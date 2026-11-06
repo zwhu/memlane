@@ -1,0 +1,30 @@
+.DS_Store
+._*
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# 本机状态、记忆数据与日志
+.local/
+.runtime/
+.memlane/
+*.log
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# 常见构建与依赖目录；具体工具链待定
+node_modules/
+dist/
+build/
+target/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.cache/
+.coverage
+coverage/
