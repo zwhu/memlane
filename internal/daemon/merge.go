@@ -35,13 +35,30 @@ func (s *Server) startMerge(ctx context.Context, d records.MergeStart) (records.
 			return
 		}
 		events := map[string]int{}
-		out, err := agents.RunMergeProposal(runCtx, agents.MergeRunOptions{Snapshot: t.Snapshot, OnEvent: func(event string) {
+		out, err := agents.RunMergeProposal(runCtx, agents.MergeRunOptions{Snapshot: t.Snapshot, GuardExecutable: s.proposalGuard, OnStart: func(pid int) error {
+			b, _ := json.Marshal(map[string]any{"pid": pid, "process_started": true, "process_group_gone": false})
+			r, e := s.store.DB.ExecContext(runCtx, `UPDATE merge_attempts SET execution=? WHERE task=? AND attempt=? AND state='running'`, string(b), t.ID, t.Attempt)
+			if e != nil {
+				return e
+			}
+			n, e := r.RowsAffected()
+			if e != nil {
+				return e
+			}
+			if n != 1 {
+				return records.MergeError("attempt_invalid")
+			}
+			return nil
+		}, OnEvent: func(event string) {
 			events[event]++
 			if event == "turn.started" {
-				b, _ := json.Marshal(map[string]any{"events": events, "process_active": true})
-				_, _ = s.store.DB.ExecContext(runCtx, `UPDATE merge_attempts SET execution=? WHERE task=? AND attempt=? AND state='running'`, string(b), t.ID, t.Attempt)
+				b, _ := json.Marshal(events)
+				_, _ = s.store.DB.ExecContext(runCtx, `UPDATE merge_attempts SET execution=json_set(execution,'$.events',json(?),'$.process_active',json('true')) WHERE task=? AND attempt=? AND state='running'`, string(b), t.ID, t.Attempt)
 			}
 		}})
+		if out.Started && !out.GroupGone && s.stop != nil {
+			s.stop()
+		}
 		failure := ""
 		if err != nil {
 			failure = "agent_failed"

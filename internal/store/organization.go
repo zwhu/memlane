@@ -211,6 +211,9 @@ func (s *Store) ClaimOrganization(ctx context.Context, id string, attempt int64)
 		return err
 	}
 	defer tx.Rollback()
+	if err = s.checkOrganizationLease(ctx, tx, id, attempt); err != nil {
+		return err
+	}
 	if err = s.checkOrganizationPlan(ctx, tx, id); err != nil {
 		return err
 	}
@@ -249,6 +252,9 @@ func (s *Store) StageOrganization(ctx context.Context, id string, attempt int64,
 			return t, ErrConflict
 		}
 		return t, nil
+	}
+	if err = s.checkOrganizationLease(ctx, tx, id, attempt); err != nil {
+		return t, err
 	}
 	if t.State != "running" {
 		return t, records.MergeError("attempt_invalid")
@@ -327,6 +333,9 @@ func (s *Store) ApplyOrganizationItem(ctx context.Context, id string, attempt in
 	}
 	if entry.State != "pending" {
 		return entry, nil
+	}
+	if err = s.checkOrganizationLease(ctx, tx, id, attempt); err != nil {
+		return entry, err
 	}
 	if err = s.checkOrganizationPlan(ctx, tx, id); err != nil {
 		return entry, err
@@ -409,8 +418,22 @@ func (s *Store) ApplyOrganizationItem(ctx context.Context, id string, attempt in
 }
 func stringRevision(v int64) string { b, _ := json.Marshal(v); return string(b) }
 func (s *Store) FailOrganizationItem(ctx context.Context, id string, attempt int64, position int) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE organization_items SET state='failed',error_code='service_error' WHERE task=? AND position=? AND state='pending' AND EXISTS(SELECT 1 FROM organization_tasks t WHERE t.id=organization_items.task AND t.attempt=? AND t.cancelled=0 AND t.state='applying')`, id, position, attempt)
-	return err
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = s.checkOrganizationLease(ctx, tx, id, attempt); err != nil {
+		return err
+	}
+	if err = s.checkOrganizationPlan(ctx, tx, id); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE organization_items SET state='failed',error_code='service_error' WHERE task=? AND position=? AND state='pending' AND EXISTS(SELECT 1 FROM organization_tasks t WHERE t.id=organization_items.task AND t.attempt=? AND t.cancelled=0 AND t.state='applying')`, id, position, attempt)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *Store) FinishOrganization(ctx context.Context, id string, attempt int64) (records.OrganizationTask, error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -430,6 +453,12 @@ func (s *Store) FinishOrganization(ctx context.Context, id string, attempt int64
 	}
 	if t.State != "applying" {
 		return t, records.MergeError("attempt_invalid")
+	}
+	if err = s.checkOrganizationLease(ctx, tx, id, attempt); err != nil {
+		return t, err
+	}
+	if err = s.checkOrganizationPlan(ctx, tx, id); err != nil {
+		return t, err
 	}
 	state := "completed"
 	for _, entry := range t.Entries {

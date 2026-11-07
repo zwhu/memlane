@@ -92,3 +92,9 @@ App 只提供明确草稿、启停与频率/范围编辑；受信 typed IPC 将�
 Claim、Stage 和自动 Apply 核对计划当前 generation、启用状态及冻结项目/目的身份。修改/停用按当前持久计划取消旧运行，历史 operation 重放不能取消新代次。已完成的待审结果仍按 C4/E 规则确认，不因停用频率抹掉历史。触发连续三次存储错误停止循环，通过 health.schedule_error 独立显示诊断。
 
 v7 只引入实际计划/操作/槽位表，租约/自动重试由 D2 增量实现。日历/DST/有限补跑是时钟夹具，真实 App 验收使用两个真实未来槽位及真实 traex/Rust。见 [D 契约](p3-schedule-contract.md)、[D1 验证](p3-schedule-validation.md)。
+
+## D2a 拥有权与进程保护
+
+v8 的 organization_leases 保存 attempt 随机 owner、到期与进程回收事实。daemon 获取执行槽后建租约并续租；owner凭据仅在内部context，受信 Store 在短事务中核对取消/attempt/到期/计划代次。已提交回执先重放，用户确认历史结果不受运行租约误撤销。
+
+memlaned 自身提供配置/数据库读取之前的内部 guard 入口。独立进程组的 guard 收到持久登记许可后才运行 Agent，私有控制 FD 显式 close-on-exec；服务死亡导致 EOF 时杀组。启动先观察旧组消失才撤销旧租约并中断任务，不 kill 可能复用的 PID；即使旧行已 released，也保存实际 gone 事实。旧 C1 合并沿用 guard，organization 租约和 C1 审核表分开。D2b 自动恢复待实现，见 [契约](p3-recovery-contract.md)、[验证](p3-recovery-validation.md)。

@@ -173,3 +173,7 @@ App 原文复制、真实 traex 通用提炼/条件预览确认与整理候选�
 ## 13. P3-D1 持久计划
 
 App 明确保存停用草稿、启用、两个真实未来槽位的正常 traex/Rust 和活动取消、停用/主动停服重开已通过；schema v7 备份保留、DST/有限补跑/原子去重与代次栅栏夹具、旧 v6 helper 拒绝及独立备份恢复读取分别见 [D1 验证](p3-schedule-validation.md) 和 [D 契约](p3-schedule-contract.md)。D2 attempt/租约/有限重试/崩溃恢复继续，不能把 D1 单服务执行串行称为持久租约。
+
+## 14. P3-D2a 持久拥有权与进程保护
+
+schema v8 的 lease、owner/attempt/到期/取消/计划栅栏、内部 guard 许可/FD/服务崩溃 EOF、旧组启动观察与事实保存已验收；真实 App/traex/Rust 正常和活动取消、旧 C1 真实服务回归、v7 WAL 备份保留、部分回执/过期故障和完整包见 [D2 验证](p3-recovery-validation.md)。完整 D2b 有限自动重试/预算/恢复继续，尚不代表 D2 或总交付通过。

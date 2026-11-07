@@ -20,6 +20,8 @@ type isolatedProposalOptions struct {
 	InspectInput                       bool
 	Agent, Model, Executable, AuthHome string
 	OnEvent                            func(string)
+	GuardExecutable                    string
+	OnStart                            func(int) error
 }
 type ProposalProcess struct {
 	Final      json.RawMessage `json:"-"`
@@ -166,16 +168,38 @@ func runIsolatedProposal(ctx context.Context, o isolatedProposalOptions, x propo
 		b, e := cmd.Output()
 		return ProposalProcess{Final: json.RawMessage(b)}, e
 	}
-	return runProposalProcess(ctx, o.Executable, args, env, work, prompt, o.OnEvent)
+	return runProposalProcessOwned(ctx, o.Executable, args, env, work, prompt, o.OnEvent, o.GuardExecutable, o.OnStart)
 }
 
 // runP3Process is shared by the real run and explicitly labelled protocol
 // fixtures. A successful exit alone never releases a proposal.
 func runProposalProcess(ctx context.Context, executable string, args, env []string, dir, prompt string, onEvent func(string)) (ProposalProcess, error) {
+	return runProposalProcessOwned(ctx, executable, args, env, dir, prompt, onEvent, "", nil)
+}
+
+func runProposalProcessOwned(ctx context.Context, executable string, args, env []string, dir, prompt string, onEvent func(string), guard string, onStart func(int) error) (ProposalProcess, error) {
 	out := ProposalProcess{Events: map[string]int{}, Items: map[string]int{}, ExitCode: -1}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
+	var controlRead, controlWrite *os.File
+	if guard != "" {
+		if !filepath.IsAbs(guard) {
+			return out, errors.New("absolute proposal guard required")
+		}
+		var err error
+		controlRead, controlWrite, err = os.Pipe()
+		if err != nil {
+			return out, err
+		}
+		defer controlRead.Close()
+		defer controlWrite.Close()
+		args = append([]string{"--proposal-guard", executable}, args...)
+		executable = guard
+	}
 	cmd := exec.CommandContext(ctx, executable, args...)
+	if controlRead != nil {
+		cmd.ExtraFiles = []*os.File{controlRead}
+	}
 	cmd.Dir = dir
 	cmd.Env = env
 	cmd.Stdin = strings.NewReader(prompt)
@@ -199,6 +223,27 @@ func runProposalProcess(ctx context.Context, executable string, args, env []stri
 	}
 	out.Started = true
 	out.PID = cmd.Process.Pid
+	if controlRead != nil {
+		_ = controlRead.Close()
+	}
+	if onStart != nil {
+		if err = onStart(out.PID); err != nil {
+			_ = syscall.Kill(-out.PID, syscall.SIGKILL)
+			_ = cmd.Wait()
+			out.Reaped = cmd.ProcessState != nil
+			out.GroupGone = syscall.Kill(-out.PID, 0) == syscall.ESRCH
+			return out, err
+		}
+	}
+	if controlWrite != nil {
+		if _, err = controlWrite.Write([]byte{'S'}); err != nil {
+			_ = syscall.Kill(-out.PID, syscall.SIGKILL)
+			_ = cmd.Wait()
+			out.Reaped = cmd.ProcessState != nil
+			out.GroupGone = syscall.Kill(-out.PID, 0) == syscall.ESRCH
+			return out, err
+		}
+	}
 	// Keep draining via Scanner, bounded per event. Cancellation kills the group
 	// even while a grandchild holds stdout; WaitDelay also bounds inherited pipes.
 	stream := &io.LimitedReader{R: stdout, N: 8*1024*1024 + 1}

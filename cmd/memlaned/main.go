@@ -11,10 +11,14 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/zwhu/memlane/internal/agents"
 	"github.com/zwhu/memlane/internal/daemon"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--proposal-guard" {
+		os.Exit(agents.RunProposalGuard(os.Args[2:]))
+	}
 	path := flag.String("config", os.Getenv("MEMLANE_SERVICE_CONFIG"), "explicit service configuration file")
 	resume := flag.Bool("resume", false, "explicitly resume a stopped service before starting")
 	flag.Parse()

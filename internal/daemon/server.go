@@ -35,6 +35,7 @@ var MarkStopped = serviceipc.MarkStopped
 var writeJSON = serviceipc.WriteJSON
 
 type Server struct {
+	proposalGuard    string
 	scheduleFailure  string
 	organizerOnce    sync.Once
 	organizerSlot    chan struct{}
@@ -91,6 +92,9 @@ func Run(ctx context.Context, config Config) error {
 		return err
 	}
 	defer db.Close()
+	if err = prepareOrganizationLeases(ctx, db); err != nil {
+		return err
+	}
 	if err = db.InterruptMerges(ctx); err != nil {
 		return err
 	}
@@ -99,7 +103,11 @@ func Run(ctx context.Context, config Config) error {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	s := &Server{organizationRuns: make(map[string]organizationOwner), lifecycle: ctx, mergeRuns: make(map[string]context.CancelFunc), config: config, store: db, state: state, status: "preparing", stop: cancel, wake: make(chan struct{}, 1), work: make(chan struct{}, 1), gate: make(chan struct{}, 1)}
+	guard, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	s := &Server{proposalGuard: guard, organizationRuns: make(map[string]organizationOwner), lifecycle: ctx, mergeRuns: make(map[string]context.CancelFunc), config: config, store: db, state: state, status: "preparing", stop: cancel, wake: make(chan struct{}, 1), work: make(chan struct{}, 1), gate: make(chan struct{}, 1)}
 	path := SocketPath(config.Root)
 	dir := filepath.Dir(path)
 	if err = os.MkdirAll(dir, 0700); err != nil {

@@ -245,3 +245,13 @@
 - [x] 旧 E helper 实际拒绝 v7，独立 v6 备份恢复读取；GUI/IPC 读取失败诊断、test/vet/race、分组与跨组审查、实际窗口/完整 DMG。
 
 见 [D1 验证](p3-schedule-validation.md)。多 attempt 租约、有限自动重试、崩溃/迟到/部分提交恢复保留 D2 未完成；不将上文组合的计划与异常恢复总项提前勾选。
+
+### P3-D2a 持久拥有权与进程保护：已通过
+
+- [x] schema v8 增量租约表与 v7 非空 WAL 一致性备份、全部旧表/计划/部分结果/回执保留。
+- [x] owner/attempt/到期/取消/计划代次在 Claim、Stage、自动 Apply、失败与收尾短事务核对，过期不复活，回执先重放。
+- [x] 独立 guard 在持久登记后才放行 Agent，控制 FD 不继承；实际 owner SIGKILL 后组消失、旧组存在阻塞而不盲目 kill，观察 gone 持久保存。
+- [x] 真实 App/traex/Rust 正常与活动取消，停服后两个租约回收状态准确；test/vet/race、分组与跨组审查、系统窗口和完整 DMG。
+- [ ] D2b 用户明确授权的有限重试/退避/错误分类、恢复窗口，自动新 attempt、完整崩溃重启/迟到/部分提交/重复触发恢复。
+
+见 [D2 验证](p3-recovery-validation.md)。D2a 不改变旧计划收费调用次数；完整 D2 和总矩阵仍未完成。

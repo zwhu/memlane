@@ -275,3 +275,9 @@ App、服务、traex 与真实 pi/Rust 证据见 [E 验证](p3-global-validation
 schema v7 增量保存计划/generation/明确策略、幂等 operation 回执和唯一到期槽位。新草稿停用；用户明确启用才计算未来运行。日历时区由用户设置，DST 缺失时刻顺延、重复时刻单次；唤醒只补最新一槽，超过窗口记跳过。输入与动作/目的/executor/model 策略相同且已有持久结果时记 no_changes，时间或窗口编辑不重复模型调用。
 
 原子计划触发复用 C3/C4/E 正式任务与来源冻结，daemon 共用单本机执行槽，计划身份/代次在 Claim/Stage/自动 Apply 校验。v6 迁移前一致性备份、旧 helper 拒绝 v7 和独立 v6 恢复读取已证明；正式升级/索引重建另验。App 正常、活动取消、停用/停服与 Rust 证据见 [D1 验证](p3-schedule-validation.md)。D2 租约与有限自动重试仍未完成。
+
+## P3-D2a 已验收的租约与进程保护
+
+v8 增量 organization_leases 绑定 task/attempt 随机 owner、到期、进程组与回收事实；短事务门禁保护领取/结果/自动应用/失败/收尾，后台续租失败取消执行，旧 owner 不能复活。内部 guard 收到持久登记许可后启动 Agent，FD3 不继承，服务崩溃 EOF 杀组。新服务只观察旧组消失后撤销旧租约与中断任务，不盲目 kill 复用 PID；旧 C1 guard 的历史组同样核对保存。
+
+v7 非空 WAL 一致性备份/全部旧表/部分回执保留、真实 App/traex/Rust 正常与取消、实际 guard 故障和旧 C1 真服务回归见 [D2 验证](p3-recovery-validation.md)。租约不是收费重试授权；D2b 有限重试/恢复预算和完整自动恢复仍待实现。

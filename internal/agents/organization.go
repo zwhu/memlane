@@ -7,6 +7,8 @@ import (
 
 type OrganizationRunOptions struct {
 	Executable, AuthHome, Model string
+	GuardExecutable             string
+	OnStart                     func(int) error
 	Snapshot                    records.OrganizationSnapshot
 	OnEvent                     func(string)
 }
@@ -38,7 +40,7 @@ func RunOrganization(ctx context.Context, o OrganizationRunOptions) (Organizatio
 	if o.Snapshot.Schema == records.OrganizationGlobalSchema {
 		prompt = organizationReviewPrompt + organizationGlobalPrompt
 	}
-	process, err := runIsolatedProposal(ctx, isolatedProposalOptions{Agent: "traex", Executable: resolved.Executable, AuthHome: resolved.AuthHome, Model: resolved.Model, OnEvent: o.OnEvent}, o.Snapshot, prompt)
+	process, err := runIsolatedProposal(ctx, isolatedProposalOptions{Agent: "traex", Executable: resolved.Executable, AuthHome: resolved.AuthHome, Model: resolved.Model, OnEvent: o.OnEvent, GuardExecutable: o.GuardExecutable, OnStart: o.OnStart}, o.Snapshot, prompt)
 	out.ProposalProcess = process
 	if err != nil {
 		return out, err

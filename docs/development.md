@@ -397,3 +397,9 @@ MEMLANE_C3_QUALITY_REAL=1 sh scripts/go.sh test -json ./internal/agents -run '^T
 停服后运行 `python3 scripts/verify-p3-schedule-presentation.py`，将发现时运行快照绑定到原计划 operation 回执，核对最终 completed/cancelled、停用代次、窗口重启历史和真实 Rust v2/过期摘要排除，不运行模型。`python3 scripts/verify-p3-schedule-compat.py` 仅复制已停服合成库，实际旧 E schema6 helper 拒绝 v7，并读取独立 v6 备份恢复的全局 v3 条件；不代表索引重建或正式回退发布通过。
 
 `sh scripts/go.sh test ./internal/store -run Schedule -count=1 -v` 与 daemon 的 Schedule/Organizer 用例包含明确时钟/SQL/控制器夹具；GUI 诊断故障测试在 desktop。全仓 test/vet 和 Store/daemon/agents/desktop race 同既有标准。完整 DMG 用 `python3 scripts/build-client.py --out build/p3-schedules-production`。真实结果、失败探针历史、D2 边界和体积见 [D1 验证](p3-schedule-validation.md)。
+
+## P3-D2a 租约和进程保护验收
+
+`python3 scripts/create-p3-recovery-fixture.py` 建立业务为空的新合成根；按输出 runtime-config/identifier 构建 `--out build/p3-recovery-app --name MemlaneRecovery --automation --skip-dmg`，执行 `python3 scripts/verify-p3-recovery-app.py` 验证真实 App/traex/Rust 正常与活动取消及停服后租约回收事实。首次流程只运行于新根。
+
+无模型实际进程夹具先 `sh scripts/go.sh build -o build/p3-recovery/memlaned ./cmd/memlaned`，再 `python3 scripts/verify-p3-proposal-guard.py`。`sh scripts/go.sh test ./internal/store ./internal/daemon -run '^TestOrganizationLease' -count=1 -v` 覆盖 SQLite 过期/版本/取消/部分回执/v7 WAL 迁移和实际旧进程组启动门禁；不冒充完整 D2b 自动恢复。完整生产 DMG 为 `python3 scripts/build-client.py --out build/p3-recovery-production`，边界见 [D2 验证](p3-recovery-validation.md)。

@@ -82,6 +82,12 @@ func (s *Server) resumeOrganization(ctx context.Context, d records.OrganizationR
 			return
 		}
 		defer release()
+		owned, finish, err := s.beginOrganizationLease(runCtx, t, cancel)
+		if err != nil {
+			return
+		}
+		defer finish(true, true)
+		runCtx = owned
 		s.applyOrganization(runCtx, t)
 	}()
 	return t, nil
@@ -169,6 +175,13 @@ func (s *Server) launchOrganization(t records.OrganizationTask) {
 			return
 		}
 		defer release()
+		owned, finish, err := s.beginOrganizationLease(runCtx, t, cancel)
+		if err != nil {
+			return
+		}
+		runCtx = owned
+		reaped, gone := true, true
+		defer func() { finish(reaped, gone) }()
 		if err := s.store.ClaimOrganization(runCtx, t.ID, t.Attempt); err != nil {
 			return
 		}
@@ -181,13 +194,21 @@ func (s *Server) launchOrganization(t records.OrganizationTask) {
 			model = spec.Model
 		}
 		counts := map[string]int{}
-		out, err := agents.RunOrganization(runCtx, agents.OrganizationRunOptions{Snapshot: t.Snapshot, Model: model, OnEvent: func(event string) {
+		out, err := agents.RunOrganization(runCtx, agents.OrganizationRunOptions{Snapshot: t.Snapshot, Model: model, GuardExecutable: s.proposalGuard, OnStart: func(pid int) error {
+			return s.store.RegisterOrganizationProcess(runCtx, t.ID, t.Attempt, pid)
+		}, OnEvent: func(event string) {
 			counts[event]++
 			if event == "turn.started" {
 				b, _ := json.Marshal(map[string]any{"events": counts, "process_active": true})
 				_, _ = s.store.DB.ExecContext(runCtx, `UPDATE organization_attempts SET execution=? WHERE task=? AND attempt=? AND state='running'`, string(b), t.ID, t.Attempt)
 			}
 		}})
+		if out.Started {
+			reaped, gone = out.Reaped, out.GroupGone
+		}
+		if !gone && s.stop != nil {
+			s.stop()
+		}
 		failure := ""
 		if err != nil {
 			failure = "agent_failed"

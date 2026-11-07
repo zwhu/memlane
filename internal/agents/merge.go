@@ -11,11 +11,13 @@ import (
 )
 
 type MergeRunOptions struct {
-	Executable string
-	AuthHome   string
-	Model      string
-	Snapshot   records.MergeSnapshot
-	OnEvent    func(string)
+	Executable      string
+	GuardExecutable string
+	OnStart         func(int) error
+	AuthHome        string
+	Model           string
+	Snapshot        records.MergeSnapshot
+	OnEvent         func(string)
 }
 type MergeExecution struct {
 	Proposal *records.MergeProposal `json:"proposal,omitempty"`
@@ -37,7 +39,7 @@ func RunMergeProposal(ctx context.Context, o MergeRunOptions) (MergeExecution, e
 	if err != nil {
 		return out, err
 	}
-	process, err := runIsolatedProposal(ctx, isolatedProposalOptions{Agent: "traex", Executable: o.Executable, AuthHome: o.AuthHome, Model: o.Model, OnEvent: o.OnEvent}, o.Snapshot, mergePrompt)
+	process, err := runIsolatedProposal(ctx, isolatedProposalOptions{Agent: "traex", Executable: o.Executable, AuthHome: o.AuthHome, Model: o.Model, OnEvent: o.OnEvent, GuardExecutable: o.GuardExecutable, OnStart: o.OnStart}, o.Snapshot, mergePrompt)
 	out.ProposalProcess = process
 	if err != nil {
 		return out, err
