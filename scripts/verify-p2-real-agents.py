@@ -10,6 +10,7 @@ p.add_argument('--agent',choices=['codex','pi'],required=True)
 p.add_argument('--mode',choices=['save','read'],required=True)
 p.add_argument('--provider');p.add_argument('--model')
 p.add_argument('--auth-dir',type=Path)
+p.add_argument('--report',type=Path,help='单独保存恢复/重启验证，保留之前的回执')
 a=p.parse_args()
 
 def adapter(action,**fields):
@@ -65,7 +66,7 @@ response=adapter('run',connection=c,options=options,run=run)
 report={'status':'failed','synthetic_only':True,'actual_installed_agent':True,'agent':a.agent,'mode':a.mode,
         'version':found['version'],'seconds':round(time.monotonic()-began,3),'execution':response.get('result'),
         'error':response.get('error'),'authentication_owned_by_agent':True,'isolated_config':True}
-path=d.OUT/(a.agent+'-real-'+a.mode+'.json')
+path=a.report or d.OUT/(a.agent+'-real-'+a.mode+'.json')
 try:
     assert response['ok'],response
     calls=response['result']['calls']

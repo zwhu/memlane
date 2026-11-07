@@ -1,6 +1,6 @@
 # 第一版实施清单
 
-执行依据：[技术方案](technical-plan.md)、[产品定义](product.md)、[设计决策](design.md)。当前 P0 核心工程流程已通过真实合成数据验证；尚无真实 Agent 接入；P1 手动界面已接入并通过闭环，实际系统窗口设计对照已通过。2026-11-07 用户明确要求停止旁白等旁支验证，以主流程走通为本轮标准；VoiceOver未通过，移到后续增强，不伪称通过。证据见 [P0 验证记录](p0-validation.md)。
+执行依据：[技术方案](technical-plan.md)、[产品定义](product.md)、[设计决策](design.md)。当前 P0 核心工程流程、P1 手动界面闭环与实际窗口对照已通过；P2 真实 Codex/pi 接入和 App 管理已通过，结果见 [P2 验证记录](p2-validation.md)。2026-11-07 用户明确要求停止旁白等旁支验证，以主流程走通为本轮标准；VoiceOver 未通过，移到后续增强，不伪称通过。证据见 [P0 验证记录](p0-validation.md)。
 
 先完成 P0 的运行与打包验证，再实现界面与真实数据；首个使用里程碑是 **Codex 写入项目经验 → App 查看/编辑 → pi 在同项目检索到当前版本**。阶段是依赖顺序，不是工期承诺。
 
@@ -120,10 +120,10 @@
 
 ### P2.5：跨 Agent 闭环与交付
 
-- [ ] 真实 Codex 保存 A → App 查看/编辑 → 真实 pi 检索当前正文、来源、版本；编辑/恢复后不返回旧版。
-- [ ] 项目 B 隔离、允许全局和额外授权；重复写入去重、服务停止明确报错、重启保留记忆与连接。
-- [ ] 相关测试和 `sh scripts/go.sh test ./...`；完整 `python3 scripts/build-client.py --out build/p0-final` 包含 MCP/CLI 桥、helper/LaunchAgent。
-- [ ] 更新开发说明与验证记录，分别报告主包大小、首次准备下载量、最终磁盘占用；复用未变化的组件证据并注明。
+- [x] 真实 Codex 保存 A → App 查看/编辑 → 真实 pi 检索当前正文、来源、版本；App 确认恢复为 v3，真实 pi 搜索/读取当前 v3，旧 v1/v2 历史保留。
+- [x] 项目 B 隔离、允许全局和额外授权；真实 Codex 重放原稳定保存 ID 返回同一条目与当前 v3，Codex/pi 停服返回 service_unavailable，App 显式重启保留记忆与连接代次。
+- [x] 相关测试和 `sh scripts/go.sh test ./...` / `vet ./...` 退出 0；完整 `python3 scripts/build-client.py --out build/p0-final` 包含 MCP/CLI 桥、helper/LaunchAgent，本机签名校验通过。
+- [x] 更新开发说明与验证记录；主 DMG 13,108,437 bytes、App 29,208,416 bytes；首次组件下载 285,752,286 bytes 复用未变化 P0 归档，P2 实际准备后总逻辑占用 520,941,898 bytes。
 - [ ] 每阶段提交，最终推送并核对远端提交；逐项完成审计，结束前执行 `/handoff` 说明 P3 入口。
 
 **通过标准**：Codex 保存合成经验，pi 在项目 A 查到当前正文、来源和版本；项目 B 查不到 A 的专属内容。服务不可用返回错误，不能伪装成空结果或成功保存。

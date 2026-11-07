@@ -8,7 +8,7 @@
 
 只读探测：PATH 中 Codex `0.147.0`、pi `0.84.1`。Codex 提供 stdio MCP 与 exec，pi 提供 Extension/RPC，帮助未列出原生 MCP 命令；本机先用 Extension，不自动升级。pi 帮助在原沙箱中尝试建立 settings lock 被拒绝，没有修改真实设置；后续运行使用隔离 `PI_CODING_AGENT_DIR`。
 
-P2.1/P2.2 统一契约与范围协议已通过；P2.3 的真实 Codex → App 查看/编辑 → pi 当前版本读取已通过；P2.4 App 内 Codex/pi 读写、连接管理与实际系统窗口对照已通过。P2.5 恢复、停止/重启和最终交付审计继续执行。
+P2.1–P2.4 已通过；P2.5 App 恢复、真实 Agent 幂等/停止错误/重启读取、完整主包与最终审计已通过。每阶段提交后最终推送并核对远端，提交/交接状态见文末。
 
 官方 Go SDK 固定 `v1.8.0`。`proxy.golang.org` 在沙箱及沙箱外均连接超时；`goproxy.cn` 实际访问成功，命令级 `GOPROXY=https://goproxy.cn` 完成版本查询与下载，不修改用户默认 Go 环境。
 
@@ -71,3 +71,45 @@ Agent 页沿用导航—列表—详情三栏，连接、范围、验证、断�
 `build/p2/real-scope-verification.json` 七组通过，均启动实际 pi/Codex 进程并核对工具事件。pi 实际默认模型为 `deepseek/deepseek-v4-pro`，由 Agent 自己处理认证。覆盖显式全局保存、B 默认排除 A（即使连接已允许 A）、额外项目显式授权、未授权 A 的 scope_denied、B 默认允许全局、真实 pi worktree ctx.cwd 映射 A，以及真实 Codex MCP 在 worktree 读取 A 的当前 v2。
 
 Codex worktree 首次运行正常退出但没有工具回执，不能以 exit=0 宣称通过；同一精确工具请求重试取得真实 MCP memory_get 回执后才计通过。验收器保留终态与工具事件，未以直接 IPC 或模型最终文本替代工具调用。CLI/MCP 原契约十组和配置适配六组仍通过，证据分别为 `build/p2/contract-verification.json`、`build/p2/adapter-verification.json`。
+
+## P2.5：恢复、故障与重启闭环
+
+`python3 scripts/verify-p2-restore.py` 通过实际 App 查看 v2、历史、恢复 v1 的栏内确认。确认前仍为 v2；确认后创建当前 v3，保持原始正文、来源片段/引用和 v1/v2 历史，真实 worker 完成 v3 索引。`build/p2/cross-agent-app-restore.json` 与系统窗口帧证明 App 操作；恢复/详情和首页分别归档于 [当前 v3](images/p2-detail.png) 与 [宽幅首页](images/p2-home.png)。实际查看系统图，对照两张设计稿，首页仍宽幅，详情仍三栏，正文/来源/版本独立展示，保存与索引分开。
+
+`python3 scripts/verify-p2-real-agents.py --agent pi --mode read --report build/p2/pi-real-restored-read.json` 的真实 pi 搜索和 get 返回当前 v3、codex 来源与原引用。先前 v2 回执保留在 `pi-real-read.json`，不以 v3 覆盖之前的编辑证据。恢复相同正文也通过版本号核对，不能只看文字相同。
+
+`build/p2/real-lifecycle-verification.json` 五组 passed，覆盖真实 Codex 重放原稳定 operation_id、两款 Agent 停服错误、App 显式重启和真实 pi 重启后读取。Codex 重放返回 persisted=true、saved_revision=1，但 record 当前 revision=3；memory ID 不变且只有 v1/v2/v3 三条版本。App 设置中停止后 socket 消失、持久 stopped=true；Codex MCP 和 pi Extension 的实际 memory_search 均返回结构化 service_unavailable，无 result，无假空结果，也未启动服务。随后 App 明确点击启动，服务 ready、连接 ID/代次/白名单/绑定与正文历史保持；真实 pi get 返回 v3 及来源。
+
+生命周期验收最初用完整对象相等检查连接，因成功工具调用更新 last_seen 而失败。最小对照显示仅该字段不同，ID/项目/代次/授权不变；服务 TouchConnection 本就记录实际访问。修正验收比较持久配置字段，保留前三组真实回执，从已明确重启的服务继续，未改业务代码。失败保留 `build/p2/lifecycle-last-seen-assertion-failure.json`，后续五组报告 passed。
+
+完成后通过 `python3 scripts/stop-p2-app.py` 调用实际 App「停止服务并退出」，本轮 socket 消失、owner lock 可独占、WAL 已清空。所有本轮验证连接均已撤销，不改其他 P0/P1 job 或真实 Agent 设置。合成库完整性 ok、schema=2、当前与索引 revision=3、v1/v2/v3 历史及来源保留；主经验只有一次创建活动，raw 验证记录未计热力图。
+
+## 测试、完整主包与体积
+
+最终 `sh scripts/go.sh test ./...`、`sh scripts/go.sh vet ./...` 都退出 0，退出码与日志见 `build/p2/final-checks.json`。受影响服务回归六组、原协议十组、配置六组、真实范围七组、App 管理九组与上述实际闭环全部通过；未受影响的 P0 更新/模型/组件/系统输入证据复用，不重开 VoiceOver 等旁支。
+
+完整执行 `python3 scripts/build-client.py --out build/p0-final`，当前日志 `build/p2/current-client-build.log`。完整 App/DMG 包含 UI、更新器、组件管理、memlaned、LaunchAgent 和 memlane Go 桥；不附带 worker、模型或 agent-check 验收工具。Go MCP SDK/TOML 增加轻量桥体积，不要求用户安装 Python/Node 来运行主客户端；pi 使用自身已有运行环境。
+
+`python3 scripts/measure-package.py ... --out build/p2/final-sizes.json` 在本轮实际准备且已停止的合成根测量，MB 按 1,000,000 bytes：
+
+| 类别 | 字节 | MB | 口径 |
+| --- | ---: | ---: | --- |
+| 主下载 DMG | 13,108,437 | 13.11 | 本轮完整主包 |
+| 主 App | 29,208,416 | 29.21 | 普通文件逻辑大小，不含引擎/模型 |
+| 首次组件下载 | 285,752,286 | 285.75 | Rust worker 66,253,324 + 模型 219,498,962；归档未变，复用 P0 成功下载证据 |
+| 准备后总占用 | 520,941,898 | 520.94 | 主 App + 本轮实际组件、模型、缓存、合成数据和设置 |
+| 文件分配指标 | 521,273,344 | 521.27 | st_blocks；不等同 APFS 可释放空间 |
+
+实际 client 根为 491,733,482 bytes，其中 runtime 491,569,377、data 163,217，另含设置等文件。首次下载量不含失败重试或 HTTP/TLS 开销；磁盘量不含目录元数据。Python 对照首次归档下载 584,328,409 bytes，仍是 P0 对照，未冒充本轮 App 路径。当前 DMG SHA-256 为 `cb49cd61f2fe8d7558466000def80e08f35d56bf4182290ff6da8e8fe2733725`。
+
+`python3 scripts/audit-p2.py` 当前 passed，12 组需求映射与各报告/窗口/测试日志/主包散列在 `build/p2/final-audit.json`；同时核对停止合成库、连接撤销、当前版本、索引与一次活动。DMG 的 SHA256SUMS 和 App `codesign --verify --deep --strict` 通过。本机 ad-hoc 签名，正式 Developer ID、公证、正式组件/更新源及干净机器分发仍属于 P4。
+
+## 提交、交接与下一阶段
+
+- P2.1 `b7cb4d5`：统一记忆契约与 MCP/CLI 桥。
+- P2.2 `060c379`：项目/worktree、白名单与授权屏障。
+- P2.3 `e17fda1`：真实 Codex/pi 接入与 App 管理。
+- P2.4 `6d49cf8`：真实 App 管理与实际系统窗口验收。
+- P2.5：当前恢复、故障、体积及交付审计产物在提交后推送；最终远端核对以 `build/p2/remote-verification.json` 为准，不在文档内循环引用其自身提交。
+
+已按 `.trae/skills/handoff/SKILL.md` 在开始、各阶段、阻塞与继续步骤实际生成系统临时交接文件；最新完成和最终交接路径在 `build/p2/` 的交付记录中保存。交接不复制代码/报告，不放密钥、真实聊天、记忆库或 Agent 配置。P3 从固定正文/revision 快照、受限后台执行、取消/超时、结构化提案与栏内确认开始；未确认覆盖/合并/删除/跨项目移动不得改变有效知识。不扩展本轮到 TRAE/traex、代码图谱或远程管理。

@@ -272,6 +272,47 @@ python3 scripts/p2-handoff.py <阶段> --result '<结果与证据路径>' --next
 
 协议验收复用 `build/p1/memlaned` 的已提交 schema v1 基线，仅在新建临时合成根初始化旧业务库，再由当前服务迁移；worker/model 使用 P0 已验证的合成组件路径。不要将生产用户目录传给验证脚本。Go 默认代理无法连接时可在命令前设置 `GOPROXY=https://goproxy.cn`；这是仓库工具链的单次命令设置，不替换用户默认环境。
 
+### P2 实际 App 与 Agent 验收
+
+本机已验证 Codex 0.147.0 的 stdio MCP、pi 0.84.1 的 Extension。App 自动发现 PATH/已知位置/所选路径，用户明确连接后增量安装配置并备份；变更范围更新代次，重新加载 Agent 后验证。App 的“验证读写”实际启动已安装 Agent，以合成 raw 记录执行保存、状态和搜索，只有完整回执和 ready 服务才显示可用；额度、认证或调用失败显示异常。初始化复制 prompt 入口保留但禁用，P3 再设计内容。
+
+创建新合成根时只复用 P0 的组件缓存，不复制真实知识或 Agent 设置：
+
+```sh
+sh scripts/go.sh build -o build/p2/agent-check ./cmd/p2-agent-check
+python3 scripts/verify-p2-adapters.py
+python3 scripts/create-p2-fixture.py
+python3 scripts/build-client.py --out build/p2-app --runtime-config <新合成根>/runtime-config.json --identifier <source-info中的独立identifier> --name MemlaneP2 --automation --skip-dmg
+python3 scripts/setup-p2-app.py
+python3 scripts/verify-p2-real-agents.py --agent codex --mode save
+python3 scripts/verify-p2-app-edit.py
+python3 scripts/verify-p2-real-agents.py --agent pi --mode read
+python3 scripts/verify-p2-real-scopes.py
+python3 scripts/verify-p2-agent-ui.py --verify --verify-pi --require-success
+python3 scripts/verify-p2-restore.py
+python3 scripts/verify-p2-real-agents.py --agent pi --mode read --report build/p2/pi-real-restored-read.json
+python3 scripts/verify-p2-lifecycle.py
+python3 scripts/stop-p2-app.py
+```
+
+`build/p2/fixture-path.txt` 指向本轮临时根；驱动优先使用 `source-info.json` 的 app 路径，否则使用 `build/p2-app/darwin-arm64/MemlaneP2.app`。不要将已有真实用户目录设为夹具。首次保存/编辑/恢复有明确版本前置条件，不能对已恢复 v3 的夹具重复执行编辑/恢复脚本。需要重跑全链路时新建合成根；保留历史报告。因 `last_seen` 断言失败而中断的本轮生命周期检查可用 `--resume-after-restart` 保留前三组实际回执，核对配置并从已明确重启的服务继续，不能跳过没有证据的步骤。
+
+认证由实际 Agent 读取：隔离运行只为其 auth 文件创建临时链接，不提取 token，也不在 Codex/pi 之间传凭据。Codex 运行忽略用户配置/项目规则并限制 shell，只为 Memlane 的新增保存工具设置实际支持的 `approval_mode="approve"`；pi 禁用其他工具/扩展/上下文，可信 `ctx.cwd` 由 Extension 转发。若安装版本不支持参数或没有认证/额度，记录真实失败，不使用模拟结果替代。`--provider/--model/--auth-dir` 仅选择该 Agent 的已有运行条件。
+
+系统截图需要解锁桌面，实际窗口 key/visible 和采集元信息都要通过；`--functional-only` 结果只能为 functional_passed。取得并实际看图对照后更新 `build/p2/final-window-verification.json`，不能自动把渲染图当成视觉通过。验收结束通过 App 明确停止本轮服务，审计使用已停止且取得 owner lock 的合成库。
+
+完整主包和体积仍使用下面的独立命令；引擎与模型未变化，首次下载复用 P0 成功归档字节，最终磁盘量按 P2 实际准备目录测量：
+
+```sh
+sh scripts/go.sh test ./...
+sh scripts/go.sh vet ./...
+python3 scripts/build-client.py --out build/p0-final
+python3 scripts/measure-package.py build/p0-final/darwin-arm64/memlane-0.0.1-arm64.dmg build/p0-final/darwin-arm64/Memlane.app --runtime-root <本轮合成根>/client --worker-archive build/p0-engine/memlane-cognee-rust-0.0.1-darwin-arm64.tar.gz --model-archive build/p0-engine/memlane-model-e5-base-int8.tar.gz --python-archive build/p0-engine/memlane-cognee-python-0.0.1-darwin-arm64.tar.gz --out build/p2/final-sizes.json
+python3 scripts/audit-p2.py
+```
+
+审计前 `build/p2/final-checks.json` 保存上面 test/vet 的真实退出码与日志路径。完整包包含 UI、更新器、组件管理、memlaned、LaunchAgent 和 memlane 桥；验收工具 agent-check 不随主包分发。当前正式组件/更新源、Developer ID 和公证仍待 P4；本机 ad-hoc 签名的验证包不表示正式发布通过。阶段交接执行 `p2-handoff.py`，输出只保存在系统临时目录。
+
 ```sh
 sh scripts/go.sh build -o build/p1/memlaned ./cmd/memlaned
 python3 scripts/verify-p1-service.py

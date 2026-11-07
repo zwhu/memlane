@@ -2,7 +2,7 @@
 
 2026-11-07。桌面框架按用户选择采用 **MyGo**；建议使用 **MyGo 轻量客户端 + Go 后台服务 + 独立下载的 Cognee 引擎**。用户已明确优先控制主下载包大小：主客户端提供 UI、自动更新、组件准备与状态管理及必要的轻量 Go helper，重型引擎依赖和模型由 App 自动下载，在本地运行。用户无需安装数据库服务器、Python 或 Docker。首版交付 macOS，保留以后扩展 Windows/Linux 的边界。
 
-这是按阶段实施的技术方案。MyGo 的平台与接口、Cognee 源码及本机 Agent 命令已经核对；真实原文服务、固定模型、Rust/Python独立worker、App准备、后台及受控更新的P0核心流程已通过合成实测，结果见[P0验证记录](p0-validation.md)。按2026-11-07用户最新要求，旁白等旁支不再阻塞本轮；未通过结果保留后续增强。MyGo本机P0工程基线已通过，手动记忆界面的 P1 实现与验证见 [P1 记录](p1-validation.md)，实际系统窗口设计对照已通过；真实 Agent 接入和正式签名分发仍按后续阶段验收。
+这是按阶段实施的技术方案。MyGo 的平台与接口、Cognee 源码及本机 Agent 命令已经核对；真实原文服务、固定模型、Rust/Python 独立 worker、App 准备、后台及受控更新的 P0 核心流程已通过合成实测，结果见 [P0 验证记录](p0-validation.md)。按 2026-11-07 用户最新要求，旁白等旁支不再阻塞本轮；未通过结果保留后续增强。P1 手动记忆与系统窗口已通过；P2 已接通真实 Codex/pi 和 App Agent 管理，证据见 [P2 记录](p2-validation.md)。后台整理、其余 Agent、代码图谱和正式签名分发仍按后续阶段验收。
 
 实现路线补充：官方 **Cognee-RS** 是本地引擎的 Rust 移植，仍标 Experimental。P0 优先验证它的最小可用构建，并与 Python 1.6.7 对照；本轮 App 使用已通过原文契约的 Rust worker，Python 保留同契约对照；完整代码图谱仍待 P4 适配。下文标明 Python 的内部接口、FastEmbed、Enola 和 wheel 条件仅适用于该候选，Rust 对应能力须独立验收。[Rust 研究](research-cognee-rust.md)
 
@@ -16,7 +16,7 @@
 | 记忆引擎 | Cognee worker 独立下载；对照 Cognee-RS 与 Python Cognee 1.6.7 | 复用索引、语义检索和图谱；实现以功能与分发验证决定，不让每个 Agent 独立打开引擎数据库 |
 | Cognee 存储 | SQLite + LanceDB + Ladybug，随引擎组件提供 | 沿用引擎提供的本地实现，用户无须部署独立服务 |
 | 向量模型 | 显式本地推理；Python 验证 FastEmbed，Rust 验证 ONNX provider | 模型由 App 管理；模型兼容性、中文效果与资源占用分别实测 |
-| Agent 接入 | 自带 Go MCP stdio 桥；旧 pi 使用薄 Extension | 统一作用域、来源、幂等和审核规则 |
+| Agent 接入 | 自带 Go MCP stdio/CLI 桥；本机 pi 0.84.1 使用薄 Extension | 统一作用域、来源、幂等；Agent 只允许新建，覆盖等操作保留确认规则 |
 | AI 执行 | 调用用户选择的后台 Agent，输出结构化结果 | 登录由 Agent 处理；不复制凭据，不承诺无限或免费额度 |
 | 分发 | 轻量 `.app` / DMG + 独立引擎组件 + 模型资源，首轮验证 arm64、macOS 15+ | 主包不附带 Cognee 引擎、重型原生依赖和模型；完整能力的系统要求仍由引擎依赖决定 |
 | 自动更新 | 主客户端更新器与组件管理器 | 主客户端、引擎、模型分别版本化；未变化的组件复用，兼容性和失败恢复须实测 |
@@ -36,14 +36,14 @@ MyGo v0.7.4 自身的 macOS 下限为 12。首轮测试暂采用 macOS 15+，依
 ```mermaid
 flowchart LR
     UI[MyGo 桌面界面] -->|本地 IPC| S[Go 后台服务 memlaned]
-    A[Codex / pi / TRAE / traex] -->|MCP 或 Extension| B[自带 memlane 桥接程序]
+    A[已接通 Codex / pi] -->|MCP 或 Extension| B[自带 memlane 桥接程序]
     B -->|本地 IPC| S
     S --> DB[(业务 SQLite：正文 / 版本 / 提案 / 队列)]
-    S -->|JSONL 请求与事件| C[Cognee worker：Rust 或 Python 待验证]
+    S -->|JSONL 请求与事件| C[App Rust worker / Python 契约对照]
     C --> IDX[(Cognee：SQLite / LanceDB / Ladybug)]
     C --> E[本地 embedding]
-    S -->|独立任务| L[用户选择的整理 Agent]
-    C -.模型请求经服务转发.-> L
+    S -.P3 独立任务待实现.-> L[用户选择的整理 Agent]
+    C -.P3 模型请求待适配.-> L
 ```
 
 职责保持简单：
@@ -133,12 +133,12 @@ worker 提交任务结果时再次检查 revision，旧任务不能把新版本�
 
 | Agent | 日常读写 | 后台整理候选 |
 | --- | --- | --- |
-| Codex | MCP stdio | CLI `exec`，结构化结果与事件流 |
-| pi | 新版 MCP；本机旧版 Extension | RPC、独立会话、受限结果工具 |
+| Codex | 0.147.0 MCP stdio，真实保存/读取通过 | P3 候选 CLI `exec`，结构化结果与事件流 |
+| pi | 0.84.1 Extension，真实保存/检索通过；本机不假设原生 MCP | P3 候选 RPC、独立会话、受限结果工具 |
 | TRAE | 按实际版本/渠道接 MCP | 不把 IDE 默认当成后台执行器 |
 | traex | 独立 TRAE CLI MCP 适配 | `exec`，先验证本机 internal 发行版的隔离与取消 |
 
-以上仅核查到接口，尚未接通；具体版本和官方依据见 [Agent 研究](research-agents.md)。MCP 使用 [官方 Go SDK](https://github.com/modelcontextprotocol/go-sdk)；内部建议工具为 `memory_search/get/save/propose_change/job_status`，名称与 schema 在 P1 固定。
+Codex/pi 的真实接入见 [P2 验证](p2-validation.md)，其余两款尚未接通；版本与接口依据见 [Agent 研究](research-agents.md)。MCP 使用 [官方 Go SDK](https://github.com/modelcontextprotocol/go-sdk) v1.8.0；P2 固定 `memory_scopes/save/search/get/status`，详见 [接入契约](agent-contract.md)。覆盖、删除、恢复与移动不作为 Agent 直接工具暴露；提案和后台任务属于 P3。
 
 连接流程是发现 → 能力探测 → 用户连接 → 安装自己的配置 → 待重载 → 真实工具往返 → 可用。只搜索已知安装位置、PATH 和用户选定路径，不扫描全盘或导入聊天历史。Skill 只描述使用时机与工具语义，不代替连接和后台执行协议。配置增量修改并保留备份，断开时只移除 Memlane 条目。
 
@@ -223,17 +223,19 @@ MyGo 已有 helper 分发和嵌套代码签名机制，可用于主客户端的�
 
 ## 13. 工程组织与本轮验证边界
 
-建议后续按实际实现创建以下目录，本轮不提前放空模块：
+当前实现使用下列目录；提案、计划与其余 Agent 按后续阶段增加，不提前放空模块：
 
 ```text
 cmd/memlane-app/        MyGo 界面入口
 cmd/memlaned/           独立后台服务
 cmd/memlane/            MCP / CLI 桥
-internal/ui/           页面、组件、状态、设计 token
-internal/memory/        版本、范围、提案与活动规则
+internal/desktop/      页面、组件、状态、设计 token
+internal/records/      正文、版本、来源与连接契约
+internal/daemon/       服务端版本、范围、活动与 Agent 规则
+internal/agentbridge/  官方 SDK MCP / CLI 统一工具与错误
 internal/store/         SQLite 与 migration
 internal/jobs/          队列、计划、恢复
-internal/agents/        Codex / pi / TRAE / traex 适配
+internal/agents/        Codex / pi 发现、配置与实际验证
 internal/engine/        Cognee worker 协议
 internal/platform/     系统服务、目录、进程控制
 engine/                选定的 Rust/Python worker、Cognee 适配与依赖锁文件
@@ -241,6 +243,6 @@ packaging/             plist、资源、签名与构建脚本
 docs/                  产品、设计、方案和证据
 ```
 
-本轮实机只读检查：macOS 26.6.2 arm64；PATH 中无 Go；默认 Python 为 3.9.23，低于 Cognee 声明下限；uv 可用。不能把当前设备描述为已具备构建环境，也不必改掉用户的默认 Python。后续在工程内准备固定工具链与独立环境。
+早期只读检查为 macOS 26.6.2 arm64、PATH 中无 Go、默认 Python 3.9.23、uv 可用。随后已在仓库隔离准备固定 Go/Rust/Python 工具链并完成构建，不替换用户默认环境。工具链命令见 [开发说明](development.md)。
 
-尚未执行 MyGo 构建、Cognee 运行、模型下载、Agent 调用或系统服务注册。具体通过条件与开发顺序见 [实施清单](implementation-plan.md)；详细来源见 [Python Cognee 研究](research-cognee.md)、[Cognee-RS 研究](research-cognee-rust.md)、[Nowledge Mem 研究](research-nowledge-mem.md)、[Agent 研究](research-agents.md)。
+MyGo 完整主包、组件准备、固定本地模型、服务注册、手动记忆和真实 Codex/pi 互通已有实测记录；正式发布、后台整理和完整代码图谱尚未验收。具体通过条件与开发顺序见 [实施清单](implementation-plan.md)；详细来源见 [Python Cognee 研究](research-cognee.md)、[Cognee-RS 研究](research-cognee-rust.md)、[Nowledge Mem 研究](research-nowledge-mem.md)、[Agent 研究](research-agents.md)。

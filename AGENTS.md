@@ -1,6 +1,6 @@
 # Memlane
 
-这是面向程序员的 macOS 记忆客户端，使用 Cognee 作为记忆引擎。桌面框架已选择 MyGo；P0 核心客户端、服务与组件链路已通过合成数据验证，App 内手动记忆管理已接通并通过合成数据闭环验证，P1 实际系统窗口设计对照已通过，Agent 接入留在 P2。
+这是面向程序员的 macOS 记忆客户端，使用 Cognee 作为记忆引擎。桌面框架已选择 MyGo；P0 核心客户端、服务与组件链路、P1 手动记忆管理与实际窗口设计对照已通过。P2 已接通真实 Codex MCP、pi Extension 和 App Agent 管理，闭环与交付结果见 docs/p2-validation.md；整理与后台 Agent 任务留在 P3。
 
 - 开始工作前阅读 [产品定义](docs/product.md) 和 [设计决策](docs/design.md)，以已确认的产品规则为准。
 - 开发或验收 UI 前，实际打开 [首页设计图](docs/images/home.jpg) 和 [三栏详情设计图](docs/images/memory-detail.jpg)，不能只读 Markdown 图片路径。完成后对照实际窗口截图；工具无法看图时明确视觉验收未完成。
