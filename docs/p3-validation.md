@@ -181,3 +181,7 @@ schema v8 的 lease、owner/attempt/到期/取消/计划栅栏、内部 guard �
 ## 15. P3-D2b 有限自动恢复
 
 schema9有限预算/退避/窗口、model/apply attempt与stop epoch栅栏已通过。真实App三个未来槽位覆盖实际traex生成、SQL部分失败后仅继续已有结果、真实活动取消及实际helper SIGKILL后旧组退出/同task新model恢复；真实Rust返回当前版本。v8非空WAL全表/lease/部分回执保留、永久失败与停服/时钟回退夹具、实际旧v8 helper拒绝v9、27文件分组/跨组审查及完整本机包分别见 [D2验证](p3-recovery-validation.md)。阶段提交后继续U/I/A/R/G/F；正式分发仍缺外部证据，总Goal未完成。
+
+## 16. P3-U 使用记录与透明排序
+
+schema10的采集起点、三类日常事件、App/连接验证分通道、重要标记及透明排序已通过。真实App/pi0.84.1/Rust读取/返回/采用回执重放、常用/重要排序、轮询不计browse、登记页不误计、重启保留与App搜索单独计数见 [U验证](p3-usage-validation.md)。v9非空WAL/恢复策略/lease保留、回执/工作区/移动/来源变化门禁与兼容查看状态分别以明确夹具验证；后台次数及旧未报告采用仍为未知。I/A/R/G/F继续，总Goal未完成。

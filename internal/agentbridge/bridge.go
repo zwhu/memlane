@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/zwhu/memlane/internal/records"
 	"github.com/zwhu/memlane/internal/serviceipc"
@@ -17,6 +18,7 @@ import (
 
 type Config struct {
 	Root, ConnectionID, Workspace string
+	CallID, Channel               string
 	Generation                    int64
 }
 
@@ -47,8 +49,12 @@ func (c Config) Call(ctx context.Context, tool string, args records.AgentArgumen
 	if err := validate(tool, data); err != nil {
 		return Result{Protocol: 1, Error: &Failure{Code: "invalid_request", Message: err.Error()}}
 	}
+	callID := c.CallID
+	if callID == "" {
+		callID = uuid.NewString()
+	}
 	var raw json.RawMessage
-	err := serviceipc.Call(ctx, c.Root, serviceipc.Request{Op: "agent", AgentRequest: records.AgentRequest{Protocol: 1, ConnectionID: c.ConnectionID, Generation: c.Generation, Workspace: c.Workspace, Tool: tool, Arguments: args}}, &raw)
+	err := serviceipc.Call(ctx, c.Root, serviceipc.Request{Op: "agent", AgentRequest: records.AgentRequest{Protocol: 1, ConnectionID: c.ConnectionID, Generation: c.Generation, Workspace: c.Workspace, CallID: callID, Channel: c.Channel, Tool: tool, Arguments: args}}, &raw)
 	out := Result{Protocol: 1, OK: err == nil, Result: raw}
 	if err != nil {
 		f := &Failure{Code: "service_unavailable", Message: err.Error(), Retryable: true}
@@ -76,7 +82,7 @@ func (c Config) Call(ctx context.Context, tool string, args records.AgentArgumen
 
 func validate(tool string, raw json.RawMessage) error {
 	switch tool {
-	case "memory_scopes", "memory_save", "memory_get", "memory_search", "memory_status":
+	case "memory_scopes", "memory_save", "memory_get", "memory_search", "memory_status", "memory_adopt":
 	default:
 		return errors.New("unknown memory tool")
 	}
@@ -112,6 +118,12 @@ func schema(tool string) map[string]any {
 		p["origin"] = map[string]any{"type": "string", "enum": []string{"knowledge", "raw"}}
 		p["source"] = map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"fragment": str(), "references": map[string]any{"type": "array", "items": str()}}}
 		required = []string{"operation_id", "text"}
+	case "memory_adopt":
+		p["operation_id"] = map[string]any{"type": "string", "minLength": 1, "maxLength": 128}
+		p["memory_id"] = str()
+		p["revision"] = map[string]any{"type": "integer", "minimum": 1}
+		p["exposure_receipt"] = str()
+		required = []string{"operation_id", "memory_id", "revision", "exposure_receipt"}
 	case "memory_search":
 		p["scopes"] = map[string]any{"type": "array", "items": str()}
 		p["query"] = map[string]any{"type": "string", "minLength": 1}
@@ -133,11 +145,12 @@ func (c Config) MCP(ctx context.Context) error {
 		"memory_search": "检索当前项目及允许的全局范围，返回可追溯的当前正文、来源和版本。其他项目必须显式选择已授权 scope。",
 		"memory_get":    "读取允许范围中的当前正文、来源、版本和索引状态。",
 		"memory_status": "查询已持久化记忆的当前版本与独立索引状态。",
+		"memory_adopt":  "明确报告采用此前成功读取/返回的具体版本，关联usage_receipt.id与稳定operation_id；这是Agent报告，不代表独立验证代码提交。",
 		"memory_scopes": "列出本连接已获用户批准的范围，用于项目不明时让用户选择；不查询记忆。",
 	}
-	for _, name := range []string{"memory_scopes", "memory_search", "memory_get", "memory_save", "memory_status"} {
+	for _, name := range []string{"memory_scopes", "memory_search", "memory_get", "memory_save", "memory_status", "memory_adopt"} {
 		closed, additive := false, false
-		annotations := &mcp.ToolAnnotations{ReadOnlyHint: name != "memory_save", DestructiveHint: &additive, OpenWorldHint: &closed, IdempotentHint: true}
+		annotations := &mcp.ToolAnnotations{ReadOnlyHint: name != "memory_save" && name != "memory_adopt", DestructiveHint: &additive, OpenWorldHint: &closed, IdempotentHint: true}
 		server.AddTool(&mcp.Tool{Name: name, Description: descriptions[name], InputSchema: schema(name), Annotations: annotations}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args records.AgentArguments
 			err := validate(name, req.Params.Arguments)

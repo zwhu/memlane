@@ -29,6 +29,8 @@ type ConnectionDraft struct {
 // Workspace comes from an explicit bridge binding or pi ctx.cwd, never a
 // model tool argument or the MCP process's current working directory.
 type AgentRequest struct {
+	CallID       string         `json:"call_id,omitempty"`
+	Channel      string         `json:"usage_channel,omitempty"`
 	Protocol     int            `json:"protocol_version"`
 	ConnectionID string         `json:"connection_id"`
 	Generation   int64          `json:"generation"`
@@ -38,6 +40,8 @@ type AgentRequest struct {
 }
 
 type AgentArguments struct {
+	Exposure    string       `json:"exposure_receipt,omitempty"`
+	Revision    int64        `json:"revision,omitempty"`
 	OperationID string       `json:"operation_id,omitempty"`
 	Scope       string       `json:"scope,omitempty"`
 	Scopes      []string     `json:"scopes,omitempty"`

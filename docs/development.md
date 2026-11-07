@@ -409,3 +409,9 @@ MEMLANE_C3_QUALITY_REAL=1 sh scripts/go.sh test -json ./internal/agents -run '^T
 新根 `python3 scripts/create-p3-retry-fixture.py` 后按source-info中的隔离标识、runtime-config构建完整MemlaneRetry验收包至 `build/p3-recovery-d2b-app`，再 `python3 scripts/verify-p3-retry-app.py`。使用真实三个未来分钟槽、实际traex/Rust；SQL tag拒绝与本root真实helper SIGKILL明确故障夹具。该驱动要求全新root，不重放已有收费计划；finally独立持久停服、收口本App与写入cleanup_errors。保留D2a包与证据。
 
 `sh scripts/go.sh test ./internal/store ./internal/daemon -run '^TestOrganizationRecovery' -count=1 -v` 覆盖恢复/来源/永久结果/stop epoch与v8 WAL；状态/时钟/SQL夹具不替代App。全仓test/vet及四包race沿用标准，完整生产包 `python3 scripts/build-client.py --out build/p3-recovery-d2b-production`。真实窗口与体积、旧helper拒绝和正式分发边界见 [D2验证](p3-recovery-validation.md)。
+
+## P3-U 实际验收
+
+新根 `python3 scripts/create-p3-usage-fixture.py`；按source-info的bundle身份和runtime-config构建完整自动化MemlaneUsage包，再运行 `python3 scripts/verify-p3-usage-app.py`。先构建隔离验证工具 `sh scripts/go.sh build -o build/p3-usage/p2-agent-check ./cmd/p2-agent-check`。该工具仅接受标记的合成root，不进入发布包；真实pi沿用自己的认证/模型。主验收通过且停服后 `python3 scripts/verify-p3-usage-search.py` 补验真实App搜索，只计App return，没有模型调用。
+
+`sh scripts/go.sh test ./internal/store ./internal/daemon -run '^TestUsage' -count=1 -v` 覆盖SQLite迁移、状态/来源/回执/范围边界，故障夹具单独标记。全仓test/vet与受影响race沿用标准；完整生产包 `python3 scripts/build-client.py --out build/p3-usage-production`。实际结果、首轮驱动失败、旧helper拒绝、截图和支持边界见 [U验证](p3-usage-validation.md)。

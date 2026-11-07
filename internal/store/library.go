@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
@@ -18,10 +19,11 @@ const versionJoins = ` FROM memories m JOIN versions v ON v.memory=m.id AND v.re
 
 type scanner interface{ Scan(...any) error }
 
-func scanVersion(row scanner) (Version, error) {
+func scanVersion(row scanner, extra ...any) (Version, error) {
 	var v Version
 	var detail string
-	err := row.Scan(&v.Memory, &v.Dataset, &v.Revision, &v.Text, &v.State, &v.Operation, &v.Title, &v.CreatedAt, &v.UpdatedAt, &v.Source, &v.Original, &v.ScopeName, &v.ScopeKind, &v.Origin, &v.IndexState, &detail)
+	values := []any{&v.Memory, &v.Dataset, &v.Revision, &v.Text, &v.State, &v.Operation, &v.Title, &v.CreatedAt, &v.UpdatedAt, &v.Source, &v.Original, &v.ScopeName, &v.ScopeKind, &v.Origin, &v.IndexState, &detail}
+	err := row.Scan(append(values, extra...)...)
 	if err == nil {
 		err = json.Unmarshal([]byte(detail), &v.SourceDetail)
 	}
@@ -71,7 +73,11 @@ func (s *Store) RegisterProject(ctx context.Context, draft records.ScopeDraft) (
 	return scope, err
 }
 
-type listCursor struct{ Created, ID string }
+type listCursor struct {
+	Created, ID, Filter string
+	Rank                int64
+	AsOfMS              int64
+}
 
 func (s *Store) List(ctx context.Context, q records.ListQuery) (records.Page, error) {
 	page := records.Page{Items: []records.Version{}}
@@ -80,6 +86,48 @@ func (s *Store) List(ctx context.Context, q records.ListQuery) (records.Page, er
 	}
 	if q.Limit < 1 || q.Limit > 100 {
 		return page, errors.New("list limit must be between 1 and 100")
+	}
+	sortMode := q.Sort
+	switch sortMode {
+	case "", "updated", "frequent", "important":
+	default:
+		return page, errors.New("invalid list sort")
+	}
+	if sortMode != "" && s.Schema < 10 {
+		return page, errors.New("sorted usage list unavailable")
+	}
+	fingerprintQuery := q
+	fingerprintQuery.Cursor = ""
+	fingerprintQuery.Limit = 0
+	fingerprint := UsageDigest(fingerprintQuery)
+	asOf := time.Now().UnixMilli()
+	var cursor listCursor
+	if q.Cursor != "" {
+		if len(q.Cursor) > 1024 {
+			return page, errors.New("invalid page cursor")
+		}
+		data, e := base64.RawURLEncoding.DecodeString(q.Cursor)
+		if e != nil || json.Unmarshal(data, &cursor) != nil || cursor.Created == "" || cursor.ID == "" {
+			return page, errors.New("invalid page cursor")
+		}
+		// Historical created-order cursors remain accepted only in their old mode.
+		if cursor.Filter != fingerprint && !(cursor.Filter == "" && sortMode == "") {
+			return page, errors.New("page cursor scope or sort changed")
+		}
+		if cursor.AsOfMS > 0 {
+			asOf = cursor.AsOfMS
+		}
+	}
+	dateColumn := "md.created_at"
+	if sortMode != "" {
+		dateColumn = "v.created_at"
+	}
+	rankColumn := "CAST(0 AS INTEGER)"
+	if sortMode == "important" {
+		rankColumn = "COALESCE((SELECT important FROM memory_importance WHERE memory=m.id),0)"
+	}
+	if sortMode == "frequent" {
+		rankColumn = fmt.Sprintf("(SELECT count(*) FROM usage_events u WHERE u.memory=m.id AND u.dataset=m.dataset AND u.channel='daily' AND u.kind='read' AND u.observed_ms BETWEEN %d AND %d)", asOf-int64(30*24*time.Hour/time.Millisecond), asOf)
 	}
 	where := []string{"1=1"}
 	args := []any{}
@@ -130,32 +178,24 @@ func (s *Store) List(ctx context.Context, q records.ListQuery) (records.Page, er
 		return page, err
 	}
 	if q.Cursor != "" {
-		if len(q.Cursor) > 512 {
-			return page, errors.New("invalid page cursor")
-		}
-		data, err := base64.RawURLEncoding.DecodeString(q.Cursor)
-		if err != nil {
-			return page, errors.New("invalid page cursor")
-		}
-		var cursor listCursor
-		if json.Unmarshal(data, &cursor) != nil || cursor.Created == "" || cursor.ID == "" {
-			return page, errors.New("invalid page cursor")
-		}
-		filter += " AND (md.created_at<? OR (md.created_at=? AND m.id<?))"
-		args = append(args, cursor.Created, cursor.Created, cursor.ID)
+		filter += " AND (" + rankColumn + "<? OR (" + rankColumn + "=? AND (" + dateColumn + "<? OR (" + dateColumn + "=? AND m.id<?))))"
+		args = append(args, cursor.Rank, cursor.Rank, cursor.Created, cursor.Created, cursor.ID)
 	}
 	args = append(args, q.Limit+1)
-	rows, err := s.DB.QueryContext(ctx, `SELECT `+versionColumns+versionJoins+`WHERE `+filter+` ORDER BY md.created_at DESC,m.id DESC LIMIT ?`, args...)
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+versionColumns+","+rankColumn+versionJoins+`WHERE `+filter+` ORDER BY `+rankColumn+` DESC,`+dateColumn+` DESC,m.id DESC LIMIT ?`, args...)
 	if err != nil {
 		return page, err
 	}
 	defer rows.Close()
+	ranks := []int64{}
 	for rows.Next() {
-		v, err := scanVersion(rows)
+		var rank int64
+		v, err := scanVersion(rows, &rank)
 		if err != nil {
 			return page, err
 		}
 		page.Items = append(page.Items, v)
+		ranks = append(ranks, rank)
 	}
 	if err = rows.Err(); err != nil {
 		return page, err
@@ -163,7 +203,11 @@ func (s *Store) List(ctx context.Context, q records.ListQuery) (records.Page, er
 	if len(page.Items) > q.Limit {
 		page.Items = page.Items[:q.Limit]
 		last := page.Items[len(page.Items)-1]
-		data, _ := json.Marshal(listCursor{last.CreatedAt, last.Memory})
+		date := last.CreatedAt
+		if sortMode != "" {
+			date = last.UpdatedAt
+		}
+		data, _ := json.Marshal(listCursor{Created: date, ID: last.Memory, Filter: fingerprint, Rank: ranks[q.Limit-1], AsOfMS: asOf})
 		page.NextCursor = base64.RawURLEncoding.EncodeToString(data)
 	}
 	rows.Close()
@@ -173,6 +217,15 @@ func (s *Store) List(ctx context.Context, q records.ListQuery) (records.Page, er
 	}
 	if err = s.enrichVersions(ctx, versions); err != nil {
 		return page, err
+	}
+	if s.Schema >= 10 {
+		for _, v := range versions {
+			u, e := s.UsageForVersion(ctx, *v)
+			if e != nil {
+				return page, e
+			}
+			v.Usage = &u
+		}
 	}
 	return page, nil
 }

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"github.com/zwhu/memlane/internal/records"
@@ -77,7 +78,14 @@ func (s *Server) runSchedules(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	failures := 0
+	lastUsagePrune := time.Now()
 	for {
+		if time.Since(lastUsagePrune) >= time.Hour {
+			if err := s.store.PruneUsage(ctx); err != nil && ctx.Err() == nil {
+				log.Print("usage metadata retention cleanup failed")
+			}
+			lastUsagePrune = time.Now()
+		}
 		if err := s.scheduleTick(ctx, time.Now()); err != nil {
 			if ctx.Err() != nil {
 				return

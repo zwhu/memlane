@@ -285,3 +285,7 @@ v7 非空 WAL 一致性备份/全部旧表/部分回执保留、真实 App/traex
 ## D2b 有限恢复边界（2026-11-08）
 
 schema9仅新增实际organization_recovery，旧v8一致性备份/全表保留；授权extra1–2/window1–1440分钟、15/60秒退避，默认0。同task新attempt，已有结果仅apply，回执保持；来源/计划/lease/window在领取及guard许可复核。stop_generation优先于时间水位，Resume保留旧停服边界；KnownOutcome即使SQL末写失败也不覆写为可重跑unknown。真实App/traex/Rust及故障/包边界见 [D2验证](p3-recovery-validation.md)，正式契约见 [恢复契约](p3-recovery-contract.md)。
+
+## U 使用观察与排序（2026-11-08）
+
+schema10在一致性v9备份后仅增加实际usage_operations/events/coverage与用户importance。受信服务记录当前范围/版本，采用关联同连接代次/工作区摘要的90天内曝光；事务内来源门禁与原get状态兼容保持。明细90天、常用近30天，最小幂等回执长期保留避免重计；App/验证独立，后台未采集不补造。Current/List按观察scope补统计，历史Apply回执不受其当前栅栏影响。正式契约和真实证据见 [U契约](p3-usage-contract.md)、[U验证](p3-usage-validation.md)。

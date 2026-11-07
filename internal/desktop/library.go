@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/zwhu/memlane/internal/records"
 	"github.com/zwhu/memlane/internal/serviceipc"
 )
@@ -24,7 +25,7 @@ func displayVersion(v records.Version) MemoryItem {
 	} else if v.ScopeKind == "experience" {
 		category = "通用经验"
 	}
-	return MemoryItem{ID: v.Memory, Dataset: v.Dataset, Title: v.Title, Text: v.Text, Original: v.Original, Source: v.Source, ScopeName: v.ScopeName, Category: category, Revision: v.Revision, State: v.State, IndexState: v.IndexState, Operation: v.Operation, CreatedAt: created.Local(), SourceDetail: v.SourceDetail, Tags: v.Tags, Derived: v.Derived, Experience: v.Experience}
+	return MemoryItem{ID: v.Memory, Dataset: v.Dataset, Title: v.Title, Text: v.Text, Original: v.Original, Source: v.Source, ScopeName: v.ScopeName, Category: category, Revision: v.Revision, State: v.State, IndexState: v.IndexState, Operation: v.Operation, CreatedAt: created.Local(), SourceDetail: v.SourceDetail, Tags: v.Tags, Derived: v.Derived, Experience: v.Experience, Usage: v.Usage}
 }
 func displayVersions(vs []records.Version) []MemoryItem {
 	out := make([]MemoryItem, 0, len(vs))
@@ -54,18 +55,35 @@ func displayHistory(vs []records.History) []MemoryHistory {
 // from replacing a newer selection or draft; read failures retain prior data.
 func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(func())) {
 	a.library = serviceipc.Library{Root: root}
+	a.usageBrowseError = ""
+	a.usageImportantError = ""
+	a.usageNavigation = uuid.NewString()
+	a.usageBrowsed = map[string]bool{}
+	a.listSort = "最近更新"
 	a.schedules = ScheduleUI{Client: serviceipc.ScheduleClient{Root: root}, Destinations: map[string]bool{}}
 	a.organization = OrganizationUI{Client: serviceipc.OrganizationClient{Root: root}, Chosen: map[string]MemoryItem{}, Results: map[string]MemoryItem{}, Kind: "knowledge"}
 	a.merges = MergeUI{Client: serviceipc.MergeClient{Root: root}, Chosen: map[string]records.MergeTarget{}, Reviews: map[string]records.MergeReview{}}
 	a.libraryContext = ctx
 	a.dispatch = dispatch
 	a.onNavigate = func() {
+		a.usageBrowseError = ""
+		a.usageImportantError = ""
+		a.usageNavigation = uuid.NewString()
+		a.usageBrowsed = map[string]bool{}
 		a.refresh(false)
 		a.refreshMerge(false)
 		a.refreshOrganization(false, false)
 		a.refreshSchedules()
 	}
-	a.onSelect = func(string) { a.history = nil; a.selectedItem = nil; a.refresh(false) }
+	a.onSelect = func(string) {
+		a.usageBrowseError = ""
+		a.usageImportantError = ""
+		a.usageNavigation = uuid.NewString()
+		a.usageBrowsed = map[string]bool{}
+		a.history = nil
+		a.selectedItem = nil
+		a.refresh(false)
+	}
 	a.onProject = func() { a.registerProject() }
 	a.onMore = func() { a.refresh(true) }
 	a.onSave = a.saveMemory
@@ -98,7 +116,8 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 	a.refreshMerge(false)
 }
 func (a *App) listQuery() records.ListQuery {
-	q := records.ListQuery{Limit: 50, Kind: a.recordKind, Date: a.activityDate, Timezone: time.Local.String()}
+	sortMode := map[string]string{"最近更新": "updated", "常用": "frequent", "重要优先": "important"}[a.listSort]
+	q := records.ListQuery{Sort: sortMode, Limit: 50, Kind: a.recordKind, Date: a.activityDate, Timezone: time.Local.String()}
 	if a.scope != "" {
 		q.Datasets = []string{a.scope}
 	} else if a.page == "全局记忆" {

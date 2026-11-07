@@ -1,8 +1,8 @@
 # P3 技术方案与实验结论
 
-> 当前实施基线：C1 服务、[C2 合并审核](p3-c2-validation.md)、[C3 摘要/标签](p3-c3-validation.md) 和 [C4 修改审核](p3-c4-validation.md) 已通过，C1 细节见 [服务验收](p3-validation.md#8-p3-c1-正式服务端验收)。早期“本轮/未接生产”段落描述隔离实验历史。全部剩余切片与外部条件见 [交付矩阵](p3-delivery-plan.md)，后续通过项仅以对应证据为准。
+> 当前已交付：C1服务、[C2合并审核](p3-c2-validation.md)、[C3摘要/标签](p3-c3-validation.md)、[C4修改审核](p3-c4-validation.md)、[E全局经验](p3-global-validation.md)、[D1计划](p3-schedule-validation.md)、[D2有限恢复](p3-recovery-validation.md)与[U使用记录](p3-usage-validation.md)。下文早期“本轮/未接生产/不做调度”等段落保留实验快照，不能作为当前能力状态；现行参数和规则以各正式契约及[完整交付矩阵](p3-delivery-plan.md)为准。I/A/R/G/F仍继续。
 
-2026-11-08 历史实验资料重生成。用户已将本轮后台验证执行器改为 traex；生产基线为 P2 `70ddc0f`。本文区分已存在代码、隔离实验和待定正式接口，实际命令与结果见 [验证记录](p3-validation.md)。
+2026-11-08 早期隔离实验使用traex，以P2 `70ddc0f`为当时基线。下文保留当时复用分析；当前生产schema10及各正式接口以验收文档为准，实际命令与状态见 [验证记录](p3-validation.md)。
 
 配套：[产品](p3-product-design.md)、[架构](p3-architecture.md)、[研究](research-p3-memory.md)。
 

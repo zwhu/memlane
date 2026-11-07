@@ -96,6 +96,9 @@ func Run(ctx context.Context, config Config) error {
 	if err = prepareOrganizationLeases(ctx, db); err != nil {
 		return err
 	}
+	if err = db.PruneUsage(ctx); err != nil {
+		return err
+	}
 	db.ServiceStopGeneration = state.StopGeneration
 	if err = db.CancelRecoveriesForStop(ctx, state.LastStoppedMS, state.StopGeneration); err != nil {
 		return err
@@ -471,6 +474,9 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 	case "agent":
 		s.agentAccess.RLock()
 		defer s.agentAccess.RUnlock()
+		if r.AgentRequest.CallID == "" {
+			r.AgentRequest.CallID = r.ID
+		}
 		result, err := s.agent(operation, r.AgentRequest, &svc)
 		if err == nil && r.AgentRequest.Tool == "memory_save" {
 			select {
@@ -512,6 +518,18 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 			}
 		}
 		return v, nil
+	case "usage":
+		return s.store.Usage(operation, r.Memory)
+	case "important":
+		if !r.UserConfirmed || r.Important == nil {
+			return nil, errors.New("important mark requires user action")
+		}
+		return nil, s.store.SetImportant(operation, *r.Important)
+	case "usage_browse":
+		if r.UsageObservation == nil || r.UsageObservation.Channel != "app" || r.UsageObservation.Kind != "browse" {
+			return nil, errors.New("App browse observation required")
+		}
+		return s.store.RecordUsage(operation, *r.UsageObservation)
 	case "get":
 		return s.store.Current(operation, r.Memory)
 	case "scopes":
@@ -573,7 +591,22 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		if !found {
 			return nil, errors.New("unknown search scope")
 		}
-		return svc.Search(operation, datasets, r.Query, r.Limit)
+		hits, e := svc.Search(operation, datasets, r.Query, r.Limit)
+		if e != nil {
+			return nil, e
+		}
+		targets := []records.UsageTarget{}
+		for _, h := range hits {
+			targets = append(targets, records.UsageTarget{Memory: h.Version.Memory, Dataset: h.Version.Dataset, Revision: h.Version.Revision})
+		}
+		_, e = s.store.RecordUsage(operation, records.UsageObservation{OperationID: "app-search:" + r.ID, Digest: store.UsageDigest(struct {
+			Query    string
+			Datasets []string
+		}{r.Query, datasets}), Kind: "return", Channel: "app", Targets: targets})
+		if e != nil {
+			return nil, e
+		}
+		return hits, nil
 	case "index":
 		return nil, svc.IndexCurrent(operation, r.Memory)
 	case "search":

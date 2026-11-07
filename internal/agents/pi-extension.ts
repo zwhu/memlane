@@ -7,6 +7,7 @@ const config = __MEMLANE_CONFIG__;
 
 const scope = { scope: Type.Optional(Type.String()) };
 const tools = [
+ { name: "memory_adopt", description: "明确报告采用已读取/返回的具体版本；使用usage_receipt.id和稳定operation_id，不代表独立核验代码提交。", parameters: Type.Object({...scope,operation_id:Type.String({minLength:1,maxLength:128}),memory_id:Type.String(),revision:Type.Integer({minimum:1}),exposure_receipt:Type.String()},{additionalProperties:false}) },
   { name: "memory_scopes", description: "列出 Memlane 已授权范围；项目不明时让用户选择。", parameters: Type.Object({}, { additionalProperties: false }) },
   { name: "memory_search", description: "检索当前项目和已允许全局，返回当前正文、来源与版本。其他项目需显式选择获批 scope。", parameters: Type.Object({ ...scope, scopes: Type.Optional(Type.Array(Type.String())), query: Type.String({ minLength: 1 }), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })) }, { additionalProperties: false }) },
   { name: "memory_save", description: "保存 Agent 实际提交的新知识或原始记录。稳定 operation_id 在重试时复用；persisted 才表示保存成功，索引状态独立。不能覆盖已有知识。", parameters: Type.Object({ ...scope, operation_id: Type.String({ minLength: 1, maxLength: 128 }), text: Type.String({ minLength: 1, maxLength: 524288 }), title: Type.Optional(Type.String()), origin: Type.Optional(Type.Union([Type.Literal("knowledge"), Type.Literal("raw")])), source: Type.Optional(Type.Object({ fragment: Type.Optional(Type.String()), references: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false })) }, { additionalProperties: false }) },
@@ -20,7 +21,7 @@ export default function (pi: ExtensionAPI) {
       label: "Memlane · " + tool.name,
       async execute(_toolCallId, params, signal, _onUpdate, ctx) {
         const argv = ["call", "--root", config.root, "--connection", config.connection_id,
-          "--generation", String(config.generation), "--workspace", ctx.cwd, "--tool", tool.name];
+          "--generation", String(config.generation), "--workspace", ctx.cwd, "--call-id", _toolCallId, "--usage-channel", process.env.MEMLANE_USAGE_CHANNEL ?? "daily", "--tool", tool.name];
         // ctx.cwd is the trusted Extension context, never a model parameter.
         const result = await new Promise<any>((resolve, reject) => {
           const child = spawn(config.bridge, argv, { stdio: ["pipe", "pipe", "pipe"] });

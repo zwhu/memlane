@@ -3,11 +3,14 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/zwhu/memlane/internal/memory"
 	"github.com/zwhu/memlane/internal/records"
+	"github.com/zwhu/memlane/internal/store"
 )
 
 func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.Service) (any, error) {
@@ -16,7 +19,7 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 		return nil, &records.AccessError{Code: "protocol_mismatch", Message: "unsupported Agent protocol version"}
 	}
 	switch r.Tool {
-	case "memory_save", "memory_get", "memory_search", "memory_status", "memory_scopes":
+	case "memory_save", "memory_get", "memory_search", "memory_status", "memory_scopes", "memory_adopt":
 	default:
 		return nil, invalid("unknown memory tool")
 	}
@@ -24,7 +27,46 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 	if err != nil {
 		return nil, err
 	}
+	if r.CallID == "" {
+		r.CallID = uuid.NewString()
+	}
+	if len(r.CallID) > 128 {
+		return nil, invalid("bounded bridge call ID required")
+	}
 	a := r.Arguments
+	channel := r.Channel
+	if channel == "" {
+		channel = "daily"
+	}
+	if channel != "daily" && channel != "verification" {
+		return nil, invalid("invalid Agent usage channel")
+	}
+	workspaceID := ""
+	if r.Workspace != "" {
+		canonical, e := filepath.EvalSymlinks(r.Workspace)
+		if e != nil {
+			return nil, e
+		}
+		workspaceID = store.UsageDigest([]string{c.ContextProject, canonical})
+	} else if c.ContextProject != "" {
+		workspaceID = store.UsageDigest([]string{c.ContextProject, "explicit-bound-project"})
+	}
+	observed := false
+	observe := func(kind string, versions []records.Version, stable string, exposure string) (records.UsageReceipt, error) {
+		targets := []records.UsageTarget{}
+		for _, v := range versions {
+			targets = append(targets, records.UsageTarget{Memory: v.Memory, Dataset: v.Dataset, Revision: v.Revision})
+		}
+		key := uuid.NewSHA1(uuid.NameSpaceOID, []byte(c.ID+"/"+fmt.Sprint(c.Generation)+"/"+kind+"/"+stable)).String()
+		receipt, e := s.store.RecordUsage(ctx, records.UsageObservation{OperationID: key, Digest: store.UsageDigest(struct {
+			Workspace string
+			Arguments records.AgentArguments
+		}{r.Workspace, r.Arguments}), Kind: kind, Channel: channel, WorkspaceID: workspaceID, ConnectionID: c.ID, Generation: c.Generation, Targets: targets, Exposure: exposure})
+		if e == nil {
+			observed = true
+		}
+		return receipt, e
+	}
 	var result any
 	switch r.Tool {
 	case "memory_scopes":
@@ -91,7 +133,37 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 		if e = s.store.FilterAgentVersion(ctx, &v, scopes); e != nil {
 			return nil, e
 		}
+		if r.Tool == "memory_get" {
+			receipt, e := observe("read", []records.Version{v}, r.CallID, "")
+			if e != nil {
+				return nil, e
+			}
+			v.UsageReceipt = &receipt
+		}
 		result = v
+	case "memory_adopt":
+		if channel != "daily" || a.OperationID == "" || len(a.OperationID) > 128 || a.Memory == "" || a.Revision < 1 || a.Exposure == "" {
+			return nil, invalid("adoption requires stable operation_id, memory_id, revision and exposure_receipt")
+		}
+		v, e := s.store.Current(ctx, a.Memory)
+		if e != nil {
+			return nil, e
+		}
+		found := false
+		for _, scope := range scopes {
+			if scope == v.Dataset {
+				found = true
+			}
+		}
+		if !found {
+			return nil, &records.AccessError{Code: "scope_denied", Message: "adoption outside selected scope"}
+		}
+		v.Revision = a.Revision
+		receipt, e := observe("adopt", []records.Version{v}, a.OperationID, a.Exposure)
+		if e != nil {
+			return nil, e
+		}
+		result = receipt
 	case "memory_search":
 		if strings.TrimSpace(a.Query) == "" {
 			return nil, invalid("nonempty query required")
@@ -115,12 +187,25 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 				return nil, e
 			}
 		}
-		result = map[string]any{"hits": hits, "scopes": scopes, "project_priority": "当前项目明确约定优先于全局建议；保留来源和适用范围"}
+		versions := []records.Version{}
+		for _, h := range hits {
+			versions = append(versions, h.Version)
+		}
+		receipt, e := observe("return", versions, r.CallID, "")
+		if e != nil {
+			return nil, e
+		}
+		for i := range hits {
+			hits[i].Version.UsageReceipt = &receipt
+		}
+		result = map[string]any{"usage_receipt": receipt, "hits": hits, "scopes": scopes, "project_priority": "当前项目明确约定优先于全局建议；保留来源和适用范围"}
 	}
 	// A real successful tool invocation is evidence; initialization alone is
 	// not. Generations invalidate old sessions after scope/config changes.
-	if err = s.store.TouchConnection(ctx, c.ID, c.Generation); err != nil {
-		return nil, err
+	if !observed {
+		if err = s.store.TouchConnection(ctx, c.ID, c.Generation); err != nil {
+			return nil, err
+		}
 	}
 	return result, nil
 }

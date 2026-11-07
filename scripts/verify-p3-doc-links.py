@@ -7,6 +7,7 @@ from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
 files = [ROOT / 'docs' / name for name in (
+	'p3-usage-contract.md', 'p3-usage-validation.md',
 	'p3-recovery-contract.md', 'p3-recovery-validation.md',
 	'p3-schedule-contract.md', 'p3-schedule-validation.md', 'product.md',
 	'p3-global-contract.md', 'p3-global-validation.md',

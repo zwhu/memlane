@@ -13,27 +13,30 @@ import (
 )
 
 type App struct {
-	organization                OrganizationUI
-	schedules                   ScheduleUI
-	experience                  ExperienceUI
-	organizationMode            bool
-	organizationSources         []records.OrganizationSource
-	organizationSourcesFor      string
-	organizationSourcesRevision int64
-	organizationSourcesError    string
-	relatedFor, relatedError    string
-	relatedMerges               []records.MergeSummary
-	merges                      MergeUI
-	agents                      AgentUI
-	activityLoaded              bool
-	pendingMutations            map[string]records.Mutation
-	saving                      bool
-	restoreExpected             int64
-	conflictCurrent             *MemoryItem
-	retryingIndex               bool
-	searchSequence              int64
-	searching                   bool
-	searchQuery, searchError    string
+	listSort, usageNavigation, usageBrowseError, usageImportantError string
+	usageBrowsed                                                     map[string]bool
+	importanceBusy                                                   bool
+	organization                                                     OrganizationUI
+	schedules                                                        ScheduleUI
+	experience                                                       ExperienceUI
+	organizationMode                                                 bool
+	organizationSources                                              []records.OrganizationSource
+	organizationSourcesFor                                           string
+	organizationSourcesRevision                                      int64
+	organizationSourcesError                                         string
+	relatedFor, relatedError                                         string
+	relatedMerges                                                    []records.MergeSummary
+	merges                                                           MergeUI
+	agents                                                           AgentUI
+	activityLoaded                                                   bool
+	pendingMutations                                                 map[string]records.Mutation
+	saving                                                           bool
+	restoreExpected                                                  int64
+	conflictCurrent                                                  *MemoryItem
+	retryingIndex                                                    bool
+	searchSequence                                                   int64
+	searching                                                        bool
+	searchQuery, searchError                                         string
 
 	serviceState                           string
 	routeStates                            map[string]PaneState
@@ -452,6 +455,10 @@ func (a *App) details(c *ui.Context) {
 						ui.Button(c, "知识").Height(28).Padding(5, 10).OnClick(func() { a.recordKind = "knowledge"; a.nextCursor = ""; a.refresh(false) })
 						ui.Button(c, "原始记录").Height(28).Padding(5, 10).OnClick(func() { a.recordKind = "raw"; a.nextCursor = ""; a.refresh(false) })
 					})
+					if a.page != "搜索" {
+						ui.Select(c.Key("memory-sort"), &a.listSort, []string{"最近更新", "常用", "重要优先"}).OnChange(func() { a.nextCursor = ""; a.items = nil; a.refresh(false) })
+						ui.Text(c, usageSortExplanation(a.listSort)).FontSize(design.Small).TextColor(design.Muted)
+					}
 					if a.activityDate != "" {
 						quietButton(c, a.activityDate+" · 清除日期筛选").OnClick(func() {
 							a.activityDate = ""
@@ -646,6 +653,7 @@ func (a *App) memoryDetail(c *ui.Context) {
 			a.historyView(c, *item)
 			return
 		}
+		a.recordDisplayedMemory(*item)
 		ui.Text(c, item.Title).FontSize(design.Title).Bold()
 		ui.Text(c, item.Text).Selectable().LineHeight(1.8)
 		if item.Experience != nil {
@@ -658,6 +666,7 @@ func (a *App) memoryDetail(c *ui.Context) {
 			ui.Text(c, "项目明确约定优先于全局建议。").FontSize(design.Small).TextColor(design.Muted)
 		}
 		a.experienceCopyPreview(c, *item)
+		a.usageDetail(c, *item)
 		ui.Column(c).Gap(10).Children(func() {
 			meta(c, "范围", item.ScopeName)
 			meta(c, "来源", item.Source)

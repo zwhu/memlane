@@ -1,8 +1,8 @@
 # P3 交互说明与验收边界
 
-> 当前实施基线：C1 服务、[C2 合并审核](p3-c2-validation.md)、[C3 摘要/标签](p3-c3-validation.md) 和 [C4 修改审核](p3-c4-validation.md) 已通过，C1 细节见 [服务验收](p3-validation.md#8-p3-c1-正式服务端验收)。早期“本轮/未接生产”段落描述隔离实验历史。全部剩余切片与外部条件见 [交付矩阵](p3-delivery-plan.md)，后续通过项仅以对应证据为准。
+> 当前已交付：C1服务、[C2合并审核](p3-c2-validation.md)、[C3摘要/标签](p3-c3-validation.md)、[C4修改审核](p3-c4-validation.md)、[E全局经验](p3-global-validation.md)、[D1计划](p3-schedule-validation.md)、[D2有限恢复](p3-recovery-validation.md)与[U使用记录](p3-usage-validation.md)。下文早期“本轮/未接生产/不做调度”等段落保留实验快照，不能作为当前能力状态；现行参数和规则以各正式契约及[完整交付矩阵](p3-delivery-plan.md)为准。I/A/R/G/F仍继续。
 
-2026-11-08 历史实验资料重生成。本轮完成工程实验与文档，不实现 P3 UI，也未进行浏览器逐项点击或实际窗口视觉验收。现有图稿和原型继续保留，示例状态不作为真实 Agent 或数据库成果。
+2026-11-08 保留早期交互提案及原型示例。早期实验只做工程验证；当前C2/C3/C4/E/D/U已有各自实际窗口验收，见上方链接。下列图稿和原型示例不作为真实Agent、数据库或未完成引导的成果。
 
 依据：[产品规则](product.md)、[设计决策](design.md)、[P3 产品范围](p3-product-design.md)。工程状态见 [验证记录](p3-validation.md)，实现边界见 [技术](p3-technical-analysis.md) 与 [架构](p3-architecture.md)。
 

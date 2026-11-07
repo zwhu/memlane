@@ -154,6 +154,13 @@ func (s *Store) Current(ctx context.Context, id string) (Version, error) {
 	if err == nil {
 		err = s.enrichVersions(ctx, []*records.Version{&v})
 	}
+	if err == nil && s.Schema >= 10 {
+		u, e := s.UsageForVersion(ctx, v)
+		err = e
+		if e == nil {
+			v.Usage = &u
+		}
+	}
 	return v, err
 }
 

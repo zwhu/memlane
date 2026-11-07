@@ -24,9 +24,11 @@ type Mutation struct {
 }
 
 type Version struct {
-	Experience *ExperienceInfo `json:"experience,omitempty"`
-	Tags       []string        `json:"tags,omitempty"`
-	Derived    *DerivedInfo    `json:"derived,omitempty"`
+	Usage        *UsageInfo      `json:"usage,omitempty"`
+	UsageReceipt *UsageReceipt   `json:"usage_receipt,omitempty"`
+	Experience   *ExperienceInfo `json:"experience,omitempty"`
+	Tags         []string        `json:"tags,omitempty"`
+	Derived      *DerivedInfo    `json:"derived,omitempty"`
 	engine.Record
 	State        string       `json:"state"`
 	Operation    string       `json:"operation"`
@@ -53,6 +55,7 @@ type ScopeDraft struct {
 	Path string `json:"path"`
 }
 type ListQuery struct {
+	Sort     string   `json:"sort,omitempty"`
 	Datasets []string `json:"datasets,omitempty"`
 	Kind     string   `json:"kind,omitempty"` // knowledge or raw
 	Source   string   `json:"source,omitempty"`
