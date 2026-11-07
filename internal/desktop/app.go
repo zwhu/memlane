@@ -2,14 +2,37 @@
 package desktop
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/internal/records"
+	"github.com/zwhu/memlane/internal/serviceipc"
 )
 
 type App struct {
+	serviceState                           string
+	routeStates                            map[string]PaneState
+	memoryRoute                            string
+	library                                serviceipc.Library
+	libraryContext                         context.Context
+	dispatch                               func(func())
+	scopes                                 []records.Scope
+	selectedItem                           *MemoryItem
+	recent                                 []MemoryItem
+	loadSequence                           int64
+	loading                                bool
+	libraryError                           string
+	nextCursor                             string
+	listTotal                              int
+	imported                               int
+	recordKind                             string
+	projectName, projectPath, projectError string
+	projectBusy                            bool
+	onProject, onMore                      func()
+
 	page            string
 	scope           string
 	selectedID      string
@@ -53,7 +76,7 @@ type App struct {
 
 func New(version string, check func()) *App {
 	return &App{page: "总览", detailMode: "view", zoom: 1, version: version, check: check, keepService: true,
-		updateText: "此版本尚未配置更新源", drafts: map[string]Draft{}, listScroll: map[string]*ui.ScrollState{}, activities: map[string]int{}}
+		updateText: "此版本尚未配置更新源", routeStates: map[string]PaneState{}, drafts: map[string]Draft{}, listScroll: map[string]*ui.ScrollState{}, activities: map[string]int{}}
 }
 func (a *App) SetRuntimeStatus(status RuntimeStatus) { a.runtimeStatus = status }
 func (a *App) ConfigureRuntime(prepare, cancel, stop, resume func(), keep bool, changed func(bool)) {
@@ -126,7 +149,17 @@ func (a *App) sidebar(c *ui.Context) {
 		ui.Column(c).Padding(10).Gap(10).Shrink(0).Children(func() {
 			a.nav(c, "设置", "", icons["设置"])
 			status := "服务未连接"
-			if a.runtimeStatus.Phase == "ready" {
+			switch a.serviceState {
+			case "ready":
+				status = "服务运行中"
+			case "preparing":
+				status = "引擎准备中"
+			case "recovering":
+				status = "索引恢复中"
+			case "failed":
+				status = "索引服务异常"
+			}
+			if a.serviceState == "" && a.runtimeStatus.Phase == "ready" {
 				status = "服务运行中"
 			} else if a.runtimeStatus.Phase == "stopped" {
 				status = "服务已停止"
@@ -205,11 +238,15 @@ func (a *App) home(c *ui.Context) {
 					quietButton(c, "查看全部").OnClick(func() { a.navigate("全部记忆", "") })
 				})
 				ui.Divider(c)
-				if len(a.items) == 0 {
-					a.empty(c, "还没有记忆", "新增一条项目经验，让知识从这里开始。")
+				if len(a.recent) == 0 && !a.visualFixture {
+					a.empty(c, "还没有新增活动", "新增一条项目经验，让知识从这里开始。")
 					actionButton(c, "记录第一条记忆", icons["plus"]).AlignSelf(ui.Start).OnClick(a.newMemory)
 				}
-				for i, item := range a.items {
+				recent := a.recent
+				if a.visualFixture {
+					recent = a.items
+				}
+				for i, item := range recent {
 					if i == 4 {
 						break
 					}
@@ -314,13 +351,17 @@ func (a *App) details(c *ui.Context) {
 		ui.Column(c).Key("item-list").Width(width).Shrink(0).BorderWidth(0, 1, 0, 0).BorderColor(design.Border).Children(func() {
 			ui.Column(c).Padding(28, 24, 18, 24).Gap(12).Shrink(0).Children(func() {
 				ui.Text(c, a.pageTitle()).FontSize(design.Heading).Bold()
+				if a.libraryError != "" {
+					ui.Text(c, a.libraryError).FontSize(design.Small).TextColor(design.Muted)
+					quietButton(c, "重试读取").OnClick(func() { a.refresh(false) })
+				}
 				if a.page == "设置" {
 					ui.Text(c, "引擎、模型与客户端分别管理。").FontSize(design.Small).TextColor(design.Muted)
 				} else if a.isMemoryPage() {
-					ui.Text(c, fmt.Sprintf("%d 条知识 · 保留来源与修改记录", len(a.items))).FontSize(design.Small).TextColor(design.Muted)
+					ui.Text(c, fmt.Sprintf("%d 条知识 · 保留来源与修改记录", a.listTotal)).FontSize(design.Small).TextColor(design.Muted)
 					ui.Row(c).Gap(6).Children(func() {
-						ui.Text(c, "知识").Padding(5, 10).Radius(4).Border(1, design.Border)
-						ui.Text(c, "原始记录").Padding(5, 10).TextColor(design.Muted).Tooltip("来源记录随知识保留；Agent 原始记录接入将在后续完成")
+						ui.Button(c, "知识").Height(28).Padding(5, 10).OnClick(func() { a.recordKind = "knowledge"; a.nextCursor = ""; a.refresh(false) })
+						ui.Button(c, "原始记录").Height(28).Padding(5, 10).OnClick(func() { a.recordKind = "raw"; a.nextCursor = ""; a.refresh(false) })
 					})
 					if a.activityDate != "" {
 						quietButton(c, a.activityDate+" · 清除日期筛选").OnClick(func() {
@@ -343,6 +384,13 @@ func (a *App) details(c *ui.Context) {
 					}
 					for _, item := range a.items {
 						a.memoryRow(c, item, true)
+					}
+					if a.nextCursor != "" {
+						quietButton(c, "加载更多").Disabled(a.loading || a.onMore == nil).OnClick(func() {
+							if a.onMore != nil {
+								a.onMore()
+							}
+						})
 					}
 				} else {
 					a.empty(c, "", a.pageDescription())
@@ -371,7 +419,9 @@ func (a *App) details(c *ui.Context) {
 					iconButton(c, "历史记录", icons["history"]).OnClick(func() { a.detailMode = "history" })
 				}
 			})
-			if a.page == "设置" {
+			if a.page == "项目" && a.scope == "" {
+				a.projectEditor(c)
+			} else if a.page == "设置" {
 				ui.Scroll(c).Grow(1).Padding(24).Gap(18).Children(func() { a.settings(c) })
 			} else if a.editing && a.isMemoryPage() {
 				a.editor(c)
@@ -387,6 +437,9 @@ func (a *App) isMemoryPage() bool {
 	return a.page == "全部记忆" || a.page == "全局记忆" || a.page == "项目" || a.page == "搜索"
 }
 func (a *App) current() *MemoryItem {
+	if a.selectedItem != nil && a.selectedItem.ID == a.selectedID {
+		return a.selectedItem
+	}
 	for i := range a.items {
 		if a.items[i].ID == a.selectedID {
 			return &a.items[i]

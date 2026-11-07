@@ -10,7 +10,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/zwhu/memlane/internal/records"
 )
+
+type ServiceError struct{ Code, Message string }
+
+func (e *ServiceError) Error() string { return e.Message }
+func (e *ServiceError) Is(target error) bool {
+	return e.Code == "conflict" && target == records.ErrConflict
+}
 
 // Call opens one private IPC connection, with caller cancellation affecting
 // both dialing and reads. It never opens the business database.
@@ -53,6 +61,7 @@ func Call(ctx context.Context, root string, request Request, out any) error {
 		OK       bool            `json:"ok"`
 		Result   json.RawMessage `json:"result"`
 		Error    string          `json:"error"`
+		Code     string          `json:"code"`
 	}
 	if err = json.NewDecoder(conn).Decode(&response); err != nil {
 		return err
@@ -61,7 +70,7 @@ func Call(ctx context.Context, root string, request Request, out any) error {
 		return errors.New("service protocol mismatch")
 	}
 	if !response.OK {
-		return errors.New(response.Error)
+		return &ServiceError{Code: response.Code, Message: response.Error}
 	}
 	if out != nil {
 		return json.Unmarshal(response.Result, out)

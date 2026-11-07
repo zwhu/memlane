@@ -139,10 +139,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--python-source", action="store_true")
+    parser.add_argument("--report",type=Path)
     args = parser.parse_args()
     args.worker_mode = bool(args.archive or args.python_source)
     report = {"source_worker":args.python_source,"relocated_archive":bool(args.archive),"status": "failed", "steps": [], "commands": [], "synthetic_only": True}
-    out = ROOT / ("build/p0-engine/python-source-memory-contract.json" if args.python_source else "build/p0-engine/python-memory-contract-verification.json" if args.archive else "build/p0-engine/memory-contract-verification.json")
+    out = args.report or ROOT / ("build/p0-engine/python-source-memory-contract.json" if args.python_source else "build/p0-engine/python-memory-contract-verification.json" if args.archive else "build/p0-engine/memory-contract-verification.json")
     error = None
     with tempfile.TemporaryDirectory(prefix="memlane-memory-contract-") as name:
         try:

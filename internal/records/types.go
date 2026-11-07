@@ -1,7 +1,12 @@
 // Package records defines lightweight original/version transport types.
 package records
 
-import "github.com/zwhu/memlane/internal/engine"
+import (
+	"errors"
+	"github.com/zwhu/memlane/internal/engine"
+)
+
+var ErrConflict = errors.New("revision or idempotency conflict")
 
 type Mutation struct {
 	OperationID      string `json:"operation_id"`
@@ -11,10 +16,70 @@ type Mutation struct {
 	ExpectedRevision int64  `json:"expected_revision"`
 	RestoreRevision  int64  `json:"restore_revision,omitempty"`
 	Text             string `json:"text,omitempty"`
+	Title            string `json:"title,omitempty"`
+	Source           string `json:"source,omitempty"`
+	Origin           string `json:"origin,omitempty"` // knowledge, imported, raw
 }
 
 type Version struct {
 	engine.Record
-	State     string `json:"state"`
+	State      string `json:"state"`
+	Operation  string `json:"operation"`
+	Title      string `json:"title"`
+	CreatedAt  string `json:"created_at"`
+	UpdatedAt  string `json:"updated_at"`
+	Source     string `json:"source"`
+	Original   string `json:"original"`
+	ScopeName  string `json:"scope_name"`
+	ScopeKind  string `json:"scope_kind"`
+	Origin     string `json:"origin"`
+	IndexState string `json:"index_state"`
+}
+
+type Scope struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	Path string `json:"path,omitempty"`
+}
+type ScopeDraft struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+type ListQuery struct {
+	Datasets []string `json:"datasets,omitempty"`
+	Kind     string   `json:"kind,omitempty"` // knowledge or raw
+	Source   string   `json:"source,omitempty"`
+	Date     string   `json:"date,omitempty"` // activity date, in Timezone
+	Timezone string   `json:"timezone,omitempty"`
+	Cursor   string   `json:"cursor,omitempty"`
+	Limit    int      `json:"limit,omitempty"`
+}
+type Page struct {
+	Items      []Version `json:"items"`
+	NextCursor string    `json:"next_cursor,omitempty"`
+	Total      int       `json:"total"`
+}
+type History struct {
+	Revision  int64  `json:"revision"`
+	Title     string `json:"title"`
+	Text      string `json:"text"`
 	Operation string `json:"operation"`
+	CreatedAt string `json:"created_at"`
+}
+type HistoryPage struct {
+	Items        []History `json:"items"`
+	NextRevision int64     `json:"next_revision,omitempty"`
+}
+type Activity struct {
+	Memory     string `json:"memory"`
+	Kind       string `json:"kind"`
+	OccurredAt string `json:"occurred_at"`
+	State      string `json:"state"`
+}
+type ActivitySummary struct {
+	Days     map[string]int `json:"days"`
+	Total    int            `json:"total"`
+	Imported int            `json:"imported"`
+	Recent   []Version      `json:"recent"`
 }

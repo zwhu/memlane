@@ -191,6 +191,13 @@ func main() {
 				app.SetRuntimeStatus(desktop.RuntimeStatus{Phase: "failed", Message: "本地运行配置不可用：" + err.Error()})
 			} else {
 				controller = &desktop.RuntimeController{Config: cfg}
+				if action == "" {
+					app.ConfigureLibrary(ctx, filepath.Join(cfg.Root, "data"), func(fn func()) {
+						if ctx.Err() == nil {
+							win.Update(fn)
+						}
+					})
+				}
 				if e := desktop.ConfigureControlledUpdates(cfg); e != nil {
 					app.SetUpdateStatus("更新源配置失败："+e.Error(), false)
 				}

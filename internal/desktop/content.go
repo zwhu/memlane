@@ -35,21 +35,55 @@ func (a *App) rememberDraft() {
 	d.Title, d.Text, d.Scope = a.draftTitle, a.draft, a.draftScope
 	a.drafts[key] = d
 }
+
+type PaneState struct{ ID, Mode string }
+
 func (a *App) navigate(page, scope string) {
 	a.rememberDraft()
+	if a.isMemoryPage() {
+		a.routeStates[a.page+":"+a.scope] = PaneState{a.selectedID, a.detailMode}
+	}
+	oldRoute := a.memoryRoute
+	if a.page != page || a.scope != scope {
+		a.nextCursor = ""
+		if !a.visualFixture {
+			a.items = nil
+		}
+	}
 	a.page, a.scope = page, scope
 	if !a.isMemoryPage() {
 		a.editing = false
-	} else if a.detailMode == "new" || a.detailMode == "edit" {
-		a.editing = true
+	} else {
+		route := page + ":" + scope
+		if route != oldRoute {
+			state := a.routeStates[route]
+			a.selectedID = state.ID
+			a.selectedItem = nil
+			a.history = nil
+			a.detailMode = state.Mode
+			if a.detailMode == "" {
+				a.detailMode = "view"
+			}
+			key := a.selectedID
+			if a.detailMode == "new" {
+				key = "new"
+			}
+			if draft, ok := a.drafts[key]; ok {
+				a.draftTitle, a.draft, a.draftScope = draft.Title, draft.Text, draft.Scope
+			}
+		}
+		a.memoryRoute = route
+		a.editing = a.detailMode == "new" || a.detailMode == "edit"
 	}
 	if a.onNavigate != nil {
 		a.onNavigate()
 	}
 }
+
 func (a *App) newMemory() {
 	a.rememberDraft()
 	a.page = "全部记忆"
+	a.memoryRoute = a.page + ":" + a.scope
 	a.detailMode = "new"
 	a.editing = true
 	d := a.drafts["new"]
@@ -59,6 +93,9 @@ func (a *App) newMemory() {
 		for _, p := range a.projects {
 			if a.scope == p.ID {
 				a.draftScope = p.Name
+				if label := a.scopeLabel(p.ID); label != "" {
+					a.draftScope = label
+				}
 			}
 		}
 	}
@@ -78,6 +115,13 @@ func (a *App) editMemory() {
 	a.draftTitle, a.draft, a.draftScope = d.Title, d.Text, d.Scope
 }
 func (a *App) scopeOptions() []string {
+	if len(a.scopes) > 0 {
+		out := []string{}
+		for _, scope := range a.scopes {
+			out = append(out, a.scopeLabel(scope.ID))
+		}
+		return out
+	}
 	out := []string{"个人偏好", "全局经验"}
 	for _, p := range a.projects {
 		out = append(out, p.Name)

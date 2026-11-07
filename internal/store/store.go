@@ -19,7 +19,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-var ErrConflict = errors.New("revision or idempotency conflict")
+var ErrConflict = records.ErrConflict
 
 type Store struct{ DB *sql.DB }
 
@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS index_bindings(chunk_id TEXT NOT NULL, memory TEXT NO
 		db.Close()
 		return nil, err
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := os.Chmod(path, 0600); err != nil {
 		db.Close()
 		return nil, err
@@ -59,9 +63,7 @@ CREATE TABLE IF NOT EXISTS index_bindings(chunk_id TEXT NOT NULL, memory TEXT NO
 func (s *Store) Close() error { return s.DB.Close() }
 
 func (s *Store) Current(ctx context.Context, id string) (Version, error) {
-	var v Version
-	err := s.DB.QueryRowContext(ctx, `SELECT m.id,m.dataset,m.current_revision,v.text,m.state,v.operation FROM memories m JOIN versions v ON v.memory=m.id AND v.revision=m.current_revision WHERE m.id=?`, id).Scan(&v.Memory, &v.Dataset, &v.Revision, &v.Text, &v.State, &v.Operation)
-	return v, err
+	return scanVersion(s.DB.QueryRowContext(ctx, `SELECT `+versionColumns+versionJoins+`WHERE m.id=?`, id))
 }
 
 func (s *Store) Apply(ctx context.Context, m Mutation) (Version, error) {
@@ -84,6 +86,12 @@ func (s *Store) Apply(ctx context.Context, m Mutation) (Version, error) {
 	}
 	if (m.Kind == "save" || m.Kind == "edit") && strings.TrimSpace(m.Text) == "" {
 		return Version{}, errors.New("empty text")
+	}
+	if m.Origin != "" && m.Origin != "knowledge" && m.Origin != "imported" && m.Origin != "raw" {
+		return Version{}, errors.New("invalid memory origin")
+	}
+	if len(m.Title) > 512 || len(m.Source) > 512 || len(m.OperationID) > 128 {
+		return Version{}, errors.New("memory metadata too large")
 	}
 	payload, _ := json.Marshal(m)
 	sum := sha256.Sum256(payload)
@@ -119,6 +127,11 @@ func (s *Store) Apply(ctx context.Context, m Mutation) (Version, error) {
 		}
 		revision = 0
 		dataset = m.Dataset
+		// P0 apply accepted explicit UUID datasets. Adopt unknown ones without
+		// changing that contract; only App project registration supplies a path.
+		if _, err = tx.ExecContext(ctx, `INSERT INTO scopes(id,kind,name) VALUES(?,'legacy',?) ON CONFLICT(id) DO NOTHING`, m.Dataset, "未登记项目 "+m.Dataset[:8]); err != nil {
+			return Version{}, err
+		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO memories(id,dataset,current_revision,state) VALUES(?,?,0,'active')`, m.Memory, m.Dataset)
 	} else if err == nil {
 		if m.Kind == "save" || dataset != m.Dataset || revision != m.ExpectedRevision {
@@ -132,13 +145,19 @@ func (s *Store) Apply(ctx context.Context, m Mutation) (Version, error) {
 		return Version{}, err
 	}
 	text = m.Text
+	title := titleFor(m.Title, m.Text)
+	if m.Kind == "edit" && m.Title == "" {
+		if err = tx.QueryRowContext(ctx, `SELECT title FROM versions WHERE memory=? AND revision=?`, m.Memory, revision).Scan(&title); err != nil {
+			return Version{}, err
+		}
+	}
 	if m.Kind == "delete" {
-		err = tx.QueryRowContext(ctx, `SELECT text FROM versions WHERE memory=? AND revision=?`, m.Memory, revision).Scan(&text)
+		err = tx.QueryRowContext(ctx, `SELECT text,title FROM versions WHERE memory=? AND revision=?`, m.Memory, revision).Scan(&text, &title)
 	} else if m.Kind == "restore" {
 		if m.RestoreRevision <= 0 || m.RestoreRevision > revision {
 			return Version{}, ErrConflict
 		}
-		err = tx.QueryRowContext(ctx, `SELECT text FROM versions WHERE memory=? AND revision=?`, m.Memory, m.RestoreRevision).Scan(&text)
+		err = tx.QueryRowContext(ctx, `SELECT text,title FROM versions WHERE memory=? AND revision=?`, m.Memory, m.RestoreRevision).Scan(&text, &title)
 	}
 	if err != nil {
 		return Version{}, err
@@ -152,16 +171,28 @@ func (s *Store) Apply(ctx context.Context, m Mutation) (Version, error) {
 		query string
 		args  []any
 	}{
-		{`INSERT INTO versions(memory,revision,text,operation) VALUES(?,?,?,?)`, []any{m.Memory, revision, text, m.Kind}},
+		{`INSERT INTO versions(memory,revision,text,operation,title) VALUES(?,?,?,?,?)`, []any{m.Memory, revision, text, m.Kind, title}},
 		{`UPDATE memories SET current_revision=?,state=?,indexed_revision=0,generation='' WHERE id=?`, []any{revision, state, m.Memory}},
 		{`INSERT INTO operations(id,digest,memory,revision) VALUES(?,?,?,?)`, []any{m.OperationID, digest, m.Memory, revision}},
-		{`UPDATE jobs SET state='superseded' WHERE memory=? AND state IN ('pending','failed')`, []any{m.Memory}},
+		{`UPDATE jobs SET state='superseded' WHERE memory=? AND state IN ('pending','failed','indexing')`, []any{m.Memory}},
 	}
 	if state == "active" {
 		queries = append(queries, struct {
 			query string
 			args  []any
 		}{`INSERT INTO jobs(memory,revision,state) VALUES(?,?,'pending')`, []any{m.Memory, revision}})
+	}
+	if revision == 1 {
+		origin, source := m.Origin, m.Source
+		if origin == "" {
+			origin = "knowledge"
+		}
+		if source == "" {
+			source = "手动新增"
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO memory_metadata(memory,source,origin,created_at) VALUES(?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))`, m.Memory, source, origin); err != nil {
+			return Version{}, err
+		}
 	}
 	for _, q := range queries {
 		if _, err = tx.ExecContext(ctx, q.query, q.args...); err != nil {
@@ -207,6 +238,10 @@ func (s *Store) MarkIndexed(ctx context.Context, r engine.Record, receipt engine
 	if err != nil {
 		return err
 	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO activities(memory,kind,occurred_at) SELECT memory,CASE origin WHEN 'imported' THEN 'imported' WHEN 'raw' THEN 'raw' ELSE 'created' END,strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM memory_metadata WHERE memory=? ON CONFLICT(memory) DO NOTHING`, r.Memory)
+	if err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -218,8 +253,7 @@ func (s *Store) IndexFailed(ctx context.Context, r engine.Record, cause error) e
 // Resolve only candidates whose complete provenance binding is current. The
 // business store supplies the original text; engine payload alone is insufficient.
 func (s *Store) Resolve(ctx context.Context, c engine.Candidate) (Version, bool, error) {
-	var v Version
-	err := s.DB.QueryRowContext(ctx, `SELECT m.id,m.dataset,v.revision,v.text,m.state,v.operation FROM memories m JOIN versions v ON v.memory=m.id AND v.revision=m.current_revision JOIN index_bindings b ON b.memory=m.id AND b.revision=v.revision WHERE b.chunk_id=? AND b.generation=? AND m.id=? AND m.dataset=? AND v.revision=? AND m.indexed_revision=v.revision AND m.generation=b.generation AND m.state='active'`, c.ChunkID, c.Generation, c.Memory, c.Dataset, c.Revision).Scan(&v.Memory, &v.Dataset, &v.Revision, &v.Text, &v.State, &v.Operation)
+	v, err := scanVersion(s.DB.QueryRowContext(ctx, `SELECT `+versionColumns+versionJoins+` JOIN index_bindings b ON b.memory=m.id AND b.revision=v.revision WHERE b.chunk_id=? AND b.generation=? AND m.id=? AND m.dataset=? AND v.revision=? AND m.indexed_revision=v.revision AND m.generation=b.generation AND m.state='active'`, c.ChunkID, c.Generation, c.Memory, c.Dataset, c.Revision))
 	if err == sql.ErrNoRows {
 		return v, false, nil
 	}

@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -274,6 +275,13 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		response.OK = err == nil
 		if err != nil {
 			response.Error = err.Error()
+			if errors.Is(err, store.ErrConflict) {
+				response.Code = "conflict"
+			} else if errors.Is(err, sql.ErrNoRows) {
+				response.Code = "not_found"
+			} else {
+				response.Code = "service_error"
+			}
 		}
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		if encoder.Encode(response) != nil {
@@ -330,6 +338,47 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		return v, nil
 	case "get":
 		return s.store.Current(operation, r.Memory)
+	case "scopes":
+		return s.store.Scopes(operation)
+	case "register_project":
+		if !r.UserConfirmed {
+			return nil, errors.New("project registration requires user confirmation")
+		}
+		return s.store.RegisterProject(operation, r.Project)
+	case "list":
+		return s.store.List(operation, r.ListQuery)
+	case "history":
+		return s.store.History(operation, r.Memory, r.BeforeRevision, r.Limit)
+	case "activities":
+		return s.store.Activities(operation, r.Timezone)
+	case "retry_index":
+		if err := s.store.Requeue(operation, r.Memory, r.ExpectedRevision); err != nil {
+			return nil, err
+		}
+		select {
+		case s.work <- struct{}{}:
+		default:
+		}
+		return map[string]bool{"queued": true}, nil
+	case "library_search":
+		scopes, err := s.store.Scopes(operation)
+		if err != nil {
+			return nil, err
+		}
+		datasets := []string{}
+		found := r.Scope == ""
+		for _, scope := range scopes {
+			if scope.ID == r.Scope {
+				found = true
+			}
+			if r.AllScopes || scope.ID == r.Scope || scope.Kind == "preference" || scope.Kind == "experience" {
+				datasets = append(datasets, scope.ID)
+			}
+		}
+		if !found {
+			return nil, errors.New("unknown search scope")
+		}
+		return svc.Search(operation, datasets, r.Query, r.Limit)
 	case "index":
 		return nil, svc.IndexCurrent(operation, r.Memory)
 	case "search":
@@ -389,7 +438,7 @@ func (w *serialWorker) Search(ctx context.Context, dataset, query string, k int)
 	return w.client.Search(ctx, dataset, query, k)
 }
 func (s *Server) replay(ctx context.Context, worker *engine.Client) {
-	rows, err := s.store.DB.QueryContext(ctx, `SELECT j.memory FROM jobs j JOIN memories m ON m.id=j.memory AND m.current_revision=j.revision WHERE j.state IN ('pending','failed') AND m.state='active'`)
+	rows, err := s.store.DB.QueryContext(ctx, `SELECT j.memory FROM jobs j JOIN memories m ON m.id=j.memory AND m.current_revision=j.revision WHERE j.state IN ('pending','failed','indexing') AND m.state='active'`)
 	if err != nil {
 		return
 	}

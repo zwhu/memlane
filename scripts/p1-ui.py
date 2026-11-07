@@ -52,6 +52,9 @@ class UI:
         n=next(n for n in self.nodes() if n.get('label')==label and 'press' in n.get('actions',[]))
         assert 'disabled' not in n.get('states',[]),n
         self.req('act',id=n['id'],action='press');self.req('idle',timeout=2000)
+    def press_key(self,key):
+        n=self.node(key=key);assert 'disabled' not in n.get('states',[]),n
+        self.req('act',id=n['id'],action='press');self.req('idle',timeout=2000)
     def set(self,key,text):
         self.req('act',id=self.node(key=key)['id'],action='setValue',text=text)
         self.req('idle',timeout=2000)

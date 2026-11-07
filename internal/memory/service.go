@@ -31,6 +31,9 @@ func (s *Service) IndexCurrent(ctx context.Context, id string) error {
 	if s.Engine == nil {
 		return errors.New("engine unavailable; original remains saved")
 	}
+	if err = s.Store.IndexStarted(ctx, id, v.Revision); err != nil {
+		return err
+	}
 	r, err := s.Engine.Index(ctx, v.Record)
 	if err != nil {
 		// Persist failure independently of a cancelled request context.

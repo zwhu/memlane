@@ -21,15 +21,22 @@ type Config struct {
 }
 
 type Request struct {
-	Protocol      int              `json:"protocol"`
-	ID            string           `json:"id"`
-	Op            string           `json:"op"`
-	Mutation      records.Mutation `json:"mutation,omitempty"`
-	Datasets      []string         `json:"datasets,omitempty"`
-	Query         string           `json:"query,omitempty"`
-	Limit         int              `json:"limit,omitempty"`
-	Memory        string           `json:"memory,omitempty"`
-	UserConfirmed bool             `json:"user_confirmed,omitempty"`
+	Protocol         int                `json:"protocol"`
+	ID               string             `json:"id"`
+	Op               string             `json:"op"`
+	Mutation         records.Mutation   `json:"mutation,omitempty"`
+	Datasets         []string           `json:"datasets,omitempty"`
+	Query            string             `json:"query,omitempty"`
+	Limit            int                `json:"limit,omitempty"`
+	Memory           string             `json:"memory,omitempty"`
+	UserConfirmed    bool               `json:"user_confirmed,omitempty"`
+	ListQuery        records.ListQuery  `json:"list_query,omitempty"`
+	Project          records.ScopeDraft `json:"project,omitempty"`
+	Scope            string             `json:"scope,omitempty"`
+	AllScopes        bool               `json:"all_scopes,omitempty"`
+	BeforeRevision   int64              `json:"before_revision,omitempty"`
+	ExpectedRevision int64              `json:"expected_revision,omitempty"`
+	Timezone         string             `json:"timezone,omitempty"`
 }
 
 type Response struct {
@@ -38,6 +45,7 @@ type Response struct {
 	OK       bool   `json:"ok"`
 	Result   any    `json:"result,omitempty"`
 	Error    string `json:"error,omitempty"`
+	Code     string `json:"code,omitempty"`
 }
 
 type State struct {
