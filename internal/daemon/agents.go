@@ -61,6 +61,12 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 		if e != nil {
 			return nil, e
 		}
+		if current.Dataset != scopes[0] {
+			return nil, &records.AccessError{Code: "scope_denied", Message: "original save persisted; current knowledge moved outside requested scope"}
+		}
+		if e = s.store.FilterAgentVersion(ctx, &current, scopes); e != nil {
+			return nil, e
+		}
 		result = records.SaveReceipt{Persisted: true, SavedRevision: saved.Revision, Record: current}
 	case "memory_get", "memory_status":
 		if a.Memory == "" {
@@ -82,6 +88,9 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 		if r.Tool == "memory_get" && v.Derived != nil && v.Derived.State == "stale" {
 			return nil, &records.AccessError{Code: "source_stale", Message: "summary source changed; inspect memory_status or organize again"}
 		}
+		if e = s.store.FilterAgentVersion(ctx, &v, scopes); e != nil {
+			return nil, e
+		}
 		result = v
 	case "memory_search":
 		if strings.TrimSpace(a.Query) == "" {
@@ -100,6 +109,11 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 				return nil, e
 			}
 			return nil, &records.AccessError{Code: "index_unavailable", Message: e.Error()}
+		}
+		for i := range hits {
+			if e = s.store.FilterAgentVersion(ctx, &hits[i].Version, scopes); e != nil {
+				return nil, e
+			}
 		}
 		result = map[string]any{"hits": hits, "scopes": scopes, "project_priority": "当前项目明确约定优先于全局建议；保留来源和适用范围"}
 	}

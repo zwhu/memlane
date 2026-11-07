@@ -18,6 +18,15 @@ func TestOrganizationRealQualityBaseline(t *testing.T) {
 	if os.Getenv("MEMLANE_C3_QUALITY_REAL") != "1" {
 		t.Skip("explicit real model quality opt-in required")
 	}
+	runOrganizationQualityBaseline(t, records.OrganizationSchema)
+}
+func TestOrganizationRealReviewQualityBaseline(t *testing.T) {
+	if os.Getenv("MEMLANE_C4_QUALITY_REAL") != "1" {
+		t.Skip("explicit real v2 model quality opt-in required")
+	}
+	runOrganizationQualityBaseline(t, records.OrganizationReviewSchema)
+}
+func runOrganizationQualityBaseline(t *testing.T, schema string) {
 	cases := []struct {
 		id        string
 		materials []string
@@ -33,7 +42,7 @@ func TestOrganizationRealQualityBaseline(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.id, func(t *testing.T) {
-			x := records.OrganizationSnapshot{Schema: records.OrganizationSchema, Task: uuid.NewString(), Attempt: 1, Project: uuid.NewString()}
+			x := records.OrganizationSnapshot{Schema: schema, Task: uuid.NewString(), Attempt: 1, Project: uuid.NewString()}
 			root := uuid.NewString()
 			for i, body := range c.materials {
 				id := uuid.NewString()

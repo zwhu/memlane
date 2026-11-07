@@ -265,7 +265,7 @@ func TestOrganizationV3BackupAndLegacyRetention(t *testing.T) {
 	mustMerge(t, reader.Close())
 	mustMerge(t, e)
 	defer s.Close()
-	if s.Schema != 4 {
+	if s.Schema != SchemaVersion {
 		t.Fatal(s.Schema)
 	}
 	for _, table := range tables {

@@ -148,6 +148,8 @@ func (a *App) scopeOptions() []string {
 func preview(text string) string { return strings.Join(strings.Fields(text), " ") }
 func operationLabel(op string) string {
 	switch op {
+	case "move":
+		return "项目移动"
 	case "merge_archive":
 		return "整理归档"
 	case "save":

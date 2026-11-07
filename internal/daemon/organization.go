@@ -70,6 +70,9 @@ func (s *Server) startOrganization(ctx context.Context, d records.OrganizationSt
 }
 func (s *Server) applyOrganization(ctx context.Context, t records.OrganizationTask) {
 	for _, entry := range t.Entries {
+		if entry.Item.RequiresReview() {
+			continue
+		}
 		if ctx.Err() != nil {
 			return
 		}

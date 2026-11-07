@@ -37,3 +37,9 @@ func (c OrganizationClient) Sources(ctx context.Context, id string, revision int
 	e := Call(ctx, c.Root, Request{Op: "organization_sources", Memory: id, ExpectedRevision: revision}, &out)
 	return out, e
 }
+
+func (c OrganizationClient) Review(ctx context.Context, d records.OrganizationReview) (records.OrganizationTask, error) {
+	var out records.OrganizationTask
+	e := Call(ctx, c.Root, Request{Op: "organization_review", UserConfirmed: true, OrganizationReview: &d}, &out)
+	return out, e
+}

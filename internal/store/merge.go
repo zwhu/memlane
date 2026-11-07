@@ -50,6 +50,11 @@ func (s *Store) StartMerge(ctx context.Context, d records.MergeStart) (records.M
 		if stale || v.Dataset != d.Project || v.State != "active" || v.Origin == "raw" || v.Revision != target.Revision {
 			return records.MergeTask{}, false, records.MergeError("proposal_expired")
 		}
+		if s.Schema >= 5 {
+			if e = filterVersionProvenance(ctx, tx, &v, []string{d.Project}); e != nil {
+				return records.MergeTask{}, false, e
+			}
+		}
 		x.Inputs = append(x.Inputs, records.MergeInput{Memory: v.Memory, Revision: v.Revision, Title: v.Title, Text: v.Text, Source: v.Source, SourceDetail: v.SourceDetail, CapturedAt: time.Now().UTC().Format(time.RFC3339Nano)})
 	}
 	if err = x.Seal(); err != nil {

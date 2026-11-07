@@ -1,8 +1,8 @@
 # P3 架构与接口边界
 
-> 当前实施基线：C1 正式服务端与 [C2 App 合并审核](p3-c2-validation.md) 已通过，C1 细节见 [服务验收](p3-validation.md#8-p3-c1-正式服务端验收)。早期“本轮/未接生产”段落描述隔离实验历史。全部剩余切片与外部条件见 [交付矩阵](p3-delivery-plan.md)，后续通过项仅以对应证据为准。
+> 当前实施基线：C1 服务、[C2 合并审核](p3-c2-validation.md)、[C3 摘要/标签](p3-c3-validation.md) 和 [C4 修改审核](p3-c4-validation.md) 已通过，C1 细节见 [服务验收](p3-validation.md#8-p3-c1-正式服务端验收)。早期“本轮/未接生产”段落描述隔离实验历史。全部剩余切片与外部条件见 [交付矩阵](p3-delivery-plan.md)，后续通过项仅以对应证据为准。
 
-2026-11-08 重生成。以 [技术方案](technical-plan.md) 和 P2 实际代码为基线，正式产品语义见 [P3 产品方案](p3-product-design.md)。实验结果见 [验证记录](p3-validation.md)，接口与参数是否正式由对应切片决定。
+2026-11-08 历史实验资料重生成。以 [技术方案](technical-plan.md) 和 P2 实际代码为基线，正式产品语义见 [P3 产品方案](p3-product-design.md)。实验结果见 [验证记录](p3-validation.md)，接口与参数是否正式由对应切片决定。
 
 ## 1. 保持已有进程结构
 

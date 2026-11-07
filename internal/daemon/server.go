@@ -351,6 +351,21 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 			return s.resumeOrganization(operation, *r.OrganizationResume)
 		}
 		return s.cancelOrganization(operation, r.OrganizationTask)
+	case "organization_review":
+		if !r.UserConfirmed {
+			return nil, records.MergeError("confirmation_required")
+		}
+		if r.OrganizationReview == nil {
+			return nil, records.MergeError("invalid_request")
+		}
+		t, err := s.store.ReviewOrganization(operation, *r.OrganizationReview)
+		if err == nil {
+			select {
+			case s.work <- struct{}{}:
+			default:
+			}
+		}
+		return t, err
 	case "organization_get":
 		return s.getOrganization(operation, r.OrganizationTask)
 	case "organization_list":

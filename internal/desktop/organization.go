@@ -3,6 +3,7 @@ package desktop
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -12,6 +13,9 @@ import (
 )
 
 type OrganizationUI struct {
+	ReviewMode                                                         bool
+	Destinations                                                       map[string]bool
+	Decisions                                                          map[string]records.OrganizationReview
 	Client                                                             serviceipc.OrganizationClient
 	Tasks                                                              []records.OrganizationSummary
 	Selected, Next, Project, ProjectLabel, Kind, Cursor, Error, Notice string
@@ -67,6 +71,8 @@ func (a *App) beginOrganization() {
 	s.Order = nil
 	s.Start = nil
 	s.Resume = nil
+	s.Destinations = map[string]bool{}
+	s.Decisions = map[string]records.OrganizationReview{}
 	s.Kind = "knowledge"
 	s.Project = ""
 	s.ProjectLabel = ""
@@ -138,7 +144,7 @@ func (a *App) refreshOrganization(more, candidatesMore bool) {
 		}
 		if err == nil {
 			for _, entry := range task.Entries {
-				if entry.Receipt != nil {
+				if entry.Receipt != nil && entry.Receipt.Memory != "" {
 					v, e := a.library.Get(ctx, entry.Receipt.Memory)
 					if e != nil {
 						err = e
@@ -211,7 +217,14 @@ func (a *App) startOrganization() {
 		return
 	}
 	if s.Start == nil {
-		d := records.OrganizationStart{OperationID: uuid.NewString(), Project: s.Project}
+		d := records.OrganizationStart{OperationID: uuid.NewString(), Project: s.Project, Review: s.ReviewMode}
+		if s.ReviewMode {
+			for _, scope := range a.scopes {
+				if s.Destinations[scope.ID] {
+					d.Destinations = append(d.Destinations, scope.ID)
+				}
+			}
+		}
 		for _, id := range s.Order {
 			v := s.Chosen[id]
 			d.Inputs = append(d.Inputs, records.MergeTarget{Memory: id, Revision: v.Revision})
@@ -291,12 +304,17 @@ func (a *App) organizationList(c *ui.Context) {
 	for _, t := range s.Tasks {
 		title := t.Title
 		if title == "" {
-			title = "摘要与标签整理"
+			title = "项目材料整理"
 		}
 		b := ui.Button(c.Key("organization-task-"+t.ID), "").Label(title).BorderWidth(0).Padding(12).Justify(ui.Start).Children(func() {
 			ui.Column(c).Gap(7).Children(func() {
 				ui.Text(c, title).Bold()
-				ui.Text(c, a.scopeLabel(t.Project)+" · "+organizationStatus(t.State)).FontSize(design.Small).TextColor(design.Muted)
+				ui.Text(c, a.scopeLabel(t.Project)+" · "+func() string {
+					if t.State == "completed" {
+						return "执行已完成"
+					}
+					return organizationStatus(t.State)
+				}()).FontSize(design.Small).TextColor(design.Muted)
 				created, _ := time.Parse("2006-01-02 15:04:05", t.CreatedAt)
 				ui.Text(c, created.Local().Format("2006-01-02 15:04")).FontSize(design.Small).TextColor(design.Muted)
 			})
@@ -314,7 +332,24 @@ func (a *App) organizationList(c *ui.Context) {
 }
 func (a *App) organizationChooser(c *ui.Context) {
 	s := &a.organization
-	ui.Text(c, "摘要与标签").FontSize(design.Title).Bold()
+	ui.Text(c, "项目材料整理").FontSize(design.Title).Bold()
+	ui.Checkbox(c.Key("organization-review-mode"), &s.ReviewMode, "同时提出修改建议，逐项确认后生效").Disabled(s.Busy).OnChange(func() { s.Start = nil; s.Destinations = map[string]bool{} })
+	if s.ReviewMode {
+		ui.Text(c, "可建议移入的项目（可不选；授权不读取其他项目知识）").FontSize(design.Small)
+		for _, scope := range a.scopes {
+			if scope.Kind == "project" && scope.ID != s.Project {
+				allowed := s.Destinations[scope.ID]
+				ui.Checkbox(c.Key("organization-destination-"+scope.ID), &allowed, a.scopeLabel(scope.ID)).Disabled(s.Busy).OnChange(func() {
+					if s.Destinations == nil {
+						s.Destinations = map[string]bool{}
+					}
+					s.Destinations[scope.ID] = allowed
+					s.Start = nil
+				})
+				ui.Text(c, scope.Path).FontSize(design.Small).TextColor(design.Muted)
+			}
+		}
+	}
 	ui.Text(c, "选择一个项目内的知识或原始材料。新增摘要和标签可自动保存；已有正文、范围和历史保留。材料将交给 traex 当前模型处理。").LineHeight(1.7)
 	options := []string{}
 	for _, v := range a.scopes {
@@ -325,6 +360,7 @@ func (a *App) organizationChooser(c *ui.Context) {
 	ui.Select(c.Key("organization-project"), &s.ProjectLabel, options).Label("整理项目").Disabled(s.Busy).OnChange(func() {
 		s.Project = a.datasetForLabel(s.ProjectLabel)
 		s.Chosen = map[string]MemoryItem{}
+		s.Destinations = map[string]bool{}
 		s.Order = nil
 		s.Candidates = nil
 		s.Cursor = ""
@@ -405,15 +441,19 @@ func (a *App) organizationDetail(c *ui.Context) {
 			return
 		}
 		task := s.Task
-		ui.Text(c, organizationStatus(task.State)).FontSize(design.Title).Bold()
+		ui.Text(c, organizationTaskStatus(*task)).FontSize(design.Title).Bold()
 		meta(c, "任务", task.ID)
 		meta(c, "项目", a.scopeLabel(task.Project))
-		meta(c, "执行", fmt.Sprintf("traex · 执行记录 %d", task.Attempt))
+		executor := "traex"
+		if task.AttemptKind == "apply" {
+			executor = "应用已有结果"
+		}
+		meta(c, "执行", fmt.Sprintf("%s · 执行记录 %d", executor, task.Snapshot.Attempt))
 		if task.Error != "" {
 			meta(c, "错误", task.Error)
 		}
 		if task.Result != nil {
-			ui.Text(c, task.Result.Explanation).LineHeight(1.7)
+			ui.Text(c, strings.ReplaceAll(task.Result.Explanation, "destinations 授权列表", "已授权的移入项目列表")).LineHeight(1.7)
 			if len(task.Entries) == 0 {
 				ui.Text(c, "本次没有可应用的建议，已有知识保持不变。").Bold()
 			}
@@ -427,21 +467,37 @@ func (a *App) organizationDetail(c *ui.Context) {
 			}
 		}
 		if task.Result != nil {
-			ui.Text(c, fmt.Sprintf("已应用 %d 项 · 未应用 %d 项", applied, failed)).FontSize(design.Small).TextColor(design.Muted)
+			if task.Snapshot.Schema == records.OrganizationReviewSchema {
+				confirmed, pending := 0, 0
+				for _, e := range task.Entries {
+					if e.State == "review_pending" {
+						pending++
+					}
+					if e.State == "applied" && (e.Item.Action == "duplicate" || e.Item.Action == "conflict") {
+						confirmed++
+					}
+				}
+				ui.Text(c, fmt.Sprintf("已应用 %d 项 · 已核对 %d 项 · 待审核 %d 项 · 其他未应用 %d 项", applied-confirmed, confirmed, pending, failed-pending)).FontSize(design.Small).TextColor(design.Muted)
+			} else {
+				ui.Text(c, fmt.Sprintf("已应用 %d 项 · 未应用 %d 项", applied, failed)).FontSize(design.Small).TextColor(design.Muted)
+			}
 		}
 		for _, entry := range task.Entries {
 			ui.Column(c.Key("organization-entry-"+entry.ID)).Border(1, design.Border).Radius(5).Padding(14).Gap(10).Children(func() {
-				label := "新增摘要"
-				if entry.Item.Action == "add_tags" {
-					label = "添加标签"
+				label := organizationActionLabel(entry.Item.Action)
+				entryLabel := organizationEntryLabel(entry.State)
+				if entry.State == "applied" && (entry.Item.Action == "duplicate" || entry.Item.Action == "conflict") {
+					entryLabel = "已核对"
 				}
-				ui.Text(c, label+" · "+organizationEntryLabel(entry.State)).Bold()
+				ui.Text(c, label+" · "+entryLabel).Bold()
 				if entry.Item.Action == "summary" {
 					ui.Text(c, entry.Item.Title).Bold()
 					ui.Text(c, entry.Item.Text).Selectable().LineHeight(1.7)
 					ui.Text(c, "派生摘要保留引用依据，不构成新的独立证据。").FontSize(design.Small).TextColor(design.Muted)
-				} else {
+				} else if entry.Item.Action == "add_tags" {
 					ui.Text(c, fmt.Sprint(entry.Item.Tags)).Selectable()
+				} else {
+					a.organizationReviewPreview(c, *task, entry)
 				}
 				if entry.Error != "" {
 					ui.Text(c, entry.Error).FontSize(design.Small).TextColor(design.Muted)
@@ -450,7 +506,7 @@ func (a *App) organizationDetail(c *ui.Context) {
 					ui.Text(c, fmt.Sprintf("依据 %s · v%d", ref.Memory, ref.Revision)).FontSize(design.Small).TextColor(design.Muted)
 					ui.Text(c, ref.Quote).Selectable().LineHeight(1.6)
 				}
-				if entry.Receipt != nil {
+				if entry.Receipt != nil && entry.Receipt.Memory != "" {
 					v, ok := s.Results[entry.Receipt.Memory]
 					if ok {
 						meta(c, "当前", fmt.Sprintf("v%d · %s", v.Revision, a.organizationResultLabel(v)))
@@ -461,7 +517,9 @@ func (a *App) organizationDetail(c *ui.Context) {
 					if entry.Item.Action == "add_tags" {
 						meta(c, "本次新增", fmt.Sprint(entry.Receipt.AddedTags))
 					}
-					quietButton(c, "查看产出或标签目标").Key("organization-open-" + entry.ID).OnClick(func() { a.openMergeMemory(entry.Receipt.Memory, task.Project) })
+					quietButton(c, "查看产出或标签目标").Key("organization-open-" + entry.ID).OnClick(func() {
+						a.openOrganizationMemory(entry.Receipt.Memory)
+					})
 				}
 			})
 		}
@@ -473,7 +531,7 @@ func (a *App) organizationDetail(c *ui.Context) {
 				ui.Text(c, v.Text).Selectable().LineHeight(1.7)
 				meta(c, "来源", v.Source)
 				meta(c, "捕获", v.CapturedAt)
-				quietButton(c, "查看材料当前版本").Key("organization-source-" + v.Memory).OnClick(func() { a.openMergeMemory(v.Memory, task.Project) })
+				quietButton(c, "查看材料当前版本").Key("organization-source-" + v.Memory).OnClick(func() { a.openOrganizationMemory(v.Memory) })
 			})
 		}
 	})
@@ -482,8 +540,18 @@ func (a *App) organizationDetail(c *ui.Context) {
 		if s.New || t == nil {
 			return
 		}
-		if t.State == "queued" || t.State == "running" || t.State == "applying" {
-			actionButton(c, "取消摘要整理", nil).Key("organization-cancel").Disabled(s.Busy).OnClick(a.cancelOrganization)
+		hasReview := false
+		for _, e := range t.Entries {
+			if e.State == "review_pending" {
+				hasReview = true
+			}
+		}
+		if hasReview || t.State == "queued" || t.State == "running" || t.State == "applying" {
+			label := "取消摘要整理"
+			if t.Snapshot.Schema == records.OrganizationReviewSchema {
+				label = "取消未完成项"
+			}
+			actionButton(c, label, nil).Key("organization-cancel").Disabled(s.Busy).OnClick(a.cancelOrganization)
 		}
 		if t.Result != nil && (t.State == "partial_failed" || t.State == "interrupted") {
 			actionButton(c, "继续应用已有结果", nil).Key("organization-resume").Disabled(s.Busy).OnClick(a.resumeOrganization)
@@ -496,6 +564,10 @@ func (a *App) organizationDetail(c *ui.Context) {
 
 func organizationEntryLabel(state string) string {
 	switch state {
+	case "review_pending":
+		return "待审核"
+	case "rejected":
+		return "已拒绝"
 	case "pending":
 		return "等待保存"
 	case "applied":
@@ -532,4 +604,138 @@ func (a *App) organizationResultLabel(v MemoryItem) string {
 		return "摘要依据过期 · 已排除检索"
 	}
 	return a.availableIndexLabel(v.IndexState)
+}
+
+func organizationActionLabel(action string) string {
+	switch action {
+	case "summary":
+		return "新增摘要"
+	case "add_tags":
+		return "添加标签"
+	case "merge":
+		return "合并知识"
+	case "overwrite":
+		return "覆盖正文"
+	case "delete":
+		return "删除知识"
+	case "move":
+		return "移动项目"
+	case "duplicate":
+		return "重复发现"
+	case "conflict":
+		return "冲突发现"
+	}
+	return action
+}
+func (a *App) organizationReviewPreview(c *ui.Context, t records.OrganizationTask, e records.OrganizationEntry) {
+	ui.Text(c, e.Item.Reason).Selectable().LineHeight(1.7)
+	if e.Item.Target != "" {
+		for _, v := range t.Snapshot.Inputs {
+			if v.Memory == e.Item.Target {
+				meta(c, "目标", fmt.Sprintf("%s · v%d", v.Title, v.Revision))
+				ui.Text(c, "修改前").Bold()
+				ui.Text(c, v.Text).Selectable().LineHeight(1.6)
+			}
+		}
+	}
+	if e.Item.Text != "" {
+		ui.Text(c, "建议正文").Bold()
+		ui.Text(c, e.Item.Title).Bold()
+		ui.Text(c, e.Item.Text).Selectable().LineHeight(1.7)
+	}
+	if e.Item.Action == "merge" {
+		ui.Text(c, "确认后新建合并知识，归档全部下列引用知识；历史保留。").FontSize(design.Small)
+	}
+	if e.Item.Action == "delete" {
+		ui.Text(c, "确认后逻辑删除，历史保留；恢复产生新版本。").FontSize(design.Small)
+	}
+	if e.Item.Destination != "" {
+		meta(c, "移入项目", a.scopeLabel(e.Item.Destination))
+		ui.Text(c, "正文保留；原项目检索立即排除。").FontSize(design.Small)
+	}
+	if e.Item.Action == "duplicate" || e.Item.Action == "conflict" {
+		ui.Text(c, "确认仅记录已核对，不裁决或修改知识。").FontSize(design.Small)
+	}
+	if e.State == "review_pending" {
+		ui.Row(c).Gap(8).Children(func() {
+			label := "确认应用此项"
+			if e.Item.Action == "duplicate" || e.Item.Action == "conflict" {
+				label = "记录已核对此项"
+			}
+			actionButton(c, label, nil).Key("organization-confirm-" + e.ID).Disabled(a.organization.Busy).OnClick(func() { a.reviewOrganizationEntry(t, e, true) })
+			quietButton(c, "拒绝此项").Key("organization-reject-" + e.ID).Disabled(a.organization.Busy).OnClick(func() { a.reviewOrganizationEntry(t, e, false) })
+		})
+	}
+}
+func (a *App) reviewOrganizationEntry(t records.OrganizationTask, e records.OrganizationEntry, confirm bool) {
+	s := &a.organization
+	if s.Decisions == nil {
+		s.Decisions = map[string]records.OrganizationReview{}
+	}
+	key := e.ID + fmt.Sprint(confirm)
+	d, ok := s.Decisions[key]
+	if !ok {
+		d = records.OrganizationReview{Task: t.ID, Item: e.ID, Digest: records.MergeDigest(e.Item), Receipt: uuid.NewString(), Confirm: confirm}
+		s.Decisions[key] = d
+	}
+	a.organizationAction(func(ctx context.Context) (records.OrganizationTask, error) { return s.Client.Review(ctx, d) }, false)
+}
+
+// Resolve every current-version navigation against the service. A moved
+// record's frozen scope remains history and cannot choose its current route.
+func (a *App) openOrganizationMemory(id string) {
+	s := &a.organization
+	if s.Busy || a.libraryContext == nil {
+		return
+	}
+	selected := s.Selected
+	s.Busy = true
+	go func() {
+		ctx, stop := context.WithTimeout(a.libraryContext, 5*time.Second)
+		defer stop()
+		v, err := a.library.Get(ctx, id)
+		if a.libraryContext.Err() != nil {
+			return
+		}
+		a.dispatch(func() {
+			s.Busy = false
+			if s.Selected != selected || a.page != "整理记录" || !a.organizationMode {
+				return
+			}
+			if err != nil {
+				s.Error = "当前版本读取失败，请重试；任务内容已保留。"
+				return
+			}
+			a.openMergeMemory(id, v.Dataset)
+		})
+	}()
+}
+
+// Execution completion and approval are separate facts. The v2 detail heading
+// names the unresolved decision without changing the persistent task state.
+func organizationTaskStatus(t records.OrganizationTask) string {
+	if t.Snapshot.Schema != records.OrganizationReviewSchema || t.State != "completed" {
+		return organizationStatus(t.State)
+	}
+	pending, expired, rejected := 0, 0, 0
+	for _, e := range t.Entries {
+		switch e.State {
+		case "review_pending":
+			pending++
+		case "expired":
+			expired++
+		case "rejected":
+			rejected++
+		}
+	}
+	if pending > 0 {
+		return fmt.Sprintf("等待审核 · %d 项", pending)
+	}
+	if expired > 0 {
+		return "执行已完成 · 有过期建议"
+	}
+	if rejected > 0 {
+		return "执行已完成 · 已记录拒绝"
+	}
+	return "整理已完成"
 }

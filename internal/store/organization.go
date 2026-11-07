@@ -13,7 +13,7 @@ import (
 
 func (s *Store) StartOrganization(ctx context.Context, d records.OrganizationStart) (records.OrganizationTask, bool, error) {
 	var empty records.OrganizationTask
-	if len(d.Inputs) < 1 || len(d.Inputs) > 16 || strings.TrimSpace(d.OperationID) == "" || len(d.OperationID) > 128 {
+	if len(d.Destinations) > 8 || (!d.Review && len(d.Destinations) > 0) || len(d.Inputs) < 1 || len(d.Inputs) > 16 || strings.TrimSpace(d.OperationID) == "" || len(d.OperationID) > 128 {
 		return empty, false, records.MergeError("invalid_request")
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -39,6 +39,19 @@ func (s *Store) StartOrganization(ctx context.Context, d records.OrganizationSta
 		return empty, false, err
 	}
 	snapshot := records.OrganizationSnapshot{Schema: records.OrganizationSchema, Task: uuid.NewString(), Project: d.Project, Attempt: 1}
+	if d.Review {
+		snapshot.Schema = records.OrganizationReviewSchema
+		seen := map[string]bool{}
+		for _, id := range d.Destinations {
+			var scope records.Scope
+			err = tx.QueryRowContext(ctx, `SELECT id,name,kind,path FROM scopes WHERE id=?`, id).Scan(&scope.ID, &scope.Name, &scope.Kind, &scope.Path)
+			if err != nil || scope.Kind != "project" || id == d.Project || seen[id] {
+				return empty, false, records.MergeError("scope_denied")
+			}
+			seen[id] = true
+			snapshot.Destinations = append(snapshot.Destinations, scope)
+		}
+	}
 	for _, ref := range d.Inputs {
 		ok, e := organizationCurrent(ctx, tx, d.Project, []records.MergeSource{{Memory: ref.Memory, Revision: ref.Revision}})
 		if e != nil {
@@ -50,6 +63,11 @@ func (s *Store) StartOrganization(ctx context.Context, d records.OrganizationSta
 		v, e := scanVersion(tx.QueryRowContext(ctx, `SELECT `+versionColumns+versionJoins+`WHERE m.id=?`, ref.Memory))
 		if e != nil {
 			return empty, false, e
+		}
+		if s.Schema >= 5 {
+			if e = filterVersionProvenance(ctx, tx, &v, []string{d.Project}); e != nil {
+				return empty, false, e
+			}
 		}
 		roots, e := s.evidenceRoots(ctx, tx, v.Memory, v.Revision)
 		if e != nil {
@@ -84,7 +102,7 @@ func (s *Store) StartOrganization(ctx context.Context, d records.OrganizationSta
 func organizationTask(ctx context.Context, tx *sql.Tx, id string) (records.OrganizationTask, error) {
 	var t records.OrganizationTask
 	var raw, execution string
-	err := tx.QueryRowContext(ctx, `SELECT t.id,t.project,t.state,t.attempt,t.cancelled,t.error_code,t.created_at,a.snapshot,a.execution FROM organization_tasks t JOIN organization_attempts a ON a.task=t.id AND a.attempt=(SELECT max(attempt) FROM organization_attempts WHERE task=t.id) WHERE t.id=?`, id).Scan(&t.ID, &t.Project, &t.State, &t.Attempt, &t.Cancelled, &t.Error, &t.CreatedAt, &raw, &execution)
+	err := tx.QueryRowContext(ctx, `SELECT t.id,t.project,t.state,t.attempt,t.cancelled,t.error_code,t.created_at,a.snapshot,a.execution,a.kind FROM organization_tasks t JOIN organization_attempts a ON a.task=t.id AND a.attempt=(SELECT max(attempt) FROM organization_attempts WHERE task=t.id) WHERE t.id=?`, id).Scan(&t.ID, &t.Project, &t.State, &t.Attempt, &t.Cancelled, &t.Error, &t.CreatedAt, &raw, &execution, &t.AttemptKind)
 	if err != nil {
 		return t, err
 	}
@@ -102,7 +120,13 @@ func organizationTask(ctx context.Context, tx *sql.Tx, id string) (records.Organ
 		return t, err
 	}
 	t.Entries = []records.OrganizationEntry{}
-	rows, err := tx.QueryContext(ctx, `SELECT id,payload,state,error_code,receipt FROM organization_items WHERE task=? ORDER BY position`, id)
+	entriesSQL := `SELECT id,payload,state,error_code,receipt FROM organization_items WHERE task=? ORDER BY position`
+	args := []any{id}
+	if t.Snapshot.Schema == records.OrganizationReviewSchema {
+		entriesSQL = `SELECT id,payload,state,error_code,receipt FROM (SELECT id,payload,state,error_code,receipt,position FROM organization_items WHERE task=? UNION ALL SELECT id,payload,state,error_code,receipt,position FROM organization_reviews WHERE task=?) ORDER BY position`
+		args = append(args, id)
+	}
+	rows, err := tx.QueryContext(ctx, entriesSQL, args...)
 	if err != nil {
 		return t, err
 	}
@@ -134,13 +158,19 @@ func (s *Store) OrganizationTask(ctx context.Context, id string) (records.Organi
 		return t, err
 	}
 	for i, v := range t.Entries {
-		if v.State == "pending" {
-			ok, e := organizationCurrent(ctx, tx, t.Project, v.Item.Sources)
+		if v.State == "pending" || v.State == "review_pending" {
+			ok, e := organizationItemCurrent(ctx, tx, t.Snapshot, v.Item)
 			if e != nil {
 				return t, e
 			}
 			if !ok {
-				if _, err = tx.ExecContext(ctx, `UPDATE organization_items SET state='expired',error_code='proposal_expired' WHERE id=? AND state='pending'`, v.ID); err != nil {
+				table := "organization_items"
+				prior := "pending"
+				if v.State == "review_pending" {
+					table = "organization_reviews"
+					prior = "review_pending"
+				}
+				if _, err = tx.ExecContext(ctx, `UPDATE `+table+` SET state='expired',error_code='proposal_expired' WHERE id=? AND state=?`, v.ID, prior); err != nil {
 					return t, err
 				}
 				t.Entries[i].State = "expired"
@@ -211,7 +241,13 @@ func (s *Store) StageOrganization(ctx context.Context, id string, attempt int64,
 		}
 		for _, item := range result.Items {
 			b, _ := json.Marshal(item)
-			if _, err = tx.ExecContext(ctx, `INSERT INTO organization_items(id,task,position,action,digest,payload,state) VALUES(?,?,?,?,?,?,'pending')`, t.Snapshot.ItemID(item.Index), id, item.Index, item.Action, records.MergeDigest(item), string(b)); err != nil {
+			table := "organization_items"
+			itemState := "pending"
+			if item.RequiresReview() {
+				table = "organization_reviews"
+				itemState = "review_pending"
+			}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO `+table+`(id,task,position,action,digest,payload,state) VALUES(?,?,?,?,?,?,?)`, t.Snapshot.ItemID(item.Index), id, item.Index, item.Action, records.MergeDigest(item), string(b), itemState); err != nil {
 				return t, err
 			}
 		}
@@ -366,7 +402,7 @@ func (s *Store) FinishOrganization(ctx context.Context, id string, attempt int64
 		if entry.State == "pending" {
 			return t, records.MergeError("attempt_invalid")
 		}
-		if entry.State != "applied" {
+		if entry.State != "applied" && entry.State != "review_pending" && entry.State != "rejected" {
 			state = "partial_failed"
 		}
 	}
@@ -392,7 +428,13 @@ func (s *Store) CancelOrganization(ctx context.Context, id string) (records.Orga
 	if err != nil {
 		return t, err
 	}
-	if t.State == "completed" || t.State == "partial_failed" || t.State == "failed" || t.Cancelled {
+	reviewPending := false
+	for _, entry := range t.Entries {
+		if entry.State == "review_pending" {
+			reviewPending = true
+		}
+	}
+	if ((t.State == "completed" || t.State == "partial_failed" || t.State == "failed") && !reviewPending) || t.Cancelled {
 		return t, nil
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE organization_tasks SET cancelled=1,state='cancelled',attempt=attempt+1 WHERE id=?`, id); err != nil {
@@ -403,6 +445,11 @@ func (s *Store) CancelOrganization(ctx context.Context, id string) (records.Orga
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE organization_items SET state='cancelled' WHERE task=? AND state='pending'`, id); err != nil {
 		return t, err
+	}
+	if t.Snapshot.Schema == records.OrganizationReviewSchema {
+		if _, err = tx.ExecContext(ctx, `UPDATE organization_reviews SET state='cancelled' WHERE task=? AND state='review_pending'`, id); err != nil {
+			return t, err
+		}
 	}
 	t, err = organizationTask(ctx, tx, id)
 	if err != nil {

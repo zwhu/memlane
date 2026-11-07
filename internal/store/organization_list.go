@@ -30,7 +30,7 @@ func (s *Store) ListOrganizations(ctx context.Context, q records.MergeListQuery)
 			return out, e
 		}
 	}
-	rows, e := s.DB.QueryContext(ctx, `SELECT t.id,t.project,t.state,COALESCE(json_extract(r.payload,'$.items[0].title'),''),t.created_at FROM organization_tasks t LEFT JOIN organization_results r ON r.task=t.id AND r.attempt=(SELECT max(attempt) FROM organization_results WHERE task=t.id) WHERE (?='' OR t.project=?) AND (?='' OR t.created_at<? OR (t.created_at=? AND t.id<?)) AND (?='' OR EXISTS(SELECT 1 FROM organization_items i WHERE i.task=t.id AND json_extract(i.receipt,'$.memory')=?)) ORDER BY t.created_at DESC,t.id DESC LIMIT ?`, q.Project, q.Project, q.Before, before, before, q.Before, q.Memory, q.Memory, q.Limit+1)
+	rows, e := s.DB.QueryContext(ctx, `SELECT t.id,t.project,t.state,COALESCE(NULLIF(json_extract(r.payload,'$.items[0].title'),''),(SELECT json_extract(a.snapshot,'$.inputs[0].title') FROM organization_attempts a WHERE a.task=t.id ORDER BY a.attempt DESC LIMIT 1),''),t.created_at FROM organization_tasks t LEFT JOIN organization_results r ON r.task=t.id AND r.attempt=(SELECT max(attempt) FROM organization_results WHERE task=t.id) WHERE (?='' OR t.project=?) AND (?='' OR t.created_at<? OR (t.created_at=? AND t.id<?)) AND (?='' OR EXISTS(SELECT 1 FROM organization_items i WHERE i.task=t.id AND json_extract(i.receipt,'$.memory')=?)) ORDER BY t.created_at DESC,t.id DESC LIMIT ?`, q.Project, q.Project, q.Before, before, before, q.Before, q.Memory, q.Memory, q.Limit+1)
 	if e != nil {
 		return out, e
 	}

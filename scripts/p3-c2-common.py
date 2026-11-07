@@ -7,7 +7,7 @@ def ensure_inside(path,root):
 
 def validate_fixture(fixture,app,phase="c2"):
  fixture=fixture.resolve();app=app.resolve()
- assert phase in ('c2','c3') and fixture.name.startswith('memlane-p3-'+phase+'-app-'), 'isolated synthetic root required'
+ assert phase in ('c2','c3','c4') and fixture.name.startswith('memlane-p3-'+phase+'-app-'), 'isolated synthetic root required'
  metadata=json.loads((fixture/'source-info.json').read_text())
  assert metadata.get('synthetic_only') is True, 'synthetic fixture marker required'
  identity=metadata['identifier']
