@@ -25,10 +25,22 @@ class UI:
         if visual:cmd+=['--p1-visual-fixture']
         if config:cmd+=['--p0-config',str(config)]
         self.log=(out/'window.log').open('a')
-        env={'PATH':'/usr/bin:/bin','HOME':str(fixture/'ui-home'),'MYGO_AUTOMATION':self.path}
+        self.native_path='/tmp/memlane-p1-native-'+uuid.uuid4().hex[:10]+'.sock'
+        env={'PATH':'/usr/bin:/bin','HOME':str(fixture/'ui-home'),'MYGO_AUTOMATION':self.path,'MEMLANE_NATIVE_PROBE':self.native_path}
         (fixture/'ui-home').mkdir(exist_ok=True)
-        self.proc=subprocess.Popen(cmd,cwd=fixture,env=env,stdout=self.log,stderr=self.log)
-        self.pid=self.proc.pid
+        # Launch the bundle through Launch Services, as Finder does. After an
+        # in-place rebuild, direct binary launch can leave BTM's app registration
+        # stale and cause BundleProgram EX_CONFIG before the helper executes.
+        command=['/usr/bin/open','-n','-W','--stdout',str(out/'window.log'),'--stderr',str(out/'window.log')]
+        for name,value in env.items():command+=['--env',name+'='+value]
+        command+=[str(app.resolve())]
+        if len(cmd)>1:command+=['--args']+cmd[1:]
+        self.proc=subprocess.Popen(command,cwd=fixture,stdout=self.log,stderr=self.log)
+        def actual_pid():
+            result=subprocess.run(['pgrep','-f','^'+cmd[0]],capture_output=True,text=True)
+            pids=[int(x) for x in result.stdout.split()]
+            return pids[0] if len(pids)==1 else None
+        self.pid=wait(actual_pid)
         wait(lambda:Path(self.path).exists() or self.proc.poll() is not None)
         assert self.proc.poll() is None,('App exited',self.proc.returncode)
         self.s=socket.socket(socket.AF_UNIX);self.s.settimeout(30);self.s.connect(self.path)
@@ -61,10 +73,29 @@ class UI:
     def capture(self,name):
         (self.out/name).write_bytes(base64.b64decode(self.req('capture')['png']))
         (self.out/(Path(name).stem+'-tree.json')).write_text(json.dumps(self.nodes(),ensure_ascii=False,indent=2)+'\n')
+    def native(self,op='snapshot'):
+        with socket.socket(socket.AF_UNIX) as s:
+            s.settimeout(5);s.connect(self.native_path);s.sendall((json.dumps({'op':op})+'\n').encode())
+            result=json.loads(s.makefile('rb',buffering=0).readline())
+        assert 'error' not in result,result
+        return result
     def system_capture(self,name):
         from importlib.machinery import SourceFileLoader
         mac=SourceFileLoader('p1mac',str(ROOT/'scripts/mac-native.py')).load_module().Mac()
+        mac.require_unlocked()
+        mac.activate(self.pid)
+        own=next(w for w in mac.visible_windows([self.pid]) if w['layer']==0 and w['bounds']['width']>=980)
+        bounds=own['bounds']
+        # A real click in empty toolbar space brings this App's window forward.
+        # Verify the actual NSWindow state; global AXFocusedApplication can be
+        # unavailable even while the console is unlocked.
+        mac.click(bounds['x']+500,bounds['y']+27)
+        wait(lambda:self.native()['key_window'],timeout=10)
+        self.req('capture');self.req('idle',timeout=2000)
         mac.capture(self.pid,self.out/name)
+        snapshot=self.native();assert snapshot['key_window'] and snapshot['visible']
+        (self.out/(Path(name).stem+'-capture.json')).write_text(json.dumps({'pid':self.pid,'window_key':snapshot['key_window'],'visible':snapshot['visible'],'actual_system_window':True})+'\n')
+
     def quit(self,stop=False):
         try:
             if stop:self.req('menu',path=['文件','停止服务并退出'])

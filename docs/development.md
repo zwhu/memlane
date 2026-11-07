@@ -1,6 +1,6 @@
 # 本地开发与 P0 验证
 
-当前已有真实 MyGo Native UI、独立 Go 记忆服务、Rust/Python 原文 worker 和外置组件管理。Rust 为本轮 App 原文索引验证路线，Python 归档按同一契约完成对照；App 自动准备、后台系统注册、生命周期与受控 HTTPS 更新已实测。记忆管理 UI 与真实 Agent 接入属于后续阶段；草稿只在窗口内存中保留，退出后不保存。测量结果与验收边界见 [P0 验证记录](p0-validation.md)。
+当前已有真实 MyGo Native UI、独立 Go 记忆服务、Rust/Python 原文 worker 和外置组件管理。Rust 为本轮 App 原文索引验证路线，Python 归档按同一契约完成对照；App 自动准备、后台系统注册、生命周期与受控 HTTPS 更新已实测。P1 记忆管理 UI 已接入并通过真实 App 合成数据闭环与系统窗口设计对照；真实 Agent 接入留在 P2。未保存草稿只在窗口内存中保留，退出后不保存。最新测量和验收边界见 [P1 验证记录](p1-validation.md)，未受影响的能力引用 P0 证据。
 
 ## 桌面客户端
 
@@ -250,3 +250,32 @@ python3 scripts/verify-system-ime.py --system-home
 其余系统步骤为minimize、close、drag，只在未通过或受改动影响时重跑。全屏退出使用系统“视图”菜单AXPress，未将其写成Ctrl+Cmd+F通过。拼音必须使用系统GUI环境；`--system-home`让Launch Services保持系统正常输入上下文，Memlane业务配置和数据根仍指向本轮合成目录。候选面板可由本App PID持有，按新建窗口、坐标、层级和实际截图核对，不能只查SCIM进程；最终验收为真实拼音候选与空格提交，不是Unicode注入。
 
 每个脚本实际生成handoff，报告在build/p0-engine、截图在build/p0-screenshots。已停止的VoiceOver脚本和失败报告保留作历史，不属于本轮必跑命令；清理结果见ancillary-cleanup.json。P0核心链路已通过，App内真实记忆管理UI及Agent接入仍按P1/P2实施；不扩展其他主机管理。
+
+
+## P1 实际记忆界面与验收
+
+已实现项目登记、真实列表/来源/独立索引状态、App 新增与编辑、当前版本语义搜索、历史差异和恢复。恢复产生新版本，过期编辑拒绝覆盖；草稿在窗口内按条目保留，退出 App 后未保存草稿不持久化。首页来自首次可用活动，编辑/恢复/重试不重复计数，导入单列，整理显示未接入空态。实际系统首页和详情已通过设计图对照，进度见 [P1 验证记录](p1-validation.md)。
+
+服务 schema 使用 PRAGMA user_version=1；P0 数据迁移保留正文、版本、操作、任务与绑定，旧记录作为导入。客户端只通过 serviceipc.Library 访问服务。测试均用合成根，不把默认用户目录或真实 Agent 配置作为输入。
+
+```sh
+sh scripts/go.sh build -o build/p1/memlaned ./cmd/memlaned
+python3 scripts/verify-p1-service.py
+python3 scripts/verify-memory-contract.py --report build/p1/original-version-regression.json
+python3 scripts/create-p1-fixture.py
+```
+
+`create-p1-fixture.py` 只从已验证 P0 合成根复制组件缓存，新业务库从空开始；路径写入 build/p1/fixture-path.txt，公共配置与独立 identifier 写入新根。用这些值构建验收 App：
+
+```sh
+python3 scripts/build-client.py --out build/p1-app --runtime-config <合成根>/runtime-config.json --identifier <独立identifier> --name MemlaneP1 --automation --skip-dmg
+python3 scripts/verify-p1-library-ui.py
+python3 scripts/verify-p1-management.py
+python3 scripts/verify-p1-states.py
+python3 scripts/capture-p1-final.py
+python3 scripts/audit-p1.py
+```
+
+P1 驱动通过 Launch Services 启动实际 App，避免直接执行包内二进制时，原地重建与 BTM 注册缓存造成 EX_CONFIG。系统截图需要桌面解锁；驱动在空白工具栏实际点击，并核对本 App 的 NSWindow key/visible 状态后取得系统窗口截图。源码普通构建不含 e2e 夹具和探针。验收结束明确停止独立测试服务；下次打开保留主动停止状态，从设置点击「启动服务」。
+
+完整主包仍执行 `python3 scripts/build-client.py --out build/p0-final`。最新大小与签名边界见 P1 验证记录；P0 文档中的旧 DMG 大小属于历史基线，同输出路径被新构建更新。正式组件/更新源及 Developer ID、公证仍未配置，P1 的实际闭环验收使用隔离公共配置，不能把它描述为正式可分发版本。

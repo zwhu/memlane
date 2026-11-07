@@ -53,3 +53,5 @@ func meta(c *ui.Context, label, value string) {
 		ui.Text(c, value).FontSize(design.Small).Grow(1).MinWidth(0).Selectable()
 	})
 }
+
+func init() { icons["搜索"] = icons["search"] }

@@ -29,7 +29,8 @@ func (s *Service) IndexCurrent(ctx context.Context, id string) error {
 		return store.ErrConflict
 	}
 	if s.Engine == nil {
-		return errors.New("engine unavailable; original remains saved")
+		cause := errors.New("engine unavailable; original remains saved")
+		return errors.Join(cause, s.Store.IndexFailed(context.WithoutCancel(ctx), v.Record, cause))
 	}
 	if err = s.Store.IndexStarted(ctx, id, v.Revision); err != nil {
 		return err

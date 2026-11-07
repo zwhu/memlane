@@ -13,6 +13,7 @@ import (
 )
 
 type App struct {
+	activityLoaded           bool
 	pendingMutations         map[string]records.Mutation
 	saving                   bool
 	restoreExpected          int64
@@ -173,6 +174,9 @@ func (a *App) sidebar(c *ui.Context) {
 			} else if a.runtimeStatus.Phase == "stopped" {
 				status = "服务已停止"
 			}
+			if a.libraryError != "" && a.activityLoaded && a.runtimeStatus.Phase != "stopped" {
+				status = "服务暂不可用"
+			}
 			ui.Text(c, "· "+status).Label(status).FontSize(design.Small).TextColor(design.Muted).Padding(0, 12)
 		})
 	})
@@ -209,7 +213,7 @@ func (a *App) toolbar(c *ui.Context) {
 		ui.Spacer(c)
 		ui.Row(c).Width(244).Height(29).Padding(4, 9).Gap(6).Radius(5).Border(1, design.Border).Background(design.Surface).Children(func() {
 			ui.Icon(c, icons["search"]).FontSize(13).TextColor(design.Muted)
-			ui.TextInput(c.Key("memory-search"), &a.query).Label("搜索记忆").Placeholder("搜索所有记忆").Grow(1).MinWidth(0).BorderWidth(0).Background(ui.Transparent).OnSubmit(func() {
+			ui.TextInput(c.Key("memory-search"), &a.query).Label("搜索记忆").Placeholder(a.searchPlaceholder()).Grow(1).MinWidth(0).BorderWidth(0).Background(ui.Transparent).OnSubmit(func() {
 				if a.onSearch != nil {
 					a.onSearch()
 				}
@@ -243,6 +247,12 @@ func (a *App) home(c *ui.Context) {
 			})
 			ui.Text(c, "最近积累的知识，以及需要你确认的改动。").FontSize(design.Small).TextColor(design.Muted)
 		})
+		if a.libraryError != "" {
+			ui.Row(c).Gap(10).Children(func() {
+				ui.Text(c, "活动读取失败，保留上次记录。").FontSize(design.Small).TextColor(design.Muted)
+				quietButton(c, "重试读取").OnClick(func() { a.refresh(false) })
+			})
+		}
 		a.heatmap(c)
 		ui.Row(c).AlignItems(ui.Stretch).Gap(32).Children(func() {
 			ui.Column(c).Grow(1.85).MinWidth(0).Gap(0).Children(func() {
@@ -253,7 +263,14 @@ func (a *App) home(c *ui.Context) {
 				})
 				ui.Divider(c)
 				if len(a.recent) == 0 && !a.visualFixture {
-					a.empty(c, "还没有新增活动", "新增一条项目经验，让知识从这里开始。")
+					title, description := "还没有新增活动", "新增一条项目经验，让知识从这里开始。"
+					if !a.activityLoaded {
+						title = "等待本地记忆服务"
+						description = "活动和最近新增将在服务连接后显示。"
+					} else if a.listTotal > 0 {
+						description = "已保存的知识会在首次索引完成后计入新增；导入记录单独统计。"
+					}
+					a.empty(c, title, description)
 					actionButton(c, "记录第一条记忆", icons["plus"]).AlignSelf(ui.Start).OnClick(a.newMemory)
 				}
 				recent := a.recent
@@ -296,7 +313,11 @@ func (a *App) heatmap(c *ui.Context) {
 	}
 	ui.Column(c).Key("activity-heatmap").Border(1, design.Border).Radius(8).Padding(20).Gap(16).Children(func() {
 		ui.Row(c).Children(func() {
-			ui.Text(c, fmt.Sprintf("过去一年新增 %d 条记忆", total))
+			label := fmt.Sprintf("过去一年新增 %d 条记忆", total)
+			if !a.activityLoaded && !a.visualFixture {
+				label = "每日记忆 · 等待本地活动记录"
+			}
+			ui.Text(c, label)
 			ui.Spacer(c)
 			ui.Text(c, start.Format("2006.01")+" — "+today.Format("2006.01")).FontSize(design.Small).TextColor(design.Muted)
 		})
@@ -344,7 +365,14 @@ func (a *App) heatmap(c *ui.Context) {
 			})
 		})
 		ui.Row(c).Gap(4).Children(func() {
-			ui.Text(c, fmt.Sprintf("今天新增 %d 条", a.activities[today.Format("2006-01-02")])).FontSize(design.Small).TextColor(design.Muted)
+			label := fmt.Sprintf("今天新增 %d 条", a.activities[today.Format("2006-01-02")])
+			if !a.activityLoaded && !a.visualFixture {
+				label = "尚未读取活动"
+			}
+			ui.Text(c, label).FontSize(design.Small).TextColor(design.Muted)
+			if a.imported > 0 {
+				ui.Text(c, fmt.Sprintf("· 另外导入 %d 条", a.imported)).FontSize(design.Small).TextColor(design.Muted)
+			}
 			ui.Spacer(c)
 			ui.Text(c, "少").FontSize(10).TextColor(design.Muted)
 			for _, color := range design.Heat {
@@ -450,7 +478,7 @@ func (a *App) details(c *ui.Context) {
 				ui.Text(c, label)
 				ui.Spacer(c)
 				if a.current() != nil && !a.editing && a.detailMode == "view" {
-					iconButton(c, "编辑", icons["edit"]).OnClick(a.editMemory)
+					iconButton(c, "编辑", icons["edit"]).Disabled(a.current().State == "deleted").OnClick(a.editMemory)
 					iconButton(c, "历史记录", icons["history"]).OnClick(func() { a.detailMode = "history" })
 				}
 			})
@@ -487,7 +515,11 @@ func (a *App) memoryRow(c *ui.Context, item MemoryItem, inList bool) {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
 			ui.Row(c).Gap(8).Children(func() {
 				ui.Text(c, item.Title).FontWeight(600).SingleLine().Grow(1).MinWidth(0)
-				ui.Text(c, item.Category).FontSize(10).TextColor(design.Muted).Shrink(0)
+				category := item.Category
+				if item.State == "deleted" {
+					category = "已删除"
+				}
+				ui.Text(c, category).FontSize(10).TextColor(design.Muted).Shrink(0)
 			})
 			ui.Text(c, preview(item.Text)).FontSize(design.Small).TextColor(design.Muted).SingleLine()
 			ui.Row(c).Children(func() {
@@ -504,6 +536,8 @@ func (a *App) memoryRow(c *ui.Context, item MemoryItem, inList bool) {
 	b.OnClick(func() {
 		a.rememberDraft()
 		a.selectedID = item.ID
+		a.message = ""
+		a.conflictCurrent = nil
 		a.editing = false
 		a.detailMode = "view"
 		a.detailScroll.Y = 0
@@ -560,7 +594,7 @@ func (a *App) memoryDetail(c *ui.Context) {
 			meta(c, "创建", item.CreatedAt.Format("2006-01-02 15:04"))
 			meta(c, "版本", fmt.Sprintf("v%d · %s", item.Revision, operationLabel(item.Operation)))
 			meta(c, "保存", "已保存")
-			meta(c, "索引", indexLabel(item.IndexState))
+			meta(c, "索引", a.availableIndexLabel(item.IndexState))
 			if a.message != "" {
 				ui.Text(c, a.message).FontSize(design.Small).TextColor(design.Muted)
 			}
@@ -576,13 +610,19 @@ func (a *App) memoryDetail(c *ui.Context) {
 		})
 		ui.Row(c).Gap(6).Children(func() {
 			ui.Text(c, item.Category).FontSize(10).Padding(4, 6).Background(design.Surface)
-			ui.Text(c, "当前有效").FontSize(10).Padding(4, 6).Background(design.Surface)
+			state := "当前有效"
+			if item.State == "deleted" {
+				state = "已删除 · 保留历史"
+			}
+			ui.Text(c, state).FontSize(10).Padding(4, 6).Background(design.Surface)
 		})
 	})
-	ui.Row(c).Shrink(0).Padding(18, 24, 24, 24).Gap(8).Children(func() {
-		actionButton(c, "编辑", icons["edit"]).OnClick(a.editMemory)
-		actionButton(c, "历史记录", icons["history"]).OnClick(func() { a.detailMode = "history"; a.detailScroll.Y = 0 })
-	})
+	if a.detailMode == "view" {
+		ui.Row(c).Shrink(0).Padding(18, 24, 24, 24).Gap(8).Children(func() {
+			actionButton(c, "编辑", icons["edit"]).Disabled(item.State == "deleted").OnClick(a.editMemory)
+			actionButton(c, "历史记录", icons["history"]).OnClick(func() { a.detailMode = "history"; a.detailScroll.Y = 0 })
+		})
+	}
 }
 func (a *App) historyView(c *ui.Context, item MemoryItem) {
 	ui.Text(c, item.Title).FontSize(design.Title).Bold()
@@ -594,6 +634,9 @@ func (a *App) historyView(c *ui.Context, item MemoryItem) {
 		ui.Text(c, "恢复会新增版本，保留当前正文和全部历史。确认前不会改动已有知识。").TextColor(design.Muted).LineHeight(1.6)
 		for _, h := range a.history {
 			if h.Revision == a.historyRevision {
+				if h.Title != "" {
+					ui.Text(c, h.Title).Bold()
+				}
 				ui.Text(c, h.Text).Selectable().LineHeight(1.7).Padding(14).Background(design.Surface)
 			}
 		}
@@ -618,13 +661,22 @@ func (a *App) historyView(c *ui.Context, item MemoryItem) {
 				ui.Spacer(c)
 				ui.Text(c, h.CreatedAt.Format("01-02 15:04")).FontSize(design.Small).TextColor(design.Muted)
 			})
+			if h.Title != "" {
+				ui.Text(c, h.Title).Bold()
+			}
 			ui.Text(c, h.Text).Selectable().LineHeight(1.7)
 			if i+1 < len(a.history) {
 				ui.Text(c, "相较上一版本").FontSize(design.Small).TextColor(design.Muted)
 				ui.Text(c, lineDiff(a.history[i+1].Text, h.Text)).FontSize(design.Small).Selectable().LineHeight(1.6).Background(design.Surface).Padding(10)
 			}
 			if h.Revision != item.Revision {
-				quietButton(c, fmt.Sprintf("恢复 v%d", h.Revision)).AlignSelf(ui.Start).OnClick(func() { a.historyRevision = h.Revision; a.restoreExpected=item.Revision; a.message=""; a.detailMode = "restore"; a.detailScroll.Y = 0 })
+				quietButton(c, fmt.Sprintf("恢复 v%d", h.Revision)).AlignSelf(ui.Start).OnClick(func() {
+					a.historyRevision = h.Revision
+					a.restoreExpected = item.Revision
+					a.message = ""
+					a.detailMode = "restore"
+					a.detailScroll.Y = 0
+				})
 			} else {
 				ui.Text(c, "当前版本").FontSize(design.Small).TextColor(design.Muted)
 			}

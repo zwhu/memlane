@@ -14,9 +14,9 @@ type MemoryItem struct {
 }
 type ProjectItem struct{ ID, Name, Path string }
 type MemoryHistory struct {
-	Revision        int64
-	Text, Operation string
-	CreatedAt       time.Time
+	Revision               int64
+	Title, Text, Operation string
+	CreatedAt              time.Time
 }
 type Draft struct {
 	Title, Text, Scope string
@@ -83,8 +83,14 @@ func (a *App) navigate(page, scope string) {
 func (a *App) newMemory() {
 	a.rememberDraft()
 	a.message = ""
+	a.recordKind = "knowledge"
+	a.activityDate = ""
 	a.conflictCurrent = nil
-	if a.scope!="" {a.page="项目"} else if a.page!="全局记忆" {a.page = "全部记忆"}
+	if a.scope != "" {
+		a.page = "项目"
+	} else if a.page != "全局记忆" {
+		a.page = "全部记忆"
+	}
 	a.memoryRoute = a.page + ":" + a.scope
 	a.detailMode = "new"
 	a.editing = true
@@ -114,6 +120,9 @@ func (a *App) editMemory() {
 	d, ok := a.drafts[item.ID]
 	if !ok {
 		d = Draft{Title: item.Title, Text: item.Text, Scope: item.ScopeName, Revision: item.Revision}
+		if label := a.scopeLabel(item.Dataset); label != "" {
+			d.Scope = label
+		}
 		a.drafts[item.ID] = d
 	}
 	a.draftTitle, a.draft, a.draftScope = d.Title, d.Text, d.Scope
@@ -148,6 +157,8 @@ func operationLabel(op string) string {
 }
 func indexLabel(state string) string {
 	switch state {
+	case "deleted":
+		return "已删除，不参与检索"
 	case "indexed":
 		return "可检索"
 	case "failed":
@@ -191,4 +202,21 @@ func lineDiff(before, after string) string {
 func (a *App) SetVisualFixture(items []MemoryItem, projects []ProjectItem, history []MemoryHistory, activity map[string]int) {
 	a.items, a.projects, a.history, a.activities = items, projects, history, activity
 	a.visualFixture = true
+}
+
+func (a *App) searchPlaceholder() string {
+	if a.scope != "" {
+		return "搜索当前项目与全局"
+	}
+	if a.page == "全局记忆" {
+		return "搜索全局记忆"
+	}
+	return "搜索所有记忆"
+}
+
+func (a *App) availableIndexLabel(state string) string {
+	if state == "indexed" && a.libraryContext != nil && (a.serviceState != "ready" || a.libraryError != "" || a.runtimeStatus.Phase == "stopped") {
+		return "索引已完成 · 等待服务恢复"
+	}
+	return indexLabel(state)
 }

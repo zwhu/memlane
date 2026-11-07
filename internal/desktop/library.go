@@ -15,6 +15,9 @@ func displayVersion(v records.Version) MemoryItem {
 	if created.IsZero() {
 		created, _ = time.Parse("2006-01-02 15:04:05", v.CreatedAt)
 	}
+	if v.State == "deleted" {
+		v.IndexState = "deleted"
+	}
 	category := "项目约定"
 	if v.ScopeKind == "preference" {
 		category = "个人偏好"
@@ -37,7 +40,7 @@ func displayHistory(vs []records.History) []MemoryHistory {
 		if created.IsZero() {
 			created, _ = time.Parse(time.RFC3339Nano, v.CreatedAt)
 		}
-		out = append(out, MemoryHistory{Revision: v.Revision, Text: v.Text, Operation: v.Operation, CreatedAt: created.Local()})
+		out = append(out, MemoryHistory{Revision: v.Revision, Title: v.Title, Text: v.Text, Operation: v.Operation, CreatedAt: created.Local()})
 	}
 	return out
 }
@@ -195,6 +198,7 @@ func (a *App) refresh(more bool) {
 			}
 			a.recent = displayVersions(activity.Recent)
 			a.activities = activity.Days
+			a.activityLoaded = true
 			a.imported = activity.Imported
 			if selected != "" && selected == a.selectedID {
 				item := displayVersion(current)

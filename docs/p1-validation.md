@@ -80,6 +80,39 @@ sh scripts/go.sh vet ./internal/desktop ./internal/store ./internal/daemon ./int
 
 首次主流程启动曾失败：组件已准备，App 65 秒等待后台服务超时，socket 不存在。保留 `build/p1/management-startup-failure.json`、`management-failed.png` 与 `startup-action.jsonl`。同包 helper 用同配置直接启动约 3 秒 ready；同 App 的独立 resume 入口返回 ready/enabled。重跑完整 App 主流程和其中的主动停止/启动均通过。没有据此宣称唯一根因，亦没有用直接 helper 代替 App 验收；正式后台注册的干净机器条件仍见 P0/P4。
 
-## P1.4
+## P1.4：真实活动、四类状态与完整构建（2026-11-07）
 
-尚待首页活动与四类真实状态的最终截图核对、完整 DMG 构建、开发文档收口和推送。
+`build/p1/states-verification.json` 六组功能检查全部通过。新建空库 App 以真实 HTTP 请求执行准备，使用未改动签名的组件清单，准备期间 UI 可用；准备完成后真实列表和活动为 0，未填示例记忆或建议。已有数据 App 的首页读取首次可用事件；原始记录和导入的统计规则由 P1.2 真实 API 验收覆盖，导入单独展示。
+
+在仅属于本轮合成根的 worker 副本上临时改名并终止实际 worker，服务进入异常。App 保存正文后，显式索引失败记为 failed；正文和 v1 保留，首页仍为 4 条。恢复 worker 并点击 App「重试索引」后可检索，只新增一次活动变为 5 条，重复重试不增加活动或版本。删除该合成条目后，5 条历史创建事实仍保留，日期列表显示「已删除 · 保留历史」和「不参与检索」。主流程条目仍为恢复后的 v3，v1/v2 未改写。
+
+实际截图位于 `build/p1-screenshots/`：`system-state-preparing.png`、`system-state-empty-home.png`、`system-state-index-failed.png`、`state-date-deleted.png`、`system-final-real-home.png`。准备、空态、失败与有数据首页已实际打开对照。最终详情截图最初采到切换中的旧帧（列表/右栏为空，语义树已有真实数据），因此不能作为最终详情验收证据；补拍时 CGSession 确认 screen_locked=true，前台激活超时与 AXFocusedApplication -25204。解锁后重新执行 `python3 scripts/capture-p1-final.py`，在空白工具栏实际点击，核对本 App 的 NSWindow key/visible 状态后取得新的系统截图。最终首页与详情已实际打开对照，字体、间距、212/428/560 栏宽、选中态和连续浅蓝侧栏通过。截图已归档到 `docs/images/p1-home.png` 与 `p1-detail.png`，均为本轮隔离合成数据的真实 App 窗口；保留旧帧和失败诊断记录，不将其当作通过证据。
+
+正常启动回归 `build/p1/startup-verification.json` passed：验收改用 Launch Services 启动真实 App 包，同标识、配置和数据根下连续两次通过，包含原地重建后立即启动。此前直接执行包内二进制在原地重建后触发 BTM `invalidateLaunchItem`、launchd spawn failed / EX_CONFIG 78。保留 `states-startup-failure.json`、`state-startup-launchd.txt`、`launchd-diagnostic.log` 和原 `management-startup-failure.json`；没有绕过 helper 或改动业务数据。
+
+完整构建 `python3 scripts/build-client.py --out build/p0-final` 已通过，包含 helper/LaunchAgent 的重新签名 App 与 DMG。本机 codesign 完整性和 SHA256SUMS 通过；正式 Developer ID、公证、组件发布源与更新源仍按 P4 落实。生产包不含模型、worker 或验收检查器；验收 App 使用显式隔离公共配置。组件与模型未变，本轮复用 P0 已验证的首次下载和离线链路，没有重跑其无关旁支。
+
+| 测量项 | bytes | 十进制 MB |
+| --- | ---: | ---: |
+| 主 DMG | 9,128,917 | 9.13 |
+| App 普通文件 | 19,679,978 | 19.68 |
+| 首次额外引擎＋模型下载 | 285,752,286 | 285.75 |
+| 准备后 App＋运行目录逻辑占用 | 511,409,538 | 511.41 |
+| 同目录 st_blocks 文件分配指标 | 511,770,624 | 511.77 |
+
+体积报告 `build/p1/final-sizes.json`，其中 Rust worker 归档 66,253,324 bytes、模型归档 219,498,962 bytes；Python 对照首次额外下载 584,328,409 bytes，非 App 当前运行路线。磁盘口径含 5 条合成知识及实际组件、数据、设置和缓存，APFS 分配指标不等于删除可释放空间。
+
+最终 `sh scripts/go.sh test ./...` 与 `sh scripts/go.sh vet ./...` 退出 0，日志与命令记录见 `build/p1/final-checks.json`。只读数据/包审计 `build/p1/data-package-audit.json` 通过：在持久 owner 锁空闲、WAL 为空时核对 integrity_check=ok，v3 为恢复正文、v1/v2 保留，5 个唯一创建事件含 1 个删除事实，最终 DMG 散列与签名正确。该中间审计保留当时的视觉、提交和推送未完成项；最终完整审计见 `build/p1/final-audit.json`。
+
+已有索引与 worker 可用性另行区分：worker 不可用时显示「索引已完成 · 等待服务恢复」，服务恢复后才显示「可检索」。实际 worker 故障/恢复的 UI 数据检查见 `build/p1/availability-verification.json`，不代替系统视觉检查。
+
+最终视觉检查已完成。`python3 scripts/audit-p1.py` 逐项核对真实报告、owner 已停止的业务库、窗口 key/visible 状态与截图散列、当前 DMG 散列/签名/helper/LaunchAgent、完整清单和三类体积；结果写入 `build/p1/final-audit.json`。后续入口是 P2 的 Codex/pi 项目记忆共享，按实施清单推进。Agent、AI 整理、代码图谱、远程管理不纳入本轮，VoiceOver 等 P0 未通过旁支保持原边界。
+
+
+## 最终实际系统窗口
+
+以下是隔离合成数据的真实 MyGo App 截图，已经实际打开并对照选定设计；真实 Agent 尚未接入。
+
+![P1 实际首页](images/p1-home.png)
+
+![P1 实际三栏详情](images/p1-detail.png)

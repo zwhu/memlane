@@ -76,6 +76,9 @@ func (a *App) applyMutation(key string, mutation records.Mutation) {
 		a.dispatch(func() {
 			a.saving = false
 			if err != nil {
+				if page != a.page || scope != a.scope || mode != a.detailMode {
+					return
+				}
 				if errors.Is(err, records.ErrConflict) {
 					a.message = "内容已有新版本，保留你的草稿；请核对最新内容。"
 					if latest.Memory != "" {
@@ -147,10 +150,12 @@ func (a *App) retryIndex() {
 		}
 		a.dispatch(func() {
 			a.retryingIndex = false
-			if err != nil {
-				a.message = "索引重试失败，正文仍已保存；请检查服务。"
-			} else {
-				a.message = "已提交索引重试，正文和历史保留。"
+			if a.selectedID == id {
+				if err != nil {
+					a.message = "索引重试失败，正文仍已保存；请检查服务。"
+				} else {
+					a.message = "已提交索引重试，正文和历史保留。"
+				}
 			}
 			a.refresh(false)
 		})

@@ -2,9 +2,9 @@
 
 2026-11-07。桌面框架按用户选择采用 **MyGo**；建议使用 **MyGo 轻量客户端 + Go 后台服务 + 独立下载的 Cognee 引擎**。用户已明确优先控制主下载包大小：主客户端提供 UI、自动更新、组件准备与状态管理及必要的轻量 Go helper，重型引擎依赖和模型由 App 自动下载，在本地运行。用户无需安装数据库服务器、Python 或 Docker。首版交付 macOS，保留以后扩展 Windows/Linux 的边界。
 
-这是按阶段实施的技术方案。MyGo 的平台与接口、Cognee 源码及本机 Agent 命令已经核对；真实原文服务、固定模型、Rust/Python独立worker、App准备、后台及受控更新的P0核心流程已通过合成实测，结果见[P0验证记录](p0-validation.md)。按2026-11-07用户最新要求，旁白等旁支不再阻塞本轮；未通过结果保留后续增强。MyGo本机P0工程基线已通过，真实Agent接入和正式签名分发仍按后续阶段验收。
+这是按阶段实施的技术方案。MyGo 的平台与接口、Cognee 源码及本机 Agent 命令已经核对；真实原文服务、固定模型、Rust/Python独立worker、App准备、后台及受控更新的P0核心流程已通过合成实测，结果见[P0验证记录](p0-validation.md)。按2026-11-07用户最新要求，旁白等旁支不再阻塞本轮；未通过结果保留后续增强。MyGo本机P0工程基线已通过，手动记忆界面的 P1 实现与验证见 [P1 记录](p1-validation.md)，实际系统窗口设计对照已通过；真实 Agent 接入和正式签名分发仍按后续阶段验收。
 
-实现路线补充：官方 **Cognee-RS** 是本地引擎的 Rust 移植，仍标 Experimental。P0 优先验证它的最小可用构建，并与 Python 1.6.7 对照；尚未决定最终 worker 使用哪种实现。下文标明 Python 的内部接口、FastEmbed、Enola 和 wheel 条件仅适用于该候选，Rust 对应能力须独立验收。[Rust 研究](research-cognee-rust.md)
+实现路线补充：官方 **Cognee-RS** 是本地引擎的 Rust 移植，仍标 Experimental。P0 优先验证它的最小可用构建，并与 Python 1.6.7 对照；本轮 App 使用已通过原文契约的 Rust worker，Python 保留同契约对照；完整代码图谱仍待 P4 适配。下文标明 Python 的内部接口、FastEmbed、Enola 和 wheel 条件仅适用于该候选，Rust 对应能力须独立验收。[Rust 研究](research-cognee-rust.md)
 
 ## 1. 关键选择
 
