@@ -1,6 +1,6 @@
-# 本地开发与 P0 验证
+# 本地开发与验收
 
-当前已有真实 MyGo Native UI、独立 Go 记忆服务、Rust/Python 原文 worker 和外置组件管理。Rust 为本轮 App 原文索引验证路线，Python 归档按同一契约完成对照；App 自动准备、后台系统注册、生命周期与受控 HTTPS 更新已实测。P1 记忆管理 UI 已接入并通过真实 App 合成数据闭环与系统窗口设计对照；真实 Agent 接入留在 P2。未保存草稿只在窗口内存中保留，退出后不保存。最新测量和验收边界见 [P1 验证记录](p1-validation.md)，未受影响的能力引用 P0 证据。
+当前已有真实 MyGo Native UI、独立 Go 记忆服务、Rust/Python 原文 worker 和外置组件管理。Rust 为本轮 App 原文索引路线，Python 归档按同一契约完成对照；App 自动准备、后台系统注册、生命周期与受控 HTTPS 更新已实测。P1 记忆管理与 P2 真实 Codex/pi 互通、App Agent 管理和系统窗口对照均已通过。未保存草稿只在窗口内存中保留，退出后不保存。最新测量和验收边界见 [P2 验证记录](p2-validation.md)，未受影响的能力引用 P0/P1 证据。
 
 ## 桌面客户端
 
@@ -249,7 +249,7 @@ python3 scripts/verify-system-ime.py --system-home
 
 其余系统步骤为minimize、close、drag，只在未通过或受改动影响时重跑。全屏退出使用系统“视图”菜单AXPress，未将其写成Ctrl+Cmd+F通过。拼音必须使用系统GUI环境；`--system-home`让Launch Services保持系统正常输入上下文，Memlane业务配置和数据根仍指向本轮合成目录。候选面板可由本App PID持有，按新建窗口、坐标、层级和实际截图核对，不能只查SCIM进程；最终验收为真实拼音候选与空格提交，不是Unicode注入。
 
-每个脚本实际生成handoff，报告在build/p0-engine、截图在build/p0-screenshots。已停止的VoiceOver脚本和失败报告保留作历史，不属于本轮必跑命令；清理结果见ancillary-cleanup.json。P0核心链路已通过，App内真实记忆管理UI及Agent接入仍按P1/P2实施；不扩展其他主机管理。
+P0 脚本实际生成 handoff，报告在 build/p0-engine、截图在 build/p0-screenshots。已停止的 VoiceOver 脚本和失败报告保留作历史，不属于本轮必跑命令；清理结果见 ancillary-cleanup.json。P0 核心链路、P1 记忆管理和 P2 Agent 接入均已通过；不扩展其他主机管理。
 
 
 ## P1 实际记忆界面与验收

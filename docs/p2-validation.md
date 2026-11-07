@@ -8,7 +8,7 @@
 
 只读探测：PATH 中 Codex `0.147.0`、pi `0.84.1`。Codex 提供 stdio MCP 与 exec，pi 提供 Extension/RPC，帮助未列出原生 MCP 命令；本机先用 Extension，不自动升级。pi 帮助在原沙箱中尝试建立 settings lock 被拒绝，没有修改真实设置；后续运行使用隔离 `PI_CODING_AGENT_DIR`。
 
-P2.1–P2.4 已通过；P2.5 App 恢复、真实 Agent 幂等/停止错误/重启读取、完整主包与最终审计已通过。每阶段提交后最终推送并核对远端，提交/交接状态见文末。
+P2.1–P2.5 已完成：App 恢复、真实 Agent 幂等/停止错误/重启读取、完整主包与最终审计已通过。每阶段已提交，main 已推送并核对远端；提交/交接状态见文末。
 
 官方 Go SDK 固定 `v1.8.0`。`proxy.golang.org` 在沙箱及沙箱外均连接超时；`goproxy.cn` 实际访问成功，命令级 `GOPROXY=https://goproxy.cn` 完成版本查询与下载，不修改用户默认 Go 环境。
 
@@ -110,6 +110,6 @@ Codex worktree 首次运行正常退出但没有工具回执，不能以 exit=0 
 - P2.2 `060c379`：项目/worktree、白名单与授权屏障。
 - P2.3 `e17fda1`：真实 Codex/pi 接入与 App 管理。
 - P2.4 `6d49cf8`：真实 App 管理与实际系统窗口验收。
-- P2.5：当前恢复、故障、体积及交付审计产物在提交后推送；最终远端核对以 `build/p2/remote-verification.json` 为准，不在文档内循环引用其自身提交。
+- P2.5 `8ce35f8`：恢复、故障、体积及交付审计；首次最终推送由 `0a39b40` 更新为该提交并用 ls-remote 核对。随后提交本完成记录，最终远端核对以 `build/p2/remote-verification.json` 为准，不在文档内循环引用其自身提交。
 
 已按 `.trae/skills/handoff/SKILL.md` 在开始、各阶段、阻塞与继续步骤实际生成系统临时交接文件；最新完成和最终交接路径在 `build/p2/` 的交付记录中保存。交接不复制代码/报告，不放密钥、真实聊天、记忆库或 Agent 配置。P3 从固定正文/revision 快照、受限后台执行、取消/超时、结构化提案与栏内确认开始；未确认覆盖/合并/删除/跨项目移动不得改变有效知识。不扩展本轮到 TRAE/traex、代码图谱或远程管理。

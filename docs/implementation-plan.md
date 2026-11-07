@@ -124,7 +124,7 @@
 - [x] 项目 B 隔离、允许全局和额外授权；真实 Codex 重放原稳定保存 ID 返回同一条目与当前 v3，Codex/pi 停服返回 service_unavailable，App 显式重启保留记忆与连接代次。
 - [x] 相关测试和 `sh scripts/go.sh test ./...` / `vet ./...` 退出 0；完整 `python3 scripts/build-client.py --out build/p0-final` 包含 MCP/CLI 桥、helper/LaunchAgent，本机签名校验通过。
 - [x] 更新开发说明与验证记录；主 DMG 13,108,437 bytes、App 29,208,416 bytes；首次组件下载 285,752,286 bytes 复用未变化 P0 归档，P2 实际准备后总逻辑占用 520,941,898 bytes。
-- [ ] 每阶段提交，最终推送并核对远端提交；逐项完成审计，结束前执行 `/handoff` 说明 P3 入口。
+- [x] 每阶段提交，最终推送并核对远端提交；逐项完成审计，结束前执行 `/handoff` 说明 P3 入口。机器可读审计/远端/交接记录在 `build/p2/final-audit.json`、`remote-verification.json` 与 `delivery.json`。
 
 **通过标准**：Codex 保存合成经验，pi 在项目 A 查到当前正文、来源和版本；项目 B 查不到 A 的专属内容。服务不可用返回错误，不能伪装成空结果或成功保存。
 
