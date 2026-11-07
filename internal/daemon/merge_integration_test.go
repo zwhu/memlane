@@ -126,6 +126,33 @@ func TestMergePrivateIPCAuthorization(t *testing.T) {
 	if a, ok := e.(*serviceipc.ServiceError); !ok || a.Code != "scope_denied" {
 		t.Fatalf("unknown scope allowed: %v", e)
 	}
+	// P2 protocol 1 and existing connection generations continue to work on
+	// schema v3. This is an IPC compatibility check, not a real Agent session.
+	repo := filepath.Join(root, "compat-repo")
+	requireService(t, os.Mkdir(repo, 0700))
+	requireService(t, exec.Command("git", "init", "-q", repo).Run())
+	var project records.Scope
+	requireService(t, serviceipc.Call(context.Background(), root, serviceipc.Request{Op: "register_project", UserConfirmed: true, Project: records.ScopeDraft{Name: "P2 compatibility", Path: repo}}, &project))
+	var connection records.Connection
+	requireService(t, serviceipc.Call(context.Background(), root, serviceipc.Request{Op: "configure_connection", UserConfirmed: true, Connection: records.ConnectionDraft{Agent: "codex", Name: "P2 protocol fixture", Project: project.ID, AllowedScopes: []string{project.ID}}}, &connection))
+	request := records.AgentRequest{Protocol: 1, ConnectionID: connection.ID, Generation: connection.Generation, Tool: "memory_save", Arguments: records.AgentArguments{OperationID: "p2-stable-operation", Text: "P2 compatibility body"}}
+	var receipt records.SaveReceipt
+	requireService(t, serviceipc.Call(context.Background(), root, serviceipc.Request{Op: "agent", AgentRequest: request}, &receipt))
+	var repeated records.SaveReceipt
+	requireService(t, serviceipc.Call(context.Background(), root, serviceipc.Request{Op: "agent", AgentRequest: request}, &repeated))
+	if receipt.Record.Memory != repeated.Record.Memory || repeated.SavedRevision != 1 {
+		t.Fatal("P2 save idempotency changed")
+	}
+	stop()
+	stop = startService(t, daemon.Config{Root: root, RetryDelayMS: 10})
+	defer stop()
+	request.Tool = "memory_get"
+	request.Arguments = records.AgentArguments{Memory: receipt.Record.Memory}
+	var current records.Version
+	requireService(t, serviceipc.Call(context.Background(), root, serviceipc.Request{Op: "agent", AgentRequest: request}, &current))
+	if current.Text != "P2 compatibility body" || current.Revision != 1 {
+		t.Fatal("P2 connection/read not preserved on restart")
+	}
 }
 
 func TestMergeRealServiceTraexAndRust(t *testing.T) {

@@ -131,7 +131,7 @@ handoff 要求每个切片、阻塞或会话切换时实际生成系统临时交
 | SQL 中途失败 | 回执插入 trigger 故障，正文/历史/来源/元信息/活动/operations/jobs/提案/决定/回执完全回滚，移除故障后可确认 | rollback 子项 |
 | 索引失败/真实 Rust | 故意配置不可用 worker，已确认正文与回执保留、索引 failed；重启真实 worker 后既有 replay 恢复检索，真实 Search 返回合并 v1，归档来源旧绑定不返回 | real-service.json；这是引擎不可用故障，不冒称 Rust 内部错误 |
 | 归档恢复 | 来源 v1 保留，合并追加源 v2 merge_archive；直接 edit 归档冲突，restore 单条产生 active v3 并排索引，不撤销合并 | TestMergeAtomicReviewRestoreAndConflicts |
-| 私有权限 | SameUser/0700目录/0600 socket沿用；新变更 IPC 缺显式用户动作拒绝，未知范围拒绝；日常 Agent 请求 merge_confirm 是 unknown tool | TestMergePrivateIPCAuthorization |
+| 私有权限 | SameUser/0700目录/0600 socket沿用；新变更 IPC 缺显式用户动作拒绝，未知范围拒绝；日常 Agent 请求 merge_confirm 是 unknown tool | TestMergePrivateIPCAuthorization；同时验证 P2 protocol1 保存/重放、连接代次与重启读取兼容 |
 
 命令：
 
@@ -146,3 +146,7 @@ python3 scripts/verify-p3-c1.py --real --short-path
 当前范围只包含服务端 C1。无 UI/打包变化，没有重跑无关 P0/P1/P2 UI、签名/体积验收；P3 视觉验收未开展。主包、首次下载量和磁盘占用仍引用 [P2 验证](p2-validation.md)，本切片没有重新测量。
 
 仍有限制：本机 internal CLI 和现有模型组合已实测，其他版本/渠道未覆盖；same-uid 是受信本机宿主边界，不对抗同账户任意恶意程序；正常取消/停服只保证本机同组进程收口，不撤回云端推理/计费，也不承诺 SIGKILL 后清理逃逸进程。重启识别 queued/running 中断并使旧 attempt 失效，不自动重试或实现完整租约。备份恢复不恢复引擎索引文件，检索须按当前正文重建。下一切片为 P3-C2 栏内建议审核 UI 与实际窗口验收，摘要/标签及完整调度另行实施。
+
+最终检查记录为 `build/p3-c1/final-checks.json`：全仓 `sh scripts/go.sh test ./...`、`vet ./...`、store/agents/daemon/serviceipc 的 CGO race、正式服务/临时库检查和 diff/link 检查均退出 0。链接检查覆盖 9 份相关文档及 124 个本地链接/章节锚点。只计 opt-in real-service 日志中实际 pass 的真实场景；普通全仓检查中该项 skip 不计为真实通过。
+
+每阶段使用 `python3 scripts/p3-handoff.py` 直接生成系统临时交接，未通过禁止自动模型调用的 Skill 工具调用、不修改 skill 配置。契约、持久化、真实服务与最终验收/交付各有临时文件；交接路径、实际提交及远端 SHA 核对回执在 `build/p3-c1/delivery.json`，不提交临时交接、build 证据或本机数据。

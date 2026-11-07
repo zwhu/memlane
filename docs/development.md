@@ -341,6 +341,7 @@ P1 驱动通过 Launch Services 启动实际 App，避免直接执行包内二�
 python3 scripts/verify-p3-c1.py
 python3 scripts/verify-p3-c1.py --real
 python3 scripts/verify-p3-c1.py --real --short-path
+python3 scripts/verify-p3-c1-checks.py
 sh scripts/go.sh test ./...
 sh scripts/go.sh vet ./...
 CGO_ENABLED=1 sh scripts/go.sh test -race ./internal/store ./internal/agents ./internal/daemon ./internal/serviceipc -count=1
