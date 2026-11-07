@@ -26,6 +26,11 @@ func (s *Server) startMerge(ctx context.Context, d records.MergeStart) (records.
 		defer s.mergeWG.Done()
 		defer cancel()
 		defer func() { s.mergeMu.Lock(); delete(s.mergeRuns, t.ID); s.mergeMu.Unlock() }()
+		release, err := s.acquireOrganizer(runCtx)
+		if err != nil {
+			return
+		}
+		defer release()
 		if err := s.store.ClaimMerge(runCtx, t.ID, t.Attempt); err != nil {
 			return
 		}

@@ -22,50 +22,7 @@ func (s *Server) startOrganization(ctx context.Context, d records.OrganizationSt
 	if err != nil || !created {
 		return t, err
 	}
-	runCtx, cancel := context.WithCancel(s.lifecycle)
-	s.organizationRuns[t.ID] = organizationOwner{Attempt: t.Attempt, Cancel: cancel}
-	s.organizationWG.Add(1)
-	go func() {
-		defer s.organizationWG.Done()
-		defer cancel()
-		defer s.finishOrganizationRun(t)
-		if err := s.store.ClaimOrganization(runCtx, t.ID, t.Attempt); err != nil {
-			return
-		}
-		counts := map[string]int{}
-		out, err := agents.RunOrganization(runCtx, agents.OrganizationRunOptions{Snapshot: t.Snapshot, OnEvent: func(event string) {
-			counts[event]++
-			if event == "turn.started" {
-				b, _ := json.Marshal(map[string]any{"events": counts, "process_active": true})
-				_, _ = s.store.DB.ExecContext(runCtx, `UPDATE organization_attempts SET execution=? WHERE task=? AND attempt=? AND state='running'`, string(b), t.ID, t.Attempt)
-			}
-		}})
-		failure := ""
-		if err != nil {
-			failure = "agent_failed"
-			var access *records.AccessError
-			if errors.As(err, &access) {
-				failure = access.Code
-			}
-			if errors.Is(err, context.DeadlineExceeded) {
-				failure = "agent_timeout"
-			}
-		}
-		process, _ := json.Marshal(out.ProposalProcess)
-		_, _ = s.store.DB.ExecContext(context.Background(), `UPDATE organization_attempts SET execution=? WHERE task=? AND attempt=?`, string(process), t.ID, t.Attempt)
-		if runCtx.Err() != nil {
-			return
-		}
-		var raw []byte
-		if out.Result != nil {
-			raw, _ = json.Marshal(out.Result)
-		}
-		staged, err := s.store.StageOrganization(runCtx, t.ID, t.Attempt, raw, out.ProposalProcess, failure)
-		if err != nil || staged.State != "applying" {
-			return
-		}
-		s.applyOrganization(runCtx, staged)
-	}()
+	s.launchOrganization(t)
 	return t, nil
 }
 func (s *Server) applyOrganization(ctx context.Context, t records.OrganizationTask) {
@@ -120,6 +77,11 @@ func (s *Server) resumeOrganization(ctx context.Context, d records.OrganizationR
 		defer s.organizationWG.Done()
 		defer cancel()
 		defer s.finishOrganizationRun(t)
+		release, err := s.acquireOrganizer(runCtx)
+		if err != nil {
+			return
+		}
+		defer release()
 		s.applyOrganization(runCtx, t)
 	}()
 	return t, nil
@@ -190,4 +152,66 @@ func (s *Server) listOrganizations(ctx context.Context, q records.MergeListQuery
 type organizationOwner struct {
 	Attempt int64
 	Cancel  context.CancelFunc
+}
+
+// Caller holds organizationMu so a frozen queued task gains its in-memory
+// owner before queries can reconcile it as interrupted.
+func (s *Server) launchOrganization(t records.OrganizationTask) {
+	runCtx, cancel := context.WithCancel(s.lifecycle)
+	s.organizationRuns[t.ID] = organizationOwner{Attempt: t.Attempt, Cancel: cancel}
+	s.organizationWG.Add(1)
+	go func() {
+		defer s.organizationWG.Done()
+		defer cancel()
+		defer s.finishOrganizationRun(t)
+		release, err := s.acquireOrganizer(runCtx)
+		if err != nil {
+			return
+		}
+		defer release()
+		if err := s.store.ClaimOrganization(runCtx, t.ID, t.Attempt); err != nil {
+			return
+		}
+		spec, err := s.store.ScheduleTaskSpec(runCtx, t.ID)
+		if err != nil {
+			return
+		}
+		model := ""
+		if spec != nil {
+			model = spec.Model
+		}
+		counts := map[string]int{}
+		out, err := agents.RunOrganization(runCtx, agents.OrganizationRunOptions{Snapshot: t.Snapshot, Model: model, OnEvent: func(event string) {
+			counts[event]++
+			if event == "turn.started" {
+				b, _ := json.Marshal(map[string]any{"events": counts, "process_active": true})
+				_, _ = s.store.DB.ExecContext(runCtx, `UPDATE organization_attempts SET execution=? WHERE task=? AND attempt=? AND state='running'`, string(b), t.ID, t.Attempt)
+			}
+		}})
+		failure := ""
+		if err != nil {
+			failure = "agent_failed"
+			var access *records.AccessError
+			if errors.As(err, &access) {
+				failure = access.Code
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				failure = "agent_timeout"
+			}
+		}
+		process, _ := json.Marshal(out.ProposalProcess)
+		_, _ = s.store.DB.ExecContext(context.Background(), `UPDATE organization_attempts SET execution=? WHERE task=? AND attempt=?`, string(process), t.ID, t.Attempt)
+		if runCtx.Err() != nil {
+			return
+		}
+		var raw []byte
+		if out.Result != nil {
+			raw, _ = json.Marshal(out.Result)
+		}
+		staged, err := s.store.StageOrganization(runCtx, t.ID, t.Attempt, raw, out.ProposalProcess, failure)
+		if err != nil || staged.State != "applying" {
+			return
+		}
+		s.applyOrganization(runCtx, staged)
+	}()
 }

@@ -21,6 +21,17 @@ func (s *Store) StartOrganization(ctx context.Context, d records.OrganizationSta
 		return empty, false, err
 	}
 	defer tx.Rollback()
+	t, created, err := s.startOrganizationTx(ctx, tx, d)
+	if err != nil || !created {
+		return t, created, err
+	}
+	return t, true, tx.Commit()
+}
+
+// Plans freeze inputs and record their unique trigger in the same transaction.
+func (s *Store) startOrganizationTx(ctx context.Context, tx *sql.Tx, d records.OrganizationStart) (records.OrganizationTask, bool, error) {
+	var empty records.OrganizationTask
+	var err error
 	var kind string
 	if err = tx.QueryRowContext(ctx, `SELECT kind FROM scopes WHERE id=?`, d.Project).Scan(&kind); err != nil || kind != "project" {
 		return empty, false, records.MergeError("scope_denied")
@@ -107,7 +118,7 @@ func (s *Store) StartOrganization(ctx context.Context, d records.OrganizationSta
 	if err != nil {
 		return t, false, err
 	}
-	return t, true, tx.Commit()
+	return t, true, nil
 }
 func organizationTask(ctx context.Context, tx *sql.Tx, id string) (records.OrganizationTask, error) {
 	var t records.OrganizationTask
@@ -200,6 +211,9 @@ func (s *Store) ClaimOrganization(ctx context.Context, id string, attempt int64)
 		return err
 	}
 	defer tx.Rollback()
+	if err = s.checkOrganizationPlan(ctx, tx, id); err != nil {
+		return err
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE organization_tasks SET state='running' WHERE id=? AND attempt=? AND state='queued' AND cancelled=0`, id, attempt)
 	if err != nil {
 		return err
@@ -238,6 +252,9 @@ func (s *Store) StageOrganization(ctx context.Context, id string, attempt int64,
 	}
 	if t.State != "running" {
 		return t, records.MergeError("attempt_invalid")
+	}
+	if err = s.checkOrganizationPlan(ctx, tx, id); err != nil {
+		return t, err
 	}
 	var result records.OrganizationResult
 	if failure == "" {
@@ -310,6 +327,9 @@ func (s *Store) ApplyOrganizationItem(ctx context.Context, id string, attempt in
 	}
 	if entry.State != "pending" {
 		return entry, nil
+	}
+	if err = s.checkOrganizationPlan(ctx, tx, id); err != nil {
+		return entry, err
 	}
 	ok, err := organizationCurrent(ctx, tx, t.Project, entry.Item.Sources)
 	if err != nil {

@@ -84,3 +84,11 @@ memlaned 是唯一数据库拥有者，持有服务 root 锁和数据库 owner �
 App负责显式原文复制、提炼请求、条件预览/确认/拒绝与历史恢复。Store决定源revision/目的范围有效性，原子记录正文/条件/冻结出处/回执；组织runner v3只产结构化候选，不能批准或持有数据库。服务沿用attempt/取消与独立索引栅栏。日常Agent只能读取已授权的全局正文和条件，源项目正文仍需要其项目授权。
 
 pi验收适配器按本机0.84.1事件的toolCallId关联start参数和end回执，避免将错误回执归属推断为成功证据。契约与真实结果见 [E 契约](p3-global-contract.md)、[E 验证](p3-global-validation.md)。
+
+## D1 计划职责与边界
+
+App 只提供明确草稿、启停与频率/范围编辑；受信 typed IPC 将计划送交 Store。Store 原子保存 operation 回执/generation，并在短事务内冻结具体版本、登记唯一槽位/任务/next。daemon 的周期循环处理每计划最新一个到期槽位，手动/计划/旧 merge 共用一个执行槽；网络和模型不持有 SQLite 事务。
+
+Claim、Stage 和自动 Apply 核对计划当前 generation、启用状态及冻结项目/目的身份。修改/停用按当前持久计划取消旧运行，历史 operation 重放不能取消新代次。已完成的待审结果仍按 C4/E 规则确认，不因停用频率抹掉历史。触发连续三次存储错误停止循环，通过 health.schedule_error 独立显示诊断。
+
+v7 只引入实际计划/操作/槽位表，租约/自动重试由 D2 增量实现。日历/DST/有限补跑是时钟夹具，真实 App 验收使用两个真实未来槽位及真实 traex/Rust。见 [D 契约](p3-schedule-contract.md)、[D1 验证](p3-schedule-validation.md)。

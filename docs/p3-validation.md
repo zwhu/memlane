@@ -169,3 +169,7 @@ schema v4 备份迁移、真实 App/traex/Rust 新增摘要/标签、冻结依�
 ## 12. P3-E 全局经验
 
 App 原文复制、真实 traex 通用提炼/条件预览确认与整理候选、拒绝/过期/取消、版本恢复、来源变化、Rust 当前检索和真实 pi 全局/来源范围回执已通过，见 [E 验证](p3-global-validation.md) 与 [E 契约](p3-global-contract.md)。schema v6 保留 v5 旧表/决定/WAL 一致性备份，已确认全局事实不自动随源变化覆盖；计划、使用/引导、其他日常接入、图谱及正式分发仍待交付。
+
+## 13. P3-D1 持久计划
+
+App 明确保存停用草稿、启用、两个真实未来槽位的正常 traex/Rust 和活动取消、停用/主动停服重开已通过；schema v7 备份保留、DST/有限补跑/原子去重与代次栅栏夹具、旧 v6 helper 拒绝及独立备份恢复读取分别见 [D1 验证](p3-schedule-validation.md) 和 [D 契约](p3-schedule-contract.md)。D2 attempt/租约/有限重试/崩溃恢复继续，不能把 D1 单服务执行串行称为持久租约。

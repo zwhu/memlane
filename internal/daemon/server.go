@@ -35,6 +35,9 @@ var MarkStopped = serviceipc.MarkStopped
 var writeJSON = serviceipc.WriteJSON
 
 type Server struct {
+	scheduleFailure  string
+	organizerOnce    sync.Once
+	organizerSlot    chan struct{}
 	organizationMu   sync.Mutex
 	organizationWG   sync.WaitGroup
 	organizationRuns map[string]organizationOwner
@@ -133,6 +136,8 @@ func Run(ctx context.Context, config Config) error {
 	go func() { <-ctx.Done(); listener.Close() }()
 	workerDone := make(chan struct{})
 	go func() { defer close(workerDone); s.supervise(ctx) }()
+	schedulesDone := make(chan struct{})
+	go func() { defer close(schedulesDone); s.runSchedules(ctx) }()
 	for {
 		conn, e := listener.Accept()
 		if e != nil {
@@ -141,6 +146,7 @@ func Run(ctx context.Context, config Config) error {
 			}
 			cancel()
 			<-workerDone
+			<-schedulesDone
 			handlers.Wait()
 			s.mergeWG.Wait()
 			s.organizationWG.Wait()
@@ -152,6 +158,7 @@ func Run(ctx context.Context, config Config) error {
 		go func() { defer handlers.Done(); defer conn.Close(); s.handle(ctx, conn) }()
 	}
 	<-workerDone
+	<-schedulesDone
 	handlers.Wait()
 	s.mergeWG.Wait()
 	s.organizationWG.Wait()
@@ -334,6 +341,18 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 	}
 	svc := memory.Service{Store: s.store, Engine: selected}
 	switch r.Op {
+	case "schedules":
+		return s.store.Schedules(operation)
+	case "schedule_runs":
+		return s.store.ScheduleRuns(operation, r.ScheduleID)
+	case "schedule_put":
+		if !r.UserConfirmed {
+			return nil, records.MergeError("confirmation_required")
+		}
+		if r.ScheduleDraft == nil {
+			return nil, records.MergeError("invalid_request")
+		}
+		return s.putSchedule(operation, *r.ScheduleDraft)
 	case "experience_copy":
 		if !r.UserConfirmed {
 			return nil, records.MergeError("confirmation_required")
@@ -459,7 +478,10 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 			}
 			stop()
 		}
-		return map[string]any{"service_version": ServiceVersion, "state": status, "worker_pid": pid, "worker_busy": busy}, nil
+		s.mu.Lock()
+		scheduleFailure := s.scheduleFailure
+		s.mu.Unlock()
+		return map[string]any{"service_version": ServiceVersion, "state": status, "worker_pid": pid, "worker_busy": busy, "schedule_error": scheduleFailure}, nil
 	case "apply":
 		if r.Mutation.Kind != "save" && !r.UserConfirmed {
 			return nil, errors.New("knowledge changes require an explicit user confirmation")

@@ -14,6 +14,7 @@ import (
 
 type App struct {
 	organization                OrganizationUI
+	schedules                   ScheduleUI
 	experience                  ExperienceUI
 	organizationMode            bool
 	organizationSources         []records.OrganizationSource
@@ -200,7 +201,7 @@ func (a *App) nav(c *ui.Context, label, scope string, icon *ui.SVG) {
 		}
 		ui.Text(c, label).SingleLine().MinWidth(0)
 	})
-	selected := a.page == label && a.scope == scope || scope != "" && a.scope == scope
+	selected := a.page == label && a.scope == scope || scope != "" && a.scope == scope || label == "设置" && a.page == "整理计划"
 	if selected {
 		button.Background(design.Selected)
 	} else if button.Hovered() {
@@ -217,6 +218,9 @@ func (a *App) nav(c *ui.Context, label, scope string, icon *ui.SVG) {
 func (a *App) toolbar(c *ui.Context) {
 	ui.Row(c).Height(design.Toolbar).Shrink(0).Padding(10, 24).Gap(12).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).DragWindow().Children(func() {
 		icon := icons[a.page]
+		if a.page == "整理计划" {
+			icon = icons["整理记录"]
+		}
 		if icon == nil {
 			icon = icons["项目"]
 		}
@@ -307,8 +311,19 @@ func (a *App) home(c *ui.Context) {
 		ui.Divider(c)
 		ui.Row(c).Padding(0, 0, 14, 0).Gap(8).Children(func() {
 			ui.Icon(c, icons["history"]).FontSize(11).TextColor(design.Muted)
-			ui.Text(c, "整理计划尚未启用").FontSize(design.Small).TextColor(design.Muted)
+			label := "整理计划待读取"
+			if a.schedules.Loaded {
+				count := 0
+				for _, plan := range a.schedules.Plans {
+					if plan.Enabled {
+						count++
+					}
+				}
+				label = fmt.Sprintf("已启用 %d 个整理计划", count)
+			}
+			ui.Text(c, label).FontSize(design.Small).TextColor(design.Muted)
 			ui.Spacer(c)
+			quietButton(c, "管理计划").Key("schedule-manage").OnClick(func() { a.navigate("整理计划", "") })
 		})
 	})
 }
@@ -416,7 +431,10 @@ func (a *App) details(c *ui.Context) {
 					ui.Text(c, a.libraryError).FontSize(design.Small).TextColor(design.Muted)
 					quietButton(c, "重试读取").OnClick(func() { a.refresh(false) })
 				}
-				if a.page == "设置" {
+				if a.page == "整理计划" {
+					ui.Text(c, "按项目设置频率，明确启用后才运行。").FontSize(design.Small).TextColor(design.Muted)
+					actionButton(c, "新建整理计划", nil).Key("schedule-new").Disabled(a.schedules.Busy).OnClick(a.newSchedule)
+				} else if a.page == "设置" {
 					ui.Text(c, "引擎、模型与客户端分别管理。").FontSize(design.Small).TextColor(design.Muted)
 				} else if a.page == "Agent" {
 					ui.Text(c, "共享当前项目的记忆，保留来源与版本。").FontSize(design.Small).TextColor(design.Muted)
@@ -482,6 +500,8 @@ func (a *App) details(c *ui.Context) {
 					}
 				} else if a.page == "Agent" {
 					a.agentList(c)
+				} else if a.page == "整理计划" {
+					a.scheduleList(c)
 				} else {
 					a.empty(c, "", a.pageDescription())
 				}
@@ -509,7 +529,9 @@ func (a *App) details(c *ui.Context) {
 					iconButton(c, "历史记录", icons["history"]).OnClick(func() { a.detailMode = "history" })
 				}
 			})
-			if a.page == "整理记录" {
+			if a.page == "整理计划" {
+				a.scheduleDetail(c)
+			} else if a.page == "整理记录" {
 				if a.organizationMode {
 					a.organizationDetail(c)
 				} else {
@@ -857,6 +879,7 @@ func (a *App) pageDescription() string {
 }
 
 func (a *App) settings(c *ui.Context) {
+	quietButton(c, "整理计划").Key("schedule-settings").OnClick(func() { a.navigate("整理计划", "") })
 	ui.Text(c, "本地组件与更新").FontSize(20).Bold()
 	if a.prepareRuntime == nil {
 		ui.Text(c, "本地引擎：待准备").Bold()

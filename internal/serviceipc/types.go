@@ -21,6 +21,8 @@ type Config struct {
 }
 
 type Request struct {
+	ScheduleDraft      *records.ScheduleDraft      `json:"schedule_draft,omitempty"`
+	ScheduleID         string                      `json:"schedule,omitempty"`
 	ExperienceCopy     *records.ExperienceCopy     `json:"experience_copy,omitempty"`
 	OrganizationReview *records.OrganizationReview `json:"organization_review,omitempty"`
 	OrganizationStart  *records.OrganizationStart  `json:"organization_start,omitempty"`

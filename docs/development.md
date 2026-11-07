@@ -389,3 +389,11 @@ MEMLANE_C3_QUALITY_REAL=1 sh scripts/go.sh test -json ./internal/agents -run '^T
 `sh scripts/go.sh build -o build/p3-global/agent-check ./cmd/p2-agent-check` 后运行 `python3 scripts/verify-p3-global-agent.py`，经真实pi Extension读取全局当前版本并拒绝指定未授权来源；只写本轮pi-agent目录，断开保留其他字段。`python3 scripts/verify-p3-global-presentation.py` 要求同根主流程/pi通过且已停服，用修订包复核全局页导航、重启条件和出处变化；没有再次模型调用。
 
 真实v3质量基线：`MEMLANE_GLOBAL_QUALITY_REAL=1 sh scripts/go.sh test ./internal/agents -run '^TestOrganizationRealGlobalQualityBaseline$' -count=1 -v`。全量test/vet与受影响race同前述标准。完整生产包仍用 `python3 scripts/build-client.py --out build/p3-global-production`，量化与具体限制见 [E 验证](p3-global-validation.md)。
+
+## P3-D1 计划实际验收
+
+`python3 scripts/create-p3-schedule-fixture.py` 创建组件缓存之外业务数据为空的新合成根。按输出 runtime-config 和独立 identifier 构建 `--out build/p3-schedules-app --name MemlaneSchedules --automation --skip-dmg`，再运行 `python3 scripts/verify-p3-schedule-app.py`。驱动在实际 App 选定两个未来 UTC 分钟槽位；不改系统时钟、不覆盖产品最小间隔。正常和活动取消使用真实 traex，首次流程不可在已有两次执行的根重跑。
+
+停服后运行 `python3 scripts/verify-p3-schedule-presentation.py`，将发现时运行快照绑定到原计划 operation 回执，核对最终 completed/cancelled、停用代次、窗口重启历史和真实 Rust v2/过期摘要排除，不运行模型。`python3 scripts/verify-p3-schedule-compat.py` 仅复制已停服合成库，实际旧 E schema6 helper 拒绝 v7，并读取独立 v6 备份恢复的全局 v3 条件；不代表索引重建或正式回退发布通过。
+
+`sh scripts/go.sh test ./internal/store -run Schedule -count=1 -v` 与 daemon 的 Schedule/Organizer 用例包含明确时钟/SQL/控制器夹具；GUI 诊断故障测试在 desktop。全仓 test/vet 和 Store/daemon/agents/desktop race 同既有标准。完整 DMG 用 `python3 scripts/build-client.py --out build/p3-schedules-production`。真实结果、失败探针历史、D2 边界和体积见 [D1 验证](p3-schedule-validation.md)。

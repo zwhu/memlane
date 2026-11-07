@@ -54,11 +54,17 @@ func displayHistory(vs []records.History) []MemoryHistory {
 // from replacing a newer selection or draft; read failures retain prior data.
 func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(func())) {
 	a.library = serviceipc.Library{Root: root}
+	a.schedules = ScheduleUI{Client: serviceipc.ScheduleClient{Root: root}, Destinations: map[string]bool{}}
 	a.organization = OrganizationUI{Client: serviceipc.OrganizationClient{Root: root}, Chosen: map[string]MemoryItem{}, Results: map[string]MemoryItem{}, Kind: "knowledge"}
 	a.merges = MergeUI{Client: serviceipc.MergeClient{Root: root}, Chosen: map[string]records.MergeTarget{}, Reviews: map[string]records.MergeReview{}}
 	a.libraryContext = ctx
 	a.dispatch = dispatch
-	a.onNavigate = func() { a.refresh(false); a.refreshMerge(false); a.refreshOrganization(false, false) }
+	a.onNavigate = func() {
+		a.refresh(false)
+		a.refreshMerge(false)
+		a.refreshOrganization(false, false)
+		a.refreshSchedules()
+	}
 	a.onSelect = func(string) { a.history = nil; a.selectedItem = nil; a.refresh(false) }
 	a.onProject = func() { a.registerProject() }
 	a.onMore = func() { a.refresh(true) }
@@ -74,6 +80,9 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 				return
 			case <-ticker.C:
 				dispatch(func() {
+					if a.page == "整理计划" || a.page == "总览" {
+						a.refreshSchedules()
+					}
 					if !a.loading {
 						a.refresh(false)
 						if a.page == "整理记录" || a.page == "总览" {
@@ -123,7 +132,8 @@ func (a *App) refresh(more bool) {
 		ctx, cancel := context.WithTimeout(a.libraryContext, 5*time.Second)
 		defer cancel()
 		var health struct {
-			State string `json:"state"`
+			State         string `json:"state"`
+			ScheduleError string `json:"schedule_error"`
 		}
 		err := serviceipc.Call(ctx, a.library.Root, serviceipc.Request{Op: "health"}, &health)
 		reachable := err == nil
@@ -191,6 +201,7 @@ func (a *App) refresh(more bool) {
 			a.loading = false
 			if reachable {
 				a.serviceState = health.State
+				a.schedules.RuntimeError = health.ScheduleError
 			} else {
 				a.serviceState = "unavailable"
 			}
