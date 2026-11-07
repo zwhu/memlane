@@ -1,0 +1,59 @@
+# P3 架构与接口边界
+
+2026-11-08 重生成。以 [技术方案](technical-plan.md) 和 P2 实际代码为基线，正式产品语义见 [P3 产品方案](p3-product-design.md)。实验结果见 [验证记录](p3-validation.md)，接口与参数是否正式由对应切片决定。
+
+## 1. 保持已有进程结构
+
+```mermaid
+flowchart LR
+  UI[MyGo 客户端] -->|既有私有 IPC| S[memlaned]
+  A[Codex/pi 日常会话] --> B[既有 MCP/Extension 桥]
+  B --> S
+  S --> DB[(业务 SQLite 正文与版本)]
+  S --> W[既有 Rust worker]
+  W --> IDX[(可重建索引)]
+  E[P3 隔离实验探针] -->|冻结合成快照| R[agents.RunP3Experiment]
+  R --> T[本机 traex exec]
+  T -->|纯提案和终态| R
+  R -->|校验后的建议| ES[store 实验事务]
+  ES --> TEMP[(临时 SQLite)]
+```
+
+图中 P3 实验没有接入生产 IPC，不代表 memlaned 已提供完整整理能力。Agent 没有数据库句柄、生产记忆连接或 improve 写入入口。有效正文的真相仍在业务库，Cognee 只承担可重建索引。
+
+## 2. 当前真实接口
+
+| 所属模块 | 已存在或本轮实现 | 边界 |
+| --- | --- | --- |
+| internal/agents | P2 Run；实验 RunP3Experiment | 独立 argv/目录/认证链接、JSONL、输出绑定、终态和进程取消；不替换日常验证 |
+| internal/records | P3Snapshot/P3Proposal/Seal/Decode/OutputSchema | 实验 schema、来源 quote、任务/输入绑定和限制 |
+| internal/store | Apply/applyTx；实验 Start/Stage/Cancel/Apply | 事务门禁、结果/应用幂等、多来源合并与历史/索引任务 |
+| internal/memory | IndexCurrent/Search | 索引失败持久化、当前 revision/generation、归档候选排除 |
+| cmd/p3-runner-check | 合成验证入口 | 默认 traex；纯建议/显式合成确认/取消，不随主包分发 |
+
+没有为每个概念新增仓储或抽象接口。只有正式整理进入生产服务后，才按实际职责引入编排模块；调度器、排名和初始化不提前建空骨架。
+
+## 3. 实验数据与事务
+
+实际 schema v2 不变。显式实验附加表分别保存 task/当前 attempt/冻结快照/取消标记、提案结果、唯一应用回执、具体版本来源快照。普通 Open 不创建这些表。
+
+冻结快照 → 调用 Agent（不持有写事务）→ Stage 事务登记 → 明确确认 → Apply 事务校验两来源 → 新建合并知识并归档来源 → 一次 commit → 持久索引队列。
+
+来源快照保存捕获时能证实的 P2 元信息与具体正文版本，不能据此补造历史来源。归档前 v1 保留，归档各追加新 revision，不删除活动事实。新合并在首次可用索引时计一次活动。
+
+## 4. 门禁与恢复语义
+
+- 接收结果同时核对宿主任务、attempt、取消、输入摘要、动作与来源。
+- 确认应用同时核对全部 revision、dataset 和有效状态，任一变化使整项过期。
+- 数据库唯一约束负责重复提案和回执；不同内容或不同提案重用标识冲突。
+- 取消先提交则迟到结果不能登记/应用；应用先提交则重放返回已有事实。
+- SQL 中途异常整体回滚；索引失败不回滚已提交知识，重排任务后重试。
+- 默认列表和 Resolve 过滤归档条目及旧 revision/generation，不能用旧 chunk 补结果。
+
+正式 attempt 租约、重启中断、失败重试和依赖传播仍需设计。本轮 attempt 固定 1，只证明当前门禁，不宣称完整恢复调度已实现。
+
+## 5. 进入生产的切片
+
+P3-C：正式快照/来源/提案决定/回执和权限 → 兼容迁移与备份 → 服务审核闭环 → 栏内 UI 与实际窗口验收。P3-B 的引导/初始化/使用事件和 P3-D 的调度/全局经验分别后续收口。
+
+新增生产接口前明确契约所有者和旧客户端兼容；实验参数、名称、表和方法保持实验标记。完整 UI、质量对比、签名分发及三类体积实测各在受影响阶段完成。

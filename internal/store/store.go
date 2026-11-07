@@ -67,6 +67,24 @@ func (s *Store) Current(ctx context.Context, id string) (Version, error) {
 }
 
 func (s *Store) Apply(ctx context.Context, m Mutation) (Version, error) {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return Version{}, err
+	}
+	defer tx.Rollback()
+	v, err := s.applyTx(ctx, tx, m)
+	if err != nil {
+		return Version{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Version{}, err
+	}
+	return v, nil
+}
+
+// applyTx lets a larger business operation share the existing version, metadata
+// and durable-index invariants without opening nested transactions.
+func (s *Store) applyTx(ctx context.Context, tx *sql.Tx, m Mutation) (Version, error) {
 	id, err := uuid.Parse(m.Memory)
 	if err != nil {
 		return Version{}, errors.New("invalid memory UUID")
@@ -99,11 +117,6 @@ func (s *Store) Apply(ctx context.Context, m Mutation) (Version, error) {
 	payload, _ := json.Marshal(m)
 	sum := sha256.Sum256(payload)
 	digest := hex.EncodeToString(sum[:])
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return Version{}, err
-	}
-	defer tx.Rollback()
 	var existing string
 	var revision int64
 	var memory string
@@ -205,9 +218,6 @@ func (s *Store) Apply(ctx context.Context, m Mutation) (Version, error) {
 	}
 	saved, err := scanVersion(tx.QueryRowContext(ctx, `SELECT `+versionColumns+versionJoins+`WHERE m.id=?`, m.Memory))
 	if err != nil {
-		return Version{}, err
-	}
-	if err = tx.Commit(); err != nil {
 		return Version{}, err
 	}
 	return saved, nil
