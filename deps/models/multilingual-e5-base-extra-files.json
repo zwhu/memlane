@@ -1,0 +1,14 @@
+[
+  {
+    "name": "tokenizer_config.json",
+    "url": "https://huggingface.co/Xenova/multilingual-e5-base/resolve/1ec9243030a27d1a115d5c340572074c125b58b2/tokenizer_config.json",
+    "bytes": 418,
+    "sha256": "efb5c0d09722e5fe59a462cd2a9976ee216d55b037597d997cd3fe833216da15"
+  },
+  {
+    "name": "special_tokens_map.json",
+    "url": "https://huggingface.co/Xenova/multilingual-e5-base/resolve/1ec9243030a27d1a115d5c340572074c125b58b2/special_tokens_map.json",
+    "bytes": 280,
+    "sha256": "06e405a36dfe4b9604f484f6a1e619af1a7f7d09e34a8555eb0b77b66318067f"
+  }
+]

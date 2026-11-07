@@ -1,0 +1,13 @@
+{
+  "name": "Memlane",
+  "slug": "memlane",
+  "identifier": "io.github.zwhu.memlane",
+  "version": "0.0.1",
+  "main": "./cmd/memlane-app",
+  "out": "build",
+  "macos": {
+    "minimumSystemVersion": "15.0",
+    "signingIdentity": "-"
+  },
+  "linux": { "webview": false }
+}

@@ -1,0 +1,2 @@
+# 补丁的空白上下文行必须保留前导空格；文件内容受 SHA-256 锁定。
+deps/cognee-rs/*.patch whitespace=-blank-at-eol

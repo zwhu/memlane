@@ -16,7 +16,7 @@
 *.sqlite
 *.sqlite3
 
-# 常见构建与依赖目录；具体工具链待定
+# 构建产物、依赖与工具缓存
 node_modules/
 dist/
 build/

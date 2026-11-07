@@ -1,0 +1,12 @@
+{
+  "source_commit": "151905c302fc9b5b9aad88d6b13931c09f0eac30",
+  "patches": [
+    {
+      "patch": "onnx-input-contract.patch",
+      "path": "crates/embedding/src/onnx.rs",
+      "before_sha256": "d0c3682274659f70d166cb20fc2c0fd7044aeb3ee116348b113af1227409646a",
+      "after_sha256": "af8c7926bc41524693500ca5bc5c51d7c614760afcc2597a838691a42c55dbaf",
+      "patch_sha256": "c73d00e0f09c0ef481fb0c1422be98206dcabafea14c10e0ed6d9ddf98292e89"
+    }
+  ]
+}
