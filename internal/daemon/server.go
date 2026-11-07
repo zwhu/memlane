@@ -355,9 +355,23 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		if err := s.store.Requeue(operation, r.Memory, r.ExpectedRevision); err != nil {
 			return nil, err
 		}
-		select {
-		case s.work <- struct{}{}:
-		default:
+		if worker == nil {
+			s.mu.Lock()
+			s.state.Restarts = nil
+			err := writeJSON(filepath.Join(s.config.Root, "service-state.json"), s.state)
+			s.mu.Unlock()
+			if err != nil {
+				return nil, err
+			}
+			select {
+			case s.wake <- struct{}{}:
+			default:
+			}
+		} else {
+			select {
+			case s.work <- struct{}{}:
+			default:
+			}
 		}
 		return map[string]bool{"queued": true}, nil
 	case "library_search":
@@ -366,12 +380,15 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 			return nil, err
 		}
 		datasets := []string{}
+		if r.Scope != "" {
+			datasets = append(datasets, r.Scope)
+		}
 		found := r.Scope == ""
 		for _, scope := range scopes {
 			if scope.ID == r.Scope {
 				found = true
 			}
-			if r.AllScopes || scope.ID == r.Scope || scope.Kind == "preference" || scope.Kind == "experience" {
+			if scope.ID != r.Scope && (r.AllScopes || scope.Kind == "preference" || scope.Kind == "experience") {
 				datasets = append(datasets, scope.ID)
 			}
 		}

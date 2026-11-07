@@ -55,6 +55,31 @@ python3 scripts/verify-p1-library-ui.py
 
 `create-p1-fixture.py` 生成公共配置与独立应用标识后，使用 `scripts/build-client.py --runtime-config <新根>/runtime-config.json --identifier <独立标识> --name MemlaneP1 --automation --skip-dmg --out build/p1-app` 构建。停止服务的验收根下次启动会保留停止状态，必须从设置明确启动。
 
-## P1.3–P1.4
+## P1.3：实际 App 记忆管理闭环（2026-11-07）
 
-尚待 App 写入/编辑/搜索/恢复闭环、真实首页状态收口与完整 DMG 构建。已有服务验收不代替这些 App 主流程证据。
+保存、编辑、语义搜索、历史差异、恢复和索引重试均通过类型化私有 IPC；UI 不读数据库。保存使用稳定 operation ID 重试，编辑保存使用打开编辑器时的 revision，恢复使用进入栏内确认时的 revision。服务在单事务内保存正文/版本/任务并返回真实快照；索引稍后独立更新。服务不可用时草稿保留，过期编辑不会覆盖最新正文；选择以最新版本继续编辑是明确的栏内操作。
+
+`build/p1/management-verification.json` 六组全部 passed，主流程由实际 MyGo 按钮与输入框完成：
+
+- 在 App 新增合成项目记忆，v1 正文保存并在详情读取；所属 dataset 与当前登记项目一致。
+- 在 App 编辑为 v2，搜索新内容并打开当前版本，原始出处保留。
+- App 历史显示 v1/v2 和正文差异；进入恢复确认时仍为 v2，确认后生成 v3，v1/v2 内容不变。
+- 真实退出/重开 App，读到恢复后的 v3 正文与三个历史版本；默认退出后服务继续运行。
+- 用独立合成条目模拟外部编辑，旧编辑器保存被拒绝，最新正文仍为 v2；草稿保留。用户明确选择以最新版本继续编辑后，才保存新 v3。
+- 从 App 主动停止服务，实际保存失败；草稿跨设置导航保留。启动服务后重试仅创建一个 v1 和一条新增活动。
+
+主条目当前 v3 仍为恢复正文，历史顺序 [3,2,1]；实际活动总数 4（包括 P1.2 的一条合成知识及三个本阶段新增条目），连续编辑、恢复和重试没有重复计数。字段内容均为本轮合成夹具，保存在独立系统临时目录，未涉及真实 Agent。
+
+实际系统截图 `build/p1-screenshots/system-management-restarted.png` 已打开检查；栏内确认截图 `management-confirm.png`、搜索、历史、冲突、服务中断、恢复等截图同目录。命令：
+
+```sh
+python3 scripts/verify-p1-management.py
+sh scripts/go.sh test ./...
+sh scripts/go.sh vet ./internal/desktop ./internal/store ./internal/daemon ./internal/serviceipc
+```
+
+首次主流程启动曾失败：组件已准备，App 65 秒等待后台服务超时，socket 不存在。保留 `build/p1/management-startup-failure.json`、`management-failed.png` 与 `startup-action.jsonl`。同包 helper 用同配置直接启动约 3 秒 ready；同 App 的独立 resume 入口返回 ready/enabled。重跑完整 App 主流程和其中的主动停止/启动均通过。没有据此宣称唯一根因，亦没有用直接 helper 代替 App 验收；正式后台注册的干净机器条件仍见 P0/P4。
+
+## P1.4
+
+尚待首页活动与四类真实状态的最终截图核对、完整 DMG 构建、开发文档收口和推送。

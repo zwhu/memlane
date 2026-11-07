@@ -82,7 +82,9 @@ func (a *App) navigate(page, scope string) {
 
 func (a *App) newMemory() {
 	a.rememberDraft()
-	a.page = "全部记忆"
+	a.message = ""
+	a.conflictCurrent = nil
+	if a.scope!="" {a.page="项目"} else if a.page!="全局记忆" {a.page = "全部记忆"}
 	a.memoryRoute = a.page + ":" + a.scope
 	a.detailMode = "new"
 	a.editing = true
@@ -107,6 +109,8 @@ func (a *App) editMemory() {
 	}
 	a.detailMode = "edit"
 	a.editing = true
+	a.message = ""
+	a.conflictCurrent = nil
 	d, ok := a.drafts[item.ID]
 	if !ok {
 		d = Draft{Title: item.Title, Text: item.Text, Scope: item.ScopeName, Revision: item.Revision}

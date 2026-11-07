@@ -47,3 +47,9 @@ func (l Library) Apply(ctx context.Context, mutation records.Mutation) (records.
 func (l Library) RetryIndex(ctx context.Context, id string, revision int64) error {
 	return Call(ctx, l.Root, Request{Op: "retry_index", Memory: id, ExpectedRevision: revision}, nil)
 }
+
+func (l Library) Search(ctx context.Context, scope, query string, all bool) ([]records.SearchHit, error) {
+	var out []records.SearchHit
+	err := Call(ctx, l.Root, Request{Op: "library_search", Scope: scope, Query: query, AllScopes: all, Limit: 30}, &out)
+	return out, err
+}

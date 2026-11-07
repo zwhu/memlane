@@ -53,6 +53,9 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 	a.onSelect = func(string) { a.history = nil; a.selectedItem = nil; a.refresh(false) }
 	a.onProject = func() { a.registerProject() }
 	a.onMore = func() { a.refresh(true) }
+	a.onSave = a.saveMemory
+	a.onRestore = a.restoreMemory
+	a.onSearch = a.searchMemory
 	go func() {
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
@@ -170,7 +173,9 @@ func (a *App) refresh(more bool) {
 					a.projects = append(a.projects, ProjectItem{ID: scope.ID, Name: scope.Name, Path: scope.Path})
 				}
 			}
-			if more {
+			if pageName == "搜索" {
+				// Search results remain bound to their submitted query.
+			} else if more {
 				a.items = append(a.items, displayVersions(page.Items)...)
 			} else {
 				// Keep a loaded pagination window during background status polling.
@@ -185,7 +190,9 @@ func (a *App) refresh(more bool) {
 			if more {
 				a.nextCursor = page.NextCursor
 			}
-			a.listTotal = page.Total
+			if pageName != "搜索" {
+				a.listTotal = page.Total
+			}
 			a.recent = displayVersions(activity.Recent)
 			a.activities = activity.Days
 			a.imported = activity.Imported

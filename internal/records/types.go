@@ -83,3 +83,8 @@ type ActivitySummary struct {
 	Imported int            `json:"imported"`
 	Recent   []Version      `json:"recent"`
 }
+
+type SearchHit struct {
+	Version   Version          `json:"version"`
+	Candidate engine.Candidate `json:"candidate"`
+}

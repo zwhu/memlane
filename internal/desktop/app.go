@@ -13,6 +13,15 @@ import (
 )
 
 type App struct {
+	pendingMutations         map[string]records.Mutation
+	saving                   bool
+	restoreExpected          int64
+	conflictCurrent          *MemoryItem
+	retryingIndex            bool
+	searchSequence           int64
+	searching                bool
+	searchQuery, searchError string
+
 	serviceState                           string
 	routeStates                            map[string]PaneState
 	memoryRoute                            string
@@ -76,7 +85,7 @@ type App struct {
 
 func New(version string, check func()) *App {
 	return &App{page: "总览", detailMode: "view", zoom: 1, version: version, check: check, keepService: true,
-		updateText: "此版本尚未配置更新源", routeStates: map[string]PaneState{}, drafts: map[string]Draft{}, listScroll: map[string]*ui.ScrollState{}, activities: map[string]int{}}
+		updateText: "此版本尚未配置更新源", pendingMutations: map[string]records.Mutation{}, routeStates: map[string]PaneState{}, drafts: map[string]Draft{}, listScroll: map[string]*ui.ScrollState{}, activities: map[string]int{}}
 }
 func (a *App) SetRuntimeStatus(status RuntimeStatus) { a.runtimeStatus = status }
 func (a *App) ConfigureRuntime(prepare, cancel, stop, resume func(), keep bool, changed func(bool)) {
@@ -205,6 +214,11 @@ func (a *App) toolbar(c *ui.Context) {
 					a.onSearch()
 				}
 			})
+		})
+		quietButton(c, "搜索").OnClick(func() {
+			if a.onSearch != nil {
+				a.onSearch()
+			}
 		})
 		actionButton(c, "新增记忆", icons["plus"]).OnClick(a.newMemory)
 	})
@@ -351,6 +365,16 @@ func (a *App) details(c *ui.Context) {
 		ui.Column(c).Key("item-list").Width(width).Shrink(0).BorderWidth(0, 1, 0, 0).BorderColor(design.Border).Children(func() {
 			ui.Column(c).Padding(28, 24, 18, 24).Gap(12).Shrink(0).Children(func() {
 				ui.Text(c, a.pageTitle()).FontSize(design.Heading).Bold()
+				if a.page == "搜索" {
+					if a.searching {
+						ui.Text(c, "正在搜索当前可检索版本…").FontSize(design.Small).TextColor(design.Muted)
+					} else if a.searchError != "" {
+						ui.Text(c, a.searchError).FontSize(design.Small).TextColor(design.Muted)
+						quietButton(c, "重试搜索").OnClick(a.searchMemory)
+					} else {
+						ui.Text(c, fmt.Sprintf("“%s” · %d 条当前版本", a.searchQuery, len(a.items))).FontSize(design.Small).TextColor(design.Muted)
+					}
+				}
 				if a.libraryError != "" {
 					ui.Text(c, a.libraryError).FontSize(design.Small).TextColor(design.Muted)
 					quietButton(c, "重试读取").OnClick(func() { a.refresh(false) })
@@ -380,7 +404,18 @@ func (a *App) details(c *ui.Context) {
 			ui.Scroll(c.Key("list-"+key)).Grow(1).TrackScroll(a.listScroll[key]).Padding(0, 15, 18, 15).Children(func() {
 				if a.isMemoryPage() {
 					if len(a.items) == 0 {
-						a.empty(c, "列表为空", "保存的记忆会出现在这里。")
+						if a.page == "搜索" {
+							message := "没有搜索结果。未完成索引的记忆暂不参与搜索。"
+							if a.searching {
+								message = "索引查询进行中。"
+							}
+							if a.searchError != "" {
+								message = "搜索未完成，请重试。"
+							}
+							a.empty(c, "", message)
+						} else {
+							a.empty(c, "列表为空", "保存的记忆会出现在这里。")
+						}
 					}
 					for _, item := range a.items {
 						a.memoryRow(c, item, true)
@@ -482,12 +517,12 @@ func (a *App) memoryRow(c *ui.Context, item MemoryItem, inList bool) {
 }
 func (a *App) editor(c *ui.Context) {
 	ui.Column(c).Grow(1).Padding(24).Gap(16).Children(func() {
-		ui.TextInput(c.Key("memory-title"), &a.draftTitle).Label("记忆标题").Placeholder("给这条记忆一个简短标题").FontSize(design.Title).Height(36)
+		ui.TextInput(c.Key("memory-title"), &a.draftTitle).Disabled(a.saving).Label("记忆标题").Placeholder("给这条记忆一个简短标题").FontSize(design.Title).Height(36)
 		ui.Row(c).Gap(10).Children(func() {
 			ui.Text(c, "范围").FontSize(design.Small).TextColor(design.Muted)
-			ui.Select(c.Key("draft-scope"), &a.draftScope, a.scopeOptions()).Label("记忆范围").Disabled(a.detailMode == "edit")
+			ui.Select(c.Key("draft-scope"), &a.draftScope, a.scopeOptions()).Label("记忆范围").Disabled(a.detailMode == "edit" || a.saving)
 		})
-		ui.TextArea(c.Key("memory-draft"), &a.draft).Label("记忆内容").Placeholder("记录一条项目经验…").Grow(1).MinHeight(80).LineHeight(1.7)
+		ui.TextArea(c.Key("memory-draft"), &a.draft).Disabled(a.saving).Label("记忆内容").Placeholder("记录一条项目经验…").Grow(1).MinHeight(80).LineHeight(1.7)
 		message := "内容暂存于当前窗口，尚未保存。"
 		if a.onSave == nil {
 			message = "记忆服务尚未就绪，暂不能保存。"
@@ -496,9 +531,13 @@ func (a *App) editor(c *ui.Context) {
 			message = a.message
 		}
 		ui.Text(c, message).FontSize(design.Small).TextColor(design.Muted)
+		if a.conflictCurrent != nil {
+			ui.Text(c, fmt.Sprintf("最新 v%d：%s", a.conflictCurrent.Revision, a.conflictCurrent.Text)).MaxLines(3).FontSize(design.Small).Selectable()
+			quietButton(c, "按最新版本继续编辑").AlignSelf(ui.Start).OnClick(a.continueFromLatest)
+		}
 		ui.Row(c).Gap(8).Children(func() {
 			actionButton(c, "返回", nil).OnClick(func() { a.rememberDraft(); a.editing = false; a.detailMode = "view" })
-			actionButton(c, "保存", nil).Disabled(a.onSave == nil || strings.TrimSpace(a.draft) == "").OnClick(func() {
+			actionButton(c, "保存", nil).Disabled(a.saving || a.onSave == nil || strings.TrimSpace(a.draft) == "").OnClick(func() {
 				if a.onSave != nil {
 					a.onSave()
 				}
@@ -522,6 +561,12 @@ func (a *App) memoryDetail(c *ui.Context) {
 			meta(c, "版本", fmt.Sprintf("v%d · %s", item.Revision, operationLabel(item.Operation)))
 			meta(c, "保存", "已保存")
 			meta(c, "索引", indexLabel(item.IndexState))
+			if a.message != "" {
+				ui.Text(c, a.message).FontSize(design.Small).TextColor(design.Muted)
+			}
+			if item.IndexState != "indexed" && a.libraryContext != nil {
+				quietButton(c, "重试索引").Disabled(a.retryingIndex).AlignSelf(ui.Start).OnClick(a.retryIndex)
+			}
 		})
 		ui.Divider(c)
 		ui.Column(c).Gap(12).Children(func() {
@@ -543,6 +588,9 @@ func (a *App) historyView(c *ui.Context, item MemoryItem) {
 	ui.Text(c, item.Title).FontSize(design.Title).Bold()
 	if a.detailMode == "restore" {
 		ui.Text(c, fmt.Sprintf("将 v%d 的正文恢复为新的当前版本", a.historyRevision)).Bold()
+		if a.message != "" {
+			ui.Text(c, a.message).FontSize(design.Small).TextColor(design.Muted)
+		}
 		ui.Text(c, "恢复会新增版本，保留当前正文和全部历史。确认前不会改动已有知识。").TextColor(design.Muted).LineHeight(1.6)
 		for _, h := range a.history {
 			if h.Revision == a.historyRevision {
@@ -551,7 +599,7 @@ func (a *App) historyView(c *ui.Context, item MemoryItem) {
 		}
 		ui.Row(c).Gap(8).Children(func() {
 			actionButton(c, "返回历史", nil).OnClick(func() { a.detailMode = "history" })
-			actionButton(c, "确认恢复", nil).Disabled(a.onRestore == nil).OnClick(func() {
+			actionButton(c, "确认恢复", nil).Disabled(a.saving || a.onRestore == nil).OnClick(func() {
 				if a.onRestore != nil {
 					a.onRestore(a.historyRevision)
 				}
@@ -576,7 +624,7 @@ func (a *App) historyView(c *ui.Context, item MemoryItem) {
 				ui.Text(c, lineDiff(a.history[i+1].Text, h.Text)).FontSize(design.Small).Selectable().LineHeight(1.6).Background(design.Surface).Padding(10)
 			}
 			if h.Revision != item.Revision {
-				quietButton(c, fmt.Sprintf("恢复 v%d", h.Revision)).AlignSelf(ui.Start).OnClick(func() { a.historyRevision = h.Revision; a.detailMode = "restore"; a.detailScroll.Y = 0 })
+				quietButton(c, fmt.Sprintf("恢复 v%d", h.Revision)).AlignSelf(ui.Start).OnClick(func() { a.historyRevision = h.Revision; a.restoreExpected=item.Revision; a.message=""; a.detailMode = "restore"; a.detailScroll.Y = 0 })
 			} else {
 				ui.Text(c, "当前版本").FontSize(design.Small).TextColor(design.Muted)
 			}

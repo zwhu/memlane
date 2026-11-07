@@ -199,10 +199,14 @@ func (s *Store) Apply(ctx context.Context, m Mutation) (Version, error) {
 			return Version{}, err
 		}
 	}
+	saved, err := scanVersion(tx.QueryRowContext(ctx, `SELECT `+versionColumns+versionJoins+`WHERE m.id=?`, m.Memory))
+	if err != nil {
+		return Version{}, err
+	}
 	if err = tx.Commit(); err != nil {
 		return Version{}, err
 	}
-	return Version{Record: engine.Record{Dataset: dataset, Memory: m.Memory, Revision: revision, Text: text}, State: state, Operation: m.Kind}, nil
+	return saved, nil
 }
 
 func (s *Store) MarkIndexed(ctx context.Context, r engine.Record, receipt engine.Receipt) error {
