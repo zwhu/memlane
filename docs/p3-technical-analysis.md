@@ -2,7 +2,7 @@
 
 2026-11-08 重生成。用户已将本轮后台验证执行器改为 traex；生产基线为 P2 `70ddc0f`。本文区分已存在代码、隔离实验和待定正式接口，实际命令与结果见 [验证记录](p3-validation.md)。
 
-配套：[产品](p3-product-design.md)、[架构](p3-architecture.md)、[研究](research-p3-memory.md)、[Goal prompt](p3-goal-prompt.md)。
+配套：[产品](p3-product-design.md)、[架构](p3-architecture.md)、[研究](research-p3-memory.md)。
 
 ## 1. 实际复用能力
 

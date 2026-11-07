@@ -2,7 +2,7 @@
 
 2026-11-08 重生成。产品规则以 [产品定义](product.md) 和 [设计决策](design.md) 为准。生产入口基线仍为 P2；本轮新增的是隔离工程实验，结果见 [验证记录](p3-validation.md)。P3 名称、排序、记忆形态和计划参数继续是待评审建议。
 
-配套：[交互](p3-interaction-design.md) · [技术](p3-technical-analysis.md) · [架构](p3-architecture.md) · [研究](research-p3-memory.md) · [实施清单](implementation-plan.md) · [可复制 Goal prompt](p3-goal-prompt.md)。
+配套：[交互](p3-interaction-design.md) · [技术](p3-technical-analysis.md) · [架构](p3-architecture.md) · [研究](research-p3-memory.md) · [实施清单](implementation-plan.md)。
 
 ## 1. 当前要解决的问题
 

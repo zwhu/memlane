@@ -8,7 +8,7 @@ from urllib.parse import unquote
 ROOT = Path(__file__).resolve().parents[1]
 files = [ROOT / 'docs' / name for name in (
     'p3-validation.md', 'implementation-plan.md', 'p3-product-design.md',
-    'p3-interaction-design.md', 'p3-technical-analysis.md', 'p3-architecture.md', 'research-p3-memory.md','p3-goal-prompt.md','p3-experiment-goal-prompt.md')]
+    'p3-interaction-design.md', 'p3-technical-analysis.md', 'p3-architecture.md', 'research-p3-memory.md')]
 
 def headings(path):
     seen = {}

@@ -52,7 +52,7 @@ def main():
 - AGENTS.md、docs/product.md、docs/design.md：确认规则。
 - docs/technical-plan.md、docs/implementation-plan.md、docs/p3-architecture.md、docs/p3-technical-analysis.md：实现与边界。
 - docs/p3-validation.md、build/p3/goal-completion-audit.json：已通过的隔离实验。
-- docs/p3-goal-prompt.md：下一阶段 P3-C1 Goal；docs/p3-experiment-goal-prompt.md：实验复查。
+- 下一阶段目标以用户当前会话指令和 --next 参数为准。
 - build/p3/：真实 traex 正常/应用/取消、隔离、Rust 重试与全仓检查。对应生产切片新增报告应在验证文档列明。
 不重复复制代码、规范、差异、模型输入或详细测试日志，只引用这些产物。
 

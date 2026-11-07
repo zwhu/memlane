@@ -4,7 +4,7 @@
 
 **两个最小工程验证通过：真实 traex 返回纯提案并可取消；服务原子应用并拒绝过期、重复和取消后迟到结果。** 这不代表完整 P3 UI、调度、迁移或质量评估已交付。Codex 额度失败与旧阻塞审计保留为历史，不改写成成功。
 
-规则来自 [产品定义](product.md)、[设计决策](design.md)、[技术方案](technical-plan.md) 和 [实施清单](implementation-plan.md)。P3 [产品](p3-product-design.md)、[交互](p3-interaction-design.md)、[技术](p3-technical-analysis.md)、[架构](p3-architecture.md)、[研究](research-p3-memory.md) 与 [Goal prompt](p3-goal-prompt.md) 本轮重新生成；正式字段、参数和接口仍需相应切片确认。
+规则来自 [产品定义](product.md)、[设计决策](design.md)、[技术方案](technical-plan.md) 和 [实施清单](implementation-plan.md)。P3 [产品](p3-product-design.md)、[交互](p3-interaction-design.md)、[技术](p3-technical-analysis.md)、[架构](p3-architecture.md) 与 [研究](research-p3-memory.md) 本轮重新生成；正式字段、参数和接口仍需相应切片确认。
 
 ## 1. 环境、代码与范围
 
@@ -105,8 +105,8 @@ Codex 的额度失败和 `build/p3/goal-blocked-audit.json` 是改用 traex 前�
 
 初始化、使用事件/排名、调度/休眠补跑、全局经验、pi RPC、其他 Agent 和代码图谱未展开。补图、浏览器原型点击、归档与文案定稿继续暂留，视觉验收未完成，但不阻塞本轮两个工程验证。
 
-## 7. 当前交付与下一步 prompt
+## 7. 当前交付
 
-用户已授权将本轮实验实现、测试、P3 文档、既有六张 P3 设计图和下一步 prompt 提交到当前 main 并推送；不包含 build 下的本机数据/证据/文档备份、认证、聊天或原型工作区未提交代码。实际提交与远端核对结果保存在 `build/p3/delivery.json`，最终回执同时提供提交链接。
+用户已授权将本轮实验实现、测试、P3 文档和既有六张 P3 设计图提交到当前 main 并推送；不包含 build 下的本机数据/证据/文档备份、认证、聊天或原型工作区未提交代码。实际提交与远端核对结果保存在 `build/p3/delivery.json`，最终回执同时提供提交链接。
 
-[下一步 Goal prompt](p3-goal-prompt.md) 限定 P3-C1 正式服务端契约/迁移/任务/审核/IPC，不自动展开 UI 等后续切片；[实验复查 prompt](p3-experiment-goal-prompt.md) 保留已完成任务的原指令。handoff 要求每个切片、阻塞或会话切换时实际生成系统临时交接，[交接脚本](../scripts/p3-handoff.py) 明确注明直接生成、未调用禁止自动模型调用的 Skill。临时交接不进入提交。
+handoff 要求每个切片、阻塞或会话切换时实际生成系统临时交接，[交接脚本](../scripts/p3-handoff.py) 明确注明直接生成、未调用禁止自动模型调用的 Skill。临时交接不进入提交。

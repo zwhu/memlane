@@ -132,7 +132,7 @@
 
 2026-11-08 按用户最新指令重生成 P3 计划与文档，以本机 traex 完成两个最小工程实验。生产入口基线仍为 P2；通过项、提案、夹具与真实调用分别见 [P3 验证记录](p3-validation.md)。
 
-导航：[产品](p3-product-design.md)、[交互](p3-interaction-design.md)、[技术](p3-technical-analysis.md)、[架构](p3-architecture.md)、[研究](research-p3-memory.md)、[可复制 Goal prompt](p3-goal-prompt.md)。
+导航：[产品](p3-product-design.md)、[交互](p3-interaction-design.md)、[技术](p3-technical-analysis.md)、[架构](p3-architecture.md)、[研究](research-p3-memory.md)。
 
 ### P3 最小工程实验：已取得真实证据
 
