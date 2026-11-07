@@ -37,7 +37,12 @@ func (s *Server) putSchedule(ctx context.Context, d records.ScheduleDraft) (reco
 	if err != nil {
 		return plan, err
 	}
-	rows, err := s.store.DB.QueryContext(ctx, `SELECT t.id FROM organization_tasks t JOIN organization_plan_runs r ON r.task=t.id WHERE r.plan=? AND (r.generation!=? OR ?=0) AND t.state IN ('queued','running','applying')`, current.ID, current.Generation, current.Enabled)
+	obsoleteSQL := `SELECT t.id FROM organization_tasks t JOIN organization_plan_runs r ON r.task=t.id WHERE r.plan=? AND (r.generation!=? OR ?=0) AND (t.state IN ('queued','running','applying')`
+	if s.store.Schema >= 9 {
+		obsoleteSQL += ` OR EXISTS(SELECT 1 FROM organization_recovery x WHERE x.task=t.id AND x.state IN ('active','waiting') AND t.state IN ('failed','partial_failed','interrupted'))`
+	}
+	obsoleteSQL += `)`
+	rows, err := s.store.DB.QueryContext(ctx, obsoleteSQL, current.ID, current.Generation, current.Enabled)
 	if err != nil {
 		return plan, err
 	}
@@ -102,6 +107,9 @@ func (s *Server) scheduleTick(ctx context.Context, now time.Time) error {
 		return ctx.Err()
 	}
 	if err := s.reconcileOrganizations(ctx); err != nil {
+		return err
+	}
+	if err := s.recoveryTick(ctx, now); err != nil {
 		return err
 	}
 	plans, err := s.store.Schedules(ctx)

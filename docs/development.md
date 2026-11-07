@@ -403,3 +403,9 @@ MEMLANE_C3_QUALITY_REAL=1 sh scripts/go.sh test -json ./internal/agents -run '^T
 `python3 scripts/create-p3-recovery-fixture.py` 建立业务为空的新合成根；按输出 runtime-config/identifier 构建 `--out build/p3-recovery-app --name MemlaneRecovery --automation --skip-dmg`，执行 `python3 scripts/verify-p3-recovery-app.py` 验证真实 App/traex/Rust 正常与活动取消及停服后租约回收事实。首次流程只运行于新根。
 
 无模型实际进程夹具先 `sh scripts/go.sh build -o build/p3-recovery/memlaned ./cmd/memlaned`，再 `python3 scripts/verify-p3-proposal-guard.py`。`sh scripts/go.sh test ./internal/store ./internal/daemon -run '^TestOrganizationLease' -count=1 -v` 覆盖 SQLite 过期/版本/取消/部分回执/v7 WAL 迁移和实际旧进程组启动门禁；不冒充完整 D2b 自动恢复。完整生产 DMG 为 `python3 scripts/build-client.py --out build/p3-recovery-production`，边界见 [D2 验证](p3-recovery-validation.md)。
+
+## P3-D2b 有限恢复验收
+
+新根 `python3 scripts/create-p3-retry-fixture.py` 后按source-info中的隔离标识、runtime-config构建完整MemlaneRetry验收包至 `build/p3-recovery-d2b-app`，再 `python3 scripts/verify-p3-retry-app.py`。使用真实三个未来分钟槽、实际traex/Rust；SQL tag拒绝与本root真实helper SIGKILL明确故障夹具。该驱动要求全新root，不重放已有收费计划；finally独立持久停服、收口本App与写入cleanup_errors。保留D2a包与证据。
+
+`sh scripts/go.sh test ./internal/store ./internal/daemon -run '^TestOrganizationRecovery' -count=1 -v` 覆盖恢复/来源/永久结果/stop epoch与v8 WAL；状态/时钟/SQL夹具不替代App。全仓test/vet及四包race沿用标准，完整生产包 `python3 scripts/build-client.py --out build/p3-recovery-d2b-production`。真实窗口与体积、旧helper拒绝和正式分发边界见 [D2验证](p3-recovery-validation.md)。

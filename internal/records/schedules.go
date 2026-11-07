@@ -3,19 +3,21 @@ package records
 // Plan policy is explicit user input. Empty fields do not authorize a default
 // frequency, material budget, or background model invocation.
 type ScheduleSpec struct {
-	Project       string   `json:"project"`
-	Executor      string   `json:"executor"`
-	Model         string   `json:"model,omitempty"`
-	Timezone      string   `json:"timezone"`
-	Frequency     string   `json:"frequency"`
-	LocalTime     string   `json:"local_time,omitempty"`
-	Weekday       int      `json:"weekday"`
-	IntervalHours int      `json:"interval_hours,omitempty"`
-	WindowMinutes int      `json:"window_minutes"`
-	MaterialLimit int      `json:"material_limit"`
-	Review        bool     `json:"review"`
-	Global        bool     `json:"global_candidates"`
-	Destinations  []string `json:"destinations,omitempty"`
+	RetryLimit            int      `json:"retry_limit,omitempty"`
+	RecoveryWindowMinutes int      `json:"recovery_window_minutes,omitempty"`
+	Project               string   `json:"project"`
+	Executor              string   `json:"executor"`
+	Model                 string   `json:"model,omitempty"`
+	Timezone              string   `json:"timezone"`
+	Frequency             string   `json:"frequency"`
+	LocalTime             string   `json:"local_time,omitempty"`
+	Weekday               int      `json:"weekday"`
+	IntervalHours         int      `json:"interval_hours,omitempty"`
+	WindowMinutes         int      `json:"window_minutes"`
+	MaterialLimit         int      `json:"material_limit"`
+	Review                bool     `json:"review"`
+	Global                bool     `json:"global_candidates"`
+	Destinations          []string `json:"destinations,omitempty"`
 }
 
 type ScheduleDraft struct {

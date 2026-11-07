@@ -24,9 +24,10 @@ import (
 var ErrConflict = records.ErrConflict
 
 type Store struct {
-	DB        *sql.DB
-	ownership *os.File
-	Schema    int
+	ServiceStopGeneration int64 // fixed for this service epoch, never model data
+	DB                    *sql.DB
+	ownership             *os.File
+	Schema                int
 }
 
 type Mutation = records.Mutation

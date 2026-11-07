@@ -20,7 +20,7 @@
 | C4 重复与冲突建议 | C3 | 合并、覆盖、删除、跨项目移动、冲突选择均先审核；依赖失效/重新生成、每项结果与部分失败准确；中文/代码/重复/冲突/恶意指令/不足来源质量基线 | build/p3-c4/ | 已通过，见 [C4 验证](p3-c4-validation.md) |
 | E 全局经验 | 来源与审核契约 | 原文复制与 AI 通用表述/条件/预览确认、整理候选、来源保留；拒绝/过期/重放/授权范围及项目优先 | build/p3-global/ | 已通过，见 [E 验证](p3-global-validation.md) |
 | D1 持久计划 | 完整整理执行、用户明确执行者/范围/频率 | 时区/下一次/启停/记录、并发去重、有限唤醒补跑；初次不自动启用模型调用 | build/p3-schedules/ | 已通过，见 [D1 验证](p3-schedule-validation.md) |
-| D2 attempt 与恢复 | D1 | 拥有权/租约、有限重试退避错误分类、取消/停服/崩溃/重启栅栏、迟到拒绝、部分提交与重复事实门禁 | build/p3-recovery/ | D2a 租约/进程保护已通过；D2b 有限重试与完整恢复继续，见 [D2 验证](p3-recovery-validation.md) |
+| D2 attempt 与恢复 | D1 | 拥有权/租约、有限重试退避错误分类、取消/停服/崩溃/重启栅栏、迟到拒绝、部分提交与重复事实门禁 | build/p3-recovery/、build/p3-recovery-d2b/ | D2a/D2b本机验收已通过，见 [D2 验证](p3-recovery-validation.md) |
 | U 使用记录与排序 | 日常 Agent / App 入口 | 成功读取/检索返回/明确采用分开，App/后台/验证分开，起点/去重/保留真实，最近更新/常用/重要解释；未知不补造 | build/p3-usage/ | 待实现 |
 | I 引导与初始化 | 组件/项目/连接实际回执 | 可跳过恢复、复制 prompt、真实批次/稳定 ID/来源/最小提交/取消/重放、导入与新增分开 | build/p3-onboarding/ | 待实现 |
 | A TRAE / traex 日常接入 | P2 受控记忆桥 | 按安装版本渠道探测、App 连接、隔离配置增量备份/重载/断开、真实保存读取搜索来源版本、scope/generation/workspace | build/p3-agents/ | 待实现 |

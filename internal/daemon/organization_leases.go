@@ -95,3 +95,47 @@ func prepareOrganizationLeases(ctx context.Context, db *store.Store) error {
 	_, err = db.DB.ExecContext(ctx, `UPDATE merge_attempts SET execution=json_set(execution,'$.startup_group_gone',json('true')) WHERE json_valid(execution) AND coalesce(json_extract(execution,'$.process_started'),0)=1 AND coalesce(json_extract(execution,'$.process_group_gone'),0)=0 AND CAST(json_extract(execution,'$.pid') AS INTEGER)>1`)
 	return err
 }
+
+// A dead in-process owner can have failed its final lease write while storage
+// was unavailable. Observe its registered group gone before clearing that
+// lease; keep the actual reaped history, never synthesize it or signal a PID.
+func (s *Server) reconcileDeadOrganizationLeases(ctx context.Context) error {
+	if s.store.Schema < 8 {
+		return nil
+	}
+	rows, err := s.store.DB.QueryContext(ctx, `SELECT task,attempt,owner,process_pid FROM organization_leases WHERE released=0 OR process_pid>1 AND group_gone=0`)
+	if err != nil {
+		return err
+	}
+	type lease struct {
+		task, owner string
+		attempt     int64
+		pid         int
+	}
+	var old []lease
+	for rows.Next() {
+		var l lease
+		if err = rows.Scan(&l.task, &l.attempt, &l.owner, &l.pid); err != nil {
+			rows.Close()
+			return err
+		}
+		old = append(old, l)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, l := range old {
+		if owner, live := s.organizationRuns[l.task]; live && owner.Attempt == l.attempt {
+			continue
+		}
+		if l.pid > 1 && syscall.Kill(-l.pid, 0) != syscall.ESRCH {
+			continue
+		}
+		if _, err = s.store.DB.ExecContext(ctx, `UPDATE organization_leases SET released=1,expires_ms=0,group_gone=1 WHERE task=? AND attempt=? AND owner=?`, l.task, l.attempt, l.owner); err != nil {
+			return err
+		}
+	}
+	return nil
+}

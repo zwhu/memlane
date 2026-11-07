@@ -70,26 +70,9 @@ func (s *Server) resumeOrganization(ctx context.Context, d records.OrganizationR
 	if err != nil || !created {
 		return t, err
 	}
-	runCtx, cancel := context.WithCancel(s.lifecycle)
-	s.organizationRuns[t.ID] = organizationOwner{Attempt: t.Attempt, Cancel: cancel}
-	s.organizationWG.Add(1)
-	go func() {
-		defer s.organizationWG.Done()
-		defer cancel()
-		defer s.finishOrganizationRun(t)
-		release, err := s.acquireOrganizer(runCtx)
-		if err != nil {
-			return
-		}
-		defer release()
-		owned, finish, err := s.beginOrganizationLease(runCtx, t, cancel)
-		if err != nil {
-			return
-		}
-		defer finish(true, true)
-		runCtx = owned
-		s.applyOrganization(runCtx, t)
-	}()
+	execution := t
+	execution.Recovery = nil // explicit user apply-resume has its own authorization
+	s.launchOrganization(execution)
 	return t, nil
 }
 
@@ -98,10 +81,17 @@ func (s *Server) finishOrganizationRun(t records.OrganizationTask) {
 	defer s.organizationMu.Unlock()
 	ctx, stop := context.WithTimeout(context.Background(), 2*time.Second)
 	defer stop()
-	_ = s.store.InterruptOrganization(ctx, t.ID, t.Attempt)
+	if outcome, ok := s.organizationOutcomes[t.ID]; ok && outcome.Attempt == t.Attempt {
+		if s.store.InterruptOrganizationOutcome(ctx, t.ID, t.Attempt, outcome.Known, outcome.Failure) == nil {
+			delete(s.organizationOutcomes, t.ID)
+		}
+	} else {
+		_ = s.store.InterruptOrganization(ctx, t.ID, t.Attempt)
+	}
 	if owner, ok := s.organizationRuns[t.ID]; ok && owner.Attempt == t.Attempt {
 		delete(s.organizationRuns, t.ID)
 	}
+	_ = s.store.ScheduleOrganizationRecovery(ctx, t.ID, t.Snapshot.Attempt, time.Now())
 }
 
 // Caller holds organizationMu: start/resume registration and reconciliation
@@ -132,11 +122,18 @@ func (s *Server) reconcileOrganizations(ctx context.Context) error {
 		return err
 	}
 	for _, o := range dead {
-		if err = s.store.InterruptOrganization(ctx, o.id, o.attempt); err != nil {
+		outcome := s.organizationOutcomes[o.id]
+		if outcome.Attempt == o.attempt {
+			err = s.store.InterruptOrganizationOutcome(ctx, o.id, o.attempt, outcome.Known, outcome.Failure)
+		} else {
+			err = s.store.InterruptOrganization(ctx, o.id, o.attempt)
+		}
+		if err != nil {
 			return err
 		}
+		delete(s.organizationOutcomes, o.id)
 	}
-	return nil
+	return s.reconcileDeadOrganizationLeases(ctx)
 }
 func (s *Server) getOrganization(ctx context.Context, id string) (records.OrganizationTask, error) {
 	s.organizationMu.Lock()
@@ -160,6 +157,20 @@ type organizationOwner struct {
 	Cancel  context.CancelFunc
 }
 
+type organizationOutcome struct {
+	Attempt int64
+	Known   bool
+	Failure string
+}
+
+func (s *Server) finalizeOrganizationShutdown(ctx context.Context) error {
+	s.organizationMu.Lock()
+	defer s.organizationMu.Unlock()
+	// All runner/handler groups have finished. Preserve in-memory known
+	// outcomes rather than bypassing them through a generic interrupted pass.
+	return s.reconcileOrganizations(ctx)
+}
+
 // Caller holds organizationMu so a frozen queued task gains its in-memory
 // owner before queries can reconcile it as interrupted.
 func (s *Server) launchOrganization(t records.OrganizationTask) {
@@ -170,6 +181,11 @@ func (s *Server) launchOrganization(t records.OrganizationTask) {
 		defer s.organizationWG.Done()
 		defer cancel()
 		defer s.finishOrganizationRun(t)
+		if t.Recovery != nil {
+			bounded, stop := context.WithDeadline(runCtx, time.UnixMilli(t.Recovery.DeadlineMS))
+			defer stop()
+			runCtx = bounded
+		}
 		release, err := s.acquireOrganizer(runCtx)
 		if err != nil {
 			return
@@ -182,6 +198,10 @@ func (s *Server) launchOrganization(t records.OrganizationTask) {
 		runCtx = owned
 		reaped, gone := true, true
 		defer func() { finish(reaped, gone) }()
+		if t.AttemptKind == "apply" {
+			s.applyOrganization(runCtx, t)
+			return
+		}
 		if err := s.store.ClaimOrganization(runCtx, t.ID, t.Attempt); err != nil {
 			return
 		}
@@ -210,6 +230,7 @@ func (s *Server) launchOrganization(t records.OrganizationTask) {
 			s.stop()
 		}
 		failure := ""
+		known := true
 		if err != nil {
 			failure = "agent_failed"
 			var access *records.AccessError
@@ -219,8 +240,28 @@ func (s *Server) launchOrganization(t records.OrganizationTask) {
 			if errors.Is(err, context.DeadlineExceeded) {
 				failure = "agent_timeout"
 			}
+			if failure == "agent_failed" && transientOrganizationError(err) {
+				failure = "agent_transient"
+			}
+			if errors.Is(err, context.Canceled) {
+				if s.lifecycle.Err() != nil {
+					known = false
+				} else {
+					failure = "lease_interrupted"
+				}
+			}
 		}
-		process, _ := json.Marshal(out.ProposalProcess)
+		s.organizationMu.Lock()
+		if s.organizationOutcomes == nil {
+			s.organizationOutcomes = map[string]organizationOutcome{}
+		}
+		s.organizationOutcomes[t.ID] = organizationOutcome{Attempt: t.Attempt, Known: known, Failure: failure}
+		s.organizationMu.Unlock()
+		processData := map[string]any{}
+		encoded, _ := json.Marshal(out.ProposalProcess)
+		_ = json.Unmarshal(encoded, &processData)
+		processData["outcome_recorded"], processData["outcome_code"] = known, failure
+		process, _ := json.Marshal(processData)
 		_, _ = s.store.DB.ExecContext(context.Background(), `UPDATE organization_attempts SET execution=? WHERE task=? AND attempt=?`, string(process), t.ID, t.Attempt)
 		if runCtx.Err() != nil {
 			return
@@ -229,7 +270,7 @@ func (s *Server) launchOrganization(t records.OrganizationTask) {
 		if out.Result != nil {
 			raw, _ = json.Marshal(out.Result)
 		}
-		staged, err := s.store.StageOrganization(runCtx, t.ID, t.Attempt, raw, out.ProposalProcess, failure)
+		staged, err := s.store.StageOrganization(runCtx, t.ID, t.Attempt, raw, processData, failure)
 		if err != nil || staged.State != "applying" {
 			return
 		}

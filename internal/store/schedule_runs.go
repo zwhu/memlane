@@ -81,7 +81,14 @@ func (s *Store) FireSchedule(ctx context.Context, id string, generation int64, n
 		run.Reason = "missed_window"
 	} else {
 		var busy bool
-		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM organization_tasks WHERE project=? AND state IN ('queued','running','applying') UNION ALL SELECT 1 FROM merge_tasks WHERE project=? AND state IN ('queued','running'))`, plan.Spec.Project, plan.Spec.Project).Scan(&busy); err != nil {
+		busySQL := `SELECT EXISTS(SELECT 1 FROM organization_tasks WHERE project=? AND state IN ('queued','running','applying') UNION ALL SELECT 1 FROM merge_tasks WHERE project=? AND state IN ('queued','running')`
+		busyArgs := []any{plan.Spec.Project, plan.Spec.Project}
+		if s.Schema >= 9 {
+			busySQL += ` UNION ALL SELECT 1 FROM organization_recovery r JOIN organization_tasks t ON t.id=r.task WHERE t.project=? AND r.state IN ('active','waiting') AND t.state IN ('failed','partial_failed','interrupted')`
+			busyArgs = append(busyArgs, plan.Spec.Project)
+		}
+		busySQL += `)`
+		if err = tx.QueryRowContext(ctx, busySQL, busyArgs...).Scan(&busy); err != nil {
 			return run, nil, err
 		}
 		if busy {
@@ -138,6 +145,13 @@ func (s *Store) FireSchedule(ctx context.Context, id string, generation int64, n
 					run.State = "queued"
 					run.Task = created.ID
 					task = &created
+					if s.Schema >= 9 && plan.Spec.RetryLimit > 0 {
+						deadline := now.Add(time.Duration(plan.Spec.RecoveryWindowMinutes) * time.Minute).UnixMilli()
+						if _, e = tx.ExecContext(ctx, `INSERT INTO organization_recovery(task,created_ms,stop_generation,extra_limit,deadline_ms) VALUES(?,?,?,?,?)`, created.ID, time.Now().UnixMilli(), s.ServiceStopGeneration, plan.Spec.RetryLimit, deadline); e != nil {
+							return run, nil, e
+						}
+						created.Recovery = &records.OrganizationRecovery{State: "active", ExtraLimit: plan.Spec.RetryLimit, DeadlineMS: deadline}
+					}
 				}
 			}
 			if _, err = tx.ExecContext(ctx, `INSERT INTO organization_plan_runs(id,plan,generation,due_ms,state,reason,task,input_digest) VALUES(?,?,?,?,?,?,?,?)`, run.ID, id, generation, due, run.State, run.Reason, nullableTask(run.Task), fingerprint); err != nil {

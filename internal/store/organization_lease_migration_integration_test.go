@@ -65,7 +65,7 @@ func TestOrganizationLeaseV7MigrationRetainsPlanResultAndNonemptyWAL(t *testing.
 	mustMerge(t, reader.Close())
 	backups, e := filepath.Glob(filepath.Join(filepath.Dir(path), "backups/schema-v7-*.sqlite"))
 	mustMerge(t, e)
-	if len(backups) != 1 || current.Schema != 8 {
+	if len(backups) != 1 || current.Schema != SchemaVersion {
 		t.Fatal("v7 backup missing", backups, current.Schema)
 	}
 	backup, e := sql.Open("sqlite", backups[0])

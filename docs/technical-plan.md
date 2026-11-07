@@ -281,3 +281,7 @@ schema v7 增量保存计划/generation/明确策略、幂等 operation 回执�
 v8 增量 organization_leases 绑定 task/attempt 随机 owner、到期、进程组与回收事实；短事务门禁保护领取/结果/自动应用/失败/收尾，后台续租失败取消执行，旧 owner 不能复活。内部 guard 收到持久登记许可后启动 Agent，FD3 不继承，服务崩溃 EOF 杀组。新服务只观察旧组消失后撤销旧租约与中断任务，不盲目 kill 复用 PID；旧 C1 guard 的历史组同样核对保存。
 
 v7 非空 WAL 一致性备份/全部旧表/部分回执保留、真实 App/traex/Rust 正常与取消、实际 guard 故障和旧 C1 真服务回归见 [D2 验证](p3-recovery-validation.md)。租约不是收费重试授权；D2b 有限重试/恢复预算和完整自动恢复仍待实现。
+
+## D2b 有限恢复边界（2026-11-08）
+
+schema9仅新增实际organization_recovery，旧v8一致性备份/全表保留；授权extra1–2/window1–1440分钟、15/60秒退避，默认0。同task新attempt，已有结果仅apply，回执保持；来源/计划/lease/window在领取及guard许可复核。stop_generation优先于时间水位，Resume保留旧停服边界；KnownOutcome即使SQL末写失败也不覆写为可重跑unknown。真实App/traex/Rust及故障/包边界见 [D2验证](p3-recovery-validation.md)，正式契约见 [恢复契约](p3-recovery-contract.md)。

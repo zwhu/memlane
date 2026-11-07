@@ -177,3 +177,7 @@ App 明确保存停用草稿、启用、两个真实未来槽位的正常 traex/
 ## 14. P3-D2a 持久拥有权与进程保护
 
 schema v8 的 lease、owner/attempt/到期/取消/计划栅栏、内部 guard 许可/FD/服务崩溃 EOF、旧组启动观察与事实保存已验收；真实 App/traex/Rust 正常和活动取消、旧 C1 真实服务回归、v7 WAL 备份保留、部分回执/过期故障和完整包见 [D2 验证](p3-recovery-validation.md)。完整 D2b 有限自动重试/预算/恢复继续，尚不代表 D2 或总交付通过。
+
+## 15. P3-D2b 有限自动恢复
+
+schema9有限预算/退避/窗口、model/apply attempt与stop epoch栅栏已通过。真实App三个未来槽位覆盖实际traex生成、SQL部分失败后仅继续已有结果、真实活动取消及实际helper SIGKILL后旧组退出/同task新model恢复；真实Rust返回当前版本。v8非空WAL全表/lease/部分回执保留、永久失败与停服/时钟回退夹具、实际旧v8 helper拒绝v9、27文件分组/跨组审查及完整本机包分别见 [D2验证](p3-recovery-validation.md)。阶段提交后继续U/I/A/R/G/F；正式分发仍缺外部证据，总Goal未完成。

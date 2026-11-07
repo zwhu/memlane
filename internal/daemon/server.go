@@ -35,28 +35,29 @@ var MarkStopped = serviceipc.MarkStopped
 var writeJSON = serviceipc.WriteJSON
 
 type Server struct {
-	proposalGuard    string
-	scheduleFailure  string
-	organizerOnce    sync.Once
-	organizerSlot    chan struct{}
-	organizationMu   sync.Mutex
-	organizationWG   sync.WaitGroup
-	organizationRuns map[string]organizationOwner
-	lifecycle        context.Context
-	mergeMu          sync.Mutex
-	mergeWG          sync.WaitGroup
-	mergeRuns        map[string]context.CancelFunc
-	config           Config
-	store            *store.Store
-	mu               sync.Mutex
-	worker           *engine.Client
-	state            State
-	status           string
-	stop             context.CancelFunc
-	wake             chan struct{}
-	work             chan struct{}
-	gate             chan struct{}
-	agentAccess      sync.RWMutex // scope changes wait for previously authorized tools
+	proposalGuard        string
+	scheduleFailure      string
+	organizerOnce        sync.Once
+	organizerSlot        chan struct{}
+	organizationMu       sync.Mutex
+	organizationWG       sync.WaitGroup
+	organizationRuns     map[string]organizationOwner
+	organizationOutcomes map[string]organizationOutcome
+	lifecycle            context.Context
+	mergeMu              sync.Mutex
+	mergeWG              sync.WaitGroup
+	mergeRuns            map[string]context.CancelFunc
+	config               Config
+	store                *store.Store
+	mu                   sync.Mutex
+	worker               *engine.Client
+	state                State
+	status               string
+	stop                 context.CancelFunc
+	wake                 chan struct{}
+	work                 chan struct{}
+	gate                 chan struct{}
+	agentAccess          sync.RWMutex // scope changes wait for previously authorized tools
 }
 
 func Run(ctx context.Context, config Config) error {
@@ -93,6 +94,10 @@ func Run(ctx context.Context, config Config) error {
 	}
 	defer db.Close()
 	if err = prepareOrganizationLeases(ctx, db); err != nil {
+		return err
+	}
+	db.ServiceStopGeneration = state.StopGeneration
+	if err = db.CancelRecoveriesForStop(ctx, state.LastStoppedMS, state.StopGeneration); err != nil {
 		return err
 	}
 	if err = db.InterruptMerges(ctx); err != nil {
@@ -159,7 +164,9 @@ func Run(ctx context.Context, config Config) error {
 			s.mergeWG.Wait()
 			s.organizationWG.Wait()
 			_ = db.InterruptMerges(context.Background())
-			_ = db.InterruptOrganizations(context.Background())
+			if finalErr := s.finalizeOrganizationShutdown(context.Background()); finalErr != nil {
+				return errors.Join(e, finalErr)
+			}
 			return e
 		}
 		handlers.Add(1)
@@ -170,7 +177,7 @@ func Run(ctx context.Context, config Config) error {
 	handlers.Wait()
 	s.mergeWG.Wait()
 	s.organizationWG.Wait()
-	if err = db.InterruptOrganizations(context.Background()); err != nil {
+	if err = s.finalizeOrganizationShutdown(context.Background()); err != nil {
 		return err
 	}
 	return db.InterruptMerges(context.Background())
@@ -586,12 +593,22 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		return map[string]bool{"retry_requested": true}, nil
 	case "stop":
 		s.mu.Lock()
+		if !s.state.Stopped {
+			s.state.StopGeneration++
+		}
+		if s.state.StopGeneration == 0 {
+			s.state.StopGeneration = 1
+		}
 		s.state.Stopped = true
+		s.state.LastStoppedMS = time.Now().UnixMilli()
+		cutoff := s.state.LastStoppedMS
+		epoch := s.state.StopGeneration
 		err := writeJSON(filepath.Join(s.config.Root, "service-state.json"), s.state)
 		s.mu.Unlock()
 		if err != nil {
 			return nil, err
 		}
+		_ = s.store.CancelRecoveriesForStop(operation, cutoff, epoch)
 		return map[string]bool{"stopped": true}, nil
 	case "quiesce":
 		return map[string]bool{"paused_for_update": true}, nil

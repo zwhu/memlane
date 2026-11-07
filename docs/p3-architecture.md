@@ -98,3 +98,7 @@ v7 只引入实际计划/操作/槽位表，租约/自动重试由 D2 增量实�
 v8 的 organization_leases 保存 attempt 随机 owner、到期与进程回收事实。daemon 获取执行槽后建租约并续租；owner凭据仅在内部context，受信 Store 在短事务中核对取消/attempt/到期/计划代次。已提交回执先重放，用户确认历史结果不受运行租约误撤销。
 
 memlaned 自身提供配置/数据库读取之前的内部 guard 入口。独立进程组的 guard 收到持久登记许可后才运行 Agent，私有控制 FD 显式 close-on-exec；服务死亡导致 EOF 时杀组。启动先观察旧组消失才撤销旧租约并中断任务，不 kill 可能复用的 PID；即使旧行已 released，也保存实际 gone 事实。旧 C1 合并沿用 guard，organization 租约和 C1 审核表分开。D2b 自动恢复待实现，见 [契约](p3-recovery-contract.md)、[验证](p3-recovery-validation.md)。
+
+## D2b 有限恢复边界（2026-11-08）
+
+schema9仅新增实际organization_recovery，旧v8一致性备份/全表保留；授权extra1–2/window1–1440分钟、15/60秒退避，默认0。同task新attempt，已有结果仅apply，回执保持；来源/计划/lease/window在领取及guard许可复核。stop_generation优先于时间水位，Resume保留旧停服边界；KnownOutcome即使SQL末写失败也不覆写为可重跑unknown。真实App/traex/Rust及故障/包边界见 [D2验证](p3-recovery-validation.md)，正式契约见 [恢复契约](p3-recovery-contract.md)。

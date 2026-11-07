@@ -1,6 +1,6 @@
 # P3-D2 执行恢复验证
 
-2026-11-08，D2a 持久租约与进程保护通过。D2b 有限自动重试、退避、恢复预算和完整崩溃重启/迟到/部分失败闭环仍未完成，不标 D2 或总 Goal 完成。契约见 [D2 契约](p3-recovery-contract.md)，依赖与其余必需项见 [交付矩阵](p3-delivery-plan.md)。
+2026-11-08，D2a 持久租约与进程保护、D2b 有限自动恢复均已通过本机验收。真实 App/Agent/Rust、明确故障夹具与正式分发边界分别记录；U/I/A/R/G/F 和总 Goal 继续。契约见 [D2 契约](p3-recovery-contract.md)，依赖与其余必需项见 [交付矩阵](p3-delivery-plan.md)。
 
 ## D2a 真实 App 主流程
 
@@ -47,3 +47,44 @@ schema7→8 临时旧库有计划 operation、持久模型结果与已提交项�
 细分见 `sizes.json`，不包含失败重试/TLS开销；APFS 分配不等于删除可释放空间。用户并行图标/design/roadmap 改动影响本机包，仍保留并排除于 D2a 提交。
 
 检查、阶段 SHA/远端匹配和临时 handoff 分别在 `final-checks.json`、`delivery-d2a.json`。handoff 由脚本直接生成，明确未调用禁止自动模型调用的源 Skill，不入库。下一步 D2b 后继续 U/I/A/R/G/F，不因 D2a 或交接结束总 Goal。
+
+## D2b 有限自动恢复：真实 App
+
+2026-11-08，独立 `memlane-p3-recovery-app-m_yo_lmj` 合成根与标识 `io.github.zwhu.memlane.recovery.104424935fbc`。真实 MyGo App / traex 0.214.1 internal / 固定 Rust worker，三个实际未来 UTC 槽位；没有改变系统时钟，没有模型协议替身。正常模型生成和活动取消为真实调用；SQL tag INSERT 拒绝与实际 helper SIGKILL 明确为故障注入。
+
+| 主流程 | 通过结果 | 证据 |
+| --- | --- | --- |
+| 用户授权 | 新计划重试默认关闭；App 明确选择额外1次、总窗口10分钟，保存停用草稿后单独启用 | `build/p3-recovery-d2b/real-app.json` |
+| 部分成功后恢复 | 真实模型生成摘要/标签；SQL故障留下摘要回执，解除故障后同task新apply attempt仅继续未提交项，无模型；原回执不变，摘要由真实Rust返回，来源仍v1 | 同文件 real_model_partial_sql_then_auto_apply |
+| 活动取消 | 新来源v2、真实turn活动时App取消；无结果/条目，进程组消失，恢复cancelled，不补跑 | 同文件 real_active_cancel |
+| 服务崩溃/重启 | 仅核验此隔离锁拥有者的helper路径后实际SIGKILL；旧guard组先消失，launchd恢复，同task新model attempt完成，唯一结果与真实Rust当前版本返回 | 同文件 actual_service_crash_and_real_model_retry |
+| 终态/清理 | App停用计划并停服，持久stop_generation=1；全部recovery terminal，五个lease released/gone；四个model PID>1，一个无模型apply PID=0，cleanup_errors为空 | `stopped-audit-compat.json` |
+| 实际视觉 | 已实际打开两张设计图及计划授权、部分失败、apply完成、取消、崩溃恢复五张系统窗口截图；连续浅蓝侧栏、三栏、来源版本、UTC窗口、无模型说明与执行记录一致 | `build/p3-recovery-d2b-screenshots/retry-*-system.png` |
+
+崩溃推进栅栏使执行编号为1/3，历史只有两个model attempt，界面称“执行记录”，不表示三次付费调用。部分结果的单result行已在停服拥有者锁下核对；原回执保持由驱动逐项断言，不以最终标题相同推断。服务/计划停止后的旧恢复不会因显式重启重新启用。
+
+## D2b 故障、迁移与审查
+
+Store真实SQLite集成覆盖默认0/永久失败不重跑、15/60秒退避、额外1–2次预算、1–1440分钟窗口、原任务新attempt、有限去重、来源过期、取消、手动优先和已有结果apply-only。领取槽后与最终guard许可前分别重查来源与计划代次；手动开始/继续暂停尚未持租约的自动queued/applying，已持lease不抢占。已提交事实不重复，窗口耗尽只终止自动恢复；明确手动继续已有结果仍按来源规则应用。
+
+Controller故障夹具覆盖已知永久模型结果遇SQL终态写入失败、内存保留、final shutdown与存储恢复，不将已知永久失败覆写成可收费重跑的unknown。stop epoch在实际持久MarkStopped/Resume上验证，旧epoch被关闭，同epoch同毫秒及created_ms回退1小时仍保留，下一次stop推进代次；这是状态/时钟夹具，不代表真实时间旅行。
+
+v8临时库从实际旧DDL构建，含非空WAL、全局条件/历史、持久lease和部分已提交回执。唯一拥有者一致性备份v8 integrity_check=ok；全部旧表逐项保持，升级schema9仅增实际recovery表，旧计划不会获得重试授权；全局restore产生v3。见 `store-recovery.log`。实际D2a schema8 helper在新隔离schema9副本上拒绝，错误为 `database schema is newer than this client`；不冒称正式回退更新或索引重建通过。
+
+全仓 `test-pre-app.log`、`vet-pre-app.log`、Store/daemon/agents/desktop `race-pre-app.log` 通过；末次stop rollback补断言 `stop-rollback-final.log` 通过，未改变生产代码。分组与跨组审查27文件当前0项，5个已解决根因及脚本清理修复保留于 `review/resolved_comments.jsonl`；HTML/Markdown与覆盖在同目录。原审查时“实际App待执行”是当时状态，最终以 `real-app.json` 为准。
+
+## D2b 本机交付
+
+完整 UI/helper/LaunchAgent/Agent 桥与DMG在 `build/p3-recovery-d2b-production/`，严格深度codesign通过；仍为ad-hoc本机验证包。用户图标/design/roadmap/builder变动保留并排除于阶段提交；它们影响本机包外观，不以本包冒称正式发行。
+
+| 口径 | 字节 |
+| --- | ---: |
+| 主DMG | 15,165,389 |
+| App普通文件逻辑大小 | 34,067,711 |
+| 首次额外Rust/E5归档 | 285,752,286 |
+| App + 实际准备合成根逻辑占用 | 526,057,445 |
+| 更新下载量 | 未验证 |
+
+体积明细 `sizes.json`；组件归档未变化，沿用已有下载验证，没有重复下载。APFS分配不等于可释放空间。Developer ID、公证、正式更新源、Gatekeeper与干净macOS15+ arm64仍未通过，继续F3。
+
+检查与提交/远端回执分别为 `build/p3-recovery-d2b/final-checks.json`、`delivery-d2b.json`。每阶段临时handoff由脚本直接按格式生成，未自动调用禁止模型调用的源Skill，不入库。D2完成后继续U/I/A/R/G/F，总Goal未完成。

@@ -324,18 +324,38 @@ type OrganizationEntry struct {
 	Receipt *OrganizationReceipt `json:"receipt,omitempty"`
 }
 type OrganizationTask struct {
-	AttemptKind string               `json:"attempt_kind,omitempty"`
-	ID          string               `json:"task"`
-	Project     string               `json:"project"`
-	State       string               `json:"state"`
-	Attempt     int64                `json:"attempt"`
-	Cancelled   bool                 `json:"cancel_requested"`
-	Error       string               `json:"error_code,omitempty"`
-	Snapshot    OrganizationSnapshot `json:"snapshot"`
-	Result      *OrganizationResult  `json:"result,omitempty"`
-	Entries     []OrganizationEntry  `json:"entries"`
-	Execution   json.RawMessage      `json:"execution,omitempty"`
-	CreatedAt   string               `json:"created_at"`
+	Attempts    []OrganizationAttempt `json:"attempts,omitempty"`
+	Recovery    *OrganizationRecovery `json:"recovery,omitempty"`
+	AttemptKind string                `json:"attempt_kind,omitempty"`
+	ID          string                `json:"task"`
+	Project     string                `json:"project"`
+	State       string                `json:"state"`
+	Attempt     int64                 `json:"attempt"`
+	Cancelled   bool                  `json:"cancel_requested"`
+	Error       string                `json:"error_code,omitempty"`
+	Snapshot    OrganizationSnapshot  `json:"snapshot"`
+	Result      *OrganizationResult   `json:"result,omitempty"`
+	Entries     []OrganizationEntry   `json:"entries"`
+	Execution   json.RawMessage       `json:"execution,omitempty"`
+	CreatedAt   string                `json:"created_at"`
+}
+
+type OrganizationAttempt struct {
+	Attempt   int64           `json:"attempt"`
+	Kind      string          `json:"kind"`
+	State     string          `json:"state"`
+	Execution json.RawMessage `json:"execution,omitempty"`
+}
+
+// Recovery is a receipt of the current policy/budget, not an adoption or a
+// claim that another model call has already run.
+type OrganizationRecovery struct {
+	State      string `json:"state"`
+	ExtraLimit int    `json:"extra_limit"`
+	Used       int    `json:"used"`
+	DeadlineMS int64  `json:"deadline_ms"`
+	NextMS     int64  `json:"next_ms"`
+	Reason     string `json:"reason,omitempty"`
 }
 type OrganizationResume struct {
 	Task            string `json:"task"`

@@ -25,6 +25,9 @@ func (s *Store) StartOrganization(ctx context.Context, d records.OrganizationSta
 	if err != nil || !created {
 		return t, created, err
 	}
+	if err = s.pauseUnownedRecoveries(ctx, tx, d.Project, t.ID); err != nil {
+		return t, false, err
+	}
 	return t, true, tx.Commit()
 }
 
@@ -140,6 +143,10 @@ func organizationTask(ctx context.Context, tx *sql.Tx, id string) (records.Organ
 	} else if err != sql.ErrNoRows {
 		return t, err
 	}
+	t.Recovery, err = organizationRecoveryTx(ctx, tx, id)
+	if err != nil {
+		return t, err
+	}
 	t.Entries = []records.OrganizationEntry{}
 	entriesSQL := `SELECT id,payload,state,error_code,receipt FROM organization_items WHERE task=? ORDER BY position`
 	args := []any{id}
@@ -170,7 +177,25 @@ func organizationTask(ctx context.Context, tx *sql.Tx, id string) (records.Organ
 		}
 		t.Entries = append(t.Entries, entry)
 	}
-	return t, rows.Err()
+	if err = rows.Err(); err != nil {
+		return t, err
+	}
+	rows.Close()
+	history, err := tx.QueryContext(ctx, `SELECT attempt,kind,state,execution FROM organization_attempts WHERE task=? ORDER BY attempt`, id)
+	if err != nil {
+		return t, err
+	}
+	defer history.Close()
+	for history.Next() {
+		var a records.OrganizationAttempt
+		var process string
+		if err = history.Scan(&a.Attempt, &a.Kind, &a.State, &process); err != nil {
+			return t, err
+		}
+		a.Execution = json.RawMessage(process)
+		t.Attempts = append(t.Attempts, a)
+	}
+	return t, history.Err()
 }
 func (s *Store) OrganizationTask(ctx context.Context, id string) (records.OrganizationTask, error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -216,6 +241,19 @@ func (s *Store) ClaimOrganization(ctx context.Context, id string, attempt int64)
 	}
 	if err = s.checkOrganizationPlan(ctx, tx, id); err != nil {
 		return err
+	}
+	current, e := s.organizationModelSourcesCurrent(ctx, tx, id, attempt)
+	if e != nil {
+		return e
+	}
+	if !current {
+		if err = s.expireOrganizationModel(ctx, tx, id, attempt); err != nil {
+			return err
+		}
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+		return records.MergeError("proposal_expired")
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE organization_tasks SET state='running' WHERE id=? AND attempt=? AND state='queued' AND cancelled=0`, id, attempt)
 	if err != nil {
@@ -497,7 +535,8 @@ func (s *Store) CancelOrganization(ctx context.Context, id string) (records.Orga
 			reviewPending = true
 		}
 	}
-	if ((t.State == "completed" || t.State == "partial_failed" || t.State == "failed") && !reviewPending) || t.Cancelled {
+	recovering := t.Recovery != nil && (t.Recovery.State == "active" || t.Recovery.State == "waiting") && t.State != "completed"
+	if ((t.State == "completed" || t.State == "partial_failed" || t.State == "failed") && !reviewPending && !recovering) || t.Cancelled {
 		return t, nil
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE organization_tasks SET cancelled=1,state='cancelled',attempt=attempt+1 WHERE id=?`, id); err != nil {
@@ -508,6 +547,11 @@ func (s *Store) CancelOrganization(ctx context.Context, id string) (records.Orga
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE organization_items SET state='cancelled' WHERE task=? AND state='pending'`, id); err != nil {
 		return t, err
+	}
+	if s.Schema >= 9 {
+		if _, err = tx.ExecContext(ctx, `UPDATE organization_recovery SET state='cancelled',next_ms=0,reason='task_cancelled' WHERE task=?`, id); err != nil {
+			return t, err
+		}
 	}
 	if t.Snapshot.Schema == records.OrganizationReviewSchema || t.Snapshot.Schema == records.OrganizationGlobalSchema {
 		if _, err = tx.ExecContext(ctx, `UPDATE organization_reviews SET state='cancelled' WHERE task=? AND state='review_pending'`, id); err != nil {
@@ -526,8 +570,34 @@ func (s *Store) CancelOrganization(ctx context.Context, id string) (records.Orga
 	return t, tx.Commit()
 }
 func (s *Store) InterruptOrganizations(ctx context.Context) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE organization_attempts SET state='interrupted' WHERE state IN ('queued','running','applying'); UPDATE organization_tasks SET state='interrupted',attempt=attempt+1,error_code='service_interrupted' WHERE state IN ('queued','running','applying')`)
-	return err
+	rows, err := s.DB.QueryContext(ctx, `SELECT id,attempt FROM organization_tasks WHERE state IN ('queued','running','applying')`)
+	if err != nil {
+		return err
+	}
+	type dead struct {
+		id      string
+		attempt int64
+	}
+	var old []dead
+	for rows.Next() {
+		var d dead
+		if err = rows.Scan(&d.id, &d.attempt); err != nil {
+			rows.Close()
+			return err
+		}
+		old = append(old, d)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, d := range old {
+		if err = s.InterruptOrganization(ctx, d.id, d.attempt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 func (s *Store) ResumeOrganization(ctx context.Context, d records.OrganizationResume) (records.OrganizationTask, bool, error) {
 	var empty records.OrganizationTask
@@ -578,6 +648,14 @@ func (s *Store) ResumeOrganization(ctx context.Context, d records.OrganizationRe
 	if _, err = tx.ExecContext(ctx, `UPDATE organization_items SET state='pending',error_code='' WHERE task=? AND state='failed'`, t.ID); err != nil {
 		return t, false, err
 	}
+	if s.Schema >= 9 {
+		if _, err = tx.ExecContext(ctx, `UPDATE organization_recovery SET state='done',next_ms=0,reason='user_resume' WHERE task=?`, t.ID); err != nil {
+			return t, false, err
+		}
+	}
+	if err = s.pauseUnownedRecoveries(ctx, tx, t.Project, t.ID); err != nil {
+		return t, false, err
+	}
 	t, err = organizationTask(ctx, tx, t.ID)
 	if err != nil {
 		return t, false, err
@@ -588,12 +666,44 @@ func (s *Store) ResumeOrganization(ctx context.Context, d records.OrganizationRe
 // InterruptOrganization fences only the dead owner. Receipts already committed
 // survive; a later read retries this transition if persistence was unavailable.
 func (s *Store) InterruptOrganization(ctx context.Context, id string, attempt int64) error {
+	return s.InterruptOrganizationOutcome(ctx, id, attempt, false, "")
+}
+
+func (s *Store) InterruptOrganizationOutcome(ctx context.Context, id string, attempt int64, known bool, failure string) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	r, err := tx.ExecContext(ctx, `UPDATE organization_tasks SET state='interrupted',attempt=attempt+1,error_code='service_interrupted' WHERE id=? AND attempt=? AND state IN ('queued','running','applying') AND cancelled=0`, id, attempt)
+	if !known {
+		var raw string
+		err = tx.QueryRowContext(ctx, `SELECT execution FROM organization_attempts WHERE task=? AND attempt=?`, id, attempt).Scan(&raw)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		var outcome struct {
+			Known   bool   `json:"outcome_recorded"`
+			Failure string `json:"outcome_code"`
+		}
+		if json.Unmarshal([]byte(raw), &outcome) == nil && outcome.Known {
+			known, failure = true, outcome.Failure
+		}
+	}
+	state, reason := "interrupted", "service_interrupted"
+	if known {
+		if failure != "" {
+			state, reason = "failed", failure
+		} else {
+			var persisted bool
+			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM organization_results WHERE task=?)`, id).Scan(&persisted); err != nil {
+				return err
+			}
+			if !persisted {
+				reason = "result_unpersisted"
+			}
+		}
+	}
+	r, err := tx.ExecContext(ctx, `UPDATE organization_tasks SET state=?,attempt=attempt+1,error_code=? WHERE id=? AND attempt=? AND state IN ('queued','running','applying') AND cancelled=0`, state, reason, id, attempt)
 	if err != nil {
 		return err
 	}
@@ -602,7 +712,7 @@ func (s *Store) InterruptOrganization(ctx context.Context, id string, attempt in
 		return err
 	}
 	if n > 0 {
-		if _, err = tx.ExecContext(ctx, `UPDATE organization_attempts SET state='interrupted' WHERE task=? AND attempt=?`, id, attempt); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE organization_attempts SET state=? WHERE task=? AND attempt=?`, state, id, attempt); err != nil {
 			return err
 		}
 	}

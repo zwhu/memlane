@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -454,6 +455,15 @@ func (a *App) organizationDetail(c *ui.Context) {
 			executor = "应用已有结果"
 		}
 		meta(c, "执行", fmt.Sprintf("%s · 执行记录 %d", executor, task.Snapshot.Attempt))
+		if task.Recovery != nil {
+			r := task.Recovery
+			label := map[string]string{"active": "正在执行或准备恢复", "waiting": "等待有限重试", "done": "自动恢复已结束", "exhausted": "已达到恢复次数上限", "expired": "自动恢复窗口已结束", "cancelled": "自动恢复已取消"}[r.State]
+			meta(c, "自动恢复", fmt.Sprintf("%s · 已使用%d/%d次额外尝试", label, r.Used, r.ExtraLimit))
+			if r.NextMS > 0 {
+				meta(c, "下一次尝试（UTC）", time.UnixMilli(r.NextMS).UTC().Format("2006-01-02 15:04:05"))
+			}
+			meta(c, "恢复截止（UTC）", time.UnixMilli(r.DeadlineMS).UTC().Format("2006-01-02 15:04:05"))
+		}
 		if task.Error != "" {
 			meta(c, "错误", task.Error)
 		}
@@ -539,6 +549,30 @@ func (a *App) organizationDetail(c *ui.Context) {
 				quietButton(c, "查看材料当前版本").Key("organization-source-" + v.Memory).OnClick(func() { a.openOrganizationMemory(v.Memory) })
 			})
 		}
+		if len(task.Attempts) > 0 {
+			ui.Divider(c)
+			ui.Text(c, "执行与恢复历史").Bold()
+			for _, attempt := range task.Attempts {
+				kind := "模型整理"
+				if attempt.Kind == "apply" {
+					kind = "继续应用已有结果 · 未调用模型"
+				}
+				ui.Text(c, fmt.Sprintf("执行记录%d · %s · %s", attempt.Attempt, kind, organizationStatus(attempt.State)))
+				var process struct {
+					StartedMS int64 `json:"process_started_ms"`
+					EndedMS   int64 `json:"process_ended_ms"`
+				}
+				_ = json.Unmarshal(attempt.Execution, &process)
+				if process.StartedMS > 0 {
+					ui.Text(c, "执行者进程启动（UTC）："+time.UnixMilli(process.StartedMS).UTC().Format("2006-01-02 15:04:05")).TextColor(design.Muted)
+				} else if attempt.Kind != "apply" {
+					ui.Text(c, "执行时间未记录").TextColor(design.Muted)
+				}
+				if process.EndedMS > 0 {
+					ui.Text(c, "进程结束（UTC）："+time.UnixMilli(process.EndedMS).UTC().Format("2006-01-02 15:04:05")).TextColor(design.Muted)
+				}
+			}
+		}
 	})
 	ui.Row(c).Shrink(0).Padding(14, 24, 20, 24).Gap(8).Children(func() {
 		t := s.Task
@@ -551,7 +585,8 @@ func (a *App) organizationDetail(c *ui.Context) {
 				hasReview = true
 			}
 		}
-		if hasReview || t.State == "queued" || t.State == "running" || t.State == "applying" {
+		waitingRecovery := t.Recovery != nil && (t.Recovery.State == "active" || t.Recovery.State == "waiting") && t.State != "completed"
+		if hasReview || waitingRecovery || t.State == "queued" || t.State == "running" || t.State == "applying" {
 			label := "取消摘要整理"
 			if t.Snapshot.Schema != records.OrganizationSchema {
 				label = "取消未完成项"

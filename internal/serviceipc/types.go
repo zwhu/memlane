@@ -64,8 +64,10 @@ type Response struct {
 }
 
 type State struct {
-	Stopped  bool        `json:"stopped"`
-	Restarts []time.Time `json:"restarts"`
+	StopGeneration int64       `json:"stop_generation,omitempty"`
+	LastStoppedMS  int64       `json:"last_stopped_ms,omitempty"`
+	Stopped        bool        `json:"stopped"`
+	Restarts       []time.Time `json:"restarts"`
 }
 
 func SocketPath(root string) string {
@@ -114,6 +116,14 @@ func Resume(root string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	if state.Stopped {
+		if state.StopGeneration == 0 {
+			state.StopGeneration = 1
+		}
+		if state.LastStoppedMS == 0 {
+			state.LastStoppedMS = time.Now().UnixMilli()
+		}
+	}
 	state.Stopped = false
 	state.Restarts = nil
 	return WriteJSON(path, state)
@@ -135,6 +145,13 @@ func MarkStopped(root string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	if !state.Stopped {
+		state.StopGeneration++
+	}
+	if state.StopGeneration == 0 {
+		state.StopGeneration = 1
+	}
 	state.Stopped = true
+	state.LastStoppedMS = time.Now().UnixMilli()
 	return WriteJSON(path, state)
 }

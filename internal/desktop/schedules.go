@@ -19,6 +19,8 @@ type ScheduleUI struct {
 	Selected                                                  string
 	Draft                                                     records.ScheduleDraft
 	ProjectLabel, Frequency, Weekday, Interval, Window, Limit string
+	RetryEnabled                                              bool
+	RetryCount, RecoveryWindow                                string
 	Destinations                                              map[string]bool
 	Requested                                                 *records.ScheduleDraft
 	Busy, Loading, Loaded, Editing                            bool
@@ -111,6 +113,9 @@ func (a *App) newSchedule() {
 	s.Interval = ""
 	s.Window = ""
 	s.Limit = ""
+	s.RetryEnabled = false
+	s.RetryCount = ""
+	s.RecoveryWindow = ""
 	s.Destinations = map[string]bool{}
 	for _, scope := range a.scopes {
 		if scope.ID == project && scope.Kind == "project" {
@@ -138,6 +143,9 @@ func (a *App) editSchedule() {
 	s.Interval = strconv.Itoa(plan.Spec.IntervalHours)
 	s.Window = strconv.Itoa(plan.Spec.WindowMinutes)
 	s.Limit = strconv.Itoa(plan.Spec.MaterialLimit)
+	s.RetryEnabled = plan.Spec.RetryLimit > 0
+	s.RetryCount = strconv.Itoa(plan.Spec.RetryLimit)
+	s.RecoveryWindow = strconv.Itoa(plan.Spec.RecoveryWindowMinutes)
 	s.Destinations = map[string]bool{}
 	for _, id := range plan.Spec.Destinations {
 		s.Destinations[id] = true
@@ -170,6 +178,16 @@ func (a *App) saveSchedule() {
 	}
 	d.Spec.WindowMinutes, _ = strconv.Atoi(s.Window)
 	d.Spec.MaterialLimit, _ = strconv.Atoi(s.Limit)
+	d.Spec.RetryLimit = 0
+	d.Spec.RecoveryWindowMinutes = 0
+	if s.RetryEnabled {
+		d.Spec.RetryLimit, _ = strconv.Atoi(s.RetryCount)
+		d.Spec.RecoveryWindowMinutes, _ = strconv.Atoi(s.RecoveryWindow)
+		if d.Spec.RetryLimit < 1 || d.Spec.RetryLimit > 2 || d.Spec.RecoveryWindowMinutes < 1 || d.Spec.RecoveryWindowMinutes > 1440 {
+			s.Error = "允许自动重试时，请明确填写1–2次额外尝试和1–1440分钟总恢复窗口。"
+			return
+		}
+	}
 	d.Spec.Destinations = nil
 	if d.Spec.Review {
 		for _, scope := range a.scopes {
@@ -294,6 +312,11 @@ func (a *App) scheduleDetail(c *ui.Context) {
 		meta(c, "模型", model)
 		meta(c, "每次材料", fmt.Sprintf("最多 %d 条授权项目材料", plan.Spec.MaterialLimit))
 		meta(c, "补跑窗口", fmt.Sprintf("%d 分钟，醒来后最多补一次", plan.Spec.WindowMinutes))
+		if plan.Spec.RetryLimit > 0 {
+			meta(c, "自动恢复", fmt.Sprintf("最多额外%d次尝试 · 总窗口%d分钟", plan.Spec.RetryLimit, plan.Spec.RecoveryWindowMinutes))
+		} else {
+			meta(c, "自动重试", "未启用")
+		}
 		state := "已停用"
 		if plan.Enabled {
 			state = "已启用"
@@ -307,7 +330,7 @@ func (a *App) scheduleDetail(c *ui.Context) {
 		if a.runtimeStatus.Phase == "stopped" {
 			ui.Text(c, "记忆服务已主动停止，计划不会执行；需你明确启动服务。").Bold()
 		}
-		ui.Text(c, "启用后将按所选频率调用执行者模型，可能发生费用；每次最多一次模型执行。修改/停用会取消尚未完成的旧计划运行，已提交结果保留。").LineHeight(1.7)
+		ui.Text(c, fmt.Sprintf("启用后将按所选频率调用执行者模型，可能发生费用；每次最多%d次客户端整理调用，单次最多2分钟。没有持久结果时才可能重跑模型；已有结果只继续应用。修改/停用会取消旧计划尚未完成的运行，已提交结果保留。", plan.Spec.RetryLimit+1)).LineHeight(1.7)
 		ui.Row(c).Gap(8).Children(func() {
 			quietButton(c, "编辑计划").Key("schedule-edit").Disabled(s.Busy).OnClick(a.editSchedule)
 			label := "确认启用计划"
@@ -372,6 +395,12 @@ func (a *App) scheduleEditor(c *ui.Context) {
 	}
 	ui.TextInput(c.Key("schedule-window"), &s.Window).Label("补跑窗口（分钟）").Placeholder("1–1440").Disabled(s.Busy)
 	ui.TextInput(c.Key("schedule-limit"), &s.Limit).Label("每次材料上限").Placeholder("1–16").Disabled(s.Busy)
+	ui.Checkbox(c.Key("schedule-retry"), &s.RetryEnabled, "允许有限自动重试，额外模型调用可能收费").Disabled(s.Busy)
+	if s.RetryEnabled {
+		ui.TextInput(c.Key("schedule-retry-count"), &s.RetryCount).Label("最多额外尝试次数").Placeholder("1–2").Disabled(s.Busy)
+		ui.TextInput(c.Key("schedule-recovery-window"), &s.RecoveryWindow).Label("总恢复窗口（分钟，包含首次执行）").Placeholder("1–1440").Disabled(s.Busy)
+		ui.Text(c, "仅对明确临时网络错误、超时或意外中断有限恢复；认证、额度、来源过期和无效结果不会自动重跑。已有结果只继续未提交项。保存即确认本页的次数和费用提示，首次仍须单独启用。").LineHeight(1.7)
+	}
 	ui.Checkbox(c.Key("schedule-review"), &spec.Review, "同时提出修改建议，逐项确认").Disabled(s.Busy).OnChange(func() {
 		if !spec.Review {
 			spec.Global = false

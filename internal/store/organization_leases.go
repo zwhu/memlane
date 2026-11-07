@@ -33,6 +33,9 @@ func (s *Store) AcquireOrganizationLease(ctx context.Context, id string, attempt
 	if err = s.checkOrganizationPlan(ctx, tx, id); err != nil {
 		return err
 	}
+	if err = s.checkOrganizationRecoveryWindow(ctx, tx, id, attempt); err != nil {
+		return err
+	}
 	var valid bool
 	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM organization_tasks WHERE id=? AND attempt=? AND cancelled=0 AND state IN ('queued','applying'))`, id, attempt).Scan(&valid); err != nil {
 		return err
@@ -69,6 +72,24 @@ func (s *Store) checkOrganizationLease(ctx context.Context, tx *sql.Tx, id strin
 	if owner != credential || released || expires <= time.Now().UnixMilli() {
 		return records.MergeError("lease_invalid")
 	}
+	return s.checkOrganizationRecoveryWindow(ctx, tx, id, attempt)
+}
+
+func (s *Store) checkOrganizationRecoveryWindow(ctx context.Context, tx *sql.Tx, id string, attempt int64) error {
+	if s.Schema < 9 {
+		return nil
+	}
+	var deadline int64
+	err := tx.QueryRowContext(ctx, `SELECT r.deadline_ms FROM organization_recovery r JOIN organization_attempts a ON a.task=r.task WHERE r.task=? AND a.attempt=? AND (a.kind='model' OR a.resume_id LIKE 'auto-recovery:%')`, id, attempt).Scan(&deadline)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if deadline <= time.Now().UnixMilli() {
+		return records.MergeError("recovery_window")
+	}
 	return nil
 }
 
@@ -79,6 +100,9 @@ func (s *Store) RenewOrganizationLease(ctx context.Context, id string, attempt i
 	}
 	defer tx.Rollback()
 	if err = s.checkOrganizationPlan(ctx, tx, id); err != nil {
+		return err
+	}
+	if err = s.checkOrganizationRecoveryWindow(ctx, tx, id, attempt); err != nil {
 		return err
 	}
 	r, err := tx.ExecContext(ctx, `UPDATE organization_leases SET expires_ms=? WHERE task=? AND attempt=? AND owner=? AND released=0 AND expires_ms>? AND EXISTS(SELECT 1 FROM organization_tasks t WHERE t.id=task AND t.attempt=organization_leases.attempt AND t.cancelled=0 AND t.state IN ('queued','running','applying'))`, now.Add(OrganizationLeaseTTL).UnixMilli(), id, attempt, owner, now.UnixMilli())
@@ -106,6 +130,22 @@ func (s *Store) RegisterOrganizationProcess(ctx context.Context, id string, atte
 	defer tx.Rollback()
 	if err = s.checkOrganizationLease(ctx, tx, id, attempt); err != nil {
 		return err
+	}
+	if err = s.checkOrganizationPlan(ctx, tx, id); err != nil {
+		return err
+	}
+	current, e := s.organizationModelSourcesCurrent(ctx, tx, id, attempt)
+	if e != nil {
+		return e
+	}
+	if !current {
+		if err = s.expireOrganizationModel(ctx, tx, id, attempt); err != nil {
+			return err
+		}
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+		return records.MergeError("proposal_expired")
 	}
 	r, err := tx.ExecContext(ctx, `UPDATE organization_leases SET process_pid=? WHERE task=? AND attempt=? AND released=0 AND process_pid=0 AND EXISTS(SELECT 1 FROM organization_tasks t WHERE t.id=task AND t.attempt=organization_leases.attempt AND t.cancelled=0 AND t.state='running')`, pid, id, attempt)
 	if err != nil {

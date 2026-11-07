@@ -24,6 +24,8 @@ type isolatedProposalOptions struct {
 	OnStart                            func(int) error
 }
 type ProposalProcess struct {
+	StartedMS  int64           `json:"process_started_ms,omitempty"`
+	EndedMS    int64           `json:"process_ended_ms,omitempty"`
 	Final      json.RawMessage `json:"-"`
 	Events     map[string]int  `json:"events"`
 	Items      map[string]int  `json:"items"`
@@ -222,6 +224,7 @@ func runProposalProcessOwned(ctx context.Context, executable string, args, env [
 		return out, err
 	}
 	out.Started = true
+	out.StartedMS = time.Now().UnixMilli()
 	out.PID = cmd.Process.Pid
 	if controlRead != nil {
 		_ = controlRead.Close()
@@ -231,6 +234,7 @@ func runProposalProcessOwned(ctx context.Context, executable string, args, env [
 			_ = syscall.Kill(-out.PID, syscall.SIGKILL)
 			_ = cmd.Wait()
 			out.Reaped = cmd.ProcessState != nil
+			out.EndedMS = time.Now().UnixMilli()
 			out.GroupGone = syscall.Kill(-out.PID, 0) == syscall.ESRCH
 			return out, err
 		}
@@ -240,6 +244,7 @@ func runProposalProcessOwned(ctx context.Context, executable string, args, env [
 			_ = syscall.Kill(-out.PID, syscall.SIGKILL)
 			_ = cmd.Wait()
 			out.Reaped = cmd.ProcessState != nil
+			out.EndedMS = time.Now().UnixMilli()
 			out.GroupGone = syscall.Kill(-out.PID, 0) == syscall.ESRCH
 			return out, err
 		}
@@ -349,11 +354,13 @@ func runProposalProcessOwned(ctx context.Context, executable string, args, env [
 		time.Sleep(10 * time.Millisecond)
 	}
 	if ctx.Err() != nil {
+		out.EndedMS = time.Now().UnixMilli()
 		out.Cancelled = true
 		out.Failure = ctx.Err().Error()
 		return out, ctx.Err()
 	}
 	if err != nil || scan.Err() != nil || malformed || tool || !out.GroupGone || !out.Terminal || out.Events["turn.completed"] != 1 || out.Events["turn.started"] != 1 || out.Events["thread.started"] != 1 || out.Events["turn.failed"] > 0 || out.Events["error"] > 0 || out.Items["agent_message"] != 1 {
+		out.EndedMS = time.Now().UnixMilli()
 		if out.Failure == "" {
 			out.Failure = safeReason(strings.TrimSpace(diagnostic.text.String()))
 			if out.Failure == "" {
@@ -363,5 +370,6 @@ func runProposalProcessOwned(ctx context.Context, executable string, args, env [
 		return out, errors.New(out.Failure)
 	}
 	out.Final = json.RawMessage(final)
+	out.EndedMS = time.Now().UnixMilli()
 	return out, nil
 }

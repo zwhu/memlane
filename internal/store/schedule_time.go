@@ -10,6 +10,9 @@ import (
 
 func validateScheduleSpec(spec records.ScheduleSpec) error {
 	invalid := records.MergeError("invalid_request")
+	if spec.RetryLimit < 0 || spec.RetryLimit > 2 || spec.RetryLimit == 0 && spec.RecoveryWindowMinutes != 0 || spec.RetryLimit > 0 && (spec.RecoveryWindowMinutes < 1 || spec.RecoveryWindowMinutes > 1440) {
+		return invalid
+	}
 	if _, err := uuid.Parse(spec.Project); err != nil {
 		return invalid
 	}
