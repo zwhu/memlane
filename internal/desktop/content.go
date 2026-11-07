@@ -15,16 +15,17 @@ type MemoryItem struct {
 	SourceDetail                                                                                  *records.AgentSource
 	Tags                                                                                          []string
 	Derived                                                                                       *records.DerivedInfo
+	Experience                                                                                    *records.ExperienceInfo
 }
 type ProjectItem struct{ ID, Name, Path string }
 type MemoryHistory struct {
-	Revision               int64
-	Title, Text, Operation string
-	CreatedAt              time.Time
+	Revision                           int64
+	Title, Text, Operation, Conditions string
+	CreatedAt                          time.Time
 }
 type Draft struct {
-	Title, Text, Scope string
-	Revision           int64
+	Title, Text, Scope, Conditions string
+	Revision                       int64
 }
 
 func (a *App) rememberDraft() {
@@ -37,6 +38,7 @@ func (a *App) rememberDraft() {
 	}
 	d := a.drafts[key]
 	d.Title, d.Text, d.Scope = a.draftTitle, a.draft, a.draftScope
+	d.Conditions = a.draftConditions
 	a.drafts[key] = d
 }
 
@@ -74,6 +76,7 @@ func (a *App) navigate(page, scope string) {
 			}
 			if draft, ok := a.drafts[key]; ok {
 				a.draftTitle, a.draft, a.draftScope = draft.Title, draft.Text, draft.Scope
+				a.draftConditions = draft.Conditions
 			}
 		}
 		a.memoryRoute = route
@@ -100,6 +103,7 @@ func (a *App) newMemory() {
 	a.editing = true
 	d := a.drafts["new"]
 	a.draftTitle, a.draft, a.draftScope = d.Title, d.Text, d.Scope
+	a.draftConditions = d.Conditions
 	if a.draftScope == "" {
 		a.draftScope = "全局经验"
 		for _, p := range a.projects {
@@ -124,12 +128,16 @@ func (a *App) editMemory() {
 	d, ok := a.drafts[item.ID]
 	if !ok {
 		d = Draft{Title: item.Title, Text: item.Text, Scope: item.ScopeName, Revision: item.Revision}
+		if item.Experience != nil {
+			d.Conditions = item.Experience.Conditions
+		}
 		if label := a.scopeLabel(item.Dataset); label != "" {
 			d.Scope = label
 		}
 		a.drafts[item.ID] = d
 	}
 	a.draftTitle, a.draft, a.draftScope = d.Title, d.Text, d.Scope
+	a.draftConditions = d.Conditions
 }
 func (a *App) scopeOptions() []string {
 	if len(a.scopes) > 0 {

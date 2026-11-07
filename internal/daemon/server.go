@@ -334,6 +334,21 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 	}
 	svc := memory.Service{Store: s.store, Engine: selected}
 	switch r.Op {
+	case "experience_copy":
+		if !r.UserConfirmed {
+			return nil, records.MergeError("confirmation_required")
+		}
+		if r.ExperienceCopy == nil {
+			return nil, records.MergeError("invalid_request")
+		}
+		receipt, err := s.store.CopyExperience(operation, *r.ExperienceCopy)
+		if err == nil {
+			select {
+			case s.work <- struct{}{}:
+			default:
+			}
+		}
+		return receipt, err
 	case "organization_start", "organization_cancel", "organization_resume":
 		if !r.UserConfirmed {
 			return nil, records.MergeError("confirmation_required")

@@ -14,6 +14,7 @@ import (
 
 type App struct {
 	organization                OrganizationUI
+	experience                  ExperienceUI
 	organizationMode            bool
 	organizationSources         []records.OrganizationSource
 	organizationSourcesFor      string
@@ -61,6 +62,7 @@ type App struct {
 	editing         bool
 	draft           string
 	draftTitle      string
+	draftConditions string
 	draftScope      string
 	drafts          map[string]Draft
 	items           []MemoryItem
@@ -590,6 +592,9 @@ func (a *App) editor(c *ui.Context) {
 			ui.Select(c.Key("draft-scope"), &a.draftScope, a.scopeOptions()).Label("记忆范围").Disabled(a.detailMode == "edit" || a.saving)
 		})
 		ui.TextArea(c.Key("memory-draft"), &a.draft).Disabled(a.saving).Label("记忆内容").Placeholder("记录一条项目经验…").Grow(1).MinHeight(80).LineHeight(1.7)
+		if item := a.current(); a.detailMode == "edit" && item != nil && item.Experience != nil {
+			ui.TextArea(c.Key("experience-conditions"), &a.draftConditions).Disabled(a.saving).Label("适用条件").Height(80).LineHeight(1.6)
+		}
 		message := "内容暂存于当前窗口，尚未保存。"
 		if a.onSave == nil {
 			message = "记忆服务尚未就绪，暂不能保存。"
@@ -621,12 +626,22 @@ func (a *App) memoryDetail(c *ui.Context) {
 		}
 		ui.Text(c, item.Title).FontSize(design.Title).Bold()
 		ui.Text(c, item.Text).Selectable().LineHeight(1.8)
+		if item.Experience != nil {
+			ui.Text(c, "适用条件").Bold()
+			conditions := item.Experience.Conditions
+			if conditions == "" {
+				conditions = "原文复制，尚未填写通用适用条件；使用时核对项目明确约定。"
+			}
+			ui.Text(c, conditions).Selectable().LineHeight(1.7)
+			ui.Text(c, "项目明确约定优先于全局建议。").FontSize(design.Small).TextColor(design.Muted)
+		}
+		a.experienceCopyPreview(c, *item)
 		ui.Column(c).Gap(10).Children(func() {
 			meta(c, "范围", item.ScopeName)
 			meta(c, "来源", item.Source)
 			meta(c, "创建", item.CreatedAt.Format("2006-01-02 15:04"))
 			operation := operationLabel(item.Operation)
-			if item.Derived != nil && item.Operation == "save" {
+			if item.Derived != nil && item.Experience == nil && item.Operation == "save" {
 				operation = "自动摘要"
 			}
 			if item.Operation == "save" && strings.Contains(item.Source, "用户确认合并") {
@@ -637,7 +652,9 @@ func (a *App) memoryDetail(c *ui.Context) {
 			}
 			meta(c, "版本", fmt.Sprintf("v%d · %s", item.Revision, operation))
 			meta(c, "保存", "已保存")
-			if item.Derived != nil {
+			if item.Experience != nil {
+				meta(c, "形态", experienceKindLabel(item.Experience.Kind))
+			} else if item.Derived != nil {
 				meta(c, "形态", "派生摘要 · "+derivedLabel(item.Derived.State))
 			}
 			if len(item.Tags) > 0 {
@@ -672,6 +689,9 @@ func (a *App) memoryDetail(c *ui.Context) {
 			if item.Derived != nil {
 				sourceTitle = "生成时正文 · 派生转述"
 			}
+			if item.Experience != nil {
+				sourceTitle = "保存时全局正文"
+			}
 			ui.Text(c, sourceTitle).Bold()
 			ui.Text(c, item.Original).Selectable().LineHeight(1.7).Padding(0, 0, 0, 12).BorderWidth(0, 0, 0, 2).BorderColor(design.Muted)
 			ui.Text(c, item.Source+" · 已保留来源").FontSize(design.Small).TextColor(design.Muted)
@@ -686,13 +706,16 @@ func (a *App) memoryDetail(c *ui.Context) {
 		})
 		if item.Derived != nil && a.organizationSourcesFor == item.ID {
 			ui.Divider(c)
-			ui.Text(c, "摘要冻结依据").Bold()
+			ui.Text(c, "冻结依据与具体版本").Bold()
 			ui.Text(c, "摘要与同源转述不构成新证据，来源版本和历史保留。").FontSize(design.Small).TextColor(design.Muted)
 			if a.organizationSourcesError != "" {
 				ui.Text(c, a.organizationSourcesError).TextColor(design.Muted)
 			}
 			for _, source := range a.organizationSources {
 				ui.Text(c, fmt.Sprintf("%s · v%d", source.Input.Title, source.Revision)).Bold()
+				if source.Changed {
+					ui.Text(c, fmt.Sprintf("来源已变化 · 当前 v%d；冻结依据与已确认正文保留。", source.CurrentRevision)).FontSize(design.Small).TextColor(design.Muted)
+				}
 				ui.Text(c, source.Quote).Selectable().LineHeight(1.7)
 				quietButton(c, "查看摘要依据").Key("derived-source-" + source.Memory).OnClick(func() { a.openMergeMemory(source.Memory, source.Project) })
 			}
@@ -717,6 +740,10 @@ func (a *App) memoryDetail(c *ui.Context) {
 		ui.Row(c).Shrink(0).Padding(18, 24, 24, 24).Gap(8).Children(func() {
 			actionButton(c, "编辑", icons["edit"]).Disabled(item.State != "active").OnClick(a.editMemory)
 			actionButton(c, "历史记录", icons["history"]).OnClick(func() { a.detailMode = "history"; a.detailScroll.Y = 0 })
+			if a.isProjectKnowledge(*item) {
+				quietButton(c, "复制到全局…").Key("experience-copy-preview").Disabled(a.experience.Busy).OnClick(func() { a.beginExperienceCopy(*item) })
+				quietButton(c, "AI 提炼为全局…").Key("experience-distill").Disabled(a.organization.Busy).OnClick(func() { a.beginExperienceDistill(*item) })
+			}
 			if a.organization.Selected != "" {
 				quietButton(c, "返回摘要任务").OnClick(func() { a.selectOrganization(a.organization.Selected) })
 			}
@@ -740,6 +767,9 @@ func (a *App) historyView(c *ui.Context, item MemoryItem) {
 					ui.Text(c, h.Title).Bold()
 				}
 				ui.Text(c, h.Text).Selectable().LineHeight(1.7).Padding(14).Background(design.Surface)
+				if item.Experience != nil {
+					meta(c, "恢复适用条件", h.Conditions)
+				}
 			}
 		}
 		ui.Row(c).Gap(8).Children(func() {
@@ -771,6 +801,9 @@ func (a *App) historyView(c *ui.Context, item MemoryItem) {
 				ui.Text(c, h.Title).Bold()
 			}
 			ui.Text(c, h.Text).Selectable().LineHeight(1.7)
+			if item.Experience != nil {
+				meta(c, "适用条件", h.Conditions)
+			}
 			if i+1 < len(a.history) {
 				ui.Text(c, "相较上一版本").FontSize(design.Small).TextColor(design.Muted)
 				ui.Text(c, lineDiff(a.history[i+1].Text, h.Text)).FontSize(design.Small).Selectable().LineHeight(1.6).Background(design.Surface).Padding(10)

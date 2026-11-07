@@ -24,7 +24,7 @@ func displayVersion(v records.Version) MemoryItem {
 	} else if v.ScopeKind == "experience" {
 		category = "通用经验"
 	}
-	return MemoryItem{ID: v.Memory, Dataset: v.Dataset, Title: v.Title, Text: v.Text, Original: v.Original, Source: v.Source, ScopeName: v.ScopeName, Category: category, Revision: v.Revision, State: v.State, IndexState: v.IndexState, Operation: v.Operation, CreatedAt: created.Local(), SourceDetail: v.SourceDetail, Tags: v.Tags, Derived: v.Derived}
+	return MemoryItem{ID: v.Memory, Dataset: v.Dataset, Title: v.Title, Text: v.Text, Original: v.Original, Source: v.Source, ScopeName: v.ScopeName, Category: category, Revision: v.Revision, State: v.State, IndexState: v.IndexState, Operation: v.Operation, CreatedAt: created.Local(), SourceDetail: v.SourceDetail, Tags: v.Tags, Derived: v.Derived, Experience: v.Experience}
 }
 func displayVersions(vs []records.Version) []MemoryItem {
 	out := make([]MemoryItem, 0, len(vs))
@@ -40,7 +40,11 @@ func displayHistory(vs []records.History) []MemoryHistory {
 		if created.IsZero() {
 			created, _ = time.Parse(time.RFC3339Nano, v.CreatedAt)
 		}
-		out = append(out, MemoryHistory{Revision: v.Revision, Title: v.Title, Text: v.Text, Operation: v.Operation, CreatedAt: created.Local()})
+		conditions := ""
+		if v.Experience != nil {
+			conditions = v.Experience.Conditions
+		}
+		out = append(out, MemoryHistory{Revision: v.Revision, Title: v.Title, Text: v.Text, Operation: v.Operation, CreatedAt: created.Local(), Conditions: conditions})
 	}
 	return out
 }

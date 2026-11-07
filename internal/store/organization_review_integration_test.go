@@ -225,7 +225,7 @@ func TestOrganizationV4MigrationPreservesCommittedWAL(t *testing.T) {
 	mustMerge(t, reader.Close())
 	mustMerge(t, e)
 	defer current.Close()
-	if current.Schema != 5 {
+	if current.Schema != SchemaVersion {
 		t.Fatal(current.Schema)
 	}
 	for _, name := range tables {

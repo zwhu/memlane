@@ -17,6 +17,7 @@ import (
 )
 
 type ToolCall struct {
+	CallID    string             `json:"call_id,omitempty"`
 	Tool      string             `json:"tool"`
 	Arguments any                `json:"arguments,omitempty"`
 	Response  agentbridge.Result `json:"response"`
@@ -178,6 +179,11 @@ func Run(ctx context.Context, d Discovery, i Installation, o RunOptions) (Execut
 	}
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 4096), 8*1024*1024)
+	type piStart struct {
+		name string
+		args any
+	}
+	piCalls := map[string]piStart{}
 	for scanner.Scan() {
 		var event map[string]any
 		if json.Unmarshal(scanner.Bytes(), &event) != nil {
@@ -185,6 +191,13 @@ func Run(ctx context.Context, d Discovery, i Installation, o RunOptions) (Execut
 		}
 		type_, _ := event["type"].(string)
 		out.Events[type_]++
+		if d.Agent == "pi" && type_ == "tool_execution_start" {
+			id, _ := event["toolCallId"].(string)
+			name, _ := event["toolName"].(string)
+			if id != "" && strings.HasPrefix(name, "memory_") && len(piCalls) < 128 {
+				piCalls[id] = piStart{name: name, args: event["args"]}
+			}
+		}
 		if message, ok := event["message"].(map[string]any); ok {
 			if provider, ok := message["provider"].(string); ok {
 				out.Provider = provider
@@ -243,11 +256,18 @@ func Run(ctx context.Context, d Discovery, i Installation, o RunOptions) (Execut
 			continue
 		}
 		if response, ok := wrapped(item); ok {
+			callID, _ := item["toolCallId"].(string)
 			args := item["arguments"]
 			if args == nil {
 				args = item["args"]
 			}
-			out.Calls = append(out.Calls, ToolCall{Tool: name, Arguments: args, Response: response})
+			if d.Agent == "pi" {
+				if started, exists := piCalls[callID]; exists && started.name == name && args == nil {
+					args = started.args
+				}
+				delete(piCalls, callID)
+			}
+			out.Calls = append(out.Calls, ToolCall{CallID: callID, Tool: name, Arguments: args, Response: response})
 		}
 	}
 	scanErr := scanner.Err()

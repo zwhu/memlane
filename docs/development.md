@@ -380,3 +380,12 @@ MEMLANE_C3_QUALITY_REAL=1 sh scripts/go.sh test -json ./internal/agents -run '^T
 ```
 
 真实模型操作沿用本机 traex 已有认证/选择，需已就绪的合成组件缓存及解锁桌面；不修改日常 Agent 配置。两次 App 脚本都按实际包身份与合成数据 root 校验。恢复脚本中的 SQLite tag INSERT 拒绝和 Rust dataset 阻挡文件是明确故障夹具；正常返回、进程活动取消及摘要检索仍为真实链路。质量测试 pass 只证明进程/schema/两种弃答断言，需逐项核对实际正文和引用。
+
+
+## P3-E 全局经验验收
+
+运行 `python3 scripts/create-p3-global-fixture.py` 新建仅含合成数据的隔离根；按输出的runtime-config与identifier使用完整builder构建 `--out build/p3-global-app --name MemlaneGlobal --automation --skip-dmg`。运行 `python3 scripts/verify-p3-global-app.py` 验证真实App/traex/Rust。根必须新建，不能重复跑有新版本的初次流程。
+
+`sh scripts/go.sh build -o build/p3-global/agent-check ./cmd/p2-agent-check` 后运行 `python3 scripts/verify-p3-global-agent.py`，经真实pi Extension读取全局当前版本并拒绝指定未授权来源；只写本轮pi-agent目录，断开保留其他字段。`python3 scripts/verify-p3-global-presentation.py` 要求同根主流程/pi通过且已停服，用修订包复核全局页导航、重启条件和出处变化；没有再次模型调用。
+
+真实v3质量基线：`MEMLANE_GLOBAL_QUALITY_REAL=1 sh scripts/go.sh test ./internal/agents -run '^TestOrganizationRealGlobalQualityBaseline$' -count=1 -v`。全量test/vet与受影响race同前述标准。完整生产包仍用 `python3 scripts/build-client.py --out build/p3-global-production`，量化与具体限制见 [E 验证](p3-global-validation.md)。

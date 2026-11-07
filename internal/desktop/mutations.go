@@ -35,14 +35,22 @@ func (a *App) saveMemory() {
 	if kind == "save" {
 		mutation.Source = "手动新增"
 	}
+	if item := a.current(); kind == "edit" && item != nil && item.Experience != nil {
+		conditions := a.draftConditions
+		mutation.Conditions = &conditions
+	}
 	if prior, ok := a.pendingMutations[key]; ok {
 		mutation.Memory = prior.Memory
-		if prior.Text == mutation.Text && prior.Title == mutation.Title && prior.Dataset == mutation.Dataset {
+		if prior.Text == mutation.Text && prior.Title == mutation.Title && prior.Dataset == mutation.Dataset && sameConditions(prior.Conditions, mutation.Conditions) {
 			mutation = prior
 		}
 	}
 	a.pendingMutations[key] = mutation
 	a.applyMutation(key, mutation)
+}
+
+func sameConditions(a, b *string) bool {
+	return a == nil && b == nil || a != nil && b != nil && *a == *b
 }
 func (a *App) restoreMemory(revision int64) {
 	item := a.current()

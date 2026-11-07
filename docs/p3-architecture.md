@@ -77,3 +77,10 @@ memlaned 是唯一数据库拥有者，持有服务 root 锁和数据库 owner �
 后台进程运行在 SQLite 事务外。内存拥有权记录 task 与 attempt，旧执行清理不能移除新拥有权；取消的持久事务和进程取消共用序列化边界。异常执行结束但终态写入失败时，服务后续查询核对无执行者状态、递增栅栏并返回 interrupted；有持久结果时新 apply attempt 重用项标识，已提交项直接回放，不重跑模型。存储仍不可写时明确返回失败，解除后可重试协调。计划/租约/自动重试没有借此提前宣称完成。
 
 来源递归依赖只使自动派生摘要失效，不撤销用户确认正文或已应用 C1 合并事实。日常 memory_get 拒绝 stale，memory_status 与 App Current 保留标记供历史核对；C1 所有开始/建议/列表/确认均核对直接派生有效性。见 [契约](p3-organization-contract.md) 和 [验收](p3-c3-validation.md)。
+
+
+## E 全局经验职责与验收
+
+App负责显式原文复制、提炼请求、条件预览/确认/拒绝与历史恢复。Store决定源revision/目的范围有效性，原子记录正文/条件/冻结出处/回执；组织runner v3只产结构化候选，不能批准或持有数据库。服务沿用attempt/取消与独立索引栅栏。日常Agent只能读取已授权的全局正文和条件，源项目正文仍需要其项目授权。
+
+pi验收适配器按本机0.84.1事件的toolCallId关联start参数和end回执，避免将错误回执归属推断为成功证据。契约与真实结果见 [E 契约](p3-global-contract.md)、[E 验证](p3-global-validation.md)。

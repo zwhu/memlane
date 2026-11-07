@@ -13,6 +13,8 @@ import (
 )
 
 type OrganizationUI struct {
+	GlobalMode                                                         bool
+	Purpose                                                            string
 	ReviewMode                                                         bool
 	Destinations                                                       map[string]bool
 	Decisions                                                          map[string]records.OrganizationReview
@@ -74,6 +76,8 @@ func (a *App) beginOrganization() {
 	s.Destinations = map[string]bool{}
 	s.Decisions = map[string]records.OrganizationReview{}
 	s.Kind = "knowledge"
+	s.GlobalMode = false
+	s.Purpose = ""
 	s.Project = ""
 	s.ProjectLabel = ""
 	s.Scroll.Y = 0
@@ -217,7 +221,7 @@ func (a *App) startOrganization() {
 		return
 	}
 	if s.Start == nil {
-		d := records.OrganizationStart{OperationID: uuid.NewString(), Project: s.Project, Review: s.ReviewMode}
+		d := records.OrganizationStart{OperationID: uuid.NewString(), Project: s.Project, Review: s.ReviewMode || s.GlobalMode, Global: s.GlobalMode, Purpose: s.Purpose}
 		if s.ReviewMode {
 			for _, scope := range a.scopes {
 				if s.Destinations[scope.ID] {
@@ -333,6 +337,7 @@ func (a *App) organizationList(c *ui.Context) {
 func (a *App) organizationChooser(c *ui.Context) {
 	s := &a.organization
 	ui.Text(c, "项目材料整理").FontSize(design.Title).Bold()
+	ui.Checkbox(c.Key("organization-global-mode"), &s.GlobalMode, "发现全局经验候选，预览确认后保存").Disabled(s.Busy).OnChange(func() { s.Start = nil })
 	ui.Checkbox(c.Key("organization-review-mode"), &s.ReviewMode, "同时提出修改建议，逐项确认后生效").Disabled(s.Busy).OnChange(func() { s.Start = nil; s.Destinations = map[string]bool{} })
 	if s.ReviewMode {
 		ui.Text(c, "可建议移入的项目（可不选；授权不读取其他项目知识）").FontSize(design.Small)
@@ -467,7 +472,7 @@ func (a *App) organizationDetail(c *ui.Context) {
 			}
 		}
 		if task.Result != nil {
-			if task.Snapshot.Schema == records.OrganizationReviewSchema {
+			if task.Snapshot.Schema != records.OrganizationSchema {
 				confirmed, pending := 0, 0
 				for _, e := range task.Entries {
 					if e.State == "review_pending" {
@@ -548,7 +553,7 @@ func (a *App) organizationDetail(c *ui.Context) {
 		}
 		if hasReview || t.State == "queued" || t.State == "running" || t.State == "applying" {
 			label := "取消摘要整理"
-			if t.Snapshot.Schema == records.OrganizationReviewSchema {
+			if t.Snapshot.Schema != records.OrganizationSchema {
 				label = "取消未完成项"
 			}
 			actionButton(c, label, nil).Key("organization-cancel").Disabled(s.Busy).OnClick(a.cancelOrganization)
@@ -624,6 +629,8 @@ func organizationActionLabel(action string) string {
 		return "重复发现"
 	case "conflict":
 		return "冲突发现"
+	case "global_experience":
+		return "全局经验候选"
 	}
 	return action
 }
@@ -649,7 +656,13 @@ func (a *App) organizationReviewPreview(c *ui.Context, t records.OrganizationTas
 	if e.Item.Action == "delete" {
 		ui.Text(c, "确认后逻辑删除，历史保留；恢复产生新版本。").FontSize(design.Small)
 	}
-	if e.Item.Destination != "" {
+	if e.Item.Action == "global_experience" {
+		meta(c, "保存范围", a.scopeLabel(e.Item.Destination))
+		ui.Text(c, "适用条件").Bold()
+		ui.Text(c, e.Item.Conditions).Selectable().LineHeight(1.7)
+		ui.Text(c, "确认后新增全局经验，原项目知识与来源版本保留；项目明确约定优先。").FontSize(design.Small)
+	}
+	if e.Item.Action == "move" {
 		meta(c, "移入项目", a.scopeLabel(e.Item.Destination))
 		ui.Text(c, "正文保留；原项目检索立即排除。").FontSize(design.Small)
 	}
@@ -714,7 +727,7 @@ func (a *App) openOrganizationMemory(id string) {
 // Execution completion and approval are separate facts. The v2 detail heading
 // names the unresolved decision without changing the persistent task state.
 func organizationTaskStatus(t records.OrganizationTask) string {
-	if t.Snapshot.Schema != records.OrganizationReviewSchema || t.State != "completed" {
+	if t.Snapshot.Schema == records.OrganizationSchema || t.State != "completed" {
 		return organizationStatus(t.State)
 	}
 	pending, expired, rejected := 0, 0, 0

@@ -92,7 +92,7 @@ func (s *Store) OrganizationSources(ctx context.Context, memory string, revision
 	if s.Schema < 4 {
 		return out, nil
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT source_memory,source_revision,project,snapshot,quote FROM organization_sources WHERE memory=? AND revision=? ORDER BY source_memory`, memory, revision)
+	rows, err := s.DB.QueryContext(ctx, `SELECT p.source_memory,p.source_revision,p.project,p.snapshot,p.quote,m.current_revision,(m.current_revision!=p.source_revision OR m.dataset!=p.project OR m.state!='active' OR EXISTS(SELECT 1 FROM derived_memories d WHERE d.memory=m.id AND d.revision=p.source_revision AND d.state='stale')) FROM organization_sources p JOIN memories m ON m.id=p.source_memory WHERE p.memory=? AND p.revision=? ORDER BY p.source_memory`, memory, revision)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +100,7 @@ func (s *Store) OrganizationSources(ctx context.Context, memory string, revision
 	for rows.Next() {
 		var v records.OrganizationSource
 		var raw string
-		if err = rows.Scan(&v.Memory, &v.Revision, &v.Project, &raw, &v.Quote); err != nil {
+		if err = rows.Scan(&v.Memory, &v.Revision, &v.Project, &raw, &v.Quote, &v.CurrentRevision, &v.Changed); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal([]byte(raw), &v.Input); err != nil {
@@ -161,6 +161,9 @@ func (s *Store) enrichVersions(ctx context.Context, versions []*records.Version)
 	}
 	err = rows.Err()
 	rows.Close()
+	if err == nil {
+		err = s.enrichExperienceVersions(ctx, versions)
+	}
 	return err
 }
 func (s *Store) followOrganizationVersion(ctx context.Context, tx *sql.Tx, id string, revision int64) error {

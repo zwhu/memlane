@@ -15,10 +15,13 @@ import (
 // the already accepted two-source merge contract. Approval is never model data.
 const OrganizationSchema = "memlane-organization-v1"
 const OrganizationReviewSchema = "memlane-organization-v2"
+const OrganizationGlobalSchema = "memlane-organization-v3"
 const OrganizationInputLimit = 128 * 1024
 const OrganizationOutputLimit = 256 * 1024
 
 type OrganizationStart struct {
+	Global       bool          `json:"global_candidates,omitempty"`
+	Purpose      string        `json:"purpose,omitempty"`
 	Review       bool          `json:"review,omitempty"`
 	Destinations []string      `json:"destinations,omitempty"`
 	OperationID  string        `json:"operation_id"`
@@ -33,6 +36,7 @@ type OrganizationInput struct {
 	Roots []MergeTarget `json:"evidence_roots"`
 }
 type OrganizationSnapshot struct {
+	Purpose      string              `json:"purpose,omitempty"`
 	Destinations []Scope             `json:"destinations,omitempty"`
 	Schema       string              `json:"schema"`
 	Task         string              `json:"task"`
@@ -42,6 +46,7 @@ type OrganizationSnapshot struct {
 	Digest       string              `json:"input_digest"`
 }
 type OrganizationItem struct {
+	Conditions  string        `json:"conditions,omitempty"`
 	Reason      string        `json:"reason,omitempty"`
 	Destination string        `json:"destination,omitempty"`
 	Index       int           `json:"index"`
@@ -75,7 +80,7 @@ func stringID(index int) string {
 }
 func (s *OrganizationSnapshot) Seal() error {
 	invalid := MergeError("invalid_proposal")
-	if (s.Schema != OrganizationSchema && s.Schema != OrganizationReviewSchema) || s.Attempt < 1 || len(s.Inputs) < 1 || len(s.Inputs) > 16 {
+	if (s.Schema != OrganizationSchema && s.Schema != OrganizationReviewSchema && s.Schema != OrganizationGlobalSchema) || s.Attempt < 1 || len(s.Inputs) < 1 || len(s.Inputs) > 16 {
 		return invalid
 	}
 	for _, id := range []string{s.Task, s.Project} {
@@ -83,15 +88,27 @@ func (s *OrganizationSnapshot) Seal() error {
 			return invalid
 		}
 	}
-	if len(s.Destinations) > 8 || (s.Schema == OrganizationSchema && len(s.Destinations) > 0) {
+	if len(s.Destinations) > 9 || (s.Schema != OrganizationGlobalSchema && len(s.Destinations) > 8) || (s.Schema == OrganizationSchema && len(s.Destinations) > 0) {
+		return invalid
+	}
+	if s.Purpose != "" && (s.Purpose != "global" || s.Schema != OrganizationGlobalSchema || len(s.Inputs) != 1) {
 		return invalid
 	}
 	destinations := map[string]bool{}
+	globals := 0
 	for _, d := range s.Destinations {
-		if _, err := uuid.Parse(d.ID); err != nil || d.ID == s.Project || d.Kind != "project" || d.Path == "" || destinations[d.ID] {
+		allowed := d.Kind == "project" && d.Path != ""
+		if s.Schema == OrganizationGlobalSchema && d.Kind == "experience" {
+			allowed = true
+			globals++
+		}
+		if _, err := uuid.Parse(d.ID); err != nil || d.ID == s.Project || !allowed || destinations[d.ID] {
 			return invalid
 		}
 		destinations[d.ID] = true
+	}
+	if s.Schema == OrganizationGlobalSchema && globals != 1 {
+		return invalid
 	}
 	seen := map[string]bool{}
 	size := 0
@@ -174,10 +191,16 @@ func (s OrganizationSnapshot) Decode(raw []byte) (OrganizationResult, error) {
 		if s.Schema == OrganizationSchema && (item.Reason != "" || item.Destination != "") {
 			return out, invalid
 		}
-		if s.Schema == OrganizationReviewSchema && (strings.TrimSpace(item.Reason) == "" || len(item.Reason) > 4096) {
+		if s.Schema != OrganizationSchema && (strings.TrimSpace(item.Reason) == "" || len(item.Reason) > 4096) {
 			return out, invalid
 		}
-		if item.Action != "move" && item.Destination != "" {
+		if item.Action != "move" && item.Action != "global_experience" && item.Destination != "" {
+			return out, invalid
+		}
+		if item.Action != "global_experience" && item.Conditions != "" {
+			return out, invalid
+		}
+		if s.Purpose == "global" && item.Action != "global_experience" {
 			return out, invalid
 		}
 		switch item.Action {
@@ -197,7 +220,7 @@ func (s OrganizationSnapshot) Decode(raw []byte) (OrganizationResult, error) {
 				tags[tag] = true
 			}
 		case "merge", "overwrite", "delete", "move", "duplicate", "conflict":
-			if s.Schema != OrganizationReviewSchema || len(item.Tags) != 0 {
+			if s.Schema == OrganizationSchema || len(item.Tags) != 0 {
 				return out, invalid
 			}
 			if item.Action == "merge" || item.Action == "duplicate" || item.Action == "conflict" {
@@ -227,13 +250,26 @@ func (s OrganizationSnapshot) Decode(raw []byte) (OrganizationResult, error) {
 			if item.Action == "move" {
 				allowed := false
 				for _, d := range s.Destinations {
-					if item.Destination == d.ID {
+					if item.Destination == d.ID && d.Kind == "project" {
 						allowed = true
 					}
 				}
 				if !allowed {
 					return out, invalid
 				}
+			}
+		case "global_experience":
+			if s.Schema != OrganizationGlobalSchema || item.Target != "" || len(item.Tags) != 0 || strings.TrimSpace(item.Conditions) == "" || len(item.Conditions) > 4096 || strings.TrimSpace(item.Title) == "" || len(item.Title) > 512 || strings.TrimSpace(item.Text) == "" || len(item.Text) > MergeInputLimit {
+				return out, invalid
+			}
+			allowed := false
+			for _, d := range s.Destinations {
+				if d.Kind == "experience" && d.ID == item.Destination {
+					allowed = true
+				}
+			}
+			if !allowed {
+				return out, invalid
 			}
 		default:
 			return out, invalid
@@ -251,11 +287,20 @@ func (s OrganizationSnapshot) OutputSchema() []byte {
 		"sources": map[string]any{"type": "array", "minItems": 1, "maxItems": 16, "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"memory", "revision", "quote"}, "properties": map[string]any{"memory": map[string]any{"type": "string"}, "revision": map[string]any{"type": "integer"}, "quote": map[string]any{"type": "string"}}}},
 	}
 	required := []string{"index", "action", "title", "text", "target", "tags", "sources"}
-	if s.Schema == OrganizationReviewSchema {
+	if s.Schema == OrganizationReviewSchema || s.Schema == OrganizationGlobalSchema {
 		properties["action"] = map[string]any{"type": "string", "enum": []string{"summary", "add_tags", "merge", "overwrite", "delete", "move", "duplicate", "conflict"}}
 		properties["reason"] = map[string]any{"type": "string"}
 		properties["destination"] = map[string]any{"type": "string"}
 		required = append(required, "reason", "destination")
+	}
+	if s.Schema == OrganizationGlobalSchema {
+		actions := []string{"summary", "add_tags", "merge", "overwrite", "delete", "move", "duplicate", "conflict", "global_experience"}
+		if s.Purpose == "global" {
+			actions = []string{"global_experience"}
+		}
+		properties["action"] = map[string]any{"type": "string", "enum": actions}
+		properties["conditions"] = map[string]any{"type": "string"}
+		required = append(required, "conditions")
 	}
 	b, _ := json.Marshal(map[string]any{"type": "object", "additionalProperties": false, "required": []string{"schema", "task", "attempt", "input_digest", "result_id", "items", "explanation"}, "properties": map[string]any{
 		"schema": str(s.Schema), "task": str(s.Task), "attempt": map[string]any{"type": "integer", "const": s.Attempt}, "input_digest": str(s.Digest), "result_id": str(s.ProposalID()), "explanation": map[string]any{"type": "string"},
@@ -302,11 +347,13 @@ type DerivedInfo struct {
 	State string `json:"state"`
 }
 type OrganizationSource struct {
-	Memory   string            `json:"source_memory"`
-	Revision int64             `json:"source_revision"`
-	Project  string            `json:"project"`
-	Input    OrganizationInput `json:"snapshot"`
-	Quote    string            `json:"quote"`
+	CurrentRevision int64             `json:"current_revision"`
+	Changed         bool              `json:"source_changed"`
+	Memory          string            `json:"source_memory"`
+	Revision        int64             `json:"source_revision"`
+	Project         string            `json:"project"`
+	Input           OrganizationInput `json:"snapshot"`
+	Quote           string            `json:"quote"`
 }
 
 type OrganizationSummary struct {
@@ -338,7 +385,7 @@ type OrganizationReview struct {
 func (r OrganizationResult) MarshalJSON() ([]byte, error) {
 	type plain OrganizationResult
 	raw, err := json.Marshal(plain(r))
-	if err != nil || r.Schema != OrganizationReviewSchema {
+	if err != nil || r.Schema != OrganizationReviewSchema && r.Schema != OrganizationGlobalSchema {
 		return raw, err
 	}
 	var value map[string]any
@@ -350,7 +397,21 @@ func (r OrganizationResult) MarshalJSON() ([]byte, error) {
 			item := v.(map[string]any)
 			item["reason"] = r.Items[i].Reason
 			item["destination"] = r.Items[i].Destination
+			if r.Schema == OrganizationGlobalSchema {
+				item["conditions"] = r.Items[i].Conditions
+			}
 		}
 	}
 	return json.Marshal(value)
+}
+
+type ExperienceCopy struct {
+	OperationID string `json:"operation_id"`
+	Project     string `json:"project"`
+	Memory      string `json:"memory"`
+	Revision    int64  `json:"revision"`
+}
+type ExperienceInfo struct {
+	Kind       string `json:"kind"`
+	Conditions string `json:"conditions"`
 }

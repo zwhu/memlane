@@ -310,6 +310,9 @@ func (s *Store) applyTx(ctx context.Context, tx *sql.Tx, m Mutation) (Version, e
 		}
 	}
 	if m.Kind == "edit" || m.Kind == "restore" {
+		if err = s.followExperienceVersion(ctx, tx, m, revision); err != nil {
+			return Version{}, err
+		}
 		if err = s.followOrganizationVersion(ctx, tx, m.Memory, revision); err != nil {
 			return Version{}, err
 		}

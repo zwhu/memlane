@@ -9,6 +9,7 @@ import (
 var ErrConflict = errors.New("revision or idempotency conflict")
 
 type Mutation struct {
+	Conditions       *string      `json:"experience_conditions,omitempty"`
 	OperationID      string       `json:"operation_id"`
 	Kind             string       `json:"kind"` // save, edit, delete, restore; all explicit user actions
 	Dataset          string       `json:"dataset"`
@@ -23,8 +24,9 @@ type Mutation struct {
 }
 
 type Version struct {
-	Tags    []string     `json:"tags,omitempty"`
-	Derived *DerivedInfo `json:"derived,omitempty"`
+	Experience *ExperienceInfo `json:"experience,omitempty"`
+	Tags       []string        `json:"tags,omitempty"`
+	Derived    *DerivedInfo    `json:"derived,omitempty"`
 	engine.Record
 	State        string       `json:"state"`
 	Operation    string       `json:"operation"`
@@ -65,11 +67,12 @@ type Page struct {
 	Total      int       `json:"total"`
 }
 type History struct {
-	Revision  int64  `json:"revision"`
-	Title     string `json:"title"`
-	Text      string `json:"text"`
-	Operation string `json:"operation"`
-	CreatedAt string `json:"created_at"`
+	Experience *ExperienceInfo `json:"experience,omitempty"`
+	Revision   int64           `json:"revision"`
+	Title      string          `json:"title"`
+	Text       string          `json:"text"`
+	Operation  string          `json:"operation"`
+	CreatedAt  string          `json:"created_at"`
 }
 type HistoryPage struct {
 	Items        []History `json:"items"`

@@ -14,9 +14,14 @@ func organizationItemCurrent(ctx context.Context, tx *sql.Tx, x records.Organiza
 	if err != nil || !ok {
 		return ok, err
 	}
-	if item.Action == "move" {
+	if item.Action == "move" || item.Action == "global_experience" {
 		for _, d := range x.Destinations {
 			if d.ID == item.Destination {
+				if item.Action == "global_experience" {
+					var count int
+					err = tx.QueryRowContext(ctx, `SELECT count(*) FROM scopes WHERE id=? AND kind='experience'`, d.ID).Scan(&count)
+					return count == 1, err
+				}
 				var count int
 				err = tx.QueryRowContext(ctx, `SELECT count(*) FROM scopes WHERE id=? AND kind='project' AND path=?`, d.ID, d.Path).Scan(&count)
 				return count == 1, err
@@ -57,7 +62,13 @@ func (s *Store) ReviewOrganization(ctx context.Context, d records.OrganizationRe
 		decision = "confirm"
 	}
 	var priorItem, priorDigest, priorDecision string
-	err = tx.QueryRowContext(ctx, `SELECT item,digest,decision FROM organization_decisions WHERE id=?`, d.Receipt).Scan(&priorItem, &priorDigest, &priorDecision)
+	sqlDecision := `SELECT item,digest,decision FROM organization_decisions WHERE id=?`
+	decisionArgs := []any{d.Receipt}
+	if s.Schema >= 6 {
+		sqlDecision += ` UNION ALL SELECT item,digest,decision FROM global_experience_decisions WHERE id=?`
+		decisionArgs = append(decisionArgs, d.Receipt)
+	}
+	err = tx.QueryRowContext(ctx, sqlDecision, decisionArgs...).Scan(&priorItem, &priorDigest, &priorDecision)
 	if err == nil {
 		if priorItem != d.Item || priorDigest != d.Digest || priorDecision != decision {
 			return t, ErrConflict
@@ -81,7 +92,7 @@ func (s *Store) ReviewOrganization(ctx context.Context, d records.OrganizationRe
 		return t, err
 	}
 	if !ok {
-		if _, err = tx.ExecContext(ctx, `UPDATE organization_reviews SET state='expired',error_code='proposal_expired' WHERE id=?`, entry.ID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE `+organizationReviewTable(entry.Item.Action)+` SET state='expired',error_code='proposal_expired' WHERE id=?`, entry.ID); err != nil {
 			return t, err
 		}
 		if err = tx.Commit(); err != nil {
@@ -98,14 +109,14 @@ func (s *Store) ReviewOrganization(ctx context.Context, d records.OrganizationRe
 		}
 	}
 	encoded, _ := json.Marshal(receipt)
-	if _, err = tx.ExecContext(ctx, `INSERT INTO organization_decisions(id,item,digest,decision,receipt) VALUES(?,?,?,?,?)`, d.Receipt, d.Item, d.Digest, decision, string(encoded)); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO `+organizationDecisionTable(entry.Item.Action)+`(id,item,digest,decision,receipt) VALUES(?,?,?,?,?)`, d.Receipt, d.Item, d.Digest, decision, string(encoded)); err != nil {
 		return t, err
 	}
 	persisted := any("null")
 	if d.Confirm {
 		persisted = string(encoded)
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE organization_reviews SET state=?,receipt=? WHERE id=? AND state='review_pending'`, state, persisted, entry.ID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE `+organizationReviewTable(entry.Item.Action)+` SET state=?,receipt=? WHERE id=? AND state='review_pending'`, state, persisted, entry.ID); err != nil {
 		return t, err
 	}
 	t, err = organizationTask(ctx, tx, t.ID)
@@ -118,6 +129,9 @@ func (s *Store) ReviewOrganization(ctx context.Context, d records.OrganizationRe
 func (s *Store) applyOrganizationReview(ctx context.Context, tx *sql.Tx, t records.OrganizationTask, e records.OrganizationEntry, id string) (records.OrganizationReceipt, error) {
 	receipt := records.OrganizationReceipt{ID: id}
 	item := e.Item
+	if item.Action == "global_experience" {
+		return s.applyGlobalExperience(ctx, tx, t, e, id)
+	}
 	if item.Action == "duplicate" || item.Action == "conflict" {
 		return receipt, nil
 	}
@@ -235,4 +249,17 @@ func filterVersionProvenance(ctx context.Context, q provenanceReader, v *records
 	v.SourceDetail = nil
 	v.Source = "项目移动 · 原范围出处未授权"
 	return nil
+}
+
+func organizationReviewTable(action string) string {
+	if action == "global_experience" {
+		return "global_experience_reviews"
+	}
+	return "organization_reviews"
+}
+func organizationDecisionTable(action string) string {
+	if action == "global_experience" {
+		return "global_experience_decisions"
+	}
+	return "organization_decisions"
 }

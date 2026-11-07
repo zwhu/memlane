@@ -21,6 +21,7 @@ type Config struct {
 }
 
 type Request struct {
+	ExperienceCopy     *records.ExperienceCopy     `json:"experience_copy,omitempty"`
 	OrganizationReview *records.OrganizationReview `json:"organization_review,omitempty"`
 	OrganizationStart  *records.OrganizationStart  `json:"organization_start,omitempty"`
 	OrganizationResume *records.OrganizationResume `json:"organization_resume,omitempty"`

@@ -31,7 +31,7 @@ func main() {
 	case "discover":
 		result = agents.Discover(context.Background(), r.Home, r.Selected)
 	case "install", "uninstall":
-		if !filepath.IsAbs(r.Options.ClientRoot) || !strings.Contains(r.Options.ClientRoot, "memlane-p2-") {
+		if !isolatedRoot(r.Options.ClientRoot) {
 			fmt.Fprintln(os.Stderr, "isolated P2 root required")
 			os.Exit(2)
 		}
@@ -41,7 +41,7 @@ func main() {
 			err = agents.Uninstall(context.Background(), r.Options.ClientRoot, r.Connection.ID)
 		}
 	case "run":
-		if !strings.Contains(r.Options.ClientRoot, "memlane-p2-") {
+		if !isolatedRoot(r.Options.ClientRoot) {
 			err = fmt.Errorf("isolated P2 root required")
 			break
 		}
@@ -58,4 +58,28 @@ func main() {
 		os.Exit(1)
 	}
 	json.NewEncoder(os.Stdout).Encode(map[string]any{"ok": true, "result": result})
+}
+
+// Reuse the accepted adapter verifier for E only on the marked synthetic root.
+// This command is a validation tool and never enters the distributed bundle.
+func isolatedRoot(root string) bool {
+	if !filepath.IsAbs(root) {
+		return false
+	}
+	if strings.Contains(root, "memlane-p2-") {
+		return true
+	}
+	fixture := filepath.Dir(root)
+	if filepath.Base(root) != "client" || !strings.HasPrefix(filepath.Base(fixture), "memlane-p3-global-app-") {
+		return false
+	}
+	raw, err := os.ReadFile(filepath.Join(fixture, "source-info.json"))
+	if err != nil {
+		return false
+	}
+	var meta struct {
+		Synthetic  bool   `json:"synthetic_only"`
+		Identifier string `json:"identifier"`
+	}
+	return json.Unmarshal(raw, &meta) == nil && meta.Synthetic && strings.HasPrefix(meta.Identifier, "io.github.zwhu.memlane.global.")
 }

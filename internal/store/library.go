@@ -191,15 +191,23 @@ func (s *Store) History(ctx context.Context, id string, before int64, limit int)
 	if before == 0 {
 		before = 1 << 62
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT revision,title,text,operation,created_at FROM versions WHERE memory=? AND revision<? ORDER BY revision DESC LIMIT ?`, id, before, limit+1)
+	query := `SELECT revision,title,text,operation,created_at,'','' FROM versions WHERE memory=? AND revision<? ORDER BY revision DESC LIMIT ?`
+	if s.Schema >= 6 {
+		query = `SELECT v.revision,v.title,v.text,v.operation,v.created_at,coalesce(g.kind,''),coalesce(g.conditions,'') FROM versions v LEFT JOIN global_experiences g ON g.memory=v.memory AND g.revision=(SELECT max(revision) FROM global_experiences x WHERE x.memory=v.memory AND x.revision<=v.revision) WHERE v.memory=? AND v.revision<? ORDER BY v.revision DESC LIMIT ?`
+	}
+	rows, err := s.DB.QueryContext(ctx, query, id, before, limit+1)
 	if err != nil {
 		return out, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var v records.History
-		if err = rows.Scan(&v.Revision, &v.Title, &v.Text, &v.Operation, &v.CreatedAt); err != nil {
+		var kind, conditions string
+		if err = rows.Scan(&v.Revision, &v.Title, &v.Text, &v.Operation, &v.CreatedAt, &kind, &conditions); err != nil {
 			return out, err
+		}
+		if kind != "" {
+			v.Experience = &records.ExperienceInfo{Kind: kind, Conditions: conditions}
 		}
 		out.Items = append(out.Items, v)
 	}

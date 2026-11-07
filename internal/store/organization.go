@@ -13,7 +13,7 @@ import (
 
 func (s *Store) StartOrganization(ctx context.Context, d records.OrganizationStart) (records.OrganizationTask, bool, error) {
 	var empty records.OrganizationTask
-	if len(d.Destinations) > 8 || (!d.Review && len(d.Destinations) > 0) || len(d.Inputs) < 1 || len(d.Inputs) > 16 || strings.TrimSpace(d.OperationID) == "" || len(d.OperationID) > 128 {
+	if len(d.Destinations) > 8 || (!d.Review && (len(d.Destinations) > 0 || d.Global)) || (d.Purpose != "" && (d.Purpose != "global" || !d.Global)) || len(d.Inputs) < 1 || len(d.Inputs) > 16 || strings.TrimSpace(d.OperationID) == "" || len(d.OperationID) > 128 {
 		return empty, false, records.MergeError("invalid_request")
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -51,6 +51,16 @@ func (s *Store) StartOrganization(ctx context.Context, d records.OrganizationSta
 			seen[id] = true
 			snapshot.Destinations = append(snapshot.Destinations, scope)
 		}
+	}
+	if d.Global {
+		snapshot.Schema = records.OrganizationGlobalSchema
+		snapshot.Purpose = d.Purpose
+		var global records.Scope
+		err = tx.QueryRowContext(ctx, `SELECT id,name,kind,path FROM scopes WHERE kind='experience'`).Scan(&global.ID, &global.Name, &global.Kind, &global.Path)
+		if err != nil {
+			return empty, false, err
+		}
+		snapshot.Destinations = append(snapshot.Destinations, global)
 	}
 	for _, ref := range d.Inputs {
 		ok, e := organizationCurrent(ctx, tx, d.Project, []records.MergeSource{{Memory: ref.Memory, Revision: ref.Revision}})
@@ -122,9 +132,13 @@ func organizationTask(ctx context.Context, tx *sql.Tx, id string) (records.Organ
 	t.Entries = []records.OrganizationEntry{}
 	entriesSQL := `SELECT id,payload,state,error_code,receipt FROM organization_items WHERE task=? ORDER BY position`
 	args := []any{id}
-	if t.Snapshot.Schema == records.OrganizationReviewSchema {
+	if t.Snapshot.Schema == records.OrganizationReviewSchema || t.Snapshot.Schema == records.OrganizationGlobalSchema {
 		entriesSQL = `SELECT id,payload,state,error_code,receipt FROM (SELECT id,payload,state,error_code,receipt,position FROM organization_items WHERE task=? UNION ALL SELECT id,payload,state,error_code,receipt,position FROM organization_reviews WHERE task=?) ORDER BY position`
 		args = append(args, id)
+	}
+	if t.Snapshot.Schema == records.OrganizationGlobalSchema {
+		entriesSQL = `SELECT id,payload,state,error_code,receipt FROM (SELECT id,payload,state,error_code,receipt,position FROM organization_items WHERE task=? UNION ALL SELECT id,payload,state,error_code,receipt,position FROM organization_reviews WHERE task=? UNION ALL SELECT id,payload,state,error_code,receipt,position FROM global_experience_reviews WHERE task=?) ORDER BY position`
+		args = []any{id, id, id}
 	}
 	rows, err := tx.QueryContext(ctx, entriesSQL, args...)
 	if err != nil {
@@ -167,7 +181,7 @@ func (s *Store) OrganizationTask(ctx context.Context, id string) (records.Organi
 				table := "organization_items"
 				prior := "pending"
 				if v.State == "review_pending" {
-					table = "organization_reviews"
+					table = organizationReviewTable(v.Item.Action)
 					prior = "review_pending"
 				}
 				if _, err = tx.ExecContext(ctx, `UPDATE `+table+` SET state='expired',error_code='proposal_expired' WHERE id=? AND state=?`, v.ID, prior); err != nil {
@@ -244,7 +258,7 @@ func (s *Store) StageOrganization(ctx context.Context, id string, attempt int64,
 			table := "organization_items"
 			itemState := "pending"
 			if item.RequiresReview() {
-				table = "organization_reviews"
+				table = organizationReviewTable(item.Action)
 				itemState = "review_pending"
 			}
 			if _, err = tx.ExecContext(ctx, `INSERT INTO `+table+`(id,task,position,action,digest,payload,state) VALUES(?,?,?,?,?,?,?)`, t.Snapshot.ItemID(item.Index), id, item.Index, item.Action, records.MergeDigest(item), string(b), itemState); err != nil {
@@ -446,8 +460,13 @@ func (s *Store) CancelOrganization(ctx context.Context, id string) (records.Orga
 	if _, err = tx.ExecContext(ctx, `UPDATE organization_items SET state='cancelled' WHERE task=? AND state='pending'`, id); err != nil {
 		return t, err
 	}
-	if t.Snapshot.Schema == records.OrganizationReviewSchema {
+	if t.Snapshot.Schema == records.OrganizationReviewSchema || t.Snapshot.Schema == records.OrganizationGlobalSchema {
 		if _, err = tx.ExecContext(ctx, `UPDATE organization_reviews SET state='cancelled' WHERE task=? AND state='review_pending'`, id); err != nil {
+			return t, err
+		}
+	}
+	if t.Snapshot.Schema == records.OrganizationGlobalSchema {
+		if _, err = tx.ExecContext(ctx, `UPDATE global_experience_reviews SET state='cancelled' WHERE task=? AND state='review_pending'`, id); err != nil {
 			return t, err
 		}
 	}

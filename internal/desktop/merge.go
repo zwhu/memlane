@@ -462,7 +462,14 @@ func (a *App) mergeChooser(c *ui.Context) {
 	actionButton(c, "开始整理", nil).Key("merge-start").Disabled(s.Busy || len(s.Chosen) != 2 || s.Error != "").OnClick(a.startMerge)
 }
 func (a *App) openMergeMemory(id, project string) {
-	a.navigate("项目", project)
+	page, scope := "项目", project
+	for _, registered := range a.scopes {
+		if registered.ID == project && registered.Kind != "project" {
+			page, scope = "全局记忆", ""
+			break
+		}
+	}
+	a.navigate(page, scope)
 	a.selectedID = id
 	a.selectedItem = nil
 	a.history = nil

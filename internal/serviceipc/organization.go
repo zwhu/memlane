@@ -7,6 +7,12 @@ import (
 
 type OrganizationClient struct{ Root string }
 
+func (c OrganizationClient) CopyExperience(ctx context.Context, d records.ExperienceCopy) (records.OrganizationReceipt, error) {
+	var out records.OrganizationReceipt
+	e := Call(ctx, c.Root, Request{Op: "experience_copy", UserConfirmed: true, ExperienceCopy: &d}, &out)
+	return out, e
+}
+
 func (c OrganizationClient) Start(ctx context.Context, d records.OrganizationStart) (records.OrganizationTask, error) {
 	var out records.OrganizationTask
 	e := Call(ctx, c.Root, Request{Op: "organization_start", UserConfirmed: true, OrganizationStart: &d}, &out)
