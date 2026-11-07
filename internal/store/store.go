@@ -93,6 +93,9 @@ func (s *Store) Apply(ctx context.Context, m Mutation) (Version, error) {
 	if len(m.Title) > 512 || len(m.Source) > 512 || len(m.OperationID) > 128 {
 		return Version{}, errors.New("memory metadata too large")
 	}
+	if detail, err := json.Marshal(m.SourceDetail); err != nil || len(detail) > 65536 {
+		return Version{}, errors.New("source detail too large")
+	}
 	payload, _ := json.Marshal(m)
 	sum := sha256.Sum256(payload)
 	digest := hex.EncodeToString(sum[:])
@@ -190,7 +193,8 @@ func (s *Store) Apply(ctx context.Context, m Mutation) (Version, error) {
 		if source == "" {
 			source = "手动新增"
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO memory_metadata(memory,source,origin,created_at) VALUES(?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))`, m.Memory, source, origin); err != nil {
+		detail, _ := json.Marshal(m.SourceDetail)
+		if _, err = tx.ExecContext(ctx, `INSERT INTO memory_metadata(memory,source,origin,created_at,source_detail) VALUES(?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'),?)`, m.Memory, source, origin, string(detail)); err != nil {
 			return Version{}, err
 		}
 	}

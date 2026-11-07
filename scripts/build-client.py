@@ -45,6 +45,7 @@ def main():
         def run(command):
             subprocess.run(command,cwd=ROOT,env=env,check=True)
         run([str(GO),"build","-trimpath","-ldflags=-s -w","-o",str(helper),"./cmd/memlaned"])
+        run([str(GO),"build","-trimpath","-ldflags=-s -w","-o",str(resources / "bin/memlane"),"./cmd/memlane"])
         service_plist="io.github.zwhu.memlane.service.plist"
         variables={}
         if args.runtime_config:

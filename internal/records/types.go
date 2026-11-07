@@ -9,31 +9,33 @@ import (
 var ErrConflict = errors.New("revision or idempotency conflict")
 
 type Mutation struct {
-	OperationID      string `json:"operation_id"`
-	Kind             string `json:"kind"` // save, edit, delete, restore; all explicit user actions
-	Dataset          string `json:"dataset"`
-	Memory           string `json:"memory"`
-	ExpectedRevision int64  `json:"expected_revision"`
-	RestoreRevision  int64  `json:"restore_revision,omitempty"`
-	Text             string `json:"text,omitempty"`
-	Title            string `json:"title,omitempty"`
-	Source           string `json:"source,omitempty"`
-	Origin           string `json:"origin,omitempty"` // knowledge, imported, raw
+	OperationID      string       `json:"operation_id"`
+	Kind             string       `json:"kind"` // save, edit, delete, restore; all explicit user actions
+	Dataset          string       `json:"dataset"`
+	Memory           string       `json:"memory"`
+	ExpectedRevision int64        `json:"expected_revision"`
+	RestoreRevision  int64        `json:"restore_revision,omitempty"`
+	Text             string       `json:"text,omitempty"`
+	Title            string       `json:"title,omitempty"`
+	Source           string       `json:"source,omitempty"`
+	Origin           string       `json:"origin,omitempty"` // knowledge, imported, raw
+	SourceDetail     *AgentSource `json:"source_detail,omitempty"`
 }
 
 type Version struct {
 	engine.Record
-	State      string `json:"state"`
-	Operation  string `json:"operation"`
-	Title      string `json:"title"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
-	Source     string `json:"source"`
-	Original   string `json:"original"`
-	ScopeName  string `json:"scope_name"`
-	ScopeKind  string `json:"scope_kind"`
-	Origin     string `json:"origin"`
-	IndexState string `json:"index_state"`
+	State        string       `json:"state"`
+	Operation    string       `json:"operation"`
+	Title        string       `json:"title"`
+	CreatedAt    string       `json:"created_at"`
+	UpdatedAt    string       `json:"updated_at"`
+	Source       string       `json:"source"`
+	Original     string       `json:"original"`
+	ScopeName    string       `json:"scope_name"`
+	ScopeKind    string       `json:"scope_kind"`
+	Origin       string       `json:"origin"`
+	IndexState   string       `json:"index_state"`
+	SourceDetail *AgentSource `json:"source_detail,omitempty"`
 }
 
 type Scope struct {

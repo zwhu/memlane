@@ -7,8 +7,8 @@ from importlib.machinery import SourceFileLoader
 driver=SourceFileLoader('p1ui',str(ROOT/'scripts/p1-ui.py')).load_module()
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--daemon',type=Path,default=ROOT/'build/p1/memlaned');a=p.parse_args()
-    out=ROOT/'build/p1';out.mkdir(parents=True,exist_ok=True)
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--daemon',type=Path,default=ROOT/'build/p1/memlaned');p.add_argument('--out',type=Path,default=ROOT/'build/p1');a=p.parse_args()
+    out=a.out;out.mkdir(parents=True,exist_ok=True)
     report={'status':'failed','synthetic_only':True,'checks':[]};proc=None
     with tempfile.TemporaryDirectory(prefix='memlane-p1-service-') as temporary:
         root=Path(temporary);data=root/'data';data.mkdir();db=data/'memlane.sqlite'
@@ -59,10 +59,10 @@ CREATE TABLE index_bindings(chunk_id TEXT NOT NULL,memory TEXT NOT NULL,revision
                 activity=call('activities',timezone='Asia/Shanghai');assert activity['total']==0 and activity['imported']==1
                 return {'preserved_original_versions':2,'p0_idempotency_replay':True,'imports_excluded_from_heatmap':True}
             check('legacy-migration',migration)
-            repo=root/'repo';(repo/'.git').mkdir(parents=True);link=root/'repo-link';link.symlink_to(repo)
+            repo=root/'repo';subprocess.run(['/usr/bin/git','init',str(repo)],check=True,capture_output=True);link=root/'repo-link';link.symlink_to(repo)
             project=call('register_project',project={'name':'合成项目 A','path':str(repo)},user_confirmed=True)
             same=call('register_project',project={'name':'同路径名称','path':str(link)},user_confirmed=True);assert project['id']==same['id']
-            repoB=root/'repo-b';(repoB/'.git').mkdir(parents=True)
+            repoB=root/'repo-b';subprocess.run(['/usr/bin/git','init',str(repoB)],check=True,capture_output=True)
             projectB=call('register_project',project={'name':'合成项目 B','path':str(repoB)},user_confirmed=True)
             scopes=call('scopes');globals_={s['kind']:s['id'] for s in scopes if s['kind'] in ['preference','experience']}
             check('scope-mapping',lambda:{'project_uuid_stable_for_normalized_path':True,'global_scope_kinds':list(globals_)})
@@ -127,7 +127,7 @@ CREATE TABLE index_bindings(chunk_id TEXT NOT NULL,memory TEXT NOT NULL,revision
             check('activity-invariants',activities)
             call('stop');assert proc.wait(timeout=15)==0;proc=None
             with sqlite3.connect(db) as c:
-                assert c.execute('PRAGMA user_version').fetchone()[0]==1
+                assert c.execute('PRAGMA user_version').fetchone()[0]==2
                 assert c.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
                 assert c.execute('SELECT memory,revision,text,operation,created_at FROM versions WHERE memory=? ORDER BY revision',(memory,)).fetchall()==original['versions']
                 assert c.execute('SELECT * FROM operations WHERE memory=? ORDER BY revision',(memory,)).fetchall()==original['operations']
@@ -138,7 +138,7 @@ CREATE TABLE index_bindings(chunk_id TEXT NOT NULL,memory TEXT NOT NULL,revision
             assert len(call('history',memory=ids[0])['items'])==3
             assert {s['kind']:s['id'] for s in call('scopes') if s['kind'] in globals_}==globals_
             assert call('activities',timezone='Asia/Shanghai')['total']==13
-            check('restart-and-migration-integrity',lambda:{'schema_version':1,'integrity_check':'ok','legacy_original_operations_bindings_preserved':True,'current_history_scopes_activity_survive_restart':True})
+            check('restart-and-migration-integrity',lambda:{'schema_version':2,'integrity_check':'ok','legacy_original_operations_bindings_preserved':True,'current_history_scopes_activity_survive_restart':True})
             call('stop');assert proc.wait(timeout=15)==0;proc=None
             report['status']='passed'
         except Exception as error:report['error']=repr(error);raise

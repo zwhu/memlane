@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Create a fresh synthetic P1 App root, reusing immutable verified components."""
-import json,shutil,tempfile,uuid
+import json,shutil,tempfile,uuid,subprocess
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 old=Path((ROOT/'build/p0-engine/client-fixture-path.txt').read_text().strip())
@@ -13,7 +13,7 @@ identifier='io.github.zwhu.memlane.p1.'+uuid.uuid4().hex[:12]
 cfg['root']=str(client);cfg['service_plist']=identifier+'.service.plist'
 (root/'runtime-config.json').write_text(json.dumps(cfg,indent=2))
 (root/'source-info.json').write_text(json.dumps({'identifier':identifier,'synthetic_only':True}))
-for name in ['repo-a','repo-b']:(root/name/'.git').mkdir(parents=True)
+for name in ['repo-a','repo-b']:subprocess.run(['/usr/bin/git','init',str(root/name)],check=True,capture_output=True)
 out=ROOT/'build/p1';out.mkdir(parents=True,exist_ok=True)
 (out/'fixture-path.txt').write_text(str(root)+'\n')
 print(json.dumps({'fixture':str(root),'identifier':identifier,'reused':'verified P0 component cache only','user_data_copied':False},indent=2))

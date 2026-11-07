@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -14,14 +13,18 @@ import (
 	"github.com/zwhu/memlane/internal/records"
 )
 
-const versionColumns = `m.id,m.dataset,m.current_revision,v.text,m.state,v.operation,v.title,md.created_at,v.created_at,md.source,original.text,s.name,s.kind,md.origin,CASE WHEN m.indexed_revision=m.current_revision AND m.state='active' THEN 'indexed' WHEN j.state='failed' THEN 'failed' WHEN j.state='indexing' THEN 'indexing' ELSE 'pending' END`
+const versionColumns = `m.id,m.dataset,m.current_revision,v.text,m.state,v.operation,v.title,md.created_at,v.created_at,md.source,original.text,s.name,s.kind,md.origin,CASE WHEN m.indexed_revision=m.current_revision AND m.state='active' THEN 'indexed' WHEN j.state='failed' THEN 'failed' WHEN j.state='indexing' THEN 'indexing' ELSE 'pending' END,md.source_detail`
 const versionJoins = ` FROM memories m JOIN versions v ON v.memory=m.id AND v.revision=m.current_revision JOIN versions original ON original.memory=m.id AND original.revision=1 JOIN memory_metadata md ON md.memory=m.id JOIN scopes s ON s.id=m.dataset LEFT JOIN jobs j ON j.memory=m.id AND j.revision=m.current_revision `
 
 type scanner interface{ Scan(...any) error }
 
 func scanVersion(row scanner) (Version, error) {
 	var v Version
-	err := row.Scan(&v.Memory, &v.Dataset, &v.Revision, &v.Text, &v.State, &v.Operation, &v.Title, &v.CreatedAt, &v.UpdatedAt, &v.Source, &v.Original, &v.ScopeName, &v.ScopeKind, &v.Origin, &v.IndexState)
+	var detail string
+	err := row.Scan(&v.Memory, &v.Dataset, &v.Revision, &v.Text, &v.State, &v.Operation, &v.Title, &v.CreatedAt, &v.UpdatedAt, &v.Source, &v.Original, &v.ScopeName, &v.ScopeKind, &v.Origin, &v.IndexState, &detail)
+	if err == nil {
+		err = json.Unmarshal([]byte(detail), &v.SourceDetail)
+	}
 	return v, err
 }
 
@@ -47,18 +50,15 @@ func (s *Store) RegisterProject(ctx context.Context, draft records.ScopeDraft) (
 	if name == "" || len([]rune(name)) > 80 || !filepath.IsAbs(draft.Path) {
 		return records.Scope{}, errors.New("project name and absolute repository path required")
 	}
-	path, err := filepath.EvalSymlinks(filepath.Clean(draft.Path))
+	path, _, err := repository(ctx, draft.Path)
 	if err != nil {
 		return records.Scope{}, err
 	}
-	info, err := os.Stat(path)
-	if err != nil || !info.IsDir() {
-		return records.Scope{}, errors.New("repository directory does not exist")
+	if known, found, e := s.knownRepository(ctx, path); e != nil {
+		return records.Scope{}, e
+	} else if found {
+		return known, nil
 	}
-	if _, err = os.Stat(filepath.Join(path, ".git")); err != nil {
-		return records.Scope{}, errors.New("choose a Git repository directory")
-	}
-	// Workspace/common-dir binding for Agent connections belongs to P2.
 	if name == "个人偏好" || name == "全局经验" {
 		return records.Scope{}, errors.New("project name is reserved for a global scope")
 	}

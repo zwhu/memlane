@@ -256,7 +256,21 @@ python3 scripts/verify-system-ime.py --system-home
 
 已实现项目登记、真实列表/来源/独立索引状态、App 新增与编辑、当前版本语义搜索、历史差异和恢复。恢复产生新版本，过期编辑拒绝覆盖；草稿在窗口内按条目保留，退出 App 后未保存草稿不持久化。首页来自首次可用活动，编辑/恢复/重试不重复计数，导入单列，整理显示未接入空态。实际系统首页和详情已通过设计图对照，进度见 [P1 验证记录](p1-validation.md)。
 
-服务 schema 使用 PRAGMA user_version=1；P0 数据迁移保留正文、版本、操作、任务与绑定，旧记录作为导入。客户端只通过 serviceipc.Library 访问服务。测试均用合成根，不把默认用户目录或真实 Agent 配置作为输入。
+服务 schema 使用 PRAGMA user_version=2（P2 新增连接与结构化来源）；P0/P1 数据迁移保留正文、版本、操作、任务与绑定，旧记录作为导入。客户端只通过 serviceipc.Library 访问服务。测试均用合成根，不把默认用户目录或真实 Agent 配置作为输入。
+
+## P2 记忆桥与协议验收
+
+[接入契约](agent-contract.md) 固定 MCP stdio 与 CLI 的工具、连接代次、范围、来源、回执及错误类型。桥随主包构建，不自动启动服务；实际 Codex/pi 验收和协议检查分别记录于 [P2 验证记录](p2-validation.md)。
+
+```sh
+sh scripts/go.sh build -o build/p2/memlane ./cmd/memlane
+sh scripts/go.sh build -o build/p2/memlaned ./cmd/memlaned
+python3 scripts/verify-p2-contract.py
+python3 scripts/verify-p1-service.py --daemon build/p2/memlaned --out build/p2/p1-regression
+python3 scripts/p2-handoff.py <阶段> --result '<结果与证据路径>' --next '<明确继续步骤>'
+```
+
+协议验收复用 `build/p1/memlaned` 的已提交 schema v1 基线，仅在新建临时合成根初始化旧业务库，再由当前服务迁移；worker/model 使用 P0 已验证的合成组件路径。不要将生产用户目录传给验证脚本。Go 默认代理无法连接时可在命令前设置 `GOPROXY=https://goproxy.cn`；这是仓库工具链的单次命令设置，不替换用户默认环境。
 
 ```sh
 sh scripts/go.sh build -o build/p1/memlaned ./cmd/memlaned

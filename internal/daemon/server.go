@@ -18,6 +18,7 @@ import (
 
 	"github.com/zwhu/memlane/internal/engine"
 	"github.com/zwhu/memlane/internal/memory"
+	"github.com/zwhu/memlane/internal/records"
 	"github.com/zwhu/memlane/internal/serviceipc"
 	"github.com/zwhu/memlane/internal/store"
 )
@@ -275,7 +276,10 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		response.OK = err == nil
 		if err != nil {
 			response.Error = err.Error()
-			if errors.Is(err, store.ErrConflict) {
+			var access *records.AccessError
+			if errors.As(err, &access) {
+				response.Code = access.Code
+			} else if errors.Is(err, store.ErrConflict) {
 				response.Code = "conflict"
 			} else if errors.Is(err, sql.ErrNoRows) {
 				response.Code = "not_found"
@@ -306,6 +310,27 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 	}
 	svc := memory.Service{Store: s.store, Engine: selected}
 	switch r.Op {
+	case "connections":
+		return s.store.Connections(operation)
+	case "configure_connection":
+		if !r.UserConfirmed {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "connect or change scope explicitly in Memlane"}
+		}
+		return s.store.ConfigureConnection(operation, r.Connection)
+	case "disconnect":
+		if !r.UserConfirmed {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "disconnect explicitly in Memlane"}
+		}
+		return nil, s.store.Disconnect(operation, r.ConnectionID)
+	case "agent":
+		result, err := s.agent(operation, r.AgentRequest, &svc)
+		if err == nil && r.AgentRequest.Tool == "memory_save" {
+			select {
+			case s.work <- struct{}{}:
+			default:
+			}
+		}
+		return result, err
 	case "health":
 		pid := 0
 		busy := false

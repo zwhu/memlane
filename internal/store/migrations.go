@@ -23,10 +23,16 @@ func migrate(db *sql.DB) error {
 	if err = tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 1 {
+	if version > 2 {
 		return errors.New("database schema is newer than this client")
 	}
+	if version == 2 {
+		return tx.Commit()
+	}
 	if version == 1 {
+		if err = migrateAgents(tx); err != nil {
+			return err
+		}
 		return tx.Commit()
 	}
 	_, err = tx.Exec(`
@@ -79,7 +85,19 @@ PRAGMA user_version=1;`)
 	if err != nil {
 		return err
 	}
+	if err = migrateAgents(tx); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+func migrateAgents(tx *sql.Tx) error {
+	_, err := tx.Exec(`
+ALTER TABLE memory_metadata ADD COLUMN source_detail TEXT NOT NULL DEFAULT 'null';
+CREATE TABLE connections(id TEXT PRIMARY KEY, agent TEXT NOT NULL, name TEXT NOT NULL, project TEXT NOT NULL, allowed_scopes TEXT NOT NULL, enabled INTEGER NOT NULL, generation INTEGER NOT NULL, last_seen TEXT NOT NULL DEFAULT '');
+CREATE TABLE repositories(common_dir TEXT PRIMARY KEY, scope TEXT NOT NULL REFERENCES scopes(id));
+PRAGMA user_version=2;`)
+	return err
 }
 
 func titleFor(title, text string) string {

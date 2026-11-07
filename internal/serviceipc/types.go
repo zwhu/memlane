@@ -21,22 +21,25 @@ type Config struct {
 }
 
 type Request struct {
-	Protocol         int                `json:"protocol"`
-	ID               string             `json:"id"`
-	Op               string             `json:"op"`
-	Mutation         records.Mutation   `json:"mutation,omitempty"`
-	Datasets         []string           `json:"datasets,omitempty"`
-	Query            string             `json:"query,omitempty"`
-	Limit            int                `json:"limit,omitempty"`
-	Memory           string             `json:"memory,omitempty"`
-	UserConfirmed    bool               `json:"user_confirmed,omitempty"`
-	ListQuery        records.ListQuery  `json:"list_query,omitempty"`
-	Project          records.ScopeDraft `json:"project,omitempty"`
-	Scope            string             `json:"scope,omitempty"`
-	AllScopes        bool               `json:"all_scopes,omitempty"`
-	BeforeRevision   int64              `json:"before_revision,omitempty"`
-	ExpectedRevision int64              `json:"expected_revision,omitempty"`
-	Timezone         string             `json:"timezone,omitempty"`
+	Protocol         int                     `json:"protocol"`
+	ID               string                  `json:"id"`
+	Op               string                  `json:"op"`
+	Mutation         records.Mutation        `json:"mutation,omitempty"`
+	Datasets         []string                `json:"datasets,omitempty"`
+	Query            string                  `json:"query,omitempty"`
+	Limit            int                     `json:"limit,omitempty"`
+	Memory           string                  `json:"memory,omitempty"`
+	UserConfirmed    bool                    `json:"user_confirmed,omitempty"`
+	ListQuery        records.ListQuery       `json:"list_query,omitempty"`
+	Project          records.ScopeDraft      `json:"project,omitempty"`
+	Scope            string                  `json:"scope,omitempty"`
+	AllScopes        bool                    `json:"all_scopes,omitempty"`
+	BeforeRevision   int64                   `json:"before_revision,omitempty"`
+	ExpectedRevision int64                   `json:"expected_revision,omitempty"`
+	Timezone         string                  `json:"timezone,omitempty"`
+	Connection       records.ConnectionDraft `json:"connection,omitempty"`
+	ConnectionID     string                  `json:"connection_id,omitempty"`
+	AgentRequest     records.AgentRequest    `json:"agent_request,omitempty"`
 }
 
 type Response struct {
