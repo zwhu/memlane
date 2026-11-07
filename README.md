@@ -48,7 +48,7 @@ sh scripts/go.sh tool mygo dev
 
 完整客户端验证包使用 `python3 scripts/build-client.py --out build/p0-final` 构建，包含 helper 与 LaunchAgent 后处理；源码、依赖清单和验证脚本入库，工具链、模型、运行数据及构建产物保留在忽略目录。开发与验收命令见 [开发说明](docs/development.md)。
 
-首个实现目标：一个 Agent 在项目内写入经验，另一个 Agent 能在同一项目检索到，并可在客户端查看来源。随后接入编辑历史与受控整理。
+下一步先按 [P1 分步清单](docs/implementation-plan.md#p1桌面界面与真实记忆管理) 完成设计稿还原与 App 内真实记忆管理，再进入 P2：一个 Agent 在项目内写入经验，另一个 Agent 能在同一项目检索到，并可在客户端查看来源。受控 AI 整理按 P3 接入。
 
 查看交互原型：
 
