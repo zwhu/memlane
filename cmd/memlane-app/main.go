@@ -169,13 +169,14 @@ func main() {
 			}()
 		})
 		win = mygo.NewWindow(mygo.WindowOptions{
-			Title: "Memlane", Width: 1200, Height: 780,
+			Title: "Memlane", Width: 1200, Height: 820,
 			MinWidth: 980, MinHeight: 620,
 			TitleBarStyle: mygo.TitleBarHidden,
 			Vibrancy:      mygo.VibrancySidebar,
 			Content:       ui.View(app.View),
 		})
 		configureNativeProbe(win)
+		configureVisualFixture(app)
 		if configPath == "" {
 			if resources, err := mygo.App.Path(mygo.PathResources); err == nil {
 				candidate := filepath.Join(resources, "runtime-config.json")

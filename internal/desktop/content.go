@@ -1,0 +1,146 @@
+package desktop
+
+import (
+	"strings"
+	"time"
+)
+
+// Presentation types carry service snapshots. They never fabricate persistence
+// or index status; the visual fixture is compiled only into e2e builds.
+type MemoryItem struct {
+	ID, Dataset, Title, Text, Original, Source, ScopeName, Category, State, IndexState, Operation string
+	Revision                                                                                      int64
+	CreatedAt                                                                                     time.Time
+}
+type ProjectItem struct{ ID, Name, Path string }
+type MemoryHistory struct {
+	Revision        int64
+	Text, Operation string
+	CreatedAt       time.Time
+}
+type Draft struct {
+	Title, Text, Scope string
+	Revision           int64
+}
+
+func (a *App) rememberDraft() {
+	if !a.editing {
+		return
+	}
+	key := a.selectedID
+	if a.detailMode == "new" {
+		key = "new"
+	}
+	d := a.drafts[key]
+	d.Title, d.Text, d.Scope = a.draftTitle, a.draft, a.draftScope
+	a.drafts[key] = d
+}
+func (a *App) navigate(page, scope string) {
+	a.rememberDraft()
+	a.page, a.scope = page, scope
+	if !a.isMemoryPage() {
+		a.editing = false
+	} else if a.detailMode == "new" || a.detailMode == "edit" {
+		a.editing = true
+	}
+	if a.onNavigate != nil {
+		a.onNavigate()
+	}
+}
+func (a *App) newMemory() {
+	a.rememberDraft()
+	a.page = "全部记忆"
+	a.detailMode = "new"
+	a.editing = true
+	d := a.drafts["new"]
+	a.draftTitle, a.draft, a.draftScope = d.Title, d.Text, d.Scope
+	if a.draftScope == "" {
+		a.draftScope = "全局经验"
+		for _, p := range a.projects {
+			if a.scope == p.ID {
+				a.draftScope = p.Name
+			}
+		}
+	}
+}
+func (a *App) editMemory() {
+	item := a.current()
+	if item == nil {
+		return
+	}
+	a.detailMode = "edit"
+	a.editing = true
+	d, ok := a.drafts[item.ID]
+	if !ok {
+		d = Draft{Title: item.Title, Text: item.Text, Scope: item.ScopeName, Revision: item.Revision}
+		a.drafts[item.ID] = d
+	}
+	a.draftTitle, a.draft, a.draftScope = d.Title, d.Text, d.Scope
+}
+func (a *App) scopeOptions() []string {
+	out := []string{"个人偏好", "全局经验"}
+	for _, p := range a.projects {
+		out = append(out, p.Name)
+	}
+	return out
+}
+func preview(text string) string { return strings.Join(strings.Fields(text), " ") }
+func operationLabel(op string) string {
+	switch op {
+	case "save":
+		return "手动新增"
+	case "edit":
+		return "手动编辑"
+	case "restore":
+		return "恢复版本"
+	case "delete":
+		return "删除"
+	}
+	return op
+}
+func indexLabel(state string) string {
+	switch state {
+	case "indexed":
+		return "可检索"
+	case "failed":
+		return "索引失败 · 正文已保留"
+	case "pending":
+		return "等待索引"
+	case "indexing":
+		return "正在索引"
+	}
+	return "尚未索引"
+}
+
+// A line diff preserves both removed and added text using monochrome markers.
+// Equal prefix/suffix lines stay out of the change block for long documents.
+func lineDiff(before, after string) string {
+	a, b := strings.Split(before, "\n"), strings.Split(after, "\n")
+	prefix := 0
+	for prefix < len(a) && prefix < len(b) && a[prefix] == b[prefix] {
+		prefix++
+	}
+	ai, bi := len(a), len(b)
+	for ai > prefix && bi > prefix && a[ai-1] == b[bi-1] {
+		ai--
+		bi--
+	}
+	lines := []string{}
+	for _, line := range a[prefix:ai] {
+		lines = append(lines, "− "+line)
+	}
+	for _, line := range b[prefix:bi] {
+		lines = append(lines, "+ "+line)
+	}
+	if len(lines) == 0 {
+		return "正文未改变"
+	}
+	return strings.Join(lines, "\n")
+}
+
+// SetVisualFixture is used only by the e2e command's explicit flag. It has no
+// persistence or mock-success actions, so saves remain disabled.
+func (a *App) SetVisualFixture(items []MemoryItem, projects []ProjectItem, history []MemoryHistory, activity map[string]int) {
+	a.items, a.projects, a.history, a.activities = items, projects, history, activity
+	a.visualFixture = true
+}
