@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/zwhu/memlane/internal/engine"
@@ -21,24 +23,90 @@ import (
 
 var ErrConflict = records.ErrConflict
 
-type Store struct{ DB *sql.DB }
+type Store struct {
+	DB        *sql.DB
+	ownership *os.File
+}
 
 type Mutation = records.Mutation
 type Version = records.Version
 
-func Open(path string) (*Store, error) {
+func Open(path string) (*Store, error) { return open(path, true) }
+
+func open(path string, formal bool) (*Store, error) {
 	if !filepath.IsAbs(path) {
 		return nil, errors.New("database path must be absolute")
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
+	ownership, err := os.OpenFile(path+".owner.lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err = syscall.Flock(int(ownership.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		ownership.Close()
+		return nil, errors.New("database already owned")
+	}
+	opened := false
+	defer func() {
+		if !opened {
+			ownership.Close()
+		}
+	}()
+
 	// Require an explicit absolute path; never use Cognee's cwd database default.
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
+	var prior int
+	if err = db.QueryRow(`PRAGMA user_version`).Scan(&prior); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if prior > 3 || (!formal && prior > 2) {
+		db.Close()
+		return nil, errors.New("database schema is newer than this client")
+	}
+	// VACUUM INTO includes committed WAL pages. The exclusive database owner
+	// creates this snapshot before any schema change and aborts on backup failure.
+	if formal && prior == 2 {
+		var experiments int
+		if err = db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name LIKE 'p3_experiment_%'`).Scan(&experiments); err != nil || experiments > 0 {
+			db.Close()
+			return nil, errors.New("experiment database requires explicit experiment entrypoint")
+		}
+		backups := filepath.Join(filepath.Dir(path), "backups")
+		if err = os.MkdirAll(backups, 0700); err == nil {
+			backup := filepath.Join(backups, "schema-v2-"+time.Now().UTC().Format("20060102T150405.000000000")+".sqlite")
+			_, err = db.Exec(`VACUUM INTO ?`, backup)
+			if err == nil {
+				err = os.Chmod(backup, 0600)
+				if err == nil {
+					var f *os.File
+					f, err = os.Open(backup)
+					if err == nil {
+						err = f.Sync()
+						f.Close()
+					}
+				}
+				if err == nil {
+					var f *os.File
+					f, err = os.Open(backups)
+					if err == nil {
+						err = f.Sync()
+						f.Close()
+					}
+				}
+			}
+		}
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	_, err = db.Exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS memories(id TEXT PRIMARY KEY, dataset TEXT NOT NULL, current_revision INTEGER NOT NULL, indexed_revision INTEGER NOT NULL DEFAULT 0, generation TEXT NOT NULL DEFAULT '', state TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS versions(memory TEXT NOT NULL REFERENCES memories(id), revision INTEGER NOT NULL, text TEXT NOT NULL, operation TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(memory,revision));
@@ -49,7 +117,7 @@ CREATE TABLE IF NOT EXISTS index_bindings(chunk_id TEXT NOT NULL, memory TEXT NO
 		db.Close()
 		return nil, err
 	}
-	if err := migrate(db); err != nil {
+	if err := migrate(db, formal); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -57,10 +125,17 @@ CREATE TABLE IF NOT EXISTS index_bindings(chunk_id TEXT NOT NULL, memory TEXT NO
 		db.Close()
 		return nil, err
 	}
-	return &Store{DB: db}, nil
+	opened = true
+	return &Store{DB: db, ownership: ownership}, nil
 }
 
-func (s *Store) Close() error { return s.DB.Close() }
+func (s *Store) Close() error {
+	err := s.DB.Close()
+	if s.ownership != nil {
+		s.ownership.Close()
+	}
+	return err
+}
 
 func (s *Store) Current(ctx context.Context, id string) (Version, error) {
 	return scanVersion(s.DB.QueryRowContext(ctx, `SELECT `+versionColumns+versionJoins+`WHERE m.id=?`, id))
@@ -153,7 +228,7 @@ func (s *Store) applyTx(ctx context.Context, tx *sql.Tx, m Mutation) (Version, e
 		if m.Kind == "save" || dataset != m.Dataset || revision != m.ExpectedRevision {
 			return Version{}, ErrConflict
 		}
-		if state == "deleted" && m.Kind != "restore" {
+		if (state == "deleted" || state == "archived") && m.Kind != "restore" {
 			return Version{}, ErrConflict
 		}
 	}

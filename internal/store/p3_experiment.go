@@ -14,7 +14,7 @@ import (
 // Normal Open and the production daemon do not create or use these tables.
 // This is not a schema-v3 migration or a public consolidation API.
 func OpenP3Experiment(path string) (*Store, error) {
-	s, err := Open(path)
+	s, err := open(path, false)
 	if err != nil {
 		return nil, err
 	}

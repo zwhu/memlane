@@ -12,7 +12,7 @@ import (
 // P0 databases have user_version=0. Upgrade in one transaction, retaining
 // originals, operations, durable jobs and chunk bindings. Future versions fail
 // closed rather than being silently opened by an older client.
-func migrate(db *sql.DB) error {
+func migrate(db *sql.DB, formal bool) error {
 	ctx := context.Background()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -23,15 +23,25 @@ func migrate(db *sql.DB) error {
 	if err = tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 2 {
+	if version > 3 || (!formal && version > 2) {
 		return errors.New("database schema is newer than this client")
 	}
-	if version == 2 {
+	if version >= 2 {
+		if formal && version == 2 {
+			if err = migrateMerge(tx); err != nil {
+				return err
+			}
+		}
 		return tx.Commit()
 	}
 	if version == 1 {
 		if err = migrateAgents(tx); err != nil {
 			return err
+		}
+		if formal {
+			if err = migrateMerge(tx); err != nil {
+				return err
+			}
 		}
 		return tx.Commit()
 	}
@@ -87,6 +97,11 @@ PRAGMA user_version=1;`)
 	}
 	if err = migrateAgents(tx); err != nil {
 		return err
+	}
+	if formal {
+		if err = migrateMerge(tx); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

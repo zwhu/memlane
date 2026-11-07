@@ -51,11 +51,11 @@ Stage 在事务内校验取消与 attempt，只保存建议。Apply 在同一事
 本切片由用户明确授权接入正式服务；不实现 UI、摘要/标签、调度、排名、初始化、图谱或其他 Agent。契约所有者是 memlaned，正式类型见 [records/merge.go](../internal/records/merge.go)，不沿用实验 schema、动作或附加表。以下是已确定的工程规则；实现验收以验证记录为准。
 
 - 用户从受信本机宿主明确选一个已登记 project 和两条不同 active 知识及 expected revision，提交稳定 operation_id。禁止 raw、全局范围、跨项目和隐式选择。IPC 使用既有私有 socket 和 same-uid 校验；日常 MCP/Extension 不注册整理审核工具。用户确认标记仅适用于受信宿主边界，不是对同账户任意程序的安全隔离。
-- 开始事务冻结正文、标题、memory/revision、项目、捕获时来源片段/引用与 captured_at。来源元信息来自实际 P2 当前记录，不能补造旧版本出处。输入 SHA-256 覆盖正式快照；正文各限 16 KiB，来源元信息仍按 P2 64 KiB 上限，模型输出 JSON 限 48 KiB，标题限 512 bytes。这些是正式 C1 资源限制。
+- 开始事务冻结正文、标题、memory/revision、项目、捕获时来源片段/引用与 captured_at。来源元信息来自实际 P2 当前记录，不能补造旧版本出处。输入 SHA-256 覆盖正式快照；正文各限 16 KiB，来源元信息仍按 P2 64 KiB 上限，模型输出 JSON 限 48 KiB，标题限 512 bytes；单事件 1 MiB、事件流 8 MiB、模型/进程最长两分钟。这些是正式 C1 资源限制。
 - 输出 schema=memlane-merge-proposal-v1、action=merge；宿主绑定 task UUID、attempt、input_digest 和确定性 proposal_id。sources 完整有序引用两条具体版本，quote 是非空原文子串。未知字段、批准字段、工具/错误事件、无终态和非正常退出不登记成功。
 - 任务执行 queued/running/completed/failed/cancelled/interrupted 与审核 none/pending/applied/rejected/cancelled/expired 分开。completed 表示纯提案已持久化，不能代表应用或可检索。最小 attempt 初始 1，无租约、自动重试或定期模型调用。停服/重启将 queued/running 标记 interrupted 并推进任务栅栏，保留原 attempt/快照；旧结果被拒绝。重新分析需要用户新 operation_id。
-- 确认/拒绝携带 task、proposal_id、result_digest 和稳定 receipt_id；确认时再次核对所有来源 revision/project/active。任一不符整项 expired，提交过期标记而不改知识。查询 pending 时也复核版本。拒绝只改变审核记录，同决定重放幂等，相反决定冲突。
+- 确认/拒绝携带 task、proposal_id、result_digest 和稳定 receipt_id；决定标识、提案、结果摘要与决定类型持久绑定，重放标识不能改绑。确认时再次核对所有来源 revision/project/active。任一不符整项 expired，提交过期标记而不改知识。查询 pending 时也复核版本。拒绝只改变审核记录，同决定重放幂等，相反决定冲突。
 - 确认一次事务新建合并 v1、两条 merge_archive 历史、两项具体版本来源快照、唯一应用回执及索引 jobs。源条目 archived，历史/元信息/活动保留。只有 restore 可重新激活归档来源，追加新版本和索引任务；恢复一条不撤销合并或恢复整次任务。合并来源链接固定在捕获的源版本，后续编辑不改写它。
 - 同 operation_id 异输入、同 proposal 异输出、同 receipt_id 异 proposal/结果摘要均 conflict。相同提案即使换 receipt_id，也返回首次回执，不重复事实。取消先提交阻止登记/应用；应用先提交则取消保留回执和有效知识；拒绝后取消也保留已拒绝决定。无按时间自动过期，C1 过期仅由来源版本/状态变化触发。
 - 错误使用既有 AccessError/ServiceError 类型：invalid_request、scope_denied、confirmation_required、invalid_proposal、attempt_invalid、task_cancelled、proposal_expired、conflict、not_found、agent_failed、agent_timeout、service_interrupted；SQLite/存储异常 service_error，索引沿用既有 failed/pending 状态。诊断只保存事件计数、终态、PID/退出/组收口，不记录完整输入、推理或凭据。
-- schema v3 增量添加 merge_tasks/attempts/proposals/receipts/sources，不解释、导入或删除 p3_experiment_* 数据。数据库拥有者先取排他锁，v2 用 VACUUM INTO 生成包含 WAL 已提交页的一致性 v2 备份，成功后才事务迁移；失败关闭。老服务版本不能打开 v3，P2 IPC protocol 1 和日常工具保持兼容。回退须停服，在独立路径核对备份 integrity/user_version 和全部旧表，再用 v2 二进制打开；索引可重建，不能用恢复业务库宣称旧引擎文件被一并恢复。
+- schema v3 增量添加 merge_tasks/attempts/proposals/decisions/receipts/sources，不解释、导入或删除 p3_experiment_* 数据。数据库拥有者先取排他锁，v2 用 VACUUM INTO 生成包含 WAL 已提交页的一致性 v2 备份，成功后才事务迁移；失败关闭。老服务版本不能打开 v3，P2 IPC protocol 1 和日常工具保持兼容。回退须停服，在独立路径核对备份 integrity/user_version 和全部旧表，再用 v2 二进制打开；索引可重建，不能用恢复业务库宣称旧引擎文件被一并恢复。
