@@ -8,7 +8,7 @@
 
 只读探测：PATH 中 Codex `0.147.0`、pi `0.84.1`。Codex 提供 stdio MCP 与 exec，pi 提供 Extension/RPC，帮助未列出原生 MCP 命令；本机先用 Extension，不自动升级。pi 帮助在原沙箱中尝试建立 settings lock 被拒绝，没有修改真实设置；后续运行使用隔离 `PI_CODING_AGENT_DIR`。
 
-P2.1/P2.2 统一契约与范围协议已通过；P2.3 的真实 Codex → App 查看/编辑 → pi 当前版本读取已通过。Agent 页功能已有真实 pi 读写回执；P2 系统窗口视觉验收与最终交付审计尚未完成。
+P2.1/P2.2 统一契约与范围协议已通过；P2.3 的真实 Codex → App 查看/编辑 → pi 当前版本读取已通过；P2.4 App 内 Codex/pi 读写、连接管理与实际系统窗口对照已通过。P2.5 恢复、停止/重启和最终交付审计继续执行。
 
 官方 Go SDK 固定 `v1.8.0`。`proxy.golang.org` 在沙箱及沙箱外均连接超时；`goproxy.cn` 实际访问成功，命令级 `GOPROXY=https://goproxy.cn` 完成版本查询与下载，不修改用户默认 Go 环境。
 
@@ -52,7 +52,7 @@ P2.1 提交 `b7cb4d5`；P2.2 在此基础增加显式项目绑定优先、动态
 
 验收运行关闭用户配置、项目规则和非必要工具，使用隔离配置/会话与合成 Git 项目；没有覆盖真实 Agent 的配置或导入聊天。主包内提供 Go 桥，pi Extension 使用其已安装的运行环境，不额外安装 Node/Python 或重型引擎。
 
-## P2.4 当前状态：App 功能已通过，系统视觉待完成
+## P2.4：App 功能与实际系统窗口已通过
 
 `build/p2/adapter-verification.json` 六组通过：限定位置发现、Codex 精确增量 TOML/备份/断开、配置冲突拒绝、pi Extension 增量/断开、外部修改保留、符号链接与失败回滚。用户选定可执行路径由客户端保存，首次打开重新探测；连接配置记录实际版本。不会扫描全盘或在发现时改 Agent 设置。
 
@@ -60,7 +60,11 @@ Agent 页沿用导航—列表—详情三栏，连接、范围、验证、断�
 
 一次原地重建后的明确停止/恢复曾失败：该隔离 launchd job 无 helper/socket、EX_CONFIG 78、runs=16。通过 App「停止服务并退出」注销旧 job，保持同一数据目录，改用新验证标识/路径 r2；真实 App 恢复后 job running、runs=1、never exited，pi 读写通过。该结果支持验证 App 注册缓存相关解释，不将直接 helper 启动当作 App 验收，也不改动其他已运行服务。当前测试 App 路径由临时 `source-info.json` 记录，脚本按该权威路径启动。
 
-系统截图检查发现 graphical_session=true、on_console=true、screen_locked=true；已请求用户解锁。当前仅取得渲染/语义功能产物，**P2 实际系统窗口设计对照未完成**，不能将 functional_passed 当成视觉通过。P1 已通过的系统截图仍作为基线。服务读取失败时 UI 保留上次正文，但将服务状态标为不可用，不继续显示可检索/Agent 可用。
+系统截图最初发现 graphical_session=true、on_console=true、screen_locked=true，未把渲染检查算作视觉通过。随后桌面解锁，执行 `python3 scripts/verify-p2-agent-ui.py --verify --verify-pi --require-success`，九组 passed、visual_complete=true；实际 App 内 Codex 和 pi 都通过保存、状态、检索回执，待重载转为可用。系统采集前检查桌面解锁、实际激活并点击测试窗口，NSWindow key/visible 均为 true。
+
+已实际打开两张设计图，并查看系统帧逐项对照：窗口内容 1200×820，首页宽幅沿用 P1；Agent 为导航—列表—右栏详情，浅蓝侧栏从红绿灯顶部连续到底，正文与工具栏白色，字号/间距沿用 P1 token，按钮与图标单色。连接、范围、验证、断开在右栏，长配置路径在输入框或文本行显示并可滚动；初始化保留禁用入口。截图的重复待连接行来自多轮合成验收留下的断开连接历史，不代表真实 Agent 数量。没有普通操作弹框。
+
+系统 Codex/pi 可用帧归档于 [Codex](images/p2-codex.png) 和 [pi](images/p2-pi.png)，全部中间状态与系统采集元信息在 `build/p2-screenshots/system-agent-*.png` 及同名 `*-capture.json`。先前仅功能结果保留为 `build/p2/agent-ui-functional-verification.json`，失败报告仍保留。服务读取失败时 UI 保留上次正文，但将服务状态标为不可用，不继续显示可检索/Agent 可用。
 
 ## 真实范围与 worktree
 

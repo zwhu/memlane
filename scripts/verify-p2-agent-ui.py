@@ -7,7 +7,7 @@ ROOT=Path(__file__).resolve().parents[1]
 d=SourceFileLoader('p2common',str(ROOT/'scripts/p2-common.py')).load_module()
 out=ROOT/'build/p2-screenshots';out.mkdir(parents=True,exist_ok=True)
 projects=json.loads((d.fixture/'projects.json').read_text())
-p=argparse.ArgumentParser(description=__doc__);p.add_argument('--functional-only',action='store_true');p.add_argument('--verify',action='store_true');p.add_argument('--verify-pi',action='store_true');p.add_argument('--restart-service',action='store_true');args=p.parse_args()
+p=argparse.ArgumentParser(description=__doc__);p.add_argument('--functional-only',action='store_true');p.add_argument('--verify',action='store_true');p.add_argument('--verify-pi',action='store_true');p.add_argument('--restart-service',action='store_true');p.add_argument('--require-success',action='store_true');args=p.parse_args()
 report={'status':'failed','synthetic_only':True,'checks':[],'visual_complete':not args.functional_only};ui=None
 binpath=str(Path(shutil.which('codex')).parent)
 env={'PATH':binpath+':/usr/bin:/bin','PI_CODING_AGENT_DIR':str(d.fixture/'pi-agent'),'CODEX_HOME':str(Path.home()/'.codex'),'MEMLANE_PI_AUTH_DIRECTORY':str(Path.home()/'.pi/agent')}
@@ -74,6 +74,7 @@ try:
         d.UI.wait(lambda:any(label.startswith('验证失败：') or label=='真实 Agent 读写验证通过。' for label in ui.labels()),timeout=200)
         label=next(label for label in ui.labels() if label.startswith('验证失败：') or label=='真实 Agent 读写验证通过。')
         failure=label.startswith('验证失败：')
+        if args.require_success:assert not failure,label
         assert ('异常' if failure else '可用') in ui.labels()
         if failure:assert '可用' not in ui.labels()
         capture('system-agent-verification-result.png')
