@@ -9,6 +9,7 @@ import (
 // Presentation types carry service snapshots. They never fabricate persistence
 // or index status; the visual fixture is compiled only into e2e builds.
 type MemoryItem struct {
+	Origin                                                                                        string
 	Usage                                                                                         *records.UsageInfo
 	ID, Dataset, Title, Text, Original, Source, ScopeName, Category, State, IndexState, Operation string
 	Revision                                                                                      int64

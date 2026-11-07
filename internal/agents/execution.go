@@ -36,6 +36,7 @@ type Execution struct {
 	Events     map[string]int   `json:"event_types,omitempty"`
 }
 type RunOptions struct {
+	Initialization  bool   // only approved source-query/status and structured import tools
 	UsageChannel    string // explicit daily replay acceptance; default is connection verification
 	Workspace       string // explicit trusted session root for isolated verification
 	Prompt          string
@@ -125,6 +126,11 @@ func Run(ctx context.Context, d Discovery, i Installation, o RunOptions) (Execut
 		return out, errors.New("invalid usage channel")
 	}
 	env := append(os.Environ(), "PATH="+filepath.Dir(d.Path)+":"+os.Getenv("PATH"), "PI_TELEMETRY=0", "MEMLANE_USAGE_CHANNEL="+channel)
+	mode := ""
+	if o.Initialization {
+		mode = "initialization"
+	}
+	env = append(env, "MEMLANE_TOOL_MODE="+mode)
 	var arguments []string
 	if d.Agent == "codex" {
 		authHome := o.CodexAuthHome
@@ -142,9 +148,12 @@ func Run(ctx context.Context, d Discovery, i Installation, o RunOptions) (Execut
 		}
 		env = append(env, "CODEX_HOME="+isolated)
 		command, _ := json.Marshal(i.Options.Bridge)
-		argv, _ := json.Marshal([]string{"mcp", "--root", i.Options.ServiceRoot, "--connection", i.Connection.ID, "--generation", fmt.Sprint(i.Connection.Generation), "--workspace", workspace, "--usage-channel",channel})
+		argv, _ := json.Marshal([]string{"mcp", "--root", i.Options.ServiceRoot, "--connection", i.Connection.ID, "--generation", fmt.Sprint(i.Connection.Generation), "--workspace", workspace, "--usage-channel", channel, "--tool-mode", mode})
 		arguments = []string{"exec", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--json", "--sandbox", "read-only", "--cd", workspace, "-c", `approval_policy="never"`, "-c", "mcp_servers.memlane.command=" + string(command), "-c", "mcp_servers.memlane.args=" + string(argv), "-c", "features.shell_tool=false"}
 		arguments = append(arguments, "-c", `mcp_servers.memlane.tools.memory_save.approval_mode="approve"`)
+		if o.Initialization {
+			arguments = append(arguments, "-c", `mcp_servers.memlane.tools.memory_initialize.approval_mode="approve"`)
+		}
 		if o.Model != "" {
 			arguments = append(arguments, "--model", o.Model)
 		}
@@ -160,7 +169,14 @@ func Run(ctx context.Context, d Discovery, i Installation, o RunOptions) (Execut
 			}
 		}
 		env = append(env, "PI_CODING_AGENT_DIR="+isolated)
-		arguments = []string{"--mode", "json", "--print", "--no-session", "--offline", "--no-extensions", "--no-context-files", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-builtin-tools", "--extension", i.ExtensionPath, "--tools", "memory_scopes,memory_search,memory_get,memory_save,memory_status,memory_adopt"}
+		arguments = []string{"--mode", "json", "--print", "--no-session", "--offline", "--no-extensions", "--no-context-files", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-builtin-tools", "--extension", i.ExtensionPath, "--tools", "memory_scopes,memory_search,memory_get,memory_save,memory_status,memory_adopt,memory_initialization_get,memory_initialization_status,memory_initialize"}
+		if o.Initialization {
+			for n := range arguments {
+				if n > 0 && arguments[n-1] == "--tools" {
+					arguments[n] = "memory_initialization_get,memory_initialization_status,memory_initialize"
+				}
+			}
+		}
 		if o.Provider != "" {
 			arguments = append(arguments, "--provider", o.Provider)
 		}

@@ -33,6 +33,7 @@ type InstallOptions struct {
 }
 
 type Installation struct {
+	ToolsetVersion     int                `json:"toolset_version,omitempty"`
 	AgentVersion       string             `json:"agent_version,omitempty"`
 	Connection         records.Connection `json:"connection"`
 	Options            InstallOptions     `json:"options"`
@@ -222,7 +223,7 @@ func Install(ctx context.Context, c records.Connection, o InstallOptions) (resul
 	if priorErr == nil && (prior.Connection.Agent != c.Agent || (c.Agent == "codex" && prior.Options.Workspace != o.Workspace) || prior.Options.PiDirectory != o.PiDirectory) {
 		return Installation{}, errors.New("disconnect before changing Agent configuration location")
 	}
-	i := Installation{Connection: c, Options: o}
+	i := Installation{Connection: c, Options: o, ToolsetVersion: 2}
 	i.AgentVersion = probe.Version
 	var content []byte
 	var originalConfig []byte

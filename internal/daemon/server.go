@@ -518,6 +518,20 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 			}
 		}
 		return v, nil
+	case "initialization_start":
+		if !r.UserConfirmed || r.InitializationStart == nil {
+			return nil, errors.New("initialization preparation requires explicit user action")
+		}
+		return s.store.StartInitialization(operation, *r.InitializationStart)
+	case "initialization_get":
+		return s.store.Initialization(operation, r.InitializationBatch)
+	case "initialization_list":
+		return s.store.Initializations(operation, r.Scope)
+	case "initialization_cancel":
+		if !r.UserConfirmed {
+			return nil, errors.New("batch cancellation requires user action")
+		}
+		return s.store.CancelInitialization(operation, r.InitializationBatch)
 	case "usage":
 		return s.store.Usage(operation, r.Memory)
 	case "important":

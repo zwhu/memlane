@@ -13,6 +13,9 @@ import (
 )
 
 type App struct {
+	initialization                                                   InitializationUI
+	guidanceRoot, guidanceError                                      string
+	guidanceHidden                                                   bool
 	listSort, usageNavigation, usageBrowseError, usageImportantError string
 	usageBrowsed                                                     map[string]bool
 	importanceBusy                                                   bool
@@ -266,6 +269,7 @@ func (a *App) home(c *ui.Context) {
 			})
 			ui.Text(c, "最近积累的知识，以及需要你确认的改动。").FontSize(design.Small).TextColor(design.Muted)
 		})
+		a.guidanceCard(c)
 		if a.libraryError != "" {
 			ui.Row(c).Gap(10).Children(func() {
 				ui.Text(c, "活动读取失败，保留上次记录。").FontSize(design.Small).TextColor(design.Muted)
@@ -434,7 +438,11 @@ func (a *App) details(c *ui.Context) {
 					ui.Text(c, a.libraryError).FontSize(design.Small).TextColor(design.Muted)
 					quietButton(c, "重试读取").OnClick(func() { a.refresh(false) })
 				}
-				if a.page == "整理计划" {
+				if a.page == "初始化" {
+					actionButton(c, "新建初始化批次", nil).Key("initialization-new").Disabled(a.initialization.Busy).OnClick(func() { a.openInitialization("") })
+				} else if a.page == "使用指引" {
+					ui.Text(c, "步骤状态来自实际组件、登记与连接回执。").FontSize(design.Small).TextColor(design.Muted)
+				} else if a.page == "整理计划" {
 					ui.Text(c, "按项目设置频率，明确启用后才运行。").FontSize(design.Small).TextColor(design.Muted)
 					actionButton(c, "新建整理计划", nil).Key("schedule-new").Disabled(a.schedules.Busy).OnClick(a.newSchedule)
 				} else if a.page == "设置" {
@@ -507,6 +515,8 @@ func (a *App) details(c *ui.Context) {
 					}
 				} else if a.page == "Agent" {
 					a.agentList(c)
+				} else if a.page == "初始化" {
+					a.initializationList(c)
 				} else if a.page == "整理计划" {
 					a.scheduleList(c)
 				} else {
@@ -536,7 +546,11 @@ func (a *App) details(c *ui.Context) {
 					iconButton(c, "历史记录", icons["history"]).OnClick(func() { a.detailMode = "history" })
 				}
 			})
-			if a.page == "整理计划" {
+			if a.page == "使用指引" {
+				a.guidanceDetail(c)
+			} else if a.page == "初始化" {
+				a.initializationDetail(c)
+			} else if a.page == "整理计划" {
 				a.scheduleDetail(c)
 			} else if a.page == "整理记录" {
 				if a.organizationMode {
@@ -681,6 +695,9 @@ func (a *App) memoryDetail(c *ui.Context) {
 			if item.Operation == "save" && (item.Source == "codex" || item.Source == "pi") {
 				operation = "Agent 保存"
 			}
+			if item.Operation == "save" && item.Origin == "imported" && item.Revision == 1 {
+				operation = "导入"
+			}
 			meta(c, "版本", fmt.Sprintf("v%d · %s", item.Revision, operation))
 			meta(c, "保存", "已保存")
 			if item.Experience != nil {
@@ -824,6 +841,9 @@ func (a *App) historyView(c *ui.Context, item MemoryItem) {
 				if h.Operation == "save" && (item.Source == "codex" || item.Source == "pi") {
 					operation = "Agent 保存"
 				}
+				if h.Operation == "save" && item.Origin == "imported" && h.Revision == 1 {
+					operation = "导入"
+				}
 				ui.Text(c, fmt.Sprintf("v%d · %s", h.Revision, operation)).Bold()
 				ui.Spacer(c)
 				ui.Text(c, h.CreatedAt.Format("01-02 15:04")).FontSize(design.Small).TextColor(design.Muted)
@@ -888,6 +908,8 @@ func (a *App) pageDescription() string {
 }
 
 func (a *App) settings(c *ui.Context) {
+	quietButton(c, "恢复设置指引").Key("guidance-restore").OnClick(func() { a.hideGuidance(false); a.navigate("使用指引", "") })
+	quietButton(c, "初始化记录").Key("initialization-settings").OnClick(func() { a.openInitialization("") })
 	quietButton(c, "整理计划").Key("schedule-settings").OnClick(func() { a.navigate("整理计划", "") })
 	ui.Text(c, "本地组件与更新").FontSize(20).Bold()
 	if a.prepareRuntime == nil {

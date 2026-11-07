@@ -144,7 +144,7 @@ Codex/pi 的真实接入见 [P2 验证](p2-validation.md)，其余两款尚未�
 
 MCP 进程 cwd 不一定是当前会话项目。优先使用项目配置的明确绑定、受信工作区上下文或 Extension 提供的 cwd；无法确认就要求选范围，不默认查询全部。额外项目由用户明确授权，服务验证 connection 的允许范围。这约束 Agent 误操作，不宣称能隔离同账户下拥有任意执行权限的恶意程序。
 
-初始化记忆库保留“复制 prompt”入口，本阶段不展开 prompt 内容。来源只保存 Agent 实际提交的片段与引用，不偷偷读取全部历史对话。
+P2当时只保留初始化入口；当前I已实现可选指引、明确文件冻结快照、复制prompt与初始化三工具，见 [I契约](p3-onboarding-contract.md)。来源保存已批准具体版本/引用，不读取聊天库。
 
 ## 8. 本地模型与用户 Agent
 
@@ -289,3 +289,9 @@ schema9仅新增实际organization_recovery，旧v8一致性备份/全表保留�
 ## U 使用观察与排序（2026-11-08）
 
 schema10在一致性v9备份后仅增加实际usage_operations/events/coverage与用户importance。受信服务记录当前范围/版本，采用关联同连接代次/工作区摘要的90天内曝光；事务内来源门禁与原get状态兼容保持。明细90天、常用近30天，最小幂等回执长期保留避免重计；App/验证独立，后台未采集不补造。Current/List按观察scope补统计，历史Apply回执不受其当前栅栏影响。正式契约和真实证据见 [U契约](p3-usage-contract.md)、[U验证](p3-usage-validation.md)。
+
+## I 可选指引与原子初始化（2026-11-08）
+
+schema11在v10一致性备份后增量保存initialization_batches，包含冻结文件/路径/SHA/text、operation/digest、连接代次/工作区/状态及稳定导入回执。文件读取不持SQLite事务，descriptor-relative openat/NOFOLLOW/CLOEXEC限制批准根。新增版本/引用/操作/索引/导入活动一次短事务；整批稳定ID冲突回滚，收到回执优先重放，慢源读取错误不覆盖并发已提交事实。具体资源上限/错误/取消/恢复见 [I契约](p3-onboarding-contract.md)。
+
+App指引只持隐藏偏好，实际组件/项目/Agent状态持续刷新。准备并复制只生成pending，三个批次工具由daemon校验scope/generation/workspace；初始化模式无普通保存/批准/文件/命令工具。pi Extension显式筛选；Codex MCP用argv传tool-mode，避免env_clear丢失模式。真实pi/Rust/App及索引故障恢复见 [I验证](p3-onboarding-validation.md)。通道toolset_version2需要旧接入重新连接/重载/实际验证，旧日常协议1保持兼容；Codex新增模型验收与TRAE/traex/piRPC继续A/R。

@@ -268,7 +268,7 @@ func TestUsageV9MigrationPreservesAllTablesAndCoverage(t *testing.T) {
 	mustMerge(t, reader.Close())
 	backups, e := filepath.Glob(filepath.Join(filepath.Dir(path), "backups/schema-v9-*.sqlite"))
 	mustMerge(t, e)
-	if len(backups) != 1 || current.Schema != 10 {
+	if len(backups) != 1 || current.Schema != SchemaVersion {
 		t.Fatal("v9 backup/schema", backups, current.Schema)
 	}
 	backup, e := sql.Open("sqlite", backups[0])

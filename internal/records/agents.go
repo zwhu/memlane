@@ -29,6 +29,7 @@ type ConnectionDraft struct {
 // Workspace comes from an explicit bridge binding or pi ctx.cwd, never a
 // model tool argument or the MCP process's current working directory.
 type AgentRequest struct {
+	ToolMode     string         `json:"tool_mode,omitempty"`
 	CallID       string         `json:"call_id,omitempty"`
 	Channel      string         `json:"usage_channel,omitempty"`
 	Protocol     int            `json:"protocol_version"`
@@ -40,18 +41,20 @@ type AgentRequest struct {
 }
 
 type AgentArguments struct {
-	Exposure    string       `json:"exposure_receipt,omitempty"`
-	Revision    int64        `json:"revision,omitempty"`
-	OperationID string       `json:"operation_id,omitempty"`
-	Scope       string       `json:"scope,omitempty"`
-	Scopes      []string     `json:"scopes,omitempty"`
-	Memory      string       `json:"memory_id,omitempty"`
-	Query       string       `json:"query,omitempty"`
-	Limit       int          `json:"limit,omitempty"`
-	Title       string       `json:"title,omitempty"`
-	Text        string       `json:"text,omitempty"`
-	Origin      string       `json:"origin,omitempty"`
-	Source      *AgentSource `json:"source,omitempty"`
+	InitializationBatch string               `json:"batch_id,omitempty"`
+	InitializationItems []InitializationItem `json:"items,omitempty"`
+	Exposure            string               `json:"exposure_receipt,omitempty"`
+	Revision            int64                `json:"revision,omitempty"`
+	OperationID         string               `json:"operation_id,omitempty"`
+	Scope               string               `json:"scope,omitempty"`
+	Scopes              []string             `json:"scopes,omitempty"`
+	Memory              string               `json:"memory_id,omitempty"`
+	Query               string               `json:"query,omitempty"`
+	Limit               int                  `json:"limit,omitempty"`
+	Title               string               `json:"title,omitempty"`
+	Text                string               `json:"text,omitempty"`
+	Origin              string               `json:"origin,omitempty"`
+	Source              *AgentSource         `json:"source,omitempty"`
 }
 
 type SaveReceipt struct {

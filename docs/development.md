@@ -274,7 +274,7 @@ python3 scripts/p2-handoff.py <阶段> --result '<结果与证据路径>' --next
 
 ### P2 实际 App 与 Agent 验收
 
-本机已验证 Codex 0.147.0 的 stdio MCP、pi 0.84.1 的 Extension。App 自动发现 PATH/已知位置/所选路径，用户明确连接后增量安装配置并备份；变更范围更新代次，重新加载 Agent 后验证。App 的“验证读写”实际启动已安装 Agent，以合成 raw 记录执行保存、状态和搜索，只有完整回执和 ready 服务才显示可用；额度、认证或调用失败显示异常。初始化复制 prompt 入口保留但禁用，P3 再设计内容。
+本机已验证 Codex 0.147.0 的 stdio MCP、pi 0.84.1 的 Extension。App 自动发现 PATH/已知位置/所选路径，用户明确连接后增量安装配置并备份；变更范围更新代次，重新加载 Agent 后验证。App 的“验证读写”实际启动已安装 Agent，以合成 raw 记录执行保存、状态和搜索，只有完整回执和 ready 服务才显示可用；额度、认证或调用失败显示异常。P2当时初始化入口禁用；当前I允许选择具体文件准备/复制prompt，批次三工具与真实pi初始化见 [I验证](p3-onboarding-validation.md)，复制仍不代表成功。
 
 创建新合成根时只复用 P0 的组件缓存，不复制真实知识或 Agent 设置：
 
@@ -415,3 +415,9 @@ MEMLANE_C3_QUALITY_REAL=1 sh scripts/go.sh test -json ./internal/agents -run '^T
 新根 `python3 scripts/create-p3-usage-fixture.py`；按source-info的bundle身份和runtime-config构建完整自动化MemlaneUsage包，再运行 `python3 scripts/verify-p3-usage-app.py`。先构建隔离验证工具 `sh scripts/go.sh build -o build/p3-usage/p2-agent-check ./cmd/p2-agent-check`。该工具仅接受标记的合成root，不进入发布包；真实pi沿用自己的认证/模型。主验收通过且停服后 `python3 scripts/verify-p3-usage-search.py` 补验真实App搜索，只计App return，没有模型调用。
 
 `sh scripts/go.sh test ./internal/store ./internal/daemon -run '^TestUsage' -count=1 -v` 覆盖SQLite迁移、状态/来源/回执/范围边界，故障夹具单独标记。全仓test/vet与受影响race沿用标准；完整生产包 `python3 scripts/build-client.py --out build/p3-usage-production`。实际结果、首轮驱动失败、旧helper拒绝、截图和支持边界见 [U验证](p3-usage-validation.md)。
+
+## P3-I 隔离初始化验收
+
+契约见 [I契约](p3-onboarding-contract.md)，证据/故障分界见 [I验证](p3-onboarding-validation.md)。`python3 scripts/create-p3-onboarding-fixture.py`新建合成Git/来源及独立root，只复用已通过的组件缓存。以source-info.json标记identifier和runtime-config.json构建独立automation App后运行 `python3 scripts/verify-p3-onboarding-app.py`；真实App连接/验证、来源批次/pi提交/Rust检索和活动取消，使用Agent自己的认证与已选模型，无模型协议错误检查单列。`python3 scripts/verify-p3-onboarding-fault-app.py`只复用主流程passed且停服的根，以普通文件阻断新Rust dataset；协议导入明确不是模型，App实际展示保存保留/索引失败，移除夹具重启检索同v1/回执。
+
+最终展示补验 `python3 scripts/verify-p3-onboarding-display.py`核对当前根故障回执/导入统计/导入v1与历史，不调用模型。生产包使用 `python3 scripts/build-client.py --out build/p3-onboarding-production-sealed`；最后实际包与测量路径见final-checks.json。测试/静态检查/race沿用本页Go命令。门禁/清理只影响source-info标记的隔离bundle与精确PID，禁止传生产root或日常Agent配置。旧toolset0接入需重新连接/重载/真实验证才可准备初始化。阶段临时handoff用既有通用脚本，生成后继续A/R/G/F。

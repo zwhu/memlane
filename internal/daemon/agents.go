@@ -19,9 +19,15 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 		return nil, &records.AccessError{Code: "protocol_mismatch", Message: "unsupported Agent protocol version"}
 	}
 	switch r.Tool {
-	case "memory_save", "memory_get", "memory_search", "memory_status", "memory_scopes", "memory_adopt":
+	case "memory_save", "memory_get", "memory_search", "memory_status", "memory_scopes", "memory_adopt", "memory_initialization_get", "memory_initialization_status", "memory_initialize":
 	default:
 		return nil, invalid("unknown memory tool")
+	}
+	if r.ToolMode != "" && r.ToolMode != "initialization" {
+		return nil, invalid("unknown tool mode")
+	}
+	if r.ToolMode == "initialization" && r.Tool != "memory_initialization_get" && r.Tool != "memory_initialization_status" && r.Tool != "memory_initialize" {
+		return nil, invalid("tool is unavailable during initialization")
 	}
 	c, scopes, err := s.store.Authorize(ctx, r)
 	if err != nil {
@@ -69,6 +75,41 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 	}
 	var result any
 	switch r.Tool {
+	case "memory_initialization_get", "memory_initialization_status", "memory_initialize":
+		if a.InitializationBatch == "" {
+			return nil, invalid("batch_id required")
+		}
+		batch, e := s.store.CheckInitializationAgent(ctx, a.InitializationBatch, c.ID, c.Generation, workspaceID, scopes)
+		if e != nil {
+			return nil, e
+		}
+		switch r.Tool {
+		case "memory_initialization_get":
+			result, e = s.store.ReadInitializationSources(ctx, batch)
+		case "memory_initialization_status":
+			batch.Sources = nil
+			result = batch
+		case "memory_initialize":
+			var receipt records.InitializationReceipt
+			receipt, e = s.store.SubmitInitialization(ctx, batch, records.InitializationCommit{Batch: batch.ID, OperationID: a.OperationID, Items: a.InitializationItems})
+			if e == nil {
+				result = receipt
+				select {
+				case s.work <- struct{}{}:
+				default:
+				}
+			} else {
+				code := "submission_failed"
+				var failure *records.AccessError
+				if errors.As(e, &failure) {
+					code = failure.Code
+				}
+				s.store.NoteInitializationFailure(ctx, batch, code)
+			}
+		}
+		if e != nil {
+			return nil, e
+		}
 	case "memory_scopes":
 		available, e := s.store.Scopes(ctx)
 		if e != nil {

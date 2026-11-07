@@ -7,7 +7,7 @@ def ensure_inside(path,root):
 
 def validate_fixture(fixture,app,phase="c2"):
  fixture=fixture.resolve();app=app.resolve()
- assert phase in ('c2','c3','c4','global','schedules','recovery','usage') and fixture.name.startswith('memlane-p3-'+phase+'-app-'), 'isolated synthetic root required'
+ assert phase in ('c2','c3','c4','global','schedules','recovery','usage','onboarding') and fixture.name.startswith('memlane-p3-'+phase+'-app-'), 'isolated synthetic root required'
  metadata=json.loads((fixture/'source-info.json').read_text())
  assert metadata.get('synthetic_only') is True, 'synthetic fixture marker required'
  identity=metadata['identifier']
@@ -33,3 +33,30 @@ def validate_fixture(fixture,app,phase="c2"):
   assert Path(service_data["root"]).resolve()==fixture/"client/data", "service root differs"
   ensure_inside(Path(service_data["worker"]["DataDir"]),fixture)
  return local
+
+
+def close_partial_ui(instance,fixture,app,phase):
+ """关闭当前受门禁确认的隔离App；支持启动途中没有socket的实例。"""
+ import os,re,signal,subprocess
+ validate_fixture(fixture,app,phase)
+ try:
+  if hasattr(instance,'s'):instance.quit(stop=True);return
+ except Exception:pass
+ info=plistlib.loads((app/'Contents/Info.plist').read_bytes())
+ binary=str((app/'Contents/MacOS'/info['CFBundleExecutable']).resolve())
+ if getattr(instance,'pid',None):candidates=[instance.pid]
+ else:
+  proc=subprocess.run(['pgrep','-f','^'+re.escape(binary)+'$'],capture_output=True,text=True)
+  candidates=[int(v) for v in proc.stdout.split()]
+ for pid in candidates:
+  command=subprocess.run(['ps','-p',str(pid),'-o','command='],capture_output=True,text=True).stdout.strip()
+  if not command:continue
+  if command!=binary:raise AssertionError('partial App pid no longer matches isolated bundle')
+  os.kill(pid,signal.SIGTERM)
+ proc=getattr(instance,'proc',None)
+ if proc is not None:
+  try:proc.wait(timeout=10)
+  except subprocess.TimeoutExpired:proc.terminate();proc.wait(timeout=5)
+ for name in ('s','log'):
+  resource=getattr(instance,name,None)
+  if resource is not None:resource.close()

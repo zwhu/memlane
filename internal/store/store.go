@@ -24,6 +24,7 @@ import (
 var ErrConflict = records.ErrConflict
 
 type Store struct {
+	initializationReader  func(context.Context, string, []string) ([]records.InitializationSource, error)
 	ServiceStopGeneration int64 // fixed for this service epoch, never model data
 	DB                    *sql.DB
 	ownership             *os.File

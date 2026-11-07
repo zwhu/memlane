@@ -25,7 +25,7 @@ func displayVersion(v records.Version) MemoryItem {
 	} else if v.ScopeKind == "experience" {
 		category = "通用经验"
 	}
-	return MemoryItem{ID: v.Memory, Dataset: v.Dataset, Title: v.Title, Text: v.Text, Original: v.Original, Source: v.Source, ScopeName: v.ScopeName, Category: category, Revision: v.Revision, State: v.State, IndexState: v.IndexState, Operation: v.Operation, CreatedAt: created.Local(), SourceDetail: v.SourceDetail, Tags: v.Tags, Derived: v.Derived, Experience: v.Experience, Usage: v.Usage}
+	return MemoryItem{Origin: v.Origin, ID: v.Memory, Dataset: v.Dataset, Title: v.Title, Text: v.Text, Original: v.Original, Source: v.Source, ScopeName: v.ScopeName, Category: category, Revision: v.Revision, State: v.State, IndexState: v.IndexState, Operation: v.Operation, CreatedAt: created.Local(), SourceDetail: v.SourceDetail, Tags: v.Tags, Derived: v.Derived, Experience: v.Experience, Usage: v.Usage}
 }
 func displayVersions(vs []records.Version) []MemoryItem {
 	out := make([]MemoryItem, 0, len(vs))
@@ -55,6 +55,7 @@ func displayHistory(vs []records.History) []MemoryHistory {
 // from replacing a newer selection or draft; read failures retain prior data.
 func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(func())) {
 	a.library = serviceipc.Library{Root: root}
+	a.initialization = InitializationUI{Client: serviceipc.InitializationClient{Root: root}}
 	a.usageBrowseError = ""
 	a.usageImportantError = ""
 	a.usageNavigation = uuid.NewString()
@@ -74,6 +75,10 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 		a.refreshMerge(false)
 		a.refreshOrganization(false, false)
 		a.refreshSchedules()
+		a.refreshInitialization()
+		if a.page == "使用指引" || a.page == "初始化" {
+			a.refreshAgents(false)
+		}
 	}
 	a.onSelect = func(string) {
 		a.usageBrowseError = ""
@@ -98,6 +103,9 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 				return
 			case <-ticker.C:
 				dispatch(func() {
+					if a.page == "初始化" || a.page == "使用指引" {
+						a.refreshInitialization()
+					}
 					if a.page == "整理计划" || a.page == "总览" {
 						a.refreshSchedules()
 					}
