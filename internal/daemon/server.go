@@ -35,16 +35,17 @@ var MarkStopped = serviceipc.MarkStopped
 var writeJSON = serviceipc.WriteJSON
 
 type Server struct {
-	config Config
-	store  *store.Store
-	mu     sync.Mutex
-	worker *engine.Client
-	state  State
-	status string
-	stop   context.CancelFunc
-	wake   chan struct{}
-	work   chan struct{}
-	gate   chan struct{}
+	config      Config
+	store       *store.Store
+	mu          sync.Mutex
+	worker      *engine.Client
+	state       State
+	status      string
+	stop        context.CancelFunc
+	wake        chan struct{}
+	work        chan struct{}
+	gate        chan struct{}
+	agentAccess sync.RWMutex // scope changes wait for previously authorized tools
 }
 
 func Run(ctx context.Context, config Config) error {
@@ -316,13 +317,19 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		if !r.UserConfirmed {
 			return nil, &records.AccessError{Code: "confirmation_required", Message: "connect or change scope explicitly in Memlane"}
 		}
+		s.agentAccess.Lock()
+		defer s.agentAccess.Unlock()
 		return s.store.ConfigureConnection(operation, r.Connection)
 	case "disconnect":
 		if !r.UserConfirmed {
 			return nil, &records.AccessError{Code: "confirmation_required", Message: "disconnect explicitly in Memlane"}
 		}
+		s.agentAccess.Lock()
+		defer s.agentAccess.Unlock()
 		return nil, s.store.Disconnect(operation, r.ConnectionID)
 	case "agent":
+		s.agentAccess.RLock()
+		defer s.agentAccess.RUnlock()
 		result, err := s.agent(operation, r.AgentRequest, &svc)
 		if err == nil && r.AgentRequest.Tool == "memory_save" {
 			select {

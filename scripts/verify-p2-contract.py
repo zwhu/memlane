@@ -285,6 +285,66 @@ def main():
             fresh.tool('memory_get',{'memory_id':memory_id},'disconnected')
             return {'connection_and_memory_persist':True,'generation_invalidates_old_session':True,'disconnect_revokes':True}
         check('restart-reload-disconnect',restart)
+        def context_boundaries():
+            unknown=repo('unregistered')
+            unknown_client=client(piA,workspace=unknown)
+            unknown_client.tool('memory_search',{'query':'sharedCurrentToken'},'scope_required')
+            assert unknown_client.tool('memory_scopes',{})['requires_scope']
+            assert unknown_client.tool('memory_search',{'query':'sharedCurrentToken','scope':scopeA['id']})['scopes']==[scopeA['id']]
+            no_global=connection('pi','',[scopeB['id']])
+            onlyB=client(no_global,workspace=B)
+            assert onlyB.tool('memory_search',{'query':'sharedGlobalToken'})['scopes']==[scopeB['id']]
+            onlyB.tool('memory_search',{'query':'sharedGlobalToken','scope':global_id},'scope_denied')
+            # A raw save is distinct from knowledge and never increments activity.
+            before=call('activities',timezone='UTC')['total']
+            raw=onlyB.tool('memory_save',{'operation_id':'synthetic-raw','text':'synthetic raw received fragment','origin':'raw'})
+            wait(lambda:onlyB.tool('memory_get',{'memory_id':raw['record']['memory']})['index_state']=='indexed')
+            assert call('activities',timezone='UTC')['total']==before
+            # Explicitly bound A without workspace is valid; cwd B is ignored.
+            bound=connection('codex',scopeA['id'],[scopeA['id']])
+            fixed=client(bound,cwd=B)
+            assert fixed.tool('memory_scopes',{})['current_project']==scopeA['id']
+            assert fixed.tool('memory_get',{'memory_id':memory_id})['dataset']==scopeA['id']
+            return {'unregistered_requires_choice':True,'explicit_authorized_scope_works':True,'unapproved_global_denied':True,'raw_no_heatmap_count':True,'explicit_binding_precedes_process_cwd':True}
+        check('workspace-and-global-boundaries',context_boundaries)
+        # Reproduce legacy P1 duplicate paths only while the single owner is
+        # stopped. An explicit binding resolves ambiguity without merging rows.
+        call('quiesce');daemon.wait(timeout=15)
+        duplicate=str(uuid.uuid4())
+        with sqlite3.connect(data/'memlane.sqlite') as db:
+            db.execute('INSERT INTO scopes(id,kind,name,path) VALUES(?,?,?,?)',(duplicate,'project','legacy duplicate',str(worktree)))
+        daemon=start();wait(lambda:call('health')['state']=='ready')
+        def ambiguity():
+            pA.tool('memory_search',{'query':'x'},'scope_ambiguous')
+            assert pA.tool('memory_scopes',{})['requires_scope']
+            chosen=connection('codex',scopeA['id'],[scopeA['id']])
+            bound=client(chosen,workspace=link)
+            assert bound.tool('memory_get',{'memory_id':memory_id})['dataset']==scopeA['id']
+            return {'legacy_ambiguity_requires_choice':True,'explicit_binding_checked_against_worktree':True}
+        check('legacy-project-ambiguity',ambiguity)
+        # A service can persist new originals even if the engine cannot start.
+        # Search must return an error and index status must not claim readiness.
+        fault_connection=connection('pi',scopeB['id'],[scopeB['id']])
+        fault_client=client(fault_connection,workspace=B)
+        call('quiesce');daemon.wait(timeout=15)
+        missing={**config,'worker':{**config['worker'],'Executable':str(root/'missing-worker')}}
+        configpath.write_text(json.dumps(missing))
+        daemon=start();wait(lambda:call('health')['state']=='failed')
+        fault_payload={'operation_id':'synthetic-engine-failure','text':'synthetic engineFailureDurableToken'}
+        accepted=fault_client.tool('memory_save',fault_payload)
+        fault_id=accepted['record']['memory']
+        assert accepted['persisted'] and accepted['record']['index_state']=='pending'
+        fault_client.tool('memory_search',{'query':'engineFailureDurableToken'},'index_unavailable')
+        call('quiesce');daemon.wait(timeout=15)
+        configpath.write_text(json.dumps(config))
+        state=json.loads((data/'service-state.json').read_text());state['restarts']=[];(data/'service-state.json').write_text(json.dumps(state))
+        daemon=start();wait(lambda:call('health')['state']=='ready')
+        def engine_recovery():
+            wait(lambda:fault_client.tool('memory_get',{'memory_id':fault_id})['index_state']=='indexed')
+            assert fault_client.tool('memory_save',fault_payload)['record']['revision']==1
+            assert any(h['version']['memory']==fault_id for h in fault_client.tool('memory_search',{'query':'engineFailureDurableToken'})['hits'])
+            return {'persisted_while_engine_missing':True,'index_not_ready':True,'search_explicit_error':True,'durable_queue_replayed_once':True}
+        check('engine-failure-durable-recovery',engine_recovery)
         report['status']='passed'
     except Exception as error:
         report['error']=repr(error)

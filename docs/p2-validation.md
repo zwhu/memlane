@@ -8,7 +8,7 @@
 
 只读探测：PATH 中 Codex `0.147.0`、pi `0.84.1`。Codex 提供 stdio MCP 与 exec，pi 提供 Extension/RPC，帮助未列出原生 MCP 命令；本机先用 Extension，不自动升级。pi 帮助在原沙箱中尝试建立 settings lock 被拒绝，没有修改真实设置；后续运行使用隔离 `PI_CODING_AGENT_DIR`。
 
-P2.1 统一契约与 MCP/CLI 协议已通过；项目映射/范围基础同时实现，P2.2 继续补齐动态工作区与授权变更边界。尚未完成真实 Agent、App Agent 页或实际 P2 窗口验收，不能描述为 Codex/pi 已接通。
+P2.1/P2.2 统一契约、MCP/CLI 协议与项目/范围已通过。尚未完成真实 Agent、App Agent 页或实际 P2 窗口验收，不能描述为 Codex/pi 已接通。
 
 官方 Go SDK 固定 `v1.8.0`。`proxy.golang.org` 在沙箱及沙箱外均连接超时；`goproxy.cn` 实际访问成功，命令级 `GOPROXY=https://goproxy.cn` 完成版本查询与下载，不修改用户默认 Go 环境。
 
@@ -29,3 +29,13 @@ P2.1 统一契约与 MCP/CLI 协议已通过；项目映射/范围基础同时�
 ## 真实 Agent 运行条件
 
 Codex `login status` 报告 ChatGPT 已登录（未输出凭据）。pi 使用 `auth check --json --no-refresh`，`openai-codex`、`google`、`anthropic`、`openai` 均返回 `not_ready/credentials_not_configured`。已请求用户选择可用 provider/model 或在 pi 完成登录；不复制 Codex 凭据给 pi，不将协议通过代替 pi 真实进程验收。其余开发继续。
+
+## P2.2：工作区、全局白名单与授权边界
+
+P2.1 提交 `b7cb4d5`；P2.2 在此基础增加显式项目绑定优先、动态工作区错误和服务授权屏障。`build/p2/contract-verification.json` 扩展为十组通过；受影响包的 Go test/vet 退出 0。
+
+新增真实检查：未登记仓库默认返回 scope_required，显式获批范围可读；未批准全局的 B 连接默认只搜索 B，显式请求全局仍拒绝；raw 原始记录保存与索引完成不增加热力图。Codex 明确绑定 A、桥进程在 B 启动时仍使用已确认 A 绑定，不反推进程 cwd；绑定＋工作区冲突拒绝。
+
+在单服务 owner 停止时人为加入 P1 历史重复项目映射，再重启：未绑定动态工作区返回 scope_ambiguous 并要求选择；明确选择 A 的连接仍核对实际 worktree 的 common directory，可以正确读取 A，不合并或删除历史项目。配置变更/断开与工具调用使用读写屏障，变更完成后的旧代次调用被拒绝；先前十组中的重载/撤销检查仍通过。
+
+使用合成配置将 worker Executable 指向不存在的路径，服务真实进入 failed：MCP 新保存返回持久化回执，index_state=pending；搜索返回 index_unavailable。恢复原 worker 配置并明确重启，持久任务补索引，重复保存仍为同一 v1，原文可检索。该实验只改变本轮临时根，未停止或改动其他服务。

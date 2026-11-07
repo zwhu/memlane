@@ -99,10 +99,10 @@
 
 ### P2.2：项目、worktree 与连接范围
 
-- [ ] 服务按本地 Git common directory 映射仓库和 worktree；符号链接规范化，独立 clone 不按 remote 或目录名自动合并。
-- [ ] 服务端验证连接白名单和代次；默认检索当前项目＋允许全局，其他已授权项目也需要显式选择。
-- [ ] Codex 使用明确绑定；pi 使用 Extension `ctx.cwd`。不使用 MCP 进程 cwd 推断会话项目。项目不明要求选择，未登记或存在歧义返回明确错误。
-- [ ] 验证 A/B 隔离、允许全局、额外项目授权、worktree、独立 clone、未知范围和重启后持久性。
+- [x] 服务按本地 Git common directory 映射仓库和 worktree；符号链接规范化，独立 clone 不按 remote 或目录名自动合并。
+- [x] 服务端验证连接白名单和代次；默认检索当前项目＋允许全局，其他已授权项目也需要显式选择。
+- [x] 固定 Codex 明确绑定、pi Extension `ctx.cwd` 的工作区契约；桥不使用进程 cwd。服务已验证未知/歧义范围的选择与拒绝规则，真实 Agent 适配在 P2.3。
+- [x] 验证 A/B 隔离、允许全局、额外项目授权、worktree、独立 clone、未知范围和重启后持久性。
 
 ### P2.3：Codex 与 pi 真实工具往返
 

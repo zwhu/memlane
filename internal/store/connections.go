@@ -153,7 +153,11 @@ func (s *Store) Authorize(ctx context.Context, r records.AgentRequest) (records.
 	}
 	current := c.Project
 	explicit := r.Arguments.Scope != "" || len(r.Arguments.Scopes) > 0
-	if r.Workspace != "" {
+	if r.Workspace != "" && c.Project != "" {
+		if err := s.CheckBoundWorkspace(ctx, c.Project, r.Workspace); err != nil {
+			return c, nil, err
+		}
+	} else if r.Workspace != "" {
 		project, e := s.ProjectForWorkspace(ctx, r.Workspace)
 		if e != nil {
 			// With no fixed binding, an explicitly chosen allowed scope is

@@ -77,3 +77,24 @@ func (s *Store) knownRepository(ctx context.Context, path string) (records.Scope
 	}
 	return scope, err == nil, err
 }
+
+// An explicit project binding takes precedence over ambiguous legacy project
+// entries, but still must match the actual workspace's local repository.
+func (s *Store) CheckBoundWorkspace(ctx context.Context, project, path string) error {
+	var registered string
+	if err := s.DB.QueryRowContext(ctx, `SELECT path FROM scopes WHERE id=? AND kind='project'`, project).Scan(&registered); err != nil {
+		return err
+	}
+	_, known, err := repository(ctx, registered)
+	if err != nil {
+		return err
+	}
+	_, current, err := repository(ctx, path)
+	if err != nil {
+		return err
+	}
+	if known != current {
+		return access("workspace_mismatch", "workspace differs from bound project")
+	}
+	return nil
+}
