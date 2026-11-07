@@ -31,13 +31,13 @@ def main():
     if not slug:
         p.error('phase must contain a filename-safe character')
     path = folder / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ') + '-' + slug + '.md')
-    content = f'''# Memlane P3 handoff：{a.phase}
+    content = f'''# Memlane 交付 handoff：{a.phase}
 
 ## 生成方式
 本脚本读取 {skill} 作为交接格式依据，直接生成文档；没有通过 Skill 工具调用 handoff。源技能禁止自动模型调用时也不修改其 frontmatter。交接只保存在系统临时目录。
 
 ## 目标与范围
-推进 P3-C1 正式服务端纯建议、审核与原子应用，以及迁移/备份、持久任务和私有 IPC；以当前会话授权为准，不写入 Goal prompt。
+完成本机 macOS 记忆客户端剩余开发、真实验收与交付准备。阶段覆盖栏内整理审核、完整整理动作、全局经验、计划与后台恢复、使用记录和初始化、日常 Agent 接入、代码图谱与正式分发。当前会话指令是总目标的授权来源；仓库仅保存实施与验收资料，不保存 Goal prompt。阶段通过或生成本交接后继续总目标。
 
 ## 当前检查点
 仓库：{ROOT}
@@ -54,9 +54,11 @@ def main():
 ## 权威资料
 - AGENTS.md、docs/product.md、docs/design.md：确认规则。
 - docs/technical-plan.md、docs/implementation-plan.md、docs/p3-architecture.md、docs/p3-technical-analysis.md：实现与边界。
-- docs/p3-validation.md、build/p3/goal-completion-audit.json：已通过的隔离实验。
+- docs/p3-delivery-plan.md：完整切片、依赖、验收矩阵、剩余工作与外部条件。
+- docs/p3-validation.md：历史实验、正式 C1 和后续切片的证据与能力边界。
 - 下一阶段目标以用户当前会话指令和 --next 参数为准。
-- build/p3/：真实 traex 正常/应用/取消、隔离、Rust 重试与全仓检查。对应生产切片新增报告应在验证文档列明。
+- build/p3/ 与 build/p3-c1/：历史实验和 C1 服务证据；后续证据以各切片验证文档列出的路径为准。
+- docs/p0-validation.md、docs/p1-validation.md、docs/p2-validation.md：已通过基线；受影响部分重新验证。
 不重复复制代码、规范、差异、模型输入或详细测试日志，只引用这些产物。
 
 ## suggested skills
@@ -66,10 +68,12 @@ def main():
 - bits-unit-test-gen：任务明确涉及单元测试生成/修改时按适用契约使用；与服务/协议集成测试区分。
 
 ## 持续约束
-后台 Agent 仅返回提案，合并需明确确认；任一目标过期则整项拒绝。取消不撤销已提交事实，重复回执只返回一次应用。只用合成验收库，不读取真实记忆/聊天，不提交凭据或本机 Agent 配置。P3-C1 不扩展 UI、调度、排名、初始化、代码图谱或其他 Agent；不替换 Rust worker/本地模型。验收与提交按当前用户授权范围执行，保留用户无关改动。
+AGENTS.md 与产品规则持续有效。后台 Agent 仅返回结构化结果；新增有出处摘要/标签可按正式规则自动应用，改写、合并、覆盖、删除、跨项目移动及 AI 全局提炼需确认。版本、来源、范围、取消、幂等及索引门禁由受信本机服务执行。只用隔离合成验收库，不读取真实记忆/聊天，不提交凭据或本机 Agent 配置。采用选定 Rust worker 路线；未启用项目不扫描代码。每切片审查、验证、记录、提交后继续；最终普通推送授权分支，不强推。证书、公证、正式源与干净系统必须实证，缺必需项不能标记总目标完成。保留用户无关修改。
 '''
     path.write_text(redact(content), encoding='utf-8')
     path.chmod(0o600)
+    if not path.is_file() or path.stat().st_size == 0:
+        raise SystemExit('handoff file verification failed')
     print(path)
 
 if __name__ == '__main__':
