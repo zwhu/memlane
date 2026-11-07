@@ -35,21 +35,24 @@ var MarkStopped = serviceipc.MarkStopped
 var writeJSON = serviceipc.WriteJSON
 
 type Server struct {
-	lifecycle   context.Context
-	mergeMu     sync.Mutex
-	mergeWG     sync.WaitGroup
-	mergeRuns   map[string]context.CancelFunc
-	config      Config
-	store       *store.Store
-	mu          sync.Mutex
-	worker      *engine.Client
-	state       State
-	status      string
-	stop        context.CancelFunc
-	wake        chan struct{}
-	work        chan struct{}
-	gate        chan struct{}
-	agentAccess sync.RWMutex // scope changes wait for previously authorized tools
+	organizationMu   sync.Mutex
+	organizationWG   sync.WaitGroup
+	organizationRuns map[string]organizationOwner
+	lifecycle        context.Context
+	mergeMu          sync.Mutex
+	mergeWG          sync.WaitGroup
+	mergeRuns        map[string]context.CancelFunc
+	config           Config
+	store            *store.Store
+	mu               sync.Mutex
+	worker           *engine.Client
+	state            State
+	status           string
+	stop             context.CancelFunc
+	wake             chan struct{}
+	work             chan struct{}
+	gate             chan struct{}
+	agentAccess      sync.RWMutex // scope changes wait for previously authorized tools
 }
 
 func Run(ctx context.Context, config Config) error {
@@ -88,9 +91,12 @@ func Run(ctx context.Context, config Config) error {
 	if err = db.InterruptMerges(ctx); err != nil {
 		return err
 	}
+	if err = db.InterruptOrganizations(ctx); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	s := &Server{lifecycle: ctx, mergeRuns: make(map[string]context.CancelFunc), config: config, store: db, state: state, status: "preparing", stop: cancel, wake: make(chan struct{}, 1), work: make(chan struct{}, 1), gate: make(chan struct{}, 1)}
+	s := &Server{organizationRuns: make(map[string]organizationOwner), lifecycle: ctx, mergeRuns: make(map[string]context.CancelFunc), config: config, store: db, state: state, status: "preparing", stop: cancel, wake: make(chan struct{}, 1), work: make(chan struct{}, 1), gate: make(chan struct{}, 1)}
 	path := SocketPath(config.Root)
 	dir := filepath.Dir(path)
 	if err = os.MkdirAll(dir, 0700); err != nil {
@@ -137,7 +143,9 @@ func Run(ctx context.Context, config Config) error {
 			<-workerDone
 			handlers.Wait()
 			s.mergeWG.Wait()
+			s.organizationWG.Wait()
 			_ = db.InterruptMerges(context.Background())
+			_ = db.InterruptOrganizations(context.Background())
 			return e
 		}
 		handlers.Add(1)
@@ -146,6 +154,10 @@ func Run(ctx context.Context, config Config) error {
 	<-workerDone
 	handlers.Wait()
 	s.mergeWG.Wait()
+	s.organizationWG.Wait()
+	if err = db.InterruptOrganizations(context.Background()); err != nil {
+		return err
+	}
 	return db.InterruptMerges(context.Background())
 }
 
@@ -322,6 +334,34 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 	}
 	svc := memory.Service{Store: s.store, Engine: selected}
 	switch r.Op {
+	case "organization_start", "organization_cancel", "organization_resume":
+		if !r.UserConfirmed {
+			return nil, records.MergeError("confirmation_required")
+		}
+		if r.Op == "organization_start" {
+			if r.OrganizationStart == nil {
+				return nil, records.MergeError("invalid_request")
+			}
+			return s.startOrganization(operation, *r.OrganizationStart)
+		}
+		if r.Op == "organization_resume" {
+			if r.OrganizationResume == nil {
+				return nil, records.MergeError("invalid_request")
+			}
+			return s.resumeOrganization(operation, *r.OrganizationResume)
+		}
+		return s.cancelOrganization(operation, r.OrganizationTask)
+	case "organization_get":
+		return s.getOrganization(operation, r.OrganizationTask)
+	case "organization_list":
+		q := records.MergeListQuery{}
+		if r.OrganizationList != nil {
+			q = *r.OrganizationList
+		}
+		return s.listOrganizations(operation, q)
+	case "organization_sources":
+		return s.store.OrganizationSources(operation, r.Memory, r.ExpectedRevision)
+
 	case "merge_start", "merge_cancel", "merge_confirm", "merge_reject":
 		if !r.UserConfirmed {
 			return nil, &records.AccessError{Code: "confirmation_required", Message: "explicit action from trusted Memlane host required"}

@@ -365,3 +365,18 @@ python3 scripts/verify-p3-c2-index-fault.py
 ```
 
 根与 identifier 由创建脚本打印；fixture-path.txt/source-info.json 指向本次隔离根与 App。索引故障脚本依赖主流程已通过并显式停服，使用实际 Rust dataset 的新阻挡文件，停服后校验并移除，再重启真实 worker 恢复；只用合成库。失败状态开发工具不随主包分发，不替代真实 Agent 的正常与活动取消。完整规则、证据、原地重建失败和分发边界见 [C2 验证](p3-c2-validation.md)。正式构建默认无 automation，仍使用 build-client.py --out build/p0-final。
+
+## P3-C3 摘要与标签验收
+
+正式服务 schema v4，受信 App 提供项目知识/raw 材料选择、持久任务和逐项摘要/新增标签回执；完整修改建议与计划尚未实现。契约见 [整理动作](p3-organization-contract.md)，证据见 [C3 验证](p3-c3-validation.md)。
+
+```sh
+python3 scripts/create-p3-c3-fixture.py
+# 按脚本输出的新标识和 fixture/runtime-config.json 构建专用 MemlaneC3.app：
+python3 scripts/build-client.py --out build/p3-c3-app --runtime-config <fixture>/runtime-config.json --identifier <identifier> --name MemlaneC3 --automation
+python3 scripts/verify-p3-c3-app.py
+python3 scripts/verify-p3-c3-recovery-app.py
+MEMLANE_C3_QUALITY_REAL=1 sh scripts/go.sh test -json ./internal/agents -run '^TestOrganizationRealQualityBaseline$' -count=1
+```
+
+真实模型操作沿用本机 traex 已有认证/选择，需已就绪的合成组件缓存及解锁桌面；不修改日常 Agent 配置。两次 App 脚本都按实际包身份与合成数据 root 校验。恢复脚本中的 SQLite tag INSERT 拒绝和 Rust dataset 阻挡文件是明确故障夹具；正常返回、进程活动取消及摘要检索仍为真实链路。质量测试 pass 只证明进程/schema/两种弃答断言，需逐项核对实际正文和引用。

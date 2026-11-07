@@ -43,7 +43,11 @@ func (s *Store) StartMerge(ctx context.Context, d records.MergeStart) (records.M
 		if e != nil {
 			return records.MergeTask{}, false, e
 		}
-		if v.Dataset != d.Project || v.State != "active" || v.Origin == "raw" || v.Revision != target.Revision {
+		var stale bool
+		if stale, e = mergeDerivedStale(ctx, tx, v.Memory, v.Revision); e != nil {
+			return records.MergeTask{}, false, e
+		}
+		if stale || v.Dataset != d.Project || v.State != "active" || v.Origin == "raw" || v.Revision != target.Revision {
 			return records.MergeTask{}, false, records.MergeError("proposal_expired")
 		}
 		x.Inputs = append(x.Inputs, records.MergeInput{Memory: v.Memory, Revision: v.Revision, Title: v.Title, Text: v.Text, Source: v.Source, SourceDetail: v.SourceDetail, CapturedAt: time.Now().UTC().Format(time.RFC3339Nano)})
@@ -103,10 +107,15 @@ func mergeCurrent(ctx context.Context, tx *sql.Tx, x records.MergeSnapshot) (boo
 	for _, v := range x.Inputs {
 		var revision int64
 		var project, state string
+		var stale bool
 		if err := tx.QueryRowContext(ctx, `SELECT current_revision,dataset,state FROM memories WHERE id=?`, v.Memory).Scan(&revision, &project, &state); err != nil {
 			return false, err
 		}
-		if revision != v.Revision || project != x.Project || state != "active" {
+		var err error
+		if stale, err = mergeDerivedStale(ctx, tx, v.Memory, revision); err != nil {
+			return false, err
+		}
+		if stale || revision != v.Revision || project != x.Project || state != "active" {
 			return false, nil
 		}
 	}
@@ -392,4 +401,18 @@ func (s *Store) ReviewMerge(ctx context.Context, r records.MergeReview, confirm 
 		return t, err
 	}
 	return t, tx.Commit()
+}
+
+// Experimental/legacy v2-v3 stores have no derived summaries. Keep their merge
+// contract usable while formal v4 always enforces the derived validity fence.
+func mergeDerivedStale(ctx context.Context, tx *sql.Tx, id string, revision int64) (bool, error) {
+	var present, stale bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='derived_memories')`).Scan(&present); err != nil {
+		return false, err
+	}
+	if !present {
+		return false, nil
+	}
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM derived_memories WHERE memory=? AND revision=? AND state='stale')`, id, revision).Scan(&stale)
+	return stale, err
 }

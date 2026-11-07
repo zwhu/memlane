@@ -69,3 +69,11 @@ memlaned 是唯一数据库拥有者，持有服务 root 锁和数据库 owner �
 后台模型运行使用服务生命周期 context，独立于开始 IPC 的超时/断连；开始持久化后立即返回稳定 task ID。取消先提交数据库门禁再取消进程；服务退出先取消编排并等待全部 runner 收口，再关闭数据库/释放 root。模型/网络运行和进程等待不持有 SQLite 事务。重启不自动重跑中断任务，不重复应用 completed/applied。
 
 已有 agentAccess 只保护 P2 连接代次；C1 授权来自受信宿主明确选择项目和用户确认，复用 scopes、same-uid 和范围校验，不通过伪造 traex 日常 connection 授权。确认工具不会出现在 Codex/pi MCP 清单。新类型化 IPC 操作是 merge_start/get/cancel/confirm/reject，协议仍为 1；完整租约、服务外逃逸进程隔离和 UI 后续切片实现。
+
+## 7. P3-C3 摘要与标签
+
+受信 App 的 organization_start/get/list/cancel/resume/sources 私有 IPC 与 C1 merge 操作并存，日常 Agent 不暴露整理或批准工具。Store 持有版本/来源有效性判断和唯一回执；agents 只接冻结 DTO，daemon 负责进程及任务生命周期。新增摘要通过原 applyTx 与派生/出处写入同一事务，标签不改正文、版本或创建活动。
+
+后台进程运行在 SQLite 事务外。内存拥有权记录 task 与 attempt，旧执行清理不能移除新拥有权；取消的持久事务和进程取消共用序列化边界。异常执行结束但终态写入失败时，服务后续查询核对无执行者状态、递增栅栏并返回 interrupted；有持久结果时新 apply attempt 重用项标识，已提交项直接回放，不重跑模型。存储仍不可写时明确返回失败，解除后可重试协调。计划/租约/自动重试没有借此提前宣称完成。
+
+来源递归依赖只使自动派生摘要失效，不撤销用户确认正文或已应用 C1 合并事实。日常 memory_get 拒绝 stale，memory_status 与 App Current 保留标记供历史核对；C1 所有开始/建议/列表/确认均核对直接派生有效性。见 [契约](p3-organization-contract.md) 和 [验收](p3-c3-validation.md)。

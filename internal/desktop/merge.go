@@ -57,6 +57,7 @@ func mergeStatus(state, review string) string {
 	return ""
 }
 func (a *App) beginMerge() {
+	a.organizationMode = false
 	s := &a.merges
 	if s.Busy {
 		return
@@ -186,6 +187,7 @@ func (a *App) refreshMerge(more bool) {
 	}()
 }
 func (a *App) selectMerge(id string) {
+	a.organizationMode = false
 	s := &a.merges
 	if s.Busy {
 		return

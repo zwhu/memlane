@@ -1,0 +1,250 @@
+package records
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/google/uuid"
+)
+
+// OrganizationSchema adds the automatic summary/tag slice independently of
+// the already accepted two-source merge contract. Approval is never model data.
+const OrganizationSchema = "memlane-organization-v1"
+const OrganizationInputLimit = 128 * 1024
+const OrganizationOutputLimit = 256 * 1024
+
+type OrganizationStart struct {
+	OperationID string        `json:"operation_id"`
+	Project     string        `json:"project"`
+	Inputs      []MergeTarget `json:"inputs"`
+}
+type OrganizationInput struct {
+	MergeInput
+	Origin string `json:"origin"`
+	// Evidence roots are resolved by the trusted service from persisted lineage.
+	// A derived summary does not invent an additional independent source.
+	Roots []MergeTarget `json:"evidence_roots"`
+}
+type OrganizationSnapshot struct {
+	Schema  string              `json:"schema"`
+	Task    string              `json:"task"`
+	Attempt int64               `json:"attempt"`
+	Project string              `json:"project"`
+	Inputs  []OrganizationInput `json:"inputs"`
+	Digest  string              `json:"input_digest"`
+}
+type OrganizationItem struct {
+	Index   int           `json:"index"`
+	Action  string        `json:"action"`
+	Title   string        `json:"title"`
+	Text    string        `json:"text"`
+	Target  string        `json:"target"`
+	Tags    []string      `json:"tags"`
+	Sources []MergeSource `json:"sources"`
+}
+type OrganizationResult struct {
+	Schema      string             `json:"schema"`
+	Task        string             `json:"task"`
+	Attempt     int64              `json:"attempt"`
+	Digest      string             `json:"input_digest"`
+	ID          string             `json:"result_id"`
+	Items       []OrganizationItem `json:"items"`
+	Explanation string             `json:"explanation"`
+}
+
+func (s OrganizationSnapshot) ProposalID() string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("organization-v1:"+s.Task+":"+s.Digest)).String()
+}
+func (s OrganizationSnapshot) ItemID(index int) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("organization-v1-item:"+s.Task+":"+stringID(index))).String()
+}
+func stringID(index int) string {
+	// Decimal indices avoid lossy rune conversions and ambiguous receipt names.
+	b, _ := json.Marshal(index)
+	return string(b)
+}
+func (s *OrganizationSnapshot) Seal() error {
+	invalid := MergeError("invalid_proposal")
+	if s.Schema != OrganizationSchema || s.Attempt < 1 || len(s.Inputs) < 1 || len(s.Inputs) > 16 {
+		return invalid
+	}
+	for _, id := range []string{s.Task, s.Project} {
+		if _, err := uuid.Parse(id); err != nil {
+			return invalid
+		}
+	}
+	seen := map[string]bool{}
+	size := 0
+	for _, v := range s.Inputs {
+		if _, err := uuid.Parse(v.Memory); err != nil {
+			return invalid
+		}
+		if seen[v.Memory] || v.Revision < 1 || strings.TrimSpace(v.Text) == "" || len(v.Text) > MergeInputLimit || v.CapturedAt == "" || len(v.Title) > 512 || !utf8.ValidString(v.Text) {
+			return invalid
+		}
+		seen[v.Memory] = true
+		if v.Origin != "knowledge" && v.Origin != "raw" && v.Origin != "imported" && v.Origin != "summary" {
+			return invalid
+		}
+		if len(v.Roots) == 0 || len(v.Roots) > 256 {
+			return invalid
+		}
+		roots := map[string]bool{}
+		for _, root := range v.Roots {
+			if _, err := uuid.Parse(root.Memory); err != nil {
+				return invalid
+			}
+			key := root.Memory + ":" + stringID64(root.Revision)
+			if root.Revision < 1 || roots[key] {
+				return invalid
+			}
+			roots[key] = true
+		}
+		raw, _ := json.Marshal(v)
+		size += len(raw)
+	}
+	if size > OrganizationInputLimit {
+		return invalid
+	}
+	s.Digest = ""
+	s.Digest = MergeDigest(*s)
+	return nil
+}
+func stringID64(v int64) string { b, _ := json.Marshal(v); return string(b) }
+func (s OrganizationSnapshot) Decode(raw []byte) (OrganizationResult, error) {
+	var out OrganizationResult
+	invalid := MergeError("invalid_proposal")
+	if len(raw) > OrganizationOutputLimit {
+		return out, invalid
+	}
+	var schema jsonschema.Schema
+	if json.Unmarshal(s.OutputSchema(), &schema) != nil {
+		return out, invalid
+	}
+	resolved, err := schema.Resolve(nil)
+	var value any
+	if err != nil || json.Unmarshal(raw, &value) != nil || resolved.Validate(value) != nil {
+		return out, invalid
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&out) != nil || decoder.Decode(new(any)) != io.EOF {
+		return out, invalid
+	}
+	check := s
+	if check.Seal() != nil || check.Digest != s.Digest || out.Schema != s.Schema || out.Task != s.Task || out.Attempt != s.Attempt || out.Digest != s.Digest || out.ID != s.ProposalID() || len(out.Items) > 32 || len(out.Explanation) > 4096 || (len(out.Items) == 0 && strings.TrimSpace(out.Explanation) == "") {
+		return out, invalid
+	}
+	inputs := map[string]OrganizationInput{}
+	for _, v := range s.Inputs {
+		inputs[v.Memory] = v
+	}
+	for i, item := range out.Items {
+		if item.Index != i+1 || len(item.Sources) < 1 || len(item.Sources) > 16 {
+			return out, invalid
+		}
+		cited := map[string]bool{}
+		for _, ref := range item.Sources {
+			v, ok := inputs[ref.Memory]
+			if !ok || cited[ref.Memory] || ref.Revision != v.Revision || strings.TrimSpace(ref.Quote) == "" || !strings.Contains(v.Text, ref.Quote) {
+				return out, invalid
+			}
+			cited[ref.Memory] = true
+		}
+		switch item.Action {
+		case "summary":
+			if item.Target != "" || len(item.Tags) != 0 || strings.TrimSpace(item.Title) == "" || len(item.Title) > 512 || strings.TrimSpace(item.Text) == "" || len(item.Text) > MergeInputLimit {
+				return out, invalid
+			}
+		case "add_tags":
+			if !cited[item.Target] || item.Text != "" || item.Title != "" || len(item.Tags) < 1 || len(item.Tags) > 8 {
+				return out, invalid
+			}
+			tags := map[string]bool{}
+			for _, tag := range item.Tags {
+				if strings.TrimSpace(tag) != tag || tag == "" || utf8.RuneCountInString(tag) > 32 || !utf8.ValidString(tag) || strings.ContainsAny(tag, "\n\r\t") || tags[tag] {
+					return out, invalid
+				}
+				tags[tag] = true
+			}
+		default:
+			return out, invalid
+		}
+	}
+	return out, nil
+}
+func (s OrganizationSnapshot) OutputSchema() []byte {
+	str := func(v string) any { return map[string]any{"type": "string", "const": v} }
+	properties := map[string]any{
+		"index":  map[string]any{"type": "integer", "minimum": 1, "maximum": 32},
+		"action": map[string]any{"type": "string", "enum": []string{"summary", "add_tags"}},
+		"title":  map[string]any{"type": "string"}, "text": map[string]any{"type": "string"}, "target": map[string]any{"type": "string"},
+		"tags":    map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "string"}},
+		"sources": map[string]any{"type": "array", "minItems": 1, "maxItems": 16, "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"memory", "revision", "quote"}, "properties": map[string]any{"memory": map[string]any{"type": "string"}, "revision": map[string]any{"type": "integer"}, "quote": map[string]any{"type": "string"}}}},
+	}
+	b, _ := json.Marshal(map[string]any{"type": "object", "additionalProperties": false, "required": []string{"schema", "task", "attempt", "input_digest", "result_id", "items", "explanation"}, "properties": map[string]any{
+		"schema": str(s.Schema), "task": str(s.Task), "attempt": map[string]any{"type": "integer", "const": s.Attempt}, "input_digest": str(s.Digest), "result_id": str(s.ProposalID()), "explanation": map[string]any{"type": "string"},
+		"items": map[string]any{"type": "array", "maxItems": 32, "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"index", "action", "title", "text", "target", "tags", "sources"}, "properties": properties}},
+	}})
+	return b
+}
+
+// Receipts describe committed facts independently of task and index state.
+type OrganizationReceipt struct {
+	ID        string   `json:"receipt_id"`
+	Memory    string   `json:"memory"`
+	Revision  int64    `json:"revision"`
+	AddedTags []string `json:"added_tags,omitempty"`
+}
+type OrganizationEntry struct {
+	ID      string               `json:"item_id"`
+	Item    OrganizationItem     `json:"item"`
+	State   string               `json:"state"`
+	Error   string               `json:"error_code,omitempty"`
+	Receipt *OrganizationReceipt `json:"receipt,omitempty"`
+}
+type OrganizationTask struct {
+	ID        string               `json:"task"`
+	Project   string               `json:"project"`
+	State     string               `json:"state"`
+	Attempt   int64                `json:"attempt"`
+	Cancelled bool                 `json:"cancel_requested"`
+	Error     string               `json:"error_code,omitempty"`
+	Snapshot  OrganizationSnapshot `json:"snapshot"`
+	Result    *OrganizationResult  `json:"result,omitempty"`
+	Entries   []OrganizationEntry  `json:"entries"`
+	Execution json.RawMessage      `json:"execution,omitempty"`
+	CreatedAt string               `json:"created_at"`
+}
+type OrganizationResume struct {
+	Task            string `json:"task"`
+	OperationID     string `json:"operation_id"`
+	ExpectedAttempt int64  `json:"expected_attempt"`
+}
+type DerivedInfo struct {
+	Kind  string `json:"kind"`
+	State string `json:"state"`
+}
+type OrganizationSource struct {
+	Memory   string            `json:"source_memory"`
+	Revision int64             `json:"source_revision"`
+	Project  string            `json:"project"`
+	Input    OrganizationInput `json:"snapshot"`
+	Quote    string            `json:"quote"`
+}
+
+type OrganizationSummary struct {
+	ID        string `json:"task"`
+	Project   string `json:"project"`
+	State     string `json:"state"`
+	Title     string `json:"title"`
+	CreatedAt string `json:"created_at"`
+}
+type OrganizationPage struct {
+	Items []OrganizationSummary `json:"items"`
+	Next  string                `json:"next,omitempty"`
+}

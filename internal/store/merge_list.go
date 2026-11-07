@@ -32,7 +32,11 @@ func (s *Store) MergeList(ctx context.Context, q records.MergeListQuery) (record
 			return out, err
 		}
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT t.id,t.project,t.state,CASE WHEN p.state='pending' AND EXISTS (SELECT 1 FROM merge_attempts a, json_each(a.snapshot,'$.inputs') j LEFT JOIN memories m ON m.id=json_extract(j.value,'$.memory') WHERE a.task=t.id AND a.attempt=p.attempt AND (m.id IS NULL OR m.state<>'active' OR m.dataset<>t.project OR m.current_revision<>json_extract(j.value,'$.revision'))) THEN 'expired' ELSE COALESCE(p.state,'none') END,COALESCE(json_extract(p.payload,'$.title'),''),t.created_at
+	derivedFence := ""
+	if s.Schema >= 4 {
+		derivedFence = " OR EXISTS(SELECT 1 FROM derived_memories d WHERE d.memory=m.id AND d.revision=m.current_revision AND d.state='stale')"
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT t.id,t.project,t.state,CASE WHEN p.state='pending' AND EXISTS (SELECT 1 FROM merge_attempts a, json_each(a.snapshot,'$.inputs') j LEFT JOIN memories m ON m.id=json_extract(j.value,'$.memory') WHERE a.task=t.id AND a.attempt=p.attempt AND (m.id IS NULL OR m.state<>'active' OR m.dataset<>t.project OR m.current_revision<>json_extract(j.value,'$.revision')`+derivedFence+`)) THEN 'expired' ELSE COALESCE(p.state,'none') END,COALESCE(json_extract(p.payload,'$.title'),''),t.created_at
  FROM merge_tasks t LEFT JOIN merge_proposals p ON p.task=t.id
  WHERE (?='' OR EXISTS (SELECT 1 FROM merge_attempts a,json_each(a.snapshot,'$.inputs') j WHERE a.task=t.id AND json_extract(j.value,'$.memory')=?) OR EXISTS (SELECT 1 FROM merge_receipts r WHERE r.proposal=p.id AND r.memory=?)) AND (?='' OR t.project=?) AND (?='' OR t.created_at<? OR (t.created_at=? AND t.id<?))
  ORDER BY t.created_at DESC,t.id DESC LIMIT ?`, q.Memory, q.Memory, q.Memory, q.Project, q.Project, q.Before, beforeDate, beforeDate, q.Before, q.Limit+1)

@@ -5,13 +5,13 @@ from pathlib import Path
 def ensure_inside(path,root):
  assert path.resolve().is_relative_to(root.resolve()), "path escapes synthetic fixture"
 
-def validate_fixture(fixture,app):
+def validate_fixture(fixture,app,phase="c2"):
  fixture=fixture.resolve();app=app.resolve()
- assert fixture.name.startswith('memlane-p3-c2-app-'), 'isolated synthetic root required'
+ assert phase in ('c2','c3') and fixture.name.startswith('memlane-p3-'+phase+'-app-'), 'isolated synthetic root required'
  metadata=json.loads((fixture/'source-info.json').read_text())
  assert metadata.get('synthetic_only') is True, 'synthetic fixture marker required'
  identity=metadata['identifier']
- assert identity.startswith('io.github.zwhu.memlane.c2.'), 'isolated bundle identity required'
+ assert identity.startswith('io.github.zwhu.memlane.'+phase+'.'), 'isolated bundle identity required'
  info=plistlib.loads((app/'Contents/Info.plist').read_bytes())
  assert info['CFBundleIdentifier']==identity, 'App and fixture identities differ'
  local=json.loads((fixture/'runtime-config.json').read_text())

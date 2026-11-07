@@ -85,6 +85,9 @@ func (s *Store) List(ctx context.Context, q records.ListQuery) (records.Page, er
 	args := []any{}
 	if q.Date == "" {
 		where = append(where, "m.state='active'")
+		if s.Schema >= 4 {
+			where = append(where, "NOT EXISTS(SELECT 1 FROM derived_memories d WHERE d.memory=m.id AND d.revision=m.current_revision AND d.state='stale')")
+		}
 	}
 	if len(q.Datasets) > 0 {
 		marks := []string{}
@@ -162,6 +165,14 @@ func (s *Store) List(ctx context.Context, q records.ListQuery) (records.Page, er
 		last := page.Items[len(page.Items)-1]
 		data, _ := json.Marshal(listCursor{last.CreatedAt, last.Memory})
 		page.NextCursor = base64.RawURLEncoding.EncodeToString(data)
+	}
+	rows.Close()
+	versions := []*records.Version{}
+	for i := range page.Items {
+		versions = append(versions, &page.Items[i])
+	}
+	if err = s.enrichVersions(ctx, versions); err != nil {
+		return page, err
 	}
 	return page, nil
 }
@@ -274,7 +285,13 @@ func (s *Store) Activities(ctx context.Context, zone string) (records.ActivitySu
 // Requeue uses the current revision and leaves immutable versions and activity
 // facts untouched. The daemon's persistent replay performs the actual work.
 func (s *Store) Requeue(ctx context.Context, id string, expected int64) error {
-	result, err := s.DB.ExecContext(ctx, `UPDATE jobs SET state='pending',error='' WHERE memory=? AND revision=? AND EXISTS(SELECT 1 FROM memories WHERE id=? AND current_revision=? AND state='active')`, id, expected, id, expected)
+	query := `UPDATE jobs SET state='pending',error='' WHERE memory=? AND revision=? AND EXISTS(SELECT 1 FROM memories WHERE id=? AND current_revision=? AND state='active')`
+	args := []any{id, expected, id, expected}
+	if s.Schema >= 4 {
+		query += ` AND NOT EXISTS(SELECT 1 FROM derived_memories WHERE memory=? AND revision=? AND state='stale')`
+		args = append(args, id, expected)
+	}
+	result, err := s.DB.ExecContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}

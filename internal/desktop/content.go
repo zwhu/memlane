@@ -13,6 +13,8 @@ type MemoryItem struct {
 	Revision                                                                                      int64
 	CreatedAt                                                                                     time.Time
 	SourceDetail                                                                                  *records.AgentSource
+	Tags                                                                                          []string
+	Derived                                                                                       *records.DerivedInfo
 }
 type ProjectItem struct{ ID, Name, Path string }
 type MemoryHistory struct {

@@ -79,6 +79,9 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 		if !found {
 			return nil, &records.AccessError{Code: "scope_denied", Message: "memory is outside requested allowed scopes"}
 		}
+		if r.Tool == "memory_get" && v.Derived != nil && v.Derived.State == "stale" {
+			return nil, &records.AccessError{Code: "source_stale", Message: "summary source changed; inspect memory_status or organize again"}
+		}
 		result = v
 	case "memory_search":
 		if strings.TrimSpace(a.Query) == "" {

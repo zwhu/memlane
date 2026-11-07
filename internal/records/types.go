@@ -23,6 +23,8 @@ type Mutation struct {
 }
 
 type Version struct {
+	Tags    []string     `json:"tags,omitempty"`
+	Derived *DerivedInfo `json:"derived,omitempty"`
 	engine.Record
 	State        string       `json:"state"`
 	Operation    string       `json:"operation"`

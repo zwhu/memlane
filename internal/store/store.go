@@ -26,6 +26,7 @@ var ErrConflict = records.ErrConflict
 type Store struct {
 	DB        *sql.DB
 	ownership *os.File
+	Schema    int
 }
 
 type Mutation = records.Mutation
@@ -56,6 +57,8 @@ func open(path string, formal bool) (*Store, error) {
 	}()
 
 	// Require an explicit absolute path; never use Cognee's cwd database default.
+	priorFile, statErr := os.Stat(path)
+	hadDatabase := statErr == nil && priorFile.Size() > 0
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
@@ -66,45 +69,47 @@ func open(path string, formal bool) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if prior > 3 || (!formal && prior > 2) {
+	if prior > SchemaVersion || (!formal && prior > 2) {
 		db.Close()
 		return nil, errors.New("database schema is newer than this client")
 	}
 	// VACUUM INTO includes committed WAL pages. The exclusive database owner
 	// creates this snapshot before any schema change and aborts on backup failure.
-	if formal && prior == 2 {
+	if formal && prior < SchemaVersion {
 		var experiments int
 		if err = db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name LIKE 'p3_experiment_%'`).Scan(&experiments); err != nil || experiments > 0 {
 			db.Close()
 			return nil, errors.New("experiment database requires explicit experiment entrypoint")
 		}
-		backups := filepath.Join(filepath.Dir(path), "backups")
-		if err = os.MkdirAll(backups, 0700); err == nil {
-			backup := filepath.Join(backups, "schema-v2-"+time.Now().UTC().Format("20060102T150405.000000000")+".sqlite")
-			_, err = db.Exec(`VACUUM INTO ?`, backup)
-			if err == nil {
-				err = os.Chmod(backup, 0600)
+		if hadDatabase {
+			backups := filepath.Join(filepath.Dir(path), "backups")
+			if err = os.MkdirAll(backups, 0700); err == nil {
+				backup := filepath.Join(backups, fmt.Sprintf("schema-v%d-%s.sqlite", prior, time.Now().UTC().Format("20060102T150405.000000000")))
+				_, err = db.Exec(`VACUUM INTO ?`, backup)
 				if err == nil {
-					var f *os.File
-					f, err = os.Open(backup)
+					err = os.Chmod(backup, 0600)
 					if err == nil {
-						err = f.Sync()
-						f.Close()
+						var f *os.File
+						f, err = os.Open(backup)
+						if err == nil {
+							err = f.Sync()
+							f.Close()
+						}
 					}
-				}
-				if err == nil {
-					var f *os.File
-					f, err = os.Open(backups)
 					if err == nil {
-						err = f.Sync()
-						f.Close()
+						var f *os.File
+						f, err = os.Open(backups)
+						if err == nil {
+							err = f.Sync()
+							f.Close()
+						}
 					}
 				}
 			}
-		}
-		if err != nil {
-			db.Close()
-			return nil, err
+			if err != nil {
+				db.Close()
+				return nil, err
+			}
 		}
 	}
 	_, err = db.Exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
@@ -126,7 +131,13 @@ CREATE TABLE IF NOT EXISTS index_bindings(chunk_id TEXT NOT NULL, memory TEXT NO
 		return nil, err
 	}
 	opened = true
-	return &Store{DB: db, ownership: ownership}, nil
+	var schema int
+	if err = db.QueryRow(`PRAGMA user_version`).Scan(&schema); err != nil {
+		db.Close()
+		opened = false
+		return nil, err
+	}
+	return &Store{DB: db, ownership: ownership, Schema: schema}, nil
 }
 
 func (s *Store) Close() error {
@@ -138,7 +149,11 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Current(ctx context.Context, id string) (Version, error) {
-	return scanVersion(s.DB.QueryRowContext(ctx, `SELECT `+versionColumns+versionJoins+`WHERE m.id=?`, id))
+	v, err := scanVersion(s.DB.QueryRowContext(ctx, `SELECT `+versionColumns+versionJoins+`WHERE m.id=?`, id))
+	if err == nil {
+		err = s.enrichVersions(ctx, []*records.Version{&v})
+	}
+	return v, err
 }
 
 func (s *Store) Apply(ctx context.Context, m Mutation) (Version, error) {
@@ -153,6 +168,9 @@ func (s *Store) Apply(ctx context.Context, m Mutation) (Version, error) {
 	}
 	if err = tx.Commit(); err != nil {
 		return Version{}, err
+	}
+	if err = s.enrichVersions(ctx, []*records.Version{&v}); err != nil {
+		return v, err
 	}
 	return v, nil
 }
@@ -291,6 +309,11 @@ func (s *Store) applyTx(ctx context.Context, tx *sql.Tx, m Mutation) (Version, e
 			return Version{}, err
 		}
 	}
+	if m.Kind == "edit" || m.Kind == "restore" {
+		if err = s.followOrganizationVersion(ctx, tx, m.Memory, revision); err != nil {
+			return Version{}, err
+		}
+	}
 	saved, err := scanVersion(tx.QueryRowContext(ctx, `SELECT `+versionColumns+versionJoins+`WHERE m.id=?`, m.Memory))
 	if err != nil {
 		return Version{}, err
@@ -307,6 +330,15 @@ func (s *Store) MarkIndexed(ctx context.Context, r engine.Record, receipt engine
 		return err
 	}
 	defer tx.Rollback()
+	if s.Schema >= 4 {
+		var stale int
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM derived_memories WHERE memory=? AND revision=? AND state='stale'`, r.Memory, r.Revision).Scan(&stale); err != nil {
+			return err
+		}
+		if stale > 0 {
+			return ErrConflict
+		}
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE memories SET indexed_revision=?,generation=? WHERE id=? AND dataset=? AND current_revision=? AND state='active'`, r.Revision, receipt.Generation, r.Memory, r.Dataset, r.Revision)
 	if err != nil {
 		return err
@@ -354,6 +386,12 @@ func (s *Store) Resolve(ctx context.Context, c engine.Candidate) (Version, bool,
 		return v, false, err
 	}
 	if c.StartByte < 0 || c.EndByte <= c.StartByte || c.EndByte > len(v.Text) || v.Text[c.StartByte:c.EndByte] != c.Text {
+		return v, false, nil
+	}
+	if err = s.enrichVersions(ctx, []*records.Version{&v}); err != nil {
+		return v, false, err
+	}
+	if v.Derived != nil && v.Derived.State == "stale" {
 		return v, false, nil
 	}
 	return v, true, nil

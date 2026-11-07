@@ -25,7 +25,7 @@ func (s *Service) IndexCurrent(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if v.State != "active" {
+	if v.State != "active" || (v.Derived != nil && v.Derived.State == "stale") {
 		return store.ErrConflict
 	}
 	if s.Engine == nil {

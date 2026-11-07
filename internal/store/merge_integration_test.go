@@ -149,7 +149,7 @@ func TestMergeV2MigrationBackupRestore(t *testing.T) {
 	}
 	var version int
 	mustMerge(t, s.DB.QueryRow(`PRAGMA user_version`).Scan(&version))
-	if version != 3 {
+	if version != SchemaVersion {
 		t.Fatal(version)
 	}
 	for _, table := range tables {

@@ -13,19 +13,25 @@ import (
 )
 
 type App struct {
-	relatedFor, relatedError string
-	relatedMerges            []records.MergeSummary
-	merges                   MergeUI
-	agents                   AgentUI
-	activityLoaded           bool
-	pendingMutations         map[string]records.Mutation
-	saving                   bool
-	restoreExpected          int64
-	conflictCurrent          *MemoryItem
-	retryingIndex            bool
-	searchSequence           int64
-	searching                bool
-	searchQuery, searchError string
+	organization                OrganizationUI
+	organizationMode            bool
+	organizationSources         []records.OrganizationSource
+	organizationSourcesFor      string
+	organizationSourcesRevision int64
+	organizationSourcesError    string
+	relatedFor, relatedError    string
+	relatedMerges               []records.MergeSummary
+	merges                      MergeUI
+	agents                      AgentUI
+	activityLoaded              bool
+	pendingMutations            map[string]records.Mutation
+	saving                      bool
+	restoreExpected             int64
+	conflictCurrent             *MemoryItem
+	retryingIndex               bool
+	searchSequence              int64
+	searching                   bool
+	searchQuery, searchError    string
 
 	serviceState                           string
 	routeStates                            map[string]PaneState
@@ -247,7 +253,7 @@ func (a *App) home(c *ui.Context) {
 			ui.Row(c).Children(func() {
 				ui.Text(c, "记忆动态").FontSize(design.Heading).Bold()
 				ui.Spacer(c)
-				actionButton(c, "立即整理", icons["全部记忆"]).OnClick(func() { a.beginMerge() })
+				actionButton(c, "立即整理", icons["全部记忆"]).OnClick(func() { a.beginOrganizationOrMerge() })
 			})
 			ui.Text(c, "最近积累的知识，以及需要你确认的改动。").FontSize(design.Small).TextColor(design.Muted)
 		})
@@ -414,9 +420,13 @@ func (a *App) details(c *ui.Context) {
 					ui.Text(c, "共享当前项目的记忆，保留来源与版本。").FontSize(design.Small).TextColor(design.Muted)
 					quietButton(c, "重新发现").Disabled(a.agents.Busy).OnClick(func() { a.refreshAgents(true) })
 				} else if a.page == "整理记录" {
-					actionButton(c, "立即整理", icons["全部记忆"]).Disabled(a.merges.Busy).OnClick(a.beginMerge)
+					ui.Row(c).Gap(8).Children(func() {
+						ui.Button(c, "合并审核").Key("organization-tab-merge").OnClick(func() { a.organizationMode = false })
+						ui.Button(c, "摘要与标签").Key("organization-tab-summary").OnClick(func() { a.organizationMode = true; a.refreshOrganization(false, false) })
+					})
+					actionButton(c, "立即整理", icons["全部记忆"]).Disabled(a.merges.Busy).OnClick(a.beginOrganizationOrMerge)
 				} else if a.isMemoryPage() {
-					actionButton(c, "立即整理", icons["全部记忆"]).OnClick(a.beginMerge)
+					actionButton(c, "立即整理", icons["全部记忆"]).OnClick(a.beginOrganizationOrMerge)
 					ui.Text(c, fmt.Sprintf("%d 条知识 · 保留来源与修改记录", a.listTotal)).FontSize(design.Small).TextColor(design.Muted)
 					ui.Row(c).Gap(6).Children(func() {
 						ui.Button(c, "知识").Height(28).Padding(5, 10).OnClick(func() { a.recordKind = "knowledge"; a.nextCursor = ""; a.refresh(false) })
@@ -463,7 +473,11 @@ func (a *App) details(c *ui.Context) {
 						})
 					}
 				} else if a.page == "整理记录" {
-					a.mergeList(c)
+					if a.organizationMode {
+						a.organizationList(c)
+					} else {
+						a.mergeList(c)
+					}
 				} else if a.page == "Agent" {
 					a.agentList(c)
 				} else {
@@ -494,7 +508,11 @@ func (a *App) details(c *ui.Context) {
 				}
 			})
 			if a.page == "整理记录" {
-				a.mergeDetail(c)
+				if a.organizationMode {
+					a.organizationDetail(c)
+				} else {
+					a.mergeDetail(c)
+				}
 			} else if a.page == "Agent" {
 				a.agentDetail(c)
 			} else if a.page == "项目" && a.scope == "" {
@@ -608,6 +626,9 @@ func (a *App) memoryDetail(c *ui.Context) {
 			meta(c, "来源", item.Source)
 			meta(c, "创建", item.CreatedAt.Format("2006-01-02 15:04"))
 			operation := operationLabel(item.Operation)
+			if item.Derived != nil && item.Operation == "save" {
+				operation = "自动摘要"
+			}
 			if item.Operation == "save" && strings.Contains(item.Source, "用户确认合并") {
 				operation = "确认整理新增"
 			}
@@ -616,7 +637,16 @@ func (a *App) memoryDetail(c *ui.Context) {
 			}
 			meta(c, "版本", fmt.Sprintf("v%d · %s", item.Revision, operation))
 			meta(c, "保存", "已保存")
+			if item.Derived != nil {
+				meta(c, "形态", "派生摘要 · "+derivedLabel(item.Derived.State))
+			}
+			if len(item.Tags) > 0 {
+				meta(c, "标签", fmt.Sprint(item.Tags))
+			}
 			index := a.availableIndexLabel(item.IndexState)
+			if item.Derived != nil && item.Derived.State == "stale" {
+				index = "摘要来源已变化 · 不参与检索"
+			}
 			if item.State == "archived" {
 				index = "已归档 · 不参与检索"
 			}
@@ -624,7 +654,7 @@ func (a *App) memoryDetail(c *ui.Context) {
 			if a.message != "" {
 				ui.Text(c, a.message).FontSize(design.Small).TextColor(design.Muted)
 			}
-			if item.IndexState != "indexed" && a.libraryContext != nil {
+			if item.IndexState != "indexed" && a.libraryContext != nil && (item.Derived == nil || item.Derived.State != "stale") {
 				quietButton(c, "重试索引").Disabled(a.retryingIndex).AlignSelf(ui.Start).OnClick(a.retryIndex)
 			}
 		})
@@ -638,7 +668,11 @@ func (a *App) memoryDetail(c *ui.Context) {
 		}
 		ui.Divider(c)
 		ui.Column(c).Gap(12).Children(func() {
-			ui.Text(c, "原始出处").Bold()
+			sourceTitle := "原始出处"
+			if item.Derived != nil {
+				sourceTitle = "生成时正文 · 派生转述"
+			}
+			ui.Text(c, sourceTitle).Bold()
 			ui.Text(c, item.Original).Selectable().LineHeight(1.7).Padding(0, 0, 0, 12).BorderWidth(0, 0, 0, 2).BorderColor(design.Muted)
 			ui.Text(c, item.Source+" · 已保留来源").FontSize(design.Small).TextColor(design.Muted)
 			if item.SourceDetail != nil {
@@ -650,9 +684,26 @@ func (a *App) memoryDetail(c *ui.Context) {
 				}
 			}
 		})
+		if item.Derived != nil && a.organizationSourcesFor == item.ID {
+			ui.Divider(c)
+			ui.Text(c, "摘要冻结依据").Bold()
+			ui.Text(c, "摘要与同源转述不构成新证据，来源版本和历史保留。").FontSize(design.Small).TextColor(design.Muted)
+			if a.organizationSourcesError != "" {
+				ui.Text(c, a.organizationSourcesError).TextColor(design.Muted)
+			}
+			for _, source := range a.organizationSources {
+				ui.Text(c, fmt.Sprintf("%s · v%d", source.Input.Title, source.Revision)).Bold()
+				ui.Text(c, source.Quote).Selectable().LineHeight(1.7)
+				quietButton(c, "查看摘要依据").Key("derived-source-" + source.Memory).OnClick(func() { a.openMergeMemory(source.Memory, source.Project) })
+			}
+		}
+
 		ui.Row(c).Gap(6).Children(func() {
 			ui.Text(c, item.Category).FontSize(10).Padding(4, 6).Background(design.Surface)
 			state := "当前有效"
+			if item.Derived != nil && item.Derived.State == "stale" {
+				state = "摘要依据过期"
+			}
 			if item.State == "archived" {
 				state = archivedLabel(item.State)
 			}
@@ -666,6 +717,9 @@ func (a *App) memoryDetail(c *ui.Context) {
 		ui.Row(c).Shrink(0).Padding(18, 24, 24, 24).Gap(8).Children(func() {
 			actionButton(c, "编辑", icons["edit"]).Disabled(item.State != "active").OnClick(a.editMemory)
 			actionButton(c, "历史记录", icons["history"]).OnClick(func() { a.detailMode = "history"; a.detailScroll.Y = 0 })
+			if a.organization.Selected != "" {
+				quietButton(c, "返回摘要任务").OnClick(func() { a.selectOrganization(a.organization.Selected) })
+			}
 			if a.merges.Selected != "" {
 				quietButton(c, "返回整理任务").OnClick(func() { a.selectMerge(a.merges.Selected) })
 			}

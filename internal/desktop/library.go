@@ -24,7 +24,7 @@ func displayVersion(v records.Version) MemoryItem {
 	} else if v.ScopeKind == "experience" {
 		category = "通用经验"
 	}
-	return MemoryItem{ID: v.Memory, Dataset: v.Dataset, Title: v.Title, Text: v.Text, Original: v.Original, Source: v.Source, ScopeName: v.ScopeName, Category: category, Revision: v.Revision, State: v.State, IndexState: v.IndexState, Operation: v.Operation, CreatedAt: created.Local(), SourceDetail: v.SourceDetail}
+	return MemoryItem{ID: v.Memory, Dataset: v.Dataset, Title: v.Title, Text: v.Text, Original: v.Original, Source: v.Source, ScopeName: v.ScopeName, Category: category, Revision: v.Revision, State: v.State, IndexState: v.IndexState, Operation: v.Operation, CreatedAt: created.Local(), SourceDetail: v.SourceDetail, Tags: v.Tags, Derived: v.Derived}
 }
 func displayVersions(vs []records.Version) []MemoryItem {
 	out := make([]MemoryItem, 0, len(vs))
@@ -50,10 +50,11 @@ func displayHistory(vs []records.History) []MemoryHistory {
 // from replacing a newer selection or draft; read failures retain prior data.
 func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(func())) {
 	a.library = serviceipc.Library{Root: root}
+	a.organization = OrganizationUI{Client: serviceipc.OrganizationClient{Root: root}, Chosen: map[string]MemoryItem{}, Results: map[string]MemoryItem{}, Kind: "knowledge"}
 	a.merges = MergeUI{Client: serviceipc.MergeClient{Root: root}, Chosen: map[string]records.MergeTarget{}, Reviews: map[string]records.MergeReview{}}
 	a.libraryContext = ctx
 	a.dispatch = dispatch
-	a.onNavigate = func() { a.refresh(false); a.refreshMerge(false) }
+	a.onNavigate = func() { a.refresh(false); a.refreshMerge(false); a.refreshOrganization(false, false) }
 	a.onSelect = func(string) { a.history = nil; a.selectedItem = nil; a.refresh(false) }
 	a.onProject = func() { a.registerProject() }
 	a.onMore = func() { a.refresh(true) }
@@ -73,6 +74,7 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 						a.refresh(false)
 						if a.page == "整理记录" || a.page == "总览" {
 							a.refreshMerge(false)
+							a.refreshOrganization(false, false)
 						}
 					}
 				})
@@ -131,6 +133,8 @@ func (a *App) refresh(more bool) {
 		var history []records.History
 		var related records.MergePage
 		var relatedErr error
+		var organizationSources []records.OrganizationSource
+		var organizationSourcesErr error
 		if err == nil {
 			if pageName == "全局记忆" {
 				query.Datasets = nil
@@ -167,6 +171,11 @@ func (a *App) refresh(more bool) {
 			linksCtx, linksStop := context.WithTimeout(a.libraryContext, 500*time.Millisecond)
 			related, relatedErr = a.merges.Client.List(linksCtx, records.MergeListQuery{Memory: selected, Limit: 100})
 			linksStop()
+			if current.Derived != nil {
+				sourcesCtx, sourcesStop := context.WithTimeout(a.libraryContext, 500*time.Millisecond)
+				organizationSources, organizationSourcesErr = a.organization.Client.Sources(sourcesCtx, selected, current.Revision)
+				sourcesStop()
+			}
 		}
 		if a.libraryContext.Err() != nil {
 			return
@@ -230,6 +239,17 @@ func (a *App) refresh(more bool) {
 					a.relatedError = "相关整理记录暂不可用"
 				}
 				a.relatedFor = selected
+				if organizationSourcesErr == nil {
+					a.organizationSources = organizationSources
+					a.organizationSourcesError = ""
+				} else {
+					if a.organizationSourcesFor != selected || a.organizationSourcesRevision != current.Revision {
+						a.organizationSources = nil
+					}
+					a.organizationSourcesError = "摘要依据读取失败，保留已读取的同版本内容；请重试。"
+				}
+				a.organizationSourcesFor = selected
+				a.organizationSourcesRevision = current.Revision
 				if history != nil {
 					a.history = displayHistory(history)
 				}

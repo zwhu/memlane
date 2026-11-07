@@ -23,7 +23,7 @@ func migrate(db *sql.DB, formal bool) error {
 	if err = tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 3 || (!formal && version > 2) {
+	if version > SchemaVersion || (!formal && version > 2) {
 		return errors.New("database schema is newer than this client")
 	}
 	if version >= 2 {
@@ -32,7 +32,7 @@ func migrate(db *sql.DB, formal bool) error {
 				return err
 			}
 		}
-		return tx.Commit()
+		return finishMigration(tx, formal)
 	}
 	if version == 1 {
 		if err = migrateAgents(tx); err != nil {
@@ -43,7 +43,7 @@ func migrate(db *sql.DB, formal bool) error {
 				return err
 			}
 		}
-		return tx.Commit()
+		return finishMigration(tx, formal)
 	}
 	_, err = tx.Exec(`
 CREATE TABLE scopes(id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, path TEXT NOT NULL DEFAULT '');
@@ -103,7 +103,7 @@ PRAGMA user_version=1;`)
 			return err
 		}
 	}
-	return tx.Commit()
+	return finishMigration(tx, formal)
 }
 
 func migrateAgents(tx *sql.Tx) error {
