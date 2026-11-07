@@ -57,3 +57,13 @@ flowchart LR
 P3-C：正式快照/来源/提案决定/回执和权限 → 兼容迁移与备份 → 服务审核闭环 → 栏内 UI 与实际窗口验收。P3-B 的引导/初始化/使用事件和 P3-D 的调度/全局经验分别后续收口。
 
 新增生产接口前明确契约所有者和旧客户端兼容；实验参数、名称、表和方法保持实验标记。完整 UI、质量对比、签名分发及三类体积实测各在受影响阶段完成。
+
+## 6. P3-C1 服务端职责
+
+正式链路：受信宿主类型化私有 IPC → memlaned 开始/冻结事务 → daemon 持久任务编排 → 隔离 traex 纯建议 → CompleteMerge 登记 → 宿主确认或拒绝 → ReviewMerge/applyTx 单事务 → 既有 replay/IndexCurrent/Rust 检索。正式契约见 [技术文档第 6 节](p3-technical-analysis.md#6-p3-c1-正式契约2026-11-08)。
+
+memlaned 是唯一数据库拥有者，持有服务 root 锁和数据库 owner 锁；Store.Open 仅承担备份/迁移，重启中断识别由 daemon 在开始监听前执行。实验 OpenP3Experiment 保留 v2 显式临时入口；正式路径不得使用实验表。Agent 模块只收到独立 DTO 快照，不持有 store、生产根或生产写工具。
+
+后台模型运行使用服务生命周期 context，独立于开始 IPC 的超时/断连；开始持久化后立即返回稳定 task ID。取消先提交数据库门禁再取消进程；服务退出先取消编排并等待全部 runner 收口，再关闭数据库/释放 root。模型/网络运行和进程等待不持有 SQLite 事务。重启不自动重跑中断任务，不重复应用 completed/applied。
+
+已有 agentAccess 只保护 P2 连接代次；C1 授权来自受信宿主明确选择项目和用户确认，复用 scopes、same-uid 和范围校验，不通过伪造 traex 日常 connection 授权。确认工具不会出现在 Codex/pi MCP 清单。新类型化 IPC 操作是 merge_start/get/cancel/confirm/reject，协议仍为 1；完整租约、服务外逃逸进程隔离和 UI 后续切片实现。
