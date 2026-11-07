@@ -1,6 +1,6 @@
 # P3 工程验证与 P3-C1 服务端交付
 
-> 当前实施基线：P3-C1 正式服务端已通过，见 [C1 验收](p3-validation.md#8-p3-c1-正式服务端验收)。早期“本轮/未接生产”段落描述隔离实验历史。全部剩余切片与外部条件见 [交付矩阵](p3-delivery-plan.md)，后续通过项仅以对应证据为准。
+> 当前实施基线：C1 正式服务端与 [C2 App 合并审核](p3-c2-validation.md) 已通过，C1 细节见 [服务验收](p3-validation.md#8-p3-c1-正式服务端验收)。早期“本轮/未接生产”段落描述隔离实验历史。全部剩余切片与外部条件见 [交付矩阵](p3-delivery-plan.md)，后续通过项仅以对应证据为准。
 
 2026-11-08：P3-C1 已接入正式服务；当前契约与验收见第 8 节。第 1–7 节保留先前隔离实验的历史证据，其 schema v2/未接 IPC 等描述仅对应实验阶段。
 
@@ -152,3 +152,8 @@ python3 scripts/verify-p3-c1.py --real --short-path
 最终检查记录为 `build/p3-c1/final-checks.json`：全仓 `sh scripts/go.sh test ./...`、`vet ./...`、store/agents/daemon/serviceipc 的 CGO race、正式服务/临时库检查和 diff/link 检查均退出 0。链接检查覆盖 9 份相关文档及 124 个本地链接/章节锚点。只计 opt-in real-service 日志中实际 pass 的真实场景；普通全仓检查中该项 skip 不计为真实通过。
 
 每阶段使用 `python3 scripts/p3-handoff.py` 直接生成系统临时交接，未通过禁止自动模型调用的 Skill 工具调用、不修改 skill 配置。契约、持久化、真实服务与最终验收/交付各有临时文件；交接路径、实际提交及远端 SHA 核对回执在 `build/p3-c1/delivery.json`，不提交临时交接、build 证据或本机数据。
+
+
+## 9. P3-C2 App 栏内审核
+
+真实 App/traex/Rust 闭环、拒绝、活动取消、过期、离页/重开、停服中断、归档恢复、实际索引写入失败与恢复已通过，详见 [C2 验证](p3-c2-validation.md) 与 [C2 契约](p3-c2-contract.md)。完整矩阵继续覆盖后续动作、计划、全局经验、使用/初始化、Agent、图谱与正式分发；阶段通过不代表总交付完成。

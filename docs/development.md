@@ -352,3 +352,16 @@ CGO_ENABLED=1 sh scripts/go.sh test -race ./internal/store ./internal/agents ./i
 类型化宿主入口为 serviceipc.MergeClient.Start/Get/Cancel/Confirm/Reject；长任务立即返回持久 ID，通过 Get 查询 execution/state/review_state/result_digest。审核必须携带对应 task/proposal/result_digest/receipt_id，仅受信宿主用户动作允许；日常 Agent 工具不暴露确认。状态和迁移/恢复细节见 [正式技术契约](p3-technical-analysis.md#6-p3-c1-正式契约2026-11-08) 与 [验收](p3-validation.md#8-p3-c1-正式服务端验收)。
 
 迁移 v2 前数据库拥有者在同根 backups/schema-v2-时间.sqlite 创建 VACUUM INTO 备份，并 sync 后才迁移。恢复验证必须先停服、复制选定备份到新的独立根（不要漏处理该根已有 WAL），检查 user_version=2、integrity_check 和表/历史，再使用兼容 v2 服务。不要把真实默认用户根传给任何验证脚本。
+
+
+## P3-C2 实际 App 验收
+
+```sh
+python3 scripts/create-p3-c2-fixture.py
+python3 scripts/build-client.py --out build/p3-c2-final-app --runtime-config <新合成根>/runtime-config.json --identifier <独立identifier> --name MemlaneC2Final --automation
+sh scripts/go.sh build -o build/p3-c2/ui-failure-fixture ./cmd/p3-ui-fault
+python3 scripts/verify-p3-c2-app.py
+python3 scripts/verify-p3-c2-index-fault.py
+```
+
+根与 identifier 由创建脚本打印；fixture-path.txt/source-info.json 指向本次隔离根与 App。索引故障脚本依赖主流程已通过并显式停服，使用实际 Rust dataset 的新阻挡文件，停服后校验并移除，再重启真实 worker 恢复；只用合成库。失败状态开发工具不随主包分发，不替代真实 Agent 的正常与活动取消。完整规则、证据、原地重建失败和分发边界见 [C2 验证](p3-c2-validation.md)。正式构建默认无 automation，仍使用 build-client.py --out build/p0-final。

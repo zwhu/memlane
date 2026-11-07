@@ -64,6 +64,7 @@ def main():
 ## suggested skills
 - handoff：{skill}；只有用户显式调用或当前工具契约允许时才真正调用；否则用本脚本生成并注明方式。
 - traex-guide：核对 TRAE CLI 安装版本、认证、参数和协议，按当前 skill catalog 定位。
+- bits-code-guard：本地 diff 的产品、来源、版本、并发、迁移与恢复审查；按当前 skill catalog 定位。
 - diagnosing-bugs：出现难定位故障时使用。
 - bits-unit-test-gen：任务明确涉及单元测试生成/修改时按适用契约使用；与服务/协议集成测试区分。
 

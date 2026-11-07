@@ -50,9 +50,10 @@ func displayHistory(vs []records.History) []MemoryHistory {
 // from replacing a newer selection or draft; read failures retain prior data.
 func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(func())) {
 	a.library = serviceipc.Library{Root: root}
+	a.merges = MergeUI{Client: serviceipc.MergeClient{Root: root}, Chosen: map[string]records.MergeTarget{}, Reviews: map[string]records.MergeReview{}}
 	a.libraryContext = ctx
 	a.dispatch = dispatch
-	a.onNavigate = func() { a.refresh(false) }
+	a.onNavigate = func() { a.refresh(false); a.refreshMerge(false) }
 	a.onSelect = func(string) { a.history = nil; a.selectedItem = nil; a.refresh(false) }
 	a.onProject = func() { a.registerProject() }
 	a.onMore = func() { a.refresh(true) }
@@ -70,12 +71,16 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 				dispatch(func() {
 					if !a.loading {
 						a.refresh(false)
+						if a.page == "整理记录" || a.page == "总览" {
+							a.refreshMerge(false)
+						}
 					}
 				})
 			}
 		}
 	}()
 	a.refresh(false)
+	a.refreshMerge(false)
 }
 func (a *App) listQuery() records.ListQuery {
 	q := records.ListQuery{Limit: 50, Kind: a.recordKind, Date: a.activityDate, Timezone: time.Local.String()}
@@ -124,6 +129,8 @@ func (a *App) refresh(more bool) {
 		var activity records.ActivitySummary
 		var current records.Version
 		var history []records.History
+		var related records.MergePage
+		var relatedErr error
 		if err == nil {
 			if pageName == "全局记忆" {
 				query.Datasets = nil
@@ -155,6 +162,11 @@ func (a *App) refresh(more bool) {
 				}
 				before = result.NextRevision
 			}
+		}
+		if err == nil && selected != "" {
+			linksCtx, linksStop := context.WithTimeout(a.libraryContext, 500*time.Millisecond)
+			related, relatedErr = a.merges.Client.List(linksCtx, records.MergeListQuery{Memory: selected, Limit: 100})
+			linksStop()
 		}
 		if a.libraryContext.Err() != nil {
 			return
@@ -208,6 +220,16 @@ func (a *App) refresh(more bool) {
 			if selected != "" && selected == a.selectedID {
 				item := displayVersion(current)
 				a.selectedItem = &item
+				if relatedErr == nil {
+					a.relatedMerges = related.Items
+					a.relatedError = ""
+				} else {
+					if a.relatedFor != selected {
+						a.relatedMerges = nil
+					}
+					a.relatedError = "相关整理记录暂不可用"
+				}
+				a.relatedFor = selected
 				if history != nil {
 					a.history = displayHistory(history)
 				}

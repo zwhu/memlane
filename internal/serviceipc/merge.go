@@ -9,6 +9,12 @@ import (
 // the daily Agent MCP/Extension tool registry and carries no database handle.
 type MergeClient struct{ Root string }
 
+func (c MergeClient) List(ctx context.Context, q records.MergeListQuery) (records.MergePage, error) {
+	var out records.MergePage
+	err := Call(ctx, c.Root, Request{Op: "merge_list", MergeList: &q}, &out)
+	return out, err
+}
+
 func (c MergeClient) Start(ctx context.Context, d records.MergeStart) (records.MergeTask, error) {
 	var out records.MergeTask
 	err := Call(ctx, c.Root, Request{Op: "merge_start", UserConfirmed: true, MergeStart: d}, &out)

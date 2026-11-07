@@ -343,6 +343,11 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		}
 	case "merge_get":
 		return s.store.MergeTask(operation, r.MergeTask)
+	case "merge_list":
+		if r.MergeList == nil {
+			return nil, records.MergeError("invalid_request")
+		}
+		return s.store.MergeList(operation, *r.MergeList)
 	case "connections":
 		return s.store.Connections(operation)
 	case "configure_connection":

@@ -21,6 +21,7 @@ type Config struct {
 }
 
 type Request struct {
+	MergeList        *records.MergeListQuery `json:"merge_list,omitempty"`
 	MergeStart       records.MergeStart      `json:"merge_start,omitempty"`
 	MergeReview      records.MergeReview     `json:"merge_review,omitempty"`
 	MergeTask        string                  `json:"merge_task,omitempty"`

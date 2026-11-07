@@ -13,6 +13,9 @@ import (
 )
 
 type App struct {
+	relatedFor, relatedError string
+	relatedMerges            []records.MergeSummary
+	merges                   MergeUI
 	agents                   AgentUI
 	activityLoaded           bool
 	pendingMutations         map[string]records.Mutation
@@ -244,7 +247,7 @@ func (a *App) home(c *ui.Context) {
 			ui.Row(c).Children(func() {
 				ui.Text(c, "记忆动态").FontSize(design.Heading).Bold()
 				ui.Spacer(c)
-				actionButton(c, "立即整理", icons["全部记忆"]).OnClick(func() { a.navigate("整理记录", "") })
+				actionButton(c, "立即整理", icons["全部记忆"]).OnClick(func() { a.beginMerge() })
 			})
 			ui.Text(c, "最近积累的知识，以及需要你确认的改动。").FontSize(design.Small).TextColor(design.Muted)
 		})
@@ -291,16 +294,7 @@ func (a *App) home(c *ui.Context) {
 					a.memoryRow(c, item, false)
 				}
 			})
-			ui.Column(c).Grow(1).MinWidth(0).Gap(12).Children(func() {
-				ui.Row(c).Children(func() {
-					ui.Text(c, "待确认").Bold()
-					ui.Text(c, "0").FontSize(10).Padding(2, 6).Radius(3).Background(design.Surface).TextColor(design.Muted)
-				})
-				ui.Column(c).Border(1, design.Border).Radius(7).Background(ui.Hex("#fafbfc")).Padding(16).Gap(10).Children(func() {
-					ui.Text(c, "暂无整理建议").Bold()
-					ui.Text(c, "整理能力尚未接入。已有记忆可以手动编辑，并保留每次修改记录。").FontSize(design.Small).LineHeight(1.6).TextColor(design.Muted)
-				})
-			})
+			ui.Column(c).Grow(1).MinWidth(0).Gap(12).Children(func() { a.mergeHome(c) })
 		})
 		ui.Divider(c)
 		ui.Row(c).Padding(0, 0, 14, 0).Gap(8).Children(func() {
@@ -419,7 +413,10 @@ func (a *App) details(c *ui.Context) {
 				} else if a.page == "Agent" {
 					ui.Text(c, "共享当前项目的记忆，保留来源与版本。").FontSize(design.Small).TextColor(design.Muted)
 					quietButton(c, "重新发现").Disabled(a.agents.Busy).OnClick(func() { a.refreshAgents(true) })
+				} else if a.page == "整理记录" {
+					actionButton(c, "立即整理", icons["全部记忆"]).Disabled(a.merges.Busy).OnClick(a.beginMerge)
 				} else if a.isMemoryPage() {
+					actionButton(c, "立即整理", icons["全部记忆"]).OnClick(a.beginMerge)
 					ui.Text(c, fmt.Sprintf("%d 条知识 · 保留来源与修改记录", a.listTotal)).FontSize(design.Small).TextColor(design.Muted)
 					ui.Row(c).Gap(6).Children(func() {
 						ui.Button(c, "知识").Height(28).Padding(5, 10).OnClick(func() { a.recordKind = "knowledge"; a.nextCursor = ""; a.refresh(false) })
@@ -465,6 +462,8 @@ func (a *App) details(c *ui.Context) {
 							}
 						})
 					}
+				} else if a.page == "整理记录" {
+					a.mergeList(c)
 				} else if a.page == "Agent" {
 					a.agentList(c)
 				} else {
@@ -489,12 +488,14 @@ func (a *App) details(c *ui.Context) {
 				}
 				ui.Text(c, label)
 				ui.Spacer(c)
-				if a.current() != nil && !a.editing && a.detailMode == "view" {
-					iconButton(c, "编辑", icons["edit"]).Disabled(a.current().State == "deleted").OnClick(a.editMemory)
+				if a.isMemoryPage() && a.current() != nil && !a.editing && a.detailMode == "view" {
+					iconButton(c, "编辑", icons["edit"]).Disabled(a.current().State != "active").OnClick(a.editMemory)
 					iconButton(c, "历史记录", icons["history"]).OnClick(func() { a.detailMode = "history" })
 				}
 			})
-			if a.page == "Agent" {
+			if a.page == "整理记录" {
+				a.mergeDetail(c)
+			} else if a.page == "Agent" {
 				a.agentDetail(c)
 			} else if a.page == "项目" && a.scope == "" {
 				a.projectEditor(c)
@@ -607,12 +608,19 @@ func (a *App) memoryDetail(c *ui.Context) {
 			meta(c, "来源", item.Source)
 			meta(c, "创建", item.CreatedAt.Format("2006-01-02 15:04"))
 			operation := operationLabel(item.Operation)
+			if item.Operation == "save" && strings.Contains(item.Source, "用户确认合并") {
+				operation = "确认整理新增"
+			}
 			if item.Operation == "save" && (item.Source == "codex" || item.Source == "pi") {
 				operation = "Agent 保存"
 			}
 			meta(c, "版本", fmt.Sprintf("v%d · %s", item.Revision, operation))
 			meta(c, "保存", "已保存")
-			meta(c, "索引", a.availableIndexLabel(item.IndexState))
+			index := a.availableIndexLabel(item.IndexState)
+			if item.State == "archived" {
+				index = "已归档 · 不参与检索"
+			}
+			meta(c, "索引", index)
 			if a.message != "" {
 				ui.Text(c, a.message).FontSize(design.Small).TextColor(design.Muted)
 			}
@@ -620,6 +628,14 @@ func (a *App) memoryDetail(c *ui.Context) {
 				quietButton(c, "重试索引").Disabled(a.retryingIndex).AlignSelf(ui.Start).OnClick(a.retryIndex)
 			}
 		})
+		if a.relatedFor == item.ID {
+			if a.relatedError != "" {
+				ui.Text(c, a.relatedError).FontSize(design.Small).TextColor(design.Muted)
+			}
+			for _, task := range a.relatedMerges {
+				quietButton(c, "相关整理 · "+mergeStatus(task.State, task.ReviewState)).Key("memory-merge-" + task.ID).OnClick(func() { a.selectMerge(task.ID) })
+			}
+		}
 		ui.Divider(c)
 		ui.Column(c).Gap(12).Children(func() {
 			ui.Text(c, "原始出处").Bold()
@@ -637,6 +653,9 @@ func (a *App) memoryDetail(c *ui.Context) {
 		ui.Row(c).Gap(6).Children(func() {
 			ui.Text(c, item.Category).FontSize(10).Padding(4, 6).Background(design.Surface)
 			state := "当前有效"
+			if item.State == "archived" {
+				state = archivedLabel(item.State)
+			}
 			if item.State == "deleted" {
 				state = "已删除 · 保留历史"
 			}
@@ -645,8 +664,11 @@ func (a *App) memoryDetail(c *ui.Context) {
 	})
 	if a.detailMode == "view" {
 		ui.Row(c).Shrink(0).Padding(18, 24, 24, 24).Gap(8).Children(func() {
-			actionButton(c, "编辑", icons["edit"]).Disabled(item.State == "deleted").OnClick(a.editMemory)
+			actionButton(c, "编辑", icons["edit"]).Disabled(item.State != "active").OnClick(a.editMemory)
 			actionButton(c, "历史记录", icons["history"]).OnClick(func() { a.detailMode = "history"; a.detailScroll.Y = 0 })
+			if a.merges.Selected != "" {
+				quietButton(c, "返回整理任务").OnClick(func() { a.selectMerge(a.merges.Selected) })
+			}
 		})
 	}
 }
@@ -738,10 +760,10 @@ func (a *App) pageDescription() string {
 	case "Agent":
 		return "选择已发现的 Codex 或 pi，连接并管理允许访问的项目。"
 	case "整理记录":
-		return "整理能力尚未接入，不会自动修改已有知识。"
+		return "选择同一项目内两条知识生成建议，确认后合并并保留来源与历史。"
 	case "项目":
 		if a.scope == "" {
-			return "一个项目对应一个代码仓库。项目登记功能正在接入本地服务。"
+			return "一个项目对应一个本地代码仓库。登记后多个 Agent 可以共享项目记忆。"
 		}
 	}
 	return "从列表选择记忆查看正文、来源与历史，或新增一条记忆。"
