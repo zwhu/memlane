@@ -1,4 +1,6 @@
-# P3 最小工程验证
+# P3 工程验证与 P3-C1 服务端交付
+
+2026-11-08：P3-C1 已接入正式服务；当前契约与验收见第 8 节。第 1–7 节保留先前隔离实验的历史证据，其 schema v2/未接 IPC 等描述仅对应实验阶段。
 
 2026-11-08 重生成。本轮按用户最新指令采用 **本机 traex / TRAE CLI**，不再等待 Codex 额度。生产入口仍为 P2 `70ddc0f`；本次新增隔离实验实现、检查、证据和整套 P3 文档/prompt。工程验证后用户已明确授权提交与推送当前工作，交付范围见末节。
 
@@ -110,3 +112,37 @@ Codex 的额度失败和 `build/p3/goal-blocked-audit.json` 是改用 traex 前�
 用户已授权将本轮实验实现、测试、P3 文档和既有六张 P3 设计图提交到当前 main 并推送；不包含 build 下的本机数据/证据/文档备份、认证、聊天或原型工作区未提交代码。实际提交与远端核对结果保存在 `build/p3/delivery.json`，最终回执同时提供提交链接。
 
 handoff 要求每个切片、阻塞或会话切换时实际生成系统临时交接，[交接脚本](../scripts/p3-handoff.py) 明确注明直接生成、未调用禁止自动模型调用的 Skill。临时交接不进入提交。
+
+## 8. P3-C1 正式服务端验收
+
+正式实现由 [records/merge.go](../internal/records/merge.go) 定义独立 memlane-merge-proposal-v1 契约；[store/merge.go](../internal/store/merge.go) 持久化和原子审核，[daemon/merge.go](../internal/daemon/merge.go) 编排，[serviceipc/merge.go](../internal/serviceipc/merge.go) 提供受信宿主类型化入口。背景与工程取舍见 [技术第 6 节](p3-technical-analysis.md#6-p3-c1-正式契约2026-11-08)、[架构第 6 节](p3-architecture.md#6-p3-c1-服务端职责)。本次不迁移、读取或清理真实用户记忆库，也不修改本机 Agent 配置。
+
+| 场景 | 实际结果 | 可重复证据 |
+| --- | --- | --- |
+| P2 v2 → v3 | 使用实际 v2 DDL/写入契约构造临时库；十张旧表逐行完全相同，包括历史、来源、活动、operations、jobs/bindings、连接和仓库映射；重开不丢数据 | build/p3-c1/store-ipc.json / .jsonl，TestMergeV2MigrationBackupRestore |
+| WAL 一致性备份/恢复 | 夹具只读事务保持已提交 WAL；数据库拥有者 VACUUM INTO 后迁移，0600 v2 备份 integrity_check=ok，全部旧表一致，旧操作重放成功 | 同一 migration test；独立备份路径重新打开 v2 |
+| 迁移失败门禁 | 备份目录故障、实验附加表、未来 schema 均拒绝，user_version/旧 scopes 保留，不出现半套正式表；第二数据库拥有者拒绝 | TestMergeMigrationFailsClosed 与 migration test |
+| 纯建议/确认/拒绝 | 正式 daemon 的 typed IPC 开始立即返回稳定 ID；真实 traex 纯提案完成前/确认前两来源仍 v1 active；确认新建合并 v1，拒绝保留原知识 | build/p3-c1/real-service.json / .jsonl，TestMergeRealServiceTraexAndRust |
+| 提示输入与隔离 | 同一正式 runner 配置与服务冻结快照经本机 debug prompt-input 实际渲染；两正文/schema/摘要完整，没有 skills 或 memories 注入，仅保存摘要；真实正常输出无工具/错误项、终态/退出0/组消失 | real-service.json 的 actual_formal_prompt_verified 与 prompt_input_sha256；既有隔离配置检查 build/p3/traex-isolation.json |
+| 来源被编辑 | 分别编辑第一或第二来源，整项 expired；其他来源仍 active v1，无部分归档；模型运行期间编辑后结果直接登记 expired | TestMergeExpiredRejectRollbackAndAttempts/A、B；TestMergeInvalidResultsAndEditedFrozenInput/source_edited |
+| 幂等与冲突 | 开始重放同 ID；提案同内容/回执重放仅一次事实；异输入/输出/结果摘要/提案重用标识冲突；确认/拒绝决定不可相互替换 | TestMergeAtomicReviewRestoreAndConflicts、reject 子项 |
+| 取消竞态与恢复 | 取消先提交阻止结果/应用，应用先提交保留回执；20 组 goroutine 竞争只得到完整应用或零应用；持久中断推进 attempt 栅栏、旧结果拒绝 | TestMergeCancelApplyCompetition；restart-and-cancel 子项 |
+| 真实取消/停服/重启 | 真实活动 turn 经取消 IPC 收口；另一真实活动 turn 经 stop 停服，daemon 等待进程组消失后退出；重启仍 interrupted/attempt2、不重跑，旧合法结果拒绝 | real-service.json 的 real_cancel/real_shutdown；迟到输出明确 late_result_is_protocol_fixture=true |
+| SQL 中途失败 | 回执插入 trigger 故障，正文/历史/来源/元信息/活动/operations/jobs/提案/决定/回执完全回滚，移除故障后可确认 | rollback 子项 |
+| 索引失败/真实 Rust | 故意配置不可用 worker，已确认正文与回执保留、索引 failed；重启真实 worker 后既有 replay 恢复检索，真实 Search 返回合并 v1，归档来源旧绑定不返回 | real-service.json；这是引擎不可用故障，不冒称 Rust 内部错误 |
+| 归档恢复 | 来源 v1 保留，合并追加源 v2 merge_archive；直接 edit 归档冲突，restore 单条产生 active v3 并排索引，不撤销合并 | TestMergeAtomicReviewRestoreAndConflicts |
+| 私有权限 | SameUser/0700目录/0600 socket沿用；新变更 IPC 缺显式用户动作拒绝，未知范围拒绝；日常 Agent 请求 merge_confirm 是 unknown tool | TestMergePrivateIPCAuthorization |
+
+命令：
+
+```sh
+python3 scripts/verify-p3-c1.py
+python3 scripts/verify-p3-c1.py --real
+python3 scripts/verify-p3-c1.py --real --short-path
+```
+
+`--real` 使用本机 traex 0.214.1 internal、原认证和现有模型选择及真实 Rust/E5-base int8；正常返回、拒绝和活动取消没有用协议夹具替代。SQL/无效输出/迟到结果/引擎不可用是明确的故障或协议夹具。Go test JSONL 长行可能拆成多事件，脚本汇总完整 Output 再解析；`--collect-log` 只汇总已有完整测试日志，不再调用模型。初次验收误用了 searchable 状态名（实际为 indexed），修正后重跑通过；该失败不计通过。
+
+当前范围只包含服务端 C1。无 UI/打包变化，没有重跑无关 P0/P1/P2 UI、签名/体积验收；P3 视觉验收未开展。主包、首次下载量和磁盘占用仍引用 [P2 验证](p2-validation.md)，本切片没有重新测量。
+
+仍有限制：本机 internal CLI 和现有模型组合已实测，其他版本/渠道未覆盖；same-uid 是受信本机宿主边界，不对抗同账户任意恶意程序；正常取消/停服只保证本机同组进程收口，不撤回云端推理/计费，也不承诺 SIGKILL 后清理逃逸进程。重启识别 queued/running 中断并使旧 attempt 失效，不自动重试或实现完整租约。备份恢复不恢复引擎索引文件，检索须按当前正文重建。下一切片为 P3-C2 栏内建议审核 UI 与实际窗口验收，摘要/标签及完整调度另行实施。

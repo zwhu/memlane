@@ -246,3 +246,11 @@ docs/                  产品、设计、方案和证据
 早期只读检查为 macOS 26.6.2 arm64、PATH 中无 Go、默认 Python 3.9.23、uv 可用。随后已在仓库隔离准备固定 Go/Rust/Python 工具链并完成构建，不替换用户默认环境。工具链命令见 [开发说明](development.md)。
 
 MyGo 完整主包、组件准备、固定本地模型、服务注册、手动记忆和真实 Codex/pi 互通已有实测记录；正式发布、后台整理和完整代码图谱尚未验收。具体通过条件与开发顺序见 [实施清单](implementation-plan.md)；详细来源见 [Python Cognee 研究](research-cognee.md)、[Cognee-RS 研究](research-cognee-rust.md)、[Nowledge Mem 研究](research-nowledge-mem.md)、[Agent 研究](research-agents.md)。
+
+## 14. P3-C1 当前正式落点
+
+2026-11-08 最小合并已接正式 memlaned：同一个用户明确授权项目两条有效知识 → 冻结具体版本 → 本机 traex 纯建议 → 宿主确认/拒绝 → applyTx 原子合并/归档 → 既有 Rust 索引与检索。正式 schema v3 增量增加 merge_tasks/attempts/proposals/decisions/receipts/sources，既有 jobs 仍是索引任务；不将前文概念表或实验附加表当现成 API。
+
+详细约束、错误、决定与取消/重启栅栏见 [P3 技术第 6 节](p3-technical-analysis.md#6-p3-c1-正式契约2026-11-08)，职责见 [架构](p3-architecture.md#6-p3-c1-服务端职责)，实际证据见 [验证记录](p3-validation.md#8-p3-c1-正式服务端验收)。数据库 owner 锁与 v2 WAL 一致性备份先于迁移，旧数据完整保留；老 v2 服务无法打开 v3，回退需停服后恢复独立 v2 备份，不切二进制冒充回退。P2 私有 IPC 1 与日常工具兼容。
+
+本次没有 P3 UI、摘要/标签、定期计划、排名、初始化、代码图谱或其他后台 Agent，也不重跑未受影响的 UI/包验收；后续按实施清单的切片展开。

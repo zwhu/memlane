@@ -331,19 +331,6 @@ func (s *Store) ReviewMerge(ctx context.Context, r records.MergeReview, confirm 
 	if t.ReviewState != "pending" || t.Attempt != t.Proposal.Attempt {
 		return t, records.MergeError("attempt_invalid")
 	}
-	if !confirm {
-		if err = recordDecision(); err != nil {
-			return t, err
-		}
-		if _, err = tx.ExecContext(ctx, `UPDATE merge_proposals SET state='rejected' WHERE task=?`, r.Task); err != nil {
-			return t, err
-		}
-		t, err = mergeTask(ctx, tx, r.Task)
-		if err != nil {
-			return t, err
-		}
-		return t, tx.Commit()
-	}
 	ok, err := mergeCurrent(ctx, tx, t.Snapshot)
 	if err != nil {
 		return t, err
@@ -356,6 +343,19 @@ func (s *Store) ReviewMerge(ctx context.Context, r records.MergeReview, confirm 
 			return t, err
 		}
 		return t, records.MergeError("proposal_expired")
+	}
+	if !confirm {
+		if err = recordDecision(); err != nil {
+			return t, err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE merge_proposals SET state='rejected' WHERE task=?`, r.Task); err != nil {
+			return t, err
+		}
+		t, err = mergeTask(ctx, tx, r.Task)
+		if err != nil {
+			return t, err
+		}
+		return t, tx.Commit()
 	}
 	if err = recordDecision(); err != nil {
 		return t, err

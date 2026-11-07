@@ -318,7 +318,7 @@ func TestMergeExpiredRejectRollbackAndAttempts(t *testing.T) {
 		s, _ := mergeDB(t)
 		x, r, b := mergeFixture(t, s)
 		completeFixture(t, s, x, b)
-		tables := []string{"memories", "versions", "memory_metadata", "activities", "operations", "jobs", "merge_sources", "merge_receipts", "merge_proposals"}
+		tables := []string{"memories", "versions", "memory_metadata", "activities", "operations", "jobs", "merge_sources", "merge_receipts", "merge_proposals", "merge_decisions"}
 		before := map[string][][]any{}
 		for _, table := range tables {
 			before[table] = sqlRows(t, s.DB, table)

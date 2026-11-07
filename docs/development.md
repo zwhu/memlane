@@ -256,7 +256,7 @@ P0 脚本实际生成 handoff，报告在 build/p0-engine、截图在 build/p0-s
 
 已实现项目登记、真实列表/来源/独立索引状态、App 新增与编辑、当前版本语义搜索、历史差异和恢复。恢复产生新版本，过期编辑拒绝覆盖；草稿在窗口内按条目保留，退出 App 后未保存草稿不持久化。首页来自首次可用活动，编辑/恢复/重试不重复计数，导入单列，整理显示未接入空态。实际系统首页和详情已通过设计图对照，进度见 [P1 验证记录](p1-validation.md)。
 
-服务 schema 使用 PRAGMA user_version=2（P2 新增连接与结构化来源）；P0/P1 数据迁移保留正文、版本、操作、任务与绑定，旧记录作为导入。客户端只通过 serviceipc.Library 访问服务。测试均用合成根，不把默认用户目录或真实 Agent 配置作为输入。
+服务 schema 当前使用 PRAGMA user_version=3（P2 v2 新增连接与结构化来源，P3-C1 v3 新增正式合并）；P0/P1 数据迁移保留正文、版本、操作、任务与绑定，旧记录作为导入。客户端只通过 serviceipc.Library 访问服务。测试均用合成根，不把默认用户目录或真实 Agent 配置作为输入。
 
 ## P2 记忆桥与协议验收
 
@@ -334,3 +334,20 @@ python3 scripts/audit-p1.py
 P1 驱动通过 Launch Services 启动实际 App，避免直接执行包内二进制时，原地重建与 BTM 注册缓存造成 EX_CONFIG。系统截图需要桌面解锁；驱动在空白工具栏实际点击，并核对本 App 的 NSWindow key/visible 状态后取得系统窗口截图。源码普通构建不含 e2e 夹具和探针。验收结束明确停止独立测试服务；下次打开保留主动停止状态，从设置点击「启动服务」。
 
 完整主包仍执行 `python3 scripts/build-client.py --out build/p0-final`。最新大小与签名边界见 P1 验证记录；P0 文档中的旧 DMG 大小属于历史基线，同输出路径被新构建更新。正式组件/更新源及 Developer ID、公证仍未配置，P1 的实际闭环验收使用隔离公共配置，不能把它描述为正式可分发版本。
+
+## P3-C1 服务端开发验收
+
+```sh
+python3 scripts/verify-p3-c1.py
+python3 scripts/verify-p3-c1.py --real
+python3 scripts/verify-p3-c1.py --real --short-path
+sh scripts/go.sh test ./...
+sh scripts/go.sh vet ./...
+CGO_ENABLED=1 sh scripts/go.sh test -race ./internal/store ./internal/agents ./internal/daemon ./internal/serviceipc -count=1
+```
+
+只创建临时合成根；真实检查复用仓库已有 Rust worker/E5 模型和本机 traex 认证/模型选择，不升级或修改用户 Agent 配置。`--short-path` 额外核对 Finder/LaunchAgent 常见短 PATH 下的已知本地 traex 路径，仍不扫描全盘。
+
+类型化宿主入口为 serviceipc.MergeClient.Start/Get/Cancel/Confirm/Reject；长任务立即返回持久 ID，通过 Get 查询 execution/state/review_state/result_digest。审核必须携带对应 task/proposal/result_digest/receipt_id，仅受信宿主用户动作允许；日常 Agent 工具不暴露确认。状态和迁移/恢复细节见 [正式技术契约](p3-technical-analysis.md#6-p3-c1-正式契约2026-11-08) 与 [验收](p3-validation.md#8-p3-c1-正式服务端验收)。
+
+迁移 v2 前数据库拥有者在同根 backups/schema-v2-时间.sqlite 创建 VACUUM INTO 备份，并 sync 后才迁移。恢复验证必须先停服、复制选定备份到新的独立根（不要漏处理该根已有 WAL），检查 user_version=2、integrity_check 和表/历史，再使用兼容 v2 服务。不要把真实默认用户根传给任何验证脚本。

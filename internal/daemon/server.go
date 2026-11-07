@@ -35,6 +35,10 @@ var MarkStopped = serviceipc.MarkStopped
 var writeJSON = serviceipc.WriteJSON
 
 type Server struct {
+	lifecycle   context.Context
+	mergeMu     sync.Mutex
+	mergeWG     sync.WaitGroup
+	mergeRuns   map[string]context.CancelFunc
 	config      Config
 	store       *store.Store
 	mu          sync.Mutex
@@ -81,9 +85,12 @@ func Run(ctx context.Context, config Config) error {
 		return err
 	}
 	defer db.Close()
+	if err = db.InterruptMerges(ctx); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	s := &Server{config: config, store: db, state: state, status: "preparing", stop: cancel, wake: make(chan struct{}, 1), work: make(chan struct{}, 1), gate: make(chan struct{}, 1)}
+	s := &Server{lifecycle: ctx, mergeRuns: make(map[string]context.CancelFunc), config: config, store: db, state: state, status: "preparing", stop: cancel, wake: make(chan struct{}, 1), work: make(chan struct{}, 1), gate: make(chan struct{}, 1)}
 	path := SocketPath(config.Root)
 	dir := filepath.Dir(path)
 	if err = os.MkdirAll(dir, 0700); err != nil {
@@ -128,6 +135,9 @@ func Run(ctx context.Context, config Config) error {
 			}
 			cancel()
 			<-workerDone
+			handlers.Wait()
+			s.mergeWG.Wait()
+			_ = db.InterruptMerges(context.Background())
 			return e
 		}
 		handlers.Add(1)
@@ -135,7 +145,8 @@ func Run(ctx context.Context, config Config) error {
 	}
 	<-workerDone
 	handlers.Wait()
-	return nil
+	s.mergeWG.Wait()
+	return db.InterruptMerges(context.Background())
 }
 
 func (s *Server) supervise(ctx context.Context) {
@@ -311,6 +322,27 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 	}
 	svc := memory.Service{Store: s.store, Engine: selected}
 	switch r.Op {
+	case "merge_start", "merge_cancel", "merge_confirm", "merge_reject":
+		if !r.UserConfirmed {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "explicit action from trusted Memlane host required"}
+		}
+		switch r.Op {
+		case "merge_start":
+			return s.startMerge(operation, r.MergeStart)
+		case "merge_cancel":
+			return s.cancelMerge(operation, r.MergeTask)
+		default:
+			t, err := s.store.ReviewMerge(operation, r.MergeReview, r.Op == "merge_confirm")
+			if err == nil && t.Receipt != nil {
+				select {
+				case s.work <- struct{}{}:
+				default:
+				}
+			}
+			return t, err
+		}
+	case "merge_get":
+		return s.store.MergeTask(operation, r.MergeTask)
 	case "connections":
 		return s.store.Connections(operation)
 	case "configure_connection":

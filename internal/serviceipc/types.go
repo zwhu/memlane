@@ -21,6 +21,9 @@ type Config struct {
 }
 
 type Request struct {
+	MergeStart       records.MergeStart      `json:"merge_start,omitempty"`
+	MergeReview      records.MergeReview     `json:"merge_review,omitempty"`
+	MergeTask        string                  `json:"merge_task,omitempty"`
 	Protocol         int                     `json:"protocol"`
 	ID               string                  `json:"id"`
 	Op               string                  `json:"op"`
