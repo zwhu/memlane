@@ -18,3 +18,7 @@ func (l Library) ConfigureConnection(ctx context.Context, d records.ConnectionDr
 func (l Library) Disconnect(ctx context.Context, id string) error {
 	return Call(ctx, l.Root, Request{Op: "disconnect", ConnectionID: id, UserConfirmed: true}, nil)
 }
+
+func (l Library) CheckWorkspace(ctx context.Context, scope, path string) error {
+	return Call(ctx, l.Root, Request{Op: "check_workspace", Scope: scope, Project: records.ScopeDraft{Path: path}}, nil)
+}

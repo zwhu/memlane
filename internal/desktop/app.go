@@ -13,6 +13,7 @@ import (
 )
 
 type App struct {
+	agents                   AgentUI
 	activityLoaded           bool
 	pendingMutations         map[string]records.Mutation
 	saving                   bool
@@ -272,6 +273,12 @@ func (a *App) home(c *ui.Context) {
 					}
 					a.empty(c, title, description)
 					actionButton(c, "记录第一条记忆", icons["plus"]).AlignSelf(ui.Start).OnClick(a.newMemory)
+					if a.agents.Context != nil {
+						ui.Row(c).Gap(12).Margin(12, 0, 0, 0).Children(func() {
+							quietButton(c, "连接 Agent").OnClick(func() { a.navigate("Agent", "") })
+							quietButton(c, "添加本地项目").OnClick(func() { a.navigate("项目", "") })
+						})
+					}
 				}
 				recent := a.recent
 				if a.visualFixture {
@@ -409,6 +416,9 @@ func (a *App) details(c *ui.Context) {
 				}
 				if a.page == "设置" {
 					ui.Text(c, "引擎、模型与客户端分别管理。").FontSize(design.Small).TextColor(design.Muted)
+				} else if a.page == "Agent" {
+					ui.Text(c, "共享当前项目的记忆，保留来源与版本。").FontSize(design.Small).TextColor(design.Muted)
+					quietButton(c, "重新发现").Disabled(a.agents.Busy).OnClick(func() { a.refreshAgents(true) })
 				} else if a.isMemoryPage() {
 					ui.Text(c, fmt.Sprintf("%d 条知识 · 保留来源与修改记录", a.listTotal)).FontSize(design.Small).TextColor(design.Muted)
 					ui.Row(c).Gap(6).Children(func() {
@@ -455,6 +465,8 @@ func (a *App) details(c *ui.Context) {
 							}
 						})
 					}
+				} else if a.page == "Agent" {
+					a.agentList(c)
 				} else {
 					a.empty(c, "", a.pageDescription())
 				}
@@ -482,7 +494,9 @@ func (a *App) details(c *ui.Context) {
 					iconButton(c, "历史记录", icons["history"]).OnClick(func() { a.detailMode = "history" })
 				}
 			})
-			if a.page == "项目" && a.scope == "" {
+			if a.page == "Agent" {
+				a.agentDetail(c)
+			} else if a.page == "项目" && a.scope == "" {
 				a.projectEditor(c)
 			} else if a.page == "设置" {
 				ui.Scroll(c).Grow(1).Padding(24).Gap(18).Children(func() { a.settings(c) })
@@ -592,7 +606,11 @@ func (a *App) memoryDetail(c *ui.Context) {
 			meta(c, "范围", item.ScopeName)
 			meta(c, "来源", item.Source)
 			meta(c, "创建", item.CreatedAt.Format("2006-01-02 15:04"))
-			meta(c, "版本", fmt.Sprintf("v%d · %s", item.Revision, operationLabel(item.Operation)))
+			operation := operationLabel(item.Operation)
+			if item.Operation == "save" && (item.Source == "codex" || item.Source == "pi") {
+				operation = "Agent 保存"
+			}
+			meta(c, "版本", fmt.Sprintf("v%d · %s", item.Revision, operation))
 			meta(c, "保存", "已保存")
 			meta(c, "索引", a.availableIndexLabel(item.IndexState))
 			if a.message != "" {
@@ -607,6 +625,14 @@ func (a *App) memoryDetail(c *ui.Context) {
 			ui.Text(c, "原始出处").Bold()
 			ui.Text(c, item.Original).Selectable().LineHeight(1.7).Padding(0, 0, 0, 12).BorderWidth(0, 0, 0, 2).BorderColor(design.Muted)
 			ui.Text(c, item.Source+" · 已保留来源").FontSize(design.Small).TextColor(design.Muted)
+			if item.SourceDetail != nil {
+				if item.SourceDetail.Fragment != "" {
+					ui.Text(c, item.SourceDetail.Fragment).Selectable().FontSize(design.Small).LineHeight(1.7)
+				}
+				for _, reference := range item.SourceDetail.References {
+					ui.Text(c, reference).Selectable().FontSize(design.Small).TextColor(design.Muted)
+				}
+			}
 		})
 		ui.Row(c).Gap(6).Children(func() {
 			ui.Text(c, item.Category).FontSize(10).Padding(4, 6).Background(design.Surface)
@@ -657,7 +683,11 @@ func (a *App) historyView(c *ui.Context, item MemoryItem) {
 	for i, h := range a.history {
 		ui.Column(c.Key(fmt.Sprintf("history-%d", h.Revision))).Border(1, design.Border).Radius(6).Padding(14).Gap(10).Children(func() {
 			ui.Row(c).Children(func() {
-				ui.Text(c, fmt.Sprintf("v%d · %s", h.Revision, operationLabel(h.Operation))).Bold()
+				operation := operationLabel(h.Operation)
+				if h.Operation == "save" && (item.Source == "codex" || item.Source == "pi") {
+					operation = "Agent 保存"
+				}
+				ui.Text(c, fmt.Sprintf("v%d · %s", h.Revision, operation)).Bold()
 				ui.Spacer(c)
 				ui.Text(c, h.CreatedAt.Format("01-02 15:04")).FontSize(design.Small).TextColor(design.Muted)
 			})
@@ -706,7 +736,7 @@ func (a *App) emptyTitle() string {
 func (a *App) pageDescription() string {
 	switch a.page {
 	case "Agent":
-		return "Agent 接入将在后续完成。当前可以在 App 内管理本地记忆。"
+		return "选择已发现的 Codex 或 pi，连接并管理允许访问的项目。"
 	case "整理记录":
 		return "整理能力尚未接入，不会自动修改已有知识。"
 	case "项目":

@@ -372,6 +372,8 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		return s.store.Current(operation, r.Memory)
 	case "scopes":
 		return s.store.Scopes(operation)
+	case "check_workspace":
+		return nil, s.store.CheckBoundWorkspace(operation, r.Scope, r.Project.Path)
 	case "register_project":
 		if !r.UserConfirmed {
 			return nil, errors.New("project registration requires user confirmation")

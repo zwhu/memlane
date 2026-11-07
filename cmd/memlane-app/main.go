@@ -316,6 +316,21 @@ func main() {
 		}
 		show := func() { mygo.App.Focus(); win.Show(); win.Focus() }
 		if action == "" {
+			home, _ := os.UserHomeDir()
+			clientRoot := filepath.Join(home, "Library/Application Support/Memlane")
+			if controller != nil {
+				clientRoot = controller.Config.Root
+			}
+			resources, _ := mygo.App.Path(mygo.PathResources)
+			piDir := os.Getenv("PI_CODING_AGENT_DIR")
+			if piDir == "" {
+				piDir = filepath.Join(home, ".pi/agent")
+			}
+			app.ConfigureAgents(ctx, clientRoot, home, filepath.Join(resources, "bin/memlane"), piDir, func(fn func()) {
+				if ctx.Err() == nil {
+					win.Update(fn)
+				}
+			})
 			show()
 		}
 		_, err := mygo.NewTray(mygo.TrayOptions{

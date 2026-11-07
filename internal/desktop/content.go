@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"github.com/zwhu/memlane/internal/records"
 	"strings"
 	"time"
 )
@@ -11,6 +12,7 @@ type MemoryItem struct {
 	ID, Dataset, Title, Text, Original, Source, ScopeName, Category, State, IndexState, Operation string
 	Revision                                                                                      int64
 	CreatedAt                                                                                     time.Time
+	SourceDetail                                                                                  *records.AgentSource
 }
 type ProjectItem struct{ ID, Name, Path string }
 type MemoryHistory struct {

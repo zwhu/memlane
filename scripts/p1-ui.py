@@ -15,7 +15,7 @@ def wait(fn, timeout=45):
     raise AssertionError(('deadline',last))
 
 class UI:
-    def __init__(self,app,fixture,out,visual=False,config=None):
+    def __init__(self,app,fixture,out,visual=False,config=None,extra_env=None):
         self.out=out;out.mkdir(parents=True,exist_ok=True)
         fixture.mkdir(parents=True,exist_ok=True)
         meta=plistlib.loads((app/'Contents/Info.plist').read_bytes())
@@ -27,6 +27,7 @@ class UI:
         self.log=(out/'window.log').open('a')
         self.native_path='/tmp/memlane-p1-native-'+uuid.uuid4().hex[:10]+'.sock'
         env={'PATH':'/usr/bin:/bin','HOME':str(fixture/'ui-home'),'MYGO_AUTOMATION':self.path,'MEMLANE_NATIVE_PROBE':self.native_path}
+        if extra_env:env.update(extra_env)
         (fixture/'ui-home').mkdir(exist_ok=True)
         # Launch the bundle through Launch Services, as Finder does. After an
         # in-place rebuild, direct binary launch can leave BTM's app registration

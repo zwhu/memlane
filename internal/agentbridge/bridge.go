@@ -136,7 +136,9 @@ func (c Config) MCP(ctx context.Context) error {
 		"memory_scopes": "列出本连接已获用户批准的范围，用于项目不明时让用户选择；不查询记忆。",
 	}
 	for _, name := range []string{"memory_scopes", "memory_search", "memory_get", "memory_save", "memory_status"} {
-		server.AddTool(&mcp.Tool{Name: name, Description: descriptions[name], InputSchema: schema(name)}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		closed, additive := false, false
+		annotations := &mcp.ToolAnnotations{ReadOnlyHint: name != "memory_save", DestructiveHint: &additive, OpenWorldHint: &closed, IdempotentHint: true}
+		server.AddTool(&mcp.Tool{Name: name, Description: descriptions[name], InputSchema: schema(name), Annotations: annotations}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args records.AgentArguments
 			err := validate(name, req.Params.Arguments)
 			if err == nil && len(req.Params.Arguments) > 0 {

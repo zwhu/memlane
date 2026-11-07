@@ -24,7 +24,7 @@ func displayVersion(v records.Version) MemoryItem {
 	} else if v.ScopeKind == "experience" {
 		category = "通用经验"
 	}
-	return MemoryItem{ID: v.Memory, Dataset: v.Dataset, Title: v.Title, Text: v.Text, Original: v.Original, Source: v.Source, ScopeName: v.ScopeName, Category: category, Revision: v.Revision, State: v.State, IndexState: v.IndexState, Operation: v.Operation, CreatedAt: created.Local()}
+	return MemoryItem{ID: v.Memory, Dataset: v.Dataset, Title: v.Title, Text: v.Text, Original: v.Original, Source: v.Source, ScopeName: v.ScopeName, Category: category, Revision: v.Revision, State: v.State, IndexState: v.IndexState, Operation: v.Operation, CreatedAt: created.Local(), SourceDetail: v.SourceDetail}
 }
 func displayVersions(vs []records.Version) []MemoryItem {
 	out := make([]MemoryItem, 0, len(vs))
@@ -115,6 +115,7 @@ func (a *App) refresh(more bool) {
 			State string `json:"state"`
 		}
 		err := serviceipc.Call(ctx, a.library.Root, serviceipc.Request{Op: "health"}, &health)
+		reachable := err == nil
 		var scopes []records.Scope
 		if err == nil {
 			scopes, err = a.library.Scopes(ctx)
@@ -163,12 +164,16 @@ func (a *App) refresh(more bool) {
 				return
 			}
 			a.loading = false
+			if reachable {
+				a.serviceState = health.State
+			} else {
+				a.serviceState = "unavailable"
+			}
 			if err != nil {
 				a.libraryError = "读取失败，保留上次内容；请重试。"
 				return
 			}
 			a.libraryError = ""
-			a.serviceState = health.State
 			a.scopes = scopes
 			a.projects = nil
 			for _, scope := range scopes {
