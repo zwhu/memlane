@@ -88,6 +88,7 @@ type App struct {
 	historyRevision int64
 	listScroll      map[string]*ui.ScrollState
 	detailScroll    ui.ScrollState
+	textWindows     map[string]*textWindow
 	visualFixture   bool
 	zoom            float32
 	version         string
@@ -684,7 +685,7 @@ func (a *App) memoryDetail(c *ui.Context) {
 		}
 		a.recordDisplayedMemory(*item)
 		ui.Text(c, item.Title).FontSize(design.Title).Bold()
-		ui.Text(c, item.Text).Selectable().LineHeight(1.8)
+		ui.Text(c, a.readableText(c, "current-"+item.ID+fmt.Sprint(item.Revision), item.Text)).Selectable().LineHeight(1.8)
 		if item.Experience != nil {
 			ui.Text(c, "适用条件").Bold()
 			conditions := item.Experience.Conditions
@@ -756,7 +757,7 @@ func (a *App) memoryDetail(c *ui.Context) {
 				sourceTitle = "保存时全局正文"
 			}
 			ui.Text(c, sourceTitle).Bold()
-			ui.Text(c, item.Original).Selectable().LineHeight(1.7).Padding(0, 0, 0, 12).BorderWidth(0, 0, 0, 2).BorderColor(design.Muted)
+			ui.Text(c, a.readableText(c, "original-"+item.ID, item.Original)).Selectable().LineHeight(1.7).Padding(0, 0, 0, 12).BorderWidth(0, 0, 0, 2).BorderColor(design.Muted)
 			ui.Text(c, item.Source+" · 已保留来源").FontSize(design.Small).TextColor(design.Muted)
 			if item.SourceDetail != nil {
 				if item.SourceDetail.Fragment != "" {
@@ -829,7 +830,7 @@ func (a *App) historyView(c *ui.Context, item MemoryItem) {
 				if h.Title != "" {
 					ui.Text(c, h.Title).Bold()
 				}
-				ui.Text(c, h.Text).Selectable().LineHeight(1.7).Padding(14).Background(design.Surface)
+				ui.Text(c, a.readableText(c, fmt.Sprintf("restore-%s-%d", item.ID, h.Revision), h.Text)).Selectable().LineHeight(1.7).Padding(14).Background(design.Surface)
 				if item.Experience != nil {
 					meta(c, "恢复适用条件", h.Conditions)
 				}
@@ -866,13 +867,13 @@ func (a *App) historyView(c *ui.Context, item MemoryItem) {
 			if h.Title != "" {
 				ui.Text(c, h.Title).Bold()
 			}
-			ui.Text(c, h.Text).Selectable().LineHeight(1.7)
+			ui.Text(c, a.readableText(c, fmt.Sprintf("history-%s-%d", item.ID, h.Revision), h.Text)).Selectable().LineHeight(1.7)
 			if item.Experience != nil {
 				meta(c, "适用条件", h.Conditions)
 			}
 			if i+1 < len(a.history) {
 				ui.Text(c, "相较上一版本").FontSize(design.Small).TextColor(design.Muted)
-				ui.Text(c, lineDiff(a.history[i+1].Text, h.Text)).FontSize(design.Small).Selectable().LineHeight(1.6).Background(design.Surface).Padding(10)
+				ui.Text(c, a.readableText(c, fmt.Sprintf("diff-%s-%d", item.ID, h.Revision), lineDiff(a.history[i+1].Text, h.Text))).FontSize(design.Small).Selectable().LineHeight(1.6).Background(design.Surface).Padding(10)
 			}
 			if h.Revision != item.Revision {
 				quietButton(c, fmt.Sprintf("恢复 v%d", h.Revision)).AlignSelf(ui.Start).OnClick(func() {

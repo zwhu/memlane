@@ -52,6 +52,8 @@ MYGO_AUTOMATION=/tmp/memlane-p0.sock build/memlane-e2e
 
 正式构建不包含自动化插件。菜单栏支持重新打开窗口，Cmd+W 收起窗口，Cmd+Q 或菜单退出应用；默认退出保留后台，主动停止或关闭“退出 App 后继续运行”会等待服务和 worker 退出。
 
+磁盘满验收先创建新的 `create-p4-code-fixture.py` 隔离根并构建其完整App，再执行 `verify-p4-diskfull-substrate.py --pointer <新pointer> --out <新报告>` 与 `verify-p4-diskfull-app.py --pointer <同pointer> --out <新报告>`。脚本仅填充自己新建的128MiB APFS卷，不能指向用户数据目录；不覆盖旧image或报告。`--resume <旧失败报告>`只继续已经释放并成功卸载的同根，用新报告保留原失败。`--finish-short`仅供保留已接受大v2后显式保存短v3；不声称大正文索引通过。实际边界见 [F1d验证](p4-diskfull-validation.md)。
+
 ## Cognee-RS 构建候选
 
 固定源码提交为 `151905c302fc9b5b9aad88d6b13931c09f0eac30`。准备脚本要求本机已有 `uv`，将 Rust `1.91.1`、CMake `4.1.2`、protoc `33.1`、源码与 ONNX Runtime `1.28.0` 放在 `.local/`：

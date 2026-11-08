@@ -69,6 +69,7 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 	a.libraryContext = ctx
 	a.dispatch = dispatch
 	a.onNavigate = func() {
+		a.textWindows = nil
 		if a.page != "代码图谱" && a.code.Cancel != nil {
 			a.code.Cancel()
 			a.code.Cancel = nil
@@ -95,6 +96,7 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 		}
 	}
 	a.onSelect = func(string) {
+		a.textWindows = nil
 		a.usageBrowseError = ""
 		a.usageImportantError = ""
 		a.usageNavigation = uuid.NewString()

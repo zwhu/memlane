@@ -155,7 +155,14 @@ func (a *App) scopeOptions() []string {
 	}
 	return out
 }
-func preview(text string) string { return strings.Join(strings.Fields(text), " ") }
+func preview(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	runes := []rune(text)
+	if len(runes) > 240 {
+		return string(runes[:240]) + "…"
+	}
+	return text
+}
 func operationLabel(op string) string {
 	switch op {
 	case "move":

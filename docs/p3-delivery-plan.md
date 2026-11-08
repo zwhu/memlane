@@ -32,6 +32,7 @@
 | F1b 手动一致性备份 | F1a/SQLite拥有权 | App创建/目录/校验、WAL全表与幂等、Root原子发布及故障恢复 | build/p4-delivery/ | 本机通过，见 [备份验证](p4-backup-validation.md)；离线恢复按F1c另验 |
 | F1c1 主离线恢复 | F1b/双拥有权锁 | 内存schema14转换、原库/WAL/SHM保留、持久journal/stop/幂等、App确认重载与当前检索 | build/p4-delivery/ | 主流程本机通过，见 [恢复验证](p4-restore-validation.md)；F1c2另有独立补验，非整个F1故障或分发通过 |
 | F1c2 恢复后的授权与故障闭环 | F1c1/原Agent、计划、建议、初始化、代码记录 | 真实App新ID重接/旧ID拒绝、计划/建议/初始化/代码排除、显式重开、当前Rust与完整包 | build/p4-delivery/ | 本机通过，见 [恢复验证](p4-restore-validation.md)；完成ID重放为离线全表检查，stop写失败是明确注入，其他F1/正式分发独立 |
+| F1d 实际空间不足 | F1c2/完整App与独立Rust | 有界APFS真实ENOSPC、App保存/备份失败、保留来源历史、释放后当前检索及停服卸载 | build/p4-delivery/ | 真实故障、App/Rust/历史/长文复制/停服卸载恢复与最新完整包独立复验通过，见 [磁盘验证](p4-diskfull-validation.md)；大正文索引未验，不是宿主全盘或正式分发 |
 | F2 完整本机包 | 全部功能及 F1 | 最新 UI/helper/LaunchAgent/Agent 桥、DMG、签名完整性、三类体积和更新下载字节 | build/p4-final/ | G2最新完整ad-hoc包首次准备与功能/体积通过；整体最终包须待R/A1b/A2b/F1收口，不标F2完成 |
 | F3 正式分发 | F2、有效身份、渠道、干净设备 | Developer ID / 公证 / Gatekeeper、正式签名清单与更新下载可达；macOS 15+ arm64 干净安装准备离线主要功能 | build/p4-release/ | 外部条件待解除 |
 | 交付收口 | 全部必需项 | 适用 checks/review、文档链接、阶段提交、普通推送 SHA 核对、最终临时 handoff 与能力/故障/体积报告 | build/p4-delivery/ | 待完成 |
