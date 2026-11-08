@@ -13,6 +13,7 @@ import (
 )
 
 type App struct {
+	code                                                             CodeUI
 	initialization                                                   InitializationUI
 	guidanceRoot, guidanceError                                      string
 	guidanceHidden                                                   bool
@@ -162,6 +163,7 @@ func (a *App) sidebar(c *ui.Context) {
 			for _, page := range []string{"总览", "全部记忆", "全局记忆", "Agent", "整理记录"} {
 				a.nav(c, page, "", icons[page])
 			}
+			a.nav(c, "代码图谱", "", icons["项目"])
 			ui.Row(c).Margin(22, 12, 8, 12).Children(func() {
 				ui.Text(c, "项目").FontSize(design.Small).TextColor(design.Muted)
 				ui.Spacer(c)
@@ -438,7 +440,9 @@ func (a *App) details(c *ui.Context) {
 					ui.Text(c, a.libraryError).FontSize(design.Small).TextColor(design.Muted)
 					quietButton(c, "重试读取").OnClick(func() { a.refresh(false) })
 				}
-				if a.page == "初始化" {
+				if a.page == "代码图谱" {
+					actionButton(c.Key("code-new"), "开启工作区", icons["plus"]).Disabled(a.code.Busy).OnClick(a.newCode)
+				} else if a.page == "初始化" {
 					actionButton(c, "新建初始化批次", nil).Key("initialization-new").Disabled(a.initialization.Busy).OnClick(func() { a.openInitialization("") })
 				} else if a.page == "使用指引" {
 					ui.Text(c, "步骤状态来自实际组件、登记与连接回执。").FontSize(design.Small).TextColor(design.Muted)
@@ -513,6 +517,8 @@ func (a *App) details(c *ui.Context) {
 					} else {
 						a.mergeList(c)
 					}
+				} else if a.page == "代码图谱" {
+					a.codeList(c)
 				} else if a.page == "Agent" {
 					a.agentList(c)
 				} else if a.page == "初始化" {
@@ -546,7 +552,9 @@ func (a *App) details(c *ui.Context) {
 					iconButton(c, "历史记录", icons["history"]).OnClick(func() { a.detailMode = "history" })
 				}
 			})
-			if a.page == "使用指引" {
+			if a.page == "代码图谱" {
+				a.codeDetail(c)
+			} else if a.page == "使用指引" {
 				a.guidanceDetail(c)
 			} else if a.page == "初始化" {
 				a.initializationDetail(c)

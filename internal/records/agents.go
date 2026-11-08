@@ -41,6 +41,9 @@ type AgentRequest struct {
 }
 
 type AgentArguments struct {
+	CodeMode            string               `json:"mode,omitempty"`
+	CodeNode            string               `json:"node,omitempty"`
+	CodeHops            int                  `json:"hops,omitempty"`
 	InitializationBatch string               `json:"batch_id,omitempty"`
 	InitializationItems []InitializationItem `json:"items,omitempty"`
 	Exposure            string               `json:"exposure_receipt,omitempty"`

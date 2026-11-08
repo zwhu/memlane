@@ -26,6 +26,7 @@ type Extraction struct {
 	Receipt  json.RawMessage
 }
 type ExtractOptions struct {
+	GuardExecutable                          string
 	Executable, Worktree, Directory, Dataset string
 	DenyReads                                []string
 }
@@ -84,12 +85,41 @@ func Extract(ctx context.Context, o ExtractOptions) (out Extraction, err error) 
 		if !filepath.IsAbs(p) {
 			return out, errors.New("absolute denied data path required")
 		}
+		canonical, e := filepath.EvalSymlinks(p)
+		if e != nil {
+			parent, e := filepath.EvalSymlinks(filepath.Dir(p))
+			if e != nil {
+				return out, e
+			}
+			canonical = filepath.Join(parent, filepath.Base(p))
+		}
+		p = canonical
 		profile += "(deny file-read* (subpath " + quote(p) + "))"
 	}
 	run := func(args ...string) ([]byte, error) {
 		limited, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(limited, "/usr/bin/sandbox-exec", append([]string{"-p", profile, o.Executable}, args...)...)
+		executable := "/usr/bin/sandbox-exec"
+		arguments := append([]string{"-p", profile, o.Executable}, args...)
+		var controlRead, controlWrite *os.File
+		if o.GuardExecutable != "" {
+			if !filepath.IsAbs(o.GuardExecutable) {
+				return nil, errors.New("absolute extractor guard required")
+			}
+			var e error
+			controlRead, controlWrite, e = os.Pipe()
+			if e != nil {
+				return nil, e
+			}
+			defer controlRead.Close()
+			defer controlWrite.Close()
+			arguments = append([]string{"--proposal-guard", executable}, arguments...)
+			executable = o.GuardExecutable
+		}
+		cmd := exec.CommandContext(limited, executable, arguments...)
+		if controlRead != nil {
+			cmd.ExtraFiles = []*os.File{controlRead}
+		}
 		cmd.Dir = shadow
 		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + home, "TMPDIR=" + o.Directory, "ENOLA_NO_UPDATE_CHECK=1", "ENOLA_NO_PROMPTS=1"}
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -104,7 +134,24 @@ func Extract(ctx context.Context, o ExtractOptions) (out Extraction, err error) 
 		stderr := &cappedOutput{limit: 1024 * 1024}
 		cmd.Stdout = stdout
 		cmd.Stderr = stderr
-		e := cmd.Run()
+		e := cmd.Start()
+		if controlRead != nil {
+			_ = controlRead.Close()
+		}
+		if e == nil {
+			if controlWrite != nil {
+				if e = limited.Err(); e == nil {
+					_, e = controlWrite.Write([]byte{'S'})
+				}
+				if e != nil {
+					_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				}
+			}
+			waitErr := cmd.Wait()
+			if e == nil {
+				e = waitErr
+			}
+		}
 		if cmd.Process != nil {
 			kill := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 			if kill != nil && kill != syscall.ESRCH {

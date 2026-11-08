@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/zwhu/memlane/internal/codegraph"
 	"github.com/zwhu/memlane/internal/engine"
 	"github.com/zwhu/memlane/internal/memory"
 	"github.com/zwhu/memlane/internal/records"
@@ -35,6 +36,11 @@ var MarkStopped = serviceipc.MarkStopped
 var writeJSON = serviceipc.WriteJSON
 
 type Server struct {
+	codeMu               sync.Mutex
+	codeCapture          func(context.Context, string, string) (codegraph.Manifest, error)
+	codeStopping         bool
+	codeRuns             map[string]context.CancelFunc
+	codeWake             chan struct{}
 	proposalGuard        string
 	scheduleFailure      string
 	organizerOnce        sync.Once
@@ -109,6 +115,9 @@ func Run(ctx context.Context, config Config) error {
 	if err = db.InterruptOrganizations(ctx); err != nil {
 		return err
 	}
+	if err = db.InterruptCode(ctx); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	guard, err := os.Executable()
@@ -116,6 +125,8 @@ func Run(ctx context.Context, config Config) error {
 		return err
 	}
 	s := &Server{proposalGuard: guard, organizationRuns: make(map[string]organizationOwner), lifecycle: ctx, mergeRuns: make(map[string]context.CancelFunc), config: config, store: db, state: state, status: "preparing", stop: cancel, wake: make(chan struct{}, 1), work: make(chan struct{}, 1), gate: make(chan struct{}, 1)}
+	s.codeRuns = make(map[string]context.CancelFunc)
+	s.codeWake = make(chan struct{}, 1)
 	path := SocketPath(config.Root)
 	dir := filepath.Dir(path)
 	if err = os.MkdirAll(dir, 0700); err != nil {
@@ -154,6 +165,8 @@ func Run(ctx context.Context, config Config) error {
 	go func() { defer close(workerDone); s.supervise(ctx) }()
 	schedulesDone := make(chan struct{})
 	go func() { defer close(schedulesDone); s.runSchedules(ctx) }()
+	codeDone := make(chan struct{})
+	go func() { defer close(codeDone); s.runCode(ctx) }()
 	for {
 		conn, e := listener.Accept()
 		if e != nil {
@@ -163,6 +176,7 @@ func Run(ctx context.Context, config Config) error {
 			cancel()
 			<-workerDone
 			<-schedulesDone
+			<-codeDone
 			handlers.Wait()
 			s.mergeWG.Wait()
 			s.organizationWG.Wait()
@@ -177,10 +191,14 @@ func Run(ctx context.Context, config Config) error {
 	}
 	<-workerDone
 	<-schedulesDone
+	<-codeDone
 	handlers.Wait()
 	s.mergeWG.Wait()
 	s.organizationWG.Wait()
 	if err = s.finalizeOrganizationShutdown(context.Background()); err != nil {
+		return err
+	}
+	if err = db.InterruptCode(context.Background()); err != nil {
 		return err
 	}
 	return db.InterruptMerges(context.Background())
@@ -359,6 +377,20 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 	}
 	svc := memory.Service{Store: s.store, Engine: selected}
 	switch r.Op {
+	case "code_list":
+		return s.store.Codes(operation)
+	case "code_jobs":
+		return s.store.CodeJobs(operation, r.CodeID)
+	case "code_action":
+		if !r.UserConfirmed || r.CodeAction == nil {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "enable, disable or refresh code graph explicitly in Memlane"}
+		}
+		return s.codeAction(operation, *r.CodeAction)
+	case "code_query":
+		if r.CodeQuery == nil {
+			return nil, &records.AccessError{Code: "invalid_request", Message: "typed code query required"}
+		}
+		return s.queryCode(operation, *r.CodeQuery)
 	case "schedules":
 		return s.store.Schedules(operation)
 	case "schedule_runs":
@@ -646,6 +678,8 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		}
 		return map[string]bool{"retry_requested": true}, nil
 	case "stop":
+		s.codeMu.Lock()
+		defer s.codeMu.Unlock()
 		s.mu.Lock()
 		if !s.state.Stopped {
 			s.state.StopGeneration++
@@ -662,9 +696,19 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		s.codeStopping = true
+		for _, cancel := range s.codeRuns {
+			cancel()
+		}
 		_ = s.store.CancelRecoveriesForStop(operation, cutoff, epoch)
 		return map[string]bool{"stopped": true}, nil
 	case "quiesce":
+		s.codeMu.Lock()
+		s.codeStopping = true
+		for _, cancel := range s.codeRuns {
+			cancel()
+		}
+		s.codeMu.Unlock()
 		return map[string]bool{"paused_for_update": true}, nil
 	default:
 		return nil, errors.New("unsupported service operation")

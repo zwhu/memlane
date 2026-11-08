@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/zwhu/memlane/internal/records"
 )
@@ -28,7 +29,11 @@ func repository(ctx context.Context, path string) (root, common string, err erro
 		if e != nil {
 			return "", access("workspace_unavailable", "workspace is not a readable Git repository")
 		}
-		return filepath.EvalSymlinks(strings.TrimSpace(string(out)))
+		path := strings.TrimSuffix(strings.TrimSuffix(string(out), "\n"), "\r")
+		if !filepath.IsAbs(path) || strings.IndexFunc(path, unicode.IsControl) >= 0 {
+			return "", access("workspace_unavailable", "invalid Git workspace path receipt")
+		}
+		return filepath.EvalSymlinks(path)
 	}
 	root, err = git("--show-toplevel")
 	if err != nil {

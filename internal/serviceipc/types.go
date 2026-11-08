@@ -15,12 +15,16 @@ import (
 )
 
 type Config struct {
-	Root         string        `json:"root"`
-	Worker       engine.Config `json:"worker"`
-	RetryDelayMS int           `json:"retry_delay_ms,omitempty"`
+	CodeExtractor string        `json:"code_extractor,omitempty"`
+	Root          string        `json:"root"`
+	Worker        engine.Config `json:"worker"`
+	RetryDelayMS  int           `json:"retry_delay_ms,omitempty"`
 }
 
 type Request struct {
+	CodeAction          *records.CodeAction          `json:"code_action,omitempty"`
+	CodeQuery           *records.CodeQuery           `json:"code_query,omitempty"`
+	CodeID              string                       `json:"code_id,omitempty"`
 	IDEVerification     *records.IDEVerification     `json:"ide_verification,omitempty"`
 	InitializationStart *records.InitializationStart `json:"initialization_start,omitempty"`
 	InitializationBatch string                       `json:"initialization_batch,omitempty"`

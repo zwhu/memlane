@@ -27,6 +27,7 @@ type RuntimeConfig struct {
 	ComponentPublicKey   string `json:"component_public_key"`
 	WorkerID             string `json:"worker_id"`
 	ModelID              string `json:"model_id"`
+	CodeExtractorID      string `json:"code_extractor_id,omitempty"`
 	ServicePlist         string `json:"service_plist"`
 	AllowLocalTestSource bool   `json:"allow_local_test_source,omitempty"`
 	UpdateManifestURL    string `json:"update_manifest_url,omitempty"`
@@ -117,7 +118,11 @@ func (r *RuntimeController) Prepare(ctx context.Context, notify func(RuntimeStat
 		}
 	}
 	selected := []components.Descriptor{}
-	for _, id := range []string{r.Config.WorkerID, r.Config.ModelID} {
+	required := []string{r.Config.WorkerID, r.Config.ModelID}
+	if r.Config.CodeExtractorID != "" {
+		required = append(required, r.Config.CodeExtractorID)
+	}
+	for _, id := range required {
 		found := false
 		for _, d := range feed.Components {
 			if d.ID == id {
@@ -137,6 +142,9 @@ func (r *RuntimeController) Prepare(ctx context.Context, notify func(RuntimeStat
 	report := notify
 	notify = func(status RuntimeStatus) {
 		status.EngineBytes, status.ModelBytes = selected[0].Bytes, selected[1].Bytes
+		if len(selected) > 2 {
+			status.EngineBytes += selected[2].Bytes
+		}
 		report(status)
 	}
 	installed := []components.Installed{}
@@ -157,7 +165,14 @@ func (r *RuntimeController) Prepare(ctx context.Context, notify func(RuntimeStat
 	service := serviceipc.Config{Root: filepath.Join(r.Config.Root, "data"), Worker: engine.Config{
 		Executable: filepath.Join(worker.Directory, worker.Metadata.Executable),
 		Library:    filepath.Join(worker.Directory, worker.Metadata.Library), ModelDir: model.Directory,
-		DataDir: filepath.Join(r.Config.Root, "data/index"), DenyNetwork: r.Config.AllowLocalTestSource}}
+		DataDir: filepath.Join(r.Config.Root, "data/index"), ExpectedVersion: worker.Metadata.Version, DenyNetwork: r.Config.AllowLocalTestSource}}
+	if len(installed) > 2 {
+		extractor := installed[2]
+		if worker.Metadata.Version != "0.0.2" || extractor.Metadata.ID != "enola-code" || extractor.Metadata.Version != "0.4.30-v351" {
+			return errors.New("incompatible code worker/extractor components")
+		}
+		service.CodeExtractor = filepath.Join(extractor.Directory, extractor.Metadata.Executable)
+	}
 	// Service settings contain paths and protocol data; original knowledge is
 	// held by the service's own database, never by this controller.
 	config, err := json.Marshal(service)

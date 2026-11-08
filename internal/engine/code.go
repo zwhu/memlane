@@ -46,7 +46,7 @@ func (c *Client) CodeBuild(ctx context.Context, g codegraph.Graph) (codegraph.Re
 		return out, closed
 	}
 	e = c.Call(ctx, "code_build", map[string]any{"dataset": g.Dataset, "code_import": id}, &out)
-	if e == nil && (out.Dataset != g.Dataset || out.Snapshot != g.Snapshot || out.SourceDigest != g.Manifest.Digest || out.Nodes != len(g.Nodes) || out.Edges != len(g.Edges) || out.Extractor != g.Extractor) {
+	if e == nil && (out.GraphDigest != uuid.NewSHA1(uuid.NameSpaceOID, data).String() || out.Dataset != g.Dataset || out.Snapshot != g.Snapshot || out.SourceDigest != g.Manifest.Digest || out.Nodes != len(g.Nodes) || out.Edges != len(g.Edges) || out.Extractor != g.Extractor) {
 		e = errors.New("code graph receipt mismatch")
 	}
 	return out, e

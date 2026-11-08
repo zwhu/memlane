@@ -222,7 +222,7 @@ func Run(ctx context.Context, d Discovery, i Installation, o RunOptions) (Execut
 			}
 		}
 		env = append(env, "PI_CODING_AGENT_DIR="+isolated)
-		arguments = []string{"--mode", "json", "--print", "--no-session", "--offline", "--no-extensions", "--no-context-files", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-builtin-tools", "--extension", i.ExtensionPath, "--tools", "memory_scopes,memory_search,memory_get,memory_save,memory_status,memory_adopt,memory_initialization_get,memory_initialization_status,memory_initialize"}
+		arguments = []string{"--mode", "json", "--print", "--no-session", "--offline", "--no-extensions", "--no-context-files", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-builtin-tools", "--extension", i.ExtensionPath, "--tools", "memory_scopes,memory_search,memory_get,memory_save,memory_status,memory_adopt,memory_initialization_get,memory_initialization_status,memory_initialize,memory_code_search"}
 		if o.Initialization {
 			for n := range arguments {
 				if n > 0 && arguments[n-1] == "--tools" {

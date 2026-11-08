@@ -19,7 +19,7 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 		return nil, &records.AccessError{Code: "protocol_mismatch", Message: "unsupported Agent protocol version"}
 	}
 	switch r.Tool {
-	case "memory_save", "memory_get", "memory_search", "memory_status", "memory_scopes", "memory_adopt", "memory_initialization_get", "memory_initialization_status", "memory_initialize":
+	case "memory_save", "memory_get", "memory_search", "memory_status", "memory_scopes", "memory_adopt", "memory_initialization_get", "memory_initialization_status", "memory_initialize", "memory_code_search":
 	default:
 		return nil, invalid("unknown memory tool")
 	}
@@ -81,6 +81,46 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 	}
 	var result any
 	switch r.Tool {
+	case "memory_code_search":
+		project := a.Scope
+		if project == "" {
+			project = c.ContextProject
+		}
+		allowed := false
+		for _, id := range scopes {
+			if id == project {
+				allowed = true
+				break
+			}
+		}
+		if !allowed || project == "" || r.Workspace == "" {
+			return nil, &records.AccessError{Code: "scope_required", Message: "code queries need a trusted workspace and an authorized project"}
+		}
+		workspace := r.Workspace
+		if project != c.ContextProject {
+			known, e := s.store.Scopes(ctx)
+			if e != nil {
+				return nil, e
+			}
+			workspace = ""
+			for _, scope := range known {
+				if scope.ID == project && scope.Kind == "project" {
+					workspace = scope.Path
+					break
+				}
+			}
+			if workspace == "" {
+				return nil, invalid("code scope must be a registered project")
+			}
+		}
+		state, e := s.store.CodeForWorkspace(ctx, project, workspace)
+		if e != nil {
+			return nil, e
+		}
+		result, e = s.queryCode(ctx, records.CodeQuery{ID: state.ID, Mode: a.CodeMode, Text: a.Query, Node: a.CodeNode, Limit: a.Limit, Hops: a.CodeHops})
+		if e != nil {
+			return nil, e
+		}
 	case "memory_initialization_get", "memory_initialization_status", "memory_initialize":
 		if a.InitializationBatch == "" {
 			return nil, invalid("batch_id required")

@@ -86,7 +86,7 @@ func isolatedRoot(root string) bool {
 		return true
 	}
 	fixture := filepath.Dir(root)
-	if filepath.Base(root) != "client" || !(strings.HasPrefix(filepath.Base(fixture), "memlane-p3-global-app-") || strings.HasPrefix(filepath.Base(fixture), "memlane-p3-usage-app-") || strings.HasPrefix(filepath.Base(fixture), "memlane-p3-onboarding-app-") || strings.HasPrefix(filepath.Base(fixture), "memlane-p3-agents-app-")) {
+	if filepath.Base(root) != "client" || !(strings.HasPrefix(filepath.Base(fixture), "memlane-p3-global-app-") || strings.HasPrefix(filepath.Base(fixture), "memlane-p3-usage-app-") || strings.HasPrefix(filepath.Base(fixture), "memlane-p3-onboarding-app-") || strings.HasPrefix(filepath.Base(fixture), "memlane-p3-agents-app-") || strings.HasPrefix(filepath.Base(fixture), "memlane-p3-code-app-")) {
 		return false
 	}
 	raw, err := os.ReadFile(filepath.Join(fixture, "source-info.json"))
@@ -97,5 +97,5 @@ func isolatedRoot(root string) bool {
 		Synthetic  bool   `json:"synthetic_only"`
 		Identifier string `json:"identifier"`
 	}
-	return json.Unmarshal(raw, &meta) == nil && meta.Synthetic && (strings.HasPrefix(meta.Identifier, "io.github.zwhu.memlane.global.") && strings.HasPrefix(filepath.Base(fixture), "memlane-p3-global-app-") || strings.HasPrefix(meta.Identifier, "io.github.zwhu.memlane.usage.") && strings.HasPrefix(filepath.Base(fixture), "memlane-p3-usage-app-") || strings.HasPrefix(meta.Identifier, "io.github.zwhu.memlane.onboarding.") && strings.HasPrefix(filepath.Base(fixture), "memlane-p3-onboarding-app-") || strings.HasPrefix(meta.Identifier, "io.github.zwhu.memlane.agents.") && strings.HasPrefix(filepath.Base(fixture), "memlane-p3-agents-app-"))
+	return json.Unmarshal(raw, &meta) == nil && meta.Synthetic && (strings.HasPrefix(meta.Identifier, "io.github.zwhu.memlane.global.") && strings.HasPrefix(filepath.Base(fixture), "memlane-p3-global-app-") || strings.HasPrefix(meta.Identifier, "io.github.zwhu.memlane.usage.") && strings.HasPrefix(filepath.Base(fixture), "memlane-p3-usage-app-") || strings.HasPrefix(meta.Identifier, "io.github.zwhu.memlane.onboarding.") && strings.HasPrefix(filepath.Base(fixture), "memlane-p3-onboarding-app-") || strings.HasPrefix(meta.Identifier, "io.github.zwhu.memlane.agents.") && strings.HasPrefix(filepath.Base(fixture), "memlane-p3-agents-app-") || strings.HasPrefix(meta.Identifier, "io.github.zwhu.memlane.code.") && strings.HasPrefix(filepath.Base(fixture), "memlane-p3-code-app-"))
 }

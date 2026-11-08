@@ -55,6 +55,7 @@ func displayHistory(vs []records.History) []MemoryHistory {
 // from replacing a newer selection or draft; read failures retain prior data.
 func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(func())) {
 	a.library = serviceipc.Library{Root: root}
+	a.code = CodeUI{Client: serviceipc.CodeClient{Root: root}, Mode: "函数与符号", Manage: true}
 	a.initialization = InitializationUI{Client: serviceipc.InitializationClient{Root: root}}
 	a.usageBrowseError = ""
 	a.usageImportantError = ""
@@ -67,6 +68,14 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 	a.libraryContext = ctx
 	a.dispatch = dispatch
 	a.onNavigate = func() {
+		if a.page != "代码图谱" && a.code.Cancel != nil {
+			a.code.Cancel()
+			a.code.Cancel = nil
+			a.code.Sequence++
+			a.code.Loading = false
+			a.code.Busy = false
+		}
+		a.refreshCode()
 		a.usageBrowseError = ""
 		a.usageImportantError = ""
 		a.usageNavigation = uuid.NewString()
@@ -103,6 +112,9 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 				return
 			case <-ticker.C:
 				dispatch(func() {
+					if a.page == "代码图谱" && !a.code.Busy {
+						a.refreshCode()
+					}
 					if a.page == "初始化" || a.page == "使用指引" {
 						a.refreshInitialization()
 					}
