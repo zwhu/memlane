@@ -896,7 +896,7 @@ func (a *App) emptyTitle() string {
 func (a *App) pageDescription() string {
 	switch a.page {
 	case "Agent":
-		return "选择已发现的 Codex 或 pi，连接并管理允许访问的项目。"
+		return "选择已发现的 Codex、pi 或 TRAE CLI，连接并管理允许访问的项目。"
 	case "整理记录":
 		return "选择同一项目内两条知识生成建议，确认后合并并保留来源与历史。"
 	case "项目":

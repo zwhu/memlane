@@ -19,6 +19,8 @@ import (
 	"github.com/zwhu/memlane/internal/records"
 )
 
+func projectMCPAgent(agent string) bool { return agent == "codex" || agent == "traex" }
+
 //go:embed pi-extension.ts
 var piExtension string
 
@@ -34,6 +36,7 @@ type InstallOptions struct {
 
 type Installation struct {
 	ToolsetVersion     int                `json:"toolset_version,omitempty"`
+	AgentChannel       string             `json:"agent_channel,omitempty"`
 	AgentVersion       string             `json:"agent_version,omitempty"`
 	Connection         records.Connection `json:"connection"`
 	Options            InstallOptions     `json:"options"`
@@ -74,7 +77,7 @@ func CheckInstallation(i Installation) error {
 	if err != nil {
 		return err
 	}
-	if i.Connection.Agent == "codex" {
+	if projectMCPAgent(i.Connection.Agent) {
 		if i.Block == "" {
 			return errors.New("Memlane 配置回执不完整，请重新连接")
 		}
@@ -194,8 +197,8 @@ func validateOptions(c records.Connection, o InstallOptions) error {
 			return errors.New("bridge or Agent executable is unavailable")
 		}
 	}
-	if c.Agent == "codex" && !filepath.IsAbs(o.Workspace) {
-		return errors.New("Codex requires a selected project workspace")
+	if projectMCPAgent(c.Agent) && !filepath.IsAbs(o.Workspace) {
+		return errors.New("MCP CLI requires a selected project workspace")
 	}
 	if c.Agent == "pi" && !filepath.IsAbs(o.PiDirectory) {
 		return errors.New("pi configuration directory required")
@@ -220,11 +223,12 @@ func Install(ctx context.Context, c records.Connection, o InstallOptions) (resul
 	if priorErr != nil && !os.IsNotExist(priorErr) {
 		return Installation{}, priorErr
 	}
-	if priorErr == nil && (prior.Connection.Agent != c.Agent || (c.Agent == "codex" && prior.Options.Workspace != o.Workspace) || prior.Options.PiDirectory != o.PiDirectory) {
+	if priorErr == nil && (prior.Connection.Agent != c.Agent || (projectMCPAgent(c.Agent) && prior.Options.Workspace != o.Workspace) || prior.Options.PiDirectory != o.PiDirectory) {
 		return Installation{}, errors.New("disconnect before changing Agent configuration location")
 	}
 	i := Installation{Connection: c, Options: o, ToolsetVersion: 2}
 	i.AgentVersion = probe.Version
+	i.AgentChannel = probe.Channel
 	var content []byte
 	var originalConfig []byte
 	type edited struct {
@@ -265,8 +269,11 @@ func Install(ctx context.Context, c records.Connection, o InstallOptions) (resul
 	}()
 	var mode os.FileMode
 	var err error
-	if c.Agent == "codex" {
+	if projectMCPAgent(c.Agent) {
 		i.ConfigPath = filepath.Join(o.Workspace, ".codex/config.toml")
+		if c.Agent == "traex" {
+			i.ConfigPath = filepath.Join(o.Workspace, ".trae/traecli.toml")
+		}
 		if target, e := filepath.EvalSymlinks(i.ConfigPath); e == nil {
 			i.ConfigPath = target
 		}
@@ -277,11 +284,11 @@ func Install(ctx context.Context, c records.Connection, o InstallOptions) (resul
 		originalConfig = content
 		var parsed map[string]any
 		if err = toml.Unmarshal(content, &parsed); err != nil {
-			return i, errors.New("Codex config.toml is invalid; configuration preserved")
+			return i, errors.New("Agent project TOML is invalid; configuration preserved")
 		}
 		if priorErr == nil {
 			if !bytes.Contains(content, []byte(prior.Block)) {
-				return i, errors.New("Memlane Codex entry was changed externally; configuration preserved")
+				return i, errors.New("Memlane MCP entry was changed externally; configuration preserved")
 			}
 			content = bytes.Replace(content, []byte(prior.Block), nil, 1)
 		} else if servers, ok := parsed["mcp_servers"].(map[string]any); ok && servers["memlane"] != nil {
@@ -295,7 +302,7 @@ func Install(ctx context.Context, c records.Connection, o InstallOptions) (resul
 		i.Block = fmt.Sprintf("\n# Memlane %s begin\n[mcp_servers.memlane]\ncommand = %s\nargs = %s\n[mcp_servers.memlane.tools.memory_save]\napproval_mode = \"approve\"\n# Memlane %s end\n", c.ID, command, arguments, c.ID)
 		content = append(content, []byte(i.Block)...)
 		if err = toml.Unmarshal(content, &parsed); err != nil {
-			return i, errors.New("Memlane configuration would conflict with Codex TOML; original preserved")
+			return i, errors.New("Memlane configuration would conflict with Agent TOML; original preserved")
 		}
 	} else if c.Agent == "pi" {
 		i.ConfigPath = filepath.Join(o.PiDirectory, "settings.json")
@@ -393,9 +400,9 @@ func Uninstall(ctx context.Context, root, id string) error {
 		return err
 	}
 	originalConfig := content
-	if i.Connection.Agent == "codex" {
+	if projectMCPAgent(i.Connection.Agent) {
 		if !bytes.Contains(content, []byte(i.Block)) {
-			return errors.New("Memlane Codex entry changed externally; configuration preserved")
+			return errors.New("Memlane MCP entry changed externally; configuration preserved")
 		}
 		content = bytes.Replace(content, []byte(i.Block), nil, 1)
 	} else {

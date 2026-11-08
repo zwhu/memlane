@@ -18,6 +18,7 @@ type Discovery struct {
 	Path     string `json:"path,omitempty"`
 	Version  string `json:"version,omitempty"`
 	Protocol string `json:"protocol,omitempty"`
+	Channel  string `json:"channel,omitempty"`
 	Error    string `json:"error,omitempty"`
 }
 
@@ -33,10 +34,12 @@ func Discover(ctx context.Context, home string, selected map[string]string) []Di
 		}
 	}
 	results := []Discovery{}
-	for _, agent := range []string{"codex", "pi"} {
+	for _, agent := range []string{"codex", "pi", "traex"} {
 		name := agent
 		if agent == "codex" {
 			name = "Codex"
+		} else if agent == "traex" {
+			name = "TRAE CLI"
 		}
 		if chosen := selected[agent]; chosen != "" {
 			results = append(results, Probe(ctx, agent, chosen))
@@ -48,7 +51,11 @@ func Discover(ctx context.Context, home string, selected map[string]string) []Di
 		}
 		for _, dir := range paths {
 			if filepath.IsAbs(dir) {
-				pathsForAgent = append(pathsForAgent, filepath.Join(dir, agent))
+				if agent == "traex" {
+					pathsForAgent = append(pathsForAgent, filepath.Join(dir, "traecli"), filepath.Join(dir, "traex"))
+				} else {
+					pathsForAgent = append(pathsForAgent, filepath.Join(dir, agent))
+				}
 			}
 		}
 		if agent == "codex" {
@@ -70,6 +77,8 @@ func Probe(ctx context.Context, agent, path string) Discovery {
 	name := agent
 	if agent == "codex" {
 		name = "Codex"
+	} else if agent == "traex" {
+		name = "TRAE CLI"
 	}
 	out := Discovery{Agent: agent, Name: name, Path: path}
 	if !filepath.IsAbs(path) {
@@ -82,7 +91,7 @@ func Probe(ctx context.Context, agent, path string) Discovery {
 		return out
 	}
 	defer os.RemoveAll(isolated)
-	env := append(os.Environ(), "PATH="+filepath.Dir(path)+":"+os.Getenv("PATH"), "CODEX_HOME="+filepath.Join(isolated, "codex"), "PI_CODING_AGENT_DIR="+filepath.Join(isolated, "pi"), "PI_OFFLINE=1", "PI_TELEMETRY=0")
+	env := append(os.Environ(), "PATH="+filepath.Dir(path)+":"+os.Getenv("PATH"), "CODEX_HOME="+filepath.Join(isolated, "codex"), "PI_CODING_AGENT_DIR="+filepath.Join(isolated, "pi"), "PI_OFFLINE=1", "PI_TELEMETRY=0", "TRAE_HOME="+filepath.Join(isolated, "trae"), "TRAECLI_HOME="+filepath.Join(isolated, "trae/cli"))
 	command := func(args ...string) (string, error) {
 		run, stop := context.WithTimeout(ctx, 5*time.Second)
 		defer stop()
@@ -101,7 +110,15 @@ func Probe(ctx context.Context, agent, path string) Discovery {
 		return out
 	}
 	out.Version = strings.TrimSpace(version)
-	if agent == "codex" {
+	if agent == "traex" {
+		for _, line := range strings.Split(version, "\n") {
+			if strings.HasPrefix(line, "installation: ") {
+				out.Channel = strings.TrimSpace(strings.TrimPrefix(line, "installation: "))
+			}
+		}
+		out.Version = strings.TrimSpace(strings.Split(version, "\n")[0])
+	}
+	if projectMCPAgent(agent) {
 		help, e := command("mcp", "add", "--help")
 		if e == nil && strings.Contains(help, "--url") && strings.Contains(help, "COMMAND") {
 			out.Protocol = "mcp"

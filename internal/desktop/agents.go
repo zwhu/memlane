@@ -120,6 +120,7 @@ func (a *App) selectedAgent() (agents.Discovery, *records.Connection) {
 			if connection != nil {
 				if i, ok := a.agents.Installs[connection.ID]; ok {
 					d.Path = i.Options.AgentPath
+					d.Channel = i.AgentChannel
 					if i.AgentVersion != "" {
 						d.Version = i.AgentVersion
 					}
@@ -287,13 +288,16 @@ func (a *App) agentDetail(c *ui.Context) {
 		})
 		ui.Text(c, description).FontSize(design.Small).LineHeight(1.7).TextColor(design.Muted)
 		meta(c, "版本", d.Version)
+		if d.Channel != "" {
+			meta(c, "渠道", d.Channel)
+		}
 		ui.TextInput(c.Key("agent-path"), &s.Path).Label("Agent 路径").Placeholder("可执行文件的绝对路径").Disabled(s.Busy || conn != nil)
 		if conn == nil {
 			quietButton(c.Key("probe-agent"), "检查所选路径").Disabled(s.Busy || s.Path == "").OnClick(a.probeAgentPath)
 		}
 		ui.Divider(c)
 		ui.Text(c, "项目与检索范围").Bold()
-		ui.Select(c.Key("agent-project"), &s.ProjectLabel, a.agentProjectOptions()).Label("连接项目").Disabled(s.Busy || (conn != nil && d.Agent == "codex")).OnChange(func() {
+		ui.Select(c.Key("agent-project"), &s.ProjectLabel, a.agentProjectOptions()).Label("连接项目").Disabled(s.Busy || (conn != nil && d.Agent != "pi")).OnChange(func() {
 			s.Project = ""
 			for _, p := range a.projects {
 				if a.scopeLabel(p.ID) == s.ProjectLabel {
@@ -303,11 +307,11 @@ func (a *App) agentDetail(c *ui.Context) {
 				}
 			}
 		})
-		ui.TextInput(c.Key("agent-workspace"), &s.Workspace).Label("工作区路径").Placeholder("所选仓库或 worktree 的绝对路径").Disabled(s.Busy || (conn != nil && d.Agent == "codex"))
+		ui.TextInput(c.Key("agent-workspace"), &s.Workspace).Label("工作区路径").Placeholder("所选仓库或 worktree 的绝对路径").Disabled(s.Busy || (conn != nil && d.Agent != "pi"))
 		if d.Agent == "pi" {
 			ui.Text(c, "pi 使用当前会话项目。这里选择验证项目，并授权它可以访问的范围。").FontSize(design.Small).TextColor(design.Muted)
 		} else {
-			ui.Text(c, "Codex 使用所选项目的配置；worktree 共用该仓库记忆。").FontSize(design.Small).TextColor(design.Muted)
+			ui.Text(c, "MCP CLI 使用所选项目的配置；worktree 共用该仓库记忆。").FontSize(design.Small).TextColor(design.Muted)
 		}
 		for _, scope := range a.scopes {
 			if scope.Kind != "project" && scope.Kind != "preference" && scope.Kind != "experience" {
@@ -343,13 +347,13 @@ func (a *App) agentDetail(c *ui.Context) {
 				}
 			}
 		}
-		if d.Agent == "pi" {
-			ui.Text(c, "验证模型（留空使用 Agent 默认模型）").FontSize(design.Small).TextColor(design.Muted)
-			ui.Row(c).Gap(8).Children(func() {
+		ui.Text(c, "验证模型（留空使用 Agent 默认模型）").FontSize(design.Small).TextColor(design.Muted)
+		ui.Row(c).Gap(8).Children(func() {
+			if d.Agent == "pi" {
 				ui.TextInput(c.Key("agent-provider"), &s.Provider).Placeholder("provider").Grow(1).Disabled(s.Busy)
-				ui.TextInput(c.Key("agent-model"), &s.Model).Placeholder("model").Grow(1).Disabled(s.Busy)
-			})
-		}
+			}
+			ui.TextInput(c.Key("agent-model"), &s.Model).Placeholder("model").Grow(1).Disabled(s.Busy)
+		})
 		ui.Divider(c)
 		ui.Text(c, "初始化记忆库").Bold()
 		ui.Text(c, "选择少量项目文件后复制prompt，实际提交与索引状态由初始化记录显示。").FontSize(design.Small).TextColor(design.Muted)
@@ -410,7 +414,7 @@ func (a *App) connectAgent() {
 	if prior != nil {
 		draft.ID = prior.ID
 	}
-	if d.Agent == "codex" {
+	if d.Agent != "pi" {
 		draft.Project = s.Project
 	}
 	project := s.Project
@@ -517,7 +521,7 @@ func (a *App) verifyAgent() {
 	s.Cancel = cancel
 	s.Busy = true
 	s.Notice = "正在让真实 Agent 验证读写…"
-	options := agents.RunOptions{Prompt: prompt, Provider: s.Provider, Model: s.Model, PiAuthDirectory: os.Getenv("MEMLANE_PI_AUTH_DIRECTORY")}
+	options := agents.RunOptions{Prompt: prompt, Provider: s.Provider, Model: s.Model, PiAuthDirectory: os.Getenv("MEMLANE_PI_AUTH_DIRECTORY"), TraeAuthHome: os.Getenv("MEMLANE_TRAE_AUTH_DIRECTORY")}
 	go func() {
 		defer cancel()
 		execution, err := agents.Run(ctx, d, i, options)

@@ -189,3 +189,7 @@ schema10的采集起点、三类日常事件、App/连接验证分通道、重�
 ## P3-I 可选指引与初始化本机验收
 
 schema11只新增实际批次；冻结批准文件的路径/SHA/原文与稳定来源引用，原子新增/活动/回执/索引，复制prompt不等于成功。真实App/pi0.84.1仅初始化三工具保存两条，Rust当前v1与实际活动取消/重启通过；重复/错误摘录/变化/代次/工作区夹具、v10非空WAL全表保留、明确Rust路径写失败恢复、完整包/系统窗口和分组审查见 [I验证](p3-onboarding-validation.md)。A/R/G/F继续，正式分发外部证据缺失，总Goal未完成。
+
+## P3-A1a traex日常接入
+
+实际traecli0.214.1 internal的项目MCP、App真实验证/初始化/Rust、六工具和目标采用重放、活动保存后取消/重验/断开已通过；模型选择/渠道来自实际安装，SelectedModel与未知actual model分开。新Agent使用现有schema11/protocol1，不扩表。OS/协议夹具、原驱动异步断开assert失败与无模型完整补验、首次包路径helper超时未解决F1分别见 [A验证](p3-agent-validation.md)。A1b Codex新工具、A2 IDE、R/G/F继续，总Goal未完成。

@@ -421,3 +421,11 @@ MEMLANE_C3_QUALITY_REAL=1 sh scripts/go.sh test -json ./internal/agents -run '^T
 契约见 [I契约](p3-onboarding-contract.md)，证据/故障分界见 [I验证](p3-onboarding-validation.md)。`python3 scripts/create-p3-onboarding-fixture.py`新建合成Git/来源及独立root，只复用已通过的组件缓存。以source-info.json标记identifier和runtime-config.json构建独立automation App后运行 `python3 scripts/verify-p3-onboarding-app.py`；真实App连接/验证、来源批次/pi提交/Rust检索和活动取消，使用Agent自己的认证与已选模型，无模型协议错误检查单列。`python3 scripts/verify-p3-onboarding-fault-app.py`只复用主流程passed且停服的根，以普通文件阻断新Rust dataset；协议导入明确不是模型，App实际展示保存保留/索引失败，移除夹具重启检索同v1/回执。
 
 最终展示补验 `python3 scripts/verify-p3-onboarding-display.py`核对当前根故障回执/导入统计/导入v1与历史，不调用模型。生产包使用 `python3 scripts/build-client.py --out build/p3-onboarding-production-sealed`；最后实际包与测量路径见final-checks.json。测试/静态检查/race沿用本页Go命令。门禁/清理只影响source-info标记的隔离bundle与精确PID，禁止传生产root或日常Agent配置。旧toolset0接入需重新连接/重载/真实验证才可准备初始化。阶段临时handoff用既有通用脚本，生成后继续A/R/G/F。
+
+## P3-A1a traex 日常验收
+
+[A契约](p3-agent-contract.md)与[A验证](p3-agent-validation.md)区分A1a当前CLI与A1b新Codex工具、A2 IDE/R RPC待完成。`python3 scripts/create-p3-agents-fixture.py`新建标记合成根；按该根runtime-config/source-info构建独立MemlaneAgents automation App。`verify-p3-agents-preflight-app.py`仅实际App连接/增量配置和无模型上下文；`verify-p3-agent-inspection.py`测试项目标量模型优先并绑定当前根/连接代次/实际CLI版本和inspection hash，debug不当作完整exec等价证明。
+
+`verify-p3-traex-real-tools.py`通过当前helper实际运行CLI六工具，保存/get/检索和采用两次回执绑定同一目标。`verify-p3-traex-app.py`实际App验证/初始化/代次重载/实际保存后的取消/再验证/断开；断开必须等服务撤销、metadata删除、原TOML及完整UI回执。历史末尾过早assert失败保留，并由`verify-p3-traex-disconnect.py`实际无模型配置补验闭合。`verify-p3-traex-scope-contract.py`是明确私有IPC范围/工作区/代次/撤销故障夹具，不替代模型正常或取消。
+
+所有脚本仅绑定source-info标记根/包与合成项目。`repro-p3-helper-startup.py`只诊断隔离helper启动，当前同包重试通过不代表F1首次换路径问题修复。生产完整包 `python3 scripts/build-client.py --out build/p3-agents-production`；最终实际结果、checks/review/体积/推送/handoff在该阶段build产物，生成handoff后继续总交付。

@@ -6,13 +6,12 @@ import unicodedata
 from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
-files = [ROOT / 'docs' / name for name in (
-	'p3-usage-contract.md', 'p3-usage-validation.md',
-	'p3-recovery-contract.md', 'p3-recovery-validation.md',
-	'p3-schedule-contract.md', 'p3-schedule-validation.md', 'product.md',
-	'p3-global-contract.md', 'p3-global-validation.md',
-    'p3-delivery-plan.md', 'p3-organization-contract.md', 'p3-c3-validation.md', 'p3-c4-contract.md', 'p3-c4-validation.md', 'p3-c2-contract.md', 'p3-c2-validation.md', 'p3-validation.md', 'implementation-plan.md', 'technical-plan.md', 'development.md', 'p3-product-design.md',
-    'p3-interaction-design.md', 'p3-technical-analysis.md', 'p3-architecture.md', 'research-p3-memory.md')]
+# Discover stage contracts instead of maintaining a list that misses new slices.
+docs = ROOT / 'docs'
+files = sorted(set(docs.glob('p3-*.md')) | set(docs.glob('p4-*.md')) | {
+    docs / name for name in ('product.md', 'implementation-plan.md',
+        'technical-plan.md', 'development.md', 'research-p3-memory.md')
+})
 
 def headings(path):
     seen = {}

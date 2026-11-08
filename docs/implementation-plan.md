@@ -265,3 +265,14 @@
 - [x] 明确Rust路径故障夹具，App保存保留/索引失败和恢复同v1/回执；分组审查、test/vet/race、完整轻量包与系统截图。
 
 见 [I验证](p3-onboarding-validation.md)。pi初始化只标0.84.1已通过；Codex新初始化/采用真实模型、TRAE/traex日常、piRPC、代码图谱与正式分发继续A/R/G/F，总Goal未完成。
+
+### P3-A1a traex 日常接入：本机已通过
+
+- [x] 实际CLI0.214.1 internal发现/路径/版本/渠道，所选项目增量MCP区块、备份、重载代次和完整断开。
+- [x] 真实六工具及精确目标v1/来源、两次采用同回执/1事件、真实App验证和初始化三工具/Rust。
+- [x] 实际raw保存后的活动取消、重新验证、旧代次拒绝，私有IPC范围/工作区/撤销门禁和OS后代持pipe故障夹具。
+- [x] 项目标量模型优先，受信配置/认证隔离、进程组/有界退出；实际系统图、受影响checks/review和完整轻量包。
+- [ ] A1b Codex新增采用/初始化工具实际模型验收；保留P2普通接入通过边界。
+- [ ] A2 TRAE IDE独立版本/渠道、配置/实际重载与日常工具；不把CLI通过当IDE通过。
+
+证据见 [A验证](p3-agent-validation.md)。A1a首次同identity换路径的helper启动超时仍留F1未解决。R/G/F继续，总Goal未完成。

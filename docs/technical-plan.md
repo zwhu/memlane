@@ -295,3 +295,9 @@ schema10在一致性v9备份后仅增加实际usage_operations/events/coverage�
 schema11在v10一致性备份后增量保存initialization_batches，包含冻结文件/路径/SHA/text、operation/digest、连接代次/工作区/状态及稳定导入回执。文件读取不持SQLite事务，descriptor-relative openat/NOFOLLOW/CLOEXEC限制批准根。新增版本/引用/操作/索引/导入活动一次短事务；整批稳定ID冲突回滚，收到回执优先重放，慢源读取错误不覆盖并发已提交事实。具体资源上限/错误/取消/恢复见 [I契约](p3-onboarding-contract.md)。
 
 App指引只持隐藏偏好，实际组件/项目/Agent状态持续刷新。准备并复制只生成pending，三个批次工具由daemon校验scope/generation/workspace；初始化模式无普通保存/批准/文件/命令工具。pi Extension显式筛选；Codex MCP用argv传tool-mode，避免env_clear丢失模式。真实pi/Rust/App及索引故障恢复见 [I验证](p3-onboarding-validation.md)。通道toolset_version2需要旧接入重新连接/重载/实际验证，旧日常协议1保持兼容；Codex新增模型验收与TRAE/traex/piRPC继续A/R。
+
+## A1a traex 日常适配（2026-11-08）
+
+traex/traecli0.214.1 internal日常MCP复用schema11/protocol1业务契约，connections Agent字符串不扩表；所选项目`.trae/traecli.toml`增量区块/备份/外部改动门禁/撤销复用既有Codex配置模块。版本与渠道由实际Probe记录到Installation，连接详情从该安装读取；未知旧channel不沿用其他路径的发现值。共享与项目标量模型选择按优先级读取，自定义provider默认路径明确拒绝，认证只由CLI读取自身auth链接。CLI临时运行仅Memlane MCP/受限工具，实际GET/保存/返回/采用和初始化三工具按原受信栅栏处理；验证进程独立组与有界管道退出，结果区别SelectedModel和未报告的Model。
+
+真实App按钮/traex六工具/初始化/Rust、实际活动取消/重验/断开与OS/协议夹具见 [A验证](p3-agent-validation.md)。第一次同identity换包路径启动超时仍留F1；Codex新工具、TRAE IDE和piRPC继续独立验收，不能从CLI推断IDE支持。

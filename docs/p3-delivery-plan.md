@@ -23,7 +23,7 @@
 | D2 attempt 与恢复 | D1 | 拥有权/租约、有限重试退避错误分类、取消/停服/崩溃/重启栅栏、迟到拒绝、部分提交与重复事实门禁 | build/p3-recovery/、build/p3-recovery-d2b/ | D2a/D2b本机验收已通过，见 [D2 验证](p3-recovery-validation.md) |
 | U 使用记录与排序 | 日常 Agent / App 入口 | 成功读取/检索返回/明确采用分开，App/后台/验证分开，起点/去重/保留真实，最近更新/常用/重要解释；未知不补造 | build/p3-usage/ | 已通过，见 [U验证](p3-usage-validation.md) |
 | I 引导与初始化 | 组件/项目/连接实际回执 | 可跳过恢复、复制 prompt、真实批次/稳定 ID/来源/最小提交/取消/重放、导入与新增分开 | build/p3-onboarding/ | 本机已通过，见 [I验证](p3-onboarding-validation.md) |
-| A TRAE / traex 日常接入 | P2 受控记忆桥 | 按安装版本渠道探测、App 连接、隔离配置增量备份/重载/断开、真实保存读取搜索来源版本、scope/generation/workspace | build/p3-agents/ | 待实现 |
+| A TRAE / traex 日常接入 | P2 受控记忆桥 | 按安装版本渠道探测、App 连接、隔离配置增量备份/重载/断开、真实保存读取搜索来源版本、scope/generation/workspace | build/p3-agents/ | A1a traex本机通过；A1b Codex新工具/A2 IDE待验证，见 [A验证](p3-agent-validation.md) |
 | R pi RPC 后台 | 固定本机包、纯建议 runner | 接受/终态区分、真实正常与取消、隔离与生命周期、仅验收版本列支持 | build/p3-pi-rpc/ | 待实现 |
 | G1 Rust 代码图谱 | 固定源码及抽取实验、开启授权 | 独立 code dataset / worktree / commit / snapshot，函数文件调用依赖影响查询，App 与受控 Agent 入口，明确实际输出路径 | build/p4-code/ | 待实现 |
 | G2 图谱更新与组件 | G1 | 未开启不扫描、忽略/删除/重命名/合并更新、旧图排除/过期/失败/重启隔离；真实 TS/Python 支持样本与 worker 包 | build/p4-code/ | 待实现 |
