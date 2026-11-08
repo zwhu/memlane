@@ -4,6 +4,7 @@
 
 - 开始工作前阅读 [产品定义](docs/product.md) 和 [设计决策](docs/design.md)，以已确认的产品规则为准。
 - UI 重设计开发先读 [设计交接入口](docs/ui-redesign/README.md)；A01–A04 按 [已认可的环境安装设计契约](docs/ui-redesign/a-environment.md) 与截图实现。确认和安装进度同页，组件卡片内显示进度，主按钮为「安装并继续」；A05–A10 与 B 后续稿尚未在本轮认可，不得把示例下载数字或原型状态当成真实结果。
+- Agent 连接按 [电脑级配置规则](docs/ui-redesign/agent-connection-contract.md)：先将 Memlane 配置到当前电脑的编码 Agent，连接不以项目、工作目录或首任务模型为前置条件；项目/任务范围另行确认。现有项目级适配不能被描述为电脑级配置已实现。
 - 开发或验收 UI 前，实际打开 [首页设计图](docs/images/home.jpg) 和 [三栏详情设计图](docs/images/memory-detail.jpg)，不能只读 Markdown 图片路径。完成后对照实际窗口截图；工具无法看图时明确视觉验收未完成。
 - 实现依据 [技术方案](docs/technical-plan.md) 与 [实施清单](docs/implementation-plan.md)；区分已选框架、待验证依赖和已通过的验收。
 - 文档默认中文。区分已实现、原型演示与待验证能力，不将示例状态描述为真实接入结果。
