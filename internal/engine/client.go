@@ -59,6 +59,7 @@ type Client struct {
 	closeOnce  sync.Once
 	config     Config
 	Generation string
+	CodeRecipe string
 	diagnostic boundedLog
 }
 
@@ -127,6 +128,7 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 		Version    string `json:"worker_version"`
 		Ready      bool   `json:"ready"`
 		Generation string `json:"generation"`
+		CodeRecipe string `json:"code_recipe"`
 	}
 	if err = c.Call(ctx, "handshake", nil, &handshake); err != nil {
 		c.Close()
@@ -136,6 +138,7 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 		c.Close()
 		return nil, errors.New("worker handshake mismatch")
 	}
+	c.CodeRecipe = handshake.CodeRecipe
 	return c, nil
 }
 

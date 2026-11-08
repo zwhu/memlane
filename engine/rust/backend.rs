@@ -60,6 +60,7 @@ pub struct Backend {
 }
 
 impl Backend {
+    pub fn code_root(&self) -> &Path { &self.root }
     pub fn new(root: PathBuf, model: &Path) -> Result<Self> {
         let recipe: Recipe = serde_json::from_str(&std::fs::read_to_string(model.join("recipe.json"))?)?;
         if recipe.batch_size == 0 || recipe.chunk_tokens == 0

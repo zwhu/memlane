@@ -34,6 +34,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--python-source", action="store_true")
+    parser.add_argument("--out", type=Path, help="explicit report path for a new component validation")
     args = parser.parse_args()
     if not args.archive and not args.python_source:parser.error("archive or python source required")
     corpus = load("raw_corpus", ROOT / "scripts/verify-index.py")
@@ -103,7 +104,9 @@ def main():
         finally:
             if session:session.close()
     report["peak_child_rss_bytes"]=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-    (ROOT / ("build/p0-engine/python-source-corpus.json" if args.python_source else "build/p0-engine/python-worker-corpus.json")).write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n")
+    output = args.out or ROOT / ("build/p0-engine/python-source-corpus.json" if args.python_source else "build/p0-engine/python-worker-corpus.json")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n")
     print(json.dumps(report,ensure_ascii=False,indent=2))
     if report["status"]!="passed":raise SystemExit(1)
 

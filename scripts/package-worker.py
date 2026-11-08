@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Build a deterministic, relocatable raw Cognee worker component; excludes models."""
+"""Build the 0.0.2 raw/code Cognee worker component; excludes models and extractor."""
+import argparse
 import gzip
 import hashlib
 import io
@@ -21,6 +22,9 @@ def digest(path):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--out", type=Path, default=ROOT / "build/p4-code-component")
+    args = parser.parse_args()
     files = {
         "memlane-cognee-worker": ROOT / ".cache/cognee-target/release/memlane-cognee-worker",
         "libonnxruntime.1.28.0.dylib": RUNTIME / "lib/libonnxruntime.1.28.0.dylib",
@@ -29,17 +33,18 @@ def main():
         "LICENSE.onnxruntime": RUNTIME / "LICENSE",
         "ThirdPartyNotices.onnxruntime.txt": RUNTIME / "ThirdPartyNotices.txt",
     }
-    manifest = {"id": "cognee-rust", "version": "0.0.1", "platform": "darwin-arm64",
+    manifest = {"id": "cognee-rust", "version": "0.0.2", "platform": "darwin-arm64",
                 "protocol_min": 1, "protocol_max": 1, "executable": "memlane-cognee-worker",
                 "library": "libonnxruntime.1.28.0.dylib", "model": "multilingual-e5-base-int8",
                 "engine_commit": "151905c302fc9b5b9aad88d6b13931c09f0eac30",
                 "adapter_patch_sha256": "c73d00e0f09c0ef481fb0c1422be98206dcabafea14c10e0ed6d9ddf98292e89",
-                "capabilities": ["raw_index", "raw_search", "remove", "cancel", "timeout"],
+                "capabilities": ["raw_index", "raw_search", "remove", "cancel", "timeout", "code_build", "code_query"],
+                "code_recipe": "enola-0.4.30-v351",
                 "files": [{"path": name, "bytes": path.stat().st_size, "sha256": digest(path)} for name, path in files.items()]}
     data = (json.dumps(manifest, indent=2)+"\n").encode()
-    out = ROOT / "build/p0-engine"
+    out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
-    archive = out / "memlane-cognee-rust-0.0.1-darwin-arm64.tar.gz"
+    archive = out / "memlane-cognee-rust-0.0.2-darwin-arm64.tar.gz"
     with archive.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, filename="", compresslevel=9) as compressed:
         with tarfile.open(fileobj=compressed, mode="w") as tar:
             for name, path in files.items():
@@ -51,7 +56,7 @@ def main():
             info = tarfile.TarInfo("component.json")
             info.size = len(data); info.mode = 0o644
             tar.addfile(info, io.BytesIO(data))
-    report = {"archive": str(archive.relative_to(ROOT)), "archive_bytes": archive.stat().st_size,
+    report = {"archive": str(archive), "archive_bytes": archive.stat().st_size,
               "unpacked_file_bytes": sum(x["bytes"] for x in manifest["files"])+len(data),
               "sha256": digest(archive), "component": manifest,
               "models_included": False, "developer_id_notarization": "not configured"}

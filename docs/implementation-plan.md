@@ -184,6 +184,8 @@
 
 ## P4：代码图谱、其余 Agent 与可安装版本
 
+2026-11-08 G0 固定 Enola→Rust Ladybug底座和独立0.0.2 worker通过，TS/Python精确调用/导入/来源、重启、更新快照及原文9/9回归有真实证据，见 [G验证](p4-code-validation.md)。App手动开启/三栏、日常Agent、持久任务/current、自动更新和抽取组件仍继续G1/G2；下方完整代码图谱项保持未完成。
+
 - [ ] Native辅助功能增强：VoiceOver实际听读、导航与编辑；本轮尝试未通过，按用户最新要求停止，未列为P0主流程完成门槛。NSAccessibility暴露不等于朗读通过；Ctrl+Cmd+F快捷键旧失败也保留后续核对。
 - [ ] 项目手动启用代码图谱、文件/符号/调用查询、变更合并更新和过期状态。Python 路线验证 Enola 固定打包与默认 `.enola` 输出外置；Rust 路线需验证等价实现或补齐适配，不能默认复用 Python 接口。启用前说明实际写入位置。
 - [ ] TRAE 按版本/渠道接入；traex 独立适配，不把 internal CLI 帮助当作公开版兼容证明。
