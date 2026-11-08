@@ -17,9 +17,11 @@ import (
 )
 
 type AgentUI struct {
+	Sequence                                                        uint64
 	Workspace                                                       string
 	SelectedPaths                                                   map[string]string
 	InstallErrors                                                   map[string]string
+	IDEStates                                                       map[string]string
 	Context                                                         context.Context
 	Dispatch                                                        func(func())
 	Root, Home, Bridge, PiDir                                       string
@@ -63,6 +65,7 @@ func (a *App) refreshAgents(discover bool) {
 		return
 	}
 	s.Loading = true
+	sequence := s.Sequence
 	prior := append([]agents.Discovery{}, s.Found...)
 	selectedPaths := map[string]string{}
 	for agent, path := range s.SelectedPaths {
@@ -78,11 +81,29 @@ func (a *App) refreshAgents(discover bool) {
 		connections, err := a.library.Connections(ctx)
 		installs := map[string]agents.Installation{}
 		installErrors := map[string]string{}
+		ideStates := map[string]string{}
 		for _, c := range connections {
 			if i, e := agents.LoadInstallation(s.Root, c.ID); e == nil {
 				installs[c.ID] = i
 				if e = agents.CheckInstallation(i); e != nil {
 					installErrors[c.ID] = e.Error()
+				} else if c.Agent == "trae" && c.Enabled && i.Connection.Generation == c.Generation && i.IDEChallenge != nil && i.IDEReceipt == nil {
+					receipt, e := a.library.CheckIDEVerification(ctx, *i.IDEChallenge)
+					if e != nil {
+						ideStates[c.ID] = e.Error()
+					} else {
+						ideStates[c.ID] = receipt.State
+						if receipt.Complete {
+							if e = agents.FinishIDEVerification(s.Root, *i.IDEChallenge, &receipt); e != nil {
+								ideStates[c.ID] = e.Error()
+							} else {
+								updated, e := agents.LoadInstallation(s.Root, c.ID)
+								if e == nil {
+									installs[c.ID] = updated
+								}
+							}
+						}
+					}
 				}
 			}
 		}
@@ -91,11 +112,16 @@ func (a *App) refreshAgents(discover bool) {
 		}
 		s.Dispatch(func() {
 			s.Loading = false
+			if s.Sequence != sequence {
+				a.refreshAgents(false)
+				return
+			}
 			s.Found = found
 			if err == nil {
 				s.Connections = connections
 				s.Installs = installs
 				s.InstallErrors = installErrors
+				s.IDEStates = ideStates
 			}
 			if s.Selection == "" && len(found) > 0 {
 				a.selectAgent("agent-" + found[0].Agent)
@@ -218,6 +244,13 @@ func (a *App) agentStatus(d agents.Discovery, c *records.Connection) (string, st
 	if i.VerificationError != "" {
 		return "异常", i.VerificationError
 	}
+	if c.Agent == "trae" && i.IDEChallenge != nil && i.IDEReceipt == nil {
+		message := "到此项目的TRAE IDE重载MCP，执行验证prompt；正在等待真实工具回执。"
+		if status := a.agents.IDEStates[c.ID]; status != "" && status != "waiting" {
+			message += " 当前回执状态：" + status
+		}
+		return "待验证", message
+	}
 	if i.VerifiedGeneration != c.Generation {
 		return "待重载", "配置已安装。重载 Agent 后验证真实读写。"
 	}
@@ -310,6 +343,8 @@ func (a *App) agentDetail(c *ui.Context) {
 		ui.TextInput(c.Key("agent-workspace"), &s.Workspace).Label("工作区路径").Placeholder("所选仓库或 worktree 的绝对路径").Disabled(s.Busy || (conn != nil && d.Agent != "pi"))
 		if d.Agent == "pi" {
 			ui.Text(c, "pi 使用当前会话项目。这里选择验证项目，并授权它可以访问的范围。").FontSize(design.Small).TextColor(design.Muted)
+		} else if d.Agent == "trae" {
+			ui.Text(c, "TRAE IDE 使用所选项目的 .trae/mcp.json；在该项目中启用或重载 MCP 后执行验证prompt。").FontSize(design.Small).TextColor(design.Muted)
 		} else {
 			ui.Text(c, "MCP CLI 使用所选项目的配置；worktree 共用该仓库记忆。").FontSize(design.Small).TextColor(design.Muted)
 		}
@@ -329,7 +364,11 @@ func (a *App) agentDetail(c *ui.Context) {
 				actionButton(c.Key("connect-agent"), "连接", nil).Disabled(s.Busy || s.Project == "" || s.Path == "").OnClick(a.connectAgent)
 			} else {
 				actionButton(c.Key("apply-agent-scopes"), "应用范围", nil).Disabled(s.Busy).OnClick(a.connectAgent)
-				actionButton(c.Key("verify-agent"), "验证读写", nil).Disabled(s.Busy).OnClick(a.verifyAgent)
+				verifyLabel := "验证读写"
+				if d.Agent == "trae" {
+					verifyLabel = "准备验证prompt"
+				}
+				actionButton(c.Key("verify-agent"), verifyLabel, nil).Disabled(s.Busy).OnClick(a.verifyAgent)
 				actionButton(c.Key("disconnect-agent"), "断开", nil).Disabled(s.Busy).OnClick(a.disconnectAgent)
 			}
 			if s.Cancel != nil {
@@ -347,13 +386,29 @@ func (a *App) agentDetail(c *ui.Context) {
 				}
 			}
 		}
-		ui.Text(c, "验证模型（留空使用 Agent 默认模型）").FontSize(design.Small).TextColor(design.Muted)
-		ui.Row(c).Gap(8).Children(func() {
-			if d.Agent == "pi" {
-				ui.TextInput(c.Key("agent-provider"), &s.Provider).Placeholder("provider").Grow(1).Disabled(s.Busy)
+		if d.Agent == "trae" {
+			ui.Text(c, "在 IDE 中使用自己的登录与模型。复制prompt仅开始等待回执；Memlane不会启动IDE模型。").FontSize(design.Small).LineHeight(1.7).TextColor(design.Muted)
+			if conn != nil {
+				if i, ok := s.Installs[conn.ID]; ok && i.IDEChallenge != nil {
+					d := *i.IDEChallenge
+					ui.Text(c, agents.IDEVerificationPrompt(d)).Selectable().FontSize(design.Small).LineHeight(1.6)
+					ui.Row(c).Gap(10).Children(func() {
+						quietButton(c, "复制验证prompt").Key("ide-copy-prompt").OnClick(func() { c.Services().WriteClipboard(agents.IDEVerificationPrompt(d)) })
+						if i.IDEReceipt == nil {
+							quietButton(c, "取消等待").Key("ide-cancel-verification").Disabled(s.Busy).OnClick(func() { a.cancelIDEVerification(d) })
+						}
+					})
+				}
 			}
-			ui.TextInput(c.Key("agent-model"), &s.Model).Placeholder("model").Grow(1).Disabled(s.Busy)
-		})
+		} else {
+			ui.Text(c, "验证模型（留空使用 Agent 默认模型）").FontSize(design.Small).TextColor(design.Muted)
+			ui.Row(c).Gap(8).Children(func() {
+				if d.Agent == "pi" {
+					ui.TextInput(c.Key("agent-provider"), &s.Provider).Placeholder("provider").Grow(1).Disabled(s.Busy)
+				}
+				ui.TextInput(c.Key("agent-model"), &s.Model).Placeholder("model").Grow(1).Disabled(s.Busy)
+			})
+		}
 		ui.Divider(c)
 		ui.Text(c, "初始化记忆库").Bold()
 		ui.Text(c, "选择少量项目文件后复制prompt，实际提交与索引状态由初始化记录显示。").FontSize(design.Small).TextColor(design.Muted)
@@ -419,6 +474,7 @@ func (a *App) connectAgent() {
 	}
 	project := s.Project
 	opts := agents.InstallOptions{ClientRoot: s.Root, ServiceRoot: a.library.Root, Bridge: s.Bridge, AgentPath: s.Path, Workspace: workspace, PiDirectory: s.PiDir, Project: project}
+	s.Sequence++
 	s.Busy = true
 	s.Notice = "正在连接…"
 	go func() {
@@ -466,6 +522,7 @@ func (a *App) disconnectAgent() {
 		return
 	}
 	id := conn.ID
+	s.Sequence++
 	s.Busy = true
 	go func() {
 		ctx, stop := context.WithTimeout(s.Context, 20*time.Second)
@@ -502,6 +559,23 @@ func (a *App) verifyAgent() {
 	i, ok := s.Installs[conn.ID]
 	if !ok {
 		s.Notice = "请先完成连接"
+		return
+	}
+	if d.Agent == "trae" {
+		id, generation := conn.ID, conn.Generation
+		s.Sequence++
+		s.Busy = true
+		go func() {
+			_, err := agents.BeginIDEVerification(s.Root, id, generation)
+			s.Dispatch(func() {
+				s.Busy = false
+				s.Notice = "验证prompt已准备；到此项目的IDE执行，等待真实工具回执。"
+				if err != nil {
+					s.Notice = "准备失败：" + err.Error()
+				}
+				a.refreshAgents(false)
+			})
+		}()
 		return
 	}
 	if s.Provider == "" && d.Agent == "pi" {
@@ -578,6 +652,26 @@ func (a *App) verifyAgent() {
 			s.Notice = "真实 Agent 读写验证通过。"
 			if err != nil {
 				s.Notice = "验证失败：" + err.Error()
+			}
+			a.refreshAgents(false)
+		})
+	}()
+}
+
+func (a *App) cancelIDEVerification(d records.IDEVerification) {
+	s := &a.agents
+	if s.Busy {
+		return
+	}
+	s.Sequence++
+	s.Busy = true
+	go func() {
+		err := agents.FinishIDEVerification(s.Root, d, nil)
+		s.Dispatch(func() {
+			s.Busy = false
+			s.Notice = "已取消等待；旧回执不能通过后续验证。IDE会话由用户控制。"
+			if err != nil {
+				s.Notice = "取消失败：" + err.Error()
 			}
 			a.refreshAgents(false)
 		})

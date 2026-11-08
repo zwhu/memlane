@@ -21,6 +21,7 @@ type Config struct {
 }
 
 type Request struct {
+	IDEVerification     *records.IDEVerification     `json:"ide_verification,omitempty"`
 	InitializationStart *records.InitializationStart `json:"initialization_start,omitempty"`
 	InitializationBatch string                       `json:"initialization_batch,omitempty"`
 	Important           *records.ImportantRequest    `json:"important,omitempty"`

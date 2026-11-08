@@ -3,6 +3,7 @@ package agents
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -34,12 +35,14 @@ func Discover(ctx context.Context, home string, selected map[string]string) []Di
 		}
 	}
 	results := []Discovery{}
-	for _, agent := range []string{"codex", "pi", "traex"} {
+	for _, agent := range []string{"codex", "pi", "traex", "trae"} {
 		name := agent
 		if agent == "codex" {
 			name = "Codex"
 		} else if agent == "traex" {
 			name = "TRAE CLI"
+		} else if agent == "trae" {
+			name = "TRAE IDE"
 		}
 		if chosen := selected[agent]; chosen != "" {
 			results = append(results, Probe(ctx, agent, chosen))
@@ -60,6 +63,8 @@ func Discover(ctx context.Context, home string, selected map[string]string) []Di
 		}
 		if agent == "codex" {
 			pathsForAgent = append(pathsForAgent, "/Applications/Codex.app/Contents/Resources/codex")
+		} else if agent == "trae" {
+			pathsForAgent = []string{filepath.Join(home, "Applications/Trae CN.app/Contents/Resources/app/bin/trae-cn"), "/Applications/Trae CN.app/Contents/Resources/app/bin/trae-cn"}
 		}
 		found := Discovery{Agent: agent, Name: name}
 		for _, path := range pathsForAgent {
@@ -79,6 +84,8 @@ func Probe(ctx context.Context, agent, path string) Discovery {
 		name = "Codex"
 	} else if agent == "traex" {
 		name = "TRAE CLI"
+	} else if agent == "trae" {
+		name = "TRAE IDE"
 	}
 	out := Discovery{Agent: agent, Name: name, Path: path}
 	if !filepath.IsAbs(path) {
@@ -103,6 +110,32 @@ func Probe(ctx context.Context, agent, path string) Discovery {
 			return "", errors.New("Agent help output too large")
 		}
 		return string(data), e
+	}
+	if agent == "trae" {
+		// The IDE launcher --version reports its VS Code base version. Bind the
+		// supported MCP loader to the actual product commit and product help.
+		resolved, e := filepath.EvalSymlinks(path)
+		if e != nil {
+			out.Error = "TRAE IDE 安装路径不可用"
+			return out
+		}
+		var product struct{ ApplicationName, Commit string }
+		data, e := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(resolved)), "product.json"))
+		if e != nil || json.Unmarshal(data, &product) != nil || product.ApplicationName != "trae-cn" || product.Commit != "5d9926ed75dce7fa36dff87dbef5fb53e06b790a" {
+			out.Error = "此 IDE 渠道或版本的项目 MCP 格式尚未验证"
+			return out
+		}
+		version, e := command("--version", "--user-data-dir", filepath.Join(isolated, "profile"), "--extensions-dir", filepath.Join(isolated, "extensions"))
+		help, h := command("--help")
+		// The installed CN launcher prints this harmless preamble with an empty
+		// user home. Keep the actual version and commit checks below strict.
+		help = strings.TrimPrefix(help, "No config file found\n")
+		if e != nil || h != nil || !strings.Contains(version, product.Commit) || !strings.HasPrefix(help, "Trae CN 3.4.14\n") || !strings.Contains(help, "--user-data-dir") {
+			out.Error = "无法确认此 IDE 的版本和隔离启动能力"
+			return out
+		}
+		out.Version, out.Channel, out.Protocol = "3.4.14", "cn/stable", "mcp-ide-external"
+		return out
 	}
 	version, err := command("--version")
 	if err != nil {

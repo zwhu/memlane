@@ -301,3 +301,5 @@ App指引只持隐藏偏好，实际组件/项目/Agent状态持续刷新。准�
 traex/traecli0.214.1 internal日常MCP复用schema11/protocol1业务契约，connections Agent字符串不扩表；所选项目`.trae/traecli.toml`增量区块/备份/外部改动门禁/撤销复用既有Codex配置模块。版本与渠道由实际Probe记录到Installation，连接详情从该安装读取；未知旧channel不沿用其他路径的发现值。共享与项目标量模型选择按优先级读取，自定义provider默认路径明确拒绝，认证只由CLI读取自身auth链接。CLI临时运行仅Memlane MCP/受限工具，实际GET/保存/返回/采用和初始化三工具按原受信栅栏处理；验证进程独立组与有界管道退出，结果区别SelectedModel和未报告的Model。
 
 真实App按钮/traex六工具/初始化/Rust、实际活动取消/重验/断开与OS/协议夹具见 [A验证](p3-agent-validation.md)。第一次同identity换包路径启动超时仍留F1；Codex新工具、TRAE IDE和piRPC继续独立验收，不能从CLI推断IDE支持。
+
+TRAE IDE增量JSONC、外部challenge与typed回执查询复用schema11/protocol1，独立记录合成连接验证并用短事务原子记录mixed检索；GUI读取序列避免晚到状态覆盖取消。正式契约与实测限制见 [IDE契约](p3-ide-contract.md) / [IDE验证](p3-ide-validation.md)。

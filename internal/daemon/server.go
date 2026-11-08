@@ -457,6 +457,13 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		return s.store.MergeList(operation, *r.MergeList)
 	case "connections":
 		return s.store.Connections(operation)
+	case "ide_verification":
+		if r.IDEVerification == nil {
+			return nil, &records.AccessError{Code: "invalid_request", Message: "IDE challenge required"}
+		}
+		s.agentAccess.RLock()
+		defer s.agentAccess.RUnlock()
+		return s.store.CheckIDEVerification(operation, *r.IDEVerification)
 	case "configure_connection":
 		if !r.UserConfirmed {
 			return nil, &records.AccessError{Code: "confirmation_required", Message: "connect or change scope explicitly in Memlane"}

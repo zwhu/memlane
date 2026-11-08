@@ -15,12 +15,13 @@ import (
 
 func main() {
 	var r struct {
-		Action     string                `json:"action"`
-		Connection records.Connection    `json:"connection"`
-		Options    agents.InstallOptions `json:"options"`
-		Home       string                `json:"home"`
-		Selected   map[string]string     `json:"selected"`
-		Run        agents.RunOptions     `json:"run"`
+		Action     string                          `json:"action"`
+		Connection records.Connection              `json:"connection"`
+		Options    agents.InstallOptions           `json:"options"`
+		Home       string                          `json:"home"`
+		Selected   map[string]string               `json:"selected"`
+		Run        agents.RunOptions               `json:"run"`
+		IDEReceipt *records.IDEVerificationReceipt `json:"ide_receipt"`
 	}
 	if err := json.NewDecoder(os.Stdin).Decode(&r); err != nil {
 		panic(err)
@@ -30,15 +31,30 @@ func main() {
 	switch r.Action {
 	case "discover":
 		result = agents.Discover(context.Background(), r.Home, r.Selected)
-	case "install", "uninstall":
+	case "install", "uninstall", "check_installation", "ide_begin", "ide_finish":
 		if !isolatedRoot(r.Options.ClientRoot) {
 			fmt.Fprintln(os.Stderr, "isolated P2 root required")
 			os.Exit(2)
 		}
 		if r.Action == "install" {
 			result, err = agents.Install(context.Background(), r.Connection, r.Options)
-		} else {
+		} else if r.Action == "uninstall" {
 			err = agents.Uninstall(context.Background(), r.Options.ClientRoot, r.Connection.ID)
+		} else if r.Action == "ide_begin" {
+			result, err = agents.BeginIDEVerification(r.Options.ClientRoot, r.Connection.ID, r.Connection.Generation)
+		} else {
+			var i agents.Installation
+			i, err = agents.LoadInstallation(r.Options.ClientRoot, r.Connection.ID)
+			if err == nil && r.Action == "check_installation" {
+				err = agents.CheckInstallation(i)
+			}
+			if err == nil && r.Action == "ide_finish" {
+				if i.IDEChallenge == nil {
+					err = fmt.Errorf("no pending IDE challenge")
+				} else {
+					err = agents.FinishIDEVerification(r.Options.ClientRoot, *i.IDEChallenge, r.IDEReceipt)
+				}
+			}
 		}
 	case "run":
 		if !isolatedRoot(r.Options.ClientRoot) {

@@ -429,3 +429,5 @@ MEMLANE_C3_QUALITY_REAL=1 sh scripts/go.sh test -json ./internal/agents -run '^T
 `verify-p3-traex-real-tools.py`通过当前helper实际运行CLI六工具，保存/get/检索和采用两次回执绑定同一目标。`verify-p3-traex-app.py`实际App验证/初始化/代次重载/实际保存后的取消/再验证/断开；断开必须等服务撤销、metadata删除、原TOML及完整UI回执。历史末尾过早assert失败保留，并由`verify-p3-traex-disconnect.py`实际无模型配置补验闭合。`verify-p3-traex-scope-contract.py`是明确私有IPC范围/工作区/代次/撤销故障夹具，不替代模型正常或取消。
 
 所有脚本仅绑定source-info标记根/包与合成项目。`repro-p3-helper-startup.py`只诊断隔离helper启动，当前同包重试通过不代表F1首次换路径问题修复。生产完整包 `python3 scripts/build-client.py --out build/p3-agents-production`；最终实际结果、checks/review/体积/推送/handoff在该阶段build产物，生成handoff后继续总交付。
+
+A2隔离配置与显式无模型App/真实Rust回执夹具见 [IDE验证](p3-ide-validation.md)。`create-p3-ide-fixture.py`生成新根及独立IDE profile；`verify-p3-ide-config.py`和`verify-p3-ide-app.py`不会调用IDE模型，真实IDE登录后须另做日常/初始化验收。完整生产身份包仍用标准build-client.py，ad-hoc不得标正式分发通过。

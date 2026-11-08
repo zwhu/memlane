@@ -27,3 +27,9 @@
 全仓test/vet、store/daemon/agents/desktop race、三组产品/来源/范围/版本/配置/并发/取消审查和完整UI/helper/LaunchAgent/桥包见 `build/p3-agents/final-checks.json`；审查发现与修复保留 `review/`。实际生产验证包 `build/p3-agents-production/`，主DMG15,263,001字节，App普通文件34,270,879字节；首次未变Rust/E5组件归档285,752,286字节，App加准备根526,328,311字节，不含工作区/Agent自身配置及开发工具链。APFS分配不等于可释放空间。更新下载字节未知。
 
 签名完整性仅本机ad-hoc，Developer ID/公证/Gatekeeper、正式源/干净macOS15+arm64未通过。阶段提交与普通推送SHA、临时handoff见delivery.json，随后继续剩余切片，总Goal未完成。
+
+## A1b Codex 实际模型阻塞
+
+`build/p3-agents/codex-new-tools-report.json`保留真实Codex0.147.0/App运行结果：当前选择gpt-6-astra返回HTTP400 invalid_request_error，原文为 `The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.`。没有成功Memlane工具调用，A1b新增采用/初始化未通过。隔离配置已撤销、服务主动停止；没有升级Agent、改默认模型或导入聊天。需要明确兼容模型输入，或用户自行处理版本条件后重测，P2普通接入历史通过边界保留。
+
+A2a配置与外部回执等待已实现，实际IDE隔离登录与模型工具验收尚未通过，见 [IDE验证](p3-ide-validation.md)。继续R/G/F，总Goal未完成。

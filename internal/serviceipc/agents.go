@@ -22,3 +22,9 @@ func (l Library) Disconnect(ctx context.Context, id string) error {
 func (l Library) CheckWorkspace(ctx context.Context, scope, path string) error {
 	return Call(ctx, l.Root, Request{Op: "check_workspace", Scope: scope, Project: records.ScopeDraft{Path: path}}, nil)
 }
+
+func (l Library) CheckIDEVerification(ctx context.Context, d records.IDEVerification) (records.IDEVerificationReceipt, error) {
+	var out records.IDEVerificationReceipt
+	err := Call(ctx, l.Root, Request{Op: "ide_verification", IDEVerification: &d}, &out)
+	return out, err
+}

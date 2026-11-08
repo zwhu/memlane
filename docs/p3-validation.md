@@ -193,3 +193,5 @@ schema11只新增实际批次；冻结批准文件的路径/SHA/原文与稳定�
 ## P3-A1a traex日常接入
 
 实际traecli0.214.1 internal的项目MCP、App真实验证/初始化/Rust、六工具和目标采用重放、活动保存后取消/重验/断开已通过；模型选择/渠道来自实际安装，SelectedModel与未知actual model分开。新Agent使用现有schema11/protocol1，不扩表。OS/协议夹具、原驱动异步断开assert失败与无模型完整补验、首次包路径helper超时未解决F1分别见 [A验证](p3-agent-validation.md)。A1b Codex新工具、A2 IDE、R/G/F继续，总Goal未完成。
+
+A1b当前Codex0.147.0/gpt-6-astra的400版本阻塞已实测；A2a项目配置、外部回执等待和无模型App/真实Rust协议夹具已实现并通过对应检查，实际IDE模型等待隔离登录。见 [A验证](p3-agent-validation.md) / [IDE验证](p3-ide-validation.md)，不将配置或协议通过记为真实IDE支持。R/G/F及总Goal继续未完成。

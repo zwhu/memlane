@@ -197,3 +197,5 @@
 - [选定的交互原型（独立分支）](https://github.com/zwhu/memlane/tree/prototype/selected-ui/prototypes/selected-ui)
 
 本文迁入工程时保留已确认的产品规则。之前的多套视觉探索仍保留在原思考工作区，本仓库归档最终选定的设计。
+
+TRAE IDE 的项目配置与外部工具回执等待已实现；仅绑定实际CN3.4.14版本/渠道。真实IDE模型尚需隔离实例登录验收，不能从CLI、配置或无模型夹具通过推断支持，见 [IDE验证](p3-ide-validation.md)。

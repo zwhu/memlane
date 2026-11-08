@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,6 +21,8 @@ import (
 )
 
 func projectMCPAgent(agent string) bool { return agent == "codex" || agent == "traex" }
+
+var installationMu sync.Mutex
 
 //go:embed pi-extension.ts
 var piExtension string
@@ -35,22 +38,26 @@ type InstallOptions struct {
 }
 
 type Installation struct {
-	ToolsetVersion     int                `json:"toolset_version,omitempty"`
-	AgentChannel       string             `json:"agent_channel,omitempty"`
-	AgentVersion       string             `json:"agent_version,omitempty"`
-	Connection         records.Connection `json:"connection"`
-	Options            InstallOptions     `json:"options"`
-	ConfigPath         string             `json:"config_path"`
-	BackupPath         string             `json:"backup_path,omitempty"`
-	ExtensionPath      string             `json:"extension_path,omitempty"`
-	Block              string             `json:"block,omitempty"`
-	ExtensionHash      string             `json:"extension_hash,omitempty"`
-	VerifiedGeneration int64              `json:"verified_generation,omitempty"`
-	VerifiedAt         string             `json:"verified_at,omitempty"`
-	VerificationError  string             `json:"verification_error,omitempty"`
+	IDEChallenge       *records.IDEVerification        `json:"ide_challenge,omitempty"`
+	IDEReceipt         *records.IDEVerificationReceipt `json:"ide_receipt,omitempty"`
+	ToolsetVersion     int                             `json:"toolset_version,omitempty"`
+	AgentChannel       string                          `json:"agent_channel,omitempty"`
+	AgentVersion       string                          `json:"agent_version,omitempty"`
+	Connection         records.Connection              `json:"connection"`
+	Options            InstallOptions                  `json:"options"`
+	ConfigPath         string                          `json:"config_path"`
+	BackupPath         string                          `json:"backup_path,omitempty"`
+	ExtensionPath      string                          `json:"extension_path,omitempty"`
+	Block              string                          `json:"block,omitempty"`
+	ExtensionHash      string                          `json:"extension_hash,omitempty"`
+	VerifiedGeneration int64                           `json:"verified_generation,omitempty"`
+	VerifiedAt         string                          `json:"verified_at,omitempty"`
+	VerificationError  string                          `json:"verification_error,omitempty"`
 }
 
 func SaveVerification(root, id string, generation int64, failure string) error {
+	installationMu.Lock()
+	defer installationMu.Unlock()
 	i, err := LoadInstallation(root, id)
 	if err != nil {
 		return err
@@ -76,6 +83,9 @@ func CheckInstallation(i Installation) error {
 	data, _, err := readConfig(i.ConfigPath)
 	if err != nil {
 		return err
+	}
+	if i.Connection.Agent == "trae" {
+		return checkIDEConfig(data, i.Block)
 	}
 	if projectMCPAgent(i.Connection.Agent) {
 		if i.Block == "" {
@@ -197,7 +207,7 @@ func validateOptions(c records.Connection, o InstallOptions) error {
 			return errors.New("bridge or Agent executable is unavailable")
 		}
 	}
-	if projectMCPAgent(c.Agent) && !filepath.IsAbs(o.Workspace) {
+	if (projectMCPAgent(c.Agent) || c.Agent == "trae") && !filepath.IsAbs(o.Workspace) {
 		return errors.New("MCP CLI requires a selected project workspace")
 	}
 	if c.Agent == "pi" && !filepath.IsAbs(o.PiDirectory) {
@@ -209,6 +219,8 @@ func validateOptions(c records.Connection, o InstallOptions) error {
 // Install is invoked only by an explicit App Connect/Apply action. It never
 // scans or changes settings during discovery, and backs up existing files.
 func Install(ctx context.Context, c records.Connection, o InstallOptions) (result Installation, retErr error) {
+	installationMu.Lock()
+	defer installationMu.Unlock()
 	if err := validateOptions(c, o); err != nil {
 		return Installation{}, err
 	}
@@ -223,7 +235,7 @@ func Install(ctx context.Context, c records.Connection, o InstallOptions) (resul
 	if priorErr != nil && !os.IsNotExist(priorErr) {
 		return Installation{}, priorErr
 	}
-	if priorErr == nil && (prior.Connection.Agent != c.Agent || (projectMCPAgent(c.Agent) && prior.Options.Workspace != o.Workspace) || prior.Options.PiDirectory != o.PiDirectory) {
+	if priorErr == nil && (prior.Connection.Agent != c.Agent || ((projectMCPAgent(c.Agent) || c.Agent == "trae") && prior.Options.Workspace != o.Workspace) || prior.Options.PiDirectory != o.PiDirectory) {
 		return Installation{}, errors.New("disconnect before changing Agent configuration location")
 	}
 	i := Installation{Connection: c, Options: o, ToolsetVersion: 2}
@@ -303,6 +315,26 @@ func Install(ctx context.Context, c records.Connection, o InstallOptions) (resul
 		content = append(content, []byte(i.Block)...)
 		if err = toml.Unmarshal(content, &parsed); err != nil {
 			return i, errors.New("Memlane configuration would conflict with Agent TOML; original preserved")
+		}
+	} else if c.Agent == "trae" {
+		i.ConfigPath = filepath.Join(o.Workspace, ".trae", "mcp.json")
+		if target, e := filepath.EvalSymlinks(i.ConfigPath); e == nil {
+			i.ConfigPath = target
+		}
+		content, mode, err = readConfig(i.ConfigPath)
+		if err != nil {
+			return i, err
+		}
+		originalConfig = content
+		args := []string{"mcp", "--root", o.ServiceRoot, "--connection", c.ID, "--generation", fmt.Sprint(c.Generation), "--workspace", o.Workspace}
+		entry, _ := json.Marshal(map[string]any{"command": o.Bridge, "args": args, "cwd": o.Workspace, "disabled": false})
+		owned := ""
+		if priorErr == nil {
+			owned = prior.Block
+		}
+		content, i.Block, err = editIDEConfig(content, owned, entry)
+		if err != nil {
+			return i, err
 		}
 	} else if c.Agent == "pi" {
 		i.ConfigPath = filepath.Join(o.PiDirectory, "settings.json")
@@ -385,6 +417,8 @@ func Install(ctx context.Context, c records.Connection, o InstallOptions) (resul
 // Uninstall removes only the exact owned entry. External edits cause a
 // conflict, leaving unrelated user configuration and changed files untouched.
 func Uninstall(ctx context.Context, root, id string) error {
+	installationMu.Lock()
+	defer installationMu.Unlock()
 	i, err := LoadInstallation(root, id)
 	if os.IsNotExist(err) {
 		return nil
@@ -400,7 +434,12 @@ func Uninstall(ctx context.Context, root, id string) error {
 		return err
 	}
 	originalConfig := content
-	if projectMCPAgent(i.Connection.Agent) {
+	if i.Connection.Agent == "trae" {
+		content, _, err = editIDEConfig(content, i.Block, nil)
+		if err != nil {
+			return err
+		}
+	} else if projectMCPAgent(i.Connection.Agent) {
 		if !bytes.Contains(content, []byte(i.Block)) {
 			return errors.New("Memlane MCP entry changed externally; configuration preserved")
 		}

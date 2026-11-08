@@ -47,7 +47,7 @@ func (s *Store) Connections(ctx context.Context) ([]records.Connection, error) {
 }
 
 func (s *Store) ConfigureConnection(ctx context.Context, d records.ConnectionDraft) (records.Connection, error) {
-	if d.Agent != "codex" && d.Agent != "pi" && d.Agent != "traex" {
+	if d.Agent != "codex" && d.Agent != "pi" && d.Agent != "traex" && d.Agent != "trae" {
 		return records.Connection{}, access("invalid_request", "unsupported Agent")
 	}
 	if strings.TrimSpace(d.Name) == "" || len(d.Name) > 160 || len(d.AllowedScopes) == 0 || len(d.AllowedScopes) > 100 {

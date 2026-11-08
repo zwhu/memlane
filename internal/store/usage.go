@@ -24,6 +24,39 @@ func UsageDigest(value any) string {
 // RecordUsage rechecks connection generation and current scope/version in the
 // same short transaction as the observation. No model or network work is here.
 func (s *Store) RecordUsage(ctx context.Context, o records.UsageObservation) (records.UsageReceipt, error) {
+	receipts, err := s.RecordUsageBatch(ctx, []records.UsageObservation{o})
+	if err != nil {
+		return records.UsageReceipt{}, err
+	}
+	return receipts[0], nil
+}
+
+// Mixed search channels are one successful return. Any failed target or write
+// rolls back the complete batch; search/network work occurs before this call.
+func (s *Store) RecordUsageBatch(ctx context.Context, batch []records.UsageObservation) ([]records.UsageReceipt, error) {
+	if len(batch) == 0 || len(batch) > 2 {
+		return nil, access("invalid_request", "bounded usage batch required")
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	out := make([]records.UsageReceipt, 0, len(batch))
+	for _, o := range batch {
+		receipt, e := s.recordUsageTx(ctx, tx, o)
+		if e != nil {
+			return nil, e
+		}
+		out = append(out, receipt)
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *Store) recordUsageTx(ctx context.Context, tx *sql.Tx, o records.UsageObservation) (records.UsageReceipt, error) {
 	var receipt records.UsageReceipt
 	if s.Schema < 10 {
 		return receipt, access("usage_unavailable", "usage collection not available in this schema")
@@ -37,11 +70,11 @@ func (s *Store) RecordUsage(ctx context.Context, o records.UsageObservation) (re
 		return receipt, access("invalid_request", "unknown usage channel")
 	}
 	switch o.Kind {
-	case "read", "return", "adopt", "browse":
+	case "read", "return", "adopt", "browse", "status":
 	default:
 		return receipt, access("invalid_request", "unknown usage kind")
 	}
-	if o.Channel == "app" && o.Kind != "browse" && o.Kind != "return" || o.Channel != "app" && o.Kind == "browse" || o.Kind == "adopt" && (o.Channel != "daily" || o.Exposure == "" || o.WorkspaceID == "" || len(o.Targets) != 1) {
+	if o.Kind == "status" && o.Channel != "verification" || o.Channel == "app" && o.Kind != "browse" && o.Kind != "return" || o.Channel != "app" && o.Kind == "browse" || o.Kind == "adopt" && (o.Channel != "daily" || o.Exposure == "" || o.WorkspaceID == "" || len(o.Targets) != 1) {
 		return receipt, access("invalid_request", "invalid usage channel/kind")
 	}
 	seen := map[string]bool{}
@@ -61,11 +94,7 @@ func (s *Store) RecordUsage(ctx context.Context, o records.UsageObservation) (re
 	})
 	o.Targets = targets
 	digest := UsageDigest(o)
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return receipt, err
-	}
-	defer tx.Rollback()
+	var err error
 	if o.Channel == "daily" || o.Channel == "verification" {
 		c, e := scanConnection(tx.QueryRowContext(ctx, `SELECT `+connectionColumns+` FROM connections WHERE id=?`, o.ConnectionID))
 		if e != nil {
@@ -153,7 +182,7 @@ func (s *Store) RecordUsage(ctx context.Context, o records.UsageObservation) (re
 			return receipt, err
 		}
 	}
-	return receipt, tx.Commit()
+	return receipt, nil
 }
 
 func (s *Store) Usage(ctx context.Context, memory string) (records.UsageInfo, error) {

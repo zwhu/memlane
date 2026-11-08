@@ -58,16 +58,22 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 		workspaceID = store.UsageDigest([]string{c.ContextProject, "explicit-bound-project"})
 	}
 	observed := false
-	observe := func(kind string, versions []records.Version, stable string, exposure string) (records.UsageReceipt, error) {
+	observation := func(kind string, versions []records.Version, stable string, exposure string, observationChannel string) records.UsageObservation {
 		targets := []records.UsageTarget{}
 		for _, v := range versions {
 			targets = append(targets, records.UsageTarget{Memory: v.Memory, Dataset: v.Dataset, Revision: v.Revision})
 		}
+		if c.Agent == "trae" {
+			stable += "/" + observationChannel
+		}
 		key := uuid.NewSHA1(uuid.NameSpaceOID, []byte(c.ID+"/"+fmt.Sprint(c.Generation)+"/"+kind+"/"+stable)).String()
-		receipt, e := s.store.RecordUsage(ctx, records.UsageObservation{OperationID: key, Digest: store.UsageDigest(struct {
+		return records.UsageObservation{OperationID: key, Digest: store.UsageDigest(struct {
 			Workspace string
 			Arguments records.AgentArguments
-		}{r.Workspace, r.Arguments}), Kind: kind, Channel: channel, WorkspaceID: workspaceID, ConnectionID: c.ID, Generation: c.Generation, Targets: targets, Exposure: exposure})
+		}{r.Workspace, r.Arguments}), Kind: kind, Channel: observationChannel, WorkspaceID: workspaceID, ConnectionID: c.ID, Generation: c.Generation, Targets: targets, Exposure: exposure}
+	}
+	observe := func(kind string, versions []records.Version, stable, exposure, ch string) (records.UsageReceipt, error) {
+		receipt, e := s.store.RecordUsage(ctx, observation(kind, versions, stable, exposure, ch))
 		if e == nil {
 			observed = true
 		}
@@ -174,8 +180,17 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 		if e = s.store.FilterAgentVersion(ctx, &v, scopes); e != nil {
 			return nil, e
 		}
+		readChannel := channel
+		if records.IDEVerificationRecord(c, v) {
+			readChannel = "verification"
+		}
+		if r.Tool == "memory_status" && readChannel == "verification" && v.IndexState == "indexed" {
+			if _, e := observe("status", []records.Version{v}, r.CallID, "", readChannel); e != nil {
+				return nil, e
+			}
+		}
 		if r.Tool == "memory_get" {
-			receipt, e := observe("read", []records.Version{v}, r.CallID, "")
+			receipt, e := observe("read", []records.Version{v}, r.CallID, "", readChannel)
 			if e != nil {
 				return nil, e
 			}
@@ -200,7 +215,7 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 			return nil, &records.AccessError{Code: "scope_denied", Message: "adoption outside selected scope"}
 		}
 		v.Revision = a.Revision
-		receipt, e := observe("adopt", []records.Version{v}, a.OperationID, a.Exposure)
+		receipt, e := observe("adopt", []records.Version{v}, a.OperationID, a.Exposure, channel)
 		if e != nil {
 			return nil, e
 		}
@@ -228,16 +243,45 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 				return nil, e
 			}
 		}
-		versions := []records.Version{}
+		groups := map[string][]records.Version{}
 		for _, h := range hits {
-			versions = append(versions, h.Version)
+			ch := channel
+			if records.IDEVerificationRecord(c, h.Version) {
+				ch = "verification"
+			}
+			groups[ch] = append(groups[ch], h.Version)
 		}
-		receipt, e := observe("return", versions, r.CallID, "")
+		if len(hits) == 0 {
+			groups[channel] = []records.Version{}
+		}
+		batch := []records.UsageObservation{}
+		channels := []string{}
+		for _, ch := range []string{"daily", "verification"} {
+			if versions, ok := groups[ch]; ok {
+				batch = append(batch, observation("return", versions, r.CallID, "", ch))
+				channels = append(channels, ch)
+			}
+		}
+		returned, e := s.store.RecordUsageBatch(ctx, batch)
 		if e != nil {
 			return nil, e
 		}
+		observed = true
+		receipts := map[string]records.UsageReceipt{}
+		for index, receipt := range returned {
+			receipts[channels[index]] = receipt
+		}
 		for i := range hits {
+			ch := channel
+			if records.IDEVerificationRecord(c, hits[i].Version) {
+				ch = "verification"
+			}
+			receipt := receipts[ch]
 			hits[i].Version.UsageReceipt = &receipt
+		}
+		receipt, ok := receipts[channel]
+		if !ok {
+			receipt = receipts["verification"]
 		}
 		result = map[string]any{"usage_receipt": receipt, "hits": hits, "scopes": scopes, "project_priority": "当前项目明确约定优先于全局建议；保留来源和适用范围"}
 	}
