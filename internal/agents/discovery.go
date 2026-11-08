@@ -4,7 +4,9 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +23,19 @@ type Discovery struct {
 	Protocol string `json:"protocol,omitempty"`
 	Channel  string `json:"channel,omitempty"`
 	Error    string `json:"error,omitempty"`
+	// CapabilityError describes an installed Agent whose connection format has
+	// not been verified. It must block configuration without hiding installation.
+	CapabilityError string `json:"capability_error,omitempty"`
+}
+
+func (d Discovery) ConnectionError() error {
+	if d.Error != "" {
+		return errors.New(d.Error)
+	}
+	if d.CapabilityError != "" {
+		return errors.New(d.CapabilityError)
+	}
+	return nil
 }
 
 func Discover(ctx context.Context, home string, selected map[string]string) []Discovery {
@@ -119,22 +134,34 @@ func Probe(ctx context.Context, agent, path string) Discovery {
 			out.Error = "TRAE IDE 安装路径不可用"
 			return out
 		}
-		var product struct{ ApplicationName, Commit string }
-		data, e := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(resolved)), "product.json"))
-		if e != nil || json.Unmarshal(data, &product) != nil || product.ApplicationName != "trae-cn" || product.Commit != "5d9926ed75dce7fa36dff87dbef5fb53e06b790a" {
-			out.Error = "此 IDE 渠道或版本的项目 MCP 格式尚未验证"
+		appRoot := filepath.Dir(filepath.Dir(resolved))
+		var product struct{ ApplicationName, Commit, Quality string }
+		data, e := readProbeMetadata(filepath.Join(appRoot, "product.json"))
+		if e != nil || json.Unmarshal(data, &product) != nil {
+			out.Error = "无法读取 TRAE IDE 产品信息"
 			return out
 		}
-		version, e := command("--version", "--user-data-dir", filepath.Join(isolated, "profile"), "--extensions-dir", filepath.Join(isolated, "extensions"))
+		data, e = readProbeMetadata(filepath.Join(filepath.Dir(filepath.Dir(appRoot)), "Info.plist"))
+		version, bundle, e := traeBundleVersion(data, e)
+		if e != nil || product.ApplicationName != "trae-cn" || bundle != "cn.trae.app" {
+			out.Error = "无法确认 TRAE IDE 产品版本和渠道"
+			return out
+		}
+		out.Version, out.Channel = version, "cn/"+product.Quality
+		if version != "3.4.14" || product.Quality != "stable" || product.Commit != "5d9926ed75dce7fa36dff87dbef5fb53e06b790a" {
+			out.CapabilityError = "已发现安装；此 IDE 渠道或版本的项目 MCP 格式尚未验证。"
+			return out
+		}
+		launcherVersion, e := command("--version", "--user-data-dir", filepath.Join(isolated, "profile"), "--extensions-dir", filepath.Join(isolated, "extensions"))
 		help, h := command("--help")
 		// The installed CN launcher prints this harmless preamble with an empty
 		// user home. Keep the actual version and commit checks below strict.
 		help = strings.TrimPrefix(help, "No config file found\n")
-		if e != nil || h != nil || !strings.Contains(version, product.Commit) || !strings.HasPrefix(help, "Trae CN 3.4.14\n") || !strings.Contains(help, "--user-data-dir") {
+		if e != nil || h != nil || !strings.Contains(launcherVersion, product.Commit) || !strings.HasPrefix(help, "Trae CN 3.4.14\n") || !strings.Contains(help, "--user-data-dir") {
 			out.Error = "无法确认此 IDE 的版本和隔离启动能力"
 			return out
 		}
-		out.Version, out.Channel, out.Protocol = "3.4.14", "cn/stable", "mcp-ide-external"
+		out.Protocol = "mcp-ide-external"
 		return out
 	}
 	version, err := command("--version")
@@ -155,16 +182,74 @@ func Probe(ctx context.Context, agent, path string) Discovery {
 		help, e := command("mcp", "add", "--help")
 		if e == nil && strings.Contains(help, "--url") && strings.Contains(help, "COMMAND") {
 			out.Protocol = "mcp"
+		} else if e != nil {
+			out.Error = "无法检查 Agent 的 MCP 能力"
 		} else {
-			out.Error = "此版本未验证 stdio MCP 支持"
+			out.CapabilityError = "此版本未验证 stdio MCP 支持"
 		}
 	} else {
 		help, e := command("--help")
 		if e == nil && strings.Contains(help, "--extension") {
 			out.Protocol = "extension"
+		} else if e != nil {
+			out.Error = "无法检查 Agent 的 Extension 能力"
 		} else {
-			out.Error = "此版本未验证 Extension 支持"
+			out.CapabilityError = "此版本未验证 Extension 支持"
 		}
 	}
 	return out
+}
+
+func readProbeMetadata(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	const limit = 1 << 20
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if len(data) > limit {
+		return nil, errors.New("Agent metadata too large")
+	}
+	return data, err
+}
+
+// Read only direct key/string pairs. Other plist values (arrays, booleans or
+// nested dictionaries) must not shift keys or supply a nested product version.
+func traeBundleVersion(data []byte, readErr error) (string, string, error) {
+	if readErr != nil {
+		return "", "", readErr
+	}
+	var plist struct {
+		XMLName xml.Name `xml:"plist"`
+		Dict    struct {
+			Entries []struct {
+				XMLName xml.Name
+				Value   string `xml:",chardata"`
+			} `xml:",any"`
+		} `xml:"dict"`
+	}
+	if err := xml.Unmarshal(data, &plist); err != nil {
+		return "", "", err
+	}
+	values := map[string]string{}
+	entries := plist.Dict.Entries
+	for index := 0; index < len(entries); index += 2 {
+		if index+1 >= len(entries) || entries[index].XMLName.Local != "key" {
+			return "", "", errors.New("invalid Agent plist dictionary")
+		}
+		key := entries[index].Value
+		if key != "CFBundleShortVersionString" && key != "CFBundleIdentifier" {
+			continue
+		}
+		if _, exists := values[key]; exists || entries[index+1].XMLName.Local != "string" {
+			return "", "", errors.New("ambiguous Agent product metadata")
+		}
+		values[key] = strings.TrimSpace(entries[index+1].Value)
+	}
+	version, bundle := values["CFBundleShortVersionString"], values["CFBundleIdentifier"]
+	if version == "" || bundle == "" {
+		return "", "", errors.New("Agent product version missing")
+	}
+	return version, bundle, nil
 }

@@ -14,6 +14,8 @@
 
 视觉方案已选定：采用V3 首页设计稿的浅色风格。首页保留宽幅总览，不使用三栏；记忆、Agent、整理记录等列表与详情页采用三栏。此前深灰玻璃方案保留作探索记录，不继续作为主方案。最新 [浅色交互原型](https://github.com/zwhu/memlane/tree/prototype/selected-ui/prototypes/selected-ui) 使用栏内详情和操作。
 
+2026-11-08 接入产品梳理：当前优先完善四种本地 Agent 的自动发现与连接说明，复用已实现的增量配置和受控记忆桥接。安装升级与剩余工程验收暂缓；本期流程、Cognee 复用依据和真实发现边界见 [Agent 接入](agent-integrations.md)。
+
 ## 1. 已确定的产品规则
 
 | 领域 | 第一版决定 |

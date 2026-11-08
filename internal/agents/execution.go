@@ -110,6 +110,9 @@ func Run(ctx context.Context, d Discovery, i Installation, o RunOptions) (Execut
 	if d.Path == "" || d.Error != "" || !filepath.IsAbs(d.Path) {
 		return out, errors.New("Agent executable unavailable")
 	}
+	if err := d.ConnectionError(); err != nil {
+		return out, err
+	}
 	workspace := i.Options.Workspace
 	if o.Workspace != "" {
 		workspace = o.Workspace

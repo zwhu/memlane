@@ -228,8 +228,8 @@ func Install(ctx context.Context, c records.Connection, o InstallOptions) (resul
 		return Installation{}, err
 	}
 	probe := Probe(ctx, c.Agent, o.AgentPath)
-	if probe.Error != "" {
-		return Installation{}, errors.New(probe.Error)
+	if err := probe.ConnectionError(); err != nil {
+		return Installation{}, err
 	}
 	prior, priorErr := LoadInstallation(o.ClientRoot, c.ID)
 	if priorErr != nil && !os.IsNotExist(priorErr) {

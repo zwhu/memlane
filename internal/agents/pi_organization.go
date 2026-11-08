@@ -63,7 +63,7 @@ func RunPiOrganization(ctx context.Context, o PiOrganizationRunOptions) (out PiO
 		}
 	}
 	probe := Probe(ctx, "pi", o.Executable)
-	if probe.Error != "" || probe.Version != "0.84.1" {
+	if probe.ConnectionError() != nil || probe.Version != "0.84.1" {
 		return out, errors.New("pi RPC is only adapted for the verified installed 0.84.1 protocol")
 	}
 	out.AgentVersion = probe.Version

@@ -143,19 +143,22 @@ func (a *App) selectedAgent() (agents.Discovery, *records.Connection) {
 	}
 	for _, d := range a.agents.Found {
 		if d.Agent == key {
-			if connection != nil {
-				if i, ok := a.agents.Installs[connection.ID]; ok {
-					d.Path = i.Options.AgentPath
-					d.Channel = i.AgentChannel
-					if i.AgentVersion != "" {
-						d.Version = i.AgentVersion
-					}
-				}
-			}
-			return d, connection
+			return a.connectionDiscovery(d, connection), connection
 		}
 	}
 	return agents.Discovery{}, connection
+}
+
+func (a *App) connectionDiscovery(d agents.Discovery, c *records.Connection) agents.Discovery {
+	if c != nil {
+		if i, ok := a.agents.Installs[c.ID]; ok && d.Path != i.Options.AgentPath {
+			return agents.Discovery{Agent: d.Agent, Name: d.Name, Path: i.Options.AgentPath,
+				Error: "此连接的安装路径与当前探测不同；请在 Agent 安装项检查该路径后重新发现。"}
+		}
+	}
+	// Installation receipts describe the previous version. Preserve the current
+	// discovery at this path for both list rows and connection details.
+	return d
 }
 
 func (a *App) selectAgent(key string) {
@@ -219,11 +222,18 @@ func (a *App) selectAgent(key string) {
 }
 
 func (a *App) agentStatus(d agents.Discovery, c *records.Connection) (string, string) {
+	d = a.connectionDiscovery(d, c)
 	if d.Path == "" {
 		return "待连接", "未找到安装；可填写已知可执行文件路径。"
 	}
 	if d.Error != "" {
 		return "异常", d.Error
+	}
+	if d.CapabilityError != "" {
+		if c != nil && c.Enabled {
+			return "待适配", d.CapabilityError + " 现有连接配置保留，暂不能验证当前版本。"
+		}
+		return "已发现", d.CapabilityError
 	}
 	if c == nil {
 		return "已发现", "选择项目和允许范围，连接后在 Agent 中重载。"
@@ -361,14 +371,14 @@ func (a *App) agentDetail(c *ui.Context) {
 		}
 		ui.Row(c).Gap(10).Children(func() {
 			if conn == nil || !conn.Enabled {
-				actionButton(c.Key("connect-agent"), "连接", nil).Disabled(s.Busy || s.Project == "" || s.Path == "").OnClick(a.connectAgent)
+				actionButton(c.Key("connect-agent"), "连接", nil).Disabled(s.Busy || s.Project == "" || s.Path == "" || d.ConnectionError() != nil).OnClick(a.connectAgent)
 			} else {
-				actionButton(c.Key("apply-agent-scopes"), "应用范围", nil).Disabled(s.Busy).OnClick(a.connectAgent)
+				actionButton(c.Key("apply-agent-scopes"), "应用范围", nil).Disabled(s.Busy || d.ConnectionError() != nil).OnClick(a.connectAgent)
 				verifyLabel := "验证读写"
 				if d.Agent == "trae" {
 					verifyLabel = "准备验证prompt"
 				}
-				actionButton(c.Key("verify-agent"), verifyLabel, nil).Disabled(s.Busy).OnClick(a.verifyAgent)
+				actionButton(c.Key("verify-agent"), verifyLabel, nil).Disabled(s.Busy || d.ConnectionError() != nil).OnClick(a.verifyAgent)
 				actionButton(c.Key("disconnect-agent"), "断开", nil).Disabled(s.Busy).OnClick(a.disconnectAgent)
 			}
 			if s.Cancel != nil {
@@ -438,6 +448,9 @@ func (a *App) probeAgentPath() {
 			if probe.Error != "" {
 				s.Notice = probe.Error
 			} else {
+				if probe.CapabilityError != "" {
+					s.Notice = probe.CapabilityError
+				}
 				if s.SelectedPaths == nil {
 					s.SelectedPaths = map[string]string{}
 				}
@@ -483,8 +496,8 @@ func (a *App) connectAgent() {
 		probe := agents.Probe(ctx, d.Agent, opts.AgentPath)
 		var conn records.Connection
 		var err error
-		if probe.Error != "" {
-			err = errors.New(probe.Error)
+		if probe.ConnectionError() != nil {
+			err = probe.ConnectionError()
 		} else {
 			err = a.library.CheckWorkspace(ctx, project, workspace)
 			if err == nil {
