@@ -313,6 +313,13 @@ func (a *App) firstLaunchRuntime(status RuntimeStatus) {
 	if s.Controller == nil || !s.Open {
 		return
 	}
+	// Component progress may report a failed phase before the controller returns
+	// its concrete error. Retain that final error after entering the failed page.
+	if s.State.Stage == "failed" && status.Phase == "failed" {
+		s.State.Message = status.Message
+		a.persistFirstLaunch()
+		return
+	}
 	if s.State.Stage == "cancelling" {
 		if status.Phase == "stopped" || status.Phase == "cancelled" {
 			s.State.Stage = "cancelled"
@@ -422,118 +429,6 @@ func environmentStateLabel(state string) string {
 	}
 	return state
 }
-func (a *App) firstLaunchView(c *ui.Context) {
-	s := &a.firstLaunch
-	ui.Column(c).Fill().Background(ui.Hex("#ffffff")).Children(func() {
-		if s.State.Stage == "discovering" {
-			ui.Row(c).Shrink(0).Height(design.Toolbar).Padding(10, 24).Children(func() {
-				ui.Spacer(c)
-				button := quietButton(c, "稍后准备").Key("first-launch-skip").OnClick(func() { a.cancelFirstLaunch(true) })
-				if button.Shortcut(0, ui.KeyEscape) {
-					a.cancelFirstLaunch(true)
-				}
-			})
-			ui.Column(c).Grow(1).Justify(ui.Center).AlignItems(ui.Center).Gap(30).Children(func() { a.firstLaunchBlocks(c); ui.Text(c, s.State.Message).FontSize(15).TextColor(design.Muted) })
-			return
-		}
-		ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-			ui.Column(c).Width(212).Shrink(0).Background(design.SidebarFill).Padding(36, 22).Gap(22).Children(func() {
-				ui.Text(c, "Memlane").FontSize(24).Bold()
-				ui.Text(c, "先准备本机环境，再为真实项目记录与使用记忆。").LineHeight(1.7)
-				ui.Text(c, "历史记忆导入是独立可选操作，不扫描已有聊天。").FontSize(design.Small).TextColor(design.Muted)
-				ui.Spacer(c)
-				ui.Checkbox(c.Key("first-launch-reduced"), &s.State.ReducedMotion, "减少动态效果").OnChange(a.persistFirstLaunch)
-			})
-			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-				ui.Scroll(c).Grow(1).Padding(28).Gap(18).Children(func() {
-					ui.Text(c, "本机环境准备").FontSize(design.Title).Bold()
-					ui.Text(c, s.State.Message).Key("first-launch-stage").LineHeight(1.7)
-					if s.Error != "" {
-						ui.Text(c, s.Error).TextColor(design.Muted)
-					}
-					if s.State.Stage == "preparing" || s.State.Stage == "verifying" || s.State.Stage == "ready" {
-						a.firstLaunchBlocks(c)
-					}
-					if s.State.Stage == "confirmation" {
-						ui.Text(c, "将校验并复用兼容组件，下载缺失组件，注册此 App 的 helper 并验证本机服务。不会安装或升级 Agent、启用采集 hook 或改动其模型。").LineHeight(1.7)
-					}
-					for _, item := range s.State.Items {
-						ui.Column(c).Gap(6).Padding(12).Border(1, design.Border).Radius(5).Children(func() {
-							ui.Row(c).Gap(10).Children(func() {
-								ui.Text(c, item.Name).Bold()
-								ui.Spacer(c)
-								ui.Text(c, environmentStateLabel(item.State)).FontSize(design.Small)
-							})
-							quietButton(c, "查看检测依据").Key("first-launch-evidence-" + item.Name).OnClick(func() {
-								if s.Details == nil {
-									s.Details = map[string]bool{}
-								}
-								s.Details[item.Name] = !s.Details[item.Name]
-							})
-							if s.Details[item.Name] {
-								ui.Text(c, item.Evidence).FontSize(design.Small).TextColor(design.Muted).Selectable()
-							}
-							if item.Bytes > 0 {
-								ui.Text(c, fmt.Sprintf("预计额外准备 %.2f MB", float64(item.Bytes)/1e6)).FontSize(design.Small)
-							}
-						})
-					}
-					if a.runtimeStatus.Total > 0 && (s.State.Stage == "preparing" || s.State.Stage == "verifying") {
-						ui.Text(c, fmt.Sprintf("组件进度 %.2f / %.2f MB", float64(a.runtimeStatus.Downloaded)/1e6, float64(a.runtimeStatus.Total)/1e6)).Key("first-launch-bytes")
-					}
-				})
-				ui.Row(c).Shrink(0).Padding(18, 28).Gap(12).Children(func() {
-					quietButton(c, "稍后准备").Key("first-launch-skip").OnClick(func() { a.cancelFirstLaunch(true) })
-					ui.Spacer(c)
-					switch s.State.Stage {
-					case "results":
-						actionButton(c, "核对准备方案", nil).Key("first-launch-confirmation").OnClick(func() { s.State.Stage = "confirmation"; a.persistFirstLaunch() })
-					case "confirmation":
-						actionButton(c, "确认并准备本机环境", nil).Key("first-launch-prepare").OnClick(a.prepareFirstLaunch)
-					case "preparing", "verifying":
-						actionButton(c, "取消准备", nil).Key("first-launch-cancel").OnClick(func() { a.cancelFirstLaunch(false) })
-					case "ready":
-						actionButton(c, "选择项目并开始记录", nil).Key("first-launch-use").OnClick(func() {
-							if a.runtimeStatus.Phase != "ready" {
-								s.State.Stage = "failed"
-								s.State.Message = "记忆服务已不可用，请重新验证。"
-								a.persistFirstLaunch()
-								return
-							}
-							s.State.Completed = true
-							s.Open = false
-							a.persistFirstLaunch()
-							a.navigate("项目", "")
-							a.detailMode = "project"
-						})
-					case "failed", "cancelled", "interrupted":
-						actionButton(c, "重新检查", nil).Key("first-launch-retry").OnClick(a.discoverFirstLaunch)
-					}
-				})
-			})
-			ui.Column(c).Width(160).Shrink(0).Padding(36, 18).Gap(28).BorderWidth(0, 0, 0, 1).BorderColor(design.Border).Children(func() {
-				active := 0
-				if s.State.Stage == "confirmation" {
-					active = 1
-				}
-				if s.State.Stage == "preparing" || s.State.Stage == "verifying" || s.State.Stage == "cancelling" {
-					active = 2
-				}
-				if s.State.Stage == "ready" {
-					active = 3
-				}
-				for index, step := range []string{"检查本机", "核对方案", "准备与验证", "首次使用"} {
-					text := ui.Text(c, step).FontSize(design.Small).TextColor(design.Muted)
-					if index == active {
-						text.Bold().TextColor(design.Ink)
-					}
-				}
-				ui.Spacer(c)
-				ui.Text(c, "配置、授权与实际可用分别核对。").FontSize(design.Small).TextColor(design.Muted)
-			})
-		})
-	})
-}
 
 // Only interpolation uses elapsed time. Target geometry is determined by the
 // actual stage, never by a timer that declares preparation successful.
@@ -542,6 +437,9 @@ func (a *App) firstLaunchBlocks(c *ui.Context) {
 	a.preparationBlocks(c, "first-launch-blocks", s.State.Stage, s.State.ReducedMotion, s.ChangedAt)
 }
 func (a *App) preparationBlocks(c *ui.Context, key, stage string, reduced bool, changed time.Time) {
+	a.preparationBlocksSized(c, key, stage, reduced, changed, 340, 300)
+}
+func (a *App) preparationBlocksSized(c *ui.Context, key, stage string, reduced bool, changed time.Time, width, height float32) {
 	elapsed := time.Since(changed).Seconds()
 	transition := math.Min(1, elapsed/0.7)
 	if reduced {
@@ -551,7 +449,7 @@ func (a *App) preparationBlocks(c *ui.Context, key, stage string, reduced bool, 
 	if active || transition < 1 {
 		c.AnimationFrame()
 	}
-	ui.Column(c).Key(key).Size(340, 300).Draw(func(p *ui.Painter, r ui.Rect) {
+	ui.Column(c).Key(key).Size(width, height).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
 		bulb := [][2]float64{}
 		for y := -8; y <= 8; y++ {
 			for x := -8; x <= 8; x++ {
@@ -606,7 +504,8 @@ func (a *App) preparationBlocks(c *ui.Context, key, stage string, reduced bool, 
 			if stage == "failed" || stage == "cancelled" {
 				color = design.Muted
 			}
-			p.Fill(ui.Rect{X: r.X + r.W/2 + float32(x) - 3.5, Y: r.Y + r.H/2 + float32(y) - 3.5, W: 7, H: 7}, color, 1)
+			scale := min(r.W/340, r.H/300)
+			p.Fill(ui.Rect{X: r.X + r.W/2 + (float32(x)-3.5)*scale, Y: r.Y + r.H/2 + (float32(y)-3.5)*scale, W: 7 * scale, H: 7 * scale}, color, scale)
 		}
 	})
 }

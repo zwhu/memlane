@@ -2,7 +2,26 @@
 
 2026-11-08。此记录对应本轮独立 Goal；**两部分连续真实运行验收已通过**，提交与远端以 Git 和最终交接为准。不恢复旧工程 Goal，不选择 Q1–Q4 或日常自动记忆策略。没有启动其他 Agent 开发会话。
 
-## 当前结果与仍需完成的验收
+## 最终不可变包的空起点连续验收
+
+2026-11-08，`build/onboarding-memory-validation/immutable-full-run/continuous/report.json`通过：最新完整包从新空业务库、空Rust/E5与官方组件缓存开始，在同一个实际窗口内完成环境发现、确认、真实下载与验证、正常Codex工具任务、官方持久同步、Native完整原文、三视图、全部当前Rust和全新官方graph recall。主二进制、helper和配置的前后SHA均相同，过程中没有修包、手工补数据或切换模型。此项是最终连续证据，下面的旧恢复链路和故障切片不能替代它。
+
+本次实际产物为11 raw（1完整会话＋1 QA＋9 trace）、2 knowledge、21实体、22条有出处关系。原文51,401 B，SHA256 `a12098adbe9e9c380d72364ced3086e853329e6a39a6d605f950f094485cace1`，实际复制、长分页、搜索与SDK摘录定位通过。首session `codex_01a1bbc5-980c-7ce0-9a99-a0ee2fca0b9d`，新session `codex_01a1bbc9-c676-7fb1-a183-d24156b90a19`；新prompt和项目文件没有答案，通过官方脚本返回首session材料及真实回答。数目按实际模型产物记录，没有为了匹配旧记录补造4条知识或27个实体。
+
+同包重放、第二项目隔离、来源跨项目拒绝、停止及重开恢复再次通过，证据 `immutable-full-run/browsing-reopen/report.json`。本轮服务、Agent与两个组件源已停止，临时auth与TLS测试私钥清理，包与合成材料保留；`immutable-bundle-before.json`、`immutable-bundle-after.json`和`cleanup-final.json`证明过程与最终状态。故障/取消/旧库迁移仍沿用下方实际边界证据，独立于正常连续链路。
+
+此根只复用开发工具链、现有Codex认证及已批准Cognee独立模型条件；没有组件缓存、业务记忆或历史聊天。一次源启动脚本误解引用venv Python而缺cryptography，属于App启动前的源工具错误，已纠正入口并保留日志，不计作成功准备或App运行失败。
+
+当前推荐包：`build/onboarding-memory-validation/immutable-full-run/app/darwin-arm64/MemlaneOnboardingFinal.app`，身份 `io.github.zwhu.memlane.p0.d84a77123654`。主DMG18,149,754 B、App40,550,279 B，实际首下载708,140,713 B，App加client普通文件1,556,330,556 B（du约1.63 GB）。旧恢复环境额外保留的SDK数据使体积不同，两根测量分别保存，不能混用。
+
+```sh
+open "/Users/bytedance/work/AI/memlane/build/onboarding-memory-validation/immutable-full-run/app/darwin-arm64/MemlaneOnboardingFinal.app" --args --p0-config "/var/folders/nv/g6m5_3nx1r9_v9dk3zh_5zw40000gn/T/memlane-official-agent-onboarding-59oevo8l/runtime-config.json"
+```
+
+此环境打开时服务已停止。在设置“启动服务”，从项目A的官方接入入口确认复核已安装环境后阅读三视图与原文。停止用“文件→停止服务并退出”，只停进程不删数据。体验根为 `immutable-full-run/fixture-path.txt` 所指目录，包/数据原路径保留；系统临时根的长期迁移需后续显式操作。原恢复根也保留，下面命令仅是该旧根入口。
+
+## 此前恢复链路与生命周期边界
+
 
 以下是当前口径；后文按时间保留尝试历史，旧的“待验”描述不覆盖此表。
 
@@ -131,3 +150,19 @@ open "/Users/bytedance/work/AI/memlane/build/onboarding-memory-validation/final-
 App打开时服务已停止：在设置明确“启动服务”，从项目A的“官方接入与同步”确认复核已安装环境，再进入三视图和完整原文。无需新Agent即可体验现有合成材料；B保持撤销的受限状态。停止用“文件→停止服务并退出”，只停进程，不删数据。根和build包保留原路径，数据根位于系统临时目录，本轮未移动已授权项目；长期迁移保留为后续显式操作。
 
 Q1–Q4仍待讨论。本轮技术与流程通过不选择日常自动记忆策略、项目创建策略、全局自动共享或完整代码图谱，不恢复旧全量Goal。
+
+## 首启原型交互续改（2026-11-09）
+
+原先首启统一长卡片列表及大动效没有完整承接所选首启原型的信息层级与交互，已改为紧凑分组、折叠详情、具体准备确认、任务进度与明确下一步。固定顶部状态/底部操作/右侧编号与步骤高亮，方块灯泡仍是选定动效；薄雾 URL 仅作为用户指出的交互参考。正式 MyGo 实现使用真实状态，不搬入 HTML 或模拟成功。
+
+新的独立 App `MemlaneOnboardingFlow.app` 位于 `build/onboarding-memory-validation/selected-interaction/app/darwin-arm64/`。实际系统窗口已对照原型，检测页默认无需长滚动，ready 页小灯泡保留终态并引导项目首次使用。原生 frame 检查只证明布局/按钮门禁；真实窗口与本机准备另有证据。全仓 test、vet 与 desktop/official/components race 通过，日志在同目录。
+
+本次 UI 预检创建了两个仅含签名 feed 的缓存目录；严格空缓存续验前只清理本轮拥有的这两份 feed-cache，详情在 `strict-cache-reset-after-ui-review.json`。业务库、已安装组件、官方服务数据和 Agent home 都没有预置。预检后首次驱动因目录存在的严格断言提前结束，保留 `continuous-untouched-cache-check.log`；没有把该断言算作准备成功。独立 Cognee 条件复用本 Goal 已授权模型配置，换成本轮根并移除旧 HF_HOME；没有复制服务数据、模型缓存或历史会话。
+
+真实连续路径在 `selected-interaction/continuous-accepted/` 执行；故障与恢复在 `build/first-launch-validation/selected-interaction/` 续验。最终通过状态、数量、体积和清理结果在执行结束后补记。
+
+### 具体失败原因补验
+
+`selected-interaction` 的首启跳过、503拒绝、下载取消与重开恢复都运行完成，但实际失败窗口暴露具体原因缺失：组件 progress 提前发出 failed，首启状态进入 failed 后忽略外层随后的 HTTP 原因，显示旧“正在准备”文案。原生测试与首轮自检没有发现这个问题，不能据其宣布失败展示通过。已修正 failed→failed 的具体错误更新与持久保存，并确保迟到 ready 不覆盖失败；实机驱动新增必须出现 503 的断言。
+
+最终新包与独立空根在 `build/onboarding-memory-validation/selected-final/` 和 `build/first-launch-validation/selected-final/`，与上一包/旧失败分别保留。前一包的正常任务、来源、Rust、新会话召回与重开证据保留；最终包会继续按同一连续标准复验。

@@ -17,6 +17,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pointer", type=Path, default=ROOT / "build/onboarding-memory-validation/final-cold/fixture-path.txt")
     parser.add_argument("--out", type=Path, default=ROOT / "build/memory-browsing-validation/official-app")
+    parser.add_argument("--session", default="codex_01a1bb1f-68bf-7441-b006-00ad9c034e6c")
+    parser.add_argument("--native-expected", type=Path, default=ROOT / "build/memory-browsing-validation/native-original.txt")
     args = parser.parse_args(); args.out.mkdir(parents=True, exist_ok=True)
     fixture = Path(args.pointer.read_text().strip())
     assert json.loads((fixture / "synthetic-only.json").read_text())["synthetic_only"]
@@ -53,7 +55,7 @@ def main():
         U.wait(lambda: json.loads((fixture / "client/official-onboarding.json").read_text())["Phase"] in ("ready", "failed", "cancelled") and "disabled" not in ui.node(key="cognee-prepare").get("states", []), timeout=240)
         assert json.loads((fixture / "client/official-onboarding.json").read_text())["Phase"] == "ready"
         before = {kind: call("list", list_query={"kind": kind, "datasets": [project["id"]]}) for kind in ("raw", "knowledge")}
-        ui.set("cognee-session", "codex_01a1bb1f-68bf-7441-b006-00ad9c034e6c"); press("cognee-sync")
+        ui.set("cognee-session", args.session); press("cognee-sync")
         U.wait(lambda: "disabled" not in ui.node(key="cognee-sync").get("states", []), timeout=330)
         report["sync_message"] = ui.node(key="cognee-result").get("label", "")
         assert "Memlane 已持久化" in report["sync_message"] and "取消" not in report["sync_message"]
@@ -93,7 +95,7 @@ def main():
         ui.system_capture("01-memory-knowledge-system.png")
         sdk_raw = [v for v in raw["items"] if v.get("source_detail", {}).get("official")]
         native = next(v for v in raw["items"] if v.get("source_detail", {}).get("native"))
-        assert native["text"] == (ROOT / "build/memory-browsing-validation/native-original.txt").read_text()
+        assert native["text"] == args.native_expected.read_text()
         qa = next(v for v in sdk_raw if v["source_detail"]["official"]["kind"] == "qa")
         reader_key = "source-reader-open-" + qa["memory"]
         raw_id = reader_key.removeprefix("source-reader-open-")

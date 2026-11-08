@@ -81,6 +81,7 @@ def main():
         control(component_mode="http_error")
         press("first-launch-confirmation"); press("first-launch-prepare")
         U.wait(lambda: state()["stage"] == "failed", timeout=100)
+        U.wait(lambda: "503" in state()["message"], timeout=10)
         assert not state()["completed"] and not any(n.get("key") == "first-launch-use" for n in ui.nodes())
         ui.system_capture("02-real-http503-failure-system.png")
         report["cases"].append({"case": "download_http503_fault_injection", "state": state(), "source": source_state(), "fault_injection": True})
@@ -91,6 +92,12 @@ def main():
             return sum(p.stat().st_size for p in (f / "client/runtime/downloads").glob("*.part"))
         U.wait(lambda: partial_bytes() > 65536, timeout=90)
         report["download_before_cancel"] = partial_bytes()
+        # Capture the real active phase without the generic idle waiter: the
+        # native block animation remains active until a real terminal receipt.
+        mac = SourceFileLoader("firstlaunchprogressmac", str(ROOT / "scripts/mac-native.py")).load_module().Mac()
+        mac.require_unlocked(); mac.activate(ui.pid)
+        mac.capture(ui.pid, ui.out / "03a-real-preparation-system.png")
+        (ui.out / "03a-real-preparation-state.json").write_text(json.dumps({"actual_system_window": True, "pid": ui.pid, "state": state(), "native": ui.native()}, ensure_ascii=False, indent=2))
         press("first-launch-cancel")
         U.wait(lambda: state()["stage"] == "cancelled", timeout=50)
         assert not state()["completed"] and not (f / "client/data/memlane.sqlite").exists()

@@ -12,10 +12,10 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def capture_recall(path, phrase):
+def capture_recall(path, phrase, original_session="codex_01a1bb1f-68bf-7441-b006-00ad9c034e6c"):
     rows = [json.loads(line) for line in path.read_text().splitlines()]
     session_id = next(r["payload"]["id"] for r in rows if r["type"] == "session_meta")
-    assert session_id != "01a1bb1f-68bf-7441-b006-00ad9c034e6c"
+    assert "codex_" + session_id != original_session
     calls = {}; returns = {}; final = []; injected = []
     for row in rows:
         if row["type"] != "response_item": continue
@@ -27,11 +27,11 @@ def capture_recall(path, phrase):
             returns[p["call_id"]] = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
         elif p.get("type") == "message":
             texts = [v.get("text", "") for v in p.get("content", [])]
-            if p.get("role") == "assistant": final += texts
+            if p.get("role") == "assistant" and p.get("phase") == "final_answer": final += texts
             elif p.get("role") == "user": assert all(phrase not in v for v in texts), "New prompt supplied the answer"
             elif p.get("role") == "developer": injected += [v[:2400] for v in texts if "[cognee-memory]" in v and phrase in v]
     recall = [{"request": v, "response": returns.get(k, "")} for k, v in calls.items() if "cognee-search.sh" in v["arguments"]]
-    assert recall and any(phrase in v["response"] and "graph" in v["response"] and "codex_01a1bb1f-68bf-7441-b006-00ad9c034e6c" in v["response"] for v in recall), {"recall_calls": len(recall), "response_bytes": [len(v["response"]) for v in recall]}
+    assert recall and any(phrase in v["response"] and "graph" in v["response"] and original_session in v["response"] for v in recall), {"recall_calls": len(recall), "response_bytes": [len(v["response"]) for v in recall]}
     assert any(phrase in v for v in final), final
     return {"session": "codex_" + session_id, "official_recall_calls": recall, "assistant_answer": final, "official_prompt_hook_context": injected}
 
@@ -52,7 +52,7 @@ def main():
     session_root = Path(scope["home"]) / ".codex/sessions"
     if args.capture_existing:
         assert args.capture_existing.resolve().is_relative_to(session_root.resolve())
-        report = capture_recall(args.capture_existing, phrase)
+        report = capture_recall(args.capture_existing, phrase, expected.get("session", "codex_01a1bb1f-68bf-7441-b006-00ad9c034e6c"))
         report.update(state="fresh_session_official_graph_recall_passed", project=project, resume=False, prompt_contains_answer=False, ordinary_mcp_used=False, synthetic_only=True, evidence_capture_only=True)
         (args.out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
         print({"state": report["state"], "session": report["session"], "official_calls": len(report["official_recall_calls"])}, flush=True)
@@ -93,7 +93,7 @@ def main():
         ui.system_capture("01-fresh-official-answer-system.png")
         new = set(session_root.rglob("*.jsonl")) - before
         assert len(new) == 1, new
-        report.update(capture_recall(next(iter(new)), phrase))
+        report.update(capture_recall(next(iter(new)), phrase, expected.get("session", "codex_01a1bb1f-68bf-7441-b006-00ad9c034e6c")))
         for file in Path(scope["workspace"]).rglob("*"):
             if file.is_file() and ".git" not in file.parts: assert phrase.encode() not in file.read_bytes(), file
         assert not (Path(scope["home"]) / ".codex/auth.json").exists(), "Temporary Agent authentication was not removed"
