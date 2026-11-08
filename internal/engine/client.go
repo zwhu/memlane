@@ -48,19 +48,21 @@ type response struct {
 }
 
 type Client struct {
-	cmd        *exec.Cmd
-	stdin      io.WriteCloser
-	writeMu    sync.Mutex
-	mu         sync.Mutex
-	pending    map[string]chan response
-	ready      chan error
-	done       chan struct{}
-	err        error
-	closeOnce  sync.Once
-	config     Config
-	Generation string
-	CodeRecipe string
-	diagnostic boundedLog
+	cmd             *exec.Cmd
+	stdin           io.WriteCloser
+	writeMu         sync.Mutex
+	mu              sync.Mutex
+	pending         map[string]chan response
+	ready           chan error
+	done            chan struct{}
+	err             error
+	closeOnce       sync.Once
+	config          Config
+	Generation      string
+	CodeRecipe      string
+	CodeRootModules bool
+	codeRecycled    bool
+	diagnostic      boundedLog
 }
 
 type boundedLog struct {
@@ -125,10 +127,11 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, err
 	}
 	var handshake struct {
-		Version    string `json:"worker_version"`
-		Ready      bool   `json:"ready"`
-		Generation string `json:"generation"`
-		CodeRecipe string `json:"code_recipe"`
+		Version         string `json:"worker_version"`
+		Ready           bool   `json:"ready"`
+		Generation      string `json:"generation"`
+		CodeRecipe      string `json:"code_recipe"`
+		CodeRootModules bool   `json:"code_root_modules"`
 	}
 	if err = c.Call(ctx, "handshake", nil, &handshake); err != nil {
 		c.Close()
@@ -139,6 +142,7 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, errors.New("worker handshake mismatch")
 	}
 	c.CodeRecipe = handshake.CodeRecipe
+	c.CodeRootModules = handshake.CodeRootModules
 	return c, nil
 }
 
@@ -335,3 +339,11 @@ func (c *Client) PID() int {
 }
 func (c *Client) Done() <-chan struct{} { return c.done }
 func (c *Client) Diagnostics() string   { return c.diagnostic.String() }
+
+// CodeRecycled distinguishes a controlled native cancellation fence from a
+// crash, so normal user cancellation does not consume the supervisor budget.
+func (c *Client) CodeRecycled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.codeRecycled
+}

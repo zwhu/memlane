@@ -1,6 +1,6 @@
 # G1 App、服务与日常代码工具验证
 
-2026-11-08，G1 对应范围本机通过。G0 底座见 [底座验证](p4-code-validation.md)，正式规则见 [契约](p4-code-contract.md)。G2 文件自动更新、重启/崩溃/取消、派生索引资源和组件升级/回退仍需对应验收；完整代码图谱及总 Goal 尚未完成。
+2026-11-08，G1 对应范围本机通过。G0 底座见 [底座验证](p4-code-validation.md)，正式规则见 [契约](p4-code-contract.md)。后续 G2 文件更新、取消、CLI 崩溃恢复、派生回收与组件升级/回退已在 [G2 验证](p4-code-update-validation.md) 分别记录；本页只证明 G1，正式交付及总 Goal 尚未完成。
 
 ## 真实 App 与 Agent
 
@@ -18,7 +18,7 @@ schema 11→12 在修改前创建一致性 VACUUM INTO 备份。`g1-migration-v1
 
 `g1-daemon-code-faults.log` 额外调用实际 daemon helper：SQL ready-publication ABORT 经有限三次短事务重试后进入 publication_failed，未产生 current；旧批次的已停用记录在首次 Capture 前被拒绝；明确 reader instrumentation 故障夹具证明初始扫描 owner 已登记，停用取消 context。夹具不代替真实 Enola/Rust/App 正常流程。全库不可写后 owner 退出与实际启动恢复尚需后续故障验收，此处仅有源码栅栏。
 
-stop/quiesce 与发布共用 codeStopping/mutex；旧 generation 不能更新 current。网络/文件/模型/worker 等待不持 SQLite 写事务。helper owner FD guard 先获 S 才运行，服务消失杀整组，FD 不交 Enola；该接线正常 App 已运行，崩溃故障仍在 G2/F。
+stop/quiesce 与发布共用 codeStopping/mutex；旧 generation 不能更新 current。网络/文件/模型/worker 等待不持 SQLite 写事务。helper owner FD guard 先获 S 才运行，服务消失杀整组，FD 不交 Enola；该接线正常 App 已运行，后续 CLI 崩溃故障见 G2，App/launchd 路径及正式分发按 F 独立验收。
 
 ## 审查、失败历史与包
 

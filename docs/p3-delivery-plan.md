@@ -25,10 +25,10 @@
 | I 引导与初始化 | 组件/项目/连接实际回执 | 可跳过恢复、复制 prompt、真实批次/稳定 ID/来源/最小提交/取消/重放、导入与新增分开 | build/p3-onboarding/ | 本机已通过，见 [I验证](p3-onboarding-validation.md) |
 | A TRAE / traex 日常接入 | P2 受控记忆桥 | 按安装版本渠道探测、App 连接、隔离配置增量备份/重载/断开、真实保存读取搜索来源版本、scope/generation/workspace | build/p3-agents/ | A1a traex本机通过；A1b当前Codex模型/版本阻塞；A2a已实现，真实IDE模型待隔离登录，见 [A验证](p3-agent-validation.md) / [IDE验证](p3-ide-validation.md) |
 | R pi RPC 后台 | 固定本机包、纯建议 runner | 接受/终态区分、真实正常与取消、隔离与生命周期、仅验收版本列支持 | build/p3-pi-rpc/ | R0 runner及真实活动取消通过；当前qwen3:0.6b正常质量未通过，服务/App/Rust仍待完成，见 [R验证](p3-pi-rpc-validation.md) |
-| G1 Rust 代码图谱 | 固定源码及抽取实验、开启授权 | 独立 code dataset / worktree / commit / snapshot，函数文件调用依赖影响查询，App 与受控 Agent 入口，明确实际输出路径 | build/p4-code/ | G0底座、G1真实App开启/来源/调用/停用、traex0.214.1 internal代码工具本机通过，见 [G1验证](p4-code-app-validation.md)；G2仍待 |
-| G2 图谱更新与组件 | G1 | 未开启不扫描、忽略/删除/重命名/合并更新、旧图排除/过期/失败/重启隔离；真实 TS/Python 支持样本与 worker 包 | build/p4-code/ | 待实现 |
-| F1 迁移与故障回归 | 各新增表/协议/包 | 迁移前一致性备份，临时旧库保留/恢复/重建；许可撤销/磁盘满/worker 与服务崩溃/App 移动更新路径；兼容/回退失败恢复 | build/p4-delivery/ | 待实现 |
-| F2 完整本机包 | 全部功能及 F1 | 最新 UI/helper/LaunchAgent/Agent 桥、DMG、签名完整性、三类体积和更新下载字节 | build/p4-final/ | 待实现 |
+| G1 Rust 代码图谱 | 固定源码及抽取实验、开启授权 | 独立 code dataset / worktree / commit / snapshot，函数文件调用依赖影响查询，App 与受控 Agent 入口，明确实际输出路径 | build/p4-code/ | G0底座、G1真实App与traex0.214.1 internal代码工具通过，见 [G1验证](p4-code-app-validation.md)；更新见G2 |
+| G2 图谱更新与组件 | G1 | 未开启不扫描、忽略/删除/重命名/合并更新、旧图排除/过期/失败/重启隔离；真实 TS/Python 支持样本与 worker 包 | build/p4-code/ | G2真实App更新/删除重命名/失败重试/停服恢复、Rust图回收与三轮取消、CLI owner故障、根混合语言/旧图/组件升级回退/最新完整包本机通过，见 [G2验证](p4-code-update-validation.md)；App helper替换见F1 |
+| F1 迁移与故障回归 | 各新增表/协议/包 | 迁移前一致性备份，临时旧库保留/恢复/重建；许可撤销/磁盘满/worker 与服务崩溃/App 移动更新路径；兼容/回退失败恢复 | build/p4-delivery/ | 既有迁移/备份及部分故障已分层验证；同路径helper替换Launch Constraint仍失败，见 [F1诊断](p4-helper-replacement-validation.md)；其余故障继续 |
+| F2 完整本机包 | 全部功能及 F1 | 最新 UI/helper/LaunchAgent/Agent 桥、DMG、签名完整性、三类体积和更新下载字节 | build/p4-final/ | G2最新完整ad-hoc包首次准备与功能/体积通过；整体最终包须待R/A1b/A2b/F1收口，不标F2完成 |
 | F3 正式分发 | F2、有效身份、渠道、干净设备 | Developer ID / 公证 / Gatekeeper、正式签名清单与更新下载可达；macOS 15+ arm64 干净安装准备离线主要功能 | build/p4-release/ | 外部条件待解除 |
 | 交付收口 | 全部必需项 | 适用 checks/review、文档链接、阶段提交、普通推送 SHA 核对、最终临时 handoff 与能力/故障/体积报告 | build/p4-delivery/ | 待完成 |
 

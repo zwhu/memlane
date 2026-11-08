@@ -168,7 +168,7 @@ func (r *RuntimeController) Prepare(ctx context.Context, notify func(RuntimeStat
 		DataDir: filepath.Join(r.Config.Root, "data/index"), ExpectedVersion: worker.Metadata.Version, DenyNetwork: r.Config.AllowLocalTestSource}}
 	if len(installed) > 2 {
 		extractor := installed[2]
-		if worker.Metadata.Version != "0.0.2" || extractor.Metadata.ID != "enola-code" || extractor.Metadata.Version != "0.4.30-v351" {
+		if (worker.Metadata.Version != "0.0.2" && worker.Metadata.Version != "0.0.3") || extractor.Metadata.ID != "enola-code" || extractor.Metadata.Version != "0.4.30-v351" {
 			return errors.New("incompatible code worker/extractor components")
 		}
 		service.CodeExtractor = filepath.Join(extractor.Directory, extractor.Metadata.Executable)

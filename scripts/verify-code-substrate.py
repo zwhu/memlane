@@ -18,6 +18,7 @@ def main():
     p.add_argument('--enola', type=Path, default=ROOT/'.local/cognee-python/bin/enola')
     p.add_argument('--checker', type=Path, default=ROOT/'build/p4-code/p4-code-check')
     p.add_argument('--out', type=Path, default=ROOT/'build/p4-code/relocated-substrate.json')
+    p.add_argument('--prune', action='store_true', help='also verify retained real graphs and explicit orphan staging')
     args = p.parse_args()
     args.out.parent.mkdir(parents=True, exist_ok=True)
     result = {'status':'failed','synthetic_only':True,'relocated_archive':str(args.archive),'actual_app':False,'actual_daily_agent':False}
@@ -44,7 +45,9 @@ def main():
                 assert target.is_file() and not target.is_symlink() and target.resolve().is_relative_to(component.resolve()), 'component executable/library escapes archive directory'
                 asset=next(x for x in meta['files'] if x['path']==value)
                 assert target.stat().st_size==asset['bytes'] and hashlib.sha256(target.read_bytes()).hexdigest()==asset['sha256'], 'selected component member changed after verification'
-            run=subprocess.run([str(args.checker),'--worker',str(component/meta['executable']),'--library',str(component/meta['library']),'--model',str(args.model.resolve()),'--enola',str(args.enola.resolve())],capture_output=True,text=True,timeout=210)
+            command=[str(args.checker),'--worker',str(component/meta['executable']),'--library',str(component/meta['library']),'--model',str(args.model.resolve()),'--enola',str(args.enola.resolve())]
+            if args.prune:command.append('--prune')
+            run=subprocess.run(command,capture_output=True,text=True,timeout=210)
             result['execution']=json.loads(run.stdout)
             result['exit_code']=run.returncode
             assert run.returncode==0 and result['execution']['status']=='passed',result['execution'].get('error',run.stderr[-1000:])

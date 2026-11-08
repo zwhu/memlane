@@ -23,7 +23,7 @@ def validate_fixture(fixture,app,phase="c2"):
  assert plist==identity+'.service.plist', 'service identity differs'
  service=plistlib.loads((app/'Contents/Library/LaunchAgents'/plist).read_bytes())
  assert Path(service['EnvironmentVariables']['MEMLANE_SERVICE_CONFIG']).resolve()==fixture/'client/service.json', 'service config escapes fixture'
- assert service['BundleProgram']=='Contents/Resources/bin/memlaned', 'unexpected helper path'
+ assert service['BundleProgram'] in ('Contents/Resources/bin/memlaned','Contents/MacOS/memlaned'), 'unexpected helper path'
  for relative in ['client/data','client/data/memlane.sqlite','client/data/memlane.sqlite-wal','client/data/memlane.sqlite-shm','client/data/memlane.sqlite.owner.lock','client/data/service-state.json','client/data/.service.lock','client/service.json','pi-agent','ui-home']:
   path=fixture/relative
   if path.exists() or path.is_symlink():ensure_inside(path,fixture)

@@ -41,6 +41,7 @@ type Server struct {
 	codeStopping         bool
 	codeRuns             map[string]context.CancelFunc
 	codeWake             chan struct{}
+	codeCleanupError     string
 	proposalGuard        string
 	scheduleFailure      string
 	organizerOnce        sync.Once
@@ -273,6 +274,9 @@ func (s *Server) supervise(ctx context.Context) {
 		}
 		if ctx.Err() != nil {
 			return
+		}
+		if worker != nil && worker.CodeRecycled() {
+			continue
 		}
 		s.mu.Lock()
 		s.state.Restarts = append(s.state.Restarts, time.Now())
@@ -540,8 +544,9 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		}
 		s.mu.Lock()
 		scheduleFailure := s.scheduleFailure
+		codeCleanupError := s.codeCleanupError
 		s.mu.Unlock()
-		return map[string]any{"service_version": ServiceVersion, "state": status, "worker_pid": pid, "worker_busy": busy, "schedule_error": scheduleFailure}, nil
+		return map[string]any{"service_version": ServiceVersion, "state": status, "worker_pid": pid, "worker_busy": busy, "schedule_error": scheduleFailure, "code_cleanup_error": codeCleanupError}, nil
 	case "apply":
 		if r.Mutation.Kind != "save" && !r.UserConfirmed {
 			return nil, errors.New("knowledge changes require an explicit user confirmation")

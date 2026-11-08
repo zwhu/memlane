@@ -431,3 +431,14 @@ MEMLANE_C3_QUALITY_REAL=1 sh scripts/go.sh test -json ./internal/agents -run '^T
 所有脚本仅绑定source-info标记根/包与合成项目。`repro-p3-helper-startup.py`只诊断隔离helper启动，当前同包重试通过不代表F1首次换路径问题修复。生产完整包 `python3 scripts/build-client.py --out build/p3-agents-production`；最终实际结果、checks/review/体积/推送/handoff在该阶段build产物，生成handoff后继续总交付。
 
 A2隔离配置与显式无模型App/真实Rust回执夹具见 [IDE验证](p3-ide-validation.md)。`create-p3-ide-fixture.py`生成新根及独立IDE profile；`verify-p3-ide-config.py`和`verify-p3-ide-app.py`不会调用IDE模型，真实IDE登录后须另做日常/初始化验收。完整生产身份包仍用标准build-client.py，ad-hoc不得标正式分发通过。
+
+
+## G2 更新、根语言与 owner 验收
+
+G2 实际更新和活动取消分别运行 `python3 scripts/verify-p4-code-updates.py`、`python3 scripts/verify-p4-code-lifecycle.py`，仅绑定各自 marker 指定的隔离根；后者必须绑定本轮源 SHA/新增 staging，旧组退出后再核对 current，不能用旧 stage 当活动证明。完整证据与失败记录见 [G2验证](p4-code-update-validation.md)。
+
+`python3 scripts/verify-p4-code-owner.py` 以 `build/p4-code/helper-latest` 在新合成根执行真实 Enola/Rust CLI owner SIGKILL，仅复用组件缓存路径；kill前核对其直接 child/PGID，失败有界清理且保持 failed。它先等旧组退出才启动新 CLI owner，不代表 App/launchd 立即恢复。
+
+根混合语言 App 可运行 `python3 scripts/verify-p4-code-root-app.py --pointer build/p4-code/g2-final-fixture-path.txt --out build/p4-code/g2-complete-package-app.json --screenshots build/p4-code-g2-final-screenshots`。要求全新登记状态、含 root.ts/root.py 的合成源，0.0.3 独立 worker。用 `create-p4-code-fixture.py --app <隔离完整App> --pointer <新pointer> --worker-archive <0.0.3归档>` 创建新标记根，按 source-info 的 identifier 和 runtime-config 构建完整包；避免覆盖 G1/G2 历史包和报告。组件旧图/升级/回退 checker 位于 `cmd/p4-component-check`，正式能力及当前版本见 [根模块契约](p4-code-root-contract.md)。
+
+F1 无模型复现命令为 `python3 scripts/verify-p4-helper-replacement.py --replace-helper --helper-signing producer --helper-change-mode unused-build-tag --out build/p4-delivery/<probe>.json`；先持久停服，脚本只修改旧F1隔离App，不能对用户日常包运行。当前仍失败，见 [F1诊断](p4-helper-replacement-validation.md)，不反复覆盖失败或以新身份安装代替更新。

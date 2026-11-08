@@ -1,6 +1,6 @@
 # G0 代码图谱底座验证
 
-2026-11-08。真实固定 Enola → Rust Ladybug 图存储/查询 → 重启持久化及独立归档已通过。**App 开启/查询、日常 Agent、持久授权/当前快照、自动更新和抽取器组件准备尚未通过**，继续 G1/G2，不能把 G0 记为完整代码图谱交付。正式规则见 [契约](p4-code-contract.md)。
+2026-11-08。真实固定 Enola → Rust Ladybug 图存储/查询 → 重启持久化及独立归档已通过。这是 G0 历史底座验收；当时未包含 App/Agent/授权更新。后续 G1 与 G2 的实际通过范围分别见 [G1 验证](p4-code-app-validation.md)、[G2 验证](p4-code-update-validation.md)，不能以 G0 独立证明完整交付。正式规则见 [契约](p4-code-contract.md)。
 
 ## 实际闭环
 
@@ -20,7 +20,7 @@ Git 忽略（含已跟踪但被忽略文件）、node_modules、隐藏凭据样�
 
 ## 兼容、包与检查
 
-独立 `memlane-cognee-rust-0.0.2-darwin-arm64.tar.gz` 为 **69,952,134 bytes**，归档文件解包量 **206,998,499 bytes**；不包含模型或 Enola 抽取器。这是 worker 组件大小，不能当主 App、首次完整准备或最终磁盘量。G2 还需独立抽取器包、组件准备及 App/helper 包。Developer ID/公证/正式更新源与干净系统仍属 F，未通过。
+独立 `memlane-cognee-rust-0.0.2-darwin-arm64.tar.gz` 为 **69,952,134 bytes**，归档文件解包量 **206,998,499 bytes**；不包含模型或 Enola 抽取器。这是 worker 组件大小，不能当主 App、首次完整准备或最终磁盘量。独立抽取器、组件准备与 App/helper 的后续证据见 G1/G2，本段大小仅属于历史 G0 worker。Developer ID/公证/正式更新源与干净系统仍属 F，未通过。
 
 `raw-corpus-v2.json` 用新重定位 worker、同 E5-base int8 配方和 OS 禁止联网，原 9 条检索 9/9 Top-1/Top-3，来源 byte range、长中文 7 分片和跨进程持久化通过。原文 generation 和协议不变；旧组件缺 code_recipe 时，新 CodeBuild/Query 明确拒绝，不影响旧原文调用。
 
@@ -28,4 +28,4 @@ Git 忽略（含已跟踪但被忽略文件）、node_modules、隐藏凭据样�
 
 语料回归脚本第一次沿旧默认路径覆盖 Python 历史报告。本轮已从原始 2026-11-07 完整工具 JSON 恢复全部原报告字段，记录 `evidence-path-recovery.json`；新 Rust 结果单独保存，脚本新增 --out 避免再次覆盖。恢复的是原合成验收报告，不是新的 Python 验收。
 
-G1 后续完成持久设置/代次/任务/current receipt、用户明确开启及停止、服务重启/取消/迟到栅栏、App 三栏和受控日常 Agent；G2 完成变化合并、组件分发与包级故障。R 正常模型质量、A1b/A2b 与 F3 外部条件继续独立保留，总 Goal 未完成。
+历史后续计划由 G1/G2 分别验收：持久设置/代次/任务/current receipt、用户明确开启及停止、服务重启/取消/迟到栅栏、App 三栏和受控日常 Agent；G2 完成变化合并、组件分发与包级故障。R 正常模型质量、A1b/A2b 与 F3 外部条件继续独立保留，总 Goal 未完成。

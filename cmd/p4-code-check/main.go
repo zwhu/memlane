@@ -69,6 +69,7 @@ func run() (exit int) {
 	model := flag.String("model", "", "absolute accepted model component")
 	library := flag.String("library", "", "absolute ORT library")
 	enola := flag.String("enola", "", "absolute fixed extractor")
+	prune := flag.Bool("prune", false, "also verify actual closed graph retention")
 	flag.Parse()
 	report := map[string]any{"status": "failed", "synthetic_only": true, "actual_rust": true, "actual_enola": true, "actual_app": false, "actual_daily_agent": false, "fixture_faults": []string{"foreign_dataset", "import_replay_conflict", "oversize_source", "unsupported_query"}, "cases": []string{}}
 	var client *engine.Client
@@ -289,6 +290,42 @@ func run() (exit int) {
 	must(e)
 	require(len(follow.Nodes) == 2, "worker unavailable after rejecting invalid query")
 	cases = append(cases, "invalid_query_rejected_worker_stays_usable")
+	if *prune {
+		must(os.Remove(filepath.Join(repo, "control\x01.ts")))
+		must(os.WriteFile(filepath.Join(repo, "src/third.ts"), []byte("export function thirdRetentionVersion(){return 3;}\n"), 0600))
+		third, e := codegraph.Extract(ctx, codegraph.ExtractOptions{Executable: *enola, Worktree: repo, Directory: filepath.Join(root, "third-extract"), Dataset: dataset})
+		must(e)
+		thirdReceipt, e := client.CodeBuild(ctx, third.Graph)
+		must(e)
+		stage := filepath.Join(cfg.DataDir, "code", dataset, ".building-"+uuid.NewString())
+		must(os.Mkdir(stage, 0700))
+		must(os.WriteFile(filepath.Join(stage, "synthetic-interrupted"), []byte("NO LIVE WORKER OPERATION"), 0600))
+		n, e := client.CodePrune(ctx, map[string][]string{dataset: {thirdReceipt.Snapshot, newReceipt.Snapshot}})
+		must(e)
+		require(n == 2, "old real graph or explicit orphan staging not pruned")
+		for _, snapshot := range []string{thirdReceipt.Snapshot, newReceipt.Snapshot} {
+			retained, e := client.CodeQuery(ctx, codegraph.Query{Dataset: dataset, Snapshot: snapshot, Mode: "files", Text: "", Limit: 30, Hops: 1})
+			must(e)
+			require(len(retained.Nodes) > 0, "retained real Ladybug graph unreadable")
+		}
+		_, e = client.CodeQuery(ctx, codegraph.Query{Dataset: dataset, Snapshot: receipt.Snapshot, Mode: "files", Text: "", Limit: 30, Hops: 1})
+		var missing *engine.RemoteError
+		require(errors.As(e, &missing) && missing.Code == "engine_error" && strings.Contains(missing.Message, "os error 2"), "pruned query did not return an explicit missing-source error")
+		_, statErr := os.Stat(filepath.Join(cfg.DataDir, "code", dataset, receipt.Snapshot))
+		require(os.IsNotExist(statErr), "pruned historical directory remains")
+		select {
+		case <-client.Done():
+			panic("worker crashed after pruned historical query")
+		default:
+		}
+		for _, snapshot := range []string{thirdReceipt.Snapshot, newReceipt.Snapshot} {
+			retained, e := client.CodeQuery(ctx, codegraph.Query{Dataset: dataset, Snapshot: snapshot, Mode: "files", Text: "", Limit: 30, Hops: 1})
+			must(e)
+			require(len(retained.Nodes) > 0, "retained graph unavailable after pruned query rejection")
+		}
+		cases = append(cases, "actual_three_Ladybug_graphs_current_previous_retained_older_reclaimed")
+		report["prune"] = map[string]any{"removed": n, "current": thirdReceipt, "previous": newReceipt, "older": receipt, "orphan_staging_fixture": true}
+	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		panic(ctx.Err())
 	}

@@ -9,7 +9,7 @@ use tokio::{io::{AsyncBufReadExt, AsyncReadExt, BufReader}, sync::{mpsc, oneshot
 use uuid::Uuid;
 
 const PROTOCOL: u32 = 1;
-const WORKER_VERSION: &str = "0.0.2";
+const WORKER_VERSION: &str = "0.0.3";
 const MAX_LINE: usize = 1024*1024;
 
 #[derive(Deserialize)]
@@ -73,7 +73,7 @@ async fn main() -> backend::Result<()> {
     emit(json!({"protocol":PROTOCOL,"event":"ready","worker_version":WORKER_VERSION,"ready":true,
         "generation":engine.generation(),"model":engine.recipe.id,"model_revision":engine.recipe.revision,
         "model_load_ms":engine.load_ms,"capabilities":["raw_index","raw_search","remove","cancel","timeout","code_build","code_query"],
-        "graph_ready":true,"code_recipe":"enola-0.4.30-v351"}))?;
+        "graph_ready":true,"code_recipe":"enola-0.4.30-v351","code_root_modules":true}))?;
     let mut stdin=BufReader::new(tokio::io::stdin());
     let (completed_tx,mut completed_rx)=mpsc::channel::<(String,Value)>(1);
     let mut active: Option<(String,Option<oneshot::Sender<()>>)>=None;
@@ -98,7 +98,7 @@ async fn main() -> backend::Result<()> {
                 if input.id.is_empty() || input.id.len()>128 {emit(error(&input.id,"bad_request","invalid request id"))?;continue;}
                 if used_ids.len()>=10000 || !used_ids.insert(input.id.clone()) {emit(error(&input.id,"duplicate_id","request IDs must be unique; reconnect after 10000 requests"))?;continue;}
                 match input.op.as_str() {
-                    "handshake" | "health" => emit(success(&input.id,json!({"worker_version":WORKER_VERSION,"ready":true,"busy":active.is_some(),"generation":engine.generation(),"code_recipe":"enola-0.4.30-v351"})))?,
+                    "handshake" | "health" => emit(success(&input.id,json!({"worker_version":WORKER_VERSION,"ready":true,"busy":active.is_some(),"generation":engine.generation(),"code_recipe":"enola-0.4.30-v351","code_root_modules":true})))?,
                     "cancel" => {
                         let mut matched=false;
                         if active.as_ref().is_some_and(|(id,_)|*id==input.target) {

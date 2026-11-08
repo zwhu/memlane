@@ -46,7 +46,8 @@ fn validate(g:&Graph)->Result<()> {
         if n.kind=="external" {
             if !n.unresolved||!n.file.is_empty()||!n.file_sha.is_empty()||n.line!=0{return Err("invalid external code node".into());}
         } else if n.kind=="module" {
-            if n.unresolved||!safe_path(&n.file)||!files.keys().any(|p|p.starts_with(&(n.file.clone()+"/"))){return Err("invalid module code source".into());}
+            let root_module=n.file=="."&&n.name=="."&&n.line==0&&n.file_sha.is_empty()&&!files.is_empty();
+            if n.unresolved||(!root_module&&(!safe_path(&n.file)||!files.keys().any(|p|p.starts_with(&(n.file.clone()+"/"))))){return Err("invalid module code source".into());}
         } else {
             let f=files.get(n.file.as_str()).ok_or("code node missing source")?;
             if !["file","symbol","dependency"].contains(&n.kind.as_str())||n.unresolved||n.file_sha!=f.sha256||n.line>f.lines{return Err("code node source mismatch".into());}

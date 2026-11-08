@@ -1,6 +1,6 @@
 # G 代码图谱正式契约
 
-2026-11-08，G0 底座及 G1 本机 App/traex 静态主流程通过，见 [G1 验证](p4-code-app-validation.md)；G2 自动更新、恢复和组件升级仍待验收。选定路线是固定 Cognee-RS `151905c302fc9b5b9aad88d6b13931c09f0eac30` 的 Rust worker + Ladybug，静态抽取器为 Enola 0.4.30 / v351。单独抽取、普通实体图或编译不能算完整代码图谱完成。
+2026-11-08，G0 底座及 G1 本机 App/traex 静态主流程通过，见 [G1 验证](p4-code-app-validation.md)；G2 更新、取消、根目录语言、CLI 恢复与组件升级/回退本机通过，见 [G2 验证](p4-code-update-validation.md)。选定路线是固定 Cognee-RS `151905c302fc9b5b9aad88d6b13931c09f0eac30` 的 Rust worker + Ladybug，静态抽取器为 Enola 0.4.30 / v351。单独抽取、普通实体图或编译不能算完整代码图谱完成。
 
 ## 授权与来源
 
@@ -42,4 +42,4 @@ schema 12 只新增实际所需 code_worktrees、code_jobs 和 code_actions；�
 
 MCP/pi 增加只读 memory_code_search（mode/query/node/limit/hops 和可选 scope）。工作区来自桥的固定绑定或 pi ctx.cwd，不能由模型参数伪造。只查询已开启且连接授权的 worktree，其他项目要求显式授权 scope，并选已登记的该项目根；不授予扫描、导入、Cypher、删除或批准工具。初始化模式不开放代码查询。代码查询只更新真实连接使用回执，不虚构知识读取/采用计数。
 
-主包仍无引擎/模型/解析器。worker 0.0.2 与独立 enola-code 0.4.30-v351、原模型分别准备，配置明确选择解析器组件时一并校验版本和实际 executable；旧配置没有解析器项时仍可使用原文能力，代码入口明确要求组件。静态 Enola 包携带其实际 Apache-2.0 许可，不含 Python runtime。生产默认清单、升级/回退与正式源仍须 F/G2 对应实际验收，不能用受控 loopback 签名源标记正式分发。
+主包仍无引擎/模型/解析器。worker 0.0.3（旧 0.0.2 合法图兼容；根模块需显式能力）与独立 enola-code 0.4.30-v351、原模型分别准备，配置明确选择解析器组件时一并校验版本和实际 executable；旧配置没有解析器项时仍可使用原文能力，代码入口明确要求组件。静态 Enola 包携带其实际 Apache-2.0 许可，不含 Python runtime。受控组件升级/回退已有 G2 证据；生产默认清单与正式源仍须 F 对应实际验收，不能用受控 loopback 签名源标记正式分发。

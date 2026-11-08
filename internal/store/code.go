@@ -266,7 +266,7 @@ func (s *Store) FinishCodeJob(ctx context.Context, j records.CodeJob, receipt *c
 	return tx.Commit()
 }
 func (s *Store) CodeFailure(ctx context.Context, c records.CodeState, cause string) error {
-	_, e := s.DB.ExecContext(ctx, `UPDATE code_worktrees SET state='failed',error=?,updated_ms=? WHERE id=? AND generation=? AND enabled=1 AND state NOT IN ('indexing','failed')`, cause, time.Now().UnixMilli(), c.ID, c.Generation)
+	_, e := s.DB.ExecContext(ctx, `UPDATE code_worktrees SET state='failed',observed_digest='',error=?,updated_ms=? WHERE id=? AND generation=? AND enabled=1 AND state NOT IN ('indexing','failed')`, cause, time.Now().UnixMilli(), c.ID, c.Generation)
 	return e
 }
 func (s *Store) MarkCodeStale(ctx context.Context, id string, generation int64) error {

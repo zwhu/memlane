@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"syscall"
@@ -256,6 +257,7 @@ func normalize(dataset uuid.UUID, m Manifest, facts []fact) (Graph, error) {
 	nodes := map[string]Node{}
 	factIDs := map[string]string{}
 	names := map[string][]string{}
+	modules := map[string]fact{}
 	for _, f := range m.Files {
 		files[f.Path] = f
 		n := Node{ID: id("file:" + f.Path), Name: f.Path, Kind: "file", File: f.Path, Line: 1, FileSHA: f.SHA256}
@@ -268,8 +270,22 @@ func normalize(dataset uuid.UUID, m Manifest, facts []fact) (Graph, error) {
 		nodes[n.ID] = n
 	}
 	for _, f := range facts {
-		if f.ID == "" || len(f.ID) > 128 || factIDs[f.ID] != "" || len(f.Name) > 1024 || controls(f.Name) || !safePath(f.File) {
+		rootModule := f.Kind == "module" && f.Name == "." && f.File == "." && f.Line == 0
+		if f.ID == "" || len(f.ID) > 128 || len(f.Name) > 1024 || controls(f.Name) || (!safePath(f.File) && !rootModule) {
 			return g, errors.New("invalid code fact identity/path")
+		}
+		if previous := factIDs[f.ID]; previous != "" {
+			old, ok := modules[f.ID]
+			if !ok || !sameSharedModule(old, f) {
+				return g, errors.New("conflicting duplicate code fact")
+			}
+			n := nodes[previous]
+			language, _ := f.Props["language"].(string)
+			if n.Language != language {
+				n.Language = ""
+			}
+			nodes[previous] = n
+			continue
 		}
 		if f.Kind == "file_ref" {
 			if _, ok := files[f.File]; !ok {
@@ -289,7 +305,7 @@ func normalize(dataset uuid.UUID, m Manifest, facts []fact) (Graph, error) {
 			return g, errors.New("code fact absent from source snapshot")
 		}
 		if !ok {
-			found := false
+			found := rootModule && len(files) > 0
 			for p := range files {
 				if strings.HasPrefix(p, f.File+"/") {
 					found = true
@@ -311,6 +327,9 @@ func normalize(dataset uuid.UUID, m Manifest, facts []fact) (Graph, error) {
 		n := Node{ExtractorID: f.ID, ID: id("fact:" + f.ID), Name: f.Name, Kind: f.Kind, File: f.File, Line: f.Line, Language: language, SymbolKind: symbol, FileSHA: file.SHA256}
 		nodes[n.ID] = n
 		factIDs[f.ID] = n.ID
+		if f.Kind == "module" {
+			modules[f.ID] = f
+		}
 		names[f.Name] = append(names[f.Name], n.ID)
 	}
 	edges := map[string]Edge{}
@@ -363,4 +382,29 @@ func normalize(dataset uuid.UUID, m Manifest, facts []fact) (Graph, error) {
 		return a.Source+a.Target+a.Kind < b.Source+b.Target+b.Kind
 	})
 	return g, nil
+}
+
+func sameSharedModule(a, b fact) bool {
+	if a.Kind != "module" || b.Kind != "module" || a.Name != b.Name || a.File != b.File || a.Line != b.Line || !reflect.DeepEqual(a.Relations, b.Relations) {
+		return false
+	}
+	copyProps := func(f fact) (map[string]any, bool) {
+		language, _ := f.Props["language"].(string)
+		if language != "typescript" && language != "python" {
+			return nil, false
+		}
+		out := map[string]any{}
+		for k, v := range f.Props {
+			if k != "language" {
+				out[k] = v
+			}
+		}
+		return out, true
+	}
+	x, ok := copyProps(a)
+	if !ok {
+		return false
+	}
+	y, ok := copyProps(b)
+	return ok && reflect.DeepEqual(x, y)
 }

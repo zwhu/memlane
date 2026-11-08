@@ -28,6 +28,7 @@ func (s *Server) runCode(ctx context.Context) {
 					s.refreshCode(ctx, state)
 				}
 			}
+			s.pruneCode(ctx)
 		}
 		select {
 		case <-ctx.Done():
@@ -36,6 +37,47 @@ func (s *Server) runCode(ctx context.Context) {
 		case <-s.codeWake:
 		}
 	}
+}
+
+// Called only by the serial code owner after all builds have published. Query
+// shares gate; codeMu fences authorization/stop while the keep set is selected.
+func (s *Server) pruneCode(ctx context.Context) {
+	select {
+	case s.gate <- struct{}{}:
+		defer func() { <-s.gate }()
+	case <-ctx.Done():
+		return
+	}
+	s.codeMu.Lock()
+	defer s.codeMu.Unlock()
+	if s.codeStopping || ctx.Err() != nil {
+		return
+	}
+	keep, err := s.store.CodeRetention(ctx)
+	if err == nil {
+		s.mu.Lock()
+		worker := s.worker
+		s.mu.Unlock()
+		if worker == nil {
+			return
+		}
+		_, err = worker.CodePrune(ctx, keep)
+	}
+	if err == nil {
+		jobs, e := s.store.CompletedCodeExtractions(ctx)
+		if e != nil {
+			err = e
+		} else {
+			_, err = codegraph.RemoveCompletedExtractions(ctx, s.config.Root, jobs)
+		}
+	}
+	s.mu.Lock()
+	if err != nil {
+		s.codeCleanupError = err.Error()
+	} else {
+		s.codeCleanupError = ""
+	}
+	s.mu.Unlock()
 }
 func (s *Server) codeAction(ctx context.Context, a records.CodeAction) (records.CodeState, error) {
 	s.codeMu.Lock()
@@ -69,7 +111,7 @@ func (s *Server) refreshCode(ctx context.Context, c records.CodeState) {
 	c = current
 	// An unavailable source is retried on explicit refresh, not every poll. A
 	// failed extraction with a captured digest may retry after actual changes.
-	if c.State == "failed" && c.ObservedDigest == "" {
+	if c.State == "failed" && (c.ObservedDigest == "" || codeNeedsExplicitRetry(c.Error)) {
 		s.codeMu.Unlock()
 		return
 	}
@@ -165,6 +207,15 @@ func (s *Server) refreshCode(ctx context.Context, c records.CodeState) {
 		receipt = nil
 	}
 	s.finishCodePublication(ctx, j, receipt, cause)
+}
+
+func codeNeedsExplicitRetry(cause string) bool {
+	switch cause {
+	case "source_unavailable", "workspace_mismatch", "code_component_required", "extractor_component_required":
+		return true
+	default:
+		return false
+	}
 }
 
 // Retry only the short receipt transaction, never the extractor/model. An
