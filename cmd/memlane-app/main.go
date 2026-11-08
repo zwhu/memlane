@@ -191,6 +191,12 @@ func main() {
 				app.SetRuntimeStatus(desktop.RuntimeStatus{Phase: "failed", Message: "本地运行配置不可用：" + err.Error()})
 			} else {
 				controller = &desktop.RuntimeController{Config: cfg}
+				app.ConfigureBackupRecovery(controller.RestoreBackup, func() {
+					// A new UI process prevents pre-restore IPC callbacks and drafts
+					// from being reused across the database/authorization epoch.
+					forceQuit = true
+					mygo.App.Relaunch()
+				})
 				app.ConfigureGuidance(cfg.Root)
 				if action == "" {
 					app.ConfigureLibrary(ctx, filepath.Join(cfg.Root, "data"), func(fn func()) {

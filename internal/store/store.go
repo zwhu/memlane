@@ -18,10 +18,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/zwhu/memlane/internal/engine"
 	"github.com/zwhu/memlane/internal/records"
+	"github.com/zwhu/memlane/internal/recoveryfiles"
 	_ "modernc.org/sqlite"
 )
 
 var ErrConflict = records.ErrConflict
+var ErrRestoreRecovered = errors.New("offline restore recovered; explicit service resume required")
 
 type Store struct {
 	initializationReader  func(context.Context, string, []string) ([]records.InitializationSource, error)
@@ -57,6 +59,15 @@ func open(path string, formal bool) (*Store, error) {
 			ownership.Close()
 		}
 	}()
+	if formal && filepath.Base(path) == "memlane.sqlite" {
+		recovered, e := (recoveryfiles.RestoreManager{Root: filepath.Dir(path)}).RecoverBeforeOpen(context.Background())
+		if e != nil {
+			return nil, e
+		}
+		if recovered {
+			return nil, ErrRestoreRecovered
+		}
+	}
 
 	// Require an explicit absolute path; never use Cognee's cwd database default.
 	priorFile, statErr := os.Stat(path)

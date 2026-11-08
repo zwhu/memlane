@@ -14,6 +14,11 @@ import (
 )
 
 type BackupUI struct {
+	RestoreSelection                                                 records.BackupReceipt
+	LastRestore                                                      records.RestoreReceipt
+	RestoreOperation                                                 string
+	RestoreLocked                                                    bool
+	RestoreCatalogueError                                            string
 	Client                                                           serviceipc.BackupClient
 	Items                                                            []records.BackupReceipt
 	Busy, Loading, Loaded                                            bool
@@ -27,7 +32,7 @@ func (a *App) backupSettings(c *ui.Context) {
 	ui.Divider(c)
 	ui.Text(c, "一致性备份").Bold()
 	ui.Text(c, "备份已保存的原文、来源、版本与项目记录。引擎、模型和代码仓库单独管理；在线备份上限 64 MiB。").TextColor(c.Theme().TextMuted)
-	quietButton(c, "创建一致性备份").Key("backup-create").Disabled(a.libraryContext == nil || b.Busy).OnClick(a.createBackup)
+	quietButton(c, "创建一致性备份").Key("backup-create").Disabled(a.libraryContext == nil || b.Busy || b.RestoreLocked).OnClick(a.createBackup)
 	if b.Notice != "" {
 		ui.Text(c, b.Notice).Selectable()
 	}
@@ -36,6 +41,15 @@ func (a *App) backupSettings(c *ui.Context) {
 	}
 	if b.CatalogueError != "" {
 		ui.Text(c, b.CatalogueError).Selectable()
+	}
+	if b.RestoreCatalogueError != "" {
+		ui.Text(c, b.RestoreCatalogueError).Selectable()
+	}
+	if r := b.LastRestore; r.ID != "" {
+		ui.Text(c, "最近完整恢复 · "+r.CreatedAt).Bold()
+		ui.Text(c, "恢复记录 · "+r.ID).FontSize(11).Selectable()
+		ui.Text(c, "源备份 · "+r.Backup).FontSize(11).Selectable()
+		ui.Text(c, fmt.Sprintf("当次恢复：%d 条原文等待重建 · %d 个旧连接退休 · %d 个计划停用 · %d 个代码索引停用", r.Stats.Memories, r.Stats.Connections, r.Stats.Plans, r.Stats.CodeWorktrees)).FontSize(11)
 	}
 	if len(b.Items) == 0 && b.Loaded && !b.Loading && b.CatalogueError == "" {
 		ui.Text(c, "尚无手动备份。").TextColor(c.Theme().TextMuted)
@@ -56,6 +70,7 @@ func (a *App) backupSettings(c *ui.Context) {
 		} else {
 			ui.Text(c, "当前文件待校验").FontSize(11).TextColor(c.Theme().TextMuted)
 		}
+		a.backupRestorePreview(c, r)
 	}
 	if len(b.Items) > 10 {
 		ui.Row(c).Gap(8).Children(func() {
@@ -76,6 +91,7 @@ func (a *App) refreshBackups() {
 		ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 		defer cancel()
 		items, err := client.List(ctx)
+		restores, restoreErr := client.Restores(ctx)
 		if parent.Err() != nil {
 			return
 		}
@@ -84,6 +100,26 @@ func (a *App) refreshBackups() {
 				return
 			}
 			b.Loading = false
+			if restoreErr != nil {
+				b.RestoreCatalogueError = "恢复记录读取失败或存在未完成项；已有恢复文件保留。"
+			} else {
+				b.RestoreCatalogueError = ""
+				for _, r := range restores {
+					if r.State == "recovery_required" {
+						b.RestoreLocked = true
+						b.RestoreOperation = r.ID
+						b.Notice = "上次恢复尚未完成，请沿用原恢复记录再次确认；服务需保持停止。"
+						for _, item := range items {
+							if item.ID == r.Backup {
+								b.RestoreSelection = item
+							}
+						}
+						break
+					} else if b.LastRestore.ID == "" {
+						b.LastRestore = r
+					}
+				}
+			}
 			if err != nil {
 				b.CatalogueError = "备份列表读取失败，已有文件保留；请检查数据目录。"
 				return

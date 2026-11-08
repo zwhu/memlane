@@ -29,7 +29,9 @@
 | G2 图谱更新与组件 | G1 | 未开启不扫描、忽略/删除/重命名/合并更新、旧图排除/过期/失败/重启隔离；真实 TS/Python 支持样本与 worker 包 | build/p4-code/ | G2真实App更新/删除重命名/失败重试/停服恢复、Rust图回收与三轮取消、CLI owner故障、根混合语言/旧图/组件升级回退/最新完整包本机通过，见 [G2验证](p4-code-update-validation.md)；App helper替换见F1 |
 | F1 迁移与故障回归 | 各新增表/协议/包 | 迁移前一致性备份，临时旧库保留/恢复/重建；许可撤销/磁盘满/worker 与服务崩溃/App 移动更新路径；兼容/回退失败恢复 | build/p4-delivery/ | 既有迁移/备份及部分故障已分层验证；同路径helper替换Launch Constraint仍失败，见 [F1诊断](p4-helper-replacement-validation.md)；其余故障继续 |
 | F1a 原文索引重建 | G2/current原文与持久jobs | App确认/稳定UUID/范围/有效当前版本、迁移备份与真实索引丢失恢复 | build/p4-delivery/ | 本机App/Rust/范围上限/重启/旧helper拒绝/审查通过，见 [F1a验证](p4-index-recovery-validation.md)；不是数据库备份恢复 |
-| F1b 手动一致性备份 | F1a/SQLite拥有权 | App创建/目录/校验、WAL全表与幂等、Root原子发布及故障恢复 | build/p4-delivery/ | 本机通过，见 [备份验证](p4-backup-validation.md)；F1c数据库离线恢复待实现 |
+| F1b 手动一致性备份 | F1a/SQLite拥有权 | App创建/目录/校验、WAL全表与幂等、Root原子发布及故障恢复 | build/p4-delivery/ | 本机通过，见 [备份验证](p4-backup-validation.md)；离线恢复按F1c另验 |
+| F1c1 主离线恢复 | F1b/双拥有权锁 | 内存schema14转换、原库/WAL/SHM保留、持久journal/stop/幂等、App确认重载与当前检索 | build/p4-delivery/ | 主流程本机通过，见 [恢复验证](p4-restore-validation.md)；F1c2和整个恢复总项继续 |
+| F1c2 恢复后的授权与故障闭环 | F1c1/原Agent、计划、建议、初始化、代码记录 | 真实App新ID重接/旧scope拒绝、计划/建议/代码排除、重放与故障状态、重新启用/索引 | build/p4-delivery/ | 临时SQL/FS已覆盖；真实App综合与停服写入失败专项待验，不缩减F1c范围 |
 | F2 完整本机包 | 全部功能及 F1 | 最新 UI/helper/LaunchAgent/Agent 桥、DMG、签名完整性、三类体积和更新下载字节 | build/p4-final/ | G2最新完整ad-hoc包首次准备与功能/体积通过；整体最终包须待R/A1b/A2b/F1收口，不标F2完成 |
 | F3 正式分发 | F2、有效身份、渠道、干净设备 | Developer ID / 公证 / Gatekeeper、正式签名清单与更新下载可达；macOS 15+ arm64 干净安装准备离线主要功能 | build/p4-release/ | 外部条件待解除 |
 | 交付收口 | 全部必需项 | 适用 checks/review、文档链接、阶段提交、普通推送 SHA 核对、最终临时 handoff 与能力/故障/体积报告 | build/p4-delivery/ | 待完成 |

@@ -166,7 +166,7 @@ func TestIndexRebuildV12BackupPreservesAllOldTables(t *testing.T) {
 	mustMerge(t, reader.Close())
 	backups, err := filepath.Glob(filepath.Join(filepath.Dir(path), "backups/schema-v12-*.sqlite"))
 	mustMerge(t, err)
-	if len(backups) != 1 || current.Schema != 13 {
+	if len(backups) != 1 || current.Schema != SchemaVersion {
 		t.Fatal(backups, current.Schema)
 	}
 	backup, err := sql.Open("sqlite", backups[0])

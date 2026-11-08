@@ -58,7 +58,7 @@ func prepareOrganizationLeases(ctx context.Context, db *store.Store) error {
 		return nil
 	}
 	rows, err := db.DB.QueryContext(ctx, `SELECT process_pid FROM organization_leases WHERE process_pid>1 AND group_gone=0
- UNION SELECT CAST(json_extract(execution,'$.pid') AS INTEGER) FROM merge_attempts WHERE json_valid(execution) AND coalesce(json_extract(execution,'$.process_started'),0)=1 AND coalesce(json_extract(execution,'$.process_group_gone'),0)=0 AND coalesce(json_extract(execution,'$.startup_group_gone'),0)=0 AND CAST(json_extract(execution,'$.pid') AS INTEGER)>1`)
+	 UNION SELECT CAST(json_extract(execution,'$.pid') AS INTEGER) FROM merge_attempts WHERE json_valid(execution) AND coalesce(json_extract(execution,'$.backup_restored'),'')='' AND coalesce(json_extract(execution,'$.process_started'),0)=1 AND coalesce(json_extract(execution,'$.process_group_gone'),0)=0 AND coalesce(json_extract(execution,'$.startup_group_gone'),0)=0 AND CAST(json_extract(execution,'$.pid') AS INTEGER)>1`)
 	if err != nil {
 		return err
 	}
@@ -92,7 +92,7 @@ func prepareOrganizationLeases(ctx context.Context, db *store.Store) error {
 	if err = db.RevokeOrganizationLeases(ctx); err != nil {
 		return err
 	}
-	_, err = db.DB.ExecContext(ctx, `UPDATE merge_attempts SET execution=json_set(execution,'$.startup_group_gone',json('true')) WHERE json_valid(execution) AND coalesce(json_extract(execution,'$.process_started'),0)=1 AND coalesce(json_extract(execution,'$.process_group_gone'),0)=0 AND CAST(json_extract(execution,'$.pid') AS INTEGER)>1`)
+	_, err = db.DB.ExecContext(ctx, `UPDATE merge_attempts SET execution=json_set(execution,'$.startup_group_gone',json('true')) WHERE json_valid(execution) AND coalesce(json_extract(execution,'$.backup_restored'),'')='' AND coalesce(json_extract(execution,'$.process_started'),0)=1 AND coalesce(json_extract(execution,'$.process_group_gone'),0)=0 AND CAST(json_extract(execution,'$.pid') AS INTEGER)>1`)
 	return err
 }
 

@@ -97,6 +97,11 @@ func Run(ctx context.Context, config Config) error {
 	}
 	db, err := store.Open(filepath.Join(config.Root, "memlane.sqlite"))
 	if err != nil {
+		if errors.Is(err, store.ErrRestoreRecovered) {
+			// Recovery synced stopped before clearing its durable intent. This
+			// owner must return without opening SQL or starting the worker.
+			return nil
+		}
 		return err
 	}
 	defer db.Close()

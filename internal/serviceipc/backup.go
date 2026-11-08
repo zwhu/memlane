@@ -22,3 +22,6 @@ func (c BackupClient) Verify(ctx context.Context, id string) (records.BackupRece
 	snapshot, err := (recoveryfiles.Manager{Root: c.Root}).Verify(ctx, id)
 	return snapshot.Receipt, err
 }
+func (c BackupClient) Restores(ctx context.Context) ([]records.RestoreReceipt, error) {
+	return (recoveryfiles.RestoreManager{Root: c.Root}).List(ctx)
+}

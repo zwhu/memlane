@@ -44,10 +44,11 @@ type RuntimeStatus struct {
 }
 
 type RuntimeController struct {
-	Config RuntimeConfig
-	mu     sync.Mutex
-	busy   bool
-	cancel context.CancelFunc
+	Config    RuntimeConfig
+	lifecycle sync.Mutex
+	mu        sync.Mutex
+	busy      bool
+	cancel    context.CancelFunc
 }
 
 func LoadRuntimeConfig(path string) (RuntimeConfig, error) {
@@ -81,6 +82,12 @@ func (r *RuntimeController) Cancel() {
 }
 
 func (r *RuntimeController) Prepare(ctx context.Context, notify func(RuntimeStatus)) error {
+	r.lifecycle.Lock()
+	defer r.lifecycle.Unlock()
+	return r.prepare(ctx, notify)
+}
+
+func (r *RuntimeController) prepare(ctx context.Context, notify func(RuntimeStatus)) error {
 	r.mu.Lock()
 	if r.busy {
 		r.mu.Unlock()
@@ -305,6 +312,12 @@ func SaveRuntimeSettings(root string, settings RuntimeSettings) error {
 
 func (r *RuntimeController) StopService(ctx context.Context) error {
 	r.Cancel()
+	r.lifecycle.Lock()
+	defer r.lifecycle.Unlock()
+	return r.stopService(ctx)
+}
+
+func (r *RuntimeController) stopService(ctx context.Context) error {
 	for {
 		r.mu.Lock()
 		busy := r.busy
@@ -371,14 +384,19 @@ func (r *RuntimeController) StopService(ctx context.Context) error {
 }
 
 func (r *RuntimeController) ResumeService(ctx context.Context, notify func(RuntimeStatus)) error {
+	r.lifecycle.Lock()
+	defer r.lifecycle.Unlock()
 	root := filepath.Join(r.Config.Root, "data")
 	if err := serviceipc.Resume(root); err != nil {
 		return err
 	}
-	return r.Prepare(ctx, notify)
+	return r.prepare(ctx, notify)
 }
 
 func (r *RuntimeController) QuiesceForUpdate(ctx context.Context) (bool, error) {
+	r.Cancel()
+	r.lifecycle.Lock()
+	defer r.lifecycle.Unlock()
 	root := filepath.Join(r.Config.Root, "data")
 	stopped, err := serviceipc.IsStopped(root)
 	if err != nil {

@@ -64,6 +64,15 @@ func (s *Store) ConfigureConnection(ctx context.Context, d records.ConnectionDra
 		return records.Connection{}, err
 	}
 	defer tx.Rollback()
+	if s.Schema >= 14 {
+		var retired int
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM connection_retirements WHERE connection=?`, d.ID).Scan(&retired); err != nil {
+			return records.Connection{}, err
+		}
+		if retired > 0 {
+			d.ID = uuid.NewString()
+		}
+	}
 	allowed := []string{}
 	seen := map[string]bool{}
 	for _, id := range d.AllowedScopes {
@@ -138,6 +147,15 @@ func (s *Store) TouchConnection(ctx context.Context, id string, generation int64
 // Authorize selects explicit scopes or current project plus allowed globals.
 // It never expands to all allowed projects implicitly.
 func (s *Store) Authorize(ctx context.Context, r records.AgentRequest) (records.Connection, []string, error) {
+	if s.Schema >= 14 {
+		var retired int
+		if err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM connection_retirements WHERE connection=?`, r.ConnectionID).Scan(&retired); err != nil {
+			return records.Connection{}, nil, err
+		}
+		if retired > 0 {
+			return records.Connection{}, nil, access("restore_reconnect_required", "backup restored; reconnect this Agent with a new identity")
+		}
+	}
 	c, err := s.Connection(ctx, r.ConnectionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = access("connection_not_found", "connect Agent in Memlane first")

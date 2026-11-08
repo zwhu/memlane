@@ -75,12 +75,7 @@ type Response struct {
 	Code     string `json:"code,omitempty"`
 }
 
-type State struct {
-	StopGeneration int64       `json:"stop_generation,omitempty"`
-	LastStoppedMS  int64       `json:"last_stopped_ms,omitempty"`
-	Stopped        bool        `json:"stopped"`
-	Restarts       []time.Time `json:"restarts"`
-}
+type State = records.ServiceState
 
 func SocketPath(root string) string {
 	h := sha256.Sum256([]byte(root))

@@ -13,6 +13,8 @@ import (
 )
 
 type App struct {
+	restoreBackup                                                    func(context.Context, string, string) (records.RestoreReceipt, error)
+	reloadAfterBackup                                                func()
 	backups                                                          BackupUI
 	indexRebuild                                                     records.IndexRebuild
 	indexRebuildScope, indexRebuildError, indexRebuildOperation      string
@@ -937,17 +939,17 @@ func (a *App) settings(c *ui.Context) {
 			ui.Text(c, fmt.Sprintf("已准备 %.2f / %.2f MB", float64(a.runtimeStatus.Downloaded)/1e6, float64(a.runtimeStatus.Total)/1e6)).TextColor(c.Theme().TextMuted)
 			ui.Progress(c, float64(a.runtimeStatus.Downloaded)/float64(a.runtimeStatus.Total))
 		}
-		busy := a.runtimeStatus.Phase == "checking" || a.runtimeStatus.Phase == "downloading" || a.runtimeStatus.Phase == "installing" || a.runtimeStatus.Phase == "installed" || a.runtimeStatus.Phase == "preparing"
+		busy := a.backups.RestoreLocked || a.backups.Busy || a.runtimeStatus.Phase == "checking" || a.runtimeStatus.Phase == "downloading" || a.runtimeStatus.Phase == "installing" || a.runtimeStatus.Phase == "installed" || a.runtimeStatus.Phase == "preparing"
 		ui.Row(c).Gap(8).Children(func() {
 			ui.Button(c, "准备 / 重试").Disabled(busy).OnClick(a.prepareRuntime)
 			if busy {
 				ui.Button(c, "取消准备").OnClick(a.cancelRuntime)
 			}
 			if a.runtimeStatus.Phase == "ready" {
-				ui.Button(c, "停止服务").OnClick(a.stopRuntime)
+				ui.Button(c, "停止服务").Disabled(busy).OnClick(a.stopRuntime)
 			}
 			if a.runtimeStatus.Phase == "stopped" {
-				ui.Button(c, "启动服务").OnClick(a.resumeRuntime)
+				ui.Button(c, "启动服务").Disabled(busy).OnClick(a.resumeRuntime)
 			}
 		})
 		previous := a.keepService

@@ -458,3 +458,9 @@ F1 无模型复现命令为 `python3 scripts/verify-p4-helper-replacement.py --r
 `sh scripts/go.sh test ./internal/recoveryfiles ./internal/store ./internal/desktop -run 'TestBackup|TestShellWithoutEngine' -count=1 -v` 为真实FS/SQLite与Headless callback故障回归，不冒充App。Root与64MiB/幂等/同步契约见 [备份恢复契约](p4-backup-recovery-contract.md)。
 
 新隔离fixture使用 `create-p4-code-fixture.py --app build/p4-backup-app/darwin-arm64/MemlaneBackup.app --pointer build/p4-delivery/backup-fixture-path.txt --worker-archive <固定0.0.3归档>`，按source-info的identifier/runtime-config构建完整automation包后，运行 `python3 scripts/verify-p4-backup-app.py`。仅操作标记合成根，UI创建/编辑/校验与真实Rust为真实；一字节坏/暂缺receipt明确IO夹具，失败时恢复原字节并停止服务。不能对用户真实备份运行此驱动。产物/截图/体积/支持边界见 [F1b验证](p4-backup-validation.md)。
+
+## F1c 离线恢复验收
+
+`sh scripts/go.sh test ./internal/store ./internal/recoveryfiles -run '^TestRestore' -v -count=1`验证真实SQLite/FS、schema13→14一致性备份、隔离转换和开库前journal；文件位置/目录同步/取消/stop代次是明确故障夹具。`sh scripts/go.sh test ./internal/desktop -run '^TestBackupRestore' -v -count=1`为Headless真实SQL/FS确认回归，不能代替native窗口。
+
+新源按F1b同样创建全新App身份与标记fixture，完整包需包含最新helper/LaunchAgent。运行 `python3 scripts/verify-p4-restore-app.py --pointer build/p4-delivery/restore-verified-fixture-path.txt --out build/p4-delivery/restore-actual-app-v3.json --screenshots build/p4-restore-verified-screenshots`。必须新空库，App保存v2备份、后来v3、取消与确认恢复、实际App新PID、停服/明确启动与真实Rustv2检索。禁止对真实库或日常Agent运行；失败报告不覆盖为成功，关闭/重载中也要登记清理PID并核对新App退出。WAL模式序列化快照以immutable读取；恢复前原件不为验证而修改。完整约束、故障范围及F1c2未完成项见 [恢复验证](p4-restore-validation.md)。

@@ -492,6 +492,11 @@ func (a *App) connectAgent() {
 			}
 		}
 		if err == nil {
+			if prior != nil && prior.ID != conn.ID {
+				err = agents.Uninstall(ctx, s.Root, prior.ID)
+			}
+		}
+		if err == nil {
 			_, err = agents.Install(ctx, conn, opts)
 		}
 		if s.Context.Err() != nil {
