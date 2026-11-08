@@ -547,6 +547,20 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		s.agentAccess.Lock()
 		defer s.agentAccess.Unlock()
 		return nil, s.store.Disconnect(operation, r.ConnectionID)
+	case "cognee_import":
+		if !r.UserConfirmed || r.CogneeImport == nil {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "approve the isolated official integration import in Memlane"}
+		}
+		s.agentAccess.RLock()
+		defer s.agentAccess.RUnlock()
+		result, err := s.store.ImportCognee(operation, *r.CogneeImport)
+		if err == nil {
+			select {
+			case s.work <- struct{}{}:
+			default:
+			}
+		}
+		return result, err
 	case "agent":
 		s.agentAccess.RLock()
 		defer s.agentAccess.RUnlock()

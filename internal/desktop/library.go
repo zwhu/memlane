@@ -20,7 +20,9 @@ func displayVersion(v records.Version) MemoryItem {
 		v.IndexState = "deleted"
 	}
 	category := "项目约定"
-	if v.ScopeKind == "preference" {
+	if v.Origin == "raw" {
+		category = "原始记录"
+	} else if v.ScopeKind == "preference" {
 		category = "个人偏好"
 	} else if v.ScopeKind == "experience" {
 		category = "通用经验"

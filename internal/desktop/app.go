@@ -470,7 +470,11 @@ func (a *App) details(c *ui.Context) {
 					actionButton(c, "立即整理", icons["全部记忆"]).Disabled(a.merges.Busy).OnClick(a.beginOrganizationOrMerge)
 				} else if a.isMemoryPage() {
 					actionButton(c, "立即整理", icons["全部记忆"]).OnClick(a.beginOrganizationOrMerge)
-					ui.Text(c, fmt.Sprintf("%d 条知识 · 保留来源与修改记录", a.listTotal)).FontSize(design.Small).TextColor(design.Muted)
+					kind := "知识"
+					if a.recordKind == "raw" {
+						kind = "原始记录"
+					}
+					ui.Text(c, fmt.Sprintf("%d 条%s · 保留来源与修改记录", a.listTotal, kind)).FontSize(design.Small).TextColor(design.Muted)
 					ui.Row(c).Gap(6).Children(func() {
 						ui.Button(c, "知识").Height(28).Padding(5, 10).OnClick(func() { a.recordKind = "knowledge"; a.nextCursor = ""; a.refresh(false) })
 						ui.Button(c, "原始记录").Height(28).Padding(5, 10).OnClick(func() { a.recordKind = "raw"; a.nextCursor = ""; a.refresh(false) })
