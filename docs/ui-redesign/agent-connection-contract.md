@@ -2,6 +2,8 @@
 
 2026-11-09。**以下产品规则由用户明确纠正并确认；新画面仍待评审。** 这不是电脑级适配器已经实现或验收通过的报告。
 
+同日最新补充：连接指参考 Cognee Web UI，为对应 Agent 安装 skill、hooks、插件或 Extension 等接入内容；不局限于添加 MCP。记忆处理独立配置，优先 LLM provider，Agent 方式仅选择已连接的 pi/Codex；[最新设计交接](memory-processing-design.md) 替代此前只以 MCP 解释连接及将 API Key 当成唯一途径的取舍。
+
 用户原话：“这个流程不对，这里应该是线选择Agent做链接，不一定需要关联项目；链接的作用是可以配置到当前电脑中的codeagent”。
 
 ## 已确认的作用与顺序

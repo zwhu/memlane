@@ -4,6 +4,8 @@
 
 用户最新纠正的 [Agent 电脑级连接规则](agent-connection-contract.md) 已确认：连接先配置当前电脑的编码 Agent，不要求关联项目。新版 A 后半段画面据此修正，仍待视觉评审；上一版将项目/模型准备放在连接页的取舍已作废。
 
+最新补充以 [连接与记忆处理设计](memory-processing-design.md) 为准：连接按 Cognee Web UI 安装 skill/hooks/插件；记忆处理优先 LLM provider，另一方式只选择已连接的 pi/Codex。当前 revision 5 为设计预览，用户已明确先做设计，正式实现未在本轮进行。
+
 | 分组 | 状态 | 依据 |
 | --- | --- | --- |
 | A01–A04 本机环境检测与安装 | 用户已认可，待按此稿实现并做真实窗口验收 | [A 开发契约](a-environment.md) |
