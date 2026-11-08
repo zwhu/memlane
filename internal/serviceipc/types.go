@@ -22,6 +22,7 @@ type Config struct {
 }
 
 type Request struct {
+	BackupID            string                       `json:"backup_id,omitempty"`
 	IndexRebuildStart   *records.IndexRebuildStart   `json:"index_rebuild_start,omitempty"`
 	IndexRebuildID      string                       `json:"index_rebuild_id,omitempty"`
 	CodeAction          *records.CodeAction          `json:"code_action,omitempty"`

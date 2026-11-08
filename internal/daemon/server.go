@@ -381,6 +381,13 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 	}
 	svc := memory.Service{Store: s.store, Engine: selected}
 	switch r.Op {
+	case "backup_create":
+		if !r.UserConfirmed {
+			return nil, errors.New("backup creation requires user confirmation")
+		}
+		backupCtx, stop := context.WithTimeout(operation, 60*time.Second)
+		defer stop()
+		return s.store.Backup(backupCtx, s.config.Root, r.BackupID)
 	case "rebuild_index":
 		if !r.UserConfirmed || r.IndexRebuildStart == nil {
 			return nil, errors.New("index rebuild requires user confirmation")

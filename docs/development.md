@@ -451,3 +451,10 @@ F1 无模型复现命令为 `python3 scripts/verify-p4-helper-replacement.py --r
 新隔离完整包按 `create-p4-code-fixture.py` 的新pointer、App路径、identifier/runtime-config和0.0.3独立worker构建，保留G2及第一轮失败包。运行 `python3 scripts/verify-p4-index-recovery.py --pointer build/p4-delivery/index-recovery-final-fixture-path.txt --out build/p4-delivery/index-recovery-final-app.json --screenshots build/p4-index-recovery-final-screenshots`；仅移走明确停服的合成项目raw目录，App保存/编辑/确认/取消及Rust检索为真实。归档状态是明确SQL夹具。
 
 正常报告passed且该合成服务停服后，`python3 scripts/verify-p4-index-recovery-scope.py` 验证实际范围Select和10001条明确SQL raw行触发上限，确认无部分任务再清理该预算dataset。它不证明SQL行有真实索引。失败或清理错误保留failed。完整实际证据/截图/体积/未通过边界见 [F1a验证](p4-index-recovery-validation.md)。
+
+
+## F1b 手动一致性备份验收
+
+`sh scripts/go.sh test ./internal/recoveryfiles ./internal/store ./internal/desktop -run 'TestBackup|TestShellWithoutEngine' -count=1 -v` 为真实FS/SQLite与Headless callback故障回归，不冒充App。Root与64MiB/幂等/同步契约见 [备份恢复契约](p4-backup-recovery-contract.md)。
+
+新隔离fixture使用 `create-p4-code-fixture.py --app build/p4-backup-app/darwin-arm64/MemlaneBackup.app --pointer build/p4-delivery/backup-fixture-path.txt --worker-archive <固定0.0.3归档>`，按source-info的identifier/runtime-config构建完整automation包后，运行 `python3 scripts/verify-p4-backup-app.py`。仅操作标记合成根，UI创建/编辑/校验与真实Rust为真实；一字节坏/暂缺receipt明确IO夹具，失败时恢复原字节并停止服务。不能对用户真实备份运行此驱动。产物/截图/体积/支持边界见 [F1b验证](p4-backup-validation.md)。

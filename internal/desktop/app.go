@@ -13,6 +13,7 @@ import (
 )
 
 type App struct {
+	backups                                                          BackupUI
 	indexRebuild                                                     records.IndexRebuild
 	indexRebuildScope, indexRebuildError, indexRebuildOperation      string
 	indexRebuildConfirm, indexRebuildBusy, indexRebuildLoading       bool
@@ -957,6 +958,7 @@ func (a *App) settings(c *ui.Context) {
 	}
 	ui.Divider(c)
 	a.indexRecoverySettings(c)
+	a.backupSettings(c)
 	ui.Divider(c)
 	ui.Text(c, "客户端 "+a.version).Bold()
 	ui.Text(c, a.updateText).Selectable().TextColor(c.Theme().TextMuted)

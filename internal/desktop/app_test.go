@@ -46,6 +46,8 @@ func TestShellWithoutEngine(t *testing.T) {
 		t.Fatal("disabled save fabricated success")
 	}
 	click("设置")
+	// Settings grows with recovery controls; scroll within its real pane.
+	tt.Scroll(1000, 650, 0, 300)
 	click("放大")
 	if app.zoom <= 1 {
 		t.Fatal("zoom did not change")
