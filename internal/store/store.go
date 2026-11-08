@@ -375,6 +375,11 @@ func (s *Store) MarkIndexed(ctx context.Context, r engine.Record, receipt engine
 	if err != nil {
 		return err
 	}
+	if s.Schema >= 13 {
+		if _, err = tx.ExecContext(ctx, `UPDATE index_rebuild_items SET state='completed' WHERE memory=? AND revision=? AND state IN ('queued','failed')`, r.Memory, r.Revision); err != nil {
+			return err
+		}
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO activities(memory,kind,occurred_at) SELECT memory,CASE origin WHEN 'imported' THEN 'imported' WHEN 'raw' THEN 'raw' ELSE 'created' END,strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM memory_metadata WHERE memory=? ON CONFLICT(memory) DO NOTHING`, r.Memory)
 	if err != nil {
 		return err
@@ -383,8 +388,23 @@ func (s *Store) MarkIndexed(ctx context.Context, r engine.Record, receipt engine
 }
 
 func (s *Store) IndexFailed(ctx context.Context, r engine.Record, cause error) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE jobs SET state='failed',error=? WHERE memory=? AND revision=? AND state!='superseded'`, fmt.Sprintf("%T", cause), r.Memory, r.Revision)
-	return err
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `UPDATE jobs SET state='failed',error=? WHERE memory=? AND revision=? AND state!='superseded'`, fmt.Sprintf("%T", cause), r.Memory, r.Revision)
+	if err != nil {
+		return err
+	}
+	if s.Schema >= 13 {
+		_, err = tx.ExecContext(ctx, `UPDATE index_rebuild_items SET state='failed',error=? WHERE memory=? AND revision=? AND state IN ('queued','failed')
+ AND EXISTS(SELECT 1 FROM memories m WHERE m.id=index_rebuild_items.memory AND m.current_revision=index_rebuild_items.revision AND m.state='active')`, fmt.Sprintf("%T", cause), r.Memory, r.Revision)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // Resolve only candidates whose complete provenance binding is current. The

@@ -85,6 +85,9 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 		a.refreshOrganization(false, false)
 		a.refreshSchedules()
 		a.refreshInitialization()
+		if a.page == "设置" {
+			a.refreshIndexRebuild()
+		}
 		if a.page == "使用指引" || a.page == "初始化" {
 			a.refreshAgents(false)
 		}
@@ -112,6 +115,9 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 				return
 			case <-ticker.C:
 				dispatch(func() {
+					if a.page == "设置" {
+						a.refreshIndexRebuild()
+					}
 					if a.page == "代码图谱" && !a.code.Busy {
 						a.refreshCode()
 					}

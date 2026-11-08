@@ -16,12 +16,17 @@
 | 改 helper，再次打开同包 | 两轮失败 `helper-replacement-after-helper-change*.json` |
 | 仅刷新本隔离 App 的 LaunchServices 注册 | 失败 `helper-replacement-refresh-ls.json` |
 | 从已变化 App 运行原生 unregister 再 register | 失败 `helper-replacement-new-app-unregister.json` |
+| 从已验证能启动的旧 App 注销，等待旧 launch job 消失后改 helper | 失败 `helper-old-unregister-before-change.json`；旧 App 独立 ready 基线为 `helper-timing-ready-baseline.json` |
 | 将 helper SHA 写入隔离 plist 环境并重新封装 | 失败 `helper-replacement-fingerprint.json` |
 | helper 移至 Contents/MacOS，形成嵌套代码封装 | 失败 `helper-replacement-macos-location.json` |
 | 同时改变 App 版本与 helper | 失败 `helper-replacement-version-and-helper.json` |
 | producer Go linker 签名与显式 ad-hoc 签名 | 两类都失败，见 `helper-signature-comparison.json` 与 producer 报告 |
 
 BTM tuple UUID 是注册项 ID，不能当 Mach-O UUID。曾有该方向推测，实际日志已纠正。未重置全局 BTM、升级系统或削弱签名防护。Apple 论坛正文获取遇到安全验证；未读完整帖子，不以搜索摘要作为已证实修复。
+
+Apple 官方 [启动约束诊断说明](https://developer.apple.com/documentation/security/applying-launch-environment-and-library-constraints) 的 Markdown 正文已实际读取并保留 `apple-launch-constraints.md`：c=5 指 spawn constraint，p=1 指待启动进程，m=1/e=0 指约束存在但不匹配，不是约束解析错误。官方 [约束事实定义](https://developer.apple.com/documentation/security/defining-launch-environment-and-library-constraints) 正文保留 `apple-launch-constraint-facts.md`，vc=10 表示签名身份不属于其他已列类别；Developer ID 为6。这些分类不能单独证明哪个事实未匹配，也不能证明换正式签名一定修复。
+
+时序实验使用新的专用 `helper-timing-fixture-path.txt` 标记根，旧 helper 已实际 ready。旧 App 原生注销返回 not_registered，旧 launch job 实际消失，再改同身份 helper 的标准 Go 元数据；重新启动仍 EX_CONFIG78，无 ready IPC，cleanup_errors为空。另一图谱基线 UI 等待表单的失败 `helper-timing-baseline-app.json` 保留，不将其标passed；独立 ready 报告只证明 F1 必要的旧 helper 运行基线。
 
 ## 后续验收
 

@@ -41,7 +41,16 @@ func (s *Service) IndexCurrent(ctx context.Context, id string) error {
 		persistErr := s.Store.IndexFailed(context.WithoutCancel(ctx), v.Record, err)
 		return fmt.Errorf("index unavailable: %w", errors.Join(err, persistErr))
 	}
-	return s.Store.MarkIndexed(ctx, v.Record, r)
+	if err = s.Store.MarkIndexed(ctx, v.Record, r); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			return err
+		}
+		// A successful engine write is not a committed binding or task receipt.
+		// Keep that publication failure visible rather than leaving indexing forever.
+		persistErr := s.Store.IndexFailed(context.WithoutCancel(ctx), v.Record, err)
+		return fmt.Errorf("index publication unavailable: %w", errors.Join(err, persistErr))
+	}
+	return nil
 }
 
 // datasets must be an explicit, authorized list from the caller; an empty list

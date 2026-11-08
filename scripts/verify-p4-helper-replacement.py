@@ -16,16 +16,18 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--out', type=Path, default=ROOT/'build/p4-delivery/helper-replacement.json')
+parser.add_argument('--pointer', type=Path, default=ROOT/'build/p4-code/g2-app-fixture-path.txt')
 parser.add_argument('--replace-version', help='Rebuild this isolated App at the same path before the startup probe')
 parser.add_argument('--replace-helper', action='store_true', help='Build the real helper with a distinct test build ID and re-sign the isolated bundle')
 parser.add_argument('--helper-signing', choices=['producer','explicit'], default='producer', help='Keep the Go linker signature as the production builder does, or re-sign the helper as an explicit signature fixture')
 parser.add_argument('--helper-change-mode', choices=['unused-build-tag','build-id'], default='unused-build-tag', help='Change canonical Go build metadata, or use the earlier explicit build-ID fault fixture')
 parser.add_argument('--refresh-launch-services', action='store_true', help='Refresh only this guarded App registration before the startup probe')
 parser.add_argument('--unregister-current-app', action='store_true', help='Run the existing native unregister action in the changed App before registering again')
+parser.add_argument('--unregister-before-replacement', action='store_true', help='Unregister the verified old App and wait for its launch job to disappear before changing bytes')
 parser.add_argument('--fingerprint-plist', action='store_true', help='Add the changed helper SHA to this isolated LaunchAgent plist and re-seal the bundle')
 parser.add_argument('--standard-helper-location', action='store_true', help='Move only the guarded helper to Contents/MacOS and update its bundled LaunchAgent')
 args = parser.parse_args()
-f = Path((ROOT/'build/p4-code/g2-app-fixture-path.txt').read_text().strip())
+f = Path(args.pointer.read_text().strip())
 meta = json.loads((f/'source-info.json').read_text())
 app = Path(meta['app'])
 G = SourceFileLoader('helperreplaceguard',str(ROOT/'scripts/p3-c2-common.py')).load_module()
@@ -45,10 +47,30 @@ def call(op):
 def job():
     p=subprocess.run(['/bin/launchctl','print',f'gui/{os.getuid()}/'+label],capture_output=True,text=True)
     return {'present':p.returncode==0,'lines':[line.strip() for line in p.stdout.splitlines() if re.match(r'\s*(state|runs|last exit code|job state|program) =',line)]}
+def native_unregister(phase):
+    args.out.parent.mkdir(parents=True,exist_ok=True)
+    native_log=args.out.with_suffix('.'+phase+'-unregister.log')
+    p=subprocess.run(['/usr/bin/open','-n','-W','--stdout',str(native_log.resolve()),'--stderr',str(native_log.resolve()),'--env','HOME='+str(f/'ui-home'),'--env','PATH=/usr/bin:/bin',str(app.resolve()),'--args','--p0-action','unregister'],capture_output=True,text=True,timeout=20)
+    assert p.returncode==0,phase+' App native unregister process failed'
+    receipts=[]
+    for line in native_log.read_text().splitlines():
+        try:receipts.append(json.loads(line))
+        except json.JSONDecodeError:pass
+    receipt=next(r for r in receipts if r.get('action')=='unregister')
+    assert 'error' not in receipt and receipt['system_state']=='not_registered',receipt
+    return receipt
 ui=U.UI.__new__(U.UI)
 report={'status':'failed','synthetic_only':True,'actual_app':False,'actual_helper':False,'formal_distribution':False,'fixture':str(f),'bundle':str(app)}
 started=time.monotonic()
 try:
+    if args.unregister_before_replacement:
+        assert args.replace_helper or args.replace_version, 'pre-unregister requires an actual replacement'
+        assert json.loads((data/'service-state.json').read_text())['stopped'], 'stop guarded old service first'
+        report['old_app_unregister_receipt']=native_unregister('old')
+        deadline=time.monotonic()+15
+        while job()['present'] and time.monotonic()<deadline:time.sleep(.1)
+        assert not job()['present'],'old launch job did not disappear before replacement'
+        report['old_launch_job_absent_before_replacement']=True
     if args.replace_version:
         assert json.loads((data/'service-state.json').read_text())['stopped'], 'stop guarded service before replacing the fixture App'
         info=plistlib.loads((app/'Contents/Info.plist').read_bytes())
@@ -104,17 +126,7 @@ try:
         report['launch_services_refresh_exit']=p.returncode
         assert p.returncode==0,'guarded Launch Services refresh failed'
     if args.unregister_current_app:
-        args.out.parent.mkdir(parents=True,exist_ok=True)
-        native_log=args.out.with_suffix('.native-unregister.log')
-        p=subprocess.run(['/usr/bin/open','-n','-W','--stdout',str(native_log.resolve()),'--stderr',str(native_log.resolve()),'--env','HOME='+str(f/'ui-home'),'--env','PATH=/usr/bin:/bin',str(app.resolve()),'--args','--p0-action','unregister'],capture_output=True,text=True,timeout=20)
-        assert p.returncode==0,'changed App native unregister process failed'
-        receipts=[]
-        for line in native_log.read_text().splitlines():
-            try:receipts.append(json.loads(line))
-            except json.JSONDecodeError:pass
-        receipt=next(r for r in receipts if r.get('action')=='unregister')
-        assert 'error' not in receipt and receipt['system_state']=='not_registered',receipt
-        report['changed_app_unregister_receipt']=receipt
+        report['changed_app_unregister_receipt']=native_unregister('changed')
     U.UI.__init__(ui,app,f,ROOT/'build/p4-delivery/helper-replacement-screenshots')
     report['actual_app']=True
     ui.press('设置')

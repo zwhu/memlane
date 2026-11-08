@@ -13,6 +13,10 @@ import (
 )
 
 type App struct {
+	indexRebuild                                                     records.IndexRebuild
+	indexRebuildScope, indexRebuildError, indexRebuildOperation      string
+	indexRebuildConfirm, indexRebuildBusy, indexRebuildLoading       bool
+	indexRebuildSequence                                             int64
 	code                                                             CodeUI
 	initialization                                                   InitializationUI
 	guidanceRoot, guidanceError                                      string
@@ -951,6 +955,8 @@ func (a *App) settings(c *ui.Context) {
 			a.keepChanged(a.keepService)
 		}
 	}
+	ui.Divider(c)
+	a.indexRecoverySettings(c)
 	ui.Divider(c)
 	ui.Text(c, "客户端 "+a.version).Bold()
 	ui.Text(c, a.updateText).Selectable().TextColor(c.Theme().TextMuted)

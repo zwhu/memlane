@@ -442,3 +442,12 @@ G2 实际更新和活动取消分别运行 `python3 scripts/verify-p4-code-updat
 根混合语言 App 可运行 `python3 scripts/verify-p4-code-root-app.py --pointer build/p4-code/g2-final-fixture-path.txt --out build/p4-code/g2-complete-package-app.json --screenshots build/p4-code-g2-final-screenshots`。要求全新登记状态、含 root.ts/root.py 的合成源，0.0.3 独立 worker。用 `create-p4-code-fixture.py --app <隔离完整App> --pointer <新pointer> --worker-archive <0.0.3归档>` 创建新标记根，按 source-info 的 identifier 和 runtime-config 构建完整包；避免覆盖 G1/G2 历史包和报告。组件旧图/升级/回退 checker 位于 `cmd/p4-component-check`，正式能力及当前版本见 [根模块契约](p4-code-root-contract.md)。
 
 F1 无模型复现命令为 `python3 scripts/verify-p4-helper-replacement.py --replace-helper --helper-signing producer --helper-change-mode unused-build-tag --out build/p4-delivery/<probe>.json`；先持久停服，脚本只修改旧F1隔离App，不能对用户日常包运行。当前仍失败，见 [F1诊断](p4-helper-replacement-validation.md)，不反复覆盖失败或以新身份安装代替更新。
+
+
+## F1a 检索索引重建验收
+
+正式输入/来源/幂等/回执与schema13迁移见 [重建契约](p4-index-recovery-contract.md)。`sh scripts/go.sh test ./internal/store ./internal/memory -run '^TestIndexRebuild' -count=1 -v` 为真实SQLite迁移/原子性/版本/发布故障夹具，未运行模型或Rust。全仓test/vet与受影响race按标准执行。
+
+新隔离完整包按 `create-p4-code-fixture.py` 的新pointer、App路径、identifier/runtime-config和0.0.3独立worker构建，保留G2及第一轮失败包。运行 `python3 scripts/verify-p4-index-recovery.py --pointer build/p4-delivery/index-recovery-final-fixture-path.txt --out build/p4-delivery/index-recovery-final-app.json --screenshots build/p4-index-recovery-final-screenshots`；仅移走明确停服的合成项目raw目录，App保存/编辑/确认/取消及Rust检索为真实。归档状态是明确SQL夹具。
+
+正常报告passed且该合成服务停服后，`python3 scripts/verify-p4-index-recovery-scope.py` 验证实际范围Select和10001条明确SQL raw行触发上限，确认无部分任务再清理该预算dataset。它不证明SQL行有真实索引。失败或清理错误保留failed。完整实际证据/截图/体积/未通过边界见 [F1a验证](p4-index-recovery-validation.md)。

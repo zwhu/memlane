@@ -381,6 +381,27 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 	}
 	svc := memory.Service{Store: s.store, Engine: selected}
 	switch r.Op {
+	case "rebuild_index":
+		if !r.UserConfirmed || r.IndexRebuildStart == nil {
+			return nil, errors.New("index rebuild requires user confirmation")
+		}
+		result, err := s.store.StartIndexRebuild(operation, *r.IndexRebuildStart)
+		if err == nil {
+			select {
+			case s.work <- struct{}{}:
+			default:
+			}
+		}
+		return result, err
+	case "index_rebuild":
+		if r.IndexRebuildID == "" {
+			result, err := s.store.LatestIndexRebuild(operation)
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, nil
+			}
+			return result, err
+		}
+		return s.store.IndexRebuild(operation, r.IndexRebuildID)
 	case "code_list":
 		return s.store.Codes(operation)
 	case "code_jobs":

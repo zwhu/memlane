@@ -36,6 +36,8 @@ Developer ID/公证/正式更新源/干净系统仍属 F3，G 的本机 ad-hoc �
 
 schema 12 只新增实际所需 code_worktrees、code_jobs 和 code_actions；一致性 VACUUM INTO 备份在迁移前完成。code_actions 的 operation UUID、请求 digest 和固定原回执防止重放改变授权；回执 replay 标记只用于调用方，不是新的开启指令。已有授权变更使用 expected_generation，停用保留最后成功 receipt/source manifest 并增代。每个 worktree 最多一条 queued/running job；当前服务只串行扫描/建图，已开启 worktree 上限 16，15 秒轮询合并变化，不创建未启用项目的扫描任务。
 
+后续 F1a schema13 新增原文检索重建任务，不改变代码表或扫描授权，见 [维护契约](p4-index-recovery-contract.md)。G1/G2 的 schema12 记录是当时验收版本。
+
 受信 IPC code_action 接受 enable/disable/refresh，均需要 App 明确操作；code_list/code_jobs 读取持久状态；code_query 由 worktree record ID 选取服务 current snapshot，不能由客户端直接提供 dataset、snapshot 或文件路径。结果前后重读内容快照并复核授权代次/current receipt；变化明确返回 code_stale，旧结果从 UI 排除。失败保留成功历史；同一失败 source digest 不每轮重试，来源不可读时要求明确刷新。实际新变化可再次生成任务。
 
 持久 job ID 与 generation 拦住取消、重启和迟到结果。服务 stop/quiesce 与发布共用 codeStopping/mutex 栅栏，取消活动上下文；中断保留 last current 并清除该次 observed digest。显式用户 stop 的持久标记仍阻止服务重启扫描，只有明确 resume 后才恢复已开启范围。抽取子进程使用已有 helper owner FD guard：数据库任务先存在，guard 收到 S 才启动，父服务 FD 消失则杀整组；不把数据库或 owner FD 传给 Enola。网络、文件读取、模型和 worker 等待不持 SQLite 写事务。

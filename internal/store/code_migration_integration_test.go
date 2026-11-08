@@ -70,7 +70,7 @@ func TestCodeV11MigrationBacksUpAndPreservesEveryOldTable(t *testing.T) {
 	mustMerge(t, reader.Close())
 	backups, e := filepath.Glob(filepath.Join(filepath.Dir(path), "backups/schema-v11-*.sqlite"))
 	mustMerge(t, e)
-	if len(backups) != 1 || current.Schema != 12 {
+	if len(backups) != 1 || current.Schema != SchemaVersion {
 		t.Fatal("code migration/backup missing", backups, current.Schema)
 	}
 	backup, e := sql.Open("sqlite", backups[0])
