@@ -3,6 +3,7 @@
 这是面向程序员的 macOS 记忆客户端，使用 Cognee 作为记忆引擎。桌面框架已选择 MyGo；P0 核心客户端、服务与组件链路、P1 手动记忆管理与实际窗口设计对照已通过。P2 已接通真实 Codex MCP、pi Extension 和 App Agent 管理，闭环与交付结果见 docs/p2-validation.md；P3-C1 正式服务和 P3-C2 App 手动合并审核已通过，见 docs/p3-c2-validation.md；P3-C3 摘要/标签、来源失效和逐项恢复已通过，见 docs/p3-c3-validation.md；P3-C4 修改建议与审核已通过，见 docs/p3-c4-validation.md；P3-E 全局经验复制/提炼、条件和来源范围已通过，见 docs/p3-global-validation.md；P3-D1 持久计划、明确启停与真实槽位/取消已通过，见 docs/p3-schedule-validation.md；D2a 持久租约/进程保护已通过，见 docs/p3-recovery-validation.md；D2b 有限自动重试/完整恢复和其余交付继续按 docs/p3-delivery-plan.md 实施。
 
 - 开始工作前阅读 [产品定义](docs/product.md) 和 [设计决策](docs/design.md)，以已确认的产品规则为准。
+- UI 重设计开发先读 [设计交接入口](docs/ui-redesign/README.md)；A01–A04 按 [已认可的环境安装设计契约](docs/ui-redesign/a-environment.md) 与截图实现。确认和安装进度同页，组件卡片内显示进度，主按钮为「安装并继续」；A05–A10 与 B 后续稿尚未在本轮认可，不得把示例下载数字或原型状态当成真实结果。
 - 开发或验收 UI 前，实际打开 [首页设计图](docs/images/home.jpg) 和 [三栏详情设计图](docs/images/memory-detail.jpg)，不能只读 Markdown 图片路径。完成后对照实际窗口截图；工具无法看图时明确视觉验收未完成。
 - 实现依据 [技术方案](docs/technical-plan.md) 与 [实施清单](docs/implementation-plan.md)；区分已选框架、待验证依赖和已通过的验收。
 - 文档默认中文。区分已实现、原型演示与待验证能力，不将示例状态描述为真实接入结果。
