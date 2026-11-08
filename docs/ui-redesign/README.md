@@ -5,8 +5,8 @@
 | 分组 | 状态 | 依据 |
 | --- | --- | --- |
 | A01–A04 本机环境检测与安装 | 用户已认可，待按此稿实现并做真实窗口验收 | [A 开发契约](a-environment.md) |
-| A05–A10 Agent、项目、连接、第一项任务与恢复 | 本轮尚未完成视觉设计；既有产品规则继续有效 | [全部场景](scenarios.md)、[产品问题](../product-questions.md) |
-| B01–B08 日常首页 | 开始设计，待用户确认 | 原型分支的 `b-home.html`；不能当作最终开发要求 |
+| A05–A10 Agent、项目、连接、第一项任务与恢复 | 已补讨论稿，待用户评审；既有产品规则继续有效 | 原型分支 `a-agent.html`、`A-AGENT-DRAFT.md`；[全部场景](scenarios.md)、[产品问题](../product-questions.md) |
+| B01–B08 日常首页 | 按用户最新要求暂缓，先补 A | 待恢复设计，不是最终开发要求 |
 | C–O | 仅完成场景枚举 | [全部场景](scenarios.md) |
 
 已认可的 A 原型归档在 `prototype/selected-ui` 分支，路径为 `prototypes/ui-redesign-20261109/`，冻结提交为 `5f4c504bfbc6ee07a571b015f7ccc809d0943848`。此提交仅保存在本地；未推送。按该目录 README 用一条 Python 命令启动浏览器预览。主分支保留规则、截图与核验记录，生产实现继续使用 MyGo，不移植 HTML 原型。
