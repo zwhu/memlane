@@ -195,6 +195,9 @@ func initializationState(b records.InitializationBatch) string {
 	case "cancelled":
 		return "已取消接收"
 	case "expired":
+		if b.Error == "backup_restored" {
+			return "备份已恢复，批次过期"
+		}
 		return "材料已变化，批次过期"
 	case "received":
 		if b.IndexFailed > 0 {
@@ -361,7 +364,11 @@ func (a *App) initializationDetail(c *ui.Context) {
 				ui.Text(c, s.Notice).FontSize(design.Small).TextColor(design.Muted)
 			}
 			if b.Error != "" {
-				ui.Text(c, b.Error).FontSize(design.Small).TextColor(design.Muted)
+				detail := b.Error
+				if b.Error == "backup_restored" {
+					detail = "整库备份已恢复，原批次不可再提交；请重新准备初始化。"
+				}
+				ui.Text(c, detail).FontSize(design.Small).TextColor(design.Muted)
 			}
 			for _, source := range b.Sources {
 				v := source

@@ -36,7 +36,7 @@ func mergeStatus(state, review string) string {
 	case "rejected":
 		return "已拒绝"
 	case "expired":
-		return "已过期 · 来源已有变化"
+		return "已过期 · 请重新生成建议"
 	case "cancelled":
 		return "已取消"
 	}
@@ -351,7 +351,7 @@ func (a *App) mergeDetail(c *ui.Context) {
 			ui.Text(c, "确认前已有知识保持不变。确认会新建合并知识，并归档两条来源；历史和出处保留。").LineHeight(1.7)
 		}
 		if t.ReviewState == "expired" {
-			ui.Text(c, "来源的版本或状态已变化，整项建议不能应用。请核对当前版本后重新整理。").LineHeight(1.7)
+			ui.Text(c, "该建议已失效，整项不能应用。请核对当前知识后重新生成建议。").LineHeight(1.7)
 		}
 		if t.State == "interrupted" {
 			ui.Text(c, "服务中断，旧执行结果不会应用。重新整理需再次选择当前版本。").LineHeight(1.7)

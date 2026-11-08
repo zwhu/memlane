@@ -464,3 +464,7 @@ F1 无模型复现命令为 `python3 scripts/verify-p4-helper-replacement.py --r
 `sh scripts/go.sh test ./internal/store ./internal/recoveryfiles -run '^TestRestore' -v -count=1`验证真实SQLite/FS、schema13→14一致性备份、隔离转换和开库前journal；文件位置/目录同步/取消/stop代次是明确故障夹具。`sh scripts/go.sh test ./internal/desktop -run '^TestBackupRestore' -v -count=1`为Headless真实SQL/FS确认回归，不能代替native窗口。
 
 新源按F1b同样创建全新App身份与标记fixture，完整包需包含最新helper/LaunchAgent。运行 `python3 scripts/verify-p4-restore-app.py --pointer build/p4-delivery/restore-verified-fixture-path.txt --out build/p4-delivery/restore-actual-app-v3.json --screenshots build/p4-restore-verified-screenshots`。必须新空库，App保存v2备份、后来v3、取消与确认恢复、实际App新PID、停服/明确启动与真实Rustv2检索。禁止对真实库或日常Agent运行；失败报告不覆盖为成功，关闭/重载中也要登记清理PID并核对新App退出。WAL模式序列化快照以immutable读取；恢复前原件不为验证而修改。完整约束、故障范围及F1c2未完成项见 [恢复验证](p4-restore-validation.md)。
+
+F1c2综合入口为 `verify-p4-restore-authorizations.py`；仅在上述已通过停服根、还没有Agent/计划/代码时启动，--resume-connection只保留第一次未验证初始化失败后的owned连接。初始化前必须实际Verify，不伪造verified_generation。`verify-p4-restore-auth-presentation.py --out <独立报告>`仅针对记录的v2已恢复根，继续新ID真实Verify与显式代码重开。最终完整包/过期文案使用 `verify-p4-restore-final-app.py --out <独立报告>`，它不调用模型，不拿瞬时Notice代替重启后的持久验证状态。
+
+`sh scripts/go.sh test ./cmd/p4-restore-replay-check -v -count=1`验证只读前置门禁；构建该checker后仅可给当前已停服合成根、已完成backup/operation UUID验证全表保持。新/未完成ID、root链接/非合成/绑定不符在Store.Open前拒绝；不把checker加入主包或日常Agent工具。它不停止正在运行的服务、不触发新恢复、不迁移旧库。详细失败、真实通过和正式分发剩余项以恢复验证记录为准。

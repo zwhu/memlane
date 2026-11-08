@@ -33,8 +33,9 @@ type restoreJournal struct {
 type RestoreManager struct {
 	Root string
 	// Explicit filesystem fault fixtures; never normal App acceptance.
-	checkpoint func(string) error
-	syncDir    func(*os.Root) error
+	checkpoint  func(string) error
+	syncDir     func(*os.Root) error
+	persistStop func(*os.Root) error // explicit stop-write failure fixture
 }
 
 type PrepareSnapshot func(context.Context, []byte, string) ([]byte, records.RestoreStats, error)
@@ -533,7 +534,11 @@ func (m RestoreManager) recover(ctx context.Context, root *os.Root) (bool, error
 	// Stop is part of the durable recovery transaction. Never clear the intent
 	// before this state is synced: a previous explicit Resume may have cleared
 	// stopped before a startup recovery, and no new owner may run afterward.
-	if err = persistRestoreStop(root); err != nil {
+	stop := m.persistStop
+	if stop == nil {
+		stop = persistRestoreStop
+	}
+	if err = stop(root); err != nil {
 		return false, err
 	}
 	if err = m.point("stop_state_persisted"); err != nil {

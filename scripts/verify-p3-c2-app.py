@@ -96,13 +96,13 @@ try:
  # Source change is an explicit fault setup using the real service, not a model fixture.
  v=sources[1];call('apply',user_confirmed=True,mutation={'kind':'edit','operation_id':str(uuid.uuid4()),'dataset':project,'memory':v['memory'],'expected_revision':1,'text':v['text']+' 用户后来补充新约定。'})
  U.wait(lambda:call('merge_get',merge_task=tid)['review_state']=='expired')
- U.wait(lambda:'已过期 · 来源已有变化' in ui.labels());assert not any(n.get('key')=='merge-confirm' for n in ui.nodes())
+ U.wait(lambda:'已过期 · 请重新生成建议' in ui.labels());assert not any(n.get('key')=='merge-confirm' for n in ui.nodes())
  ui.capture('expired.png');report['scenarios'][-1]['source_edit_fault_setup_app_expired']=True
  # App exit and reopen must reconstruct records from persistent service state.
  ui.quit();ui=None
  ui=U.UI(app,fixture,ROOT/'build/p3-c2-screenshots',extra_env={'PI_CODING_AGENT_DIR':str(fixture/'pi-agent')})
  ui.press('整理记录');U.wait(lambda:any(n.get('key')=='merge-task-'+tid for n in ui.nodes()));ui.press_key('merge-task-'+tid)
- U.wait(lambda:'已过期 · 来源已有变化' in ui.labels());report['app_reopen_persistent_list']=True
+ U.wait(lambda:'已过期 · 请重新生成建议' in ui.labels());report['app_reopen_persistent_list']=True
  sources,tid=start('interrupted');U.wait(lambda:(call('merge_get',merge_task=tid).get('execution') or {}).get('process_active'),timeout=60)
  ui.quit(stop=True);ui=None
  ui=U.UI(app,fixture,ROOT/'build/p3-c2-screenshots',extra_env={'PI_CODING_AGENT_DIR':str(fixture/'pi-agent')})

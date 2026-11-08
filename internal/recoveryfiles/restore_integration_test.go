@@ -307,4 +307,30 @@ func TestRestoreIODirectoryFailureRetryAndCancelBeforeIntent(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	t.Run("stop_write_failure_keeps_intent", func(t *testing.T) {
+		root, backup, prepared, prior := restoreIOFixture(t)
+		op, calls := uuid.NewString(), 0
+		fault := errors.New("explicit persisted-stop write failure")
+		m := RestoreManager{Root: root, persistStop: func(*os.Root) error { return fault }}
+		if _, err := m.Restore(context.Background(), backup, op, capturedPrepare(prepared, &calls)); !errors.Is(err, fault) {
+			t.Fatal("stop-write failure returned success", err)
+		}
+		if _, err := os.Stat(filepath.Join(root, restorePointer)); err != nil {
+			t.Fatal("stop-write failure erased commit intent", err)
+		}
+		for name, want := range prior {
+			got, err := os.ReadFile(filepath.Join(root, "backups/restores", op, "previous-"+name))
+			if err != nil || !bytes.Equal(got, want) {
+				t.Fatal("stop failure lost pre-restore copy", name, err)
+			}
+		}
+		m.persistStop = nil
+		if _, err := m.Restore(context.Background(), backup, op, capturedPrepare(prepared, &calls)); err != nil {
+			t.Fatal("explicit retry after stop failure", err)
+		}
+		assertRestoreFiles(t, root, op, prepared, prior)
+		if calls != 1 {
+			t.Fatal("stop-write retry re-prepared source", calls)
+		}
+	})
 }

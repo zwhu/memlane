@@ -1,6 +1,6 @@
 # F1b 手动一致性备份验证
 
-2026-11-08，F1b 对应本机范围通过；F1c 离线恢复仍未实现。[契约](p4-backup-recovery-contract.md) 区分备份/校验、灾难恢复、单条版本恢复及原文索引重建。worker0.0.3/protocol1、schema13与模型/Enola版本沿用前阶段，不升级 Agent、不读取聊天。
+2026-11-08，F1b 对应本机范围通过。F1b验收时F1c尚未实现；后来F1c1/F1c2的独立恢复证据见 [恢复验证](p4-restore-validation.md)，不以本文备份结果替代。[契约](p4-backup-recovery-contract.md)区分备份/校验、灾难恢复、单条版本恢复及原文索引重建。本文历史包沿用worker0.0.3/protocol1、schema13与模型/Enola，不升级Agent、不读取聊天。
 
 ## 真实 App 与 SQLite
 
