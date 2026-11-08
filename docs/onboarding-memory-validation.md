@@ -2,9 +2,41 @@
 
 2026-11-08。此记录对应本轮独立 Goal；**两部分连续真实运行验收已通过**，提交与远端以 Git 和最终交接为准。不恢复旧工程 Goal，不选择 Q1–Q4 或日常自动记忆策略。没有启动其他 Agent 开发会话。
 
-## 最终不可变包的空起点连续验收
+## 最新正式包与最终验收（2026-11-09）
 
-2026-11-08，`build/onboarding-memory-validation/immutable-full-run/continuous/report.json`通过：最新完整包从新空业务库、空Rust/E5与官方组件缓存开始，在同一个实际窗口内完成环境发现、确认、真实下载与验证、正常Codex工具任务、官方持久同步、Native完整原文、三视图、全部当前Rust和全新官方graph recall。主二进制、helper和配置的前后SHA均相同，过程中没有修包、手工补数据或切换模型。此项是最终连续证据，下面的旧恢复链路和故障切片不能替代它。
+当前推荐包为 `build/onboarding-memory-validation/selected-final/app/darwin-arm64/MemlaneOnboardingReady.app`，独立身份 `io.github.zwhu.memlane.p0.24b79c7bfa2c`。首启已按所选 `index.html` 交互还原分阶段页面、紧凑分组、默认折叠检查详情、固定顶部/底部操作和右侧编号高亮；保留方块散落→归整→灯泡，不搬入原型数据、开关或固定成功计时。准备/验证/ready页使用小型动效标记，任务与下一步保持可见。具体HTTP错误后补回执丢失已修正，最新真实503窗口与重开/取消恢复通过。
+
+| 必需部分 | 最新真实结果 | 权威证据 |
+| --- | --- | --- |
+| 三视图与完整原始记录 | 记忆/实体/关系共享项目与选择，跨视图返回同一出处；完整复制、长分页、查找及SDK引用定位通过 | `selected-final/continuous/report.json`、`after-cleanup-reopen/report.json` |
+| Cognee实体/关系衔接 | 13个真实实体、14条有具体材料支持的关系，受信项目/实例/dataset读取 | `selected-final/continuous/report.json` 中graph与source_read |
+| 空环境准备与首次使用 | 新空业务根、严格空Rust/E5/Cognee组件缓存，实际下载/校验/helper/完整健康/模型验证；本机与项目内官方影响分别确认 | `selected-final/before-app-empty-state.json`、`continuous/report.json` |
+| 官方Agent/Cognee | Codex正常工具任务、官方结束同步、实际持久水位和session_learning，再受信导入 | 同一窗口连续报告；没有预置记忆 |
+| Memlane/Rust当前版本 | 8 raw（1完整会话、1 QA、6 trace）与2 knowledge分别计数，2条知识逐条真实Rust正文/范围/具体revision通过 | 连续报告中的rust_current_versions；新包重放保持ID/版本/正文 |
+| 全新正式召回 | 新exec、无resume、无首会话输入或文件答案，正式官方graph返回首会话来源与实际回答 | 连续报告中的fresh_official_recall及实际窗口 |
+| 必要边界与恢复 | 最终UI真实503、下载取消/跳过/同根恢复通过；两个项目及重开通过。真实Agent SIGINT取消/迟到撤权、暂停服务/重放账本、旧库/WAL保留沿用未受影响正式路径证据 | `build/first-launch-validation/selected-final/actual/report.json`；`final-cold/cancel-accepted/`、`boundaries-accepted/`、store迁移检查 |
+
+最终完整原文26,723 B，SHA256 `6a8d11b5be05731bc2afc4cf3c71b8f0576e37a63a1895604c9d0d2efd2a2967`；保留实际SDK截短分段和官方learning，不改写产物制造一致。首session `codex_01a1bbf5-70a0-77a3-8c22-73023690dd13`；fresh `codex_01a1bbf8-8539-7692-93a4-38800b7e43a7`。项目A `7fa97bff-aff3-4253-89cb-3b55152a89dd`，B `f27069c0-d560-49ca-a0be-ea3f7e4b835c`；Cognee实例 `36be3e2a-2cc4-4575-a347-303fdafc6976`，dataset `f962aa4d-5053-5d3a-b2ad-9499b064b69c`，实际验证服务地址 `http://127.0.0.1:53215`（当前已停止）。实体查询、Memlane/Rust检索和官方recall分别走各自路径，没有双向同步或全局dataset自动提升。
+
+实际版本：Codex0.167.0-alpha.3.2，沿用用户当前gpt-6.1-sol；官方插件1.7.7/上游997fd6f72253aa97b49996eb1b032793f0257935，Cognee1.6.7（冻结适配组件1.6.7-memlane.3），LiteLLM1.108.2、FastEmbed0.9.1、Uvicorn0.54.0、Go1.27.3、MyGo0.7.4。Cognee独立模型deepseek/deepseek-v4-flash，BGE512维；模型条件与Agent认证分别核对，没有升级Agent或改动日常模型。
+
+全仓test/vet、desktop/official/components race通过；选定提交源码剥离用户未提交修改后test通过。包内全部9个普通文件前后SHA清单相同，helper与LaunchAgent也在清单内；当前包没有原地重建。自检及实机发现的失败消息修正见 `selected-interaction/review/`，自检不代替真实窗口。原型和故障夹具只作为对应设计/边界证据；503与节流下载明确标记，不替代正常Agent任务。公开组件源、正式签名分发、完整代码图谱和旧工程Goal其余生命周期不在本轮完成范围。
+
+主DMG 18,166,963 B，App 40,583,159 B；首轮真实组件归档下载 708,140,713 B；最终App+client普通文件 1,583,373,218 B，OS分配文件量 1,653,649,408 B。下载量由真实受控源计数，排除HTTP/TLS及模型请求开销；组件归档复用仓库固定发布候选，仍是本机受控分发。最终磁盘含本轮组件、模型、业务与官方数据，不含开发工具链/编译缓存或其他验收根。
+
+用户打开有效环境的一条命令：
+
+```sh
+open "/Users/bytedance/work/AI/memlane/build/onboarding-memory-validation/selected-final/app/darwin-arm64/MemlaneOnboardingReady.app" --args --p0-config "/var/folders/nv/g6m5_3nx1r9_v9dk3zh_5zw40000gn/T/memlane-official-agent-onboarding-yvz0iu65/runtime-config.json"
+```
+
+打开时服务已停止。在设置明确“启动服务”，从项目A“官方接入与同步”确认复核已安装环境，再在记忆→实体→关系图浏览并打开完整出处。无需再运行Agent即可体验保留的真实合成材料；若要查看首启页面，从设置重新检查本机准备，结果来自已有环境。停止使用“文件→停止服务并退出”，不删除数据。实际数据根为 `/var/folders/nv/g6m5_3nx1r9_v9dk3zh_5zw40000gn/T/memlane-official-agent-onboarding-yvz0iu65/client`，包与合成项目保留原路径；没有开启日常采集hook。系统临时根长期迁移仍需后续明确操作。
+
+两个准备源、最终App/Agent/Cognee/LaunchAgent已停止，临时Agent auth与本轮TLS私钥不存在；停止后在下载源不可用条件下，同包全文/Rust/项目隔离/重开选择仍通过。日常Codex config/auth在最终起点与终点的SHA和mtime相同。清理、体积、清单与完整矩阵分别见 `selected-final/cleanup-final.json`、`sizes-final.json`、`immutable-bundle-*.json`、`delivery-matrix.json`。提交/远端与临时handoff以最终Git/交接核对为准；Q1–Q4保持开放，不恢复旧Goal。
+
+## 首启交互续改前的不可变包验收（历史证据）
+
+2026-11-08，`build/onboarding-memory-validation/immutable-full-run/continuous/report.json`通过：最新完整包从新空业务库、空Rust/E5与官方组件缓存开始，在同一个实际窗口内完成环境发现、确认、真实下载与验证、正常Codex工具任务、官方持久同步、Native完整原文、三视图、全部当前Rust和全新官方graph recall。主二进制、helper和配置的前后SHA均相同，过程中没有修包、手工补数据或切换模型。此项是该阶段连续证据；本轮首启交互和具体错误续改后的最新证据见 selected-final，不混用不同包。
 
 本次实际产物为11 raw（1完整会话＋1 QA＋9 trace）、2 knowledge、21实体、22条有出处关系。原文51,401 B，SHA256 `a12098adbe9e9c380d72364ced3086e853329e6a39a6d605f950f094485cace1`，实际复制、长分页、搜索与SDK摘录定位通过。首session `codex_01a1bbc5-980c-7ce0-9a99-a0ee2fca0b9d`，新session `codex_01a1bbc9-c676-7fb1-a183-d24156b90a19`；新prompt和项目文件没有答案，通过官方脚本返回首session材料及真实回答。数目按实际模型产物记录，没有为了匹配旧记录补造4条知识或27个实体。
 
@@ -12,7 +44,7 @@
 
 此根只复用开发工具链、现有Codex认证及已批准Cognee独立模型条件；没有组件缓存、业务记忆或历史聊天。一次源启动脚本误解引用venv Python而缺cryptography，属于App启动前的源工具错误，已纠正入口并保留日志，不计作成功准备或App运行失败。
 
-当前推荐包：`build/onboarding-memory-validation/immutable-full-run/app/darwin-arm64/MemlaneOnboardingFinal.app`，身份 `io.github.zwhu.memlane.p0.d84a77123654`。主DMG18,149,754 B、App40,550,279 B，实际首下载708,140,713 B，App加client普通文件1,556,330,556 B（du约1.63 GB）。旧恢复环境额外保留的SDK数据使体积不同，两根测量分别保存，不能混用。
+该阶段保留包：`build/onboarding-memory-validation/immutable-full-run/app/darwin-arm64/MemlaneOnboardingFinal.app`，身份 `io.github.zwhu.memlane.p0.d84a77123654`。主DMG18,149,754 B、App40,550,279 B，实际首下载708,140,713 B，App加client普通文件1,556,330,556 B（du约1.63 GB）。旧恢复环境额外保留的SDK数据使体积不同，两根测量分别保存，不能混用。
 
 ```sh
 open "/Users/bytedance/work/AI/memlane/build/onboarding-memory-validation/immutable-full-run/app/darwin-arm64/MemlaneOnboardingFinal.app" --args --p0-config "/var/folders/nv/g6m5_3nx1r9_v9dk3zh_5zw40000gn/T/memlane-official-agent-onboarding-59oevo8l/runtime-config.json"

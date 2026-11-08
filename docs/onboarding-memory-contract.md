@@ -22,10 +22,10 @@
 | --- | --- | --- |
 | 基线 | 已核对并保护原 index/worktree | build/onboarding-memory-validation/baseline/ |
 | 来源阅读器 | SDK 分段正式窗口通过；完整 Codex 原文解析与正式窗口、长分页/复制/定位均通过 | build/memory-browsing-validation/official-app-4/、native-original-report.json |
-| 受信图与三视图 | 27 实体/30 关系真实来源、两个项目、跨视图和重开已通过 | 当前知识与 SDK 来源保持具体 v1；Native 不改图/知识来源 |
+| 受信图与三视图 | 最新 selected-final 的 13 实体/14 关系真实来源、两个项目与跨视图通过；最终同包重开已通过 | 当前知识与 SDK 来源保持具体 v1；Native 不改图/知识来源 |
 | 首启/方块灯泡 | 真实空根/空缓存、下载/全部服务验证、失败/下载取消/跳过/同根恢复通过 | 正常路径与 HTTP 503 故障注入分开报告 |
-| 官方正常任务与保存 | 首 session 正常工具任务、真实 QA/trace 持久水位和 4 knowledge 已通过 | 缓冲、后台提交、持久化、提炼、Memlane 导入分开；Native补接及正式包通过 |
-| Rust 当前版本 | 4 knowledge逐条实际查询通过 | 图检索独立；新增 Native raw 不作为 knowledge |
+| 官方正常任务与保存 | 首 session 正常工具任务、真实 QA/trace 持久水位和实际 knowledge 已通过 | 缓冲、后台提交、持久化、提炼、Memlane 导入分开；Native补接及正式包通过 |
+| Rust 当前版本 | 最新2条 knowledge逐条实际查询通过；先前4条另有独立证据 | 图检索独立；新增 Native raw 不作为 knowledge |
 | 全新官方 recall | 无 resume、无首 session历史、正式官方 graph召回已通过 | final-cold/fresh-recall-evidence/report.json |
 | 活动取消/迟到与失败恢复 | SIGINT真实工具取消、授权撤销、迟到sync及旧请求拒绝已通过；重开显示真实受限状态 | 不以驱动失败、正常完成或故障夹具算真实取消 |
 | 完整包与交付 | 完整包、全仓test/vet/受影响race通过；清理后完整包、体积和交接通过；提交/普通push以Git最终核对为准 | 反复原地重建包的 macOS launch constraint失败保留；新独立身份验证当前代码 |
@@ -55,3 +55,7 @@ Cognee 1.6.7/官方插件 1.7.7 的 trace DTO 对工具返回最多保留 1,000 
 生产呈现读取原有 FirstLaunchState、真实发现结果与 RuntimeStatus；不复制原型示例、版本、开关或固定等待。首启确认只准备本机 Rust/模型/helper，官方 Cognee 模型与插件的影响仍在真实项目内独立确认；发现 Agent 不显示为已接入。准备中的 MB 指组件处理进度，可复用量与真实网络下载量分别报告。
 
 此续改的独立完整包和实际窗口位于 `build/onboarding-memory-validation/selected-interaction/`；新包全链路与重开验收结果以该目录报告为准。失败/取消/跳过/恢复的续验位于 `build/first-launch-validation/selected-interaction/`，与原有旧包证据分开。此前不可变包的连续证明继续保留，不替代续改包尚未完成的检查。
+
+## 最新完整交付依据
+
+最终首启包 `selected-final` 已从独立空业务/严格空组件缓存的同一窗口，真实通过准备、正常官方任务、持久化、全文/三视图、两条Rust当前版本和全新官方recall；实际8 raw、2 knowledge、13实体、14关系，按产物记录不补造数量。整个包9文件清单前后一致，下载源关闭后重开与完整来源/项目隔离通过。具体HTTP503外层错误更新与持久保存已实机重验，原失败保留。最终权威连续与恢复证据为 `build/onboarding-memory-validation/selected-final/`，首启边界为 `build/first-launch-validation/selected-final/`。此前包是历史独立证据，当前以验证记录顶部的版本、根、数量、大小和启动命令为准。
