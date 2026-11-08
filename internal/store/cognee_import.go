@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -43,13 +44,17 @@ func (s *Store) ImportCognee(ctx context.Context, d records.CogneeImport) (recor
 		return receipt, invalid()
 	}
 	if d.Origin == "raw" {
-		if (parts[2] != "qa" && parts[2] != "trace") || len(d.Sources) != 0 {
+		if (parts[2] != "qa" && parts[2] != "trace" && (parts[2] != "native" || d.Native == nil)) || len(d.Sources) != 0 {
 			return receipt, invalid()
 		}
 	} else if d.Origin != "knowledge" || parts[2] != "data" || len(d.Sources) == 0 || len(d.Sources) > 16 {
 		return receipt, invalid()
 	}
-	if strings.TrimSpace(d.Text) == "" || len(d.Text) > records.MergeInputLimit || len(d.Fragment) > records.MergeInputLimit || len(d.Title) > 512 || !utf8.ValidString(d.Text) || !utf8.ValidString(d.Fragment) || d.Workspace == "" {
+	textLimit := records.MergeInputLimit
+	if d.Origin == "raw" {
+		textLimit = records.CogneeRawLimit
+	}
+	if strings.TrimSpace(d.Text) == "" || len(d.Text) > textLimit || len(d.Fragment) > records.MergeInputLimit || len(d.Title) > 512 || !utf8.ValidString(d.Text) || !utf8.ValidString(d.Fragment) || d.Workspace == "" {
 		return receipt, invalid()
 	}
 	r := records.AgentRequest{Protocol: 1, ConnectionID: d.ConnectionID, Generation: d.Generation, Workspace: d.Workspace, Tool: "memory_save", Arguments: records.AgentArguments{Scope: d.Project}}
@@ -63,6 +68,30 @@ func (s *Store) ImportCognee(ctx context.Context, d records.CogneeImport) (recor
 	refs := append([]records.MergeSource(nil), d.Sources...)
 	sort.Slice(refs, func(i, j int) bool { return refs[i].Memory < refs[j].Memory })
 	detail := &records.AgentSource{Fragment: d.Fragment, References: []string{d.ExternalID}}
+	if d.Native != nil {
+		hash := sha256.Sum256([]byte(d.Text))
+		if d.Origin != "raw" || parts[2] != "native" || d.Material != nil || d.Native.Dataset != u.Host || d.Native.Session != parts[1] || d.Native.Workspace != d.Workspace || d.Native.CLIVersion != "0.167.0-alpha.3.2" || d.Native.Digest != hex.EncodeToString(hash[:]) {
+			return receipt, invalid()
+		}
+		if id, e := uuid.Parse(d.Native.Instance); e != nil || id.String() != d.Native.Instance {
+			return receipt, invalid()
+		}
+		detail.Native = d.Native
+	}
+	if d.Material != nil {
+		if d.Material.Session != parts[1] || d.Material.Kind != parts[2] || d.Material.Sequence < 0 || d.Material.OfficialState != "persisted" {
+			return receipt, invalid()
+		}
+		if parsed, e := uuid.Parse(d.Material.Instance); e != nil || parsed.String() != d.Material.Instance {
+			return receipt, invalid()
+		}
+		if d.Material.CapturedAt != "" {
+			if _, e := time.Parse(time.RFC3339Nano, d.Material.CapturedAt); e != nil {
+				return receipt, invalid()
+			}
+		}
+		detail.Official = d.Material
+	}
 	for i, ref := range refs {
 		if _, err = uuid.Parse(ref.Memory); err != nil || ref.Revision < 1 || strings.TrimSpace(ref.Quote) == "" || len(ref.Quote) > records.MergeInputLimit || !utf8.ValidString(ref.Quote) || (i > 0 && refs[i-1].Memory == ref.Memory) {
 			return receipt, invalid()

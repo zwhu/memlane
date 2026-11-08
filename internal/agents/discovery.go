@@ -77,7 +77,8 @@ func Discover(ctx context.Context, home string, selected map[string]string) []Di
 			}
 		}
 		if agent == "codex" {
-			pathsForAgent = append(pathsForAgent, "/Applications/Codex.app/Contents/Resources/codex")
+			pathsForAgent = append(pathsForAgent, "/Applications/Codex.app/Contents/Resources/codex",
+				"/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex")
 		} else if agent == "trae" {
 			pathsForAgent = []string{filepath.Join(home, "Applications/Trae CN.app/Contents/Resources/app/bin/trae-cn"), "/Applications/Trae CN.app/Contents/Resources/app/bin/trae-cn"}
 		}

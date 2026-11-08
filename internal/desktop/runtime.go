@@ -15,6 +15,7 @@ import (
 
 	"github.com/zwhu/memlane/internal/components"
 	"github.com/zwhu/memlane/internal/engine"
+	"github.com/zwhu/memlane/internal/official"
 	"github.com/zwhu/memlane/internal/platform"
 	"github.com/zwhu/memlane/internal/serviceipc"
 )
@@ -22,16 +23,17 @@ import (
 // RuntimeConfig is distributable configuration, containing a public key only.
 // Tests pass its path explicitly; no default memory or Agent config is read.
 type RuntimeConfig struct {
-	Root                 string `json:"root"`
-	ComponentSource      string `json:"component_source"`
-	ComponentPublicKey   string `json:"component_public_key"`
-	WorkerID             string `json:"worker_id"`
-	ModelID              string `json:"model_id"`
-	CodeExtractorID      string `json:"code_extractor_id,omitempty"`
-	ServicePlist         string `json:"service_plist"`
-	AllowLocalTestSource bool   `json:"allow_local_test_source,omitempty"`
-	UpdateManifestURL    string `json:"update_manifest_url,omitempty"`
-	UpdateCAPEM          string `json:"update_ca_pem,omitempty"`
+	Official             *official.Config `json:"official,omitempty"`
+	Root                 string           `json:"root"`
+	ComponentSource      string           `json:"component_source"`
+	ComponentPublicKey   string           `json:"component_public_key"`
+	WorkerID             string           `json:"worker_id"`
+	ModelID              string           `json:"model_id"`
+	CodeExtractorID      string           `json:"code_extractor_id,omitempty"`
+	ServicePlist         string           `json:"service_plist"`
+	AllowLocalTestSource bool             `json:"allow_local_test_source,omitempty"`
+	UpdateManifestURL    string           `json:"update_manifest_url,omitempty"`
+	UpdateCAPEM          string           `json:"update_ca_pem,omitempty"`
 }
 
 type RuntimeStatus struct {
@@ -44,6 +46,7 @@ type RuntimeStatus struct {
 }
 
 type RuntimeController struct {
+	Official  *official.Controller
 	Config    RuntimeConfig
 	lifecycle sync.Mutex
 	mu        sync.Mutex
@@ -73,6 +76,9 @@ func LoadRuntimeConfig(path string) (RuntimeConfig, error) {
 }
 
 func (r *RuntimeController) Cancel() {
+	if r.Official != nil {
+		r.Official.Cancel()
+	}
 	r.mu.Lock()
 	cancel := r.cancel
 	r.mu.Unlock()
@@ -251,6 +257,7 @@ func (r *RuntimeController) prepare(ctx context.Context, notify func(RuntimeStat
 		return nil
 	}
 	deadline := time.NewTimer(65 * time.Second)
+	notify(RuntimeStatus{Phase: "verifying", Message: "组件已校验，正在验证 helper、服务与 Rust worker…", Installed: true, Service: state, Downloaded: total, Total: total})
 	defer deadline.Stop()
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
@@ -318,6 +325,11 @@ func (r *RuntimeController) StopService(ctx context.Context) error {
 }
 
 func (r *RuntimeController) stopService(ctx context.Context) error {
+	if r.Official != nil {
+		if err := r.Official.Stop(ctx); err != nil {
+			return err
+		}
+	}
 	for {
 		r.mu.Lock()
 		busy := r.busy

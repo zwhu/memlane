@@ -177,6 +177,9 @@ func (s *Store) Current(ctx context.Context, id string) (Version, error) {
 }
 
 func (s *Store) Apply(ctx context.Context, m Mutation) (Version, error) {
+	if m.SourceDetail != nil && (m.SourceDetail.Official != nil || m.SourceDetail.Native != nil) {
+		return Version{}, access("invalid_provenance", "official material metadata is stamped by trusted Cognee import only")
+	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return Version{}, err

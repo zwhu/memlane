@@ -27,6 +27,7 @@ def main():
         parser.error("该兼容适配只验证过 Cognee 1.6.7 与既有 DeepSeek V4 Flash")
     import litellm
     import uvicorn
+    import sys
 
     # The real endpoint rejected json_schema. Preserve model/cost metadata,
     # register that measured capability through LiteLLM's own API, and let
@@ -37,7 +38,11 @@ def main():
     if litellm.supports_response_schema(model):
         raise RuntimeError("已测协议能力未被实际注册，拒绝启动")
     args.report.write_text(json.dumps({"model": model, "cognee": "1.6.7", "litellm": importlib.metadata.version("litellm"), "framework": "litellm_native", "response_schema": False, "real_model_transport": True, "synthesized_responses": False}, indent=2))
-    uvicorn.run("cognee.api.client:app", host="127.0.0.1", port=args.port, access_log=False)
+    from cognee.api.client import app
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "engine/python"))
+    from cognee_browsing import install
+    install(app)
+    uvicorn.run(app, host="127.0.0.1", port=args.port, access_log=False)
 
 
 if __name__ == "__main__":

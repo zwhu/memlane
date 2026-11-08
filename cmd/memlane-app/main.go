@@ -317,7 +317,13 @@ func main() {
 						win.Update(func() { forceQuit = true; mygo.App.Quit() })
 					}()
 				} else {
-					prepare()
+					if !app.ConfigureFirstLaunch(ctx, controller, func(fn func()) {
+						if ctx.Err() == nil {
+							win.Update(fn)
+						}
+					}) {
+						prepare()
+					}
 				}
 			}
 		}

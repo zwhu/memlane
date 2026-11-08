@@ -47,6 +47,7 @@ func (a *App) rememberDraft() {
 type PaneState struct{ ID, Mode string }
 
 func (a *App) navigate(page, scope string) {
+	a.saveBrowsing()
 	a.rememberDraft()
 	if a.isMemoryPage() {
 		a.routeStates[a.page+":"+a.scope] = PaneState{a.selectedID, a.detailMode}
@@ -85,6 +86,7 @@ func (a *App) navigate(page, scope string) {
 		a.editing = a.detailMode == "new" || a.detailMode == "edit"
 	}
 	if a.onNavigate != nil {
+		a.browseProjectChanged()
 		a.onNavigate()
 	}
 }
@@ -121,6 +123,10 @@ func (a *App) newMemory() {
 func (a *App) editMemory() {
 	item := a.current()
 	if item == nil {
+		return
+	}
+	if item.Origin == "raw" && item.SourceDetail != nil && (item.SourceDetail.Official != nil || item.SourceDetail.Native != nil) {
+		a.message = "官方原始记录保持原样；请通过阅读器核验来源与授权后阅读。"
 		return
 	}
 	a.detailMode = "edit"

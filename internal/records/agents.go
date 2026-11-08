@@ -2,8 +2,10 @@ package records
 
 // AgentSource contains only content and references supplied by the Agent.
 type AgentSource struct {
-	Fragment   string   `json:"fragment,omitempty"`
-	References []string `json:"references,omitempty"`
+	Native     *CodexOriginal  `json:"native,omitempty"`
+	Official   *CogneeOriginal `json:"official,omitempty"`
+	Fragment   string          `json:"fragment,omitempty"`
+	References []string        `json:"references,omitempty"`
 }
 
 type Connection struct {

@@ -22,6 +22,11 @@ type Config struct {
 }
 
 type Request struct {
+	CogneeAuthorization *records.CogneeAuthorization `json:"cognee_authorization,omitempty"`
+	CogneeSync          *records.CogneeSync          `json:"cognee_sync,omitempty"`
+	CogneeBinding       *records.CogneeBinding       `json:"cognee_binding,omitempty"`
+	CogneeGraphQuery    *records.CogneeGraphQuery    `json:"cognee_graph_query,omitempty"`
+	SourceRead          *records.SourceRead          `json:"source_read,omitempty"`
 	CogneeImport        *records.CogneeImport        `json:"cognee_import,omitempty"`
 	BackupID            string                       `json:"backup_id,omitempty"`
 	IndexRebuildStart   *records.IndexRebuildStart   `json:"index_rebuild_start,omitempty"`

@@ -69,6 +69,9 @@ func (a *App) guidanceCard(c *ui.Context) {
 			quietButton(c, "跳过指引").Key("guidance-skip").OnClick(func() { a.hideGuidance(true) })
 		})
 		ui.Text(c, "组件准备、项目登记、Agent连接与可选初始化。复制prompt不代表初始化成功。").FontSize(design.Small).TextColor(design.Muted)
+		if a.firstLaunch.Controller != nil {
+			quietButton(c, "本机环境准备").Key("first-launch-resume").OnClick(a.openFirstLaunch)
+		}
 		if a.guidanceError != "" {
 			ui.Text(c, a.guidanceError).FontSize(design.Small).TextColor(design.Muted)
 		}
@@ -76,6 +79,7 @@ func (a *App) guidanceCard(c *ui.Context) {
 }
 func (a *App) guidanceDetail(c *ui.Context) {
 	ui.Scroll(c).Grow(1).Padding(24).Gap(16).Children(func() {
+		quietButton(c, "首次官方 Agent 使用").Key("guidance-official").OnClick(a.openCognee)
 		ui.Text(c, "设置指引").FontSize(design.Title).Bold()
 		if a.guidanceError != "" {
 			ui.Text(c, a.guidanceError).FontSize(design.Small).TextColor(design.Muted)

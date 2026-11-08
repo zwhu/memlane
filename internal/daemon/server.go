@@ -497,6 +497,33 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		return s.listOrganizations(operation, q)
 	case "organization_sources":
 		return s.store.OrganizationSources(operation, r.Memory, r.ExpectedRevision)
+	case "source_read":
+		if r.SourceRead == nil {
+			return nil, &records.AccessError{Code: "invalid_request", Message: "scoped source query required"}
+		}
+		return s.readSource(operation, *r.SourceRead)
+	case "cognee_bind":
+		if !r.UserConfirmed || r.CogneeBinding == nil {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "approve Cognee service and project binding in Memlane"}
+		}
+		return s.bindCognee(operation, *r.CogneeBinding)
+	case "cognee_authorize":
+		if !r.UserConfirmed || r.CogneeAuthorization == nil {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "approve independent Cognee authorization in Memlane"}
+		}
+		return s.authorizeCognee(operation, *r.CogneeAuthorization)
+	case "cognee_bindings":
+		return s.store.CogneeBindings(operation, r.Scope)
+	case "cognee_sync":
+		if !r.UserConfirmed || r.CogneeSync == nil {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "approve this session's official result import in Memlane"}
+		}
+		return s.syncCognee(operation, *r.CogneeSync)
+	case "cognee_graph":
+		if r.CogneeGraphQuery == nil {
+			return nil, &records.AccessError{Code: "invalid_request", Message: "typed project graph query required"}
+		}
+		return s.queryCognee(operation, *r.CogneeGraphQuery)
 
 	case "merge_start", "merge_cancel", "merge_confirm", "merge_reject":
 		if !r.UserConfirmed {
@@ -550,6 +577,9 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 	case "cognee_import":
 		if !r.UserConfirmed || r.CogneeImport == nil {
 			return nil, &records.AccessError{Code: "confirmation_required", Message: "approve the isolated official integration import in Memlane"}
+		}
+		if r.CogneeImport.Material != nil || r.CogneeImport.Native != nil {
+			return nil, &records.AccessError{Code: "invalid_provenance", Message: "official source metadata is stamped only by authorized live Cognee sync"}
 		}
 		s.agentAccess.RLock()
 		defer s.agentAccess.RUnlock()

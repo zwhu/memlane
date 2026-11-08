@@ -71,6 +71,7 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 	a.libraryContext = ctx
 	a.dispatch = dispatch
 	a.onNavigate = func() {
+		a.closeSourceReader()
 		a.textWindows = nil
 		if a.page != "代码图谱" && a.code.Cancel != nil {
 			a.code.Cancel()
@@ -98,6 +99,20 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 		}
 	}
 	a.onSelect = func(string) {
+		a.closeSourceReader()
+		a.browsing.Relation = ""
+		if a.browsing.Entity != "" {
+			related := false
+			for _, mention := range a.browsing.Graph.Mentions {
+				if mention.Memory == a.selectedID && mention.Entity == a.browsing.Entity {
+					related = true
+					break
+				}
+			}
+			if !related {
+				a.browsing.Entity = ""
+			}
+		}
 		a.textWindows = nil
 		a.usageBrowseError = ""
 		a.usageImportantError = ""
@@ -106,6 +121,8 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 		a.history = nil
 		a.selectedItem = nil
 		a.refresh(false)
+		a.saveBrowsing()
+		a.refreshBrowsing()
 	}
 	a.onProject = func() { a.registerProject() }
 	a.onMore = func() { a.refresh(true) }
@@ -121,6 +138,12 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 				return
 			case <-ticker.C:
 				dispatch(func() {
+					if a.page == "项目" {
+						a.refreshBrowsing()
+					}
+					if a.reader.Open {
+						a.refreshSourceReader()
+					}
 					if a.page == "设置" {
 						a.refreshIndexRebuild()
 						a.refreshBackups()
@@ -147,6 +170,7 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 	}()
 	a.refresh(false)
 	a.refreshMerge(false)
+	a.configureBrowsing()
 }
 func (a *App) listQuery() records.ListQuery {
 	sortMode := map[string]string{"最近更新": "updated", "常用": "frequent", "重要优先": "important"}[a.listSort]
@@ -217,6 +241,9 @@ func (a *App) refresh(more bool) {
 		}
 		if err == nil && selected != "" {
 			current, err = a.library.Get(ctx, selected)
+			if err == nil && pageName == "项目" && len(query.Datasets) == 1 && current.Dataset != query.Datasets[0] {
+				err = &records.AccessError{Code: "scope_denied", Message: "selection belongs to another project"}
+			}
 		}
 		if err == nil && selected != "" && (!historyLoaded || current.Revision != selectedRevision) {
 			before := int64(0)
@@ -257,18 +284,25 @@ func (a *App) refresh(more bool) {
 			} else {
 				a.serviceState = "unavailable"
 			}
+			a.ReconcileFirstLaunchAvailability()
+			if scopes != nil {
+				a.scopes = scopes
+				a.projects = nil
+				for _, scope := range scopes {
+					if scope.Kind != "preference" && scope.Kind != "experience" {
+						a.projects = append(a.projects, ProjectItem{ID: scope.ID, Name: scope.Name, Path: scope.Path})
+					}
+				}
+			}
 			if err != nil {
-				a.libraryError = "读取失败，保留上次内容；请重试。"
+				a.libraryError = "读取失败，保留同范围的上次内容；请重新选择或重试。"
+				if current.Dataset != "" && pageName == "项目" && current.Dataset != a.scope {
+					a.selectedItem = nil
+					a.selectedID = ""
+				}
 				return
 			}
 			a.libraryError = ""
-			a.scopes = scopes
-			a.projects = nil
-			for _, scope := range scopes {
-				if scope.Kind != "preference" && scope.Kind != "experience" {
-					a.projects = append(a.projects, ProjectItem{ID: scope.ID, Name: scope.Name, Path: scope.Path})
-				}
-			}
 			if pageName == "搜索" {
 				// Search results remain bound to their submitted query.
 			} else if more {

@@ -82,6 +82,32 @@ type Installed struct {
 	DownloadedBytes int64    `json:"downloaded_bytes"`
 }
 
+// Inspect verifies an already installed immutable component against an
+// authenticated descriptor. It does not download, repair or publish files.
+func (m *Manager) Inspect(ctx context.Context, d Descriptor) (Installed, error) {
+	if err := ctx.Err(); err != nil {
+		return Installed{}, err
+	}
+	m.mu.RLock()
+	approved, ok := m.approved[d.ID]
+	m.mu.RUnlock()
+	if !ok || approved != d {
+		return Installed{}, errors.New("component is not authorized by a verified feed")
+	}
+	if err := m.validate(d); err != nil {
+		return Installed{}, err
+	}
+	directory := filepath.Join(m.Root, "components", d.ID, d.Version)
+	metadata, err := verify(directory, d)
+	if err != nil {
+		return Installed{}, err
+	}
+	if err = ctx.Err(); err != nil {
+		return Installed{}, err
+	}
+	return Installed{Directory: directory, Metadata: metadata, Reused: true}, nil
+}
+
 type Manager struct {
 	Root           string
 	PublicKey      ed25519.PublicKey

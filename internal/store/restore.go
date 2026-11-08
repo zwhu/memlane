@@ -63,7 +63,7 @@ func PrepareRestoredSnapshot(ctx context.Context, data []byte, operation string)
 		return nil, stats, err
 	}
 	if version < 13 || version > SchemaVersion {
-		return nil, stats, errors.New("restore supports manual schema13 or schema14 snapshots")
+		return nil, stats, errors.New("restore supports manual snapshots from schema13 through the current schema")
 	}
 	if err = db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
 		return nil, stats, errors.New("restore snapshot integrity invalid")

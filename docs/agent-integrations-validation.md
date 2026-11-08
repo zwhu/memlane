@@ -102,3 +102,9 @@ python3 /Users/bytedance/work/AI/memlane/scripts/open-agent-integrations-validat
 应用 bits-code-guard，对本轮 10 个代码文件按持久契约和宿主生命周期分组，再跨组检查。已修复来源 namespace／受信账本绑定和启动异常清理／假停止等实质问题，复核后没有剩余高置信 P0–P2；初始缺陷与最终空结果均保留。最终 `sh scripts/go.sh test ./...`、`sh scripts/go.sh vet ./...`、受影响 race、Python 语法及 diff 检查通过。验证包构建使用 `scripts/build-client.py` 的完整 automation 包路径，不是后台探针或空壳 App。
 
 阶段和最终交接实际执行 `python3 scripts/p3-handoff.py <阶段> --result ... --next ...`，核对生成文件存在，具体系统临时路径见本轮 handoff 回执。脚本直接生成，未通过 Skill 调用，也未修改源 Skill 的禁用属性；交接不恢复或扩展旧 Goal。本轮提交与普通推送的完整本地／远端快照保存在最终交付证据，所有用户无关修改保持未提交。
+
+## 2026-11-08：首启与正式项目浏览续验
+
+官方Codex/Cognee隔离接入基线继续有效。本轮正式App已受信接入当前材料的实体/关系，完成项目内记忆、实体、关系图的共享导航；正常任务和新会话官方recall仍分别通过各自路径，Memlane当前知识由Rust独立检索。连续准备、来源、取消与最新包证据见 [本轮验证记录](onboarding-memory-validation.md)，身份和版本约束见 [共同契约](onboarding-memory-contract.md)。
+
+旧QA/trace复制验收只证明官方SDK分段原样保留。实测SDK工具返回最多1,000字符，因此本轮另从准确、已完成、App-owned的Codex日志补接完整对话与工具消息，保持SDK分段和4条knowledge的来源v1不变；两者是一份会话依据。普通JSON导入和Agent保存不能声明官方或Native来源戳。App编辑仍不自动写回Cognee，不提升整项目dataset为全局共享，不选择Q1–Q4或日常自动记忆策略。

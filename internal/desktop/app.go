@@ -13,6 +13,11 @@ import (
 )
 
 type App struct {
+	cognee                                                           CogneeUI
+	officialPreparation                                              OfficialPreparationUI
+	firstLaunch                                                      FirstLaunchUI
+	browsing                                                         BrowsingUI
+	reader                                                           SourceReaderUI
 	restoreBackup                                                    func(context.Context, string, string) (records.RestoreReceipt, error)
 	reloadAfterBackup                                                func()
 	backups                                                          BackupUI
@@ -114,9 +119,13 @@ type App struct {
 
 func New(version string, check func()) *App {
 	return &App{page: "总览", detailMode: "view", zoom: 1, version: version, check: check, keepService: true,
+		browsing:   BrowsingUI{View: "memories", Preferences: BrowsePreferences{Selections: map[string]BrowseSelection{}}},
 		updateText: "此版本尚未配置更新源", pendingMutations: map[string]records.Mutation{}, routeStates: map[string]PaneState{}, drafts: map[string]Draft{}, listScroll: map[string]*ui.ScrollState{}, activities: map[string]int{}}
 }
-func (a *App) SetRuntimeStatus(status RuntimeStatus) { a.runtimeStatus = status }
+func (a *App) SetRuntimeStatus(status RuntimeStatus) {
+	a.runtimeStatus = status
+	a.firstLaunchRuntime(status)
+}
 func (a *App) ConfigureRuntime(prepare, cancel, stop, resume func(), keep bool, changed func(bool)) {
 	a.prepareRuntime, a.cancelRuntime, a.stopRuntime, a.resumeRuntime = prepare, cancel, stop, resume
 	a.keepService, a.keepChanged = keep, changed
@@ -132,14 +141,26 @@ func (a *App) View(c *ui.Context) {
 	theme.Accent, theme.Text, theme.TextMuted, theme.Border = design.Ink, design.Ink, design.Muted, design.Border
 	c.SetTheme(&theme)
 	c.SetZoom(a.zoom)
+	if a.firstLaunch.Open {
+		a.firstLaunchView(c)
+		return
+	}
 	if c.Vibrancy() {
 		c.Root().Background(ui.Transparent)
 	}
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
 		a.sidebar(c)
 		ui.Column(c).Grow(1).MinWidth(0).Background(ui.Hex("#ffffff")).Children(func() {
+			if a.reader.Open {
+				a.sourceReader(c)
+				return
+			}
 			a.toolbar(c)
-			if a.page == "总览" {
+			if a.page == "项目" && a.scope != "" && a.detailMode == "view" {
+				a.projectExplorer(c)
+			} else if a.page == "官方记忆" {
+				a.cogneeSetupPage(c)
+			} else if a.page == "总览" {
 				a.home(c)
 			} else {
 				a.details(c)
@@ -580,6 +601,8 @@ func (a *App) details(c *ui.Context) {
 				}
 			} else if a.page == "Agent" {
 				a.agentDetail(c)
+			} else if a.page == "官方记忆" {
+				a.cogneeDetail(c)
 			} else if a.page == "项目" && a.scope == "" {
 				a.projectEditor(c)
 			} else if a.page == "设置" {
@@ -619,7 +642,11 @@ func (a *App) memoryRow(c *ui.Context, item MemoryItem, inList bool) {
 				}
 				ui.Text(c, category).FontSize(10).TextColor(design.Muted).Shrink(0)
 			})
-			ui.Text(c, preview(item.Text)).FontSize(design.Small).TextColor(design.Muted).SingleLine()
+			rowPreview := preview(item.Text)
+			if item.Origin == "raw" && item.SourceDetail != nil && (item.SourceDetail.Official != nil || item.SourceDetail.Native != nil) {
+				rowPreview = "原文已保留 · 打开阅读器核验当前来源与授权"
+			}
+			ui.Text(c, rowPreview).FontSize(design.Small).TextColor(design.Muted).SingleLine()
 			ui.Row(c).Children(func() {
 				ui.Text(c, item.Source+" · "+item.ScopeName).FontSize(10).TextColor(design.Muted).Grow(1).SingleLine().MinWidth(0)
 				ui.Text(c, item.CreatedAt.Format("15:04")).FontSize(10).TextColor(design.Muted)
@@ -689,7 +716,37 @@ func (a *App) memoryDetail(c *ui.Context) {
 		}
 		a.recordDisplayedMemory(*item)
 		ui.Text(c, item.Title).FontSize(design.Title).Bold()
-		ui.Text(c, a.readableText(c, "current-"+item.ID+fmt.Sprint(item.Revision), item.Text)).Selectable().LineHeight(1.8)
+		if a.page == "项目" && a.scope == item.Dataset {
+			entities := a.memoryEntities(*item)
+			if len(entities) > 0 {
+				ui.Column(c).Gap(6).Children(func() {
+					ui.Text(c, "这条知识涉及的对象").FontSize(design.Small).Bold()
+					for start := 0; start < len(entities); start += 2 {
+						ui.Row(c).Gap(8).Children(func() {
+							for _, entity := range entities[start:min(start+2, len(entities))] {
+								name := []rune(entity.Name)
+								label := string(name[:min(28, len(name))])
+								if len(name) > 28 {
+									label += "…"
+								}
+								quietButton(c, label).Key("browse-memory-entity-"+entity.ID).Tooltip(entity.Name).Padding(5, 8).Background(design.Surface).Grow(1).MinWidth(0).Height(28).OnClick(func() { a.browseEntity(entity.ID) })
+							}
+						})
+					}
+				})
+			}
+			if a.browsing.Error != "" {
+				ui.Text(c, a.browsing.Error).FontSize(design.Small).TextColor(design.Muted)
+			}
+		}
+		if item.Origin == "raw" {
+			quietButton(c, "阅读完整原始记录").Key("source-reader-open").OnClick(func() { a.openSourceReader(*item, records.MergeTarget{Memory: item.ID, Revision: item.Revision}) })
+		}
+		if item.Origin == "raw" && item.SourceDetail != nil && (item.SourceDetail.Official != nil || item.SourceDetail.Native != nil) {
+			ui.Text(c, "原文副本已持久保留。阅读器会核验当前项目、来源版本和官方授权；来源变化或接入撤销后停止读取。").FontSize(design.Small).LineHeight(1.8)
+		} else {
+			ui.Text(c, a.readableText(c, "current-"+item.ID+fmt.Sprint(item.Revision), item.Text)).Selectable().LineHeight(1.8)
+		}
 		if item.Experience != nil {
 			ui.Text(c, "适用条件").Bold()
 			conditions := item.Experience.Conditions
@@ -764,7 +821,7 @@ func (a *App) memoryDetail(c *ui.Context) {
 			ui.Text(c, a.readableText(c, "original-"+item.ID, item.Original)).Selectable().LineHeight(1.7).Padding(0, 0, 0, 12).BorderWidth(0, 0, 0, 2).BorderColor(design.Muted)
 			ui.Text(c, item.Source+" · 已保留来源").FontSize(design.Small).TextColor(design.Muted)
 			if item.SourceDetail != nil {
-				if item.SourceDetail.Fragment != "" {
+				if item.SourceDetail.Fragment != "" && item.SourceDetail.Official == nil {
 					ui.Text(c, item.SourceDetail.Fragment).Selectable().FontSize(design.Small).LineHeight(1.7)
 				}
 				for _, reference := range item.SourceDetail.References {
@@ -786,6 +843,11 @@ func (a *App) memoryDetail(c *ui.Context) {
 				}
 				ui.Text(c, source.Quote).Selectable().LineHeight(1.7)
 				quietButton(c, "查看摘要依据").Key("derived-source-" + source.Memory).OnClick(func() { a.openMergeMemory(source.Memory, source.Project) })
+				if source.Input.Origin == "raw" && source.Project == item.Dataset {
+					quietButton(c, "阅读完整原始记录").Key("source-reader-open-" + source.Memory).OnClick(func() {
+						a.openSourceReader(*item, records.MergeTarget{Memory: source.Memory, Revision: source.Revision})
+					})
+				}
 			}
 		}
 
@@ -823,6 +885,11 @@ func (a *App) memoryDetail(c *ui.Context) {
 }
 func (a *App) historyView(c *ui.Context, item MemoryItem) {
 	ui.Text(c, item.Title).FontSize(design.Title).Bold()
+	if item.Origin == "raw" && item.SourceDetail != nil && (item.SourceDetail.Official != nil || item.SourceDetail.Native != nil) {
+		ui.Text(c, "官方原始记录保持原样。请返回详情，通过阅读器核验具体来源和当前授权后阅读。").LineHeight(1.7)
+		quietButton(c, "返回详情").OnClick(func() { a.detailMode = "view" })
+		return
+	}
 	if a.detailMode == "restore" {
 		ui.Text(c, fmt.Sprintf("将 v%d 的正文恢复为新的当前版本", a.historyRevision)).Bold()
 		if a.message != "" {
@@ -928,9 +995,13 @@ func (a *App) pageDescription() string {
 }
 
 func (a *App) settings(c *ui.Context) {
+	quietButton(c, "官方 Cognee 接入与同步").Key("cognee-settings").OnClick(a.openCognee)
 	quietButton(c, "恢复设置指引").Key("guidance-restore").OnClick(func() { a.hideGuidance(false); a.navigate("使用指引", "") })
 	quietButton(c, "初始化记录").Key("initialization-settings").OnClick(func() { a.openInitialization("") })
 	quietButton(c, "整理计划").Key("schedule-settings").OnClick(func() { a.navigate("整理计划", "") })
+	if a.firstLaunch.Controller != nil {
+		quietButton(c, "本机环境准备").Key("first-launch-resume").OnClick(a.openFirstLaunch)
+	}
 	ui.Text(c, "本地组件与更新").FontSize(20).Bold()
 	if a.prepareRuntime == nil {
 		ui.Text(c, "本地引擎：待准备").Bold()
@@ -944,7 +1015,7 @@ func (a *App) settings(c *ui.Context) {
 			ui.Text(c, fmt.Sprintf("已准备 %.2f / %.2f MB", float64(a.runtimeStatus.Downloaded)/1e6, float64(a.runtimeStatus.Total)/1e6)).TextColor(c.Theme().TextMuted)
 			ui.Progress(c, float64(a.runtimeStatus.Downloaded)/float64(a.runtimeStatus.Total))
 		}
-		busy := a.backups.RestoreLocked || a.backups.Busy || a.runtimeStatus.Phase == "checking" || a.runtimeStatus.Phase == "downloading" || a.runtimeStatus.Phase == "installing" || a.runtimeStatus.Phase == "installed" || a.runtimeStatus.Phase == "preparing"
+		busy := a.backups.RestoreLocked || a.backups.Busy || a.runtimeStatus.Phase == "checking" || a.runtimeStatus.Phase == "downloading" || a.runtimeStatus.Phase == "installing" || a.runtimeStatus.Phase == "installed" || a.runtimeStatus.Phase == "preparing" || a.runtimeStatus.Phase == "verifying"
 		ui.Row(c).Gap(8).Children(func() {
 			ui.Button(c, "准备 / 重试").Disabled(busy).OnClick(a.prepareRuntime)
 			if busy {

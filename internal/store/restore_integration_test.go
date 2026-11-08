@@ -44,9 +44,9 @@ func restoreTables(t *testing.T, db *sql.DB) map[string][][]any {
 
 func TestRestoreSchema13MigrationPreservesAllTablesAndBackup(t *testing.T) {
 	s, _, task, _ := recoveryFixture(t, 1)
-	// The v14 retirement table is empty in this fixture. Removing only that
-	// addition produces the exact shipped v13 schema, with real old rows/WAL.
-	_, err := s.DB.Exec(`DROP TABLE connection_retirements; PRAGMA user_version=13; PRAGMA wal_autocheckpoint=0`)
+	// Remove the empty additions after v13 to recreate its shipped schema,
+	// retaining real old rows and committed WAL.
+	_, err := s.DB.Exec(`DROP TABLE cognee_bindings; DROP TABLE connection_retirements; PRAGMA user_version=13; PRAGMA wal_autocheckpoint=0`)
 	mustMerge(t, err)
 	s.Schema = 13
 	before := restoreTables(t, s.DB)
@@ -123,7 +123,7 @@ func TestRestorePreparedSnapshotPreservesKnowledgeAndRetiresAuthority(t *testing
 	v, err = s.Apply(ctx, Mutation{Kind: "edit", OperationID: uuid.NewString(), Memory: v.Memory, Dataset: v.Dataset, ExpectedRevision: v.Revision, Text: "合成恢复当前原文 v2"})
 	mustMerge(t, err)
 	mustMerge(t, s.MarkIndexed(ctx, v.Record, engine.Receipt{Generation: "synthetic-old-index", ChunkIDs: []string{uuid.NewString()}}))
-	_, err = s.DB.Exec(`DROP TABLE connection_retirements; PRAGMA user_version=13`)
+	_, err = s.DB.Exec(`DROP TABLE cognee_bindings; DROP TABLE connection_retirements; PRAGMA user_version=13`)
 	mustMerge(t, err)
 	s.Schema = 13
 	before := restoreTables(t, s.DB)
