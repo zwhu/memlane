@@ -28,13 +28,14 @@ var installationMu sync.Mutex
 var piExtension string
 
 type InstallOptions struct {
-	Project     string // explicit App verification scope; pi daily context still comes from ctx.cwd
-	ClientRoot  string
-	ServiceRoot string
-	Bridge      string
-	AgentPath   string
-	Workspace   string // Codex's explicit project binding
-	PiDirectory string // known user directory, or isolated validation directory
+	Project        string // explicit App verification scope; pi daily context still comes from ctx.cwd
+	ClientRoot     string
+	ServiceRoot    string
+	Bridge         string
+	AgentPath      string
+	Workspace      string // Codex's explicit project binding
+	PiDirectory    string // known user directory, or isolated validation directory
+	CodexDirectory string // explicit current config/login reference; never copied
 }
 
 type Installation struct {
@@ -190,6 +191,9 @@ func backup(path string, data []byte) (string, error) {
 func hash(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
 
 func validateOptions(c records.Connection, o InstallOptions) error {
+	if o.CodexDirectory != "" && !filepath.IsAbs(o.CodexDirectory) {
+		return errors.New("absolute Codex configuration reference required")
+	}
 	for _, path := range []string{o.ClientRoot, o.ServiceRoot, o.Bridge, o.AgentPath} {
 		if !filepath.IsAbs(path) {
 			return errors.New("absolute bridge, Agent and client paths required")

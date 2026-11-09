@@ -61,14 +61,16 @@ type ProjectTaskSnapshot struct {
 }
 
 type ProjectTask struct {
-	ID          string              `json:"task"`
-	Attempt     int64               `json:"attempt"`
-	State       string              `json:"state"`
-	Cancelled   bool                `json:"cancel_requested"`
-	Error       string              `json:"error_code,omitempty"`
-	Snapshot    ProjectTaskSnapshot `json:"snapshot"`
-	CreatedMS   int64               `json:"created_ms"`
-	AccessState string              `json:"access_state"`
+	ID          string                `json:"task"`
+	Attempt     int64                 `json:"attempt"`
+	State       string                `json:"state"`
+	Cancelled   bool                  `json:"cancel_requested"`
+	Error       string                `json:"error_code,omitempty"`
+	Snapshot    ProjectTaskSnapshot   `json:"snapshot"`
+	CreatedMS   int64                 `json:"created_ms"`
+	AccessState string                `json:"access_state"`
+	Receipt     *ProjectTaskReceipt   `json:"receipt,omitempty"`
+	Execution   *ProjectTaskExecution `json:"execution,omitempty"`
 }
 
 type ProjectTaskSummary struct {
@@ -106,4 +108,39 @@ type ProjectKnowledgeProposal struct {
 	Attempt     int64                  `json:"attempt"`
 	Items       []ProjectKnowledgeItem `json:"items"`
 	Explanation string                 `json:"explanation"`
+}
+
+// Only the daemon can seal process receipts. An exit code is not a model
+// terminal event, and restored PIDs are historical data rather than owners.
+type ProjectTaskExecution struct {
+	PID                   int    `json:"pid"`
+	StartedMS             int64  `json:"started_ms"`
+	EndedMS               int64  `json:"ended_ms"`
+	Terminal              bool   `json:"terminal_completed"`
+	Reaped                bool   `json:"process_reaped"`
+	GroupGone             bool   `json:"process_group_gone"`
+	Thread                string `json:"thread,omitempty"`
+	Turn                  string `json:"turn,omitempty"`
+	Model                 string `json:"model,omitempty"`
+	Provider              string `json:"provider,omitempty"`
+	PermissionProfile     string `json:"permission_profile,omitempty"`
+	InterruptSent         bool   `json:"interrupt_sent"`
+	InterruptAcknowledged bool   `json:"interrupt_acknowledged"`
+}
+type ProjectTaskSaved struct {
+	Memory   string `json:"memory"`
+	Revision int64  `json:"revision"`
+}
+type ProjectTaskReceipt struct {
+	Task              string             `json:"task"`
+	Attempt           int64              `json:"attempt"`
+	Persisted         bool               `json:"persisted"`
+	Added             []ProjectTaskSaved `json:"added"`
+	Sources           []ProjectTaskSaved `json:"sources"`
+	Skipped           int                `json:"skipped"`
+	SaveFailed        int                `json:"save_failed"`
+	Indexed           int                `json:"indexed"`
+	IndexFailed       int                `json:"index_failed"`
+	SourceIndexed     int                `json:"source_indexed"`
+	SourceIndexFailed int                `json:"source_index_failed"`
 }

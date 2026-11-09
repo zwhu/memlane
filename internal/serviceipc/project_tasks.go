@@ -8,6 +8,17 @@ import (
 
 type ProjectTaskClient struct{ Root string }
 
+func (c ProjectTaskClient) Start(ctx context.Context, d records.ProjectTaskStart) (records.ProjectTask, error) {
+	var out records.ProjectTask
+	err := Call(ctx, c.Root, Request{Op: "project_task_start", UserConfirmed: true, ProjectTaskStart: &d}, &out)
+	return out, err
+}
+func (c ProjectTaskClient) Cancel(ctx context.Context, id string) (records.ProjectTask, error) {
+	var out records.ProjectTask
+	err := Call(ctx, c.Root, Request{Op: "project_task_cancel", UserConfirmed: true, ProjectTaskID: id}, &out)
+	return out, err
+}
+
 func (c ProjectTaskClient) Get(ctx context.Context, id string) (records.ProjectTask, error) {
 	var out records.ProjectTask
 	err := Call(ctx, c.Root, Request{Op: "project_task", ProjectTaskID: id}, &out)

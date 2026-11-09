@@ -191,6 +191,9 @@ func (s *Store) ProjectTask(ctx context.Context, id string) (records.ProjectTask
 	if err != nil {
 		return t, err
 	}
+	if err = s.projectTaskRuntime(ctx, &t); err != nil {
+		return t, err
+	}
 	b, err := s.ProjectBinding(ctx, t.Snapshot.Project)
 	if err != nil {
 		return t, err

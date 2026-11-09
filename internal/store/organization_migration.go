@@ -2,7 +2,7 @@ package store
 
 import "database/sql"
 
-const SchemaVersion = 18
+const SchemaVersion = 19
 
 // These tables exist only for the shipped summary/tag flow. Lease and schedule
 // policy are deliberately added by their own delivery slices.
@@ -177,6 +177,14 @@ func finishMigration(tx *sql.Tx, formal bool) error {
 		}
 		if version == 17 {
 			if err := migrateProjectTasks(tx); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == 18 {
+			if err := migrateProjectRuns(tx); err != nil {
 				return err
 			}
 		}

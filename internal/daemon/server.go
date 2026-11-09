@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/zwhu/memlane/internal/agents"
 	"github.com/zwhu/memlane/internal/codegraph"
 	"github.com/zwhu/memlane/internal/engine"
 	"github.com/zwhu/memlane/internal/memory"
@@ -37,6 +38,11 @@ var MarkStopped = serviceipc.MarkStopped
 var writeJSON = serviceipc.WriteJSON
 
 type Server struct {
+	projectMu            sync.Mutex
+	projectWG            sync.WaitGroup
+	projectRuns          map[string]projectTaskOwner
+	projectResolve       func(context.Context, string) (agents.CodexProjectPlan, error)
+	projectExecute       func(context.Context, agents.CodexProjectPlan, records.ProjectTask, func(int) error, func(string)) (agents.CodexProjectExecution, error)
 	codeMu               sync.Mutex
 	codeCapture          func(context.Context, string, string) (codegraph.Manifest, error)
 	codeStopping         bool
@@ -115,6 +121,9 @@ func Run(ctx context.Context, config Config) error {
 	}
 	defer db.Close()
 	if err = prepareOrganizationLeases(ctx, db); err != nil {
+		return err
+	}
+	if err = prepareProjectRuns(ctx, db); err != nil {
 		return err
 	}
 	if err = db.PruneUsage(ctx); err != nil {
@@ -200,6 +209,7 @@ func Run(ctx context.Context, config Config) error {
 			handlers.Wait()
 			s.mergeWG.Wait()
 			s.organizationWG.Wait()
+			s.projectWG.Wait()
 			_ = db.InterruptMerges(context.Background())
 			if finalErr := s.finalizeOrganizationShutdown(context.Background()); finalErr != nil {
 				return errors.Join(e, finalErr)
@@ -215,6 +225,7 @@ func Run(ctx context.Context, config Config) error {
 	handlers.Wait()
 	s.mergeWG.Wait()
 	s.organizationWG.Wait()
+	s.projectWG.Wait()
 	if err = s.finalizeOrganizationShutdown(context.Background()); err != nil {
 		return err
 	}
@@ -476,6 +487,16 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		return receipt, err
 	case "project_binding":
 		return s.store.ProjectBinding(operation, r.Scope)
+	case "project_task_start":
+		if !r.UserConfirmed || r.ProjectTaskStart == nil {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "explicit project task start required"}
+		}
+		return s.startProjectTask(operation, *r.ProjectTaskStart)
+	case "project_task_cancel":
+		if !r.UserConfirmed {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "explicit project task cancellation required"}
+		}
+		return s.cancelProjectTask(operation, r.ProjectTaskID)
 	case "project_task":
 		return s.store.ProjectTask(operation, r.ProjectTaskID)
 	case "project_task_list":

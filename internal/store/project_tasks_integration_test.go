@@ -207,7 +207,7 @@ func TestProjectTaskRepositoryReplacementAndRestoreInvalidateAuthority(t *testin
 func TestProjectTaskSchema17BackupRetainsPreviousTables(t *testing.T) {
 	s, p, c := projectTaskFixture(t)
 	path := filepath.Join(filepath.Dir(p.Path), "memory.sqlite")
-	_, err := s.DB.Exec(`DROP TABLE project_tasks; DROP TABLE project_bindings; PRAGMA user_version=17`)
+	_, err := s.DB.Exec(`DROP TABLE project_task_items; DROP TABLE project_task_sources; DROP TABLE project_task_runs; DROP TABLE project_tasks; DROP TABLE project_bindings; PRAGMA user_version=17`)
 	mustMerge(t, err)
 	s.Schema = 17
 	mustMerge(t, s.Close())
@@ -216,7 +216,7 @@ func TestProjectTaskSchema17BackupRetainsPreviousTables(t *testing.T) {
 	defer current.Close()
 	backups, err := filepath.Glob(filepath.Join(filepath.Dir(path), "backups/schema-v17-*.sqlite"))
 	mustMerge(t, err)
-	if current.Schema != 18 || len(backups) != 1 {
+	if current.Schema != SchemaVersion || len(backups) != 1 {
 		t.Fatal("schema17 backup or migration absent", backups)
 	}
 	backup, err := sql.Open("sqlite", backups[0])

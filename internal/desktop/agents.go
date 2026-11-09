@@ -521,6 +521,12 @@ func (a *App) connectAgent() {
 	}
 	project := s.Project
 	opts := agents.InstallOptions{ClientRoot: s.Root, ServiceRoot: a.library.Root, Bridge: s.Bridge, AgentPath: s.Path, Workspace: workspace, PiDirectory: s.PiDir, Project: project}
+	if d.Agent == "codex" {
+		opts.CodexDirectory = os.Getenv("CODEX_HOME")
+		if opts.CodexDirectory == "" {
+			opts.CodexDirectory = filepath.Join(s.Home, ".codex")
+		}
+	}
 	s.Sequence++
 	s.Busy = true
 	s.Notice = "正在连接…"
