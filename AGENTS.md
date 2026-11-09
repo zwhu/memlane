@@ -4,7 +4,7 @@
 
 - 开始工作前阅读 [产品定义](docs/product.md) 和 [设计决策](docs/design.md)，以已确认的产品规则为准。
 - UI 重设计开发先读 [设计交接入口](docs/ui-redesign/README.md) 和 [A 已认可设计实施交接](docs/ui-redesign/a-setup-handoff.md)。A 环境正文、三步初始化、批量连接、记忆处理与设置复用已由用户确认归档；固定原型提交 `e27a49e35020972d6aea4ab070ec898fb6c9c22e`，截图见 `docs/images/ui-redesign/a-setup/`。B 日常首页 revision 5 已认可，固定原型 `ed6cd37858c5d6f56f9307ecbf6ac454bb6e1edb`，实施先读 [B 交接](docs/ui-redesign/b-home-handoff.md) 与 `docs/images/ui-redesign/b-home/`；C 继续设计，未认可；不得将设计认可、示例数字或浏览器验证当成生产能力已交付。
-- Agent 日常管理按 [已确认入口调整](docs/ui-redesign/agent-settings-placement.md)：放在「设置 → Agent 连接」，主侧栏移除一级 Agent；设置统一环境与组件／Agent 连接／记忆处理。项目页只提供「用 Agent 建立项目知识」按钮，复制带项目上下文的指令，用户自行选择自己的 Agent 分析并通过现有记忆能力保存；首版新 UI 不设置文件列表、导入向导或 App 分析调度。Agent 详情保留前往项目的快捷入口。该入口规则已确认，C 完整稿和生产能力仍按各自证据验收。
+- Agent 日常管理按 [已确认入口调整](docs/ui-redesign/agent-settings-placement.md)：放在「设置 → Agent 连接」，主侧栏移除一级 Agent；设置统一环境与组件／Agent 连接／记忆处理。项目页保留「初始化知识库」概念：右栏用方块归整、知识卡片到记忆书展开的动效承载，用户主动点击后由当前项目绑定的 Agent 分析并通过现有记忆能力保存；无绑定时明确选择，不默默替换执行者。首版新 UI 不设置文件列表、阅读范围表单或导入向导；运行中去重、收起保留任务、取消和失败停止动效，保存／索引按真实回执分别反馈。C revision 4 动效仍待评审，真实启动与任务协议待工程验证，复制只作失败备用。Agent 详情保留前往项目的快捷入口。该入口规则已确认，C 完整稿和生产能力仍按各自证据验收。
 - Agent 连接按 [电脑级配置规则](docs/ui-redesign/agent-connection-contract.md)：先将 Memlane 配置到当前电脑的编码 Agent，连接不以项目、工作目录或首任务模型为前置条件；项目/任务范围另行确认。现有项目级适配不能被描述为电脑级配置已实现。
 - Agent 连接页使用多选卡片批量接入，逐项同页反馈安装、重载、验证与结果；已连接/不支持项不可重复提交，只重试失败项，取消保留成功项。处理记忆仍只选一个已连接 pi/Codex；页面删除登录/模型和提炼会话的技术说明，仅留当前模型与账号额度提示，隔离要求继续保存在开发契约。
 - 连接与处理记忆按 [最新设计交接](docs/ui-redesign/memory-processing-design.md)：连接参考 Cognee Web UI 安装 skill/hooks/插件等；处理方式为自配 LLM provider、已连接 pi/Codex、Magpie 网关。模型目录参考 Magpie，供应商配置复用；Magpie 上游密钥由其管理。整理会话必须隔离采集以防循环；设计已认可归档，真实桥接、Provider 与 Magpie 分别按工程证据验收。
