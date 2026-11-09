@@ -23,6 +23,7 @@ type Config struct {
 }
 
 type Request struct {
+	ConnectionScopeChange  *records.ConnectionScopeChange       `json:"connection_scope_change,omitempty"`
 	CogneeAuthorization    *records.CogneeAuthorization         `json:"cognee_authorization,omitempty"`
 	CogneeSync             *records.CogneeSync                  `json:"cognee_sync,omitempty"`
 	CogneeBinding          *records.CogneeBinding               `json:"cognee_binding,omitempty"`

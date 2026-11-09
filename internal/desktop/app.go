@@ -19,6 +19,8 @@ type App struct {
 	browsing                                                         BrowsingUI
 	reader                                                           SourceReaderUI
 	knowledgeHistory                                                 KnowledgeHistoryUI
+	projectSettings                                                  ProjectSettingsUI
+	projectOverviews                                                 map[string]*ProjectOverview
 	readingUsageOpen, readingMetadataOpen                            bool
 	readingActionsOpen                                               bool
 	readingKnowledgeTotal, readingRawTotal                           *int
@@ -249,7 +251,7 @@ func (a *App) sidebar(c *ui.Context) {
 				iconButton(c, "添加项目", icons["plus"]).OnClick(func() { a.navigate("项目", ""); a.detailMode = "project" })
 			})
 			for _, project := range a.projects {
-				a.nav(c, project.Name, project.ID, icons["项目"])
+				a.projectNavigation(c, project)
 			}
 			ui.Button(c, "").Label("项目").Padding(8, 12).BorderWidth(0).Background(ui.Transparent).Justify(ui.Start).Gap(10).Children(func() {
 				ui.Icon(c, icons["plus"]).FontSize(design.Icon).TextColor(design.Muted)
@@ -576,8 +578,8 @@ func (a *App) details(c *ui.Context) {
 						}
 						ui.Text(c, title).FontSize(design.Small).TextColor(design.Muted)
 						ui.Spacer(c)
-						if !a.loading {
-							ui.Text(c, fmt.Sprintf("%d 条%s", a.listTotal, kind)).FontSize(10).TextColor(design.Muted)
+						if !a.loading && a.libraryError == "" && (a.visualFixture || a.readingKnowledgeTotal != nil && a.readingRawTotal != nil) {
+							ui.Text(c, fmt.Sprintf("%d 条%s", a.listTotal, kind)).Key("reading-list-count").FontSize(10).TextColor(design.Muted)
 						}
 						if a.page == "项目" {
 							quietButton(c, "实体").Height(24).OnClick(func() { a.browseView("entities") })
@@ -703,14 +705,21 @@ func (a *App) details(c *ui.Context) {
 				} else if !a.isMemoryPage() {
 					label = a.pageTitle()
 				}
+				if a.projectSettings.Open && a.page == "项目" && a.scope == a.projectSettings.Owner.ID {
+					label = "项目设置"
+				}
 				ui.Text(c, label)
 				ui.Spacer(c)
-				if a.isMemoryPage() && a.current() != nil && !a.editing && a.detailMode == "view" {
+				if a.projectSettings.Open && a.page == "项目" {
+					quietButton(c, "返回知识").Key("project-settings-close").OnClick(a.closeProjectSettings)
+				} else if a.isMemoryPage() && a.current() != nil && !a.editing && a.detailMode == "view" {
 					iconButton(c, "编辑", icons["edit"]).Disabled(a.current().State != "active").OnClick(a.editMemory)
 					quietButton(c, "历史").Key("knowledge-history-open").Disabled(raw).OnClick(a.openKnowledgeHistory)
 				}
 			})
-			if a.page == "代码图谱" {
+			if a.projectSettings.Open && a.page == "项目" && a.scope == a.projectSettings.Owner.ID {
+				a.projectSettingsContent(c)
+			} else if a.page == "代码图谱" {
 				a.codeDetail(c)
 			} else if a.page == "使用指引" {
 				a.guidanceDetail(c)
@@ -790,6 +799,9 @@ func (a *App) memoryRow(c *ui.Context, item MemoryItem, inList bool) {
 		a.conflictCurrent = nil
 		a.editing = false
 		a.detailMode = "view"
+		if a.projectSettings.Open {
+			a.projectSettings.ReturnEditing, a.projectSettings.ReturnMode = false, "view"
+		}
 		a.detailScroll.Y = 0
 		if a.page == "总览" {
 			a.page = "全部记忆"

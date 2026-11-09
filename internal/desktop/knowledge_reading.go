@@ -26,6 +26,9 @@ func (a *App) switchReadingKind(kind string) {
 	a.recordKind, a.selectedID = kind, a.readingSelections[route+kind]
 	a.selectedItem, a.history = nil, nil
 	a.editing, a.detailMode, a.nextCursor = false, "view", ""
+	if a.projectSettings.Open {
+		a.projectSettings.ReturnEditing, a.projectSettings.ReturnMode = false, "view"
+	}
 	if !a.visualFixture {
 		a.items = nil
 	}

@@ -21,6 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--components', type=Path, required=True)
+    parser.add_argument('--scenario', choices=('reading', 'project-settings'), default='reading')
     args = parser.parse_args()
     out, previous = args.out.resolve(), args.components.resolve()
     out.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -56,7 +57,9 @@ def main():
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
-    app = out / 'app/darwin-arm64/MemlaneReading.app'
+    app_name = 'MemlaneProjects' if args.scenario == 'project-settings' else 'MemlaneReading'
+    report['scenario'] = args.scenario
+    app = out / ('app/darwin-arm64/' + app_name + '.app')
     runtime = out / 'runtime-config.json'
     ipc = Path('/tmp') / ('memlane-' + str(os.getuid()) + '-' + hashlib.sha256(str(client/'data').encode()).hexdigest()[:12]) / 'service.sock'
     try:
@@ -83,7 +86,7 @@ k=Ed25519PrivateKey.generate();print(json.dumps({'signature':base64.b64encode(k.
         thread.start()
         with (out / 'build.log').open('w') as log:
             subprocess.run(['python3', str(ROOT/'scripts/build-client.py'), '--out', str(out/'app'),
-                            '--runtime-config', str(runtime), '--name', 'MemlaneReading', '--identifier', identifier,
+                            '--runtime-config', str(runtime), '--name', app_name, '--identifier', identifier,
                             '--automation', '--skip-dmg'], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True)
         spec = importlib.util.spec_from_file_location('reading_ui', ROOT/'scripts/p1-ui.py')
         driver = importlib.util.module_from_spec(spec)
@@ -124,116 +127,123 @@ k=Ed25519PrivateKey.generate();print(json.dumps({'signature':base64.b64encode(k.
             assert 'error' not in result, result
 
         driver.wait(lambda: '服务运行中' in ui.labels(), timeout=90)
-        repo = out/'synthetic-repository'
-        subprocess.run(['/usr/bin/git', 'init', str(repo)], capture_output=True, check=True)
-        project = call('register_project', user_confirmed=True, project=dict(name='本轮阅读验收', path=str(repo)))
-        identifier = str(uuid.uuid4())
-        first = '最初保存的知识正文，不能冒充完整会话原文。\n' + '长历史保留原始版本内容。\n'*80
-        current = '同一代码仓库对应一个项目，多个编码 Agent 共享已授权的记忆。\n\n共享范围\n默认使用当前项目知识、全局个人偏好与通用经验。其他项目需要明确授权。'
-        call('apply', user_confirmed=True, mutation=dict(operation_id=str(uuid.uuid4()), kind='save',
-             dataset=project['id'], memory=identifier, title='项目记忆与版本', text=first, origin='knowledge', source='本轮合成输入'))
-        call('apply', user_confirmed=True, mutation=dict(operation_id=str(uuid.uuid4()), kind='edit', dataset=project['id'],
-             memory=identifier, expected_revision=1, title='项目记忆与版本', text=current))
-        raw_id = str(uuid.uuid4())
-        raw_text = '用户：跨仓库如何共享？\nAgent：逐项目明确授权。\n' + '独立原始材料，保留当时上下文。\n'*60
-        call('apply', user_confirmed=True, mutation=dict(operation_id=str(uuid.uuid4()), kind='save', dataset=project['id'],
-             memory=raw_id, title='独立原始材料', text=raw_text, origin='raw', source='本轮合成输入'))
-        driver.wait(lambda: call('get', memory=identifier)['index_state'] == 'indexed', timeout=90)
-        report['actual_rust_index'] = True
-        driver.wait(lambda: project['name'] in ui.labels())
-        ui.press(project['name'])
-        driver.wait(lambda: '知识 1' in ui.labels() and '原始记录 1' in ui.labels())
-        ui.press('项目记忆与版本')
-        driver.wait(lambda: '这条知识未附完整会话原文。' in ui.labels())
-        assert first not in ui.labels()
-        capture('01-reading-system.png')
-        ui.set('reading-search', '本轮不匹配的关键词')
-        ui.req('act', id=ui.node(key='reading-search')['id'], action='focus')
-        ui.req('input', events=[dict(type='key', key='Enter')])
-        driver.wait(lambda: '没有匹配的内容' in ui.labels())
-        assert '知识 1' in ui.labels() and '原始记录 1' in ui.labels()
-        assert '整理项目' not in ui.labels()
-        capture('01b-filter-zero-system.png')
-        ui.press('清除内容筛选')
-        driver.wait(lambda: any(n.get('key') == 'memory-'+identifier for n in ui.nodes()))
-        report['filter_zero_keeps_scope_counts_and_reading'] = True
-        ui.press('历史')
-        driver.wait(lambda: 'v1' in ui.labels() and 'v2' in ui.labels())
-        capture('02-history-current-system.png')
-        ui.press('v1')
-        assert first in ui.labels()
-        capture('03-history-old-system.png')
-        preview = ui.node(key='knowledge-history-preview')['bounds']
-        before_text_y = ui.node(label=first)['bounds']['y']
-        ui.req('input', events=[dict(type='wheel', x=preview['x']+preview['width']/2,
-                                   y=preview['y']+preview['height']/2, dx=0, dy=400, precise=True)])
-        assert ui.node(label=first)['bounds']['y'] < before_text_y
-        assert any(n.get('key') == 'knowledge-history-dismiss' for n in ui.nodes())
-        capture('03b-history-scroll-system.png')
-        report['long_history_preview_scrolls_with_fixed_close'] = True
-        after = call('get', memory=identifier)
-        assert after['revision'] == 2 and after['text'] == current
-        report['history_reads_real_immutable_versions'] = True
-        report['history_does_not_replace_current_knowledge'] = True
-        resize(980, 620)
-        capture('04-history-narrow-system.png')
-        for _ in range(10):
-            ui.req('input', events=[dict(type='key', key='Tab')])
-            focused = ui.req('tree').get('focus')
-            nodes = ui.nodes()
-            by_id = {n['id']: n for n in nodes}
-            modal_id = next(n['id'] for n in nodes if n.get('key') == 'knowledge-history-dialog')
-            ancestor = focused
-            while ancestor in by_id and ancestor != modal_id:
-                ancestor = by_id[ancestor].get('parent')
-            assert ancestor == modal_id, by_id.get(focused)
-        ui.req('input', events=[dict(type='key', key='Escape')])
-        driver.wait(lambda: not any(n.get('key') == 'knowledge-history-dialog' for n in ui.nodes()))
-        report['history_escape_and_tab_verified'] = True
-        resize(1200, 820)
-        ui.press('历史')
-        driver.wait(lambda: 'v1' in ui.labels())
-        ui.press('关闭知识历史')
-        driver.wait(lambda: not any(n.get('key') == 'knowledge-history-dialog' for n in ui.nodes()))
-        ui.press('历史')
-        driver.wait(lambda: 'v1' in ui.labels())
-        ui.req('input', events=[dict(type='click', x=10, y=10)])
-        driver.wait(lambda: not any(n.get('key') == 'knowledge-history-dialog' for n in ui.nodes()))
-        report['history_close_button_and_backdrop_verified'] = True
-        ui.press('历史')
-        driver.wait(lambda: 'v1' in ui.labels())
-        ui.press('关闭')
-        ui.press_key('reading-tab-raw')
-        driver.wait(lambda: '独立原始材料' in ui.labels())
-        ui.press('独立原始材料')
-        ui.press('阅读完整原始记录')
-        driver.wait(lambda: '逐项目明确授权' in ' '.join(ui.labels()))
-        capture('05-original-reader-system.png')
-        assert call('get', memory=raw_id)['text'] == raw_text
-        ui.press('返回所选记忆')
-        ui.press_key('reading-tab-knowledge')
-        driver.wait(lambda: any(n.get('key') == 'knowledge-history-open' for n in ui.nodes()))
-        assert call('get', memory=identifier)['revision'] == 2
-        report['knowledge_selection_survives_original_tab_return'] = True
-        report['actual_independent_original_read'] = True
-        report['scope_counts_verified'] = True
-        # Stop only this isolated daemon through its real lifecycle contract.
-        # A later filter read must retain the previously loaded rows.
-        call('stop')
-        driver.wait(lambda: not ipc.exists(), timeout=30)
-        ui.set('reading-search', '停服后的筛选请求')
-        ui.req('act', id=ui.node(key='reading-search')['id'], action='focus')
-        ui.req('input', events=[dict(type='key', key='Enter')])
-        driver.wait(lambda: any(label.startswith('读取失败，保留同范围') for label in ui.labels()))
-        assert any(n.get('key') == 'memory-'+identifier for n in ui.nodes())
-        assert '没有匹配的内容' not in ui.labels()
-        capture('06-stopped-filter-failure-system.png')
-        report['actual_stopped_filter_retains_previous_rows'] = True
+        if args.scenario == 'project-settings':
+            from verify_project_settings_scenario import verify
+            verify(ui, call, report, capture, resize, out, ipc, driver)
+        else:
+            repo = out/'synthetic-repository'
+            subprocess.run(['/usr/bin/git', 'init', str(repo)], capture_output=True, check=True)
+            project = call('register_project', user_confirmed=True, project=dict(name='本轮阅读验收', path=str(repo)))
+            identifier = str(uuid.uuid4())
+            first = '最初保存的知识正文，不能冒充完整会话原文。\n' + '长历史保留原始版本内容。\n'*80
+            current = '同一代码仓库对应一个项目，多个编码 Agent 共享已授权的记忆。\n\n共享范围\n默认使用当前项目知识、全局个人偏好与通用经验。其他项目需要明确授权。'
+            call('apply', user_confirmed=True, mutation=dict(operation_id=str(uuid.uuid4()), kind='save',
+                 dataset=project['id'], memory=identifier, title='项目记忆与版本', text=first, origin='knowledge', source='本轮合成输入'))
+            call('apply', user_confirmed=True, mutation=dict(operation_id=str(uuid.uuid4()), kind='edit', dataset=project['id'],
+                 memory=identifier, expected_revision=1, title='项目记忆与版本', text=current))
+            raw_id = str(uuid.uuid4())
+            raw_text = '用户：跨仓库如何共享？\nAgent：逐项目明确授权。\n' + '独立原始材料，保留当时上下文。\n'*60
+            call('apply', user_confirmed=True, mutation=dict(operation_id=str(uuid.uuid4()), kind='save', dataset=project['id'],
+                 memory=raw_id, title='独立原始材料', text=raw_text, origin='raw', source='本轮合成输入'))
+            driver.wait(lambda: call('get', memory=identifier)['index_state'] == 'indexed', timeout=90)
+            report['actual_rust_index'] = True
+            driver.wait(lambda: project['name'] in ui.labels())
+            ui.press(project['name'])
+            driver.wait(lambda: '知识 1' in ui.labels() and '原始记录 1' in ui.labels())
+            ui.press('项目记忆与版本')
+            driver.wait(lambda: '这条知识未附完整会话原文。' in ui.labels())
+            assert first not in ui.labels()
+            capture('01-reading-system.png')
+            ui.set('reading-search', '本轮不匹配的关键词')
+            ui.req('act', id=ui.node(key='reading-search')['id'], action='focus')
+            ui.req('input', events=[dict(type='key', key='Enter')])
+            driver.wait(lambda: '没有匹配的内容' in ui.labels())
+            assert '知识 1' in ui.labels() and '原始记录 1' in ui.labels()
+            assert '整理项目' not in ui.labels()
+            capture('01b-filter-zero-system.png')
+            ui.press('清除内容筛选')
+            driver.wait(lambda: any(n.get('key') == 'memory-'+identifier for n in ui.nodes()))
+            report['filter_zero_keeps_scope_counts_and_reading'] = True
+            ui.press('历史')
+            driver.wait(lambda: 'v1' in ui.labels() and 'v2' in ui.labels())
+            capture('02-history-current-system.png')
+            ui.press('v1')
+            assert first in ui.labels()
+            capture('03-history-old-system.png')
+            preview = ui.node(key='knowledge-history-preview')['bounds']
+            before_text_y = ui.node(label=first)['bounds']['y']
+            ui.req('input', events=[dict(type='wheel', x=preview['x']+preview['width']/2,
+                                       y=preview['y']+preview['height']/2, dx=0, dy=400, precise=True)])
+            assert ui.node(label=first)['bounds']['y'] < before_text_y
+            assert any(n.get('key') == 'knowledge-history-dismiss' for n in ui.nodes())
+            capture('03b-history-scroll-system.png')
+            report['long_history_preview_scrolls_with_fixed_close'] = True
+            after = call('get', memory=identifier)
+            assert after['revision'] == 2 and after['text'] == current
+            report['history_reads_real_immutable_versions'] = True
+            report['history_does_not_replace_current_knowledge'] = True
+            resize(980, 620)
+            capture('04-history-narrow-system.png')
+            for _ in range(10):
+                ui.req('input', events=[dict(type='key', key='Tab')])
+                focused = ui.req('tree').get('focus')
+                nodes = ui.nodes()
+                by_id = {n['id']: n for n in nodes}
+                modal_id = next(n['id'] for n in nodes if n.get('key') == 'knowledge-history-dialog')
+                ancestor = focused
+                while ancestor in by_id and ancestor != modal_id:
+                    ancestor = by_id[ancestor].get('parent')
+                assert ancestor == modal_id, by_id.get(focused)
+            ui.req('input', events=[dict(type='key', key='Escape')])
+            driver.wait(lambda: not any(n.get('key') == 'knowledge-history-dialog' for n in ui.nodes()))
+            report['history_escape_and_tab_verified'] = True
+            resize(1200, 820)
+            ui.press('历史')
+            driver.wait(lambda: 'v1' in ui.labels())
+            ui.press('关闭知识历史')
+            driver.wait(lambda: not any(n.get('key') == 'knowledge-history-dialog' for n in ui.nodes()))
+            ui.press('历史')
+            driver.wait(lambda: 'v1' in ui.labels())
+            ui.req('input', events=[dict(type='click', x=10, y=10)])
+            driver.wait(lambda: not any(n.get('key') == 'knowledge-history-dialog' for n in ui.nodes()))
+            report['history_close_button_and_backdrop_verified'] = True
+            ui.press('历史')
+            driver.wait(lambda: 'v1' in ui.labels())
+            ui.press('关闭')
+            ui.press_key('reading-tab-raw')
+            driver.wait(lambda: '独立原始材料' in ui.labels())
+            ui.press('独立原始材料')
+            ui.press('阅读完整原始记录')
+            driver.wait(lambda: '逐项目明确授权' in ' '.join(ui.labels()))
+            capture('05-original-reader-system.png')
+            assert call('get', memory=raw_id)['text'] == raw_text
+            ui.press('返回所选记忆')
+            ui.press_key('reading-tab-knowledge')
+            driver.wait(lambda: any(n.get('key') == 'knowledge-history-open' for n in ui.nodes()))
+            assert call('get', memory=identifier)['revision'] == 2
+            report['knowledge_selection_survives_original_tab_return'] = True
+            report['actual_independent_original_read'] = True
+            report['scope_counts_verified'] = True
+            # Stop only this isolated daemon through its real lifecycle contract.
+            # A later filter read must retain the previously loaded rows.
+            call('stop')
+            driver.wait(lambda: not ipc.exists(), timeout=30)
+            ui.set('reading-search', '停服后的筛选请求')
+            ui.req('act', id=ui.node(key='reading-search')['id'], action='focus')
+            ui.req('input', events=[dict(type='key', key='Enter')])
+            driver.wait(lambda: any(label.startswith('读取失败，保留同范围') for label in ui.labels()))
+            assert any(n.get('key') == 'memory-'+identifier for n in ui.nodes())
+            assert '没有匹配的内容' not in ui.labels()
+            capture('06-stopped-filter-failure-system.png')
+            report['actual_stopped_filter_retains_previous_rows'] = True
         report['status'] = 'passed'
     except Exception as error:
         report['failure'] = repr(error)
+        import traceback
+        report['failure_traceback'] = traceback.format_exc()
         if ui is not None:
             try:
+                (out/'failure-tree.json').write_text(json.dumps(ui.req('tree'), ensure_ascii=False, indent=2)+'\n')
                 ui.system_capture('failure-system.png')
                 report['failure_labels'] = ui.labels()
             except Exception as capture_error:

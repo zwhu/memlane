@@ -34,6 +34,15 @@ type ConnectionDraft struct {
 	AllowedScopes []string `json:"allowed_scopes"`
 }
 
+// ConnectionScopeChange changes one project grant without replacing the
+// connection's other scopes, identity or trusted workspace.
+type ConnectionScopeChange struct {
+	ConnectionID       string `json:"connection_id"`
+	ExpectedGeneration int64  `json:"expected_generation"`
+	Project            string `json:"project"`
+	Allowed            bool   `json:"allowed"`
+}
+
 // Workspace comes from an explicit bridge binding or pi ctx.cwd, never a
 // model tool argument or the MCP process's current working directory.
 type AgentRequest struct {

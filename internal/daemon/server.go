@@ -586,6 +586,13 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		s.agentAccess.Lock()
 		defer s.agentAccess.Unlock()
 		return s.store.ConfigureConnection(operation, r.Connection)
+	case "connection_project_access":
+		if !r.UserConfirmed || r.ConnectionScopeChange == nil {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "change project access explicitly in Memlane"}
+		}
+		s.agentAccess.Lock()
+		defer s.agentAccess.Unlock()
+		return s.store.ChangeProjectAccess(operation, *r.ConnectionScopeChange)
 	case "disconnect":
 		if !r.UserConfirmed {
 			return nil, &records.AccessError{Code: "confirmation_required", Message: "disconnect explicitly in Memlane"}
