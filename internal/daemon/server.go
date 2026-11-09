@@ -929,7 +929,7 @@ func (w *serialWorker) Search(ctx context.Context, dataset, query string, k int)
 	return w.client.Search(ctx, dataset, query, k)
 }
 func (s *Server) replay(ctx context.Context, worker *engine.Client) {
-	rows, err := s.store.DB.QueryContext(ctx, `SELECT j.memory FROM jobs j JOIN memories m ON m.id=j.memory AND m.current_revision=j.revision WHERE j.state IN ('pending','failed','indexing') AND m.state='active'`)
+	rows, err := s.store.IndexReplayCandidates(ctx)
 	if err != nil {
 		return
 	}

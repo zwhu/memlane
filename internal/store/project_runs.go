@@ -258,5 +258,19 @@ func (s *Store) projectTaskRuntime(ctx context.Context, t *records.ProjectTask) 
 		t.Receipt.Indexed, t.Receipt.IndexFailed = indexed, failed
 		t.Receipt.SourceIndexed, t.Receipt.SourceIndexFailed = sourceIndexed, sourceFailed
 	}
+	if s.Schema >= 20 {
+		var id string
+		err = s.DB.QueryRowContext(ctx, `SELECT operation FROM project_index_recoveries WHERE task=? AND attempt=? ORDER BY rowid DESC LIMIT 1`, t.ID, t.Attempt).Scan(&id)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			value, e := s.IndexRebuild(ctx, id)
+			if e != nil {
+				return e
+			}
+			t.IndexRecovery = &value
+		}
+	}
 	return nil
 }

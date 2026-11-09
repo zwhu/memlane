@@ -8,6 +8,12 @@ import (
 
 type ProjectTaskClient struct{ Root string }
 
+func (c ProjectTaskClient) RecoverIndexes(ctx context.Context, d records.IndexRebuildStart) (records.IndexRebuild, error) {
+	var out records.IndexRebuild
+	err := Call(ctx, c.Root, Request{Op: "rebuild_index", UserConfirmed: true, IndexRebuildStart: &d}, &out)
+	return out, err
+}
+
 func (c ProjectTaskClient) Start(ctx context.Context, d records.ProjectTaskStart) (records.ProjectTask, error) {
 	var out records.ProjectTask
 	err := Call(ctx, c.Root, Request{Op: "project_task_start", UserConfirmed: true, ProjectTaskStart: &d}, &out)

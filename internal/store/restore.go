@@ -130,6 +130,8 @@ func PrepareRestoredSnapshot(ctx context.Context, data []byte, operation string)
 		{`UPDATE code_worktrees SET enabled=0,generation=generation+1,state='disabled',observed_digest='',error='backup_restored'`, nil},
 		{`UPDATE code_jobs SET state='interrupted',error='backup_restored',finished_ms=? WHERE state IN ('queued','running')`, []any{time.Now().UnixMilli()}},
 		{`UPDATE index_rebuild_items SET state='expired',error='backup_restored' WHERE state IN ('queued','failed')`, nil},
+		{`UPDATE project_index_recoveries SET retired=1`, nil},
+		{`UPDATE index_rebuild_items SET state='expired',error='backup_restored' WHERE task IN (SELECT operation FROM project_index_recoveries)`, nil},
 		{`UPDATE memories SET indexed_revision=0,generation=''`, nil},
 		{`UPDATE jobs SET state='superseded' WHERE state IN ('pending','failed','indexing')`, nil},
 		{`INSERT INTO jobs(memory,revision,state,error) SELECT m.id,m.current_revision,'pending','' FROM memories m WHERE m.state='active' AND NOT EXISTS(SELECT 1 FROM derived_memories d WHERE d.memory=m.id AND d.revision=m.current_revision AND d.state='stale') ON CONFLICT(memory,revision) DO UPDATE SET state='pending',error=''`, nil},

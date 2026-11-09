@@ -283,7 +283,10 @@ func (a *App) projectStage(c *ui.Context) {
 	s := &a.projectOrganizer
 	stage, key, attempt := "ready", "ready", int64(0)
 	if s.Task != nil {
-		stage, key, attempt = s.Task.State, s.Task.ID, s.Task.Attempt
+		stage, key, attempt = projectTaskVisualState(s.Task), s.Task.ID, s.Task.Attempt
+		if s.Task.IndexRecovery != nil {
+			key += ":index:" + s.Task.IndexRecovery.ID
+		}
 		if stage == "queued" {
 			stage = "starting"
 		}

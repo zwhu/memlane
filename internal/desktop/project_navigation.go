@@ -39,7 +39,7 @@ func (a *App) ensureProjectOverview(id string) {
 		page, err := library.List(ctx, records.ListQuery{Datasets: []string{id}, Kind: "knowledge", Limit: 1})
 		var tasks records.ProjectTaskPage
 		if err == nil {
-			tasks, err = client.List(ctx, records.MergeListQuery{Project: id, ActiveOnly: true, Limit: 1})
+			tasks, err = client.List(ctx, records.MergeListQuery{Project: id, ActiveOnly: true, IncludeIndexRecovery: true, Limit: 1})
 		}
 		if ownerContext.Err() != nil {
 			return

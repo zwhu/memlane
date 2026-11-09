@@ -147,7 +147,7 @@ func TestProcessingSchema16WALMigrationPreservesEveryOldTableAndStopIntent(t *te
 	mustMerge(t, err)
 	// Deliberately remove only the unpopulated v17 ledger additions. This
 	// reconstructs the actual schema16, instead of relabeling a newer schema.
-	_, err = s.DB.Exec(`DROP TABLE project_task_items; DROP TABLE project_task_sources; DROP TABLE project_task_runs; DROP TABLE project_tasks; DROP TABLE project_bindings; DROP TABLE processing_operations; DROP TABLE processing_validations; DROP TABLE processing_saved; DROP TABLE processing_current; DROP TABLE processing_revisions; PRAGMA user_version=16; PRAGMA wal_autocheckpoint=0`)
+	_, err = s.DB.Exec(`DROP TABLE project_index_recoveries; DROP TABLE project_task_items; DROP TABLE project_task_sources; DROP TABLE project_task_runs; DROP TABLE project_tasks; DROP TABLE project_bindings; DROP TABLE processing_operations; DROP TABLE processing_validations; DROP TABLE processing_saved; DROP TABLE processing_current; DROP TABLE processing_revisions; PRAGMA user_version=16; PRAGMA wal_autocheckpoint=0`)
 	mustMerge(t, err)
 	s.Schema = 16
 	before := restoreTables(t, s.DB)

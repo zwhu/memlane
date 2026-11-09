@@ -12,13 +12,14 @@ import (
 )
 
 type ProjectBindingOperation struct {
-	Project string
-	Active  bool
-	Error   string
-	Kind    string
-	Task    string
-	Draft   records.ProjectTaskStart
-	Result  *records.ProjectTask
+	Project  string
+	Active   bool
+	Error    string
+	Kind     string
+	Task     string
+	Draft    records.ProjectTaskStart
+	Recovery records.IndexRebuildStart
+	Result   *records.ProjectTask
 }
 
 type ProjectOrganizerUI struct {
@@ -119,7 +120,7 @@ func (a *App) refreshProjectOrganizer() {
 			}
 		}
 		if err == nil && selected == "" {
-			page, e := client.List(ctx, records.MergeListQuery{Project: project, ActiveOnly: true, Limit: 1})
+			page, e := client.List(ctx, records.MergeListQuery{Project: project, ActiveOnly: true, IncludeIndexRecovery: true, Limit: 1})
 			err = e
 			if err == nil && len(page.Items) > 0 {
 				value, e := client.Get(ctx, page.Items[0].ID)
@@ -154,7 +155,7 @@ func (a *App) refreshProjectOrganizer() {
 			}
 			current.Error, current.Loaded = "", true
 			if op := current.Operation; op != nil && op.Project == project && op.Error != "" {
-				if op.Kind == "start" && task == nil || op.Kind == "cancel" && projectTaskRunning(task) && task.State != "cancelling" {
+				if op.Kind == "start" && task == nil || op.Kind == "cancel" && projectTaskRunning(task) && task.State != "cancelling" || op.Kind == "recover" && (task == nil || task.IndexRecovery == nil || task.IndexRecovery.ID != op.Recovery.OperationID) {
 					current.Error = op.Error
 				}
 			}
@@ -330,6 +331,86 @@ func projectTaskRunning(task *records.ProjectTask) bool {
 	return false
 }
 
+func projectIndexRecoveryRunning(task *records.ProjectTask) bool {
+	return task != nil && task.IndexRecovery != nil && task.IndexRecovery.State == "running"
+}
+
+func projectIndexRecoverable(task *records.ProjectTask) bool {
+	if task == nil || projectTaskRunning(task) || projectIndexRecoveryRunning(task) || task.Error == "backup_restored" ||
+		task.Receipt == nil || !task.Receipt.Persisted || task.Receipt.IndexFailed+task.Receipt.SourceIndexFailed == 0 {
+		return false
+	}
+	if task.IndexRecovery != nil && task.IndexRecovery.State == "expired" {
+		for _, item := range task.IndexRecovery.Items {
+			if item.State == "failed" && item.Error != "backup_restored" {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+func projectTaskVisualState(task *records.ProjectTask) string {
+	if task.IndexRecovery != nil {
+		switch task.IndexRecovery.State {
+		case "running":
+			return "indexing"
+		case "completed":
+			if task.Receipt != nil && task.Receipt.Indexed == len(task.Receipt.Added) && task.Receipt.SourceIndexed == len(task.Receipt.Sources) {
+				return "completed"
+			}
+			return "failed"
+		case "failed", "partial_failed", "expired":
+			return "failed"
+		}
+	}
+	return task.State
+}
+
+func (a *App) recoverProjectIndexes() {
+	s := &a.projectOrganizer
+	if !s.Open || !s.Loaded || s.Loading || s.Error != "" || !projectIndexRecoverable(s.Task) || s.Operation != nil && s.Operation.Active || a.libraryContext == nil || a.dispatch == nil {
+		return
+	}
+	d := records.IndexRebuildStart{OperationID: uuid.NewString(), ProjectTask: s.Task.ID, Attempt: s.Task.Attempt}
+	if prior := s.Operation; prior != nil && prior.Kind == "recover" && prior.Task == s.Task.ID && prior.Recovery.Attempt == s.Task.Attempt && prior.Result == nil {
+		d = prior.Recovery
+	}
+	op := &ProjectBindingOperation{Project: s.Project, Task: s.Task.ID, Kind: "recover", Active: true, Recovery: d}
+	s.Operation = op
+	ownerContext, client := a.libraryContext, s.Client
+	go func() {
+		ctx, cancel := context.WithTimeout(ownerContext, 15*time.Second)
+		defer cancel()
+		recovery, err := client.RecoverIndexes(ctx, d)
+		if ownerContext.Err() != nil {
+			return
+		}
+		a.dispatch(func() {
+			op.Active = false
+			current := &a.projectOrganizer
+			if current.Operation != op {
+				return
+			}
+			if err != nil {
+				op.Error = "索引恢复未确认，请重新读取当前任务后再试。"
+			}
+			if current.Project != op.Project || current.Task == nil || current.Task.ID != d.ProjectTask || current.Task.Attempt != d.Attempt {
+				return
+			}
+			current.Error = op.Error
+			if err == nil {
+				current.Task.IndexRecovery = &recovery
+				op.Result = current.Task
+				current.Sequence++
+				current.Loading = false
+			}
+			a.refreshProjectOrganizer()
+		})
+	}()
+}
+
 func projectTaskStatus(state string) string {
 	switch state {
 	case "queued":
@@ -375,6 +456,24 @@ func projectOrganizerHeading(task *records.ProjectTask) (string, string) {
 	if task == nil {
 		return "让 Agent 了解这个项目", "整理项目约定、架构与关键模块，并存入当前项目。"
 	}
+	if task.IndexRecovery != nil {
+		switch task.IndexRecovery.State {
+		case "running":
+			return "正在恢复索引", "只处理本次已保存的知识与原文，不重新整理。"
+		case "completed":
+			if projectTaskVisualState(task) == "completed" {
+				return "已保存内容的索引已恢复", "知识与原文版本保留，可以继续查看和使用。"
+			}
+			return "已保存内容的版本已变化", "恢复回执保留；当前版本的索引状态以知识详情为准。"
+		case "expired":
+			return "部分内容版本已变化", "旧版本不再恢复索引，当前知识与原文仍保留。"
+		default:
+			return "索引恢复未完成", "已保存正文仍可阅读，可以重试失败索引。"
+		}
+	}
+	if projectIndexRecoverable(task) {
+		return "知识已保存，索引未完成", "可先阅读正文，或恢复本次已保存内容的索引。"
+	}
 	switch task.State {
 	case "completed":
 		if task.Receipt != nil && task.Receipt.Persisted && len(task.Receipt.Added) == 0 {
@@ -394,7 +493,7 @@ func projectOrganizerHeading(task *records.ProjectTask) (string, string) {
 func projectProgressSteps(c *ui.Context, task *records.ProjectTask) {
 	phase := 0
 	if task != nil {
-		switch task.State {
+		switch projectTaskVisualState(task) {
 		case "queued", "starting":
 			phase = 1
 		case "organizing":
@@ -403,6 +502,10 @@ func projectProgressSteps(c *ui.Context, task *records.ProjectTask) {
 			phase = 3
 		case "completed":
 			phase = 4
+		case "failed":
+			if task.Execution != nil && task.Execution.Terminal && task.Receipt != nil && task.Receipt.Persisted {
+				phase = 3
+			}
 		}
 	}
 	ui.Row(c).Key("project-organizer-steps").Justify(ui.Center).Gap(12).Padding(16, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
@@ -423,7 +526,7 @@ func projectProgressSteps(c *ui.Context, task *records.ProjectTask) {
 
 func (a *App) projectOrganizerContent(c *ui.Context) {
 	s := &a.projectOrganizer
-	busy := projectTaskRunning(s.Task) || s.Operation != nil && s.Operation.Active
+	busy := projectTaskRunning(s.Task) || projectIndexRecoveryRunning(s.Task) || s.Operation != nil && s.Operation.Active
 	frozen := s.Task != nil
 	heading, description := projectOrganizerHeading(s.Task)
 	padding, gap := float32(24), float32(16)
@@ -505,6 +608,20 @@ func (a *App) projectOrganizerContent(c *ui.Context) {
 			}
 		})
 		ui.Row(c).Shrink(0).Padding(14, 24).Gap(14).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
+			if projectIndexRecoveryRunning(s.Task) || projectIndexRecoverable(s.Task) || s.Task != nil && s.Task.IndexRecovery != nil {
+				ui.Column(c).Grow(1).Gap(4).Children(func() {
+					ui.Text(c, "知识与原文已保存").FontSize(10).Bold()
+					ui.Text(c, "恢复索引不调用模型，不消耗整理 Token。").FontSize(10).TextColor(design.Muted)
+				})
+				if projectIndexRecoverable(s.Task) {
+					actionButton(c, "恢复索引", nil).Key("project-organizer-index-recover").Disabled(busy || s.Loading || s.Error != "").OnClick(a.recoverProjectIndexes)
+				} else if projectIndexRecoveryRunning(s.Task) {
+					actionButton(c, "正在恢复索引…", nil).Key("project-organizer-index-recover").Disabled(true)
+				} else {
+					actionButton(c, "查看项目知识", nil).Key("project-organizer-view").OnClick(a.returnFromProjectOrganizer)
+				}
+				return
+			}
 			if s.Task != nil && s.Task.State == "completed" {
 				ui.Spacer(c)
 				actionButton(c, "查看项目知识", nil).Key("project-organizer-view").Background(design.Ink).TextColor(ui.Hex("#ffffff")).OnClick(a.returnFromProjectOrganizer)

@@ -61,16 +61,17 @@ type ProjectTaskSnapshot struct {
 }
 
 type ProjectTask struct {
-	ID          string                `json:"task"`
-	Attempt     int64                 `json:"attempt"`
-	State       string                `json:"state"`
-	Cancelled   bool                  `json:"cancel_requested"`
-	Error       string                `json:"error_code,omitempty"`
-	Snapshot    ProjectTaskSnapshot   `json:"snapshot"`
-	CreatedMS   int64                 `json:"created_ms"`
-	AccessState string                `json:"access_state"`
-	Receipt     *ProjectTaskReceipt   `json:"receipt,omitempty"`
-	Execution   *ProjectTaskExecution `json:"execution,omitempty"`
+	ID            string                `json:"task"`
+	Attempt       int64                 `json:"attempt"`
+	State         string                `json:"state"`
+	Cancelled     bool                  `json:"cancel_requested"`
+	Error         string                `json:"error_code,omitempty"`
+	Snapshot      ProjectTaskSnapshot   `json:"snapshot"`
+	CreatedMS     int64                 `json:"created_ms"`
+	AccessState   string                `json:"access_state"`
+	Receipt       *ProjectTaskReceipt   `json:"receipt,omitempty"`
+	Execution     *ProjectTaskExecution `json:"execution,omitempty"`
+	IndexRecovery *IndexRebuild         `json:"index_recovery,omitempty"`
 }
 
 type ProjectTaskSummary struct {

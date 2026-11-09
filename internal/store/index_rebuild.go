@@ -25,6 +25,9 @@ func (s *Store) StartIndexRebuild(ctx context.Context, start records.IndexRebuil
 	if err != nil || id.String() != start.OperationID {
 		return out, errors.New("canonical rebuild operation UUID required")
 	}
+	if start.ProjectTask != "" || start.Attempt != 0 {
+		return s.startProjectIndexRecovery(ctx, start)
+	}
 	if start.Scope != "" {
 		parsed, e := uuid.Parse(start.Scope)
 		if e != nil || parsed.String() != start.Scope {
@@ -39,6 +42,15 @@ func (s *Store) StartIndexRebuild(ctx context.Context, start records.IndexRebuil
 	var scope string
 	err = tx.QueryRowContext(ctx, `SELECT scope FROM index_rebuilds WHERE id=?`, start.OperationID).Scan(&scope)
 	if err == nil {
+		if s.Schema >= 20 {
+			var linked int
+			if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM project_index_recoveries WHERE operation=?`, start.OperationID).Scan(&linked); err != nil {
+				return out, err
+			}
+			if linked != 0 {
+				return out, ErrConflict
+			}
+		}
 		if scope != start.Scope {
 			return out, ErrConflict
 		}
@@ -115,6 +127,20 @@ func (s *Store) IndexRebuild(ctx context.Context, id string) (records.IndexRebui
 	if err = tx.QueryRowContext(ctx, `SELECT id,scope,created_at FROM index_rebuilds WHERE id=?`, id).Scan(&out.ID, &out.Scope, &out.CreatedAt); err != nil {
 		return out, err
 	}
+	if s.Schema >= 20 {
+		err = tx.QueryRowContext(ctx, `SELECT task,attempt FROM project_index_recoveries WHERE operation=?`, id).Scan(&out.ProjectTask, &out.Attempt)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return out, err
+		}
+	}
+	if out.ProjectTask != "" {
+		_, err = tx.ExecContext(ctx, `UPDATE index_rebuild_items SET state='expired' WHERE task=? AND state!='expired' AND NOT EXISTS(
+ SELECT 1 FROM memories m WHERE m.id=index_rebuild_items.memory AND m.current_revision=index_rebuild_items.revision AND m.state='active'
+ AND NOT EXISTS(SELECT 1 FROM derived_memories d WHERE d.memory=m.id AND d.revision=m.current_revision AND d.state='stale'))`, id)
+		if err != nil {
+			return out, err
+		}
+	}
 	_, err = tx.ExecContext(ctx, `UPDATE index_rebuild_items SET state='expired' WHERE task=? AND state IN ('queued','failed') AND NOT EXISTS(
  SELECT 1 FROM memories m WHERE m.id=index_rebuild_items.memory AND m.current_revision=index_rebuild_items.revision AND m.state='active'
  AND NOT EXISTS(SELECT 1 FROM derived_memories d WHERE d.memory=m.id AND d.revision=m.current_revision AND d.state='stale'))`, id)
@@ -126,7 +152,7 @@ func (s *Store) IndexRebuild(ctx context.Context, id string) (records.IndexRebui
 		return out, err
 	}
 	out.Items = []records.IndexRebuildItem{}
-	queued, completed, failed := 0, 0, 0
+	queued, completed, failed, expired := 0, 0, 0, 0
 	for rows.Next() {
 		var item records.IndexRebuildItem
 		if err = rows.Scan(&item.Memory, &item.Revision, &item.State, &item.Error); err != nil {
@@ -141,6 +167,8 @@ func (s *Store) IndexRebuild(ctx context.Context, id string) (records.IndexRebui
 			completed++
 		case "failed":
 			failed++
+		case "expired":
+			expired++
 		}
 	}
 	err = rows.Err()
@@ -158,6 +186,8 @@ func (s *Store) IndexRebuild(ctx context.Context, id string) (records.IndexRebui
 		out.State = "partial_failed"
 	case failed > 0:
 		out.State = "failed"
+	case expired > 0:
+		out.State = "expired"
 	case completed > 0 || len(out.Items) == 0:
 		out.State = "completed"
 	default:

@@ -721,7 +721,7 @@ func (a *App) details(c *ui.Context) {
 				ui.Text(c, label)
 				ui.Spacer(c)
 				if a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
-					if a.projectOrganizer.Task == nil || a.projectOrganizer.Task.State != "completed" {
+					if a.projectOrganizer.Task == nil || projectTaskVisualState(a.projectOrganizer.Task) != "completed" {
 						quietButton(c, "查看知识").Key("project-organizer-close").OnClick(a.returnFromProjectOrganizer)
 					}
 				} else if a.reader.Open {

@@ -250,8 +250,14 @@ func (s *Store) ListProjectTasks(ctx context.Context, q records.MergeListQuery) 
 	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT id,project,state,attempt,created_ms FROM project_tasks
  WHERE (?='' OR project=?) AND (?='' OR created_ms<? OR (created_ms=? AND id<?))
- AND (?=0 OR state IN ('queued','starting','organizing','saving','indexing','cancelling'))
- ORDER BY created_ms DESC,id DESC LIMIT ?`, q.Project, q.Project, q.Before, before, before, q.Before, q.ActiveOnly, q.Limit+1)
+	AND (?=0 OR state IN ('queued','starting','organizing','saving','indexing','cancelling') OR (?=1 AND EXISTS(
+ SELECT 1 FROM project_task_runs r WHERE r.task=project_tasks.id AND r.attempt=project_tasks.attempt AND r.released=1 AND r.backup_restored=''
+ AND (EXISTS(SELECT 1 FROM project_index_recoveries x JOIN index_rebuild_items i ON i.task=x.operation WHERE x.task=r.task AND x.attempt=r.attempt AND x.retired=0 AND i.state='queued')
+ OR EXISTS(SELECT 1 FROM json_each('["added","sources"]') a,json_each(json_extract(r.receipt,'$.'||a.value)) v JOIN memories m ON m.id=json_extract(v.value,'$.memory')
+ JOIN jobs j ON j.memory=m.id AND j.revision=json_extract(v.value,'$.revision')
+ WHERE m.current_revision=j.revision AND m.state='active'
+ AND (j.state='failed' OR (j.state='completed' AND (m.indexed_revision!=j.revision OR m.generation=''))))))))
+	ORDER BY created_ms DESC,id DESC LIMIT ?`, q.Project, q.Project, q.Before, before, before, q.Before, q.ActiveOnly, q.IncludeIndexRecovery, q.Limit+1)
 	if err != nil {
 		return out, err
 	}

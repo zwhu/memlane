@@ -95,11 +95,12 @@ type MergeTask struct {
 // List entries contain only task summaries. Frozen inputs are fetched on
 // selection, keeping both IPC size and background polling bounded.
 type MergeListQuery struct {
-	ActiveOnly bool   `json:"active_only,omitempty"`
-	Memory     string `json:"memory,omitempty"`
-	Project    string `json:"project,omitempty"`
-	Before     string `json:"before,omitempty"`
-	Limit      int    `json:"limit,omitempty"`
+	IncludeIndexRecovery bool   `json:"include_index_recovery,omitempty"`
+	ActiveOnly           bool   `json:"active_only,omitempty"`
+	Memory               string `json:"memory,omitempty"`
+	Project              string `json:"project,omitempty"`
+	Before               string `json:"before,omitempty"`
+	Limit                int    `json:"limit,omitempty"`
 }
 type MergeSummary struct {
 	ID          string `json:"task"`
