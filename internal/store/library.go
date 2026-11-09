@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -52,7 +53,7 @@ func (s *Store) RegisterProject(ctx context.Context, draft records.ScopeDraft) (
 	if name == "" || len([]rune(name)) > 80 || !filepath.IsAbs(draft.Path) {
 		return records.Scope{}, errors.New("project name and absolute repository path required")
 	}
-	path, _, err := repository(ctx, draft.Path)
+	path, common, err := repository(ctx, draft.Path)
 	if err != nil {
 		return records.Scope{}, err
 	}
@@ -65,12 +66,33 @@ func (s *Store) RegisterProject(ctx context.Context, draft records.ScopeDraft) (
 		return records.Scope{}, errors.New("project name is reserved for a global scope")
 	}
 	scope := records.Scope{ID: uuid.NewString(), Name: name, Kind: "project", Path: path}
-	_, err = s.DB.ExecContext(ctx, `INSERT INTO scopes(id,kind,name,path) VALUES(?,'project',?,?) ON CONFLICT(path) WHERE path!='' DO NOTHING`, scope.ID, name, path)
+	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return records.Scope{}, err
 	}
-	err = s.DB.QueryRowContext(ctx, `SELECT id,name,kind,path FROM scopes WHERE path=?`, path).Scan(&scope.ID, &scope.Name, &scope.Kind, &scope.Path)
-	return scope, err
+	defer tx.Rollback()
+	if s.Schema >= 16 {
+		var pending string
+		e := tx.QueryRowContext(ctx, `SELECT i.pending_project FROM connection_intakes i JOIN connections c ON c.id=i.connection_id WHERE i.trusted_repository=? AND i.pending_project!='' AND c.enabled=1 ORDER BY c.id LIMIT 1`, common).Scan(&pending)
+		if e != nil && e != sql.ErrNoRows {
+			return records.Scope{}, e
+		}
+		if e == nil {
+			scope.ID = pending
+		}
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO scopes(id,kind,name,path) VALUES(?,'project',?,?) ON CONFLICT(path) WHERE path!='' DO NOTHING`, scope.ID, name, path)
+	if err != nil {
+		return records.Scope{}, err
+	}
+	err = tx.QueryRowContext(ctx, `SELECT id,name,kind,path FROM scopes WHERE path=?`, path).Scan(&scope.ID, &scope.Name, &scope.Kind, &scope.Path)
+	if err != nil {
+		return scope, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO repositories(common_dir,scope) VALUES(?,?) ON CONFLICT(common_dir) DO NOTHING`, common, scope.ID); err != nil {
+		return scope, err
+	}
+	return scope, tx.Commit()
 }
 
 type listCursor struct {

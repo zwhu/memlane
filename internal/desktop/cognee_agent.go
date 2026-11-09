@@ -49,6 +49,12 @@ func (a *App) loadOfficialAgent() {
 			}
 		}
 	}
+	if s.AuthDirectory == "" {
+		s.AuthDirectory = os.Getenv("MEMLANE_CODEX_AUTH_DIRECTORY")
+		if s.AuthDirectory == "" && a.agents.Home != "" {
+			s.AuthDirectory = filepath.Join(a.agents.Home, ".codex")
+		}
+	}
 }
 func (a *App) prepareOfficialAgent() {
 	s := &a.cognee
@@ -57,6 +63,9 @@ func (a *App) prepareOfficialAgent() {
 		return
 	}
 	var workspace string
+	if s.FirstTask {
+		workspace = s.Workspace
+	}
 	for _, project := range a.scopes {
 		if project.ID == s.Project {
 			workspace = project.Path
@@ -94,6 +103,7 @@ func (a *App) runOfficialAgent() {
 		return
 	}
 	d, prompt := *s.Agent, s.TaskPrompt
+	confirmed := s.Connection
 	s.Busy = true
 	s.Sequence++
 	sequence := s.Sequence
@@ -103,13 +113,30 @@ func (a *App) runOfficialAgent() {
 	s.Cancel = cancel
 	go func() {
 		defer cancel()
-		result, err := c.RunAgent(ctx, d, prompt, func(message string) {
-			a.dispatch(func() {
-				if s.Sequence == sequence && s.Project == d.Project {
-					s.TaskOutput = message
+		var result official.AgentResult
+		var err error
+		if confirmed != nil {
+			connections, e := a.library.Connections(ctx)
+			err = e
+			active := false
+			for _, connection := range connections {
+				if connection.ID == confirmed.ID && connection.Enabled && connection.Generation == confirmed.Generation {
+					active = true
 				}
+			}
+			if err == nil && !active {
+				err = fmt.Errorf("本轮接入已撤销或改变，请返回 Agent 重新连接")
+			}
+		}
+		if err == nil {
+			result, err = c.RunAgent(ctx, d, prompt, func(message string) {
+				a.dispatch(func() {
+					if s.Sequence == sequence && s.Project == d.Project {
+						s.TaskOutput = message
+					}
+				})
 			})
-		})
+		}
 		a.dispatch(func() {
 			if s.Sequence != sequence || s.Project != d.Project {
 				return
@@ -122,6 +149,9 @@ func (a *App) runOfficialAgent() {
 				return
 			}
 			s.AgentStage = "正常任务已结束。请完成官方持久同步，再接收具体会话材料。"
+			if s.FirstTask {
+				a.finishOfficialSession()
+			}
 		})
 	}()
 }
@@ -139,6 +169,7 @@ func (a *App) finishOfficialSession() {
 	ctx, cancel := context.WithTimeout(a.libraryContext, 5*time.Minute)
 	s.Cancel = cancel
 	projectName := a.scopeLabel(s.Project)
+	confirmed := s.Connection
 	go func() {
 		defer cancel()
 		err := c.SyncSession(ctx, d, session)
@@ -161,10 +192,17 @@ func (a *App) finishOfficialSession() {
 				err = e
 				var connection records.Connection
 				for _, existing := range connections {
-					if existing.Agent == "codex" && existing.Project == d.Project && existing.Enabled {
+					if confirmed != nil && existing.ID == confirmed.ID && existing.Generation == confirmed.Generation && existing.Enabled {
 						connection = existing
 						break
 					}
+					if confirmed == nil && existing.Agent == "codex" && existing.Project == d.Project && existing.Enabled {
+						connection = existing
+						break
+					}
+				}
+				if err == nil && confirmed != nil && connection.ID == "" {
+					err = &records.AccessError{Code: "disconnected", Message: "本轮接入已撤销或改变，请重新连接；官方材料独立保留"}
 				}
 				if err == nil && connection.ID == "" {
 					connection, err = a.library.ConfigureConnection(ctx, records.ConnectionDraft{Agent: "codex", Name: "官方 Cognee · " + projectName, Project: d.Project, AllowedScopes: []string{d.Project}})

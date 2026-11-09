@@ -25,7 +25,7 @@ func TestFirstLaunchNativeFramesAndReadyActionsRequireActualAvailability(t *test
 			a.firstLaunch.State.ReducedMotion = true
 			tt := ui.NewTester(a.View, 1200, 820)
 			if stage == "ready" {
-				if err := tt.Click("选择项目并开始记录"); err != nil {
+				if err := tt.Click("选择 Agent"); err != nil {
 					t.Fatal(err)
 				}
 				if a.firstLaunch.State.Completed || a.firstLaunch.State.Stage != "failed" {
@@ -33,6 +33,21 @@ func TestFirstLaunchNativeFramesAndReadyActionsRequireActualAvailability(t *test
 				}
 			}
 		})
+	}
+}
+
+func TestFirstLaunchReadyOpensAgentSelectionWithoutRegisteringProject(t *testing.T) {
+	a := New("test", nil)
+	a.firstLaunch.Open = true
+	a.firstLaunch.Controller = &RuntimeController{Config: RuntimeConfig{Root: t.TempDir()}}
+	a.firstLaunch.State.Stage = "ready"
+	a.runtimeStatus.Phase = "ready"
+	tt := ui.NewTester(a.View, 1200, 820)
+	if err := tt.Click("选择 Agent"); err != nil {
+		t.Fatal(err)
+	}
+	if a.firstLaunch.Open || !a.firstLaunch.State.Completed || a.page != "Agent" || a.detailMode == "project" || len(a.projects) != 0 {
+		t.Fatal("ready did not continue to Agent selection without a project")
 	}
 }
 

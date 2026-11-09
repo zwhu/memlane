@@ -22,6 +22,7 @@ type AgentUI struct {
 	SelectedPaths                                                   map[string]string
 	InstallErrors                                                   map[string]string
 	IDEStates                                                       map[string]string
+	OfficialConnections                                             map[string]bool
 	Context                                                         context.Context
 	Dispatch                                                        func(func())
 	Root, Home, Bridge, PiDir                                       string
@@ -82,6 +83,7 @@ func (a *App) refreshAgents(discover bool) {
 		installs := map[string]agents.Installation{}
 		installErrors := map[string]string{}
 		ideStates := map[string]string{}
+		officialConnections := map[string]bool{}
 		for _, c := range connections {
 			if i, e := agents.LoadInstallation(s.Root, c.ID); e == nil {
 				installs[c.ID] = i
@@ -106,6 +108,17 @@ func (a *App) refreshAgents(discover bool) {
 					}
 				}
 			}
+			if c.Agent == "codex" && c.Project != "" {
+				var receipt struct {
+					Connection string `json:"connection"`
+					Generation int64  `json:"generation"`
+					Project    string `json:"project"`
+				}
+				path := filepath.Join(s.Root, "official", "agents", c.Project, "current-knowledge.json")
+				if data, e := os.ReadFile(path); e == nil && len(data) < 65536 && json.Unmarshal(data, &receipt) == nil {
+					officialConnections[c.ID] = receipt.Connection == c.ID && receipt.Generation == c.Generation && receipt.Project == c.Project
+				}
+			}
 		}
 		if s.Context.Err() != nil {
 			return
@@ -122,6 +135,7 @@ func (a *App) refreshAgents(discover bool) {
 				s.Installs = installs
 				s.InstallErrors = installErrors
 				s.IDEStates = ideStates
+				s.OfficialConnections = officialConnections
 			}
 			if s.Selection == "" && len(found) > 0 {
 				a.selectAgent("agent-" + found[0].Agent)
@@ -185,6 +199,7 @@ func (a *App) selectAgent(key string) {
 			s.Allowed[id] = true
 		}
 		s.Project = c.Project
+		s.Workspace = c.TrustedWorkspace
 		if i, ok := s.Installs[c.ID]; ok {
 			s.Workspace = i.Options.Workspace
 			if i.Options.Project != "" {
@@ -210,7 +225,7 @@ func (a *App) selectAgent(key string) {
 	}
 	s.ProjectLabel = a.scopeLabel(s.Project)
 	if s.ProjectLabel == "" {
-		s.ProjectLabel = "选择本地项目"
+		s.ProjectLabel = "暂不选择项目"
 	}
 	if s.Workspace == "" {
 		for _, p := range a.projects {
@@ -224,7 +239,7 @@ func (a *App) selectAgent(key string) {
 func (a *App) agentStatus(d agents.Discovery, c *records.Connection) (string, string) {
 	d = a.connectionDiscovery(d, c)
 	if d.Path == "" {
-		return "待连接", "未找到安装；可填写已知可执行文件路径。"
+		return "未找到安装", "可填写已知可执行文件路径。"
 	}
 	if d.Error != "" {
 		return "异常", d.Error
@@ -236,10 +251,21 @@ func (a *App) agentStatus(d agents.Discovery, c *records.Connection) (string, st
 		return "已发现", d.CapabilityError
 	}
 	if c == nil {
-		return "已发现", "选择项目和允许范围，连接后在 Agent 中重载。"
+		return "已发现", "确认接入范围；项目可以跳过，再由 App 引导首次任务。"
 	}
 	if !c.Enabled {
 		return "待连接", "已断开；其他 Agent 配置和项目记忆保留。"
+	}
+	if a.agents.OfficialConnections[c.ID] {
+		if a.serviceState != "ready" {
+			return "异常", "官方接入已确认，当前记忆服务不可用；请明确启动服务后继续。"
+		}
+		return "已接入", "官方任务材料已进入 Memlane，后续任务先读取当前有效知识；可继续任务或查看记忆与出处。"
+	}
+	if c.PendingProject != "" || (c.Project == "" && c.TrustedWorkspace == "") {
+		if c.Agent == "codex" {
+			return "已连接 · 待首次任务", "接入身份已确认。下一步确认任务工作目录、准备官方插件并完成首次真实任务；尚未产生项目记忆。"
+		}
 	}
 	i, ok := a.agents.Installs[c.ID]
 	if !ok {
@@ -308,7 +334,7 @@ func (a *App) agentRow(c *ui.Context, key, title, subtitle, state string) {
 }
 
 func (a *App) agentProjectOptions() []string {
-	options := []string{"选择本地项目"}
+	options := []string{"暂不选择项目"}
 	for _, p := range a.projects {
 		options = append(options, a.scopeLabel(p.ID))
 	}
@@ -340,8 +366,9 @@ func (a *App) agentDetail(c *ui.Context) {
 		}
 		ui.Divider(c)
 		ui.Text(c, "项目与检索范围").Bold()
-		ui.Select(c.Key("agent-project"), &s.ProjectLabel, a.agentProjectOptions()).Label("连接项目").Disabled(s.Busy || (conn != nil && d.Agent != "pi")).OnChange(func() {
+		ui.Select(c.Key("agent-project"), &s.ProjectLabel, a.agentProjectOptions()).Label("项目（可跳过）").Disabled(s.Busy || (conn != nil && d.Agent != "pi")).OnChange(func() {
 			s.Project = ""
+			s.Workspace = ""
 			for _, p := range a.projects {
 				if a.scopeLabel(p.ID) == s.ProjectLabel {
 					s.Project = p.ID
@@ -350,7 +377,8 @@ func (a *App) agentDetail(c *ui.Context) {
 				}
 			}
 		})
-		ui.TextInput(c.Key("agent-workspace"), &s.Workspace).Label("工作区路径").Placeholder("所选仓库或 worktree 的绝对路径").Disabled(s.Busy || (conn != nil && d.Agent != "pi"))
+		ui.Text(c, "未选择项目时，连接不会创建空项目。首项任务确认工作目录，有有效记忆后按真实仓库建立或复用项目。").FontSize(design.Small).LineHeight(1.7).TextColor(design.Muted)
+		ui.TextInput(c.Key("agent-workspace"), &s.Workspace).Label("任务工作目录").Placeholder("可以在首次任务时再选择").Disabled(s.Busy || (conn != nil && d.Agent != "pi"))
 		if d.Agent == "pi" {
 			ui.Text(c, "pi 使用当前会话项目。这里选择验证项目，并授权它可以访问的范围。").FontSize(design.Small).TextColor(design.Muted)
 		} else if d.Agent == "trae" {
@@ -371,8 +399,8 @@ func (a *App) agentDetail(c *ui.Context) {
 		}
 		ui.Row(c).Gap(10).Children(func() {
 			if conn == nil || !conn.Enabled {
-				actionButton(c.Key("connect-agent"), "连接", nil).Disabled(s.Busy || s.Project == "" || s.Path == "" || d.ConnectionError() != nil).OnClick(a.connectAgent)
-			} else {
+				actionButton(c.Key("connect-agent"), "连接", nil).Disabled(s.Busy || s.Path == "" || d.ConnectionError() != nil).OnClick(a.connectAgent)
+			} else if !s.OfficialConnections[conn.ID] && conn.PendingProject == "" && !(d.Agent == "codex" && conn.Project == "") {
 				actionButton(c.Key("apply-agent-scopes"), "应用范围", nil).Disabled(s.Busy || d.ConnectionError() != nil).OnClick(a.connectAgent)
 				verifyLabel := "验证读写"
 				if d.Agent == "trae" {
@@ -381,11 +409,17 @@ func (a *App) agentDetail(c *ui.Context) {
 				actionButton(c.Key("verify-agent"), verifyLabel, nil).Disabled(s.Busy || d.ConnectionError() != nil).OnClick(a.verifyAgent)
 				actionButton(c.Key("disconnect-agent"), "断开", nil).Disabled(s.Busy).OnClick(a.disconnectAgent)
 			}
+			if conn != nil && conn.Enabled && (s.OfficialConnections[conn.ID] || conn.PendingProject != "" || (d.Agent == "codex" && conn.Project == "")) {
+				actionButton(c.Key("disconnect-agent"), "断开", nil).Disabled(s.Busy).OnClick(a.disconnectAgent)
+			}
 			if s.Cancel != nil {
 				quietButton(c, "取消验证").OnClick(s.Cancel)
 			}
 		})
 		if conn != nil {
+			if d.Agent == "codex" && a.officialController() != nil {
+				actionButton(c, "开始首次任务", nil).Key("agent-first-task").Disabled(s.Busy || !conn.Enabled).OnClick(func() { a.openFirstTask(*conn) })
+			}
 			if i, ok := s.Installs[conn.ID]; ok {
 				meta(c, "配置", i.ConfigPath)
 				if i.BackupPath != "" {
@@ -479,6 +513,11 @@ func (a *App) connectAgent() {
 	}
 	workspace := s.Workspace
 	draft := records.ConnectionDraft{Agent: d.Agent, Name: d.Name + " · " + a.scopeLabel(s.Project), AllowedScopes: allowed}
+	deferred := s.Project == ""
+	if deferred {
+		draft.Name = d.Name + " · 首次接入"
+		draft.AutoProject, draft.Workspace = true, workspace
+	}
 	if prior != nil {
 		draft.ID = prior.ID
 	}
@@ -499,7 +538,9 @@ func (a *App) connectAgent() {
 		if probe.ConnectionError() != nil {
 			err = probe.ConnectionError()
 		} else {
-			err = a.library.CheckWorkspace(ctx, project, workspace)
+			if !deferred {
+				err = a.library.CheckWorkspace(ctx, project, workspace)
+			}
 			if err == nil {
 				conn, err = a.library.ConfigureConnection(ctx, draft)
 			}
@@ -509,7 +550,7 @@ func (a *App) connectAgent() {
 				err = agents.Uninstall(ctx, s.Root, prior.ID)
 			}
 		}
-		if err == nil {
+		if err == nil && !(deferred && d.Agent == "codex") {
 			_, err = agents.Install(ctx, conn, opts)
 		}
 		if s.Context.Err() != nil {
@@ -527,6 +568,10 @@ func (a *App) connectAgent() {
 				s.SelectedPaths[d.Agent] = opts.AgentPath
 				_ = serviceipc.WriteJSON(filepath.Join(s.Root, "agent-paths.json"), s.SelectedPaths)
 				s.Notice = "配置已安装，请重载 Agent 后验证读写。"
+				if deferred && d.Agent == "codex" {
+					s.Notice = "Agent 接入身份已确认。继续确认本轮任务工作目录与官方采集；连接没有创建项目。"
+					a.openFirstTask(conn)
+				}
 			}
 			a.refreshAgents(false)
 		})
@@ -540,6 +585,7 @@ func (a *App) disconnectAgent() {
 		return
 	}
 	id := conn.ID
+	_, hasInstallation := s.Installs[id]
 	s.Sequence++
 	s.Busy = true
 	go func() {
@@ -547,7 +593,7 @@ func (a *App) disconnectAgent() {
 		defer stop()
 		err := a.library.Disconnect(ctx, id)
 		revoked := err == nil
-		if err == nil {
+		if err == nil && hasInstallation {
 			err = agents.Uninstall(ctx, s.Root, id)
 		}
 		if s.Context.Err() != nil {

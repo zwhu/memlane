@@ -11,17 +11,20 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/internal/modelbridge"
 	"github.com/zwhu/memlane/internal/official"
 	"github.com/zwhu/memlane/internal/serviceipc"
 )
 
 type OfficialPreparationUI struct {
-	Status                           official.Status
-	Provider, Model, Endpoint, Key   string
-	ModelPresent, EditingModel, Busy bool
-	Sequence                         int64
-	Cancel                           context.CancelFunc
-	ChangedAt                        time.Time
+	Status                                             official.Status
+	Provider, Model, Endpoint, Key                     string
+	ModelPresent, EditingModel, Busy                   bool
+	Sequence                                           int64
+	Cancel                                             context.CancelFunc
+	ChangedAt                                          time.Time
+	UsePi                                              bool
+	PiExecutable, PiAuthDirectory, PiProvider, PiModel string
 }
 
 func (a *App) configureOfficialPreparation(controller *RuntimeController) {
@@ -30,6 +33,19 @@ func (a *App) configureOfficialPreparation(controller *RuntimeController) {
 	}
 	controller.Official = &official.Controller{Root: filepath.Join(controller.Config.Root, "official"), Config: *controller.Config.Official}
 	s := &a.officialPreparation
+	s.UsePi = true
+	home, _ := os.UserHomeDir()
+	s.PiAuthDirectory = os.Getenv("PI_CODING_AGENT_DIR")
+	if s.PiAuthDirectory == "" {
+		s.PiAuthDirectory = filepath.Join(home, ".pi/agent")
+	}
+	var selected struct {
+		Provider string `json:"defaultProvider"`
+		Model    string `json:"defaultModel"`
+	}
+	if raw, err := os.ReadFile(filepath.Join(s.PiAuthDirectory, "settings.json")); err == nil && len(raw) < 65536 && json.Unmarshal(raw, &selected) == nil {
+		s.PiProvider, s.PiModel = selected.Provider, selected.Model
+	}
 	if raw, err := os.ReadFile(filepath.Join(controller.Config.Root, "official-onboarding.json")); err == nil && len(raw) < 65536 {
 		_ = json.Unmarshal(raw, &s.Status)
 	}
@@ -42,11 +58,45 @@ func (a *App) configureOfficialPreparation(controller *RuntimeController) {
 		s.Status.Message = "上次官方环境准备已中断，请核对后重试。"
 	}
 	if settings, err := controller.Official.Settings(); err == nil {
-		s.ModelPresent = true
+		s.ModelPresent = settings.ModelBridge != nil || (settings.Environment["LLM_API_KEY"] != "" && settings.Environment["LLM_MODEL"] != "")
+		if settings.ModelBridge != nil {
+			s.PiExecutable, s.PiAuthDirectory, s.PiProvider, s.PiModel = settings.ModelBridge.Executable, settings.ModelBridge.AuthHome, settings.ModelBridge.Provider, settings.ModelBridge.Model
+		} else if s.ModelPresent {
+			s.UsePi = false
+		}
 		s.Provider = settings.Environment["LLM_PROVIDER"]
 		s.Model = settings.Environment["LLM_MODEL"]
 		s.Endpoint = settings.Environment["LLM_ENDPOINT"]
 	}
+}
+func (a *App) saveOfficialPi() {
+	r := a.firstLaunch.Controller
+	s := &a.officialPreparation
+	if r == nil || r.Official == nil || s.Busy {
+		return
+	}
+	if s.PiExecutable == "" {
+		for _, found := range a.agents.Found {
+			if found.Agent == "pi" && found.ConnectionError() == nil {
+				s.PiExecutable = found.Path
+				break
+			}
+		}
+	}
+	if s.PiExecutable == "" {
+		s.Status.Message = "未发现可用 pi，请先检查本机 Agent 安装。"
+		return
+	}
+	if err := r.Official.SelectPiBridge(modelbridge.Config{Executable: s.PiExecutable, AuthHome: s.PiAuthDirectory, Provider: s.PiProvider, Model: s.PiModel, Helper: a.agents.Bridge}); err != nil {
+		s.Status.Message = "提炼 Agent 未保存：" + err.Error()
+		return
+	}
+	s.ModelPresent = true
+	s.EditingModel = false
+	s.Model = "pi · " + s.PiProvider + " / " + s.PiModel
+	s.Status.Phase = "configured"
+	s.Status.Message = "已选择 pi；模型可用性尚待真实验证。"
+	a.saveOfficialStatus()
 }
 func (a *App) saveOfficialStatus() {
 	r := a.firstLaunch.Controller
@@ -103,7 +153,7 @@ func (a *App) prepareOfficial() {
 	s.Busy = true
 	s.Sequence++
 	sequence := s.Sequence
-	s.Status = official.Status{Phase: "preparing", Message: "准备已确认的独立官方环境…"}
+	s.Status = official.Status{Phase: "preparing", Message: "验证提炼 Agent 与已准备的记忆服务…"}
 	s.ChangedAt = time.Now()
 	a.saveOfficialStatus()
 	ctx, cancel := context.WithTimeout(a.libraryContext, 20*time.Minute)
@@ -150,7 +200,7 @@ func (a *App) cogneePreparation(c *ui.Context) {
 	if r == nil {
 		return
 	}
-	ui.Text(c, "独立官方环境").Bold()
+	ui.Text(c, "提炼 Agent 与记忆服务").Bold()
 	if r.Official == nil {
 		ui.Text(c, "尚无已配置的官方服务组件来源。请配置真实服务与模型组件后准备，或绑定兼容的已有本机服务。").LineHeight(1.7)
 		return
@@ -162,10 +212,20 @@ func (a *App) cogneePreparation(c *ui.Context) {
 		}
 		a.preparationBlocks(c, "official-preparation-blocks", stage, a.firstLaunch.State.ReducedMotion, s.ChangedAt)
 	}
-	ui.Text(c, "复用本机 Codex 与其登录；Cognee 服务、FastEmbed 模型和官方插件位于此 App 的独立目录。不会采集既有聊天。").FontSize(design.Small).LineHeight(1.7)
+	ui.Text(c, "记忆服务和本地依赖在初始化时统一准备。提炼通过本机 Agent 执行，复用该 Agent 的登录与模型配置。").FontSize(design.Small).LineHeight(1.7)
 	if s.ModelPresent && !s.EditingModel {
-		meta(c, "Cognee 模型条件", s.Model+" · 已配置")
-		quietButton(c, "修改独立模型条件").Disabled(s.Busy).OnClick(func() { s.EditingModel = true })
+		label := s.Model
+		if s.UsePi {
+			label = "pi · " + s.PiProvider + " / " + s.PiModel
+		}
+		meta(c, "提炼执行者", label+" · 已配置")
+		quietButton(c, "修改提炼执行者").Disabled(s.Busy).OnClick(func() { s.EditingModel = true })
+	} else if s.UsePi {
+		meta(c, "提炼 Agent", "pi")
+		ui.TextInput(c.Key("pi-model-auth"), &s.PiAuthDirectory).Label("pi 配置目录").Disabled(s.Busy)
+		ui.TextInput(c.Key("pi-model-provider"), &s.PiProvider).Label("当前模型服务").Disabled(s.Busy)
+		ui.TextInput(c.Key("pi-model-name"), &s.PiModel).Label("当前模型").Disabled(s.Busy)
+		actionButton(c, "使用 pi 作为提炼 Agent", nil).Key("pi-model-save").Disabled(s.Busy).OnClick(a.saveOfficialPi)
 	} else {
 		ui.TextInput(c.Key("cognee-model-provider"), &s.Provider).Placeholder("Cognee LLM provider").Disabled(s.Busy)
 		ui.TextInput(c.Key("cognee-model-name"), &s.Model).Placeholder("用户选定的模型 ID").Disabled(s.Busy)
@@ -173,9 +233,9 @@ func (a *App) cogneePreparation(c *ui.Context) {
 		ui.TextInput(c.Key("cognee-model-key"), &s.Key).Password().Placeholder("Cognee 独立模型凭据").Disabled(s.Busy)
 		actionButton(c, "保存独立模型条件", nil).Key("cognee-model-save").Disabled(s.Busy).OnClick(a.saveOfficialModel)
 	}
-	ui.Text(c, "确认后校验／下载独立组件、启动 Cognee，并执行数据库与小型模型可用探测（按所选模型计费）。Agent 的采集与项目范围另行确认。").FontSize(design.Small).LineHeight(1.7)
+	ui.Text(c, "验证将复用已准备的组件，并通过所选 Agent 执行一次小型模型探测，使用该 Agent 的模型额度。采集与项目范围另行确认。").FontSize(design.Small).LineHeight(1.7)
 	ui.Row(c).Gap(10).Children(func() {
-		actionButton(c, "确认准备并验证官方环境", nil).Key("cognee-prepare").Disabled(s.Busy || !s.ModelPresent).OnClick(a.prepareOfficial)
+		actionButton(c, "验证提炼 Agent 并继续", nil).Key("cognee-prepare").Disabled(s.Busy || !s.ModelPresent).OnClick(a.prepareOfficial)
 		quietButton(c, "取消本轮准备").Key("cognee-prepare-cancel").Disabled(!s.Busy).OnClick(func() {
 			if s.Cancel != nil {
 				s.Cancel()

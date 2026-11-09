@@ -35,7 +35,7 @@ func scanInitialization(row scanner) (records.InitializationBatch, error) {
 	return b, err
 }
 func initializationConnection(ctx context.Context, tx *sql.Tx, id string, generation int64, project string) (records.Connection, error) {
-	c, err := scanConnection(tx.QueryRowContext(ctx, `SELECT `+connectionColumns+` FROM connections WHERE id=?`, id))
+	c, err := scanConnection(tx.QueryRowContext(ctx, `SELECT `+connectionColumns+`,0,'','','' FROM connections WHERE id=?`, id))
 	if err != nil {
 		return c, err
 	}

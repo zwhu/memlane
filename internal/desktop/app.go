@@ -192,7 +192,6 @@ func (a *App) sidebar(c *ui.Context) {
 			for _, page := range []string{"总览", "全部记忆", "全局记忆", "Agent", "整理记录"} {
 				a.nav(c, page, "", icons[page])
 			}
-			a.nav(c, "代码图谱", "", icons["项目"])
 			ui.Row(c).Margin(22, 12, 8, 12).Children(func() {
 				ui.Text(c, "项目").FontSize(design.Small).TextColor(design.Muted)
 				ui.Spacer(c)

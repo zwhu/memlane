@@ -27,6 +27,8 @@ def main():
     args=parser.parse_args()
     config=json.loads((ROOT / "mygo.json").read_text())
     config["main"]=str(ROOT / "cmd/memlane-app")
+    if config.get("icon"):
+        config["icon"]=str((ROOT / config["icon"]).resolve())
     config["out"]=str(args.out.resolve())
     if args.version:config["version"]=args.version
     if args.name:config["name"]=args.name

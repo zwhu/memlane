@@ -141,7 +141,7 @@ func TestCogneeBrowsingSchema14WALBackupPreservesEveryOldTable(t *testing.T) {
 	}
 	var version int
 	mustMerge(t, backup.QueryRow(`PRAGMA user_version`).Scan(&version))
-	if version != 14 || current.Schema != 15 {
+	if version != 14 || current.Schema != SchemaVersion {
 		t.Fatal("backup/schema mismatch", version, current.Schema)
 	}
 }

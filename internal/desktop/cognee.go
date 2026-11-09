@@ -15,6 +15,9 @@ import (
 // Host-only approval. Credentials live only in the masked edit field until
 // sent to the service, which owns the private credential and scope barrier.
 type CogneeUI struct {
+	FirstTask                                                          bool
+	Workspace                                                          string
+	Connection                                                         *records.Connection
 	AgentExecutable, AuthDirectory, TaskPrompt, TaskOutput, AgentStage string
 	Agent                                                              *official.AgentScope
 	Project, Endpoint, Dataset, Credential, Session                    string
@@ -152,6 +155,13 @@ func (a *App) syncCognee() {
 		return
 	}
 	query := records.CogneeSync{Project: s.Project, Dataset: s.Binding.Dataset, Session: strings.TrimSpace(s.Session)}
+	firstTask := s.FirstTask
+	binding := *s.Binding
+	var firstAgent *official.AgentScope
+	if firstTask && s.Agent != nil {
+		copy := *s.Agent
+		firstAgent = &copy
+	}
 	s.Sequence++
 	sequence := s.Sequence
 	s.Busy = true
@@ -174,6 +184,10 @@ func (a *App) syncCognee() {
 				}
 			})
 		})
+		var currentReadError error
+		if err == nil && firstAgent != nil && len(receipt.Knowledge) > 0 {
+			currentReadError = a.enableFirstTaskCurrentKnowledge(ctx, *firstAgent, binding)
+		}
 		cancelled := ctx.Err() == context.Canceled
 		a.dispatch(func() {
 			if s.Sequence != sequence || s.Project != query.Project {
@@ -198,6 +212,14 @@ func (a *App) syncCognee() {
 				s.Message = fmt.Sprintf("Memlane 已持久化 1 份完整会话原文、%d 份 SDK 分段、%d 条知识；%d 份官方材料仍待提炼。知识索引由 Rust 独立确认。", len(receipt.Raw), len(receipt.Knowledge), receipt.PendingDocuments)
 			} else {
 				s.Message = fmt.Sprintf("Memlane 已持久化 %d 份 SDK 采集分段、%d 条知识；%d 份官方材料仍待提炼。完整会话原文尚未接入。", len(receipt.Raw), len(receipt.Knowledge), receipt.PendingDocuments)
+			}
+			if firstTask {
+				if currentReadError != nil {
+					s.Message += " 当前知识读取尚未接通：" + currentReadError.Error()
+				} else if len(receipt.Knowledge) > 0 {
+					s.Message += " 后续任务会先读取 Memlane 当前有效知识；官方采集原文继续保留。"
+				}
+				a.refreshAgents(false)
 			}
 			a.refresh(false)
 		})
@@ -271,6 +293,10 @@ func (a *App) cogneeDetail(c *ui.Context) {
 
 func (a *App) cogneeSetupPage(c *ui.Context) {
 	s := &a.cognee
+	if s.FirstTask {
+		a.firstTaskPage(c)
+		return
+	}
 	ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() { a.cogneeDetail(c) })
 		ui.Column(c).Width(176).Shrink(0).Padding(28, 18).Gap(24).BorderWidth(0, 0, 0, 1).BorderColor(design.Border).Children(func() {

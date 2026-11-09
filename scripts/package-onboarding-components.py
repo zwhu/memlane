@@ -39,6 +39,8 @@ def main():
     parser.add_argument("--model-cache",required=True,type=Path)
     parser.add_argument("--upstream",required=True,type=Path)
     parser.add_argument("--out",type=Path,default=ROOT/"build/onboarding-components")
+    parser.add_argument("--service",type=Path,default=ROOT/"build/cognee-service-component/memlane-cognee-service")
+    parser.add_argument("--service-version",default="1.6.7-memlane.3")
     args=parser.parse_args();args.out.mkdir(parents=True,exist_ok=True)
     assert subprocess.check_output(["git","rev-parse","HEAD"],cwd=args.upstream,text=True).strip()==SHA
     assert subprocess.check_output(["git","status","--porcelain"],cwd=args.upstream,text=True).strip()=="", "Official source must be unchanged"
@@ -49,7 +51,7 @@ def main():
     for path in (service,model,plugin):
         if path.exists(): shutil.rmtree(path)
         path.mkdir()
-    shutil.copytree(ROOT/"build/cognee-service-component/memlane-cognee-service",service/"service",symlinks=True)
+    shutil.copytree(args.service,service/"service",symlinks=True)
     # Only this Goal's real downloaded BGE snapshot/cache, never user caches.
     assert args.model_cache.resolve().is_relative_to((ROOT/"build/memory-browsing-validation").resolve())
     for name in ("models--Qdrant--bge-small-zh-v1.5","models--BAAI--bge-small-zh-v1.5"):
@@ -61,7 +63,7 @@ def main():
         if source.is_dir(): shutil.copytree(source,target,symlinks=True,ignore=shutil.ignore_patterns("__pycache__","*.pyc"))
         else: shutil.copy2(source,target)
     (plugin/"upstream.json").write_text(json.dumps({"repository":"https://github.com/topoteretes/cognee-integrations","sha":SHA,"version":"1.7.7"}))
-    outputs=[archive(service,args.out,"cognee-service","1.6.7-memlane.3","service/memlane-cognee-service"),archive(model,args.out,"cognee-bge-zh","1.5"),archive(plugin,args.out,"cognee-codex-plugin","1.7.7")]
+    outputs=[archive(service,args.out,"cognee-service",args.service_version,"service/memlane-cognee-service"),archive(model,args.out,"cognee-bge-zh","1.5"),archive(plugin,args.out,"cognee-codex-plugin","1.7.7")]
     (args.out/"archives.json").write_text(json.dumps([str(path) for path in outputs],indent=2))
 
 if __name__=="__main__":main()

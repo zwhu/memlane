@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Reuse only pi's selected existing qwen3:0.6b blobs for a temporary server."""
-import json,os,shutil,socket,tempfile
+import argparse,json,os,shutil,socket,tempfile
 from pathlib import Path
-ROOT=Path(__file__).resolve().parents[1];OUT=ROOT/'build/p3-pi-rpc';OUT.mkdir(parents=True,exist_ok=True)
+ROOT=Path(__file__).resolve().parents[1]
+parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--out',type=Path,default=ROOT/'build/p3-pi-rpc');args=parser.parse_args()
+OUT=args.out.resolve();OUT.mkdir(parents=True,exist_ok=True)
 source=Path(os.environ.get('OLLAMA_MODELS',str(Path.home()/'.ollama/models')));manifest=source/'manifests/registry.ollama.ai/library/qwen3/0.6b';data=json.loads(manifest.read_text())
 f=Path(tempfile.mkdtemp(prefix='memlane-p3-pi-model-'));models=f/'models';target=models/'manifests/registry.ollama.ai/library/qwen3/0.6b';target.parent.mkdir(parents=True);shutil.copy2(manifest,target);(models/'blobs').mkdir()
 for v in [data['config'],*data['layers']]:

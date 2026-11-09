@@ -96,7 +96,7 @@ func (s *Store) recordUsageTx(ctx context.Context, tx *sql.Tx, o records.UsageOb
 	digest := UsageDigest(o)
 	var err error
 	if o.Channel == "daily" || o.Channel == "verification" {
-		c, e := scanConnection(tx.QueryRowContext(ctx, `SELECT `+connectionColumns+` FROM connections WHERE id=?`, o.ConnectionID))
+		c, e := scanConnection(tx.QueryRowContext(ctx, `SELECT `+s.connectionProjection()+` FROM connections WHERE id=?`, o.ConnectionID))
 		if e != nil {
 			return receipt, e
 		}

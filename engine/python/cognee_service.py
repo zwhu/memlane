@@ -45,18 +45,27 @@ def main():
         value = settings.get("environment", {}).get(name)
         if value is not None:
             environment[name] = str(value)
-    if not environment.get("LLM_API_KEY"):
-        parser.error("Cognee 独立模型授权未提供，不能使用 Agent 登录替代")
     os.environ.update(environment)
     import litellm
     import uvicorn
-    model = environment["LLM_MODEL"]
+    # Local services can initialize before the user selects an inference Agent.
+    # Actual model availability is verified separately, never with a fake key.
+    model = environment.get("LLM_MODEL", "")
     # The already verified DeepSeek capability uses LiteLLM's official
     # registration, preserving transport/output validation and model choice.
     if model == "deepseek/deepseek-v4-flash":
         entry = dict(litellm.model_cost.get(model, {}) or litellm.model_cost.get("deepseek-v4-flash", {}))
         entry.update(supports_response_schema=False, litellm_provider="deepseek", mode="chat")
         litellm.register_model({model: entry})
+    if model == "openai/memlane-pi":
+        # This private alias is our real schema-validating model API, not a
+        # vendor model. Register its actual capability so the native adapter
+        # forwards response_format.json_schema instead of prompted JSON.
+        litellm.register_model({model: {
+            "supports_response_schema": True,
+            "supports_function_calling": False,
+            "litellm_provider": "openai", "mode": "chat",
+        }})
     from cognee.api.client import app
     from cognee_browsing import install
     install(app)

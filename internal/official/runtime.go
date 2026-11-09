@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +25,7 @@ import (
 	"time"
 
 	"github.com/zwhu/memlane/internal/components"
+	"github.com/zwhu/memlane/internal/modelbridge"
 	"github.com/zwhu/memlane/internal/serviceipc"
 )
 
@@ -32,8 +35,10 @@ type Config struct {
 	AllowLocalTestSource bool   `json:"allow_local_test_source,omitempty"`
 }
 type Settings struct {
-	Root        string            `json:"root"`
-	Environment map[string]string `json:"environment"`
+	Root                 string              `json:"root"`
+	Environment          map[string]string   `json:"environment"`
+	ModelBridge          *modelbridge.Config `json:"model_bridge,omitempty"`
+	ModelRestartRequired bool                `json:"model_restart_required,omitempty"`
 }
 type State struct {
 	PID      int    `json:"pid"`
@@ -45,6 +50,7 @@ type State struct {
 type Status struct {
 	Phase, Message, Endpoint, Instance, Model string
 	Downloaded, Total                         int64
+	EngineBytes, ModelBytes                   int64
 	EmbeddingDimensions                       int
 }
 type Controller struct {
@@ -73,8 +79,8 @@ func privateJSON(path string, out any) error {
 func (c *Controller) Settings() (Settings, error) {
 	var s Settings
 	err := privateJSON(filepath.Join(c.Root, "cognee-config.json"), &s)
-	if err == nil && (s.Root != filepath.Join(c.Root, "cognee") || s.Environment["LLM_API_KEY"] == "" || s.Environment["LLM_MODEL"] == "") {
-		err = errors.New("Cognee 独立模型授权与模型配置未提供")
+	if err == nil && (s.Root != filepath.Join(c.Root, "cognee") || s.Environment == nil) {
+		err = errors.New("Cognee 私有服务配置无效")
 	}
 	return s, err
 }
@@ -107,6 +113,7 @@ func (c *Controller) Manager(ctx context.Context) (*components.Manager, componen
 	return m, f, err
 }
 func (c *Controller) Cancel() {
+	c.cancelModelRequests()
 	c.mu.Lock()
 	cancel := c.cancel
 	tasks := make([]context.CancelFunc, 0, len(c.tasks))
@@ -204,6 +211,12 @@ func running(state State, executable, config string) bool {
 	return err == nil && strings.TrimSpace(string(output)) == executable+" --config "+config
 }
 func (c *Controller) Prepare(ctx context.Context, notify func(Status)) (resultErr error) {
+	return c.prepare(ctx, notify, true)
+}
+func (c *Controller) PrepareEnvironment(ctx context.Context, notify func(Status)) error {
+	return c.prepare(ctx, notify, false)
+}
+func (c *Controller) prepare(ctx context.Context, notify func(Status), verifyModel bool) (resultErr error) {
 	c.gate.Lock()
 	defer c.gate.Unlock()
 	ctx, cancel := context.WithCancel(ctx)
@@ -215,8 +228,20 @@ func (c *Controller) Prepare(ctx context.Context, notify func(Status)) (resultEr
 		notify = func(Status) {}
 	}
 	settings, err := c.Settings()
+	if os.IsNotExist(err) && !verifyModel {
+		password := make([]byte, 32)
+		if _, err = rand.Read(password); err != nil {
+			return err
+		}
+		settings = Settings{Environment: map[string]string{"DEFAULT_USER_EMAIL": "memlane-local@example.com", "DEFAULT_USER_PASSWORD": hex.EncodeToString(password), "EMBEDDING_PROVIDER": "fastembed", "EMBEDDING_MODEL": "BAAI/bge-small-zh-v1.5", "EMBEDDING_DIMENSIONS": "512", "EMBEDDING_MAX_TOKENS": "512"}}
+		err = c.SaveSettings(settings)
+		settings.Root = filepath.Join(c.Root, "cognee")
+	}
 	if err != nil {
 		return err
+	}
+	if verifyModel && settings.ModelBridge == nil && (settings.Environment["LLM_API_KEY"] == "" || settings.Environment["LLM_MODEL"] == "") {
+		return errors.New("请选择并验证提炼 Agent")
 	}
 	notify(Status{Phase: "checking", Message: "核对真实 Cognee 服务、模型与官方插件组件…"})
 	m, feed, err := c.Manager(ctx)
@@ -224,7 +249,7 @@ func (c *Controller) Prepare(ctx context.Context, notify func(Status)) (resultEr
 		return err
 	}
 	installed := map[string]components.Installed{}
-	var total, done int64
+	var total, done, engineBytes, modelBytes int64
 	for _, id := range []string{"cognee-service", "cognee-bge-zh", "cognee-codex-plugin"} {
 		var selected *components.Descriptor
 		for i := range feed.Components {
@@ -237,7 +262,14 @@ func (c *Controller) Prepare(ctx context.Context, notify func(Status)) (resultEr
 			return fmt.Errorf("组件清单缺少 %s", id)
 		}
 		total += selected.Bytes
+		if id == "cognee-bge-zh" {
+			modelBytes += selected.Bytes
+		} else {
+			engineBytes += selected.Bytes
+		}
 	}
+	report := notify
+	notify = func(status Status) { status.EngineBytes, status.ModelBytes = engineBytes, modelBytes; report(status) }
 	for _, id := range []string{"cognee-service", "cognee-bge-zh", "cognee-codex-plugin"} {
 		for _, d := range feed.Components {
 			if d.ID != id {
@@ -255,10 +287,19 @@ func (c *Controller) Prepare(ctx context.Context, notify func(Status)) (resultEr
 	}
 	settings.Environment["HF_HOME"] = installed["cognee-bge-zh"].Directory
 	settings.Environment["HF_HUB_OFFLINE"] = "1"
+	if verifyModel && settings.ModelBridge != nil && installed["cognee-service"].Metadata.Version != "1.6.7-memlane.5" {
+		return errors.New("当前 Cognee 服务组件尚未适配 pi 完整 Schema；请准备已验证的 1.6.7-memlane.5 组件后重试")
+	}
 	if err = c.SaveSettings(settings); err != nil {
 		return err
 	}
 	executable := filepath.Join(installed["cognee-service"].Directory, installed["cognee-service"].Metadata.Executable)
+	if err = c.restartModelProcess(ctx, executable, &settings); err != nil {
+		return err
+	}
+	if err = c.startModelBridge(ctx, &settings); err != nil {
+		return err
+	}
 	config := filepath.Join(c.Root, "cognee-config.json")
 	state, stateErr := c.ReadState()
 	if stateErr != nil && !os.IsNotExist(stateErr) {
@@ -333,13 +374,30 @@ func (c *Controller) Prepare(ctx context.Context, notify func(Status)) (resultEr
 	}
 	var health struct {
 		Status  string `json:"status"`
+		Health  string `json:"health"`
 		Version string `json:"version"`
 	}
-	if err = Request(ctx, state.Endpoint, "/health/detailed", "GET", token, "", nil, &health); err != nil {
+	// The official basic health route probes all four critical local stores.
+	// Its detailed variant also performs LLM inference, which must wait for the
+	// user's explicit model verification below.
+	if err = Request(ctx, state.Endpoint, "/health", "GET", token, "", nil, &health); err != nil {
 		return fmt.Errorf("Cognee 数据服务尚未验证可用（图/向量子进程）：%w", err)
 	}
-	if health.Status != "healthy" || health.Version != "1.6.7" {
+	if health.Status != "ready" || health.Health != "healthy" || health.Version != "1.6.7" {
 		return errors.New("Cognee 图/向量/关系库完整健康验证未通过")
+	}
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	if settings.ModelRestartRequired {
+		settings.ModelRestartRequired = false
+		if err = c.SaveSettings(settings); err != nil {
+			return err
+		}
+	}
+	if !verifyModel {
+		notify(Status{Phase: "service_ready", Message: "Cognee 本地服务与依赖已验证；提炼 Agent 在首次任务或设置中选择", Endpoint: state.Endpoint, Instance: identity.Instance, Total: total, Downloaded: done})
+		return nil
 	}
 	var probe struct {
 		State         string `json:"state"`
@@ -357,10 +415,11 @@ func (c *Controller) Prepare(ctx context.Context, notify func(Status)) (resultEr
 	return nil
 }
 
-func (c *Controller) Stop(ctx context.Context) error {
+func (c *Controller) Stop(ctx context.Context) (resultErr error) {
 	c.Cancel()
 	c.gate.Lock()
 	defer c.gate.Unlock()
+	defer func() { resultErr = errors.Join(resultErr, c.stopModelBridge(ctx)) }()
 	for {
 		c.mu.Lock()
 		active := len(c.tasks)

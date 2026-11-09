@@ -153,8 +153,9 @@ func (r *RuntimeController) prepare(ctx context.Context, notify func(RuntimeStat
 		total += d.Bytes
 	}
 	report := notify
+	var officialEngineBytes, officialModelBytes int64
 	notify = func(status RuntimeStatus) {
-		status.EngineBytes, status.ModelBytes = selected[0].Bytes, selected[1].Bytes
+		status.EngineBytes, status.ModelBytes = selected[0].Bytes+officialEngineBytes, selected[1].Bytes+officialModelBytes
 		if len(selected) > 2 {
 			status.EngineBytes += selected[2].Bytes
 		}
@@ -273,6 +274,21 @@ func (r *RuntimeController) prepare(ctx context.Context, notify func(RuntimeStat
 			return errors.New("incompatible business service version")
 		}
 		if err == nil && health.State == "ready" {
+			if r.Official != nil {
+				var officialTotal int64
+				if err = r.Official.PrepareEnvironment(ctx, func(status official.Status) {
+					officialEngineBytes, officialModelBytes = status.EngineBytes, status.ModelBytes
+					officialTotal = status.Total
+					phase := status.Phase
+					if phase == "service_ready" {
+						phase = "verifying"
+					}
+					notify(RuntimeStatus{Phase: phase, Message: status.Message, Installed: true, Service: state, Downloaded: total + status.Downloaded, Total: total + status.Total})
+				}); err != nil {
+					return err
+				}
+				total += officialTotal
+			}
 			notify(RuntimeStatus{Phase: "ready", Message: "本地记忆服务已就绪", Installed: true, Service: state, Downloaded: total, Total: total})
 			return nil
 		}

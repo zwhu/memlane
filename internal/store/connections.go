@@ -15,10 +15,19 @@ func access(code, message string) error { return &records.AccessError{Code: code
 
 const connectionColumns = `id,agent,name,project,allowed_scopes,enabled,generation,last_seen`
 
+// Keep the shipped connection table unchanged for old snapshots and callers.
+// Deferred grants are an additive table, projected only in schema16 onward.
+func (s *Store) connectionProjection() string {
+	if s.Schema < 16 {
+		return connectionColumns + `,0,'','',''`
+	}
+	return connectionColumns + `,COALESCE((SELECT auto_project FROM connection_intakes i WHERE i.connection_id=connections.id),0),COALESCE((SELECT pending_project FROM connection_intakes i WHERE i.connection_id=connections.id),''),COALESCE((SELECT trusted_workspace FROM connection_intakes i WHERE i.connection_id=connections.id),''),COALESCE((SELECT trusted_repository FROM connection_intakes i WHERE i.connection_id=connections.id),'')`
+}
+
 func scanConnection(row scanner) (records.Connection, error) {
 	var c records.Connection
 	var scopes string
-	err := row.Scan(&c.ID, &c.Agent, &c.Name, &c.Project, &scopes, &c.Enabled, &c.Generation, &c.LastSeen)
+	err := row.Scan(&c.ID, &c.Agent, &c.Name, &c.Project, &scopes, &c.Enabled, &c.Generation, &c.LastSeen, &c.AutoProject, &c.PendingProject, &c.TrustedWorkspace, &c.TrustedRepository)
 	if err == nil {
 		err = json.Unmarshal([]byte(scopes), &c.AllowedScopes)
 	}
@@ -26,11 +35,11 @@ func scanConnection(row scanner) (records.Connection, error) {
 }
 
 func (s *Store) Connection(ctx context.Context, id string) (records.Connection, error) {
-	return scanConnection(s.DB.QueryRowContext(ctx, `SELECT `+connectionColumns+` FROM connections WHERE id=?`, id))
+	return scanConnection(s.DB.QueryRowContext(ctx, `SELECT `+s.connectionProjection()+` FROM connections WHERE id=?`, id))
 }
 
 func (s *Store) Connections(ctx context.Context) ([]records.Connection, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT `+connectionColumns+` FROM connections ORDER BY name,id`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+s.connectionProjection()+` FROM connections ORDER BY name,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -58,6 +67,28 @@ func (s *Store) ConfigureConnection(ctx context.Context, d records.ConnectionDra
 	}
 	if _, err := uuid.Parse(d.ID); err != nil {
 		return records.Connection{}, access("invalid_request", "invalid connection ID")
+	}
+	if d.AutoProject && d.Project != "" {
+		return records.Connection{}, access("invalid_request", "choose either a registered project or deferred project creation")
+	}
+	if d.AutoProject && s.Schema < 16 {
+		return records.Connection{}, access("unsupported_schema", "deferred project connection requires the current schema")
+	}
+	var pending, workspace, common string
+	if d.AutoProject && d.Workspace != "" {
+		var err error
+		workspace, common, err = repository(ctx, d.Workspace)
+		if err != nil {
+			return records.Connection{}, err
+		}
+		known, found, err := s.knownRepository(ctx, workspace)
+		if err != nil {
+			return records.Connection{}, err
+		}
+		pending = uuid.NewSHA1(uuid.NameSpaceOID, []byte("memlane-auto-project-v1\x00"+common)).String()
+		if found {
+			pending = known.ID
+		}
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -113,7 +144,13 @@ func (s *Store) ConfigureConnection(ctx context.Context, d records.ConnectionDra
 	if err != nil {
 		return records.Connection{}, err
 	}
-	c, err := scanConnection(tx.QueryRowContext(ctx, `SELECT `+connectionColumns+` FROM connections WHERE id=?`, d.ID))
+	if s.Schema >= 16 {
+		_, err = tx.ExecContext(ctx, `INSERT INTO connection_intakes(connection_id,auto_project,pending_project,trusted_workspace,trusted_repository) VALUES(?,?,?,?,?) ON CONFLICT(connection_id) DO UPDATE SET auto_project=excluded.auto_project,pending_project=excluded.pending_project,trusted_workspace=excluded.trusted_workspace,trusted_repository=excluded.trusted_repository`, d.ID, d.AutoProject, pending, workspace, common)
+		if err != nil {
+			return records.Connection{}, err
+		}
+	}
+	c, err := scanConnection(tx.QueryRowContext(ctx, `SELECT `+s.connectionProjection()+` FROM connections WHERE id=?`, d.ID))
 	if err != nil {
 		return c, err
 	}
@@ -171,7 +208,20 @@ func (s *Store) Authorize(ctx context.Context, r records.AgentRequest) (records.
 	}
 	current := c.Project
 	explicit := r.Arguments.Scope != "" || len(r.Arguments.Scopes) > 0
-	if r.Workspace != "" && c.Project != "" {
+	pendingSave := false
+	if c.PendingProject != "" {
+		if err = s.checkPendingWorkspace(ctx, c, r.Workspace); err != nil {
+			return c, nil, err
+		}
+		var exists int
+		if err = s.DB.QueryRowContext(ctx, `SELECT count(*) FROM scopes WHERE id=? AND kind='project'`, c.PendingProject).Scan(&exists); err != nil {
+			return c, nil, err
+		}
+		pendingSave = r.Tool == "memory_save"
+		if pendingSave || exists == 1 {
+			current = c.PendingProject
+		}
+	} else if r.Workspace != "" && c.Project != "" {
 		if err := s.CheckBoundWorkspace(ctx, c.Project, r.Workspace); err != nil {
 			return c, nil, err
 		}
@@ -197,6 +247,9 @@ func (s *Store) Authorize(ctx context.Context, r records.AgentRequest) (records.
 	for _, id := range c.AllowedScopes {
 		allowed[id] = true
 	}
+	if c.PendingProject != "" && current == c.PendingProject {
+		allowed[current] = true
+	}
 	if current != "" && !allowed[current] && !explicit && r.Tool != "memory_scopes" {
 		return c, nil, access("scope_denied", "current project is not allowed")
 	}
@@ -212,6 +265,18 @@ func (s *Store) Authorize(ctx context.Context, r records.AgentRequest) (records.
 			return c, append([]string{}, c.AllowedScopes...), nil
 		}
 		if current == "" {
+			if c.AutoProject && r.Tool != "memory_save" {
+				for _, scope := range c.AllowedScopes {
+					var kind string
+					if err = s.DB.QueryRowContext(ctx, `SELECT kind FROM scopes WHERE id=?`, scope).Scan(&kind); err != nil {
+						return c, nil, err
+					}
+					if kind == "preference" || kind == "experience" {
+						selected = append(selected, scope)
+					}
+				}
+				return c, selected, nil
+			}
 			return c, nil, access("scope_required", "select an allowed scope or bind the current project")
 		}
 		selected = append(selected, current)

@@ -178,11 +178,14 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 		if a.Memory != "" || (a.Origin != "" && a.Origin != "knowledge" && a.Origin != "raw") {
 			return nil, invalid("Agent saves create knowledge or raw records; existing knowledge changes require user confirmation")
 		}
+		if c.PendingProject != "" && channel == "verification" {
+			return nil, &records.AccessError{Code: "first_task_required", Message: "connection verification cannot create a project; complete an authorized real task first"}
+		}
 		// Namespace idempotency by connection. Scope is in the mutation digest,
 		// so reusing an operation ID with different scope/content conflicts.
 		key := uuid.NewSHA1(uuid.NameSpaceOID, []byte(c.ID+"\x00"+a.OperationID))
 		m := records.Mutation{OperationID: "agent:" + key.String(), Kind: "save", Dataset: scopes[0], Memory: key.String(), ExpectedRevision: 0, Text: a.Text, Title: a.Title, Source: c.Agent, Origin: a.Origin, SourceDetail: a.Source}
-		saved, e := s.store.Apply(ctx, m)
+		saved, e := s.store.ApplyAgentSave(ctx, c, m)
 		if e != nil {
 			return nil, e
 		}

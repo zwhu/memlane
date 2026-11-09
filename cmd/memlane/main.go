@@ -13,10 +13,29 @@ import (
 	"time"
 
 	"github.com/zwhu/memlane/internal/agentbridge"
+	"github.com/zwhu/memlane/internal/agents"
+	"github.com/zwhu/memlane/internal/modelbridge"
 	"github.com/zwhu/memlane/internal/records"
 )
 
 func run() int {
+	if len(os.Args) > 1 && os.Args[1] == "--proposal-guard" {
+		return agents.RunProposalGuard(os.Args[2:])
+	}
+	if len(os.Args) > 1 && os.Args[1] == "model-bridge" {
+		flags := flag.NewFlagSet("model-bridge", flag.ContinueOnError)
+		path := flags.String("config", "", "private model bridge config")
+		if flags.Parse(os.Args[2:]) != nil || flags.NArg() != 0 {
+			return 2
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		if err := modelbridge.Run(ctx, *path); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	}
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: memlane mcp|call --root /absolute/service/root --connection UUID --generation N [--workspace /bound/repo] [--tool memory_save]")
 		return 2

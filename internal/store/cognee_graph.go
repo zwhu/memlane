@@ -19,7 +19,7 @@ func migrateCogneeBrowsing(tx *sql.Tx) error {
 }
 
 func (s *Store) AuthorizeCogneeBinding(ctx context.Context, b records.CogneeBinding) error {
-	c, scopes, err := s.Authorize(ctx, records.AgentRequest{Protocol: 1, ConnectionID: b.ConnectionID, Generation: b.Generation, Workspace: b.Workspace, Tool: "memory_get", Arguments: records.AgentArguments{Scope: b.Project}})
+	c, scopes, err := s.Authorize(ctx, records.AgentRequest{Protocol: 1, ConnectionID: b.ConnectionID, Generation: b.Generation, Workspace: b.Workspace, Tool: "memory_save", Arguments: records.AgentArguments{Scope: b.Project}})
 	if err != nil {
 		return err
 	}
@@ -54,7 +54,7 @@ func (s *Store) BindCognee(ctx context.Context, b records.CogneeBinding) (record
 	}
 	defer tx.Rollback()
 	var prior, payload string
-	err = tx.QueryRowContext(ctx, `SELECT digest,payload FROM cognee_bindings WHERE operation=? OR (instance=? AND dataset=?)`, b.Operation, b.Instance, b.Dataset).Scan(&prior, &payload)
+	err = tx.QueryRowContext(ctx, `SELECT digest,payload FROM cognee_bindings WHERE operation=? OR (instance=? AND dataset=?) UNION ALL SELECT digest,payload FROM pending_cognee_bindings WHERE operation=? OR (instance=? AND dataset=?)`, b.Operation, b.Instance, b.Dataset, b.Operation, b.Instance, b.Dataset).Scan(&prior, &payload)
 	if err == nil {
 		if prior != digest {
 			return b, ErrConflict
@@ -75,7 +75,15 @@ func (s *Store) BindCognee(ctx context.Context, b records.CogneeBinding) (record
 	if foreign > 0 {
 		return b, access("scope_denied", "Cognee dataset already belongs to another project")
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO cognee_bindings(instance,dataset,project,operation,digest,payload) VALUES(?,?,?,?,?,?)`, b.Instance, b.Dataset, b.Project, b.Operation, digest, string(encoded))
+	table := "cognee_bindings"
+	var project int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM scopes WHERE id=? AND kind='project'`, b.Project).Scan(&project); err != nil {
+		return b, err
+	}
+	if project == 0 {
+		table = "pending_cognee_bindings"
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO `+table+`(instance,dataset,project,operation,digest,payload) VALUES(?,?,?,?,?,?)`, b.Instance, b.Dataset, b.Project, b.Operation, digest, string(encoded))
 	if err != nil {
 		return b, err
 	}
@@ -83,7 +91,7 @@ func (s *Store) BindCognee(ctx context.Context, b records.CogneeBinding) (record
 }
 
 func (s *Store) CogneeBindings(ctx context.Context, project string) ([]records.CogneeBinding, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT payload FROM cognee_bindings WHERE project=? ORDER BY instance,dataset`, project)
+	rows, err := s.DB.QueryContext(ctx, `SELECT payload FROM cognee_bindings WHERE project=? UNION ALL SELECT payload FROM pending_cognee_bindings WHERE project=? ORDER BY payload`, project, project)
 	if err != nil {
 		return nil, err
 	}

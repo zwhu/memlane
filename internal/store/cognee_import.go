@@ -108,6 +108,11 @@ func (s *Store) ImportCognee(ctx context.Context, d records.CogneeImport) (recor
 		return receipt, err
 	}
 	defer tx.Rollback()
+	if c.PendingProject != "" {
+		if err = s.acceptFirstProjectTx(ctx, tx, c); err != nil {
+			return receipt, err
+		}
+	}
 	// A dataset is bound by the first original received under an approved
 	// workspace. Original records cannot be moved by the review tools, so this
 	// immutable metadata remains authoritative when derived knowledge moves.

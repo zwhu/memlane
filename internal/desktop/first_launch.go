@@ -170,11 +170,17 @@ func (r *RuntimeController) DiscoverEnvironment(ctx context.Context) ([]Environm
 	if r.Official == nil {
 		items = append(items, EnvironmentItem{Name: "官方 Cognee / Codex", State: "not_verified", Evidence: "官方服务组件来源尚未配置。已有本机兼容服务可在项目官方接入入口独立授权；Agent 安装或登录不等于模型条件已具备"})
 	} else {
+		model := EnvironmentItem{Name: "提炼 Agent", State: "not_selected", Evidence: "在首次任务或设置中选择并验证；环境初始化无需模型 API Key"}
 		if settings, e := r.Official.Settings(); e == nil {
-			items = append(items, EnvironmentItem{Name: "Cognee 独立模型", State: "configured", Evidence: settings.Environment["LLM_MODEL"] + " · 当前 App 私有配置存在，需经批准发送实际可用探测；未读取 Agent 凭据"})
-		} else {
-			items = append(items, EnvironmentItem{Name: "Cognee 独立模型", State: "not_verified", Evidence: "独立模型条件尚未提供；不能使用 Agent 登录代替"})
+			if settings.ModelBridge != nil {
+				model.State = "configured"
+				model.Evidence = "pi · " + settings.ModelBridge.Provider + " / " + settings.ModelBridge.Model + " · 已配置，实际推理需单独确认并验证"
+			} else if settings.Environment["LLM_API_KEY"] != "" && settings.Environment["LLM_MODEL"] != "" {
+				model.Name, model.State = "提炼模型", "configured"
+				model.Evidence = settings.Environment["LLM_MODEL"] + " · 已有模型配置，实际推理需单独确认并验证"
+			}
 		}
+		items = append(items, model)
 		manager, feed, e := r.Official.Manager(ctx)
 		if e != nil {
 			items = append(items, EnvironmentItem{Name: "官方服务组件", State: "not_verified", Evidence: "真实签名组件来源不可用：" + e.Error()})
@@ -336,11 +342,16 @@ func (a *App) firstLaunchRuntime(status RuntimeStatus) {
 	switch status.Phase {
 	case "ready":
 		s.State.Stage = "ready"
-		s.State.Message = "本机记忆服务与 Rust 已验证可用。官方 Cognee / Agent 接入仍需单独确认和验证。"
+		s.State.Message = "本机记忆服务与 Rust 已验证可用。"
+		if s.Controller.Official != nil {
+			s.State.Message += " Cognee 服务与本地依赖已统一准备；提炼 Agent 在首次任务或设置中选择并验证。"
+		} else {
+			s.State.Message += " 官方采集服务来源尚未配置。"
+		}
 		for i := range s.State.Items {
 			item := &s.State.Items[i]
 			switch item.Name {
-			case s.Controller.Config.WorkerID, s.Controller.Config.ModelID:
+			case s.Controller.Config.WorkerID, s.Controller.Config.ModelID, "cognee-service", "cognee-bge-zh", "cognee-codex-plugin":
 				item.State = "prepared_verified"
 				item.Bytes = 0
 				item.Evidence += " · 实际准备与校验已完成"

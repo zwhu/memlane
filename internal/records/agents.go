@@ -9,18 +9,24 @@ type AgentSource struct {
 }
 
 type Connection struct {
-	ID             string   `json:"id"`
-	Agent          string   `json:"agent"`
-	Name           string   `json:"name"`
-	Project        string   `json:"project,omitempty"`
-	AllowedScopes  []string `json:"allowed_scopes"`
-	Enabled        bool     `json:"enabled"`
-	Generation     int64    `json:"generation"`
-	LastSeen       string   `json:"last_seen,omitempty"`
-	ContextProject string   `json:"context_project,omitempty"` // resolved per request, not persisted
+	AutoProject       bool     `json:"auto_project,omitempty"`
+	PendingProject    string   `json:"pending_project,omitempty"`
+	TrustedWorkspace  string   `json:"trusted_workspace,omitempty"`
+	TrustedRepository string   `json:"trusted_repository,omitempty"`
+	ID                string   `json:"id"`
+	Agent             string   `json:"agent"`
+	Name              string   `json:"name"`
+	Project           string   `json:"project,omitempty"`
+	AllowedScopes     []string `json:"allowed_scopes"`
+	Enabled           bool     `json:"enabled"`
+	Generation        int64    `json:"generation"`
+	LastSeen          string   `json:"last_seen,omitempty"`
+	ContextProject    string   `json:"context_project,omitempty"` // resolved per request, not persisted
 }
 
 type ConnectionDraft struct {
+	AutoProject   bool     `json:"auto_project,omitempty"`
+	Workspace     string   `json:"workspace,omitempty"`
 	ID            string   `json:"id,omitempty"`
 	Agent         string   `json:"agent"`
 	Name          string   `json:"name"`

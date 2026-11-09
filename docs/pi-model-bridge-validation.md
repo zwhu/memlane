@@ -110,4 +110,4 @@ JSON Schema、持久接收、完整出处和当前版本读取并不证明正文
 
 所有本轮组件源、完整 App/helper、Cognee 服务、模型桥及独立 Ollama 进程已实际退出，服务 socket 已移除。清理事实见 `final-source-cleanup.json`、`final-model-cleanup.json`、`final-service-cleanup.json` 和 `final-owned-executable-cleanup.json`；此前失败报告继续保留。
 
-本次 Git 交接发布桥接需求、研究依据与本验证记录，`AGENTS.md` 已提供对应开发入口。桥接实现代码、复现脚本及构建/验收产物仍留在本机工作区，尚未随本次文档提交发布；远端开发 Agent 能读取方案与记录，实际复现还需要取得对应实现和脚本。凭据、聊天记录、本机 Agent 配置与记忆库不纳入 Git。
+最初 Git 交接只发布桥接需求、研究依据与本验证记录。2026-11-09 基线整理将桥接实现、相关测试、复现脚本及构建支持一并纳入 Git，后续开发可从同一源码版本继续；`AGENTS.md` 已提供对应开发入口。构建与验收产物仍只保存在本机，凭据、聊天记录、本机 Agent 配置与记忆库不纳入 Git。本次提交整理不增加模型、Provider 或新版 A UI 的验收通过范围；上述 qwen3:0.6b 结果保留为当时固定模型的历史证据。

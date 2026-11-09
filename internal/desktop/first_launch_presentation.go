@@ -161,7 +161,13 @@ func (a *App) firstLaunchLocalItems() []EnvironmentItem {
 	if r == nil {
 		return nil
 	}
-	return []EnvironmentItem{a.firstLaunchItem(r.Config.WorkerID), a.firstLaunchItem(r.Config.ModelID)}
+	items := []EnvironmentItem{a.firstLaunchItem(r.Config.WorkerID), a.firstLaunchItem(r.Config.ModelID)}
+	if r.Official != nil {
+		for _, id := range []string{"cognee-service", "cognee-bge-zh", "cognee-codex-plugin"} {
+			items = append(items, a.firstLaunchItem(id))
+		}
+	}
+	return items
 }
 func (a *App) firstLaunchDownloadSummary() string {
 	var bytes int64
@@ -175,7 +181,7 @@ func (a *App) firstLaunchDownloadSummary() string {
 }
 
 func (a *App) firstLaunchResults(c *ui.Context) {
-	firstLaunchHeading(c, "让 Agent 用上记忆", "已检查本机环境。先准备记忆环境，再在项目中确认 Agent 接入范围。")
+	firstLaunchHeading(c, "让 Agent 用上记忆", "已检查本机环境。先准备记忆环境，再选择 Agent 并确认本轮使用范围。")
 	firstLaunchSection(c, "本地 Agent", "安装、接入与可用分别核对", func() {
 		for _, agent := range a.firstLaunch.State.Agents {
 			item := a.firstLaunchItem(agent.Name)
@@ -202,11 +208,19 @@ func (a *App) firstLaunchResults(c *ui.Context) {
 			if i == 1 {
 				title = "向量模型"
 			}
+			switch item.Name {
+			case "cognee-service":
+				title = "Cognee 服务"
+			case "cognee-bge-zh":
+				title = "Cognee 本地向量模型"
+			case "cognee-codex-plugin":
+				title = "官方插件组件"
+			}
 			firstLaunchRow(c, fmt.Sprintf("first-launch-environment-component-%d", i), title, item.Name, environmentStateLabel(item.State), icons["全部记忆"])
 		}
 		item := a.firstLaunchItem("记忆服务")
 		firstLaunchRow(c, "first-launch-environment-service", "本机记忆服务", "随 App 提供 helper，准备后核对当前服务", environmentStateLabel(item.State), icons["设置"])
-		firstLaunchRow(c, "first-launch-environment-official", "官方 Cognee 与 Codex", a.firstLaunchOfficialSummary(), "项目内独立确认", icons["Agent"])
+		firstLaunchRow(c, "first-launch-environment-official", "官方 Cognee 服务", a.firstLaunchOfficialSummary(), "一起初始化", icons["Agent"])
 	})
 	a.firstLaunchDetails(c)
 }
@@ -216,10 +230,7 @@ func (a *App) firstLaunchOfficialSummary() string {
 	if r == nil || r.Official == nil {
 		return "尚未配置官方组件来源 · 可在项目中绑定兼容服务"
 	}
-	if a.firstLaunchItem("Cognee 独立模型").State != "configured" {
-		return "独立模型条件尚未提供 · 准备前需要授权"
-	}
-	return "组件来源与模型条件已配置 · 仍需真实准备和验证"
+	return "服务、运行依赖与本地模型统一准备；提炼 Agent 之后单独选择和验证"
 }
 
 func (a *App) firstLaunchDetails(c *ui.Context) {
@@ -270,7 +281,7 @@ func (a *App) firstLaunchConfirmation(c *ui.Context) {
 		}
 		firstLaunchRow(c, "first-launch-plan-service", "启动并验证本机服务", "注册此 App 的 helper，核对服务与 Rust 健康回执", "随 App 提供", icons["设置"])
 	})
-	firstLaunchNotice(c, "Agent 接入在项目中确认", "准备完成后选择真实项目，再确认官方 Cognee 模型探测、插件与本轮采集范围。现有 Agent 安装、模型和日常配置保持原样。")
+	firstLaunchNotice(c, "准备后选择 Agent", "先选择要使用记忆的 Agent。项目可以跳过；首次任务再确认工作目录与本轮采集范围，有有效记忆后建立或复用项目。")
 	firstLaunchNotice(c, "记忆列表从空白开始", "本次准备不会导入历史对话。导入已有记忆是 App 内的独立可选操作。")
 	a.firstLaunchDetails(c)
 }
@@ -301,7 +312,7 @@ func (a *App) firstLaunchProgress(c *ui.Context) {
 			done, running     bool
 		}{
 			{"核对已确认组件", "读取真实签名清单，复核本机组件", checked, active && !checked},
-			{"准备 Rust 与向量模型", "复用或下载、校验并安装本机组件", status.Installed, active && checked && !status.Installed},
+			{"准备引擎与本地模型", "复用或下载、校验 Rust 与 Cognee 依赖", status.Installed, active && checked && !status.Installed},
 			{"启动本机记忆服务", "注册当前 App helper，等待服务响应", false, active && status.Installed},
 			{"验证服务与 Rust", "当前服务健康回执通过后才能开始使用", false, active && s.State.Stage == "verifying"},
 		}
@@ -348,16 +359,20 @@ func (a *App) firstLaunchReady(c *ui.Context) {
 	ui.Row(c).Gap(14).AlignItems(ui.Center).Children(func() {
 		a.preparationBlocksSized(c, "first-launch-blocks", "ready", s.State.ReducedMotion, s.ChangedAt, 64, 64)
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-			firstLaunchHeading(c, "本机记忆环境已就绪", "本机服务与 Rust 已验证可用。下一步，选择项目并确认首次 Agent 使用。")
+			firstLaunchHeading(c, "本机记忆环境已就绪", "本机服务与 Rust 已验证可用。下一步，选择你要使用的 Agent。")
 		})
 	})
 	firstLaunchSection(c, "本机记忆", "来自当前服务健康回执", func() {
 		firstLaunchRow(c, "first-launch-ready-local", "记忆服务与原文检索", "本机组件校验与当前服务验证已通过", "实际可用", icons["全部记忆"])
-		firstLaunchRow(c, "first-launch-ready-official", "官方 Cognee 与 Codex", "选择项目后独立准备和验证，确认本轮采集范围", "等待项目确认", icons["Agent"])
+		if a.firstLaunch.Controller != nil && a.firstLaunch.Controller.Official != nil {
+			firstLaunchRow(c, "first-launch-ready-official", "Cognee 服务与本地依赖", "已统一准备；提炼能力在首次任务中真实验证", "服务已就绪", icons["Agent"])
+		} else {
+			firstLaunchRow(c, "first-launch-ready-official", "官方采集服务", "尚未配置组件来源", "尚未验证", icons["Agent"])
+		}
 	})
 	ui.Column(c).Gap(10).Padding(20, 0).Children(func() {
 		ui.Text(c, "从一条有用的记忆开始").FontSize(14).Bold()
-		ui.Text(c, "1. 选择真实项目，确认这次 Agent 接入的范围。\n2. 在 Agent 中完成正常任务，按官方流程保存与同步。\n3. 在 App 查看内容、完整出处与实体，再用新会话检查召回。").FontSize(design.Body).LineHeight(1.9)
+		ui.Text(c, "1. 选择 Agent，项目可以跳过。\n2. 确认本轮工作目录与接入范围，由 App 引导完成真实任务。\n3. 查看实际记忆与完整出处，再用新会话检查召回。").FontSize(design.Body).LineHeight(1.9)
 		ui.Text(c, "准备环境不会创建记忆，也不会采集历史聊天。").FontSize(design.Small).TextColor(design.Muted)
 	})
 	a.firstLaunchDetails(c)
@@ -374,7 +389,7 @@ func (a *App) firstLaunchFooter(c *ui.Context) {
 			case "preparing", "verifying":
 				text, hint = "请保持 App 打开", "完成真实验证后进入下一步。"
 			case "ready":
-				text, hint = "本机环境可用", "选择项目，继续确认首次使用。"
+				text, hint = "本机环境可用", "选择 Agent，继续确认首次使用。"
 			case "failed", "cancelled", "interrupted", "cancelling":
 				text, hint = firstLaunchStageLabel(s.State.Stage), "当前仍不能开始使用。"
 			}
@@ -394,7 +409,7 @@ func (a *App) firstLaunchFooter(c *ui.Context) {
 		case "preparing", "verifying":
 			firstLaunchPrimary(c, "取消准备").Key("first-launch-cancel").OnClick(func() { a.cancelFirstLaunch(false) })
 		case "ready":
-			firstLaunchPrimary(c, "选择项目并开始记录").Key("first-launch-use").OnClick(func() {
+			firstLaunchPrimary(c, "选择 Agent").Key("first-launch-use").OnClick(func() {
 				if a.runtimeStatus.Phase != "ready" {
 					s.State.Stage = "failed"
 					s.State.Message = "记忆服务已不可用，请重新验证。"
@@ -404,8 +419,8 @@ func (a *App) firstLaunchFooter(c *ui.Context) {
 				s.State.Completed = true
 				s.Open = false
 				a.persistFirstLaunch()
-				a.navigate("项目", "")
-				a.detailMode = "project"
+				a.navigate("Agent", "")
+				a.refreshAgents(true)
 			})
 		case "failed", "cancelled", "interrupted":
 			firstLaunchPrimary(c, "重新检查").Key("first-launch-retry").OnClick(a.discoverFirstLaunch)

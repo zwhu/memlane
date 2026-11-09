@@ -14,7 +14,7 @@ import (
 
 func (a *App) indexRecoverySettings(c *ui.Context) {
 	ui.Text(c, "数据与检索恢复").Bold()
-	ui.Text(c, "索引损坏或丢失时，从已保存的当前原文重建检索。正文、来源和历史保留；代码图谱单独管理。").TextColor(c.Theme().TextMuted)
+	ui.Text(c, "索引损坏或丢失时，从已保存的当前原文重建检索。正文、来源和历史保留。").TextColor(c.Theme().TextMuted)
 	if a.indexRebuildScope == "" {
 		a.indexRebuildScope = "全部本机范围"
 	}

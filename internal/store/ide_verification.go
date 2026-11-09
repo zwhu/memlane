@@ -39,7 +39,7 @@ func (s *Store) CheckIDEVerification(ctx context.Context, d records.IDEVerificat
 		return out, err
 	}
 	defer tx.Rollback()
-	current, err := scanConnection(tx.QueryRowContext(ctx, `SELECT `+connectionColumns+` FROM connections WHERE id=?`, c.ID))
+	current, err := scanConnection(tx.QueryRowContext(ctx, `SELECT `+s.connectionProjection()+` FROM connections WHERE id=?`, c.ID))
 	if err != nil {
 		return out, err
 	}
