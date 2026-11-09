@@ -1,8 +1,10 @@
 # UI 重设计：开发 Agent 入口
 
-**2026-11-09，A 初始配置与设置复用的 revision 13 已由用户确认归档。**
+**2026-11-09，A revision 13 与 B 日常首页 revision 5 已由用户确认归档。**
 
 后续实现从 [A 已认可设计实施交接](a-setup-handoff.md) 开始。该文档写明最终范围、三步流程、全部页面/按钮/状态、配置所有权、真实适配要求、代码入口、开发顺序与 V01–V14 验收清单。再实际打开 [选定截图与证据](../images/ui-redesign/a-setup/README.md)，不能只阅读图片路径。
+
+B 首页实施从 [B 已认可设计交接](b-home-handoff.md) 与 [固定截图／动效](../images/ui-redesign/b-home/README.md) 开始。C Agent 日常管理与可选导入继续设计，尚未认可。
 
 ## 已确认范围
 
@@ -12,15 +14,17 @@
 | A Agent 连接 | revision 13 已认可：多选批量接入、逐项回执、仅失败项重试、取消保留成功 | [批量连接契约](agent-connection-contract.md) |
 | A 记忆处理与完成配置 | revision 13 已认可：Provider、已连接 pi/Codex、Magpie；三份保存、一个当前使用，保存与启用分开 | [处理契约](memory-processing-design.md) |
 | 环境与记忆处理的设置复用 | 已认可：恢复已有组件、任务和配置，不重走初始化 | [复用契约](reusable-setup.md) |
-| B 日常首页的新设计 | 尚未开展本轮选定设计，本次不继续设计或实现 | 现有宽幅首页规则继续有效 |
-| C–O | 仅场景枚举及各自已有规则 | [全部场景](scenarios.md) |
+| B 日常首页 | revision 5 已认可：①宽幅首页、累计统计、日期筛选、具体处理配置、通用标题导航去重和整理按钮动效 | [B 交接](b-home-handoff.md)、[证据](../images/ui-redesign/b-home/README.md) |
+| C Agent 日常管理与可选导入 | 正在设计，未认可；连接不以项目为前置条件 | [场景](scenarios.md)、[电脑级规则](agent-connection-contract.md) |
+| D–O | 仅场景枚举及各自已有规则 | [全部场景](scenarios.md) |
 
 初始化只有「准备环境 → 连接 Agent → 配置记忆处理」，之后完成配置进入首页。项目、第一项任务和记忆结果不再属于初始化；可选项目知识导入继续独立。批量连接不等于多个处理执行者。三个方式页签只显示单行名称；「设为当前使用」位于方式状态栏右侧。
 
 ## 固定归档与证据
 
 - 可交互原型分支：`prototype/selected-ui`。
-- 当前选定原型提交：`e27a49e35020972d6aea4ab070ec898fb6c9c22e`，路径 `prototypes/ui-redesign-20261109/`。
+- A 选定原型提交：`e27a49e35020972d6aea4ab070ec898fb6c9c22e`，路径 `prototypes/ui-redesign-20261109/`。
+- B 选定原型提交：`ed6cd37858c5d6f56f9307ecbf6ac454bb6e1edb`，`b-home.html?variant=1`；主分支固定38张PNG、1张GIF及核验JSON和来源清单。②③仍是探索。
 - 原环境正文冻结提交：`5f4c504bfbc6ee07a571b015f7ccc809d0943848`，原图及旧导航留作对应版本证据。
 - 主分支保存44张当前截图、27状态核验 JSON 与 [归档清单](../images/ui-redesign/a-setup/archive.json)，包括固定来源及 SHA256。
 - 启动、当前预览路由和原型核验命令见 [A 交接](a-setup-handoff.md#2-固定版本与打开方法)。原型分支以后推进时，仍按固定提交核对本轮设计。

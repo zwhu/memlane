@@ -1,0 +1,137 @@
+{
+  "revision": 5,
+  "prototypeOnly": true,
+  "idleStill": true,
+  "hoverRunsOnce": true,
+  "runningLoops": true,
+  "completionFollowsState": true,
+  "completionSettles": true,
+  "cancelStops": true,
+  "failureStops": true,
+  "disabledStill": true,
+  "reducedMotion": true,
+  "hoverAnimations": [
+    {
+      "iterations": 1
+    },
+    {
+      "iterations": 1
+    },
+    {
+      "iterations": 1
+    },
+    {
+      "iterations": 1
+    },
+    {
+      "iterations": 1
+    },
+    {
+      "iterations": 1
+    },
+    {
+      "iterations": 1
+    },
+    {
+      "name": "memory-organize-sheen",
+      "iterations": 1
+    },
+    {
+      "name": "memory-organize-hover",
+      "iterations": 1
+    },
+    {
+      "name": "memory-organize-hover",
+      "iterations": 1
+    },
+    {
+      "name": "memory-organize-hover",
+      "iterations": 1
+    },
+    {
+      "name": "memory-organize-hover",
+      "iterations": 1
+    },
+    {
+      "name": "memory-organize-hover",
+      "iterations": 1
+    },
+    {
+      "name": "memory-organize-hover",
+      "iterations": 1
+    },
+    {
+      "name": "memory-organize-hover",
+      "iterations": 1
+    },
+    {
+      "name": "memory-organize-hover",
+      "iterations": 1
+    },
+    {
+      "name": "memory-organize-hover",
+      "iterations": 1
+    }
+  ],
+  "runningAnimations": [
+    {
+      "iterations": 1
+    },
+    {
+      "iterations": 1
+    },
+    {
+      "iterations": 1
+    },
+    {
+      "iterations": 1
+    },
+    {
+      "iterations": 1
+    },
+    {
+      "iterations": 1
+    },
+    {
+      "iterations": 1
+    },
+    {
+      "name": "memory-organize-flow",
+      "iterations": "infinite"
+    },
+    {
+      "name": "memory-organize-flow",
+      "iterations": "infinite"
+    },
+    {
+      "name": "memory-organize-flow",
+      "iterations": "infinite"
+    },
+    {
+      "name": "memory-organize-flow",
+      "iterations": "infinite"
+    },
+    {
+      "name": "memory-organize-flow",
+      "iterations": "infinite"
+    },
+    {
+      "name": "memory-organize-flow",
+      "iterations": "infinite"
+    },
+    {
+      "name": "memory-organize-flow",
+      "iterations": "infinite"
+    },
+    {
+      "name": "memory-organize-flow",
+      "iterations": "infinite"
+    },
+    {
+      "name": "memory-organize-flow",
+      "iterations": "infinite"
+    }
+  ],
+  "frameCount": 42,
+  "runtimeErrors": []
+}
