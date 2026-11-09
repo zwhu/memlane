@@ -1,6 +1,6 @@
 # pi → DeepSeek V4.1 Flash：本轮验收
 
-2026-11-09。工程入口及 A/B 总矩阵见 [本轮交付记录](ui-redesign/implementation-20261109.md)。本页分别记录独立桥、固定事实质量样本和新完整包。**独立桥及第3轮固定样本通过；同包官方闭环因环境准备失败尚未通过。** 不将三种结论合并成总成功。
+2026-11-09。工程入口及 A/B 总矩阵见 [本轮交付记录](ui-redesign/implementation-20261109.md)。本页分别记录独立桥、固定事实质量样本和新完整包。**独立桥及第3轮固定样本通过；空根环境健康故障已修复，同包官方闭环仍在新根复验，尚未通过。** 不将三种结论合并成总成功。
 
 ## 实际版本与认证所有权
 
@@ -79,8 +79,26 @@ Native 窗口已实际打开并截图：[准备中窗口](../build/ui-delivery-2
 
 ## 检查、审查与下一步
 
+### 空根健康修复与新运行
+
+一次有完整预算的基础健康请求 `health-minimal-002/report.json` 实际返回503，耗时43.42秒，服务进程组回收。原错误为 Ladybug 初始化尝试从 `extension.ladybugdb.com` 下载 JSON 扩展失败。锁定的 Cognee wheel 已带匹配资源，冻结打包却遗漏了它；现在将 `v0.19.0/osx_arm64/libjson.lbug_extension` 收入组件，避免新私有 HOME 在基础健康检查时额外联网下载。
+
+PyInstaller 会重签该 Mach-O；第一轮构建后的原字节SHA检查失败保留。复核11个原生代码/数据节及动态依赖完全相同、签名有效后，构建门禁改为分别记录源/分发SHA并核对原生内容与依赖。源630,440字节、SHA `e6482a025de31d662ee4b32a39c991706b8cc3c2ec49673ef5d8ce45cc23ce7a`；分发644,928字节、SHA `a10e51c0fe8f91958300c753cfe6bcf6d52be753caf50539e8b456ff09547822`。证据为 `json-extension-native-sections.json`、`json-extension-packaging-fixed.json` 与 `cognee-service-fixed-verified-build/cognee-service-build-result.json`，修正后完整组件构建退出0。
+
+新组件 `1.6.7-memlane.6` 在另一个空合成根 `health-fixed-001/report.json` 单次真实 `/health` 返回200、ready/healthy，耗时33.14秒；没有LLM请求，进程组回收。该归档366,777,590字节、SHA `9f3e515c308e874ab2576389fc511b4d0d22fd853d27a61dce193c4a56c839f9`；本轮五个组件归档合计712,037,978字节。第二包真实环境准备、无项目连接、App选择pi与短模型验证通过，但活动取消驱动错过短请求而超时。第三包已通过同样准备，在首次验证自动进入插件页后仍寻找上一页按钮而失败。原报告分别保留在 `pi-package-002/runtime/report.json` 与 `pi-package-003/runtime/report.json`，均不计取消或官方闭环通过。
+
+第四包使用新业务/状态/身份/会话，仅复用已校验组件文件。取消夹具先通过Cognee真实验证，再发起实际pi长合成请求与App验证共用槽位，在设置的共享准备页操作取消；报告明确该长请求不是官方采集材料。随后另行执行真实官方编码任务，不用受控请求代替采集和事实质量验收。
+
+第二、第三包的App/服务已停止，socket不存在；自有组件源逐一核对完整argv后SIGTERM退出，新清理事实见各自 `component-source-cleanup.json`。第四包仍在运行，尚未报告清理完成。
+
+### B02断线停止的局部修复
+
+daemon原实现仅在回执Encode成功后停止；调用者关闭socket会留下已停止标记和仍运行的进程。现在成功执行stop/quiesce后登记defer停止，回执写失败也回收；执行停止失败时不关闭服务。原无worker三次失败见 `stop-disconnect-baseline-001/report.json`，修后无worker三次通过见 `stop-disconnect-fixed-001/report.json`；实际Rust 0.0.3 worker的三个独立根均通过，见 `stop-disconnect-rust-fixed-001/report.json`：停止持久化、daemon/socket/锁退出及父PID归属核对后的worker退出全部成立。
+
+这是B02断线回执根因的修复证据，尚不代表活动官方模型、最终普通App包或全部停止恢复矩阵通过。daemon/official race及相关test/vet通过，日志 `go-race-stop-service-fix.log`。停止及取消驱动3文件直接审查见 `review-stop-001/`，组件修复3文件审查见 `review-service-fix-001/`；当前没有剩余可确认P0–P2。
+
 全仓 Go test/vet 和 agents/modelbridge/official race 通过；最后 pi 指令变化后全仓 test/vet再次通过，日志为 `go-test-final-pi.log`、`go-vet-final-pi.log`，Python语法/diff检查通过。
 
 `bits-code-guard` 对本轮八文件进行分组/跨组审查。发现收尾配置核对及截断回执可阻止原失败报告写出的 P2，现已保护读取、逐行容错并保留原 failure，三项独立 Python/文件故障复验通过。初始缺陷、修复复核与 HTML 报告见 `review-pi-001/`，故障夹具见 `verifier-audit-fault-002/report.json`；这些不称为真实云端故障。
 
-下一步先关闭本轮打包 Cognee 503 正常准备阻塞，再以新身份/根/报告取得官方采集 → 实际 pi/DeepSeek 提炼 → 完整出处/Rust → App编辑/新会话的同包证据。A/B、共享配置、旧计划迁移、Provider独立授权、Codex桥与Magpie均继续未完成。
+下一步以第四包新身份/根/报告取得取消、官方采集 → 实际 pi/DeepSeek 提炼 → 完整出处/Rust → App编辑/新会话的同包证据，并逐项审查初始提炼质量。A/B、共享配置、旧计划迁移、Provider独立授权、Codex桥与Magpie均继续未完成。

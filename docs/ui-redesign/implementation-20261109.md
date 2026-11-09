@@ -8,6 +8,8 @@
 
 2026-11-09 执行期间，并行设计改动独立提交为 `d7956789b439e61fbe8fba57a48ffbbab3057ca6`（Agent 连接归入设置、导入归入项目）。已重新核对 HEAD/工作区；本轮继续接在该提交之后，未覆盖其文件。
 
+随后并行设计继续提交 `e688060`：用户原话「这里没必要导入相关知识，直接给个按钮，让用户自己选择使用自己的Agent去分析知识存入」。新项目入口只复制带当前项目的指令，不设计 App 文件列表/导入向导/分析调度；保存和索引只读实际回执，正常 Agent 保存不套用旧 imported 批次口径。旧 P3-I 代码与历史统计保留。这条最新已确认规则叠加固定 A/B，不据此移植完整 C 原型。
+
 A 固定 `e27a49e35020972d6aea4ab070ec898fb6c9c22e` revision 13，B 固定 `ed6cd37858c5d6f56f9307ecbf6ac454bb6e1edb` revision 5。已实际打开 home.jpg、memory-detail.jpg、A 环境/三步/批次部分失败/窄窗口/Provider失败/Magpie失败/环境设置窄窗口，以及 B 正常/窄窗口/日期选择/运行/完成截图。Agent 入口采用当前用户已确认的「设置 → Agent 连接」补充，C 完整稿不移植。
 
 开始 handoff 已生成并核对非空：`/var/folders/nv/g6m5_3nx1r9_v9dk3zh_5zw40000gn/T/memlane-p3-handoffs/20261109T053201.561040Z-redesign-start.md`。
@@ -35,11 +37,11 @@ A 固定 `e27a49e35020972d6aea4ab070ec898fb6c9c22e` revision 13，B 固定 `ed6c
 | Q01 | ScheduleSpec 固定 executor=traex，daemon RunOrganization 与模型策略仍走 traex；全局配置不能静默继承旧收费授权 | 保留原计划、范围、预算和启停意图，已有运行用原快照；旧计划后续标需确认执行者。备选保留旧 traex 路径，则全局当前配置仅作用于新计划 | 等待用户；阻止旧计划迁移分派，不阻止 pi 取证与配置结构实现 |
 | Q02 | pi auth.json 有 DeepSeek api_key，但不能复制到独立 Provider | 由用户指定独立供应商及安全存储引用，只让 Agent 读取自己的认证 | 等待独立 Provider 条件；不阻止 pi 推理 |
 | Q03 | activities 已有 created/imported，当前无受信首次使用字段；不能用文件或最早知识时间补造首日。旧原文身份覆盖需逐表核对 | 缺失字段保持未知；可由用户明确确认日期并记录来源 | 等待迁移口径确认；新空根可以建立受信首日 |
-| E01 | pi 0.84.1，默认 deepseek/deepseek-flash，模型定义 DeepSeek V4.1 Flash (1017)，api=openai-completions，认证项存在；尚无真实 Memlane 推理 | 复用原始 Provider，认证不转存，实际调用后再判定 | 进行中；现有 Schema 扩展仅适配 Ollama，需要补齐，不能用 prompt 代验 |
+| E01 | pi 0.84.1，默认 deepseek/deepseek-flash，模型定义 DeepSeek V4.1 Flash (1017)；原认证实际复用，隔离Responses完整Schema/流式取消通过 | 原配置不变，认证不转存；同包官方任务另取证 | 独立桥通过，第四包在验证；不以单请求代替同包和质量 |
 | E02 | Codex PATH 0.147.0；历史官方采集用独立 0.167.0-alpha.3.2 | 重新核对实际采集可用通道与 app-server schema，分别记录版本 | 未验证；新模型桥不继承采集结果 |
 | E03 | 本机 127.0.0.1:3425/v1/models 当前连接失败 | 先查实际可用安装与公共接口，不读取 Magpie 私有凭据；无真实服务条件则保留未通过 | 未验证；Magpie 成功/隔离/取消不能用 HTTP 夹具替代 |
 | E04 | 各 Agent 当前 config.go 仍有项目配置门禁，pi 用指定配置目录 | 逐版本查用户级接口和无项目回执，未支持禁用 | 待调查；无项目连接身份不算电脑级安装 |
-| E05 | 初始 JSON 或单条知识不足以证明质量 | 固定多个样本逐项核对来源、实体、结论、范围和冲突；保留失败原文/版本 | 待验证；禁止替换失败样本为通过 |
+| E05 | 固定六样本第三轮逐项通过；第一、二轮失败保留；尚无本轮Cognee初始知识 | 同材料修复复验，来源/实体/结论/范围/冲突单列 | 固定样本通过；官方初始质量待验，不外推全部题材 |
 
 ## 验收矩阵
 
@@ -49,8 +51,8 @@ A 固定 `e27a49e35020972d6aea4ab070ec898fb6c9c22e` revision 13，B 固定 `ed6c
 
 | 条目 | 当前状态 | 新证据要求 |
 | --- | --- | --- |
-| pi 原配置/认证、完整 Schema、流式取消/终态/回收/迟到 | 未通过 | 脱敏 preflight、请求/Schema digest、RPC 模型/版本、返回校验、活动取消与清理 |
-| pi 事实质量与官方同包闭环 | 未通过 | 冻结合成材料、逐事实评判、完整出处、Rust 当前索引、App v2、新会话实际工具读取 |
+| pi 原配置/认证、完整 Schema、流式取消/终态/回收/迟到 | 独立桥通过；App包取消仍待新运行 | pi-responses-001报告；同包受控推理不能冒称官方材料 |
+| pi 事实质量与官方同包闭环 | 固定六样本第三轮通过；官方同包未通过 | 原失败保留，Cognee初始质量、完整出处、Rust当前索引、App v2、新会话实际读取待验 |
 | A V01–V02 环境与三步 | 未实现新稿 | 空根、失败/取消/重开/兼容复用、真实下载字节与占用 |
 | A V03–V05 批量电脑级连接 | 未实现新稿 | 默认空、逐项状态与稳定代次、部分成功/重载/只失败重试/迟到 |
 | A V06 Provider | 未实现 | 公共协议/目录证据、独立配置复用、地址变更凭据门禁、实际推理 |
@@ -59,7 +61,33 @@ A 固定 `e27a49e35020972d6aea4ab070ec898fb6c9c22e` revision 13，B 固定 `ed6c
 | A V12–V14 设置/窗口/完整链路 | 未通过 | 重启持久恢复、普通/窄窗口/长错误、普通包与完整日常任务 |
 | B 总览统计与日期 | 未实现新稿 | 原文身份去重/有效知识/首日证据、独立活动/导入、零与未来、选择/返回保持 |
 | B 建议/计划/整理/动效/缓存 | 未实现新稿 | 实际任务驱动、不重复启动、审核前不变、主动停止保留、可信缓存时间、减少动态 |
-| B02/B03/R01 | 历史真实失败未关闭 | 新修复、新归档/包、断线活动停止与跨限检索、普通入口 |
-| 全仓检查与最终包 | 待执行 | Go test/vet、受影响 race/迁移/集成、Python语法/diff、完整包散列与三类体积 |
+| B02/B03/R01 | B02断线回执根因修复，真实Rust三根通过；最终活动停止、B03/R01仍未关闭 | 原失败与修复报告并存；新归档/包、断线活动停止与跨限检索、普通入口 |
+| 全仓检查与最终包 | pi/组件/停止test、vet、race及语法/diff通过；最终A/B包待验 | 当前证据不代替后续修改的检查、Native窗口和三类体积 |
 
 阶段完成后独立审查、修复、验证、中文记录、提交、生成实际临时 handoff，再继续。正式签名发布、全量旧工程、C–O 未认可重设计、远程管理不纳入本轮完成声明。
+
+## 当前检查点
+
+pi 独立 Schema/取消与固定样本切片已提交 `b77517db7b7c3cf5f264db4035edf632588b12eb`，未推送。每个失败保留；同包官方采集因空环境 Cognee 503 未进入任务。详见 [pi 新验证](../pi-deepseek-validation.md)。
+
+正常准备的最小反馈命令已实际运行并返回503：
+
+```sh
+python3 scripts/verify-packaged-cognee-health.py \
+  --pointer build/ui-delivery-20261109-001/pi-package-001/fixture-path.txt \
+  --out build/ui-delivery-20261109-001/health-minimal-002
+```
+
+新合成根、仅复用已核对组件文件；单次完整健康请求 43.42 秒返回 `not ready/unhealthy`，无 LLM 推理，进程组实际清空，见该目录 report.json。该红灯仍需要真实冻结服务/本地存储初始化，因此不是秒级单元测试；已从完整App数分钟准备收敛到单请求诊断，不用浅层HTTP夹具替代。
+
+日志精确根因：Ladybug worker `INSTALL JSON` 下载 `https://extension.ladybugdb.com/v0.19.0/osx_arm64/json/libjson.lbug_extension` 失败。三个待证假设是冻结包漏收资源、子进程路径丢失、版本/ABI不匹配。实际核对锁定 Cognee1.6.7 wheel：资源存在，630440字节，SHA256 `e6482a025de31d662ee4b32a39c991706b8cc3c2ec49673ef5d8ce45cc23ce7a`，与wheel RECORD一致；旧1.6.7-memlane.5组件中同资源缺失。官方cognee_db_workers已支持按数据库报告的版本/平台加载该资源，无需另改上游算法或联网安装。
+
+build-cognee-service.py已补入这份固定arm64资源。PyInstaller重签后原字节SHA不同的构建失败保留；复核原生11节、动态依赖及签名不变后，门禁分别记录源/分发SHA，完整组件构建退出0。新1.6.7-memlane.6在health-fixed-001新根中单次/health真实200、ready/healthy，无LLM，进程组回收。完整证据和新归档字节见[pi新验证](../pi-deepseek-validation.md)。
+
+第二、第三包真实准备通过但取消驱动分别错过短请求和定位已离开的准备页，失败保留。第四包685c727c52a5使用新业务/状态/身份/会话及新完整UI/helper/CLI/LaunchAgent，仅复用组件文件；先真实Cognee验证、再在共享设置页取消实际pi长合成请求，随后另跑官方编码材料闭环。第二、第三包自有组件源已精确核对argv后退出；第四包仍在运行。
+
+B02根因是stop/quiesce成功后仅在写回执成功时停止。成功perform后defer停止保证调用者断线也完成；失败perform不停止。无worker原三次失败、修后三次通过，真实Rust0.0.3三个新根均通过停止持久化、daemon/socket/锁及自有worker退出。报告stop-disconnect-rust-fixed-001，相关race通过；最终活动执行者/App停止仍需独立复验，B03/R01不随之关闭。
+
+最新并行产品资料已将项目知识入口修正为绑定Agent主动初始化，原话与具体规则见agent-settings-placement.md；此前单复制按钮为历史设计，C revision4动效仍待认可。保留这些用户修改，本轮仅按A/B实现范围接现有目标页，不追随未认可C动效扩展。
+
+后续接入只读版本补核：traecli/traex真实0.214.1 internal，TRAE IDE实际CN3.4.15当前适配门禁不通过。Magpie默认公共网关不可连，两个标准App位置也未发现；不据此全盘扫描、不读取其私有凭据或宣称成功。

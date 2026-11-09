@@ -287,8 +287,8 @@ func (c *Controller) prepare(ctx context.Context, notify func(Status), verifyMod
 	}
 	settings.Environment["HF_HOME"] = installed["cognee-bge-zh"].Directory
 	settings.Environment["HF_HUB_OFFLINE"] = "1"
-	if verifyModel && settings.ModelBridge != nil && installed["cognee-service"].Metadata.Version != "1.6.7-memlane.5" {
-		return errors.New("当前 Cognee 服务组件尚未适配 pi 完整 Schema；请准备已验证的 1.6.7-memlane.5 组件后重试")
+	if version := installed["cognee-service"].Metadata.Version; verifyModel && settings.ModelBridge != nil && version != "1.6.7-memlane.5" && version != "1.6.7-memlane.6" {
+		return errors.New("当前 Cognee 服务组件尚未适配 pi 完整 Schema；请准备包含完整依赖的 1.6.7-memlane.6 组件后重试")
 	}
 	if err = c.SaveSettings(settings); err != nil {
 		return err

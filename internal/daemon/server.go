@@ -363,12 +363,17 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 				response.Code = "service_error"
 			}
 		}
+		stopAccepted := err == nil && (request.Op == "stop" || request.Op == "quiesce")
+		if stopAccepted {
+			// A persisted stop belongs to the service, even when the caller
+			// disconnects before receiving its acknowledgement.
+			defer s.stop()
+		}
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		if encoder.Encode(response) != nil {
 			return
 		}
-		if r := request.Op; (r == "stop" || r == "quiesce") && err == nil {
-			s.stop()
+		if stopAccepted {
 			return
 		}
 	}
