@@ -1,6 +1,8 @@
 # Agent 接入与记忆处理：最新设计交接
 
-2026-11-09，预览 revision 7。**用户已确认下面的产品取舍，画面仍待评审；本轮仅完成设计，不改正式 App。** 本文件替代之前将 API Key 作为唯一途径、将任意已发现 Agent 视为可整理、以及只用 MCP 配置解释连接的设计。
+2026-11-09，预览 revision 8。**用户已确认下面的产品取舍，画面仍待评审；本轮仅完成设计，不改正式 App。** 本文件替代之前将 API Key 作为唯一途径、将任意已发现 Agent 视为可整理、以及只用 MCP 配置解释连接的设计。
+
+本轮补充：三种方式任选一种即可，初始化和后续设置复用同一配置页；环境准备页同样复用。设置中的当前使用、候选验证、保存与取消，以及 Magpie 本机免密检测，以 [页面复用契约](reusable-setup.md) 为准。revision 7 的本机访问凭据必填设计作废。
 
 最新补充：用户以 Magpie 的模型选择设计为参考，并要求“我计划这里还支持一个模式就是直接支持magpie就行了”。当前稿增加「使用 Magpie」第三种处理方式；模型选择改为搜索、供应商筛选、分组列表、常用与选中勾选，供应商只配置一次。此前 revision 6 的 Provider 卡片目录退为历史设计；已连接 pi/Codex 的卡片选择继续保留。
 
@@ -9,7 +11,7 @@
 | 配置 | 用户选择与作用 | 前置条件 |
 | --- | --- | --- |
 | 连接 Agent | 给该电脑上的编码工具安装记忆 skill、hooks、插件、Extension 等适配内容；参考 Cognee Web UI 的对应步骤 | 不要求项目、仓库目录或提炼执行者 |
-| 配置记忆处理 | 默认自配 LLM provider；也可使用已连接 pi/Codex，或连接 Magpie 网关选择其模型 | Provider 可独立配置；Agent 候选必须已连接并符合后台处理能力；Magpie 需要可访问的网关及相应访问凭据 |
+| 配置记忆处理 | 三种方式任选一种：自配 LLM provider、已连接 pi/Codex、Magpie | Provider 可独立配置；Agent 候选必须已连接并符合后台处理能力；Magpie 默认自动检测本机网关，无需访问凭据 |
 
 LLM provider 优先设计并作为后续优先实现方式。处理记忆的 Agent 候选只支持 **pi、Codex**；这个限制不自动缩减可安装记忆接入的编码工具目录。安装接入、验证连通、验证整理能力和授权具体任务分别反馈。
 
@@ -22,7 +24,7 @@ LLM provider 优先设计并作为后续优先实现方式。处理记忆的 Age
 - 自配 Provider 的「供应商配置」单独展示供应商列表、API 地址和密码输入。未配置供应商的模型先进入对应配置，保存后回到模型选择；新增或修改配置本身不代表模型推理验证通过。修改服务地址时需重新提供相应密钥，不继承旧服务凭据。
 - Provider 与模型目录当前为设计示例，实际实现应来自适配器/供应商目录和真实配置。图中 DeepSeek、Kimi、GLM、OpenAI 模型名借鉴参考页，不宣称当前 Memlane 已验证这些模型，模型 ID 也不能由显示名称推断。此前 DSH 候选词义仍未确认，不作为已验证模型供应商映射。
 - 已选模型与对应供应商配置满足条件后，才可「验证并使用」。验证中、成功、失败原位更新；结构化输出通过前不能标为可用于处理记忆。支持手动添加实际供应商提供的模型 ID，按供应商命名空间去重和绑定。
-- Magpie 模式先配置网关地址与 Magpie 访问凭据，连接后读取同一套分组模型列表；提供连接设置、刷新与「在 Magpie 中管理」。这项不复制供应商 Key，也不在 Memlane 修改 Magpie 的供应商/账号/Agent 模型配置。
+- Magpie 模式自动检测本机服务，连接后读取同一套分组模型列表；未运行时提供打开 Magpie 与重新检测，非默认本机地址放在连接设置中。默认不填写访问凭据；提供刷新与「在 Magpie 中管理」，不复制供应商 Key，也不在 Memlane 修改其供应商/账号/Agent 模型配置。
 - Agent 页仅显示已连接的 pi/Codex，两张卡片显示图标、名称、版本和已连接状态；默认不自动选择，删除下拉框。选中后显示它自己的登录/模型与独立提炼会话说明，再明确验证；处理会消耗所选 Agent 的模型额度。
 - Agent 验证区区分登录/模型条件、结构化输出、提炼会话隔离。任一项失败不得显示可用于整理。支持登录失效、额度不足、取消、采集隔离失败和没有已连接候选的画面。
 - 连接页显示将安装的内容、安装、重载和接入验证。Codex 为官方记忆插件与 hooks；pi 沿用其实际 Extension 接入，skill 的安装内容另按支持格式落实。
@@ -47,7 +49,7 @@ Cognee Web UI 的服务访问 API Key 与 LLM provider 的模型 Key 是不同�
 
 Agent 处理模式下，Cognee 的模型请求经 Memlane 管理的适配层交给所选 pi/Codex，返回经 Schema 校验的结果；Agent 自己管理登录和模型调用，用户无需为这一模式额外填写云模型 Key。Provider 模式直接使用用户配置的模型接口，两者独立保存和验证，不自动故障切换。
 
-Magpie 模式将 Cognee 模型请求发到其网关。已核对官方仓库提交 `ed0ab567cba78fae8ea9d9c9a07a7446e315b787` 的 `docs/reference.md` 与 `internal/gateway/model_api_test.go`：本机示例地址为 `http://127.0.0.1:3425/v1`，OpenAI 格式模型目录为 `GET /v1/models`，网关提供 `/v1/chat/completions` 等兼容请求。网关凭据与上游供应商 Key 分开，具体访问条件以 Magpie Gateway → Connect 为准；本稿只预填参考端口，真实发现和地址由实际运行状态确定。
+Magpie 模式将 Cognee 模型请求发到其网关。已核对官方仓库提交 `ed0ab567cba78fae8ea9d9c9a07a7446e315b787` 的 `docs/reference.md` 与 `internal/gateway/model_api_test.go`：本机示例地址为 `http://127.0.0.1:3425/v1`，OpenAI 格式模型目录为 `GET /v1/models`，网关提供 `/v1/chat/completions` 等兼容请求。本机 loopback 访问网关自身端口无需密钥；网络/代理访问的鉴权条件不同，本轮不设计远程连接。真实发现和地址由实际运行状态确定。
 
 客户端使用网关实际返回的模型 ID/供应商信息，记录 Magpie 来源；不把 Codex 专用目录 `/v1/codex/models` 与普通目录混用，不凭显示名拼接真实路由。图中的 ID 为演示数据，尚未实际连接 Magpie。原始模型调用、Schema、错误、取消和使用量仍需单独真实验收。Magpie 可能按自身账号/路由策略处理回退，Memlane 不能将未报告的实际模型冒称固定命中所选模型。
 
@@ -67,4 +69,4 @@ Magpie 模式将 Cognee 模型请求发到其网关。已核对官方仓库提�
 
 正式实现优先交付 LLM provider。Agent 模式限 pi/Codex，实际处理能力通过后才开放。用户最后要求“先把设计做出来”，本轮未修改生产代码、安装用户插件或执行模型请求。
 
-当前原型 `artifacts/model-picker/` 保存14个状态/窄窗口截图，以及搜索、选中模型、供应商配置画面和 `verification.json`。核验通过模型搜索/焦点保留、供应商筛选、选中状态、一次供应商配置、三种模式，以及 Magpie 只配置网关凭据、读取模型、验证、首任务复用的示例路径。运行时错误0。旧 `artifacts/memory-processing/` 为 revision 5/6 历史证据；当前保存/验证仍为设计演示，不代表真实持久化、模型或 Magpie 调用。
+当前原型核验与截图使用 `artifacts/setup-reuse/`、`node verify-setup-reuse.cjs`，覆盖三选一提示、本机 Magpie 免密检测、模型选择及两页设置复用。`artifacts/model-picker/` 为 revision 7，`artifacts/memory-processing/` 为 revision 5/6 历史证据；当前保存/验证仍为设计演示，不代表真实持久化、模型或 Magpie 调用。
