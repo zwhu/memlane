@@ -28,7 +28,8 @@ const codexProjectInstructions = `你是用户为当前项目绑定的编码 Age
 // Live configuration comes from the bound Agent, never the global processor.
 // Provider settings stay private in memory and a short-lived config file.
 type CodexProjectPlan struct {
-	Executor                               records.ProjectTaskExecutor `json:"executor"`
+	Executor                               records.ProjectTaskExecutor   `json:"executor"`
+	KnowledgeReader                        ProjectKnowledgeContextReader `json:"-"`
 	workspace, executable, authHome, guard string
 	selected                               map[string]any
 	rootInfo                               os.FileInfo
@@ -245,17 +246,18 @@ func resolveCodexNativeProvider(ctx context.Context, executable, authHome, guard
 
 type CodexProjectExecution struct {
 	ProposalProcess
-	SelectedModel          string                            `json:"selected_model,omitempty"`
-	SelectedProvider       string                            `json:"selected_provider,omitempty"`
-	Thread                 string                            `json:"thread,omitempty"`
-	Turn                   string                            `json:"turn,omitempty"`
-	PermissionProfile      string                            `json:"permission_profile,omitempty"`
-	InterruptSent          bool                              `json:"interrupt_sent"`
-	InterruptAcknowledged  bool                              `json:"interrupt_acknowledged"`
-	AbsoluteSourceRequests int                               `json:"absolute_source_requests"`
-	RejectedSourcePath     string                            `json:"-"` // synthetic verifier only
-	Proposal               *records.ProjectKnowledgeProposal `json:"proposal,omitempty"`
-	Sources                []records.ProjectRepositorySource `json:"sources,omitempty"`
+	KnowledgeContext       *records.ProjectKnowledgeContextReceipt `json:"knowledge_context,omitempty"`
+	SelectedModel          string                                  `json:"selected_model,omitempty"`
+	SelectedProvider       string                                  `json:"selected_provider,omitempty"`
+	Thread                 string                                  `json:"thread,omitempty"`
+	Turn                   string                                  `json:"turn,omitempty"`
+	PermissionProfile      string                                  `json:"permission_profile,omitempty"`
+	InterruptSent          bool                                    `json:"interrupt_sent"`
+	InterruptAcknowledged  bool                                    `json:"interrupt_acknowledged"`
+	AbsoluteSourceRequests int                                     `json:"absolute_source_requests"`
+	RejectedSourcePath     string                                  `json:"-"` // synthetic verifier only
+	Proposal               *records.ProjectKnowledgeProposal       `json:"proposal,omitempty"`
+	Sources                []records.ProjectRepositorySource       `json:"sources,omitempty"`
 }
 
 func projectKnowledgeSchema(task records.ProjectTask) json.RawMessage {
@@ -276,6 +278,8 @@ func projectKnowledgeSchema(task records.ProjectTask) json.RawMessage {
 // runtimeWorkspaceRoots exposes the actual repository to normal coding tools.
 // No daily memory bridge, user sessions or global processor is installed.
 func RunCodexProject(ctx context.Context, plan CodexProjectPlan, task records.ProjectTask, onStart func(int) error, onEvent func(string)) (out CodexProjectExecution, resultErr error) {
+	knowledge := newProjectContextReader(plan.KnowledgeReader)
+	defer func() { out.KnowledgeContext = knowledge.proof() }()
 	out.Events, out.Items = map[string]int{}, map[string]int{}
 	if _, err := uuid.Parse(task.ID); err != nil || task.Attempt < 1 || task.Cancelled || task.Snapshot.IncludeHistory || task.Snapshot.Workspace != plan.workspace || task.Snapshot.Executor != plan.Executor || plan.selected == nil {
 		return out, errors.New("resolved bound repository task required; history not yet adapted")
@@ -352,6 +356,12 @@ func RunCodexProject(ctx context.Context, plan CodexProjectPlan, task records.Pr
 		return out, err
 	}
 	tool := map[string]any{"type": "function", "name": "memlane_project_source", "description": "Read and freeze one authorized repository document/code file for exact citations. Path may be repository-relative or absolute within the authorized repository. Git metadata, Agent config/session/credential directories and environment secrets are excluded. No save or indexing.", "inputSchema": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"path"}, "properties": map[string]any{"path": map[string]string{"type": "string"}}}}
+	tools := []any{tool}
+	instructions := codexProjectInstructions
+	if plan.KnowledgeReader != nil {
+		tools = append(tools, map[string]any{"type": "function", "name": "memlane_project_knowledge", "description": "Read current effective knowledge in this task's project, with memory ID and revision. Start with an empty cursor and follow each returned next cursor until complete. These are context to avoid duplicate additions and preserve existing decisions, not repository citations. No other project, raw record, historical selection or mutation is available.", "inputSchema": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"cursor"}, "properties": map[string]any{"cursor": map[string]string{"type": "string"}}}})
+		instructions += "\n形成新增知识候选前，必须先用 memlane_project_knowledge 从空cursor开始，按返回的next读完当前项目已有有效知识。已有知识只用于避免重复、识别项目约定与待确认冲突，不作为本次仓库出处。已经有相同含义的知识就不要新增另一条，不因措辞变化制造重复；发现冲突时保留已有内容并在说明中提出待确认事项，不能覆盖、合并、删除或移动。所有新增候选仍须通过 memlane_project_source 取得实际仓库依据。没有新的有据知识时返回items=[]并说明。"
+	}
 	var started struct {
 		Thread struct {
 			ID string `json:"id"`
@@ -363,7 +373,7 @@ func RunCodexProject(ctx context.Context, plan CodexProjectPlan, task records.Pr
 			ID string `json:"id"`
 		} `json:"activePermissionProfile"`
 	}
-	if err = rpc.call(run, "thread/start", map[string]any{"cwd": work, "runtimeWorkspaceRoots": []string{plan.workspace}, "model": plan.Executor.Model, "modelProvider": plan.selected["model_provider"], "permissions": codexProjectPermission, "approvalPolicy": "never", "ephemeral": true, "allowProviderModelFallback": false, "dynamicTools": []any{tool}, "developerInstructions": codexProjectInstructions}, &started); err != nil {
+	if err = rpc.call(run, "thread/start", map[string]any{"cwd": work, "runtimeWorkspaceRoots": []string{plan.workspace}, "model": plan.Executor.Model, "modelProvider": plan.selected["model_provider"], "permissions": codexProjectPermission, "approvalPolicy": "never", "ephemeral": true, "allowProviderModelFallback": false, "dynamicTools": tools, "developerInstructions": instructions}, &started); err != nil {
 		return out, err
 	}
 	if started.Thread.ID == "" || started.Model != plan.Executor.Model || started.Provider != plan.selected["model_provider"] || started.Profile == nil || started.Profile.ID != codexProjectPermission || len(started.Roots) != 1 || started.Roots[0] != plan.workspace {
@@ -440,8 +450,28 @@ func RunCodexProject(ctx context.Context, plan CodexProjectPlan, task records.Pr
 				Thread    string          `json:"threadId"`
 				Turn      string          `json:"turnId"`
 			}
-			if json.Unmarshal(m.Params, &call) != nil || call.Thread != out.Thread || out.Turn != "" && call.Turn != out.Turn || call.Tool != "memlane_project_source" {
+			if json.Unmarshal(m.Params, &call) != nil || call.Thread != out.Thread || out.Turn != "" && call.Turn != out.Turn || call.Tool != "memlane_project_source" && call.Tool != "memlane_project_knowledge" {
 				return out, errors.New("Codex source call identity invalid")
+			}
+			if call.Tool == "memlane_project_knowledge" {
+				var args struct {
+					Cursor string `json:"cursor"`
+				}
+				if err = decodeProjectJSON(call.Arguments, &args); err != nil {
+					return out, err
+				}
+				body, readErr := knowledge.page(run, args.Cursor)
+				if readErr != nil {
+					return out, readErr
+				}
+				if err = rpc.send(run, map[string]any{"id": m.ID, "result": map[string]any{"success": true, "contentItems": []any{map[string]string{"type": "inputText", "text": string(body)}}}}); err != nil {
+					return out, err
+				}
+				knowledge.markSent(args.Cursor)
+				continue
+			}
+			if err = knowledge.requireComplete(); err != nil {
+				return out, err
 			}
 			var args struct {
 				Path string `json:"path"`
@@ -509,6 +539,9 @@ func RunCodexProject(ctx context.Context, plan CodexProjectPlan, task records.Pr
 		}
 	}
 	if err = run.Err(); err != nil {
+		return out, err
+	}
+	if err = knowledge.requireComplete(); err != nil {
 		return out, err
 	}
 	current, err := os.Stat(plan.workspace)

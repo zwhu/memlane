@@ -85,7 +85,8 @@ for line in sys.stdin:
    send({'id':m['id'],'result':{'model':p['model'],'modelProvider':'fixture'}});continue
   assert p['permissions']=='memlane_project' and p['ephemeral'] and not p['allowProviderModelFallback']
   assert p['cwd']!=p['runtimeWorkspaceRoots'][0]
-  assert [x['name'] for x in p['dynamicTools']]==['memlane_project_source']
+  expected=['memlane_project_source']+(['memlane_project_knowledge'] if MODE.startswith('context') else [])
+  assert [x['name'] for x in p['dynamicTools']]==expected
   send({'id':m['id'],'result':{'thread':{'id':thread},'model':'wrong-model' if MODE=='model' else p['model'],'modelProvider':p['modelProvider'],'runtimeWorkspaceRoots':p['runtimeWorkspaceRoots'],'activePermissionProfile':{'id':p['permissions']}}})
  elif method=='turn/start':
   schema=p['outputSchema'];pending=(schema['properties']['task']['enum'][0],schema['properties']['attempt']['enum'][0])
@@ -93,9 +94,17 @@ for line in sys.stdin:
   if MODE=='cancel':
    send({'method':'item/reasoning/textDelta','params':{'threadId':thread,'turnId':turn,'delta':'fixture active'}})
   elif MODE=='unexpected': send({'id':700,'method':'item/commandExecution/requestApproval','params':{'threadId':thread,'turnId':turn}})
+  elif MODE.startswith('context') and MODE!='context_missing':
+   send({'id':698,'method':'item/tool/call','params':{'threadId':thread,'turnId':turn,'tool':'memlane_project_knowledge','arguments':{'cursor':'','project':'foreign'} if MODE=='context_cross' else {'cursor':''}}})
   else: send({'id':700,'method':'item/tool/call','params':{'threadId':thread,'turnId':turn if MODE!='cross' else 'other-turn','tool':'memlane_project_source','arguments':{'path':'README.md'}}})
  elif method=='turn/interrupt':
   send({'id':m['id'],'result':{}});send({'method':'turn/completed','params':{'threadId':thread,'turn':{'id':turn,'status':'interrupted','error':None}}})
+ elif m.get('id')==698 and 'result' in m:
+  page=json.loads(m['result']['contentItems'][0]['text']);assert page['total']==2 and page['items'][0]['revision']==2
+  send({'id':699,'method':'item/tool/call','params':{'threadId':thread,'turnId':turn,'tool':'memlane_project_knowledge','arguments':{'cursor':page['next']}}})
+ elif m.get('id')==699 and 'result' in m:
+  page=json.loads(m['result']['contentItems'][0]['text']);assert page['total']==2 and not page.get('next')
+  send({'id':700,'method':'item/tool/call','params':{'threadId':thread,'turnId':turn,'tool':'memlane_project_source','arguments':{'path':'README.md'}}})
  elif m.get('id')==700 and 'result' in m:
   source=json.loads(m['result']['contentItems'][0]['text'])
   proposal={'task':pending[0],'attempt':pending[1],'items':[{'title':'项目规则','text':'本项目使用 pnpm。','sources':[{'source':source['id'] if MODE!='forged' else '0'*64,'quote':source['text']}]}],'explanation':'已核对本轮合成材料。'}
@@ -119,7 +128,7 @@ func codexProjectFixture(t *testing.T, mode string) (Installation, string, strin
 }
 
 func TestCodexProjectActualProtocolSeam(t *testing.T) {
-	for _, mode := range []string{"normal", "native", "model", "cross", "forged", "failed", "unexpected", "cancel"} {
+	for _, mode := range []string{"normal", "native", "model", "cross", "forged", "failed", "unexpected", "cancel", "context", "context_missing", "context_cross", "context_cancel"} {
 		t.Run(mode, func(t *testing.T) {
 			i, work, home := codexProjectFixture(t, mode)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -133,6 +142,17 @@ func TestCodexProjectActualProtocolSeam(t *testing.T) {
 				t.Fatal("private configuration exposed")
 			}
 			task := records.ProjectTask{ID: uuid.NewString(), Attempt: 1, Snapshot: records.ProjectTaskSnapshot{Workspace: work, Executor: plan.Executor}}
+			if strings.HasPrefix(mode, "context") {
+				plan.KnowledgeReader = func(_ context.Context, cursor string) (records.ProjectKnowledgeContextPage, error) {
+					if mode == "context_cancel" {
+						cancel()
+					}
+					if cursor == "" {
+						return records.ProjectKnowledgeContextPage{Items: []records.ProjectKnowledgeContextItem{{Memory: "00000000-0000-4000-8000-000000000001", Revision: 2, Title: "已有v2", Text: "本轮已有知识"}}, Next: "00000000-0000-4000-8000-000000000001", Total: 2}, nil
+					}
+					return records.ProjectKnowledgeContextPage{Items: []records.ProjectKnowledgeContextItem{{Memory: "00000000-0000-4000-8000-000000000002", Revision: 1, Text: "保留当前项目约定"}}, Total: 2}, nil
+				}
+			}
 			out, err := RunCodexProject(ctx, plan, task, nil, func(event string) {
 				if mode == "cancel" && event == "model_update" {
 					cancel()
@@ -141,9 +161,12 @@ func TestCodexProjectActualProtocolSeam(t *testing.T) {
 			if !out.Reaped || !out.GroupGone {
 				t.Fatalf("process remains: %+v %v", out, err)
 			}
-			if mode == "normal" || mode == "native" {
+			if mode == "normal" || mode == "native" || mode == "context" {
 				if err != nil || out.Proposal == nil || len(out.Sources) != 1 || out.Items["commandExecution"] != 1 || !out.Terminal {
 					t.Fatalf("normal: %+v %v", out, err)
+				}
+				if mode == "context" && (out.KnowledgeContext == nil || !out.KnowledgeContext.Complete || out.KnowledgeContext.Pages != 2 || out.KnowledgeContext.SentPages != 2 || out.KnowledgeContext.Items != 2) {
+					t.Fatal("context delivery receipt missing", out.KnowledgeContext)
 				}
 			} else {
 				if err == nil || out.Proposal != nil || len(out.Sources) != 0 || len(out.Final) != 0 {

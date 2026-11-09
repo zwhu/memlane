@@ -166,6 +166,11 @@ func (s *Server) runProjectTask(ctx context.Context, cancel context.CancelFunc, 
 	if runner == nil {
 		runner = agents.RunCodexProject
 	}
+	plan.KnowledgeReader = func(readCtx context.Context, cursor string) (records.ProjectKnowledgeContextPage, error) {
+		s.agentAccess.RLock()
+		defer s.agentAccess.RUnlock()
+		return s.store.ProjectTaskKnowledge(readCtx, t.ID, t.Attempt, cursor)
+	}
 	var stageErr error
 	execution, runErr := runner(ctx, plan, t, func(pid int) error { return s.store.RegisterProjectProcess(ctx, t.ID, t.Attempt, pid) }, func(stage string) {
 		if stage == "organizing" {
@@ -177,7 +182,7 @@ func (s *Server) runProjectTask(ctx context.Context, cancel context.CancelFunc, 
 	})
 	final, stop := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	if execution.Started {
-		proof := records.ProjectTaskExecution{PID: execution.PID, StartedMS: execution.StartedMS, EndedMS: execution.EndedMS, Reaped: execution.Reaped, GroupGone: execution.GroupGone, Terminal: execution.Terminal, Thread: execution.Thread, Turn: execution.Turn, Model: execution.SelectedModel, Provider: execution.SelectedProvider, PermissionProfile: execution.PermissionProfile, InterruptSent: execution.InterruptSent, InterruptAcknowledged: execution.InterruptAcknowledged}
+		proof := records.ProjectTaskExecution{PID: execution.PID, StartedMS: execution.StartedMS, EndedMS: execution.EndedMS, Reaped: execution.Reaped, GroupGone: execution.GroupGone, Terminal: execution.Terminal, Thread: execution.Thread, Turn: execution.Turn, Model: execution.SelectedModel, Provider: execution.SelectedProvider, PermissionProfile: execution.PermissionProfile, InterruptSent: execution.InterruptSent, InterruptAcknowledged: execution.InterruptAcknowledged, KnowledgeContext: execution.KnowledgeContext}
 		if err = s.store.FinishProjectProcess(final, t.ID, t.Attempt, proof); err != nil {
 			stop()
 			if s.stop != nil {

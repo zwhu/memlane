@@ -243,3 +243,16 @@ func TestProjectTaskUICompletedReceiptFitsAboveFixedAction(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectTaskUISupplementDoesNotRestoreOldStartAcknowledgement(t *testing.T) {
+	a := sourceReadingFrame()
+	a.closeSourceReader()
+	a.openProjectOrganizer(a.scope, "")
+	a.projectOrganizer.Task = &records.ProjectTask{ID: "finished-task", Attempt: 1, State: "completed", Snapshot: records.ProjectTaskSnapshot{Project: a.scope}}
+	a.projectOrganizer.Operation = &ProjectBindingOperation{Project: a.scope, Kind: "start", Task: "finished-task", Result: &records.ProjectTask{ID: "finished-task", Attempt: 1, State: "queued", Snapshot: records.ProjectTaskSnapshot{Project: a.scope}}}
+	prior := a.projectOrganizer.OperationID
+	a.openProjectOrganizer(a.scope, "")
+	if a.projectOrganizer.SelectedTask != "" || a.projectOrganizer.Task != nil || a.projectOrganizer.OperationID == prior {
+		t.Fatal("supplement reused the old queued acknowledgement instead of reading active tasks")
+	}
+}

@@ -110,22 +110,45 @@ type ProjectKnowledgeProposal struct {
 	Explanation string                 `json:"explanation"`
 }
 
+// Current project knowledge is context for avoiding duplicate additions. It is
+// not a repository source, and this reader grants no mutation authorization.
+type ProjectKnowledgeContextItem struct {
+	Memory   string `json:"memory"`
+	Revision int64  `json:"revision"`
+	Title    string `json:"title"`
+	Text     string `json:"text"`
+}
+type ProjectKnowledgeContextPage struct {
+	Items []ProjectKnowledgeContextItem `json:"items"`
+	Next  string                        `json:"next,omitempty"`
+	Total int                           `json:"total"`
+}
+type ProjectKnowledgeContextReceipt struct {
+	Pages     int    `json:"pages"`
+	SentPages int    `json:"sent_pages"`
+	Items     int    `json:"items"`
+	Bytes     int64  `json:"bytes"`
+	Complete  bool   `json:"complete"`
+	Digest    string `json:"digest"`
+}
+
 // Only the daemon can seal process receipts. An exit code is not a model
 // terminal event, and restored PIDs are historical data rather than owners.
 type ProjectTaskExecution struct {
-	PID                   int    `json:"pid"`
-	StartedMS             int64  `json:"started_ms"`
-	EndedMS               int64  `json:"ended_ms"`
-	Terminal              bool   `json:"terminal_completed"`
-	Reaped                bool   `json:"process_reaped"`
-	GroupGone             bool   `json:"process_group_gone"`
-	Thread                string `json:"thread,omitempty"`
-	Turn                  string `json:"turn,omitempty"`
-	Model                 string `json:"model,omitempty"`
-	Provider              string `json:"provider,omitempty"`
-	PermissionProfile     string `json:"permission_profile,omitempty"`
-	InterruptSent         bool   `json:"interrupt_sent"`
-	InterruptAcknowledged bool   `json:"interrupt_acknowledged"`
+	KnowledgeContext      *ProjectKnowledgeContextReceipt `json:"knowledge_context,omitempty"`
+	PID                   int                             `json:"pid"`
+	StartedMS             int64                           `json:"started_ms"`
+	EndedMS               int64                           `json:"ended_ms"`
+	Terminal              bool                            `json:"terminal_completed"`
+	Reaped                bool                            `json:"process_reaped"`
+	GroupGone             bool                            `json:"process_group_gone"`
+	Thread                string                          `json:"thread,omitempty"`
+	Turn                  string                          `json:"turn,omitempty"`
+	Model                 string                          `json:"model,omitempty"`
+	Provider              string                          `json:"provider,omitempty"`
+	PermissionProfile     string                          `json:"permission_profile,omitempty"`
+	InterruptSent         bool                            `json:"interrupt_sent"`
+	InterruptAcknowledged bool                            `json:"interrupt_acknowledged"`
 }
 type ProjectTaskSaved struct {
 	Memory   string `json:"memory"`

@@ -62,9 +62,6 @@ func (a *App) openProjectOrganizer(project, task string) {
 		if prior.Operation.Active && prior.Operation.Kind == "start" {
 			a.projectOrganizer.OperationID = prior.Operation.Draft.OperationID
 		}
-		if task == "" && prior.Operation.Result != nil && projectTaskRunning(prior.Operation.Result) {
-			a.projectOrganizer.SelectedTask = prior.Operation.Result.ID
-		}
 	}
 	if task != "" && prior.Task != nil && prior.Task.ID == task {
 		a.projectOrganizer.Task = prior.Task
