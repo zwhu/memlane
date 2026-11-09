@@ -47,6 +47,7 @@ func TestShellWithoutEngine(t *testing.T) {
 		t.Fatal("disabled save fabricated success")
 	}
 	click("设置")
+	click("更多维护选项")
 	// Settings grows with recovery controls; scroll within its real pane.
 	tt.Scroll(1000, 650, 0, 300)
 	click("放大")

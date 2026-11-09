@@ -29,6 +29,7 @@ func TestBackupVerificationDoesNotStrandCatalogueRead(t *testing.T) {
 	}
 	app := New("0.0.4", nil)
 	app.page = "设置"
+	app.environment.Maintenance = true
 	app.libraryContext = ctx
 	updates := make(chan func(), 4)
 	app.dispatch = func(fn func()) { updates <- fn }

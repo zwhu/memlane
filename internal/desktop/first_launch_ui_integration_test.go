@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/zwhu/memlane/internal/agents"
+	"github.com/zwhu/memlane/internal/components"
 	"github.com/zwhu/memlane/internal/records"
 	"github.com/zwhu/memlane/internal/serviceipc"
 )
@@ -160,47 +160,41 @@ func TestConfigureFirstLaunchDeferredProcessingCanResumeAfterRestart(t *testing.
 	}
 }
 
-func TestFirstLaunchDiscoveryIsCompactAndDetailsDoNotAuthorizePreparation(t *testing.T) {
+func TestFirstLaunchPreparationKeepsCardsOnOnePage(t *testing.T) {
 	a := New("test", nil)
 	a.firstLaunch.Open = true
-	a.firstLaunch.Controller = &RuntimeController{Config: RuntimeConfig{Root: t.TempDir(), WorkerID: "cognee-rust", ModelID: "e5-base"}}
+	a.firstLaunch.Controller = &RuntimeController{Config: RuntimeConfig{Root: t.TempDir(), WorkerID: "rust", ModelID: "e5"}}
 	a.firstLaunch.State.Stage = "results"
-	for _, agent := range []string{"codex", "pi", "traex", "trae"} {
-		a.firstLaunch.State.Agents = append(a.firstLaunch.State.Agents, agents.Discovery{Agent: agent, Name: agent, Path: "/synthetic/" + agent, Version: "synthetic-frame-only"})
-		a.firstLaunch.State.Items = append(a.firstLaunch.State.Items, EnvironmentItem{Name: agent, State: "installed", Evidence: "synthetic-details-only"})
-	}
+	prepared := false
+	a.prepareRuntime = func() { prepared = true }
 	tt := ui.NewTester(a.View, 1200, 820)
-	button, ok := tt.Find("继续")
+	button, ok := tt.Find("安装并继续")
 	if !ok || button.Y+button.H > 820 {
-		t.Fatal("primary action is outside the window")
+		t.Fatal("primary preparation action is outside the window")
 	}
-	details, ok := tt.Find("查看检查详情")
-	if !ok || details.Y+details.H > button.Y {
-		t.Fatal("default discovery requires scrolling to reach its final row")
+	if tt.HasText("查看检查详情") || tt.HasText("第一项任务") {
+		t.Fatal("obsolete preparation flow returned")
 	}
-	if tt.HasText("synthetic-details-only") {
-		t.Fatal("technical evidence is expanded by default")
+	for _, label := range []string{"记忆数据库", "向量数据库", "向量模型"} {
+		if !tt.HasText(label) {
+			t.Fatal("missing environment card", label)
+		}
 	}
-	if err := tt.Click("查看检查详情"); err != nil {
+	if err := tt.Click("安装并继续"); err != nil {
 		t.Fatal(err)
 	}
-	if !tt.HasText("synthetic-details-only") || a.firstLaunch.State.Stage != "results" || a.firstLaunch.State.Attempt != 0 {
-		t.Fatal("expanding details changed preparation scope or failed to display evidence")
+	if !prepared || a.firstLaunch.State.Stage != "preparing" || a.firstLaunch.State.Attempt != 1 {
+		t.Fatal("one-page confirmation did not prepare")
 	}
-	if err := tt.Click("收起检查详情"); err != nil {
-		t.Fatal(err)
+	for _, label := range []string{"记忆数据库", "向量数据库", "向量模型", "取消准备"} {
+		if !tt.HasText(label) {
+			t.Fatal("preparation replaced page content", label)
+		}
 	}
-	if err := tt.Click("继续"); err != nil {
-		t.Fatal(err)
-	}
-	if a.firstLaunch.State.Stage != "confirmation" || a.firstLaunch.State.Attempt != 0 {
-		t.Fatal("reviewing the plan started preparation")
-	}
-	if err := tt.Click("返回"); err != nil {
-		t.Fatal(err)
-	}
-	if a.firstLaunch.State.Stage != "results" || a.firstLaunch.State.Completed {
-		t.Fatal("returning from confirmation lost the discovery state")
+	tt.SetSize(980, 620)
+	button, ok = tt.Find("取消准备")
+	if !ok || button.Y+button.H > 620 {
+		t.Fatal("narrow footer is clipped")
 	}
 }
 
@@ -219,7 +213,7 @@ func TestFirstLaunchConfirmedRecoveryUsesDurableStopMarker(t *testing.T) {
 	// A reopened App has no previous transient runtime phase. The user's
 	// explicit preparation confirmation must consult the durable stop marker.
 	tt := ui.NewTester(a.View, 1200, 820)
-	if err := tt.Click("确认并准备本机环境"); err != nil {
+	if err := tt.Click("安装并继续"); err != nil {
 		t.Fatal(err)
 	}
 	if !resumed || prepared {
@@ -271,5 +265,19 @@ func TestFirstLaunchCancelLateReadyCannotCompleteAndStateIsDurable(t *testing.T)
 	}
 	if loaded.Stage != "cancelled" || loaded.Completed {
 		t.Fatal("cancel state not durable")
+	}
+}
+
+func TestEnvironmentFailureRetainsOnlyItsActualDownloadBytes(t *testing.T) {
+	a := New("test", nil)
+	a.firstLaunch.Open = true
+	a.firstLaunch.Controller = &RuntimeController{Config: RuntimeConfig{Root: t.TempDir(), WorkerID: "rust", ModelID: "e5"}}
+	a.firstLaunch.State.Stage = "cancelled"
+	a.firstLaunch.State.Message = "本轮准备已取消"
+	a.firstLaunch.State.Items = []EnvironmentItem{{Name: "rust", State: "prepared_verified"}, {Name: "e5", State: "needs_preparation", Bytes: 100000000}}
+	a.runtimeStatus = RuntimeStatus{Phase: "cancelled", Downloaded: 99000000, Total: 100000000, Components: []components.PreparationReceipt{{Progress: components.Progress{ID: "e5", Phase: "failed", Downloaded: 25000000, Total: 100000000}}}}
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("已保留下载 25.00 MB") || tt.HasText("已保留下载 99.00 MB") {
+		t.Fatal("card used combined progress or lost retained bytes")
 	}
 }

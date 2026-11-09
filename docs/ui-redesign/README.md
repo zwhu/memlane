@@ -6,6 +6,8 @@
 
 B 首页实施从 [B 已认可设计交接](b-home-handoff.md) 与 [固定截图／动效](../images/ui-redesign/b-home/README.md) 开始。C Agent 设置与项目知识整理 revision 7 已认可，固定原型 `35a5bad5f5398f2c9cf3073b673983f5dab0a48c`：Agent 连接位于设置，空知识列表提供「整理项目」，右栏明确Token消耗与可选历史会话，已有知识隐藏空态大按钮并通过项目菜单补充，可一直跳过主动整理；记忆为总称，以知识／原始记录分别展示。实施先读 [C 交接](c-agent-handoff.md)、[入口与范围](agent-settings-placement.md) 与 [内容分层](content-model.md)。开发本稿及后续所有动效先读 [MyGo 动效实施与复用](motion-implementation.md)。
 
+第二轮 Native 环境卡片、同页准备与设置复用、首页整理按钮动效的实施和证据见 [还原记录第二轮](fidelity-20261110.md)。已认可范围与工程完成边界继续分开。
+
 ## 已确认范围
 
 | 分组 | 设计状态 | 实施依据 |

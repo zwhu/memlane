@@ -153,6 +153,9 @@ func (a *App) settingsSidebar(c *ui.Context) {
 				key := item.key
 				button.OnClick(func() {
 					a.settingsSection = key
+					if key == "environment" {
+						a.refreshEnvironment()
+					}
 					if key == "agents" {
 						a.refreshAgents(true)
 					}
@@ -174,7 +177,7 @@ func (a *App) settingsShell(c *ui.Context) {
 		case "agents":
 			a.agentSettingsPage(c)
 		default:
-			ui.Scroll(c).Grow(1).Padding(30).Gap(18).Children(func() { a.settings(c) })
+			a.environmentSettings(c)
 		}
 	})
 }

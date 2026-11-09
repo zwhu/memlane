@@ -45,12 +45,16 @@ type App struct {
 	merges                                                           MergeUI
 	agents                                                           AgentUI
 	processing                                                       ProcessingUI
+	environment                                                      EnvironmentUI
 	activityLoaded                                                   bool
 	overviewRaw, overviewKnowledge                                   *int
 	overviewUpdated                                                  time.Time
 	homeDate                                                         string
 	homeRecentLoaded                                                 bool
 	homeActiveTask                                                   homeTask
+	homeLastTask                                                     homeTask
+	homeMotion                                                       homeButtonMotion
+	homeCompletedAt                                                  time.Time
 	pendingMutations                                                 map[string]records.Mutation
 	saving                                                           bool
 	restoreExpected                                                  int64
@@ -131,6 +135,9 @@ func New(version string, check func()) *App {
 		updateText: "此版本尚未配置更新源", pendingMutations: map[string]records.Mutation{}, routeStates: map[string]PaneState{}, drafts: map[string]Draft{}, listScroll: map[string]*ui.ScrollState{}, activities: map[string]int{}}
 }
 func (a *App) SetRuntimeStatus(status RuntimeStatus) {
+	if status.Components == nil {
+		status.Components = a.runtimeStatus.Components
+	}
 	a.runtimeStatus = status
 	a.firstLaunchRuntime(status)
 }
@@ -1040,41 +1047,8 @@ func (a *App) settings(c *ui.Context) {
 	quietButton(c, "初始化记录").Key("initialization-settings").OnClick(func() { a.openInitialization("") })
 	quietButton(c, "整理计划").Key("schedule-settings").OnClick(func() { a.navigate("整理计划", "") })
 	if a.firstLaunch.Controller != nil {
-		quietButton(c, "本机环境准备").Key("first-launch-resume").OnClick(a.openFirstLaunch)
+		quietButton(c, "继续首次设置").Key("first-launch-resume").OnClick(a.openFirstLaunch)
 	}
-	ui.Text(c, "本地组件与更新").FontSize(20).Bold()
-	if a.prepareRuntime == nil {
-		ui.Text(c, "本地引擎：待准备").Bold()
-		ui.Text(c, "引擎与模型将独立下载；当前尚无可安装的组件版本。").TextColor(c.Theme().TextMuted)
-	} else {
-		ui.Text(c, a.runtimeStatus.Message).Selectable()
-		if a.runtimeStatus.EngineBytes > 0 && a.runtimeStatus.ModelBytes > 0 {
-			ui.Text(c, fmt.Sprintf("引擎 %.2f MB · 模型 %.2f MB", float64(a.runtimeStatus.EngineBytes)/1e6, float64(a.runtimeStatus.ModelBytes)/1e6)).FontSize(11).TextColor(c.Theme().TextMuted)
-		}
-		if a.runtimeStatus.Total > 0 {
-			ui.Text(c, fmt.Sprintf("已准备 %.2f / %.2f MB", float64(a.runtimeStatus.Downloaded)/1e6, float64(a.runtimeStatus.Total)/1e6)).TextColor(c.Theme().TextMuted)
-			ui.Progress(c, float64(a.runtimeStatus.Downloaded)/float64(a.runtimeStatus.Total))
-		}
-		busy := a.backups.RestoreLocked || a.backups.Busy || a.runtimeStatus.Phase == "checking" || a.runtimeStatus.Phase == "downloading" || a.runtimeStatus.Phase == "installing" || a.runtimeStatus.Phase == "installed" || a.runtimeStatus.Phase == "preparing" || a.runtimeStatus.Phase == "verifying"
-		ui.Row(c).Gap(8).Children(func() {
-			ui.Button(c, "准备 / 重试").Disabled(busy).OnClick(a.prepareRuntime)
-			if busy {
-				ui.Button(c, "取消准备").OnClick(a.cancelRuntime)
-			}
-			if a.runtimeStatus.Phase == "ready" {
-				ui.Button(c, "停止服务").Disabled(busy).OnClick(a.stopRuntime)
-			}
-			if a.runtimeStatus.Phase == "stopped" {
-				ui.Button(c, "启动服务").Disabled(busy).OnClick(a.resumeRuntime)
-			}
-		})
-		previous := a.keepService
-		ui.Checkbox(c, &a.keepService, "退出 App 后继续运行记忆服务")
-		if previous != a.keepService && a.keepChanged != nil {
-			a.keepChanged(a.keepService)
-		}
-	}
-	ui.Divider(c)
 	a.indexRecoverySettings(c)
 	a.backupSettings(c)
 	ui.Divider(c)

@@ -48,6 +48,7 @@ type State struct {
 	Phase    string `json:"phase"`
 }
 type Status struct {
+	Component                                 *components.PreparationReceipt
 	Phase, Message, Endpoint, Instance, Model string
 	Downloaded, Total                         int64
 	EngineBytes, ModelBytes                   int64
@@ -276,12 +277,15 @@ func (c *Controller) prepare(ctx context.Context, notify func(Status), verifyMod
 				continue
 			}
 			item, e := m.Prepare(ctx, d, func(p components.Progress) {
-				notify(Status{Phase: p.Phase, Message: "正在准备 " + id, Downloaded: done + p.Downloaded, Total: total})
+				receipt := components.PreparationReceipt{Progress: p, ExpectedBytes: d.UnpackedBytes}
+				notify(Status{Phase: p.Phase, Component: &receipt, Message: "正在准备 " + id, Downloaded: done + p.Downloaded, Total: total})
 			})
 			if e != nil {
 				return e
 			}
 			installed[id] = item
+			receipt := components.InstalledReceipt(ctx, d, item)
+			notify(Status{Phase: "installed", Component: &receipt, Message: id + " 文件已校验", Downloaded: done + item.DownloadedBytes, Total: total})
 			done += d.Bytes
 		}
 	}
@@ -333,7 +337,11 @@ func (c *Controller) prepare(ctx context.Context, notify func(Status), verifyMod
 			}
 		}()
 	}
-	notify(Status{Phase: "verifying", Message: "验证独立服务、模型授权与实际嵌入…", Total: total, Downloaded: done})
+	message := "验证独立服务、模型授权与实际嵌入…"
+	if !verifyModel {
+		message = "正在核对 Cognee 本地服务与数据存储…"
+	}
+	notify(Status{Phase: "verifying", Message: message, Total: total, Downloaded: done})
 	deadline := time.NewTimer(120 * time.Second)
 	defer deadline.Stop()
 	tick := time.NewTicker(300 * time.Millisecond)

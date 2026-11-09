@@ -215,6 +215,7 @@ func (a *App) refresh(more bool) {
 		selectedRevision = item.Revision
 	}
 	historyLoaded := len(a.history) > 0
+	lastHomeTask := a.homeLastTask
 	go func() {
 		ctx, cancel := context.WithTimeout(a.libraryContext, 5*time.Second)
 		defer cancel()
@@ -231,6 +232,7 @@ func (a *App) refresh(more bool) {
 		var page records.Page
 		var activity records.ActivitySummary
 		var active homeTask
+		var terminal homeTask
 		var current records.Version
 		var history []records.History
 		var related records.MergePage
@@ -267,6 +269,22 @@ func (a *App) refresh(more bool) {
 				}
 			}
 		}
+		if err == nil && pageName == "总览" && lastHomeTask.ID != "" && active.ID != lastHomeTask.ID {
+			// An absent active task does not prove completion. Fetch its actual final
+			// receipt; failed/cancelled/unreadable tasks never show a success glyph.
+			if lastHomeTask.Kind == "organization" {
+				task, e := a.organization.Client.Get(ctx, lastHomeTask.ID)
+				if e == nil {
+					terminal = homeTask{ID: task.ID, Kind: "organization", State: task.State}
+				}
+			} else {
+				task, e := a.merges.Client.Get(ctx, lastHomeTask.ID)
+				if e == nil {
+					terminal = homeTask{ID: task.ID, Kind: "merge", State: task.State}
+				}
+			}
+		}
+
 		if pageName == "总览" {
 			selected = ""
 		}
@@ -355,7 +373,7 @@ func (a *App) refresh(more bool) {
 				a.listTotal = page.Total
 			}
 			if pageName == "总览" {
-				a.homeActiveTask = active
+				a.observeHomeTask(active, terminal, time.Now())
 				a.recent = displayVersions(activity.Recent)
 				if query.Date != "" {
 					a.recent = displayVersions(page.Items)

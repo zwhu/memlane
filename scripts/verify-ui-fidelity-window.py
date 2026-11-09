@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--app", type=Path, required=True)
     parser.add_argument("--worker-config", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--button-motion", action="store_true")
     args = parser.parse_args()
     app, out = args.app.resolve(), args.out.resolve()
     out.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -106,6 +107,23 @@ def main():
         driver.wait(lambda: all(label in ui.labels() for label in ("累计记忆", "首次使用日期未知", titles[-1])), timeout=90)
         assert "可选设置指引" not in ui.labels()
         capture("01-home-system.png")
+        if args.button_motion:
+            import time
+            from importlib.machinery import SourceFileLoader
+            mac = SourceFileLoader("home_motion_mac", str(ROOT / "scripts/mac-native.py")).load_module().Mac()
+            control = ui.node(key="home-organize")
+            rect = control['bounds']
+            ui.req('input', events=[{'type': 'pointerMove', 'x': rect['x'] + rect['width']/2, 'y': rect['y'] + rect['height']/2}])
+            time.sleep(.14)
+            mac.capture(ui.pid, out / 'screenshots/01b-home-hover-system.png')
+            report['screenshots'].append('01b-home-hover-system.png')
+            time.sleep(1)
+            ui.req('idle', timeout=2000)
+            ui.req('input', events=[{'type': 'pointerMove', 'x': 450, 'y': 25}])
+            ui.req('idle', timeout=2000)
+            report['native_hover_stops_after_one_pass'] = True
+            report['native_running_and_completion_task_verified'] = False
+
         date = next(date for date, count in summary["days"].items() if count == 3)
         ui.press(date + " 新增 3 条")
         driver.wait(lambda: date + " 新增知识" in ui.labels() and titles[-1] in ui.labels())

@@ -1,6 +1,20 @@
 package desktop
 
-import "github.com/egoist/mygo/ui"
+import (
+	"embed"
+	"github.com/egoist/mygo/ui"
+)
+
+//go:embed assets/*.svg
+var environmentAssets embed.FS
+
+func environmentSVG(name string) *ui.SVG {
+	raw, err := environmentAssets.ReadFile("assets/" + name + ".svg")
+	if err != nil {
+		panic(err)
+	}
+	return ui.MustParseSVG(raw)
+}
 
 // Tokens are measured against the selected 1200 x 820 content area. The
 // navigation is 212 DIP, the memory list 428 DIP, leaving 560 DIP for details.
@@ -16,6 +30,9 @@ var design = struct {
 }
 
 var icons = map[string]*ui.SVG{
+	"sqlite":  environmentSVG("sqlite"),
+	"lancedb": environmentSVG("lancedb"),
+	"model":   svg(`<rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M8 2v3m8-3v3M8 19v3m8-3v3M2 8h3m-3 8h3M19 8h3m-3 8h3"/>`),
 	"brand":   ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><g fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"><path d="M72 30 A30 30 0 1 0 79 58"/><path d="M64 36 A20 20 0 1 0 69 55"/><path d="M56 43 A10 10 0 1 0 59 53"/></g><circle cx="78" cy="36" r="4" fill="currentColor"/></svg>`)),
 	"pi":      ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M5 3h12v4h4v10h-4V7H9v4h8v4H9v6H5z"/></svg>`)),
 	"codex":   svg(`<rect x="2" y="4" width="20" height="16" rx="6"/><path d="m7 9 3 3-3 3m6 0h4"/>`),

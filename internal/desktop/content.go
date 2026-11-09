@@ -60,6 +60,13 @@ func (a *App) navigate(page, scope string) {
 		}
 	}
 	a.page, a.scope = page, scope
+	if page != "总览" {
+		a.homeMotion = homeButtonMotion{}
+		a.homeCompletedAt = time.Time{}
+	}
+	if page == "设置" && a.settingsSection == "environment" {
+		a.refreshEnvironment()
+	}
 	if !a.isMemoryPage() {
 		a.editing = false
 	} else {

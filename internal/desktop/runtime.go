@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -37,6 +38,8 @@ type RuntimeConfig struct {
 }
 
 type RuntimeStatus struct {
+	Component               *components.PreparationReceipt
+	Components              []components.PreparationReceipt
 	Phase                   string
 	Message                 string
 	Downloaded, Total       int64
@@ -107,6 +110,19 @@ func (r *RuntimeController) prepare(ctx context.Context, notify func(RuntimeStat
 	if notify == nil {
 		notify = func(RuntimeStatus) {}
 	}
+	receipts := map[string]components.PreparationReceipt{}
+	emit := notify
+	notify = func(status RuntimeStatus) {
+		if status.Component != nil {
+			receipts[status.Component.ID] = *status.Component
+		}
+		status.Components = make([]components.PreparationReceipt, 0, len(receipts))
+		for _, receipt := range receipts {
+			status.Components = append(status.Components, receipt)
+		}
+		sort.Slice(status.Components, func(i, j int) bool { return status.Components[i].ID < status.Components[j].ID })
+		emit(status)
+	}
 	notify(RuntimeStatus{Phase: "checking", Message: "正在检查本地组件…"})
 	key, err := base64.StdEncoding.DecodeString(r.Config.ComponentPublicKey)
 	if err != nil {
@@ -163,13 +179,18 @@ func (r *RuntimeController) prepare(ctx context.Context, notify func(RuntimeStat
 	}
 	installed := []components.Installed{}
 	for _, d := range selected {
+		receipt := components.PreparationReceipt{Progress: components.Progress{ID: d.ID, Phase: "waiting", Total: d.Bytes}, ExpectedBytes: d.UnpackedBytes}
+		notify(RuntimeStatus{Phase: "checking", Component: &receipt, Message: "正在核对组件"})
 		item, e := manager.Prepare(ctx, d, func(p components.Progress) {
-			notify(RuntimeStatus{Phase: p.Phase, Message: "正在准备本地引擎与模型", Downloaded: completed + p.Downloaded, Total: total})
+			receipt := components.PreparationReceipt{Progress: p, ExpectedBytes: d.UnpackedBytes}
+			notify(RuntimeStatus{Phase: p.Phase, Component: &receipt, Message: "正在准备本地引擎与模型", Downloaded: completed + p.Downloaded, Total: total})
 		})
 		if e != nil {
 			return e
 		}
 		installed = append(installed, item)
+		receipt = components.InstalledReceipt(ctx, d, item)
+		notify(RuntimeStatus{Phase: "installed", Component: &receipt, Message: "组件文件已校验", Downloaded: completed + item.DownloadedBytes, Total: total})
 		completed += d.Bytes
 	}
 	worker, model := installed[0], installed[1]
@@ -283,7 +304,7 @@ func (r *RuntimeController) prepare(ctx context.Context, notify func(RuntimeStat
 					if phase == "service_ready" {
 						phase = "verifying"
 					}
-					notify(RuntimeStatus{Phase: phase, Message: status.Message, Installed: true, Service: state, Downloaded: total + status.Downloaded, Total: total + status.Total})
+					notify(RuntimeStatus{Phase: phase, Component: status.Component, Message: status.Message, Installed: true, Service: state, Downloaded: total + status.Downloaded, Total: total + status.Total})
 				}); err != nil {
 					return err
 				}

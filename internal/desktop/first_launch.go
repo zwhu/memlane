@@ -23,10 +23,12 @@ import (
 )
 
 type EnvironmentItem struct {
-	Name     string `json:"name"`
-	State    string `json:"state"`
-	Evidence string `json:"evidence"`
-	Bytes    int64  `json:"bytes,omitempty"`
+	Name          string `json:"name"`
+	State         string `json:"state"`
+	Evidence      string `json:"evidence"`
+	Bytes         int64  `json:"bytes,omitempty"`
+	ExpectedBytes int64  `json:"expected_bytes,omitempty"`
+	OccupiedBytes *int64 `json:"occupied_bytes,omitempty"`
 }
 type FirstLaunchState struct {
 	Stage         string             `json:"stage"`
@@ -145,7 +147,11 @@ func (r *RuntimeController) DiscoverEnvironment(ctx context.Context) ([]Environm
 			return items, errors.New("组件清单不可用；需要可访问且签名有效的组件来源")
 		}
 	}
-	for _, id := range []string{r.Config.WorkerID, r.Config.ModelID} {
+	required := []string{r.Config.WorkerID, r.Config.ModelID}
+	if r.Config.CodeExtractorID != "" {
+		required = append(required, r.Config.CodeExtractorID)
+	}
+	for _, id := range required {
 		var found *components.Descriptor
 		for i := range feed.Components {
 			if feed.Components[i].ID == id {
@@ -156,11 +162,12 @@ func (r *RuntimeController) DiscoverEnvironment(ctx context.Context) ([]Environm
 		if found == nil {
 			return items, fmt.Errorf("组件清单缺少 %s", id)
 		}
-		item := EnvironmentItem{Name: id, State: "needs_preparation", Evidence: "固定版本 " + found.Version + " · SHA256 " + found.SHA256, Bytes: found.Bytes}
+		item := EnvironmentItem{Name: id, State: "needs_preparation", Evidence: "固定版本 " + found.Version + " · SHA256 " + found.SHA256, Bytes: found.Bytes, ExpectedBytes: found.UnpackedBytes}
 		if installed, err := manager.Inspect(ctx, *found); err == nil {
 			item.State = "verified_reusable"
 			item.Evidence = "文件校验通过 · " + installed.Directory
 			item.Bytes = 0
+			item.OccupiedBytes = components.InstalledReceipt(ctx, *found, installed).OccupiedBytes
 		} else if _, existing := os.Stat(filepath.Join(manager.Root, "components", found.ID, found.Version)); existing == nil {
 			item.State = "validation_failed"
 			item.Evidence += " · 已有组件未通过校验，需要修复或重新准备"
@@ -209,11 +216,12 @@ func (r *RuntimeController) DiscoverEnvironment(ctx context.Context) ([]Environm
 						continue
 					}
 					found = true
-					item := EnvironmentItem{Name: id, State: "needs_preparation", Evidence: "固定版本 " + d.Version + " · SHA256 " + d.SHA256, Bytes: d.Bytes}
+					item := EnvironmentItem{Name: id, State: "needs_preparation", Evidence: "固定版本 " + d.Version + " · SHA256 " + d.SHA256, Bytes: d.Bytes, ExpectedBytes: d.UnpackedBytes}
 					if installed, e := manager.Inspect(ctx, d); e == nil {
 						item.State = "verified_reusable"
 						item.Evidence = "真实文件校验通过 · " + installed.Directory
 						item.Bytes = 0
+						item.OccupiedBytes = components.InstalledReceipt(ctx, d, installed).OccupiedBytes
 					}
 					items = append(items, item)
 				}
@@ -312,7 +320,7 @@ func (a *App) discoverFirstLaunch() {
 }
 func (a *App) prepareFirstLaunch() {
 	s := &a.firstLaunch
-	if s.State.Stage != "confirmation" && s.State.Stage != "failed" && s.State.Stage != "interrupted" && s.State.Stage != "cancelled" {
+	if s.State.Stage != "results" && s.State.Stage != "confirmation" && s.State.Stage != "failed" && s.State.Stage != "interrupted" && s.State.Stage != "cancelled" {
 		return
 	}
 	s.State.Stage, s.State.Message = "preparing", "正在准备已确认的本地组件与服务…"

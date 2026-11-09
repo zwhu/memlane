@@ -2,7 +2,6 @@ package desktop
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -36,20 +35,11 @@ func (a *App) firstLaunchView(c *ui.Context) {
 				if a.firstLaunchStep() == "processing" {
 					a.processingSettings(c)
 				} else {
-					ui.Scroll(c).Key("first-launch-content").Grow(1).MinHeight(0).Padding(28, 32).Gap(20).Children(func() {
+					ui.Scroll(c).Key("first-launch-content").Grow(1).MinHeight(0).Padding(28, 36).Gap(20).Children(func() {
 						if a.firstLaunchStep() == "agents" {
 							a.firstLaunchAgents(c)
 						} else {
-							switch s.State.Stage {
-							case "results":
-								a.firstLaunchResults(c)
-							case "confirmation":
-								a.firstLaunchConfirmation(c)
-							case "ready":
-								a.firstLaunchReady(c)
-							default:
-								a.firstLaunchProgress(c)
-							}
+							a.environmentContent(c, true)
 						}
 						if s.Error != "" {
 							firstLaunchNotice(c, "状态保存", s.Error)
@@ -164,224 +154,6 @@ func (a *App) firstLaunchItem(name string) EnvironmentItem {
 	}
 	return EnvironmentItem{Name: name, State: "not_verified", Evidence: "本次检测未取得此项结果"}
 }
-func (a *App) firstLaunchLocalItems() []EnvironmentItem {
-	r := a.firstLaunch.Controller
-	if r == nil {
-		return nil
-	}
-	items := []EnvironmentItem{a.firstLaunchItem(r.Config.WorkerID), a.firstLaunchItem(r.Config.ModelID)}
-	if r.Official != nil {
-		for _, id := range []string{"cognee-service", "cognee-bge-zh", "cognee-codex-plugin"} {
-			items = append(items, a.firstLaunchItem(id))
-		}
-	}
-	return items
-}
-func (a *App) firstLaunchDownloadSummary() string {
-	var bytes int64
-	for _, item := range a.firstLaunchLocalItems() {
-		bytes += item.Bytes
-	}
-	if bytes > 0 {
-		return fmt.Sprintf("本机组件预计下载 %.2f MB", float64(bytes)/1e6)
-	}
-	return "本机组件按实际校验结果复用"
-}
-
-func (a *App) firstLaunchResults(c *ui.Context) {
-	firstLaunchHeading(c, "让 Agent 用上记忆", "已检查本机环境。先准备记忆环境，再选择 Agent 并确认本轮使用范围。")
-	firstLaunchSection(c, "本地 Agent", "安装、接入与可用分别核对", func() {
-		for _, agent := range a.firstLaunch.State.Agents {
-			item := a.firstLaunchItem(agent.Name)
-			desc := "安装后可在 Agent 页重新检查"
-			if agent.Path != "" {
-				desc = "现有安装 · " + strings.TrimSpace(agent.Version)
-				if agent.Agent == "codex" && agent.Error == "" && agent.CapabilityError == "" {
-					desc += " · 项目内确认官方接入"
-				} else if agent.CapabilityError != "" {
-					desc += " · 此版本接入尚待适配"
-				} else {
-					desc += " · 接入在 Agent 页独立设置"
-				}
-			}
-			firstLaunchRow(c, "first-launch-agent-"+agent.Agent, agent.Name, desc, environmentStateLabel(item.State), icons["Agent"])
-		}
-		if len(a.firstLaunch.State.Agents) == 0 {
-			firstLaunchRow(c, "first-launch-no-agent", "尚未发现可用 Agent", "可以先准备记忆环境，之后重新检查", "尚未验证", icons["Agent"])
-		}
-	})
-	firstLaunchSection(c, "记忆环境", "兼容组件直接复用", func() {
-		for i, item := range a.firstLaunchLocalItems() {
-			title := "原文检索 · Rust"
-			if i == 1 {
-				title = "向量模型"
-			}
-			switch item.Name {
-			case "cognee-service":
-				title = "Cognee 服务"
-			case "cognee-bge-zh":
-				title = "Cognee 本地向量模型"
-			case "cognee-codex-plugin":
-				title = "官方插件组件"
-			}
-			firstLaunchRow(c, fmt.Sprintf("first-launch-environment-component-%d", i), title, item.Name, environmentStateLabel(item.State), icons["全部记忆"])
-		}
-		item := a.firstLaunchItem("记忆服务")
-		firstLaunchRow(c, "first-launch-environment-service", "本机记忆服务", "随 App 提供 helper，准备后核对当前服务", environmentStateLabel(item.State), icons["设置"])
-		firstLaunchRow(c, "first-launch-environment-official", "官方 Cognee 服务", a.firstLaunchOfficialSummary(), "一起初始化", icons["Agent"])
-	})
-	a.firstLaunchDetails(c)
-}
-
-func (a *App) firstLaunchOfficialSummary() string {
-	r := a.firstLaunch.Controller
-	if r == nil || r.Official == nil {
-		return "尚未配置官方组件来源 · 可在项目中绑定兼容服务"
-	}
-	return "服务、运行依赖与本地模型统一准备；提炼 Agent 之后单独选择和验证"
-}
-
-func (a *App) firstLaunchDetails(c *ui.Context) {
-	s := &a.firstLaunch
-	opened := s.Details["environment"]
-	label := "查看检查详情"
-	if opened {
-		label = "收起检查详情"
-	}
-	quietButton(c, label).Key("first-launch-details").OnClick(func() {
-		if s.Details == nil {
-			s.Details = map[string]bool{}
-		}
-		s.Details["environment"] = !opened
-	})
-	if opened {
-		ui.Column(c).Gap(12).Padding(14).Background(ui.Hex("#f8fafc")).Radius(5).Children(func() {
-			for _, item := range s.State.Items {
-				ui.Column(c).Gap(4).Children(func() {
-					ui.Text(c, item.Name+" · "+environmentStateLabel(item.State)).FontSize(design.Small).Bold()
-					ui.Text(c, item.Evidence).FontSize(design.Small).TextColor(design.Muted).Selectable().LineHeight(1.5)
-					if item.Bytes > 0 {
-						ui.Text(c, fmt.Sprintf("归档下载 %.2f MB", float64(item.Bytes)/1e6)).FontSize(design.Small).TextColor(design.Muted)
-					}
-				})
-			}
-		})
-	}
-}
-
-func (a *App) firstLaunchConfirmation(c *ui.Context) {
-	firstLaunchHeading(c, "确认这次准备的内容", "校验并复用兼容组件，只准备缺失或校验未通过的本机组件。")
-	firstLaunchSection(c, "本机组件准备", "确认后开始下载与修改", func() {
-		for i, item := range a.firstLaunchLocalItems() {
-			title := "准备 Rust 原文检索"
-			if i == 1 {
-				title = "准备向量模型"
-			}
-			summary := "下载固定版本，校验签名与文件后安装"
-			if item.State == "verified_reusable" || item.State == "prepared_verified" {
-				summary = "复核已有文件，兼容时直接复用"
-			}
-			size := "按实际校验复用"
-			if item.Bytes > 0 {
-				size = fmt.Sprintf("%.2f MB", float64(item.Bytes)/1e6)
-			}
-			firstLaunchRow(c, fmt.Sprintf("first-launch-plan-component-%d", i), title, summary, size, icons["全部记忆"])
-		}
-		firstLaunchRow(c, "first-launch-plan-service", "启动并验证本机服务", "注册此 App 的 helper，核对服务与 Rust 健康回执", "随 App 提供", icons["设置"])
-	})
-	firstLaunchNotice(c, "准备后选择 Agent", "先选择要使用记忆的 Agent。项目可以跳过；首次任务再确认工作目录与本轮采集范围，有有效记忆后建立或复用项目。")
-	firstLaunchNotice(c, "记忆列表从空白开始", "本次准备不会导入历史对话。导入已有记忆是 App 内的独立可选操作。")
-	a.firstLaunchDetails(c)
-}
-
-func (a *App) firstLaunchProgress(c *ui.Context) {
-	s, status := &a.firstLaunch, a.runtimeStatus
-	active := s.State.Stage == "preparing" || s.State.Stage == "verifying"
-	title, lead := "正在准备记忆环境", "完成当前组件准备后，核对本机服务与 Rust 的实际可用性。"
-	if s.State.Stage == "verifying" {
-		title = "正在验证记忆环境"
-	}
-	if !active {
-		title, lead = "准备暂时停在这里", "已校验组件会保留。重新检查后，再确认需要继续的准备。"
-	}
-	if s.State.Stage == "cancelling" {
-		title, lead = "正在取消本轮准备", "正在等待停止回执，完成后可以重新检查或稍后继续。"
-	}
-	ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
-		ui.Column(c).Grow(1).MinWidth(0).Children(func() { firstLaunchHeading(c, title, lead) })
-		if active {
-			a.preparationBlocksSized(c, "first-launch-blocks", s.State.Stage, s.State.ReducedMotion, s.ChangedAt, 64, 64)
-		}
-	})
-	if s.State.Attempt > 0 {
-		checked := status.Total > 0 || status.Installed
-		tasks := []struct {
-			name, description string
-			done, running     bool
-		}{
-			{"核对已确认组件", "读取真实签名清单，复核本机组件", checked, active && !checked},
-			{"准备引擎与本地模型", "复用或下载、校验 Rust 与 Cognee 依赖", status.Installed, active && checked && !status.Installed},
-			{"启动本机记忆服务", "注册当前 App helper，等待服务响应", false, active && status.Installed},
-			{"验证服务与 Rust", "当前服务健康回执通过后才能开始使用", false, active && s.State.Stage == "verifying"},
-		}
-		ui.Column(c).Children(func() {
-			for i, task := range tasks {
-				state, mark := "等待", fmt.Sprint(i+1)
-				if task.done {
-					state, mark = "已完成", "✓"
-				} else if task.running {
-					state, mark = "进行中", "·"
-				} else if !active {
-					state = "尚未完成"
-				}
-				ui.Row(c).MinHeight(68).Padding(14, 0).Gap(14).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).Children(func() {
-					ui.Text(c, mark).Width(20).FontSize(14).TextColor(design.Muted)
-					ui.Column(c).Grow(1).MinWidth(0).Gap(5).Children(func() {
-						ui.Text(c, task.name).FontSize(design.Body).Bold()
-						ui.Text(c, task.description).FontSize(design.Small).TextColor(design.Muted)
-					})
-					ui.Text(c, state).FontSize(design.Small).TextColor(design.Muted).SingleLine()
-				})
-			}
-		})
-	}
-	if active && status.Total > 0 {
-		ui.Column(c).Gap(8).Children(func() {
-			ui.Row(c).Children(func() {
-				ui.Text(c, "当前组件准备进度").FontSize(design.Small).TextColor(design.Muted)
-				ui.Spacer(c)
-				ui.Text(c, fmt.Sprintf("%.2f / %.2f MB", float64(status.Downloaded)/1e6, float64(status.Total)/1e6)).Key("first-launch-bytes").FontSize(design.Small)
-			})
-			ui.Column(c).Height(3).Draw(func(p *ui.Painter, r ui.Rect) {
-				p.Fill(r, design.Border, 1)
-				r.W *= float32(max(0, min(1, float64(status.Downloaded)/float64(status.Total))))
-				p.Fill(r, design.Muted, 1)
-			})
-		})
-	}
-	firstLaunchNotice(c, firstLaunchStageLabel(s.State.Stage), s.State.Message)
-}
-
-func (a *App) firstLaunchReady(c *ui.Context) {
-	s := &a.firstLaunch
-	ui.Row(c).Gap(14).AlignItems(ui.Center).Children(func() {
-		a.preparationBlocksSized(c, "first-launch-blocks", "ready", s.State.ReducedMotion, s.ChangedAt, 64, 64)
-		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-			firstLaunchHeading(c, "本机记忆环境已就绪", "本机服务与 Rust 已验证可用。下一步连接 Agent；也可以稍后设置。")
-		})
-	})
-	firstLaunchSection(c, "本机记忆", "来自当前服务健康回执", func() {
-		firstLaunchRow(c, "first-launch-ready-local", "记忆服务与原文检索", "本机组件校验与当前服务验证已通过", "实际可用", icons["全部记忆"])
-		if a.firstLaunch.Controller != nil && a.firstLaunch.Controller.Official != nil {
-			firstLaunchRow(c, "first-launch-ready-official", "Cognee 服务与本地依赖", "已统一准备；提炼能力在首次任务中真实验证", "服务已就绪", icons["Agent"])
-		} else {
-			firstLaunchRow(c, "first-launch-ready-official", "官方采集服务", "尚未配置组件来源", "尚未验证", icons["Agent"])
-		}
-	})
-	firstLaunchNotice(c, "环境步骤完成", "准备环境不会创建项目、执行编码任务、采集历史聊天或等待记忆结果。")
-	a.firstLaunchDetails(c)
-}
-
 func (a *App) firstLaunchAgents(c *ui.Context) {
 	ui.Row(c).Children(func() {
 		ui.Text(c, "连接 Agent").FontSize(design.Heading).Bold()
@@ -394,49 +166,14 @@ func (a *App) firstLaunchAgents(c *ui.Context) {
 }
 
 func (a *App) firstLaunchFooter(c *ui.Context) {
-	s := &a.firstLaunch
-	ui.Row(c).Key("first-launch-footer").MinHeight(74).Shrink(0).Padding(16, 28).Gap(14).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
-		ui.Column(c).Grow(1).MinWidth(0).Gap(5).Children(func() {
-			text, hint := a.firstLaunchDownloadSummary(), "下一步确认准备，当前还未修改环境。"
-			if a.firstLaunchStep() == "agents" {
-				text, hint = "Agent 可以稍后连接", "继续后选择并验证一种记忆处理方式。"
-			}
-			switch s.State.Stage {
-			case "confirmation":
-				hint = "本次仅准备本机环境；Agent 接入在项目中确认。"
-			case "preparing", "verifying":
-				text, hint = "请保持 App 打开", "完成真实验证后进入下一步。"
-			case "ready":
-				text, hint = "本机环境可用", "选择 Agent，继续确认首次使用。"
-			case "failed", "cancelled", "interrupted", "cancelling":
-				text, hint = firstLaunchStageLabel(s.State.Stage), "当前仍不能开始使用。"
-			}
-			ui.Text(c, text).FontSize(design.Small).Bold()
-			ui.Text(c, hint).FontSize(design.Small).TextColor(design.Muted)
-		})
-		if a.firstLaunchStep() == "agents" {
-			quietButton(c, "稍后设置").Key("first-launch-skip").OnClick(func() { a.cancelFirstLaunch(true) })
-		} else if s.State.Stage == "confirmation" {
-			quietButton(c, "返回").Key("first-launch-back").OnClick(func() { s.State.Stage = "results"; a.persistFirstLaunch() })
-		} else if s.State.Stage != "ready" {
-			quietButton(c, "稍后准备").Key("first-launch-skip").OnClick(func() { a.cancelFirstLaunch(true) })
-		}
-		if a.firstLaunchStep() == "agents" {
-			firstLaunchPrimary(c, "继续配置记忆处理").Key("first-launch-processing").OnClick(a.advanceFirstLaunchToProcessing)
-			return
-		}
-		switch s.State.Stage {
-		case "results":
-			firstLaunchPrimary(c, "继续").Key("first-launch-confirmation").OnClick(func() { s.State.Stage = "confirmation"; a.persistFirstLaunch() })
-		case "confirmation":
-			firstLaunchPrimary(c, "确认并准备本机环境").Key("first-launch-prepare").OnClick(a.prepareFirstLaunch)
-		case "preparing", "verifying":
-			firstLaunchPrimary(c, "取消准备").Key("first-launch-cancel").OnClick(func() { a.cancelFirstLaunch(false) })
-		case "ready":
-			firstLaunchPrimary(c, "继续连接 Agent").Key("first-launch-use").OnClick(a.advanceFirstLaunchToAgents)
-		case "failed", "cancelled", "interrupted":
-			firstLaunchPrimary(c, "重新检查").Key("first-launch-retry").OnClick(a.discoverFirstLaunch)
-		}
+	if a.firstLaunchStep() == "environment" {
+		a.environmentFooter(c, true)
+		return
+	}
+	ui.Row(c).Key("first-launch-footer").MinHeight(64).Shrink(0).Padding(14, 28).Gap(14).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
+		ui.Spacer(c)
+		quietButton(c, "稍后设置").Key("first-launch-skip").OnClick(func() { a.cancelFirstLaunch(true) })
+		firstLaunchPrimary(c, "继续配置记忆处理").Key("first-launch-processing").OnClick(a.advanceFirstLaunchToProcessing)
 	})
 }
 

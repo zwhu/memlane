@@ -52,3 +52,54 @@ func TestHomeDateSelectionKeepsGlobalTotalsAndSurvivesNavigation(t *testing.T) {
 		}
 	}
 }
+
+func TestHomeCompletionRequiresFinalReceiptAndDoesNotReplay(t *testing.T) {
+	for _, terminal := range []string{"", "failed", "cancelled", "interrupted", "completed"} {
+		t.Run(terminal, func(t *testing.T) {
+			a := New("test", nil)
+			now := time.Now()
+			a.observeHomeTask(homeTask{ID: "task", Kind: "organization", State: "running"}, homeTask{}, now)
+			a.observeHomeTask(homeTask{}, homeTask{ID: "task", Kind: "organization", State: terminal}, now)
+			if !a.homeCompletedAt.IsZero() != (terminal == "completed") {
+				t.Fatal("absent, failed or cancelled task fabricated completion")
+			}
+			when := a.homeCompletedAt
+			a.observeHomeTask(homeTask{}, homeTask{ID: "task", Kind: "organization", State: terminal}, now.Add(time.Second))
+			if a.homeCompletedAt != when {
+				t.Fatal("polling replayed completion feedback")
+			}
+		})
+	}
+}
+
+func TestHomeRunningBlocksMoveAtCurrentEpochAndCompletionIsBounded(t *testing.T) {
+	epoch := float64(time.Now().UnixMilli()) / 1000
+	moved := false
+	for i := 0; i < 9; i++ {
+		x, y, _, _ := homeBlockPose(i, epoch, "running")
+		nextX, nextY, _, _ := homeBlockPose(i, epoch+.2, "running")
+		if x != nextX || y != nextY {
+			moved = true
+		}
+	}
+	if !moved {
+		t.Fatal("epoch precision froze the running glyph")
+	}
+	a := New("test", nil)
+	a.serviceState = "ready"
+	a.homeCompletedAt = time.Now()
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("整理完成") {
+		t.Fatal("real final receipt feedback is missing")
+	}
+	a.homeCompletedAt = time.Now().Add(-2 * time.Second)
+	tt = ui.NewTester(a.View, 1200, 820)
+	if tt.HasText("整理完成") {
+		t.Fatal("expired completion feedback remained")
+	}
+	a.homeMotion = homeButtonMotion{Hover: true, HoverAt: time.Now()}
+	a.navigate("设置", "")
+	if a.homeMotion.Hover || !a.homeMotion.HoverAt.IsZero() {
+		t.Fatal("hidden hover state replayed on reentry")
+	}
+}
