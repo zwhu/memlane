@@ -4,7 +4,7 @@
 
 后续实现从 [A 已认可设计实施交接](a-setup-handoff.md) 开始。该文档写明最终范围、三步流程、全部页面/按钮/状态、配置所有权、真实适配要求、代码入口、开发顺序与 V01–V14 验收清单。再实际打开 [选定截图与证据](../images/ui-redesign/a-setup/README.md)，不能只阅读图片路径。
 
-B 首页实施从 [B 已认可设计交接](b-home-handoff.md) 与 [固定截图／动效](../images/ui-redesign/b-home/README.md) 开始。C 最新稿为 revision 5：Agent 连接位于设置，空知识列表提供「分析项目」，右栏明确Token消耗与可选历史会话，已有知识隐藏启动入口，用词统一为知识。见 [入口与范围](agent-settings-placement.md)。开发本稿及后续所有动效先读 [MyGo 动效实施与复用](motion-implementation.md)；C 完整稿仍继续评审。
+B 首页实施从 [B 已认可设计交接](b-home-handoff.md) 与 [固定截图／动效](../images/ui-redesign/b-home/README.md) 开始。C 最新稿为 revision 6：Agent 连接位于设置，空知识列表提供「分析项目」，右栏明确Token消耗与可选历史会话，已有知识隐藏空态大按钮并通过项目菜单补充，可一直跳过主动分析；记忆为总称，以知识／原始记录分别展示。见 [入口与范围](agent-settings-placement.md) 与 [内容分层](content-model.md)。开发本稿及后续所有动效先读 [MyGo 动效实施与复用](motion-implementation.md)；C 完整稿仍继续评审。
 
 ## 已确认范围
 
