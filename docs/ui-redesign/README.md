@@ -4,12 +4,12 @@
 
 用户最新纠正的 [Agent 电脑级连接规则](agent-connection-contract.md) 已确认：连接先配置当前电脑的编码 Agent，不要求关联项目。新版 A 后半段画面据此修正，仍待视觉评审；上一版将项目/模型准备放在连接页的取舍已作废。
 
-最新补充以 [连接与记忆处理设计](memory-processing-design.md) 和 [页面复用契约](reusable-setup.md) 为准：记忆处理三选一，模型目录参考 Magpie 的分组列表；本机 Magpie 自动检测，无需访问凭据。当前 revision 8 同时补出「设置 → 记忆处理」「设置 → 环境与组件」，复用初始化内容、已有配置和组件任务。用户已明确先做设计，新增画面仍待评审，正式实现未在本轮进行。
+最新补充以 [连接与记忆处理设计](memory-processing-design.md) 和 [页面复用契约](reusable-setup.md) 为准：三种记忆处理配置可同时保留，仅一个当前使用；revision 9 将「保存配置」与「设为当前使用」分开，切换页签只查看编辑。模型目录参考 Magpie 的分组列表，本机免密检测；「设置 → 记忆处理」「设置 → 环境与组件」复用初始化内容、已有配置和组件任务。用户已明确先做设计，新增画面仍待评审，正式实现未在本轮进行。
 
 | 分组 | 状态 | 依据 |
 | --- | --- | --- |
 | A01–A04 本机环境检测与安装 | 用户已认可，待按此稿实现并做真实窗口验收 | [A 开发契约](a-environment.md) |
-| A05–A10 Agent、项目、连接、第一项任务与恢复 | 已补 revision 8 讨论稿，待用户评审；既有产品规则继续有效 | 原型分支 `a-agent.html`、`MEMORY-PROCESSING.md`；[处理设计契约](memory-processing-design.md)、[页面复用](reusable-setup.md) |
+| A05–A10 Agent、项目、连接、第一项任务与恢复 | 已补 revision 9 讨论稿，待用户评审；既有产品规则继续有效 | 原型分支 `a-agent.html`、`MEMORY-PROCESSING.md`；[处理设计契约](memory-processing-design.md)、[页面复用](reusable-setup.md) |
 | B01–B08 日常首页 | 按用户最新要求暂缓，先补 A | 待恢复设计，不是最终开发要求 |
 | C–O | 仅完成场景枚举 | [全部场景](scenarios.md) |
 
