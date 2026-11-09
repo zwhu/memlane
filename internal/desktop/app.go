@@ -18,6 +18,14 @@ type App struct {
 	firstLaunch                                                      FirstLaunchUI
 	browsing                                                         BrowsingUI
 	reader                                                           SourceReaderUI
+	knowledgeHistory                                                 KnowledgeHistoryUI
+	readingUsageOpen, readingMetadataOpen                            bool
+	readingActionsOpen                                               bool
+	readingKnowledgeTotal, readingRawTotal                           *int
+	readingCountsRoute                                               string
+	readingSelections                                                map[string]string
+	readingSearch, readingFilter                                     string
+	readingQueries                                                   map[string][2]string
 	restoreBackup                                                    func(context.Context, string, string) (records.RestoreReceipt, error)
 	reloadAfterBackup                                                func()
 	backups                                                          BackupUI
@@ -180,7 +188,11 @@ func (a *App) View(c *ui.Context) {
 	if c.Vibrancy() {
 		c.Root().Background(ui.Transparent)
 	}
-	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
+	backgroundBlur := float32(0)
+	if a.knowledgeHistory.Open && !c.Preferences().HighContrast {
+		backgroundBlur = 4
+	}
+	ui.Row(c).Fill().AlignItems(ui.Stretch).Blur(backgroundBlur).Children(func() {
 		if a.page == "设置" {
 			a.settingsSidebar(c)
 		} else {
@@ -205,6 +217,7 @@ func (a *App) View(c *ui.Context) {
 			}
 		})
 	})
+	a.knowledgeHistoryView(c)
 }
 func (a *App) sidebar(c *ui.Context) {
 	width := design.Sidebar
@@ -500,9 +513,12 @@ func (a *App) heatmap(c *ui.Context) {
 }
 func (a *App) details(c *ui.Context) {
 	width := design.List
+	if a.isMemoryPage() {
+		width = 316
+	}
 	// At the minimum window size the detail remains useful rather than being squeezed by a fixed list.
 	windowWidth, _ := c.Size()
-	if windowWidth < 1100 {
+	if windowWidth < 1100 && !a.isMemoryPage() {
 		width = 320
 	}
 	ui.Row(c).Key("details-layout").Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
@@ -546,16 +562,51 @@ func (a *App) details(c *ui.Context) {
 					})
 					actionButton(c, "立即整理", icons["全部记忆"]).Disabled(a.merges.Busy).OnClick(a.beginOrganizationOrMerge)
 				} else if a.isMemoryPage() {
-					actionButton(c, "立即整理", icons["全部记忆"]).AlignSelf(ui.End).OnClick(a.beginOrganizationOrMerge)
+					if a.page != "项目" {
+						actionButton(c, "立即整理", icons["全部记忆"]).AlignSelf(ui.End).OnClick(a.beginOrganizationOrMerge)
+					}
 					kind := "知识"
 					if a.recordKind == "raw" {
 						kind = "原始记录"
 					}
-					ui.Text(c, fmt.Sprintf("%d 条%s · 保留来源与修改记录", a.listTotal, kind)).FontSize(design.Small).TextColor(design.Muted)
-					ui.Row(c).Gap(6).Children(func() {
-						ui.Button(c, "知识").Height(28).Padding(5, 10).OnClick(func() { a.recordKind = "knowledge"; a.nextCursor = ""; a.refresh(false) })
-						ui.Button(c, "原始记录").Height(28).Padding(5, 10).OnClick(func() { a.recordKind = "raw"; a.nextCursor = ""; a.refresh(false) })
+					ui.Row(c).Gap(8).Children(func() {
+						title := "内容列表"
+						if a.page == "项目" {
+							title = "项目内容"
+						}
+						ui.Text(c, title).FontSize(design.Small).TextColor(design.Muted)
+						ui.Spacer(c)
+						if !a.loading {
+							ui.Text(c, fmt.Sprintf("%d 条%s", a.listTotal, kind)).FontSize(10).TextColor(design.Muted)
+						}
+						if a.page == "项目" {
+							quietButton(c, "实体").Height(24).OnClick(func() { a.browseView("entities") })
+							quietButton(c, "关系图").Height(24).OnClick(func() { a.browseView("relations") })
+						}
 					})
+					ui.Row(c).Gap(6).Children(func() {
+						knowledge, raw := "知识", "原始记录"
+						if a.readingCountsRoute == a.page+":"+a.scope {
+							if a.readingKnowledgeTotal != nil {
+								knowledge += " " + fmt.Sprint(*a.readingKnowledgeTotal)
+							}
+							if a.readingRawTotal != nil {
+								raw += " " + fmt.Sprint(*a.readingRawTotal)
+							}
+						}
+						ui.Button(c, knowledge).Key("reading-tab-knowledge").Height(28).Padding(5, 10).OnClick(func() { a.switchReadingKind("knowledge") })
+						ui.Button(c, raw).Key("reading-tab-raw").Height(28).Padding(5, 10).OnClick(func() { a.switchReadingKind("raw") })
+					})
+					if a.page != "搜索" {
+						ui.TextInput(c.Key("reading-search"), &a.readingSearch).Label("搜索项目内容").Placeholder("搜索当前内容").Height(32).OnSubmit(func() {
+							a.readingFilter = strings.TrimSpace(a.readingSearch)
+							a.nextCursor = ""
+							a.refresh(false)
+						})
+						if a.readingFilter != "" {
+							quietButton(c, "清除内容筛选").OnClick(func() { a.readingSearch, a.readingFilter, a.nextCursor = "", "", ""; a.refresh(false) })
+						}
+					}
 					if a.page != "搜索" {
 						ui.Select(c.Key("memory-sort"), &a.listSort, []string{"最近更新", "常用", "重要优先"}).OnChange(func() { a.nextCursor = ""; a.items = nil; a.refresh(false) })
 						ui.Text(c, usageSortExplanation(a.listSort)).FontSize(design.Small).TextColor(design.Muted)
@@ -571,6 +622,9 @@ func (a *App) details(c *ui.Context) {
 				}
 			})
 			key := a.page + ":" + a.scope
+			if a.isMemoryPage() {
+				key += ":" + a.recordKind
+			}
 			if a.listScroll[key] == nil {
 				a.listScroll[key] = &ui.ScrollState{}
 			}
@@ -587,7 +641,15 @@ func (a *App) details(c *ui.Context) {
 							}
 							a.empty(c, "", message)
 						} else {
-							a.empty(c, "列表为空", "保存的记忆会出现在这里。")
+							if a.loading {
+								a.empty(c, "正在读取内容", "")
+							} else if a.libraryError != "" {
+								a.empty(c, "读取未完成", "重试后继续查看当前范围。")
+							} else if a.readingFilter != "" {
+								a.empty(c, "没有匹配的内容", "清除筛选可查看这个范围的全部内容。")
+							} else {
+								a.empty(c, "列表为空", "保存的记忆会出现在这里。")
+							}
 						}
 					}
 					for _, item := range a.items {
@@ -645,7 +707,7 @@ func (a *App) details(c *ui.Context) {
 				ui.Spacer(c)
 				if a.isMemoryPage() && a.current() != nil && !a.editing && a.detailMode == "view" {
 					iconButton(c, "编辑", icons["edit"]).Disabled(a.current().State != "active").OnClick(a.editMemory)
-					iconButton(c, "历史记录", icons["history"]).OnClick(func() { a.detailMode = "history" })
+					quietButton(c, "历史").Key("knowledge-history-open").Disabled(raw).OnClick(a.openKnowledgeHistory)
 				}
 			})
 			if a.page == "代码图谱" {
@@ -780,6 +842,9 @@ func (a *App) memoryDetail(c *ui.Context) {
 		}
 		a.recordDisplayedMemory(*item)
 		ui.Text(c, item.Title).FontSize(design.Title).Bold()
+		if item.Origin != "raw" {
+			ui.Text(c, fmt.Sprintf("%s · %s · v%d · %s", item.ScopeName, item.Source, item.Revision, knowledgeState(*item))).FontSize(10).TextColor(design.Muted)
+		}
 		if a.page == "项目" && a.scope == item.Dataset {
 			entities := a.memoryEntities(*item)
 			if len(entities) > 0 {
@@ -821,8 +886,9 @@ func (a *App) memoryDetail(c *ui.Context) {
 			ui.Text(c, "项目明确约定优先于全局建议。").FontSize(design.Small).TextColor(design.Muted)
 		}
 		a.experienceCopyPreview(c, *item)
-		a.usageDetail(c, *item)
-		ui.Column(c).Gap(10).Children(func() {
+		a.knowledgeProvenance(c, *item)
+		ui.Collapsible(c, "使用记录", &a.readingUsageOpen, func() { a.usageDetail(c, *item) })
+		ui.Collapsible(c, "保存与检索状态", &a.readingMetadataOpen, func() {
 			meta(c, "范围", item.ScopeName)
 			meta(c, "来源", item.Source)
 			meta(c, "创建", item.CreatedAt.Format("2006-01-02 15:04"))
@@ -864,6 +930,15 @@ func (a *App) memoryDetail(c *ui.Context) {
 				quietButton(c, "重试索引").Disabled(a.retryingIndex).AlignSelf(ui.Start).OnClick(a.retryIndex)
 			}
 		})
+		if item.Origin != "raw" {
+			ui.Collapsible(c, "更多操作", &a.readingActionsOpen, func() {
+				if a.isProjectKnowledge(*item) {
+					quietButton(c, "复制到全局…").Key("experience-copy-preview").Disabled(a.experience.Busy).OnClick(func() { a.beginExperienceCopy(*item) })
+					quietButton(c, "AI 提炼为全局…").Key("experience-distill").Disabled(a.organization.Busy).OnClick(func() { a.beginExperienceDistill(*item) })
+				}
+				quietButton(c, "恢复旧版本").Key("knowledge-restore-open").OnClick(func() { a.detailMode = "history"; a.detailScroll.Y = 0; a.refresh(false) })
+			})
+		}
 		if a.relatedFor == item.ID {
 			if a.relatedError != "" {
 				ui.Text(c, a.relatedError).FontSize(design.Small).TextColor(design.Muted)
@@ -872,49 +947,6 @@ func (a *App) memoryDetail(c *ui.Context) {
 				quietButton(c, "相关整理 · "+mergeStatus(task.State, task.ReviewState)).Key("memory-merge-" + task.ID).OnClick(func() { a.selectMerge(task.ID) })
 			}
 		}
-		ui.Divider(c)
-		ui.Column(c).Gap(12).Children(func() {
-			sourceTitle := "原始出处"
-			if item.Derived != nil {
-				sourceTitle = "生成时正文 · 派生转述"
-			}
-			if item.Experience != nil {
-				sourceTitle = "保存时全局正文"
-			}
-			ui.Text(c, sourceTitle).Bold()
-			ui.Text(c, a.readableText(c, "original-"+item.ID, item.Original)).Selectable().LineHeight(1.7).Padding(0, 0, 0, 12).BorderWidth(0, 0, 0, 2).BorderColor(design.Muted)
-			ui.Text(c, item.Source+" · 已保留来源").FontSize(design.Small).TextColor(design.Muted)
-			if item.SourceDetail != nil {
-				if item.SourceDetail.Fragment != "" && item.SourceDetail.Official == nil {
-					ui.Text(c, item.SourceDetail.Fragment).Selectable().FontSize(design.Small).LineHeight(1.7)
-				}
-				for _, reference := range item.SourceDetail.References {
-					ui.Text(c, reference).Selectable().FontSize(design.Small).TextColor(design.Muted)
-				}
-			}
-		})
-		if item.Derived != nil && a.organizationSourcesFor == item.ID {
-			ui.Divider(c)
-			ui.Text(c, "冻结依据与具体版本").Bold()
-			ui.Text(c, "摘要与同源转述不构成新证据，来源版本和历史保留。").FontSize(design.Small).TextColor(design.Muted)
-			if a.organizationSourcesError != "" {
-				ui.Text(c, a.organizationSourcesError).TextColor(design.Muted)
-			}
-			for _, source := range a.organizationSources {
-				ui.Text(c, fmt.Sprintf("%s · v%d", source.Input.Title, source.Revision)).Bold()
-				if source.Changed {
-					ui.Text(c, fmt.Sprintf("来源已变化 · 当前 v%d；冻结依据与已确认正文保留。", source.CurrentRevision)).FontSize(design.Small).TextColor(design.Muted)
-				}
-				ui.Text(c, source.Quote).Selectable().LineHeight(1.7)
-				quietButton(c, "查看摘要依据").Key("derived-source-" + source.Memory).OnClick(func() { a.openMergeMemory(source.Memory, source.Project) })
-				if source.Input.Origin == "raw" && source.Project == item.Dataset {
-					quietButton(c, "阅读完整原始记录").Key("source-reader-open-" + source.Memory).OnClick(func() {
-						a.openSourceReader(*item, records.MergeTarget{Memory: source.Memory, Revision: source.Revision})
-					})
-				}
-			}
-		}
-
 		ui.Row(c).Gap(6).Children(func() {
 			ui.Text(c, item.Category).FontSize(10).Padding(4, 6).Background(design.Surface)
 			state := "当前有效"
@@ -932,18 +964,15 @@ func (a *App) memoryDetail(c *ui.Context) {
 	})
 	if a.detailMode == "view" {
 		ui.Row(c).Shrink(0).Padding(18, 24, 24, 24).Gap(8).Children(func() {
-			actionButton(c, "编辑", icons["edit"]).Disabled(item.State != "active").OnClick(a.editMemory)
-			actionButton(c, "历史记录", icons["history"]).OnClick(func() { a.detailMode = "history"; a.detailScroll.Y = 0 })
-			if a.isProjectKnowledge(*item) {
-				quietButton(c, "复制到全局…").Key("experience-copy-preview").Disabled(a.experience.Busy).OnClick(func() { a.beginExperienceCopy(*item) })
-				quietButton(c, "AI 提炼为全局…").Key("experience-distill").Disabled(a.organization.Busy).OnClick(func() { a.beginExperienceDistill(*item) })
-			}
+			ui.Text(c, fmt.Sprintf("%s · 当前版本 v%d", item.Source, item.Revision)).FontSize(10).TextColor(design.Muted)
 			if a.organization.Selected != "" {
 				quietButton(c, "返回摘要任务").OnClick(func() { a.selectOrganization(a.organization.Selected) })
 			}
 			if a.merges.Selected != "" {
 				quietButton(c, "返回整理任务").OnClick(func() { a.selectMerge(a.merges.Selected) })
 			}
+			ui.Spacer(c)
+			quietButton(c, "复制正文").Key("knowledge-copy").Border(1, design.Border).Padding(6, 15).Radius(6).OnClick(func() { c.WriteClipboard(item.Text) })
 		})
 	}
 }

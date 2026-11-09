@@ -186,6 +186,9 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 func (a *App) listQuery() records.ListQuery {
 	sortMode := map[string]string{"最近更新": "updated", "常用": "frequent", "重要优先": "important"}[a.listSort]
 	q := records.ListQuery{Sort: sortMode, Limit: 50, Kind: a.recordKind, Date: a.activityDate, Timezone: time.Local.String()}
+	if a.isMemoryPage() && a.page != "搜索" {
+		q.Text = a.readingFilter
+	}
 	if a.page == "总览" {
 		q.Kind, q.Date, q.Sort = "knowledge", a.homeDate, ""
 	}
@@ -201,7 +204,7 @@ func (a *App) listQuery() records.ListQuery {
 	return q
 }
 func (a *App) refresh(more bool) {
-	if a.libraryContext == nil || a.libraryContext.Err() != nil || a.visualFixture || a.firstLaunch.Detecting {
+	if a.libraryContext == nil || a.libraryContext.Err() != nil || a.visualFixture || a.firstLaunch.Detecting || a.knowledgeHistory.Open {
 		return
 	}
 	a.loadSequence++
@@ -212,6 +215,7 @@ func (a *App) refresh(more bool) {
 		query.Cursor = a.nextCursor
 	}
 	pageName := a.page
+	countsRoute := a.page + ":" + a.scope
 	selected := a.selectedID
 	selectedRevision := int64(0)
 	if item := a.current(); item != nil {
@@ -310,7 +314,7 @@ func (a *App) refresh(more bool) {
 			linksCtx, linksStop := context.WithTimeout(a.libraryContext, 500*time.Millisecond)
 			related, relatedErr = a.merges.Client.List(linksCtx, records.MergeListQuery{Memory: selected, Limit: 100})
 			linksStop()
-			if current.Derived != nil {
+			if current.Origin != "raw" {
 				sourcesCtx, sourcesStop := context.WithTimeout(a.libraryContext, 500*time.Millisecond)
 				organizationSources, organizationSourcesErr = a.organization.Client.Sources(sourcesCtx, selected, current.Revision)
 				sourcesStop()
@@ -320,7 +324,7 @@ func (a *App) refresh(more bool) {
 			return
 		}
 		a.dispatch(func() {
-			if sequence != a.loadSequence || a.firstLaunch.Detecting {
+			if sequence != a.loadSequence || a.firstLaunch.Detecting || a.knowledgeHistory.Open {
 				return
 			}
 			a.loading = false
@@ -361,6 +365,8 @@ func (a *App) refresh(more bool) {
 			}
 			if pageName != "搜索" {
 				a.listTotal = page.Total
+				a.readingCountsRoute = countsRoute
+				a.readingKnowledgeTotal, a.readingRawTotal = page.KnowledgeTotal, page.RawTotal
 			}
 			if pageName == "总览" {
 				a.observeHomeTask(active, terminal, time.Now())

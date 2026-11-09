@@ -55,6 +55,7 @@ type ScopeDraft struct {
 	Path string `json:"path"`
 }
 type ListQuery struct {
+	Text     string   `json:"text,omitempty"`
 	Sort     string   `json:"sort,omitempty"`
 	Datasets []string `json:"datasets,omitempty"`
 	Kind     string   `json:"kind,omitempty"` // knowledge or raw
@@ -65,9 +66,11 @@ type ListQuery struct {
 	Limit    int      `json:"limit,omitempty"`
 }
 type Page struct {
-	Items      []Version `json:"items"`
-	NextCursor string    `json:"next_cursor,omitempty"`
-	Total      int       `json:"total"`
+	KnowledgeTotal *int      `json:"knowledge_total,omitempty"`
+	RawTotal       *int      `json:"raw_total,omitempty"`
+	Items          []Version `json:"items"`
+	NextCursor     string    `json:"next_cursor,omitempty"`
+	Total          int       `json:"total"`
 }
 type History struct {
 	Experience *ExperienceInfo `json:"experience,omitempty"`

@@ -10,6 +10,8 @@ B 首页实施从 [B 已认可设计交接](b-home-handoff.md) 与 [固定截图
 
 首屏检查与恢复时机、方块灯泡的专项修正见 [首屏检测记录](first-detection-20261110.md)。检查在首屏完成，首页采用服务回执，设置复用本次启动结果；安装后验证与后台监测继续保留。
 
+2026-11-10 用户已另授权全量还原开发。完整111场景、批次依赖、新增设计复查与逐项工程证据见 [开发账本](development-progress.md)；C①阅读与历史弹框按 [当前阅读交接](c-project-reading-handoff.md) 实施。新版窗口和真实后端仍按各自证据关闭，候选稿不改写为已认可。
+
 2026-11-10，用户明确将整个项目的配置与「⋯」入口归到左侧栏项目项；后续C/E实施叠加 [项目设置入口与作用范围](project-settings-placement.md)。此轮仅纠正入口与对象，E完整设计仍为候选。
 
 ## 已确认范围
@@ -21,8 +23,8 @@ B 首页实施从 [B 已认可设计交接](b-home-handoff.md) 与 [固定截图
 | A 记忆处理与完成配置 | revision 13 已认可：Provider、已连接 pi/Codex、Magpie；三份保存、一个当前使用，保存与启用分开 | [处理契约](memory-processing-design.md) |
 | 环境与记忆处理的设置复用 | 已认可：恢复已有组件、任务和配置，不重走初始化 | [复用契约](reusable-setup.md) |
 | B 日常首页 | revision 5 已认可：①宽幅首页、累计统计、日期筛选、具体处理配置、通用标题导航去重和整理按钮动效 | [B 交接](b-home-handoff.md)、[证据](../images/ui-redesign/b-home/README.md) |
-| C Agent 设置与项目知识任务 | 入口位置已确认，完整稿待评审；设置 → Agent 连接；仅项目知识空态提供分析入口，Token提示、可选历史会话，完整稿继续评审 | [场景](scenarios.md)、[电脑级规则](agent-connection-contract.md) |
-| D–O | 仅场景枚举及各自已有规则 | [全部场景](scenarios.md) |
+| C Agent 设置与项目知识任务 | revision 7已认可；叠加已认可C①阅读／历史弹框与侧栏项目菜单位置；完整任务与Native仍分项验收 | [C交接](c-agent-handoff.md)、[阅读交接](c-project-reading-handoff.md)、[项目菜单](project-settings-placement.md) |
+| D–O | 场景与候选分批推进；F/G/H/I、J/K/L/M、N/O及D/E尾项已有候选，逐项核对最新归档 | [全部场景](scenarios.md)、[设计进度](full-design-progress.md)、[开发账本](development-progress.md) |
 
 初始化只有「准备环境 → 连接 Agent → 配置记忆处理」，之后完成配置进入首页。项目、第一项任务和记忆结果不再属于初始化；建立项目知识在日常项目空态独立触发。批量连接不等于多个处理执行者。三个方式页签只显示单行名称；「设为当前使用」位于方式状态栏右侧。
 

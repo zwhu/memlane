@@ -133,7 +133,7 @@ func (s *Store) List(ctx context.Context, q records.ListQuery) (records.Page, er
 			return page, errors.New("invalid page cursor")
 		}
 		// Historical created-order cursors remain accepted only in their old mode.
-		if cursor.Filter != fingerprint && !(cursor.Filter == "" && sortMode == "") {
+		if cursor.Filter != fingerprint && !(cursor.Filter == "" && sortMode == "" && q.Text == "") {
 			return page, errors.New("page cursor scope or sort changed")
 		}
 		if cursor.AsOfMS > 0 {
@@ -171,6 +171,16 @@ func (s *Store) List(ctx context.Context, q records.ListQuery) (records.Page, er
 		}
 		where = append(where, "m.dataset IN ("+strings.Join(marks, ",")+")")
 	}
+	// Scope totals precede content-kind, source, date and cursor filters.
+	countWhere := append([]string{"m.state='active'"}, where[1:]...)
+	if q.Date != "" && s.Schema >= 4 {
+		countWhere = append(countWhere, "NOT EXISTS(SELECT 1 FROM derived_memories d WHERE d.memory=m.id AND d.revision=m.current_revision AND d.state='stale')")
+	}
+	var knowledge, raw int
+	if err := s.DB.QueryRowContext(ctx, `SELECT coalesce(sum(CASE WHEN md.origin!='raw' THEN 1 ELSE 0 END),0),coalesce(sum(CASE WHEN md.origin='raw' THEN 1 ELSE 0 END),0)`+versionJoins+`WHERE `+strings.Join(countWhere, " AND "), args...).Scan(&knowledge, &raw); err != nil {
+		return page, err
+	}
+	page.KnowledgeTotal, page.RawTotal = &knowledge, &raw
 	switch q.Kind {
 	case "", "knowledge":
 		where = append(where, "md.origin!='raw'")
@@ -182,6 +192,13 @@ func (s *Store) List(ctx context.Context, q records.ListQuery) (records.Page, er
 	if q.Source != "" {
 		where = append(where, "md.source=?")
 		args = append(args, q.Source)
+	}
+	if q.Text != "" {
+		if len(q.Text) > 1024 {
+			return page, errors.New("content filter too long")
+		}
+		where = append(where, "(instr(lower(v.title),lower(?))>0 OR instr(lower(v.text),lower(?))>0)")
+		args = append(args, q.Text, q.Text)
 	}
 	if q.Date != "" {
 		loc, err := timezone(q.Timezone)

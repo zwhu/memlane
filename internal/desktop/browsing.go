@@ -192,6 +192,10 @@ func (a *App) memoryEntities(item MemoryItem) []records.CogneeEntity {
 
 func (a *App) projectExplorer(c *ui.Context) {
 	s := &a.browsing
+	if s.View == "memories" {
+		a.details(c)
+		return
+	}
 	ui.Column(c).Key("project-explorer-header").Shrink(0).Padding(18, 24, 0, 24).Gap(10).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).Children(func() {
 		ui.Row(c).Gap(12).Children(func() {
 			ui.Text(c, a.pageTitle()).FontSize(design.Heading).Bold()

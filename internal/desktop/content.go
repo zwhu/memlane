@@ -47,9 +47,14 @@ func (a *App) rememberDraft() {
 type PaneState struct{ ID, Mode string }
 
 func (a *App) navigate(page, scope string) {
+	a.closeKnowledgeHistory()
 	a.saveBrowsing()
 	a.rememberDraft()
 	if a.isMemoryPage() {
+		if a.readingQueries == nil {
+			a.readingQueries = map[string][2]string{}
+		}
+		a.readingQueries[a.page+":"+a.scope] = [2]string{a.readingSearch, a.readingFilter}
 		a.routeStates[a.page+":"+a.scope] = PaneState{a.selectedID, a.detailMode}
 	}
 	oldRoute := a.memoryRoute
@@ -60,6 +65,10 @@ func (a *App) navigate(page, scope string) {
 		}
 	}
 	a.page, a.scope = page, scope
+	if a.isMemoryPage() {
+		query := a.readingQueries[page+":"+scope]
+		a.readingSearch, a.readingFilter = query[0], query[1]
+	}
 	if page != "总览" {
 		a.homeMotion = homeButtonMotion{}
 		a.homeCompletedAt = time.Time{}
