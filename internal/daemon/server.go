@@ -683,6 +683,16 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		return s.store.RecordUsage(operation, *r.UsageObservation)
 	case "get":
 		return s.store.Current(operation, r.Memory)
+	case "processing_get":
+		return s.store.ProcessingConfiguration(operation)
+	case "processing_save":
+		if !r.UserConfirmed {
+			return nil, errors.New("configuration save requires explicit user action")
+		}
+		if r.ProcessingSave == nil {
+			return nil, records.MergeError("invalid_request")
+		}
+		return s.store.SaveProcessing(operation, *r.ProcessingSave, time.Now())
 	case "scopes":
 		return s.store.Scopes(operation)
 	case "check_workspace":

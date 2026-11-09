@@ -1,6 +1,6 @@
 # Memlane
 
-这是面向程序员的 macOS 记忆客户端，使用 Cognee 作为记忆引擎。桌面框架已选择 MyGo；P0 核心客户端、服务与组件链路、P1 手动记忆管理与实际窗口设计对照已通过。P2 已接通真实 Codex MCP、pi Extension 和 App Agent 管理，闭环与交付结果见 docs/p2-validation.md；P3-C1 正式服务和 P3-C2 App 手动合并审核已通过，见 docs/p3-c2-validation.md；P3-C3 摘要/标签、来源失效和逐项恢复已通过，见 docs/p3-c3-validation.md；P3-C4 修改建议与审核已通过，见 docs/p3-c4-validation.md；P3-E 全局经验复制/提炼、条件和来源范围已通过，见 docs/p3-global-validation.md；P3-D1 持久计划、明确启停与真实槽位/取消已通过，见 docs/p3-schedule-validation.md；D2a 持久租约/进程保护已通过，见 docs/p3-recovery-validation.md；D2b 有限自动重试/完整恢复和其余交付继续按 docs/p3-delivery-plan.md 实施。
+这是面向程序员的 macOS 记忆客户端，使用 Cognee 作为记忆引擎。桌面框架已选择 MyGo；P0 核心客户端、服务与组件链路、P1 手动记忆管理与实际窗口设计对照、P2 真实 Codex/pi 共享与 App Agent 管理已通过。P3-C1–C4 正式整理、P3-E 全局经验、P3-D1/D2 计划与有限恢复、U 使用记录、I 引导、A1a traex 日常接入均已通过对应本机验收；G2 代码图谱更新与 F1a–F1d 索引/备份/恢复/空间不足已分层通过，具体边界见 docs/p3-delivery-plan.md。2026-11-09 最新实施转入已认可 A/B 重设计：pi/DeepSeek 限定同包闭环已通过，schema17 记忆处理配置账本通过；真实验证所有者、独立凭据和三协议适配仍在接入 daemon/UI，A/B Native 页面、Codex/Magpie、最终包和正式分发未完成。
 
 - 开始工作前阅读 [产品定义](docs/product.md) 和 [设计决策](docs/design.md)，以已确认的产品规则为准。
 - UI 重设计开发先读 [设计交接入口](docs/ui-redesign/README.md) 和 [A 已认可设计实施交接](docs/ui-redesign/a-setup-handoff.md)。A 环境正文、三步初始化、批量连接、记忆处理与设置复用已由用户确认归档；固定原型提交 `e27a49e35020972d6aea4ab070ec898fb6c9c22e`，截图见 `docs/images/ui-redesign/a-setup/`。B 日常首页 revision 5 已认可，固定原型 `ed6cd37858c5d6f56f9307ecbf6ac454bb6e1edb`，实施先读 [B 交接](docs/ui-redesign/b-home-handoff.md) 与 `docs/images/ui-redesign/b-home/`；C 继续设计，未认可；不得将设计认可、示例数字或浏览器验证当成生产能力已交付。
@@ -11,13 +11,13 @@
 - 连接与处理记忆按 [最新设计交接](docs/ui-redesign/memory-processing-design.md)：连接参考 Cognee Web UI 安装 skill/hooks/插件等；处理方式为自配 LLM provider、已连接 pi/Codex、Magpie 网关。模型目录参考 Magpie，供应商配置复用；Magpie 上游密钥由其管理。整理会话必须隔离采集以防循环；设计已认可归档，真实桥接、Provider 与 Magpie 分别按工程证据验收。
 - 环境与组件、记忆处理按 [页面复用契约](docs/ui-redesign/reusable-setup.md) 同时用于初始化与后续设置；三种配置可同时保留，仅一个当前使用，保存配置与明确启用分开，切换页签不启用。Magpie 默认自动检测本机网关，无需访问凭据；环境准备复用已有组件与后台任务，不重走首任务。
 - 初始配置最新边界同样以 [页面复用契约](docs/ui-redesign/reusable-setup.md) 为准：仅「准备环境／连接 Agent／配置记忆处理」三步，完成后进入日常首页；第一项任务与记忆结果移出初始化。此前产品文档和验收中将首任务列为初始化步骤的安排属于旧版本，不覆盖本轮纠正。「设为当前使用」置于方式状态栏右侧。
-- 开发或验收本地 Agent 模型桥接前，先读 [桥接需求与方案](docs/agent-model-bridge-requirements.md)、[研究依据](docs/research-cognee-agent-appserver.md) 和 [pi 实现与测试记录](docs/pi-model-bridge-validation.md)。pi 0.84.1 / Ollama 的完整包技术链路已通过，qwen3:0.6b 事实质量未通过；测试复用真实默认模型并替换为隔离服务地址，原始 provider 配置直接复用及云端认证尚未实测。按现有实现继续，不把后续界面设计、其他 provider、Codex app-server 模型桥或 Magpie 视为已实现；复现入口与未通过项以验证记录为准。
+- 开发或验收本地 Agent 模型桥接前，先读 [桥接需求与方案](docs/agent-model-bridge-requirements.md)、[研究依据](docs/research-cognee-agent-appserver.md)、[旧 pi/qwen 记录](docs/pi-model-bridge-validation.md) 和 [pi/DeepSeek 新记录](docs/pi-deepseek-validation.md)。pi 0.84.1 / Ollama 的完整包技术链路已通过但 qwen3:0.6b 事实质量未通过；随后 pi 0.84.1 / DeepSeek V4.1 Flash 的完整 Schema、六个固定样本和第五包限定闭环通过。两组结果都只覆盖各自模型、样本和隔离包；独立 Provider、Codex app-server、Magpie、共享配置分派和新版 UI 仍须分别验收。
 - 开发或验收 UI 前，实际打开 [首页设计图](docs/images/home.jpg) 和 [三栏详情设计图](docs/images/memory-detail.jpg)，不能只读 Markdown 图片路径。完成后对照实际窗口截图；工具无法看图时明确视觉验收未完成。
 - 实现依据 [技术方案](docs/technical-plan.md) 与 [实施清单](docs/implementation-plan.md)；区分已选框架、待验证依赖和已通过的验收。
 - 文档默认中文。区分已实现、原型演示与待验证能力，不将示例状态描述为真实接入结果。
 - 首页保留宽幅总览；列表与详情页采用三栏；普通操作在栏内完成。保持紧凑排版、单色图标和按钮、连续浅蓝侧边栏。
 - 不自动扩大首版范围。技术选型通过实际接口与打包验证确定，不由原型技术反推。
-- 主下载包保持轻量，包含 UI、自动更新和组件管理等客户端能力；Cognee 引擎、原生依赖和模型作为独立组件自动准备。本轮 App 使用 Rust 原文 worker，Python 按相同原文契约完成对照，完整代码图谱仍待适配。分别报告主包大小、首次准备下载量与最终磁盘占用。
+- 主下载包保持轻量，包含 UI、自动更新和组件管理等客户端能力；Cognee 引擎、原生依赖和模型作为独立组件自动准备。本轮 App 使用 Rust 原文 worker，Python 按相同原文契约完成对照；G2 代码图谱本机链路已通过，最终包与正式分发仍单独验收。分别报告主包大小、首次准备下载量与最终磁盘占用。
 - 其他主机的记忆管理仅记录于 [Roadmap](docs/roadmap.md)，本次不设计或实现远程管理。
 - 编辑与整理保留记录。AI 提出的合并、覆盖、删除、跨项目移动在确认前不得改变已有有效知识；恢复旧版本产生新版本。
 - 保留用户无关修改。不要提交密钥、真实记忆库、聊天记录或本机 Agent 配置。

@@ -1,0 +1,314 @@
+{
+  "schema_version": 1,
+  "mode": "flowchart",
+  "style": 1,
+  "template_type": "architecture",
+  "text_policy": "strict",
+  "quality_profile": "showcase",
+  "width": 1380,
+  "height": 1020,
+  "title": "Codex → Cognee → Memlane",
+  "subtitle": "先保存会话增量，再触发提炼；Memlane 可先接收原始记录，知识完成后再补入知识层。",
+  "nodes": [
+    {
+      "id": "task",
+      "kind": "rect",
+      "x": 40,
+      "y": 120,
+      "width": 280,
+      "height": 132,
+      "label": "1 · Codex 正常工作",
+      "sublabel": "用户提示、工具调用、回答",
+      "fill": "#ffffff",
+      "stroke": "#cbd7e6",
+      "flat": true
+    },
+    {
+      "id": "entry",
+      "kind": "rect",
+      "x": 380,
+      "y": 120,
+      "width": 280,
+      "height": 132,
+      "label": "2 · 写入 QA 与 Trace",
+      "sublabel": "Stop 配对问题和回答",
+      "fill": "#ffffff",
+      "stroke": "#cbd7e6",
+      "flat": true
+    },
+    {
+      "id": "cache",
+      "kind": "rect",
+      "x": 720,
+      "y": 120,
+      "width": 280,
+      "height": 132,
+      "label": "3 · Cognee 会话层保存",
+      "sublabel": "SessionManager 收下原始增量",
+      "fill": "#f5f9ff",
+      "stroke": "#cbd7e6",
+      "flat": true
+    },
+    {
+      "id": "trigger",
+      "kind": "rect",
+      "x": 1060,
+      "y": 120,
+      "width": 280,
+      "height": 132,
+      "label": "4 · 插件触发 improve",
+      "sublabel": "阈值自动触发 / 会话结束",
+      "fill": "#ffffff",
+      "stroke": "#cbd7e6",
+      "flat": true
+    },
+    {
+      "id": "rawgraph",
+      "kind": "rect",
+      "x": 1060,
+      "y": 440,
+      "width": 280,
+      "height": 132,
+      "label": "5 · 原始材料进入图谱",
+      "sublabel": "persist_session_qa",
+      "fill": "#ffffff",
+      "stroke": "#cbd7e6",
+      "flat": true
+    },
+    {
+      "id": "context",
+      "kind": "rect",
+      "x": 720,
+      "y": 440,
+      "width": 280,
+      "height": 132,
+      "label": "6 · 提取会话上下文",
+      "sublabel": "extract_agent_context",
+      "fill": "#ffffff",
+      "stroke": "#cbd7e6",
+      "flat": true
+    },
+    {
+      "id": "distill",
+      "kind": "rect",
+      "x": 380,
+      "y": 440,
+      "width": 280,
+      "height": 132,
+      "label": "7 · 提炼并筛选经验",
+      "sublabel": "LOAD → CURATE → ACCEPT",
+      "fill": "#ffffff",
+      "stroke": "#cbd7e6",
+      "flat": true
+    },
+    {
+      "id": "learning",
+      "kind": "rect",
+      "x": 40,
+      "y": 440,
+      "width": 280,
+      "height": 132,
+      "label": "8 · 提炼知识构建完成",
+      "sublabel": "Session learning 独立文档",
+      "fill": "#f5f9ff",
+      "stroke": "#cbd7e6",
+      "flat": true
+    },
+    {
+      "id": "read",
+      "kind": "rect",
+      "x": 40,
+      "y": 760,
+      "width": 280,
+      "height": 132,
+      "label": "9 · Memlane 读取结果",
+      "sublabel": "批准的 dataset / session",
+      "fill": "#ffffff",
+      "stroke": "#cbd7e6",
+      "flat": true
+    },
+    {
+      "id": "store",
+      "kind": "rect",
+      "x": 380,
+      "y": 760,
+      "width": 280,
+      "height": 132,
+      "label": "10 · 原始与知识分别入库",
+      "sublabel": "raw / knowledge 分开保存",
+      "fill": "#f5f9ff",
+      "stroke": "#cbd7e6",
+      "flat": true
+    },
+    {
+      "id": "index",
+      "kind": "rect",
+      "x": 720,
+      "y": 760,
+      "width": 280,
+      "height": 132,
+      "label": "11 · 建立当前版本索引",
+      "sublabel": "Rust worker / E5",
+      "fill": "#ffffff",
+      "stroke": "#cbd7e6",
+      "flat": true
+    },
+    {
+      "id": "recall",
+      "kind": "rect",
+      "x": 1060,
+      "y": 760,
+      "width": 280,
+      "height": 132,
+      "label": "12 · 新会话消费记忆",
+      "sublabel": "Memlane memory_search / get",
+      "fill": "#ffffff",
+      "stroke": "#cbd7e6",
+      "flat": true
+    },
+    {
+      "id": "buffer",
+      "kind": "rect",
+      "x": 450,
+      "y": 310,
+      "width": 260,
+      "height": 84,
+      "label": "失联：插件本地暂存",
+      "sublabel": "恢复后补送会话条目",
+      "fill": "#fff8ed",
+      "stroke": "#dfc699",
+      "flat": true
+    },
+    {
+      "id": "empty",
+      "kind": "rect",
+      "x": 380,
+      "y": 625,
+      "width": 280,
+      "height": 82,
+      "label": "提炼产物为 0 / 未完成",
+      "sublabel": "无新知识、跳过与错误需区分",
+      "fill": "#fff8ed",
+      "stroke": "#dfc699",
+      "flat": true
+    }
+  ],
+  "arrows": [
+    {
+      "id": "edge-1",
+      "source": "task",
+      "target": "entry",
+      "source_port": "right",
+      "target_port": "left",
+      "flow": "read"
+    },
+    {
+      "id": "edge-2",
+      "source": "entry",
+      "target": "cache",
+      "source_port": "right",
+      "target_port": "left",
+      "flow": "read"
+    },
+    {
+      "id": "edge-3",
+      "source": "cache",
+      "target": "trigger",
+      "source_port": "right",
+      "target_port": "left",
+      "flow": "read"
+    },
+    {
+      "id": "edge-4",
+      "source": "trigger",
+      "target": "rawgraph",
+      "source_port": "bottom",
+      "target_port": "top",
+      "flow": "read"
+    },
+    {
+      "id": "edge-5",
+      "source": "rawgraph",
+      "target": "context",
+      "source_port": "left",
+      "target_port": "right",
+      "flow": "read"
+    },
+    {
+      "id": "edge-6",
+      "source": "context",
+      "target": "distill",
+      "source_port": "left",
+      "target_port": "right",
+      "flow": "read"
+    },
+    {
+      "id": "edge-7",
+      "source": "distill",
+      "target": "learning",
+      "source_port": "left",
+      "target_port": "right",
+      "flow": "read"
+    },
+    {
+      "id": "edge-8",
+      "source": "learning",
+      "target": "read",
+      "source_port": "bottom",
+      "target_port": "top",
+      "flow": "read"
+    },
+    {
+      "id": "edge-9",
+      "source": "read",
+      "target": "store",
+      "source_port": "right",
+      "target_port": "left",
+      "flow": "read"
+    },
+    {
+      "id": "edge-10",
+      "source": "store",
+      "target": "index",
+      "source_port": "right",
+      "target_port": "left",
+      "flow": "read"
+    },
+    {
+      "id": "edge-11",
+      "source": "index",
+      "target": "recall",
+      "source_port": "right",
+      "target_port": "left",
+      "flow": "read"
+    },
+    {
+      "id": "buffer-write",
+      "source": "entry",
+      "target": "buffer",
+      "source_port": "bottom",
+      "target_port": "top",
+      "flow": "feedback"
+    },
+    {
+      "id": "buffer-replay",
+      "source": "buffer",
+      "target": "cache",
+      "source_port": "right",
+      "target_port": "bottom",
+      "flow": "feedback"
+    },
+    {
+      "id": "empty-result",
+      "source": "distill",
+      "target": "empty",
+      "source_port": "bottom",
+      "target_port": "top",
+      "flow": "feedback"
+    }
+  ],
+  "legend": [],
+  "footer": "固定插件 1.7.7 / 上游 997fd6f · 实装 Cognee 1.6.7 · 示例状态，不读取真实会话",
+  "footer_x": 40,
+  "footer_y": 990
+}

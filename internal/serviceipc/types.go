@@ -61,6 +61,7 @@ type Request struct {
 	Memory              string                       `json:"memory,omitempty"`
 	UserConfirmed       bool                         `json:"user_confirmed,omitempty"`
 	ListQuery           records.ListQuery            `json:"list_query,omitempty"`
+	ProcessingSave      *records.ProcessingSave      `json:"processing_save,omitempty"`
 	Project             records.ScopeDraft           `json:"project,omitempty"`
 	Scope               string                       `json:"scope,omitempty"`
 	AllScopes           bool                         `json:"all_scopes,omitempty"`

@@ -1,0 +1,78 @@
+{
+  "artifact": "离线动态流程说明",
+  "scope": "浏览器交互与显示，不是运行链路验收",
+  "verified_at": "2026-11-09T07:21:32.658Z",
+  "browser": "Chrome/156.0.8078.79",
+  "checks": [
+    {
+      "name": "正常主链 12 步与分层计数",
+      "passed": true
+    },
+    {
+      "name": "用户编辑 v2 保留官方 v1，重复接收不增加数量",
+      "passed": true
+    },
+    {
+      "name": "后台处理中：Memlane 已接收 raw，knowledge 仍为 0，当前阶段与提前接收分开显示",
+      "passed": true
+    },
+    {
+      "name": "处理中场景可以恢复观察",
+      "passed": true
+    },
+    {
+      "name": "服务失联与恢复补送",
+      "passed": true
+    },
+    {
+      "name": "短会话停在会话保存，结束同步后继续",
+      "passed": true
+    },
+    {
+      "name": "本轮无已处理知识：仅接收原始材料，未生成示例知识",
+      "passed": true
+    },
+    {
+      "name": "真实播放包含运动数据点，暂停冻结进度",
+      "passed": true
+    },
+    {
+      "name": "自动播放到终点停止",
+      "passed": true
+    },
+    {
+      "name": "点击节点、键盘激活与拖动时间轴",
+      "passed": true
+    },
+    {
+      "name": "图中文字未超过卡片预留宽度，放大可返回",
+      "passed": true
+    },
+    {
+      "name": "1440、1100、390 宽度无页面横向溢出",
+      "passed": true
+    },
+    {
+      "name": "减少动态效果隐藏运动数据点，保留逐步交互",
+      "passed": true
+    },
+    {
+      "name": "所有页面下载与说明链接指向已存在的文件",
+      "passed": true
+    },
+    {
+      "name": "Chrome 无脚本错误，无 HTTP 网络请求",
+      "passed": true
+    }
+  ],
+  "screenshots": [
+    "preview.png",
+    "raw-before-knowledge.png"
+  ],
+  "diagram": {
+    "width": 2400,
+    "height": 1774
+  },
+  "errors": [],
+  "network_requests": []
+}

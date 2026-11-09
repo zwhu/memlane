@@ -1,6 +1,6 @@
 # 第一版实施清单
 
-执行依据：[技术方案](technical-plan.md)、[产品定义](product.md)、[设计决策](design.md)。当前 P0 核心工程流程、P1 手动界面闭环与实际窗口对照已通过；P2 真实 Codex/pi 接入和 App 管理已通过，结果见 [P2 验证记录](p2-validation.md)。2026-11-07 用户明确要求停止旁白等旁支验证，以主流程走通为本轮标准；VoiceOver 未通过，移到后续增强，不伪称通过。证据见 [P0 验证记录](p0-validation.md)。
+执行依据：[技术方案](technical-plan.md)、[产品定义](product.md)、[设计决策](design.md)。当前 P0–P2 核心流程、P3 主要整理/计划/恢复切片、G2 代码图谱及 F1a–F1d 恢复切片已分层通过。2026-11-09 最新实施转入 A/B 重设计：pi/DeepSeek 限定闭环和 schema17 配置账本已通过，processing runner/Keychain/三协议适配仍在接入 daemon/UI。完整状态见 [交付矩阵](p3-delivery-plan.md) 与 [A/B 实施记录](ui-redesign/implementation-20261109.md)。VoiceOver 未通过且不作为本轮主流程门槛，不伪称通过。
 
 先完成 P0 的运行与打包验证，再实现界面与真实数据；首个使用里程碑是 **Codex 写入项目经验 → App 查看/编辑 → pi 在同项目检索到当前版本**。阶段是依赖顺序，不是工期承诺。
 
@@ -309,3 +309,12 @@ App校验/替换范围预览/取消保留v3，确认后双owner锁保护完整�
 - [x] 长文列表240字符预览、UTF-8详情/来源/历史/恢复预览分段，真实App全文复制SHA保持；旧窗口超时与driver持有SQLite句柄的卸载失败保留，修后无清理错误。
 
 见 [F1d验证](p4-diskfull-validation.md)。attach异常/未知映射/链接、busy后编号复用为明确夹具；实际既有挂载/文件/IPC归属负例单列。750KB重复正文索引未通过，不用短v3替代该能力；后台许可、其他崩溃、路径更新、R/A以及F2/F3仍继续，总Goal未完成。
+
+### A/B 重设计实施：进行中
+
+- [x] pi 0.84.1 / DeepSeek V4.1 Flash 完整 Schema、真实流式取消、六个固定质量样本第三轮及第五包同根官方采集/提炼/出处/App v2/新会话闭环；结论限所列模型、样本和隔离包，见 [DeepSeek 验证](pi-deepseek-validation.md)。
+- [x] schema16→17 记忆处理配置账本：三种模式保存候选、不可变修订、独立当前选择、验证尝试/代次、恢复失效及任务冻结基础；真实 SQLite/WAL、49张旧表、完整包daemon迁移通过，见 [A1 验证](memory-processing-ledger-validation.md)。
+- [ ] 将真实验证所有者、Keychain凭据版本和OpenAI Responses/Chat、Anthropic、Magpie适配接入daemon生命周期、共享执行槽位、私有状态/取消API与显式启用；当前只有基础实现和夹具，不称真实Provider/Magpie通过，见 [在途记录](processing-validation-runtime.md)。
+- [ ] 实现并验证A三步配置、电脑级批量连接、记忆处理与设置复用的Native页面；当前设计认可和schema17账本不代替实际窗口。
+- [ ] 实现并验证B首页真实累计/日期、建议/计划/整理状态、动效和可信缓存；示例数字与原型不进入生产结论。
+- [ ] 收口剩余F1、F2最终包及F3 Developer ID/公证/Gatekeeper/正式更新源/干净macOS验收。

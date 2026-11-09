@@ -2,7 +2,7 @@
 
 一个面向程序员的 macOS 记忆客户端，让多个编码 Agent 共用项目知识，减少重复交代背景。
 
-名字取自 **memory lane**。使用 Cognee 作为记忆引擎，把好看、简单使用和方便管理作为产品重点。这是一个个人 side project，P0 核心工程链路、P1 手动记忆管理及 P2 真实 Codex/pi 共享已通过隔离合成数据验证，App 实际系统窗口已完成设计对照。
+名字取自 **memory lane**。使用 Cognee 作为记忆引擎，把好看、简单使用和方便管理作为产品重点。这是一个个人 side project。P0–P2 核心客户端、真实记忆管理与 Codex/pi 共享已通过；P3 整理、审核、计划、恢复、使用记录和初始化的主要切片，以及 G2 代码图谱与 F1a–F1d 恢复切片已有本机证据。当前开发重点是把已认可的 A/B 重设计落到 Native App，并统一 Provider、pi/Codex 与 Magpie 的记忆处理配置。
 
 ## 产品方向
 
@@ -10,11 +10,11 @@
 - 手动新增与编辑：保留来源、修改记录和单条版本恢复。
 - 手动与定期整理：自动提炼和归类，合并、覆盖、删除等建议经用户确认后生效。
 - 全局总览：每日新增记忆热力图、最近新增、待确认建议。
-- 项目代码图谱：手动启用，后续自动更新。
+- 项目代码图谱：手动启用、自动合并变化并保留来源与状态。
 - 本地运行：管理记忆服务及其后台生命周期。
-- 轻量下载包：主客户端包含 UI、自动更新和组件管理；Cognee 引擎与模型独立准备。本轮 App 使用 Rust 原文 worker，Python 归档按相同原文契约完成对照；完整代码图谱仍待适配。
+- 轻量下载包：主客户端包含 UI、自动更新和组件管理；Cognee 引擎与模型独立准备。本轮 App 使用 Rust 原文 worker，Python 归档按相同原文契约完成对照；最终包与正式分发仍待收口。
 
-**Codex 0.147.0 MCP 与 pi 0.84.1 Extension** 已完成真实工具往返；TRAE、traex 留待后续适配。记忆数据保存在本地；使用云端模型的 Agent 处理内容时，相关输入仍会交给该模型服务。
+Codex、pi 与 traex 已分别取得限定版本的真实往返证据；TRAE IDE 真实模型仍待隔离登录验收。旧 qwen3:0.6b 桥保留“技术通过、事实质量失败”，最新 pi/DeepSeek V4.1 Flash 已通过完整 Schema、固定样本和第五包限定闭环。记忆数据保存在本地；使用云端模型的 Agent 处理内容时，相关输入仍会交给该模型服务。
 
 ## 当前材料
 
@@ -22,6 +22,11 @@
 - [设计决策与界面](docs/design.md)
 - [第一版技术方案](docs/technical-plan.md) — MyGo 轻量客户端、Go 服务、独立下载的 Cognee 运行时和本地数据库。
 - [实施清单](docs/implementation-plan.md) — 从打包验证到首个跨 Agent 记忆闭环。
+- [当前交付矩阵](docs/p3-delivery-plan.md) — 已通过切片、剩余工程与正式分发条件。
+- [A/B 实施记录](docs/ui-redesign/implementation-20261109.md) — 最新重设计的真实工程状态与验收矩阵。
+- [记忆处理配置账本](docs/memory-processing-ledger-validation.md) — schema17 持久配置与迁移验证。
+- [记忆处理运行时记录](docs/processing-validation-runtime.md) — 在途 runner、Keychain 与协议适配边界。
+- [Codex → Cognee → Memlane 动态流程](docs/cognee-codex-flow/README.md) — 原始会话、后台提炼、分层接收与当前版本读取的职责边界。
 - [本地开发](docs/development.md) — 工具链准备、运行、测试与打包命令。
 - [P2 验证记录](docs/p2-validation.md) — 真实 Codex→App→pi、连接管理、范围、恢复与故障、完整包和三类体积。
 - [Agent 接入契约](docs/agent-contract.md) — MCP/CLI 工具、持久化回执、当前版本与授权范围。
@@ -38,9 +43,9 @@
 
 ## 当前实现与开发
 
-已有 MyGo Native UI 客户端、独立 Go 记忆服务、业务 SQLite、Rust/Python worker、组件管理与更新链路。P0 已验证原文、组件准备、后台生命周期及受控 HTTPS 更新；P1 已验证项目登记、来源、新增/编辑/搜索、历史/恢复与过期编辑保护。P2 已完成真实 Codex 保存 v1 → App 查看/编辑 v2 → pi 检索当前正文/来源/版本，另验证 App 恢复 v3、真实 pi 读取、项目/worktree 隔离、幂等重试及停服/重启。App 内 Agent 发现、连接、范围、实际验证与断开已接通，保留无关配置。首页来自实际首次可用活动，整理显示未接入空态；系统窗口完成设计对照，原型 HTML/CSS 仍只作设计参考。自动化均使用隔离配置和合成数据，未覆盖真实 Agent 设置或导入聊天。
+已有 MyGo Native UI、独立 Go 服务、业务 SQLite、Rust/Python worker、组件管理、更新、整理审核、持久计划、有限恢复和代码图谱链路。Codex 首任务已在空业务根完成“官方采集 → 首材料登记项目 → 完整出处 → App 编辑 → 新会话读取当前版本”；pi/DeepSeek 第五包完成同根提炼与限定质量核对。schema17 已加入三种记忆处理方式的不可变配置账本和独立当前选择；新的验证所有者、Keychain 凭据版本与三协议 HTTP 适配已有测试，但尚未接入 daemon 私有 API、正式任务分派或 A/B Native 页面。
 
-当前本机 arm64 验证包：主 DMG **13.11 MB**、App 文件合计 **29.21 MB**；Rust 路线首次额外下载 **285.75 MB**，准备后 App 与实际运行目录普通文件合计 **520.94 MB**（含组件、模型、缓存与合成数据/设置）。三类体积分别统计，详见 [P2 验证记录](docs/p2-validation.md)。当前仅有 ad-hoc 签名；Developer ID、公证和正式更新源尚未配置。
+不同阶段包的体积口径分别保留在对应验证记录中；最新 pi/DeepSeek 隔离包和组件数据见 [pi/DeepSeek 验证](docs/pi-deepseek-validation.md)。当前仍只有本机 ad-hoc 签名；最终 F2 包、Developer ID、公证、Gatekeeper、正式更新源和干净 macOS 验收均未完成。
 
 ```sh
 python3 scripts/bootstrap.py
@@ -51,7 +56,7 @@ sh scripts/go.sh tool mygo dev
 
 完整客户端验证包使用 `python3 scripts/build-client.py --out build/p0-final` 构建，包含 helper 与 LaunchAgent 后处理；源码、依赖清单和验证脚本入库，工具链、模型、运行数据及构建产物保留在忽略目录。开发与验收命令见 [开发说明](docs/development.md)。
 
-下一阶段 P3：固定版本快照、受限后台执行、结构化提案与栏内确认，保留未经确认不得改变有效知识的规则；代码图谱、其余 Agent 与正式分发在 P4。
+当前下一阶段：先把真实验证 runner、凭据引用、共享执行槽位、状态/取消 API 和显式启用接进 daemon，再实现 A 三步配置与设置复用；随后落地 B 首页真实统计与任务状态，最后收口剩余 F1、F2 最终包与 F3 正式分发。未经确认不得改变有效知识的规则继续有效。
 
 查看交互原型：
 

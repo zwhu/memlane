@@ -470,3 +470,15 @@ F1 无模型复现命令为 `python3 scripts/verify-p4-helper-replacement.py --r
 F1c2综合入口为 `verify-p4-restore-authorizations.py`；仅在上述已通过停服根、还没有Agent/计划/代码时启动，--resume-connection只保留第一次未验证初始化失败后的owned连接。初始化前必须实际Verify，不伪造verified_generation。`verify-p4-restore-auth-presentation.py --out <独立报告>`仅针对记录的v2已恢复根，继续新ID真实Verify与显式代码重开。最终完整包/过期文案使用 `verify-p4-restore-final-app.py --out <独立报告>`，它不调用模型，不拿瞬时Notice代替重启后的持久验证状态。
 
 `sh scripts/go.sh test ./cmd/p4-restore-replay-check -v -count=1`验证只读前置门禁；构建该checker后仅可给当前已停服合成根、已完成backup/operation UUID验证全表保持。新/未完成ID、root链接/非合成/绑定不符在Store.Open前拒绝；不把checker加入主包或日常Agent工具。它不停止正在运行的服务、不触发新恢复、不迁移旧库。详细失败、真实通过和正式分发剩余项以恢复验证记录为准。
+
+## A/B 记忆处理配置开发
+
+schema17 配置账本与包迁移复现入口见 [A1 验证](memory-processing-ledger-validation.md)，运行时所有权和未完成边界见 [运行时记录](processing-validation-runtime.md)。常规回归先运行：
+
+```sh
+sh scripts/go.sh test ./...
+sh scripts/go.sh vet ./...
+CGO_ENABLED=1 sh scripts/go.sh test -race ./internal/store ./internal/daemon ./internal/processing ./internal/credentials
+```
+
+Keychain 测试只写随机合成字节和独立 UUID，结束时精确删除；不得换成用户 Agent 或供应商密钥。HTTP 夹具只证明完整 Schema 请求、目录、重定向和取消边界，不代替真实 Provider/Magpie。接入 daemon 后还必须用新普通包和空合成根核对验证状态、取消、显式启用、重启失效和任务冻结；未打开实际 Native A/B 窗口前不得标新版 UI 通过。
