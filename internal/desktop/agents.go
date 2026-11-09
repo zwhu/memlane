@@ -3,8 +3,6 @@ package desktop
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -652,61 +650,14 @@ func (a *App) verifyAgent() {
 			s.Model = settings.Model
 		}
 	}
-	marker := "memlaneConnectionCheck" + strings.ReplaceAll(conn.ID, "-", "") + fmt.Sprint(conn.Generation)
-	params, _ := json.Marshal(map[string]any{"operation_id": "connection-check-" + fmt.Sprint(conn.Generation), "text": "Memlane synthetic connection verification " + marker, "origin": "raw", "source": map[string]any{"fragment": "Memlane connection verification; synthetic only"}})
-	prompt := "这是 Memlane 合成连接验证。仅使用 Memlane memory tools，不读取文件或运行命令。先 memory_save 保存：" + string(params) + "。取得 persisted 回执后，用 memory_status 等待索引完成，再 memory_search 查询 " + marker + "。失败明确报告，不能宣称成功。"
 	ctx, cancel := context.WithCancel(s.Context)
 	s.Cancel = cancel
 	s.Busy = true
 	s.Notice = "正在让真实 Agent 验证读写…"
-	options := agents.RunOptions{Prompt: prompt, Provider: s.Provider, Model: s.Model, PiAuthDirectory: os.Getenv("MEMLANE_PI_AUTH_DIRECTORY"), TraeAuthHome: os.Getenv("MEMLANE_TRAE_AUTH_DIRECTORY")}
+	options := agents.RunOptions{Provider: s.Provider, Model: s.Model, PiAuthDirectory: os.Getenv("MEMLANE_PI_AUTH_DIRECTORY"), TraeAuthHome: os.Getenv("MEMLANE_TRAE_AUTH_DIRECTORY")}
 	go func() {
 		defer cancel()
-		execution, err := agents.Run(ctx, d, i, options)
-		if err == nil {
-			var memoryID string
-			var searchable bool
-			var status bool
-			for _, call := range execution.Calls {
-				if !call.Response.OK {
-					continue
-				}
-				switch call.Tool {
-				case "memory_save":
-					var receipt records.SaveReceipt
-					if json.Unmarshal(call.Response.Result, &receipt) == nil && receipt.Persisted && strings.Contains(receipt.Record.Text, marker) {
-						memoryID = receipt.Record.Memory
-					}
-				case "memory_status":
-					var v records.Version
-					if json.Unmarshal(call.Response.Result, &v) == nil && v.Memory == memoryID && v.IndexState == "indexed" {
-						status = true
-					}
-				case "memory_search":
-					var results struct {
-						Hits []records.SearchHit `json:"hits"`
-					}
-					if json.Unmarshal(call.Response.Result, &results) == nil {
-						for _, hit := range results.Hits {
-							if hit.Version.Memory == memoryID && strings.Contains(hit.Version.Text, marker) {
-								searchable = true
-							}
-						}
-					}
-				}
-			}
-			if memoryID == "" || !status || !searchable {
-				err = errors.New("真实 Agent 未完成保存、索引状态和检索回执，连接尚不可用")
-			}
-		}
-		failure := ""
-		if err != nil {
-			failure = err.Error()
-		}
-		persistErr := agents.SaveVerification(s.Root, conn.ID, conn.Generation, failure)
-		if err == nil {
-			err = persistErr
-		}
+		_, err := agents.VerifyConnection(ctx, d, i, options)
 		if s.Context.Err() != nil {
 			return
 		}

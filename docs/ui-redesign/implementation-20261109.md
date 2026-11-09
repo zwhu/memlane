@@ -101,8 +101,8 @@ B02根因是stop/quiesce成功后仅在写回执成功时停止。成功perform�
 
 B03的0.0.4新Rust归档、Python源和daemon各跨10005真实请求，旧序号重放仍拒绝、活动取消/终态/停止、Go版本索引/当前检索通过；旧0.0.3跨限故障准确传播为unavailable。新归档未拼接第五包；待后续Native包包含0.0.4再完成适用验收。审查发现的启动取消race、Agent旧刷新覆盖、恢复路由、原报告覆盖、Go超时组清理/primary保持及Enola版本门禁均修复；证据review-runtime-continuation-001，短Go请求预算是明确真实进程故障报告而非正常通过。
 
-共享处理配置的正式持久所有者与不可变修订已由A1账本完成；当前下一阶段是把真实验证所有者、凭据引用、共享槽位、状态/取消私有API和显式启用接进daemon，再用新包和新合成根取得实际pi回执。草稿/查看方式属于UI，三份已保存候选与一个当前修订属于daemon单写SQLite；验证必须由实际运行者产生并绑定配置/凭据/连接代次，运行任务冻结其启动修订。旧单配置与traex计划迁移必须保留原件和授权，Q01–Q03决定仍待用户，不静默收费切换或制造首日。正式整理/计划仍走traex，不能据pi模型桥或协议夹具通过宣称已全局切换。
+共享处理配置的正式持久所有者与不可变修订已由A1账本完成；真实 pi 验证所有者、共享槽位、状态/取消私有API和显式启用现已接进daemon，并由新包和新合成根取得实际 Schema、abort ACK、回收、启用与重启回执。草稿/查看方式仍属于UI，三份已保存候选与一个当前修订属于daemon单写SQLite；运行任务冻结其启动修订尚未接正式 Cognee/P3 任务。旧单配置与traex计划迁移必须保留原件和授权，Q01–Q03决定仍待用户，不静默收费切换或制造首日。正式整理/计划仍走traex，不能据本次 pi 验证宣称已全局切换。
 
 A1账本切片全仓test/vet和Store/daemon race通过；普通格式完整包daemon在新合成根验证schema16→17、49张旧表及一致性备份、v2原文、保存候选重放/重启、主动停止保护与明确恢复。驱动001/002只读WAL失败保留，003实际passed；最终6个自有daemon全部退出、socket不存在。详见[账本验证](../memory-processing-ledger-validation.md)。未调用模型、未打开新A窗口、未接真实验证/全局分派，不关闭A1整体或R01。独立App随包LaunchAgent仍为默认label，尚未注册，后续普通Native包身份须修正。
 
-账本后的实现新增pi依赖解析与验证所有者、macOS Keychain不可变凭据版本，以及OpenAI Responses/Chat、Anthropic和Magpie协议基础。pi 验证所有者已接入 daemon 生命周期、与整理共用的执行槽位、开始/状态/取消私有 IPC 和显式启用门禁；新 `service.json` 显式携带客户端根。当前全仓test/vet、受影响race、合成Keychain存取及HTTP夹具通过。真实独立Provider/Magpie、daemon 新完整包中的实际 pi 回执、正式任务分派和Native页面仍未验收。详见[运行时记录](../processing-validation-runtime.md)。
+账本后的实现新增pi依赖解析与验证所有者、macOS Keychain不可变凭据版本，以及OpenAI Responses/Chat、Anthropic和Magpie协议基础。pi 验证所有者已接入 daemon 生命周期、与整理共用的执行槽位、开始/状态/取消私有 IPC 和显式启用门禁；新 `service.json` 显式携带客户端根。新完整包已在空业务根通过真实 pi/DeepSeek 连接验证、活动取消、abort ACK、原生 Schema、进程回收、启用和重启保持；首轮驱动误判保留。真实独立Provider/Magpie、正式任务分派和Native页面仍未验收。详见[运行时记录](../processing-validation-runtime.md)。

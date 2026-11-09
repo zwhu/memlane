@@ -22,7 +22,7 @@ B 首页实施从 [B 已认可设计交接](b-home-handoff.md) 与 [固定截图
 
 ## 当前工程状态
 
-设计认可与生产实现继续分开记录。pi/DeepSeek 的限定同包闭环已经通过；A1 schema17 配置账本、不可变修订、独立当前选择和完整包 daemon 迁移也已通过。其后的真实验证所有者、Keychain 凭据版本与三协议 HTTP 适配已有代码和测试，但尚未接 daemon 私有 API、显式启用、正式任务分派或 Native 页面，也没有取得真实独立 Provider/Magpie 推理证据。
+设计认可与生产实现继续分开记录。pi/DeepSeek 的限定同包闭环已经通过；A1 schema17 配置账本、不可变修订、独立当前选择、完整包 daemon 迁移，以及 daemon 所有的真实 pi 验证／活动取消／显式启用／重启保持也已通过。Keychain 凭据版本与三协议 HTTP 适配仍只有基础和夹具，尚未取得真实独立 Provider/Magpie 推理证据；正式任务分派与 Native 页面也未完成。
 
 A V01–V06、V10–V14 和 B 新首页仍未通过生产验收。当前矩阵、失败保留和下一步见 [A/B 实施记录](implementation-20261109.md)、[配置账本验证](../memory-processing-ledger-validation.md)与[运行时在途记录](../processing-validation-runtime.md)。不得用这些基础结构恢复旧初始化流程，或把技术夹具写成新设计已交付。
 

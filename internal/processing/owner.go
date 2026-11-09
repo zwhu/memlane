@@ -60,6 +60,23 @@ type Owner struct {
 	wg                              sync.WaitGroup
 	closed                          bool
 	runs                            map[string]validationRun
+	observations                    map[string]records.ProcessingValidationProgress
+	observationOrder                []string
+}
+
+func (o *Owner) remember(id string, progress records.ProcessingValidationProgress) {
+	if o.observations == nil {
+		o.observations = make(map[string]records.ProcessingValidationProgress)
+	}
+	if _, exists := o.observations[id]; !exists {
+		o.observationOrder = append(o.observationOrder, id)
+	}
+	o.observations[id] = progress
+	for len(o.observationOrder) > 64 {
+		oldest := o.observationOrder[0]
+		o.observationOrder = o.observationOrder[1:]
+		delete(o.observations, oldest)
+	}
 }
 
 func (o *Owner) resolve(ctx context.Context, spec records.ProcessingSpec) (PiBinding, error) {
@@ -131,6 +148,9 @@ func (o *Owner) execute(ctx context.Context, cancel context.CancelFunc, validati
 	defer cancel()
 	defer func() {
 		o.mu.Lock()
+		if active, ok := o.runs[validation.ID]; ok {
+			o.remember(validation.ID, active.progress)
+		}
 		delete(o.runs, validation.ID)
 		o.mu.Unlock()
 	}()
@@ -200,6 +220,16 @@ func (o *Owner) execute(ctx context.Context, cancel context.CancelFunc, validati
 		active.progress.Events[event]++
 		o.mu.Unlock()
 	})
+	o.mu.Lock()
+	active := o.runs[validation.ID]
+	active.progress.Terminal = execution.Terminal
+	active.progress.Reaped = execution.Reaped
+	active.progress.GroupGone = execution.GroupGone
+	active.progress.NativeSchemaRequested = execution.NativeSchemaRequested
+	active.progress.AbortSent = execution.AbortSent
+	active.progress.AbortAcknowledged = execution.AbortAcknowledged
+	o.runs[validation.ID] = active
+	o.mu.Unlock()
 	if execution.Started && !execution.GroupGone && o.Poison != nil {
 		o.Poison()
 	}
@@ -244,6 +274,13 @@ func (o *Owner) Status(ctx context.Context, id string) (records.ProcessingValida
 		progress := active.progress
 		progress.Events = make(map[string]int, len(active.progress.Events))
 		for event, count := range active.progress.Events {
+			progress.Events[event] = count
+		}
+		out.Progress = &progress
+	} else if observed, ok := o.observations[id]; ok {
+		progress := observed
+		progress.Events = make(map[string]int, len(observed.Events))
+		for event, count := range observed.Events {
 			progress.Events[event] = count
 		}
 		out.Progress = &progress

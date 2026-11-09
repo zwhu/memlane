@@ -56,7 +56,7 @@ func main() {
 				}
 			}
 		}
-	case "run":
+	case "run", "verify_connection":
 		if !isolatedRoot(r.Options.ClientRoot) {
 			err = fmt.Errorf("isolated P2 root required")
 			break
@@ -64,7 +64,11 @@ func main() {
 		var installed agents.Installation
 		installed, err = agents.LoadInstallation(r.Options.ClientRoot, r.Connection.ID)
 		if err == nil {
-			result, err = agents.Run(context.Background(), agents.Probe(context.Background(), r.Connection.Agent, r.Options.AgentPath), installed, r.Run)
+			if r.Action == "verify_connection" {
+				result, err = agents.VerifyConnection(context.Background(), agents.Probe(context.Background(), r.Connection.Agent, r.Options.AgentPath), installed, r.Run)
+			} else {
+				result, err = agents.Run(context.Background(), agents.Probe(context.Background(), r.Connection.Agent, r.Options.AgentPath), installed, r.Run)
+			}
 		}
 	default:
 		err = fmt.Errorf("unknown action")

@@ -1,6 +1,6 @@
 # 记忆处理验证与独立凭据：在途工程记录
 
-2026-11-09。此页记录 A1 账本之后的实现。pi 验证所有者现已接入 daemon 生命周期、共享执行槽位、私有 RPC 与显式启用动作；尚未接入 Native 页面、Cognee/P3 整项任务分派，也未用新包执行这条 daemon runner 的真实 pi 推理。不能称 A1、Provider 或全局任务分派通过。账本包证据见 [A1 验证](memory-processing-ledger-validation.md)。
+2026-11-09。此页记录 A1 账本之后的实现。pi 验证所有者已接入 daemon 生命周期、共享执行槽位、私有 RPC 与显式启用动作，并由新完整包和空业务根取得真实 pi/DeepSeek 证据；尚未接入 Native 页面或 Cognee/P3 整项任务分派。不能把这项结果扩展为独立 Provider、Magpie 或全局任务分派通过。账本包证据见 [A1 验证](memory-processing-ledger-validation.md)。
 
 ## pi 验证所有者
 
@@ -18,7 +18,18 @@ daemon 启动时先把遗留 `validating` 记录协调为中断，再创建唯�
 
 私有 IPC 已提供开始验证、读取持久状态与即时进程观察、明确取消和明确启用。开始、取消、启用均要求用户动作；UI/Agent 仍没有伪造完成回执的接口。验证与正式整理共用 `organizerSlot`，排队后重新检查连接和依赖。启用再次解析实时依赖，并由账本核对同一成功验证、当前候选和选择代次；保存或验证成功都不会自动切换当前方式。
 
-定向测试覆盖 daemon 调用门禁、真实 SQLite 终态、共享所有者状态、取消、启用和依赖漂移；私有 Unix socket 集成测试确认未支持的 Provider 不会因 RPC 接通而获得验证。全仓 test/vet 与 processing/daemon/store race 通过。这里仍使用协议 runner 夹具，没有启动真实 pi、创建新完整包或打开 Native 页面，因此不能替代后续真实验收。
+定向测试覆盖 daemon 调用门禁、真实 SQLite 终态、共享所有者状态、取消、启用和依赖漂移；私有 Unix socket 集成测试确认未支持的 Provider 不会因 RPC 接通而获得验证。全仓 test/vet 与 processing/daemon/store race 通过。这组自动化测试本身使用协议 runner 夹具；真实 pi 与新包证据由下节单独记录，Native 页面仍未验收。
+
+## 新完整包真实 pi 验收
+
+新包位于 `build/ui-delivery-20261109-001/processing-daemon-package-001/`，App、daemon、CLI、LaunchAgent 同次构建；DMG 为 18,572,432 bytes，SHA256 `b1e61886640f176f6252e155955d948bbc3d96cafcad0cea7e332003a4a17064`，严格深度 codesign 与 `hdiutil verify` 通过，仍为 ad-hoc 本机包。验收复用已固定并核对的 Rust 0.0.4/E5 组件文件，不复制旧业务数据库；业务根、索引、连接、安装回执和 schema17 账本均新建。
+
+`processing-daemon-runtime-001/report.json` 保留首轮驱动失败：安装回执的零值字段按 JSON `omitempty` 正常省略，驱动却按必有字段读取，链路尚未进入模型验证；用户 pi 配置未变、凭据链接已移除、daemon/worker 锁与 socket 均清理。修正只改变驱动解释，新根 `processing-daemon-runtime-002/report.json` 实际通过：
+
+- pi 0.84.1 以自身 `deepseek/deepseek-flash` 配置完成真实连接验证，实际取得 `memory_save`、`memory_status`、`memory_search` 回执；认证只由 pi 读取，用户 settings/models/auth 散列前后不变。
+- daemon 第一验证 attempt 在实际 `message_start` 后收到明确取消；当前生命周期观察记录 `native_schema_requested=true`、`abort_sent=true`、`abort_acknowledged=true`、reaped/group-gone，取消 PID 已不存在。该观察只保留在当前 daemon 内存，重启后不冒充持久结果。
+- 第二 attempt 完成原生完整 Schema，终态、进程回收、进程组退出和成功摘要齐全；随后以选择代次 0 明确启用为代次 1。停止并明确恢复 daemon 后，当前修订仍保持启用，而上一次即时进程观察按契约消失。
+- 收尾删除本轮认证链接和 Agent 适配，用户 Agent 配置未修改；两个 daemon、取消的 pi、socket 与 service/worker 锁均不存在。报告不含密钥。该结果不证明 Provider、Magpie、Codex bridge、新 A 页面或正式整理/Cognee 分派。
 
 ## 独立 Provider 凭据版本
 
@@ -54,4 +65,4 @@ Magpie 公共三协议和目录参考固定 [接入说明](https://github.com/ye
 
 ## 下一步
 
-用新包、新合成根取得 daemon 所有的实际 pi Schema、进程回收与活动取消回执，再接 Native 保存／验证／启用状态。随后将冻结配置纳入 Cognee/手动整理/新计划的整项任务事务。Q01 旧 traex 计划迁移未获决定，不更换其已授权执行者或启停意图。
+接 Native 保存／验证／启用状态，并将冻结配置纳入 Cognee/手动整理/新计划的整项任务事务。独立 Provider/Keychain 和 Magpie 仍须各自接入同一所有者并真实验证。Q01 旧 traex 计划迁移未获决定，不更换其已授权执行者或启停意图。

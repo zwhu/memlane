@@ -12,7 +12,7 @@
 
 2026-11-08：P3-C1 正式服务和 [C2 App 手动合并审核](p3-c2-validation.md) 已通过。C3/C4 完整手动整理、E 全局经验与 [D1 持久计划](p3-schedule-validation.md) 已通过；D2a 租约/进程保护与D2b有限自动恢复见 [验证](p3-recovery-validation.md)；[U使用记录与排序](p3-usage-validation.md)已通过；[I 引导与初始化](p3-onboarding-validation.md)本机已通过；[A1a traex日常接入](p3-agent-validation.md)已通过；Codex新工具与TRAE IDE、pi RPC、代码图谱与正式分发继续按 [交付矩阵](p3-delivery-plan.md) 推进；本机技术通过不代表正式分发完成。
 
-2026-11-09 最新工程状态：Codex Agent 优先首任务和 pi/DeepSeek 第五包限定闭环已通过；G2 代码图谱与 F1a–F1d 恢复切片已有本机证据。A/B 新设计仍未完成生产 UI：schema17 记忆处理配置账本及完整包 daemon 迁移通过，真实验证所有者、独立 Keychain 凭据和三协议适配已有代码与测试，但尚未接入 daemon 启用/任务分派、真实独立 Provider/Magpie 或 Native 页面。状态见 [A/B 实施记录](ui-redesign/implementation-20261109.md)、[账本验证](memory-processing-ledger-validation.md)和[运行时记录](processing-validation-runtime.md)。
+2026-11-09 最新工程状态：Codex Agent 优先首任务和 pi/DeepSeek 第五包限定闭环已通过；G2 代码图谱与 F1a–F1d 恢复切片已有本机证据。A/B 新设计仍未完成生产 UI：schema17 记忆处理配置账本、完整包 daemon 迁移，以及 daemon 所有的真实 pi 验证／活动取消／显式启用／重启保持已通过；独立 Keychain 和三协议已有基础与夹具，但尚未接真实 Provider/Magpie、正式任务分派或 Native 页面。状态见 [A/B 实施记录](ui-redesign/implementation-20261109.md)、[账本验证](memory-processing-ledger-validation.md)和[运行时记录](processing-validation-runtime.md)。
 
 2026-11-07 本轮工程验证按用户最新要求以主流程走通收口：P0 核心链路、后台更新和体积数据已通过；旁白等旁支停止并保留未通过结果。P1 手动记忆管理及 P2 Codex/pi 互通已实现；整理、代码图谱与其余 Agent 按实施清单继续，不把原型示例当成接入成果。
 

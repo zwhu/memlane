@@ -1,6 +1,6 @@
 # Memlane
 
-这是面向程序员的 macOS 记忆客户端，使用 Cognee 作为记忆引擎。桌面框架已选择 MyGo；P0 核心客户端、服务与组件链路、P1 手动记忆管理与实际窗口设计对照、P2 真实 Codex/pi 共享与 App Agent 管理已通过。P3-C1–C4 正式整理、P3-E 全局经验、P3-D1/D2 计划与有限恢复、U 使用记录、I 引导、A1a traex 日常接入均已通过对应本机验收；G2 代码图谱更新与 F1a–F1d 索引/备份/恢复/空间不足已分层通过，具体边界见 docs/p3-delivery-plan.md。2026-11-09 最新实施转入已认可 A/B 重设计：pi/DeepSeek 限定同包闭环已通过，schema17 记忆处理配置账本通过；真实验证所有者、独立凭据和三协议适配仍在接入 daemon/UI，A/B Native 页面、Codex/Magpie、最终包和正式分发未完成。
+这是面向程序员的 macOS 记忆客户端，使用 Cognee 作为记忆引擎。桌面框架已选择 MyGo；P0 核心客户端、服务与组件链路、P1 手动记忆管理与实际窗口设计对照、P2 真实 Codex/pi 共享与 App Agent 管理已通过。P3-C1–C4 正式整理、P3-E 全局经验、P3-D1/D2 计划与有限恢复、U 使用记录、I 引导、A1a traex 日常接入均已通过对应本机验收；G2 代码图谱更新与 F1a–F1d 索引/备份/恢复/空间不足已分层通过，具体边界见 docs/p3-delivery-plan.md。2026-11-09 最新实施转入已认可 A/B 重设计：pi/DeepSeek 限定同包闭环、schema17 记忆处理配置账本及 daemon 所有的真实 pi 验证／取消／显式启用／重启保持已通过；Provider/Magpie 实际推理、正式任务分派、A/B Native 页面、Codex、最终包和正式分发未完成。
 
 - 开始工作前阅读 [产品定义](docs/product.md) 和 [设计决策](docs/design.md)，以已确认的产品规则为准。
 - UI 重设计开发先读 [设计交接入口](docs/ui-redesign/README.md) 和 [A 已认可设计实施交接](docs/ui-redesign/a-setup-handoff.md)。A 环境正文、三步初始化、批量连接、记忆处理与设置复用已由用户确认归档；固定原型提交 `e27a49e35020972d6aea4ab070ec898fb6c9c22e`，截图见 `docs/images/ui-redesign/a-setup/`。B 日常首页 revision 5 已认可，固定原型 `ed6cd37858c5d6f56f9307ecbf6ac454bb6e1edb`，实施先读 [B 交接](docs/ui-redesign/b-home-handoff.md) 与 `docs/images/ui-redesign/b-home/`；C 继续设计，未认可；不得将设计认可、示例数字或浏览器验证当成生产能力已交付。

@@ -148,7 +148,9 @@ func TestValidationOwnerCancelRejectsLateSuccessAndCloseWaits(t *testing.T) {
 		<-ctx.Done()
 		close(cleanup)
 		<-release
-		return fixtureCompletion(b), nil // explicit ignored-cancellation fixture
+		out := fixtureCompletion(b)
+		out.AbortSent, out.AbortAcknowledged = true, true
+		return out, nil // explicit ignored-cancellation fixture
 	}
 	v, err := o.Begin(context.Background(), uuid.NewString(), r.ID)
 	if err != nil {
@@ -170,6 +172,10 @@ func TestValidationOwnerCancelRejectsLateSuccessAndCloseWaits(t *testing.T) {
 	<-closed
 	if terminal := waitValidation(t, s, v.ID); terminal.State != "cancelled" || terminal.ReceiptDigest != "" {
 		t.Fatal("late success survived cancellation", terminal)
+	}
+	status, err := o.Status(context.Background(), v.ID)
+	if err != nil || status.Progress == nil || !status.Progress.AbortSent || !status.Progress.AbortAcknowledged || !status.Progress.Reaped || !status.Progress.GroupGone {
+		t.Fatal("owned cancellation process observation was lost", status, err)
 	}
 	if _, err = o.Begin(context.Background(), uuid.NewString(), r.ID); err == nil {
 		t.Fatal("closed owner accepted work")
