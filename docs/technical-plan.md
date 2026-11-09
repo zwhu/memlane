@@ -4,6 +4,8 @@
 
 这是按阶段实施的技术方案。MyGo 的平台与接口、Cognee 源码及本机 Agent 命令已经核对；真实原文服务、固定模型、Rust/Python 独立 worker、App 准备、后台及受控更新的 P0 核心流程已通过合成实测，结果见 [P0 验证记录](p0-validation.md)。按 2026-11-07 用户最新要求，旁白等旁支不再阻塞本轮；未通过结果保留后续增强。P1 手动记忆与系统窗口已通过；P2 已接通真实 Codex/pi 和 App Agent 管理，证据见 [P2 记录](p2-validation.md)。后台整理、其余 Agent、代码图谱和正式签名分发仍按后续阶段验收。
 
+2026-11-09 本轮实现：基础服务与官方 Cognee 本地依赖统一初始化，服务健康与实际模型推理验证解耦；不选择提炼 Agent、没有模型 API Key 时仍可启动本地服务。按用户后续要求，首个工程适配为 Cognee → Memlane 管理的本机兼容模型接口 → pi 0.84.1 RPC，复用 Agent 配置，采用单推理槽位、独立无工具上下文、完整 Schema 校验和活动取消。官方 Claude observer 子进程案例作为结构依据；Codex 0.147.0 不支持 MCP Sampling 回调，Codex app-server 模型桥仍待实现。采集端继续使用官方 Codex 插件。需求见 [模型桥接需求](agent-model-bridge-requirements.md)，实现证据和未覆盖项见 [pi 验证](pi-model-bridge-validation.md)，源码与协议边界见 [研究](research-cognee-agent-appserver.md)；既有直连模型验收不代替这条新链路。
+
 实现路线补充：官方 **Cognee-RS** 是本地引擎的 Rust 移植，仍标 Experimental。P0 优先验证它的最小可用构建，并与 Python 1.6.7 对照；本轮 App 使用已通过原文契约的 Rust worker，Python 保留同契约对照；完整代码图谱仍待 P4 适配。下文标明 Python 的内部接口、FastEmbed、Enola 和 wheel 条件仅适用于该候选，Rust 对应能力须独立验收。[Rust 研究](research-cognee-rust.md)
 
 ## 1. 关键选择
@@ -154,7 +156,7 @@ embedding 显式指定本地 provider、模型、revision、维度、切片参�
 
 引擎运行时和模型均独立于主安装包，由 App 首次自动下载并准备，显示各组件进度、大小和重试入口。主客户端与轻量业务服务可以先运行，准备失败仍允许持久化原文，但索引显示未就绪。使用固定下载来源与校验值，准备完成后可离线向量化和搜索，不隐式切换云 embedding。以后换模型新建索引 generation，不能混用向量。
 
-摘要、整理和需要模型的图谱抽取统一使用用户选定的后台 Agent。Go 适配器抽象 `probe/start/events/cancel/result`；Cognee 模型请求经本机桥转换为该适配器的结构化任务。优先验证 Codex，pi 作为另一条候选。桥接采用请求 ID、schema、超时和取消协议；未经验证的 provider/参数不写成已支持。[桥接参考及限制](research-cognee.md#6-用用户的-agent-提供-llm)
+Cognee 模型请求经本机桥转换为所选 Agent 的结构化任务。按用户要求，首个适配为 pi RPC；原有 Memlane 整理任务仍遵守 P3 自身的执行者和审核契约，本轮不替换该调度器。`internal/agents/pi_completion.go` 提供通用模型任务，`internal/modelbridge` 提供私有兼容接口，`internal/official/model_bridge.go` 管理桥与 Cognee 生命周期。请求使用 ID、Schema、期限和取消协议；未经验证的 provider/参数不写成已支持。[桥接参考及限制](research-cognee.md#6-用用户的-agent-提供-llm)
 
 任务使用独立会话和只读快照，关闭不需要的工具、自动 hooks 与插件；不能再次调用正常记忆写工具形成递归。schema 由服务二次校验。认证和额度问题由对应 Agent 报告，不读取登录 token 给 Cognee 直连。云端 Agent 会接收任务输入，本地存储不等于全部离线推理。
 
