@@ -67,6 +67,16 @@ func (a *App) confirmFirstTaskWorkspace() {
 				return
 			}
 			s.Connection = &connection
+			a.agents.Sequence++ // invalidate an older in-flight refresh snapshot
+			// The Agent detail page can be reopened before its polling refresh.
+			// Keep its connection snapshot in step with this explicit scope
+			// confirmation so it cannot reopen the old, unassigned workspace.
+			for index := range a.agents.Connections {
+				if a.agents.Connections[index].ID == connection.ID {
+					a.agents.Connections[index] = connection
+				}
+			}
+			a.refreshAgents(false)
 			s.Workspace = workspace
 			if connection.TrustedWorkspace != "" {
 				s.Workspace = connection.TrustedWorkspace

@@ -1,13 +1,13 @@
 # pi → DeepSeek V4.1 Flash：本轮验收
 
-2026-11-09。工程入口及 A/B 总矩阵见 [本轮交付记录](ui-redesign/implementation-20261109.md)。本页分别记录独立桥、固定事实质量样本和新完整包。**独立桥及第3轮固定样本通过；空根环境健康故障已修复，同包官方闭环仍在新根复验，尚未通过。** 不将三种结论合并成总成功。
+2026-11-09。工程入口及 A/B 总矩阵见 [本轮交付记录](ui-redesign/implementation-20261109.md)。本页分别记录独立桥、固定事实质量样本和新完整包。**pi独立桥、六个固定样本第三轮、第五包同根官方采集/提炼/完整出处/编辑/新会话闭环已通过；两条初始知识逐项审核通过。** 失败报告保留，结论限所列模型、样本与本机包；A/B新UI、全配置分派及最终普通包仍未完成。
 
 ## 实际版本与认证所有权
 
 - 模型执行端 pi `0.84.1`，原始默认为 `provider=deepseek`、`model=deepseek-flash`。本机定义名 `DeepSeek V4.1 Flash (1017)`，原 API 为 `openai-completions`。
 - 官方 [模型目录](https://api-docs.deepseek.com/api/list-models) 将 `deepseek-flash` 映射为 `DeepSeek-V4.1-Flash`；本轮读取的官方页面快照保存在 `build/ui-delivery-20261109-001/deepseek-models.html`。实际推理的 pi RPC 核对精确 provider/model，不把显示名称当作路由。
 - pi 自己读取原 `auth.json`，隔离进程仅临时链接认证；原 `models.json` 按已校验字节用于 pi 配置。密钥没有转存到 Cognee 或独立 Provider，用户默认配置未修改。独立桥报告的原 settings/models/auth 散列核对为不变。
-- 当前准备验证的官方采集端为 ChatGPT App 所带 Codex `0.167.0-alpha.3.2`、Cognee plugin `1.7.7`。PATH 中另有 Codex `0.147.0`，发现列表与实际任务执行端分开。采集尚未执行，不能据版本存在宣称成功。
+- 实际官方采集端为 ChatGPT App 所带 Codex `0.167.0-alpha.3.2`，沿用其 `gpt-6.1-sol`，Cognee plugin `1.7.7`。模型执行端另为pi/DeepSeek。PATH中Codex `0.147.0`只是发现结果，不冒称本次采集版本。
 - 本轮仅对以上 pi、模型、原认证方式取得实证。环境变量 Key、OAuth、其他 endpoint/Provider、Codex app-server 模型桥与 Magpie不继承本结果。
 
 ## 完整 Schema 与保留的失败
@@ -89,7 +89,7 @@ PyInstaller 会重签该 Mach-O；第一轮构建后的原字节SHA检查失败�
 
 第四包使用新业务/状态/身份/会话，仅复用已校验组件文件。取消夹具先通过Cognee真实验证，再发起实际pi长合成请求与App验证共用槽位，在设置的共享准备页操作取消；报告明确该长请求不是官方采集材料。随后另行执行真实官方编码任务，不用受控请求代替采集和事实质量验收。
 
-第二、第三包的App/服务已停止，socket不存在；自有组件源逐一核对完整argv后SIGTERM退出，新清理事实见各自 `component-source-cleanup.json`。第四包仍在运行，尚未报告清理完成。
+第二、第三包的App/服务已停止，socket不存在；自有组件源逐一核对完整argv后SIGTERM退出，新清理事实见各自 `component-source-cleanup.json`。第四包已退出，socket不存在，自有源清理见 `pi-package-004/component-source-cleanup.json`。
 
 ### B02断线停止的局部修复
 
@@ -101,4 +101,25 @@ daemon原实现仅在回执Encode成功后停止；调用者关闭socket会留�
 
 `bits-code-guard` 对本轮八文件进行分组/跨组审查。发现收尾配置核对及截断回执可阻止原失败报告写出的 P2，现已保护读取、逐行容错并保留原 failure，三项独立 Python/文件故障复验通过。初始缺陷、修复复核与 HTML 报告见 `review-pi-001/`，故障夹具见 `verifier-audit-fault-002/report.json`；这些不称为真实云端故障。
 
-下一步以第四包新身份/根/报告取得取消、官方采集 → 实际 pi/DeepSeek 提炼 → 完整出处/Rust → App编辑/新会话的同包证据，并逐项审查初始提炼质量。A/B、共享配置、旧计划迁移、Provider独立授权、Codex桥与Magpie均继续未完成。
+该历史检查点的下一步为新包取得同包证据；最新第五包结果见下节。A/B、共享配置、旧计划迁移、Provider独立授权、Codex桥与Magpie均继续未完成。
+
+
+## 第五包同根闭环与保留的取证失败
+
+包身份 `io.github.zwhu.memlane.firsttask.41b3df22ae9d`。App、helper、CLI、LaunchAgent为一次完整构建；新业务/状态/身份/会话，仅复用经过SHA验证的组件文件，仍使用Rust0.0.3、Cognee1.6.7-memlane.6、pi0.84.1/deepseek/deepseek-flash、官方Codex0.167.0-alpha.3.2/plugin1.7.7。没有用新B03的0.0.4报告拼接该包。首启/选择/取消与原任务报告 `pi-package-005/runtime/report.json` 保留；同包继续的实际最终报告为 `pi-package-005/runtime-continuation-005/report.json`，不是第二个包或新的初始质量样本。
+
+1. 环境与无项目接入、确认工作区、App选择pi、真实Cognee验证、实际pi流式取消408/abort ACK/回收/后续401通过。长取消请求明确是合成并发负载，不冒称官方材料。
+2. 取消后返回首次任务丢目录的缓存问题修复：确认后同步连接快照，并提升刷新代次防旧异步结果回写。重试保留原授权目录，重新验证，官方插件真实准备。
+3. 官方Codex在合成仓库复现normalize_ticket既有测试的1失败/1错误，实际读源码和测试、修复后两项通过。官方会话与工具轨迹保存，Cognee实际模型请求经pi/DeepSeek完整Schema执行，Memlane保存7条raw（完整会话、QA和trace）及2条知识，Rust索引实际确认。
+4. 新出处取证脚本误用source字段名而失败。继续001误触空根门禁，002/003读到旧验证状态，004误从全部记忆等待项目控件，均保留各自failed报告；没有重新运行原编码任务或替换其材料。修正后同根明确启动服务，等待新的实际模型回执，再从原知识逐项读取6份QA/trace来源及6306字节完整会话。不同SDK分段不算独立来源。
+5. Native App实际打开完整原文阅读器，编辑原知识为v2，Rust当前索引确认；新Codex会话先调用memory_search/memory_get，实际返回v2、当前审核口令、项目范围和出处，问题中没有答案、不resume、不读取旧会话猜答案。原始出处与v1保留。
+
+初始内容审核：负责人实际阅读每条知识、全部来源及完整会话，对来源、实体、结论、适用范围与冲突逐项核对，记录 `pi-package-005/initial-quality-itemwise-review.json`。第一条修复流程建议对应实际先失败、读取代码/测试、patch、两项回归通过；第二条发布前unittest且不削弱断言的项目约定来自用户明确材料。两条均有限通过；没有虚构实体、通过所有输入或其他项目规则。此次未提炼全部函数字段规则和初始审核口令，原文保留，不宣称知识覆盖完整或广泛可靠性。此前六样本及旧qwen失败继续独立保留。
+
+实际窗口已打开并由负责人看图：`runtime-continuation-005/screenshots/06-full-original-reader.png`、`07-user-current-version.png`、`08-new-agent-session-current-recall.png`。这些是现有Native技术承载，不能当作A revision13/B revision5视觉通过。
+
+收尾 `pi-package-005/final-cleanup-audit.json`：App/CLI/worker/Cognee/桥及自有源实际均退出，没有剩余该bundle/root进程，socket不存在。Cognee状态文件仍显示starting，而PID已退出；准确记录差异，后续共享持久状态应修复，不把文件旧状态当运行事实。新报告中的本机访问token仅为该根桥接控制凭据；用户Agent认证不转存。正式签名分发不在本轮。
+
+`pi-package-005/package-size-final.json`：App41,668,388字节，DMG18,563,281字节；五组件新空缓存所需归档总量712,037,978字节；此次明确复用组件文件，实际HTTP下载量未单独取得，不冒称这轮实际下载同样字节。最终client逻辑文件1,558,609,461字节，含独立服务/模型/业务/会话与运行日志，不含开发工具链、已有Agent及云流量；不叫最终A/B首版占用。
+
+下一阶段补齐正式配置/任务所有者、旧授权迁移和三步/设置复用。B03新归档已有独立原文与daemon证据，仍需绑定后续Native包；Provider独立条件、Codex模型桥、Magpie、电脑级配置、B统计与普通包R01继续未完成。
