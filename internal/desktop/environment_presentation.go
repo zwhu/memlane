@@ -11,11 +11,24 @@ import (
 // Initialization and settings share the RuntimeController and its receipts.
 // Discovery is read-only; rendering never creates a second preparation owner.
 type EnvironmentUI struct {
+	CheckedAt   time.Time
 	Items       []EnvironmentItem
 	Loading     bool
 	Error       string
 	Sequence    uint64
 	Maintenance bool
+}
+
+func (a *App) ensureEnvironment() {
+	if a.environment.CheckedAt.IsZero() {
+		a.refreshEnvironment()
+	}
+}
+
+func (a *App) adoptDetectedEnvironment(items []EnvironmentItem) {
+	a.environment.Items = append([]EnvironmentItem(nil), items...)
+	a.environment.CheckedAt = time.Now()
+	a.environment.Error = ""
 }
 
 type environmentCard struct {
@@ -57,6 +70,7 @@ func (a *App) refreshEnvironment() {
 				return
 			}
 			s.Items = items
+			s.CheckedAt = time.Now()
 			a.runtimeStatus.Components = nil
 			if err != nil {
 				s.Error = "环境检查未完成：" + err.Error()

@@ -29,6 +29,7 @@ def digest(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--detection-captures', action='store_true')
     parser.add_argument('--reuse-components', type=Path, help='仅复用已通过本轮验收的不可变组件，业务根仍为空')
     args = parser.parse_args()
     out = args.out.resolve()
@@ -39,6 +40,7 @@ def main():
               'user_data_copied': False, 'agent_configs_copied': False, 'actual_native_app': True,
               'model_inference_verified': False, 'screenshots': [], 'cleanup_errors': []}
     ui = None
+    kept_service = False
     state = {'mode': 'normal', 'delay': 0, 'sent': 0, 'requests': {}}
     lock = threading.Lock()
     archives = {}
@@ -68,6 +70,8 @@ def main():
                 state['requests'][self.path] = state['requests'].get(self.path, 0) + 1
                 mode, delay = state['mode'], state['delay']
             if self.path == '/components.json':
+                if args.detection_captures:
+                    time.sleep(6)  # Controlled source latency, never a production UI delay.
                 data = signed
                 self.send_response(200)
                 self.send_header('Content-Length', str(len(data)))
@@ -171,7 +175,10 @@ k=Ed25519PrivateKey.generate();print(json.dumps({'signature':base64.b64encode(k.
             assert 'error' not in response, response
             return response['result']
         ui.req = request
-        ui.nodes = lambda: ui.req('tree').get('nodes', [])
+        def nodes():
+            ui.req('capture')
+            return ui.req('tree').get('nodes', [])
+        ui.nodes = nodes
         (out / 'ui-process.json').write_text(json.dumps({'pid': ui.pid, 'automation': ui.path, 'native': ui.native_path, 'owned': True}) + '\n')
 
         ipc = Path('/tmp') / ('memlane-' + str(os.getuid()) + '-' + hashlib.sha256(str(client / 'data').encode()).hexdigest()[:12]) / 'service.sock'
@@ -209,6 +216,19 @@ k=Ed25519PrivateKey.generate();print(json.dumps({'signature':base64.b64encode(k.
             assert '查看检查详情' not in ui.labels()
             return nodes
 
+        if args.detection_captures:
+            driver.wait(lambda: '正在检查本机环境' in ui.labels())
+            assert '准备记忆环境' not in ui.labels()
+            capture('00a-detection-scatter-system.png')
+            time.sleep(1.4)
+            capture('00b-detection-organizing-system.png')
+            # Only a capture schedule: the real check continues against the
+            # delayed source. No production stage depends on this timestamp.
+            started = (client / 'first-launch.json').stat().st_mtime
+            phase = (time.time() - started) % 4.5
+            time.sleep((3.40 - phase) % 4.5)
+            assert '正在检查本机环境' in ui.labels()
+            capture('00c-detection-bulb-system.png')
         driver.wait(lambda: '安装并继续' in ui.labels(), timeout=90)
         cards()
         capture('01-confirm-system.png')
@@ -245,11 +265,40 @@ k=Ed25519PrivateKey.generate();print(json.dumps({'signature':base64.b64encode(k.
         capture('06-ready-narrow-system.png')
         resize(1200, 820)
         ui.press('继续连接 Agent')
+        if args.detection_captures:
+            # A saved later step must also check both services before showing
+            # that page. Keep its real background service alive across restart.
+            before_restart_requests = dict(state['requests'])
+            ui.quit()
+            kept_service = True
+            ui = None
+            ui = driver.UI(app, out, out / 'restart-screenshots', config=runtime)
+            ui.req = request
+            ui.nodes = nodes
+            driver.wait(lambda: '正在检查本机环境' in ui.labels())
+            assert '继续配置记忆处理' not in ui.labels()
+            capture('06b-resumed-detection-system.png')
+            driver.wait(lambda: '继续配置记忆处理' in ui.labels(), timeout=90)
+            after_restart_requests = dict(state['requests'])
+            assert all(after_restart_requests.get(path,0) == count for path,count in before_restart_requests.items() if path.endswith('.tar.gz'))
+            report['resumed_services_checked_before_page'] = True
+            report['restart_does_not_download_components'] = True
         ui.press('稍后设置')
+        driver.wait(lambda: '服务运行中' in ui.labels(), timeout=30)
+        assert '正在检查本机环境' not in ui.labels()
+        capture('06c-home-system.png')
+        report['home_adopts_checked_service'] = True
+        # Page entry must reuse the completed startup result even after the old
+        # 15-second cache window. This wait belongs only to the test driver.
+        before_settings_requests = dict(state['requests'])
+        if args.detection_captures:
+            time.sleep(16)
         ui.press('设置')
         driver.wait(lambda: any('已安装组件 ' in label for label in ui.labels()), timeout=90)
         cards()
         assert '停止服务' in ui.labels()
+        assert state['requests'] == before_settings_requests, state['requests']
+        report['settings_entry_does_not_recheck_environment'] = True
         capture('07-settings-system.png')
         resize(980, 620)
         capture('08-settings-narrow-system.png')
@@ -277,8 +326,39 @@ k=Ed25519PrivateKey.generate();print(json.dumps({'signature':base64.b64encode(k.
         if ui is not None:
             try:
                 ui.quit(stop=True)
+                kept_service = False
             except Exception as error:
+                kept_service = True
                 report['cleanup_errors'].append('ui/service: ' + repr(error))
+        if kept_service:
+            try:
+                log = out / 'fallback-stop.log'
+                result = subprocess.run(['/usr/bin/open', '-n', '-W', '--stdout', str(log), '--stderr', str(log),
+                    '--env', 'HOME=' + str(out / 'ui-home'), '--env', 'PATH=/usr/bin:/bin', str(app),
+                    '--args', '--p0-config', str(out / 'runtime-config.json'), '--p0-action', 'stop'],
+                    capture_output=True, text=True, timeout=90)
+                assert result.returncode == 0, result.stderr
+                receipts = []
+                for line in log.read_text().splitlines():
+                    try:
+                        value = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(value, dict) and value.get('action') == 'stop':
+                        receipts.append(value)
+                assert receipts and not receipts[-1].get('error'), receipts
+                report['fallback_service_stop'] = receipts[-1]
+                # A constructor failure may leave a partially opened window.
+                # Match only this new isolated bundle's executable.
+                import plistlib, re, signal
+                meta = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+                executable = str(app / 'Contents/MacOS' / meta['CFBundleExecutable'])
+                result = subprocess.run(['pgrep', '-f', '^' + re.escape(executable)], capture_output=True, text=True)
+                report['partial_ui_pids'] = [int(pid) for pid in result.stdout.split()]
+                for pid in report['partial_ui_pids']:
+                    os.kill(pid, signal.SIGTERM)
+            except Exception as error:
+                report['cleanup_errors'].append('fallback service/partial UI stop: ' + repr(error))
         if server_thread is not None:
             server.shutdown()
             server_thread.join(timeout=5)

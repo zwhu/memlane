@@ -40,6 +40,13 @@ func TestRuntimeAvailabilityCannotOverrideActiveLifecycleOrStop(t *testing.T) {
 	if a.runtimeStatus.Phase != "ready" {
 		t.Fatal("observation replaced an active offline restore")
 	}
+	a = New("test", nil)
+	a.runtimeStatus = RuntimeStatus{Phase: "ready", Installed: true}
+	a.firstLaunch.Detecting = true
+	a.ApplyRuntimeAvailability(RuntimeAvailability{Phase: "unavailable", Message: "late observation"})
+	if a.runtimeStatus.Phase != "ready" {
+		t.Fatal("background observer replaced the startup check")
+	}
 }
 
 func TestRuntimeObservationRespectsPersistentStopAndLifecycleLock(t *testing.T) {

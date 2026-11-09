@@ -57,6 +57,16 @@ type RuntimeController struct {
 	cancel    context.CancelFunc
 }
 
+func validateRuntimeRecipe(worker, model components.Installed, extractor *components.Installed) error {
+	if worker.Metadata.Model != model.Metadata.ID {
+		return errors.New("worker and model component mismatch")
+	}
+	if extractor != nil && ((worker.Metadata.Version != "0.0.2" && worker.Metadata.Version != "0.0.3" && worker.Metadata.Version != "0.0.4") || extractor.Metadata.ID != "enola-code" || extractor.Metadata.Version != "0.4.30-v351") {
+		return errors.New("incompatible code worker/extractor components")
+	}
+	return nil
+}
+
 func LoadRuntimeConfig(path string) (RuntimeConfig, error) {
 	var cfg RuntimeConfig
 	if !filepath.IsAbs(path) {
@@ -194,8 +204,12 @@ func (r *RuntimeController) prepare(ctx context.Context, notify func(RuntimeStat
 		completed += d.Bytes
 	}
 	worker, model := installed[0], installed[1]
-	if worker.Metadata.Model != model.Metadata.ID {
-		return errors.New("worker and model component mismatch")
+	var extractor *components.Installed
+	if len(installed) > 2 {
+		extractor = &installed[2]
+	}
+	if err = validateRuntimeRecipe(worker, model, extractor); err != nil {
+		return err
 	}
 	service := serviceipc.Config{ClientRoot: r.Config.Root, Root: filepath.Join(r.Config.Root, "data"), Worker: engine.Config{
 		Executable: filepath.Join(worker.Directory, worker.Metadata.Executable),
@@ -203,9 +217,6 @@ func (r *RuntimeController) prepare(ctx context.Context, notify func(RuntimeStat
 		DataDir: filepath.Join(r.Config.Root, "data/index"), ExpectedVersion: worker.Metadata.Version, DenyNetwork: r.Config.AllowLocalTestSource}}
 	if len(installed) > 2 {
 		extractor := installed[2]
-		if (worker.Metadata.Version != "0.0.2" && worker.Metadata.Version != "0.0.3" && worker.Metadata.Version != "0.0.4") || extractor.Metadata.ID != "enola-code" || extractor.Metadata.Version != "0.4.30-v351" {
-			return errors.New("incompatible code worker/extractor components")
-		}
 		service.CodeExtractor = filepath.Join(extractor.Directory, extractor.Metadata.Executable)
 	}
 	// Service settings contain paths and protocol data; original knowledge is

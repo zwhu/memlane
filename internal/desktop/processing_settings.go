@@ -154,7 +154,7 @@ func (a *App) settingsSidebar(c *ui.Context) {
 				button.OnClick(func() {
 					a.settingsSection = key
 					if key == "environment" {
-						a.refreshEnvironment()
+						a.ensureEnvironment()
 					}
 					if key == "agents" {
 						a.refreshAgents(true)

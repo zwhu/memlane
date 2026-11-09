@@ -65,7 +65,7 @@ func (a *App) navigate(page, scope string) {
 		a.homeCompletedAt = time.Time{}
 	}
 	if page == "设置" && a.settingsSection == "environment" {
-		a.refreshEnvironment()
+		a.ensureEnvironment()
 	}
 	if !a.isMemoryPage() {
 		a.editing = false

@@ -15,6 +15,8 @@ var ErrRuntimeChanging = errors.New("runtime lifecycle is changing")
 type RuntimeAvailability struct {
 	Phase, Message string
 	Service        platform.ServiceState
+	State          string
+	ScheduleError  string
 }
 
 // ObserveAvailability only reads the stop flag, system registration and health.
@@ -54,8 +56,9 @@ func (r *RuntimeController) ObserveAvailability(ctx context.Context) (RuntimeAva
 	probe, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	var health struct {
-		State   string `json:"state"`
-		Version string `json:"service_version"`
+		State         string `json:"state"`
+		Version       string `json:"service_version"`
+		ScheduleError string `json:"schedule_error"`
 	}
 	if err = serviceipc.Call(probe, root, serviceipc.Request{Op: "health"}, &health); err != nil {
 		result.Phase, result.Message = "unavailable", "后台服务暂不可用；已保存的原文保留，请重试。"
@@ -66,13 +69,16 @@ func (r *RuntimeController) ObserveAvailability(ctx context.Context) (RuntimeAva
 	} else {
 		result.Phase, result.Message = "ready", "本地记忆服务已就绪"
 	}
+	if err == nil && health.Version == "0.0.1" {
+		result.State, result.ScheduleError = health.State, health.ScheduleError
+	}
 	return result, nil
 }
 
 // Called only on the window's serialized update boundary. Preparation and
 // explicit stop/resume own their state; late observations cannot replace them.
 func (a *App) ApplyRuntimeAvailability(observation RuntimeAvailability) {
-	if !a.runtimeStatus.Installed || a.backups.RestoreLocked || a.backups.Busy {
+	if !a.runtimeStatus.Installed || a.backups.RestoreLocked || a.backups.Busy || a.firstLaunch.Detecting {
 		return
 	}
 	switch a.runtimeStatus.Phase {
@@ -83,5 +89,10 @@ func (a *App) ApplyRuntimeAvailability(observation RuntimeAvailability) {
 	a.runtimeStatus.Phase = observation.Phase
 	a.runtimeStatus.Message = observation.Message
 	a.runtimeStatus.Service = observation.Service
+	a.serviceState = observation.Phase
+	if observation.State != "" {
+		a.serviceState = observation.State
+		a.schedules.RuntimeError = observation.ScheduleError
+	}
 	a.ReconcileFirstLaunchAvailability()
 }

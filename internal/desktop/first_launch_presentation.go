@@ -12,16 +12,7 @@ func (a *App) firstLaunchView(c *ui.Context) {
 	s := &a.firstLaunch
 	ui.Column(c).Fill().Background(ui.Hex("#ffffff")).Children(func() {
 		if a.firstLaunchStep() == "environment" && s.State.Stage == "discovering" {
-			ui.Row(c).Shrink(0).Height(design.Toolbar).Padding(10, 24).Children(func() {
-				ui.Spacer(c)
-				if quietButton(c, "稍后准备").Key("first-launch-skip").OnClick(func() { a.cancelFirstLaunch(true) }).Shortcut(0, ui.KeyEscape) {
-					a.cancelFirstLaunch(true)
-				}
-			})
-			ui.Column(c).Grow(1).Justify(ui.Center).AlignItems(ui.Center).Gap(14).Children(func() {
-				a.firstLaunchBlocks(c)
-				ui.Text(c, s.State.Message).FontSize(14).TextColor(design.Muted)
-			})
+			a.firstLaunchDetectionView(c)
 			return
 		}
 		ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {

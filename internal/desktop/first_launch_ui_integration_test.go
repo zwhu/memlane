@@ -5,6 +5,7 @@ package desktop
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -108,55 +109,37 @@ func TestOpenFirstLaunchResumesPersistedProcessingStepWithoutRediscovery(t *test
 	}
 }
 
-func TestConfigureFirstLaunchResumesProcessingAfterLiveAvailabilityCheck(t *testing.T) {
-	a := New("test", nil)
-	root := t.TempDir()
-	state := FirstLaunchState{Stage: "ready", Step: "processing"}
-	raw, err := json.Marshal(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(filepath.Join(root, "first-launch.json"), raw, 0600); err != nil {
-		t.Fatal(err)
-	}
-	controller := &RuntimeController{Config: RuntimeConfig{Root: root}}
-	if !a.ConfigureFirstLaunch(context.Background(), controller, func(fn func()) { fn() }) {
-		t.Fatal("persisted processing step did not keep first launch open")
-	}
-	a.serviceState = "ready"
-	a.ReconcileFirstLaunchAvailability()
-	if !a.firstLaunch.Open || a.firstLaunch.State.Stage != "ready" || a.runtimeStatus.Phase != "checking_availability" || !a.runtimeStatus.Installed {
-		t.Fatal("transient startup check invalidated a persisted ready step")
-	}
-	a.ApplyRuntimeAvailability(RuntimeAvailability{Phase: "ready", Message: "服务已就绪"})
-	if a.runtimeStatus.Phase != "ready" || a.firstLaunch.State.Stage != "ready" {
-		t.Fatal("live availability did not restore the persisted processing step")
-	}
-}
-
-func TestConfigureFirstLaunchDeferredProcessingCanResumeAfterRestart(t *testing.T) {
-	a := New("test", nil)
-	root := t.TempDir()
-	state := FirstLaunchState{Stage: "ready", Step: "processing", Skipped: true}
-	raw, err := json.Marshal(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(filepath.Join(root, "first-launch.json"), raw, 0600); err != nil {
-		t.Fatal(err)
-	}
-	controller := &RuntimeController{Config: RuntimeConfig{Root: root}}
-	if !a.ConfigureFirstLaunch(context.Background(), controller, func(fn func()) { fn() }) {
-		t.Fatal("deferred processing setup did not remain pending")
-	}
-	if a.firstLaunch.Open || a.runtimeStatus.Phase != "checking_availability" || !a.runtimeStatus.Installed {
-		t.Fatal("deferred processing setup cannot receive a live availability observation")
-	}
-	a.serviceState = "ready"
-	a.ApplyRuntimeAvailability(RuntimeAvailability{Phase: "ready", Message: "服务已就绪"})
-	a.openFirstLaunch()
-	if !a.firstLaunch.Open || a.firstLaunch.State.Skipped || a.firstLaunch.State.Step != "processing" || a.runtimeStatus.Phase != "ready" {
-		t.Fatal("deferred processing setup did not resume after restart")
+func TestConfigureFirstLaunchChecksBeforeOpeningPersistedPage(t *testing.T) {
+	for _, skipped := range []bool{false, true} {
+		t.Run(fmt.Sprint(skipped), func(t *testing.T) {
+			a := New("test", nil)
+			root := t.TempDir()
+			state := FirstLaunchState{Stage: "ready", Step: "processing", Skipped: skipped}
+			raw, _ := json.Marshal(state)
+			if err := os.WriteFile(filepath.Join(root, "first-launch.json"), raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			updates := make(chan func(), 32)
+			controller := &RuntimeController{Config: RuntimeConfig{Root: root}}
+			if !a.ConfigureFirstLaunch(ctx, controller, func(fn func()) { updates <- fn }) {
+				t.Fatal("startup verification was bypassed")
+			}
+			tt := ui.NewTester(a.View, 1200, 820)
+			if !a.firstLaunch.Detecting || a.firstLaunch.Open || !tt.HasText("正在检查本机环境") || tt.HasText("设为当前使用") {
+				t.Fatal("persisted page opened before checks")
+			}
+			a.firstLaunch.StartupPreparing = true
+			a.SetRuntimeStatus(RuntimeStatus{Phase: "verifying", Installed: true, Message: "checking actual service"})
+			if !a.firstLaunch.Detecting {
+				t.Fatal("component installation skipped live checks")
+			}
+			a.SetRuntimeStatus(RuntimeStatus{Phase: "ready", Installed: true})
+			if a.firstLaunch.Detecting || a.firstLaunch.Open == skipped || a.firstLaunch.State.Step != "processing" || a.firstLaunch.State.Completed {
+				t.Fatal("live readiness lost saved step or silently completed setup")
+			}
+		})
 	}
 }
 

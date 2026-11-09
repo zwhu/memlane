@@ -42,17 +42,20 @@ type FirstLaunchState struct {
 	Agents        []agents.Discovery `json:"agents,omitempty"`
 }
 type FirstLaunchUI struct {
-	State      FirstLaunchState
-	Controller *RuntimeController
-	Context    context.Context
-	Dispatch   func(func())
-	Open       bool
-	Sequence   int64
-	Cancel     context.CancelFunc
-	WasReady   bool
-	Error      string
-	ChangedAt  time.Time
-	Details    map[string]bool
+	Detecting, DetectionFailed, Startup, StartupPreparing bool
+	ReturnOpen                                            bool
+	ReturnStep                                            string
+	State                                                 FirstLaunchState
+	Controller                                            *RuntimeController
+	Context                                               context.Context
+	Dispatch                                              func(func())
+	Open                                                  bool
+	Sequence                                              int64
+	Cancel                                                context.CancelFunc
+	WasReady                                              bool
+	Error                                                 string
+	ChangedAt                                             time.Time
+	Details                                               map[string]bool
 }
 
 func (a *App) ConfigureFirstLaunch(ctx context.Context, controller *RuntimeController, dispatch func(func())) bool {
@@ -70,25 +73,11 @@ func (a *App) ConfigureFirstLaunch(ctx context.Context, controller *RuntimeContr
 	if s.State.Step == "" {
 		s.State.Step = "environment"
 	}
-	if s.State.Completed {
-		return false
-	}
-	if s.State.Skipped {
-		if s.State.Step != "environment" && s.State.Stage == "ready" && a.runtimeStatus.Phase == "" {
-			a.runtimeStatus = RuntimeStatus{Phase: "checking_availability", Message: "正在确认本地记忆服务…", Installed: true}
-		}
+	if s.State.Completed || s.State.Skipped || (s.State.Step != "environment" && s.State.Stage == "ready") {
+		a.checkResumedFirstLaunch()
 		return true
 	}
 	s.Open = true
-	if s.State.Step != "environment" && s.State.Stage == "ready" {
-		// A persisted later step proves the previous environment transition, but
-		// each new process still waits for a live availability observation before
-		// allowing progress or completion.
-		if a.runtimeStatus.Phase == "" {
-			a.runtimeStatus = RuntimeStatus{Phase: "checking_availability", Message: "正在确认本地记忆服务…", Installed: true}
-		}
-		return true
-	}
 	s.State.Step = "environment"
 	if s.State.Stage == "preparing" || s.State.Stage == "verifying" || s.State.Stage == "cancelling" {
 		s.State.Stage = "interrupted"
@@ -113,6 +102,18 @@ func (a *App) persistFirstLaunch() {
 }
 
 func (r *RuntimeController) DiscoverEnvironment(ctx context.Context) ([]EnvironmentItem, error) {
+	return r.DiscoverEnvironmentWithProgress(ctx, nil)
+}
+
+func (r *RuntimeController) DiscoverEnvironmentWithProgress(ctx context.Context, notify func(string)) ([]EnvironmentItem, error) {
+	if !r.lifecycle.TryLock() {
+		return nil, ErrRuntimeChanging
+	}
+	defer r.lifecycle.Unlock()
+	if notify == nil {
+		notify = func(string) {}
+	}
+	notify("正在检查后台服务与客户端组件…")
 	items := []EnvironmentItem{}
 	state, err := platform.ServiceStatus(r.Config.ServicePlist)
 	if err != nil {
@@ -136,6 +137,7 @@ func (r *RuntimeController) DiscoverEnvironment(ctx context.Context) ([]Environm
 	if err != nil {
 		return items, err
 	}
+	notify("正在读取并校验组件清单…")
 	feed, err := manager.Feed(ctx, r.Config.ComponentSource)
 	if err != nil {
 		var networkError net.Error
@@ -148,10 +150,12 @@ func (r *RuntimeController) DiscoverEnvironment(ctx context.Context) ([]Environm
 		}
 	}
 	required := []string{r.Config.WorkerID, r.Config.ModelID}
+	inspected := map[string]components.Installed{}
 	if r.Config.CodeExtractorID != "" {
 		required = append(required, r.Config.CodeExtractorID)
 	}
 	for _, id := range required {
+		notify("正在校验已有引擎与模型组件…")
 		var found *components.Descriptor
 		for i := range feed.Components {
 			if feed.Components[i].ID == id {
@@ -164,6 +168,7 @@ func (r *RuntimeController) DiscoverEnvironment(ctx context.Context) ([]Environm
 		}
 		item := EnvironmentItem{Name: id, State: "needs_preparation", Evidence: "固定版本 " + found.Version + " · SHA256 " + found.SHA256, Bytes: found.Bytes, ExpectedBytes: found.UnpackedBytes}
 		if installed, err := manager.Inspect(ctx, *found); err == nil {
+			inspected[id] = installed
 			item.State = "verified_reusable"
 			item.Evidence = "文件校验通过 · " + installed.Directory
 			item.Bytes = 0
@@ -174,6 +179,18 @@ func (r *RuntimeController) DiscoverEnvironment(ctx context.Context) ([]Environm
 		}
 		items = append(items, item)
 	}
+	if worker, ok := inspected[r.Config.WorkerID]; ok {
+		if model, ok := inspected[r.Config.ModelID]; ok {
+			var extractor *components.Installed
+			if value, ok := inspected[r.Config.CodeExtractorID]; ok {
+				extractor = &value
+			}
+			if err := validateRuntimeRecipe(worker, model, extractor); err != nil {
+				return items, err
+			}
+		}
+	}
+	notify("正在检查记忆服务与检索引擎…")
 	if stopped, err := serviceipc.IsStopped(filepath.Join(r.Config.Root, "data")); err != nil {
 		return items, err
 	} else if stopped {
@@ -181,12 +198,13 @@ func (r *RuntimeController) DiscoverEnvironment(ctx context.Context) ([]Environm
 	} else {
 		probe, stop := context.WithTimeout(ctx, time.Second)
 		var health struct {
-			State string `json:"state"`
+			State   string `json:"state"`
+			Version string `json:"service_version"`
 		}
 		err := serviceipc.Call(probe, filepath.Join(r.Config.Root, "data"), serviceipc.Request{Op: "health"}, &health)
 		stop()
 		serviceState := "unavailable"
-		if err == nil {
+		if err == nil && health.Version == "0.0.1" {
 			serviceState = health.State
 		}
 		items = append(items, EnvironmentItem{Name: "记忆服务", State: serviceState, Evidence: "实际私有 IPC / worker 健康回执"})
@@ -194,6 +212,7 @@ func (r *RuntimeController) DiscoverEnvironment(ctx context.Context) ([]Environm
 	if r.Official == nil {
 		items = append(items, EnvironmentItem{Name: "官方 Cognee / Codex", State: "not_verified", Evidence: "官方服务组件来源尚未配置。已有本机兼容服务可在项目官方接入入口独立授权；Agent 安装或登录不等于模型条件已具备"})
 	} else {
+		notify("正在校验 Cognee 服务与本地依赖…")
 		model := EnvironmentItem{Name: "提炼 Agent", State: "not_selected", Evidence: "在首次任务或设置中选择并验证；环境初始化无需模型 API Key"}
 		if settings, e := r.Official.Settings(); e == nil {
 			if settings.ModelBridge != nil {
@@ -206,6 +225,7 @@ func (r *RuntimeController) DiscoverEnvironment(ctx context.Context) ([]Environm
 		}
 		items = append(items, model)
 		manager, feed, e := r.Official.Manager(ctx)
+		var executable string
 		if e != nil {
 			items = append(items, EnvironmentItem{Name: "官方服务组件", State: "not_verified", Evidence: "真实签名组件来源不可用：" + e.Error()})
 		} else {
@@ -222,6 +242,9 @@ func (r *RuntimeController) DiscoverEnvironment(ctx context.Context) ([]Environm
 						item.Evidence = "真实文件校验通过 · " + installed.Directory
 						item.Bytes = 0
 						item.OccupiedBytes = components.InstalledReceipt(ctx, d, installed).OccupiedBytes
+						if id == "cognee-service" {
+							executable = filepath.Join(installed.Directory, installed.Metadata.Executable)
+						}
 					}
 					items = append(items, item)
 				}
@@ -230,6 +253,9 @@ func (r *RuntimeController) DiscoverEnvironment(ctx context.Context) ([]Environm
 				}
 			}
 		}
+		notify("正在检查 Cognee 数据服务…")
+		status := r.Official.ObserveEnvironment(ctx, executable)
+		items = append(items, EnvironmentItem{Name: "Cognee 数据服务", State: status.Phase, Evidence: status.Message})
 	}
 	return items, nil
 }
@@ -246,19 +272,30 @@ func (a *App) discoverFirstLaunch() {
 	sequence := s.Sequence
 	s.State.Step = "environment"
 	s.State.Stage, s.State.Message, s.State.Skipped = "discovering", "正在检查本机环境…", false
-	s.ChangedAt = time.Now()
+	s.beginDetection()
 	a.persistFirstLaunch()
 	ctx, cancel := context.WithTimeout(s.Context, 40*time.Second)
 	s.Cancel = cancel
 	controller, dispatch := s.Controller, s.Dispatch
 	go func() {
 		defer cancel()
-		items, err := controller.DiscoverEnvironment(ctx)
+		items, err := controller.DiscoverEnvironmentWithProgress(ctx, func(message string) {
+			dispatch(func() {
+				if s.Sequence == sequence && s.Open {
+					s.State.Message = message
+				}
+			})
+		})
 		home, _ := os.UserHomeDir()
 		selected := map[string]string{}
 		if raw, e := os.ReadFile(filepath.Join(controller.Config.Root, "agent-paths.json")); e == nil && len(raw) < 65536 {
 			_ = json.Unmarshal(raw, &selected)
 		}
+		dispatch(func() {
+			if s.Sequence == sequence && s.Open {
+				s.State.Message = "正在检查本机 Agent…"
+			}
+		})
 		discovered := agents.Discover(ctx, home, selected)
 		for _, agent := range discovered {
 			state := "not_found"
@@ -302,6 +339,7 @@ func (a *App) discoverFirstLaunch() {
 			s.State.Agents = discovered
 			s.State.ReducedMotion = s.State.ReducedMotion || reduced
 			s.State.Stage = "results"
+			s.Detecting = false
 			s.State.Message = "本机检测已完成，请核对实际结果。"
 			s.WasReady = false
 			for _, item := range items {
@@ -310,8 +348,16 @@ func (a *App) discoverFirstLaunch() {
 				}
 			}
 			if err != nil {
+				s.Detecting, s.DetectionFailed = true, true
 				s.State.Stage = "failed"
 				s.State.Message = "环境发现失败：" + err.Error()
+			} else if environmentDetectedReady(items, controller) {
+				s.State.Stage = "ready"
+				a.runtimeStatus = RuntimeStatus{Phase: "ready", Message: "本机记忆环境已就绪", Installed: true, Service: platform.Enabled}
+				a.serviceState = "ready"
+			}
+			if err == nil {
+				a.adoptDetectedEnvironment(items)
 			}
 			s.ChangedAt = time.Now()
 			a.persistFirstLaunch()
@@ -408,6 +454,24 @@ func (a *App) firstLaunchRuntime(status RuntimeStatus) {
 }
 func (a *App) cancelFirstLaunch(skip bool) {
 	s := &a.firstLaunch
+	if s.Startup {
+		s.Sequence++
+		if s.Cancel != nil {
+			s.Cancel()
+			s.Cancel = nil
+		}
+		if s.StartupPreparing && a.cancelRuntime != nil {
+			a.cancelRuntime()
+		}
+		s.Detecting, s.DetectionFailed, s.Startup, s.StartupPreparing, s.Open = false, false, false, false, false
+		if !s.State.Completed {
+			s.State.Skipped = true
+		}
+		a.navigate("总览", "")
+		a.persistFirstLaunch()
+		return
+	}
+	s.Detecting, s.DetectionFailed = false, false
 	s.Sequence++
 	if s.Cancel != nil {
 		s.Cancel()
@@ -445,12 +509,7 @@ func (a *App) openFirstLaunch() {
 	s.Open = true
 	s.State.Skipped = false
 	if s.State.Step != "" && s.State.Step != "environment" && s.State.Stage == "ready" {
-		a.persistFirstLaunch()
-		if s.State.Step == "processing" {
-			a.refreshProcessing()
-		} else {
-			a.refreshAgents(true)
-		}
+		a.checkResumedFirstLaunch()
 		return
 	}
 	a.discoverFirstLaunch()

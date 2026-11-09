@@ -201,13 +201,6 @@ func main() {
 					mygo.App.Relaunch()
 				})
 				app.ConfigureGuidance(cfg.Root)
-				if action == "" {
-					app.ConfigureLibrary(ctx, filepath.Join(cfg.Root, "data"), func(fn func()) {
-						if ctx.Err() == nil {
-							win.Update(fn)
-						}
-					})
-				}
 				if e := desktop.ConfigureControlledUpdates(cfg); e != nil {
 					app.SetUpdateStatus("更新源配置失败："+e.Error(), false)
 				}
@@ -336,6 +329,12 @@ func main() {
 					}) {
 						prepare()
 					}
+					// Configure the startup gate before scheduling page data reads.
+					app.ConfigureLibrary(ctx, filepath.Join(cfg.Root, "data"), func(fn func()) {
+						if ctx.Err() == nil {
+							win.Update(fn)
+						}
+					})
 					go func() {
 						ticker := time.NewTicker(2 * time.Second)
 						defer ticker.Stop()

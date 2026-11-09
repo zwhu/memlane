@@ -139,7 +139,16 @@ func (a *App) SetRuntimeStatus(status RuntimeStatus) {
 		status.Components = a.runtimeStatus.Components
 	}
 	a.runtimeStatus = status
+	if status.Phase == "ready" {
+		a.serviceState = "ready"
+	}
+	a.firstLaunchStartupRuntime(status)
 	a.firstLaunchRuntime(status)
+	if status.Phase == "ready" {
+		a.environment.CheckedAt = time.Now()
+	} else if status.Phase == "checking" {
+		a.environment.CheckedAt = time.Time{}
+	}
 }
 func (a *App) ConfigureRuntime(prepare, cancel, stop, resume func(), keep bool, changed func(bool)) {
 	a.prepareRuntime, a.cancelRuntime, a.stopRuntime, a.resumeRuntime = prepare, cancel, stop, resume
@@ -156,6 +165,14 @@ func (a *App) View(c *ui.Context) {
 	theme.Accent, theme.Text, theme.TextMuted, theme.Border = design.Ink, design.Ink, design.Muted, design.Border
 	c.SetTheme(&theme)
 	c.SetZoom(a.zoom)
+	if a.firstLaunch.Detecting {
+		if c.Shortcut(0, ui.KeyEscape) {
+			a.cancelFirstLaunch(true)
+		} else {
+			a.firstLaunchDetectionView(c)
+			return
+		}
+	}
 	if a.firstLaunch.Open {
 		a.firstLaunchView(c)
 		return
@@ -245,7 +262,7 @@ func (a *App) sidebar(c *ui.Context) {
 				status = "服务已停止"
 			}
 			if a.libraryError != "" && a.activityLoaded && a.runtimeStatus.Phase != "stopped" {
-				status = "服务暂不可用"
+				status = "记忆读取失败"
 			}
 			ui.Text(c, "· "+status).Label(status).FontSize(design.Small).TextColor(design.Muted).Padding(0, 12)
 		})

@@ -142,6 +142,9 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 				return
 			case <-ticker.C:
 				dispatch(func() {
+					if a.firstLaunch.Detecting {
+						return
+					}
 					if a.page == "项目" {
 						a.refreshBrowsing()
 					}
@@ -198,7 +201,7 @@ func (a *App) listQuery() records.ListQuery {
 	return q
 }
 func (a *App) refresh(more bool) {
-	if a.libraryContext == nil || a.libraryContext.Err() != nil || a.visualFixture {
+	if a.libraryContext == nil || a.libraryContext.Err() != nil || a.visualFixture || a.firstLaunch.Detecting {
 		return
 	}
 	a.loadSequence++
@@ -219,16 +222,10 @@ func (a *App) refresh(more bool) {
 	go func() {
 		ctx, cancel := context.WithTimeout(a.libraryContext, 5*time.Second)
 		defer cancel()
-		var health struct {
-			State         string `json:"state"`
-			ScheduleError string `json:"schedule_error"`
-		}
-		err := serviceipc.Call(ctx, a.library.Root, serviceipc.Request{Op: "health"}, &health)
-		reachable := err == nil
-		var scopes []records.Scope
-		if err == nil {
-			scopes, err = a.library.Scopes(ctx)
-		}
+		// Page reads do not own availability. Startup and the runtime observer
+		// publish service health independently, including schedule diagnostics
+		// when the business database itself cannot be read.
+		scopes, err := a.library.Scopes(ctx)
 		var page records.Page
 		var activity records.ActivitySummary
 		var active homeTask
@@ -323,17 +320,10 @@ func (a *App) refresh(more bool) {
 			return
 		}
 		a.dispatch(func() {
-			if sequence != a.loadSequence {
+			if sequence != a.loadSequence || a.firstLaunch.Detecting {
 				return
 			}
 			a.loading = false
-			if reachable {
-				a.serviceState = health.State
-				a.schedules.RuntimeError = health.ScheduleError
-			} else {
-				a.serviceState = "unavailable"
-			}
-			a.ReconcileFirstLaunchAvailability()
 			if scopes != nil {
 				a.scopes = scopes
 				a.projects = nil
