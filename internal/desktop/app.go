@@ -44,6 +44,7 @@ type App struct {
 	relatedMerges                                                    []records.MergeSummary
 	merges                                                           MergeUI
 	agents                                                           AgentUI
+	processing                                                       ProcessingUI
 	activityLoaded                                                   bool
 	pendingMutations                                                 map[string]records.Mutation
 	saving                                                           bool
@@ -75,6 +76,7 @@ type App struct {
 	onProject, onMore                      func()
 
 	page            string
+	settingsSection string
 	scope           string
 	selectedID      string
 	detailMode      string
@@ -118,7 +120,8 @@ type App struct {
 }
 
 func New(version string, check func()) *App {
-	return &App{page: "总览", detailMode: "view", zoom: 1, version: version, check: check, keepService: true,
+	return &App{page: "总览", settingsSection: "environment", detailMode: "view", zoom: 1, version: version, check: check, keepService: true,
+		processing: ProcessingUI{Mode: "agent", Drafts: map[string]records.ProcessingSpec{}, Configuration: records.ProcessingConfiguration{Saved: map[string]records.ProcessingRevision{}}},
 		browsing:   BrowsingUI{View: "memories", Preferences: BrowsePreferences{Selections: map[string]BrowseSelection{}}},
 		updateText: "此版本尚未配置更新源", pendingMutations: map[string]records.Mutation{}, routeStates: map[string]PaneState{}, drafts: map[string]Draft{}, listScroll: map[string]*ui.ScrollState{}, activities: map[string]int{}}
 }
@@ -162,6 +165,8 @@ func (a *App) View(c *ui.Context) {
 				a.cogneeSetupPage(c)
 			} else if a.page == "总览" {
 				a.home(c)
+			} else if a.page == "设置" {
+				a.settingsShell(c)
 			} else {
 				a.details(c)
 			}
@@ -253,6 +258,12 @@ func (a *App) nav(c *ui.Context, label, scope string, icon *ui.SVG) {
 }
 func (a *App) toolbar(c *ui.Context) {
 	ui.Row(c).Height(design.Toolbar).Shrink(0).Padding(10, 24).Gap(12).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).DragWindow().Children(func() {
+		if a.page == "设置" {
+			ui.Text(c, "设置 / "+a.settingsSectionLabel()).FontSize(design.Small).TextColor(design.Muted)
+			ui.Spacer(c)
+			ui.Text(c, a.processingToolbarStatus()).FontSize(design.Small).TextColor(design.Muted)
+			return
+		}
 		icon := icons[a.page]
 		if a.page == "整理计划" {
 			icon = icons["整理记录"]

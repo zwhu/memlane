@@ -68,6 +68,7 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 	a.schedules = ScheduleUI{Client: serviceipc.ScheduleClient{Root: root}, Destinations: map[string]bool{}}
 	a.organization = OrganizationUI{Client: serviceipc.OrganizationClient{Root: root}, Chosen: map[string]MemoryItem{}, Results: map[string]MemoryItem{}, Kind: "knowledge"}
 	a.merges = MergeUI{Client: serviceipc.MergeClient{Root: root}, Chosen: map[string]records.MergeTarget{}, Reviews: map[string]records.MergeReview{}}
+	a.processing.ensure()
 	a.libraryContext = ctx
 	a.dispatch = dispatch
 	a.onNavigate = func() {
@@ -93,6 +94,9 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 		if a.page == "设置" {
 			a.refreshIndexRebuild()
 			a.refreshBackups()
+			if a.settingsSection == "processing" {
+				a.refreshProcessing()
+			}
 		}
 		if a.page == "使用指引" || a.page == "初始化" {
 			a.refreshAgents(false)
@@ -147,6 +151,9 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 					if a.page == "设置" {
 						a.refreshIndexRebuild()
 						a.refreshBackups()
+						if a.settingsSection == "processing" {
+							a.refreshProcessing()
+						}
 					}
 					if a.page == "代码图谱" && !a.code.Busy {
 						a.refreshCode()
@@ -170,6 +177,7 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 	}()
 	a.refresh(false)
 	a.refreshMerge(false)
+	a.refreshProcessing()
 	a.configureBrowsing()
 }
 func (a *App) listQuery() records.ListQuery {

@@ -22,9 +22,9 @@ B 首页实施从 [B 已认可设计交接](b-home-handoff.md) 与 [固定截图
 
 ## 当前工程状态
 
-设计认可与生产实现继续分开记录。pi/DeepSeek 的限定同包闭环已经通过；A1 schema17 配置账本、不可变修订、独立当前选择、完整包 daemon 迁移，以及 daemon 所有的真实 pi 验证／活动取消／显式启用／重启保持也已通过。Keychain 凭据版本与三协议 HTTP 适配仍只有基础和夹具，尚未取得真实独立 Provider/Magpie 推理证据；正式任务分派与 Native 页面也未完成。
+设计认可与生产实现继续分开记录。pi/DeepSeek 的限定同包闭环已经通过；A1 schema17 配置账本、不可变修订、独立当前选择、完整包 daemon 迁移，以及 daemon 所有的真实 pi 验证／活动取消／显式启用／重启保持也已通过。「设置 → 记忆处理」已用实际 Native App 完成 pi 候选保存、活动验证取消、重新验证和明确「设为当前使用」；Provider、Codex 与 Magpie 在页面中仍按真实边界不可用。Keychain 凭据版本与三协议 HTTP 适配仍只有基础和夹具，尚未取得真实独立 Provider/Magpie 推理证据；正式任务分派也未完成。
 
-A V01–V06、V10–V14 和 B 新首页仍未通过生产验收。当前矩阵、失败保留和下一步见 [A/B 实施记录](implementation-20261109.md)、[配置账本验证](../memory-processing-ledger-validation.md)与[运行时在途记录](../processing-validation-runtime.md)。不得用这些基础结构恢复旧初始化流程，或把技术夹具写成新设计已交付。
+A V01–V06、V07 三方式全部保存、V08 完整初始化出口、V09 非 pi 后端、V10 Codex、V11 Magpie、V12 完整恢复、V13 窄窗口实际系统截图、V14 日常任务链路及 B 新首页仍未通过生产验收；本次仅关闭其中「设置 → 记忆处理」的 pi 子路径。当前矩阵、失败保留和下一步见 [A/B 实施记录](implementation-20261109.md)、[配置账本验证](../memory-processing-ledger-validation.md)与[运行时记录](../processing-validation-runtime.md)。不得用这个 Native 切片恢复旧初始化流程，或把单后端 UI 证据写成三种处理方式已交付。
 
 ## 固定归档与证据
 

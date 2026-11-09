@@ -56,9 +56,9 @@ A 固定 `e27a49e35020972d6aea4ab070ec898fb6c9c22e` revision 13，B 固定 `ed6c
 | A V01–V02 环境与三步 | 未实现新稿 | 空根、失败/取消/重开/兼容复用、真实下载字节与占用 |
 | A V03–V05 批量电脑级连接 | 未实现新稿 | 默认空、逐项状态与稳定代次、部分成功/重载/只失败重试/迟到 |
 | A V06 Provider | 未实现 | 公共协议/目录证据、独立配置复用、地址变更凭据门禁、实际推理 |
-| A V07–V09 配置/启用/失效 | schema17账本与私有保存、真实SQLite/WAL及完整包daemon迁移通过；真实验证/分派/UI未接 | 三份保存、不可变有效修订、验证绑定、运行快照、失败/取消不切换；账本夹具不代替模型 |
-| A V10 pi/Codex，V11 Magpie | pi本轮桥/同包通过；新A方式承载、Codex/Magpie仍未通过 | 各自完整 Schema/真实隔离/超时/取消，实际模型及路由 |
-| A V12–V14 设置/窗口/完整链路 | 未通过 | 重启持久恢复、普通/窄窗口/长错误、普通包与完整日常任务 |
+| A V07–V09 配置/启用/失效 | schema17账本、daemon真实pi验证，以及设置页pi保存／活动取消／重验／明确启用通过；三方式完整保存与正式任务冻结仍未接 | Provider/Agent/Magpie三份保存、运行快照、非pi失败/取消/迟到；单后端UI不关闭整项 |
+| A V10 pi/Codex，V11 Magpie | pi桥/同包及设置页真实pi子路径通过；Codex/Magpie仍不可用并如实显示 | Codex/Magpie各自完整 Schema/真实隔离/超时/取消、实际模型及路由 |
+| A V12–V14 设置/窗口/完整链路 | 设置页pi普通窗口与生产格式包通过；窄窗口仅MyGo测试，初始化复用/完整恢复/日常任务未通过 | 重启后的实际页面恢复、窄窗口系统截图、长错误、初始化承载与完整日常任务 |
 | B 总览统计与日期 | 未实现新稿 | 原文身份去重/有效知识/首日证据、独立活动/导入、零与未来、选择/返回保持 |
 | B 建议/计划/整理/动效/缓存 | 未实现新稿 | 实际任务驱动、不重复启动、审核前不变、主动停止保留、可信缓存时间、减少动态 |
 | B02/B03/R01 | B02断线回执根因修复，真实Rust三根通过；最终活动停止、B03/R01仍未关闭 | 原失败与修复报告并存；新归档/包、断线活动停止与跨限检索、普通入口 |
@@ -105,4 +105,12 @@ B03的0.0.4新Rust归档、Python源和daemon各跨10005真实请求，旧序号
 
 A1账本切片全仓test/vet和Store/daemon race通过；普通格式完整包daemon在新合成根验证schema16→17、49张旧表及一致性备份、v2原文、保存候选重放/重启、主动停止保护与明确恢复。驱动001/002只读WAL失败保留，003实际passed；最终6个自有daemon全部退出、socket不存在。详见[账本验证](../memory-processing-ledger-validation.md)。未调用模型、未打开新A窗口、未接真实验证/全局分派，不关闭A1整体或R01。独立App随包LaunchAgent仍为默认label，尚未注册，后续普通Native包身份须修正。
 
-账本后的实现新增pi依赖解析与验证所有者、macOS Keychain不可变凭据版本，以及OpenAI Responses/Chat、Anthropic和Magpie协议基础。pi 验证所有者已接入 daemon 生命周期、与整理共用的执行槽位、开始/状态/取消私有 IPC 和显式启用门禁；新 `service.json` 显式携带客户端根。新完整包已在空业务根通过真实 pi/DeepSeek 连接验证、活动取消、abort ACK、原生 Schema、进程回收、启用和重启保持；首轮驱动误判保留。真实独立Provider/Magpie、正式任务分派和Native页面仍未验收。详见[运行时记录](../processing-validation-runtime.md)。
+账本后的实现新增pi依赖解析与验证所有者、macOS Keychain不可变凭据版本，以及OpenAI Responses/Chat、Anthropic和Magpie协议基础。pi 验证所有者已接入 daemon 生命周期、与整理共用的执行槽位、开始/状态/取消私有 IPC 和显式启用门禁；新 `service.json` 显式携带客户端根。新完整包已在空业务根通过真实 pi/DeepSeek 连接验证、活动取消、abort ACK、原生 Schema、进程回收、启用和重启保持；首轮驱动误判保留。真实独立Provider/Magpie、Codex处理桥和正式任务分派仍未验收。详见[运行时记录](../processing-validation-runtime.md)。
+
+## Native 记忆处理设置页检查点
+
+「设置 → 记忆处理」已接到既有私有 IPC，并保持服务端顺序：保存不可变候选 → daemon 验证该修订 → 用户明确启用。实际 `processing-settings-runtime-003/report.json` 使用新空业务根、真实 pi 0.84.1 与 `deepseek/deepseek-flash`，从 Native 页面完成保存、活动验证取消、第二次验证成功和「设为当前使用」；取消回执包含 abort ACK、reaped 和 group-gone。用户 pi 配置散列未变，临时认证链接、socket 与 service/worker 锁均清理。
+
+失败证据没有覆盖：001 为驱动未保留 adapter stderr 导致 JSON 解析失败，002 精确暴露 `isolated P2 root required`，004/005 在补窄窗口系统截图前被真实 Agent 保存／索引／检索预检门禁拦截。普通窗口的候选、取消、验证、当前使用系统截图均实际打开对照认可稿；二级导航、当前使用行、三页签、状态栏右侧启用、pi 卡片、三项验证和底部固定动作的核心关系一致。980×620 动作可见性由 MyGo 测试通过，但没有把它写成实际窄窗口截图。
+
+生产格式 `processing-settings-package-002` 的 App 深度严格 codesign 通过，DMG `hdiutil verify` 通过；DMG 18,605,222 bytes，SHA256 `dc0e565f757fddf7e67d0265b76639b5f73225f3738239989dd23b2443198142`。该包仍为本机 ad-hoc 验证包。外层旧主侧栏、初始化承载、环境与批量 Agent 连接、Provider/Codex/Magpie、正式任务分派、B/C 页面和正式分发继续未完成。
