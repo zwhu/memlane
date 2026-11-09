@@ -316,7 +316,8 @@ App校验/替换范围预览/取消保留v3，确认后双owner锁保护完整�
 - [x] schema16→17 记忆处理配置账本：三种模式保存候选、不可变修订、独立当前选择、验证尝试/代次、恢复失效及任务冻结基础；真实 SQLite/WAL、49张旧表、完整包daemon迁移通过，见 [A1 验证](memory-processing-ledger-validation.md)。
 - [x] 将 pi 真实验证所有者接入 daemon 生命周期、共享执行槽位、私有状态/取消 API 与显式启用；新完整包和空业务根已通过真实 DeepSeek Schema、活动取消与 abort ACK、进程回收、启用和重启保持，见 [运行时记录](processing-validation-runtime.md)。
 - [x] 实现「设置 → 记忆处理」Native 页的真实 pi 子路径；实际 App 从已连接 pi 候选完成保存、活动取消、重新验证与明确启用，普通窗口系统截图、980×620 固定操作测试、完整包签名与 DMG 校验通过。Provider、Codex、Magpie 和正式任务分派不随此项关闭。
+- [x] 将同一记忆处理页复用到 A 三步初始化；环境 ready 后不再直接完成，依次进入 Agent 与处理配置，推迟后恢复原步骤，仅在真实服务 ready 且 daemon 当前修订已验证并明确启用后允许「完成配置」。唯一 LaunchAgent、空业务根、真实 pi 的实际 App 已完成保存、活动取消、重验、启用和进入首页，初始化前后知识／原文为零增量；不执行首任务、不等待记忆结果。
 - [ ] 将 Keychain 凭据登记及 OpenAI Responses/Chat、Anthropic、Magpie 适配接入同一 daemon 控制面并分别取得真实推理证据；当前仍只有基础实现和 HTTP／Keychain 夹具，不称真实 Provider/Magpie 通过。
-- [ ] 完成并验证 A 三步初始化承载、电脑级批量连接、Provider/Codex/Magpie 记忆处理、完整设置恢复和窄窗口实际系统截图；当前 pi 设置页切片不代替这些页面与链路。
+- [ ] 完成并验证 A 环境页全新空根准备／失败／取消／复用、电脑级批量连接、Provider/Codex/Magpie 记忆处理、完整设置恢复和窄窗口实际系统截图；当前三步承载与 pi 子路径不代替这些页面与链路。
 - [ ] 实现并验证B首页真实累计/日期、建议/计划/整理状态、动效和可信缓存；示例数字与原型不进入生产结论。
 - [ ] 收口剩余F1、F2最终包及F3 Developer ID/公证/Gatekeeper/正式更新源/干净macOS验收。

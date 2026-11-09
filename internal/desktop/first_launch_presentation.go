@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/internal/records"
 )
 
 // This presentation uses discovery and runtime receipts. It never installs an
@@ -12,7 +13,7 @@ import (
 func (a *App) firstLaunchView(c *ui.Context) {
 	s := &a.firstLaunch
 	ui.Column(c).Fill().Background(ui.Hex("#ffffff")).Children(func() {
-		if s.State.Stage == "discovering" {
+		if a.firstLaunchStep() == "environment" && s.State.Stage == "discovering" {
 			ui.Row(c).Shrink(0).Height(design.Toolbar).Padding(10, 24).Children(func() {
 				ui.Spacer(c)
 				if quietButton(c, "稍后准备").Key("first-launch-skip").OnClick(func() { a.cancelFirstLaunch(true) }).Shortcut(0, ui.KeyEscape) {
@@ -32,24 +33,32 @@ func (a *App) firstLaunchView(c *ui.Context) {
 					ui.Icon(c, icons["Agent"]).FontSize(15).TextColor(design.Ink)
 					ui.Text(c, "首次使用").FontSize(design.Body)
 					ui.Spacer(c)
-					ui.Text(c, firstLaunchStageLabel(s.State.Stage)).FontSize(design.Small).TextColor(design.Muted)
+					ui.Text(c, a.firstLaunchStatusLabel()).FontSize(design.Small).TextColor(design.Muted)
 				})
-				ui.Scroll(c).Key("first-launch-content").Grow(1).MinHeight(0).Padding(28, 32).Gap(20).Children(func() {
-					switch s.State.Stage {
-					case "results":
-						a.firstLaunchResults(c)
-					case "confirmation":
-						a.firstLaunchConfirmation(c)
-					case "ready":
-						a.firstLaunchReady(c)
-					default:
-						a.firstLaunchProgress(c)
-					}
-					if s.Error != "" {
-						firstLaunchNotice(c, "状态保存", s.Error)
-					}
-				})
-				a.firstLaunchFooter(c)
+				if a.firstLaunchStep() == "processing" {
+					a.processingSettings(c)
+				} else {
+					ui.Scroll(c).Key("first-launch-content").Grow(1).MinHeight(0).Padding(28, 32).Gap(20).Children(func() {
+						if a.firstLaunchStep() == "agents" {
+							a.firstLaunchAgents(c)
+						} else {
+							switch s.State.Stage {
+							case "results":
+								a.firstLaunchResults(c)
+							case "confirmation":
+								a.firstLaunchConfirmation(c)
+							case "ready":
+								a.firstLaunchReady(c)
+							default:
+								a.firstLaunchProgress(c)
+							}
+						}
+						if s.Error != "" {
+							firstLaunchNotice(c, "状态保存", s.Error)
+						}
+					})
+					a.firstLaunchFooter(c)
+				}
 			})
 			a.firstLaunchSteps(c)
 		})
@@ -59,6 +68,17 @@ func (a *App) firstLaunchView(c *ui.Context) {
 func firstLaunchStageLabel(stage string) string {
 	labels := map[string]string{"results": "检查完成", "confirmation": "等待确认", "preparing": "准备中", "verifying": "验证中", "ready": "本机环境就绪", "failed": "尚未完成", "cancelling": "正在取消", "cancelled": "已取消", "interrupted": "准备已中断"}
 	return labels[stage]
+}
+
+func (a *App) firstLaunchStatusLabel() string {
+	switch a.firstLaunchStep() {
+	case "agents":
+		return "连接 Agent"
+	case "processing":
+		return a.processingToolbarStatus()
+	default:
+		return firstLaunchStageLabel(a.firstLaunch.State.Stage)
+	}
 }
 
 func (a *App) firstLaunchSidebar(c *ui.Context) {
@@ -78,26 +98,19 @@ func (a *App) firstLaunchSidebar(c *ui.Context) {
 }
 
 func (a *App) firstLaunchSteps(c *ui.Context) {
-	stage := a.firstLaunch.State.Stage
 	active := 0
-	switch stage {
-	case "confirmation":
+	switch a.firstLaunchStep() {
+	case "agents":
 		active = 1
-	case "preparing", "verifying", "cancelling", "cancelled", "interrupted":
+	case "processing":
 		active = 2
-	case "failed":
-		if a.firstLaunch.State.Attempt > 0 {
-			active = 2
-		}
-	case "ready":
-		active = 3
 	}
 	ui.Column(c).Width(164).Shrink(0).Background(ui.Hex("#f8fafc")).BorderWidth(0, 0, 0, 1).BorderColor(design.Border).Children(func() {
 		ui.Row(c).Height(design.Toolbar).Shrink(0).Padding(0, 20).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).Children(func() {
 			ui.Text(c, "准备进度").FontSize(design.Small).TextColor(design.Muted)
 		})
 		ui.Column(c).Padding(100, 12, 0, 12).Gap(12).Children(func() {
-			for i, label := range []string{"检查本机", "确认准备", "准备与验证", "开始使用"} {
+			for i, label := range []string{"准备环境", "连接 Agent", "配置记忆处理"} {
 				fill, color := ui.Transparent, design.Muted
 				if i == active {
 					fill, color = design.Selected, design.Ink
@@ -359,7 +372,7 @@ func (a *App) firstLaunchReady(c *ui.Context) {
 	ui.Row(c).Gap(14).AlignItems(ui.Center).Children(func() {
 		a.preparationBlocksSized(c, "first-launch-blocks", "ready", s.State.ReducedMotion, s.ChangedAt, 64, 64)
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-			firstLaunchHeading(c, "本机记忆环境已就绪", "本机服务与 Rust 已验证可用。下一步，选择你要使用的 Agent。")
+			firstLaunchHeading(c, "本机记忆环境已就绪", "本机服务与 Rust 已验证可用。下一步连接 Agent；也可以稍后设置。")
 		})
 	})
 	firstLaunchSection(c, "本机记忆", "来自当前服务健康回执", func() {
@@ -370,12 +383,38 @@ func (a *App) firstLaunchReady(c *ui.Context) {
 			firstLaunchRow(c, "first-launch-ready-official", "官方采集服务", "尚未配置组件来源", "尚未验证", icons["Agent"])
 		}
 	})
-	ui.Column(c).Gap(10).Padding(20, 0).Children(func() {
-		ui.Text(c, "从一条有用的记忆开始").FontSize(14).Bold()
-		ui.Text(c, "1. 选择 Agent，项目可以跳过。\n2. 确认本轮工作目录与接入范围，由 App 引导完成真实任务。\n3. 查看实际记忆与完整出处，再用新会话检查召回。").FontSize(design.Body).LineHeight(1.9)
-		ui.Text(c, "准备环境不会创建记忆，也不会采集历史聊天。").FontSize(design.Small).TextColor(design.Muted)
-	})
+	firstLaunchNotice(c, "环境步骤完成", "准备环境不会创建项目、执行编码任务、采集历史聊天或等待记忆结果。")
 	a.firstLaunchDetails(c)
+}
+
+func (a *App) firstLaunchAgents(c *ui.Context) {
+	firstLaunchHeading(c, "连接 Agent", "把 Memlane 配置到这台电脑上的编码 Agent。项目、任务范围和处理记忆的执行者在各自步骤确认。")
+	firstLaunchSection(c, "本机 Agent", "连接可稍后完成，不阻塞进入记忆处理配置", func() {
+		if a.agents.Loading && len(a.agents.Found) == 0 {
+			firstLaunchRow(c, "first-launch-agent-loading", "正在发现 Agent", "只检查已知安装位置、PATH 和用户已选路径", "检查中", icons["Agent"])
+		}
+		for _, found := range a.agents.Found {
+			var connection *records.Connection
+			for index := range a.agents.Connections {
+				candidate := &a.agents.Connections[index]
+				if candidate.Agent == found.Agent && candidate.Enabled {
+					connection = candidate
+					break
+				}
+			}
+			state, detail := a.agentStatus(found, connection)
+			version := found.Version
+			if version == "" {
+				version = "版本待确认"
+			}
+			firstLaunchRow(c, "first-launch-setup-agent-"+found.Agent, found.Name, version+" · "+detail, state, icons["Agent"])
+		}
+		if !a.agents.Loading && len(a.agents.Found) == 0 {
+			firstLaunchRow(c, "first-launch-agent-empty", "尚未发现 Agent", "可以稍后从设置连接，不会创建空项目", "未连接", icons["Agent"])
+		}
+	})
+	quietButton(c, "打开现有 Agent 连接页").Key("first-launch-agent-settings").OnClick(a.openFirstLaunchAgentSettings)
+	firstLaunchNotice(c, "本轮生产边界", "电脑级批量连接新稿仍待实现；此步骤只展示真实发现与现有连接，不把已安装当成已连接。")
 }
 
 func (a *App) firstLaunchFooter(c *ui.Context) {
@@ -383,6 +422,9 @@ func (a *App) firstLaunchFooter(c *ui.Context) {
 	ui.Row(c).Key("first-launch-footer").MinHeight(74).Shrink(0).Padding(16, 28).Gap(14).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(5).Children(func() {
 			text, hint := a.firstLaunchDownloadSummary(), "下一步确认准备，当前还未修改环境。"
+			if a.firstLaunchStep() == "agents" {
+				text, hint = "Agent 可以稍后连接", "继续后选择并验证一种记忆处理方式。"
+			}
 			switch s.State.Stage {
 			case "confirmation":
 				hint = "本次仅准备本机环境；Agent 接入在项目中确认。"
@@ -396,10 +438,16 @@ func (a *App) firstLaunchFooter(c *ui.Context) {
 			ui.Text(c, text).FontSize(design.Small).Bold()
 			ui.Text(c, hint).FontSize(design.Small).TextColor(design.Muted)
 		})
-		if s.State.Stage == "confirmation" {
+		if a.firstLaunchStep() == "agents" {
+			quietButton(c, "稍后设置").Key("first-launch-skip").OnClick(func() { a.cancelFirstLaunch(true) })
+		} else if s.State.Stage == "confirmation" {
 			quietButton(c, "返回").Key("first-launch-back").OnClick(func() { s.State.Stage = "results"; a.persistFirstLaunch() })
 		} else if s.State.Stage != "ready" {
 			quietButton(c, "稍后准备").Key("first-launch-skip").OnClick(func() { a.cancelFirstLaunch(true) })
+		}
+		if a.firstLaunchStep() == "agents" {
+			firstLaunchPrimary(c, "继续配置记忆处理").Key("first-launch-processing").OnClick(a.advanceFirstLaunchToProcessing)
+			return
 		}
 		switch s.State.Stage {
 		case "results":
@@ -409,19 +457,7 @@ func (a *App) firstLaunchFooter(c *ui.Context) {
 		case "preparing", "verifying":
 			firstLaunchPrimary(c, "取消准备").Key("first-launch-cancel").OnClick(func() { a.cancelFirstLaunch(false) })
 		case "ready":
-			firstLaunchPrimary(c, "选择 Agent").Key("first-launch-use").OnClick(func() {
-				if a.runtimeStatus.Phase != "ready" {
-					s.State.Stage = "failed"
-					s.State.Message = "记忆服务已不可用，请重新验证。"
-					a.persistFirstLaunch()
-					return
-				}
-				s.State.Completed = true
-				s.Open = false
-				a.persistFirstLaunch()
-				a.navigate("Agent", "")
-				a.refreshAgents(true)
-			})
+			firstLaunchPrimary(c, "继续连接 Agent").Key("first-launch-use").OnClick(a.advanceFirstLaunchToAgents)
 		case "failed", "cancelled", "interrupted":
 			firstLaunchPrimary(c, "重新检查").Key("first-launch-retry").OnClick(a.discoverFirstLaunch)
 		}

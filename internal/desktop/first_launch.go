@@ -30,6 +30,7 @@ type EnvironmentItem struct {
 }
 type FirstLaunchState struct {
 	Stage         string             `json:"stage"`
+	Step          string             `json:"step,omitempty"`
 	Completed     bool               `json:"completed"`
 	Skipped       bool               `json:"skipped"`
 	ReducedMotion bool               `json:"reduced_motion"`
@@ -64,13 +65,29 @@ func (a *App) ConfigureFirstLaunch(ctx context.Context, controller *RuntimeContr
 	} else if !os.IsNotExist(err) {
 		s.Error = "首次使用状态无法读取：" + err.Error()
 	}
+	if s.State.Step == "" {
+		s.State.Step = "environment"
+	}
 	if s.State.Completed {
 		return false
 	}
 	if s.State.Skipped {
+		if s.State.Step != "environment" && s.State.Stage == "ready" && a.runtimeStatus.Phase == "" {
+			a.runtimeStatus = RuntimeStatus{Phase: "checking_availability", Message: "正在确认本地记忆服务…", Installed: true}
+		}
 		return true
 	}
 	s.Open = true
+	if s.State.Step != "environment" && s.State.Stage == "ready" {
+		// A persisted later step proves the previous environment transition, but
+		// each new process still waits for a live availability observation before
+		// allowing progress or completion.
+		if a.runtimeStatus.Phase == "" {
+			a.runtimeStatus = RuntimeStatus{Phase: "checking_availability", Message: "正在确认本地记忆服务…", Installed: true}
+		}
+		return true
+	}
+	s.State.Step = "environment"
 	if s.State.Stage == "preparing" || s.State.Stage == "verifying" || s.State.Stage == "cancelling" {
 		s.State.Stage = "interrupted"
 		s.State.Message = "上次准备已中断。重新检查后可继续，不自动重试收费操作。"
@@ -219,6 +236,7 @@ func (a *App) discoverFirstLaunch() {
 	}
 	s.Sequence++
 	sequence := s.Sequence
+	s.State.Step = "environment"
 	s.State.Stage, s.State.Message, s.State.Skipped = "discovering", "正在检查本机环境…", false
 	s.ChangedAt = time.Now()
 	a.persistFirstLaunch()
@@ -418,12 +436,90 @@ func (a *App) openFirstLaunch() {
 	}
 	s.Open = true
 	s.State.Skipped = false
+	if s.State.Step != "" && s.State.Step != "environment" && s.State.Stage == "ready" {
+		a.persistFirstLaunch()
+		if s.State.Step == "processing" {
+			a.refreshProcessing()
+		} else {
+			a.refreshAgents(true)
+		}
+		return
+	}
 	a.discoverFirstLaunch()
+}
+
+func (a *App) firstLaunchStep() string {
+	step := a.firstLaunch.State.Step
+	if step == "" {
+		return "environment"
+	}
+	return step
+}
+
+func (a *App) advanceFirstLaunchToAgents() {
+	s := &a.firstLaunch
+	if !s.Open || s.State.Stage != "ready" || a.runtimeStatus.Phase != "ready" {
+		s.State.Step = "environment"
+		s.State.Stage = "failed"
+		s.State.Message = "记忆服务已不可用，请重新验证。"
+		a.persistFirstLaunch()
+		return
+	}
+	s.State.Step = "agents"
+	s.State.Skipped = false
+	s.State.Message = "环境已就绪；Agent 可以现在连接，也可以稍后设置。"
+	a.persistFirstLaunch()
+	a.refreshAgents(true)
+}
+
+func (a *App) advanceFirstLaunchToProcessing() {
+	s := &a.firstLaunch
+	if !s.Open || s.State.Stage != "ready" || a.runtimeStatus.Phase != "ready" {
+		return
+	}
+	s.State.Step = "processing"
+	s.State.Skipped = false
+	s.State.Message = "选择并验证一种记忆处理方式，再明确设为当前使用。"
+	a.persistFirstLaunch()
+	a.refreshProcessing()
+}
+
+func (a *App) openFirstLaunchAgentSettings() {
+	s := &a.firstLaunch
+	if !s.Open || a.firstLaunchStep() != "agents" {
+		return
+	}
+	s.Open = false
+	a.persistFirstLaunch()
+	a.navigate("Agent", "")
+	a.refreshAgents(true)
+}
+
+func (a *App) canCompleteFirstLaunch() bool {
+	s, current := &a.firstLaunch, a.processing.Configuration.Current
+	return s.Open && a.firstLaunchStep() == "processing" && s.State.Stage == "ready" &&
+		a.runtimeStatus.Phase == "ready" && a.serviceState == "ready" && !a.processing.Busy && !a.processing.Polling &&
+		current.Active && current.Revision != nil
+}
+
+func (a *App) completeFirstLaunch() {
+	if !a.canCompleteFirstLaunch() {
+		return
+	}
+	s := &a.firstLaunch
+	s.State.Completed = true
+	s.State.Skipped = false
+	s.State.Message = "初始配置已完成。"
+	s.Open = false
+	a.persistFirstLaunch()
+	a.navigate("总览", "")
 }
 
 func (a *App) ReconcileFirstLaunchAvailability() {
 	s := &a.firstLaunch
-	if s.Open && s.State.Stage == "ready" && (a.runtimeStatus.Phase != "ready" || a.serviceState != "ready") {
+	runtimeUnavailable := map[string]bool{"authorization": true, "cancelled": true, "failed": true, "stopped": true, "unavailable": true}[a.runtimeStatus.Phase]
+	serviceUnavailable := a.serviceState == "unavailable"
+	if s.Open && s.State.Stage == "ready" && (runtimeUnavailable || serviceUnavailable) {
 		s.State.Stage = "failed"
 		s.State.Message = "记忆服务当前不可用，请重新检查并验证。"
 		a.persistFirstLaunch()

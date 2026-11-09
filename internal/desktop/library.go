@@ -94,9 +94,9 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 		if a.page == "设置" {
 			a.refreshIndexRebuild()
 			a.refreshBackups()
-			if a.settingsSection == "processing" {
-				a.refreshProcessing()
-			}
+		}
+		if (a.page == "设置" && a.settingsSection == "processing") || (a.firstLaunch.Open && a.firstLaunchStep() == "processing") {
+			a.refreshProcessing()
 		}
 		if a.page == "使用指引" || a.page == "初始化" {
 			a.refreshAgents(false)
@@ -151,9 +151,9 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 					if a.page == "设置" {
 						a.refreshIndexRebuild()
 						a.refreshBackups()
-						if a.settingsSection == "processing" {
-							a.refreshProcessing()
-						}
+					}
+					if (a.page == "设置" && a.settingsSection == "processing") || (a.firstLaunch.Open && a.firstLaunchStep() == "processing") {
+						a.refreshProcessing()
 					}
 					if a.page == "代码图谱" && !a.code.Busy {
 						a.refreshCode()

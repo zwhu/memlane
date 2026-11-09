@@ -11,6 +11,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/zwhu/memlane/internal/agents"
+	"github.com/zwhu/memlane/internal/records"
 	"github.com/zwhu/memlane/internal/serviceipc"
 )
 
@@ -25,7 +26,7 @@ func TestFirstLaunchNativeFramesAndReadyActionsRequireActualAvailability(t *test
 			a.firstLaunch.State.ReducedMotion = true
 			tt := ui.NewTester(a.View, 1200, 820)
 			if stage == "ready" {
-				if err := tt.Click("选择 Agent"); err != nil {
+				if err := tt.Click("继续连接 Agent"); err != nil {
 					t.Fatal(err)
 				}
 				if a.firstLaunch.State.Completed || a.firstLaunch.State.Stage != "failed" {
@@ -36,18 +37,126 @@ func TestFirstLaunchNativeFramesAndReadyActionsRequireActualAvailability(t *test
 	}
 }
 
-func TestFirstLaunchReadyOpensAgentSelectionWithoutRegisteringProject(t *testing.T) {
+func TestFirstLaunchReadyAdvancesToAgentStepWithoutCompletingSetup(t *testing.T) {
 	a := New("test", nil)
 	a.firstLaunch.Open = true
 	a.firstLaunch.Controller = &RuntimeController{Config: RuntimeConfig{Root: t.TempDir()}}
 	a.firstLaunch.State.Stage = "ready"
 	a.runtimeStatus.Phase = "ready"
 	tt := ui.NewTester(a.View, 1200, 820)
-	if err := tt.Click("选择 Agent"); err != nil {
+	if err := tt.Click("继续连接 Agent"); err != nil {
 		t.Fatal(err)
 	}
-	if a.firstLaunch.Open || !a.firstLaunch.State.Completed || a.page != "Agent" || a.detailMode == "project" || len(a.projects) != 0 {
-		t.Fatal("ready did not continue to Agent selection without a project")
+	if !a.firstLaunch.Open || a.firstLaunch.State.Completed || a.firstLaunch.State.Step != "agents" || a.page != "总览" || len(a.projects) != 0 {
+		t.Fatal("environment readiness completed setup or registered a project")
+	}
+	for _, label := range []string{"准备环境", "连接 Agent", "配置记忆处理", "继续配置记忆处理"} {
+		if !tt.HasText(label) {
+			t.Fatalf("three-step setup is missing %q", label)
+		}
+	}
+	if tt.HasText("第一项任务") || tt.HasText("记忆结果") {
+		t.Fatal("superseded first-task gate returned to setup")
+	}
+}
+
+func TestFirstLaunchProcessingReusesLedgerAndRequiresExplicitActiveRevision(t *testing.T) {
+	a := New("test", nil)
+	a.firstLaunch.Open = true
+	a.firstLaunch.Controller = &RuntimeController{Config: RuntimeConfig{Root: t.TempDir()}}
+	a.firstLaunch.State.Stage = "ready"
+	a.firstLaunch.State.Step = "agents"
+	a.runtimeStatus.Phase = "ready"
+	a.serviceState = "ready"
+	tt := ui.NewTester(a.View, 1200, 820)
+	if err := tt.Click("继续配置记忆处理"); err != nil {
+		t.Fatal(err)
+	}
+	if a.firstLaunch.State.Step != "processing" || !tt.HasText("使用已连接 Agent") || !tt.HasText("设为当前使用") {
+		t.Fatal("processing setup did not reuse the production ledger page")
+	}
+	_ = tt.Click("完成配置")
+	if a.firstLaunch.State.Completed || !a.firstLaunch.Open {
+		t.Fatal("setup completed without an explicitly active processing revision")
+	}
+	spec := records.ProcessingSpec{Mode: "agent", Agent: "pi", Provider: "deepseek", Model: "deepseek-flash", Connection: "connection", ConnectionGeneration: 1}
+	revision := records.ProcessingRevision{ID: "revision", Spec: spec, Validation: &records.ProcessingValidation{ID: "validation", Revision: "revision", State: "succeeded"}}
+	a.processing.Configuration.Saved["agent"] = revision
+	a.processing.Configuration.Current = records.ProcessingSelection{Active: true, Generation: 1, Revision: &revision}
+	a.processing.Drafts["agent"] = spec
+	tt = ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("pi · deepseek / deepseek-flash · 当前使用") {
+		t.Fatal("processing setup hid the current production-ledger selection")
+	}
+	if err := tt.Click("完成配置"); err != nil {
+		t.Fatal(err)
+	}
+	if !a.firstLaunch.State.Completed || a.firstLaunch.State.Skipped || a.firstLaunch.Open || a.page != "总览" {
+		t.Fatal("active processing revision did not complete setup into the daily home")
+	}
+}
+
+func TestOpenFirstLaunchResumesPersistedProcessingStepWithoutRediscovery(t *testing.T) {
+	a := New("test", nil)
+	root := t.TempDir()
+	a.firstLaunch.Controller = &RuntimeController{Config: RuntimeConfig{Root: root}}
+	a.firstLaunch.State = FirstLaunchState{Stage: "ready", Step: "processing", Skipped: true}
+	a.runtimeStatus.Phase = "ready"
+	a.openFirstLaunch()
+	if !a.firstLaunch.Open || a.firstLaunch.State.Skipped || a.firstLaunch.State.Step != "processing" || a.firstLaunch.State.Stage != "ready" {
+		t.Fatal("resuming deferred setup restarted environment discovery")
+	}
+}
+
+func TestConfigureFirstLaunchResumesProcessingAfterLiveAvailabilityCheck(t *testing.T) {
+	a := New("test", nil)
+	root := t.TempDir()
+	state := FirstLaunchState{Stage: "ready", Step: "processing"}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(root, "first-launch.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	controller := &RuntimeController{Config: RuntimeConfig{Root: root}}
+	if !a.ConfigureFirstLaunch(context.Background(), controller, func(fn func()) { fn() }) {
+		t.Fatal("persisted processing step did not keep first launch open")
+	}
+	a.serviceState = "ready"
+	a.ReconcileFirstLaunchAvailability()
+	if !a.firstLaunch.Open || a.firstLaunch.State.Stage != "ready" || a.runtimeStatus.Phase != "checking_availability" || !a.runtimeStatus.Installed {
+		t.Fatal("transient startup check invalidated a persisted ready step")
+	}
+	a.ApplyRuntimeAvailability(RuntimeAvailability{Phase: "ready", Message: "服务已就绪"})
+	if a.runtimeStatus.Phase != "ready" || a.firstLaunch.State.Stage != "ready" {
+		t.Fatal("live availability did not restore the persisted processing step")
+	}
+}
+
+func TestConfigureFirstLaunchDeferredProcessingCanResumeAfterRestart(t *testing.T) {
+	a := New("test", nil)
+	root := t.TempDir()
+	state := FirstLaunchState{Stage: "ready", Step: "processing", Skipped: true}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(root, "first-launch.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	controller := &RuntimeController{Config: RuntimeConfig{Root: root}}
+	if !a.ConfigureFirstLaunch(context.Background(), controller, func(fn func()) { fn() }) {
+		t.Fatal("deferred processing setup did not remain pending")
+	}
+	if a.firstLaunch.Open || a.runtimeStatus.Phase != "checking_availability" || !a.runtimeStatus.Installed {
+		t.Fatal("deferred processing setup cannot receive a live availability observation")
+	}
+	a.serviceState = "ready"
+	a.ApplyRuntimeAvailability(RuntimeAvailability{Phase: "ready", Message: "服务已就绪"})
+	a.openFirstLaunch()
+	if !a.firstLaunch.Open || a.firstLaunch.State.Skipped || a.firstLaunch.State.Step != "processing" || a.runtimeStatus.Phase != "ready" {
+		t.Fatal("deferred processing setup did not resume after restart")
 	}
 }
 

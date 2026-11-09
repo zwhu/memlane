@@ -138,6 +138,9 @@ func (a *App) refreshAgents(discover bool) {
 			if s.Selection == "" && len(found) > 0 {
 				a.selectAgent("agent-" + found[0].Agent)
 			}
+			if a.firstLaunch.Open && a.firstLaunchStep() == "processing" {
+				a.refreshProcessing()
+			}
 		})
 	}()
 }

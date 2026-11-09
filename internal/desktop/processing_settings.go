@@ -123,7 +123,8 @@ func (a *App) settingsSectionLabel() string {
 }
 
 func (a *App) processingToolbarStatus() string {
-	if a.settingsSection != "processing" {
+	setup := a.firstLaunch.Open && a.firstLaunchStep() == "processing"
+	if a.settingsSection != "processing" && !setup {
 		return ""
 	}
 	current := a.processing.Configuration.Current
@@ -173,9 +174,14 @@ func (a *App) settingsShell(c *ui.Context) {
 func (a *App) processingSettings(c *ui.Context) {
 	s := &a.processing
 	s.ensure()
+	setup := a.firstLaunch.Open && a.firstLaunchStep() == "processing"
 	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
 		ui.Scroll(c).Grow(1).Padding(30).Gap(16).Children(func() {
-			ui.Text(c, "记忆处理").FontSize(design.Heading).Bold()
+			title := "记忆处理"
+			if setup {
+				title = "配置记忆处理"
+			}
+			ui.Text(c, title).FontSize(design.Heading).Bold()
 			ui.Divider(c)
 			current := "尚未设置"
 			if s.Configuration.Current.Active && s.Configuration.Current.Revision != nil {
@@ -213,12 +219,19 @@ func (a *App) processingSettings(c *ui.Context) {
 			}
 		})
 		ui.Row(c).Height(58).Shrink(0).Padding(12, 30).Gap(10).Justify(ui.End).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
+			if setup {
+				quietButton(c, "稍后设置").Key("first-launch-skip").OnClick(func() { a.cancelFirstLaunch(true) })
+				ui.Spacer(c)
+			}
 			ui.Button(c, "取消修改").Disabled(s.Busy || s.Polling || !a.processingHasDraftChanges()).OnClick(a.cancelProcessingChanges)
 			ui.Button(c, "保存配置").Disabled(!s.CanSave()).OnClick(a.saveProcessing)
 			if s.CanCancel() {
 				ui.Button(c, "取消验证").OnClick(a.cancelProcessingValidation)
 			} else {
 				ui.Button(c, "验证配置").Disabled(!s.CanValidate()).OnClick(a.validateProcessing)
+			}
+			if setup {
+				firstLaunchPrimary(c, "完成配置").Key("first-launch-complete").Disabled(!a.canCompleteFirstLaunch()).OnClick(a.completeFirstLaunch)
 			}
 		})
 	})

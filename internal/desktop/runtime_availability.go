@@ -76,11 +76,12 @@ func (a *App) ApplyRuntimeAvailability(observation RuntimeAvailability) {
 		return
 	}
 	switch a.runtimeStatus.Phase {
-	case "ready", "authorization", "unavailable":
+	case "checking_availability", "ready", "authorization", "unavailable":
 	default:
 		return
 	}
 	a.runtimeStatus.Phase = observation.Phase
 	a.runtimeStatus.Message = observation.Message
 	a.runtimeStatus.Service = observation.Service
+	a.ReconcileFirstLaunchAvailability()
 }

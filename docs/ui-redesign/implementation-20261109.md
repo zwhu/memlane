@@ -53,12 +53,12 @@ A 固定 `e27a49e35020972d6aea4ab070ec898fb6c9c22e` revision 13，B 固定 `ed6c
 | --- | --- | --- |
 | pi 原配置/认证、完整 Schema、流式取消/终态/回收/迟到 | 独立桥与第五包取消/重试通过 | pi-responses-001报告；同包受控推理不能冒称官方材料 |
 | pi 事实质量与官方同包闭环 | 第五包同根原材料/完整出处/Rust/App v2/新会话通过，两条初始内容和六固定样本逐项通过 | pi-package-005/runtime-continuation-005/report.json及initial-quality-itemwise-review.json；保留原失败，限制题材/稳定性/知识覆盖 |
-| A V01–V02 环境与三步 | 未实现新稿 | 空根、失败/取消/重开/兼容复用、真实下载字节与占用 |
+| A V01–V02 环境与三步 | 三步承载、推迟恢复、环境ready后进入Agent与pi处理页已通过实际包；环境全新准备矩阵未关闭 | 继续补空根下载、失败/取消/重开/兼容复用、真实下载字节与占用 |
 | A V03–V05 批量电脑级连接 | 未实现新稿 | 默认空、逐项状态与稳定代次、部分成功/重载/只失败重试/迟到 |
 | A V06 Provider | 未实现 | 公共协议/目录证据、独立配置复用、地址变更凭据门禁、实际推理 |
-| A V07–V09 配置/启用/失效 | schema17账本、daemon真实pi验证，以及设置页pi保存／活动取消／重验／明确启用通过；三方式完整保存与正式任务冻结仍未接 | Provider/Agent/Magpie三份保存、运行快照、非pi失败/取消/迟到；单后端UI不关闭整项 |
+| A V07–V09 配置/启用/失效 | schema17账本、daemon真实pi验证、设置页与初始化复用页的pi保存／活动取消／重验／明确启用通过；三方式完整保存与正式任务冻结仍未接 | Provider/Agent/Magpie三份保存、运行快照、非pi失败/取消/迟到；单后端UI不关闭整项 |
 | A V10 pi/Codex，V11 Magpie | pi桥/同包及设置页真实pi子路径通过；Codex/Magpie仍不可用并如实显示 | Codex/Magpie各自完整 Schema/真实隔离/超时/取消、实际模型及路由 |
-| A V12–V14 设置/窗口/完整链路 | 设置页pi普通窗口与生产格式包通过；窄窗口仅MyGo测试，初始化复用/完整恢复/日常任务未通过 | 重启后的实际页面恢复、窄窗口系统截图、长错误、初始化承载与完整日常任务 |
+| A V12–V14 设置/窗口/完整链路 | 设置页pi与初始化复用普通窗口、唯一LaunchAgent注册包通过；窄窗口仍仅MyGo测试，完整设置恢复/日常任务未通过 | 重启后的实际页面恢复、窄窗口系统截图、长错误与完整日常任务 |
 | B 总览统计与日期 | 未实现新稿 | 原文身份去重/有效知识/首日证据、独立活动/导入、零与未来、选择/返回保持 |
 | B 建议/计划/整理/动效/缓存 | 未实现新稿 | 实际任务驱动、不重复启动、审核前不变、主动停止保留、可信缓存时间、减少动态 |
 | B02/B03/R01 | B02断线回执根因修复，真实Rust三根通过；最终活动停止、B03/R01仍未关闭 | 原失败与修复报告并存；新归档/包、断线活动停止与跨限检索、普通入口 |
@@ -113,4 +113,18 @@ A1账本切片全仓test/vet和Store/daemon race通过；普通格式完整包da
 
 失败证据没有覆盖：001 为驱动未保留 adapter stderr 导致 JSON 解析失败，002 精确暴露 `isolated P2 root required`，004/005 在补窄窗口系统截图前被真实 Agent 保存／索引／检索预检门禁拦截。普通窗口的候选、取消、验证、当前使用系统截图均实际打开对照认可稿；二级导航、当前使用行、三页签、状态栏右侧启用、pi 卡片、三项验证和底部固定动作的核心关系一致。980×620 动作可见性由 MyGo 测试通过，但没有把它写成实际窄窗口截图。
 
-生产格式 `processing-settings-package-002` 的 App 深度严格 codesign 通过，DMG `hdiutil verify` 通过；DMG 18,605,222 bytes，SHA256 `dc0e565f757fddf7e67d0265b76639b5f73225f3738239989dd23b2443198142`。该包仍为本机 ad-hoc 验证包。外层旧主侧栏、初始化承载、环境与批量 Agent 连接、Provider/Codex/Magpie、正式任务分派、B/C 页面和正式分发继续未完成。
+生产格式 `processing-settings-package-002` 的 App 深度严格 codesign 通过，DMG `hdiutil verify` 通过；DMG 18,605,222 bytes，SHA256 `dc0e565f757fddf7e67d0265b76639b5f73225f3738239989dd23b2443198142`。该包仍为本机 ad-hoc 验证包。环境全新准备、电脑级批量 Agent 连接、Provider/Codex/Magpie、正式任务分派、B/C 页面和正式分发继续未完成。
+
+## Native 三步初始化复用检查点
+
+首次设置新增持久 `step`，与原环境生命周期 `stage` 分开：`environment → agents → processing`。环境 ready 只进入 Agent 步，不再直接写 `completed`；Agent 可稍后设置，processing 直接复用「设置 → 记忆处理」同一草稿、候选、daemon 账本和操作顺序。「完成配置」要求本次真实运行态和服务均为 ready，且当前修订已完成验证并由用户明确启用；它不执行首任务、不采集会话、不等待知识。推迟后从持久步骤恢复，不重新伪造环境或连接成功。
+
+恢复启动时发现并修复了一个实际顺序问题：持久 agents/processing 步在进程刚启动的空运行态会被立即降为 failed，且可用性观察因尚未标记已安装而无法接管。现在这一路径先进入专用 `checking_availability`，只接受本次只读服务观察转为 ready；明确 unavailable/stopped/failed 才使环境步骤失效。普通运行中的 `checking` 生命周期仍不接受晚到观察，既有并发门禁未放宽。
+
+最终证据 `first-launch-processing-runtime-007/report.json` 使用唯一 LaunchAgent `io.github.zwhu.memlane.first-launch-processing.20261109.r4.plist`，由实际包注册并启动打包 daemon/Rust worker；本轮服务回执为 enabled，清理后为 not_registered。真实 pi 0.84.1 / `deepseek/deepseek-flash` 连接一次通过；Native 页面完成 Agent 步、processing 页、保存、活动取消、重验成功、明确启用与「完成配置」，取消与成功尝试均证明进程回收和进程组消失。首启状态最终为 `ready/processing/completed=true`，随后进入日常首页。
+
+连接前置验证会产生一条 preference 范围原文，因此不能把最终数据库总数误写为零。通过报告在 UI 前后分别读取同一 daemon：knowledge 均为 0，raw 均为 1，证明初始化处理页面零增量，而不是把真实连接验证记录当成任务产物。用户 pi 配置散列未变，临时凭据链接、socket、service/worker 锁全部清理。
+
+失败证据逐目录保留：001 为适配器隔离根命名门禁；002 暴露恢复启动的瞬时降级；003 证明仅外部 daemon ready 不能替代 macOS 服务注册；004 与 006 为真实 Agent 保存／索引／检索验证失败；005 已走完整条 UI 并写入 completed，但旧驱动错误要求最终总记录为零。007 才是修正解释和清理等待后的通过报告，没有覆盖前述失败。
+
+已实际打开 007 的 Agent、processing 未配置、当前启用和完成后首页系统截图。三步栏、紧凑主区、固定底部动作、当前使用行、三页签、pi 卡片与认可 A 的核心关系一致；Agent 页面仍明确是“真实发现与现有连接”的有限承载，不是已认可的电脑级多选批量连接新稿。此次为 1200×820 普通窗口，未补窄窗口系统截图，也未验证 Provider、Codex、Magpie、完整设置重启恢复或完成后的正式整理任务。
