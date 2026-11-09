@@ -153,10 +153,8 @@ func runPiRPCProcessOwned(parent context.Context, executable string, args, env [
 					out.NativeSchemaResponseStatus = e.Status
 				}
 			}
-			if bound == 1 && responses == 1 {
-				out.NativeSchemaRequested = true
-			}
-			if resultErr == nil && (!out.NativeSchemaRequested || out.NativeSchemaResponseStatus != 200) {
+			out.NativeSchemaRequested = bound == 1
+			if resultErr == nil && (!out.NativeSchemaRequested || responses != 1 || out.NativeSchemaResponseStatus != 200) {
 				resultErr = errors.New("native schema provider receipt missing or repeated")
 			}
 		}

@@ -88,6 +88,9 @@ func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (out PiCompleti
 	if o.Provider == "" || o.Model == "" {
 		return out, errors.New("select pi provider/model before running a background task")
 	}
+	if o.Provider != "ollama" && o.Provider != "deepseek" {
+		return out, errors.New("pi provider has no adapted full JSON schema request binding")
+	}
 	out.SelectedProvider, out.SelectedModel = o.Provider, o.Model
 	root, err := os.MkdirTemp("", "memlane-pi-rpc-")
 	if err != nil {
@@ -163,19 +166,16 @@ func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (out PiCompleti
 	// Replace the coding assistant's default system context for this isolated
 	// pure-suggestion task. No user settings or model selection is rewritten.
 	args = append(args, "--system-prompt", instructions)
-	schemaDigest := ""
-	if o.Provider == "ollama" {
-		schema := o.OutputSchema
-		sum := sha256.Sum256(schema)
-		schemaDigest = hex.EncodeToString(sum[:])
-		extension := strings.ReplaceAll(piStructuredOutput, "__MEMLANE_OUTPUT_SCHEMA__", string(schema))
-		extension = strings.ReplaceAll(extension, "__MEMLANE_SCHEMA_DIGEST__", schemaDigest)
-		path := filepath.Join(root, "schema-extension.ts")
-		if err = os.WriteFile(path, []byte(extension), 0400); err != nil {
-			return out, err
-		}
-		args = append(args, "--extension", path)
+	sum := sha256.Sum256(o.OutputSchema)
+	schemaDigest := hex.EncodeToString(sum[:])
+	extension := strings.ReplaceAll(piStructuredOutput, "__MEMLANE_OUTPUT_SCHEMA__", string(o.OutputSchema))
+	extension = strings.ReplaceAll(extension, "__MEMLANE_SCHEMA_DIGEST__", schemaDigest)
+	extension = strings.ReplaceAll(extension, "__MEMLANE_SCHEMA_PROVIDER__", o.Provider)
+	path := filepath.Join(root, "schema-extension.ts")
+	if err = os.WriteFile(path, []byte(extension), 0400); err != nil {
+		return out, err
 	}
+	args = append(args, "--extension", path)
 	prompt := o.Prompt + "\nReturn ONLY JSON matching this schema:\n" + string(o.OutputSchema)
 	process, err := runPiRPCProcessOwned(ctx, o.Executable, args, env, work, prompt, o.GuardExecutable, o.OnStart, o.OnEvent, func(provider, model string) error {
 		if provider != o.Provider || model != o.Model {

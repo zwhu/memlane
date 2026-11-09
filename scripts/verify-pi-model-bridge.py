@@ -36,8 +36,8 @@ def stop(process):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True, type=Path)
-    parser.add_argument("--provider", default="ollama")
-    parser.add_argument("--model", default="qwen3:0.6b")
+    parser.add_argument("--provider", required=True)
+    parser.add_argument("--model", required=True)
     parser.add_argument("--auth-directory", type=Path, default=Path(os.environ.get("PI_CODING_AGENT_DIR", str(Path.home() / ".pi/agent"))))
     parser.add_argument("--bridge", type=Path, default=ROOT / "build/pi-model-bridge/memlane")
     args = parser.parse_args()
@@ -49,6 +49,13 @@ def main():
     endpoint = token = ""
     try:
         auth = args.auth_directory.resolve()
+        original = json.loads((auth / "settings.json").read_text())
+        assert original["defaultProvider"] == args.provider and original["defaultModel"] == args.model, "本轮必须显式选择真实 pi 默认模型"
+        original_digests = {name: hashlib.sha256((auth / name).read_bytes()).hexdigest()
+                            for name in ("settings.json", "models.json", "auth.json") if (auth / name).is_file()}
+        report["selected_provider"] = args.provider
+        report["selected_model"] = args.model
+        report["original_provider_config_reused"] = args.provider != "ollama"
         if args.provider == "ollama":
             assert args.model == "qwen3:0.6b", "只复用用户实际选择的固定模型"
             original = json.loads((auth / "settings.json").read_text())
@@ -99,6 +106,10 @@ def main():
         status, response = call(endpoint, "/v1/chat/completions", token, body)
         (root / "probe-response.json").write_text(json.dumps({"status": status, "response": response}, indent=2))
         assert status == 200 and json.loads(response["choices"][0]["message"]["content"]) == {"ready": True}, "real model probe failed"
+        probe_receipts = [json.loads(line) for line in (bridge_root / "events.jsonl").read_text().splitlines()]
+        probe_terminal = [value for value in probe_receipts if "http_status" in value]
+        assert len(probe_terminal) == 1
+        assert probe_terminal[0].get("native_schema_requested") and probe_terminal[0].get("native_schema_response_status") == 200, "完整 Schema 未实际绑定到 Provider 请求并取得响应"
         report["cases"].append({"name": "real-pi-structured-probe", "passed": True})
         body["messages"][1]["content"] = "Write a detailed 8000-character explanation of how sorting algorithms work inside the text property. Keep producing text until the requested length is reached."
         body["response_format"]["json_schema"]["schema"] = {"type": "object", "properties": {"text": {"type": "string", "minLength": 8000}}, "required": ["text"], "additionalProperties": False}
@@ -118,6 +129,8 @@ def main():
         terminal = [value for value in receipts if "http_status" in value]
         assert len(terminal) == 2 and all(value["reaped"] and value["group_gone"] for value in terminal)
         assert terminal[-1]["abort_sent"] and terminal[-1]["abort_acknowledged"]
+        assert all(value.get("native_schema_requested") and value.get("native_schema_response_status") == 200 for value in terminal)
+        assert all(value["rpc_resolved_provider"] == args.provider and value["rpc_resolved_model"] == args.model for value in terminal)
         assert all(not name.startswith("tool_execution") for value in terminal for name in value["events"])
         report["cases"].append({"name": "real-streaming-abort-and-process-reaping", "passed": True})
         report["receipts"] = terminal
@@ -125,11 +138,43 @@ def main():
     except Exception as error:
         report["failure"] = type(error).__name__ + ": " + str(error)
     finally:
+        def audit_failure(message):
+            report["status"] = "failed"
+            if report.get("failure"):
+                report.setdefault("additional_failures", []).append(message)
+            else:
+                report["failure"] = message
         if endpoint and token:
             try: call(endpoint, "/shutdown", token, {}, timeout=10)
             except Exception: pass
         for process in reversed(processes): stop(process)
         report["cleanup"] = {"owned_processes_exited": all(process.poll() is not None for process in processes)}
+        if "original_digests" in locals():
+            try:
+                report["original_agent_config_unchanged"] = all(
+                    hashlib.sha256((args.auth_directory.resolve() / name).read_bytes()).hexdigest() == digest
+                    for name, digest in original_digests.items())
+            except OSError as error:
+                report["original_agent_config_unchanged"] = False
+                report["config_audit_error"] = type(error).__name__
+            if not report["original_agent_config_unchanged"]:
+                audit_failure("original Agent configuration changed or could not be audited during validation")
+        if "bridge_root" in locals() and (bridge_root / "events.jsonl").is_file():
+            try:
+                report["receipts"] = []
+                for number, line in enumerate((bridge_root / "events.jsonl").read_text().splitlines(), 1):
+                    try:
+                        value = json.loads(line)
+                        if not isinstance(value, dict):
+                            raise ValueError("receipt must be an object")
+                        if "http_status" in value:
+                            report["receipts"].append(value)
+                    except ValueError:
+                        report.setdefault("receipt_audit_errors", []).append({"line": number, "error": "invalid_json_receipt"})
+                        audit_failure("bridge receipt audit encountered invalid JSON")
+            except (OSError, UnicodeError) as error:
+                report.setdefault("receipt_audit_errors", []).append({"error": type(error).__name__})
+                audit_failure("bridge receipts could not be audited")
         (root / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
         (args.out / "latest-probe-path.txt").write_text(str(root) + "\n")
         print(json.dumps({"status": report["status"], "report": str(root / "report.json"), "failure": report.get("failure")}, ensure_ascii=False), flush=True)

@@ -341,6 +341,7 @@ def main():
             if args.require_full_schema:
                 generic = hashlib.sha256(b'{"type":"object"}').hexdigest()
                 assert all(row["schema_sha256"] != generic for row in rows if row.get("http_status") == 200)
+                assert all(row.get("native_schema_requested") and row.get("native_schema_response_status") == 200 for row in rows if row.get("http_status") == 200)
                 case("actual-cognee-transmitted-full-response-schema")
             case("explicit-real-pi-model-and-local-embedding-verification",model_requests=model_requests_before_task)
         original = "linden-gate-" + uuid.uuid4().hex[:12]
@@ -411,6 +412,7 @@ def main():
             if args.require_full_schema:
                 generic = hashlib.sha256(b'{"type":"object"}').hexdigest()
                 assert all(row["schema_sha256"] != generic for row in completed), "processing fell back to an unspecified JSON object"
+                assert all(row.get("native_schema_requested") and row.get("native_schema_response_status") == 200 for row in completed), "pi 未实际发送完整 Schema 并取得 Provider 响应"
             case("official-cognee-processing-through-real-pi",successful_model_requests=len(completed),provider=completed[0]["rpc_resolved_provider"],model=completed[0]["rpc_resolved_model"],receipts=completed)
         report["status"] = "main_flow_passed"
         report["scope"] = "当前完整配置包的Codex官方采集+Memlane当前知识读取；独立官方graph不宣称自动同步App修改。"
