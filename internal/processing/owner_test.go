@@ -107,6 +107,39 @@ func TestValidationOwnerReplayNeverRerunsAndSubmissionDoesNotOwnTask(t *testing.
 	}
 }
 
+func TestValidationOwnerExplicitActivationUsesFreshDependency(t *testing.T) {
+	o, s, r := ownerFixture(t)
+	dependency := records.MergeDigest("first dependency")
+	o.Resolve = func(_ context.Context, _, _, _ string, spec records.ProcessingSpec) (PiBinding, error) {
+		return PiBinding{Spec: spec, Dependency: dependency}, nil
+	}
+	if _, err := o.Activate(context.Background(), records.ProcessingActivation{OperationID: uuid.NewString(), Revision: r.ID}); err == nil {
+		t.Fatal("unverified candidate activated")
+	}
+	o.Run = func(_ context.Context, b PiBinding, _ func(int) error, _ func(string)) (agents.PiCompletionExecution, error) {
+		return fixtureCompletion(b), nil
+	}
+	validation, err := o.Begin(context.Background(), uuid.NewString(), r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal := waitValidation(t, s, validation.ID); terminal.State != "succeeded" {
+		t.Fatal("validation did not succeed", terminal)
+	}
+	receipt, err := o.Activate(context.Background(), records.ProcessingActivation{OperationID: uuid.NewString(), Revision: r.ID, ExpectedGeneration: 0})
+	if err != nil || receipt.Revision != r.ID || receipt.Generation != 1 {
+		t.Fatal("verified candidate was not explicitly activated", receipt, err)
+	}
+	configuration, err := s.ProcessingConfiguration(context.Background())
+	if err != nil || !configuration.Current.Active || configuration.Current.Revision == nil || configuration.Current.Revision.ID != r.ID {
+		t.Fatal("activation did not update the current selection", configuration, err)
+	}
+	dependency = records.MergeDigest("changed dependency")
+	if _, err = o.Activate(context.Background(), records.ProcessingActivation{OperationID: uuid.NewString(), Revision: r.ID, ExpectedGeneration: 1}); err == nil {
+		t.Fatal("dependency drift reused an old validation")
+	}
+}
+
 func TestValidationOwnerCancelRejectsLateSuccessAndCloseWaits(t *testing.T) {
 	o, s, r := ownerFixture(t)
 	started, cleanup, release := make(chan struct{}), make(chan struct{}), make(chan struct{})

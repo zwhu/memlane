@@ -19,6 +19,7 @@ import (
 	"github.com/zwhu/memlane/internal/codegraph"
 	"github.com/zwhu/memlane/internal/engine"
 	"github.com/zwhu/memlane/internal/memory"
+	"github.com/zwhu/memlane/internal/processing"
 	"github.com/zwhu/memlane/internal/records"
 	"github.com/zwhu/memlane/internal/serviceipc"
 	"github.com/zwhu/memlane/internal/store"
@@ -65,11 +66,19 @@ type Server struct {
 	work                 chan struct{}
 	gate                 chan struct{}
 	agentAccess          sync.RWMutex // scope changes wait for previously authorized tools
+	processing           *processing.Owner
 }
 
 func Run(ctx context.Context, config Config) error {
 	if !filepath.IsAbs(config.Root) {
 		return errors.New("explicit absolute service root required")
+	}
+	clientRoot := config.ClientRoot
+	if clientRoot == "" {
+		clientRoot = filepath.Dir(config.Root) // legacy service.json files predate the explicit client root
+	}
+	if !filepath.IsAbs(clientRoot) {
+		return errors.New("explicit absolute client root required")
 	}
 	if err := os.MkdirAll(config.Root, 0700); err != nil {
 		return err
@@ -124,6 +133,9 @@ func Run(ctx context.Context, config Config) error {
 	if err = db.InterruptCode(ctx); err != nil {
 		return err
 	}
+	if err = db.InterruptProcessingValidations(ctx, time.Now()); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	guard, err := os.Executable()
@@ -131,6 +143,8 @@ func Run(ctx context.Context, config Config) error {
 		return err
 	}
 	s := &Server{proposalGuard: guard, organizationRuns: make(map[string]organizationOwner), lifecycle: ctx, mergeRuns: make(map[string]context.CancelFunc), config: config, store: db, state: state, status: "preparing", stop: cancel, wake: make(chan struct{}, 1), work: make(chan struct{}, 1), gate: make(chan struct{}, 1)}
+	s.processing = &processing.Owner{Ledger: db, Lifecycle: ctx, ClientRoot: clientRoot, ServiceRoot: config.Root, Helper: guard, Acquire: s.acquireOrganizer, Poison: cancel}
+	defer s.processing.Close()
 	s.codeRuns = make(map[string]context.CancelFunc)
 	s.codeWake = make(chan struct{}, 1)
 	path := SocketPath(config.Root)
@@ -693,6 +707,29 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 			return nil, records.MergeError("invalid_request")
 		}
 		return s.store.SaveProcessing(operation, *r.ProcessingSave, time.Now())
+	case "processing_validate":
+		if !r.UserConfirmed {
+			return nil, errors.New("configuration validation requires explicit user action")
+		}
+		if r.ProcessingValidation == nil {
+			return nil, records.MergeError("invalid_request")
+		}
+		return s.processing.Begin(operation, r.ProcessingValidation.OperationID, r.ProcessingValidation.Revision)
+	case "processing_validation":
+		return s.processing.Status(operation, r.ProcessingValidationID)
+	case "processing_validation_cancel":
+		if !r.UserConfirmed {
+			return nil, errors.New("configuration validation cancellation requires explicit user action")
+		}
+		return nil, s.processing.Cancel(operation, r.ProcessingValidationID)
+	case "processing_activate":
+		if !r.UserConfirmed {
+			return nil, errors.New("configuration activation requires explicit user action")
+		}
+		if r.ProcessingActivation == nil {
+			return nil, records.MergeError("invalid_request")
+		}
+		return s.processing.Activate(operation, *r.ProcessingActivation)
 	case "scopes":
 		return s.store.Scopes(operation)
 	case "check_workspace":

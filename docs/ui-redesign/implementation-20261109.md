@@ -105,4 +105,4 @@ B03的0.0.4新Rust归档、Python源和daemon各跨10005真实请求，旧序号
 
 A1账本切片全仓test/vet和Store/daemon race通过；普通格式完整包daemon在新合成根验证schema16→17、49张旧表及一致性备份、v2原文、保存候选重放/重启、主动停止保护与明确恢复。驱动001/002只读WAL失败保留，003实际passed；最终6个自有daemon全部退出、socket不存在。详见[账本验证](../memory-processing-ledger-validation.md)。未调用模型、未打开新A窗口、未接真实验证/全局分派，不关闭A1整体或R01。独立App随包LaunchAgent仍为默认label，尚未注册，后续普通Native包身份须修正。
 
-账本后的在途实现新增pi依赖解析与验证所有者、macOS Keychain不可变凭据版本，以及OpenAI Responses/Chat、Anthropic和Magpie协议基础。当前全仓test/vet、受影响race、合成Keychain存取及HTTP夹具通过；真实独立Provider/Magpie、daemon启动与IPC、启用动作、完整新包和Native页面仍未验收。详见[运行时记录](../processing-validation-runtime.md)。
+账本后的实现新增pi依赖解析与验证所有者、macOS Keychain不可变凭据版本，以及OpenAI Responses/Chat、Anthropic和Magpie协议基础。pi 验证所有者已接入 daemon 生命周期、与整理共用的执行槽位、开始/状态/取消私有 IPC 和显式启用门禁；新 `service.json` 显式携带客户端根。当前全仓test/vet、受影响race、合成Keychain存取及HTTP夹具通过。真实独立Provider/Magpie、daemon 新完整包中的实际 pi 回执、正式任务分派和Native页面仍未验收。详见[运行时记录](../processing-validation-runtime.md)。

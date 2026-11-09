@@ -17,3 +17,25 @@ func (l Library) SaveProcessing(ctx context.Context, draft records.ProcessingSav
 	err := Call(ctx, l.Root, Request{Op: "processing_save", ProcessingSave: &draft, UserConfirmed: true}, &out)
 	return out, err
 }
+
+func (l Library) ValidateProcessing(ctx context.Context, request records.ProcessingValidationRequest) (records.ProcessingValidation, error) {
+	var out records.ProcessingValidation
+	err := Call(ctx, l.Root, Request{Op: "processing_validate", ProcessingValidation: &request, UserConfirmed: true}, &out)
+	return out, err
+}
+
+func (l Library) ProcessingValidation(ctx context.Context, id string) (records.ProcessingValidationStatus, error) {
+	var out records.ProcessingValidationStatus
+	err := Call(ctx, l.Root, Request{Op: "processing_validation", ProcessingValidationID: id}, &out)
+	return out, err
+}
+
+func (l Library) CancelProcessingValidation(ctx context.Context, id string) error {
+	return Call(ctx, l.Root, Request{Op: "processing_validation_cancel", ProcessingValidationID: id, UserConfirmed: true}, nil)
+}
+
+func (l Library) ActivateProcessing(ctx context.Context, request records.ProcessingActivation) (records.ProcessingActivationReceipt, error) {
+	var out records.ProcessingActivationReceipt
+	err := Call(ctx, l.Root, Request{Op: "processing_activate", ProcessingActivation: &request, UserConfirmed: true}, &out)
+	return out, err
+}

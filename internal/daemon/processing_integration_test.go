@@ -39,6 +39,12 @@ func TestProcessingPrivateIPCOwnershipAndSaveWithoutActivation(t *testing.T) {
 	if after.Current.Active || after.Current.Revision != nil || after.Saved["provider"].Validation != nil {
 		t.Fatal("saving config fabricated activation or validation", after)
 	}
+	if err = serviceipc.Call(ctx, root, serviceipc.Request{Op: "processing_validate", ProcessingValidation: &records.ProcessingValidationRequest{OperationID: uuid.NewString(), Revision: revision.ID}}, nil); err == nil {
+		t.Fatal("private IPC validation bypassed user confirmation")
+	}
+	if _, err = library.ValidateProcessing(ctx, records.ProcessingValidationRequest{OperationID: uuid.NewString(), Revision: revision.ID}); err == nil {
+		t.Fatal("unsupported Provider validation was accepted without a real runner")
+	}
 	// No RPC is provided for a UI/Agent to assert successful capability.
 	if err = serviceipc.Call(ctx, root, serviceipc.Request{Op: "processing_finish", UserConfirmed: true}, nil); err == nil {
 		t.Fatal("private API accepted fabricated processing capability")

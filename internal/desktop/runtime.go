@@ -176,7 +176,7 @@ func (r *RuntimeController) prepare(ctx context.Context, notify func(RuntimeStat
 	if worker.Metadata.Model != model.Metadata.ID {
 		return errors.New("worker and model component mismatch")
 	}
-	service := serviceipc.Config{Root: filepath.Join(r.Config.Root, "data"), Worker: engine.Config{
+	service := serviceipc.Config{ClientRoot: r.Config.Root, Root: filepath.Join(r.Config.Root, "data"), Worker: engine.Config{
 		Executable: filepath.Join(worker.Directory, worker.Metadata.Executable),
 		Library:    filepath.Join(worker.Directory, worker.Metadata.Library), ModelDir: model.Directory,
 		DataDir: filepath.Join(r.Config.Root, "data/index"), ExpectedVersion: worker.Metadata.Version, DenyNetwork: r.Config.AllowLocalTestSource}}

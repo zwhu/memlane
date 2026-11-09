@@ -18,6 +18,26 @@ type Ledger interface {
 	BeginProcessingValidation(context.Context, string, string, string, time.Time) (records.ProcessingValidation, error)
 	RequestProcessingValidationCancel(context.Context, string) error
 	FinishProcessingValidation(context.Context, string, int64, string, string, string, time.Time) error
+	ActivateProcessing(context.Context, records.ProcessingActivation, string, time.Time) (records.ProcessingActivationReceipt, error)
+}
+
+func (o *Owner) Activate(ctx context.Context, request records.ProcessingActivation) (records.ProcessingActivationReceipt, error) {
+	var out records.ProcessingActivationReceipt
+	o.mu.Lock()
+	closed := o.closed
+	o.mu.Unlock()
+	if closed || o.Lifecycle == nil || o.Lifecycle.Err() != nil {
+		return out, records.MergeError("service_stopping")
+	}
+	revision, err := o.Ledger.ProcessingRevision(ctx, request.Revision)
+	if err != nil {
+		return out, err
+	}
+	binding, err := o.resolve(ctx, revision.Spec)
+	if err != nil {
+		return out, err
+	}
+	return o.Ledger.ActivateProcessing(ctx, request, binding.Dependency, time.Now())
 }
 
 type validationRun struct {
