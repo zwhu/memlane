@@ -201,10 +201,6 @@ func (a *App) View(c *ui.Context) {
 			a.sidebar(c)
 		}
 		ui.Column(c).Grow(1).MinWidth(0).Background(ui.Hex("#ffffff")).Children(func() {
-			if a.reader.Open {
-				a.sourceReader(c)
-				return
-			}
 			a.toolbar(c)
 			if a.page == "项目" && a.scope != "" && a.detailMode == "view" {
 				a.projectExplorer(c)
@@ -708,16 +704,23 @@ func (a *App) details(c *ui.Context) {
 				if a.projectSettings.Open && a.page == "项目" && a.scope == a.projectSettings.Owner.ID {
 					label = "项目设置"
 				}
+				if a.reader.Open {
+					label = "原始出处"
+				}
 				ui.Text(c, label)
 				ui.Spacer(c)
-				if a.projectSettings.Open && a.page == "项目" {
+				if a.reader.Open {
+					quietButton(c, a.sourceReaderReturnLabel()).Key("source-reader-close").OnClick(a.returnFromSourceReader)
+				} else if a.projectSettings.Open && a.page == "项目" {
 					quietButton(c, "返回知识").Key("project-settings-close").OnClick(a.closeProjectSettings)
 				} else if a.isMemoryPage() && a.current() != nil && !a.editing && a.detailMode == "view" {
 					iconButton(c, "编辑", icons["edit"]).Disabled(a.current().State != "active").OnClick(a.editMemory)
 					quietButton(c, "历史").Key("knowledge-history-open").Disabled(raw).OnClick(a.openKnowledgeHistory)
 				}
 			})
-			if a.projectSettings.Open && a.page == "项目" && a.scope == a.projectSettings.Owner.ID {
+			if a.reader.Open {
+				a.sourceReader(c)
+			} else if a.projectSettings.Open && a.page == "项目" && a.scope == a.projectSettings.Owner.ID {
 				a.projectSettingsContent(c)
 			} else if a.page == "代码图谱" {
 				a.codeDetail(c)
@@ -881,7 +884,11 @@ func (a *App) memoryDetail(c *ui.Context) {
 			}
 		}
 		if item.Origin == "raw" {
-			quietButton(c, "阅读完整原始记录").Key("source-reader-open").OnClick(func() { a.openSourceReader(*item, records.MergeTarget{Memory: item.ID, Revision: item.Revision}) })
+			button := quietButton(c, "阅读完整原始记录").Key("source-reader-open").OnClick(func() { a.openSourceReader(*item, records.MergeTarget{Memory: item.ID, Revision: item.Revision}) })
+			if a.reader.ReturnFocus && a.reader.Query.Owner == item.ID {
+				button.Focus()
+				a.reader.ReturnFocus = false
+			}
 		}
 		if item.Origin == "raw" && item.SourceDetail != nil && (item.SourceDetail.Official != nil || item.SourceDetail.Native != nil) {
 			ui.Text(c, "原文副本已持久保留。阅读器会核验当前项目、来源版本和官方授权；来源变化或接入撤销后停止读取。").FontSize(design.Small).LineHeight(1.8)

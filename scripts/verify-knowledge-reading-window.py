@@ -217,7 +217,8 @@ k=Ed25519PrivateKey.generate();print(json.dumps({'signature':base64.b64encode(k.
             driver.wait(lambda: '逐项目明确授权' in ' '.join(ui.labels()))
             capture('05-original-reader-system.png')
             assert call('get', memory=raw_id)['text'] == raw_text
-            ui.press('返回所选记忆')
+            assert any(n.get('key') == 'memory-'+raw_id for n in ui.nodes())
+            ui.press_key('source-reader-close')
             ui.press_key('reading-tab-knowledge')
             driver.wait(lambda: any(n.get('key') == 'knowledge-history-open' for n in ui.nodes()))
             assert call('get', memory=identifier)['revision'] == 2

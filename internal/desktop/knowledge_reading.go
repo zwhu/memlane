@@ -84,9 +84,13 @@ func (a *App) knowledgeProvenance(c *ui.Context, item MemoryItem) {
 							ui.Text(c, fmt.Sprintf("%s · v%d · %s", source.Input.Source, source.Revision, kind)).FontSize(10).TextColor(design.Muted)
 						})
 						if source.Input.Origin == "raw" {
-							quietButton(c, "阅读原文").Key("knowledge-source-" + source.Memory).OnClick(func() {
+							button := quietButton(c, "阅读原文").Key("knowledge-source-" + source.Memory).OnClick(func() {
 								a.openSourceReader(item, records.MergeTarget{Memory: source.Memory, Revision: source.Revision})
 							})
+							if a.reader.ReturnFocus && a.reader.Query.Owner == item.ID && a.reader.Query.Memory == source.Memory {
+								button.Focus()
+								a.reader.ReturnFocus = false
+							}
 						} else {
 							quietButton(c, "查看来源知识").Key("knowledge-source-" + source.Memory).OnClick(func() { a.openMergeMemory(source.Memory, source.Project) })
 						}
