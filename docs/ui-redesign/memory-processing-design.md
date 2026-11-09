@@ -1,6 +1,8 @@
 # Agent 接入与记忆处理：最新设计交接
 
-2026-11-09，预览 revision 9。**用户已确认下面的产品取舍，画面仍待评审；本轮仅完成设计，不改正式 App。** 本文件替代之前将 API Key 作为唯一途径、将任意已发现 Agent 视为可整理、以及只用 MCP 配置解释连接的设计。
+2026-11-09，预览 revision 12。**用户已确认下面的产品取舍，画面仍待评审；本轮仅完成设计，不改正式 App。** 本文件替代之前将 API Key 作为唯一途径、将任意已发现 Agent 视为可整理、以及只用 MCP 配置解释连接的设计。
+
+最新纠正：第一项任务与记忆结果不进入初始配置；初始化只有环境、Agent 连接、记忆处理三步，之后完成配置进入首页。「设为当前使用」移到页签下方方式状态栏右侧，默认可见。以 [最新边界](reusable-setup.md) 为准。
 
 本轮补充：三种配置可同时保存、仅启用一种，初始化和后续设置复用同一配置页；环境准备页同样复用。设置中的当前使用、候选验证、独立保存、明确启用与取消，以及 Magpie 本机免密检测，以 [页面复用契约](reusable-setup.md) 为准。revision 8 保存即启用与 revision 7 本机访问凭据必填设计作废。
 
@@ -28,8 +30,8 @@ LLM provider 优先设计并作为后续优先实现方式。处理记忆的 Age
 - Agent 页仅显示已连接的 pi/Codex，两张卡片显示图标、名称、版本和已连接状态；默认不自动选择，删除下拉框。选中后显示它自己的登录/模型与独立提炼会话说明，再明确验证；处理会消耗所选 Agent 的模型额度。
 - Agent 验证区区分登录/模型条件、结构化输出、提炼会话隔离。任一项失败不得显示可用于整理。支持登录失效、额度不足、取消、采集隔离失败和没有已连接候选的画面。
 - 连接页显示将安装的内容、安装、重载和接入验证。Codex 为官方记忆插件与 hooks；pi 沿用其实际 Extension 接入，skill 的安装内容另按支持格式落实。
-- 项目与工作目录仍在实际首任务中处理，不进入 Agent 安装或 Provider 配置页。已验证的处理方式在任务页面复用。
-- 四步进度为「准备环境／连接 Agent／设置整理方式／第一项任务」。原安装稿的视觉仍保留；步骤名称衔接随最终评审落实。
+- 项目、工作目录与材料范围在日常任务中处理，不进入 Agent 安装或 Provider 配置页。已验证并启用的方式供后续任务复用。
+- 三步进度为「准备环境／连接 Agent／配置记忆处理」，最后使用「完成配置」。已认可安装正文保留，最新三步导航单独归档；不再出现首任务与记忆结果步骤。
 - 控件固定在顶部/底部，中部滚动；窄窗口将 Provider 字段改为单列。评审工具栏和「下一状态」不进入正式产品。
 
 ## 参考依据与边界
@@ -69,4 +71,4 @@ Magpie 模式将 Cognee 模型请求发到其网关。已核对官方仓库提�
 
 正式实现优先交付 LLM provider。Agent 模式限 pi/Codex，实际处理能力通过后才开放。用户最后要求“先把设计做出来”，本轮未修改生产代码、安装用户插件或执行模型请求。
 
-当前原型核验与截图使用 `artifacts/processing-modes/`、`node verify-processing-modes.cjs`，覆盖三份配置保留、独立保存与启用、页签和草稿保留、本机 Magpie 免密检测、模型选择及两页设置复用。`artifacts/setup-reuse/` 为 revision 8，`artifacts/model-picker/` 为 revision 7，`artifacts/memory-processing/` 为 revision 5/6 历史证据；当前保存/验证仍为设计演示，不代表真实持久化、模型或 Magpie 调用。
+当前原型核验与截图使用 `artifacts/setup-final/`、`node verify-setup-final.cjs`，覆盖三步初始化、首任务和结果移除、方式状态栏启用按钮，以及三份配置、独立保存与启用、本机 Magpie、两页复用。`artifacts/processing-modes/` 为 revision 9，`artifacts/setup-reuse/` 为 revision 8，`artifacts/model-picker/` 为 revision 7，`artifacts/memory-processing/` 为 revision 5/6 历史证据；当前保存/验证仍为设计演示，不代表真实持久化、模型或 Magpie 调用。

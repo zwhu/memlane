@@ -1,6 +1,12 @@
 # 环境与组件、记忆处理：初始化与设置复用契约
 
-2026-11-09，revision 9。用户确认：三种记忆处理方式可同时配置保留，仅选择其中一种使用；记忆处理配置页与前面的环境准备页，后续都应复用。当前完成浏览器设计预览，正式 App 尚未按本稿改造。
+2026-11-09，revision 12。用户确认：三种记忆处理方式可同时配置保留，仅选择其中一种使用；记忆处理配置页与前面的环境准备页，后续都应复用。最新纠正：第一项任务和记忆结果不进入初始配置；删除方式页签下的状态小字，页签保持单行。当前完成浏览器设计预览，正式 App 尚未按本稿改造。
+
+## 初始配置边界
+
+初始配置只有「准备环境 → 连接 Agent → 配置记忆处理」三步。末步使用「完成配置」，完成后进入日常首页，不要求先执行任务、产生记忆或查看记忆结果。项目、材料授权、具体任务与结果阅读在日常使用中承接。已有文档、场景与生产验收中将首任务列入初始化的描述，作为对应旧版本证据保留；当前设计在初始化范围内以本契约为准。
+
+最新初始化导航预览使用 `a-environment-flow.html` 与 `a-agent.html`。已认可的 `a-environment.html` revision 11 冻结稿继续保留其组件正文与历史导航；导航变更单独归档，不把此前四步栏作为当前流程要求。
 
 ## 两个固定入口
 
@@ -9,13 +15,14 @@
 | 环境与组件 | 准备记忆环境 | 设置 → 环境与组件 | 组件卡片、实际状态、兼容检查、缺失准备、卡片内进度、失败重试与取消 |
 | 记忆处理 | 配置记忆处理 | 设置 → 记忆处理 | 三种方式、供应商配置、模型列表、Agent 候选、Magpie 检测及处理能力验证 |
 
-初始化保留步骤栏与「继续」操作；设置中显示当前配置或组件状态，隐藏初始化步骤栏，操作结束留在当前设置页面。复用内容与任务状态，不能只复制页面样式并另建初始化专用配置。
+初始化保留三步栏与「完成配置」操作；设置中显示当前配置或组件状态，隐藏初始化步骤栏，操作结束留在当前设置页面。复用内容与任务状态，不能只复制页面样式并另建初始化专用配置。
 
 ## 记忆处理配置
 
-- 三种配置可同时保存，同一时刻仅有一个生效方式。方式选择处直接提示「可配置多种方式，选择一种用于记忆处理」。页签分别标出「当前使用」「已配置」「未配置」；当前查看的页签与当前生效方式可以不同。
+- 三种配置可同时保存，同一时刻仅有一个生效方式。方式选择处直接提示「可配置多种方式，选择一种用于记忆处理」。三个页签保持单行名称，不加「未配置／已配置／当前使用」第二行小字；配置及启用状态集中在下方状态栏，当前有效方式使用上方简洁行表达。当前查看的页签与当前生效方式可以不同。
 - 首次引导保存后，后续设置读取同一份供应商、模型、方式与验证状态。已有配置保持，不回到空表单。Provider、Agent 和 Magpie 各自配置可保留，切换不删除其余方式的配置。
 - 设置中标明「当前使用」，新候选可以选择并验证。验证成功后点击「保存配置」仅保存该方式；点击「设为当前使用」才改变生效配置。两项操作分开，不因编辑另一种配置而切换。未保存、未验证的新配置不能直接启用；保存和启用均留在本页。
+- 「设为当前使用」放在页签下方、当前查看方式的状态栏右侧，紧邻配置状态，默认可见，不藏在底部或滚动列表后。已生效时保留按钮文字并禁用，旁边显示「当前正在使用」；尚未验证或保存时禁用并说明状态。底部只承载保存、取消及初始化完成。
 - 点击页签只查看、编辑该方式；各方式的已保存配置与当前草稿分别保留。「取消修改」恢复当前页签的已保存配置。候选验证失败、取消或切换页签，不得改变当前有效方式；不在后台静默回退到其他方式。
 - 修改模型、供应商地址或凭据、Agent 登录与版本、Magpie 地址等影响能力的条件后，重新验证。既有成功状态不能直接继承给新配置。
 - 后续整理任务使用明确启用的配置；仅保存另一份配置不改变后续任务的执行者。已开始的任务保留启动时的配置快照，切换不隐式取消、重复启动或改写正在运行的任务。初始化可配置多份，选择一种当前使用后继续。
@@ -41,11 +48,12 @@
 
 原型归档于 `prototype/selected-ui` 的 `prototypes/ui-redesign-20261109/`。
 
-- `a-agent.html?screen=organize&state=configure&revision=9`：初始化配置与提示。
-- `a-agent.html?screen=organize&state=all-configured&context=settings&revision=9`：三种配置同时保留、一个当前使用。
-- `a-agent.html?screen=organize&state=saved&context=settings&revision=9`：已保存配置的设置入口。
-- `a-agent.html?screen=organize&state=magpie-loading&revision=9`：本机 Magpie 自动检测。
-- `a-environment-settings.html?screen=prepare&state=ready&context=settings&revision=9`：环境管理就绪示例。
-- `a-environment-settings.html?screen=prepare&state=missing&context=settings&revision=9`：从设置准备缺失组件。
+- `a-agent.html?screen=organize&state=configure&revision=12`：初始化配置与提示。
+- `a-agent.html?screen=organize&state=all-configured&view=magpie&context=settings&revision=12`：三种配置同时保留，直接显示可启用的 Magpie 与按钮。
+- `a-agent.html?screen=organize&state=saved&context=settings&revision=12`：已保存配置的设置入口。
+- `a-agent.html?screen=organize&state=magpie-loading&revision=12`：本机 Magpie 自动检测。
+- `a-environment-flow.html?screen=prepare&state=missing&revision=12`：最新三步初始配置的环境入口。
+- `a-environment-settings.html?screen=prepare&state=ready&context=settings&revision=12`：环境管理就绪示例。
+- `a-environment-settings.html?screen=prepare&state=missing&context=settings&revision=12`：从设置准备缺失组件。
 
-原型设置配置、保存与取消仅在当前页面内存中演示；重新加载示例 URL 会重置，不能将浏览器演示宣称为真实持久化。`setup-context.js` 切换承载，环境设置预览读取冻结环境稿，正文与状态复用；生产 MyGo 使用正式共享页面与配置/任务所有者，不移植 HTML 加载方式。当前截图与核验位于 `artifacts/processing-modes/`，命令为 `node verify-processing-modes.cjs`；`artifacts/setup-reuse/` 为 revision 8 历史证据。
+原型设置配置、保存与取消仅在当前页面内存中演示；重新加载示例 URL 会重置，不能将浏览器演示宣称为真实持久化。`setup-context.js` 切换承载，环境设置预览读取冻结环境稿，正文与状态复用；生产 MyGo 使用正式共享页面与配置/任务所有者，不移植 HTML 加载方式。当前截图与核验位于 `artifacts/setup-final/`，命令为 `node verify-setup-final.cjs`；`artifacts/processing-modes/` 和 `artifacts/setup-reuse/` 分别为 revision 9、revision 8 历史证据。
