@@ -4,7 +4,7 @@
 
 后续实现从 [A 已认可设计实施交接](a-setup-handoff.md) 开始。该文档写明最终范围、三步流程、全部页面/按钮/状态、配置所有权、真实适配要求、代码入口、开发顺序与 V01–V14 验收清单。再实际打开 [选定截图与证据](../images/ui-redesign/a-setup/README.md)，不能只阅读图片路径。
 
-B 首页实施从 [B 已认可设计交接](b-home-handoff.md) 与 [固定截图／动效](../images/ui-redesign/b-home/README.md) 开始。C 入口与项目概念已确认：Agent 连接归入设置，项目页「初始化知识库」由用户主动启动绑定 Agent 分析与存入，右栏提供方块归整到记忆书展开的动效；C revision 4 动效稿待评审；见 [入口调整](agent-settings-placement.md)。C 完整稿仍继续评审。
+B 首页实施从 [B 已认可设计交接](b-home-handoff.md) 与 [固定截图／动效](../images/ui-redesign/b-home/README.md) 开始。C 最新稿为 revision 5：Agent 连接位于设置，空知识列表提供「分析项目」，右栏明确Token消耗与可选历史会话，已有知识隐藏启动入口，用词统一为知识。见 [入口与范围](agent-settings-placement.md)。开发本稿及后续所有动效先读 [MyGo 动效实施与复用](motion-implementation.md)；C 完整稿仍继续评审。
 
 ## 已确认范围
 
@@ -15,10 +15,10 @@ B 首页实施从 [B 已认可设计交接](b-home-handoff.md) 与 [固定截图
 | A 记忆处理与完成配置 | revision 13 已认可：Provider、已连接 pi/Codex、Magpie；三份保存、一个当前使用，保存与启用分开 | [处理契约](memory-processing-design.md) |
 | 环境与记忆处理的设置复用 | 已认可：恢复已有组件、任务和配置，不重走初始化 | [复用契约](reusable-setup.md) |
 | B 日常首页 | revision 5 已认可：①宽幅首页、累计统计、日期筛选、具体处理配置、通用标题导航去重和整理按钮动效 | [B 交接](b-home-handoff.md)、[证据](../images/ui-redesign/b-home/README.md) |
-| C Agent 设置与项目知识任务 | 入口位置已确认，完整稿待评审；设置 → Agent 连接，项目页主动启动绑定 Agent 初始化知识库；右栏动效待评审，连接不以项目为前置条件 | [场景](scenarios.md)、[电脑级规则](agent-connection-contract.md) |
+| C Agent 设置与项目知识任务 | 入口位置已确认，完整稿待评审；设置 → Agent 连接；仅项目知识空态提供分析入口，Token提示、可选历史会话，完整稿继续评审 | [场景](scenarios.md)、[电脑级规则](agent-connection-contract.md) |
 | D–O | 仅场景枚举及各自已有规则 | [全部场景](scenarios.md) |
 
-初始化只有「准备环境 → 连接 Agent → 配置记忆处理」，之后完成配置进入首页。项目、第一项任务和记忆结果不再属于初始化；项目知识库初始化在日常项目页独立触发。批量连接不等于多个处理执行者。三个方式页签只显示单行名称；「设为当前使用」位于方式状态栏右侧。
+初始化只有「准备环境 → 连接 Agent → 配置记忆处理」，之后完成配置进入首页。项目、第一项任务和记忆结果不再属于初始化；建立项目知识在日常项目空态独立触发。批量连接不等于多个处理执行者。三个方式页签只显示单行名称；「设为当前使用」位于方式状态栏右侧。
 
 ## 固定归档与证据
 
