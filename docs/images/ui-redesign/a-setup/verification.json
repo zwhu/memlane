@@ -1,0 +1,265 @@
+{
+  "passed": true,
+  "results": [
+    {
+      "name": "models",
+      "state": "configure",
+      "footerBottom": 855.1875,
+      "horizontalOverflow": false,
+      "modes": [
+        "provider",
+        "agent",
+        "magpie"
+      ],
+      "modelCount": 9
+    },
+    {
+      "name": "models-verifying",
+      "state": "provider-verifying",
+      "footerBottom": 855.1875,
+      "horizontalOverflow": false,
+      "modes": [
+        "provider",
+        "agent",
+        "magpie"
+      ],
+      "modelCount": 9
+    },
+    {
+      "name": "models-ready",
+      "state": "provider-ready",
+      "footerBottom": 855.1875,
+      "horizontalOverflow": false,
+      "modes": [
+        "provider",
+        "agent",
+        "magpie"
+      ],
+      "modelCount": 9
+    },
+    {
+      "name": "models-failed",
+      "state": "provider-failed",
+      "footerBottom": 855.1875,
+      "horizontalOverflow": false,
+      "modes": [
+        "provider",
+        "agent",
+        "magpie"
+      ],
+      "modelCount": 9
+    },
+    {
+      "name": "agents",
+      "state": "agent",
+      "footerBottom": 855.1875,
+      "horizontalOverflow": false,
+      "modes": [
+        "provider",
+        "agent",
+        "magpie"
+      ],
+      "modelCount": 0
+    },
+    {
+      "name": "magpie-connect",
+      "state": "magpie-disconnected",
+      "footerBottom": 855.1875,
+      "horizontalOverflow": false,
+      "modes": [
+        "provider",
+        "agent",
+        "magpie"
+      ],
+      "modelCount": 0
+    },
+    {
+      "name": "magpie-loading",
+      "state": "magpie-loading",
+      "footerBottom": 855.1875,
+      "horizontalOverflow": false,
+      "modes": [
+        "provider",
+        "agent",
+        "magpie"
+      ],
+      "modelCount": 0
+    },
+    {
+      "name": "magpie-models",
+      "state": "magpie-models",
+      "footerBottom": 855.1875,
+      "horizontalOverflow": false,
+      "modes": [
+        "provider",
+        "agent",
+        "magpie"
+      ],
+      "modelCount": 9
+    },
+    {
+      "name": "magpie-verifying",
+      "state": "magpie-verifying",
+      "footerBottom": 855.1875,
+      "horizontalOverflow": false,
+      "modes": [
+        "provider",
+        "agent",
+        "magpie"
+      ],
+      "modelCount": 9
+    },
+    {
+      "name": "magpie-ready",
+      "state": "magpie-ready",
+      "footerBottom": 855.1875,
+      "horizontalOverflow": false,
+      "modes": [
+        "provider",
+        "agent",
+        "magpie"
+      ],
+      "modelCount": 9
+    },
+    {
+      "name": "magpie-failed",
+      "state": "magpie-failed",
+      "footerBottom": 855.1875,
+      "horizontalOverflow": false,
+      "modes": [
+        "provider",
+        "agent",
+        "magpie"
+      ],
+      "modelCount": 0
+    },
+    {
+      "name": "magpie-empty",
+      "state": "magpie-empty",
+      "footerBottom": 855.1875,
+      "horizontalOverflow": false,
+      "modes": [
+        "provider",
+        "agent",
+        "magpie"
+      ],
+      "modelCount": 0
+    },
+    {
+      "name": "models-narrow",
+      "state": "configure",
+      "footerBottom": 663.1875,
+      "horizontalOverflow": false,
+      "modes": [
+        "provider",
+        "agent",
+        "magpie"
+      ],
+      "modelCount": 9
+    },
+    {
+      "name": "models-ready-narrow",
+      "state": "provider-ready",
+      "footerBottom": 663.1875,
+      "horizontalOverflow": false,
+      "modes": [
+        "provider",
+        "agent",
+        "magpie"
+      ],
+      "modelCount": 9
+    },
+    {
+      "name": "magpie-models-narrow",
+      "state": "magpie-models",
+      "footerBottom": 663.1875,
+      "horizontalOverflow": false,
+      "modes": [
+        "provider",
+        "agent",
+        "magpie"
+      ],
+      "modelCount": 9
+    },
+    {
+      "name": "processing-settings-saved",
+      "context": "settings"
+    },
+    {
+      "name": "processing-settings-magpie",
+      "context": "settings"
+    },
+    {
+      "name": "environment-settings-ready",
+      "context": "settings"
+    },
+    {
+      "name": "environment-settings-missing",
+      "context": "settings"
+    },
+    {
+      "name": "environment-settings-narrow",
+      "context": "settings"
+    },
+    {
+      "name": "batch-ready",
+      "state": "batch-ready"
+    },
+    {
+      "name": "batch-progress",
+      "state": "batch-connecting"
+    },
+    {
+      "name": "batch-reload",
+      "state": "batch-reload"
+    },
+    {
+      "name": "batch-partial",
+      "state": "batch-partial"
+    },
+    {
+      "name": "batch-complete",
+      "state": "batch-complete"
+    },
+    {
+      "name": "batch-cancelled",
+      "state": "batch-cancelled"
+    },
+    {
+      "name": "batch-narrow",
+      "state": "batch-ready"
+    }
+  ],
+  "searchKeepsFocus": true,
+  "providerFilter": true,
+  "selectedModel": true,
+  "supplierConfiguredOnce": true,
+  "magpieLocalCredentialFree": true,
+  "magpieAutoDetect": true,
+  "oneModeSufficient": true,
+  "processingSettingsReuse": true,
+  "environmentSettingsReuse": true,
+  "saveAndCancel": true,
+  "threeConfigurationsPreserved": true,
+  "saveSeparateFromActivation": true,
+  "activationNearModeStatus": true,
+  "directActivationPreview": true,
+  "batchMultiSelect": true,
+  "batchInline": true,
+  "retryFailedOnly": true,
+  "cancelKeepsSuccesses": true,
+  "connectedAndUnsupportedDisabled": true,
+  "agentRuntimeNotesRemoved": true,
+  "singleLineTabs": true,
+  "threeSetupSteps": true,
+  "noFirstTaskInSetup": true,
+  "completionWithoutMemoryResults": true,
+  "tabsDoNotActivate": true,
+  "draftsSurviveTabs": true,
+  "threeModes": [
+    "provider",
+    "agent",
+    "magpie"
+  ],
+  "runtimeErrors": []
+}
