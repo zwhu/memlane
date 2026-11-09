@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/zwhu/memlane/internal/records"
 )
 
 // This presentation uses discovery and runtime receipts. It never installs an
@@ -30,8 +29,7 @@ func (a *App) firstLaunchView(c *ui.Context) {
 			a.firstLaunchSidebar(c)
 			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 				ui.Row(c).Height(design.Toolbar).Shrink(0).Padding(0, 28).Gap(10).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).Children(func() {
-					ui.Icon(c, icons["Agent"]).FontSize(15).TextColor(design.Ink)
-					ui.Text(c, "首次使用").FontSize(design.Body)
+					ui.Text(c, "首次设置").FontSize(design.Body)
 					ui.Spacer(c)
 					ui.Text(c, a.firstLaunchStatusLabel()).FontSize(design.Small).TextColor(design.Muted)
 				})
@@ -83,16 +81,13 @@ func (a *App) firstLaunchStatusLabel() string {
 
 func (a *App) firstLaunchSidebar(c *ui.Context) {
 	s := &a.firstLaunch
-	ui.Column(c).Width(design.Sidebar).Shrink(0).Background(design.SidebarFill).Padding(44, 24, 24, 24).Gap(8).Children(func() {
+	ui.Column(c).Width(196).Shrink(0).Background(design.SidebarFill).Padding(82, 28, 24, 28).Gap(8).Children(func() {
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-			ui.Icon(c, icons["全部记忆"]).FontSize(22).TextColor(design.Ink)
-			ui.Text(c, "Memlane").FontSize(20).Bold()
+			ui.Icon(c, icons["brand"]).FontSize(24).TextColor(design.Ink)
+			ui.Text(c, "Memlane").FontSize(18).Bold()
 		})
-		ui.Text(c, "让记忆留在工作里").FontSize(design.Small).TextColor(design.Muted).Padding(0, 0, 0, 32)
+		ui.Text(c, "让记忆\n融入日常工作").FontSize(design.Small).TextColor(design.Muted).LineHeight(1.8).Padding(12, 0, 0, 0)
 		ui.Spacer(c)
-		ui.Icon(c, icons["Agent"]).FontSize(20).TextColor(design.Muted)
-		ui.Text(c, "复用本机已有环境").FontSize(design.Body).Bold().Padding(8, 0, 0, 0)
-		ui.Text(c, "兼容组件直接复用。\n准备与接入分别确认。").FontSize(design.Small).TextColor(design.Muted).LineHeight(1.8)
 		ui.Checkbox(c.Key("first-launch-reduced"), &s.State.ReducedMotion, "减少动态效果").FontSize(design.Small).OnChange(a.persistFirstLaunch)
 	})
 }
@@ -105,11 +100,11 @@ func (a *App) firstLaunchSteps(c *ui.Context) {
 	case "processing":
 		active = 2
 	}
-	ui.Column(c).Width(164).Shrink(0).Background(ui.Hex("#f8fafc")).BorderWidth(0, 0, 0, 1).BorderColor(design.Border).Children(func() {
+	ui.Column(c).Width(154).Shrink(0).Background(ui.Hex("#f8fafc")).BorderWidth(0, 0, 0, 1).BorderColor(design.Border).Children(func() {
 		ui.Row(c).Height(design.Toolbar).Shrink(0).Padding(0, 20).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).Children(func() {
-			ui.Text(c, "准备进度").FontSize(design.Small).TextColor(design.Muted)
+			ui.Text(c, "设置进度").FontSize(design.Small).TextColor(design.Muted)
 		})
-		ui.Column(c).Padding(100, 12, 0, 12).Gap(12).Children(func() {
+		ui.Column(c).Padding(40, 14, 0, 14).Gap(12).Children(func() {
 			for i, label := range []string{"准备环境", "连接 Agent", "配置记忆处理"} {
 				fill, color := ui.Transparent, design.Muted
 				if i == active {
@@ -388,33 +383,14 @@ func (a *App) firstLaunchReady(c *ui.Context) {
 }
 
 func (a *App) firstLaunchAgents(c *ui.Context) {
-	firstLaunchHeading(c, "连接 Agent", "把 Memlane 配置到这台电脑上的编码 Agent。项目、任务范围和处理记忆的执行者在各自步骤确认。")
-	firstLaunchSection(c, "本机 Agent", "连接可稍后完成，不阻塞进入记忆处理配置", func() {
-		if a.agents.Loading && len(a.agents.Found) == 0 {
-			firstLaunchRow(c, "first-launch-agent-loading", "正在发现 Agent", "只检查已知安装位置、PATH 和用户已选路径", "检查中", icons["Agent"])
-		}
-		for _, found := range a.agents.Found {
-			var connection *records.Connection
-			for index := range a.agents.Connections {
-				candidate := &a.agents.Connections[index]
-				if candidate.Agent == found.Agent && candidate.Enabled {
-					connection = candidate
-					break
-				}
-			}
-			state, detail := a.agentStatus(found, connection)
-			version := found.Version
-			if version == "" {
-				version = "版本待确认"
-			}
-			firstLaunchRow(c, "first-launch-setup-agent-"+found.Agent, found.Name, version+" · "+detail, state, icons["Agent"])
-		}
-		if !a.agents.Loading && len(a.agents.Found) == 0 {
-			firstLaunchRow(c, "first-launch-agent-empty", "尚未发现 Agent", "可以稍后从设置连接，不会创建空项目", "未连接", icons["Agent"])
-		}
+	ui.Row(c).Children(func() {
+		ui.Text(c, "连接 Agent").FontSize(design.Heading).Bold()
+		ui.Spacer(c)
+		quietButton(c, "重新检测").Disabled(a.agents.Busy).OnClick(func() { a.refreshAgents(true) })
 	})
-	quietButton(c, "打开现有 Agent 连接页").Key("first-launch-agent-settings").OnClick(a.openFirstLaunchAgentSettings)
-	firstLaunchNotice(c, "本轮生产边界", "电脑级批量连接新稿仍待实现；此步骤只展示真实发现与现有连接，不把已安装当成已连接。")
+	ui.Divider(c)
+	a.agentConnectionCards(c, true)
+	ui.Text(c, "选择卡片管理当前连接。批量连接暂未开放；也可以稍后设置。").FontSize(design.Small).TextColor(design.Muted)
 }
 
 func (a *App) firstLaunchFooter(c *ui.Context) {

@@ -314,6 +314,19 @@ func (s *Store) Activities(ctx context.Context, zone string) (records.ActivitySu
 	if err != nil {
 		return out, err
 	}
+	// Count identities, not versions or graph nodes. Raw records remain part of
+	// the cumulative receipt count after archival; knowledge is the effective
+	// current set, using the same stale-derived exclusion as the normal list.
+	raw, knowledge := 0, 0
+	knowledgeWhere := "md.origin!='raw' AND m.state='active'"
+	if s.Schema >= 4 {
+		knowledgeWhere += " AND NOT EXISTS(SELECT 1 FROM derived_memories d WHERE d.memory=m.id AND d.revision=m.current_revision AND d.state='stale')"
+	}
+	err = s.DB.QueryRowContext(ctx, `SELECT count(CASE WHEN md.origin='raw' THEN 1 END),count(CASE WHEN `+knowledgeWhere+` THEN 1 END) FROM memories m JOIN memory_metadata md ON md.memory=m.id`).Scan(&raw, &knowledge)
+	if err != nil {
+		return out, err
+	}
+	out.RawTotal, out.KnowledgeTotal = &raw, &knowledge
 	today := time.Now().In(loc)
 	cutoff := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, loc).AddDate(-1, 0, 1)
 	rows, err := s.DB.QueryContext(ctx, `SELECT kind,occurred_at FROM activities`)

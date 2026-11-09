@@ -36,6 +36,7 @@ def main():
     parser.add_argument("--worker-config", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--pi-directory", type=Path, default=Path.home() / ".pi/agent")
+    parser.add_argument("--fidelity", action="store_true", help="增加设置复用、首页和窄窗口系统截图")
     args = parser.parse_args()
 
     out = args.out.resolve()
@@ -162,6 +163,9 @@ def main():
             raise RuntimeError("adapter " + action + " returned invalid JSON: exit=" + str(completed.returncode) +
                                " stdout=" + repr(completed.stdout) + " stderr=" + repr(completed.stderr)) from error
         if completed.returncode != 0 or not value.get("ok"):
+            if action == "verify_connection":
+                diagnostics = out / ("adapter-verification-" + uuid.uuid4().hex[:8] + ".json")
+                diagnostics.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
             raise RuntimeError("adapter " + action + " failed: " + str(value.get("error")))
         return value.get("result")
 
@@ -187,6 +191,22 @@ def main():
         ui.system_capture(name)
         report["screenshots"].append(name)
 
+    def resize(width, height):
+        with socket.socket(socket.AF_UNIX) as channel:
+            channel.settimeout(10)
+            channel.connect(ui.native_path)
+            channel.sendall((json.dumps({"op": "resize", "width": width, "height": height}) + "\n").encode())
+            result = json.loads(channel.makefile("rb", buffering=0).readline())
+        assert "error" not in result, result
+        ui.req("idle", timeout=2000)
+
+    def assert_fixed_actions(labels, width, height):
+        nodes = ui.nodes()
+        for label in labels:
+            node = next(node for node in nodes if node.get("label") == label and node.get("role") == "button")
+            bounds = node["bounds"]
+            assert bounds["x"] >= 0 and bounds["y"] >= 0 and bounds["x"] + bounds["width"] <= width + 1 and bounds["y"] + bounds["height"] <= height + 1, (label, bounds)
+
     try:
         for path in (daemon, bridge, agent_check, pi_executable, Path(worker["Executable"]), Path(worker["Library"]), Path(worker["ModelDir"])):
             assert path.exists(), "required executable/component missing: " + str(path)
@@ -211,6 +231,14 @@ def main():
         }
         adapter("install", connection=connection, options=options)
         installed = True
+        if args.fidelity:
+            driver = load_ui_driver()
+            ui = driver.UI(app, out, screenshots, config=runtime_config, extra_env={
+                "PI_CODING_AGENT_DIR": str(pi_directory),
+                "PATH": str(pi_executable.parent) + ":/usr/bin:/bin",
+            })
+            wait(lambda: "继续配置记忆处理" in ui.labels())
+            capture("00-agent-before-verification-system.png")
         report["connection_verification_attempts"] = []
         verified = None
         for attempt in range(1, 3):
@@ -232,13 +260,17 @@ def main():
         }
         report["pre_ui_record_counts"] = baseline_counts
 
-        driver = load_ui_driver()
-        ui = driver.UI(app, out, screenshots, config=runtime_config, extra_env={
-            "PI_CODING_AGENT_DIR": str(pi_directory),
-            "PATH": str(pi_executable.parent) + ":/usr/bin:/bin",
-        })
+        if ui is None:
+            driver = load_ui_driver()
+            ui = driver.UI(app, out, screenshots, config=runtime_config, extra_env={
+                "PI_CODING_AGENT_DIR": str(pi_directory),
+                "PATH": str(pi_executable.parent) + ":/usr/bin:/bin",
+            })
         wait(lambda: all(label in ui.labels() for label in ("准备环境", "连接 Agent", "配置记忆处理", "继续配置记忆处理")))
-        wait(lambda: "可用" in ui.labels())
+        # Native buttons expose the card as one accessibility node; internal
+        # Text children are not independent labels. Check the actual card's
+        # receipt-derived label rather than waiting for an invisible Text node.
+        wait(lambda: ui.node(key="connection-card-pi")["label"] == "pi · 可用")
         state = json.loads((client / "first-launch.json").read_text())
         assert state["step"] == "agents" and state["stage"] == "ready" and not state.get("completed")
         capture("01-agents-system.png")
@@ -286,6 +318,14 @@ def main():
         assert "disabled" not in ui.node(key="first-launch-complete").get("states", [])
         capture("06-active-system.png")
 
+        if args.fidelity:
+            labels = ui.labels()
+            assert not any(any(term in label for term in ("当前生产边界", "终态回收", "整理能力验证")) for label in labels)
+            resize(980, 620)
+            assert_fixed_actions(["设为当前使用", "保存配置", "验证配置", "完成配置"], 980, 620)
+            capture("06-active-narrow-system.png")
+            resize(1200, 820)
+
         ui.press_key("first-launch-complete")
         wait(lambda: not any(node.get("key") == "first-launch-complete" for node in ui.nodes()))
         state = json.loads((client / "first-launch.json").read_text())
@@ -297,6 +337,35 @@ def main():
         report["post_completion_record_counts"] = completed_counts
         assert completed_counts == baseline_counts
         capture("07-completed-home-system.png")
+        if args.fidelity:
+            wait(lambda: all(label in ui.labels() for label in ("累计记忆", "知识", "使用天数", "首次使用日期未知")))
+            assert "可选设置指引" not in ui.labels()
+            summary = call("activities", timezone="Asia/Shanghai")
+            assert summary["raw_total"] == completed_counts["raw"] and summary["knowledge_total"] == completed_counts["knowledge"]
+            resize(980, 620)
+            assert_fixed_actions(["管理计划"], 980, 620)
+            capture("08-home-narrow-system.png")
+            resize(1200, 820)
+            ui.press("设置")
+            ui.press("记忆处理")
+            wait(lambda: "当前正在使用" in ui.labels())
+            assert "总览" not in ui.labels()
+            capture("09-settings-active-system.png")
+            resize(980, 620)
+            assert_fixed_actions(["设为当前使用", "取消修改", "保存配置", "验证配置"], 980, 620)
+            capture("10-settings-narrow-system.png")
+            resize(1200, 820)
+            ui.press("LLM provider")
+            assert "LLM provider 暂不可用" in ui.labels()
+            capture("11-provider-unavailable-system.png")
+            ui.press("使用 Magpie")
+            assert "Magpie 暂不可用" in ui.labels()
+            ui.press("Agent 连接")
+            wait(lambda: any(node.get("key") == "connection-card-pi" for node in ui.nodes()))
+            capture("12-agent-settings-system.png")
+            report["fidelity_checks"] = {"actual_narrow_system_screenshots": True, "fixed_actions_visible": True,
+                "shared_settings_sidebar": True, "implementation_details_removed": True, "real_home_counts": summary,
+                "unknown_first_use_preserved": True, "unavailable_backends_not_enabled": True}
         report.update({
             "status": "passed", "agent_step_real_connection": True,
             "processing_page_reused_ledger": True, "completion_blocked_before_activation": True,
@@ -308,6 +377,11 @@ def main():
         })
     except Exception as error:
         report["failure"] = repr(error)
+        if ui is not None:
+            try:
+                capture("failure-system.png")
+            except Exception as capture_error:
+                report["failure_capture_error"] = repr(capture_error)
     finally:
         if ui is not None:
             try:

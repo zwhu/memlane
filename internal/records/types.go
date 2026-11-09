@@ -88,10 +88,12 @@ type Activity struct {
 	State      string `json:"state"`
 }
 type ActivitySummary struct {
-	Days     map[string]int `json:"days"`
-	Total    int            `json:"total"`
-	Imported int            `json:"imported"`
-	Recent   []Version      `json:"recent"`
+	RawTotal       *int           `json:"raw_total,omitempty"`
+	KnowledgeTotal *int           `json:"knowledge_total,omitempty"`
+	Days           map[string]int `json:"days"`
+	Total          int            `json:"total"`
+	Imported       int            `json:"imported"`
+	Recent         []Version      `json:"recent"`
 }
 
 type SearchHit struct {

@@ -491,8 +491,7 @@ func (a *App) openFirstLaunchAgentSettings() {
 	}
 	s.Open = false
 	a.persistFirstLaunch()
-	a.navigate("Agent", "")
-	a.refreshAgents(true)
+	a.openAgentSettings()
 }
 
 func (a *App) canCompleteFirstLaunch() bool {

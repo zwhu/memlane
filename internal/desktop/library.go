@@ -183,6 +183,9 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 func (a *App) listQuery() records.ListQuery {
 	sortMode := map[string]string{"最近更新": "updated", "常用": "frequent", "重要优先": "important"}[a.listSort]
 	q := records.ListQuery{Sort: sortMode, Limit: 50, Kind: a.recordKind, Date: a.activityDate, Timezone: time.Local.String()}
+	if a.page == "总览" {
+		q.Kind, q.Date, q.Sort = "knowledge", a.homeDate, ""
+	}
 	if a.scope != "" {
 		q.Datasets = []string{a.scope}
 	} else if a.page == "全局记忆" {
@@ -227,6 +230,7 @@ func (a *App) refresh(more bool) {
 		}
 		var page records.Page
 		var activity records.ActivitySummary
+		var active homeTask
 		var current records.Version
 		var history []records.History
 		var related records.MergePage
@@ -246,6 +250,25 @@ func (a *App) refresh(more bool) {
 		}
 		if err == nil {
 			activity, err = a.library.Activities(ctx, time.Local.String())
+		}
+		if err == nil && pageName == "总览" {
+			var organizations records.OrganizationPage
+			organizations, err = a.organization.Client.List(ctx, records.MergeListQuery{ActiveOnly: true, Limit: 1})
+			if err == nil && len(organizations.Items) > 0 {
+				v := organizations.Items[0]
+				active = homeTask{ID: v.ID, Kind: "organization", State: v.State}
+			}
+			if err == nil {
+				var merges records.MergePage
+				merges, err = a.merges.Client.List(ctx, records.MergeListQuery{ActiveOnly: true, Limit: 1})
+				if len(merges.Items) > 0 && (active.ID == "" || (active.State == "queued" && merges.Items[0].State == "running")) {
+					v := merges.Items[0]
+					active = homeTask{ID: v.ID, Kind: "merge", State: v.State}
+				}
+			}
+		}
+		if pageName == "总览" {
+			selected = ""
 		}
 		if err == nil && selected != "" {
 			current, err = a.library.Get(ctx, selected)
@@ -331,7 +354,18 @@ func (a *App) refresh(more bool) {
 			if pageName != "搜索" {
 				a.listTotal = page.Total
 			}
-			a.recent = displayVersions(activity.Recent)
+			if pageName == "总览" {
+				a.homeActiveTask = active
+				a.recent = displayVersions(activity.Recent)
+				if query.Date != "" {
+					a.recent = displayVersions(page.Items)
+				}
+				a.homeRecentLoaded = true
+			} else if a.homeDate == "" {
+				a.recent = displayVersions(activity.Recent)
+			}
+			a.overviewRaw, a.overviewKnowledge = activity.RawTotal, activity.KnowledgeTotal
+			a.overviewUpdated = time.Now()
 			a.activities = activity.Days
 			a.activityLoaded = true
 			a.imported = activity.Imported

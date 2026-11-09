@@ -46,6 +46,11 @@ type App struct {
 	agents                                                           AgentUI
 	processing                                                       ProcessingUI
 	activityLoaded                                                   bool
+	overviewRaw, overviewKnowledge                                   *int
+	overviewUpdated                                                  time.Time
+	homeDate                                                         string
+	homeRecentLoaded                                                 bool
+	homeActiveTask                                                   homeTask
 	pendingMutations                                                 map[string]records.Mutation
 	saving                                                           bool
 	restoreExpected                                                  int64
@@ -152,7 +157,11 @@ func (a *App) View(c *ui.Context) {
 		c.Root().Background(ui.Transparent)
 	}
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-		a.sidebar(c)
+		if a.page == "设置" {
+			a.settingsSidebar(c)
+		} else {
+			a.sidebar(c)
+		}
 		ui.Column(c).Grow(1).MinWidth(0).Background(ui.Hex("#ffffff")).Children(func() {
 			if a.reader.Open {
 				a.sourceReader(c)
@@ -194,7 +203,7 @@ func (a *App) sidebar(c *ui.Context) {
 			if a.collapsed {
 				ui.Button(c, "展开").Label("切换侧边栏").OnClick(func() { a.collapsed = false })
 			}
-			for _, page := range []string{"总览", "全部记忆", "全局记忆", "Agent", "整理记录"} {
+			for _, page := range []string{"总览", "全部记忆", "全局记忆", "整理记录"} {
 				a.nav(c, page, "", icons[page])
 			}
 			ui.Row(c).Margin(22, 12, 8, 12).Children(func() {
@@ -301,78 +310,83 @@ func (a *App) pageTitle() string {
 	return a.page
 }
 func (a *App) home(c *ui.Context) {
-	ui.Scroll(c).Key("overview").Grow(1).Padding(30, 36, 0, 36).Gap(24).Children(func() {
-		ui.Column(c).Gap(8).Children(func() {
-			ui.Row(c).Children(func() {
-				ui.Text(c, "记忆动态").FontSize(design.Heading).Bold()
-				ui.Spacer(c)
-				actionButton(c, "立即整理", icons["全部记忆"]).OnClick(func() { a.beginOrganizationOrMerge() })
-			})
-			ui.Text(c, "最近积累的知识，以及需要你确认的改动。").FontSize(design.Small).TextColor(design.Muted)
-		})
-		a.guidanceCard(c)
-		if a.libraryError != "" {
-			ui.Row(c).Gap(10).Children(func() {
-				ui.Text(c, "活动读取失败，保留上次记录。").FontSize(design.Small).TextColor(design.Muted)
-				quietButton(c, "重试读取").OnClick(func() { a.refresh(false) })
-			})
-		}
-		a.heatmap(c)
-		ui.Row(c).AlignItems(ui.Stretch).Gap(32).Children(func() {
-			ui.Column(c).Grow(1.85).MinWidth(0).Gap(0).Children(func() {
+	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
+		ui.Scroll(c).Key("overview").Grow(1).MinHeight(0).Padding(28, 30, 24, 30).Gap(20).Children(func() {
+			ui.Column(c).Gap(8).Children(func() {
 				ui.Row(c).Children(func() {
-					ui.Text(c, "最近新增").Bold().Margin(0, 0, 12, 0)
+					ui.Text(c, "记忆动态").FontSize(design.Heading).Bold()
 					ui.Spacer(c)
-					quietButton(c, "查看全部").OnClick(func() { a.navigate("全部记忆", "") })
+					a.homeOrganizationButton(c)
 				})
-				ui.Divider(c)
-				if len(a.recent) == 0 && !a.visualFixture {
-					title, description := "还没有新增活动", "新增一条项目经验，让知识从这里开始。"
-					if !a.activityLoaded {
-						title = "等待本地记忆服务"
-						description = "活动和最近新增将在服务连接后显示。"
-					} else if a.listTotal > 0 {
-						description = "已保存的知识会在首次索引完成后计入新增；导入记录单独统计。"
-					}
-					a.empty(c, title, description)
-					actionButton(c, "记录第一条记忆", icons["plus"]).AlignSelf(ui.Start).OnClick(a.newMemory)
-					if a.agents.Context != nil {
-						ui.Row(c).Gap(12).Margin(12, 0, 0, 0).Children(func() {
-							quietButton(c, "连接 Agent").OnClick(func() { a.navigate("Agent", "") })
-							quietButton(c, "添加本地项目").OnClick(func() { a.navigate("项目", "") })
-						})
-					}
-				}
-				recent := a.recent
-				if a.visualFixture {
-					recent = a.items
-				}
-				for i, item := range recent {
-					if i == 4 {
-						break
-					}
-					a.memoryRow(c, item, false)
-				}
+				ui.Text(c, "最近积累的知识，以及需要你确认的改动。").FontSize(design.Small).TextColor(design.Muted)
 			})
-			ui.Column(c).Grow(1).MinWidth(0).Gap(12).Children(func() { a.mergeHome(c) })
-		})
-		ui.Divider(c)
-		ui.Row(c).Padding(0, 0, 14, 0).Gap(8).Children(func() {
-			ui.Icon(c, icons["history"]).FontSize(11).TextColor(design.Muted)
-			label := "整理计划待读取"
-			if a.schedules.Loaded {
-				count := 0
-				for _, plan := range a.schedules.Plans {
-					if plan.Enabled {
-						count++
+			a.homeTotals(c)
+			if a.libraryError != "" {
+				ui.Row(c).Gap(10).Children(func() {
+					label := "数据暂不可用"
+					if !a.overviewUpdated.IsZero() {
+						label = "保留上次数据 · 更新于 " + a.overviewUpdated.Format("15:04")
 					}
-				}
-				label = fmt.Sprintf("已启用 %d 个整理计划", count)
+					ui.Text(c, label).FontSize(design.Small).TextColor(design.Muted)
+					quietButton(c, "重试读取").OnClick(func() { a.refresh(false) })
+				})
 			}
-			ui.Text(c, label).FontSize(design.Small).TextColor(design.Muted)
-			ui.Spacer(c)
-			quietButton(c, "管理计划").Key("schedule-manage").OnClick(func() { a.navigate("整理计划", "") })
+			a.heatmap(c)
+			ui.Row(c).AlignItems(ui.Stretch).Gap(28).Children(func() {
+				ui.Column(c).Grow(1.85).MinWidth(0).Gap(0).Children(func() {
+					ui.Row(c).Children(func() {
+						label := "最近新增"
+						if a.homeDate != "" {
+							label = a.homeDate + " 新增知识"
+						}
+						ui.Text(c, label).Bold().Margin(0, 0, 12, 0)
+						ui.Spacer(c)
+						if a.homeDate != "" {
+							quietButton(c, "回到最近新增").OnClick(func() { a.selectHomeDate("") })
+						}
+						quietButton(c, "查看全部").OnClick(func() { a.navigate("全部记忆", "") })
+					})
+					ui.Divider(c)
+					if len(a.recent) == 0 && !a.visualFixture {
+						title, description := "还没有知识", "保存一条知识，或在项目中整理已有记录。"
+						if a.libraryError != "" {
+							title, description = "知识暂不可用", "请重试读取，或选择其他日期。"
+						} else if a.loading || (a.homeDate != "" && !a.homeRecentLoaded) {
+							title, description = "正在读取知识", "等待所选日期的实际记录。"
+						} else if !a.activityLoaded {
+							title = "等待本地记忆服务"
+							description = "活动和最近新增将在服务连接后显示。"
+						} else if a.homeDate != "" {
+							title, description = "这一天没有新增知识", "可以选择其他日期，或回到最近新增。"
+						} else if a.overviewRaw != nil && *a.overviewRaw > 0 {
+							title, description = "已有原始记录，尚未形成知识", "可以查看原始记录，或在项目中整理。"
+						} else if a.overviewKnowledge != nil && *a.overviewKnowledge > 0 {
+							title, description = "暂无日常新增知识", "已有知识可以从全部记忆查看；导入数量单独统计。"
+						}
+						a.empty(c, title, description)
+						actionButton(c, "记录第一条记忆", icons["plus"]).AlignSelf(ui.Start).OnClick(a.newMemory)
+						if a.agents.Context != nil {
+							ui.Row(c).Gap(12).Margin(12, 0, 0, 0).Children(func() {
+								quietButton(c, "连接 Agent").OnClick(func() { a.openAgentSettings() })
+								quietButton(c, "添加本地项目").OnClick(func() { a.navigate("项目", "") })
+							})
+						}
+					}
+					recent := a.recent
+					if a.visualFixture {
+						recent = a.items
+					}
+					for i, item := range recent {
+						if i == 4 {
+							break
+						}
+						a.memoryRow(c, item, false)
+					}
+				})
+				ui.Column(c).Grow(1).MinWidth(0).Gap(12).Children(func() { a.mergeHome(c) })
+			})
 		})
+		a.homePlanFooter(c)
 	})
 }
 func (a *App) heatmap(c *ui.Context) {
@@ -385,7 +399,7 @@ func (a *App) heatmap(c *ui.Context) {
 	}
 	ui.Column(c).Key("activity-heatmap").Border(1, design.Border).Radius(8).Padding(20).Gap(16).Children(func() {
 		ui.Row(c).Children(func() {
-			label := fmt.Sprintf("过去一年新增 %d 条记忆", total)
+			label := fmt.Sprintf("过去一年新增 %d 条知识", total)
 			if !a.activityLoaded && !a.visualFixture {
 				label = "每日记忆 · 等待本地活动记录"
 			}
@@ -426,11 +440,17 @@ func (a *App) heatmap(c *ui.Context) {
 							if count > 0 {
 								level = min(4, (count+1)/2)
 							}
-							cell := ui.Button(c.Key("day-"+key), "").Label(fmt.Sprintf("%s 新增 %d 条", key, count)).Height(12).MinWidth(0).Padding(0).BorderWidth(0).Radius(2).Background(design.Heat[level]).Tooltip(fmt.Sprintf("%s · 新增 %d 条", key, count)).Disabled(d.After(today))
-							if key == a.activityDate {
+							cell := ui.Button(c.Key("day-"+key), "").Label(fmt.Sprintf("%s 新增 %d 条", key, count)).Height(12).MinWidth(0).Padding(0).BorderWidth(0).Radius(2).Background(design.Heat[level]).Tooltip(fmt.Sprintf("%s · 新增 %d 条", key, count)).Disabled(d.After(today) || (!a.activityLoaded && !a.visualFixture))
+							if key == a.homeDate {
 								cell.Border(1, design.Muted)
 							}
-							cell.OnClick(func() { a.activityDate = key; a.navigate("全部记忆", "") })
+							cell.OnClick(func() {
+								if a.homeDate == key {
+									a.selectHomeDate("")
+								} else {
+									a.selectHomeDate(key)
+								}
+							})
 						}
 					})
 				}
@@ -464,7 +484,9 @@ func (a *App) details(c *ui.Context) {
 	ui.Row(c).Key("details-layout").Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 		ui.Column(c).Key("item-list").Width(width).Shrink(0).BorderWidth(0, 1, 0, 0).BorderColor(design.Border).Children(func() {
 			ui.Column(c).Padding(28, 24, 18, 24).Gap(12).Shrink(0).Children(func() {
-				ui.Text(c, a.pageTitle()).FontSize(design.Heading).Bold()
+				if !a.isMemoryPage() {
+					ui.Text(c, a.pageTitle()).FontSize(design.Heading).Bold()
+				}
 				if a.page == "搜索" {
 					if a.searching {
 						ui.Text(c, "正在搜索当前可检索版本…").FontSize(design.Small).TextColor(design.Muted)
@@ -500,7 +522,7 @@ func (a *App) details(c *ui.Context) {
 					})
 					actionButton(c, "立即整理", icons["全部记忆"]).Disabled(a.merges.Busy).OnClick(a.beginOrganizationOrMerge)
 				} else if a.isMemoryPage() {
-					actionButton(c, "立即整理", icons["全部记忆"]).OnClick(a.beginOrganizationOrMerge)
+					actionButton(c, "立即整理", icons["全部记忆"]).AlignSelf(ui.End).OnClick(a.beginOrganizationOrMerge)
 					kind := "知识"
 					if a.recordKind == "raw" {
 						kind = "原始记录"
@@ -575,7 +597,14 @@ func (a *App) details(c *ui.Context) {
 		})
 		ui.Column(c).Key("detail-pane").Grow(1).MinWidth(0).Children(func() {
 			ui.Row(c).Height(55).Shrink(0).Padding(0, 22).Gap(12).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).Children(func() {
-				label := "记忆详情"
+				label := "知识详情"
+				raw := a.recordKind == "raw"
+				if item := a.current(); item != nil {
+					raw = item.Origin == "raw"
+				}
+				if raw {
+					label = "原始记录"
+				}
 				if a.editing {
 					label = "新增记忆"
 					if a.detailMode == "edit" {
@@ -678,6 +707,7 @@ func (a *App) memoryRow(c *ui.Context, item MemoryItem, inList bool) {
 		a.detailScroll.Y = 0
 		if a.page == "总览" {
 			a.page = "全部记忆"
+			a.recordKind, a.activityDate = "knowledge", ""
 		}
 		if a.onSelect != nil {
 			a.onSelect(item.ID)

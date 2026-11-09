@@ -134,10 +134,15 @@ func (a *App) processingToolbarStatus() string {
 	return processingSpecLabel(current.Revision.Spec) + " · 当前使用"
 }
 
-func (a *App) settingsShell(c *ui.Context) {
-	ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
-		ui.Column(c).Width(196).Shrink(0).Padding(28, 12).Gap(6).BorderWidth(0, 1, 0, 0).BorderColor(design.Border).Children(func() {
-			ui.Text(c, "设置").FontSize(design.Heading).Bold().Padding(0, 12, 14, 12)
+func (a *App) settingsSidebar(c *ui.Context) {
+	ui.Column(c).Key("settings-navigation").Width(196).Shrink(0).Background(design.SidebarFill).Children(func() {
+		ui.Row(c).Height(design.Toolbar).Shrink(0).DragWindow()
+		ui.Row(c).Padding(28, 28, 20, 28).Gap(10).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, icons["brand"]).FontSize(24).TextColor(design.Ink)
+			ui.Text(c, "Memlane").FontSize(18).Bold()
+		})
+		ui.Text(c, "设置").FontSize(design.Small).TextColor(design.Muted).Padding(20, 28, 14, 28)
+		ui.Scroll(c).Grow(1).Padding(0, 12).Gap(6).Children(func() {
 			for _, item := range []struct{ key, label string }{{"environment", "环境与组件"}, {"agents", "Agent 连接"}, {"processing", "记忆处理"}} {
 				button := ui.Button(c.Key("settings-"+item.key), item.label).Label(item.label).Height(36).Padding(8, 12).Justify(ui.Start).BorderWidth(0).Background(ui.Transparent)
 				if a.settingsSection == item.key {
@@ -148,26 +153,29 @@ func (a *App) settingsShell(c *ui.Context) {
 				key := item.key
 				button.OnClick(func() {
 					a.settingsSection = key
+					if key == "agents" {
+						a.refreshAgents(true)
+					}
 					if key == "processing" {
 						a.refreshProcessing()
 					}
 				})
 			}
 		})
-		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-			switch a.settingsSection {
-			case "processing":
-				a.processingSettings(c)
-			case "agents":
-				ui.Scroll(c).Grow(1).Padding(30).Gap(16).Children(func() {
-					ui.Text(c, "Agent 连接").FontSize(design.Heading).Bold()
-					ui.Text(c, "连接与验证仍由现有生产页面负责；处理记忆只会列出已连接且满足后台能力条件的 pi / Codex。").TextColor(design.Muted)
-					actionButton(c, "打开 Agent 连接", icons["Agent"]).OnClick(func() { a.navigate("Agent", "") })
-				})
-			default:
-				ui.Scroll(c).Grow(1).Padding(30).Gap(18).Children(func() { a.settings(c) })
-			}
-		})
+		quietButton(c, "返回日常首页").Margin(20, 28).OnClick(func() { a.navigate("总览", "") })
+	})
+}
+
+func (a *App) settingsShell(c *ui.Context) {
+	ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
+		switch a.settingsSection {
+		case "processing":
+			a.processingSettings(c)
+		case "agents":
+			a.agentSettingsPage(c)
+		default:
+			ui.Scroll(c).Grow(1).Padding(30).Gap(18).Children(func() { a.settings(c) })
+		}
 	})
 }
 
@@ -176,7 +184,7 @@ func (a *App) processingSettings(c *ui.Context) {
 	s.ensure()
 	setup := a.firstLaunch.Open && a.firstLaunchStep() == "processing"
 	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
-		ui.Scroll(c).Grow(1).Padding(30).Gap(16).Children(func() {
+		ui.Scroll(c).Grow(1).Padding(28, 30, 24, 30).Gap(18).Children(func() {
 			title := "记忆处理"
 			if setup {
 				title = "配置记忆处理"
@@ -191,30 +199,34 @@ func (a *App) processingSettings(c *ui.Context) {
 				ui.Text(c, "当前使用").FontSize(design.Small).TextColor(design.Muted)
 				ui.Text(c, current).FontSize(design.Small).Bold()
 			})
-			ui.Row(c).Gap(4).Children(func() {
-				for _, tab := range []struct{ mode, label string }{{"provider", "LLM provider"}, {"agent", "使用已连接 Agent"}, {"magpie", "使用 Magpie"}} {
-					button := ui.Button(c.Key("processing-tab-"+tab.mode), tab.label).Label(tab.label).Height(34).Padding(7, 12).BorderWidth(0).Background(design.Surface)
-					if s.Mode == tab.mode {
-						button.Background(ui.Hex("#ffffff")).Border(1, design.Border)
+			ui.Row(c).Gap(16).AlignItems(ui.Center).Children(func() {
+				ui.Row(c).Gap(3).Padding(3).Radius(5).Background(ui.Hex("#edf2f7")).Children(func() {
+					for _, tab := range []struct{ mode, label string }{{"provider", "LLM provider"}, {"agent", "使用已连接 Agent"}, {"magpie", "使用 Magpie"}} {
+						button := ui.Button(c.Key("processing-tab-"+tab.mode), tab.label).Label(tab.label).Height(32).Padding(6, 12).FontSize(design.Small).BorderWidth(0).Background(ui.Transparent)
+						if s.Mode == tab.mode {
+							button.Background(ui.Hex("#ffffff"))
+						}
+						mode := tab.mode
+						button.OnClick(func() { s.Mode = mode; s.Error = ""; s.Notice = "" })
 					}
-					mode := tab.mode
-					button.OnClick(func() { s.Mode = mode; s.Error = ""; s.Notice = "" })
-				}
-				ui.Text(c, "可配置多种方式，选择一种用于记忆处理。").FontSize(design.Small).TextColor(design.Muted).Padding(8, 12)
+				})
+				ui.Text(c, "可配置多种方式，选择一种用于记忆处理。").FontSize(design.Small).TextColor(design.Muted).Grow(1).MinWidth(0)
 			})
 			a.processingModeHeader(c)
 			switch s.Mode {
 			case "provider":
-				a.processingUnavailable(c, "Provider 处理桥尚未接入", "独立凭据、真实模型目录和推理验证完成前不能保存或启用。")
+				a.processingUnavailable(c, "LLM provider 暂不可用", "供应商配置和模型验证尚未开放。请先使用已连接的 pi。")
 			case "magpie":
-				a.processingUnavailable(c, "Magpie 处理桥尚未接入", "本机网关仍需完成免密发现、模型目录和真实推理验证。")
+				a.processingUnavailable(c, "Magpie 暂不可用", "Magpie 接入尚未开放。请先使用已连接的 pi。")
 			default:
 				a.processingAgents(c)
 			}
 			if s.Error != "" {
 				ui.Text(c, s.Error).FontSize(design.Small).TextColor(ui.Hex("#a04343")).Selectable()
 			}
-			if s.Notice != "" {
+			saved, hasSaved := s.saved()
+			failed := hasSaved && s.sameSavedDraft() && saved.Validation != nil && (saved.Validation.State == "failed" || saved.Validation.State == "interrupted")
+			if s.Notice != "" && s.Error == "" && (a.processingModeState() == "有未保存修改" || failed) {
 				ui.Text(c, s.Notice).FontSize(design.Small).TextColor(design.Muted).Selectable()
 			}
 		})
@@ -295,66 +307,67 @@ func (a *App) processingUnavailable(c *ui.Context, title, detail string) {
 
 func (a *App) processingAgents(c *ui.Context) {
 	s := &a.processing
-	ui.Text(c, "当前生产边界：pi 已接入真实 daemon 验证；Codex 处理桥尚未接入。Provider 处理桥尚未接入；Magpie 处理桥尚未接入。").FontSize(design.Small).TextColor(design.Muted).Padding(4, 0)
 	if len(s.Candidates) == 0 {
 		a.processingUnavailable(c, "没有可用的处理 Agent", "请先在“设置 → Agent 连接”完成 pi 连接及真实读写验证。")
 		return
 	}
-	ui.Row(c).Gap(14).AlignItems(ui.Stretch).Children(func() {
-		for index := range s.Candidates {
-			candidate := s.Candidates[index]
-			selected := processingCandidateSelected(s.draft(), candidate)
-			button := ui.Button(c.Key("processing-agent-"+candidate.Connection), "").Label(candidate.Name).Width(300).Height(112).Padding(16).Justify(ui.Start).AlignItems(ui.Start).Disabled(!candidate.Available).Children(func() {
-				ui.Column(c).Grow(1).Gap(8).AlignItems(ui.Start).Children(func() {
-					ui.Row(c).FillWidth().Children(func() {
-						ui.Text(c, candidate.Name).Bold()
-						ui.Spacer(c)
-						if selected {
-							ui.Text(c, "●").TextColor(ui.Hex("#688db9"))
-						} else {
-							ui.Text(c, "○").TextColor(design.Muted)
+	// Keep the two-column geometry from the approved design. A single real
+	// candidate occupies one column; unavailable candidates are never invented.
+	width, _ := c.Size()
+	available := width - 196 - 60
+	if a.firstLaunch.Open {
+		available = width - 196 - 154 - 60
+	}
+	cardWidth := (available - 14) / 2
+	for start := 0; start < len(s.Candidates); start += 2 {
+		ui.Row(c).Gap(14).AlignItems(ui.Stretch).Children(func() {
+			for index := start; index < min(start+2, len(s.Candidates)); index++ {
+				candidate := s.Candidates[index]
+				selected := processingCandidateSelected(s.draft(), candidate)
+				button := ui.Button(c.Key("processing-agent-"+candidate.Connection), "").Label(candidate.Name).Width(cardWidth).Height(108).Padding(18).Border(1, ui.Hex("#d8e2ed")).Background(ui.Hex("#ffffff")).Justify(ui.Start).AlignItems(ui.Start).Disabled(!candidate.Available).Children(func() {
+					ui.Column(c).Grow(1).Gap(8).AlignItems(ui.Start).Children(func() {
+						ui.Row(c).FillWidth().Children(func() {
+							icon := icons[candidate.Agent]
+							if icon == nil {
+								icon = icons["Agent"]
+							}
+							ui.Icon(c, icon).FontSize(26).TextColor(design.Muted).Margin(0, 10, 0, 0)
+							ui.Text(c, candidate.Name).Bold()
+							ui.Spacer(c)
+							if selected {
+								ui.Text(c, "●").TextColor(ui.Hex("#688db9"))
+							} else {
+								ui.Text(c, "○").TextColor(design.Muted)
+							}
+						})
+						version := candidate.Version
+						if version == "" {
+							version = "版本待确认"
+						}
+						ui.Row(c).FillWidth().Padding(8, 0, 0, 36).Children(func() {
+							ui.Text(c, version).FontSize(10).TextColor(design.Muted)
+							ui.Spacer(c)
+							state := "已连接"
+							if !candidate.Available {
+								state = "暂不可用"
+							}
+							ui.Text(c, state).FontSize(10).TextColor(design.Muted)
+						})
+						if !candidate.Available {
+							ui.Text(c, "当前连接尚不能用于记忆处理").FontSize(10).TextColor(design.Muted)
 						}
 					})
-					version := candidate.Version
-					if version == "" {
-						version = "版本待确认"
-					}
-					ui.Text(c, version+" · 已连接").FontSize(design.Small).TextColor(design.Muted)
-					if candidate.Reason != "" {
-						ui.Text(c, candidate.Reason).FontSize(design.Small).TextColor(design.Muted)
-					}
 				})
-			})
-			if selected {
-				button.Background(ui.Hex("#eef4fb")).Border(1, ui.Hex("#8caac9"))
+				if selected {
+					button.Background(ui.Hex("#eef4fb")).Border(1, ui.Hex("#8caac9"))
+				}
+				candidateCopy := candidate
+				button.OnClick(func() { a.selectProcessingAgent(candidateCopy) })
 			}
-			candidateCopy := candidate
-			button.OnClick(func() { a.selectProcessingAgent(candidateCopy) })
-		}
-	})
+		})
+	}
 	if draft := s.draft(); draft.Agent == "pi" {
 		ui.Text(c, fmt.Sprintf("使用 pi 当前模型 %s / %s 处理记忆，会消耗该账号的模型额度。", draft.Provider, draft.Model)).FontSize(design.Small).TextColor(design.Muted).Padding(8, 0)
-	}
-	a.processingValidationDetails(c)
-}
-
-func (a *App) processingValidationDetails(c *ui.Context) {
-	saved, ok := a.processing.saved()
-	if !ok || !a.processing.sameSavedDraft() || saved.Validation == nil {
-		return
-	}
-	validation := saved.Validation
-	ui.Text(c, "整理能力验证").Bold().Padding(12, 0, 0, 0)
-	state := map[string]string{"validating": "进行中", "succeeded": "已通过", "failed": "未通过", "cancelled": "已取消", "interrupted": "已中断"}[validation.State]
-	if state == "" {
-		state = validation.State
-	}
-	for _, row := range []string{"Agent 登录与当前模型", "完整结构化输出", "隔离进程与终态回收"} {
-		ui.Row(c).Height(36).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).Children(func() {
-			ui.Text(c, row).FontSize(design.Small)
-			ui.Spacer(c)
-			ui.Text(c, state).FontSize(design.Small).TextColor(design.Muted)
-		})
 	}
 }
 

@@ -37,6 +37,7 @@ func TestShellWithoutEngine(t *testing.T) {
 		t.Fatalf("copy lost Unicode text: %q", tt.Clipboard())
 	}
 	click("设置")
+	click("返回日常首页")
 	click("全部记忆")
 	if app.draft != "项目经验：保留 request_id" || !tt.HasText("记忆服务尚未就绪，暂不能保存。") {
 		t.Fatal("navigation lost the draft or implied it was saved")

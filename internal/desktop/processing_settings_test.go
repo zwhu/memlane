@@ -54,8 +54,20 @@ func TestSettingsMemoryProcessingNativeFrameKeepsUnavailableModesHonest(t *testi
 			t.Fatalf("missing accepted settings label %q", label)
 		}
 	}
-	if !tt.HasText("Provider 处理桥尚未接入") || !tt.HasText("Magpie 处理桥尚未接入") || !tt.HasText("Codex 处理桥尚未接入") {
-		t.Fatal("unverified processing modes were hidden or presented as available")
+	if tt.HasText("当前生产边界") || tt.HasText("隔离进程与终态回收") {
+		t.Fatal("implementation details leaked into the daily processing page")
+	}
+	if err := tt.Click("LLM provider"); err != nil {
+		t.Fatal(err)
+	}
+	if !tt.HasText("LLM provider 暂不可用") {
+		t.Fatal("provider became available without a real backend")
+	}
+	if err := tt.Click("使用 Magpie"); err != nil {
+		t.Fatal(err)
+	}
+	if !tt.HasText("Magpie 暂不可用") {
+		t.Fatal("Magpie became available without a real backend")
 	}
 	_ = tt.Click("设为当前使用")
 	if a.processing.Configuration.Current.Active || a.processing.Busy {

@@ -49,7 +49,7 @@ func (a *App) ConfigureAgents(ctx context.Context, root, home, bridge, piDir str
 				return
 			case <-ticker.C:
 				dispatch(func() {
-					if (a.page == "Agent" || a.page == "使用指引" || a.page == "初始化") && !a.agents.Busy {
+					if (a.page == "Agent" || (a.firstLaunch.Open && a.firstLaunchStep() == "agents") || (a.page == "设置" && a.settingsSection == "agents") || a.page == "使用指引" || a.page == "初始化") && !a.agents.Busy {
 						a.refreshAgents(false)
 					}
 				})
@@ -455,13 +455,7 @@ func (a *App) agentDetail(c *ui.Context) {
 			})
 		}
 		ui.Divider(c)
-		ui.Text(c, "初始化记忆库").Bold()
-		ui.Text(c, "选择少量项目文件后复制prompt，实际提交与索引状态由初始化记录显示。").FontSize(design.Small).TextColor(design.Muted)
-		key := ""
-		if conn != nil {
-			key = conn.ID
-		}
-		actionButton(c, "初始化项目记忆", nil).Key("agent-initialization").Disabled(conn == nil || !conn.Enabled).OnClick(func() { a.openInitialization(key) })
+		actionButton(c, "前往项目知识", nil).Key("agent-project-knowledge").Disabled(conn == nil || !conn.Enabled || conn.Project == "").OnClick(func() { a.navigate("项目", conn.Project) })
 	})
 }
 
