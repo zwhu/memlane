@@ -83,3 +83,27 @@ type ProjectTaskPage struct {
 	Items []ProjectTaskSummary `json:"items"`
 	Next  string               `json:"next,omitempty"`
 }
+
+// A repository source is read and frozen by the host. The model only cites its
+// opaque ID and exact quote; it cannot submit arbitrary source bytes or paths.
+type ProjectRepositorySource struct {
+	ID     string `json:"id"`
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+	Text   string `json:"text"`
+}
+type ProjectKnowledgeQuote struct {
+	Source string `json:"source"`
+	Quote  string `json:"quote"`
+}
+type ProjectKnowledgeItem struct {
+	Title   string                  `json:"title"`
+	Text    string                  `json:"text"`
+	Sources []ProjectKnowledgeQuote `json:"sources"`
+}
+type ProjectKnowledgeProposal struct {
+	Task        string                 `json:"task"`
+	Attempt     int64                  `json:"attempt"`
+	Items       []ProjectKnowledgeItem `json:"items"`
+	Explanation string                 `json:"explanation"`
+}

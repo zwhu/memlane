@@ -57,3 +57,49 @@ C通过绑定Agent自己的正常模型、工具和仓库上下文生成带出�
 第一份`permissions-config-7bvjcp9n`只调用`--print-startup-config`，输出是机器要求；合法与错误字段控制都exit0，不能据此说本地profile已验证。修正后的`permissions-rpc-0zvtlp65`通过实际initialize／config/read／thread/start确认本机加载`memlane_project`，运行工作区与命名profile一致，没有发起model turn。随后`permissions-exec-p8ojlkf8`直接执行受限cat：项目内与项目外都exit134且没有输出，说明最小系统运行权限尚不完整，不能作为有效项目读取或越界拒绝的通过证据。两份探针及原失败均保留；后续优先核对自身sandbox helper／Agent资源路径和最低系统读取依赖，不能扩大到其他用户仓库或凭据目录来通过。
 
 C07／C08／C09整体未验收，正常仓库任务、可靠历史会话读取、真实取消／尝试恢复、保存／索引分阶段与质量仍未完成；123场景Goal保持进行中。用户原有产品／内容分层／研究文件保持。
+
+## 第四步：真实Codex工具执行与宿主出处模块
+
+本步再次读取产品／设计、设计入口、C交接与领域词汇，固定原型仍为`780745fc55d71edb22e46d9c3e4f208d5ecb602f`，没有新增提交。本步增加后台执行模块，没有修改C窗口或将完整舞台标为通过；前一步实际窗口对照继续只覆盖绑定基础层。
+
+### 权限134的定位与复验
+
+证据根为`build/ui-fidelity-20261110-007`。`permissions-runtime-001`复现普通readOnly读取项目内外均成功、三个受限profile项目内外均134；stderr为空。增加自身App目录及常用系统目录没有解决。仅检查本轮`cat`崩溃记录的进程路径、异常与栈，显示SIGABRT发生在`dyld4::CacheFinder`／`ignition_halt`加载阶段，没有执行到正常文件读取。官方当前sandbox源码只作研究依据，本机结论以实际命令回执为准。
+
+在相同profile中只增加`":minimal"="read"`，项目内cat成功，项目外cat以exit1和`Operation not permitted`正常拒绝。`sandbox-minimal-single-variable/report.json`保留单变量结果。它授予Codex规定的平台启动能力，不授予其他用户仓库或Agent配置目录。
+
+`scripts/verify-codex-project-permissions.py`随后回到本机实际app-server协议：`config/read`、命名profile的`thread/start`和真实`command/exec`。`permissions-runtime-002`通过项目内读取、项目外／符号链接越界及项目内外写入拒绝；`permissions-runtime-003`再通过私有Agent目录与嵌套`.env`合成文件的正常拒绝。所有拒绝均exit1，合成文件未改变，app-server已回收。原三个无`:minimal`profile仍保留134对照，不把崩溃作为有效拒绝。全部探针没有模型turn或认证复制。
+
+### 正常模型、工具与出处所有权
+
+新增`internal/agents/codex_project.go`、`codex_rpc.go`与`project_sources.go`，与J冻结材料纯推理执行器分开。绑定安装须是当前已验证代次、配置block仍存在、实际版本为`codex-cli 0.167.0-alpha.3.2`。通过Agent的实际`config/read`解析当前模型和供应商配置，记录摘要；配置与凭据不进入诊断转录。`model_provider=null`表示Codex原生默认，另用隔离的无turn临时线程取得实际供应商，不能按名称猜默认或选择另一款处理执行者。本机当前结果为`gpt-6.1-sol`／`openai`。配置中的整数供应商字段保留为TOML整数，避免JSON浮点转换成`4.0`后被拒绝。
+
+正常整理创建新stdio进程和临时会话，使用正常Codex编码工具及已解析模型，`allowProviderModelFallback=false`。临时任务cwd不加载原项目的日常MCP／hook配置；`runtimeWorkspaceRoots`提供实际授权仓库，模型读取仓库AGENTS与代码。任务目录仅授予读取，项目外文件与项目内Agent／凭据／环境路径保持拒绝，shell没有仓库写入或网络权限。只链接认证文件，不复制会话／业务库，不修改用户默认配置；受管强制hooks由Codex自身要求保留，本机管理安装未改动。
+
+额外的`memlane_project_source`只读取和冻结出处，不是保存工具。宿主以目录描述符逐层`NOFOLLOW`打开文本，拒绝逃逸、符号链接、特殊文件及受限路径；授权根内绝对路径与相对路径归一为同一来源。ID由实际相对路径和原文SHA-256生成，第一次读到的版本固定，后续编辑不替换该任务的引用。每份4MiB、累计32MiB是IPC资源边界，超出明确失败；没有沿用旧1–16项／128KiB导入限制。回归实际读取20份、每份大于128KiB的合成文件，确认这一边界。
+
+模型只能提交已有宿主来源ID和精确原文引用。结果解码拒绝外加字段、错误任务／尝试、未知来源、重复来源和伪造引用；宿主同时核对实际返回的模型、供应商、命名权限、工作区与事件任务身份。外部MCP、委派或文件修改回执拒绝释放结果。这里只输出新增候选，不自动覆盖、合并、删除或移动知识；来源正确不等于所有语义质量已通过。
+
+### 原失败与实际运行
+
+`cmd/c-project-agent-check`是未打包到用户App的独立验证入口，运行同一生产模块，但安装验证／绑定回执明确为合成夹具。报告固定`actual_connection_verified=false`、`actual_daemon_task=false`、`actual_app=false`、`actual_save=false`与`actual_index=false`。不能将其解释为真实连接验证或C完整包任务已交付。
+
+| 证据 | 结果与边界 |
+| --- | --- |
+| `project-inspect-001` | 发现Go命令构造与共享Cancel钩子不匹配；修正为支持Cancel的CommandContext，受控中断仍由调用方先发协议 |
+| `project-inspect-002` | 原配置未显式写model_provider，拒绝继续；随后以原生无turn解析取得实际默认，未硬写默认 |
+| `project-inspect-003` | 真实配置与原生默认解析通过，没有模型turn |
+| `project-agent-runtime-001` | 真实模型完成正常命令与三份出处读取，返回三条候选；此初版探针使用合成代码目录，尚未创建Git，不冒称Store仓库身份门禁通过 |
+| `project-agent-cancel-001` | 第一次真实模型delta后发送turn/interrupt，取得确认、取消状态和进程组清理；没有释放候选 |
+| `project-agent-guard-001` | 已打包helper守护下完成独立正常运行；与前一行一样只是合成代码目录 |
+| `project-agent-guard-002` | 新合成Git仓库运行收到不允许的出处路径，任务失败且结果未释放。原失败保留；该次未采集请求路径，不能据此声称是哪一个具体路径导致。后续明确工具的代码／文档范围、补充根内绝对路径契约及合成专用拒绝路径回执 |
+| `project-agent-guard-003` | 最终模块在新合成Git仓库、打包helper守护下通过：gpt-6.1-sol／openai、2项正常命令、3项宿主出处工具、3条候选、真实turn完成、进程及进程组已清理；没有保存或索引 |
+| `project-agent-guard-cancel-001` | 最终模块在新合成Git仓库与打包helper守护下，真实模型delta后取消通过：interrupt发送／确认、取消、进程回收和进程组消失分别成立；没有释放知识候选或出处 |
+
+前两份协议测试失败分别是macOS临时路径未规范化和Command构造问题，原日志为`project-agent-contract-tests.log`与`project-agent-contract-recheck.log`；修后原调用路径与原生默认配置分支均通过。实际运行不能靠进程exitCode替代模型终态：stdio app-server在本次任务结束后由宿主关闭进程组，因此报告exitCode=-1，同时单独保留真实turn/completed、reaped与group_gone回执。
+
+最终三条候选逐项核对：依赖规则明确区分文档约定与未验证依赖配置；函数事实保留类型检查、归一化、空字符串及静态核对边界，没有声称测试成功；适用范围与合成整理约束都有README／AGENTS精确原文。该样本质量核对通过，只覆盖TicketBox合成材料与本机当前模型，没有覆盖冲突／注入／无新增等完整矩阵。
+
+整仓测试和vet通过，最后修改后的Agent／验证命令继续用实际协议夹具、race与vet复核。测试证明错误模型、跨任务回执、伪造来源、失败终态、额外审批、真实进程清理和取消握手不会释放候选；夹具不是模型运行证据，真实运行报告另列如上。
+
+下一步接入daemon的持久任务／进程所有者、正式新增保存及raw出处关联、索引分阶段、取消与重启失效，再接右栏真实阶段舞台和历史选择。当前生产启动callback仍未接通；C07／C08／C09和123项整体Goal继续，不用本模块结果关闭完整C或最终分发。
