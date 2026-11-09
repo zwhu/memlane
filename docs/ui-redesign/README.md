@@ -4,7 +4,7 @@
 
 后续实现从 [A 已认可设计实施交接](a-setup-handoff.md) 开始。该文档写明最终范围、三步流程、全部页面/按钮/状态、配置所有权、真实适配要求、代码入口、开发顺序与 V01–V14 验收清单。再实际打开 [选定截图与证据](../images/ui-redesign/a-setup/README.md)，不能只阅读图片路径。
 
-B 首页实施从 [B 已认可设计交接](b-home-handoff.md) 与 [固定截图／动效](../images/ui-redesign/b-home/README.md) 开始。C 入口位置已确认：Agent 连接归入设置，导入主要在项目页；见 [入口调整](agent-settings-placement.md)。C 完整稿仍继续评审。
+B 首页实施从 [B 已认可设计交接](b-home-handoff.md) 与 [固定截图／动效](../images/ui-redesign/b-home/README.md) 开始。C 入口位置已确认：Agent 连接归入设置，项目页以单按钮复制分析保存指令，由用户自己的 Agent 执行；见 [入口调整](agent-settings-placement.md)。C 完整稿仍继续评审。
 
 ## 已确认范围
 
@@ -15,7 +15,7 @@ B 首页实施从 [B 已认可设计交接](b-home-handoff.md) 与 [固定截图
 | A 记忆处理与完成配置 | revision 13 已认可：Provider、已连接 pi/Codex、Magpie；三份保存、一个当前使用，保存与启用分开 | [处理契约](memory-processing-design.md) |
 | 环境与记忆处理的设置复用 | 已认可：恢复已有组件、任务和配置，不重走初始化 | [复用契约](reusable-setup.md) |
 | B 日常首页 | revision 5 已认可：①宽幅首页、累计统计、日期筛选、具体处理配置、通用标题导航去重和整理按钮动效 | [B 交接](b-home-handoff.md)、[证据](../images/ui-redesign/b-home/README.md) |
-| C Agent 日常管理与可选导入 | 入口位置已确认，完整稿待评审；设置 → Agent 连接，项目页导入，连接不以项目为前置条件 | [场景](scenarios.md)、[电脑级规则](agent-connection-contract.md) |
+| C Agent 设置与项目知识任务 | 入口位置已确认，完整稿待评审；设置 → Agent 连接，项目页单按钮提供 Agent 指令，连接不以项目为前置条件 | [场景](scenarios.md)、[电脑级规则](agent-connection-contract.md) |
 | D–O | 仅场景枚举及各自已有规则 | [全部场景](scenarios.md) |
 
 初始化只有「准备环境 → 连接 Agent → 配置记忆处理」，之后完成配置进入首页。项目、第一项任务和记忆结果不再属于初始化；可选项目知识导入继续独立。批量连接不等于多个处理执行者。三个方式页签只显示单行名称；「设为当前使用」位于方式状态栏右侧。
