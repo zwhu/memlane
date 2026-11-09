@@ -32,18 +32,22 @@ func (a *App) ensureProjectOverview(id string) {
 		return
 	}
 	s.Loading = true
+	ownerContext, library, client := a.libraryContext, a.library, a.projectOrganizer.Client
 	go func() {
-		ctx, cancel := context.WithTimeout(a.libraryContext, 5*time.Second)
+		ctx, cancel := context.WithTimeout(ownerContext, 5*time.Second)
 		defer cancel()
-		page, err := a.library.List(ctx, records.ListQuery{Datasets: []string{id}, Kind: "knowledge", Limit: 1})
+		page, err := library.List(ctx, records.ListQuery{Datasets: []string{id}, Kind: "knowledge", Limit: 1})
 		var tasks records.ProjectTaskPage
 		if err == nil {
-			tasks, err = a.projectOrganizer.Client.List(ctx, records.MergeListQuery{Project: id, ActiveOnly: true, Limit: 1})
+			tasks, err = client.List(ctx, records.MergeListQuery{Project: id, ActiveOnly: true, Limit: 1})
 		}
-		if a.libraryContext.Err() != nil {
+		if ownerContext.Err() != nil {
 			return
 		}
 		a.dispatch(func() {
+			if a.projectOverviews[id] != s {
+				return
+			}
 			s.Loading = false
 			s.CheckedAt = time.Now()
 			if err != nil || page.KnowledgeTotal == nil || page.RawTotal == nil {

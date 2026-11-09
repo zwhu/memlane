@@ -21,6 +21,8 @@ type App struct {
 	knowledgeHistory                                                 KnowledgeHistoryUI
 	projectSettings                                                  ProjectSettingsUI
 	projectOrganizer                                                 ProjectOrganizerUI
+	projectPreview                                                   projectStageMotion
+	projectPreviewInviting                                           bool
 	startProjectTask                                                 func(records.ProjectTaskStart)
 	projectOverviews                                                 map[string]*ProjectOverview
 	readingUsageOpen, readingMetadataOpen                            bool
@@ -713,11 +715,15 @@ func (a *App) details(c *ui.Context) {
 				}
 				if a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
 					label = "项目知识整理"
+				} else if a.projectKnowledgeEmpty() {
+					label = "项目知识"
 				}
 				ui.Text(c, label)
 				ui.Spacer(c)
 				if a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
-					quietButton(c, "查看知识").Key("project-organizer-close").OnClick(a.returnFromProjectOrganizer)
+					if a.projectOrganizer.Task == nil || a.projectOrganizer.Task.State != "completed" {
+						quietButton(c, "查看知识").Key("project-organizer-close").OnClick(a.returnFromProjectOrganizer)
+					}
 				} else if a.reader.Open {
 					quietButton(c, a.sourceReaderReturnLabel()).Key("source-reader-close").OnClick(a.returnFromSourceReader)
 				} else if a.projectSettings.Open && a.page == "项目" {
@@ -729,6 +735,8 @@ func (a *App) details(c *ui.Context) {
 			})
 			if a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
 				a.projectOrganizerContent(c)
+			} else if a.projectKnowledgeEmpty() {
+				a.projectKnowledgePreview(c)
 			} else if a.reader.Open {
 				a.sourceReader(c)
 			} else if a.projectSettings.Open && a.page == "项目" && a.scope == a.projectSettings.Owner.ID {
