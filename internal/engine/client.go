@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -36,21 +38,24 @@ type RemoteError struct {
 func (e *RemoteError) Error() string { return e.Code + ": " + e.Message }
 
 type response struct {
-	Protocol   int             `json:"protocol"`
-	ID         string          `json:"id"`
-	Event      string          `json:"event"`
-	OK         bool            `json:"ok"`
-	Ready      bool            `json:"ready"`
-	Version    string          `json:"worker_version"`
-	Generation string          `json:"generation"`
-	Result     json.RawMessage `json:"result"`
-	Error      *RemoteError    `json:"error"`
+	Protocol        int             `json:"protocol"`
+	ID              string          `json:"id"`
+	Event           string          `json:"event"`
+	OK              bool            `json:"ok"`
+	Ready           bool            `json:"ready"`
+	Version         string          `json:"worker_version"`
+	Generation      string          `json:"generation"`
+	RequestIDScheme string          `json:"request_id_scheme"`
+	Result          json.RawMessage `json:"result"`
+	Error           *RemoteError    `json:"error"`
 }
 
 type Client struct {
 	cmd             *exec.Cmd
 	stdin           io.WriteCloser
 	writeMu         sync.Mutex
+	requestSequence uint64 // protected by writeMu; allocated in actual wire order
+	requestIDScheme string // negotiated before ready, immutable afterwards
 	mu              sync.Mutex
 	pending         map[string]chan response
 	ready           chan error
@@ -176,6 +181,9 @@ func (c *Client) read(stdout io.Reader) {
 				break
 			}
 			c.Generation = r.Generation
+			c.writeMu.Lock()
+			c.requestIDScheme = r.RequestIDScheme
+			c.writeMu.Unlock()
 			c.ready <- nil
 			continue
 		}
@@ -184,6 +192,12 @@ func (c *Client) read(stdout io.Reader) {
 			readySignalled = true
 		}
 		if r.ID != "" {
+			if c.requestIDScheme == "sequence-uuid-v1" {
+				parts := strings.Split(r.ID, ":")
+				if len(parts) == 3 && parts[0] == "seq" {
+					r.ID = parts[2]
+				}
+			}
 			c.mu.Lock()
 			ch := c.pending[r.ID]
 			c.mu.Unlock()
@@ -215,6 +229,19 @@ func (c *Client) read(stdout io.Reader) {
 }
 
 func (c *Client) write(input map[string]any) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.requestIDScheme == "sequence-uuid-v1" {
+		id, ok := input["id"].(string)
+		if !ok || c.requestSequence == ^uint64(0) {
+			return errors.New("invalid or exhausted worker request sequence")
+		}
+		c.requestSequence++
+		// UUID is the local correlation key; the full wire ID is unique for
+		// this worker stream by its strictly increasing sequence. Cancel uses
+		// the unchanged UUID, including when the original write is delayed.
+		input["id"] = "seq:" + strconv.FormatUint(c.requestSequence, 10) + ":" + id
+	}
 	data, err := json.Marshal(input)
 	if err != nil {
 		return err
@@ -222,8 +249,6 @@ func (c *Client) write(input map[string]any) error {
 	if len(data) > 1024*1024-1 {
 		return errors.New("worker request exceeds 1 MiB")
 	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
 	_, err = c.stdin.Write(append(data, '\n'))
 	return err
 }

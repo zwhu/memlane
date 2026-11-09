@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the 0.0.3 raw/code Cognee worker component; excludes models and extractor."""
+"""Build the 0.0.4 raw/code worker with sequenced requests; excludes models and extractor."""
 import argparse
 import gzip
 import hashlib
@@ -33,7 +33,7 @@ def main():
         "LICENSE.onnxruntime": RUNTIME / "LICENSE",
         "ThirdPartyNotices.onnxruntime.txt": RUNTIME / "ThirdPartyNotices.txt",
     }
-    manifest = {"id": "cognee-rust", "version": "0.0.3", "platform": "darwin-arm64",
+    manifest = {"id": "cognee-rust", "version": "0.0.4", "platform": "darwin-arm64",
                 "protocol_min": 1, "protocol_max": 1, "executable": "memlane-cognee-worker",
                 "library": "libonnxruntime.1.28.0.dylib", "model": "multilingual-e5-base-int8",
                 "engine_commit": "151905c302fc9b5b9aad88d6b13931c09f0eac30",
@@ -41,11 +41,12 @@ def main():
                 "capabilities": ["raw_index", "raw_search", "remove", "cancel", "timeout", "code_build", "code_query"],
                 "code_recipe": "enola-0.4.30-v351",
                 "code_root_modules": True,
+                "request_id_scheme": "sequence-uuid-v1",
                 "files": [{"path": name, "bytes": path.stat().st_size, "sha256": digest(path)} for name, path in files.items()]}
     data = (json.dumps(manifest, indent=2)+"\n").encode()
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
-    archive = out / "memlane-cognee-rust-0.0.3-darwin-arm64.tar.gz"
+    archive = out / "memlane-cognee-rust-0.0.4-darwin-arm64.tar.gz"
     with archive.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, filename="", compresslevel=9) as compressed:
         with tarfile.open(fileobj=compressed, mode="w") as tar:
             for name, path in files.items():

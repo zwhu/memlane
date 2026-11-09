@@ -231,6 +231,7 @@ async def serve(backend):
     active = None
     active_id = None
     used = set()
+    sequence = 0
     while True:
         waiting = [incoming]+([active] if active else [])
         completed, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
@@ -259,9 +260,22 @@ async def serve(backend):
             emit(failure("", "bad_request", "invalid JSON or request fields"));continue
         if request.get("protocol") != PROTOCOL:
             emit(failure(request_id, "protocol_mismatch", "requires protocol 1"));continue
-        if request_id in used or len(used) >= 10000:
-            emit(failure(request_id, "duplicate_id", "unique IDs required; reconnect after 10000 requests"));continue
-        used.add(request_id)
+        if request_id.startswith("seq:"):
+            parts = request_id.split(":")
+            try:
+                next_sequence = int(parts[1])
+                valid = (len(parts) == 3 and str(next_sequence) == parts[1]
+                         and sequence < next_sequence <= 2**64-1
+                         and str(uuid.UUID(parts[2])) == parts[2] and not used)
+            except (ValueError, IndexError):
+                valid = False
+            if not valid:
+                emit(failure(request_id, "duplicate_id", "invalid, mixed or replayed sequenced request ID"));continue
+            sequence = next_sequence
+        else:
+            if sequence or request_id in used or len(used) >= 10000:
+                emit(failure(request_id, "duplicate_id", "legacy IDs require a fresh stream after 10000 requests; managed streams use sequence-uuid-v1"));continue
+            used.add(request_id)
         op = request.get("op")
         if op in ("health", "handshake"):
             emit(success(request_id, {"worker_version": "0.0.1", "ready": True,
@@ -271,7 +285,8 @@ async def serve(backend):
                 active.cancel()
             emit(success(request_id, {"stopping": True}));break
         elif op == "cancel":
-            matched = active is not None and active_id == request.get("target")
+            matched = active is not None and (active_id == request.get("target") or
+                (active_id.startswith("seq:") and active_id.split(":")[-1] == request.get("target")))
             if matched:
                 active.cancel()
             emit(success(request_id, {"cancel_requested": matched}))
@@ -343,7 +358,8 @@ def main():
         emit({"event": "ready", "worker_version": "0.0.1", "ready": True,
               "generation": backend.generation, "model": backend.recipe["id"],
               "model_revision": backend.recipe["revision"], "model_load_ms": (time.monotonic()-started)*1000,
-              "capabilities": ["raw_index", "raw_search", "remove", "cancel", "timeout"], "graph_ready": False})
+              "capabilities": ["raw_index", "raw_search", "remove", "cancel", "timeout"], "graph_ready": False,
+              "request_id_scheme": "sequence-uuid-v1"})
         asyncio.run(serve(backend))
 
 

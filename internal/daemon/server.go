@@ -613,22 +613,33 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 	case "health":
 		pid := 0
 		busy := false
+		workerFailure := ""
 		if worker != nil {
 			pid = worker.PID()
 			var health struct {
-				Busy bool `json:"busy"`
+				Busy  bool `json:"busy"`
+				Ready bool `json:"ready"`
 			}
 			check, stop := context.WithTimeout(operation, time.Second)
-			if worker.Call(check, "health", nil, &health) == nil {
+			if err := worker.Call(check, "health", nil, &health); err != nil {
+				workerFailure = err.Error()
+				status = "unavailable"
+			} else if !health.Ready {
+				workerFailure = "worker did not confirm readiness"
+				status = "unavailable"
+			} else {
 				busy = health.Busy
 			}
 			stop()
+		} else if status == "ready" {
+			status = "unavailable"
+			workerFailure = "worker is absent"
 		}
 		s.mu.Lock()
 		scheduleFailure := s.scheduleFailure
 		codeCleanupError := s.codeCleanupError
 		s.mu.Unlock()
-		return map[string]any{"service_version": ServiceVersion, "state": status, "worker_pid": pid, "worker_busy": busy, "schedule_error": scheduleFailure, "code_cleanup_error": codeCleanupError}, nil
+		return map[string]any{"service_version": ServiceVersion, "state": status, "worker_pid": pid, "worker_busy": busy, "worker_error": workerFailure, "schedule_error": scheduleFailure, "code_cleanup_error": codeCleanupError}, nil
 	case "apply":
 		if r.Mutation.Kind != "save" && !r.UserConfirmed {
 			return nil, errors.New("knowledge changes require an explicit user confirmation")

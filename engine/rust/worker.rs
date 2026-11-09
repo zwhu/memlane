@@ -9,7 +9,7 @@ use tokio::{io::{AsyncBufReadExt, AsyncReadExt, BufReader}, sync::{mpsc, oneshot
 use uuid::Uuid;
 
 const PROTOCOL: u32 = 1;
-const WORKER_VERSION: &str = "0.0.3";
+const WORKER_VERSION: &str = "0.0.4";
 const MAX_LINE: usize = 1024*1024;
 
 #[derive(Deserialize)]
@@ -43,6 +43,19 @@ fn success(id: &str, result: Value) -> Value {
     json!({"protocol":PROTOCOL,"id":id,"ok":true,"result":result})
 }
 
+// Managed streams negotiate this mode in ready. A high-water mark rejects
+// every replay without retaining one UUID for each request in process life.
+fn sequence_id(id: &str) -> Option<(u64, &str)> {
+    let mut parts = id.split(':');
+    if parts.next()? != "seq" { return None; }
+    let number = parts.next()?;
+    let correlation = parts.next()?;
+    if parts.next().is_some() { return None; }
+    let sequence = number.parse::<u64>().ok()?;
+    if sequence == 0 || sequence.to_string() != number || Uuid::parse_str(correlation).ok()?.to_string() != correlation { return None; }
+    Some((sequence, correlation))
+}
+
 async fn perform(engine: &Arc<Backend>, input: Request) -> backend::Result<Value> {
     match input.op.as_str() {
         "index" => engine.index(&input.record.ok_or("record required")?).await,
@@ -73,11 +86,13 @@ async fn main() -> backend::Result<()> {
     emit(json!({"protocol":PROTOCOL,"event":"ready","worker_version":WORKER_VERSION,"ready":true,
         "generation":engine.generation(),"model":engine.recipe.id,"model_revision":engine.recipe.revision,
         "model_load_ms":engine.load_ms,"capabilities":["raw_index","raw_search","remove","cancel","timeout","code_build","code_query"],
-        "graph_ready":true,"code_recipe":"enola-0.4.30-v351","code_root_modules":true}))?;
+        "graph_ready":true,"code_recipe":"enola-0.4.30-v351","code_root_modules":true,
+        "request_id_scheme":"sequence-uuid-v1"}))?;
     let mut stdin=BufReader::new(tokio::io::stdin());
     let (completed_tx,mut completed_rx)=mpsc::channel::<(String,Value)>(1);
     let mut active: Option<(String,Option<oneshot::Sender<()>>)>=None;
     let mut used_ids=HashSet::<String>::new();
+    let mut sequence=0_u64;
     let mut buffer=Vec::new();
     loop {
         let mut limited=(&mut stdin).take((MAX_LINE+1-buffer.len()) as u64);
@@ -96,12 +111,19 @@ async fn main() -> backend::Result<()> {
                 buffer.clear();
                 if input.protocol!=PROTOCOL {emit(error(&input.id,"protocol_mismatch","requires protocol 1"))?;continue;}
                 if input.id.is_empty() || input.id.len()>128 {emit(error(&input.id,"bad_request","invalid request id"))?;continue;}
-                if used_ids.len()>=10000 || !used_ids.insert(input.id.clone()) {emit(error(&input.id,"duplicate_id","request IDs must be unique; reconnect after 10000 requests"))?;continue;}
+                if input.id.starts_with("seq:") {
+                    match sequence_id(&input.id) {
+                        Some((next,_)) if used_ids.is_empty() && next > sequence => sequence=next,
+                        _ => {emit(error(&input.id,"duplicate_id","invalid, mixed or replayed sequenced request ID"))?;continue;},
+                    }
+                } else if sequence > 0 || used_ids.len()>=10000 || !used_ids.insert(input.id.clone()) {
+                    emit(error(&input.id,"duplicate_id","legacy IDs require a fresh stream after 10000 requests; managed streams use sequence-uuid-v1"))?;continue;
+                }
                 match input.op.as_str() {
                     "handshake" | "health" => emit(success(&input.id,json!({"worker_version":WORKER_VERSION,"ready":true,"busy":active.is_some(),"generation":engine.generation(),"code_recipe":"enola-0.4.30-v351","code_root_modules":true})))?,
                     "cancel" => {
                         let mut matched=false;
-                        if active.as_ref().is_some_and(|(id,_)|*id==input.target) {
+                        if active.as_ref().is_some_and(|(id,_)|*id==input.target || sequence_id(id).is_some_and(|(_,correlation)|correlation==input.target)) {
                             if let Some((_,sender))=active.as_mut(){if let Some(sender)=sender.take(){let _=sender.send(());matched=true;}}
                         }
                         emit(success(&input.id,json!({"cancel_requested":matched})))?;

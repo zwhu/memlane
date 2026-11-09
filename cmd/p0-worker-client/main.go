@@ -31,6 +31,9 @@ func main() {
 	library := flag.String("library", "", "dynamic library")
 	model := flag.String("model", "", "model directory")
 	data := flag.String("data", "", "synthetic data directory")
+	version := flag.String("worker-version", "0.0.1", "expected packaged worker version")
+	healthRequests := flag.Int("health-requests", 0, "real requests before functional checks, including crossing the old lifetime limit")
+	denyNetwork := flag.Bool("deny-network", false, "deny network access to the actual worker")
 	flag.Parse()
 	report := map[string]any{"status": "failed"}
 	defer func() {
@@ -44,10 +47,19 @@ func main() {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cfg := engine.Config{Executable: *worker, DataDir: filepath.Join(*data, "index"), ModelDir: *model, Library: *library}
+	cfg := engine.Config{Executable: *worker, DataDir: filepath.Join(*data, "index"), ModelDir: *model, Library: *library, ExpectedVersion: *version, DenyNetwork: *denyNetwork}
 	client, err := engine.Start(ctx, cfg)
 	require(err == nil, fmt.Sprint(err))
 	defer client.Close()
+	for number := 0; number < *healthRequests; number++ {
+		var health struct {
+			Ready      bool   `json:"ready"`
+			Generation string `json:"generation"`
+		}
+		err = client.Call(ctx, "health", nil, &health)
+		require(err == nil && health.Ready && health.Generation == client.Generation, fmt.Sprint(number, health, err))
+	}
+	report["health_requests_before_functional_checks"] = *healthRequests
 	db, err := store.Open(filepath.Join(*data, "business.sqlite"))
 	require(err == nil, fmt.Sprint(err))
 	defer db.Close()
