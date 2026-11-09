@@ -2,7 +2,7 @@
 
 2026-11-09。本轮逐组设计并由用户逐项确认。实现前先看本页、对应设计契约及实际截图，不能将历史探索稿或待讨论稿作为已选定设计。
 
-最新 revision 12：初始化仅准备环境、连接 Agent、配置记忆处理三步，删除第一项任务与记忆结果；「设为当前使用」位于方式状态栏右侧；三个方式页签保持单行，移除状态小字。最新环境导航使用原型 `a-environment-flow.html`，已认可的安装正文冻结稿保留。具体边界见 [复用与初始配置契约](reusable-setup.md)。
+最新 revision 13：连接 Agent 使用多选卡片批量接入，同页逐项显示结果，已连接项保留，失败项单独重试；处理页删除登录/模型与提炼会话说明，仅留账号额度一句话。初始化仍只有环境、连接 Agent、记忆处理三步，状态栏启用按钮与单行页签保留。最新环境导航使用原型 `a-environment-flow.html`，已认可安装正文冻结稿保留。见 [批量连接契约](agent-connection-contract.md)、[复用契约](reusable-setup.md)。
 
 用户最新纠正的 [Agent 电脑级连接规则](agent-connection-contract.md) 已确认：连接先配置当前电脑的编码 Agent，不要求关联项目。新版 A 后半段画面据此修正，仍待视觉评审；上一版将项目/模型准备放在连接页的取舍已作废。
 
@@ -11,7 +11,7 @@
 | 分组 | 状态 | 依据 |
 | --- | --- | --- |
 | A01–A04 本机环境检测与安装 | 用户已认可，待按此稿实现并做真实窗口验收 | [A 开发契约](a-environment.md) |
-| A 后半段：Agent 连接、记忆处理与完成配置 | 已补 revision 12 讨论稿，待用户视觉评审；项目、第一项任务及结果移出初始化 | 原型分支 `a-agent.html`、`MEMORY-PROCESSING.md`；[处理设计契约](memory-processing-design.md)、[页面复用](reusable-setup.md) |
+| A 后半段：Agent 连接、记忆处理与完成配置 | 已补 revision 13 讨论稿，待用户视觉评审；连接为多选批量，项目、第一项任务及结果移出初始化 | 原型分支 `a-agent.html`、`MEMORY-PROCESSING.md`；[批量连接](agent-connection-contract.md)、[处理设计](memory-processing-design.md) |
 | B01–B08 日常首页 | 按用户最新要求暂缓，先补 A | 待恢复设计，不是最终开发要求 |
 | C–O | 仅完成场景枚举 | [全部场景](scenarios.md) |
 

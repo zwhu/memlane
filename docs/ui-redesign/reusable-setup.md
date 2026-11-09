@@ -1,6 +1,8 @@
 # 环境与组件、记忆处理：初始化与设置复用契约
 
-2026-11-09，revision 12。用户确认：三种记忆处理方式可同时配置保留，仅选择其中一种使用；记忆处理配置页与前面的环境准备页，后续都应复用。最新纠正：第一项任务和记忆结果不进入初始配置；删除方式页签下的状态小字，页签保持单行。当前完成浏览器设计预览，正式 App 尚未按本稿改造。
+2026-11-09，revision 13。用户确认：三种记忆处理方式可同时配置保留，仅选择其中一种使用；记忆处理配置页与前面的环境准备页，后续都应复用。最新纠正：第一项任务和记忆结果不进入初始配置；删除方式页签下的状态小字，页签保持单行。当前完成浏览器设计预览，正式 App 尚未按本稿改造。
+
+连接页最新规则：多选批量接入，同页逐项反馈，见 [批量连接契约](agent-connection-contract.md)。处理 Agent 仍只选一个，运行说明精简为当前模型与账号额度一句话，隔离要求留在开发文档。
 
 ## 初始配置边界
 
@@ -48,12 +50,12 @@
 
 原型归档于 `prototype/selected-ui` 的 `prototypes/ui-redesign-20261109/`。
 
-- `a-agent.html?screen=organize&state=configure&revision=12`：初始化配置与提示。
-- `a-agent.html?screen=organize&state=all-configured&view=magpie&context=settings&revision=12`：三种配置同时保留，直接显示可启用的 Magpie 与按钮。
-- `a-agent.html?screen=organize&state=saved&context=settings&revision=12`：已保存配置的设置入口。
-- `a-agent.html?screen=organize&state=magpie-loading&revision=12`：本机 Magpie 自动检测。
-- `a-environment-flow.html?screen=prepare&state=missing&revision=12`：最新三步初始配置的环境入口。
-- `a-environment-settings.html?screen=prepare&state=ready&context=settings&revision=12`：环境管理就绪示例。
-- `a-environment-settings.html?screen=prepare&state=missing&context=settings&revision=12`：从设置准备缺失组件。
+- `a-agent.html?screen=organize&state=configure&revision=13`：初始化配置与提示。
+- `a-agent.html?screen=organize&state=all-configured&view=magpie&context=settings&revision=13`：三种配置同时保留，直接显示可启用的 Magpie 与按钮。
+- `a-agent.html?screen=organize&state=saved&context=settings&revision=13`：已保存配置的设置入口。
+- `a-agent.html?screen=organize&state=magpie-loading&revision=13`：本机 Magpie 自动检测。
+- `a-environment-flow.html?screen=prepare&state=missing&revision=13`：最新三步初始配置的环境入口。
+- `a-environment-settings.html?screen=prepare&state=ready&context=settings&revision=13`：环境管理就绪示例。
+- `a-environment-settings.html?screen=prepare&state=missing&context=settings&revision=13`：从设置准备缺失组件。
 
-原型设置配置、保存与取消仅在当前页面内存中演示；重新加载示例 URL 会重置，不能将浏览器演示宣称为真实持久化。`setup-context.js` 切换承载，环境设置预览读取冻结环境稿，正文与状态复用；生产 MyGo 使用正式共享页面与配置/任务所有者，不移植 HTML 加载方式。当前截图与核验位于 `artifacts/setup-final/`，命令为 `node verify-setup-final.cjs`；`artifacts/processing-modes/` 和 `artifacts/setup-reuse/` 分别为 revision 9、revision 8 历史证据。
+原型设置配置、保存与取消仅在当前页面内存中演示；重新加载示例 URL 会重置，不能将浏览器演示宣称为真实持久化。`setup-context.js` 切换承载，环境设置预览读取冻结环境稿，正文与状态复用；生产 MyGo 使用正式共享页面与配置/任务所有者，不移植 HTML 加载方式。当前截图与核验位于 `artifacts/batch-connection/`，命令为 `node verify-batch-connection.cjs`；`artifacts/setup-final/` 为 revision 12 历史证据，`artifacts/processing-modes/` 和 `artifacts/setup-reuse/` 分别为 revision 9、revision 8 历史证据。
