@@ -474,6 +474,21 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 			}
 		}
 		return receipt, err
+	case "project_binding":
+		return s.store.ProjectBinding(operation, r.Scope)
+	case "project_task":
+		return s.store.ProjectTask(operation, r.ProjectTaskID)
+	case "project_task_list":
+		q := records.MergeListQuery{}
+		if r.ProjectTaskList != nil {
+			q = *r.ProjectTaskList
+		}
+		return s.store.ListProjectTasks(operation, q)
+	case "project_binding_change":
+		if !r.UserConfirmed || r.ProjectBindingChange == nil {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "explicit project organizer choice required"}
+		}
+		return s.store.ChangeProjectBinding(operation, *r.ProjectBindingChange)
 	case "organization_start", "organization_cancel", "organization_resume":
 		if !r.UserConfirmed {
 			return nil, records.MergeError("confirmation_required")

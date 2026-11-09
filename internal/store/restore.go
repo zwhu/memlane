@@ -105,6 +105,7 @@ func PrepareRestoredSnapshot(ctx context.Context, data []byte, operation string)
 		{`INSERT INTO connection_retirements(connection,restore) SELECT id,? FROM connections WHERE true ON CONFLICT(connection) DO NOTHING`, []any{operation}},
 		{`UPDATE connections SET enabled=0,generation=generation+1,last_seen=''`, nil},
 		{`UPDATE organization_plans SET enabled=0,generation=generation+1,next_run_ms=0`, nil},
+		{`UPDATE project_tasks SET state='interrupted',cancel_requested=1,error_code='backup_restored' WHERE state IN ('queued','starting','organizing','saving','indexing','cancelling')`, nil},
 		// A restored model choice is historical intent, not permission to
 		// resume an old paid executor. Preserve the revision and saved modes.
 		{`UPDATE processing_current SET active=0,generation=generation+1`, nil},

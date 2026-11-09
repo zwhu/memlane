@@ -20,6 +20,8 @@ type App struct {
 	reader                                                           SourceReaderUI
 	knowledgeHistory                                                 KnowledgeHistoryUI
 	projectSettings                                                  ProjectSettingsUI
+	projectOrganizer                                                 ProjectOrganizerUI
+	startProjectTask                                                 func(records.ProjectTaskStart)
 	projectOverviews                                                 map[string]*ProjectOverview
 	readingUsageOpen, readingMetadataOpen                            bool
 	readingActionsOpen                                               bool
@@ -643,6 +645,8 @@ func (a *App) details(c *ui.Context) {
 								a.empty(c, "正在读取内容", "")
 							} else if a.libraryError != "" {
 								a.empty(c, "读取未完成", "重试后继续查看当前范围。")
+							} else if a.projectKnowledgeEmpty() {
+								a.projectEmptyKnowledge(c)
 							} else if a.readingFilter != "" {
 								a.empty(c, "没有匹配的内容", "清除筛选可查看这个范围的全部内容。")
 							} else {
@@ -707,9 +711,14 @@ func (a *App) details(c *ui.Context) {
 				if a.reader.Open {
 					label = "原始出处"
 				}
+				if a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
+					label = "项目知识整理"
+				}
 				ui.Text(c, label)
 				ui.Spacer(c)
-				if a.reader.Open {
+				if a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
+					quietButton(c, "查看知识").Key("project-organizer-close").OnClick(a.returnFromProjectOrganizer)
+				} else if a.reader.Open {
 					quietButton(c, a.sourceReaderReturnLabel()).Key("source-reader-close").OnClick(a.returnFromSourceReader)
 				} else if a.projectSettings.Open && a.page == "项目" {
 					quietButton(c, "返回知识").Key("project-settings-close").OnClick(a.closeProjectSettings)
@@ -718,7 +727,9 @@ func (a *App) details(c *ui.Context) {
 					quietButton(c, "历史").Key("knowledge-history-open").Disabled(raw).OnClick(a.openKnowledgeHistory)
 				}
 			})
-			if a.reader.Open {
+			if a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
+				a.projectOrganizerContent(c)
+			} else if a.reader.Open {
 				a.sourceReader(c)
 			} else if a.projectSettings.Open && a.page == "项目" && a.scope == a.projectSettings.Owner.ID {
 				a.projectSettingsContent(c)
@@ -796,6 +807,7 @@ func (a *App) memoryRow(c *ui.Context, item MemoryItem, inList bool) {
 		b.Background(design.Surface)
 	}
 	b.OnClick(func() {
+		a.closeProjectOrganizer()
 		a.rememberDraft()
 		a.selectedID = item.ID
 		a.message = ""

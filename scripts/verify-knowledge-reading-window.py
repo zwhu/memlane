@@ -21,7 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--components', type=Path, required=True)
-    parser.add_argument('--scenario', choices=('reading', 'project-settings'), default='reading')
+    parser.add_argument('--scenario', choices=('reading', 'project-settings', 'project-binding'), default='reading')
     args = parser.parse_args()
     out, previous = args.out.resolve(), args.components.resolve()
     out.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -37,6 +37,7 @@ def main():
                   actual_packaged_daemon=True, user_data_copied=False, agent_configs_copied=False,
                   initial_configuration_fixture=True, model_inference_verified=False,
                   native_generated_knowledge_lineage_verified=False, screenshots=[], cleanup_errors=[])
+    report['verifier_source_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     ui = None
     signed = b''
     requests = []
@@ -57,7 +58,7 @@ def main():
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
-    app_name = 'MemlaneProjects' if args.scenario == 'project-settings' else 'MemlaneReading'
+    app_name = {'project-settings': 'MemlaneProjects', 'project-binding': 'MemlaneProjectBinding'}.get(args.scenario, 'MemlaneReading')
     report['scenario'] = args.scenario
     app = out / ('app/darwin-arm64/' + app_name + '.app')
     runtime = out / 'runtime-config.json'
@@ -129,6 +130,10 @@ k=Ed25519PrivateKey.generate();print(json.dumps({'signature':base64.b64encode(k.
         driver.wait(lambda: '服务运行中' in ui.labels(), timeout=90)
         if args.scenario == 'project-settings':
             from verify_project_settings_scenario import verify
+            verify(ui, call, report, capture, resize, out, ipc, driver)
+        elif args.scenario == 'project-binding':
+            report['scenario_source_sha256'] = hashlib.sha256((ROOT/'scripts/verify_project_binding_scenario.py').read_bytes()).hexdigest()
+            from verify_project_binding_scenario import verify
             verify(ui, call, report, capture, resize, out, ipc, driver)
         else:
             repo = out/'synthetic-repository'

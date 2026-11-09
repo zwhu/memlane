@@ -31,6 +31,7 @@ type ProjectSettingsUI struct {
 }
 
 func (a *App) openProjectSettings(id string) {
+	a.closeProjectOrganizer()
 	var owner records.Scope
 	for _, p := range a.projects {
 		if p.ID == id {

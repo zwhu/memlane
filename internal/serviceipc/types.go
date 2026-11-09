@@ -23,6 +23,9 @@ type Config struct {
 }
 
 type Request struct {
+	ProjectBindingChange   *records.ProjectBindingChange        `json:"project_binding_change,omitempty"`
+	ProjectTaskID          string                               `json:"project_task,omitempty"`
+	ProjectTaskList        *records.MergeListQuery              `json:"project_task_list,omitempty"`
 	ConnectionScopeChange  *records.ConnectionScopeChange       `json:"connection_scope_change,omitempty"`
 	CogneeAuthorization    *records.CogneeAuthorization         `json:"cognee_authorization,omitempty"`
 	CogneeSync             *records.CogneeSync                  `json:"cognee_sync,omitempty"`

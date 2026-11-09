@@ -67,6 +67,8 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 	a.listSort = "最近更新"
 	a.schedules = ScheduleUI{Client: serviceipc.ScheduleClient{Root: root}, Destinations: map[string]bool{}}
 	a.organization = OrganizationUI{Client: serviceipc.OrganizationClient{Root: root}, Chosen: map[string]MemoryItem{}, Results: map[string]MemoryItem{}, Kind: "knowledge"}
+	a.projectOrganizer = ProjectOrganizerUI{Client: serviceipc.ProjectTaskClient{Root: root}, Sequence: a.projectOrganizer.Sequence + 1}
+	a.projectOverviews = nil
 	a.merges = MergeUI{Client: serviceipc.MergeClient{Root: root}, Chosen: map[string]records.MergeTarget{}, Reviews: map[string]records.MergeReview{}}
 	a.processing.ensure()
 	a.libraryContext = ctx
@@ -150,6 +152,9 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 					}
 					if a.reader.Open {
 						a.refreshSourceReader()
+					}
+					if a.projectOrganizer.Open {
+						a.refreshProjectOrganizer()
 					}
 					if a.page == "设置" {
 						a.refreshIndexRebuild()

@@ -132,6 +132,7 @@ func (a *App) refreshBrowsing() {
 	}()
 }
 func (a *App) browseView(view string) {
+	a.closeProjectOrganizer()
 	a.browsing.View = view
 	a.browsing.Relation = ""
 	a.closeSourceReader()
@@ -140,6 +141,7 @@ func (a *App) browseView(view string) {
 }
 func (a *App) browseEntity(id string) { a.browsing.Entity = id; a.browseView("entities") }
 func (a *App) browseMemory(id string) {
+	a.closeProjectOrganizer()
 	a.rememberDraft()
 	a.selectedID = id
 	a.selectedItem = nil

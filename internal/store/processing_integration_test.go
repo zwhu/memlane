@@ -147,7 +147,7 @@ func TestProcessingSchema16WALMigrationPreservesEveryOldTableAndStopIntent(t *te
 	mustMerge(t, err)
 	// Deliberately remove only the unpopulated v17 ledger additions. This
 	// reconstructs the actual schema16, instead of relabeling a newer schema.
-	_, err = s.DB.Exec(`DROP TABLE processing_operations; DROP TABLE processing_validations; DROP TABLE processing_saved; DROP TABLE processing_current; DROP TABLE processing_revisions; PRAGMA user_version=16; PRAGMA wal_autocheckpoint=0`)
+	_, err = s.DB.Exec(`DROP TABLE project_tasks; DROP TABLE project_bindings; DROP TABLE processing_operations; DROP TABLE processing_validations; DROP TABLE processing_saved; DROP TABLE processing_current; DROP TABLE processing_revisions; PRAGMA user_version=16; PRAGMA wal_autocheckpoint=0`)
 	mustMerge(t, err)
 	s.Schema = 16
 	before := restoreTables(t, s.DB)
@@ -168,7 +168,7 @@ func TestProcessingSchema16WALMigrationPreservesEveryOldTableAndStopIntent(t *te
 	mustMerge(t, reader.Close())
 	backups, err := filepath.Glob(filepath.Join(filepath.Dir(path), "backups/schema-v16-*.sqlite"))
 	mustMerge(t, err)
-	if current.Schema != 17 || len(backups) != 1 {
+	if current.Schema != SchemaVersion || len(backups) != 1 {
 		t.Fatal("schema16 WAL consistency backup missing", backups)
 	}
 	backup, err := sql.Open("sqlite", backups[0])

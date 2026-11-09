@@ -1,0 +1,33 @@
+package serviceipc
+
+import (
+	"context"
+
+	"github.com/zwhu/memlane/internal/records"
+)
+
+type ProjectTaskClient struct{ Root string }
+
+func (c ProjectTaskClient) Get(ctx context.Context, id string) (records.ProjectTask, error) {
+	var out records.ProjectTask
+	err := Call(ctx, c.Root, Request{Op: "project_task", ProjectTaskID: id}, &out)
+	return out, err
+}
+
+func (c ProjectTaskClient) List(ctx context.Context, q records.MergeListQuery) (records.ProjectTaskPage, error) {
+	var out records.ProjectTaskPage
+	err := Call(ctx, c.Root, Request{Op: "project_task_list", ProjectTaskList: &q}, &out)
+	return out, err
+}
+
+func (c ProjectTaskClient) Binding(ctx context.Context, project string) (records.ProjectBinding, error) {
+	var out records.ProjectBinding
+	err := Call(ctx, c.Root, Request{Op: "project_binding", Scope: project}, &out)
+	return out, err
+}
+
+func (c ProjectTaskClient) Bind(ctx context.Context, change records.ProjectBindingChange) (records.ProjectBinding, error) {
+	var out records.ProjectBinding
+	err := Call(ctx, c.Root, Request{Op: "project_binding_change", UserConfirmed: true, ProjectBindingChange: &change}, &out)
+	return out, err
+}

@@ -36,9 +36,9 @@ func (a *App) ensureProjectOverview(id string) {
 		ctx, cancel := context.WithTimeout(a.libraryContext, 5*time.Second)
 		defer cancel()
 		page, err := a.library.List(ctx, records.ListQuery{Datasets: []string{id}, Kind: "knowledge", Limit: 1})
-		var tasks records.OrganizationPage
+		var tasks records.ProjectTaskPage
 		if err == nil {
-			tasks, err = a.organization.Client.List(ctx, records.MergeListQuery{Project: id, ActiveOnly: true, Limit: 1})
+			tasks, err = a.projectOrganizer.Client.List(ctx, records.MergeListQuery{Project: id, ActiveOnly: true, Limit: 1})
 		}
 		if a.libraryContext.Err() != nil {
 			return
@@ -75,6 +75,10 @@ func (a *App) projectNavigation(c *ui.Context, p ProjectItem) {
 			ui.Text(c, p.Name).SingleLine().MinWidth(0)
 		}).OnClick(func() { a.navigate("项目", p.ID) })
 		more := ui.Button(c, "⋯").Key("project-menu-"+p.ID).Label("项目菜单："+p.Name).Size(24, 28).Padding(0).BorderWidth(0).Background(ui.Transparent)
+		if a.projectOrganizer.ReturnFocus && a.projectOrganizer.Project == p.ID && !a.projectKnowledgeEmpty() {
+			more.Focus()
+			a.projectOrganizer.ReturnFocus = false
+		}
 		if !selected && !row.Hovered() && !row.FocusWithin() && !more.FocusVisible() {
 			more.Opacity(0)
 		}
@@ -96,10 +100,8 @@ func (a *App) projectNavigation(c *ui.Context, p ProjectItem) {
 					label = "查看整理进度"
 				}
 			}
-			// Repository task start is supplied by the C task implementation.
-			// Existing tasks remain recoverable by their actual identity.
-			if m.Item(label).Disabled(!s.Ready || s.Task == "").Chosen() {
-				a.selectOrganization(s.Task)
+			if m.Item(label).Disabled(!s.Ready).Chosen() {
+				a.openProjectOrganizer(p.ID, s.Task)
 			}
 			if s.Error != "" {
 				m.Item(s.Error).Disabled(true)

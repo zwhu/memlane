@@ -47,6 +47,7 @@ func (a *App) rememberDraft() {
 type PaneState struct{ ID, Mode string }
 
 func (a *App) navigate(page, scope string) {
+	a.closeProjectOrganizer()
 	a.closeProjectSettings()
 	a.closeKnowledgeHistory()
 	a.saveBrowsing()
@@ -109,6 +110,7 @@ func (a *App) navigate(page, scope string) {
 }
 
 func (a *App) newMemory() {
+	a.closeProjectOrganizer()
 	a.closeProjectSettings()
 	a.rememberDraft()
 	a.message = ""

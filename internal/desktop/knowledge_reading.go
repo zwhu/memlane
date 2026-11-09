@@ -12,6 +12,7 @@ func (a *App) switchReadingKind(kind string) {
 		return
 	}
 	a.closeKnowledgeHistory()
+	a.closeProjectOrganizer()
 	a.closeSourceReader()
 	a.rememberDraft()
 	if a.readingSelections == nil {
