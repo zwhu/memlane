@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -26,6 +27,7 @@ func main() {
 	var controller *desktop.RuntimeController
 	settings := desktop.RuntimeSettings{KeepService: true}
 	var quitPending, forceQuit, stopRequested bool
+	var availabilityEpoch atomic.Uint64
 	stopAndQuit := func() { stopRequested = true; mygo.App.Quit() }
 	configPath, action := "", ""
 	for i, arg := range os.Args {
@@ -100,6 +102,7 @@ func main() {
 				return
 			}
 			installing = true
+			availabilityEpoch.Add(1)
 			app.SetUpdateStatus("正在准备更新…", true)
 			go func() {
 				updateCtx, stop := context.WithTimeout(ctx, 5*time.Minute)
@@ -215,6 +218,12 @@ func main() {
 				}
 				var latest desktop.RuntimeStatus
 				notify := func(status desktop.RuntimeStatus) {
+					switch status.Phase {
+					case "ready", "stopped", "authorization", "failed", "cancelled":
+						// Discard observations captured during quiescence before
+						// an update rollback or lifecycle operation completed.
+						availabilityEpoch.Add(1)
+					}
 					latest = status
 					if ctx.Err() == nil {
 						win.Update(func() { app.SetRuntimeStatus(status) })
@@ -225,6 +234,7 @@ func main() {
 						return
 					}
 					app.SetRuntimeStatus(desktop.RuntimeStatus{Phase: "checking", Message: "正在检查本地组件…"})
+					availabilityEpoch.Add(1)
 					go func() {
 						err := controller.Prepare(ctx, notify)
 						if err != nil && ctx.Err() == nil {
@@ -237,6 +247,7 @@ func main() {
 					}()
 				}
 				stopService := func() {
+					availabilityEpoch.Add(1)
 					app.SetRuntimeStatus(desktop.RuntimeStatus{Phase: "preparing", Message: "正在停止记忆服务…"})
 					go func() {
 						stopCtx, stop := context.WithTimeout(ctx, 20*time.Second)
@@ -253,6 +264,7 @@ func main() {
 					if quitPending || quitting {
 						return
 					}
+					availabilityEpoch.Add(1)
 					go func() {
 						if err := controller.ResumeService(ctx, notify); err != nil {
 							notify(desktop.RuntimeStatus{Phase: "failed", Message: err.Error()})
@@ -324,6 +336,32 @@ func main() {
 					}) {
 						prepare()
 					}
+					go func() {
+						ticker := time.NewTicker(2 * time.Second)
+						defer ticker.Stop()
+						for {
+							select {
+							case <-ctx.Done():
+								return
+							case <-ticker.C:
+							}
+							epoch := availabilityEpoch.Load()
+							observe, stop := context.WithTimeout(ctx, 1500*time.Millisecond)
+							status, err := controller.ObserveAvailability(observe)
+							stop()
+							if errors.Is(err, desktop.ErrRuntimeChanging) || ctx.Err() != nil {
+								continue
+							}
+							if err != nil {
+								status = desktop.RuntimeAvailability{Phase: "unavailable", Message: "无法确认后台状态；已保存的原文保留，请重试。"}
+							}
+							win.Update(func() {
+								if epoch == availabilityEpoch.Load() && !installing && !quitPending && !quitting {
+									app.ApplyRuntimeAvailability(status)
+								}
+							})
+						}
+					}()
 				}
 			}
 		}
