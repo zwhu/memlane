@@ -32,11 +32,12 @@ type ProjectSessionSource struct {
 }
 
 type ProjectTaskStart struct {
-	OperationID     string                    `json:"operation_id"`
-	Project         string                    `json:"project"`
-	BindingRevision int64                     `json:"binding_revision"`
-	IncludeHistory  bool                      `json:"include_history"`
-	Sessions        []ProjectSessionSelection `json:"sessions"`
+	OperationID        string                    `json:"operation_id"`
+	Project            string                    `json:"project"`
+	BindingRevision    int64                     `json:"binding_revision"`
+	IncludeHistory     bool                      `json:"include_history"`
+	HistoryWorkspaceID string                    `json:"history_workspace_identity,omitempty"`
+	Sessions           []ProjectSessionSelection `json:"sessions"`
 }
 
 // Resolved by the task owner from the connected Agent's current configuration.
@@ -90,10 +91,11 @@ type ProjectTaskPage struct {
 // A repository source is read and frozen by the host. The model only cites its
 // opaque ID and exact quote; it cannot submit arbitrary source bytes or paths.
 type ProjectRepositorySource struct {
-	ID     string `json:"id"`
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
-	Text   string `json:"text"`
+	ID      string                  `json:"id"`
+	Path    string                  `json:"path"`
+	SHA256  string                  `json:"sha256"`
+	Text    string                  `json:"text"`
+	History *ProjectHistoryOriginal `json:"history,omitempty"`
 }
 type ProjectKnowledgeQuote struct {
 	Source string `json:"source"`
@@ -136,6 +138,7 @@ type ProjectKnowledgeContextReceipt struct {
 // Only the daemon can seal process receipts. An exit code is not a model
 // terminal event, and restored PIDs are historical data rather than owners.
 type ProjectTaskExecution struct {
+	HistoryContext        *ProjectHistoryContextReceipt   `json:"history_context,omitempty"`
 	KnowledgeContext      *ProjectKnowledgeContextReceipt `json:"knowledge_context,omitempty"`
 	PID                   int                             `json:"pid"`
 	StartedMS             int64                           `json:"started_ms"`

@@ -487,6 +487,11 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		return receipt, err
 	case "project_binding":
 		return s.store.ProjectBinding(operation, r.Scope)
+	case "project_history":
+		if !r.UserConfirmed || r.ProjectHistory == nil {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "explicit historical project selection required"}
+		}
+		return s.projectHistoryCatalog(operation, *r.ProjectHistory)
 	case "project_task_start":
 		if !r.UserConfirmed || r.ProjectTaskStart == nil {
 			return nil, &records.AccessError{Code: "confirmation_required", Message: "explicit project task start required"}

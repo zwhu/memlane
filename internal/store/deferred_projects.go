@@ -107,6 +107,9 @@ func (s *Store) acceptFirstProjectTx(ctx context.Context, tx *sql.Tx, c records.
 // ApplyAgentSave extends the existing mutation transaction only for the first
 // accepted record. Explicit global saves do not create a repository project.
 func (s *Store) ApplyAgentSave(ctx context.Context, c records.Connection, m Mutation) (Version, error) {
+	if m.SourceDetail != nil && m.SourceDetail.History != nil {
+		return Version{}, access("invalid_source", "historical provenance is stamped only by the project task owner")
+	}
 	if c.PendingProject == "" || m.Dataset != c.PendingProject {
 		return s.Apply(ctx, m)
 	}

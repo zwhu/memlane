@@ -24,6 +24,7 @@ type Config struct {
 
 type Request struct {
 	ProjectTaskStart       *records.ProjectTaskStart            `json:"project_task_start,omitempty"`
+	ProjectHistory         *records.ProjectHistoryQuery         `json:"project_history,omitempty"`
 	ProjectBindingChange   *records.ProjectBindingChange        `json:"project_binding_change,omitempty"`
 	ProjectTaskID          string                               `json:"project_task,omitempty"`
 	ProjectTaskList        *records.MergeListQuery              `json:"project_task_list,omitempty"`

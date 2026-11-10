@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"sort"
 
 	"github.com/zwhu/memlane/internal/records"
@@ -51,11 +50,26 @@ func (s *Store) PrepareProjectKnowledge(ctx context.Context, id string, attempt 
 	if json.Unmarshal([]byte(executionJSON), &execution) != nil || !execution.Terminal || !execution.Reaped || !execution.GroupGone || execution.Model != t.Snapshot.Executor.Model || execution.Provider == "" || execution.PermissionProfile != "memlane_project" || execution.Thread == "" || execution.Turn == "" {
 		return access("project_model_incomplete", "matching model and cleanup receipts required")
 	}
+	if t.Snapshot.IncludeHistory {
+		h := execution.HistoryContext
+		if h == nil || h.Selected != len(t.Snapshot.Sessions) || h.Read != h.Selected || h.Sent != h.Selected || h.Bytes <= 0 || !projectDigest(h.Digest) {
+			return access("history_incomplete", "all selected historical tool responses must be sent")
+		}
+	}
 	if t.State != "organizing" {
 		return access("project_task_closed", "task no longer accepting a model result")
 	}
 	for _, source := range sources {
 		b, _ := json.Marshal(source)
+		if source.History != nil {
+			var frozen string
+			if err = tx.QueryRowContext(ctx, `SELECT payload FROM project_task_histories WHERE task=? AND session=?`, id, source.History.Session).Scan(&frozen); err != nil {
+				return err
+			}
+			if frozen != string(b) {
+				return access("history_changed", "historical source differs from frozen task input")
+			}
+		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO project_task_sources(task,source,payload) VALUES(?,?,?)`, id, source.ID, string(b)); err != nil {
 			return err
 		}
@@ -194,7 +208,8 @@ func (s *Store) applyProjectKnowledgeItem(ctx context.Context, id string, attemp
 		var revision int64
 		err = tx.QueryRowContext(ctx, `SELECT v.text,m.dataset,md.origin,m.state,m.current_revision FROM memories m JOIN versions v ON v.memory=m.id AND v.revision=m.current_revision JOIN memory_metadata md ON md.memory=m.id WHERE m.id=?`, sourceMemory).Scan(&text, &dataset, &origin, &sourceState, &revision)
 		if err == sql.ErrNoRows {
-			v, e := s.applyTx(ctx, tx, Mutation{Kind: "save", OperationID: "project-source:" + sourceMemory, Memory: sourceMemory, Dataset: t.Snapshot.Project, Title: filepath.Base(source.Path), Text: source.Text, Origin: "raw", Source: t.Snapshot.Executor.Agent + "：仓库出处", SourceDetail: &records.AgentSource{References: []string{"repo://" + t.Snapshot.Project + "/" + source.Path + "?sha256=" + source.SHA256}}})
+			title, label, detail := projectOriginalPresentation(t, source)
+			v, e := s.applyTx(ctx, tx, Mutation{Kind: "save", OperationID: "project-source:" + sourceMemory, Memory: sourceMemory, Dataset: t.Snapshot.Project, Title: title, Text: source.Text, Origin: "raw", Source: label, SourceDetail: detail})
 			if e != nil {
 				return e
 			}
@@ -220,7 +235,8 @@ func (s *Store) applyProjectKnowledgeItem(ctx context.Context, id string, attemp
 	for _, quote := range item.Sources {
 		source := byID[quote.Source]
 		sourceMemory := projectSourceMemory(t.Snapshot.Project, source)
-		snapshot := records.OrganizationInput{MergeInput: records.MergeInput{Memory: sourceMemory, Revision: 1, Title: source.Path, Text: source.Text, Source: t.Snapshot.Executor.Agent + "：仓库出处"}, Origin: "raw", Roots: []records.MergeTarget{{Memory: sourceMemory, Revision: 1}}}
+		title, label, _ := projectOriginalPresentation(t, source)
+		snapshot := records.OrganizationInput{MergeInput: records.MergeInput{Memory: sourceMemory, Revision: 1, Title: title, Text: source.Text, Source: label}, Origin: "raw", Roots: []records.MergeTarget{{Memory: sourceMemory, Revision: 1}}}
 		b, _ := json.Marshal(snapshot)
 		if _, err = tx.ExecContext(ctx, `INSERT INTO organization_sources(memory,revision,source_memory,source_revision,project,snapshot,quote) VALUES(?,?,?,?,?,?,?)`, memory, v.Revision, sourceMemory, 1, t.Snapshot.Project, string(b), quote.Quote); err != nil {
 			return err

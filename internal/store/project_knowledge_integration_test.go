@@ -281,7 +281,7 @@ func TestProjectSchema18MigrationKeepsBindingIntentAndOriginalBackup(t *testing.
 	mustMerge(t, err)
 	var path string
 	mustMerge(t, s.DB.QueryRow(`SELECT file FROM pragma_database_list WHERE name='main'`).Scan(&path))
-	_, err = s.DB.Exec(`DROP TABLE project_index_recoveries; DROP TABLE project_task_items; DROP TABLE project_task_sources; DROP TABLE project_task_runs; PRAGMA user_version=18`)
+	_, err = s.DB.Exec(`DROP TABLE project_task_histories; DROP TABLE project_index_recoveries; DROP TABLE project_task_items; DROP TABLE project_task_sources; DROP TABLE project_task_runs; PRAGMA user_version=18`)
 	mustMerge(t, err)
 	mustMerge(t, s.Close())
 	current, err := Open(path)

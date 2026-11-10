@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/zwhu/memlane/internal/records"
@@ -137,22 +138,28 @@ func TestProjectTaskHistoryAndConnectionGenerationFences(t *testing.T) {
 	ctx := context.Background()
 	s, p, c := projectTaskFixture(t)
 	b := bindProjectFixture(t, s, p, c)
-	source := records.ProjectSessionSource{ProjectSessionSelection: records.ProjectSessionSelection{ID: "codex_current_project_session", Digest: strings.Repeat("b", 64)}, Agent: c.Agent, Project: p.ID}
+	session := uuid.NewString()
+	source := records.ProjectSessionSource{ProjectSessionSelection: records.ProjectSessionSelection{ID: "codex_" + session, Digest: strings.Repeat("b", 64)}, Agent: c.Agent, Project: p.ID}
+	frozen := projectSourceFixture("history/codex/"+session+".txt", "explicit historical contract fixture")
+	frozen.History = &records.ProjectHistoryOriginal{Agent: "codex", Session: source.ID, Digest: source.Digest, Workspace: p.Path, CLIVersion: "0.167.0-alpha.3.2", CapturedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	d := records.ProjectTaskStart{OperationID: uuid.NewString(), Project: p.ID, BindingRevision: b.Revision, IncludeHistory: true, Sessions: []records.ProjectSessionSelection{source.ProjectSessionSelection}}
 	e := projectExecutorFixture(c)
+	_, identity, err := s.projectTaskWorkspace(ctx, p.ID)
+	mustMerge(t, err)
+	d.HistoryWorkspaceID = identity
 	wrong := source
 	wrong.Agent = "pi"
-	if _, _, err := s.StartProjectTask(ctx, d, e, []records.ProjectSessionSource{wrong}); err == nil {
+	if _, _, err := s.StartProjectTaskWithHistory(ctx, d, e, []records.ProjectSessionSource{wrong}, []records.ProjectRepositorySource{frozen}); err == nil {
 		t.Fatal("another Agent's history was accepted")
 	}
 	wrong = source
 	wrong.Project = uuid.NewString()
-	if _, _, err := s.StartProjectTask(ctx, d, e, []records.ProjectSessionSource{wrong}); err == nil {
+	if _, _, err := s.StartProjectTaskWithHistory(ctx, d, e, []records.ProjectSessionSource{wrong}, []records.ProjectRepositorySource{frozen}); err == nil {
 		t.Fatal("another project's history was accepted")
 	}
 	wrong = source
 	wrong.Digest = strings.Repeat("c", 64)
-	if _, _, err := s.StartProjectTask(ctx, d, e, []records.ProjectSessionSource{wrong}); err == nil {
+	if _, _, err := s.StartProjectTaskWithHistory(ctx, d, e, []records.ProjectSessionSource{wrong}, []records.ProjectRepositorySource{frozen}); err == nil {
 		t.Fatal("changed history was accepted")
 	}
 	d.IncludeHistory = false
@@ -160,7 +167,7 @@ func TestProjectTaskHistoryAndConnectionGenerationFences(t *testing.T) {
 		t.Fatal("history entered an unchecked task")
 	}
 	d.IncludeHistory = true
-	task, _, err := s.StartProjectTask(ctx, d, e, []records.ProjectSessionSource{source})
+	task, _, err := s.StartProjectTaskWithHistory(ctx, d, e, []records.ProjectSessionSource{source}, []records.ProjectRepositorySource{frozen})
 	mustMerge(t, err)
 	mustMerge(t, s.Disconnect(ctx, c.ID))
 	current, err := s.ProjectTask(ctx, task.ID)
@@ -207,7 +214,7 @@ func TestProjectTaskRepositoryReplacementAndRestoreInvalidateAuthority(t *testin
 func TestProjectTaskSchema17BackupRetainsPreviousTables(t *testing.T) {
 	s, p, c := projectTaskFixture(t)
 	path := filepath.Join(filepath.Dir(p.Path), "memory.sqlite")
-	_, err := s.DB.Exec(`DROP TABLE project_index_recoveries; DROP TABLE project_task_items; DROP TABLE project_task_sources; DROP TABLE project_task_runs; DROP TABLE project_tasks; DROP TABLE project_bindings; PRAGMA user_version=17`)
+	_, err := s.DB.Exec(`DROP TABLE project_task_histories; DROP TABLE project_index_recoveries; DROP TABLE project_task_items; DROP TABLE project_task_sources; DROP TABLE project_task_runs; DROP TABLE project_tasks; DROP TABLE project_bindings; PRAGMA user_version=17`)
 	mustMerge(t, err)
 	s.Schema = 17
 	mustMerge(t, s.Close())

@@ -70,7 +70,14 @@ func sameProjectExecutor(b records.ProjectBinding, e records.ProjectTaskExecutor
 // This method persists intent only; it never starts a process, reads history,
 // invokes global memory processing or declares a model/save/index result.
 func (s *Store) StartProjectTask(ctx context.Context, d records.ProjectTaskStart, executor records.ProjectTaskExecutor, sessions []records.ProjectSessionSource) (records.ProjectTask, bool, error) {
+	return s.StartProjectTaskWithHistory(ctx, d, executor, sessions, nil)
+}
+
+func (s *Store) StartProjectTaskWithHistory(ctx context.Context, d records.ProjectTaskStart, executor records.ProjectTaskExecutor, sessions []records.ProjectSessionSource, histories []records.ProjectRepositorySource) (records.ProjectTask, bool, error) {
 	var empty records.ProjectTask
+	if err := validateFrozenProjectHistory(d, histories); err != nil {
+		return empty, false, err
+	}
 	if s.Schema < 18 || !projectUUID(d.OperationID) || !projectUUID(d.Project) || d.BindingRevision < 1 ||
 		strings.TrimSpace(executor.Model) == "" || len(executor.Model) > 512 || strings.TrimSpace(executor.Version) == "" || len(executor.Version) > 512 || !projectDigest(executor.ConfigurationDigest) {
 		return empty, false, access("invalid_request", "resolved current project executor required")
@@ -129,6 +136,9 @@ func (s *Store) StartProjectTask(ctx context.Context, d records.ProjectTaskStart
 	if err != nil {
 		return empty, false, err
 	}
+	if d.IncludeHistory && d.HistoryWorkspaceID != identity {
+		return empty, false, access("workspace_changed", "repository changed since history selection")
+	}
 	snapshot := records.ProjectTaskSnapshot{Project: d.Project, BindingRevision: b.Revision, Workspace: root, WorkspaceID: identity,
 		Executor: executor, IncludeHistory: d.IncludeHistory, Sessions: selected}
 	encoded, err := json.Marshal(snapshot)
@@ -181,6 +191,15 @@ func (s *Store) StartProjectTask(ctx context.Context, d records.ProjectTaskStart
 	t, err := scanProjectTask(tx.QueryRowContext(ctx, `SELECT `+projectTaskColumns+` FROM project_tasks WHERE id=?`, id))
 	if err != nil {
 		return empty, false, err
+	}
+	for _, source := range histories {
+		b, e := json.Marshal(source)
+		if e != nil {
+			return empty, false, e
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO project_task_histories(task,session,payload) VALUES(?,?,?)`, id, source.History.Session, string(b)); err != nil {
+			return empty, false, err
+		}
 	}
 	t.AccessState = "available"
 	return t, true, tx.Commit()

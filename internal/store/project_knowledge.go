@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -23,6 +24,21 @@ func validateProjectKnowledge(t records.ProjectTask, p records.ProjectKnowledgeP
 	byID := map[string]records.ProjectRepositorySource{}
 	total := 0
 	for _, s := range sources {
+		if s.History != nil {
+			matched := false
+			for _, choice := range t.Snapshot.Sessions {
+				if t.Snapshot.IncludeHistory && choice.ID == s.History.Session && choice.Digest == s.History.Digest && choice.Agent == t.Snapshot.Executor.Agent && choice.Project == t.Snapshot.Project {
+					matched = true
+				}
+			}
+			id, e := uuid.Parse(strings.TrimPrefix(s.History.Session, "codex_"))
+			if !matched || e != nil || s.History.Session != "codex_"+id.String() || s.Path != "history/codex/"+id.String()+".txt" || s.History.CLIVersion != "0.167.0-alpha.3.2" {
+				return invalid
+			}
+			if _, e = time.Parse(time.RFC3339Nano, s.History.CapturedAt); e != nil {
+				return invalid
+			}
+		}
 		if s.Path == "" || filepath.IsAbs(s.Path) || filepath.ToSlash(filepath.Clean(s.Path)) != s.Path || strings.ContainsAny(s.Path, "\\\x00\r\n") || strings.HasPrefix(s.Path, "../") {
 			return invalid
 		}

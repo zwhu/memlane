@@ -58,14 +58,24 @@ func (s *Server) startProjectTask(ctx context.Context, d records.ProjectTaskStar
 	if s.lifecycle == nil || s.lifecycle.Err() != nil {
 		return empty, &records.AccessError{Code: "service_stopping", Message: "background service is stopping"}
 	}
-	if d.IncludeHistory || len(d.Sessions) > 0 {
-		return empty, &records.AccessError{Code: "history_unavailable", Message: "project history reading is not adapted yet"}
-	}
 	plan, err := s.resolveProjectExecutor(ctx, d.Project)
 	if err != nil {
 		return empty, err
 	}
-	t, created, err := s.store.StartProjectTask(ctx, d, plan.Executor, nil)
+	if d.IncludeHistory {
+		prior, found, e := s.store.ProjectTaskForIntent(ctx, d)
+		if e != nil || found {
+			if e == nil && prior.Snapshot.Executor != plan.Executor {
+				prior.AccessState = "configuration_changed"
+			}
+			return prior, e
+		}
+	}
+	selected, histories, err := s.freezeProjectHistory(ctx, d)
+	if err != nil {
+		return empty, err
+	}
+	t, created, err := s.store.StartProjectTaskWithHistory(ctx, d, plan.Executor, selected, histories)
 	if err != nil || !created {
 		return t, err
 	}
@@ -171,6 +181,13 @@ func (s *Server) runProjectTask(ctx context.Context, cancel context.CancelFunc, 
 		defer s.agentAccess.RUnlock()
 		return s.store.ProjectTaskKnowledge(readCtx, t.ID, t.Attempt, cursor)
 	}
+	if t.Snapshot.IncludeHistory {
+		plan.HistoryReader = func(readCtx context.Context, session string) (records.ProjectRepositorySource, error) {
+			s.agentAccess.RLock()
+			defer s.agentAccess.RUnlock()
+			return s.store.ProjectTaskHistory(readCtx, t.ID, t.Attempt, session)
+		}
+	}
 	var stageErr error
 	execution, runErr := runner(ctx, plan, t, func(pid int) error { return s.store.RegisterProjectProcess(ctx, t.ID, t.Attempt, pid) }, func(stage string) {
 		if stage == "organizing" {
@@ -182,7 +199,7 @@ func (s *Server) runProjectTask(ctx context.Context, cancel context.CancelFunc, 
 	})
 	final, stop := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	if execution.Started {
-		proof := records.ProjectTaskExecution{PID: execution.PID, StartedMS: execution.StartedMS, EndedMS: execution.EndedMS, Reaped: execution.Reaped, GroupGone: execution.GroupGone, Terminal: execution.Terminal, Thread: execution.Thread, Turn: execution.Turn, Model: execution.SelectedModel, Provider: execution.SelectedProvider, PermissionProfile: execution.PermissionProfile, InterruptSent: execution.InterruptSent, InterruptAcknowledged: execution.InterruptAcknowledged, KnowledgeContext: execution.KnowledgeContext}
+		proof := records.ProjectTaskExecution{PID: execution.PID, StartedMS: execution.StartedMS, EndedMS: execution.EndedMS, Reaped: execution.Reaped, GroupGone: execution.GroupGone, Terminal: execution.Terminal, Thread: execution.Thread, Turn: execution.Turn, Model: execution.SelectedModel, Provider: execution.SelectedProvider, PermissionProfile: execution.PermissionProfile, InterruptSent: execution.InterruptSent, InterruptAcknowledged: execution.InterruptAcknowledged, KnowledgeContext: execution.KnowledgeContext, HistoryContext: execution.HistoryContext}
 		if err = s.store.FinishProjectProcess(final, t.ID, t.Attempt, proof); err != nil {
 			stop()
 			if s.stop != nil {

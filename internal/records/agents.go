@@ -1,11 +1,13 @@
 package records
 
-// AgentSource contains only content and references supplied by the Agent.
+// AgentSource keeps ordinary citations separate from host provenance.
+// History is stamped by the project owner; ordinary Agent saves cannot set it.
 type AgentSource struct {
-	Native     *CodexOriginal  `json:"native,omitempty"`
-	Official   *CogneeOriginal `json:"official,omitempty"`
-	Fragment   string          `json:"fragment,omitempty"`
-	References []string        `json:"references,omitempty"`
+	History    *ProjectHistoryOriginal `json:"history,omitempty"`
+	Native     *CodexOriginal          `json:"native,omitempty"`
+	Official   *CogneeOriginal         `json:"official,omitempty"`
+	Fragment   string                  `json:"fragment,omitempty"`
+	References []string                `json:"references,omitempty"`
 }
 
 type Connection struct {

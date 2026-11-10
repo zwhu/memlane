@@ -291,6 +291,9 @@ func (a *App) projectStage(c *ui.Context) {
 			stage = "starting"
 		}
 	}
+	if s.Task == nil && s.HistoryError != "" {
+		stage, key = "failed", "historical-selection-failed"
+	}
 	width, height := c.Size()
 	stageHeight := float32(280)
 	if width < 1100 || height < 740 {

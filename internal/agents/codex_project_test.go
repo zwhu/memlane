@@ -85,7 +85,7 @@ for line in sys.stdin:
    send({'id':m['id'],'result':{'model':p['model'],'modelProvider':'fixture'}});continue
   assert p['permissions']=='memlane_project' and p['ephemeral'] and not p['allowProviderModelFallback']
   assert p['cwd']!=p['runtimeWorkspaceRoots'][0]
-  expected=['memlane_project_source']+(['memlane_project_knowledge'] if MODE.startswith('context') else [])
+  expected=['memlane_project_source']+(['memlane_project_knowledge'] if MODE.startswith('context') else [])+(['memlane_project_history'] if MODE.startswith('history') else [])
   assert [x['name'] for x in p['dynamicTools']]==expected
   send({'id':m['id'],'result':{'thread':{'id':thread},'model':'wrong-model' if MODE=='model' else p['model'],'modelProvider':p['modelProvider'],'runtimeWorkspaceRoots':p['runtimeWorkspaceRoots'],'activePermissionProfile':{'id':p['permissions']}}})
  elif method=='turn/start':
@@ -94,6 +94,8 @@ for line in sys.stdin:
   if MODE=='cancel':
    send({'method':'item/reasoning/textDelta','params':{'threadId':thread,'turnId':turn,'delta':'fixture active'}})
   elif MODE=='unexpected': send({'id':700,'method':'item/commandExecution/requestApproval','params':{'threadId':thread,'turnId':turn}})
+  elif MODE.startswith('history') and MODE!='history_missing':
+   send({'id':700,'method':'item/tool/call','params':{'threadId':thread,'turnId':turn,'tool':'memlane_project_history','arguments':{'session':'codex_00000000-0000-4000-8000-000000000003','project':'foreign'} if MODE=='history_cross' else {'session':'codex_00000000-0000-4000-8000-000000000003'}}})
   elif MODE.startswith('context') and MODE!='context_missing':
    send({'id':698,'method':'item/tool/call','params':{'threadId':thread,'turnId':turn,'tool':'memlane_project_knowledge','arguments':{'cursor':'','project':'foreign'} if MODE=='context_cross' else {'cursor':''}}})
   else: send({'id':700,'method':'item/tool/call','params':{'threadId':thread,'turnId':turn if MODE!='cross' else 'other-turn','tool':'memlane_project_source','arguments':{'path':'README.md'}}})
@@ -128,7 +130,7 @@ func codexProjectFixture(t *testing.T, mode string) (Installation, string, strin
 }
 
 func TestCodexProjectActualProtocolSeam(t *testing.T) {
-	for _, mode := range []string{"normal", "native", "model", "cross", "forged", "failed", "unexpected", "cancel", "context", "context_missing", "context_cross", "context_cancel"} {
+	for _, mode := range []string{"normal", "native", "model", "cross", "forged", "failed", "unexpected", "cancel", "context", "context_missing", "context_cross", "context_cancel", "history", "history_missing", "history_cross", "history_cancel"} {
 		t.Run(mode, func(t *testing.T) {
 			i, work, home := codexProjectFixture(t, mode)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -142,6 +144,17 @@ func TestCodexProjectActualProtocolSeam(t *testing.T) {
 				t.Fatal("private configuration exposed")
 			}
 			task := records.ProjectTask{ID: uuid.NewString(), Attempt: 1, Snapshot: records.ProjectTaskSnapshot{Workspace: work, Executor: plan.Executor}}
+			if strings.HasPrefix(mode, "history") {
+				id := "codex_00000000-0000-4000-8000-000000000003"
+				task.Snapshot.IncludeHistory = true
+				task.Snapshot.Sessions = []records.ProjectSessionSource{{ProjectSessionSelection: records.ProjectSessionSelection{ID: id, Digest: strings.Repeat("b", 64)}, Agent: "codex"}}
+				plan.HistoryReader = func(_ context.Context, session string) (records.ProjectRepositorySource, error) {
+					if mode == "history_cancel" {
+						cancel()
+					}
+					return records.ProjectRepositorySource{ID: strings.Repeat("a", 64), Path: "history/codex/00000000-0000-4000-8000-000000000003.txt", Text: "本项目使用 pnpm。", History: &records.ProjectHistoryOriginal{Agent: "codex", Session: session, Digest: strings.Repeat("b", 64)}}, nil
+				}
+			}
 			if strings.HasPrefix(mode, "context") {
 				plan.KnowledgeReader = func(_ context.Context, cursor string) (records.ProjectKnowledgeContextPage, error) {
 					if mode == "context_cancel" {
@@ -161,12 +174,15 @@ func TestCodexProjectActualProtocolSeam(t *testing.T) {
 			if !out.Reaped || !out.GroupGone {
 				t.Fatalf("process remains: %+v %v", out, err)
 			}
-			if mode == "normal" || mode == "native" || mode == "context" {
+			if mode == "normal" || mode == "native" || mode == "context" || mode == "history" {
 				if err != nil || out.Proposal == nil || len(out.Sources) != 1 || out.Items["commandExecution"] != 1 || !out.Terminal {
 					t.Fatalf("normal: %+v %v", out, err)
 				}
 				if mode == "context" && (out.KnowledgeContext == nil || !out.KnowledgeContext.Complete || out.KnowledgeContext.Pages != 2 || out.KnowledgeContext.SentPages != 2 || out.KnowledgeContext.Items != 2) {
 					t.Fatal("context delivery receipt missing", out.KnowledgeContext)
+				}
+				if mode == "history" && (out.HistoryContext == nil || out.HistoryContext.Selected != 1 || out.HistoryContext.Read != 1 || out.HistoryContext.Sent != 1) {
+					t.Fatal("historical response receipt missing", out.HistoryContext)
 				}
 			} else {
 				if err == nil || out.Proposal != nil || len(out.Sources) != 0 || len(out.Final) != 0 {

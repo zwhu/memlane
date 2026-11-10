@@ -2,7 +2,9 @@ package desktop
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -12,32 +14,38 @@ import (
 )
 
 type ProjectBindingOperation struct {
-	Project  string
-	Active   bool
-	Error    string
-	Kind     string
-	Task     string
-	Draft    records.ProjectTaskStart
-	Recovery records.IndexRebuildStart
-	Result   *records.ProjectTask
+	FailureCode string
+	Project     string
+	Active      bool
+	Error       string
+	Kind        string
+	Task        string
+	Draft       records.ProjectTaskStart
+	Recovery    records.IndexRebuildStart
+	Result      *records.ProjectTask
 }
 
 type ProjectOrganizerUI struct {
-	Client                       serviceipc.ProjectTaskClient
-	Open, Loaded, Loading        bool
-	Choosing, IncludeHistory     bool
-	ReturnEditing, ReturnFocus   bool
-	ReturnMode                   string
-	Project, SelectedTask, Error string
-	OperationID                  string
-	Sequence                     uint64
-	Binding                      records.ProjectBinding
-	Connections                  []records.Connection
-	Sessions                     []records.ProjectSessionSelection
-	Task                         *records.ProjectTask
-	Operation                    *ProjectBindingOperation
-	Scroll                       ui.ScrollState
-	Motion                       projectStageMotion
+	HistoryLoading, HistoryLoaded           bool
+	HistorySequence                         uint64
+	HistoryCancel                           context.CancelFunc
+	HistoryWorkspaceID, HistoryError        string
+	HistoryUnavailable, HistoryUnattributed int
+	Client                                  serviceipc.ProjectTaskClient
+	Open, Loaded, Loading                   bool
+	Choosing, IncludeHistory                bool
+	ReturnEditing, ReturnFocus              bool
+	ReturnMode                              string
+	Project, SelectedTask, Error            string
+	OperationID                             string
+	Sequence                                uint64
+	Binding                                 records.ProjectBinding
+	Connections                             []records.Connection
+	Sessions                                []records.ProjectSessionSelection
+	Task                                    *records.ProjectTask
+	Operation                               *ProjectBindingOperation
+	Scroll                                  ui.ScrollState
+	Motion                                  projectStageMotion
 }
 
 func (a *App) projectKnowledgeEmpty() bool {
@@ -58,7 +66,8 @@ func (a *App) openProjectOrganizer(project, task string) {
 	prior := a.projectOrganizer
 	a.projectOrganizer = ProjectOrganizerUI{Client: prior.Client, Project: project, SelectedTask: task,
 		Open: true, Sequence: prior.Sequence + 1, Operation: prior.Operation,
-		OperationID: uuid.NewString(), ReturnMode: a.detailMode, ReturnEditing: a.editing}
+		HistorySequence: prior.HistorySequence + 1,
+		OperationID:     uuid.NewString(), ReturnMode: a.detailMode, ReturnEditing: a.editing}
 	if prior.Operation != nil && prior.Operation.Project == project {
 		if prior.Operation.Active && prior.Operation.Kind == "start" {
 			a.projectOrganizer.OperationID = prior.Operation.Draft.OperationID
@@ -69,6 +78,16 @@ func (a *App) openProjectOrganizer(project, task string) {
 	}
 	if prior.Project == project {
 		a.projectOrganizer.Motion = prior.Motion
+		if task == "" && prior.Task == nil {
+			a.projectOrganizer.IncludeHistory = prior.IncludeHistory
+			a.projectOrganizer.Sessions = append([]records.ProjectSessionSelection(nil), prior.Sessions...)
+			a.projectOrganizer.HistoryLoaded = prior.HistoryLoaded
+			a.projectOrganizer.HistoryWorkspaceID = prior.HistoryWorkspaceID
+			a.projectOrganizer.HistoryError = prior.HistoryError
+			a.projectOrganizer.HistoryUnavailable = prior.HistoryUnavailable
+			a.projectOrganizer.HistoryUnattributed = prior.HistoryUnattributed
+			a.projectOrganizer.Binding = prior.Binding
+		}
 	}
 	a.projectOrganizer.Motion.Reenter = true
 	a.editing, a.detailMode = false, "view"
@@ -78,6 +97,12 @@ func (a *App) openProjectOrganizer(project, task string) {
 
 func (a *App) closeProjectOrganizer() {
 	s := &a.projectOrganizer
+	if s.HistoryCancel != nil {
+		s.HistoryCancel()
+		s.HistoryCancel = nil
+		s.HistoryLoading = false
+		s.HistorySequence++
+	}
 	if s.Open && a.page == "项目" && a.scope == s.Project {
 		a.editing, a.detailMode = s.ReturnEditing, s.ReturnMode
 	}
@@ -146,8 +171,8 @@ func (a *App) refreshProjectOrganizer() {
 				current.Error = "项目整理状态读取未完成，已加载内容保留。"
 				return
 			}
-			if current.Binding.Revision != binding.Revision || current.Binding.Generation != binding.Generation {
-				current.IncludeHistory, current.Sessions = false, nil
+			if current.Binding != binding {
+				current.clearHistory()
 			}
 			current.Binding, current.Connections, current.Task = binding, connections, task
 			if task != nil {
@@ -156,7 +181,9 @@ func (a *App) refreshProjectOrganizer() {
 			current.Error, current.Loaded = "", true
 			if op := current.Operation; op != nil && op.Project == project && op.Error != "" {
 				if op.Kind == "start" && task == nil || op.Kind == "cancel" && projectTaskRunning(task) && task.State != "cancelling" || op.Kind == "recover" && (task == nil || task.IndexRecovery == nil || task.IndexRecovery.ID != op.Recovery.OperationID) {
-					current.Error = op.Error
+					if op.FailureCode != "history_changed" || current.HistoryError == "" {
+						current.Error = op.Error
+					}
 				}
 			}
 		})
@@ -168,6 +195,10 @@ func (a *App) beginProjectTask(d records.ProjectTaskStart) {
 	if !s.Open || !s.Loaded || s.Loading || s.Error != "" || s.Project != d.Project || s.Binding.Revision != d.BindingRevision || s.Binding.State != "available" || s.Binding.Agent != "codex" || projectTaskRunning(s.Task) || s.Operation != nil && s.Operation.Active || a.libraryContext == nil || a.dispatch == nil {
 		return
 	}
+	if d.IncludeHistory && (!s.HistoryLoaded || s.HistoryLoading || s.HistoryError != "" || len(s.Sessions) == 0 || d.HistoryWorkspaceID != s.HistoryWorkspaceID || !reflect.DeepEqual(d.Sessions, s.Sessions)) {
+		return
+	}
+	d.Sessions = append([]records.ProjectSessionSelection(nil), d.Sessions...)
 	operation := &ProjectBindingOperation{Project: d.Project, Kind: "start", Active: true, Draft: d}
 	s.Operation = operation
 	ownerContext, client := a.libraryContext, s.Client
@@ -186,8 +217,23 @@ func (a *App) beginProjectTask(d records.ProjectTaskStart) {
 			}
 			if err != nil {
 				operation.Error = "项目整理启动未确认，请重新读取当前任务后再试。"
+				var remote *serviceipc.ServiceError
+				if errors.As(err, &remote) {
+					operation.FailureCode = remote.Code
+				}
+				if operation.FailureCode == "history_changed" {
+					operation.Error = "所选历史会话已变化，请重新选择后再开始。"
+					if current.Project == d.Project && current.Task == nil {
+						current.HistoryLoaded = false
+						current.HistoryError = "所选历史会话已变化，请重新读取历史选择。"
+					}
+				}
 				if current.Open && current.Project == d.Project {
-					current.Error = operation.Error
+					if operation.FailureCode == "history_changed" {
+						current.Error = ""
+					} else {
+						current.Error = operation.Error
+					}
 					a.refreshProjectOrganizer()
 				}
 				return
@@ -313,7 +359,7 @@ func (a *App) bindProjectOrganizer(connection records.Connection) {
 			}
 			if err == nil {
 				current.Binding, current.Choosing = binding, false
-				current.IncludeHistory, current.Sessions = false, nil
+				current.clearHistory()
 			}
 			current.Error = operation.Error
 		})
@@ -456,6 +502,9 @@ func projectOrganizerHeading(task *records.ProjectTask) (string, string) {
 	if task == nil {
 		return "让 Agent 了解这个项目", "整理项目约定、架构与关键模块，并存入当前项目。"
 	}
+	if task.State == "organizing" && task.Snapshot.IncludeHistory {
+		return "正在整理项目与历史会话", "范围已固定，已有知识保留，可随时查看知识或停止整理。"
+	}
 	if task.IndexRecovery != nil {
 		switch task.IndexRecovery.State {
 		case "running":
@@ -473,6 +522,11 @@ func projectOrganizerHeading(task *records.ProjectTask) (string, string) {
 	}
 	if projectIndexRecoverable(task) {
 		return "知识已保存，索引未完成", "可先阅读正文，或恢复本次已保存内容的索引。"
+	}
+	if task.State == "failed" && task.Snapshot.IncludeHistory {
+		if task.Execution == nil || task.Execution.HistoryContext == nil || task.Execution.HistoryContext.Read != len(task.Snapshot.Sessions) || task.Execution.HistoryContext.Sent != len(task.Snapshot.Sessions) {
+			return "历史会话整理未完成", "本次选定的历史范围未完成，已保存知识保留，可重新选择后再整理。"
+		}
 	}
 	switch task.State {
 	case "completed":
@@ -509,7 +563,11 @@ func projectProgressSteps(c *ui.Context, task *records.ProjectTask) {
 		}
 	}
 	ui.Row(c).Key("project-organizer-steps").Justify(ui.Center).Gap(12).Padding(16, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
-		for i, label := range []string{"启动 Agent", "整理项目", "存入知识"} {
+		organizeLabel := "整理项目"
+		if task != nil && task.Snapshot.IncludeHistory {
+			organizeLabel = "项目与历史会话"
+		}
+		for i, label := range []string{"启动 Agent", organizeLabel, "存入知识"} {
 			mark, color := fmt.Sprint(i+1), design.Muted
 			if phase > i+1 {
 				mark, color = "✓", ui.Hex("#7493ad")
@@ -584,15 +642,37 @@ func (a *App) projectOrganizerContent(c *ui.Context) {
 				quietButton(c, "前往 Agent 连接").OnClick(func() { a.navigate("设置", ""); a.settingsSection = "agents" })
 			}
 			ui.Column(c).Padding(12).Gap(6).Radius(6).Border(1, design.Border).Children(func() {
-				// Historical reads stay unavailable until a scoped reader is attached.
 				history := s.IncludeHistory
 				if frozen {
 					history = s.Task.Snapshot.IncludeHistory
 				}
-				ui.Checkbox(c.Key("project-organizer-history"), &history, "同时整理历史会话").Disabled(true)
+				ui.Checkbox(c.Key("project-organizer-history"), &history, "同时整理历史会话").Disabled(frozen || busy || !s.Loaded || s.Binding.State != "available" || s.Binding.Agent != "codex" || a.startProjectTask == nil).OnChange(func() { a.chooseProjectHistory(history) })
 				historyText := "当前绑定 Agent 的历史会话暂不可读取。"
+				if !frozen && s.Binding.State == "available" && s.Binding.Agent == "codex" && a.startProjectTask != nil {
+					historyText = "仅整理 Codex 在当前项目的已完成会话，保留原始出处。"
+				}
 				if frozen && !history {
 					historyText = "本次仅整理当前仓库，未包含历史会话。"
+				}
+				if frozen && history {
+					historyText = fmt.Sprintf("本次固定选择 %d 个历史会话，历史会话会增加用量。", len(s.Task.Snapshot.Sessions))
+				}
+				if !frozen && history {
+					if s.HistoryLoading {
+						historyText = "正在读取当前项目的历史会话…"
+					} else if s.HistoryLoaded {
+						historyText = fmt.Sprintf("已选择 %d 个已完成会话 · 历史会话会增加用量。", len(s.Sessions))
+						if s.HistoryUnavailable > 0 || s.HistoryUnattributed > 0 {
+							ui.Text(c, fmt.Sprintf("%d 项当前项目会话暂不可读取，%d 项无法确认归属，均未纳入。", s.HistoryUnavailable, s.HistoryUnattributed)).FontSize(10).TextColor(design.Muted)
+						}
+						if len(s.Sessions) == 0 {
+							historyText = "没有可读取的已完成会话，可取消历史选择后仅整理仓库。"
+						}
+					}
+					if s.HistoryError != "" {
+						ui.Text(c, s.HistoryError).Key("project-history-error").FontSize(10)
+						quietButton(c, "重新读取历史会话").Key("project-history-reload").Disabled(s.HistoryLoading).OnClick(func() { a.chooseProjectHistory(true) })
+					}
 				}
 				ui.Text(c, historyText).FontSize(10).TextColor(design.Muted)
 			})
@@ -630,6 +710,9 @@ func (a *App) projectOrganizerContent(c *ui.Context) {
 			ui.Column(c).Grow(1).Gap(4).Children(func() {
 				ui.Text(c, "会消耗 Token").FontSize(10).Bold()
 				ui.Text(c, "使用绑定 Agent 当前模型，用量随整理内容变化。").FontSize(10).TextColor(design.Muted)
+				if s.IncludeHistory || frozen && s.Task.Snapshot.IncludeHistory {
+					ui.Text(c, "历史会话会增加用量。").FontSize(10).TextColor(design.Muted)
+				}
 				if a.startProjectTask == nil {
 					ui.Text(c, "项目整理暂不可用。").Key("project-organizer-unavailable").FontSize(10).TextColor(design.Muted)
 				}
@@ -649,7 +732,7 @@ func (a *App) projectOrganizerContent(c *ui.Context) {
 				quietButton(c, "重新整理").Key("project-organizer-reset").Disabled(busy || s.Loading || s.Error != "").OnClick(func() {
 					s.Task, s.SelectedTask, s.Choosing = nil, "", false
 					s.OperationID = uuid.NewString()
-					s.IncludeHistory, s.Sessions = false, nil
+					s.clearHistory()
 					s.Motion.Reenter = true
 				})
 				return
@@ -661,9 +744,9 @@ func (a *App) projectOrganizerContent(c *ui.Context) {
 			if s.Operation != nil && s.Operation.Active && s.Operation.Kind == "start" {
 				label = "正在确认启动…"
 			}
-			actionButton(c, label, nil).Key("project-organizer-start").Background(design.Ink).TextColor(ui.Hex("#ffffff")).Disabled(busy || !s.Loaded || s.Loading || s.Binding.State != "available" || s.Binding.Agent != "codex" || s.Error != "" || a.startProjectTask == nil).OnClick(func() {
+			actionButton(c, label, nil).Key("project-organizer-start").Background(design.Ink).TextColor(ui.Hex("#ffffff")).Disabled(busy || !s.Loaded || s.Loading || s.Binding.State != "available" || s.Binding.Agent != "codex" || s.Error != "" || a.startProjectTask == nil || s.IncludeHistory && (!s.HistoryLoaded || s.HistoryLoading || s.HistoryError != "" || len(s.Sessions) == 0)).OnClick(func() {
 				if a.startProjectTask != nil && s.Binding.State == "available" {
-					a.startProjectTask(records.ProjectTaskStart{OperationID: s.OperationID, Project: s.Project, BindingRevision: s.Binding.Revision, IncludeHistory: s.IncludeHistory, Sessions: s.Sessions})
+					a.startProjectTask(records.ProjectTaskStart{OperationID: s.OperationID, Project: s.Project, BindingRevision: s.Binding.Revision, IncludeHistory: s.IncludeHistory, Sessions: s.Sessions, HistoryWorkspaceID: s.HistoryWorkspaceID})
 				}
 			})
 		})

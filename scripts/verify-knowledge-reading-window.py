@@ -21,7 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--components', type=Path, required=True)
-    parser.add_argument('--scenario', choices=('reading', 'project-settings', 'project-binding', 'project-task', 'project-context', 'project-index-recovery'), default='reading')
+    parser.add_argument('--scenario', choices=('reading', 'project-settings', 'project-binding', 'project-task', 'project-context', 'project-index-recovery', 'project-history', 'project-history-guard'), default='reading')
     args = parser.parse_args()
     out, previous = args.out.resolve(), args.components.resolve()
     out.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -58,7 +58,7 @@ def main():
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
-    app_name = {'project-settings': 'MemlaneProjects', 'project-binding': 'MemlaneProjectBinding', 'project-task': 'MemlaneProjectTask', 'project-context':'MemlaneProjectTask', 'project-index-recovery':'MemlaneProjectTask'}.get(args.scenario, 'MemlaneReading')
+    app_name = {'project-settings': 'MemlaneProjects', 'project-binding': 'MemlaneProjectBinding', 'project-task': 'MemlaneProjectTask', 'project-context':'MemlaneProjectTask', 'project-index-recovery':'MemlaneProjectTask', 'project-history':'MemlaneProjectTask', 'project-history-guard':'MemlaneProjectTask'}.get(args.scenario, 'MemlaneReading')
     report['scenario'] = args.scenario
     app = out / ('app/darwin-arm64/' + app_name + '.app')
     runtime = out / 'runtime-config.json'
@@ -147,6 +147,10 @@ k=Ed25519PrivateKey.generate();print(json.dumps({'signature':base64.b64encode(k.
         elif args.scenario == 'project-index-recovery':
             report['scenario_source_sha256'] = hashlib.sha256((ROOT/'scripts/verify_project_index_recovery_scenario.py').read_bytes()).hexdigest()
             from verify_project_index_recovery_scenario import verify
+            verify(ui, call, report, capture, resize, out, ipc, driver)
+        elif args.scenario in ('project-history','project-history-guard'):
+            report['scenario_source_sha256'] = hashlib.sha256((ROOT/'scripts/verify_project_history_scenario.py').read_bytes()).hexdigest()
+            from verify_project_history_scenario import verify
             verify(ui, call, report, capture, resize, out, ipc, driver)
         else:
             repo = out/'synthetic-repository'

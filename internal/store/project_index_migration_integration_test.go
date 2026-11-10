@@ -12,7 +12,7 @@ import (
 
 func TestProjectIndexSchema19MigrationPreservesReceiptAndBackup(t *testing.T) {
 	s, ctx, task, _ := failedProjectIndexFixture(t)
-	_, err := s.DB.Exec(`DROP TABLE project_index_recoveries; PRAGMA user_version=19; PRAGMA wal_autocheckpoint=0`)
+	_, err := s.DB.Exec(`DROP TABLE project_task_histories; DROP TABLE project_index_recoveries; PRAGMA user_version=19; PRAGMA wal_autocheckpoint=0`)
 	mustMerge(t, err)
 	s.Schema = 19
 	before := restoreTables(t, s.DB)
@@ -32,7 +32,7 @@ func TestProjectIndexSchema19MigrationPreservesReceiptAndBackup(t *testing.T) {
 	mustMerge(t, reader.Close())
 	backups, err := filepath.Glob(filepath.Join(filepath.Dir(path), "backups/schema-v19-*.sqlite"))
 	mustMerge(t, err)
-	if len(backups) != 1 || current.Schema != 20 {
+	if len(backups) != 1 || current.Schema != SchemaVersion {
 		t.Fatal("missing schema19 original backup", backups, current.Schema)
 	}
 	old, err := sql.Open("sqlite", backups[0])
