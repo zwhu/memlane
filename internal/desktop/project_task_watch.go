@@ -88,6 +88,7 @@ func (a *App) ensureProjectTaskWatch() {
 func (a *App) SetWindowVisible(visible bool) {
 	a.windowHidden = !visible
 	if !visible {
+		a.persistExperiencePreview(nil)
 		a.projectOrganizer.stopWatch()
 	} else {
 		a.projectOrganizer.Motion.Reenter = true

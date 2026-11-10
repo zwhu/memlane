@@ -47,6 +47,12 @@ func (a *App) rememberDraft() {
 type PaneState struct{ ID, Mode string }
 
 func (a *App) navigate(page, scope string) {
+	if p := a.experiencePersistence; p != nil && !p.Loaded {
+		p.Touched = true
+	}
+	if a.commonDistillOpen() {
+		a.experience.Distill.BodyScroll = a.detailScroll.Y
+	}
 	if page == "全局记忆" {
 		page = "通用知识"
 	}

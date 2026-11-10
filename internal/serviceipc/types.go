@@ -23,6 +23,7 @@ type Config struct {
 }
 
 type Request struct {
+	ExperiencePreview      *records.ExperiencePreviewWrite      `json:"experience_preview,omitempty"`
 	ProjectTaskWatch       *records.ProjectTaskWatch            `json:"project_task_watch,omitempty"`
 	ProjectTaskStart       *records.ProjectTaskStart            `json:"project_task_start,omitempty"`
 	ProjectHistory         *records.ProjectHistoryQuery         `json:"project_history,omitempty"`

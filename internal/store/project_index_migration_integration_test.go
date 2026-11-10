@@ -12,7 +12,7 @@ import (
 
 func TestProjectIndexSchema19MigrationPreservesReceiptAndBackup(t *testing.T) {
 	s, ctx, task, _ := failedProjectIndexFixture(t)
-	_, err := s.DB.Exec(`DROP TABLE project_task_histories; DROP TABLE project_index_recoveries; PRAGMA user_version=19; PRAGMA wal_autocheckpoint=0`)
+	_, err := s.DB.Exec(`DROP TABLE experience_previews; DROP TABLE experience_preview_head; DROP TABLE project_task_histories; DROP TABLE project_index_recoveries; PRAGMA user_version=19; PRAGMA wal_autocheckpoint=0`)
 	mustMerge(t, err)
 	s.Schema = 19
 	before := restoreTables(t, s.DB)

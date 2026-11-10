@@ -108,7 +108,7 @@ func TestCogneeBrowsingSchema14WALBackupPreservesEveryOldTable(t *testing.T) {
 	s, a, _ := cogneeImportFixture(t)
 	_, err := s.ImportCognee(context.Background(), a)
 	mustMerge(t, err)
-	_, err = s.DB.Exec(`DROP TABLE project_task_histories; DROP TABLE project_index_recoveries; DROP TABLE project_task_items; DROP TABLE project_task_sources; DROP TABLE project_task_runs; DROP TABLE project_tasks; DROP TABLE project_bindings; DROP TABLE processing_operations; DROP TABLE processing_validations; DROP TABLE processing_saved; DROP TABLE processing_current; DROP TABLE processing_revisions; DROP TABLE pending_cognee_bindings; DROP TABLE connection_intakes; DROP TABLE cognee_bindings; PRAGMA user_version=14; PRAGMA wal_autocheckpoint=0`)
+	_, err = s.DB.Exec(`DROP TABLE experience_previews; DROP TABLE experience_preview_head; DROP TABLE project_task_histories; DROP TABLE project_index_recoveries; DROP TABLE project_task_items; DROP TABLE project_task_sources; DROP TABLE project_task_runs; DROP TABLE project_tasks; DROP TABLE project_bindings; DROP TABLE processing_operations; DROP TABLE processing_validations; DROP TABLE processing_saved; DROP TABLE processing_current; DROP TABLE processing_revisions; DROP TABLE pending_cognee_bindings; DROP TABLE connection_intakes; DROP TABLE cognee_bindings; PRAGMA user_version=14; PRAGMA wal_autocheckpoint=0`)
 	mustMerge(t, err)
 	s.Schema = 14
 	before := restoreTables(t, s.DB)

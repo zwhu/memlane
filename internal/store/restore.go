@@ -102,6 +102,8 @@ func PrepareRestoredSnapshot(ctx context.Context, data []byte, operation string)
 		query string
 		args  []any
 	}{
+		{`DELETE FROM experience_previews`, nil},
+		{`UPDATE experience_preview_head SET identity=?,generation=0,current='',operation='',digest='' WHERE singleton=1`, []any{uuid.NewString()}},
 		{`INSERT INTO connection_retirements(connection,restore) SELECT id,? FROM connections WHERE true ON CONFLICT(connection) DO NOTHING`, []any{operation}},
 		{`UPDATE connections SET enabled=0,generation=generation+1,last_seen=''`, nil},
 		{`UPDATE organization_plans SET enabled=0,generation=generation+1,next_run_ms=0`, nil},

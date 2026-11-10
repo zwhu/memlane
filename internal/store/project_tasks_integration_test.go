@@ -214,7 +214,7 @@ func TestProjectTaskRepositoryReplacementAndRestoreInvalidateAuthority(t *testin
 func TestProjectTaskSchema17BackupRetainsPreviousTables(t *testing.T) {
 	s, p, c := projectTaskFixture(t)
 	path := filepath.Join(filepath.Dir(p.Path), "memory.sqlite")
-	_, err := s.DB.Exec(`DROP TABLE project_task_histories; DROP TABLE project_index_recoveries; DROP TABLE project_task_items; DROP TABLE project_task_sources; DROP TABLE project_task_runs; DROP TABLE project_tasks; DROP TABLE project_bindings; PRAGMA user_version=17`)
+	_, err := s.DB.Exec(`DROP TABLE experience_previews; DROP TABLE experience_preview_head; DROP TABLE project_task_histories; DROP TABLE project_index_recoveries; DROP TABLE project_task_items; DROP TABLE project_task_sources; DROP TABLE project_task_runs; DROP TABLE project_tasks; DROP TABLE project_bindings; PRAGMA user_version=17`)
 	mustMerge(t, err)
 	s.Schema = 17
 	mustMerge(t, s.Close())

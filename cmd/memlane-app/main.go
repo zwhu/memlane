@@ -63,7 +63,25 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var quitting bool
+	var previewQuitPending, previewQuitFlushed bool
 	mygo.App.OnBeforeQuit(func(e *mygo.QuitEvent) {
+		if app != nil && app.HasExperiencePreview() && !previewQuitFlushed {
+			e.PreventDefault()
+			if previewQuitPending {
+				return
+			}
+			previewQuitPending = true
+			app.FlushExperiencePreview(func(err error) {
+				previewQuitPending = false
+				if err != nil {
+					log.Printf("退出前草稿保存未完成：%v", err)
+					return
+				}
+				previewQuitFlushed = true
+				mygo.App.Quit()
+			})
+			return
+		}
 		if controller != nil && (stopRequested || !settings.KeepService) && !forceQuit {
 			e.PreventDefault()
 			if quitPending {
@@ -79,6 +97,8 @@ func main() {
 				win.Update(func() {
 					quitPending = false
 					if err != nil {
+						previewQuitFlushed = false
+						app.CancelExperiencePreviewExit()
 						app.SetRuntimeStatus(desktop.RuntimeStatus{Phase: "failed", Message: "停止失败，请重试：" + err.Error()})
 						return
 					}

@@ -55,6 +55,8 @@ func TestBackupRestorePreviewCancelConfirmationAndReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := New("0.0.6", nil)
+	app.experience.Distill = &ExperienceDistillUI{TaskID: "old-task"}
+	app.organization.ExperienceDrafts = map[string]*ExperienceReviewDraft{"old-item": {Value: records.ExperienceReviewEdit{Text: "旧库未确认草稿"}}}
 	updates := make(chan func(), 4)
 	app.libraryContext = ctx
 	app.dispatch = func(fn func()) { updates <- fn }
@@ -83,7 +85,7 @@ func TestBackupRestorePreviewCancelConfirmationAndReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	after, err := os.ReadFile(path)
-	if err != nil || !bytes.Equal(prior, after) || calls != 0 || app.backups.RestoreSelection.ID != "" {
+	if err != nil || !bytes.Equal(prior, after) || calls != 0 || app.backups.RestoreSelection.ID != "" || app.experience.Distill == nil {
 		t.Fatal("preview/cancel changed current knowledge", err, calls)
 	}
 	app.previewBackupRestore(backup.ID)
@@ -95,6 +97,9 @@ func TestBackupRestorePreviewCancelConfirmationAndReceipt(t *testing.T) {
 	next()
 	if calls != 1 || reloads != 1 || app.backups.LastRestore.ID == "" || app.backups.Busy || app.runtimeStatus.Phase != "stopped" {
 		t.Fatal("restore receipt/reload absent", calls, reloads, app.backups)
+	}
+	if app.HasExperiencePreview() || app.experiencePersistence != nil || len(app.organization.ExperienceDrafts) != 0 {
+		t.Fatal("restored App retained old drafts or a shutdown flush")
 	}
 	if strings.Contains(app.backups.Error, "服务保持停止") {
 		t.Fatal("failure text makes unproven stop claim")

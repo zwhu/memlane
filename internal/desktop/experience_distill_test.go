@@ -3,6 +3,7 @@ package desktop
 // Native state fixtures exercise immutable drafts and navigation. They do not
 // represent model generation; the packaged pi run is verified separately.
 import (
+	"context"
 	"github.com/egoist/mygo/ui"
 	"github.com/zwhu/memlane/internal/records"
 	"github.com/zwhu/memlane/internal/serviceipc"
@@ -81,15 +82,20 @@ func TestDistillCommittedReceiptRetrySurvivesSourceChange(t *testing.T) {
 	})
 	source := *a.current()
 	e := records.OrganizationEntry{ID: "candidate", State: "review_pending", Item: records.OrganizationItem{Action: "global_experience", Title: "标题", Text: "通用表述", Conditions: "适用条件"}}
+	a.experiencePersistence = &experiencePersistence{Loaded: true, Writer: &experiencePreviewWriter{life: context.Background(), identity: "fixture-identity", save: func(_ context.Context, w records.ExperiencePreviewWrite) (records.ExperiencePreviewState, error) {
+		return records.ExperiencePreviewState{Identity: w.Identity, Generation: w.Generation + 1}, nil
+	}}}
 	s := &ExperienceDistillUI{Open: true, Source: source, CurrentSource: source, TaskID: "task", Task: &records.OrganizationTask{ID: "task", State: "completed", Entries: []records.OrganizationEntry{e}}}
 	a.experience.Distill = s
 	a.confirmDistillExperience(e, true)
+	awaitExperienceDispatch(t, dispatch)
 	awaitExperienceDispatch(t, dispatch)
 	if s.Error == "" || a.experienceReviewDraft(e).Request == nil {
 		t.Fatal("uncertain confirmation lost its immutable request")
 	}
 	s.CurrentSource.Revision++
 	a.confirmDistillExperience(e, true)
+	awaitExperienceDispatch(t, dispatch)
 	awaitExperienceDispatch(t, dispatch)
 	if len(requests) != 2 || requests[0].Receipt != requests[1].Receipt || requests[1].Edit.Text != "通用表述" || s.Task.Entries[0].State != "applied" {
 		t.Fatal("source change prevented receipt recovery or changed the request")

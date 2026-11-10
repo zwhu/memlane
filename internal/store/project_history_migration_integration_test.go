@@ -10,7 +10,7 @@ import (
 
 func TestProjectHistorySchema20MigrationKeepsOriginalTaskAndBackup(t *testing.T) {
 	s, ctx, task, _ := failedProjectIndexFixture(t)
-	_, err := s.DB.Exec(`DROP TABLE project_task_histories; PRAGMA user_version=20`)
+	_, err := s.DB.Exec(`DROP TABLE experience_previews; DROP TABLE experience_preview_head; DROP TABLE project_task_histories; PRAGMA user_version=20`)
 	mustMerge(t, err)
 	s.Schema = 20
 	before := restoreTables(t, s.DB)

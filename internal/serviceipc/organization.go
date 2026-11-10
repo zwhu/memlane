@@ -7,6 +7,17 @@ import (
 
 type OrganizationClient struct{ Root string }
 
+func (c OrganizationClient) Preview(ctx context.Context) (records.ExperiencePreviewState, error) {
+	var out records.ExperiencePreviewState
+	err := Call(ctx, c.Root, Request{Op: "experience_preview_get"}, &out)
+	return out, err
+}
+func (c OrganizationClient) SavePreview(ctx context.Context, w records.ExperiencePreviewWrite) (records.ExperiencePreviewState, error) {
+	var out records.ExperiencePreviewState
+	err := Call(ctx, c.Root, Request{Op: "experience_preview_put", ExperiencePreview: &w}, &out)
+	return out, err
+}
+
 func (c OrganizationClient) CopyExperience(ctx context.Context, d records.ExperienceCopy) (records.OrganizationReceipt, error) {
 	var out records.OrganizationReceipt
 	e := Call(ctx, c.Root, Request{Op: "experience_copy", UserConfirmed: true, ExperienceCopy: &d}, &out)

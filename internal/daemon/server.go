@@ -554,6 +554,13 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 			}
 		}
 		return t, err
+	case "experience_preview_get":
+		return s.store.ExperiencePreview(operation)
+	case "experience_preview_put":
+		if r.ExperiencePreview == nil {
+			return nil, records.MergeError("invalid_request")
+		}
+		return s.store.SaveExperiencePreview(operation, *r.ExperiencePreview)
 	case "organization_get":
 		return s.getOrganization(operation, r.OrganizationTask)
 	case "organization_list":

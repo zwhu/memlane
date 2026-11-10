@@ -57,7 +57,8 @@ func displayHistory(vs []records.History) []MemoryHistory {
 // from replacing a newer selection or draft; read failures retain prior data.
 func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(func())) {
 	a.projectOrganizer.stopWatch()
-	a.experience = ExperienceUI{}
+	a.retireExperiencePreview()
+	a.experiencePersistence = &experiencePersistence{}
 	a.library = serviceipc.Library{Root: root}
 	a.backups = BackupUI{Client: serviceipc.BackupClient{Root: root}, Sequence: a.backups.Sequence + 1}
 	a.code = CodeUI{Client: serviceipc.CodeClient{Root: root}, Mode: "函数与符号", Manage: true}
@@ -77,6 +78,7 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 	a.libraryContext = ctx
 	a.dispatch = dispatch
 	a.onNavigate = func() {
+		a.persistExperiencePreview(nil)
 		a.closeSourceReader()
 		a.textWindows = nil
 		if a.page != "代码图谱" && a.code.Cancel != nil {
@@ -150,6 +152,8 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 					if a.firstLaunch.Detecting {
 						return
 					}
+					a.loadExperiencePreview()
+					a.persistExperiencePreview(nil)
 					if a.page == "项目" {
 						a.refreshBrowsing()
 					}
@@ -159,7 +163,7 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 					if a.projectOrganizer.Open {
 						a.refreshProjectOrganizer()
 					}
-					if a.commonDistillOpen() {
+					if a.commonDistillOpen() && !a.windowHidden {
 						a.refreshExperienceDistill()
 					}
 					if a.page == "设置" {
@@ -193,6 +197,8 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 	a.refreshMerge(false)
 	a.refreshProcessing()
 	a.configureBrowsing()
+	a.experiencePersistence.Touched = false
+	a.loadExperiencePreview()
 }
 func (a *App) listQuery() records.ListQuery {
 	sortMode := map[string]string{"最近更新": "updated", "常用": "frequent", "重要优先": "important"}[a.listSort]

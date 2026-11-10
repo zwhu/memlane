@@ -33,6 +33,25 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
                   model_inference_verified=False, native_candidate_edit_verified=False,
                   actual_processing_dispatch_verified=False, cleanup_model_errors=[])
     receipts = {}
+    faults = set()
+
+    def fault(name, statement=None):
+        with sqlite3.connect(client/'data/memlane.sqlite', timeout=15) as db:
+            if statement:
+                db.execute(statement)
+                faults.add(name)
+            else:
+                db.execute('DROP TRIGGER IF EXISTS '+name)
+                faults.discard(name)
+
+    def reopen(name):
+        old = ui.pid
+        ui.quit()
+        assert ipc.exists(), '退出App应保留真实后台服务'
+        ui.__init__(app,out,out/'screenshots',config=out/'runtime-config.json')
+        resize(980,620)
+        (out/(name+'-process.json')).write_text(json.dumps(dict(pid=ui.pid,previous_pid=old,automation=ui.path,native=ui.native_path,owned=True))+'\n')
+        assert ui.pid != old
 
     def fast_press(key):
         node = ui.node(key=key)
@@ -113,7 +132,7 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
 
         def candidate(identifier):
             value = task(identifier)
-            if value['state'] in ('failed','partial_failed','interrupted','cancelled'): raise AssertionError(('真实提炼失败',value))
+            if value['state'] in ('failed','partial_failed','interrupted','cancelled'): raise RuntimeError(('真实提炼失败',value))
             return value if value['state']=='completed' and value.get('entries') else None
         generated = driver.wait(lambda:candidate(second),timeout=180)
         assert globals_total()==0 and len(generated['entries'])==1
@@ -148,10 +167,69 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
         capture('05-edited-candidate-narrow-system.png')
         footer = ui.node(key='experience-distill-confirm')['bounds']
         assert footer['y']>=54 and footer['y']+footer['height']<=620, footer
+        ui.req('act', id=ui.node(key='experience-review-conditions-'+identifier)['id'], action='focus')
+        def preview_matches(require_focus=True):
+            value = call('experience_preview_get')
+            p = value.get('preview') or {}
+            d = p.get('drafts',{}).get(identifier,{})
+            return value if p.get('task')==second and d.get('value')==dict(title=title,text=text,conditions=conditions) and (not require_focus or p.get('focus')=='experience-review-conditions-'+identifier) and p.get('body_scroll',0)>0 else None
+        before_reopen = driver.wait(preview_matches)
+        receipts['preview_before_reopen'] = before_reopen
+        reopen('draft-reopen')
+        driver.wait(lambda:any(n.get('key')=='experience-review-conditions-'+identifier for n in ui.nodes()),timeout=60)
+        resize(980,620)
+        assert ui.node(key='experience-review-title-'+identifier)['value']==title
+        assert ui.node(key='experience-review-text-'+identifier)['value']==text
+        assert ui.node(key='experience-review-conditions-'+identifier)['value']==conditions
+        def restored_focus():
+            field=ui.node(key='experience-review-conditions-'+identifier)
+            tree=ui.req('tree')
+            return field if tree.get('focus')==field['id'] and 'offscreen' not in field.get('states',[]) else None
+        driver.wait(restored_focus)
+        restored_preview = driver.wait(preview_matches)
+        assert restored_preview['identity']==before_reopen['identity']
+        assert restored_preview['preview']['id']==before_reopen['preview']['id']
+        assert restored_preview['task']['attempt']==generated['attempt'] and restored_preview['task']['execution']==generated['execution']
+        assert len(tasks())==2 and globals_total()==0
+        capture('05b-draft-restored-narrow-system.png')
+        report['actual_app_reopen_preserves_task_draft_focus_scroll'] = True
+        receipts['preview_restored'] = restored_preview
+
+        fault('l04_draft_fault', "CREATE TRIGGER l04_draft_fault BEFORE UPDATE ON experience_previews BEGIN SELECT RAISE(ABORT,'explicit synthetic draft write fault'); END")
+        ui.set('experience-review-title-'+identifier,title+'（未持久）')
+        driver.wait(lambda:any(n.get('key')=='experience-preview-error' for n in ui.nodes()))
+        assert ui.node(key='experience-review-title-'+identifier)['value']==title+'（未持久）'
+        assert call('experience_preview_get')['preview']['drafts'][identifier]['value']['title']==title
+        assert globals_total()==0
+        capture('05c-draft-write-failed-system.png')
+        report['actual_sqlite_fault_retains_native_draft_without_save'] = True
+        fault('l04_draft_fault')
+        ui.set('experience-review-title-'+identifier,title)
+        driver.wait(lambda:not any(n.get('key')=='experience-preview-error' for n in ui.nodes()))
+        driver.wait(lambda:preview_matches(require_focus=False))
+
+        # The draft barrier commits its receipt before this real transaction
+        # fails. Reopening retains the same receipt and never launches a model.
+        fault('l04_confirm_fault', "CREATE TRIGGER l04_confirm_fault BEFORE INSERT ON global_experiences BEGIN SELECT RAISE(ABORT,'explicit synthetic approval transaction fault'); END")
+        fast_press('experience-distill-confirm')
+        driver.wait(lambda:'重试确认回执' in ui.labels())
+        pending = call('experience_preview_get')['preview']['drafts'][identifier]['request']
+        driver.wait(lambda: any('确认回执未完成' in x for x in ui.labels()))
+        assert task(second)['entries'][0]['state']=='review_pending' and globals_total()==0
+        capture('05d-confirm-transaction-failed-system.png')
+        reopen('confirmation-reopen')
+        driver.wait(lambda:'重试确认回执' in ui.labels(),timeout=60)
+        assert 'disabled' in ui.node(key='experience-review-title-'+identifier).get('states',[])
+        assert call('experience_preview_get')['preview']['drafts'][identifier]['request']==pending
+        assert len(tasks())==2 and task(second)['execution']==generated['execution']
+        capture('05e-confirm-receipt-restored-system.png')
+        fault('l04_confirm_fault')
         fast_press('experience-distill-confirm')
         approved = driver.wait(lambda: (t if t['entries'][0]['state']=='applied' else None) if (t:=task(second)) else None)
         assert approved['result']==generated['result'] and approved['entries'][0]['item']==item['item']
         receipt = approved['entries'][0]['receipt']
+        assert receipt['receipt_id']==pending['receipt_id']
+        report['actual_confirmation_reopen_reuses_frozen_receipt'] = True
         assert receipt['edited_experience']==dict(title=title,text=text,conditions=conditions)
         stored = driver.wait(lambda:(v if v['index_state']=='indexed' else None) if (v:=call('get',memory=receipt['memory'])) else None,timeout=90)
         assert stored['title']==title and stored['text']==text and stored['experience']['conditions']==conditions
@@ -196,6 +274,9 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
         (out/'distill-receipts.json').write_text(json.dumps(receipts,ensure_ascii=False,indent=2)+'\n')
         report['full_l04_all_backends_verified'] = False
     finally:
+        for name in list(faults):
+            try: fault(name)
+            except Exception as error: report['cleanup_model_errors'].append(repr(error))
         # Always persist the completed evidence before removing temporary links.
         (out/'distill-partial-receipts.json').write_text(json.dumps(receipts,ensure_ascii=False,indent=2)+'\n')
         if connection and options:

@@ -13,6 +13,8 @@ import (
 )
 
 type App struct {
+	experiencePersistence                                            *experiencePersistence
+	experienceExitPending                                            bool
 	commonCategory                                                   string
 	commonSelectMatch                                                bool
 	windowHidden                                                     bool
@@ -177,6 +179,7 @@ func (a *App) SetUpdateStatus(message string, checking bool) {
 }
 
 func (a *App) View(c *ui.Context) {
+	c.Root().Disabled(a.experienceExitPending)
 	theme := *ui.LightTheme()
 	theme.Spacing, theme.FontSize, theme.Radius = 3, design.Body, 5
 	theme.Accent, theme.Text, theme.TextMuted, theme.Border = design.Ink, design.Ink, design.Muted, design.Border
@@ -209,6 +212,12 @@ func (a *App) View(c *ui.Context) {
 		}
 		ui.Column(c).Grow(1).MinWidth(0).Background(ui.Hex("#ffffff")).Children(func() {
 			a.toolbar(c)
+			if p := a.experiencePersistence; p != nil && p.Error != "" && !a.commonDistillOpen() && a.HasExperiencePreview() {
+				ui.Row(c).Padding(8, 24).Gap(8).Children(func() {
+					ui.Text(c, p.Error).FontSize(11).Grow(1)
+					quietButton(c, "返回提炼预览").Key("experience-preview-return").OnClick(a.showExperienceDistill)
+				})
+			}
 			if a.page == "项目" && a.scope != "" && a.detailMode == "view" {
 				a.projectExplorer(c)
 			} else if a.page == "官方记忆" {

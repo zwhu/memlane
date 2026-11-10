@@ -12,20 +12,23 @@ import (
 )
 
 type ExperienceDistillUI struct {
-	Open                            bool
-	Source, CurrentSource           MemoryItem
-	SourceError                     string
-	ReturnPage, ReturnScope         string
-	ReturnScroll                    float32
-	Task                            *records.OrganizationTask
-	TaskID, CandidateID             string
-	Start                           *records.OrganizationStart
-	Saved                           *MemoryItem
-	Sequence                        uint64
-	Loading, Busy, CancelWanted     bool
-	Error                           string
-	DebugError                      string
-	ExplanationOpen, DiagnosticOpen bool
+	PreviewID, ReturnSelected, Focus string
+	BodyScroll                       float32
+	RestoreFocus                     bool
+	Open                             bool
+	Source, CurrentSource            MemoryItem
+	SourceError                      string
+	ReturnPage, ReturnScope          string
+	ReturnScroll                     float32
+	Task                             *records.OrganizationTask
+	TaskID, CandidateID              string
+	Start                            *records.OrganizationStart
+	Saved                            *MemoryItem
+	Sequence                         uint64
+	Loading, Busy, CancelWanted      bool
+	Error                            string
+	DebugError                       string
+	ExplanationOpen, DiagnosticOpen  bool
 }
 
 func (a *App) commonDistillOpen() bool {
@@ -96,33 +99,48 @@ func (a *App) submitExperienceDistill(s *ExperienceDistillUI) {
 	sequence := s.Sequence
 	request := *s.Start
 	client, life := a.organization.Client, a.libraryContext
-	go func() {
-		ctx, stop := context.WithTimeout(life, 10*time.Second)
-		defer stop()
-		task, err := client.Start(ctx, request)
-		if life.Err() != nil {
+	a.persistExperiencePreview(func(persistErr error) {
+		if a.experience.Distill != s || sequence != s.Sequence {
 			return
 		}
-		a.dispatch(func() {
-			if a.experience.Distill != s || sequence != s.Sequence {
-				return
-			}
+		if persistErr != nil {
 			s.Busy = false
-			if err != nil {
-				s.Error = "生成请求未完成，请核对处理配置；可以按同一请求重试。"
-				s.DebugError = err.Error()
+			s.Error = "生成请求尚未保存，请重试。"
+			return
+		}
+		if s.CancelWanted {
+			s.Busy = false
+			a.closeExperienceDistill()
+			return
+		}
+		go func() {
+			ctx, stop := context.WithTimeout(life, 10*time.Second)
+			defer stop()
+			task, err := client.Start(ctx, request)
+			if life.Err() != nil {
 				return
 			}
-			s.Start = nil
-			s.TaskID = task.ID
-			s.Task = &task
-			if s.CancelWanted {
-				a.cancelExperienceDistill()
-				return
-			}
-			a.refreshExperienceDistill()
-		})
-	}()
+			a.dispatch(func() {
+				if a.experience.Distill != s || sequence != s.Sequence {
+					return
+				}
+				s.Busy = false
+				if err != nil {
+					s.Error = "生成请求未完成，请核对处理配置；可以按同一请求重试。"
+					s.DebugError = err.Error()
+					return
+				}
+				s.Start = nil
+				s.TaskID = task.ID
+				s.Task = &task
+				if s.CancelWanted {
+					a.cancelExperienceDistill()
+					return
+				}
+				a.refreshExperienceDistill()
+			})
+		}()
+	})
 }
 
 func (a *App) refreshExperienceDistill() {
@@ -184,6 +202,7 @@ func (a *App) refreshExperienceDistill() {
 					}
 				}
 			}
+			a.persistExperiencePreview(nil)
 		})
 	}()
 }
@@ -200,9 +219,14 @@ func (a *App) closeExperienceDistill() {
 	if s == nil {
 		return
 	}
+	if a.commonDistillOpen() {
+		s.BodyScroll = a.detailScroll.Y
+	}
 	s.Open = false
 	a.navigate(s.ReturnPage, s.ReturnScope)
+	a.selectedID = s.ReturnSelected
 	a.detailScroll.Y = s.ReturnScroll
+	a.persistExperiencePreview(nil)
 }
 
 func (a *App) cancelExperienceDistill() {
@@ -273,29 +297,39 @@ func (a *App) confirmDistillExperience(e records.OrganizationEntry, confirm bool
 	s.Sequence++
 	sequence := s.Sequence
 	client, life := a.organization.Client, a.libraryContext
-	go func() {
-		ctx, stop := context.WithTimeout(life, 10*time.Second)
-		defer stop()
-		task, err := client.Review(ctx, request)
-		if life.Err() != nil {
+	a.persistExperiencePreview(func(persistErr error) {
+		if a.experience.Distill != s || sequence != s.Sequence {
 			return
 		}
-		a.dispatch(func() {
-			if a.experience.Distill != s || sequence != s.Sequence {
-				return
-			}
+		if persistErr != nil {
 			s.Busy = false
-			if err != nil {
-				s.Error = "确认回执未完成，草稿与原候选保留，可以按同一回执重试。"
-				s.DebugError = err.Error()
+			s.Error = "确认请求尚未保存，草稿保留，请重试。"
+			return
+		}
+		go func() {
+			ctx, stop := context.WithTimeout(life, 10*time.Second)
+			defer stop()
+			task, err := client.Review(ctx, request)
+			if life.Err() != nil {
 				return
 			}
-			s.Error = ""
-			s.Task = &task
-			a.refreshExperienceDistill()
-			a.refresh(false)
-		})
-	}()
+			a.dispatch(func() {
+				if a.experience.Distill != s || sequence != s.Sequence {
+					return
+				}
+				s.Busy = false
+				if err != nil {
+					s.Error = "确认回执未完成，草稿与原候选保留，可以按同一回执重试。"
+					s.DebugError = err.Error()
+					return
+				}
+				s.Error = ""
+				s.Task = &task
+				a.refreshExperienceDistill()
+				a.refresh(false)
+			})
+		}()
+	})
 }
 
 func (a *App) experienceDistillPreview(c *ui.Context) {
@@ -351,6 +385,17 @@ func (a *App) experienceDistillPreview(c *ui.Context) {
 					}
 				})
 			}
+			if p := a.experiencePersistence; p != nil && p.Error != "" {
+				ui.Text(c, p.Error).Key("experience-preview-error").FontSize(11)
+				quietButton(c, "重试保存草稿").Key("experience-preview-retry").OnClick(func() {
+					if !p.Loaded {
+						a.loadExperiencePreview()
+					} else {
+						p.LastDigest = ""
+						a.persistExperiencePreview(nil)
+					}
+				})
+			}
 			if s.SourceError != "" {
 				ui.Text(c, s.SourceError).FontSize(11)
 			} else if s.CurrentSource.ID != "" && (s.CurrentSource.Revision != s.Source.Revision || s.CurrentSource.State != "active" || s.CurrentSource.Dataset != s.Source.Dataset) {
@@ -361,7 +406,7 @@ func (a *App) experienceDistillPreview(c *ui.Context) {
 				ui.Row(c).Gap(8).Children(func() {
 					for _, e := range s.Task.Entries {
 						if e.Item.Action == "global_experience" {
-							quietButton(c, e.Item.Title).Key("experience-distill-candidate-" + e.ID).OnClick(func() { s.CandidateID = e.ID })
+							quietButton(c, e.Item.Title).Key("experience-distill-candidate-" + e.ID).OnClick(func() { s.CandidateID = e.ID; s.Focus = ""; a.persistExperiencePreview(nil) })
 						}
 					}
 				})
@@ -380,13 +425,16 @@ func (a *App) experienceDistillPreview(c *ui.Context) {
 					if entry.State == "review_pending" || entry.State == "expired" {
 						ui.Column(c).Border(1, design.Border).Radius(7).Padding(16).Gap(12).Children(func() {
 							ui.Text(c, "将新增到：通用经验").FontSize(10).TextColor(design.Muted)
-							frozen := s.Busy || d.Request != nil || entry.State != "review_pending"
+							frozen := s.Busy || d.Request != nil || d.RejectRequest != nil || entry.State != "review_pending"
 							ui.Text(c, "标题").FontSize(11).TextColor(design.Muted)
-							ui.TextInput(c.Key("experience-review-title-"+entry.ID), &d.Value.Title).Label("标题").Height(34).Disabled(frozen)
+							title := ui.TextInput(c.Key("experience-review-title-"+entry.ID), &d.Value.Title).Label("标题").Height(34).Disabled(frozen).OnChange(func() { a.persistExperiencePreview(nil) })
+							a.trackExperienceFocus(title, "experience-review-title-"+entry.ID, frozen)
 							ui.Text(c, "通用表述").FontSize(11).TextColor(design.Muted)
-							ui.TextArea(c.Key("experience-review-text-"+entry.ID), &d.Value.Text).Label("通用表述").Height(160).LineHeight(1.7).Disabled(frozen)
+							body := ui.TextArea(c.Key("experience-review-text-"+entry.ID), &d.Value.Text).Label("通用表述").Height(160).LineHeight(1.7).Disabled(frozen).OnChange(func() { a.persistExperiencePreview(nil) })
+							a.trackExperienceFocus(body, "experience-review-text-"+entry.ID, frozen)
 							ui.Text(c, "适用条件").FontSize(11).TextColor(design.Muted)
-							ui.TextArea(c.Key("experience-review-conditions-"+entry.ID), &d.Value.Conditions).Label("适用条件").Height(80).LineHeight(1.7).Disabled(frozen)
+							conditions := ui.TextArea(c.Key("experience-review-conditions-"+entry.ID), &d.Value.Conditions).Label("适用条件").Height(80).LineHeight(1.7).Disabled(frozen).OnChange(func() { a.persistExperiencePreview(nil) })
+							a.trackExperienceFocus(conditions, "experience-review-conditions-"+entry.ID, frozen)
 							ui.Collapsible(c, "模型原候选", &d.OriginalOpen, func() {
 								ui.Text(c, entry.Item.Title).Bold()
 								ui.Text(c, entry.Item.Text).Selectable().LineHeight(1.7)
@@ -427,7 +475,14 @@ func (a *App) experienceDistillPreview(c *ui.Context) {
 			}
 		})
 		ui.Row(c).Shrink(0).Padding(12, 24).Gap(8).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
-			ui.Text(c, "保存前再次核对来源版本").FontSize(10).TextColor(design.Muted).Grow(1).MinWidth(0)
+			notice := "保存前再次核对来源版本"
+			if s.Error != "" {
+				notice = s.Error
+			}
+			if p := a.experiencePersistence; p != nil && p.Error != "" {
+				notice = p.Error
+			}
+			ui.Text(c, notice).Key("experience-distill-footer-notice").FontSize(10).TextColor(design.Muted).Grow(1).MinWidth(0)
 			if s.Task == nil && s.Busy {
 				quietButton(c, "取消生成").Key("experience-distill-cancel").OnClick(a.cancelExperienceDistill)
 			}
@@ -456,12 +511,18 @@ func (a *App) showExperienceDistill() {
 		return
 	}
 	s.ReturnPage, s.ReturnScope, s.ReturnScroll = a.page, a.scope, a.detailScroll.Y
+	s.ReturnSelected = a.selectedID
 	s.Open = true
+	if s.TaskID == "" {
+		s.CancelWanted = false
+	}
 	a.navigate("通用知识", "")
 	a.detailMode = "view"
 	a.editing = false
-	a.detailScroll.Y = 0
+	a.detailScroll.Y = s.BodyScroll
+	s.RestoreFocus = true
 	a.refreshExperienceDistill()
+	a.persistExperiencePreview(nil)
 }
 
 func (a *App) repeatExperienceDistill() {
@@ -473,7 +534,7 @@ func (a *App) repeatExperienceDistill() {
 	if source.ID == "" {
 		source = old.Source
 	}
-	s := &ExperienceDistillUI{Open: true, Source: source, ReturnPage: old.ReturnPage, ReturnScope: old.ReturnScope, ReturnScroll: old.ReturnScroll}
+	s := &ExperienceDistillUI{Open: true, Source: source, ReturnPage: old.ReturnPage, ReturnScope: old.ReturnScope, ReturnSelected: old.ReturnSelected, ReturnScroll: old.ReturnScroll}
 	a.experience.Distill = s
 	a.detailScroll.Y = 0
 	a.prepareExperienceDistill(s)

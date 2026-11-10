@@ -139,6 +139,7 @@ func (a *App) finishStartupDetection() {
 		a.serviceState = "ready"
 	}
 	s.State.Message = a.runtimeStatus.Message
+	a.loadExperiencePreview()
 	if a.onNavigate != nil {
 		a.onNavigate()
 	}

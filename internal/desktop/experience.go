@@ -200,7 +200,7 @@ func (a *App) beginExperienceDistill(v MemoryItem) {
 		return
 	}
 	if old := a.experience.Distill; old != nil && old.Source.ID == v.ID && old.Source.Revision == v.Revision {
-		pending := old.Busy || old.Loading || distillTaskRunning(old.Task)
+		pending := old.Start != nil || old.Busy || old.Loading || distillTaskRunning(old.Task)
 		if old.Task != nil {
 			for _, entry := range old.Task.Entries {
 				pending = pending || entry.State == "review_pending"
@@ -211,7 +211,7 @@ func (a *App) beginExperienceDistill(v MemoryItem) {
 			return
 		}
 	}
-	s := &ExperienceDistillUI{Open: true, Source: v, ReturnPage: a.page, ReturnScope: a.scope, ReturnScroll: a.detailScroll.Y}
+	s := &ExperienceDistillUI{Open: true, Source: v, ReturnPage: a.page, ReturnScope: a.scope, ReturnSelected: a.selectedID, ReturnScroll: a.detailScroll.Y}
 	a.experience.Copy = nil
 	a.experience.Distill = s
 	a.commonCategory = ""
