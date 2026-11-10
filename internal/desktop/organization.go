@@ -12,36 +12,40 @@ import (
 )
 
 type OrganizationUI struct {
-	ReviewItem                                                         string
-	ResultScroll                                                       float32
-	ReviewScroll                                                       map[string]*ui.ScrollState
-	DiagnosticOpen, ExplanationOpen                                    bool
-	Sources                                                            map[string]MemoryItem
-	SourceErrors                                                       map[string]string
-	Epoch                                                              string
-	Processing                                                         records.ProcessingConfiguration
-	ProcessingLoaded, ProcessingLoading                                bool
-	ProcessingError                                                    string
-	ProcessingSequence                                                 uint64
-	ExperienceDrafts                                                   map[string]*ExperienceReviewDraft
-	GlobalMode                                                         bool
-	Purpose                                                            string
-	ReviewMode                                                         bool
-	Destinations                                                       map[string]bool
-	Decisions                                                          map[string]records.OrganizationReview
-	Client                                                             serviceipc.OrganizationClient
-	Tasks                                                              []records.OrganizationSummary
-	Selected, Next, Project, ProjectLabel, Kind, Cursor, Error, Notice string
-	Task                                                               *records.OrganizationTask
-	Candidates                                                         []MemoryItem
-	Chosen                                                             map[string]MemoryItem
-	Order                                                              []string
-	Start                                                              *records.OrganizationStart
-	Resume                                                             *records.OrganizationResume
-	Results                                                            map[string]MemoryItem
-	New, Busy, Loading                                                 bool
-	Sequence                                                           int64
-	Scroll                                                             ui.ScrollState
+	FilterOpen, TasksLoaded                                                   bool
+	FilterOrigin, FilterProject, FilterProjectLabel, FilterTime, ListIdentity string
+	TasksTotal                                                                int
+	RejectReasons                                                             map[string]*OrganizationRejectDraft
+	ReviewItem                                                                string
+	ResultScroll                                                              float32
+	ReviewScroll                                                              map[string]*ui.ScrollState
+	DiagnosticOpen, ExplanationOpen                                           bool
+	Sources                                                                   map[string]MemoryItem
+	SourceErrors                                                              map[string]string
+	Epoch                                                                     string
+	Processing                                                                records.ProcessingConfiguration
+	ProcessingLoaded, ProcessingLoading                                       bool
+	ProcessingError                                                           string
+	ProcessingSequence                                                        uint64
+	ExperienceDrafts                                                          map[string]*ExperienceReviewDraft
+	GlobalMode                                                                bool
+	Purpose                                                                   string
+	ReviewMode                                                                bool
+	Destinations                                                              map[string]bool
+	Decisions                                                                 map[string]records.OrganizationReview
+	Client                                                                    serviceipc.OrganizationClient
+	Tasks                                                                     []records.OrganizationSummary
+	Selected, Next, Project, ProjectLabel, Kind, Cursor, Error, Notice        string
+	Task                                                                      *records.OrganizationTask
+	Candidates                                                                []MemoryItem
+	Chosen                                                                    map[string]MemoryItem
+	Order                                                                     []string
+	Start                                                                     *records.OrganizationStart
+	Resume                                                                    *records.OrganizationResume
+	Results                                                                   map[string]MemoryItem
+	New, Busy, Loading                                                        bool
+	Sequence                                                                  int64
+	Scroll                                                                    ui.ScrollState
 }
 
 func organizationStatus(state string) string {
@@ -150,7 +154,8 @@ func (a *App) refreshOrganization(more, candidatesMore bool) {
 	if kind == "" {
 		kind = "knowledge"
 	}
-	q := records.MergeListQuery{Limit: 30}
+	q := a.organizationListQuery(time.Now())
+	identity := records.MergeDigest(q)
 	if more {
 		q.Before = s.Next
 	}
@@ -212,6 +217,10 @@ func (a *App) refreshOrganization(more, candidatesMore bool) {
 				return
 			}
 			s.Error = ""
+			if s.ListIdentity != identity {
+				s.Tasks, s.Next = nil, ""
+			}
+			s.ListIdentity, s.TasksLoaded, s.TasksTotal = identity, true, page.Total
 			if more {
 				s.Tasks = append(s.Tasks, page.Items...)
 			} else if len(s.Tasks) <= 30 {
@@ -355,8 +364,21 @@ func (a *App) resumeOrganization() {
 }
 func (a *App) organizationList(c *ui.Context) {
 	s := &a.organization
+	a.organizationListControls(c)
 	if len(s.Tasks) == 0 {
-		a.empty(c, "暂无整理记录", "选择本次材料和处理方式开始整理，所有产出保留出处。")
+		if s.Error != "" {
+			ui.Text(c, "整理记录读取未完成，保留当前任务与筛选条件。").FontSize(11)
+			quietButton(c, "重试读取整理记录").Key("organization-list-retry").Disabled(s.Loading || s.Busy).OnClick(func() { a.refreshOrganization(false, false) })
+		} else if !s.TasksLoaded && !a.visualFixture {
+			ui.Text(c, "正在读取整理记录…").FontSize(11)
+		} else if s.FilterProject != "" || s.FilterOrigin != "" && s.FilterOrigin != "不限来源" || s.FilterTime == "今天" {
+			a.empty(c, "没有匹配的整理记录", "当前任务和审核上下文保留，可清空筛选条件。")
+			if !s.FilterOpen {
+				quietButton(c, "清空条件").Key("organization-list-clear-empty").Disabled(s.Busy || s.Loading).OnClick(a.clearOrganizationFilters)
+			}
+		} else {
+			a.empty(c, "暂无整理记录", "选择本次材料和处理方式开始整理，所有产出保留出处。")
+		}
 		return
 	}
 	for _, t := range s.Tasks {
@@ -367,14 +389,18 @@ func (a *App) organizationList(c *ui.Context) {
 		b := ui.Button(c.Key("organization-task-"+t.ID), "").Label(title).BorderWidth(0).Padding(12).Justify(ui.Start).Children(func() {
 			ui.Column(c).Gap(7).Children(func() {
 				ui.Text(c, title).Bold()
-				ui.Text(c, a.scopeLabel(t.Project)+" · "+func() string {
+				ui.Text(c, a.scopeLabel(t.Project)+" · "+organizationSummaryExecutor(t)).FontSize(design.Small).TextColor(design.Muted)
+				status := func() string {
 					if t.State == "completed" {
 						return "执行已完成"
 					}
 					return organizationStatus(t.State)
-				}()).FontSize(design.Small).TextColor(design.Muted)
+				}()
 				created, _ := time.Parse("2006-01-02 15:04:05", t.CreatedAt)
-				ui.Text(c, created.Local().Format("2006-01-02 15:04")).FontSize(design.Small).TextColor(design.Muted)
+				if created.IsZero() {
+					created, _ = time.Parse(time.RFC3339Nano, t.CreatedAt)
+				}
+				ui.Text(c, organizationOriginLabel(t.Origin)+" · "+created.Local().Format("2006-01-02 15:04")+" · "+status).FontSize(design.Small).TextColor(design.Muted)
 			})
 		})
 		if t.ID == s.Selected && !s.New {
@@ -385,7 +411,7 @@ func (a *App) organizationList(c *ui.Context) {
 		b.OnClick(func() { a.selectOrganization(t.ID) })
 	}
 	if s.Next != "" {
-		quietButton(c, "更多整理记录").Disabled(s.Loading).OnClick(func() { a.refreshOrganization(true, false) })
+		quietButton(c, "加载更多记录").Key("organization-list-more").Disabled(s.Loading || s.Busy).OnClick(func() { a.refreshOrganization(true, false) })
 	}
 }
 func (a *App) organizationChooser(c *ui.Context) {
@@ -630,6 +656,11 @@ func (a *App) reviewOrganizationEntry(t records.OrganizationTask, e records.Orga
 	d, ok := s.Decisions[key]
 	if !ok {
 		d = records.OrganizationReview{Task: t.ID, Item: e.ID, Digest: records.MergeDigest(e.Item), Receipt: uuid.NewString(), Confirm: confirm}
+		if !confirm {
+			if draft := s.RejectReasons[e.ID]; draft != nil {
+				d.RejectionReason = draft.Reason
+			}
+		}
 		s.Decisions[key] = d
 	}
 	client := s.Client

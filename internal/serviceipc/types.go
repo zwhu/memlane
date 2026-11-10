@@ -54,7 +54,7 @@ type Request struct {
 	OrganizationReview     *records.OrganizationReview          `json:"organization_review,omitempty"`
 	OrganizationStart      *records.OrganizationStart           `json:"organization_start,omitempty"`
 	OrganizationResume     *records.OrganizationResume          `json:"organization_resume,omitempty"`
-	OrganizationList       *records.MergeListQuery              `json:"organization_list,omitempty"`
+	OrganizationList       *records.OrganizationListQuery       `json:"organization_list,omitempty"`
 	OrganizationTask       string                               `json:"organization_task,omitempty"`
 	MergeList              *records.MergeListQuery              `json:"merge_list,omitempty"`
 	MergeStart             records.MergeStart                   `json:"merge_start,omitempty"`

@@ -88,7 +88,7 @@ func TestActiveTaskQueriesFindOldRunningTasksBeyondHistoryPage(t *testing.T) {
 	if err != nil || len(merges.Items) != 1 || merges.Items[0].State != "running" {
 		t.Fatal("old running merge was hidden by completed/queued history", merges, err)
 	}
-	organizations, err := s.ListOrganizations(ctx, q)
+	organizations, err := s.ListOrganizations(ctx, records.OrganizationListQuery{MergeListQuery: q})
 	if err != nil || len(organizations.Items) != 1 || organizations.Items[0].State != "running" {
 		t.Fatal("old running organization was hidden by completed/queued history", organizations, err)
 	}
@@ -101,7 +101,7 @@ func TestActiveTaskQueriesFindOldRunningTasksBeyondHistoryPage(t *testing.T) {
 	if err != nil || len(merges.Items) != 1 || merges.Items[0].State != "queued" {
 		t.Fatal("completed merge remained active", merges, err)
 	}
-	organizations, err = s.ListOrganizations(ctx, q)
+	organizations, err = s.ListOrganizations(ctx, records.OrganizationListQuery{MergeListQuery: q})
 	if err != nil || len(organizations.Items) != 1 || organizations.Items[0].State != "queued" {
 		t.Fatal("completed organization remained active", organizations, err)
 	}

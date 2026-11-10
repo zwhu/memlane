@@ -160,7 +160,7 @@ func (s *Server) getOrganization(ctx context.Context, id string) (records.Organi
 	}
 	return s.store.OrganizationTask(ctx, id)
 }
-func (s *Server) listOrganizations(ctx context.Context, q records.MergeListQuery) (records.OrganizationPage, error) {
+func (s *Server) listOrganizations(ctx context.Context, q records.OrganizationListQuery) (records.OrganizationPage, error) {
 	s.organizationMu.Lock()
 	defer s.organizationMu.Unlock()
 	if err := s.reconcileOrganizations(ctx); err != nil {

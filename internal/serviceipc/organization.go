@@ -44,7 +44,7 @@ func (c OrganizationClient) Resume(ctx context.Context, d records.OrganizationRe
 	e := Call(ctx, c.Root, Request{Op: "organization_resume", UserConfirmed: true, OrganizationResume: &d}, &out)
 	return out, e
 }
-func (c OrganizationClient) List(ctx context.Context, q records.MergeListQuery) (records.OrganizationPage, error) {
+func (c OrganizationClient) List(ctx context.Context, q records.OrganizationListQuery) (records.OrganizationPage, error) {
 	var out records.OrganizationPage
 	e := Call(ctx, c.Root, Request{Op: "organization_list", OrganizationList: &q}, &out)
 	return out, e

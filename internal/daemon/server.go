@@ -564,7 +564,7 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 	case "organization_get":
 		return s.getOrganization(operation, r.OrganizationTask)
 	case "organization_list":
-		q := records.MergeListQuery{}
+		q := records.OrganizationListQuery{}
 		if r.OrganizationList != nil {
 			q = *r.OrganizationList
 		}

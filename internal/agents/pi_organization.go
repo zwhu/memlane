@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"github.com/zwhu/memlane/internal/records"
 )
 
@@ -53,6 +54,12 @@ func RunPiOrganization(ctx context.Context, o PiOrganizationRunOptions) (out PiO
 	decoded, err := o.Snapshot.Decode(execution.Final)
 	if err != nil {
 		out.Final = nil
+		out.FailureStage, out.FailureCode = "proposal_validation", "pi_proposal_invalid"
+		var diagnostic *records.OrganizationValidationError
+		if errors.As(err, &diagnostic) {
+			out.FailureCode = "pi_proposal_" + diagnostic.ValidationReason()
+			out.FailureItem = diagnostic.ValidationItem()
+		}
 		return out, err
 	}
 	out.Result = &decoded

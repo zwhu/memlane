@@ -21,7 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--components', type=Path, required=True)
-    parser.add_argument('--scenario', choices=('material-organization', 'experience-distill', 'common-knowledge', 'reading', 'project-settings', 'project-binding', 'project-task', 'project-context', 'project-index-recovery', 'project-history', 'project-history-guard', 'project-history-archive', 'project-history-archive-guard', 'project-motion', 'project-motion-task', 'project-motion-visual'), default='reading')
+    parser.add_argument('--scenario', choices=('material-context', 'material-organization', 'experience-distill', 'common-knowledge', 'reading', 'project-settings', 'project-binding', 'project-task', 'project-context', 'project-index-recovery', 'project-history', 'project-history-guard', 'project-history-archive', 'project-history-archive-guard', 'project-motion', 'project-motion-task', 'project-motion-visual'), default='reading')
     args = parser.parse_args()
     out, previous = args.out.resolve(), args.components.resolve()
     out.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -140,7 +140,7 @@ k=Ed25519PrivateKey.generate();print(json.dumps({'signature':base64.b64encode(k.
             assert 'error' not in result, result
 
         driver.wait(lambda: '服务运行中' in ui.labels(), timeout=90)
-        if args.scenario == 'material-organization':
+        if args.scenario in ('material-organization','material-context'):
             report['scenario_source_sha256'] = hashlib.sha256((ROOT/'scripts/verify_material_organization_scenario.py').read_bytes()).hexdigest()
             from verify_material_organization_scenario import verify
             verify(ui,call,report,capture,resize,out,ipc,driver)

@@ -22,6 +22,7 @@ type PiRPCProcess struct {
 	ProposalProcess
 	FailureStage               string `json:"failure_stage,omitempty"` // bounded runner stage, never paths/output
 	FailureCode                string `json:"failure_code,omitempty"`  // bounded diagnostic, never original error text
+	FailureItem                int    `json:"failure_item,omitempty"`  // bounded candidate position, no payload
 	Accepted                   bool   `json:"prompt_accepted"`
 	AbortSent                  bool   `json:"abort_sent"`
 	AbortAcknowledged          bool   `json:"abort_acknowledged"`

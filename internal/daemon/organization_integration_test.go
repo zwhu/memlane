@@ -43,7 +43,7 @@ func TestOrganizationPrivateIPCGate(t *testing.T) {
 	if a, ok := e.(*serviceipc.ServiceError); !ok || a.Code != "scope_denied" {
 		t.Fatal(e)
 	}
-	page, e := c.List(context.Background(), records.MergeListQuery{})
+	page, e := c.List(context.Background(), records.OrganizationListQuery{})
 	requireService(t, e)
 	if len(page.Items) != 0 {
 		t.Fatal(page)

@@ -281,7 +281,7 @@ func (a *App) refresh(more bool) {
 		}
 		if err == nil && pageName == "总览" {
 			var organizations records.OrganizationPage
-			organizations, err = a.organization.Client.List(ctx, records.MergeListQuery{ActiveOnly: true, Limit: 1})
+			organizations, err = a.organization.Client.List(ctx, records.OrganizationListQuery{MergeListQuery: records.MergeListQuery{ActiveOnly: true, Limit: 1}})
 			if err == nil && len(organizations.Items) > 0 {
 				v := organizations.Items[0]
 				active = homeTask{ID: v.ID, Kind: "organization", State: v.State}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/zwhu/memlane/internal/records"
 )
@@ -34,7 +35,7 @@ func organizationItemCurrent(ctx context.Context, tx *sql.Tx, x records.Organiza
 
 func (s *Store) ReviewOrganization(ctx context.Context, d records.OrganizationReview) (records.OrganizationTask, error) {
 	var empty records.OrganizationTask
-	if strings.TrimSpace(d.Receipt) == "" || len(d.Receipt) > 128 || d.Digest == "" {
+	if strings.TrimSpace(d.Receipt) == "" || len(d.Receipt) > 128 || d.Digest == "" || len(d.RejectionReason) > 1024 || !utf8.ValidString(d.RejectionReason) || d.Confirm && d.RejectionReason != "" {
 		return empty, records.MergeError("invalid_request")
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -80,7 +81,7 @@ func (s *Store) ReviewOrganization(ctx context.Context, d records.OrganizationRe
 		if err = json.Unmarshal([]byte(priorReceipt), &saved); err != nil {
 			return t, err
 		}
-		if records.MergeDigest(saved.EditedExperience) != records.MergeDigest(d.Edit) {
+		if records.MergeDigest(saved.EditedExperience) != records.MergeDigest(d.Edit) || saved.RejectionReason != d.RejectionReason {
 			return t, ErrConflict
 		}
 		return t, nil
@@ -110,7 +111,7 @@ func (s *Store) ReviewOrganization(ctx context.Context, d records.OrganizationRe
 		}
 		return t, records.MergeError("proposal_expired")
 	}
-	receipt := records.OrganizationReceipt{ID: d.Receipt}
+	receipt := records.OrganizationReceipt{ID: d.Receipt, RejectionReason: d.RejectionReason}
 	state := "rejected"
 	if d.Confirm {
 		state = "applied"
@@ -127,10 +128,7 @@ func (s *Store) ReviewOrganization(ctx context.Context, d records.OrganizationRe
 	if _, err = tx.ExecContext(ctx, `INSERT INTO `+organizationDecisionTable(entry.Item.Action)+`(id,item,digest,decision,receipt) VALUES(?,?,?,?,?)`, d.Receipt, d.Item, d.Digest, decision, string(encoded)); err != nil {
 		return t, err
 	}
-	persisted := any("null")
-	if d.Confirm {
-		persisted = string(encoded)
-	}
+	persisted := string(encoded)
 	if _, err = tx.ExecContext(ctx, `UPDATE `+organizationReviewTable(entry.Item.Action)+` SET state=?,receipt=? WHERE id=? AND state='review_pending'`, state, persisted, entry.ID); err != nil {
 		return t, err
 	}

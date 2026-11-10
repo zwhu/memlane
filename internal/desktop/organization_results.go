@@ -285,7 +285,10 @@ func (a *App) materialOrganizationReview(c *ui.Context, t records.OrganizationTa
 	ui.Text(c, title).FontSize(design.Title).Bold()
 	ui.Text(c, "确认前，已有有效知识保持原样。").FontSize(11).TextColor(design.Muted)
 	ui.Text(c, organizationEntryLabel(e.State)).Key("organization-review-state").FontSize(11)
-	if !a.organizationSourcesCurrent(t, e) {
+	if e.State == "rejected" && e.Receipt != nil && e.Receipt.RejectionReason != "" {
+		ui.Text(c, "拒绝理由："+e.Receipt.RejectionReason).Key("organization-rejected-reason").Selectable().FontSize(11)
+	}
+	if e.State == "review_pending" && !a.organizationSourcesCurrent(t, e) {
 		ui.Text(c, "来源已经变化或当前读取未完成，不能提交新的确认；原始依据与建议保留。").Key("organization-review-stale").FontSize(11)
 	}
 	source := func() {
@@ -372,6 +375,47 @@ func (a *App) materialOrganizationReview(c *ui.Context, t records.OrganizationTa
 			}
 		}
 	}
+	if e.State == "review_pending" {
+		draft := a.organizationRejectDraft(e.ID)
+		frozen := a.organization.Busy || a.organization.Decisions[e.ID+"false"].Receipt != "" || a.organization.Decisions[e.ID+"true"].Receipt != ""
+		if e.Item.Action == "global_experience" {
+			d := a.experienceReviewDraft(e)
+			frozen = frozen || d.Request != nil || d.RejectRequest != nil
+		}
+		ui.Text(c, "拒绝理由（可选）").FontSize(11).TextColor(design.Muted)
+		ui.TextInput(c.Key("organization-reject-reason-"+e.ID), &draft.Reason).Label("拒绝理由（可选）").Height(34).Disabled(frozen)
+		if len(draft.Reason) > 1024 {
+			ui.Text(c, "拒绝理由超过保存上限，请缩短后提交。").FontSize(11)
+		}
+	}
+}
+
+type OrganizationRejectDraft struct{ Reason string }
+
+func (a *App) organizationRejectDraft(id string) *OrganizationRejectDraft {
+	s := &a.organization
+	if s.RejectReasons == nil {
+		s.RejectReasons = map[string]*OrganizationRejectDraft{}
+	}
+	if s.RejectReasons[id] == nil {
+		s.RejectReasons[id] = &OrganizationRejectDraft{}
+	}
+	return s.RejectReasons[id]
+}
+
+func nextOrganizationReview(t records.OrganizationTask, id string) string {
+	for i, e := range t.Entries {
+		if e.ID != id {
+			continue
+		}
+		for n := 1; n < len(t.Entries); n++ {
+			e = t.Entries[(i+n)%len(t.Entries)]
+			if e.Item.RequiresReview() {
+				return e.ID
+			}
+		}
+	}
+	return ""
 }
 func (a *App) materialOrganizationReviewActions(c *ui.Context, t records.OrganizationTask, e records.OrganizationEntry) {
 	s := &a.organization
@@ -390,7 +434,11 @@ func (a *App) materialOrganizationReviewActions(c *ui.Context, t records.Organiz
 		valid = d.Value.Valid()
 	}
 	blocked := s.Busy || e.State != "review_pending" || !valid || !confirmedRequest && !a.organizationSourcesCurrent(t, e)
-	quietButton(c, "拒绝建议").Key("organization-reject-" + e.ID).Disabled(s.Busy || e.State != "review_pending").OnClick(func() { a.reviewOrganizationEntry(t, e, false) })
+	rejectLabel := "拒绝建议"
+	if s.Decisions[e.ID+"false"].Receipt != "" {
+		rejectLabel = "重试拒绝回执"
+	}
+	quietButton(c, rejectLabel).Key("organization-reject-" + e.ID).Disabled(s.Busy || e.State != "review_pending" || confirmedRequest || len(a.organizationRejectDraft(e.ID).Reason) > 1024).OnClick(func() { a.reviewOrganizationEntry(t, e, false) })
 	label := "确认这项改动"
 	if e.Item.Action == "duplicate" || e.Item.Action == "conflict" {
 		label = "记录已核对此项"
@@ -398,26 +446,16 @@ func (a *App) materialOrganizationReviewActions(c *ui.Context, t records.Organiz
 	if confirmedRequest {
 		label = "重试确认回执"
 	}
-	actionButton(c, label, nil).Key("organization-confirm-" + e.ID).Disabled(blocked).OnClick(func() {
+	actionButton(c, label, nil).Key("organization-confirm-" + e.ID).Disabled(blocked || s.Decisions[e.ID+"false"].Receipt != "").OnClick(func() {
 		if e.Item.Action == "global_experience" {
 			a.confirmExperienceReview(t, e)
 		} else {
 			a.reviewOrganizationEntry(t, e, true)
 		}
 	})
-	if len(t.Entries) > 1 {
+	if next := nextOrganizationReview(t, e.ID); next != "" {
 		quietButton(c, "下一项").Key("organization-review-next").Disabled(s.Busy).OnClick(func() {
-			for i, item := range t.Entries {
-				if item.ID == e.ID {
-					for n := 1; n < len(t.Entries); n++ {
-						next := t.Entries[(i+n)%len(t.Entries)]
-						if next.Item.RequiresReview() {
-							a.openOrganizationEntry(next.ID)
-							return
-						}
-					}
-				}
-			}
+			a.openOrganizationEntry(next)
 		})
 	}
 }

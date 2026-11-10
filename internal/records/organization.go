@@ -160,102 +160,104 @@ func (s *OrganizationSnapshot) Seal() error {
 func stringID64(v int64) string { b, _ := json.Marshal(v); return string(b) }
 func (s OrganizationSnapshot) Decode(raw []byte) (OrganizationResult, error) {
 	var out OrganizationResult
-	invalid := MergeError("invalid_proposal")
+	itemPosition := 0
+	invalid := func(reason string) error { return &OrganizationValidationError{reason: reason, item: itemPosition} }
 	if len(raw) > OrganizationOutputLimit {
-		return out, invalid
+		return out, invalid("output_limit")
 	}
 	var schema jsonschema.Schema
 	if json.Unmarshal(s.OutputSchema(), &schema) != nil {
-		return out, invalid
+		return out, invalid("schema_definition")
 	}
 	resolved, err := schema.Resolve(nil)
 	var value any
 	if err != nil || json.Unmarshal(raw, &value) != nil || resolved.Validate(value) != nil {
-		return out, invalid
+		return out, invalid("output_schema")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&out) != nil || decoder.Decode(new(any)) != io.EOF {
-		return out, invalid
+		return out, invalid("json_decode")
 	}
 	check := s
 	if check.Seal() != nil || check.Digest != s.Digest || out.Schema != s.Schema || out.Task != s.Task || out.Attempt != s.Attempt || out.Digest != s.Digest || out.ID != s.ProposalID() || len(out.Items) > 32 || len(out.Explanation) > 4096 || (len(out.Items) == 0 && strings.TrimSpace(out.Explanation) == "") {
-		return out, invalid
+		return out, invalid("identity")
 	}
 	inputs := map[string]OrganizationInput{}
 	for _, v := range s.Inputs {
 		inputs[v.Memory] = v
 	}
 	for i, item := range out.Items {
+		itemPosition = i + 1
 		if item.Index != i+1 || len(item.Sources) < 1 || len(item.Sources) > 16 {
-			return out, invalid
+			return out, invalid("item_order")
 		}
 		cited := map[string]bool{}
 		for _, ref := range item.Sources {
 			v, ok := inputs[ref.Memory]
 			if !ok || cited[ref.Memory] || ref.Revision != v.Revision || strings.TrimSpace(ref.Quote) == "" || !strings.Contains(v.Text, ref.Quote) {
-				return out, invalid
+				return out, invalid("citation")
 			}
 			cited[ref.Memory] = true
 		}
 		if s.Schema == OrganizationSchema && (item.Reason != "" || item.Destination != "") {
-			return out, invalid
+			return out, invalid("legacy_fields")
 		}
 		if s.Schema != OrganizationSchema && (strings.TrimSpace(item.Reason) == "" || len(item.Reason) > 4096) {
-			return out, invalid
+			return out, invalid("reason")
 		}
 		if item.Action != "move" && item.Action != "global_experience" && item.Destination != "" {
-			return out, invalid
+			return out, invalid("destination")
 		}
 		if item.Action != "global_experience" && item.Conditions != "" {
-			return out, invalid
+			return out, invalid("conditions")
 		}
 		if s.Purpose == "global" && item.Action != "global_experience" {
-			return out, invalid
+			return out, invalid("purpose")
 		}
 		switch item.Action {
 		case "summary":
 			if item.Target != "" || len(item.Tags) != 0 || strings.TrimSpace(item.Title) == "" || len(item.Title) > 512 || strings.TrimSpace(item.Text) == "" || len(item.Text) > MergeInputLimit {
-				return out, invalid
+				return out, invalid("summary_fields")
 			}
 		case "add_tags":
 			if !cited[item.Target] || item.Text != "" || item.Title != "" || len(item.Tags) < 1 || len(item.Tags) > 8 {
-				return out, invalid
+				return out, invalid("tag_fields")
 			}
 			tags := map[string]bool{}
 			for _, tag := range item.Tags {
 				if strings.TrimSpace(tag) != tag || tag == "" || utf8.RuneCountInString(tag) > 32 || !utf8.ValidString(tag) || strings.ContainsAny(tag, "\n\r\t") || tags[tag] {
-					return out, invalid
+					return out, invalid("tag_value")
 				}
 				tags[tag] = true
 			}
 		case "merge", "overwrite", "delete", "move", "duplicate", "conflict":
 			if s.Schema == OrganizationSchema || len(item.Tags) != 0 {
-				return out, invalid
+				return out, invalid("review_fields")
 			}
 			if item.Action == "merge" || item.Action == "duplicate" || item.Action == "conflict" {
 				if len(item.Sources) < 2 || item.Target != "" {
-					return out, invalid
+					return out, invalid("multi_source")
 				}
 			} else if !cited[item.Target] {
-				return out, invalid
+				return out, invalid("target")
 			}
 			if item.Action == "merge" || item.Action == "overwrite" {
 				if strings.TrimSpace(item.Title) == "" || len(item.Title) > 512 || strings.TrimSpace(item.Text) == "" || len(item.Text) > MergeInputLimit {
-					return out, invalid
+					return out, invalid("review_body")
 				}
 			} else if item.Title != "" || item.Text != "" {
-				return out, invalid
+				return out, invalid("review_empty_body")
 			}
 			if item.Action == "merge" {
 				for _, ref := range item.Sources {
 					if inputs[ref.Memory].Origin == "raw" {
-						return out, invalid
+						return out, invalid("merge_raw_source")
 					}
 				}
 			}
 			if item.Target != "" && inputs[item.Target].Origin == "raw" {
-				return out, invalid
+				return out, invalid("target_raw_source")
 			}
 			if item.Action == "move" {
 				allowed := false
@@ -265,12 +267,12 @@ func (s OrganizationSnapshot) Decode(raw []byte) (OrganizationResult, error) {
 					}
 				}
 				if !allowed {
-					return out, invalid
+					return out, invalid("move_scope")
 				}
 			}
 		case "global_experience":
 			if s.Schema != OrganizationGlobalSchema || item.Target != "" || len(item.Tags) != 0 || strings.TrimSpace(item.Conditions) == "" || len(item.Conditions) > 4096 || strings.TrimSpace(item.Title) == "" || len(item.Title) > 512 || strings.TrimSpace(item.Text) == "" || len(item.Text) > MergeInputLimit {
-				return out, invalid
+				return out, invalid("experience_fields")
 			}
 			allowed := false
 			for _, d := range s.Destinations {
@@ -279,10 +281,10 @@ func (s OrganizationSnapshot) Decode(raw []byte) (OrganizationResult, error) {
 				}
 			}
 			if !allowed {
-				return out, invalid
+				return out, invalid("experience_scope")
 			}
 		default:
-			return out, invalid
+			return out, invalid("action")
 		}
 	}
 	return out, nil
@@ -326,6 +328,7 @@ type OrganizationReceipt struct {
 	Revision         int64                 `json:"revision"`
 	AddedTags        []string              `json:"added_tags,omitempty"`
 	EditedExperience *ExperienceReviewEdit `json:"edited_experience,omitempty"`
+	RejectionReason  string                `json:"rejection_reason,omitempty"`
 }
 type OrganizationEntry struct {
 	ID      string               `json:"item_id"`
@@ -388,15 +391,25 @@ type OrganizationSource struct {
 }
 
 type OrganizationSummary struct {
-	ID        string `json:"task"`
-	Project   string `json:"project"`
-	State     string `json:"state"`
-	Title     string `json:"title"`
-	CreatedAt string `json:"created_at"`
+	ID         string          `json:"task"`
+	Project    string          `json:"project"`
+	State      string          `json:"state"`
+	Title      string          `json:"title"`
+	CreatedAt  string          `json:"created_at"`
+	Origin     string          `json:"origin,omitempty"`
+	Processing *ProcessingSpec `json:"processing,omitempty"`
+}
+
+// Organization-only filters retain the existing bounded cursor contract.
+type OrganizationListQuery struct {
+	MergeListQuery
+	Origin  string `json:"origin,omitempty"`
+	SinceMS int64  `json:"since_ms,omitempty"`
 }
 type OrganizationPage struct {
 	Items []OrganizationSummary `json:"items"`
 	Next  string                `json:"next,omitempty"`
+	Total int                   `json:"total"`
 }
 
 func (i OrganizationItem) RequiresReview() bool {
@@ -404,12 +417,13 @@ func (i OrganizationItem) RequiresReview() bool {
 }
 
 type OrganizationReview struct {
-	Task    string                `json:"task"`
-	Item    string                `json:"item_id"`
-	Digest  string                `json:"item_digest"`
-	Receipt string                `json:"receipt_id"`
-	Confirm bool                  `json:"confirm"`
-	Edit    *ExperienceReviewEdit `json:"edited_experience,omitempty"`
+	Task            string                `json:"task"`
+	Item            string                `json:"item_id"`
+	Digest          string                `json:"item_digest"`
+	Receipt         string                `json:"receipt_id"`
+	Confirm         bool                  `json:"confirm"`
+	Edit            *ExperienceReviewEdit `json:"edited_experience,omitempty"`
+	RejectionReason string                `json:"rejection_reason,omitempty"`
 }
 
 // The original model item and its evidence remain immutable. Only the three

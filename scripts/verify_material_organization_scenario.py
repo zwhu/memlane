@@ -35,6 +35,17 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
     receipts = {}
     faults = set()
 
+    context_mode = report['scenario'] == 'material-context'
+
+    def select_option(key, label):
+        fast_press(key)
+        def popup_option():
+            nodes=ui.nodes();index={n['id']:n for n in nodes}
+            return next((n for n in nodes if n.get('role')=='text' and n.get('label')==label and index.get(n.get('parent'),{}).get('role')=='popup'),None)
+        option=driver.wait(popup_option);b=option['bounds']
+        ui.req('input',events=[dict(type='click',x=b['x']+b['width']/2,y=b['y']+b['height']/2)])
+        ui.req('idle',timeout=2000)
+
     def fault(name, statement=None):
         with sqlite3.connect(client/'data/memlane.sqlite', timeout=15) as db:
             if statement:
@@ -54,7 +65,7 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
         assert ui.pid != old
 
     def fast_press(key):
-        node = ui.node(key=key)
+        node = driver.wait(lambda:next((n for n in ui.nodes() if n.get('key')==key),None))
         assert 'disabled' not in node.get('states', []), node
         ui.req('act', id=node['id'], action='press')
         ui.req('capture')
@@ -75,6 +86,11 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
         repo = out/'synthetic-distill-project'
         subprocess.run(['/usr/bin/git','init',str(repo)], capture_output=True, check=True)
         project = call('register_project',user_confirmed=True,project=dict(name='本轮真实材料整理项目',path=str(repo)))
+        empty_project = None
+        if context_mode:
+            empty_repo=out/'synthetic-context-empty-project'
+            subprocess.run(['/usr/bin/git','init',str(empty_repo)],capture_output=True,check=True)
+            empty_project=call('register_project',user_confirmed=True,project=dict(name='本轮筛选空项目',path=str(empty_repo)))
         source_id = str(uuid.uuid4())
         source_text = '项目使用 pnpm 管理依赖。任何依赖更新都必须同时提交 pnpm-lock.yaml，以便开发环境与 CI 使用相同的依赖版本。'
         call('apply',user_confirmed=True,mutation=dict(kind='save',operation_id=str(uuid.uuid4()),dataset=project['id'],memory=source_id,title='使用 pnpm 管理依赖',text=source_text,origin='knowledge',source='本轮合成项目输入'))
@@ -93,7 +109,7 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
         assert terminal['validation']['state']=='succeeded', terminal
         activation = call('processing_activate',user_confirmed=True,processing_activation=dict(operation_id=str(uuid.uuid4()),revision=saved['revision'],expected_generation=0))
         receipts['processing'] = dict(saved=saved,validation=terminal,activation=activation)
-        report['actual_processing_dispatch_verified'] = True
+        report['actual_processing_configuration_activated'] = True
 
         def tasks(): return call('organization_list',organization_list=dict(project=project['id'],limit=30))['items']
         def task(identifier): return call('organization_get',organization_task=identifier)
@@ -133,6 +149,7 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
         assert completed['snapshot']['schema']=='memlane-organization-v1'
         assert len(completed['snapshot']['inputs'])==2 and completed['snapshot']['processing']['revision']['revision']==saved['revision']
         assert completed['execution']['selected_model']==model and completed['execution']['process_reaped'] and completed['execution']['process_group_gone']
+        report['actual_processing_dispatch_verified'] = True
         assert completed['entries'] and all(e['state']=='applied' and e['item']['action'] in ('summary','add_tags') for e in completed['entries'])
         memories=[e['receipt']['memory'] for e in completed['entries'] if e['item']['action']=='summary']
         assert memories
@@ -155,6 +172,30 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
         assert reloaded['attempt']==completed['attempt'] and reloaded['execution']==completed['execution'] and len(tasks())==1 and ui.pid!=before_ui_pid
         capture('04-same-task-reopened-system.png')
         report['actual_material_task_reopen_without_model_restart']=True
+
+        if context_mode:
+            resize(1280,900)
+            fast_press('organization-list-filter')
+            select_option('organization-filter-origin','计划')
+            driver.wait(lambda:ui.node(key='organization-list-count')['label']=='0 次' and '没有匹配的整理记录' in ui.labels())
+            assert '整理已完成' in ui.labels(), '筛选零结果不能清空当前任务详情'
+            capture('04c-plan-filter-zero-keeps-task-system.png')
+            fast_press('organization-list-clear')
+            driver.wait(lambda:ui.node(key='organization-list-count')['label']=='1 次')
+            select_option('organization-filter-project',empty_project['name'])
+            driver.wait(lambda:'没有匹配的整理记录' in ui.labels())
+            capture('04d-project-filter-zero-keeps-task-system.png')
+            fast_press('organization-list-clear')
+            driver.wait(lambda:ui.node(key='organization-list-count')['label']=='1 次')
+            select_option('organization-filter-origin','手动')
+            select_option('organization-filter-time','今天')
+            driver.wait(lambda:ui.node(key='organization-list-count')['label']=='1 次')
+            assert call('organization_list',organization_list=dict(project=project['id'],origin='manual',limit=10))['total']==1
+            assert call('organization_list',organization_list=dict(project=project['id'],origin='schedule',limit=10))['total']==0
+            capture('04e-manual-today-filter-system.png')
+            fast_press('organization-list-clear')
+            fast_press('organization-list-filter')
+            report['actual_native_origin_project_time_filters_keep_task']=True
 
         open_config()
         fast_press('organization-start')
@@ -186,6 +227,53 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
         assert review_entries,'本轮真实模型未提出可审核建议'
         assert call('get',memory=source_id)['revision']==1 and call('get',memory=source_two)['revision']==1
         entry=next((e for e in review_entries if e['item']['action']=='merge'),review_entries[0])
+
+        if context_mode:
+            others=[e for e in review_entries if e['item_id']!=entry['item_id']]
+            assert others,'本轮模型合法建议不足两项，未取得多项审核证据'
+            rejected_entry=others[0]
+            reject_id=rejected_entry['item_id'];reason='本次保留独立来源，暂不接受这一项建议。'
+            fast_press('organization-review-open-'+reject_id)
+            reason_key='organization-reject-reason-'+reject_id
+            driver.wait(lambda:any(n.get('key')==reason_key for n in ui.nodes()))
+            resize(980,620)
+            body=ui.node(key='organization-detail-scroll')['bounds']
+            ui.req('input',events=[dict(type='wheel',x=body['x']+80,y=body['y']+200,dy=1600,precise=True)])
+            ui.set(reason_key,reason)
+            bounds=ui.node(key=reason_key)['bounds'];assert 54<=bounds['y'] and bounds['y']+bounds['height']<=620,bounds
+            capture('05b-optional-rejection-reason-narrow-system.png')
+            fast_press('organization-review-next')
+            for _ in range(len(review_entries)):
+                if any(n.get('key')=='organization-confirm-'+entry['item_id'] for n in ui.nodes()): break
+                fast_press('organization-review-next')
+            driver.wait(lambda:any(n.get('key')=='organization-confirm-'+entry['item_id'] for n in ui.nodes()))
+            fast_press('organization-review-return')
+            fast_press('organization-review-open-'+reject_id)
+            driver.wait(lambda:ui.node(key=reason_key).get('value')==reason)
+            bounds=ui.node(key=reason_key)['bounds'];assert 54<=bounds['y'] and bounds['y']+bounds['height']<=620,bounds
+            capture('05c-return-keeps-item-reason-and-scroll-system.png')
+            fast_press('organization-reject-'+reject_id)
+            rejected=driver.wait(lambda:(t if next(e for e in t['entries'] if e['item_id']==reject_id)['state']=='rejected' else None) if (t:=task(second)) else None)
+            decision=next(e for e in rejected['entries'] if e['item_id']==reject_id)
+            assert decision['item']==rejected_entry['item'] and decision['receipt']['rejection_reason']==reason and not decision['receipt'].get('memory')
+            assert call('get',memory=source_id)['revision']==1 and call('get',memory=source_two)['revision']==1
+            capture('05d-rejection-keeps-source-knowledge-system.png')
+            receipts['rejected']=rejected
+            reopen('rejected-material-task-reopen')
+            driver.wait(lambda:'整理记录' in ui.labels())
+            ui.press('整理记录')
+            driver.wait(lambda:any(n.get('key')=='organization-task-'+second for n in ui.nodes()))
+            fast_press('organization-task-'+second)
+            driver.wait(lambda:any(n.get('key')=='organization-review-open-'+reject_id for n in ui.nodes()))
+            fast_press('organization-review-open-'+reject_id)
+            driver.wait(lambda:any(n.get('key')=='organization-rejected-reason' for n in ui.nodes()))
+            assert ui.node(key='organization-rejected-reason')['label']=='拒绝理由：'+reason
+            reloaded=task(second);assert reloaded['execution']==suggestions['execution'] and len(tasks())==3
+            capture('05e-rejected-receipt-reopened-system.png')
+            receipts['rejected_reopened']=reloaded
+            report['actual_native_rejection_reason_persisted_without_knowledge_change']=True
+            report['actual_native_multi_item_draft_scroll_and_reopen']=True
+            fast_press('organization-review-return')
         driver.wait(lambda:any(n.get('key')=='organization-review-open-'+entry['item_id'] for n in ui.nodes()))
         fast_press('organization-review-open-'+entry['item_id'])
         driver.wait(lambda:'具体影响' in ui.labels())
@@ -208,6 +296,10 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
         driver.wait(lambda:'已确认' in ui.labels())
         capture('09-grouped-decisions-system.png')
         receipts['suggestions']=suggestions;receipts['approved']=approved
+        if context_mode:
+            final_rejected=next(e for e in approved['entries'] if e['item_id']==reject_id)
+            assert final_rejected['state']=='rejected' and final_rejected['receipt']==decision['receipt']
+            report['actual_same_task_rejected_and_confirmed_decisions']=True
         report['actual_native_review_does_not_mutate_before_confirmation']=True
         report['actual_native_single_review_with_atomic_receipt']=True
         report['model_inference_verified']=True
