@@ -48,6 +48,7 @@ type CodexProjectHistory struct {
 	root                       *os.File
 	project, workspace, common string
 	workspaceInfo, commonInfo  os.FileInfo
+	directories                map[string]os.FileInfo
 }
 
 func historyRepository(ctx context.Context, cwd string) (string, error) {
@@ -88,25 +89,27 @@ func OpenCodexProjectHistory(ctx context.Context, directory, project, workspace 
 	if !info.IsDir() {
 		return nil, errors.New("bound Codex configuration directory unavailable")
 	}
-	path := filepath.Join(directory, "sessions")
-	if _, e = os.Lstat(path); os.IsNotExist(e) {
-		return nil, ErrCodexHistoryEmpty
-	} else if e != nil {
-		return nil, e
-	}
-	canonical, err := filepath.EvalSymlinks(path)
+	canonical, err := filepath.EvalSymlinks(directory)
 	if err != nil {
 		return nil, err
 	}
-	if canonical != path {
+	if canonical != directory {
 		return nil, errors.New("canonical Codex history directory required")
 	}
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := unix.Open(directory, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
-	r := &CodexProjectHistory{root: os.NewFile(uintptr(fd), path), project: project, workspace: workspace}
+	r := &CodexProjectHistory{root: os.NewFile(uintptr(fd), directory), project: project, workspace: workspace, directories: map[string]os.FileInfo{}}
 	fail := func(e error) (*CodexProjectHistory, error) { r.Close(); return nil, e }
+	for _, name := range []string{"sessions", "archived_sessions"} {
+		if _, err = r.catalogDirectory(name); err != nil {
+			return fail(err)
+		}
+	}
+	if len(r.directories) == 0 {
+		return fail(ErrCodexHistoryEmpty)
+	}
 	r.workspaceInfo, err = os.Stat(workspace)
 	if err != nil {
 		return fail(err)
@@ -123,6 +126,28 @@ func OpenCodexProjectHistory(ctx context.Context, directory, project, workspace 
 }
 func (r *CodexProjectHistory) Close() error { return r.root.Close() }
 
+// Codex 0.167 archives into one flat directory, keeping the original bytes and
+// filename. Pin each catalog's identity, including a newly created archive dir.
+func (r *CodexProjectHistory) catalogDirectory(name string) (bool, error) {
+	f, err := historyOpen(r.root, name, true)
+	if errors.Is(err, os.ErrNotExist) && r.directories[name] == nil {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return false, err
+	}
+	if previous := r.directories[name]; previous != nil && !os.SameFile(previous, info) {
+		return false, errors.New("Codex history catalog directory changed")
+	}
+	r.directories[name] = info
+	return true, nil
+}
+
 func (r *CodexProjectHistory) check(ctx context.Context, cwd string) error {
 	current, err := os.Stat(r.workspace)
 	if err != nil || !os.SameFile(current, r.workspaceInfo) {
@@ -136,10 +161,15 @@ func (r *CodexProjectHistory) check(ctx context.Context, cwd string) error {
 	if err != nil || !os.SameFile(current, r.commonInfo) {
 		return errors.New("session repository identity changed")
 	}
-	current, err = os.Stat(r.root.Name())
+	current, err = os.Lstat(r.root.Name())
 	opened, e := r.root.Stat()
 	if err != nil || e != nil || !os.SameFile(current, opened) {
 		return errors.New("Codex history directory changed")
+	}
+	for name := range r.directories {
+		if _, err = r.catalogDirectory(name); err != nil {
+			return err
+		}
 	}
 	return ctx.Err()
 }
@@ -207,15 +237,7 @@ func (r *CodexProjectHistory) paths(ctx context.Context) ([]string, error) {
 		}
 		var f *os.File
 		var err error
-		if path == "" {
-			fd, e := unix.Openat(int(r.root.Fd()), ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-			err = e
-			if e == nil {
-				f = os.NewFile(uintptr(fd), r.root.Name())
-			}
-		} else {
-			f, err = historyOpen(r.root, path, true)
-		}
+		f, err = historyOpen(r.root, path, true)
 		if err != nil {
 			return err
 		}
@@ -253,8 +275,22 @@ func (r *CodexProjectHistory) paths(ctx context.Context) ([]string, error) {
 		}
 		return nil
 	}
-	if err := walk("", 0); err != nil {
-		return nil, err
+	for _, catalog := range []struct {
+		name  string
+		depth int
+	}{{"sessions", 0}, {"archived_sessions", 3}} {
+		present, err := r.catalogDirectory(catalog.name)
+		if err != nil {
+			return nil, err
+		}
+		if present {
+			if err = walk(catalog.name, catalog.depth); err != nil {
+				return nil, err
+			}
+			if _, err = r.catalogDirectory(catalog.name); err != nil {
+				return nil, err
+			}
+		}
 	}
 	sort.Strings(paths)
 	return paths, nil

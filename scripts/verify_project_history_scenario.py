@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sqlite3
 import uuid
 
 
@@ -16,6 +17,13 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
                  'ticket.py':"def normalize_ticket(value):\n    if not isinstance(value, str):\n        raise TypeError('str required')\n    return '-'.join(value.strip().split()).lower()\n",
                  'AGENTS.md':'本轮合成仓库。核对文档及代码；不执行脚本，不改文件，不读取仓库以外材料。'}
     for name,text in materials.items(): (repo/name).write_text(text)
+    archival = report['scenario'] in ('project-history-archive','project-history-archive-guard')
+    history_workspace = repo
+    if archival:
+        subprocess.run(['/usr/bin/git','-C',str(repo),'add','.'],capture_output=True,check=True)
+        subprocess.run(['/usr/bin/git','-C',str(repo),'-c','user.name=Memlane Test','-c','user.email=test@example.invalid','commit','-m','synthetic'],capture_output=True,check=True)
+        history_workspace = out/'synthetic-worktree'
+        subprocess.run(['/usr/bin/git','-C',str(repo),'worktree','add','-b','history-test',str(history_workspace)],capture_output=True,check=True)
     # Generate a private runtime configuration from the current native provider's
     # model setting. No Agent configuration file or credential is copied.
     original_path = Path('/Users/bytedance/.codex/config.toml')
@@ -32,14 +40,14 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
     prompt = '用户明确为 TicketBox 新增约定：只允许 release 分支正式发布，发布审批号不能为空。请只复述本次用户要求，不修改文件、不执行工具、不写入仓库，也不声称代码已经强制执行。'
     env = os.environ.copy();env['CODEX_HOME']=str(directory)
     with (out/'normal-history-events.jsonl').open('w') as log,(out/'normal-history-stderr.log').open('w') as err:
-        normal = subprocess.run(['/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex','exec','--json','--sandbox','read-only','--cd',str(repo),prompt],env=env,stdout=log,stderr=err,timeout=180)
+        normal = subprocess.run(['/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex','exec','--json','--sandbox','read-only','--cd',str(history_workspace),prompt],env=env,stdout=log,stderr=err,timeout=180)
     assert normal.returncode == 0
     logs = list((directory/'sessions').rglob('*.jsonl'))
     assert len(logs)==1
     history = logs[0]
     meta = json.loads(history.read_text().splitlines()[0])
     session_id='codex_'+meta['payload']['id']
-    assert meta['payload']['cwd']==str(repo) and meta['payload']['source']=='exec'
+    assert meta['payload']['cwd']==str(history_workspace) and meta['payload']['source']=='exec'
     assert hashlib.sha256(original_path.read_bytes()).hexdigest()==original_digest
     project = call('register_project',user_confirmed=True,project=dict(name='C历史会话本轮项目',path=str(repo)))
     connection = call('configure_connection',user_confirmed=True,connection=dict(agent='codex',name='本轮真实Codex',project=project['id'],allowed_scopes=[project['id']]))
@@ -71,6 +79,21 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
     driver.wait(lambda:'已选择 1 个已完成会话 · 历史会话会增加用量。' in ui.labels())
     assert not tasks()
     resize(980,620);capture('02-c-history-selected-narrow-system.png')
+    if archival:
+        # Move only this new synthetic history via Codex's official API. Keeping
+        # identical bytes must keep the explicit choice readable after archive.
+        from importlib.machinery import SourceFileLoader
+        archive = SourceFileLoader('history_archive',str(root/'scripts/verify-codex-history-layout.py')).load_module()
+        raw=history.read_bytes()
+        before,after=archive.archive_thread(Path('/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex'),directory,history_workspace,meta['payload']['id'],out)
+        archived=directory/'archived_sessions'/history.name
+        assert not history.exists() and archived.read_bytes()==raw
+        assert Path(after['thread']['path'])==archived
+        history=archived
+        page=call('project_history',user_confirmed=True,project_history=dict(project=project['id'],binding_revision=call('project_binding',scope=project['id'])['revision']))
+        assert len(page['items'])==1 and page['items'][0]['state']=='available'
+        assert page['items'][0]['digest']==hashlib.sha256(raw).hexdigest()
+        report.update(official_archive_keeps_selected_version=True,actual_worktree_history_available=True)
     # Changing raw bytes after selection invalidates the old selected digest;
     # no task/model may start under that obsolete intent.
     with history.open('a') as f:f.write('\n')
@@ -78,7 +101,7 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
     driver.wait(lambda:'所选历史会话已变化，请重新读取历史选择。' in ui.labels(),timeout=60)
     assert not tasks()
     capture('03-c-history-changed-before-start-system.png')
-    if report['scenario']=='project-history-guard':
+    if report['scenario'] in ('project-history-guard','project-history-archive-guard'):
         assert not any(n.get('key')=='project-organizer-retry' for n in ui.nodes())
         report.update(actual_normal_codex_history_created=True,actual_connection_verified=True,
                       changed_history_blocks_start=True,history_default_off=True,
@@ -103,6 +126,55 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
     driver.wait(lambda:'查看整理进度' in ui.labels())
     node=ui.node(label='查看整理进度');ui.req('act',id=node['id'],action='press');ui.req('capture')
     assert task()['task']==task_id and task()['snapshot']['sessions'][0]['digest']==selected_digest
+    expected_tasks=1
+    if archival:
+        def live_pid():
+            with sqlite3.connect((out/'client/data/memlane.sqlite').as_uri()+'?mode=ro',uri=True) as db:
+                row=db.execute('SELECT process_pid FROM project_task_runs WHERE task=? AND released=0',(task_id,)).fetchone()
+                return row[0] if row else 0
+        driver.wait(lambda:task()['state']=='organizing' and live_pid()>1,timeout=90)
+        before_pid=live_pid(); before_attempt=task()['attempt']; before_ui_pid=ui.pid
+        ui.quit()
+        state_path=out/'client/first-launch.json'
+        state=json.loads(state_path.read_text());state['reduced_motion']=True
+        state_path.write_text(json.dumps(state)+'\n')
+        ui.__init__(app,out,out/'screenshots',config=out/'runtime-config.json')
+        (out/'ui-reduced-process.json').write_text(json.dumps(dict(pid=ui.pid,automation=ui.path,native=ui.native_path,owned=True))+'\n')
+        assert ui.pid != before_ui_pid
+        driver.wait(lambda:any(n.get('key')=='project-open-'+project['id'] for n in ui.nodes()))
+        press('project-open-'+project['id']);press('project-menu-'+project['id'])
+        driver.wait(lambda:'查看整理进度' in ui.labels())
+        node=ui.node(label='查看整理进度');ui.req('act',id=node['id'],action='press');ui.req('capture')
+        driver.wait(lambda:any(n.get('key')=='project-organizer-stop' for n in ui.nodes()))
+        assert len(tasks())==1 and task()['attempt']==before_attempt and live_pid()==before_pid
+        assert task()['snapshot']['sessions'][0]['digest']==selected_digest
+        capture('04b-c-archived-history-reduced-reopened-system.png')
+        press('project-organizer-stop')
+        driver.wait(lambda:task()['state'] in ('cancelled','failed','interrupted'),timeout=60)
+        cancelled=task()
+        (out/'project-history-cancel-receipt.json').write_text(json.dumps(cancelled,ensure_ascii=False,indent=2)+'\n')
+        assert cancelled['state']=='cancelled' and cancelled['cancel_requested']
+        assert cancelled['execution']['process_reaped'] and cancelled['execution']['process_group_gone']
+        assert cancelled['snapshot']['sessions'][0]['digest']==selected_digest
+        driver.wait(lambda:'已停止整理' in ui.labels())
+        capture('04c-c-archived-history-cancelled-system.png')
+        resize(980,620);capture('04d-c-archived-history-cancelled-narrow-system.png')
+        report.update(history_task_survives_actual_app_restart=True,history_cancel_process_cleanup_verified=True,
+                      reduced_motion_history_native_window_verified=True,cancelled_task=task_id)
+        # A new explicit request chooses the current archive version. The old
+        # cancelled attempt remains unchanged and is never automatically retried.
+        press('project-organizer-reset')
+        driver.wait(lambda:any(n.get('key')=='project-organizer-start' and 'disabled' not in n.get('states',[]) for n in ui.nodes()))
+        assert ui.node(key='project-organizer-history').get('value') in (None,'','false')
+        press('project-organizer-history')
+        driver.wait(lambda:'已选择 1 个已完成会话 · 历史会话会增加用量。' in ui.labels())
+        selected_digest=hashlib.sha256(history.read_bytes()).hexdigest()
+        cancelled_id=task_id
+        press('project-organizer-start')
+        fresh=driver.wait(lambda:next((t for t in tasks() if t['task']!=cancelled_id),None),timeout=60)
+        task_id=fresh['task'];expected_tasks=2
+        assert task()['snapshot']['sessions'][0]['digest']==selected_digest
+        assert call('project_task',project_task=cancelled_id)==cancelled
     driver.wait(lambda:task()['state'] in ('completed','failed','cancelled','interrupted'),timeout=240)
     finished=task();(out/'project-history-task-receipt.json').write_text(json.dumps(finished,ensure_ascii=False,indent=2)+'\n')
     assert finished['state']=='completed',finished
@@ -127,7 +199,12 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
     target=historical[0]['memory']
     driver.wait(lambda:any(n.get('key')=='memory-'+target for n in ui.nodes()));press('memory-'+target)
     capture('06-c-history-knowledge-with-source-system.png')
-    assert len(tasks())==1 and list((directory/'sessions').rglob('*.jsonl'))==logs
+    assert len(tasks())==expected_tasks
+    if archival:
+        assert not list((directory/'sessions').rglob('*.jsonl'))
+        assert list((directory/'archived_sessions').rglob('*.jsonl'))==[history]
+    else:
+        assert list((directory/'sessions').rglob('*.jsonl'))==logs
     assert hashlib.sha256(original_path.read_bytes()).hexdigest()==original_digest
     report.update(model_inference_verified=True,actual_project_task_execution=True,actual_connection_verified=True,
                   actual_normal_codex_history_created=True,actual_history_read=True,history_default_off=True,

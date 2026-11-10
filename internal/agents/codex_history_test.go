@@ -178,3 +178,156 @@ func TestCodexHistoryIncompleteMixedScopeDuplicateAndSymlink(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexHistoryArchiveMovementKeepsSelectionAndRejectsAmbiguity(t *testing.T) {
+	ctx := context.Background()
+	root, home := historyRepositoryFixture(t), historyHomeFixture(t)
+	path := historyLogFixture(t, home, root, uuid.NewString(), nil)
+	r, err := OpenCodexProjectHistory(ctx, home, uuid.NewString(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	page, err := r.List(ctx, "")
+	if err != nil || len(page.Items) != 1 {
+		t.Fatal(page, err)
+	}
+	selected := page.Items[0].ProjectSessionSelection
+	original, err := r.Read(ctx, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(home, "archived_sessions")
+	if err = os.Mkdir(archive, 0700); err != nil {
+		t.Fatal(err)
+	}
+	archived := filepath.Join(archive, filepath.Base(path))
+	if err = os.Rename(path, archived); err != nil {
+		t.Fatal(err)
+	}
+	page, err = r.List(ctx, "")
+	if err != nil || len(page.Items) != 1 || page.Items[0].ProjectSessionSelection != selected {
+		t.Fatal("archive changed selection", page, err)
+	}
+	for i := 0; i < 2; i++ {
+		source, e := r.Read(ctx, selected)
+		if e != nil || source.Text != original.Text || *source.History != *original.History {
+			t.Fatal("archive changed source", source, e)
+		}
+	}
+	body, err := os.ReadFile(archived)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = r.List(ctx, ""); err == nil {
+		t.Fatal("duplicate identity across catalogs accepted")
+	}
+	if _, err = r.Read(ctx, selected); err == nil {
+		t.Fatal("ambiguous selected identity accepted")
+	}
+}
+
+func TestCodexHistoryArchiveOnlyAndCatalogReplacement(t *testing.T) {
+	for _, mode := range []string{"only", "replace", "linked-file", "linked-directory", "linked-root"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			root, home := historyRepositoryFixture(t), historyHomeFixture(t)
+			path := historyLogFixture(t, home, root, uuid.NewString(), nil)
+			archive := filepath.Join(home, "archived_sessions")
+			if err := os.Mkdir(archive, 0700); err != nil {
+				t.Fatal(err)
+			}
+			archived := filepath.Join(archive, filepath.Base(path))
+			if err := os.Rename(path, archived); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(filepath.Join(home, "sessions")); err != nil {
+				t.Fatal(err)
+			}
+			r, err := OpenCodexProjectHistory(ctx, home, uuid.NewString(), root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			page, err := r.List(ctx, "")
+			if err != nil || len(page.Items) != 1 || page.Items[0].State != "available" {
+				t.Fatal(page, err)
+			}
+			selected := page.Items[0].ProjectSessionSelection
+			switch mode {
+			case "only":
+				if _, err = r.Read(ctx, selected); err != nil {
+					t.Fatal(err)
+				}
+				return
+			case "replace", "linked-directory":
+				if err = os.Rename(archive, archive+"-old"); err != nil {
+					t.Fatal(err)
+				}
+				if mode == "replace" {
+					err = os.Mkdir(archive, 0700)
+				} else {
+					err = os.Symlink(archive+"-old", archive)
+				}
+			case "linked-file":
+				if err = os.Rename(archived, archived+"-old"); err != nil {
+					t.Fatal(err)
+				}
+				err = os.Symlink(archived+"-old", archived)
+			case "linked-root":
+				if err = os.Rename(home, home+"-old"); err != nil {
+					t.Fatal(err)
+				}
+				err = os.Symlink(home+"-old", home)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = r.List(ctx, ""); err == nil {
+				t.Fatal("replaced/linked catalog accepted")
+			}
+			if _, err = r.Read(ctx, selected); err == nil {
+				t.Fatal("replaced/linked selection accepted")
+			}
+		})
+	}
+}
+
+func TestCodexHistoryWorktreeCommonRepositoryAndMixedRoots(t *testing.T) {
+	ctx := context.Background()
+	root, home := historyRepositoryFixture(t), historyHomeFixture(t)
+	worktree := filepath.Join(filepath.Dir(root), "linked-worktree")
+	if b, err := exec.Command("/usr/bin/git", "-C", root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "synthetic").CombinedOutput(); err != nil {
+		t.Fatal(err, string(b))
+	}
+	if b, err := exec.Command("/usr/bin/git", "-C", root, "worktree", "add", "-b", "history-test", worktree).CombinedOutput(); err != nil {
+		t.Fatal(err, string(b))
+	}
+	validID := uuid.NewString()
+	historyLogFixture(t, home, worktree, validID, nil)
+	historyLogFixture(t, home, worktree, uuid.NewString(), []map[string]any{{"type": "turn_context", "timestamp": "2026-11-10T01:00:09Z", "payload": map[string]any{"cwd": worktree, "runtime_workspace_roots": []string{worktree, historyRepositoryFixture(t)}}}})
+	r, err := OpenCodexProjectHistory(ctx, home, uuid.NewString(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	page, err := r.List(ctx, "")
+	if err != nil || len(page.Items) != 2 {
+		t.Fatal(page, err)
+	}
+	for _, item := range page.Items {
+		if item.ID == "codex_"+validID {
+			if item.State != "available" {
+				t.Fatal(item)
+			}
+			if _, err = r.Read(ctx, item.ProjectSessionSelection); err != nil {
+				t.Fatal(err)
+			}
+		} else if item.State == "available" || item.Digest != "" {
+			t.Fatal("foreign runtime root accepted", item)
+		}
+	}
+}
