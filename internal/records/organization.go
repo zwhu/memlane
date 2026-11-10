@@ -425,11 +425,14 @@ func (r OrganizationResult) MarshalJSON() ([]byte, error) {
 	return json.Marshal(value)
 }
 
+// Optional preview fields preserve replay of requests from older clients.
 type ExperienceCopy struct {
-	OperationID string `json:"operation_id"`
-	Project     string `json:"project"`
-	Memory      string `json:"memory"`
-	Revision    int64  `json:"revision"`
+	OperationID string  `json:"operation_id"`
+	Project     string  `json:"project"`
+	Memory      string  `json:"memory"`
+	Revision    int64   `json:"revision"`
+	Title       *string `json:"title,omitempty"`
+	Conditions  *string `json:"conditions,omitempty"`
 }
 type ExperienceInfo struct {
 	Kind       string `json:"kind"`

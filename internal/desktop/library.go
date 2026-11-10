@@ -27,7 +27,7 @@ func displayVersion(v records.Version) MemoryItem {
 	} else if v.ScopeKind == "experience" {
 		category = "通用经验"
 	}
-	return MemoryItem{Origin: v.Origin, ID: v.Memory, Dataset: v.Dataset, Title: v.Title, Text: v.Text, Original: v.Original, Source: v.Source, ScopeName: v.ScopeName, Category: category, Revision: v.Revision, State: v.State, IndexState: v.IndexState, Operation: v.Operation, CreatedAt: created.Local(), SourceDetail: v.SourceDetail, Tags: v.Tags, Derived: v.Derived, Experience: v.Experience, Usage: v.Usage}
+	return MemoryItem{Origin: v.Origin, ID: v.Memory, Dataset: v.Dataset, Title: v.Title, Text: v.Text, Original: v.Original, Source: sourceDisplayName(v.Source), ScopeName: scopeDisplayName(records.Scope{Kind: v.ScopeKind, Name: v.ScopeName}), Category: category, Revision: v.Revision, State: v.State, IndexState: v.IndexState, Operation: v.Operation, CreatedAt: created.Local(), SourceDetail: v.SourceDetail, Tags: v.Tags, Derived: v.Derived, Experience: v.Experience, Usage: v.Usage}
 }
 func displayVersions(vs []records.Version) []MemoryItem {
 	out := make([]MemoryItem, 0, len(vs))
@@ -201,12 +201,8 @@ func (a *App) listQuery() records.ListQuery {
 	}
 	if a.scope != "" {
 		q.Datasets = []string{a.scope}
-	} else if a.page == "全局记忆" {
-		for _, scope := range a.scopes {
-			if scope.Kind == "preference" || scope.Kind == "experience" {
-				q.Datasets = append(q.Datasets, scope.ID)
-			}
-		}
+	} else if a.page == "通用知识" {
+		q.Datasets, _ = commonDatasets(a.scopes, a.commonQueryCategory())
 	}
 	return q
 }
@@ -222,14 +218,18 @@ func (a *App) refresh(more bool) {
 		query.Cursor = a.nextCursor
 	}
 	pageName := a.page
+	commonCategory := a.commonQueryCategory()
+	selectMatch := a.commonSelectMatch
 	countsRoute := a.page + ":" + a.scope
 	selected := a.selectedID
+	requestedSelection := selected
 	selectedRevision := int64(0)
 	if item := a.current(); item != nil {
 		selectedRevision = item.Revision
 	}
 	historyLoaded := len(a.history) > 0
 	lastHomeTask := a.homeLastTask
+	copyRequest := a.experience.Copy
 	go func() {
 		ctx, cancel := context.WithTimeout(a.libraryContext, 5*time.Second)
 		defer cancel()
@@ -247,16 +247,24 @@ func (a *App) refresh(more bool) {
 		var relatedErr error
 		var organizationSources []records.OrganizationSource
 		var organizationSourcesErr error
+		var copySource records.Version
+		var copySourceErr error
 		if err == nil {
-			if pageName == "全局记忆" {
-				query.Datasets = nil
-				for _, scope := range scopes {
-					if scope.Kind == "preference" || scope.Kind == "experience" {
-						query.Datasets = append(query.Datasets, scope.ID)
-					}
+			if pageName == "通用知识" {
+				query.Datasets, err = commonDatasets(scopes, commonCategory)
+			}
+			if err == nil {
+				page, err = a.library.List(ctx, query)
+			}
+			if err == nil && pageName == "通用知识" && commonCategory != "" {
+				all, _ := commonDatasets(scopes, "")
+				counts, e := a.library.List(ctx, records.ListQuery{Datasets: all, Limit: 1})
+				if e != nil {
+					err = e
+				} else {
+					page.KnowledgeTotal, page.RawTotal = counts.KnowledgeTotal, counts.RawTotal
 				}
 			}
-			page, err = a.library.List(ctx, query)
 		}
 		if err == nil {
 			activity, err = a.library.Activities(ctx, time.Local.String())
@@ -298,8 +306,28 @@ func (a *App) refresh(more bool) {
 		}
 		if err == nil && selected != "" {
 			current, err = a.library.Get(ctx, selected)
+			if err == nil && pageName == "通用知识" {
+				allowed := false
+				for _, id := range query.Datasets {
+					if current.Dataset == id && (query.Kind == "raw") == (current.Origin == "raw") {
+						allowed = true
+					}
+				}
+				if !allowed {
+					selected = ""
+					current = records.Version{}
+				}
+			}
 			if err == nil && pageName == "项目" && len(query.Datasets) == 1 && current.Dataset != query.Datasets[0] {
 				err = &records.AccessError{Code: "scope_denied", Message: "selection belongs to another project"}
+			}
+		}
+		if err == nil && pageName == "通用知识" && selectMatch {
+			if page.Total == 0 {
+				selected, current = "", records.Version{}
+			} else if selected == "" && len(page.Items) > 0 {
+				selected = page.Items[0].Memory
+				current, err = a.library.Get(ctx, selected)
 			}
 		}
 		if err == nil && selected != "" && (!historyLoaded || current.Revision != selectedRevision) {
@@ -327,6 +355,9 @@ func (a *App) refresh(more bool) {
 				sourcesStop()
 			}
 		}
+		if copyRequest != nil {
+			copySource, copySourceErr = a.library.Get(ctx, copyRequest.Memory)
+		}
 		if a.libraryContext.Err() != nil {
 			return
 		}
@@ -335,6 +366,16 @@ func (a *App) refresh(more bool) {
 				return
 			}
 			a.loading = false
+			if copyRequest != nil && a.experience.Copy != nil && a.experience.Copy.OperationID == copyRequest.OperationID {
+				if copySourceErr == nil && copySource.Dataset == copyRequest.Project && copySource.State == "active" && copySource.Origin != "raw" {
+					a.experience.CurrentRevision = copySource.Revision
+					a.experience.LatestSource = displayVersion(copySource)
+					a.experience.SourceError = ""
+				} else {
+					a.experience.CurrentRevision = 0
+					a.experience.SourceError = "来源读取未完成或已不再有效，请重新核对。"
+				}
+			}
 			if scopes != nil {
 				a.scopes = scopes
 				a.projects = nil
@@ -374,6 +415,15 @@ func (a *App) refresh(more bool) {
 				a.listTotal = page.Total
 				a.readingCountsRoute = countsRoute
 				a.readingKnowledgeTotal, a.readingRawTotal = page.KnowledgeTotal, page.RawTotal
+			}
+			if pageName == "通用知识" && a.selectedID == requestedSelection && !a.editing && a.detailMode == "view" {
+				if selectMatch {
+					a.commonSelectMatch = false
+				}
+				a.selectedID = selected
+				if selected == "" {
+					a.selectedItem, a.history = nil, nil
+				}
 			}
 			if pageName == "总览" {
 				a.observeHomeTask(active, terminal, time.Now())
@@ -454,25 +504,37 @@ func (a *App) scopeLabel(id string) string {
 		if scope.ID == id {
 			count := 0
 			for _, other := range a.scopes {
-				if other.Name == scope.Name {
+				if scopeDisplayName(other) == scopeDisplayName(scope) {
 					count++
 				}
 			}
 			if count > 1 {
-				return fmt.Sprintf("%s · %s", scope.Name, scope.ID[:8])
+				return fmt.Sprintf("%s · %s", scopeDisplayName(scope), scope.ID[:min(8, len(scope.ID))])
 			}
-			return scope.Name
+			return scopeDisplayName(scope)
 		}
 	}
 	return ""
 }
 func (a *App) datasetForLabel(label string) string {
+	label = strings.TrimSpace(label)
 	for _, scope := range a.scopes {
-		if a.scopeLabel(scope.ID) == strings.TrimSpace(label) {
+		if a.scopeLabel(scope.ID) == label {
 			return scope.ID
 		}
 	}
-	return ""
+	// Previously saved drafts contain the old display name. Resolve only a
+	// unique existing common scope; never create or infer a dataset from a name.
+	legacy := ""
+	for _, scope := range a.scopes {
+		if (scope.Kind == "preference" || scope.Kind == "experience") && scope.Name == label {
+			if legacy != "" {
+				return ""
+			}
+			legacy = scope.ID
+		}
+	}
+	return legacy
 }
 
 func (a *App) visibleTotal() int {

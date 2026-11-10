@@ -25,6 +25,9 @@ func (a *App) switchReadingKind(kind string) {
 	route := a.page + ":" + a.scope + ":"
 	a.readingSelections[route+oldKind] = a.selectedID
 	a.recordKind, a.selectedID = kind, a.readingSelections[route+kind]
+	if a.page == "通用知识" {
+		a.commonSelectMatch = true
+	}
 	a.selectedItem, a.history = nil, nil
 	a.editing, a.detailMode, a.nextCursor = false, "view", ""
 	if a.projectSettings.Open {
@@ -82,7 +85,7 @@ func (a *App) knowledgeProvenance(c *ui.Context, item MemoryItem) {
 							if source.Changed {
 								kind += " · 来源已变化"
 							}
-							ui.Text(c, fmt.Sprintf("%s · v%d · %s", source.Input.Source, source.Revision, kind)).FontSize(10).TextColor(design.Muted)
+							ui.Text(c, fmt.Sprintf("%s · v%d · %s", sourceDisplayName(source.Input.Source), source.Revision, kind)).FontSize(10).TextColor(design.Muted)
 						})
 						if source.Input.Origin == "raw" {
 							button := quietButton(c, "阅读原文").Key("knowledge-source-" + source.Memory).OnClick(func() {

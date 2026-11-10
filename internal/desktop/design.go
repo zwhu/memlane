@@ -38,7 +38,7 @@ var icons = map[string]*ui.SVG{
 	"codex":   svg(`<rect x="2" y="4" width="20" height="16" rx="6"/><path d="m7 9 3 3-3 3m6 0h4"/>`),
 	"总览":      svg(`<rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="3" width="6" height="6" rx="1"/><rect x="3" y="15" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/>`),
 	"全部记忆":    svg(`<path d="m3 7 9-5 9 5-9 5-9-5zm0 5 9 5 9-5M3 17l9 5 9-5"/>`),
-	"全局记忆":    svg(`<circle cx="12" cy="7" r="4"/><path d="M4 21v-3a8 8 0 0 1 16 0v3z"/>`),
+	"通用知识":    svg(`<circle cx="12" cy="7" r="4"/><path d="M4 21v-3a8 8 0 0 1 16 0v3z"/>`),
 	"Agent":   svg(`<rect x="2" y="4" width="20" height="16" rx="3"/><path d="m6 9 3 3-3 3m6 0h5"/>`),
 	"整理记录":    svg(`<circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/>`),
 	"项目":      svg(`<path d="M3 6h7l2 3h9v12H3z"/>`),

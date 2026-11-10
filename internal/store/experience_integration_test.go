@@ -294,3 +294,42 @@ func TestExperienceRejectAndExpire(t *testing.T) {
 		})
 	}
 }
+
+func TestExperienceCopyPreviewPersistsConditionsAndRejectsChangedReplay(t *testing.T) {
+	s, _ := mergeDB(t)
+	_, e := s.Scopes(mergeCtx)
+	mustMerge(t, e)
+	base, _, _ := organizationFixture(t, s)
+	source := base.Snapshot.Inputs[0]
+	title, conditions := "可参考的依赖约定", "仅适用于采用相同工具链的项目；项目明确约定优先。"
+	d := records.ExperienceCopy{OperationID: uuid.NewString(), Project: base.Project, Memory: source.Memory, Revision: source.Revision, Title: &title, Conditions: &conditions}
+	r, e := s.CopyExperience(mergeCtx, d)
+	mustMerge(t, e)
+	v, e := s.Current(mergeCtx, r.Memory)
+	mustMerge(t, e)
+	if v.Title != title || v.Text != source.Text || v.Experience.Conditions != conditions {
+		t.Fatal(v)
+	}
+	before := sqlRows(t, s.DB, "versions")
+	replay, e := s.CopyExperience(mergeCtx, d)
+	mustMerge(t, e)
+	if !reflect.DeepEqual(replay, r) || !reflect.DeepEqual(before, sqlRows(t, s.DB, "versions")) {
+		t.Fatal("preview replay duplicated")
+	}
+	changed := "扩大适用范围"
+	d.Conditions = &changed
+	if _, e = s.CopyExperience(mergeCtx, d); !errors.Is(e, ErrConflict) {
+		t.Fatal("changed conditions replay accepted", e)
+	}
+	d.Conditions = &conditions
+	d.OperationID = uuid.NewString()
+	d.Project = v.Dataset
+	if _, e = s.CopyExperience(mergeCtx, d); e == nil {
+		t.Fatal("common source copied as project knowledge")
+	}
+	original, e := s.Current(mergeCtx, source.Memory)
+	mustMerge(t, e)
+	if original.Revision != source.Revision || original.Text != source.Text || original.State != "active" {
+		t.Fatal("source changed", original)
+	}
+}

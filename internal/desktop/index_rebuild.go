@@ -100,7 +100,7 @@ func (a *App) startIndexRebuild() {
 				if errors.As(err, &failure) {
 					switch {
 					case failure.Message == "rebuild exceeds 10000 items; choose a scope":
-						a.indexRebuildError = "所选范围超过 10000 条，请选择一个较小的项目或全局范围后重建。"
+						a.indexRebuildError = "所选范围超过 10000 条，请选择一个较小的项目或通用知识范围后重建。"
 					case failure.Code == "not_found":
 						a.indexRebuildError = "所选范围已不可用，请重新选择当前已登记的范围。"
 					case failure.Code == "conflict":

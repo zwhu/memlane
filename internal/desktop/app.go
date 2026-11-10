@@ -13,6 +13,8 @@ import (
 )
 
 type App struct {
+	commonCategory                                                   string
+	commonSelectMatch                                                bool
 	windowHidden                                                     bool
 	cognee                                                           CogneeUI
 	officialPreparation                                              OfficialPreparationUI
@@ -243,7 +245,7 @@ func (a *App) sidebar(c *ui.Context) {
 			if a.collapsed {
 				ui.Button(c, "展开").Label("切换侧边栏").OnClick(func() { a.collapsed = false })
 			}
-			for _, page := range []string{"总览", "全部记忆", "全局记忆", "整理记录"} {
+			for _, page := range []string{"总览", "全部记忆", "通用知识", "整理记录"} {
 				a.nav(c, page, "", icons[page])
 			}
 			ui.Row(c).Margin(22, 12, 8, 12).Children(func() {
@@ -574,6 +576,9 @@ func (a *App) details(c *ui.Context) {
 					}
 					ui.Row(c).Gap(8).Children(func() {
 						title := "内容列表"
+						if a.page == "通用知识" {
+							title = "通用知识"
+						}
 						if a.page == "项目" {
 							title = "项目内容"
 						}
@@ -600,6 +605,17 @@ func (a *App) details(c *ui.Context) {
 						ui.Button(c, knowledge).Key("reading-tab-knowledge").Height(28).Padding(5, 10).OnClick(func() { a.switchReadingKind("knowledge") })
 						ui.Button(c, raw).Key("reading-tab-raw").Height(28).Padding(5, 10).OnClick(func() { a.switchReadingKind("raw") })
 					})
+					if a.page == "通用知识" && a.recordKind != "raw" {
+						ui.Row(c).Gap(6).Children(func() {
+							for _, item := range []struct{ kind, label string }{{"preference", "个人偏好"}, {"experience", "通用经验"}} {
+								button := ui.Button(c, item.label).Key("common-category-"+item.kind).Height(28).Padding(5, 10)
+								if a.commonCategory == item.kind {
+									button.Background(design.Selected)
+								}
+								button.OnClick(func() { a.selectCommonCategory(item.kind) })
+							}
+						})
+					}
 					if a.page != "搜索" {
 						ui.TextInput(c.Key("reading-search"), &a.readingSearch).Label("搜索项目内容").Placeholder("搜索当前内容").Height(32).OnSubmit(func() {
 							a.readingFilter = strings.TrimSpace(a.readingSearch)
@@ -650,7 +666,7 @@ func (a *App) details(c *ui.Context) {
 								a.empty(c, "读取未完成", "重试后继续查看当前范围。")
 							} else if a.projectKnowledgeEmpty() {
 								a.projectEmptyKnowledge(c)
-							} else if a.readingFilter != "" {
+							} else if a.readingFilter != "" || a.page == "通用知识" && a.commonCategory != "" {
 								a.empty(c, "没有匹配的内容", "清除筛选可查看这个范围的全部内容。")
 							} else {
 								a.empty(c, "列表为空", "保存的记忆会出现在这里。")
@@ -719,9 +735,14 @@ func (a *App) details(c *ui.Context) {
 				} else if a.projectKnowledgeEmpty() {
 					label = "项目知识"
 				}
+				if a.commonCopyOpen() {
+					label = "原文复制到通用知识"
+				}
 				ui.Text(c, label)
 				ui.Spacer(c)
-				if a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
+				if a.commonCopyOpen() {
+					quietButton(c, "取消").Key("experience-copy-cancel").Disabled(a.experience.Busy).OnClick(a.closeExperienceCopy)
+				} else if a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
 					if a.projectOrganizer.Task == nil || projectTaskVisualState(a.projectOrganizer.Task) != "completed" {
 						quietButton(c, "查看知识").Key("project-organizer-close").OnClick(a.returnFromProjectOrganizer)
 					}
@@ -734,7 +755,9 @@ func (a *App) details(c *ui.Context) {
 					quietButton(c, "历史").Key("knowledge-history-open").Disabled(raw).OnClick(a.openKnowledgeHistory)
 				}
 			})
-			if a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
+			if a.commonCopyOpen() {
+				a.experienceCopyPreview(c)
+			} else if a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
 				a.projectOrganizerContent(c)
 			} else if a.projectKnowledgeEmpty() {
 				a.projectKnowledgePreview(c)
@@ -775,7 +798,7 @@ func (a *App) details(c *ui.Context) {
 	})
 }
 func (a *App) isMemoryPage() bool {
-	return a.page == "全部记忆" || a.page == "全局记忆" || a.page == "项目" || a.page == "搜索"
+	return a.page == "全部记忆" || a.page == "通用知识" || a.page == "项目" || a.page == "搜索"
 }
 func (a *App) current() *MemoryItem {
 	if a.selectedItem != nil && a.selectedItem.ID == a.selectedID {
@@ -805,7 +828,7 @@ func (a *App) memoryRow(c *ui.Context, item MemoryItem, inList bool) {
 			}
 			ui.Text(c, rowPreview).FontSize(design.Small).TextColor(design.Muted).SingleLine()
 			ui.Row(c).Children(func() {
-				ui.Text(c, item.Source+" · "+item.ScopeName).FontSize(10).TextColor(design.Muted).Grow(1).SingleLine().MinWidth(0)
+				ui.Text(c, item.Source+" · "+a.memoryScopeName(item)).FontSize(10).TextColor(design.Muted).Grow(1).SingleLine().MinWidth(0)
 				ui.Text(c, item.CreatedAt.Format("15:04")).FontSize(10).TextColor(design.Muted)
 			})
 		})
@@ -879,7 +902,7 @@ func (a *App) memoryDetail(c *ui.Context) {
 		a.recordDisplayedMemory(*item)
 		ui.Text(c, item.Title).FontSize(design.Title).Bold()
 		if item.Origin != "raw" {
-			ui.Text(c, fmt.Sprintf("%s · %s · v%d · %s", item.ScopeName, item.Source, item.Revision, knowledgeState(*item))).FontSize(10).TextColor(design.Muted)
+			ui.Text(c, fmt.Sprintf("%s · %s · v%d · %s", a.memoryScopeName(*item), item.Source, item.Revision, knowledgeState(*item))).FontSize(10).TextColor(design.Muted)
 		}
 		if a.page == "项目" && a.scope == item.Dataset {
 			entities := a.memoryEntities(*item)
@@ -923,13 +946,12 @@ func (a *App) memoryDetail(c *ui.Context) {
 				conditions = "原文复制，尚未填写通用适用条件；使用时核对项目明确约定。"
 			}
 			ui.Text(c, conditions).Selectable().LineHeight(1.7)
-			ui.Text(c, "项目明确约定优先于全局建议。").FontSize(design.Small).TextColor(design.Muted)
+			ui.Text(c, "项目明确约定优先于通用知识。").FontSize(design.Small).TextColor(design.Muted)
 		}
-		a.experienceCopyPreview(c, *item)
 		a.knowledgeProvenance(c, *item)
 		ui.Collapsible(c, "使用记录", &a.readingUsageOpen, func() { a.usageDetail(c, *item) })
 		ui.Collapsible(c, "保存与检索状态", &a.readingMetadataOpen, func() {
-			meta(c, "范围", item.ScopeName)
+			meta(c, "范围", a.memoryScopeName(*item))
 			meta(c, "来源", item.Source)
 			meta(c, "创建", item.CreatedAt.Format("2006-01-02 15:04"))
 			operation := operationLabel(item.Operation)
@@ -973,8 +995,8 @@ func (a *App) memoryDetail(c *ui.Context) {
 		if item.Origin != "raw" {
 			ui.Collapsible(c, "更多操作", &a.readingActionsOpen, func() {
 				if a.isProjectKnowledge(*item) {
-					quietButton(c, "复制到全局…").Key("experience-copy-preview").Disabled(a.experience.Busy).OnClick(func() { a.beginExperienceCopy(*item) })
-					quietButton(c, "AI 提炼为全局…").Key("experience-distill").Disabled(a.organization.Busy).OnClick(func() { a.beginExperienceDistill(*item) })
+					quietButton(c, "原文复制到通用知识…").Key("experience-copy-preview").Disabled(a.experience.Busy).OnClick(func() { a.beginExperienceCopy(*item) })
+					quietButton(c, "AI 提炼为通用经验…").Key("experience-distill").Disabled(a.organization.Busy).OnClick(func() { a.beginExperienceDistill(*item) })
 				}
 				quietButton(c, "恢复旧版本").Key("knowledge-restore-open").OnClick(func() { a.detailMode = "history"; a.detailScroll.Y = 0; a.refresh(false) })
 			})

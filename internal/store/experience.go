@@ -13,6 +13,11 @@ import (
 
 func (s *Store) CopyExperience(ctx context.Context, d records.ExperienceCopy) (records.OrganizationReceipt, error) {
 	var receipt records.OrganizationReceipt
+	if d.Title != nil || d.Conditions != nil {
+		if d.Title == nil || d.Conditions == nil || strings.TrimSpace(*d.Title) == "" || strings.TrimSpace(*d.Conditions) == "" || len(*d.Title) > 512 || len(*d.Conditions) > 4096 {
+			return receipt, records.MergeError("invalid_request")
+		}
+	}
 	if strings.TrimSpace(d.OperationID) == "" || len(d.OperationID) > 128 || d.Revision < 1 {
 		return receipt, records.MergeError("invalid_request")
 	}
@@ -35,10 +40,26 @@ func (s *Store) CopyExperience(ctx context.Context, d records.ExperienceCopy) (r
 	}
 	operation := "experience-copy:" + uuid.NewSHA1(uuid.NameSpaceOID, []byte(d.OperationID)).String()
 	memoryID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(operation)).String()
-	m := Mutation{Kind: "save", OperationID: operation, Memory: memoryID, Dataset: global, Text: body, Title: title, Source: "用户：原文复制到全局", Origin: "knowledge", SourceDetail: &records.AgentSource{References: []string{d.Project + "/" + d.Memory + "@v" + stringRevision(d.Revision)}}}
+	source := "用户：原文复制到全局"
+	conditions := ""
+	copyTitle := title
+	if d.Title != nil {
+		copyTitle, conditions = *d.Title, *d.Conditions
+		source = "用户：原文复制到通用知识"
+	}
+	m := Mutation{Kind: "save", OperationID: operation, Memory: memoryID, Dataset: global, Text: body, Title: copyTitle, Source: source, Origin: "knowledge", SourceDetail: &records.AgentSource{References: []string{d.Project + "/" + d.Memory + "@v" + stringRevision(d.Revision)}}}
 	var prior bool
 	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM operations WHERE id=?)`, operation).Scan(&prior); err != nil {
 		return receipt, err
+	}
+	if prior && d.Conditions != nil {
+		var savedConditions string
+		if err = tx.QueryRowContext(ctx, `SELECT conditions FROM global_experiences WHERE memory=? AND revision=1`, memoryID).Scan(&savedConditions); err != nil {
+			return receipt, err
+		}
+		if savedConditions != conditions {
+			return receipt, ErrConflict
+		}
 	}
 	if !prior {
 		ok, e := organizationCurrent(ctx, tx, d.Project, []records.MergeSource{{Memory: d.Memory, Revision: d.Revision}})
@@ -57,7 +78,7 @@ func (s *Store) CopyExperience(ctx context.Context, d records.ExperienceCopy) (r
 	if prior {
 		return receipt, nil
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO global_experiences(memory,revision,kind,conditions) VALUES(?,?,'copy','')`, saved.Memory, saved.Revision); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO global_experiences(memory,revision,kind,conditions) VALUES(?,?,'copy',?)`, saved.Memory, saved.Revision, conditions); err != nil {
 		return receipt, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO derived_memories(memory,revision,state) VALUES(?,?,'user_confirmed')`, saved.Memory, saved.Revision); err != nil {

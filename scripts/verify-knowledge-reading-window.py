@@ -21,7 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--components', type=Path, required=True)
-    parser.add_argument('--scenario', choices=('reading', 'project-settings', 'project-binding', 'project-task', 'project-context', 'project-index-recovery', 'project-history', 'project-history-guard', 'project-history-archive', 'project-history-archive-guard', 'project-motion', 'project-motion-task', 'project-motion-visual'), default='reading')
+    parser.add_argument('--scenario', choices=('common-knowledge', 'reading', 'project-settings', 'project-binding', 'project-task', 'project-context', 'project-index-recovery', 'project-history', 'project-history-guard', 'project-history-archive', 'project-history-archive-guard', 'project-motion', 'project-motion-task', 'project-motion-visual'), default='reading')
     args = parser.parse_args()
     out, previous = args.out.resolve(), args.components.resolve()
     out.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -110,11 +110,22 @@ k=Ed25519PrivateKey.generate();print(json.dumps({'signature':base64.b64encode(k.
             mac = SourceFileLoader('reading_mac', str(ROOT/'scripts/mac-native.py')).load_module().Mac()
             mac.require_unlocked()
             was_dialog = any(n.get('key') == 'knowledge-history-dialog' for n in ui.nodes())
-            mac.activate(ui.pid)
-            driver.wait(lambda: ui.native()['key_window'], timeout=10)
-            ui.req('capture')
-            mac.capture(ui.pid, out/'screenshots'/name)
-            assert ui.native()['visible'] and ui.native()['key_window']
+            for attempt in range(3):
+                mac.activate(ui.pid)
+                driver.wait(lambda: ui.native()['key_window'], timeout=10)
+                # Activation can yield focus while macOS starts a new bundle.
+                # Click this owned window's toolbar and verify the actual frame.
+                bounds = next(w['bounds'] for w in mac.visible_windows([ui.pid]) if w['layer'] == 0 and w['bounds']['width'] >= 980)
+                if not was_dialog:
+                    mac.click(bounds['x']+500, bounds['y']+27)
+                driver.wait(lambda: ui.native()['key_window'], timeout=10)
+                ui.req('capture')
+                mac.capture(ui.pid, out/'screenshots'/name)
+                frame_state = ui.native()
+                if frame_state['visible'] and frame_state['key_window']:
+                    break
+            else:
+                raise AssertionError(('system_capture_focus_lost', frame_state))
             assert was_dialog == any(n.get('key') == 'knowledge-history-dialog' for n in ui.nodes())
             (out/'screenshots'/(Path(name).stem+'-capture.json')).write_text(json.dumps(dict(pid=ui.pid, actual_system_window=True, dialog_kept_open=was_dialog))+'\n')
             (out/'screenshots'/ (Path(name).stem+'-tree.json')).write_text(json.dumps(ui.nodes(), ensure_ascii=False, indent=2)+'\n')
@@ -129,7 +140,11 @@ k=Ed25519PrivateKey.generate();print(json.dumps({'signature':base64.b64encode(k.
             assert 'error' not in result, result
 
         driver.wait(lambda: '服务运行中' in ui.labels(), timeout=90)
-        if args.scenario == 'project-settings':
+        if args.scenario == 'common-knowledge':
+            report['scenario_source_sha256'] = hashlib.sha256((ROOT/'scripts/verify_common_knowledge_scenario.py').read_bytes()).hexdigest()
+            from verify_common_knowledge_scenario import verify
+            verify(ui, call, report, capture, resize, out, ipc, driver)
+        elif args.scenario == 'project-settings':
             from verify_project_settings_scenario import verify
             verify(ui, call, report, capture, resize, out, ipc, driver)
         elif args.scenario == 'project-binding':

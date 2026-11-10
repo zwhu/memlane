@@ -326,7 +326,7 @@ func (a *App) scheduleDetail(c *ui.Context) {
 			loc, _ := time.LoadLocation(plan.Spec.Timezone)
 			meta(c, "下一次", time.UnixMilli(plan.NextRunMS).In(loc).Format("2006-01-02 15:04 MST"))
 		}
-		ui.Text(c, "摘要和标签可按已确认规则新增；修改已有知识及全局提炼必须逐项审核。来源版本与历史保留。").LineHeight(1.7)
+		ui.Text(c, "摘要和标签可按已确认规则新增；修改已有知识及通用提炼必须逐项审核。来源版本与历史保留。").LineHeight(1.7)
 		if a.runtimeStatus.Phase == "stopped" {
 			ui.Text(c, "记忆服务已主动停止，计划不会执行；需你明确启动服务。").Bold()
 		}
@@ -407,7 +407,7 @@ func (a *App) scheduleEditor(c *ui.Context) {
 			s.Destinations = map[string]bool{}
 		}
 	})
-	ui.Checkbox(c.Key("schedule-global"), &spec.Global, "发现全局经验候选，预览确认").Disabled(s.Busy).OnChange(func() {
+	ui.Checkbox(c.Key("schedule-global"), &spec.Global, "发现通用经验候选，预览确认").Disabled(s.Busy).OnChange(func() {
 		if spec.Global {
 			spec.Review = true
 		}

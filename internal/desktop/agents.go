@@ -392,9 +392,9 @@ func (a *App) agentDetail(c *ui.Context) {
 				continue
 			}
 			allowed := s.Allowed[scope.ID] || scope.ID == s.Project
-			ui.Checkbox(c.Key("allow-"+scope.ID), &allowed, scope.Name).Disabled(s.Busy || scope.ID == s.Project).OnChange(func() { s.Allowed[scope.ID] = allowed })
+			ui.Checkbox(c.Key("allow-"+scope.ID), &allowed, a.scopeLabel(scope.ID)).Disabled(s.Busy || scope.ID == s.Project).OnChange(func() { s.Allowed[scope.ID] = allowed })
 		}
-		ui.Text(c, "默认当前项目＋允许的全局范围。其他获批项目仍需在 Agent 中明确指定。").FontSize(design.Small).TextColor(design.Muted)
+		ui.Text(c, "默认当前项目＋已授权的通用知识范围。其他获批项目仍需在 Agent 中明确指定。").FontSize(design.Small).TextColor(design.Muted)
 		if s.Notice != "" {
 			ui.Text(c, s.Notice).Selectable().FontSize(design.Small).LineHeight(1.7).TextColor(design.Muted)
 		}

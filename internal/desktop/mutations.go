@@ -28,7 +28,7 @@ func (a *App) saveMemory() {
 	}
 	dataset := a.datasetForLabel(a.draftScope)
 	if dataset == "" {
-		a.message = "请选择已登记的项目或全局范围。"
+		a.message = "请选择已登记的项目或通用知识范围。"
 		return
 	}
 	mutation := records.Mutation{OperationID: uuid.NewString(), Kind: kind, Memory: id, Dataset: dataset, ExpectedRevision: expected, Title: a.draftTitle, Text: a.draft}
@@ -179,7 +179,7 @@ func (a *App) searchMemory() {
 		return
 	}
 	scope := a.scope
-	all := scope == "" && a.page != "全局记忆"
+	all := scope == "" && a.page != "通用知识"
 	a.navigate("搜索", scope)
 	a.selectedID = ""
 	a.selectedItem = nil

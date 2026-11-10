@@ -47,6 +47,9 @@ func (a *App) rememberDraft() {
 type PaneState struct{ ID, Mode string }
 
 func (a *App) navigate(page, scope string) {
+	if page == "全局记忆" {
+		page = "通用知识"
+	}
 	a.closeProjectOrganizer()
 	a.closeProjectSettings()
 	a.closeKnowledgeHistory()
@@ -65,6 +68,9 @@ func (a *App) navigate(page, scope string) {
 		if !a.visualFixture {
 			a.items = nil
 		}
+	}
+	if page == "通用知识" && a.page != page {
+		a.commonSelectMatch = true
 	}
 	a.page, a.scope = page, scope
 	if a.isMemoryPage() {
@@ -119,7 +125,7 @@ func (a *App) newMemory() {
 	a.conflictCurrent = nil
 	if a.scope != "" {
 		a.page = "项目"
-	} else if a.page != "全局记忆" {
+	} else if a.page != "通用知识" {
 		a.page = "全部记忆"
 	}
 	a.memoryRoute = a.page + ":" + a.scope
@@ -129,7 +135,10 @@ func (a *App) newMemory() {
 	a.draftTitle, a.draft, a.draftScope = d.Title, d.Text, d.Scope
 	a.draftConditions = d.Conditions
 	if a.draftScope == "" {
-		a.draftScope = "全局经验"
+		a.draftScope = "通用经验"
+		if a.commonCategory == "preference" {
+			a.draftScope = "个人偏好"
+		}
 		for _, p := range a.projects {
 			if a.scope == p.ID {
 				a.draftScope = p.Name
@@ -175,7 +184,7 @@ func (a *App) scopeOptions() []string {
 		}
 		return out
 	}
-	out := []string{"个人偏好", "全局经验"}
+	out := []string{"个人偏好", "通用经验"}
 	for _, p := range a.projects {
 		out = append(out, p.Name)
 	}
@@ -257,10 +266,10 @@ func (a *App) SetVisualFixture(items []MemoryItem, projects []ProjectItem, histo
 
 func (a *App) searchPlaceholder() string {
 	if a.scope != "" {
-		return "搜索当前项目与全局"
+		return "搜索当前项目与通用知识"
 	}
-	if a.page == "全局记忆" {
-		return "搜索全局记忆"
+	if a.page == "通用知识" {
+		return "搜索通用知识"
 	}
 	return "搜索所有记忆"
 }

@@ -124,7 +124,7 @@ func (a *App) knowledgeHistoryView(c *ui.Context) {
 		panel.Column().Key("knowledge-history-dialog").Label("知识历史").Width(min(820, w-48)).Height(min(524, height-48)).Radius(18).Clip().Border(1, ui.Hex("#dce5ef")).Background(ui.Hex("#ffffff")).Shadow(0, 25, 90, 0, ui.RGBA(38, 59, 87, .18))
 		ui.Row(c).Shrink(0).Padding(24, 27, 20, 27).Gap(20).AlignItems(ui.Start).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).Children(func() {
 			ui.Column(c).Grow(1).MinWidth(0).Gap(8).Children(func() {
-				ui.Text(c, h.Owner.ScopeName).FontSize(10).TextColor(design.Muted)
+				ui.Text(c, a.memoryScopeName(h.Owner)).FontSize(10).TextColor(design.Muted)
 				ui.Text(c, "知识历史").FontSize(22).Bold()
 				ui.Text(c, h.Owner.Title).FontSize(12).MaxLines(2).TextColor(design.Muted)
 			})

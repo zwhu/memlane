@@ -465,7 +465,8 @@ func (a *App) openMergeMemory(id, project string) {
 	page, scope := "项目", project
 	for _, registered := range a.scopes {
 		if registered.ID == project && registered.Kind != "project" {
-			page, scope = "全局记忆", ""
+			page, scope = "通用知识", ""
+			a.commonCategory = ""
 			break
 		}
 	}

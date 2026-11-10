@@ -56,7 +56,6 @@ func experienceUIFixture(t *testing.T, handle func(serviceipc.Request) serviceip
 	a.page, a.scope, a.detailMode = "项目", project, "view"
 	v := MemoryItem{ID: uuid.NewString(), Dataset: project, Text: "合成项目约定", Title: "合成", State: "active", Revision: 1}
 	a.selectedID, a.selectedItem = v.ID, &v
-	a.beginExperienceCopy(v)
 	return a, dispatched
 }
 
@@ -84,12 +83,14 @@ func TestExperienceUIReadFailureRetriesSavedReceiptAfterSourceChanged(t *testing
 		}
 		return serviceipc.Response{OK: true, Result: records.Version{Memory: receipt.Memory, Dataset: "global", Revision: 1}}
 	})
+	a.beginExperienceCopy(*a.current())
+	a.experience.Conditions = "适用于已确认相同约定的项目。"
 	a.confirmExperienceCopy()
 	awaitExperienceDispatch(t, dispatched)
 	if a.experience.Receipt == nil || a.experience.Copy == nil || a.experience.Error == "" {
 		t.Fatal("committed receipt lost")
 	}
-	a.selectedItem.Revision = 2
+	a.experience.CurrentRevision = 2
 	tt := ui.NewTester(a.View, 1200, 900)
 	if e := tt.Click("重试复制回执"); e != nil {
 		t.Fatal("source edit disabled committed receipt recovery", e)
@@ -110,7 +111,12 @@ func TestExperienceUICopyReplyPreservesNewEditRoute(t *testing.T) {
 		}
 		return serviceipc.Response{OK: true, Result: records.Version{Memory: receipt.Memory, Dataset: "global", Revision: 1}}
 	})
+	a.beginExperienceCopy(*a.current())
+	a.experience.Conditions = "适用于已确认相同约定的项目。"
 	a.confirmExperienceCopy()
+	a.navigate("项目", a.experience.Source.Dataset)
+	v := a.experience.Source
+	a.selectedID, a.selectedItem = v.ID, &v
 	a.editMemory()
 	a.draft = "用户正在编辑的新草稿"
 	selected := a.selectedID
@@ -118,5 +124,21 @@ func TestExperienceUICopyReplyPreservesNewEditRoute(t *testing.T) {
 	awaitExperienceDispatch(t, dispatched)
 	if a.selectedID != selected || a.detailMode != "edit" || a.draft != "用户正在编辑的新草稿" || a.experience.Copy != nil {
 		t.Fatal("late copy reply replaced new route")
+	}
+}
+
+func TestExperienceCopyCancelKeepsSourceRouteScrollAndSnapshot(t *testing.T) {
+	a, _ := experienceUIFixture(t, func(r serviceipc.Request) serviceipc.Response { return serviceipc.Response{OK: false} })
+	source := *a.current()
+	a.detailScroll.Y = 130
+	page, scope := a.page, a.scope
+	a.beginExperienceCopy(source)
+	if a.page != "通用知识" || a.experience.Source.Text != source.Text || a.experience.CurrentRevision != source.Revision {
+		t.Fatal("preview lost snapshot or route")
+	}
+	a.experience.Conditions = "独立预览草稿"
+	a.closeExperienceCopy()
+	if a.page != page || a.scope != scope || a.selectedID != source.ID || a.detailScroll.Y != 130 || a.experience.Copy != nil {
+		t.Fatal("cancel changed source reading", a.page, a.selectedID, a.detailScroll.Y)
 	}
 }

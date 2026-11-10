@@ -259,7 +259,7 @@ func (a *App) projectSettingsContent(c *ui.Context) {
 						if bound {
 							ui.Text(c, "该连接与本项目绑定。撤销访问请先在 Agent 连接中断开。").FontSize(11).TextColor(design.Muted)
 						}
-						ui.Text(c, "这里只修改本项目的授权；其他项目和全局范围保留。").FontSize(11).TextColor(design.Muted)
+						ui.Text(c, "这里只修改本项目的授权；其他项目和通用知识范围保留。").FontSize(11).TextColor(design.Muted)
 						ui.Row(c).Gap(10).Children(func() {
 							quietButton(c, "取消").Key("project-access-cancel").Disabled(busy).OnClick(func() { s.Editing = "" })
 							quietButton(c, "保存范围").Key("project-access-save").Disabled(busy || a.libraryContext == nil || bound).OnClick(a.saveProjectAccess)
@@ -279,8 +279,8 @@ func (a *App) projectSettingsContent(c *ui.Context) {
 		})
 		ui.Column(c).Padding(16, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Gap(10).Children(func() {
 			ui.Text(c, "使用范围").FontSize(11).Bold().TextColor(design.Muted)
-			ui.Text(c, "默认使用当前项目与允许的全局记忆。其他项目需要明确指定。").FontSize(11).LineHeight(1.8).TextColor(design.Muted)
-			ui.Text(c, "当前项目的明确约定优先于全局建议。").Padding(5, 0, 5, 13).BorderWidth(0, 0, 0, 2).BorderColor(design.Border).FontSize(11).TextColor(design.Muted)
+			ui.Text(c, "默认使用当前项目与允许的通用知识。其他项目需要明确指定。").FontSize(11).LineHeight(1.8).TextColor(design.Muted)
+			ui.Text(c, "当前项目的明确约定优先于通用知识。").Padding(5, 0, 5, 13).BorderWidth(0, 0, 0, 2).BorderColor(design.Border).FontSize(11).TextColor(design.Muted)
 		})
 	})
 }

@@ -338,7 +338,7 @@ func (a *App) organizationList(c *ui.Context) {
 func (a *App) organizationChooser(c *ui.Context) {
 	s := &a.organization
 	ui.Text(c, "项目材料整理").FontSize(design.Title).Bold()
-	ui.Checkbox(c.Key("organization-global-mode"), &s.GlobalMode, "发现全局经验候选，预览确认后保存").Disabled(s.Busy).OnChange(func() { s.Start = nil })
+	ui.Checkbox(c.Key("organization-global-mode"), &s.GlobalMode, "发现通用经验候选，预览确认后保存").Disabled(s.Busy).OnChange(func() { s.Start = nil })
 	ui.Checkbox(c.Key("organization-review-mode"), &s.ReviewMode, "同时提出修改建议，逐项确认后生效").Disabled(s.Busy).OnChange(func() { s.Start = nil; s.Destinations = map[string]bool{} })
 	if s.ReviewMode {
 		ui.Text(c, "可建议移入的项目（可不选；授权不读取其他项目知识）").FontSize(design.Small)
@@ -665,7 +665,7 @@ func organizationActionLabel(action string) string {
 	case "conflict":
 		return "冲突发现"
 	case "global_experience":
-		return "全局经验候选"
+		return "通用经验候选"
 	}
 	return action
 }
@@ -695,7 +695,7 @@ func (a *App) organizationReviewPreview(c *ui.Context, t records.OrganizationTas
 		meta(c, "保存范围", a.scopeLabel(e.Item.Destination))
 		ui.Text(c, "适用条件").Bold()
 		ui.Text(c, e.Item.Conditions).Selectable().LineHeight(1.7)
-		ui.Text(c, "确认后新增全局经验，原项目知识与来源版本保留；项目明确约定优先。").FontSize(design.Small)
+		ui.Text(c, "确认后新增通用经验，原项目知识与来源版本保留；项目明确约定优先。").FontSize(design.Small)
 	}
 	if e.Item.Action == "move" {
 		meta(c, "移入项目", a.scopeLabel(e.Item.Destination))
