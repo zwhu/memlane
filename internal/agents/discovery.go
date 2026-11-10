@@ -16,13 +16,14 @@ import (
 )
 
 type Discovery struct {
-	Agent    string `json:"agent"`
-	Name     string `json:"name"`
-	Path     string `json:"path,omitempty"`
-	Version  string `json:"version,omitempty"`
-	Protocol string `json:"protocol,omitempty"`
-	Channel  string `json:"channel,omitempty"`
-	Error    string `json:"error,omitempty"`
+	Agent            string `json:"agent"`
+	Name             string `json:"name"`
+	Path             string `json:"path,omitempty"`
+	Version          string `json:"version,omitempty"`
+	Protocol         string `json:"protocol,omitempty"`
+	Channel          string `json:"channel,omitempty"`
+	Error            string `json:"error,omitempty"`
+	ProbeFailureCode string `json:"probe_failure_code,omitempty"` // bounded phase/cause; no stderr or paths
 	// CapabilityError describes an installed Agent whose connection format has
 	// not been verified. It must block configuration without hiding installation.
 	CapabilityError string `json:"capability_error,omitempty"`
@@ -122,8 +123,30 @@ func Probe(ctx context.Context, agent, path string) Discovery {
 		cmd.Dir = isolated
 		cmd.Env = env
 		data, e := cmd.Output()
+		phase := "capability"
+		if len(args) > 0 && args[0] == "--version" {
+			phase = "version"
+		}
 		if len(data) > 32768 {
+			out.ProbeFailureCode = "agent_probe_" + phase + "_output_limit"
 			return "", errors.New("Agent help output too large")
+		}
+		if e != nil {
+			cause := "failed"
+			var exit *exec.ExitError
+			switch {
+			case errors.Is(run.Err(), context.Canceled):
+				cause = "cancelled"
+			case errors.Is(run.Err(), context.DeadlineExceeded):
+				cause = "timeout"
+			case errors.As(e, &exit):
+				cause = "exited"
+			case errors.Is(e, os.ErrNotExist):
+				cause = "unavailable"
+			case errors.Is(e, os.ErrPermission):
+				cause = "permission"
+			}
+			out.ProbeFailureCode = "agent_probe_" + phase + "_" + cause
 		}
 		return string(data), e
 	}

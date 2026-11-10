@@ -148,7 +148,7 @@ type App struct {
 }
 
 func New(version string, check func()) *App {
-	return &App{page: "总览", settingsSection: "environment", detailMode: "view", zoom: 1, version: version, check: check, keepService: true,
+	return &App{page: "总览", organizationMode: true, settingsSection: "environment", detailMode: "view", zoom: 1, version: version, check: check, keepService: true,
 		processing: ProcessingUI{Mode: "agent", Drafts: map[string]records.ProcessingSpec{}, Configuration: records.ProcessingConfiguration{Saved: map[string]records.ProcessingRevision{}}},
 		browsing:   BrowsingUI{View: "memories", Preferences: BrowsePreferences{Selections: map[string]BrowseSelection{}}},
 		updateText: "此版本尚未配置更新源", pendingMutations: map[string]records.Mutation{}, routeStates: map[string]PaneState{}, drafts: map[string]Draft{}, listScroll: map[string]*ui.ScrollState{}, activities: map[string]int{}}
@@ -530,6 +530,9 @@ func (a *App) details(c *ui.Context) {
 	if a.isMemoryPage() {
 		width = 316
 	}
+	if a.page == "整理记录" {
+		width = 316
+	}
 	// At the minimum window size the detail remains useful rather than being squeezed by a fixed list.
 	windowWidth, _ := c.Size()
 	if windowWidth < 1100 && !a.isMemoryPage() {
@@ -571,8 +574,8 @@ func (a *App) details(c *ui.Context) {
 					quietButton(c, "重新发现").Disabled(a.agents.Busy).OnClick(func() { a.refreshAgents(true) })
 				} else if a.page == "整理记录" {
 					ui.Row(c).Gap(8).Children(func() {
-						ui.Button(c, "合并审核").Key("organization-tab-merge").OnClick(func() { a.organizationMode = false })
-						ui.Button(c, "摘要与标签").Key("organization-tab-summary").OnClick(func() { a.organizationMode = true; a.refreshOrganization(false, false) })
+						ui.Button(c, "整理任务").Key("organization-tab-summary").OnClick(func() { a.organizationMode = true; a.refreshOrganization(false, false) })
+						ui.Button(c, "合并记录").Key("organization-tab-merge").OnClick(func() { a.organizationMode = false })
 					})
 					actionButton(c, "立即整理", icons["全部记忆"]).Disabled(a.merges.Busy).OnClick(a.beginOrganizationOrMerge)
 				} else if a.isMemoryPage() {
@@ -746,6 +749,15 @@ func (a *App) details(c *ui.Context) {
 				}
 				if a.commonDistillOpen() {
 					label = "AI 提炼为通用经验"
+				}
+				if a.page == "整理记录" && a.organizationMode {
+					label = "整理结果"
+					if a.organization.New {
+						label = "整理项目"
+					}
+					if a.organization.ReviewItem != "" {
+						label = "建议审核"
+					}
 				}
 				if a.commonCopyOpen() {
 					label = "原文复制到通用知识"

@@ -67,6 +67,9 @@ func ResolvePi(ctx context.Context, clientRoot, serviceRoot, helper string, spec
 		return out, records.MergeError("connection_changed")
 	}
 	probe := agents.Probe(ctx, "pi", i.Options.AgentPath)
+	if probe.ProbeFailureCode != "" {
+		return out, records.MergeError(probe.ProbeFailureCode)
+	}
 	if probe.ConnectionError() != nil || probe.Version != "0.84.1" {
 		return out, records.MergeError("unsupported_agent_version")
 	}

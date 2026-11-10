@@ -7,10 +7,29 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/zwhu/memlane/internal/records"
 )
+
+// Opt-in read-only installation probe: no authentication, model or memory.
+func TestPiInstalledProbeWithShortEnvironment(t *testing.T) {
+	executable := os.Getenv("MEMLANE_PI_PROBE_EXECUTABLE")
+	if executable == "" {
+		t.Skip("explicit installed pi probe opt-in required")
+	}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", "/usr/bin:/bin")
+	for attempt := 1; attempt <= 3; attempt++ {
+		started := time.Now()
+		d := Probe(context.Background(), "pi", executable)
+		t.Logf("PI_PROBE_EVIDENCE attempt=%d version=%q code=%q seconds=%.3f", attempt, d.Version, d.ProbeFailureCode, time.Since(started).Seconds())
+		if d.ConnectionError() != nil || d.Version != "0.84.1" || d.Protocol != "extension" {
+			t.Fatalf("installed probe failed: version=%q code=%q error=%q", d.Version, d.ProbeFailureCode, d.Error)
+		}
+	}
+}
 
 // Synthetic bundle/launcher fixtures exercise capability gates, not real IDE
 // compatibility. The actual installed bundle is checked separately.

@@ -163,7 +163,7 @@ func (s *Store) applyOrganizationReview(ctx context.Context, tx *sql.Tx, t recor
 		m.Memory = e.ID
 		m.ExpectedRevision = 0
 		m.Origin = "knowledge"
-		m.Source = "traex：用户确认整理合并"
+		m.Source = organizationProducer(t) + "：用户确认整理合并"
 	case "overwrite":
 	case "delete":
 		m.Kind = "delete"

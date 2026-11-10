@@ -97,7 +97,7 @@ func (s *OrganizationSnapshot) Seal() error {
 		return invalid
 	}
 	if p := s.Processing; p != nil {
-		if s.Schema != OrganizationGlobalSchema || s.Purpose != "global" || p.SelectionGeneration < 1 || p.FrozenMS <= 0 || len(p.DependencyDigest) != 64 || p.Revision.Digest != MergeDigest(p.Revision.Spec) || p.Revision.Validation == nil || p.Revision.Validation.State != "succeeded" || p.Revision.Validation.CancelRequested || p.Revision.Validation.DependencyDigest != p.DependencyDigest {
+		if p.SelectionGeneration < 1 || p.FrozenMS <= 0 || len(p.DependencyDigest) != 64 || p.Revision.Digest != MergeDigest(p.Revision.Spec) || p.Revision.Validation == nil || p.Revision.Validation.State != "succeeded" || p.Revision.Validation.CancelRequested || p.Revision.Validation.DependencyDigest != p.DependencyDigest {
 			return invalid
 		}
 		if _, err := uuid.Parse(p.Revision.ID); err != nil {

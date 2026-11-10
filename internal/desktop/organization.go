@@ -2,9 +2,7 @@ package desktop
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -14,6 +12,17 @@ import (
 )
 
 type OrganizationUI struct {
+	ReviewItem                                                         string
+	ResultScroll                                                       float32
+	ReviewScroll                                                       map[string]*ui.ScrollState
+	DiagnosticOpen, ExplanationOpen                                    bool
+	Sources                                                            map[string]MemoryItem
+	SourceErrors                                                       map[string]string
+	Epoch                                                              string
+	Processing                                                         records.ProcessingConfiguration
+	ProcessingLoaded, ProcessingLoading                                bool
+	ProcessingError                                                    string
+	ProcessingSequence                                                 uint64
 	ExperienceDrafts                                                   map[string]*ExperienceReviewDraft
 	GlobalMode                                                         bool
 	Purpose                                                            string
@@ -61,6 +70,12 @@ func (a *App) beginOrganization() {
 	if s.Busy {
 		return
 	}
+	if s.Start != nil {
+		a.organizationMode = true
+		a.navigate("整理记录", "")
+		s.New = true
+		return
+	}
 	project := a.scope
 	a.organizationMode = true
 	a.navigate("整理记录", "")
@@ -77,6 +92,9 @@ func (a *App) beginOrganization() {
 	s.Resume = nil
 	s.Destinations = map[string]bool{}
 	s.Decisions = map[string]records.OrganizationReview{}
+	s.ReviewItem = ""
+	s.Sources = nil
+	s.SourceErrors = nil
 	s.Kind = "knowledge"
 	s.GlobalMode = false
 	s.Purpose = ""
@@ -91,6 +109,7 @@ func (a *App) beginOrganization() {
 		}
 	}
 	a.refreshOrganization(false, false)
+	a.refreshOrganizationProcessing()
 }
 func (a *App) beginOrganizationOrMerge() {
 	if a.organizationMode {
@@ -111,18 +130,22 @@ func (a *App) selectOrganization(id string) {
 	s.New = false
 	s.Notice = ""
 	s.Resume = nil
+	s.ReviewItem = ""
+	s.Sources = nil
+	s.SourceErrors = nil
 	s.Scroll.Y = 0
 	s.Sequence++
 	a.refreshOrganization(false, false)
 }
 func (a *App) refreshOrganization(more, candidatesMore bool) {
 	s := &a.organization
-	if a.libraryContext == nil || a.libraryContext.Err() != nil || s.Loading || a.visualFixture {
+	if a.libraryContext == nil || a.libraryContext.Err() != nil || s.Loading || s.Busy || a.visualFixture {
 		return
 	}
 	s.Loading = true
 	s.Sequence++
 	seq := s.Sequence
+	epoch, life, client, library := s.Epoch, a.libraryContext, s.Client, a.library
 	selected, project, isNew, kind := s.Selected, s.Project, s.New, s.Kind
 	if kind == "" {
 		kind = "knowledge"
@@ -136,22 +159,24 @@ func (a *App) refreshOrganization(more, candidatesMore bool) {
 		query.Cursor = s.Cursor
 	}
 	go func() {
-		ctx, stop := context.WithTimeout(a.libraryContext, 5*time.Second)
+		ctx, stop := context.WithTimeout(life, 5*time.Second)
 		defer stop()
-		page, err := s.Client.List(ctx, q)
+		page, err := client.List(ctx, q)
 		var task records.OrganizationTask
 		var candidates records.Page
 		results := map[string]MemoryItem{}
+		sources := map[string]MemoryItem{}
+		sourceErrors := map[string]string{}
 		if err == nil && selected != "" && !isNew {
-			task, err = s.Client.Get(ctx, selected)
+			task, err = client.Get(ctx, selected)
 		}
 		if err == nil && isNew && project != "" {
-			candidates, err = a.library.List(ctx, query)
+			candidates, err = library.List(ctx, query)
 		}
 		if err == nil {
 			for _, entry := range task.Entries {
 				if entry.Receipt != nil && entry.Receipt.Memory != "" {
-					v, e := a.library.Get(ctx, entry.Receipt.Memory)
+					v, e := library.Get(ctx, entry.Receipt.Memory)
 					if e != nil {
 						err = e
 						break
@@ -160,10 +185,23 @@ func (a *App) refreshOrganization(more, candidatesMore bool) {
 				}
 			}
 		}
-		if a.libraryContext.Err() != nil {
+		if err == nil {
+			for _, input := range task.Snapshot.Inputs {
+				v, e := library.Get(ctx, input.Memory)
+				if e != nil {
+					sourceErrors[input.Memory] = "当前来源读取未完成，暂不能确认新的改动。"
+				} else {
+					sources[input.Memory] = displayVersion(v)
+				}
+			}
+		}
+		if life.Err() != nil {
 			return
 		}
 		a.dispatch(func() {
+			if a.organization.Epoch != epoch {
+				return
+			}
 			s.Loading = false
 			if s.Sequence != seq {
 				a.refreshOrganization(false, false)
@@ -198,6 +236,8 @@ func (a *App) refreshOrganization(more, candidatesMore bool) {
 				if !isNew && selected != "" {
 					s.Task = &task
 					s.Results = results
+					s.Sources = sources
+					s.SourceErrors = sourceErrors
 					for i := range s.Tasks {
 						if s.Tasks[i].ID == task.ID {
 							s.Tasks[i].State = task.State
@@ -223,7 +263,12 @@ func (a *App) startOrganization() {
 		return
 	}
 	if s.Start == nil {
+		if s.ProcessingLoading || !s.ProcessingLoaded || !organizationProcessingAvailable(s.Processing) {
+			s.Error = "请先在记忆处理中明确启用已验证的 pi 方式，再开始本次整理。"
+			return
+		}
 		d := records.OrganizationStart{OperationID: uuid.NewString(), Project: s.Project, Review: s.ReviewMode || s.GlobalMode, Global: s.GlobalMode, Purpose: s.Purpose}
+		d.Processing = &records.ProcessingTaskAuthorization{Revision: s.Processing.Current.Revision.ID, Generation: s.Processing.Current.Generation}
 		if s.ReviewMode {
 			for _, scope := range a.scopes {
 				if s.Destinations[scope.ID] {
@@ -238,7 +283,8 @@ func (a *App) startOrganization() {
 		s.Start = &d
 	}
 	d := *s.Start
-	a.organizationAction(func(ctx context.Context) (records.OrganizationTask, error) { return s.Client.Start(ctx, d) }, true)
+	client := s.Client
+	a.organizationAction(func(ctx context.Context) (records.OrganizationTask, error) { return client.Start(ctx, d) }, true)
 }
 func (a *App) organizationAction(fn func(context.Context) (records.OrganizationTask, error), start bool) {
 	s := &a.organization
@@ -249,14 +295,18 @@ func (a *App) organizationAction(fn func(context.Context) (records.OrganizationT
 	s.Notice = "正在提交…"
 	s.Error = ""
 	s.Sequence++
+	epoch, life := s.Epoch, a.libraryContext
 	go func() {
-		ctx, stop := context.WithTimeout(a.libraryContext, 10*time.Second)
+		ctx, stop := context.WithTimeout(life, 10*time.Second)
 		defer stop()
 		task, err := fn(ctx)
-		if a.libraryContext.Err() != nil {
+		if life.Err() != nil {
 			return
 		}
 		a.dispatch(func() {
+			if a.organization.Epoch != epoch {
+				return
+			}
 			s.Busy = false
 			if err != nil {
 				s.Notice = ""
@@ -288,7 +338,8 @@ func (a *App) cancelOrganization() {
 		return
 	}
 	id := s.Task.ID
-	a.organizationAction(func(ctx context.Context) (records.OrganizationTask, error) { return s.Client.Cancel(ctx, id) }, false)
+	client := s.Client
+	a.organizationAction(func(ctx context.Context) (records.OrganizationTask, error) { return client.Cancel(ctx, id) }, false)
 }
 func (a *App) resumeOrganization() {
 	s := &a.organization
@@ -299,12 +350,13 @@ func (a *App) resumeOrganization() {
 		s.Resume = &records.OrganizationResume{Task: s.Task.ID, OperationID: uuid.NewString(), ExpectedAttempt: s.Task.Attempt}
 	}
 	d := *s.Resume
-	a.organizationAction(func(ctx context.Context) (records.OrganizationTask, error) { return s.Client.Resume(ctx, d) }, false)
+	client := s.Client
+	a.organizationAction(func(ctx context.Context) (records.OrganizationTask, error) { return client.Resume(ctx, d) }, false)
 }
 func (a *App) organizationList(c *ui.Context) {
 	s := &a.organization
 	if len(s.Tasks) == 0 {
-		a.empty(c, "暂无摘要与标签记录", "选择项目材料开始整理，所有产出保留出处。")
+		a.empty(c, "暂无整理记录", "选择本次材料和处理方式开始整理，所有产出保留出处。")
 		return
 	}
 	for _, t := range s.Tasks {
@@ -333,20 +385,20 @@ func (a *App) organizationList(c *ui.Context) {
 		b.OnClick(func() { a.selectOrganization(t.ID) })
 	}
 	if s.Next != "" {
-		quietButton(c, "更多摘要记录").Disabled(s.Loading).OnClick(func() { a.refreshOrganization(true, false) })
+		quietButton(c, "更多整理记录").Disabled(s.Loading).OnClick(func() { a.refreshOrganization(true, false) })
 	}
 }
 func (a *App) organizationChooser(c *ui.Context) {
 	s := &a.organization
-	ui.Text(c, "项目材料整理").FontSize(design.Title).Bold()
-	ui.Checkbox(c.Key("organization-global-mode"), &s.GlobalMode, "发现通用经验候选，预览确认后保存").Disabled(s.Busy).OnChange(func() { s.Start = nil })
-	ui.Checkbox(c.Key("organization-review-mode"), &s.ReviewMode, "同时提出修改建议，逐项确认后生效").Disabled(s.Busy).OnChange(func() { s.Start = nil; s.Destinations = map[string]bool{} })
+	ui.Text(c, "选好范围，再开始整理").FontSize(design.Title).Bold()
+	ui.Checkbox(c.Key("organization-global-mode"), &s.GlobalMode, "发现通用经验候选，预览确认后保存").Disabled(s.Busy || s.Start != nil).OnChange(func() { s.Start = nil })
+	ui.Checkbox(c.Key("organization-review-mode"), &s.ReviewMode, "同时提出修改建议，逐项确认后生效").Disabled(s.Busy || s.Start != nil).OnChange(func() { s.Start = nil; s.Destinations = map[string]bool{} })
 	if s.ReviewMode {
 		ui.Text(c, "可建议移入的项目（可不选；授权不读取其他项目知识）").FontSize(design.Small)
 		for _, scope := range a.scopes {
 			if scope.Kind == "project" && scope.ID != s.Project {
 				allowed := s.Destinations[scope.ID]
-				ui.Checkbox(c.Key("organization-destination-"+scope.ID), &allowed, a.scopeLabel(scope.ID)).Disabled(s.Busy).OnChange(func() {
+				ui.Checkbox(c.Key("organization-destination-"+scope.ID), &allowed, a.scopeLabel(scope.ID)).Disabled(s.Busy || s.Start != nil).OnChange(func() {
 					if s.Destinations == nil {
 						s.Destinations = map[string]bool{}
 					}
@@ -357,14 +409,36 @@ func (a *App) organizationChooser(c *ui.Context) {
 			}
 		}
 	}
-	ui.Text(c, "选择一个项目内的知识或原始材料。新增摘要和标签可自动保存；已有正文、范围和历史保留。材料将交给 traex 当前模型处理。").LineHeight(1.7)
+	ui.Text(c, "选择一个项目内的知识或原始记录。使用已启用的记忆处理方式与账号额度；新增摘要和标签可自动保存，已有知识的修改先生成建议。").LineHeight(1.7)
+	ui.Column(c).Gap(8).Padding(12).Border(1, design.Border).Radius(5).Children(func() {
+		ui.Text(c, "整理执行者").FontSize(11).TextColor(design.Muted)
+		if s.Start != nil && s.Start.Processing != nil {
+			ui.Text(c, "本次处理方式已固定；重试沿用原请求。").Key("organization-processing-fixed")
+		} else if s.ProcessingLoading {
+			ui.Text(c, "正在读取记忆处理方式…")
+		} else if v := s.Processing.Current.Revision; v != nil {
+			ui.Text(c, processingExecutorName(v.Spec)).Key("organization-processing-executor")
+			if !organizationProcessingAvailable(s.Processing) {
+				ui.Text(c, "当前方式尚未接通本次整理；请选择已验证并启用的 pi 方式。").FontSize(11)
+			}
+		} else {
+			ui.Text(c, "尚未启用记忆处理方式。")
+		}
+		if s.ProcessingError != "" {
+			ui.Text(c, s.ProcessingError).FontSize(11)
+		}
+		ui.Row(c).Gap(8).Children(func() {
+			quietButton(c, "读取当前处理方式").Key("organization-processing-refresh").Disabled(s.Busy || s.Start != nil || s.ProcessingLoading).OnClick(a.refreshOrganizationProcessing)
+			quietButton(c, "前往记忆处理").Key("organization-processing-settings").Disabled(s.Busy || s.Start != nil).OnClick(func() { a.navigate("设置", ""); a.settingsSection = "processing"; a.refreshProcessing() })
+		})
+	})
 	options := []string{}
 	for _, v := range a.scopes {
 		if v.Kind == "project" {
 			options = append(options, a.scopeLabel(v.ID))
 		}
 	}
-	ui.Select(c.Key("organization-project"), &s.ProjectLabel, options).Label("整理项目").Disabled(s.Busy).OnChange(func() {
+	ui.Select(c.Key("organization-project"), &s.ProjectLabel, options).Label("整理项目").Disabled(s.Busy || s.Start != nil).OnChange(func() {
 		s.Project = a.datasetForLabel(s.ProjectLabel)
 		s.Chosen = map[string]MemoryItem{}
 		s.Destinations = map[string]bool{}
@@ -385,7 +459,7 @@ func (a *App) organizationChooser(c *ui.Context) {
 			if kind == "raw" {
 				label = "原始记录"
 			}
-			ui.Button(c, label).Key("organization-kind-" + kind).Disabled(s.Busy).OnClick(func() {
+			ui.Button(c, label).Key("organization-kind-" + kind).Disabled(s.Busy || s.Start != nil).OnClick(func() {
 				s.Kind = kind
 				s.Candidates = nil
 				s.Cursor = ""
@@ -400,7 +474,7 @@ func (a *App) organizationChooser(c *ui.Context) {
 		if selected {
 			label = "已选 " + v.Title
 		}
-		ui.Button(c.Key("organization-choose-"+v.ID), label).Justify(ui.Start).Disabled(s.Busy || (!selected && len(s.Chosen) >= 16)).OnClick(func() {
+		ui.Button(c.Key("organization-choose-"+v.ID), label).Justify(ui.Start).Disabled(s.Busy || s.Start != nil || (!selected && len(s.Chosen) >= 16)).OnClick(func() {
 			if selected {
 				delete(s.Chosen, v.ID)
 				ids := []string{}
@@ -427,184 +501,8 @@ func (a *App) organizationChooser(c *ui.Context) {
 		v := s.Chosen[id]
 		ui.Text(c, fmt.Sprintf("%s · v%d", v.Title, v.Revision)).FontSize(design.Small)
 	}
-	actionButton(c, "开始摘要与标签", nil).Key("organization-start").Disabled(s.Busy || s.Project == "" || len(s.Chosen) == 0 || s.Error != "").OnClick(a.startOrganization)
 }
-func (a *App) organizationDetail(c *ui.Context) {
-	s := &a.organization
-	ui.Scroll(c.Key("organization-detail-scroll")).Grow(1).TrackScroll(&s.Scroll).Padding(24).Gap(16).Children(func() {
-		if s.Error != "" {
-			ui.Text(c, s.Error).TextColor(design.Muted)
-			quietButton(c, "重试整理读取").OnClick(func() { a.refreshOrganization(false, false) })
-		}
-		if s.Notice != "" {
-			ui.Text(c, s.Notice).FontSize(design.Small).TextColor(design.Muted)
-		}
-		if s.New {
-			a.organizationChooser(c)
-			return
-		}
-		if s.Task == nil {
-			a.empty(c, "查看摘要与标签", "选择任务或开始整理。")
-			return
-		}
-		task := s.Task
-		ui.Text(c, organizationTaskStatus(*task)).FontSize(design.Title).Bold()
-		meta(c, "任务", task.ID)
-		meta(c, "项目", a.scopeLabel(task.Project))
-		executor := "traex"
-		if p := task.Snapshot.Processing; p != nil {
-			executor = p.Revision.Spec.Agent + " · " + p.Revision.Spec.Model
-		}
-		if task.AttemptKind == "apply" {
-			executor = "应用已有结果"
-		}
-		meta(c, "执行", fmt.Sprintf("%s · 执行记录 %d", executor, task.Snapshot.Attempt))
-		if task.Recovery != nil {
-			r := task.Recovery
-			label := map[string]string{"active": "正在执行或准备恢复", "waiting": "等待有限重试", "done": "自动恢复已结束", "exhausted": "已达到恢复次数上限", "expired": "自动恢复窗口已结束", "cancelled": "自动恢复已取消"}[r.State]
-			meta(c, "自动恢复", fmt.Sprintf("%s · 已使用%d/%d次额外尝试", label, r.Used, r.ExtraLimit))
-			if r.NextMS > 0 {
-				meta(c, "下一次尝试（UTC）", time.UnixMilli(r.NextMS).UTC().Format("2006-01-02 15:04:05"))
-			}
-			meta(c, "恢复截止（UTC）", time.UnixMilli(r.DeadlineMS).UTC().Format("2006-01-02 15:04:05"))
-		}
-		if task.Error != "" {
-			meta(c, "错误", task.Error)
-		}
-		if task.Result != nil {
-			ui.Text(c, strings.ReplaceAll(task.Result.Explanation, "destinations 授权列表", "已授权的移入项目列表")).LineHeight(1.7)
-			if len(task.Entries) == 0 {
-				ui.Text(c, "本次没有可应用的建议，已有知识保持不变。").Bold()
-			}
-		}
-		applied, failed := 0, 0
-		for _, e := range task.Entries {
-			if e.State == "applied" {
-				applied++
-			} else {
-				failed++
-			}
-		}
-		if task.Result != nil {
-			if task.Snapshot.Schema != records.OrganizationSchema {
-				confirmed, pending := 0, 0
-				for _, e := range task.Entries {
-					if e.State == "review_pending" {
-						pending++
-					}
-					if e.State == "applied" && (e.Item.Action == "duplicate" || e.Item.Action == "conflict") {
-						confirmed++
-					}
-				}
-				ui.Text(c, fmt.Sprintf("已应用 %d 项 · 已核对 %d 项 · 待审核 %d 项 · 其他未应用 %d 项", applied-confirmed, confirmed, pending, failed-pending)).FontSize(design.Small).TextColor(design.Muted)
-			} else {
-				ui.Text(c, fmt.Sprintf("已应用 %d 项 · 未应用 %d 项", applied, failed)).FontSize(design.Small).TextColor(design.Muted)
-			}
-		}
-		for _, entry := range task.Entries {
-			ui.Column(c.Key("organization-entry-"+entry.ID)).Border(1, design.Border).Radius(5).Padding(14).Gap(10).Children(func() {
-				label := organizationActionLabel(entry.Item.Action)
-				entryLabel := organizationEntryLabel(entry.State)
-				if entry.State == "applied" && (entry.Item.Action == "duplicate" || entry.Item.Action == "conflict") {
-					entryLabel = "已核对"
-				}
-				ui.Text(c, label+" · "+entryLabel).Bold()
-				if entry.Item.Action == "summary" {
-					ui.Text(c, entry.Item.Title).Bold()
-					ui.Text(c, entry.Item.Text).Selectable().LineHeight(1.7)
-					ui.Text(c, "派生摘要保留引用依据，不构成新的独立证据。").FontSize(design.Small).TextColor(design.Muted)
-				} else if entry.Item.Action == "add_tags" {
-					ui.Text(c, fmt.Sprint(entry.Item.Tags)).Selectable()
-				} else {
-					a.organizationReviewPreview(c, *task, entry)
-				}
-				if entry.Error != "" {
-					ui.Text(c, entry.Error).FontSize(design.Small).TextColor(design.Muted)
-				}
-				for _, ref := range entry.Item.Sources {
-					ui.Text(c, fmt.Sprintf("依据 %s · v%d", ref.Memory, ref.Revision)).FontSize(design.Small).TextColor(design.Muted)
-					ui.Text(c, ref.Quote).Selectable().LineHeight(1.6)
-				}
-				if entry.Receipt != nil && entry.Receipt.Memory != "" {
-					v, ok := s.Results[entry.Receipt.Memory]
-					if ok {
-						meta(c, "当前", fmt.Sprintf("v%d · %s", v.Revision, a.organizationResultLabel(v)))
-						if v.Derived != nil && v.Derived.State == "stale" {
-							ui.Text(c, "摘要来源已变化，已排除检索。").Bold()
-						}
-					}
-					if entry.Item.Action == "add_tags" {
-						meta(c, "本次新增", fmt.Sprint(entry.Receipt.AddedTags))
-					}
-					quietButton(c, "查看产出或标签目标").Key("organization-open-" + entry.ID).OnClick(func() {
-						a.openOrganizationMemory(entry.Receipt.Memory)
-					})
-				}
-			})
-		}
-		ui.Divider(c)
-		ui.Text(c, "冻结材料与具体版本").Bold()
-		for _, v := range task.Snapshot.Inputs {
-			ui.Column(c).Border(1, design.Border).Padding(14).Gap(10).Children(func() {
-				ui.Text(c, fmt.Sprintf("%s · v%d", v.Title, v.Revision)).Bold()
-				ui.Text(c, v.Text).Selectable().LineHeight(1.7)
-				meta(c, "来源", v.Source)
-				meta(c, "捕获", v.CapturedAt)
-				quietButton(c, "查看材料当前版本").Key("organization-source-" + v.Memory).OnClick(func() { a.openOrganizationMemory(v.Memory) })
-			})
-		}
-		if len(task.Attempts) > 0 {
-			ui.Divider(c)
-			ui.Text(c, "执行与恢复历史").Bold()
-			for _, attempt := range task.Attempts {
-				kind := "模型整理"
-				if attempt.Kind == "apply" {
-					kind = "继续应用已有结果 · 未调用模型"
-				}
-				ui.Text(c, fmt.Sprintf("执行记录%d · %s · %s", attempt.Attempt, kind, organizationStatus(attempt.State)))
-				var process struct {
-					StartedMS int64 `json:"process_started_ms"`
-					EndedMS   int64 `json:"process_ended_ms"`
-				}
-				_ = json.Unmarshal(attempt.Execution, &process)
-				if process.StartedMS > 0 {
-					ui.Text(c, "执行者进程启动（UTC）："+time.UnixMilli(process.StartedMS).UTC().Format("2006-01-02 15:04:05")).TextColor(design.Muted)
-				} else if attempt.Kind != "apply" {
-					ui.Text(c, "执行时间未记录").TextColor(design.Muted)
-				}
-				if process.EndedMS > 0 {
-					ui.Text(c, "进程结束（UTC）："+time.UnixMilli(process.EndedMS).UTC().Format("2006-01-02 15:04:05")).TextColor(design.Muted)
-				}
-			}
-		}
-	})
-	ui.Row(c).Shrink(0).Padding(14, 24, 20, 24).Gap(8).Children(func() {
-		t := s.Task
-		if s.New || t == nil {
-			return
-		}
-		hasReview := false
-		for _, e := range t.Entries {
-			if e.State == "review_pending" {
-				hasReview = true
-			}
-		}
-		waitingRecovery := t.Recovery != nil && (t.Recovery.State == "active" || t.Recovery.State == "waiting") && t.State != "completed"
-		if hasReview || waitingRecovery || t.State == "queued" || t.State == "running" || t.State == "applying" {
-			label := "取消摘要整理"
-			if t.Snapshot.Schema != records.OrganizationSchema {
-				label = "取消未完成项"
-			}
-			actionButton(c, label, nil).Key("organization-cancel").Disabled(s.Busy).OnClick(a.cancelOrganization)
-		}
-		if t.Result != nil && (t.State == "partial_failed" || t.State == "interrupted") {
-			actionButton(c, "继续应用已有结果", nil).Key("organization-resume").Disabled(s.Busy).OnClick(a.resumeOrganization)
-		}
-		if t.State == "failed" || t.State == "cancelled" || t.State == "interrupted" || t.State == "partial_failed" {
-			quietButton(c, "重新选择并整理").Disabled(s.Busy).OnClick(a.beginOrganization)
-		}
-	})
-}
+func (a *App) organizationDetail(c *ui.Context) { a.materialOrganizationDetail(c) }
 
 func organizationEntryLabel(state string) string {
 	switch state {
@@ -734,7 +632,8 @@ func (a *App) reviewOrganizationEntry(t records.OrganizationTask, e records.Orga
 		d = records.OrganizationReview{Task: t.ID, Item: e.ID, Digest: records.MergeDigest(e.Item), Receipt: uuid.NewString(), Confirm: confirm}
 		s.Decisions[key] = d
 	}
-	a.organizationAction(func(ctx context.Context) (records.OrganizationTask, error) { return s.Client.Review(ctx, d) }, false)
+	client := s.Client
+	a.organizationAction(func(ctx context.Context) (records.OrganizationTask, error) { return client.Review(ctx, d) }, false)
 }
 
 // Resolve every current-version navigation against the service. A moved
@@ -745,15 +644,19 @@ func (a *App) openOrganizationMemory(id string) {
 		return
 	}
 	selected := s.Selected
+	epoch, life, library := s.Epoch, a.libraryContext, a.library
 	s.Busy = true
 	go func() {
-		ctx, stop := context.WithTimeout(a.libraryContext, 5*time.Second)
+		ctx, stop := context.WithTimeout(life, 5*time.Second)
 		defer stop()
-		v, err := a.library.Get(ctx, id)
-		if a.libraryContext.Err() != nil {
+		v, err := library.Get(ctx, id)
+		if life.Err() != nil {
 			return
 		}
 		a.dispatch(func() {
+			if a.organization.Epoch != epoch {
+				return
+			}
 			s.Busy = false
 			if s.Selected != selected || a.page != "整理记录" || !a.organizationMode {
 				return

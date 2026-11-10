@@ -117,7 +117,7 @@ func (s *Store) startOrganizationTx(ctx context.Context, tx *sql.Tx, d records.O
 		snapshot.Inputs = append(snapshot.Inputs, records.OrganizationInput{MergeInput: records.MergeInput{Memory: v.Memory, Revision: v.Revision, Title: v.Title, Text: v.Text, Source: v.Source, SourceDetail: v.SourceDetail, CapturedAt: time.Now().UTC().Format(time.RFC3339Nano)}, Origin: origin, Roots: roots})
 	}
 	if d.Processing != nil {
-		if !d.Global || d.Purpose != "global" || len(dependencies) != 1 || !processingDigest(dependencies[0]) {
+		if len(dependencies) != 1 || !processingDigest(dependencies[0]) {
 			return empty, false, records.MergeError("verification_required")
 		}
 		binding, e := freezeProcessingTx(ctx, tx, dependencies[0], time.Now())
@@ -419,7 +419,7 @@ func (s *Store) ApplyOrganizationItem(ctx context.Context, id string, attempt in
 		for _, ref := range entry.Item.Sources {
 			refs = append(refs, ref.Memory+"@v"+stringRevision(ref.Revision))
 		}
-		v, e := s.applyTx(ctx, tx, Mutation{Kind: "save", OperationID: "organization-v1:" + entry.ID, Memory: entry.ID, Dataset: t.Project, Text: entry.Item.Text, Title: entry.Item.Title, Source: "traex：自动摘要", Origin: "knowledge", SourceDetail: &records.AgentSource{References: refs}})
+		v, e := s.applyTx(ctx, tx, Mutation{Kind: "save", OperationID: "organization-v1:" + entry.ID, Memory: entry.ID, Dataset: t.Project, Text: entry.Item.Text, Title: entry.Item.Title, Source: organizationProducer(t) + "：自动摘要", Origin: "knowledge", SourceDetail: &records.AgentSource{References: refs}})
 		if e != nil {
 			return entry, e
 		}
@@ -757,4 +757,20 @@ func (s *Store) ReplayOrganizationStart(ctx context.Context, d records.Organizat
 	}
 	t, err := s.OrganizationTask(ctx, id)
 	return t, true, err
+}
+
+func organizationProducer(t records.OrganizationTask) string {
+	if p := t.Snapshot.Processing; p != nil {
+		spec := p.Revision.Spec
+		if spec.Mode == "agent" && spec.Agent != "" {
+			return spec.Agent
+		}
+		if spec.Mode == "provider" && spec.Provider != "" {
+			return spec.Provider
+		}
+		if spec.Mode == "magpie" {
+			return "Magpie"
+		}
+	}
+	return "traex"
 }

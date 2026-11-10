@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -31,6 +32,25 @@ type PiCompletionExecution struct {
 
 // RunPiCompletion reuses the verified RPC lifecycle and isolated Agent config.
 func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (out PiCompletionExecution, resultErr error) {
+	stage, code := "schema", "pi_schema_invalid"
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		out.FailureStage, out.FailureCode = stage, code
+		switch {
+		case errors.Is(resultErr, context.Canceled):
+			out.FailureCode = "pi_cancelled"
+		case errors.Is(resultErr, context.DeadlineExceeded):
+			out.FailureCode = "pi_timeout"
+		case errors.Is(resultErr, syscall.ENOSPC):
+			out.FailureCode = "pi_storage_full"
+		case errors.Is(resultErr, os.ErrPermission):
+			out.FailureCode = "pi_permission_denied"
+		case errors.Is(resultErr, os.ErrNotExist):
+			out.FailureCode = "pi_file_unavailable"
+		}
+	}()
 	if o.SystemPrompt == "" || o.Prompt == "" || len(o.Prompt) > 1024*1024 || len(o.OutputSchema) > 65536 || !json.Valid(o.OutputSchema) {
 		return out, errors.New("bounded prompt and JSON schema required")
 	}
@@ -42,6 +62,7 @@ func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (out PiCompleti
 	if err != nil {
 		return out, errors.New("invalid completion schema")
 	}
+	stage, code = "auth_directory", "pi_auth_directory_invalid"
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return out, err
@@ -63,11 +84,20 @@ func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (out PiCompleti
 			}
 		}
 	}
+	stage, code = "agent_probe", "pi_agent_probe_failed"
 	probe := Probe(ctx, "pi", o.Executable)
-	if probe.ConnectionError() != nil || probe.Version != "0.84.1" {
+	out.AgentVersion = probe.Version
+	if probe.ConnectionError() != nil {
+		if probe.ProbeFailureCode != "" {
+			code = "pi_" + probe.ProbeFailureCode
+		}
 		return out, errors.New("pi RPC is only adapted for the verified installed 0.84.1 protocol")
 	}
-	out.AgentVersion = probe.Version
+	if probe.Version != "0.84.1" {
+		code = "pi_agent_version_unsupported"
+		return out, errors.New("pi RPC is only adapted for the verified installed 0.84.1 protocol")
+	}
+	stage, code = "model_settings", "pi_model_settings_invalid"
 	var settings struct {
 		Provider string `json:"defaultProvider"`
 		Model    string `json:"defaultModel"`
@@ -85,13 +115,16 @@ func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (out PiCompleti
 	if o.Model == "" {
 		o.Model = settings.Model
 	}
+	stage, code = "model_selection", "pi_model_selection_required"
 	if o.Provider == "" || o.Model == "" {
 		return out, errors.New("select pi provider/model before running a background task")
 	}
 	if o.Provider != "ollama" && o.Provider != "deepseek" {
+		code = "pi_schema_binding_unsupported"
 		return out, errors.New("pi provider has no adapted full JSON schema request binding")
 	}
 	out.SelectedProvider, out.SelectedModel = o.Provider, o.Model
+	stage, code = "private_directory", "pi_private_directory_failed"
 	root, err := os.MkdirTemp("", "memlane-pi-rpc-")
 	if err != nil {
 		return out, err
@@ -106,6 +139,7 @@ func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (out PiCompleti
 	// models.json is pi-owned provider configuration, not model knowledge.
 	// Command-valued configuration could execute a shell outside the tool list;
 	// reject it rather than weakening background isolation.
+	stage, code = "provider_configuration", "pi_provider_configuration_invalid"
 	if b, e := os.ReadFile(filepath.Join(o.AuthHome, "models.json")); e == nil {
 		var configuration any
 		if len(b) > 1024*1024 || json.Unmarshal(b, &configuration) != nil {
@@ -132,6 +166,7 @@ func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (out PiCompleti
 			return false
 		}
 		if commandValue(configuration) {
+			code = "pi_command_configuration_unsupported"
 			return out, errors.New("pi command-valued provider configuration is not supported by the isolated runner")
 		}
 		// The checked bytes are the bytes pi consumes. An original config edit
@@ -142,6 +177,7 @@ func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (out PiCompleti
 	} else if !os.IsNotExist(e) {
 		return out, e
 	}
+	stage, code = "auth_link", "pi_auth_link_failed"
 	for _, name := range []string{"auth.json"} {
 		source := filepath.Join(o.AuthHome, name)
 		if info, e := os.Stat(source); e == nil {
@@ -172,11 +208,13 @@ func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (out PiCompleti
 	extension = strings.ReplaceAll(extension, "__MEMLANE_SCHEMA_DIGEST__", schemaDigest)
 	extension = strings.ReplaceAll(extension, "__MEMLANE_SCHEMA_PROVIDER__", o.Provider)
 	path := filepath.Join(root, "schema-extension.ts")
+	stage, code = "schema_extension", "pi_schema_extension_failed"
 	if err = os.WriteFile(path, []byte(extension), 0400); err != nil {
 		return out, err
 	}
 	args = append(args, "--extension", path)
 	prompt := o.Prompt + "\nReturn ONLY JSON matching this schema:\n" + string(o.OutputSchema)
+	stage, code = "rpc", "pi_rpc_failed"
 	process, err := runPiRPCProcessOwned(ctx, o.Executable, args, env, work, prompt, o.GuardExecutable, o.OnStart, o.OnEvent, func(provider, model string) error {
 		if provider != o.Provider || model != o.Model {
 			return errors.New("pi resolved a different model; choose its exact ID explicitly")
@@ -188,9 +226,11 @@ func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (out PiCompleti
 		return out, err
 	}
 	if process.ResolvedProvider != o.Provider || process.ResolvedModel != o.Model {
+		code = "pi_resolved_model_changed"
 		return out, errors.New("pi resolved a different model; choose its exact ID explicitly")
 	}
 	var value any
+	stage, code = "output_schema", "pi_output_schema_invalid"
 	if json.Unmarshal(process.Final, &value) != nil || resolved.Validate(value) != nil {
 		out.Final = nil
 		return out, errors.New("pi completion did not match the requested JSON schema")

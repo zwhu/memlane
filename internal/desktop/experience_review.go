@@ -91,7 +91,8 @@ func (a *App) confirmExperienceReview(t records.OrganizationTask, e records.Orga
 		d.Request = &records.OrganizationReview{Task: t.ID, Item: e.ID, Digest: records.MergeDigest(e.Item), Receipt: uuid.NewString(), Confirm: true, Edit: &edit}
 	}
 	request := *d.Request
+	client := a.organization.Client
 	a.organizationAction(func(ctx context.Context) (records.OrganizationTask, error) {
-		return a.organization.Client.Review(ctx, request)
+		return client.Review(ctx, request)
 	}, false)
 }
