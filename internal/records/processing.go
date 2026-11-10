@@ -74,3 +74,10 @@ type ProcessingSnapshot struct {
 	DependencyDigest    string             `json:"dependency_digest"`
 	FrozenMS            int64              `json:"frozen_ms"`
 }
+
+// A user submits only expected ledger identity. Runtime dependency material and
+// the actual frozen configuration are resolved by the service owner.
+type ProcessingTaskAuthorization struct {
+	Revision   string `json:"revision"`
+	Generation int64  `json:"selection_generation"`
+}

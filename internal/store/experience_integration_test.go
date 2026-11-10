@@ -333,3 +333,109 @@ func TestExperienceCopyPreviewPersistsConditionsAndRejectsChangedReplay(t *testi
 		t.Fatal("source changed", original)
 	}
 }
+
+func TestExperienceReviewEditedPreviewKeepsOriginalProposalAndFrozenReceipt(t *testing.T) {
+	s, _ := mergeDB(t)
+	task, d := globalExperienceFixture(t, s)
+	original := task.Entries[0].Item
+	edit := records.ExperienceReviewEdit{Title: "先遵循项目确认的工具约定", Text: "更换依赖前，应核对项目已经确认的依赖管理方式，避免混用工具。", Conditions: "适用于已有明确依赖管理约定的项目；项目具体规则优先。"}
+	d.Edit = &edit
+	saved, e := s.ReviewOrganization(mergeCtx, d)
+	mustMerge(t, e)
+	entry := saved.Entries[0]
+	if !reflect.DeepEqual(entry.Item, original) || !reflect.DeepEqual(entry.Receipt.EditedExperience, &edit) {
+		t.Fatal("model proposal or user approval lost", entry)
+	}
+	v, e := s.Current(mergeCtx, entry.Receipt.Memory)
+	mustMerge(t, e)
+	if v.Text != edit.Text || v.Title != edit.Title || v.Experience.Conditions != edit.Conditions {
+		t.Fatal("edited preview not saved", v)
+	}
+	before := sqlRows(t, s.DB, "versions")
+	_, e = s.ReviewOrganization(mergeCtx, d)
+	mustMerge(t, e)
+	if !reflect.DeepEqual(before, sqlRows(t, s.DB, "versions")) {
+		t.Fatal("confirmation replay duplicated")
+	}
+	changed := edit
+	changed.Conditions = "更广泛适用"
+	d.Edit = &changed
+	if _, e = s.ReviewOrganization(mergeCtx, d); !errors.Is(e, ErrConflict) {
+		t.Fatal("changed replay accepted", e)
+	}
+	d.Edit = nil
+	if _, e = s.ReviewOrganization(mergeCtx, d); !errors.Is(e, ErrConflict) {
+		t.Fatal("edited receipt replayed as original confirmation", e)
+	}
+	sources, e := s.OrganizationSources(mergeCtx, v.Memory, 1)
+	mustMerge(t, e)
+	if len(sources) != 1 || sources[0].Quote != original.Sources[0].Quote || sources[0].Revision != original.Sources[0].Revision {
+		t.Fatal("immutable source lost", sources)
+	}
+}
+
+func TestExperienceReviewEditInvalidOrExpiredNeverPersists(t *testing.T) {
+	s, _ := mergeDB(t)
+	task, d := globalExperienceFixture(t, s)
+	edit := records.ExperienceReviewEdit{Title: "", Text: "用户修改的通用表述", Conditions: "保留项目约定优先"}
+	d.Edit = &edit
+	before := sqlRows(t, s.DB, "versions")
+	if _, e := s.ReviewOrganization(mergeCtx, d); e == nil {
+		t.Fatal("empty edited title accepted")
+	}
+	edit.Title = "独立通用经验"
+	d.Confirm = false
+	if _, e := s.ReviewOrganization(mergeCtx, d); e == nil {
+		t.Fatal("reject request carried a saving edit")
+	}
+	d.Confirm = true
+	source := task.Snapshot.Inputs[0]
+	_, e := s.Apply(mergeCtx, Mutation{Kind: "edit", OperationID: uuid.NewString(), Dataset: task.Project, Memory: source.Memory, ExpectedRevision: source.Revision, Text: "来源已变更"})
+	mustMerge(t, e)
+	before = sqlRows(t, s.DB, "versions")
+	if _, e = s.ReviewOrganization(mergeCtx, d); e == nil {
+		t.Fatal("expired source approved with edited body")
+	}
+	if !reflect.DeepEqual(before, sqlRows(t, s.DB, "versions")) {
+		t.Fatal("invalid confirmation changed knowledge")
+	}
+}
+
+func TestProcessingOrganizationFreezesCurrentConfigurationAndReplaysWithoutRetarget(t *testing.T) {
+	s, _ := mergeDB(t)
+	_, e := s.Scopes(mergeCtx)
+	mustMerge(t, e)
+	base, _, _ := organizationFixture(t, s)
+	first, e := s.SaveProcessing(mergeCtx, records.ProcessingSave{OperationID: uuid.NewString(), Spec: processingProvider("first")}, processingTime)
+	mustMerge(t, e)
+	dependency := records.MergeDigest("first task dependency")
+	processingVerifiedFixture(t, s, first.ID, dependency)
+	_, e = s.ActivateProcessing(mergeCtx, records.ProcessingActivation{OperationID: uuid.NewString(), Revision: first.ID}, dependency, processingTime)
+	mustMerge(t, e)
+	d := records.OrganizationStart{OperationID: uuid.NewString(), Project: base.Project, Inputs: []records.MergeTarget{{Memory: base.Snapshot.Inputs[0].Memory, Revision: 1}}, Review: true, Global: true, Purpose: "global", Processing: &records.ProcessingTaskAuthorization{Revision: first.ID, Generation: 1}}
+	task, created, e := s.StartProcessingOrganization(mergeCtx, d, dependency)
+	mustMerge(t, e)
+	if !created || task.Snapshot.Processing == nil || task.Snapshot.Processing.Revision.ID != first.ID || task.Snapshot.Processing.DependencyDigest != dependency {
+		t.Fatal("task configuration was not frozen", task)
+	}
+	second, e := s.SaveProcessing(mergeCtx, records.ProcessingSave{OperationID: uuid.NewString(), ExpectedSaved: first.ID, Spec: processingProvider("second")}, processingTime)
+	mustMerge(t, e)
+	secondDep := records.MergeDigest("second dependencies")
+	processingVerifiedFixture(t, s, second.ID, secondDep)
+	_, e = s.ActivateProcessing(mergeCtx, records.ProcessingActivation{OperationID: uuid.NewString(), Revision: second.ID, ExpectedGeneration: 1}, secondDep, processingTime)
+	mustMerge(t, e)
+	replay, found, e := s.ReplayOrganizationStart(mergeCtx, d)
+	mustMerge(t, e)
+	if !found || replay.ID != task.ID || replay.Snapshot.Processing.Revision.ID != first.ID {
+		t.Fatal("start replay retargeted task")
+	}
+	d.OperationID = uuid.NewString()
+	if _, _, e = s.StartProcessingOrganization(mergeCtx, d, secondDep); !errors.Is(e, ErrConflict) {
+		t.Fatal("new task accepted stale current selection", e)
+	}
+	loaded, e := s.OrganizationTask(mergeCtx, task.ID)
+	mustMerge(t, e)
+	if !reflect.DeepEqual(loaded.Snapshot.Processing, task.Snapshot.Processing) {
+		t.Fatal("configuration switch altered frozen task")
+	}
+}

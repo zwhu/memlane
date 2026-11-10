@@ -735,12 +735,17 @@ func (a *App) details(c *ui.Context) {
 				} else if a.projectKnowledgeEmpty() {
 					label = "项目知识"
 				}
+				if a.commonDistillOpen() {
+					label = "AI 提炼为通用经验"
+				}
 				if a.commonCopyOpen() {
 					label = "原文复制到通用知识"
 				}
 				ui.Text(c, label)
 				ui.Spacer(c)
-				if a.commonCopyOpen() {
+				if a.commonDistillOpen() {
+					quietButton(c, "取消").Key("experience-distill-close").OnClick(a.cancelAndCloseExperienceDistill)
+				} else if a.commonCopyOpen() {
 					quietButton(c, "取消").Key("experience-copy-cancel").Disabled(a.experience.Busy).OnClick(a.closeExperienceCopy)
 				} else if a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
 					if a.projectOrganizer.Task == nil || projectTaskVisualState(a.projectOrganizer.Task) != "completed" {
@@ -755,7 +760,9 @@ func (a *App) details(c *ui.Context) {
 					quietButton(c, "历史").Key("knowledge-history-open").Disabled(raw).OnClick(a.openKnowledgeHistory)
 				}
 			})
-			if a.commonCopyOpen() {
+			if a.commonDistillOpen() {
+				a.experienceDistillPreview(c)
+			} else if a.commonCopyOpen() {
 				a.experienceCopyPreview(c)
 			} else if a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
 				a.projectOrganizerContent(c)
@@ -996,6 +1003,10 @@ func (a *App) memoryDetail(c *ui.Context) {
 			ui.Collapsible(c, "更多操作", &a.readingActionsOpen, func() {
 				if a.isProjectKnowledge(*item) {
 					quietButton(c, "原文复制到通用知识…").Key("experience-copy-preview").Disabled(a.experience.Busy).OnClick(func() { a.beginExperienceCopy(*item) })
+					if s := a.experience.Distill; s != nil && s.Source.ID == item.ID && s.TaskID != "" {
+						quietButton(c, "查看提炼进度").Key("experience-distill-resume").OnClick(a.showExperienceDistill)
+					}
+					ui.Text(c, "AI 提炼会消耗当前处理方式的模型额度，生成后仍需确认保存。").FontSize(11).TextColor(design.Muted)
 					quietButton(c, "AI 提炼为通用经验…").Key("experience-distill").Disabled(a.organization.Busy).OnClick(func() { a.beginExperienceDistill(*item) })
 				}
 				quietButton(c, "恢复旧版本").Key("knowledge-restore-open").OnClick(func() { a.detailMode = "history"; a.detailScroll.Y = 0; a.refresh(false) })

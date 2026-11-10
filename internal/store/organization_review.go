@@ -57,20 +57,30 @@ func (s *Store) ReviewOrganization(ctx context.Context, d records.OrganizationRe
 	if !found || records.MergeDigest(entry.Item) != d.Digest {
 		return t, ErrConflict
 	}
+	if d.Edit != nil && (!d.Confirm || entry.Item.Action != "global_experience" || !d.Edit.Valid()) {
+		return t, records.MergeError("invalid_request")
+	}
 	decision := "reject"
 	if d.Confirm {
 		decision = "confirm"
 	}
-	var priorItem, priorDigest, priorDecision string
-	sqlDecision := `SELECT item,digest,decision FROM organization_decisions WHERE id=?`
+	var priorItem, priorDigest, priorDecision, priorReceipt string
+	sqlDecision := `SELECT item,digest,decision,receipt FROM organization_decisions WHERE id=?`
 	decisionArgs := []any{d.Receipt}
 	if s.Schema >= 6 {
-		sqlDecision += ` UNION ALL SELECT item,digest,decision FROM global_experience_decisions WHERE id=?`
+		sqlDecision += ` UNION ALL SELECT item,digest,decision,receipt FROM global_experience_decisions WHERE id=?`
 		decisionArgs = append(decisionArgs, d.Receipt)
 	}
-	err = tx.QueryRowContext(ctx, sqlDecision, decisionArgs...).Scan(&priorItem, &priorDigest, &priorDecision)
+	err = tx.QueryRowContext(ctx, sqlDecision, decisionArgs...).Scan(&priorItem, &priorDigest, &priorDecision, &priorReceipt)
 	if err == nil {
 		if priorItem != d.Item || priorDigest != d.Digest || priorDecision != decision {
+			return t, ErrConflict
+		}
+		var saved records.OrganizationReceipt
+		if err = json.Unmarshal([]byte(priorReceipt), &saved); err != nil {
+			return t, err
+		}
+		if records.MergeDigest(saved.EditedExperience) != records.MergeDigest(d.Edit) {
 			return t, ErrConflict
 		}
 		return t, nil
@@ -104,9 +114,14 @@ func (s *Store) ReviewOrganization(ctx context.Context, d records.OrganizationRe
 	state := "rejected"
 	if d.Confirm {
 		state = "applied"
-		if receipt, err = s.applyOrganizationReview(ctx, tx, t, entry, d.Receipt); err != nil {
+		confirmed := entry
+		if d.Edit != nil {
+			confirmed.Item.Title, confirmed.Item.Text, confirmed.Item.Conditions = d.Edit.Title, d.Edit.Text, d.Edit.Conditions
+		}
+		if receipt, err = s.applyOrganizationReview(ctx, tx, t, confirmed, d.Receipt); err != nil {
 			return t, err
 		}
+		receipt.EditedExperience = d.Edit
 	}
 	encoded, _ := json.Marshal(receipt)
 	if _, err = tx.ExecContext(ctx, `INSERT INTO `+organizationDecisionTable(entry.Item.Action)+`(id,item,digest,decision,receipt) VALUES(?,?,?,?,?)`, d.Receipt, d.Item, d.Digest, decision, string(encoded)); err != nil {

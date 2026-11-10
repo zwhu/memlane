@@ -20,13 +20,14 @@ const OrganizationInputLimit = 128 * 1024
 const OrganizationOutputLimit = 256 * 1024
 
 type OrganizationStart struct {
-	Global       bool          `json:"global_candidates,omitempty"`
-	Purpose      string        `json:"purpose,omitempty"`
-	Review       bool          `json:"review,omitempty"`
-	Destinations []string      `json:"destinations,omitempty"`
-	OperationID  string        `json:"operation_id"`
-	Project      string        `json:"project"`
-	Inputs       []MergeTarget `json:"inputs"`
+	Processing   *ProcessingTaskAuthorization `json:"processing,omitempty"`
+	Global       bool                         `json:"global_candidates,omitempty"`
+	Purpose      string                       `json:"purpose,omitempty"`
+	Review       bool                         `json:"review,omitempty"`
+	Destinations []string                     `json:"destinations,omitempty"`
+	OperationID  string                       `json:"operation_id"`
+	Project      string                       `json:"project"`
+	Inputs       []MergeTarget                `json:"inputs"`
 }
 type OrganizationInput struct {
 	MergeInput
@@ -36,6 +37,7 @@ type OrganizationInput struct {
 	Roots []MergeTarget `json:"evidence_roots"`
 }
 type OrganizationSnapshot struct {
+	Processing   *ProcessingSnapshot `json:"processing,omitempty"`
 	Purpose      string              `json:"purpose,omitempty"`
 	Destinations []Scope             `json:"destinations,omitempty"`
 	Schema       string              `json:"schema"`
@@ -93,6 +95,14 @@ func (s *OrganizationSnapshot) Seal() error {
 	}
 	if s.Purpose != "" && (s.Purpose != "global" || s.Schema != OrganizationGlobalSchema || len(s.Inputs) != 1) {
 		return invalid
+	}
+	if p := s.Processing; p != nil {
+		if s.Schema != OrganizationGlobalSchema || s.Purpose != "global" || p.SelectionGeneration < 1 || p.FrozenMS <= 0 || len(p.DependencyDigest) != 64 || p.Revision.Digest != MergeDigest(p.Revision.Spec) || p.Revision.Validation == nil || p.Revision.Validation.State != "succeeded" || p.Revision.Validation.CancelRequested || p.Revision.Validation.DependencyDigest != p.DependencyDigest {
+			return invalid
+		}
+		if _, err := uuid.Parse(p.Revision.ID); err != nil {
+			return invalid
+		}
 	}
 	destinations := map[string]bool{}
 	globals := 0
@@ -311,10 +321,11 @@ func (s OrganizationSnapshot) OutputSchema() []byte {
 
 // Receipts describe committed facts independently of task and index state.
 type OrganizationReceipt struct {
-	ID        string   `json:"receipt_id"`
-	Memory    string   `json:"memory"`
-	Revision  int64    `json:"revision"`
-	AddedTags []string `json:"added_tags,omitempty"`
+	ID               string                `json:"receipt_id"`
+	Memory           string                `json:"memory"`
+	Revision         int64                 `json:"revision"`
+	AddedTags        []string              `json:"added_tags,omitempty"`
+	EditedExperience *ExperienceReviewEdit `json:"edited_experience,omitempty"`
 }
 type OrganizationEntry struct {
 	ID      string               `json:"item_id"`
@@ -393,11 +404,24 @@ func (i OrganizationItem) RequiresReview() bool {
 }
 
 type OrganizationReview struct {
-	Task    string `json:"task"`
-	Item    string `json:"item_id"`
-	Digest  string `json:"item_digest"`
-	Receipt string `json:"receipt_id"`
-	Confirm bool   `json:"confirm"`
+	Task    string                `json:"task"`
+	Item    string                `json:"item_id"`
+	Digest  string                `json:"item_digest"`
+	Receipt string                `json:"receipt_id"`
+	Confirm bool                  `json:"confirm"`
+	Edit    *ExperienceReviewEdit `json:"edited_experience,omitempty"`
+}
+
+// The original model item and its evidence remain immutable. Only the three
+// user-authored preview fields can become the separately confirmed knowledge.
+type ExperienceReviewEdit struct {
+	Title      string `json:"title"`
+	Text       string `json:"text"`
+	Conditions string `json:"conditions"`
+}
+
+func (v ExperienceReviewEdit) Valid() bool {
+	return strings.TrimSpace(v.Title) != "" && strings.TrimSpace(v.Text) != "" && strings.TrimSpace(v.Conditions) != "" && len(v.Title) <= 512 && len(v.Text) <= MergeInputLimit && len(v.Conditions) <= 4096 && utf8.ValidString(v.Title) && utf8.ValidString(v.Text) && utf8.ValidString(v.Conditions)
 }
 
 // Structured-output providers require all declared v2 keys. Keep their empty

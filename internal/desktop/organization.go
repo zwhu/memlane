@@ -14,6 +14,7 @@ import (
 )
 
 type OrganizationUI struct {
+	ExperienceDrafts                                                   map[string]*ExperienceReviewDraft
 	GlobalMode                                                         bool
 	Purpose                                                            string
 	ReviewMode                                                         bool
@@ -451,6 +452,9 @@ func (a *App) organizationDetail(c *ui.Context) {
 		meta(c, "任务", task.ID)
 		meta(c, "项目", a.scopeLabel(task.Project))
 		executor := "traex"
+		if p := task.Snapshot.Processing; p != nil {
+			executor = p.Revision.Spec.Agent + " · " + p.Revision.Spec.Model
+		}
 		if task.AttemptKind == "apply" {
 			executor = "应用已有结果"
 		}
@@ -670,6 +674,10 @@ func organizationActionLabel(action string) string {
 	return action
 }
 func (a *App) organizationReviewPreview(c *ui.Context, t records.OrganizationTask, e records.OrganizationEntry) {
+	if e.Item.Action == "global_experience" {
+		a.experienceReviewPreview(c, t, e)
+		return
+	}
 	ui.Text(c, e.Item.Reason).Selectable().LineHeight(1.7)
 	if e.Item.Target != "" {
 		for _, v := range t.Snapshot.Inputs {

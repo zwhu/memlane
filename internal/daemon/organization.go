@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/zwhu/memlane/internal/agents"
 	"github.com/zwhu/memlane/internal/records"
 	"time"
 )
@@ -17,6 +16,24 @@ func (s *Server) startOrganization(ctx context.Context, d records.OrganizationSt
 	}
 	if err := s.reconcileOrganizations(ctx); err != nil {
 		return records.OrganizationTask{}, err
+	}
+	if d.Processing != nil {
+		if prior, found, e := s.store.ReplayOrganizationStart(ctx, d); found || e != nil {
+			return prior, e
+		}
+		if s.processing == nil {
+			return records.OrganizationTask{}, records.MergeError("unsupported_processing")
+		}
+		binding, e := s.processing.ResolveCurrentTask(ctx, *d.Processing)
+		if e != nil {
+			return records.OrganizationTask{}, e
+		}
+		t, created, e := s.store.StartProcessingOrganization(ctx, d, binding.Dependency)
+		if e != nil || !created {
+			return t, e
+		}
+		s.launchOrganization(t)
+		return t, nil
 	}
 	t, created, err := s.store.StartOrganization(ctx, d)
 	if err != nil || !created {
@@ -214,15 +231,16 @@ func (s *Server) launchOrganization(t records.OrganizationTask) {
 			model = spec.Model
 		}
 		counts := map[string]int{}
-		out, err := agents.RunOrganization(runCtx, agents.OrganizationRunOptions{Snapshot: t.Snapshot, Model: model, GuardExecutable: s.proposalGuard, OnStart: func(pid int) error {
+		out, err := s.runOrganizationModel(runCtx, t, model, func(pid int) error {
 			return s.store.RegisterOrganizationProcess(runCtx, t.ID, t.Attempt, pid)
-		}, OnEvent: func(event string) {
+		}, func(event string) {
 			counts[event]++
-			if event == "turn.started" {
+			if event == "turn.started" || event == "message_start" {
 				b, _ := json.Marshal(map[string]any{"events": counts, "process_active": true})
 				_, _ = s.store.DB.ExecContext(runCtx, `UPDATE organization_attempts SET execution=? WHERE task=? AND attempt=? AND state='running'`, string(b), t.ID, t.Attempt)
 			}
-		}})
+		})
+
 		if out.Started {
 			reaped, gone = out.Reaped, out.GroupGone
 		}
@@ -258,8 +276,11 @@ func (s *Server) launchOrganization(t records.OrganizationTask) {
 		s.organizationOutcomes[t.ID] = organizationOutcome{Attempt: t.Attempt, Known: known, Failure: failure}
 		s.organizationMu.Unlock()
 		processData := map[string]any{}
-		encoded, _ := json.Marshal(out.ProposalProcess)
+		encoded, _ := json.Marshal(out.Detail)
 		_ = json.Unmarshal(encoded, &processData)
+		if processData == nil {
+			processData = map[string]any{}
+		}
 		processData["outcome_recorded"], processData["outcome_code"] = known, failure
 		process, _ := json.Marshal(processData)
 		_, _ = s.store.DB.ExecContext(context.Background(), `UPDATE organization_attempts SET execution=? WHERE task=? AND attempt=?`, string(process), t.ID, t.Attempt)

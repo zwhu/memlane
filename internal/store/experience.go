@@ -106,7 +106,11 @@ func (s *Store) applyGlobalExperience(ctx context.Context, tx *sql.Tx, t records
 	for _, ref := range item.Sources {
 		refs = append(refs, t.Project+"/"+ref.Memory+"@v"+stringRevision(ref.Revision))
 	}
-	v, err := s.applyTx(ctx, tx, Mutation{Kind: "save", OperationID: "experience-review:" + e.ID, Memory: e.ID, Dataset: item.Destination, Text: item.Text, Title: item.Title, Source: "traex：用户确认全局提炼", Origin: "knowledge", SourceDetail: &records.AgentSource{References: refs}})
+	source := "traex：用户确认全局提炼"
+	if t.Snapshot.Processing != nil {
+		source = t.Snapshot.Processing.Revision.Spec.Agent + "：用户确认通用提炼"
+	}
+	v, err := s.applyTx(ctx, tx, Mutation{Kind: "save", OperationID: "experience-review:" + e.ID, Memory: e.ID, Dataset: item.Destination, Text: item.Text, Title: item.Title, Source: source, Origin: "knowledge", SourceDetail: &records.AgentSource{References: refs}})
 	if err != nil {
 		return receipt, err
 	}

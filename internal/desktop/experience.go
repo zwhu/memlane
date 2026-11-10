@@ -12,6 +12,7 @@ import (
 )
 
 type ExperienceUI struct {
+	Distill                 *ExperienceDistillUI
 	Copy                    *records.ExperienceCopy
 	Source                  MemoryItem
 	LatestSource            MemoryItem
@@ -195,19 +196,29 @@ func (a *App) confirmExperienceCopy() {
 }
 
 func (a *App) beginExperienceDistill(v MemoryItem) {
-	if !a.isProjectKnowledge(v) || a.organization.Busy || a.libraryContext == nil {
+	if !a.isProjectKnowledge(v) || a.experience.Busy || a.libraryContext == nil {
 		return
 	}
-	a.beginOrganization()
-	s := &a.organization
-	s.Project = v.Dataset
-	s.ProjectLabel = a.scopeLabel(v.Dataset)
-	s.Chosen = map[string]MemoryItem{v.ID: v}
-	s.Order = []string{v.ID}
-	s.GlobalMode = true
-	s.ReviewMode = true
-	s.Purpose = "global"
-	a.startOrganization()
+	if old := a.experience.Distill; old != nil && old.Source.ID == v.ID && old.Source.Revision == v.Revision {
+		pending := old.Busy || old.Loading || distillTaskRunning(old.Task)
+		if old.Task != nil {
+			for _, entry := range old.Task.Entries {
+				pending = pending || entry.State == "review_pending"
+			}
+		}
+		if pending {
+			a.showExperienceDistill()
+			return
+		}
+	}
+	s := &ExperienceDistillUI{Open: true, Source: v, ReturnPage: a.page, ReturnScope: a.scope, ReturnScroll: a.detailScroll.Y}
+	a.experience.Copy = nil
+	a.experience.Distill = s
+	a.commonCategory = ""
+	a.navigate("通用知识", "")
+	a.editing, a.detailMode = false, "view"
+	a.detailScroll.Y = 0
+	a.prepareExperienceDistill(s)
 }
 
 func (a *App) closeExperienceCopy() {

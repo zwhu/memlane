@@ -12,6 +12,15 @@ import (
 )
 
 func (s *Store) StartOrganization(ctx context.Context, d records.OrganizationStart) (records.OrganizationTask, bool, error) {
+	return s.startOrganization(ctx, d, "")
+}
+
+// Only a service-resolved dependency may authorize the processing snapshot.
+func (s *Store) StartProcessingOrganization(ctx context.Context, d records.OrganizationStart, dependency string) (records.OrganizationTask, bool, error) {
+	return s.startOrganization(ctx, d, dependency)
+}
+
+func (s *Store) startOrganization(ctx context.Context, d records.OrganizationStart, dependency string) (records.OrganizationTask, bool, error) {
 	var empty records.OrganizationTask
 	if len(d.Destinations) > 8 || (!d.Review && (len(d.Destinations) > 0 || d.Global)) || (d.Purpose != "" && (d.Purpose != "global" || !d.Global)) || len(d.Inputs) < 1 || len(d.Inputs) > 16 || strings.TrimSpace(d.OperationID) == "" || len(d.OperationID) > 128 {
 		return empty, false, records.MergeError("invalid_request")
@@ -21,7 +30,7 @@ func (s *Store) StartOrganization(ctx context.Context, d records.OrganizationSta
 		return empty, false, err
 	}
 	defer tx.Rollback()
-	t, created, err := s.startOrganizationTx(ctx, tx, d)
+	t, created, err := s.startOrganizationTx(ctx, tx, d, dependency)
 	if err != nil || !created {
 		return t, created, err
 	}
@@ -32,7 +41,7 @@ func (s *Store) StartOrganization(ctx context.Context, d records.OrganizationSta
 }
 
 // Plans freeze inputs and record their unique trigger in the same transaction.
-func (s *Store) startOrganizationTx(ctx context.Context, tx *sql.Tx, d records.OrganizationStart) (records.OrganizationTask, bool, error) {
+func (s *Store) startOrganizationTx(ctx context.Context, tx *sql.Tx, d records.OrganizationStart, dependencies ...string) (records.OrganizationTask, bool, error) {
 	var empty records.OrganizationTask
 	var err error
 	var kind string
@@ -106,6 +115,19 @@ func (s *Store) startOrganizationTx(ctx context.Context, tx *sql.Tx, d records.O
 			origin = "summary"
 		}
 		snapshot.Inputs = append(snapshot.Inputs, records.OrganizationInput{MergeInput: records.MergeInput{Memory: v.Memory, Revision: v.Revision, Title: v.Title, Text: v.Text, Source: v.Source, SourceDetail: v.SourceDetail, CapturedAt: time.Now().UTC().Format(time.RFC3339Nano)}, Origin: origin, Roots: roots})
+	}
+	if d.Processing != nil {
+		if !d.Global || d.Purpose != "global" || len(dependencies) != 1 || !processingDigest(dependencies[0]) {
+			return empty, false, records.MergeError("verification_required")
+		}
+		binding, e := freezeProcessingTx(ctx, tx, dependencies[0], time.Now())
+		if e != nil {
+			return empty, false, e
+		}
+		if binding.SelectionGeneration != d.Processing.Generation || binding.Revision.ID != d.Processing.Revision {
+			return empty, false, ErrConflict
+		}
+		snapshot.Processing = &binding
 	}
 	if err = snapshot.Seal(); err != nil {
 		return empty, false, err
@@ -717,4 +739,22 @@ func (s *Store) InterruptOrganizationOutcome(ctx context.Context, id string, att
 		}
 	}
 	return tx.Commit()
+}
+
+// Replay precedes runtime dependency resolution. Retrying an existing operation
+// retrieves its task without launching it again or selecting another executor.
+func (s *Store) ReplayOrganizationStart(ctx context.Context, d records.OrganizationStart) (records.OrganizationTask, bool, error) {
+	var id, digest string
+	err := s.DB.QueryRowContext(ctx, `SELECT id,request_digest FROM organization_tasks WHERE operation_id=? AND project=?`, d.OperationID, d.Project).Scan(&id, &digest)
+	if err == sql.ErrNoRows {
+		return records.OrganizationTask{}, false, nil
+	}
+	if err != nil {
+		return records.OrganizationTask{}, false, err
+	}
+	if digest != records.MergeDigest(d) {
+		return records.OrganizationTask{}, true, ErrConflict
+	}
+	t, err := s.OrganizationTask(ctx, id)
+	return t, true, err
 }
