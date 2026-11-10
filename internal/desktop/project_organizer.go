@@ -26,6 +26,8 @@ type ProjectBindingOperation struct {
 }
 
 type ProjectOrganizerUI struct {
+	WatchCancel                             context.CancelFunc
+	WatchSequence                           uint64
 	HistoryLoading, HistoryLoaded           bool
 	HistorySequence                         uint64
 	HistoryCancel                           context.CancelFunc
@@ -65,7 +67,8 @@ func (a *App) openProjectOrganizer(project, task string) {
 	a.rememberDraft()
 	prior := a.projectOrganizer
 	a.projectOrganizer = ProjectOrganizerUI{Client: prior.Client, Project: project, SelectedTask: task,
-		Open: true, Sequence: prior.Sequence + 1, Operation: prior.Operation,
+		WatchSequence: prior.WatchSequence + 1,
+		Open:          true, Sequence: prior.Sequence + 1, Operation: prior.Operation,
 		HistorySequence: prior.HistorySequence + 1,
 		OperationID:     uuid.NewString(), ReturnMode: a.detailMode, ReturnEditing: a.editing}
 	if prior.Operation != nil && prior.Operation.Project == project {
@@ -97,6 +100,7 @@ func (a *App) openProjectOrganizer(project, task string) {
 
 func (a *App) closeProjectOrganizer() {
 	s := &a.projectOrganizer
+	s.stopWatch()
 	if s.HistoryCancel != nil {
 		s.HistoryCancel()
 		s.HistoryCancel = nil
@@ -118,7 +122,7 @@ func (a *App) returnFromProjectOrganizer() {
 
 func (a *App) refreshProjectOrganizer() {
 	s := &a.projectOrganizer
-	if !s.Open || s.Loading || a.libraryContext == nil || a.dispatch == nil || s.Operation != nil && s.Operation.Active && s.Operation.Project == s.Project {
+	if a.windowHidden || !s.Open || s.Loading || a.libraryContext == nil || a.dispatch == nil || s.Operation != nil && s.Operation.Active && s.Operation.Project == s.Project {
 		return
 	}
 	s.Loading = true
@@ -179,6 +183,7 @@ func (a *App) refreshProjectOrganizer() {
 				current.SelectedTask = task.ID
 			}
 			current.Error, current.Loaded = "", true
+			a.ensureProjectTaskWatch()
 			if op := current.Operation; op != nil && op.Project == project && op.Error != "" {
 				if op.Kind == "start" && task == nil || op.Kind == "cancel" && projectTaskRunning(task) && task.State != "cancelling" || op.Kind == "recover" && (task == nil || task.IndexRecovery == nil || task.IndexRecovery.ID != op.Recovery.OperationID) {
 					if op.FailureCode != "history_changed" || current.HistoryError == "" {
@@ -192,7 +197,7 @@ func (a *App) refreshProjectOrganizer() {
 
 func (a *App) beginProjectTask(d records.ProjectTaskStart) {
 	s := &a.projectOrganizer
-	if !s.Open || !s.Loaded || s.Loading || s.Error != "" || s.Project != d.Project || s.Binding.Revision != d.BindingRevision || s.Binding.State != "available" || s.Binding.Agent != "codex" || projectTaskRunning(s.Task) || s.Operation != nil && s.Operation.Active || a.libraryContext == nil || a.dispatch == nil {
+	if !s.Open || !s.Loaded || s.Error != "" || s.Project != d.Project || s.Binding.Revision != d.BindingRevision || s.Binding.State != "available" || s.Binding.Agent != "codex" || projectTaskRunning(s.Task) || s.Operation != nil && s.Operation.Active || a.libraryContext == nil || a.dispatch == nil {
 		return
 	}
 	if d.IncludeHistory && (!s.HistoryLoaded || s.HistoryLoading || s.HistoryError != "" || len(s.Sessions) == 0 || d.HistoryWorkspaceID != s.HistoryWorkspaceID || !reflect.DeepEqual(d.Sessions, s.Sessions)) {
@@ -244,6 +249,7 @@ func (a *App) beginProjectTask(d records.ProjectTaskStart) {
 				current.SelectedTask, current.Task, current.Error = task.ID, &task, ""
 				current.Sequence++
 				current.Loading = false
+				a.ensureProjectTaskWatch()
 			}
 			if overview := a.projectOverview(d.Project); overview != nil {
 				overview.Task = task.ID
@@ -284,6 +290,9 @@ func (a *App) stopProjectTask() {
 			}
 			operation.Result = &task
 			if current.Project == project && current.SelectedTask == id && task.Attempt == attempt {
+				if current.Task != nil && !projectTaskRunning(current.Task) && projectTaskRunning(&task) {
+					return
+				}
 				current.Task = &task
 				current.Error = ""
 				current.Sequence++
@@ -416,7 +425,7 @@ func projectTaskVisualState(task *records.ProjectTask) string {
 
 func (a *App) recoverProjectIndexes() {
 	s := &a.projectOrganizer
-	if !s.Open || !s.Loaded || s.Loading || s.Error != "" || !projectIndexRecoverable(s.Task) || s.Operation != nil && s.Operation.Active || a.libraryContext == nil || a.dispatch == nil {
+	if !s.Open || !s.Loaded || s.Error != "" || !projectIndexRecoverable(s.Task) || s.Operation != nil && s.Operation.Active || a.libraryContext == nil || a.dispatch == nil {
 		return
 	}
 	d := records.IndexRebuildStart{OperationID: uuid.NewString(), ProjectTask: s.Task.ID, Attempt: s.Task.Attempt}
@@ -694,7 +703,7 @@ func (a *App) projectOrganizerContent(c *ui.Context) {
 					ui.Text(c, "恢复索引不调用模型，不消耗整理 Token。").FontSize(10).TextColor(design.Muted)
 				})
 				if projectIndexRecoverable(s.Task) {
-					actionButton(c, "恢复索引", nil).Key("project-organizer-index-recover").Disabled(busy || s.Loading || s.Error != "").OnClick(a.recoverProjectIndexes)
+					actionButton(c, "恢复索引", nil).Key("project-organizer-index-recover").Disabled(busy || !s.Loaded || s.Error != "").OnClick(a.recoverProjectIndexes)
 				} else if projectIndexRecoveryRunning(s.Task) {
 					actionButton(c, "正在恢复索引…", nil).Key("project-organizer-index-recover").Disabled(true)
 				} else {
@@ -729,11 +738,16 @@ func (a *App) projectOrganizerContent(c *ui.Context) {
 				return
 			}
 			if frozen {
-				quietButton(c, "重新整理").Key("project-organizer-reset").Disabled(busy || s.Loading || s.Error != "").OnClick(func() {
+				quietButton(c, "重新整理").Key("project-organizer-reset").Disabled(busy || !s.Loaded || s.Error != "").OnClick(func() {
+					s.stopWatch()
+					s.Sequence++
+					s.Loading = false
 					s.Task, s.SelectedTask, s.Choosing = nil, "", false
+					s.Operation = nil
 					s.OperationID = uuid.NewString()
 					s.clearHistory()
 					s.Motion.Reenter = true
+					a.refreshProjectOrganizer()
 				})
 				return
 			}
@@ -744,7 +758,7 @@ func (a *App) projectOrganizerContent(c *ui.Context) {
 			if s.Operation != nil && s.Operation.Active && s.Operation.Kind == "start" {
 				label = "正在确认启动…"
 			}
-			actionButton(c, label, nil).Key("project-organizer-start").Background(design.Ink).TextColor(ui.Hex("#ffffff")).Disabled(busy || !s.Loaded || s.Loading || s.Binding.State != "available" || s.Binding.Agent != "codex" || s.Error != "" || a.startProjectTask == nil || s.IncludeHistory && (!s.HistoryLoaded || s.HistoryLoading || s.HistoryError != "" || len(s.Sessions) == 0)).OnClick(func() {
+			actionButton(c, label, nil).Key("project-organizer-start").Background(design.Ink).TextColor(ui.Hex("#ffffff")).Disabled(busy || !s.Loaded || s.Binding.State != "available" || s.Binding.Agent != "codex" || s.Error != "" || a.startProjectTask == nil || s.IncludeHistory && (!s.HistoryLoaded || s.HistoryLoading || s.HistoryError != "" || len(s.Sessions) == 0)).OnClick(func() {
 				if a.startProjectTask != nil && s.Binding.State == "available" {
 					a.startProjectTask(records.ProjectTaskStart{OperationID: s.OperationID, Project: s.Project, BindingRevision: s.Binding.Revision, IncludeHistory: s.IncludeHistory, Sessions: s.Sessions, HistoryWorkspaceID: s.HistoryWorkspaceID})
 				}

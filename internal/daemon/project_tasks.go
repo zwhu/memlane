@@ -85,6 +85,7 @@ func (s *Server) startProjectTask(ctx context.Context, d records.ProjectTaskStar
 	run, cancel := context.WithCancel(s.lifecycle)
 	s.projectRuns[t.ID] = projectTaskOwner{Attempt: t.Attempt, Cancel: cancel}
 	s.projectWG.Add(1)
+	s.projectTaskChanged()
 	go s.runProjectTask(run, cancel, t)
 	return t, nil
 }
@@ -94,6 +95,7 @@ func (s *Server) cancelProjectTask(ctx context.Context, id string) (records.Proj
 	defer s.projectMu.Unlock()
 	t, err := s.store.CancelProjectTask(ctx, id)
 	if err == nil {
+		s.projectTaskChanged()
 		if owner, ok := s.projectRuns[id]; ok && owner.Attempt == t.Attempt {
 			owner.Cancel()
 		}
@@ -102,6 +104,7 @@ func (s *Server) cancelProjectTask(ctx context.Context, id string) (records.Proj
 }
 
 func (s *Server) runProjectTask(ctx context.Context, cancel context.CancelFunc, t records.ProjectTask) {
+	defer s.projectTaskChanged()
 	defer s.projectWG.Done()
 	defer cancel()
 	defer func() {
@@ -150,6 +153,7 @@ func (s *Server) runProjectTask(ctx context.Context, cancel context.CancelFunc, 
 		return
 	}
 	claimed = true
+	s.projectTaskChanged()
 	ctx = context.WithValue(store.WithProjectRun(ctx, owner), projectOwnerKey{}, owner)
 	done := make(chan struct{})
 	watchDone := make(chan struct{})
@@ -195,6 +199,7 @@ func (s *Server) runProjectTask(ctx context.Context, cancel context.CancelFunc, 
 				stageErr = e
 				cancel()
 			}
+			s.projectTaskChanged()
 		}
 	})
 	final, stop := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
@@ -218,8 +223,13 @@ func (s *Server) runProjectTask(ctx context.Context, cancel context.CancelFunc, 
 	release()
 	slotHeld = false
 	s.agentAccess.RLock()
-	_, err = s.store.SaveProjectKnowledge(ctx, t.ID, t.Attempt, *execution.Proposal, execution.Sources)
+	err = s.store.PrepareProjectKnowledge(ctx, t.ID, t.Attempt, *execution.Proposal, execution.Sources)
+	if err == nil {
+		s.projectTaskChanged()
+		_, err = s.store.ApplyProjectKnowledge(ctx, t.ID, t.Attempt)
+	}
 	s.agentAccess.RUnlock()
+	s.projectTaskChanged()
 	if err != nil {
 		endState, endCode = "failed", "project_save_failed"
 		return

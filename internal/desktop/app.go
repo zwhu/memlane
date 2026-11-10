@@ -13,6 +13,7 @@ import (
 )
 
 type App struct {
+	windowHidden                                                     bool
 	cognee                                                           CogneeUI
 	officialPreparation                                              OfficialPreparationUI
 	firstLaunch                                                      FirstLaunchUI

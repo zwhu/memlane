@@ -56,6 +56,7 @@ func displayHistory(vs []records.History) []MemoryHistory {
 // window's serialized Update boundary. Sequence checks keep late page responses
 // from replacing a newer selection or draft; read failures retain prior data.
 func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(func())) {
+	a.projectOrganizer.stopWatch()
 	a.library = serviceipc.Library{Root: root}
 	a.backups = BackupUI{Client: serviceipc.BackupClient{Root: root}, Sequence: a.backups.Sequence + 1}
 	a.code = CodeUI{Client: serviceipc.CodeClient{Root: root}, Mode: "函数与符号", Manage: true}
@@ -67,7 +68,7 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 	a.listSort = "最近更新"
 	a.schedules = ScheduleUI{Client: serviceipc.ScheduleClient{Root: root}, Destinations: map[string]bool{}}
 	a.organization = OrganizationUI{Client: serviceipc.OrganizationClient{Root: root}, Chosen: map[string]MemoryItem{}, Results: map[string]MemoryItem{}, Kind: "knowledge"}
-	a.projectOrganizer = ProjectOrganizerUI{Client: serviceipc.ProjectTaskClient{Root: root}, Sequence: a.projectOrganizer.Sequence + 1}
+	a.projectOrganizer = ProjectOrganizerUI{Client: serviceipc.ProjectTaskClient{Root: root}, Sequence: a.projectOrganizer.Sequence + 1, WatchSequence: a.projectOrganizer.WatchSequence + 1}
 	a.startProjectTask = a.beginProjectTask
 	a.projectOverviews = nil
 	a.merges = MergeUI{Client: serviceipc.MergeClient{Root: root}, Chosen: map[string]records.MergeTarget{}, Reviews: map[string]records.MergeReview{}}

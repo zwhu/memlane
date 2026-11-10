@@ -8,6 +8,12 @@ import (
 
 type ProjectTaskClient struct{ Root string }
 
+func (c ProjectTaskClient) Watch(ctx context.Context, q records.ProjectTaskWatch) (records.ProjectTaskObservation, error) {
+	var out records.ProjectTaskObservation
+	err := Call(ctx, c.Root, Request{Op: "project_task_watch", ProjectTaskWatch: &q}, &out)
+	return out, err
+}
+
 func (c ProjectTaskClient) History(ctx context.Context, q records.ProjectHistoryQuery) (records.ProjectHistoryPage, error) {
 	var out records.ProjectHistoryPage
 	err := Call(ctx, c.Root, Request{Op: "project_history", UserConfirmed: true, ProjectHistory: &q}, &out)

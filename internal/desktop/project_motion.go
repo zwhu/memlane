@@ -11,6 +11,7 @@ type projectTilePose struct{ X, Y, Z, Rotation, Scale, Alpha float32 }
 type projectStagePose struct {
 	Tiles                                                                                    [24]projectTilePose
 	SourceAlpha, CardAlpha, CardX, CardY, BookAlpha, BookScale, BookY, PageAngle, CheckAlpha float32
+	SourceRotation, SourceScale, SourceX, CardScale                                          float32
 }
 type projectStageMotion struct {
 	Key, Stage string
@@ -22,9 +23,21 @@ type projectStageMotion struct {
 
 var projectCollectEase = ui.CubicBezier(.2, .7, .2, 1)
 var projectBookEase = ui.CubicBezier(.2, .8, .2, 1)
+var projectCSSEase = ui.CubicBezier(.25, .1, .25, 1)
+var projectCSSIn = ui.CubicBezier(.42, 0, 1, 1)
+var projectCSSInOut = ui.CubicBezier(.42, 0, .58, 1)
+
+func projectLoopPulse(phase, peak float64) float32 {
+	phase = math.Mod(phase, 1)
+	if phase <= peak {
+		return projectCSSInOut(float32(phase / peak))
+	}
+	return 1 - projectCSSInOut(float32((phase-peak)/(1-peak)))
+}
 
 func projectStageTarget(stage string) (p projectStagePose) {
 	p.SourceAlpha, p.CardAlpha, p.CardY = 1, .16, 15
+	p.SourceRotation, p.SourceScale, p.CardScale = -7, 1, 1
 	for i := range p.Tiles {
 		angle, radius := float64(i)*2.39996, 34+math.Sqrt(float64(i))*15
 		p.Tiles[i] = projectTilePose{X: float32(math.Round(math.Cos(angle) * radius)), Y: float32(math.Round(math.Sin(angle) * radius * .66)), Z: float32(i % 4 * 8), Rotation: float32((i*13)%45 - 22), Scale: .75, Alpha: .65}
@@ -48,12 +61,19 @@ func projectStageTarget(stage string) (p projectStagePose) {
 		}
 	}
 	switch stage {
+	case "inviting":
+		p.CardAlpha, p.CardY = .6, 0
+	case "starting":
+		p.SourceRotation, p.SourceScale, p.SourceX = -2, .96, -10
 	case "organizing":
 		p.SourceAlpha, p.CardAlpha, p.CardY = .4, .6, 0
+		p.SourceRotation, p.SourceScale = -3, .9
 	case "saving", "indexing":
 		p.SourceAlpha, p.CardAlpha, p.CardY = .18, 1, 0
+		p.SourceScale = .8
 	case "completed":
 		p.SourceAlpha, p.CardAlpha, p.CardX, p.CardY, p.BookAlpha, p.BookScale, p.PageAngle, p.CheckAlpha = 0, 0, -125, 15, 1, 1, 0, 1
+		p.SourceScale, p.CardScale = .7, .5
 	}
 	return
 }
@@ -100,29 +120,36 @@ func (m projectStageMotion) sample(now time.Time, reduced bool) (p projectStageP
 	for i := range p.Tiles {
 		t := float32(min(1, max(0, (elapsed-float64(i)*stagger)/duration)))
 		if m.Stage == "saving" {
-			t = ui.EaseIn(t)
+			t = projectCSSIn(t)
 		} else {
 			t = projectCollectEase(t)
 		}
 		a, b := m.From.Tiles[i], p.Tiles[i]
 		p.Tiles[i] = projectTilePose{X: projectInterpolate(a.X, b.X, t), Y: projectInterpolate(a.Y, b.Y, t), Z: projectInterpolate(a.Z, b.Z, t), Rotation: projectInterpolate(a.Rotation, b.Rotation, t), Scale: projectInterpolate(a.Scale, b.Scale, t), Alpha: projectInterpolate(a.Alpha, b.Alpha, t)}
 		if m.Stage == "ready" {
-			wave := float32(.5 - .5*math.Cos((elapsed+float64(i)*.22)/6*2*math.Pi))
+			wave := projectLoopPulse((elapsed+float64(i)*.22)/6, .5)
 			p.Tiles[i].Y -= wave * 7
 			p.Tiles[i].Rotation += wave * 4
 			p.Tiles[i].Scale += wave * .05
 		}
 		if m.Stage == "organizing" {
-			wave := float32(.5 - .5*math.Cos((elapsed+float64(i)*.09)/1.7*2*math.Pi))
+			wave := projectLoopPulse((elapsed+float64(i)*.09)/1.7, .45)
 			p.Tiles[i].Y -= wave * 4
 			p.Tiles[i].Scale *= 1 - wave*.14
 			p.Tiles[i].Alpha *= 1 - wave*.6
 		}
 	}
-	p.SourceAlpha = projectInterpolate(m.From.SourceAlpha, p.SourceAlpha, global)
-	p.CardAlpha = projectInterpolate(m.From.CardAlpha, p.CardAlpha, global)
-	p.CardX = projectInterpolate(m.From.CardX, p.CardX, global)
-	p.CardY = projectInterpolate(m.From.CardY, p.CardY, global)
+	opacity := projectCSSEase(float32(min(1, elapsed/.5)))
+	source := projectCSSEase(float32(min(1, elapsed/.6)))
+	card := projectBookEase(float32(min(1, elapsed/.7)))
+	p.SourceAlpha = projectInterpolate(m.From.SourceAlpha, p.SourceAlpha, opacity)
+	p.SourceRotation = projectInterpolate(m.From.SourceRotation, p.SourceRotation, source)
+	p.SourceScale = projectInterpolate(m.From.SourceScale, p.SourceScale, source)
+	p.SourceX = projectInterpolate(m.From.SourceX, p.SourceX, source)
+	p.CardScale = projectInterpolate(m.From.CardScale, p.CardScale, card)
+	p.CardAlpha = projectInterpolate(m.From.CardAlpha, p.CardAlpha, opacity)
+	p.CardX = projectInterpolate(m.From.CardX, p.CardX, card)
+	p.CardY = projectInterpolate(m.From.CardY, p.CardY, card)
 	p.BookAlpha = projectInterpolate(m.From.BookAlpha, p.BookAlpha, global)
 	p.BookScale = projectInterpolate(m.From.BookScale, p.BookScale, global)
 	p.BookY = projectInterpolate(m.From.BookY, p.BookY, global)
@@ -144,7 +171,9 @@ func projectShapeRect(p *ui.Painter, r ui.Rect, fill, stroke ui.Color, radius fl
 }
 
 func drawProjectStage(p *ui.Painter, r ui.Rect, pose projectStagePose, stage string, elapsed float64, reduced bool) {
-	scale := min(1, min(r.W/560, r.H/280))
+	// A short stage crops the decorative floor, as the fixed prototype does.
+	// Fitting the entire 280-high canvas made its cards and labels too small.
+	scale := min(1, r.W/560)
 	ox, oy := r.X+(r.W-560*scale)/2, r.Y+(r.H-280*scale)/2
 	point := func(x, y float32) (float32, float32) { return ox + x*scale, oy + y*scale }
 	rect := func(x, y, w, h float32) ui.Rect {
@@ -160,22 +189,29 @@ func drawProjectStage(p *ui.Painter, r ui.Rect, pose projectStagePose, stage str
 	for i := 0; i < 4; i++ {
 		line(140, 179+float32(i)*15, 230, 1, ui.Hex("#adc3d7").Alpha(.12))
 	}
-	p.FillRadialGradient(rect(106, 226, 358, 25), ui.RadialGradient{Radius: 150 * scale, Stops: []ui.GradientStop{{Color: ui.Hex("#718ba4").Alpha(.12)}, {Color: ui.Transparent, At: 1}}}, 12*scale)
+	floor := rect(106, 226, 358, 25)
+	if r.H < 280*scale {
+		floor.Y = r.Y + r.H - 29 - 25*scale
+	}
+	p.FillRadialGradient(floor, ui.RadialGradient{Radius: 150 * scale, Stops: []ui.GradientStop{{Color: ui.Hex("#718ba4").Alpha(.12)}, {Color: ui.Transparent, At: 1}}}, 12*scale)
 	if pose.SourceAlpha > 0 {
-		a := pose.SourceAlpha
-		for i := 2; i > 0; i-- {
-			p.Fill(rect(17+float32(i)*5, 95+float32(i)*7, 90, 106), ui.Hex("#eaf0f7").Alpha(a*.7), 7*scale)
-		}
-		projectShapeRect(p, rect(17, 95, 90, 106), ui.Hex("#f8fbfe").Alpha(a), ui.Hex("#bccdde").Alpha(a), 7*scale)
-		folder := (&ui.Path{})
-		x, y := point(31, 112)
-		folder.MoveTo(x, y+4*scale).LineTo(x+9*scale, y+4*scale).LineTo(x+12*scale, y+8*scale).LineTo(x+25*scale, y+8*scale).LineTo(x+25*scale, y+23*scale).LineTo(x, y+23*scale).Close()
-		p.StrokePath(folder, 1.5*scale, ui.Hex("#6c879f").Alpha(a))
-		for i, w := range []float32{47, 34, 42} {
-			line(30, 145+float32(i)*7, w, 2, ui.Hex("#d0dce8").Alpha(a))
-		}
-		x, y = point(30, 182)
-		p.Text(x, y, "当前仓库", 9*scale, ui.Hex("#7a8c9c").Alpha(a))
+		sx, sy := point(62, 148)
+		p.Transform(ui.Rotation(pose.SourceRotation).Then(ui.Scaling(pose.SourceScale, pose.SourceScale)).Then(ui.Translation(pose.SourceX*scale, 0)), sx, sy, func() {
+			a := pose.SourceAlpha
+			for i := 2; i > 0; i-- {
+				p.Fill(rect(17+float32(i)*5, 95+float32(i)*7, 90, 106), ui.Hex("#eaf0f7").Alpha(a*.7), 7*scale)
+			}
+			projectShapeRect(p, rect(17, 95, 90, 106), ui.Hex("#f8fbfe").Alpha(a), ui.Hex("#bccdde").Alpha(a), 7*scale)
+			folder := (&ui.Path{})
+			x, y := point(31, 112)
+			folder.MoveTo(x, y+4*scale).LineTo(x+9*scale, y+4*scale).LineTo(x+12*scale, y+8*scale).LineTo(x+25*scale, y+8*scale).LineTo(x+25*scale, y+23*scale).LineTo(x, y+23*scale).Close()
+			p.StrokePath(folder, 1.5*scale, ui.Hex("#6c879f").Alpha(a))
+			for i, w := range []float32{47, 34, 42} {
+				line(30, 145+float32(i)*7, w, 2, ui.Hex("#d0dce8").Alpha(a))
+			}
+			x, y = point(30, 182)
+			p.Text(x, y, "当前仓库", 9*scale, ui.Hex("#7a8c9c").Alpha(a))
+		})
 	}
 	for _, tile := range pose.Tiles {
 		if tile.Alpha <= 0 {
@@ -206,25 +242,55 @@ func drawProjectStage(p *ui.Painter, r ui.Rect, pose projectStagePose, stage str
 		p.FillPath(face(ui.Point{X: 14}, ui.Point{X: 19, Y: -5}, ui.Point{X: 19, Y: 9}, ui.Point{X: 14, Y: 14}), ui.Hex("#7995ae").Alpha(tile.Alpha))
 	}
 	if stage == "starting" && !reduced {
-		alpha := float32(.15 + .75*(.5-.5*math.Cos(elapsed/1.3*2*math.Pi)))
+		alpha := .15 + .75*projectLoopPulse(elapsed/1.3, .5)
 		for i := 0; i < 4; i++ {
 			line(146+float32(i)*23, 154, 16, 2, ui.Hex("#a5bdd2").Alpha(alpha))
 		}
 	}
 	if pose.CardAlpha > 0 {
-		for i, label := range []string{"项目约定", "系统架构", "关键模块"} {
-			xOffset := []float32{0, -10, 4}[i]
-			x, y := 412+pose.CardX+xOffset, 70+pose.CardY+float32(i)*51
-			projectShapeRect(p, rect(x, y, 136, 42), ui.Hex("#ffffff").Alpha(pose.CardAlpha), ui.Hex("#c9d8e6").Alpha(pose.CardAlpha), 5*scale)
-			line(x+10, y+14, 12, 12, ui.Hex("#dce7f1").Alpha(pose.CardAlpha))
-			tx, ty := point(x+30, y+26)
-			p.Text(tx, ty, label, 10*scale, ui.Hex("#6e8ca6").Alpha(pose.CardAlpha))
-			line(x+119, y+18, 5, 5, ui.Hex("#a2bbd2").Alpha(pose.CardAlpha))
-			if stage == "indexing" && !reduced {
-				scan := float32(math.Mod(max(0, elapsed-float64(i)*.25)/1.6, 1))
-				line(x+8+scan*110, y+4, 13, 34, ui.Hex("#e3edf7").Alpha(.6*pose.CardAlpha))
+		cx, cy := point(480+pose.CardX, 142+pose.CardY)
+		p.Transform(ui.Scaling(pose.CardScale, pose.CardScale), cx, cy, func() {
+			for i, label := range []string{"项目约定", "系统架构", "关键模块"} {
+				xOffset := []float32{0, -10, 4}[i]
+				x, y := 412+pose.CardX+xOffset, 70+pose.CardY+float32(i)*51
+				rx, ry := point(x+68, y+21)
+				p.Transform(ui.Rotation([]float32{2, -3, 1}[i]), rx, ry, func() {
+					projectShapeRect(p, rect(x, y, 136, 42), ui.Hex("#ffffff").Alpha(pose.CardAlpha), ui.Hex("#c9d8e6").Alpha(pose.CardAlpha), 5*scale)
+					iconColor := ui.Hex("#6e8ca6").Alpha(pose.CardAlpha)
+					iconPath := func(points ...ui.Point) *ui.Path {
+						path := &ui.Path{}
+						for n, q := range points {
+							px, py := point(x+10+q.X, y+14+q.Y)
+							if n == 0 {
+								path.MoveTo(px, py)
+							} else {
+								path.LineTo(px, py)
+							}
+						}
+						return path
+					}
+					if i == 0 {
+						p.StrokePath(iconPath(ui.Point{X: 7}, ui.Point{X: 14, Y: 4}, ui.Point{X: 7, Y: 8}, ui.Point{Y: 4}).Close(), scale, iconColor)
+						for _, dy := range []float32{4, 7} {
+							p.StrokePath(iconPath(ui.Point{Y: 4 + dy}, ui.Point{X: 7, Y: 8 + dy}, ui.Point{X: 14, Y: 4 + dy}), scale, iconColor)
+						}
+					} else if i == 1 {
+						for _, q := range []ui.Point{{}, {X: 9}, {Y: 9}, {X: 9, Y: 9}} {
+							p.Stroke(rect(x+10+q.X, y+14+q.Y, 5, 5), iconColor, scale, scale)
+						}
+					} else {
+						p.StrokePath(iconPath(ui.Point{Y: 2}, ui.Point{X: 5, Y: 2}, ui.Point{X: 7, Y: 5}, ui.Point{X: 14, Y: 5}, ui.Point{X: 14, Y: 13}, ui.Point{Y: 13}).Close(), scale, iconColor)
+					}
+					tx, ty := point(x+30, y+26)
+					p.Text(tx, ty, label, 10*scale, ui.Hex("#6e8ca6").Alpha(pose.CardAlpha))
+					line(x+119, y+18, 5, 5, ui.Hex("#a2bbd2").Alpha(pose.CardAlpha))
+					if stage == "indexing" && !reduced {
+						scan := projectCSSInOut(float32(math.Mod(max(0, elapsed-float64(i)*.25)/1.6, 1)))
+						line(x+8+scan*110, y+4, 13, 34, ui.Hex("#e3edf7").Alpha(.6*pose.CardAlpha))
+					}
+				})
 			}
-		}
+		})
 	}
 	if pose.BookAlpha > 0 {
 		bookScale := pose.BookScale
@@ -324,7 +390,7 @@ func (a *App) projectKnowledgePreview(c *ui.Context) {
 func (a *App) drawProjectScene(c *ui.Context, elementKey, key string, attempt int64, stage string, state *projectStageMotion, stageHeight float32) {
 	state.update(key, attempt, stage, c.Now())
 	motion := *state
-	reduced := a.firstLaunch.State.ReducedMotion || c.Preferences().ReduceMotion
+	reduced := a.windowHidden || a.firstLaunch.State.ReducedMotion || c.Preferences().ReduceMotion
 	scene := ui.Box(c).Key(elementKey).Height(stageHeight).MinHeight(150).Shrink(0)
 	rx, ry := float32(0), float32(0)
 	x, y, over := scene.PointerPosition()
@@ -337,10 +403,12 @@ func (a *App) drawProjectScene(c *ui.Context, elementKey, key string, attempt in
 		rx, ry = scene.AnimateTo("tilt-x", rx, animation), scene.AnimateTo("tilt-y", ry, animation)
 	}
 	scene.Perspective(750).RotateX(rx).RotateY(ry).Draw(func(p *ui.Painter, r ui.Rect) {
+		started := projectDrawStart()
 		pose, animate := motion.sample(p.Now(), reduced)
 		drawProjectStage(p, r, pose, stage, max(0, p.Now().Sub(motion.Changed).Seconds()), reduced)
 		if animate {
 			p.AnimationFrame()
 		}
+		a.recordProjectDraw(stage, p.Now(), started, animate, reduced, rx, ry, [4]float32{r.X, r.Y, r.W, r.H})
 	})
 }

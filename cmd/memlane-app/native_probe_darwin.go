@@ -7,13 +7,14 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 	"github.com/egoist/mygo"
+	"github.com/zwhu/memlane/internal/desktop"
 	"net"
 	"os"
 )
 
 // This opt-in local probe exercises actual AppKit objects, without requesting
 // machine-wide event injection, changing input sources or claiming VoiceOver.
-func configureNativeProbe(win *mygo.Window) {
+func configureNativeProbe(win *mygo.Window, app *desktop.App) {
 	path := os.Getenv("MEMLANE_NATIVE_PROBE")
 	if path == "" {
 		return
@@ -110,9 +111,11 @@ func configureNativeProbe(win *mygo.Window) {
 				enc := json.NewEncoder(connection)
 				for {
 					var req struct {
-						Op     string `json:"op"`
-						Width  int    `json:"width"`
-						Height int    `json:"height"`
+						Stage   string `json:"stage"`
+						Reduced bool   `json:"reduced"`
+						Op      string `json:"op"`
+						Width   int    `json:"width"`
+						Height  int    `json:"height"`
 					}
 					if dec.Decode(&req) != nil {
 						return
@@ -123,6 +126,17 @@ func configureNativeProbe(win *mygo.Window) {
 						pool := objc.ID(objc.GetClass("NSAutoreleasePool")).Send(sel("new"))
 						defer pool.Send(sel("drain"))
 						switch req.Op {
+						case "motion-fixture":
+							if err := app.UseProjectMotionFixture(req.Stage, req.Reduced); err != nil {
+								result = map[string]string{"error": err.Error()}
+							} else {
+								win.Update(func() {})
+								result = map[string]any{"visual_fixture_only": true, "stage": req.Stage, "reduced": req.Reduced}
+							}
+							return
+						case "motion":
+							result = app.ProjectMotionDiagnostics()
+							return
 						case "close", "minimize", "zoom":
 							index := map[string]int{"close": 0, "minimize": 1, "zoom": 2}[req.Op]
 							b := w.Send(sel("standardWindowButton:"), index)

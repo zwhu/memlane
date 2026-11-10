@@ -178,7 +178,9 @@ func main() {
 			Vibrancy:      mygo.VibrancySidebar,
 			Content:       ui.View(app.View),
 		})
-		configureNativeProbe(win)
+		configureNativeProbe(win, app)
+		win.OnHide(func() { app.SetWindowVisible(false) })
+		win.OnShow(func() { app.SetWindowVisible(true) })
 		configureVisualFixture(app)
 		if configPath == "" {
 			if resources, err := mygo.App.Path(mygo.PathResources); err == nil {

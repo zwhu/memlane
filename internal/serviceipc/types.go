@@ -23,6 +23,7 @@ type Config struct {
 }
 
 type Request struct {
+	ProjectTaskWatch       *records.ProjectTaskWatch            `json:"project_task_watch,omitempty"`
 	ProjectTaskStart       *records.ProjectTaskStart            `json:"project_task_start,omitempty"`
 	ProjectHistory         *records.ProjectHistoryQuery         `json:"project_history,omitempty"`
 	ProjectBindingChange   *records.ProjectBindingChange        `json:"project_binding_change,omitempty"`

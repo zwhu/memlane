@@ -38,6 +38,8 @@ var MarkStopped = serviceipc.MarkStopped
 var writeJSON = serviceipc.WriteJSON
 
 type Server struct {
+	projectWatchMu       sync.Mutex
+	projectChanged       chan struct{}
 	projectMu            sync.Mutex
 	projectWG            sync.WaitGroup
 	projectRuns          map[string]projectTaskOwner
@@ -504,6 +506,11 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		return s.cancelProjectTask(operation, r.ProjectTaskID)
 	case "project_task":
 		return s.store.ProjectTask(operation, r.ProjectTaskID)
+	case "project_task_watch":
+		if r.ProjectTaskWatch == nil {
+			return nil, errors.New("project task watch required")
+		}
+		return s.watchProjectTask(operation, *r.ProjectTaskWatch)
 	case "project_task_list":
 		q := records.MergeListQuery{}
 		if r.ProjectTaskList != nil {
