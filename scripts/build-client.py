@@ -15,6 +15,28 @@ ROOT = Path(__file__).resolve().parents[1]
 GO = ROOT / ".local/toolchains/go-1.27.3/go/bin/go"
 
 
+def signing_identity(config, override=None):
+    identity = override if override is not None else config.get("macos", {}).get("signingIdentity", "-")
+    if not isinstance(identity, str) or not identity.strip():
+        raise ValueError("macOS signing identity must be nonempty")
+    return identity
+
+
+def seal_command(app, identity, entitlements=None):
+    # MyGo has already signed nested code with this identity. Reseal only the
+    # containing bundle after adding its LaunchAgent; keep its entitlements.
+    command = ["/usr/bin/codesign", "--force", "--sign", identity]
+    if identity == "-":
+        command += ["--timestamp=none"]
+    else:
+        command += ["--options", "runtime", "--timestamp"]
+    if entitlements:
+        command += ["--entitlements", str(entitlements)]
+    else:
+        command += ["--preserve-metadata=entitlements"]
+    return command + [str(app)]
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out",type=Path,default=ROOT / "build")
@@ -23,6 +45,8 @@ def main():
     parser.add_argument("--version")
     parser.add_argument("--name")
     parser.add_argument("--identifier")
+    parser.add_argument("--signing-identity",help="Override macos.signingIdentity for both MyGo and the final bundle seal")
+    parser.add_argument("--offline-candidate",action="store_true",help="Do not replace the retained runtime package pointer; never launches the App")
     parser.add_argument("--automation",action="store_true")
     parser.add_argument("--skip-dmg",action="store_true",help="Build only the App for focused native verification")
     args=parser.parse_args()
@@ -35,7 +59,10 @@ def main():
     if args.version:config["version"]=args.version
     if args.name:config["name"]=args.name
     if args.identifier:config["identifier"]=args.identifier
-    config["macos"]["signingIdentity"]="-"
+    identity=signing_identity(config,args.signing_identity)
+    config.setdefault("macos",{})["signingIdentity"]=identity
+    if config["macos"].get("entitlements"):
+        config["macos"]["entitlements"]=str((ROOT / config["macos"]["entitlements"]).resolve())
     cfg_root=ROOT / ".cache/client-bundles"
     cfg_root.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="source-",dir=cfg_root) as name:
@@ -81,7 +108,7 @@ def main():
         if variables:plist["EnvironmentVariables"]=variables
         (agents / service_plist).write_bytes(plistlib.dumps(plist))
         run(["/usr/bin/plutil","-lint",str(agents / service_plist)])
-        run(["/usr/bin/codesign","--force","--sign","-","--timestamp=none",str(app)])
+        run(seal_command(app,identity,config["macos"].get("entitlements")))
         run(["/usr/bin/codesign","--verify","--deep","--strict",str(app)])
         dmg=stage / (config.get("slug","memlane")+"-"+config["version"]+"-arm64.dmg")
         image=source / "image";image.mkdir()
@@ -95,10 +122,12 @@ def main():
             lines=[line for line in lines if line.split("  ",1)[-1]!=relative]
             lines.append(hashlib.sha256(dmg.read_bytes()).hexdigest()+"  "+relative)
             sums.write_text("\n".join(lines)+"\n")
-        retention = ROOT / "build/disk-cleanup/retained-package.txt"
-        retention.parent.mkdir(exist_ok=True)
-        retention.write_text(str(args.out.resolve())+"\n")
+        if not args.offline_candidate:
+            retention = ROOT / "build/disk-cleanup/retained-package.txt"
+            retention.parent.mkdir(exist_ok=True)
+            retention.write_text(str(args.out.resolve())+"\n")
         print(json.dumps({"app":str(app),"dmg":None if args.skip_dmg else str(dmg),"service_plist":service_plist,
+                          "signing_identity":identity,"offline_candidate":args.offline_candidate,
                           "runtime_model_included":False,"developer_id_notarized":False},indent=2))
 
 

@@ -22,7 +22,7 @@ import (
 func runCodexConnectionProtocol(ctx context.Context, d Discovery, i Installation, o RunOptions) (out Execution, resultErr error) {
 	out = Execution{Agent: "codex", Version: d.Version, Events: map[string]int{}, Calls: []ToolCall{}}
 	c := i.Connection
-	if c.Agent != "codex" || d.Agent != "codex" || d.Path != i.Options.AgentPath || !i.Options.ComputerLevel || c.AutoProject || c.PendingProject != "" || c.TrustedWorkspace != "" || d.Version != i.AgentVersion {
+	if c.Agent != "codex" || d.Agent != "codex" || d.Path != i.Options.AgentPath || !i.Options.ComputerLevel || c.AutoProject || c.PendingProject != "" || c.TrustedWorkspace != "" {
 		return out, errors.New("current computer-level Codex installation required")
 	}
 	if err := ComputerConnectionError(d); err != nil {

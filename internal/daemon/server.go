@@ -218,6 +218,9 @@ func Run(ctx context.Context, config Config) error {
 	go func() { defer close(schedulesDone); s.runSchedules(ctx) }()
 	codeDone := make(chan struct{})
 	go func() { defer close(codeDone); s.runCode(ctx) }()
+	captureDone := make(chan struct{})
+	go func() { defer close(captureDone); s.runCaptureDeliveries(ctx) }()
+	defer func() { cancel(); <-captureDone }()
 	for {
 		conn, e := listener.Accept()
 		if e != nil {
@@ -449,6 +452,10 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 	}
 	svc := memory.Service{Store: s.store, Engine: selected}
 	switch r.Op {
+	case "capture_route_confirm":
+		return s.confirmCaptureRoute(operation, r.CaptureRouteConfirmation, r.UserConfirmed)
+	case "capture_deliver":
+		return s.deliverCapturedRaw(operation, r.CaptureDeliveryQuery)
 	case "deletion_impact":
 		return s.deletionImpact(operation, records.DeletionImpactQuery{Memory: r.Memory, Dataset: r.Scope, ExpectedRevision: r.ExpectedRevision, Datasets: r.Datasets})
 	case "project_preference_decisions":

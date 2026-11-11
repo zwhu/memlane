@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"github.com/zwhu/memlane/internal/agentbridge"
+	"github.com/zwhu/memlane/internal/agents"
 	"github.com/zwhu/memlane/internal/records"
 )
 
@@ -15,6 +16,14 @@ func (s *Server) deliveryAssignmentPreview(ctx context.Context, q *records.Deliv
 		return records.DeliveryAssignmentPreview{}, err
 	}
 	out, err := s.store.DeliveryAssignmentPreview(ctx, source, q.Project)
+	if _, captured := records.ReadCaptureOrigin(source.Review.Arguments); err == nil && captured && out.Assignment == nil {
+		proofErr := agents.WithCodexCaptureAuthorization(ctx, s.captureClientRoot(), source.Review.Item.ConnectionID, func(i agents.Installation) error {
+			return agents.ValidateCodexCaptureSource(s.captureClientRoot(), i, source.Review.Arguments)
+		})
+		if proofErr != nil {
+			out.CanConfirm, out.Code = false, "capture_session_unverified"
+		}
+	}
 	if err == nil && out.Assignment != nil {
 		out.Assignment.SpoolAckPending = source.Review.Item.Assignment == nil || source.Review.Item.Assignment.State != "saved"
 	}

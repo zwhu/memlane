@@ -83,13 +83,13 @@ func TestCodexComputerInstallationIsIncrementalAndScopeIndependent(t *testing.T)
 	}
 }
 
-func TestComputerConnectionVersionBoundary(t *testing.T) {
-	for _, version := range []string{"codex-cli 0.167.0", "codex-cli 0.167.0-alpha.3.2"} {
+func TestComputerConnectionUsesCapabilitiesRatherThanVersion(t *testing.T) {
+	for _, version := range []string{"codex-cli 0.167.0", "codex-cli 0.167.0-alpha.3.2", "codex-cli 0.167.1", "codex-cli 9.0.0", ""} {
 		if err := ComputerConnectionError(Discovery{Agent: "codex", Version: version}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, d := range []Discovery{{Agent: "codex", Version: "codex-cli 0.168.0"}, {Agent: "codex", Version: "codex-cli 0.167.0", CapabilityError: "fixture unsupported"}, {Agent: "traex"}} {
+	for _, d := range []Discovery{{Agent: "codex", Error: "executable missing"}, {Agent: "codex", Version: "codex-cli 0.167.0", CapabilityError: "fixture unsupported"}, {Agent: "traex"}} {
 		if ComputerConnectionError(d) == nil {
 			t.Fatal("unverified capability accepted", d)
 		}

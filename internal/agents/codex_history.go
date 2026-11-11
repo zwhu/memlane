@@ -32,11 +32,12 @@ var ErrCodexHistoryEmpty = errors.New("bound Codex has no session directory")
 var ErrCodexHistoryChanged = errors.New("selected history changed; select its current version")
 
 type codexHistoryMeta struct {
-	Roots   []string        `json:"runtime_workspace_roots"`
-	ID      string          `json:"id"`
-	Cwd     string          `json:"cwd"`
-	Version string          `json:"cli_version"`
-	Source  json.RawMessage `json:"source"`
+	Originator string          `json:"originator"`
+	Roots      []string        `json:"runtime_workspace_roots"`
+	ID         string          `json:"id"`
+	Cwd        string          `json:"cwd"`
+	Version    string          `json:"cli_version"`
+	Source     json.RawMessage `json:"source"`
 }
 type codexHistoryRow struct {
 	Type      string          `json:"type"`
@@ -336,8 +337,8 @@ func (r *CodexProjectHistory) read(ctx context.Context, path, id string) (record
 		}
 	}
 	var source string
-	if json.Unmarshal(meta.Source, &source) != nil || source != "cli" && source != "exec" && source != "vscode" && source != "appServer" || meta.Version != "0.167.0-alpha.3.2" {
-		return out, "unsupported", errors.New("session source or CLI version not adapted")
+	if json.Unmarshal(meta.Source, &source) != nil || source != "cli" && source != "exec" && source != "vscode" && source != "appServer" {
+		return out, "unsupported", errors.New("session source not adapted")
 	}
 	if _, err = f.Seek(0, 0); err != nil {
 		return out, "unavailable", err

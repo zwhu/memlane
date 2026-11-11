@@ -23,6 +23,8 @@ type Config struct {
 }
 
 type Request struct {
+	CaptureRouteConfirmation       *records.CaptureRouteConfirmation       `json:"capture_route_confirmation,omitempty"`
+	CaptureDeliveryQuery           *records.CaptureDeliveryQuery           `json:"capture_delivery_query,omitempty"`
 	DeliveryAssignmentPreviewQuery *records.DeliveryAssignmentPreviewQuery `json:"delivery_assignment_preview_query,omitempty"`
 	DeliveryAssignmentIntent       *records.DeliveryAssignmentIntent       `json:"delivery_assignment_intent,omitempty"`
 

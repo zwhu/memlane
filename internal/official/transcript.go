@@ -75,8 +75,8 @@ func (c *Controller) Transcript(project, session, workspace string) (string, rec
 				ID, Cwd, Source string
 				CLIVersion      string `json:"cli_version"`
 			}
-			if json.Unmarshal(row.Payload, &meta) != nil || meta.ID != id.String() || meta.Cwd != workspace || meta.Source != "exec" || meta.CLIVersion != "0.167.0-alpha.3.2" {
-				return "", original, errors.New("original session identity or version differs")
+			if json.Unmarshal(row.Payload, &meta) != nil || meta.ID != id.String() || meta.Cwd != workspace || meta.Source != "exec" {
+				return "", original, errors.New("original session identity differs")
 			}
 			original.Session, original.Workspace, original.CLIVersion, original.CapturedAt = session, workspace, meta.CLIVersion, row.Timestamp
 			body.WriteString("Codex 原始会话 · " + session + "\n项目工作区：" + workspace + "\nCLI：" + meta.CLIVersion + "\n\n")

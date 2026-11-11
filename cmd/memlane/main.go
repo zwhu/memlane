@@ -19,6 +19,9 @@ import (
 )
 
 func run() int {
+	if len(os.Args) > 1 && os.Args[1] == "capture-codex" {
+		return agents.RunCodexCaptureCLI(os.Args[2:])
+	}
 	if len(os.Args) > 1 && os.Args[1] == "--proposal-guard" {
 		return agents.RunProposalGuard(os.Args[2:])
 	}
@@ -52,9 +55,9 @@ func run() int {
 	flags.StringVar(&c.ConnectionID, "connection", "", "registered connection ID")
 	flags.Int64Var(&c.Generation, "generation", 0, "configuration generation")
 	flags.StringVar(&c.Workspace, "workspace", "", "explicit trusted workspace; process cwd is never used")
-	flags.StringVar(&c.HostWorkspace, "host-workspace", "", "version-pinned local stdio host context")
-	flags.StringVar(&c.HostExecutable, "host-executable", "", "explicit version-pinned Codex executable")
-	flags.StringVar(&c.HostVersion, "host-version", "", "verified Codex stdio version")
+	flags.StringVar(&c.HostWorkspace, "host-workspace", "", "local stdio host context")
+	flags.StringVar(&c.HostExecutable, "host-executable", "", "explicit installed Codex executable")
+	flags.StringVar(&c.HostVersion, "host-version", "", "observed Codex version for diagnostics")
 	flags.StringVar(&c.ToolMode, "tool-mode", os.Getenv("MEMLANE_TOOL_MODE"), "optional initialization tool boundary")
 	flags.StringVar(&c.CallID, "call-id", "", "trusted Agent tool call ID")
 	flags.StringVar(&c.Channel, "usage-channel", os.Getenv("MEMLANE_USAGE_CHANNEL"), "daily or verification observations")

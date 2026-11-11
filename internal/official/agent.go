@@ -133,9 +133,6 @@ func (c *Controller) PrepareAgent(ctx context.Context, d AgentScope) (AgentScope
 		return d, err
 	}
 	d.Version = strings.TrimSpace(string(version))
-	if !strings.Contains(d.Version, "0.167.0-alpha.3.2") {
-		return d, errors.New("当前官方插件路径仅实际核验 Codex 0.167.0-alpha.3.2；不会升级 Agent")
-	}
 	python, err := exec.CommandContext(ctx, "/usr/bin/python3", "-c", "import sys; assert sys.version_info >= (3, 9); print(sys.version.split()[0])").Output()
 	if err != nil || len(python) == 0 {
 		return d, errors.New("官方 hook 需要可用 Python 3.9 或以上；当前本机依赖未验证")

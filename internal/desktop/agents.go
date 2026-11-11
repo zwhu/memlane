@@ -15,6 +15,8 @@ import (
 )
 
 type AgentUI struct {
+	CaptureStatus                                                   map[string]*agents.CodexCaptureStatus
+	CaptureErrors                                                   map[string]string
 	Batch                                                           AgentBatchUI
 	Sequence                                                        uint64
 	Workspace                                                       string
@@ -90,12 +92,22 @@ func (a *App) refreshAgents(discover bool) {
 		}
 		connections, err := client.Connections(ctx)
 		installs := map[string]agents.Installation{}
+		captureStatus := map[string]*agents.CodexCaptureStatus{}
+		captureErrors := map[string]string{}
 		installErrors := map[string]string{}
 		ideStates := map[string]string{}
 		officialConnections := map[string]bool{}
 		for _, c := range connections {
 			if i, e := agents.LoadInstallation(root, c.ID); e == nil {
 				installs[c.ID] = i
+				if c.Agent == "codex" && i.Options.ComputerLevel {
+					status, e := agents.ReadCodexCaptureStatus(root, c.ID)
+					if e != nil {
+						captureErrors[c.ID] = "采集回执暂时无法核对；不会据此显示采集中。"
+					} else {
+						captureStatus[c.ID] = status
+					}
+				}
 				if e = agents.CheckInstallation(i); e != nil {
 					installErrors[c.ID] = e.Error()
 				} else if c.Agent == "trae" && c.Enabled && i.Connection.Generation == c.Generation && i.IDEChallenge != nil && i.IDEReceipt == nil {
@@ -145,6 +157,8 @@ func (a *App) refreshAgents(discover bool) {
 			if err == nil {
 				s.Connections = connections
 				s.Installs = installs
+				s.CaptureStatus = captureStatus
+				s.CaptureErrors = captureErrors
 				s.InstallErrors = installErrors
 				s.IDEStates = ideStates
 				s.OfficialConnections = officialConnections
@@ -304,8 +318,8 @@ func (a *App) agentStatus(d agents.Discovery, c *records.Connection) (string, st
 	if message := a.agents.InstallErrors[c.ID]; message != "" {
 		return "异常", message
 	}
-	if c.Agent == "codex" && i.Options.ComputerLevel && (d.Version != i.AgentVersion || agents.ComputerConnectionError(d) != nil) {
-		return "待适配", "Codex 安装版本已变化，请重新检查并连接；原协议证明不能复用。"
+	if c.Agent == "codex" && i.Options.ComputerLevel && agents.ComputerConnectionError(d) != nil {
+		return "待适配", "Codex 所需连接能力暂不可用，请重新检测并验证连接。"
 	}
 	if i.Connection.Generation != c.Generation {
 		return "待重载", "范围已变更，请应用配置并重载 Agent。"
@@ -906,7 +920,7 @@ func (a *App) settingsProtocolVerificationReason(d agents.Discovery, conn *recor
 		if !installation.Options.ComputerLevel {
 			return "这是原项目级连接，不能将其标为电脑级连接；原配置保留。"
 		}
-		if a.computerVerificationNeedsProject(conn) {
+		if a.computerVerificationNeedsProject(conn) && (a.agents.Workspace == "" || !connectionAllows(*conn, a.agents.Project)) {
 			return "此连接的验证需要项目上下文，当前页面暂不能单独验证；原配置与授权保留，此处不会调用模型。"
 		}
 	default:
@@ -932,6 +946,9 @@ func (a *App) agentSettingsConnectionDetail(c *ui.Context) {
 			ui.Text(c, a.agentConnectionRecordState(*conn)).FontSize(design.Small).TextColor(design.Muted)
 		})
 		ui.Text(c, "连接配置与项目访问分别管理。访问授权请前往对应项目设置；连接验证不代表模型或项目读写能力已通过。").FontSize(design.Small).TextColor(design.Muted).LineHeight(1.6)
+		if conn.Agent == "codex" {
+			a.codexCaptureSettings(c, *conn)
+		}
 		if d.Version != "" {
 			meta(c, "版本", d.Version)
 		}

@@ -189,7 +189,7 @@ func Probe(ctx context.Context, agent, path string) Discovery {
 		return out
 	}
 	version, err := command("--version")
-	if err != nil {
+	if err != nil && agent != "codex" {
 		out.Error = "无法读取 Agent 版本"
 		return out
 	}

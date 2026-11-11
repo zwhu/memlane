@@ -146,11 +146,22 @@ func (a *App) machineConnectionEligible(d agents.Discovery) bool {
 		return false
 	}
 	for _, c := range a.agents.Connections {
-		if c.Agent == d.Agent && c.Enabled {
+		if a.matchesMachineConnection(c, d) {
 			return false
 		}
 	}
 	return true
+}
+
+func (a *App) matchesMachineConnection(c records.Connection, d agents.Discovery) bool {
+	if c.Agent != d.Agent || !c.Enabled {
+		return false
+	}
+	if c.Agent != "codex" {
+		return true
+	}
+	i, ok := a.agents.Installs[c.ID]
+	return ok && i.Options.ComputerLevel && i.Options.CodexDirectory == a.machineConnectionDirectory("codex")
 }
 
 func (a *App) machineConnectionDirectory(agent string) string {

@@ -19,6 +19,38 @@ Go 固定 `1.27.3`，MyGo 固定 `v0.7.4`，依赖校验见 `go.sum`。工具链
 GOPROXY=https://goproxy.cn,direct sh scripts/go.sh mod download
 ```
 
+日常 Native/业务开发使用前台 dev 流程，无需完整打包：
+
+```sh
+python3 scripts/dev.py
+```
+
+入口增量编译 daemon/CLI，在 `.local/dev/client/data` 使用独立开发库，前台启动 daemon，通过真实私有 IPC 核对可用后启动 MyGo dev。GUI 源码由 MyGo 监控并重编译/重载；daemon/CLI 变更后 Ctrl+C 再运行此命令，复用 Go 编译缓存。Ctrl+C 收尾本入口拥有的进程，开发数据保留。Codex/pi 配置分别指向 `.local/dev/codex` 与 `.local/dev/pi`，不会因开发入口而改写日常 Agent 配置。
+
+GUI 以 `reuse_running_service` 连接该前台后台，不管理系统服务；不生成 DMG、不注册/替换/重启真实 helper，不复制完整引擎或模型。MyGo dev 自身生成的轻量 Native 调试容器由框架负责，不走完整客户端封包流程。新开发库尚未配置模型与索引组件时，只能调试对应已准备的能力，模型处理仍需显式配置。
+
+此入口默认直接进入日常页面，跳过依赖已安装包的首启组件准备，不把开发库写成初始化已完成。用于初始化/组件安装的验收仍按对应运行配置单独执行；空开发环境中显示索引未准备或异常不代表已具备索引能力。
+
+仅验证编译、前台 daemon、真实 health IPC 和退出收尾（不开窗口）：
+
+```sh
+python3 scripts/dev.py --check
+```
+
+需要验证当前电脑日常 Agent 接入时使用 `python3 scripts/dev.py --daily-agents`。该选项保留当前 shell 的 `CODEX_HOME` / `PI_CODING_AGENT_DIR`（未设置时走 Agent 默认目录），仅改变开发窗口的发现位置，不自动安装 MCP/hook 或授予采集权限。开发记忆库仍独立；实际连接/采集按 Native 明确动作执行，并保留增量安装与备份。
+
+已有完整安装中的 Rust worker、模型和运行库可只读复用，无需重新下载或打包：
+
+```sh
+python3 scripts/dev.py --daily-agents --worker-config /绝对路径/已有客户端/service.json
+```
+
+仅复用 worker 的 Executable/ModelDir/Library 及版本/网络约束；来源配置中的 DataDir 不会被采用，开发索引固定在 `.local/dev/client/data/index`。显式提供 worker 后，入口等待 health.state=ready 才打开 GUI。组件来源仍需保留，不能因开发库独立就删除来源运行包或模型目录。dev 入口用文件锁限制单一拥有者，并在退出时向自己启动的进程组收尾，不停止其他 App 的服务。
+
+已显式准备并验证过 worker 后，开发入口会复用自身 `.local/dev/service.json` 的组件路径，索引数据仍固定在开发库。后续直接运行 `python3 scripts/dev.py --daily-agents`；2026-11-12 已实际重开验证索引 ready、知识1及原始记录8保留。组件来源路径仍需保留，不能把引用文件当作可清理缓存。
+
+完整包只用于安装、签名、helper 生命周期、更新及最终交付验收。开发前台链路通过不能解除已停止的真实 helper 问题。
+
 生成 `.app` 与 DMG：
 
 ```sh
@@ -26,6 +58,14 @@ python3 scripts/build-client.py --out build/p0-final
 ```
 
 完整输出位于 `build/p0-final/darwin-arm64/`。原始 `sh scripts/go.sh tool mygo build -skip-notarize` 仍可检查框架构建，但不会完成 helper/LaunchAgent 后处理，P0 主包使用上面的 builder。当前使用 ad-hoc 签名，仅用于本机开发和体积验证，尚未完成 Developer ID 签名、公证或正式分发。主包不附带 Cognee、Python、Rust 编译器、模型或开发缓存。
+
+离线准备候选包而不更改当前运行包保留指针：
+
+```sh
+python3 scripts/build-client.py --out .local/candidates/codex-daily-20261111 --offline-candidate --skip-dmg
+```
+
+候选目录放在 `.local/candidates/`，避免被 `build/` 历史载荷清理误作可删除运行包。该命令只构建与核验签名，不启动 App 或注册 helper；候选包不等于可切换的回退基线。构建默认遵循 `mygo.json` 中的 `macos.signingIdentity`，可用 `--signing-identity` 显式覆盖；MyGo 内嵌组件及最终封包使用同一身份，封包保留 entitlements。非 ad-hoc 身份保持 hardened runtime 和时间戳；没有对应签名材料则构建失败，不自动降级。builder 仍跳过公证，任何签名成功均不证明已停止的 helper 更新问题得到解决。
 
 每次加入依赖后重新测量主包；输出不把尚未测量的引擎与模型记为 0：
 

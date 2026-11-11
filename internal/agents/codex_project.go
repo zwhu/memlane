@@ -64,8 +64,8 @@ func ResolveCodexProject(ctx context.Context, installation Installation, workspa
 		return plan, err
 	}
 	probe := Probe(ctx, "codex", installation.Options.AgentPath)
-	if probe.ConnectionError() != nil || probe.Version != "codex-cli 0.167.0-alpha.3.2" || installation.AgentVersion != probe.Version {
-		return plan, errors.New("bound Codex version changed or project protocol not adapted")
+	if probe.ConnectionError() != nil {
+		return plan, errors.New("bound Codex connection capabilities unavailable")
 	}
 	if !filepath.IsAbs(workspace) {
 		return plan, errors.New("absolute authorized repository required")

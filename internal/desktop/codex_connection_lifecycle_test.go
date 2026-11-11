@@ -11,13 +11,13 @@ import (
 )
 
 func TestCodexComputerConnectionStatusUsesOnlyCurrentProtocolEvidence(t *testing.T) {
-	for _, version := range []string{"codex-cli 0.167.0", "codex-cli 0.167.0-alpha.3.2"} {
+	for _, version := range []string{"codex-cli 0.167.0", "codex-cli 0.167.0-alpha.3.2", "codex-cli 9.0.0"} {
 		t.Run(version, func(t *testing.T) {
 			a := New("test", nil)
 			a.serviceState = "ready"
 			c := records.Connection{ID: "codex-computer", Agent: "codex", Enabled: true, Generation: 1}
 			d := agents.Discovery{Agent: "codex", Path: "/synthetic/codex", Version: version}
-			i := agents.Installation{Connection: c, AgentVersion: version, Options: agents.InstallOptions{AgentPath: d.Path, ComputerLevel: true}, VerifiedGeneration: 1, VerifiedAt: "old project receipt"}
+			i := agents.Installation{Connection: c, AgentVersion: "codex-cli 0.167.0", Options: agents.InstallOptions{AgentPath: d.Path, ComputerLevel: true}, VerifiedGeneration: 1, VerifiedAt: "old project receipt"}
 			a.agents.Installs = map[string]agents.Installation{c.ID: i}
 			if state, _ := a.agentStatus(d, &c); state != "待验证" {
 				t.Fatal("old project receipt implied computer connection", state)

@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/zwhu/memlane/internal/agentbridge"
 	"github.com/zwhu/memlane/internal/records"
 )
 
@@ -18,6 +17,9 @@ type DeliveryAssignmentUI struct {
 	ListScroll                                        ui.ScrollState
 }
 type DeliveryAssignmentPanel struct {
+	CaptureName                                         string
+	CaptureRoute                                        *records.CaptureRoute
+	CaptureReceipt                                      *records.CaptureDeliveryReceipt
 	Review                                              *records.AgentDeliveryReview
 	KnownRejected, AckPending                           bool
 	EntryID, Root, SelectedProject, Choice, Error, Info string
@@ -84,7 +86,7 @@ func (a *App) refreshDeliveryAssignments() {
 	seq := s.Sequence
 	root, life, dispatch, epoch := a.library.Root, a.libraryContext, a.dispatch, a.libraryEpoch
 	go func() {
-		page, err := agentbridge.ListDeliveries(root)
+		page, err := readAgentDeliveryPage(life, root)
 		dispatch(func() {
 			if life.Err() != nil || a.libraryContext != life || a.library.Root != root || a.libraryEpoch != epoch || s.Sequence != seq {
 				return
@@ -173,6 +175,10 @@ func assignmentFailure(code string) string {
 		return "该来源对应已登记的项目。可打开匹配项目，或重新核对来源。"
 	case "workspace_changed":
 		return "来源目录已变化，当前仓库归属尚未核验。原提交保留，不能确认。"
+	case "capture_repository_changed":
+		return "当前仓库与采集时的身份不同。原始记录保留，不能自动归入当前项目。"
+	case "capture_repository_unverified":
+		return "采集时未能确认仓库身份。原始记录保留，暂不归入项目或通用知识。"
 	case "project_unregistered":
 		return "来源仓库尚未登记为项目；请先核对并登记实际仓库，再重新读取。"
 	case "workspace_unavailable", "workspace_unverified":
@@ -258,6 +264,10 @@ func (a *App) deliveryAssignmentLayout(c *ui.Context) {
 	})
 }
 func (a *App) deliveryAssignmentBody(c *ui.Context, p *DeliveryAssignmentPanel) {
+	if _, ok := capturedAssignmentOrigin(p); ok {
+		a.capturedAssignmentBody(c, p)
+		return
+	}
 	ui.Scroll(c).Key("assignment-body").TrackScroll(&p.Scroll).Grow(1).MinHeight(0).Padding(24).Gap(16).Children(func() {
 		ui.Text(c, "尚未归属的提交").FontSize(11).TextColor(design.Muted)
 		ui.Text(c, "先核对仓库，再确认项目").FontSize(design.Heading).Bold()
@@ -326,6 +336,10 @@ func (a *App) deliveryAssignmentBody(c *ui.Context, p *DeliveryAssignmentPanel) 
 	})
 }
 func (a *App) deliveryAssignmentFooter(c *ui.Context, p *DeliveryAssignmentPanel) {
+	if _, ok := capturedAssignmentOrigin(p); ok {
+		a.capturedAssignmentFooter(c, p)
+		return
+	}
 	ui.Column(c).Key("assignment-footer").Shrink(0).Padding(12, 22).Gap(8).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
 		ui.Text(c, "本次仅确认归属，不增加 Agent 项目授权。").FontSize(10).LineHeight(1.5)
 		ui.Row(c).Wrap().Gap(10).Children(func() {

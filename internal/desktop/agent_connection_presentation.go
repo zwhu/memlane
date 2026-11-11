@@ -31,7 +31,7 @@ func (a *App) agentConnectionCards(c *ui.Context, setup bool) {
 				detail := ""
 				var connection *records.Connection
 				for i := range s.Connections {
-					if s.Connections[i].Agent == found.Agent && s.Connections[i].Enabled {
+					if a.matchesMachineConnection(s.Connections[i], found) {
 						connection = &s.Connections[i]
 						break
 					}
@@ -107,6 +107,12 @@ func (a *App) agentConnectionCards(c *ui.Context, setup bool) {
 							ui.Text(c, state).FontSize(10).TextColor(design.Muted)
 						})
 						ui.Text(c, version).FontSize(design.Small).TextColor(design.Muted)
+						if found.Agent == "codex" && connection != nil {
+							if i, ok := s.Installs[connection.ID]; ok && i.Options.ComputerLevel {
+								capture, _ := codexCaptureStateLabel(i, s.CaptureStatus[connection.ID], s.CaptureErrors[connection.ID])
+								ui.Text(c, "对话记录："+capture).FontSize(design.Small).TextColor(design.Muted)
+							}
+						}
 						if detail != "" {
 							ui.Text(c, detail).FontSize(design.Small).TextColor(design.Muted).LineHeight(1.5)
 						}

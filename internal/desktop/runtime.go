@@ -24,6 +24,7 @@ import (
 // RuntimeConfig is distributable configuration, containing a public key only.
 // Tests pass its path explicitly; no default memory or Agent config is read.
 type RuntimeConfig struct {
+	ReuseRunningService  bool             `json:"reuse_running_service,omitempty"`
 	Official             *official.Config `json:"official,omitempty"`
 	Root                 string           `json:"root"`
 	ComponentSource      string           `json:"component_source"`
@@ -107,6 +108,14 @@ func (r *RuntimeController) Prepare(ctx context.Context, notify func(RuntimeStat
 }
 
 func (r *RuntimeController) prepare(ctx context.Context, notify func(RuntimeStatus)) error {
+	if r.Config.ReuseRunningService {
+		status, err := r.observeAvailability(ctx)
+		if err != nil {
+			return err
+		}
+		notify(RuntimeStatus{Phase: status.Phase, Message: status.Message, Installed: true, Service: status.Service})
+		return nil
+	}
 	r.mu.Lock()
 	if r.busy {
 		r.mu.Unlock()
@@ -366,6 +375,9 @@ func SaveRuntimeSettings(root string, settings RuntimeSettings) error {
 }
 
 func (r *RuntimeController) StopService(ctx context.Context) error {
+	if r.Config.ReuseRunningService {
+		return errors.New("当前客户端复用已有后台服务，请从服务所属的 App 停止服务")
+	}
 	r.Cancel()
 	r.lifecycle.Lock()
 	defer r.lifecycle.Unlock()
@@ -373,6 +385,9 @@ func (r *RuntimeController) StopService(ctx context.Context) error {
 }
 
 func (r *RuntimeController) stopService(ctx context.Context) error {
+	if r.Config.ReuseRunningService {
+		return errors.New("当前客户端复用已有后台服务，请从服务所属的 App 停止服务")
+	}
 	if r.Official != nil {
 		if err := r.Official.Stop(ctx); err != nil {
 			return err
@@ -444,6 +459,9 @@ func (r *RuntimeController) stopService(ctx context.Context) error {
 }
 
 func (r *RuntimeController) ResumeService(ctx context.Context, notify func(RuntimeStatus)) error {
+	if r.Config.ReuseRunningService {
+		return errors.New("当前客户端复用已有后台服务，请从服务所属的 App 启动服务")
+	}
 	r.lifecycle.Lock()
 	defer r.lifecycle.Unlock()
 	root := filepath.Join(r.Config.Root, "data")
@@ -454,6 +472,9 @@ func (r *RuntimeController) ResumeService(ctx context.Context, notify func(Runti
 }
 
 func (r *RuntimeController) QuiesceForUpdate(ctx context.Context) (bool, error) {
+	if r.Config.ReuseRunningService {
+		return false, errors.New("当前客户端复用已有后台服务，不执行服务更新")
+	}
 	r.Cancel()
 	r.lifecycle.Lock()
 	defer r.lifecycle.Unlock()

@@ -29,7 +29,7 @@ func main() {
 	var quitPending, forceQuit, stopRequested bool
 	var availabilityEpoch atomic.Uint64
 	stopAndQuit := func() { stopRequested = true; mygo.App.Quit() }
-	configPath, action := "", ""
+	configPath, action := os.Getenv("MEMLANE_DEV_RUNTIME_CONFIG"), ""
 	for i, arg := range os.Args {
 		if arg == "--p0-config" && i+1 < len(os.Args) {
 			configPath = os.Args[i+1]
@@ -380,7 +380,7 @@ func main() {
 						win.Update(func() { forceQuit = true; mygo.App.Quit() })
 					}()
 				} else {
-					if !app.ConfigureFirstLaunch(ctx, controller, func(fn func()) {
+					if os.Getenv("MEMLANE_DEV_RUNTIME_CONFIG") != "" || !app.ConfigureFirstLaunch(ctx, controller, func(fn func()) {
 						if ctx.Err() == nil {
 							win.Update(fn)
 						}
@@ -430,11 +430,15 @@ func main() {
 				clientRoot = controller.Config.Root
 			}
 			resources, _ := mygo.App.Path(mygo.PathResources)
+			bridge := filepath.Join(resources, "bin/memlane")
+			if os.Getenv("MEMLANE_DEV_RUNTIME_CONFIG") != "" && os.Getenv("MEMLANE_DEV_BRIDGE") != "" {
+				bridge = os.Getenv("MEMLANE_DEV_BRIDGE")
+			}
 			piDir := os.Getenv("PI_CODING_AGENT_DIR")
 			if piDir == "" {
 				piDir = filepath.Join(home, ".pi/agent")
 			}
-			app.ConfigureAgents(ctx, clientRoot, home, filepath.Join(resources, "bin/memlane"), piDir, func(fn func()) {
+			app.ConfigureAgents(ctx, clientRoot, home, bridge, piDir, func(fn func()) {
 				if ctx.Err() == nil {
 					win.Update(fn)
 				}

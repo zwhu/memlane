@@ -31,6 +31,10 @@ func (r *RuntimeController) ObserveAvailability(ctx context.Context) (RuntimeAva
 		return RuntimeAvailability{}, ErrRuntimeChanging
 	}
 	defer r.lifecycle.Unlock()
+	return r.observeAvailability(ctx)
+}
+
+func (r *RuntimeController) observeAvailability(ctx context.Context) (RuntimeAvailability, error) {
 	if err := ctx.Err(); err != nil {
 		return RuntimeAvailability{}, err
 	}
@@ -42,9 +46,12 @@ func (r *RuntimeController) ObserveAvailability(ctx context.Context) (RuntimeAva
 	if stopped {
 		return RuntimeAvailability{LibraryRoot: root, Phase: "stopped", Message: "记忆服务已主动停止"}, nil
 	}
-	state, err := platform.ServiceStatus(r.Config.ServicePlist)
-	if err != nil {
-		return RuntimeAvailability{}, err
+	var state platform.ServiceState
+	if !r.Config.ReuseRunningService {
+		state, err = platform.ServiceStatus(r.Config.ServicePlist)
+		if err != nil {
+			return RuntimeAvailability{}, err
+		}
 	}
 	result := RuntimeAvailability{LibraryRoot: root, Service: state}
 	switch state {

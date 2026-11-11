@@ -2,16 +2,21 @@ package desktop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/egoist/mygo/ui"
 	"github.com/zwhu/memlane/internal/agentbridge"
+	"github.com/zwhu/memlane/internal/agents"
 	"github.com/zwhu/memlane/internal/records"
+	"github.com/zwhu/memlane/internal/serviceipc"
 	"time"
 )
 
 // Local retained transmissions are not HomeActivities or saved knowledge.
 // This pane deliberately does not alter counts, selected knowledge or sources.
 type AgentDeliveryUI struct {
+	CaptureDiscoveries                                      []records.AgentDeliveryReview
+	CaptureDeferred                                         map[string]bool
 	Technical                                               bool
 	Root, Selected, Error, DetailError, Info                string
 	Sequence, DetailSequence, RetrySequence                 uint64
@@ -57,6 +62,34 @@ func (a *App) bindAgentDelivery() {
 		*s = AgentDeliveryUI{Root: a.library.Root, Sequence: seq}
 	}
 }
+
+// Background capture and GUI reads share the same durable queue lock. A busy
+// lock is transient, not an unreadable queue. Bound waiting to this view's
+// lifetime and one second; preserve every other error without retrying it.
+func readDeliveryQueue[T any](ctx context.Context, read func() (T, error)) (T, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	for {
+		page, err := read()
+		var remote *serviceipc.ServiceError
+		busy := err != nil && (err.Error() == "delivery_busy" || errors.As(err, &remote) && remote.Code == "delivery_busy")
+		if !busy {
+			return page, err
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return page, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func readAgentDeliveryPage(ctx context.Context, root string) (records.AgentDeliveryPage, error) {
+	return readDeliveryQueue(ctx, func() (records.AgentDeliveryPage, error) { return agentbridge.ListDeliveries(root) })
+}
+
 func (a *App) refreshAgentDeliveries() {
 	a.bindAgentDelivery()
 	s := &a.homeActivity.Delivery
@@ -69,9 +102,33 @@ func (a *App) refreshAgentDeliveries() {
 	s.Confirm = false
 	s.Error = ""
 	root, owner, epoch := s.Root, a.libraryContext, a.libraryEpoch
+	captureRoot := a.agents.Root
 	dispatch := a.dispatch
 	go func() {
-		page, err := agentbridge.ListDeliveries(root)
+		page, err := readAgentDeliveryPage(owner, root)
+		var discoveries []records.AgentDeliveryReview
+		if err == nil {
+			for _, item := range page.Items {
+				if len(discoveries) >= 64 {
+					break
+				}
+				if item.HasGrant || item.Status.PersistedConfirmed || item.Assignment != nil || item.Origin != "raw" {
+					continue
+				}
+				review, readErr := readDeliveryQueue(owner, func() (records.AgentDeliveryReview, error) { return agentbridge.ReviewDelivery(root, item.Status.ID) })
+				if readErr == nil {
+					if _, ok := records.ReadCaptureOrigin(review.Arguments); ok {
+						// Advisory display only; the daemon owns the lock and
+						// repeats this proof before routing or saving anything.
+						i, proofErr := agents.LoadInstallation(captureRoot, item.ConnectionID)
+						if proofErr != nil || agents.ValidateCodexCaptureSource(captureRoot, i, review.Arguments) != nil {
+							continue
+						}
+						discoveries = append(discoveries, review)
+					}
+				}
+			}
+		}
 		dispatch(func() {
 			if owner.Err() != nil || a.libraryContext != owner || a.libraryEpoch != epoch || s.Root != root || a.library.Root != root || s.Sequence != seq {
 				return
@@ -83,6 +140,7 @@ func (a *App) refreshAgentDeliveries() {
 				return
 			}
 			s.Items = page.Items
+			s.CaptureDiscoveries = discoveries
 			s.Loaded = true
 			found := false
 			for _, item := range s.Items {
@@ -128,7 +186,7 @@ func (a *App) selectAgentDelivery(id string) {
 		return
 	}
 	go func() {
-		review, err := agentbridge.ReviewDelivery(root, id)
+		review, err := readDeliveryQueue(owner, func() (records.AgentDeliveryReview, error) { return agentbridge.ReviewDelivery(root, id) })
 		dispatch(func() {
 			if owner.Err() != nil || a.libraryContext != owner || a.libraryEpoch != epoch || s.Root != root || a.library.Root != root || s.DetailSequence != seq || s.Selected != id {
 				return
@@ -211,18 +269,22 @@ func (a *App) agentDeliveryEntry(c *ui.Context) {
 	if !s.Loading && !s.Retrying && s.Error == "" && (!s.Loaded || time.Since(s.CheckedAt) > 5*time.Second) {
 		a.refreshAgentDeliveries()
 	}
+	a.captureRepositoryDiscovery(c)
 	ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 		label := "待发送"
 		if s.Loaded && s.Error == "" {
 			n := 0
 			for _, i := range s.Items {
-				if !i.Status.PersistedConfirmed && (i.Assignment==nil || i.Assignment.State!="saved") {
+				if !i.Status.PersistedConfirmed && (i.Assignment == nil || i.Assignment.State != "saved") {
 					n++
 				}
 			}
 			label = fmt.Sprintf("待发送 %d", n)
 		}
 		quietButton(c, label).Key("agent-delivery-entry").OnClick(a.openAgentDelivery)
+		if len(s.CaptureDiscoveries) > 0 {
+			quietButton(c, "待归属原始记录").Key("capture-unassigned-entry").OnClick(func() { a.openDeliveryAssignment("") })
+		}
 		if s.Error != "" {
 			ui.Text(c, "本机暂存状态未知").FontSize(10).TextColor(design.Muted)
 		}
@@ -325,7 +387,9 @@ func (a *App) agentDeliveryFull(c *ui.Context) {
 						ui.Button(c, "重试补发").Key("delivery-review-retry").OnClick(func() { s.Confirm = true })
 					}
 				}
-				if s.Review!=nil&&!s.Retrying {a.deliveryAssignmentEntry(c,s.Review.Item)}
+				if s.Review != nil && !s.Retrying {
+					a.deliveryAssignmentEntry(c, s.Review.Item)
+				}
 				ui.Spacer(c)
 				quietButton(c, "重新读取暂存").Disabled(s.Retrying || s.Selected == "").OnClick(func() { a.selectAgentDelivery(s.Selected) })
 			})

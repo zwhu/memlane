@@ -35,7 +35,7 @@ func (c Config) Validate() error {
 	if c.Workspace != "" && !filepath.IsAbs(c.Workspace) {
 		return errors.New("workspace must be an explicit absolute path")
 	}
-	if c.HostWorkspace != "" && (c.HostWorkspace != "codex-stdio-v1" || c.Workspace != "" || c.ToolMode == "initialization" || !filepath.IsAbs(c.HostExecutable) || c.HostVersion != "codex-cli 0.167.0" && c.HostVersion != "codex-cli 0.167.0-alpha.3.2") {
+	if c.HostWorkspace != "" && (c.HostWorkspace != "codex-stdio-v1" || c.Workspace != "" || c.ToolMode == "initialization" || !filepath.IsAbs(c.HostExecutable)) {
 		return errors.New("invalid Codex host workspace boundary")
 	}
 	if c.HostWorkspace == "" && (c.HostExecutable != "" || c.HostVersion != "") {
@@ -208,10 +208,10 @@ func (c Config) MCP(ctx context.Context) error {
 	options := &mcp.ServerOptions{Instructions: "共享本地项目记忆。先检索，保存使用稳定 operation_id；persisted 才表示已保存，index_state 单列。scope_required 时调用 memory_scopes 并让用户选择；其他项目须经 App 授权。已有知识的修改由用户在 App 确认。"}
 	var workspaceInfo os.FileInfo
 	if c.HostWorkspace != "" {
-		if err := checkCodexHostVersion(ctx, c); err != nil {
+		if err := checkCodexHostExecutable(ctx, c); err != nil {
 			return err
 		}
-		// Codex's version-pinned local stdio launcher owns this cwd. Its
+		// Codex's local stdio launcher owns this cwd. Its
 		// connection identity includes the fallback cwd and changes on thread
 		// cwd updates. Legacy MCP is deliberately private to each chat: never
 		// negotiate 2026 connection sharing or derive scope from request _meta.

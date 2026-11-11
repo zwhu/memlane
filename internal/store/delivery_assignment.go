@@ -179,6 +179,14 @@ func (s *Store) assignmentPreview(ctx context.Context, source records.DeliveryAs
 		out.Code = "workspace_unverified"
 		return out, frozen, nil
 	}
+	if err := checkCapturedRepository(source.Review.Arguments, workspace.identity); err != nil {
+		var failure *records.AccessError
+		if errors.As(err, &failure) {
+			out.Code = failure.Code
+			return out, frozen, nil
+		}
+		return out, frozen, err
+	}
 	var matches []struct {
 		scope    records.Scope
 		snapshot deliveryWorkspaceSnapshot

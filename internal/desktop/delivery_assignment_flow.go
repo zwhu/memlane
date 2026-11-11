@@ -38,10 +38,12 @@ func (a *App) readDeliveryAssignment(id string) {
 	p.Cancel = cancel
 	go func() {
 		defer cancel()
-		pending, err := agentbridge.ReadDeliveryAssignmentIntent(root, id)
+		pending, err := readDeliveryQueue(ctx, func() (*records.DeliveryAssignmentIntent, error) {
+			return agentbridge.ReadDeliveryAssignmentIntent(root, id)
+		})
 		var review records.AgentDeliveryReview
 		if err == nil {
-			review, err = agentbridge.ReviewDelivery(root, id)
+			review, err = readDeliveryQueue(ctx, func() (records.AgentDeliveryReview, error) { return agentbridge.ReviewDelivery(root, id) })
 		}
 		q := records.DeliveryAssignmentPreviewQuery{EntryID: id, ReviewDigest: review.Item.Status.ReviewDigest, Project: selected}
 		if pending != nil {
@@ -50,7 +52,7 @@ func (a *App) readDeliveryAssignment(id string) {
 		}
 		var preview records.DeliveryAssignmentPreview
 		if err == nil {
-			preview, err = client.DeliveryAssignmentPreview(ctx, q)
+			preview, err = readDeliveryQueue(ctx, func() (records.DeliveryAssignmentPreview, error) { return client.DeliveryAssignmentPreview(ctx, q) })
 		}
 		dispatch(func() {
 			if life.Err() != nil || a.libraryContext != life || !a.assignmentOwner(p, epoch) || p.Sequence != sequence {

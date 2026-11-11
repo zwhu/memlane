@@ -3,7 +3,7 @@ package agents
 import "errors"
 
 // ComputerConnectionError is narrower than installation discovery. A discovered
-// MCP CLI can still lack the version-proved, private stdio cwd lifecycle needed
+// MCP CLI can still lack the private stdio cwd lifecycle needed
 // for a computer-wide identity. This does not grant any project or model access.
 func ComputerConnectionError(d Discovery) error {
 	if err := d.ConnectionError(); err != nil {
@@ -16,10 +16,9 @@ func ComputerConnectionError(d Discovery) error {
 		}
 		return errors.New("此 pi 版本尚未通过电脑级连接验证。")
 	case "codex":
-		if d.Version == "codex-cli 0.167.0" || d.Version == "codex-cli 0.167.0-alpha.3.2" {
-			return nil
-		}
-		return errors.New("此 Codex 版本尚未验证私有 MCP 工作目录隔离，请使用受支持版本。")
+		// Discovery checks installed MCP support; connection verification checks
+		// the actual protocol. Version is diagnostic, never an allowlist.
+		return nil
 	default:
 		return errors.New("此 Agent 的电脑级安装尚待适配。")
 	}

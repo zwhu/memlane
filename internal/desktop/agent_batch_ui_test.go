@@ -66,11 +66,34 @@ func TestAgentBatchSupportsVerifiedCodexVersionsWithSeparateConfiguration(t *tes
 			if len(targets) != 2 || targets[0].Directory != a.agents.PiDir || targets[1].Agent != "codex" || targets[1].Directory != codex || !tt.HasText("连接所选 Agent（2）") {
 				t.Fatal("batch lost an adapter or mixed Agent configuration roots", targets)
 			}
-			a.agents.Connections = []records.Connection{{Agent: "codex", Enabled: true}}
+			a.agents.Connections = []records.Connection{{ID: "connected-codex", Agent: "codex", Enabled: true}}
+			a.agents.Installs = map[string]agents.Installation{"connected-codex": {Options: agents.InstallOptions{ComputerLevel: true, CodexDirectory: codex}}}
 			if len(a.selectedConnectionTargets()) != 1 {
 				t.Fatal("already connected Codex remained reinstallable")
 			}
 		})
+	}
+}
+
+func TestUninstalledCodexIdentityDoesNotBlockComputerConnection(t *testing.T) {
+	a := New("test", nil)
+	profile := t.TempDir()
+	t.Setenv("CODEX_HOME", profile)
+	d := agents.Discovery{Agent: "codex", Path: "/synthetic/codex", Version: "codex-cli synthetic"}
+	c := records.Connection{ID: "raw-source-only", Agent: "codex", Enabled: true}
+	a.agents.Connections = []records.Connection{c}
+	if !a.machineConnectionEligible(d) {
+		t.Fatal("raw source identity masqueraded as installed computer connection")
+	}
+	a.agents.Installs = map[string]agents.Installation{c.ID: {Options: agents.InstallOptions{ComputerLevel: true, CodexDirectory: t.TempDir()}}}
+	if !a.machineConnectionEligible(d) {
+		t.Fatal("another profile blocked the daily profile")
+	}
+	i := a.agents.Installs[c.ID]
+	i.Options.CodexDirectory = profile
+	a.agents.Installs[c.ID] = i
+	if a.machineConnectionEligible(d) {
+		t.Fatal("same installed profile offered duplicate installation")
 	}
 }
 
@@ -285,6 +308,16 @@ func TestSettingsProtocolManagementUsesExactSupportedConnection(t *testing.T) {
 		}
 		if agent == "codex" && reason == "" {
 			t.Fatal("Codex project context gate changed")
+		}
+		if agent == "codex" {
+			a.agents.Project, a.agents.Workspace = conn.AllowedScopes[0], "/synthetic/explicit-project"
+			if reason := a.settingsProtocolVerificationReason(d, &conn); reason != "" {
+				t.Fatal("explicit authorized project cannot be verified", reason)
+			}
+			a.agents.Project = "ungranted"
+			if a.settingsProtocolVerificationReason(d, &conn) == "" {
+				t.Fatal("ungranted project accepted")
+			}
 		}
 	}
 }

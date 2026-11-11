@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestHostWorkspaceOnlyAcceptsVersionedPrivateStdioBoundary(t *testing.T) {
+func TestHostWorkspaceOnlyAcceptsPrivateStdioBoundary(t *testing.T) {
 	base := Config{Root: "/generated/service", ConnectionID: "generated", Generation: 1, HostWorkspace: "codex-stdio-v1", HostExecutable: "/generated/codex", HostVersion: "codex-cli 0.167.0"}
 	if err := base.Validate(); err != nil {
 		t.Fatal(err)
@@ -21,7 +21,7 @@ func TestHostWorkspaceOnlyAcceptsVersionedPrivateStdioBoundary(t *testing.T) {
 	}
 }
 
-func TestCodexHostVersionUpgradeFailsBeforeTools(t *testing.T) {
+func TestCodexHostUsesExecutablePathRatherThanVersion(t *testing.T) {
 	root := t.TempDir()
 	program := filepath.Join(root, "codex")
 	write := func(version string) {
@@ -32,16 +32,22 @@ func TestCodexHostVersionUpgradeFailsBeforeTools(t *testing.T) {
 	}
 	c := Config{HostExecutable: program, HostVersion: "codex-cli 0.167.0"}
 	write(c.HostVersion)
-	if err := checkCodexHostVersion(context.Background(), c); err != nil {
+	if err := checkCodexHostExecutable(context.Background(), c); err != nil {
 		t.Fatal(err)
 	}
 	write("codex-cli 0.168.0")
-	if checkCodexHostVersion(context.Background(), c) == nil {
-		t.Fatal("in-place unsupported upgrade accepted")
+	if err := checkCodexHostExecutable(context.Background(), c); err != nil {
+		t.Fatal("in-place upgrade rejected despite available executable", err)
+	}
+	if err := os.Chmod(program, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if checkCodexHostExecutable(context.Background(), c) == nil {
+		t.Fatal("unexecutable path accepted")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if checkCodexHostVersion(ctx, c) == nil {
+	if checkCodexHostExecutable(ctx, c) == nil {
 		t.Fatal("cancelled host probe accepted")
 	}
 }

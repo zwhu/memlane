@@ -40,6 +40,9 @@ type InstallOptions struct {
 }
 
 type Installation struct {
+	CaptureConsent          *CodexCaptureConsent            `json:"-"`
+	CaptureHooks            *CodexCaptureHooks              `json:"-"`
+	CaptureRoutes           []records.CaptureRoute          `json:"-"`
 	IDEChallenge            *records.IDEVerification        `json:"ide_challenge,omitempty"`
 	IDEReceipt              *records.IDEVerificationReceipt `json:"ide_receipt,omitempty"`
 	ToolsetVersion          int                             `json:"toolset_version,omitempty"`
@@ -180,6 +183,9 @@ func LoadInstallation(root, id string) (Installation, error) {
 		return out, err
 	}
 	err = json.Unmarshal(data, &out)
+	if err == nil {
+		err = loadCodexCaptureState(root, id, &out)
+	}
 	return out, err
 }
 
@@ -313,10 +319,36 @@ func Install(ctx context.Context, c records.Connection, o InstallOptions) (resul
 	if priorErr != nil && !os.IsNotExist(priorErr) {
 		return Installation{}, priorErr
 	}
+	if os.IsNotExist(priorErr) {
+		// A disconnected identity cannot resurrect collection from a sidecar
+		// left behind by an older uninstaller. Original events remain intact.
+		if err := os.Remove(codexCaptureStatePath(o.ClientRoot, c.ID)); err != nil && !os.IsNotExist(err) {
+			return Installation{}, err
+		}
+	}
+	if priorErr == nil && prior.CaptureConsent != nil {
+		owner, err := lockCodexCapture(ctx, o.ClientRoot, c.ID)
+		if err != nil {
+			return Installation{}, err
+		}
+		defer owner.Close()
+		prior, priorErr = LoadInstallation(o.ClientRoot, c.ID)
+		if priorErr != nil {
+			return Installation{}, priorErr
+		}
+	}
 	if priorErr == nil && (prior.Connection.Agent != c.Agent || prior.Options.ComputerLevel != o.ComputerLevel || (o.ComputerLevel && !sameConfigDirectory(prior.Options.CodexDirectory, o.CodexDirectory)) || ((projectMCPAgent(c.Agent) || c.Agent == "trae") && prior.Options.Workspace != o.Workspace) || !sameConfigDirectory(prior.Options.PiDirectory, o.PiDirectory)) {
 		return Installation{}, errors.New("disconnect before changing Agent configuration location")
 	}
 	i := Installation{Connection: c, Options: o, ToolsetVersion: 2}
+	// Project/tool scope updates do not silently ask for collection consent
+	// again. Changing the computer identity or config directory is rejected
+	// above; disconnecting removes the installation and its consent.
+	if priorErr == nil && c.Agent == "codex" && o.ComputerLevel {
+		i.CaptureConsent = prior.CaptureConsent
+		i.CaptureHooks = prior.CaptureHooks
+		i.CaptureRoutes = prior.CaptureRoutes
+	}
 	i.AgentVersion = probe.Version
 	i.AgentChannel = probe.Channel
 	var content []byte
@@ -516,6 +548,22 @@ func Uninstall(ctx context.Context, root, id string) error {
 	if err != nil {
 		return err
 	}
+	if i.CaptureConsent != nil {
+		owner, err := lockCodexCapture(ctx, root, id)
+		if err != nil {
+			return err
+		}
+		defer owner.Close()
+		consent := *i.CaptureConsent
+		consent.Enabled = false
+		i.CaptureConsent = &consent
+		if e := saveCodexCaptureState(root, i); e != nil {
+			return e
+		}
+	}
+	if err = removeCodexCaptureHooks(i); err != nil {
+		return err
+	}
 	if err = ctx.Err(); err != nil {
 		return err
 	}
@@ -580,5 +628,11 @@ func Uninstall(ctx context.Context, root, id string) error {
 			}
 		}
 	}
-	return os.Remove(installationPath(root, id))
+	if err = os.Remove(installationPath(root, id)); err != nil {
+		return err
+	}
+	if err = os.Remove(codexCaptureStatePath(root, id)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
