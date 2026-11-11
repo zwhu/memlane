@@ -323,12 +323,13 @@ func (s OrganizationSnapshot) OutputSchema() []byte {
 
 // Receipts describe committed facts independently of task and index state.
 type OrganizationReceipt struct {
-	ID               string                `json:"receipt_id"`
-	Memory           string                `json:"memory"`
-	Revision         int64                 `json:"revision"`
-	AddedTags        []string              `json:"added_tags,omitempty"`
-	EditedExperience *ExperienceReviewEdit `json:"edited_experience,omitempty"`
-	RejectionReason  string                `json:"rejection_reason,omitempty"`
+	MoveScopeAccepted bool                  `json:"move_scope_accepted,omitempty"`
+	ID                string                `json:"receipt_id"`
+	Memory            string                `json:"memory"`
+	Revision          int64                 `json:"revision"`
+	AddedTags         []string              `json:"added_tags,omitempty"`
+	EditedExperience  *ExperienceReviewEdit `json:"edited_experience,omitempty"`
+	RejectionReason   string                `json:"rejection_reason,omitempty"`
 }
 type OrganizationEntry struct {
 	ID      string               `json:"item_id"`
@@ -417,13 +418,14 @@ func (i OrganizationItem) RequiresReview() bool {
 }
 
 type OrganizationReview struct {
-	Task            string                `json:"task"`
-	Item            string                `json:"item_id"`
-	Digest          string                `json:"item_digest"`
-	Receipt         string                `json:"receipt_id"`
-	Confirm         bool                  `json:"confirm"`
-	Edit            *ExperienceReviewEdit `json:"edited_experience,omitempty"`
-	RejectionReason string                `json:"rejection_reason,omitempty"`
+	MoveScopeAccepted bool                  `json:"move_scope_accepted,omitempty"`
+	Task              string                `json:"task"`
+	Item              string                `json:"item_id"`
+	Digest            string                `json:"item_digest"`
+	Receipt           string                `json:"receipt_id"`
+	Confirm           bool                  `json:"confirm"`
+	Edit              *ExperienceReviewEdit `json:"edited_experience,omitempty"`
+	RejectionReason   string                `json:"rejection_reason,omitempty"`
 }
 
 // The original model item and its evidence remain immutable. Only the three

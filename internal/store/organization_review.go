@@ -81,13 +81,21 @@ func (s *Store) ReviewOrganization(ctx context.Context, d records.OrganizationRe
 		if err = json.Unmarshal([]byte(priorReceipt), &saved); err != nil {
 			return t, err
 		}
-		if records.MergeDigest(saved.EditedExperience) != records.MergeDigest(d.Edit) || saved.RejectionReason != d.RejectionReason {
+		if records.MergeDigest(saved.EditedExperience) != records.MergeDigest(d.Edit) || saved.RejectionReason != d.RejectionReason || saved.MoveScopeAccepted != d.MoveScopeAccepted {
 			return t, ErrConflict
 		}
 		return t, nil
 	}
 	if err != sql.ErrNoRows {
 		return t, err
+	}
+	// Previously committed receipts remain replayable; a new move requires the
+	// separate review-time consent, not only the task's destination selection.
+	if d.Confirm && entry.Item.Action == "move" && !d.MoveScopeAccepted {
+		return t, records.MergeError("move_scope_confirmation_required")
+	}
+	if d.MoveScopeAccepted && (!d.Confirm || entry.Item.Action != "move") {
+		return t, records.MergeError("invalid_request")
 	}
 	if entry.State == "applied" || entry.State == "rejected" {
 		return t, ErrConflict
@@ -123,6 +131,7 @@ func (s *Store) ReviewOrganization(ctx context.Context, d records.OrganizationRe
 			return t, err
 		}
 		receipt.EditedExperience = d.Edit
+		receipt.MoveScopeAccepted = d.MoveScopeAccepted
 	}
 	encoded, _ := json.Marshal(receipt)
 	if _, err = tx.ExecContext(ctx, `INSERT INTO `+organizationDecisionTable(entry.Item.Action)+`(id,item,digest,decision,receipt) VALUES(?,?,?,?,?)`, d.Receipt, d.Item, d.Digest, decision, string(encoded)); err != nil {

@@ -256,7 +256,7 @@ func (a *App) cogneeDetail(c *ui.Context) {
 				a.refreshCogneeBindings()
 			})
 		}
-		quietButton(c, "添加本地项目").Key("cognee-add-project").Disabled(s.Busy).OnClick(func() { a.navigate("项目", ""); a.detailMode = "project" })
+		quietButton(c, "添加本地项目").Key("cognee-add-project").Disabled(s.Busy).OnClick(a.beginProjectCreation)
 		a.cogneeAgent(c)
 		ui.Text(c, "服务地址").FontSize(design.Small)
 		ui.TextInput(c.Key("cognee-endpoint"), &s.Endpoint).Placeholder("http://127.0.0.1:端口").Disabled(s.Busy || s.Binding != nil)

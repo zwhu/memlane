@@ -38,18 +38,20 @@ func TestShellWithoutEngine(t *testing.T) {
 	}
 	click("设置")
 	click("返回日常首页")
-	click("全部记忆")
+	if _, exists := tt.Find("全部记忆"); exists {
+		t.Fatal("superseded all-memory sidebar entry returned")
+	}
+	click("通用知识")
+	click("新增记忆")
 	if app.draft != "项目经验：保留 request_id" || !tt.HasText("记忆服务尚未就绪，暂不能保存。") {
 		t.Fatal("navigation lost the draft or implied it was saved")
 	}
 	writeScreenshot(t, tt, "draft.png")
-	if err := tt.Click("保存"); err == nil && tt.HasText("已保存") {
+	if err := tt.Click("保存知识"); err == nil && tt.HasText("已保存") {
 		t.Fatal("disabled save fabricated success")
 	}
 	click("设置")
-	click("更多维护选项")
-	// Settings grows with recovery controls; scroll within its real pane.
-	tt.Scroll(1000, 650, 0, 300)
+	click("窗口与退出")
 	click("放大")
 	if app.zoom <= 1 {
 		t.Fatal("zoom did not change")

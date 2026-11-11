@@ -20,26 +20,26 @@ func (a *App) selectHomeDate(date string) {
 }
 
 func (a *App) homeTotals(c *ui.Context) {
-	ui.Row(c).Key("overview-totals").AlignItems(ui.Start).Padding(0, 0, 18, 0).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).Children(func() {
+	ui.Row(c).Key("overview-totals").AlignItems(ui.Stretch).Border(1, design.Border).Radius(7).Background(ui.Hex("#fafbfd")).Children(func() {
 		for _, metric := range []struct {
 			label, unit string
 			count       *int
 		}{
 			{"累计记忆", "条", a.overviewRaw}, {"知识", "条", a.overviewKnowledge}, {"使用天数", "天", nil},
 		} {
-			ui.Column(c).Key("overview-" + metric.label).Grow(1).MinWidth(0).Gap(8).Children(func() {
+			ui.Column(c).Key("overview-"+metric.label).Grow(1).MinWidth(0).Padding(11, 18).Gap(4).Children(func() {
 				ui.Text(c, metric.label).FontSize(design.Small).TextColor(design.Muted)
 				ui.Row(c).Gap(6).AlignItems(ui.Baseline).Children(func() {
 					value := "—"
 					if metric.count != nil {
 						value = fmt.Sprint(*metric.count)
 					}
-					ui.Text(c, value).FontSize(28).Bold()
+					ui.Text(c, value).FontSize(26).Bold()
 					ui.Text(c, metric.unit).FontSize(10).TextColor(design.Muted)
+					if metric.label == "使用天数" {
+						ui.Text(c, "首次使用日期未知").FontSize(10).TextColor(design.Muted).SingleLine().MinWidth(0)
+					}
 				})
-				if metric.label == "使用天数" {
-					ui.Text(c, "首次使用日期未知").FontSize(10).TextColor(design.Muted)
-				}
 			})
 		}
 	})
@@ -65,10 +65,10 @@ func (a *App) homePlanFooter(c *ui.Context) {
 			label = "服务已停止"
 		}
 		ui.Text(c, label).FontSize(10).TextColor(design.Muted).SingleLine()
-		current := "记忆处理未配置"
-		if value := a.processing.Configuration.Current; value.Active && value.Revision != nil {
-			current = "当前方式：" + processingSpecLabel(value.Revision.Spec)
+		if a.serviceState == "ready" && time.Since(a.processing.CheckedAt) > 5*time.Second {
+			a.refreshProcessing()
 		}
+		current := a.processing.currentLabel()
 		ui.Text(c, "· "+current).FontSize(10).TextColor(design.Muted).Grow(1).MinWidth(0)
 		quietButton(c, "管理计划").Key("schedule-manage").OnClick(func() { a.navigate("整理计划", "") })
 	})

@@ -54,6 +54,12 @@ func (s *Store) BeginProcessingValidation(ctx context.Context, operation, revisi
 	if _, err = tx.ExecContext(ctx, `UPDATE processing_validations SET state='superseded',finished_ms=? WHERE revision=? AND state='validating'`, now.UnixMilli(), revision); err != nil {
 		return out, err
 	}
+	// Explicitly revalidating the selected revision retires its current-use
+	// authority before starting another probe. A later success cannot silently
+	// reactivate it; activation remains a separate, generation-checked action.
+	if _, err = tx.ExecContext(ctx, `UPDATE processing_current SET active=0,generation=generation+1,changed_ms=? WHERE id=1 AND active=1 AND revision=?`, now.UnixMilli(), revision); err != nil {
+		return out, err
+	}
 	out = records.ProcessingValidation{ID: uuid.NewString(), Revision: revision, Attempt: attempt, DependencyDigest: dependency, State: "validating", StartedMS: now.UnixMilli()}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO processing_validations(id,revision,attempt,dependency_digest,state,started_ms) VALUES(?,?,?,?,?,?)`, out.ID, out.Revision, out.Attempt, out.DependencyDigest, out.State, out.StartedMS); err != nil {
 		return out, err
@@ -84,11 +90,28 @@ func (s *Store) RequestProcessingValidationCancel(ctx context.Context, id string
 
 // FinishProcessingValidation is an internal runner boundary, not an IPC
 // action that lets a UI or Agent assert model capability by passing success.
-func (s *Store) FinishProcessingValidation(ctx context.Context, id string, attempt int64, state, receipt, code string, now time.Time) error {
+func (s *Store) FinishProcessingValidation(ctx context.Context, id string, attempt int64, state, receipt, code string, now time.Time, diagnostics ...records.ProcessingValidationDiagnostics) error {
+	return s.finishProcessingValidation(ctx, id, attempt, state, receipt, code, now, nil, nil, diagnostics...)
+}
+
+func (s *Store) FinishHTTPProcessingValidation(ctx context.Context, id string, attempt int64, state, receipt, code string, now time.Time, diagnostic records.ProcessingValidationDiagnostics, http *records.ProcessingHTTPReceipt) error {
+	if state == "succeeded" && (http == nil || !http.RequestSent || !http.NativeSchemaRequested || !http.ResponseComplete || !http.SchemaValid || http.LocalCancelled || http.ReportedModel == "") {
+		return records.MergeError("invalid_request")
+	}
+	return s.finishProcessingValidation(ctx, id, attempt, state, receipt, code, now, http, nil, diagnostic)
+}
+
+func (s *Store) finishProcessingValidation(ctx context.Context, id string, attempt int64, state, receipt, code string, now time.Time, http *records.ProcessingHTTPReceipt, evidence *records.ProcessingCapabilityEvidence, diagnostics ...records.ProcessingValidationDiagnostics) error {
 	if s.Schema < 17 || !processingUUID(id) || attempt < 1 || len(code) > 128 ||
 		(state != "succeeded" && state != "failed" && state != "cancelled") ||
 		(state == "succeeded" && (!processingDigest(receipt) || code != "")) ||
 		(receipt != "" && !processingDigest(receipt)) {
+		return records.MergeError("invalid_request")
+	}
+	if len(diagnostics) > 1 {
+		return records.MergeError("invalid_request")
+	}
+	if len(diagnostics) == 1 && !validProcessingDiagnostics(diagnostics[0]) {
 		return records.MergeError("invalid_request")
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -107,8 +130,43 @@ func (s *Store) FinishProcessingValidation(ctx context.Context, id string, attem
 	if latest == nil || latest.ID != id || latest.Attempt != attempt || latest.State != "validating" || latest.CancelRequested && state != "cancelled" {
 		return ErrConflict
 	}
+	if evidence != nil {
+		if state == "cancelled" || code == "model_timeout" || code == "owner_interrupted" {
+			return records.MergeError("invalid_request")
+		}
+		var rawSpec string
+		var spec records.ProcessingSpec
+		if err = tx.QueryRowContext(ctx, `SELECT spec FROM processing_revisions WHERE id=?`, revision).Scan(&rawSpec); err != nil {
+			return err
+		}
+		if json.Unmarshal([]byte(rawSpec), &spec) != nil || spec.Mode != "agent" || spec.Agent != evidence.Agent {
+			return records.MergeError("invalid_request")
+		}
+		if s.Schema < 31 || !validCapabilityEvidence(*evidence, *latest) {
+			return records.MergeError("invalid_request")
+		}
+		if state == "succeeded" && (!evidence.ResponseComplete || !evidence.StructureValid || !evidence.Reaped || !evidence.GroupGone) {
+			return records.MergeError("invalid_request")
+		}
+		if err = saveCapabilityEvidenceTx(ctx, tx, *evidence); err != nil {
+			return err
+		}
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE processing_validations SET state=?,receipt_digest=?,error_code=?,finished_ms=? WHERE id=?`, state, receipt, code, now.UnixMilli(), id); err != nil {
 		return err
+	}
+	if http != nil {
+		if s.Schema < 27 {
+			return records.MergeError("unsupported_schema")
+		}
+		if err = saveProcessingHTTPTx(ctx, tx, id, *http); err != nil {
+			return err
+		}
+	}
+	if s.Schema >= 26 && state != "succeeded" && len(diagnostics) == 1 {
+		if err = saveProcessingDiagnosticsTx(ctx, tx, id, diagnostics[0]); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

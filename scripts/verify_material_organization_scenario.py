@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import time
 import uuid
+from verify_ipc_lost_reply import LostIPCReply
 
 
 def verify(ui, call, report, capture, resize, out, ipc, driver):
@@ -35,7 +36,8 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
     receipts = {}
     faults = set()
 
-    context_mode = report['scenario'] == 'material-context'
+    recovery_mode = report['scenario'] == 'material-recovery'
+    context_mode = report['scenario'] in ('material-context','material-recovery')
 
     def select_option(key, label):
         fast_press(key)
@@ -143,7 +145,19 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
         capture('02-materials-configured-narrow-system.png')
         footer=ui.node(key='organization-start')['bounds']
         assert footer['y']>=54 and footer['y']+footer['height']<=620,footer
-        fast_press('organization-start')
+        if recovery_mode:
+            # The actual daemon commits Start; only its response is dropped.
+            with LostIPCReply(ipc,'organization_start') as loss:
+                fast_press('organization-start')
+                driver.wait(lambda:loss.dropped.is_set(),timeout=30)
+            receipts['lost_start_transport']=loss.evidence
+            driver.wait(lambda:any(n.get('key')=='organization-start-receipt' for n in ui.nodes()))
+            capture('02b-start-response-lost-system.png')
+            fast_press('organization-start-receipt')
+            driver.wait(lambda:not any(n.get('key')=='organization-project' for n in ui.nodes()))
+            report['actual_unknown_start_read_recovers_same_task']=True
+        else:
+            fast_press('organization-start')
         first=driver.wait(lambda:(rows[0]['task'] if len(rows)==1 else None) if (rows:=tasks()) else None)
         completed=driver.wait(lambda:settled(first),timeout=180)
         assert completed['snapshot']['schema']=='memlane-organization-v1'
@@ -252,7 +266,32 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
             driver.wait(lambda:ui.node(key=reason_key).get('value')==reason)
             bounds=ui.node(key=reason_key)['bounds'];assert 54<=bounds['y'] and bounds['y']+bounds['height']<=620,bounds
             capture('05c-return-keeps-item-reason-and-scroll-system.png')
-            fast_press('organization-reject-'+reject_id)
+            if recovery_mode:
+                ui.req('act',id=ui.node(key=reason_key)['id'],action='focus')
+                ui.req('capture')
+                draft=call('organization_preview_get')
+                # Quit performs the final durability barrier for focus/scroll.
+                before_count=len(tasks())
+                reopen('unsubmitted-material-draft-reopen')
+                driver.wait(lambda:any(n.get('key')==reason_key for n in ui.nodes()))
+                assert ui.node(key=reason_key).get('value')==reason
+                tree=ui.req('tree')
+                assert tree.get('focus')==ui.node(key=reason_key)['id'],tree.get('focus')
+                restored=call('organization_preview_get')
+                assert restored['preview']['candidate']==reject_id and restored['preview']['focus']==reason_key
+                assert restored['preview']['reject_reasons'][reject_id]==reason
+                assert restored['preview']['scroll']>0 and restored['task']['task']==second
+                assert len(tasks())==before_count and task(second)['execution']==suggestions['execution']
+                assert next(e for e in task(second)['entries'] if e['item_id']==reject_id)['state']=='review_pending'
+                capture('05c1-unsubmitted-draft-focus-restored-system.png')
+                receipts['unsubmitted_draft_reopened']=restored
+                report['actual_unsubmitted_reason_focus_scroll_reopen_without_model']=True
+                with LostIPCReply(ipc,'organization_review') as loss:
+                    fast_press('organization-reject-'+reject_id)
+                    driver.wait(lambda:loss.dropped.is_set(),timeout=30)
+                receipts['lost_reject_transport']=loss.evidence
+            else:
+                fast_press('organization-reject-'+reject_id)
             rejected=driver.wait(lambda:(t if next(e for e in t['entries'] if e['item_id']==reject_id)['state']=='rejected' else None) if (t:=task(second)) else None)
             decision=next(e for e in rejected['entries'] if e['item_id']==reject_id)
             assert decision['item']==rejected_entry['item'] and decision['receipt']['rejection_reason']==reason and not decision['receipt'].get('memory')
@@ -264,6 +303,8 @@ def verify(ui, call, report, capture, resize, out, ipc, driver):
             ui.press('整理记录')
             driver.wait(lambda:any(n.get('key')=='organization-task-'+second for n in ui.nodes()))
             fast_press('organization-task-'+second)
+            if any(n.get('key')=='organization-review-return' for n in ui.nodes()):
+                fast_press('organization-review-return')
             driver.wait(lambda:any(n.get('key')=='organization-review-open-'+reject_id for n in ui.nodes()))
             fast_press('organization-review-open-'+reject_id)
             driver.wait(lambda:any(n.get('key')=='organization-rejected-reason' for n in ui.nodes()))

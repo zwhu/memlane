@@ -19,6 +19,7 @@ import (
 )
 
 type PiRPCProcess struct {
+	Diagnostics *CompletionDiagnostics `json:"diagnostics,omitempty"`
 	ProposalProcess
 	FailureStage               string `json:"failure_stage,omitempty"` // bounded runner stage, never paths/output
 	FailureCode                string `json:"failure_code,omitempty"`  // bounded diagnostic, never original error text
@@ -41,6 +42,8 @@ type piRPCRead struct {
 }
 
 type piRPCEvent struct {
+	ToolName     string `json:"toolName"`
+	ToolCallID   string `json:"toolCallId"`
 	Type         string `json:"type"`
 	ID           string `json:"id"`
 	Command      string `json:"command"`
@@ -58,23 +61,57 @@ type piRPCEvent struct {
 	} `json:"data"`
 	Message struct {
 		Role         string `json:"role"`
+		ToolName     string `json:"toolName"`
+		ToolCallID   string `json:"toolCallId"`
 		StopReason   string `json:"stopReason"`
 		ErrorMessage string `json:"errorMessage"`
 		Content      []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
+			Name string `json:"name"`
+			ID   string `json:"id"`
 		} `json:"content"`
 	} `json:"message"`
 }
 
 // One prompt per fresh RPC process. Command acceptance does not release a
 // proposal; terminal assistant output, agent_end and cleanup are all required.
-func runPiRPCProcessOwned(parent context.Context, executable string, args, env []string, dir, prompt, guard string, onStart func(int) error, onEvent func(string), onModel func(string, string) error, schemaDigest string) (out PiRPCProcess, resultErr error) {
+func runPiRPCProcessOwned(parent context.Context, executable string, args, env []string, dir, prompt, guard string, onStart func(int) error, onEvent func(string), onModel func(string, string) error, schemaDigest string) (PiRPCProcess, error) {
+	return runPiRPCProcessWithProject(parent, executable, args, env, dir, prompt, guard, onStart, onEvent, onModel, schemaDigest, nil)
+}
+
+func runPiRPCProcessWithProject(parent context.Context, executable string, args, env []string, dir, prompt, guard string, onStart func(int) error, onEvent func(string), onModel func(string, string) error, schemaDigest string, project *piProjectTools) (out PiRPCProcess, resultErr error) {
+	var toolBoundary piProjectRPCBoundary
+	diagnosticStart := time.Now()
+	messageComplete, agentEnded, settled, started, promptSent, finalState := false, false, false, false, false, false
+	phase, cause, stopReason := "rpc_start", "", ""
+
 	out.Events = map[string]int{}
 	out.Items = map[string]int{}
 	out.ExitCode = -1
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
+	defer func() {
+		if resultErr != nil && cause == "" {
+			switch {
+			case errors.Is(resultErr, context.DeadlineExceeded):
+				cause = "deadline_exceeded"
+			case errors.Is(resultErr, context.Canceled):
+				cause = "cancelled"
+			case !out.Started:
+				cause = "process_start_failed"
+			default:
+				cause = "rpc_protocol_invalid"
+			}
+		}
+		if resultErr == nil {
+			phase = "completed"
+		} else if phase == "rpc_stream" && (messageComplete || agentEnded || settled) {
+			phase = "rpc_tail"
+		}
+		elapsed := time.Since(diagnosticStart).Milliseconds()
+		out.Diagnostics = SafeCompletionDiagnostics(&CompletionDiagnostics{Stage: phase, FailureCode: cause, ElapsedMS: elapsed, RPCMS: elapsed, ParentContext: CompletionContextState(parent.Err()), RPCContext: CompletionContextState(ctx.Err()), Accepted: out.Accepted, MessageComplete: messageComplete, AgentEnded: agentEnded, Settled: settled, FinalState: finalState, AssistantStopReason: stopReason})
+	}()
 	var controlRead, controlWrite *os.File
 	if guard != "" {
 		if !strings.HasPrefix(guard, "/") {
@@ -124,12 +161,18 @@ func runPiRPCProcessOwned(parent context.Context, executable string, args, env [
 		case e := <-waited:
 			if resultErr == nil && e != nil {
 				resultErr = e
+				if cause == "" {
+					phase, cause = "cleanup", "process_exit_failed"
+				}
 			}
 		case <-time.After(time.Second):
 			_ = syscall.Kill(-out.PID, syscall.SIGKILL)
 			e := <-waited
 			if resultErr == nil {
 				resultErr = errors.Join(errors.New("RPC exit timed out"), e)
+				if cause == "" {
+					phase, cause = "cleanup", "exit_timeout"
+				}
 			}
 		}
 		out.Reaped = cmd.ProcessState != nil
@@ -159,11 +202,17 @@ func runPiRPCProcessOwned(parent context.Context, executable string, args, env [
 			out.NativeSchemaRequested = bound == 1
 			if resultErr == nil && (!out.NativeSchemaRequested || responses != 1 || out.NativeSchemaResponseStatus != 200) {
 				resultErr = errors.New("native schema provider receipt missing or repeated")
+				if cause == "" {
+					phase, cause = "rpc_tail", "native_schema_unconfirmed"
+				}
 			}
 		}
 
 		if !out.GroupGone {
 			resultErr = errors.Join(resultErr, errors.New("RPC process group still active"))
+			if cause == "" {
+				phase, cause = "cleanup", "cleanup_failed"
+			}
 		}
 		if resultErr != nil {
 			out.Final = nil
@@ -266,10 +315,25 @@ func runPiRPCProcessOwned(parent context.Context, executable string, args, env [
 	seen := map[string]bool{}
 	queue(stateID, "get_state", nil)
 	var final string
-	messageComplete, agentEnded, settled, started, promptSent, finalState := false, false, false, false, false, false
+	phase = "rpc_setup"
 	var abortDeadline <-chan time.Time
 	ctxDone := ctx.Done()
-	fail := func(e error) (PiRPCProcess, error) { _ = syscall.Kill(-out.PID, syscall.SIGKILL); return out, e }
+	fail := func(e error) (PiRPCProcess, error) {
+		if cause == "" {
+			switch {
+			case errors.Is(e, context.DeadlineExceeded):
+				cause = "deadline_exceeded"
+			case errors.Is(e, context.Canceled):
+				cause = "cancelled"
+			case errors.Is(e, io.EOF):
+				cause = "rpc_eof"
+			default:
+				cause = "rpc_protocol_invalid"
+			}
+		}
+		_ = syscall.Kill(-out.PID, syscall.SIGKILL)
+		return out, e
+	}
 	for {
 		if ctx.Err() != nil && !out.Cancelled {
 			out.Cancelled = true
@@ -295,6 +359,7 @@ func runPiRPCProcessOwned(parent context.Context, executable string, args, env [
 				}
 			}
 			if !json.Valid([]byte(candidate)) || len(final) > 256*1024 {
+				phase, cause = "rpc_json", "rpc_invalid_json"
 				out.FinalFormat = "invalid_json"
 				if strings.HasPrefix(strings.TrimSpace(final), "```") {
 					out.FinalFormat = "markdown_fence"
@@ -303,6 +368,11 @@ func runPiRPCProcessOwned(parent context.Context, executable string, args, env [
 					out.FinalFormat = "too_large"
 				}
 				return fail(errors.New("RPC final structured result invalid: " + out.FinalFormat))
+			}
+			if project != nil {
+				if err := toolBoundary.complete(); err != nil {
+					return fail(err)
+				}
 			}
 			out.Terminal = true
 			out.Final = json.RawMessage(candidate)
@@ -321,9 +391,13 @@ func runPiRPCProcessOwned(parent context.Context, executable string, args, env [
 		case <-abortDeadline:
 			return fail(errors.Join(ctx.Err(), errors.New("RPC abort acknowledgement or terminal missing")))
 		case e := <-writeErrors:
+			phase, cause = "rpc_write", "rpc_write_failed"
 			return fail(fmt.Errorf("RPC input failed: %w", e))
 		case packet := <-events:
 			if packet.Err != nil {
+				if !errors.Is(packet.Err, io.EOF) {
+					phase, cause = "rpc_read", "rpc_read_failed"
+				}
 				return fail(fmt.Errorf("RPC ended before complete result: %w", packet.Err))
 			}
 			event := packet.Event
@@ -371,6 +445,7 @@ func runPiRPCProcessOwned(parent context.Context, executable string, args, env [
 					}
 				case "prompt":
 					out.Accepted = true
+					phase = "rpc_stream"
 				case "abort":
 					if !out.AbortSent {
 						return fail(errors.New("unsolicited RPC abort response"))
@@ -393,14 +468,38 @@ func runPiRPCProcessOwned(parent context.Context, executable string, args, env [
 				}
 				started = true
 			case "message_end":
+				phase = "rpc_stream"
 				if !started || agentEnded {
 					return fail(errors.New("RPC message outside operation"))
 				}
 				if event.Message.Role == "assistant" {
+					stopReason = completionStopReason(event.Message.StopReason)
+					if project != nil && event.Message.StopReason == "toolUse" {
+						if messageComplete {
+							return fail(errors.New("pi project tool after final answer"))
+						}
+						if err := toolBoundary.assistant(event); err != nil {
+							return fail(err)
+						}
+						continue
+					}
+
 					if out.Cancelled && event.Message.StopReason == "aborted" {
 						continue
 					}
+					if project != nil && !out.Cancelled && !project.phaseEnded() {
+						return fail(errors.New("pi project final answer before read barrier"))
+					}
 					if messageComplete || event.Message.StopReason != "stop" {
+						phase, cause = "assistant", "assistant_terminal_invalid"
+						switch event.Message.StopReason {
+						case "length":
+							cause = "assistant_length"
+						case "error":
+							cause = "assistant_error"
+						case "aborted":
+							cause = "assistant_aborted"
+						}
 						return fail(errors.New("RPC assistant failed, truncated or duplicated: " + safeReason(event.Message.ErrorMessage)))
 					}
 					for _, part := range event.Message.Content {
@@ -414,6 +513,10 @@ func runPiRPCProcessOwned(parent context.Context, executable string, args, env [
 					}
 					messageComplete = true
 					out.Items["assistant_message"]++
+				} else if project != nil && event.Message.Role == "toolResult" {
+					if err := toolBoundary.result(event); err != nil {
+						return fail(err)
+					}
 				} else if event.Message.Role != "user" {
 					return fail(errors.New("RPC unexpected message role"))
 				}
@@ -434,6 +537,15 @@ func runPiRPCProcessOwned(parent context.Context, executable string, args, env [
 				if !started || agentEnded {
 					return fail(errors.New("RPC event outside operation"))
 				}
+			case "tool_execution_start", "tool_execution_end":
+				if project == nil || !started || agentEnded {
+					return fail(errors.New("RPC unexpected tool event"))
+				}
+				if err := toolBoundary.event(event); err != nil {
+					return fail(err)
+				}
+			case "extension_error":
+				return fail(errors.New("RPC Extension failed: " + safeReason(event.Error)))
 			default:
 				return fail(errors.New("RPC unexpected event or forbidden tool: " + event.Type))
 			}

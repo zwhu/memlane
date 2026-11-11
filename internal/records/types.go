@@ -51,26 +51,31 @@ type Scope struct {
 	Path string `json:"path,omitempty"`
 }
 type ScopeDraft struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
+	ExpectedRepository string `json:"expected_repository,omitempty"`
+	Name               string `json:"name"`
+	Path               string `json:"path"`
 }
 type ListQuery struct {
-	Text     string   `json:"text,omitempty"`
-	Sort     string   `json:"sort,omitempty"`
-	Datasets []string `json:"datasets,omitempty"`
-	Kind     string   `json:"kind,omitempty"` // knowledge or raw
-	Source   string   `json:"source,omitempty"`
-	Date     string   `json:"date,omitempty"` // activity date, in Timezone
-	Timezone string   `json:"timezone,omitempty"`
-	Cursor   string   `json:"cursor,omitempty"`
-	Limit    int      `json:"limit,omitempty"`
+	ScopeKind      string   `json:"scope_kind,omitempty"`
+	UpdatedSinceMS int64    `json:"updated_since_ms,omitempty"`
+	Text           string   `json:"text,omitempty"`
+	Sort           string   `json:"sort,omitempty"`
+	Datasets       []string `json:"datasets,omitempty"`
+	Kind           string   `json:"kind,omitempty"` // knowledge or raw
+	Source         string   `json:"source,omitempty"`
+	Date           string   `json:"date,omitempty"` // activity date, in Timezone
+	Timezone       string   `json:"timezone,omitempty"`
+	Cursor         string   `json:"cursor,omitempty"`
+	Limit          int      `json:"limit,omitempty"`
 }
 type Page struct {
-	KnowledgeTotal *int      `json:"knowledge_total,omitempty"`
-	RawTotal       *int      `json:"raw_total,omitempty"`
-	Items          []Version `json:"items"`
-	NextCursor     string    `json:"next_cursor,omitempty"`
-	Total          int       `json:"total"`
+	Sources          []string  `json:"sources,omitempty"`
+	SourcesTruncated bool      `json:"sources_truncated,omitempty"`
+	KnowledgeTotal   *int      `json:"knowledge_total,omitempty"`
+	RawTotal         *int      `json:"raw_total,omitempty"`
+	Items            []Version `json:"items"`
+	NextCursor       string    `json:"next_cursor,omitempty"`
+	Total            int       `json:"total"`
 }
 type History struct {
 	Experience *ExperienceInfo `json:"experience,omitempty"`

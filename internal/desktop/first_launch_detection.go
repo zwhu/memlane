@@ -140,6 +140,7 @@ func (a *App) finishStartupDetection() {
 	}
 	s.State.Message = a.runtimeStatus.Message
 	a.loadExperiencePreview()
+	a.loadMaterialPreview()
 	if a.onNavigate != nil {
 		a.onNavigate()
 	}

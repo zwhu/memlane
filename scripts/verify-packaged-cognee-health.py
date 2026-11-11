@@ -5,10 +5,12 @@ import json
 import os
 from pathlib import Path
 import signal
+import secrets
 import subprocess
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 
 
 def group_members(group):
@@ -22,6 +24,7 @@ def main():
     parser.add_argument("--out", type=Path, required=True, help="新的独立诊断根；已存在时拒绝覆盖")
     parser.add_argument("--request-timeout", type=int, default=125)
     parser.add_argument("--component-directory", type=Path, help="本轮新的已打包组件目录，包含 component.json；只读对照")
+    parser.add_argument("--expect-material-submission", action="store_true", help="通过合成账号核对实际新材料/取消路由与能力；不调用模型")
     args = parser.parse_args()
     if not 5 <= args.request_timeout <= 180:
         parser.error("request timeout must be between 5 and 180 seconds")
@@ -38,6 +41,9 @@ def main():
     (out / "synthetic-only.json").write_text(json.dumps({"synthetic_only": True, "no_business_data": True,
         "no_model_inference": True, "compatible_component_files_reused": True}))
     settings = json.loads((previous / "client/official/cognee-config.json").read_text())
+    settings["environment"] = {key: value for key, value in settings["environment"].items()
+        if key in ("EMBEDDING_PROVIDER", "EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS", "EMBEDDING_MAX_TOKENS", "HF_HOME", "HF_HUB_OFFLINE", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "FASTEMBED_CACHE_PATH")}
+    settings["environment"].update(DEFAULT_USER_EMAIL="memlane-packaged-health@example.com", DEFAULT_USER_PASSWORD=secrets.token_urlsafe(32))
     settings["root"] = str(out / "cognee")
     settings.pop("model_bridge", None)
     settings.pop("model_restart_required", None)
@@ -50,6 +56,7 @@ def main():
               "component_version": descriptor["version"], "root": str(out), "llm_invoked": False,
               "request_count": 0, "cleanup_errors": []}
     process = None
+    local_http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     started = time.monotonic()
     with (out / "service.log").open("w") as log:
         try:
@@ -70,7 +77,7 @@ def main():
             report["request_count"] = 1
             request_started = time.monotonic()
             try:
-                with urllib.request.urlopen(state["endpoint"] + "/health", timeout=args.request_timeout) as response:
+                with local_http.open(state["endpoint"] + "/health", timeout=args.request_timeout) as response:
                     status, body = response.status, json.load(response)
             except urllib.error.HTTPError as error:
                 status, body = error.code, json.load(error)
@@ -78,7 +85,32 @@ def main():
                           request_seconds=time.monotonic() - request_started)
             if status == 200 and body.get("status") == "ready" and body.get("health") == "healthy":
                 report["status"] = "passed"
+            if report["status"] == "passed" and args.expect_material_submission:
+                environment = settings["environment"]
+                login = urllib.request.Request(state["endpoint"] + "/api/v1/auth/login",
+                    data=urllib.parse.urlencode({"username": environment["DEFAULT_USER_EMAIL"], "password": environment["DEFAULT_USER_PASSWORD"]}).encode(),
+                    headers={"Content-Type": "application/x-www-form-urlencoded"}, method="POST")
+                report["request_count"] += 1
+                with local_http.open(login, timeout=15) as response:
+                    token = json.load(response)["access_token"]
+                request = urllib.request.Request(state["endpoint"] + "/api/v1/memlane/identity", headers={"Authorization": "Bearer " + token})
+                report["request_count"] += 1
+                with local_http.open(request, timeout=15) as response:
+                    identity = json.load(response)
+                token = ""
+                if identity.get("cognee_version") != "1.6.7" or "material_submission_v1" not in identity.get("capabilities", []):
+                    raise RuntimeError("packaged service lacks the verified material submission capability")
+                report["material_identity"] = {key: identity.get(key) for key in ("instance", "cognee_version", "adapter", "capabilities")}
+                report["request_count"] += 1
+                with local_http.open(state["endpoint"] + "/openapi.json", timeout=15) as response:
+                    paths = json.load(response).get("paths", {})
+                required = ["/api/v1/memlane/material-submission", "/api/v1/memlane/material-submission/cancel"]
+                if any(path not in paths for path in required):
+                    raise RuntimeError("packaged service lacks material submission or cancellation route")
+                report["material_routes"] = required
+                report["material_pipeline_executed"] = False
         except Exception as error:
+            report["status"] = "failed"
             report["failure"] = type(error).__name__ + ": " + str(error)
         finally:
             if process is not None:

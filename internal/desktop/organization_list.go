@@ -50,11 +50,15 @@ func (a *App) clearOrganizationFilters() {
 func (a *App) organizationListControls(c *ui.Context) {
 	s := &a.organization
 	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-		count := "整理记录"
-		if s.TasksLoaded {
+		ui.Text(c, "整理记录").FontSize(11).TextColor(design.Muted).Grow(1)
+		count := "数量未知"
+		if s.TasksLoaded && !s.Loading && !s.SourcesReadFailed {
 			count = fmt.Sprintf("%d 次", s.TasksTotal)
 		}
-		ui.Text(c, count).Key("organization-list-count").FontSize(11).TextColor(design.Muted).Grow(1)
+		ui.Text(c, count).Key("organization-list-count").FontSize(10).TextColor(design.Muted)
+	})
+	ui.Row(c).Gap(8).Wrap().Children(func() {
+		quietButton(c, "开始整理").Key("organization-list-new").Disabled(s.Busy).Grow(1).Justify(ui.Start).OnClick(a.beginOrganization)
 		quietButton(c, "筛选").Key("organization-list-filter").Disabled(s.Busy).OnClick(func() { s.FilterOpen = !s.FilterOpen })
 		quietButton(c, "计划").Key("organization-list-plans").Disabled(s.Busy).OnClick(func() { a.navigate("整理计划", "") })
 	})

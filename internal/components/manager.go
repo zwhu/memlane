@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 type Descriptor struct {
@@ -98,7 +100,7 @@ func (m *Manager) Inspect(ctx context.Context, d Descriptor) (Installed, error) 
 		return Installed{}, err
 	}
 	directory := filepath.Join(m.Root, "components", d.ID, d.Version)
-	metadata, err := verify(directory, d)
+	metadata, err := verify(ctx, directory, d)
 	if err != nil {
 		return Installed{}, err
 	}
@@ -301,14 +303,30 @@ func (m *Manager) validate(d Descriptor) error {
 	return m.validURL(u)
 }
 
-func hashFile(path string) (string, error) {
+func hashFile(path string) (string, error) { return hashFileContext(context.Background(), path) }
+
+type inspectionReader struct {
+	ctx    context.Context
+	source io.Reader
+}
+
+func (r inspectionReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.source.Read(p)
+}
+func hashFileContext(ctx context.Context, path string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
 	checksum := sha256.New()
-	if _, err = io.Copy(checksum, file); err != nil {
+	if _, err = io.Copy(checksum, inspectionReader{ctx: ctx, source: file}); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(checksum.Sum(nil)), nil
@@ -341,7 +359,7 @@ func safeLink(root, name, target string) (string, error) {
 	return path, nil
 }
 
-func verify(directory string, d Descriptor) (Metadata, error) {
+func verify(ctx context.Context, directory string, d Descriptor) (Metadata, error) {
 	var metadata Metadata
 	path := filepath.Join(directory, "component.json")
 	info, err := os.Lstat(path)
@@ -351,8 +369,11 @@ func verify(directory string, d Descriptor) (Metadata, error) {
 	if !info.Mode().IsRegular() || info.Size() > 16*1024*1024 {
 		return metadata, errors.New("invalid component metadata file")
 	}
-	hash, err := hashFile(path)
-	if err != nil || hash != d.ManifestSHA256 {
+	hash, err := hashFileContext(ctx, path)
+	if err != nil {
+		return metadata, err
+	}
+	if hash != d.ManifestSHA256 {
 		return metadata, errors.New("component metadata hash mismatch")
 	}
 	data, err := os.ReadFile(path)
@@ -387,6 +408,9 @@ func verify(directory string, d Descriptor) (Metadata, error) {
 		if e != nil {
 			return e
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			rel, e := filepath.Rel(directory, path)
 			if e != nil {
@@ -412,6 +436,9 @@ func verify(directory string, d Descriptor) (Metadata, error) {
 		return metadata, err
 	}
 	for name := range links {
+		if err := ctx.Err(); err != nil {
+			return metadata, err
+		}
 		resolved, e := filepath.EvalSymlinks(filepath.Join(directory, name))
 		if e != nil {
 			return metadata, e
@@ -423,7 +450,10 @@ func verify(directory string, d Descriptor) (Metadata, error) {
 		allowed[name] = true
 	}
 	for _, asset := range metadata.Files {
-		path, err := safePath(directory, asset.Path)
+		if err := ctx.Err(); err != nil {
+			return metadata, err
+		}
+		_, err := safePath(directory, asset.Path)
 		if err != nil {
 			return metadata, err
 		}
@@ -431,23 +461,46 @@ func verify(directory string, d Descriptor) (Metadata, error) {
 			return metadata, errors.New("duplicate component asset")
 		}
 		allowed[asset.Path] = true
-		info, err := os.Lstat(path)
-		if err != nil {
-			return metadata, err
+	}
+	group, work := errgroup.WithContext(ctx)
+	group.SetLimit(4)
+	for _, asset := range metadata.Files {
+		if work.Err() != nil {
+			break
 		}
-		if !info.Mode().IsRegular() || info.Size() != asset.Bytes {
-			return metadata, errors.New("invalid component asset size or type")
-		}
-		hash, err := hashFile(path)
-		if err != nil {
-			return metadata, err
-		}
-		if hash != asset.SHA256 {
-			return metadata, errors.New("component asset hash mismatch")
-		}
+		group.Go(func() error {
+			if err := work.Err(); err != nil {
+				return err
+			}
+			path := filepath.Join(directory, asset.Path)
+			info, err := os.Lstat(path)
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() || info.Size() != asset.Bytes {
+				return errors.New("invalid component asset size or type")
+			}
+			hash, err := hashFileContext(work, path)
+			if err != nil {
+				return err
+			}
+			if hash != asset.SHA256 {
+				return errors.New("component asset hash mismatch")
+			}
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return metadata, err
+	}
+	if err := ctx.Err(); err != nil {
+		return metadata, err
 	}
 	err = filepath.WalkDir(directory, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if path == directory {
@@ -531,7 +584,7 @@ func (m *Manager) prepare(ctx context.Context, d Descriptor, progress func(Progr
 	}
 	parent := filepath.Join(m.Root, "components", d.ID)
 	destination := filepath.Join(parent, d.Version)
-	if metadata, err := verify(destination, d); err == nil {
+	if metadata, err := verify(ctx, destination, d); err == nil {
 		progress(Progress{ID: d.ID, Phase: "installed", Total: d.Bytes})
 		return Installed{Directory: destination, Metadata: metadata, Reused: true}, nil
 	}
@@ -556,7 +609,7 @@ func (m *Manager) prepare(ctx context.Context, d Descriptor, progress func(Progr
 	if err = unpack(ctx, partial, stage, d.UnpackedBytes); err != nil {
 		return installed, err
 	}
-	metadata, err := verify(stage, d)
+	metadata, err := verify(ctx, stage, d)
 	if err != nil {
 		return installed, err
 	}

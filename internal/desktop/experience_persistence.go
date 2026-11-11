@@ -23,15 +23,16 @@ type previewJob struct {
 // One writer owns generation and serializes snapshots. Only adjacent automatic
 // writes coalesce; request barriers retain their exact frozen payload.
 type experiencePreviewWriter struct {
-	mu         sync.Mutex
-	queue      []previewJob
-	running    bool
-	client     serviceipc.OrganizationClient
-	life       context.Context
-	identity   string
-	generation int64
-	uncertain  *records.ExperiencePreviewWrite
-	save       func(context.Context, records.ExperiencePreviewWrite) (records.ExperiencePreviewState, error)
+	mu              sync.Mutex
+	queue           []previewJob
+	running         bool
+	client          serviceipc.OrganizationClient
+	life            context.Context
+	identity        string
+	generation      int64
+	confirmedDigest string
+	uncertain       *records.ExperiencePreviewWrite
+	save            func(context.Context, records.ExperiencePreviewWrite) (records.ExperiencePreviewState, error)
 }
 
 func (w *experiencePreviewWriter) enqueue(job previewJob) {
@@ -52,6 +53,8 @@ func (w *experiencePreviewWriter) commit(request records.ExperiencePreviewWrite)
 	ctx, stop := context.WithTimeout(w.life, 5*time.Second)
 	defer stop()
 	result, err := w.save(ctx, request)
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if err != nil {
 		w.uncertain = &request
 		var rejected *serviceipc.ServiceError
@@ -61,11 +64,26 @@ func (w *experiencePreviewWriter) commit(request records.ExperiencePreviewWrite)
 		return err
 	}
 	if result.Identity != w.identity || result.Generation != request.Generation+1 {
-		return fmt.Errorf("preview receipt identity or generation changed")
+		w.uncertain = &request
+		return fmt.Errorf("experience preview receipt identity or generation changed")
 	}
 	w.generation = result.Generation
 	w.uncertain = nil
+	w.confirmedDigest = records.MergeDigest(request.Preview)
 	return nil
+}
+
+// Only a verified receipt (or authoritative loaded snapshot) can prove an
+// unchanged draft durable. Enqueued payload digests never grant this proof.
+func (w *experiencePreviewWriter) durableAndIdle(digest string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.identity != "" && digest != "" && digest == w.confirmedDigest && !w.running && len(w.queue) == 0 && w.uncertain == nil
+}
+func (w *experiencePreviewWriter) idle() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return !w.running && len(w.queue) == 0 && w.uncertain == nil
 }
 
 func (w *experiencePreviewWriter) run() {
@@ -128,6 +146,9 @@ func (a *App) loadExperiencePreview() {
 			writerLife, cancelWriter := context.WithCancel(life)
 			s.Cancel = cancelWriter
 			s.Writer = &experiencePreviewWriter{client: client, life: writerLife, identity: state.Identity, generation: state.Generation, save: client.SavePreview}
+			if state.Identity != "" && state.Preview != nil {
+				s.Writer.confirmedDigest = records.MergeDigest(state.Preview)
+			}
 			if state.Preview != nil && a.experience.Distill == nil {
 				p := state.Preview
 				d := &ExperienceDistillUI{PreviewID: p.ID, Open: p.Open, TaskID: p.TaskID, Task: state.Task, Start: p.Start, CandidateID: p.Candidate, ReturnPage: p.ReturnPage, ReturnScope: p.ReturnScope, ReturnSelected: p.ReturnSelected, ReturnScroll: p.ReturnScroll, BodyScroll: p.BodyScroll, Focus: p.Focus, RestoreFocus: true, ExplanationOpen: p.ExplanationOpen}
@@ -139,12 +160,18 @@ func (a *App) loadExperiencePreview() {
 					d.Error = "原生成请求尚未取得任务回执。可以显式重试同一请求；重开不会自动生成。"
 				}
 				a.experience.Distill = d
-				a.organization.ExperienceDrafts = map[string]*ExperienceReviewDraft{}
+				if a.organization.ExperienceDrafts == nil {
+					a.organization.ExperienceDrafts = map[string]*ExperienceReviewDraft{}
+				}
 				for id, v := range p.Drafts {
 					a.organization.ExperienceDrafts[id] = &ExperienceReviewDraft{ProposalDigest: v.ProposalDigest, Value: v.Value, Request: v.Request, RejectRequest: v.RejectRequest, OriginalOpen: v.OriginalOpen}
 				}
 				if !s.Touched {
-					a.navigate(p.Page, p.Scope)
+					materialTouched := a.materialPersistence != nil && a.materialPersistence.Touched
+					a.manualAutomaticNavigation(p.Page, p.Scope)
+					if a.materialPersistence != nil {
+						a.materialPersistence.Touched = materialTouched
+					}
 					a.selectedID = p.Selected
 					a.detailMode = "view"
 					a.editing = false
@@ -156,6 +183,7 @@ func (a *App) loadExperiencePreview() {
 				a.refresh(false)
 			}
 			a.persistExperiencePreview(nil)
+			a.loadMaterialPreview()
 		})
 	}()
 }
@@ -215,6 +243,9 @@ func (a *App) persistExperiencePreview(done func(error)) {
 			}
 			if err != nil {
 				s.Error = "尚未保存草稿，当前编辑保留；请重试。"
+				if code := maintenanceRemoteStorageCode(err); code != "" {
+					s.Error = maintenanceStorageMessage(code)
+				}
 				s.LastDigest = ""
 			} else {
 				s.Error = ""
@@ -228,7 +259,7 @@ func (a *App) persistExperiencePreview(done func(error)) {
 
 func (a *App) FlushExperiencePreview(done func(error)) {
 	a.experienceExitPending = true
-	a.persistExperiencePreview(func(err error) {
+	a.flushExperiencePreview(func(err error) {
 		if err != nil {
 			a.experienceExitPending = false
 		}
@@ -267,4 +298,26 @@ func (a *App) trackExperienceFocus(e ui.Element, key string, disabled bool) {
 	if e.Focused() {
 		s.Focus = key
 	}
+}
+
+func (a *App) flushExperiencePreview(done func(error)) {
+	s := a.experiencePersistence
+	p := a.experiencePreviewSnapshot()
+	if s != nil && (s.Loading || !s.Loaded || s.Writer == nil) {
+		done(fmt.Errorf("experience preview durability not loaded"))
+		return
+	}
+	if p == nil {
+		if s != nil && !s.Writer.idle() {
+			done(fmt.Errorf("experience preview writes remain pending"))
+			return
+		}
+		done(nil)
+		return
+	}
+	if s != nil && s.Writer.durableAndIdle(records.MergeDigest(p)) {
+		done(nil)
+		return
+	}
+	a.persistExperiencePreview(done)
 }

@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/zwhu/memlane/internal/agents"
 	"github.com/zwhu/memlane/internal/codegraph"
 	"github.com/zwhu/memlane/internal/engine"
@@ -38,6 +39,17 @@ var MarkStopped = serviceipc.MarkStopped
 var writeJSON = serviceipc.WriteJSON
 
 type Server struct {
+	recoveryOwner        string
+	recoveryGeneration   int64
+	cogneeSubmissions    *cogneeSubmissionOwner
+	backupMu             sync.Mutex
+	backupRuns           map[string]*backupRun
+	backupCreate         func(context.Context, string) (records.BackupReceipt, error)
+	agentBatchMu         sync.Mutex
+	agentBatchWG         sync.WaitGroup
+	agentBatchRuns       map[string]context.CancelFunc
+	agentBatchInstall    func(context.Context, records.AgentConnectionBatchItem) (records.AgentConnectionBatchItem, error)
+	agentBatchVerify     func(context.Context, records.AgentConnectionBatchItem) (records.AgentConnectionBatchItem, error)
 	projectWatchMu       sync.Mutex
 	projectChanged       chan struct{}
 	projectMu            sync.Mutex
@@ -147,6 +159,9 @@ func Run(ctx context.Context, config Config) error {
 	if err = db.InterruptProcessingValidations(ctx, time.Now()); err != nil {
 		return err
 	}
+	if err = db.InterruptAgentConnectionBatches(ctx); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	guard, err := os.Executable()
@@ -156,6 +171,11 @@ func Run(ctx context.Context, config Config) error {
 	s := &Server{proposalGuard: guard, organizationRuns: make(map[string]organizationOwner), lifecycle: ctx, mergeRuns: make(map[string]context.CancelFunc), config: config, store: db, state: state, status: "preparing", stop: cancel, wake: make(chan struct{}, 1), work: make(chan struct{}, 1), gate: make(chan struct{}, 1)}
 	s.processing = &processing.Owner{Ledger: db, Lifecycle: ctx, ClientRoot: clientRoot, ServiceRoot: config.Root, Helper: guard, Acquire: s.acquireOrganizer, Poison: cancel}
 	defer s.processing.Close()
+	s.cogneeSubmissions, err = newCogneeSubmissionOwner(ctx, s)
+	if err != nil {
+		return err
+	}
+	defer s.cogneeSubmissions.Close()
 	s.codeRuns = make(map[string]context.CancelFunc)
 	s.codeWake = make(chan struct{}, 1)
 	path := SocketPath(config.Root)
@@ -212,6 +232,8 @@ func Run(ctx context.Context, config Config) error {
 			s.mergeWG.Wait()
 			s.organizationWG.Wait()
 			s.projectWG.Wait()
+			s.agentBatchWG.Wait()
+			s.cogneeSubmissions.Close()
 			_ = db.InterruptMerges(context.Background())
 			if finalErr := s.finalizeOrganizationShutdown(context.Background()); finalErr != nil {
 				return errors.Join(e, finalErr)
@@ -228,6 +250,8 @@ func Run(ctx context.Context, config Config) error {
 	s.mergeWG.Wait()
 	s.organizationWG.Wait()
 	s.projectWG.Wait()
+	s.agentBatchWG.Wait()
+	s.cogneeSubmissions.Close()
 	if err = s.finalizeOrganizationShutdown(context.Background()); err != nil {
 		return err
 	}
@@ -379,9 +403,16 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		response.OK = err == nil
 		if err != nil {
 			response.Error = err.Error()
+			var staged interface{ OperationStage() string }
+			if errors.As(err, &staged) {
+				response.Stage = staged.OperationStage()
+			}
 			var access *records.AccessError
 			if errors.As(err, &access) {
 				response.Code = access.Code
+			} else if code := storageResponseCode(err); code != "" {
+				response.Code = code
+				response.Error = "storage write did not complete"
 			} else if errors.Is(err, store.ErrConflict) {
 				response.Code = "conflict"
 			} else if errors.Is(err, sql.ErrNoRows) {
@@ -418,13 +449,32 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 	}
 	svc := memory.Service{Store: s.store, Engine: selected}
 	switch r.Op {
+	case "deletion_impact":
+		return s.deletionImpact(operation, records.DeletionImpactQuery{Memory: r.Memory, Dataset: r.Scope, ExpectedRevision: r.ExpectedRevision, Datasets: r.Datasets})
+	case "project_preference_decisions":
+		return s.projectPreferenceDecisions(operation, r.ProjectPreferenceDecisionsQuery)
+	case "project_preference_comparison":
+		return s.projectPreferenceComparison(operation, r.ProjectPreferenceQuery)
+	case "project_preference_confirm":
+		return s.confirmProjectPreference(operation, r.ProjectPreferenceConfirmation)
+	case "delivery_assignment_preview":
+		return s.deliveryAssignmentPreview(operation, r.DeliveryAssignmentPreviewQuery)
+	case "delivery_assignment_confirm":
+		return s.confirmDeliveryAssignment(operation, r.DeliveryAssignmentIntent, r.UserConfirmed)
+	case "usage_events":
+		return s.usageEvents(operation, r.UsageEventsQuery)
 	case "backup_create":
 		if !r.UserConfirmed {
 			return nil, errors.New("backup creation requires user confirmation")
 		}
-		backupCtx, stop := context.WithTimeout(operation, 60*time.Second)
-		defer stop()
-		return s.store.Backup(backupCtx, s.config.Root, r.BackupID)
+		return s.createBackup(operation, r.BackupID)
+	case "backup_cancel":
+		if !r.UserConfirmed {
+			return nil, errors.New("backup cancellation requires user confirmation")
+		}
+		return s.cancelBackup(operation, r.BackupID)
+	case "backup_status":
+		return s.backupStatus(operation, r.BackupID)
 	case "rebuild_index":
 		if !r.UserConfirmed || r.IndexRebuildStart == nil {
 			return nil, errors.New("index rebuild requires user confirmation")
@@ -437,6 +487,11 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 			}
 		}
 		return result, err
+	case "index_rebuild_cancel":
+		if !r.UserConfirmed {
+			return nil, errors.New("index rebuild cancellation requires user confirmation")
+		}
+		return s.store.CancelIndexRebuild(operation, r.IndexRebuildID)
 	case "index_rebuild":
 		if r.IndexRebuildID == "" {
 			result, err := s.store.LatestIndexRebuild(operation)
@@ -563,6 +618,20 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		return s.store.SaveExperiencePreview(operation, *r.ExperiencePreview)
 	case "organization_get":
 		return s.getOrganization(operation, r.OrganizationTask)
+	case "organization_preview_get":
+		s.organizationMu.Lock()
+		defer s.organizationMu.Unlock()
+		return s.store.OrganizationPreviewFor(operation, r.OrganizationTask)
+	case "organization_preview_put":
+		if r.OrganizationPreview == nil {
+			return nil, records.MergeError("invalid_preview")
+		}
+		if r.OrganizationPreview.AbandonStart && !r.UserConfirmed {
+			return nil, records.MergeError("confirmation_required")
+		}
+		s.organizationMu.Lock()
+		defer s.organizationMu.Unlock()
+		return s.store.SaveOrganizationPreview(operation, *r.OrganizationPreview)
 	case "organization_list":
 		q := records.OrganizationListQuery{}
 		if r.OrganizationList != nil {
@@ -588,6 +657,31 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		return s.authorizeCognee(operation, *r.CogneeAuthorization)
 	case "cognee_bindings":
 		return s.store.CogneeBindings(operation, r.Scope)
+	case "cognee_project_authorize":
+		if !r.UserConfirmed || r.CogneeProjectAuthorization == nil {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "confirm the current project's local material access"}
+		}
+		return s.authorizeProjectCogneeMaterial(operation, *r.CogneeProjectAuthorization)
+	case "cognee_submission_latest":
+		return s.store.LatestCogneeSubmission(operation, r.Scope)
+	case "cognee_submission_start":
+		if !r.UserConfirmed || r.CogneeSubmission == nil {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "confirm the selected project material and processing usage"}
+		}
+		if s.cogneeSubmissions == nil {
+			return nil, records.MergeError("unsupported_processing")
+		}
+		return s.cogneeSubmissions.Start(operation, *r.CogneeSubmission)
+	case "cognee_submission_get":
+		return s.store.CogneeSubmissionTask(operation, r.CogneeSubmissionID)
+	case "cognee_submission_cancel":
+		if !r.UserConfirmed {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "confirm stopping this material task"}
+		}
+		if s.cogneeSubmissions == nil {
+			return nil, records.MergeError("unsupported_processing")
+		}
+		return s.cogneeSubmissions.Cancel(operation, r.CogneeSubmissionID)
 	case "cognee_sync":
 		if !r.UserConfirmed || r.CogneeSync == nil {
 			return nil, &records.AccessError{Code: "confirmation_required", Message: "approve this session's official result import in Memlane"}
@@ -625,6 +719,18 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 			return nil, records.MergeError("invalid_request")
 		}
 		return s.store.MergeList(operation, *r.MergeList)
+	case "agent_connection_batch":
+		return s.connectionBatchState(operation, r.AgentConnectionBatchID, r.AgentConnectionBatchOperation)
+	case "agent_connection_batch_start":
+		if !r.UserConfirmed || r.AgentConnectionBatchStart == nil {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "select Agent installation targets explicitly"}
+		}
+		return s.startConnectionBatch(operation, *r.AgentConnectionBatchStart)
+	case "agent_connection_batch_action":
+		if !r.UserConfirmed || r.AgentConnectionBatchAction == nil {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "confirm the connection batch action explicitly"}
+		}
+		return s.actionConnectionBatch(operation, *r.AgentConnectionBatchAction)
 	case "connections":
 		return s.store.Connections(operation)
 	case "ide_verification":
@@ -672,6 +778,10 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 			}
 		}
 		return result, err
+	case "agent_delivery_authorize":
+		s.agentAccess.RLock()
+		defer s.agentAccess.RUnlock()
+		return s.authorizeAgentDelivery(operation, r.AgentRequest)
 	case "agent":
 		s.agentAccess.RLock()
 		defer s.agentAccess.RUnlock()
@@ -712,10 +822,33 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 			workerFailure = "worker is absent"
 		}
 		s.mu.Lock()
+		if s.recoveryOwner == "" {
+			s.recoveryOwner = uuid.NewString()
+		}
+		recoveryOwner, recoveryGeneration := s.recoveryOwner, s.recoveryGeneration
+		if worker == nil {
+			if s.worker != nil {
+				status = "preparing"
+			} else {
+				status = s.status
+			}
+		}
 		scheduleFailure := s.scheduleFailure
 		codeCleanupError := s.codeCleanupError
+		attempts := 0
+		for _, when := range s.state.Restarts {
+			if when.After(time.Now().Add(-10 * time.Minute)) {
+				attempts++
+			}
+		}
+		recovery := ""
+		if status == "failed" && attempts >= 3 {
+			recovery = "exhausted"
+		} else if status == "recovering" || status == "preparing" {
+			recovery = "recovering"
+		}
 		s.mu.Unlock()
-		return map[string]any{"service_version": ServiceVersion, "state": status, "worker_pid": pid, "worker_busy": busy, "worker_error": workerFailure, "schedule_error": scheduleFailure, "code_cleanup_error": codeCleanupError}, nil
+		return map[string]any{"service_version": ServiceVersion, "state": status, "worker_pid": pid, "worker_busy": busy, "worker_error": workerFailure, "schedule_error": scheduleFailure, "code_cleanup_error": codeCleanupError, "recovery": recovery, "recovery_attempts": attempts, "recovery_limit": 3, "recovery_window_seconds": 600, "recovery_owner": recoveryOwner, "recovery_generation": recoveryGeneration}, nil
 	case "apply":
 		if r.Mutation.Kind != "save" && !r.UserConfirmed {
 			return nil, errors.New("knowledge changes require an explicit user confirmation")
@@ -759,8 +892,21 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		return s.store.RecordUsage(operation, *r.UsageObservation)
 	case "get":
 		return s.store.Current(operation, r.Memory)
+	case "processing_credential_save":
+		if !r.UserConfirmed || r.ProcessingCredentialWrite == nil {
+			return nil, records.MergeError("confirmation_required")
+		}
+		defer clear(r.ProcessingCredentialWrite.Secret)
+		return s.processing.SaveCredential(operation, *r.ProcessingCredentialWrite)
+	case "processing_suppliers":
+		return s.processing.Suppliers(operation)
+	case "processing_models":
+		if !r.UserConfirmed || r.ProcessingModelQuery == nil {
+			return nil, records.MergeError("confirmation_required")
+		}
+		return s.processing.Models(operation, *r.ProcessingModelQuery)
 	case "processing_get":
-		return s.store.ProcessingConfiguration(operation)
+		return s.processing.Configuration(operation)
 	case "processing_save":
 		if !r.UserConfirmed {
 			return nil, errors.New("configuration save requires explicit user action")
@@ -796,6 +942,8 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		return s.store.Scopes(operation)
 	case "check_workspace":
 		return nil, s.store.CheckBoundWorkspace(operation, r.Scope, r.Project.Path)
+	case "inspect_project":
+		return s.store.InspectProject(operation, r.Project.Path)
 	case "register_project":
 		if !r.UserConfirmed {
 			return nil, errors.New("project registration requires user confirmation")
@@ -807,6 +955,10 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		return s.store.History(operation, r.Memory, r.BeforeRevision, r.Limit)
 	case "activities":
 		return s.store.Activities(operation, r.Timezone)
+	case "home_activity":
+		return s.store.HomeActivities(operation, r.HomeActivity)
+	case "home_review":
+		return s.store.HomeReviews(operation, r.HomeReview)
 	case "retry_index":
 		if err := s.store.Requeue(operation, r.Memory, r.ExpectedRevision); err != nil {
 			return nil, err
@@ -873,8 +1025,22 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		return svc.Search(operation, r.Datasets, r.Query, r.Limit)
 	case "retry":
 		s.mu.Lock()
+		priorRestarts := s.state.Restarts
 		s.state.Restarts = nil
 		err := writeJSON(filepath.Join(s.config.Root, "service-state.json"), s.state)
+		if err != nil {
+			s.state.Restarts = priorRestarts
+		}
+		if err == nil {
+			if s.recoveryOwner == "" {
+				s.recoveryOwner = uuid.NewString()
+			}
+			s.recoveryGeneration++
+			if s.worker == nil {
+				s.status = "recovering"
+			}
+		}
+		owner, generation := s.recoveryOwner, s.recoveryGeneration
 		s.mu.Unlock()
 		if err != nil {
 			return nil, err
@@ -883,7 +1049,7 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		case s.wake <- struct{}{}:
 		default:
 		}
-		return map[string]bool{"retry_requested": true}, nil
+		return map[string]any{"retry_requested": true, "recovery_owner": owner, "recovery_generation": generation}, nil
 	case "stop":
 		s.codeMu.Lock()
 		defer s.codeMu.Unlock()
@@ -908,6 +1074,9 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 			cancel()
 		}
 		_ = s.store.CancelRecoveriesForStop(operation, cutoff, epoch)
+		if s.cogneeSubmissions != nil {
+			s.cogneeSubmissions.quiesce()
+		}
 		return map[string]bool{"stopped": true}, nil
 	case "quiesce":
 		s.codeMu.Lock()
@@ -916,6 +1085,9 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 			cancel()
 		}
 		s.codeMu.Unlock()
+		if s.cogneeSubmissions != nil {
+			s.cogneeSubmissions.quiesce()
+		}
 		return map[string]bool{"paused_for_update": true}, nil
 	default:
 		return nil, errors.New("unsupported service operation")

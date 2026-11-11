@@ -57,6 +57,14 @@ func (s *Store) RegisterProject(ctx context.Context, draft records.ScopeDraft) (
 	if err != nil {
 		return records.Scope{}, err
 	}
+	// E02 preflight is advisory until the real identity is rechecked before
+	// knownRepository can backfill its cache or registration writes anything.
+	if draft.ExpectedRepository != "" {
+		identity, identityErr := projectRepositoryIdentity(path, common)
+		if identityErr != nil || identity != draft.ExpectedRepository {
+			return records.Scope{}, access("repository_changed", "repository changed after inspection; check it again")
+		}
+	}
 	if known, found, e := s.knownRepository(ctx, path); e != nil {
 		return records.Scope{}, e
 	} else if found {
@@ -133,7 +141,7 @@ func (s *Store) List(ctx context.Context, q records.ListQuery) (records.Page, er
 			return page, errors.New("invalid page cursor")
 		}
 		// Historical created-order cursors remain accepted only in their old mode.
-		if cursor.Filter != fingerprint && !(cursor.Filter == "" && sortMode == "" && q.Text == "") {
+		if cursor.Filter != fingerprint && !(cursor.Filter == "" && sortMode == "" && len(q.Datasets) == 0 && q.Kind == "" && q.Timezone == "" && q.Text == "" && q.Source == "" && q.Date == "" && q.ScopeKind == "" && q.UpdatedSinceMS == 0) {
 			return page, errors.New("page cursor scope or sort changed")
 		}
 		if cursor.AsOfMS > 0 {
@@ -181,6 +189,43 @@ func (s *Store) List(ctx context.Context, q records.ListQuery) (records.Page, er
 		return page, err
 	}
 	page.KnowledgeTotal, page.RawTotal = &knowledge, &raw
+	sourceRows, err := s.DB.QueryContext(ctx, `SELECT DISTINCT md.source`+versionJoins+`WHERE `+strings.Join(countWhere, " AND ")+` ORDER BY md.source LIMIT 1001`, args...)
+	if err != nil {
+		return page, err
+	}
+	for sourceRows.Next() {
+		var source string
+		if err = sourceRows.Scan(&source); err != nil {
+			sourceRows.Close()
+			return page, err
+		}
+		page.Sources = append(page.Sources, source)
+	}
+	err = sourceRows.Err()
+	sourceRows.Close()
+	if err != nil {
+		return page, err
+	}
+	if len(page.Sources) > 1000 {
+		page.Sources = page.Sources[:1000]
+		page.SourcesTruncated = true
+	}
+	if q.ScopeKind != "" {
+		switch q.ScopeKind {
+		case "project", "preference", "experience":
+		default:
+			return page, errors.New("invalid content category")
+		}
+		where = append(where, "s.kind=?")
+		args = append(args, q.ScopeKind)
+	}
+	if q.UpdatedSinceMS < 0 {
+		return page, errors.New("invalid saved-version date range")
+	}
+	if q.UpdatedSinceMS > 0 {
+		where = append(where, "julianday(v.created_at)>=julianday(?)")
+		args = append(args, time.UnixMilli(q.UpdatedSinceMS).UTC().Format(time.RFC3339Nano))
+	}
 	switch q.Kind {
 	case "", "knowledge":
 		where = append(where, "md.origin!='raw'")
@@ -398,6 +443,9 @@ func (s *Store) Activities(ctx context.Context, zone string) (records.ActivitySu
 // Requeue uses the current revision and leaves immutable versions and activity
 // facts untouched. The daemon's persistent replay performs the actual work.
 func (s *Store) Requeue(ctx context.Context, id string, expected int64) error {
+	if s.Schema >= 25 {
+		return s.requeueIndex(ctx, id, expected)
+	}
 	query := `UPDATE jobs SET state='pending',error='' WHERE memory=? AND revision=? AND EXISTS(SELECT 1 FROM memories WHERE id=? AND current_revision=? AND state='active')`
 	args := []any{id, expected, id, expected}
 	if s.Schema >= 4 {

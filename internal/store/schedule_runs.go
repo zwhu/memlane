@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -71,12 +72,28 @@ func (s *Store) FireSchedule(ctx context.Context, id string, generation int64, n
 	if err != nil {
 		return run, nil, err
 	}
+	processingCurrent := true
+	if p := plan.Spec.Processing; p != nil {
+		revision, e := processingRevisionTx(ctx, tx, p.Revision.ID)
+		if e != nil {
+			return run, nil, e
+		}
+		if e = processingVerifiedTx(ctx, tx, revision, p.DependencyDigest); e != nil {
+			var denied *records.AccessError
+			if !errors.As(e, &denied) {
+				return run, nil, e
+			}
+			processingCurrent = false
+		}
+	}
 	if kind != "project" || currentPath != plan.ProjectPath || !scopesCurrent {
 		run.Reason = "scope_changed"
 		if _, err = tx.ExecContext(ctx, `UPDATE organization_plans SET enabled=0 WHERE id=?`, id); err != nil {
 			return run, nil, err
 		}
 		next = 0
+	} else if !processingCurrent {
+		run.Reason = "processing_changed"
 	} else if now.UnixMilli()-due > int64(plan.Spec.WindowMinutes)*int64(time.Minute/time.Millisecond) {
 		run.Reason = "missed_window"
 	} else {
@@ -123,6 +140,12 @@ func (s *Store) FireSchedule(ctx context.Context, id string, generation int64, n
 				Destinations    []string
 				Executor, Model string
 			}{inputs, plan.Spec.Review, plan.Spec.Global, plan.Spec.Destinations, plan.Spec.Executor, plan.Spec.Model})
+			if plan.Spec.Processing != nil {
+				fingerprint = records.MergeDigest(struct {
+					Policy     string
+					Processing *records.ProcessingSnapshot
+				}{fingerprint, plan.Spec.Processing})
+			}
 			var prior string
 			e = tx.QueryRowContext(ctx, `SELECT r.input_digest FROM organization_plan_runs r WHERE r.plan=? AND EXISTS(SELECT 1 FROM organization_results x WHERE x.task=r.task) ORDER BY r.due_ms DESC LIMIT 1`, id).Scan(&prior)
 			if e != nil && e != sql.ErrNoRows {
@@ -133,7 +156,7 @@ func (s *Store) FireSchedule(ctx context.Context, id string, generation int64, n
 			} else if prior == fingerprint {
 				run.Reason = "no_changes"
 			} else {
-				created, _, e := s.startOrganizationTx(ctx, tx, records.OrganizationStart{OperationID: "schedule:" + run.ID, Project: plan.Spec.Project, Review: plan.Spec.Review, Global: plan.Spec.Global, Destinations: plan.Spec.Destinations, Inputs: inputs})
+				created, _, e := s.startScheduledOrganizationTx(ctx, tx, plan.Spec.Processing, records.OrganizationStart{OperationID: "schedule:" + run.ID, Project: plan.Spec.Project, Review: plan.Spec.Review, Global: plan.Spec.Global, Destinations: plan.Spec.Destinations, Inputs: inputs})
 				if e != nil {
 					var access *records.AccessError
 					if errors.As(e, &access) && access.Code == "invalid_proposal" {
@@ -159,7 +182,7 @@ func (s *Store) FireSchedule(ctx context.Context, id string, generation int64, n
 			}
 		}
 	}
-	if run.Reason == "scope_changed" || run.Reason == "missed_window" || run.Reason == "project_busy" {
+	if run.Reason == "scope_changed" || run.Reason == "missed_window" || run.Reason == "project_busy" || run.Reason == "processing_changed" {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO organization_plan_runs(id,plan,generation,due_ms,state,reason) VALUES(?,?,?,?,?,?)`, run.ID, id, generation, due, run.State, run.Reason); err != nil {
 			return run, nil, err
 		}
@@ -191,4 +214,34 @@ func scheduleScopesCurrent(ctx context.Context, tx *sql.Tx, plan records.Schedul
 		}
 	}
 	return true, nil
+}
+
+// A scheduled run keeps the immutable processing revision approved with its plan.
+// Selection changes do not substitute a new model; the daemon rechecks runtime
+// dependencies before invoking this frozen executor.
+func (s *Store) startScheduledOrganizationTx(ctx context.Context, tx *sql.Tx, processing *records.ProcessingSnapshot, d records.OrganizationStart) (records.OrganizationTask, bool, error) {
+	t, created, err := s.startOrganizationTx(ctx, tx, d)
+	if err != nil || !created || processing == nil {
+		return t, created, err
+	}
+	revision, err := processingRevisionTx(ctx, tx, processing.Revision.ID)
+	if err != nil {
+		return t, false, err
+	}
+	if revision.Digest != processing.Revision.Digest {
+		return t, false, records.ErrConflict
+	}
+	if err = processingVerifiedTx(ctx, tx, revision, processing.DependencyDigest); err != nil {
+		return t, false, err
+	}
+	t.Snapshot.Processing = processing
+	if err = t.Snapshot.Seal(); err != nil {
+		return t, false, err
+	}
+	raw, err := json.Marshal(t.Snapshot)
+	if err != nil {
+		return t, false, err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE organization_attempts SET snapshot=? WHERE task=? AND attempt=?`, string(raw), t.ID, t.Attempt)
+	return t, created, err
 }

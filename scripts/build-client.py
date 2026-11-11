@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 import plistlib
 import shutil
@@ -25,6 +26,7 @@ def main():
     parser.add_argument("--automation",action="store_true")
     parser.add_argument("--skip-dmg",action="store_true",help="Build only the App for focused native verification")
     args=parser.parse_args()
+    subprocess.run(["python3", str(ROOT / "scripts/disk-space.py")], check=True)
     config=json.loads((ROOT / "mygo.json").read_text())
     config["main"]=str(ROOT / "cmd/memlane-app")
     if config.get("icon"):
@@ -63,6 +65,9 @@ def main():
         (source / "mygo.json").write_text(json.dumps(config,indent=2))
         if args.automation:
             env["GOFLAGS"]+=" -tags=e2e"
+            # Only the verification UI uses AppKit's own-view bitmap export.
+            # Runtime helpers above and ordinary client builds remain pure Go.
+            env["CGO_ENABLED"]="1"
             env["MYGO_INSPECTOR"]="1"
         # MyGo signs the helper resources. The LaunchAgent must be placed in
         # Contents/Library, so seal the complete bundle again before the DMG.
@@ -90,8 +95,17 @@ def main():
             lines=[line for line in lines if line.split("  ",1)[-1]!=relative]
             lines.append(hashlib.sha256(dmg.read_bytes()).hexdigest()+"  "+relative)
             sums.write_text("\n".join(lines)+"\n")
+        retention = ROOT / "build/disk-cleanup/retained-package.txt"
+        retention.parent.mkdir(exist_ok=True)
+        retention.write_text(str(args.out.resolve())+"\n")
         print(json.dumps({"app":str(app),"dmg":None if args.skip_dmg else str(dmg),"service_plist":service_plist,
                           "runtime_model_included":False,"developer_id_notarized":False},indent=2))
 
 
-if __name__=="__main__":main()
+if __name__=="__main__":
+    if os.environ.get("MEMLANE_DISK_TASK") != "1":
+        raise SystemExit(subprocess.call([sys.executable, str(ROOT / "scripts/task.py"), "--", sys.executable, __file__, *sys.argv[1:]]))
+    try:
+        main()
+    finally:
+        subprocess.run(["python3", str(ROOT / "scripts/disk-space.py"), "--finish"], check=False)

@@ -1,6 +1,7 @@
 package records
 
 type IndexRebuildStart struct {
+	RetryOf     string `json:"retry_of,omitempty"`
 	OperationID string `json:"operation_id"`
 	Scope       string `json:"scope,omitempty"`
 	ProjectTask string `json:"project_task,omitempty"`
@@ -15,6 +16,8 @@ type IndexRebuildItem struct {
 }
 
 type IndexRebuild struct {
+	RetryOf     string             `json:"retry_of,omitempty"`
+	Cancelled   bool               `json:"cancelled,omitempty"`
 	ID          string             `json:"id"`
 	Scope       string             `json:"scope,omitempty"`
 	CreatedAt   string             `json:"created_at"`

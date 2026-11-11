@@ -1,7 +1,9 @@
 package desktop
 
 import (
+	"fmt"
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/internal/agents"
 	"github.com/zwhu/memlane/internal/records"
 )
 
@@ -9,10 +11,10 @@ func (a *App) openAgentSettings() {
 	a.navigate("设置", "")
 	a.settingsSection = "agents"
 	a.refreshAgents(true)
+	a.refreshAgentBatch()
 }
 
-// Reuse the verified discovery and connection receipts. Two-column cards do
-// not imply that a project-level adapter supports machine-wide batch install.
+// Installation and verification outcomes come from the daemon's durable batch.
 func (a *App) agentConnectionCards(c *ui.Context, setup bool) {
 	s := &a.agents
 	width, _ := c.Size()
@@ -25,6 +27,8 @@ func (a *App) agentConnectionCards(c *ui.Context, setup bool) {
 		ui.Row(c).Gap(14).Children(func() {
 			for index := start; index < min(start+2, len(s.Found)); index++ {
 				found := s.Found[index]
+				state := "待连接"
+				detail := ""
 				var connection *records.Connection
 				for i := range s.Connections {
 					if s.Connections[i].Agent == found.Agent && s.Connections[i].Enabled {
@@ -32,77 +36,174 @@ func (a *App) agentConnectionCards(c *ui.Context, setup bool) {
 						break
 					}
 				}
-				state, _ := a.agentStatus(found, connection)
+				if connection != nil {
+					state, detail = a.agentStatus(found, connection)
+				} else if found.Path == "" {
+					state = "未找到安装"
+				} else if !a.machineConnectionEligible(found) {
+					state = "电脑级接入暂不支持"
+					detail = "当前版本尚不能在这里连接。"
+				}
+				if batch := s.Batch.State.Batch; batch != nil && batch.State != "retired" {
+					for _, item := range batch.Items {
+						if item.Target.Agent == found.Agent {
+							state = agentBatchItemState(item.State)
+							detail = item.Error
+							if item.State == "awaiting_reload" {
+								detail = "重载 Agent 后，点击下方验证连接。"
+							}
+							if item.State == "connected" || item.State == "already_connected" {
+								if connection == nil {
+									state = "连接状态待核对"
+								} else if connection.ID != item.ConnectionID || connection.Generation != item.Generation {
+									state = "连接已变化"
+									detail = "请重新验证当前连接。"
+								} else {
+									state, detail = a.agentStatus(found, connection)
+								}
+							}
+							if item.Target.Path != found.Path {
+								detail = "本批保留启动时的安装路径；检测到的路径已变化。"
+							}
+							break
+						}
+					}
+				}
 				version := found.Version
 				if version == "" {
 					version = "版本待确认"
 				}
+				selected := s.Batch.Selected[found.Agent]
+				enabled := a.machineConnectionEligible(found) && !s.Batch.frozen() && !s.Busy
 				icon := icons[found.Agent]
 				if icon == nil {
 					icon = icons["Agent"]
 				}
-				ui.Button(c.Key("connection-card-"+found.Agent), "").Label(found.Name+" · "+state).Width(cardWidth).MinHeight(134).Padding(18).Border(1, ui.Hex("#d8e2ed")).Background(ui.Hex("#fafbfd")).Justify(ui.Start).Children(func() {
-					ui.Column(c).Grow(1).MinWidth(0).Gap(10).Children(func() {
-						ui.Icon(c, icon).FontSize(28).TextColor(design.Muted)
+				background := ui.Hex("#fafbfd")
+				if selected {
+					background = ui.Hex("#f1f5fa")
+				}
+				card := ui.CheckboxBase(c.Key("connection-card-"+found.Agent), &selected).Label("选择 "+found.Name).AlignItems(ui.Start).Width(cardWidth).MinHeight(156).Padding(18).Border(1, ui.Hex("#d8e2ed")).Background(background).Disabled(!enabled).OnChange(func() {
+					if s.Batch.Selected == nil {
+						s.Batch.Selected = map[string]bool{}
+					}
+					s.Batch.Selected[found.Agent] = selected
+				})
+				card.Children(func() {
+					ui.Column(c).FillWidth().Gap(10).Children(func() {
+						ui.Row(c).FillWidth().Children(func() {
+							ui.Icon(c, icon).FontSize(28).TextColor(design.Muted)
+							ui.Spacer(c)
+							ui.Box(c).Size(12, 12).Radius(2).Border(1, ui.Hex("#a6b8ca")).Draw(func(p *ui.Painter, r ui.Rect) {
+								if selected {
+									p.Fill(r, ui.Hex("#66829b"), 2)
+									p.StrokePath((&ui.Path{}).MoveTo(r.X+3, r.Y+6).LineTo(r.X+5, r.Y+8).LineTo(r.X+9, r.Y+4), 1.2, ui.Hex("#ffffff"))
+								}
+							})
+						})
 						ui.Row(c).FillWidth().Children(func() {
 							ui.Text(c, found.Name).Bold()
 							ui.Spacer(c)
 							ui.Text(c, state).FontSize(10).TextColor(design.Muted)
 						})
 						ui.Text(c, version).FontSize(design.Small).TextColor(design.Muted)
+						if detail != "" {
+							ui.Text(c, detail).FontSize(design.Small).TextColor(design.Muted).LineHeight(1.5)
+						}
 					})
-				}).Disabled(s.Busy).OnClick(func() {
-					key := "agent-" + found.Agent
-					if connection != nil {
-						key = "connection-" + connection.ID
-					}
-					a.selectAgent(key)
-					if setup {
-						a.openFirstLaunchAgentSettings()
-					}
 				})
-			}
-		})
-	}
-	if !setup {
-		ui.Row(c).Gap(14).Children(func() {
-			for _, found := range s.Found {
-				if found.Agent == "pi" {
-					continue
-				}
-				quietButton(c, "添加 "+found.Name+" 连接").Key("add-connection-" + found.Agent).Disabled(s.Busy || found.ConnectionError() != nil).OnClick(func() { a.selectAgent("agent-" + found.Agent) })
 			}
 		})
 	}
 	if len(s.Found) == 0 {
 		a.empty(c, "正在发现 Agent", "连接可以稍后设置。")
 	}
+	if s.Batch.Error != "" {
+		ui.Text(c, s.Batch.Error).FontSize(design.Small).TextColor(design.Muted).Selectable()
+	}
+	if s.Batch.pending() {
+		ui.Text(c, "上次连接操作的回执尚待核对。重试会复用同一操作，不另建连接。").FontSize(design.Small).TextColor(design.Muted)
+	}
+}
+
+func (a *App) agentConnectionActionButtons(c *ui.Context) {
+	b := &a.agents.Batch
+	if b.pending() {
+		quietButton(c, "核对并重试上次操作").Key("agent-batch-reconcile").Disabled(b.Submitting).OnClick(a.submitAgentBatchIntent)
+		return
+	}
+	count := len(a.selectedConnectionTargets())
+	firstLaunchPrimary(c, fmt.Sprintf("连接所选 Agent（%d）", count)).Key("agent-batch-start").Disabled(count == 0 || b.frozen() || b.State.Identity == "" || a.agents.Context == nil).OnClick(a.startSelectedAgentBatch)
+	if b.State.Batch == nil {
+		return
+	}
+	waiting, failed := false, false
+	for _, item := range b.State.Batch.Items {
+		if item.State == "awaiting_reload" {
+			waiting = true
+		}
+		if item.State == "failed" || item.State == "interrupted" || item.State == "cancelled" {
+			failed = true
+		}
+	}
+	if waiting {
+		quietButton(c, "已重载，验证连接").Key("agent-batch-verify").Disabled(b.Submitting || b.State.Batch.State == "running" || b.State.Batch.State == "cancelling").OnClick(func() { a.actAgentBatch("verify") })
+	}
+	if failed {
+		quietButton(c, "重试失败项").Key("agent-batch-retry").Disabled(b.Submitting || b.State.Batch.State == "running" || b.State.Batch.State == "cancelling").OnClick(func() { a.actAgentBatch("retry") })
+	}
+	if b.State.Batch.State == "running" || b.State.Batch.State == "waiting" {
+		quietButton(c, "取消本批连接").Key("agent-batch-cancel").Disabled(b.Submitting).OnClick(func() { a.actAgentBatch("cancel") })
+	}
+	if b.State.Batch.State == "cancelling" {
+		ui.Text(c, "正在取消，等待实际操作结束…").FontSize(design.Small).TextColor(design.Muted)
+	}
 }
 
 func (a *App) agentSettingsPage(c *ui.Context) {
 	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
 		ui.Scroll(c).Grow(1).MinHeight(0).Padding(28, 30).Gap(18).Children(func() {
-			ui.Row(c).Children(func() {
+			ui.Row(c).Gap(14).Children(func() {
 				ui.Text(c, "Agent 连接").FontSize(design.Heading).Bold()
 				ui.Spacer(c)
+				quietButton(c, "全选可连接").Disabled(a.agents.Batch.frozen()).OnClick(a.selectAllAgentConnections)
 				quietButton(c, "重新检测").Disabled(a.agents.Busy).OnClick(func() { a.refreshAgents(true) })
 			})
 			ui.Divider(c)
 			a.agentConnectionCards(c, false)
-			ui.Text(c, "选择卡片管理当前连接。批量连接暂未开放。").FontSize(design.Small).TextColor(design.Muted)
+
 			if len(a.agents.Connections) > 0 {
-				ui.Text(c, "已配置连接").Bold()
+				ui.Text(c, "连接记录").Bold()
 				for _, connection := range a.agents.Connections {
-					state := "已断开"
-					if connection.Enabled {
-						state = "已配置"
+					detail := "访问范围由项目设置管理"
+					if len(connection.AllowedScopes) == 0 {
+						detail = "尚未授权项目与通用知识"
 					}
-					a.agentRow(c, "connection-"+connection.ID, connection.Name, "保留已有访问范围", state)
+					a.agentRow(c, "connection-"+connection.ID, connection.Name, detail, a.agentConnectionRecordState(connection))
 				}
 			}
 			if a.agents.Selection != "" {
-				ui.Column(c).Height(480).MinHeight(0).Border(1, design.Border).Radius(6).Children(func() { a.agentDetail(c) })
+				ui.Column(c).MinHeight(0).Border(1, design.Border).Radius(6).Children(func() { a.agentDetail(c) })
 			}
 		})
+		ui.Row(c).Wrap().Shrink(0).Padding(14, 30).Gap(10).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() { a.agentConnectionActionButtons(c) })
 	})
+}
+
+func (a *App) agentConnectionRecordState(connection records.Connection) string {
+	if !connection.Enabled {
+		return "已断开"
+	}
+	if _, installed := a.agents.Installs[connection.ID]; !installed {
+		return "配置未完成"
+	}
+	d := agents.Discovery{Agent: connection.Agent}
+	for _, found := range a.agents.Found {
+		if found.Agent == connection.Agent {
+			d = found
+			break
+		}
+	}
+	state, _ := a.agentStatus(d, &connection)
+	return state
 }

@@ -23,13 +23,23 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 	default:
 		return nil, invalid("unknown memory tool")
 	}
-	if r.ToolMode != "" && r.ToolMode != "initialization" {
+	if r.ToolMode != "" && r.ToolMode != "initialization" && r.ToolMode != "connection" {
 		return nil, invalid("unknown tool mode")
+	}
+	if r.ToolMode == "connection" && r.Tool != "memory_scopes" {
+		return nil, invalid("only scope handshake is available during connection verification")
 	}
 	if r.ToolMode == "initialization" && r.Tool != "memory_initialization_get" && r.Tool != "memory_initialization_status" && r.Tool != "memory_initialize" {
 		return nil, invalid("tool is unavailable during initialization")
 	}
-	c, scopes, err := s.store.Authorize(ctx, r)
+	var c records.Connection
+	var scopes []string
+	var err error
+	if r.ExpectedLibraryID != "" || r.DeliveryGrant != nil {
+		c, scopes, err = s.store.AuthorizeReadOnly(ctx, r)
+	} else {
+		c, scopes, err = s.store.Authorize(ctx, r)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +195,16 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 		// so reusing an operation ID with different scope/content conflicts.
 		key := uuid.NewSHA1(uuid.NameSpaceOID, []byte(c.ID+"\x00"+a.OperationID))
 		m := records.Mutation{OperationID: "agent:" + key.String(), Kind: "save", Dataset: scopes[0], Memory: key.String(), ExpectedRevision: 0, Text: a.Text, Title: a.Title, Source: c.Agent, Origin: a.Origin, SourceDetail: a.Source}
-		saved, e := s.store.ApplyAgentSave(ctx, c, m)
+		var saved records.Version
+		var e error
+		if r.ExpectedLibraryID != "" || r.DeliveryGrant != nil {
+			if e = s.validateAgentDelivery(ctx, r); e != nil {
+				return nil, e
+			}
+			saved, e = s.store.ApplyAgentSaveInLibrary(ctx, c, m, r.ExpectedLibraryID, *r.DeliveryGrant)
+		} else {
+			saved, e = s.store.ApplyAgentSave(ctx, c, m)
+		}
 		if e != nil {
 			return nil, e
 		}

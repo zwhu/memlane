@@ -30,7 +30,31 @@ func (s *Store) ProcessingValidation(ctx context.Context, id string) (records.Pr
 	if !processingUUID(id) || s.Schema < 17 {
 		return out, records.MergeError("invalid_request")
 	}
-	err := s.DB.QueryRowContext(ctx, `SELECT id,revision,attempt,dependency_digest,state,cancel_requested,receipt_digest,error_code,started_ms,finished_ms FROM processing_validations WHERE id=?`, id).Scan(&out.ID, &out.Revision, &out.Attempt, &out.DependencyDigest, &out.State, &out.CancelRequested, &out.ReceiptDigest, &out.ErrorCode, &out.StartedMS, &out.FinishedMS)
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return out, err
+	}
+	defer tx.Rollback()
+	err = tx.QueryRowContext(ctx, `SELECT id,revision,attempt,dependency_digest,state,cancel_requested,receipt_digest,error_code,started_ms,finished_ms FROM processing_validations WHERE id=?`, id).Scan(&out.ID, &out.Revision, &out.Attempt, &out.DependencyDigest, &out.State, &out.CancelRequested, &out.ReceiptDigest, &out.ErrorCode, &out.StartedMS, &out.FinishedMS)
+	if err != nil {
+		return out, err
+	}
+	if s.Schema >= 26 {
+		out.Diagnostics, err = processingDiagnosticsTx(ctx, tx, id)
+		if err == nil && s.Schema >= 27 {
+			out.HTTP, err = processingHTTPTx(ctx, tx, id)
+		}
+		if err != nil {
+			return out, err
+		}
+	}
+	if s.Schema >= 31 {
+		out.Evidence, err = capabilityEvidenceTx(ctx, tx, out)
+		if err != nil {
+			return out, err
+		}
+	}
+	err = tx.Commit()
 	return out, err
 }
 

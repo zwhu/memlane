@@ -213,7 +213,7 @@ func (s *Server) launchOrganization(t records.OrganizationTask) {
 			return
 		}
 		runCtx = owned
-		reaped, gone := true, true
+		reaped, gone := false, true
 		defer func() { finish(reaped, gone) }()
 		if t.AttemptKind == "apply" {
 			s.applyOrganization(runCtx, t)
@@ -235,6 +235,10 @@ func (s *Server) launchOrganization(t records.OrganizationTask) {
 			return s.store.RegisterOrganizationProcess(runCtx, t.ID, t.Attempt, pid)
 		}, func(event string) {
 			counts[event]++
+			if event == "http.request_sent" {
+				b, _ := json.Marshal(map[string]any{"events": counts, "http_active": true})
+				_, _ = s.store.DB.ExecContext(runCtx, `UPDATE organization_attempts SET execution=? WHERE task=? AND attempt=? AND state='running'`, string(b), t.ID, t.Attempt)
+			}
 			if event == "turn.started" || event == "message_start" {
 				b, _ := json.Marshal(map[string]any{"events": counts, "process_active": true})
 				_, _ = s.store.DB.ExecContext(runCtx, `UPDATE organization_attempts SET execution=? WHERE task=? AND attempt=? AND state='running'`, string(b), t.ID, t.Attempt)

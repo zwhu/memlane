@@ -9,7 +9,7 @@ import (
 )
 
 func TestOrganizationProcessingReadDoesNotEnableAndRetiresLateLibraryReceipt(t *testing.T) {
-	configuration := records.ProcessingConfiguration{Current: records.ProcessingSelection{Active: true, Revision: &records.ProcessingRevision{ID: "pi-config", Spec: records.ProcessingSpec{Mode: "agent", Agent: "pi", Model: "selected-model"}, Validation: &records.ProcessingValidation{State: "succeeded"}}}}
+	configuration := records.ProcessingConfiguration{Runtime: map[string]records.ProcessingReadiness{"pi-config": {State: "ready"}}, Current: records.ProcessingSelection{Active: true, Revision: &records.ProcessingRevision{ID: "pi-config", Spec: records.ProcessingSpec{Mode: "agent", Agent: "pi", Model: "selected-model"}, Validation: &records.ProcessingValidation{State: "succeeded"}}}}
 	a, dispatch := experienceUIFixture(t, func(r serviceipc.Request) serviceipc.Response {
 		if r.Op != "processing_get" {
 			t.Errorf("chooser performed %s instead of reading", r.Op)

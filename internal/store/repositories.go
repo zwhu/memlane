@@ -46,6 +46,9 @@ func repository(ctx context.Context, path string) (root, common string, err erro
 // Backfill identities lazily for existing P1 registered paths, without
 // rejecting a migrated database whose repository is temporarily unavailable.
 func (s *Store) ProjectForWorkspace(ctx context.Context, path string) (records.Scope, error) {
+	return s.projectForWorkspace(ctx, path, true)
+}
+func (s *Store) projectForWorkspace(ctx context.Context, path string, cache bool) (records.Scope, error) {
 	_, common, err := repository(ctx, path)
 	if err != nil {
 		return records.Scope{}, err
@@ -69,6 +72,9 @@ func (s *Store) ProjectForWorkspace(ctx context.Context, path string) (records.S
 	}
 	if len(matches) > 1 {
 		return records.Scope{}, access("scope_ambiguous", "multiple registered projects match this repository; choose one in Memlane")
+	}
+	if !cache {
+		return matches[0], nil
 	}
 	_, err = s.DB.ExecContext(ctx, `INSERT INTO repositories(common_dir,scope) VALUES(?,?) ON CONFLICT(common_dir) DO NOTHING`, common, matches[0].ID)
 	return matches[0], err

@@ -27,8 +27,8 @@ func (s *Server) resolveProjectExecutor(ctx context.Context, project string) (ag
 	if err != nil {
 		return empty, err
 	}
-	if b.State != "available" || b.Agent != "codex" {
-		return empty, &records.AccessError{Code: "project_executor_unavailable", Message: "select a verified project Codex organizer"}
+	if b.State != "available" || (b.Agent != "codex" && b.Agent != "pi") {
+		return empty, &records.AccessError{Code: "project_executor_unavailable", Message: "select a verified supported project organizer"}
 	}
 	c, err := s.store.Connection(ctx, b.ConnectionID)
 	if err != nil {
@@ -46,6 +46,9 @@ func (s *Server) resolveProjectExecutor(ctx context.Context, project string) (ag
 	if err = s.store.DB.QueryRowContext(ctx, `SELECT path FROM scopes WHERE id=? AND kind='project'`, project).Scan(&workspace); err != nil {
 		return empty, err
 	}
+	if b.Agent == "pi" {
+		return agents.ResolvePiProject(ctx, i, workspace, s.proposalGuard)
+	}
 	return agents.ResolveCodexProject(ctx, i, workspace, i.Options.CodexDirectory, s.proposalGuard)
 }
 
@@ -58,26 +61,22 @@ func (s *Server) startProjectTask(ctx context.Context, d records.ProjectTaskStar
 	if s.lifecycle == nil || s.lifecycle.Err() != nil {
 		return empty, &records.AccessError{Code: "service_stopping", Message: "background service is stopping"}
 	}
+	// Recover a lost reply before resolving mutable executables/configuration.
+	// Existing intent never grants permission to launch a replacement task.
+	if prior, found, err := s.store.ProjectTaskForIntent(ctx, d); found || err != nil {
+		return prior, projectStartError("request", err)
+	}
 	plan, err := s.resolveProjectExecutor(ctx, d.Project)
 	if err != nil {
-		return empty, err
-	}
-	if d.IncludeHistory {
-		prior, found, e := s.store.ProjectTaskForIntent(ctx, d)
-		if e != nil || found {
-			if e == nil && prior.Snapshot.Executor != plan.Executor {
-				prior.AccessState = "configuration_changed"
-			}
-			return prior, e
-		}
+		return empty, projectStartError("executor", err)
 	}
 	selected, histories, err := s.freezeProjectHistory(ctx, d)
 	if err != nil {
-		return empty, err
+		return empty, projectStartError("history", err)
 	}
 	t, created, err := s.store.StartProjectTaskWithHistory(ctx, d, plan.Executor, selected, histories)
 	if err != nil || !created {
-		return t, err
+		return t, projectStartError("persist", err)
 	}
 	if s.projectRuns == nil {
 		s.projectRuns = map[string]projectTaskOwner{}
@@ -178,7 +177,7 @@ func (s *Server) runProjectTask(ctx context.Context, cancel context.CancelFunc, 
 	defer func() { close(done); <-watchDone }()
 	runner := s.projectExecute
 	if runner == nil {
-		runner = agents.RunCodexProject
+		runner = agents.RunProject
 	}
 	plan.KnowledgeReader = func(readCtx context.Context, cursor string) (records.ProjectKnowledgeContextPage, error) {
 		s.agentAccess.RLock()
@@ -204,7 +203,7 @@ func (s *Server) runProjectTask(ctx context.Context, cancel context.CancelFunc, 
 	})
 	final, stop := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	if execution.Started {
-		proof := records.ProjectTaskExecution{PID: execution.PID, StartedMS: execution.StartedMS, EndedMS: execution.EndedMS, Reaped: execution.Reaped, GroupGone: execution.GroupGone, Terminal: execution.Terminal, Thread: execution.Thread, Turn: execution.Turn, Model: execution.SelectedModel, Provider: execution.SelectedProvider, PermissionProfile: execution.PermissionProfile, InterruptSent: execution.InterruptSent, InterruptAcknowledged: execution.InterruptAcknowledged, KnowledgeContext: execution.KnowledgeContext, HistoryContext: execution.HistoryContext}
+		proof := records.ProjectTaskExecution{Pi: execution.Pi, PID: execution.PID, StartedMS: execution.StartedMS, EndedMS: execution.EndedMS, Reaped: execution.Reaped, GroupGone: execution.GroupGone, Terminal: execution.Terminal, Thread: execution.Thread, Turn: execution.Turn, Model: execution.SelectedModel, Provider: execution.SelectedProvider, PermissionProfile: execution.PermissionProfile, InterruptSent: execution.InterruptSent, InterruptAcknowledged: execution.InterruptAcknowledged, KnowledgeContext: execution.KnowledgeContext, HistoryContext: execution.HistoryContext}
 		if err = s.store.FinishProjectProcess(final, t.ID, t.Attempt, proof); err != nil {
 			stop()
 			if s.stop != nil {
@@ -311,4 +310,21 @@ func prepareProjectRuns(ctx context.Context, db *store.Store) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// The transport exposes only a fixed operation stage in addition to the
+// existing trusted error code; request data and runtime configuration stay out.
+type projectStartFailure struct {
+	stage string
+	err   error
+}
+
+func (e *projectStartFailure) Error() string          { return e.err.Error() }
+func (e *projectStartFailure) Unwrap() error          { return e.err }
+func (e *projectStartFailure) OperationStage() string { return e.stage }
+func projectStartError(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &projectStartFailure{stage: stage, err: err}
 }

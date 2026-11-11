@@ -39,3 +39,22 @@ func (l Library) ActivateProcessing(ctx context.Context, request records.Process
 	err := Call(ctx, l.Root, Request{Op: "processing_activate", ProcessingActivation: &request, UserConfirmed: true}, &out)
 	return out, err
 }
+
+// SaveProcessingCredential consumes the supplied secret bytes. The private IPC
+// response returns only immutable references and supplier metadata.
+func (l Library) SaveProcessingCredential(ctx context.Context, d records.ProcessingCredentialWrite) (records.ProcessingCredentialReference, error) {
+	defer clear(d.Secret)
+	var out records.ProcessingCredentialReference
+	err := Call(ctx, l.Root, Request{Op: "processing_credential_save", UserConfirmed: true, ProcessingCredentialWrite: &d}, &out)
+	return out, err
+}
+func (l Library) ProcessingSuppliers(ctx context.Context) ([]records.ProcessingSupplier, error) {
+	var out []records.ProcessingSupplier
+	err := Call(ctx, l.Root, Request{Op: "processing_suppliers"}, &out)
+	return out, err
+}
+func (l Library) ProcessingModels(ctx context.Context, q records.ProcessingModelQuery) (records.ProcessingModelCatalog, error) {
+	var out records.ProcessingModelCatalog
+	err := Call(ctx, l.Root, Request{Op: "processing_models", UserConfirmed: true, ProcessingModelQuery: &q}, &out)
+	return out, err
+}

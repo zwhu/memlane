@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"reflect"
 	"time"
 
@@ -14,15 +15,16 @@ import (
 )
 
 type ProjectBindingOperation struct {
-	FailureCode string
-	Project     string
-	Active      bool
-	Error       string
-	Kind        string
-	Task        string
-	Draft       records.ProjectTaskStart
-	Recovery    records.IndexRebuildStart
-	Result      *records.ProjectTask
+	FailureStage string
+	FailureCode  string
+	Project      string
+	Active       bool
+	Error        string
+	Kind         string
+	Task         string
+	Draft        records.ProjectTaskStart
+	Recovery     records.IndexRebuildStart
+	Result       *records.ProjectTask
 }
 
 type ProjectOrganizerUI struct {
@@ -52,8 +54,14 @@ type ProjectOrganizerUI struct {
 
 func (a *App) projectKnowledgeEmpty() bool {
 	return a.page == "项目" && a.scope != "" && (a.recordKind == "" || a.recordKind == "knowledge") &&
-		!a.loading && a.libraryError == "" && a.readingSearch == "" && a.readingFilter == "" &&
+		!a.loading && a.libraryError == "" && a.readingSearch == "" && a.readingFilter == "" && !a.readingFilters.active() &&
 		a.readingCountsRoute == a.page+":"+a.scope && a.readingKnowledgeTotal != nil && a.readingRawTotal != nil && *a.readingKnowledgeTotal == 0
+}
+
+// The empty knowledge preview never covers an explicit editor, source reader
+// or project settings panel; project organization remains optional.
+func (a *App) projectKnowledgePreviewVisible() bool {
+	return a.projectKnowledgeEmpty() && !a.editing && !a.reader.Open && !a.projectSettings.Open
 }
 
 func (a *App) openProjectOrganizer(project, task string) {
@@ -195,13 +203,19 @@ func (a *App) refreshProjectOrganizer() {
 	}()
 }
 
+func projectTaskAgentSupported(agent string) bool { return agent == "codex" || agent == "pi" }
+
 func (a *App) beginProjectTask(d records.ProjectTaskStart) {
 	s := &a.projectOrganizer
-	if !s.Open || !s.Loaded || s.Error != "" || s.Project != d.Project || s.Binding.Revision != d.BindingRevision || s.Binding.State != "available" || s.Binding.Agent != "codex" || projectTaskRunning(s.Task) || s.Operation != nil && s.Operation.Active || a.libraryContext == nil || a.dispatch == nil {
+	if !s.Open || !s.Loaded || s.Error != "" || s.Project != d.Project || s.Binding.Revision != d.BindingRevision || s.Binding.State != "available" || !projectTaskAgentSupported(s.Binding.Agent) || projectTaskRunning(s.Task) || s.Operation != nil && s.Operation.Active || a.libraryContext == nil || a.dispatch == nil {
 		return
 	}
 	if d.IncludeHistory && (!s.HistoryLoaded || s.HistoryLoading || s.HistoryError != "" || len(s.Sessions) == 0 || d.HistoryWorkspaceID != s.HistoryWorkspaceID || !reflect.DeepEqual(d.Sessions, s.Sessions)) {
 		return
+	}
+	if !d.IncludeHistory {
+		d.HistoryWorkspaceID = ""
+		d.Sessions = nil
 	}
 	d.Sessions = append([]records.ProjectSessionSelection(nil), d.Sessions...)
 	operation := &ProjectBindingOperation{Project: d.Project, Kind: "start", Active: true, Draft: d}
@@ -221,11 +235,7 @@ func (a *App) beginProjectTask(d records.ProjectTaskStart) {
 				return
 			}
 			if err != nil {
-				operation.Error = "项目整理启动未确认，请重新读取当前任务后再试。"
-				var remote *serviceipc.ServiceError
-				if errors.As(err, &remote) {
-					operation.FailureCode = remote.Code
-				}
+				operation.FailureStage, operation.FailureCode, operation.Error = projectStartFailureNotice(err)
 				if operation.FailureCode == "history_changed" {
 					operation.Error = "所选历史会话已变化，请重新选择后再开始。"
 					if current.Project == d.Project && current.Task == nil {
@@ -544,6 +554,9 @@ func projectOrganizerHeading(task *records.ProjectTask) (string, string) {
 		}
 		return "项目知识已经就绪", "可以回到项目，查看知识与对应出处。"
 	case "failed":
+		if task.Error == "project_save_failed" {
+			return "项目知识未能保存", "整理结果未通过保存检查；已有知识保留，可以重新整理。"
+		}
 		return "项目整理未完成", "已保存的知识保留，可查看结果或重新整理。"
 	case "cancelled", "interrupted":
 		return projectTaskStatus(task.State), "已保存的知识保留；重新整理会创建新的任务。"
@@ -725,7 +738,7 @@ func (a *App) projectOrganizerContent(c *ui.Context) {
 				if a.startProjectTask == nil {
 					ui.Text(c, "项目整理暂不可用。").Key("project-organizer-unavailable").FontSize(10).TextColor(design.Muted)
 				}
-				if s.Binding.State == "available" && s.Binding.Agent != "codex" && !frozen {
+				if s.Binding.State == "available" && !projectTaskAgentSupported(s.Binding.Agent) && !frozen {
 					ui.Text(c, "当前 Agent 的项目整理暂不可用。").FontSize(10).TextColor(design.Muted)
 				}
 			})
@@ -758,11 +771,46 @@ func (a *App) projectOrganizerContent(c *ui.Context) {
 			if s.Operation != nil && s.Operation.Active && s.Operation.Kind == "start" {
 				label = "正在确认启动…"
 			}
-			actionButton(c, label, nil).Key("project-organizer-start").Background(design.Ink).TextColor(ui.Hex("#ffffff")).Disabled(busy || !s.Loaded || s.Binding.State != "available" || s.Binding.Agent != "codex" || s.Error != "" || a.startProjectTask == nil || s.IncludeHistory && (!s.HistoryLoaded || s.HistoryLoading || s.HistoryError != "" || len(s.Sessions) == 0)).OnClick(func() {
+			actionButton(c, label, nil).Key("project-organizer-start").Background(design.Ink).TextColor(ui.Hex("#ffffff")).Disabled(busy || !s.Loaded || s.Binding.State != "available" || !projectTaskAgentSupported(s.Binding.Agent) || s.Error != "" || a.startProjectTask == nil || s.IncludeHistory && (!s.HistoryLoaded || s.HistoryLoading || s.HistoryError != "" || len(s.Sessions) == 0)).OnClick(func() {
 				if a.startProjectTask != nil && s.Binding.State == "available" {
 					a.startProjectTask(records.ProjectTaskStart{OperationID: s.OperationID, Project: s.Project, BindingRevision: s.Binding.Revision, IncludeHistory: s.IncludeHistory, Sessions: s.Sessions, HistoryWorkspaceID: s.HistoryWorkspaceID})
 				}
 			})
 		})
 	})
+}
+
+func projectStartFailureNotice(err error) (string, string, string) {
+	stage, code := "transport", "ipc_reply_unavailable"
+	var remote *serviceipc.ServiceError
+	if errors.As(err, &remote) {
+		stage, code = remote.Stage, remote.Code
+		if stage == "" {
+			stage = "request"
+		}
+	} else {
+		var network net.Error
+		var operation *net.OpError
+		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &network) && network.Timeout() {
+			code = "ipc_timeout"
+		} else if errors.As(err, &operation) && operation.Op == "dial" {
+			code = "ipc_connect_unavailable"
+		}
+	}
+	label := map[string]string{"transport": "连接后台", "request": "核对启动请求", "executor": "准备执行者", "history": "核对历史范围", "persist": "保存启动请求"}[stage]
+	if label == "" {
+		stage, label = "request", "核对启动请求"
+	}
+	// Codes from the private service are bounded identifiers, never raw provider
+	// errors or a path. Unexpected code shapes receive a fixed fallback.
+	if len(code) == 0 || len(code) > 128 {
+		code = "service_error"
+	}
+	for _, r := range code {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_') {
+			code = "service_error"
+			break
+		}
+	}
+	return stage, code, fmt.Sprintf("项目整理启动未确认（%s：%s）；请重新读取当前任务后再试。", label, code)
 }

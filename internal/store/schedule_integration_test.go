@@ -208,3 +208,72 @@ func TestScheduleFrequencyEditDoesNotReprocessSameMaterials(t *testing.T) {
 		t.Fatal("time edit duplicated processed materials", run)
 	}
 }
+
+// SQLite ledger fixtures prove the plan's immutable paid selection; no real
+// provider capability is claimed by these synthetic validation receipts.
+func TestScheduleProcessingFrozenSelectionAndExplicitEnable(t *testing.T) {
+	s, d, now := scheduleFixture(t)
+	first, err := s.SaveProcessing(mergeCtx, records.ProcessingSave{OperationID: uuid.NewString(), Spec: processingProvider("plan-first")}, processingTime)
+	mustMerge(t, err)
+	dependency := records.MergeDigest("plan runtime")
+	processingVerifiedFixture(t, s, first.ID, dependency)
+	_, err = s.ActivateProcessing(mergeCtx, records.ProcessingActivation{OperationID: uuid.NewString(), Revision: first.ID}, dependency, processingTime)
+	mustMerge(t, err)
+	d.Spec.Executor = "processing"
+	d.Processing = &records.ProcessingTaskAuthorization{Revision: first.ID, Generation: 1}
+	plan, err := s.PutSchedule(mergeCtx, d, now, dependency)
+	mustMerge(t, err)
+	if plan.Enabled || plan.Spec.Processing == nil || plan.Spec.Processing.Revision.ID != first.ID {
+		t.Fatal("save did not freeze inactive plan", plan)
+	}
+	second, err := s.SaveProcessing(mergeCtx, records.ProcessingSave{OperationID: uuid.NewString(), ExpectedSaved: first.ID, Spec: processingProvider("plan-second")}, processingTime)
+	mustMerge(t, err)
+	processingVerifiedFixture(t, s, second.ID, dependency)
+	_, err = s.ActivateProcessing(mergeCtx, records.ProcessingActivation{OperationID: uuid.NewString(), Revision: second.ID, ExpectedGeneration: 1}, dependency, processingTime)
+	mustMerge(t, err)
+	enable := records.ScheduleDraft{ID: plan.ID, OperationID: uuid.NewString(), ExpectedGeneration: plan.Generation, Enabled: true, Spec: plan.Spec}
+	enabled, err := s.PutSchedule(mergeCtx, enable, now)
+	mustMerge(t, err)
+	_, task, err := s.FireSchedule(mergeCtx, enabled.ID, enabled.Generation, time.UnixMilli(enabled.NextRunMS))
+	mustMerge(t, err)
+	if task == nil || task.Snapshot.Processing == nil || task.Snapshot.Processing.Revision.ID != first.ID {
+		t.Fatal("plan silently switched runtime", task)
+	}
+	if err = task.Snapshot.Seal(); err != nil {
+		t.Fatal("unsealed task", err)
+	}
+	forged := enable
+	forged.ID, forged.OperationID, forged.ExpectedGeneration = uuid.NewString(), uuid.NewString(), 0
+	if _, err = s.PutSchedule(mergeCtx, forged, now); err == nil {
+		t.Fatal("client introduced a frozen paid selection without service resolution")
+	}
+}
+
+func TestScheduleProcessingRevokedValidationSkipsWithoutFallback(t *testing.T) {
+	s, d, now := scheduleFixture(t)
+	revision, err := s.SaveProcessing(mergeCtx, records.ProcessingSave{OperationID: uuid.NewString(), Spec: processingProvider("fixture")}, processingTime)
+	mustMerge(t, err)
+	dependency := records.MergeDigest("fixture runtime")
+	processingVerifiedFixture(t, s, revision.ID, dependency)
+	_, err = s.ActivateProcessing(mergeCtx, records.ProcessingActivation{OperationID: uuid.NewString(), Revision: revision.ID}, dependency, processingTime)
+	mustMerge(t, err)
+	d.Spec.Executor = "processing"
+	d.Processing = &records.ProcessingTaskAuthorization{Revision: revision.ID, Generation: 1}
+	d.Enabled = true
+	plan, err := s.PutSchedule(mergeCtx, d, now, dependency)
+	mustMerge(t, err)
+	// A later failed validation invalidates authorization; no legacy executor or
+	// model call may replace the frozen binding.
+	_, err = s.BeginProcessingValidation(mergeCtx, uuid.NewString(), revision.ID, dependency, processingTime)
+	mustMerge(t, err)
+	run, task, err := s.FireSchedule(mergeCtx, plan.ID, plan.Generation, time.UnixMilli(plan.NextRunMS))
+	mustMerge(t, err)
+	if task != nil || run.Reason != "processing_changed" || run.State != "skipped" {
+		t.Fatal(run, task)
+	}
+	replay, found, err := s.ReplaySchedule(mergeCtx, d)
+	mustMerge(t, err)
+	if !found || replay.ID != plan.ID {
+		t.Fatal("lost reply did not recover original save", replay)
+	}
+}

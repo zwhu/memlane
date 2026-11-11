@@ -155,7 +155,7 @@ func TestExperiencePreviewRestoreRetiresIdentityAndDrafts(t *testing.T) {
 func TestExperiencePreviewSchema21MigrationPreservesSourceAndBackup(t *testing.T) {
 	s, _ := mergeDB(t)
 	_ = previewFixture(t, s)
-	_, err := s.DB.Exec(`DROP TABLE experience_previews; DROP TABLE experience_preview_head; PRAGMA user_version=21`)
+	_, err := s.DB.Exec(`DROP TABLE processing_validation_evidence; DROP TABLE delivery_assignments; DROP TABLE project_preference_decisions; DROP TABLE cognee_submissions; DROP TABLE cognee_submission_tasks; DROP TABLE cognee_library_identity; DROP TABLE processing_http_receipts; DROP TABLE processing_suppliers; DROP TABLE processing_validation_diagnostics; DROP TABLE index_rebuild_controls; DROP TABLE index_attempts; DROP TABLE agent_connection_batch_head; DROP TABLE agent_connection_batches; DROP TABLE organization_start_intents; DROP TABLE organization_previews; DROP TABLE organization_preview_head; DROP TABLE experience_previews; DROP TABLE experience_preview_head; PRAGMA user_version=21`)
 	mustMerge(t, err)
 	s.Schema = 21
 	before := restoreTables(t, s.DB)
@@ -167,7 +167,7 @@ func TestExperiencePreviewSchema21MigrationPreservesSourceAndBackup(t *testing.T
 	defer current.Close()
 	backups, err := filepath.Glob(filepath.Join(filepath.Dir(path), "backups/schema-v21-*.sqlite"))
 	mustMerge(t, err)
-	if len(backups) != 1 || current.Schema != 22 {
+	if len(backups) != 1 || current.Schema != SchemaVersion {
 		t.Fatal("schema21 backup or migration absent", backups, current.Schema)
 	}
 	old, err := sql.Open("sqlite", backups[0])

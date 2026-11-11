@@ -61,6 +61,11 @@ func (s *Store) startOrganizationTx(ctx context.Context, tx *sql.Tx, d records.O
 	if err != sql.ErrNoRows {
 		return empty, false, err
 	}
+	if s.Schema >= 23 {
+		if err = organizationStartIntent(ctx, tx, d); err != nil {
+			return empty, false, err
+		}
+	}
 	snapshot := records.OrganizationSnapshot{Schema: records.OrganizationSchema, Task: uuid.NewString(), Project: d.Project, Attempt: 1}
 	if d.Review {
 		snapshot.Schema = records.OrganizationReviewSchema

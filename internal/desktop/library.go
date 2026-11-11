@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -16,6 +17,10 @@ func displayVersion(v records.Version) MemoryItem {
 	if created.IsZero() {
 		created, _ = time.Parse("2006-01-02 15:04:05", v.CreatedAt)
 	}
+	updated, _ := time.Parse(time.RFC3339Nano, v.UpdatedAt)
+	if updated.IsZero() {
+		updated, _ = time.Parse("2006-01-02 15:04:05", v.UpdatedAt)
+	}
 	if v.State == "deleted" {
 		v.IndexState = "deleted"
 	}
@@ -27,7 +32,7 @@ func displayVersion(v records.Version) MemoryItem {
 	} else if v.ScopeKind == "experience" {
 		category = "通用经验"
 	}
-	return MemoryItem{Origin: v.Origin, ID: v.Memory, Dataset: v.Dataset, Title: v.Title, Text: v.Text, Original: v.Original, Source: sourceDisplayName(v.Source), ScopeName: scopeDisplayName(records.Scope{Kind: v.ScopeKind, Name: v.ScopeName}), Category: category, Revision: v.Revision, State: v.State, IndexState: v.IndexState, Operation: v.Operation, CreatedAt: created.Local(), SourceDetail: v.SourceDetail, Tags: v.Tags, Derived: v.Derived, Experience: v.Experience, Usage: v.Usage}
+	return MemoryItem{RawSource: v.Source, Origin: v.Origin, ID: v.Memory, Dataset: v.Dataset, Title: v.Title, Text: v.Text, Original: v.Original, Source: sourceDisplayName(v.Source), ScopeName: scopeDisplayName(records.Scope{Kind: v.ScopeKind, Name: v.ScopeName}), Category: category, Revision: v.Revision, State: v.State, IndexState: v.IndexState, Operation: v.Operation, CreatedAt: created.Local(), UpdatedAt: updated.Local(), SourceDetail: v.SourceDetail, Tags: v.Tags, Derived: v.Derived, Experience: v.Experience, Usage: v.Usage}
 }
 func displayVersions(vs []records.Version) []MemoryItem {
 	out := make([]MemoryItem, 0, len(vs))
@@ -56,10 +61,30 @@ func displayHistory(vs []records.History) []MemoryHistory {
 // window's serialized Update boundary. Sequence checks keep late page responses
 // from replacing a newer selection or draft; read failures retain prior data.
 func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(func())) {
+	a.retireProjectCreation()
+	a.retireAgentDelivery()
+	a.retireDeliveryAssignment()
+	a.libraryEpoch++
+	a.retireProjectPreference()
+	a.closeKnowledgeHistory()
+	a.retireMaintenanceRecoveryState()
+	a.usageEvents = UsageEventsUI{Sequence: a.usageEvents.Sequence + 1}
+	a.saving, a.retryingIndex = false, false
+	a.projectBusy = false
 	a.projectOrganizer.stopWatch()
 	a.retireExperiencePreview()
+	a.retireMaterialPreview()
 	a.experiencePersistence = &experiencePersistence{}
+	a.materialPersistence = &materialPersistence{}
 	a.library = serviceipc.Library{Root: root}
+	a.readingFilters, a.readingFilterRoutes = ReadingFilterUI{}, map[string]ReadingFilterUI{}
+	a.readingSources, a.readingSourcesRoute = nil, ""
+	a.readingSourcesTruncated = false
+	a.indexRebuildSequence++
+	a.indexRebuild = records.IndexRebuild{}
+	a.indexRebuildBusy, a.indexRebuildLoading, a.indexRebuildConfirm = false, false, false
+	a.indexRebuildOperation, a.indexRebuildError = "", ""
+	a.homeActivity = homeActivityUI{Sequence: a.homeActivity.Sequence + 1, Review: homeReviewUI{Sequence: a.homeActivity.Review.Sequence + 1}}
 	a.backups = BackupUI{Client: serviceipc.BackupClient{Root: root}, Sequence: a.backups.Sequence + 1}
 	a.code = CodeUI{Client: serviceipc.CodeClient{Root: root}, Mode: "函数与符号", Manage: true}
 	a.initialization = InitializationUI{Client: serviceipc.InitializationClient{Root: root}}
@@ -74,11 +99,14 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 	a.startProjectTask = a.beginProjectTask
 	a.projectOverviews = nil
 	a.merges = MergeUI{Client: serviceipc.MergeClient{Root: root}, Chosen: map[string]records.MergeTarget{}, Reviews: map[string]records.MergeReview{}}
+	a.processing = ProcessingUI{Sequence: a.processing.Sequence + 1}
 	a.processing.ensure()
 	a.libraryContext = ctx
 	a.dispatch = dispatch
+	a.configureManualDrafts(root)
 	a.onNavigate = func() {
 		a.persistExperiencePreview(nil)
+		a.persistMaterialPreview(nil)
 		a.closeSourceReader()
 		a.textWindows = nil
 		if a.page != "代码图谱" && a.code.Cancel != nil {
@@ -154,6 +182,8 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 					}
 					a.loadExperiencePreview()
 					a.persistExperiencePreview(nil)
+					a.loadMaterialPreview()
+					a.persistMaterialPreview(nil)
 					if a.page == "项目" {
 						a.refreshBrowsing()
 					}
@@ -171,7 +201,7 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 						a.refreshBackups()
 					}
 					if (a.page == "设置" && a.settingsSection == "processing") || (a.firstLaunch.Open && a.firstLaunchStep() == "processing") {
-						a.refreshProcessing()
+						a.pollProcessing()
 					}
 					if a.page == "代码图谱" && !a.code.Busy {
 						a.refreshCode()
@@ -196,7 +226,14 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 	a.refresh(false)
 	a.refreshMerge(false)
 	a.refreshProcessing()
+	manualTouched := false
+	if a.manualDrafts != nil {
+		manualTouched = a.manualDrafts.Touched
+	}
 	a.configureBrowsing()
+	if a.manualDrafts != nil {
+		a.manualDrafts.Touched = manualTouched
+	}
 	a.experiencePersistence.Touched = false
 	a.loadExperiencePreview()
 }
@@ -214,6 +251,12 @@ func (a *App) listQuery() records.ListQuery {
 	} else if a.page == "通用知识" {
 		q.Datasets, _ = commonDatasets(a.scopes, a.commonQueryCategory())
 	}
+	if a.isMemoryPage() {
+		q.Source, q.ScopeKind, q.UpdatedSinceMS = a.readingFilters.Source, a.readingFilters.Category, a.readingFilters.SinceMS
+		if a.readingFilters.Scope != "" {
+			q.Datasets = []string{a.readingFilters.Scope}
+		}
+	}
 	return q
 }
 func (a *App) refresh(more bool) {
@@ -228,6 +271,17 @@ func (a *App) refresh(more bool) {
 		query.Cursor = a.nextCursor
 	}
 	pageName := a.page
+	addingProject := a.addingProject()
+	if addingProject {
+		// An unregistered project has no content scope. Empty datasets means
+		// all scopes to List, so this route must never issue that query.
+		a.items, a.selectedItem, a.history = nil, nil, nil
+		a.selectedID, a.nextCursor = "", ""
+		a.listTotal = 0
+		a.readingKnowledgeTotal, a.readingRawTotal = nil, nil
+		a.readingCountsRoute = ""
+	}
+	rankedSearch := pageName == "搜索" && a.searchQuery != ""
 	commonCategory := a.commonQueryCategory()
 	selectMatch := a.commonSelectMatch
 	countsRoute := a.page + ":" + a.scope
@@ -240,13 +294,17 @@ func (a *App) refresh(more bool) {
 	historyLoaded := len(a.history) > 0
 	lastHomeTask := a.homeLastTask
 	copyRequest := a.experience.Copy
+	if addingProject {
+		copyRequest = nil
+	}
+	life, client, orgClient, mergeClient, dispatch, epoch := a.libraryContext, a.library, a.organization.Client, a.merges.Client, a.dispatch, a.libraryEpoch
 	go func() {
-		ctx, cancel := context.WithTimeout(a.libraryContext, 5*time.Second)
+		ctx, cancel := context.WithTimeout(life, 5*time.Second)
 		defer cancel()
 		// Page reads do not own availability. Startup and the runtime observer
 		// publish service health independently, including schedule diagnostics
 		// when the business database itself cannot be read.
-		scopes, err := a.library.Scopes(ctx)
+		scopes, err := client.Scopes(ctx)
 		var page records.Page
 		var activity records.ActivitySummary
 		var active homeTask
@@ -263,12 +321,12 @@ func (a *App) refresh(more bool) {
 			if pageName == "通用知识" {
 				query.Datasets, err = commonDatasets(scopes, commonCategory)
 			}
-			if err == nil {
-				page, err = a.library.List(ctx, query)
+			if err == nil && !addingProject {
+				page, err = client.List(ctx, query)
 			}
 			if err == nil && pageName == "通用知识" && commonCategory != "" {
 				all, _ := commonDatasets(scopes, "")
-				counts, e := a.library.List(ctx, records.ListQuery{Datasets: all, Limit: 1})
+				counts, e := client.List(ctx, records.ListQuery{Datasets: all, Limit: 1})
 				if e != nil {
 					err = e
 				} else {
@@ -276,19 +334,19 @@ func (a *App) refresh(more bool) {
 				}
 			}
 		}
-		if err == nil {
-			activity, err = a.library.Activities(ctx, time.Local.String())
+		if err == nil && !addingProject {
+			activity, err = client.Activities(ctx, time.Local.String())
 		}
 		if err == nil && pageName == "总览" {
 			var organizations records.OrganizationPage
-			organizations, err = a.organization.Client.List(ctx, records.OrganizationListQuery{MergeListQuery: records.MergeListQuery{ActiveOnly: true, Limit: 1}})
+			organizations, err = orgClient.List(ctx, records.OrganizationListQuery{MergeListQuery: records.MergeListQuery{ActiveOnly: true, Limit: 1}})
 			if err == nil && len(organizations.Items) > 0 {
 				v := organizations.Items[0]
 				active = homeTask{ID: v.ID, Kind: "organization", State: v.State}
 			}
 			if err == nil {
 				var merges records.MergePage
-				merges, err = a.merges.Client.List(ctx, records.MergeListQuery{ActiveOnly: true, Limit: 1})
+				merges, err = mergeClient.List(ctx, records.MergeListQuery{ActiveOnly: true, Limit: 1})
 				if len(merges.Items) > 0 && (active.ID == "" || (active.State == "queued" && merges.Items[0].State == "running")) {
 					v := merges.Items[0]
 					active = homeTask{ID: v.ID, Kind: "merge", State: v.State}
@@ -299,12 +357,12 @@ func (a *App) refresh(more bool) {
 			// An absent active task does not prove completion. Fetch its actual final
 			// receipt; failed/cancelled/unreadable tasks never show a success glyph.
 			if lastHomeTask.Kind == "organization" {
-				task, e := a.organization.Client.Get(ctx, lastHomeTask.ID)
+				task, e := orgClient.Get(ctx, lastHomeTask.ID)
 				if e == nil {
 					terminal = homeTask{ID: task.ID, Kind: "organization", State: task.State}
 				}
 			} else {
-				task, e := a.merges.Client.Get(ctx, lastHomeTask.ID)
+				task, e := mergeClient.Get(ctx, lastHomeTask.ID)
 				if e == nil {
 					terminal = homeTask{ID: task.ID, Kind: "merge", State: task.State}
 				}
@@ -315,7 +373,7 @@ func (a *App) refresh(more bool) {
 			selected = ""
 		}
 		if err == nil && selected != "" {
-			current, err = a.library.Get(ctx, selected)
+			current, err = client.Get(ctx, selected)
 			if err == nil && pageName == "通用知识" {
 				allowed := false
 				for _, id := range query.Datasets {
@@ -337,14 +395,14 @@ func (a *App) refresh(more bool) {
 				selected, current = "", records.Version{}
 			} else if selected == "" && len(page.Items) > 0 {
 				selected = page.Items[0].Memory
-				current, err = a.library.Get(ctx, selected)
+				current, err = client.Get(ctx, selected)
 			}
 		}
 		if err == nil && selected != "" && (!historyLoaded || current.Revision != selectedRevision) {
 			before := int64(0)
 			for {
 				var result records.HistoryPage
-				result, err = a.library.History(ctx, selected, before)
+				result, err = client.History(ctx, selected, before)
 				if err != nil {
 					break
 				}
@@ -356,23 +414,23 @@ func (a *App) refresh(more bool) {
 			}
 		}
 		if err == nil && selected != "" {
-			linksCtx, linksStop := context.WithTimeout(a.libraryContext, 500*time.Millisecond)
-			related, relatedErr = a.merges.Client.List(linksCtx, records.MergeListQuery{Memory: selected, Limit: 100})
+			linksCtx, linksStop := context.WithTimeout(life, 500*time.Millisecond)
+			related, relatedErr = mergeClient.List(linksCtx, records.MergeListQuery{Memory: selected, Limit: 100})
 			linksStop()
 			if current.Origin != "raw" {
-				sourcesCtx, sourcesStop := context.WithTimeout(a.libraryContext, 500*time.Millisecond)
-				organizationSources, organizationSourcesErr = a.organization.Client.Sources(sourcesCtx, selected, current.Revision)
+				sourcesCtx, sourcesStop := context.WithTimeout(life, 500*time.Millisecond)
+				organizationSources, organizationSourcesErr = orgClient.Sources(sourcesCtx, selected, current.Revision)
 				sourcesStop()
 			}
 		}
 		if copyRequest != nil {
-			copySource, copySourceErr = a.library.Get(ctx, copyRequest.Memory)
+			copySource, copySourceErr = client.Get(ctx, copyRequest.Memory)
 		}
-		if a.libraryContext.Err() != nil {
+		if life.Err() != nil {
 			return
 		}
-		a.dispatch(func() {
-			if sequence != a.loadSequence || a.firstLaunch.Detecting || a.knowledgeHistory.Open {
+		dispatch(func() {
+			if epoch != a.libraryEpoch || sequence != a.loadSequence || a.firstLaunch.Detecting || a.knowledgeHistory.Open {
 				return
 			}
 			a.loading = false
@@ -388,6 +446,7 @@ func (a *App) refresh(more bool) {
 			}
 			if scopes != nil {
 				a.scopes = scopes
+				a.manualScopesLoaded()
 				a.projects = nil
 				for _, scope := range scopes {
 					if scope.Kind != "preference" && scope.Kind != "experience" {
@@ -404,7 +463,10 @@ func (a *App) refresh(more bool) {
 				return
 			}
 			a.libraryError = ""
-			if pageName == "搜索" {
+			if addingProject {
+				return
+			}
+			if rankedSearch {
 				// Search results remain bound to their submitted query.
 			} else if more {
 				a.items = append(a.items, displayVersions(page.Items)...)
@@ -421,7 +483,8 @@ func (a *App) refresh(more bool) {
 			if more {
 				a.nextCursor = page.NextCursor
 			}
-			if pageName != "搜索" {
+			if !rankedSearch {
+				a.readingSources, a.readingSourcesRoute, a.readingSourcesTruncated = page.Sources, countsRoute, page.SourcesTruncated
 				a.listTotal = page.Total
 				a.readingCountsRoute = countsRoute
 				a.readingKnowledgeTotal, a.readingRawTotal = page.KnowledgeTotal, page.RawTotal
@@ -436,6 +499,12 @@ func (a *App) refresh(more bool) {
 				}
 			}
 			if pageName == "总览" {
+				if !a.homeActivity.Full {
+					a.refreshHomeActivity(false)
+				}
+				if !a.homeActivity.Review.Full {
+					a.refreshHomeReviews(false)
+				}
 				a.observeHomeTask(active, terminal, time.Now())
 				a.recent = displayVersions(activity.Recent)
 				if query.Date != "" {
@@ -482,26 +551,43 @@ func (a *App) refresh(more bool) {
 	}()
 }
 func (a *App) registerProject() {
-	if a.projectBusy || a.libraryContext == nil {
+	if a.projectBusy || a.libraryContext == nil || !a.projectCreationCanRegister() {
 		return
 	}
-	draft := records.ScopeDraft{Name: a.projectName, Path: a.projectPath}
+	draft := records.ScopeDraft{Name: a.projectName, Path: a.projectPath, ExpectedRepository: a.projectCreation.Inspection.Identity}
+	sequence := a.projectCreation.Sequence
 	a.projectBusy = true
 	a.projectError = ""
+	life, client, dispatch, epoch := a.libraryContext, a.library, a.dispatch, a.libraryEpoch
 	go func() {
-		ctx, cancel := context.WithTimeout(a.libraryContext, 5*time.Second)
+		ctx, cancel := context.WithTimeout(life, 5*time.Second)
 		defer cancel()
-		scope, err := a.library.RegisterProject(ctx, draft)
-		if a.libraryContext.Err() != nil {
+		scope, err := client.RegisterProject(ctx, draft)
+		if life.Err() != nil {
 			return
 		}
-		a.dispatch(func() {
+		dispatch(func() {
+			if epoch != a.libraryEpoch || sequence != a.projectCreation.Sequence {
+				return
+			}
 			a.projectBusy = false
 			if err != nil {
 				a.projectError = "添加失败：请检查项目名称和本地 Git 仓库路径。"
+				var failure *records.AccessError
+				if errors.As(err, &failure) && failure.Code == "repository_changed" {
+					a.projectCreation.Inspection = nil
+					a.projectCreation.CheckedPath = ""
+					a.projectError = "仓库位置已变化，请重新检查后再添加。"
+				}
 				return
 			}
+			open := a.projectCreationOpen()
 			a.projectName, a.projectPath = "", ""
+			a.retireProjectCreation()
+			if !open {
+				a.refresh(false)
+				return
+			}
 			a.navigate("项目", scope.ID)
 			a.detailMode = "view"
 			a.editing = false
@@ -519,7 +605,14 @@ func (a *App) scopeLabel(id string) string {
 				}
 			}
 			if count > 1 {
-				return fmt.Sprintf("%s · %s", scopeDisplayName(scope), scope.ID[:min(8, len(scope.ID))])
+				suffix := scope.ID[:min(8, len(scope.ID))]
+				for _, other := range a.scopes {
+					if other.ID != scope.ID && scopeDisplayName(other) == scopeDisplayName(scope) && other.ID[:min(8, len(other.ID))] == suffix {
+						suffix = scope.ID
+						break
+					}
+				}
+				return fmt.Sprintf("%s · %s", scopeDisplayName(scope), suffix)
 			}
 			return scopeDisplayName(scope)
 		}
@@ -528,10 +621,17 @@ func (a *App) scopeLabel(id string) string {
 }
 func (a *App) datasetForLabel(label string) string {
 	label = strings.TrimSpace(label)
+	match := ""
 	for _, scope := range a.scopes {
 		if a.scopeLabel(scope.ID) == label {
-			return scope.ID
+			if match != "" {
+				return ""
+			}
+			match = scope.ID
 		}
+	}
+	if match != "" {
+		return match
 	}
 	// Previously saved drafts contain the old display name. Resolve only a
 	// unique existing common scope; never create or infer a dataset from a name.

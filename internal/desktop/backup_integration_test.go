@@ -29,7 +29,7 @@ func TestBackupVerificationDoesNotStrandCatalogueRead(t *testing.T) {
 	}
 	app := New("0.0.4", nil)
 	app.page = "设置"
-	app.environment.Maintenance = true
+	app.maintenanceSection = "backups"
 	app.libraryContext = ctx
 	updates := make(chan func(), 4)
 	app.dispatch = func(fn func()) { updates <- fn }
@@ -55,6 +55,9 @@ func TestBackupVerificationDoesNotStrandCatalogueRead(t *testing.T) {
 		t.Fatal("backup verification stranded catalogue", app.backups)
 	}
 	tt := ui.NewTester(app.View, 1200, 780)
+	if err := tt.Click("展开技术详情"); err != nil {
+		t.Fatal("backup record disclosure missing after invalidated read", err)
+	}
 	if !tt.HasText("备份 · "+receipt.ID) || !tt.HasText("当前文件待校验") && app.backups.VerifiedAt == "" {
 		t.Fatal("backup record not represented after invalidated read")
 	}

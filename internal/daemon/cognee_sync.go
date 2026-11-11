@@ -64,7 +64,7 @@ func (s *Server) authorizeCognee(ctx context.Context, d records.CogneeAuthorizat
 		return b, &records.AccessError{Code: "cognee_authorization_required", Message: "provide Cognee's independent authorization"}
 	}
 	s.agentAccess.RLock()
-	err := s.store.AuthorizeCogneeBinding(ctx, b)
+	err := s.store.AuthorizeCogneeGraphBinding(ctx, b)
 	s.agentAccess.RUnlock()
 	if err != nil {
 		return b, err

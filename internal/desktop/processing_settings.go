@@ -16,6 +16,16 @@ import (
 	"github.com/zwhu/memlane/internal/records"
 )
 
+// Runtime reads may include two sequential five-second metadata probes per
+// Agent revision, plus storage/IPC. These are bounded end-to-end UI budgets,
+// not longer model validation or per-probe limits. Activation resolves once
+// and then reads readiness again, so it needs a separate round-trip margin.
+const (
+	processingRuntimeMetadataTimeout     = 20 * time.Second
+	processingValidationBeginTimeout     = 20 * time.Second
+	processingActivationRoundTripTimeout = 30 * time.Second
+)
+
 type ProcessingAgentCandidate struct {
 	Agent, Name, Version, Connection, Provider, Model, Reason string
 	Generation                                                int64
@@ -25,16 +35,23 @@ type ProcessingAgentCandidate struct {
 // ProcessingUI is presentation state for the service-owned processing ledger.
 // It does not infer success from a selected card or from a completed IPC call.
 type ProcessingUI struct {
+	HTTP             processingHTTPUI
 	Mode             string
 	Drafts           map[string]records.ProcessingSpec
 	Configuration    records.ProcessingConfiguration
 	Candidates       []ProcessingAgentCandidate
 	CandidatesLoaded bool
+	Loaded           bool
+	CheckedAt        time.Time
+	ProgressMode     string
 	Progress         *records.ProcessingValidationProgress
 	ValidationID     string
 	Notice, Error    string
+	ReadError        string
 	Sequence         uint64
 	Loading          bool
+	Refreshing       bool
+	RefreshSequence  uint64
 	Busy             bool
 	Polling          bool
 }
@@ -69,10 +86,24 @@ func (s *ProcessingUI) sameSavedDraft() bool {
 
 func (s *ProcessingUI) validDraft() bool {
 	draft := s.draft()
-	return draft.Mode == "agent" && draft.Agent == "pi" && draft.Connection != "" && draft.ConnectionGeneration > 0 && draft.Provider != "" && draft.Model != ""
+	if draft.Model == "" || strings.TrimSpace(draft.Model) != draft.Model || len(draft.Model) > 256 {
+		return false
+	}
+	switch draft.Mode {
+	case "agent":
+		return (draft.Agent == "pi" || draft.Agent == "codex") && draft.Connection != "" && draft.ConnectionGeneration > 0 && draft.Provider != ""
+	case "provider":
+		return processingKnownSupplier(draft.Provider) && processingProviderEndpoint(draft.Endpoint) && processingHTTPProtocol(draft.Protocol) && draft.Credential != "" && draft.CredentialRevision > 0
+	case "magpie":
+		return processingLocalGateway(draft.Endpoint) && processingHTTPProtocol(draft.Protocol) && draft.Credential == "" && draft.CredentialRevision == 0 && draft.Provider == ""
+	}
+	return false
 }
 
 func (s *ProcessingUI) availableDraft() bool {
+	if s.draft().Mode != "agent" {
+		return s.validDraft()
+	}
 	if !s.CandidatesLoaded {
 		return true
 	}
@@ -85,16 +116,29 @@ func (s *ProcessingUI) availableDraft() bool {
 	return false
 }
 
+func (s *ProcessingUI) currentConnectionAvailable() bool {
+	current := s.Configuration.Current
+	if !s.CandidatesLoaded || !current.Active || current.Revision == nil || current.Revision.Spec.Mode != "agent" {
+		return true
+	}
+	for _, candidate := range s.Candidates {
+		if candidate.Available && processingCandidateSelected(current.Revision.Spec, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *ProcessingUI) CanSave() bool {
-	return !s.Loading && !s.Busy && !s.Polling && s.validDraft() && s.availableDraft() && !s.sameSavedDraft()
+	return !s.Loading && !s.Busy && !s.Polling && !s.HTTP.CredentialBusy && s.validDraft() && s.availableDraft() && !s.sameSavedDraft()
 }
 
 func (s *ProcessingUI) CanValidate() bool {
 	saved, ok := s.saved()
-	if !ok || s.Loading || s.Busy || s.Polling || !s.sameSavedDraft() || !s.availableDraft() {
+	if !ok || s.Loading || s.Busy || s.Polling || s.HTTP.CredentialBusy || !s.sameSavedDraft() || !s.availableDraft() {
 		return false
 	}
-	return saved.Validation == nil || saved.Validation.State == "failed" || saved.Validation.State == "cancelled" || saved.Validation.State == "interrupted" || saved.Validation.State == "superseded"
+	return saved.Validation == nil || saved.Validation.State == "succeeded" || saved.Validation.State == "failed" || saved.Validation.State == "cancelled" || saved.Validation.State == "interrupted" || saved.Validation.State == "superseded"
 }
 
 func (s *ProcessingUI) CanCancel() bool {
@@ -104,11 +148,53 @@ func (s *ProcessingUI) CanCancel() bool {
 
 func (s *ProcessingUI) CanActivate() bool {
 	saved, ok := s.saved()
-	if !ok || s.Loading || s.Busy || s.Polling || !s.sameSavedDraft() || !s.availableDraft() || saved.Validation == nil || saved.Validation.State != "succeeded" || saved.Validation.CancelRequested {
+	if !ok || s.Loading || s.Busy || s.Polling || s.HTTP.CredentialBusy || !s.sameSavedDraft() || !s.availableDraft() || !s.runtimeReady(saved.ID) || s.ReadError != "" || saved.Validation == nil || saved.Validation.State != "succeeded" || saved.Validation.CancelRequested {
 		return false
 	}
 	current := s.Configuration.Current
 	return !current.Active || current.Revision == nil || current.Revision.ID != saved.ID
+}
+
+func (s *ProcessingUI) runtimeReady(revision string) bool {
+	return s.Configuration.Runtime[revision].State == "ready"
+}
+func (s *ProcessingUI) currentRuntimeReady() bool {
+	current := s.Configuration.Current
+	return s.ReadError == "" && current.Active && current.Revision != nil && s.runtimeReady(current.Revision.ID)
+}
+
+func (s *ProcessingUI) currentLabel() string {
+	if !s.Loaded {
+		if s.ReadError != "" {
+			return "记忆处理读取失败"
+		}
+		return "记忆处理待读取"
+	}
+	if s.ReadError != "" {
+		return "记忆处理读取失败；保留上次配置"
+	}
+	current := s.Configuration.Current
+	if !current.Active || current.Revision == nil {
+		if len(s.Configuration.Saved) > 0 {
+			return "记忆处理已保存，待启用"
+		}
+		return "记忆处理未配置"
+	}
+	if !s.currentConnectionAvailable() {
+		return "处理连接已变化，需重新验证"
+	}
+	switch s.Configuration.Runtime[current.Revision.ID].State {
+	case "ready":
+		return "当前方式：" + processingSpecLabel(current.Revision.Spec)
+	case "dependency_changed":
+		return "处理依赖已变化，需重新验证"
+	case "verification_required":
+		return "处理方式需重新验证并明确启用"
+	case "unavailable":
+		return "处理依赖暂不可用，请检查并重新验证"
+	default:
+		return "当前处理状态待读取"
+	}
 }
 
 func (a *App) settingsSectionLabel() string {
@@ -127,11 +213,10 @@ func (a *App) processingToolbarStatus() string {
 	if a.settingsSection != "processing" && !setup {
 		return ""
 	}
-	current := a.processing.Configuration.Current
-	if !current.Active || current.Revision == nil {
-		return "记忆处理待配置"
+	if a.processing.Loaded && a.processing.currentRuntimeReady() && a.processing.currentConnectionAvailable() {
+		return processingSpecLabel(a.processing.Configuration.Current.Revision.Spec) + " · 当前使用"
 	}
-	return processingSpecLabel(current.Revision.Spec) + " · 当前使用"
+	return a.processing.currentLabel()
 }
 
 func (a *App) settingsSidebar(c *ui.Context) {
@@ -165,7 +250,11 @@ func (a *App) settingsSidebar(c *ui.Context) {
 				})
 			}
 		})
-		quietButton(c, "返回日常首页").Margin(20, 28).OnClick(func() { a.navigate("总览", "") })
+		quietButton(c, "返回日常首页").Margin(20, 28).OnClick(func() {
+			a.homeActivity.Full, a.homeActivity.Review.Full = false, false
+			a.homeActivity.Return, a.homeActivity.Review.Return = false, false
+			a.navigate("总览", "")
+		})
 	})
 }
 
@@ -177,7 +266,7 @@ func (a *App) settingsShell(c *ui.Context) {
 		case "agents":
 			a.agentSettingsPage(c)
 		default:
-			a.environmentSettings(c)
+			a.maintenanceSettings(c)
 		}
 	})
 }
@@ -194,8 +283,8 @@ func (a *App) processingSettings(c *ui.Context) {
 			}
 			ui.Text(c, title).FontSize(design.Heading).Bold()
 			ui.Divider(c)
-			current := "尚未设置"
-			if s.Configuration.Current.Active && s.Configuration.Current.Revision != nil {
+			current := s.currentLabel()
+			if s.currentRuntimeReady() && s.currentConnectionAvailable() {
 				current = processingSpecLabel(s.Configuration.Current.Revision.Spec)
 			}
 			ui.Row(c).Gap(10).Children(func() {
@@ -218,17 +307,35 @@ func (a *App) processingSettings(c *ui.Context) {
 			a.processingModeHeader(c)
 			switch s.Mode {
 			case "provider":
-				a.processingUnavailable(c, "LLM provider 暂不可用", "供应商配置和模型验证尚未开放。请先使用已连接的 pi。")
+				a.processingProviderPage(c)
 			case "magpie":
-				a.processingUnavailable(c, "Magpie 暂不可用", "Magpie 接入尚未开放。请先使用已连接的 pi。")
+				a.processingMagpiePage(c)
 			default:
 				a.processingAgents(c)
 			}
+			a.processingValidationFacts(c)
 			if s.Error != "" {
 				ui.Text(c, s.Error).FontSize(design.Small).TextColor(ui.Hex("#a04343")).Selectable()
 			}
+			if s.ReadError != "" {
+				ui.Text(c, s.ReadError).FontSize(design.Small).TextColor(ui.Hex("#a04343")).Selectable()
+				quietButton(c, "重新读取配置").Disabled(s.Loading || s.Busy || s.Polling).OnClick(a.refreshProcessing)
+			}
+			var receipt *records.ProcessingHTTPReceipt
+			if saved, ok := s.saved(); ok && s.sameSavedDraft() && saved.Validation != nil {
+				receipt = saved.Validation.HTTP
+			}
+			if s.Progress != nil && s.Progress.HTTP != nil && s.ProgressMode == s.Mode {
+				receipt = s.Progress.HTTP
+			}
+			if receipt != nil {
+				a.processingHTTPReceipt(c, *receipt)
+			}
 			saved, hasSaved := s.saved()
-			failed := hasSaved && s.sameSavedDraft() && saved.Validation != nil && (saved.Validation.State == "failed" || saved.Validation.State == "interrupted")
+			if hasSaved && s.sameSavedDraft() && saved.Validation != nil && saved.Validation.State == "succeeded" {
+				ui.Text(c, "重新验证会先停用正在使用的此方式；验证完成后仍需明确设为当前使用。").FontSize(design.Small).TextColor(design.Muted)
+			}
+			failed := hasSaved && s.sameSavedDraft() && saved.Validation != nil && (saved.Validation.State == "failed" || saved.Validation.State == "interrupted" || saved.Validation.State == "superseded")
 			if s.Notice != "" && s.Error == "" && (a.processingModeState() == "有未保存修改" || failed) {
 				ui.Text(c, s.Notice).FontSize(design.Small).TextColor(design.Muted).Selectable()
 			}
@@ -243,7 +350,11 @@ func (a *App) processingSettings(c *ui.Context) {
 			if s.CanCancel() {
 				ui.Button(c, "取消验证").OnClick(a.cancelProcessingValidation)
 			} else {
-				ui.Button(c, "验证配置").Disabled(!s.CanValidate()).OnClick(a.validateProcessing)
+				label := "验证配置"
+				if saved, ok := s.saved(); ok && saved.Validation != nil && saved.Validation.State == "succeeded" {
+					label = "重新验证"
+				}
+				ui.Button(c, label).Disabled(!s.CanValidate()).OnClick(a.validateProcessing)
 			}
 			if setup {
 				firstLaunchPrimary(c, "完成配置").Key("first-launch-complete").Disabled(!a.canCompleteFirstLaunch()).OnClick(a.completeFirstLaunch)
@@ -273,7 +384,28 @@ func (a *App) processingModeState() string {
 		return "正在提交操作"
 	}
 	if saved, ok := s.saved(); ok && s.sameSavedDraft() {
-		if s.Configuration.Current.Active && s.Configuration.Current.Revision != nil && s.Configuration.Current.Revision.ID == saved.ID {
+		if !s.availableDraft() {
+			if s.Mode == "agent" {
+				return "原连接已变化，请重新选择并保存"
+			}
+			return "供应商或本机网关配置不完整，请检查并保存"
+		}
+		if saved.Validation != nil && saved.Validation.State == "succeeded" && !s.runtimeReady(saved.ID) {
+			if s.Configuration.Runtime[saved.ID].State == "dependency_changed" {
+				return "依赖已变化，请重新验证"
+			}
+			if s.Configuration.Runtime[saved.ID].State == "unavailable" {
+				return "依赖暂不可用，请检查并重新验证"
+			}
+			return "旧验证已保存，当前依赖待读取"
+		}
+		if saved.Validation != nil && saved.Validation.State == "validating" {
+			if saved.Validation.CancelRequested {
+				return "正在取消验证"
+			}
+			return "正在验证；完成后需明确启用"
+		}
+		if s.Configuration.Current.Active && s.Configuration.Current.Revision != nil && s.Configuration.Current.Revision.ID == saved.ID && s.currentRuntimeReady() {
 			return "当前正在使用"
 		}
 		if saved.Validation != nil {
@@ -291,6 +423,8 @@ func (a *App) processingModeState() string {
 				return "验证已取消"
 			case "interrupted":
 				return "验证被服务重启中断"
+			case "superseded":
+				return "验证已被替代，请重新验证"
 			}
 		}
 		return "已保存，等待验证"
@@ -369,8 +503,8 @@ func (a *App) processingAgents(c *ui.Context) {
 			}
 		})
 	}
-	if draft := s.draft(); draft.Agent == "pi" {
-		ui.Text(c, fmt.Sprintf("使用 pi 当前模型 %s / %s 处理记忆，会消耗该账号的模型额度。", draft.Provider, draft.Model)).FontSize(design.Small).TextColor(design.Muted).Padding(8, 0)
+	if draft := s.draft(); draft.Agent == "pi" || draft.Agent == "codex" {
+		ui.Text(c, fmt.Sprintf("使用 %s 当前模型 %s / %s 处理记忆，会消耗该账号的模型额度。", projectAgentName(draft.Agent), draft.Provider, draft.Model)).FontSize(design.Small).TextColor(design.Muted).Padding(8, 0)
 	}
 }
 
@@ -379,6 +513,9 @@ func processingSpecLabel(spec records.ProcessingSpec) string {
 	case "agent":
 		if spec.Agent == "pi" {
 			return "pi · " + spec.Provider + " / " + spec.Model
+		}
+		if spec.Agent == "codex" && spec.Provider != "" {
+			return "Codex · " + spec.Provider + " / " + spec.Model
 		}
 		return strings.TrimSpace(spec.Agent + " · " + spec.Model)
 	case "provider":
@@ -395,21 +532,31 @@ func processingCandidateSelected(spec records.ProcessingSpec, candidate Processi
 }
 
 func (a *App) selectProcessingAgent(candidate ProcessingAgentCandidate) {
-	if !candidate.Available || candidate.Agent != "pi" {
+	if !candidate.Available || (candidate.Agent != "pi" && candidate.Agent != "codex") {
 		return
 	}
 	a.processing.ensure()
-	a.processing.Drafts["agent"] = records.ProcessingSpec{Mode: "agent", Agent: "pi", Provider: candidate.Provider, Model: candidate.Model, Connection: candidate.Connection, ConnectionGeneration: candidate.Generation}
+	a.processing.Drafts["agent"] = records.ProcessingSpec{Mode: "agent", Agent: candidate.Agent, Provider: candidate.Provider, Model: candidate.Model, Connection: candidate.Connection, ConnectionGeneration: candidate.Generation}
 	a.processing.Error = ""
 	a.processing.Notice = "已选择真实连接；保存不会自动启用。"
 }
 
 func (a *App) processingHasDraftChanges() bool {
-	draft := a.processing.draft()
-	if draft.Mode == "" {
-		return false
+	s := &a.processing
+	if s.Mode == "magpie" && s.HTTP.GatewayTouched {
+		endpoint := "http://127.0.0.1:3425/v1"
+		if saved, ok := s.saved(); ok {
+			endpoint = saved.Spec.Endpoint
+		}
+		if s.HTTP.GatewayEndpoint != endpoint {
+			return true
+		}
 	}
-	return !a.processing.sameSavedDraft()
+	if s.Mode == "provider" && s.HTTP.Secret != "" {
+		return true
+	}
+	draft := s.draft()
+	return draft.Mode != "" && !s.sameSavedDraft()
 }
 
 func (a *App) cancelProcessingChanges() {
@@ -420,11 +567,26 @@ func (a *App) cancelProcessingChanges() {
 	} else {
 		delete(s.Drafts, s.Mode)
 	}
+	s.ensureHTTP()
+	if s.Mode == "magpie" {
+		s.HTTP.GatewayEndpoint = "http://127.0.0.1:3425/v1"
+		if saved, ok := s.saved(); ok {
+			s.HTTP.GatewayEndpoint = saved.Spec.Endpoint
+		}
+		s.HTTP.GatewaySettings = false
+		s.HTTP.GatewayTouched = false
+	} else if s.Mode == "provider" {
+		s.HTTP.Secret = ""
+		s.HTTP.CredentialAttempt = nil
+		s.HTTP.CredentialAttemptDigest = ""
+		s.HTTP.View = ""
+		s.HTTP.Editing = ""
+	}
 	s.Error = ""
 	s.Notice = "已恢复此方式上次保存的配置；当前使用未改变。"
 }
 
-func processingCandidates(clientRoot string, connections []records.Connection) []ProcessingAgentCandidate {
+func processingCandidates(ctx context.Context, clientRoot string, connections []records.Connection) []ProcessingAgentCandidate {
 	out := []ProcessingAgentCandidate{}
 	for _, connection := range connections {
 		if !connection.Enabled || (connection.Agent != "pi" && connection.Agent != "codex") {
@@ -443,23 +605,34 @@ func processingCandidates(clientRoot string, connections []records.Connection) [
 		if err == nil {
 			candidate.Version = installation.AgentVersion
 		}
-		if connection.Agent == "codex" {
-			candidate.Reason = "Codex 处理桥尚未接入"
-			out = append(out, candidate)
-			continue
-		}
 		if err != nil || installation.Connection.ID != connection.ID || installation.Connection.Generation != connection.Generation {
 			candidate.Reason = "需先完成 Agent 连接"
 			out = append(out, candidate)
 			continue
 		}
-		if installation.VerifiedGeneration != connection.Generation || installation.VerifiedAt == "" || installation.VerificationError != "" {
+		if _, verified := agents.ConnectionVerification(installation, connection.Generation); !verified {
 			candidate.Reason = "需先完成真实连接验证"
 			out = append(out, candidate)
 			continue
 		}
 		if err = agents.CheckInstallation(installation); err != nil {
 			candidate.Reason = "Agent 连接已变化，请重新验证"
+			out = append(out, candidate)
+			continue
+		}
+		if connection.Agent == "codex" {
+			selected, err := agents.CodexCompletionSelection(ctx, installation, installation.Options.Bridge)
+			if err != nil {
+				candidate.Reason = "无法确认 Codex 当前账号与模型，请在 Codex 中配置后重新检查"
+				if agents.CodexCompletionErrorCode(err) == "codex_profile_unsupported" {
+					candidate.Reason = "当前 Codex 模型档案尚不支持处理记忆"
+				}
+				out = append(out, candidate)
+				continue
+			}
+			candidate.Provider, candidate.Model, candidate.Version = selected.Provider, selected.Model, selected.Version
+			candidate.Available = true
+			candidate.Reason = selected.Provider + " / " + selected.Model
 			out = append(out, candidate)
 			continue
 		}
@@ -492,37 +665,61 @@ func processingCandidates(clientRoot string, connections []records.Connection) [
 }
 
 func (a *App) refreshProcessing() {
-	s := &a.processing
-	s.ensure()
-	if a.libraryContext == nil || a.libraryContext.Err() != nil || s.Loading || s.Busy || s.Polling {
+	a.readProcessing(false)
+}
+
+// Routine observations must not repeatedly turn a usable form into a blocking
+// loading screen or launch an Agent model/account probe every two seconds.
+func (a *App) pollProcessing() {
+	if !a.processing.CheckedAt.IsZero() && time.Since(a.processing.CheckedAt) < 15*time.Second {
 		return
 	}
-	s.Loading = true
+	a.readProcessing(a.processing.Loaded)
+}
+
+func (a *App) readProcessing(background bool) {
+	s := &a.processing
+	s.ensure()
+	if a.libraryContext == nil || a.libraryContext.Err() != nil || s.Loading || s.Refreshing || s.Busy || s.Polling {
+		return
+	}
+	s.Loading, s.Refreshing = !background, true
 	s.Sequence++
 	sequence := s.Sequence
+	s.RefreshSequence = sequence
 	clientRoot := a.agents.Root
+	owner, library := a.libraryContext, a.library
 	go func() {
-		ctx, cancel := context.WithTimeout(a.libraryContext, 5*time.Second)
+		ctx, cancel := context.WithTimeout(owner, processingRuntimeMetadataTimeout)
 		defer cancel()
-		configuration, err := a.library.ProcessingConfiguration(ctx)
+		configuration, err := library.ProcessingConfiguration(ctx)
 		var connections []records.Connection
 		if err == nil {
-			connections, err = a.library.Connections(ctx)
+			connections, err = library.Connections(ctx)
 		}
-		candidates := processingCandidates(clientRoot, connections)
-		if a.libraryContext.Err() != nil {
+		candidates := processingCandidates(ctx, clientRoot, connections)
+		if owner.Err() != nil {
 			return
 		}
 		a.dispatch(func() {
-			if s.Sequence != sequence {
+			if a.library.Root == library.Root && s.RefreshSequence == sequence {
+				s.Loading, s.Refreshing = false, false
+			}
+			if s.Sequence != sequence || a.library.Root != library.Root {
 				return
 			}
-			s.Loading = false
+			s.CheckedAt = time.Now()
 			if err != nil {
-				s.Error = "读取记忆处理配置失败：" + err.Error()
+				s.ReadError = "读取记忆处理配置失败；请重新读取。"
 				return
 			}
 			s.Configuration = configuration
+			if !s.HTTP.GatewayTouched {
+				if saved, ok := configuration.Saved["magpie"]; ok {
+					s.HTTP.GatewayEndpoint = saved.Spec.Endpoint
+				}
+			}
+			s.Loaded = true
 			s.Candidates = candidates
 			s.CandidatesLoaded = true
 			for mode, saved := range configuration.Saved {
@@ -530,7 +727,45 @@ func (a *App) refreshProcessing() {
 					s.Drafts[mode] = saved.Spec
 				}
 			}
-			s.Error = ""
+			if saved, ok := s.saved(); ok && s.sameSavedDraft() && saved.Validation != nil && s.Notice == "" && (saved.Validation.State == "failed" || saved.Validation.State == "interrupted" || saved.Validation.State == "superseded") {
+				s.Notice = processingValidationNotice(*saved.Validation)
+			}
+			s.ReadError = ""
+		})
+	}()
+}
+
+// A terminal probe refreshes the owner observation and selection generation;
+// it does not rescan Agent installations or enable the saved revision.
+func (a *App) refreshProcessingState() {
+	s := &a.processing
+	if a.libraryContext == nil || a.dispatch == nil || s.Loading || s.Busy || s.Polling {
+		return
+	}
+	s.Loading = true
+	s.Sequence++
+	sequence := s.Sequence
+	owner, library := a.libraryContext, a.library
+	go func() {
+		ctx, cancel := context.WithTimeout(owner, processingRuntimeMetadataTimeout)
+		defer cancel()
+		config, err := library.ProcessingConfiguration(ctx)
+		if owner.Err() != nil {
+			return
+		}
+		a.dispatch(func() {
+			if s.Sequence != sequence || a.library.Root != library.Root {
+				return
+			}
+			s.Loading = false
+			s.CheckedAt = time.Now()
+			if err != nil {
+				s.ReadError = "读取最新验证与启用状态失败；请重新读取后再启用。"
+				return
+			}
+			s.Configuration = config
+			s.Loaded = true
+			s.ReadError = ""
 		})
 	}()
 }
@@ -546,23 +781,34 @@ func (a *App) saveProcessing() {
 		expected = saved.ID
 	}
 	s.Busy = true
+	s.Sequence++
+	sequence := s.Sequence
+	owner, library := a.libraryContext, a.library
 	s.Error, s.Notice = "", "正在保存配置…"
 	go func() {
-		ctx, cancel := context.WithTimeout(a.libraryContext, 10*time.Second)
+		ctx, cancel := context.WithTimeout(owner, 10*time.Second)
 		defer cancel()
-		revision, err := a.library.SaveProcessing(ctx, records.ProcessingSave{OperationID: uuid.NewString(), ExpectedSaved: expected, Spec: draft})
-		if a.libraryContext.Err() != nil {
+		revision, err := library.SaveProcessing(ctx, records.ProcessingSave{OperationID: uuid.NewString(), ExpectedSaved: expected, Spec: draft})
+		if owner.Err() != nil {
 			return
 		}
 		a.dispatch(func() {
+			if s.Sequence != sequence || a.library.Root != library.Root {
+				return
+			}
 			s.Busy = false
 			if err != nil {
-				s.Error = "保存配置失败：" + err.Error()
+				s.Error = "保存配置失败：" + processingActionError(err, draft.Mode)
 				s.Notice = ""
 				return
 			}
 			s.Configuration.Saved[draft.Mode] = revision
 			s.Drafts[draft.Mode] = revision.Spec
+			if s.ProgressMode == draft.Mode {
+				s.Progress = nil
+				s.ProgressMode = ""
+				s.ValidationID = ""
+			}
 			s.Notice = "配置已保存；还需完成真实验证后才能设为当前使用。"
 		})
 	}()
@@ -575,57 +821,76 @@ func (a *App) validateProcessing() {
 		return
 	}
 	s.Busy = true
-	s.Error, s.Notice = "", "正在启动真实 pi 验证…"
+	s.Sequence++
+	sequence := s.Sequence
+	owner, library := a.libraryContext, a.library
+	mode := s.Mode
+	s.Error, s.Notice = "", "正在启动真实模型验证…"
 	go func() {
-		ctx, cancel := context.WithTimeout(a.libraryContext, 10*time.Second)
+		ctx, cancel := context.WithTimeout(owner, processingValidationBeginTimeout)
 		defer cancel()
-		validation, err := a.library.ValidateProcessing(ctx, records.ProcessingValidationRequest{OperationID: uuid.NewString(), Revision: saved.ID})
-		if a.libraryContext.Err() != nil {
+		validation, err := library.ValidateProcessing(ctx, records.ProcessingValidationRequest{OperationID: uuid.NewString(), Revision: saved.ID})
+		if owner.Err() != nil {
 			return
 		}
 		a.dispatch(func() {
+			if s.Sequence != sequence || a.library.Root != library.Root {
+				return
+			}
 			s.Busy = false
 			if err != nil {
-				s.Error = "启动验证失败：" + err.Error()
+				s.Error = "启动验证失败：" + processingActionError(err, mode)
 				s.Notice = ""
 				return
 			}
-			revision := s.Configuration.Saved[s.Mode]
+			revision := s.Configuration.Saved[mode]
 			revision.Validation = &validation
-			s.Configuration.Saved[s.Mode] = revision
+			if s.Configuration.Runtime == nil {
+				s.Configuration.Runtime = map[string]records.ProcessingReadiness{}
+			}
+			s.Configuration.Runtime[revision.ID] = records.ProcessingReadiness{State: "verification_required"}
+			s.Configuration.Saved[mode] = revision
 			s.ValidationID = validation.ID
+			s.ProgressMode = mode
+			s.Progress = nil
 			s.Polling = true
-			s.Notice = "正在验证当前模型、完整结构化输出与进程回收…"
-			a.pollProcessingValidation(validation.ID, revision.ID)
+			s.Notice = "正在验证当前模型的完整结构化输出…"
+			a.pollProcessingValidationMode(validation.ID, revision.ID, mode)
 		})
 	}()
 }
 
 func (a *App) pollProcessingValidation(id, revisionID string) {
+	a.pollProcessingValidationMode(id, revisionID, "agent")
+}
+
+func (a *App) pollProcessingValidationMode(id, revisionID, mode string) {
+	owner, library := a.libraryContext, a.library
 	go func() {
-		ctx, cancel := context.WithTimeout(a.libraryContext, 130*time.Second)
+		ctx, cancel := context.WithTimeout(owner, 130*time.Second)
 		defer cancel()
 		ticker := time.NewTicker(300 * time.Millisecond)
 		defer ticker.Stop()
 		for {
-			status, err := a.library.ProcessingValidation(ctx, id)
+			status, err := library.ProcessingValidation(ctx, id)
 			if err == nil {
 				terminal := status.Validation.State != "validating"
 				a.dispatch(func() {
 					s := &a.processing
-					if s.ValidationID != id {
+					if s.ValidationID != id || a.library.Root != library.Root {
 						return
 					}
-					revision := s.Configuration.Saved["agent"]
+					revision := s.Configuration.Saved[mode]
 					if revision.ID != revisionID {
 						return
 					}
 					revision.Validation = &status.Validation
-					s.Configuration.Saved["agent"] = revision
+					s.Configuration.Saved[mode] = revision
 					s.Progress = status.Progress
 					if terminal {
 						s.Polling = false
 						s.Notice = processingValidationNotice(status.Validation)
+						a.refreshProcessingState()
 					}
 				})
 				if terminal {
@@ -634,7 +899,7 @@ func (a *App) pollProcessingValidation(id, revisionID string) {
 			}
 			select {
 			case <-ctx.Done():
-				if a.libraryContext.Err() == nil {
+				if owner.Err() == nil {
 					a.dispatch(func() {
 						if a.processing.ValidationID == id && a.processing.Polling {
 							a.processing.Polling = false
@@ -654,14 +919,30 @@ func processingValidationNotice(validation records.ProcessingValidation) string 
 	case "succeeded":
 		return "真实验证通过；仍需明确点击“设为当前使用”。"
 	case "cancelled":
-		return "验证已取消；当前使用配置未改变。"
+		return "验证已取消；保存的配置保留，未自动启用。"
 	case "interrupted":
-		return "验证被服务重启中断；当前使用配置未改变。"
+		return "验证被服务重启中断；保存的配置保留，未自动启用。"
 	default:
 		if validation.ErrorCode != "" {
-			return "验证未通过（" + validation.ErrorCode + "）；当前使用配置未改变。"
+			if validation.Diagnostics != nil {
+				stage := map[string]string{"queue": "排队检查", "preflight": "验证前检查", "model": "模型调用", "postflight": "验证后检查"}[validation.Diagnostics.Stage]
+				names := []string{}
+				labels := map[string]string{"settings.json": "Agent 设置", "models.json": "模型配置", "auth.json": "账号配置", "adapter_protocol": "连接协议", "processing_configuration": "处理配置", "agent_version": "Agent 版本", "agent_executable": "Agent 程序", "agent_configuration_directory": "Agent 配置位置", "helper_executable": "后台程序", "extension": "连接扩展", "connection_verification": "连接验证", "independent_credential": "供应商凭据", "gateway_model": "网关模型目录"}
+				for _, name := range validation.Diagnostics.ChangedNames {
+					if label := labels[name]; label != "" {
+						names = append(names, label)
+					}
+				}
+				if len(names) > 0 {
+					return stage + "未通过：" + strings.Join(names, "、") + "发生变化；保存的配置保留，未自动启用。"
+				}
+				if validation.Diagnostics.ResolveCode != "" {
+					return stage + "未通过：连接或模型依赖需要重新核对（" + safeProcessingCode(validation.Diagnostics.ResolveCode) + "）；保存的配置保留，未自动启用。"
+				}
+			}
+			return "验证未通过（" + safeProcessingCode(validation.ErrorCode) + "）；保存的配置保留，未自动启用。"
 		}
-		return "验证未通过；当前使用配置未改变。"
+		return "验证未通过；保存的配置保留，未自动启用。"
 	}
 }
 
@@ -673,27 +954,34 @@ func (a *App) cancelProcessingValidation() {
 	}
 	id := saved.Validation.ID
 	s.Busy = true
+	s.Sequence++
+	sequence := s.Sequence
+	owner, library := a.libraryContext, a.library
+	mode := s.Mode
 	s.Error, s.Notice = "", "正在请求取消验证…"
 	go func() {
-		ctx, cancel := context.WithTimeout(a.libraryContext, 10*time.Second)
+		ctx, cancel := context.WithTimeout(owner, 10*time.Second)
 		defer cancel()
-		err := a.library.CancelProcessingValidation(ctx, id)
-		if a.libraryContext.Err() != nil {
+		err := library.CancelProcessingValidation(ctx, id)
+		if owner.Err() != nil {
 			return
 		}
 		a.dispatch(func() {
+			if s.Sequence != sequence || a.library.Root != library.Root {
+				return
+			}
 			s.Busy = false
 			if err != nil {
-				s.Error = "取消验证失败：" + err.Error()
+				s.Error = "取消验证失败：" + processingActionError(err, mode)
 				s.Notice = ""
 				return
 			}
-			revision := s.Configuration.Saved[s.Mode]
+			revision := s.Configuration.Saved[mode]
 			if revision.Validation != nil && revision.Validation.ID == id {
 				copy := *revision.Validation
 				copy.CancelRequested = true
 				revision.Validation = &copy
-				s.Configuration.Saved[s.Mode] = revision
+				s.Configuration.Saved[mode] = revision
 			}
 			s.Notice = "取消请求已送达；等待 daemon 确认进程终态。"
 		})
@@ -707,28 +995,80 @@ func (a *App) activateProcessing() {
 		return
 	}
 	s.Busy = true
+	s.Sequence++
+	sequence := s.Sequence
+	owner, library := a.libraryContext, a.library
 	s.Error, s.Notice = "", "正在设为当前使用…"
 	expected := s.Configuration.Current.Generation
 	go func() {
-		ctx, cancel := context.WithTimeout(a.libraryContext, 10*time.Second)
+		ctx, cancel := context.WithTimeout(owner, processingActivationRoundTripTimeout)
 		defer cancel()
-		_, err := a.library.ActivateProcessing(ctx, records.ProcessingActivation{OperationID: uuid.NewString(), Revision: saved.ID, ExpectedGeneration: expected})
+		_, err := library.ActivateProcessing(ctx, records.ProcessingActivation{OperationID: uuid.NewString(), Revision: saved.ID, ExpectedGeneration: expected})
 		var configuration records.ProcessingConfiguration
 		if err == nil {
-			configuration, err = a.library.ProcessingConfiguration(ctx)
+			configuration, err = library.ProcessingConfiguration(ctx)
 		}
-		if a.libraryContext.Err() != nil {
+		if owner.Err() != nil {
 			return
 		}
 		a.dispatch(func() {
+			if s.Sequence != sequence || a.library.Root != library.Root {
+				return
+			}
 			s.Busy = false
 			if err != nil {
-				s.Error = "启用配置失败：" + err.Error()
+				s.Error = "启用配置失败：" + processingActionError(err, saved.Spec.Mode)
 				s.Notice = ""
 				return
 			}
 			s.Configuration = configuration
+			s.Loaded = true
+			s.CheckedAt = time.Now()
+			s.ReadError = ""
 			s.Notice = "已设为当前使用；只影响之后启动的记忆处理任务。"
 		})
 	}()
+}
+
+// Individual outcomes need their own evidence; aggregate success is not a check receipt.
+func (a *App) processingValidationFacts(c *ui.Context) {
+	s := &a.processing
+	statuses := [3]string{"未取得验证结果", "未取得验证结果", "未知 · 未取得隔离验证结果"}
+	if saved, ok := s.saved(); ok && s.sameSavedDraft() && saved.Validation != nil && saved.Validation.Revision == saved.ID {
+		validation := saved.Validation
+		evidence := validation.Evidence
+		if saved.Spec.Mode == "agent" && evidence != nil && validation.ID != "" && validation.Attempt > 0 && validation.DependencyDigest != "" &&
+			evidence.ValidationID == validation.ID && evidence.Revision == saved.ID && evidence.Attempt == validation.Attempt &&
+			evidence.DependencyDigest == validation.DependencyDigest && evidence.Agent == saved.Spec.Agent {
+			if evidence.ResponseComplete {
+				statuses[0] = "已收到模型响应"
+			}
+			if evidence.ResponseComplete && evidence.StructureValid {
+				statuses[1] = "结构校验通过"
+			}
+			policy := map[string]string{"pi": "pi_private_no_session_no_tools_v1", "codex": "codex_private_ephemeral_no_tools_v1"}[evidence.Agent]
+			if evidence.IsolationConfigured && policy != "" && evidence.IsolationPolicy == policy {
+				statuses[2] = "本次本机隔离已配置"
+			}
+		}
+		r := saved.Validation.HTTP
+		if r != nil && r.RequestedModel == saved.Spec.Model {
+			if r.RequestSent && r.ResponseComplete && r.Status >= 200 && r.Status < 300 {
+				statuses[0] = "已收到模型响应"
+			}
+			if r.NativeSchemaRequested && r.ResponseComplete && r.SchemaValid {
+				statuses[1] = "结构校验通过"
+			}
+		}
+	}
+	ui.Column(c).Key("processing-validation-facts").Gap(8).Children(func() {
+		ui.Text(c, "整理能力验证").FontSize(12).Bold()
+		labels := []string{"模型请求与响应", "结构化提炼输出", "本次本机隔离"}
+		for i, label := range labels {
+			ui.Row(c).Gap(12).Padding(10, 0).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).Children(func() {
+				ui.Text(c, label).FontSize(design.Small).Grow(1).MinWidth(0)
+				ui.Text(c, statuses[i]).Key(fmt.Sprintf("processing-check-%d", i)).FontSize(design.Small).TextColor(design.Muted)
+			})
+		}
+	})
 }

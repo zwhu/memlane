@@ -26,6 +26,7 @@ var ErrConflict = records.ErrConflict
 var ErrRestoreRecovered = errors.New("offline restore recovered; explicit service resume required")
 
 type Store struct {
+	usageEventsKey        string // private per-open cursor signer; never persisted/exported
 	initializationReader  func(context.Context, string, []string) ([]records.InitializationSource, error)
 	ServiceStopGeneration int64 // fixed for this service epoch, never model data
 	DB                    *sql.DB
@@ -139,6 +140,12 @@ CREATE TABLE IF NOT EXISTS index_bindings(chunk_id TEXT NOT NULL, memory TEXT NO
 		db.Close()
 		return nil, err
 	}
+	if formal {
+		if _, err = db.Exec(`UPDATE index_attempts SET token=''`); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	if err := os.Chmod(path, 0600); err != nil {
 		db.Close()
 		return nil, err
@@ -150,7 +157,7 @@ CREATE TABLE IF NOT EXISTS index_bindings(chunk_id TEXT NOT NULL, memory TEXT NO
 		opened = false
 		return nil, err
 	}
-	return &Store{DB: db, ownership: ownership, Schema: schema}, nil
+	return &Store{DB: db, ownership: ownership, Schema: schema, usageEventsKey: uuid.NewString()}, nil
 }
 
 func (s *Store) Close() error {
@@ -229,6 +236,11 @@ func (s *Store) applyTx(ctx context.Context, tx *sql.Tx, m Mutation) (Version, e
 	}
 	if detail, err := json.Marshal(m.SourceDetail); err != nil || len(detail) > 65536 {
 		return Version{}, errors.New("source detail too large")
+	}
+	if s.Schema >= 30 && m.Kind == "save" && strings.HasPrefix(m.OperationID, "agent:") {
+		if err := s.rejectUserAssignedAgentTx(ctx, tx, m.OperationID); err != nil {
+			return Version{}, err
+		}
 	}
 	payload, _ := json.Marshal(m)
 	sum := sha256.Sum256(payload)
@@ -356,6 +368,9 @@ func (s *Store) MarkIndexed(ctx context.Context, r engine.Record, receipt engine
 		return err
 	}
 	defer tx.Rollback()
+	if err = s.checkIndexAttempt(ctx, tx, r); err != nil {
+		return err
+	}
 	if s.Schema >= 4 {
 		var stale int
 		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM derived_memories WHERE memory=? AND revision=? AND state='stale'`, r.Memory, r.Revision).Scan(&stale); err != nil {
@@ -389,8 +404,13 @@ func (s *Store) MarkIndexed(ctx context.Context, r engine.Record, receipt engine
 	if err != nil {
 		return err
 	}
-	if s.Schema >= 13 {
-		if _, err = tx.ExecContext(ctx, `UPDATE index_rebuild_items SET state='completed' WHERE memory=? AND revision=? AND state IN ('queued','failed')`, r.Memory, r.Revision); err != nil {
+	if s.Schema >= 25 {
+		if _, err = tx.ExecContext(ctx, `UPDATE index_rebuild_items SET state='completed' WHERE memory=? AND revision=? AND state IN ('queued','failed') AND NOT EXISTS(SELECT 1 FROM index_rebuild_controls c WHERE c.task=index_rebuild_items.task AND c.cancelled=1)`, r.Memory, r.Revision); err != nil {
+			return err
+		}
+	}
+	if s.Schema >= 25 {
+		if _, err = tx.ExecContext(ctx, `UPDATE index_attempts SET token='',owner='' WHERE memory=? AND revision=?`, r.Memory, r.Revision); err != nil {
 			return err
 		}
 	}
@@ -407,12 +427,16 @@ func (s *Store) IndexFailed(ctx context.Context, r engine.Record, cause error) e
 		return err
 	}
 	defer tx.Rollback()
+	if err = s.checkIndexAttempt(ctx, tx, r); err != nil {
+		return err
+	}
 	_, err = tx.ExecContext(ctx, `UPDATE jobs SET state='failed',error=? WHERE memory=? AND revision=? AND state!='superseded'`, fmt.Sprintf("%T", cause), r.Memory, r.Revision)
 	if err != nil {
 		return err
 	}
-	if s.Schema >= 13 {
+	if s.Schema >= 25 {
 		_, err = tx.ExecContext(ctx, `UPDATE index_rebuild_items SET state='failed',error=? WHERE memory=? AND revision=? AND state IN ('queued','failed')
+ AND NOT EXISTS(SELECT 1 FROM index_rebuild_controls c WHERE c.task=index_rebuild_items.task AND c.cancelled=1)
  AND EXISTS(SELECT 1 FROM memories m WHERE m.id=index_rebuild_items.memory AND m.current_revision=index_rebuild_items.revision AND m.state='active')`, fmt.Sprintf("%T", cause), r.Memory, r.Revision)
 		if err != nil {
 			return err

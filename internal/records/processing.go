@@ -36,22 +36,39 @@ type ProcessingSelection struct {
 	ChangedMS  int64               `json:"changed_ms"`
 }
 
+// ProcessingReadiness is a read-only runtime observation. It never changes a
+// saved validation receipt, current selection or permission to start a task.
+type ProcessingReadiness struct {
+	State     string `json:"state"`
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
 type ProcessingConfiguration struct {
-	Saved   map[string]ProcessingRevision `json:"saved"`
-	Current ProcessingSelection           `json:"current"`
+	Runtime map[string]ProcessingReadiness `json:"runtime,omitempty"`
+	Saved   map[string]ProcessingRevision  `json:"saved"`
+	Current ProcessingSelection            `json:"current"`
+}
+
+type ProcessingValidationDiagnostics struct {
+	Stage        string   `json:"stage"`
+	ResolveCode  string   `json:"resolve_code,omitempty"`
+	ChangedNames []string `json:"changed_names,omitempty"`
 }
 
 type ProcessingValidation struct {
-	ID               string `json:"validation"`
-	Revision         string `json:"revision"`
-	Attempt          int64  `json:"attempt"`
-	DependencyDigest string `json:"dependency_digest"`
-	State            string `json:"state"`
-	CancelRequested  bool   `json:"cancel_requested"`
-	ReceiptDigest    string `json:"receipt_digest,omitempty"`
-	ErrorCode        string `json:"error_code,omitempty"`
-	StartedMS        int64  `json:"started_ms"`
-	FinishedMS       int64  `json:"finished_ms,omitempty"`
+	Evidence         *ProcessingCapabilityEvidence    `json:"evidence,omitempty"`
+	HTTP             *ProcessingHTTPReceipt           `json:"http,omitempty"`
+	Diagnostics      *ProcessingValidationDiagnostics `json:"diagnostics,omitempty"`
+	ID               string                           `json:"validation"`
+	Revision         string                           `json:"revision"`
+	Attempt          int64                            `json:"attempt"`
+	DependencyDigest string                           `json:"dependency_digest"`
+	State            string                           `json:"state"`
+	CancelRequested  bool                             `json:"cancel_requested"`
+	ReceiptDigest    string                           `json:"receipt_digest,omitempty"`
+	ErrorCode        string                           `json:"error_code,omitempty"`
+	StartedMS        int64                            `json:"started_ms"`
+	FinishedMS       int64                            `json:"finished_ms,omitempty"`
 }
 
 type ProcessingActivation struct {

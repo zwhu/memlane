@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -254,5 +255,45 @@ func TestProjectTaskUISupplementDoesNotRestoreOldStartAcknowledgement(t *testing
 	a.openProjectOrganizer(a.scope, "")
 	if a.projectOrganizer.SelectedTask != "" || a.projectOrganizer.Task != nil || a.projectOrganizer.OperationID == prior {
 		t.Fatal("supplement reused the old queued acknowledgement instead of reading active tasks")
+	}
+}
+
+func TestProjectStartUnselectedHistoryNotTransmittedAndFailureIsActionable(t *testing.T) {
+	requested := make(chan records.ProjectTaskStart, 1)
+	a, dispatched := projectTaskUIFixture(t, func(r serviceipc.Request) serviceipc.Response {
+		if r.Op == "project_task_start" {
+			requested <- *r.ProjectTaskStart
+			return serviceipc.Response{OK: false, Code: "binding_changed", Stage: "persist", Error: "synthetic private path must not reach UI"}
+		}
+		return serviceipc.Response{OK: false, Code: "fixture_unexpected"}
+	})
+	draft := records.ProjectTaskStart{OperationID: a.projectOrganizer.OperationID, Project: a.scope, BindingRevision: a.projectOrganizer.Binding.Revision, HistoryWorkspaceID: "old-unselected-workspace", Sessions: []records.ProjectSessionSelection{{ID: "old-unselected-session", Digest: "old-digest"}}}
+	a.beginProjectTask(draft)
+	select {
+	case got := <-requested:
+		if got.IncludeHistory || got.HistoryWorkspaceID != "" || len(got.Sessions) != 0 {
+			t.Fatal("unselected history leaked into start scope", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("start not submitted")
+	}
+	awaitProcessingDispatch(t, dispatched)
+	operation := a.projectOrganizer.Operation
+	if operation == nil || operation.FailureStage != "persist" || operation.FailureCode != "binding_changed" {
+		t.Fatal("native action lost remote failure stage/code", operation)
+	}
+	if !strings.Contains(operation.Error, "保存启动请求：binding_changed") || strings.Contains(operation.Error, "private path") {
+		t.Fatal("unsafe or generic failure notice", operation.Error)
+	}
+}
+
+func TestProjectStartFailureNoticeSeparatesTransportWithoutProviderText(t *testing.T) {
+	stage, code, message := projectStartFailureNotice(context.DeadlineExceeded)
+	if stage != "transport" || code != "ipc_timeout" || !strings.Contains(message, "连接后台") {
+		t.Fatal(stage, code, message)
+	}
+	stage, code, message = projectStartFailureNotice(&serviceipc.ServiceError{Code: "provider error secret", Message: "private value", Stage: "executor"})
+	if stage != "executor" || code != "service_error" || strings.Contains(message, "secret") || strings.Contains(message, "private") {
+		t.Fatal(stage, code, message)
 	}
 }

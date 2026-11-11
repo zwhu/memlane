@@ -65,7 +65,7 @@ func TestMaterialReviewSourceChangesBlockNewConfirmation(t *testing.T) {
 	}
 	a.openOrganizationEntry("merge")
 	tt := ui.NewTester(a.View, 980, 620)
-	if !tt.HasText("来源已经变化或当前读取未完成，不能提交新的确认；原始依据与建议保留。") {
+	if !tt.HasText("来源版本或范围已变化") || !tt.HasText("重新整理相关材料") {
 		t.Fatal("stale preview feedback absent")
 	}
 }
@@ -98,6 +98,7 @@ func TestMaterialReviewMatrixRendersAllActionsAtBothWidths(t *testing.T) {
 				task.Entries = []records.OrganizationEntry{e}
 				a.organization.Task = &task
 				a.scopes = []records.Scope{{ID: "project", Kind: "project", Name: "原项目"}, {ID: "destination", Kind: "project", Name: "目标项目"}}
+				task.Snapshot.Destinations = []records.Scope{{ID: "destination", Kind: "project"}}
 				a.openOrganizationEntry(e.ID)
 				height := 900
 				if width == 980 {

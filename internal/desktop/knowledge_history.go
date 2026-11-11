@@ -12,7 +12,10 @@ import (
 // History owns an immutable viewing snapshot. It neither changes the selected
 // knowledge nor replaces its scroll, drafts or background task identity.
 type KnowledgeHistoryUI struct {
+	Root          string
+	Epoch         uint64
 	Open, Loading bool
+	ReturnFocus   bool
 	Owner         MemoryItem
 	Entries       []MemoryHistory
 	Selected      int64
@@ -27,15 +30,24 @@ func (a *App) openKnowledgeHistory() {
 	if item == nil || a.editing || item.Origin == "raw" {
 		return
 	}
+	a.openKnowledgeHistoryFor(*item)
+}
+func (a *App) openKnowledgeHistoryFor(item MemoryItem) {
+	if a.editing || item.Origin == "raw" {
+		return
+	}
 	a.closeKnowledgeHistory()
 	a.loadSequence++ // Retire any page read that began before the dialog.
 	a.loading = false
-	a.knowledgeHistory = KnowledgeHistoryUI{Open: true, Owner: *item, Selected: item.Revision, Sequence: a.knowledgeHistory.Sequence + 1}
+	a.knowledgeHistory = KnowledgeHistoryUI{Root: a.library.Root, Epoch: a.libraryEpoch, Open: true, Owner: item, Selected: item.Revision, Sequence: a.knowledgeHistory.Sequence + 1}
 	a.loadKnowledgeHistory()
 }
 
 func (a *App) closeKnowledgeHistory() {
 	h := &a.knowledgeHistory
+	if h.Open {
+		h.ReturnFocus = true
+	}
 	if h.Cancel != nil {
 		h.Cancel()
 		h.Cancel = nil
@@ -56,8 +68,9 @@ func (a *App) loadKnowledgeHistory() {
 	}
 	h.Sequence++
 	sequence, owner := h.Sequence, h.Owner
+	life, library, dispatch, epoch := a.libraryContext, a.library, a.dispatch, a.libraryEpoch
 	h.Loading, h.Error = true, ""
-	ctx, cancel := context.WithTimeout(a.libraryContext, 15*time.Second)
+	ctx, cancel := context.WithTimeout(life, 15*time.Second)
 	h.Cancel = cancel
 	go func() {
 		defer cancel()
@@ -65,7 +78,7 @@ func (a *App) loadKnowledgeHistory() {
 		before := int64(0)
 		var err error
 		for {
-			page, e := a.library.History(ctx, owner.ID, before)
+			page, e := library.History(ctx, owner.ID, before)
 			if e != nil {
 				err = e
 				break
@@ -84,11 +97,11 @@ func (a *App) loadKnowledgeHistory() {
 			}
 			before = page.NextRevision
 		}
-		if a.libraryContext.Err() != nil {
+		if life.Err() != nil {
 			return
 		}
-		a.dispatch(func() {
-			if !h.Open || sequence != h.Sequence || h.Owner.ID != owner.ID || h.Owner.Revision != owner.Revision {
+		dispatch(func() {
+			if a.libraryEpoch != epoch || a.library.Root != library.Root || !h.Open || sequence != h.Sequence || h.Owner.ID != owner.ID || h.Owner.Revision != owner.Revision {
 				return
 			}
 			h.Cancel, h.Loading = nil, false
@@ -196,10 +209,52 @@ func (a *App) knowledgeHistoryView(c *ui.Context) {
 		ui.Row(c).Shrink(0).Padding(13, 26).Gap(15).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Background(ui.Hex("#fcfdfe")).Children(func() {
 			ui.Text(c, "查看旧版本时，当前知识保留。").FontSize(10).TextColor(design.Muted)
 			ui.Spacer(c)
+			quietButton(c, "预览恢复此版本").Key("knowledge-history-restore-preview").Disabled(h.Loading || h.Error != "" || h.Selected < 1 || len(h.Entries) == 0).OnClick(a.previewKnowledgeHistoryRestore)
 			quietButton(c, "关闭").Key("knowledge-history-dismiss").Border(1, design.Border).Padding(6, 20).Radius(6).OnClick(a.closeKnowledgeHistory)
 		})
 	})
 	if dialog.Dismissed() {
+		// DialogBase has already cleared Open on Escape or backdrop dismissal.
+		h.ReturnFocus = true
 		a.closeKnowledgeHistory()
 	}
+}
+
+func (a *App) previewKnowledgeHistoryRestore() {
+	h := &a.knowledgeHistory
+	if !h.Open || h.Loading || h.Error != "" || h.Root != a.library.Root || h.Epoch != a.libraryEpoch || h.Owner.Origin == "raw" || a.saving {
+		return
+	}
+	found := false
+	for _, entry := range h.Entries {
+		found = found || entry.Revision == h.Selected
+	}
+	if !found {
+		return
+	}
+	owner, selected := h.Owner, h.Selected
+	if current := a.current(); a.isMemoryPage() && current != nil && current.ID == owner.ID && (current.Revision != owner.Revision || current.Dataset != owner.Dataset) {
+		h.Error = "当前知识的版本或范围已变化，请返回当前知识后重新打开历史。"
+		return
+	}
+	entries := append([]MemoryHistory(nil), h.Entries...)
+	if !a.isMemoryPage() || a.selectedID != owner.ID || a.current() == nil || a.current().Dataset != owner.Dataset {
+		a.openMergeMemory(owner.ID, owner.Dataset, owner.Origin)
+		a.selectedItem = &owner
+		a.loadSequence++ // The preview owns the frozen version, not a late page read.
+		a.loading = false
+	}
+	a.history, a.historyRevision, a.restoreExpected = entries, selected, owner.Revision
+	a.detailMode, a.detailScroll.Y = "restore", 0
+	a.closeKnowledgeHistory()
+}
+
+func (a *App) returnToKnowledgeHistory() {
+	h := &a.knowledgeHistory
+	a.detailMode = "view"
+	if h.Owner.ID == a.selectedID && h.Root == a.library.Root && h.Epoch == a.libraryEpoch && len(h.Entries) > 0 {
+		h.Open, h.Selected = true, a.historyRevision
+		return
+	}
+	a.openKnowledgeHistory()
 }

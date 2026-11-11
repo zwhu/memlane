@@ -16,6 +16,7 @@ type EnvironmentUI struct {
 	Loading     bool
 	Error       string
 	Sequence    uint64
+	Details     map[string]*bool
 	Maintenance bool
 }
 
@@ -225,24 +226,36 @@ func (a *App) environmentSizeSummary(cards []environmentCard) string {
 func (a *App) environmentSettings(c *ui.Context) {
 	ui.Scroll(c).Key("environment-content").Grow(1).MinHeight(0).Padding(28, 36).Gap(20).Children(func() {
 		a.environmentContent(c, false)
-		quietButton(c, "更多维护选项").Key("environment-maintenance").OnClick(func() { a.environment.Maintenance = !a.environment.Maintenance })
-		if a.environment.Maintenance {
-			ui.Column(c).Gap(14).Children(func() { a.settings(c) })
-		}
 	})
 	a.environmentFooter(c, false)
+}
+
+// Layout follows the space left after the shared navigation/step columns,
+// rather than the total window width. Preserve the approved ordinary 1200px
+// settings layout (about 210px per card); stack when cards would be under 200px.
+func environmentContentLayout(width float32, setup bool) (available float32, narrow bool) {
+	available = width - 196 - 72
+	if setup {
+		available -= 154
+	} else if width < 1040 {
+		available -= 212
+	} else {
+		available -= 272
+	}
+	available = max(0, available)
+	return available, available < 3*200+2*14
 }
 
 func (a *App) environmentContent(c *ui.Context, setup bool) {
 	cards := a.environmentCards(setup)
 	width, _ := c.Size()
-	available := width - 196 - 72
-	if setup {
-		available -= 154
-	}
-	narrow := width < 1040 || available < 690
+	available, narrow := environmentContentLayout(width, setup)
 	ui.Row(c).Key("environment-heading").Gap(12).AlignItems(ui.Center).Padding(0, 0, 14, 0).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).Children(func() {
-		ui.Text(c, "准备记忆环境").FontSize(design.Heading).Bold().Shrink(0)
+		title := "环境与组件"
+		if setup {
+			title = "准备记忆环境"
+		}
+		ui.Text(c, title).FontSize(design.Heading).Bold().Shrink(0)
 		ui.Spacer(c)
 		ui.Text(c, a.environmentSizeSummary(cards)).FontSize(10).TextColor(design.Muted).Grow(1).MinWidth(0)
 	})
@@ -292,79 +305,119 @@ func (a *App) environmentCardView(c *ui.Context, card environmentCard, width flo
 		container.Width(width)
 	}
 	container.Children(func() {
-		ui.Row(c).Height(32).Gap(8).AlignItems(ui.Center).Children(func() {
-			iconWidth := float32(28)
-			if card.Icon == "sqlite" {
-				iconWidth = 78
+		if narrow {
+			ui.Row(c).Gap(14).AlignItems(ui.Center).Children(func() {
+				ui.Box(c).Width(78).Height(32).Children(func() {
+					iconWidth := float32(28)
+					if card.Icon == "sqlite" {
+						iconWidth = 78
+					}
+					if card.Icon == "sqlite" {
+						ui.Image(c, icons[card.Icon]).Size(iconWidth, 28).Fit(ui.Contain).Grayscale()
+					} else {
+						ui.Box(c).Size(iconWidth, 28).Draw(func(p *ui.Painter, r ui.Rect) { p.Icon(icons[card.Icon], r, design.Muted) })
+					}
+
+				})
+				ui.Column(c).Grow(1).MinWidth(0).Gap(5).Children(func() {
+					ui.Text(c, card.Title).FontSize(14).Bold()
+					ui.Text(c, card.Product).FontSize(design.Small).TextColor(design.Muted)
+					ui.Text(c, card.Purpose).FontSize(design.Small).TextColor(design.Muted).LineHeight(1.4)
+				})
+				ui.Text(c, state).Key("environment-state-" + card.Key).FontSize(10).TextColor(design.Muted)
+			})
+		} else {
+			ui.Row(c).Height(32).Gap(8).AlignItems(ui.Center).Children(func() {
+				iconWidth := float32(28)
+				if card.Icon == "sqlite" {
+					iconWidth = 78
+				}
+				if card.Icon == "sqlite" {
+					ui.Image(c, icons[card.Icon]).Size(iconWidth, 28).Fit(ui.Contain).Grayscale()
+				} else {
+					ui.Box(c).Size(iconWidth, 28).Draw(func(p *ui.Painter, r ui.Rect) { p.Icon(icons[card.Icon], r, design.Muted) })
+				}
+				ui.Spacer(c)
+				ui.Text(c, state).Key("environment-state-" + card.Key).FontSize(10).TextColor(design.Muted)
+			})
+			ui.Text(c, card.Title).FontSize(14).Bold()
+			ui.Text(c, card.Product).FontSize(design.Small).TextColor(design.Muted)
+			ui.Text(c, card.Purpose).FontSize(design.Body).TextColor(design.Muted).LineHeight(1.5)
+			if !narrow {
+				ui.Spacer(c)
 			}
-			if card.Icon == "sqlite" {
-				ui.Image(c, icons[card.Icon]).Size(iconWidth, 28).Fit(ui.Contain).Grayscale()
-			} else {
-				ui.Box(c).Size(iconWidth, 28).Draw(func(p *ui.Painter, r ui.Rect) { p.Icon(icons[card.Icon], r, design.Muted) })
-			}
-			ui.Spacer(c)
-			ui.Text(c, state).Key("environment-state-" + card.Key).FontSize(10).TextColor(design.Muted)
-		})
-		ui.Text(c, card.Title).FontSize(14).Bold()
-		ui.Text(c, card.Product).FontSize(design.Small).TextColor(design.Muted)
-		ui.Text(c, card.Purpose).FontSize(design.Body).TextColor(design.Muted).LineHeight(1.5)
-		if !narrow {
-			ui.Spacer(c)
+
 		}
 		if card.Bundled {
 			ui.Text(c, "无需下载").FontSize(10).TextColor(design.Muted)
 			return
 		}
-		for _, item := range card.Items {
-			label := "原文检索引擎"
-			if r := a.firstLaunch.Controller; r != nil {
-				if item.Name == r.Config.ModelID {
-					label = "E5 原文检索模型"
+		details := func() {
+			for _, item := range card.Items {
+				label := "原文检索引擎"
+				if r := a.firstLaunch.Controller; r != nil {
+					if item.Name == r.Config.ModelID {
+						label = "E5 原文检索模型"
+					}
+					if item.Name == r.Config.CodeExtractorID {
+						label = "代码图谱依赖"
+					}
 				}
-				if item.Name == r.Config.CodeExtractorID {
-					label = "代码图谱依赖"
+				switch item.Name {
+				case "cognee-service":
+					label = "Cognee 服务与依赖"
+				case "cognee-codex-plugin":
+					label = "官方插件组件"
+				case "cognee-bge-zh":
+					label = "BGE 官方采集模型"
 				}
-			}
-			switch item.Name {
-			case "cognee-service":
-				label = "Cognee 服务与依赖"
-			case "cognee-codex-plugin":
-				label = "官方插件组件"
-			case "cognee-bge-zh":
-				label = "BGE 官方采集模型"
-			}
-			phase := environmentStateLabel(item.State)
-			switch item.State {
-			case "installed", "verified_reusable", "prepared_verified":
-				phase = "文件已校验"
-			case "waiting":
-				phase = "等待准备"
-			case "downloading":
-				phase = "下载中"
-			case "installing":
-				phase = "校验安装中"
-			case "failed":
-				phase = "尚未完成"
-			}
-			if item.Bytes > 0 && item.State == "needs_preparation" {
-				phase = "需下载 " + environmentSize(item.Bytes)
-			}
-			ui.Text(c, label+" · "+phase).FontSize(10).TextColor(design.Muted)
-			for _, receipt := range a.runtimeStatus.Components {
-				if receipt.ID != item.Name || receipt.Total <= 0 {
-					continue
+				phase := environmentStateLabel(item.State)
+				switch item.State {
+				case "installed", "verified_reusable", "prepared_verified":
+					phase = "文件已校验"
+				case "waiting":
+					phase = "等待准备"
+				case "downloading":
+					phase = "下载中"
+				case "installing":
+					phase = "校验安装中"
+				case "failed":
+					phase = "尚未完成"
 				}
-				if receipt.Phase == "failed" && receipt.Downloaded > 0 {
-					ui.Text(c, "已保留下载 "+environmentSize(receipt.Downloaded)).FontSize(10).TextColor(design.Muted)
-					continue
+				if item.Bytes > 0 && item.State == "needs_preparation" {
+					phase = "需下载 " + environmentSize(item.Bytes)
 				}
-				if receipt.Phase != "downloading" {
-					continue
+				ui.Text(c, label+" · "+phase).FontSize(10).TextColor(design.Muted)
+				for _, receipt := range a.runtimeStatus.Components {
+					if receipt.ID != item.Name || receipt.Total <= 0 {
+						continue
+					}
+					if receipt.Phase == "failed" && receipt.Downloaded > 0 {
+						ui.Text(c, "已保留下载 "+environmentSize(receipt.Downloaded)).FontSize(10).TextColor(design.Muted)
+						continue
+					}
+					if receipt.Phase != "downloading" {
+						continue
+					}
+					ui.Text(c, environmentSize(receipt.Downloaded)+" / "+environmentSize(receipt.Total)).Key("environment-bytes-" + item.Name).FontSize(10).TextColor(design.Muted)
+					ui.Progress(c.Key("environment-progress-"+item.Name), max(0, min(1, float64(receipt.Downloaded)/float64(receipt.Total)))).Height(3)
 				}
-				ui.Text(c, environmentSize(receipt.Downloaded)+" / "+environmentSize(receipt.Total)).Key("environment-bytes-" + item.Name).FontSize(10).TextColor(design.Muted)
-				ui.Progress(c.Key("environment-progress-"+item.Name), max(0, min(1, float64(receipt.Downloaded)/float64(receipt.Total)))).Height(3)
 			}
 		}
+		if state == "已校验" {
+			if a.environment.Details == nil {
+				a.environment.Details = map[string]*bool{}
+			}
+			expanded := a.environment.Details[card.Key]
+			if expanded == nil {
+				expanded = new(bool)
+				a.environment.Details[card.Key] = expanded
+			}
+			ui.Collapsible(c, "组件明细", expanded, details)
+		} else {
+			details()
+		}
+
 	})
 }
 
@@ -393,11 +446,6 @@ func (a *App) environmentFooter(c *ui.Context, setup bool) {
 			}
 			return
 		}
-		previous := a.keepService
-		ui.Checkbox(c, &a.keepService, "退出 App 后继续运行记忆服务").FontSize(design.Small)
-		if previous != a.keepService && a.keepChanged != nil {
-			a.keepChanged(a.keepService)
-		}
 		ui.Spacer(c)
 		locked := a.backups.RestoreLocked || a.backups.Busy
 		if busy {
@@ -408,7 +456,7 @@ func (a *App) environmentFooter(c *ui.Context, setup bool) {
 				if environmentNeedsPreparation(a.environmentCards(false)) {
 					firstLaunchPrimary(c, "准备缺失组件").Disabled(a.prepareRuntime == nil || locked || a.environment.Loading).OnClick(a.prepareRuntime)
 				}
-				firstLaunchPrimary(c, "停止服务").Disabled(a.stopRuntime == nil || locked).OnClick(a.stopRuntime)
+				firstLaunchPrimary(c, "停止服务").Disabled(a.stopRuntime == nil || locked).OnClick(func() { a.maintenanceSection = "service"; a.maintenanceStopConfirm = true })
 			} else if a.runtimeStatus.Phase == "stopped" {
 				firstLaunchPrimary(c, "启动服务").Disabled(a.resumeRuntime == nil || locked).OnClick(a.resumeRuntime)
 			} else {

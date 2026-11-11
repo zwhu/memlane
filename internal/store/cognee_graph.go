@@ -19,6 +19,9 @@ func migrateCogneeBrowsing(tx *sql.Tx) error {
 }
 
 func (s *Store) AuthorizeCogneeBinding(ctx context.Context, b records.CogneeBinding) error {
+	if b.MaterialSubmission {
+		return access("scope_denied", "material authorization does not grant historical session import")
+	}
 	c, scopes, err := s.Authorize(ctx, records.AgentRequest{Protocol: 1, ConnectionID: b.ConnectionID, Generation: b.Generation, Workspace: b.Workspace, Tool: "memory_save", Arguments: records.AgentArguments{Scope: b.Project}})
 	if err != nil {
 		return err
@@ -39,7 +42,7 @@ func (s *Store) BindCognee(ctx context.Context, b records.CogneeBinding) (record
 	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.Port() == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return b, access("invalid_request", "explicit local Cognee endpoint required")
 	}
-	if err = s.AuthorizeCogneeBinding(ctx, b); err != nil {
+	if err = s.AuthorizeCogneeGraphBinding(ctx, b); err != nil {
 		return b, err
 	}
 	encoded, err := json.Marshal(b)
@@ -116,7 +119,7 @@ func (s *Store) CogneeBindings(ctx context.Context, project string) ([]records.C
 // co-occurrence inference, model output or local extraction is used.
 func (s *Store) ProjectCogneeGraph(ctx context.Context, b records.CogneeBinding, g records.CogneeGraph) (records.CogneeGraph, error) {
 	out := records.CogneeGraph{Instance: b.Instance, Dataset: b.Dataset, Project: b.Project, CogneeVersion: g.CogneeVersion, State: "empty", Entities: []records.CogneeEntity{}, Mentions: []records.CogneeMention{}, Relations: []records.CogneeRelation{}, UnsupportedRelations: g.UnsupportedRelations}
-	if err := s.AuthorizeCogneeBinding(ctx, b); err != nil {
+	if err := s.AuthorizeCogneeGraphBinding(ctx, b); err != nil {
 		return out, err
 	}
 	if g.Instance != b.Instance || g.Dataset != b.Dataset || g.CogneeVersion != "1.6.7" || len(g.Entities) > 4000 || len(g.Mentions) > 16000 || len(g.Relations) > 16000 {
@@ -147,6 +150,9 @@ func (s *Store) ProjectCogneeGraph(ctx context.Context, b records.CogneeBinding,
 	}
 	documents := map[string]records.Version{}
 	for _, id := range ids {
+		if b.MaterialSubmission {
+			continue
+		} // new grants do not authorize legacy imported/session material
 		v, err := scanVersion(tx.QueryRowContext(ctx, `SELECT `+versionColumns+versionJoins+`WHERE m.id=?`, id))
 		if err != nil {
 			return out, err
@@ -174,6 +180,17 @@ func (s *Store) ProjectCogneeGraph(ctx context.Context, b records.CogneeBinding,
 			documents[parts[3]] = v
 		}
 	}
+	// Independently submitted current materials carry a distinct durable proof.
+	submitted, err := submittedCogneeDocuments(ctx, tx, b)
+	if err != nil {
+		return out, err
+	}
+	for document, v := range submitted {
+		if prior, exists := documents[document]; exists && (prior.Memory != v.Memory || prior.Revision != v.Revision) {
+			return out, access("invalid_provenance", "ambiguous official document")
+		}
+		documents[document] = v
+	}
 	bindSource := func(source records.CogneeGraphSource) (records.CogneeGraphSource, bool) {
 		v, ok := documents[source.Document]
 		if !ok || source.Quote == "" || len(source.Quote) > records.MergeInputLimit || !strings.Contains(v.Text, source.Quote) {
@@ -182,13 +199,18 @@ func (s *Store) ProjectCogneeGraph(ctx context.Context, b records.CogneeBinding,
 		if _, err := uuid.Parse(source.Chunk); err != nil {
 			return source, false
 		}
-		source.Memory, source.Revision = v.Memory, v.Revision
+		source.Memory, source.Revision, source.Origin = v.Memory, v.Revision, v.Origin
 		return source, true
 	}
 	entities := map[string]records.CogneeEntity{}
 	for _, entity := range g.Entities {
-		if parsed, err := uuid.Parse(entity.ID); err != nil || parsed.String() != entity.ID || len(entity.Name) > 1024 || len(entity.Description) > 16384 {
+		if parsed, err := uuid.Parse(entity.ID); err != nil || parsed.String() != entity.ID || len(entity.Name) > 1024 || len(entity.Description) > 16384 || len(entity.Types) > 32 {
 			return out, access("invalid_provenance", "invalid entity identity or text")
+		}
+		for _, kind := range entity.Types {
+			if strings.TrimSpace(kind) == "" || len(kind) > 1024 {
+				return out, access("invalid_provenance", "invalid entity type")
+			}
 		}
 		entities[entity.ID] = entity
 	}

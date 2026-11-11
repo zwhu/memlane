@@ -11,6 +11,23 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 
+def entity_types(by_id, edges, entity_ids):
+    """Only persisted Entity --is_a--> EntityType edges supply labels."""
+    result = {}
+    for edge in edges:
+        if len(edge) < 3:
+            continue
+        source, target, label = map(str, edge[:3])
+        node = by_id.get(target, {})
+        name = node.get("name")
+        if source not in entity_ids or label != "is_a" or node.get("type") != "EntityType":
+            continue
+        if not isinstance(name, str) or not name.strip() or len(name.encode("utf-8")) > 1024:
+            continue
+        result.setdefault(source, set()).add(name)
+    return {key: sorted(values)[:32] for key, values in result.items()}
+
+
 def install(app):
     if importlib.metadata.version("cognee") != "1.6.7":
         raise RuntimeError("Memlane 材料图仅适配 Cognee 1.6.7")
@@ -38,7 +55,7 @@ def install(app):
 
     @app.get("/api/v1/memlane/identity")
     async def identity(user=Depends(get_authenticated_user)):
-        return {"instance": instance, "cognee_version": "1.6.7", "adapter": "memlane-material-graph-v1"}
+        return {"instance": instance, "cognee_version": "1.6.7", "adapter": "memlane-material-graph-v1", "capabilities": ["material_submission_v1"]}
 
     @app.post("/api/v1/memlane/verify-environment")
     async def verify_environment(user=Depends(get_authenticated_user)):
@@ -160,6 +177,7 @@ def install(app):
             by_id = {str(node[0]): node[1] for node in nodes}
             chunks = {key: value for key, value in by_id.items() if value.get("type") == "DocumentChunk"}
             entity_ids = {key for key, value in by_id.items() if value.get("type") == "Entity"}
+            types = entity_types(by_id, edges, entity_ids)
             relations = []
             missing_identity = 0
             for edge in edges:
@@ -200,9 +218,39 @@ def install(app):
             supported = [{"id": edge[3], "source": edge[0], "target": edge[1], "label": edge[2],
                           "sources": evidence_by_edge[edge[3]]}
                          for edge in relations if edge[3] in evidence_by_edge]
-            return {"instance": instance, "dataset": str(dataset_id), "cognee_version": "1.6.7",
+            # Legacy provenance remains a real source fact, never upgraded into
+            # semantic verification. Only exact published owner audit qualifies.
+            from cognee_grounded_graph import relation_grounding, graph_materials
+            system_root = os.path.realpath(os.environ['SYSTEM_ROOT_DIRECTORY'])
+            materials = await graph_materials(dataset_id, {s['document'] for relation in supported for s in relation['sources']})
+            grounded = []
+            grounding_counts = {}
+            for relation in supported:
+                relation['grounding'] = relation_grounding(system_root, instance=instance, dataset=str(dataset_id),
+                                                           edge_id=relation['id'], sources=relation['sources'], materials=materials)
+                state = relation['grounding']['state']
+                if state == 'model_entailed':
+                    grounded.append(relation)
+                else:
+                    grounding_counts[state] = grounding_counts.get(state, 0) + 1
+            payload = {"instance": instance, "dataset": str(dataset_id), "cognee_version": "1.6.7",
                     "entities": [{"id": key, "name": by_id[key].get("name", ""),
-                                  "description": by_id[key].get("description", "")}
+                                  "description": by_id[key].get("description", ""), "types": types.get(key, [])}
                                  for key in sorted(entity_ids)],
-                    "mentions": mentions, "relations": supported,
-                    "unsupported_relations": missing_identity+len(relations)-len(supported)}
+                    "mentions": mentions, "relations": grounded,
+                    "unsupported_relations": missing_identity+len(relations)-len(grounded),
+                    "grounding_unreviewed_relations": grounding_counts.get("unreviewed", 0),
+                    "grounding_audit_unavailable_relations": grounding_counts.get("audit_unavailable", 0)}
+            # Same complete-response budget enforced by the daemon transport.
+            # An oversized response fails explicitly; verified edges never become
+            # "unverified" merely to fit redundant audit payload into the API.
+            if len(json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode()) > 8*1024*1024:
+                raise HTTPException(413, "Material graph response exceeds transport budget")
+            return payload
+
+    # Same authenticated service process and graph/database owner. Execution
+    # additionally requires the daemon's per-task private processing gateway.
+    from cognee_processing_adapter import install as install_processing_adapter
+    install_processing_adapter()
+    from cognee_submission import install as install_submission
+    install_submission(app, instance, get_authenticated_user)

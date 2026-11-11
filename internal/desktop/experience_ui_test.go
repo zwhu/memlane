@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,7 +80,7 @@ func TestExperienceUIReadFailureRetriesSavedReceiptAfterSourceChanged(t *testing
 		}
 		reads++
 		if reads == 1 {
-			return serviceipc.Response{OK: false, Code: "service_error", Error: "read fault fixture after committed copy"}
+			return serviceipc.Response{OK: false, Code: "service_error", Error: "dial unix /private/tmp/fixture-only/memlane.sock: read fault after committed copy"}
 		}
 		return serviceipc.Response{OK: true, Result: records.Version{Memory: receipt.Memory, Dataset: "global", Revision: 1}}
 	})
@@ -89,6 +90,9 @@ func TestExperienceUIReadFailureRetriesSavedReceiptAfterSourceChanged(t *testing
 	awaitExperienceDispatch(t, dispatched)
 	if a.experience.Receipt == nil || a.experience.Copy == nil || a.experience.Error == "" {
 		t.Fatal("committed receipt lost")
+	}
+	if strings.Contains(a.experience.Error, "/private/tmp/") || strings.Contains(a.experience.Error, "dial unix") {
+		t.Fatal("default copy notice exposed transport path", a.experience.Error)
 	}
 	a.experience.CurrentRevision = 2
 	tt := ui.NewTester(a.View, 1200, 900)

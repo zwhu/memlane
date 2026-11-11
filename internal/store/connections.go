@@ -59,7 +59,10 @@ func (s *Store) ConfigureConnection(ctx context.Context, d records.ConnectionDra
 	if d.Agent != "codex" && d.Agent != "pi" && d.Agent != "traex" && d.Agent != "trae" {
 		return records.Connection{}, access("invalid_request", "unsupported Agent")
 	}
-	if strings.TrimSpace(d.Name) == "" || len(d.Name) > 160 || len(d.AllowedScopes) == 0 || len(d.AllowedScopes) > 100 {
+	if d.ConnectionOnly && (d.Project != "" || d.AutoProject || d.Workspace != "" || len(d.AllowedScopes) != 0) {
+		return records.Connection{}, access("invalid_request", "connection-only setup cannot grant memory access or bind a workspace")
+	}
+	if strings.TrimSpace(d.Name) == "" || len(d.Name) > 160 || (!d.ConnectionOnly && len(d.AllowedScopes) == 0) || len(d.AllowedScopes) > 100 {
 		return records.Connection{}, access("invalid_request", "name and explicit allowed scopes required")
 	}
 	if d.ID == "" {
@@ -184,6 +187,15 @@ func (s *Store) TouchConnection(ctx context.Context, id string, generation int64
 // Authorize selects explicit scopes or current project plus allowed globals.
 // It never expands to all allowed projects implicitly.
 func (s *Store) Authorize(ctx context.Context, r records.AgentRequest) (records.Connection, []string, error) {
+	return s.authorize(ctx, r, false)
+}
+
+// AuthorizeReadOnly applies the same grants and physical-workspace checks,
+// without lazily writing the repository cache or touching connection activity.
+func (s *Store) AuthorizeReadOnly(ctx context.Context, r records.AgentRequest) (records.Connection, []string, error) {
+	return s.authorize(ctx, r, true)
+}
+func (s *Store) authorize(ctx context.Context, r records.AgentRequest, readOnly bool) (records.Connection, []string, error) {
 	if s.Schema >= 14 {
 		var retired int
 		if err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM connection_retirements WHERE connection=?`, r.ConnectionID).Scan(&retired); err != nil {
@@ -226,7 +238,7 @@ func (s *Store) Authorize(ctx context.Context, r records.AgentRequest) (records.
 			return c, nil, err
 		}
 	} else if r.Workspace != "" {
-		project, e := s.ProjectForWorkspace(ctx, r.Workspace)
+		project, e := s.projectForWorkspace(ctx, r.Workspace, !readOnly)
 		if e != nil {
 			// With no fixed binding, an explicitly chosen allowed scope is
 			// sufficient even outside a registered Git repository. Still fail

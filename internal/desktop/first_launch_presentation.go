@@ -146,14 +146,14 @@ func (a *App) firstLaunchItem(name string) EnvironmentItem {
 	return EnvironmentItem{Name: name, State: "not_verified", Evidence: "本次检测未取得此项结果"}
 }
 func (a *App) firstLaunchAgents(c *ui.Context) {
-	ui.Row(c).Children(func() {
+	ui.Row(c).Gap(14).Children(func() {
 		ui.Text(c, "连接 Agent").FontSize(design.Heading).Bold()
 		ui.Spacer(c)
+		quietButton(c, "全选可连接").Disabled(a.agents.Batch.frozen()).OnClick(a.selectAllAgentConnections)
 		quietButton(c, "重新检测").Disabled(a.agents.Busy).OnClick(func() { a.refreshAgents(true) })
 	})
 	ui.Divider(c)
 	a.agentConnectionCards(c, true)
-	ui.Text(c, "选择卡片管理当前连接。批量连接暂未开放；也可以稍后设置。").FontSize(design.Small).TextColor(design.Muted)
 }
 
 func (a *App) firstLaunchFooter(c *ui.Context) {
@@ -161,7 +161,8 @@ func (a *App) firstLaunchFooter(c *ui.Context) {
 		a.environmentFooter(c, true)
 		return
 	}
-	ui.Row(c).Key("first-launch-footer").MinHeight(64).Shrink(0).Padding(14, 28).Gap(14).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
+	ui.Row(c).Key("first-launch-footer").Wrap().MinHeight(64).Shrink(0).Padding(14, 28).Gap(14).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
+		a.agentConnectionActionButtons(c)
 		ui.Spacer(c)
 		quietButton(c, "稍后设置").Key("first-launch-skip").OnClick(func() { a.cancelFirstLaunch(true) })
 		firstLaunchPrimary(c, "继续配置记忆处理").Key("first-launch-processing").OnClick(a.advanceFirstLaunchToProcessing)

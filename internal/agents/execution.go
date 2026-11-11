@@ -23,24 +23,29 @@ type ToolCall struct {
 	Response  agentbridge.Result `json:"response"`
 }
 type Execution struct {
-	Channel          string           `json:"channel,omitempty"`
-	SelectedModel    string           `json:"selected_model,omitempty"`
-	PID              int              `json:"pid,omitempty"`
-	ProcessGroupGone bool             `json:"process_group_gone"`
-	Inspection       json.RawMessage  `json:"inspection,omitempty"`
-	FinalText        string           `json:"final_text,omitempty"`
-	ItemTypes        map[string]int   `json:"item_types,omitempty"`
-	ToolEvents       []map[string]any `json:"memory_tool_events,omitempty"`
-	Provider         string           `json:"provider,omitempty"`
-	Model            string           `json:"model,omitempty"`
-	Agent            string           `json:"agent"`
-	Version          string           `json:"version"`
-	ExitCode         int              `json:"exit_code"`
-	Calls            []ToolCall       `json:"calls"`
-	Failure          string           `json:"failure,omitempty"`
-	Events           map[string]int   `json:"event_types,omitempty"`
+	FailureStage     string              `json:"failure_stage,omitempty"`
+	FailureCode      string              `json:"failure_code,omitempty"`
+	ProtocolReceipt  *agentbridge.Result `json:"protocol_receipt,omitempty"`
+	Channel          string              `json:"channel,omitempty"`
+	SelectedModel    string              `json:"selected_model,omitempty"`
+	PID              int                 `json:"pid,omitempty"`
+	ProcessGroupGone bool                `json:"process_group_gone"`
+	Inspection       json.RawMessage     `json:"inspection,omitempty"`
+	FinalText        string              `json:"final_text,omitempty"`
+	ItemTypes        map[string]int      `json:"item_types,omitempty"`
+	ToolEvents       []map[string]any    `json:"memory_tool_events,omitempty"`
+	Provider         string              `json:"provider,omitempty"`
+	Model            string              `json:"model,omitempty"`
+	Agent            string              `json:"agent"`
+	Version          string              `json:"version"`
+	ExitCode         int                 `json:"exit_code"`
+	Calls            []ToolCall          `json:"calls"`
+	Failure          string              `json:"failure,omitempty"`
+	Events           map[string]int      `json:"event_types,omitempty"`
 }
 type RunOptions struct {
+	Guard           string // packaged helper; owner EOF terminates the whole verification group
+	ProtocolOnly    bool   // pi: only memory_scopes, in a new empty temporary workspace
 	InspectInput    bool   // no-model context check; debug launch semantics differ from exec
 	Initialization  bool   // only approved source-query/status and structured import tools
 	UsageChannel    string // explicit daily replay acceptance; default is connection verification
@@ -117,7 +122,11 @@ func Run(ctx context.Context, d Discovery, i Installation, o RunOptions) (Execut
 	if o.Workspace != "" {
 		workspace = o.Workspace
 	}
-	if !filepath.IsAbs(workspace) {
+	if o.ProtocolOnly && (d.Agent != "pi" || !PiProtocolConnectionEligible(i.Connection) || o.Workspace != "" || o.Initialization || o.Provider != "" || o.Model != "" || o.UsageChannel != "" && o.UsageChannel != "verification") {
+		return out, errors.New("protocol verification requires a settled pi identity and metadata-only verification options")
+	}
+
+	if !o.ProtocolOnly && !filepath.IsAbs(workspace) {
 		return out, errors.New("select a workspace before verifying Agent")
 	}
 	isolated, err := os.MkdirTemp("", "memlane-agent-run-")
@@ -125,6 +134,12 @@ func Run(ctx context.Context, d Discovery, i Installation, o RunOptions) (Execut
 		return out, err
 	}
 	defer os.RemoveAll(isolated)
+	if o.ProtocolOnly {
+		workspace = filepath.Join(isolated, "workspace")
+		if err = os.Mkdir(workspace, 0700); err != nil {
+			return out, err
+		}
+	}
 	if err = os.Chmod(isolated, 0700); err != nil {
 		return out, err
 	}
@@ -136,9 +151,15 @@ func Run(ctx context.Context, d Discovery, i Installation, o RunOptions) (Execut
 		return out, errors.New("invalid usage channel")
 	}
 	env := append(os.Environ(), "PATH="+filepath.Dir(d.Path)+":"+os.Getenv("PATH"), "PI_TELEMETRY=0", "MEMLANE_USAGE_CHANNEL="+channel)
+	if o.ProtocolOnly {
+		env = []string{"PATH=" + filepath.Dir(d.Path) + ":" + os.Getenv("PATH"), "HOME=" + isolated, "TMPDIR=" + os.TempDir(), "PI_TELEMETRY=0", "MEMLANE_USAGE_CHANNEL=verification"}
+	}
 	mode := ""
 	if o.Initialization {
 		mode = "initialization"
+	}
+	if o.ProtocolOnly {
+		mode = "connection"
 	}
 	env = append(env, "MEMLANE_TOOL_MODE="+mode)
 	var arguments []string
@@ -219,13 +240,21 @@ func Run(ctx context.Context, d Discovery, i Installation, o RunOptions) (Execut
 		if authDir == "" {
 			authDir = i.Options.PiDirectory
 		}
-		if info, e := os.Stat(filepath.Join(authDir, "auth.json")); e == nil && !info.IsDir() {
+		if info, e := os.Stat(filepath.Join(authDir, "auth.json")); !o.ProtocolOnly && e == nil && !info.IsDir() {
 			if err = os.Symlink(filepath.Join(authDir, "auth.json"), filepath.Join(isolated, "auth.json")); err != nil {
+				return out, err
+			}
+		}
+		if !o.ProtocolOnly {
+			if err = copyPiModelDefinitions(authDir, isolated, ""); err != nil {
 				return out, err
 			}
 		}
 		env = append(env, "PI_CODING_AGENT_DIR="+isolated)
 		arguments = []string{"--mode", "json", "--print", "--no-session", "--offline", "--no-extensions", "--no-context-files", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-builtin-tools", "--extension", i.ExtensionPath, "--tools", "memory_scopes,memory_search,memory_get,memory_save,memory_status,memory_adopt,memory_initialization_get,memory_initialization_status,memory_initialize,memory_code_search"}
+		if o.ProtocolOnly {
+			arguments[len(arguments)-1] = "memory_scopes"
+		}
 		if o.Initialization {
 			for n := range arguments {
 				if n > 0 && arguments[n-1] == "--tools" {
@@ -245,7 +274,25 @@ func Run(ctx context.Context, d Discovery, i Installation, o RunOptions) (Execut
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, d.Path, arguments...)
+	executable := d.Path
+	var controlRead, controlWrite *os.File
+	if o.Guard != "" {
+		if !filepath.IsAbs(o.Guard) {
+			return out, errors.New("absolute Agent process guard required")
+		}
+		controlRead, controlWrite, err = os.Pipe()
+		if err != nil {
+			return out, err
+		}
+		defer controlRead.Close()
+		defer controlWrite.Close()
+		arguments = append([]string{"--proposal-guard", executable}, arguments...)
+		executable = o.Guard
+	}
+	cmd := exec.CommandContext(ctx, executable, arguments...)
+	if controlRead != nil {
+		cmd.ExtraFiles = []*os.File{controlRead}
+	}
 	cmd.Dir = workspace
 	cmd.Env = env
 	out.SelectedModel = o.Model
@@ -288,6 +335,16 @@ func Run(ctx context.Context, d Discovery, i Installation, o RunOptions) (Execut
 	}
 	out.PID = cmd.Process.Pid
 	defer finishAgentProcess(cmd)
+	if controlRead != nil {
+		_ = controlRead.Close()
+		if _, err = controlWrite.Write([]byte{'S'}); err != nil {
+			_ = controlWrite.Close()
+			_ = cmd.Cancel()
+			_ = cmd.Wait()
+			out.ProcessGroupGone = finishAgentProcess(cmd)
+			return out, err
+		}
+	}
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 4096), 8*1024*1024)
 	type piStart struct {
@@ -295,6 +352,7 @@ func Run(ctx context.Context, d Discovery, i Installation, o RunOptions) (Execut
 		args any
 	}
 	piCalls := map[string]piStart{}
+	assistantFinished := false
 	for scanner.Scan() {
 		var event map[string]any
 		if json.Unmarshal(scanner.Bytes(), &event) != nil {
@@ -302,6 +360,43 @@ func Run(ctx context.Context, d Discovery, i Installation, o RunOptions) (Execut
 		}
 		type_, _ := event["type"].(string)
 		out.Events[type_]++
+		if o.ProtocolOnly {
+			if message, ok := event["message"].(map[string]any); ok && message["role"] == "assistant" {
+				out.Failure = "connection verification unexpectedly invoked a model"
+			}
+		}
+		message, _ := event["message"].(map[string]any)
+		if d.Agent == "pi" && !o.ProtocolOnly && type_ == "message_end" && message["role"] == "assistant" {
+			reason, _ := message["stopReason"].(string)
+			if assistantFinished || reason != "stop" && reason != "toolUse" {
+				out.FailureStage, out.FailureCode = "assistant_terminal", "pi_assistant_failed"
+				if reason == "aborted" {
+					out.FailureCode = "pi_assistant_aborted"
+				}
+				if assistantFinished {
+					out.FailureCode = "pi_assistant_duplicate"
+				}
+				detail, _ := message["errorMessage"].(string)
+				out.Failure = "pi assistant did not complete: " + safeReason(detail)
+			} else if reason == "stop" {
+				assistantFinished = true
+			}
+		}
+
+		if o.ProtocolOnly && type_ == "message_end" && message["role"] == "custom" && message["customType"] == "memlane-connection-result" {
+			var receipt struct {
+				Connection string             `json:"connection"`
+				Generation int64              `json:"generation"`
+				Reply      agentbridge.Result `json:"reply"`
+			}
+			data, _ := json.Marshal(message["details"])
+			if json.Unmarshal(data, &receipt) == nil && receipt.Connection == i.Connection.ID && receipt.Generation == i.Connection.Generation && out.ProtocolReceipt == nil {
+				out.ProtocolReceipt = &receipt.Reply
+			} else {
+				out.Failure = "invalid or duplicate connection protocol receipt"
+			}
+			continue
+		}
 		if d.Agent == "pi" && type_ == "tool_execution_start" {
 			id, _ := event["toolCallId"].(string)
 			name, _ := event["toolName"].(string)
@@ -403,6 +498,15 @@ func Run(ctx context.Context, d Discovery, i Installation, o RunOptions) (Execut
 	}
 	if !out.ProcessGroupGone {
 		return out, errors.New("Agent process group did not exit")
+	}
+	if o.ProtocolOnly {
+		if out.ProtocolReceipt == nil || out.Failure != "" {
+			return out, errors.New("Agent did not return a valid connection protocol receipt")
+		}
+		return out, nil
+	}
+	if out.FailureCode != "" {
+		return out, errors.New(out.Failure)
 	}
 	if len(out.Calls) == 0 {
 		if diagnostic.text.Len() > 0 {

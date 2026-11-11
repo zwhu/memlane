@@ -24,6 +24,14 @@ func (s *Server) runOrganizationModel(ctx context.Context, t records.Organizatio
 	if err != nil {
 		return organizationModelExecution{}, err
 	}
+	if binding.Spec.Mode == "provider" || binding.Spec.Mode == "magpie" {
+		out, err := s.processing.RunHTTPOrganization(ctx, t.Snapshot, onEvent)
+		return organizationModelExecution{Result: out.Result, Detail: out}, err
+	}
+	if binding.Spec.Agent == "codex" {
+		out, err := s.processing.RunCodexOrganization(ctx, t.Snapshot, onStart, onEvent)
+		return organizationModelExecution{ProposalProcess: out.ProposalProcess, Result: out.Result, Detail: out}, err
+	}
 	out, err := agents.RunPiOrganization(ctx, agents.PiOrganizationRunOptions{Snapshot: t.Snapshot, Executable: binding.Executable, AuthHome: binding.AuthHome, Provider: binding.Spec.Provider, Model: binding.Spec.Model, GuardExecutable: binding.Helper, OnStart: onStart, OnEvent: onEvent})
 	result := organizationModelExecution{ProposalProcess: out.ProposalProcess, Result: out.Result, Detail: out}
 	if err == nil {

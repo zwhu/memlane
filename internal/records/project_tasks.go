@@ -137,7 +137,15 @@ type ProjectKnowledgeContextReceipt struct {
 
 // Only the daemon can seal process receipts. An exit code is not a model
 // terminal event, and restored PIDs are historical data rather than owners.
+type ProjectPiExecution struct {
+	FailureCode                string `json:"failure_code,omitempty"`
+	NativeSchemaRequested      bool   `json:"native_schema_requested"`
+	NativeSchemaResponseStatus int    `json:"native_schema_response_status"`
+	ReadPhaseEnded             bool   `json:"read_phase_ended"`
+}
+
 type ProjectTaskExecution struct {
+	Pi                    *ProjectPiExecution             `json:"pi,omitempty"`
 	HistoryContext        *ProjectHistoryContextReceipt   `json:"history_context,omitempty"`
 	KnowledgeContext      *ProjectKnowledgeContextReceipt `json:"knowledge_context,omitempty"`
 	PID                   int                             `json:"pid"`

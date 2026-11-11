@@ -28,6 +28,7 @@ var installationMu sync.Mutex
 var piExtension string
 
 type InstallOptions struct {
+	ComputerLevel  bool   // Codex local stdio identity; project grants remain independent
 	Project        string // explicit App verification scope; pi daily context still comes from ctx.cwd
 	ClientRoot     string
 	ServiceRoot    string
@@ -39,21 +40,58 @@ type InstallOptions struct {
 }
 
 type Installation struct {
-	IDEChallenge       *records.IDEVerification        `json:"ide_challenge,omitempty"`
-	IDEReceipt         *records.IDEVerificationReceipt `json:"ide_receipt,omitempty"`
-	ToolsetVersion     int                             `json:"toolset_version,omitempty"`
-	AgentChannel       string                          `json:"agent_channel,omitempty"`
-	AgentVersion       string                          `json:"agent_version,omitempty"`
-	Connection         records.Connection              `json:"connection"`
-	Options            InstallOptions                  `json:"options"`
-	ConfigPath         string                          `json:"config_path"`
-	BackupPath         string                          `json:"backup_path,omitempty"`
-	ExtensionPath      string                          `json:"extension_path,omitempty"`
-	Block              string                          `json:"block,omitempty"`
-	ExtensionHash      string                          `json:"extension_hash,omitempty"`
-	VerifiedGeneration int64                           `json:"verified_generation,omitempty"`
-	VerifiedAt         string                          `json:"verified_at,omitempty"`
-	VerificationError  string                          `json:"verification_error,omitempty"`
+	IDEChallenge            *records.IDEVerification        `json:"ide_challenge,omitempty"`
+	IDEReceipt              *records.IDEVerificationReceipt `json:"ide_receipt,omitempty"`
+	ToolsetVersion          int                             `json:"toolset_version,omitempty"`
+	AgentChannel            string                          `json:"agent_channel,omitempty"`
+	AgentVersion            string                          `json:"agent_version,omitempty"`
+	Connection              records.Connection              `json:"connection"`
+	Options                 InstallOptions                  `json:"options"`
+	ConfigPath              string                          `json:"config_path"`
+	BackupPath              string                          `json:"backup_path,omitempty"`
+	ExtensionPath           string                          `json:"extension_path,omitempty"`
+	Block                   string                          `json:"block,omitempty"`
+	ExtensionHash           string                          `json:"extension_hash,omitempty"`
+	VerifiedGeneration      int64                           `json:"verified_generation,omitempty"`
+	VerifiedAt              string                          `json:"verified_at,omitempty"`
+	VerificationError       string                          `json:"verification_error,omitempty"`
+	ProtocolGeneration      int64                           `json:"protocol_generation,omitempty"`
+	ProtocolVerifiedAt      string                          `json:"protocol_verified_at,omitempty"`
+	ProtocolError           string                          `json:"protocol_error,omitempty"`
+	ProtocolProject         string                          `json:"protocol_project,omitempty"`
+	ProtocolWorkspaceDigest string                          `json:"protocol_workspace_digest,omitempty"`
+	ProtocolScopeDigest     string                          `json:"protocol_scope_digest,omitempty"`
+}
+
+// Protocol verification is independent of the historical write/index check.
+type ProtocolVerificationContext struct{ Project, WorkspaceDigest, ScopeDigest string }
+
+func SaveProtocolVerification(root, id string, generation int64, failure string, proof ...ProtocolVerificationContext) error {
+	installationMu.Lock()
+	defer installationMu.Unlock()
+	i, err := LoadInstallation(root, id)
+	if err != nil {
+		return err
+	}
+	if i.Connection.Generation != generation || len(proof) > 0 && proof[0].ScopeDigest != "" && proof[0].ScopeDigest != protocolScopeDigest(i.Connection) {
+		return errors.New("connection changed during verification")
+	}
+	i.ProtocolGeneration, i.ProtocolVerifiedAt, i.ProtocolError = 0, "", failure
+	i.ProtocolProject, i.ProtocolWorkspaceDigest = "", ""
+	i.ProtocolScopeDigest = ""
+	if failure == "" {
+		i.ProtocolGeneration = generation
+		i.ProtocolVerifiedAt = time.Now().UTC().Format(time.RFC3339)
+		i.ProtocolScopeDigest = protocolScopeDigest(i.Connection)
+		if len(proof) > 0 {
+			i.ProtocolProject, i.ProtocolWorkspaceDigest = proof[0].Project, proof[0].WorkspaceDigest
+		}
+	}
+	data, err := json.MarshalIndent(i, "", "  ")
+	if err != nil {
+		return err
+	}
+	return privateWrite(installationPath(root, id), data, 0600)
 }
 
 func SaveVerification(root, id string, generation int64, failure string) error {
@@ -94,6 +132,17 @@ func CheckInstallation(i Installation) error {
 		}
 		if !bytes.Contains(data, []byte(i.Block)) {
 			return errors.New("Memlane 配置已变更，请重新连接")
+		}
+		if i.Options.ComputerLevel {
+			var parsed map[string]any
+			if toml.Unmarshal(data, &parsed) != nil {
+				return errors.New("Codex configuration is invalid")
+			}
+			servers, _ := parsed["mcp_servers"].(map[string]any)
+			server, _ := servers["memlane"].(map[string]any)
+			if server == nil || server["cwd"] != nil {
+				return errors.New("computer-level Codex must not fix an MCP working directory")
+			}
 		}
 	} else {
 		var settings map[string]json.RawMessage
@@ -211,13 +260,33 @@ func validateOptions(c records.Connection, o InstallOptions) error {
 			return errors.New("bridge or Agent executable is unavailable")
 		}
 	}
-	if (projectMCPAgent(c.Agent) || c.Agent == "trae") && !filepath.IsAbs(o.Workspace) {
+	if o.ComputerLevel && (c.Agent != "codex" || o.Workspace != "" || !filepath.IsAbs(o.CodexDirectory)) {
+		return errors.New("computer-level Codex requires its explicit configuration directory and no fixed workspace")
+	}
+	if (projectMCPAgent(c.Agent) || c.Agent == "trae") && !o.ComputerLevel && !filepath.IsAbs(o.Workspace) {
 		return errors.New("MCP CLI requires a selected project workspace")
 	}
 	if c.Agent == "pi" && !filepath.IsAbs(o.PiDirectory) {
 		return errors.New("pi configuration directory required")
 	}
 	return nil
+}
+
+// sameConfigDirectory accepts filesystem aliases such as macOS /var and
+// /private/var without authorizing a move to a different settings directory.
+func sameConfigDirectory(a, b string) bool {
+	if a == b {
+		return true
+	}
+	if !filepath.IsAbs(a) || !filepath.IsAbs(b) {
+		return false
+	}
+	left, err := os.Stat(a)
+	if err != nil || !left.IsDir() {
+		return false
+	}
+	right, err := os.Stat(b)
+	return err == nil && right.IsDir() && os.SameFile(left, right)
 }
 
 // Install is invoked only by an explicit App Connect/Apply action. It never
@@ -235,11 +304,16 @@ func Install(ctx context.Context, c records.Connection, o InstallOptions) (resul
 	if err := probe.ConnectionError(); err != nil {
 		return Installation{}, err
 	}
+	if o.ComputerLevel {
+		if err := ComputerConnectionError(probe); err != nil {
+			return Installation{}, err
+		}
+	}
 	prior, priorErr := LoadInstallation(o.ClientRoot, c.ID)
 	if priorErr != nil && !os.IsNotExist(priorErr) {
 		return Installation{}, priorErr
 	}
-	if priorErr == nil && (prior.Connection.Agent != c.Agent || ((projectMCPAgent(c.Agent) || c.Agent == "trae") && prior.Options.Workspace != o.Workspace) || prior.Options.PiDirectory != o.PiDirectory) {
+	if priorErr == nil && (prior.Connection.Agent != c.Agent || prior.Options.ComputerLevel != o.ComputerLevel || (o.ComputerLevel && !sameConfigDirectory(prior.Options.CodexDirectory, o.CodexDirectory)) || ((projectMCPAgent(c.Agent) || c.Agent == "trae") && prior.Options.Workspace != o.Workspace) || !sameConfigDirectory(prior.Options.PiDirectory, o.PiDirectory)) {
 		return Installation{}, errors.New("disconnect before changing Agent configuration location")
 	}
 	i := Installation{Connection: c, Options: o, ToolsetVersion: 2}
@@ -287,6 +361,12 @@ func Install(ctx context.Context, c records.Connection, o InstallOptions) (resul
 	var err error
 	if projectMCPAgent(c.Agent) {
 		i.ConfigPath = filepath.Join(o.Workspace, ".codex/config.toml")
+		if o.ComputerLevel {
+			i.ConfigPath = filepath.Join(o.CodexDirectory, "config.toml")
+			if info, e := os.Lstat(i.ConfigPath); e == nil && info.Mode()&os.ModeSymlink != 0 {
+				return i, errors.New("computer-level Codex config is a symlink; source preserved")
+			}
+		}
 		if c.Agent == "traex" {
 			i.ConfigPath = filepath.Join(o.Workspace, ".trae/traecli.toml")
 		}
@@ -311,6 +391,12 @@ func Install(ctx context.Context, c records.Connection, o InstallOptions) (resul
 			return i, errors.New("an unrelated memlane MCP entry already exists; configuration preserved")
 		}
 		args := []string{"mcp", "--root", o.ServiceRoot, "--connection", c.ID, "--generation", fmt.Sprint(c.Generation), "--workspace", o.Workspace}
+		if o.ComputerLevel {
+			args = []string{"mcp", "--root", o.ServiceRoot, "--connection", c.ID, "--generation", fmt.Sprint(c.Generation), "--host-workspace", "codex-stdio-v1", "--host-executable", o.AgentPath, "--host-version", probe.Version}
+		}
+		if c.Agent == "codex" {
+			args = append(args, "--durable-delivery")
+		}
 		// JSON strings/arrays are valid TOML basic strings/arrays, with all
 		// shell-looking text preserved as literal configuration values.
 		command, _ := json.Marshal(o.Bridge)

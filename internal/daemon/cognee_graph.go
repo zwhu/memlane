@@ -101,7 +101,7 @@ func (s *Server) cogneeToken(instance, dataset string) (string, error) {
 
 func (s *Server) bindCognee(ctx context.Context, b records.CogneeBinding) (records.CogneeBinding, error) {
 	s.agentAccess.RLock()
-	err := s.store.AuthorizeCogneeBinding(ctx, b)
+	err := s.store.AuthorizeCogneeGraphBinding(ctx, b)
 	s.agentAccess.RUnlock()
 	if err != nil {
 		return b, err
@@ -143,7 +143,7 @@ func (s *Server) queryCognee(ctx context.Context, q records.CogneeGraphQuery) (r
 		bindings = selected
 	}
 	if err == nil && len(bindings) == 1 {
-		err = s.store.AuthorizeCogneeBinding(ctx, bindings[0])
+		err = s.store.AuthorizeCogneeGraphBinding(ctx, bindings[0])
 	}
 	s.agentAccess.RUnlock()
 	if err != nil {

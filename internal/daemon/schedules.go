@@ -28,7 +28,21 @@ func (s *Server) putSchedule(ctx context.Context, d records.ScheduleDraft) (reco
 	if s.lifecycle.Err() != nil {
 		return records.Schedule{}, s.lifecycle.Err()
 	}
-	plan, err := s.store.PutSchedule(ctx, d, time.Now())
+	var dependencies []string
+	if d.Processing != nil {
+		if prior, found, err := s.store.ReplaySchedule(ctx, d); found || err != nil {
+			return prior, err
+		}
+		if s.processing == nil {
+			return records.Schedule{}, records.MergeError("unsupported_processing")
+		}
+		binding, err := s.processing.ResolveCurrentTask(ctx, *d.Processing)
+		if err != nil {
+			return records.Schedule{}, err
+		}
+		dependencies = []string{binding.Dependency}
+	}
+	plan, err := s.store.PutSchedule(ctx, d, time.Now(), dependencies...)
 	if err != nil {
 		return plan, err
 	}

@@ -2,7 +2,7 @@ package store
 
 import "database/sql"
 
-const SchemaVersion = 22
+const SchemaVersion = 31
 
 // These tables exist only for the shipped summary/tag flow. Lease and schedule
 // policy are deliberately added by their own delivery slices.
@@ -209,6 +209,78 @@ func finishMigration(tx *sql.Tx, formal bool) error {
 		}
 		if version == 21 {
 			if err := migrateExperiencePreviews(tx); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == 22 {
+			if err := migrateOrganizationPreviews(tx); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == 23 {
+			if err := migrateAgentConnectionBatches(tx); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == 24 {
+			if err := migrateIndexCancellation(tx); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == 25 {
+			if err := migrateProcessingDiagnostics(tx); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == 26 {
+			if err := migrateHTTPProcessing(tx); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == 27 {
+			if err := migrateCogneeSubmissions(tx); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == 28 {
+			if err := migrateProjectPreferenceDecisions(tx); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == 29 {
+			if err := migrateDeliveryAssignments(tx); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == 30 {
+			if err := migrateProcessingEvidence(tx); err != nil {
 				return err
 			}
 		}

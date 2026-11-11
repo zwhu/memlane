@@ -39,23 +39,25 @@ func main() {
 		}
 	}
 	mygo.Theme.SetSource(mygo.ThemeLight)
+	fileMenu := []*mygo.MenuItem{
+		{Label: "打开 Memlane", Click: func(*mygo.MenuItem, *mygo.Window) {
+			if win != nil {
+				mygo.App.Focus()
+				win.Show()
+				win.Focus()
+			}
+		}},
+		{Label: "关闭窗口", Accelerator: "CmdOrCtrl+W", Click: func(*mygo.MenuItem, *mygo.Window) {
+			if win != nil {
+				win.Close()
+			}
+		}},
+		{Label: "停止服务并退出", Click: func(*mygo.MenuItem, *mygo.Window) { stopAndQuit() }},
+	}
+	fileMenu = appendNativeCaptureMenu(fileMenu, func() *mygo.Window { return win })
 	mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
 		{Role: mygo.RoleAppMenu},
-		{Label: "文件", Submenu: []*mygo.MenuItem{
-			{Label: "打开 Memlane", Click: func(*mygo.MenuItem, *mygo.Window) {
-				if win != nil {
-					mygo.App.Focus()
-					win.Show()
-					win.Focus()
-				}
-			}},
-			{Label: "关闭窗口", Accelerator: "CmdOrCtrl+W", Click: func(*mygo.MenuItem, *mygo.Window) {
-				if win != nil {
-					win.Close()
-				}
-			}},
-			{Label: "停止服务并退出", Click: func(*mygo.MenuItem, *mygo.Window) { stopAndQuit() }},
-		}},
+		{Label: "文件", Submenu: fileMenu},
 		{Role: mygo.RoleEditMenu},
 		{Label: "视图", Submenu: []*mygo.MenuItem{{Role: mygo.RoleToggleFullScreen}}},
 		{Role: mygo.RoleWindowMenu},
@@ -65,13 +67,13 @@ func main() {
 	var quitting bool
 	var previewQuitPending, previewQuitFlushed bool
 	mygo.App.OnBeforeQuit(func(e *mygo.QuitEvent) {
-		if app != nil && app.HasExperiencePreview() && !previewQuitFlushed {
+		if app != nil && app.HasDraftPreview() && !previewQuitFlushed {
 			e.PreventDefault()
 			if previewQuitPending {
 				return
 			}
 			previewQuitPending = true
-			app.FlushExperiencePreview(func(err error) {
+			app.FlushDraftPreviews(func(err error) {
 				previewQuitPending = false
 				if err != nil {
 					log.Printf("退出前草稿保存未完成：%v", err)
@@ -124,8 +126,13 @@ func main() {
 			installing = true
 			availabilityEpoch.Add(1)
 			app.SetUpdateStatus("正在准备更新…", true)
+			updateCtx, stop := context.WithTimeout(ctx, 5*time.Minute)
+			app.SetCancelUpdate(func() {
+				app.SetCancelUpdate(nil)
+				app.SetUpdateStatus("正在取消更新，等待回执…", true)
+				stop()
+			})
 			go func() {
-				updateCtx, stop := context.WithTimeout(ctx, 5*time.Minute)
 				defer stop()
 				wasRunning := false
 				var err error
@@ -136,12 +143,23 @@ func main() {
 					err = update.Install(updateCtx, func(done, total int64) {
 						if ctx.Err() == nil {
 							win.Update(func() {
-								app.SetUpdateStatus(fmt.Sprintf("正在下载更新 %.2f / %.2f MB", float64(done)/1e6, float64(total)/1e6), true)
+								if total > 0 && done >= total {
+									app.SetCancelUpdate(nil)
+									app.SetUpdateStatus("正在校验并安装更新…", true)
+								} else if updateCtx.Err() == nil {
+									app.SetCancelUpdate(func() {
+										app.SetCancelUpdate(nil)
+										app.SetUpdateStatus("正在取消更新，等待回执…", true)
+										stop()
+									})
+									app.SetUpdateStatus(fmt.Sprintf("正在下载更新 %.2f / %.2f MB", float64(done)/1e6, float64(total)/1e6), true)
+								}
 							})
 						}
 					})
 				}
 				if err != nil {
+					cancelled, restored := errors.Is(err, context.Canceled) || errors.Is(updateCtx.Err(), context.Canceled), true
 					if wasRunning && controller != nil {
 						restoreCtx, restoreStop := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 						defer restoreStop()
@@ -151,16 +169,20 @@ func main() {
 							}
 						})
 						if resumeErr != nil {
+							restored = false
 							err = fmt.Errorf("%w；后台恢复失败：%v", err, resumeErr)
 						}
 					}
 					message := "更新失败，请重试：" + err.Error()
+					if cancelled && restored {
+						message = "更新已取消，当前安装与知识保留。"
+					}
 					if ctx.Err() == nil {
-						win.Update(func() { installing = false; app.SetUpdateStatus(message, false) })
+						win.Update(func() { installing = false; app.SetCancelUpdate(nil); app.SetUpdateStatus(message, false) })
 					}
 					return
 				}
-				win.Update(func() { forceQuit = true; mygo.App.Relaunch() })
+				win.Update(func() { app.SetCancelUpdate(nil); forceQuit = true; mygo.App.Relaunch() })
 			}()
 		}
 		app = desktop.New(version, func() {
@@ -191,14 +213,26 @@ func main() {
 				}
 			}()
 		})
+		app.ConfigureWindowActions(func() { mygo.App.Quit() }, stopAndQuit, func() {
+			if win != nil {
+				win.Hide()
+			}
+		})
 		win = mygo.NewWindow(mygo.WindowOptions{
 			Title: "Memlane", Width: 1200, Height: 820,
-			MinWidth: 980, MinHeight: 620,
+			MinWidth: 800, MinHeight: 620,
 			TitleBarStyle: mygo.TitleBarHidden,
 			Vibrancy:      mygo.VibrancySidebar,
 			Content:       ui.View(app.View),
 		})
 		configureNativeProbe(win, app)
+		app.ConfigureProjectDirectoryChooser(func() (string, error) {
+			paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: win, Title: "选择本地 Git 仓库", ButtonLabel: "选择文件夹", Directory: true})
+			if err != nil || len(paths) == 0 {
+				return "", err
+			}
+			return paths[0], nil
+		})
 		win.OnHide(func() { app.SetWindowVisible(false) })
 		win.OnShow(func() { app.SetWindowVisible(true) })
 		configureVisualFixture(app)
@@ -280,12 +314,14 @@ func main() {
 						return
 					}
 					availabilityEpoch.Add(1)
+					app.SetRuntimeStatus(desktop.RuntimeStatus{Phase: "checking", Message: "正在启动记忆服务…"})
 					go func() {
 						if err := controller.ResumeService(ctx, notify); err != nil {
 							notify(desktop.RuntimeStatus{Phase: "failed", Message: err.Error()})
 						}
 					}()
 				}
+				app.ConfigureMaintenanceRecovery(controller.ObserveAvailability, platform.OpenBackgroundServiceSettings, func() { win.Show(); win.Focus() })
 				app.ConfigureRuntime(prepare, controller.Cancel, stopService, resumeService, settings.KeepService, func(keep bool) {
 					settings.KeepService = keep
 					if err := desktop.SaveRuntimeSettings(cfg.Root, settings); err != nil {

@@ -47,7 +47,7 @@ func (s *Store) PrepareProjectKnowledge(ctx context.Context, id string, attempt 
 		return nil
 	}
 	var execution records.ProjectTaskExecution
-	if json.Unmarshal([]byte(executionJSON), &execution) != nil || !execution.Terminal || !execution.Reaped || !execution.GroupGone || execution.Model != t.Snapshot.Executor.Model || execution.Provider == "" || execution.PermissionProfile != "memlane_project" || execution.Thread == "" || execution.Turn == "" {
+	if json.Unmarshal([]byte(executionJSON), &execution) != nil || !projectModelComplete(t, execution) {
 		return access("project_model_incomplete", "matching model and cleanup receipts required")
 	}
 	if t.Snapshot.IncludeHistory {
@@ -88,6 +88,23 @@ func (s *Store) PrepareProjectKnowledge(ctx context.Context, id string, attempt 
 		return err
 	}
 	return tx.Commit()
+}
+
+func projectModelComplete(t records.ProjectTask, e records.ProjectTaskExecution) bool {
+	if !e.Terminal || !e.Reaped || !e.GroupGone || e.Model != t.Snapshot.Executor.Model || e.Provider == "" {
+		return false
+	}
+	switch t.Snapshot.Executor.Agent {
+	case "codex":
+		return e.PermissionProfile == "memlane_project" && e.Thread != "" && e.Turn != "" && e.Pi == nil
+	case "pi":
+		p, k := e.Pi, e.KnowledgeContext
+		return e.PermissionProfile == "pi_project_readonly" && p != nil && p.FailureCode == "" &&
+			p.NativeSchemaRequested && p.NativeSchemaResponseStatus == 200 && p.ReadPhaseEnded &&
+			k != nil && k.Complete && k.Pages > 0 && k.SentPages == k.Pages && projectDigest(k.Digest)
+	default:
+		return false
+	}
 }
 
 type projectItemReceipt struct {

@@ -3,22 +3,25 @@ package records
 // A host-confirmed service/dataset binding. Endpoint and project come from
 // the trusted App, never from an Agent graph query or extraction result.
 type CogneeBinding struct {
-	Operation    string `json:"operation"`
-	Instance     string `json:"instance"`
-	Dataset      string `json:"dataset"`
-	Project      string `json:"project"`
-	Endpoint     string `json:"endpoint"`
-	ConnectionID string `json:"connection_id"`
-	Generation   int64  `json:"generation"`
-	Workspace    string `json:"workspace"`
+	MaterialSubmission bool   `json:"material_submission,omitempty"`
+	Operation          string `json:"operation"`
+	Instance           string `json:"instance"`
+	Dataset            string `json:"dataset"`
+	Project            string `json:"project"`
+	Endpoint           string `json:"endpoint"`
+	ConnectionID       string `json:"connection_id"`
+	Generation         int64  `json:"generation"`
+	Workspace          string `json:"workspace"`
 }
 
 type CogneeEntity struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	Types       []string `json:"types,omitempty"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
 }
 type CogneeGraphSource struct {
+	Origin     string `json:"origin,omitempty"`
 	Document   string `json:"document"`
 	Chunk      string `json:"chunk"`
 	ChunkIndex *int   `json:"chunk_index,omitempty"`

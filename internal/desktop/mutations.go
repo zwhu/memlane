@@ -21,7 +21,7 @@ func (a *App) saveMemory() {
 	id := a.selectedID
 	expected := a.drafts[key].Revision
 	if a.detailMode == "new" {
-		key = "new"
+		key = a.newDraftKey()
 		kind = "save"
 		expected = 0
 		id = uuid.NewString()
@@ -46,7 +46,7 @@ func (a *App) saveMemory() {
 		}
 	}
 	a.pendingMutations[key] = mutation
-	a.applyMutation(key, mutation)
+	a.persistManualMutation(key, mutation)
 }
 
 func sameConditions(a, b *string) bool {
@@ -70,18 +70,23 @@ func (a *App) applyMutation(key string, mutation records.Mutation) {
 	a.message = "正在保存…"
 	a.conflictCurrent = nil
 	page, scope, mode := a.page, a.scope, a.detailMode
+	life, client, epoch := a.libraryContext, a.library, a.libraryEpoch
+	deliver := a.dispatch
 	go func() {
-		ctx, cancel := context.WithTimeout(a.libraryContext, 10*time.Second)
+		ctx, cancel := context.WithTimeout(life, 10*time.Second)
 		defer cancel()
-		v, err := a.library.Apply(ctx, mutation)
+		v, err := client.Apply(ctx, mutation)
 		var latest records.Version
 		if errors.Is(err, records.ErrConflict) {
-			latest, _ = a.library.Get(ctx, mutation.Memory)
+			latest, _ = client.Get(ctx, mutation.Memory)
 		}
-		if a.libraryContext.Err() != nil {
+		if life.Err() != nil {
 			return
 		}
-		a.dispatch(func() {
+		deliver(func() {
+			if a.libraryEpoch != epoch || life.Err() != nil {
+				return
+			}
 			a.saving = false
 			if err != nil {
 				if page != a.page || scope != a.scope || mode != a.detailMode {
@@ -95,9 +100,13 @@ func (a *App) applyMutation(key string, mutation records.Mutation) {
 					}
 				} else {
 					a.message = "保存失败，草稿已保留。恢复服务后可以再次保存。"
+					if a.noteMaintenanceStorageError("manual", key, mutation.OperationID, err) {
+						a.message = "保存未完成；原草稿和保存请求保留，请查看存储提示。"
+					}
 				}
 				return
 			}
+			a.clearMaintenanceStorageError("manual", key)
 			delete(a.pendingMutations, key)
 			delete(a.drafts, key)
 			if page == a.page && scope == a.scope && mode == a.detailMode {
@@ -109,8 +118,12 @@ func (a *App) applyMutation(key string, mutation records.Mutation) {
 				a.history = nil
 				a.detailScroll.Y = 0
 				a.message = "已保存；索引状态单独更新。"
-				a.nextCursor = ""
-				a.items = nil
+				// A submitted search owns its ranked snapshot. Saving or restoring
+				// a detail must not clear it or turn an unrelated record into a hit.
+				if a.page != "搜索" || a.searchQuery == "" {
+					a.nextCursor = ""
+					a.items = nil
+				}
 			} else {
 				a.routeStates[page+":"+scope] = PaneState{ID: v.Memory, Mode: "view"}
 			}
@@ -126,7 +139,7 @@ func (a *App) continueFromLatest() {
 	a.rememberDraft()
 	key := a.selectedID
 	if a.detailMode == "new" {
-		key = "new"
+		key = a.newDraftKey()
 	}
 	d := a.drafts[key]
 	d.Revision = item.Revision
@@ -139,6 +152,7 @@ func (a *App) continueFromLatest() {
 	a.detailMode = "edit"
 	a.editing = true
 	a.draftScope = d.Scope
+	a.confirmManualLatest(item.ID, item.Dataset)
 	a.conflictCurrent = nil
 	a.message = fmt.Sprintf("草稿已保留。下一次保存以 v%d 为基准，请先核对内容。", item.Revision)
 }
@@ -148,15 +162,20 @@ func (a *App) retryIndex() {
 		return
 	}
 	id, revision := item.ID, item.Revision
+	life, client, epoch := a.libraryContext, a.library, a.libraryEpoch
+	deliver := a.dispatch
 	a.retryingIndex = true
 	go func() {
-		ctx, cancel := context.WithTimeout(a.libraryContext, 5*time.Second)
+		ctx, cancel := context.WithTimeout(life, 5*time.Second)
 		defer cancel()
-		err := a.library.RetryIndex(ctx, id, revision)
-		if a.libraryContext.Err() != nil {
+		err := client.RetryIndex(ctx, id, revision)
+		if life.Err() != nil {
 			return
 		}
-		a.dispatch(func() {
+		deliver(func() {
+			if a.libraryEpoch != epoch || life.Err() != nil {
+				return
+			}
 			a.retryingIndex = false
 			if a.selectedID == id {
 				if err != nil {
@@ -175,7 +194,12 @@ func (a *App) searchMemory() {
 	}
 	query := strings.TrimSpace(a.query)
 	if query == "" {
-		a.navigate("全部记忆", "")
+		a.searchSequence++
+		a.searchQuery, a.searchError = "", ""
+		a.searchHits = nil
+		a.searching = false
+		a.navigate("搜索", "")
+		a.refresh(false)
 		return
 	}
 	scope := a.scope
@@ -184,6 +208,9 @@ func (a *App) searchMemory() {
 	a.selectedID = ""
 	a.selectedItem = nil
 	a.items = nil
+	a.searchHits = nil
+	a.readingKnowledgeTotal, a.readingRawTotal = nil, nil
+	a.readingCountsRoute = ""
 	a.listTotal = 0
 	a.nextCursor = ""
 	a.searching = true
@@ -191,15 +218,17 @@ func (a *App) searchMemory() {
 	a.searchQuery = query
 	a.searchSequence++
 	sequence := a.searchSequence
+	life, client, epoch := a.libraryContext, a.library, a.libraryEpoch
+	deliver := a.dispatch
 	go func() {
-		ctx, cancel := context.WithTimeout(a.libraryContext, 45*time.Second)
+		ctx, cancel := context.WithTimeout(life, 45*time.Second)
 		defer cancel()
-		hits, err := a.library.Search(ctx, scope, query, all)
-		if a.libraryContext.Err() != nil {
+		hits, err := client.Search(ctx, scope, query, all)
+		if life.Err() != nil {
 			return
 		}
-		a.dispatch(func() {
-			if sequence != a.searchSequence || a.page != "搜索" || a.scope != scope {
+		deliver(func() {
+			if a.libraryEpoch != epoch || life.Err() != nil || sequence != a.searchSequence || a.page != "搜索" || a.scope != scope {
 				return
 			}
 			a.searching = false
@@ -211,8 +240,33 @@ func (a *App) searchMemory() {
 			for _, hit := range hits {
 				versions = append(versions, hit.Version)
 			}
-			a.items = displayVersions(versions)
-			a.listTotal = len(versions)
+			a.applySearchResults(versions)
 		})
 	}()
+}
+
+func (a *App) applySearchResults(versions []records.Version) {
+	a.searchHits = displayVersions(versions)
+	a.applySearchKind()
+}
+
+// Filter the submitted search snapshot without issuing a different query or
+// replacing ranked hits with an ordinary database list on tab changes.
+func (a *App) applySearchKind() {
+	knowledge, raw := 0, 0
+	a.items = nil
+	for _, item := range a.searchHits {
+		isRaw := item.Origin == "raw"
+		if isRaw {
+			raw++
+		} else {
+			knowledge++
+		}
+		if isRaw == (a.recordKind == "raw") && a.matchesReadingFilters(item) {
+			a.items = append(a.items, item)
+		}
+	}
+	a.listTotal = len(a.items)
+	a.readingCountsRoute = a.page + ":" + a.scope
+	a.readingKnowledgeTotal, a.readingRawTotal = &knowledge, &raw
 }

@@ -7,6 +7,20 @@ import (
 
 type OrganizationClient struct{ Root string }
 
+func (c OrganizationClient) MaterialPreview(ctx context.Context) (records.OrganizationPreviewState, error) {
+	return c.MaterialPreviewFor(ctx, "")
+}
+func (c OrganizationClient) MaterialPreviewFor(ctx context.Context, task string) (records.OrganizationPreviewState, error) {
+	var out records.OrganizationPreviewState
+	err := Call(ctx, c.Root, Request{Op: "organization_preview_get", OrganizationTask: task}, &out)
+	return out, err
+}
+func (c OrganizationClient) SaveMaterialPreview(ctx context.Context, w records.OrganizationPreviewWrite) (records.OrganizationPreviewState, error) {
+	var out records.OrganizationPreviewState
+	err := Call(ctx, c.Root, Request{Op: "organization_preview_put", OrganizationPreview: &w, UserConfirmed: w.AbandonStart}, &out)
+	return out, err
+}
+
 func (c OrganizationClient) Preview(ctx context.Context) (records.ExperiencePreviewState, error) {
 	var out records.ExperiencePreviewState
 	err := Call(ctx, c.Root, Request{Op: "experience_preview_get"}, &out)

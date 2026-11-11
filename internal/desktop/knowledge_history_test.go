@@ -100,6 +100,58 @@ func TestKnowledgeHistoryLongPreviewClosesByBackdropAndButton(t *testing.T) {
 	}
 }
 
+func TestKnowledgeHistoryEscapeReturnsFocusWithoutPointerFocus(t *testing.T) {
+	a := New("test", nil)
+	a.page, a.scope = "项目", "project"
+	v := MemoryItem{ID: "known", Dataset: "project", Origin: "knowledge", Title: "当前", Revision: 1, Text: "当前正文", State: "active"}
+	a.selectedID, a.selectedItem = v.ID, &v
+	a.history = []MemoryHistory{{Revision: 1, Text: v.Text}}
+	tt := ui.NewTester(a.View, 1200, 820)
+	// Accessibility invocation can open the dialog without first focusing the
+	// pointer target. Closing must still restore the documented history entry.
+	a.openKnowledgeHistory()
+	tt.Frame()
+	tt.Key(0, ui.KeyEscape)
+	tt.Frame()
+	if a.knowledgeHistory.Open || !tt.Focused("历史") {
+		t.Fatal("Escape closed the dialog without restoring its history entry")
+	}
+	tt.Key(0, ui.KeyEnter)
+	if !a.knowledgeHistory.Open || a.selectedItem.Revision != 1 || a.selectedItem.Text != v.Text {
+		t.Fatal("keyboard return did not reopen history while preserving knowledge")
+	}
+}
+
+func TestKnowledgeHistoryCloseDoesNotStealFocusAfterContextChange(t *testing.T) {
+	for _, changed := range []string{"selection", "library_epoch"} {
+		t.Run(changed, func(t *testing.T) {
+			a := New("test", nil)
+			a.page, a.scope = "项目", "project"
+			v := MemoryItem{ID: "known", Dataset: "project", Origin: "knowledge", Title: "当前", Revision: 1, Text: "当前正文", State: "active"}
+			a.selectedID, a.selectedItem = v.ID, &v
+			a.history = []MemoryHistory{{Revision: 1, Text: v.Text}}
+			tt := ui.NewTester(a.View, 1200, 820)
+			if err := tt.Click("搜索项目内容"); err != nil {
+				t.Fatal(err)
+			}
+			a.openKnowledgeHistory()
+			tt.Frame()
+			if changed == "selection" {
+				other := v
+				other.ID = "other"
+				a.selectedID, a.selectedItem = other.ID, &other
+			} else {
+				a.libraryEpoch++
+			}
+			a.closeKnowledgeHistory()
+			tt.Frame()
+			if tt.Focused("历史") || !tt.Focused("搜索项目内容") {
+				t.Fatal("history close stole focus after its owning context changed")
+			}
+		})
+	}
+}
+
 func TestKnowledgeProvenanceNeverTreatsSavedFirstVersionAsOriginal(t *testing.T) {
 	a := New("test", nil)
 	a.page = "全部记忆"

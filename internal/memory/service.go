@@ -32,7 +32,8 @@ func (s *Service) IndexCurrent(ctx context.Context, id string) error {
 		cause := errors.New("engine unavailable; original remains saved")
 		return errors.Join(cause, s.Store.IndexFailed(context.WithoutCancel(ctx), v.Record, cause))
 	}
-	if err = s.Store.IndexStarted(ctx, id, v.Revision); err != nil {
+	ctx, err = s.Store.ClaimIndex(ctx, id, v.Revision)
+	if err != nil {
 		return err
 	}
 	r, err := s.Engine.Index(ctx, v.Record)

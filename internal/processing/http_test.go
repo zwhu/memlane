@@ -181,3 +181,24 @@ func TestHTTPMalformedDirectoryIsUnknownRatherThanEmptySuccess(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPDirectoryOwnerBoundedAndCredentialEchoNotReturned(t *testing.T) {
+	for _, body := range []string{`{"data":[{"id":"fixture","owned_by":"` + strings.Repeat("p", 129) + `"}]}`, `{"data":[{"id":"owned-secret-credential"}]}`} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(body)) }))
+		binding := HTTPBinding{Spec: records.ProcessingSpec{Mode: "provider", Endpoint: srv.URL, Protocol: "openai-chat"}, Credential: []byte("owned-secret-credential")}
+		catalog, err := ReadModels(context.Background(), binding, "")
+		srv.Close()
+		if err == nil || catalog.ReadMS != 0 || len(catalog.Models) != 0 {
+			t.Fatal("unbounded owner/credential echo became directory", catalog, err)
+		}
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(responseFixture("openai-chat", `{"fact":7,"source":{"id":"explicit-fixture"}}`))
+	}))
+	defer srv.Close()
+	binding := HTTPBinding{Spec: records.ProcessingSpec{Mode: "provider", Endpoint: srv.URL, Protocol: "openai-chat", Model: "fixture"}, Credential: []byte("fixture-model")}
+	result, err := CompleteHTTP(context.Background(), binding, "synthetic", "synthetic", httpFixtureSchema)
+	if err == nil || result.Terminal || result.Receipt.ReportedModel != "" {
+		t.Fatal("credential echo became model receipt", result, err)
+	}
+}

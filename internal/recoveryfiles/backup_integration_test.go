@@ -116,3 +116,24 @@ func TestBackupCatalogueKeepsValidRecordsBesideMissingFiles(t *testing.T) {
 		t.Fatal("missing vault identity was recreated", err)
 	}
 }
+
+func TestBackupLateCancelAfterPublicationReportsCommittedReceipt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	root := t.TempDir()
+	data := sqliteFixture(t)
+	id := uuid.NewString()
+	manager := Manager{Root: root, syncDir: func(dir *os.Root) error {
+		// Catalogue sync happens after rename, the publication commit point.
+		cancel()
+		return syncDirectory(dir)
+	}}
+	receipt, err := manager.Create(ctx, id, func(context.Context) (int, []byte, error) { return 13, data, nil })
+	if err != nil || receipt.ID != id || receipt.Verification != "verified" {
+		t.Fatal("late cancel concealed committed backup", receipt, err)
+	}
+	verified, err := (Manager{Root: root}).Verify(context.Background(), id)
+	if err != nil || verified.Receipt.SHA256 != receipt.SHA256 {
+		t.Fatal(verified.Receipt, err)
+	}
+}

@@ -102,6 +102,11 @@ func PrepareRestoredSnapshot(ctx context.Context, data []byte, operation string)
 		query string
 		args  []any
 	}{
+		{`DELETE FROM organization_previews`, nil},
+		{`UPDATE agent_connection_batches SET state='retired',revision=revision+1,payload=json_set(payload,'$.state','retired','$.revision',revision+1)`, nil},
+		{`UPDATE agent_connection_batch_head SET identity=? WHERE singleton=1`, []any{uuid.NewString()}},
+		{`DELETE FROM organization_start_intents`, nil},
+		{`UPDATE organization_preview_head SET identity=?,generation=0,current='',operation='',digest='' WHERE singleton=1`, []any{uuid.NewString()}},
 		{`DELETE FROM experience_previews`, nil},
 		{`UPDATE experience_preview_head SET identity=?,generation=0,current='',operation='',digest='' WHERE singleton=1`, []any{uuid.NewString()}},
 		{`INSERT INTO connection_retirements(connection,restore) SELECT id,? FROM connections WHERE true ON CONFLICT(connection) DO NOTHING`, []any{operation}},
@@ -112,6 +117,11 @@ func PrepareRestoredSnapshot(ctx context.Context, data []byte, operation string)
 		{`UPDATE project_task_items SET state='cancelled' WHERE state='pending'`, nil},
 		// A restored model choice is historical intent, not permission to
 		// resume an old paid executor. Preserve the revision and saved modes.
+		{`DELETE FROM cognee_submissions`, nil},
+		{`DELETE FROM cognee_submission_tasks`, nil},
+		{`UPDATE delivery_assignments SET state='retired',payload=json_set(payload,'$.state','retired') WHERE state='saved'`, nil},
+		{`UPDATE project_preference_decisions SET state='retired',payload=json_set(payload,'$.state','retired') WHERE state='confirmed'`, nil},
+		{`UPDATE cognee_library_identity SET identity=? WHERE id=1`, []any{uuid.NewString()}},
 		{`UPDATE processing_current SET active=0,generation=generation+1`, nil},
 		{`UPDATE processing_validations SET state='superseded',error_code='backup_restored' WHERE state IN ('validating','succeeded')`, nil},
 		{`UPDATE organization_recovery SET state='cancelled',reason='backup_restored',next_ms=0 WHERE state IN ('active','waiting')`, nil},
@@ -134,6 +144,7 @@ func PrepareRestoredSnapshot(ctx context.Context, data []byte, operation string)
 		{`UPDATE index_rebuild_items SET state='expired',error='backup_restored' WHERE state IN ('queued','failed')`, nil},
 		{`UPDATE project_index_recoveries SET retired=1`, nil},
 		{`UPDATE index_rebuild_items SET state='expired',error='backup_restored' WHERE task IN (SELECT operation FROM project_index_recoveries)`, nil},
+		{`DELETE FROM index_attempts`, nil},
 		{`UPDATE memories SET indexed_revision=0,generation=''`, nil},
 		{`UPDATE jobs SET state='superseded' WHERE state IN ('pending','failed','indexing')`, nil},
 		{`INSERT INTO jobs(memory,revision,state,error) SELECT m.id,m.current_revision,'pending','' FROM memories m WHERE m.state='active' AND NOT EXISTS(SELECT 1 FROM derived_memories d WHERE d.memory=m.id AND d.revision=m.current_revision AND d.state='stale') ON CONFLICT(memory,revision) DO UPDATE SET state='pending',error=''`, nil},

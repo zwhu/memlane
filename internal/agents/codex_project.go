@@ -28,6 +28,7 @@ const codexProjectInstructions = `你是用户为当前项目绑定的编码 Age
 // Live configuration comes from the bound Agent, never the global processor.
 // Provider settings stay private in memory and a short-lived config file.
 type CodexProjectPlan struct {
+	pi                                     *piProjectConfiguration
 	Executor                               records.ProjectTaskExecutor   `json:"executor"`
 	KnowledgeReader                        ProjectKnowledgeContextReader `json:"-"`
 	HistoryReader                          ProjectHistoryContextReader   `json:"-"`
@@ -246,6 +247,7 @@ func resolveCodexNativeProvider(ctx context.Context, executable, authHome, guard
 }
 
 type CodexProjectExecution struct {
+	Pi             *records.ProjectPiExecution           `json:"pi,omitempty"`
 	HistoryContext *records.ProjectHistoryContextReceipt `json:"history_context,omitempty"`
 	ProposalProcess
 	KnowledgeContext       *records.ProjectKnowledgeContextReceipt `json:"knowledge_context,omitempty"`

@@ -30,6 +30,7 @@ type codexRPCRead struct {
 	err     error
 }
 type codexRPC struct {
+	observe                func(codexRPCMessage) // optional bounded protocol-only observation
 	cmd                    *exec.Cmd
 	input                  io.WriteCloser
 	output                 io.ReadCloser
@@ -180,6 +181,9 @@ func (r *codexRPC) send(ctx context.Context, value any) error {
 func (r *codexRPC) next(ctx context.Context) (codexRPCMessage, error) {
 	select {
 	case e := <-r.events:
+		if r.observe != nil && e.err == nil {
+			r.observe(e.message)
+		}
 		return e.message, e.err
 	case e := <-r.writeErrors:
 		return codexRPCMessage{}, e

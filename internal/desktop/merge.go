@@ -461,7 +461,7 @@ func (a *App) mergeChooser(c *ui.Context) {
 	ui.Text(c, fmt.Sprintf("已选 %d / 2", len(s.Chosen))).FontSize(design.Small)
 	actionButton(c, "开始整理", nil).Key("merge-start").Disabled(s.Busy || len(s.Chosen) != 2 || s.Error != "").OnClick(a.startMerge)
 }
-func (a *App) openMergeMemory(id, project string) {
+func (a *App) openMergeMemory(id, project string, origins ...string) {
 	page, scope := "项目", project
 	for _, registered := range a.scopes {
 		if registered.ID == project && registered.Kind != "project" {
@@ -471,10 +471,16 @@ func (a *App) openMergeMemory(id, project string) {
 		}
 	}
 	a.navigate(page, scope)
+	a.recordKind = "knowledge"
+	if len(origins) > 0 && origins[0] == "raw" {
+		a.recordKind = "raw"
+	}
+	a.items, a.nextCursor = nil, ""
 	a.selectedID = id
 	a.selectedItem = nil
 	a.history = nil
 	a.detailMode = "view"
+	a.editing = false
 	a.detailScroll.Y = 0
 	a.refresh(false)
 }

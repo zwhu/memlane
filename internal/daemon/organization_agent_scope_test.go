@@ -49,7 +49,7 @@ func TestOrganizationMoveAgentSaveReplayScope(t *testing.T) {
 	check(e)
 	_, e = db.FinishOrganization(ctx, start.ID, 1)
 	check(e)
-	_, e = db.ReviewOrganization(ctx, records.OrganizationReview{Task: start.ID, Item: start.Snapshot.ItemID(1), Digest: records.MergeDigest(item), Receipt: uuid.NewString(), Confirm: true})
+	_, e = db.ReviewOrganization(ctx, records.OrganizationReview{Task: start.ID, Item: start.Snapshot.ItemID(1), Digest: records.MergeDigest(item), Receipt: uuid.NewString(), Confirm: true, MoveScopeAccepted: true})
 	check(e)
 	_, e = db.Apply(ctx, records.Mutation{Kind: "edit", OperationID: uuid.NewString(), Dataset: b, Memory: saved.Record.Memory, ExpectedRevision: 2, Text: "B private current body"})
 	check(e)

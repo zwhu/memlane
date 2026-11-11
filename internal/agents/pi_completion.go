@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -24,16 +25,43 @@ type PiCompletionOptions struct {
 	OnEvent                               func(string)
 }
 type PiCompletionExecution struct {
-	AgentVersion     string `json:"agent_version,omitempty"`
-	SelectedProvider string `json:"selected_provider,omitempty"`
-	SelectedModel    string `json:"selected_model,omitempty"`
+	Observation      *CompletionObservation  `json:"observation,omitempty"`
+	Codex            *CodexCompletionReceipt `json:"codex,omitempty"`
+	AgentVersion     string                  `json:"agent_version,omitempty"`
+	SelectedProvider string                  `json:"selected_provider,omitempty"`
+	SelectedModel    string                  `json:"selected_model,omitempty"`
 	PiRPCProcess
 }
 
 // RunPiCompletion reuses the verified RPC lifecycle and isolated Agent config.
-func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (out PiCompletionExecution, resultErr error) {
+func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (PiCompletionExecution, error) {
+	return runPiCompletion(ctx, o, nil)
+}
+
+func runPiCompletion(ctx context.Context, o PiCompletionOptions, project *piProjectTools) (out PiCompletionExecution, resultErr error) {
 	stage, code := "schema", "pi_schema_invalid"
+	completionStarted := time.Now()
 	defer func() {
+		d := out.Diagnostics
+		if d == nil {
+			d = &CompletionDiagnostics{Stage: "preflight", ParentContext: CompletionContextState(ctx.Err())}
+		}
+		d.ElapsedMS = time.Since(completionStarted).Milliseconds()
+		if resultErr != nil && (d.FailureCode == "" || stage == "output_schema") {
+			d.Stage, d.FailureCode = "preflight", "preflight_failed"
+			if stage == "output_schema" {
+				d.Stage, d.FailureCode = "output_schema", "output_schema_invalid"
+			}
+			if errors.Is(resultErr, context.DeadlineExceeded) {
+				d.FailureCode = "deadline_exceeded"
+			} else if errors.Is(resultErr, context.Canceled) {
+				d.FailureCode = "cancelled"
+			}
+		}
+		if resultErr == nil {
+			d.Stage, d.FailureCode = "completed", ""
+		}
+		out.Diagnostics = SafeCompletionDiagnostics(d)
 		if resultErr == nil {
 			return
 		}
@@ -73,6 +101,11 @@ func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (out PiCompleti
 			o.AuthHome = filepath.Join(home, ".pi/agent")
 		}
 	}
+	if project != nil && project.config != nil {
+		if err := project.config.verify(o.AuthHome); err != nil {
+			return out, err
+		}
+	}
 	if !filepath.IsAbs(o.AuthHome) {
 		return out, errors.New("absolute pi configuration directory required")
 	}
@@ -103,6 +136,9 @@ func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (out PiCompleti
 		Model    string `json:"defaultModel"`
 	}
 	if b, e := os.ReadFile(filepath.Join(o.AuthHome, "settings.json")); e == nil {
+		if project != nil && project.config != nil && hash(b) != project.config.settingsHash {
+			return out, errors.New("bound pi settings changed")
+		}
 		if len(b) > 1024*1024 || json.Unmarshal(b, &settings) != nil {
 			return out, errors.New("pi model settings invalid; original preserved")
 		}
@@ -140,42 +176,21 @@ func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (out PiCompleti
 	// Command-valued configuration could execute a shell outside the tool list;
 	// reject it rather than weakening background isolation.
 	stage, code = "provider_configuration", "pi_provider_configuration_invalid"
-	if b, e := os.ReadFile(filepath.Join(o.AuthHome, "models.json")); e == nil {
-		var configuration any
-		if len(b) > 1024*1024 || json.Unmarshal(b, &configuration) != nil {
-			return out, errors.New("pi provider configuration invalid")
-		}
-		var commandValue func(any) bool
-		commandValue = func(v any) bool {
-			switch x := v.(type) {
-			case string:
-				return strings.HasPrefix(x, "!")
-			case []any:
-				for _, value := range x {
-					if commandValue(value) {
-						return true
-					}
-				}
-			case map[string]any:
-				for _, value := range x {
-					if commandValue(value) {
-						return true
-					}
-				}
-			}
-			return false
-		}
-		if commandValue(configuration) {
+	expectedModels := ""
+	if project != nil && project.config != nil {
+		expectedModels = project.config.modelsHash
+	}
+	if err = copyPiModelDefinitions(o.AuthHome, private, expectedModels); err != nil {
+		if errors.Is(err, errPiCommandConfiguration) {
 			code = "pi_command_configuration_unsupported"
-			return out, errors.New("pi command-valued provider configuration is not supported by the isolated runner")
 		}
-		// The checked bytes are the bytes pi consumes. An original config edit
-		// after validation must not introduce command-valued credentials.
-		if err = os.WriteFile(filepath.Join(private, "models.json"), b, 0400); err != nil {
+		return out, err
+	}
+
+	if project != nil && project.config != nil {
+		if err := project.config.verify(o.AuthHome); err != nil {
 			return out, err
 		}
-	} else if !os.IsNotExist(e) {
-		return out, e
 	}
 	stage, code = "auth_link", "pi_auth_link_failed"
 	for _, name := range []string{"auth.json"} {
@@ -207,21 +222,36 @@ func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (out PiCompleti
 	extension := strings.ReplaceAll(piStructuredOutput, "__MEMLANE_OUTPUT_SCHEMA__", string(o.OutputSchema))
 	extension = strings.ReplaceAll(extension, "__MEMLANE_SCHEMA_DIGEST__", schemaDigest)
 	extension = strings.ReplaceAll(extension, "__MEMLANE_SCHEMA_PROVIDER__", o.Provider)
+	if project != nil {
+		extension = project.extension(extension)
+	}
 	path := filepath.Join(root, "schema-extension.ts")
 	stage, code = "schema_extension", "pi_schema_extension_failed"
 	if err = os.WriteFile(path, []byte(extension), 0400); err != nil {
 		return out, err
 	}
 	args = append(args, "--extension", path)
+	if project != nil {
+		for index, argument := range args {
+			if argument == "--no-tools" {
+				args = append(args[:index], args[index+1:]...)
+				break
+			}
+		}
+		args = append(args, "--tools", "memlane_project_tree,memlane_project_source,memlane_project_knowledge,memlane_project_finish")
+	}
 	prompt := o.Prompt + "\nReturn ONLY JSON matching this schema:\n" + string(o.OutputSchema)
 	stage, code = "rpc", "pi_rpc_failed"
-	process, err := runPiRPCProcessOwned(ctx, o.Executable, args, env, work, prompt, o.GuardExecutable, o.OnStart, o.OnEvent, func(provider, model string) error {
+	process, err := runPiRPCProcessWithProject(ctx, o.Executable, args, env, work, prompt, o.GuardExecutable, o.OnStart, o.OnEvent, func(provider, model string) error {
 		if provider != o.Provider || model != o.Model {
 			return errors.New("pi resolved a different model; choose its exact ID explicitly")
 		}
 		return nil
-	}, schemaDigest)
+	}, schemaDigest, project)
 	out.PiRPCProcess = process
+	if project == nil {
+		out.Observation = &CompletionObservation{ResponseComplete: process.Accepted && process.Terminal && len(process.Final) > 0, IsolationConfigured: process.Started, IsolationPolicy: "pi_private_no_session_no_tools_v1"}
+	}
 	if err != nil {
 		return out, err
 	}
@@ -234,6 +264,9 @@ func RunPiCompletion(ctx context.Context, o PiCompletionOptions) (out PiCompleti
 	if json.Unmarshal(process.Final, &value) != nil || resolved.Validate(value) != nil {
 		out.Final = nil
 		return out, errors.New("pi completion did not match the requested JSON schema")
+	}
+	if out.Observation != nil {
+		out.Observation.LocalSchemaValid = true
 	}
 	return out, nil
 }

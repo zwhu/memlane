@@ -103,7 +103,7 @@ func (a *App) guidanceDetail(c *ui.Context) {
 			text = fmt.Sprintf("已登记%d个本机项目", projects)
 		}
 		meta(c, "项目", text)
-		quietButton(c, "添加项目").Key("guidance-project").OnClick(func() { a.navigate("项目", "") })
+		quietButton(c, "添加项目").Key("guidance-project").OnClick(a.beginProjectCreation)
 		for _, d := range a.agents.Found {
 			state, _ := a.agentStatus(d, nil)
 			for _, connection := range a.agents.Connections {

@@ -15,6 +15,7 @@ import (
 )
 
 type AgentUI struct {
+	Batch                                                           AgentBatchUI
 	Sequence                                                        uint64
 	Workspace                                                       string
 	SelectedPaths                                                   map[string]string
@@ -33,13 +34,20 @@ type AgentUI struct {
 	Cancel                                                          context.CancelFunc
 }
 
+func protocolOnlyConnection(c *records.Connection) bool {
+	return c != nil && (c.Agent == "pi" || c.Agent == "codex") && c.Project == "" && !c.AutoProject && c.PendingProject == "" && c.TrustedWorkspace == "" && len(c.AllowedScopes) == 0
+}
+
 func (a *App) ConfigureAgents(ctx context.Context, root, home, bridge, piDir string, dispatch func(func())) {
 	a.agents = AgentUI{Context: ctx, Dispatch: dispatch, Root: root, Home: home, Bridge: bridge, PiDir: piDir, Allowed: map[string]bool{}, Installs: map[string]agents.Installation{}}
 	a.agents.SelectedPaths = map[string]string{}
+	a.agents.Batch.Selected = map[string]bool{}
+	a.loadAgentBatchIntent()
 	if saved, err := os.ReadFile(filepath.Join(root, "agent-paths.json")); err == nil && len(saved) < 65536 {
 		_ = json.Unmarshal(saved, &a.agents.SelectedPaths)
 	}
 	a.refreshAgents(true)
+	a.refreshAgentBatch()
 	go func() {
 		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
@@ -51,6 +59,7 @@ func (a *App) ConfigureAgents(ctx context.Context, root, home, bridge, piDir str
 				dispatch(func() {
 					if (a.page == "Agent" || (a.firstLaunch.Open && a.firstLaunchStep() == "agents") || (a.page == "设置" && a.settingsSection == "agents") || a.page == "使用指引" || a.page == "初始化") && !a.agents.Busy {
 						a.refreshAgents(false)
+						a.refreshAgentBatch()
 					}
 				})
 			}
@@ -65,39 +74,41 @@ func (a *App) refreshAgents(discover bool) {
 	}
 	s.Loading = true
 	sequence := s.Sequence
+	life, client, dispatch, epoch := s.Context, a.library, s.Dispatch, a.libraryEpoch
+	root, home := s.Root, s.Home
 	prior := append([]agents.Discovery{}, s.Found...)
 	selectedPaths := map[string]string{}
 	for agent, path := range s.SelectedPaths {
 		selectedPaths[agent] = path
 	}
 	go func() {
-		ctx, stop := context.WithTimeout(s.Context, 20*time.Second)
+		ctx, stop := context.WithTimeout(life, 20*time.Second)
 		defer stop()
 		found := prior
 		if discover {
-			found = agents.Discover(ctx, s.Home, selectedPaths)
+			found = agents.Discover(ctx, home, selectedPaths)
 		}
-		connections, err := a.library.Connections(ctx)
+		connections, err := client.Connections(ctx)
 		installs := map[string]agents.Installation{}
 		installErrors := map[string]string{}
 		ideStates := map[string]string{}
 		officialConnections := map[string]bool{}
 		for _, c := range connections {
-			if i, e := agents.LoadInstallation(s.Root, c.ID); e == nil {
+			if i, e := agents.LoadInstallation(root, c.ID); e == nil {
 				installs[c.ID] = i
 				if e = agents.CheckInstallation(i); e != nil {
 					installErrors[c.ID] = e.Error()
 				} else if c.Agent == "trae" && c.Enabled && i.Connection.Generation == c.Generation && i.IDEChallenge != nil && i.IDEReceipt == nil {
-					receipt, e := a.library.CheckIDEVerification(ctx, *i.IDEChallenge)
+					receipt, e := client.CheckIDEVerification(ctx, *i.IDEChallenge)
 					if e != nil {
 						ideStates[c.ID] = e.Error()
 					} else {
 						ideStates[c.ID] = receipt.State
 						if receipt.Complete {
-							if e = agents.FinishIDEVerification(s.Root, *i.IDEChallenge, &receipt); e != nil {
+							if e = agents.FinishIDEVerification(root, *i.IDEChallenge, &receipt); e != nil {
 								ideStates[c.ID] = e.Error()
 							} else {
-								updated, e := agents.LoadInstallation(s.Root, c.ID)
+								updated, e := agents.LoadInstallation(root, c.ID)
 								if e == nil {
 									installs[c.ID] = updated
 								}
@@ -112,16 +123,19 @@ func (a *App) refreshAgents(discover bool) {
 					Generation int64  `json:"generation"`
 					Project    string `json:"project"`
 				}
-				path := filepath.Join(s.Root, "official", "agents", c.Project, "current-knowledge.json")
+				path := filepath.Join(root, "official", "agents", c.Project, "current-knowledge.json")
 				if data, e := os.ReadFile(path); e == nil && len(data) < 65536 && json.Unmarshal(data, &receipt) == nil {
 					officialConnections[c.ID] = receipt.Connection == c.ID && receipt.Generation == c.Generation && receipt.Project == c.Project
 				}
 			}
 		}
-		if s.Context.Err() != nil {
+		if life.Err() != nil {
 			return
 		}
-		s.Dispatch(func() {
+		dispatch(func() {
+			if a.libraryEpoch != epoch {
+				return
+			}
 			s.Loading = false
 			if s.Sequence != sequence {
 				a.refreshAgents(false)
@@ -135,7 +149,7 @@ func (a *App) refreshAgents(discover bool) {
 				s.IDEStates = ideStates
 				s.OfficialConnections = officialConnections
 			}
-			if s.Selection == "" && len(found) > 0 {
+			if s.Selection == "" && len(found) > 0 && a.page == "Agent" {
 				a.selectAgent("agent-" + found[0].Agent)
 			}
 			if a.firstLaunch.Open && a.firstLaunchStep() == "processing" {
@@ -237,6 +251,21 @@ func (a *App) selectAgent(key string) {
 	}
 }
 
+func currentComputerProtocol(i agents.Installation, c records.Connection) bool {
+	proof, ok := agents.ConnectionVerification(i, c.Generation)
+	return ok && strings.HasPrefix(proof, "protocol:") && i.ProtocolScopeDigest == records.MergeDigest([]any{c.Project, c.AllowedScopes})
+}
+
+// Match the displayed protocol proof to both the installed and current grant
+// snapshot; a legacy read/write token is not an authorization metadata proof.
+func currentPiProtocol(i agents.Installation, c records.Connection) bool {
+	return agents.PiProtocolConnectionEligible(c) && i.Connection.ID == c.ID &&
+		i.Connection.Generation == c.Generation && i.ProtocolGeneration == c.Generation &&
+		i.ProtocolVerifiedAt != "" && i.ProtocolError == "" &&
+		i.ProtocolScopeDigest == records.MergeDigest([]any{c.Project, c.AllowedScopes}) &&
+		records.MergeDigest([]any{i.Connection.Project, i.Connection.AllowedScopes}) == i.ProtocolScopeDigest
+}
+
 func (a *App) agentStatus(d agents.Discovery, c *records.Connection) (string, string) {
 	d = a.connectionDiscovery(d, c)
 	if d.Path == "" {
@@ -263,8 +292,8 @@ func (a *App) agentStatus(d agents.Discovery, c *records.Connection) (string, st
 		}
 		return "已接入", "官方任务材料已进入 Memlane，后续任务先读取当前有效知识；可继续任务或查看记忆与出处。"
 	}
-	if c.PendingProject != "" || (c.Project == "" && c.TrustedWorkspace == "") {
-		if c.Agent == "codex" {
+	if !protocolOnlyConnection(c) && (c.PendingProject != "" || (c.Project == "" && c.TrustedWorkspace == "")) {
+		if c.Agent == "codex" && !a.agents.Installs[c.ID].Options.ComputerLevel {
 			return "已连接 · 待首次任务", "接入身份已确认。下一步确认任务工作目录、准备官方插件并完成首次真实任务；尚未产生项目记忆。"
 		}
 	}
@@ -275,8 +304,50 @@ func (a *App) agentStatus(d agents.Discovery, c *records.Connection) (string, st
 	if message := a.agents.InstallErrors[c.ID]; message != "" {
 		return "异常", message
 	}
+	if c.Agent == "codex" && i.Options.ComputerLevel && (d.Version != i.AgentVersion || agents.ComputerConnectionError(d) != nil) {
+		return "待适配", "Codex 安装版本已变化，请重新检查并连接；原协议证明不能复用。"
+	}
 	if i.Connection.Generation != c.Generation {
 		return "待重载", "范围已变更，请应用配置并重载 Agent。"
+	}
+	if c.Agent == "pi" && agents.PiProtocolConnectionEligible(*c) && !protocolOnlyConnection(c) {
+		if i.ProtocolError != "" {
+			return "异常", i.ProtocolError
+		}
+		if !currentPiProtocol(i, *c) {
+			return "待验证", "授权已更新；请重载 Agent 后核对当前连接与授权元数据。"
+		}
+		if a.serviceState != "ready" {
+			return "异常", "连接与授权元数据已核对，记忆服务当前不可用。"
+		}
+		return "已连接", "本机连接与当前授权元数据已核对；模型、记忆读写和项目工作目录访问仍需独立验证。"
+	}
+	if protocolOnlyConnection(c) {
+		if c.Agent == "codex" && !i.Options.ComputerLevel {
+			return "待适配", "原项目级配置不是电脑级连接，请使用电脑级连接入口。"
+		}
+		if i.ProtocolError != "" {
+			return "异常", i.ProtocolError
+		}
+		if i.ProtocolGeneration != c.Generation || i.ProtocolVerifiedAt == "" || c.Agent == "codex" && !currentComputerProtocol(i, *c) {
+			return "待验证", "配置已安装，请验证连接；项目与通用知识尚未授权。"
+		}
+		if a.serviceState != "ready" {
+			if a.agents.Batch.ServiceReachable && a.serviceState != "stopped" && a.runtimeStatus.Phase != "stopped" {
+				return "已连接", "本机连接协议已验证；记忆环境尚未就绪，项目与通用知识尚未授权。"
+			}
+			return "异常", "连接协议已验证，记忆服务当前不可用。"
+		}
+		return "已连接", "本机连接协议已验证；项目与通用知识尚未授权。"
+	}
+	if c.Agent == "codex" && i.Options.ComputerLevel {
+		if currentComputerProtocol(i, *c) {
+			if a.serviceState != "ready" {
+				return "异常", "连接协议已验证，记忆服务当前不可用。"
+			}
+			return "已连接", "本机连接与当前授权范围协议已验证；项目读写与模型能力独立验证。"
+		}
+		return "待验证", "项目授权已保存；请重载 Agent，项目访问能力尚待独立验证。"
 	}
 	if i.VerificationError != "" {
 		return "异常", i.VerificationError
@@ -342,9 +413,31 @@ func (a *App) agentProjectOptions() []string {
 	return options
 }
 
+func (a *App) computerVerificationNeedsProject(conn *records.Connection) bool {
+	if conn == nil {
+		return false
+	}
+	for _, scope := range a.scopes {
+		if scope.Kind == "project" && connectionAllows(*conn, scope.ID) {
+			return true
+		}
+	}
+	for _, project := range a.projects {
+		if connectionAllows(*conn, project.ID) {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) agentDetail(c *ui.Context) {
+	if a.page == "设置" && a.settingsSection == "agents" {
+		a.agentSettingsConnectionDetail(c)
+		return
+	}
 	s := &a.agents
 	d, conn := a.selectedAgent()
+	computer := conn != nil && d.Agent == "codex" && s.Installs[conn.ID].Options.ComputerLevel
 	ui.Scroll(c.Key("agent-detail")).Grow(1).Padding(24).Gap(18).Children(func() {
 		if d.Agent == "" {
 			a.empty(c, "选择 Agent", "选择已发现的安装或连接。")
@@ -366,51 +459,88 @@ func (a *App) agentDetail(c *ui.Context) {
 			quietButton(c.Key("probe-agent"), "检查所选路径").Disabled(s.Busy || s.Path == "").OnClick(a.probeAgentPath)
 		}
 		ui.Divider(c)
-		ui.Text(c, "项目与检索范围").Bold()
-		ui.Select(c.Key("agent-project"), &s.ProjectLabel, a.agentProjectOptions()).Label("项目（可跳过）").Disabled(s.Busy || (conn != nil && d.Agent != "pi")).OnChange(func() {
-			s.Project = ""
-			s.Workspace = ""
-			for _, p := range a.projects {
-				if a.scopeLabel(p.ID) == s.ProjectLabel {
-					s.Project = p.ID
-					s.Workspace = p.Path
-					break
+		if computer {
+			ui.Text(c, "电脑级连接").Bold()
+			ui.Text(c, "此连接不绑定项目或首次任务。项目访问请在对应项目的设置中明确授权；连接验证不表示模型或项目读写能力已通过。").FontSize(design.Small).TextColor(design.Muted)
+			if a.computerVerificationNeedsProject(conn) {
+				options := []string{"选择已授权项目用于验证"}
+				for _, project := range a.projects {
+					if connectionAllows(*conn, project.ID) {
+						options = append(options, a.scopeLabel(project.ID))
+					}
 				}
+				ui.Select(c.Key("codex-verification-project"), &s.ProjectLabel, options).Label("验证项目").Disabled(s.Busy).OnChange(func() {
+					s.Project, s.Workspace = "", ""
+					for _, project := range a.projects {
+						if connectionAllows(*conn, project.ID) && a.scopeLabel(project.ID) == s.ProjectLabel {
+							s.Project, s.Workspace = project.ID, project.Path
+							break
+						}
+					}
+				})
 			}
-		})
-		ui.Text(c, "未选择项目时，连接不会创建空项目。首项任务确认工作目录，有有效记忆后按真实仓库建立或复用项目。").FontSize(design.Small).LineHeight(1.7).TextColor(design.Muted)
-		ui.TextInput(c.Key("agent-workspace"), &s.Workspace).Label("任务工作目录").Placeholder("可以在首次任务时再选择").Disabled(s.Busy || (conn != nil && d.Agent != "pi"))
-		if d.Agent == "pi" {
-			ui.Text(c, "pi 使用当前会话项目。这里选择验证项目，并授权它可以访问的范围。").FontSize(design.Small).TextColor(design.Muted)
-		} else if d.Agent == "trae" {
-			ui.Text(c, "TRAE IDE 使用所选项目的 .trae/mcp.json；在该项目中启用或重载 MCP 后执行验证prompt。").FontSize(design.Small).TextColor(design.Muted)
+
 		} else {
-			ui.Text(c, "MCP CLI 使用所选项目的配置；worktree 共用该仓库记忆。").FontSize(design.Small).TextColor(design.Muted)
-		}
-		for _, scope := range a.scopes {
-			if scope.Kind != "project" && scope.Kind != "preference" && scope.Kind != "experience" {
-				continue
+			ui.Text(c, "项目与检索范围").Bold()
+			ui.Select(c.Key("agent-project"), &s.ProjectLabel, a.agentProjectOptions()).Label("项目（可跳过）").Disabled(s.Busy || (conn != nil && d.Agent != "pi")).OnChange(func() {
+				s.Project = ""
+				s.Workspace = ""
+				for _, p := range a.projects {
+					if a.scopeLabel(p.ID) == s.ProjectLabel {
+						s.Project = p.ID
+						s.Workspace = p.Path
+						break
+					}
+				}
+			})
+			ui.Text(c, "未选择项目时，连接不会创建空项目。首项任务确认工作目录，有有效记忆后按真实仓库建立或复用项目。").FontSize(design.Small).LineHeight(1.7).TextColor(design.Muted)
+			ui.TextInput(c.Key("agent-workspace"), &s.Workspace).Label("任务工作目录").Placeholder("可以在首次任务时再选择").Disabled(s.Busy || (conn != nil && d.Agent != "pi"))
+			if d.Agent == "pi" {
+				ui.Text(c, "pi 使用当前会话项目。这里选择验证项目，并授权它可以访问的范围。").FontSize(design.Small).TextColor(design.Muted)
+			} else if d.Agent == "trae" {
+				ui.Text(c, "TRAE IDE 使用所选项目的 .trae/mcp.json；在该项目中启用或重载 MCP 后执行验证prompt。").FontSize(design.Small).TextColor(design.Muted)
+			} else {
+				ui.Text(c, "MCP CLI 使用所选项目的配置；worktree 共用该仓库记忆。").FontSize(design.Small).TextColor(design.Muted)
 			}
-			allowed := s.Allowed[scope.ID] || scope.ID == s.Project
-			ui.Checkbox(c.Key("allow-"+scope.ID), &allowed, a.scopeLabel(scope.ID)).Disabled(s.Busy || scope.ID == s.Project).OnChange(func() { s.Allowed[scope.ID] = allowed })
+			for _, scope := range a.scopes {
+				if scope.Kind != "project" && scope.Kind != "preference" && scope.Kind != "experience" {
+					continue
+				}
+				allowed := s.Allowed[scope.ID] || scope.ID == s.Project
+				ui.Checkbox(c.Key("allow-"+scope.ID), &allowed, a.scopeLabel(scope.ID)).Disabled(s.Busy || scope.ID == s.Project).OnChange(func() { s.Allowed[scope.ID] = allowed })
+			}
+			ui.Text(c, "默认当前项目＋已授权的通用知识范围。其他获批项目仍需在 Agent 中明确指定。").FontSize(design.Small).TextColor(design.Muted)
 		}
-		ui.Text(c, "默认当前项目＋已授权的通用知识范围。其他获批项目仍需在 Agent 中明确指定。").FontSize(design.Small).TextColor(design.Muted)
 		if s.Notice != "" {
 			ui.Text(c, s.Notice).Selectable().FontSize(design.Small).LineHeight(1.7).TextColor(design.Muted)
 		}
 		ui.Row(c).Gap(10).Children(func() {
-			if conn == nil || !conn.Enabled {
+			if computer && conn.Enabled {
+				actionButton(c.Key("verify-agent"), "已重载，验证连接", nil).Disabled(s.Busy || d.ConnectionError() != nil || a.computerVerificationNeedsProject(conn) && s.Workspace == "").OnClick(a.verifyAgent)
+				actionButton(c.Key("disconnect-agent"), "断开", nil).Disabled(s.Busy).OnClick(a.disconnectAgent)
+			} else if computer {
+				quietButton(c, "选择电脑级重新连接").Key("reconnect-computer-agent").Disabled(s.Busy || s.Batch.frozen() || !a.machineConnectionEligible(d)).OnClick(func() {
+					if s.Batch.Selected == nil {
+						s.Batch.Selected = map[string]bool{}
+					}
+					s.Batch.Selected[d.Agent] = true
+					s.Selection = ""
+				})
+			} else if conn == nil || !conn.Enabled {
 				actionButton(c.Key("connect-agent"), "连接", nil).Disabled(s.Busy || s.Path == "" || d.ConnectionError() != nil).OnClick(a.connectAgent)
 			} else if !s.OfficialConnections[conn.ID] && conn.PendingProject == "" && !(d.Agent == "codex" && conn.Project == "") {
 				actionButton(c.Key("apply-agent-scopes"), "应用范围", nil).Disabled(s.Busy || d.ConnectionError() != nil).OnClick(a.connectAgent)
 				verifyLabel := "验证读写"
+				if protocolOnlyConnection(conn) {
+					verifyLabel = "验证连接"
+				}
 				if d.Agent == "trae" {
 					verifyLabel = "准备验证prompt"
 				}
 				actionButton(c.Key("verify-agent"), verifyLabel, nil).Disabled(s.Busy || d.ConnectionError() != nil).OnClick(a.verifyAgent)
 				actionButton(c.Key("disconnect-agent"), "断开", nil).Disabled(s.Busy).OnClick(a.disconnectAgent)
 			}
-			if conn != nil && conn.Enabled && (s.OfficialConnections[conn.ID] || conn.PendingProject != "" || (d.Agent == "codex" && conn.Project == "")) {
+			if !computer && conn != nil && conn.Enabled && (s.OfficialConnections[conn.ID] || conn.PendingProject != "" || (d.Agent == "codex" && conn.Project == "")) {
 				actionButton(c.Key("disconnect-agent"), "断开", nil).Disabled(s.Busy).OnClick(a.disconnectAgent)
 			}
 			if s.Cancel != nil {
@@ -418,7 +548,7 @@ func (a *App) agentDetail(c *ui.Context) {
 			}
 		})
 		if conn != nil {
-			if d.Agent == "codex" && a.officialController() != nil {
+			if !computer && d.Agent == "codex" && a.officialController() != nil {
 				actionButton(c, "开始首次任务", nil).Key("agent-first-task").Disabled(s.Busy || !conn.Enabled).OnClick(func() { a.openFirstTask(*conn) })
 			}
 			if i, ok := s.Installs[conn.ID]; ok {
@@ -426,8 +556,11 @@ func (a *App) agentDetail(c *ui.Context) {
 				if i.BackupPath != "" {
 					meta(c, "备份", i.BackupPath)
 				}
-				if i.VerifiedAt != "" {
+				if !computer && i.VerifiedAt != "" && i.VerifiedGeneration == conn.Generation {
 					meta(c, "验证", i.VerifiedAt)
+				}
+				if i.ProtocolVerifiedAt != "" && i.ProtocolGeneration == conn.Generation && i.ProtocolError == "" && (!computer || currentComputerProtocol(i, *conn)) {
+					meta(c, "连接验证", i.ProtocolVerifiedAt)
 				}
 			}
 		}
@@ -445,7 +578,7 @@ func (a *App) agentDetail(c *ui.Context) {
 					})
 				}
 			}
-		} else {
+		} else if !protocolOnlyConnection(conn) {
 			ui.Text(c, "验证模型（留空使用 Agent 默认模型）").FontSize(design.Small).TextColor(design.Muted)
 			ui.Row(c).Gap(8).Children(func() {
 				if d.Agent == "pi" {
@@ -618,8 +751,14 @@ func (a *App) disconnectAgent() {
 func (a *App) verifyAgent() {
 	s := &a.agents
 	d, conn := a.selectedAgent()
-	if conn == nil || s.Busy {
+	if conn == nil || !conn.Enabled || s.Busy {
 		return
+	}
+	if a.page == "设置" && a.settingsSection == "agents" {
+		if reason := a.settingsProtocolVerificationReason(d, conn); reason != "" {
+			s.Notice = reason
+			return
+		}
 	}
 	i, ok := s.Installs[conn.ID]
 	if !ok {
@@ -643,7 +782,18 @@ func (a *App) verifyAgent() {
 		}()
 		return
 	}
-	if s.Provider == "" && d.Agent == "pi" {
+	if i.Connection.Generation != conn.Generation {
+		s.Notice = "当前授权配置尚未应用，请重新读取连接并应用后重载。"
+		return
+	}
+	computer := d.Agent == "codex" && i.Options.ComputerLevel
+	settingsPi := a.page == "设置" && a.settingsSection == "agents" && agents.PiProtocolConnectionEligible(*conn)
+	protocolOnly := protocolOnlyConnection(conn) || computer || settingsPi
+	if computer && a.computerVerificationNeedsProject(conn) && (s.Workspace == "" || !connectionAllows(*conn, s.Project)) {
+		s.Notice = "请明确选择一个已授权项目，用它的工作目录验证当前连接。"
+		return
+	}
+	if !protocolOnly && s.Provider == "" && d.Agent == "pi" {
 		var settings struct {
 			Provider string `json:"defaultProvider"`
 			Model    string `json:"defaultModel"`
@@ -653,21 +803,56 @@ func (a *App) verifyAgent() {
 			s.Model = settings.Model
 		}
 	}
-	ctx, cancel := context.WithCancel(s.Context)
+	life, dispatch, epoch := s.Context, s.Dispatch, a.libraryEpoch
+	if life == nil || dispatch == nil {
+		s.Notice = "连接服务尚未准备，请重新读取连接。"
+		return
+	}
+	ctx, cancel := context.WithCancel(life)
 	s.Cancel = cancel
 	s.Busy = true
 	s.Notice = "正在让真实 Agent 验证读写…"
+	if protocolOnly {
+		s.Notice = "正在验证本机连接…"
+		if settingsPi {
+			s.Notice = "正在核对本机连接及当前授权元数据…"
+		}
+	}
+	workspace, granted := s.Workspace, len(conn.AllowedScopes) > 0
+	if settingsPi {
+		workspace = ""
+	}
+	if computer && !a.computerVerificationNeedsProject(conn) {
+		workspace = ""
+	}
 	options := agents.RunOptions{Provider: s.Provider, Model: s.Model, PiAuthDirectory: os.Getenv("MEMLANE_PI_AUTH_DIRECTORY"), TraeAuthHome: os.Getenv("MEMLANE_TRAE_AUTH_DIRECTORY")}
 	go func() {
 		defer cancel()
-		_, err := agents.VerifyConnection(ctx, d, i, options)
-		if s.Context.Err() != nil {
+		var err error
+		if protocolOnly {
+			_, err = agents.VerifyProtocolConnection(ctx, d, i, agents.RunOptions{Workspace: workspace})
+		} else {
+			_, err = agents.VerifyConnection(ctx, d, i, options)
+		}
+		if life.Err() != nil {
 			return
 		}
-		s.Dispatch(func() {
+		dispatch(func() {
+			if a.libraryEpoch != epoch {
+				return
+			}
 			s.Busy = false
 			s.Cancel = nil
 			s.Notice = "真实 Agent 读写验证通过。"
+			if protocolOnly {
+				s.Notice = "本机连接验证通过；项目与通用知识尚未授权。"
+				if granted {
+					s.Notice = "本机连接与当前授权范围协议验证通过；不代表模型或项目读写验证。"
+				}
+				if settingsPi {
+					s.Notice = "本机连接及当前授权元数据握手通过；不代表模型、记忆读写或项目工作目录访问已验证。"
+				}
+			}
 			if err != nil {
 				s.Notice = "验证失败：" + err.Error()
 			}
@@ -694,4 +879,99 @@ func (a *App) cancelIDEVerification(d records.IDEVerification) {
 			a.refreshAgents(false)
 		})
 	}()
+}
+
+// The connection settings never turn a protocol check into a model-backed
+// read/write task, including when an old connection already carries grants.
+func (a *App) settingsProtocolVerificationReason(d agents.Discovery, conn *records.Connection) string {
+	if conn == nil || !conn.Enabled {
+		return "请先通过上方卡片连接 Agent。"
+	}
+	installation, ok := a.agents.Installs[conn.ID]
+	if !ok {
+		return "连接配置尚未安装完成；原记录保留，请重新读取连接。"
+	}
+	if installation.Connection.Generation != conn.Generation {
+		return "当前连接配置尚未应用，请重新读取连接并核对重载状态。"
+	}
+	if d.ConnectionError() != nil || agents.ComputerConnectionError(d) != nil {
+		return "当前安装版本尚不能在这里执行电脑级连接验证；原配置保留。"
+	}
+	switch conn.Agent {
+	case "pi":
+		if !agents.PiProtocolConnectionEligible(*conn) {
+			return "此连接尚未形成可核对的授权配置；原记录保留，请先在项目设置完成归属与授权。"
+		}
+	case "codex":
+		if !installation.Options.ComputerLevel {
+			return "这是原项目级连接，不能将其标为电脑级连接；原配置保留。"
+		}
+		if a.computerVerificationNeedsProject(conn) {
+			return "此连接的验证需要项目上下文，当前页面暂不能单独验证；原配置与授权保留，此处不会调用模型。"
+		}
+	default:
+		return "此接入暂不支持这里的电脑级连接验证；原配置保留。"
+	}
+	return ""
+}
+
+func (a *App) agentSettingsConnectionDetail(c *ui.Context) {
+	s := &a.agents
+	d, conn := a.selectedAgent()
+	ui.Column(c).Key("connection-management").Padding(20).Gap(12).Children(func() {
+		if conn == nil {
+			ui.Text(c, "请通过上方卡片多选连接 Agent。").FontSize(design.Small).TextColor(design.Muted)
+			return
+		}
+		name := conn.Name
+		if name == "" {
+			name = conn.Agent
+		}
+		ui.Row(c).Gap(10).Children(func() {
+			ui.Text(c, name).Bold().Grow(1).MinWidth(0)
+			ui.Text(c, a.agentConnectionRecordState(*conn)).FontSize(design.Small).TextColor(design.Muted)
+		})
+		ui.Text(c, "连接配置与项目访问分别管理。访问授权请前往对应项目设置；连接验证不代表模型或项目读写能力已通过。").FontSize(design.Small).TextColor(design.Muted).LineHeight(1.6)
+		if d.Version != "" {
+			meta(c, "版本", d.Version)
+		}
+		if installed, ok := s.Installs[conn.ID]; ok {
+			level := "现有配置（保留）"
+			if conn.Agent == "pi" && installed.Options.PiDirectory != "" || conn.Agent == "codex" && installed.Options.ComputerLevel {
+				level = "这台电脑"
+			}
+			meta(c, "连接层级", level)
+			if installed.ConfigPath != "" {
+				meta(c, "配置位置", installed.ConfigPath)
+			}
+			if installed.ProtocolGeneration == conn.Generation && installed.ProtocolVerifiedAt != "" && installed.ProtocolError == "" && (protocolOnlyConnection(conn) || conn.Agent == "pi" && currentPiProtocol(installed, *conn) || conn.Agent == "codex" && currentComputerProtocol(installed, *conn)) {
+				meta(c, "连接验证", installed.ProtocolVerifiedAt)
+			}
+		}
+		reason := a.settingsProtocolVerificationReason(d, conn)
+		if conn.Enabled && reason != "" {
+			ui.Text(c, reason).FontSize(design.Small).TextColor(design.Muted).LineHeight(1.6)
+		}
+		if s.Notice != "" {
+			ui.Text(c, s.Notice).Selectable().FontSize(design.Small).TextColor(design.Muted)
+		}
+		ui.Row(c).Wrap().Gap(8).Children(func() {
+			quietButton(c, "重新读取连接").Key("connection-read-again").Disabled(s.Busy || s.Context == nil).OnClick(func() { a.refreshAgents(false) })
+			if conn.Enabled {
+				actionButton(c.Key("verify-agent"), "已重载，验证连接", nil).Disabled(s.Busy || s.Context == nil || reason != "").OnClick(a.verifyAgent)
+				actionButton(c.Key("disconnect-agent"), "断开", nil).Disabled(s.Busy || s.Context == nil).OnClick(a.disconnectAgent)
+			} else {
+				quietButton(c, "选择电脑级重新连接").Key("reconnect-computer-agent").Disabled(s.Busy || s.Batch.frozen() || !a.machineConnectionEligible(d)).OnClick(func() {
+					if s.Batch.Selected == nil {
+						s.Batch.Selected = map[string]bool{}
+					}
+					s.Batch.Selected[d.Agent] = true
+					s.Selection = ""
+				})
+			}
+			if s.Cancel != nil {
+				quietButton(c, "取消验证").OnClick(s.Cancel)
+			}
+		})
+	})
 }

@@ -14,16 +14,29 @@ func (a *App) openOrganizationEntry(id string) {
 	if s.Busy || s.Task == nil {
 		return
 	}
+	if s.ReviewItem != id {
+		s.DeletionImpact = nil
+	}
 	if s.ReviewItem == "" {
 		s.ResultScroll = s.Scroll.Y
 	} else {
 		a.rememberOrganizationReviewScroll()
+		if s.ReviewFocus == nil {
+			s.ReviewFocus = map[string]string{}
+		}
+		s.ReviewFocus[s.ReviewItem] = s.Focus
 	}
 	s.ReviewItem = id
+	s.Focus = s.ReviewFocus[id]
 	s.Scroll.Y = 0
 	if at := s.ReviewScroll[id]; at != nil {
 		s.Scroll.Y = at.Y
 	}
+	s.RestoreFocus = true
+	if e := a.selectedOrganizationEntry(); e != nil && e.Item.Action == "delete" && e.State == "review_pending" {
+		a.refreshOrganizationDeletionImpact()
+	}
+	a.persistMaterialPreview(nil)
 }
 func (a *App) rememberOrganizationReviewScroll() {
 	s := &a.organization
@@ -40,6 +53,7 @@ func (a *App) showOrganizationResult() {
 	s := &a.organization
 	s.ReviewItem = ""
 	s.Scroll.Y = s.ResultScroll
+	a.persistMaterialPreview(nil)
 }
 func (a *App) selectedOrganizationEntry() *records.OrganizationEntry {
 	s := &a.organization
@@ -53,12 +67,15 @@ func (a *App) selectedOrganizationEntry() *records.OrganizationEntry {
 	return nil
 }
 func (a *App) organizationSourcesCurrent(t records.OrganizationTask, e records.OrganizationEntry) bool {
-	if len(e.Item.Sources) == 0 {
+	if len(e.Item.Sources) == 0 || a.organization.Loading || a.organization.SourcesReadFailed {
+		return false
+	}
+	if e.Item.Action == "move" && !a.organizationMoveDestinationCurrent(t, e) {
 		return false
 	}
 	for _, ref := range e.Item.Sources {
 		v, ok := a.organization.Sources[ref.Memory]
-		if !ok || a.organization.SourceErrors[ref.Memory] != "" || v.Revision != ref.Revision || v.State != "active" || v.Dataset != t.Project {
+		if !ok || a.organization.SourceErrors[ref.Memory] != "" || v.Revision != ref.Revision || v.State != "active" || v.Dataset != t.Project || v.Derived != nil && v.Derived.State == "stale" {
 			return false
 		}
 	}
@@ -101,10 +118,14 @@ func processingExecutorName(s records.ProcessingSpec) string {
 	return name + " · " + s.Model
 }
 func (a *App) materialOrganizationDetail(c *ui.Context) {
+	if a.organizationProgressOpen() {
+		a.organizationProgressDetail(c)
+		return
+	}
 	s := &a.organization
 	entry := a.selectedOrganizationEntry()
 	ui.Scroll(c.Key("organization-detail-scroll")).Grow(1).MinHeight(0).TrackScroll(&s.Scroll).Padding(24).Gap(18).Children(func() {
-		if s.Error != "" {
+		if s.Error != "" && !s.New {
 			ui.Text(c, s.Error).FontSize(11).Selectable()
 			quietButton(c, "重试读取整理记录").Key("organization-refresh").Disabled(s.Busy || s.Loading).OnClick(func() { a.refreshOrganization(false, false) })
 		}
@@ -125,7 +146,9 @@ func (a *App) materialOrganizationDetail(c *ui.Context) {
 	ui.Row(c).Shrink(0).Padding(12, 24).Gap(8).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
 		if s.New {
 			note := "范围与执行者在开始后固定"
-			if s.Error != "" {
+			if !a.organizationServiceAvailable() {
+				note = "记忆服务尚未就绪，材料与原请求保留。"
+			} else if s.Error != "" {
 				note = "原请求和材料保留，可核对后重试。"
 			}
 			ui.Text(c, note).FontSize(10).TextColor(design.Muted).Grow(1).MinWidth(0)
@@ -133,7 +156,7 @@ func (a *App) materialOrganizationDetail(c *ui.Context) {
 			if s.Start != nil {
 				label = "重试原整理请求"
 			}
-			actionButton(c, label, nil).Key("organization-start").Disabled(s.Busy || s.Project == "" || len(s.Chosen) == 0 || s.Start == nil && (s.ProcessingLoading || !s.ProcessingLoaded || !organizationProcessingAvailable(s.Processing))).OnClick(a.startOrganization)
+			actionButton(c, label, nil).Key("organization-start").Background(design.Ink).TextColor(ui.Hex("#ffffff")).Disabled(!a.organizationServiceAvailable() || s.Busy || s.AbandonWanted || s.Project == "" || len(s.Chosen) == 0 || s.Start == nil && (s.ProcessingLoading || !s.ProcessingLoaded || !organizationProcessingAvailable(s.Processing))).OnClick(a.startOrganization)
 			return
 		}
 		if s.Task == nil {
@@ -234,7 +257,11 @@ func (a *App) materialOrganizationResult(c *ui.Context, t records.OrganizationTa
 	ui.Collapsible(c, "本次使用的材料", &s.DiagnosticOpen, func() {
 		for _, input := range t.Snapshot.Inputs {
 			ui.Text(c, fmt.Sprintf("%s · v%d", input.Title, input.Revision)).Bold()
-			ui.Text(c, input.Text).Selectable().FontSize(11).LineHeight(1.6)
+			if a.organizationSourcePermissionDenied(input.Memory) {
+				ui.Text(c, "当前无权限查看来源原文。").FontSize(11)
+			} else {
+				ui.Text(c, a.readableText(c, "task-input-"+t.ID+"-"+input.Memory, input.Text)).Selectable().FontSize(11).LineHeight(1.6)
+			}
 		}
 		meta(c, "任务", t.ID)
 		meta(c, "执行记录", fmt.Sprintf("%d", t.Attempt))
@@ -289,7 +316,9 @@ func (a *App) materialOrganizationReview(c *ui.Context, t records.OrganizationTa
 		ui.Text(c, "拒绝理由："+e.Receipt.RejectionReason).Key("organization-rejected-reason").Selectable().FontSize(11)
 	}
 	if e.State == "review_pending" && !a.organizationSourcesCurrent(t, e) {
-		ui.Text(c, "来源已经变化或当前读取未完成，不能提交新的确认；原始依据与建议保留。").Key("organization-review-stale").FontSize(11)
+		a.organizationReviewSourceNotice(c, t, e)
+	} else if e.State == "expired" {
+		a.organizationReviewSourceNotice(c, t, e)
 	}
 	source := func() {
 		ui.Column(c).Gap(12).Padding(16).Border(1, design.Border).Radius(6).Children(func() {
@@ -300,11 +329,24 @@ func (a *App) materialOrganizationReview(c *ui.Context, t records.OrganizationTa
 						continue
 					}
 					ui.Text(c, fmt.Sprintf("%s · v%d", input.Title, input.Revision)).Bold().FontSize(12)
-					ui.Text(c, input.Text).Selectable().LineHeight(1.7)
-					ui.Text(c, a.scopeLabel(t.Project)).FontSize(10).TextColor(design.Muted)
-					if v, ok := a.organization.Sources[ref.Memory]; ok && (v.Revision != ref.Revision || v.Dataset != t.Project || v.State != "active") {
+					if a.organizationSourcePermissionDenied(input.Memory) {
+						ui.Text(c, "当前无权限查看来源原文。").FontSize(11)
+					} else {
+						ui.Text(c, a.readableText(c, "review-source-"+t.ID+"-"+input.Memory, input.Text)).Selectable().LineHeight(1.7)
+					}
+					source := sourceDisplayName(input.Source)
+					if strings.TrimSpace(input.Source) == "" {
+						source = "来源未记录"
+					}
+					ui.Text(c, a.scopeLabel(t.Project)+" · "+source).Selectable().FontSize(10).TextColor(design.Muted)
+					if v, ok := a.organization.Sources[ref.Memory]; ok && (v.Revision != ref.Revision || v.Dataset != t.Project || v.State != "active" || v.Derived != nil && v.Derived.State == "stale") {
 						ui.Text(c, fmt.Sprintf("当前版本 v%d · %s", v.Revision, a.memoryScopeName(v))).FontSize(10)
-						ui.Text(c, v.Text).Selectable().FontSize(11).LineHeight(1.6)
+						if v.Derived != nil && v.Derived.State == "stale" {
+							ui.Text(c, "来源依据已变化，当前版本暂不参与检索。").FontSize(11).TextColor(design.Muted)
+						}
+						if !a.organizationSourcePermissionDenied(ref.Memory) {
+							ui.Text(c, a.readableText(c, "review-current-"+t.ID+"-"+v.ID+fmt.Sprint(v.Revision), v.Text)).Selectable().FontSize(11).LineHeight(1.6)
+						}
 					}
 				}
 			}
@@ -317,11 +359,14 @@ func (a *App) materialOrganizationReview(c *ui.Context, t records.OrganizationTa
 				d := a.experienceReviewDraft(e)
 				frozen := a.organization.Busy || d.Request != nil || d.RejectRequest != nil || e.State != "review_pending"
 				ui.Text(c, "标题").FontSize(11)
-				ui.TextInput(c.Key("experience-review-title-"+e.ID), &d.Value.Title).Height(34).Label("标题").Disabled(frozen)
+				title := ui.TextInput(c.Key("experience-review-title-"+e.ID), &d.Value.Title).Height(34).Label("标题").Disabled(frozen).OnChange(func() { a.persistMaterialPreview(nil) })
+				a.trackMaterialFocus(title, "experience-review-title-"+e.ID, frozen)
 				ui.Text(c, "通用表述").FontSize(11)
-				ui.TextArea(c.Key("experience-review-text-"+e.ID), &d.Value.Text).Height(150).Label("通用表述").Disabled(frozen)
+				text := ui.TextArea(c.Key("experience-review-text-"+e.ID), &d.Value.Text).Height(150).Label("通用表述").Disabled(frozen).OnChange(func() { a.persistMaterialPreview(nil) })
+				a.trackMaterialFocus(text, "experience-review-text-"+e.ID, frozen)
 				ui.Text(c, "适用条件").FontSize(11)
-				ui.TextArea(c.Key("experience-review-conditions-"+e.ID), &d.Value.Conditions).Height(80).Label("适用条件").Disabled(frozen)
+				conditions := ui.TextArea(c.Key("experience-review-conditions-"+e.ID), &d.Value.Conditions).Height(80).Label("适用条件").Disabled(frozen).OnChange(func() { a.persistMaterialPreview(nil) })
+				a.trackMaterialFocus(conditions, "experience-review-conditions-"+e.ID, frozen)
 				if e.Receipt != nil && e.Receipt.EditedExperience != nil {
 					ui.Text(c, "本次保存的用户确认内容").Bold()
 					ui.Text(c, e.Receipt.EditedExperience.Text).Selectable()
@@ -355,9 +400,15 @@ func (a *App) materialOrganizationReview(c *ui.Context, t records.OrganizationTa
 		ui.Text(c, "确认后替换目标知识正文并产生新版本；旧版本与出处保留。").FontSize(11)
 	case "delete":
 		ui.Text(c, "确认后逻辑删除目标知识，排除当前检索；历史仍保留，恢复产生新版本。").FontSize(11)
+		if e.State == "applied" && e.Receipt != nil {
+			quietButton(c, "查看历史并恢复").Key("organization-delete-history").Disabled(a.organization.Busy).OnClick(func() { a.openOrganizationMemoryMode(e.Receipt.Memory, true) })
+		} else if e.State == "review_pending" {
+			a.organizationDeletionImpactPanel(c, t, e)
+		}
 	case "move":
 		ui.Text(c, "移入项目："+a.scopeLabel(e.Item.Destination)).Bold()
 		ui.Text(c, "确认后正文保留，原项目检索立即排除。移动范围不授予其他项目知识读取权限。").FontSize(11)
+		a.organizationMoveConsent(c, t, e)
 	case "global_experience":
 		ui.Text(c, "确认后新建独立通用经验；原项目与出处保留。项目明确约定优先，来源关联不授予原项目读取权限。").FontSize(11)
 	default:
@@ -371,7 +422,11 @@ func (a *App) materialOrganizationReview(c *ui.Context, t records.OrganizationTa
 			}
 			if included {
 				ui.Text(c, input.Title+" · 差异").FontSize(11).Bold()
-				ui.Text(c, lineDiff(input.Text, e.Item.Text)).Selectable().FontSize(11).LineHeight(1.6).Padding(10).Background(design.Surface)
+				if a.organizationSourcePermissionDenied(input.Memory) {
+					ui.Text(c, "当前无权限查看来源原文或正文差异。").FontSize(11)
+				} else {
+					ui.Text(c, a.readableText(c, "review-diff-"+t.ID+"-"+input.Memory, lineDiff(input.Text, e.Item.Text))).Selectable().FontSize(11).LineHeight(1.6).Padding(10).Background(design.Surface)
+				}
 			}
 		}
 	}
@@ -383,7 +438,8 @@ func (a *App) materialOrganizationReview(c *ui.Context, t records.OrganizationTa
 			frozen = frozen || d.Request != nil || d.RejectRequest != nil
 		}
 		ui.Text(c, "拒绝理由（可选）").FontSize(11).TextColor(design.Muted)
-		ui.TextInput(c.Key("organization-reject-reason-"+e.ID), &draft.Reason).Label("拒绝理由（可选）").Height(34).Disabled(frozen)
+		field := ui.TextInput(c.Key("organization-reject-reason-"+e.ID), &draft.Reason).Label("拒绝理由（可选）").Height(34).Disabled(frozen).OnChange(func() { a.persistMaterialPreview(nil) })
+		a.trackMaterialFocus(field, "organization-reject-reason-"+e.ID, frozen)
 		if len(draft.Reason) > 1024 {
 			ui.Text(c, "拒绝理由超过保存上限，请缩短后提交。").FontSize(11)
 		}
@@ -433,7 +489,10 @@ func (a *App) materialOrganizationReviewActions(c *ui.Context, t records.Organiz
 		confirmedRequest = d.Request != nil
 		valid = d.Value.Valid()
 	}
-	blocked := s.Busy || e.State != "review_pending" || !valid || !confirmedRequest && !a.organizationSourcesCurrent(t, e)
+	blocked := s.Busy || e.State != "review_pending" || !valid || !confirmedRequest && (!a.organizationSourcesCurrent(t, e) || e.Item.Action == "move" && !a.organizationMoveAuthorized(t, e))
+	if !confirmedRequest && e.Item.Action == "delete" && !a.organizationDeletionImpactCurrent(t, e) {
+		blocked = true
+	}
 	rejectLabel := "拒绝建议"
 	if s.Decisions[e.ID+"false"].Receipt != "" {
 		rejectLabel = "重试拒绝回执"

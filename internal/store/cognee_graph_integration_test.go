@@ -108,7 +108,7 @@ func TestCogneeBrowsingSchema14WALBackupPreservesEveryOldTable(t *testing.T) {
 	s, a, _ := cogneeImportFixture(t)
 	_, err := s.ImportCognee(context.Background(), a)
 	mustMerge(t, err)
-	_, err = s.DB.Exec(`DROP TABLE experience_previews; DROP TABLE experience_preview_head; DROP TABLE project_task_histories; DROP TABLE project_index_recoveries; DROP TABLE project_task_items; DROP TABLE project_task_sources; DROP TABLE project_task_runs; DROP TABLE project_tasks; DROP TABLE project_bindings; DROP TABLE processing_operations; DROP TABLE processing_validations; DROP TABLE processing_saved; DROP TABLE processing_current; DROP TABLE processing_revisions; DROP TABLE pending_cognee_bindings; DROP TABLE connection_intakes; DROP TABLE cognee_bindings; PRAGMA user_version=14; PRAGMA wal_autocheckpoint=0`)
+	_, err = s.DB.Exec(`DROP TABLE processing_validation_evidence; DROP TABLE delivery_assignments; DROP TABLE project_preference_decisions; DROP TABLE cognee_submissions; DROP TABLE cognee_submission_tasks; DROP TABLE cognee_library_identity; DROP TABLE processing_http_receipts; DROP TABLE processing_suppliers; DROP TABLE processing_validation_diagnostics; DROP TABLE index_rebuild_controls; DROP TABLE index_attempts; DROP TABLE agent_connection_batch_head; DROP TABLE agent_connection_batches; DROP TABLE organization_start_intents; DROP TABLE organization_previews; DROP TABLE organization_preview_head; DROP TABLE experience_previews; DROP TABLE experience_preview_head; DROP TABLE project_task_histories; DROP TABLE project_index_recoveries; DROP TABLE project_task_items; DROP TABLE project_task_sources; DROP TABLE project_task_runs; DROP TABLE project_tasks; DROP TABLE project_bindings; DROP TABLE processing_operations; DROP TABLE processing_validations; DROP TABLE processing_saved; DROP TABLE processing_current; DROP TABLE processing_revisions; DROP TABLE pending_cognee_bindings; DROP TABLE connection_intakes; DROP TABLE cognee_bindings; PRAGMA user_version=14; PRAGMA wal_autocheckpoint=0`)
 	mustMerge(t, err)
 	s.Schema = 14
 	before := restoreTables(t, s.DB)
@@ -143,5 +143,25 @@ func TestCogneeBrowsingSchema14WALBackupPreservesEveryOldTable(t *testing.T) {
 	mustMerge(t, backup.QueryRow(`PRAGMA user_version`).Scan(&version))
 	if version != 14 || current.Schema != SchemaVersion {
 		t.Fatal("backup/schema mismatch", version, current.Schema)
+	}
+}
+
+func TestCogneeGraphExplicitTypesSurviveAuthorizedProjection(t *testing.T) {
+	s, _, b, g, _ := graphContractFixture(t)
+	g.Entities[0].Types = []string{"Package", "Tool"}
+	out, err := s.ProjectCogneeGraph(context.Background(), b, g)
+	mustMerge(t, err)
+	found := false
+	for _, entity := range out.Entities {
+		if entity.ID == g.Entities[0].ID {
+			found = reflect.DeepEqual(entity.Types, g.Entities[0].Types)
+		}
+	}
+	if !found {
+		t.Fatal("explicit graph types dropped from authorized entity")
+	}
+	g.Entities[0].Types = []string{" "}
+	if _, err = s.ProjectCogneeGraph(context.Background(), b, g); err == nil {
+		t.Fatal("invalid type label accepted")
 	}
 }

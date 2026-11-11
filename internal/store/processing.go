@@ -91,6 +91,15 @@ func processingValidationTx(ctx context.Context, tx *sql.Tx, revision string) (*
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
+	if err == nil {
+		v.Diagnostics, err = processingDiagnosticsTx(ctx, tx, v.ID)
+		if err == nil {
+			v.HTTP, err = processingHTTPTx(ctx, tx, v.ID)
+		}
+	}
+	if err == nil {
+		v.Evidence, err = capabilityEvidenceTx(ctx, tx, v)
+	}
 	return &v, err
 }
 

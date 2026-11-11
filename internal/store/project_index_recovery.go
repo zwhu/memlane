@@ -138,7 +138,12 @@ func (s *Store) startProjectIndexRecovery(ctx context.Context, start records.Ind
 		default:
 			// A worker may already own pending/indexing. Never enqueue it twice.
 			if job != "pending" && job != "indexing" {
-				if _, err = tx.ExecContext(ctx, `UPDATE jobs SET state='pending',error='' WHERE memory=? AND revision=?`, id, revision); err != nil {
+				if s.Schema >= 25 {
+					err = s.queueRebuildIndexTx(ctx, tx, id, revision, start.OperationID)
+				} else {
+					_, err = tx.ExecContext(ctx, `UPDATE jobs SET state='pending',error='' WHERE memory=? AND revision=?`, id, revision)
+				}
+				if err != nil {
 					return out, err
 				}
 			}

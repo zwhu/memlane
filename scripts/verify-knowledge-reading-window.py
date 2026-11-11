@@ -21,7 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--components', type=Path, required=True)
-    parser.add_argument('--scenario', choices=('material-context', 'material-organization', 'experience-distill', 'common-knowledge', 'reading', 'project-settings', 'project-binding', 'project-task', 'project-context', 'project-index-recovery', 'project-history', 'project-history-guard', 'project-history-archive', 'project-history-archive-guard', 'project-motion', 'project-motion-task', 'project-motion-visual'), default='reading')
+    parser.add_argument('--scenario', choices=('material-recovery', 'material-context', 'material-organization', 'experience-distill', 'common-knowledge', 'reading', 'project-settings', 'project-binding', 'project-task', 'project-context', 'project-index-recovery', 'project-history', 'project-history-guard', 'project-history-archive', 'project-history-archive-guard', 'project-motion', 'project-motion-task', 'project-motion-visual'), default='reading')
     args = parser.parse_args()
     out, previous = args.out.resolve(), args.components.resolve()
     out.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -110,24 +110,42 @@ k=Ed25519PrivateKey.generate();print(json.dumps({'signature':base64.b64encode(k.
             mac = SourceFileLoader('reading_mac', str(ROOT/'scripts/mac-native.py')).load_module().Mac()
             mac.require_unlocked()
             was_dialog = any(n.get('key') == 'knowledge-history-dialog' for n in ui.nodes())
+            focus_attempts = []
             for attempt in range(3):
                 mac.activate(ui.pid)
-                driver.wait(lambda: ui.native()['key_window'], timeout=10)
-                # Activation can yield focus while macOS starts a new bundle.
-                # Click this owned window's toolbar and verify the actual frame.
-                bounds = next(w['bounds'] for w in mac.visible_windows([ui.pid]) if w['layer'] == 0 and w['bounds']['width'] >= 980)
+                # Wait for the actual owned CG window after reopening/resizing.
+                # A visible window can still need the toolbar click to become key.
+                observed_windows = []
+                def owned_visible_window():
+                    observed_windows[:] = mac.visible_windows([ui.pid])
+                    return next((w for w in observed_windows if w['layer'] == 0 and w['bounds']['width'] >= 980 and w['bounds']['height'] >= 620), None)
+                try:
+                    actual_window = driver.wait(owned_visible_window, timeout=15)
+                    bounds = actual_window['bounds']
+                except Exception:
+                    (out/'screenshots'/(Path(name).stem+'-window-lookup-failure.json')).write_text(json.dumps(dict(pid=ui.pid, windows=observed_windows, native=ui.native()), ensure_ascii=False, indent=2)+'\n')
+                    raise
                 if not was_dialog:
                     mac.click(bounds['x']+500, bounds['y']+27)
-                driver.wait(lambda: ui.native()['key_window'], timeout=10)
+                def focused_window():
+                    state = ui.native()
+                    return state if state['visible'] and state['key_window'] else None
+                try:
+                    driver.wait(focused_window, timeout=10)
+                except AssertionError:
+                    focus_attempts.append(dict(window=actual_window, native=ui.native()))
+                    continue
                 ui.req('capture')
-                mac.capture(ui.pid, out/'screenshots'/name)
+                mac.capture_id(actual_window['number'], out/'screenshots'/name)
                 frame_state = ui.native()
                 if frame_state['visible'] and frame_state['key_window']:
                     break
+                focus_attempts.append(dict(window=actual_window, native=frame_state))
             else:
-                raise AssertionError(('system_capture_focus_lost', frame_state))
+                (out/'screenshots'/(Path(name).stem+'-focus-failure.json')).write_text(json.dumps(focus_attempts, ensure_ascii=False, indent=2)+'\n')
+                raise AssertionError(('system_capture_focus_lost', Path(name).stem))
             assert was_dialog == any(n.get('key') == 'knowledge-history-dialog' for n in ui.nodes())
-            (out/'screenshots'/(Path(name).stem+'-capture.json')).write_text(json.dumps(dict(pid=ui.pid, actual_system_window=True, dialog_kept_open=was_dialog))+'\n')
+            (out/'screenshots'/(Path(name).stem+'-capture.json')).write_text(json.dumps(dict(pid=ui.pid, actual_system_window=True, dialog_kept_open=was_dialog, cg_window=actual_window['number'], cg_bounds=bounds))+'\n')
             (out/'screenshots'/ (Path(name).stem+'-tree.json')).write_text(json.dumps(ui.nodes(), ensure_ascii=False, indent=2)+'\n')
             report['screenshots'].append(name)
 
@@ -139,8 +157,22 @@ k=Ed25519PrivateKey.generate();print(json.dumps({'signature':base64.b64encode(k.
                 result = json.loads(channel.makefile('rb', buffering=0).readline())
             assert 'error' not in result, result
 
-        driver.wait(lambda: '服务运行中' in ui.labels(), timeout=90)
-        if args.scenario in ('material-organization','material-context'):
+        report['runtime_start_retries'] = []
+        def initial_runtime_ready():
+            labels = ui.labels()
+            if '服务运行中' in labels:
+                return True
+            # Exercise the existing explicit product retry only for this
+            # bounded startup failure. Keep its actual window and receipt.
+            if len(report['runtime_start_retries']) < 1 and any('组件已准备，服务启动超时' in label for label in labels):
+                retry = next((n for n in ui.nodes() if n.get('key') == 'first-launch-retry'), None)
+                if retry and 'disabled' not in retry.get('states', []):
+                    capture('00-runtime-start-timeout-before-explicit-retry-system.png')
+                    report['runtime_start_retries'].append(dict(labels=labels, action='first-launch-retry', explicit=True))
+                    ui.press_key('first-launch-retry')
+            return False
+        driver.wait(initial_runtime_ready, timeout=180)
+        if args.scenario in ('material-organization','material-context','material-recovery'):
             report['scenario_source_sha256'] = hashlib.sha256((ROOT/'scripts/verify_material_organization_scenario.py').read_bytes()).hexdigest()
             from verify_material_organization_scenario import verify
             verify(ui,call,report,capture,resize,out,ipc,driver)

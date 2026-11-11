@@ -13,7 +13,7 @@ import (
 	"github.com/zwhu/memlane/internal/records"
 )
 
-type ServiceError struct{ Code, Message string }
+type ServiceError struct{ Code, Message, Stage string }
 
 func (e *ServiceError) Error() string { return e.Message }
 func (e *ServiceError) Is(target error) bool {
@@ -62,6 +62,7 @@ func Call(ctx context.Context, root string, request Request, out any) error {
 		Result   json.RawMessage `json:"result"`
 		Error    string          `json:"error"`
 		Code     string          `json:"code"`
+		Stage    string          `json:"stage"`
 	}
 	if err = json.NewDecoder(conn).Decode(&response); err != nil {
 		return err
@@ -70,7 +71,7 @@ func Call(ctx context.Context, root string, request Request, out any) error {
 		return errors.New("service protocol mismatch")
 	}
 	if !response.OK {
-		return &ServiceError{Code: response.Code, Message: response.Error}
+		return &ServiceError{Code: response.Code, Message: response.Error, Stage: response.Stage}
 	}
 	if out != nil {
 		return json.Unmarshal(response.Result, out)

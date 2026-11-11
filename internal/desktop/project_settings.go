@@ -74,12 +74,13 @@ func (a *App) refreshProjectSettings() {
 	}
 	s.Sequence++
 	sequence, id := s.Sequence, s.Owner.ID
+	life, client, dispatch, epoch := a.libraryContext, a.library, a.dispatch, a.libraryEpoch
 	s.Loading, s.Error = true, ""
 	s.Editing = ""
 	go func() {
-		ctx, cancel := context.WithTimeout(a.libraryContext, 5*time.Second)
+		ctx, cancel := context.WithTimeout(life, 5*time.Second)
 		defer cancel()
-		scopes, err := a.library.Scopes(ctx)
+		scopes, err := client.Scopes(ctx)
 		var owner records.Scope
 		for _, p := range scopes {
 			if p.ID == id && p.Kind == "project" {
@@ -92,12 +93,15 @@ func (a *App) refreshProjectSettings() {
 		}
 		var connections []records.Connection
 		if err == nil {
-			connections, err = a.library.Connections(ctx)
+			connections, err = client.Connections(ctx)
 		}
-		if a.libraryContext.Err() != nil {
+		if life.Err() != nil {
 			return
 		}
-		a.dispatch(func() {
+		dispatch(func() {
+			if a.libraryEpoch != epoch {
+				return
+			}
 			if !s.Open || s.Sequence != sequence || s.Owner.ID != id {
 				return
 			}
@@ -128,7 +132,37 @@ func (a *App) projectAccessState(c records.Connection, id string) string {
 		return "未授权本项目"
 	}
 	i, ok := a.agents.Installs[c.ID]
-	if !ok || i.Connection.Generation != c.Generation || i.VerifiedGeneration != c.Generation || i.VerifiedAt == "" || a.agents.InstallErrors[c.ID] != "" {
+	if !ok || i.Connection.Generation != c.Generation || a.agents.InstallErrors[c.ID] != "" {
+		return "已授权，待重载与验证"
+	}
+	if c.Agent == "codex" && i.Options.ComputerLevel {
+		for _, d := range a.agents.Found {
+			if d.Agent != c.Agent {
+				continue
+			}
+			d = a.connectionDiscovery(d, &c)
+			workspace := ""
+			for _, scope := range a.scopes {
+				if scope.ID == id && scope.Kind == "project" {
+					workspace = scope.Path
+					break
+				}
+			}
+			if workspace == "" {
+				for _, project := range a.projects {
+					if project.ID == id {
+						workspace = project.Path
+						break
+					}
+				}
+			}
+			if agents.ComputerConnectionError(d) == nil && d.Version == i.AgentVersion && currentComputerProtocol(i, c) && agents.CodexProjectVerification(i, id, workspace, c.Generation) {
+				return "已授权，项目连接已验证"
+			}
+		}
+		return "已授权，待重载与验证"
+	}
+	if i.VerifiedGeneration != c.Generation || i.VerifiedAt == "" {
 		return "已授权，待重载与验证"
 	}
 	for _, d := range a.agents.Found {
@@ -158,21 +192,25 @@ func (a *App) saveProjectAccess() {
 	}
 	d := records.ConnectionScopeChange{ConnectionID: s.Editing, ExpectedGeneration: s.Generation, Project: s.Owner.ID, Allowed: s.Allowed}
 	sequence := s.Sequence
+	life, client, dispatch, epoch := a.libraryContext, a.library, a.dispatch, a.libraryEpoch
 	op := &ProjectAccessOperation{Active: true, Owner: s.Owner.ID, Connection: s.Editing}
 	s.Operation = op
 	i, installed := a.agents.Installs[d.ConnectionID]
 	go func() {
-		ctx, cancel := context.WithTimeout(a.libraryContext, 25*time.Second)
+		ctx, cancel := context.WithTimeout(life, 25*time.Second)
 		defer cancel()
-		conn, err := a.library.ChangeProjectAccess(ctx, d)
+		conn, err := client.ChangeProjectAccess(ctx, d)
 		accepted := err == nil
 		if err == nil && installed && i.Connection.Generation != conn.Generation {
 			_, err = agents.Install(ctx, conn, i.Options)
 		}
-		if a.libraryContext.Err() != nil {
+		if life.Err() != nil {
 			return
 		}
-		a.dispatch(func() {
+		dispatch(func() {
+			if a.libraryEpoch != epoch {
+				return
+			}
 			op.Active = false
 			if accepted && conn.ID != "" && conn.Generation != d.ExpectedGeneration {
 				op.Notice = "授权已保存；请重载 Agent 后重新验证。"
@@ -250,6 +288,9 @@ func (a *App) projectSettingsContent(c *ui.Context) {
 					})
 					ui.Text(c, a.projectAccessState(conn, s.Owner.ID)).Key("project-access-state-" + conn.ID).FontSize(10).TextColor(design.Muted)
 					quietButton(c, "管理范围").Key("project-access-edit-" + conn.ID).Disabled(busy || !conn.Enabled).OnClick(func() { a.editProjectAccess(conn) })
+					if conn.Agent == "codex" && conn.Enabled && connectionAllows(conn, s.Owner.ID) && a.agents.Installs[conn.ID].Options.ComputerLevel {
+						quietButton(c, "重载与验证").Key("project-access-verify-" + conn.ID).Disabled(busy).OnClick(func() { a.openProjectConnectionVerification(conn, s.Owner) })
+					}
 				})
 				if s.Editing == conn.ID {
 					ui.Column(c).Key("project-access-editor").Padding(12).Gap(10).Background(design.Surface).Radius(7).Children(func() {
@@ -283,4 +324,16 @@ func (a *App) projectSettingsContent(c *ui.Context) {
 			ui.Text(c, "当前项目的明确约定优先于通用知识。").Padding(5, 0, 5, 13).BorderWidth(0, 0, 0, 2).BorderColor(design.Border).FontSize(11).TextColor(design.Muted)
 		})
 	})
+}
+
+// The project row is an explicit selection; do not infer a verification workspace
+// from another open project or a connection's historical default.
+func (a *App) openProjectConnectionVerification(conn records.Connection, owner records.Scope) {
+	if !conn.Enabled || !connectionAllows(conn, owner.ID) || owner.Path == "" {
+		return
+	}
+	a.openAgentSettings()
+	a.selectAgent("connection-" + conn.ID)
+	a.agents.Project, a.agents.Workspace = owner.ID, owner.Path
+	a.agents.ProjectLabel = a.scopeLabel(owner.ID)
 }

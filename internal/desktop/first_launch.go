@@ -140,6 +140,9 @@ func (r *RuntimeController) DiscoverEnvironmentWithProgress(ctx context.Context,
 	notify("正在读取并校验组件清单…")
 	feed, err := manager.Feed(ctx, r.Config.ComponentSource)
 	if err != nil {
+		if ctx.Err() != nil {
+			return items, ctx.Err()
+		}
 		var networkError net.Error
 		if !errors.As(err, &networkError) {
 			return items, err
@@ -173,6 +176,10 @@ func (r *RuntimeController) DiscoverEnvironmentWithProgress(ctx context.Context,
 			item.Evidence = "文件校验通过 · " + installed.Directory
 			item.Bytes = 0
 			item.OccupiedBytes = components.InstalledReceipt(ctx, *found, installed).OccupiedBytes
+		} else if ctx.Err() != nil {
+			item.State, item.Bytes = "not_verified", 0
+			item.Evidence = "校验未完成；尚未确认是否需要下载"
+			return append(items, item), ctx.Err()
 		} else if _, existing := os.Stat(filepath.Join(manager.Root, "components", found.ID, found.Version)); existing == nil {
 			item.State = "validation_failed"
 			item.Evidence += " · 已有组件未通过校验，需要修复或重新准备"
@@ -245,6 +252,10 @@ func (r *RuntimeController) DiscoverEnvironmentWithProgress(ctx context.Context,
 						if id == "cognee-service" {
 							executable = filepath.Join(installed.Directory, installed.Metadata.Executable)
 						}
+					} else if ctx.Err() != nil {
+						item.State, item.Bytes = "not_verified", 0
+						item.Evidence = "校验未完成；尚未确认是否需要下载"
+						return append(items, item), ctx.Err()
 					}
 					items = append(items, item)
 				}
@@ -409,7 +420,7 @@ func (a *App) firstLaunchRuntime(status RuntimeStatus) {
 	if s.State.Stage != "preparing" && s.State.Stage != "verifying" {
 		return
 	}
-	previousStage := s.State.Stage
+	previousStage, previousMessage := s.State.Stage, s.State.Message
 	s.State.Message = status.Message
 	switch status.Phase {
 	case "ready":
@@ -450,7 +461,11 @@ func (a *App) firstLaunchRuntime(status RuntimeStatus) {
 	if previousStage != s.State.Stage {
 		s.ChangedAt = time.Now()
 	}
-	a.persistFirstLaunch()
+	// Byte counters live in RuntimeStatus. Persist lifecycle/message changes,
+	// never an identical first-launch snapshot for every download chunk.
+	if previousStage != s.State.Stage || previousMessage != s.State.Message {
+		a.persistFirstLaunch()
+	}
 }
 func (a *App) cancelFirstLaunch(skip bool) {
 	s := &a.firstLaunch
@@ -565,7 +580,7 @@ func (a *App) canCompleteFirstLaunch() bool {
 	s, current := &a.firstLaunch, a.processing.Configuration.Current
 	return s.Open && a.firstLaunchStep() == "processing" && s.State.Stage == "ready" &&
 		a.runtimeStatus.Phase == "ready" && a.serviceState == "ready" && !a.processing.Busy && !a.processing.Polling &&
-		current.Active && current.Revision != nil
+		current.Active && current.Revision != nil && a.processing.currentRuntimeReady()
 }
 
 func (a *App) completeFirstLaunch() {

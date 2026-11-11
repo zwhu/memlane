@@ -21,6 +21,7 @@ func TestOrganizationRejectionReasonIsFrozenReceiptAndLeavesKnowledge(t *testing
 				task, d = reviewOrganizationFixture(t, s, action)
 			}
 			d.Confirm, d.Edit, d.RejectionReason = false, nil, "暂时保留现有约定；待补充独立依据。"
+			d.MoveScopeAccepted = false
 			before := sqlRows(t, s.DB, "versions")
 			done, err := s.ReviewOrganization(mergeCtx, d)
 			mustMerge(t, err)

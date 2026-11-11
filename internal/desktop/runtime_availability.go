@@ -13,10 +13,15 @@ import (
 var ErrRuntimeChanging = errors.New("runtime lifecycle is changing")
 
 type RuntimeAvailability struct {
-	Phase, Message string
-	Service        platform.ServiceState
-	State          string
-	ScheduleError  string
+	LibraryRoot                                            string
+	RecoveryOwner                                          string
+	RecoveryGeneration                                     int64
+	Recovery                                               string
+	RecoveryAttempts, RecoveryLimit, RecoveryWindowSeconds int
+	Phase, Message                                         string
+	Service                                                platform.ServiceState
+	State                                                  string
+	ScheduleError                                          string
 }
 
 // ObserveAvailability only reads the stop flag, system registration and health.
@@ -35,13 +40,13 @@ func (r *RuntimeController) ObserveAvailability(ctx context.Context) (RuntimeAva
 		return RuntimeAvailability{}, err
 	}
 	if stopped {
-		return RuntimeAvailability{Phase: "stopped", Message: "记忆服务已主动停止"}, nil
+		return RuntimeAvailability{LibraryRoot: root, Phase: "stopped", Message: "记忆服务已主动停止"}, nil
 	}
 	state, err := platform.ServiceStatus(r.Config.ServicePlist)
 	if err != nil {
 		return RuntimeAvailability{}, err
 	}
-	result := RuntimeAvailability{Service: state}
+	result := RuntimeAvailability{LibraryRoot: root, Service: state}
 	switch state {
 	case platform.RequiresApproval:
 		result.Phase, result.Message = "authorization", "后台许可已撤销或需要批准，请在系统设置的登录项与扩展中允许 Memlane 后重试。"
@@ -56,9 +61,15 @@ func (r *RuntimeController) ObserveAvailability(ctx context.Context) (RuntimeAva
 	probe, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	var health struct {
-		State         string `json:"state"`
-		Version       string `json:"service_version"`
-		ScheduleError string `json:"schedule_error"`
+		State                 string `json:"state"`
+		RecoveryOwner         string `json:"recovery_owner"`
+		RecoveryGeneration    int64  `json:"recovery_generation"`
+		Recovery              string `json:"recovery"`
+		RecoveryAttempts      int    `json:"recovery_attempts"`
+		RecoveryLimit         int    `json:"recovery_limit"`
+		RecoveryWindowSeconds int    `json:"recovery_window_seconds"`
+		Version               string `json:"service_version"`
+		ScheduleError         string `json:"schedule_error"`
 	}
 	if err = serviceipc.Call(probe, root, serviceipc.Request{Op: "health"}, &health); err != nil {
 		result.Phase, result.Message = "unavailable", "后台服务暂不可用；已保存的原文保留，请重试。"
@@ -71,6 +82,8 @@ func (r *RuntimeController) ObserveAvailability(ctx context.Context) (RuntimeAva
 	}
 	if err == nil && health.Version == "0.0.1" {
 		result.State, result.ScheduleError = health.State, health.ScheduleError
+		result.RecoveryOwner, result.RecoveryGeneration = health.RecoveryOwner, health.RecoveryGeneration
+		result.Recovery, result.RecoveryAttempts, result.RecoveryLimit, result.RecoveryWindowSeconds = health.Recovery, health.RecoveryAttempts, health.RecoveryLimit, health.RecoveryWindowSeconds
 	}
 	return result, nil
 }
@@ -78,6 +91,9 @@ func (r *RuntimeController) ObserveAvailability(ctx context.Context) (RuntimeAva
 // Called only on the window's serialized update boundary. Preparation and
 // explicit stop/resume own their state; late observations cannot replace them.
 func (a *App) ApplyRuntimeAvailability(observation RuntimeAvailability) {
+	if observation.LibraryRoot != "" && observation.LibraryRoot != a.library.Root {
+		return
+	}
 	if !a.runtimeStatus.Installed || a.backups.RestoreLocked || a.backups.Busy || a.firstLaunch.Detecting {
 		return
 	}
@@ -86,6 +102,12 @@ func (a *App) ApplyRuntimeAvailability(observation RuntimeAvailability) {
 	default:
 		return
 	}
+	if n := &a.maintenanceNext; n.Awaiting && n.WaitingOwner != "" && (observation.RecoveryOwner == "" || observation.RecoveryOwner == n.WaitingOwner && observation.RecoveryGeneration < n.WaitingGeneration) {
+		return
+	}
+	a.maintenanceNext.Recovery = observation.Recovery
+	a.maintenanceNext.Attempts, a.maintenanceNext.Limit, a.maintenanceNext.WindowSeconds = observation.RecoveryAttempts, observation.RecoveryLimit, observation.RecoveryWindowSeconds
+	a.maintenanceNext.Awaiting = false
 	a.runtimeStatus.Phase = observation.Phase
 	a.runtimeStatus.Message = observation.Message
 	a.runtimeStatus.Service = observation.Service

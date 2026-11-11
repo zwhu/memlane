@@ -125,6 +125,27 @@ func TestProjectKnowledgeNormalSaveOriginalLineageIndexAndReplay(t *testing.T) {
 	}
 }
 
+// Replay the daemon-sealed pi receipt shape from the Native project task.
+// pi uses schema/read-phase receipts rather than Codex thread/turn identifiers.
+func TestProjectKnowledgePiReceiptSaves(t *testing.T) {
+	s, p, _ := projectTaskFixture(t)
+	c, err := s.ConfigureConnection(context.Background(), records.ConnectionDraft{Agent: "pi", Name: "pi receipt fixture", Project: p.ID, AllowedScopes: []string{p.ID}})
+	mustMerge(t, err)
+	ctx, task := projectRunFixture(t, s, p, c)
+	mustMerge(t, s.FinishProjectProcess(ctx, task.ID, task.Attempt, records.ProjectTaskExecution{
+		PID: 12345678, StartedMS: 1, EndedMS: 2, Terminal: true, Reaped: true, GroupGone: true,
+		Model: task.Snapshot.Executor.Model, Provider: "fixture-provider", PermissionProfile: "pi_project_readonly",
+		Pi:               &records.ProjectPiExecution{NativeSchemaRequested: true, NativeSchemaResponseStatus: 200, ReadPhaseEnded: true},
+		KnowledgeContext: &records.ProjectKnowledgeContextReceipt{Pages: 1, SentPages: 1, Complete: true, Digest: strings.Repeat("a", 64)},
+	}))
+	source := projectSourceFixture("README.md", "本项目使用 pnpm。")
+	r, err := s.SaveProjectKnowledge(ctx, task.ID, task.Attempt, projectProposalFixture(task, source), []records.ProjectRepositorySource{source})
+	mustMerge(t, err)
+	if len(r.Added) != 1 || len(r.Sources) != 1 {
+		t.Fatal("pi proposal was not saved with its original", r)
+	}
+}
+
 func TestProjectKnowledgeCancelFailureAndSourceValidation(t *testing.T) {
 	for _, mode := range []string{"cancel", "disconnect", "hash", "quote", "outside", "raw-edited", "index-failure"} {
 		t.Run(mode, func(t *testing.T) {
@@ -281,7 +302,7 @@ func TestProjectSchema18MigrationKeepsBindingIntentAndOriginalBackup(t *testing.
 	mustMerge(t, err)
 	var path string
 	mustMerge(t, s.DB.QueryRow(`SELECT file FROM pragma_database_list WHERE name='main'`).Scan(&path))
-	_, err = s.DB.Exec(`DROP TABLE experience_previews; DROP TABLE experience_preview_head; DROP TABLE project_task_histories; DROP TABLE project_index_recoveries; DROP TABLE project_task_items; DROP TABLE project_task_sources; DROP TABLE project_task_runs; PRAGMA user_version=18`)
+	_, err = s.DB.Exec(`DROP TABLE processing_validation_evidence; DROP TABLE delivery_assignments; DROP TABLE project_preference_decisions; DROP TABLE cognee_submissions; DROP TABLE cognee_submission_tasks; DROP TABLE cognee_library_identity; DROP TABLE processing_http_receipts; DROP TABLE processing_suppliers; DROP TABLE processing_validation_diagnostics; DROP TABLE index_rebuild_controls; DROP TABLE index_attempts; DROP TABLE agent_connection_batch_head; DROP TABLE agent_connection_batches; DROP TABLE organization_start_intents; DROP TABLE organization_previews; DROP TABLE organization_preview_head; DROP TABLE experience_previews; DROP TABLE experience_preview_head; DROP TABLE project_task_histories; DROP TABLE project_index_recoveries; DROP TABLE project_task_items; DROP TABLE project_task_sources; DROP TABLE project_task_runs; PRAGMA user_version=18`)
 	mustMerge(t, err)
 	mustMerge(t, s.Close())
 	current, err := Open(path)

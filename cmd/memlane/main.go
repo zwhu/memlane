@@ -36,6 +36,9 @@ func run() int {
 		}
 		return 0
 	}
+	if len(os.Args) > 1 && os.Args[1] == "delivery" {
+		return agentbridge.RunDeliveryCLI(os.Args[2:])
+	}
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: memlane mcp|call --root /absolute/service/root --connection UUID --generation N [--workspace /bound/repo] [--tool memory_save]")
 		return 2
@@ -44,10 +47,14 @@ func run() int {
 	flags := flag.NewFlagSet(mode, flag.ContinueOnError)
 	var c agentbridge.Config
 	var tool string
+	flags.BoolVar(&c.DurableDelivery, "durable-delivery", false, "persist ordinary Agent saves before IPC; retries require explicit review")
 	flags.StringVar(&c.Root, "root", "", "absolute service data root")
 	flags.StringVar(&c.ConnectionID, "connection", "", "registered connection ID")
 	flags.Int64Var(&c.Generation, "generation", 0, "configuration generation")
 	flags.StringVar(&c.Workspace, "workspace", "", "explicit trusted workspace; process cwd is never used")
+	flags.StringVar(&c.HostWorkspace, "host-workspace", "", "version-pinned local stdio host context")
+	flags.StringVar(&c.HostExecutable, "host-executable", "", "explicit version-pinned Codex executable")
+	flags.StringVar(&c.HostVersion, "host-version", "", "verified Codex stdio version")
 	flags.StringVar(&c.ToolMode, "tool-mode", os.Getenv("MEMLANE_TOOL_MODE"), "optional initialization tool boundary")
 	flags.StringVar(&c.CallID, "call-id", "", "trusted Agent tool call ID")
 	flags.StringVar(&c.Channel, "usage-channel", os.Getenv("MEMLANE_USAGE_CHANNEL"), "daily or verification observations")
@@ -56,6 +63,9 @@ func run() int {
 		return 2
 	}
 	if flags.NArg() != 0 {
+		return 2
+	}
+	if c.HostWorkspace != "" && mode != "mcp" {
 		return 2
 	}
 	if err := c.Validate(); err != nil {

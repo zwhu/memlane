@@ -84,13 +84,21 @@ func (a *App) experienceCopyPreview(c *ui.Context) {
 		ui.Column(c).Key("experience-copy-destination-panel").Grow(1).MinWidth(0).Border(1, design.Border).Radius(7).Padding(16).Gap(12).Children(func() {
 			ui.Text(c, "将新增到：通用经验").FontSize(10).TextColor(design.Muted)
 			ui.Text(c, "标题").FontSize(11).TextColor(design.Muted)
-			ui.TextInput(c.Key("experience-copy-title"), &s.Title).Label("标题").Height(34).Disabled(s.Busy || s.Submitted)
+			if s.Submitted {
+				ui.Text(c, s.Title).Key("experience-copy-frozen-title").Selectable().LineHeight(1.7)
+			} else {
+				ui.TextInput(c.Key("experience-copy-title"), &s.Title).Label("标题").Height(34).Disabled(s.Busy)
+			}
 			ui.Text(c, "原文（保持一致）").FontSize(11).TextColor(design.Muted)
-			ui.Column(c).Padding(12).Border(1, design.Border).Radius(5).Children(func() {
+			ui.Scroll(c.Key("experience-copy-original-scroll")).Height(210).MinHeight(0).Padding(12).Border(1, design.Border).Radius(5).Children(func() {
 				ui.Text(c, s.Source.Text).Key("experience-copy-original").Selectable().LineHeight(1.8)
 			})
 			ui.Text(c, "适用条件").FontSize(11).TextColor(design.Muted)
-			ui.TextArea(c.Key("experience-copy-conditions"), &s.Conditions).Label("适用条件").Placeholder("说明哪些项目或情形适用；项目明确约定优先").Height(72).Disabled(s.Busy || s.Submitted)
+			if s.Submitted {
+				ui.Text(c, s.Conditions).Key("experience-copy-frozen-conditions").Selectable().LineHeight(1.7)
+			} else {
+				ui.TextArea(c.Key("experience-copy-conditions"), &s.Conditions).Label("适用条件").Placeholder("说明哪些项目或情形适用；项目明确约定优先").Height(72).Disabled(s.Busy)
+			}
 		})
 	}
 	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
@@ -182,7 +190,7 @@ func (a *App) confirmExperienceCopy() {
 				if r.ID != "" {
 					s.Receipt = &r
 				}
-				s.Error = "复制回执读取未完成，可以按同一请求重试：" + err.Error()
+				s.Error = "复制回执读取未完成，原请求已保留。请恢复服务后按同一请求重试，不会重复新建副本。"
 				return
 			}
 			s.Copy = nil

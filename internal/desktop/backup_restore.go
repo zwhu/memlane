@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/zwhu/memlane/internal/records"
 	"github.com/zwhu/memlane/internal/recoveryfiles"
+	"github.com/zwhu/memlane/internal/serviceipc"
 	"github.com/zwhu/memlane/internal/store"
 )
 
@@ -45,13 +46,23 @@ func (a *App) backupRestorePreview(c *ui.Context, r records.BackupReceipt) {
 		quietButton(c, "从此备份恢复…").Key("backup-restore-open-" + r.ID).Disabled(b.Busy || b.RestoreLocked || r.Verification == "invalid" || a.restoreBackup == nil).OnClick(func() { a.previewBackupRestore(r.ID) })
 		return
 	}
-	ui.Text(c, "恢复整个本机记忆库").Bold()
-	ui.Text(c, fmt.Sprintf("恢复到 %s 的 schema %d 快照。备份之后的更改保存在恢复前副本中；原文、来源与历史按该快照恢复。", r.CreatedAt, r.Schema)).TextColor(c.Theme().TextMuted)
-	ui.Text(c, "确认后停止服务与引擎，撤销旧 Agent 连接，停用全部整理计划和代码索引，待审核建议与未提交初始化失效。未确认草稿不会带入恢复后的记忆库。完成后 App 重新打开，服务保持停止；请明确启动并重新连接 Agent。").TextColor(c.Theme().TextMuted)
-	ui.Row(c).Gap(8).Children(func() {
-		quietButton(c, "确认恢复此备份").Key("backup-restore-confirm").Disabled(b.Busy).OnClick(a.confirmBackupRestore)
-		quietButton(c, "取消恢复").Key("backup-restore-dismiss").Disabled(b.Busy || b.RestoreLocked).OnClick(func() { b.RestoreSelection = records.BackupReceipt{}; b.RestoreOperation = "" })
+	a.backupRestoreDescription(c, r)
+	ui.Row(c).Gap(8).Children(func() { a.backupRestoreActions(c) })
+}
+
+func (a *App) backupRestoreDescription(c *ui.Context, r records.BackupReceipt) {
+	ui.Text(c, "恢复整个本机记忆库").FontSize(design.Heading).Bold()
+	ui.Text(c, fmt.Sprintf("恢复到 %s 的 schema %d 快照。备份之后的更改保存在恢复前副本中；原文、来源与历史按该快照恢复。", backupDisplayTime(r.CreatedAt), r.Schema)).TextColor(c.Theme().TextMuted)
+	a.maintenanceTechnicalDetails(c, "restore-preview:"+r.ID, func() {
+		ui.Text(c, "备份时间 · "+r.CreatedAt).FontSize(11).Selectable()
 	})
+	ui.Text(c, "确认后停止服务与引擎，撤销旧 Agent 连接，停用全部整理计划和代码索引，待审核建议与未提交初始化失效。未确认草稿不会带入恢复后的记忆库。完成后 App 重新打开，服务保持停止；请明确启动并重新连接 Agent。").TextColor(c.Theme().TextMuted)
+}
+
+func (a *App) backupRestoreActions(c *ui.Context) {
+	b := &a.backups
+	quietButton(c, "取消恢复").Key("backup-restore-dismiss").Disabled(b.Busy || b.RestoreLocked).OnClick(func() { b.RestoreSelection = records.BackupReceipt{}; b.RestoreOperation = "" })
+	actionButton(c, "确认恢复此备份", nil).Key("backup-restore-confirm").Disabled(b.Busy).OnClick(a.confirmBackupRestore)
 }
 
 func (a *App) previewBackupRestore(id string) {
@@ -117,12 +128,26 @@ func (a *App) confirmBackupRestore() {
 			if err != nil {
 				b.Notice = ""
 				b.Error = "恢复未完成，请核对停服状态；已有文件保留，再次确认沿用同一恢复 ID。原因：" + err.Error()
+				if a.noteLocalMaintenanceStorageError("restore", operation, operation, err) {
+					b.Error = maintenanceStorageMessage(serviceipc.StorageFailureCode(err)) + "恢复尚未完成，沿用原恢复 ID。"
+				}
 				return
 			}
 			b.LastRestore = r
+			a.retireAgentDelivery()
+			a.retireDeliveryAssignment()
+			a.libraryEpoch++
+			a.retireProjectPreference()
+			a.closeKnowledgeHistory()
+			a.retireMaintenanceRecoveryState()
+			a.retireGraphSubmissions()
+			a.usageEvents = UsageEventsUI{Sequence: a.usageEvents.Sequence + 1}
 			// The old library is already retired and its service stopped. Never
 			// flush an old draft into that library from OnBeforeQuit/Relaunch.
 			a.retireExperiencePreview()
+			a.retireMaterialPreview()
+			a.retireManualDrafts()
+			a.retireProjectCreation()
 			b.Notice = "恢复完成，服务保持停止 · " + r.ID
 			a.runtimeStatus = RuntimeStatus{Phase: "stopped", Message: "备份恢复完成，请明确启动服务并重新连接 Agent", Installed: true}
 			if a.reloadAfterBackup != nil {

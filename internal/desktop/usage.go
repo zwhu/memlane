@@ -92,16 +92,34 @@ func (a *App) usageDetail(c *ui.Context, v MemoryItem) {
 	ui.Column(c).Key("usage-detail").Gap(8).Children(func() {
 		ui.Text(c, "使用记录").Bold()
 		if v.Usage == nil {
-			ui.Text(c, "未知 · 尚未取得使用记录覆盖起点。").FontSize(design.Small).TextColor(design.Muted)
+			ui.Text(c, usageCoverageText(nil)).FontSize(design.Small).TextColor(design.Muted)
+			a.usageEventsPanel(c, v)
 			return
 		}
 		u := v.Usage
-		ui.Text(c, "采集自 "+time.UnixMilli(u.StartedMS).Local().Format("2006-01-02 15:04")+"；此前未知。近30天统计，详细事件保留90天。").FontSize(design.Small).TextColor(design.Muted)
-		meta(c, "日常Agent", fmt.Sprintf("成功读取%d · 检索返回%d · 报告采用%d", u.Daily.Reads, u.Daily.Returns, u.Daily.Adoptions))
-		meta(c, "App", fmt.Sprintf("浏览%d · 检索返回%d", u.App.Browses, u.App.Returns))
-		meta(c, "连接验证", fmt.Sprintf("读取%d · 返回%d", u.Verification.Reads, u.Verification.Returns))
-		meta(c, "后台整理", "次数未采集 · 冻结来源见整理记录")
-		ui.Text(c, "返回不代表采用。采用仅表示Agent明确报告；旧Agent未提供回执时采用仍未知。").FontSize(design.Small).TextColor(design.Muted)
+		ui.Text(c, usageCoverageText(u)).FontSize(design.Small).TextColor(design.Muted)
+		ui.Text(c, "日常 Agent · 三种事实分别记录").FontSize(12).Bold()
+		ui.Row(c).Gap(12).Children(func() {
+			for _, fact := range []struct {
+				label string
+				count int64
+			}{{"检索返回", u.Daily.Returns}, {"成功读取", u.Daily.Reads}, {"报告采用", u.Daily.Adoptions}} {
+				ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
+					ui.Text(c, fact.label).FontSize(design.Small).TextColor(design.Muted)
+					ui.Text(c, usageCountText(u.StartedMS > 0, fact.count)).FontSize(16).Bold()
+				})
+			}
+		})
+		meta(c, "App", "浏览"+usageCountText(u.StartedMS > 0, u.App.Browses)+" · 检索返回"+usageCountText(u.StartedMS > 0, u.App.Returns))
+		meta(c, "连接验证 · 单独统计", "读取"+usageCountText(u.StartedMS > 0, u.Verification.Reads)+" · 返回"+usageCountText(u.StartedMS > 0, u.Verification.Returns))
+		if u.BackgroundCollected {
+			meta(c, "后台整理", "读取"+usageCountText(u.StartedMS > 0, u.Background.Reads)+" · 返回"+usageCountText(u.StartedMS > 0, u.Background.Returns))
+		} else {
+			meta(c, "后台整理", "次数未采集 · 冻结来源见整理记录")
+		}
+		ui.Text(c, "App 浏览、连接验证不计为日常 Agent 读取。返回不代表采用；报告采用仅表示 Agent 明确报告，不核对实际代码修改；未报告的使用仍未知。").FontSize(design.Small).TextColor(design.Muted)
+
+		a.usageEventsPanel(c, v)
 		label := "标记重要"
 		if u.Important {
 			label = "取消重要标记"
@@ -113,4 +131,25 @@ func (a *App) usageDetail(c *ui.Context, v MemoryItem) {
 			}
 		}
 	})
+}
+
+func usageCountText(covered bool, count int64) string {
+	if !covered || count < 0 {
+		return "未知"
+	}
+	return fmt.Sprintf("%d 次", count)
+}
+func usageCoverageText(u *records.UsageInfo) string {
+	if u == nil || u.StartedMS <= 0 {
+		return "未知 · 尚未取得使用记录覆盖起点，不将未观测显示为零。"
+	}
+	window := "统计窗口未知"
+	retention := "详细事件保留期未知"
+	if u.WindowDays > 0 {
+		window = fmt.Sprintf("近%d天统计", u.WindowDays)
+	}
+	if u.RetentionDays > 0 {
+		retention = fmt.Sprintf("详细事件保留%d天", u.RetentionDays)
+	}
+	return "采集自 " + time.UnixMilli(u.StartedMS).Local().Format("2006-01-02 15:04") + "；此前未知。" + window + "，" + retention + "。当前范围内同条记录各版本合计。"
 }

@@ -9,11 +9,13 @@ import (
 // Presentation types carry service snapshots. They never fabricate persistence
 // or index status; the visual fixture is compiled only into e2e builds.
 type MemoryItem struct {
+	RawSource                                                                                     string
 	Origin                                                                                        string
 	Usage                                                                                         *records.UsageInfo
 	ID, Dataset, Title, Text, Original, Source, ScopeName, Category, State, IndexState, Operation string
 	Revision                                                                                      int64
 	CreatedAt                                                                                     time.Time
+	UpdatedAt                                                                                     time.Time
 	SourceDetail                                                                                  *records.AgentSource
 	Tags                                                                                          []string
 	Derived                                                                                       *records.DerivedInfo
@@ -30,23 +32,39 @@ type Draft struct {
 	Revision                       int64
 }
 
+// New drafts belong to the route where the user started composing. An
+// unrelated project must never inherit that draft or its save retry identity.
+func (a *App) newDraftKey() string {
+	return "new:" + a.scope
+}
+
 func (a *App) rememberDraft() {
 	if !a.editing {
 		return
 	}
 	key := a.selectedID
 	if a.detailMode == "new" {
-		key = "new"
+		key = a.newDraftKey()
 	}
 	d := a.drafts[key]
 	d.Title, d.Text, d.Scope = a.draftTitle, a.draft, a.draftScope
 	d.Conditions = a.draftConditions
 	a.drafts[key] = d
+	a.noteManualDraft(key)
 }
 
-type PaneState struct{ ID, Mode string }
+type PaneState struct {
+	ID, Mode, Kind string
+	BodyScroll     float32
+}
 
 func (a *App) navigate(page, scope string) {
+	if p := a.manualDrafts; p != nil && !p.Loaded {
+		p.Touched = true
+	}
+	if p := a.materialPersistence; p != nil && !p.Loaded {
+		p.Touched = true
+	}
 	if p := a.experiencePersistence; p != nil && !p.Loaded {
 		p.Touched = true
 	}
@@ -62,11 +80,15 @@ func (a *App) navigate(page, scope string) {
 	a.saveBrowsing()
 	a.rememberDraft()
 	if a.isMemoryPage() {
+		if a.readingFilterRoutes == nil {
+			a.readingFilterRoutes = map[string]ReadingFilterUI{}
+		}
+		a.readingFilterRoutes[a.page+":"+a.scope] = a.readingFilters
 		if a.readingQueries == nil {
 			a.readingQueries = map[string][2]string{}
 		}
 		a.readingQueries[a.page+":"+a.scope] = [2]string{a.readingSearch, a.readingFilter}
-		a.routeStates[a.page+":"+a.scope] = PaneState{a.selectedID, a.detailMode}
+		a.routeStates[a.page+":"+a.scope] = PaneState{ID: a.selectedID, Mode: a.detailMode, Kind: a.recordKind, BodyScroll: a.detailScroll.Y}
 	}
 	oldRoute := a.memoryRoute
 	if a.page != page || a.scope != scope {
@@ -82,6 +104,7 @@ func (a *App) navigate(page, scope string) {
 	if a.isMemoryPage() {
 		query := a.readingQueries[page+":"+scope]
 		a.readingSearch, a.readingFilter = query[0], query[1]
+		a.readingFilters = a.readingFilterRoutes[page+":"+scope]
 	}
 	if page != "总览" {
 		a.homeMotion = homeButtonMotion{}
@@ -100,12 +123,14 @@ func (a *App) navigate(page, scope string) {
 			a.selectedItem = nil
 			a.history = nil
 			a.detailMode = state.Mode
+			a.recordKind = state.Kind
+			a.detailScroll.Y = state.BodyScroll
 			if a.detailMode == "" {
 				a.detailMode = "view"
 			}
 			key := a.selectedID
 			if a.detailMode == "new" {
-				key = "new"
+				key = a.newDraftKey()
 			}
 			if draft, ok := a.drafts[key]; ok {
 				a.draftTitle, a.draft, a.draftScope = draft.Title, draft.Text, draft.Scope
@@ -122,22 +147,26 @@ func (a *App) navigate(page, scope string) {
 }
 
 func (a *App) newMemory() {
+	if p := a.manualDrafts; p != nil && !p.Loaded {
+		p.Info = "手动草稿待当前库核验恢复，完成后可新增；原草稿保留。"
+		return
+	}
 	a.closeProjectOrganizer()
 	a.closeProjectSettings()
 	a.rememberDraft()
 	a.message = ""
-	a.recordKind = "knowledge"
-	a.activityDate = ""
 	a.conflictCurrent = nil
-	if a.scope != "" {
-		a.page = "项目"
-	} else if a.page != "通用知识" {
-		a.page = "全部记忆"
+	// A new draft belongs to the current reading route. Its destination is
+	// chosen in the editor; it does not replace the search/list context.
+	switch a.page {
+	case "项目", "通用知识", "搜索":
+	default:
+		a.navigate("搜索", "")
 	}
 	a.memoryRoute = a.page + ":" + a.scope
 	a.detailMode = "new"
 	a.editing = true
-	d := a.drafts["new"]
+	d := a.drafts[a.newDraftKey()]
 	a.draftTitle, a.draft, a.draftScope = d.Title, d.Text, d.Scope
 	a.draftConditions = d.Conditions
 	if a.draftScope == "" {
@@ -154,8 +183,30 @@ func (a *App) newMemory() {
 			}
 		}
 	}
+	key := a.newDraftKey()
+	if p := a.manualDrafts; p != nil && p.Targets[key] == "" {
+		target := a.scope
+		if target == "" {
+			kind := "experience"
+			if a.commonCategory == "preference" {
+				kind = "preference"
+			}
+			for _, scope := range a.scopes {
+				if scope.Kind == kind {
+					target = scope.ID
+					a.draftScope = a.scopeLabel(scope.ID)
+					break
+				}
+			}
+		}
+		a.beginManualDraftTarget(key, target)
+	}
 }
 func (a *App) editMemory() {
+	if p := a.manualDrafts; p != nil && !p.Loaded {
+		p.Info = "手动草稿待当前库核验恢复，完成后可编辑；原草稿保留。"
+		return
+	}
 	item := a.current()
 	if item == nil {
 		return
@@ -181,6 +232,7 @@ func (a *App) editMemory() {
 	}
 	a.draftTitle, a.draft, a.draftScope = d.Title, d.Text, d.Scope
 	a.draftConditions = d.Conditions
+	a.beginManualDraftTarget(item.ID, item.Dataset)
 }
 func (a *App) scopeOptions() []string {
 	if len(a.scopes) > 0 {

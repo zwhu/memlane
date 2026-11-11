@@ -22,6 +22,9 @@ func (a *App) sourceReaderReturnLabel() string {
 
 func (a *App) selectSourceRecord(source records.OrganizationSource) {
 	s := &a.reader
+	if source.Memory == s.Query.Memory && source.Revision == s.Query.Revision && !sourceReaderCanRetry(*s) {
+		return
+	}
 	if s.Cancel != nil {
 		s.Cancel()
 	}
@@ -30,21 +33,33 @@ func (a *App) selectSourceRecord(source records.OrganizationSource) {
 	s.Result, s.Window, s.Search, s.Matches = records.SourceRecord{}, nil, "", nil
 	s.Match, s.FocusOffset, s.FocusLength = 0, 0, 0
 	s.Reveal, s.Scroll.Y = false, 0
-	s.Error, s.ErrorDetail, s.Loading, s.Technical = "", "", false, false
+	s.Error, s.ErrorDetail, s.ErrorCode, s.Loading, s.Technical = "", "", "", false, false
 	s.HadSessionOriginal = false
 	a.refreshSourceReader()
 }
 
 func (a *App) sourceReaderMessage() string {
 	s := &a.reader
+	if s.Loading {
+		return "正在核验来源与访问权限…"
+	}
 	if s.Error != "" {
 		return s.Error
 	}
 	if s.Result.State == "available" && s.Full && s.HadSessionOriginal && s.Result.SessionOriginal == nil {
+		switch s.Result.OriginalState {
+		case "source_changed", "owner_changed", "upstream_changed":
+			return "完整会话来源已变化，旧完整正文不可读。请返回知识核对同步；也可明确选择已核验的引用片段。"
+		case "upstream_unavailable":
+			return "完整会话来源缺失或尚无保存回执。请返回知识核对来源；也可明确选择已核验的引用片段。"
+		}
 		return "完整会话暂不可读取，已保留来源身份。可以核对引用片段，或重新读取完整会话。"
 	}
 	switch s.Result.State {
 	case "source_changed":
+		if s.Result.CurrentRevision < 1 {
+			return fmt.Sprintf("引用 v%d；当前来源版本未知或已失效，请返回知识核对来源。", s.Query.Revision)
+		}
 		return fmt.Sprintf("引用 v%d，当前 v%d 或已失效；来源身份保留，请核对当前来源。", s.Query.Revision, s.Result.CurrentRevision)
 	case "owner_changed":
 		return "所选知识已更新，请返回当前知识重新打开出处。"
@@ -61,6 +76,10 @@ func (a *App) sourceReaderMessage() string {
 // original text belong to the right pane and own their scrolling independently.
 func (a *App) sourceReader(c *ui.Context) {
 	s := &a.reader
+	if !s.Loading && sourceReaderPermissionBlocked(*s) {
+		a.sourceReaderPermissionPage(c)
+		return
+	}
 	baseAvailable := !s.Loading && s.Error == "" && s.Result.State == "available" && s.Window != nil
 	available := baseAvailable && !(s.Full && s.HadSessionOriginal && s.Result.SessionOriginal == nil)
 	ui.Column(c).Key("source-reader-layout").Grow(1).MinHeight(0).MinWidth(0).Children(func() {
@@ -85,6 +104,9 @@ func (a *App) sourceReader(c *ui.Context) {
 					button := quietButton(c, source.Input.Title).Key("source-reader-record-"+source.Memory).Tooltip(source.Input.Title).MaxWidth(230).Height(29).Padding(5, 9).Radius(5).Border(1, design.Border)
 					if s.Query.Memory == source.Memory {
 						button.Background(design.ListSelected)
+						if !sourceReaderCanRetry(*s) {
+							button.Disabled(true)
+						}
 					}
 					button.OnClick(func() { a.selectSourceRecord(source) })
 				}
@@ -120,7 +142,11 @@ func (a *App) sourceReader(c *ui.Context) {
 		bodyScroll.Children(func() {
 			if !available {
 				ui.Text(c, a.sourceReaderMessage()).Key("source-reader-state").FontSize(12).LineHeight(1.8)
-				quietButton(c, "重新读取").Key("source-reader-retry").Disabled(s.Loading).OnClick(a.refreshSourceReader)
+				if sourceReaderCanRetry(*s) {
+					quietButton(c, "重新读取").Key("source-reader-retry").Disabled(s.Loading).OnClick(a.refreshSourceReader)
+				} else if !s.Loading {
+					ui.Text(c, "当前状态不能原地重试；返回知识后核对版本或授权。").FontSize(10).TextColor(design.Muted)
+				}
 				if s.ErrorDetail != "" {
 					quietButton(c, "查看错误详情").Key("source-reader-technical").OnClick(func() { s.Technical = !s.Technical })
 					if s.Technical {
@@ -137,13 +163,30 @@ func (a *App) sourceReader(c *ui.Context) {
 			start, end := s.Window.Offsets[s.Window.Page], s.Window.Offsets[s.Window.Page+1]
 			if s.FocusLength > 0 && s.FocusOffset >= start && s.FocusOffset < end {
 				focusEnd := min(end, s.FocusOffset+s.FocusLength)
-				ui.Text(c, body[start:s.FocusOffset]).Key("source-reader-original").Selectable().LineHeight(1.85)
-				focus := ui.Text(c, body[s.FocusOffset:focusEnd]).Key("source-reader-focus").Selectable().LineHeight(1.85).Background(design.Heat[1])
-				if s.Reveal {
-					focus.ScrollIntoView()
-					s.Reveal = false
-				}
-				ui.Text(c, body[focusEnd:end]).Selectable().LineHeight(1.85)
+				// Inline children share one shaped paragraph, including original newlines.
+				// Reveal uses inline glyph bounds: SDK ScrollIntoView promotes an
+				// inline child to its whole paragraph, which loses long-paragraph hits.
+				ui.RichText(c).Key("source-reader-original").Selectable().LineHeight(1.85).Children(func() {
+					ui.Text(c, body[start:s.FocusOffset])
+					focus := ui.Text(c, body[s.FocusOffset:focusEnd]).Key("source-reader-focus-" + records.MergeDigest([]any{body[start:end], s.FocusOffset, s.FocusLength})).Label("原文当前匹配").Background(design.Heat[1])
+					if s.Reveal {
+						// Inline bounds are from the previous layout. A distinct match key
+						// waits one frame instead of using the previous match's geometry.
+						match, viewport := focus.LayoutBounds(), bodyScroll.LayoutBounds()
+						if s.RevealLayout && match.H > 0 && viewport.H > 0 {
+							if match.Y < viewport.Y+8 {
+								s.Scroll.Y += match.Y - (viewport.Y + 8)
+							} else if match.Y+match.H > viewport.Y+viewport.H-8 {
+								s.Scroll.Y += match.Y + match.H - (viewport.Y + viewport.H - 8)
+							}
+							s.Scroll.Y = max(0, s.Scroll.Y)
+							s.Reveal = false
+						}
+						s.RevealLayout = true
+						c.After(0)
+					}
+					ui.Text(c, body[focusEnd:end])
+				})
 			} else {
 				ui.Text(c, body[start:end]).Key("source-reader-original").Selectable().LineHeight(1.85)
 			}
@@ -170,6 +213,32 @@ func (a *App) sourceReader(c *ui.Context) {
 				quietButton(c, "复制全文").Key("source-reader-copy").Disabled(!available).OnClick(func() { c.WriteClipboard(s.Window.Body) })
 				quietButton(c, a.sourceReaderReturnLabel()).Key("source-reader-return").OnClick(a.returnFromSourceReader)
 			})
+		})
+	})
+}
+
+func sourceReaderPermissionBlocked(s SourceReaderUI) bool {
+	switch s.ErrorCode {
+	case "scope_denied", "permission_denied", "connection_revoked", "authorization_required", "cognee_authorization_required":
+		return true
+	}
+	return false
+}
+
+// The permission scene keeps the current common knowledge/project selection,
+// but shows no cached source title, paragraph, search controls or copy action.
+func (a *App) sourceReaderPermissionPage(c *ui.Context) {
+	ui.Column(c).Key("source-reader-permission").Grow(1).MinHeight(0).MinWidth(0).Children(func() {
+		ui.Scroll(c.Key("source-permission-body")).Grow(1).MinHeight(0).Padding(60, 24).Gap(24).Children(func() {
+			ui.Column(c).Width(68).Height(74).AlignItems(ui.Center).Justify(ui.Center).Border(1, design.Border).Radius(10).Background(design.Surface).Children(func() {
+				ui.Icon(c, icons["全部记忆"]).FontSize(25).TextColor(design.Muted)
+			})
+			ui.Text(c, "没有这个项目的访问权限").Key("source-permission-title").FontSize(design.Heading).Bold()
+			ui.Text(c, "来源关联仍保留，原文不在当前授权范围内。").FontSize(12).TextColor(design.Muted).LineHeight(1.8)
+		})
+		ui.Row(c).Shrink(0).Wrap().Padding(14, 24).Gap(10).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
+			ui.Text(c, "当前知识与选中结果保持").FontSize(10).TextColor(design.Muted).Grow(1).MinWidth(0)
+			quietButton(c, a.sourceReaderReturnLabel()).Key("source-reader-return").OnClick(a.returnFromSourceReader)
 		})
 	})
 }

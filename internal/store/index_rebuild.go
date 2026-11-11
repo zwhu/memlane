@@ -25,6 +25,9 @@ func (s *Store) StartIndexRebuild(ctx context.Context, start records.IndexRebuil
 	if err != nil || id.String() != start.OperationID {
 		return out, errors.New("canonical rebuild operation UUID required")
 	}
+	if start.RetryOf != "" {
+		return s.retryIndexRebuild(ctx, start)
+	}
 	if start.ProjectTask != "" || start.Attempt != 0 {
 		return s.startProjectIndexRecovery(ctx, start)
 	}
@@ -39,8 +42,16 @@ func (s *Store) StartIndexRebuild(ctx context.Context, start records.IndexRebuil
 		return out, err
 	}
 	defer tx.Rollback()
-	var scope string
-	err = tx.QueryRowContext(ctx, `SELECT scope FROM index_rebuilds WHERE id=?`, start.OperationID).Scan(&scope)
+	var scope, retry string
+	query := `SELECT scope FROM index_rebuilds WHERE id=?`
+	if s.Schema >= 25 {
+		query = `SELECT r.scope,coalesce(c.retry_of,'') FROM index_rebuilds r LEFT JOIN index_rebuild_controls c ON c.task=r.id WHERE r.id=?`
+	}
+	if s.Schema >= 25 {
+		err = tx.QueryRowContext(ctx, query, start.OperationID).Scan(&scope, &retry)
+	} else {
+		err = tx.QueryRowContext(ctx, query, start.OperationID).Scan(&scope)
+	}
 	if err == nil {
 		if s.Schema >= 20 {
 			var linked int
@@ -51,7 +62,7 @@ func (s *Store) StartIndexRebuild(ctx context.Context, start records.IndexRebuil
 				return out, ErrConflict
 			}
 		}
-		if scope != start.Scope {
+		if scope != start.Scope || retry != "" {
 			return out, ErrConflict
 		}
 		if err = tx.Rollback(); err != nil {
@@ -99,9 +110,21 @@ func (s *Store) StartIndexRebuild(ctx context.Context, start records.IndexRebuil
 		if _, err = tx.ExecContext(ctx, `UPDATE memories SET indexed_revision=0,generation='' WHERE id=?`, item.Memory); err != nil {
 			return out, err
 		}
-		result, e := tx.ExecContext(ctx, `UPDATE jobs SET state='pending',error='' WHERE memory=? AND revision=?`, item.Memory, item.Revision)
+		var result sql.Result
+		var e error
+		if s.Schema >= 25 {
+			e = s.queueRebuildIndexTx(ctx, tx, item.Memory, item.Revision, start.OperationID)
+			if e != nil {
+				return out, e
+			}
+		} else {
+			result, e = tx.ExecContext(ctx, `UPDATE jobs SET state='pending',error='' WHERE memory=? AND revision=?`, item.Memory, item.Revision)
+		}
 		if e != nil {
 			return out, e
+		}
+		if s.Schema >= 25 {
+			continue
 		}
 		n, e := result.RowsAffected()
 		if e != nil {
@@ -126,6 +149,12 @@ func (s *Store) IndexRebuild(ctx context.Context, id string) (records.IndexRebui
 	defer tx.Rollback()
 	if err = tx.QueryRowContext(ctx, `SELECT id,scope,created_at FROM index_rebuilds WHERE id=?`, id).Scan(&out.ID, &out.Scope, &out.CreatedAt); err != nil {
 		return out, err
+	}
+	if s.Schema >= 25 {
+		err = tx.QueryRowContext(ctx, `SELECT retry_of,cancelled FROM index_rebuild_controls WHERE task=?`, id).Scan(&out.RetryOf, &out.Cancelled)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return out, err
+		}
 	}
 	if s.Schema >= 20 {
 		err = tx.QueryRowContext(ctx, `SELECT task,attempt FROM project_index_recoveries WHERE operation=?`, id).Scan(&out.ProjectTask, &out.Attempt)
@@ -180,6 +209,8 @@ func (s *Store) IndexRebuild(ctx context.Context, id string) (records.IndexRebui
 		return out, err
 	}
 	switch {
+	case out.Cancelled:
+		out.State = "cancelled"
 	case queued > 0:
 		out.State = "running"
 	case failed > 0 && completed > 0:

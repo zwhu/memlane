@@ -483,6 +483,8 @@ func (m Manager) Create(ctx context.Context, id string, source func(context.Cont
 	if err = m.syncCatalogue(root, base); err != nil {
 		return out, err
 	}
-	snap, err := verified(ctx, base, id, vid)
+	// Publication is committed. A late cancellation must report the actual
+	// verified receipt instead of pretending the published snapshot was removed.
+	snap, err := verified(context.WithoutCancel(ctx), base, id, vid)
 	return snap.Receipt, err
 }

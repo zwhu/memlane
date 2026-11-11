@@ -104,6 +104,34 @@ func TestBackupRestorePreviewCancelConfirmationAndReceipt(t *testing.T) {
 	if strings.Contains(app.backups.Error, "服务保持停止") {
 		t.Fatal("failure text makes unproven stop claim")
 	}
+	// A genuine completion receipt enters the completion page, but a newly
+	// opened catalogue must not replay that historic completion as a new event.
+	completion := ui.NewTester(func(c *ui.Context) {
+		selection := app.backups.RestoreSelection
+		app.backups.RestoreSelection = records.BackupReceipt{}
+		app.maintenanceRestoreSummary(c)
+		app.backups.RestoreSelection = selection
+	}, 1200, 820)
+	if !completion.HasText("知识已恢复，服务保持停止") {
+		t.Fatal("current actual restore lost its completion page")
+	}
+	fresh := New("test", nil)
+	fresh.libraryContext = ctx
+	fresh.backups.Client = serviceipc.BackupClient{Root: root}
+	fresh.dispatch = func(fn func()) { updates <- fn }
+	fresh.refreshBackups()
+	next()
+	if fresh.backups.LastRestore.ID != app.backups.LastRestore.ID {
+		t.Fatal("history receipt missing from catalogue")
+	}
+	history := ui.NewTester(func(c *ui.Context) {
+		if !fresh.maintenanceRestoreSummary(c) {
+			fresh.backupBody(c, false)
+		}
+	}, 1200, 820)
+	if history.HasText("知识已恢复，服务保持停止") || !history.HasText("给知识留下可恢复的副本") {
+		t.Fatal("historic restore hijacked backup catalogue")
+	}
 	restored, err := store.Open(path)
 	if err != nil {
 		t.Fatal(err)

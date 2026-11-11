@@ -12,4 +12,4 @@ export GOTOOLCHAIN=local
 export CGO_ENABLED="${CGO_ENABLED:-0}"
 export PATH="$(dirname -- "$MEMLANE_GO"):$PATH"
 cd "$MEMLANE_ROOT"
-exec "$MEMLANE_GO" "$@"
+python3 "$MEMLANE_ROOT/scripts/task.py" -- "$MEMLANE_GO" "$@"

@@ -15,3 +15,9 @@ func (l Library) IndexRebuild(ctx context.Context, id string) (records.IndexRebu
 	err := Call(ctx, l.Root, Request{Op: "index_rebuild", IndexRebuildID: id}, &out)
 	return out, err
 }
+
+func (l Library) CancelIndexRebuild(ctx context.Context, id string) (records.IndexRebuild, error) {
+	var out records.IndexRebuild
+	err := Call(ctx, l.Root, Request{Op: "index_rebuild_cancel", IndexRebuildID: id, UserConfirmed: true}, &out)
+	return out, err
+}

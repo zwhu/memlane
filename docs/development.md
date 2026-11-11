@@ -482,3 +482,15 @@ CGO_ENABLED=1 sh scripts/go.sh test -race ./internal/store ./internal/daemon ./i
 ```
 
 Keychain 测试只写随机合成字节和独立 UUID，结束时精确删除；不得换成用户 Agent 或供应商密钥。HTTP 夹具只证明完整 Schema 请求、目录、重定向和取消边界，不代替真实 Provider/Magpie。接入 daemon 后还必须用新普通包和空合成根核对验证状态、取消、显式启用、重启失效和任务冻结；未打开实际 Native A/B 窗口前不得标新版 UI 通过。
+
+## 开发磁盘预算与临时文件（2026-11-10 用户要求）
+
+- 至少保留100 GiB可用空间。构建／测试前先检查并清理可再生缓存，不足则拒绝启动；受管任务运行中每2秒检查，低于105 GiB停止该任务，预留缓冲。其他程序仍可能并发占盘，此机制不声称能控制整台电脑的所有写入。
+- `sh scripts/go.sh ...` 和 `python3 scripts/build-client.py ...` 已接入预算。其他验收、组件打包、模型准备必须使用 `python3 scripts/task.py -- <命令及参数>`，禁止绕过门禁直接批量创建环境。
+- 每任务使用独立TMPDIR，命令结束自动移除临时目录。不要后台遗留子进程；启动服务的验收必须先停止自身拥有的服务再结束。报告、截图与小型回执放显式输出目录；引擎／模型／安装副本属于临时载荷，验收结束清理，不作为长期证据保存。
+- 可再生缓存任务后限制约8 GiB，启动前限制约10 GiB。`python3 scripts/disk-space.py --prune-history` 清理旧build与memlane临时目录中的大载荷，跳过活动目录、Git工作树和保留的最新包，留下清单。清理后的旧目录只是报告证据，不能再当完整可运行环境；应重建需要的组件。
+- 保留源码、原型工作树、报告和截图；不清理用户记忆库、用户Agent配置或其他软件文件。完整builder成功后更新build/disk-cleanup/retained-package.txt，仅保留最新成功包；任务结束也会清理旧验收大载荷。
+
+## 集中开发与问题闭环
+
+新增工作按 [工程规范](engineering/workflow.md) 执行，先写主流程用例，集中实现后统一集成；[清单](engineering/acceptance.md) 区分规范落稿、源码检查和实际运行证据。

@@ -27,13 +27,16 @@ type Connection struct {
 }
 
 type ConnectionDraft struct {
-	AutoProject   bool     `json:"auto_project,omitempty"`
-	Workspace     string   `json:"workspace,omitempty"`
-	ID            string   `json:"id,omitempty"`
-	Agent         string   `json:"agent"`
-	Name          string   `json:"name"`
-	Project       string   `json:"project,omitempty"`
-	AllowedScopes []string `json:"allowed_scopes"`
+	// ConnectionOnly registers an identity without granting access to memory.
+	// Project and common-knowledge authorization remain separate user actions.
+	ConnectionOnly bool     `json:"connection_only,omitempty"`
+	AutoProject    bool     `json:"auto_project,omitempty"`
+	Workspace      string   `json:"workspace,omitempty"`
+	ID             string   `json:"id,omitempty"`
+	Agent          string   `json:"agent"`
+	Name           string   `json:"name"`
+	Project        string   `json:"project,omitempty"`
+	AllowedScopes  []string `json:"allowed_scopes"`
 }
 
 // ConnectionScopeChange changes one project grant without replacing the
@@ -48,15 +51,17 @@ type ConnectionScopeChange struct {
 // Workspace comes from an explicit bridge binding or pi ctx.cwd, never a
 // model tool argument or the MCP process's current working directory.
 type AgentRequest struct {
-	ToolMode     string         `json:"tool_mode,omitempty"`
-	CallID       string         `json:"call_id,omitempty"`
-	Channel      string         `json:"usage_channel,omitempty"`
-	Protocol     int            `json:"protocol_version"`
-	ConnectionID string         `json:"connection_id"`
-	Generation   int64          `json:"generation"`
-	Workspace    string         `json:"workspace,omitempty"`
-	Tool         string         `json:"tool"`
-	Arguments    AgentArguments `json:"arguments"`
+	ExpectedLibraryID string              `json:"expected_library_id,omitempty"`
+	DeliveryGrant     *AgentDeliveryGrant `json:"delivery_grant,omitempty"`
+	ToolMode          string              `json:"tool_mode,omitempty"`
+	CallID            string              `json:"call_id,omitempty"`
+	Channel           string              `json:"usage_channel,omitempty"`
+	Protocol          int                 `json:"protocol_version"`
+	ConnectionID      string              `json:"connection_id"`
+	Generation        int64               `json:"generation"`
+	Workspace         string              `json:"workspace,omitempty"`
+	Tool              string              `json:"tool"`
+	Arguments         AgentArguments      `json:"arguments"`
 }
 
 type AgentArguments struct {

@@ -85,6 +85,11 @@ func TestFirstLaunchProcessingReusesLedgerAndRequiresExplicitActiveRevision(t *t
 	a.processing.Configuration.Saved["agent"] = revision
 	a.processing.Configuration.Current = records.ProcessingSelection{Active: true, Generation: 1, Revision: &revision}
 	a.processing.Drafts["agent"] = spec
+	if a.canCompleteFirstLaunch() {
+		t.Fatal("historical active ledger completed setup without fresh runtime readiness")
+	}
+	a.processing.Loaded = true
+	a.processing.Configuration.Runtime = map[string]records.ProcessingReadiness{revision.ID: {State: "ready"}}
 	tt = ui.NewTester(a.View, 1200, 820)
 	if !tt.HasText("pi · deepseek / deepseek-flash · 当前使用") {
 		t.Fatal("processing setup hid the current production-ledger selection")

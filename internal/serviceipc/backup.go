@@ -25,3 +25,14 @@ func (c BackupClient) Verify(ctx context.Context, id string) (records.BackupRece
 func (c BackupClient) Restores(ctx context.Context) ([]records.RestoreReceipt, error) {
 	return (recoveryfiles.RestoreManager{Root: c.Root}).List(ctx)
 }
+
+func (c BackupClient) Cancel(ctx context.Context, id string) (records.BackupOperation, error) {
+	var out records.BackupOperation
+	err := Call(ctx, c.Root, Request{Op: "backup_cancel", BackupID: id, UserConfirmed: true}, &out)
+	return out, err
+}
+func (c BackupClient) Status(ctx context.Context, id string) (records.BackupOperation, error) {
+	var out records.BackupOperation
+	err := Call(ctx, c.Root, Request{Op: "backup_status", BackupID: id}, &out)
+	return out, err
+}

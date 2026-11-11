@@ -471,24 +471,24 @@ func (r *RuntimeController) QuiesceForUpdate(ctx context.Context) (bool, error) 
 	wasRunning := err == nil && !stopped
 	if wasRunning {
 		if err = serviceipc.Call(ctx, root, serviceipc.Request{Op: "quiesce"}, nil); err != nil {
-			return false, err
+			return wasRunning, err
 		}
 	}
 	state, err := platform.ServiceStatus(r.Config.ServicePlist)
 	if err != nil {
-		return false, err
+		return wasRunning, err
 	}
 	if state == platform.Enabled || state == platform.RequiresApproval {
 		if err = platform.UnregisterService(r.Config.ServicePlist); err != nil {
-			return false, err
+			return wasRunning, err
 		}
 	}
 	if err = os.MkdirAll(root, 0700); err != nil {
-		return false, err
+		return wasRunning, err
 	}
 	lock, err := os.OpenFile(filepath.Join(root, ".service.lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
-		return false, err
+		return wasRunning, err
 	}
 	defer lock.Close()
 	for {
@@ -498,13 +498,13 @@ func (r *RuntimeController) QuiesceForUpdate(ctx context.Context) (bool, error) 
 			return wasRunning, nil
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
-			return false, err
+			return wasRunning, err
 		}
 		timer := time.NewTimer(50 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return false, ctx.Err()
+			return wasRunning, ctx.Err()
 		case <-timer.C:
 		}
 	}

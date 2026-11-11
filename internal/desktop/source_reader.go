@@ -2,12 +2,15 @@ package desktop
 
 import (
 	"context"
+	"errors"
+	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/zwhu/memlane/internal/records"
+	"github.com/zwhu/memlane/internal/serviceipc"
 )
 
 type SourceReaderUI struct {
@@ -18,6 +21,7 @@ type SourceReaderUI struct {
 	Result                   records.SourceRecord
 	Error, Search            string
 	ErrorDetail              string
+	ErrorCode                string
 	ReturnFocus              bool
 	HadSessionOriginal       bool
 	Sources                  []records.OrganizationSource
@@ -27,6 +31,7 @@ type SourceReaderUI struct {
 	Scroll                   ui.ScrollState
 	Cancel                   context.CancelFunc
 	FocusOffset, FocusLength int
+	RevealLayout             bool // Wait for current inline glyph layout before revealing a match.
 	Reveal                   bool
 }
 
@@ -71,33 +76,38 @@ func (a *App) openSourceReader(owner MemoryItem, source records.MergeTarget) {
 
 func (a *App) refreshSourceReader() {
 	s := &a.reader
-	if !s.Open || s.Loading || a.libraryContext == nil || a.libraryContext.Err() != nil {
+	if !s.Open || s.Loading || a.libraryContext == nil || a.libraryContext.Err() != nil || !sourceReaderCanRetry(*s) {
 		return
 	}
 	s.Sequence++
 	sequence, query := s.Sequence, s.Query
 	s.Loading = true
-	ctx, cancel := context.WithTimeout(a.libraryContext, 15*time.Second)
+	life, client, deliver, epoch := a.libraryContext, a.library, a.dispatch, a.libraryEpoch
+	ctx, cancel := context.WithTimeout(life, 15*time.Second)
 	s.Cancel = cancel
 	go func() {
 		defer cancel()
-		result, err := a.library.ReadSource(ctx, query)
-		if a.libraryContext.Err() != nil {
+		result, err := client.ReadSource(ctx, query)
+		if life.Err() != nil {
 			return
 		}
-		a.dispatch(func() {
+		deliver(func() {
 			s := &a.reader
-			if !s.Open || s.Sequence != sequence || s.Query != query {
+			if a.libraryEpoch != epoch || a.library.Root != client.Root || life.Err() != nil || !s.Open || s.Sequence != sequence || s.Query != query {
 				return
 			}
 			s.Loading, s.Cancel = false, nil
 			if err != nil {
 				s.Result, s.Window = records.SourceRecord{}, nil
-				s.Error = "原文读取未完成，请检查记忆服务与来源权限后重试。"
-				s.ErrorDetail = err.Error()
+				s.ErrorCode = sourceReaderErrorCode(err)
+				if a.runtimeStatus.Phase == "stopped" && s.ErrorCode == "service_unavailable" {
+					s.ErrorCode = "service_stopped"
+				}
+				s.Error = sourceReaderFailureMessage(s.ErrorCode)
+				s.ErrorDetail = "代码：" + s.ErrorCode
 				return
 			}
-			s.Error, s.ErrorDetail, s.Result = "", "", result
+			s.Error, s.ErrorDetail, s.ErrorCode, s.Result = "", "", "", result
 			if result.SessionOriginal != nil {
 				s.HadSessionOriginal = true
 			}
@@ -144,6 +154,7 @@ func (a *App) locateSourceOffset(offset int) {
 		s.FocusLength = len(s.Search)
 	}
 	s.Reveal = true
+	s.RevealLayout = false
 	s.Scroll.Y = 0
 }
 
@@ -165,4 +176,67 @@ func (a *App) searchSource() {
 	if len(s.Matches) > 0 {
 		a.locateSourceOffset(s.Matches[0])
 	}
+}
+
+// Only safe protocol codes enter presentation. Provider/transport error text
+// never becomes a source paragraph or a technical-details disclosure.
+func sourceReaderErrorCode(err error) string {
+	var remote *serviceipc.ServiceError
+	if errors.As(err, &remote) && remote.Code != "" {
+		switch remote.Code {
+		case "scope_denied", "permission_denied", "connection_revoked", "authorization_required", "cognee_authorization_required", "invalid_provenance", "not_found", "source_not_found", "original_unavailable", "version_changed", "stale_source", "scope_changed", "service_stopped", "service_unavailable", "cognee_unavailable", "service_error", "timeout", "deadline_exceeded", "index_unavailable":
+			return remote.Code
+		}
+		return "source_read_failed"
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return "permission_denied"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "cancelled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return "service_unavailable"
+}
+func sourceReaderFailureMessage(code string) string {
+	switch code {
+	case "scope_denied", "permission_denied", "connection_revoked", "authorization_required", "cognee_authorization_required":
+		return "当前来源访问权限不足或已撤销。请返回知识，确认项目授权后重新打开。"
+	case "invalid_provenance", "not_found", "source_not_found", "original_unavailable":
+		return "来源身份缺失或无法核验。引用关系保留，请返回知识核对来源。"
+	case "version_changed", "stale_source", "scope_changed":
+		return "知识或来源版本已经变化。请返回知识，核对当前版本后重新打开出处。"
+	case "service_stopped":
+		return "记忆服务已停止。请先查看服务状态，明确启动后重新打开出处。"
+	case "cancelled":
+		return "本次原文读取已取消，请返回知识后重新打开。"
+	case "source_read_failed":
+		return "原文读取失败，原因尚未确认。可以重新读取，旧来源正文保持不可读。"
+	case "timeout", "deadline_exceeded":
+		return "原文读取超时，尚未确认来源内容。可以重新读取。"
+	default:
+		return "原文服务暂不可用，尚未确认来源内容。可以重新读取。"
+	}
+}
+func sourceReaderCanRetry(s SourceReaderUI) bool {
+	if s.Loading {
+		return false
+	}
+	switch s.ErrorCode {
+	case "scope_denied", "permission_denied", "connection_revoked", "authorization_required", "cognee_authorization_required", "invalid_provenance", "not_found", "source_not_found", "original_unavailable", "version_changed", "stale_source", "scope_changed", "service_stopped", "cancelled":
+		return false
+	}
+	if s.Full && s.HadSessionOriginal && s.Result.SessionOriginal == nil {
+		switch s.Result.OriginalState {
+		case "source_changed", "owner_changed", "upstream_changed", "upstream_unavailable":
+			return false
+		}
+	}
+	switch s.Result.State {
+	case "source_changed", "owner_changed", "upstream_changed", "upstream_unavailable":
+		return false
+	}
+	return true
 }

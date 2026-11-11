@@ -16,11 +16,16 @@ import (
 	"github.com/zwhu/memlane/internal/records"
 )
 
-type PiBinding struct {
+type Binding struct {
+	Codex                        *agents.CodexCompletionBinding `json:"-"`
+	DependencyParts              map[string]string              `json:"-"` // service memory only; never persisted or returned
 	Spec                         records.ProcessingSpec
 	Executable, AuthHome, Helper string
 	AgentVersion, Dependency     string
 }
+
+// PiBinding remains a source-compatible alias for the existing pi adapter.
+type PiBinding = Binding
 
 // Dependency hashes only enter the service-owned capability ledger. Neither
 // credential values nor original provider files are stored in it or returned.
@@ -55,10 +60,11 @@ func ResolvePi(ctx context.Context, clientRoot, serviceRoot, helper string, spec
 		return out, records.MergeError("invalid_dependency")
 	}
 	i, err := agents.LoadInstallation(clientRoot, spec.Connection)
+	verification, verified := agents.ConnectionVerification(i, spec.ConnectionGeneration)
 	if err != nil || i.Connection.ID != spec.Connection || i.Connection.Agent != "pi" ||
 		!i.Connection.Enabled || i.Connection.Generation != spec.ConnectionGeneration ||
 		i.ToolsetVersion != 2 ||
-		i.VerifiedGeneration != spec.ConnectionGeneration || i.VerifiedAt == "" || i.VerificationError != "" ||
+		!verified ||
 		i.Options.ClientRoot != clientRoot || i.Options.ServiceRoot != serviceRoot || i.Options.Bridge == "" ||
 		!filepath.IsAbs(i.Options.PiDirectory) || !filepath.IsAbs(i.Options.AgentPath) {
 		return out, records.MergeError("connection_verification_required")
@@ -77,16 +83,21 @@ func ResolvePi(ctx context.Context, clientRoot, serviceRoot, helper string, spec
 		return out, records.MergeError("unsupported_schema_binding")
 	}
 	dependencies := []string{"memlane-pi-completion-v1", records.MergeDigest(spec), probe.Version,
-		i.Options.AgentPath, i.Options.PiDirectory, helper, i.ExtensionHash, i.VerifiedAt}
+		i.Options.AgentPath, i.Options.PiDirectory, helper, i.ExtensionHash, verification}
+	parts := map[string]string{}
+	for index, name := range []string{"adapter_protocol", "processing_configuration", "agent_version", "agent_executable", "agent_configuration_directory", "helper_executable", "extension", "connection_verification"} {
+		parts[name] = records.MergeDigest(dependencies[index])
+	}
 	for _, name := range []string{"settings.json", "models.json", "auth.json"} {
 		digest, err := fileDigest(filepath.Join(i.Options.PiDirectory, name), name != "settings.json")
 		if err != nil {
 			return out, err
 		}
 		dependencies = append(dependencies, name, digest)
+		parts[name] = digest
 	}
 	out = PiBinding{Spec: spec, Executable: i.Options.AgentPath, AuthHome: i.Options.PiDirectory,
-		Helper: helper, AgentVersion: probe.Version, Dependency: records.MergeDigest(dependencies)}
+		DependencyParts: parts, Helper: helper, AgentVersion: probe.Version, Dependency: records.MergeDigest(dependencies)}
 	return out, nil
 }
 

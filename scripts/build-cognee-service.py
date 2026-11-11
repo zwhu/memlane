@@ -45,7 +45,7 @@ def main():
     parser.add_argument("--report-out",type=Path,default=ROOT/"build/onboarding-memory-validation")
     args=parser.parse_args()
     source_hashes = {name: hashlib.sha256((ROOT / "engine/python" / name).read_bytes()).hexdigest()
-                     for name in ("cognee_service.py", "cognee_browsing.py")}
+                     for name in ("cognee_service.py", "cognee_browsing.py", "cognee_submission.py", "cognee_processing_adapter.py", "cognee_grounded_graph.py", "cognee_grounding_audit.py")}
     # Cognee's wheel bundles the matching Ladybug JSON extension. PyInstaller
     # discovers the worker Python modules but does not include this data file.
     # Ship the pinned macOS arm64 resource so a fresh private HOME never needs
@@ -62,7 +62,7 @@ def main():
            "HF_HUB_OFFLINE": "1", "COGNEE_TRACING_ENABLED": "false", "TELEMETRY_DISABLED": "true",
            "LITELLM_LOCAL_MODEL_COST_MAP": "true", "SYSTEM_ROOT_DIRECTORY": str(build / "system"),
            "DATA_ROOT_DIRECTORY": str(build / "raw"), "CACHE_ROOT_DIRECTORY": str(build / "cache"),
-           "LOGS_ROOT_DIRECTORY": str(build / "logs")}
+           "LOGS_ROOT_DIRECTORY": str(build / "logs"), "COGNEE_LOGS_DIR": str(build / "logs")}
     encoding_cache = build / "tiktoken-cache"
     encoding_cache.mkdir(exist_ok=True)
     env["TIKTOKEN_CACHE_DIR"] = str(encoding_cache)
@@ -73,6 +73,8 @@ def main():
                "--workpath", str(build / "work"), "--specpath", str(build),
                "--paths", str(ROOT / "engine/python")]
     command += ["--add-data", str(encoding_cache) + ":tiktoken-cache", "--hidden-import", "tiktoken_ext.openai_public"]
+    for module in ("cognee_grounded_graph", "cognee_grounding_audit"):
+        command += ["--hidden-import", module]
     command += ["--add-data", str(extension) + ":cognee_db_workers/ladybug_extensions/v0.19.0/osx_arm64"]
     for module in ("cognee", "fastembed", "litellm", "uvicorn", "fastapi", "lancedb", "lance", "onnxruntime", "tokenizers", "sqlalchemy", "aiosqlite", "alembic", "ladybug", "kuzu", "tiktoken", "tiktoken_ext"):
         command += ["--collect-all", module]
@@ -88,13 +90,32 @@ def main():
     bundled = args.out.resolve() / "memlane-cognee-service/_internal/cognee_db_workers/ladybug_extensions/v0.19.0/osx_arm64/libjson.lbug_extension"
     if result.returncode == 0 and (not bundled.is_file() or native_sections(bundled) != native_sections(extension)):
         raise RuntimeError("frozen service lost the matching offline JSON extension")
+    bundled_modules = []
     if result.returncode == 0:
+        # Inspect the shipped executable, rather than a reusable build cache.
+        required_modules = [Path(name).stem for name in source_hashes if name != "cognee_service.py"]
+        inspect_archive = """import json,sys
+from PyInstaller.archive.readers import CArchiveReader, PKG_ITEM_PYZ
+archive=CArchiveReader(sys.argv[1])
+names=[name for name,entry in archive.toc.items() if entry[-1]==PKG_ITEM_PYZ]
+assert len(names)==1, 'expected one embedded Python archive'
+modules=archive.open_embedded_archive(names[0]).toc
+required=json.loads(sys.argv[2])
+assert all(name in modules for name in required), 'frozen Memlane module missing'
+print(json.dumps(required))
+"""
+        binary = args.out.resolve() / "memlane-cognee-service/memlane-cognee-service"
+        bundled_modules = json.loads(subprocess.check_output(
+            [str(ROOT / ".local/cognee-python/bin/python"), "-c", inspect_archive, str(binary), json.dumps(required_modules)],
+            env=env, text=True))
         original_dependencies = subprocess.check_output(["otool", "-L", str(extension)], text=True).splitlines()[1:]
         bundled_dependencies = subprocess.check_output(["otool", "-L", str(bundled)], text=True).splitlines()[1:]
         if original_dependencies != bundled_dependencies:
             raise RuntimeError("frozen JSON extension changed its native library dependencies")
         subprocess.run(["codesign", "--verify", "--strict", str(bundled)], check=True, capture_output=True)
     (out / "cognee-service-build-result.json").write_text(json.dumps({"exit": result.returncode, "command": command,
+        "source_sha256": source_hashes,
+        "verified_embedded_modules": bundled_modules,
         "entry_sha256": hashlib.sha256((ROOT / "engine/python/cognee_service.py").read_bytes()).hexdigest(),
         "adapter_sha256": hashlib.sha256((ROOT / "engine/python/cognee_browsing.py").read_bytes()).hexdigest(),
         "ladybug_json_extension_source_sha256": extension_sha, "ladybug_json_extension_source_bytes": extension.stat().st_size,

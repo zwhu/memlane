@@ -53,7 +53,7 @@ func reviewOrganizationFixture(t *testing.T, s *Store, action string) (records.O
 	if task.State != "completed" || task.Entries[0].State != "review_pending" || organizationCount(t, s, `SELECT count(*) FROM memories`) != 2 {
 		t.Fatal("proposal changed knowledge", task)
 	}
-	return task, records.OrganizationReview{Task: task.ID, Item: task.Entries[0].ID, Digest: records.MergeDigest(item), Receipt: uuid.NewString(), Confirm: true}
+	return task, records.OrganizationReview{Task: task.ID, Item: task.Entries[0].ID, Digest: records.MergeDigest(item), Receipt: uuid.NewString(), Confirm: true, MoveScopeAccepted: action == "move"}
 }
 
 func TestOrganizationReviewActionsAndReplay(t *testing.T) {
@@ -121,6 +121,7 @@ func TestOrganizationReviewRejectExpiryAndRollback(t *testing.T) {
 			switch mode {
 			case "reject":
 				d.Confirm = false
+				d.MoveScopeAccepted = false
 				done, e := s.ReviewOrganization(mergeCtx, d)
 				mustMerge(t, e)
 				if done.Entries[0].State != "rejected" {

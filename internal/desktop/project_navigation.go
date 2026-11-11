@@ -72,12 +72,16 @@ func (a *App) projectNavigation(c *ui.Context, p ProjectItem) {
 		row.Background(ui.Hex("#dfe9f4"))
 	}
 	row.Children(func() {
-		ui.Button(c, "").Key("project-open-"+p.ID).Label(p.Name).Tooltip(p.Name).Grow(1).MinWidth(0).Height(34).Padding(8, 12).Justify(ui.Start).Gap(10).BorderWidth(0).Background(ui.Transparent).Children(func() {
+		open := ui.Button(c, "").Key("project-open-"+p.ID).Label(p.Name).Tooltip(p.Name).Grow(1).MinWidth(0).Height(34).Padding(8, 12).Justify(ui.Start).Gap(10).BorderWidth(0).Background(ui.Transparent).Children(func() {
 			if !a.collapsed {
 				ui.Icon(c, icons["项目"]).FontSize(design.Icon).TextColor(design.Muted)
 			}
 			ui.Text(c, p.Name).SingleLine().MinWidth(0)
 		}).OnClick(func() { a.navigate("项目", p.ID) })
+		if a.projectCreation.ReturnFocus && a.projectCreation.ReturnPage == "项目" && a.projectCreation.ReturnScope == p.ID {
+			open.Focus()
+			a.projectCreation.ReturnFocus = false
+		}
 		more := ui.Button(c, "⋯").Key("project-menu-"+p.ID).Label("项目菜单："+p.Name).Size(24, 28).Padding(0).BorderWidth(0).Background(ui.Transparent)
 		if a.projectOrganizer.ReturnFocus && a.projectOrganizer.Project == p.ID && !a.projectKnowledgeEmpty() {
 			more.Focus()

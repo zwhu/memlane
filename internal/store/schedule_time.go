@@ -16,7 +16,10 @@ func validateScheduleSpec(spec records.ScheduleSpec) error {
 	if _, err := uuid.Parse(spec.Project); err != nil {
 		return invalid
 	}
-	if spec.Executor != "traex" || len(spec.Model) > 128 || spec.Model != strings.TrimSpace(spec.Model) || strings.ContainsAny(spec.Model, "\n\r\t") || spec.MaterialLimit < 1 || spec.MaterialLimit > 16 || spec.WindowMinutes < 1 || spec.WindowMinutes > 1440 || len(spec.Destinations) > 8 || !spec.Review && (spec.Global || len(spec.Destinations) > 0) {
+	if (spec.Executor != "traex" && spec.Executor != "processing") || len(spec.Model) > 128 || spec.Model != strings.TrimSpace(spec.Model) || strings.ContainsAny(spec.Model, "\n\r\t") || spec.MaterialLimit < 1 || spec.MaterialLimit > 16 || spec.WindowMinutes < 1 || spec.WindowMinutes > 1440 || len(spec.Destinations) > 8 || !spec.Review && (spec.Global || len(spec.Destinations) > 0) {
+		return invalid
+	}
+	if spec.Executor == "traex" && spec.Processing != nil {
 		return invalid
 	}
 	if spec.Timezone == "" || spec.Timezone == "Local" {

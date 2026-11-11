@@ -24,7 +24,7 @@ func scheduleTx(ctx context.Context, tx *sql.Tx, id string) (records.Schedule, e
 	return plan, err
 }
 
-func (s *Store) PutSchedule(ctx context.Context, d records.ScheduleDraft, now time.Time) (records.Schedule, error) {
+func (s *Store) PutSchedule(ctx context.Context, d records.ScheduleDraft, now time.Time, dependencies ...string) (records.Schedule, error) {
 	var empty records.Schedule
 	if s.Schema < 7 || d.ExpectedGeneration < 0 || strings.TrimSpace(d.OperationID) == "" || len(d.OperationID) > 128 {
 		return empty, records.MergeError("invalid_request")
@@ -80,6 +80,33 @@ func (s *Store) PutSchedule(ctx context.Context, d records.ScheduleDraft, now ti
 	}
 	if err == sql.ErrNoRows && d.ExpectedGeneration != 0 || err == nil && old.Generation != d.ExpectedGeneration {
 		return empty, ErrConflict
+	}
+	if d.Spec.Executor == "processing" {
+		if d.Processing != nil {
+			if len(dependencies) != 1 {
+				return empty, records.MergeError("verification_required")
+			}
+			frozen, e := freezeProcessingTx(ctx, tx, dependencies[0], now)
+			if e != nil {
+				return empty, e
+			}
+			if frozen.SelectionGeneration != d.Processing.Generation || frozen.Revision.ID != d.Processing.Revision {
+				return empty, ErrConflict
+			}
+			d.Spec.Processing = &frozen
+		} else {
+			// Editing timing or explicitly enabling retains this plan's executor;
+			// client-supplied snapshots cannot introduce a new paid binding.
+			if old.Spec.Processing == nil || records.MergeDigest(d.Spec.Processing) != records.MergeDigest(old.Spec.Processing) {
+				return empty, records.MergeError("configuration_required")
+			}
+			d.Spec.Processing = old.Spec.Processing
+		}
+		if d.Spec.Model != "" {
+			return empty, records.MergeError("invalid_request")
+		}
+	} else if d.Processing != nil {
+		return empty, records.MergeError("invalid_request")
 	}
 	if d.Enabled {
 		var busy bool
@@ -218,4 +245,23 @@ func (s *Store) ScheduleRuns(ctx context.Context, id string) ([]records.Schedule
 		out = append(out, run)
 	}
 	return out, rows.Err()
+}
+
+// ReplaySchedule resolves a lost save reply without contacting the paid runtime
+// or reviving a plan that has since been disabled.
+func (s *Store) ReplaySchedule(ctx context.Context, d records.ScheduleDraft) (records.Schedule, bool, error) {
+	var out records.Schedule
+	var digest, receipt string
+	err := s.DB.QueryRowContext(ctx, `SELECT digest,receipt FROM organization_plan_operations WHERE id=?`, d.OperationID).Scan(&digest, &receipt)
+	if err == sql.ErrNoRows {
+		return out, false, nil
+	}
+	if err != nil {
+		return out, false, err
+	}
+	if digest != records.MergeDigest(d) {
+		return out, true, ErrConflict
+	}
+	err = json.Unmarshal([]byte(receipt), &out)
+	return out, true, err
 }

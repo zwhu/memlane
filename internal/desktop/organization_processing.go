@@ -2,14 +2,13 @@ package desktop
 
 import (
 	"context"
-	"time"
 
 	"github.com/zwhu/memlane/internal/records"
 )
 
 func organizationProcessingAvailable(c records.ProcessingConfiguration) bool {
 	v := c.Current.Revision
-	return c.Current.Active && v != nil && v.Spec.Mode == "agent" && v.Spec.Agent == "pi" && v.Validation != nil && v.Validation.State == "succeeded" && !v.Validation.CancelRequested
+	return c.Current.Active && v != nil && c.Runtime[v.ID].State == "ready" && v.Spec.Mode == "agent" && v.Spec.Agent == "pi" && v.Validation != nil && v.Validation.State == "succeeded" && !v.Validation.CancelRequested
 }
 
 // The picker reads the existing settings ledger. Drawing a page, choosing
@@ -23,7 +22,7 @@ func (a *App) refreshOrganizationProcessing() {
 	s.ProcessingSequence++
 	sequence, epoch, life, library := s.ProcessingSequence, s.Epoch, a.libraryContext, a.library
 	go func() {
-		ctx, stop := context.WithTimeout(life, 5*time.Second)
+		ctx, stop := context.WithTimeout(life, processingRuntimeMetadataTimeout)
 		defer stop()
 		configuration, err := library.ProcessingConfiguration(ctx)
 		if life.Err() != nil {
@@ -35,6 +34,7 @@ func (a *App) refreshOrganizationProcessing() {
 			}
 			s.ProcessingLoading = false
 			if err != nil {
+				s.ProcessingLoaded = false
 				s.ProcessingError = "记忆处理方式读取未完成，保留本次材料；请重试。"
 				return
 			}
