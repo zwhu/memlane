@@ -1,5 +1,0 @@
-Lesson-Type: state
-State-Key: test-baseline
-# Session learning (session codex_01a1ce9c-2a72-7983-8a63-c1f6f488a656)
-
-`python -m unittest -v` passes all 9 tests in `test_inventory.py`, with 0 failures.

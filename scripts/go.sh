@@ -11,5 +11,11 @@ export GOCACHE="$MEMLANE_ROOT/.cache/go-build"
 export GOTOOLCHAIN=local
 export CGO_ENABLED="${CGO_ENABLED:-0}"
 export PATH="$(dirname -- "$MEMLANE_GO"):$PATH"
+# Build archives contain historical Go snippets, not active application packages.
+# A nested module boundary preserves those artifacts while excluding them from ./....
+mkdir -p "$MEMLANE_ROOT/build"
+if [ ! -e "$MEMLANE_ROOT/build/go.mod" ]; then
+    printf 'module memlane.local/build-artifacts\n\ngo 1.27.3\n' > "$MEMLANE_ROOT/build/go.mod"
+fi
 cd "$MEMLANE_ROOT"
 python3 "$MEMLANE_ROOT/scripts/task.py" -- "$MEMLANE_GO" "$@"

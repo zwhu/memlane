@@ -2,7 +2,7 @@
 
 2026-11-12。当前界面按[精简版规格](client-simplification-spec-20261112.md)与[技术方案](client-simplification-technical-plan-20261112.md)收口。用户要求将已砍掉功能从设计中删除；本文件不再要求还原旧全量功能。
 
-当前入口为[设计目录](ui-redesign/design-catalog.md)、[界面交接](ui-redesign/full-design-handoff.md)和[精简版原型](../build/p3-prototype/prototypes/client-simplification-20261112/index.html)。设计示例不代表真实接入或生产交付。本轮清理不恢复暂停的生产开发。
+当前入口为[设计目录](ui-redesign/design-catalog.md)、[界面交接](ui-redesign/full-design-handoff.md)和[精简版原型](../build/p3-prototype/prototypes/client-simplification-20261112/index.html)。设计示例不代表真实接入或生产交付。2026-11-13仅本次精简版已转入dev实施，历史全量Goal保持暂停；真实交付状态见[执行记录](engineering/client-simplification-execution-20261113.md)。
 
 ## 视觉与布局
 

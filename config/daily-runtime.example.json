@@ -1,0 +1,18 @@
+{
+  "official_data": "/absolute/existing/official/cognee",
+  "official_source": "/absolute/fixed/upstream/source",
+  "official_archive": "/absolute/fixed/upstream/archive.tar.gz",
+  "service_commit": "ec6f40859e5f2df9e7862dde27d580ac3268ed43",
+  "python": "/absolute/existing/python",
+  "service_url": "http://127.0.0.1:61255",
+  "completion_url": "http://127.0.0.1:18173",
+  "token_file": "/absolute/private/official.token",
+  "completion_token_file": "/absolute/private/completion.token",
+  "service_environment_file": "/absolute/private/service-environment.json",
+  "codex_executable": "/absolute/installed-codex-native-binary",
+  "auth_home": "/absolute/existing/codex/home",
+  "model": "gpt-6.1-sol",
+  "graph_assets": "/absolute/web/official-graph/dist",
+  "projects": [],
+  "common_datasets": []
+}

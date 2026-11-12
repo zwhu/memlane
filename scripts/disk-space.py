@@ -17,6 +17,53 @@ RETAINED = ROOT / 'build/disk-cleanup/retained-package.txt'
 DEPENDENCIES = ROOT / 'build/disk-cleanup/retained-dependencies.txt'
 
 
+def retained_dependencies():
+    """Protect explicit runtime references even when ps only shows --config.
+
+    Resolve aliases before comparing paths. A candidate containing a dependency
+    is protected as a whole: its surrounding runtime resources may be required
+    too. Invalid existing configuration fails closed before any deletion.
+    """
+    protected = []
+    if DEPENDENCIES.exists():
+        protected.extend(Path(line.strip()).expanduser().resolve()
+                         for line in DEPENDENCIES.read_text().splitlines() if line.strip())
+    config_path = ROOT / '.local/daily/runtime.json'
+    if config_path.exists():
+        try:
+            config = json.loads(config_path.read_text())
+            protected.append(config_path.resolve())
+            for key in ('official_data', 'official_source', 'official_archive', 'python',
+                        'graph_assets', 'service_environment_file', 'token_file',
+                        'completion_token_file', 'codex_executable', 'auth_home'):
+                value = config.get(key)
+                if value:
+                    path = Path(value).expanduser()
+                    if not path.is_absolute():
+                        raise ValueError('runtime dependency must be absolute')
+                    protected.append(path.resolve())
+            environment_path = config.get('service_environment_file')
+            if environment_path:
+                environment = json.loads(Path(environment_path).expanduser().read_text())
+                for key in ('HF_HOME', 'ENOLA_PATH', 'TIKTOKEN_CACHE_DIR'):
+                    value = environment.get(key)
+                    if value:
+                        path = Path(value).expanduser()
+                        if not path.is_absolute():
+                            raise ValueError('component dependency must be absolute')
+                        protected.append(path.resolve())
+        except (OSError, ValueError, TypeError, AttributeError):
+            # Never include configuration contents or credentials in errors.
+            raise RuntimeError('daily runtime dependencies unavailable; cleanup refused') from None
+    return protected
+
+
+def protected_path(path, dependencies):
+    path = path.resolve()
+    return any(path == dependency or path in dependency.parents or dependency in path.parents
+               for dependency in dependencies)
+
+
 def active_arguments():
     return subprocess.check_output(['ps', '-axo', 'pid=,args='], text=True).splitlines()
 
@@ -46,13 +93,7 @@ def prune_history():
     if RETAINED.exists():
         candidate = Path(RETAINED.read_text().strip()).resolve()
         if ROOT / 'build' in candidate.parents and candidate.is_dir(): keep = candidate
-    protected = worktrees() + [keep]
-    if DEPENDENCIES.exists():
-        for line in DEPENDENCIES.read_text().splitlines():
-            if not line.strip(): continue
-            dependency = Path(line.strip()).resolve()
-            if ROOT / 'build' in dependency.parents:
-                protected.append(dependency)
+    protected = [p.resolve() for p in worktrees() + [keep]] + retained_dependencies()
     # A LaunchAgent may expose only "memlaned" in ps. Its mapped executable
     # still owns its bundle, including after a package was moved or aliased.
     mapped = subprocess.run(['/usr/sbin/lsof', '-n', '-P', '-a', '-c', 'memlane', '-d', 'txt', '-Fn'], capture_output=True, text=True)
@@ -63,12 +104,12 @@ def prune_history():
             if parent.suffix == '.app' and ROOT / 'build' in parent.parents:
                 protected.append(parent)
                 break
-    targets = [p for p in (ROOT / 'build').iterdir() if p.is_dir() and not p.is_symlink() and not any(p == x or p in x.parents for x in protected)]
+    targets = [p for p in (ROOT / 'build').iterdir() if p.is_dir() and not p.is_symlink()]
     tmp = Path(tempfile.gettempdir())
     targets += [p for p in tmp.glob('memlane-*') if p.is_dir() and not p.is_symlink()]
     removed, skipped, logical, bundles = [], [], 0, []
     for target in targets:
-        if busy(target, processes):
+        if protected_path(target, protected) or busy(target, processes):
             skipped.append(str(target)); continue
         # Preserve evidence/source/configuration, remove only large regenerable payloads.
         for base, dirs, files in os.walk(target, followlinks=False):
@@ -90,6 +131,7 @@ def prune_history():
 
 
 def trim_caches(limit):
+    protected = retained_dependencies()
     processes = active_arguments()
     # Do not race a compiler/worker from another terminal.
     if any(len(s.split(None, 2)) >= 2 and s.split(None, 2)[1].startswith(str(ROOT)) and Path(s.split(None, 2)[1]).name in {'go', 'rustc', 'cargo', 'uv'} for s in processes):
@@ -97,7 +139,7 @@ def trim_caches(limit):
     removed = []
     for name in ['go-build', 'cognee-target', 'cognee-service-build', 'python-worker-build', 'uv', 'swift-icon']:
         p = ROOT / '.cache' / name
-        if p.is_symlink() or busy(p, processes): continue
+        if p.is_symlink() or protected_path(p, protected) or busy(p, processes): continue
         if size(ROOT / '.cache') <= limit and shutil.disk_usage(ROOT).free >= 100*GIB: break
         if p.exists(): shutil.rmtree(p); removed.append(str(p))
     return removed

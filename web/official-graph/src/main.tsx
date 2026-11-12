@@ -27,7 +27,7 @@ let currentEpoch = -1;
 let renderFrame: (frame: Frame | null) => void;
 function hostEvent(frame: Frame, node: BusinessEntity) {
   // Only an identity selection leaves the page. Host resolves provenance and
-  // rechecks the epoch and current project grant before following any source.
+  // rechecks the epoch and current project identity before following any source.
   if (frame.epoch !== currentEpoch) return;
   void window.mygo?.call('OfficialGraph.Select', {epoch: frame.epoch, project: frame.project,
     instance: frame.instance, dataset: frame.dataset, node: node.id}).catch(() => {});
@@ -57,7 +57,7 @@ function Graph({frame}: {frame: Frame}) {
       spotlight={spotlight} focusSets={focusSets} focusTypes={null} sourceCardRefs={cardRefs}
       activeDatasetId={frame.dataset} pathIds={path.pathIds} pathEdgeKeys={path.pathEdgeKeys}/>
     <div className="host-toolbar"><button onClick={() => canvas.current?.fit(true)}>适应窗口</button>
-      <button onClick={() => canvas.current?.goToAltimeterLevel(3)}>Records</button>
+      <button onClick={() => canvas.current?.goToAltimeterLevel(2)}>查看节点</button>
       <span className="text-[11px] text-[#7E8CA6]">已加载子图 · {frame.payload.nodes.length} 个节点</span></div>
     <div className="absolute left-3 top-14 bottom-8 w-52 overflow-y-auto pointer-events-none [&>*]:pointer-events-auto">
       <SourcesRail brainState={brain} encoding={encoding} focusSets={focusSets}
@@ -78,7 +78,7 @@ function App() {
   const [frame, setFrame] = useState<Frame | null>(null);
   renderFrame = setFrame;
   return <MantineProvider forceColorScheme="dark">{frame ? <Graph key={[frame.project,frame.instance,frame.dataset].join(':')} frame={frame}/>
-    : <div className="host-status">等待当前项目的授权图谱</div>}</MantineProvider>;
+    : <div className="host-status">等待当前项目的官方图谱</div>}</MantineProvider>;
 }
 flushSync(() => createRoot(document.getElementById('root')!).render(<App/>));
 window.memlaneOfficialGraph = {

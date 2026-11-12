@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -9,6 +10,52 @@ disk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(disk)
 
 class DiskSafety(unittest.TestCase):
+    def test_daily_official_data_and_model_survive_without_paths_in_ps(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name).resolve(); (root/'build').mkdir()
+            tmp = root/'temp'; tmp.mkdir()
+            runtime = tmp/'memlane-original/initialization/client/official'
+            data = runtime/'cognee'; model = runtime/'components/embedding'
+            for folder in (data/'system', data/'data', model): folder.mkdir(parents=True)
+            database = data/'system/cognee_db'; weights = model/'model.onnx'
+            old = tmp/'memlane-unused/model.onnx'; old.parent.mkdir()
+            for file in (database, weights, old):
+                with file.open('wb') as stream: stream.truncate(8*1024**2)
+            alias = root/'official-alias'; alias.symlink_to(data, target_is_directory=True)
+            daily = root/'.local/daily'; daily.mkdir(parents=True)
+            environment = daily/'environment.json'; environment.write_text(json.dumps({'HF_HOME':str(model), 'DEFAULT_USER_PASSWORD':'synthetic-private'}))
+            config = daily/'runtime.json'; config.write_text(json.dumps({'official_data':str(alias), 'service_environment_file':str(environment)}))
+            with patch.object(disk,'ROOT',root), patch.object(disk,'KEEP',root/'build/latest'), patch.object(disk,'RETAINED',root/'absent'), patch.object(disk,'DEPENDENCIES',root/'absent-dependencies'), patch.object(disk,'worktrees',return_value=[]), patch.object(disk,'active_arguments',return_value=['123 python official_service_dev.py --config '+str(config)]), patch.object(disk.tempfile,'gettempdir',return_value=str(tmp)), patch.object(disk.subprocess,'run',return_value=SimpleNamespace(stdout='')):
+                result = disk.prune_history()
+            self.assertTrue(database.is_file()); self.assertTrue(weights.is_file())
+            self.assertFalse(old.exists())
+            self.assertIn(str(tmp/'memlane-original'),result['skipped_active'])
+
+    def test_explicit_dependency_manifest_protects_temporary_runtime(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name).resolve(); (root/'build').mkdir(); tmp=root/'temp'; tmp.mkdir()
+            runtime=tmp/'memlane-owned/MemlaneRuntime.app'; runtime.mkdir(parents=True)
+            manifest=root/'dependencies.txt'; manifest.write_text(str(runtime/'Contents/bin/helper')+'\n')
+            with patch.object(disk,'ROOT',root), patch.object(disk,'KEEP',root/'build/latest'), patch.object(disk,'RETAINED',root/'absent'), patch.object(disk,'DEPENDENCIES',manifest), patch.object(disk,'worktrees',return_value=[]), patch.object(disk,'active_arguments',return_value=[]), patch.object(disk.tempfile,'gettempdir',return_value=str(tmp)), patch.object(disk.subprocess,'run',return_value=SimpleNamespace(stdout='')):
+                disk.prune_history()
+            self.assertTrue(runtime.is_dir())
+
+    def test_cache_dependency_and_invalid_config_fail_closed(self):
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name).resolve(); daily=root/'.local/daily'; daily.mkdir(parents=True)
+            cache=root/'.cache/cognee-service-build'; cache.mkdir(parents=True)
+            library=cache/'runtime/libpython.dylib'; library.parent.mkdir(); library.write_bytes(b'preserved')
+            config=daily/'runtime.json'; config.write_text(json.dumps({'python':str(library)}))
+            with patch.object(disk,'ROOT',root), patch.object(disk,'DEPENDENCIES',root/'absent'), patch.object(disk,'active_arguments',return_value=[]), patch.object(disk,'size',return_value=100*disk.GIB):
+                disk.trim_caches(0)
+                self.assertTrue(library.is_file())
+                config.write_text('{broken-private-config')
+                with self.assertRaisesRegex(RuntimeError,'cleanup refused'):
+                    disk.trim_caches(0)
+            self.assertTrue(library.is_file())
+
     def test_mapped_daemon_and_explicit_dependencies_survive_pruning(self):
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as name:

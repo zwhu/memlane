@@ -1,3 +1,7 @@
+# 当前技术入口
+
+2026-11-13：本次dev实施以[精简技术方案](client-simplification-technical-plan-20261112.md)为准。下文为旧架构历史记录，其memlaned、私有IPC、SQLite、计划、权限与release链路源码已退役，不是当前实现或启动指令；历史验收事实不改写。
+
 # Memlane 第一版技术方案
 
 2026-11-07。桌面框架按用户选择采用 **MyGo**；建议使用 **MyGo 轻量客户端 + Go 后台服务 + 独立下载的 Cognee 引擎**。用户已明确优先控制主下载包大小：主客户端提供 UI、自动更新、组件准备与状态管理及必要的轻量 Go helper，重型引擎依赖和模型由 App 自动下载，在本地运行。用户无需安装数据库服务器、Python 或 Docker。首版交付 macOS，保留以后扩展 Windows/Linux 的边界。

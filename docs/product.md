@@ -1,6 +1,6 @@
 # Memlane 产品定义
 
-2026-11-12。本阶段以[精简版规格](client-simplification-spec-20261112.md)和[技术方案](client-simplification-technical-plan-20261112.md)为准。当前工作只清理设计资产与文档，未启动生产代码改造或运行数据清理。
+2026-11-12。本阶段以[精简版规格](client-simplification-spec-20261112.md)和[技术方案](client-simplification-technical-plan-20261112.md)为准。2026-11-13已获明确实施授权，当前以dev模式执行；进度及实际边界见[执行记录](engineering/client-simplification-execution-20261113.md)，不恢复旧全量Goal、不进入release。
 
 Memlane 面向程序员，让编码 Agent 使用同一份项目知识，并提供独立、美观的 macOS 阅读界面。Cognee 是唯一内容数据源；Memlane 提供桌面呈现、必要配置、Codex 模型适配和开发启动入口。
 

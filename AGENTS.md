@@ -1,3 +1,9 @@
+## 2026-11-13 精简版实施授权
+
+本轮D01–D09已按明确范围收口，交付入口为 `docs/engineering/client-simplification-delivery-20261113.md`。下文2026-11-12的“没有启停／未清理／未打tag”等表述保留为当时设计阶段历史，不覆盖本次已完成事实；历史全量Goal继续暂停。
+
+用户已明确启动本次精简版 Goal，覆盖下文旧“开发暂停／仅方案”状态。仅执行 `docs/client-simplification-spec-20261112.md` 与技术方案范围，使用 `scripts/dev.py`、MyGo dev；不恢复历史全量 Goal、不进入 release。开发前直接提交当前相关代码并创建本地 tag，不采用独立 index、快照分支或多 worktree 快照。进度与所有权见 `docs/engineering/client-simplification-execution-20261113.md`。旧具体问题停止次数与运行依赖保护继续有效。
+
 ## 2026-11-12 当前精简设计入口
 
 本轮用户要求从设计中删除已砍掉的功能。当前产品范围以 `docs/client-simplification-spec-20261112.md`、`docs/client-simplification-technical-plan-20261112.md` 为准，当前界面入口为 `docs/ui-redesign/design-catalog.md`。旧 A–O、三种处理方式、编辑／历史／审核／计划／权限等交接不再构成首版设计要求；实际工程和缺陷记录保留历史事实。
@@ -43,7 +49,7 @@ UI 工作查看 `docs/images/ui-redesign/client-simplification-20261112/` 中首
 - 保留用户无关修改。不要提交密钥、真实记忆库、聊天记录或本机 Agent 配置。
 - 可交互设计原型归档于 `prototype/selected-ui` 分支；主分支保留产品规则与选定设计，生产实现按最终技术方案编写。
 
-开发命令见 [开发说明](docs/development.md)，实际验收与限制见 [P0 验证记录](docs/p0-validation.md)。使用 `sh scripts/go.sh test ./...` 测试，`python3 scripts/build-client.py --out build/p0-final` 构建包含 helper/LaunchAgent 的本机验证包；工具链保存在仓库内，不替换用户默认环境。
+当前开发命令见 [开发说明](docs/development.md)，统一使用 `python3 scripts/dev.py`；Go检查使用 `sh scripts/go.sh test ./...`，Python端点检查通过已有环境及 `scripts/task.py`。旧完整builder和helper专属驱动已随旧链退役，不作为当前命令；P0记录保留历史事实。工具链保存在仓库内，不替换用户默认环境。
 
 ## 开发磁盘安全空间（用户2026-11-10明确要求）
 

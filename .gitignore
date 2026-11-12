@@ -28,3 +28,9 @@ __pycache__/
 .cache/
 .coverage
 coverage/
+
+# MyGo dev lightweight container
+.mygo/
+
+# Official Enola generated snapshot and incremental cache
+.enola/

@@ -32,7 +32,7 @@ try {
   await page.exposeFunction('recordHostEvent', (name, value) => selections.push({name, value}));
   await page.addInitScript(() => {window.mygo = {call: async (name, value) => window.recordHostEvent(name, value)};});
   await page.goto(origin);
-  await page.getByText('等待当前项目的授权图谱').waitFor();
+  await page.getByText('等待当前项目的官方图谱').waitFor();
   const frame = {epoch: 1, project: 'synthetic-project', instance: 'synthetic-instance', dataset: 'synthetic-dataset', payload: {
     nodes: [
       {id:'doc', name:'Synthetic coding lesson', type:'TextDocument', stage:'document', belongs_to_set:['session_learnings']},
@@ -100,7 +100,7 @@ try {
   await page.waitForTimeout(300);
   await page.screenshot({path:path.join(output,'official-records.png')});
   assert.equal(await page.evaluate(() => window.memlaneOfficialGraph.clear(2)), true);
-  await page.getByText('等待当前项目的授权图谱').waitFor();
+  await page.getByText('等待当前项目的官方图谱').waitFor();
   assert.equal(await page.locator('canvas').count(),0);
   assert.equal(await page.evaluate((value) => window.memlaneOfficialGraph.apply(value), frame),false);
   assert.equal(await page.evaluate((value) => window.memlaneOfficialGraph.apply({...value,epoch:2}), frame),false);
