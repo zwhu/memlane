@@ -39,7 +39,7 @@ func TestProcessingDiagnosticsAtomicBoundedNamesAndMigration25(t *testing.T) {
 	}
 	// Recreate the prior shipped schema with real old validation results. The
 	// migration preserves those results and cannot invent a new model receipt.
-	_, err = s.DB.Exec(`DROP TABLE processing_validation_evidence; DROP TABLE delivery_assignments; DROP TABLE project_preference_decisions; DROP TABLE cognee_submissions; DROP TABLE cognee_submission_tasks; DROP TABLE cognee_library_identity; DROP TABLE processing_http_receipts; DROP TABLE processing_suppliers; DROP TABLE processing_validation_diagnostics; PRAGMA user_version=25`)
+	_, err = s.DB.Exec(`DROP TABLE official_code_scopes;DROP TABLE coding_memory_grants; DROP TABLE pi_capture_read_grants; DROP TABLE pi_capture_consents; DROP TABLE official_capture_receipts; DROP TABLE session_processing_tasks; DROP TABLE processing_validation_evidence; DROP TABLE delivery_assignments; DROP TABLE project_preference_decisions; DROP TABLE cognee_submissions; DROP TABLE cognee_submission_tasks; DROP TABLE cognee_library_identity; DROP TABLE processing_http_receipts; DROP TABLE processing_suppliers; DROP TABLE processing_validation_diagnostics; PRAGMA user_version=25`)
 	mustMerge(t, err)
 	prior := sqlRows(t, s.DB, "processing_validations")
 	mustMerge(t, s.Close())

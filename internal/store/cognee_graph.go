@@ -22,7 +22,7 @@ func (s *Store) AuthorizeCogneeBinding(ctx context.Context, b records.CogneeBind
 	if b.MaterialSubmission {
 		return access("scope_denied", "material authorization does not grant historical session import")
 	}
-	c, scopes, err := s.Authorize(ctx, records.AgentRequest{Protocol: 1, ConnectionID: b.ConnectionID, Generation: b.Generation, Workspace: b.Workspace, Tool: "memory_save", Arguments: records.AgentArguments{Scope: b.Project}})
+	c, scopes, err := s.ResolveAgentScopes(ctx, records.AgentRequest{Protocol: 1, ConnectionID: b.ConnectionID, Generation: b.Generation, Workspace: b.Workspace, Tool: "memory_save", Arguments: records.AgentArguments{Scope: b.Project}})
 	if err != nil {
 		return err
 	}
@@ -33,6 +33,13 @@ func (s *Store) AuthorizeCogneeBinding(ctx context.Context, b records.CogneeBind
 }
 
 func (s *Store) BindCognee(ctx context.Context, b records.CogneeBinding) (records.CogneeBinding, error) {
+	var codeScopes int
+	if err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM official_code_scopes WHERE instance=? AND dataset=?`, b.Instance, b.Dataset).Scan(&codeScopes); err != nil {
+		return b, err
+	}
+	if codeScopes != 0 {
+		return b, access("scope_denied", "code datasets do not grant knowledge/session access")
+	}
 	for _, id := range []string{b.Operation, b.Instance, b.Dataset, b.Project} {
 		if parsed, err := uuid.Parse(id); err != nil || parsed.String() != id {
 			return b, access("invalid_request", "canonical binding identities required")
@@ -56,6 +63,12 @@ func (s *Store) BindCognee(ctx context.Context, b records.CogneeBinding) (record
 		return b, err
 	}
 	defer tx.Rollback()
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM official_code_scopes WHERE instance=? AND dataset=?`, b.Instance, b.Dataset).Scan(&codeScopes); err != nil {
+		return b, err
+	}
+	if codeScopes != 0 {
+		return b, access("scope_denied", "code datasets do not grant knowledge/session access")
+	}
 	var prior, payload string
 	err = tx.QueryRowContext(ctx, `SELECT digest,payload FROM cognee_bindings WHERE operation=? OR (instance=? AND dataset=?) UNION ALL SELECT digest,payload FROM pending_cognee_bindings WHERE operation=? OR (instance=? AND dataset=?)`, b.Operation, b.Instance, b.Dataset, b.Operation, b.Instance, b.Dataset).Scan(&prior, &payload)
 	if err == nil {
@@ -67,6 +80,9 @@ func (s *Store) BindCognee(ctx context.Context, b records.CogneeBinding) (record
 	}
 	if err != sql.ErrNoRows {
 		return b, err
+	}
+	if b.ReadReviewDigest != "" || b.ReadPreviousOperation != "" {
+		return b, access("invalid_request", "read reauthorization metadata requires its explicit review operation")
 	}
 	// The actual original-import ledger owns dataset→project association.
 	prefix := "cognee://" + b.Dataset + "/"

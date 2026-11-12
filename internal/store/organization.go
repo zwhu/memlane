@@ -102,11 +102,6 @@ func (s *Store) startOrganizationTx(ctx context.Context, tx *sql.Tx, d records.O
 		if e != nil {
 			return empty, false, e
 		}
-		if s.Schema >= 5 {
-			if e = filterVersionProvenance(ctx, tx, &v, []string{d.Project}); e != nil {
-				return empty, false, e
-			}
-		}
 		roots, e := s.evidenceRoots(ctx, tx, v.Memory, v.Revision)
 		if e != nil {
 			return empty, false, e

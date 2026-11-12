@@ -16,16 +16,15 @@ func environmentSVG(name string) *ui.SVG {
 	return ui.MustParseSVG(raw)
 }
 
-// Tokens are measured against the selected 1200 x 820 content area. The
-// navigation is 212 DIP, the memory list 428 DIP, leaving 560 DIP for details.
+// Shared geometry follows b-home.css; C/F/G/J lists use c-project-redesign.css.
 var design = struct {
 	Sidebar, List, Toolbar, Body, Small, Heading, Title, Icon        float32
 	SidebarFill, Selected, ListSelected, Border, Ink, Muted, Surface ui.Color
 	Heat                                                             [5]ui.Color
 }{
-	212, 428, 54, 12, 11, 20, 20, 15,
-	ui.Hex("#e8f0fa"), ui.Hex("#d6e2ef"), ui.Hex("#eef1f5"),
-	ui.Hex("#e9eaed"), ui.Hex("#30353a"), ui.Hex("#8a9098"), ui.Hex("#f4f5f7"),
+	196, 428, 56, 12, 11, 20, 20, 15,
+	ui.Hex("#e7eff9"), ui.Hex("#d5e1ef"), ui.Hex("#edf3fa"),
+	ui.Hex("#e8ecf0"), ui.Hex("#29343e"), ui.Hex("#88939e"), ui.Hex("#f6f8fb"),
 	[5]ui.Color{ui.Hex("#f0f2f5"), ui.Hex("#e0eaf5"), ui.Hex("#c3d5e9"), ui.Hex("#9bb8d7"), ui.Hex("#688db9")},
 }
 
@@ -45,6 +44,8 @@ var icons = map[string]*ui.SVG{
 	"设置":      svg(`<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 1v3m0 16v3M1 12h3m16 0h3"/>`),
 	"sidebar": svg(`<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>`),
 	"search":  svg(`<circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/>`),
+	"info":    svg(`<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v1"/>`),
+	"copy":    svg(`<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>`),
 	"edit":    svg(`<path d="m4 16 12-12 4 4-12 12-5 1zM13 7l4 4"/>`),
 	"history": svg(`<circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/>`),
 	"plus":    svg(`<path d="M12 5v14M5 12h14"/>`),

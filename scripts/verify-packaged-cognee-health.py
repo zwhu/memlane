@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.request
 import urllib.parse
+from uuid import uuid4
 
 
 def group_members(group):
@@ -25,6 +26,7 @@ def main():
     parser.add_argument("--request-timeout", type=int, default=125)
     parser.add_argument("--component-directory", type=Path, help="本轮新的已打包组件目录，包含 component.json；只读对照")
     parser.add_argument("--expect-material-submission", action="store_true", help="通过合成账号核对实际新材料/取消路由与能力；不调用模型")
+    parser.add_argument("--expect-session-improve", action="store_true", help="核对实际会话处理路由、无效请求拒绝及取消墓碑；不运行处理")
     args = parser.parse_args()
     if not 5 <= args.request_timeout <= 180:
         parser.error("request timeout must be between 5 and 180 seconds")
@@ -85,7 +87,7 @@ def main():
                           request_seconds=time.monotonic() - request_started)
             if status == 200 and body.get("status") == "ready" and body.get("health") == "healthy":
                 report["status"] = "passed"
-            if report["status"] == "passed" and args.expect_material_submission:
+            if report["status"] == "passed" and (args.expect_material_submission or args.expect_session_improve):
                 environment = settings["environment"]
                 login = urllib.request.Request(state["endpoint"] + "/api/v1/auth/login",
                     data=urllib.parse.urlencode({"username": environment["DEFAULT_USER_EMAIL"], "password": environment["DEFAULT_USER_PASSWORD"]}).encode(),
@@ -97,7 +99,6 @@ def main():
                 report["request_count"] += 1
                 with local_http.open(request, timeout=15) as response:
                     identity = json.load(response)
-                token = ""
                 if identity.get("cognee_version") != "1.6.7" or "material_submission_v1" not in identity.get("capabilities", []):
                     raise RuntimeError("packaged service lacks the verified material submission capability")
                 report["material_identity"] = {key: identity.get(key) for key in ("instance", "cognee_version", "adapter", "capabilities")}
@@ -109,6 +110,37 @@ def main():
                     raise RuntimeError("packaged service lacks material submission or cancellation route")
                 report["material_routes"] = required
                 report["material_pipeline_executed"] = False
+                if args.expect_session_improve:
+                    required_session = ["/api/v1/memlane/session-improve", "/api/v1/memlane/session-improve/cancel"]
+                    if "session_improve_v1" not in identity.get("capabilities", []) or any(path not in paths for path in required_session):
+                        raise RuntimeError("packaged service lacks session processing capability or routes")
+                    def session_post(path, payload):
+                        request = urllib.request.Request(state["endpoint"] + path,
+                            data=json.dumps(payload).encode(), headers={"Authorization": "Bearer " + token,
+                            "Content-Type": "application/json"}, method="POST")
+                        report["request_count"] += 1
+                        try:
+                            with local_http.open(request, timeout=15) as response:
+                                return response.status, json.load(response)
+                        except urllib.error.HTTPError as error:
+                            return error.code, json.load(error)
+                    status, _ = session_post(required_session[0], {})
+                    if status != 422:
+                        raise RuntimeError("packaged session route accepted an invalid scope")
+                    cancellation = {"instance": identity["instance"], "library": str(uuid4()), "operation": str(uuid4())}
+                    status, acknowledged = session_post(required_session[1], cancellation)
+                    if status != 200 or acknowledged != dict(cancellation, state="stopped"):
+                        raise RuntimeError("packaged session cancellation was not acknowledged")
+                    payload = dict(cancellation, project=str(uuid4()), dataset=str(uuid4()), session="packaged-cancelled-session",
+                        processing={"revision": {"config_digest": "a" * 64}, "dependency_digest": "b" * 64},
+                        gateway={"endpoint": "http://127.0.0.1:9/v1", "token": "synthetic-unused-capability"})
+                    status, rejected = session_post(required_session[0], payload)
+                    if status != 409 or rejected.get("detail") != "session_processing_cancelled":
+                        raise RuntimeError("packaged session cancellation tombstone was not enforced")
+                    report.update(session_routes=required_session, invalid_session_scope_rejected=True,
+                                  session_cancel_acknowledged=True, session_cancel_tombstone=True,
+                                  session_pipeline_executed=False)
+                token = ""
         except Exception as error:
             report["status"] = "failed"
             report["failure"] = type(error).__name__ + ": " + str(error)

@@ -27,8 +27,7 @@ type Connection struct {
 }
 
 type ConnectionDraft struct {
-	// ConnectionOnly registers an identity without granting access to memory.
-	// Project and common-knowledge authorization remain separate user actions.
+	// ConnectionOnly registers a computer-level connection without a default project.
 	ConnectionOnly bool     `json:"connection_only,omitempty"`
 	AutoProject    bool     `json:"auto_project,omitempty"`
 	Workspace      string   `json:"workspace,omitempty"`
@@ -37,15 +36,6 @@ type ConnectionDraft struct {
 	Name           string   `json:"name"`
 	Project        string   `json:"project,omitempty"`
 	AllowedScopes  []string `json:"allowed_scopes"`
-}
-
-// ConnectionScopeChange changes one project grant without replacing the
-// connection's other scopes, identity or trusted workspace.
-type ConnectionScopeChange struct {
-	ConnectionID       string `json:"connection_id"`
-	ExpectedGeneration int64  `json:"expected_generation"`
-	Project            string `json:"project"`
-	Allowed            bool   `json:"allowed"`
 }
 
 // Workspace comes from an explicit bridge binding or pi ctx.cwd, never a

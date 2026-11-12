@@ -15,14 +15,29 @@ import (
 )
 
 type Config struct {
-	CodeExtractor string        `json:"code_extractor,omitempty"`
-	ClientRoot    string        `json:"client_root,omitempty"`
-	Root          string        `json:"root"`
-	Worker        engine.Config `json:"worker"`
-	RetryDelayMS  int           `json:"retry_delay_ms,omitempty"`
+	PiCapturePython string        `json:"pi_capture_python,omitempty"`
+	PiCapturePolicy string        `json:"pi_capture_policy,omitempty"`
+	CodeExtractor   string        `json:"code_extractor,omitempty"`
+	ClientRoot      string        `json:"client_root,omitempty"`
+	Root            string        `json:"root"`
+	Worker          engine.Config `json:"worker"`
+	RetryDelayMS    int           `json:"retry_delay_ms,omitempty"`
 }
 
 type Request struct {
+	OfficialCodeJob                string                                  `json:"official_code_job,omitempty"`
+	OfficialVisualization          *records.OfficialVisualizationQuery     `json:"official_visualization,omitempty"`
+	CodingMemoryTrigger            *records.CodingMemoryTrigger            `json:"coding_memory_trigger,omitempty"`
+	CodingMemoryCapability         string                                  `json:"coding_memory_capability,omitempty"`
+	CodingMemoryGrantChange        *records.CodingMemoryGrantChange        `json:"coding_memory_grant_change,omitempty"`
+	CodingMemoryGrantBinding       *records.CogneeBinding                  `json:"coding_memory_grant_binding,omitempty"`
+	PiCaptureSettingsQuery         *records.PiCaptureSettingsQuery         `json:"pi_capture_settings_query,omitempty"`
+	PiCaptureBatch                 *records.PiCaptureBatchRequest          `json:"pi_capture_batch,omitempty"`
+	PiCaptureConsentReview         *records.PiCaptureConsentReview         `json:"pi_capture_consent_review,omitempty"`
+	PiCaptureConsentDisable        *records.PiCaptureConsentDisable        `json:"pi_capture_consent_disable,omitempty"`
+	CogneeReadReauthorization      *records.CogneeReadReauthorization      `json:"cognee_read_reauthorization,omitempty"`
+	SessionQuery                   *records.SessionQuery                   `json:"session_query,omitempty"`
+	DocumentQuery                  *records.OfficialDocumentQuery          `json:"document_query,omitempty"`
 	CaptureRouteConfirmation       *records.CaptureRouteConfirmation       `json:"capture_route_confirmation,omitempty"`
 	CaptureDeliveryQuery           *records.CaptureDeliveryQuery           `json:"capture_delivery_query,omitempty"`
 	DeliveryAssignmentPreviewQuery *records.DeliveryAssignmentPreviewQuery `json:"delivery_assignment_preview_query,omitempty"`
@@ -48,13 +63,14 @@ type Request struct {
 	ProjectBindingChange          *records.ProjectBindingChange        `json:"project_binding_change,omitempty"`
 	ProjectTaskID                 string                               `json:"project_task,omitempty"`
 	ProjectTaskList               *records.MergeListQuery              `json:"project_task_list,omitempty"`
-	ConnectionScopeChange         *records.ConnectionScopeChange       `json:"connection_scope_change,omitempty"`
 	CogneeAuthorization           *records.CogneeAuthorization         `json:"cognee_authorization,omitempty"`
 	CogneeSync                    *records.CogneeSync                  `json:"cognee_sync,omitempty"`
 	CogneeBinding                 *records.CogneeBinding               `json:"cognee_binding,omitempty"`
 	CogneeGraphQuery              *records.CogneeGraphQuery            `json:"cognee_graph_query,omitempty"`
 	CogneeSubmission              *records.CogneeSubmissionRequest     `json:"cognee_submission,omitempty"`
 	CogneeSubmissionID            string                               `json:"cognee_submission_id,omitempty"`
+	SessionProcessing             *records.SessionProcessingRequest    `json:"session_processing,omitempty"`
+	SessionProcessingID           string                               `json:"session_processing_id,omitempty"`
 	CogneeProjectAuthorization    *records.CogneeProjectAuthorization  `json:"cognee_project_authorization,omitempty"`
 	SourceRead                    *records.SourceRead                  `json:"source_read,omitempty"`
 	CogneeImport                  *records.CogneeImport                `json:"cognee_import,omitempty"`
@@ -104,6 +120,7 @@ type Request struct {
 	Timezone                      string                               `json:"timezone,omitempty"`
 	Connection                    records.ConnectionDraft              `json:"connection,omitempty"`
 	ConnectionID                  string                               `json:"connection_id,omitempty"`
+	ConnectionGeneration          int64                                `json:"connection_generation,omitempty"`
 	AgentRequest                  records.AgentRequest                 `json:"agent_request,omitempty"`
 }
 

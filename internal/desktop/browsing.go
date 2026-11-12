@@ -362,6 +362,10 @@ func (a *App) memoryEntities(item MemoryItem) []records.CogneeEntity {
 }
 
 func (a *App) projectExplorer(c *ui.Context) {
+	if a.conversationPageVisible() {
+		a.conversationLayout(c)
+		return
+	}
 	s := &a.browsing
 	if s.View == "memories" || a.projectSettings.Open && a.projectSettings.Owner.ID == a.scope || a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
 		a.details(c)
@@ -978,7 +982,7 @@ func (a *App) loadGraphMaterial() {
 				}
 			}
 			for _, c := range connections {
-				if c.Agent == "codex" && c.Enabled && connectionAllows(c, m.Project) {
+				if c.Agent == "codex" && c.Enabled {
 					m.Connections = append(m.Connections, c)
 				}
 			}
@@ -1010,7 +1014,7 @@ func graphBindingAuthorized(m *GraphMaterialUI) bool {
 		return false
 	}
 	for _, c := range m.Connections {
-		if c.ID == m.Binding.ConnectionID && c.Generation == m.Binding.Generation && c.Agent == "codex" && c.Enabled && connectionAllows(c, m.Project) {
+		if c.ID == m.Binding.ConnectionID && c.Generation == m.Binding.Generation && c.Agent == "codex" && c.Enabled {
 			return true
 		}
 	}
@@ -1023,7 +1027,7 @@ func (a *App) graphAuthorization(m *GraphMaterialUI) (records.CogneeAuthorizatio
 	var connection *records.Connection
 	for i := range m.Connections {
 		c := &m.Connections[i]
-		if c.ID == m.ConnectionID && c.Agent == "codex" && c.Enabled && connectionAllows(*c, m.Project) {
+		if c.ID == m.ConnectionID && c.Agent == "codex" && c.Enabled {
 			connection = c
 			break
 		}

@@ -2,10 +2,7 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-
-	"github.com/zwhu/memlane/internal/codegraph"
 )
 
 // CodeRetention preserves the current graph, including disabled worktrees,
@@ -30,11 +27,15 @@ func (s *Store) CodeRetention(ctx context.Context) (map[string][]string, error) 
 			if err = rows.Scan(&raw); err != nil {
 				break
 			}
-			var receipt codegraph.Receipt
-			if err = json.Unmarshal([]byte(raw), &receipt); err != nil {
+			receipt, official, decodeErr := decodeCodeReceipt(raw)
+			if decodeErr != nil {
+				err = decodeErr
 				break
 			}
-			if receipt.Dataset != c.Dataset || receipt.Snapshot == "" {
+			if official != nil {
+				continue
+			}
+			if receipt == nil || receipt.Dataset != c.Dataset || receipt.Snapshot == "" {
 				err = errors.New("invalid completed code retention receipt")
 				break
 			}

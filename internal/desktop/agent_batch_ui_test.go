@@ -17,6 +17,7 @@ import (
 )
 
 func TestAgentBatchCardsKeepSelectionAndRejectUnsupportedOrExisting(t *testing.T) {
+	t.Setenv("CODEX_HOME", "") // This case intentionally has no computer-level Codex directory.
 	a := New("test", nil)
 	a.page = "设置"
 	a.settingsSection = "agents"
@@ -170,6 +171,7 @@ func TestFailedInstallationIdentityIsNotPresentedAsConfigured(t *testing.T) {
 }
 
 func TestAgentCardsWholeSurfaceAndKeyboardToggle(t *testing.T) {
+	t.Setenv("CODEX_HOME", "") // This case intentionally has no computer-level Codex directory.
 	a := New("test", nil)
 	a.page = "设置"
 	a.settingsSection = "agents"
@@ -247,7 +249,7 @@ func TestSettingsLegacyConnectionShowsManagementWithoutGrantOrModelForm(t *testi
 						t.Fatal("legacy connection form leaked into settings", agent, width, label)
 					}
 				}
-				for _, label := range []string{"连接层级", "重新读取连接", "已重载，验证连接", "断开"} {
+				for _, label := range []string{"连接层级", "重新读取连接", "已重载，验证连接", "撤除接入"} {
 					if !tt.HasText(label) {
 						t.Fatal("management action missing", label)
 					}

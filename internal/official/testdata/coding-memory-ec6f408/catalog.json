@@ -1,0 +1,65 @@
+[
+  {
+    "id": "81adead8-15f6-5bc5-ba50-26b70924adac",
+    "name": "text_ca9e05eaf88e385c98357f945792c940",
+    "createdAt": "2026-11-12T07:17:32.832865",
+    "updatedAt": "2026-11-12T07:17:50.893333",
+    "extension": "txt",
+    "mimeType": "text/plain",
+    "datasetId": "bca400f0-9674-51a2-aefc-8fa8d6257ce4",
+    "label": null,
+    "externalMetadata": {
+      "lesson_type": "state",
+      "state_key": "footprint:reservation-validation",
+      "session_id": "codex_01a1ce9c-2a72-7983-8a63-c1f6f488a656",
+      "session_date": "2026-11-12",
+      "git_commit": "d7a435cdca81a99ae49c6ed9785314b8bb1c75f0",
+      "git_branch": "main",
+      "files": [
+        "inventory.py",
+        "test_inventory.py"
+      ],
+      "project_node_sets": [
+        "coding-memory-synthetic-inventory"
+      ],
+      "node_set": [
+        "session_learnings",
+        "session_learnings:codex_01a1ce9c-2a72-7983-8a63-c1f6f488a656",
+        "coding-memory-synthetic-inventory"
+      ]
+    },
+    "dataSize": 333,
+    "contentHash": "ca9e05eaf88e385c98357f945792c940"
+  },
+  {
+    "id": "3485ffc2-6a46-56b0-95c0-6c8044a6da5c",
+    "name": "text_039309f28b25a1368f48b5e6c5b75f97",
+    "createdAt": "2026-11-12T07:17:32.832002",
+    "updatedAt": "2026-11-12T07:17:47.470126",
+    "extension": "txt",
+    "mimeType": "text/plain",
+    "datasetId": "bca400f0-9674-51a2-aefc-8fa8d6257ce4",
+    "label": null,
+    "externalMetadata": {
+      "lesson_type": "state",
+      "state_key": "test-baseline",
+      "session_id": "codex_01a1ce9c-2a72-7983-8a63-c1f6f488a656",
+      "session_date": "2026-11-12",
+      "git_commit": "d7a435cdca81a99ae49c6ed9785314b8bb1c75f0",
+      "git_branch": "main",
+      "files": [
+        "test_inventory.py"
+      ],
+      "project_node_sets": [
+        "coding-memory-synthetic-inventory"
+      ],
+      "node_set": [
+        "session_learnings",
+        "session_learnings:codex_01a1ce9c-2a72-7983-8a63-c1f6f488a656",
+        "coding-memory-synthetic-inventory"
+      ]
+    },
+    "dataSize": 201,
+    "contentHash": "039309f28b25a1368f48b5e6c5b75f97"
+  }
+]

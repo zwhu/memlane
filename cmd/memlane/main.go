@@ -19,6 +19,9 @@ import (
 )
 
 func run() int {
+	if len(os.Args) > 1 && os.Args[1] == "pi-capture" {
+		return agentbridge.RunPiCaptureCLI(os.Args[2:])
+	}
 	if len(os.Args) > 1 && os.Args[1] == "capture-codex" {
 		return agents.RunCodexCaptureCLI(os.Args[2:])
 	}

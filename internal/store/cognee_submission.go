@@ -235,7 +235,7 @@ func (s *Store) AuthorizeCogneeSubmissionBinding(ctx context.Context, b records.
 	if !b.MaterialSubmission {
 		return access("scope_denied", "explicit material submission binding required")
 	}
-	c, scopes, err := s.Authorize(ctx, records.AgentRequest{Protocol: 1, ConnectionID: b.ConnectionID, Generation: b.Generation, Workspace: b.Workspace, Tool: "memory_save", Arguments: records.AgentArguments{Scope: b.Project}})
+	c, scopes, err := s.ResolveAgentScopes(ctx, records.AgentRequest{Protocol: 1, ConnectionID: b.ConnectionID, Generation: b.Generation, Workspace: b.Workspace, Tool: "memory_save", Arguments: records.AgentArguments{Scope: b.Project}})
 	if err != nil {
 		return err
 	}

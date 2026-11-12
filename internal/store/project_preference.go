@@ -103,9 +103,6 @@ func (s *Store) projectPreferenceTx(ctx context.Context, tx *sql.Tx, q records.P
 		} else if !errors.Is(conditionErr, sql.ErrNoRows) {
 			return out, conditionErr
 		}
-		if err = filterVersionProvenance(ctx, tx, &v, q.Datasets); err != nil {
-			return out, err
-		}
 		*cards[i] = v
 	}
 	var raw string

@@ -36,8 +36,13 @@ func TestNewFromRankedSearchReturnsToSearchWithRealNavigationCallbacks(t *testin
 	}
 	a.draftTitle = "未保存合成草稿"
 	a.draft = "保留草稿，不写服务"
-	tt := ui.NewTester(func(c *ui.Context) { a.editor(c) }, 800, 640)
-	if e := tt.Click("返回"); e != nil {
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Column(c).Grow(1).Children(func() {
+			a.memoryEditorReturn(c)
+			a.editor(c)
+		})
+	}, 800, 640)
+	if e := tt.Click("保留草稿返回"); e != nil {
 		t.Fatal(e)
 	}
 	if a.page != "搜索" || a.query != "HarborCourier" || a.searchQuery != "HarborCourier" {

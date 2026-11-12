@@ -37,8 +37,8 @@ func TestOrganizationChooserCancelRequiresDurableDraftAndKeepsIdentity(t *testin
 			}
 			awaitProcessingDispatch(t, updates)
 			if outcome == "saved" {
-				if a.page != "项目" || a.scope != "project" {
-					t.Fatal("cancel did not return to original project")
+				if a.page != "整理记录" || a.organization.New {
+					t.Fatal("design J01: cancel must return to organization records")
 				}
 			} else if a.page != "整理记录" {
 				t.Fatal("failed or retired draft changed navigation")
@@ -46,7 +46,7 @@ func TestOrganizationChooserCancelRequiresDurableDraftAndKeepsIdentity(t *testin
 			if persisted.ID != "same-preview" || !persisted.New || len(persisted.Inputs) != 2 || persisted.Inputs[0].Memory != "manual" || persisted.Inputs[0].Revision != 5 {
 				t.Fatal("cancel changed durable draft identity/materials")
 			}
-			if len(a.organization.Chosen) != 2 || a.organization.Order[0] != "manual" || a.organization.Start != nil || !a.organization.New {
+			if len(a.organization.Chosen) != 2 || a.organization.Order[0] != "manual" || a.organization.Start != nil {
 				t.Fatal("cancel discarded or started draft")
 			}
 		})

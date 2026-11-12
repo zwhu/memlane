@@ -152,6 +152,17 @@ func (m *Manager) validURL(u *url.URL) error {
 }
 
 func (m *Manager) Feed(ctx context.Context, source string) (Feed, error) {
+	return m.feed(ctx, source, true)
+}
+
+// PreviewFeed verifies a candidate with the same signature/compatibility gates
+// without replacing the running installation's cached source. Its descriptors
+// may prepare side-by-side assets; this does not activate an engine.
+func (m *Manager) PreviewFeed(ctx context.Context, source string) (Feed, error) {
+	return m.feed(ctx, source, false)
+}
+
+func (m *Manager) feed(ctx context.Context, source string, persist bool) (Feed, error) {
 	var feed Feed
 	u, err := url.Parse(source)
 	if err != nil {
@@ -182,6 +193,9 @@ func (m *Manager) Feed(ctx context.Context, source string) (Feed, error) {
 	feed, err = m.acceptFeed(data)
 	if err != nil {
 		return feed, err
+	}
+	if !persist {
+		return feed, nil
 	}
 	cache := struct {
 		Source string          `json:"source"`

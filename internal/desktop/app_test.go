@@ -37,7 +37,7 @@ func TestShellWithoutEngine(t *testing.T) {
 		t.Fatalf("copy lost Unicode text: %q", tt.Clipboard())
 	}
 	click("设置")
-	click("返回日常首页")
+	click("总览")
 	if _, exists := tt.Find("全部记忆"); exists {
 		t.Fatal("superseded all-memory sidebar entry returned")
 	}
@@ -51,7 +51,8 @@ func TestShellWithoutEngine(t *testing.T) {
 		t.Fatal("disabled save fabricated success")
 	}
 	click("设置")
-	click("窗口与退出")
+	click("记忆服务")
+	click("窗口与退出选项")
 	click("放大")
 	if app.zoom <= 1 {
 		t.Fatal("zoom did not change")

@@ -2,6 +2,8 @@
 import { spawn } from "node:child_process";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { PiCaptureCLIBroker } from "./pi-official-capture-broker.ts";
+import { registerPiOfficialCaptureHost } from "./pi-official-capture-host.ts";
 
 const config = __MEMLANE_CONFIG__;
 
@@ -19,6 +21,9 @@ const tools = [
 ];
 
 export default function (pi: ExtensionAPI) {
+  if (config.capture_supported && !process.env.MEMLANE_TOOL_MODE && (!process.env.MEMLANE_USAGE_CHANNEL || process.env.MEMLANE_USAGE_CHANNEL === "daily")) {
+    registerPiOfficialCaptureHost(pi, new PiCaptureCLIBroker(config));
+  }
   for (const tool of tools.filter(tool=>
     (process.env.MEMLANE_TOOL_MODE!=="connection" || tool.name==="memory_scopes") &&
     (process.env.MEMLANE_TOOL_MODE!=="initialization" || ["memory_initialization_get","memory_initialization_status","memory_initialize"].includes(tool.name)))) {

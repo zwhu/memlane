@@ -17,6 +17,10 @@ def main():
     if not path.is_absolute() or path.is_symlink() or path.stat().st_mode & 0o077 or path.stat().st_size > 65536:
         parser.error("需要明确的私有 Cognee 配置文件")
     settings = json.loads(path.read_text())
+    from cognee_component_contract import coding_contract
+    contract = coding_contract(Path(getattr(sys, '_MEIPASS', Path(__file__).parent)))
+    if contract is not None and (not isinstance(settings.get('processing_owner'), str) or not Path(settings['processing_owner']).is_absolute()):
+        parser.error('coding-memory requires its explicit daemon owner configuration')
     root = Path(settings["root"])
     if root != path.parent / "cognee" or root.is_symlink():
         parser.error("Cognee 数据只能位于该 App 的独立数据根")
@@ -42,10 +46,17 @@ def main():
                "EMBEDDING_PROVIDER", "EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS", "EMBEDDING_MAX_TOKENS",
                "DEFAULT_USER_EMAIL", "DEFAULT_USER_PASSWORD", "HF_HOME", "HF_HUB_OFFLINE")
     for name in allowed:
+        # The coding component has no ambient LLM route. Model requests only
+        # receive the explicitly enabled daemon configuration in their context.
+        if contract is not None and name.startswith('LLM_'):
+            continue
         value = settings.get("environment", {}).get(name)
         if value is not None:
             environment[name] = str(value)
     os.environ.update(environment)
+    if contract is not None:
+        os.environ['DISTILLATION_MODE'] = 'coding'
+        os.environ['MEMLANE_COGNEE_SOURCE_SHA'] = contract['service_commit']
     import litellm
     import uvicorn
     # Local services can initialize before the user selects an inference Agent.
@@ -69,6 +80,9 @@ def main():
     from cognee.api.client import app
     from cognee_browsing import install
     install(app)
+    if settings.get('processing_owner'):
+        from cognee_coding_memory import install as install_managed_improve
+        install_managed_improve(settings['processing_owner'])
     bound = socket.socket()
     target = path.parent / "cognee-service-state.json"
     port = 0

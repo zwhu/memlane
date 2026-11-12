@@ -80,6 +80,26 @@ func (s *Server) pruneCode(ctx context.Context) {
 	s.mu.Unlock()
 }
 func (s *Server) codeAction(ctx context.Context, a records.CodeAction) (records.CodeState, error) {
+	proof := a
+	if proof.Official == nil && (a.Kind == "enable" || a.Kind == "refresh") {
+		var err error
+		if a.Kind == "enable" {
+			proof.Official, err = s.store.OfficialCodeScopeForWorkspace(ctx, a.Project, a.Path)
+		} else {
+			var current records.CodeState
+			current, err = s.store.Code(ctx, a.ID)
+			proof.Project, proof.Path, proof.Official = current.Project, current.Worktree, current.Official
+		}
+		if err != nil {
+			return records.CodeState{}, err
+		}
+		proof.Kind = "enable"
+	}
+	if proof.Official != nil {
+		if err := s.verifyOfficialCodeScope(ctx, proof); err != nil {
+			return records.CodeState{}, err
+		}
+	}
 	s.codeMu.Lock()
 	defer s.codeMu.Unlock()
 	if s.codeStopping {
@@ -109,6 +129,11 @@ func (s *Server) refreshCode(ctx context.Context, c records.CodeState) {
 		return
 	}
 	c = current
+	if c.Official != nil {
+		s.codeMu.Unlock()
+		s.refreshOfficialCode(ctx,c)
+		return
+	}
 	// An unavailable source is retried on explicit refresh, not every poll. A
 	// failed extraction with a captured digest may retry after actual changes.
 	if c.State == "failed" && (c.ObservedDigest == "" || codeNeedsExplicitRetry(c.Error)) {
@@ -271,6 +296,9 @@ func (s *Server) queryCode(ctx context.Context, q records.CodeQuery) (records.Co
 	}
 	if !c.Enabled {
 		return out, &records.AccessError{Code: "code_disabled", Message: "enable code graph in Memlane"}
+	}
+	if c.Official != nil {
+		return out, &records.AccessError{Code: "official_code_backend_required", Message: "official code queries require the managed Cognee backend"}
 	}
 	if c.Snapshot == "" || c.Manifest == nil {
 		return out, &records.AccessError{Code: "code_not_ready", Message: "code snapshot is not ready"}

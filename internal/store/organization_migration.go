@@ -2,7 +2,7 @@ package store
 
 import "database/sql"
 
-const SchemaVersion = 31
+const SchemaVersion = 38
 
 // These tables exist only for the shipped summary/tag flow. Lease and schedule
 // policy are deliberately added by their own delivery slices.
@@ -281,6 +281,65 @@ func finishMigration(tx *sql.Tx, formal bool) error {
 		}
 		if version == 30 {
 			if err := migrateProcessingEvidence(tx); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == 31 {
+			if err := migrateSessionProcessing(tx); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == 32 {
+			if err := migrateOfficialCaptureReceipts(tx); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == 33 {
+			if err := migratePiCaptureConsent(tx); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == 34 {
+			if err := migratePiCaptureReadGrants(tx); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == 35 {
+			if err := migrateCodingMemoryGrants(tx); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == 36 {
+			if err := migrateOfficialCodeScopes(tx); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version == 37 {
+			// Official task/receipt JSON now uses an explicit backend envelope.
+			// Bump the reader boundary even without adding tables so older
+			// binaries cannot interpret those receipts as local worker results.
+			if _, err := tx.Exec(`PRAGMA user_version=38`); err != nil {
 				return err
 			}
 		}

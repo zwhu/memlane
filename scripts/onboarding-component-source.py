@@ -21,8 +21,12 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root",required=True,type=Path)
     parser.add_argument("--archives",required=True,type=Path)
+    parser.add_argument("--development", action="store_true", help="为当前本机开发环境提供真实组件；不创建运行库或启动引擎")
     args=parser.parse_args();args.root.mkdir(parents=True,exist_ok=True,mode=0o700)
-    assert json.loads((args.root.parent/"synthetic-only.json").read_text())["synthetic_only"]
+    if (args.root/'source-info.json').exists():
+        raise SystemExit('source root already has an owner record; inspect its process before choosing a new invocation')
+    if not args.development:
+        assert json.loads((args.root.parent/"synthetic-only.json").read_text())["synthetic_only"]
     archives={};components=[]
     for raw in json.loads(args.archives.read_text()):
         path=Path(raw).resolve()
@@ -64,7 +68,7 @@ def main():
     server=ThreadingHTTPServer(("127.0.0.1",0),Handler);base=f"http://127.0.0.1:{server.server_port}"
     for descriptor in components:descriptor["url"]=base+"/components/"+descriptor["id"]+".tar.gz"
     public=base64.b64encode(key.public_key().public_bytes(serialization.Encoding.Raw,serialization.PublicFormat.Raw)).decode()
-    (args.root/"source-info.json").write_text(json.dumps({"source":base+"/components.json","public_key":public,"allow_local_test_source":True,"actual_components":components,"public_distribution":False},indent=2))
+    (args.root/"source-info.json").write_text(json.dumps({"source":base+"/components.json","public_key":public,"allow_local_test_source":True,"actual_components":components,"public_distribution":False,"development_source":args.development},indent=2))
     server.serve_forever()
 
 if __name__=="__main__":main()

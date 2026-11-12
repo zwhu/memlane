@@ -5,7 +5,6 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"path/filepath"
 	"testing"
 
@@ -15,7 +14,7 @@ import (
 	"github.com/zwhu/memlane/internal/store"
 )
 
-func TestOrganizationMoveAgentSaveReplayScope(t *testing.T) {
+func TestOrganizationMoveAgentSaveReplayKeepsCurrentDataAndProvenance(t *testing.T) {
 	ctx := context.Background()
 	db, e := store.Open(filepath.Join(t.TempDir(), "scope-fixture.sqlite"))
 	if e != nil {
@@ -31,7 +30,7 @@ func TestOrganizationMoveAgentSaveReplayScope(t *testing.T) {
 	a, b := uuid.NewString(), uuid.NewString()
 	_, e = db.DB.Exec(`INSERT INTO scopes(id,kind,name,path) VALUES(?,'project','A','/synthetic/a'),(?,'project','B','/synthetic/b')`, a, b)
 	check(e)
-	connection, e := db.ConfigureConnection(ctx, records.ConnectionDraft{Agent: "codex", Name: "scope fixture", Project: a, AllowedScopes: []string{a}})
+	connection, e := db.ConfigureConnection(ctx, records.ConnectionDraft{Agent: "codex", Name: "group fixture", Project: a})
 	check(e)
 	request := records.AgentRequest{Protocol: 1, ConnectionID: connection.ID, Generation: connection.Generation, Tool: "memory_save", Arguments: records.AgentArguments{Scope: a, OperationID: "stable-save", Text: "A original body", Source: &records.AgentSource{Fragment: "private A original fragment"}}}
 	s := &Server{store: db}
@@ -54,22 +53,28 @@ func TestOrganizationMoveAgentSaveReplayScope(t *testing.T) {
 	_, e = db.Apply(ctx, records.Mutation{Kind: "edit", OperationID: uuid.NewString(), Dataset: b, Memory: saved.Record.Memory, ExpectedRevision: 2, Text: "B private current body"})
 	check(e)
 	replay, e := s.agent(ctx, request, svc)
-	var denied *records.AccessError
-	if replay != nil || !errors.As(e, &denied) || denied.Code != "scope_denied" {
-		t.Fatal("save replay leaked moved current version", replay, e)
+	check(e)
+	receipt := replay.(records.SaveReceipt)
+	if !receipt.Persisted || receipt.SavedRevision != 1 || receipt.Record.Dataset != b || receipt.Record.Revision != 3 {
+		t.Fatal("save replay lost original receipt or current version", replay)
 	}
 	v, e := db.Current(ctx, saved.Record.Memory)
 	check(e)
 	if v.Revision != 3 {
 		t.Fatal("replay changed knowledge")
 	}
-	connectionB, e := db.ConfigureConnection(ctx, records.ConnectionDraft{Agent: "codex", Name: "B fixture", Project: b, AllowedScopes: []string{b}})
+	connectionB, e := db.ConfigureConnection(ctx, records.ConnectionDraft{Agent: "codex", Name: "B fixture", Project: b})
 	check(e)
 	get := records.AgentRequest{Protocol: 1, ConnectionID: connectionB.ID, Generation: connectionB.Generation, Tool: "memory_get", Arguments: records.AgentArguments{Memory: v.Memory, Scope: b}}
 	public, e := s.agent(ctx, get, svc)
 	check(e)
 	filtered := public.(records.Version)
-	if filtered.Text != v.Text || filtered.Original != "" || filtered.SourceDetail != nil {
-		t.Fatal("get leaked old scope", filtered)
+	if filtered.Text != v.Text || filtered.Original == "" || filtered.SourceDetail == nil {
+		t.Fatal("get lost original provenance", filtered)
+	}
+	get.ConnectionID, get.Generation = connection.ID, connection.Generation
+	get.Arguments.Scope = ""
+	if _, e = s.agent(ctx, get, svc); e != nil {
+		t.Fatal("current project was treated as a read permission", e)
 	}
 }

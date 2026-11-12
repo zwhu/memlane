@@ -69,6 +69,7 @@ func TestSourceReaderCheckingAndChangedSourcesDoNotExposeOldText(t *testing.T) {
 		old := a.reader.Window.Body
 		if state == "checking" {
 			a.reader.Loading = true
+			a.reader.Result = records.SourceRecord{} // Initial verification has no previous verified receipt.
 		} else {
 			a.reader.Result.State = state
 		}

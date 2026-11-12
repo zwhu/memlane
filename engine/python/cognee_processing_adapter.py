@@ -36,6 +36,17 @@ class ProcessingAdapter:
             raise ValueError('unsupported_material_model_arguments')
         if len((text_input + system_prompt).encode()) > 1024 * 1024:
             raise ValueError('material_prompt_unbounded')
+        # The official connection probe and several SDK tasks request str.
+        # Keep the private gateway schema-only while returning the SDK's
+        # requested string, with no unvalidated plain-completion fallback.
+        string_output = response_model is str
+        if string_output:
+            from pydantic import BaseModel, ConfigDict, StrictStr
+            class StringOutput(BaseModel):
+                model_config = ConfigDict(extra='forbid')
+                text: StrictStr
+            response_model = StringOutput
+            system_prompt += '\nReturn the requested text in the JSON object field "text".'
         try:
             schema = response_model.model_json_schema()
             schema_size = len(json.dumps(schema).encode())
@@ -80,7 +91,8 @@ class ProcessingAdapter:
             if message.get('tool_calls') or message.get('refusal') or not isinstance(message.get('content'), str):
                 raise _SafeAdapterFailure('material_model_response_invalid')
             stage = 'response_schema'
-            return response_model.model_validate_json(message['content'])
+            validated = response_model.model_validate_json(message['content'])
+            return validated.text if string_output else validated
         except _SafeAdapterFailure as failure:
             raise ValueError(str(failure)) from None
         except Exception as failure:

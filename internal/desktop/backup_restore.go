@@ -51,12 +51,19 @@ func (a *App) backupRestorePreview(c *ui.Context, r records.BackupReceipt) {
 }
 
 func (a *App) backupRestoreDescription(c *ui.Context, r records.BackupReceipt) {
-	ui.Text(c, "恢复整个本机记忆库").FontSize(design.Heading).Bold()
-	ui.Text(c, fmt.Sprintf("恢复到 %s 的 schema %d 快照。备份之后的更改保存在恢复前副本中；原文、来源与历史按该快照恢复。", backupDisplayTime(r.CreatedAt), r.Schema)).TextColor(c.Theme().TextMuted)
-	a.maintenanceTechnicalDetails(c, "restore-preview:"+r.ID, func() {
-		ui.Text(c, "备份时间 · "+r.CreatedAt).FontSize(11).Selectable()
+	settingsHeading(c, "恢复预览", "请确认所选快照及替换范围")
+	firstLaunchNotice(c, "恢复范围", "现有恢复仅替换 Memlane 本地业务快照，官方 Cognee 独立数据不会随之回退。开始前先创建恢复前副本。")
+	settingsCard(c, "settings-restore-scope", "范围对照", func() {
+		settingsFact(c, "所选本地快照", backupDisplayTime(r.CreatedAt), fmt.Sprintf("schema %d", r.Schema))
+		ui.Divider(c)
+		settingsFact(c, "当前库", "先保留恢复前副本", "保留")
+		ui.Divider(c)
+		settingsFact(c, "服务", "恢复过程停止，结束后仍保持停止", "需明确启动")
+		ui.Divider(c)
+		settingsFact(c, "连接与计划", "重新验证连接，明确启用计划", "不自动启用")
 	})
-	ui.Text(c, "确认后停止服务与引擎，撤销旧 Agent 连接，停用全部整理计划和代码索引，待审核建议与未提交初始化失效。未确认草稿不会带入恢复后的记忆库。完成后 App 重新打开，服务保持停止；请明确启动并重新连接 Agent。").TextColor(c.Theme().TextMuted)
+	a.maintenanceTechnicalDetails(c, "restore-preview:"+r.ID, func() { ui.Text(c, "备份时间 · "+r.CreatedAt).FontSize(11).Selectable() })
+	ui.Text(c, "确认后停止服务与引擎，撤销旧 Agent 连接，停用全部整理计划和代码索引，待审核建议与未提交初始化失效。未确认草稿不会带入恢复后的记忆库。完成后 App 重新打开，服务保持停止；请明确启动并重新连接 Agent。").FontSize(design.Small).TextColor(design.Muted)
 }
 
 func (a *App) backupRestoreActions(c *ui.Context) {

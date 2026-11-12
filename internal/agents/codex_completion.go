@@ -21,6 +21,7 @@ type CodexCompletionReceipt struct {
 	Turn                 string `json:"turn"`
 	PermissionProfile    string `json:"permission_profile"`
 	SchemaDigest         string `json:"schema_digest"`
+	SourceSchemaDigest   string `json:"source_schema_digest,omitempty"`
 	OutputSchemaAccepted bool   `json:"output_schema_accepted"`
 	FinalSchemaValid     bool   `json:"final_schema_valid"`
 	ToolFree             bool   `json:"tool_free"`
@@ -247,7 +248,7 @@ func resolveCodexCompletion(ctx context.Context, o CodexCompletionOptions, selec
 	}
 	envDigest := hash(mustJSON(credentialEnvironment))
 	plan = CodexCompletionBinding{Version: probe.Version, Provider: provider, Model: model, executable: o.Executable, authHome: o.AuthHome, guard: o.GuardExecutable, selected: selected, configDigest: configDigest, authDigest: authDigest, environmentDigest: envDigest}
-	plan.ConfigurationDigest = hash(mustJSON([]any{"memlane-codex-completion-v1", probe.Version, selected, configDigest, authDigest, envDigest}))
+	plan.ConfigurationDigest = hash(mustJSON([]any{CodexCompletionProtocol, probe.Version, selected, configDigest, authDigest, envDigest}))
 	return plan, nil
 }
 
@@ -319,7 +320,7 @@ func (b CodexCompletionBinding) unchanged() error {
 }
 
 // RunCodexCompletion has one fresh ephemeral thread/turn and no registered or
-// built-in tools. OutputSchema is passed intact, then checked locally in full.
+// built-in tools. Strict transport and original schemas are both checked locally.
 // The shared carrier's Pi HTTP status remains zero; Codex has its own receipt.
 func RunCodexCompletion(ctx context.Context, o CodexCompletionOptions) (out PiCompletionExecution, resultErr error) {
 	out.Events, out.Items = map[string]int{}, map[string]int{}
@@ -347,6 +348,18 @@ func RunCodexCompletion(ctx context.Context, o CodexCompletionOptions) (out PiCo
 		return out, codexFailure("codex_schema_invalid", nil)
 	}
 	resolved, err := schema.Resolve(nil)
+	if err != nil {
+		return out, codexFailure("codex_schema_invalid", nil)
+	}
+	transportSchema, err := codexCompletionSchema(o.OutputSchema)
+	if err != nil || len(transportSchema) > 65536 {
+		return out, codexFailure("codex_schema_unsupported", nil)
+	}
+	var strictSchema jsonschema.Schema
+	if json.Unmarshal(transportSchema, &strictSchema) != nil {
+		return out, codexFailure("codex_schema_invalid", nil)
+	}
+	strictResolved, err := strictSchema.Resolve(nil)
 	if err != nil {
 		return out, codexFailure("codex_schema_invalid", nil)
 	}
@@ -463,11 +476,11 @@ func RunCodexCompletion(ctx context.Context, o CodexCompletionOptions) (out PiCo
 	}
 	out.Observation = &CompletionObservation{IsolationConfigured: true, IsolationPolicy: "codex_private_ephemeral_no_tools_v1"}
 	out.ResolvedProvider, out.ResolvedModel = started.Provider, started.Model
-	out.Codex = &CodexCompletionReceipt{Thread: started.Thread.ID, PermissionProfile: started.Profile.ID, SchemaDigest: hash(o.OutputSchema), ToolFree: true}
+	out.Codex = &CodexCompletionReceipt{Thread: started.Thread.ID, PermissionProfile: started.Profile.ID, SchemaDigest: hash(transportSchema), SourceSchemaDigest: hash(o.OutputSchema), ToolFree: true}
 	stage = "turn"
 	rpc.nextID++
 	request := rpc.nextID
-	if err = rpc.send(run, map[string]any{"id": request, "method": "turn/start", "params": map[string]any{"threadId": started.Thread.ID, "input": []any{map[string]any{"type": "text", "text": o.Prompt, "text_elements": []any{}}}, "outputSchema": json.RawMessage(o.OutputSchema), "permissions": "memlane_completion"}}); err != nil {
+	if err = rpc.send(run, map[string]any{"id": request, "method": "turn/start", "params": map[string]any{"threadId": started.Thread.ID, "input": []any{map[string]any{"type": "text", "text": o.Prompt, "text_elements": []any{}}}, "outputSchema": transportSchema, "permissions": "memlane_completion"}}); err != nil {
 		return out, codexFailure("codex_turn_failed", err)
 	}
 	var final string
@@ -596,7 +609,7 @@ func RunCodexCompletion(ctx context.Context, o CodexCompletionOptions) (out PiCo
 	}
 	out.Observation.ResponseComplete = true
 	var value any
-	if json.Unmarshal([]byte(final), &value) != nil || resolved.Validate(value) != nil {
+	if json.Unmarshal([]byte(final), &value) != nil || resolved.Validate(value) != nil || strictResolved.Validate(value) != nil {
 		return out, codexFailure("codex_schema_failed", nil)
 	}
 	if err = plan.unchanged(); err != nil {

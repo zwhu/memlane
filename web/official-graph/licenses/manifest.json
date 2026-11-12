@@ -1,0 +1,14 @@
+{
+  "@mantine/core@8.3.14": {
+    "file": "@mantine_core@8.3.14.txt",
+    "url": "https://raw.githubusercontent.com/mantinedev/mantine/ac8b0a2db3d8801e2c6a22acd594bfc3b9b16ee9/LICENSE",
+    "gitHead": "ac8b0a2db3d8801e2c6a22acd594bfc3b9b16ee9",
+    "sha256": "61c765e625bc25d55143f14de7554685c52f21d9e671d3d204304691a163d06a"
+  },
+  "@mantine/hooks@8.3.14": {
+    "file": "@mantine_hooks@8.3.14.txt",
+    "url": "https://raw.githubusercontent.com/mantinedev/mantine/4f34d7fb0b5032adf70567b0f9be817ce8f7fae8/LICENSE",
+    "gitHead": "4f34d7fb0b5032adf70567b0f9be817ce8f7fae8",
+    "sha256": "61c765e625bc25d55143f14de7554685c52f21d9e671d3d204304691a163d06a"
+  }
+}

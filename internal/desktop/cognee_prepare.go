@@ -31,7 +31,7 @@ func (a *App) configureOfficialPreparation(controller *RuntimeController) {
 	if controller.Config.Official == nil {
 		return
 	}
-	controller.Official = &official.Controller{Root: filepath.Join(controller.Config.Root, "official"), Config: *controller.Config.Official}
+	controller.Official = &official.Controller{Root: filepath.Join(controller.Config.Root, "official"), ServiceRoot: filepath.Join(controller.Config.Root, "data"), Config: *controller.Config.Official}
 	s := &a.officialPreparation
 	s.UsePi = true
 	home, _ := os.UserHomeDir()

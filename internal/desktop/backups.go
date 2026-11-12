@@ -32,14 +32,8 @@ type BackupUI struct {
 
 func (a *App) backupPage(c *ui.Context) {
 	b := &a.backups
-	ui.Row(c).Shrink(0).MinHeight(54).Padding(14, 28).Gap(10).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).Children(func() {
-		ui.Text(c, "备份与恢复").FontSize(design.Small).TextColor(design.Muted)
-		ui.Spacer(c)
-		if b.RestoreSelection.ID == "" {
-			quietButton(c, "创建一致性备份").Key("backup-create").Disabled(a.libraryContext == nil || b.Busy || b.RestoreLocked).OnClick(a.createBackup)
-		}
-	})
-	ui.Scroll(c.Key("maintenance-backup-body")).Grow(1).MinHeight(0).Padding(28).Gap(20).Children(func() {
+
+	ui.Scroll(c.Key("maintenance-backup-body")).TrackScroll(a.settingsScrollState("backups")).Grow(1).MinHeight(0).Padding(28).Gap(20).Children(func() {
 		a.maintenanceStorageNotice(c, "backup", b.Operation)
 		a.maintenanceStorageNotice(c, "restore", b.RestoreOperation)
 		if b.RestoreSelection.ID != "" {
@@ -55,7 +49,9 @@ func (a *App) backupPage(c *ui.Context) {
 		a.backupBody(c, false)
 	})
 	ui.Row(c).Key("maintenance-backup-footer").MinHeight(64).Shrink(0).Padding(14, 24).Gap(10).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
-		ui.Text(c, "备份不包含模型缓存与访问凭据").FontSize(10).TextColor(design.Muted).Grow(1).MinWidth(0)
+		if b.RestoreSelection.ID == "" && !b.Creating {
+			quietButton(c, "创建一致性备份").Key("backup-create").Disabled(a.libraryContext == nil || b.Busy || b.RestoreLocked).OnClick(a.createBackup)
+		}
 		if b.RestoreSelection.ID != "" {
 			a.backupRestoreActions(c)
 		} else if b.Creating {
@@ -72,11 +68,8 @@ func (a *App) backupSettings(c *ui.Context) {
 
 func (a *App) backupBody(c *ui.Context, inline bool) {
 	b := &a.backups
-	ui.Column(c).Gap(8).Children(func() {
-		ui.Text(c, "本机一致性快照").FontSize(design.Small).TextColor(design.Muted)
-		ui.Text(c, "给知识留下可恢复的副本").FontSize(design.Heading).Bold()
-		ui.Text(c, "快照包含知识、原始记录、来源、版本和相关业务记录。引擎、模型和代码仓库单独管理；在线备份上限 64 MiB。").TextColor(design.Muted)
-	})
+	settingsHeading(c, "备份与恢复", "备份包含什么，以实际备份格式和校验结果为准。")
+	firstLaunchNotice(c, "备份范围", "现有快照覆盖 Memlane 本地业务数据，不包含官方 Cognee 独立存储、模型缓存与访问凭据。官方数据完整备份能力待接通。")
 	if inline {
 		quietButton(c, "创建一致性备份").Key("backup-create").Disabled(a.libraryContext == nil || b.Busy || b.RestoreLocked).OnClick(a.createBackup)
 	}
@@ -110,11 +103,16 @@ func (a *App) backupBody(c *ui.Context, inline bool) {
 	if !b.Loaded && b.CatalogueError == "" {
 		ui.Text(c, "尚未读取备份记录。").TextColor(c.Theme().TextMuted)
 	}
-	for _, r := range b.Items[min(b.Offset, len(b.Items)):min(b.Offset+10, len(b.Items))] {
+	for index, r := range b.Items[min(b.Offset, len(b.Items)):min(b.Offset+10, len(b.Items))] {
+		if index == 0 && b.Offset == 0 {
+			ui.Text(c, "最新备份").Bold()
+		} else if index == 1 || index == 0 {
+			ui.Text(c, "历史备份").Bold()
+		}
 		if b.SelectedID == "" {
 			b.SelectedID = r.ID
 		}
-		ui.Column(c).Key("backup-record-"+r.ID).Padding(16, 0).Gap(8).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
+		ui.Column(c).Key("backup-record-"+r.ID).Padding(20).Gap(10).Border(1, design.Border).Radius(7).Children(func() {
 			if !inline {
 				quietButton(c, "选择备份 · "+backupDisplayTime(r.CreatedAt)).Key("backup-select-" + r.ID).AlignSelf(ui.Start).Bold().OnClick(func() { b.SelectedID = r.ID })
 				if b.SelectedID == r.ID {

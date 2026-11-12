@@ -54,7 +54,7 @@ type ProjectOrganizerUI struct {
 
 func (a *App) projectKnowledgeEmpty() bool {
 	return a.page == "项目" && a.scope != "" && (a.recordKind == "" || a.recordKind == "knowledge") &&
-		!a.loading && a.libraryError == "" && a.readingSearch == "" && a.readingFilter == "" && !a.readingFilters.active() &&
+		(a.hasCurrentListSnapshot() || !a.loading && a.libraryError == "") && a.readingSearch == "" && a.readingFilter == "" && !a.readingFilters.active() &&
 		a.readingCountsRoute == a.page+":"+a.scope && a.readingKnowledgeTotal != nil && a.readingRawTotal != nil && *a.readingKnowledgeTotal == 0
 }
 

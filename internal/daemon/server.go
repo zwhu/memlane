@@ -42,6 +42,7 @@ type Server struct {
 	recoveryOwner        string
 	recoveryGeneration   int64
 	cogneeSubmissions    *cogneeSubmissionOwner
+	sessionProcessing    *sessionProcessingOwner
 	backupMu             sync.Mutex
 	backupRuns           map[string]*backupRun
 	backupCreate         func(context.Context, string) (records.BackupReceipt, error)
@@ -61,6 +62,7 @@ type Server struct {
 	codeCapture          func(context.Context, string, string) (codegraph.Manifest, error)
 	codeStopping         bool
 	codeRuns             map[string]context.CancelFunc
+	officialCodeRuns     map[string]*officialCodeRun
 	codeWake             chan struct{}
 	codeCleanupError     string
 	proposalGuard        string
@@ -176,6 +178,11 @@ func Run(ctx context.Context, config Config) error {
 		return err
 	}
 	defer s.cogneeSubmissions.Close()
+	s.sessionProcessing, err = newSessionProcessingOwner(ctx, s)
+	if err != nil {
+		return err
+	}
+	defer s.sessionProcessing.Close()
 	s.codeRuns = make(map[string]context.CancelFunc)
 	s.codeWake = make(chan struct{}, 1)
 	path := SocketPath(config.Root)
@@ -237,6 +244,7 @@ func Run(ctx context.Context, config Config) error {
 			s.projectWG.Wait()
 			s.agentBatchWG.Wait()
 			s.cogneeSubmissions.Close()
+			s.sessionProcessing.Close()
 			_ = db.InterruptMerges(context.Background())
 			if finalErr := s.finalizeOrganizationShutdown(context.Background()); finalErr != nil {
 				return errors.Join(e, finalErr)
@@ -255,6 +263,7 @@ func Run(ctx context.Context, config Config) error {
 	s.projectWG.Wait()
 	s.agentBatchWG.Wait()
 	s.cogneeSubmissions.Close()
+	s.sessionProcessing.Close()
 	if err = s.finalizeOrganizationShutdown(context.Background()); err != nil {
 		return err
 	}
@@ -452,6 +461,21 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 	}
 	svc := memory.Service{Store: s.store, Engine: selected}
 	switch r.Op {
+	case "pi_capture_settings":
+		if r.PiCaptureSettingsQuery == nil {
+			return nil, &records.AccessError{Code: "invalid_request", Message: "pi capture settings query required"}
+		}
+		s.agentAccess.RLock()
+		defer s.agentAccess.RUnlock()
+		return s.store.PiCaptureSettings(operation, *r.PiCaptureSettingsQuery, piCapturePolicyDigest)
+	case "pi_capture_submit", "pi_capture_inspect":
+		return s.processPiCaptureBatch(operation, r.PiCaptureBatch, r.Op == "pi_capture_inspect")
+	case "pi_capture_consent_review":
+		return s.reviewPiCaptureConsent(operation, r.PiCaptureConsentReview, r.UserConfirmed)
+	case "pi_capture_consent_disable":
+		return nil, s.disablePiCaptureConsent(operation, r.PiCaptureConsentDisable, r.UserConfirmed)
+	case "pi_capture_authorize":
+		return s.authorizePiCapture(operation, r.AgentRequest)
 	case "capture_route_confirm":
 		return s.confirmCaptureRoute(operation, r.CaptureRouteConfirmation, r.UserConfirmed)
 	case "capture_deliver":
@@ -652,11 +676,43 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 			return nil, &records.AccessError{Code: "invalid_request", Message: "scoped source query required"}
 		}
 		return s.readSource(operation, *r.SourceRead)
+	case "official_documents", "official_document_text", "official_document_session", "official_document_source", "official_knowledge", "official_knowledge_text":
+		if r.DocumentQuery == nil {
+			return nil, &records.AccessError{Code: "invalid_request", Message: "scoped official document query required"}
+		}
+		if r.Op == "official_knowledge" {
+			return s.readOfficialDocumentMode(operation, *r.DocumentQuery, "knowledge")
+		}
+		if r.Op == "official_document_source" {
+			return s.readOfficialDocumentMode(operation, *r.DocumentQuery, "import_source")
+		}
+		if r.Op == "official_knowledge_text" {
+			return s.readOfficialDocumentMode(operation, *r.DocumentQuery, "knowledge_text")
+		}
+		if r.Op == "official_document_session" {
+			return s.readOfficialDocumentMode(operation, *r.DocumentQuery, "session")
+		}
+		return s.readOfficialDocument(operation, *r.DocumentQuery, r.Op == "official_document_text")
+	case "official_sessions", "official_session":
+		if r.SessionQuery == nil {
+			return nil, &records.AccessError{Code: "invalid_request", Message: "scoped official session query required"}
+		}
+		return s.readOfficialSession(operation, *r.SessionQuery, r.Op == "official_session")
+	case "official_source_session":
+		if r.SourceRead == nil {
+			return nil, &records.AccessError{Code: "invalid_request", Message: "verified lineage query required"}
+		}
+		return s.readOfficialSourceSession(operation, *r.SourceRead)
 	case "cognee_bind":
 		if !r.UserConfirmed || r.CogneeBinding == nil {
 			return nil, &records.AccessError{Code: "confirmation_required", Message: "approve Cognee service and project binding in Memlane"}
 		}
 		return s.bindCognee(operation, *r.CogneeBinding)
+	case "cognee_read_reauthorize":
+		if !r.UserConfirmed || r.CogneeReadReauthorization == nil {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "review the current project read authorization in Memlane"}
+		}
+		return s.reauthorizeCogneeRead(operation, *r.CogneeReadReauthorization)
 	case "cognee_authorize":
 		if !r.UserConfirmed || r.CogneeAuthorization == nil {
 			return nil, &records.AccessError{Code: "confirmation_required", Message: "approve independent Cognee authorization in Memlane"}
@@ -669,6 +725,55 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 			return nil, &records.AccessError{Code: "confirmation_required", Message: "confirm the current project's local material access"}
 		}
 		return s.authorizeProjectCogneeMaterial(operation, *r.CogneeProjectAuthorization)
+	case "coding_memory_grant_get":
+		if r.CodingMemoryGrantBinding == nil {
+			return nil, records.MergeError("invalid_request")
+		}
+		return s.store.CodingMemoryGrant(operation, *r.CodingMemoryGrantBinding)
+	case "coding_memory_grant_change":
+		if !r.UserConfirmed || r.CodingMemoryGrantChange == nil {
+			return nil, records.MergeError("confirmation_required")
+		}
+		return s.changeCodingMemoryGrant(operation, *r.CodingMemoryGrantChange)
+	case "official_code_job_authorize":
+		return s.authorizeOfficialCodeExecution(operation, r.CodingMemoryCapability, r.OfficialCodeJob)
+	case "coding_memory_trigger", "coding_memory_task":
+		if r.CodingMemoryTrigger == nil || s.sessionProcessing == nil {
+			return nil, records.MergeError("unsupported_processing")
+		}
+		if r.Op == "coding_memory_trigger" {
+			return s.sessionProcessing.StartAutomatic(operation, r.CodingMemoryCapability, *r.CodingMemoryTrigger)
+		}
+		return s.sessionProcessing.AutomaticTask(operation, r.CodingMemoryCapability, *r.CodingMemoryTrigger)
+	case "session_processing_start":
+		if !r.UserConfirmed || r.SessionProcessing == nil {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "confirm the selected official session and processing usage"}
+		}
+		if r.SessionProcessing.AutomaticGrant != nil {
+			return nil, records.MergeError("service_authorization_required")
+		}
+		if s.sessionProcessing == nil {
+			return nil, records.MergeError("unsupported_processing")
+		}
+		return s.sessionProcessing.Start(operation, *r.SessionProcessing)
+	case "session_processing_get":
+		return s.store.SessionProcessingTask(operation, r.SessionProcessingID)
+	case "session_processing_latest":
+		if r.SessionProcessing == nil {
+			return nil, records.MergeError("invalid_request")
+		}
+		if _, err := s.sessionBinding(operation, sessionProcessingQuery(*r.SessionProcessing)); err != nil {
+			return nil, err
+		}
+		return s.store.LatestSessionProcessing(operation, *r.SessionProcessing)
+	case "session_processing_cancel":
+		if !r.UserConfirmed {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "confirm stopping this official session processing task"}
+		}
+		if s.sessionProcessing == nil {
+			return nil, records.MergeError("unsupported_processing")
+		}
+		return s.sessionProcessing.Cancel(operation, r.SessionProcessingID)
 	case "cognee_submission_latest":
 		return s.store.LatestCogneeSubmission(operation, r.Scope)
 	case "cognee_submission_start":
@@ -694,6 +799,17 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 			return nil, &records.AccessError{Code: "confirmation_required", Message: "approve this session's official result import in Memlane"}
 		}
 		return s.syncCognee(operation, *r.CogneeSync)
+	case "official_visualization_authorize":
+		if r.OfficialVisualization == nil {
+			return nil, records.MergeError("invalid_request")
+		}
+		q := r.OfficialVisualization
+		return s.authorizeOfficialVisualization(operation, *q)
+	case "official_visualization":
+		if r.OfficialVisualization == nil {
+			return nil, records.MergeError("invalid_request")
+		}
+		return s.readOfficialVisualization(operation, *r.OfficialVisualization)
 	case "cognee_graph":
 		if r.CogneeGraphQuery == nil {
 			return nil, &records.AccessError{Code: "invalid_request", Message: "typed project graph query required"}
@@ -754,13 +870,13 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		s.agentAccess.Lock()
 		defer s.agentAccess.Unlock()
 		return s.store.ConfigureConnection(operation, r.Connection)
-	case "connection_project_access":
-		if !r.UserConfirmed || r.ConnectionScopeChange == nil {
-			return nil, &records.AccessError{Code: "confirmation_required", Message: "change project access explicitly in Memlane"}
+	case "disconnect_revision":
+		if !r.UserConfirmed {
+			return nil, &records.AccessError{Code: "confirmation_required", Message: "disconnect explicitly in Memlane"}
 		}
 		s.agentAccess.Lock()
 		defer s.agentAccess.Unlock()
-		return s.store.ChangeProjectAccess(operation, *r.ConnectionScopeChange)
+		return nil, s.store.DisconnectRevision(operation, r.ConnectionID, r.ConnectionGeneration)
 	case "disconnect":
 		if !r.UserConfirmed {
 			return nil, &records.AccessError{Code: "confirmation_required", Message: "disconnect explicitly in Memlane"}
@@ -1084,6 +1200,9 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		if s.cogneeSubmissions != nil {
 			s.cogneeSubmissions.quiesce()
 		}
+		if s.sessionProcessing != nil {
+			s.sessionProcessing.quiesce()
+		}
 		return map[string]bool{"stopped": true}, nil
 	case "quiesce":
 		s.codeMu.Lock()
@@ -1094,6 +1213,9 @@ func (s *Server) perform(ctx context.Context, r Request) (any, error) {
 		s.codeMu.Unlock()
 		if s.cogneeSubmissions != nil {
 			s.cogneeSubmissions.quiesce()
+		}
+		if s.sessionProcessing != nil {
+			s.sessionProcessing.quiesce()
 		}
 		return map[string]bool{"paused_for_update": true}, nil
 	default:

@@ -31,7 +31,7 @@ func ResolveCodex(ctx context.Context, clientRoot, serviceRoot, helper string, s
 	if err != nil {
 		return out, records.MergeError(agents.CodexCompletionErrorCode(err))
 	}
-	parts := map[string]string{"adapter_protocol": records.MergeDigest("memlane-codex-completion-v1"), "processing_configuration": records.MergeDigest(spec), "agent_version": records.MergeDigest(plan.Version), "agent_executable": records.MergeDigest(i.Options.AgentPath), "agent_configuration_directory": records.MergeDigest(i.Options.CodexDirectory), "helper_executable": records.MergeDigest(helper), "extension": records.MergeDigest(i.Block), "connection_verification": records.MergeDigest(verification), "independent_credential": plan.ConfigurationDigest}
+	parts := map[string]string{"adapter_protocol": records.MergeDigest(agents.CodexCompletionProtocol), "processing_configuration": records.MergeDigest(spec), "agent_version": records.MergeDigest(plan.Version), "agent_executable": records.MergeDigest(i.Options.AgentPath), "agent_configuration_directory": records.MergeDigest(i.Options.CodexDirectory), "helper_executable": records.MergeDigest(helper), "extension": records.MergeDigest(i.Block), "connection_verification": records.MergeDigest(verification), "independent_credential": plan.ConfigurationDigest}
 	for _, name := range []string{"config.toml", "auth.json"} {
 		digest, e := fileDigest(filepath.Join(i.Options.CodexDirectory, name), name == "auth.json")
 		if e != nil {
@@ -58,7 +58,7 @@ func CompleteCodex(ctx context.Context, b Binding, system, prompt string, schema
 // cleanup. No HTTP response/status is invented for this Agent transport.
 func CodexCompletionConfirmed(result agents.PiCompletionExecution, binding Binding) bool {
 	proof := result.Codex
-	return proof != nil && proof.Thread != "" && proof.Turn != "" && proof.PermissionProfile == "memlane_completion" && proof.SchemaDigest != "" && proof.OutputSchemaAccepted && proof.FinalSchemaValid && proof.ToolFree && result.Accepted && result.Terminal && result.Reaped && result.GroupGone && result.NativeSchemaRequested && result.SelectedProvider == binding.Spec.Provider && result.SelectedModel == binding.Spec.Model
+	return proof != nil && proof.Thread != "" && proof.Turn != "" && proof.PermissionProfile == "memlane_completion" && proof.SchemaDigest != "" && proof.SourceSchemaDigest != "" && proof.OutputSchemaAccepted && proof.FinalSchemaValid && proof.ToolFree && result.Accepted && result.Terminal && result.Reaped && result.GroupGone && result.NativeSchemaRequested && result.SelectedProvider == binding.Spec.Provider && result.SelectedModel == binding.Spec.Model
 }
 
 type CodexOrganizationExecution struct {

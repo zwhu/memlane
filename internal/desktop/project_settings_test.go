@@ -22,6 +22,19 @@ func projectMenuFrame() *App {
 	return a
 }
 
+func TestProjectSettingsHasNoPermissionEditor(t *testing.T) {
+	a := projectMenuFrame()
+	a.agents.Connections = []records.Connection{{ID: "pi", Agent: "pi", Name: "pi", Enabled: true, Generation: 1}}
+	a.openProjectSettings("a")
+	tt := ui.NewTester(a.View, 1200, 820)
+	if tt.HasText("管理范围") || tt.HasText("保存范围") || tt.HasText("允许访问本项目的知识与原始记录") {
+		t.Fatal("permission editor still present")
+	}
+	if !tt.HasText("所有 Agent 均可读写项目知识与原始记录。") || !tt.HasText("仓库位置") {
+		t.Fatal("project context or unrestricted read/write state missing")
+	}
+}
+
 func TestAnotherProjectMenuKeepsReadingUntilSettingsIsChosen(t *testing.T) {
 	a := projectMenuFrame()
 	a.detailScroll.Y = 80
@@ -65,28 +78,6 @@ func TestSameProjectSettingsPreserveDraftAndUnderlyingPosition(t *testing.T) {
 	}
 	if !a.editing || a.detailMode != "edit" || a.draft != "尚未保存" || a.detailScroll.Y != 100 {
 		t.Fatal("return lost original editor state")
-	}
-}
-
-func TestProjectAccessConflictDoesNotClaimSaveOrAdoptGeneration(t *testing.T) {
-	a, updates := experienceUIFixture(t, func(r serviceipc.Request) serviceipc.Response {
-		return serviceipc.Response{OK: false, Code: "conflict", Error: "connection changed"}
-	})
-	a.projects = []ProjectItem{{ID: a.scope, Name: "项目", Path: "/actual"}}
-	a.openProjectSettings(a.scope)
-	// Retire the fixture read and set its explicit current access snapshot.
-	a.projectSettings.Loading = false
-	a.projectSettings.Sequence++
-	conn := records.Connection{ID: "connection", Agent: "pi", Name: "pi", Enabled: true, Generation: 4}
-	a.projectSettings.Connections = []records.Connection{conn}
-	a.editProjectAccess(conn)
-	a.projectSettings.Allowed = true
-	a.saveProjectAccess()
-	// The setup read precedes the scope response; neither may replace the editor.
-	awaitExperienceDispatch(t, updates)
-	awaitExperienceDispatch(t, updates)
-	if a.projectSettings.Generation != 4 || a.projectSettings.Notice != "" || a.projectSettings.Error == "" || a.projectSettings.Operation.Active {
-		t.Fatal("conflict was treated as a successful save")
 	}
 }
 
@@ -146,25 +137,6 @@ func TestProjectSettingsDoesNotRestoreOldEditorAfterSelectionChanges(t *testing.
 	a.newMemory()
 	if a.projectSettings.Open || !a.editing || a.detailMode != "new" {
 		t.Fatal("new memory remained hidden behind settings")
-	}
-}
-
-func TestProjectAccessEditorCanOpenAndChangeGrant(t *testing.T) {
-	a := projectMenuFrame()
-	a.agents.Connections = []records.Connection{{ID: "connection", Agent: "pi", Name: "pi", Enabled: true, Generation: 3, Project: "b", AllowedScopes: []string{"b"}}}
-	a.openProjectSettings("a")
-	tt := ui.NewTester(a.View, 1200, 820)
-	if err := tt.Click("管理范围"); err != nil {
-		t.Fatal(err)
-	}
-	if a.projectSettings.Editing != "connection" || a.projectSettings.Allowed {
-		t.Fatal("editor did not use the selected connection's scope")
-	}
-	if err := tt.Click("允许访问本项目的知识与原始记录"); err != nil {
-		t.Fatal(err)
-	}
-	if !a.projectSettings.Allowed || a.projectSettings.Generation != 3 {
-		t.Fatal("grant toggle changed the connection revision")
 	}
 }
 

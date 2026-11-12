@@ -122,7 +122,7 @@ func TestD04AuthorizationObservationDoesNotPopulateRepositoryCache(t *testing.T)
 	_, e = s.DB.Exec(`PRAGMA query_only=ON`)
 	mustMerge(t, e)
 	r := records.AgentRequest{Protocol: 1, ConnectionID: c.ID, Generation: c.Generation, Workspace: a.Workspace, Tool: "memory_save"}
-	actual, scopes, e := s.AuthorizeReadOnly(ctx, r)
+	actual, scopes, e := s.ResolveAgentScopesReadOnly(ctx, r)
 	mustMerge(t, e)
 	if actual.ContextProject != a.Project || len(scopes) != 1 || scopes[0] != a.Project {
 		t.Fatal(actual, scopes)
@@ -134,7 +134,7 @@ func TestD04AuthorizationObservationDoesNotPopulateRepositoryCache(t *testing.T)
 	}
 	_, e = s.DB.Exec(`PRAGMA query_only=OFF`)
 	mustMerge(t, e)
-	_, _, e = s.Authorize(ctx, r)
+	_, _, e = s.ResolveAgentScopes(ctx, r)
 	mustMerge(t, e)
 	mustMerge(t, s.DB.QueryRow(`SELECT count(*) FROM repositories`).Scan(&count))
 	if count != 1 {
@@ -153,7 +153,7 @@ func TestD04BoundSaveRejectsSamePathWorkspaceAndGitReplacement(t *testing.T) {
 		t.Run(fmt.Sprint(gitOnly), func(t *testing.T) {
 			s, a, _ := cogneeImportFixture(t)
 			ctx := context.Background()
-			c, _, e := s.AuthorizeReadOnly(ctx, records.AgentRequest{Protocol: 1, ConnectionID: a.ConnectionID, Generation: a.Generation, Workspace: a.Workspace, Tool: "memory_save"})
+			c, _, e := s.ResolveAgentScopesReadOnly(ctx, records.AgentRequest{Protocol: 1, ConnectionID: a.ConnectionID, Generation: a.Generation, Workspace: a.Workspace, Tool: "memory_save"})
 			mustMerge(t, e)
 			library, e := s.CogneeLibraryIdentity(ctx)
 			mustMerge(t, e)

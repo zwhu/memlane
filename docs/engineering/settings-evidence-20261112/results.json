@@ -1,0 +1,51 @@
+{
+  "source_snapshot": "7bf679da46b4b80e32e25b6638e197c37beaeac1",
+  "branch": "settings/native-redesign-20261112",
+  "desktop_final": {
+    "log": "settings-desktop-final-024.log",
+    "exit": 0,
+    "seconds": 30.989
+  },
+  "vet_final": {
+    "log": "settings-vet-final-024.log",
+    "exit": 0
+  },
+  "all_tests": {
+    "log": "settings-all-final-021.log",
+    "exit": 1,
+    "failure": "TestCodexCaptureHookInstallationPreservesOtherHooksAndRemovesOwnedItems: capture_bridge_unavailable",
+    "agents_module_modified": false
+  },
+  "native": {
+    "runs": [
+      "026",
+      "027"
+    ],
+    "capture_count": 18,
+    "sizes": [
+      [
+        1200,
+        820
+      ],
+      [
+        800,
+        620
+      ]
+    ],
+    "synthetic_only": true,
+    "binary_sha256": "9527980830a6978d63b869b91f11d6b82297b757caad8059472ce700adb9935d",
+    "capture_index": "../../images/ui-redesign/settings-native-20261112/final/capture-index.json"
+  },
+  "not_verified": [
+    "current user runtime integration",
+    "official plugin migration and per-client capability receipts",
+    "full official Cognee backup/recovery",
+    "real Provider/Codex/Magpie model matrix",
+    "native initialization full window matrix",
+    "Chinese IME composition"
+  ],
+  "original_runtime_observed_pids": [
+    76077,
+    76867
+  ]
+}

@@ -40,8 +40,11 @@ func (a *App) readingFilterControls(c *ui.Context) {
 			label = fmt.Sprintf("筛选 · %d", count)
 		}
 		quietButton(c, label).Key("reading-filters-toggle").OnClick(func() { f.Open = !f.Open })
-		if a.page != "搜索" || a.searchQuery == "" {
+		if (a.page != "搜索" || a.searchQuery == "") && !a.projectKnowledgeReading() {
 			ui.Select(c.Key("memory-sort"), &a.listSort, []string{"最近更新", "常用", "重要优先"}).Grow(1).MinWidth(0).Tooltip(usageSortExplanation(a.listSort)).OnChange(a.readingFiltersChanged)
+		}
+		if a.page == "项目" {
+			quietButton(c, "＋新增").Label("新增记忆").Key("reading-add-knowledge").OnClick(a.newMemory)
 		}
 	})
 	if !f.Open {

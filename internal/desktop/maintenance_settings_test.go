@@ -26,8 +26,8 @@ func TestMaintenanceServiceStopWaitsForConfirmationAndReceipt(t *testing.T) {
 		if node.Y < 736 {
 			t.Fatalf("service action left fixed footer at %d: %#v", width, node)
 		}
-		heading, found := tt.Find("本机后台服务")
-		if !found || heading.Y > 126 {
+		heading, found := tt.Find("主动停止会保留停服选择，重开 App 不会自动启动。")
+		if !found || heading.Y > 150 {
 			t.Fatalf("maintenance content vertically centered at %d: %#v", width, heading)
 		}
 		writeScreenshot(t, tt, fmt.Sprintf("maintenance-service-%d.png", width))

@@ -103,24 +103,15 @@ func (s *Store) recordUsageTx(ctx context.Context, tx *sql.Tx, o records.UsageOb
 		if !c.Enabled || c.Generation != o.Generation {
 			return receipt, access("reload_required", "connection changed; reload Agent")
 		}
-		allowed := map[string]bool{}
-		for _, id := range c.AllowedScopes {
-			allowed[id] = true
-		}
-		for _, v := range targets {
-			if !allowed[v.Dataset] {
-				return receipt, access("scope_denied", "usage target outside allowed scope")
-			}
-		}
 	}
-	// A replay cannot disclose a record that moved out of its observed scope.
+	// A usage event must still describe the actual current data group.
 	for _, v := range targets {
 		var dataset string
 		if e := tx.QueryRowContext(ctx, `SELECT dataset FROM memories WHERE id=?`, v.Memory).Scan(&dataset); e != nil {
 			return receipt, e
 		}
 		if dataset != v.Dataset {
-			return receipt, access("scope_denied", "usage target moved outside observed scope")
+			return receipt, access("source_changed", "usage target group changed")
 		}
 	}
 	var prior, raw string

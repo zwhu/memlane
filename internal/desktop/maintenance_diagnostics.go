@@ -7,19 +7,22 @@ import (
 )
 
 func (a *App) maintenanceDiagnosticsPage(c *ui.Context) {
-	ui.Text(c, "关于与诊断").FontSize(design.Small).TextColor(design.Muted).Padding(20, 28).Shrink(0).BorderWidth(0, 0, 1, 0).BorderColor(design.Border)
-	ui.Scroll(c.Key("maintenance-diagnostics-body")).Grow(1).MinHeight(0).Padding(28).Gap(24).Children(func() {
-		ui.Column(c).Gap(8).Children(func() {
-			ui.Text(c, "Memlane").FontSize(design.Small).TextColor(design.Muted)
-			ui.Text(c, "查看当前版本与最近问题").FontSize(design.Heading).Bold()
-			ui.Text(c, "日常状态先给出可处理动作，技术信息按需展开。").TextColor(design.Muted)
+	ui.Scroll(c.Key("maintenance-diagnostics-body")).TrackScroll(a.settingsScrollState("diagnostics")).Grow(1).MinHeight(0).Padding(28).Gap(24).Children(func() {
+		settingsHeading(c, "关于与诊断", "版本、路径与错误属于按需信息。")
+		settingsCard(c, "settings-about-brand", "Memlane", func() {
+			ui.Text(c, "把项目知识留在下一次工作里").FontSize(16).Bold()
+			ui.Text(c, "面向程序员的本地记忆客户端").FontSize(design.Small).TextColor(design.Muted)
 		})
-		for _, row := range [][2]string{{"客户端", a.version}, {"本地服务", a.maintenanceServiceLabel()}} {
-			ui.Row(c).Padding(14, 0).Gap(12).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).Children(func() {
-				ui.Text(c, row[0]).FontSize(design.Small).TextColor(design.Muted).Grow(1)
-				ui.Text(c, row[1]).FontSize(design.Small)
+		settingsCard(c, "settings-about-environment", "版本与环境", func() {
+			settingsFact(c, "客户端", a.version, "")
+			ui.Divider(c)
+			settingsFact(c, "记忆服务", "本机 · 当前状态由服务回执提供", a.maintenanceServiceLabel())
+			ui.Divider(c)
+			ui.Row(c).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "组件").Grow(1)
+				quietButton(c, "查看环境与组件").OnClick(func() { a.selectSettingsSection("environment") })
 			})
-		}
+		})
 		if a.runtimeStatus.Phase != "ready" || a.libraryError != "" || a.schedules.RuntimeError != "" {
 			ui.Column(c).Gap(8).Children(func() {
 				if a.runtimeStatus.Phase == "stopped" {
@@ -45,7 +48,11 @@ func (a *App) maintenanceDiagnosticsPage(c *ui.Context) {
 		})
 	})
 	ui.Row(c).MinHeight(64).Shrink(0).Padding(14, 24).Gap(10).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
-		ui.Text(c, "按需查看诊断").FontSize(10).TextColor(design.Muted).Grow(1).MinWidth(0)
+		quietButton(c, "检查更新").Disabled(a.check == nil || a.checking).OnClick(func() {
+			if a.check != nil {
+				a.check()
+			}
+		})
 		actionButton(c, "回到服务状态", nil).OnClick(func() { a.maintenanceSection = "service" })
 	})
 }

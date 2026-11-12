@@ -67,6 +67,9 @@ func (s *Server) authorizeCognee(ctx context.Context, d records.CogneeAuthorizat
 	err := s.store.AuthorizeCogneeGraphBinding(ctx, b)
 	s.agentAccess.RUnlock()
 	if err != nil {
+		if b.MaterialSubmission {
+			return s.refreshCapturedReadCredential(ctx, b, token)
+		}
 		return b, err
 	}
 	var identity struct {
@@ -101,10 +104,14 @@ func (s *Server) authorizeCognee(ctx context.Context, d records.CogneeAuthorizat
 		if prior.Instance == b.Instance && prior.Dataset == b.Dataset {
 			candidate := b
 			candidate.Operation = prior.Operation
+			if (candidate.ReadReviewDigest != "" && candidate.ReadReviewDigest != prior.ReadReviewDigest) || (candidate.ReadPreviousOperation != "" && candidate.ReadPreviousOperation != prior.ReadPreviousOperation) {
+				return b, &records.AccessError{Code: "scope_denied", Message: "read authorization receipt changed"}
+			}
+			candidate.ReadReviewDigest, candidate.ReadPreviousOperation = prior.ReadReviewDigest, prior.ReadPreviousOperation
 			if candidate != prior {
 				return b, &records.AccessError{Code: "scope_denied", Message: "approved binding scope or generation changed"}
 			}
-			b.Operation = prior.Operation
+			b = prior
 			break
 		}
 	}

@@ -11,7 +11,7 @@ func TestEnvironmentLayoutUsesRemainingContentWidth(t *testing.T) {
 	for _, tt := range []struct {
 		width         float32
 		setup, narrow bool
-	}{{1200, false, false}, {1280, false, false}, {1100, false, true}, {1200, true, false}, {1000, false, true}, {800, true, true}} {
+	}{{1200, false, false}, {1280, false, false}, {1100, false, false}, {1200, true, false}, {1000, false, false}, {800, false, true}, {800, true, true}} {
 		available, narrow := environmentContentLayout(tt.width, tt.setup)
 		if narrow != tt.narrow || available < 0 {
 			t.Fatalf("width=%v setup=%v available=%v narrow=%v", tt.width, tt.setup, available, narrow)
@@ -25,18 +25,18 @@ func TestEnvironmentLayoutUsesRemainingContentWidth(t *testing.T) {
 	a.page = "设置"
 	a.settingsSection = "environment"
 	a.maintenanceSection = "components"
-	tt := ui.NewTester(a.View, 1100, 820)
-	first, ok := tt.Find("记忆数据库")
+	tt := ui.NewTester(a.View, 800, 620)
+	first, ok := tt.Find("原生运行依赖")
 	if !ok {
 		t.Fatal("database card missing")
 	}
-	second, ok := tt.Find("向量数据库")
-	if !ok || second.Y <= first.Y {
-		t.Fatal("setting middle navigation did not trigger stacked cards", first, second)
+	second, ok := tt.Find("Cognee 引擎")
+	if !ok || first.Y <= second.Y {
+		t.Fatal("minimum window did not stack component cards", first, second)
 	}
 	tt.SetSize(1200, 820)
-	first, _ = tt.Find("记忆数据库")
-	second, _ = tt.Find("向量数据库")
+	first, _ = tt.Find("原生运行依赖")
+	second, _ = tt.Find("Cognee 引擎")
 	if first.Y != second.Y {
 		t.Fatal("wide setting lost approved three cards", first, second)
 	}

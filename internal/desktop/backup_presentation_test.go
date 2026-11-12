@@ -24,7 +24,7 @@ func TestBackupMaintenanceKeepsRestoreConfirmationInFooter(t *testing.T) {
 				t.Fatalf("restore action outside footer %v %s %#v", size, label, n)
 			}
 		}
-		if !tt.HasText("恢复整个本机记忆库") {
+		if !tt.HasText("恢复预览") {
 			t.Fatal("restore scope missing")
 		}
 	}

@@ -58,6 +58,7 @@ type processingCatalogUI struct {
 }
 
 type processingHTTPUI struct {
+	SettingsDrafts                                                                     map[string]settingsSupplierDraft
 	Epoch                                                                              string
 	CredentialAttempt                                                                  *records.ProcessingCredentialWrite
 	CredentialAttemptDigest                                                            string
@@ -112,14 +113,15 @@ func (a *App) processingProviderPage(c *ui.Context) {
 		a.loadProcessingSuppliers()
 	}
 	switch s.HTTP.View {
-	case "suppliers":
-		a.processingSupplierManager(c)
+	case "catalog":
+		quietButton(c, "返回供应商配置").OnClick(func() { s.HTTP.View = "" })
+		a.processingModelPicker(c, "provider")
 		return
 	case "manual":
 		a.processingManualModel(c)
 		return
 	}
-	a.processingModelPicker(c, "provider")
+	a.settingsProviderForm(c)
 	if s.HTTP.Error != "" {
 		ui.Text(c, s.HTTP.Error).FontSize(design.Small).TextColor(design.Muted)
 		quietButton(c, "重新读取供应商配置").Disabled(s.HTTP.ProfilesLoading).OnClick(a.loadProcessingSuppliers)

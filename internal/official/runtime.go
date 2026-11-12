@@ -35,6 +35,7 @@ type Config struct {
 	AllowLocalTestSource bool   `json:"allow_local_test_source,omitempty"`
 }
 type Settings struct {
+	ProcessingOwner      string              `json:"processing_owner,omitempty"`
 	Root                 string              `json:"root"`
 	Environment          map[string]string   `json:"environment"`
 	ModelBridge          *modelbridge.Config `json:"model_bridge,omitempty"`
@@ -55,12 +56,13 @@ type Status struct {
 	EmbeddingDimensions                       int
 }
 type Controller struct {
-	Root   string
-	Config Config
-	gate   sync.Mutex
-	mu     sync.Mutex
-	cancel context.CancelFunc
-	tasks  map[string]context.CancelFunc
+	Root        string
+	ServiceRoot string
+	Config      Config
+	gate        sync.Mutex
+	mu          sync.Mutex
+	cancel      context.CancelFunc
+	tasks       map[string]context.CancelFunc
 }
 
 func privateJSON(path string, out any) error {
@@ -137,17 +139,38 @@ func (c *Controller) ReadState() (State, error) {
 	}
 	return state, err
 }
+
+type HTTPError struct {
+	Status int
+	Path   string
+}
+
+func (e *HTTPError) Error() string { return fmt.Sprintf("Cognee %s HTTP %d", e.Path, e.Status) }
+
 func Request(ctx context.Context, endpoint, path, method, token, contentType string, body []byte, out any) error {
-	u, err := url.Parse(endpoint)
-	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.Port() == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-		return errors.New("explicit loopback Cognee endpoint required")
-	}
-	req, err := http.NewRequestWithContext(ctx, method, endpoint+path, bytes.NewReader(body))
+	data, err := requestBytes(ctx, endpoint, path, method, token, contentType, body)
 	if err != nil {
 		return err
 	}
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Shared transport for JSON and official raw-file reads. It keeps the same
+// loopback, no-proxy, no-redirect, credential and eight MiB response limits.
+func requestBytes(ctx context.Context, endpoint, path, method, token, contentType string, body []byte) ([]byte, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.Port() == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return nil, errors.New("explicit loopback Cognee endpoint required")
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
 	if err = SetCredential(req.Header, token); err != nil {
-		return err
+		return nil, err
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
@@ -157,23 +180,20 @@ func Request(ctx context.Context, endpoint, path, method, token, contentType str
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("Cognee redirects are not permitted") }}
 	response, err := client.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("Cognee %s HTTP %d", path, response.StatusCode)
+		return nil, &HTTPError{Path: path, Status: response.StatusCode}
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, 8*1024*1024+1))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(data) > 8*1024*1024 {
-		return errors.New("Cognee response exceeds limit")
+		return nil, errors.New("Cognee response exceeds limit")
 	}
-	if out == nil {
-		return nil
-	}
-	return json.Unmarshal(data, out)
+	return data, nil
 }
 
 // Cognee 1.6.7 has separate official transports: API keys use X-Api-Key;
@@ -291,18 +311,41 @@ func (c *Controller) prepare(ctx context.Context, notify func(Status), verifyMod
 	}
 	settings.Environment["HF_HOME"] = installed["cognee-bge-zh"].Directory
 	settings.Environment["HF_HUB_OFFLINE"] = "1"
+	coding, err := c.codingMemorySettings(installed, &settings)
+	if err != nil {
+		return err
+	}
+	if coding && verifyModel {
+		return errors.New("请在设置 → 记忆处理验证并启用当前处理方式")
+	}
 	if version := installed["cognee-service"].Metadata.Version; verifyModel && settings.ModelBridge != nil && version != "1.6.7-memlane.5" && version != "1.6.7-memlane.6" {
 		return errors.New("当前 Cognee 服务组件尚未适配 pi 完整 Schema；请准备包含完整依赖的 1.6.7-memlane.6 组件后重试")
+	}
+	if coding {
+		state, stateErr := c.ReadState()
+		if stateErr != nil && !os.IsNotExist(stateErr) {
+			return stateErr
+		}
+		prior, readErr := c.Settings()
+		if readErr != nil {
+			return readErr
+		}
+		executable := filepath.Join(installed["cognee-service"].Directory, installed["cognee-service"].Metadata.Executable)
+		if state.PID > 1 && state.Phase != "stopped" && syscall.Kill(state.PID, 0) == nil && (!running(state, executable, filepath.Join(c.Root, "cognee-config.json")) || prior.ProcessingOwner != settings.ProcessingOwner) {
+			return errors.New("请先停止当前服务，完成升级备份后再切换 coding-memory 组件")
+		}
 	}
 	if err = c.SaveSettings(settings); err != nil {
 		return err
 	}
 	executable := filepath.Join(installed["cognee-service"].Directory, installed["cognee-service"].Metadata.Executable)
-	if err = c.restartModelProcess(ctx, executable, &settings); err != nil {
-		return err
-	}
-	if err = c.startModelBridge(ctx, &settings); err != nil {
-		return err
+	if !coding {
+		if err = c.restartModelProcess(ctx, executable, &settings); err != nil {
+			return err
+		}
+		if err = c.startModelBridge(ctx, &settings); err != nil {
+			return err
+		}
 	}
 	config := filepath.Join(c.Root, "cognee-config.json")
 	state, stateErr := c.ReadState()
@@ -370,15 +413,20 @@ func (c *Controller) prepare(ctx context.Context, notify func(Status), verifyMod
 		return err
 	}
 	var identity struct {
-		Instance string `json:"instance"`
-		Version  string `json:"cognee_version"`
-		Adapter  string `json:"adapter"`
+		Instance     string   `json:"instance"`
+		Version      string   `json:"cognee_version"`
+		Adapter      string   `json:"adapter"`
+		SourceCommit string   `json:"source_commit"`
+		Capabilities []string `json:"capabilities"`
 	}
 	if err = Request(ctx, state.Endpoint, "/api/v1/memlane/identity", "GET", token, "", nil, &identity); err != nil {
 		return err
 	}
 	if identity.Version != "1.6.7" || identity.Adapter != "memlane-material-graph-v1" {
 		return errors.New("Cognee 实际版本或衔接接口不匹配")
+	}
+	if coding && !CodingMemoryIdentity(identity.SourceCommit, identity.Capabilities) {
+		return errors.New("coding-memory 实际服务来源或能力不匹配")
 	}
 	var health struct {
 		Status  string `json:"status"`

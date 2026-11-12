@@ -27,7 +27,7 @@ func TestCaptureSettingsDoNotTurnToolConnectionIntoCollectionProof(t *testing.T)
 		return ui.NewTester(func(c *ui.Context) { a.codexCaptureSettings(c, connection) }, 660, 700)
 	}
 	tt := view()
-	if !tt.HasText("未开启自动记录") || !tt.HasText("授权并开启自动记录") {
+	if !tt.HasText("未开启自动记录") || tt.HasText("授权并开启自动记录") || !tt.HasText("安装 Cognee 官方插件") {
 		t.Fatal("tool connection implied authorized collection")
 	}
 	i.CaptureConsent = &agents.CodexCaptureConsent{ID: "current-consent", Enabled: true}

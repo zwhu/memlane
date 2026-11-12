@@ -42,24 +42,12 @@ func initializationConnection(ctx context.Context, tx *sql.Tx, id string, genera
 	if !c.Enabled || c.Generation != generation {
 		return c, access("reload_required", "connection changed; reload Agent")
 	}
-	if c.Project != "" && c.Project != project {
-		return c, access("scope_denied", "initialization project differs from connection binding")
-	}
-	allowed := false
-	for _, scope := range c.AllowedScopes {
-		if scope == project {
-			allowed = true
-		}
-	}
-	if !allowed {
-		return c, access("scope_denied", "initialization project is not allowed")
-	}
 	var kind string
 	if err = tx.QueryRowContext(ctx, `SELECT kind FROM scopes WHERE id=?`, project).Scan(&kind); err != nil {
 		return c, err
 	}
 	if kind != "project" {
-		return c, access("scope_denied", "initialization requires a registered project")
+		return c, access("invalid_request", "initialization requires a registered project")
 	}
 	return c, nil
 }

@@ -36,9 +36,9 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 	var scopes []string
 	var err error
 	if r.ExpectedLibraryID != "" || r.DeliveryGrant != nil {
-		c, scopes, err = s.store.AuthorizeReadOnly(ctx, r)
+		c, scopes, err = s.store.ResolveAgentScopesReadOnly(ctx, r)
 	} else {
-		c, scopes, err = s.store.Authorize(ctx, r)
+		c, scopes, err = s.store.ResolveAgentScopes(ctx, r)
 	}
 	if err != nil {
 		return nil, err
@@ -212,12 +212,6 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 		if e != nil {
 			return nil, e
 		}
-		if current.Dataset != scopes[0] {
-			return nil, &records.AccessError{Code: "scope_denied", Message: "original save persisted; current knowledge moved outside requested scope"}
-		}
-		if e = s.store.FilterAgentVersion(ctx, &current, scopes); e != nil {
-			return nil, e
-		}
 		result = records.SaveReceipt{Persisted: true, SavedRevision: saved.Revision, Record: current}
 	case "memory_get", "memory_status":
 		if a.Memory == "" {
@@ -227,20 +221,8 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 		if e != nil {
 			return nil, e
 		}
-		found := false
-		for _, scope := range scopes {
-			if scope == v.Dataset {
-				found = true
-			}
-		}
-		if !found {
-			return nil, &records.AccessError{Code: "scope_denied", Message: "memory is outside requested allowed scopes"}
-		}
 		if r.Tool == "memory_get" && v.Derived != nil && v.Derived.State == "stale" {
 			return nil, &records.AccessError{Code: "source_stale", Message: "summary source changed; inspect memory_status or organize again"}
-		}
-		if e = s.store.FilterAgentVersion(ctx, &v, scopes); e != nil {
-			return nil, e
 		}
 		readChannel := channel
 		if records.IDEVerificationRecord(c, v) {
@@ -267,15 +249,6 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 		if e != nil {
 			return nil, e
 		}
-		found := false
-		for _, scope := range scopes {
-			if scope == v.Dataset {
-				found = true
-			}
-		}
-		if !found {
-			return nil, &records.AccessError{Code: "scope_denied", Message: "adoption outside selected scope"}
-		}
 		v.Revision = a.Revision
 		receipt, e := observe("adopt", []records.Version{v}, a.OperationID, a.Exposure, channel)
 		if e != nil {
@@ -299,11 +272,6 @@ func (s *Server) agent(ctx context.Context, r records.AgentRequest, svc *memory.
 				return nil, e
 			}
 			return nil, &records.AccessError{Code: "index_unavailable", Message: e.Error()}
-		}
-		for i := range hits {
-			if e = s.store.FilterAgentVersion(ctx, &hits[i].Version, scopes); e != nil {
-				return nil, e
-			}
 		}
 		groups := map[string][]records.Version{}
 		for _, h := range hits {

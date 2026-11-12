@@ -214,9 +214,9 @@ func (a *App) refreshOrganization(more, candidatesMore bool) {
 	if more {
 		q.Before = s.Next
 	}
-	query := records.ListQuery{Datasets: []string{project}, Limit: 100, Kind: kind}
+	candidateCursor := ""
 	if candidatesMore {
-		query.Cursor = s.Cursor
+		candidateCursor = s.Cursor
 	}
 	go func() {
 		ctx, stop := context.WithTimeout(life, 5*time.Second)
@@ -236,7 +236,7 @@ func (a *App) refreshOrganization(more, candidatesMore bool) {
 			}
 		}
 		if err == nil && isNew && project != "" {
-			candidates, err = library.List(ctx, query)
+			candidates, err = listOrganizationMaterials(ctx, library.List, project, candidateCursor)
 		}
 		if err == nil {
 			for _, entry := range task.Entries {
@@ -540,8 +540,9 @@ func (a *App) organizationChooser(c *ui.Context) {
 		a.organizationFrozenChooser(c)
 		return
 	}
-	ui.Text(c, "选好范围，再开始整理").FontSize(design.Title).Bold()
-	ui.Text(c, "使用当前已启用的处理方式与账号额度；新增摘要和标签可自动保存，已有知识的修改先生成建议。").FontSize(design.Small).TextColor(design.Muted)
+	ui.Text(c, "主动整理").FontSize(10).TextColor(ui.Hex("#99aabd"))
+	ui.Text(c, "选好范围，再开始整理").FontSize(23).FontWeight(550).TextColor(ui.Hex("#3c556d")).LineHeight(1.5)
+	ui.Text(c, "使用当前已启用的处理方式与账号额度；新增摘要和标签可自动保存，已有知识的修改先生成建议。").FontSize(12).TextColor(ui.Hex("#93a7bb")).LineHeight(1.9)
 	if s.Error != "" {
 		ui.Text(c, s.Error).FontSize(design.Small)
 		quietButton(c, "重试读取整理记录").Disabled(s.Busy || s.Loading).OnClick(func() { a.refreshOrganization(false, false) })
@@ -568,7 +569,7 @@ func (a *App) organizationChooser(c *ui.Context) {
 		s.projectLabelKey = projectLabelKey
 	}
 	ui.Text(c, "本次项目").FontSize(11).TextColor(design.Muted)
-	ui.Select(c.Key("organization-project"), &s.ProjectLabel, options).Label("整理项目").Disabled(s.Busy || s.Start != nil).OnChange(func() {
+	ui.Select(c.Key("organization-project"), &s.ProjectLabel, options).Label("整理项目").Height(42).Background(ui.Hex("#fcfdff")).Border(1, ui.Hex("#dce6f2")).Radius(6).Disabled(s.Busy || s.Start != nil).OnChange(func() {
 		project := projects[s.ProjectLabel]
 		if project == "" || project == s.Project {
 			s.ProjectLabel = projectLabel
@@ -595,7 +596,7 @@ func (a *App) organizationChooser(c *ui.Context) {
 			status = "尚未启用记忆处理方式。"
 		}
 	}
-	ui.Row(c).Gap(8).Padding(7, 10).Border(1, design.Border).Radius(5).Children(func() {
+	ui.Row(c).Gap(8).MinHeight(42).Padding(10, 11).Background(ui.Hex("#fcfdff")).Border(1, ui.Hex("#dce6f2")).Radius(6).Children(func() {
 		ui.Text(c, status).Key("organization-processing-executor").FontSize(design.Small).Grow(1).MinWidth(0)
 		quietButton(c, "更多").Key("organization-processing-details").Disabled(s.Busy).OnClick(func() { s.ProcessingDetailsOpen = !s.ProcessingDetailsOpen })
 	})
@@ -614,22 +615,8 @@ func (a *App) organizationChooser(c *ui.Context) {
 		ui.Text(c, "请选择已登记项目。").TextColor(design.Muted)
 		return
 	}
-	ui.Text(c, "本次材料").Bold()
-	ui.Row(c).Gap(8).Children(func() {
-		for _, kind := range []string{"knowledge", "raw"} {
-			label := "知识"
-			if kind == "raw" {
-				label = "原始记录"
-			}
-			ui.Button(c, label).Key("organization-kind-" + kind).Disabled(s.Busy || s.Start != nil).OnClick(func() {
-				s.Kind = kind
-				s.Candidates = nil
-				s.Cursor = ""
-				s.Sequence++
-				a.refreshOrganization(false, false)
-			})
-		}
-	})
+	ui.Divider(c)
+	ui.Text(c, "本次材料").FontSize(12).FontWeight(500).TextColor(ui.Hex("#6e88a2"))
 	for _, v := range s.Candidates {
 		_, selected := s.Chosen[v.ID]
 		ui.Checkbox(c.Key("organization-choose-"+v.ID), &selected, fmt.Sprintf("%s · v%d", v.Title, v.Revision)).Disabled(s.Busy || s.Start != nil || (!selected && len(s.Chosen) >= 16)).OnChange(func() {
@@ -653,7 +640,7 @@ func (a *App) organizationChooser(c *ui.Context) {
 		})
 	}
 	if s.Cursor != "" {
-		quietButton(c, "更多授权材料").Disabled(s.Loading).OnClick(func() { a.refreshOrganization(false, true) })
+		quietButton(c, "加载更多记忆材料").Disabled(s.Loading).OnClick(func() { a.refreshOrganization(false, true) })
 	}
 	ui.Divider(c)
 	ui.Text(c, fmt.Sprintf("已选 %d / 16", len(s.Chosen))).Bold()
@@ -720,13 +707,11 @@ func (a *App) returnFromOrganizationChooser() {
 		if a.libraryEpoch != libraryEpoch || s.Epoch != epoch || s.PreviewID != id || !s.New || s.Start != nil {
 			return
 		}
-		for _, scope := range a.scopes {
-			if scope.ID == project && scope.Kind == "project" {
-				a.navigate("项目", project)
-				return
-			}
+		if s.Project != project {
+			return
 		}
-		a.navigate("搜索", "")
+		s.New = false
+		a.navigate("整理记录", "")
 	})
 }
 

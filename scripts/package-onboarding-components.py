@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import tarfile
 
+from coding_memory_recipe import recipe, contract, prepare_source
+
 ROOT = Path(__file__).resolve().parents[1]
 SHA = "997fd6f72253aa97b49996eb1b032793f0257935"
 
@@ -36,12 +38,45 @@ def archive(source, out, identity, version, executable=""):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-cache",required=True,type=Path)
-    parser.add_argument("--upstream",required=True,type=Path)
+    parser.add_argument("--model-cache",type=Path)
+    parser.add_argument("--upstream",type=Path)
+    parser.add_argument("--coding-memory", action="store_true", help="仅归档固定的新服务和官方插件，复用已有嵌入模型")
+    parser.add_argument("--source-cache", type=Path, default=ROOT/".cache/coding-memory-components")
     parser.add_argument("--out",type=Path,default=ROOT/"build/onboarding-components")
     parser.add_argument("--service",type=Path,default=ROOT/"build/cognee-service-component/memlane-cognee-service")
-    parser.add_argument("--service-version",default="1.6.7-memlane.3")
+    parser.add_argument("--service-version")
     args=parser.parse_args();args.out.mkdir(parents=True,exist_ok=True)
+    if args.coding_memory:
+        selected = recipe()
+        if args.service_version not in (None, selected['service']['component_version']):
+            parser.error('coding-memory component version is fixed by its recipe')
+        source_contract = args.service / '_internal/memlane-coding-memory.json'
+        if source_contract.is_symlink() or not source_contract.is_file() or source_contract.stat().st_size > 4096 or json.loads(source_contract.read_text()) != contract():
+            parser.error('service has no matching frozen coding-memory provenance')
+        upstream, _ = prepare_source('plugin', args.source_cache)
+        stages = args.out / 'stages'
+        if stages.exists():
+            parser.error('coding-memory staging output already exists; retain it for its consumers')
+        stages.mkdir()
+        service, plugin = stages / 'service', stages / 'plugin'
+        service.mkdir(); plugin.mkdir()
+        shutil.copytree(args.service, service / 'service', symlinks=True)
+        for relative in ('.agents/plugins/marketplace.json', 'LICENSE', 'integrations/codex/plugins/cognee'):
+            source, target = upstream / relative, plugin / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_dir():
+                shutil.copytree(source, target, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+            else:
+                shutil.copy2(source, target)
+        (plugin / 'upstream.json').write_text(json.dumps({'repository': selected['plugin']['repository'], 'sha': selected['plugin']['commit'], 'version': selected['plugin']['version']}))
+        outputs = [archive(service, args.out, 'cognee-service', selected['service']['component_version'], 'service/memlane-cognee-service'),
+                   archive(plugin, args.out, 'cognee-codex-plugin', selected['plugin']['version'])]
+        (args.out / 'archives.json').write_text(json.dumps([str(path) for path in outputs], indent=2))
+        (args.out / 'coding-memory-inputs.json').write_text(json.dumps(contract(), indent=2))
+        return
+    if args.upstream is None or args.model_cache is None:
+        parser.error('legacy mode requires --upstream and --model-cache')
+    args.service_version = args.service_version or '1.6.7-memlane.3'
     assert subprocess.check_output(["git","rev-parse","HEAD"],cwd=args.upstream,text=True).strip()==SHA
     assert subprocess.check_output(["git","status","--porcelain"],cwd=args.upstream,text=True).strip()=="", "Official source must be unchanged"
     manifest=json.loads((args.upstream/"integrations/codex/plugins/cognee/.codex-plugin/plugin.json").read_text())

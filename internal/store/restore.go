@@ -119,6 +119,8 @@ func PrepareRestoredSnapshot(ctx context.Context, data []byte, operation string)
 		// resume an old paid executor. Preserve the revision and saved modes.
 		{`DELETE FROM cognee_submissions`, nil},
 		{`DELETE FROM cognee_submission_tasks`, nil},
+		{`UPDATE session_processing_tasks SET state='interrupted',cancel_requested=1,error_code='backup_restored' WHERE state IN ('prepared','running')`, nil},
+		{`UPDATE pi_capture_consents SET enabled=0`, nil},
 		{`UPDATE delivery_assignments SET state='retired',payload=json_set(payload,'$.state','retired') WHERE state='saved'`, nil},
 		{`UPDATE project_preference_decisions SET state='retired',payload=json_set(payload,'$.state','retired') WHERE state='confirmed'`, nil},
 		{`UPDATE cognee_library_identity SET identity=? WHERE id=1`, []any{uuid.NewString()}},

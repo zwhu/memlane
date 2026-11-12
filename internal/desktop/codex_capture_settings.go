@@ -85,23 +85,19 @@ func (a *App) codexCaptureSettings(c *ui.Context, connection records.Connection)
 		}
 		ui.Row(c).Wrap().Gap(8).Children(func() {
 			if i.CaptureConsent == nil || !i.CaptureConsent.Enabled || i.CaptureHooks == nil {
-				_, verified := agents.ConnectionVerification(i, connection.Generation)
-				button := "授权并开启自动记录"
-				if i.CaptureConsent != nil && i.CaptureConsent.Enabled {
-					button = "安装采集配置"
-				}
-				quietButton(c, button).Key("capture-authorize").Disabled(!daily || !verified || !connection.Enabled || s.Busy || s.Loading || s.Context == nil || !filepath.IsAbs(s.Bridge)).OnClick(func() { a.changeCodexCapture(connection, true) })
+				ui.Text(c, "新接入请使用设置中的 Cognee 官方插件；旧采集配置保留待迁移。").FontSize(design.Small).TextColor(design.Muted)
 			} else {
 				quietButton(c, "停止自动记录").Key("capture-revoke").Disabled(s.Busy || s.Context == nil).OnClick(func() { a.changeCodexCapture(connection, false) })
 			}
 			quietButton(c, "查看待发送原文").Key("capture-open-retained").OnClick(a.openAgentDelivery)
 		})
+		a.officialCodexPluginSettings(c, connection)
 	})
 }
 
 func (a *App) changeCodexCapture(connection records.Connection, enabled bool) {
 	s := &a.agents
-	if s.Busy || s.Loading || s.Context == nil || s.Dispatch == nil || connection.Agent != "codex" {
+	if enabled || s.Busy || s.Loading || s.Context == nil || s.Dispatch == nil || connection.Agent != "codex" {
 		return
 	}
 	s.Sequence++

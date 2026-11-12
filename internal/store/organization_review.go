@@ -239,38 +239,8 @@ func (s *Store) applyOrganizationReview(ctx context.Context, tx *sql.Tx, t recor
 	return receipt, nil
 }
 
-// Current-scope authorization does not grant access to the initial body's old
-// scope. Trusted App history keeps the original; daily Agents see it only when
-// that original scope is also in the explicitly requested allowed scopes.
-func (s *Store) FilterAgentVersion(ctx context.Context, v *records.Version, scopes []string) error {
-	if s.Schema < 5 {
-		return nil
-	}
-	return filterVersionProvenance(ctx, s.DB, v, scopes)
-}
-
 type provenanceReader interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
-}
-
-func filterVersionProvenance(ctx context.Context, q provenanceReader, v *records.Version, scopes []string) error {
-	var originalScope string
-	err := q.QueryRowContext(ctx, `SELECT previous_scope FROM scope_history WHERE memory=? ORDER BY revision LIMIT 1`, v.Memory).Scan(&originalScope)
-	if err == sql.ErrNoRows {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	for _, scope := range scopes {
-		if scope == originalScope {
-			return nil
-		}
-	}
-	v.Original = ""
-	v.SourceDetail = nil
-	v.Source = "项目移动 · 原范围出处未授权"
-	return nil
 }
 
 func organizationReviewTable(action string) string {

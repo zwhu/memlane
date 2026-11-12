@@ -23,7 +23,7 @@ func (s *Store) CheckIDEVerification(ctx context.Context, d records.IDEVerificat
 		out.State = "expired"
 		return out, nil
 	}
-	c, _, err := s.Authorize(ctx, records.AgentRequest{ConnectionID: d.ConnectionID, Generation: d.Generation, Workspace: d.Workspace, Arguments: records.AgentArguments{Scope: ""}})
+	c, _, err := s.ResolveAgentScopes(ctx, records.AgentRequest{ConnectionID: d.ConnectionID, Generation: d.Generation, Workspace: d.Workspace, Arguments: records.AgentArguments{Scope: ""}})
 	if err != nil {
 		return out, err
 	}

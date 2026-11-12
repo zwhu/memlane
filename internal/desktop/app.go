@@ -8,11 +8,17 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/markdown"
 	"github.com/zwhu/memlane/internal/records"
 	"github.com/zwhu/memlane/internal/serviceipc"
 )
 
 type App struct {
+	settingsLayout                                                   SettingsLayoutState
+	readingMarkdown                                                  *markdown.Options
+	conversations                                                    ConversationUI
+	officialKnowledgeBypass                                          string
+	contentExplanation                                               ContentExplanationUI
 	deliveryAssignment                                               DeliveryAssignmentUI
 	projectPreference                                                ProjectPreferenceUI
 	maintenanceNext                                                  MaintenanceNextUI
@@ -40,6 +46,7 @@ type App struct {
 	readingActionsOpen                                               bool
 	readingKnowledgeTotal, readingRawTotal                           *int
 	readingCountsRoute                                               string
+	listReadSnapshot, listReadErrorCode                              string
 	readingSelections                                                map[string]string
 	readingSearch, readingFilter                                     string
 	readingQueries                                                   map[string][2]string
@@ -90,6 +97,7 @@ type App struct {
 	searching                                                        bool
 	searchHits                                                       []MemoryItem
 	searchQuery, searchError                                         string
+	searchFocus                                                      bool
 
 	serviceState                           string
 	routeStates                            map[string]PaneState
@@ -273,13 +281,21 @@ func (a *App) View(c *ui.Context) {
 		})
 	})
 	a.knowledgeHistoryView(c)
+	a.contentExplanationView(c)
 }
 func (a *App) navigationWidth(windowWidth float32) float32 {
-	if a.collapsed {
-		return 112
+	if (a.conversationPageVisible() || a.projectKnowledgeReading()) && !a.collapsed && windowWidth < 1000 {
+		return 160
 	}
-	if windowWidth < 1000 {
-		return 139
+	if a.collapsed {
+		return 76
+	}
+	// Prototype media queries include its 30 DIP review margin on either side.
+	if windowWidth <= 840 {
+		return 145
+	}
+	if windowWidth <= 1040 {
+		return 168
 	}
 	return design.Sidebar
 }
@@ -292,9 +308,23 @@ func (a *App) sidebar(c *ui.Context) {
 	}
 	ui.Column(c).Key("navigation").Width(width).Shrink(0).Background(background).BorderWidth(0, 1, 0, 0).BorderColor(design.Border).Children(func() {
 		bar := c.TitleBar()
-		ui.Row(c).Height(design.Toolbar).Shrink(0).Padding(0, 20, 0, max(bar.Left+8, 12)).DragWindow().Children(func() {
+		compactReading := width == 160 && (a.conversationPageVisible() || a.projectKnowledgeReading())
+		header := ui.Row(c).Height(design.Toolbar).Shrink(0).Padding(0, 12, 0, max(bar.Left+4, 12)).Gap(6).DragWindow()
+		if compactReading {
+			header.Padding(0, 8, 0, max(bar.Left+4, 12)).Gap(4)
+		}
+		header.Children(func() {
 			if !a.collapsed {
+				if compactReading {
+					ui.Text(c, "Memlane").FontSize(11).TextColor(design.Muted).SingleLine().Grow(1).MinWidth(0)
+					iconButton(c, "切换侧边栏", icons["sidebar"]).Padding(0).OnClick(func() { a.collapsed = true })
+					return
+				}
 				ui.Spacer(c)
+				ui.Icon(c, icons["brand"]).FontSize(15).TextColor(design.Muted)
+				if width > 168 {
+					ui.Text(c, "Memlane").FontSize(11).TextColor(design.Muted).SingleLine()
+				}
 				iconButton(c, "切换侧边栏", icons["sidebar"]).OnClick(func() { a.collapsed = true })
 			}
 		})
@@ -317,10 +347,6 @@ func (a *App) sidebar(c *ui.Context) {
 			for _, project := range a.projects {
 				a.projectNavigation(c, project)
 			}
-			ui.Button(c, "").Label("项目").Padding(8, 12).BorderWidth(0).Background(ui.Transparent).Justify(ui.Start).Gap(10).Children(func() {
-				ui.Icon(c, icons["plus"]).FontSize(design.Icon).TextColor(design.Muted)
-				ui.Text(c, "添加项目").TextColor(design.Muted)
-			}).OnClick(a.beginProjectCreation)
 		})
 		ui.Column(c).Padding(10).Gap(10).Shrink(0).Children(func() {
 			a.nav(c, "设置", "", icons["设置"])
@@ -380,24 +406,17 @@ func (a *App) nav(c *ui.Context, label, scope string, icon *ui.SVG) {
 	})
 }
 func (a *App) toolbar(c *ui.Context) {
+	if a.conversationPageVisible() || a.projectKnowledgeReading() {
+		a.conversationToolbar(c)
+		return
+	}
 	ui.Row(c).Height(design.Toolbar).Shrink(0).Padding(10, 24).Gap(12).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).DragWindow().Children(func() {
 		if a.page == "待归属提交" {
 			a.deliveryAssignmentToolbar(c)
 			return
 		}
 		if a.page == "设置" {
-			section := a.settingsSectionLabel()
-			maintenance := a.settingsSection == "environment" && a.maintenanceSection != "" && a.maintenanceSection != "components"
-			if maintenance {
-				section = "服务与数据"
-			}
-			ui.Text(c, "设置 / "+section).FontSize(design.Small).TextColor(design.Muted)
-			ui.Spacer(c)
-			status := a.processingToolbarStatus()
-			if maintenance {
-				status = a.maintenanceServiceLabel()
-			}
-			ui.Text(c, status).FontSize(design.Small).TextColor(design.Muted)
+			a.settingsToolbar(c)
 			return
 		}
 		icon := icons[a.page]
@@ -414,17 +433,29 @@ func (a *App) toolbar(c *ui.Context) {
 		}
 		a.deliveryAssignmentProjectReturn(c)
 		ui.Spacer(c)
+		if a.page == "整理记录" && a.organizationMode {
+			quietButton(c, "计划").Key("organization-toolbar-plans").Disabled(a.organization.Busy).OnClick(func() { a.navigate("整理计划", "") })
+			return
+		}
+		if a.page == "项目" && a.scope != "" {
+			quietButton(c, "实体与关系").Key("project-entities-entry").OnClick(func() { a.browseView("entities") })
+			return
+		}
 		searchWidth := float32(244)
 		if windowWidth, _ := c.Size(); windowWidth < 1040 {
 			searchWidth = 164
 		}
 		ui.Row(c).Width(searchWidth).Height(29).Padding(4, 9).Gap(6).Radius(5).Border(1, design.Border).Background(design.Surface).Children(func() {
 			ui.Icon(c, icons["search"]).FontSize(13).TextColor(design.Muted)
-			ui.TextInput(c.Key("memory-search"), &a.query).Label("搜索记忆").Placeholder(a.searchPlaceholder()).Grow(1).MinWidth(0).BorderWidth(0).Background(ui.Transparent).OnSubmit(func() {
+			input := ui.TextInput(c.Key("memory-search"), &a.query).Label("搜索记忆").Placeholder(a.searchPlaceholder()).Grow(1).MinWidth(0).BorderWidth(0).Background(ui.Transparent).OnSubmit(func() {
 				if a.onSearch != nil {
 					a.onSearch()
 				}
 			})
+			if a.page == "搜索" && a.searchFocus {
+				input.Focus()
+				a.searchFocus = false
+			}
 		})
 		quietButton(c, "搜索").OnClick(func() {
 			if a.onSearch != nil {
@@ -567,20 +598,29 @@ func (a *App) details(c *ui.Context) {
 	}
 	// At the minimum window size the detail remains useful rather than being squeezed by a fixed list.
 	windowWidth, _ := c.Size()
-	if windowWidth < 1040 && a.isMemoryPage() {
-		width = 216
+	if windowWidth <= 1040 && a.isMemoryPage() {
+		width = 272
+		if windowWidth <= 840 {
+			width = 216
+		}
 	}
 	if windowWidth < 1100 && !a.isMemoryPage() {
 		width = 320
 	}
-	if a.page == "整理记录" && windowWidth < 1040 {
-		width = 216
+	if a.page == "整理记录" && windowWidth <= 1040 {
+		width = 272
+		if windowWidth <= 840 {
+			width = 216
+		}
 	}
 	if a.page == "整理计划" {
 		width = 316
 		if windowWidth < 1040 {
 			width = 216
 		}
+	}
+	if a.projectKnowledgeReading() {
+		width = conversationListWidth(c)
 	}
 	ui.Row(c).Key("details-layout").Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 		ui.Column(c).Key("item-list").Width(width).Shrink(0).BorderWidth(0, 1, 0, 0).BorderColor(design.Border).Children(func() {
@@ -592,6 +632,10 @@ func (a *App) details(c *ui.Context) {
 				}
 			}
 			ui.Column(c).Padding(headerY, headerX, 16, headerX).Gap(headerGap).Shrink(0).Children(func() {
+				if a.projectKnowledgeReading() {
+					a.projectKnowledgeListHeader(c)
+					return
+				}
 				if !a.isMemoryPage() && !(a.page == "整理记录" && a.organizationMode) {
 					ui.Text(c, a.pageTitle()).FontSize(design.Heading).Bold()
 				}
@@ -607,7 +651,7 @@ func (a *App) details(c *ui.Context) {
 						ui.Text(c, fmt.Sprintf("“%s” · %d 条当前版本", a.searchQuery, len(a.items))).FontSize(design.Small).TextColor(design.Muted)
 					}
 				}
-				if a.libraryError != "" {
+				if a.libraryError != "" && !a.isMemoryPage() {
 					ui.Text(c, a.libraryError).FontSize(design.Small).TextColor(design.Muted)
 					quietButton(c, "重试读取").OnClick(func() { a.refresh(false) })
 				}
@@ -642,7 +686,7 @@ func (a *App) details(c *ui.Context) {
 					if a.recordKind == "raw" {
 						kind = "原始记录"
 					}
-					ui.Row(c).Gap(8).Wrap().Children(func() {
+					ui.Row(c).Height(24).AlignItems(ui.Center).Gap(8).Children(func() {
 						title := "内容列表"
 						if a.page == "通用知识" {
 							title = "通用知识"
@@ -652,15 +696,12 @@ func (a *App) details(c *ui.Context) {
 						}
 						ui.Text(c, title).FontSize(design.Small).TextColor(design.Muted)
 						ui.Spacer(c)
-						if !a.loading && a.libraryError == "" && (a.visualFixture || a.readingKnowledgeTotal != nil && a.readingRawTotal != nil) {
+						if (a.libraryError == "" || a.hasCurrentListSnapshot()) && (a.visualFixture || a.readingKnowledgeTotal != nil && a.readingRawTotal != nil) {
 							ui.Text(c, fmt.Sprintf("%d 条%s", a.listTotal, kind)).Key("reading-list-count").FontSize(10).TextColor(design.Muted)
 						}
-						if a.page == "项目" {
-							quietButton(c, "实体").Height(24).OnClick(func() { a.browseView("entities") })
-							quietButton(c, "关系图").Height(24).OnClick(func() { a.browseView("relations") })
-						}
+						a.readingListFailureAction(c)
 					})
-					ui.Row(c).Gap(6).Children(func() {
+					ui.Row(c).Gap(6).Wrap().Children(func() {
 						knowledge, raw := "知识", "原始记录"
 						if a.readingCountsRoute == a.page+":"+a.scope {
 							if a.readingKnowledgeTotal != nil {
@@ -672,7 +713,14 @@ func (a *App) details(c *ui.Context) {
 						}
 						ui.Button(c, knowledge).Key("reading-tab-knowledge").Height(28).Padding(5, 10).OnClick(func() { a.switchReadingKind("knowledge") })
 						ui.Button(c, raw).Key("reading-tab-raw").Height(28).Padding(5, 10).OnClick(func() { a.switchReadingKind("raw") })
+						if a.page == "项目" {
+							ui.Spacer(c)
+							a.contentExplanationEntry(c)
+						}
 					})
+					if a.page == "项目" && a.recordKind != "raw" {
+						quietButton(c, "会话整理结果").Key("official-knowledge-open").OnClick(a.openOfficialKnowledge)
+					}
 					if a.page == "通用知识" && a.recordKind != "raw" {
 						ui.Row(c).Gap(6).Children(func() {
 							for _, item := range []struct{ kind, label string }{{"preference", "个人偏好"}, {"experience", "通用经验"}} {
@@ -685,7 +733,7 @@ func (a *App) details(c *ui.Context) {
 						})
 					}
 					if a.page != "搜索" {
-						ui.TextInput(c.Key("reading-search"), &a.readingSearch).Label("搜索项目内容").Placeholder("搜索当前内容").Height(32).OnSubmit(func() {
+						ui.TextInput(c.Key("reading-search"), &a.readingSearch).Label("搜索项目内容").Placeholder("搜索标题与正文").Height(38).Background(ui.Hex("#f9fbfe")).Border(1, ui.Hex("#e0e8f2")).Radius(6).OnSubmit(func() {
 							a.readingFilter = strings.TrimSpace(a.readingSearch)
 							a.nextCursor = ""
 							a.refresh(false)
@@ -728,17 +776,7 @@ func (a *App) details(c *ui.Context) {
 							}
 							a.empty(c, "", message)
 						} else {
-							if a.loading {
-								a.empty(c, "正在读取内容", "")
-							} else if a.libraryError != "" {
-								a.empty(c, "读取未完成", "重试后继续查看当前范围。")
-							} else if a.projectKnowledgeEmpty() {
-								a.projectEmptyKnowledge(c)
-							} else if a.readingFilter != "" || a.readingFilters.active() || a.page == "通用知识" && a.commonCategory != "" {
-								a.empty(c, "没有匹配的内容", "清除筛选可查看这个范围的全部内容。")
-							} else {
-								a.empty(c, "列表为空", "保存的记忆会出现在这里。")
-							}
+							a.readingListEmpty(c)
 						}
 					}
 					for _, item := range a.items {
@@ -769,100 +807,110 @@ func (a *App) details(c *ui.Context) {
 					a.empty(c, "", a.pageDescription())
 				}
 			})
+			if a.projectKnowledgeReading() {
+				a.projectKnowledgeListFooter(c)
+			}
 		})
 		ui.Column(c).Key("detail-pane").Grow(1).MinWidth(0).Children(func() {
-			ui.Row(c).Height(55).Shrink(0).Padding(0, 22).Gap(12).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).Children(func() {
-				label := "知识详情"
-				raw := a.recordKind == "raw"
-				if item := a.current(); item != nil {
-					raw = item.Origin == "raw"
-				}
-				if raw {
-					label = "原始记录"
-				}
-				if a.editing {
-					label = "新增记忆"
-					if a.detailMode == "edit" {
-						label = "编辑知识"
+			if !a.projectKnowledgeReading() {
+				ui.Row(c).Height(54).Shrink(0).Padding(0, 28).Gap(12).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).Children(func() {
+					label := "知识详情"
+					raw := a.recordKind == "raw"
+					if item := a.current(); item != nil {
+						raw = item.Origin == "raw"
 					}
-				} else if a.detailMode == "history" {
-					label = "历史记录"
-				} else if a.detailMode == "restore" {
-					label = "恢复版本"
-				} else if !a.isMemoryPage() {
-					label = a.pageTitle()
-				}
-				if a.projectSettings.Open && a.page == "项目" && a.scope == a.projectSettings.Owner.ID {
-					label = "项目设置"
-				}
-				if a.reader.Open {
-					label = "原始出处"
-				}
-				if a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
-					label = "项目知识整理"
-				} else if a.projectKnowledgePreviewVisible() {
-					label = "项目知识"
-				}
-				if a.commonDistillOpen() {
-					label = "AI 提炼为通用经验"
-				}
-				if a.page == "整理记录" && a.organizationMode {
-					label = "整理结果"
-					if a.organization.New {
-						label = "整理项目"
+					if raw {
+						label = "原始记录"
 					}
-					if a.organization.ReviewItem != "" {
-						label = "建议审核"
+					if a.editing {
+						label = "新增知识"
+						if a.detailMode == "edit" {
+							label = "编辑知识"
+						}
+					} else if a.detailMode == "history" {
+						label = "历史记录"
+					} else if a.detailMode == "restore" {
+						label = "恢复版本"
+					} else if !a.isMemoryPage() {
+						label = a.pageTitle()
 					}
-				}
-				if a.organizationProgressOpen() {
-					label = "整理进度"
-				}
-				if a.commonCopyOpen() {
-					label = "原文复制到通用知识"
-				}
-				if a.page == "整理计划" {
-					label = a.scheduleHeaderLabel()
-				}
-				if a.projectPreferencePanelOpen() {
-					label = "约定与适用范围"
-				}
-				if a.projectCreationOpen() {
-					label = "添加项目"
-				}
-				ui.Text(c, label)
-				ui.Spacer(c)
-				if a.projectCreationOpen() {
-					a.projectCreationHeader(c)
-				} else if a.projectPreferencePanelOpen() {
-					quietButton(c, "返回知识").Key("project-preference-close").OnClick(a.closeProjectPreference)
-				} else if a.page == "整理记录" && a.organizationMode && a.organization.New {
-					a.organizationChooserHeader(c)
-				} else if a.page == "整理记录" && a.organizationMode && !a.organization.New && a.organization.Task != nil {
-					a.organizationProgressHeader(c)
-				} else if a.page == "整理计划" {
-					a.scheduleHeaderActions(c)
-				} else if a.commonDistillOpen() {
-					quietButton(c, "取消").Key("experience-distill-close").OnClick(a.cancelAndCloseExperienceDistill)
-				} else if a.commonCopyOpen() {
-					quietButton(c, "取消").Key("experience-copy-cancel").Disabled(a.experience.Busy).OnClick(a.closeExperienceCopy)
-				} else if a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
-					if a.projectOrganizer.Task == nil || projectTaskVisualState(a.projectOrganizer.Task) != "completed" {
-						quietButton(c, "查看知识").Key("project-organizer-close").OnClick(a.returnFromProjectOrganizer)
+					if a.projectSettings.Open && a.page == "项目" && a.scope == a.projectSettings.Owner.ID {
+						label = "项目设置"
 					}
-				} else if a.reader.Open {
-					quietButton(c, a.sourceReaderReturnLabel()).Key("source-reader-close").OnClick(a.returnFromSourceReader)
-				} else if a.projectSettings.Open && a.page == "项目" {
-					quietButton(c, "返回知识").Key("project-settings-close").OnClick(a.closeProjectSettings)
-				} else if a.isMemoryPage() && a.current() != nil && !a.editing && a.detailMode == "view" {
-					iconButton(c, "编辑", icons["edit"]).Disabled(a.current().State != "active").OnClick(a.editMemory)
-					historyButton := quietButton(c, "历史").Key("knowledge-history-open").Disabled(raw).OnClick(a.openKnowledgeHistory)
-					h := &a.knowledgeHistory
-					if h.ReturnFocus && !h.Open && !raw && h.Root == a.library.Root && h.Epoch == a.libraryEpoch && h.Owner.ID == a.current().ID && h.Owner.Dataset == a.current().Dataset {
-						historyButton.Focus()
+					if a.reader.Open {
+						label = "原始出处"
+						if a.reader.DirectRaw {
+							label = "原始记录"
+						}
 					}
-				}
-			})
+					if a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
+						label = "项目知识整理"
+					} else if a.projectKnowledgePreviewVisible() {
+						label = "项目知识"
+					}
+					if a.commonDistillOpen() {
+						label = "AI 提炼为通用经验"
+					}
+					if a.page == "整理记录" && a.organizationMode {
+						label = "整理结果"
+						if a.organization.New {
+							label = "整理项目"
+						}
+						if a.organization.ReviewItem != "" {
+							label = "建议审核"
+						}
+					}
+					if a.organizationProgressOpen() {
+						label = "整理进度"
+					}
+					if a.commonCopyOpen() {
+						label = "原文复制到通用知识"
+					}
+					if a.page == "整理计划" {
+						label = a.scheduleHeaderLabel()
+					}
+					if a.projectPreferencePanelOpen() {
+						label = "约定与适用范围"
+					}
+					if a.projectCreationOpen() {
+						label = "添加项目"
+					}
+					ui.Text(c, label)
+					ui.Spacer(c)
+					if a.projectCreationOpen() {
+						a.projectCreationHeader(c)
+					} else if a.projectPreferencePanelOpen() {
+						quietButton(c, "返回知识").Key("project-preference-close").OnClick(a.closeProjectPreference)
+					} else if a.page == "整理记录" && a.organizationMode && a.organization.New {
+						a.organizationChooserHeader(c)
+					} else if a.page == "整理记录" && a.organizationMode && !a.organization.New && a.organization.Task != nil {
+						a.organizationProgressHeader(c)
+					} else if a.page == "整理计划" {
+						a.scheduleHeaderActions(c)
+					} else if a.commonDistillOpen() {
+						quietButton(c, "取消").Key("experience-distill-close").OnClick(a.cancelAndCloseExperienceDistill)
+					} else if a.commonCopyOpen() {
+						quietButton(c, "取消").Key("experience-copy-cancel").Disabled(a.experience.Busy).OnClick(a.closeExperienceCopy)
+					} else if a.projectOrganizer.Open && a.projectOrganizer.Project == a.scope {
+						if a.projectOrganizer.Task == nil || projectTaskVisualState(a.projectOrganizer.Task) != "completed" {
+							quietButton(c, "查看知识").Key("project-organizer-close").OnClick(a.returnFromProjectOrganizer)
+						}
+					} else if a.reader.Open {
+						quietButton(c, a.sourceReaderReturnLabel()).Key("source-reader-close").OnClick(a.returnFromSourceReader)
+					} else if a.projectSettings.Open && a.page == "项目" {
+						quietButton(c, "返回知识").Key("project-settings-close").OnClick(a.closeProjectSettings)
+					} else if a.isMemoryPage() && a.editing {
+						a.memoryEditorReturn(c)
+					} else if a.isMemoryPage() && a.current() != nil && !a.editing && a.detailMode == "view" {
+						iconButton(c, "编辑", icons["edit"]).Disabled(a.current().State != "active").OnClick(a.editMemory)
+						historyButton := quietButton(c, "历史").Key("knowledge-history-open").Disabled(raw).OnClick(a.openKnowledgeHistory)
+						h := &a.knowledgeHistory
+						if h.ReturnFocus && !h.Open && !raw && h.Root == a.library.Root && h.Epoch == a.libraryEpoch && h.Owner.ID == a.current().ID && h.Owner.Dataset == a.current().Dataset {
+							historyButton.Focus()
+						}
+					}
+				})
+			}
 			if a.projectCreationOpen() {
 				a.projectEditor(c)
 			} else if a.projectPreferencePanelOpen() {
@@ -928,13 +976,20 @@ func (a *App) current() *MemoryItem {
 }
 func (a *App) memoryRow(c *ui.Context, item MemoryItem, inList bool) {
 	b := ui.Button(c.Key("memory-"+item.ID), "").Label(item.Title).Justify(ui.Start).BorderWidth(0, 0, 1, 0).BorderColor(design.Border).Background(ui.Transparent).Padding(12, 10).Radius(5).Children(func() {
+		if inList && a.projectKnowledgeReading() {
+			a.projectKnowledgeRowContent(c, item)
+			return
+		}
 		ui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
-			ui.Text(c, item.Title).FontWeight(600).MaxLines(2).MinWidth(0)
+			ui.Text(c, item.Title).FontSize(13).FontWeight(550).LineHeight(1.55).MaxLines(2).MinWidth(0)
 			rowPreview := preview(item.Text)
+			if a.projectKnowledgeReading() && item.SourceDetail != nil && item.SourceDetail.Official != nil {
+				rowPreview = preview(strings.ReplaceAll(strings.SplitN(item.Text, "\n\n", 2)[0], "**", ""))
+			}
 			if item.Origin == "raw" && item.SourceDetail != nil && (item.SourceDetail.Official != nil || item.SourceDetail.Native != nil) {
 				rowPreview = "原文已保留 · 打开阅读器核验当前来源与授权"
 			}
-			ui.Text(c, rowPreview).FontSize(design.Small).TextColor(design.Muted).MaxLines(2).MinWidth(0)
+			ui.Text(c, rowPreview).FontSize(11).LineHeight(1.7).TextColor(ui.Hex("#7b8998")).MaxLines(2).MinWidth(0)
 			ui.Row(c).Gap(6).Children(func() {
 				ui.Text(c, item.Source+" · "+a.memoryScopeName(item)).FontSize(10).TextColor(design.Muted).Grow(1).SingleLine().MinWidth(0)
 				category := item.Category
@@ -942,10 +997,15 @@ func (a *App) memoryRow(c *ui.Context, item MemoryItem, inList bool) {
 					category = "已删除"
 				}
 				ui.Text(c, category).FontSize(10).TextColor(design.Muted).MaxWidth(68).SingleLine().Shrink(0)
-				ui.Text(c, item.CreatedAt.Format("15:04")).FontSize(10).TextColor(design.Muted).Shrink(0)
+				if !inList {
+					ui.Text(c, item.CreatedAt.Format("15:04")).FontSize(10).TextColor(design.Muted).Shrink(0)
+				}
 			})
 		})
 	})
+	if inList && a.projectKnowledgeReading() {
+		b.BorderWidth(0).Padding(16, 12).Radius(7)
+	}
 	if inList && item.ID == a.selectedID {
 		b.Background(design.ListSelected).BorderWidth(0)
 	} else if b.Hovered() {
@@ -972,12 +1032,16 @@ func (a *App) memoryRow(c *ui.Context, item MemoryItem, inList bool) {
 		}
 	})
 }
+func (a *App) memoryEditorReturn(c *ui.Context) {
+	quietButton(c, "保留草稿返回").Key("memory-editor-return").Disabled(a.saving).OnClick(func() { a.rememberDraft(); a.editing = false; a.detailMode = "view" })
+}
+
 func (a *App) editor(c *ui.Context) {
 	if a.conflictReviewPanel(c) {
 		return
 	}
 	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
-		ui.Scroll(c).Grow(1).MinHeight(0).Padding(24).Gap(14).Children(func() {
+		ui.Scroll(c).Grow(1).MinHeight(0).Padding(29, 34).Gap(14).Children(func() {
 			a.maintenanceStorageNotice(c, "manual", a.manualStorageOwner())
 			a.projectPreferenceEditorNotice(c)
 			a.conflictReviewNotice(c)
@@ -987,18 +1051,20 @@ func (a *App) editor(c *ui.Context) {
 					revision = draft.Revision
 				}
 				ui.Text(c, fmt.Sprintf("基于 v%d", revision)).FontSize(design.Small).TextColor(design.Muted)
-				ui.Text(c, "修正这条知识").FontSize(design.Title).Bold()
+				ui.Text(c, "修正这条知识").FontSize(23).FontWeight(550).TextColor(ui.Hex("#3c556d")).LineHeight(1.5)
 			} else {
-				ui.Text(c, "记录一条知识").FontSize(design.Title).Bold()
+				ui.Text(c, "记下一条值得复用的结论").FontSize(23).FontWeight(550).TextColor(ui.Hex("#3c556d")).LineHeight(1.5)
+			}
+			if a.detailMode != "edit" {
+				ui.Row(c).Gap(10).Children(func() {
+					ui.Text(c, "保存位置").FontSize(design.Small).TextColor(design.Muted)
+					ui.Select(c.Key("draft-scope"), &a.draftScope, a.scopeOptions()).Label("记忆范围").Disabled(a.saving).OnChange(a.manualDraftScopeChanged)
+				})
 			}
 			ui.Text(c, "标题").FontSize(design.Small).TextColor(design.Muted)
-			ui.TextInput(c.Key("memory-title"), &a.draftTitle).Disabled(a.saving).Label("记忆标题").Placeholder("给这条记忆一个简短标题").Height(36)
-			ui.Row(c).Gap(10).Children(func() {
-				ui.Text(c, "范围").FontSize(design.Small).TextColor(design.Muted)
-				ui.Select(c.Key("draft-scope"), &a.draftScope, a.scopeOptions()).Label("记忆范围").Disabled(a.detailMode == "edit" || a.saving).OnChange(a.manualDraftScopeChanged)
-			})
+			ui.TextInput(c.Key("memory-title"), &a.draftTitle).Disabled(a.saving).Label("记忆标题").Placeholder("给这条记忆一个简短标题").Height(42).Background(ui.Hex("#fcfdff")).Border(1, ui.Hex("#dce6f2")).Radius(6)
 			ui.Text(c, "正文").FontSize(design.Small).TextColor(design.Muted)
-			draftField := ui.TextArea(c.Key("memory-draft"), &a.draft).Disabled(a.saving).Label("记忆内容").Placeholder("记录一条项目经验…").Height(210).LineHeight(1.7)
+			draftField := ui.TextArea(c.Key("memory-draft"), &a.draft).Disabled(a.saving).Label("记忆内容").Placeholder("记录一条项目经验…").Height(210).LineHeight(1.8).Background(ui.Hex("#fcfdff")).Border(1, ui.Hex("#dce6f2")).Radius(6)
 			a.focusConflictDraft(draftField)
 			if item := a.current(); a.detailMode == "edit" && item != nil && item.Experience != nil {
 				ui.Text(c, "适用条件").FontSize(design.Small).TextColor(design.Muted)
@@ -1008,7 +1074,7 @@ func (a *App) editor(c *ui.Context) {
 				ui.Text(c, "保存产生新版本；原正文、出处与历史保留。").FontSize(design.Small).TextColor(design.Muted)
 			}
 		})
-		ui.Row(c).Shrink(0).Wrap().Padding(14, 24).Gap(10).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
+		ui.Row(c).Shrink(0).Wrap().MinHeight(58).Padding(12, 28).Gap(10).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
 			message := "尚未保存为知识；返回时保留草稿。"
 			if a.onSave == nil {
 				message = "记忆服务尚未就绪，暂不能保存。"
@@ -1017,8 +1083,7 @@ func (a *App) editor(c *ui.Context) {
 				message = a.message
 			}
 			ui.Text(c, message).FontSize(10).TextColor(design.Muted).Grow(1).MinWidth(0)
-			actionButton(c, "返回", nil).OnClick(func() { a.rememberDraft(); a.editing = false; a.detailMode = "view" })
-			actionButton(c, "保存知识", nil).Key("memory-save").Disabled(a.saving || a.onSave == nil || strings.TrimSpace(a.draft) == "").OnClick(func() {
+			actionButton(c, "保存知识", nil).Key("memory-save").Background(design.Ink).TextColor(ui.Hex("#ffffff")).Disabled(a.saving || a.onSave == nil || strings.TrimSpace(a.draft) == "").OnClick(func() {
 				if a.onSave != nil {
 					a.onSave()
 				}
@@ -1029,7 +1094,15 @@ func (a *App) editor(c *ui.Context) {
 
 func (a *App) memoryDetail(c *ui.Context) {
 	item := a.current()
-	ui.Scroll(c).Grow(1).TrackScroll(&a.detailScroll).Padding(24).Gap(22).Children(func() {
+	body := ui.Scroll(c).Grow(1).MinHeight(0).TrackScroll(&a.detailScroll).Padding(29, 34).Gap(22)
+	if a.projectKnowledgeReading() {
+		padding := float32(30)
+		if w, _ := c.Size(); w < 1000 {
+			padding = 20
+		}
+		body.Padding(26, padding)
+	}
+	body.Children(func() {
 		if a.detailMode == "history" || a.detailMode == "restore" {
 			a.historyView(c, *item)
 			return
@@ -1038,7 +1111,24 @@ func (a *App) memoryDetail(c *ui.Context) {
 		a.knowledgeDraftNotice(c, *item)
 		a.recordDisplayedMemory(*item)
 		a.failedIndexNotice(c, *item)
-		ui.Text(c, item.Title).FontSize(design.Title).Bold()
+		ui.Column(c).Gap(8).Children(func() {
+			if item.Origin != "raw" && item.Category != "" {
+				ui.Text(c, item.Category).FontSize(10).TextColor(design.Muted)
+			}
+			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+				title := ui.Text(c, item.Title).FontSize(23).FontWeight(550).TextColor(ui.Hex("#3c556d")).LineHeight(1.5)
+				if item.SourceDetail != nil && item.SourceDetail.Official != nil && item.Origin != "raw" {
+					title.FontSize(21).TextColor(design.Ink)
+					if width, _ := c.Size(); width < 1000 && a.projectKnowledgeReading() {
+						title.FontSize(19)
+					}
+				}
+				if a.projectKnowledgeReading() {
+					title.Grow(1).MinWidth(0)
+					quietButton(c, "记录信息").Key("knowledge-record-info").OnClick(func() { a.readingMetadataOpen = !a.readingMetadataOpen })
+				}
+			})
+		})
 		if item.Origin != "raw" {
 			ui.Text(c, fmt.Sprintf("%s · %s · v%d · %s", a.memoryScopeName(*item), item.Source, item.Revision, knowledgeState(*item))).FontSize(10).TextColor(design.Muted)
 		}
@@ -1063,70 +1153,86 @@ func (a *App) memoryDetail(c *ui.Context) {
 		if item.Origin == "raw" && item.SourceDetail != nil && (item.SourceDetail.Official != nil || item.SourceDetail.Native != nil) {
 			ui.Text(c, "原文副本已持久保留。阅读器会核验当前项目、来源版本和官方授权；来源变化或接入撤销后停止读取。").FontSize(design.Small).LineHeight(1.8)
 		} else {
-			ui.Text(c, a.readableText(c, "current-"+item.ID+fmt.Sprint(item.Revision), item.Text)).Selectable().LineHeight(1.8)
+			if item.Origin != "raw" && item.SourceDetail != nil && item.SourceDetail.Official != nil {
+				if a.readingMarkdown == nil {
+					a.readingMarkdown = knowledgeMarkdownOptions()
+				}
+				markdown.View(c.Key("knowledge-markdown-"+item.ID), item.Text, a.readingMarkdown)
+			} else {
+				ui.Text(c, a.readableText(c, "current-"+item.ID+fmt.Sprint(item.Revision), item.Text)).Selectable().FontSize(13).LineHeight(1.95).TextColor(ui.Hex("#4a5e70"))
+			}
 		}
 
 		a.knowledgeProvenance(c, *item)
-		a.projectPreferenceKnowledgeNotice(c, *item)
-		a.knowledgeRelations(c, *item)
-		ui.Collapsible(c, "使用记录", &a.readingUsageOpen, func() { a.usageDetail(c, *item) })
-		ui.Collapsible(c, "保存与检索状态", &a.readingMetadataOpen, func() {
-			meta(c, "范围", a.memoryScopeName(*item))
-			meta(c, "来源", item.Source)
-			meta(c, "创建", item.CreatedAt.Format("2006-01-02 15:04"))
-			operation := operationLabel(item.Operation)
-			if item.Operation == "save" && item.Revision == 1 && item.Source != "手动新增" {
-				operation = "初始保存"
-			}
-			if item.Derived != nil && item.Experience == nil && item.Operation == "save" {
-				operation = "自动摘要"
-			}
-			if item.Operation == "save" && strings.Contains(item.Source, "用户确认合并") {
-				operation = "确认整理新增"
-			}
-			if item.Operation == "save" && (item.Source == "codex" || item.Source == "pi") {
-				operation = "Agent 保存"
-			}
-			if item.Operation == "save" && item.Origin == "imported" && item.Revision == 1 {
-				operation = "导入"
-			}
-			meta(c, "版本", fmt.Sprintf("v%d · %s", item.Revision, operation))
-			meta(c, "保存", "已保存")
-			if item.Experience != nil {
-				meta(c, "形态", experienceKindLabel(item.Experience.Kind))
-			} else if item.Derived != nil {
-				meta(c, "形态", "派生摘要 · "+derivedLabel(item.Derived.State))
-			}
-			if len(item.Tags) > 0 {
-				meta(c, "标签", fmt.Sprint(item.Tags))
-			}
-			index := a.availableIndexLabel(item.IndexState)
-			if item.Derived != nil && item.Derived.State == "stale" {
-				index = "摘要来源已变化 · 不参与检索"
-			}
-			if item.State == "archived" {
-				index = "已归档 · 不参与检索"
-			}
-			meta(c, "索引", index)
-			if a.message != "" {
-				ui.Text(c, a.message).FontSize(design.Small).TextColor(design.Muted)
-			}
-			if item.IndexState != "indexed" && !hasFailedIndexNotice(*item) && a.libraryContext != nil && (item.Derived == nil || item.Derived.State != "stale") {
-				quietButton(c, "重试索引").Disabled(a.retryingIndex).AlignSelf(ui.Start).OnClick(a.retryIndex)
-			}
-		})
-		if item.Origin != "raw" {
-			ui.Collapsible(c, "更多操作", &a.readingActionsOpen, func() {
-				if a.isProjectKnowledge(*item) {
-					quietButton(c, "原文复制到通用知识…").Key("experience-copy-preview").Disabled(a.experience.Busy).OnClick(func() { a.beginExperienceCopy(*item) })
-					if s := a.experience.Distill; s != nil && s.Source.ID == item.ID && s.TaskID != "" {
-						quietButton(c, "查看提炼进度").Key("experience-distill-resume").OnClick(a.showExperienceDistill)
-					}
-					ui.Text(c, "AI 提炼会消耗当前处理方式的模型额度，生成后仍需确认保存。").FontSize(11).TextColor(design.Muted)
-					quietButton(c, "AI 提炼为通用经验…").Key("experience-distill").Disabled(a.organization.Busy).OnClick(func() { a.beginExperienceDistill(*item) })
-				}
-				quietButton(c, "恢复旧版本").Key("knowledge-restore-open").OnClick(a.openKnowledgeHistory)
+		showRecordInfo := !a.projectKnowledgeReading() || item.SourceDetail == nil || item.SourceDetail.Official == nil || a.readingMetadataOpen
+		if showRecordInfo {
+			ui.Collapsible(c, "使用与关联", &a.readingUsageOpen, func() {
+				a.projectPreferenceKnowledgeNotice(c, *item)
+				a.knowledgeRelations(c, *item)
+				a.usageDetail(c, *item)
 			})
+			ui.Collapsible(c, "保存与检索状态", &a.readingMetadataOpen, func() {
+				meta(c, "范围", a.memoryScopeName(*item))
+				meta(c, "来源", item.Source)
+				created := "时间未知"
+				if !item.CreatedAt.IsZero() {
+					created = item.CreatedAt.Format("2006-01-02 15:04")
+				}
+				meta(c, "创建", created)
+				operation := operationLabel(item.Operation)
+				if item.Operation == "save" && item.Revision == 1 && item.Source != "手动新增" {
+					operation = "初始保存"
+				}
+				if item.Derived != nil && item.Experience == nil && item.Operation == "save" {
+					operation = "自动摘要"
+				}
+				if item.Operation == "save" && strings.Contains(item.Source, "用户确认合并") {
+					operation = "确认整理新增"
+				}
+				if item.Operation == "save" && (item.Source == "codex" || item.Source == "pi") {
+					operation = "Agent 保存"
+				}
+				if item.Operation == "save" && item.Origin == "imported" && item.Revision == 1 {
+					operation = "导入"
+				}
+				meta(c, "版本", fmt.Sprintf("v%d · %s", item.Revision, operation))
+				meta(c, "保存", "已保存")
+				if item.Experience != nil {
+					meta(c, "形态", experienceKindLabel(item.Experience.Kind))
+				} else if item.Derived != nil {
+					meta(c, "形态", "派生摘要 · "+derivedLabel(item.Derived.State))
+				}
+				if len(item.Tags) > 0 {
+					meta(c, "标签", fmt.Sprint(item.Tags))
+				}
+				index := a.availableIndexLabel(item.IndexState)
+				if item.Derived != nil && item.Derived.State == "stale" {
+					index = "摘要来源已变化 · 不参与检索"
+				}
+				if item.State == "archived" {
+					index = "已归档 · 不参与检索"
+				}
+				meta(c, "索引", index)
+				if a.message != "" {
+					ui.Text(c, a.message).FontSize(design.Small).TextColor(design.Muted)
+				}
+				if item.IndexState != "indexed" && !hasFailedIndexNotice(*item) && a.libraryContext != nil && (item.Derived == nil || item.Derived.State != "stale") {
+					quietButton(c, "重试索引").Disabled(a.retryingIndex).AlignSelf(ui.Start).OnClick(a.retryIndex)
+				}
+			})
+			if item.Origin != "raw" {
+				ui.Collapsible(c, "更多操作", &a.readingActionsOpen, func() {
+					if a.isProjectKnowledge(*item) {
+						quietButton(c, "原文复制到通用知识…").Key("experience-copy-preview").Disabled(a.experience.Busy).OnClick(func() { a.beginExperienceCopy(*item) })
+						if s := a.experience.Distill; s != nil && s.Source.ID == item.ID && s.TaskID != "" {
+							quietButton(c, "查看提炼进度").Key("experience-distill-resume").OnClick(a.showExperienceDistill)
+						}
+						ui.Text(c, "AI 提炼会消耗当前处理方式的模型额度，生成后仍需确认保存。").FontSize(11).TextColor(design.Muted)
+						quietButton(c, "AI 提炼为通用经验…").Key("experience-distill").Disabled(a.organization.Busy).OnClick(func() { a.beginExperienceDistill(*item) })
+					}
+					quietButton(c, "恢复旧版本").Key("knowledge-restore-open").OnClick(a.openKnowledgeHistory)
+				})
+			}
 		}
 		if a.relatedFor == item.ID {
 			if a.relatedError != "" {
@@ -1136,23 +1242,29 @@ func (a *App) memoryDetail(c *ui.Context) {
 				quietButton(c, "相关整理 · "+mergeStatus(task.State, task.ReviewState)).Key("memory-merge-" + task.ID).OnClick(func() { a.selectMerge(task.ID) })
 			}
 		}
-		ui.Row(c).Gap(6).Children(func() {
-			ui.Text(c, item.Category).FontSize(10).Padding(4, 6).Background(design.Surface)
-			state := "当前有效"
-			if item.Derived != nil && item.Derived.State == "stale" {
-				state = "摘要依据过期"
-			}
-			if item.State == "archived" {
-				state = archivedLabel(item.State)
-			}
-			if item.State == "deleted" {
-				state = "已删除 · 保留历史"
-			}
-			ui.Text(c, state).FontSize(10).Padding(4, 6).Background(design.Surface)
-		})
+		if item.Origin == "raw" {
+			ui.Row(c).Gap(6).Children(func() {
+				ui.Text(c, item.Category).FontSize(10).Padding(4, 6).Background(design.Surface)
+				state := "当前有效"
+				if item.Derived != nil && item.Derived.State == "stale" {
+					state = "摘要依据过期"
+				}
+				if item.State == "archived" {
+					state = archivedLabel(item.State)
+				}
+				if item.State == "deleted" {
+					state = "已删除 · 保留历史"
+				}
+				ui.Text(c, state).FontSize(10).Padding(4, 6).Background(design.Surface)
+			})
+		}
 	})
 	if a.detailMode == "view" {
-		ui.Row(c).Shrink(0).Padding(18, 24, 24, 24).Gap(8).Children(func() {
+		footer := ui.Row(c).Shrink(0).Padding(18, 24, 24, 24).Gap(8)
+		if a.projectKnowledgeReading() {
+			footer.Height(48).Padding(0, 26).BorderWidth(1, 0, 0, 0).BorderColor(design.Border)
+		}
+		footer.Children(func() {
 			ui.Text(c, fmt.Sprintf("%s · 当前版本 v%d", item.Source, item.Revision)).FontSize(10).TextColor(design.Muted)
 			if a.organizationReadingReturn(item.ID) {
 				if a.organization.ReviewItem != "" {

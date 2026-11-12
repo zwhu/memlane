@@ -13,21 +13,27 @@ import (
 	"github.com/zwhu/memlane/internal/records"
 )
 
-const codeColumns = `id,project,worktree,common_dir,dataset,enabled,generation,state,snapshot,manifest,receipt,observed_digest,error,updated_ms`
+const codeColumns = `id,project,worktree,common_dir,dataset,enabled,generation,state,snapshot,manifest,receipt,observed_digest,error,updated_ms,COALESCE((SELECT payload FROM official_code_scopes WHERE worktree_id=code_worktrees.id),'')`
 
 type codeScanner interface{ Scan(...any) error }
 
 func readCode(row codeScanner) (records.CodeState, error) {
 	var s records.CodeState
-	var manifest, receipt string
-	err := row.Scan(&s.ID, &s.Project, &s.Worktree, &s.CommonDir, &s.Dataset, &s.Enabled, &s.Generation, &s.State, &s.Snapshot, &manifest, &receipt, &s.ObservedDigest, &s.Error, &s.UpdatedMS)
+	var manifest, receipt, official string
+	err := row.Scan(&s.ID, &s.Project, &s.Worktree, &s.CommonDir, &s.Dataset, &s.Enabled, &s.Generation, &s.State, &s.Snapshot, &manifest, &receipt, &s.ObservedDigest, &s.Error, &s.UpdatedMS, &official)
 	if err != nil {
 		return s, err
 	}
 	if err = json.Unmarshal([]byte(manifest), &s.Manifest); err != nil {
 		return s, err
 	}
-	err = json.Unmarshal([]byte(receipt), &s.Receipt)
+	s.Receipt, s.OfficialReceipt, err = decodeCodeReceipt(receipt)
+	if err == nil && official != "" {
+		err = json.Unmarshal([]byte(official), &s.Official)
+	}
+	if err == nil && s.OfficialReceipt != nil && s.Official == nil {
+		err = errors.New("official code receipt without official scope")
+	}
 	return s, err
 }
 func (s *Store) Code(ctx context.Context, id string) (records.CodeState, error) {
@@ -59,6 +65,9 @@ func (s *Store) CodeAction(ctx context.Context, a records.CodeAction) (records.C
 	}
 	if a.Kind != "enable" && a.Kind != "disable" && a.Kind != "refresh" {
 		return out, access("invalid_request", "unknown code action")
+	}
+	if a.Official != nil && a.Kind != "enable" {
+		return out, access("invalid_request", "official scope can only be chosen by explicit enable")
 	}
 	digest := UsageDigest(a)
 	var old, raw string
@@ -131,6 +140,9 @@ func (s *Store) CodeAction(ctx context.Context, a records.CodeAction) (records.C
 		out = records.CodeState{ID: uuid.NewString(), Project: a.Project, Worktree: root, CommonDir: common, Dataset: uuid.NewSHA1(uuid.MustParse(a.Project), []byte("memlane-code:"+root)).String(), Generation: 1, Enabled: true, State: "queued", UpdatedMS: now}
 		_, e = tx.ExecContext(ctx, `INSERT INTO code_worktrees(id,project,worktree,common_dir,dataset,enabled,generation,state,updated_ms) VALUES(?,?,?,?,?,1,1,'queued',?)`, out.ID, out.Project, root, common, out.Dataset, now)
 	} else if e == nil {
+		if a.Official != nil && out.Official == nil && out.Enabled {
+			return out, access("code_backend_switch_requires_disable", "stop the existing local code backend before switching")
+		}
 		if a.ExpectedGeneration != out.Generation {
 			return out, ErrConflict
 		}
@@ -155,7 +167,13 @@ func (s *Store) CodeAction(ctx context.Context, a records.CodeAction) (records.C
 		if !out.Enabled {
 			out.State = "disabled"
 		}
-		_, e = tx.ExecContext(ctx, `UPDATE code_jobs SET state='cancelled',error='generation_changed',finished_ms=? WHERE worktree_id=? AND state IN ('queued','running')`, now, out.ID)
+		if out.Official != nil {
+			// Revoking permission is not evidence that the official process has
+			// stopped. Keep the active slot until its owner observes completion.
+			_, e = tx.ExecContext(ctx, `UPDATE code_jobs SET error='cancellation_requested' WHERE worktree_id=? AND state IN ('queued','running')`, out.ID)
+		} else {
+			_, e = tx.ExecContext(ctx, `UPDATE code_jobs SET state='cancelled',error='generation_changed',finished_ms=? WHERE worktree_id=? AND state IN ('queued','running')`, now, out.ID)
+		}
 		if e != nil {
 			return out, e
 		}
@@ -164,6 +182,9 @@ func (s *Store) CodeAction(ctx context.Context, a records.CodeAction) (records.C
 		return out, e
 	}
 	if e != nil {
+		return out, e
+	}
+	if e = bindOfficialCodeScope(ctx, tx, a, &out); e != nil {
 		return out, e
 	}
 	payload, e := json.Marshal(out)
@@ -178,6 +199,9 @@ func (s *Store) CodeAction(ctx context.Context, a records.CodeAction) (records.C
 
 func (s *Store) StartCodeJob(ctx context.Context, c records.CodeState, m codegraph.Manifest) (records.CodeJob, error) {
 	j := records.CodeJob{ID: uuid.NewString(), WorktreeID: c.ID, Generation: c.Generation, State: "running", Manifest: &m, CreatedMS: time.Now().UnixMilli()}
+	if c.Official != nil {
+		return j, access("official_code_backend_required", "official graphs cannot use the local worker pipeline")
+	}
 	if m.Worktree != c.Worktree || m.CommonDir != c.CommonDir || m.Recipe != codegraph.Recipe {
 		return j, access("workspace_mismatch", "code worktree identity changed")
 	}
@@ -193,6 +217,9 @@ func (s *Store) StartCodeJob(ctx context.Context, c records.CodeState, m codegra
 	current, e := readCode(tx.QueryRowContext(ctx, `SELECT `+codeColumns+` FROM code_worktrees WHERE id=?`, c.ID))
 	if e != nil {
 		return j, e
+	}
+	if current.Official != nil {
+		return j, access("official_code_backend_required", "code backend changed")
 	}
 	if !current.Enabled || current.Generation != c.Generation {
 		return j, ErrConflict
@@ -225,6 +252,9 @@ func (s *Store) FinishCodeJob(ctx context.Context, j records.CodeJob, receipt *c
 	c, e := readCode(tx.QueryRowContext(ctx, `SELECT `+codeColumns+` FROM code_worktrees WHERE id=?`, j.WorktreeID))
 	if e != nil {
 		return e
+	}
+	if c.Official != nil {
+		return access("official_code_backend_required", "local code publication cannot change an official graph")
 	}
 	if state != "running" || generation != j.Generation || c.Generation != j.Generation || !c.Enabled {
 		return ErrConflict
@@ -279,7 +309,10 @@ func (s *Store) InterruptCode(ctx context.Context) error {
 		return e
 	}
 	defer tx.Rollback()
-	_, e = tx.ExecContext(ctx, `UPDATE code_worktrees SET state='interrupted',observed_digest='',error='service_interrupted',updated_ms=? WHERE enabled=1 AND id IN (SELECT worktree_id FROM code_jobs WHERE state IN ('running','queued'));UPDATE code_jobs SET state='interrupted',error='service_interrupted',finished_ms=? WHERE state IN ('running','queued')`, time.Now().UnixMilli(), time.Now().UnixMilli())
+	_, e = tx.ExecContext(ctx, `UPDATE code_worktrees SET state='interrupted',observed_digest='',error='service_interrupted',updated_ms=? WHERE enabled=1 AND id IN (SELECT worktree_id FROM code_jobs WHERE state IN ('running','queued'));
+UPDATE code_jobs SET error='official_execution_unconfirmed' WHERE state IN ('running','queued') AND json_extract(manifest,'$.official_code_format')='official_code_job_v1';
+UPDATE code_worktrees SET error='official_execution_unconfirmed' WHERE enabled=1 AND id IN (SELECT worktree_id FROM code_jobs WHERE state IN ('running','queued') AND json_extract(manifest,'$.official_code_format')='official_code_job_v1');
+UPDATE code_jobs SET state='interrupted',error='service_interrupted',finished_ms=? WHERE state IN ('running','queued') AND json_extract(manifest,'$.official_code_format') IS NULL`, time.Now().UnixMilli(), time.Now().UnixMilli())
 	if e != nil {
 		return e
 	}
@@ -293,16 +326,9 @@ func (s *Store) CodeJobs(ctx context.Context, id string) ([]records.CodeJob, err
 	defer rows.Close()
 	out := []records.CodeJob{}
 	for rows.Next() {
-		var j records.CodeJob
-		var m, r string
-		if e = rows.Scan(&j.ID, &j.WorktreeID, &j.Generation, &j.State, &m, &r, &j.Error, &j.CreatedMS, &j.FinishedMS); e != nil {
-			return nil, e
-		}
-		if e = json.Unmarshal([]byte(m), &j.Manifest); e != nil {
-			return nil, e
-		}
-		if e = json.Unmarshal([]byte(r), &j.Receipt); e != nil {
-			return nil, e
+		j, err := readCodeJob(rows)
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, j)
 	}

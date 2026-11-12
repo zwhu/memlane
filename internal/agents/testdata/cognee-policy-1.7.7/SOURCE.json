@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/topoteretes/cognee-integrations",
+  "commit": "997fd6f72253aa97b49996eb1b032793f0257935",
+  "plugin_version": "1.7.7",
+  "source_path": "integrations/codex/plugins/cognee/scripts/_capture_policy.py",
+  "sha256": "aa49445f3d78880d5784c0b47195994aabc88dc32d0a2824a8232d77ad4719b0",
+  "modified": false,
+  "purpose": "unchanged upstream policy contract fixture; not an Agent collector",
+  "license": "Apache-2.0",
+  "root_notice_present": false
+}

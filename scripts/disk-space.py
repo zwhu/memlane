@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GIB = 1024 ** 3
 KEEP = ROOT / 'build/goal-agent-batch-window-20261110-002'
 RETAINED = ROOT / 'build/disk-cleanup/retained-package.txt'
+DEPENDENCIES = ROOT / 'build/disk-cleanup/retained-dependencies.txt'
 
 
 def active_arguments():
@@ -46,6 +47,22 @@ def prune_history():
         candidate = Path(RETAINED.read_text().strip()).resolve()
         if ROOT / 'build' in candidate.parents and candidate.is_dir(): keep = candidate
     protected = worktrees() + [keep]
+    if DEPENDENCIES.exists():
+        for line in DEPENDENCIES.read_text().splitlines():
+            if not line.strip(): continue
+            dependency = Path(line.strip()).resolve()
+            if ROOT / 'build' in dependency.parents:
+                protected.append(dependency)
+    # A LaunchAgent may expose only "memlaned" in ps. Its mapped executable
+    # still owns its bundle, including after a package was moved or aliased.
+    mapped = subprocess.run(['/usr/sbin/lsof', '-n', '-P', '-a', '-c', 'memlane', '-d', 'txt', '-Fn'], capture_output=True, text=True)
+    for line in mapped.stdout.splitlines():
+        if not line.startswith('n/'): continue
+        path = Path(line[1:]).resolve()
+        for parent in path.parents:
+            if parent.suffix == '.app' and ROOT / 'build' in parent.parents:
+                protected.append(parent)
+                break
     targets = [p for p in (ROOT / 'build').iterdir() if p.is_dir() and not p.is_symlink() and not any(p == x or p in x.parents for x in protected)]
     tmp = Path(tempfile.gettempdir())
     targets += [p for p in tmp.glob('memlane-*') if p.is_dir() and not p.is_symlink()]
@@ -96,7 +113,10 @@ def main():
     if other_tasks(active_arguments()):
         report['cache_cleanup'] = ['cleanup deferred: another managed task is active']
     else:
-        if args.prune_history or args.finish: report['history'] = prune_history()
+        # Finishing a build does not finish the artifact's lifetime: another
+        # managed task may still need to verify or run it. Scratch directories
+        # belong to task.py; historical build payloads require explicit pruning.
+        if args.prune_history: report['history'] = prune_history()
         report['cache_cleanup'] = trim_caches(8*GIB if args.finish else 10*GIB)
     report['free_after'] = shutil.disk_usage(ROOT).free
     report['minimum_free_bytes'] = 100*GIB

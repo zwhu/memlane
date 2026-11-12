@@ -40,6 +40,9 @@ type InstallOptions struct {
 }
 
 type Installation struct {
+	PiCaptureVersion        int                             `json:"pi_capture_version,omitempty"`
+	PiCaptureSupported      bool                            `json:"pi_capture_supported,omitempty"`
+	PiCaptureFiles          map[string]string               `json:"pi_capture_files,omitempty"`
 	CaptureConsent          *CodexCaptureConsent            `json:"-"`
 	CaptureHooks            *CodexCaptureHooks              `json:"-"`
 	CaptureRoutes           []records.CaptureRoute          `json:"-"`
@@ -133,7 +136,7 @@ func CheckInstallation(i Installation) error {
 		if i.Block == "" {
 			return errors.New("Memlane 配置回执不完整，请重新连接")
 		}
-		if !bytes.Contains(data, []byte(i.Block)) {
+		if _, e := ownedMCPBlock(data, i); e != nil {
 			return errors.New("Memlane 配置已变更，请重新连接")
 		}
 		if i.Options.ComputerLevel {
@@ -168,6 +171,9 @@ func CheckInstallation(i Installation) error {
 		source, e := os.ReadFile(i.ExtensionPath)
 		if e != nil || hash(source) != i.ExtensionHash {
 			return errors.New("Memlane Extension 已变更，请重新连接")
+		}
+		if err = checkPiCaptureModules(i); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -415,10 +421,11 @@ func Install(ctx context.Context, c records.Connection, o InstallOptions) (resul
 			return i, errors.New("Agent project TOML is invalid; configuration preserved")
 		}
 		if priorErr == nil {
-			if !bytes.Contains(content, []byte(prior.Block)) {
+			remaining, e := removeOwnedMCPBlock(content, prior)
+			if e != nil {
 				return i, errors.New("Memlane MCP entry was changed externally; configuration preserved")
 			}
-			content = bytes.Replace(content, []byte(prior.Block), nil, 1)
+			content = remaining
 		} else if servers, ok := parsed["mcp_servers"].(map[string]any); ok && servers["memlane"] != nil {
 			return i, errors.New("an unrelated memlane MCP entry already exists; configuration preserved")
 		}
@@ -492,7 +499,10 @@ func Install(ctx context.Context, c records.Connection, o InstallOptions) (resul
 				return i, errors.New("Memlane Extension was changed externally; preserved")
 			}
 		}
-		cfg, _ := json.Marshal(map[string]any{"bridge": o.Bridge, "root": o.ServiceRoot, "connection_id": c.ID, "generation": c.Generation})
+		if err = installPiCaptureModules(&i, prior, priorErr == nil, write); err != nil {
+			return i, err
+		}
+		cfg, _ := json.Marshal(map[string]any{"bridge": o.Bridge, "root": o.ServiceRoot, "connection_id": c.ID, "generation": c.Generation, "policy_digest": OfficialPiCapturePolicyDigest, "capture_supported": i.PiCaptureSupported})
 		source := []byte(strings.ReplaceAll(piExtension, "__MEMLANE_CONFIG__", string(cfg)))
 		i.ExtensionHash = hash(source)
 		found := false
@@ -539,6 +549,17 @@ func Install(ctx context.Context, c records.Connection, o InstallOptions) (resul
 // Uninstall removes only the exact owned entry. External edits cause a
 // conflict, leaving unrelated user configuration and changed files untouched.
 func Uninstall(ctx context.Context, root, id string) error {
+	return uninstallRevision(ctx, root, id, 0)
+}
+
+func UninstallRevision(ctx context.Context, root, id string, generation int64) error {
+	if generation < 1 {
+		return errors.New("explicit installed connection generation required")
+	}
+	return uninstallRevision(ctx, root, id, generation)
+}
+
+func uninstallRevision(ctx context.Context, root, id string, generation int64) error {
 	installationMu.Lock()
 	defer installationMu.Unlock()
 	i, err := LoadInstallation(root, id)
@@ -547,6 +568,21 @@ func Uninstall(ctx context.Context, root, id string) error {
 	}
 	if err != nil {
 		return err
+	}
+	if generation > 0 && i.Connection.Generation != generation {
+		return errors.New("installation changed; current configuration preserved")
+	}
+	removePiFamily := true
+	if i.Connection.Agent == "pi" {
+		if err = validatePiCaptureManifest(i); err != nil {
+			return err
+		}
+		if checkPiCaptureModules(i) != nil {
+			removePiFamily = false
+		}
+		if source, e := os.ReadFile(i.ExtensionPath); e != nil || hash(source) != i.ExtensionHash {
+			removePiFamily = false
+		}
 	}
 	if i.CaptureConsent != nil {
 		owner, err := lockCodexCapture(ctx, root, id)
@@ -578,10 +614,11 @@ func Uninstall(ctx context.Context, root, id string) error {
 			return err
 		}
 	} else if projectMCPAgent(i.Connection.Agent) {
-		if !bytes.Contains(content, []byte(i.Block)) {
+		remaining, e := removeOwnedMCPBlock(content, i)
+		if e != nil {
 			return errors.New("Memlane MCP entry changed externally; configuration preserved")
 		}
-		content = bytes.Replace(content, []byte(i.Block), nil, 1)
+		content = remaining
 	} else {
 		settings := map[string]json.RawMessage{}
 		if err = json.Unmarshal(content, &settings); err != nil {
@@ -621,10 +658,27 @@ func Uninstall(ctx context.Context, root, id string) error {
 	if err = privateWrite(i.ConfigPath, content, mode); err != nil {
 		return err
 	}
-	if i.ExtensionPath != "" {
+	if i.Connection.Agent == "pi" && removePiFamily {
+		if checkPiCaptureModules(i) != nil {
+			removePiFamily = false
+		}
+		if source, e := os.ReadFile(i.ExtensionPath); e != nil || hash(source) != i.ExtensionHash {
+			removePiFamily = false
+		}
+	}
+	if i.ExtensionPath != "" && (i.Connection.Agent != "pi" || removePiFamily) {
 		if source, e := os.ReadFile(i.ExtensionPath); e == nil && hash(source) == i.ExtensionHash {
 			if err = os.Remove(i.ExtensionPath); err != nil {
 				return err
+			}
+		}
+	}
+	if i.Connection.Agent == "pi" && removePiFamily {
+		for _, name := range piCaptureModuleNames {
+			if _, owned := i.PiCaptureFiles[name]; owned {
+				if err = os.Remove(filepath.Join(filepath.Dir(i.ExtensionPath), name)); err != nil && !os.IsNotExist(err) {
+					return err
+				}
 			}
 		}
 	}

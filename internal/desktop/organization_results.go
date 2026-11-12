@@ -124,7 +124,7 @@ func (a *App) materialOrganizationDetail(c *ui.Context) {
 	}
 	s := &a.organization
 	entry := a.selectedOrganizationEntry()
-	ui.Scroll(c.Key("organization-detail-scroll")).Grow(1).MinHeight(0).TrackScroll(&s.Scroll).Padding(24).Gap(18).Children(func() {
+	ui.Scroll(c.Key("organization-detail-scroll")).Grow(1).MinHeight(0).TrackScroll(&s.Scroll).Padding(29, 34).Gap(14).Children(func() {
 		if s.Error != "" && !s.New {
 			ui.Text(c, s.Error).FontSize(11).Selectable()
 			quietButton(c, "重试读取整理记录").Key("organization-refresh").Disabled(s.Busy || s.Loading).OnClick(func() { a.refreshOrganization(false, false) })
@@ -143,7 +143,7 @@ func (a *App) materialOrganizationDetail(c *ui.Context) {
 		}
 		a.materialOrganizationResult(c, *s.Task)
 	})
-	ui.Row(c).Shrink(0).Padding(12, 24).Gap(8).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
+	ui.Row(c).Shrink(0).MinHeight(58).Padding(12, 28).Gap(10).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
 		if s.New {
 			note := "范围与执行者在开始后固定"
 			if !a.organizationServiceAvailable() {
@@ -166,8 +166,15 @@ func (a *App) materialOrganizationDetail(c *ui.Context) {
 			a.materialOrganizationReviewActions(c, *s.Task, *entry)
 			return
 		}
-		ui.Text(c, "执行完成不等于建议已确认").FontSize(10).TextColor(design.Muted).Grow(1).MinWidth(0)
 		t := s.Task
+		note := "执行完成不等于建议已确认"
+		if t.State == "queued" || t.State == "running" || t.State == "applying" {
+			note = "任务仍在进行，已保存结果可随时查看"
+		}
+		if t.State == "failed" || t.State == "cancelled" || t.State == "interrupted" || t.State == "partial_failed" {
+			note = "材料与已保存结果保留"
+		}
+		ui.Text(c, note).FontSize(10).TextColor(design.Muted).Grow(1).MinWidth(0)
 		if t.State == "queued" || t.State == "running" || t.State == "applying" || hasPendingOrganizationReview(*t) {
 			quietButton(c, "取消未完成项").Key("organization-cancel").Disabled(s.Busy || t.Cancelled).OnClick(a.cancelOrganization)
 		}

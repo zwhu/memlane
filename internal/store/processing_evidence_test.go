@@ -77,13 +77,13 @@ func TestCapabilityEvidenceLedgerCAS(t *testing.T) {
 
 func TestCapabilityEvidenceMigration30CreatesNoHistoricalProof(t *testing.T) {
 	s, path := mergeDB(t)
-	_, err := s.DB.Exec(`DROP TABLE processing_validation_evidence;PRAGMA user_version=30`)
+	_, err := s.DB.Exec(`DROP TABLE official_code_scopes;DROP TABLE coding_memory_grants; DROP TABLE pi_capture_read_grants; DROP TABLE pi_capture_consents; DROP TABLE official_capture_receipts; DROP TABLE session_processing_tasks; DROP TABLE processing_validation_evidence;PRAGMA user_version=30`)
 	mustMerge(t, err)
 	mustMerge(t, s.Close())
 	upgraded, err := Open(path)
 	mustMerge(t, err)
 	defer upgraded.Close()
-	if upgraded.Schema != 31 {
+	if upgraded.Schema != SchemaVersion {
 		t.Fatal(upgraded.Schema)
 	}
 	var n int

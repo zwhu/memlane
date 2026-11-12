@@ -319,7 +319,7 @@ func TestOrganizationReviewSummaryRepeatedOverwriteLineage(t *testing.T) {
 	}
 }
 
-func TestOrganizationMovedProvenanceScopeFilter(t *testing.T) {
+func TestOrganizationMovedProvenanceRemainsAvailable(t *testing.T) {
 	s, _ := mergeDB(t)
 	task, d := reviewOrganizationFixture(t, s, "move")
 	target := task.Entries[0].Item.Target
@@ -333,27 +333,17 @@ func TestOrganizationMovedProvenanceScopeFilter(t *testing.T) {
 	if v.SourceDetail == nil || v.Original == "" {
 		t.Fatal("trusted history lost")
 	}
-	public := v
-	mustMerge(t, s.FilterAgentVersion(mergeCtx, &public, []string{v.Dataset}))
-	if public.Original != "" || public.SourceDetail != nil || public.Text != v.Text {
-		t.Fatal("old scope leaked or current body lost", public)
-	}
-	allowed := v
-	mustMerge(t, s.FilterAgentVersion(mergeCtx, &allowed, []string{v.Dataset, task.Project}))
-	if allowed.Original != v.Original || allowed.SourceDetail == nil {
-		t.Fatal("explicit old-scope access lost")
-	}
 	start, _, e := s.StartOrganization(mergeCtx, records.OrganizationStart{OperationID: uuid.NewString(), Project: v.Dataset, Review: true, Inputs: []records.MergeTarget{{Memory: v.Memory, Revision: v.Revision}}})
 	mustMerge(t, e)
-	if start.Snapshot.Inputs[0].SourceDetail != nil {
-		t.Fatal("organizer prompt leaked old scope")
+	if start.Snapshot.Inputs[0].SourceDetail == nil {
+		t.Fatal("organizer lost original provenance")
 	}
 	other := uuid.NewString()
 	_, e = s.Apply(mergeCtx, Mutation{Kind: "save", OperationID: uuid.NewString(), Memory: other, Dataset: v.Dataset, Text: "目标项目另一条安全约定"})
 	mustMerge(t, e)
 	merged, _, e := s.StartMerge(mergeCtx, records.MergeStart{OperationID: uuid.NewString(), Project: v.Dataset, Inputs: []records.MergeTarget{{Memory: v.Memory, Revision: v.Revision}, {Memory: other, Revision: 1}}})
 	mustMerge(t, e)
-	if merged.Snapshot.Inputs[0].SourceDetail != nil {
-		t.Fatal("legacy merge prompt leaked old scope")
+	if merged.Snapshot.Inputs[0].SourceDetail == nil {
+		t.Fatal("merge lost original provenance")
 	}
 }

@@ -73,7 +73,7 @@ func TestFirstLaunchProcessingReusesLedgerAndRequiresExplicitActiveRevision(t *t
 	if err := tt.Click("继续配置记忆处理"); err != nil {
 		t.Fatal(err)
 	}
-	if a.firstLaunch.State.Step != "processing" || !tt.HasText("使用已连接 Agent") || !tt.HasText("设为当前使用") {
+	if a.firstLaunch.State.Step != "processing" || !tt.HasText("已连接 Agent") || !tt.HasText("设为当前使用") {
 		t.Fatal("processing setup did not reuse the production ledger page")
 	}
 	_ = tt.Click("完成配置")
@@ -163,7 +163,7 @@ func TestFirstLaunchPreparationKeepsCardsOnOnePage(t *testing.T) {
 	if tt.HasText("查看检查详情") || tt.HasText("第一项任务") {
 		t.Fatal("obsolete preparation flow returned")
 	}
-	for _, label := range []string{"记忆数据库", "向量数据库", "向量模型"} {
+	for _, label := range []string{"原生运行依赖", "Cognee 引擎", "本地向量模型"} {
 		if !tt.HasText(label) {
 			t.Fatal("missing environment card", label)
 		}
@@ -174,7 +174,7 @@ func TestFirstLaunchPreparationKeepsCardsOnOnePage(t *testing.T) {
 	if !prepared || a.firstLaunch.State.Stage != "preparing" || a.firstLaunch.State.Attempt != 1 {
 		t.Fatal("one-page confirmation did not prepare")
 	}
-	for _, label := range []string{"记忆数据库", "向量数据库", "向量模型", "取消准备"} {
+	for _, label := range []string{"原生运行依赖", "Cognee 引擎", "本地向量模型", "取消准备"} {
 		if !tt.HasText(label) {
 			t.Fatal("preparation replaced page content", label)
 		}

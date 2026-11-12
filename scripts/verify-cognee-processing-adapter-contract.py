@@ -42,10 +42,12 @@ def main():
                 payload=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                 auth=self.headers.get('Authorization');seen.append((self.server.marker,auth,payload))
                 if self.server.marker=='failure':status,body=503,{'raw':'DO-NOT-PERSIST-SYNTHETIC-PROVIDER-ERROR'}
-                else:status,body=200,{'choices':[{'finish_reason':'stop','message':{'role':'assistant','content':json.dumps({'marker':self.server.marker})}}]}
+                else:
+                    content = {'text': 'test'} if self.server.marker == 'string' else {'text': 7} if self.server.marker == 'invalid_string' else {'marker': self.server.marker}
+                    status,body=200,{'choices':[{'finish_reason':'stop','message':{'role':'assistant','content':json.dumps(content)}}]}
                 raw=json.dumps(body).encode();self.send_response(status);self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
         servers=[]
-        for marker in ('first','second','failure'):
+        for marker in ('first','second','failure','string','invalid_string'):
             server=ThreadingHTTPServer(('127.0.0.1',0),Handler);server.marker=marker
             thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start();servers.append((server,thread))
         user=SimpleNamespace(id=uuid4(),tenant_id=None,email='synthetic@example.invalid')
@@ -71,6 +73,21 @@ def main():
                 assert 'contract-secret' not in repr(error) and 'DO-NOT-PERSIST' not in repr(error), 'unsafe_error'
             else:raise AssertionError('provider_failure_accepted')
             assert len(seen)==before+1,'implicit_paid_retry'
+            from cognee_processing_adapter import ProcessingAdapter
+            from cognee.infrastructure.llm.utils import test_llm_connection
+            server=servers[3][0]
+            config=LLMConfig(_env_prefix='MEMLANE_STRING_ISOLATED_',_env_file=None,llm_provider='custom',llm_model='openai/memlane-processing',
+                            llm_endpoint='http://127.0.0.1:'+str(server.server_port)+'/v1',llm_api_key='contract-secret-string',llm_args={})
+            token=llm_config.set(config)
+            try:
+                await test_llm_connection()
+                result=await LLMGateway.acreate_structured_output('synthetic','return test',str)
+                assert result == 'test' and type(result) is str,'sdk_string_contract_broken'
+            finally:llm_config.reset(token)
+            bad=ProcessingAdapter('http://127.0.0.1:'+str(servers[4][0].server_port)+'/v1','contract-secret-invalid_string')
+            try:await bad.acreate_structured_output('synthetic','return text',str)
+            except ValueError as error:assert str(error)=='material_model_response_schema_invalid'
+            else:raise AssertionError('non_string_output_accepted')
             # Real ASGI cancellation waits for cleanup, and a tombstone defeats
             # a delayed/replayed body for that same explicit operation.
             import hashlib
@@ -104,7 +121,7 @@ def main():
         try:asyncio.run(prove())
         finally:
             for server,thread in servers:server.shutdown();server.server_close();thread.join(timeout=5)
-        assert len(seen)==3
+        assert len(seen)==6
         for marker,auth,payload in seen:
             assert auth=='Bearer contract-secret-'+marker,'context_token_crossed'
             assert payload['model']=='memlane-processing' and payload['response_format']['type']=='json_schema' and payload['stream'] is False

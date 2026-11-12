@@ -52,6 +52,7 @@ for line in sys.stdin:
   if MODE=='tool-delta':send({'method':'item/commandExecution/outputDelta','params':{'threadId':'thread','turnId':'turn','delta':'must not run'}});continue
   if MODE=='cross-start':send({'method':'turn/started','params':{'threadId':'foreign','turn':{'id':'turn'}}});continue
   final='not json' if MODE=='json' else json.dumps({'marker':'memlane-model-probe','value':8 if MODE=='schema' else 7})
+  if MODE=='schema-omit':final=json.dumps({'marker':'memlane-model-probe'})
   item={'method':'item/completed','params':{'threadId':'foreign' if MODE=='cross' else 'thread','turnId':'turn','item':{'type':'agentMessage','phase':'final_answer','text':final}}}
   send(item)
   if MODE=='multiple':send(item)
@@ -181,6 +182,33 @@ func TestCodexCompletionStrictProtocolAndPrivateConfiguration(t *testing.T) {
 				t.Fatal("configuration leaked into receipt")
 			}
 		})
+	}
+}
+
+func TestCodexCompletionAdaptsPydanticDefaultsThroughProtocol(t *testing.T) {
+	o, _ := completionFixture(t, "ok")
+	o.OutputSchema = json.RawMessage(`{"type":"object","properties":{"marker":{"type":"string","const":"memlane-model-probe"},"value":{"type":"integer","const":7,"default":7}},"required":["marker"]}`)
+	out, err := RunCodexCompletion(context.Background(), o)
+	if err != nil || out.Codex == nil || !out.Codex.FinalSchemaValid || !out.Codex.OutputSchemaAccepted || out.Codex.SourceSchemaDigest != hash(o.OutputSchema) || out.Codex.SchemaDigest == out.Codex.SourceSchemaDigest {
+		t.Fatal("Pydantic schema did not traverse the strict production protocol", err, out.Codex)
+	}
+}
+
+func TestCodexCompletionRejectsOpenDictionaryBeforeProcess(t *testing.T) {
+	out, err := RunCodexCompletion(context.Background(), CodexCompletionOptions{SystemPrompt: "synthetic", Prompt: "synthetic", OutputSchema: json.RawMessage(`{"type":"object","additionalProperties":{"type":"string"}}`)})
+	if err == nil || out.Started || out.FailureCode != "codex_schema_unsupported" {
+		t.Fatal("unsupported schema reached a process", err, out)
+	}
+}
+
+func TestCodexCompletionRejectsResultMissingStrictDefaultField(t *testing.T) {
+	o, _ := completionFixture(t, "schema-omit")
+	// The source schema permits omission, but the actual model request requires
+	// an explicit value. Checking only the original would release this result.
+	o.OutputSchema = json.RawMessage(`{"type":"object","properties":{"marker":{"type":"string","const":"memlane-model-probe"},"value":{"type":"integer","const":7,"default":7}},"required":["marker"]}`)
+	out, err := RunCodexCompletion(context.Background(), o)
+	if err == nil || len(out.Final) != 0 || out.FailureCode != "codex_schema_failed" || !out.Reaped || !out.GroupGone {
+		t.Fatal("output violating the actual requested schema escaped", err, out)
 	}
 }
 

@@ -9,12 +9,17 @@ import (
 )
 
 func (a *App) returnFromSourceReader() {
+	direct := a.reader.DirectRaw
 	a.closeSourceReader()
+	if direct {
+		a.switchReadingKind("knowledge")
+		return
+	}
 	a.reader.ReturnFocus = true
 }
 
 func (a *App) sourceReaderReturnLabel() string {
-	if a.reader.Query.Owner == a.reader.Query.Memory {
+	if !a.reader.DirectRaw && a.reader.Query.Owner == a.reader.Query.Memory {
 		return "返回原始记录"
 	}
 	return "返回知识"
@@ -80,10 +85,12 @@ func (a *App) sourceReader(c *ui.Context) {
 		a.sourceReaderPermissionPage(c)
 		return
 	}
-	baseAvailable := !s.Loading && s.Error == "" && s.Result.State == "available" && s.Window != nil
+	// Keep the last verified content mounted during background verification.
+	// Failed or changed-source receipts still replace it immediately.
+	baseAvailable := (s.Error == "" || sourceReaderTransientFailure(s.ErrorCode)) && s.Result.State == "available" && s.Window != nil
 	available := baseAvailable && !(s.Full && s.HadSessionOriginal && s.Result.SessionOriginal == nil)
 	ui.Column(c).Key("source-reader-layout").Grow(1).MinHeight(0).MinWidth(0).Children(func() {
-		ui.Scroll(c.Key("source-reader-controls")).Shrink(0).MaxHeight(235).Padding(23, 24, 15, 24).Gap(12).Children(func() {
+		ui.Scroll(c.Key("source-reader-controls")).Shrink(0).MaxHeight(265).Padding(29, 34, 15, 34).Gap(14).Children(func() {
 			ui.Text(c, "原始记录").FontSize(10).TextColor(design.Muted)
 			title := "原始出处"
 			if s.Result.State == "available" {
@@ -95,7 +102,17 @@ func (a *App) sourceReader(c *ui.Context) {
 					}
 				}
 			}
-			ui.Text(c, title).Key("source-reader-title").FontSize(design.Title).Bold().MaxLines(2)
+			ui.Text(c, title).Key("source-reader-title").FontSize(23).FontWeight(550).MaxLines(2)
+			if available && s.Error != "" {
+				ui.Row(c).Gap(8).Children(func() {
+					ui.Text(c, "刷新暂未完成，正在显示上次核验的内容。").FontSize(10).TextColor(design.Muted).Grow(1).MinWidth(0)
+					quietButton(c, "重试刷新").Key("source-reader-refresh-retry").Disabled(s.Loading).OnClick(a.refreshSourceReader)
+				})
+			}
+			if s.DirectRaw && available {
+				v := a.readerRecord()
+				ui.Text(c, fmt.Sprintf("%s · %s · v%d · %s", a.scopeLabel(s.Query.Project), sourceDisplayName(v.Source), v.Revision, knowledgeState(displayVersion(v)))).FontSize(10).TextColor(design.Muted)
+			}
 			ui.Row(c).Wrap().Gap(6).Children(func() {
 				for _, source := range s.Sources {
 					if source.Project != s.Query.Project || source.Input.Origin != "raw" {
@@ -123,7 +140,7 @@ func (a *App) sourceReader(c *ui.Context) {
 				})
 			}
 			ui.Row(c).Gap(8).Children(func() {
-				ui.TextInput(c.Key("source-reader-search"), &s.Search).Label("在原文中查找").Placeholder("在原文中查找").Height(32).Grow(1).MinWidth(0).Disabled(!available).OnSubmit(a.searchSource)
+				ui.TextInput(c.Key("source-reader-search"), &s.Search).Label("在原文中查找").Placeholder("在原文中查找").Height(38).Grow(1).MinWidth(0).Disabled(!available).OnSubmit(a.searchSource)
 				quietButton(c, "查找").Key("source-reader-find").Disabled(!available || strings.TrimSpace(s.Search) == "").OnClick(a.searchSource)
 				quietButton(c, "下一处").Key("source-reader-match").Disabled(!available || len(s.Matches) == 0).OnClick(func() { s.Match = (s.Match + 1) % len(s.Matches); a.locateSourceOffset(s.Matches[s.Match]) })
 			})
@@ -135,7 +152,7 @@ func (a *App) sourceReader(c *ui.Context) {
 		if !available {
 			bodyKey = "source-reader-status"
 		}
-		bodyScroll := ui.Scroll(c.Key(bodyKey)).Grow(1).MinHeight(0).Padding(20, 24).Gap(15).BorderWidth(1, 0, 0, 0).BorderColor(design.Border)
+		bodyScroll := ui.Scroll(c.Key(bodyKey)).Grow(1).MinHeight(0).Padding(20, 34).Gap(15)
 		if available {
 			bodyScroll.TrackScroll(&s.Scroll)
 		}
@@ -166,7 +183,7 @@ func (a *App) sourceReader(c *ui.Context) {
 				// Inline children share one shaped paragraph, including original newlines.
 				// Reveal uses inline glyph bounds: SDK ScrollIntoView promotes an
 				// inline child to its whole paragraph, which loses long-paragraph hits.
-				ui.RichText(c).Key("source-reader-original").Selectable().LineHeight(1.85).Children(func() {
+				ui.RichText(c).Key("source-reader-original").Selectable().FontSize(13).TextColor(ui.Hex("#536477")).LineHeight(1.95).Children(func() {
 					ui.Text(c, body[start:s.FocusOffset])
 					focus := ui.Text(c, body[s.FocusOffset:focusEnd]).Key("source-reader-focus-" + records.MergeDigest([]any{body[start:end], s.FocusOffset, s.FocusLength})).Label("原文当前匹配").Background(design.Heat[1])
 					if s.Reveal {
@@ -188,31 +205,38 @@ func (a *App) sourceReader(c *ui.Context) {
 					ui.Text(c, body[focusEnd:end])
 				})
 			} else {
-				ui.Text(c, body[start:end]).Key("source-reader-original").Selectable().LineHeight(1.85)
+				ui.Text(c, body[start:end]).Key("source-reader-original").Selectable().FontSize(13).TextColor(ui.Hex("#536477")).LineHeight(1.95)
+			}
+			if s.DirectRaw {
+				ui.Text(c, "保留原始过程，提炼后的知识单独保存。").FontSize(10).TextColor(design.Muted)
 			}
 			quietButton(c, "来源详情").Key("source-reader-technical").OnClick(func() { s.Technical = !s.Technical })
 			if s.Technical {
 				a.sourceReaderDetails(c, v)
+				if s.DirectRaw {
+					quietButton(c, "编辑原始记录").Disabled(v.State != "active" || v.SourceDetail != nil && (v.SourceDetail.Official != nil || v.SourceDetail.Native != nil)).OnClick(func() { a.closeSourceReader(); a.editMemory() })
+				}
+				ui.Row(c).Wrap().Gap(8).Children(func() {
+					quietButton(c, "上一段").Key("source-reader-previous").Disabled(!available || s.Window.Page == 0).OnClick(func() { s.Window.Page--; s.Scroll.Y = 0 })
+					quietButton(c, "下一段").Key("source-reader-next").Disabled(!available || s.Window.Page >= len(s.Window.Offsets)-2).OnClick(func() { s.Window.Page++; s.Scroll.Y = 0 })
+					quietButton(c, "定位引用").Key("source-reader-quote").Disabled(!available || s.Result.QuoteOffset < 0).OnClick(func() {
+						if s.Full && s.Result.SessionOriginal != nil {
+							a.sourceReaderMode(false)
+						}
+						a.locateSourceOffset(s.Result.QuoteOffset)
+					})
+					quietButton(c, "复制全文").Key("source-reader-copy").Disabled(!available).OnClick(func() { c.WriteClipboard(s.Window.Body) })
+				})
 			}
 		})
-		ui.Column(c).Shrink(0).Padding(10, 20).Gap(6).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
-			if available {
-				v := a.readerRecord()
-				ui.Text(c, fmt.Sprintf("%s · v%d · 第 %d / %d 段", v.Source, v.Revision, s.Window.Page+1, len(s.Window.Offsets)-1)).FontSize(10).TextColor(design.Muted)
+		ui.Row(c).Shrink(0).MinHeight(58).Padding(12, 28).Gap(10).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
+			if s.DirectRaw {
+				ui.Text(c, a.scopeLabel(s.Query.Project)+" · 原始材料").FontSize(10).TextColor(design.Muted).Grow(1).MinWidth(0)
+				quietButton(c, "复制正文").Disabled(!available).OnClick(func() { c.WriteClipboard(s.Window.Body) })
+				return
 			}
-			ui.Row(c).Wrap().Gap(8).Children(func() {
-				quietButton(c, "上一段").Key("source-reader-previous").Disabled(!available || s.Window.Page == 0).OnClick(func() { s.Window.Page--; s.Scroll.Y = 0 })
-				quietButton(c, "下一段").Key("source-reader-next").Disabled(!available || s.Window.Page >= len(s.Window.Offsets)-2).OnClick(func() { s.Window.Page++; s.Scroll.Y = 0 })
-				quietButton(c, "定位引用").Key("source-reader-quote").Disabled(!available || s.Result.QuoteOffset < 0).OnClick(func() {
-					if s.Full && s.Result.SessionOriginal != nil {
-						a.sourceReaderMode(false)
-					}
-					a.locateSourceOffset(s.Result.QuoteOffset)
-				})
-				ui.Spacer(c)
-				quietButton(c, "复制全文").Key("source-reader-copy").Disabled(!available).OnClick(func() { c.WriteClipboard(s.Window.Body) })
-				quietButton(c, a.sourceReaderReturnLabel()).Key("source-reader-return").OnClick(a.returnFromSourceReader)
-			})
+			ui.Text(c, "当前知识与选中结果保持").FontSize(10).TextColor(design.Muted).Grow(1).MinWidth(0)
+			quietButton(c, a.sourceReaderReturnLabel()).Key("source-reader-return").OnClick(a.returnFromSourceReader)
 		})
 	})
 }

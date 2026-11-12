@@ -1,0 +1,1160 @@
+{
+  "scope": "design assets only",
+  "date": "2026-11-12",
+  "deleted": [
+    {
+      "path": "build/p3-prototype/prototypes/non-project-20261112/README.md",
+      "bytes": 8245
+    },
+    {
+      "path": "build/p3-prototype/prototypes/non-project-20261112/base.css",
+      "bytes": 9132
+    },
+    {
+      "path": "build/p3-prototype/prototypes/non-project-20261112/brand.svg",
+      "bytes": 312
+    },
+    {
+      "path": "build/p3-prototype/prototypes/non-project-20261112/design.css",
+      "bytes": 9384
+    },
+    {
+      "path": "build/p3-prototype/prototypes/non-project-20261112/design.js",
+      "bytes": 8285
+    },
+    {
+      "path": "build/p3-prototype/prototypes/non-project-20261112/export.swift",
+      "bytes": 4323
+    },
+    {
+      "path": "build/p3-prototype/prototypes/non-project-20261112/index.html",
+      "bytes": 309
+    },
+    {
+      "path": "build/p3-prototype/prototypes/non-project-20261112/render.cjs",
+      "bytes": 5989
+    },
+    {
+      "path": "build/p3-prototype/prototypes/non-project-20261112/scenes.js",
+      "bytes": 100530
+    },
+    {
+      "path": "build/p3-prototype/prototypes/non-project-20261112/scenes.json",
+      "bytes": 100514
+    },
+    {
+      "path": "build/p3-prototype/prototypes/conversation-reading-20261112/index.html",
+      "bytes": 19605
+    },
+    {
+      "path": "build/p3-prototype/prototypes/conversation-reading-20261112/render.cjs",
+      "bytes": 4984
+    },
+    {
+      "path": "output/pdf/memlane-non-project-design-20261112.pdf",
+      "bytes": 23264987
+    },
+    {
+      "path": "docs/images/home.jpg",
+      "bytes": 87701
+    },
+    {
+      "path": "docs/images/memory-detail.jpg",
+      "bytes": 80181
+    },
+    {
+      "path": "docs/images/ui-redesign/a-environment/a-cancelled.png",
+      "bytes": 59347
+    },
+    {
+      "path": "docs/images/ui-redesign/a-environment/a-confirm.png",
+      "bytes": 62031
+    },
+    {
+      "path": "docs/images/ui-redesign/a-environment/a-deferred.png",
+      "bytes": 61980
+    },
+    {
+      "path": "docs/images/ui-redesign/a-environment/a-detection-failed.png",
+      "bytes": 26141
+    },
+    {
+      "path": "docs/images/ui-redesign/a-environment/a-detection.png",
+      "bytes": 19385
+    },
+    {
+      "path": "docs/images/ui-redesign/a-environment/a-failure.png",
+      "bytes": 68516
+    },
+    {
+      "path": "docs/images/ui-redesign/a-environment/a-narrow.png",
+      "bytes": 52399
+    },
+    {
+      "path": "docs/images/ui-redesign/a-environment/a-offline.png",
+      "bytes": 26237
+    },
+    {
+      "path": "docs/images/ui-redesign/a-environment/a-partial.png",
+      "bytes": 62974
+    },
+    {
+      "path": "docs/images/ui-redesign/a-environment/a-progress.png",
+      "bytes": 58850
+    },
+    {
+      "path": "docs/images/ui-redesign/a-environment/a-ready.png",
+      "bytes": 56408
+    },
+    {
+      "path": "docs/images/ui-redesign/a-environment/a-unknown.png",
+      "bytes": 68948
+    },
+    {
+      "path": "docs/images/ui-redesign/a-environment/a-verifying.png",
+      "bytes": 56915
+    },
+    {
+      "path": "docs/images/ui-redesign/a-environment/verification.json",
+      "bytes": 4014
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/README.md",
+      "bytes": 3325
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/activation-entry-active.png",
+      "bytes": 72929
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/activation-entry-direct.png",
+      "bytes": 72814
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/agent-note-simplified.png",
+      "bytes": 56569
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/agents.png",
+      "bytes": 49470
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/all-configured-agent-active.png",
+      "bytes": 62584
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/all-configured-agent.png",
+      "bytes": 62702
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/all-configured-magpie-active.png",
+      "bytes": 72926
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/all-configured-magpie.png",
+      "bytes": 72814
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/all-configured-provider.png",
+      "bytes": 65515
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/archive.json",
+      "bytes": 14672
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/batch-cancel-preserves-connected.png",
+      "bytes": 55326
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/batch-cancelled.png",
+      "bytes": 54290
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/batch-complete.png",
+      "bytes": 51930
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/batch-narrow.png",
+      "bytes": 44418
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/batch-partial.png",
+      "bytes": 58368
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/batch-progress.png",
+      "bytes": 51019
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/batch-ready.png",
+      "bytes": 50889
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/batch-reload.png",
+      "bytes": 55543
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/environment-settings-missing.png",
+      "bytes": 50564
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/environment-settings-narrow.png",
+      "bytes": 45380
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/environment-settings-progress.png",
+      "bytes": 49813
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/environment-settings-ready.png",
+      "bytes": 45312
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/initial-config-environment.png",
+      "bytes": 60325
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/initial-config-three-steps.png",
+      "bytes": 70747
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/magpie-connect.png",
+      "bytes": 57155
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/magpie-empty.png",
+      "bytes": 66029
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/magpie-failed.png",
+      "bytes": 56850
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/magpie-loading.png",
+      "bytes": 50064
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/magpie-models-narrow.png",
+      "bytes": 50972
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/magpie-models.png",
+      "bytes": 77235
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/magpie-ready.png",
+      "bytes": 80011
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/magpie-verifying.png",
+      "bytes": 75923
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/models-failed.png",
+      "bytes": 75138
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/models-narrow.png",
+      "bytes": 49333
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/models-ready-narrow.png",
+      "bytes": 48627
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/models-ready.png",
+      "bytes": 72652
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/models-search.png",
+      "bytes": 55893
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/models-selected.png",
+      "bytes": 69061
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/models-verifying.png",
+      "bytes": 71849
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/models.png",
+      "bytes": 70747
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/processing-settings-magpie.png",
+      "bytes": 73322
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/processing-settings-saved-magpie.png",
+      "bytes": 72928
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/processing-settings-saved.png",
+      "bytes": 65515
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/single-line-tabs.png",
+      "bytes": 70747
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/supplier-settings.png",
+      "bytes": 77335
+    },
+    {
+      "path": "docs/images/ui-redesign/a-setup/verification.json",
+      "bytes": 5584
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/README.md",
+      "bytes": 1308
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/after-confirmation.png",
+      "bytes": 116751
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/archive.json",
+      "bytes": 10009
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/button-completed.png",
+      "bytes": 5431
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/button-hover.png",
+      "bytes": 13112
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/button-running.png",
+      "bytes": 7156
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/changed.png",
+      "bytes": 115039
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/dense.png",
+      "bytes": 117492
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/empty.png",
+      "bytes": 75969
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/failed.png",
+      "bytes": 107379
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/heatfailed.png",
+      "bytes": 116567
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/heatloading.png",
+      "bytes": 116630
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/imported.png",
+      "bytes": 96896
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/layout-1.png",
+      "bytes": 115039
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/list-all-narrow.png",
+      "bytes": 80060
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/list-all.png",
+      "bytes": 116990
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/list-design-project.png",
+      "bytes": 113253
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/list-global.png",
+      "bytes": 118818
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/list-project.png",
+      "bytes": 118517
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/list-raw.png",
+      "bytes": 81838
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/loading.png",
+      "bytes": 61986
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/memory-handoff-narrow.png",
+      "bytes": 106082
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/memory-handoff.png",
+      "bytes": 93846
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/motion-verification.json",
+      "bytes": 2341
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/narrow.png",
+      "bytes": 67642
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/new-memory-handoff.png",
+      "bytes": 45368
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/nopending.png",
+      "bytes": 100115
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/noplans.png",
+      "bytes": 112992
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/organize-button.gif",
+      "bytes": 51347
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/paused.png",
+      "bytes": 112691
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/raw-handoff.png",
+      "bytes": 81838
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/raw.png",
+      "bytes": 77494
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/retrying.png",
+      "bytes": 114334
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/review-handoff-narrow.png",
+      "bytes": 80924
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/review-handoff.png",
+      "bytes": 87551
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/running.png",
+      "bytes": 114240
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/selected-day.png",
+      "bytes": 116465
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/sparse.png",
+      "bytes": 75926
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/stopped.png",
+      "bytes": 105538
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/task-handoff.png",
+      "bytes": 63089
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/taskfailed.png",
+      "bytes": 114659
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/verification.json",
+      "bytes": 6225
+    },
+    {
+      "path": "docs/images/ui-redesign/b-home/zero-day.png",
+      "bytes": 96742
+    },
+    {
+      "path": "docs/images/ui-redesign/c-project-reading/archive.json",
+      "bytes": 1243
+    },
+    {
+      "path": "docs/images/ui-redesign/c-project-reading/history-narrow.png",
+      "bytes": 87614
+    },
+    {
+      "path": "docs/images/ui-redesign/c-project-reading/history-old-version.png",
+      "bytes": 129025
+    },
+    {
+      "path": "docs/images/ui-redesign/c-project-reading/history.png",
+      "bytes": 126960
+    },
+    {
+      "path": "docs/images/ui-redesign/c-project-reading/reading.png",
+      "bytes": 156425
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/01-home-continued.png",
+      "bytes": 174498
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/01-home.png",
+      "bytes": 186247
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/02-home-date.png",
+      "bytes": 144968
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/03-home-empty-continued.png",
+      "bytes": 109830
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/03-home-empty.png",
+      "bytes": 119391
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/04-activity.png",
+      "bytes": 128574
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/05-common.png",
+      "bytes": 214770
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/06-common-experience.png",
+      "bytes": 234858
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/07-common-edit.png",
+      "bytes": 172504
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/08-common-new.png",
+      "bytes": 148993
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/09-common-saved.png",
+      "bytes": 175657
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/10-common-history.png",
+      "bytes": 151916
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/11-common-restore.png",
+      "bytes": 172548
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/12-common-source.png",
+      "bytes": 168505
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/13-common-access.png",
+      "bytes": 164184
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/14-common-empty.png",
+      "bytes": 115157
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/15-search.png",
+      "bytes": 209552
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/16-search-raw.png",
+      "bytes": 189739
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/17-search-empty.png",
+      "bytes": 113376
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/18-search-error.png",
+      "bytes": 164980
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/19-records.png",
+      "bytes": 210274
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/20-task-running.png",
+      "bytes": 178683
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/21-task-cancelled.png",
+      "bytes": 164791
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/22-task-failed.png",
+      "bytes": 187636
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/23-review.png",
+      "bytes": 210892
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/24-review-reject.png",
+      "bytes": 153778
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/25-review-rejected.png",
+      "bytes": 141819
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/26-review-applied.png",
+      "bytes": 151159
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/27-review-stale.png",
+      "bytes": 163658
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/28-distill.png",
+      "bytes": 187909
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/29-records-empty.png",
+      "bytes": 108952
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/30-plans.png",
+      "bytes": 176701
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/31-plan-edit.png",
+      "bytes": 168217
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/32-plan-saved.png",
+      "bytes": 138257
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/33-plan-stop.png",
+      "bytes": 143597
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/34-plan-missed.png",
+      "bytes": 151875
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/35-environment.png",
+      "bytes": 161203
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/36-environment-progress.png",
+      "bytes": 151989
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/37-environment-failed.png",
+      "bytes": 142575
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/38-agents.png",
+      "bytes": 180198
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/39-agents-progress.png",
+      "bytes": 140405
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/40-agent-detail-continued.png",
+      "bytes": 165336
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/40-agent-detail.png",
+      "bytes": 174479
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/41-agent-remove.png",
+      "bytes": 150787
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/42-processing.png",
+      "bytes": 153929
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/43-processing-provider.png",
+      "bytes": 151223
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/44-processing-magpie.png",
+      "bytes": 129462
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/45-processing-magpie-missing.png",
+      "bytes": 134654
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/46-processing-validating.png",
+      "bytes": 147645
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/47-processing-active.png",
+      "bytes": 137554
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/48-service.png",
+      "bytes": 134065
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/49-service-stopped.png",
+      "bytes": 127701
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/50-service-failed.png",
+      "bytes": 138728
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/51-backup.png",
+      "bytes": 150526
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/52-backup-progress.png",
+      "bytes": 119286
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/53-backup-invalid.png",
+      "bytes": 127704
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/54-restore.png",
+      "bytes": 152193
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/55-restore-progress.png",
+      "bytes": 134857
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/56-restore-done.png",
+      "bytes": 158581
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/57-index.png",
+      "bytes": 125497
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/58-index-progress.png",
+      "bytes": 119467
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/59-update.png",
+      "bytes": 135533
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/60-update-progress.png",
+      "bytes": 119209
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/61-storage-failed.png",
+      "bytes": 139431
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/62-about.png",
+      "bytes": 135889
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/63-draft.png",
+      "bytes": 178717
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/64-conflict.png",
+      "bytes": 178186
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/65-quit.png",
+      "bytes": 140776
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/66-setup-environment.png",
+      "bytes": 147188
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/67-setup-agents.png",
+      "bytes": 160158
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/68-setup-processing.png",
+      "bytes": 138947
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/69-setup-done.png",
+      "bytes": 116775
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/70-setup-ready.png",
+      "bytes": 92442
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/71-organize.png",
+      "bytes": 136113
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/72-organize-unavailable.png",
+      "bytes": 103282
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/73-loading.png",
+      "bytes": 106203
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/74-refresh.png",
+      "bytes": 170347
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/75-setup-connected.png",
+      "bytes": 118974
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/SHA256SUMS",
+      "bytes": 15523
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-agent-detail-continued.png",
+      "bytes": 126134
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-agent-detail.png",
+      "bytes": 138319
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-agents-continued.png",
+      "bytes": 134176
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-agents.png",
+      "bytes": 142763
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-backup.png",
+      "bytes": 136266
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-common-continued.png",
+      "bytes": 196892
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-common-edit.png",
+      "bytes": 157677
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-common.png",
+      "bytes": 202194
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-environment-continued.png",
+      "bytes": 120841
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-environment.png",
+      "bytes": 124272
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-home-continued.png",
+      "bytes": 130301
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-home.png",
+      "bytes": 141817
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-plan-edit-continued.png",
+      "bytes": 145343
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-plan-edit.png",
+      "bytes": 140375
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-plans-continued.png",
+      "bytes": 151205
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-plans.png",
+      "bytes": 149943
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-processing-continued.png",
+      "bytes": 115204
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-processing-magpie.png",
+      "bytes": 116269
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-processing-provider-continued.png",
+      "bytes": 116361
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-processing-provider.png",
+      "bytes": 118821
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-processing.png",
+      "bytes": 120540
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-records-continued.png",
+      "bytes": 182159
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-records.png",
+      "bytes": 182432
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-restore-done-continued.png",
+      "bytes": 135915
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-restore-done.png",
+      "bytes": 135730
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-restore.png",
+      "bytes": 138051
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-review-continued.png",
+      "bytes": 171408
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-review.png",
+      "bytes": 173373
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-search-raw.png",
+      "bytes": 174436
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-search.png",
+      "bytes": 196388
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-service.png",
+      "bytes": 121648
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-setup-agents-continued.png",
+      "bytes": 114864
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-setup-agents.png",
+      "bytes": 123668
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-setup-environment-continued.png",
+      "bytes": 107007
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-setup-environment.png",
+      "bytes": 110345
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-setup-processing-continued.png",
+      "bytes": 101124
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/narrow-setup-processing.png",
+      "bytes": 106468
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/render-report.json",
+      "bytes": 48242
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/review-sheets/pdf-page-1.png",
+      "bytes": 449672
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/review-sheets/pdf-page-108.png",
+      "bytes": 341187
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/review-sheets/pdf-page-38.png",
+      "bytes": 247230
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/review-sheets/pdf-page-5.png",
+      "bytes": 189502
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/review-sheets/sheet-01.png",
+      "bytes": 205168
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/review-sheets/sheet-02.png",
+      "bytes": 177463
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/review-sheets/sheet-03.png",
+      "bytes": 161786
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/review-sheets/sheet-04.png",
+      "bytes": 162581
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/review-sheets/sheet-05.png",
+      "bytes": 152897
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/review-sheets/sheet-06.png",
+      "bytes": 174415
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/review-sheets/sheet-07.png",
+      "bytes": 245849
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/review-sheets/sheet-08.png",
+      "bytes": 251349
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/review-sheets/sheet-09.png",
+      "bytes": 211735
+    },
+    {
+      "path": "docs/images/ui-redesign/non-project-20261112/review-sheets/sheet-10.png",
+      "bytes": 144375
+    },
+    {
+      "path": "docs/images/ui-redesign/conversation-reading-20261112/01-conversation.png",
+      "bytes": 307724
+    },
+    {
+      "path": "docs/images/ui-redesign/conversation-reading-20261112/02-tools-expanded.png",
+      "bytes": 315894
+    },
+    {
+      "path": "docs/images/ui-redesign/conversation-reading-20261112/03-knowledge-source.png",
+      "bytes": 232753
+    },
+    {
+      "path": "docs/images/ui-redesign/conversation-reading-20261112/04-narrow.png",
+      "bytes": 221387
+    },
+    {
+      "path": "docs/images/ui-redesign/conversation-reading-20261112/05-empty.png",
+      "bytes": 214815
+    },
+    {
+      "path": "docs/images/ui-redesign/conversation-reading-20261112/06-error.png",
+      "bytes": 311511
+    },
+    {
+      "path": "docs/images/ui-redesign/conversation-reading-20261112/archive.json",
+      "bytes": 1139
+    },
+    {
+      "path": "docs/images/ui-redesign/conversation-reading-20261112/render-report.json",
+      "bytes": 2491
+    },
+    {
+      "path": "build/p3-prototype/prototypes/ui-redesign-20261109/full-design-global-plans.js",
+      "bytes": 12847
+    },
+    {
+      "path": "build/p3-prototype/prototypes/ui-redesign-20261109/full-design-organization.js",
+      "bytes": 20119
+    },
+    {
+      "path": "build/p3-prototype/prototypes/ui-redesign-20261109/full-design-maintenance.js",
+      "bytes": 22135
+    },
+    {
+      "path": "build/p3-prototype/prototypes/ui-redesign-20261109/project-agent-task.js",
+      "bytes": 1795
+    },
+    {
+      "path": "build/p3-prototype/prototypes/ui-redesign-20261109/project-initialization.js",
+      "bytes": 17603
+    },
+    {
+      "path": "build/p3-prototype/prototypes/ui-redesign-20261109/project-initialization.css",
+      "bytes": 19439
+    },
+    {
+      "path": "build/p3-prototype/prototypes/ui-redesign-20261109/a-model-picker.css",
+      "bytes": 6737
+    },
+    {
+      "path": "build/p3-prototype/prototypes/ui-redesign-20261109/a-organize.css",
+      "bytes": 3942
+    },
+    {
+      "path": "build/p3-prototype/prototypes/ui-redesign-20261109/J-K-L-M-DESIGN.md",
+      "bytes": 2285
+    },
+    {
+      "path": "build/p3-prototype/prototypes/ui-redesign-20261109/N-O-TAILS-DESIGN.md",
+      "bytes": 2477
+    },
+    {
+      "path": "build/p3-prototype/prototypes/ui-redesign-20261109/review-full-maintenance.cjs",
+      "bytes": 11286
+    },
+    {
+      "path": "build/p3-prototype/prototypes/ui-redesign-20261109/review-full-organization.cjs",
+      "bytes": 11644
+    },
+    {
+      "path": "build/p3-prototype/prototypes/ui-redesign-20261109/review-project-initialization.cjs",
+      "bytes": 24483
+    },
+    {
+      "path": "build/p3-prototype/prototypes/ui-redesign-20261109/verify-model-picker.cjs",
+      "bytes": 8733
+    },
+    {
+      "path": "build/p3-prototype/prototypes/ui-redesign-20261109/verify-processing-modes.cjs",
+      "bytes": 17238
+    },
+    {
+      "path": "build/p3-prototype/prototypes/ui-redesign-20261109/verify-processing.cjs",
+      "bytes": 9514
+    }
+  ],
+  "retired_html_entrypoints": [
+    "build/p3-prototype/prototypes/ui-redesign-20261109/b-home-overview.html",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/design-review.html",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/b-home-agent-reads.html",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/scenarios.html",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/a-environment.html",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/d-daily.html",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/a-environment-flow.html",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/c-agent.html",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/b-home-dynamics.html",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/b-home.html",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/a-environment-settings.html",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/a-agent.html"
+  ],
+  "preserved": [
+    "product runtime and data",
+    "settings-native-20261112 engineering evidence",
+    "unrelated uncommitted prototype changes"
+  ],
+  "new_entry": "build/p3-prototype/prototypes/client-simplification-20261112/index.html",
+  "subsequent_removed_narrow_designs": [
+    {
+      "path": "docs/images/ui-redesign/client-simplification-20261112/narrow-home.png",
+      "bytes": 136219
+    },
+    {
+      "path": "docs/images/ui-redesign/client-simplification-20261112/narrow-knowledge.png",
+      "bytes": 243557
+    },
+    {
+      "path": "docs/images/ui-redesign/client-simplification-20261112/narrow-records.png",
+      "bytes": 205370
+    },
+    {
+      "path": "docs/images/ui-redesign/client-simplification-20261112/narrow-settings.png",
+      "bytes": 116913
+    }
+  ]
+}

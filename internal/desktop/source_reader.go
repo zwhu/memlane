@@ -3,6 +3,7 @@ package desktop
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"sort"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 type SourceReaderUI struct {
 	Open, Loading, Technical bool
+	DirectRaw                bool // The raw-record tab uses the verified reader directly.
 	Full                     bool
 	Sequence                 int64
 	Query                    records.SourceRead
@@ -98,10 +100,15 @@ func (a *App) refreshSourceReader() {
 			}
 			s.Loading, s.Cancel = false, nil
 			if err != nil {
-				s.Result, s.Window = records.SourceRecord{}, nil
 				s.ErrorCode = sourceReaderErrorCode(err)
 				if a.runtimeStatus.Phase == "stopped" && s.ErrorCode == "service_unavailable" {
 					s.ErrorCode = "service_stopped"
+				}
+				// Only explicit transient failures retain a previously verified
+				// receipt for this exact query/epoch. Authorization, provenance,
+				// version and unclassified failures withdraw it immediately.
+				if !sourceReaderTransientFailure(s.ErrorCode) {
+					s.Result, s.Window = records.SourceRecord{}, nil
 				}
 				s.Error = sourceReaderFailureMessage(s.ErrorCode)
 				s.ErrorDetail = "代码：" + s.ErrorCode
@@ -126,6 +133,14 @@ func (a *App) refreshSourceReader() {
 			}
 		})
 	}()
+}
+
+func sourceReaderTransientFailure(code string) bool {
+	switch code {
+	case "timeout", "deadline_exceeded", "service_unavailable", "cognee_unavailable":
+		return true
+	}
+	return false
 }
 
 func (a *App) readerRecord() records.Version {
@@ -183,6 +198,12 @@ func (a *App) searchSource() {
 func sourceReaderErrorCode(err error) string {
 	var remote *serviceipc.ServiceError
 	if errors.As(err, &remote) && remote.Code != "" {
+		if remote.Code == "reload_required" {
+			return "scope_changed"
+		}
+		if remote.Code == "disconnected" || remote.Code == "connection_not_found" || remote.Code == "restore_reconnect_required" {
+			return "connection_revoked"
+		}
 		switch remote.Code {
 		case "scope_denied", "permission_denied", "connection_revoked", "authorization_required", "cognee_authorization_required", "invalid_provenance", "not_found", "source_not_found", "original_unavailable", "version_changed", "stale_source", "scope_changed", "service_stopped", "service_unavailable", "cognee_unavailable", "service_error", "timeout", "deadline_exceeded", "index_unavailable":
 			return remote.Code
@@ -198,7 +219,14 @@ func sourceReaderErrorCode(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timeout"
 	}
-	return "service_unavailable"
+	var transport *net.OpError
+	if errors.As(err, &transport) {
+		if transport.Timeout() {
+			return "timeout"
+		}
+		return "service_unavailable"
+	}
+	return "source_read_failed"
 }
 func sourceReaderFailureMessage(code string) string {
 	switch code {

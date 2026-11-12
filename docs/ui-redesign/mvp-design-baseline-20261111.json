@@ -1,0 +1,41 @@
+{
+  "scope": "Codex CLI 明确提交 → 原始记录 → J材料整理 → 知识 → G来源；MyGo Native",
+  "base": "780745fc55d71edb22e46d9c3e4f208d5ecb602f + 当前目录导航纠正",
+  "files": {
+    "build/p3-prototype/prototypes/ui-redesign-20261109/b-home-overview.html": "28975b260821d94911d0226468df9a76af531aced1777146f65738ad39a570dc",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/b-home.css": "da45776d20eb2e5365aabdbf5d85e33b6728e19bb749329f90675e24c0fb1f5e",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/c-agent.css": "1eb99795901e83321a337f36ecc0616eaab18541ee5546e89ccd5a1781263d96",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/c-agent.html": "f053487536d0019f6a30d23fa8cbc67cf7b5de275195f515b8850682e4e43765",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/c-agent.js": "0accc77f72d80e3bc9d9e349d0a2eee3a62ae54a287a83519e9cab0a3fa50bea",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/c-project-redesign.css": "9253db9606aec583434b4b6c622fc4a9c318714d8957aab4935c2c4a6c8898f9",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/c-project-redesign.js": "02eaf9886624c0f72ae0121fc0d98ea96706613bf6a6490a0abb7db254df1260",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/content-relationship.css": "75eff9ba63bd0afaf695a6c99db57652450ed7ac41b25ac0dd6024bc5a8a3e0b",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/content-relationship.js": "4b2df2210e46a870989d9200233ba5bca61fd8f026e84df5c623b0fc1ed73526",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/design-catalog.json": "e549e9846e5a617a44828934e09d9678f30f411b8893cc28d57a67b0a73d93b1",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/design-review.html": "a4de912ec9b30053546a4deb44d3d7ab667fb17fae1fef1048f2849ddb13b9f3",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/e-projects.css": "b7970ba28a5b4cd1e4711e3e44da2df11dc5cdeb7d655cc27916960067a9d33e",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/e-projects.js": "55485151ba848e9113b15f5b99c2b1787311bb80f086c7add9c98031f6739d4f",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/full-design-core.js": "6394e17908114b9a5a9bfbc58e168ab5fd3d78f7f8c2cef388275dd070bf9a13",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/full-design-fixtures.js": "3cd33b7960be2cbdc04da60bf0e84038da171fcbc6170c68d76b746fd74d49ba",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/full-design-global-plans.js": "6661e5d5157d948d5ab1a94e78e9a5605360d36ae54de1da0bc9b535b9446fdf",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/full-design-graph.js": "9d341b7a1c631c5c101eab2334725ba85f48e1d49a7ae153e7aced4f710bd90b",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/full-design-maintenance.js": "06309080af0d2ced185186b0c5176e47c2519448b68d51bad4932ff328562636",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/full-design-organization.js": "35a96cd8d7e1392e85e1d38754cd8d47d0c72f6e3c8617caccf54ea2df52ee96",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/full-design-reading.js": "1746088fdbaed066cca53d2077e13698fb5dd968be26e038a958bd945e6f56ef",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/full-design-scenes.json": "0834f7d65e9bf0c784edf0b376045946db5ad9e8a4c9f8f0c99953ed8d650cae",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/full-design.css": "1afd80418a9f90b7c6d56381dcd4b7b07beab169fbef24f21008eb5c75ec010e",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/full-design.js": "932c3378b00e74f9c6ecb82a658d56a43475f76672e9f4c35f3b83cdf420f921",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/project-agent-task.js": "78427053f3d2fee092c298240002ee08c6663384eebc6b18b7f1eba108dcce53",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/project-initialization.css": "25fb218de574e8b3dcfe4418f2de74451e175e06e659b63d48c9e78b65dc07c2",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/project-initialization.js": "7e7221b151565ec9d5cef8fdff2c4f5aa8f486c1940dbca81011882d0bab341b",
+    "build/p3-prototype/prototypes/ui-redesign-20261109/settings-navigation.js": "3c260cda18c5cf01372c1acfa14120745e3e35d7c0b7360b3cba6fc3fd7c7091"
+  },
+  "rules": [
+    "无全部记忆侧栏",
+    "编辑已有知识无保存位置控件",
+    "保留草稿返回在右上",
+    "保存知识在底部突出",
+    "J配置取消回整理记录列表"
+  ],
+  "verification": "已实际打开J01交互稿、J01截图及home/memory-detail参考；其余页面与Native对照待完成"
+}

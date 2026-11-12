@@ -131,7 +131,7 @@ func (a *App) loadGraphSubmission(s *GraphSubmissionUI) {
 			s.Connections = nil
 			s.Binding = nil
 			for _, c := range conns {
-				if c.Enabled && (c.Agent == "pi" || c.Agent == "codex") && connectionAllows(c, project) {
+				if c.Enabled && (c.Agent == "pi" || c.Agent == "codex") {
 					s.Connections = append(s.Connections, c)
 				}
 			}
@@ -177,7 +177,7 @@ func graphSubmissionBindingValid(s *GraphSubmissionUI) bool {
 		return false
 	}
 	for _, c := range s.Connections {
-		if c.ID == s.Binding.ConnectionID && c.Enabled && c.Generation == s.Binding.Generation && connectionAllows(c, s.Project) {
+		if c.ID == s.Binding.ConnectionID && c.Enabled && c.Generation == s.Binding.Generation {
 			return true
 		}
 	}

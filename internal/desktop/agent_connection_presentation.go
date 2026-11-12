@@ -18,13 +18,13 @@ func (a *App) openAgentSettings() {
 func (a *App) agentConnectionCards(c *ui.Context, setup bool) {
 	s := &a.agents
 	width, _ := c.Size()
-	available := width - 196 - 60
+	available := width - settingsNavigationWidth(width) - 64
 	if setup {
-		available -= 154
+		available = width - 196 - 154 - 60
 	}
 	cardWidth := (available - 14) / 2
 	for start := 0; start < len(s.Found); start += 2 {
-		ui.Row(c).Gap(14).Children(func() {
+		ui.Row(c).Gap(14).AlignItems(ui.Stretch).Children(func() {
 			for index := start; index < min(start+2, len(s.Found)); index++ {
 				found := s.Found[index]
 				state := "待连接"
@@ -75,37 +75,19 @@ func (a *App) agentConnectionCards(c *ui.Context, setup bool) {
 				}
 				selected := s.Batch.Selected[found.Agent]
 				enabled := a.machineConnectionEligible(found) && !s.Batch.frozen() && !s.Busy
-				icon := icons[found.Agent]
-				if icon == nil {
-					icon = icons["Agent"]
-				}
 				background := ui.Hex("#fafbfd")
 				if selected {
 					background = ui.Hex("#f1f5fa")
 				}
-				card := ui.CheckboxBase(c.Key("connection-card-"+found.Agent), &selected).Label("选择 "+found.Name).AlignItems(ui.Start).Width(cardWidth).MinHeight(156).Padding(18).Border(1, ui.Hex("#d8e2ed")).Background(background).Disabled(!enabled).OnChange(func() {
+				card := ui.CheckboxBase(c.Key("connection-card-"+found.Agent), &selected).Label("选择 "+found.Name).AlignItems(ui.Start).Width(cardWidth).MinHeight(156).Padding(18).Border(1, ui.Hex("#d8e2ed")).Radius(7).Background(background).Disabled(!enabled).OnChange(func() {
 					if s.Batch.Selected == nil {
 						s.Batch.Selected = map[string]bool{}
 					}
 					s.Batch.Selected[found.Agent] = selected
 				})
 				card.Children(func() {
-					ui.Column(c).FillWidth().Gap(10).Children(func() {
-						ui.Row(c).FillWidth().Children(func() {
-							ui.Icon(c, icon).FontSize(28).TextColor(design.Muted)
-							ui.Spacer(c)
-							ui.Box(c).Size(12, 12).Radius(2).Border(1, ui.Hex("#a6b8ca")).Draw(func(p *ui.Painter, r ui.Rect) {
-								if selected {
-									p.Fill(r, ui.Hex("#66829b"), 2)
-									p.StrokePath((&ui.Path{}).MoveTo(r.X+3, r.Y+6).LineTo(r.X+5, r.Y+8).LineTo(r.X+9, r.Y+4), 1.2, ui.Hex("#ffffff"))
-								}
-							})
-						})
-						ui.Row(c).FillWidth().Children(func() {
-							ui.Text(c, found.Name).Bold()
-							ui.Spacer(c)
-							ui.Text(c, state).FontSize(10).TextColor(design.Muted)
-						})
+					ui.Column(c).FillWidth().MinHeight(120).Gap(10).Children(func() {
+						ui.Text(c, found.Name).Bold()
 						ui.Text(c, version).FontSize(design.Small).TextColor(design.Muted)
 						if found.Agent == "codex" && connection != nil {
 							if i, ok := s.Installs[connection.ID]; ok && i.Options.ComputerLevel {
@@ -116,6 +98,16 @@ func (a *App) agentConnectionCards(c *ui.Context, setup bool) {
 						if detail != "" {
 							ui.Text(c, detail).FontSize(design.Small).TextColor(design.Muted).LineHeight(1.5)
 						}
+						ui.Spacer(c)
+						ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+							ui.Text(c, state).FontSize(design.Small).Grow(1)
+							ui.Box(c).Size(12, 12).Radius(2).Border(1, ui.Hex("#a6b8ca")).Draw(func(p *ui.Painter, r ui.Rect) {
+								if selected {
+									p.Fill(r, ui.Hex("#66829b"), 2)
+									p.StrokePath((&ui.Path{}).MoveTo(r.X+3, r.Y+6).LineTo(r.X+5, r.Y+8).LineTo(r.X+9, r.Y+4), 1.2, ui.Hex("#ffffff"))
+								}
+							})
+						})
 					})
 				})
 			}
@@ -167,32 +159,33 @@ func (a *App) agentConnectionActionButtons(c *ui.Context) {
 }
 
 func (a *App) agentSettingsPage(c *ui.Context) {
+	if _, conn := a.selectedAgent(); a.agents.Selection != "" && conn != nil {
+		a.settingsAgentDetailPage(c)
+		return
+	}
 	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
-		ui.Scroll(c).Grow(1).MinHeight(0).Padding(28, 30).Gap(18).Children(func() {
-			ui.Row(c).Gap(14).Children(func() {
-				ui.Text(c, "Agent 连接").FontSize(design.Heading).Bold()
-				ui.Spacer(c)
-				quietButton(c, "全选可连接").Disabled(a.agents.Batch.frozen()).OnClick(a.selectAllAgentConnections)
-				quietButton(c, "重新检测").Disabled(a.agents.Busy).OnClick(func() { a.refreshAgents(true) })
-			})
-			ui.Divider(c)
-			a.agentConnectionCards(c, false)
+		ui.Scroll(c.Key("settings-agents-body")).TrackScroll(a.settingsScrollState("agents")).Grow(1).MinHeight(0).Padding(30, 32).Gap(18).Children(func() {
+			settingsHeading(c, "Agent 连接", "选择要接入或待验证的 Agent")
+			settingsNotice(c, "配置到这台电脑的 Agent；项目知识读取与通用知识授权分别管理。")
 
-			if len(a.agents.Connections) > 0 {
-				ui.Text(c, "连接记录").Bold()
-				for _, connection := range a.agents.Connections {
-					detail := "访问范围由项目设置管理"
-					if len(connection.AllowedScopes) == 0 {
-						detail = "尚未授权项目与通用知识"
-					}
-					a.agentRow(c, "connection-"+connection.ID, connection.Name, detail, a.agentConnectionRecordState(connection))
+			a.agentConnectionCards(c, false)
+			settingsCard(c, "settings-agent-integration", "接入方式", func() {
+				ui.Text(c, "优先安装官方集成，复用 Agent 的现有配置。同配置目录的多个客户端共用接入项，能力状态逐客户端显示。").FontSize(design.Small).TextColor(design.Muted)
+				ui.Text(c, "已有 Codex 日常采集待迁移至官方方案；工具连通不能证明自动采集成功。").FontSize(design.Small).TextColor(design.Muted)
+			})
+			for _, connection := range a.agents.Connections {
+				detail := "查看逐客户端能力与接入详情"
+				if len(connection.AllowedScopes) == 0 {
+					detail = "尚未授权项目与通用知识"
 				}
-			}
-			if a.agents.Selection != "" {
-				ui.Column(c).MinHeight(0).Border(1, design.Border).Radius(6).Children(func() { a.agentDetail(c) })
+				a.agentRow(c, "connection-"+connection.ID, connection.Name, detail, a.agentConnectionRecordState(connection))
 			}
 		})
-		ui.Row(c).Wrap().Shrink(0).Padding(14, 30).Gap(10).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() { a.agentConnectionActionButtons(c) })
+		ui.Row(c).Wrap().MinHeight(58).Shrink(0).Padding(14, 30).Gap(10).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
+			a.agentConnectionActionButtons(c)
+			quietButton(c, "全选可连接").Disabled(a.agents.Batch.frozen()).OnClick(a.selectAllAgentConnections)
+			quietButton(c, "重新检测").Disabled(a.agents.Busy || a.agents.Loading).OnClick(func() { a.refreshAgents(true); a.refreshAgentBatch() })
+		})
 	})
 }
 

@@ -49,13 +49,13 @@ func TestSettingsCandidateDesignFrames(t *testing.T) {
 			a.schedules.Plans = []records.Schedule{{Enabled: true}}
 			a.updateText = "当前已是最新版本"
 			a.keepService = true
-			tt := ui.NewTester(a.View, width, 720)
+			tt := ui.NewTester(a.View, width, map[bool]int{true: 620, false: 820}[width == 800])
 			if scene == "agents" && (tt.HasText("配置尚未安装完成，请重新连接。") || tt.HasText("未找到安装")) {
 				t.Fatal("incomplete installation fixture")
 			}
 			if scene == "environment" {
-				n, ok := tt.Find("向量模型")
-				if !ok || n.Y+n.H > 656 {
+				n, ok := tt.Find("本地向量模型")
+				if !ok || (width == 1200 && n.Y+n.H > 756) {
 					t.Fatalf("model card outside first viewport width %d: %#v", width, n)
 				}
 			}

@@ -11,6 +11,19 @@ func (a *App) switchReadingKind(kind string) {
 	if kind == a.recordKind || (kind == "knowledge" && a.recordKind == "") {
 		return
 	}
+	if kind != "raw" {
+		s := &a.conversations
+		if s.Cancel != nil {
+			s.Cancel()
+		}
+		if s.ReadCancel != nil {
+			s.ReadCancel()
+		}
+		s.Sequence++
+		s.ReadSequence++
+		s.Loading, s.Reading = false, false
+		s.Cancel, s.ReadCancel = nil, nil
+	}
 	a.closeKnowledgeHistory()
 	a.closeProjectOrganizer()
 	a.closeSourceReader()
@@ -40,6 +53,9 @@ func (a *App) switchReadingKind(kind string) {
 			a.items = nil
 		}
 	}
+	if kind == "raw" && a.page == "项目" && a.libraryContext != nil && !a.visualFixture {
+		a.openConversations()
+	}
 	a.refresh(false)
 }
 
@@ -63,9 +79,44 @@ func (a *App) knowledgeProvenance(c *ui.Context, item MemoryItem) {
 	if item.Origin == "raw" {
 		return
 	}
-	ui.Column(c).Key("knowledge-provenance").Padding(20, 0, 0, 0).Gap(12).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
-		ui.Text(c, "原始出处").FontSize(11).Bold().TextColor(design.Muted)
-		matched := a.organizationSourcesFor == item.ID && a.organizationSourcesRevision == item.Revision
+	matched := a.organizationSourcesFor == item.ID && a.organizationSourcesRevision == item.Revision
+	officialKnowledge := item.SourceDetail != nil && item.SourceDetail.Official != nil
+	card := ui.Column(c).Key("knowledge-provenance").Padding(20, 0, 0, 0).Gap(12).BorderWidth(1, 0, 0, 0).BorderColor(design.Border)
+	if officialKnowledge {
+		card.Padding(14).Border(1, design.Border).Radius(6)
+	}
+	card.Children(func() {
+		ui.Row(c).Gap(10).Children(func() {
+			title := "原始出处"
+			if officialKnowledge {
+				title = "原始依据"
+			}
+			ui.Text(c, title).FontSize(11).Bold().TextColor(design.Muted).Grow(1)
+			if matched && a.organizationSourcesError == "" {
+				for _, source := range a.organizationSources {
+					if source.Input.Origin != "raw" {
+						continue
+					}
+					officialConversation := a.page == "项目" && source.Input.SourceDetail != nil && source.Input.SourceDetail.Official != nil
+					label := "阅读原文"
+					if officialConversation {
+						label = "阅读对话"
+					}
+					button := quietButton(c, label).Key("knowledge-source-" + source.Memory).OnClick(func() {
+						if officialConversation {
+							a.openConversationSource(item, records.MergeTarget{Memory: source.Memory, Revision: source.Revision})
+						} else {
+							a.openSourceReader(item, records.MergeTarget{Memory: source.Memory, Revision: source.Revision})
+						}
+					})
+					if a.reader.ReturnFocus && a.reader.Query.Owner == item.ID {
+						button.Focus()
+						a.reader.ReturnFocus = false
+					}
+					break
+				}
+			}
+		})
 		if !matched && a.libraryContext != nil {
 			ui.Text(c, "正在核对这条知识的出处…").FontSize(11).TextColor(design.Muted)
 			return
@@ -78,35 +129,20 @@ func (a *App) knowledgeProvenance(c *ui.Context, item MemoryItem) {
 		}
 		if matched && len(a.organizationSources) > 0 {
 			for _, source := range a.organizationSources {
-				ui.Column(c).Gap(8).Children(func() {
-					ui.Row(c).Gap(10).Children(func() {
-						ui.Column(c).Grow(1).MinWidth(0).Gap(5).Children(func() {
-							ui.Text(c, source.Input.Title).FontSize(12).Bold()
-							kind := "来源知识"
-							if source.Input.Origin == "raw" {
-								kind = "原始记录"
-							}
-							if source.Changed {
-								kind += " · 来源已变化"
-							}
-							ui.Text(c, fmt.Sprintf("%s · v%d · %s", sourceDisplayName(source.Input.Source), source.Revision, kind)).FontSize(10).TextColor(design.Muted)
-						})
-						if source.Input.Origin == "raw" {
-							button := quietButton(c, "阅读原文").Key("knowledge-source-" + source.Memory).OnClick(func() {
-								a.openSourceReader(item, records.MergeTarget{Memory: source.Memory, Revision: source.Revision})
-							})
-							if a.reader.ReturnFocus && a.reader.Query.Owner == item.ID && a.reader.Query.Memory == source.Memory {
-								button.Focus()
-								a.reader.ReturnFocus = false
-							}
-						} else {
-							quietButton(c, "查看来源知识").Key("knowledge-source-" + source.Memory).OnClick(func() { a.openMergeMemory(source.Memory, source.Project) })
-						}
-					})
-					if source.Quote != "" {
-						ui.Text(c, source.Quote).Selectable().FontSize(12).LineHeight(1.9).Padding(0, 0, 0, 12).BorderWidth(0, 0, 0, 2).BorderColor(design.Border)
+				ui.Row(c).Gap(10).Padding(10, 0).Children(func() {
+					ui.Text(c, source.Input.Title+" · "+sourceDisplayName(source.Input.Source)).FontSize(11).TextColor(design.Muted).Grow(1).MinWidth(0)
+					label := fmt.Sprintf("引用版本 v%d", source.Revision)
+					if source.Changed {
+						label += " · 来源已变化"
+					}
+					ui.Text(c, label).FontSize(10).TextColor(design.Muted).Shrink(0)
+					if source.Input.Origin != "raw" {
+						quietButton(c, "查看来源知识").Key("knowledge-source-" + source.Memory).OnClick(func() { a.openMergeMemory(source.Memory, source.Project) })
 					}
 				})
+				if officialKnowledge && source.Quote != "" {
+					ui.Text(c, "“"+source.Quote+"”").FontSize(11).LineHeight(1.8).Selectable()
+				}
 			}
 			return
 		}

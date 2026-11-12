@@ -22,7 +22,7 @@ func TestHTTPProcessingSchema26MigrationPreservesLedgerAndBackup(t *testing.T) {
 	validation, err := s.BeginProcessingValidation(mergeCtx, uuid.NewString(), revision.ID, records.MergeDigest("old26-dependency"), processingTime)
 	mustMerge(t, err)
 	mustMerge(t, s.FinishProcessingValidation(mergeCtx, validation.ID, 1, "failed", "", "provider_unavailable", processingTime))
-	_, err = s.DB.Exec(`DROP TABLE processing_validation_evidence; DROP TABLE delivery_assignments; DROP TABLE project_preference_decisions; DROP TABLE cognee_submissions; DROP TABLE cognee_submission_tasks; DROP TABLE cognee_library_identity; DROP TABLE processing_http_receipts;DROP TABLE processing_suppliers;PRAGMA user_version=26`)
+	_, err = s.DB.Exec(`DROP TABLE official_code_scopes;DROP TABLE coding_memory_grants; DROP TABLE pi_capture_read_grants; DROP TABLE pi_capture_consents; DROP TABLE official_capture_receipts; DROP TABLE session_processing_tasks; DROP TABLE processing_validation_evidence; DROP TABLE delivery_assignments; DROP TABLE project_preference_decisions; DROP TABLE cognee_submissions; DROP TABLE cognee_submission_tasks; DROP TABLE cognee_library_identity; DROP TABLE processing_http_receipts;DROP TABLE processing_suppliers;PRAGMA user_version=26`)
 	mustMerge(t, err)
 	before := restoreTables(t, s.DB)
 	mustMerge(t, s.Close())

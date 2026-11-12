@@ -58,7 +58,7 @@ func (s *Store) ImportCognee(ctx context.Context, d records.CogneeImport) (recor
 		return receipt, invalid()
 	}
 	r := records.AgentRequest{Protocol: 1, ConnectionID: d.ConnectionID, Generation: d.Generation, Workspace: d.Workspace, Tool: "memory_save", Arguments: records.AgentArguments{Scope: d.Project}}
-	c, scopes, err := s.Authorize(ctx, r)
+	c, scopes, err := s.ResolveAgentScopes(ctx, r)
 	if err != nil {
 		return receipt, err
 	}
@@ -176,12 +176,6 @@ func (s *Store) ImportCognee(ctx context.Context, d records.CogneeImport) (recor
 	}
 	current, err := s.Current(ctx, id)
 	if err != nil {
-		return receipt, err
-	}
-	if current.Dataset != d.Project {
-		return receipt, access("scope_denied", "original import persisted; current knowledge moved outside requested project")
-	}
-	if err = s.FilterAgentVersion(ctx, &current, scopes); err != nil {
 		return receipt, err
 	}
 	return records.SaveReceipt{Persisted: true, SavedRevision: v.Revision, Record: current}, nil

@@ -54,14 +54,6 @@ func (s *Store) ApplyAgentSaveInLibrary(ctx context.Context, c records.Connectio
 	if retired > 0 || !current.Enabled || current.Generation != c.Generation {
 		return Version{}, access("reload_required", "delivery connection was revoked or changed")
 	}
-	allowed := false
-	for _, scope := range current.AllowedScopes {
-		allowed = allowed || scope == m.Dataset
-	}
-	allowed = allowed || (pending && current.PendingProject == m.Dataset && current.AutoProject)
-	if !allowed {
-		return Version{}, access("scope_denied", "delivery scope is no longer authorized")
-	}
 	if err = workspace.check(); err != nil {
 		return Version{}, err
 	}

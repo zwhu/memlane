@@ -64,9 +64,9 @@ Memlane 自己封装的 worker 使用 stdin/stdout JSONL，stdout 仅协议、st
 
 **视觉实现基准是下面两张图。** 开发 Agent 需用看图能力实际打开图片，不能仅按文字自行补布局。原型里的数据属于示例；生产界面必须显示真实内容或明确的空态。分步实施与验收见 [P1 清单](implementation-plan.md#p1桌面界面与真实记忆管理)。
 
-![首页设计基准：宽幅总览](images/home.jpg)
+![首页设计基准：宽幅总览](images/ui-redesign/client-simplification-20261112/01-home.png)
 
-![详情设计基准：导航、列表、详情三栏](images/memory-detail.jpg)
+![详情设计基准：导航、列表、详情三栏](images/ui-redesign/client-simplification-20261112/02-knowledge.png)
 
 采用 MyGo 隐藏标题栏但保留系统窗口按钮的方式，使用框架提供的标题栏占位信息。侧栏从顶部延伸到底部，收起按钮始终在侧栏内部；拖动区避开按钮和输入框。MyGo 的材质可在局部露出，其他区域绘制不透明背景。[标题栏与材质接口](https://github.com/egoist/mygo/blob/v0.7.4/docs/ui/windows.md)
 

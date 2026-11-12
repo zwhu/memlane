@@ -9,6 +9,20 @@ disk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(disk)
 
 class DiskSafety(unittest.TestCase):
+    def test_mapped_daemon_and_explicit_dependencies_survive_pruning(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name).resolve(); build = root/'build'; build.mkdir(); tmp=root/'temp'; tmp.mkdir()
+            owner=build/'owner/MemlaneOwner.app'; owner.mkdir(parents=True)
+            dependency=build/'dependency/MemlaneDependency.app'; dependency.mkdir(parents=True)
+            old=build/'old/MemlaneOld.app'; old.mkdir(parents=True)
+            manifest=root/'dependencies.txt'; manifest.write_text(str(dependency)+'\n')
+            mapped=SimpleNamespace(stdout='p123\nn'+str(owner/'Contents/Resources/bin/memlaned')+'\n')
+            with patch.object(disk,'ROOT',root), patch.object(disk,'KEEP',build/'latest'), patch.object(disk,'RETAINED',root/'absent'), patch.object(disk,'DEPENDENCIES',manifest), patch.object(disk,'worktrees',return_value=[]), patch.object(disk,'active_arguments',return_value=['123 memlaned']), patch.object(disk.tempfile,'gettempdir',return_value=str(tmp)), patch.object(disk.subprocess,'run',return_value=mapped):
+                disk.prune_history()
+            self.assertTrue(owner.exists()); self.assertTrue(dependency.exists())
+            self.assertFalse(old.exists())
+
     def test_pruning_preserves_worktree_latest_evidence_and_active_roots(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name); build = root/'build'; build.mkdir(); tmp=root/'temp'; tmp.mkdir()
@@ -46,5 +60,19 @@ class DiskSafety(unittest.TestCase):
         from collections import namedtuple
         usage=namedtuple('Usage','total used free')(500*disk.GIB,350*disk.GIB,150*disk.GIB)
         with patch('sys.argv',['disk-space.py']), patch.object(disk.shutil,'disk_usage',return_value=usage), patch.object(disk,'trim_caches',return_value=[]): disk.main()
+
+    def test_finish_preserves_output_for_following_verification(self):
+        from collections import namedtuple
+        from types import SimpleNamespace
+        usage=namedtuple('Usage','total used free')(500*disk.GIB,350*disk.GIB,150*disk.GIB)
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name); (root/'build').mkdir()
+            output=root/'build/candidate/runtime'; output.mkdir(parents=True)
+            executable=output/'memlane-cognee-service'; executable.write_bytes(b'x'*(8*1024**2))
+            library=output/'libpython.dylib'; library.write_bytes(b'x'*(8*1024**2))
+            temporary=root/'temp'; temporary.mkdir()
+            with patch('sys.argv',['disk-space.py','--finish']), patch.object(disk,'ROOT',root), patch.object(disk.shutil,'disk_usage',return_value=usage), patch.object(disk,'other_tasks',return_value=False), patch.object(disk,'trim_caches',return_value=[]), patch.object(disk,'worktrees',return_value=[]), patch.object(disk,'active_arguments',return_value=[]), patch.object(disk.tempfile,'gettempdir',return_value=str(temporary)), patch.object(disk.subprocess,'run',return_value=SimpleNamespace(stdout='')):
+                disk.main()
+            self.assertTrue(executable.is_file()); self.assertTrue(library.is_file())
 
 if __name__=='__main__': unittest.main()

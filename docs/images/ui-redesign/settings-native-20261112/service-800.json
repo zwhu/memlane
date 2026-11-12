@@ -1,0 +1,14 @@
+{
+  "capture": "CoreGraphics image of this process's own NSWindow only",
+  "captured_at": "2026-11-11T20:01:36.535124Z",
+  "fixture_renderer": false,
+  "image": "20261111T200136.509128000Z.png",
+  "synthetic_only": true,
+  "system_window_chrome": true,
+  "window_bounds": {
+    "X": 356,
+    "Y": 116,
+    "Width": 800,
+    "Height": 620
+  }
+}

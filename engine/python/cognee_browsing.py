@@ -1,8 +1,9 @@
-"""Memlane 的只读 Cognee 1.6.7 材料图接口。
+"""Memlane 的 Cognee 1.6.7 材料读取与受管能力入口。
 
 官方 graph DTO 丢弃边属性，未返回 edge→chunk 依据。本扩展复用官方
 授权、dataset 图和 active edge evidence SDK，不抽取、不写图、不运行模型。
-它必须加载在同一个 Cognee 服务进程中，不能另开数据库拥有者。
+材料接口保持只读；私有代码索引接口另行复用官方 SDK 写图。
+这些入口必须加载在同一个 Cognee 服务进程中，不能另开数据库拥有者。
 """
 import importlib.metadata
 import json
@@ -29,6 +30,7 @@ def entity_types(by_id, edges, entity_ids):
 
 
 def install(app):
+    source_commit = os.environ.get('MEMLANE_COGNEE_SOURCE_SHA')
     if importlib.metadata.version("cognee") != "1.6.7":
         raise RuntimeError("Memlane 材料图仅适配 Cognee 1.6.7")
     from fastapi import Depends, HTTPException
@@ -55,7 +57,23 @@ def install(app):
 
     @app.get("/api/v1/memlane/identity")
     async def identity(user=Depends(get_authenticated_user)):
-        return {"instance": instance, "cognee_version": "1.6.7", "adapter": "memlane-material-graph-v1", "capabilities": ["material_submission_v1"]}
+        value = {"instance": instance, "cognee_version": "1.6.7", "adapter": "memlane-material-graph-v1", "capabilities": ["material_submission_v1", "session_improve_v1", "capture_receipt_v1"]}
+        if source_commit:
+            value['source_commit'] = source_commit
+            value['capabilities'] += ['coding_memory_format_v1', 'coding_memory_trigger_v1', 'official_visualization_v1', 'official_code_scope_v1']
+            value['capabilities'].append('official_code_execution_v1')
+            value['code_execution_epoch'] = code_execution_epoch
+        return value
+
+    if source_commit:
+        from cognee_visualization import install as install_visualization
+        install_visualization(app, instance)
+        from cognee_code_scope import install as install_code_scope
+        install_code_scope(app, instance)
+        from cognee_code_guard import install as install_code_guard
+        install_code_guard()
+        from cognee_code_index import install as install_code_index
+        code_execution_epoch = install_code_index(app, instance, get_authenticated_user)
 
     @app.post("/api/v1/memlane/verify-environment")
     async def verify_environment(user=Depends(get_authenticated_user)):
@@ -254,3 +272,7 @@ def install(app):
     install_processing_adapter()
     from cognee_submission import install as install_submission
     install_submission(app, instance, get_authenticated_user)
+    from cognee_session_processing import install as install_session_processing
+    install_session_processing(app, instance, get_authenticated_user)
+    from cognee_capture_receipt import install as install_capture_receipt
+    install_capture_receipt(app, instance, get_authenticated_user)

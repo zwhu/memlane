@@ -19,6 +19,7 @@ type OrganizationProgressUI struct {
 	Loading           bool
 	Error             string
 	LatestAttempt     int64
+	DetailsOpen       bool
 }
 
 func (a *App) organizationProgressOpen() bool {
@@ -137,6 +138,18 @@ func organizationProgressMotionStage(p *OrganizationProgressUI) (string, bool) {
 	return "ready", false
 }
 
+func organizationProgressDescription(t records.OrganizationTask) string {
+	switch t.State {
+	case "failed", "interrupted", "partial_failed":
+		return "已有结果保留；有持久结果时只恢复未提交项。"
+	case "cancelled":
+		return "尚未提交的操作已停止，已保存知识与历史建议保留。"
+	case "completed":
+		return "执行完成与建议是否确认分开。"
+	}
+	return "进度由任务回执更新，离开页面后仍可回来查看。"
+}
+
 // These labels report only ledger evidence; task completion is not index proof.
 func organizationProgressStages(t records.OrganizationTask, results map[string]MemoryItem) []string {
 	analysis := "状态待核对"
@@ -184,7 +197,7 @@ func organizationProgressStages(t records.OrganizationTask, results map[string]M
 func (a *App) organizationProgressDetail(c *ui.Context) {
 	p := a.organization.Progress
 	t := p.Task
-	ui.Scroll(c.Key("organization-progress-scroll")).Grow(1).MinHeight(0).TrackScroll(&p.Scroll).Padding(24).Gap(16).Children(func() {
+	ui.Scroll(c.Key("organization-progress-scroll")).Grow(1).MinHeight(0).TrackScroll(&p.Scroll).Padding(29, 34).Gap(16).Children(func() {
 		ui.Text(c, "固定任务范围").FontSize(10).TextColor(design.Muted)
 		label := a.scopeLabel(t.Project)
 		if label == "" {
@@ -193,33 +206,49 @@ func (a *App) organizationProgressDetail(c *ui.Context) {
 		if label == "" {
 			label = "本次项目"
 		}
-		ui.Text(c, label+"的整理").FontSize(design.Title).Bold()
+		ui.Text(c, label+"的整理").FontSize(23).FontWeight(550).TextColor(ui.Hex("#3c556d")).LineHeight(1.5)
 		ui.Text(c, fmt.Sprintf("%s · 尝试 %d · %d 条固定材料", organizationExecutor(t), t.Attempt, len(t.Snapshot.Inputs))).FontSize(11).TextColor(design.Muted)
-		ui.Row(c).Gap(10).Children(func() {
-			for _, s := range organizationProgressStages(t, p.Results) {
-				ui.Column(c).Grow(1).MinWidth(0).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Padding(8, 0).Children(func() { ui.Text(c, s).FontSize(10).TextColor(design.Muted) })
+		ui.Row(c).Gap(7).Padding(9, 0).Children(func() {
+			current := map[string]int{"queued": 0, "running": 1, "applying": 2}
+			phase, hasPhase := current[t.State]
+			for i, s := range []string{"启动 Agent", "整理材料", "保存知识", "建立索引"} {
+				line, ink := ui.Hex("#edf2f8"), ui.Hex("#b3c2d1")
+				if hasPhase && i == phase && !t.Cancelled && p.LatestAttempt == 0 {
+					line, ink = ui.Hex("#9db8d4"), ui.Hex("#7d98b4")
+				}
+				ui.Column(c).Grow(1).MinWidth(0).BorderWidth(2, 0, 0, 0).BorderColor(line).Padding(9, 0).Children(func() { ui.Text(c, s).FontSize(10).TextColor(ink) })
 			}
 		})
-		stage, active := organizationProgressMotionStage(p)
-		if active {
-			a.drawProjectScene(c, "organization-progress-stage", p.Task.ID, p.Task.Attempt, stage, &p.Motion, 150)
-		} else {
-			ui.Box(c).Key("organization-progress-stage").Height(150).Draw(func(painter *ui.Painter, r ui.Rect) {
-				drawProjectStage(painter, r, projectStageTarget(stage), stage, 0, true)
-			})
-		}
-		ui.Column(c).Padding(14).Gap(8).Background(ui.Hex("#f7f9fc")).BorderWidth(1).BorderColor(design.Border).Children(func() {
-			ui.Text(c, materialTaskStatus(t)).Key("organization-progress-state").FontSize(12).Bold()
-			ui.Text(c, "进度由任务回执更新，离开页面后仍可回来查看。").FontSize(11).TextColor(design.Muted)
+		// J's full-stage-art is three static cards, distinct from C's repository
+		// animation. Geometry follows full-design.css and never advances a task.
+		ui.Row(c).Key("organization-progress-stage").Height(100).Justify(ui.Center).AlignItems(ui.Center).Gap(8).Children(func() {
+			for i, card := range [][2]float32{{31, -7}, {43, 3}, {55, -2}} {
+				ui.Box(c.Key(fmt.Sprintf("organization-stage-card-%d", i))).Width(27).Height(card[0]).Radius(5).Border(1, ui.Hex("#c8daee")).Background(ui.Hex("#eef5fd")).Rotate(card[1])
+			}
 		})
-		ui.Text(c, "查看不会重新开始整理，离开页面不会停止任务。").FontSize(11).TextColor(design.Muted)
+		background, border := ui.Hex("#f8fbfe"), ui.Hex("#e0eaf5")
+		if t.State == "failed" || t.State == "interrupted" || t.State == "partial_failed" {
+			background, border = ui.Hex("#fbf7f4"), ui.Hex("#eedfd5")
+		}
+		ui.Column(c).Padding(13, 15).Gap(8).Radius(7).Background(background).BorderWidth(1).BorderColor(border).Children(func() {
+			ui.Text(c, materialTaskStatus(t)).Key("organization-progress-state").FontSize(12).Bold()
+			ui.Text(c, organizationProgressDescription(t)).FontSize(11).TextColor(design.Muted)
+			if t.Error != "" {
+				ui.Text(c, experienceDistillError(t.Error)).FontSize(11).TextColor(design.Muted)
+			}
+		})
 		if p.LatestAttempt != 0 {
 			ui.Text(c, fmt.Sprintf("任务已有尝试 %d；当前仍显示进入时的尝试 %d。返回结果后可查看新尝试。", p.LatestAttempt, t.Attempt)).FontSize(11)
 		}
 		if p.Error != "" {
 			ui.Text(c, p.Error).FontSize(11)
 		}
-		quietButton(c, "刷新任务进度").Key("organization-progress-refresh").Disabled(p.Loading).OnClick(a.refreshOrganizationProgress)
+		ui.Collapsible(c, "保存与索引状态", &p.DetailsOpen, func() {
+			for _, evidence := range organizationProgressStages(t, p.Results) {
+				ui.Text(c, evidence).FontSize(10).TextColor(design.Muted)
+			}
+			quietButton(c, "刷新任务进度").Key("organization-progress-refresh").Disabled(p.Loading).OnClick(a.refreshOrganizationProgress)
+		})
 		ui.Text(c, "本次固定材料").FontSize(12).Bold()
 		for _, in := range t.Snapshot.Inputs {
 			ui.Row(c).Gap(10).Children(func() {
@@ -233,14 +262,19 @@ func (a *App) organizationProgressDetail(c *ui.Context) {
 			}
 		}
 	})
-	ui.Row(c).Shrink(0).Padding(12, 24).Gap(8).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
+	ui.Row(c).Shrink(0).MinHeight(58).Padding(12, 28).Gap(10).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
 		ui.Text(c, "当前项目、材料与审核选择保持不变").FontSize(10).Grow(1).MinWidth(0).TextColor(design.Muted)
-		if (t.State == "queued" || t.State == "running" || t.State == "applying") && !t.Cancelled {
-			quietButton(c, "停止整理").Key("organization-progress-cancel").Disabled(a.organization.Busy || a.organization.Task == nil || a.organization.Task.ID != t.ID || a.organization.Task.Attempt != t.Attempt || a.organization.Task.Cancelled).OnClick(func() {
+		if t.State == "queued" || t.State == "running" || t.State == "applying" {
+			label := "停止整理"
+			if t.Cancelled {
+				label = "取消中"
+			}
+			quietButton(c, label).Key("organization-progress-cancel").Disabled(a.organization.Busy || a.organization.Task == nil || a.organization.Task.ID != t.ID || a.organization.Task.Attempt != t.Attempt || a.organization.Task.Cancelled).OnClick(func() {
 				if a.organizationProgressOpen() && a.organization.Task != nil && a.organization.Task.ID == t.ID && a.organization.Task.Attempt == t.Attempt {
 					a.cancelOrganization()
 				}
 			})
+			return
 		}
 		label := "返回任务结果"
 		if a.organization.ReviewItem != "" {

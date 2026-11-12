@@ -246,7 +246,7 @@ func TestProcessingHTTPSecretRemainsMaskedAndGatewayNeverRendersKeyField(t *test
 	if tt.HasText(h.Secret) {
 		t.Fatal("supplier password appeared in visible text")
 	}
-	if err := tt.Click("使用 Magpie"); err != nil {
+	if err := tt.Click("Magpie"); err != nil {
 		t.Fatal(err)
 	}
 	if _, exists := tt.Find("供应商独立 API Key"); exists {

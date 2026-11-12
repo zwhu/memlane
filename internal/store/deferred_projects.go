@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"path/filepath"
 	"strings"
 
@@ -80,16 +79,7 @@ func (s *Store) acceptFirstProjectTx(ctx context.Context, tx *sql.Tx, c records.
 	if _, err = tx.ExecContext(ctx, `INSERT INTO repositories(common_dir,scope) VALUES(?,?) ON CONFLICT(common_dir) DO NOTHING`, c.TrustedRepository, c.PendingProject); err != nil {
 		return err
 	}
-	allowed := append([]string{}, current.AllowedScopes...)
-	found := false
-	for _, id := range allowed {
-		found = found || id == c.PendingProject
-	}
-	if !found {
-		allowed = append(allowed, c.PendingProject)
-	}
-	encoded, _ := json.Marshal(allowed)
-	if _, err = tx.ExecContext(ctx, `UPDATE connections SET project=?,allowed_scopes=? WHERE id=? AND enabled=1 AND generation=?`, c.PendingProject, string(encoded), c.ID, c.Generation); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE connections SET project=? WHERE id=? AND enabled=1 AND generation=?`, c.PendingProject, c.ID, c.Generation); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE connection_intakes SET pending_project='' WHERE connection_id=?`, c.ID); err != nil {

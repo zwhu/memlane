@@ -245,7 +245,7 @@ func TestE05AssignmentSchema30BackupRestoreAndSchema29Migration(t *testing.T) {
 	legacyPath := filepath.Join(t.TempDir(), "legacy.sqlite")
 	legacy, e := Open(legacyPath)
 	mustMerge(t, e)
-	_, e = legacy.DB.Exec(`DROP TABLE processing_validation_evidence; DROP TABLE delivery_assignments;PRAGMA user_version=29`)
+	_, e = legacy.DB.Exec(`DROP TABLE official_code_scopes;DROP TABLE coding_memory_grants; DROP TABLE pi_capture_read_grants; DROP TABLE pi_capture_consents; DROP TABLE official_capture_receipts; DROP TABLE session_processing_tasks; DROP TABLE processing_validation_evidence; DROP TABLE delivery_assignments;PRAGMA user_version=29`)
 	mustMerge(t, e)
 	mustMerge(t, legacy.Close())
 	old, e := os.ReadFile(legacyPath)

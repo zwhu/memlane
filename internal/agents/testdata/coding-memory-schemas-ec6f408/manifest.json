@@ -1,0 +1,27 @@
+{
+  "server_commit": "ec6f40859e5f2df9e7862dde27d580ac3268ed43",
+  "plugin_commit": "a176248914fdb32a78354854b300174203b15a5c",
+  "source": "Sealed synthetic official improve requests; schemas only, no prompts, outputs or credentials.",
+  "schemas": [
+    {
+      "file": "CodingAgentContextExtraction.json",
+      "sha256": "f9cb067efc26aa064a8b4366ef9af8b7a02504f81af6b92e82f93c59c6064a09"
+    },
+    {
+      "file": "CodingWrittenLesson.json",
+      "sha256": "0c0418cb1e684d433f148efc86eac71545e9a4b95ca3c60e94fd942d81951e69"
+    },
+    {
+      "file": "KnowledgeGraph.json",
+      "sha256": "37843b0126838b9f25286eedba08e5825686a1fff1c9a2f2eca831fae3de07e7"
+    },
+    {
+      "file": "StringOutput.json",
+      "sha256": "c43e39d8d95286f2480fe38f6d1cba8d6f45d6462d86a212091505b86f6d424c"
+    },
+    {
+      "file": "CodingCuratorBatchOutput.json",
+      "sha256": "b1ff33163a778ef54edda99f1c97f652a28a2562429f84021f62e569e2a429ad"
+    }
+  ]
+}

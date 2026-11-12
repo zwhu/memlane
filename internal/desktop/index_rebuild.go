@@ -18,19 +18,21 @@ func (a *App) indexRecoverySettings(c *ui.Context) {
 }
 
 func (a *App) indexRecoveryPage(c *ui.Context) {
-	ui.Text(c, "重建检索索引").FontSize(design.Small).TextColor(design.Muted).Padding(20, 28).Shrink(0).BorderWidth(0, 0, 1, 0).BorderColor(design.Border)
-	ui.Scroll(c.Key("maintenance-index-body")).Grow(1).MinHeight(0).Padding(28).Gap(20).Children(func() { a.indexRecoveryBody(c) })
+	ui.Scroll(c.Key("maintenance-index-body")).TrackScroll(a.settingsScrollState("index")).Grow(1).MinHeight(0).Padding(28).Gap(20).Children(func() { a.indexRecoveryBody(c) })
 	ui.Row(c).Key("maintenance-index-footer").MinHeight(64).Shrink(0).Padding(14, 24).Gap(10).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
-		ui.Text(c, "正文与版本保持不变").FontSize(10).TextColor(design.Muted).Grow(1).MinWidth(0)
 		a.indexRecoveryActions(c)
 	})
 }
 
 func (a *App) indexRecoveryBody(c *ui.Context) {
-	ui.Column(c).Gap(8).Children(func() {
-		ui.Text(c, "恢复检索能力").FontSize(design.Small).TextColor(design.Muted)
-		ui.Text(c, "已有正文与版本保持").FontSize(design.Heading).Bold()
-		ui.Text(c, "重建索引只恢复检索，不新增知识版本。").TextColor(design.Muted)
+	settingsHeading(c, "检索索引", "先选范围，再执行重建。")
+	settingsCard(c, "settings-index-status", "索引状态", func() {
+		settingsFact(c, "索引服务", "现有检索引擎", a.settingsIndexServiceLabel())
+		ui.Divider(c)
+		settingsFact(c, "知识与原始记录", "已有正文与版本保持", "重建不新增知识版本")
+		if a.indexRebuild.ID == "" {
+			ui.Text(c, "尚未取得重建任务回执").FontSize(design.Small).TextColor(design.Muted)
+		}
 	})
 	if a.runtimeStatus.Phase == "stopped" {
 		ui.Text(c, "服务已主动停止，请明确启动服务后再重建索引。").TextColor(design.Muted)
@@ -234,4 +236,21 @@ func (a *App) refreshIndexRebuild() {
 			}
 		})
 	}()
+}
+
+func (a *App) settingsIndexServiceLabel() string {
+	switch a.serviceState {
+	case "ready":
+		return "就绪"
+	case "failed":
+		return "服务异常"
+	case "preparing", "recovering":
+		return "准备中"
+	case "stopped":
+		return "已停止"
+	case "unavailable":
+		return "暂不可用"
+	default:
+		return "尚未取得状态"
+	}
 }

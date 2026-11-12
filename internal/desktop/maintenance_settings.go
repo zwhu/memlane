@@ -18,98 +18,25 @@ func (a *App) maintenanceSettings(c *ui.Context) {
 	if a.maintenanceSection == "" {
 		a.maintenanceSection = "components"
 	}
-	width, _ := c.Size()
-	listWidth := float32(272)
-	if width < 1040 {
-		listWidth = 212
+	switch a.maintenanceSection {
+	case "components":
+		a.environmentSettings(c)
+	case "index":
+		a.indexRecoveryPage(c)
+	case "backups":
+		if !a.maintenanceRestoreSummary(c) {
+			a.backupPage(c)
+		}
+	case "diagnostics":
+		a.maintenanceDiagnosticsPage(c)
+	case "updates":
+		a.maintenanceUpdatesPage(c)
+	case "window":
+		a.maintenanceWindowPage(c)
+	default:
+		ui.Scroll(c.Key("maintenance-detail-service")).TrackScroll(a.settingsScrollState("service")).Grow(1).MinHeight(0).Padding(30, 32).Gap(18).Children(func() { a.maintenanceService(c) })
+		a.maintenanceServiceFooter(c)
 	}
-	ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
-		ui.Column(c).Width(listWidth).Shrink(0).BorderWidth(0, 1, 0, 0).BorderColor(design.Border).Children(func() {
-			ui.Text(c, "服务与数据").FontSize(design.Small).TextColor(design.Muted).Padding(22, 20)
-			ui.Scroll(c.Key("maintenance-list")).Grow(1).Padding(0, 12, 20, 12).Gap(6).Children(func() {
-				for _, item := range []struct{ key, label string }{{"service", "本地服务"}, {"components", "环境与组件"}, {"updates", "客户端更新"}, {"backups", "备份与恢复"}, {"index", "检索索引"}, {"diagnostics", "关于与诊断"}, {"window", "窗口与退出"}} {
-					subtitle := ""
-					if item.key == "service" {
-						subtitle = a.maintenanceServiceLabel()
-					}
-					if item.key == "components" {
-						subtitle = "状态未读取"
-						if !a.environment.CheckedAt.IsZero() && a.environment.Error == "" {
-							subtitle = "组件需核对"
-							ready := true
-							for _, card := range a.environmentCards(false) {
-								state := environmentCardState(card)
-								ready = ready && (state == "已校验" || state == "随 App 提供")
-							}
-							if ready {
-								subtitle = "已有组件可复用"
-							}
-						}
-					}
-					button := ui.Button(c.Key("maintenance-"+item.key), "").Label(item.label).Height(62).Padding(12).Justify(ui.Start).AlignItems(ui.Start).BorderWidth(0).Background(ui.Transparent).Children(func() {
-						ui.Column(c).Gap(5).AlignItems(ui.Start).Children(func() {
-							ui.Text(c, item.label).FontSize(design.Small)
-							if subtitle != "" {
-								ui.Text(c, subtitle).FontSize(10).TextColor(design.Muted)
-							}
-						})
-					})
-					if a.maintenanceSection == item.key {
-						button.Background(design.ListSelected)
-					}
-					key := item.key
-					button.OnClick(func() {
-						a.maintenanceSection = key
-						a.maintenanceStopConfirm = false
-						if key == "backups" {
-							a.refreshBackups()
-						}
-						if key == "index" {
-							a.refreshIndexRebuild()
-						}
-					})
-				}
-			})
-		})
-		ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
-			if a.maintenanceSection == "components" {
-				a.environmentSettings(c)
-				return
-			}
-			if a.maintenanceSection == "index" {
-				a.indexRecoveryPage(c)
-				return
-			}
-			if a.maintenanceSection == "backups" {
-				if a.maintenanceRestoreSummary(c) {
-					return
-				}
-				a.backupPage(c)
-				return
-			}
-			if a.maintenanceSection == "diagnostics" {
-				a.maintenanceDiagnosticsPage(c)
-				return
-			}
-			if a.maintenanceSection == "updates" {
-				a.maintenanceUpdatesPage(c)
-				return
-			}
-			if a.maintenanceSection == "window" {
-				a.maintenanceWindowPage(c)
-				return
-			}
-			ui.Scroll(c.Key("maintenance-detail-" + a.maintenanceSection)).Grow(1).Padding(28).Gap(20).Children(func() {
-				switch a.maintenanceSection {
-				case "service":
-					a.maintenanceService(c)
-				}
-			})
-			if a.maintenanceSection == "service" {
-				a.maintenanceServiceFooter(c)
-			}
-		})
-	})
 }
 
 func (a *App) maintenanceServiceLabel() string {
@@ -141,12 +68,24 @@ func (a *App) maintenanceServiceLabel() string {
 }
 
 func (a *App) maintenanceService(c *ui.Context) {
-	ui.Text(c, "本机后台服务").FontSize(design.Small).TextColor(design.Muted)
-	ui.Text(c, a.maintenanceServiceLabel()).FontSize(design.Heading).Bold()
-	ui.Text(c, "窗口与服务分别控制，收起窗口后后台可继续工作。").TextColor(design.Muted)
-	ui.Column(c).Key("maintenance-service-state-card").Padding(14).Gap(6).Background(ui.Hex("#f7f9fc")).Border(1, design.Border).Radius(6).Children(func() {
-		ui.Text(c, a.maintenanceServiceLabel()).FontSize(design.Small).Bold()
-		ui.Text(c, "App 显示当前服务状态；任务与计划按各自授权执行。").FontSize(design.Small).TextColor(design.Muted)
+	settingsHeading(c, "记忆服务", "主动停止会保留停服选择，重开 App 不会自动启动。")
+	settingsCard(c, "maintenance-service-state-card", "当前状态", func() {
+		settingsFact(c, "本机后台服务", "本机运行状态", a.maintenanceServiceLabel())
+		ui.Divider(c)
+		availability := "暂时不可用"
+		if a.runtimeStatus.Phase == "ready" && a.serviceState == "ready" {
+			availability = "就绪"
+		}
+		settingsFact(c, "知识读取与保存", "以服务回执为准", availability)
+	})
+	settingsCard(c, "maintenance-window-settings", "窗口与后台", func() {
+		previous := a.keepService
+		ui.Checkbox(c.Key("maintenance-keep-service"), &a.keepService, "退出 App 后继续运行记忆服务")
+		if previous != a.keepService && a.keepChanged != nil {
+			a.keepChanged(a.keepService)
+		}
+		ui.Text(c, "关闭窗口时仍收起到菜单栏").FontSize(design.Small).TextColor(design.Muted)
+		quietButton(c, "窗口与退出选项").OnClick(func() { a.selectSettingsSection("window") })
 	})
 	a.maintenanceRecoveryNotice(c)
 	if a.runtimeStatus.Message != "" {
@@ -197,7 +136,6 @@ func (a *App) maintenanceService(c *ui.Context) {
 func (a *App) maintenanceServiceFooter(c *ui.Context) {
 	locked := a.backups.RestoreLocked || a.backups.Busy || a.environmentBusy()
 	ui.Row(c).Key("maintenance-service-footer").MinHeight(64).Shrink(0).Padding(14, 24).Gap(10).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
-		ui.Text(c, "知识、来源和历史保留").FontSize(10).TextColor(design.Muted).Grow(1).MinWidth(0)
 		if a.maintenanceStopConfirm {
 			quietButton(c, "取消").OnClick(func() { a.maintenanceStopConfirm = false })
 			actionButton(c, "确认停止服务", nil).Disabled(locked || a.stopRuntime == nil).OnClick(func() {

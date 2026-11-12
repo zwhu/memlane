@@ -71,7 +71,7 @@ func TestSourceReaderLongParagraphNextRevealsActualMatch(t *testing.T) {
 		if !ok {
 			t.Fatal("match absent")
 		}
-		footer, footerOK := tt.Find("复制全文")
+		footer, footerOK := tt.Find("当前知识与选中结果保持")
 		if a.reader.Match != 1 || a.reader.Scroll.Y <= 0 || hit.Y < 200 || !footerOK || hit.Y+hit.H > footer.Y-8 {
 			t.Fatalf("actual next glyph not visible: %v scroll=%v match=%d", hit, a.reader.Scroll.Y, a.reader.Match)
 		}
@@ -114,7 +114,7 @@ func TestSourceReaderInlineNextAcrossWindow(t *testing.T) {
 	tt.Frame()
 	tt.Frame()
 	hit, ok := tt.Find("原文当前匹配")
-	footer, _ := tt.Find("复制全文")
+	footer, _ := tt.Find("当前知识与选中结果保持")
 	if a.reader.Window.Page == 0 || !ok || hit.Y < 200 || hit.Y+hit.H > footer.Y-8 {
 		t.Fatalf("next window match not visible: page=%d hit=%v", a.reader.Window.Page, hit)
 	}

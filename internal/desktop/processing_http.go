@@ -142,6 +142,7 @@ func (a *App) saveProcessingSupplier() {
 			h.SupplierRevisions[request.Provider] = reference.Supplier.Revision
 			h.ProfilesLoaded = true
 			h.Secret = ""
+			delete(h.SettingsDrafts, request.Provider)
 			h.CredentialAttempt = nil
 			h.CredentialAttemptDigest = ""
 			h.Error = ""

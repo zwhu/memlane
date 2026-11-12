@@ -78,7 +78,7 @@ func TestBackupRestorePreviewCancelConfirmationAndReceipt(t *testing.T) {
 	app.previewBackupRestore(backup.ID)
 	next()
 	tester := ui.NewTester(app.backupSettings, 1000, 900)
-	if !tester.HasText("恢复整个本机记忆库") {
+	if !tester.HasText("恢复预览") {
 		t.Fatal("verified preview absent")
 	}
 	if err = tester.Click("取消恢复"); err != nil {
@@ -129,7 +129,7 @@ func TestBackupRestorePreviewCancelConfirmationAndReceipt(t *testing.T) {
 			fresh.backupBody(c, false)
 		}
 	}, 1200, 820)
-	if history.HasText("知识已恢复，服务保持停止") || !history.HasText("给知识留下可恢复的副本") {
+	if history.HasText("知识已恢复，服务保持停止") || !history.HasText("备份与恢复") {
 		t.Fatal("historic restore hijacked backup catalogue")
 	}
 	restored, err := store.Open(path)

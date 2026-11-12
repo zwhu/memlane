@@ -1,3 +1,19 @@
+## 2026-11-12 当前精简设计入口
+
+本轮用户要求从设计中删除已砍掉的功能。当前产品范围以 `docs/client-simplification-spec-20261112.md`、`docs/client-simplification-technical-plan-20261112.md` 为准，当前界面入口为 `docs/ui-redesign/design-catalog.md`。旧 A–O、三种处理方式、编辑／历史／审核／计划／权限等交接不再构成首版设计要求；实际工程和缺陷记录保留历史事实。
+
+最新决定：窄窗口不设计、不实现、不继续修复或验收；首版默认及最小 1200×820，允许放大。后续实施同步清除此前遗留的问题代码，首次生产代码清理前先形成包含相关未提交源码的快照提交并创建注释 tag，具体步骤见当前技术方案。历史失败记录不改为通过；本轮文档与设计调整不代表已执行生产代码清理或打 tag。
+
+UI 工作查看 `docs/images/ui-redesign/client-simplification-20261112/` 中首页、知识与原始记录稿。旧设计图已退役，不能从旧截图恢复删除的按钮。最新精简原型仅是设计资产，不代表生产实现完成；本轮没有启停服务、修改 Agent 配置或删除运行数据。
+
+## 当前暂停交接（2026-11-12）
+
+用户要求暂停所有开发并整理handoff。coding-memory／代码图谱及移除权限管理相关开发已暂停，未经用户明确恢复不自动启动实现、编译、测试、组件准备或模型任务。统一入口为 docs/engineering/coding-memory-handoff-20261112.md。暂停不代表完成，也不取消旧运行依赖保护和具体问题停止计数。
+
+## 2026-11-12 最新范围：移除权限管理
+
+本阶段默认所有 Agent 均可读写 Memlane 中的数据，不保留项目／Agent 读写白名单、角色、授权／撤权确认、权限管理接口、界面、测试或计划。项目和 dataset 用于归属及检索分组，不再作为访问许可。服务连接认证与任务所有权、取消、去重、来源版本核对继续保留；启动／停止开关控制任务执行，不限制 Agent 访问已有数据。此最新要求覆盖下文旧版本中与之冲突的权限规则；全局清理见 docs/engineering/remove-agent-permissions-20261112.md。
+
 # Memlane
 
 这是面向程序员的 macOS 记忆客户端，使用 Cognee 作为记忆引擎。桌面框架已选择 MyGo；P0 核心客户端、服务与组件链路、P1 手动记忆管理与实际窗口设计对照、P2 真实 Codex/pi 共享与 App Agent 管理已通过。P3-C1–C4 正式整理、P3-E 全局经验、P3-D1/D2 计划与有限恢复、U 使用记录、I 引导、A1a traex 日常接入均已通过对应本机验收；G2 代码图谱更新与 F1a–F1d 索引/备份/恢复/空间不足已分层通过，具体边界见 docs/p3-delivery-plan.md。2026-11-09 最新实施转入已认可 A/B 重设计：pi/DeepSeek 限定同包闭环、schema17 记忆处理配置账本、daemon 所有的真实 pi 验证／取消／显式启用／重启保持，以及「设置 → 记忆处理」Native 页的真实 pi 保存／活动取消／验证／显式启用已通过；Provider/Magpie 实际推理、Codex 处理桥、正式任务分派、A 初始化承载与环境／Agent 连接页、B/C Native 页面、最终包和正式分发未完成。
@@ -8,13 +24,15 @@
 - 界面原“全局记忆”统一称“通用知识”，知识内分类“个人偏好／通用经验”，按[已确认命名交接](docs/ui-redesign/common-knowledge-naming.md)同步侧栏、页面标题、来源、授权和复制／提炼动作。此名称表示跨项目参考，保留适用条件、项目约定优先和独立授权；不迁移内部scope或把项目知识自动提升为通用知识。2026-11-10 最新纠正：当前侧栏去掉“全部记忆”，跨项目入口保留在全局搜索；同步B/C/D及F–O共用导航，不恢复旧入口。
 - 后续功能按固定设计稿还原，先读[全量设计交接](docs/ui-redesign/full-design-handoff.md)与对应已认可交接，实际打开场景截图和可交互稿；还原入口、布局、字段、按钮、状态、焦点、滚动、草稿及来源版本，不从代码结构重定页面。每一步完成即在[进度记录](docs/ui-redesign/full-design-progress.md)或对应工程账本落稿，附设计基线、实际窗口对照、操作回执、偏差和完成边界。F–O固定候选`780745fc55d71edb22e46d9c3e4f208d5ecb602f`已制作，认可状态与工程授权分别按交接和用户最新指示记录，不把制作／浏览器核验当生产完成。
 - 开发任何后续动效先读 [MyGo 动效实施与复用契约](docs/ui-redesign/motion-implementation.md)：复用几何、时序、缓动与状态规则，以 Native Go 组件实施；记录每阶段参数、稳定 Key、中断／重入、减少动态效果和实际包对照。动画只表达真实状态，不驱动任务完成；原型和GIF不作为生产功能验收。
+- 知识数据以 Cognee 官方存储为主要数据源，Memlane 负责呈现及操作适配，不默认另存完整原文／知识副本或另建重复索引；只保留必要客户端状态与关联信息。2026-11-12 用户最新纠正及现有双库待调整边界见 [内容分层](docs/ui-redesign/content-model.md#2026-11-12-用户纠正官方数据为主减少重复存储)。官方缺少的能力先明确缺口，不自动扩建独立知识系统；旧数据未经迁移核对不得删除。
+- Agent 信息采集统一按 [官方方案优先规则](docs/ui-redesign/agent-connection-contract.md#2026-11-12-用户确认所有-agent-采集统一复用官方方案)：有官方方案就复用，不另写并行采集器；仅核实无官方方案时，才参考官方插件结构补适配。Memlane 的职责是将插件安装、配置到对应 Agent 并管理接入状态，接收材料及项目归属另循现有契约。当前自有 Codex 日常采集标记为待迁移，既有实现与验收不代表新方案已完成；迁移保留已采集数据、来源和回执，避免双重采集。
 - Agent 连接按 [电脑级配置规则](docs/ui-redesign/agent-connection-contract.md)：先将 Memlane 配置到当前电脑的编码 Agent，连接不以项目、工作目录或首任务模型为前置条件；项目/任务范围另行确认。现有项目级适配不能被描述为电脑级配置已实现。
 - Agent 连接页使用多选卡片批量接入，逐项同页反馈安装、重载、验证与结果；已连接/不支持项不可重复提交，只重试失败项，取消保留成功项。处理记忆仍只选一个已连接 pi/Codex；页面删除登录/模型和提炼会话的技术说明，仅留当前模型与账号额度提示，隔离要求继续保存在开发契约。
 - 连接与处理记忆按 [最新设计交接](docs/ui-redesign/memory-processing-design.md)：连接参考 Cognee Web UI 安装 skill/hooks/插件等；处理方式为自配 LLM provider、已连接 pi/Codex、Magpie 网关。模型目录参考 Magpie，供应商配置复用；Magpie 上游密钥由其管理。整理会话必须隔离采集以防循环；设计已认可归档，真实桥接、Provider 与 Magpie 分别按工程证据验收。
 - 环境与组件、记忆处理按 [页面复用契约](docs/ui-redesign/reusable-setup.md) 同时用于初始化与后续设置；三种配置可同时保留，仅一个当前使用，保存配置与明确启用分开，切换页签不启用。Magpie 默认自动检测本机网关，无需访问凭据；环境准备复用已有组件与后台任务，不重走首任务。
 - 初始配置最新边界同样以 [页面复用契约](docs/ui-redesign/reusable-setup.md) 为准：仅「准备环境／连接 Agent／配置记忆处理」三步，完成后进入日常首页；第一项任务与记忆结果移出初始化。此前产品文档和验收中将首任务列为初始化步骤的安排属于旧版本，不覆盖本轮纠正。「设为当前使用」置于方式状态栏右侧。
 - 开发或验收本地 Agent 模型桥接前，先读 [桥接需求与方案](docs/agent-model-bridge-requirements.md)、[研究依据](docs/research-cognee-agent-appserver.md)、[旧 pi/qwen 记录](docs/pi-model-bridge-validation.md) 和 [pi/DeepSeek 新记录](docs/pi-deepseek-validation.md)。pi 0.84.1 / Ollama 的完整包技术链路已通过但 qwen3:0.6b 事实质量未通过；随后 pi 0.84.1 / DeepSeek V4.1 Flash 的完整 Schema、六个固定样本和第五包限定闭环通过。两组结果都只覆盖各自模型、样本和隔离包；本轮「设置 → 记忆处理」只增加真实 pi UI 证据，独立 Provider、Codex app-server、Magpie、共享配置分派和其余新版 UI 仍须分别验收。
-- 开发或验收 UI 前，实际打开 [首页设计图](docs/images/home.jpg) 和 [三栏详情设计图](docs/images/memory-detail.jpg)，不能只读 Markdown 图片路径。完成后对照实际窗口截图；工具无法看图时明确视觉验收未完成。
+- 开发或验收 UI 前，实际打开 [当前首页设计图](docs/images/ui-redesign/client-simplification-20261112/01-home.png) 和 [当前三栏详情设计图](docs/images/ui-redesign/client-simplification-20261112/02-knowledge.png)，不能只读 Markdown 图片路径。完成后对照实际窗口截图；工具无法看图时明确视觉验收未完成。
 - 实现依据 [技术方案](docs/technical-plan.md) 与 [实施清单](docs/implementation-plan.md)；区分已选框架、待验证依赖和已通过的验收。
 - 文档默认中文。区分已实现、原型演示与待验证能力，不将示例状态描述为真实接入结果。
 - 首页保留宽幅总览；列表与详情页采用三栏；普通操作在栏内完成。保持紧凑排版、单色图标和按钮、连续浅蓝侧边栏。
@@ -36,6 +54,29 @@
 
 ## 工程执行与问题闭环
 
+跨模块实施使用 [plan-change-impact](.agents/skills/plan-change-impact/SKILL.md)，集成／交付验收使用 [verify-continuous-scenarios](.agents/skills/verify-continuous-scenarios/SKILL.md)；局部小改动按需简化。项目填写入口为[影响与验证模板](docs/engineering/task-brief-template.md)，命令工具见[场景执行入口](docs/engineering/scenario-runner.md)。方法由Skill维护，产品规则、失败阈值、工具和状态仍以本仓库为准。
+
 后续编码遵循 [工程规范](docs/engineering/workflow.md)：先列连续主流程用例，再集中开发和定向检查，统一集成验收；失败按同类集中修复。使用 [用例模板](docs/engineering/testcase-template.md) 与 [复盘模板](docs/engineering/incident-template.md)。诊断不得把未知模型调用或进程事实推断为零／已回收。工程规范试运行与未完成门禁见 [实施验收清单](docs/engineering/acceptance.md)。
 
-同一问题累计第4次验收仍未通过，立即停止继续尝试和重跑，整理证据并汇报产品设计／技术方案／实现／验收方法疑点，等待用户明确后续方向；换版本、路径、Agent或操作ID不重置次数。详见[停止规则](docs/engineering/workflow.md)。不依赖该问题的工作可继续。
+同一具体问题累计第4次验收仍未通过，停止该问题的继续尝试并汇报；“4次”按同一具体缺陷计数，不按连续4轮整体验收失败计数。按触发条件、失败现象与验收标准识别问题，不得将整个Goal、页面或功能中的不同缺陷合并凑成4次。验收夹具／方法错误另行记录；修复引入的独立回归单独追踪。根因未明时保留归类依据与未知，不因同属UI或同一测试命令就合并。换版本、路径、Agent或操作ID也不能拆分同一问题以重置次数。失败证据始终保留，纠正误归类需留痕。详见[停止规则](docs/engineering/workflow.md)。不依赖该问题的工作可继续。
+
+计数示例：四轮分别发现布局、复制、焦点和来源权限问题，各问题分别记1次，不触发“四次失败停止”。同一具体缺陷即使中间穿插其他问题，累计第4次失败仍须停止该缺陷；停止范围限于该问题及确实依赖它的工作。
+
+
+## 开发与 release 阶段边界（用户2026-11-12明确要求）
+
+- 当前处于开发阶段，不构建或验收完整运行包，不将完整包作为开发任务完成门槛；等用户明确要求进入 release 阶段后再开始打包。
+- 开发阶段继续进行源码检查、必要测试、真实链路及实际 Native 界面验收；必要的开发调试编译不等于完整运行包交付。
+- 既有完整包依赖保护及同一问题停止规则继续有效，不因暂缓打包而清理仍被引用的运行依赖。
+
+## 运行包与清理依赖保护（用户2026-11-11要求记录防复发）
+
+- 新GUI包不能视为完整运行时替代；清理前核对daemon/helper所属完整包、Agent桥接路径、服务注册路径及组件引用。保护完整包及其资源/签名，不仅保护执行文件；不能仅凭ps命令名或无运行进程判定可删。
+- 切换保留包时同步保留实际依赖集合，只有真实迁移并验证后才清理旧包。依赖未知则保留；无安全清理候选且空间不足时停止构建/下载。
+- 复盘见[运行包误清理](docs/engineering/runtime-package-cleanup-incident-20261111.md)；后续[卸载与依赖资源清理](docs/roadmap.md)只记录待办，本次未实现或执行卸载。
+
+## Codebase ownership and communication
+
+1/ This codebase is yours: what it's for and how it's built are your call, and you'll keep building on it.
+
+2/ Before you start, say in a line what you're about to do; brief updates while you work help the user follow along. Close with a short recap that stands on its own (what you found, what you did, and what's next), so a reader who only sees the last message has the full picture.

@@ -61,6 +61,9 @@ func displayHistory(vs []records.History) []MemoryHistory {
 // window's serialized Update boundary. Sequence checks keep late page responses
 // from replacing a newer selection or draft; read failures retain prior data.
 func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(func())) {
+	a.officialKnowledgeBypass = ""
+	a.listReadSnapshot, a.listReadErrorCode = "", ""
+	a.retireConversations()
 	a.retireProjectCreation()
 	a.retireAgentDelivery()
 	a.retireDeliveryAssignment()
@@ -105,6 +108,7 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 	a.dispatch = dispatch
 	a.configureManualDrafts(root)
 	a.onNavigate = func() {
+		a.retireConversations()
 		a.persistExperiencePreview(nil)
 		a.persistMaterialPreview(nil)
 		a.closeSourceReader()
@@ -190,6 +194,14 @@ func (a *App) ConfigureLibrary(ctx context.Context, root string, dispatch func(f
 					if a.reader.Open {
 						a.refreshSourceReader()
 					}
+					if a.conversationPageVisible() {
+						a.refreshOfficialDocuments(false)
+						a.refreshSelectedOfficialDocument()
+						a.refreshOfficialDocumentSource()
+						a.refreshConversationSource()
+						a.refreshConversationCatalog(false)
+						a.refreshSelectedConversation()
+					}
 					if a.projectOrganizer.Open {
 						a.refreshProjectOrganizer()
 					}
@@ -263,6 +275,9 @@ func (a *App) refresh(more bool) {
 	if a.libraryContext == nil || a.libraryContext.Err() != nil || a.visualFixture || a.firstLaunch.Detecting || a.knowledgeHistory.Open {
 		return
 	}
+	if a.conversationPageVisible() {
+		return
+	} // official reads do not mix in the legacy record list
 	a.loadSequence++
 	sequence := a.loadSequence
 	a.loading = true
@@ -298,6 +313,8 @@ func (a *App) refresh(more bool) {
 		copyRequest = nil
 	}
 	life, client, orgClient, mergeClient, dispatch, epoch := a.libraryContext, a.library, a.organization.Client, a.merges.Client, a.dispatch, a.libraryEpoch
+	defaultOfficial := a.defaultOfficialKnowledgeCandidate() && !more
+	listSnapshot := a.readingListSnapshotKey()
 	go func() {
 		ctx, cancel := context.WithTimeout(life, 5*time.Second)
 		defer cancel()
@@ -317,6 +334,7 @@ func (a *App) refresh(more bool) {
 		var organizationSourcesErr error
 		var copySource records.Version
 		var copySourceErr error
+		var defaultKnowledgeBinding *records.CogneeBinding
 		if err == nil {
 			if pageName == "通用知识" {
 				query.Datasets, err = commonDatasets(scopes, commonCategory)
@@ -336,6 +354,20 @@ func (a *App) refresh(more bool) {
 		}
 		if err == nil && !addingProject {
 			activity, err = client.Activities(ctx, time.Local.String())
+		}
+		// An explicit zero for this unfiltered project is required. A filtered
+		// empty page or unknown count cannot hide un-migrated local knowledge.
+		if err == nil && defaultOfficial && page.KnowledgeTotal != nil && *page.KnowledgeTotal == 0 && len(page.Items) == 0 {
+			bindings, e := client.CogneeBindings(ctx, query.Datasets[0])
+			if e == nil {
+				for _, binding := range bindings {
+					if binding.Project == query.Datasets[0] && !binding.MaterialSubmission {
+						b := binding
+						defaultKnowledgeBinding = &b
+						break
+					}
+				}
+			}
 		}
 		if err == nil && pageName == "总览" {
 			var organizations records.OrganizationPage
@@ -455,7 +487,12 @@ func (a *App) refresh(more bool) {
 				}
 			}
 			if err != nil {
+				a.listReadErrorCode = sourceReaderErrorCode(err)
+				a.withdrawListSnapshot(a.listReadErrorCode)
 				a.libraryError = "读取失败，保留同范围的上次内容；请重新选择或重试。"
+				if listReadInvalidatesSnapshot(a.listReadErrorCode) {
+					a.libraryError = "当前范围无法读取，请核对权限或来源。"
+				}
 				if current.Dataset != "" && pageName == "项目" && current.Dataset != a.scope {
 					a.selectedItem = nil
 					a.selectedID = ""
@@ -463,7 +500,25 @@ func (a *App) refresh(more bool) {
 				return
 			}
 			a.libraryError = ""
+			a.listReadErrorCode = ""
 			if addingProject {
+				return
+			}
+			if defaultKnowledgeBinding != nil && a.defaultOfficialKnowledgeCandidate() && a.scope == defaultKnowledgeBinding.Project {
+				a.openOfficialKnowledgeWithBinding(defaultKnowledgeBinding)
+				return
+			}
+			// A restored selection can predate the current list tab. Resolve its
+			// actual content type before displaying a detail beside that list.
+			if pageName == "项目" && selected != "" && selected == a.selectedID && !a.editing && a.detailMode == "view" && (query.Kind == "raw") != (current.Origin == "raw") {
+				a.recordKind = "knowledge"
+				if current.Origin == "raw" {
+					a.recordKind = "raw"
+				}
+				item := displayVersion(current)
+				a.selectedItem = &item
+				a.items, a.nextCursor = nil, ""
+				a.refresh(false)
 				return
 			}
 			if rankedSearch {
@@ -484,6 +539,7 @@ func (a *App) refresh(more bool) {
 				a.nextCursor = page.NextCursor
 			}
 			if !rankedSearch {
+				a.listReadSnapshot = listSnapshot
 				a.readingSources, a.readingSourcesRoute, a.readingSourcesTruncated = page.Sources, countsRoute, page.SourcesTruncated
 				a.listTotal = page.Total
 				a.readingCountsRoute = countsRoute
@@ -545,6 +601,10 @@ func (a *App) refresh(more bool) {
 				a.organizationSourcesRevision = current.Revision
 				if history != nil {
 					a.history = displayHistory(history)
+				}
+				if pageName == "项目" && current.Origin == "raw" && a.recordKind == "raw" && !a.editing && a.detailMode == "view" && !a.reader.Open {
+					a.openSourceReader(item, records.MergeTarget{Memory: current.Memory, Revision: current.Revision})
+					a.reader.DirectRaw = true
 				}
 			}
 		})

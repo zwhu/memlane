@@ -71,7 +71,7 @@ func TestSettingsMemoryProcessingNativeFrameKeepsUnreadModelsHonest(t *testing.T
 	a.settingsSection = "processing"
 	a.processing = ProcessingUI{Mode: "agent", Drafts: map[string]records.ProcessingSpec{}, Configuration: records.ProcessingConfiguration{Saved: map[string]records.ProcessingRevision{}}}
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"环境与组件", "Agent 连接", "记忆处理", "LLM provider", "使用已连接 Agent", "使用 Magpie"} {
+	for _, label := range []string{"环境与组件", "Agent 连接", "记忆处理", "自配 LLM", "已连接 Agent", "Magpie"} {
 		if !tt.HasText(label) {
 			t.Fatalf("missing accepted settings label %q", label)
 		}
@@ -79,13 +79,13 @@ func TestSettingsMemoryProcessingNativeFrameKeepsUnreadModelsHonest(t *testing.T
 	if tt.HasText("当前生产边界") || tt.HasText("隔离进程与终态回收") {
 		t.Fatal("implementation details leaked into the daily processing page")
 	}
-	if err := tt.Click("LLM provider"); err != nil {
+	if err := tt.Click("自配 LLM"); err != nil {
 		t.Fatal(err)
 	}
 	if !tt.HasText("先配置供应商并读取模型目录") {
 		t.Fatal("provider displayed a fabricated model catalog")
 	}
-	if err := tt.Click("使用 Magpie"); err != nil {
+	if err := tt.Click("Magpie"); err != nil {
 		t.Fatal(err)
 	}
 	if !tt.HasText("等待本机记忆服务") {

@@ -13,7 +13,7 @@ func (s *Server) authorizeAgentDelivery(ctx context.Context, r records.AgentRequ
 	if r.Protocol != 1 || r.Tool != "memory_save" || r.ToolMode != "" || (r.Channel != "" && r.Channel != "daily") {
 		return out, &records.AccessError{Code: "invalid_request", Message: "ordinary save authorization only"}
 	}
-	c, scopes, err := s.store.AuthorizeReadOnly(ctx, r)
+	c, scopes, err := s.store.ResolveAgentScopesReadOnly(ctx, r)
 	if err != nil {
 		return out, err
 	}

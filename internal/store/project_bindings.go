@@ -49,17 +49,11 @@ func (s *Store) projectBindingTx(ctx context.Context, tx *sql.Tx, project string
 	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM connection_retirements WHERE connection=?`, c.ID).Scan(&retired); err != nil {
 		return b, err
 	}
-	allowed := false
-	for _, id := range c.AllowedScopes {
-		allowed = allowed || id == project
-	}
 	switch {
 	case retired > 0:
 		b.State = "retired"
 	case !c.Enabled:
 		b.State = "disconnected"
-	case !allowed:
-		b.State = "scope_denied"
 	case c.Generation != b.Generation:
 		b.State = "changed"
 	case c.LastSeen == "":
@@ -112,16 +106,12 @@ func (s *Store) ChangeProjectBinding(ctx context.Context, d records.ProjectBindi
 		if e != nil {
 			return prior, e
 		}
-		allowed := false
-		for _, id := range c.AllowedScopes {
-			allowed = allowed || id == d.Project
-		}
 		var retired int
 		if e = tx.QueryRowContext(ctx, `SELECT count(*) FROM connection_retirements WHERE connection=?`, c.ID).Scan(&retired); e != nil {
 			return prior, e
 		}
-		if !c.Enabled || c.Generation != d.ExpectedGeneration || c.LastSeen == "" || !allowed || retired > 0 {
-			return prior, access("binding_unavailable", "select a currently verified connection allowed in this project")
+		if !c.Enabled || c.Generation != d.ExpectedGeneration || c.LastSeen == "" || retired > 0 {
+			return prior, access("binding_unavailable", "select a currently verified connection")
 		}
 		connection, generation = c.ID, c.Generation
 	}

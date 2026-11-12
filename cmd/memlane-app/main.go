@@ -38,8 +38,19 @@ func main() {
 			action = os.Args[i+1]
 		}
 	}
+	if isolatedVisualFixtureEnabled() {
+		configPath = ""
+	}
 	mygo.Theme.SetSource(mygo.ThemeLight)
 	fileMenu := []*mygo.MenuItem{
+		{Label: "搜索所有记忆", Accelerator: "CmdOrCtrl+K", Click: func(*mygo.MenuItem, *mygo.Window) {
+			if app != nil && win != nil {
+				win.Update(app.OpenGlobalSearch)
+				mygo.App.Focus()
+				win.Show()
+				win.Focus()
+			}
+		}},
 		{Label: "打开 Memlane", Click: func(*mygo.MenuItem, *mygo.Window) {
 			if win != nil {
 				mygo.App.Focus()
@@ -218,8 +229,9 @@ func main() {
 				win.Hide()
 			}
 		})
+		verificationWidth, verificationHeight := verificationWindowSize()
 		win = mygo.NewWindow(mygo.WindowOptions{
-			Title: "Memlane", Width: 1200, Height: 820,
+			Title: "Memlane", Width: verificationWidth, Height: verificationHeight,
 			MinWidth: 800, MinHeight: 620,
 			TitleBarStyle: mygo.TitleBarHidden,
 			Vibrancy:      mygo.VibrancySidebar,
@@ -236,7 +248,8 @@ func main() {
 		win.OnHide(func() { app.SetWindowVisible(false) })
 		win.OnShow(func() { app.SetWindowVisible(true) })
 		configureVisualFixture(app)
-		if configPath == "" {
+		configureNativeReading(ctx, app, win)
+		if configPath == "" && !isolatedVisualFixtureEnabled() {
 			if resources, err := mygo.App.Path(mygo.PathResources); err == nil {
 				candidate := filepath.Join(resources, "runtime-config.json")
 				if _, err = os.Stat(candidate); err == nil {
@@ -423,7 +436,7 @@ func main() {
 			}
 		}
 		show := func() { mygo.App.Focus(); win.Show(); win.Focus() }
-		if action == "" {
+		if action == "" && !isolatedVisualFixtureEnabled() {
 			home, _ := os.UserHomeDir()
 			clientRoot := filepath.Join(home, "Library/Application Support/Memlane")
 			if controller != nil {
@@ -443,6 +456,9 @@ func main() {
 					win.Update(fn)
 				}
 			})
+			show()
+		}
+		if isolatedVisualFixtureEnabled() {
 			show()
 		}
 		_, err := mygo.NewTray(mygo.TrayOptions{

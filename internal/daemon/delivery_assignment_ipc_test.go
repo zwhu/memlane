@@ -105,9 +105,8 @@ func TestE05AssignmentActualSpoolPrivateIPCAndOriginalNamespaceGate(t *testing.T
 	if same.SpoolAckPending || same.Memory != saved.Memory {
 		t.Fatal("local ack did not recover", same)
 	}
-	// A later explicit grant is separate; it still cannot resend this old Agent op.
-	updated, e := l.ChangeProjectAccess(ctx, records.ConnectionScopeChange{ConnectionID: c.ID, ExpectedGeneration: c.Generation, Project: project.ID, Allowed: true})
-	requireService(t, e)
+	// The original Agent operation remains deduplicated after assignment.
+	updated := c
 	request := records.AgentRequest{Protocol: 1, ConnectionID: updated.ID, Generation: updated.Generation, Workspace: project.Path, Tool: "memory_save", Arguments: a}
 	if e = serviceipc.Call(ctx, root, serviceipc.Request{Op: "agent", AgentRequest: request}, nil); e == nil {
 		t.Fatal("late legacy Agent operation duplicated assigned content")

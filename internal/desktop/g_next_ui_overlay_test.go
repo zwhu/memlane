@@ -12,7 +12,7 @@ import (
 	"github.com/zwhu/memlane/internal/serviceipc"
 )
 
-func TestNextG06TypedFailuresKeepTextUnreadableAndRetryTruthful(t *testing.T) {
+func TestNextG06TypedFailuresKeepUnverifiedTextUnreadableAndRetryTruthful(t *testing.T) {
 	for _, test := range []struct {
 		code    string
 		retry   bool
@@ -32,10 +32,14 @@ func TestNextG06TypedFailuresKeepTextUnreadableAndRetryTruthful(t *testing.T) {
 			a.page, a.scope = "项目", frame.scope
 			a.items = frame.items
 			old := a.reader.Window.Body
+			// This case exercises first-read failure, with no verified receipt.
+			// Background transient failures now retain a verified receipt under
+			// the 2026-11-12 Goal; reading_refresh_test covers that distinction.
+			a.reader.Result, a.reader.Window = records.SourceRecord{}, nil
 			a.refreshSourceReader()
 			loading := ui.NewTester(a.sourceReader, 480, 700)
 			if loading.HasText(old) {
-				t.Fatal("in-flight verification exposed cached source text")
+				t.Fatal("首次核验泄露未核验正文")
 			}
 			awaitProcessingDispatch(t, dispatch)
 			if sourceReaderCanRetry(a.reader) != test.retry || !strings.Contains(a.sourceReaderMessage(), test.meaning) {

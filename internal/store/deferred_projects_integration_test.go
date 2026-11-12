@@ -121,7 +121,7 @@ func TestDeferredProjectsReuseRepositoryAndRejectUnapprovedWorkspace(t *testing.
 		t.Fatal(err, string(out))
 	}
 	r := records.AgentRequest{Protocol: 1, ConnectionID: a.ID, Generation: a.Generation, Workspace: foreign, Tool: "memory_save", Arguments: records.AgentArguments{Text: "unexpected repository", OperationID: "one"}}
-	if _, _, err = s.Authorize(ctx, r); err == nil {
+	if _, _, err = s.ResolveAgentScopes(ctx, r); err == nil {
 		t.Fatal("an arbitrary bridge workspace expanded the grant")
 	}
 	draft.Workspace = foreign

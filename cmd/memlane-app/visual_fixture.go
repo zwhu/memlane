@@ -5,20 +5,18 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/zwhu/memlane/internal/desktop"
 )
 
 func configureVisualFixture(app *desktop.App) {
-	enabled := false
-	for _, arg := range os.Args {
-		if arg == "--p1-visual-fixture" {
-			enabled = true
-		}
-	}
-	if !enabled {
+	if !visualFixtureEnabled() {
 		return
+	}
+	if state := os.Getenv("MEMLANE_MVP_VISUAL_STATE"); state == "conversation-live" || state == "conversation-plugin-live" {
+		return // Read only the explicitly marked isolated service, no sample rows.
 	}
 	today := time.Now()
 	projects := []desktop.ProjectItem{{ID: "visual-project-a", Name: "记忆桌面端"}, {ID: "visual-project-b", Name: "设计系统"}}
@@ -44,4 +42,22 @@ func configureVisualFixture(app *desktop.App) {
 		}
 	}
 	app.SetVisualFixture(items, projects, history, activity)
+	app.SetMVPVisualFixture(os.Getenv("MEMLANE_MVP_VISUAL_STATE"))
+	app.SetSettingsVisualFixture(os.Getenv("MEMLANE_SETTINGS_VISUAL_STATE"))
+}
+
+func visualFixtureEnabled() bool {
+	if os.Getenv("MEMLANE_VISUAL_FIXTURE") == "1" {
+		return true
+	}
+	for _, arg := range os.Args {
+		if arg == "--p1-visual-fixture" {
+			return true
+		}
+	}
+	return false
+}
+
+func isolatedVisualFixtureEnabled() bool {
+	return visualFixtureEnabled() && (os.Getenv("MEMLANE_SETTINGS_VISUAL_STATE") != "" || strings.HasPrefix(os.Getenv("MEMLANE_MVP_VISUAL_STATE"), "conversation"))
 }

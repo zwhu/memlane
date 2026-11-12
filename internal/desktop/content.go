@@ -58,7 +58,19 @@ type PaneState struct {
 	BodyScroll     float32
 }
 
+// OpenGlobalSearch is shared by the menu shortcut and settings search action.
+func (a *App) OpenGlobalSearch() {
+	if a.firstLaunch.Open {
+		return
+	}
+	a.navigate("搜索", "")
+	a.searchFocus = true
+}
+
 func (a *App) navigate(page, scope string) {
+	if a.page != page || a.scope != scope {
+		a.officialKnowledgeBypass = ""
+	}
 	if p := a.manualDrafts; p != nil && !p.Loaded {
 		p.Touched = true
 	}

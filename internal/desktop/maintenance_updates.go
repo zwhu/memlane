@@ -3,19 +3,19 @@ package desktop
 import "github.com/egoist/mygo/ui"
 
 func (a *App) maintenanceUpdatesPage(c *ui.Context) {
-	ui.Text(c, "客户端更新").FontSize(design.Small).TextColor(design.Muted).Padding(20, 28).Shrink(0).BorderWidth(0, 0, 1, 0).BorderColor(design.Border)
-	ui.Scroll(c.Key("maintenance-update-body")).Grow(1).MinHeight(0).Padding(28).Gap(24).Children(func() {
-		ui.Column(c).Gap(8).Children(func() {
-			ui.Text(c, "自动更新").FontSize(design.Small).TextColor(design.Muted)
-			ui.Text(c, "保持知识与设置").FontSize(design.Heading).Bold()
-			ui.Text(c, "客户端更新复用已有引擎与模型组件。").TextColor(design.Muted)
+	ui.Scroll(c.Key("maintenance-update-body")).TrackScroll(a.settingsScrollState("updates")).Grow(1).MinHeight(0).Padding(28).Gap(24).Children(func() {
+		settingsHeading(c, "客户端更新", "客户端更新复用已有引擎与模型组件。")
+		settingsCard(c, "settings-update-status", "更新状态", func() {
+			ui.Text(c, a.updateText).Selectable()
+			settingsFact(c, "当前版本", "已安装客户端", a.version)
 		})
-		ui.Text(c, a.updateText).Padding(16).Background(design.Surface).Border(1, design.Border).Radius(6).Selectable()
-		meta(c, "当前版本", a.version)
-		ui.Text(c, "下载与安装分别显示状态，安装完成后重新打开。已有知识、设置与组件保留。").FontSize(design.Small).TextColor(design.Muted)
+		settingsCard(c, "settings-update-content", "更新内容", func() {
+			settingsFact(c, "主客户端", "知识与设置保留", "按更新回执执行")
+			ui.Divider(c)
+			settingsFact(c, "引擎与模型", "兼容且未变化的组件继续复用", "按兼容性核对")
+		})
 	})
 	ui.Row(c).Key("maintenance-update-footer").MinHeight(64).Shrink(0).Padding(14, 24).Gap(10).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(design.Border).Children(func() {
-		ui.Text(c, "更新期间已有知识保留").FontSize(10).TextColor(design.Muted).Grow(1).MinWidth(0)
 		if a.cancelUpdate != nil {
 			actionButton(c, "取消更新", nil).OnClick(a.cancelUpdate)
 			return

@@ -58,38 +58,12 @@ func TestCodexComputerGrantCannotBorrowHistoricalProjectProof(t *testing.T) {
 	if state, _ := a.agentStatus(d, &c); state != "待验证" {
 		t.Fatal("grant used unrelated proof", state)
 	}
-	if state := a.projectAccessState(c, "project-a"); state != "已授权，待重载与验证" {
+	if state := a.projectConnectionState(c, "project-a"); state != "待重载与验证" {
 		t.Fatal(state)
-	}
-	c.AllowedScopes = nil
-	if state := a.projectAccessState(c, "project-a"); state != "未授权本项目" {
-		t.Fatal("revoked grant remained accessible", state)
 	}
 	c.Enabled = false
-	if state := a.projectAccessState(c, "project-a"); state != "已断开" {
+	if state := a.projectConnectionState(c, "project-a"); state != "已断开" {
 		t.Fatal(state)
-	}
-}
-
-func TestProjectGrantLateReceiptCannotRefreshAnotherLibrary(t *testing.T) {
-	entered, release := make(chan struct{}), make(chan struct{})
-	a, updates := experienceUIFixture(t, func(r serviceipc.Request) serviceipc.Response {
-		if r.Op == "connection_project_access" {
-			close(entered)
-			<-release
-			return serviceipc.Response{OK: true, Result: records.Connection{ID: "old", Agent: "codex", Enabled: true, Generation: 2}}
-		}
-		return serviceipc.Response{OK: false, Error: "unexpected old library read"}
-	})
-	a.projectSettings = ProjectSettingsUI{Open: true, Owner: records.Scope{ID: "old-project"}, Editing: "old", Generation: 1, Allowed: true}
-	a.saveProjectAccess()
-	<-entered
-	a.libraryEpoch++
-	a.projectSettings = ProjectSettingsUI{Open: true, Owner: records.Scope{ID: "new-project"}, Editing: "new", Generation: 9, Notice: "new state"}
-	close(release)
-	manualAwait(t, updates)
-	if a.projectSettings.Generation != 9 || a.projectSettings.Notice != "new state" || a.projectSettings.Editing != "new" {
-		t.Fatal("old access receipt mutated new library")
 	}
 }
 
@@ -116,8 +90,8 @@ func TestCodexComputerDetailKeepsAuthorizationSeparateAndReachable(t *testing.T)
 		t.Fatal("explicit project verification lost target")
 	}
 	a.openProjectConnectionVerification(c, records.Scope{ID: "project-b", Path: "/other/b"})
-	if a.agents.Project != "project-a" {
-		t.Fatal("unauthorized project replaced explicit target")
+	if a.agents.Project != "project-b" {
+		t.Fatal("project selection was restricted")
 	}
 	a.agents.Connections[0].Enabled = false
 	a.selectAgent("connection-" + c.ID)
@@ -166,14 +140,14 @@ func TestCodexComputerProjectProofIsBoundToRealSelectedDirectory(t *testing.T) {
 	a.agents.Found = []agents.Discovery{d}
 	a.agents.Installs = map[string]agents.Installation{c.ID: i}
 	a.scopes = []records.Scope{{ID: "a", Kind: "project", Path: first}, {ID: "b", Kind: "project", Path: second}}
-	if state := a.projectAccessState(c, "a"); state != "已授权，项目连接已验证" {
+	if state := a.projectConnectionState(c, "a"); state != "项目链路已验证" {
 		t.Fatal(state)
 	}
-	if state := a.projectAccessState(c, "b"); state != "已授权，待重载与验证" {
+	if state := a.projectConnectionState(c, "b"); state != "待重载与验证" {
 		t.Fatal("A proof implied B", state)
 	}
 	a.scopes[0].Path = second
-	if state := a.projectAccessState(c, "a"); state != "已授权，待重载与验证" {
+	if state := a.projectConnectionState(c, "a"); state != "待重载与验证" {
 		t.Fatal("replaced directory retained proof", state)
 	}
 	c.AllowedScopes = []string{"a"}

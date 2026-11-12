@@ -3,15 +3,25 @@ package records
 // A host-confirmed service/dataset binding. Endpoint and project come from
 // the trusted App, never from an Agent graph query or extraction result.
 type CogneeBinding struct {
-	MaterialSubmission bool   `json:"material_submission,omitempty"`
-	Operation          string `json:"operation"`
-	Instance           string `json:"instance"`
-	Dataset            string `json:"dataset"`
-	Project            string `json:"project"`
-	Endpoint           string `json:"endpoint"`
-	ConnectionID       string `json:"connection_id"`
-	Generation         int64  `json:"generation"`
-	Workspace          string `json:"workspace"`
+	ReadPreviousOperation string `json:"read_previous_operation,omitempty"`
+	ReadReviewDigest      string `json:"read_review_digest,omitempty"`
+	MaterialSubmission    bool   `json:"material_submission,omitempty"`
+	Operation             string `json:"operation"`
+	Instance              string `json:"instance"`
+	Dataset               string `json:"dataset"`
+	Project               string `json:"project"`
+	Endpoint              string `json:"endpoint"`
+	ConnectionID          string `json:"connection_id"`
+	Generation            int64  `json:"generation"`
+	Workspace             string `json:"workspace"`
+}
+
+// Explicit host review of the same service/dataset/project/connection after a
+// grant generation change. It carries no credential or material body.
+type CogneeReadReauthorization struct {
+	Previous   CogneeBinding `json:"previous"`
+	Operation  string        `json:"operation"`
+	Generation int64         `json:"generation"`
 }
 
 type CogneeEntity struct {
