@@ -12,8 +12,8 @@ import (
 )
 
 type commonKnowledgePageState struct {
-	Options, Discard bool
-	EditorScroll     ui.ScrollState
+	Options, Discard, MenuOpen bool
+	EditorScroll               ui.ScrollState
 }
 
 var commonPlus = homeSVG(`<path d="M12 5v14M5 12h14"/>`)

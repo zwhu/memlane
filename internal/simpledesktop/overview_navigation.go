@@ -94,6 +94,7 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			homeText(c, "项目", homeMeta).FontWeight(600).LetterSpacing(1).TextColor(ui.Hex("#8191a3"))
 			ui.Spacer(c)
 			homeLink(c, fmt.Sprintf("全部 %d", len(a.Config.Projects)), a.showOverviewProjects).FontSize(10)
+			a.projectAddMenu(c)
 		})
 		ui.Scroll(c.Key("overview-sidebar-projects")).TrackScroll(&a.overviewState.SidebarScroll).Grow(1).MinHeight(0).Gap(3).Children(func() {
 			labels := projectLabels(a.Config.Projects)
@@ -112,26 +113,31 @@ func (a *App) overviewNavigation(c *ui.Context) {
 							}
 						})
 					}).OnClick(func() { a.navigate("知识", index) })
-					anchor := readingAction(c, "项目菜单："+labels[idx], readingMore, func() {
-						if a.projectUI.SidebarProject == p.ID {
-							a.projectUI.SidebarMenuOpen = !a.projectUI.SidebarMenuOpen
-						} else {
-							a.projectUI.SidebarProject = p.ID
-							a.projectUI.SidebarMenuOpen = true
+					readingAction(c, "项目菜单："+labels[idx], readingMore, func() {}).Margin(0, 4, 0, 0).PopoverMenuButton(func(m *ui.Menu) {
+						m.Item(p.Name).Disabled(true)
+						paths := []string{p.Path}
+						for _, record := range a.access.Directory.Projects {
+							if record.ID == p.ID && len(record.Aliases) > 0 {
+								paths = record.Aliases
+								break
+							}
 						}
-					}).Margin(0, 4, 0, 0)
-					if a.projectUI.SidebarProject == p.ID {
-						ui.PopoverBase(c, anchor, &a.projectUI.SidebarMenuOpen, func(panel ui.Element) {
-							panel.Width(180).Padding(10).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(8).Shadow(0, 4, 14, 0, ui.RGBA(0, 0, 0, .1))
-							projectLink(c, "项目设置", func() {
-								origin := a.readingLocation()
-								a.projectUI.SidebarMenuOpen = false
-								a.navigate("设置", index)
-								a.access.OpenProject = p.ID
-								a.settingsOrigin = origin
-							})
-						})
-					}
+						for _, path := range paths {
+							if path != "" {
+								m.Item(path).Disabled(true)
+							}
+						}
+						m.Separator()
+						if m.Item("编辑项目").Chosen() {
+							a.openProjectCreation(p.ID)
+						}
+						if m.Item("项目设置").Chosen() {
+							origin := a.readingLocation()
+							a.navigate("设置", index)
+							a.access.OpenProject = p.ID
+							a.settingsOrigin = origin
+						}
+					})
 				})
 			}
 		})

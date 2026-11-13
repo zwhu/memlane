@@ -68,6 +68,8 @@ type App struct {
 	codeUnknown                                       bool
 	codeRemoteActive                                  bool
 
+	ChooseProjectFolder func() (string, error)
+	projectCreate       projectCreateState
 	Config              Config
 	Client              Client
 	Update              func(func())
@@ -162,6 +164,9 @@ func (a *App) current() (Project, bool) {
 }
 func (a *App) navigate(page string, index int) { a.navigateKind(page, index, "") }
 func (a *App) navigateKind(page string, index int, kind string) {
+	a.commonPage.MenuOpen = false
+	a.projectUI.QueueBack = nil
+	a.projectUI.QueueProject = ""
 	a.projectUI.InfoOpen = false
 	a.projectUI.MenuOpen = false
 	a.closeUnifiedSearch()
@@ -423,7 +428,7 @@ func button(c *ui.Context, label string, fn func()) {
 	ui.Button(c, label).FontSize(12).Padding(8, 12).Background(ui.Transparent).BorderWidth(0).Justify(ui.Start).OnClick(fn)
 }
 func (a *App) View(c *ui.Context) {
-	ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.viewContent(c); a.searchDialog(c) })
+	ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.viewContent(c); a.searchDialog(c); a.projectCreateDialog(c) })
 }
 func (a *App) viewContent(c *ui.Context) {
 	c.After(2 * time.Second)
@@ -744,7 +749,11 @@ func displayDate(date string) string {
 	return "时间未知"
 }
 
-func (a *App) OpenSearch() { a.openUnifiedSearch(false) }
+func (a *App) OpenSearch() {
+	if !a.projectCreate.Open {
+		a.openUnifiedSearch(false)
+	}
+}
 func (a *App) projectEditor(c *ui.Context) {
 	if a.settingsMessage != "" {
 		ui.Text(c, a.settingsMessage).FontSize(11).TextColor(muted)

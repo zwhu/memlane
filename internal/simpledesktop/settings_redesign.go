@@ -48,7 +48,7 @@ func settingsCard(c *ui.Context, title, description string, content func()) {
 	})
 }
 func (a *App) globalSettingsPage(c *ui.Context) {
-	settingsTabs(c, &a.access.SettingsSection, []string{"服务与连接", "项目关联", "高级"})
+	settingsTabs(c, &a.access.SettingsSection, []string{"服务与连接", "高级"})
 	ui.Scroll(c.Key("global-settings-" + a.access.SettingsSection)).Grow(1).MinHeight(0).Padding(28).Background(ui.Hex("#f8fafc")).Children(func() {
 		ui.Column(c).FillWidth().MaxWidth(900).Gap(20).Children(func() {
 			switch a.access.SettingsSection {
@@ -65,37 +65,7 @@ func (a *App) globalSettingsPage(c *ui.Context) {
 				if a.Config.ProjectControl != nil {
 					settingsCard(c, "本机 Agent", "连接到当前电脑；具体项目的读写权限请进入对应项目设置。", func() { a.codexConnectionSettings(c) })
 				}
-			case "项目关联":
-				settingsCard(c, "新建与关联", "这里管理项目归属；各项目的权限在左侧项目行右侧的 ⋯ 菜单中设置。", func() {
-					if a.Config.ProjectControl != nil {
-						a.projectRegistration(c)
-					} else {
-						for idx, p := range a.Config.Projects {
-							index := idx
-							commonButton(c, p.Name+" · 修改关联", false, func() { copy := a.Config.Projects[index]; a.editProject = &copy; a.editIndex = index })
-						}
-						commonButton(c, "关联已有官方项目", false, func() { a.editProject = &Project{}; a.editIndex = -1 })
-						a.projectEditor(c)
-					}
-				})
 			case "高级":
-				if a.Config.ProjectControl != nil {
-					settingsCard(c, "未保存的会话", "会话未成功保存时，在这里检查并手动处理。", func() {
-						if !a.access.PendingExpanded {
-							commonButton(c, "检查未保存的会话", false, func() { a.access.PendingExpanded = true })
-						} else {
-							for _, project := range a.access.Directory.Projects {
-								for _, agent := range a.access.Directory.Agents {
-									homeText(c, project.Name+" · "+agent.Name, homeHeading).FontSize(13)
-									a.pendingMaterialsEditor(c, project, agent)
-								}
-							}
-						}
-					})
-				}
-				if a.Config.ProjectControl != nil {
-					settingsCard(c, "通用知识存储", "仅在存储未准备或权限异常时核对。", func() { a.commonDatasetSettings(c) })
-				}
 				settingsCard(c, "开发运行", "关闭窗口后后台服务继续运行。电脑重启后通过开发启动器重新启动。", func() {
 					homeText(c, "python3 scripts/dev.py", homeBody)
 					homeText(c, "服务与模型配置变更后，重新启动后台生效。向量模型由 Cognee 官方配置管理。", homeMeta).LineHeight(1.7)
@@ -129,7 +99,7 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 					})
 				})
 			}
-			if a.access.Message != "" && a.access.Message != "设置已保存；生效状态以官方核对结果为准" {
+			if len(a.access.CheckboxPending) == 0 && a.access.Message != "" && a.access.Message != "设置已保存；生效状态以官方核对结果为准" {
 				homeText(c, a.access.Message, homeMeta).LineHeight(1.7)
 			}
 			if a.access.DirectoryError != "" {
@@ -138,10 +108,12 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 			if len(a.access.Directory.Agents) == 0 {
 				homeText(c, "尚无已连接的 Agent；请先在全局设置中连接。", homeMeta)
 			}
+			homeText(c, "权限设置", homeHeading).FontSize(15)
 			for _, row := range a.access.Directory.Agents {
 				agent := row
-				settingsCard(c, agent.Name, "", func() { a.agentPolicyEditor(c, p, agent) })
+				a.projectPermissionCard(c, p, agent)
 			}
+			a.projectQueueSection(c, p)
 		})
 	})
 }

@@ -532,6 +532,20 @@ class Registry:
             project = await self.ensure_locked(root, dataset_id, name, source='associated' if dataset_id else 'manual')
             return copy.deepcopy(project)
 
+    async def rename_project(self, expected, identifier, name):
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 120 or any(ord(c) < 32 for c in name):
+            raise PolicyError('invalid_project_name')
+        async with self.mutex:
+            self.check_revision(expected)
+            project = self.state['projects'].get(identifier)
+            if project is None:
+                raise PolicyError('project_not_found', 404)
+            if project['name'] != name.strip():
+                project['name'] = name.strip()
+                self.state['revision'] += 1
+                self.save()
+            return copy.deepcopy(project)
+
     async def add_alias(self, expected, identifier, workspace):
         root = workspace_root(workspace, explicit=True)
         async with self.mutex:
@@ -542,6 +556,8 @@ class Registry:
             if any(root in p['aliases'] and p['id'] != identifier for p in self.state['projects'].values()):
                 raise PolicyError('project_binding_conflict', 409)
             if root not in project['aliases']:
+                if project['aliases']:
+                    raise PolicyError('project_binding_locked', 409)
                 project['aliases'].append(root)
                 self.state['revision'] += 1
                 self.save()

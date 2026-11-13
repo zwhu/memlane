@@ -72,6 +72,10 @@ func (a *App) confirmProjectCheckboxes(directory AccessDirectory) {
 				a.access.Message = "设置已由其他操作更新，已显示最新值。"
 			} else if len(a.access.CheckboxPending) == 0 {
 				a.access.Message = ""
+				if a.access.PermissionSaved == nil {
+					a.access.PermissionSaved = map[string]time.Time{}
+				}
+				a.access.PermissionSaved[key] = time.Now().Add(2 * time.Second)
 			}
 		}
 	}

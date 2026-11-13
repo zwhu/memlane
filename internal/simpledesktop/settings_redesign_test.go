@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/egoist/mygo/ui"
 	"testing"
+	"time"
 )
 
 func settingsFixture() *App {
@@ -13,8 +14,13 @@ func settingsFixture() *App {
 	a.Config.Model = "当前配置的 Codex 模型"
 	a.completion = "端点已连接（登录状态以实际请求为准）"
 	access := "read"
-	p := AccessProject{ID: "p", Name: "memlane", Dataset: "ds", Status: "verified", DesiredRevision: 4, Overrides: map[string]ProjectOverride{"agent": {Access: &access}}, Applied: map[string]AccessApplied{"agent": {Status: "verified", Revision: 4}}}
+	p := AccessProject{ID: "p", Name: "memlane", Aliases: []string{"/synthetic/memlane"}, Dataset: "ds", Status: "verified", DesiredRevision: 4, Overrides: map[string]ProjectOverride{"agent": {Access: &access}}, Applied: map[string]AccessApplied{"agent": {Status: "verified", Revision: 4}}}
 	a.applyAccessDirectory(AccessDirectory{CodexConnection: &CodexConnection{Status: "configured_pending_new_session", NewSessions: 2, Home: "/synthetic/codex"}, Revision: 4, Defaults: ProjectPolicy{Access: "maintain", Capture: true, AutoProcess: false}, Agents: []AccessAgent{{ID: "agent", Name: "本机 Codex", Installation: &AgentInstallation{Status: "configured"}}}, Projects: []AccessProject{p, {ID: "same", Name: "另一个项目", Dataset: "other"}}, Bindings: []ProjectBinding{{AgentID: "agent", ProjectID: "p", HostSessionKey: "synthetic-session-0001"}, {AgentID: "agent", ProjectID: "same", HostSessionKey: "do-not-show"}}})
+	identity, _ := readingIdentity(Client{Config: a.Client.Config})
+	a.access.Queues = map[string]*projectQueueState{}
+	for _, p := range a.access.Directory.Projects {
+		a.access.Queues[identity+"/"+p.ID+"/"+p.Dataset] = &projectQueueState{Loaded: true, Next: time.Now().Add(time.Hour)}
+	}
 	return a
 }
 func TestSettingsProjectPermissionsCardsAndNavigation(t *testing.T) {

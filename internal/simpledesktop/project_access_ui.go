@@ -5,29 +5,27 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
 )
 
 type projectAccessState struct {
-	Directory                                     AccessDirectory
-	Loaded, Loading, Busy                         bool
-	Request                                       uint64
-	Next                                          time.Time
-	Message                                       string
-	DirectoryError                                string
-	Signature                                     string
-	Defaults                                      ProjectPolicy
-	DefaultsDirty                                 bool
-	DefaultsRevision                              int64
-	OpenProject, SettingsSection                  string
-	CreateName, Workspace, CreateMode, LinkChoice string
-	Linkable                                      []LinkableDataset
-	PendingExpanded                               bool
-	CheckboxPending                               map[string]*projectCheckboxPending
-	Buffers                                       map[string]*pendingBufferView
+	Directory                    AccessDirectory
+	Loaded, Loading, Busy        bool
+	Request                      uint64
+	Next                         time.Time
+	Message                      string
+	DirectoryError               string
+	Signature                    string
+	Defaults                     ProjectPolicy
+	DefaultsDirty                bool
+	DefaultsRevision             int64
+	OpenProject, SettingsSection string
+	PermissionSaved              map[string]time.Time
+	Queues                       map[string]*projectQueueState
+	CheckboxPending              map[string]*projectCheckboxPending
+	Buffers                      map[string]*pendingBufferView
 }
 
 func (a *App) accessClient() (ProjectControlClient, bool) {
@@ -287,7 +285,7 @@ func (a *App) accessSettings(c *ui.Context) {
 
 func (a *App) commonDatasetSettings(c *ui.Context) {
 	directory := a.access.Directory
-	ui.Text(c, "通用知识数据组").FontSize(17).Bold()
+	ui.Text(c, "通用知识数据组").FontSize(13).Bold()
 	if directory.Common != nil {
 		ui.Text(c, directory.Common.syncLabel(directory.Agents...)).FontSize(11).TextColor(muted)
 	}
@@ -335,92 +333,6 @@ func (a *App) agentPolicyEditor(c *ui.Context, p AccessProject, agent AccessAgen
 				a.saveProjectCheckbox(p.ID, agent.ID, "access", value)
 			})
 		})
-		if pending != nil {
-			homeText(c, "修改结果待确认", homeMeta)
-			commonButton(c, "核对修改结果", false, a.RefreshProjectDirectory).Disabled(a.access.Loading || a.access.Busy)
-		}
-	})
-}
 
-func (a *App) projectRegistration(c *ui.Context) {
-	ui.Text(c, "新建／关联项目").FontSize(17).Bold()
-	if a.access.CreateMode == "" {
-		a.access.CreateMode = "新建项目"
-	}
-	ui.Select(c, &a.access.CreateMode, []string{"新建项目", "关联已有项目", "关联已有官方数据组"}).Width(280).Disabled(a.access.Busy)
-	ui.TextInput(c, &a.access.CreateName).Placeholder("项目显示名称").Height(34).Label("项目显示名称").Disabled(a.access.Busy)
-	ui.TextInput(c, &a.access.Workspace).Placeholder("选择或输入本机仓库路径").Height(34).Label("项目仓库路径").Disabled(a.access.Busy)
-	choices := []string{}
-	if a.access.CreateMode == "关联已有项目" {
-		for _, p := range a.access.Directory.Projects {
-			choices = append(choices, p.Name+" · "+strings.Join(p.Aliases, ", "))
-		}
-	}
-	if a.access.CreateMode == "关联已有官方数据组" {
-		ui.Button(c, "读取可关联数据组").Disabled(a.access.Busy).OnClick(func() {
-			client, ok := a.accessClient()
-			if !ok {
-				return
-			}
-			a.access.Busy = true
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				rows, err := client.linkableDatasets(ctx)
-				a.Update(func() {
-					a.access.Busy = false
-					if err != nil {
-						a.access.Message = err.Error()
-					} else {
-						a.access.Linkable = rows
-					}
-				})
-			}()
-		})
-		for _, p := range a.access.Linkable {
-			choices = append(choices, p.Name)
-		}
-	}
-	if len(choices) > 0 {
-		ui.Select(c, &a.access.LinkChoice, choices).Width(560).Disabled(a.access.Busy)
-	}
-	ui.Text(c, "同仓库自动复用；同名不同路径分开。关联已有数据组先保留已有权限事实，不自动放宽。").FontSize(11).TextColor(muted)
-	ui.Button(c, "保存项目关联").Disabled(a.access.Busy).OnClick(func() {
-		workspace, name, mode, choice := strings.TrimSpace(a.access.Workspace), strings.TrimSpace(a.access.CreateName), a.access.CreateMode, a.access.LinkChoice
-		if workspace == "" {
-			a.access.Message = "请提供本机仓库路径"
-			return
-		}
-		identifier := ""
-		if mode == "关联已有项目" {
-			for idx, label := range choices {
-				if label == choice {
-					identifier = a.access.Directory.Projects[idx].ID
-				}
-			}
-		}
-		if mode == "关联已有官方数据组" {
-			for idx, label := range choices {
-				if label == choice {
-					identifier = a.access.Linkable[idx].ID
-				}
-			}
-		}
-		if mode != "新建项目" && identifier == "" {
-			a.access.Message = "请选择要关联的项目或数据组"
-			return
-		}
-		a.mutateAccess(func(ctx context.Context, client ProjectControlClient, revision int64) (AccessDirectory, error) {
-			var err error
-			if mode == "关联已有项目" {
-				_, err = client.alias(ctx, revision, identifier, workspace)
-			} else {
-				_, err = client.create(ctx, revision, name, workspace, identifier)
-			}
-			if err != nil {
-				return AccessDirectory{}, err
-			}
-			return client.directory(ctx)
-		})
 	})
 }

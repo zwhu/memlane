@@ -251,3 +251,10 @@ func (c ProjectControlClient) alias(ctx context.Context, revision int64, project
 	err := c.request(ctx, "POST", "/v1/projects/"+url.PathEscape(project)+"/aliases", map[string]any{"expected_revision": revision, "workspace": workspace}, &result)
 	return result, err
 }
+
+// rename changes only the client display name; dataset identity and bindings stay fixed.
+func (c ProjectControlClient) rename(ctx context.Context, revision int64, project, name string) (AccessProject, error) {
+	var result AccessProject
+	err := c.request(ctx, "PUT", "/v1/projects/"+url.PathEscape(project)+"/name", map[string]any{"expected_revision": revision, "name": name}, &result)
+	return result, err
+}

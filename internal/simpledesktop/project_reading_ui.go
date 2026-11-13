@@ -13,6 +13,8 @@ type projectReadingState struct {
 	MenuOpen, InfoOpen bool
 	SidebarMenuOpen    bool
 	SidebarProject     string
+	QueueBack          *readingLocation
+	QueueProject       string
 	InfoKey            string
 	Expanded           map[string]bool
 	Copied             string
@@ -24,11 +26,20 @@ type readingLocation struct {
 	Index                 int
 	FromOverview          bool
 	Floors                map[*pane]int
+	SettingsParent        *readingLocation
+	SettingsProject       string
 }
 
 func (a *App) readingLocation() *readingLocation {
 	p, _ := a.current()
-	return &readingLocation{a.page, a.kind, p.ID, a.project, a.fromOverview, a.overviewSourceFloor}
+	location := &readingLocation{Page: a.page, Kind: a.kind, ProjectID: p.ID, Index: a.project, FromOverview: a.fromOverview, Floors: a.overviewSourceFloor}
+	if a.page == "设置" {
+		location.SettingsParent = a.settingsOrigin
+		if a.settingsOrigin != nil {
+			location.SettingsProject = a.access.OpenProject
+		}
+	}
+	return location
 }
 func (a *App) restoreReadingLocation(v *readingLocation) {
 	if v == nil {
@@ -53,6 +64,10 @@ func (a *App) restoreReadingLocation(v *readingLocation) {
 		}
 	}
 	a.navigateKind(v.Page, index, v.Kind)
+	if v.Page == "设置" {
+		a.settingsOrigin = v.SettingsParent
+		a.access.OpenProject = v.SettingsProject
+	}
 	a.fromOverview = v.FromOverview
 	a.overviewSourceFloor = v.Floors
 	if v.Page == "图谱" {
@@ -93,6 +108,15 @@ func (a *App) projectHeader(c *ui.Context) {
 		} else if (a.page == "知识" || a.page == "通用知识") && len(a.state().History) > a.overviewSourceFloor[a.state()] {
 			back = func() { a.returnFromSource(a.state()) }
 			label = "返回知识"
+		} else if a.page == "知识" && a.projectUI.QueueProject != "" {
+			label = "返回项目设置"
+			back = func() {
+				origin, id := a.projectUI.QueueBack, a.projectUI.QueueProject
+				index := a.project
+				a.navigate("设置", index)
+				a.access.OpenProject = id
+				a.settingsOrigin = origin
+			}
 		} else if a.page == "设置" && a.settingsOrigin != nil {
 			back = func() { v := a.settingsOrigin; a.restoreReadingLocation(v) }
 			label = "返回项目"
@@ -118,15 +142,26 @@ func (a *App) projectHeader(c *ui.Context) {
 		homeText(c, title, homeTopTitle).FontSize(15).FontWeight(600).MaxWidth(280).SingleLine().Tooltip(title)
 		ui.Spacer(c)
 		a.unifiedSearchTrigger(c)
+		if a.page == "通用知识" {
+			anchor := readingAction(c, "通用知识菜单", readingMore, func() { a.commonPage.MenuOpen = !a.commonPage.MenuOpen })
+			ui.Popover(c, anchor, &a.commonPage.MenuOpen, func() {
+				ui.Column(c).Width(288).Padding(12).Gap(12).Children(func() {
+					if a.Config.ProjectControl == nil {
+						homeText(c, "尚未配置知识库存储服务", homeMeta)
+					} else {
+						a.commonDatasetSettings(c)
+					}
+				})
+			})
+		}
 		if p, ok := a.current(); ok && (a.page == "知识" || a.page == "图谱") {
 
-			anchor := readingAction(c, "项目菜单", readingMore, func() { a.projectUI.MenuOpen = !a.projectUI.MenuOpen; a.projectUI.InfoOpen = false })
-			ui.PopoverBase(c, anchor, &a.projectUI.MenuOpen, func(panel ui.Element) {
-				panel.Width(240).Padding(14).Gap(10).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(10).Shadow(0, 5, 18, 0, ui.RGBA(0, 0, 0, .1))
-				homeText(c, p.Name, homeHeading)
-				homeText(c, p.Path, homePath).MaxWidth(212)
-				projectLink(c, "复制项目路径", func() { c.WriteClipboard(p.Path); a.projectUI.MenuOpen = false })
-
+			readingAction(c, "项目菜单", readingMore, func() {}).PopoverMenuButton(func(m *ui.Menu) {
+				m.Item(p.Name).Disabled(true)
+				m.Separator()
+				if m.Item("复制项目路径").Chosen() {
+					c.WriteClipboard(p.Path)
+				}
 			})
 		}
 	})
@@ -332,8 +367,7 @@ func (a *App) contentInformation(c *ui.Context, anchor ui.Element, i Item) {
 		}
 	}
 	height := min(float32(560), h-160, float32(148+62*count))
-	ui.PopoverBase(c, anchor, &a.projectUI.InfoOpen, func(panel ui.Element) {
-		panel.Modal().Role(ui.RoleDialog).Width(450).Height(height).Padding(0).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(12).Shadow(0, 5, 18, 0, ui.RGBA(0, 0, 0, .1))
+	ui.Popover(c, anchor, &a.projectUI.InfoOpen, func() {
 		ui.Row(c).Padding(14, 20).Shrink(0).AlignItems(ui.Center).Children(func() {
 			homeText(c, "内容信息", homeHeading).FontSize(15)
 			ui.Spacer(c)
@@ -367,7 +401,7 @@ func (a *App) contentInformation(c *ui.Context, anchor ui.Element, i Item) {
 				homeText(c, a.projectUI.Copied+"已复制", homeMeta)
 			}
 		})
-	})
+	}).Modal().Role(ui.RoleDialog).Width(450).Height(height).Padding(0).Transition(projectOverlayMotion())
 }
 func readingDiagnostic(fields []ReadingField) string {
 	var b strings.Builder

@@ -174,8 +174,11 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.official.creates, 1)
         alias = self.root / 'moved'
         alias.mkdir()
-        await self.registry.add_alias(self.registry.state['revision'], project['id'], str(alias))
-        self.assertEqual((await self.registry.resolve('a', str(alias), 'two', explicit=True))['project_id'], project['id'])
+        # Linked projects keep their original source folder; only names may change.
+        with self.assertRaises(PolicyError) as error:
+            await self.registry.add_alias(self.registry.state['revision'], project['id'], str(alias))
+        self.assertEqual(error.exception.code, 'project_binding_locked')
+        self.assertEqual(self.registry.state['projects'][project['id']]['aliases'], [str(self.repo)])
 
     async def test_association_preserves_existing_acl(self):
         row = await self.official.owned_dataset('existing')
@@ -207,6 +210,57 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
                 await self.registry.create_project(self.registry.state['revision'], str(self.repo), dataset_id=dataset)
             self.assertEqual(error.exception.code, 'non_project_dataset_cannot_be_linked')
         self.assertEqual(self.registry.state['projects'], {})
+
+    async def test_rename_changes_only_display_name_and_survives_reload(self):
+        import copy
+        project = await self.registry.create_project(self.registry.state['revision'], str(self.repo))
+        before = copy.deepcopy(self.registry.state)
+        revision = before['revision']
+        updated = await self.registry.rename_project(revision, project['id'], '  新名称  ')
+        expected = copy.deepcopy(before['projects'][project['id']])
+        expected['name'] = '新名称'
+        self.assertEqual(updated, expected)
+        self.assertEqual(self.registry.state['revision'], revision + 1)
+        self.assertEqual(self.registry.state['sessions'], before['sessions'])
+        self.assertEqual(self.official.creates, 1)
+        self.assertEqual(json.loads(self.path.read_text())['projects'][project['id']], expected)
+        with self.assertRaises(PolicyError):
+            await self.registry.rename_project(revision, project['id'], 'stale')
+        for name in ('', '   ', 'x' * 121, 'a\nb', None):
+            with self.assertRaises(PolicyError):
+                await self.registry.rename_project(revision + 1, project['id'], name)
+        self.assertEqual(self.registry.state['projects'][project['id']], expected)
+
+    async def test_unlinked_record_can_bind_once_only(self):
+        project = await self.registry.create_project(self.registry.state['revision'], str(self.repo))
+        self.registry.state['projects'][project['id']]['aliases'] = []
+        self.registry.save()
+        await self.registry.add_alias(self.registry.state['revision'], project['id'], str(self.repo))
+        revision = self.registry.state['revision']
+        await self.registry.add_alias(revision, project['id'], str(self.repo))
+        self.assertEqual(self.registry.state['revision'], revision)
+        other = self.root / 'other'
+        other.mkdir()
+        with self.assertRaises(PolicyError):
+            await self.registry.add_alias(revision, project['id'], str(other))
+
+    async def test_http_rename_rejects_bindings_and_agent_identity(self):
+        project = await self.registry.create_project(self.registry.state['revision'], str(self.repo))
+        client = TestClient(TestServer(create_app(self.registry, 'm' * 40, {'a': 'a' * 40})))
+        await client.start_server()
+        try:
+            route = '/v1/projects/' + project['id'] + '/name'
+            payload = {'expected_revision': self.registry.state['revision'], 'name': 'renamed'}
+            manager = {'Authorization': 'Bearer ' + 'm' * 40}
+            self.assertEqual((await client.put(route, json=payload, headers={'Authorization': 'Bearer ' + 'a' * 40})).status, 403)
+            for field in ('workspace', 'dataset_id', 'overrides'):
+                self.assertEqual((await client.put(route, json={**payload, field: 'forbidden'}, headers=manager)).status, 400)
+            response = await client.put(route, json=payload, headers=manager)
+            self.assertEqual(response.status, 200)
+            self.assertEqual((await response.json())['name'], 'renamed')
+            self.assertEqual((await client.put(route, json=payload, headers=manager)).status, 409)
+        finally:
+            await client.close()
 
     async def test_http_separates_principals_and_rejects_content(self):
         client = TestClient(TestServer(create_app(self.registry, 'm' * 40, {'a': 'a' * 40, 'b': 'b' * 40})))

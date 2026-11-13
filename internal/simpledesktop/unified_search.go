@@ -232,9 +232,7 @@ func (a *App) searchDialog(c *ui.Context) {
 		return
 	}
 	w, h := c.Size()
-	ui.DialogBase(c, &s.Open, func(back, panel ui.Element) {
-		back.Background(ui.RGBA(39, 51, 64, .19)).Justify(ui.Start).AlignItems(ui.Center).Padding(min(float32(116), h/7), 0, 0, 0)
-		panel.Width(min(float32(760), w-80)).Height(min(float32(596), h-160)).Padding(0).Gap(0).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(16).Shadow(0, 5, 22, 0, ui.RGBA(0, 0, 0, .12)).Label("搜索知识与原始记录弹框")
+	ui.Modal(c.Key("unified-search-modal"), &s.Open, func() {
 		ui.Row(c).Height(76).Shrink(0).Padding(0, 20).Gap(14).AlignItems(ui.Center).Children(func() {
 			ui.Icon(c, homeSearch).FontSize(23).TextColor(homeLinkInk)
 			input := ui.TextInputBase(c.Key("unified-query"), &s.Query).Label("搜索关键词").Placeholder("输入关键词，按 Enter 搜索").Grow(1).MinWidth(0).FontSize(20).OnSubmit(a.searchSubmitOrOpen)
@@ -360,7 +358,7 @@ func (a *App) searchDialog(c *ui.Context) {
 			ui.Spacer(c)
 			homeText(c, "↑↓ 选择  ↵ 搜索/打开  esc 关闭", homeMeta)
 		})
-	})
+	}).Width(min(float32(760), w-80)).Height(min(float32(596), h-160)).Padding(0).Gap(0).Label("搜索知识与原始记录弹框").Transition(projectOverlayMotion())
 	if !s.Open {
 		a.closeUnifiedSearch()
 	}

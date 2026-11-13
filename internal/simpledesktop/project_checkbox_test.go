@@ -92,7 +92,7 @@ func TestProjectCheckboxBundlesPermissionAndConfirmsUnknownWithoutRetry(t *testi
 	if writes.Load() != 4 {
 		t.Fatal("unknown operation resent")
 	}
-	clickProjectUI(t, tt, "核对修改结果")
+	clickProjectUI(t, tt, "重新核对")
 	drainReading(t, updates, func() bool { return !a.access.Loading })
 	if a.access.CheckboxPending["p/agent"] != nil || writes.Load() != 4 {
 		t.Fatal("GET confirmation did not resolve original operation")

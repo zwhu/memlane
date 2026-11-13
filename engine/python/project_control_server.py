@@ -126,6 +126,11 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
         return web.json_response(await registry.create_project(payload['expected_revision'], payload['workspace'],
                                                              dataset_id=payload.get('dataset_id'), name=payload.get('name')))
 
+    async def rename(request):
+        manager(request)
+        payload = fields(await body(request), ('expected_revision', 'name'))
+        return web.json_response(await registry.rename_project(payload['expected_revision'], request.match_info['id'], payload['name']))
+
     async def alias(request):
         manager(request)
         payload = fields(await body(request), ('expected_revision', 'workspace'))
@@ -183,7 +188,7 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
 
     app.add_routes([web.post('/v1/project/resolve', resolve), web.get('/v1/project/policy', policy),
                     web.get('/v1/projects', directory), web.put('/v1/defaults', defaults),
-                    web.put('/v1/projects/{id}/overrides', overrides), web.post('/v1/projects', create),
+                    web.put('/v1/projects/{id}/overrides', overrides), web.put('/v1/projects/{id}/name', rename), web.post('/v1/projects', create),
                     web.post('/v1/projects/{id}/aliases', alias), web.post('/v1/projects/{id}/reconcile', reconcile),
                     web.put('/v1/projects/{id}/code', code),
                     web.post('/v1/agents', provision), web.post('/v1/agents/{id}/reconcile', recover),
