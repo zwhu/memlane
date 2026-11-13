@@ -103,6 +103,18 @@ func (a *App) generationSettings(c *ui.Context) {
 		commonButton(c, "读取知识处理配置", false, a.RefreshIntegrations)
 		return
 	}
+	if len(s.PendingOperations) > 0 {
+		settingsCard(c, "待核对操作", "重开应用后保留原操作；核对只读取回执，不重新提交请求。", func() {
+			for _, pending := range s.PendingOperations {
+				o := pending
+				label := map[string]string{"save": "保存配置", "next": "下次启动设置", "validations": "模型验证"}[o.Kind]
+				ui.Row(c.Key("pending-generation-" + o.Operation)).Gap(12).Children(func() {
+					homeText(c, label+" · "+o.Profile, homeMeta).Grow(1)
+					ui.Button(c, "核对原操作").Label("核对原操作：" + o.Operation).Disabled(s.Busy).OnClick(func() { a.reviewPendingGeneration(o) })
+				})
+			}
+		})
+	}
 	settingsCard(c, "已保存配置", "保存、验证与下次启动使用分别操作。验证会调用所选供应商并消耗额度。", func() {
 		ids := make([]string, 0, len(s.Generation.Profiles))
 		for id := range s.Generation.Profiles {
@@ -159,12 +171,12 @@ func (a *App) generationSettings(c *ui.Context) {
 			}
 		})
 		ui.Row(c).Gap(10).Children(func() {
-			ui.Button(c, "保存配置").Disabled(locked).OnClick(a.saveGeneration)
+			ui.Button(c, "保存配置").Disabled(locked || s.pendingGenerationProfile(s.ProfileID)).OnClick(a.saveGeneration)
 			if s.SaveOperation != "" {
 				ui.Button(c, "核对保存结果").Disabled(s.Busy).OnClick(a.reviewGenerationSave)
 			}
-			ui.Button(c, "验证（会消耗额度）").Disabled(s.Busy || !s.cleanSaved() || s.Validation.Status == "running" || s.Validation.Status == "queued").OnClick(func() { a.generationAction("validations") })
-			ui.Button(c, "下次启动使用").Disabled(s.Busy || s.NextOperation != "" || !s.cleanSaved() || !s.Generation.validated(s.Saved)).OnClick(func() { a.generationAction("next") })
+			ui.Button(c, "验证（会消耗额度）").Disabled(s.Busy || !s.cleanSaved() || s.Validation.Status == "running" || s.Validation.Status == "queued" || s.pendingGenerationProfile(s.ProfileID)).OnClick(func() { a.generationAction("validations") })
+			ui.Button(c, "下次启动使用").Disabled(s.Busy || s.NextOperation != "" || s.pendingGenerationProfile(s.ProfileID) || !s.cleanSaved() || !s.Generation.validated(s.Saved)).OnClick(func() { a.generationAction("next") })
 			if s.NextOperation != "" {
 				ui.Button(c, "核对待应用设置").Disabled(s.Busy).OnClick(a.reviewGenerationNext)
 			}

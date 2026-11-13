@@ -139,3 +139,21 @@ func TestIntegrationAgentListKeepsPartialSuccessAndShowsHostLimits(t *testing.T)
 	}
 	fixtureImage(t, tt, "multi-agent-1200x820-connections")
 }
+
+func TestIntegrationRecoveryActionsRemainVisibleWithoutAnOpenEditor(t *testing.T) {
+	a := settingsFixture()
+	a.page = "设置"
+	a.access.SettingsSection = "知识处理"
+	a.integrations = integrationState{Loaded: true, PendingOperations: []generationUIOperation{
+		{Operation: "ui-unconfirmed", Kind: "save", Profile: "saved-before-exit"},
+	}}
+	tt := ui.NewTester(a.View, 1200, 820)
+	for _, label := range []string{"待核对操作", "保存配置 · saved-before-exit", "核对原操作"} {
+		if !tt.HasText(label) {
+			t.Fatal("reopened recovery control missing", label)
+		}
+	}
+	if a.integrations.Editor {
+		t.Fatal("recovery depended on an open editor")
+	}
+}

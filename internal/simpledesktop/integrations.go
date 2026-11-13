@@ -92,6 +92,7 @@ func (g GenerationDirectory) validated(ref *GenerationRef) bool {
 }
 
 type integrationState struct {
+	PendingOperations                                                                           []generationUIOperation
 	Connections                                                                                 ConnectionsDirectory
 	Generation                                                                                  GenerationDirectory
 	Loaded, Loading, Busy                                                                       bool
@@ -153,6 +154,12 @@ func (a *App) RefreshIntegrations() {
 	if !ok || s.Loading || s.Busy || a.Update == nil {
 		return
 	}
+	pending, err := a.loadGenerationOperations()
+	if err != nil {
+		s.Error = "无法读取本机待核对操作，已停止发送新配置请求"
+		return
+	}
+	s.PendingOperations = pending
 	s.Loading = true
 	s.Request++
 	request := s.Request
@@ -303,6 +310,10 @@ func (a *App) saveGeneration() {
 		return
 	}
 	op := integrationOperation()
+	if err := a.recordGenerationOperation(generationUIOperation{Operation: op, Kind: "save", Profile: s.ProfileID}); err != nil {
+		s.Error = "无法保存操作回执位置，本次配置尚未发送"
+		return
+	}
 	s.SaveOperation = op
 	s.Busy = true
 	s.Error = ""
@@ -334,6 +345,9 @@ func (a *App) saveGeneration() {
 			if err != nil {
 				var rejected *ControlResponseError
 				if !submitted && errors.As(err, &rejected) && rejected.Status >= 400 && rejected.Status < 500 {
+					if !a.finishGenerationOperation(op) {
+						return
+					}
 					s.SaveOperation = ""
 					s.Error = "保存未通过，请检查配置后再次保存；新密钥需要重新填写。"
 					return
@@ -345,6 +359,9 @@ func (a *App) saveGeneration() {
 			row, found := directory.row(&response.Result)
 			if !found {
 				s.Error = "尚未找到原保存回执"
+				return
+			}
+			if !a.finishGenerationOperation(op) {
 				return
 			}
 			s.editProfile(id, row)
@@ -384,6 +401,9 @@ func (a *App) reviewGenerationSave() {
 				return
 			}
 			s.Generation = directory
+			if !a.finishGenerationOperation(op) {
+				return
+			}
 			s.editProfile(receipt.Result.ID, row)
 			s.Error = ""
 			s.Message = "原保存结果已核对，当前使用未改变"
@@ -393,12 +413,16 @@ func (a *App) reviewGenerationSave() {
 func (a *App) generationAction(action string) {
 	client, ok := a.accessClient()
 	s := &a.integrations
-	if !ok || s.Busy || !s.cleanSaved() {
+	if !ok || s.Busy || !s.cleanSaved() || (action != "validations" && action != "next") {
 		return
 	}
 	ref := *s.Saved
 	revision := s.Generation.Revision
 	op := integrationOperation()
+	if err := a.recordGenerationOperation(generationUIOperation{Operation: op, Kind: action, Profile: ref.ID, Revision: ref.Revision}); err != nil {
+		s.Error = "无法保存操作回执位置，本次请求尚未发送"
+		return
+	}
 	s.Busy = true
 	s.Error = ""
 	if action == "validations" {
@@ -428,9 +452,15 @@ func (a *App) generationAction(action string) {
 				s.Error = err.Error()
 				var rejected *ControlResponseError
 				if action == "next" && errors.As(err, &rejected) && rejected.Status >= 400 && rejected.Status < 500 {
+					if !a.finishGenerationOperation(op) {
+						return
+					}
 					s.NextOperation = ""
 				}
 			} else if action == "next" {
+				if !a.finishGenerationOperation(op) {
+					return
+				}
 				s.NextOperation = ""
 				s.Message = "已设为下次启动使用；当前任务保持原配置"
 			} else {
@@ -439,6 +469,9 @@ func (a *App) generationAction(action string) {
 			if action == "validations" {
 				var rejected *ControlResponseError
 				if errors.As(err, &rejected) && rejected.Status >= 400 && rejected.Status < 500 {
+					if !a.finishGenerationOperation(op) {
+						return
+					}
 					s.Validation = GenerationValidation{Status: "failed"}
 					return
 				}
@@ -476,6 +509,9 @@ func (a *App) reviewGenerationNext() {
 				return
 			}
 			s.Generation = directory
+			if !a.finishGenerationOperation(op) {
+				return
+			}
 			s.NextOperation = ""
 			s.Error = ""
 			s.Message = "原待应用设置已核对"
@@ -511,6 +547,9 @@ func (a *App) pollGenerationValidation(operation string) {
 					a.integrations.Error = "验证回执暂时不可用，请核对原验证"
 				} else {
 					a.integrations.Validation = receipt
+					if receipt.Status == "passed" || receipt.Status == "failed" {
+						a.finishGenerationOperation(operation)
+					}
 				}
 				if terminal {
 					a.RefreshIntegrations()
