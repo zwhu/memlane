@@ -181,3 +181,15 @@ MA05／MA04继续以原隔离库和两独立主体验收。部署的pi／TraeX h
 最新隔离dev launcher为29176工具句柄（owner77579）；Native为1277工具句柄。原48466／64706等均已正常dev停止并确认，401端点2336为有意SIGTERM后退出，非产品验收失败。`.local/multi-agent-native-20261114`保存一份最新调试窗口资源供剩余Native场景，`.local/multi-agent-coding-e2e-20261114`继续保留原官方库、认证和合成repo；日常runtime、原Agent配置及其他窗口未改。后续读取owner实况，不仅凭此处PID判断存活。
 
 按首批完整功能与验收口径约80%（比检查点十增加约4个百分点）。仍需原Codex CLI／Desktop、Native批量／未知操作／项目checkbox、403待发补交、通用知识优先、Claude／Cursor及其余Provider实链；第二批边界保持单列，目标未完成。未使用重置卡。
+
+## 开发检查点十二
+
+独立Native连接页完成Codex准备与激活，使用新官方子主体、隔离profile及原合成项目dataset，pi／TraeX状态保留。正常CLI首次信任、插件信任经宿主界面操作，没有绕过；真正首个提示触发SessionStart并绑定原项目。新会话自动获得1886字符既有知识，不使用任何工具即正确回答此前pi／TraeX生成的默认值、零值、负数、测试数和命令，补充跨Agent采用证据。随后正常编码增加retry_indices及三项测试，官方记录两轮问答、五条工具trace，完整13项测试通过。[脱敏回执](evidence/multi-agent-development-20261114/real-codex-checkpoint.json)。
+
+原始前端为Codex0.167.2，但自有profile后台daemon实际自动更新为0.169.0，必须按混合版本记录，不声称纯0.167.2基线通过。前端升级提示已跳过，未执行全局CLI升级；原auth与config内容摘要复核不变。中途发生后台重连，一次输入经本地队列／turn及官方问答核对确认未提交后才重新提交；后续确实观察到额度切换提示，未将其推断为前一次丢输入的已证唯一原因。保持本会话Sol模型，未使用重置卡。实测周剩余额度9%；用户授权仍严格为确认低于2%，等于2%不触发。
+
+**MA-CODEX-FACT01，累计失败1轮，尚未修复。** 官方自动完成整理并产生三条知识，其中footprint:retry-indices将函数位置写为“placed after retry_config.describe_retry”，实际retry_indices位于retry_limit之后、retry_options与describe_retry之前。原始Edit diff保留了正确插入位置，其他函数行为与13项测试事实正确；不能凭部分正确将本轮知识质量判为通过。尚未定位错误首次出现于官方候选提取、curator或writer；已读官方writer输入构造及unsupported拒绝规则，它仍属于模型判定，不能据此证明中间输入无误或认定某一阶段根因。
+
+错误知识、原库及原始私有会话保留；未人工修正文案、删错行、换简单输入或重放整理来制造通过。Codex自身新知识到新会话采用暂未验收通过。此问题是本次正常编码知识出现错误位置事实，区别于MA-KNOWLEDGE01的旧样本无accepted lessons及已停止的328字节README图谱问题；不合并计数，也不重试旧停止项。后续同一位置事实问题跨版本／模型／操作仍沿此计数。
+
+CLI正常退出不等于其后台daemon已退出。自有profile的后台与watcher进程仍有实际消费者，认证、组件和隔离库保留供剩余场景；未清理原包或日常服务依赖。整体仍约80%，本轮新增Codex采集与跨Agent采用证据，但质量缺陷及原先其他未完成项仍在，目标保持active。

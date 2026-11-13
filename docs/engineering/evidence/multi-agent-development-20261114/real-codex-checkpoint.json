@@ -1,0 +1,61 @@
+{
+  "scope": "Isolated dev Codex CLI, synthetic repository; no release",
+  "host": {
+    "frontend": "0.167.2",
+    "owned_background": "0.169.0",
+    "boundary": "Mixed versions; not pure 0.167.2 acceptance"
+  },
+  "quota": {
+    "last_observed_weekly_remaining_percent": 9,
+    "reset_card_used": false,
+    "authorized_condition": "verified remaining <2%; equality excluded"
+  },
+  "preservation": {
+    "original_auth_unchanged": true,
+    "original_config_unchanged": true
+  },
+  "coding": {
+    "qa_turns": 2,
+    "traces": 5,
+    "tests_passed": 13,
+    "test_command": "python -m unittest discover -v",
+    "source_functions": [
+      {
+        "line": 1,
+        "definition": "def retry_limit(value):"
+      },
+      {
+        "line": 10,
+        "definition": "def retry_indices(value):"
+      },
+      {
+        "line": 15,
+        "definition": "def retry_options(value):"
+      },
+      {
+        "line": 20,
+        "definition": "def describe_retry(value):"
+      }
+    ],
+    "source_sha256": "3f6123040021fc6aa237d20470a9ac5e4d4e7ff49ae3edef67206a2f5f4b92ef"
+  },
+  "recall": {
+    "prior_pi_traex_knowledge_adopted_without_tools": true,
+    "auto_context_chars": 1886,
+    "own_new_knowledge_fresh_session_acceptance": "not passed; quality failure pending"
+  },
+  "quality": {
+    "issue": "MA-CODEX-FACT01",
+    "failed_acceptance_rounds": 1,
+    "status": "unresolved",
+    "official_lesson_id": "ca3ba590-cebb-5c15-a0dd-0b53d305b347",
+    "state_key": "footprint:retry-indices",
+    "false_claim": "retry_indices placed after retry_config.describe_retry",
+    "actual": "after retry_limit, before retry_options and describe_retry",
+    "captured_edit_retains_correct_position": true,
+    "cause": "Not localized between official candidate extraction, curator and writer; correct raw Edit does not prove intermediate inputs correct",
+    "failure_data_retained": true,
+    "automatic_retry_after_discovery": false
+  },
+  "resources": "Private library, own profile, Native runtime and owned daemon resources retained; CLI exit alone does not establish safe cleanup"
+}
