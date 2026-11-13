@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "goal_status": "active",
+  "goal_status": "blocked",
   "source_commit": "741886e plus current connection guard fixes",
   "checks": {
     "real-acl-matrix": {
@@ -167,5 +167,14 @@
     "synthetic_official_data_cleanup": "pending",
     "source_tests": 52,
     "release": false
+  },
+  "blocked_audit": {
+    "consecutive_goal_turns": 3,
+    "normal_desktop_user_message_observed": false,
+    "native_window_observation": "cgWindowNotFound",
+    "desktop_ui_control": "tool_denied",
+    "running_services_retained": true,
+    "no_scope_reduction": true,
+    "observed_at": 1794556182.879624
   }
 }

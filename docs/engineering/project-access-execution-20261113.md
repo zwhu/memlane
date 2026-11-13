@@ -343,3 +343,14 @@ PA-A至H的主证据分别为Alpha/daily-cli真实链、Beta禁采/恢复、动�
 2. 既有真实矩阵尚未单独验证PATCH拒绝，本轮对本任务Beta合成probe466f6511-95de-4f77-8b79-e75d3254f1f3提交相同原文，none/read两种权限均直接403，最终原文摘要一致，B原覆盖完整恢复。回执 `update-denied-real.json` passed；没有触发处理或调用模型。维护权限下真实更新已由原maintenance-crud验证，不重复做。
 
 删除了实际安装器的自有无登录合成fixture目录connection-installer：191文件、逻辑3771707字节／分配4169728字节。删除前确认实际runtime/registry无引用、进程参数无引用；保留原小型通过回执，没有删除当前日常marketplace/cache或任何原库。A/B官方主体、其余合成组和被引用材料仍保留，最终白名单清理尚待收口。
+
+
+## 阻塞审计与运行保留
+
+连续三轮均遇到同一外部前置：普通Desktop用户消息尚未发送，CUA不允许操作Codex窗口，且Memlane窗口观察持续cgWindowNotFound／browser access host unavailable。第一轮已完成实际日常CLI及源码守卫并请求手动发送；第二轮完成已有组ACL导入、PATCH拒绝和安全临时fixture清理，前置仍未发生；本轮重新读取附件、查最近12个线程及窗口观察服务，仍只有CLI测试和委派任务，没有新的daily-cli普通用户对话。不是将无答复当成已发送，也不以后台ready冒充验证通过。
+
+当前可独立完成的必要接口检查、证据审计与安全清理已完成。最终普通Desktop QA、受影响Native交互／窗口观察及相应收口仍依赖用户动作／观察服务恢复；不会为保持active而重复模型、索引、接口绿例或盲重载。按Goal阻塞门槛标记blocked，不标记complete，不缩减PA01–PA14／PA-A–H。
+
+运行保留：已核对launcher39752启动时间15:11:12及原配置，phase=ready，completion39754、official39763、control40046；它们和当前日常受管连接保持，不因Goal等待而停止。最后状态守卫源码已提交并通过检查，运行加载仍按待办保留，普通Desktop验证完成后再集中处理。当前实际库、owner身份、登录、旧材料及仍被验证引用的A/B安装／合成组继续保护；不在验收前清空这些依赖。工作树内design-catalog及visual-refinement-selection等非本任务改动未提交或修改。
+
+恢复入口：用户在daily-cli项目的Codex桌面普通新对话发送只读slug提示并回报已发送后，读取该原线程与官方session，不创建替代任务或重投原提示；观察工具恢复后继续Native待验。复核原任务终态、加载最后守卫、白名单收尾、更新完整交付及资源交接后，才再执行完成审计。
