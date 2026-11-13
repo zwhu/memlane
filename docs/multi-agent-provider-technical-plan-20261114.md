@@ -108,6 +108,8 @@ capabilities() -> CapabilitySet
 
 管理 API 定为：`GET /v1/connections`、`POST /v1/connections/preview`、`POST /v1/connections/{id}/prepare|activate|review`。变更带 `expected_revision` 与 `operation_id`；复用现有鉴权和单写者，不给 Agent token 开放安装／Provider 管理。旧 `/v1/codex/*` 暂委托 Codex adapter，待 Native 及日常调用迁移后退役。
 
+实施补充：增加仅管理身份可读的 `GET /v1/connections/operations/{operation_id}`，返回原操作是否登记、原状态与原回执，不重新执行适配器。Native 在 prepare/activate 请求前，将原编号、操作类别与实例标识写入已有私有 UI 回执目录；重开后核对原回执，缺失或 unknown 继续保留，不生成新编号重发。Agent 与 Provider 的待核对项按类别分开，不相互阻塞。
+
 ### 3.2 官方插件复用与权限接入
 
 按能力登记 `explicit_memory`、`auto_capture`、`auto_recall`、`project_policy`、`code_graph`；每项附支持条件与验证状态。宿主有 MCP 不等于自动采集或自动召回；插件能采集也不等于允许借宿主模型推理。

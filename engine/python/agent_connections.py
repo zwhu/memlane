@@ -370,6 +370,14 @@ class Connections:
             rows.append(row)
         return {'revision': self.registry.state['revision'], 'connections': rows}
 
+    def operation(self, operation_id):
+        receipt = self.registry.state.get('connection_operations', {}).get(operation_id)
+        if receipt is None:
+            return {'recorded': False}
+        return {'recorded': True, 'status': receipt['status'],
+                'result': copy.deepcopy(receipt.get('result')),
+                'error_code': receipt.get('error_code')}
+
     async def perform(self, identifier, action, expected, operation_id, reviewed_sha=None):
         if not isinstance(operation_id, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', operation_id):
             raise PolicyError('invalid_operation_id')

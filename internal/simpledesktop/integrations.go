@@ -186,6 +186,19 @@ func connectionStatus(row AgentConnection) string {
 	}
 	return "尚未连接"
 }
+
+func connectionActionAllowed(row AgentConnection, action string) bool {
+	if action == "review" {
+		return row.ID != ""
+	}
+	if !row.Detected {
+		return false
+	}
+	if action == "prepare" {
+		return row.Status == "" || row.Status == "not_connected"
+	}
+	return action == "activate" && row.Status == "prepared" && row.Preview != nil && row.Preview.ProposedSHA != ""
+}
 func (a *App) RefreshIntegrations() {
 	client, ok := a.accessClient()
 	s := &a.integrations
@@ -238,8 +251,26 @@ func (a *App) connectAgents(action string, identifiers []string) {
 	if !ok || s.Busy || len(identifiers) == 0 || a.Update == nil {
 		return
 	}
+	pending, err := a.loadGenerationOperations()
+	if err != nil {
+		s.Error = "无法读取本机待核对操作，已停止发送新接入请求"
+		return
+	}
+	s.PendingOperations = pending
+	var eligible []string
+	for _, id := range identifiers {
+		if action == "review" || s.pendingConnection(id) == nil {
+			eligible = append(eligible, id)
+		}
+	}
+	if len(eligible) == 0 {
+		s.Message = "请先核对 Agent 原操作；未重新提交"
+		return
+	}
+	identifiers = eligible
 	s.Busy = true
 	s.Error = ""
+	s.Message = ""
 	stop := &atomic.Bool{}
 	s.BatchStop = stop
 	if s.ItemMessages == nil {
@@ -264,8 +295,14 @@ func (a *App) connectAgents(action string, identifiers []string) {
 			if err == nil && target == nil {
 				err = fmt.Errorf("Agent 接入配置已变化，请重新读取")
 			}
+			if err == nil && !connectionActionAllowed(*target, action) {
+				cancel()
+				continue
+			}
+			op := ""
 			if err == nil {
-				payload := map[string]any{"expected_revision": current.Revision, "operation_id": integrationOperation()}
+				op = integrationOperation()
+				payload := map[string]any{"expected_revision": current.Revision, "operation_id": op}
 				if action == "activate" {
 					if target.Preview == nil || target.Status != "prepared" {
 						cancel()
@@ -273,11 +310,27 @@ func (a *App) connectAgents(action string, identifiers []string) {
 					}
 					payload["proposed_sha256"] = target.Preview.ProposedSHA
 				}
+				if action != "review" {
+					recorded := make(chan error, 1)
+					a.Update(func() {
+						recorded <- a.recordGenerationOperation(generationUIOperation{Operation: op, Kind: "connection_" + action, Profile: id})
+					})
+					select {
+					case err = <-recorded:
+					case <-ctx.Done():
+						err = ctx.Err()
+					}
+				}
 				var result struct {
 					Revision   int64           `json:"revision"`
 					Connection AgentConnection `json:"connection"`
 				}
-				err = client.request(ctx, "POST", "/v1/connections/"+url.PathEscape(id)+"/"+action, payload, &result)
+				if err == nil {
+					err = client.request(ctx, "POST", "/v1/connections/"+url.PathEscape(id)+"/"+action, payload, &result)
+					if err == nil && result.Connection.ID != id {
+						err = fmt.Errorf("Agent 原操作回执未确认，请核对")
+					}
+				}
 			}
 			var directory ConnectionsDirectory
 			readErr := client.request(ctx, "GET", "/v1/connections", nil, &directory)
@@ -289,6 +342,9 @@ func (a *App) connectAgents(action string, identifiers []string) {
 				if err != nil {
 					s.ItemMessages[id] = err.Error()
 				} else {
+					if action != "review" {
+						a.finishGenerationOperation(op)
+					}
 					s.ItemMessages[id] = "操作完成；采集和召回仍以实际新会话为准"
 				}
 			})

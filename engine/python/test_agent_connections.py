@@ -104,12 +104,45 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         second = await connections.perform(self.adapter.id, 'prepare', 0, 'prepare-one')
         self.assertEqual(first, second)
         self.assertEqual(self.registry.state['revision'], first['revision'])
+        before = self.registry.path.read_bytes()
+        self.assertEqual(connections.operation('prepare-one'), {'recorded': True, 'status': 'complete', 'result': first, 'error_code': None})
+        self.assertEqual(connections.operation('not-registered'), {'recorded': False})
+        self.assertEqual(self.registry.path.read_bytes(), before, 'reading original receipt changed registry')
+        receipt = connections.operation('prepare-one')
+        receipt['result']['connection']['status'] = 'tampered-copy'
+        self.assertEqual(connections.operation('prepare-one')['result'], first)
         with self.assertRaisesRegex(PolicyError, 'operation_id_conflict'):
             await connections.perform(self.adapter.id, 'activate', first['revision'], 'prepare-one', 'wrong')
         self.registry.state['connection_operations']['unknown'] = {
             'signature': sha(json.dumps([self.adapter.id, 'activate', 'digest']).encode()), 'status': 'unknown'}
         with self.assertRaisesRegex(PolicyError, 'connection_operation_requires_review'):
             await connections.perform(self.adapter.id, 'activate', first['revision'], 'unknown', 'digest')
+        self.assertEqual(connections.operation('unknown')['status'], 'unknown')
+
+    async def test_original_connection_receipt_http_is_management_only_and_read_only(self):
+        from aiohttp.test_utils import TestClient, TestServer
+        from project_control_server import create_app
+        config = {**self.config, 'agent_hosts': {'pi': {'profile': str(self.profile), 'executable': sys.executable}}}
+        self.registry.state['connection_operations'] = {'prior-operation': {'status': 'unknown', 'signature': 'private-internal'}}
+        self.registry.save()
+        before = self.registry.path.read_bytes()
+        client = TestClient(TestServer(create_app(self.registry, 'm'*40, {'a': 'a'*40}, codex_config=config)))
+        await client.start_server()
+        try:
+            path = '/v1/connections/operations/prior-operation'
+            self.assertEqual((await client.get(path)).status, 401)
+            self.assertEqual((await client.get(path, headers={'Authorization': 'Bearer '+'a'*40})).status, 403)
+            response = await client.get(path, headers={'Authorization': 'Bearer '+'m'*40})
+            self.assertEqual(response.status, 200)
+            data = await response.json()
+            self.assertTrue(data['recorded'])
+            self.assertEqual(data['status'], 'unknown')
+            self.assertNotIn('private-internal', json.dumps(data))
+            response = await client.get('/v1/connections/operations/absent', headers={'Authorization': 'Bearer '+'m'*40})
+            self.assertEqual(await response.json(), {'recorded': False})
+            self.assertEqual(self.registry.path.read_bytes(), before)
+        finally:
+            await client.close()
 
     async def test_codex_discovery_is_independent_of_provider_bridge_login_and_does_not_write_profile(self):
         from project_codex_connection import CodexConnection

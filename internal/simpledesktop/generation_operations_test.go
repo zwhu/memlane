@@ -156,6 +156,25 @@ func TestGenerationOperationJournalRejectsDuplicateAndDamagedMetadata(t *testing
 	}
 }
 
+func TestConnectionAndProviderPendingOperationsRemainIndependent(t *testing.T) {
+	a := New(Config{GenerationFile: filepath.Join(t.TempDir(), "generation.json")}, nil)
+	if err := a.recordGenerationOperation(generationUIOperation{Operation: "ui-agent", Kind: "connection_prepare", Profile: "same-id"}); err != nil {
+		t.Fatal(err)
+	}
+	if a.integrations.pendingGenerationProfile("same-id") || a.integrations.hasPendingGeneration() {
+		t.Fatal("Agent pending operation blocked provider configuration")
+	}
+	if err := a.recordGenerationOperation(generationUIOperation{Operation: "ui-provider", Kind: "save", Profile: "same-id"}); err != nil {
+		t.Fatal("Provider blocked by unrelated Agent receipt", err)
+	}
+	if a.integrations.pendingConnection("same-id") == nil || !a.integrations.pendingGenerationProfile("same-id") {
+		t.Fatal("shared journal lost distinct pending operations")
+	}
+	if err := a.recordGenerationOperation(generationUIOperation{Operation: "ui-agent-again", Kind: "connection_activate", Profile: "same-id"}); err == nil {
+		t.Fatal("unknown Agent operation implicitly replaced")
+	}
+}
+
 func TestGenerationOperationRecoveryProcess(t *testing.T) {
 	if file := os.Getenv("MEMLANE_TEST_GENERATION_JOURNAL"); file != "" {
 		rows, err := New(Config{GenerationFile: file}, nil).loadGenerationOperations()

@@ -1,0 +1,63 @@
+{
+  "scope": "Actual1200x820 Native with production controller/Registry/GenerationStore and real immutable filesystem preparation; synthetic principals/keys/service, no host activation or model calls",
+  "issue": "MA-UI-CONNECT-UNKNOWN01",
+  "failed_acceptance_rounds": 1,
+  "initial_reproduction": "Unknown preparation HTTP503 lost the original operation on new App construction",
+  "fix": "Reuse existing metadata-only0700/0600 UI receipt journal; durable original ID before prepare/activate; GET original receipt; missing/unknown stays pending, no resubmit; provider/agent categories independent",
+  "native_valid_home_case": {
+    "multi_select": [
+      "pi",
+      "traex",
+      "claude_code"
+    ],
+    "prepare_success_reply_dropped": "pi",
+    "cancel_after_current_item": "traex",
+    "claude_initially_not_started": true,
+    "prepare_requests_before_reopen": 2,
+    "prepare_requests_after_original_receipt_review": 2,
+    "last_prepare_only": "claude_code",
+    "final_prepare_requests": 3,
+    "final_pending_local_operations": 0,
+    "all_three_artifacts_verified": true,
+    "host_activations": 0,
+    "model_calls": 0
+  },
+  "fixture_failure": {
+    "rounds": 1,
+    "reason": "First synthetic fixture omitted the absolute existing host HOME directory; both prepare calls rejected absolute_host_home_required before installation",
+    "retained_original_unknown_operations": 2,
+    "third_item_skipped_after_cancel": true,
+    "not_counted_as_product_failure": true,
+    "data_retained": true
+  },
+  "go_full_before_final_extra_tests_seconds": 2.327,
+  "go_vet_exit": 0,
+  "final_directed_race_seconds": 2.007,
+  "backend_prior_tests": 27,
+  "backend_prior_seconds": 6.042,
+  "new_manager_only_http_receipt_test": {
+    "tests": 1,
+    "seconds": 0.711,
+    "exit": 0
+  },
+  "screenshots": "Actual CUA screenshot+AX observed in this conversation; no repository PNG exported",
+  "codex_fact_issue": "MA-CODEX-FACT01 remains unresolved at one failed round; no engine/source/artifact edits or model reruns for that issue",
+  "reset_card_used": false,
+  "final_go_full_seconds": 2.783,
+  "live_original_control_api": {
+    "statuses_no_auth_child_manager": [
+      401,
+      403,
+      200
+    ],
+    "original_receipt": "complete",
+    "registry_unchanged_across_restart_and_read": true
+  },
+  "cleanup": {
+    "completed_fixture_process_absent": true,
+    "completed_fixture_generated_artifacts_removed": true,
+    "bytes_removed": 4730361,
+    "original_initial_unknown_fixture_retained": true,
+    "normal_isolated_runtime_restored": true
+  }
+}

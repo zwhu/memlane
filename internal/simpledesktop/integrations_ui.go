@@ -22,9 +22,8 @@ func (a *App) agentConnectionSettings(c *ui.Context) {
 		ui.Column(c.Key("agent-connection-"+row.ID)).FillWidth().Gap(8).Padding(14).Border(1, homeBorder).Radius(8).Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
 				selected := s.Selected[row.ID]
-				configured := row.Status == "configured_pending_new_session"
-				missing := !row.Detected
-				ui.Checkbox(c.Key("select-agent-"+row.ID), &selected, connectionName(row.Kind)).Disabled(s.Busy || configured || missing).OnChange(func() { s.Selected[row.ID] = selected })
+				allowed := connectionActionAllowed(row, "prepare") || connectionActionAllowed(row, "activate")
+				ui.Checkbox(c.Key("select-agent-"+row.ID), &selected, connectionName(row.Kind)).Disabled(s.Busy || !allowed || s.pendingConnection(row.ID) != nil).OnChange(func() { s.Selected[row.ID] = selected })
 				ui.Spacer(c)
 				homeText(c, connectionStatus(row), homeMeta)
 			})
@@ -45,16 +44,27 @@ func (a *App) agentConnectionSettings(c *ui.Context) {
 			}
 		})
 	}
+	for _, pending := range s.PendingOperations {
+		if !pending.connection() {
+			continue
+		}
+		o := pending
+		name := "Agent"
+		for _, row := range s.Connections.Connections {
+			if row.ID == o.Profile {
+				name = connectionName(row.Kind)
+				break
+			}
+		}
+		ui.Row(c.Key("pending-connection-" + o.Operation)).Gap(12).Children(func() {
+			homeText(c, name+" 接入结果待核对", homeMeta).Grow(1)
+			ui.Button(c, "核对 Agent 原操作").Label("核对 Agent 原操作：" + o.Operation).Disabled(s.Busy).OnClick(func() { a.reviewConnectionOperation(o) })
+		})
+	}
 	selected := func(action string) []string {
 		var ids []string
 		for _, row := range s.Connections.Connections {
-			if !s.Selected[row.ID] || row.Status == "configured_pending_new_session" {
-				continue
-			}
-			if action == "activate" && row.Status != "prepared" {
-				continue
-			}
-			if action == "prepare" && (row.Status == "prepared" || row.Status == "activation_unknown" || row.Status == "preparation_unknown") {
+			if !s.Selected[row.ID] || !connectionActionAllowed(row, action) || s.pendingConnection(row.ID) != nil {
 				continue
 			}
 			ids = append(ids, row.ID)
@@ -103,9 +113,12 @@ func (a *App) generationSettings(c *ui.Context) {
 		commonButton(c, "读取知识处理配置", false, a.RefreshIntegrations)
 		return
 	}
-	if len(s.PendingOperations) > 0 {
+	if s.hasPendingGeneration() {
 		settingsCard(c, "待核对操作", "重开应用后保留原操作；核对只读取回执，不重新提交请求。", func() {
 			for _, pending := range s.PendingOperations {
+				if pending.connection() {
+					continue
+				}
 				o := pending
 				label := map[string]string{"save": "保存配置", "next": "下次启动设置", "validations": "模型验证"}[o.Kind]
 				ui.Row(c.Key("pending-generation-" + o.Operation)).Gap(12).Children(func() {

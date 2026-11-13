@@ -22,7 +22,30 @@ var generationOperationID = regexp.MustCompile(`^ui-[A-Za-z0-9_-]{1,61}$`)
 
 func (o generationUIOperation) valid() bool {
 	return generationOperationID.MatchString(o.Operation) && o.Profile != "" &&
-		(o.Kind == "save" || o.Kind == "next" || o.Kind == "validations")
+		(o.Kind == "save" || o.Kind == "next" || o.Kind == "validations" || o.connection())
+}
+
+func (o generationUIOperation) connection() bool {
+	return o.Kind == "connection_prepare" || o.Kind == "connection_activate"
+}
+
+func (s *integrationState) pendingConnection(id string) *generationUIOperation {
+	for _, o := range s.PendingOperations {
+		if o.connection() && o.Profile == id {
+			value := o
+			return &value
+		}
+	}
+	return nil
+}
+
+func (s *integrationState) hasPendingGeneration() bool {
+	for _, o := range s.PendingOperations {
+		if !o.connection() {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) generationOperationsDir() string {
@@ -72,7 +95,7 @@ func lockGenerationOperations(root string) (*os.File, error) {
 
 func (s *integrationState) pendingGenerationProfile(id string) bool {
 	for _, o := range s.PendingOperations {
-		if o.Profile == id {
+		if !o.connection() && o.Profile == id {
 			return true
 		}
 	}
@@ -100,8 +123,10 @@ func (a *App) recordGenerationOperation(o generationUIOperation) error {
 		return err
 	}
 	a.integrations.PendingOperations = pending
-	if a.integrations.pendingGenerationProfile(o.Profile) {
-		return errors.New("review the original generation operation first")
+	for _, pending := range a.integrations.PendingOperations {
+		if pending.Profile == o.Profile && pending.connection() == o.connection() {
+			return errors.New("review the original operation first")
+		}
 	}
 	f, err := os.OpenFile(filepath.Join(root, o.Operation+".json"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {

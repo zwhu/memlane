@@ -194,6 +194,8 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
         manager(request)
         if connections is None:
             raise PolicyError('connection_hosts_not_configured', 503)
+        if request.method == 'GET' and 'operation_id' in request.match_info:
+            return web.json_response(connections.operation(request.match_info['operation_id']))
         if request.method == 'GET':
             return web.json_response(connections.view())
         preview = request.path == '/v1/connections/preview'
@@ -249,6 +251,7 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                     web.post('/v1/codex/prepare', codex_connection), web.post('/v1/codex/activate', codex_connection),
                     web.post('/v1/codex/review', codex_connection)])
     app.add_routes([web.get('/v1/connections', generic_connections),
+                    web.get('/v1/connections/operations/{operation_id}', generic_connections),
                     web.post('/v1/connections/preview', generic_connections),
                     web.post('/v1/connections/{id}/{action:prepare|activate|review}', generic_connections)])
     app.add_routes([web.get('/v1/generation', generation_config),

@@ -200,3 +200,215 @@ func TestIntegrationRecoveryActionsRemainVisibleWithoutAnOpenEditor(t *testing.T
 		t.Fatal("recovery depended on an open editor")
 	}
 }
+
+func TestConnectionUnknownMutationSurvivesReopenAndDoesNotResubmit(t *testing.T) {
+	for _, action := range []string{"prepare", "activate"} {
+		t.Run(action, func(t *testing.T) {
+			root := t.TempDir()
+			token := filepath.Join(root, "manager.token")
+			if err := os.WriteFile(token, []byte(strings.Repeat("x", 40)), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var mutations atomic.Int32
+			var receiptReady atomic.Bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == "POST" {
+					mutations.Add(1)
+					pending, err := New(Config{ProjectControl: &ProjectControlConfig{ManagementTokenFile: token}}, nil).loadGenerationOperations()
+					var payload map[string]any
+					json.NewDecoder(r.Body).Decode(&payload)
+					if err != nil || len(pending) != 1 || pending[0].Kind != "connection_"+action || pending[0].Operation != payload["operation_id"] {
+						t.Error("installation preceded durable original operation", pending, err)
+					}
+					w.WriteHeader(503)
+					w.Write([]byte(`{"error":"unconfirmed"}`))
+					return
+				}
+				if strings.HasPrefix(r.URL.Path, "/v1/connections/operations/") {
+					if receiptReady.Load() {
+						w.Write([]byte(`{"recorded":true,"status":"complete","result":{"connection":{"instance_id":"pi-test","status":"prepared"}}}`))
+					} else {
+						w.Write([]byte(`{"recorded":false}`))
+					}
+					return
+				}
+				status := "not_connected"
+				if action == "activate" {
+					status = "prepared"
+				}
+				json.NewEncoder(w).Encode(ConnectionsDirectory{Revision: 1, Connections: []AgentConnection{{ID: "pi-test", Kind: "pi", Detected: true, Status: status, Preview: &CodexConnectionPreview{ProposedSHA: "reviewed"}}}})
+			}))
+			defer server.Close()
+			config := Config{ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}}
+			a := New(config, nil)
+			updates := make(chan func(), 16)
+			a.Update = func(fn func()) { updates <- fn }
+			a.connectAgents(action, []string{"pi-test"})
+			deadline := time.After(5 * time.Second)
+			for a.integrations.Busy {
+				select {
+				case fn := <-updates:
+					fn()
+				case <-deadline:
+					t.Fatal("connection did not finish")
+				}
+			}
+			reopened := New(config, nil)
+			pending, err := reopened.loadGenerationOperations()
+			if err != nil || len(pending) != 1 {
+				t.Fatalf("unknown connection operation lost on reopen: %v %v", pending, err)
+			}
+			reopened.integrations.PendingOperations = pending
+			reopened.Update = a.Update
+			reopened.connectAgents(action, []string{"pi-test"})
+			if reopened.integrations.Busy || mutations.Load() != 1 {
+				t.Fatal("unknown connection mutation resubmitted")
+			}
+			for _, ready := range []bool{false, true} {
+				receiptReady.Store(ready)
+				reopened.reviewConnectionOperation(pending[0])
+				deadline = time.After(5 * time.Second)
+				for reopened.integrations.Busy {
+					select {
+					case fn := <-updates:
+						fn()
+					case <-deadline:
+						t.Fatal("receipt review did not finish")
+					}
+				}
+				remaining, err := reopened.loadGenerationOperations()
+				if err != nil || (len(remaining) == 0) != ready {
+					t.Fatalf("incorrect review outcome: %v %v", remaining, err)
+				}
+				if mutations.Load() != 1 {
+					t.Fatal("receipt review repeated installation")
+				}
+			}
+		})
+	}
+}
+
+func TestConnectionBatchCancellationPreservesFirstSuccessAndSkipsRemaining(t *testing.T) {
+	root := t.TempDir()
+	token := filepath.Join(root, "manager.token")
+	if err := os.WriteFile(token, []byte(strings.Repeat("x", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	var released atomic.Bool
+	defer func() {
+		if released.CompareAndSwap(false, true) {
+			close(release)
+		}
+	}()
+	var mutations atomic.Int32
+	var prepared atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			if mutations.Add(1) != 1 {
+				t.Error("second batch item started after cancellation")
+			}
+			close(started)
+			<-release
+			prepared.Store(true)
+			w.Write([]byte(`{"revision":2,"connection":{"instance_id":"pi-first","kind":"pi","detected":true,"status":"prepared","preview":{"proposed_sha256":"reviewed"}}}`))
+			return
+		}
+		status := "not_connected"
+		if prepared.Load() {
+			status = "prepared"
+		}
+		json.NewEncoder(w).Encode(ConnectionsDirectory{Revision: 2, Connections: []AgentConnection{
+			{ID: "pi-first", Kind: "pi", Detected: true, Status: status, Preview: &CodexConnectionPreview{ProposedSHA: "reviewed"}},
+			{ID: "traex-second", Kind: "traex", Detected: true, Status: "not_connected"},
+		}})
+	}))
+	// Release the synthetic installer before waiting for server shutdown, including failures.
+	defer func() {
+		if released.CompareAndSwap(false, true) {
+			close(release)
+		}
+		server.Close()
+	}()
+	a := New(Config{ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}}, nil)
+	updates := make(chan func(), 16)
+	a.Update = func(fn func()) { updates <- fn }
+	a.connectAgents("prepare", []string{"pi-first", "traex-second"})
+	deadline := time.After(5 * time.Second)
+	waiting := true
+	for waiting {
+		select {
+		case fn := <-updates:
+			fn()
+		case <-started:
+			waiting = false
+		case <-deadline:
+			t.Fatal("first installer did not start")
+		}
+	}
+	a.integrations.BatchStop.Store(true)
+	released.Store(true)
+	close(release)
+	for a.integrations.Busy {
+		select {
+		case fn := <-updates:
+			fn()
+		case <-deadline:
+			t.Fatal("cancelled batch did not finish")
+		}
+	}
+	if mutations.Load() != 1 || len(a.integrations.Connections.Connections) != 2 || a.integrations.Connections.Connections[0].Status != "prepared" {
+		t.Fatal("cancellation lost successful item or started remaining item")
+	}
+	if pending, err := a.loadGenerationOperations(); err != nil || len(pending) != 0 {
+		t.Fatalf("successful original receipt not cleared: %v %v", pending, err)
+	}
+}
+
+func TestConnectionBatchRechecksEligibilityFromServerBeforeMutation(t *testing.T) {
+	root := t.TempDir()
+	token := filepath.Join(root, "manager.token")
+	if err := os.WriteFile(token, []byte(strings.Repeat("x", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var mutations atomic.Int32
+	rows := []AgentConnection{
+		{ID: "missing", Kind: "cursor", Status: "not_connected"},
+		{ID: "connected", Kind: "pi", Detected: true, Status: "configured_pending_new_session"},
+		{ID: "conflict", Kind: "traex", Detected: true, Status: "requires_review"},
+		{ID: "staging", Kind: "codex", Detected: true, Status: "staging_unknown"},
+		{ID: "identity", Kind: "claude_code", Detected: true, Status: "agent_creation_unconfirmed"},
+		{ID: "prepared", Kind: "pi", Detected: true, Status: "prepared", Preview: &CodexConnectionPreview{ProposedSHA: "reviewed"}},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			mutations.Add(1)
+			t.Error("stale ineligible batch selection mutated host")
+		}
+		json.NewEncoder(w).Encode(ConnectionsDirectory{Revision: 1, Connections: rows})
+	}))
+	defer server.Close()
+	a := New(Config{ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}}, nil)
+	updates := make(chan func(), 16)
+	a.Update = func(fn func()) { updates <- fn }
+	var ids []string
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	a.connectAgents("prepare", ids)
+	deadline := time.After(5 * time.Second)
+	for a.integrations.Busy {
+		select {
+		case fn := <-updates:
+			fn()
+		case <-deadline:
+			t.Fatal("batch did not finish")
+		}
+	}
+	if mutations.Load() != 0 {
+		t.Fatal("ineligible item submitted")
+	}
+	if !connectionActionAllowed(rows[5], "activate") {
+		t.Fatal("prepared item cannot be explicitly activated")
+	}
+}
