@@ -16,6 +16,12 @@ from official_service_dev import verify_source
 async def probe(config):
     source = verify_source(config)
     sys.path.insert(0, str(source))
+    if config.get('generation_mode') == 'agent_bridge':
+        # Only the local bridge enforces this contract itself. Never advertise
+        # native schema capability for an arbitrary API provider/model.
+        import litellm
+        litellm.register_model({os.environ['LLM_MODEL']: {'supports_response_schema': True,
+                              'supports_function_calling': False, 'litellm_provider': 'openai', 'mode': 'chat'}})
     from pydantic import BaseModel, ConfigDict
     from cognee.infrastructure.llm.structured_output_framework.litellm_native.get_native_client import get_native_client
 
@@ -32,7 +38,7 @@ async def probe(config):
         source: str
 
     client = get_native_client()
-    plain = await client.acreate_structured_output('Return exactly MEMLANE-PROBE-OK.', 'Follow the instruction exactly.', str)
+    plain = await client.acreate_structured_output('Return exactly the text after the colon, with no quotes, punctuation, or extra characters: MEMLANE-PROBE-OK', 'Follow the instruction exactly.', str)
     plain_ok = isinstance(plain, str) and plain.strip() == 'MEMLANE-PROBE-OK'
     result = await client.acreate_structured_output(
         'Synthetic facts: project name is 样例项目. Rules in order: pnpm, TypeScript. '
@@ -44,7 +50,7 @@ async def probe(config):
     quality_ok = schema_ok and result.model_dump() == expected
     return {'status': 'passed' if plain_ok and schema_ok and quality_ok else 'failed',
             'plain_passed': plain_ok, 'schema_passed': schema_ok, 'quality_passed': quality_ok,
-            'structured_mode': 'unknown', 'sample_version': 'nested-unicode-null-1',
+            'structured_mode': 'unknown', 'sample_version': 'nested-unicode-null-2',
             'boundary': 'official_adapter_synthetic_extraction'}
 
 

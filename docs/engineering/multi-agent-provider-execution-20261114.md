@@ -109,3 +109,19 @@ pi普通CLI链开始真实验收，当前MA08仍未通过。第一轮发现MA-TR
 [检查证据](evidence/multi-agent-development-20261114/ui-operation-recovery.json)：保存、next、验证三条“503未知→重开→GET原回执”连续检查通过；独立测试进程从磁盘读到原操作；覆盖请求前日志已存在、记录不含密钥／正文、同配置防重、其他配置继续、非私有／损坏记录门禁。1200×820组件检查确认编辑器未打开时仍有核对入口，不作为实际Native窗口证据。Generation／Integration定向检查、对应race、全量Go测试及vet退出0；最后新增纯UI恢复入口断言后再次通过定向检查。没有调用模型、启停日常服务、写用户Agent配置或构建release包。
 
 整体估算约60%（增加约5个百分点）。此项源码和跨进程／HTTP检查已补齐，最终Native连续验收仍待做。下一步补API模式下Codex桥验证的独立受管端点生命周期，再处理真实知识质量／宿主与Provider矩阵。MA-TRACE01、MA-KNOWLEDGE01和旧停止项计数不变；目标仍未完成。
+
+## 开发检查点七
+
+已补API模式下Codex桥候选验证：`generation_bridge.py`在管理进程中为一次验证建立独立回环端口、私有令牌、单请求槽位，复用原completion执行／严格Schema／隔离auth home逻辑；不依赖当前completion URL或token，不修改当前API环境。缺少Codex登录／私有认证文件时，在登记模型操作前明确409拒绝，避免把已知前置失败留下为未知请求。
+
+验证所有者同时管理独立探针和app-server进程组；创建／确认退出写小型回执。取消先停探针再关闭自身端点，等待各请求清理并核对已拥有的组。清理未知则保留临时工作区和凭据副本、标记unknown、阻止下一个验证；旧未知组存在或内核状态不可读时，不信号旧PID、不宣称本机已退出。公共`process_groups.py`沿用macOS EPERM后核对内核组表的方法。原普通endpoint仍复用既有执行和工具隔离，未重装日常Codex、升级组件或恢复旧helper停止项。
+
+6项新生命周期检查使用真实本机HTTP＋合成stdio：API配置无completion URL的成功链、取消探针和独立app-server、缺登录拒绝、旧未知组防重、不可读组状态、清理未知保留与门禁。另有endpoint工作区清理失败保留auth副本的断言；测试安全收尾确认仅其自己创建的合成进程退出后删除材料。全量Python后端103项、启动器14项通过；其中generation相关23项、endpoint14项，均不作为真实模型证据。
+
+真实模型另验：使用现有Codex gpt-6.1-sol认证、固定官方native adapter和合成样本，在独立配置账本里模拟当前API配置；没有启动另一个API内容服务或变更日常模型。首轮普通精确文本失败，诊断轮观察到样本指令自带句号，第三次修正指令后完整普通文本、嵌套中文／null／数组Schema和精确事实通过（20.505秒）。原API引用不变，完成后bridge组为空、探针实际组不存在、资源全部释放。[脱敏证据](evidence/multi-agent-development-20261114/bridge-lifecycle-checkpoint.json)。MA-FIXTURE-PLAIN01按方法问题记2轮失败，[记录](generation-plain-probe-fixture-20261114.md)保留原结果；旧E09和其他产品计数不变。此结果仍只覆盖该模型及固定样本，不替代真实知识质量或全部协议矩阵；模式仍unknown，不宣称远端严格原生Schema。
+
+真实探针／诊断及所有检查终端已退出。检查两轮探针实际PGID不存在、本轮根路径无存活进程后，清理临时脚本、合成配置及令牌，仅留本机小型失败回执；不清理其他运行依赖。未做release或Native重验，Go源码本轮未改。
+
+外部前置现状：常用环境及pi／Claude已检查入口没有OpenAI、Anthropic、Gemini API配置，不代表全盘不存在；Cursor常用CLI与两个App目录未检测到安装。已异步询问用户私有配置路径／可用入口，不请求聊天粘贴密钥，同时继续独立工作。TraeX正常`login status`返回已登录标记，只证明登录前置，不证明hook真链或允许绕过信任。
+
+整体估算约65%（增加约5个百分点）。桥候选验证生命周期源码与上述证据已补齐；后续优先pi／TraeX普通编码材料→官方知识→新会话采用，补宿主采集上下文与知识质量的证据，其他Agent／Provider、权限、Native和启动恢复矩阵仍按原范围完成。外部前置尚未阻断所有工作，目标保持进行中。

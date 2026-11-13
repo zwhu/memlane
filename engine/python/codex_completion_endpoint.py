@@ -3,17 +3,20 @@
 import argparse
 import asyncio
 import copy
+from contextlib import contextmanager
 import hmac
 import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import tempfile
 import time
 import uuid
 
 from aiohttp import web
 from jsonschema import validators
+from process_groups import group_exists
 
 MAX_BODY = 2 * 1024 * 1024
 PROFILE = 'memlane_completion'
@@ -194,15 +197,16 @@ async def terminate(process):
             os.killpg(process.pid, sig)
         except ProcessLookupError:
             pass
+        except PermissionError:
+            if group_exists(process.pid):
+                raise
         try:
             await asyncio.wait_for(process.wait(), seconds)
         except asyncio.TimeoutError:
             pass
         deadline = asyncio.get_running_loop().time() + seconds
         while asyncio.get_running_loop().time() < deadline:
-            try:
-                os.killpg(process.pid, 0)
-            except ProcessLookupError:
+            if not group_exists(process.pid):
                 return
             await asyncio.sleep(.05)
     raise CompletionError('codex_process_cleanup_unknown', 503)
@@ -245,9 +249,33 @@ def record_start_failure(args, process, code, stderr):
     os.replace(temporary, directory / 'codex-start-failure.json')
 
 
+@contextmanager
+def completion_workspace(args):
+    root = Path(tempfile.mkdtemp(prefix='memlane-completion-', dir=getattr(args, 'workspace_root', None)))
+    try:
+        yield root
+    finally:
+        # A validation owner retains its auth/config/workspace if cleanup is
+        # unknown. Ordinary endpoint behavior remains independently owned.
+        if not getattr(args, 'owned_processes', None):
+            shutil.rmtree(root)
+
+
+def track_process(args, process, owned):
+    registry = getattr(args, 'owned_processes', None)
+    if registry is None:
+        return
+    if owned:
+        registry[process.pid] = process
+    else:
+        registry.pop(process.pid, None)
+    callback = getattr(args, 'ownership_changed', None)
+    if callback:
+        callback()
+
+
 async def execute(args, system, prompt, schema, transport):
-    with tempfile.TemporaryDirectory(prefix='memlane-completion-') as temporary:
-        root = Path(temporary)
+    with completion_workspace(args) as root:
         home, private, work = (root / name for name in ('home', 'codex', 'task'))
         for directory in (home, private, work):
             directory.mkdir(mode=0o700)
@@ -274,11 +302,16 @@ async def execute(args, system, prompt, schema, transport):
             process = await asyncio.shield(spawn)
         except asyncio.CancelledError:
             process = await spawn
-            await terminate(process)
+            try:
+                track_process(args, process, True)
+            finally:
+                await terminate(process)
+                track_process(args, process, False)
             raise
         stderr_task = asyncio.create_task(collect_stderr(process.stderr))
         rpc, thread_id, turn_id, failure = RPC(process), None, None, None
         try:
+            track_process(args, process, True)
             async with asyncio.timeout(args.timeout):
                 await rpc.call('initialize', {'clientInfo': {'name': 'memlane_completion', 'version': '1'}, 'capabilities': {'experimentalApi': True}})
                 await rpc.send('initialized', {}, notification=True)
@@ -359,6 +392,7 @@ async def execute(args, system, prompt, schema, transport):
             # Shield cleanup even when upstream disconnects or server shuts down.
             async def finish():
                 await terminate(process)
+                track_process(args, process, False)
                 stderr = await stderr_task
                 if failure and turn_id is None:
                     record_start_failure(args, process, failure, stderr)

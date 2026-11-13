@@ -16,14 +16,14 @@ from project_control_server import create_app
 
 class ProcessGroupTests(unittest.TestCase):
     def test_permission_denied_checks_kernel_group_table_before_claiming_exit(self):
-        with patch('generation_validation.os.killpg', side_effect=PermissionError), patch(
-                'generation_validation.subprocess.check_output', return_value='  123\n  456\n'):
+        with patch('process_groups.os.killpg', side_effect=PermissionError), patch(
+                'process_groups.subprocess.check_output', return_value='  123\n  456\n'):
             self.assertTrue(group_exists(123))
             self.assertFalse(group_exists(789))
 
     def test_unreadable_group_table_cannot_confirm_cleanup(self):
-        with patch('generation_validation.os.killpg', side_effect=PermissionError), patch(
-                'generation_validation.subprocess.check_output', side_effect=OSError):
+        with patch('process_groups.os.killpg', side_effect=PermissionError), patch(
+                'process_groups.subprocess.check_output', side_effect=OSError):
             with self.assertRaises(OSError):
                 group_exists(123)
 from project_policy import PolicyError

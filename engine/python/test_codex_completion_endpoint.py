@@ -114,6 +114,29 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(await self.run_fake('success')), {'answer':'ok'})
         self.assertEqual((self.auth/'auth.json').read_text(), '{"synthetic":true}')
 
+    async def test_validation_workspace_survives_unconfirmed_group_cleanup(self):
+        import shutil
+        self.fake('success')
+        workspace=self.root/'validation-workspaces'
+        workspace.mkdir(mode=0o700)
+        self.args.workspace_root=workspace
+        self.args.owned_processes={}
+        terminate=endpoint.terminate
+        try:
+            with patch.object(endpoint,'terminate',side_effect=endpoint.CompletionError('codex_process_cleanup_unknown',503)):
+                with self.assertRaises(endpoint.CompletionError):
+                    await endpoint.execute(self.args,'s','p',SCHEMA,endpoint.strict_schema(SCHEMA))
+            self.assertTrue(self.args.owned_processes)
+            roots=list(workspace.glob('memlane-completion-*'))
+            self.assertEqual(len(roots),1)
+            self.assertTrue((roots[0]/'codex/auth.json').exists())
+            self.assertEqual((roots[0]/'codex/auth.json').stat().st_mode&0o777,0o600)
+        finally:
+            for process in list(self.args.owned_processes.values()):
+                await terminate(process)
+                endpoint.track_process(self.args,process,False)
+            shutil.rmtree(workspace)
+
     async def test_tool_identity_and_schema_rejected(self):
         for mode, code in [('tool','codex_unexpected_tool_execution'), ('wrong-id','codex_event_identity_invalid'), ('bad-schema','codex_schema_failed')]:
             with self.subTest(mode=mode):
