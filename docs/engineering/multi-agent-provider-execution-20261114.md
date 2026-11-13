@@ -193,3 +193,28 @@ MA05／MA04继续以原隔离库和两独立主体验收。部署的pi／TraeX h
 错误知识、原库及原始私有会话保留；未人工修正文案、删错行、换简单输入或重放整理来制造通过。Codex自身新知识到新会话采用暂未验收通过。此问题是本次正常编码知识出现错误位置事实，区别于MA-KNOWLEDGE01的旧样本无accepted lessons及已停止的328字节README图谱问题；不合并计数，也不重试旧停止项。后续同一位置事实问题跨版本／模型／操作仍沿此计数。
 
 CLI正常退出不等于其后台daemon已退出。自有profile的后台与watcher进程仍有实际消费者，认证、组件和隔离库保留供剩余场景；未清理原包或日常服务依赖。整体仍约80%，本轮新增Codex采集与跨Agent采用证据，但质量缺陷及原先其他未完成项仍在，目标保持active。
+
+## 开发检查点十三（进行中）
+
+MA-CODEX-FACT01只读定位取得新证据：官方cache_session_context中的workflow_state候选已包含错误“after describe_retry”，confidence为0.9，来源指向实际编码问答。因此错误至少早于curator/writer。固定coding_unit_extraction.render_trace_input只渲染Edit.old_string/new_string，Codex实际Edit.diff未进入此紧凑输入；正确diff在原始官方trace中仍存在。此静态证据说明编辑证据缺失，尚不证明完整推理因果。官方服务仍严格校验原archive，不新增引擎补丁、不改提示词或人工知识来绕过质量验收；失败次数仍为1。
+
+MA06补齐实际官方403→恢复→明确补交流程：[脱敏证据](evidence/multi-agent-development-20261114/real-403-replay.json)。使用TraeX独立主体和第二合成项目，将已合法缓冲的QA在本地permit完成后注入真实ACL撤权竞态，内容POST确实由原官方API返回403。随后恢复原write ACL，自动drain保持0发送、1待发；用户明确replay按原signature发送1条，官方QA恰好1条，后续自动drain为0/0。全程只有两次内容POST（一次403、一次明确补交成功），未发起模型处理。属于受控真实故障注入，不冒充普通宿主自然发生的竞态。
+
+本组两个验收方法错误分别保留：首次误把registry首项当主项目，前置断言即停止；其次HTTP拦截器漏了GET的可选payload，内容POST次数0，但发送前标记已使一条合成材料呈未知。先核对官方session404，再通过产品明确discard丢弃这一条测试材料，保留错误回执后修正方法；没有重投未知材料，不计作产品403失败，不删除业务记录。
+
+源码审阅补安装器HOME归属：Claude／TraeX子进程明确使用installation.home，避免指定隔离profile时其附属状态仍继承控制进程HOME。真实Claude安装测试将ambient HOME与安装HOME分离，核对两条真实安装命令及ambient目录无写入；host plugin5项、connections8项通过。此为预防性修正，非已证用户目录被修改。
+
+DeepSeek官方[Anthropic兼容说明](https://api-docs.deepseek.com/guides/anthropic_api/)及[Claude Code接入说明](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/)提供可推进Claude宿主实链的入口。仅在本轮隔离profile，使用原DeepSeek凭据、明确固定deepseek-flash与https://api.deepseek.com/anthropic，不替代Anthropic原生服务验收，不切日常Provider或Agent账号。Claude Code2.1.96正常CLI已完成首次界面与项目信任，真实模型读源码及13项基线测试通过，新增编码任务仍在执行；尚不宣称首轮采集／知识／新会话采用通过。
+
+为加载隔离Claude profile与新版安装器，确认两个dataset均pending0后，正常停止原dev owner77579及本轮Native78646，并确认原工具29176／1277退出0。新dev owner28696、工具81878已健康启动，原库与原generation保持；Native尚未重开。后续按实时owner核对，不据旧PID清理。原Codex后台消费者与认证仍保留，未触碰日常实例。
+
+Claude真实链取得两项独立缺陷，完整宿主闭环仍未通过：[回执](evidence/multi-agent-development-20261114/real-claude-checkpoint.json)。
+
+- **MA-CLAUDE-FIRST01，失败1轮，首轮边界定向复验通过。** 第一实际任务完成retry_enabled及16项测试，但SessionStart时transcript不存在，旧适配标记paused；Stop才以全文末尾建立边界，官方session404。仅在Claude宿主补丁处理官方startup、同一UUID／profile内预期路径、初始确实不存在、目录身份及策略revision未变的首个文件，才允许从0采集。早期flush遇文件尚未出现时保留缺失回执；resume／fork／clear／compact、已有文件、权限变化或路径不符仍不回扫。官方[SessionStart定义](https://code.claude.com/docs/en/hooks#sessionstart)区分这些source；本机2.1.96普通CLI验证到startup，未借新文档推定本机其他新事件可用。修复后第二个新会话的首轮正常编码确实捕获1QA／6trace，边界size0，无旧首轮补采。
+- **MA-CLAUDE-SPOOL01，失败1轮，源码修复及定向检查通过，真实复验待做。** 上述第二任务完成last_retry_index及19项测试，但固定Claude插件强制cloud分支选择独立官方spool，而受管环境关闭其idle worker；7条材料仅入本机spool，官方仍404。源码改为受管Claude的_cloud_worker.enabled返回false，未来材料统一复用已有官方warmup buffer及PA drain；不启用缺少PA门禁的独立worker。原7条材料均attempts0、ambiguous=false、文件0600，完整保留；未迁移、补交或重放。后续真实升级必须单独验证官方入库与知识、新会话采用。
+
+同时补Claude升级保护：新代启用后只停用记录中的上一代自有插件，保留旧cache／产物；只读核对要求当前代启用且没有其他Cognee插件同时启用，部分升级或外部恢复双启用不会被核对为成功。真实CLI隔离升级验证只有一代启用，测试也覆盖再开启旧代时拒绝。原Codex固定插件manifest与官方引擎archive未改。
+
+在首轮及升级修复后，后端全量115项通过，67.271秒；随后只增Claude cloud-spool路由及异常settings类型的核对保护，并通过最终host-plugin7项，11.390秒，未重复无关检查。新增边界用例早期有两个夹具问题（合成control token太短、current stub漏位置参数），分别修正并保留本轮输出；不是生产首轮重复失败，不重置真实缺陷计数。Go源码未改，沿用检查点十一全量／vet证据。
+
+本轮Claude两个普通CLI均已通过/exit结束并确认对应工具退出0。隔离dev经正常启停加载首轮／升级修复，最新owner41651／工具97508；Native已通过新runtime路径重开，工具77122，仅是窗口启动，不算新的视觉验收。当前controller及已启用Claude插件仍是spool修复前代，下一步须正常重启控制进程并经原管理接口升级，不能声称源码修复已在该宿主生效。原Codex后台、隔离库与原认证仍保留；未启动release。首批整体估算约81%（增加约1个百分点，完成403明确补交与部分Claude实链），Codex事实质量、Claude完整闭环、Cursor、原生三类Provider、剩余Native／权限及第二批边界均保持，目标active。

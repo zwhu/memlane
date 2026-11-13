@@ -1,0 +1,56 @@
+{
+  "host": "Claude Code 2.1.96 CLI",
+  "model": "DeepSeek deepseek-flash",
+  "endpoint": "https://api.deepseek.com/anthropic",
+  "provider_boundary": "Claude host validation only; not native Anthropic provider proof",
+  "first_turn": {
+    "issue": "MA-CLAUDE-FIRST01",
+    "failed_acceptance_rounds": 1,
+    "initial_tests_passed": 16,
+    "initial_official_session_status": 404,
+    "root_cause": "SessionStart absence marked paused; first Stop advanced boundary to transcript end",
+    "source_fix": "Only native startup with same UUID/path in configured profile, observed absent file, unchanged policy revision and directory identity may start at zero; resume/fork/disable retain no-backfill behavior",
+    "retest": "First turn captured QA1 and traces6; raw boundary fixed. Official persistence separately failed."
+  },
+  "transport": {
+    "issue": "MA-CLAUDE-SPOOL01",
+    "failed_acceptance_rounds": 1,
+    "second_tests_passed": 19,
+    "captured_qa": 1,
+    "captured_traces": 6,
+    "official_session_status": 404,
+    "retained_items": 7,
+    "attempts": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "ambiguous": 0,
+    "cause": "Forced cloud selected official cloud spool while COGNEE_IDLE_DISABLED prevented its worker; managed PA drain was not used",
+    "source_fix": "Managed official cloud worker enabled() returns false; existing official warmup buffer/PA drain handles future entries",
+    "live_retest": "pending; no migration or replay of retained spool"
+  },
+  "upgrade": {
+    "live_old_generation_retained_disabled": true,
+    "live_enabled_generations": 1,
+    "new_rule": "Native read-only review rejects disabled current or multiple Cognee plugins; only previous self generation disabled on update"
+  },
+  "checks": {
+    "full_backend_before_spool_fix": {
+      "tests": 115,
+      "seconds": 67.271,
+      "exit_code": 0
+    },
+    "latest_host_plugin": {
+      "tests": 7,
+      "seconds": 11.39,
+      "exit_code": 0,
+      "scope": "after managed cloud-spool routing and malformed settings review guards; full115 preceded last host-only patches"
+    }
+  },
+  "completion": "Incomplete: transport recheck, actual knowledge, quality review and fresh-session adoption pending"
+}

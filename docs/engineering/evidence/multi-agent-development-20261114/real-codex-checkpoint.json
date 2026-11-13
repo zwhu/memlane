@@ -53,9 +53,11 @@
     "false_claim": "retry_indices placed after retry_config.describe_retry",
     "actual": "after retry_limit, before retry_options and describe_retry",
     "captured_edit_retains_correct_position": true,
-    "cause": "Not localized between official candidate extraction, curator and writer; correct raw Edit does not prove intermediate inputs correct",
+    "cause": "False location already exists in official coding candidate extraction. Static renderer ignores Edit.diff and only reads old_string/new_string, so recorded diff evidence is not rendered. Exact model causality and other intermediate inputs remain unverified.",
     "failure_data_retained": true,
-    "automatic_retry_after_discovery": false
+    "automatic_retry_after_discovery": false,
+    "earliest_observed_false_fact": "Official agent-profile workflow_state candidate, before curator/writer; candidate confidence0.9, source_qa_ids links coding turn",
+    "fixed_source_boundary": "Official source/archive integrity unchanged; no engine patch, prompt override, manual lesson correction or model retry"
   },
   "resources": "Private library, own profile, Native runtime and owned daemon resources retained; CLI exit alone does not establish safe cleanup"
 }

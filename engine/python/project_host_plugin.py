@@ -44,7 +44,8 @@ def claude_start(text, patch):
     from _memlane_policy import bind, begin_capture_boundary, NotReady
     try:
         config["dataset"] = bind(cwd, session_key)
-        begin_capture_boundary(str(payload.get("transcript_path") or ""))
+        begin_capture_boundary(str(payload.get("transcript_path") or ""),
+                               source=payload.get("source"), session_key=session_key)
     except (NotReady, OSError, ValueError):
         return {"hookSpecificOutput": {"hookEventName": "SessionStart"}}
     if payload.get("source")''')
@@ -87,6 +88,83 @@ def begin_capture_boundary(transcript):
             # The first live capture establishes its stat and skips that turn.
             state["paused"] = True
         state["host_boundary_established"] = True
+'''
+
+
+CLAUDE_FRESH_BOUNDARY = '''
+
+_existing_capture_boundary = capture_boundary
+
+
+def begin_capture_boundary(transcript, *, source=None, session_key=None):
+    """A native startup may precede creation of its own new transcript."""
+    from _plugin_common import get_session_key
+    path = Path(transcript).absolute() if transcript else None
+    fresh = None
+    if path and source == "startup" and session_key == get_session_key():
+        try:
+            if str(uuid.UUID(session_key)) != session_key:
+                raise ValueError()
+            profile = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").absolute()
+            relative = path.relative_to(profile / "projects")
+            if len(relative.parts) != 2 or path.name != session_key + ".jsonl":
+                raise ValueError()
+            if any(parent.is_symlink() for parent in (path, *path.parents)):
+                raise ValueError()
+            parent = path.parent.stat()
+            decision = current()
+            rule = decision["policy"]
+            if "write" in rule["permissions"] and rule["can_capture"]:
+                fresh = {"path": str(path), "parent_inode": parent.st_ino,
+                         "parent_device": parent.st_dev, "revision": decision["revision"],
+                         "observed_absent_at": time.time()}
+        except (ValueError, OSError, KeyError, NotReady):
+            pass
+    with _state() as state:
+        if state.get("host_boundary_established"):
+            return
+        if not path:
+            raise NotReady("host_transcript_required")
+        try:
+            state["cursor"] = _position(path)
+        except FileNotFoundError:
+            state["paused"] = True
+            if fresh:
+                state["fresh_host_transcript"] = fresh
+        state["host_boundary_established"] = True
+
+
+def capture_boundary(transcript, *, enabled=True):
+    with _state() as state:
+        fresh = state.get("fresh_host_transcript")
+    if fresh:
+        path = Path(transcript).absolute()
+        try:
+            decision = current()
+            parent = path.parent.stat()
+            stat = path.stat()
+            valid = (enabled and decision["revision"] == fresh["revision"]
+                     and "write" in decision["policy"]["permissions"]
+                     and decision["policy"]["can_capture"]
+                     and str(path) == fresh["path"]
+                     and parent.st_ino == fresh["parent_inode"]
+                     and parent.st_dev == fresh["parent_device"]
+                     and path.is_file() and not any(p.is_symlink() for p in (path, *path.parents))
+                     and getattr(stat, "st_birthtime", stat.st_ctime) >= fresh["observed_absent_at"])
+        except FileNotFoundError:
+            # SessionStart also schedules an early flush. Keep the absence
+            # receipt until this new native transcript actually exists.
+            return None
+        except (OSError, KeyError, NotReady):
+            valid = False
+        with _state() as state:
+            if state.get("fresh_host_transcript") == fresh:
+                state.pop("fresh_host_transcript", None)
+                if valid and not state.get("cursor_unconfirmed"):
+                    state.pop("paused", None)
+                    state["cursor"] = {**_position(path), "size": 0}
+                    return 0
+    return _existing_capture_boundary(transcript, enabled=enabled)
 '''
 
 
@@ -145,10 +223,18 @@ def files_for(kind, archive=None):
         if name == '_recall_http.py':
             text = text.replace('return UNREACHABLE', 'return _error(0, "managed_server_unavailable") if managed() else UNREACHABLE')
         files[path] = text.encode()
-    policy = (ENGINE / 'python/project_plugin_policy.py').read_text() + CAPTURE_BOUNDARY
+    policy = ((ENGINE / 'python/project_plugin_policy.py').read_text() + CAPTURE_BOUNDARY
+              + (CLAUDE_FRESH_BOUNDARY if kind == 'claude_code' else ''))
     policy = patch.body(policy, 'prepare_environment', '''os.environ.update(COGNEE_DISABLE_AUTO_MEMORY="false", COGNEE_UPDATE_CHECK="off", COGNEE_IDLE_DISABLED="true")''')
     files['scripts/_memlane_policy.py'] = policy.encode()
     if kind == 'claude_code':
+        # The managed path shares the official warmup buffer and its PA drain.
+        # Upstream's cloud worker has separate retry/identity semantics and is
+        # intentionally not started by our environment. Do not enqueue into it.
+        worker = 'scripts/_cloud_worker.py'
+        files[worker] = patch.body(files[worker].decode(), 'enabled', '''from _memlane_policy import managed
+if managed():
+    return False''').encode()
         for name in ('cognee_remember.py', 'cognee_search.py'):
             files['scripts/' + name] = disable_python_fallback(files['scripts/' + name].decode(), patch,
                                                               remember=name == 'cognee_remember.py').encode()

@@ -8,9 +8,11 @@ import unittest
 
 from project_control import private_write
 from project_host_plugin import files_for
+import project_host_plugin
 from project_installation import prepare
 from agent_connections import NativeConnection, verify_artifact
 from project_control import Registry
+from project_policy import PolicyError
 from unittest.mock import patch
 import shutil
 
@@ -20,7 +22,7 @@ class HostPluginTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
         private_write(self.root / 'child.key', b'synthetic-child-key')
-        private_write(self.root / 'control.key', b'synthetic-control-key')
+        private_write(self.root / 'control.key', b'synthetic-control-key-' * 3)
         self.agent = {'key_file': str(self.root / 'child.key'), 'control_token_file': str(self.root / 'control.key')}
 
     def tearDown(self):
@@ -100,6 +102,80 @@ assert cursor.take_prompt_context("host", "turn2", root) == ""
 assert cursor.read_transcript_tail("/never-read") == []
 ''')
 
+    def test_claude_fresh_start_captures_first_turn_without_replaying_existing_history(self):
+        self.isolated(self.artifact('claude_code'), r'''
+import json, os, pathlib, sys, uuid
+sys.path.insert(0, sys.argv[1])
+import _plugin_common as common
+import _memlane_policy as policy
+import _coding_memory as coding
+import _cloud_worker as cloud
+assert cloud.enabled() is False
+assert coding._cloud_spool() is False
+profile = pathlib.Path.home() / "claude-profile"
+parent = profile / "projects" / "synthetic"
+parent.mkdir(parents=True)
+os.environ["CLAUDE_CONFIG_DIR"] = str(profile)
+decision = {"revision": 7, "policy": {"permissions": ["read", "write", "delete"], "can_capture": True}}
+policy.current = lambda *args, **kwargs: decision
+session = str(uuid.uuid4())
+common.set_session_key(session)
+path = parent / (session + ".jsonl")
+policy.begin_capture_boundary(str(path), source="startup", session_key=session)
+assert not path.exists(), "the adapter must never create the host transcript"
+assert policy.capture_boundary(str(path)) is None
+rows = [{"type":"user", "uuid":"first", "message":{"content":"first new coding task"}},
+        {"type":"assistant", "uuid":"answer", "message":{"content":[{"type":"text", "text":"first new answer"}]}}]
+path.write_text(''.join(json.dumps(row) + "\n" for row in rows))
+offset = policy.capture_boundary(str(path))
+assert offset == 0
+parsed = coding.parse_claude(str(path), offset)
+assert parsed["request"] == "first new coding task" and parsed["answer"] == "first new answer"
+with policy._state() as state:
+    assert "fresh_host_transcript" not in state
+session = str(uuid.uuid4())
+common.set_session_key(session)
+existing = parent / (session + ".jsonl")
+existing.write_text(''.join(json.dumps(row) + "\n" for row in rows))
+boundary = existing.stat().st_size
+policy.begin_capture_boundary(str(existing), source="startup", session_key=session)
+assert policy.capture_boundary(str(existing)) == boundary
+assert coding.parse_claude(str(existing), boundary).get("request", "") == ""
+''')
+
+    def test_claude_absent_resume_changed_policy_and_wrong_path_skip_first_turn(self):
+        self.isolated(self.artifact('claude_code'), r'''
+import os, pathlib, sys, uuid
+sys.path.insert(0, sys.argv[1])
+import _plugin_common as common
+import _memlane_policy as policy
+profile = pathlib.Path.home() / "claude-profile"
+parent = profile / "projects" / "synthetic"
+parent.mkdir(parents=True)
+os.environ["CLAUDE_CONFIG_DIR"] = str(profile)
+decision = {"revision": 7, "policy": {"permissions": ["read", "write"], "can_capture": True}}
+policy.current = lambda *args, **kwargs: decision
+for source in ("resume", "fork", "clear", "compact", "startup"):
+    session = str(uuid.uuid4())
+    common.set_session_key(session)
+    path = parent / (session + ".jsonl")
+    policy.begin_capture_boundary(str(path), source=source, session_key=session)
+    if source == "startup":
+        decision["revision"] += 2  # revoke/restore must not turn into backfill
+    path.write_text("material that must not be replayed\n")
+    assert policy.capture_boundary(str(path)) is None, source
+    size = path.stat().st_size
+    with path.open("a") as out: out.write("next allowed turn\n")
+    assert policy.capture_boundary(str(path)) == size
+session = str(uuid.uuid4())
+common.set_session_key(session)
+path = parent / (session + ".jsonl")
+policy.begin_capture_boundary(str(path), source="startup", session_key=session)
+wrong = parent / "other-session.jsonl"
+wrong.write_text("unrelated old material\n")
+assert policy.capture_boundary(str(wrong)) is None
+''')
+
 
 class HostInstallationTests(unittest.IsolatedAsyncioTestCase):
     async def test_cursor_prepare_is_readonly_then_explicit_activation_copies_verified_plugin(self):
@@ -140,12 +216,45 @@ class HostInstallationTests(unittest.IsolatedAsyncioTestCase):
                 registry.state['agents'][connection.id] = {'name': 'Claude', 'key_file': str(root / 'key'), 'control_token_file': str(root / 'control')}
                 prepared = await connection.prepare(0)
                 self.assertFalse(connection.target.exists())
-                with patch.dict(os.environ, {'HOME': str(root)}):
+                ambient = root / 'unrelated-home'
+                ambient.mkdir()
+                with patch.dict(os.environ, {'HOME': str(ambient)}), patch(
+                        'agent_connections.subprocess.run', wraps=subprocess.run) as installer:
                     result = await connection.activate(registry.state['revision'], prepared['preview']['proposed_sha256'])
+                self.assertEqual(len(installer.call_args_list), 2)
+                self.assertTrue(all(call.kwargs['env']['HOME'] == str(root)
+                                    for call in installer.call_args_list))
+                self.assertEqual(list(ambient.iterdir()), [])
                 self.assertEqual(result['status'], 'configured_pending_new_session')
                 settings = json.loads(connection.target.read_text())
                 self.assertTrue(any(name.startswith('cognee@memlane-') and enabled for name, enabled in settings['enabledPlugins'].items()))
                 self.assertFalse((root / '.claude/settings.json').exists())
+                old_plugin = registry.state['connections'][connection.id]['enabled_plugin']
+                old_installation = dict(registry.state['agents'][connection.id]['installation'])
+                with patch('project_host_plugin.CLAUDE_FRESH_BOUNDARY',
+                           project_host_plugin.CLAUDE_FRESH_BOUNDARY + '\n# isolated update fixture\n'):
+                    updated = await connection.prepare(registry.state['revision'])
+                with patch.dict(os.environ, {'HOME': str(ambient)}), patch(
+                        'agent_connections.subprocess.run', wraps=subprocess.run) as installer:
+                    await connection.activate(registry.state['revision'], updated['preview']['proposed_sha256'])
+                self.assertEqual(len(installer.call_args_list), 3)
+                settings = json.loads(connection.target.read_text())['enabledPlugins']
+                new_plugin = registry.state['connections'][connection.id]['enabled_plugin']
+                self.assertNotEqual(new_plugin, old_plugin)
+                self.assertFalse(settings[old_plugin])
+                self.assertTrue(settings[new_plugin])
+                self.assertEqual(sum(bool(enabled) for name, enabled in settings.items()
+                                     if name.startswith('cognee@')), 1)
+                verify_artifact(old_installation)
+                self.assertEqual(list(ambient.iterdir()), [])
+                changed = json.loads(connection.target.read_text())
+                changed['enabledPlugins'][old_plugin] = True
+                private_write(connection.target, json.dumps(changed).encode())
+                with self.assertRaisesRegex(PolicyError, 'claude_installation_requires_review'):
+                    connection.view()
+                private_write(connection.target, b'[]')
+                with self.assertRaisesRegex(PolicyError, 'claude_installation_requires_review'):
+                    connection.view()
             finally:
                 registry.close()
 

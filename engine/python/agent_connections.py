@@ -60,6 +60,8 @@ class NativeConnection:
             verify_artifact({**installation, 'plugin_dir': str(self.target.parent)})
         if result['status'] == 'configured_pending_new_session' and self.kind == 'traex':
             self.traex_installed(self.registry.state['agents'][self.id]['installation'])
+        if result['status'] == 'configured_pending_new_session' and self.kind == 'claude_code':
+            self.claude_installed(self.registry.state['agents'][self.id]['installation'])
         return result
 
     def traex_installed(self, installation):
@@ -92,15 +94,21 @@ class NativeConnection:
     def claude_installed(self, installation):
         raw = safe_file(self.profile / 'plugins/installed_plugins.json')
         try:
+            enabled = 'cognee@' + installation['marketplace_name']
+            plugins = json.loads(safe_file(self.target)).get('enabledPlugins', {})
+            if plugins.get(enabled) is not True or any(
+                    name != enabled and 'cognee' in name.lower() and active
+                    for name, active in plugins.items()):
+                raise ValueError()
             state = json.loads(raw)
-            rows = state['plugins']['cognee@' + installation['marketplace_name']]
+            rows = state['plugins'][enabled]
             matches = [row for row in rows if row.get('scope') == 'user']
             if len(matches) != 1:
                 raise ValueError()
             path = Path(matches[0]['installPath'])
             if not path.is_absolute() or self.profile / 'plugins/cache' not in path.parents:
                 raise ValueError()
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError, AttributeError):
             raise PolicyError('claude_installation_requires_review', 409) from None
         verify_artifact({**installation, 'plugin_dir': str(path)})
         return path
@@ -241,11 +249,14 @@ class NativeConnection:
             else:
                 env = {key: value for key, value in os.environ.items()
                        if not key.startswith(('COGNEE_', 'MEMLANE_', 'TRAE_', 'TRAECLI_'))}
+                env['HOME'] = installation['home']
                 if self.kind == 'claude_code':
                     env['CLAUDE_CONFIG_DIR'] = str(self.profile)
                     commands = [['plugin', 'marketplace', 'add', installation['marketplace_root']],
                                 ['plugin', 'install', 'cognee@' + installation['marketplace_name'], '--scope', 'user']]
                     record['enabled_plugin'] = 'cognee@' + installation['marketplace_name']
+                    if record.get('previous_plugin') and record['previous_plugin'] != record['enabled_plugin']:
+                        commands.append(['plugin', 'disable', record['previous_plugin'], '--scope', 'user'])
                 else:
                     env.update(TRAE_HOME=str(self.profile), TRAECLI_HOME=str(self.profile))
                     record['enabled_plugin'] = 'memlane-cognee@' + installation['marketplace_name']
