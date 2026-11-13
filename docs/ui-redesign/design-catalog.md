@@ -8,7 +8,7 @@
 
 | 页面 | 原型入口 | 内容与主要操作 |
 | --- | --- | --- |
-| 总览 | [home](../../build/p3-prototype/prototypes/client-simplification-20261112/index.html?scene=home) | 项目、最近知识、服务与模型状态；进入项目、打开知识、查看连接状态 |
+| 总览 | [home](../../build/p3-prototype/prototypes/client-simplification-20261112/index.html?scene=home) | 三项全局统计、知识热力图、近期动态、项目、最近知识和连接状态；原型待按 2026-11-13 增补更新 |
 | 项目知识 | [knowledge](../../build/p3-prototype/prototypes/client-simplification-20261112/index.html?scene=knowledge) | 官方列表、Markdown 正文、分页、搜索、复制、出处 |
 | 原始记录 | [records](../../build/p3-prototype/prototypes/client-simplification-20261112/index.html?scene=records) | 会话或文档、问答、工具展开、复制已载入内容、返回知识 |
 | 搜索 | [search](../../build/p3-prototype/prototypes/client-simplification-20261112/index.html?scene=search) | 官方结果、项目分组、查询与真实来源跳转 |
@@ -32,6 +32,6 @@
 
 设计中不再保留手动新增与编辑、版本历史与恢复、审核建议、复杂整理、定期计划、项目或 Agent 权限、多模型方式切换、配置历史、维护平台及 release 设置。相关按钮、跳转和独立状态页一并退出当前稿。
 
-首页不再因旧布局而保留待确认、计划或使用账本。热力图、动态等只有在后续直接映射到可靠官方字段时再加入，本轮没有相应空壳卡片。
+首页不保留待确认、计划或使用账本。2026-11-13 用户确认恢复三项统计、知识热力图和近期动态，规则见[总览规格](../overview-spec-20261113.md)及[产品方案](../overview-product-plan-20261113.md)。此前不展示这些模块的决定被本次增补覆盖；当前链接原型和截图尚未更新，不将旧资产或本次文档当作新设计／Native 验收通过。
 
 页面详细交接见[界面交接](full-design-handoff.md)。
