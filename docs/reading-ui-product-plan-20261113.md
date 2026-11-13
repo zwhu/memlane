@@ -1,6 +1,6 @@
 # UI 优化产品方案：知识阅读
 
-日期：2026-11-13。状态：本 session 的阅读优化提案，未实施。配套：[规格](reading-ui-spec-20261113.md)、[技术方案](reading-ui-technical-plan-20261113.md)。
+日期：2026-11-13。状态：用户已启动dev实施；阅读主流程已实现并自验，真实搜索RU-G仍被官方HTTP500阻塞，未完成Goal。证据见[执行记录](engineering/reading-ui-execution-20261113.md)。配套：[规格](reading-ui-spec-20261113.md)、[技术方案](reading-ui-technical-plan-20261113.md)。
 
 ## 问题与目标
 
@@ -40,4 +40,4 @@
 
 [项目权限管理](project-access-product-plan-20261113.md)负责访问和内容操作；本部分只改善已获准读取内容的呈现，不能因优化标题扩展读取范围。[总览方案](overview-product-plan-20261113.md)独立拥有统计、热力图与动态；其最近知识可消费同一标题结果，但本 session 不改其布局或算法。
 
-当前截图和设计稿仅作为问题与视觉基线；本文没有制作新原型或通过实际 Native 验收，也不恢复开发。
+当前截图和设计稿作为问题与视觉基线；未制作新原型。启动后的真实Native、测试和未完成边界见执行记录；不恢复无关历史Goal。

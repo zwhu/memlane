@@ -56,8 +56,9 @@ func LoadConfig(path string) (Config, error) {
 }
 
 type Client struct {
-	Config Config
-	HTTP   *http.Client
+	Config         Config
+	HTTP           *http.Client
+	PolicyRevision string
 }
 
 func (c Client) request(ctx context.Context, method, path string, input any) ([]byte, error) {
@@ -115,25 +116,28 @@ func (c Client) get(ctx context.Context, path string, out any) error {
 }
 
 type Document struct {
-	ID       string         `json:"id"`
-	Dataset  string         `json:"datasetId"`
-	Name     string         `json:"name"`
-	Label    *string        `json:"label"`
-	MIME     string         `json:"mimeType"`
-	Metadata map[string]any `json:"externalMetadata"`
-	Updated  string         `json:"updatedAt"`
-	Created  string         `json:"createdAt"`
+	ID          string         `json:"id"`
+	Dataset     string         `json:"datasetId"`
+	Name        string         `json:"name"`
+	Label       *string        `json:"label"`
+	MIME        string         `json:"mimeType"`
+	Metadata    map[string]any `json:"externalMetadata"`
+	Updated     string         `json:"updatedAt"`
+	Created     string         `json:"createdAt"`
+	ContentHash string         `json:"contentHash"`
 }
 
 func (d Document) title() string {
-	if d.Label != nil && *d.Label != "" {
-		return *d.Label
+	if d.knowledge() {
+		return presentKnowledge(d, "").DisplayTitle
+	}
+	if s := readableDocumentTitle(d); s != "" {
+		return s
 	}
 	return d.Name
 }
 func (d Document) knowledge() bool {
-	v, _ := d.Metadata["node_set"].([]any)
-	for _, n := range v {
+	for _, n := range nodeSets(d) {
 		if n == "session_learnings" {
 			return true
 		}
@@ -141,13 +145,7 @@ func (d Document) knowledge() bool {
 	return false
 }
 func (d Document) session() string {
-	v, _ := d.Metadata["node_set"].([]any)
-	for _, n := range v {
-		if s, ok := n.(string); ok && strings.HasPrefix(s, "session_learnings:") {
-			return strings.TrimPrefix(s, "session_learnings:")
-		}
-	}
-	return ""
+	return uniqueLearningSession(d)
 }
 
 type Session struct {
@@ -183,6 +181,8 @@ type Item struct {
 	Document                                                              *Document
 	Session                                                               *Session
 	Detail                                                                *SessionDetail
+	ReadingState, ReadingError                                            string
+	BodyLoaded                                                            bool
 }
 
 func (i Item) key() string { return i.Dataset + "/" + i.Kind + "/" + i.ID }
@@ -239,6 +239,10 @@ func (c Client) read(ctx context.Context, i Item) (Item, error) {
 			return i, fmt.Errorf("此官方文档不是 UTF-8 文本")
 		}
 		i.Body = string(b)
+		i.BodyLoaded = true
+		if i.Kind == "知识" {
+			i.Title = itemPresentation(i).DisplayTitle
+		}
 		return i, nil
 	}
 	if i.Session != nil {
@@ -276,7 +280,7 @@ func (c Client) source(ctx context.Context, i Item) (Item, error) {
 		}
 		for _, s := range page.Sessions {
 			if s.Dataset == i.Dataset && s.ID == i.Source {
-				return c.read(ctx, Item{ID: s.ID, Dataset: s.Dataset, Kind: "会话", Title: s.ID, Session: &s})
+				return c.read(ctx, Item{ID: s.ID, Dataset: s.Dataset, Kind: "会话", Title: s.ID, Date: s.Updated, Session: &s})
 			}
 		}
 		if !page.HasMore {
@@ -345,7 +349,9 @@ func (c Client) search(ctx context.Context, projects []Project, q string, filter
 			if filter == "原始材料" && contentType == "知识片段" {
 				continue
 			}
-			items = append(items, Item{ID: id, Dataset: g.Dataset, Kind: contentType, Title: title, Body: text, Preview: text, SourceDocument: stringField("document_id")})
+			item := Item{ID: id, Dataset: g.Dataset, Kind: contentType, Title: title, Body: text, Preview: text, SourceDocument: stringField("document_id"), BodyLoaded: true}
+			item.Title = itemPresentation(item).DisplayTitle
+			items = append(items, item)
 		}
 	}
 	return items, nil
@@ -354,6 +360,13 @@ func (c Client) search(ctx context.Context, projects []Project, q string, filter
 // Resolve a real official document id against the current dataset catalog.
 // A title, filename or graph path is never used as a substitute for identity.
 func (c Client) documentByID(ctx context.Context, dataset, id string) (Item, error) {
+	i, err := c.documentInfoByID(ctx, dataset, id)
+	if err != nil {
+		return i, err
+	}
+	return c.read(ctx, i)
+}
+func (c Client) documentInfoByID(ctx context.Context, dataset, id string) (Item, error) {
 	for offset := 0; offset <= 100000; offset += 100 {
 		var rows []Document
 		if e := c.get(ctx, "/api/v1/datasets/"+url.PathEscape(dataset)+"/data?limit=100&offset="+strconv.Itoa(offset), &rows); e != nil {
@@ -368,7 +381,7 @@ func (c Client) documentByID(ctx context.Context, dataset, id string) (Item, err
 				if d.knowledge() {
 					kind = "知识"
 				}
-				return c.read(ctx, Item{ID: d.ID, Dataset: dataset, Kind: kind, Title: d.title(), Document: &d, Source: d.session()})
+				return Item{ID: d.ID, Dataset: dataset, Kind: kind, Title: d.title(), Date: d.date(), Document: &d, Source: d.session()}, nil
 			}
 		}
 		if len(rows) < 100 {

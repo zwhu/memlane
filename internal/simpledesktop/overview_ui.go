@@ -330,6 +330,7 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 		offset = 0
 	}
 	end := min(offset+8, len(rows))
+	a.startRecentTitles(rows[offset:end])
 	for _, item := range rows[offset:end] {
 		i := item
 		ui.Button(c, "").Key("recent-"+i.key()).Label(i.Title).Justify(ui.Start).Padding(12, 0).Background(ui.Transparent).BorderWidth(0, 0, 1, 0).BorderColor(border).Children(func() {
@@ -344,6 +345,9 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 				ui.Text(c, date).FontSize(10).TextColor(muted)
 			})
 		}).OnClick(func() { a.openOverviewItem(i) })
+		if i.ReadingState == "failed" || i.ReadingState == "unavailable" {
+			button(c, "标题读取失败 · 重试", func() { a.retryRecentTitle(i) })
+		}
 	}
 	if len(rows) == 0 {
 		label := "暂无知识"

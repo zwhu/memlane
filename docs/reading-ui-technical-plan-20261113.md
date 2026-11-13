@@ -1,6 +1,6 @@
 # UI 优化技术方案：知识阅读
 
-日期：2026-11-13。状态：展示层实施提案，未编码／验收。配套：[产品](reading-ui-product-plan-20261113.md)、[规格](reading-ui-spec-20261113.md)。
+日期：2026-11-13。状态：用户已启动dev实施，当前实现和未完成的RU-G真实搜索见[执行记录](engineering/reading-ui-execution-20261113.md)。下文保留方案规则，原“未验收”表述是方案阶段事实。配套：[产品](reading-ui-product-plan-20261113.md)、[规格](reading-ui-spec-20261113.md)。
 
 ## 1. 当前调用链与最小变更
 

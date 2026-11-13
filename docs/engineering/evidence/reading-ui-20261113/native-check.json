@@ -1,0 +1,32 @@
+{
+  "date_local": "2026-11-13",
+  "surface": "Memlane Dev; existing MyGo dev watcher; 1200x820 logical, 2400x1640 screenshot pixels",
+  "screenshot_policy": "Screenshots actually viewed through CUA; no separate screenshot file archived; no raw conversation archived",
+  "checks": {
+    "project_list_automatic_titles_without_row_click": "pass: three existing machine-name knowledge rows received English content titles",
+    "recent_knowledge_same_title_and_identity": "pass: recent entry opened matching project document",
+    "list_single_line_and_detail_natural_wrap": "pass: actual window observed; title stays within pane",
+    "strict_wrapper_cleaned_body": "pass: visible body excludes recognized metadata and session wrapper",
+    "technical_details_default_collapsed": "pass: original name, UUIDs and full session remain in expandable section",
+    "visible_copy_readback": "pass: pasted into local search field without submitting; content only; field cleared",
+    "raw_copy_readback": "pass: same local readback includes Lesson-Type, State-Key and Session learning wrapper; field cleared",
+    "document_id_copy_readback": "pass: exact official document UUID; field cleared",
+    "source_session_and_return": "pass: actual associated official session, QA and traces; return restores selected knowledge",
+    "tools_and_code": "pass: tool expanded; independent code horizontal scroll exercised; revisit after refresh retained tool expansion before candidate reload",
+    "refresh_selection_count_technical_expansion": "pass: selected row, three items and expanded technical section preserved",
+    "refresh_scroll": "pass: scrolled technical section retained position across refresh; screenshots compared",
+    "leave_and_reenter": "pass: common-knowledge route then project; selected knowledge restored and catalog revalidated",
+    "pagination": "only one real page; disabled arrows verified; HTTP fixtures cover 30-row boundary and cancellation",
+    "global_search_real": "blocked: single X-Api-Key query returned official HTTP 500; overview reports search failure with broken pipe summary",
+    "search_nested_native_return": "not verified due to real search failure; existing HTTP nested-source test passes"
+  },
+  "runtime": {
+    "launcher_pid": 69475,
+    "official_pid": 69478,
+    "completion_pid": 69477,
+    "ui_only_watcher_parent_pid": 70937,
+    "restarted_services": false,
+    "model_or_index_tasks_requested": false
+  },
+  "failure_counting": "E12 and E16 historical failures remain one each; this run found no new instance of those defects. One real search acceptance attempt failed, associated with existing OVR01 dependency, not renamed as title failure."
+}

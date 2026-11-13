@@ -30,14 +30,25 @@ type pane struct {
 	readRequest                    uint64
 	readCancel                     context.CancelFunc
 	cancel                         context.CancelFunc
+	titleCancel                    context.CancelFunc
+	titleCtx                       context.Context
+	titleRequest                   uint64
+	Technical                      map[string]bool
 }
 type App struct {
-	overviewState   overviewViewState
-	searchType      string
-	editProject     *Project
-	editIndex       int
-	settingsMessage string
-	focusSearch     bool
+	titles           *ReadingTitles
+	readingIdentity  string
+	recentCancel     context.CancelFunc
+	recentCtx        context.Context
+	recentRequest    uint64
+	recentScope      string
+	readingRevisions map[string]uint64
+	overviewState    overviewViewState
+	searchType       string
+	editProject      *Project
+	editIndex        int
+	settingsMessage  string
+	focusSearch      bool
 
 	graph                                             *GraphHost
 	graphError, graphMode, graphSelection, codeStatus string
@@ -63,6 +74,8 @@ type App struct {
 
 func New(c Config, err error) *App {
 	a := &App{Config: c, Client: Client{Config: c}, page: "总览", kind: "知识", panes: map[string]*pane{}, service: "尚未检查", completion: "尚未检查", searchProject: "全部项目"}
+	a.titles = newReadingTitles()
+	a.readingIdentity, _ = readingIdentity(a.Client)
 	if err != nil {
 		a.configError = err.Error()
 	}
@@ -116,7 +129,7 @@ func (a *App) state() *pane {
 	k := a.routeKey()
 	s := a.panes[k]
 	if s == nil {
-		s = &pane{DetailScroll: map[string]*ui.ScrollState{}, Tools: map[string]bool{}}
+		s = &pane{DetailScroll: map[string]*ui.ScrollState{}, Tools: map[string]bool{}, Technical: map[string]bool{}}
 		a.panes[k] = s
 	}
 	return s
@@ -135,9 +148,14 @@ func (a *App) current() (Project, bool) {
 	return Project{}, false
 }
 func (a *App) navigate(page string, index int) {
+	if a.recentCancel != nil {
+		a.recentCancel()
+		a.recentRequest++
+	}
 	a.epoch++
 	a.graph.clear()
 	for _, p := range a.panes {
+		a.cancelTitles(p)
 		if p.readCancel != nil {
 			p.readCancel()
 		}
@@ -160,12 +178,12 @@ func (a *App) navigate(page string, index int) {
 	}
 	if page != "总览" && page != "设置" && page != "图谱" {
 		s := a.state()
-		if !s.Loaded {
-			a.load(s)
-		}
+		a.load(s)
 	}
 }
 func (a *App) load(s *pane) {
+	a.syncReadingIdentity()
+	a.cancelTitles(s)
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -198,6 +216,7 @@ func (a *App) load(s *pane) {
 			}
 		}
 	}
+	client := a.Client
 	go func() {
 		defer cancel()
 		var rows []Item
@@ -210,14 +229,14 @@ func (a *App) load(s *pane) {
 				if page != "搜索" {
 					ps = []Project{p}
 				}
-				rows, err = a.Client.search(ctx, ps, q, filter)
+				rows, err = client.search(ctx, ps, q, filter)
 			}
 		} else if !ok {
 			rows = []Item{}
 		} else if kind == "会话" {
-			rows, more, err = a.Client.sessions(ctx, p, offset)
+			rows, more, err = client.sessions(ctx, p, offset)
 		} else {
-			rows, more, err = a.Client.documents(ctx, p, offset, kind == "文档")
+			rows, more, err = client.documents(ctx, p, offset, kind == "文档")
 		}
 		a.Update(func() {
 			if a.epoch != epoch || s.request != request {
@@ -226,11 +245,15 @@ func (a *App) load(s *pane) {
 			s.Loading = false
 			if err != nil {
 				s.Error = err.Error()
+				if readingUnavailable(err) {
+					a.InvalidateReading(p.Dataset)
+				}
 				return
 			}
 			s.Items = rows
 			s.More = more
 			s.Loaded = true
+			a.startTitles(s)
 			if len(s.History) > 0 {
 				return
 			}
@@ -259,25 +282,35 @@ func (a *App) selectItem(s *pane, i Item) {
 	s.readCancel = cancel
 	s.readRequest++
 	request, epoch := s.readRequest, a.epoch
+	generation := a.readingGeneration(s)
 	s.Reading = true
 	s.History = nil
 	s.Error = ""
-	if s.Selected == nil || s.Selected.key() != i.key() {
+	if s.Selected == nil || s.Selected.key() != i.key() || keyForReading("", *s.Selected, generation) != keyForReading("", i, generation) {
 		s.Selected = &i
 	}
+	client, titles := a.Client, a.titles
+	revision := a.readingRevisions[i.key()]
 	go func() {
 		defer cancel()
-		result, err := a.Client.read(ctx, i)
+		var result Item
+		var err error
+		if i.Document != nil {
+			result, err = titles.read(ctx, client, i, generation, true, false)
+		} else {
+			result, err = client.read(ctx, i)
+		}
 		a.Update(func() {
-			if epoch != a.epoch || request != s.readRequest {
+			if epoch != a.epoch || request != s.readRequest || revision != a.readingRevisions[i.key()] {
+				return
+			}
+			if !a.syncReadingIdentity() {
 				return
 			}
 			s.Reading = false
 			if err != nil {
 				s.Error = err.Error()
-				if strings.Contains(err.Error(), "HTTP 404") {
-					s.Selected = nil
-				}
+				a.handleReadingFailure(i, err)
 				return
 			}
 			s.Selected = &result
@@ -302,22 +335,35 @@ func (a *App) source(s *pane) {
 	s.readRequest++
 	request, epoch := s.readRequest, a.epoch
 	s.Reading = true
+	client := a.Client
+	titles, generation := a.titles, a.readingGeneration(s)
 	go func() {
 		defer cancel()
 		var i Item
 		var err error
 		if original.SourceDocument != "" {
-			i, err = a.Client.documentByID(ctx, original.Dataset, original.SourceDocument)
+			i, err = client.documentInfoByID(ctx, original.Dataset, original.SourceDocument)
+			if err == nil {
+				i, err = titles.read(ctx, client, i, generation, true, false)
+			}
 		} else {
-			i, err = a.Client.source(ctx, original)
+			i, err = client.source(ctx, original)
 		}
 		a.Update(func() {
 			if epoch != a.epoch || request != s.readRequest {
 				return
 			}
+			if !a.syncReadingIdentity() {
+				return
+			}
 			s.Reading = false
 			if err != nil {
 				s.Error = err.Error()
+				if i.ID != "" {
+					a.handleReadingFailure(i, err)
+				} else if strings.Contains(err.Error(), "HTTP 401") {
+					a.InvalidateReading("")
+				}
 				return
 			}
 			s.History = append(s.History, original)
@@ -329,6 +375,8 @@ func button(c *ui.Context, label string, fn func()) {
 	ui.Button(c, label).FontSize(12).Padding(8, 12).Background(ui.Transparent).BorderWidth(0).Justify(ui.Start).OnClick(fn)
 }
 func (a *App) View(c *ui.Context) {
+	c.After(2 * time.Second)
+	a.syncReadingIdentity()
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Background(ui.Hex("#ffffff")).Children(func() {
 		a.navigation(c)
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
@@ -430,6 +478,7 @@ func (a *App) reading(c *ui.Context) {
 								label = "原始记录"
 							}
 							button(c, label, func() {
+								a.cancelTitles(s)
 								a.epoch++
 								if s.cancel != nil {
 									s.cancel()
@@ -496,6 +545,11 @@ func (a *App) reading(c *ui.Context) {
 					if s.Query != "" {
 						label = "没有匹配结果"
 					}
+					if s.Loading {
+						label = "正在读取…"
+					} else if s.Error != "" {
+						label = "内容读取失败，请刷新"
+					}
 					ui.Text(c, label).Margin(12).FontSize(12).TextColor(muted)
 				}
 				for _, row := range s.Items {
@@ -504,6 +558,9 @@ func (a *App) reading(c *ui.Context) {
 						ui.Column(c).Grow(1).MinWidth(0).Gap(8).Children(func() {
 							ui.Text(c, i.Title).MinWidth(0).FontSize(13).Bold().SingleLine().TextColor(ink)
 							ui.Text(c, i.Kind+" · "+displayDate(i.Date)).MinWidth(0).FontSize(10).TextColor(muted).SingleLine()
+							if i.ReadingState == "failed" || i.ReadingState == "unavailable" {
+								button(c, "标题读取失败 · 重试", func() { a.retryReadingTitle(s, i) })
+							}
 						})
 					}).OnClick(func() { a.selectItem(s, i) })
 					if s.Selected != nil && s.Selected.key() == i.key() {
@@ -539,8 +596,9 @@ func (a *App) detail(c *ui.Context, s *pane) {
 		}
 		ui.Scroll(c.Key("detail-"+i.key())).Grow(1).MinHeight(0).TrackScroll(scroll).Padding(28, 30).Gap(18).Children(func() {
 			ui.Text(c, i.Kind+" / 只读").FontSize(10).TextColor(muted)
-			ui.Text(c, i.Title).FontSize(21).Bold().TextColor(ink)
-			ui.Text(c, i.Dataset+" · "+i.ID).FontSize(10).TextColor(muted)
+			presentation := itemPresentation(*i)
+			ui.Text(c, presentation.DisplayTitle).FontSize(21).Bold().TextColor(ink)
+			ui.Text(c, displayDate(i.Date)).FontSize(10).TextColor(muted)
 			if s.Reading {
 				ui.Text(c, "正在读取…").FontSize(10).TextColor(muted)
 			}
@@ -575,22 +633,55 @@ func (a *App) detail(c *ui.Context, s *pane) {
 					})
 				}
 			} else {
-				markdown.View(c.Key("body-"+i.key()), i.Body, &a.md)
+				markdown.View(c.Key("body-"+i.key()), presentation.VisibleBody, &a.md)
+				if presentation.Unrecognized {
+					ui.Text(c, "原文格式未识别，保留原文").FontSize(10).TextColor(muted)
+				}
 			}
 			if i.Source != "" || i.SourceDocument != "" {
 				ui.Column(c).Padding(16).Border(1, border).Radius(8).Gap(8).Children(func() {
 					ui.Text(c, "出处 · 官方关联材料").FontSize(12).Bold()
-					ui.Text(c, i.Source+i.SourceDocument).FontSize(10).TextColor(muted)
+					ui.Text(c, readingSourceLabel(*i)).FontSize(10).TextColor(muted)
 					button(c, "查看原始记录 →", func() { a.source(s) })
 				})
 			} else if i.Kind == "知识" {
 				ui.Text(c, "官方未提供可定位的会话出处").FontSize(10).TextColor(muted)
 			}
+			if s.Technical == nil {
+				s.Technical = map[string]bool{}
+			}
+			label := "› 技术详情"
+			if s.Technical[i.key()] {
+				label = "⌄ 技术详情"
+			}
+			button(c, label, func() { s.Technical[i.key()] = !s.Technical[i.key()] })
+			if s.Technical[i.key()] {
+				fields := presentation.TechnicalFields
+				if len(fields) == 0 {
+					fields = []ReadingField{{"数据组 ID", i.Dataset}, {"对象 ID", i.ID}}
+				}
+				for _, field := range fields {
+					f := field
+					if f.Value != "" {
+						ui.Text(c, f.Name+"："+f.Value).FontSize(10).TextColor(muted)
+						button(c, "复制"+f.Name, func() { c.WriteClipboard(f.Value) })
+					}
+				}
+				if i.BodyLoaded || i.Detail != nil || i.Preview != "" {
+					button(c, "复制原文", func() { c.WriteClipboard(i.Body) })
+				}
+			}
 		})
 		ui.Row(c).Height(48).Shrink(0).Padding(0, 24).BorderWidth(1, 0, 0, 0).BorderColor(border).Children(func() {
 			ui.Text(c, "只读 · 内容由 Cognee 提供").FontSize(10).TextColor(muted)
 			ui.Spacer(c)
-			button(c, "复制已载入内容", func() { c.WriteClipboard(i.Body) })
+			if i.BodyLoaded || i.Detail != nil || i.Preview != "" {
+				label := "复制已载入内容"
+				if i.Kind == "知识" {
+					label = "复制知识内容"
+				}
+				button(c, label, func() { c.WriteClipboard(itemPresentation(*i).VisibleBody) })
+			}
 		})
 	})
 }
@@ -599,7 +690,10 @@ func displayDate(date string) string {
 	if date == "" {
 		return "时间未知"
 	}
-	return date
+	if t, ok := officialTime(date); ok {
+		return t.In(time.Local).Format("2006-01-02 15:04")
+	}
+	return "时间未知"
 }
 
 func (a *App) OpenSearch() { a.navigate("搜索", 0); a.focusSearch = true }
@@ -644,6 +738,7 @@ func (a *App) projectEditor(c *ui.Context) {
 					return
 				}
 				a.epoch++
+				a.InvalidateReading("")
 				for _, state := range a.panes {
 					if state.cancel != nil {
 						state.cancel()
