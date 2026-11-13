@@ -69,3 +69,17 @@ Claude新连接在SessionStart建立stat边界，受管解析只读本session主
 [本轮证据](evidence/multi-agent-development-20261114/host-adapters-checkpoint.json)：11项检查通过，包括实际Claude原生安装器的隔离profile安装与cache摘要、Cursor准备不写host／显式激活复制、Claude禁采边界解析、Cursor延迟注入重建与无transcript读取，以及pi／TraeX连接回归。普通GET不调用模型；没有日常配置改动、真实宿主模型对话、真实Cursor IDE或新增服务实例。
 
 本轮临时安装profile及测试产物均已清理，官方archive原件保留。整体估算约35%（增加约10个百分点）：I08代码路径已接入但仍待宿主真链和权限验证；I09 Native接线及I10整体验收仍未完成，原MA/LP/UI范围不缩减。
+
+## 开发检查点四
+
+I09已接Native源码：设置分“服务与连接／知识处理／高级”；读取真实通用连接和generation API。Agent多选准备、逐项结果、启用已准备项与“取消剩余项”保留部分成功；未知结果仅核对。Provider表单使用官方Form／Select／TextInput／Password，保存／验证／下次启动分别操作，修改草稿后不能沿用旧验证。APIkey只在提交时传给私有管理端，之后清空、后台不回填。原项目checkbox保持。
+
+管理侧补充原配置操作GET回执及显式取消验证。取消等待拥有的本机进程退出，远端结果仍按unknown，不把取消当作零调用。原保存／next结果未知时使用原operation_id读取，不重新提交；明确4xx拒绝和传输未知分开处理。验证轮询只GET，可停止本机验证，不触发另一个模型请求。
+
+已实际打开当前首页／知识设计图，并检查新增合成图。1200×820实际Native使用当前生产组件和隔离真实管理API／GenerationStore（服务数据与key均为合成），核对了：多选pi／TraeX使准备按钮可用、Provider填写和保存、当前active不切换、编辑模型后禁用旧验证、重开窗口读到已保存配置。没有点真实模型验证或安装日常Agent。截图与AX回执在本次CUA工具记录，机器摘要见[Native检查点](evidence/multi-agent-development-20261114/native-checkpoint.json)，[合成图](evidence/multi-agent-development-20261114/ui-fixtures/)仅证明组件渲染。
+
+首轮发现保存后视觉已清空但AX残留合成key，失败1轮；按配置与控件代次更换输入Key后，第二轮Native保存后的完整AX树无旧值。详见[MA-UI-KEY01](provider-key-native-clear-20261114.md)，原失败计数保留。测试准备时无bundle的调试进程不在CUA应用清单，改为独立的UI调试容器，不包含引擎／模型，不是release运行包。退出阶段遇到macOS killpg的EPERM退出竞争；终端句柄退出及内核进程组表均已确认，没有将异常当作退出成功。全部本轮临时UI／合成服务／profile／key文件已清理，日常窗口及后台未停动。
+
+检查：全量`sh scripts/go.sh test ./...`、`vet ./...`退出0；新增Generation／Integration定向race退出0。Python generation回归14项通过，原操作回执和queued取消补测4项通过。Native截图不作为模型质量或真实Agent采集证据。
+
+整体估算约50%（增加约15个百分点）。仍需优先完成真实pi／TraeX采集→官方知识→新会话采用、其余宿主／权限、各Provider协议与质量、候选启动真实链，以及I10集中验收。还需补未知UI操作的跨进程恢复元数据和API模式下重新验证Codex桥的独立端点生命周期；当前源码检查未证明这两项完整，因此不能把完整方案标成完成。

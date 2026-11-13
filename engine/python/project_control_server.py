@@ -211,13 +211,22 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
         if generation is None:
             raise PolicyError('generation_not_configured', 503)
         if request.method == 'GET':
+            if request.path.startswith('/v1/generation/operations/'):
+                receipt = generation.state['operations'].get(request.match_info['operation_id'])
+                return web.json_response({'recorded': receipt is not None,
+                                          'result': receipt.get('result') if receipt else None})
             if 'operation_id' in request.match_info:
                 if generation_validation is None:
                     raise PolicyError('generation_validation_unavailable', 503)
                 return web.json_response(generation_validation.get(request.match_info['operation_id']))
             return web.json_response(generation.view())
         payload = await body(request)
-        if 'id' in request.match_info:
+        if request.method == 'DELETE':
+            fields(payload, ('expected_revision', 'operation_id'))
+            if generation_validation is None:
+                raise PolicyError('generation_validation_unavailable', 503)
+            result = await generation_validation.cancel(request.match_info['operation_id'], payload['expected_revision'], payload['operation_id'])
+        elif 'id' in request.match_info:
             fields(payload, ('expected_revision', 'operation_id', 'profile'), ('api_key',))
             result = generation.put(request.match_info['id'], payload['profile'], payload['expected_revision'],
                                     payload['operation_id'], api_key=payload.get('api_key'))
@@ -248,6 +257,8 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                     web.put('/v1/generation/profiles/{id}', generation_config),
                     web.post('/v1/generation/validations', generation_config),
                     web.get('/v1/generation/validations/{operation_id}', generation_config),
+                    web.delete('/v1/generation/validations/{operation_id}', generation_config),
+                    web.get('/v1/generation/operations/{operation_id}', generation_config),
                     web.put('/v1/generation/next', generation_config)])
     return app
 

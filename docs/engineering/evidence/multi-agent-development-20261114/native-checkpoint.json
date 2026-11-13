@@ -1,0 +1,20 @@
+{
+  "boundary": "actual_native_1200x820_synthetic_backend_not_provider_or_agent_model_e2e",
+  "native_bundle_id": "io.github.zwhu.memlane.multiagentreview20261114",
+  "checks": {
+    "multi_agent_selection": true,
+    "prepare_enabled_after_selection": true,
+    "saved_profile_visible_after_ui_restart": true,
+    "saving_keeps_active": true,
+    "no_implicit_next": true,
+    "edited_model_disables_validation": true,
+    "password_visual_cleared_after_submit": true,
+    "password_ax_value_cleared_after_key_epoch_fix": true
+  },
+  "native_secret_clear_failure_rounds": 1,
+  "native_secret_clear_final": "passed_second_native_round",
+  "synthetic_profile_count": 3,
+  "real_model_calls": false,
+  "owned_groups_stopped": true,
+  "cleanup_note": "SIGTERM confirmed by terminal handles and kernel process group table after killpg EPERM exit race"
+}

@@ -17,6 +17,7 @@ class GenerationValidation:
     def __init__(self, store, runtime):
         self.store, self.runtime = store, runtime
         self.task, self.process = None, None
+        self.operation_id = None
         # A previous process's queued/running request is not retried on restart.
         changed = False
         for row in store.state['validations'].values():
@@ -51,6 +52,7 @@ class GenerationValidation:
         s.state['validations'][operation_id] = {'status': 'queued', 'digest': row['digest'],
                                               'reference': copy.deepcopy(reference), 'structured_mode': 'unknown'}
         result = s.commit(operation_id, request, {'operation_id': operation_id, 'status': 'queued'})
+        self.operation_id = operation_id
         self.task = asyncio.create_task(self.run(operation_id, environment))
         return result
 
@@ -58,6 +60,24 @@ class GenerationValidation:
         if operation_id not in self.store.state['validations']:
             raise PolicyError('generation_validation_not_found', 404)
         return copy.deepcopy(self.store.state['validations'][operation_id])
+
+    async def cancel(self, target, expected, operation_id):
+        request = {'action': 'cancel_validation', 'target': target}
+        old = self.store.checked(expected, operation_id, request)
+        if old is not None:
+            return old
+        self.get(target)
+        if target == self.operation_id and self.task and not self.task.done():
+            self.task.cancel()
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass
+        row = self.store.state['validations'][target]
+        if row['status'] in ('queued', 'running'):
+            row.update(status='result_unknown', error_code='validation_interrupted')
+        return self.store.commit(operation_id, request, {'operation_id': target, 'status': row['status'],
+                                                         'local_process_exited': self.process is None})
 
     async def run(self, operation_id, environment):
         row = self.store.state['validations'][operation_id]
@@ -137,4 +157,7 @@ class GenerationValidation:
     async def close(self):
         if self.task and not self.task.done():
             self.task.cancel()
-            await self.task
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass

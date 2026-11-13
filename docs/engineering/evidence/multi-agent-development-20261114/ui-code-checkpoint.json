@@ -1,0 +1,39 @@
+{
+  "boundary": "native_integration_development_checkpoint_not_full_delivery",
+  "checks": {
+    "go_test_all": {
+      "exit_code": 0
+    },
+    "go_vet_all": {
+      "exit_code": 0
+    },
+    "integration_race": {
+      "exit_code": 0
+    },
+    "generation_python_regression": {
+      "tests": 14,
+      "exit_code": 0
+    },
+    "validation_api_and_cancel": {
+      "tests": 4,
+      "exit_code": 0
+    }
+  },
+  "source_sha256": {
+    "internal/simpledesktop/integrations.go": "a0bec01de8be9f99016fa33d98d98f3bde96cea7f830725779d20fe69faa82fa",
+    "internal/simpledesktop/integrations_ui.go": "343599cb770a067c99a6b70a18b97efcafd1486d1b08e382659e7666197cd778",
+    "internal/simpledesktop/integrations_test.go": "cf0eb1988025362d0335384881f65e37f02679e017e0b14f996c3d47c517d9cf",
+    "internal/simpledesktop/project_access.go": "97b0693078c89fd8a35f9a2ee010c2e79242d1a8a68bd2c45f077fb2b5927f37",
+    "internal/simpledesktop/settings_redesign.go": "5a8de7d9192a5fcb079e471b50e5970682a4efba7f142b54fe1331fca622b738",
+    "engine/python/project_control_server.py": "1e1ed9ef1551c0fc03e874c0cb9379d792a41808f44ec524718a93ed3537e93d",
+    "engine/python/generation_validation.py": "d29e6f5f821c60d0e2b705ca9d50bc17b1d9f59ed460f704a75743540870cc48"
+  },
+  "still_required": [
+    "real_pi_and_traex_capture_recall",
+    "real_provider_protocol_quality",
+    "cross_agent_permissions",
+    "unknown_ui_operation_restart_recovery",
+    "codex_bridge_validation_when_api_active",
+    "final_continuous_acceptance"
+  ]
+}

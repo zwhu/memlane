@@ -35,6 +35,8 @@ type Config struct {
 	TokenFile       string                `json:"token_file"`
 	CompletionURL   string                `json:"completion_url"`
 	Model           string                `json:"model"`
+	GenerationMode  string                `json:"generation_mode"`
+	GenerationFile  string                `json:"generation_file"`
 	Projects        []Project             `json:"projects"`
 	Common          []Project             `json:"common_datasets"`
 }

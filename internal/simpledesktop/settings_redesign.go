@@ -45,7 +45,7 @@ func settingsCard(c *ui.Context, title, description string, content func()) {
 	})
 }
 func (a *App) globalSettingsPage(c *ui.Context) {
-	settingsTabs(c, &a.access.SettingsSection, []string{"服务与连接", "高级"})
+	settingsTabs(c, &a.access.SettingsSection, []string{"服务与连接", "知识处理", "高级"})
 	ui.Scroll(c.Key("global-settings-" + a.access.SettingsSection)).Grow(1).MinHeight(0).Padding(28).Background(ui.Hex("#f8fafc")).Children(func() {
 		ui.Column(c).FillWidth().MaxWidth(900).Gap(20).Children(func() {
 			switch a.access.SettingsSection {
@@ -53,15 +53,23 @@ func (a *App) globalSettingsPage(c *ui.Context) {
 				settingsCard(c, "服务状态", "显示最近一次连接检查结果；服务地址和模型来自当前开发配置。", func() {
 					homeText(c, "Cognee · "+a.service, homeHeading).FontSize(13)
 					homeText(c, a.Config.ServiceURL, homeMeta)
-					homeText(c, "Codex 订阅推理 · "+a.Config.Model, homeHeading).FontSize(13)
-					homeText(c, a.completion, homeMeta)
+					mode := "Codex 订阅推理"
+					if a.Config.GenerationMode == "provider" {
+						mode = "Provider API"
+					}
+					homeText(c, mode+" · "+a.Config.Model, homeHeading).FontSize(13)
+					if a.Config.GenerationMode != "provider" {
+						homeText(c, a.completion, homeMeta)
+					}
 					if a.service != "已连接" {
 						commonButton(c, "重新检查连接", false, a.health)
 					}
 				})
 				if a.Config.ProjectControl != nil {
-					settingsCard(c, "本机 Agent", "连接到当前电脑；具体项目的读写权限请进入对应项目设置。", func() { a.codexConnectionSettings(c) })
+					settingsCard(c, "Agent 连接", "连接到当前电脑；具体项目的读写权限请进入对应项目设置。", func() { a.agentConnectionSettings(c) })
 				}
+			case "知识处理":
+				a.generationSettings(c)
 			case "高级":
 				settingsCard(c, "开发运行", "关闭窗口后后台服务继续运行。电脑重启后通过开发启动器重新启动。", func() {
 					homeText(c, "python3 scripts/dev.py", homeBody)

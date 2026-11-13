@@ -38,6 +38,7 @@ type pane struct {
 	Technical                      map[string]bool
 }
 type App struct {
+	integrations        integrationState
 	layout              appLayoutState
 	projectUI           projectReadingState
 	searchUI            unifiedSearchState
@@ -117,7 +118,13 @@ func New(c Config, err error) *App {
 	}}
 	return a
 }
-func (a *App) Start() { a.health(); a.loadRecent(); a.restoreCodeState(); a.RefreshProjectDirectory() }
+func (a *App) Start() {
+	a.health()
+	a.loadRecent()
+	a.restoreCodeState()
+	a.RefreshProjectDirectory()
+	a.RefreshIntegrations()
+}
 func (a *App) health() {
 	client := a.Client
 	completionURL := a.Config.CompletionURL

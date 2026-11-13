@@ -147,6 +147,12 @@ type ProjectControlClient struct {
 	Config ProjectControlConfig
 	HTTP   *http.Client
 }
+type ControlResponseError struct {
+	Status  int
+	Message string
+}
+
+func (e *ControlResponseError) Error() string { return e.Message }
 
 func (c ProjectControlClient) request(ctx context.Context, method, path string, input, output any) error {
 	u, err := url.Parse(c.Config.URL)
@@ -189,10 +195,10 @@ func (c ProjectControlClient) request(ctx context.Context, method, path string, 
 	}
 	defer response.Body.Close()
 	if response.StatusCode == 409 {
-		return fmt.Errorf("设置已变化或关联存在冲突，请刷新核对后再保存")
+		return &ControlResponseError{Status: 409, Message: "设置已变化或关联存在冲突，请刷新核对后再保存"}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("项目管理请求未确认（HTTP %d），请核对原操作", response.StatusCode)
+		return &ControlResponseError{Status: response.StatusCode, Message: fmt.Sprintf("项目管理请求未确认（HTTP %d），请核对原操作", response.StatusCode)}
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, 2*1024*1024+1))
 	if err != nil || len(data) > 2*1024*1024 || json.Unmarshal(data, output) != nil {

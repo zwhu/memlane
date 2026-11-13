@@ -76,6 +76,13 @@ class ValidationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status, 200)
             self.assertNotIn('synthetic-secret', await response.text())
             self.assertIsNone(self.validator.task)
+            response = await client.get('/v1/generation/operations/save', headers={'Authorization': 'Bearer ' + 'm' * 40})
+            receipt = await response.json()
+            self.assertTrue(receipt['recorded'])
+            self.assertEqual(receipt['result']['id'], 'api')
+            self.assertNotIn('synthetic-secret', json.dumps(receipt))
+            response = await client.get('/v1/generation/operations/save', headers={'Authorization': 'Bearer ' + 'a' * 40})
+            self.assertEqual(response.status, 403)
             response = await client.put('/v1/generation/next', headers={'Authorization': 'Bearer ' + 'm' * 40},
                                         json={'profile': self.profile, 'expected_revision': 1, 'operation_id': 'unverified'})
             self.assertEqual(response.status, 409)
@@ -83,6 +90,18 @@ class ValidationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
             registry.close()
+
+    async def test_explicit_cancel_of_queued_validation_is_idempotent_and_has_no_implicit_retry(self):
+        self.worker('import time\ntime.sleep(60)\n')
+        with patch('generation_validation.ROOT', self.root):
+            self.validator.start(self.profile, 1, 'queued')
+            result = await self.validator.cancel('queued', self.store.state['revision'], 'cancel')
+            self.assertEqual(result['status'], 'result_unknown')
+            self.assertTrue(result['local_process_exited'])
+            again = await self.validator.cancel('queued', 0, 'cancel')
+            self.assertEqual(result, again)
+        self.assertIsNone(self.validator.process)
+        self.assertTrue(self.validator.task.done())
 
 
 if __name__ == '__main__':
