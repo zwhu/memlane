@@ -65,3 +65,9 @@
 - 同URL／同凭据下策略变更调用 `App.SetReadingPolicyRevision(revision)`，将revision纳入命名空间并撤下旧阅读状态。凭据文件原地轮换、服务URL改变也清理，不以文件路径充当凭据代次。
 - 标题仍存Item.Title，原文始终Item.Body，是否已取得完整文档由BodyLoaded区分；可见正文使用itemPresentation，不复用搜索Preview为全文缓存。
 - 阅读接线和必要Native自验已结束；正式源码版本及共享app.go/client.go/overview_ui.go释放回执随提交发送PA。后续如需修改共享文件须重新取得窗口。
+
+### 2026-11-13 12:25 用户决策与正式释放
+
+- 阅读实现提交为 `62b324f`；已向PA session `01a1d316-954a-7c91-8191-7fdfe3d4a8c9` 发送版本、文件清单、失效接口和app.go/client.go/overview_ui.go及Native窗口的明确释放回执。
+- 用户回复：“由其他 session 修复后台后再补验”。本session不修改后台／dev.py、不发重启、不重发搜索或业务任务；当前Goal继续未完成，等待外部恢复证据，不自动改为complete或paused。
+- 下一次补验前先取得后台修复版本、原数据根与身份保持、服务所有权／健康及搜索恢复回执，并重新协调共享文件／Native窗口。只补RU-G真实搜索→片段→知识→会话→逐层返回及受修复影响的阅读检查；既有源码、真实raw和Native证据在版本条件成立时复用。
