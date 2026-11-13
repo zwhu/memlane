@@ -79,6 +79,7 @@ func homeText(c *ui.Context, text string, role homeTextRole) ui.Element {
 var homeTheme = func() *ui.Theme {
 	t := *ui.LightTheme()
 	t.Font = "system-ui"
+	t.Antialiased = true
 	t.Text, t.TextMuted, t.Border = homeInk, homeMuted, homeBorder
 	t.Background = homeBackground
 	t.ScrollbarWidth = 3

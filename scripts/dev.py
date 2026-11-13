@@ -345,10 +345,11 @@ def port_free(url):
 
 
 def ui_env(config_path):
+    from mygo_sdk import with_patched_sdk
     env = dict(os.environ, GOPATH=str(ROOT / '.local/gopath'), GOCACHE=str(ROOT / '.cache/go-build'),
                GOTOOLCHAIN='local', CGO_ENABLED='0', MEMLANE_DEV_RUNTIME_CONFIG=str(config_path))
     env['PATH'] = str(GO.parent) + ':' + env.get('PATH', '')
-    return env
+    return with_patched_sdk(env)
 
 
 def main():

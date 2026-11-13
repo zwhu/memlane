@@ -79,9 +79,64 @@ func fixtureImage(t *testing.T, tt *ui.Tester, name string) {
 	}
 }
 
+// Same authored labels as the fixed A screenshot, separate from both the
+// stress fixture and the live official store. No content is written to Cognee.
+func overviewSelectedAFixture(t *testing.T) *App {
+	a := overviewFixture(t)
+	names := []string{"memlane", "same", "background-window", "跨 Agent 项目知识与长期上下文管理客户端 / memory-client-exploration", "automatic", "same", "beta", "worktree", "base", "alpha", "race", "PA Native manual", "frontend-platform"}
+	for i, name := range names {
+		a.Config.Projects[i].Name = name
+		a.Config.Projects[i].Path = "~/work/" + strings.ReplaceAll(name, " / ", "/")
+	}
+	a.Config.Projects[1].Path = "~/work/team-two/same"
+	a.Config.Projects[5].Path = "~/work/team-one/same"
+	a.overviewState.AllProjects = false
+	titles := []string{"docs/development.md documents config/daily-runtime.example.json fields, credentials and the daily development workflow.", "Sandbox-denied httptest listeners abort `sh scripts/go.sh test ./internal/simpledesktop`.", "internal/simpledesktop/client.go sends X-Api-Key from token_file without Bearer fallback.", "技术说明先给出结果，再解释关键依据", "异步切换页面时核对请求所属对象"}
+	a.overviewState.Snapshot.Knowledge = nil
+	for i, title := range titles {
+		at := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 0, 46, 0, 0, time.Local)
+		if i == 0 {
+			at = at.Add(10 * time.Minute)
+		}
+		if i >= 3 {
+			at = at.AddDate(0, 0, -1)
+		}
+		d := Document{ID: fmt.Sprint(i), Dataset: "0", Name: title, Created: at.Format(time.RFC3339)}
+		a.overviewState.Snapshot.Knowledge = append(a.overviewState.Snapshot.Knowledge, Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Title: title, Document: &d})
+	}
+	a.overviewState.Snapshot.Raw = 6
+	for i := range a.overviewState.Events {
+		a.overviewState.Events[i].Project = "memlane"
+		a.overviewState.Events[i].Record.Dataset = "0"
+		clock := []struct{ h, m int }{{14, 44}, {14, 17}, {14, 10}}[i]
+		a.overviewState.Events[i].At = time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), clock.h, clock.m, 0, 0, time.Local)
+	}
+	return a
+}
+
+func TestOverviewActivityProjectUsesStableScope(t *testing.T) {
+	a := overviewFixture(t)
+	if _, ok := a.overviewActivityProject(overviewEvent{Project: "same"}); ok {
+		t.Fatal("display name used as identity")
+	}
+	if i, ok := a.overviewActivityProject(overviewEvent{Project: "same", Record: activityRow{Dataset: "1"}}); !ok || i != 1 {
+		t.Fatal("same-name project was misrouted")
+	}
+	a.Config.Projects[0].Dataset = "1"
+	if _, ok := a.overviewActivityProject(overviewEvent{Record: activityRow{Dataset: "1"}}); ok {
+		t.Fatal("ambiguous scope was routed")
+	}
+}
+
 func TestOverviewLayoutAndContinuousUIFixture(t *testing.T) {
 	for _, size := range [][2]int{{1200, 820}, {1440, 900}} {
 		t.Run(fmt.Sprint(size[0]), func(t *testing.T) {
+			if os.Getenv("MEMLANE_OVERVIEW_UI_EVIDENCE") != "" {
+				selected := overviewSelectedAFixture(t)
+				baseline := ui.NewTester(selected.overviewShell, size[0], size[1])
+				baseline.SetScale(2)
+				fixtureImage(t, baseline, fmt.Sprintf("%dx%d-selected-a", size[0], size[1]))
+			}
 			a := overviewFixture(t)
 			// Exclude lifecycle polling; exercise the actual homepage and sidebar.
 			tt := ui.NewTester(a.overviewShell, size[0], size[1])
@@ -256,6 +311,53 @@ func TestOverviewExpandedActivityStaysAlignedAndScrollsIndependently(t *testing.
 				t.Fatal("short-page expansion grew the page")
 			}
 		})
+	}
+}
+
+func TestOverviewReturnIgnoresHistoryFromBeforeThisVisit(t *testing.T) {
+	a := overviewFixture(t)
+	// No network callbacks can publish into this navigation-only fixture.
+	a.Update = func(func()) {}
+	a.page = "知识"
+	a.project = 0
+	p := a.state()
+	p.History = []Item{{ID: "old-knowledge"}, {ID: "old-source"}}
+	a.page = "总览"
+	a.overviewState.Day = "2026-11-13"
+	a.overviewState.Offset = 3
+	a.overviewState.Scroll.Y = 123
+	a.navigate("知识", 0)
+	if a.overviewSourceFloor[p] != 2 {
+		t.Fatal("visit did not capture the old source boundary")
+	}
+	// A newly followed source still unwinds once, stopping at that boundary.
+	p.History = append(p.History, Item{ID: "new-source-parent"})
+	a.returnToOverview()
+	if a.page != "知识" || len(p.History) != 2 || a.overviewSourceFloor[p] != 2 {
+		t.Fatal("new source did not stop at the visit boundary")
+	}
+	a.returnToOverview()
+	if a.page != "总览" || len(p.History) != 2 {
+		t.Fatal("old reading history consumed the homepage return")
+	}
+	if a.overviewState.Day != "2026-11-13" || a.overviewState.Offset != 3 || a.overviewState.Scroll.Y != 123 {
+		t.Fatal("homepage state lost")
+	}
+	// A new explicit item selection owns a fresh source stack, even if this
+	// pane had an older stack when it was re-entered from the homepage.
+	a.navigate("知识", 0)
+	a.selectItem(p, Item{ID: "new-item"})
+	if a.overviewSourceFloor[p] != 0 {
+		t.Fatal("new item retained the old source boundary")
+	}
+	p.History = []Item{{ID: "new-item"}}
+	a.returnToOverview()
+	if a.page != "知识" || len(p.History) != 0 {
+		t.Fatal("fresh source did not return to its item")
+	}
+	a.returnToOverview()
+	if a.page != "总览" {
+		t.Fatal("fresh item did not return to homepage")
 	}
 }
 

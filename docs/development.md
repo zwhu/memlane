@@ -68,6 +68,10 @@ python3 scripts/dev.py stop --config /绝对路径/runtime.json
 
 开发阶段不运行完整打包、DMG、签名、公证、更新或 helper 安装。Go/MyGo 固定版本和仓库内工具链继续复用。磁盘门禁至少保留 100 GiB，`dev.py` 与其他检查均通过既有 `scripts/task.py`；Go 检查使用 `sh scripts/go.sh`。
 
+首页A的字体需要与稿件的`-webkit-font-smoothing: antialiased`一致。MyGo0.7.4只在自绘字形公开此能力，当前以`scripts/patches/mygo-antialiased.json`固定两个SDK源文件及其SHA，补充主题内的可选`Antialiased`绘制标志；仅首页主题启用，其他页面默认绘制不变。`go.sh`及`dev.py`通过`scripts/mygo_sdk.py`准备一份约24 MiB的私有SDK及临时`-modfile`，路径在`.local/mygo-sdk/`，不会改模块缓存、仓库`go.mod/go.sum`或系统字体偏好。Go不允许用`-overlay`替换模块缓存中的文件，因此不采用该方式。
+
+命令入口不变；SDK原始SHA、项目版本或已准备补丁副本不符会停止构建，升级MyGo时先评审这份补丁，不能静默覆盖。现有UI watcher在启用这项构建环境前需由其所有者退出，再用`open --watch-ui`附着，健康后台继续复用。私有SDK是当前watcher的编译依赖，运行期间保留；上游提供等价主题接口后应移除此补丁和准备步骤，不扩展为长期SDK分叉。
+
 历史完整包、helper与旧索引验收命令已从当前开发说明退役。历史证据保留于对应文档及开发前tag；不得用旧脚本重启被删除链路。
 
 代码图谱使用根目录 `mcp-arch.yaml` 的官方 Enola 配置：保留除 `manifests` 外全部默认源码解析器，并排除本项目生成目录。固定版的 `manifests` 扫描器绕过 ignore、会带入 `build/` 历史依赖清单，因此当前停用该扫描器；不提供它派生的依赖清单事实。语言源码的符号、调用与导入解析继续保留。更改索引配置后在项目图谱中手动更新，不启动文件监听。

@@ -18,4 +18,4 @@ if [ ! -e "$MEMLANE_ROOT/build/go.mod" ]; then
     printf 'module memlane.local/build-artifacts\n\ngo 1.27.3\n' > "$MEMLANE_ROOT/build/go.mod"
 fi
 cd "$MEMLANE_ROOT"
-python3 "$MEMLANE_ROOT/scripts/task.py" -- "$MEMLANE_GO" "$@"
+python3 "$MEMLANE_ROOT/scripts/task.py" -- python3 "$MEMLANE_ROOT/scripts/mygo_sdk.py" --exec "$MEMLANE_GO" "$@"

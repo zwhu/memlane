@@ -36,22 +36,23 @@ type pane struct {
 	Technical                      map[string]bool
 }
 type App struct {
-	access           projectAccessState
-	commonEdit       commonEditorState
-	titles           *ReadingTitles
-	readingIdentity  string
-	recentCancel     context.CancelFunc
-	recentCtx        context.Context
-	recentRequest    uint64
-	recentScope      string
-	readingRevisions map[string]uint64
-	overviewState    overviewViewState
-	searchType       string
-	editProject      *Project
-	editIndex        int
-	settingsMessage  string
-	focusSearch      bool
-	fromOverview     bool
+	access              projectAccessState
+	commonEdit          commonEditorState
+	titles              *ReadingTitles
+	readingIdentity     string
+	recentCancel        context.CancelFunc
+	recentCtx           context.Context
+	recentRequest       uint64
+	recentScope         string
+	readingRevisions    map[string]uint64
+	overviewState       overviewViewState
+	searchType          string
+	editProject         *Project
+	editIndex           int
+	settingsMessage     string
+	focusSearch         bool
+	fromOverview        bool
+	overviewSourceFloor map[*pane]int
 
 	graph                                             *GraphHost
 	graphError, graphMode, graphSelection, codeStatus string
@@ -153,9 +154,14 @@ func (a *App) current() (Project, bool) {
 func (a *App) navigate(page string, index int) {
 	if a.page == "总览" && page != "总览" {
 		a.fromOverview = true
+		a.overviewSourceFloor = make(map[*pane]int, len(a.panes))
+		for _, p := range a.panes {
+			a.overviewSourceFloor[p] = len(p.History)
+		}
 	}
 	if page == "总览" {
 		a.fromOverview = false
+		a.overviewSourceFloor = nil
 	}
 	if a.recentCancel != nil {
 		a.recentCancel()
@@ -300,6 +306,9 @@ func (a *App) selectItem(s *pane, i Item) {
 	generation := a.readingGeneration(s)
 	s.Reading = true
 	s.History = nil
+	if a.fromOverview {
+		a.overviewSourceFloor[s] = 0
+	}
 	s.Error = ""
 	if s.Selected == nil || s.Selected.key() != i.key() || keyForReading("", *s.Selected, generation) != keyForReading("", i, generation) {
 		s.Selected = &i
@@ -842,6 +851,10 @@ func (a *App) returnFromSource(s *pane) {
 	last := len(s.History) - 1
 	original := s.History[last]
 	history := append([]Item(nil), s.History[:last]...)
+	floor := a.overviewSourceFloor[s]
 	a.selectItem(s, original)
 	s.History = history
+	if a.fromOverview {
+		a.overviewSourceFloor[s] = min(floor, len(history))
+	}
 }

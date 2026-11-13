@@ -1,0 +1,113 @@
+{
+  "round": 3,
+  "at": "2026-11-13T10:04:44.498195+00:00",
+  "base_commit": "3e9270592048a268498cde6df86f44889c1ae8cb",
+  "baseline_tag_commit": "75905c777c39e5176b951070963f406e29490367",
+  "design_commit": "3c1c845c4af58f9afd4fcdd5c97008d1a27a3563",
+  "sources": {
+    "internal/simpledesktop/app.go": "0b3204e757a1cd4e7d827f92ad97bd1816b1b50a773e30c616ec421b45d80cea",
+    "internal/simpledesktop/overview_navigation.go": "416a2caf88d982030fb2e8b5607c842eec52b121ff7d05e9b01574ff05014d81",
+    "internal/simpledesktop/overview_style.go": "cccd5730ce46f79177d77a6bb0c26d8bc482860743618d65946da46ba9805586",
+    "internal/simpledesktop/overview_ui.go": "8485ba9874ca28e06109277de4f3fa686a94fb821f05d17fad71e84ba6a4cb7e",
+    "internal/simpledesktop/overview_ui_test.go": "2a59e0d4342da9298bdf910a6e66f3e4d00813a1a9886a73f1b8657d268b5de3",
+    "internal/simpledesktop/overview_font_test.go": "69d0d0bcc0b4ee785609b6123abcdacca658c697fbaa256ff13d4a81c3d6cc08",
+    "scripts/go.sh": "fe3eb484e9294adc22e061de5addea1bd622bb3f3f56765783da904c7cee2200",
+    "scripts/dev.py": "e180c11e2da32af6a936ba1368fc64aecbd71a41f1b0b0ab68e95da8869d522b",
+    "scripts/mygo_sdk.py": "5edc978b2243db7853535ab22c7aabcf7c3eeeb141921ed3869a7fc03aa1b5f7",
+    "scripts/patches/mygo-antialiased.json": "eecb2e096dac81978c12d76fcd610cd52dc11746935a406fa6ef8a26df10d3c2",
+    "scripts/test_mygo_sdk.py": "709141118e50ec0dafc55f676b1c69f24876b36d476de8e27525d3a4c70055c8"
+  },
+  "checks": {
+    "all_go": {
+      "session": 27589,
+      "exit": 0
+    },
+    "targeted_after_link_alignment": {
+      "session": 92812,
+      "exit": 0
+    },
+    "matched_fixture_2x": {
+      "session": 93632,
+      "exit": 0
+    },
+    "vet": {
+      "session": 11285,
+      "exit": 0
+    },
+    "race": {
+      "session": 91531,
+      "exit": 0
+    },
+    "dev_launcher": {
+      "session": 51035,
+      "tests": 12,
+      "exit": 0
+    },
+    "sdk_prepare": {
+      "session": 10401,
+      "tests": 2,
+      "exit": 0
+    },
+    "antialiasing": {
+      "session": 6652,
+      "exit": 0,
+      "coverage_normal": 614495,
+      "coverage_antialiased": 490473,
+      "geometry_equal": true,
+      "sibling_rendering_equal": true
+    }
+  },
+  "native_flows": {
+    "date_knowledge_source_return_clear": "passed; date restored and global 4/17 unchanged",
+    "old_source_stack_home_project_single_return": "passed after AN04 fix",
+    "project_card_return": "passed",
+    "cmd_k_search_return": "passed; no query submitted",
+    "settings_return": "passed; no settings saved",
+    "expand_load_more_failure_copy_refresh": "passed; refresh completed with expansion and copy feedback retained",
+    "inner_activity_scroll": "observed; knowledge/projects stayed fixed"
+  },
+  "screenshots": {
+    "native-final-1200x820-home.jpg": [
+      2400,
+      1640
+    ],
+    "native-final-1200x820-projects.jpg": [
+      2400,
+      1640
+    ],
+    "native-final-1440x900-home.jpg": [
+      2880,
+      1800
+    ],
+    "native-final-1440x900-projects.jpg": [
+      2880,
+      1800
+    ]
+  },
+  "display": "HP Z27k G3; native and archive Safari moved there before final capture",
+  "issues": {
+    "AN-V01": {
+      "failures": 2,
+      "state": "rendering corrected and observed; cumulative failures retained"
+    },
+    "AN04": {
+      "failures": 1,
+      "state": "fixed and regression/native verified"
+    },
+    "AN-V09": {
+      "failures": 1,
+      "state": "fixed and observed left alignment"
+    },
+    "AN-V03_spacing": {
+      "failures": 2,
+      "state": "2.5 DIP top-line difference exceeds 2 DIP; still open"
+    }
+  },
+  "goal_complete": false,
+  "visual_pass": false,
+  "remaining": [
+    "knowledge-section 2.5 DIP anchor difference",
+    "final visual/completion audit after geometry correction"
+  ],
+  "scope": "homepage and necessary return wiring; dev only; no model/index/migration/business-service restart/release"
+}

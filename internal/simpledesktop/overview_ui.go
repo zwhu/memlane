@@ -279,7 +279,7 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 			homeText(c, start.Format("2006.01")+" — "+today.Format("2006.01"), homeMeta)
 		})
 		ui.Column(c).FillWidth().MaxWidth(900).AlignSelf(ui.Center).Gap(8).Children(func() {
-			ui.Row(c).Justify(ui.SpaceBetween).Children(func() {
+			ui.Row(c).FillWidth().MaxWidth(879).AlignSelf(ui.Center).Justify(ui.SpaceBetween).Children(func() {
 				month := time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, now.Location())
 				for !month.After(today) {
 					homeText(c, fmt.Sprint(int(month.Month()))+"月", homeMeta).FontSize(9).SingleLine().Shrink(0).TextColor(ui.Hex("#98a3ae"))
@@ -302,7 +302,7 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 						ui.Column(c).Height(0).Grow(1).Justify(ui.Center).Children(func() { homeText(c, label, homeMeta).FontSize(8) })
 					}
 				})
-				ui.Row(c).Width(0).Grow(1).Gap(3).Children(func() {
+				ui.Row(c).Width(0).Grow(1).AspectRatio(53.0 / 7).Gap(3).Children(func() {
 					for week := 0; week < weeks; week++ {
 						ui.Column(c).Width(0).Grow(1).Gap(3).Children(func() {
 							for weekday := 0; weekday < 7; weekday++ {
@@ -510,6 +510,11 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 							label += " · " + eventFailureReason(event)
 						}
 						homeText(c, label, homeMeta).TextColor(homeMuted).Margin(5, 0, 0, 0)
+						if event.State != "已完成" && event.State != "失败" {
+							if index, ok := a.overviewActivityProject(event); ok {
+								homeLink(c, "查看项目", func() { a.navigate("知识", index) }).AlignSelf(ui.Start).Justify(ui.Start)
+							}
+						}
 						if event.State == "失败" {
 							ui.Row(c).Margin(8, 0, 0, 0).Gap(8).Children(func() {
 								title := "查看失败详情"
@@ -558,4 +563,21 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 			homeLink(c, "加载更多动态", func() { v.ActivityExpanded = true; v.ActivityLimit += 20; a.loadOverviewActivity() }).Disabled(v.ActivityLoading)
 		}
 	})
+}
+
+func (a *App) overviewActivityProject(event overviewEvent) (int, bool) {
+	// Activity labels are presentation only. Same-name projects must never
+	// route through their label; only an unambiguous official dataset does.
+	index := -1
+	if event.Record.Dataset != "" {
+		for i, p := range a.Config.Projects {
+			if p.Dataset == event.Record.Dataset {
+				if index >= 0 {
+					return 0, false
+				}
+				index = i
+			}
+		}
+	}
+	return index, index >= 0
 }

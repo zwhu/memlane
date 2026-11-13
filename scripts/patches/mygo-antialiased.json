@@ -1,0 +1,33 @@
+{
+  "module": "github.com/egoist/mygo",
+  "version": "v0.7.4",
+  "purpose": "Scoped CSS-style grayscale antialiasing for selected A homepage; no module-cache writes",
+  "files": {
+    "ui/theme.go": {
+      "sha256": "817d35cd72b3d2efa70fb8cef2b24eef5cf59cde4aa94b51a6ccc360fcece264",
+      "replacements": [
+        {
+          "old": "\tFont     string\n",
+          "new": "\tFont     string\n\t// Antialiased draws text without Core Text font smoothing, as CSS\n\t// -webkit-font-smoothing: antialiased. Opt-in for this theme only.\n\tAntialiased bool\n"
+        }
+      ]
+    },
+    "ui/paint.go": {
+      "sha256": "095293701c5f59bc4dec4546d0389efe3c0e0f5bd1b74b1f0d9c41bed5655bc3",
+      "replacements": [
+        {
+          "old": "\tshade := text.ShadeOf(color.R, color.G, color.B)\n\tstart := int32(len(p.s.Glyphs))",
+          "new": "\tshade := p.textShade(color)\n\tstart := int32(len(p.s.Glyphs))"
+        },
+        {
+          "old": "glyphShade = text.ShadeOf(glyphColor.R, glyphColor.G, glyphColor.B)",
+          "new": "glyphShade = p.textShade(glyphColor)"
+        },
+        {
+          "old": "// textForeground paints glyphs and decorations over backgrounds and selection.",
+          "new": "// textShade preserves glyph layout and limits antialiasing to the innermost\n// theme. The default theme and sibling views keep their existing rendering.\nfunc (p *Painter) textShade(color Color) text.Shade {\n\tif p.Theme().Antialiased {\n\t\treturn text.Flat\n\t}\n\treturn text.ShadeOf(color.R, color.G, color.B)\n}\n\n// textForeground paints glyphs and decorations over backgrounds and selection."
+        }
+      ]
+    }
+  }
+}

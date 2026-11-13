@@ -44,7 +44,7 @@ func overviewReadingTitle(i Item) string {
 func (a *App) returnToOverview() {
 	if a.page == "知识" || a.page == "搜索" || a.page == "通用知识" {
 		s := a.state()
-		if len(s.History) > 0 {
+		if len(s.History) > a.overviewSourceFloor[s] {
 			a.returnFromSource(s)
 			return
 		}
