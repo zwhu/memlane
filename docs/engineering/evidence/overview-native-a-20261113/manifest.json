@@ -166,9 +166,25 @@
       "sha256": "58ae039c83562210631c157ecc3778f943c7cba01be7b25ebe1d19bec5de6672"
     },
     {
+      "file": "user-review/01-selected-a.png",
+      "bytes": 409594,
+      "sha256": "a503842fd85261d15acb189d7f6a4682e268f6f3f188fb0ad8e7ad2a72346fab",
+      "type": "png",
+      "width": 2544,
+      "height": 1716
+    },
+    {
+      "file": "user-review/02-native.png",
+      "bytes": 394756,
+      "sha256": "73a5b3ee3a0fa7d52113706b52b6bbd984d0e3de450d44407a4a0fe7915bfe44",
+      "type": "png",
+      "width": 2546,
+      "height": 1800
+    },
+    {
       "file": "verification.json",
-      "bytes": 3399,
-      "sha256": "42ec38030dec33c16164b1cf355530aecbd2ebd28b6a0343daab016d887be1d1"
+      "bytes": 4158,
+      "sha256": "913c2984b9d81035c7237d2267b7a3bb270f2f1d11b8f756daaad00b5904d75f"
     }
   ]
 }

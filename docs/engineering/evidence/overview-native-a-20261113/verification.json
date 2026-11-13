@@ -50,7 +50,13 @@
   "product_failures": {
     "AN01": 1,
     "AN02": 1,
-    "AN03": 1
+    "AN03": 1,
+    "AN-V01": 1,
+    "AN-V02": 1,
+    "AN-V03": 1,
+    "AN-V04": 1,
+    "AN-V05": 1,
+    "AN-V06": 1
   },
   "method_observations": {
     "initial_fixture_contract": "failure rows missing Failures; no configured project for document failure",
@@ -79,5 +85,20 @@
     "project_control": 6188,
     "changed": false
   },
-  "scope": "overview only; dev; no model/index/migration/release"
+  "scope": "overview only; dev; no model/index/migration/release",
+  "visual_review": {
+    "recorded_at": "2026-11-13T09:12:30.045612+00:00",
+    "reviewed_source_commit": "696d2b0",
+    "latest_document_commit_before_review": "908abdc",
+    "status": "failed user review; prior agent visual completion conclusion withdrawn",
+    "overall_goal_complete": false,
+    "next_stage": "visual standards review before UI corrections",
+    "standard": "docs/ui-redesign/visual-standards-20261113.md",
+    "standards_status": "draft based on selected A; new acceptance tolerances proposed",
+    "images": [
+      "user-review/01-selected-a.png",
+      "user-review/02-native.png"
+    ],
+    "production_source_changed": false
+  }
 }
