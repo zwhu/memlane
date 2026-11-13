@@ -55,7 +55,8 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
     if codex_config:
         from agent_connections import Connections
         connections = Connections(registry, codex_config)
-    if codex_config and codex_config.get('auth_home') and codex_config.get('codex_executable'):
+    if (codex_config and codex_config.get('auth_home') and Path(codex_config['auth_home']).is_dir()
+            and codex_config.get('codex_executable') and Path(codex_config['codex_executable']).is_file()):
         from project_codex_connection import CodexConnection
         connection = CodexConnection(registry, codex_config)
 

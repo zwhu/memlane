@@ -90,6 +90,14 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(env['LLM_API_KEY'], 'synthetic-secret')
         self.assertEqual(self.store.state['active']['id'], 'existing-codex')
 
+    def test_changed_key_file_invalidates_validation_even_with_same_version(self):
+        first = self.put()
+        profile = self.store.resolve(first)['profile']
+        path = self.store.credential_path(profile['credential_ref'], profile['credential_version'])
+        path.write_text('externally-changed-key')
+        with self.assertRaisesRegex(PolicyError, 'generation_validation_stale'):
+            self.store.resolve(first)
+
     def test_schema1_migration_preserves_identity_acl_and_material_references(self):
         path = self.root / 'registry.json'
         before = {'schema_version': 1, 'revision': 9, 'agents': {'codex-one': {'name': 'original', 'principal_id': 'unchanged'}},

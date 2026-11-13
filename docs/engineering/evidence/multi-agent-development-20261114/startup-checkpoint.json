@@ -1,0 +1,11 @@
+{
+  "boundary": "launcher_unit_and_owned_subprocess_checks_not_real_provider_e2e",
+  "exit_code": 0,
+  "elapsed_seconds": 1.632,
+  "summary": "Ran 28 tests in 1.422s\n\nOK",
+  "api_without_codex_inputs": true,
+  "applied_digest_gate": true,
+  "writer_lock_handoff": true,
+  "model_calls": false,
+  "daily_runtime_changed": false
+}

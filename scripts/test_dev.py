@@ -21,6 +21,79 @@ def try_lock(root, queue):
 
 
 class OwnershipTests(unittest.TestCase):
+    def test_provider_stack_needs_no_codex_login_and_commits_only_after_applied_digest(self):
+        import json
+        from generation_config import GenerationStore, runtime_generation
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            generation = root / 'generation.json'
+            store = GenerationStore(generation, 'fixed', legacy_model='original')
+            profile = store.put('api', {'mode': 'provider', 'provider': 'custom', 'model': 'synthetic',
+                                     'endpoint': 'https://example.test/v1'}, 0, 'save', api_key='synthetic-key')
+            store.state['validations']['validate'] = {'status': 'passed', 'digest': profile['digest'],
+                'plain_passed': True, 'schema_passed': True, 'quality_passed': True}
+            store.select_next(profile, 1, 'next')
+            store.close()
+            config = {'generation_file': str(generation), 'service_commit': 'fixed', 'python': 'unused-python',
+                      'service_url': 'http://127.0.0.1:18999'}
+            launches = []
+            def launch(command):
+                launches.append(command)
+                effective = json.loads(Path(command[-1]).read_text())
+                selected, environment, digest = runtime_generation(effective)
+                self.assertEqual(selected['mode'], 'provider')
+                self.assertEqual(environment['LLM_MODEL'], 'openai/synthetic')
+                self.assertEqual(environment['LLM_API_KEY'], 'synthetic-key')
+                Path(effective['generation_applied_file']).write_text(json.dumps({
+                    'pid': 42, 'digest': digest, 'reference': effective['generation_reference']}))
+                Path(effective['generation_applied_file']).chmod(0o600)
+                return Mock(pid=42)
+            with patch.object(dev, 'port_free'):
+                effective, path, endpoint, service = dev.start_generation_stack(config, root / 'runtime.json',
+                    launch, lambda: self.fail('unexpected cleanup'), health=lambda *args: None)
+            self.assertEqual(len(launches), 1)
+            self.assertIsNone(endpoint)
+            self.assertEqual(effective['generation_mode'], 'provider')
+            self.assertNotIn('synthetic-key', path.read_text())
+            # The controller can now take the same lock; no live second writer.
+            store = GenerationStore(generation, 'fixed')
+            try:
+                self.assertEqual(store.state['active']['id'], 'api')
+                self.assertIsNone(store.state['next'])
+            finally:
+                store.close()
+
+    def test_applied_digest_mismatch_does_not_commit_candidate_or_claim_cleanup(self):
+        import json
+        import sys
+        from generation_config import GenerationStore
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            generation = root / 'generation.json'
+            store = GenerationStore(generation, 'fixed', legacy_model='original')
+            profile = store.put('api', {'mode': 'provider', 'provider': 'custom', 'model': 'synthetic',
+                                     'endpoint': 'https://example.test/v1'}, 0, 'save', api_key='synthetic-key')
+            store.state['validations']['v'] = {'status': 'passed', 'digest': profile['digest'],
+                'plain_passed': True, 'schema_passed': True, 'quality_passed': True}
+            store.select_next(profile, 1, 'next')
+            store.close()
+            def launch(command):
+                config = json.loads(Path(command[-1]).read_text())
+                Path(config['generation_applied_file']).write_text(json.dumps({'pid': 42, 'digest': 'wrong'}))
+                Path(config['generation_applied_file']).chmod(0o600)
+                return Mock(pid=42)
+            config = {'generation_file': str(generation), 'service_commit': 'fixed', 'python': sys.executable,
+                      'service_url': 'http://127.0.0.1:18999'}
+            with patch.object(dev, 'port_free'):
+                with self.assertRaisesRegex(Exception, 'generation_cleanup_unconfirmed'):
+                    dev.start_generation_stack(config, root / 'runtime.json', launch, lambda: False, health=lambda *args: None)
+            store = GenerationStore(generation, 'fixed')
+            try:
+                self.assertEqual(store.state['active']['id'], 'existing-codex')
+                self.assertEqual(store.state['next']['id'], 'api')
+            finally:
+                store.close()
+
     def test_project_control_is_not_mistaken_for_ui_watcher(self):
         state = {'children': [10, 11, 12, 13], 'service_children': {'completion': 10, 'official': 11, 'project_control': 12}}
         self.assertEqual(dev.owner_ui_children(state), [13])
@@ -99,7 +172,10 @@ class OwnershipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             runtime = root / 'venv'
-            venv.EnvBuilder(with_pip=False).create(runtime)
+            # The managed relocatable macOS Python locates libpython relative
+            # to its executable. Copying it alone makes a broken venv fixture;
+            # a normal symlink venv preserves both ABI runtime and pyvenv.cfg.
+            venv.EnvBuilder(with_pip=False, symlinks=True).create(runtime)
             store = root / 'store'
             (store / 'system').mkdir(parents=True)
             (store / 'data').mkdir()

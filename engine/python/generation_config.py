@@ -109,8 +109,12 @@ class GenerationStore:
         private_write(self.path, json.dumps(self.state, ensure_ascii=False, sort_keys=True).encode())
 
     def record(self, profile, revision):
-        return {'revision': revision, 'profile': validate_profile(profile),
-                'digest': fingerprint({'profile': profile, 'service_commit': self.service_commit})}
+        validated = validate_profile(profile)
+        credential_digest = (hashlib.sha256(self.secret(validated).encode()).hexdigest()
+                             if validated['mode'] == 'provider' else None)
+        return {'revision': revision, 'profile': validated,
+                'digest': fingerprint({'profile': profile, 'service_commit': self.service_commit,
+                                       'credential_digest': credential_digest})}
 
     def checked(self, expected, operation_id, request):
         if not isinstance(operation_id, str) or not IDENTIFIER.fullmatch(operation_id):

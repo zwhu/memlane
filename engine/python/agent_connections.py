@@ -194,7 +194,8 @@ class Connections:
     def __init__(self, registry, config):
         self.registry, self.adapters = registry, {}
         self.mutex = asyncio.Lock()
-        if config.get('auth_home') and config.get('codex_executable'):
+        if (config.get('auth_home') and Path(config['auth_home']).is_dir()
+                and config.get('codex_executable') and Path(config['codex_executable']).is_file()):
             from project_codex_connection import CodexConnection
             adapter = CodexConnection(registry, config)
             self.adapters[adapter.id] = adapter

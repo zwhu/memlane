@@ -17,6 +17,7 @@ import tempfile
 import hashlib
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'engine/python'))
 GO = ROOT / '.local/toolchains/go-1.27.3/go/bin/go'
 DEFAULT_CONFIG = ROOT / '.local/daily/runtime.json'
 
@@ -28,9 +29,10 @@ def complete_initialization(config, config_path, now=None):
     with urllib.request.urlopen(request, timeout=10) as response:
         if response.status != 200:
             raise RuntimeError('authenticated content readiness failed')
-    with urllib.request.urlopen(config['completion_url'].rstrip('/') + '/health', timeout=10) as response:
-        if response.status != 200:
-            raise RuntimeError('completion readiness failed')
+    if config.get('generation_mode', 'agent_bridge') == 'agent_bridge':
+        with urllib.request.urlopen(config['completion_url'].rstrip('/') + '/health', timeout=10) as response:
+            if response.status != 200:
+                raise RuntimeError('completion readiness failed')
     path = Path(config.get('client_state_file') or Path(config_path).parent / 'client-state.json')
     if not path.is_absolute():
         raise ValueError('client_state_file must be absolute')
@@ -77,13 +79,16 @@ def complete_initialization(config, config_path, now=None):
 
 def load_config(path):
     config = json.loads(path.read_text())
-    for key in ('official_data', 'official_source', 'python', 'token_file', 'completion_token_file', 'codex_executable', 'auth_home', 'official_archive', 'service_environment_file'):
+    for key in ('official_data', 'official_source', 'python', 'token_file', 'official_archive', 'service_environment_file'):
         target = Path(config[key]).expanduser().resolve(strict=True)
         # Resolving a venv's Python symlink bypasses its pyvenv.cfg and dependencies.
         config[key] = str(Path(config[key]).expanduser().absolute()) if key == 'python' else str(target)
-    for key in ('token_file', 'completion_token_file', 'service_environment_file'):
+    for key in ('token_file', 'service_environment_file'):
         if Path(config[key]).stat().st_mode & 0o077:
             raise ValueError(key + ' must be private (0600)')
+    for key in ('completion_token_file', 'codex_executable', 'auth_home'):
+        if config.get(key):
+            config[key] = str(Path(config[key]).expanduser().absolute())
     data = Path(config['official_data'])
     if not data.is_dir() or not (data / 'system').is_dir() or not (data / 'data').is_dir():
         raise ValueError('official_data must name the existing daily store; no empty database will be created')
@@ -91,6 +96,8 @@ def load_config(path):
     if config.get('service_commit') != expected:
         raise ValueError('explicit fixed official service commit required')
     for key in ('service_url', 'completion_url'):
+        if key == 'completion_url' and key not in config:
+            continue
         from urllib.parse import urlparse
         url = urlparse(config[key])
         if url.scheme != 'http' or url.hostname != '127.0.0.1' or not url.port or url.path not in ('', '/'):
@@ -109,7 +116,7 @@ def validate_project_control(control, config):
     if (parsed.scheme != 'http' or parsed.hostname != '127.0.0.1' or not parsed.port
             or parsed.path not in ('', '/') or parsed.query or parsed.fragment or parsed.username):
         raise ValueError('project_control.url must be an explicit loopback origin')
-    if parsed.port in {urlparse(config[key]).port for key in ('service_url', 'completion_url')}:
+    if parsed.port in {urlparse(config[key]).port for key in ('service_url', 'completion_url') if config.get(key)}:
         raise ValueError('project control requires its own explicit port')
     for key in ('registry_file', 'management_token_file'):
         if not Path(control[key]).is_absolute():
@@ -352,6 +359,62 @@ def ui_env(config_path):
     return with_patched_sdk(env)
 
 
+def start_generation_stack(config, config_path, launch, cleanup, *, health=wait_http):
+    """Start one immutable revision while holding the generation writer lock.
+
+    `launch` and `cleanup` are the launcher's existing process-owner operations.
+    Hand the same private config lock to project_control only after this returns.
+    """
+    from generation_config import GenerationStore
+    from generation_startup import start_generation
+    from project_control import private_write
+    from urllib.parse import urlparse
+    generation_file = Path(config.get('generation_file') or config_path.parent / 'generation.json')
+    if not generation_file.is_absolute():
+        raise ValueError('generation_file must be absolute')
+    store = GenerationStore(generation_file, config['service_commit'], legacy_model=config.get('model'))
+    runtime_path = config_path.parent / ('.runtime-active-' + str(os.getpid()) + '.json')
+    applied_path = config_path.parent / ('.generation-applied-' + str(os.getpid()) + '.json')
+    try:
+        def start(reference, digest):
+            profile = store.resolve(reference)['profile']
+            effective = {**config, 'generation_file': str(generation_file), 'generation_reference': reference,
+                         'generation_mode': profile['mode'], 'model': profile['model'],
+                         'generation_applied_file': str(applied_path)}
+            if profile['mode'] == 'provider':
+                effective.pop('completion_url', None)
+            endpoint = None
+            if profile['mode'] == 'agent_bridge':
+                for key in ('completion_token_file', 'codex_executable', 'auth_home'):
+                    if key == 'completion_token_file' and Path(config[key]).expanduser().is_symlink():
+                        raise ValueError('completion credential must not be a symlink')
+                    effective[key] = str(Path(config[key]).expanduser().resolve(strict=True))
+                token = Path(effective['completion_token_file'])
+                if token.is_symlink() or token.stat().st_mode & 0o077:
+                    raise ValueError('completion credential must be private')
+                port_free(effective['completion_url'])
+            applied_path.unlink(missing_ok=True)
+            private_write(runtime_path, json.dumps(effective).encode())
+            if profile['mode'] == 'agent_bridge':
+                endpoint = launch([effective['python'], str(ROOT / 'engine/python/codex_completion_endpoint.py'),
+                    '--port', str(urlparse(effective['completion_url']).port),
+                    '--token-file', effective['completion_token_file'], '--codex-executable', effective['codex_executable'],
+                    '--auth-home', effective['auth_home'], '--model', effective['model']])
+                health(effective['completion_url'] + '/health', endpoint)
+            port_free(effective['service_url'])
+            service = launch([effective['python'], str(ROOT / 'engine/python/official_service_dev.py'), '--config', str(runtime_path)])
+            health(effective['service_url'] + '/health', service)
+            if applied_path.is_symlink() or applied_path.stat().st_mode & 0o077:
+                raise RuntimeError('private generation applied receipt required')
+            applied = json.loads(applied_path.read_text())
+            if applied.get('pid') != service.pid or applied.get('digest') != digest or applied.get('reference') != reference:
+                raise RuntimeError('generation applied configuration unconfirmed')
+            return effective, runtime_path, endpoint, service
+        return start_generation(store, start, cleanup)
+    finally:
+        store.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', nargs='?', choices=('start', 'stop', 'open', 'status'), default='start')
@@ -383,6 +446,8 @@ def main():
         if args.action == 'status':
             print(json.dumps(state, indent=2)); return
         if args.action == 'open':
+            if state.get('runtime_config'):
+                config = load_config(Path(state['runtime_config']))
             complete_initialization(config, path)
             if args.watch_ui:
                 # An older detached launcher may have lost its output reader.
@@ -397,7 +462,7 @@ def main():
                         raise KeyboardInterrupt
                     signal.signal(signal.SIGTERM, stop_ui)
                     watcher = launch_owned([str(GO), 'tool', 'mygo', 'dev'], cwd=ROOT,
-                                           env=ui_env(path), log_file=path.parent / 'runtime-logs/ui-attached.log')
+                                           env=ui_env(Path(state.get('runtime_config', path))), log_file=path.parent / 'runtime-logs/ui-attached.log')
                     try:
                         while watcher.poll() is None:
                             trim_service_log(path.parent / 'runtime-logs/ui-attached.log')
@@ -436,7 +501,7 @@ def main():
     reopen = False
     state = {'pid': os.getpid(), 'started': subprocess.check_output(['ps', '-p', str(os.getpid()), '-o', 'lstart='], text=True).strip(),
              'phase': 'starting', 'config': str(path), 'official_data': str(data),
-             'service_url': config['service_url'], 'completion_url': config['completion_url'], 'children': [], 'service_children': {}}
+             'service_url': config['service_url'], 'completion_url': config.get('completion_url'), 'children': [], 'service_children': {}}
     def save_owner():
         state['children'] = [proc.pid for proc in processes if proc.poll() is None]
         temporary = runfile.with_name(runfile.name + '.' + str(os.getpid()) + '.tmp')
@@ -456,26 +521,35 @@ def main():
         trim_service_log(log_file)
         proc = launch_owned(command, cwd=cwd, env=env, log_file=log_file)
         processes.append(proc)
+        role = {'codex_completion_endpoint': 'completion', 'official_service_dev': 'official',
+                'project_control_server': 'project_control'}.get(entry)
+        if role:
+            state['service_children'][role] = proc.pid
         save_owner()
         return proc
+    def cleanup_stack():
+        try:
+            track_descendants([p.pid for p in processes], descendants)
+            for proc in reversed(processes):
+                stop_group(proc)
+            stop_descendants(descendants)
+        except Exception:
+            return False
+        processes.clear()
+        descendants.clear()
+        state['service_children'].clear()
+        save_owner()
+        return True
     try:
         save_owner()
-        port_free(config['service_url'])
-        port_free(config['completion_url'])
-        from urllib.parse import urlparse
-        endpoint = launch([config['python'], str(ROOT / 'engine/python/codex_completion_endpoint.py'),
-                           '--port', str(urlparse(config['completion_url']).port),
-                           '--token-file', config['completion_token_file'], '--codex-executable', config['codex_executable'],
-                           '--auth-home', config['auth_home'], '--model', config['model']])
-        state['service_children']['completion'] = endpoint.pid
-        wait_http(config['completion_url'] + '/health', endpoint)
-        service = launch([config['python'], str(ROOT / 'engine/python/official_service_dev.py'), '--config', str(path)])
-        state['service_children']['official'] = service.pid
-        wait_http(config['service_url'] + '/health', service)
+        config, runtime_path, endpoint, service = start_generation_stack(config, path, launch, cleanup_stack)
+        state.update(runtime_config=str(runtime_path), generation_mode=config['generation_mode'],
+                     generation_reference=config['generation_reference'], completion_url=config.get('completion_url'))
+        save_owner()
         control = None
         if config.get('project_control'):
             port_free(config['project_control']['url'])
-            control = launch([config['python'], str(ROOT / 'engine/python/project_control_server.py'), '--config', str(path)])
+            control = launch([config['python'], str(ROOT / 'engine/python/project_control_server.py'), '--config', str(runtime_path)])
             state['service_children']['project_control'] = control.pid
             state['project_control_url'] = config['project_control']['url']
             wait_project_control(config['project_control'], control)
@@ -488,13 +562,13 @@ def main():
             for log_file in (path.parent / 'runtime-logs').glob('*.log'):
                 trim_service_log(log_file)
             track_descendants([p.pid for p in processes], descendants)
-            if endpoint.poll() is not None or service.poll() is not None:
+            if (endpoint is not None and endpoint.poll() is not None) or service.poll() is not None:
                 raise RuntimeError('official service or completion endpoint exited; no automatic restart')
             if control is not None and control.poll() is not None:
                 raise RuntimeError('project control exited; no automatic restart or owner fallback')
             if reopen:
                 reopen = False
-                ui = reopen_ui(ui, processes, launch, path)
+                ui = reopen_ui(ui, processes, launch, runtime_path)
             time.sleep(.25)
     except KeyboardInterrupt: pass
     finally:
@@ -509,6 +583,9 @@ def main():
             # Preserve state; do not claim a successful shutdown.
             raise RuntimeError('; '.join(errors))
         runfile.unlink(missing_ok=True)
+        for artifact in (path.parent / ('.runtime-active-' + str(os.getpid()) + '.json'),
+                         path.parent / ('.generation-applied-' + str(os.getpid()) + '.json')):
+            artifact.unlink(missing_ok=True)
         lock.close()
 
 

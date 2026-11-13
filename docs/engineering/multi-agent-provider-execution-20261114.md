@@ -45,3 +45,15 @@
 后续顺序：补通用API／宿主失败回执与真实事件验证→启动器条件completion及下次启动应用→首批其他Agent→Native集中接线→各协议及跨Agent真实链路、权限和窗口验收。原MA/LP/UI范围保持。
 
 用户本轮补充授权：Codex剩余用量额度低于2%时允许使用重置卡，无需重复确认；尚未使用。此授权不包含其他付费或供应商切换。
+
+## 开发检查点二
+
+继续完成I07源码接线：`scripts/dev.py`按所选不可变profile启动，Provider模式无需Codex executable/auth home/completion token，不启动completion子进程；官方服务读取固定revision。启动器持配置锁启动官方服务，核对私有回执的PID、profile引用和digest以及真实健康检查后才提交active，随后将写锁交给控制进程。失败仅在完整受管进程组及后代退出确认后恢复原配置一次。UI重开沿owner记录读取同一运行配置；保存候选不修改它。API模式初始化不再要求Codex健康端点。
+
+生成配置摘要同时绑定私有key文件内容摘要，外部修改同一key版本也会使验证失效；API模式缺少Codex宿主时不阻塞独立Agent连接管理。日常配置／库／服务未改动。
+
+[启动检查证据](evidence/multi-agent-development-20261114/startup-checkpoint.json)：启动器与生成配置共28项检查通过，API无Codex输入、配置摘要门禁、锁交接及一次恢复均有隔离证据；实际服务／Provider模型端到端仍待验。随后加严回执私有权限并定向复验相应2项用例。首次脚本检查有1项**测试夹具错误**：macOS受管可搬移Python被`venv`默认复制后找不到libpython；改用正常symlink venv后14项脚本检查通过。该轮不计作产品启动失败。
+
+[固定上游兼容性核对](evidence/multi-agent-development-20261114/host-patch-compatibility.json)：Claude Code有4个入口需单独改写补丁，其余10个锚点匹配但语义仍待核对；Cursor有13个锚点匹配，缺少同版`_coding_memory.py`。特别要补Claude transcript禁采水位、Cursor事件模式的召回合并／撤权及无回答时不读历史，不能直接复制Codex插件宣称支持。源码审阅还发现主动search的旧CLI fallback需在受管产物明确拦截；这是待验证源码缺口，尚非本轮验收失败计数，也没有修改／重装日常插件。
+
+整体估算约25%（对比检查点一增加约5个百分点），范围保持第一批全部Agent／Provider／Native及真实验收。I07已实现待真实链路验证，I08继续宿主专用patch及安装适配，I09/I10仍未完成。
