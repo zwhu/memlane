@@ -6,8 +6,11 @@ import json
 import os
 from pathlib import Path
 import secrets
+import re
 import tempfile
 import uuid
+from urllib.parse import urlparse
+from urllib.parse import quote
 
 from project_policy import ACCESS, DEFAULTS, PolicyError, effective, project_id, validate_fields, workspace_root
 
@@ -42,10 +45,18 @@ def read_secret(path):
     return value
 
 
+def loopback_origin(value):
+    url = urlparse(value)
+    if (url.scheme != 'http' or url.hostname != '127.0.0.1' or not url.port
+            or url.path not in ('', '/') or url.query or url.fragment or url.username):
+        raise PolicyError('explicit_loopback_origin_required')
+    return value.rstrip('/')
+
+
 class Official:
     """Fixed official API only; management key is never returned to a caller."""
     def __init__(self, session, url, token_file):
-        self.session, self.url, self.token_file = session, url.rstrip('/'), token_file
+        self.session, self.url, self.token_file = session, loopback_origin(url), token_file
 
     async def request(self, method, path, body=None, token_file=None):
         import aiohttp
@@ -97,7 +108,8 @@ class Official:
 
     async def effective_permissions(self, agent, dataset):
         me = await self.request('GET', '/api/v1/users/me', token_file=agent['key_file'])
-        if me['id'] != agent['principal_id'] or not me.get('parent_user_id'):
+        owner = await self.request('GET', '/api/v1/users/me')
+        if me['id'] != agent['principal_id'] or me.get('parent_user_id') != owner['id']:
             raise PolicyError('independent_agent_required', 503)
         tenants = await self.request('GET', '/api/v1/permissions/tenants/me', token_file=agent['key_file'])
         principals = {me['id']}
@@ -155,7 +167,8 @@ class Registry:
             raise PolicyError('agent_not_registered', 403)
         values = effective(self.state['defaults'], project['overrides'].get(agent_id, {}))
         applied = project['applied'].get(agent_id, {})
-        ready = applied.get('revision') == project['desired_revision'] and applied.get('status') == 'verified'
+        ready = (project['status'] == 'verified' and
+                 applied.get('revision') == project['desired_revision'] and applied.get('status') == 'verified')
         return {'project_id': project['id'], 'dataset_id': project['dataset_id'],
                 'dataset_name': project['dataset_name'], 'revision': self.state['revision'],
                 'desired_revision': project['desired_revision'], 'ready': ready,
@@ -164,7 +177,18 @@ class Registry:
     def directory(self):
         return {'revision': self.state['revision'], 'defaults': copy.deepcopy(self.state['defaults']),
                 'agents': [{'id': key, 'name': value['name']} for key, value in self.state['agents'].items()],
+                'enrollments': {key: {field: value[field] for field in ('status', 'error_code') if field in value}
+                                for key, value in self.state.get('enrollments', {}).items()},
                 'projects': [copy.deepcopy(project) for project in self.state['projects'].values()]}
+
+    async def reconcile(self, expected, identifier):
+        async with self.mutex:
+            self.check_revision(expected)
+            project = self.state['projects'].get(identifier)
+            if project is None:
+                raise PolicyError('project_not_found', 404)
+            await self.reconcile_locked(project)
+            return self.directory()
 
     async def add_agent(self, instance_id, name, principal_id, key_file, expected):
         """Only management can enroll a provisioned official sub-user, never an owner."""
@@ -181,6 +205,77 @@ class Registry:
             if any(a['principal_id'] == agent['principal_id'] for a in self.state['agents'].values()):
                 raise PolicyError('principal_already_registered', 409)
             self.state['agents'][instance_id] = agent
+            self.state['revision'] += 1
+            for project in self.state['projects'].values():
+                project['desired_revision'] = self.state['revision']
+            self.save()
+            for project in self.state['projects'].values():
+                await self.reconcile_locked(project)
+            return self.directory()
+
+    async def provision_agent(self, expected, instance_id, name):
+        """Persist a single creation attempt; unknown creates require explicit recovery."""
+        if not isinstance(instance_id, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', instance_id):
+            raise PolicyError('invalid_installation_id')
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
+            raise PolicyError('invalid_agent_name')
+        async with self.mutex:
+            self.check_revision(expected)
+            enrollments = self.state.setdefault('enrollments', {})
+            if instance_id in self.state['agents'] or instance_id in enrollments:
+                raise PolicyError('agent_creation_requires_review', 409)
+            unique_name = 'ml-' + self.state['service_namespace'] + '-' + instance_id
+            enrollments[instance_id] = {'name': name.strip(), 'official_name': unique_name,
+                                        'operation_id': secrets.token_hex(16), 'status': 'unconfirmed'}
+            self.state['revision'] += 1
+            self.save()
+            try:
+                result = await self.official.request('POST', '/api/v1/agents/create?name=' + quote(unique_name, safe=''))
+                principal = str(uuid.UUID(result['agentId']))
+                key = result['agentApiKey']
+                if not isinstance(key, str) or not key.strip():
+                    raise PolicyError('agent_creation_result_unknown', 503)
+                credential_root = self.path.parent / 'agent-credentials'
+                key_file = credential_root / (instance_id + '.official')
+                control_file = credential_root / (instance_id + '.control')
+                private_write(key_file, key.strip().encode())
+                private_write(control_file, secrets.token_urlsafe(32).encode())
+                enrollments[instance_id].update({'principal_id': principal, 'key_file': str(key_file),
+                                                 'control_token_file': str(control_file)})
+                self.save()
+                # Do not publish a credential until it proves this exact child identity.
+                me = await self.official.request('GET', '/api/v1/users/me', token_file=key_file)
+                owner = await self.official.request('GET', '/api/v1/users/me')
+                if me['id'] != principal or me.get('parent_user_id') != owner['id']:
+                    raise PolicyError('independent_agent_required', 503)
+                self.state['agents'][instance_id] = {'name': name.strip(), 'principal_id': principal,
+                                                      'key_file': str(key_file), 'control_token_file': str(control_file)}
+                enrollments[instance_id]['status'] = 'verified'
+                for project in self.state['projects'].values():
+                    project['desired_revision'] = self.state['revision']
+                self.save()
+                for project in self.state['projects'].values():
+                    await self.reconcile_locked(project)
+            except (PolicyError, KeyError, ValueError) as error:
+                enrollments[instance_id]['error_code'] = error.code if isinstance(error, PolicyError) else 'agent_creation_result_unknown'
+                self.save()
+            return self.directory()
+
+    async def recover_agent(self, expected, instance_id):
+        """Verify the original saved identity only; never create a replacement."""
+        async with self.mutex:
+            self.check_revision(expected)
+            enrollment = self.state.get('enrollments', {}).get(instance_id)
+            if not enrollment or not enrollment.get('key_file') or instance_id in self.state['agents']:
+                raise PolicyError('agent_recovery_requires_original_credentials', 409)
+            me = await self.official.request('GET', '/api/v1/users/me', token_file=enrollment['key_file'])
+            owner = await self.official.request('GET', '/api/v1/users/me')
+            if me['id'] != enrollment['principal_id'] or me.get('parent_user_id') != owner['id']:
+                raise PolicyError('independent_agent_required', 503)
+            self.state['agents'][instance_id] = {field: enrollment[field] for field in
+                                                  ('name', 'principal_id', 'key_file', 'control_token_file')}
+            enrollment['status'] = 'verified'
+            enrollment.pop('error_code', None)
             self.state['revision'] += 1
             for project in self.state['projects'].values():
                 project['desired_revision'] = self.state['revision']
@@ -221,6 +316,7 @@ class Registry:
                    'dataset_id': dataset_id, 'dataset_name': 'ml-project-' + identifier,
                    'overrides': {}, 'applied': {}, 'desired_revision': self.state['revision'],
                    'operation_id': secrets.token_hex(16), 'status': 'unconfirmed',
+                   'import_acl': bool(dataset_id),
                    'code_enabled': False, 'source': 'associated' if dataset_id else 'discovered'}
         self.state['projects'][identifier] = project
         self.save()
@@ -236,6 +332,18 @@ class Registry:
             row = await self.official.owned_dataset(project['dataset_name'], project['dataset_id'])
             project['dataset_id'], project['dataset_name'] = row['id'], row['name']
             self.save()
+            if project.get('import_acl'):
+                # Association imports facts, never applies the new-project template.
+                imported = {}
+                for agent_id, agent in self.state['agents'].items():
+                    actual = await self.official.effective_permissions(agent, row['id'])
+                    level = next((key for key, value in ACCESS.items() if value == actual), None)
+                    if level is None:
+                        raise PolicyError('existing_acl_requires_review', 409)
+                    imported[agent_id] = {'access': level}
+                project['overrides'] = imported
+                project['import_acl'] = False
+                self.save()
             for agent_id, agent in self.state['agents'].items():
                 policy = effective(self.state['defaults'], project['overrides'].get(agent_id, {}))
                 await self.official.sync_acl(agent, row['id'], policy['permissions'])
