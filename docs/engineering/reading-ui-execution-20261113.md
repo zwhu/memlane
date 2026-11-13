@@ -71,3 +71,7 @@
 - 阅读实现提交为 `62b324f`；已向PA session `01a1d316-954a-7c91-8191-7fdfe3d4a8c9` 发送版本、文件清单、失效接口和app.go/client.go/overview_ui.go及Native窗口的明确释放回执。
 - 用户回复：“由其他 session 修复后台后再补验”。本session不修改后台／dev.py、不发重启、不重发搜索或业务任务；当前Goal继续未完成，等待外部恢复证据，不自动改为complete或paused。
 - 下一次补验前先取得后台修复版本、原数据根与身份保持、服务所有权／健康及搜索恢复回执，并重新协调共享文件／Native窗口。只补RU-G真实搜索→片段→知识→会话→逐层返回及受修复影响的阅读检查；既有源码、真实raw和Native证据在版本条件成立时复用。
+
+### 外部依赖阻塞审计
+
+本轮及随后两次Goal续跑均未取得后台恢复／搜索恢复回执；两次通过wait_threads确认PA session仍active、原turn仍inProgress，观察超时不表示该session退出。共享源码与Native窗口仍由PA持有，用户已指定后台由其他session修复，本session无可独立推进的剩余项。因此Goal记为blocked，等待外部修复及窗口交接后恢复补验。此为外部依赖审计，不增加产品验收失败次数；真实搜索仍仅已记录1轮失败，E12/E16各1的历史计数不变。
