@@ -83,3 +83,19 @@ I09已接Native源码：设置分“服务与连接／知识处理／高级”�
 检查：全量`sh scripts/go.sh test ./...`、`vet ./...`退出0；新增Generation／Integration定向race退出0。Python generation回归14项通过，原操作回执和queued取消补测4项通过。Native截图不作为模型质量或真实Agent采集证据。
 
 整体估算约50%（增加约15个百分点）。仍需优先完成真实pi／TraeX采集→官方知识→新会话采用、其余宿主／权限、各Provider协议与质量、候选启动真实链，以及I10集中验收。还需补未知UI操作的跨进程恢复元数据和API模式下重新验证Codex桥的独立端点生命周期；当前源码检查未证明这两项完整，因此不能把完整方案标成完成。
+
+## 开发检查点五
+
+真实DeepSeek Provider探针已通过：复用现有pi模型endpoint／key，向固定官方native adapter仅发送合成样本，普通输出与含中文、null、数组的嵌套Schema及精确事实均通过，耗时13.278秒。[安全回执](evidence/multi-agent-development-20261114/real-deepseek-probe.json)。仅覆盖该配置及nested-unicode-null-1样本，不外推为所有Provider或完整官方SDK任务质量通过；结构化fallback细节仍unknown，没有跨供应商fallback。
+
+真实启动候选链已通过：独立合成官方数据库、独立owner／JWT／child身份，环境复用已有本地embedding组件；通过管理账本将已验证DeepSeek设next，正常dev启动完成健康／应用摘要核对及active提交，next清空。运行配置没有Codex executable/auth/token/completion输入，证明Provider启动无需Codex登录。[启动证据](evidence/multi-agent-development-20261114/real-provider-startup.json)。未修改日常runtime、owner、原库或插件配置。
+
+pi普通CLI链开始真实验收，当前MA08仍未通过。第一轮发现MA-TRACE01：helper错误地把工具参数dict转字符串，官方接口400，按顺序缓冲阻塞后续问答。已改为复用官方trace_entry，第二轮1条问答和2条工具进入官方缓存、缓冲0、final无incomplete_drain，传输复验通过；原失败次数1轮保留。问题／修复／夹具错误与HOME边界见[记录](agent-trace-schema-20261114.md)。
+
+第二轮官方知识整理却返回no_accepted_lessons、文档0，新pi会话自动注入字符0，未采用合成约定。另记MA-KNOWLEDGE01，累计1轮失败，原因未知；先核对官方coding门槛、writer／judge拒绝及样本适用性，不直接判定模型不支持、不盲重跑或手工造知识。[问题记录](agent-knowledge-quality-20261114.md)、[真链证据](evidence/multi-agent-development-20261114/real-pi-checkpoint.json)。首轮传输缺陷不重复计入知识问题。
+
+验证进程清理补macOS EPERM退出竞争：只有内核进程组表确无该组才确认退出，读取失败保留unknown。新增2项覆盖组仍存在与不可读取的分支；generation validation共6项、Agent连接／helper共6项通过。新trace断言增加一个事件后修正测试原metadata计数断言；不把夹具计数失败当真实宿主第二轮失败。此次未改Go，无新增Go复验要求。
+
+合成服务处理阶段完成后，通过dev所属进程停止入口退出；终端退出0、owner文件移除、进程命令表无本轮根路径。私有Provider／pi凭据副本、owner／管理token、合成官方库及受管安装产物已清理；首轮误用实际HOME的本轮唯一pi状态命名空间在备存失败缓冲后清理，其他共享目录未删除。本地仅保留约11KB小型失败回执／合成缓冲和测试日志，仓库只提交脱敏摘要，未提交真实聊天或配置。原库和日常服务保留，无release包。
+
+整体约55%（较上次增加约5个百分点，按首批完整功能与真实验收估算）。尚需知识质量及新会话采用、TraeX真实正常CLI hooks／信任链、其余Agent与权限、各Provider完整质量／错误矩阵、UI跨进程未知操作恢复、API模式Codex桥端点生命周期及集中验收。目标继续进行中，不缩减原范围。Codex重置卡仍仅在确认剩余额度低于2%时允许使用；本轮未使用，未发现可用额度查询／重置工具。

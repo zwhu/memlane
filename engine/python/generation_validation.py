@@ -7,10 +7,22 @@ from pathlib import Path
 import signal
 import tempfile
 import shutil
+import subprocess
 
 from project_policy import PolicyError
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def group_exists(pid):
+    try:
+        os.killpg(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        rows = subprocess.check_output(['ps', '-axo', 'pgid='], text=True)
+        return any(row.strip() == str(pid) for row in rows.splitlines())
 
 
 class GenerationValidation:
@@ -135,10 +147,17 @@ class GenerationValidation:
         process = self.process
         if process is None:
             return
+        if not group_exists(process.pid):
+            await process.wait()
+            self.process = None
+            return
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+        except PermissionError:
+            if group_exists(process.pid):
+                raise
         try:
             await asyncio.wait_for(process.wait(), 5)
         except asyncio.TimeoutError:
@@ -146,9 +165,7 @@ class GenerationValidation:
             await asyncio.wait_for(process.wait(), 5)
         # Confirm the entire owned group, including descendants, has exited.
         for _ in range(100):
-            try:
-                os.killpg(process.pid, 0)
-            except ProcessLookupError:
+            if not group_exists(process.pid):
                 self.process = None
                 return
             await asyncio.sleep(.05)

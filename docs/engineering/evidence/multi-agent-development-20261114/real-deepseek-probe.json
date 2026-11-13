@@ -1,0 +1,24 @@
+{
+  "operation_id": "deepseek-validation-01",
+  "receipt": {
+    "status": "passed",
+    "digest": "f5872cff72167eeaacd5b3aacc09cf0ae3f0989db207cbf1562d40d6effd3b3b",
+    "reference": {
+      "id": "deepseek-real",
+      "revision": 1,
+      "digest": "f5872cff72167eeaacd5b3aacc09cf0ae3f0989db207cbf1562d40d6effd3b3b"
+    },
+    "structured_mode": "unknown",
+    "plain_passed": true,
+    "schema_passed": true,
+    "quality_passed": true,
+    "sample_version": "nested-unicode-null-1",
+    "boundary": "official_adapter_synthetic_extraction"
+  },
+  "elapsed_seconds": 13.278,
+  "boundary": "real_fixed_official_adapter_synthetic_samples",
+  "daily_config_changed": false,
+  "source": "existing_pi_deepseek_configuration",
+  "resources_retained": false,
+  "credential_copies": "private_temporary_only"
+}

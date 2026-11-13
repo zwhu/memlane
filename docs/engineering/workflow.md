@@ -63,3 +63,5 @@ UI动作→IPC请求→后台任务→模型网关各层关联操作ID／任务I
 - 本次实例：[原始记录后台刷新闪烁](reading-refresh-flicker-20261112.md)。
 - SDK导入也可能有文件副作用；真实SDK验证须核对独立日志／缓存根，使用专用子进程HOME与cwd、显式日志设置并排除凭据，不以临时数据库根代替完整隔离。实例：[SDK日志隔离缺陷](cognee-sdk-log-isolation-incident-20261112.md)。
 - 密码清空须同时核对业务字段、画面与真实Native辅助功能值；视觉遮罩不证明旧输入控件已释放。实例：[Provider密钥输入残留](provider-key-native-clear-20261114.md)。
+- 新宿主工具记录复用官方trace构造器，保持字典参数契约；正常退出、采集事件回执不能替代队列排空和新会话采用。实例：[pi / TraeX工具参数不匹配](agent-trace-schema-20261114.md)。
+- 小Schema探针通过不能代替官方整理的知识质量；真链无知识时保留gate／judge和样本适用性的未知。实例：[pi知识与新会话采用未通过](agent-knowledge-quality-20261114.md)。

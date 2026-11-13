@@ -133,6 +133,14 @@ assert memory.handle(request)["status"] == "buffered"
 assert memory.handle(request)["duplicate"]
 assert len(delivered) == 1
 assert os.environ["COGNEE_API_KEY"] == "synthetic-key-credential"
+trace = {**request, "event_id":"tool-one", "entry":{"type":"trace", "origin_function":"bash",
+         "method_params":{"command":"printf synthetic"}, "method_return_value":{"text":"synthetic"},
+         "status":"success", "time":"2026-11-14T00:00:00Z"}}
+assert memory.handle(trace)["status"] == "buffered"
+assert delivered[-1]["method_params"] == {"command":"printf synthetic"}
+assert delivered[-1]["generate_feedback_with_llm"] is False
+assert isinstance(delivered[-1]["method_return_value"], str)
+delivered.pop()
 allowed[0] = False
 request["event_id"] = "denied"
 assert memory.handle(request)["status"] == "skipped_policy"
@@ -150,7 +158,7 @@ key, _, _ = memory.setup(request)
 state = coding.read_state(key)
 assert "synthetic answer" not in json.dumps(state)
 assert "synthetic prompt" not in json.dumps(state)
-assert len(state["host_events"]) == 3
+assert len(state["host_events"]) == 4
 import _plugin_common as common
 submitted = []
 common.run_session_improve_detailed = lambda *args, **kwargs: submitted.append(kwargs["trigger"]) or {"ok":True}

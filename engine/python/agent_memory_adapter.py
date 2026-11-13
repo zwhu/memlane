@@ -65,7 +65,7 @@ def setup(request):
 def capture(request, key, session, dataset):
     from _capture_policy import capture_enabled, sanitize
     from _memlane_policy import permit
-    from _coding_memory import _SessionState, _deliver, _drain, _truncate
+    from _coding_memory import _SessionState, _deliver, _drain, _truncate, trace_entry
     event_id = request.get('event_id')
     if not isinstance(event_id, str) or not event_id or len(event_id) > 512:
         raise ValueError('capture_event_id_required')
@@ -105,9 +105,12 @@ def capture(request, key, session, dataset):
             clean['answer'] = _truncate(clean['answer'], 8000)
             clean['context'] = _truncate(clean.get('context', ''), 2000)
         else:
-            clean['method_params'] = _truncate(clean.get('method_params', ''), 4000)
-            clean['method_return_value'] = _truncate(clean.get('method_return_value', ''), 8000)
-            clean['error_message'] = _truncate(clean.get('error_message', ''), 500)
+            clean = trace_entry({'name': clean['origin_function'],
+                                 'input': clean.get('method_params', {}),
+                                 'output': clean.get('method_return_value'),
+                                 'is_error': clean['status'] == 'error',
+                                 'error': clean.get('error_message', ''),
+                                 'time': clean.get('time')})
         # Unknown enqueue outcome cannot be repeated implicitly. The official
         # buffer retains the body and receipt; this metadata contains only IDs.
         seen[event_id] = 'enqueue_unknown'
