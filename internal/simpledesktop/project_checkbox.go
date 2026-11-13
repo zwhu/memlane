@@ -1,0 +1,78 @@
+package simpledesktop
+
+import (
+	"context"
+	"strings"
+	"time"
+)
+
+type projectCheckboxPending struct {
+	Project, Agent, Field string
+	Value                 any
+	Revision              int64
+}
+
+func (a *App) saveProjectCheckbox(project, agent, field string, value any) {
+	client, ok := a.accessClient()
+	key := project + "/" + agent
+	if !ok || field != "access" || !a.access.Loaded || a.access.Busy || a.access.CheckboxPending[key] != nil || a.Update == nil {
+		return
+	}
+	if a.access.CheckboxPending == nil {
+		a.access.CheckboxPending = map[string]*projectCheckboxPending{}
+	}
+	pending := &projectCheckboxPending{Project: project, Agent: agent, Field: field, Value: value, Revision: a.access.Directory.Revision}
+	a.access.CheckboxPending[key] = pending
+	a.access.Busy = true
+	a.access.Loading = false
+	a.access.Request++
+	request := a.access.Request
+	a.access.Message = ""
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
+		defer cancel()
+		enabled := value == "maintain"
+		directory, err := client.overrides(ctx, pending.Revision, project, agent, map[string]any{"access": value, "capture": enabled, "auto_process": enabled})
+		a.Update(func() {
+			if request != a.access.Request {
+				return
+			}
+			a.access.Busy = false
+			if err != nil {
+				// Unknown writes stay locked. Catalog verification never resends them.
+				a.access.Message = "未能确认修改，请核对后再操作：" + err.Error()
+				if strings.Contains(err.Error(), "设置已变化") {
+					delete(a.access.CheckboxPending, key)
+					a.RefreshProjectDirectory()
+				}
+				return
+			}
+			a.applyAccessDirectory(directory)
+		})
+	}()
+}
+func (a *App) confirmProjectCheckboxes(directory AccessDirectory) {
+	for key, pending := range a.access.CheckboxPending {
+		if directory.Revision <= pending.Revision {
+			continue
+		}
+		for _, p := range directory.Projects {
+			if p.ID != pending.Project || !p.permissionsReady(directory.Agents...) {
+				continue
+			}
+			actual := p.Overrides[pending.Agent].effective(directory.Defaults)
+			value := any(actual.Access)
+			enabled := pending.Value == "maintain"
+			if actual.Access == pending.Value && (actual.Capture != enabled || actual.AutoProcess != enabled) {
+				continue
+			}
+
+			delete(a.access.CheckboxPending, key)
+			if value != pending.Value {
+				a.access.Message = "设置已由其他操作更新，已显示最新值。"
+			} else if len(a.access.CheckboxPending) == 0 {
+				a.access.Message = ""
+			}
+		}
+	}
+}

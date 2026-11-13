@@ -48,7 +48,7 @@ func settingsCard(c *ui.Context, title, description string, content func()) {
 	})
 }
 func (a *App) globalSettingsPage(c *ui.Context) {
-	settingsTabs(c, &a.access.SettingsSection, []string{"服务与连接", "默认规则", "项目关联", "高级"})
+	settingsTabs(c, &a.access.SettingsSection, []string{"服务与连接", "项目关联", "高级"})
 	ui.Scroll(c.Key("global-settings-" + a.access.SettingsSection)).Grow(1).MinHeight(0).Padding(28).Background(ui.Hex("#f8fafc")).Children(func() {
 		ui.Column(c).FillWidth().MaxWidth(900).Gap(20).Children(func() {
 			switch a.access.SettingsSection {
@@ -63,10 +63,8 @@ func (a *App) globalSettingsPage(c *ui.Context) {
 					}
 				})
 				if a.Config.ProjectControl != nil {
-					settingsCard(c, "本机 Agent", "连接到当前电脑；具体项目的权限、采集和处理请进入对应项目设置。", func() { a.codexConnectionSettings(c) })
+					settingsCard(c, "本机 Agent", "连接到当前电脑；具体项目的读写权限请进入对应项目设置。", func() { a.codexConnectionSettings(c) })
 				}
-			case "默认规则":
-				settingsCard(c, "默认规则", "新项目使用这些规则；已有项目仅更新继承项，项目单独设置保持。", func() { a.accessSettings(c) })
 			case "项目关联":
 				settingsCard(c, "新建与关联", "这里管理项目归属；各项目的权限在左侧项目行右侧的 ⋯ 菜单中设置。", func() {
 					if a.Config.ProjectControl != nil {
@@ -81,6 +79,20 @@ func (a *App) globalSettingsPage(c *ui.Context) {
 					}
 				})
 			case "高级":
+				if a.Config.ProjectControl != nil {
+					settingsCard(c, "未保存的会话", "会话未成功保存时，在这里检查并手动处理。", func() {
+						if !a.access.PendingExpanded {
+							commonButton(c, "检查未保存的会话", false, func() { a.access.PendingExpanded = true })
+						} else {
+							for _, project := range a.access.Directory.Projects {
+								for _, agent := range a.access.Directory.Agents {
+									homeText(c, project.Name+" · "+agent.Name, homeHeading).FontSize(13)
+									a.pendingMaterialsEditor(c, project, agent)
+								}
+							}
+						}
+					})
+				}
 				if a.Config.ProjectControl != nil {
 					settingsCard(c, "通用知识存储", "仅在存储未准备或权限异常时核对。", func() { a.commonDatasetSettings(c) })
 				}
@@ -107,22 +119,17 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 		return
 	}
 	p := *project
-	settingsTabs(c, &a.access.ProjectSection, []string{"Agent 规则", "待发材料"})
-	ui.Scroll(c.Key("project-settings-" + p.ID + "-" + a.access.ProjectSection)).Grow(1).MinHeight(0).Padding(28).Background(ui.Hex("#f8fafc")).Children(func() {
+	ui.Scroll(c.Key("project-settings-" + p.ID)).Grow(1).MinHeight(0).Padding(28).Background(ui.Hex("#f8fafc")).Children(func() {
 		ui.Column(c).FillWidth().MaxWidth(900).Gap(18).Children(func() {
-			ui.Row(c).AlignItems(ui.Center).Children(func() {
-				homeText(c, p.Name, homeHeading).FontSize(19)
-				ui.Spacer(c)
-				homeText(c, p.syncLabel(a.access.Directory.Agents...), homeMeta)
-				if !p.permissionsReady(a.access.Directory.Agents...) {
-					commonButton(c, "核对生效状态", false, func() {
-						a.mutateAccess(func(ctx context.Context, client ProjectControlClient, revision int64) (AccessDirectory, error) {
-							return client.reconcile(ctx, revision, p.ID)
-						})
+			if !p.permissionsReady(a.access.Directory.Agents...) {
+				homeText(c, "权限尚未同步完成", homeMeta)
+				commonButton(c, "核对权限", false, func() {
+					a.mutateAccess(func(ctx context.Context, client ProjectControlClient, revision int64) (AccessDirectory, error) {
+						return client.reconcile(ctx, revision, p.ID)
 					})
-				}
-			})
-			if a.access.Message != "" {
+				})
+			}
+			if a.access.Message != "" && a.access.Message != "设置已保存；生效状态以官方核对结果为准" {
 				homeText(c, a.access.Message, homeMeta).LineHeight(1.7)
 			}
 			if a.access.DirectoryError != "" {
@@ -133,11 +140,7 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 			}
 			for _, row := range a.access.Directory.Agents {
 				agent := row
-				if a.access.ProjectSection == "待发材料" {
-					settingsCard(c, agent.Name, "这些是此前未确认保存的会话材料。核对后可明确补交或丢弃；恢复权限不会自动补交。", func() { a.pendingMaterialsEditor(c, p, agent) })
-				} else {
-					settingsCard(c, agent.Name, "仅影响此 Agent 在当前项目中的行为。修改后点击保存；继承项会随全局默认规则变化。", func() { a.agentPolicyEditor(c, p, agent) })
-				}
+				settingsCard(c, agent.Name, "", func() { a.agentPolicyEditor(c, p, agent) })
 			}
 		})
 	})

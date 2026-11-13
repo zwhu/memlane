@@ -11,11 +11,6 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-type overrideDraft struct {
-	Access, Capture, Process string
-	Revision                 int64
-}
-
 type projectAccessState struct {
 	Directory                                     AccessDirectory
 	Loaded, Loading, Busy                         bool
@@ -27,10 +22,11 @@ type projectAccessState struct {
 	Defaults                                      ProjectPolicy
 	DefaultsDirty                                 bool
 	DefaultsRevision                              int64
-	Overrides                                     map[string]*overrideDraft
-	OpenProject, SettingsSection, ProjectSection  string
+	OpenProject, SettingsSection                  string
 	CreateName, Workspace, CreateMode, LinkChoice string
 	Linkable                                      []LinkableDataset
+	PendingExpanded                               bool
+	CheckboxPending                               map[string]*projectCheckboxPending
 	Buffers                                       map[string]*pendingBufferView
 }
 
@@ -79,6 +75,7 @@ func (a *App) applyAccessDirectory(directory AccessDirectory) {
 	data, _ := json.Marshal(directory)
 	signature := fmt.Sprintf("%x", sha256.Sum256(data))
 	changed := !a.access.Loaded || accessPolicyChanged(a.access.Directory, directory)
+	a.confirmProjectCheckboxes(directory)
 	a.access.Directory = directory
 	a.access.Signature = signature
 	a.access.Loaded = true
@@ -308,58 +305,40 @@ func (a *App) commonDatasetSettings(c *ui.Context) {
 }
 
 func (a *App) agentPolicyEditor(c *ui.Context, p AccessProject, agent AccessAgent) {
-	if a.access.Overrides == nil {
-		a.access.Overrides = map[string]*overrideDraft{}
-	}
+	actual := p.Overrides[agent.ID].effective(a.access.Directory.Defaults)
+	read, maintain := actual.Access != "none" && actual.Access != "", actual.Access == "maintain"
 	key := p.ID + "/" + agent.ID
-	draft := a.access.Overrides[key]
-	if draft == nil {
-		draft = &overrideDraft{Access: "继承默认", Capture: "继承默认", Process: "继承默认", Revision: a.access.Directory.Revision}
-		o := p.Overrides[agent.ID]
-		if o.Access != nil {
-			draft.Access = accessLabel(*o.Access)
+	pending := a.access.CheckboxPending[key]
+	if pending != nil {
+		switch pending.Field {
+		case "access":
+			read = pending.Value != "none"
+			maintain = pending.Value == "maintain"
+
 		}
-		if o.Capture != nil {
-			draft.Capture = booleanLabel(*o.Capture)
-		}
-		if o.AutoProcess != nil {
-			draft.Process = booleanLabel(*o.AutoProcess)
-		}
-		a.access.Overrides[key] = draft
 	}
-	ui.Column(c.Key("agent-policy-" + key)).Gap(8).Children(func() {
-		actual := p.Overrides[agent.ID].effective(a.access.Directory.Defaults)
-		override := p.Overrides[agent.ID]
-		policySettingRow(c, "Agent 访问权限", "决定这个 Agent 能否读取、写入或删除此项目知识。", accessLabel(actual.Access), override.Access == nil, func() {
-			ui.Select(c.Key("override-access-"+key), &draft.Access, []string{"继承默认", "不可访问", "只读", "可写并维护知识（含删除）"}).Width(260).Disabled(a.access.Busy)
-		})
-		policySettingRow(c, "自动采集", "将此 Agent 后续的新会话材料保存到这个项目；不补采关闭期间的内容。", booleanLabel(actual.Capture), override.Capture == nil, func() {
-			ui.Select(c.Key("override-capture-"+key), &draft.Capture, []string{"继承默认", "开启", "关闭"}).Width(180).Label("项目自动采集").Disabled(a.access.Busy)
-		})
-		policySettingRow(c, "自动处理", "收到新材料后自动整理知识；关闭后已运行的任务仍会继续。", booleanLabel(actual.AutoProcess), override.AutoProcess == nil, func() {
-			ui.Select(c.Key("override-process-"+key), &draft.Process, []string{"继承默认", "开启", "关闭"}).Width(180).Label("项目自动处理").Disabled(a.access.Busy)
-		})
-		ui.Row(c).Gap(10).Children(func() {
-			ui.Button(c, "保存此 Agent 的设置").Disabled(a.access.Busy).OnClick(func() {
-				fields := map[string]any{"access": nil, "capture": nil, "auto_process": nil}
-				if draft.Access != "继承默认" {
-					fields["access"] = accessValue(draft.Access)
+	locked := a.access.Busy || pending != nil
+	ui.Column(c.Key("agent-policy-" + key)).Gap(20).Children(func() {
+		ui.Column(c).Gap(14).Children(func() {
+			ui.Checkbox(c.Key("project-read-"+key), &read, "允许读取知识").Disabled(locked).OnChange(func() {
+				value := "none"
+				if read {
+					value = "read"
 				}
-				if draft.Capture != "继承默认" {
-					fields["capture"] = draft.Capture == "开启"
-				}
-				if draft.Process != "继承默认" {
-					fields["auto_process"] = draft.Process == "开启"
-				}
-				a.mutateAccess(func(ctx context.Context, client ProjectControlClient, revision int64) (AccessDirectory, error) {
-					return client.overrides(ctx, draft.Revision, p.ID, agent.ID, fields)
-				}, func() { delete(a.access.Overrides, key) })
+				a.saveProjectCheckbox(p.ID, agent.ID, "access", value)
 			})
-			ui.Button(c, "改为继承默认").Disabled(a.access.Busy).OnClick(func() {
-				draft.Access, draft.Capture, draft.Process = "继承默认", "继承默认", "继承默认"
+			ui.Checkbox(c.Key("project-write-"+key), &maintain, "允许写入和删除知识").Disabled(locked || !read).OnChange(func() {
+				value := "read"
+				if maintain {
+					value = "maintain"
+				}
+				a.saveProjectCheckbox(p.ID, agent.ID, "access", value)
 			})
-			ui.Button(c, "撤销未保存修改").Disabled(a.access.Busy).OnClick(func() { delete(a.access.Overrides, key) })
 		})
+		if pending != nil {
+			homeText(c, "修改结果待确认", homeMeta)
+			commonButton(c, "核对修改结果", false, a.RefreshProjectDirectory).Disabled(a.access.Loading || a.access.Busy)
+		}
 	})
 }
 

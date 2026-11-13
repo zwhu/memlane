@@ -17,7 +17,7 @@ func settingsFixture() *App {
 	a.applyAccessDirectory(AccessDirectory{CodexConnection: &CodexConnection{Status: "configured_pending_new_session", NewSessions: 2, Home: "/synthetic/codex"}, Revision: 4, Defaults: ProjectPolicy{Access: "maintain", Capture: true, AutoProcess: false}, Agents: []AccessAgent{{ID: "agent", Name: "本机 Codex", Installation: &AgentInstallation{Status: "configured"}}}, Projects: []AccessProject{p, {ID: "same", Name: "另一个项目", Dataset: "other"}}, Bindings: []ProjectBinding{{AgentID: "agent", ProjectID: "p", HostSessionKey: "synthetic-session-0001"}, {AgentID: "agent", ProjectID: "same", HostSessionKey: "do-not-show"}}})
 	return a
 }
-func TestSettingsProjectScopeDraftInheritanceAndNavigation(t *testing.T) {
+func TestSettingsProjectPermissionsCardsAndNavigation(t *testing.T) {
 	for _, wh := range [][2]int{{1200, 820}, {1440, 900}} {
 		t.Run(fmt.Sprint(wh), func(t *testing.T) {
 			a := settingsFixture()
@@ -28,7 +28,7 @@ func TestSettingsProjectScopeDraftInheritanceAndNavigation(t *testing.T) {
 			if a.settingsOrigin == nil || a.access.OpenProject != "p" {
 				t.Fatal("project identity lost")
 			}
-			for _, label := range []string{"Agent 访问权限", "自动采集", "自动处理", "已保存：只读", "继承全局默认", "保存此 Agent 的设置"} {
+			for _, label := range []string{"允许读取知识", "允许写入和删除知识"} {
 				if !tt.HasText(label) {
 					t.Fatal("missing", label)
 				}
@@ -37,20 +37,14 @@ func TestSettingsProjectScopeDraftInheritanceAndNavigation(t *testing.T) {
 				t.Fatal("unrelated settings mixed into current project")
 			}
 			fixtureImage(t, tt, fmt.Sprintf("settings-%dx%d-project", wh[0], wh[1]))
-			// Reset changes the draft only, retaining the official saved override.
-			clickProjectUI(t, tt, "改为继承默认")
-			if a.access.Overrides["p/agent"].Access != "继承默认" || *a.access.Directory.Projects[0].Overrides["agent"].Access != "read" || a.access.Busy {
-				t.Fatal("reset wrote immediately or lost saved value")
+			for _, label := range []string{"保存后续会话记录", "自动整理知识", "自动采集", "自动处理", "已生效", "继承全局默认", "继承默认", "保存此 Agent 的设置", "撤销未保存修改", "仅影响此 Agent"} {
+				if tt.HasText(label) {
+					t.Fatal("removed settings text remains", label)
+				}
 			}
-			clickProjectUI(t, tt, "撤销未保存修改")
-			if a.access.Overrides["p/agent"].Access != "只读" {
-				t.Fatal("discard did not restore saved override")
+			if tt.HasText("待发材料") || tt.HasText("Agent 权限") {
+				t.Fatal("removed tab remains")
 			}
-			clickProjectUI(t, tt, "待发材料")
-			if !tt.HasText("synthetic-session-0001") || tt.HasText("do-not-show") || tt.HasText("保存此 Agent 的设置") {
-				t.Fatal("pending materials not separated and scoped")
-			}
-			fixtureImage(t, tt, fmt.Sprintf("settings-%dx%d-materials", wh[0], wh[1]))
 			clickProjectUI(t, tt, "返回项目")
 			if a.state() != original || a.page != "知识" {
 				t.Fatal("return lost reading pane")
@@ -62,11 +56,12 @@ func TestSettingsProjectScopeDraftInheritanceAndNavigation(t *testing.T) {
 				t.Fatal("sidebar settings still project scoped")
 			}
 			fixtureImage(t, tt, fmt.Sprintf("settings-%dx%d-global", wh[0], wh[1]))
-			clickProjectUI(t, tt, "默认规则")
-			if tt.HasText("保存此 Agent 的设置") || tt.HasText("核对待发材料") || !tt.HasText("默认自动采集") {
-				t.Fatal("project overrides leaked into global defaults")
+			for _, text := range tt.Texts() {
+				if text == "默认规则" {
+					t.Fatal("removed global policy tab remains")
+				}
 			}
-			fixtureImage(t, tt, fmt.Sprintf("settings-%dx%d-defaults", wh[0], wh[1]))
+
 		})
 	}
 }

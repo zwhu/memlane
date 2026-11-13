@@ -36,7 +36,7 @@ func (a *App) codexConnectionSettings(c *ui.Context) {
 		return
 	}
 	ui.Text(c, "本机 Codex · "+codexConnectionLabel(*connection)).FontSize(12).Bold()
-	ui.Text(c, "CLI 与桌面端共用此配置。新会话按当前默认规则接入；已有会话与待发材料保留，不会自动迁移或补交。").FontSize(11).LineHeight(1.7).TextColor(muted)
+	ui.Text(c, "CLI 与桌面端共用此连接；此前未保存的会话记录保留。").FontSize(11).LineHeight(1.7).TextColor(muted)
 	if connection.Home != "" {
 		ui.Text(c, "配置目录："+connection.Home).FontSize(10).TextColor(muted)
 	}

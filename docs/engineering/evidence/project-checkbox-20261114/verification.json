@@ -1,0 +1,49 @@
+{
+  "baseline": "d916056",
+  "source_sha256": {
+    "internal/simpledesktop/project_access_ui.go": "d57d6fd1e129d8f98194c402adaf19ff8e503435471f50e9d01af4b705e1eaa3",
+    "internal/simpledesktop/project_checkbox.go": "baba3bed0224d8166f472e1fc34acb03d651371ff05957980923dbf6c9131786",
+    "internal/simpledesktop/project_checkbox_test.go": "967dfd0b2e580323bb186a544b4215d92808218ea1b32073a634226da1b88c85",
+    "internal/simpledesktop/project_buffer_ui.go": "eff0260e913bfa1f66f68de8decc705ca73407e88379115fa423043480716446",
+    "internal/simpledesktop/project_connection_ui.go": "544d8e6510c871f7025a4dfee05b8663236f17121bd0a3ce51d3e724dede992f",
+    "internal/simpledesktop/settings_redesign.go": "47946fb6a98c01f1784882650a828715bfdb0c58675409ca8457d340ea6caf2c",
+    "internal/simpledesktop/settings_redesign_test.go": "fd9b8e5a7cc3872fe77f44e7f62fcdb84c1a8686bab2eb2f6cc95d5355c993f9",
+    "internal/simpledesktop/overview_navigation.go": "27cc7a7b60c1215686e8336e357f41441e396d732d4ef5b3bceaca0cb9576524"
+  },
+  "full_go_test": true,
+  "vet": true,
+  "targeted_race": {
+    "passed": true,
+    "seconds": 3.291
+  },
+  "native_visual": {
+    "passed_for_current_permission_card": true,
+    "display": "built-in, explicitly authorized by user",
+    "actions": "sidebar ellipsis -> project settings; observe only",
+    "tabs_present": false,
+    "checkboxes": [
+      "允许读取知识",
+      "允许写入和删除知识"
+    ],
+    "daily_permission_mutated": false,
+    "screenshot_location": "CUA tool response in conversation, no local native PNG"
+  },
+  "permission_update_contract": {
+    "maintain": {
+      "capture": true,
+      "auto_process": true
+    },
+    "read_or_none": {
+      "capture": false,
+      "auto_process": false
+    },
+    "same_versioned_request": true,
+    "unknown_result": "lock until fresh catalog confirmation, no automatic PUT retry"
+  },
+  "backend_restart": false,
+  "release_build": false,
+  "retired_stages": [
+    "root earlier four-checkbox stage",
+    "permissions-only stage still containing tabs"
+  ]
+}

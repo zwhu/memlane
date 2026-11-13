@@ -128,7 +128,6 @@ func (a *App) overviewNavigation(c *ui.Context) {
 								a.projectUI.SidebarMenuOpen = false
 								a.navigate("设置", index)
 								a.access.OpenProject = p.ID
-								a.access.ProjectSection = "Agent 规则"
 								a.settingsOrigin = origin
 							})
 						})

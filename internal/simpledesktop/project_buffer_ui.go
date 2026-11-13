@@ -45,17 +45,17 @@ func (a *App) pendingMaterialsEditor(c *ui.Context, p AccessProject, agent Acces
 		ui.Column(c.Key("pending-"+key)).Gap(6).Padding(8, 0).Children(func() {
 			ui.Row(c).Gap(8).Children(func() {
 				ui.Text(c, fmt.Sprintf("会话 %d · %s", count, shortSessionLabel(binding.HostSessionKey))).FontSize(11).Bold()
-				ui.Button(c, "核对待发材料").Disabled(view.Busy || p.Dataset == "").OnClick(func() { a.runPendingAction(view, p, agent, binding, "show") })
+				ui.Button(c, "检查会话保存结果").Disabled(view.Busy || p.Dataset == "").OnClick(func() { a.runPendingAction(view, p, agent, binding, "show") })
 			})
 			if view.Loaded {
-				ui.Text(c, fmt.Sprintf("上次核对：%d 条待发材料；%d 条原写入结果待核对", view.Status.Pending, view.Status.Unknown)).FontSize(10).TextColor(muted)
+				ui.Text(c, fmt.Sprintf("尚未保存 %d 条；保存结果不明确 %d 条", view.Status.Pending, view.Status.Unknown)).FontSize(10).TextColor(muted)
 				if view.Status.Blocked != nil {
 					ui.Text(c, "已阻塞，不会自动重试；恢复权限也不会自动补交。").FontSize(10).TextColor(muted)
 				}
 				if view.Status.Pending > 0 {
 					ui.Row(c).Gap(8).Children(func() {
-						ui.Button(c, "补交此前待发材料").Disabled(view.Busy).OnClick(func() { a.runPendingAction(view, p, agent, binding, "replay") })
-						ui.Button(c, "丢弃此前待发材料").Disabled(view.Busy).OnClick(func() { a.runPendingAction(view, p, agent, binding, "discard") })
+						ui.Button(c, "重新保存这些记录").Disabled(view.Busy).OnClick(func() { a.runPendingAction(view, p, agent, binding, "replay") })
+						ui.Button(c, "丢弃未保存记录").Disabled(view.Busy).OnClick(func() { a.runPendingAction(view, p, agent, binding, "discard") })
 					})
 				}
 			}
