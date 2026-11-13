@@ -1,0 +1,164 @@
+"""Real pinned Cognee/LiteLLM adapter against a synthetic loopback endpoint.
+
+No vendor account/model is exercised; these are protocol/error boundary tests.
+"""
+import asyncio
+import contextlib
+import io
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from aiohttp import web
+from aiohttp.test_utils import TestServer
+
+from generation_probe import probe, CompletionObservation, ProbeFailure
+
+ROOT = Path(__file__).resolve().parents[2]
+EXPECTED = {'project': {'name': '样例项目', 'rules': ['pnpm', 'TypeScript'], 'contact': None},
+            'ports': [43127, 43128], 'source': 'synthetic'}
+
+
+class ProbeTests(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temporary = tempfile.TemporaryDirectory()
+        root = Path(cls.temporary.name)
+        env = {key: value for key, value in os.environ.items() if key in ('PATH', 'LANG', 'LC_ALL', 'TMPDIR')}
+        env.update(HOME=str(root), SYSTEM_ROOT_DIRECTORY=str(root / 'system'), DATA_ROOT_DIRECTORY=str(root / 'data'),
+                   CACHE_ROOT_DIRECTORY=str(root / 'cache'), LOGS_ROOT_DIRECTORY=str(root / 'logs'),
+                   COGNEE_LOGS_DIR=str(root / 'logs'), TELEMETRY_DISABLED='true', COGNEE_TRACING_ENABLED='false',
+                   PYTHON_DOTENV_DISABLED='1', LITELLM_LOCAL_MODEL_COST_MAP='true')
+        cls.environment = patch.dict(os.environ, env, clear=True)
+        cls.environment.start()
+        manifest = json.loads((ROOT / 'engine/coding-memory-components.json').read_text())['service']
+        cls.runtime = {'official_source': str(ROOT / '.cache/coding-memory-components' / ('service-' + manifest['commit'])),
+                       'official_archive': str(ROOT / '.cache/coding-memory-components' / (manifest['commit'] + '.tar.gz')),
+                       'generation_mode': 'provider'}
+        sys.path.insert(0, cls.runtime['official_source'])
+        with contextlib.redirect_stdout(io.StringIO()):
+            from cognee.infrastructure.llm.config import LLMConfig
+            from cognee.context_global_variables import llm_config
+        cls.LLMConfig, cls.context = LLMConfig, llm_config
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.environment.stop()
+        cls.temporary.cleanup()
+
+    async def scenario(self, mode, *, native=True):
+        requests = []
+        from cognee.infrastructure.llm.structured_output_framework.litellm_native.native_adapter import clear_nonstrict_demotions
+        clear_nonstrict_demotions()
+
+        async def completion(request):
+            self.assertEqual(request.headers.get('Authorization'), 'Bearer synthetic-only-key')
+            body = await request.json()
+            requests.append(body)
+            structured = 'response_format' in body
+            if mode in ('401', '429'):
+                return web.json_response({'error': {'message': 'synthetic-only-secret-body', 'type': 'invalid_request_error'}}, status=int(mode))
+            if mode == 'timeout':
+                await asyncio.sleep(1)
+            shape = body.get('response_format', {}).get('type')
+            if structured and mode in ('json_fallback', 'unsupported') and shape == 'json_schema':
+                return web.json_response({'error': {'message': 'response_format schema unsupported', 'type': 'invalid_request_error'}}, status=400)
+            if structured and mode == 'unsupported':
+                return web.json_response({'error': {'message': 'response_format unsupported', 'type': 'invalid_request_error'}}, status=400)
+            content = json.dumps(EXPECTED, ensure_ascii=False) if structured else 'MEMLANE-PROBE-OK'
+            reason = 'stop'
+            message = {'role': 'assistant', 'content': content}
+            if mode == 'truncated' and structured:
+                # Even a valid JSON object must not pass when marked partial.
+                reason = 'length'
+            if mode == 'refusal' and structured:
+                message['refusal'] = 'synthetic-only-secret-refusal'
+            if mode == 'invalid' and structured:
+                message['content'] = '{"project":null}'
+            if mode == 'quality' and structured:
+                message['content'] = content.replace('43127', '99999')
+            return web.json_response({'id': 'synthetic-completion', 'object': 'chat.completion', 'created': 1,
+                'model': body['model'], 'choices': [{'index': 0, 'message': message, 'finish_reason': reason}],
+                'usage': {'prompt_tokens': 1, 'completion_tokens': 1, 'total_tokens': 2}})
+
+        app = web.Application()
+        app.router.add_post('/v1/chat/completions', completion)
+        server = TestServer(app)
+        await server.start_server()
+        model = 'openai/gpt-4o-2024-08-06' if native else 'openai/memlane-unknown-fixture'
+        cfg = self.LLMConfig(llm_provider='custom', llm_model=model, llm_api_key='synthetic-only-key',
+                             llm_endpoint=str(server.make_url('/v1')), structured_output_framework='litellm_native',
+                             llm_args={'timeout': .1} if mode == 'timeout' else {})
+        token = self.context.set(cfg)
+        import litellm
+        original = litellm.acompletion
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = await asyncio.wait_for(probe(self.runtime), 30)
+            self.assertIs(litellm.acompletion, original, 'probe observer leaked after completion')
+            self.assertNotIn('synthetic-only-secret', json.dumps(result))
+            self.assertTrue(all(r['model'] == model.removeprefix('openai/') for r in requests))
+            return result, requests
+        finally:
+            self.context.reset(token)
+            await server.close()
+
+    async def test_actual_schema_and_json_object_modes_are_recorded_without_capability_forgery(self):
+        for native, mode in ((True, 'json_schema'), (False, 'json_object')):
+            with self.subTest(mode=mode):
+                result, requests = await self.scenario('success', native=native)
+                self.assertEqual(result['status'], 'passed', result)
+                self.assertEqual(result['structured_mode'], mode)
+                self.assertEqual(result['structured_mode_evidence'], 'official_adapter_request')
+                self.assertEqual(len(requests), 2)
+
+    async def test_same_model_schema_demotion_is_observed_without_cross_provider_fallback(self):
+        result, requests = await self.scenario('json_fallback')
+        self.assertEqual(result['status'], 'passed', result)
+        self.assertEqual(result['structured_mode'], 'json_object')
+        self.assertEqual(len(requests), 4)
+
+    async def test_auth_rate_refusal_and_valid_but_truncated_output_fail_explicitly(self):
+        for mode, expected, count in (('401', 'authentication_failed', 1), ('429', 'rate_or_quota_limit', 1),
+                                      ('refusal', 'provider_refusal', 2), ('truncated', 'completion_truncated', 2)):
+            with self.subTest(mode=mode):
+                result, requests = await self.scenario(mode)
+                self.assertEqual(result['status'], 'failed', result)
+                self.assertEqual(result['error_code'], expected)
+                self.assertEqual(len(requests), count, 'unexpected model/SDK retry')
+                self.assertFalse(result['quality_passed'])
+
+    async def test_schema_rejection_and_quality_mismatch_are_separate(self):
+        for mode, error in (('invalid', 'schema_validation_failed'), ('quality', 'extraction_quality_failed'),
+                             ('unsupported', 'structured_output_unsupported')):
+            with self.subTest(mode=mode):
+                result, _ = await self.scenario(mode)
+                self.assertEqual(result['status'], 'failed', result)
+                self.assertEqual(result['error_code'], error)
+        result, requests = await self.scenario('invalid', native=False)
+        self.assertEqual(result['error_code'], 'schema_validation_failed')
+        self.assertEqual(len(requests), 4, 'fixed adapter JSON self-correction policy changed')
+
+    async def test_changed_model_or_endpoint_is_rejected_before_network(self):
+        client = type('Client', (), {'model': 'selected', 'endpoint': 'https://selected.test', 'api_key': 'private'})()
+        async def forbidden(*args, **kwargs):
+            raise AssertionError('sent a request to fallback')
+        observer = CompletionObservation(client, forbidden)
+        for changed in ({'model': 'other'}, {'api_base': 'https://other.test'}, {'api_key': 'other'}):
+            with self.assertRaisesRegex(ProbeFailure, ''):
+                await observer(**{'model': client.model, 'api_base': client.endpoint, 'api_key': client.api_key, **changed})
+        self.assertEqual(observer.calls, 0)
+
+    async def test_provider_timeout_remains_unknown_without_automatic_sdk_retry(self):
+        result, requests = await self.scenario('timeout')
+        self.assertEqual(result['status'], 'result_unknown', result)
+        self.assertEqual(result['error_code'], 'provider_timeout')
+        self.assertEqual(len(requests), 1)
+
+
+if __name__ == '__main__':
+    unittest.main()

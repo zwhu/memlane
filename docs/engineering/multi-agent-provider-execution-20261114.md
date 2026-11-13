@@ -153,3 +153,17 @@ MA05／MA04继续以原隔离库和两独立主体验收。部署的pi／TraeX h
 本轮原日常配置和库、原Codex产物及登录未变。当前隔离根仍为`.local/multi-agent-coding-e2e-20261114`，补充标记第二合成仓库`secondary_project`，私有attempt记录显式写／删结果；供后续原Codex与Native验收，消费结束再按所有权清理。已用正常CLI的TraeX无存活进程。Claude本机auth status已实际返回loggedIn=false／authMethod=none；已异步询问可用登录或私有配置入口，不索要聊天粘贴密钥。
 
 整体约73%（比检查点八增加约3个百分点）。MA05的上述实链及MA04不同项目过滤已补；通用知识有内容时的优先级、真实buffer403／显式补交、Claude正常宿主／首轮、Cursor、其他三类Provider、原Codex与Native仍未完成，不以此缩减首批范围。无release，未使用重置卡。
+
+## 开发检查点十
+
+补候选探针LP04：使用固定官方adapter与SDK，观察请求形状、完成状态和固定事实；length／拒绝／Schema／质量明确拒绝，供应商／本机超时保持unknown，401／403／限流等固定错误码分开。模式来自实际adapter请求，不冒充远端严格Schema。只对隔离探针限制一次外层attempt和SDK瞬态重试0，官方JSON自纠错与同模型Schema降级保留；日常引擎未改。Native显示固定中文原因和请求模式，未知错误码不会回显供应商正文。[实现边界](generation-probe-boundaries-20261114.md)。
+
+同时补最新验证门禁：registered_revision保存登记顺序，管理next、启动候选和Native统一检查最新验证；新的失败／未知／进行中不再被历史成功遮盖。旧记录无顺序且冲突则拒绝，不猜键顺序、不自动重新验证；active不变、next与原错误保留。保存重开、明确新通过后再放行的连续检查通过。本轮为源码审阅发现并新增覆盖，未新增旧E／MA失败计数。
+
+固定Cognee/LiteLLM对合成loopback服务的协议／错误检查通过：Schema与JSON、同模型降级、401／429各一次、拒绝、有效JSON却被截断、Schema不符、事实错误、unsupported、HTTP超时、变化目标发送前拒绝。generation31项通过；Go全量、vet、相应race通过；新增Native文案后定向组件检查通过，实窗仍待做。两套早期定向命令重叠运行了相同loopback用例，只算同一组覆盖，不虚增测试项或失败次数；没有重复供应商模型调用。
+
+新版真实DeepSeek隔离探针通过，13.881秒，2次adapter调用，模式json_object，普通／嵌套Schema／事实均通过。未修改原generation账本的active，未启动第二内容服务；私有验证目录及key副本在组退出确认后删除，一次性launcher脚本已删除。[回执](evidence/multi-agent-development-20261114/probe-v3-errors-and-mode.json)。这不替代其余供应商凭据、真实质量、日常业务任务拒绝／截断或原Codex验收。
+
+隔离原服务仍由48466持有，保留原库／Agent状态供后续回归；其管理进程仍是检查点九启动时加载的版本，执行新版管理／Native实链前需在确认官方任务结束后正常重启该隔离实例。没有启停日常服务、重装日常插件、触碰旧停止样本或构建release。全局设置与要求的首页／三栏图片已实际查看，沿现有Native控件加状态说明，未宣称视觉通过。
+
+整体估算约76%（增加约3个百分点）。下一步原Codex及Native连续验证，补403待发补交与通用知识优先；Claude登录、Cursor和三种Provider的真实前置仍待用户可用入口。目标范围与未完成矩阵保持，未使用重置卡。

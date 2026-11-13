@@ -13,6 +13,7 @@ from project_policy import PolicyError
 from process_groups import group_exists
 
 ROOT = Path(__file__).resolve().parents[2]
+PROBE_TIMEOUT_SECONDS = 120
 
 def receipt_groups_exited(receipt):
     groups = [receipt.get('process_group'), *receipt.get('bridge_process_groups', [])]
@@ -60,7 +61,8 @@ class GenerationValidation:
             # Check the private key before registering a model operation.
             environment = s.environment(reference, self.runtime)
         s.state['validations'][operation_id] = {'status': 'queued', 'digest': row['digest'],
-                                              'reference': copy.deepcopy(reference), 'structured_mode': 'unknown'}
+                                              'reference': copy.deepcopy(reference), 'structured_mode': 'unknown',
+                                              'registered_revision': s.state['revision'] + 1}
         result = s.commit(operation_id, request, {'operation_id': operation_id, 'status': 'queued'})
         self.operation_id = operation_id
         self.task = asyncio.create_task(self.run(operation_id, environment, row['profile']))
@@ -120,16 +122,18 @@ class GenerationValidation:
             payload = {'environment': environment, 'runtime': {
                 **{key: self.runtime[key] for key in ('official_source', 'official_archive')},
                 'generation_mode': profile['mode']}}
-            stdout, _ = await asyncio.wait_for(self.process.communicate(json.dumps(payload).encode()), 120)
+            stdout, _ = await asyncio.wait_for(self.process.communicate(json.dumps(payload).encode()), PROBE_TIMEOUT_SECONDS)
             if self.process.returncode != 0 or len(stdout) > 16384:
                 raise ValueError('probe_result_unconfirmed')
             result = json.loads(stdout)
             allowed = {'status', 'plain_passed', 'schema_passed', 'quality_passed', 'structured_mode',
-                       'sample_version', 'boundary', 'error_code'}
-            if not isinstance(result, dict) or set(result) - allowed or result.get('status') not in ('passed', 'failed'):
+                       'sample_version', 'boundary', 'error_code', 'structured_mode_evidence', 'adapter_calls'}
+            if not isinstance(result, dict) or set(result) - allowed or result.get('status') not in ('passed', 'failed', 'result_unknown'):
                 raise ValueError('probe_result_unconfirmed')
             row.update(result)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except asyncio.TimeoutError:
+            row.update(status='result_unknown', error_code='validation_timeout')
+        except asyncio.CancelledError:
             row.update(status='result_unknown', error_code='validation_interrupted')
         except Exception:
             row.update(status='result_unknown', error_code='probe_result_unconfirmed')

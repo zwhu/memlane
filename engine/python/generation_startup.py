@@ -6,6 +6,7 @@ process handles and must confirm their exit before returning from cleanup.
 import copy
 
 from project_policy import PolicyError
+from generation_config import validation_passed
 
 
 def candidate(store):
@@ -13,9 +14,7 @@ def candidate(store):
     if reference is None:
         return None
     row = store.resolve(reference)
-    if not any(receipt.get('digest') == row['digest'] and receipt.get('status') == 'passed'
-               and receipt.get('plain_passed') is True and receipt.get('schema_passed') is True
-               and receipt.get('quality_passed') is True for receipt in store.state['validations'].values()):
+    if not validation_passed(store.state['validations'], row['digest']):
         raise PolicyError('generation_validation_required', 409)
     return copy.deepcopy(reference)
 

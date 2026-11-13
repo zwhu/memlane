@@ -36,6 +36,43 @@ func TestGenerationEditingSeparatesActiveRevisionAndInvalidatesDraftValidation(t
 	}
 }
 
+func TestGenerationNewestUnknownResultWithdrawsOldSuccessAndShowsSafeReason(t *testing.T) {
+	a := settingsFixture()
+	a.page = "设置"
+	a.access.SettingsSection = "知识处理"
+	ref := &GenerationRef{ID: "api", Revision: 1}
+	row := GenerationRow{Revision: 1, Digest: "same", Profile: GenerationProfile{Mode: "provider", Provider: "custom", Model: "synthetic", Endpoint: "https://example.test/v1"}}
+	g := GenerationDirectory{Profiles: map[string][]GenerationRow{"api": {row}}, Validations: map[string]GenerationValidation{
+		"z-old": {Status: "passed", Digest: "same", Plain: true, Schema: true, Quality: true, RegisteredRevision: 2},
+		"a-new": {Status: "result_unknown", Digest: "same", ErrorCode: "validation_timeout", RegisteredRevision: 3, StructuredMode: "json_object", ModeEvidence: "official_adapter_request"},
+	}}
+	if g.validated(ref) {
+		t.Fatal("old success concealed a newer unknown result")
+	}
+	a.integrations = integrationState{Loaded: true, Editor: true, ProfileID: "api", DraftMode: "provider", ProviderLabel: "OpenAI 兼容", Model: "synthetic", Endpoint: "https://example.test/v1", Saved: ref, Generation: g, ValidationOperation: "a-new", Validation: g.Validations["a-new"]}
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("验证等待超时，结果未确认；请核对原验证。") {
+		t.Fatal("timeout reason missing from rendered settings")
+	}
+	if !tt.HasText("本次结构化请求：JSON 对象") {
+		t.Fatal("observed request mode missing from rendered settings")
+	}
+	a.integrations.Validation.ErrorCode = "synthetic-secret-never-show"
+	tt = ui.NewTester(a.View, 1200, 820)
+	for _, text := range tt.Texts() {
+		if strings.Contains(text, "synthetic-secret-never-show") {
+			t.Fatal("unknown error body leaked to settings")
+		}
+	}
+	for key, v := range g.Validations {
+		v.RegisteredRevision = 0
+		g.Validations[key] = v
+	}
+	if g.validated(ref) {
+		t.Fatal("unordered legacy conflict was treated as validated")
+	}
+}
+
 func TestGenerationUnknownSaveClearsInputAndDoesNotRepeatMutation(t *testing.T) {
 	root := t.TempDir()
 	token := filepath.Join(root, "manager.token")

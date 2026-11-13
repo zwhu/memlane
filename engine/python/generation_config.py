@@ -77,6 +77,18 @@ def compile_environment(profile, runtime, credential=None):
     return result
 
 
+def validation_passed(validations, digest):
+    matches = [row for row in validations.values() if row.get('digest') == digest]
+    if not matches:
+        return False
+    revision = max(row.get('registered_revision', 0) for row in matches)
+    # Old receipts have no reliable ordering. A conflicting old receipt must
+    # not be guessed newer/older from its operation ID or JSON key order.
+    latest = [row for row in matches if row.get('registered_revision', 0) == revision]
+    return all(row.get('status') == 'passed' and row.get('plain_passed') is True
+               and row.get('schema_passed') is True and row.get('quality_passed') is True for row in latest)
+
+
 class GenerationStore:
     def __init__(self, path, service_commit, *, legacy_model=None):
         self.path, self.service_commit = Path(path), service_commit
@@ -199,9 +211,7 @@ class GenerationStore:
         if old is not None:
             return old
         row = self.resolve(reference)
-        if not any(v.get('digest') == row['digest'] and v.get('status') == 'passed'
-                   and v.get('plain_passed') is True and v.get('schema_passed') is True and v.get('quality_passed') is True
-                   for v in self.state['validations'].values()):
+        if not validation_passed(self.state['validations'], row['digest']):
             raise PolicyError('generation_validation_required', 409)
         self.state['next'] = copy.deepcopy(reference)
         return self.commit(operation_id, request, {'next': copy.deepcopy(reference)})

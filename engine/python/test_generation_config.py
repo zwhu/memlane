@@ -71,6 +71,37 @@ class GenerationTests(unittest.TestCase):
             with self.assertRaises(PolicyError):
                 validate_profile({**p, 'fallback_model': 'unrequested'})
 
+    def test_latest_failed_or_unknown_validation_supersedes_old_success_at_select_and_startup(self):
+        from generation_startup import candidate
+        first = self.put()
+        ref = {k: first[k] for k in ('id', 'revision')}
+        passed = {'status': 'passed', 'digest': first['digest'], 'plain_passed': True,
+                  'schema_passed': True, 'quality_passed': True, 'registered_revision': 2}
+        self.store.state['validations']['z-old'] = passed
+        self.store.select_next(ref, 1, 'select-first')
+        for state in ('queued', 'running', 'failed', 'result_unknown'):
+            with self.subTest(state=state):
+                self.store.state['validations']['a-new'] = {**passed, 'status': state, 'registered_revision': 3}
+                with self.assertRaisesRegex(PolicyError, 'generation_validation_required'):
+                    self.store.select_next(ref, self.store.state['revision'], 'blocked-' + state)
+                with self.assertRaisesRegex(PolicyError, 'generation_validation_required'):
+                    candidate(self.store)
+                self.assertEqual(self.store.state['active']['id'], 'existing-codex')
+                self.assertEqual(self.store.state['next'], ref)
+        self.store.save()
+        self.store.close()
+        self.store = GenerationStore(self.path, 'fixed-commit')
+        with self.assertRaisesRegex(PolicyError, 'generation_validation_required'):
+            candidate(self.store)
+        self.store.state['validations']['a-new']['status'] = 'passed'
+        self.assertEqual(candidate(self.store), ref)
+        # JSON key order and lexical operation IDs do not establish chronology.
+        for v in self.store.state['validations'].values():
+            v.pop('registered_revision')
+        self.store.state['validations']['a-new']['status'] = 'failed'
+        with self.assertRaisesRegex(PolicyError, 'generation_validation_required'):
+            candidate(self.store)
+
     def test_second_writer_is_denied_and_service_commit_invalidates_digest(self):
         with self.assertRaises(BlockingIOError):
             GenerationStore(self.path, 'fixed-commit')

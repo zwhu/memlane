@@ -50,12 +50,15 @@ type GenerationRow struct {
 	Profile  GenerationProfile `json:"profile"`
 }
 type GenerationValidation struct {
-	Status    string `json:"status"`
-	Digest    string `json:"digest"`
-	ErrorCode string `json:"error_code"`
-	Plain     bool   `json:"plain_passed"`
-	Schema    bool   `json:"schema_passed"`
-	Quality   bool   `json:"quality_passed"`
+	Status             string `json:"status"`
+	Digest             string `json:"digest"`
+	ErrorCode          string `json:"error_code"`
+	Plain              bool   `json:"plain_passed"`
+	Schema             bool   `json:"schema_passed"`
+	Quality            bool   `json:"quality_passed"`
+	RegisteredRevision int64  `json:"registered_revision"`
+	StructuredMode     string `json:"structured_mode"`
+	ModeEvidence       string `json:"structured_mode_evidence"`
 }
 type GenerationDirectory struct {
 	Revision     int64                           `json:"revision"`
@@ -83,12 +86,23 @@ func (g GenerationDirectory) validated(ref *GenerationRef) bool {
 	if !ok {
 		return false
 	}
+	var latest int64
 	for _, v := range g.Validations {
-		if v.Digest == row.Digest && v.Status == "passed" && v.Plain && v.Schema && v.Quality {
-			return true
+		if v.Digest == row.Digest && v.RegisteredRevision > latest {
+			latest = v.RegisteredRevision
 		}
 	}
-	return false
+	found := false
+	for _, v := range g.Validations {
+		if v.Digest != row.Digest || v.RegisteredRevision != latest {
+			continue
+		}
+		found = true
+		if v.Status != "passed" || !v.Plain || !v.Schema || !v.Quality {
+			return false
+		}
+	}
+	return found
 }
 
 type integrationState struct {

@@ -1,0 +1,58 @@
+{
+  "real_probe": {
+    "status": "passed",
+    "plain_passed": true,
+    "schema_passed": true,
+    "quality_passed": true,
+    "structured_mode": "json_object",
+    "structured_mode_evidence": "official_adapter_request",
+    "sample_version": "nested-unicode-null-3",
+    "boundary": "official_adapter_synthetic_extraction",
+    "adapter_calls": 2,
+    "elapsed_seconds": 13.881,
+    "original_active_unchanged": true,
+    "private_probe_only": true,
+    "date": "2026-11-14",
+    "provider": "existing validated DeepSeek compatible configuration",
+    "owned_probe_groups_exited": true,
+    "private_credential_copy_removed": true,
+    "limits": [
+      "observed mode is the official adapter request shape; no claim of remote native strict schema",
+      "fixed synthetic extraction sample only; prior coding knowledge evidence remains separate",
+      "loopback error tests do not prove OpenAI, Anthropic or Gemini vendor availability"
+    ]
+  },
+  "protocol_tests": {
+    "boundary": "pinned official Cognee/LiteLLM with synthetic loopback OpenAI-compatible server",
+    "cases": [
+      "native schema request",
+      "unknown model JSON-object request without registration",
+      "same-model strict/non-strict/json fallback",
+      "401 once",
+      "429 once",
+      "provider refusal",
+      "valid JSON marked length",
+      "schema invalid after official JSON self-correction",
+      "fact mismatch",
+      "unsupported response format",
+      "provider timeout unknown",
+      "reject changed model/endpoint/key before sending"
+    ],
+    "sdk_transient_retries": 0,
+    "official_json_self_correction_preserved": true,
+    "outer_probe_attempts": 1
+  },
+  "state_gate": {
+    "latest_registered_revision_required": true,
+    "old_unordered_conflict_rejected": true,
+    "next_registration_and_startup_and_native_share_rule": true,
+    "current_active_unchanged": true
+  },
+  "checks": {
+    "generation_python": 31,
+    "go_all_tests": "passed",
+    "go_vet": "passed",
+    "go_generation_integration_race": "passed",
+    "native_window": "pending"
+  }
+}

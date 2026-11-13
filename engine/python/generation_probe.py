@@ -13,6 +13,83 @@ import time
 from official_service_dev import verify_source
 
 
+class ProbeFailure(Exception):
+    def __init__(self, reason, *, unknown=False):
+        self.reason, self.unknown = reason, unknown
+
+
+def failure(error, *, structured=False):
+    """Return fixed codes only; never return exception text/provider bodies."""
+    if isinstance(error, ProbeFailure):
+        return ('result_unknown' if error.unknown else 'failed'), error.reason
+    seen = set()
+    link = error
+    while link is not None and id(link) not in seen and len(seen) < 16:
+        seen.add(id(link))
+        name = type(link).__name__
+        code = getattr(link, 'status_code', None)
+        if code in (401, 403, 402, 429):
+            return 'failed', {401: 'authentication_failed', 403: 'permission_denied',
+                              402: 'payment_required', 429: 'rate_or_quota_limit'}[code]
+        if name == 'LLMQuotaExceededError':
+            return 'failed', 'quota_exhausted'
+        if name in ('ContentPolicyViolationError', 'ContentPolicyFilterError'):
+            return 'failed', 'provider_refusal'
+        if code in (408, 504) or isinstance(link, (TimeoutError, asyncio.TimeoutError)) or name in ('Timeout', 'ReadTimeout', 'APITimeoutError'):
+            return 'result_unknown', 'provider_timeout'
+        if name in ('APIConnectionError', 'ConnectError'):
+            return 'result_unknown', 'provider_connection_unconfirmed'
+        if structured and name in ('ValidationError', 'JSONDecodeError'):
+            return 'failed', 'schema_validation_failed'
+        if name == 'UnsupportedParamsError':
+            return 'failed', 'unsupported_model_parameters'
+        if code == 400:
+            # The fixed adapter itself uses this narrow text signal to choose
+            # its same-model schema fallback. Text is inspected, never emitted.
+            if structured and any(term in str(link).lower() for term in ('response_format', 'json_schema', 'schema')):
+                return 'failed', 'structured_output_unsupported'
+            return 'failed', 'provider_bad_request'
+        if code == 404:
+            return 'failed', 'provider_endpoint_or_model_not_found'
+        if isinstance(code, int) and code >= 500:
+            return 'result_unknown', 'provider_unavailable'
+        link = link.__cause__
+    return 'result_unknown', 'probe_result_unconfirmed'
+
+
+class CompletionObservation:
+    """Observe only the isolated probe's calls to the fixed official adapter."""
+    def __init__(self, client, complete):
+        self.client, self.complete = client, complete
+        self.mode, self.calls = 'unknown', 0
+
+    async def __call__(self, *args, **kwargs):
+        # Refuse a changed destination before issuing a request. This does not
+        # provide a gateway or redirect any production model traffic.
+        if (kwargs.get('model') != self.client.model or kwargs.get('api_base') != self.client.endpoint
+                or kwargs.get('api_key') != self.client.api_key):
+            raise ProbeFailure('unexpected_model_destination')
+        shape = kwargs.get('response_format')
+        if isinstance(shape, type):
+            self.mode = 'json_schema'
+        elif isinstance(shape, dict):
+            self.mode = {'json_schema': 'json_schema_non_strict', 'json_object': 'json_object'}.get(shape.get('type'), 'unknown')
+        self.calls += 1
+        response = await self.complete(*args, **kwargs)
+        choices = getattr(response, 'choices', None)
+        if not choices:
+            raise ProbeFailure('completion_result_unconfirmed', unknown=True)
+        choice = choices[0]
+        reason = getattr(choice, 'finish_reason', None)
+        if reason == 'length':
+            raise ProbeFailure('completion_truncated')
+        if reason == 'content_filter' or getattr(getattr(choice, 'message', None), 'refusal', None):
+            raise ProbeFailure('provider_refusal')
+        if reason != 'stop':
+            raise ProbeFailure('completion_result_unconfirmed', unknown=True)
+        return response
+
+
 async def probe(config):
     source = verify_source(config)
     sys.path.insert(0, str(source))
@@ -23,6 +100,8 @@ async def probe(config):
         litellm.register_model({os.environ['LLM_MODEL']: {'supports_response_schema': True,
                               'supports_function_calling': False, 'litellm_provider': 'openai', 'mode': 'chat'}})
     from pydantic import BaseModel, ConfigDict
+    import litellm
+    from tenacity import stop_after_attempt, wait_none
     from cognee.infrastructure.llm.structured_output_framework.litellm_native.get_native_client import get_native_client
 
     class Project(BaseModel):
@@ -37,21 +116,42 @@ async def probe(config):
         ports: list[int]
         source: str
 
+    receipt = {'status': 'failed', 'plain_passed': False, 'schema_passed': False, 'quality_passed': False,
+               'structured_mode': 'unknown', 'structured_mode_evidence': 'official_adapter_request',
+               'sample_version': 'nested-unicode-null-3', 'boundary': 'official_adapter_synthetic_extraction'}
     client = get_native_client()
-    plain = await client.acreate_structured_output('Return exactly the text after the colon, with no quotes, punctuation, or extra characters: MEMLANE-PROBE-OK', 'Follow the instruction exactly.', str)
-    plain_ok = isinstance(plain, str) and plain.strip() == 'MEMLANE-PROBE-OK'
-    result = await client.acreate_structured_output(
-        'Synthetic facts: project name is 样例项目. Rules in order: pnpm, TypeScript. '
-        'No contact is given. Ports in order: 43127 and 43128. Source is synthetic.',
-        'Extract only the supplied facts. Missing contact must be null. Preserve order and Unicode. Do not invent facts.', Extraction)
-    expected = {'project': {'name': '样例项目', 'rules': ['pnpm', 'TypeScript'], 'contact': None},
-                'ports': [43127, 43128], 'source': 'synthetic'}
-    schema_ok = isinstance(result, Extraction)
-    quality_ok = schema_ok and result.model_dump() == expected
-    return {'status': 'passed' if plain_ok and schema_ok and quality_ok else 'failed',
-            'plain_passed': plain_ok, 'schema_passed': schema_ok, 'quality_passed': quality_ok,
-            'structured_mode': 'unknown', 'sample_version': 'nested-unicode-null-2',
-            'boundary': 'official_adapter_synthetic_extraction'}
+    observation = CompletionObservation(client, litellm.acompletion)
+    structured = False
+    try:
+        if client.fallback_model or client.fallback_api_key or client.fallback_endpoint:
+            raise ProbeFailure('fallback_configuration_rejected')
+        # Keep the fixed adapter's schema routing, validation/self-correction
+        # and SDK path. Bound only the probe's outer tenacity policy: a failed
+        # sample must not silently spend the production 240s retry floor.
+        complete = client.acreate_structured_output.retry_with(stop=stop_after_attempt(1), wait=wait_none())
+        litellm.acompletion = observation
+        plain = await complete(client, 'Return exactly the text after the colon, with no quotes, punctuation, or extra characters: MEMLANE-PROBE-OK', 'Follow the instruction exactly.', str, num_retries=0)
+        receipt['plain_passed'] = isinstance(plain, str) and plain.strip() == 'MEMLANE-PROBE-OK'
+        if not receipt['plain_passed']:
+            raise ProbeFailure('plain_output_mismatch')
+        structured = True
+        result = await complete(client,
+            'Synthetic facts: project name is 样例项目. Rules in order: pnpm, TypeScript. '
+            'No contact is given. Ports in order: 43127 and 43128. Source is synthetic.',
+            'Extract only the supplied facts. Missing contact must be null. Preserve order and Unicode. Do not invent facts.', Extraction, num_retries=0)
+        expected = {'project': {'name': '样例项目', 'rules': ['pnpm', 'TypeScript'], 'contact': None},
+                    'ports': [43127, 43128], 'source': 'synthetic'}
+        receipt['schema_passed'] = isinstance(result, Extraction)
+        receipt['quality_passed'] = receipt['schema_passed'] and result.model_dump() == expected
+        receipt['status'] = 'passed' if receipt['quality_passed'] else 'failed'
+        if not receipt['quality_passed']:
+            receipt['error_code'] = 'extraction_quality_failed'
+    except Exception as error:
+        receipt['status'], receipt['error_code'] = failure(error, structured=structured)
+    finally:
+        litellm.acompletion = observation.complete
+        receipt.update(structured_mode=observation.mode, adapter_calls=observation.calls)
+    return receipt
 
 
 def main():
@@ -77,9 +177,8 @@ def main():
         with contextlib.redirect_stdout(io.StringIO()):
             result = asyncio.run(probe(request['runtime']))
     except Exception as error:
-        code = getattr(error, 'status_code', None)
-        reason = {401: 'authentication_failed', 403: 'permission_denied', 429: 'rate_or_quota_limit'}.get(code, 'probe_result_unconfirmed')
-        result = {'status': 'failed', 'error_code': reason, 'structured_mode': 'unknown'}
+        status, reason = failure(error)
+        result = {'status': status, 'error_code': reason, 'structured_mode': 'unknown'}
     print(json.dumps(result))
 
 

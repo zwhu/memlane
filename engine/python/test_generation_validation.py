@@ -78,6 +78,20 @@ class ValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.validator.get('cancelled')['status'], 'result_unknown')
         self.assertNotIn('schema_passed', self.validator.get('cancelled'))
 
+    async def test_validation_deadline_is_unknown_and_owned_process_exits_without_replay(self):
+        self.worker('import json,sys,time\njson.load(sys.stdin)\ntime.sleep(60)\n')
+        with patch('generation_validation.ROOT', self.root), patch('generation_validation.PROBE_TIMEOUT_SECONDS', .1):
+            first = self.validator.start(self.profile, 1, 'deadline')
+            await self.validator.task
+            self.assertEqual(self.validator.start(self.profile, 1, 'deadline'), first)
+        row = self.validator.get('deadline')
+        self.assertEqual(row['status'], 'result_unknown')
+        self.assertEqual(row['error_code'], 'validation_timeout')
+        self.assertIsNone(self.validator.process)
+        self.assertFalse(group_exists(row['process_group']))
+        self.assertEqual(self.store.state['active']['id'], 'existing-codex')
+        self.assertIsNone(self.store.state['next'])
+
     async def test_agent_cannot_manage_generation_and_get_never_starts_validation(self):
         registry = Registry(self.root / 'registry.json', None)
         client = TestClient(TestServer(create_app(registry, 'm' * 40, {'agent': 'a' * 40},

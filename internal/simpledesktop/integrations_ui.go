@@ -187,6 +187,15 @@ func (a *App) generationSettings(c *ui.Context) {
 		if s.ValidationOperation != "" {
 			label := map[string]string{"queued": "验证已登记", "running": "正在验证", "passed": "验证通过", "failed": "验证未通过", "result_unknown": "验证结果未确认"}[s.Validation.Status]
 			homeText(c, label, homeMeta)
+			if message := generationValidationMessage(s.Validation.ErrorCode); message != "" {
+				homeText(c, message, homeMeta).LineHeight(1.6)
+			}
+			if s.Validation.ModeEvidence == "official_adapter_request" {
+				mode := map[string]string{"json_schema": "本次结构化请求：Schema", "json_schema_non_strict": "本次结构化请求：非严格 Schema", "json_object": "本次结构化请求：JSON 对象"}[s.Validation.StructuredMode]
+				if mode != "" {
+					homeText(c, mode, homeMeta).LineHeight(1.6)
+				}
+			}
 			ui.Button(c, "核对原验证").Disabled(s.Busy).OnClick(func() { a.pollGenerationValidation(s.ValidationOperation) })
 			if s.Validation.Status == "queued" || s.Validation.Status == "running" {
 				ui.Button(c, "停止本机验证").Disabled(s.Busy).OnClick(a.cancelGenerationValidation)
@@ -199,4 +208,33 @@ func (a *App) generationSettings(c *ui.Context) {
 			homeText(c, s.Error, homeMeta).LineHeight(1.7)
 		}
 	})
+}
+
+func generationValidationMessage(code string) string {
+	if code == "" {
+		return ""
+	}
+	if message, ok := map[string]string{
+		"authentication_failed":                "API 密钥无效，请检查凭据。",
+		"permission_denied":                    "当前凭据没有访问此模型的权限。",
+		"payment_required":                     "供应商额度或余额不足。",
+		"quota_exhausted":                      "供应商可用额度已耗尽。",
+		"rate_or_quota_limit":                  "供应商限制了请求或可用额度，请检查后再验证。",
+		"provider_refusal":                     "模型拒绝了验证材料，本次验证未通过。",
+		"completion_truncated":                 "模型输出被截断，本次验证未通过。",
+		"schema_validation_failed":             "模型返回内容不符合所需的数据结构。",
+		"structured_output_unsupported":        "此模型或接口不支持所需的结构化输出。",
+		"unsupported_model_parameters":         "此模型或接口不支持所需的请求参数。",
+		"plain_output_mismatch":                "普通回答未通过固定样本校验。",
+		"extraction_quality_failed":            "抽取内容未通过固定事实校验。",
+		"provider_timeout":                     "供应商请求超时，结果未确认；请核对原验证。",
+		"validation_timeout":                   "验证等待超时，结果未确认；请核对原验证。",
+		"provider_endpoint_or_model_not_found": "未找到配置的模型或 API 地址。",
+		"provider_bad_request":                 "供应商拒绝了请求，请检查配置。",
+		"unexpected_model_destination":         "验证目标与已保存配置不一致，已停止请求。",
+		"fallback_configuration_rejected":      "验证配置包含其他模型回退，已停止请求。",
+	}[code]; ok {
+		return message
+	}
+	return "本次验证未确认，请核对原结果。"
 }
