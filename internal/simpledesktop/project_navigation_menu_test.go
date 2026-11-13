@@ -63,7 +63,7 @@ func TestProjectMenuReturnsToGlobalSettingsAndPreservesCreationDraft(t *testing.
 	tt := ui.NewTester(a.View, 1200, 820)
 	clickProjectUI(t, tt, "项目菜单：memlane")
 	clickProjectUI(t, tt, "项目设置")
-	clickProjectUI(t, tt, "返回项目")
+	clickProjectUI(t, tt, "返回设置")
 	if a.page != "设置" || a.settingsOrigin != nil || a.access.OpenProject != "" {
 		t.Fatal("project settings return loop")
 	}
@@ -73,5 +73,22 @@ func TestProjectMenuReturnsToGlobalSettingsAndPreservesCreationDraft(t *testing.
 	a.openProjectCreation("")
 	if a.projectCreate.Folder != "/synthetic/new-workspace" {
 		t.Fatal("closing dialog discarded draft")
+	}
+}
+
+func TestProjectSettingsBackLabelMatchesCommonKnowledgeOrigin(t *testing.T) {
+	a := settingsFixture()
+	a.Config.Common = []Project{{ID: "common", Name: "通用知识", Dataset: "common"}}
+	a.page = "通用知识"
+	a.state().Loaded = true
+	tt := ui.NewTester(a.View, 1200, 820)
+	clickProjectUI(t, tt, "项目菜单：memlane")
+	clickProjectUI(t, tt, "项目设置")
+	if tt.HasText("返回项目") {
+		t.Fatal("back label names a different destination")
+	}
+	clickProjectUI(t, tt, "返回通用知识")
+	if a.page != "通用知识" {
+		t.Fatal("back did not restore the common knowledge page")
 	}
 }

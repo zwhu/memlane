@@ -1,0 +1,43 @@
+{
+  "scope": "Pinned real SDK transport policy, loopback redirects; isolated real DeepSeek revalidation and official service startup",
+  "sdk": "LiteLLM1.108.2",
+  "transport_failure_rounds": 1,
+  "diagnostic_failure_rounds": 1,
+  "same_origin_307": [
+    "openai",
+    "anthropic",
+    "gemini"
+  ],
+  "cross_origin_308": [
+    "openai",
+    "anthropic",
+    "gemini"
+  ],
+  "sdk_cache_eviction_checked": true,
+  "cross_origin_initial_requests": 6,
+  "cross_origin_target_requests": 0,
+  "final_probe_tests": 10,
+  "final_probe_seconds": 66.884,
+  "configuration_startup_bridge_tests": 25,
+  "configuration_startup_bridge_seconds": 1.387,
+  "go_full_exit": 0,
+  "go_full_seconds": 2.115,
+  "go_vet_exit": 0,
+  "real_probe": {
+    "status": "passed",
+    "plain_passed": true,
+    "schema_passed": true,
+    "quality_passed": true,
+    "adapter_calls": 2
+  },
+  "real_probe_group_exited": true,
+  "registry_unchanged_after_normal_restart": true,
+  "active": {
+    "id": "deepseek-anthropic-e2e",
+    "revision": 1
+  },
+  "next": null,
+  "fixed_engine_source_archive_unchanged": true,
+  "native_vendor_accounts_not_proven": true,
+  "reset_card_used": false
+}

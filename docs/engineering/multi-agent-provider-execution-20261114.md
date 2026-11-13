@@ -218,3 +218,19 @@ Claude真实链取得两项独立缺陷，完整宿主闭环仍未通过：[回�
 在首轮及升级修复后，后端全量115项通过，67.271秒；随后只增Claude cloud-spool路由及异常settings类型的核对保护，并通过最终host-plugin7项，11.390秒，未重复无关检查。新增边界用例早期有两个夹具问题（合成control token太短、current stub漏位置参数），分别修正并保留本轮输出；不是生产首轮重复失败，不重置真实缺陷计数。Go源码未改，沿用检查点十一全量／vet证据。
 
 本轮Claude两个普通CLI均已通过/exit结束并确认对应工具退出0。隔离dev经正常启停加载首轮／升级修复，最新owner41651／工具97508；Native已通过新runtime路径重开，工具77122，仅是窗口启动，不算新的视觉验收。当前controller及已启用Claude插件仍是spool修复前代，下一步须正常重启控制进程并经原管理接口升级，不能声称源码修复已在该宿主生效。原Codex后台、隔离库与原认证仍保留；未启动release。首批整体估算约81%（增加约1个百分点，完成403明确补交与部分Claude实链），Codex事实质量、Claude完整闭环、Cursor、原生三类Provider、剩余Native／权限及第二批边界均保持，目标active。
+
+## 检查点十四：Claude完整样本、跨协议切换与HTTP保护
+
+承接上轮正常升级后，Claude Code 2.1.96 / DeepSeek 新会话真实增加 first_retry_index，22项测试通过；首轮 QA1／trace6 进入同一官方项目dataset，正常退出后官方整理完成3份知识。新会话不调用任何工具，正确给出函数位置、复用关系及0／None／负数规则。MA-CLAUDE-FIRST01、MA-CLAUDE-SPOOL01 均完成本样本真实复验，各保留原失败1轮；旧7条未投递spool原样保留，没有迁移或重放。[Claude回执](evidence/multi-agent-development-20261114/real-claude-checkpoint.json)。
+
+实际Native只保存一次合成通用偏好“没有项目明确规则时默认重试5”，随后核对原保存回执和官方处理完成。上述Claude新会话正确采用项目明确值3，说明项目规则优先。知识中记录22项测试，但官方git来源将基线提交后的脏文件标为变化，新会话谨慎报告历史验证结果，没有无条件确认当前22项仍新鲜；此来源粒度限制保留。helper知识中的“empty input”也未明确指空indices，不能据正确数字结果泛化全部知识质量通过。[优先级证据](evidence/multi-agent-development-20261114/real-common-priority.json)。
+
+第二个合成项目的实际Native中，Claude维护→只读→无权限→只读→维护逐项立即保存，Codex／pi／TraeX卡片保持；使用各独立主体核对官方有效权限：无权限为空、只读只有read、维护read/write/delete且无share。重开状态保持。新发现并修复MA-UI-BACK01（从通用知识打开项目设置时返回标签错误）、MA-UI-COMMON-REV01（其他项目策略变化撤下旧正文时错误提示已撤权），各失败1轮，实际Native复验通过；原提交回执保留，通用知识正文哈希与owner读取不变。最终恢复显式maintain/capture/auto_process，不误记为恢复继承。[Native证据](evidence/multi-agent-development-20261114/native-cross-agent-checkpoint.json)。截图由CUA实际观察，未导出仓库PNG。
+
+真实DeepSeek Anthropic兼容配置保存、固定样本验证通过（2次adapter请求、json_object），Native“下次启动使用”与当前配置分开。正常重启后当前配置才改为Anthropic兼容端点，next清空；服务实际settings确认provider/model/endpoint，四主体身份与八组实际项目ACL均完全保持。随后正常TraeX源码／测试检查采集QA1／trace4，22测试通过，官方整理完成2份知识，同一项目30条数据全部处理完成。这是同一供应商的两种协议，不是Anthropic/OpenAI/Gemini原生账号验收。[切换证据](evidence/multi-agent-development-20261114/real-cross-protocol-switch.json)。新测试基线的数量／命令正确，类清单只列实际7类中的5类，不宣称完整类清单通过；原MA-CODEX-FACT01错误位置知识仍保留且未解决。
+
+固定SDK的Anthropic/Gemini原生wire已覆盖普通输出、嵌套中文/null/Schema、401、429与有效JSON截断，准确检查原生路径与认证头；纯loopback合成服务不替代远端模型。新增真实SDK重定向检查发现默认跟随307，MA-PROVIDER-REDIRECT01失败1轮。探针和正式服务现共用进程所有的SDK HTTP策略，关闭自动重定向；SDK缓存淘汰后新客户端仍应用策略。三个协议同源307与无探针observer的跨地址308／缓存清空复验通过，目标请求零次。另修3xx被SDK包装成“连接未知”的诊断，MA-PROVIDER-REDIRECT-STATUS01独立失败1轮。[问题及轮次](generation-redirect-protection-20261114.md)。固定官方引擎源码／archive未改，没有新网关或知识副本。
+
+最终探针全模块10项通过（66.884秒），配置／验证／启动／桥接25项通过（1.387秒），Go全量通过（simpledesktop 2.115秒）、vet退出0。新策略下真实DeepSeek Anthropic兼容探针再次通过普通文本／Schema／事实检查，2次请求，探针进程组已退出。[HTTP策略回执](evidence/multi-agent-development-20261114/redirect-protection.json)。隔离dev正常停止owner81101后，以owner8824／工具26238加载新策略并健康启动；原registry逐字节不变、当前配置及next不变。Native旧进程82788已退出，更新debug二进制与runtime路径；不把重新启动窗口记作新的视觉验收。原Codex后台及后续消费者依赖继续保留。
+
+本轮只做dev源码、必要调试编译与实际Native验收，未构建release／完整运行包。首批整体估算约85%（相对81%增加约4个百分点），主要增加Claude实链、通用／项目规则采用、Native权限连续性及跨协议重启证据。Cursor真实宿主、三类原生供应商账号、Codex事实质量与剩余连续故障场景仍须完成；第二批OpenCode/Ollama不丢弃、不纳入已通过。目标保持active。额度重置卡仅在确认Codex剩余额度严格低于2%时允许；本轮没有使用重置卡。

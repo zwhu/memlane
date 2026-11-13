@@ -231,6 +231,7 @@ func generationValidationMessage(code string) string {
 		"validation_timeout":                   "验证等待超时，结果未确认；请核对原验证。",
 		"provider_endpoint_or_model_not_found": "未找到配置的模型或 API 地址。",
 		"provider_bad_request":                 "供应商拒绝了请求，请检查配置。",
+		"provider_redirect_rejected":           "API 地址返回了重定向，已停止请求；请核对并明确配置最终地址。",
 		"unexpected_model_destination":         "验证目标与已保存配置不一致，已停止请求。",
 		"fallback_configuration_rejected":      "验证配置包含其他模型回退，已停止请求。",
 	}[code]; ok {

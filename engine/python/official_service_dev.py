@@ -1,5 +1,6 @@
 """Run the pinned upstream API without Memlane business routes or monkey patches."""
 import argparse
+import asyncio
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -93,14 +94,19 @@ def main():
         # This registration describes only our schema-checking local bridge.
         if not litellm.supports_response_schema(model=environment['LLM_MODEL']):
             raise ValueError('configured completion model must support native JSON schema')
-    from cognee.api.client import app
-    if config.get('generation_applied_file'):
-        from project_control import private_write
-        private_write(config['generation_applied_file'], json.dumps({
-            'pid': os.getpid(), 'digest': generation_digest, 'reference': config.get('generation_reference'),
-            'mode': profile['mode'], 'model': profile['model']}).encode())
-    uvicorn.run(app, host='127.0.0.1', port=urlparse(config['service_url']).port,
-                access_log=False, timeout_graceful_shutdown=15)
+    async def serve():
+        from generation_http import generation_http_policy
+        async with generation_http_policy():
+            from cognee.api.client import app
+            if config.get('generation_applied_file'):
+                from project_control import private_write
+                private_write(config['generation_applied_file'], json.dumps({
+                    'pid': os.getpid(), 'digest': generation_digest, 'reference': config.get('generation_reference'),
+                    'mode': profile['mode'], 'model': profile['model']}).encode())
+            await uvicorn.Server(uvicorn.Config(
+                app, host='127.0.0.1', port=urlparse(config['service_url']).port,
+                access_log=False, timeout_graceful_shutdown=15)).serve()
+    asyncio.run(serve())
 
 
 if __name__ == '__main__':

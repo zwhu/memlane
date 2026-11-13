@@ -22,12 +22,28 @@ def failure(error, *, structured=False):
     """Return fixed codes only; never return exception text/provider bodies."""
     if isinstance(error, ProbeFailure):
         return ('result_unknown' if error.unknown else 'failed'), error.reason
+    # Some native SDK adapters wrap HTTP 3xx as connection errors, keeping the
+    # HTTPStatusError only in __context__. Prefer that concrete response status
+    # over the wrapper's generic connection/500 classification.
+    pending, inspected = [error], set()
+    while pending and len(inspected) < 32:
+        current = pending.pop()
+        if current is None or id(current) in inspected:
+            continue
+        inspected.add(id(current))
+        response = getattr(current, 'response', None)
+        code = getattr(current, 'status_code', None) or getattr(response, 'status_code', None)
+        if isinstance(code, int) and 300 <= code < 400:
+            return 'failed', 'provider_redirect_rejected'
+        pending.extend((current.__cause__, current.__context__))
     seen = set()
     link = error
     while link is not None and id(link) not in seen and len(seen) < 16:
         seen.add(id(link))
         name = type(link).__name__
         code = getattr(link, 'status_code', None)
+        if isinstance(code, int) and 300 <= code < 400:
+            return 'failed', 'provider_redirect_rejected'
         if code in (401, 403, 402, 429):
             return 'failed', {401: 'authentication_failed', 403: 'permission_denied',
                               402: 'payment_required', 429: 'rate_or_quota_limit'}[code]
@@ -91,6 +107,12 @@ class CompletionObservation:
 
 
 async def probe(config):
+    from generation_http import generation_http_policy
+    async with generation_http_policy():
+        return await _probe(config)
+
+
+async def _probe(config):
     source = verify_source(config)
     sys.path.insert(0, str(source))
     if config.get('generation_mode') == 'agent_bridge':

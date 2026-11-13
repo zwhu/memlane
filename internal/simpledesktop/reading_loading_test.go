@@ -14,6 +14,25 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
+func TestPolicyRevisionWithdrawsCommonBodyWithoutClaimingDenial(t *testing.T) {
+	a := New(Config{ServiceURL: "http://127.0.0.1:60000"}, nil)
+	a.syncReadingIdentity()
+	a.commonEdit = commonEditorState{Open: true, Submitted: true, SaveVerified: true,
+		Existing: &Document{ID: "saved", Dataset: "common"}, Target: Project{Dataset: "common"},
+		Draft:   CommonDraft{Title: "Saved title", Body: "Previous body"},
+		Receipt: CommonWriteReceipt{DataID: "saved", PipelineRunID: "original-operation"}}
+	a.SetReadingPolicyRevision("unrelated-project-revision")
+	if a.commonEdit.Open || a.commonEdit.Existing != nil || a.commonEdit.Draft.Body != "" {
+		t.Fatal("configuration change retained old editable content")
+	}
+	if !a.commonEdit.Submitted || !a.commonEdit.SaveVerified || a.commonEdit.Receipt.PipelineRunID != "original-operation" {
+		t.Fatal("configuration change lost the original save receipt")
+	}
+	if !strings.Contains(a.commonEdit.Message, "配置已变化") || strings.Contains(a.commonEdit.Message, "无权") {
+		t.Fatal("an identity revision was reported as a confirmed denial")
+	}
+}
+
 func drainReading(t *testing.T, updates chan func(), ready func() bool) {
 	t.Helper()
 	deadline := time.NewTimer(5 * time.Second)

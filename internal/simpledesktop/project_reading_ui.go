@@ -119,6 +119,10 @@ func (a *App) projectHeader(c *ui.Context) {
 		} else if a.page == "设置" && a.settingsOrigin != nil {
 			back = func() { v := a.settingsOrigin; a.restoreReadingLocation(v) }
 			label = "返回项目"
+			switch a.settingsOrigin.Page {
+			case "通用知识", "总览", "设置", "检索结果":
+				label = "返回" + a.settingsOrigin.Page
+			}
 		}
 		if back != nil {
 			readingAction(c, label, readingBack, back)

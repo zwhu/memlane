@@ -1,0 +1,28 @@
+{
+  "boundary": "Actual pinned Cognee/LiteLLM SDK against loopback synthetic vendor-native wire responses, no remote model/account calls",
+  "sdk": "LiteLLM1.108.2",
+  "paths": {
+    "anthropic": "/anthropic/v1/messages",
+    "gemini": "/v1beta/models/gemini-2.5-flash:generateContent"
+  },
+  "auth_headers_checked": [
+    "x-api-key",
+    "x-goog-api-key or key query"
+  ],
+  "cases_per_protocol": [
+    "plain output",
+    "nested schema/Unicode/null/fact parsing",
+    "401",
+    "429",
+    "valid JSON marked truncated"
+  ],
+  "requests_per_denial": 1,
+  "requests_per_plain_plus_schema": 2,
+  "final_tests": 2,
+  "final_seconds": 35.998,
+  "exit_code": 0,
+  "fixture_failure": "First new test expected nonexistent error-code labels; four subtest mismatches in one fixture round, corrected to existing fixed codes. No product failure or remote request.",
+  "strict_endpoint_paths_added_and_verified": true,
+  "native_vendor_real_credentials_still_required": true,
+  "redirect_gate": "Verified separately in redirect-protection.json: probe plus direct official SDK, same-origin307, cross-origin308, cache eviction. Whole LP04 still requires remaining scope."
+}

@@ -314,7 +314,10 @@ func (a *App) syncReadingIdentity() bool {
 		identity = "unavailable"
 	}
 	if identity != a.readingIdentity {
-		a.withdrawCommonEditor("")
+		if a.commonEdit.Existing != nil {
+			a.withdrawCommonEditor("")
+			a.commonEdit.Message = "连接或权限配置已变化，先前正文已撤下；请重新读取，原操作回执保留。"
+		}
 		a.readingIdentity = identity
 		a.epoch++
 		for _, s := range a.panes {

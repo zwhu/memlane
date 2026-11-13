@@ -1,0 +1,31 @@
+{
+  "scope": "Synthetic isolated official common dataset; actual Native UI and Claude Code fresh session",
+  "common_document_id": "114cbf77-43d9-468a-b671-0a0c229d6d15",
+  "pipeline_run_id": "07688c4d-99f6-451f-9d7e-29e1ace36ea4",
+  "native_submit_count": 1,
+  "native_body_verified": true,
+  "native_processing_completed": true,
+  "category": "preference",
+  "common_default": 5,
+  "project_default": 3,
+  "actual_fresh_agent": "Claude Code 2.1.96 / DeepSeek Flash",
+  "fresh_tools": 0,
+  "adopted_project_default": 3,
+  "adopted_common_as_conditional": true,
+  "first_and_last_indices": {
+    "0": [
+      null,
+      null
+    ],
+    "None": [
+      0,
+      2
+    ],
+    "-1": "ValueError for both"
+  },
+  "recorded_test_count_adopted": 22,
+  "current_freshness_asserted": false,
+  "no_builtin_claude_memory_files_observed": true,
+  "original_body_hash_unchanged_after_permission_test": true,
+  "raw_chats_committed": false
+}
