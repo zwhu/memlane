@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
+	"sort"
 	"strings"
 	"time"
 )
@@ -50,28 +50,38 @@ func commonCategory(d Document) string {
 	return ""
 }
 
-func (c Client) commonDocuments(ctx context.Context, p Project, offset int, category string) ([]Item, bool, error) {
-	var rows []Document
-	if err := c.get(ctx, "/api/v1/datasets/"+url.PathEscape(p.Dataset)+"/data?limit=31&offset="+strconv.Itoa(offset), &rows); err != nil {
-		return nil, false, err
-	}
-	more := len(rows) > 30
-	if more {
-		rows = rows[:30]
+func (c Client) commonDocumentItems(ctx context.Context, p Project, category string) ([]Item, error) {
+	rows, err := c.overviewDocuments(ctx, p)
+	if err != nil {
+		return nil, err
 	}
 	items := []Item{}
 	for _, d := range rows {
-		if d.Dataset != p.Dataset {
-			return nil, false, fmt.Errorf("通用知识归属发生变化")
-		}
 		kind := commonCategory(d)
 		if kind == "" || (category != "" && kind != category) {
 			continue
 		}
 		copy := d
-		items = append(items, Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Title: d.Name, Date: d.date(), Document: &copy, CommonCategory: kind})
+		items = append(items, Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Title: d.title(), Date: d.date(), Document: &copy, CommonCategory: kind})
 	}
-	return items, more, nil
+	sort.SliceStable(items, func(i, j int) bool {
+		a, _ := officialTime(items[i].Date)
+		b, _ := officialTime(items[j].Date)
+		if a.Equal(b) {
+			return items[i].key() < items[j].key()
+		}
+		return a.After(b)
+	})
+	return items, nil
+}
+func (c Client) commonDocuments(ctx context.Context, p Project, offset int, category string) ([]Item, bool, error) {
+	items, err := c.commonDocumentItems(ctx, p, category)
+	if err != nil {
+		return nil, false, err
+	}
+	start := min(max(offset, 0), len(items))
+	end := min(start+30, len(items))
+	return items[start:end], end < len(items), nil
 }
 
 type CommonWriteReceipt struct {
@@ -201,7 +211,10 @@ func (c Client) confirmCommon(ctx context.Context, p Project, receipt CommonWrit
 	if err != nil {
 		return Document{}, "", err
 	}
-	rows, _, err := c.commonDocuments(ctx, p, 0, draft.Category)
+	rows, err := c.commonDocumentItems(ctx, p, draft.Category)
+	if receipt.DataID == "" && len(rows) > 30 {
+		rows = rows[:30]
+	}
 	if err != nil {
 		return Document{}, "", err
 	}

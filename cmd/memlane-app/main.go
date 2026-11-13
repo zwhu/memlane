@@ -26,7 +26,9 @@ func main() {
 				win.Hide()
 			}
 		})
-		win.OnFocus(func() { win.Update(app.RefreshProjectDirectory) })
+		win.OnFocus(func() { win.Update(func() { app.SetWindowActive(true) }) })
+		win.OnBlur(func() { win.Update(func() { app.SetWindowActive(false) }) })
+		win.OnHide(func() { win.Update(func() { app.SetWindowActive(false) }) })
 		if err := app.AttachGraph(win); err != nil {
 			log.Printf("官方图组件不可用：%v", err)
 		}

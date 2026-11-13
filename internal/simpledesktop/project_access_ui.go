@@ -28,7 +28,7 @@ type projectAccessState struct {
 	DefaultsDirty                                 bool
 	DefaultsRevision                              int64
 	Overrides                                     map[string]*overrideDraft
-	OpenProject                                   string
+	OpenProject, SettingsSection, ProjectSection  string
 	CreateName, Workspace, CreateMode, LinkChoice string
 	Linkable                                      []LinkableDataset
 	Buffers                                       map[string]*pendingBufferView
@@ -190,7 +190,7 @@ func (a *App) mutateAccess(operation func(context.Context, ProjectControlClient,
 				fn()
 			}
 			a.applyAccessDirectory(directory)
-			a.access.Message = "设置已保存；各项目实际生效状态见下方"
+			a.access.Message = "设置已保存；生效状态以官方核对结果为准"
 		})
 	}()
 }
@@ -254,28 +254,22 @@ func (a *App) accessSettings(c *ui.Context) {
 	if a.access.DirectoryError != "" {
 		ui.Text(c, a.access.DirectoryError).FontSize(11).TextColor(muted)
 	}
-	ui.Button(c, "刷新项目与权限状态").Disabled(a.access.Loading || a.access.Busy).OnClick(a.RefreshProjectDirectory)
+	ui.Button(c, "重新读取默认规则").Disabled(a.access.Loading || a.access.Busy).OnClick(a.RefreshProjectDirectory)
 	if !a.access.Loaded {
 		ui.Text(c, "正在读取项目规则…").FontSize(12)
 		return
 	}
 	directory := a.access.Directory
-	a.codexConnectionSettings(c)
 	ui.Text(c, "新项目自动接入；具体项目可逐项覆盖。可写并维护包含官方删除能力，不授予分享权限。").FontSize(12).LineHeight(1.7)
 	access, capture, process := accessLabel(a.access.Defaults.Access), booleanLabel(a.access.Defaults.Capture), booleanLabel(a.access.Defaults.AutoProcess)
-	ui.Row(c).Gap(12).Children(func() {
-		ui.Column(c).Gap(4).Children(func() {
-			ui.Text(c, "默认访问").FontSize(10).TextColor(muted)
-			ui.Select(c.Key("default-access"), &access, []string{"不可访问", "只读", "可写并维护知识（含删除）"}).Width(260).Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.Access = accessValue(access); a.access.DefaultsDirty = true })
-		})
-		ui.Column(c).Gap(4).Children(func() {
-			ui.Text(c, "自动采集").FontSize(10).TextColor(muted)
-			ui.Select(c.Key("default-capture"), &capture, []string{"开启", "关闭"}).Width(130).Label("默认自动采集").Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.Capture = capture == "开启"; a.access.DefaultsDirty = true })
-		})
-		ui.Column(c).Gap(4).Children(func() {
-			ui.Text(c, "自动处理").FontSize(10).TextColor(muted)
-			ui.Select(c.Key("default-process"), &process, []string{"开启", "关闭"}).Width(130).Label("默认自动处理").Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.AutoProcess = process == "开启"; a.access.DefaultsDirty = true })
-		})
+	policySettingRow(c, "Agent 默认访问权限", "可写并维护包含读取、写入和删除；不授予分享权限。", accessLabel(directory.Defaults.Access), false, func() {
+		ui.Select(c.Key("default-access"), &access, []string{"不可访问", "只读", "可写并维护知识（含删除）"}).Width(260).Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.Access = accessValue(access); a.access.DefaultsDirty = true })
+	})
+	policySettingRow(c, "默认自动采集", "保存 Agent 后续的新会话材料；不补采关闭期间的内容。", booleanLabel(directory.Defaults.Capture), false, func() {
+		ui.Select(c.Key("default-capture"), &capture, []string{"开启", "关闭"}).Width(180).Label("默认自动采集").Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.Capture = capture == "开启"; a.access.DefaultsDirty = true })
+	})
+	policySettingRow(c, "默认自动处理", "收到新材料后自动整理知识；关闭不取消已经运行的任务。", booleanLabel(directory.Defaults.AutoProcess), false, func() {
+		ui.Select(c.Key("default-process"), &process, []string{"开启", "关闭"}).Width(180).Label("默认自动处理").Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.AutoProcess = process == "开启"; a.access.DefaultsDirty = true })
 	})
 	ui.Text(c, fmt.Sprintf("保存将更新 %d 个项目中的 %d 个继承字段；明确覆盖的字段保持。关闭自动处理只停止后续触发，已运行任务保留真实状态。", len(directory.Projects), inheritedFields(directory))).FontSize(11).TextColor(muted).LineHeight(1.7)
 	ui.Button(c, "保存默认规则").Disabled(a.access.Busy || !a.access.DefaultsDirty).OnClick(func() {
@@ -292,47 +286,10 @@ func (a *App) accessSettings(c *ui.Context) {
 			a.access.DefaultsRevision = a.access.Directory.Revision
 		})
 	}
-	ui.Text(c, "项目设置").FontSize(17).Bold()
-	if len(directory.Agents) == 0 {
-		ui.Text(c, "尚无受管 Agent；接入后按默认规则计算权限。").FontSize(12).TextColor(muted)
-	}
-	for _, p := range directory.Projects {
-		project := p
-		label := project.Name
-		labels := projectLabels(a.Config.Projects)
-		for i, row := range a.Config.Projects {
-			if row.ID == project.ID {
-				label = labels[i]
-				break
-			}
-		}
-		ui.Column(c.Key("project-policy-"+p.ID)).Border(1, border).Radius(8).Padding(16).Gap(10).Children(func() {
-			ui.Row(c).Gap(12).Children(func() {
-				ui.Text(c, label).FontSize(14).Bold()
-				ui.Spacer(c)
-				ui.Text(c, project.syncLabel(directory.Agents...)).FontSize(11).TextColor(muted)
-				button(c, "设置", func() {
-					if a.access.OpenProject == project.ID {
-						a.access.OpenProject = ""
-					} else {
-						a.access.OpenProject = project.ID
-					}
-				})
-			})
-			if a.access.OpenProject != project.ID {
-				return
-			}
-			for _, agent := range directory.Agents {
-				a.agentPolicyEditor(c, project, agent)
-			}
-			ui.Button(c, "重新核对权限").Disabled(a.access.Busy).OnClick(func() {
-				a.mutateAccess(func(ctx context.Context, client ProjectControlClient, revision int64) (AccessDirectory, error) {
-					return client.reconcile(ctx, revision, project.ID)
-				})
-			})
-		})
-	}
-	a.projectRegistration(c)
+}
+
+func (a *App) commonDatasetSettings(c *ui.Context) {
+	directory := a.access.Directory
 	ui.Text(c, "通用知识数据组").FontSize(17).Bold()
 	if directory.Common != nil {
 		ui.Text(c, directory.Common.syncLabel(directory.Agents...)).FontSize(11).TextColor(muted)
@@ -371,25 +328,19 @@ func (a *App) agentPolicyEditor(c *ui.Context, p AccessProject, agent AccessAgen
 		a.access.Overrides[key] = draft
 	}
 	ui.Column(c.Key("agent-policy-" + key)).Gap(8).Children(func() {
-		ui.Text(c, agent.Name).FontSize(12).Bold()
 		actual := p.Overrides[agent.ID].effective(a.access.Directory.Defaults)
-		ui.Text(c, "当前规则："+accessLabel(actual.Access)+" · 自动采集"+booleanLabel(actual.Capture)+" · 自动处理"+booleanLabel(actual.AutoProcess)).FontSize(11).TextColor(muted)
-		ui.Row(c).Gap(8).Children(func() {
-			ui.Column(c).Gap(4).Children(func() {
-				ui.Text(c, "访问规则").FontSize(10).TextColor(muted)
-				ui.Select(c.Key("override-access-"+key), &draft.Access, []string{"继承默认", "不可访问", "只读", "可写并维护知识（含删除）"}).Width(260).Disabled(a.access.Busy)
-			})
-			ui.Column(c).Gap(4).Children(func() {
-				ui.Text(c, "自动采集").FontSize(10).TextColor(muted)
-				ui.Select(c.Key("override-capture-"+key), &draft.Capture, []string{"继承默认", "开启", "关闭"}).Width(130).Label("项目自动采集").Disabled(a.access.Busy)
-			})
-			ui.Column(c).Gap(4).Children(func() {
-				ui.Text(c, "自动处理").FontSize(10).TextColor(muted)
-				ui.Select(c.Key("override-process-"+key), &draft.Process, []string{"继承默认", "开启", "关闭"}).Width(130).Label("项目自动处理").Disabled(a.access.Busy)
-			})
+		override := p.Overrides[agent.ID]
+		policySettingRow(c, "Agent 访问权限", "决定这个 Agent 能否读取、写入或删除此项目知识。", accessLabel(actual.Access), override.Access == nil, func() {
+			ui.Select(c.Key("override-access-"+key), &draft.Access, []string{"继承默认", "不可访问", "只读", "可写并维护知识（含删除）"}).Width(260).Disabled(a.access.Busy)
+		})
+		policySettingRow(c, "自动采集", "将此 Agent 后续的新会话材料保存到这个项目；不补采关闭期间的内容。", booleanLabel(actual.Capture), override.Capture == nil, func() {
+			ui.Select(c.Key("override-capture-"+key), &draft.Capture, []string{"继承默认", "开启", "关闭"}).Width(180).Label("项目自动采集").Disabled(a.access.Busy)
+		})
+		policySettingRow(c, "自动处理", "收到新材料后自动整理知识；关闭后已运行的任务仍会继续。", booleanLabel(actual.AutoProcess), override.AutoProcess == nil, func() {
+			ui.Select(c.Key("override-process-"+key), &draft.Process, []string{"继承默认", "开启", "关闭"}).Width(180).Label("项目自动处理").Disabled(a.access.Busy)
 		})
 		ui.Row(c).Gap(10).Children(func() {
-			ui.Button(c, "保存项目规则").Disabled(a.access.Busy).OnClick(func() {
+			ui.Button(c, "保存此 Agent 的设置").Disabled(a.access.Busy).OnClick(func() {
 				fields := map[string]any{"access": nil, "capture": nil, "auto_process": nil}
 				if draft.Access != "继承默认" {
 					fields["access"] = accessValue(draft.Access)
@@ -404,14 +355,11 @@ func (a *App) agentPolicyEditor(c *ui.Context, p AccessProject, agent AccessAgen
 					return client.overrides(ctx, draft.Revision, p.ID, agent.ID, fields)
 				}, func() { delete(a.access.Overrides, key) })
 			})
-			ui.Button(c, "恢复全部默认").Disabled(a.access.Busy).OnClick(func() {
-				a.mutateAccess(func(ctx context.Context, client ProjectControlClient, revision int64) (AccessDirectory, error) {
-					return client.overrides(ctx, revision, p.ID, agent.ID, map[string]any{"access": nil, "capture": nil, "auto_process": nil})
-				}, func() { delete(a.access.Overrides, key) })
+			ui.Button(c, "改为继承默认").Disabled(a.access.Busy).OnClick(func() {
+				draft.Access, draft.Capture, draft.Process = "继承默认", "继承默认", "继承默认"
 			})
-			ui.Button(c, "重新载入项目规则").Disabled(a.access.Busy).OnClick(func() { delete(a.access.Overrides, key) })
+			ui.Button(c, "撤销未保存修改").Disabled(a.access.Busy).OnClick(func() { delete(a.access.Overrides, key) })
 		})
-		a.pendingMaterialsEditor(c, p, agent)
 	})
 }
 

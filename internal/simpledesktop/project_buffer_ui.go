@@ -44,7 +44,7 @@ func (a *App) pendingMaterialsEditor(c *ui.Context, p AccessProject, agent Acces
 		}
 		ui.Column(c.Key("pending-"+key)).Gap(6).Padding(8, 0).Children(func() {
 			ui.Row(c).Gap(8).Children(func() {
-				ui.Text(c, fmt.Sprintf("待发材料 · 会话 %d", count)).FontSize(11).Bold()
+				ui.Text(c, fmt.Sprintf("会话 %d · %s", count, shortSessionLabel(binding.HostSessionKey))).FontSize(11).Bold()
 				ui.Button(c, "核对待发材料").Disabled(view.Busy || p.Dataset == "").OnClick(func() { a.runPendingAction(view, p, agent, binding, "show") })
 			})
 			if view.Loaded {
@@ -103,4 +103,12 @@ func (a *App) runPendingAction(view *pendingBufferView, p AccessProject, agent A
 			}
 		})
 	}()
+}
+
+func shortSessionLabel(key string) string {
+	r := []rune(key)
+	if len(r) > 22 {
+		return string(r[:10]) + "…" + string(r[len(r)-8:])
+	}
+	return key
 }

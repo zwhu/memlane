@@ -124,7 +124,7 @@ func (a *App) startTitles(s *pane) {
 		if n >= 30 {
 			break
 		}
-		if row.Kind != "知识" || row.Document == nil || readableDocumentTitle(*row.Document) != "" {
+		if row.Kind != "知识" || row.Document == nil || (a.page != "通用知识" && readableDocumentTitle(*row.Document) != "") {
 			continue
 		}
 		i := row
@@ -154,6 +154,10 @@ func (a *App) startTitles(s *pane) {
 						title := result.Title
 						if a.page == "知识" {
 							title = projectDisplayTitle(result)
+						} else if a.page == "通用知识" {
+							if draft, ok := commonReadingParts(result); ok {
+								title = draft.Title
+							}
 						}
 						s.Items[idx].Title = title
 						s.Items[idx].ReadingState = "ready"

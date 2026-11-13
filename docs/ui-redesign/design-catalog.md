@@ -1,5 +1,7 @@
 # 当前设计目录
 
+2026-11-14最新增补：[通用知识、全局设置与项目设置](common-settings-redesign-20261114.md)。用户已授权重设计及实现，生产组件与隔离检查完成，外接屏实窗待验；本范围覆盖下文旧通用知识／设置布局及项目筛选空区设计，首页移除常驻刷新与无作用页脚。
+
 2026-11-13。用户已选 [A 清晰总览](visual-refinement-selection-20261113.md)。当前整套细化入口为 [A 完整原型](http://127.0.0.1:8097/?variant=A&page=home)，固定提交及原型自验见[进度](visual-refinement-progress-20261113.md)，还原参数见[Native 交接](visual-refinement-handoff-20261113.md)。首页Native开发与Agent自验完成：按[视觉规范](visual-standards-20261113.md)修正字体、动态高度、返回及项目链接；最终知识顶线偏差1.5 DIP，进入既定2 DIP门槛，两尺寸实际截图、连续流程及历史失败见[首页执行记录](../engineering/overview-native-a-execution-20261113.md)。本版待用户审阅，不等同用户视觉认可。其余细化页沿用现有生产实现。
 
 功能范围核对当前源码和[PA 执行记录](../engineering/project-access-execution-20261113.md)，不沿用旧目录的权限／通用知识只读删减，也不恢复旧 A–O 全量功能。原型所有内容和回执均为明确标记的人工静态示例，不连接业务服务。

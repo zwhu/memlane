@@ -42,6 +42,8 @@ type App struct {
 	settingsOrigin      *readingLocation
 	access              projectAccessState
 	commonEdit          commonEditorState
+	commonPage          commonKnowledgePageState
+	commonGeneration    uint64
 	titles              *ReadingTitles
 	readingIdentity     string
 	recentCancel        context.CancelFunc
@@ -50,6 +52,8 @@ type App struct {
 	recentScope         string
 	readingRevisions    map[string]uint64
 	overviewState       overviewViewState
+	overviewRefreshAt   time.Time
+	windowInactive      bool
 	searchType          string
 	editProject         *Project
 	editIndex           int
@@ -437,6 +441,7 @@ func (a *App) viewContent(c *ui.Context) {
 			a.loadOverview()
 		}
 	}
+	a.refreshOverviewIfDue(time.Now())
 	if a.page == "总览" {
 		a.overviewShell(c)
 		return
@@ -457,6 +462,8 @@ func (a *App) viewContent(c *ui.Context) {
 			case "图谱":
 				ui.Column(c).Shrink(0).Padding(12, 32, 0, 32).Children(func() { a.projectTabs(c) })
 				a.graphView(c)
+			case "通用知识":
+				a.commonKnowledgePage(c)
 			case "知识", "检索结果":
 				a.projectReading(c)
 			default:
@@ -468,26 +475,11 @@ func (a *App) viewContent(c *ui.Context) {
 func (a *App) navigation(c *ui.Context) { a.overviewNavigation(c) }
 func (a *App) home(c *ui.Context)       { a.overviewHome(c) }
 func (a *App) settings(c *ui.Context) {
-	ui.Scroll(c).Grow(1).Padding(30, 32).Gap(22).Children(func() {
-		ui.Text(c, "服务与连接").FontSize(21).Bold()
-		ui.Text(c, "Cognee 官方服务\n"+a.Config.ServiceURL+"\n"+a.service).FontSize(12).LineHeight(1.9)
-		ui.Text(c, "Codex 订阅推理\n模型："+a.Config.Model+"\n"+a.completion).FontSize(12).LineHeight(1.9)
-		button(c, "刷新连接状态", a.health)
-		if a.Config.ProjectControl != nil {
-			a.accessSettings(c)
-		} else {
-			ui.Text(c, "项目关联").FontSize(16).Bold()
-			for idx, p := range a.Config.Projects {
-				index := idx
-				button(c, p.Name+" · 修改关联", func() { copy := a.Config.Projects[index]; a.editProject = &copy; a.editIndex = index })
-				ui.Text(c, p.Name+"\n"+p.Path+"\n知识数据组："+p.Dataset).FontSize(12).LineHeight(1.8)
-			}
-			button(c, "关联已有官方项目", func() { a.editProject = &Project{}; a.editIndex = -1 })
-			a.projectEditor(c)
-		}
-		ui.Text(c, "官方插件连接状态：以宿主实际加载回执为准").FontSize(11).TextColor(muted)
-		ui.Text(c, "开发入口\npython3 scripts/dev.py\n关闭窗口后官方服务与模型端点继续运行。重新打开窗口使用启动器入口；明确停止启动器才收尾后台。\n配置更改后停止并重新启动后台生效。电脑重启后手动启动。\n向量模型由 Cognee 官方配置管理。").FontSize(12).LineHeight(1.9)
-	})
+	if a.settingsOrigin != nil && a.access.OpenProject != "" {
+		a.projectSettingsPage(c)
+		return
+	}
+	a.globalSettingsPage(c)
 }
 func (a *App) reading(c *ui.Context) {
 	s := a.state()

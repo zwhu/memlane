@@ -1,0 +1,68 @@
+{
+  "baseline": "d59ca23",
+  "tag": "common-knowledge-redesign-before-20261114",
+  "source_sha256": {
+    "cmd/memlane-app/main.go": "cd6ea5641d6e88666246b78cd284721bc6c28e2f7a59769892f632231a89bebe",
+    "internal/simpledesktop/app.go": "156ec2e04a97656d43fb93286356c7b98864d5a4493d3119dd097a073c0ebb82",
+    "internal/simpledesktop/common_knowledge.go": "c60496e10f54c702e2dc02d50fd840a70e2247268a46eb1f228bb9d57fe7a9c8",
+    "internal/simpledesktop/common_knowledge_page.go": "bb4ae2ab84614b3370d834e2a6f60c3e36bb0df34d9d3d920b2cc8aa4a13c7e3",
+    "internal/simpledesktop/common_knowledge_page_test.go": "53ed0d96910c20854214aa4f01aefa217aac7253155cc6ba550f532acc1a19d4",
+    "internal/simpledesktop/common_knowledge_ui.go": "761f2cecc8892fc32bf341b2a92b941638795de2508b26e566995bf36939c33c",
+    "internal/simpledesktop/overview_navigation.go": "f5636e6764797c9d0fcaca54413774b28db457dda2c68bd87045fd48df39c41e",
+    "internal/simpledesktop/overview_refresh.go": "33591325742a2346ccadc3868c2bf3fc1810013db0070fc2e67561b804036692",
+    "internal/simpledesktop/overview_refresh_test.go": "404655c2eb1f1b3a7ba3b27dc10090dff11f6f412f7aada9276b2e2a012e881b",
+    "internal/simpledesktop/overview_ui.go": "7d913e77dd8148600a571f67c627e188ca5e641272a31441747d89d4ca284447",
+    "internal/simpledesktop/project_access_ui.go": "6faee119895545feb6de967a84e374bac676de72a19b68cad8bca37449cdc08e",
+    "internal/simpledesktop/project_buffer_ui.go": "7c71ccc910f2fabe6545b98642146924f3e79266a1b03f20cbc6e98a073e3f64",
+    "internal/simpledesktop/project_connection_ui.go": "dfe703f9b02152cf2ec19cd9a447c94c200415978c37ea2ec6eafc2f5230ba7e",
+    "internal/simpledesktop/project_reading_ui.go": "95da829da5614e47b6433ef5b4a1623ef2b2a68b4a05a17a72084e94250ca85d",
+    "internal/simpledesktop/reading_loading.go": "78777351aa6fe71d86dc2a3bd24246bbdfd3f952ac2dc04a345054184196aeef",
+    "internal/simpledesktop/settings_redesign.go": "c689a2ffa2b17c7f591d0102b643630e61f758f19ac7a2463b96d514f4ae05ec",
+    "internal/simpledesktop/settings_redesign_test.go": "2b93fbff705d7e2bf5c7f97443da8e898ff26cf3a4ef7ad0a28daedae906a049"
+  },
+  "checks": [
+    {
+      "command": "sh scripts/go.sh test ./... -count=1 -timeout=120s",
+      "exit_code": 0,
+      "simpledesktop_seconds": 4.595
+    },
+    {
+      "command": "sh scripts/go.sh vet ./...",
+      "exit_code": 0
+    },
+    {
+      "command": "sh scripts/go.sh test -race ./internal/simpledesktop -count=1 -timeout=120s",
+      "exit_code": 0,
+      "seconds": 31.532,
+      "boundary": "before final connection display simplification and known older ID test"
+    },
+    {
+      "command": "sh scripts/go.sh test -race ./internal/simpledesktop -run 'TestCommonConfirmKnownOlder|TestSettingsProject|TestProjectEmpty' -count=1 -timeout=60s",
+      "exit_code": 0,
+      "seconds": 2.907
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0
+    }
+  ],
+  "native_visual_verified": false,
+  "native_blocker": "HP external display offline, internal-display exception unanswered",
+  "daily_content_or_acl_write": false,
+  "backend_restart": false,
+  "release_build": false,
+  "method_failures": [
+    "round-1 substring assertion matched save-result status",
+    "round-3 normal sidebar project mistaken for settings leakage"
+  ],
+  "existing_defect_counts": "preserved; no reset",
+  "protected_runtime_pids": [
+    5546,
+    5548,
+    5557,
+    6188,
+    15940,
+    15971
+  ],
+  "first_use_sha256": "97e448181b6616bbf7b11bc7b7913d2ce8b7d686be4adee9517e7b5c8a85233a"
+}

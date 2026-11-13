@@ -31,15 +31,17 @@ func codexConnectionLabel(connection CodexConnection) string {
 
 func (a *App) codexConnectionSettings(c *ui.Context) {
 	connection := a.access.Directory.CodexConnection
-	ui.Text(c, "Agent 连接").FontSize(17).Bold()
 	if connection == nil {
-		ui.Text(c, "本机 Codex 接入状态尚未载入，请刷新连接状态。").FontSize(12).TextColor(muted)
+		ui.Text(c, "正在读取本机 Codex 接入状态…").FontSize(12).TextColor(muted)
 		return
 	}
 	ui.Text(c, "本机 Codex · "+codexConnectionLabel(*connection)).FontSize(12).Bold()
 	ui.Text(c, "CLI 与桌面端共用此配置。新会话按当前默认规则接入；已有会话与待发材料保留，不会自动迁移或补交。").FontSize(11).LineHeight(1.7).TextColor(muted)
 	if connection.Home != "" {
 		ui.Text(c, "配置目录："+connection.Home).FontSize(10).TextColor(muted)
+	}
+	if connection.Status == "configured_pending_new_session" && connection.NewSessions > 0 {
+		return
 	}
 	unknown := connection.Status == "staging_unknown" || connection.Status == "activation_unknown" || connection.Status == "requires_review" || connection.Status == "agent_creation_unconfirmed"
 	ui.Row(c).Gap(12).Children(func() {

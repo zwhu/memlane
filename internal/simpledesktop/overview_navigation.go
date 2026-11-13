@@ -14,7 +14,6 @@ func (a *App) overviewShell(c *ui.Context) {
 				ui.Row(c).Height(homeHeaderHeight).Shrink(0).BorderWidth(0, 0, 1, 0).BorderColor(ui.Hex("#edf0f3")).Padding(0, 28).DragWindow().Children(func() {
 					homeText(c, "总览", homeTopTitle)
 					ui.Spacer(c)
-					homeLink(c, "刷新总览", a.loadOverview)
 					a.unifiedSearchTrigger(c)
 				})
 				if a.configError != "" {
@@ -117,7 +116,7 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			homeNavSurface(b, false).Children(func() {
 				ui.Icon(c, homeSettings).FontSize(17).TextColor(homeMuted)
 				homeText(c, "设置", homeBody).FontSize(13).TextColor(homeNavInk)
-			}).OnClick(func() { a.navigate("设置", 0) })
+			}).OnClick(func() { a.settingsOrigin = nil; a.access.OpenProject = ""; a.navigate("设置", 0) })
 			ui.Row(c).Padding(0, 12).Gap(7).Children(func() {
 				color := homeMuted
 				status := "待检查"

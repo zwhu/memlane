@@ -11,15 +11,19 @@ import (
 )
 
 type commonEditorState struct {
-	Draft                 CommonDraft
-	Existing              *Document
-	Open, Busy, Submitted bool
-	Message               string
-	Receipt               CommonWriteReceipt
-	Target                Project
-	Category              string
-	Delete                *Document
-	Baseline              [32]byte
+	Generation                               uint64
+	Completed, SaveVerified, DeleteSubmitted bool
+	Processing                               string
+	DeleteTarget                             Project
+	Draft                                    CommonDraft
+	Existing                                 *Document
+	Open, Busy, Submitted                    bool
+	Message                                  string
+	Receipt                                  CommonWriteReceipt
+	Target                                   Project
+	Category                                 string
+	Delete                                   *Document
+	Baseline                                 [32]byte
 }
 
 func (a *App) withdrawCommonEditor(dataset string) {
@@ -54,28 +58,7 @@ func commonDraftFor(i Item) CommonDraft {
 	return draft
 }
 
-func (a *App) commonToolbar(c *ui.Context) {
-	if a.Config.ProjectControl == nil {
-		return
-	}
-	ui.Row(c).Gap(8).Children(func() {
-		ui.Button(c, "新增通用知识").Disabled(a.commonEdit.Busy).OnClick(func() {
-			p, ok := a.current()
-			if !ok || p.Dataset == "" {
-				return
-			}
-			a.commonEdit = commonEditorState{Open: true, Draft: CommonDraft{Category: "preference"}, Target: p, Category: a.commonEdit.Category}
-		})
-		category := a.commonEdit.Category
-		if category == "" {
-			category = "全部分类"
-		}
-		ui.Select(c, &category, []string{"全部分类", "个人偏好", "通用经验"}).Width(120).OnChange(func() { a.commonEdit.Category = category; s := a.state(); s.Offset = 0; a.load(s) })
-	})
-	if a.commonEdit.Message != "" && !a.commonEdit.Open {
-		ui.Text(c, a.commonEdit.Message).FontSize(10).TextColor(muted).LineHeight(1.6)
-	}
-}
+func (a *App) commonToolbar(c *ui.Context) { a.commonListToolbar(c) }
 
 func (a *App) commonCategoryFilter() string {
 	switch a.commonEdit.Category {
@@ -87,43 +70,31 @@ func (a *App) commonCategoryFilter() string {
 	return ""
 }
 
-func (a *App) commonActions(c *ui.Context, i Item) {
-	if a.page != "通用知识" || a.Config.ProjectControl == nil || i.Document == nil || commonCategory(*i.Document) == "" || !i.BodyLoaded {
-		return
-	}
-	ui.Row(c).Gap(8).Children(func() {
-		ui.Button(c, "编辑知识").Disabled(a.commonEdit.Busy).OnClick(func() {
-			p, ok := a.current()
-			if !ok {
-				return
-			}
-			d := *i.Document
-			a.commonEdit = commonEditorState{Open: true, Draft: commonDraftFor(i), Existing: &d, Target: p, Category: a.commonEdit.Category, Baseline: sha256.Sum256([]byte(i.Body))}
-		})
-		ui.Button(c, "删除知识").Disabled(a.commonEdit.Busy).OnClick(func() {
-			d := *i.Document
-			a.commonEdit.Delete = &d
-			a.commonEdit.Message = "删除后将移除这条官方知识及关联索引。"
-		})
-		if a.commonEdit.Delete != nil && a.commonEdit.Delete.ID == i.ID {
-			ui.Button(c, "确认删除此条").Disabled(a.commonEdit.Busy).OnClick(func() { a.deleteCommonKnowledge(*i.Document) })
-			button(c, "保留", func() { a.commonEdit.Delete = nil })
-		}
-	})
-}
+func (a *App) commonActions(c *ui.Context, i Item) { a.commonReadActions(c, i) }
 
 func (a *App) deleteCommonKnowledge(document Document) {
 	p, ok := a.current()
-	if !ok || a.commonEdit.Busy {
+	if !ok || a.commonEdit.Busy || a.commonEdit.DeleteSubmitted {
+		return
+	}
+	if document.Dataset != p.Dataset || commonCategory(document) == "" {
+		a.commonEdit.Message = "请选择当前知识库的有效通用知识"
 		return
 	}
 	a.commonEdit.Busy = true
+	a.commonEdit.DeleteSubmitted = true
+	a.commonEdit.Delete = &document
+	a.commonEdit.DeleteTarget = p
+	op := a.commonEdit.Generation
 	client := a.Client
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		err := client.deleteCommon(ctx, p, document)
 		a.Update(func() {
+			if op != a.commonEdit.Generation {
+				return
+			}
 			a.commonEdit.Busy = false
 			if err != nil {
 				if readingUnavailable(err) {
@@ -134,6 +105,7 @@ func (a *App) deleteCommonKnowledge(document Document) {
 				return
 			}
 			a.commonEdit.Delete = nil
+			a.commonEdit.DeleteSubmitted = false
 			if a.commonEdit.Existing != nil && a.commonEdit.Existing.ID == document.ID {
 				a.withdrawCommonEditor(p.Dataset)
 			}
@@ -146,48 +118,7 @@ func (a *App) deleteCommonKnowledge(document Document) {
 	}()
 }
 
-func (a *App) commonEditor(c *ui.Context) {
-	e := &a.commonEdit
-	ui.Scroll(c.Key("common-editor")).Grow(1).MinHeight(0).Padding(28, 30).Gap(14).Children(func() {
-		ui.Text(c, "管理通用知识").FontSize(21).Bold()
-		ui.Text(c, "独立保存，供可读的 Agent 跨项目参考；项目明确约定优先。").FontSize(12).TextColor(muted)
-		category := "个人偏好"
-		if e.Draft.Category == "experience" {
-			category = "通用经验"
-		}
-		ui.Select(c, &category, []string{"个人偏好", "通用经验"}).Width(180).Disabled(e.Busy || e.Submitted || e.Existing != nil).OnChange(func() {
-			if category == "个人偏好" {
-				e.Draft.Category = "preference"
-			} else {
-				e.Draft.Category = "experience"
-			}
-		})
-		ui.Text(c, "标题").FontSize(11).TextColor(muted)
-		ui.TextInput(c, &e.Draft.Title).Height(34).Label("通用知识标题").Disabled(e.Busy || e.Submitted)
-		ui.Text(c, "正文").FontSize(11).TextColor(muted)
-		ui.TextArea(c, &e.Draft.Body).Height(220).Label("通用知识正文").Disabled(e.Busy || e.Submitted)
-		ui.Text(c, "适用条件").FontSize(11).TextColor(muted)
-		ui.TextArea(c, &e.Draft.Applicability).Height(70).Label("通用知识适用条件").Disabled(e.Busy || e.Submitted)
-		ui.Text(c, "原始来源").FontSize(11).TextColor(muted)
-		ui.TextInput(c, &e.Draft.Source).Height(34).Label("通用知识来源").Disabled(e.Busy || e.Submitted || e.Existing != nil)
-		if e.Existing != nil {
-			ui.Text(c, "编辑保留创建时的分类与原始来源。").FontSize(11).TextColor(muted)
-		}
-		if e.Message != "" {
-			ui.Text(c, e.Message).FontSize(12).LineHeight(1.8)
-		}
-		ui.Row(c).Gap(10).Children(func() {
-			ui.Button(c, "保存到通用知识").Disabled(e.Busy || e.Submitted).OnClick(a.saveCommonKnowledge)
-			if e.Submitted {
-				ui.Button(c, "核对原保存结果").Disabled(e.Busy).OnClick(a.confirmCommonKnowledge)
-			}
-			ui.Button(c, "返回阅读").Disabled(e.Busy).OnClick(func() { e.Open = false })
-		})
-		if e.Receipt.PipelineRunID != "" {
-			ui.Text(c, "原处理记录："+e.Receipt.PipelineRunID).FontSize(10).TextColor(muted)
-		}
-	})
-}
+func (a *App) commonEditor(c *ui.Context) { a.commonKnowledgeEditor(c) }
 
 func (a *App) saveCommonKnowledge() {
 	e := &a.commonEdit
@@ -200,6 +131,7 @@ func (a *App) saveCommonKnowledge() {
 	}
 	e.Busy = true
 	e.Message = "正在提交，保存和处理结果将分别核对…"
+	op := e.Generation
 	client, p, draft, existing, baseline := a.Client, e.Target, e.Draft, e.Existing, e.Baseline
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
@@ -208,6 +140,9 @@ func (a *App) saveCommonKnowledge() {
 			current, err := client.read(ctx, Item{ID: existing.ID, Dataset: existing.Dataset, Kind: "知识", Document: existing})
 			if err != nil || sha256.Sum256([]byte(current.Body)) != baseline {
 				a.Update(func() {
+					if op != a.commonEdit.Generation {
+						return
+					}
 					e.Busy = false
 					if readingUnavailable(err) {
 						a.withdrawCommonEditor(p.Dataset)
@@ -221,6 +156,9 @@ func (a *App) saveCommonKnowledge() {
 		}
 		receipt, err := client.writeCommon(ctx, p, draft, existing)
 		a.Update(func() {
+			if op != a.commonEdit.Generation {
+				return
+			}
 			e.Busy = false
 			e.Receipt = receipt
 			e.Submitted = true
@@ -246,12 +184,21 @@ func (a *App) confirmCommonKnowledge() {
 		return
 	}
 	e.Busy = true
+	op := e.Generation
 	client, p, receipt, draft := a.Client, e.Target, e.Receipt, e.Draft
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		document, message, err := client.confirmCommon(ctx, p, receipt, draft)
 		a.Update(func() {
+			if op != a.commonEdit.Generation {
+				return
+			}
+			if document.ID != "" {
+				e.SaveVerified = true
+				e.Receipt.DataID = document.ID
+			}
+			e.Processing = commonProcessingStatus(message)
 			e.Busy = false
 			e.Message = message
 			if err != nil {

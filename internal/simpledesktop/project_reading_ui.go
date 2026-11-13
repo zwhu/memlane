@@ -94,13 +94,19 @@ func (a *App) projectHeader(c *ui.Context) {
 		} else if a.page == "设置" && a.settingsOrigin != nil {
 			back = func() { v := a.settingsOrigin; a.restoreReadingLocation(v) }
 			label = "返回项目"
-		} else if a.fromOverview {
-			back = a.returnToOverview
 		}
 		if back != nil {
 			readingAction(c, label, readingBack, back)
 		}
 		title := a.page
+		if a.page == "设置" && a.settingsOrigin != nil {
+			for _, p := range a.Config.Projects {
+				if p.ID == a.access.OpenProject {
+					title = p.Name + " · 设置"
+					break
+				}
+			}
+		}
 		if a.page == "检索结果" && a.project < 0 {
 			title = "通用知识 · 搜索结果"
 		}
@@ -160,17 +166,21 @@ func (a *App) projectReading(c *ui.Context) {
 		if a.page != "检索结果" {
 			ui.Column(c).Width(300).Shrink(0).BorderWidth(0, 1, 0, 0).BorderColor(homeBorder).Children(func() {
 				ui.Column(c).Padding(24, 18, 5, 18).Gap(12).Shrink(0).Children(func() {
-					homeText(c, "项目内容", homeMeta)
 					a.projectTabs(c)
 					if a.kind != "知识" {
-						ui.Row(c).Gap(12).Children(func() {
+						ui.Row(c).Gap(4).Padding(3).Background(ui.Hex("#f1f5f9")).Radius(7).Children(func() {
 							for _, f := range []string{"全部", "会话", "文档"} {
 								filter := f
 								kind := f
 								if kind == "全部" {
 									kind = "原始记录"
 								}
-								projectLink(c, filter, func() { a.switchProjectKind(kind) })
+								active := a.kind == kind
+								bg, ink := ui.Transparent, homeMuted
+								if active {
+									bg, ink = ui.Hex("#ffffff"), homeInk
+								}
+								ui.Button(c, filter).Label("筛选原始记录："+filter).FontSize(11).FontWeight(400).Padding(5, 12).Background(bg).TextColor(ink).BorderWidth(0).Radius(5).OnClick(func() { a.switchProjectKind(kind) })
 							}
 						})
 					}
@@ -234,7 +244,7 @@ func projectDisplayTitle(i Item) string {
 func (a *App) projectDetail(c *ui.Context, s *pane) {
 	ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
 		if s.Selected == nil {
-			homeText(c, "选择一项内容开始阅读", homeBody).Margin(32)
+			a.emptyReadingBackground(c)
 			return
 		}
 		i := s.Selected

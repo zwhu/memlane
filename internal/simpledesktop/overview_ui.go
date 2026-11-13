@@ -48,6 +48,7 @@ func (a *App) overviewScope() string {
 
 func (a *App) loadOverview() {
 	v := &a.overviewState
+	a.overviewRefreshAt = time.Now().Add(overviewRefreshInterval)
 	if a.Config.ProjectControl != nil && !a.access.Loaded {
 		v.Loading, v.ActivityLoading = true, true
 		return
@@ -227,14 +228,16 @@ func (a *App) overviewHome(c *ui.Context) {
 			if _, err := firstUseDays(a.Config, now); err != nil {
 				homeText(c, "使用天数暂不可用，请通过开发入口完成初始化。", homeAction).Margin(0, 0, 12, 0)
 			}
-			if v.Loading {
+			if v.Loading && !v.Loaded {
 				homeText(c, "正在读取统计…", homeAction).Margin(0, 0, 12, 0)
 			}
 			if v.Error != "" {
-				homeText(c, "统计读取失败，保留上次结果 · "+v.Error, homeAction).Margin(0, 0, 12, 0)
+				homeText(c, "统计读取失败，保留上次结果 · "+v.Error, homeAction).Margin(0, 0, 6, 0)
+				projectLink(c, "重试读取统计", a.loadOverview)
 			}
 			if v.Snapshot.RawError != "" {
-				homeText(c, "原始记录统计暂不可用 · "+v.Snapshot.RawError, homeAction).Margin(0, 0, 12, 0)
+				homeText(c, "原始记录统计暂不可用 · "+v.Snapshot.RawError, homeAction).Margin(0, 0, 6, 0)
+				projectLink(c, "重试读取记录统计", a.loadOverview)
 			}
 			a.overviewHeatmap(c, now)
 			ui.Row(c).Key("overview-paired-sections").Gap(homeColumnGap).Margin(homeSectionOffset, 0, 23, 0).AlignItems(ui.Stretch).Children(func() {
@@ -250,12 +253,6 @@ func (a *App) overviewHome(c *ui.Context) {
 			if len(a.Config.Projects) == 0 {
 				homeText(c, "尚未关联项目，请在设置中关联已有官方数据组。", homeBody)
 			}
-			ui.Row(c).Margin(20, 0, 0, 0).Children(func() {
-				ui.Icon(c, mark).FontSize(12).TextColor(homeMuted)
-				homeText(c, "Cognee 保存与处理", homeMeta).Margin(0, 6)
-				ui.Spacer(c)
-				homeText(c, now.Format("01月02日"), homeMeta)
-			})
 		})
 	})
 }
@@ -454,16 +451,15 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 		offset = 0
 	}
 	compactLimit := max(1, min(3, len(rows)-offset))
-	ui.Row(c).Shrink(0).Margin(0, 0, 15, 0).Children(func() {
+	ui.Row(c).Shrink(0).MinHeight(22).Margin(0, 0, 15, 0).Children(func() {
 		homeText(c, "近期动态", homeHeading)
-		ui.Spacer(c)
-		homeIconButton(c, "刷新动态", homeRefresh, a.loadOverviewActivity).Disabled(v.ActivityLoading)
 	})
-	if v.ActivityLoading {
+	if v.ActivityLoading && !v.ActivityLoaded {
 		ui.Text(c, "正在读取动态…").FontSize(11).TextColor(muted)
 	}
 	if v.ActivityError != "" {
 		ui.Text(c, "动态读取失败，保留上次结果 · "+v.ActivityError).FontSize(11).TextColor(muted)
+		projectLink(c, "重试读取动态", a.loadOverviewActivity)
 	}
 	if v.ActivityLoaded && len(v.Events) == 0 {
 		ui.Text(c, "暂无动态").FontSize(12).TextColor(muted)
