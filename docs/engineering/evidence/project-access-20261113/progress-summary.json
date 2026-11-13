@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "goal_status": "active",
+  "source_commit": "741886e plus current connection guard fixes",
+  "checks": {
+    "real-acl-matrix": {
+      "status": "completed",
+      "private_receipt": "real-acl-matrix.json",
+      "project_id": "decffe38-e26d-5d6c-93dd-d578f130fd1a",
+      "dataset_id": "f6fbfc52-ccc4-564d-a458-0ca7c55244fe"
+    },
+    "maintenance-crud": {
+      "status": "passed",
+      "private_receipt": "maintenance-crud.json",
+      "dataset_id": "f6fbfc52-ccc4-564d-a458-0ca7c55244fe"
+    },
+    "default-inheritance-real": {
+      "status": "original_defaults_restored",
+      "private_receipt": "default-inheritance-real.json",
+      "project_id": "decffe38-e26d-5d6c-93dd-d578f130fd1a"
+    },
+    "real-project-identities": {
+      "status": "passed",
+      "private_receipt": "real-project-identities.json"
+    },
+    "common-revoked-no-injection": {
+      "status": "passed",
+      "private_receipt": "common-revoked-no-injection.json",
+      "model_calls": 0
+    },
+    "manual-save-capture-off": {
+      "status": "passed",
+      "private_receipt": "manual-save-capture-off.json",
+      "project_id": "8143cf32-79b2-53b5-9e75-0bd7421e38f5"
+    },
+    "resume-capture-real": {
+      "status": "passed",
+      "private_receipt": "resume-capture-real.json",
+      "project_id": "8143cf32-79b2-53b5-9e75-0bd7421e38f5",
+      "host_session": "01a1d37a-d72b-78a1-bcfe-90e2490e075b",
+      "official_session": "codex_01a1d37a-d72b-78a1-bcfe-90e2490e075b"
+    },
+    "blocked-buffer-real": {
+      "status": "explicit_native_replay_verified",
+      "private_receipt": "blocked-buffer-real.json",
+      "dataset_id": "17fcf3f7-ea5c-5a37-b902-c0cc78fd7822",
+      "host_session": "01a1d37a-d72b-78a1-bcfe-90e2490e075b",
+      "official_session": "codex_01a1d37a-d72b-78a1-bcfe-90e2490e075b"
+    },
+    "unknown-buffer-real": {
+      "status": "explicit_cli_discard_verified",
+      "private_receipt": "unknown-buffer-real.json",
+      "dataset_id": "17fcf3f7-ea5c-5a37-b902-c0cc78fd7822",
+      "host_session": "01a1d37a-d72b-78a1-bcfe-90e2490e075b",
+      "official_session": "codex_01a1d37a-d72b-78a1-bcfe-90e2490e075b",
+      "model_calls": 0
+    },
+    "common-delete-real": {
+      "status": "passed",
+      "private_receipt": "common-delete-real.json",
+      "dataset_id": "9e5f21a7-acdd-579d-bd14-4fd4aaed3060",
+      "model_calls": 0
+    },
+    "native-background-discovery": {
+      "status": "passed",
+      "private_receipt": "native-background-discovery.json",
+      "project_id": "21476337-2a4f-51fb-aa05-d0d11d4a21e7",
+      "dataset_id": "8cbf6d8d-5ba9-5784-b1ce-55c270d6db54",
+      "model_calls": 0
+    },
+    "native-project-settings": {
+      "status": "passed",
+      "private_receipt": "native-project-settings.json",
+      "model_calls": 0
+    },
+    "codex-connection-installer": {
+      "status": "passed",
+      "private_receipt": "codex-connection-installer.json",
+      "model_calls": 0
+    },
+    "daily-codex-connection-prepare": {
+      "status": "prepared",
+      "private_receipt": "daily-codex-connection-prepare.json",
+      "model_calls": 0,
+      "configuration_unchanged": true
+    },
+    "daily-codex-connection-activation": {
+      "status": "configured_pending_new_session",
+      "private_receipt": "daily-codex-connection-activation.json",
+      "model_calls": 0
+    },
+    "daily-cli-session": {
+      "status": "passed",
+      "private_receipt": "daily-cli-session.json",
+      "project_id": "e7bec60d-3c04-544b-a3f6-cffc717ffea2",
+      "dataset_id": "933effd1-de17-550c-8c8a-fbc9390de5f7",
+      "host_session": "01a1d3c3-767b-74d0-b64a-c87c6729df96",
+      "official_session": "codex_01a1d3c3-767b-74d0-b64a-c87c6729df96",
+      "exit_code": 0,
+      "hook_trust_bypass": false,
+      "qas": 1,
+      "traces": 6
+    },
+    "daily-desktop-session": {
+      "status": "delegated_host_verified_normal_user_qa_unproven",
+      "private_receipt": "daily-desktop-session.json",
+      "project_id": "510a31bd-650a-584a-9719-0dcd28880d13",
+      "official_session": "codex_01a1d3c7-5efe-7c22-88d6-5b1ec6a66dcf",
+      "actual_cwd": "/Users/bytedance/work/AI/memlane",
+      "native_codex_window_control": "tool_denied"
+    }
+  },
+  "known_failure_counts": {
+    "PA-ACL01": 1,
+    "PA-CK02": 1,
+    "PA-CK03": 1,
+    "PA-NAME01": 1,
+    "PA-WIN01": 1,
+    "PA-CONN01": 1,
+    "PA-CONN02": 1,
+    "PA-CONN03": 1,
+    "PA-DIR01": 1
+  },
+  "unproven": [
+    "normal Desktop user-message QA capture pending user send; task-tool delegation is a different source",
+    "latest Native project visual observation blocked by cgWindowNotFound",
+    "final runtime load of current connection status guards",
+    "final test-artifact and official synthetic-data cleanup"
+  ],
+  "same_official_store": true,
+  "release": false,
+  "observed_at": 1794555231.68182,
+  "historical_error_index": "docs/engineering/client-simplification-errors-20261113.md; historical counts and stops retained",
+  "source_sha256": {
+    "engine/python/project_codex_connection.py": "08564de85a9a5e95f4ec1abc6ead9c2bb2debdb2b7380294b53674ba0e0c463c",
+    "engine/python/project_installation.py": "63c0e9de77196e46a3ebb41fb4d2d5b9de54c6dec7f4a8fd992f0701e854e34b"
+  },
+  "python_checks": 52
+}

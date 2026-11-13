@@ -269,3 +269,46 @@ Native后台恢复后目录和策略均已载入，但上方仍显示此前服�
 
 
 最终候选补充：连接“新会话回执”只统计本次启用后新增的host绑定，旧绑定不充当当前配置加载证据；未知原配置已提交时review仅核对原缓存和原配置。50项Python全量、Go全量、vet、受影响包race通过，最后计数小修定向8项通过。PA-CONN01原失败1轮保留，最后fixture补齐enabled_plugin字段不算新的真实验收轮次。日常预览仍未启用，旧watcher未停止。
+
+
+## 用户已交接日常连接；CLI真实接入已通过（15:30）
+
+用户明确答复“交接并启用”，授权停止同一旧插件采集watcher、必要宿主重载及新CLI／Desktop会话验证；原库、管理owner、登录、其他插件及旧会话／材料保护保持。没有重复询问后台许可。
+
+### 实际启用及旧材料保护
+
+按PID及内核启动时间核对后，仅向旧idle8770、exit56700/64233发送SIGTERM，编码父进程未收到信号。确认旧消费者0后记录12个已存在bridge/pending文件摘要。启用前再次发现同一旧插件idle40002（15:11:23）已被旧宿主重新建立，首次预检因此拒绝，尚未提交activate；这不是未知写入后重投。按同一授权核对并停止该进程，在同一受控执行中重新确认无旧进程，再按原预览只提交一次activate。
+
+实际回执 `daily-codex-connection-activation.json`：revision39、configured_pending_new_session、当前配置摘要ff291ac4e51d227ebad61a221b1ba1f7d817967c3d713b1b2ce4bfd3fca9beef与原预览一致，旧入口disabled，新入口enabled。没有修改owner凭据或登录。后来CLI正常保存folder trust使config加入该测试仓的trusted条目，不能因此倒推激活失败；后续核对只读检查受管入口／缓存，保留这些无关用户配置变化，启用前仍严格核对完整基线。
+
+两次同库dev重载均核对原owner／数据锁，统一stop返回groups退出和原库释放；最后一次加载home守卫修复后才启用。原活动快照273条／109个最新pipeline均终态，未重放旧任务。该观察不表示所有可能在途调用均取消，也不把正常旧宿主活动推断为零。
+
+旧12个文件在启用及真实CLI之后摘要保持。原owner key仍用于管理连接；实际新cache loader在故意继承原owner环境key时仍选本实例child，并通过官方users/me确认子主体身份，见 `daily-installed-credential-pin.json` passed，未调用模型。证据证明受管入口不落回owner，不声称管理owner key本身已被撤销。
+
+### PA-CONN02／03 与核对语义
+
+PA-CONN02累计失败1轮：启用前源码守卫把trusted用户主目录的 `.codex/config.toml` 当成另一份项目级覆盖，实际就是正在替换的主配置。按真实路径跳过同一文件，独立项目覆盖仍拦截，9项定向回归通过后沿原预览继续，没有修改预览范围。
+
+PA-CONN03累计失败1轮：CLI接入后目录接口把新代次的正常managed watcher也列为legacy。改为只匹配预览中实际被停用的旧plugin/cache namespace；其他profile和当前新代次不误判，仍保留同profile旧入口守卫。该修复及正常folder-trust后只读核对的回归已在源码通过；当前控制进程尚未加载这组最后状态守卫，待普通Desktop验证结束后再集中重载，避免中断正在等待的新会话。
+
+### 日常CLI：没有trust bypass的真实闭环
+
+原生Codex0.167.2，日常HOME／CODEX_HOME，在新空仓daily-cli交互启动。按正常界面先信任自建空仓，再逐项核对并信任本次固定Cognee的9个hook；另外4个待审阅的非Cognee hook保持原状态，没有Trust all或dangerously-bypass-hook-trust。第一空会话仅做信任准备；随后正常/new在当前工作树建立新会话，未重新运行旧任务。
+
+真实会话01a1d3c3-767b-74d0-b64a-c87c6729df96实现src/slug.ts与README，实际node检查成功，CLI正常退出0。新主体首次prompt自动登记项目e7bec60d-3c04-544b-a3f6-cffc717ffea2、dataset933effd1-de17-550c-8c8a-fbc9390de5f7，verified、code_enabled=false；官方原始会话qas1/traces6。官方正常流水线沿原操作树观察从started到全部completed，未为核对重投模型／索引。文档3项中有一条session_learnings；已实际读原文，事实为formatSlug位于src/slug.ts、README有例子、未新增依赖或配置，与实际改动一致。不声称该条覆盖所有函数边界。证据 `daily-cli-session.json` passed，模型使用本机既有gpt-6.1-sol设置。
+
+### Desktop宿主部分证据与正常用户问答缺口
+
+CUA明确拒绝操作com.openai.codex（安全限制），所以没有实际点击其发送按钮。按用户已授权的新Desktop会话，通过已连接任务接口创建只读任务01a1d3c7-5efe-7c22-88d6-5b1ec6a66dcf，继承实际cwd=/Users/bytedance/work/AI/memlane；任务已completed，只读合成slug两个文件且答复合同，无文件改动。真实SessionStart经同一独立主体绑定原memlane项目510a31bd-650a-584a-9719-0dcd28880d13，官方原始session存在，traces2，证明宿主hook／cwd／主体接入。
+
+首次检查按普通用户问答预期qas1，实际qas0。检查该新rollout结构后确认该工具创建的是Agent委派任务：FunctionCallOutput，没有UserMessage。此方法不能代替桌面输入框普通用户消息，原失败断言和qas0保留为方法观察，不给普通桌面采集判通过，也不为凑证据修改官方parser来冒充用户来源。私有 `daily-desktop-session.json` 标记delegated_host_verified_normal_user_qa_unproven。已请求用户只在daily-cli仓的Desktop新对话发送一个只读提示；回答待到，不能按超时当已发送。此前连接授权继续有效。
+
+### PA14与收尾
+
+实际服务openapi快照只有POST /api/v1/improve，没有cancel路径；固定源码improve的detached任务保留终态记录。产品明确“关闭只停止后续触发，不取消已有任务”，插件auto/idle/final/exit/coding_cooldown夹具均在网络前暂停，Beta真实auto_process=false后原pipeline集合不变；已有部分写入及unknown／blocked材料保留证据已存在。没有调用不存在的取消接口、没有把断开请求或开关关闭写成已取消；不为补运行证据再跑模型。
+
+两份自建隔离宿主A/B OAuth副本已删除，原日常登录未动，其余受引用安装／buffer证据保留。普通Desktop验证与最终资源／官方合成数据白名单收尾仍未完成。
+
+最后Native观察：此前新建／覆盖／恢复、关闭重开／来源返回均有实际成功证据。此后CUA连续报cgWindowNotFound，同时App进程与watcher存活；只对核对了身份的自有前台UI watcher做一次正常重载，服务保持，新的UI进程仍被观察工具报相同错误，浏览器inventory另报access host unavailable。原因未知，不把它认定为App退出／配置丢失，不继续盲重载。最新daily-cli知识的实际窗口截图未取得，留待工具窗口观察恢复；不得把HTTP内容检查扩大成最新视觉通过。
+
+当前源码52项Python全量通过，Go源在此后未改，已有全量／vet／race证据沿用。公开去正文的阶段回执在 `evidence/project-access-20261113/progress-summary.json`。整体Goal仍active，未向用户宣称整体验收完成。

@@ -116,6 +116,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
                 '456 Fri Nov 13 14:00:01 2026 python ' + str(self.home) + '/plugins/cache/old/cognee/1/scripts/exit-watcher.py\n')
         with patch('project_codex_connection.subprocess.check_output', return_value=rows):
             result = legacy_consumers(self.home)
+            self.assertEqual(legacy_consumers(self.home, ['cognee@current']), [])
         self.assertEqual([row['pid'] for row in result], [456])
 
     async def test_unknown_activation_reviews_original_files_without_reinstall_or_rewrite(self):
@@ -147,3 +148,22 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(PolicyError, 'codex_project_config_requires_review'):
                 await self.connection.activate(4, self.preview['proposed_sha256'])
         self.assertEqual(self.config_file.read_bytes(), self.before)
+
+    async def test_trusted_home_workspace_is_the_user_config_not_a_second_override(self):
+        self.before += ('\n[projects.' + json.dumps(str(self.home.parent)) + ']\ntrust_level = "trusted"\n').encode()
+        self.config_file.write_bytes(self.before)
+        proposed, _ = proposal(self.before, self.installation)
+        private_write(self.connection.root / 'config-proposed.toml', proposed)
+        self.preview.update(baseline_sha256=digest(self.before), proposed_sha256=digest(proposed))
+        with patch('project_codex_connection.legacy_consumers', return_value=[]):
+            result = await self.connection.activate(4, self.preview['proposed_sha256'])
+        self.assertEqual(result['status'], 'configured_pending_new_session')
+
+    async def test_post_activation_folder_trust_edit_does_not_invalidate_original_success(self):
+        with patch('project_codex_connection.legacy_consumers', return_value=[]):
+            await self.connection.activate(4, self.preview['proposed_sha256'])
+            self.config_file.write_bytes(self.config_file.read_bytes() + b'\n# trust added by normal CLI\n[projects."/new/repo"]\ntrust_level = "trusted"\n')
+            edited = self.config_file.read_bytes()
+            result = await self.connection.review(self.registry.state['revision'])
+        self.assertEqual(result['status'], 'configured_pending_new_session')
+        self.assertEqual(self.config_file.read_bytes(), edited)

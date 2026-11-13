@@ -53,13 +53,17 @@ def enabled_cognee(parsed):
                   if name.split('@', 1)[0] == 'cognee' and value.get('enabled', False))
 
 
-def project_conflicts(parsed, enabled_plugin):
+def project_conflicts(parsed, enabled_plugin, codex_home):
     """Trusted project config can override a user-level plugin disable."""
     conflicts = []
     for workspace, settings in parsed.get('projects', {}).items():
         if settings.get('trust_level') != 'trusted':
             continue
         directory = Path(workspace) / '.codex'
+        if (directory / 'config.toml').resolve() == (codex_home / 'config.toml').resolve():
+            # A trusted $HOME workspace points at the user config itself;
+            # that is precisely the file this reviewed preview replaces.
+            continue
         if not (directory / 'config.toml').exists():
             continue
         _, project = read_config(directory)
@@ -90,6 +94,15 @@ def proposal(data, installation):
     return result, [key for key in old if key != plugin]
 
 
+def configured(parsed, installation):
+    name = installation['marketplace_name']
+    entry = parsed.get('marketplaces', {}).get(name, {})
+    return (enabled_cognee(parsed) == ['cognee@' + name]
+            and entry.get('source_type') == 'local'
+            and entry.get('source') == installation['marketplace_root']
+            and bool(parsed.get('features', {}).get('hooks')))
+
+
 def verify_cache(cache, installation):
     raw = (Path(installation['plugin_dir']) / '.memlane-project-access.json').read_bytes()
     if digest(raw) != installation['manifest_sha256']:
@@ -105,7 +118,7 @@ def verify_cache(cache, installation):
         raise PolicyError('codex_installation_binding_changed', 409)
 
 
-def legacy_consumers(codex_home):
+def legacy_consumers(codex_home, plugin_ids=None):
     # Read process metadata only, never environment values or buffer bodies.
     rows = subprocess.check_output(['ps', '-axo', 'pid=,lstart=,command='], text=True)
     result = []
@@ -116,6 +129,11 @@ def legacy_consumers(codex_home):
         command = fields[6]
         if str(codex_home / 'plugins/cache') + '/' not in command:
             continue
+        if plugin_ids is not None:
+            prefixes = [str(codex_home / 'plugins/cache' / name.split('@', 1)[1] / name.split('@', 1)[0]) + '/'
+                        for name in plugin_ids if '@' in name]
+            if not any(prefix in command for prefix in prefixes):
+                continue
         for script in ('idle-watcher.py', 'exit-watcher.py', 'sync-session-to-graph.py', 'store-user-prompt.py'):
             if '/scripts/' + script in command and '/cognee/' in command:
                 result.append({'pid': int(fields[0]), 'started': ' '.join(fields[1:6]), 'script': script})
@@ -161,14 +179,16 @@ class CodexConnection:
         record = state.get('codex_connections', {}).get(self.id, {})
         preview = record.get('preview') or {}
         status = record.get('status', 'not_connected')
+        if status == 'configured_pending_new_session' and not configured(parsed, agent['installation']):
+            status = 'requires_review'
         if not agent and self.id in state.get('enrollments', {}):
             status = 'agent_creation_unconfirmed'
         return {'instance_id': self.id, 'codex_home': str(self.home),
                 'status': status,
                 'agent_registered': bool(agent),
                 'legacy_plugins': enabled_cognee(parsed),
-                'legacy_consumers': legacy_consumers(self.home),
-                'project_config_conflicts': project_conflicts(parsed, preview.get('enabled_plugin')),
+                'legacy_consumers': legacy_consumers(self.home, preview.get('disabled_plugins', enabled_cognee(parsed))),
+                'project_config_conflicts': project_conflicts(parsed, preview.get('enabled_plugin'), self.home),
                 'preview': copy.deepcopy(record.get('preview')),
                 'new_sessions': sum(json.loads(key)[0] == self.id and key not in record.get('sessions_before_activation', [])
                                     for key in state['sessions']) if status == 'configured_pending_new_session' else 0}
@@ -229,9 +249,9 @@ class CodexConnection:
             preview = record['preview']
             if reviewed_sha != preview['proposed_sha256'] or digest(baseline) != preview['baseline_sha256']:
                 raise PolicyError('codex_configuration_changed', 409)
-            if preview['disabled_plugins'] and legacy_consumers(self.home):
+            if preview['disabled_plugins'] and legacy_consumers(self.home, preview['disabled_plugins']):
                 raise PolicyError('codex_legacy_consumers_still_active', 409)
-            if project_conflicts(parsed, preview['enabled_plugin']):
+            if project_conflicts(parsed, preview['enabled_plugin'], self.home):
                 raise PolicyError('codex_project_config_requires_review', 409)
             planned = (self.root / 'config-proposed.toml').read_bytes()
             if digest(planned) != reviewed_sha:
@@ -280,12 +300,12 @@ class CodexConnection:
                     raise PolicyError('agent_creation_requires_review', 409)
                 return self.view()
             installation = r.state['agents'][self.id]['installation']
-            current, _ = read_config(self.home)
+            current, parsed = read_config(self.home)
             preview = record['preview']
             version = json.loads((Path(installation['plugin_dir']) / '.codex-plugin/plugin.json').read_text())['version']
             staged = Path(record.get('staged_cache') or self.root / 'staged-home/plugins/cache' / installation['marketplace_name'] / 'cognee' / version)
             target = self.home / 'plugins/cache' / installation['marketplace_name'] / 'cognee' / version
-            if digest(current) == preview['proposed_sha256']:
+            if configured(parsed, installation):
                 verify_cache(target, installation)
                 record['status'] = 'configured_pending_new_session'
             elif digest(current) == preview['baseline_sha256']:
