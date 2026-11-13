@@ -34,7 +34,7 @@ load_env_file()
 from _memlane_policy import managed, code_target, NotReady
 if managed():
     try:
-        dataset = code_target("write", dataset)
+        dataset = code_target("write", dataset, workspace=spec)
     except NotReady as error:
         return _error(403, str(error))''')
         text = body(text, 'do_index_repo', '''from _env_file import load_env_file
@@ -42,7 +42,7 @@ load_env_file()
 from _memlane_policy import managed, code_target, NotReady
 if managed():
     try:
-        dataset = code_target("write", dataset)
+        dataset = code_target("write", dataset, workspace=repo_spec)
     except NotReady as error:
         return _error(403, str(error))
     service_url = os.environ["COGNEE_BASE_URL"]

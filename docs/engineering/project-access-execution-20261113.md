@@ -133,3 +133,45 @@
 Native准备：旧孤立GUI58489经CUA正常退出，新 `dev.py open --watch-ui` 正在按当前源码加载；窗口由PA独占，阅读session已确认仍blocked且不启动watcher。实际新界面证据待获取。
 
 Native初次观察：MyGo dev完成调试编译，新GUI20222。CUA实际打开设置并展开项目：默认访问／采集／处理、覆盖与恢复、原未确认状态、配置准备入口可见；通用知识空列表和新增表单的分类／标题／正文／适用条件／来源可见，截图已实际查看。未通过UI改权限或保存正文；尚非PA-H整体验收。发现通用知识列表沿用“项目内容”小标题，记为待修正文案，未据此宣称全部视觉通过。当前界面停在未填写的新建通用知识表单，无未保存用户正文。
+
+### 后续源码与真实只读／拒写观察
+
+阶段源码与UI接线已提交 `c9c32dc`。其后补齐可选代码组管理契约：管理身份通过固定PUT code接口关联已拥有的官方组，不允许知识／通用组或其他项目代码组混用；项目访问变化同步可选组ACL，关闭时撤下Agent访问。原Native代码图开启入口复用该接口，只在实际ACL核对后发起索引；关联由控制登记持久化，不将自动目录写成静态配置。启动时只导入显式旧代码关联，不重跑索引。插件校验组UUID和已登记仓库根，不允许默认slug或远程／其他目录落入当前项目。新项目仍默认关闭，未知操作只显式reconcile。前述“可选代码组契约未实现”由此源码覆盖，但真实代码组启用／索引未验收。
+
+39项Python项目检查、Go全量test、vet和race通过（最后通用处理状态小修后再定向核对）。固定产物07已生成并校验，候选配置指向07；活跃控制进程仍使用06和旧Python模块，尚未第二次重启。通用列表小标题源码已修正，watcher重载后的视觉复验待后续Native轮。
+
+用原独立child对空通用组仅发一次合成拒写探针。普通remember后台模式返回200，后续官方日志为write PermissionDeniedError；管理身份只读核对文档数仍为0，原operation记为succeeded/background=true、tokens_in/out均为0。这证明官方“后台已启动”与“实际写入／处理”必须区分，不能把200直接当越权成功，也不能声称HTTP层403。最初探针未保留响应body，仅保留HTTP状态；已按原组、原操作和日志核对，未重投。属于验收方法观察，不新增PA-ACL01失败次数；回执 `.local/project-access-evidence/common-write-denied.json`。
+
+据此修正桌面原结果核对：只有明确pipeline行终态可推进处理完成，background operation的succeeded不能代替处理完成；新增回归断言。正文存在与处理终态继续分别报告。没有因此重跑模型／摄入任务。
+
+## 真实会话阶段
+
+用户进一步明确“允许必要的 dev 重载”，后续在本session已交接窗口内进行必要重载，不需逐次重新索要相同授权；原库、主体和任务保护保持。第二次同库重载现为launcher31782（13:27:49）、completion31790、official31796、control32083，ready，产物07。导入既有代码关联仅记录配置；原项目unconfirmed时不自动重试旧ACL，保留原状态，随后由明确reconcile核对。
+
+PA-ACL01 原主体显式reconcile通过：项目desired/applied revision4、通用desired/applied revision3均verified，既有代码组已关联，没有重建主体、内容或任务。原失败1轮保留，修复后本轮通过。回执 `.local/project-access-evidence/acl01-reconcile-original.json`。
+
+新增只读策略复核：每次hook取policy前重新核对该主体有效ACL（含角色／tenant及可选代码组、通用组），外部撤权撤下本地缓存许可并增加代次，不补grant、不自动将unconfirmed恢复verified。源码40项检查通过。安装／代码组接线及格式整理尚待本阶段提交。
+
+### PA-A 新仓真实采集与处理
+
+- 创建本任务隔离宿主 `.local/pa-verification/host-a`，新仓 `repos/alpha`；保持日常Codex设置、现有会话和Cognee数据路径。OAuth文件只私有复制到隔离Codex home，未切换日常登录／Agent配置。此复制是运行依赖，完成前保留，收尾删除隔离副本。
+- 管理接口准备原 `pa-verify-codex-a` 安装引用；新宿主经本机Codex官方marketplace/add实际安装，固定58文件及0600 marker再次核对。使用独立HOME／CODEX_HOME、无daemon；仅对已核对的固定hooks在本次测试调用允许运行，未修改用户全局hook信任。来源：[官方插件配置](https://developers.openai.com/plugins/build/plugins)、[官方隔离宿主验收示例](https://developers.openai.com/cookbook/examples/partners/harness_aware_plugin_evals/harness_aware_plugin_evals)。
+- 真实会话 `01a1d363-82e9-7ae3-9818-8aafcf0a4c6b`，官方会话 `codex_01a1d363-82e9-7ae3-9818-8aafcf0a4c6b`。CLI退出0，实际创建TypeScript事件模块及README，不是合成transcript。SessionStart自动建立项目 `decffe38-e26d-5d6c-93dd-d578f130fd1a`、官方组 `f6fbfc52-ccc4-564d-a458-0ca7c55244fe`，verified、代码图默认关闭；首写前绑定，未手动预加项目。
+- 官方原始会话和Data均出现，原自动整理操作树产生add/indexing/cognify/memify终态succeeded。各pipeline阶段不是擅自重跑；沿原操作树只读核对。知识内容质量及后续采用仍另验，不仅凭终态判质量。CLI事件／回执、原buffer与hook日志保留在隔离宿主及 `.local/pa-verification/alpha-session-a*`，不入Git。
+- Native侧栏自动出现alpha，截图与AX实际观察，未写静态项目清单；原memlane仍在。并发同仓、同名分离、另一主体、限制继承／恢复与blocked处置尚待真实连续验收，不将本条扩大为PA-A–H全通过。
+
+### PA-G 真实通用保存与 PA-CK02 核对缺陷
+
+通过实际Native表单仅提交一次合成验收知识，含分类preference、来源“PA-G 本机合成验收”、适用条件限定隔离验收仓库，明确不是用户真实偏好。官方Data `a8e6c6d9-0c23-4d48-b0e1-d2a1d66c299b`，metadata分类／来源／node_set正确，raw正文核对；原operation `b0873e00-cef1-43d5-a8e1-a7421263284f`，cognify `071cc7e9-79d8-45b8-85e2-a65e45581615` 终态succeeded。回执 `.local/project-access-evidence/common-native-save.json`。
+
+PA-CK02 累计失败1轮：Native核对误报未找到原文。已证官方正常文本摄入去掉末尾LF，客户端生成正文带LF，逐字相等失败；相同候选的两次只读核对属于同轮，未重复提交。修复仅忽略一个末尾LF，内部正文、空白及metadata仍精确核对，夹具改为实际无末尾LF回归。原文档及处理身份保留，未为修复再调用模型。Native源码重载后复验原结果待执行。
+
+固定官方普通文档后台响应不保证提供原pipeline标识，不能安全地将同组并发活动猜成原处理结果。后续手动新建使用官方阻塞摄入（UI仍异步），以取得实际终态与pipeline回执，超时仍未知、不自动再投。已有后台操作按原身份只读核对，不重复保存。pipeline operation启动成功不能当处理完成的回归继续保留。
+
+另一真实新会话正在同一隔离仓库验证实际采用：提示与已有源码不包含通用约定的唯一标记，不预先把期待答案放进仓库。回执 `.local/pa-verification/alpha-session-b.json`，原请求仍在进行，尚不判通过。整体Goal保持active。
+
+后续采用结果：新会话 `01a1d367-ea8c-7860-9e59-e58d30e57102` 退出0，原提示／原仓库均不含唯一标记，实际生成的parseEvent四处错误消息使用该通用约定，同时保持原项目alpha标识与UTC约定。原hook日志仅有一次coding_block_delivered（864字符）；在既有入口内完成，未新增注入hook。此条真实采用通过；不能据此代替整个PA-G的修改／删除／撤权或冲突优先级场景。
+
+PA-CK03 累计失败1轮：普通通用Markdown被旧session-learning前缀解析标为“原文格式未识别”，标题变成通用占位。只对有明确common metadata的文档增加呈现分支，复用原阅读缓存／组件，保留raw正文原值；不重做阅读UI。新增回归通过，实际Native再读同一文档后列表／详情标题正确，正文及来源可见、误报消失，本轮修复复验通过。未再次保存或调用模型。通用列表“项目内容”小标题也已在实际新窗口核对为“通用知识”。
+
+当前剩余：第二独立主体与真实ACL矩阵、默认动态继承／覆盖／恢复、新建关联及并发分组、真实禁采游标恢复和blocked处置、通用编辑／删除及无权不注入、项目优先、空项目通用采用、完整Native连续场景与运行交接／清理。现有真实进展不缩小原Goal完成范围。

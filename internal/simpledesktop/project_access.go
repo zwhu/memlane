@@ -60,22 +60,35 @@ type AccessProject struct {
 	Overrides       map[string]ProjectOverride `json:"overrides"`
 	Applied         map[string]AccessApplied   `json:"applied"`
 	CodeEnabled     bool                       `json:"code_enabled"`
+	CodeConfigured  bool                       `json:"code_configured"`
+	CodeDataset     string                     `json:"code_dataset_id"`
 }
 
 func (p AccessProject) syncLabel(agents ...AccessAgent) string {
 	if p.Status == "transition" {
 		return "同步中"
 	}
-	if p.Status != "verified" || p.Dataset == "" {
+	if !p.permissionsReady(agents...) {
 		return "权限未确认，自动操作暂缓"
 	}
-	for _,agent:=range agents{if applied,ok:=p.Applied[agent.ID];!ok||applied.Status!="verified"||applied.Revision!=p.DesiredRevision{return "权限未确认，自动操作暂缓"}}
-	for _, applied := range p.Applied {
-		if applied.Status != "verified" || applied.Revision != p.DesiredRevision {
-			return "权限未确认，自动操作暂缓"
+	return "已生效"
+}
+
+func (p AccessProject) permissionsReady(agents ...AccessAgent) bool {
+	if p.Status != "verified" || p.Dataset == "" {
+		return false
+	}
+	for _, agent := range agents {
+		if applied, ok := p.Applied[agent.ID]; !ok || applied.Status != "verified" || applied.Revision != p.DesiredRevision {
+			return false
 		}
 	}
-	return "已生效"
+	for _, applied := range p.Applied {
+		if applied.Status != "verified" || applied.Revision != p.DesiredRevision {
+			return false
+		}
+	}
+	return true
 }
 
 type AccessAgent struct {

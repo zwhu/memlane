@@ -96,7 +96,10 @@ func (c Client) writeCommon(ctx context.Context, p Project, draft CommonDraft, e
 	w := multipart.NewWriter(&payload)
 	method, path := "POST", "/api/v1/remember"
 	if existing == nil {
-		for key, value := range map[string]string{"raw_data": body, "datasetId": p.Dataset, "node_set": "memlane_common", "run_in_background": "true", "self_improvement": "false"} {
+		// Blocking official ingestion returns the actual pipeline identifier and
+		// terminal result. A background launch omits that identity on this pinned
+		// service, so it cannot be correlated safely after concurrent writes.
+		for key, value := range map[string]string{"raw_data": body, "datasetId": p.Dataset, "node_set": "memlane_common", "run_in_background": "false", "self_improvement": "false"} {
 			if err = w.WriteField(key, value); err != nil {
 				return receipt, err
 			}
@@ -220,7 +223,9 @@ func (c Client) confirmCommon(ctx context.Context, p Project, receipt CommonWrit
 		if readErr != nil {
 			return Document{}, "官方正文读取未确认", readErr
 		}
-		if loaded.Body == expected {
+		// The official raw-text ingestion strips the final LF. Compare only
+		// that transport normalization; retain all internal whitespace/content.
+		if strings.TrimSuffix(loaded.Body, "\n") == strings.TrimSuffix(expected, "\n") {
 			document = d
 			break
 		}
@@ -234,6 +239,7 @@ func (c Client) confirmCommon(ctx context.Context, p Project, receipt CommonWrit
 	}
 	if receipt.PipelineRunID != "" {
 		var runs []struct {
+			Kind    string `json:"kind"`
 			Dataset string `json:"dataset_id"`
 			Run     string `json:"pipeline_run_id"`
 			Status  string `json:"status"`
@@ -245,14 +251,21 @@ func (c Client) confirmCommon(ctx context.Context, p Project, receipt CommonWrit
 			return document, "正文已核对；处理状态未确认", err
 		}
 		for _, run := range runs {
-			if run.Dataset == p.Dataset && run.Run == receipt.PipelineRunID {
+			if run.Dataset == p.Dataset && run.Run == receipt.PipelineRunID && run.Kind == "pipeline" {
 				switch strings.ToLower(run.Outcome) {
 				case "succeeded", "success":
 					processing = "处理已完成"
 				case "failed", "errored", "abandoned":
 					processing = "处理失败，已保存内容保留"
 				default:
-					processing = "处理状态：" + run.Status
+					switch strings.ToLower(run.Status) {
+					case "pipelineruncompleted", "completed":
+						processing = "处理已完成"
+					case "pipelinerunerrored", "errored", "failed":
+						processing = "处理失败，已保存内容保留"
+					default:
+						processing = "处理状态：" + run.Status
+					}
 				}
 				break
 			}

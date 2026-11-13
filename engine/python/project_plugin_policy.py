@@ -75,7 +75,7 @@ def recall_targets(dataset_name, dataset_ids):
     return targets, result['dataset_id']
 
 
-def code_target(operation, target=None, *, automatic=False):
+def code_target(operation, target=None, *, automatic=False, workspace=None):
     """Code groups require an explicit manager association, never a slug fallback."""
     result = current()
     code = result.get('code') or {}
@@ -83,6 +83,8 @@ def code_target(operation, target=None, *, automatic=False):
         raise NotReady('project_code_not_enabled')
     if target and target != code['dataset_id']:
         raise NotReady('project_code_target_mismatch')
+    if workspace is not None and os.path.realpath(workspace) not in [os.path.realpath(root) for root in code.get('roots', [])]:
+        raise NotReady('project_code_workspace_mismatch')
     require(operation)
     if automatic:
         require('process', automatic=True)

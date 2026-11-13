@@ -63,6 +63,21 @@ func presentKnowledge(d Document, raw string) Presentation {
 	if d.Label != nil {
 		p.TechnicalFields = append(p.TechnicalFields, ReadingField{"官方 label", *d.Label})
 	}
+	if category := commonCategory(d); category != "" {
+		// A managed common document is ordinary Markdown with explicit metadata;
+		// it is not a malformed session learning and has no wrapper to remove.
+		p.TechnicalFields = append(p.TechnicalFields, ReadingField{"内容类型", "通用知识"}, ReadingField{"分类", category})
+		if source, _ := d.Metadata["source"].(string); source != "" {
+			p.TechnicalFields = append(p.TechnicalFields, ReadingField{"原始来源", source})
+		}
+		if p.DisplayTitle == "" {
+			p.DisplayTitle = firstReadingSentence(raw)
+		}
+		if p.DisplayTitle == "" {
+			p.DisplayTitle = knowledgePlaceholder(d.date())
+		}
+		return p
+	}
 	for _, key := range []string{"session_id", "lesson_type", "state_key"} {
 		if s, _ := d.Metadata[key].(string); s != "" {
 			p.TechnicalFields = append(p.TechnicalFields, ReadingField{key, s})

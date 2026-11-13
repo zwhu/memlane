@@ -78,7 +78,7 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
             project = registry.state['projects'].get(request.query.get('project_id'))
             if project is None:
                 raise PolicyError('project_not_found', 404)
-            return web.json_response(registry.policy(project, identity))
+            return web.json_response(await registry.checked_policy(project, identity))
 
     async def directory(request):
         manager(request)
@@ -91,6 +91,7 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
             owner = await registry.official.request('GET', '/api/v1/users/me')
             rows = await registry.official.request('GET', '/api/v1/datasets')
             excluded = {group['dataset_id'] for group in registry.managed_groups()}
+            excluded.update(group.get('code_dataset_id') for group in registry.state['projects'].values())
             excluded.update(registry.state.get('reserved_datasets', []))
             return web.json_response([{'id': row['id'], 'name': row['name']} for row in rows
                                       if row.get('ownerId') == owner['id'] and row['id'] not in excluded])
@@ -122,6 +123,12 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
         payload = fields(await body(request), ('expected_revision',))
         return web.json_response(await registry.reconcile(payload['expected_revision'], request.match_info['id']))
 
+    async def code(request):
+        manager(request)
+        payload = fields(await body(request), ('expected_revision', 'enabled'), ('dataset_id',))
+        return web.json_response(await registry.configure_code(payload['expected_revision'], request.match_info['id'],
+                                                                payload.get('dataset_id'), payload['enabled']))
+
     async def provision(request):
         manager(request)
         payload = fields(await body(request), ('expected_revision', 'instance_id', 'name'))
@@ -149,6 +156,7 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                     web.get('/v1/projects', directory), web.put('/v1/defaults', defaults),
                     web.put('/v1/projects/{id}/overrides', overrides), web.post('/v1/projects', create),
                     web.post('/v1/projects/{id}/aliases', alias), web.post('/v1/projects/{id}/reconcile', reconcile),
+                    web.put('/v1/projects/{id}/code', code),
                     web.post('/v1/agents', provision), web.post('/v1/agents/{id}/reconcile', recover),
                     web.post('/v1/common', common), web.post('/v1/common/reconcile', common),
                     web.get('/v1/linkable-datasets', datasets), web.post('/v1/agents/{id}/installation', installation)])
@@ -170,8 +178,11 @@ async def configured_app(config):
         # Explicit pre-existing runtime associations are configuration, not a
         # content migration. Reuse their UUIDs before any new host resolves.
         for project in config.get('projects', []):
-            await registry.create_project(registry.state['revision'], project['path'],
-                                          dataset_id=project['dataset_id'], name=project['name'])
+            linked = await registry.create_project(registry.state['revision'], project['path'],
+                                                   dataset_id=project['dataset_id'], name=project['name'])
+            if project.get('code_dataset_id') and not linked.get('code_configured'):
+                await registry.configure_code(registry.state['revision'], linked['id'], project['code_dataset_id'],
+                                              project.get('code_enabled', False), apply=linked['status'] == 'verified')
         await registry.ensure_common(registry.state['revision'])
         app = create_app(registry, read_secret(config['management_token_file']),
                          {key: read_secret(value) for key, value in config.get('agent_control_token_files', {}).items()},

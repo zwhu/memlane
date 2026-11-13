@@ -176,7 +176,11 @@ class Registry:
         return {'project_id': project['id'], 'dataset_id': project['dataset_id'],
                 'dataset_name': project['dataset_name'], 'revision': self.state['revision'],
                 'desired_revision': project['desired_revision'], 'ready': ready,
-                'applied': copy.deepcopy(applied), 'policy': values, 'code_enabled': False,
+                'applied': copy.deepcopy(applied), 'policy': values, 'code_enabled': project.get('code_enabled', False),
+                'code': {'enabled': project.get('code_enabled', False),
+                         'dataset_id': project.get('code_dataset_id'),
+                         'ready': ready and project.get('code_configured', False),
+                         'roots': project['aliases']},
                 'common': self.common_policy(agent_id)}
 
     def common_policy(self, agent_id):
@@ -188,6 +192,38 @@ class Registry:
                  and applied.get('revision') == common['desired_revision'])
         return {'dataset_id': common['dataset_id'], 'revision': common['desired_revision'],
                 'ready': ready, 'readable': ready}
+
+    async def checked_policy(self, project, agent_id):
+        """Read-only recheck before local caches can be used by a hook.
+
+        Out-of-band ACL/role changes must withdraw cached delivery too. This
+        never repairs grants or promotes an unconfirmed configuration.
+        """
+        agent = self.state['agents'].get(agent_id)
+        if not agent:
+            raise PolicyError('agent_not_registered', 403)
+        changed = False
+        for group in [project, *([self.state['common']] if self.state.get('common') else [])]:
+            if group['status'] != 'verified':
+                continue
+            expected = ({'read'} if group.get('kind') == 'common' else
+                        effective(self.state['defaults'], group['overrides'].get(agent_id, {}))['permissions'])
+            try:
+                actual = await self.official.effective_permissions(agent, group['dataset_id'])
+                if actual != set(expected):
+                    raise PolicyError('effective_acl_changed', 503)
+                if group.get('code_dataset_id'):
+                    actual = await self.official.effective_permissions(agent, group['code_dataset_id'])
+                    if actual != (set(expected) if group.get('code_enabled') else set()):
+                        raise PolicyError('effective_code_acl_changed', 503)
+            except PolicyError as error:
+                group['status'], group['error_code'] = 'unconfirmed', error.code
+                group['applied'][agent_id] = {'status': 'unconfirmed', 'error_code': error.code}
+                changed = True
+        if changed:
+            self.state['revision'] += 1
+            self.save()
+        return self.policy(project, agent_id)
 
     def directory(self):
         return {'revision': self.state['revision'], 'defaults': copy.deepcopy(self.state['defaults']),
@@ -241,6 +277,43 @@ class Registry:
             if project is None:
                 raise PolicyError('project_not_found', 404)
             await self.reconcile_locked(project)
+            return self.directory()
+
+    async def configure_code(self, expected, identifier, dataset_id, enabled, *, apply=True):
+        if type(enabled) is not bool:
+            raise PolicyError('invalid_code_enabled')
+        if dataset_id:
+            dataset_id = str(uuid.UUID(dataset_id))
+        async with self.mutex:
+            self.check_revision(expected)
+            project = self.state['projects'].get(identifier)
+            if project is None:
+                raise PolicyError('project_not_found', 404)
+            dataset_id = dataset_id or project.get('code_dataset_id')
+            if enabled and not dataset_id:
+                raise PolicyError('code_dataset_required', 409)
+            if dataset_id:
+                # Only an explicitly manager-owned existing code group can be
+                # associated. Never create an Agent-owned fallback here.
+                if any(group['dataset_id'] == dataset_id or
+                       (group['id'] != identifier and group.get('code_dataset_id') == dataset_id)
+                       for group in self.managed_groups()):
+                    raise PolicyError('code_dataset_already_linked', 409)
+                await self.official.owned_dataset('', dataset_id)
+            if (project.get('code_configured') and project.get('code_dataset_id') == dataset_id
+                    and project.get('code_enabled') == enabled):
+                return self.directory()
+            if project.get('code_dataset_id') and project['code_dataset_id'] != dataset_id:
+                raise PolicyError('code_dataset_replacement_requires_review', 409)
+            self.state['revision'] += 1
+            project.update(code_configured=True, code_dataset_id=dataset_id, code_enabled=enabled,
+                           desired_revision=self.state['revision'], status='transition')
+            self.save()
+            if apply:
+                await self.reconcile_locked(project)
+            else:
+                project['status'] = 'unconfirmed'
+                self.save()
             return self.directory()
 
     async def add_agent(self, instance_id, name, principal_id, key_file, expected):
@@ -364,6 +437,7 @@ class Registry:
         if dataset_id and any(p['dataset_id'] == dataset_id for p in self.state['projects'].values()):
             raise PolicyError('dataset_already_linked', 409)
         if dataset_id and ((self.state.get('common') or {}).get('dataset_id') == dataset_id
+                           or any(group.get('code_dataset_id') == dataset_id for group in self.state['projects'].values())
                            or dataset_id in self.state.get('reserved_datasets', [])):
             raise PolicyError('non_project_dataset_cannot_be_linked', 409)
         identifier = project_id(self.state['service_namespace'], root)
@@ -405,6 +479,12 @@ class Registry:
                           if project.get('kind') == 'common' else
                           effective(self.state['defaults'], project['overrides'].get(agent_id, {})))
                 await self.official.sync_acl(agent, row['id'], policy['permissions'])
+                if project.get('code_dataset_id'):
+                    # The optional group follows project access only while
+                    # explicitly enabled, including effective-role verification.
+                    await self.official.owned_dataset('', project['code_dataset_id'])
+                    await self.official.sync_acl(agent, project['code_dataset_id'],
+                                                policy['permissions'] if project.get('code_enabled') else set())
                 project['applied'][agent_id] = {'status': 'verified', 'revision': project['desired_revision']}
                 self.save()
             project['status'] = 'verified'

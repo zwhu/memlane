@@ -85,14 +85,16 @@ func (a *App) applyAccessDirectory(directory AccessDirectory) {
 	// appended, so an unchanged catalog never moves a reading pane's index.
 	projects := append([]Project(nil), a.Config.Projects...)
 	for _, record := range directory.Projects {
-		p := Project{ID: record.ID, Name: record.Name, Dataset: record.Dataset, CodeEnabled: record.CodeEnabled}
+		p := Project{ID: record.ID, Name: record.Name, Dataset: record.Dataset, CodeEnabled: record.CodeEnabled, CodeDataset: record.CodeDataset}
 		if len(record.Aliases) > 0 {
 			p.Path = record.Aliases[0]
 		}
 		found := false
 		for idx, old := range projects {
 			if old.ID == p.ID || (p.Dataset != "" && old.Dataset == p.Dataset) {
-				p.CodeDataset, p.CodeEnabled = old.CodeDataset, old.CodeEnabled
+				if !record.CodeConfigured {
+					p.CodeDataset, p.CodeEnabled = old.CodeDataset, old.CodeEnabled
+				}
 				projects[idx] = p
 				found = true
 				break

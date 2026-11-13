@@ -72,6 +72,22 @@ assert graph.reingest_if_changed("/private/repo", "http://wrong", "owner") == {}
 assert graph.auto_code_lane("SomeFunction", "/private/repo") == {}
 ''')
 
+    def test_enabled_code_group_keeps_uuid_root_and_policy_scope(self):
+        self.run_isolated('''
+import os, _memlane_policy as policy
+policy.current = lambda: {"ready": True, "code": {"enabled": True, "ready": True, "dataset_id": "managed-code-uuid", "roots": [os.getcwd()]}}
+calls = []
+policy.require = lambda *a, **kw: calls.append((a,kw))
+assert policy.code_target("write", workspace=os.getcwd(), automatic=True) == "managed-code-uuid"
+assert calls[-1] == (("process",), {"automatic": True})
+for kwargs in ({"target": "own-slug"}, {"workspace": os.path.dirname(os.getcwd())}):
+    try:
+        policy.code_target("write", **kwargs)
+        raise AssertionError("unregistered target/root accepted")
+    except policy.NotReady:
+        pass
+''')
+
     def test_installation_pin_overrides_inherited_owner_and_shared_environment(self):
         self.run_isolated('''
 import os

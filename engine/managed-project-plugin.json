@@ -1,7 +1,7 @@
 {
   "plugin_commit": "a176248914fdb32a78354854b300174203b15a5c",
-  "patch_sha256": "06f1423e7b1e3caa56d949efff0d10c4e596c92fded120ec1d705badf5115fb1",
-  "extension_sha256": "f905e2e9263dcd262e4ccc371697543a764d3d28be8b8ffe80e5f6cb7633fe65",
+  "patch_sha256": "0a3341a124123cb4ab010225be47fa7d055129d80a611f09eb0e237cee4bb4a2",
+  "extension_sha256": "064dc21e3bb6518f1a5f9cb59a6d36e06b4268a7b031eeec8baf47a057f7522c",
   "upstream_lock_sha256": "a3dd35d24f6949d1c22fa88062450a987170ffc0a7aca6d2e76d30f9033b1e07",
   "files": {
     "CHANGELOG.md": "fca7cf57f9a971d37bebde4ad9917132b80d65267aaa175b3660042445284258",
@@ -11,7 +11,7 @@
     "scripts/event_names.py": "c7de0492fb61a616988dd45a63e4ca2a06af60df70a5775a3ad7765deecf9160",
     "scripts/store-user-prompt.py": "ebf192127805c2372782ce10d614dcea3467b9cdfe70dbf8f236e7a4062f4793",
     "scripts/_cognee_client.py": "f6f4f23f0fb420edc27b0dd5fb864c2178c9b87c11cfe27c6a04ba0ecc8ea096",
-    "scripts/_code_graph.py": "d3b7818334f597d5e75631e07f985da94bafff2be220a0080397f740d4991bf6",
+    "scripts/_code_graph.py": "dbbe3e64246c3034d4f957e5a6783515e3cded72c68eaceecb8ca982b65180d6",
     "scripts/_coding_memory.py": "bbe7c14abffea53340275dd0218f067f7702cfee5bac89a72be8493bef2452b9",
     "scripts/hook_runner.py": "ab1caf6d8cf79ec9d5c4c48b5b6fed7300b45e816e6bd258ee27e165fd3b6976",
     "scripts/cognee-plugin": "14dd5edac1372d5b5c87ca5a5a8a4ad9e5213d543cd2c89255c5d33c2be6996a",
@@ -23,7 +23,7 @@
     "scripts/cognee-forget.sh": "8ac49d8bc7642bc3ce33c648b162018861201939e3bcf74affe5e29f0a861b1e",
     "scripts/exit-watcher.py": "dfea43ee048d06a69ad2830e49bcd2f974a5b448d2f2598bfa02b4c0158e10b0",
     "scripts/session-start.py": "9f91548588ff552a8f33a5f183453d801d22f7e003125d2d5dc866ad774e0b30",
-    "scripts/_memlane_policy.py": "f905e2e9263dcd262e4ccc371697543a764d3d28be8b8ffe80e5f6cb7633fe65",
+    "scripts/_memlane_policy.py": "064dc21e3bb6518f1a5f9cb59a6d36e06b4268a7b031eeec8baf47a057f7522c",
     "scripts/_deadlines.py": "f9a73573a0818653188dcd5dcc69e6175150956b5358ea6e57e313c38dbe243a",
     "scripts/session-context-lookup.py": "c760dbf717b9b88cbb36a8dc51be6282edfdee9fde721ed7b4d11513174430df",
     "scripts/_project_memory.py": "e44e7fcfca47f96d3b1f8da120dc06929ceb486a09e0cf39953aa6932ffdf0a7",

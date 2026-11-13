@@ -27,8 +27,8 @@ type PendingMaterials struct {
 
 type boundedBufferOutput struct{ buffer bytes.Buffer }
 
-func(b *boundedBufferOutput)Len()int{return b.buffer.Len()}
-func(b *boundedBufferOutput)Bytes()[]byte{return b.buffer.Bytes()}
+func (b *boundedBufferOutput) Len() int      { return b.buffer.Len() }
+func (b *boundedBufferOutput) Bytes() []byte { return b.buffer.Bytes() }
 
 func (b *boundedBufferOutput) Write(value []byte) (int, error) {
 	if b.Len()+len(value) > 64*1024 {

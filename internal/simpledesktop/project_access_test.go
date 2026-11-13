@@ -68,7 +68,9 @@ func TestProjectPolicyExplicitFalseAndUnconfirmedStatus(t *testing.T) {
 	if p.syncLabel() != "已生效" {
 		t.Fatal(p.syncLabel())
 	}
-	if p.syncLabel(AccessAgent{ID:"new-agent"})=="已生效"{t.Fatal("missing principal receipt was displayed as effective")}
+	if p.syncLabel(AccessAgent{ID: "new-agent"}) == "已生效" {
+		t.Fatal("missing principal receipt was displayed as effective")
+	}
 	p.Applied["codex"] = AccessApplied{Status: "verified", Revision: 0}
 	if p.syncLabel() == "已生效" {
 		t.Fatal("accepted configuration mistaken for effective ACL")

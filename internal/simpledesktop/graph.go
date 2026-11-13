@@ -324,6 +324,10 @@ func (a *App) toggleCode(enabled bool) {
 	if enabled && (a.codeBusy || a.codeUnknown || a.codeRemoteActive) {
 		return
 	}
+	if a.Config.ProjectControl != nil {
+		a.toggleManagedCode(p, enabled)
+		return
+	}
 	if enabled && p.CodeDataset == "" {
 		a.codeBusy = true
 		a.codeStatus = "正在准备本项目的官方代码数据组…"

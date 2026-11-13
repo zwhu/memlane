@@ -13,10 +13,20 @@ import (
 	"testing"
 )
 
+func TestCommonNormalDocumentPresentationPreservesRawAndUsesTitle(t *testing.T) {
+	raw := "# A common preference\n\nUse the applicable convention.\n\n## 来源\n\nManual verification"
+	d := Document{ID: "common-doc", Dataset: "common", Name: "text_0123456789abcdef0123456789abcdef.txt", Metadata: map[string]any{"memlane_kind": "common_knowledge", "category": "preference", "source": "Manual verification"}}
+	p := itemPresentation(Item{Kind: "知识", Document: &d, Body: raw})
+	if p.DisplayTitle != "A common preference" || p.VisibleBody != raw || p.Unrecognized || p.WrapperRecognized {
+		t.Fatalf("normal common document treated as a session wrapper: %#v", p)
+	}
+}
+
 func TestCommonConfirmKeepsSavedBodyAndProcessingStatusSeparate(t *testing.T) {
 	draft := CommonDraft{Title: "A preference", Body: "Use the project validation command.", Category: "preference"}
 	body, _ := draft.markdown()
 	outcome := ""
+	kind := "pipeline"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
 			t.Error("confirmation must not submit content")
@@ -25,12 +35,12 @@ func TestCommonConfirmKeepsSavedBodyAndProcessingStatusSeparate(t *testing.T) {
 		case "/api/v1/datasets/common/data":
 			_ = json.NewEncoder(w).Encode([]Document{{ID: "document", Dataset: "common", ContentHash: "hash", Metadata: map[string]any{"memlane_kind": "common_knowledge", "category": "preference"}}})
 		case "/api/v1/datasets/common/data/document/raw":
-			_, _ = w.Write([]byte(body))
+			_, _ = w.Write([]byte(strings.TrimSuffix(body, "\n")))
 		case "/api/v1/activity/pipeline-runs":
 			if r.URL.Query().Get("dataset_id") != "common" {
 				t.Error("unscoped pipeline check")
 			}
-			_ = json.NewEncoder(w).Encode([]map[string]string{{"dataset_id": "common", "pipeline_run_id": "original-run", "status": "STARTED", "outcome": outcome}})
+			_ = json.NewEncoder(w).Encode([]map[string]string{{"kind": kind, "dataset_id": "common", "pipeline_run_id": "original-run", "status": "STARTED", "outcome": outcome}})
 		default:
 			t.Error(r.URL.Path)
 		}
@@ -43,6 +53,12 @@ func TestCommonConfirmKeepsSavedBodyAndProcessingStatusSeparate(t *testing.T) {
 		t.Fatalf("running confused with completion: %s %v", message, err)
 	}
 	outcome = "succeeded"
+	kind = "operation"
+	_, message, err = c.confirmCommon(context.Background(), Project{Dataset: "common"}, receipt, draft)
+	if err != nil || strings.Contains(message, "处理已完成") {
+		t.Fatalf("background launch confused with processing: %s %v", message, err)
+	}
+	kind = "pipeline"
 	_, message, err = c.confirmCommon(context.Background(), Project{Dataset: "common"}, receipt, draft)
 	if err != nil || !strings.Contains(message, "处理已完成") {
 		t.Fatalf("terminal result missing: %s %v", message, err)
@@ -96,6 +112,9 @@ func TestCommonKnowledgeOfficialMultipartAndPartialReceipt(t *testing.T) {
 		}
 		switch r.Method {
 		case "POST":
+			if r.FormValue("run_in_background") != "false" {
+				t.Error("manual save needs the actual terminal receipt, not an uncorrelated background launch")
+			}
 			if r.URL.Path != "/api/v1/remember" || r.FormValue("datasetId") != "common-dataset" || r.FormValue("node_set") != "memlane_common" {
 				t.Error("wrong common dataset/form protocol")
 			}

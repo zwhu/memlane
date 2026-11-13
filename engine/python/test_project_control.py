@@ -83,6 +83,40 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(first['project_id'], second['project_id'])
         self.assertEqual(first['project_id'], pinned['project_id'])
 
+    async def test_optional_code_group_follows_project_acl_and_defaults_off(self):
+        bound = await self.registry.resolve('a', str(self.repo), 'one')
+        identifier = bound['project_id']
+        self.assertFalse(bound['code']['enabled'])
+        code = await self.official.owned_dataset('explicit-code')
+        await self.registry.configure_code(self.registry.state['revision'], identifier, code['id'], True, apply=False)
+        project = self.registry.state['projects'][identifier]
+        self.assertEqual(project['status'], 'unconfirmed')
+        self.assertNotIn((self.registry.state['agents']['a']['principal_id'], code['id']), self.official.acls)
+        await self.registry.reconcile(self.registry.state['revision'], identifier)
+        self.assertTrue(self.registry.policy(project, 'a')['code']['ready'])
+        self.assertEqual(self.official.acls[(self.registry.state['agents']['a']['principal_id'], code['id'])], {'read', 'write', 'delete'})
+        await self.registry.set_policy(self.registry.state['revision'], {'access': 'read'}, project_id=identifier, agent_id='a')
+        self.assertEqual(self.official.acls[(self.registry.state['agents']['a']['principal_id'], code['id'])], {'read'})
+        await self.registry.configure_code(self.registry.state['revision'], identifier, code['id'], False)
+        self.assertEqual(self.official.acls[(self.registry.state['agents']['a']['principal_id'], code['id'])], set())
+        with self.assertRaises(PolicyError):
+            await self.registry.configure_code(self.registry.state['revision'], identifier, project['dataset_id'], True)
+
+    async def test_external_acl_change_withdraws_cached_policy_without_regrant(self):
+        bound = await self.registry.resolve('a', str(self.repo), 'one')
+        await self.registry.ensure_common(self.registry.state['revision'])
+        project = self.registry.state['projects'][bound['project_id']]
+        agent = self.registry.state['agents']['a']
+        before = self.registry.state['revision']
+        self.official.acls[(agent['principal_id'], project['dataset_id'])] = set()
+        current = await self.registry.checked_policy(project, 'a')
+        self.assertFalse(current['ready'])
+        self.assertTrue(current['common']['readable'])
+        self.assertGreater(current['revision'], before)
+        self.assertEqual(self.official.acls[(agent['principal_id'], project['dataset_id'])], set())
+        self.official.acls[(agent['principal_id'], project['dataset_id'])] = {'read','write','delete'}
+        self.assertFalse((await self.registry.checked_policy(project, 'a'))['ready'])
+
     async def test_defaults_inherit_false_and_reset(self):
         result = await self.registry.resolve('a', str(self.repo), 'one')
         identifier = result['project_id']

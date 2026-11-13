@@ -491,7 +491,11 @@ func (a *App) reading(c *ui.Context) {
 	ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 		ui.Column(c).Width(316).Shrink(0).BorderWidth(0, 1, 0, 0).BorderColor(border).Children(func() {
 			ui.Column(c).Padding(24, 18, 16, 18).Gap(12).Children(func() {
-				ui.Text(c, "项目内容").FontSize(10).TextColor(muted)
+				label := "项目内容"
+				if a.page == "通用知识" {
+					label = "通用知识"
+				}
+				ui.Text(c, label).FontSize(10).TextColor(muted)
 				if a.page != "搜索" {
 					ui.Row(c).Gap(3).Children(func() {
 						if a.page != "通用知识" {
