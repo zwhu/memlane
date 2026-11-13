@@ -1,37 +1,28 @@
 # 当前设计目录
 
-2026-11-12。当前目录仅包含[精简版规格](../client-simplification-spec-20261112.md)中的页面。旧全量设计的编号、数量与固定稿不再构成本阶段交付清单。
+2026-11-13。用户已选 [A 清晰总览](visual-refinement-selection-20261113.md)。当前整套细化入口为 [A 完整原型](http://127.0.0.1:8097/?variant=A&page=home)，固定提交及自验见[进度](visual-refinement-progress-20261113.md)，还原参数见[Native 交接](visual-refinement-handoff-20261113.md)。只完成设计与浏览器原型自验；其余细化页待用户审阅，没有执行生产 App 改造。
 
-统一打开[精简版原型](../../build/p3-prototype/prototypes/client-simplification-20261112/index.html)，图片见[当前截图目录](../images/ui-redesign/client-simplification-20261112/)。这些入口只承载设计示例；实际数据和生产能力仍以工程结果为准。
+功能范围核对当前源码和[PA 执行记录](../engineering/project-access-execution-20261113.md)，不沿用旧目录的权限／通用知识只读删减，也不恢复旧 A–O 全量功能。原型所有内容和回执均为明确标记的人工静态示例，不连接业务服务。
 
-## 页面清单
+## 当前页面
 
-| 页面 | 原型入口 | 内容与主要操作 |
+| 页面 | 可打开入口 | 主要设计 |
 | --- | --- | --- |
-| 总览 | [home](../../build/p3-prototype/prototypes/client-simplification-20261112/index.html?scene=home) | 三项全局统计、知识热力图、近期动态、项目、最近知识和连接状态；原型待按 2026-11-13 增补更新 |
-| 项目知识 | [knowledge](../../build/p3-prototype/prototypes/client-simplification-20261112/index.html?scene=knowledge) | 官方列表、Markdown 正文、分页、搜索、复制、出处 |
-| 原始记录 | [records](../../build/p3-prototype/prototypes/client-simplification-20261112/index.html?scene=records) | 会话或文档、问答、工具展开、复制已载入内容、返回知识 |
-| 搜索 | [search](../../build/p3-prototype/prototypes/client-simplification-20261112/index.html?scene=search) | 官方结果、项目分组、查询与真实来源跳转 |
-| 通用知识 | [common](../../build/p3-prototype/prototypes/client-simplification-20261112/index.html?scene=common) | 复用只读阅读，按官方实际类别区分个人偏好与通用经验 |
-| 图谱 | [graph](../../build/p3-prototype/prototypes/client-simplification-20261112/index.html?scene=graph) | 官方实体图与代码结构；选择、缩放、项目索引开关与手动更新 |
-| 设置 | [settings](../../build/p3-prototype/prototypes/client-simplification-20261112/index.html?scene=settings) | 官方服务、Codex 当前状态、必要项目关联与开发入口说明 |
+| 总览 | [home](http://127.0.0.1:8097/?variant=A&page=home) | A 宽幅方向、三项统计、稀疏热力图、最近知识／动态、项目网格 |
+| 项目目录 | [projects](http://127.0.0.1:8097/?variant=A&page=projects) | 13 项目，长名称与同名不同路径 |
+| 项目知识 | [knowledge](http://127.0.0.1:8097/?variant=A&page=project&p=p0&tab=knowledge&item=k0) | 三栏、列表、Markdown、复制、出处、返回恢复 |
+| 原始记录 | [records](http://127.0.0.1:8097/?variant=A&page=project&p=p0&tab=records&item=r0) | 会话／文档、问答、工具折叠、长代码、已载入范围 |
+| 搜索 | [search](http://127.0.0.1:8097/?variant=A&page=search) | 输入、项目及类型筛选、分组结果、片段、高亮、详情与返回 |
+| 通用知识 | [common](http://127.0.0.1:8097/?variant=A&page=common&item=c0) | 个人偏好／通用经验、适用条件、来源、新增／编辑／删除及核对回执 |
+| 图谱 | [graph](http://127.0.0.1:8097/?variant=A&page=project&p=p0&tab=graph) | 实体与代码视图、官方画布承载、显式开启与手动更新；画布未接入此原型 |
+| 设置 | [settings](http://127.0.0.1:8097/?variant=A&page=settings&settings=service) | 服务、Codex 接入、默认规则、项目覆盖／继承与生效核对、新建／关联、待发材料 |
 
-项目知识和原始记录仍是同一项目的两个内容页签；图谱是该项目的视图。通用知识表示跨项目参考，不把项目知识自动提升为通用知识。跨项目搜索保留在全局搜索，不增加“全部记忆”入口。
+默认及最小窗口为1200×820，允许放大，不做窄窗口。总览及设置宽幅；项目知识、原始记录、通用知识采用导航／列表／正文三栏。无“全部记忆”入口；跨项目搜索仍在全局搜索。图谱保留官方画布边界，不自绘图引擎或伪造能力。
 
-## 共用状态与交互
+底部原型控制可检查首次加载、后台刷新、真空、无匹配、失败、失效、处理中、完成。生产必须依据真实官方字段表达，不能复制原型成功示例或统计数字。
 
-- 默认和最小窗口均为 1200×820，允许放大；首版不包含窄窗口或响应式布局，不维护多尺寸适配矩阵。
-- 首次加载、真实空结果、无匹配、刷新、读取失败和内容失效分别表达。
-- 刷新保留正文、选择、滚动与展开状态，读取失败不显示成空库，不将计数归零。
-- 来源跳转后恢复原知识及原阅读位置；无法精确定位时打开实际关联材料并说明范围。
-- 未提供的字段省略或显示未知，不补造进度、数量、时间或成功状态。
-- 图谱沿用官方组件，不自绘布局，不将代码静态关系描述为完整运行时影响。
-- 代码图谱首次显式开启时调用官方索引，后续手动更新。关闭后不发起新扫描；取消依官方实际能力处理。
+## 历史资产
 
-## 当前范围的删减
+[2026-11-12 精简原型](../../build/p3-prototype/prototypes/client-simplification-20261112/index.html)、[原截图](../images/ui-redesign/client-simplification-20261112/)和[旧交接](full-design-handoff.md)保留历史。对应范围与样式被本次明确更新覆盖时，以本页及本轮交接为准；历史工程验收、失败计数和未完成项不改写。总览来源见[总览规格](../overview-spec-20261113.md)。
 
-设计中不再保留手动新增与编辑、版本历史与恢复、审核建议、复杂整理、定期计划、项目或 Agent 权限、多模型方式切换、配置历史、维护平台及 release 设置。相关按钮、跳转和独立状态页一并退出当前稿。
-
-首页不保留待确认、计划或使用账本。2026-11-13 用户确认恢复三项统计、知识热力图和近期动态，规则见[总览规格](../overview-spec-20261113.md)及[产品方案](../overview-product-plan-20261113.md)。此前不展示这些模块的决定被本次增补覆盖；当前链接原型和截图尚未更新，不将旧资产或本次文档当作新设计／Native 验收通过。
-
-页面详细交接见[界面交接](full-design-handoff.md)。
+版本、审核、计划、多模型配置、维护平台及 release 设置仍不在本轮；本地材料上传、Codex 图片采集、新 Agent 接入与知识质量评估也不包含。

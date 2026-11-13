@@ -1,5 +1,7 @@
 # 精简版界面交接
 
+2026-11-13 更新：当前整套设计已沿用户选定 A 细化，入口与参数以[新交接](visual-refinement-handoff-20261113.md)、[设计目录](design-catalog.md)为准。下文为 2026-11-12 范围历史；项目默认／覆盖与通用知识管理按最新 PA 契约呈现，不能用旧删减覆盖新范围。本轮只设计，不代表 Native 已还原。
+
 2026-11-12。用户要求“已砍掉的东西都删除”。本交接只保留[精简版规格](../client-simplification-spec-20261112.md)中的界面，不再要求还原旧 A–O 全量设计。
 
 当前设计从[统一原型](../../build/p3-prototype/prototypes/client-simplification-20261112/index.html)、[截图目录](../images/ui-redesign/client-simplification-20261112/)和[页面清单](design-catalog.md)进入。原型中的示例数据只用于排版与交互表达。
