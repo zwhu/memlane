@@ -23,7 +23,7 @@ func TestSettingsProjectScopeDraftInheritanceAndNavigation(t *testing.T) {
 			a := settingsFixture()
 			original := a.state()
 			tt := ui.NewTester(a.View, wh[0], wh[1])
-			clickProjectUI(t, tt, "项目菜单")
+			clickProjectUI(t, tt, "项目菜单：memlane")
 			clickProjectUI(t, tt, "项目设置")
 			if a.settingsOrigin == nil || a.access.OpenProject != "p" {
 				t.Fatal("project identity lost")
@@ -55,7 +55,7 @@ func TestSettingsProjectScopeDraftInheritanceAndNavigation(t *testing.T) {
 			if a.state() != original || a.page != "知识" {
 				t.Fatal("return lost reading pane")
 			}
-			clickProjectUI(t, tt, "项目菜单")
+			clickProjectUI(t, tt, "项目菜单：memlane")
 			clickProjectUI(t, tt, "项目设置")
 			clickProjectUI(t, tt, "设置")
 			if a.settingsOrigin != nil || a.access.OpenProject != "" || !tt.HasText("服务与连接") {
@@ -83,4 +83,20 @@ func TestProjectEmptyBackgroundAndDistinctRecordFilter(t *testing.T) {
 		t.Fatal("record filter not wired")
 	}
 	fixtureImage(t, tt, "project-1200x820-empty-background")
+}
+
+func TestSidebarMenuTargetsItsOwnProjectAndReturnsToOriginal(t *testing.T) {
+	a := settingsFixture()
+	original := a.state()
+	tt := ui.NewTester(a.View, 1200, 820)
+	clickProjectUI(t, tt, "项目菜单：另一个项目")
+	fixtureImage(t, tt, "sidebar-project-menu")
+	clickProjectUI(t, tt, "项目设置")
+	if a.access.OpenProject != "same" || a.project != 1 || a.settingsOrigin.ProjectID != "p" {
+		t.Fatal("sidebar menu opened selected project instead of its own row")
+	}
+	clickProjectUI(t, tt, "返回项目")
+	if a.project != 0 || a.state() != original {
+		t.Fatal("sidebar settings lost previous project reading state")
+	}
 }

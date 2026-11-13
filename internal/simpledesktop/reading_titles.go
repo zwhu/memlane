@@ -92,6 +92,10 @@ func (r *ReadingTitles) read(ctx context.Context, client Client, i Item, generat
 		cached.stamp = r.clock
 		r.cache[key] = cached
 		r.mu.Unlock()
+		if i.Session != nil {
+			i.Title = cached.item.Title
+			return i, nil
+		}
 		i.Body = cached.item.Body
 		i.BodyLoaded = true
 		i.Title = itemPresentation(i).DisplayTitle
@@ -183,6 +187,12 @@ func (r *ReadingTitles) pumpLocked() {
 	}
 }
 func (r *ReadingTitles) putLocked(key readingKey, i Item) {
+	// Session preheating retains only the derived title, never tools or answers.
+	if i.Session != nil {
+		i.Body = ""
+		i.Detail = nil
+		i.BodyLoaded = false
+	}
 	if old, ok := r.cache[key]; ok {
 		r.bytes -= len(old.item.Body)
 	}

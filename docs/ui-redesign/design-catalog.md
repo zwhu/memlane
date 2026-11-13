@@ -32,3 +32,5 @@
 [2026-11-12 精简原型](../../build/p3-prototype/prototypes/client-simplification-20261112/index.html)、[原截图](../images/ui-redesign/client-simplification-20261112/)和[旧交接](full-design-handoff.md)保留历史。对应范围与样式被本次明确更新覆盖时，以本页及本轮交接为准；历史工程验收、失败计数和未完成项不改写。总览来源见[总览规格](../overview-spec-20261113.md)。
 
 版本、审核、计划、多模型配置、维护平台及 release 设置仍不在本轮；本地材料上传、Codex 图片采集、新 Agent 接入与知识质量评估也不包含。
+
+2026-11-14后续修正：各项目设置从左侧项目行右侧“⋯ → 项目设置”进入；会话标题在列表载入后预读，无需先点击。[实施与验证](../engineering/session-title-sidebar-settings-20261114.md)。

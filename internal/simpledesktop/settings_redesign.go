@@ -68,7 +68,7 @@ func (a *App) globalSettingsPage(c *ui.Context) {
 			case "默认规则":
 				settingsCard(c, "默认规则", "新项目使用这些规则；已有项目仅更新继承项，项目单独设置保持。", func() { a.accessSettings(c) })
 			case "项目关联":
-				settingsCard(c, "新建与关联", "这里管理项目归属；各项目的权限在项目右上角菜单中设置。", func() {
+				settingsCard(c, "新建与关联", "这里管理项目归属；各项目的权限在左侧项目行右侧的 ⋯ 菜单中设置。", func() {
 					if a.Config.ProjectControl != nil {
 						a.projectRegistration(c)
 					} else {

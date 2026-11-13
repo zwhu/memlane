@@ -11,6 +11,8 @@ import (
 
 type projectReadingState struct {
 	MenuOpen, InfoOpen bool
+	SidebarMenuOpen    bool
+	SidebarProject     string
 	InfoKey            string
 	Expanded           map[string]bool
 	Copied             string
@@ -117,18 +119,14 @@ func (a *App) projectHeader(c *ui.Context) {
 		ui.Spacer(c)
 		a.unifiedSearchTrigger(c)
 		if p, ok := a.current(); ok && (a.page == "知识" || a.page == "图谱") {
+
 			anchor := readingAction(c, "项目菜单", readingMore, func() { a.projectUI.MenuOpen = !a.projectUI.MenuOpen; a.projectUI.InfoOpen = false })
 			ui.PopoverBase(c, anchor, &a.projectUI.MenuOpen, func(panel ui.Element) {
 				panel.Width(240).Padding(14).Gap(10).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(10).Shadow(0, 5, 18, 0, ui.RGBA(0, 0, 0, .1))
 				homeText(c, p.Name, homeHeading)
 				homeText(c, p.Path, homePath).MaxWidth(212)
 				projectLink(c, "复制项目路径", func() { c.WriteClipboard(p.Path); a.projectUI.MenuOpen = false })
-				projectLink(c, "项目设置", func() {
-					v := a.readingLocation()
-					a.access.OpenProject = p.ID
-					a.navigate("设置", a.project)
-					a.settingsOrigin = v
-				})
+
 			})
 		}
 	})

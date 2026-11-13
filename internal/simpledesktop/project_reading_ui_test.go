@@ -328,3 +328,35 @@ func TestProjectTitlePreparationKeepsFullSentenceWithoutRawRows(t *testing.T) {
 		t.Fatal("project title truncated before visual layout, or raw copied into row")
 	}
 }
+
+func TestSessionTitlesPreloadBeforeSelectionAndReuseTitleOnlyCache(t *testing.T) {
+	var reads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reads.Add(1)
+		json.NewEncoder(w).Encode(SessionDetail{Session: Session{ID: "codex_session", Dataset: "dataset", User: "owner"}, QAs: []QA{{Question: "自动载入会话的可读标题", Answer: "Private answer"}}, Traces: []Trace{{ID: "private-tool"}}})
+	}))
+	defer server.Close()
+	a := New(Config{ServiceURL: server.URL, Projects: []Project{{ID: "p", Dataset: "dataset"}}}, nil)
+	a.page = "知识"
+	a.kind = "原始记录"
+	updates := make(chan func(), 10)
+	a.Update = func(fn func()) { updates <- fn }
+	session := Session{ID: "codex_session", Dataset: "dataset", User: "owner"}
+	s := a.state()
+	s.Items = []Item{{ID: session.ID, Dataset: session.Dataset, Kind: "会话", Title: session.ID, Session: &session}}
+	for round := 0; round < 2; round++ {
+		a.startTitles(s)
+		drainReading(t, updates, func() bool { return s.Items[0].ReadingState != "pending" })
+		if s.Selected != nil || s.Items[0].Title != "自动载入会话的可读标题" || s.Items[0].Body != "" || s.Items[0].Detail != nil {
+			t.Fatal("title requires selection or raw leaked into list")
+		}
+	}
+	if reads.Load() != 1 {
+		t.Fatalf("cached title fetched again: %d", reads.Load())
+	}
+	for _, entry := range a.titles.cache {
+		if entry.item.Detail != nil || entry.item.Body != "" {
+			t.Fatal("session preheat retained answers or tools")
+		}
+	}
+}

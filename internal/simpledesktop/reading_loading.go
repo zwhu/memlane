@@ -124,7 +124,7 @@ func (a *App) startTitles(s *pane) {
 		if n >= 30 {
 			break
 		}
-		if row.Kind != "知识" || row.Document == nil || (a.page != "通用知识" && readableDocumentTitle(*row.Document) != "") {
+		if row.Session == nil && (row.Kind != "知识" || row.Document == nil || (a.page != "通用知识" && readableDocumentTitle(*row.Document) != "")) {
 			continue
 		}
 		i := row

@@ -99,16 +99,41 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			labels := projectLabels(a.Config.Projects)
 			for idx, p := range a.Config.Projects {
 				index := idx
-				b := ui.Button(c, "").Key("project-"+p.ID).Label(labels[idx]).Tooltip(p.Name+" · "+p.Path).FillWidth().Padding(8, 12).Gap(11).Justify(ui.Start).BorderWidth(0).Radius(7)
-				homeNavSurface(b, (a.page == "知识" || a.page == "图谱" || a.page == "检索结果") && a.project == idx).Children(func() {
-					ui.Icon(c, homeFolder).FontSize(17).Shrink(0).TextColor(homeIconInk)
-					ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
-						homeText(c, p.Name, homeBody).TextColor(homeNavInk).SingleLine()
-						if labels[idx] != p.Name {
-							homeText(c, p.Path, homePath).FontSize(9).TextColor(ui.Hex("#7b8ca0")).SingleLine()
+				active := (a.page == "知识" || a.page == "图谱" || a.page == "检索结果") && a.project == idx
+				active = active || (a.page == "设置" && a.settingsOrigin != nil && a.access.OpenProject == p.ID)
+				row := ui.Row(c.Key("project-nav-" + p.ID)).FillWidth().AlignItems(ui.Center).Radius(7)
+				homeNavSurface(row, active).Children(func() {
+					ui.Button(c, "").Key("project-"+p.ID).Label(labels[idx]).Tooltip(p.Name+" · "+p.Path).Grow(1).MinWidth(0).Padding(8, 12).Gap(11).Justify(ui.Start).Background(ui.Transparent).BorderWidth(0).Radius(7).Children(func() {
+						ui.Icon(c, homeFolder).FontSize(17).Shrink(0).TextColor(homeIconInk)
+						ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
+							homeText(c, p.Name, homeBody).TextColor(homeNavInk).SingleLine()
+							if labels[idx] != p.Name {
+								homeText(c, p.Path, homePath).FontSize(9).TextColor(ui.Hex("#7b8ca0")).SingleLine()
+							}
+						})
+					}).OnClick(func() { a.navigate("知识", index) })
+					anchor := readingAction(c, "项目菜单："+labels[idx], readingMore, func() {
+						if a.projectUI.SidebarProject == p.ID {
+							a.projectUI.SidebarMenuOpen = !a.projectUI.SidebarMenuOpen
+						} else {
+							a.projectUI.SidebarProject = p.ID
+							a.projectUI.SidebarMenuOpen = true
 						}
-					})
-				}).OnClick(func() { a.navigate("知识", index) })
+					}).Margin(0, 4, 0, 0)
+					if a.projectUI.SidebarProject == p.ID {
+						ui.PopoverBase(c, anchor, &a.projectUI.SidebarMenuOpen, func(panel ui.Element) {
+							panel.Width(180).Padding(10).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(8).Shadow(0, 4, 14, 0, ui.RGBA(0, 0, 0, .1))
+							projectLink(c, "项目设置", func() {
+								origin := a.readingLocation()
+								a.projectUI.SidebarMenuOpen = false
+								a.navigate("设置", index)
+								a.access.OpenProject = p.ID
+								a.access.ProjectSection = "Agent 规则"
+								a.settingsOrigin = origin
+							})
+						})
+					}
+				})
 			}
 		})
 		ui.Column(c).Shrink(0).Margin(16, 0, 0, 0).Padding(12, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(ui.Hex("#d8e3ed")).Gap(10).Children(func() {
