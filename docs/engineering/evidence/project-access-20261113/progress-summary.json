@@ -108,6 +108,27 @@
       "official_session": "codex_01a1d3c7-5efe-7c22-88d6-5b1ec6a66dcf",
       "actual_cwd": "/Users/bytedance/work/AI/memlane",
       "native_codex_window_control": "tool_denied"
+    },
+    "existing-association-real": {
+      "status": "passed",
+      "model_calls": 0,
+      "index_calls": 0,
+      "project_id": "2b19a266-c87d-5fc5-8e49-c35c1622c80e",
+      "dataset_id": "82af692a-aa13-5fde-a8dc-42713a61acdd",
+      "official_group_count": 1
+    },
+    "update-denied-real": {
+      "status": "passed",
+      "model_calls": 0,
+      "project_id": "8143cf32-79b2-53b5-9e75-0bd7421e38f5",
+      "dataset_id": "17fcf3f7-ea5c-5a37-b902-c0cc78fd7822",
+      "original_override_restored": true,
+      "raw_sha256_before_after_equal": true
+    },
+    "installer-temporary-cleanup": {
+      "status": "removed_owned_synthetic_installer_tree",
+      "file_count": 191,
+      "allocated_bytes": 4169728
     }
   },
   "known_failure_counts": {
@@ -129,11 +150,22 @@
   ],
   "same_official_store": true,
   "release": false,
-  "observed_at": 1794555231.68182,
+  "observed_at": 1794555917.446631,
   "historical_error_index": "docs/engineering/client-simplification-errors-20261113.md; historical counts and stops retained",
   "source_sha256": {
     "engine/python/project_codex_connection.py": "08564de85a9a5e95f4ec1abc6ead9c2bb2debdb2b7380294b53674ba0e0c463c",
     "engine/python/project_installation.py": "63c0e9de77196e46a3ebb41fb4d2d5b9de54c6dec7f4a8fd992f0701e854e34b"
   },
-  "python_checks": 52
+  "python_checks": 52,
+  "requirements_audit": {
+    "scope": "PA01-PA14 and PA-A-PA-H retained",
+    "normal_desktop_user_message": "pending_user_send",
+    "native_default_success_button": "not_separately_verified",
+    "native_existing_dataset_picker": "not_separately_verified",
+    "native_latest_window": "observation_tool_unavailable",
+    "current_final_connection_status_guards": "source_checked_runtime_load_pending",
+    "synthetic_official_data_cleanup": "pending",
+    "source_tests": 52,
+    "release": false
+  }
 }

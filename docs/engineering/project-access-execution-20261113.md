@@ -312,3 +312,34 @@ CUA明确拒绝操作com.openai.codex（安全限制），所以没有实际点�
 最后Native观察：此前新建／覆盖／恢复、关闭重开／来源返回均有实际成功证据。此后CUA连续报cgWindowNotFound，同时App进程与watcher存活；只对核对了身份的自有前台UI watcher做一次正常重载，服务保持，新的UI进程仍被观察工具报相同错误，浏览器inventory另报access host unavailable。原因未知，不把它认定为App退出／配置丢失，不继续盲重载。最新daily-cli知识的实际窗口截图未取得，留待工具窗口观察恢复；不得把HTTP内容检查扩大成最新视觉通过。
 
 当前源码52项Python全量通过，Go源在此后未改，已有全量／vet／race证据沿用。公开去正文的阶段回执在 `evidence/project-access-20261113/progress-summary.json`。整体Goal仍active，未向用户宣称整体验收完成。
+
+
+## 逐项收口审计（当前仍未完成）
+
+本轮重新读取完整PA规格与技术方案，对照当前源码及已有真实回执，没有把“用户尚未回复”视作已经发送，也没有因等待重投模型或索引。当前线程列表没有新的daily-cli普通桌面对话，后台39752（15:11:12）仍ready。
+
+| 要求 | 已有直接证据 | 尚未证明／收尾边界 |
+| --- | --- | --- |
+| PA01 | daily-cli真实新会话首次绑定、原始qas1、原流水线终态与实际知识正文；Alpha后续会话实际采用 | 普通Desktop用户消息待发送；最新daily-cli Native截图未取得 |
+| PA02 | 实际默认动态继承／显式none保留／恢复null；Native项目采集覆盖保存及恢复 | Native默认模板按钮成功路径未单独补验，源码交互／真实控制API已有证据 |
+| PA03 | 两独立主体none/read/maintain直连官方矩阵、maintenance CRUD、有效角色／tenant核对 | 本轮补齐PATCH的none/read拒绝，见下；旧401断言纠正保留 |
+| PA04 | Beta真实只读编码无正文入队；stat-only水位与原会话恢复只收新内容 | 普通Desktop同一来源形态的完整问答仍待前置发送 |
+| PA05 | auto/idle/final/exit/cooldown生产函数门禁断言；Beta真实关闭后pipeline集合不增 | 不据此承诺服务禁止所有主动处理 |
+| PA06 | 生产remember helper真实只读拒绝且中文原因正确；capture=false但有权主动保存成功 | 无新增未证明项 |
+| PA07 | 真实403竞态→blocked→权限恢复不重试→Native明确补交一次；RST未知→不重发→明确CLI丢弃 | Native丢弃按钮未实际点击，不以CLI回执冒充；生产helper签名路径同一实现 |
+| PA08 | Native新建manual及自动登记共用身份；新增真实已有组导入ACL及重复关联测试通过 | 已有组选择器的Native成功路径未单独补验 |
+| PA09 | Alpha自动出现在Native；隐藏窗口期间后台登记、重开补发现；目录失败保留与恢复错误清理回归 | 最近日常项目Native截图受cgWindowNotFound阻断 |
+| PA10 | Native普通通用文档新增／编辑、同DataID及真实pipeline核对；实际删除raw404／列表0；真实后续采用 | 删除使用官方API后Native核对，未冒充Native删除确认按钮 |
+| PA11 | 空Beta真实使用通用99；Alpha同一注入块含项目42与通用99、实际保留项目42；真实撤权后缓存不注入 | 不外推其他模型或全部偏好质量 |
+| PA12 | 真实并发两主体单组、同名分离、软链接／子目录、worktree、移动别名；目录排除已登记code/common | 当前受管模式关闭官方companion创建，不把未启用的伴随能力说成已交付 |
+| PA13 | 关窗/重开/来源返回实际Native通过；真实Agent撤权拒绝及同进程缓存撤下；Native读取失效403回归与实际通用删除撤下 | 桌面管理owner仍有读取权，不能把Agent撤权描述为owner失权；最新窗口观察待恢复 |
+| PA14 | 实际OpenAPI无cancel路由；开关只停后续触发的界面和协议；真实已接收流水线按原ID跟踪终态；partial/unknown保留 | 不宣称关闭开关取消已运行任务或撤回已发送字节 |
+
+PA-A至H的主证据分别为Alpha/daily-cli真实链、Beta禁采/恢复、动态模板与新主体、真实ACL/CRUD、真实403/RST与原操作恢复、身份/新建关联、通用CRUD/采用/优先级、Native生命周期/来源返回。尚未关闭的用户来源、Native观察和清理项继续阻止整组Goal完成。本文是证据审计，不是用户验收通过报告。
+
+### 本轮补齐两项实际接口断言
+
+1. 自建空组82af692a-aa13-5fde-a8dc-42713a61acdd在关联前只给A与本机主体read、B none。生产create关联后source=associated、verified，三主体覆盖分别read/none/read；逐主体自动resolve仍是同一项目与组。再显式关联相同root+dataset不增加revision、不重置覆盖，官方组仍1个。回执 `existing-association-real.json` passed；模型／索引调用均0。使用本轮自有空组，不改原日常项目。
+2. 既有真实矩阵尚未单独验证PATCH拒绝，本轮对本任务Beta合成probe466f6511-95de-4f77-8b79-e75d3254f1f3提交相同原文，none/read两种权限均直接403，最终原文摘要一致，B原覆盖完整恢复。回执 `update-denied-real.json` passed；没有触发处理或调用模型。维护权限下真实更新已由原maintenance-crud验证，不重复做。
+
+删除了实际安装器的自有无登录合成fixture目录connection-installer：191文件、逻辑3771707字节／分配4169728字节。删除前确认实际runtime/registry无引用、进程参数无引用；保留原小型通过回执，没有删除当前日常marketplace/cache或任何原库。A/B官方主体、其余合成组和被引用材料仍保留，最终白名单清理尚待收口。
