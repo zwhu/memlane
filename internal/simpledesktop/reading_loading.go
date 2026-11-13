@@ -98,6 +98,7 @@ func (a *App) handleReadingFailure(i Item, err error) {
 	if !readingUnavailable(err) {
 		return
 	}
+	a.withdrawCommonEditor(i.Dataset)
 	if strings.Contains(err.Error(), "HTTP 401") || strings.Contains(err.Error(), "identity changed") || strings.Contains(err.Error(), "credential unavailable") {
 		a.InvalidateReading("")
 	} else {
@@ -294,6 +295,7 @@ func (a *App) syncReadingIdentity() bool {
 		identity = "unavailable"
 	}
 	if identity != a.readingIdentity {
+		a.withdrawCommonEditor("")
 		a.readingIdentity = identity
 		a.epoch++
 		for _, s := range a.panes {

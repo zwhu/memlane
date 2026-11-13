@@ -67,4 +67,6 @@ if __name__ == '__main__':
     parser.add_argument('--source', required=True, help='fixed integrations/codex/plugins/cognee directory')
     parser.add_argument('--output', required=True, help='new separate managed artifact directory')
     args = parser.parse_args()
-    print(json.dumps(build(args.source, args.output), sort_keys=True))
+    receipt = build(args.source, args.output)
+    print(json.dumps({key: receipt[key] for key in ('plugin_commit', 'patch_sha256', 'extension_sha256')} |
+                     {'verified_files': len(receipt['files'])}, sort_keys=True))

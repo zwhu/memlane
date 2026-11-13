@@ -25,6 +25,70 @@ def managed():
     return bool(os.environ.get('MEMLANE_PROJECT_CONTROL_URL'))
 
 
+def prepare_environment(parse_env_file):
+    """Pin each installed artifact to its own private env file, before upstream load.
+
+    Explicit exported configuration remains available for isolated dev hosts.
+    A patched artifact without either binding refuses to use global owner caches.
+    """
+    marker = Path(__file__).resolve().parents[1] / '.memlane-installation.json'
+    if marker.exists() or marker.is_symlink():
+        if marker.is_symlink() or not marker.is_file() or marker.stat().st_mode & 0o077:
+            raise NotReady('private_installation_binding_required')
+        try:
+            binding = json.loads(marker.read_text())
+            path = Path(binding['env_file'])
+        except (KeyError, ValueError, TypeError):
+            raise NotReady('installation_binding_invalid') from None
+        if not path.is_absolute() or path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077:
+            raise NotReady('private_installation_environment_required')
+        values = parse_env_file(path)
+        required = ('COGNEE_BASE_URL', 'COGNEE_API_KEY', 'MEMLANE_PROJECT_CONTROL_URL', 'MEMLANE_PROJECT_CONTROL_TOKEN_FILE')
+        if any(not values.get(key) for key in required):
+            raise NotReady('installation_environment_incomplete')
+        os.environ['COGNEE_ENV_FILE'] = str(path)
+        for key in required:
+            os.environ[key] = values[key]
+    if not managed() or not os.environ.get('COGNEE_API_KEY') or not os.environ.get('COGNEE_BASE_URL'):
+        raise NotReady('managed_installation_configuration_required')
+    os.environ.update(COGNEE_PLUGIN_IDENTITY='false', COGNEE_SHARED_AGENT_MEMORY='false',
+                      COGNEE_MANAGED_ENDPOINT='true', COGNEE_SESSION_COMPANION_DATASET='false',
+                      COGNEE_CODING_MEMORY='true', COGNEE_BACKEND='cloud', COGNEE_CODEX_BACKEND='cloud')
+
+
+def recall_targets(dataset_name, dataset_ids):
+    result = current()
+    allowed = []
+    if 'read' in result['policy']['permissions']:
+        allowed.append(result['dataset_id'])
+    common = result.get('common') or {}
+    if common.get('ready') and common.get('readable') and common.get('dataset_id'):
+        allowed.append(common['dataset_id'])
+    targets = ([item.strip() for item in dataset_ids.split(',') if item.strip()] if isinstance(dataset_ids, str)
+               else list(dataset_ids or []))
+    if not targets and dataset_name:
+        targets = [dataset_name]
+    if not targets:
+        targets = allowed
+    if not targets or any(target not in allowed for target in targets):
+        raise NotReady('project_read_denied')
+    return targets, result['dataset_id']
+
+
+def code_target(operation, target=None, *, automatic=False):
+    """Code groups require an explicit manager association, never a slug fallback."""
+    result = current()
+    code = result.get('code') or {}
+    if not result.get('ready') or not code.get('enabled') or not code.get('ready') or not code.get('dataset_id'):
+        raise NotReady('project_code_not_enabled')
+    if target and target != code['dataset_id']:
+        raise NotReady('project_code_target_mismatch')
+    require(operation)
+    if automatic:
+        require('process', automatic=True)
+    return code['dataset_id']
+
+
 def _connection():
     origin = os.environ.get('MEMLANE_PROJECT_CONTROL_URL', '')
     parsed = urllib.parse.urlparse(origin)
@@ -321,6 +385,33 @@ def _pending_snapshot(dataset_id, session_id):
     return path, key, cache, session_cache, pending, signature
 
 
+def stamp_pending_entry(dataset_id, session_id, entry, ambiguous):
+    """Journal the original official entry before sending, without another queue.
+
+    A process dying after POST but before trimming must leave an unknown outcome,
+    not an apparently unsent item that a later hook can blindly replay.
+    """
+    from _plugin_common import _buffer_lock, _write_json_file, _AMBIGUOUS_KEY
+    original = dict(entry)
+    replacement = dict(entry)
+    if ambiguous:
+        replacement[_AMBIGUOUS_KEY] = True
+    else:
+        replacement.pop(_AMBIGUOUS_KEY, None)
+    with _buffer_lock():
+        path, key, cache, session_cache, pending, _ = _pending_snapshot(dataset_id, session_id)
+        for index, value in enumerate(pending):
+            if value == original:
+                pending[index] = replacement
+                session_cache['pending_entries'] = pending
+                cache[key] = session_cache
+                _write_json_file(path, cache)
+                entry.clear()
+                entry.update(replacement)
+                return
+    raise NotReady('pending_entry_changed_before_send')
+
+
 def _pending_identity(dataset_id, session_id):
     from _plugin_common import _read_map_record, get_session_key
     if dataset_id != dataset() or _read_map_record(get_session_key()).get('session_id') != session_id:
@@ -391,14 +482,18 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--session-key', required=True)
     parser.add_argument('--dataset', required=True)
-    parser.add_argument('--session-id', required=True)
+    parser.add_argument('--session-id')
     parser.add_argument('--action', choices=('show', 'replay', 'discard'), required=True)
     parser.add_argument('--expected-signature')
     arguments = parser.parse_args()
     set_session_key(arguments.session_key)
     try:
-        value = (pending_materials(arguments.dataset, arguments.session_id) if arguments.action == 'show'
-                 else decide_pending(arguments.dataset, arguments.session_id, arguments.action, arguments.expected_signature))
+        from _plugin_common import _read_map_record
+        session_id = arguments.session_id or _read_map_record(arguments.session_key).get('session_id')
+        if not session_id:
+            raise NotReady('official_session_unconfirmed')
+        value = (pending_materials(arguments.dataset, session_id) if arguments.action == 'show'
+                 else decide_pending(arguments.dataset, session_id, arguments.action, arguments.expected_signature))
         print(json.dumps(value, ensure_ascii=False))
     except NotReady as error:
         print(json.dumps({'error': str(error)}, ensure_ascii=False))

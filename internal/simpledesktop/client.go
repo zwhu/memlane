@@ -24,17 +24,19 @@ type Project struct {
 	CodeEnabled bool   `json:"code_enabled"`
 }
 type Config struct {
-	ClientStateFile string    `json:"client_state_file"`
-	OfficialData    string    `json:"official_data"`
-	ServiceCommit   string    `json:"service_commit"`
-	GraphAssets     string    `json:"graph_assets"`
-	ConfigFile      string    `json:"-"`
-	ServiceURL      string    `json:"service_url"`
-	TokenFile       string    `json:"token_file"`
-	CompletionURL   string    `json:"completion_url"`
-	Model           string    `json:"model"`
-	Projects        []Project `json:"projects"`
-	Common          []Project `json:"common_datasets"`
+	Python          string                `json:"python"`
+	ProjectControl  *ProjectControlConfig `json:"project_control"`
+	ClientStateFile string                `json:"client_state_file"`
+	OfficialData    string                `json:"official_data"`
+	ServiceCommit   string                `json:"service_commit"`
+	GraphAssets     string                `json:"graph_assets"`
+	ConfigFile      string                `json:"-"`
+	ServiceURL      string                `json:"service_url"`
+	TokenFile       string                `json:"token_file"`
+	CompletionURL   string                `json:"completion_url"`
+	Model           string                `json:"model"`
+	Projects        []Project             `json:"projects"`
+	Common          []Project             `json:"common_datasets"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -137,6 +139,9 @@ func (d Document) title() string {
 	return d.Name
 }
 func (d Document) knowledge() bool {
+	if commonCategory(d) != "" {
+		return true
+	}
 	for _, n := range nodeSets(d) {
 		if n == "session_learnings" {
 			return true
@@ -177,6 +182,7 @@ type SessionDetail struct {
 	Count  int     `json:"msg_count"`
 }
 type Item struct {
+	CommonCategory                                                        string
 	ID, Dataset, Kind, Title, Date, Preview, Body, Source, SourceDocument string
 	Document                                                              *Document
 	Session                                                               *Session
@@ -303,7 +309,8 @@ func (c Client) search(ctx context.Context, projects []Project, q string, filter
 		filter = filters[0]
 	}
 	if filter == "知识" {
-		input["node_name"] = []string{"session_learnings"}
+		input["node_name"] = []string{"session_learnings", "memlane_common"}
+		input["node_name_filter_operator"] = "OR"
 	}
 	b, e := c.request(ctx, "POST", "/api/v1/search", input)
 	if e != nil {
@@ -350,6 +357,7 @@ func (c Client) search(ctx context.Context, projects []Project, q string, filter
 				continue
 			}
 			item := Item{ID: id, Dataset: g.Dataset, Kind: contentType, Title: title, Body: text, Preview: text, SourceDocument: stringField("document_id"), BodyLoaded: true}
+			item.CommonCategory = commonCategory(Document{Metadata: metadata})
 			item.Title = itemPresentation(item).DisplayTitle
 			items = append(items, item)
 		}

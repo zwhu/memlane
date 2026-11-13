@@ -2,14 +2,84 @@ package simpledesktop
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
+
+func TestCommonConfirmKeepsSavedBodyAndProcessingStatusSeparate(t *testing.T) {
+	draft := CommonDraft{Title: "A preference", Body: "Use the project validation command.", Category: "preference"}
+	body, _ := draft.markdown()
+	outcome := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			t.Error("confirmation must not submit content")
+		}
+		switch r.URL.Path {
+		case "/api/v1/datasets/common/data":
+			_ = json.NewEncoder(w).Encode([]Document{{ID: "document", Dataset: "common", ContentHash: "hash", Metadata: map[string]any{"memlane_kind": "common_knowledge", "category": "preference"}}})
+		case "/api/v1/datasets/common/data/document/raw":
+			_, _ = w.Write([]byte(body))
+		case "/api/v1/activity/pipeline-runs":
+			if r.URL.Query().Get("dataset_id") != "common" {
+				t.Error("unscoped pipeline check")
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]string{{"dataset_id": "common", "pipeline_run_id": "original-run", "status": "STARTED", "outcome": outcome}})
+		default:
+			t.Error(r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	c := Client{Config: Config{ServiceURL: server.URL}}
+	receipt := CommonWriteReceipt{Status: "running", DatasetID: "common", ContentHash: "hash", PipelineRunID: "original-run"}
+	d, message, err := c.confirmCommon(context.Background(), Project{Dataset: "common"}, receipt, draft)
+	if err != nil || d.ID != "document" || !strings.Contains(message, "正文已核对") || strings.Contains(message, "处理已完成") {
+		t.Fatalf("running confused with completion: %s %v", message, err)
+	}
+	outcome = "succeeded"
+	_, message, err = c.confirmCommon(context.Background(), Project{Dataset: "common"}, receipt, draft)
+	if err != nil || !strings.Contains(message, "处理已完成") {
+		t.Fatalf("terminal result missing: %s %v", message, err)
+	}
+}
+
+func TestCommonEditorChangedSourceVersionNeverSubmitsPatch(t *testing.T) {
+	var writes atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			writes.Add(1)
+		}
+		_, _ = w.Write([]byte("# Changed by another author\n"))
+	}))
+	defer server.Close()
+	a := New(Config{ServiceURL: server.URL}, nil)
+	updates := make(chan func(), 10)
+	a.Update = func(fn func()) { updates <- fn }
+	d := Document{ID: "document", Dataset: "common", Metadata: map[string]any{"memlane_kind": "common_knowledge", "category": "preference"}}
+	a.commonEdit = commonEditorState{Open: true, Draft: CommonDraft{Title: "Updated title", Body: "New body", Category: "preference"}, Existing: &d, Target: Project{Dataset: "common"}, Baseline: sha256.Sum256([]byte("old body"))}
+	a.saveCommonKnowledge()
+	drainReading(t, updates, func() bool { return !a.commonEdit.Busy })
+	if writes.Load() != 0 || a.commonEdit.Submitted || !strings.Contains(a.commonEdit.Message, "本次未提交") {
+		t.Fatal("stale editor overwrote official content")
+	}
+}
+
+func TestCommonDraftRoundtripRetainsSourceAndApplicability(t *testing.T) {
+	original := CommonDraft{Title: "A preference", Body: "Use pnpm.\n\nKeep the lockfile.", Category: "preference", Source: "User's original note", Applicability: "JavaScript repositories"}
+	body, _ := original.markdown()
+	d := Document{Metadata: map[string]any{"memlane_kind": "common_knowledge", "category": "preference", "source": original.Source}}
+	parsed := commonDraftFor(Item{Body: body, BodyLoaded: true, Document: &d})
+	roundtrip, err := parsed.markdown()
+	if err != nil || roundtrip != body {
+		t.Fatalf("edit duplicated/lost source or applicability: %q %v", roundtrip, err)
+	}
+}
 
 func TestCommonKnowledgeOfficialMultipartAndPartialReceipt(t *testing.T) {
 	requests := 0

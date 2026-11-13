@@ -122,7 +122,11 @@ class Official:
         result = set()
         for permission in ('read', 'write', 'delete', 'share'):
             for principal in principals:
-                rows = await self.request('GET', f'/api/v1/permissions/principals/{principal}/datasets?permission_name={permission}')
+                # This endpoint authorizes/scopes against the requester's
+                # current tenant. Use the child to inspect its own principals;
+                # an owner without a selected tenant cannot inspect a child.
+                rows = await self.request('GET', f'/api/v1/permissions/principals/{principal}/datasets?permission_name={permission}',
+                                          token_file=agent['key_file'])
                 if any(row['id'] == dataset for row in rows):
                     result.add(permission)
         return result
@@ -187,11 +191,27 @@ class Registry:
 
     def directory(self):
         return {'revision': self.state['revision'], 'defaults': copy.deepcopy(self.state['defaults']),
-                'agents': [{'id': key, 'name': value['name']} for key, value in self.state['agents'].items()],
+                'agents': [{'id': key, 'name': value['name'], 'installation': copy.deepcopy(value.get('installation'))}
+                           for key, value in self.state['agents'].items()],
                 'enrollments': {key: {field: value[field] for field in ('status', 'error_code') if field in value}
                                 for key, value in self.state.get('enrollments', {}).items()},
                 'projects': [copy.deepcopy(project) for project in self.state['projects'].values()],
-                'common': copy.deepcopy(self.state.get('common'))}
+                'common': copy.deepcopy(self.state.get('common')),
+                'bindings': [{'agent_id': json.loads(key)[0], 'host_session_key': json.loads(key)[1], 'project_id': value}
+                             for key, value in self.state['sessions'].items()]}
+
+    async def prepare_installation(self, expected, instance_id, plugin_source, control_url, host_home=None):
+        async with self.mutex:
+            self.check_revision(expected)
+            agent = self.state['agents'].get(instance_id)
+            if not agent or not agent.get('control_token_file'):
+                raise PolicyError('managed_agent_required', 409)
+            from project_installation import prepare
+            agent['installation'] = prepare(plugin_source, self.path.parent, instance_id, agent,
+                                             self.official.url, control_url, host_home)
+            self.state['revision'] += 1
+            self.save()
+            return self.directory()
 
     def managed_groups(self):
         return [*self.state['projects'].values(), *([self.state['common']] if self.state.get('common') else [])]
@@ -343,8 +363,9 @@ class Registry:
                 return project
         if dataset_id and any(p['dataset_id'] == dataset_id for p in self.state['projects'].values()):
             raise PolicyError('dataset_already_linked', 409)
-        if dataset_id and self.state.get('common', {}).get('dataset_id') == dataset_id:
-            raise PolicyError('common_dataset_is_not_a_project', 409)
+        if dataset_id and ((self.state.get('common') or {}).get('dataset_id') == dataset_id
+                           or dataset_id in self.state.get('reserved_datasets', [])):
+            raise PolicyError('non_project_dataset_cannot_be_linked', 409)
         identifier = project_id(self.state['service_namespace'], root)
         self.state['revision'] += 1
         project = {'id': identifier, 'name': name or Path(root).name, 'aliases': [root],

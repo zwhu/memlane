@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import stat
 import socket
 import subprocess
 import sys
@@ -141,9 +142,16 @@ def verify_managed_plugin(directory):
             raise ValueError('managed plugin patch source changed; rebuild and review the fixed input')
     files = {str(path.relative_to(directory)): hashlib.sha256(path.read_bytes()).hexdigest()
              for path in directory.rglob('*') if path.is_file() and '__pycache__' not in path.parts
-             and path.suffix != '.pyc' and path.name != '.memlane-project-access.json'}
+             and path.suffix != '.pyc' and path.name not in ('.memlane-project-access.json', '.memlane-installation.json')}
     if files != expected['files']:
         raise ValueError('managed plugin files do not match fixed input')
+    marker = directory / '.memlane-installation.json'
+    if marker.exists() or marker.is_symlink():
+        if marker.is_symlink() or marker.stat().st_mode & 0o077:
+            raise ValueError('managed installation binding must be private')
+        environment = Path(json.loads(marker.read_text())['env_file'])
+        if not environment.is_absolute() or environment.is_symlink() or environment.stat().st_mode & 0o077:
+            raise ValueError('managed installation environment must be private')
 
 
 def wait_project_control(control, process, timeout=60):
@@ -170,6 +178,51 @@ def owner_ui_children(state):
         services = set(state['service_children'].values())
         return [pid for pid in state.get('children', []) if pid not in services]
     return state.get('children', [])[2:]
+
+
+def launch_owned(command, *, cwd=ROOT, env=None, log_file=None):
+    if log_file is None:
+        raise ValueError('owned process requires an independent log file')
+    log_file = Path(log_file)
+    log_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(log_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError('owned process log must be a regular file')
+        os.fchmod(fd, 0o600)
+        return subprocess.Popen(command, cwd=cwd, env=env, start_new_session=True,
+                                stdout=fd, stderr=subprocess.STDOUT)
+    finally:
+        os.close(fd)
+
+
+def trim_service_log(path, limit=20 * 1024 * 1024):
+    path = Path(path)
+    if path.is_symlink():
+        raise ValueError('service log cannot be a symlink')
+    if not path.exists() or path.stat().st_size <= limit:
+        return
+    # Keep a bounded tail and truncate the same live inode. Child processes
+    # retain an O_APPEND regular-file fd, never a pipe or replaced log inode.
+    with path.open('rb') as source:
+        source.seek(-limit, os.SEEK_END)
+        tail = source.read(limit)
+    fd = os.open(str(path) + '.previous', os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'wb') as previous:
+        previous.write(tail)
+    fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW)
+    try:
+        os.ftruncate(fd, 0)
+    finally:
+        os.close(fd)
+
+
+def report_notice(message):
+    # A terminal observer is optional; losing it must never stop owned services.
+    try:
+        print(message, flush=True)
+    except BrokenPipeError:
+        pass
 
 
 def acquire(data):
@@ -226,7 +279,7 @@ def reopen_ui(current, processes, launch, config_path):
     except Exception as error:
         # A window-only failure must not tear down the daily data services.
         # Keep the old watcher reserved if its exit could not be confirmed.
-        print('UI reopen failed; daily services retained: ' + str(error), flush=True)
+        report_notice('UI reopen failed; daily services retained: ' + str(error))
         return current
 
 
@@ -342,10 +395,12 @@ def main():
                     def stop_ui(_signal, _frame):
                         raise KeyboardInterrupt
                     signal.signal(signal.SIGTERM, stop_ui)
-                    watcher = subprocess.Popen([str(GO), 'tool', 'mygo', 'dev'], cwd=ROOT,
-                                               env=ui_env(path), start_new_session=True)
+                    watcher = launch_owned([str(GO), 'tool', 'mygo', 'dev'], cwd=ROOT,
+                                           env=ui_env(path), log_file=path.parent / 'runtime-logs/ui-attached.log')
                     try:
-                        watcher.wait()
+                        while watcher.poll() is None:
+                            trim_service_log(path.parent / 'runtime-logs/ui-attached.log')
+                            time.sleep(.25)
                     except KeyboardInterrupt:
                         pass
                     finally:
@@ -395,7 +450,10 @@ def main():
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGUSR1, open_window)
     def launch(command, env=None, cwd=ROOT):
-        proc = subprocess.Popen(command, cwd=cwd, env=env, start_new_session=True)
+        entry = Path(command[1]).stem if len(command)>1 and command[1].endswith('.py') else 'ui'
+        log_file = path.parent / 'runtime-logs' / (entry + '.log')
+        trim_service_log(log_file)
+        proc = launch_owned(command, cwd=cwd, env=env, log_file=log_file)
         processes.append(proc)
         save_owner()
         return proc
@@ -423,9 +481,11 @@ def main():
         complete_initialization(config, path)
         state['phase'] = 'ready'
         save_owner()
-        print('Daily official services ready; closing UI keeps them running. Ctrl+C explicitly stops owned services.', flush=True)
+        report_notice('Daily official services ready; closing UI keeps them running. Ctrl+C explicitly stops owned services.')
         reopen = not args.no_ui
         while True:
+            for log_file in (path.parent / 'runtime-logs').glob('*.log'):
+                trim_service_log(log_file)
             track_descendants([p.pid for p in processes], descendants)
             if endpoint.poll() is not None or service.poll() is not None:
                 raise RuntimeError('official service or completion endpoint exited; no automatic restart')

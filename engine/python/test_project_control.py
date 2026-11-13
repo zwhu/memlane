@@ -157,6 +157,16 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(again['common']['dataset_id'], common['dataset_id'])
         self.assertEqual(self.official.creates, 2)
 
+    async def test_common_and_code_groups_cannot_be_linked_as_projects(self):
+        common = (await self.registry.ensure_common(self.registry.state['revision']))['common']
+        code = str(uuid.uuid4())
+        self.registry.state['reserved_datasets'] = [code]
+        for dataset in (common['dataset_id'], code):
+            with self.assertRaises(PolicyError) as error:
+                await self.registry.create_project(self.registry.state['revision'], str(self.repo), dataset_id=dataset)
+            self.assertEqual(error.exception.code, 'non_project_dataset_cannot_be_linked')
+        self.assertEqual(self.registry.state['projects'], {})
+
     async def test_http_separates_principals_and_rejects_content(self):
         client = TestClient(TestServer(create_app(self.registry, 'm' * 40, {'a': 'a' * 40, 'b': 'b' * 40})))
         await client.start_server()
@@ -213,7 +223,10 @@ class OfficialContractTests(unittest.IsolatedAsyncioTestCase):
                         grants.discard(permission)
                     return web.json_response({'message': 'ok'})
                 if request.path.startswith('/api/v1/permissions/principals/'):
-                    self.assertEqual(key, 'owner-key')
+                    # Official self-query avoids requiring the management user
+                    # to have a current tenant just to inspect its child.
+                    if key != 'child-key':
+                        return web.json_response({'detail': 'TenantNotFoundError'}, status=404)
                     principal = request.path.split('/')[-2]
                     actual = (principal == child and permission in grants) or (principal == role and permission == 'write')
                     return web.json_response([{'id': dataset}] if actual else [])

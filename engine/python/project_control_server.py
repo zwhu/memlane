@@ -17,7 +17,7 @@ def fields(body, required, optional=()):
     return body
 
 
-def create_app(registry, manager_token, agent_tokens):
+def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, control_url=None):
     if len(manager_token) < 32 or any(len(token) < 32 for token in agent_tokens.values()):
         raise ValueError('control tokens must contain at least 32 characters')
     tokens = [manager_token, *agent_tokens.values()]
@@ -85,6 +85,16 @@ def create_app(registry, manager_token, agent_tokens):
         async with registry.mutex:
             return web.json_response(registry.directory())
 
+    async def datasets(request):
+        manager(request)
+        async with registry.mutex:
+            owner = await registry.official.request('GET', '/api/v1/users/me')
+            rows = await registry.official.request('GET', '/api/v1/datasets')
+            excluded = {group['dataset_id'] for group in registry.managed_groups()}
+            excluded.update(registry.state.get('reserved_datasets', []))
+            return web.json_response([{'id': row['id'], 'name': row['name']} for row in rows
+                                      if row.get('ownerId') == owner['id'] and row['id'] not in excluded])
+
     async def defaults(request):
         manager(request)
         payload = fields(await body(request), ('expected_revision', 'fields'))
@@ -122,6 +132,14 @@ def create_app(registry, manager_token, agent_tokens):
         payload = fields(await body(request), ('expected_revision',))
         return web.json_response(await registry.recover_agent(payload['expected_revision'], request.match_info['id']))
 
+    async def installation(request):
+        manager(request)
+        if not plugin_source or not control_url:
+            raise PolicyError('managed_plugin_not_configured', 503)
+        payload = fields(await body(request), ('expected_revision',), ('host_home',))
+        return web.json_response(await registry.prepare_installation(payload['expected_revision'], request.match_info['id'],
+                                                                      plugin_source, control_url, payload.get('host_home')))
+
     async def common(request):
         manager(request)
         payload = fields(await body(request), ('expected_revision',))
@@ -132,7 +150,8 @@ def create_app(registry, manager_token, agent_tokens):
                     web.put('/v1/projects/{id}/overrides', overrides), web.post('/v1/projects', create),
                     web.post('/v1/projects/{id}/aliases', alias), web.post('/v1/projects/{id}/reconcile', reconcile),
                     web.post('/v1/agents', provision), web.post('/v1/agents/{id}/reconcile', recover),
-                    web.post('/v1/common', common), web.post('/v1/common/reconcile', common)])
+                    web.post('/v1/common', common), web.post('/v1/common/reconcile', common),
+                    web.get('/v1/linkable-datasets', datasets), web.post('/v1/agents/{id}/installation', installation)])
     return app
 
 
@@ -144,6 +163,10 @@ async def configured_app(config):
     registry = None
     try:
         registry = Registry(config['registry_file'], Official(session, config['service_url'], config['token_file']))
+        reserved = {project['code_dataset_id'] for project in config.get('projects', []) if project.get('code_dataset_id')}
+        reserved.update(config.get('reserved_dataset_ids', []))
+        registry.state['reserved_datasets'] = sorted(reserved)
+        registry.save()
         # Explicit pre-existing runtime associations are configuration, not a
         # content migration. Reuse their UUIDs before any new host resolves.
         for project in config.get('projects', []):
@@ -151,7 +174,8 @@ async def configured_app(config):
                                           dataset_id=project['dataset_id'], name=project['name'])
         await registry.ensure_common(registry.state['revision'])
         app = create_app(registry, read_secret(config['management_token_file']),
-                         {key: read_secret(value) for key, value in config.get('agent_control_token_files', {}).items()})
+                         {key: read_secret(value) for key, value in config.get('agent_control_token_files', {}).items()},
+                         plugin_source=config.get('plugin_dir'), control_url=config.get('project_control_url'))
     except BaseException:
         if registry is not None:
             registry.close()

@@ -16,6 +16,7 @@ func main() {
 	mygo.App.OnReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{Title: "Memlane", Width: 1200, Height: 820, MinWidth: 1200, MinHeight: 820, TitleBarStyle: mygo.TitleBarHidden, Content: ui.View(app.View)})
 		app.Update = func(fn func()) { win.Update(fn) }
+		win.OnFocus(func() { win.Update(app.RefreshProjectDirectory) })
 		if err := app.AttachGraph(win); err != nil {
 			log.Printf("官方图组件不可用：%v", err)
 		}

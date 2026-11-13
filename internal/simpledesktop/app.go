@@ -36,6 +36,8 @@ type pane struct {
 	Technical                      map[string]bool
 }
 type App struct {
+	access           projectAccessState
+	commonEdit       commonEditorState
 	titles           *ReadingTitles
 	readingIdentity  string
 	recentCancel     context.CancelFunc
@@ -99,7 +101,7 @@ func New(c Config, err error) *App {
 	}}
 	return a
 }
-func (a *App) Start() { a.health(); a.loadRecent(); a.restoreCodeState() }
+func (a *App) Start() { a.health(); a.loadRecent(); a.restoreCodeState(); a.RefreshProjectDirectory() }
 func (a *App) health() {
 	client := a.Client
 	completionURL := a.Config.CompletionURL
@@ -196,6 +198,7 @@ func (a *App) load(s *pane) {
 	s.Error = ""
 	p, ok := a.current()
 	page, kind, offset, q := a.page, a.kind, s.Offset, s.Query
+	category := a.commonCategoryFilter()
 	filter := a.searchType
 	if page != "搜索" {
 		if kind == "知识" {
@@ -230,9 +233,22 @@ func (a *App) load(s *pane) {
 					ps = []Project{p}
 				}
 				rows, err = client.search(ctx, ps, q, filter)
+				if page == "通用知识" {
+					filtered := []Item{}
+					for _, row := range rows {
+						if row.CommonCategory != "" && (category == "" || row.CommonCategory == category) {
+							filtered = append(filtered, row)
+						}
+					}
+					rows = filtered
+				}
 			}
 		} else if !ok {
 			rows = []Item{}
+		} else if p.Dataset == "" {
+			err = fmt.Errorf("项目正在登记，内容归属尚未确认")
+		} else if page == "通用知识" {
+			rows, more, err = client.commonDocuments(ctx, p, offset, category)
 		} else if kind == "会话" {
 			rows, more, err = client.sessions(ctx, p, offset)
 		} else {
@@ -377,6 +393,9 @@ func button(c *ui.Context, label string, fn func()) {
 func (a *App) View(c *ui.Context) {
 	c.After(2 * time.Second)
 	a.syncReadingIdentity()
+	if time.Now().After(a.access.Next) {
+		a.RefreshProjectDirectory()
+	}
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Background(ui.Hex("#ffffff")).Children(func() {
 		a.navigation(c)
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
@@ -387,6 +406,9 @@ func (a *App) View(c *ui.Context) {
 				}
 				ui.Text(c, title).FontSize(14).Bold().TextColor(ink)
 				ui.Spacer(c)
+				if p, ok := a.current(); ok && a.page == "知识" && a.Config.ProjectControl != nil {
+					button(c, "项目设置", func() { a.access.OpenProject = p.ID; a.navigate("设置", a.project) })
+				}
 				button(c, "搜索知识", a.OpenSearch)
 			})
 			if a.configError != "" {
@@ -448,14 +470,18 @@ func (a *App) settings(c *ui.Context) {
 		ui.Text(c, "Cognee 官方服务\n"+a.Config.ServiceURL+"\n"+a.service).FontSize(12).LineHeight(1.9)
 		ui.Text(c, "Codex 订阅推理\n模型："+a.Config.Model+"\n"+a.completion).FontSize(12).LineHeight(1.9)
 		button(c, "刷新连接状态", a.health)
-		ui.Text(c, "项目关联").FontSize(16).Bold()
-		for idx, p := range a.Config.Projects {
-			index := idx
-			button(c, p.Name+" · 修改关联", func() { copy := a.Config.Projects[index]; a.editProject = &copy; a.editIndex = index })
-			ui.Text(c, p.Name+"\n"+p.Path+"\n知识数据组："+p.Dataset).FontSize(12).LineHeight(1.8)
+		if a.Config.ProjectControl != nil {
+			a.accessSettings(c)
+		} else {
+			ui.Text(c, "项目关联").FontSize(16).Bold()
+			for idx, p := range a.Config.Projects {
+				index := idx
+				button(c, p.Name+" · 修改关联", func() { copy := a.Config.Projects[index]; a.editProject = &copy; a.editIndex = index })
+				ui.Text(c, p.Name+"\n"+p.Path+"\n知识数据组："+p.Dataset).FontSize(12).LineHeight(1.8)
+			}
+			button(c, "关联已有官方项目", func() { a.editProject = &Project{}; a.editIndex = -1 })
+			a.projectEditor(c)
 		}
-		button(c, "关联已有官方项目", func() { a.editProject = &Project{}; a.editIndex = -1 })
-		a.projectEditor(c)
 		ui.Text(c, "官方插件连接状态：以宿主实际加载回执为准").FontSize(11).TextColor(muted)
 		ui.Text(c, "开发入口\npython3 scripts/dev.py\n关闭窗口后官方服务与模型端点继续运行。重新打开窗口使用启动器入口；明确停止启动器才收尾后台。\n配置更改后停止并重新启动后台生效。电脑重启后手动启动。\n向量模型由 Cognee 官方配置管理。").FontSize(12).LineHeight(1.9)
 	})
@@ -472,6 +498,9 @@ func (a *App) reading(c *ui.Context) {
 							button(c, "图谱", func() { a.navigate("图谱", a.project); a.loadGraph() })
 						}
 						for _, k := range []string{"知识", "会话", "文档"} {
+							if a.page == "通用知识" && k != "知识" {
+								continue
+							}
 							kind := k
 							label := kind
 							if k == "会话" {
@@ -501,6 +530,7 @@ func (a *App) reading(c *ui.Context) {
 					ui.Text(c, "最多30个官方检索片段；类型按返回元数据筛选").FontSize(10).TextColor(muted)
 				}
 				if a.page == "通用知识" {
+					a.commonToolbar(c)
 					options := []string{}
 					for _, p := range a.Config.Common {
 						options = append(options, p.Name)
@@ -574,7 +604,11 @@ func (a *App) reading(c *ui.Context) {
 				ui.Button(c, "›").Disabled(!s.More || s.Loading || s.Query != "").OnClick(func() { s.Offset += 30; a.load(s) })
 			})
 		})
-		a.detail(c, s)
+		if a.page == "通用知识" && a.commonEdit.Open {
+			a.commonEditor(c)
+		} else {
+			a.detail(c, s)
+		}
 	})
 }
 func (a *App) detail(c *ui.Context, s *pane) {
@@ -599,6 +633,7 @@ func (a *App) detail(c *ui.Context, s *pane) {
 			presentation := itemPresentation(*i)
 			ui.Text(c, presentation.DisplayTitle).FontSize(21).Bold().TextColor(ink)
 			ui.Text(c, displayDate(i.Date)).FontSize(10).TextColor(muted)
+			a.commonActions(c, *i)
 			if s.Reading {
 				ui.Text(c, "正在读取…").FontSize(10).TextColor(muted)
 			}
@@ -644,7 +679,7 @@ func (a *App) detail(c *ui.Context, s *pane) {
 					ui.Text(c, readingSourceLabel(*i)).FontSize(10).TextColor(muted)
 					button(c, "查看原始记录 →", func() { a.source(s) })
 				})
-			} else if i.Kind == "知识" {
+			} else if i.Kind == "知识" && (i.Document == nil || commonCategory(*i.Document) == "") {
 				ui.Text(c, "官方未提供可定位的会话出处").FontSize(10).TextColor(muted)
 			}
 			if s.Technical == nil {

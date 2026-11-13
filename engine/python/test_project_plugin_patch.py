@@ -3,6 +3,8 @@ import importlib.util
 import os
 from pathlib import Path
 import subprocess
+import shutil
+import json
 import sys
 import tempfile
 import unittest
@@ -26,7 +28,7 @@ class OfficialPluginPatchTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.temporary.cleanup()
 
-    def run_isolated(self, code):
+    def run_isolated(self, code, *, pinned=False):
         with tempfile.TemporaryDirectory(dir=self.root) as temporary:
             home = Path(temporary)
             (home / '.cognee').mkdir()
@@ -34,6 +36,16 @@ class OfficialPluginPatchTests(unittest.TestCase):
             token = home / 'control.token'
             token.write_text('c' * 40)
             token.chmod(0o600)
+            artifact = self.artifact
+            if pinned:
+                artifact = home / 'installed-plugin'
+                shutil.copytree(self.artifact, artifact)
+                environment_file = home / 'managed.env'
+                environment_file.write_text('COGNEE_BASE_URL="http://127.0.0.1:18999"\nCOGNEE_API_KEY="pinned-child-key"\nMEMLANE_PROJECT_CONTROL_URL="http://127.0.0.1:18777"\nMEMLANE_PROJECT_CONTROL_TOKEN_FILE=' + json.dumps(str(token)) + '\n')
+                environment_file.chmod(0o600)
+                marker = artifact / '.memlane-installation.json'
+                marker.write_text(json.dumps({'instance_id': 'synthetic', 'env_file': str(environment_file)}))
+                marker.chmod(0o600)
             environment = {key: value for key, value in os.environ.items()
                            if not key.startswith(('COGNEE_', 'MEMLANE_', 'LLM_', 'EMBEDDING_'))}
             environment.update(HOME=str(home), COGNEE_ENV_FILE=str(home / '.cognee/.env'),
@@ -41,9 +53,84 @@ class OfficialPluginPatchTests(unittest.TestCase):
                                COGNEE_BASE_URL='http://127.0.0.1:18999', COGNEE_API_KEY='synthetic-child-key',
                                COGNEE_CODING_MEMORY='true', MEMLANE_PROJECT_CONTROL_URL='http://127.0.0.1:18777',
                                MEMLANE_PROJECT_CONTROL_TOKEN_FILE=str(token))
-            process = subprocess.run([sys.executable, '-c', code], cwd=home, env={**environment, 'PYTHONPATH': str(self.artifact / 'scripts')},
+            process = subprocess.run([sys.executable, '-c', code], cwd=home, env={**environment, 'PYTHONPATH': str(artifact / 'scripts')},
                                      capture_output=True, text=True, timeout=20)
             self.assertEqual(process.returncode, 0, process.stdout[-2000:] + process.stderr[-4000:])
+
+    def test_code_default_off_blocks_index_scan_and_old_local_opt_in(self):
+        self.run_isolated('''
+import _code_graph as graph, _memlane_policy as policy
+policy.current = lambda *a, **kw: {"ready": True, "code_enabled": False}
+def forbidden(*a, **kw):
+    raise AssertionError("disabled code graph scanned or sent data")
+graph.canonical_spec = forbidden
+graph.find_indexed_repo = forbidden
+assert graph.index_repo("http://wrong", "owner", "/private/repo")["status"] == 403
+assert graph.do_index_repo("http://wrong", "owner", "/private/repo", "own-slug", opener=forbidden)["status"] == 403
+assert graph.autoindex_on_session_start("/private/repo", "http://wrong", "owner") == {}
+assert graph.reingest_if_changed("/private/repo", "http://wrong", "owner") == {}
+assert graph.auto_code_lane("SomeFunction", "/private/repo") == {}
+''')
+
+    def test_installation_pin_overrides_inherited_owner_and_shared_environment(self):
+        self.run_isolated('''
+import os
+os.environ["COGNEE_API_KEY"] = "inherited-owner-key"
+os.environ["COGNEE_SHARED_AGENT_MEMORY"] = "true"
+import config, _plugin_common as common
+loaded = config.load_config()
+assert loaded["api_key"] == "pinned-child-key"
+assert common._api_key() == "pinned-child-key"
+assert common.plugin_identity_mode() == "disabled"
+assert common.shared_memory_enabled() is False
+assert os.environ["COGNEE_ENV_FILE"].endswith("managed.env")
+''', pinned=True)
+
+    def test_prepared_installation_is_private_literal_unicode_and_does_not_edit_host(self):
+        from project_installation import prepare
+        from project_control import private_write
+        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
+            root = Path(temporary) / '配置目录'
+            root.mkdir()
+            home = root / 'host-home'
+            home.mkdir()
+            private_write(root / 'official.key', b'prepared-child-key')
+            private_write(root / 'control.key', b'c' * 40)
+            agent = {'key_file': str(root / 'official.key'), 'control_token_file': str(root / 'control.key')}
+            installation = prepare(self.artifact, root, 'codex-test', agent, 'http://127.0.0.1:18999', 'http://127.0.0.1:18777', str(home))
+            self.assertEqual(Path(installation['env_file']).stat().st_mode & 0o777, 0o600)
+            marker = Path(installation['plugin_dir']) / '.memlane-installation.json'
+            self.assertEqual(marker.stat().st_mode & 0o777, 0o600)
+            self.assertFalse((self.artifact / '.memlane-installation.json').exists())
+            self.assertEqual(list(home.iterdir()), [])
+            environment = {**os.environ, 'HOME': str(home), 'COGNEE_PLUGIN_IN_VENV': '1',
+                           'PYTHONPATH': str(Path(installation['plugin_dir']) / 'scripts'), 'COGNEE_API_KEY': 'old-owner'}
+            code = 'import config,_plugin_common; assert config.load_config()["api_key"]=="prepared-child-key"; assert _plugin_common._api_key()=="prepared-child-key"'
+            result = subprocess.run([sys.executable, '-c', code], cwd=home, env=environment, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+
+    def test_missing_managed_config_cannot_fall_back_to_global_owner_or_cli(self):
+        self.run_isolated('''
+import os, subprocess
+from pathlib import Path
+for key in ("MEMLANE_PROJECT_CONTROL_URL", "MEMLANE_PROJECT_CONTROL_TOKEN_FILE"):
+    os.environ.pop(key, None)
+os.environ["COGNEE_API_KEY"] = "old-owner-key"
+import _env_file
+try:
+    _env_file.load_env_file()
+except RuntimeError as error:
+    assert "managed_installation_configuration_required" in str(error)
+else:
+    raise AssertionError("unconfigured artifact inherited owner")
+fake = Path("fake-bin").absolute();fake.mkdir()
+uv = fake / "uv";uv.write_text("#!/bin/sh\\ntouch CLI_FALLBACK_USED\\n");uv.chmod(0o700)
+os.environ["PATH"] = str(fake) + ":" + os.environ["PATH"]
+script = Path(_env_file.__file__).with_name("cognee-remember.sh")
+result = subprocess.run(["bash", str(script), "synthetic"], env=os.environ, capture_output=True, text=True, timeout=10)
+assert result.returncode != 0
+assert not Path("CLI_FALLBACK_USED").exists()
+''')
 
     def test_bound_config_disables_shared_roles_and_cached_owner(self):
         self.run_isolated('''
@@ -129,6 +216,26 @@ assert coding.build_block("query", ".") == ""
 assert coding.warm_lessons(".") == 0
 ''')
 
+    def test_common_read_denial_does_not_block_unrelated_project_buffer(self):
+        self.run_isolated('''
+import urllib.error
+import _plugin_common as common, _memlane_policy as policy
+policy.current = lambda *a, **k: {"revision": 1, "policy": {"permissions": ["read", "write", "delete"], "can_capture": True, "can_auto_process": True}}
+def denied(*a, **k):
+    raise urllib.error.HTTPError("http://127.0.0.1/", 403, "Forbidden", {}, None)
+common.urlopen_following_307 = denied
+try:
+    common._json_http_request("/api/v1/search", {"dataset_ids": ["common"]})
+except urllib.error.HTTPError:
+    pass
+assert policy.permit("drain")
+try:
+    common._json_http_request("/api/v1/remember/entry", {})
+except urllib.error.HTTPError:
+    pass
+assert not policy.permit("drain")
+''')
+
     def test_official_buffer_403_remains_blocked_without_automatic_replay(self):
         self.run_isolated('''
 import urllib.error
@@ -160,6 +267,27 @@ common.get_session_detail_via_http = lambda *a, **k: None
 common.remember_entry_via_http = lambda *a, **k: (_ for _ in ()).throw(AssertionError("unknown write replayed"))
 assert common.drain_warmup_entries(dataset, "synthetic") == (0, 1)
 assert not policy.permit("drain", dataset)
+''')
+
+    def test_process_interruption_after_send_keeps_unknown_outcome_in_official_buffer(self):
+        self.run_isolated('''
+import _plugin_common as common, _memlane_policy as policy
+dataset = "11111111-1111-4111-8111-111111111111"
+policy.current = lambda *a, **k: {"revision": 1, "policy": {"permissions": ["read", "write", "delete"], "can_capture": True, "can_auto_process": True}}
+common.append_warmup_entry(dataset, "synthetic", {"type": "qa", "question": "synthetic", "answer": "lawful pending"})
+def interrupted(*a, **k):
+    raise SystemExit("simulated host exit after POST")
+common.remember_entry_via_http = interrupted
+try:
+    common.drain_warmup_entries(dataset, "synthetic")
+except SystemExit:
+    pass
+cache = common._load_json_file(common._bridge_file("synthetic"))
+pending = cache[common._bridge_cache_key(dataset, "synthetic")]["pending_entries"]
+assert len(pending) == 1 and pending[0][common._AMBIGUOUS_KEY] is True
+common.get_session_detail_via_http = lambda *a, **k: None
+common.remember_entry_via_http = lambda *a, **k: (_ for _ in ()).throw(AssertionError("unknown POST replayed after host exit"))
+assert common.drain_warmup_entries(dataset, "synthetic") == (0, 1)
 ''')
 
     def test_explicit_buffer_replay_and_discard_bind_reviewed_snapshot(self):

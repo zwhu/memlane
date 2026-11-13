@@ -25,7 +25,61 @@ def body(text, function, code):
 
 
 def apply(name, text):
-    if name == 'config.py':
+    if name == '_code_graph.py':
+        # A child can otherwise create its own slug-named code group and become
+        # owner. Gate before any repository scan or transport, including direct
+        # helper calls; the desktop owner's existing graph path is independent.
+        text = body(text, 'index_repo', '''from _env_file import load_env_file
+load_env_file()
+from _memlane_policy import managed, code_target, NotReady
+if managed():
+    try:
+        dataset = code_target("write", dataset)
+    except NotReady as error:
+        return _error(403, str(error))''')
+        text = body(text, 'do_index_repo', '''from _env_file import load_env_file
+load_env_file()
+from _memlane_policy import managed, code_target, NotReady
+if managed():
+    try:
+        dataset = code_target("write", dataset)
+    except NotReady as error:
+        return _error(403, str(error))
+    service_url = os.environ["COGNEE_BASE_URL"]
+    api_key = os.environ["COGNEE_API_KEY"]''')
+        text = replace(text, '("datasetName", dataset),', '("datasetId" if managed() else "datasetName", dataset),')
+        for function in ('autoindex_on_session_start', 'reingest_if_changed'):
+            text = body(text, function, '''from _env_file import load_env_file
+load_env_file()
+from _memlane_policy import managed, code_target, NotReady
+if managed():
+    try:
+        code_target("write", automatic=True)
+    except NotReady:
+        return {}''')
+        text = body(text, 'auto_code_lane', '''from _env_file import load_env_file
+load_env_file()
+from _memlane_policy import managed, code_target, NotReady
+if managed():
+    try:
+        code_target("read")
+    except NotReady:
+        return {}''')
+        text = replace(text, '    return {\n        "dataset": str(state["dataset"]),', '''    if managed():
+        try:
+            code_target("read", str(state["dataset"]))
+        except NotReady:
+            return {}
+    return {
+        "dataset": str(state["dataset"]),''')
+    elif name == '_env_file.py':
+        text = replace(text, '    global _loaded\n    if _loaded:\n', '''    global _loaded
+    if not _loaded:
+        from _memlane_policy import prepare_environment
+        prepare_environment(parse_env_file)
+    if _loaded:
+''')
+    elif name == 'config.py':
         text = replace(text, '    return config\n', '''    from _memlane_policy import managed
     if managed():
         if not config.get("base_url") or not config.get("api_key"):
@@ -177,7 +231,16 @@ if managed() and not permit("drain", dataset):
         text = replace(text, '            except urllib.error.HTTPError as exc:\n                http_failure = True\n', '''            except urllib.error.HTTPError as exc:
                 from _memlane_policy import block
                 block(exc.code)
+                if managed() and exc.code in (401, 403):
+                    from _memlane_policy import stamp_pending_entry
+                    stamp_pending_entry(dataset, session_id, entry, False)
                 http_failure = True
+''')
+        text = replace(text, '                send_entry = sanitize(send_entry)\n                remember_entry_via_http(\n', '''                send_entry = sanitize(send_entry)
+                if managed():
+                    from _memlane_policy import stamp_pending_entry
+                    stamp_pending_entry(dataset, session_id, entry, True)
+                remember_entry_via_http(
 ''')
         # Permission denial is sticky even if another entry point catches it.
         text = replace(text, '    with urlopen_following_307(req, timeout=timeout, context=_https_context()) as resp:\n        body = resp.read().decode("utf-8")\n        if not body:\n            return None\n        return json.loads(body)\n', '''    try:
@@ -188,7 +251,8 @@ if managed() and not permit("drain", dataset):
             return json.loads(body)
     except urllib.error.HTTPError as exc:
         from _memlane_policy import block
-        block(exc.code)
+        if method not in ("GET", "HEAD") and path.split("?")[0] in ("/api/v1/remember/entry", "/api/v1/improve"):
+            block(exc.code)
         raise
 ''')
     elif name == '_remember_http.py':
@@ -196,7 +260,11 @@ if managed() and not permit("drain", dataset):
 load_env_file()
 from _memlane_policy import managed, permit
 if managed() and not permit("write", dataset_id or dataset):
-    return _error(403, "当前 Agent 没有此项目的写入权限")''')
+    return _error(403, "当前 Agent 没有此项目的写入权限")
+if managed():
+    if service_url.rstrip("/") != os.environ.get("COGNEE_BASE_URL", "").rstrip("/"):
+        return _error(403, "managed_service_mismatch")
+    api_key = os.environ["COGNEE_API_KEY"]''')
         text = replace(text, '    except urllib.error.HTTPError as e:\n        if e.code in (401, 403):\n', '''    except urllib.error.HTTPError as e:
         from _memlane_policy import block
         block(e.code)
@@ -205,8 +273,27 @@ if managed() and not permit("write", dataset_id or dataset):
         if text.count('        return UNREACHABLE\n') != 2:
             raise ValueError('remember fallback anchors changed')
         text = text.replace('        return UNREACHABLE\n', '        return _error(0, "managed_server_unreachable") if managed() else UNREACHABLE\n')
-    elif name == 'cognee-remember.sh':
-        text = replace(text, 'elif [ -n "$FILE_PATH" ]; then\n', '''elif [ -n "${MEMLANE_PROJECT_CONTROL_URL:-}" ]; then
+    elif name == '_recall_http.py':
+        text = body(text, 'do_recall', '''from _env_file import load_env_file
+load_env_file()
+from _memlane_policy import managed, recall_targets, NotReady
+if managed():
+    import os
+    if service_url.rstrip("/") != os.environ.get("COGNEE_BASE_URL", "").rstrip("/"):
+        return _error(403, "managed_service_mismatch")
+    try:
+        dataset_ids, project_id = recall_targets(dataset, dataset_ids)
+    except NotReady:
+        return _error(403, "project_read_denied")
+    dataset = ""
+    api_key = os.environ["COGNEE_API_KEY"]
+    if any(target != project_id for target in dataset_ids):
+        session_id, scope = "", ["graph"]''')
+    elif name in ('cognee-remember.sh', 'cognee-search.sh'):
+        text = replace(text, 'except Exception:\n    pass\nservice_url =', 'except Exception:\n    raise SystemExit("managed_configuration_required")\nservice_url =')
+        if name == 'cognee-search.sh':
+            return text
+        text = replace(text, 'elif [ -n "$FILE_PATH" ]; then\n', '''elif [ -f "${SELF_DIR}/_memlane_policy.py" ]; then
     echo '{"error":"managed_server_unreachable","status":0}'
     exit 1
 elif [ -n "$FILE_PATH" ]; then
@@ -230,4 +317,5 @@ if managed() and not permit("capture"):
 
 
 FILES = ('config.py', 'session-start.py', '_coding_memory.py', '_plugin_common.py',
-         '_remember_http.py', 'cognee-remember.sh', 'store-user-prompt.py', 'sync-session-to-graph.py')
+         '_remember_http.py', 'cognee-remember.sh', 'store-user-prompt.py', 'sync-session-to-graph.py',
+         '_env_file.py', '_recall_http.py', 'cognee-search.sh', '_code_graph.py')

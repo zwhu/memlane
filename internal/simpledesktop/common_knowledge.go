@@ -69,7 +69,7 @@ func (c Client) commonDocuments(ctx context.Context, p Project, offset int, cate
 			continue
 		}
 		copy := d
-		items = append(items, Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Title: d.Name, Date: d.date(), Document: &copy})
+		items = append(items, Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Title: d.Name, Date: d.date(), Document: &copy, CommonCategory: kind})
 	}
 	return items, more, nil
 }
@@ -191,4 +191,72 @@ func (c Client) deleteCommon(ctx context.Context, p Project, d Document) error {
 		return fmt.Errorf("官方删除结果未确认，请核对原知识")
 	}
 	return nil
+}
+
+func (c Client) confirmCommon(ctx context.Context, p Project, receipt CommonWriteReceipt, draft CommonDraft) (Document, string, error) {
+	expected, err := draft.markdown()
+	if err != nil {
+		return Document{}, "", err
+	}
+	rows, _, err := c.commonDocuments(ctx, p, 0, draft.Category)
+	if err != nil {
+		return Document{}, "", err
+	}
+	var document Document
+	reads := 0
+	for _, row := range rows {
+		d := *row.Document
+		if receipt.DataID != "" && d.ID != receipt.DataID {
+			continue
+		}
+		if receipt.ContentHash != "" && d.ContentHash != receipt.ContentHash {
+			continue
+		}
+		if reads >= 8 {
+			break
+		}
+		reads++
+		loaded, readErr := c.read(ctx, row)
+		if readErr != nil {
+			return Document{}, "官方正文读取未确认", readErr
+		}
+		if loaded.Body == expected {
+			document = d
+			break
+		}
+	}
+	if document.ID == "" {
+		return Document{}, "保存尚未核对", fmt.Errorf("未找到与本次正文一致的官方文档；保留原操作，不重复提交")
+	}
+	processing := "处理状态未确认"
+	if receipt.Status == "completed" || receipt.Status == "incremental" || receipt.Status == "unchanged" || receipt.Status == "full_rebuild" {
+		processing = "处理已完成"
+	}
+	if receipt.PipelineRunID != "" {
+		var runs []struct {
+			Dataset string `json:"dataset_id"`
+			Run     string `json:"pipeline_run_id"`
+			Status  string `json:"status"`
+			Outcome string `json:"outcome"`
+			Ended   string `json:"ended_at"`
+		}
+		err = c.get(ctx, "/api/v1/activity/pipeline-runs?dataset_id="+url.QueryEscape(p.Dataset)+"&limit=100&offset=0", &runs)
+		if err != nil {
+			return document, "正文已核对；处理状态未确认", err
+		}
+		for _, run := range runs {
+			if run.Dataset == p.Dataset && run.Run == receipt.PipelineRunID {
+				switch strings.ToLower(run.Outcome) {
+				case "succeeded", "success":
+					processing = "处理已完成"
+				case "failed", "errored", "abandoned":
+					processing = "处理失败，已保存内容保留"
+				default:
+					processing = "处理状态：" + run.Status
+				}
+				break
+			}
+		}
+	}
+	return document, "官方正文已核对；" + processing, nil
 }
