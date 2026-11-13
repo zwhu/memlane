@@ -354,3 +354,19 @@ PA-A至H的主证据分别为Alpha/daily-cli真实链、Beta禁采/恢复、动�
 运行保留：已核对launcher39752启动时间15:11:12及原配置，phase=ready，completion39754、official39763、control40046；它们和当前日常受管连接保持，不因Goal等待而停止。最后状态守卫源码已提交并通过检查，运行加载仍按待办保留，普通Desktop验证完成后再集中处理。当前实际库、owner身份、登录、旧材料及仍被验证引用的A/B安装／合成组继续保护；不在验收前清空这些依赖。工作树内design-catalog及visual-refinement-selection等非本任务改动未提交或修改。
 
 恢复入口：用户在daily-cli项目的Codex桌面普通新对话发送只读slug提示并回报已发送后，读取该原线程与官方session，不创建替代任务或重投原提示；观察工具恢复后继续Native待验。复核原任务终态、加载最后守卫、白名单收尾、更新完整交付及资源交接后，才再执行完成审计。
+
+## 前置解除、最终自验与交接（16:16）
+
+用户答复“已发送”后，原普通Desktop线程01a1d3e9-8312-7032-a96d-c7e51523d326已completed，真实UserMessage及只读命令存在；同一日常子主体绑定daily-cli，官方qas1/traces1，问题及边界回答齐全。`normal-desktop-user-session.json` passed，没有重复发提示、创建替代任务或改parser。此前委派任务qas0的方法观察保留，不再作为普通用户来源的缺口。Goal工具原blocked状态不会自动变active；用户本次答复授权恢复本范围工作，完成全部审计后再标complete。
+
+Memlane观察恢复，原因仍未知；没有将cgWindowNotFound改记为已证App缺陷。实际Native已读daily-cli知识正文、打开对应CLI原始来源再返回阅读。设置中默认采集关闭保存revision45，随后恢复开启revision46，14项目全部verified；只提交各一次，保存期间不重复点击。`native-default-save.json` passed。Native已有组选择器读到本轮自有空组5b83bb93-372e-5c9c-8d10-7758678c5a24，实际关联PA Native associated，原UUID/source=associated、三主体全none、单一项目、无模型／索引，`native-existing-picker.json` passed。
+
+收尾前观察313条活动／125个最新pipeline，102 DATASET_PROCESSING_COMPLETED、23历史DATASET_PROCESSING_ERRORED，均终态。使用dev.py停止确认原组退出／库释放；Registry同一排他锁下移除验收A/B与13个精确白名单项目、对应overrides/applied/enrollments和19个绑定，保留日常主体、memlane、daily-cli、common和所有保留策略。原配置同库启动，加载最终状态守卫，owner5546启动16:09:00，completion5548、official5557、control6188，ready。
+
+随后仅删除已脱离控制登记的13个自有官方合成组，逐一核对owner、名称、ID及实际消失；删除2个本轮官方子主体，旧key实际401后再删除私有凭据。原4个应保留组均存在；旧12份bridge／pending摘要完全一致。只清理实际runtime／registry和进程均无引用的A/B隔离宿主、精确旧插件候选01–07、A/B受管安装、合成仓等，2173文件、分配102871040字节；产物08、当前日常marketplace／cache、daily-cli仓、原运行依赖及build未删。`final-cleanup.json` passed，未为收尾重跑模型／索引。
+
+最终Native仅有memlane／daily-cli；设置显示本机Codex收到新会话回执、默认维护／采集／处理均开启、项目已生效，旧消费者误报消失。「核对原接入操作」实际成功，没有重装、重启任务或重写用户配置。daily-cli知识及用户刚发的普通Desktop问答实际可读，qas1/1、边界、工具记录显示正确。`final-runtime-verification.json` passed：重载后真实子主体有效ACL对项目／原显式启用代码组read/write/delete、common仅read，无share，legacy消费者0、项目冲突0，原问答／知识仍在，旧12文件不变。
+
+本轮方法纠正留痕：回执最初误读不存在的sync_state而非目录status；活动使用官方大写枚举而非简写标签；最终raw是文本，控制Official JSON helper不能用作正文reader；均修正断言／读取方法，无产品变更、内容重投或模型索引。UI首次信号只到外层task包装器，实际60335持锁者仍在，新open被锁拒绝；按命令／启动时间重新核对实际owner后正常结束，旧mygo进程退出再开唯一watcher，没有kill未知进程或移除锁。以上不计新产品验收失败轮次，原9个PA缺陷各1及历史停止记录不变。
+
+PA01–PA14／PA-A–H最终结果与用户可操作步骤见[交付记录](project-access-delivery-20261113.md)。源码自最后52项Python、Go全量／vet／race通过后未改；启动器15项通过证据沿用，最后新增真实只读运行核对与Native成功路径。未逐按钮点击的Native丢弃／通用删除确认边界明确保留，其实际适配和结果已由CLI／官方API及Native撤下核对覆盖，不将方法混同。本轮既定完成标准已达到；日常后台／窗口留给用户继续使用，不进入release，不恢复其他暂停Goal。无关工作树与参考文档未改动或提交。

@@ -1,3 +1,7 @@
+## 2026-11-13 项目权限增补
+
+用户已明确授权 PA01–PA14，覆盖本文旧“无项目权限／共用 owner／通用知识只读”的相应范围，不恢复历史全量 Goal。当前产品规则见 `docs/product.md`、`docs/design.md`；自验及日常接入边界、缺陷计数、资源与启动入口见 `docs/engineering/project-access-delivery-20261113.md`、`docs/engineering/project-access-execution-20261113.md`。使用独立官方 Agent 主体、管理侧 project_control、固定官方插件补丁、动态默认策略及逐字段项目覆盖；维护权限包括 read/write/delete，不授 share。保留原库、管理 owner、登录、其他插件及旧会话／材料，不自动迁移、补采或重放。继续 dev，不做 release。下文相反表述为先前阶段历史，不覆盖 PA 增补。
+
 ## 2026-11-13 精简版实施授权
 
 本轮D01–D09已按明确范围收口，交付入口为 `docs/engineering/client-simplification-delivery-20261113.md`。下文2026-11-12的“没有启停／未清理／未打tag”等表述保留为当时设计阶段历史，不覆盖本次已完成事实；历史全量Goal继续暂停。

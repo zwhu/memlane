@@ -1,6 +1,6 @@
 # 本地开发
 
-2026-11-13 PA项目权限增补正在实施，进度以[项目权限执行记录](engineering/project-access-execution-20261113.md)为准。原D01–D09的共用owner和只读通用知识规则是此前交付事实；受管PA将使用独立Agent主体、官方dataset ACL与本机项目控制进程，未自动迁移现有会话或日常配置。
+2026-11-13 PA项目权限增补已完成dev自验，范围及实际日常接入见[项目权限交付](engineering/project-access-delivery-20261113.md)，详细证据见[执行记录](engineering/project-access-execution-20261113.md)。原D01–D09的共用owner和只读通用知识规则是此前交付事实；当前受管PA使用独立Agent主体、官方dataset ACL与本机项目控制进程。经用户明确交接已切换本机Codex，新CLI与普通Desktop问答均已验证；既有会话及材料未自动迁移、补采或重放。
 
 PA配置模板新增可选 `project_control`：显式loopback `url`、私有 `registry_file`、独立 `management_token_file`、安装实例 `agent_control_token_files` 以及固定 `plugin_dir`。启用后启动器一并管理控制进程，关窗保持，明确stop才收尾。未配置时保留原启动流程；模板路径仍是占位符。受管插件在独立目录重放 `engine/patches/project_access.py`，启动器核对 `engine/managed-project-plugin.json` 的全部摘要；禁止手改日常插件缓存。项目权限源码、真实隔离Agent及Native验证边界见 `docs/engineering/project-access-execution-20261113.md`；本机Codex准备、启用及实际加载分别记录，不用准备成功代替日常接入。
 
