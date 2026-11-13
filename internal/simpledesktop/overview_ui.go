@@ -237,7 +237,7 @@ func (a *App) overviewHome(c *ui.Context) {
 				homeText(c, "原始记录统计暂不可用 · "+v.Snapshot.RawError, homeAction).Margin(0, 0, 12, 0)
 			}
 			a.overviewHeatmap(c, now)
-			ui.Row(c).Key("overview-paired-sections").Gap(homeColumnGap).Margin(0, 0, 23, 0).AlignItems(ui.Stretch).Children(func() {
+			ui.Row(c).Key("overview-paired-sections").Gap(homeColumnGap).Margin(homeSectionOffset, 0, 23, 0).AlignItems(ui.Stretch).Children(func() {
 				ui.Column(c).Key("overview-knowledge-section").Width(0).Grow(1.6).MinWidth(0).Gap(0).Children(func() { a.overviewKnowledge(c, now) })
 				// The knowledge column determines the row's natural height. The
 				// activity content fills that same box without contributing its
@@ -407,7 +407,9 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 	a.startRecentTitles(rows[offset:end])
 	for _, item := range rows[offset:end] {
 		i := item
-		ui.Button(c, "").Key("recent-"+i.key()).Label(i.Title).FillWidth().Justify(ui.Start).AlignItems(ui.Start).Padding(17, 0).Gap(13).Background(ui.Transparent).BorderWidth(0, 0, 1, 0).BorderColor(homeBorder).Children(func() {
+		row := ui.Button(c, "").Key("recent-"+i.key()).Label(i.Title).FillWidth().Justify(ui.Start).AlignItems(ui.Start).Padding(17, 0).Gap(13).BorderWidth(0, 0, 1, 0).BorderColor(homeBorder)
+		hover := ui.Hex("#f7f9fb")
+		row.Background(homeHoverColor(row, "knowledge-surface", hover.Alpha(0), hover)).Children(func() {
 			ui.Column(c).Size(28, 33).Shrink(0).Border(1, homeBorder).Radius(6).Background(ui.Hex("#f7f9fc")).AlignItems(ui.Center).Justify(ui.Center).Children(func() { ui.Icon(c, homeDocument).FontSize(15).TextColor(homeMuted) })
 			ui.Column(c).Gap(0).Grow(1).MinWidth(0).Children(func() {
 				homeText(c, i.Title, homeTitle).MaxLines(2)

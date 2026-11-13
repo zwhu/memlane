@@ -70,9 +70,7 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			for _, page := range []string{"总览", "搜索", "通用知识"} {
 				label := page
 				n := ui.Button(c, "").Key("nav-"+page).Label(label).Height(39).Padding(10, 12).Gap(11).Justify(ui.Start).Background(ui.Transparent).BorderWidth(0).Radius(7)
-				if page == a.page {
-					n.Background(ui.Hex("#d7e4f1"))
-				}
+				homeNavSurface(n, page == a.page)
 				n.Children(func() {
 					icon := navIcons[label]
 					if label == "通用知识" {
@@ -107,7 +105,8 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			labels := projectLabels(a.Config.Projects)
 			for idx, p := range a.Config.Projects {
 				index := idx
-				ui.Button(c, "").Key("project-"+p.ID).Label(labels[idx]).Tooltip(p.Name+" · "+p.Path).FillWidth().Padding(8, 12).Gap(11).Justify(ui.Start).BorderWidth(0).Background(ui.Transparent).Radius(7).Children(func() {
+				b := ui.Button(c, "").Key("project-"+p.ID).Label(labels[idx]).Tooltip(p.Name+" · "+p.Path).FillWidth().Padding(8, 12).Gap(11).Justify(ui.Start).BorderWidth(0).Radius(7)
+				homeNavSurface(b, false).Children(func() {
 					ui.Icon(c, homeFolder).FontSize(17).Shrink(0).TextColor(homeIconInk)
 					ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
 						homeText(c, p.Name, homeBody).TextColor(homeNavInk).SingleLine()
@@ -119,7 +118,8 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			}
 		})
 		ui.Column(c).Shrink(0).Margin(16, 0, 0, 0).Padding(12, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(ui.Hex("#d8e3ed")).Gap(10).Children(func() {
-			ui.Button(c, "").Label("设置").Padding(10, 12).Gap(11).Justify(ui.Start).Background(ui.Transparent).BorderWidth(0).Children(func() {
+			b := ui.Button(c, "").Label("设置").Padding(10, 12).Gap(11).Justify(ui.Start).BorderWidth(0).Radius(7)
+			homeNavSurface(b, false).Children(func() {
 				ui.Icon(c, homeSettings).FontSize(17).TextColor(homeMuted)
 				homeText(c, "设置", homeBody).FontSize(13).TextColor(homeNavInk)
 			}).OnClick(func() { a.navigate("设置", 0) })
@@ -171,7 +171,12 @@ func (a *App) overviewProjectGrid(c *ui.Context) {
 						continue
 					}
 					p := a.Config.Projects[idx]
-					ui.Button(c, "").Key("home-project-"+p.ID).Label(p.Name+" · "+p.Path+" · 查看项目知识").Width(0).Grow(1).MinWidth(0).MinHeight(94).Padding(15).Gap(11).Justify(ui.Start).Border(1, homeBorder).Radius(8).Background(ui.Hex("#ffffff")).Children(func() {
+					card := ui.Button(c, "").Key("home-project-"+p.ID).Label(p.Name+" · "+p.Path+" · 查看项目知识").Width(0).Grow(1).MinWidth(0).MinHeight(94).Padding(15).Gap(11).Justify(ui.Start).Border(1, homeBorder).Radius(8)
+					card.Background(homeHoverColor(card, "card-surface", ui.Hex("#ffffff"), ui.Hex("#f8fafc")))
+					if card.Hovered() {
+						card.BorderColor(ui.Hex("#b4c7d9"))
+					}
+					card.Children(func() {
 						ui.Column(c).Size(30, 31).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Radius(6).Background(ui.Hex("#edf3f8")).Children(func() { ui.Icon(c, homeFolder).FontSize(16).TextColor(ui.Hex("#7d96ae")) })
 						ui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
 							homeText(c, p.Name, homeTitle).LineHeight(1.6).MaxLines(2).TextColor(homeInk)

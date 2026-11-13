@@ -2,6 +2,7 @@ package simpledesktop
 
 import (
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -16,6 +17,8 @@ const (
 	homeColumnGap        = 30
 	homeCalendarMaxWidth = 900
 	homeGridGap          = 12
+	// Calibrate the Core Text heading band against the fixed 2x A image.
+	homeSectionOffset = 1
 )
 
 var homeInk = ui.Hex("#273340")
@@ -73,7 +76,11 @@ var homeType = map[homeTextRole]homeTypography{
 
 func homeText(c *ui.Context, text string, role homeTextRole) ui.Element {
 	t := homeType[role]
-	return ui.Text(c, text).Font("system-ui").FontSize(t.size).FontWeight(t.weight).TextColor(t.color).LineHeight(t.lineHeight).LetterSpacing(t.tracking)
+	e := ui.Text(c, text).Font("system-ui").FontSize(t.size).FontWeight(t.weight).TextColor(t.color).LineHeight(t.lineHeight).LetterSpacing(t.tracking)
+	if role == homeStatValue {
+		e.FontFeatures("tnum")
+	}
+	return e
 }
 
 var homeTheme = func() *ui.Theme {
@@ -84,6 +91,7 @@ var homeTheme = func() *ui.Theme {
 	t.Background = homeBackground
 	t.ScrollbarWidth = 3
 	t.Scrollbar = ui.Hex("#c8d4e0")
+	t.Focus = ui.Hex("#6b8db1")
 	return &t
 }()
 
@@ -101,15 +109,36 @@ var homeSettings = homeSVG(`<path d="m9 3-1 3-3 1-2 5 2 5 3 1 1 3h6l1-3 3-1 2-5-
 
 func homeLink(c *ui.Context, title string, fn func()) ui.Element {
 	b := ui.Button(c, "").Label(title).FontWeight(400).Padding(4, 0).Gap(5).Background(ui.Transparent).BorderWidth(0)
+	color := homeHoverColor(b, "link", homeLinkInk, ui.Hex("#345e86"))
 	b.Children(func() {
-		homeText(c, strings.TrimSpace(strings.TrimSuffix(title, "›")), homeAction)
+		homeText(c, strings.TrimSpace(strings.TrimSuffix(title, "›")), homeAction).TextColor(color)
 		if strings.HasSuffix(title, "›") {
-			ui.Icon(c, homeArrow).FontSize(13).TextColor(homeLinkInk)
+			ui.Icon(c, homeArrow).FontSize(13).TextColor(color)
 		}
 	})
 	return b.OnClick(fn)
 }
 
+func homeHoverColor(b ui.Element, key string, normal, hover ui.Color) ui.Color {
+	target := normal
+	if b.Hovered() {
+		target = hover
+	}
+	// AnimateColor handles interruption, re-entry and ReduceMotion itself;
+	// these 150ms CSS-ease transitions never affect task state or geometry.
+	return b.AnimateColor(key, target, ui.Animation{Duration: 150 * time.Millisecond, Ease: ui.CubicBezier(.25, .1, .25, 1)})
+}
+
+func homeNavSurface(b ui.Element, active bool) ui.Element {
+	if active {
+		return b.Background(ui.Hex("#d7e4f1"))
+	}
+	color := ui.Hex("#dee8f2")
+	return b.Background(homeHoverColor(b, "nav-surface", color.Alpha(0), color))
+}
+
 func homeIconButton(c *ui.Context, label string, icon *ui.SVG, fn func()) ui.Element {
-	return ui.Button(c, "").Label(label).Padding(4, 0).Background(ui.Transparent).BorderWidth(0).Children(func() { ui.Icon(c, icon).FontSize(14).TextColor(homeLinkInk) }).OnClick(fn)
+	b := ui.Button(c, "").Label(label).Padding(4, 0).Background(ui.Transparent).BorderWidth(0)
+	color := homeHoverColor(b, "icon-action", homeLinkInk, ui.Hex("#345e86"))
+	return b.Children(func() { ui.Icon(c, icon).FontSize(14).TextColor(color) }).OnClick(fn)
 }
