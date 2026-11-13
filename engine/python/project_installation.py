@@ -18,6 +18,9 @@ ENGINE = Path(__file__).resolve().parents[1]
 def prepare(source, root, instance_id, agent, service_url, control_url, host_home=None, *, host_kind='codex', python=None):
     if not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', instance_id):
         raise PolicyError('invalid_installation_id')
+    if host_kind in ('claude_code', 'cursor'):
+        return prepare_official_host(root, instance_id, agent, service_url, control_url, host_home,
+                                     host_kind=host_kind, python=python)
     if host_kind not in ('codex', 'pi', 'traex'):
         raise PolicyError('unsupported_installation_host')
     source, root = Path(source), Path(root)
@@ -122,3 +125,63 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
             'helper_sha256': expected['extension_sha256'],
             'manifest_sha256': hashlib.sha256((target / '.memlane-project-access.json').read_bytes()).hexdigest(),
             'status': 'prepared'}
+
+
+def prepare_official_host(root, instance_id, agent, service_url, control_url, host_home, *, host_kind, python):
+    from project_host_plugin import files_for
+    if not python or not Path(python).is_absolute() or not Path(python).is_file():
+        raise PolicyError('host_helper_python_required')
+    home = Path(host_home) if host_home else Path.home()
+    if not home.is_absolute() or not home.is_dir():
+        raise PolicyError('absolute_host_home_required')
+    root = Path(root)
+    files, upstream = files_for(host_kind)
+    namespace = host_kind + '-' + instance_id
+    old = 'claude-code' if host_kind == 'claude_code' else 'cursor'
+    for name, raw in list(files.items()):
+        if Path(name).suffix in ('.py', '.sh', '.ts') or Path(name).name.startswith('run-'):
+            text = raw.decode().replace('".cognee-plugin" / "' + old + '"', '".cognee-plugin" / ' + json.dumps(namespace))
+            text = text.replace('.cognee-plugin/' + old, '.cognee-plugin/' + namespace)
+            files[name] = text.encode()
+    files['host-binding.json'] = json.dumps({'python': python, 'host_kind': host_kind}).encode()
+    hashes = {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()}
+    receipt = {**upstream, 'files': hashes,
+               'builder_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    generation = hashlib.sha256(json.dumps(receipt, sort_keys=True).encode()).hexdigest()[:20]
+    marketplace_name = 'memlane-' + hashlib.sha256(instance_id.encode()).hexdigest()[:12] + '-' + generation
+    marketplace = root / 'managed-marketplaces' / instance_id / generation
+    target = marketplace / 'plugins/cognee'
+    if not target.exists():
+        for name, raw in files.items():
+            private_write(target / name, raw)
+        # Official wrappers are shell executables (Cursor invokes them directly).
+        for name in files:
+            if name.startswith('scripts/') and (Path(name).suffix == '.sh' or Path(name).name.startswith('run-')):
+                (target / name).chmod(0o700)
+        private_write(target / '.memlane-project-access.json', json.dumps(receipt, sort_keys=True).encode())
+    if json.loads((target / '.memlane-project-access.json').read_text()) != receipt:
+        raise PolicyError('existing_installation_changed', 409)
+    for name, expected in hashes.items():
+        path = target / name
+        if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise PolicyError('existing_installation_changed', 409)
+    environment = root / 'agent-credentials' / (instance_id + '.env')
+    values = {'COGNEE_BASE_URL': service_url, 'COGNEE_API_KEY': read_secret(agent['key_file']),
+              'MEMLANE_PROJECT_CONTROL_URL': control_url,
+              'MEMLANE_PROJECT_CONTROL_TOKEN_FILE': agent['control_token_file'],
+              'COGNEE_PLUGIN_IDENTITY': 'false', 'COGNEE_SHARED_AGENT_MEMORY': 'false',
+              'COGNEE_MANAGED_ENDPOINT': 'true', 'COGNEE_CODING_MEMORY': 'true',
+              'COGNEE_DISABLE_AUTO_MEMORY': 'false', 'COGNEE_UPDATE_CHECK': 'off', 'COGNEE_IDLE_DISABLED': 'true'}
+    if any('\r' in value or '\n' in value for value in values.values()):
+        raise PolicyError('installation_environment_invalid')
+    private_write(environment, ''.join(key + '="' + value + '"\n' for key, value in values.items()).encode())
+    private_write(target / '.memlane-installation.json', json.dumps({
+        'instance_id': instance_id, 'host_kind': host_kind, 'env_file': str(environment)}).encode())
+    if host_kind == 'claude_code':
+        private_write(marketplace / '.claude-plugin/marketplace.json', json.dumps({
+            'name': marketplace_name, 'owner': {'name': 'Memlane'},
+            'plugins': [{'name': 'cognee', 'source': './plugins/cognee'}]}).encode())
+    return {'plugin_dir': str(target), 'env_file': str(environment), 'home': str(home),
+            'marketplace_root': str(marketplace), 'marketplace_name': marketplace_name,
+            'manifest_sha256': hashlib.sha256((target / '.memlane-project-access.json').read_bytes()).hexdigest(),
+            'host_kind': host_kind, 'instance_id': instance_id, 'status': 'prepared'}

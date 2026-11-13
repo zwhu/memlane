@@ -57,3 +57,15 @@
 [固定上游兼容性核对](evidence/multi-agent-development-20261114/host-patch-compatibility.json)：Claude Code有4个入口需单独改写补丁，其余10个锚点匹配但语义仍待核对；Cursor有13个锚点匹配，缺少同版`_coding_memory.py`。特别要补Claude transcript禁采水位、Cursor事件模式的召回合并／撤权及无回答时不读历史，不能直接复制Codex插件宣称支持。源码审阅还发现主动search的旧CLI fallback需在受管产物明确拦截；这是待验证源码缺口，尚非本轮验收失败计数，也没有修改／重装日常插件。
 
 整体估算约25%（对比检查点一增加约5个百分点），范围保持第一批全部Agent／Provider／Native及真实验收。I07已实现待真实链路验证，I08继续宿主专用patch及安装适配，I09/I10仍未完成。
+
+## 开发检查点三
+
+新增`project_host_plugin.py`，从已固定摘要的官方archive分别生成Claude Code、Cursor受管产物。保留各自官方入口；不将Codex插件改名。Claude四处不同入口独立补丁；主动Python工具固定受管凭据与绑定项目，服务不可用时不启动CLI fallback。Cursor继续使用官方payload适配和事件采集，复用同commit的官方coding recall库补公共知识，延迟注入时重建当前授权上下文，不返回旧缓存块；缺回答不扫transcript尾部。
+
+Claude新连接在SessionStart建立stat边界，受管解析只读本session主transcript，不扫sidechain旧文件；sidechain须独立绑定。若SessionStart时transcript还不存在，保守跳过首次捕获轮，后续真链必须核对并补齐正常首轮采集，不能因此宣称MA02完成。Cursor无工具回合／首个Read工具的官方召回限制继续作为能力条件，真实IDE尚未验证。
+
+通用连接管理已加入Claude Code和Cursor：准备仅创建独立主体产物，激活才调用Claude用户级原生marketplace/install或复制Cursor本地插件。CLI信任不绕过。核对Claude宿主installed_plugins的用户级cache及全部固定文件、私有marker；Cursor仅接受自有、摘要一致的现有产物，不原地替换运行代际；未知结果只review原产物，不重跑install。检测到Cursor可能导入已启用Claude Cognee插件时停止并要求消歧，保留全部既有配置。
+
+[本轮证据](evidence/multi-agent-development-20261114/host-adapters-checkpoint.json)：11项检查通过，包括实际Claude原生安装器的隔离profile安装与cache摘要、Cursor准备不写host／显式激活复制、Claude禁采边界解析、Cursor延迟注入重建与无transcript读取，以及pi／TraeX连接回归。普通GET不调用模型；没有日常配置改动、真实宿主模型对话、真实Cursor IDE或新增服务实例。
+
+本轮临时安装profile及测试产物均已清理，官方archive原件保留。整体估算约35%（增加约10个百分点）：I08代码路径已接入但仍待宿主真链和权限验证；I09 Native接线及I10整体验收仍未完成，原MA/LP/UI范围不缩减。
