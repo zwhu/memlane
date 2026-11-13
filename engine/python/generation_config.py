@@ -1,0 +1,242 @@
+"""Private generation profiles. No SDK imports, model calls or runtime switching.
+
+The controller owns this lock while serving; the launcher owns it during startup.
+Profile revisions are immutable so editing a candidate cannot alter active jobs.
+"""
+import copy
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import uuid
+from urllib.parse import urlparse
+
+from project_control import private_write, read_secret
+from project_policy import PolicyError
+
+PROVIDERS = {'openai': 'openai', 'anthropic': 'anthropic', 'gemini': 'gemini', 'custom': 'openai'}
+IDENTIFIER = re.compile(r'[a-zA-Z0-9_-]{1,64}')
+
+
+def fingerprint(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+
+
+def validate_profile(value):
+    if not isinstance(value, dict):
+        raise PolicyError('invalid_generation_profile')
+    allowed = {'mode', 'provider', 'bridge_kind', 'model', 'endpoint', 'credential_ref', 'credential_version'}
+    if set(value) - allowed:
+        raise PolicyError('invalid_generation_fields')
+    model = value.get('model')
+    if not isinstance(model, str) or not model.strip() or len(model) > 200 or any(ord(c) < 32 for c in model):
+        raise PolicyError('invalid_generation_model')
+    mode = value.get('mode')
+    if mode == 'agent_bridge':
+        if value.get('bridge_kind') != 'codex' or set(value) - {'mode', 'bridge_kind', 'model'}:
+            raise PolicyError('unsupported_generation_bridge')
+    elif mode == 'provider':
+        if value.get('provider') not in PROVIDERS or 'bridge_kind' in value:
+            raise PolicyError('unsupported_generation_provider')
+        endpoint = value.get('endpoint', '')
+        if not isinstance(endpoint, str):
+            raise PolicyError('invalid_generation_endpoint')
+        parsed = urlparse(endpoint)
+        if (not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment
+                or (parsed.scheme != 'https' and not (parsed.scheme == 'http' and parsed.hostname in ('127.0.0.1', '::1', 'localhost')))):
+            raise PolicyError('invalid_generation_endpoint')
+        if not isinstance(value.get('credential_ref'), str) or not IDENTIFIER.fullmatch(value['credential_ref']):
+            raise PolicyError('private_generation_credential_required')
+        if not isinstance(value.get('credential_version'), str) or not IDENTIFIER.fullmatch(value['credential_version']):
+            raise PolicyError('generation_credential_version_required')
+    else:
+        raise PolicyError('unsupported_generation_mode')
+    return copy.deepcopy(value)
+
+
+def compile_environment(profile, runtime, credential=None):
+    """Map a validated profile onto the fixed official adapter's variables."""
+    p = validate_profile(profile)
+    result = {'STRUCTURED_OUTPUT_FRAMEWORK': 'litellm_native', 'LITELLM_LOCAL_MODEL_COST_MAP': 'true'}
+    if p['mode'] == 'agent_bridge':
+        provider, prefix = 'openai', 'openai'
+        endpoint = runtime['completion_url'].rstrip('/') + '/v1'
+        key = read_secret(runtime['completion_token_file'])
+    else:
+        provider, prefix = p['provider'], PROVIDERS[p['provider']]
+        endpoint, key = p['endpoint'], credential
+        if not isinstance(key, str) or not key.strip():
+            raise PolicyError('generation_credential_unavailable', 503)
+    model = p['model']
+    # Keep organization/model IDs for compatible endpoints. Only strip the
+    # explicitly selected protocol prefix, never guess from a model name.
+    qualified = model if model.startswith(prefix + '/') else prefix + '/' + model
+    result.update(LLM_PROVIDER=provider, LLM_MODEL=qualified, LLM_ENDPOINT=endpoint, LLM_API_KEY=key)
+    return result
+
+
+class GenerationStore:
+    def __init__(self, path, service_commit, *, legacy_model=None):
+        self.path, self.service_commit = Path(path), service_commit
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.lock = os.open(str(self.path) + '.lock', os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if self.path.exists():
+                if self.path.is_symlink() or self.path.stat().st_mode & 0o077:
+                    raise PolicyError('private_generation_config_required', 503)
+                self.state = json.loads(self.path.read_text())
+                if self.state.get('schema_version') != 2:
+                    raise PolicyError('unsupported_generation_config', 503)
+            else:
+                self.state = {'schema_version': 2, 'revision': 0, 'profiles': {}, 'active': None,
+                              'next': None, 'validations': {}, 'operations': {}}
+                if legacy_model:
+                    profile = {'mode': 'agent_bridge', 'bridge_kind': 'codex', 'model': legacy_model}
+                    self.state['profiles']['existing-codex'] = [self.record(profile, 1)]
+                    self.state['active'] = {'id': 'existing-codex', 'revision': 1}
+                self.save()
+        except BaseException:
+            os.close(self.lock)
+            raise
+
+    def close(self):
+        os.close(self.lock)
+
+    def save(self):
+        private_write(self.path, json.dumps(self.state, ensure_ascii=False, sort_keys=True).encode())
+
+    def record(self, profile, revision):
+        return {'revision': revision, 'profile': validate_profile(profile),
+                'digest': fingerprint({'profile': profile, 'service_commit': self.service_commit})}
+
+    def checked(self, expected, operation_id, request):
+        if not isinstance(operation_id, str) or not IDENTIFIER.fullmatch(operation_id):
+            raise PolicyError('invalid_operation_id')
+        old = self.state['operations'].get(operation_id)
+        signature = fingerprint(request)
+        if old:
+            if old['signature'] != signature:
+                raise PolicyError('operation_id_conflict', 409)
+            return copy.deepcopy(old['result'])
+        if type(expected) is not int or expected != self.state['revision']:
+            raise PolicyError('revision_conflict', 409)
+        return None
+
+    def commit(self, operation_id, request, result):
+        self.state['revision'] += 1
+        self.state['operations'][operation_id] = {'signature': fingerprint(request), 'result': copy.deepcopy(result)}
+        self.save()
+        return result
+
+    def credential_path(self, ref, version):
+        if not all(isinstance(item, str) and IDENTIFIER.fullmatch(item) for item in (ref, version)):
+            raise PolicyError('invalid_generation_credential_reference')
+        directory = self.path.parent / 'generation-credentials'
+        if directory.is_symlink() or (directory.exists() and (not directory.is_dir() or directory.stat().st_mode & 0o077)):
+            raise PolicyError('private_generation_credentials_required', 503)
+        return directory / (ref + '-' + version)
+
+    def secret(self, profile):
+        try:
+            return read_secret(self.credential_path(profile['credential_ref'], profile['credential_version']))
+        except OSError:
+            raise PolicyError('generation_credential_unavailable', 503) from None
+
+    def put(self, identifier, profile, expected, operation_id, *, api_key=None):
+        if not isinstance(identifier, str) or not IDENTIFIER.fullmatch(identifier):
+            raise PolicyError('invalid_generation_profile_id')
+        request = {'action': 'put', 'id': identifier, 'profile': profile,
+                   'key_digest': fingerprint(api_key) if api_key is not None else None}
+        old = self.checked(expected, operation_id, request)
+        if old is not None:
+            return old
+        profile = copy.deepcopy(profile)
+        if api_key is not None:
+            if (profile.get('mode') != 'provider' or not isinstance(api_key, str) or not api_key.strip()
+                    or len(api_key) > 8192 or any(c in api_key for c in '\r\n')):
+                raise PolicyError('invalid_generation_credential')
+            profile['credential_ref'], profile['credential_version'] = identifier, uuid.uuid4().hex
+        elif profile.get('mode') == 'provider' and not profile.get('credential_ref'):
+            rows = self.state['profiles'].get(identifier, [])
+            previous = rows[-1]['profile'] if rows else {}
+            if profile.get('credential_version') == previous.get('credential_version') and previous.get('credential_ref'):
+                profile['credential_ref'] = previous['credential_ref']
+        validated = validate_profile(profile)
+        if validated['mode'] == 'provider':
+            path = self.credential_path(validated['credential_ref'], validated['credential_version'])
+            if api_key is not None:
+                if path.exists():
+                    raise PolicyError('immutable_generation_credential', 409)
+                private_write(path, api_key.encode())
+            else:
+                self.secret(validated)
+        rows = self.state['profiles'].setdefault(identifier, [])
+        row = self.record(validated, len(rows) + 1)
+        rows.append(row)
+        return self.commit(operation_id, request, {'id': identifier, 'revision': row['revision'], 'digest': row['digest']})
+
+    def resolve(self, reference):
+        try:
+            if type(reference['revision']) is not int or reference['revision'] < 1:
+                raise KeyError()
+            row = self.state['profiles'][reference['id']][reference['revision'] - 1]
+        except (KeyError, IndexError, TypeError):
+            raise PolicyError('generation_profile_not_found', 404) from None
+        if row['digest'] != self.record(row['profile'], row['revision'])['digest']:
+            raise PolicyError('generation_validation_stale', 409)
+        return copy.deepcopy(row)
+
+    def select_next(self, reference, expected, operation_id):
+        request = {'action': 'next', 'reference': reference}
+        old = self.checked(expected, operation_id, request)
+        if old is not None:
+            return old
+        row = self.resolve(reference)
+        if not any(v.get('digest') == row['digest'] and v.get('status') == 'passed'
+                   and v.get('plain_passed') is True and v.get('schema_passed') is True and v.get('quality_passed') is True
+                   for v in self.state['validations'].values()):
+            raise PolicyError('generation_validation_required', 409)
+        self.state['next'] = copy.deepcopy(reference)
+        return self.commit(operation_id, request, {'next': copy.deepcopy(reference)})
+
+    def environment(self, reference, runtime):
+        profile = self.resolve(reference)['profile']
+        credential = (self.secret(profile)
+                      if profile['mode'] == 'provider' else None)
+        return compile_environment(profile, runtime, credential)
+
+    def view(self):
+        result = copy.deepcopy(self.state)
+        result.pop('operations', None)
+        for rows in result['profiles'].values():
+            for row in rows:
+                profile = row['profile']
+                if profile['mode'] == 'provider':
+                    profile['credential_configured'] = self.credential_path(profile['credential_ref'], profile['credential_version']).is_file()
+                    profile.pop('credential_ref', None)
+        return result
+
+
+def runtime_generation(runtime):
+    """Read one immutable revision while the launcher/controller owns the lock.
+
+    This reader never writes or selects `next`; services cannot switch profiles
+    because the manager saves another candidate during an in-flight request.
+    """
+    reference = runtime.get('generation_reference')
+    if reference is None:
+        profile = {'mode': 'agent_bridge', 'bridge_kind': 'codex', 'model': runtime['model']}
+        return profile, compile_environment(profile, runtime), None
+    path = Path(runtime['generation_file'])
+    if path.is_symlink() or path.stat().st_mode & 0o077:
+        raise PolicyError('private_generation_config_required', 503)
+    reader = object.__new__(GenerationStore)
+    reader.path, reader.service_commit = path, runtime['service_commit']
+    reader.state = json.loads(path.read_text())
+    if reader.state.get('schema_version') != 2:
+        raise PolicyError('unsupported_generation_config', 503)
+    row = reader.resolve(reference)
+    return row['profile'], reader.environment(reference, runtime), row['digest']

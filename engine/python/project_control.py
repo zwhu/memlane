@@ -144,12 +144,22 @@ class Registry:
                 if self.path.is_symlink() or self.path.stat().st_mode & 0o077:
                     raise PolicyError('private_registry_required', 503)
                 self.state = json.loads(self.path.read_text())
-                if self.state['schema_version'] != 1:
+                if self.state['schema_version'] not in (1, 2):
                     raise PolicyError('unsupported_registry', 503)
+                if self.state['schema_version'] == 1:
+                    private_write(str(self.path) + '.schema1-backup', self.path.read_bytes())
+                    self.state['connections'] = copy.deepcopy(self.state.get('codex_connections', {}))
+                    for identifier, agent in self.state['agents'].items():
+                        # Older manually enrolled identities have no proven host.
+                        agent.setdefault('kind', 'codex' if identifier.startswith('codex-') else 'unknown')
+                        agent.setdefault('capabilities', {})
+                        agent.setdefault('entrypoints', [])
+                    self.state['schema_version'] = 2
+                    self.save()
             else:
-                self.state = {'schema_version': 1, 'service_namespace': str(uuid.uuid4()),
+                self.state = {'schema_version': 2, 'service_namespace': str(uuid.uuid4()),
                               'revision': 0, 'defaults': dict(DEFAULTS), 'agents': {},
-                              'projects': {}, 'sessions': {}}
+                              'projects': {}, 'sessions': {}, 'connections': {}}
                 self.save()
         except BaseException:
             os.close(self._lock_file)
@@ -227,7 +237,10 @@ class Registry:
 
     def directory(self):
         return {'revision': self.state['revision'], 'defaults': copy.deepcopy(self.state['defaults']),
-                'agents': [{'id': key, 'name': value['name'], 'installation': copy.deepcopy(value.get('installation'))}
+                'agents': [{'id': key, 'name': value['name'], 'kind': value.get('kind', 'unknown'),
+                            'capabilities': copy.deepcopy(value.get('capabilities', {})),
+                            'entrypoints': copy.deepcopy(value.get('entrypoints', [])),
+                            'installation': copy.deepcopy(value.get('installation'))}
                            for key, value in self.state['agents'].items()],
                 'enrollments': {key: {field: value[field] for field in ('status', 'error_code') if field in value}
                                 for key, value in self.state.get('enrollments', {}).items()},

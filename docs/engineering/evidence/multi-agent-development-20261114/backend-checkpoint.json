@@ -1,0 +1,17 @@
+{
+  "boundary": "python_tests_and_isolated_traex_installer_not_model_e2e",
+  "modules": [
+    "test_generation_config",
+    "test_generation_startup",
+    "test_generation_validation",
+    "test_agent_connections",
+    "test_project_control",
+    "test_project_codex_connection",
+    "test_project_plugin_patch"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 8.373,
+  "summary": "Ran 67 tests in 8.064s\n\nOK",
+  "production_config_changed": false,
+  "model_calls": false
+}

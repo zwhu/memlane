@@ -17,7 +17,8 @@ def fields(body, required, optional=()):
     return body
 
 
-def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, control_url=None, codex_config=None):
+def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, control_url=None, codex_config=None,
+               generation=None, generation_validation=None):
     if len(manager_token) < 32 or any(len(token) < 32 for token in agent_tokens.values()):
         raise ValueError('control tokens must contain at least 32 characters')
     tokens = [manager_token, *agent_tokens.values()]
@@ -50,7 +51,11 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
 
     app = web.Application(client_max_size=16 * 1024, middlewares=[boundary])
     connection = None
+    connections = None
     if codex_config:
+        from agent_connections import Connections
+        connections = Connections(registry, codex_config)
+    if codex_config and codex_config.get('auth_home') and codex_config.get('codex_executable'):
         from project_codex_connection import CodexConnection
         connection = CodexConnection(registry, codex_config)
 
@@ -186,6 +191,45 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
             await connection.prepare(payload['expected_revision'])
         return web.json_response(directory_result())
 
+    async def generic_connections(request):
+        manager(request)
+        if connections is None:
+            raise PolicyError('connection_hosts_not_configured', 503)
+        if request.method == 'GET':
+            return web.json_response(connections.view())
+        preview = request.path == '/v1/connections/preview'
+        payload = fields(await body(request), ('expected_revision', 'operation_id', 'instance_id') if preview
+                         else ('expected_revision', 'operation_id'), ('proposed_sha256',))
+        identifier = payload.get('instance_id') if preview else request.match_info['id']
+        action = 'preview' if preview else request.match_info['action']
+        return web.json_response(await connections.perform(identifier, action, payload['expected_revision'],
+                                                           payload['operation_id'], payload.get('proposed_sha256')))
+
+    async def generation_config(request):
+        manager(request)
+        if generation is None:
+            raise PolicyError('generation_not_configured', 503)
+        if request.method == 'GET':
+            if 'operation_id' in request.match_info:
+                if generation_validation is None:
+                    raise PolicyError('generation_validation_unavailable', 503)
+                return web.json_response(generation_validation.get(request.match_info['operation_id']))
+            return web.json_response(generation.view())
+        payload = await body(request)
+        if 'id' in request.match_info:
+            fields(payload, ('expected_revision', 'operation_id', 'profile'), ('api_key',))
+            result = generation.put(request.match_info['id'], payload['profile'], payload['expected_revision'],
+                                    payload['operation_id'], api_key=payload.get('api_key'))
+        else:
+            fields(payload, ('expected_revision', 'operation_id', 'profile'))
+            if request.path.endswith('/next'):
+                result = generation.select_next(payload['profile'], payload['expected_revision'], payload['operation_id'])
+            else:
+                if generation_validation is None:
+                    raise PolicyError('generation_validation_unavailable', 503)
+                result = generation_validation.start(payload['profile'], payload['expected_revision'], payload['operation_id'])
+        return web.json_response({'revision': generation.state['revision'], 'result': result})
+
     app.add_routes([web.post('/v1/project/resolve', resolve), web.get('/v1/project/policy', policy),
                     web.get('/v1/projects', directory), web.put('/v1/defaults', defaults),
                     web.put('/v1/projects/{id}/overrides', overrides), web.put('/v1/projects/{id}/name', rename), web.post('/v1/projects', create),
@@ -196,6 +240,14 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                     web.get('/v1/linkable-datasets', datasets), web.post('/v1/agents/{id}/installation', installation),
                     web.post('/v1/codex/prepare', codex_connection), web.post('/v1/codex/activate', codex_connection),
                     web.post('/v1/codex/review', codex_connection)])
+    app.add_routes([web.get('/v1/connections', generic_connections),
+                    web.post('/v1/connections/preview', generic_connections),
+                    web.post('/v1/connections/{id}/{action:prepare|activate|review}', generic_connections)])
+    app.add_routes([web.get('/v1/generation', generation_config),
+                    web.put('/v1/generation/profiles/{id}', generation_config),
+                    web.post('/v1/generation/validations', generation_config),
+                    web.get('/v1/generation/validations/{operation_id}', generation_config),
+                    web.put('/v1/generation/next', generation_config)])
     return app
 
 
@@ -205,6 +257,7 @@ async def configured_app(config):
         config = {**config, **control, 'project_control_url': control['url']}
     session = ClientSession()
     registry = None
+    generation = validation = None
     try:
         registry = Registry(config['registry_file'], Official(session, config['service_url'], config['token_file']))
         reserved = {project['code_dataset_id'] for project in config.get('projects', []) if project.get('code_dataset_id')}
@@ -220,16 +273,28 @@ async def configured_app(config):
                 await registry.configure_code(registry.state['revision'], linked['id'], project['code_dataset_id'],
                                               project.get('code_enabled', False), apply=linked['status'] == 'verified')
         await registry.ensure_common(registry.state['revision'])
+        if config.get('generation_file'):
+            from generation_config import GenerationStore
+            from generation_validation import GenerationValidation
+            generation = GenerationStore(config['generation_file'], config['service_commit'], legacy_model=config.get('model'))
+            validation = GenerationValidation(generation, config)
         app = create_app(registry, read_secret(config['management_token_file']),
                          {key: read_secret(value) for key, value in config.get('agent_control_token_files', {}).items()},
-                         plugin_source=config.get('plugin_dir'), control_url=config.get('project_control_url'), codex_config=config)
+                         plugin_source=config.get('plugin_dir'), control_url=config.get('project_control_url'), codex_config=config,
+                         generation=generation, generation_validation=validation)
     except BaseException:
         if registry is not None:
             registry.close()
+        if generation is not None:
+            generation.close()
         await session.close()
         raise
 
     async def cleanup(_):
+        if validation is not None:
+            await validation.close()
+        if generation is not None:
+            generation.close()
         await session.close()
         registry.close()
     app.on_cleanup.append(cleanup)

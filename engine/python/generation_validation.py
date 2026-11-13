@@ -1,0 +1,140 @@
+"""One owned, isolated validation subprocess at a time; reads never call models."""
+import asyncio
+import copy
+import json
+import os
+from pathlib import Path
+import signal
+import tempfile
+import shutil
+
+from project_policy import PolicyError
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+class GenerationValidation:
+    def __init__(self, store, runtime):
+        self.store, self.runtime = store, runtime
+        self.task, self.process = None, None
+        # A previous process's queued/running request is not retried on restart.
+        changed = False
+        for row in store.state['validations'].values():
+            if row['status'] in ('queued', 'running'):
+                row.update(status='result_unknown', error_code='validation_owner_interrupted')
+                changed = True
+        if changed:
+            store.save()
+
+    def start(self, reference, expected, operation_id):
+        s = self.store
+        request = {'action': 'validate', 'reference': reference}
+        old = s.checked(expected, operation_id, request)
+        if old is not None:
+            return old
+        if self.process is not None or (self.task and not self.task.done()):
+            raise PolicyError('generation_validation_busy', 409)
+        # After an interrupted manager, never infer process exit from a stale
+        # operation file. A surviving group (or reused PID) needs review.
+        for receipt in s.state['validations'].values():
+            if receipt.get('status') == 'result_unknown' and receipt.get('process_group'):
+                try:
+                    os.killpg(receipt['process_group'], 0)
+                except ProcessLookupError:
+                    continue
+                except PermissionError:
+                    pass
+                raise PolicyError('generation_validation_owner_requires_review', 409)
+        row = s.resolve(reference)
+        # Check the private key now, before registering a model operation.
+        environment = s.environment(reference, self.runtime)
+        s.state['validations'][operation_id] = {'status': 'queued', 'digest': row['digest'],
+                                              'reference': copy.deepcopy(reference), 'structured_mode': 'unknown'}
+        result = s.commit(operation_id, request, {'operation_id': operation_id, 'status': 'queued'})
+        self.task = asyncio.create_task(self.run(operation_id, environment))
+        return result
+
+    def get(self, operation_id):
+        if operation_id not in self.store.state['validations']:
+            raise PolicyError('generation_validation_not_found', 404)
+        return copy.deepcopy(self.store.state['validations'][operation_id])
+
+    async def run(self, operation_id, environment):
+        row = self.store.state['validations'][operation_id]
+        row['status'] = 'running'
+        self.store.save()
+        # No inherited provider/auth/login environment. stdin carries the
+        # credential; no key appears in process arguments or validation logs.
+        env = {key: value for key, value in os.environ.items() if key in ('PATH', 'LANG', 'LC_ALL', 'TMPDIR')}
+        temporary = tempfile.mkdtemp(prefix='memlane-generation-validation-')
+        try:
+            try:
+                env.update(HOME=temporary, XDG_CACHE_HOME=str(Path(temporary) / 'cache'))
+                command = [self.runtime['python'], str(ROOT / 'engine/python/generation_probe.py')]
+                launch = asyncio.create_task(asyncio.create_subprocess_exec(*command, env=env, cwd=temporary,
+                    stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                    start_new_session=True, limit=64 * 1024))
+                try:
+                    self.process = await asyncio.shield(launch)
+                except asyncio.CancelledError:
+                    self.process = await launch
+                    raise
+                row['process_group'] = self.process.pid
+                self.store.save()
+                try:
+                    payload = {'environment': environment, 'runtime': {key: self.runtime[key] for key in ('official_source', 'official_archive')}}
+                    stdout, _ = await asyncio.wait_for(self.process.communicate(json.dumps(payload).encode()), 120)
+                    if self.process.returncode != 0 or len(stdout) > 16384:
+                        raise ValueError('probe_result_unconfirmed')
+                    result = json.loads(stdout)
+                    allowed = {'status', 'plain_passed', 'schema_passed', 'quality_passed', 'structured_mode',
+                               'sample_version', 'boundary', 'error_code'}
+                    if not isinstance(result, dict) or set(result) - allowed or result.get('status') not in ('passed', 'failed'):
+                        raise ValueError('probe_result_unconfirmed')
+                    row.update(result)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    await self.stop_process()
+                    row.update(status='result_unknown', error_code='validation_interrupted')
+                finally:
+                    if self.process:
+                        await self.stop_process()
+            except asyncio.CancelledError:
+                if self.process:
+                    await self.stop_process()
+                row.update(status='result_unknown', error_code='validation_interrupted')
+        except Exception:
+            row.update(status='result_unknown', error_code='probe_result_unconfirmed')
+        finally:
+            if self.process is None:
+                shutil.rmtree(temporary)
+            else:
+                row.update(status='result_unknown', error_code='validation_cleanup_unconfirmed', resources_retained=True)
+            self.store.save()
+
+    async def stop_process(self):
+        process = self.process
+        if process is None:
+            return
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            await asyncio.wait_for(process.wait(), 5)
+        except asyncio.TimeoutError:
+            os.killpg(process.pid, signal.SIGKILL)
+            await asyncio.wait_for(process.wait(), 5)
+        # Confirm the entire owned group, including descendants, has exited.
+        for _ in range(100):
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                self.process = None
+                return
+            await asyncio.sleep(.05)
+        raise RuntimeError('validation_group_exit_unconfirmed')
+
+    async def close(self):
+        if self.task and not self.task.done():
+            self.task.cancel()
+            await self.task

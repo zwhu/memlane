@@ -1,0 +1,41 @@
+{
+  "boundary": "development_checkpoint_not_delivery",
+  "source_sha256": {
+    "engine/python/agent_connections.py": "808c65e0aa614909819bd17a3d9aee52366752da55daf0ab94f62ab3b2f5bbfa",
+    "engine/python/agent_memory_adapter.py": "4e4bb5b95fe06965fd116a1b485e9f164e1d794bdf92ef1d30198cdaf2d8f8e6",
+    "engine/python/traex_hook.py": "4de5e220ed59a3b8f38a28ae8ed9d998a2bddfdf7e51f93d26d4e2df9d4a5cda",
+    "engine/python/project_control.py": "0ac8db847f3ebf4d5e3f32c0043a4fc849e6d3f5c17a62d481a3817a5e4fa706",
+    "engine/python/project_control_server.py": "ec513b9a6b7855c75ab61111e606e4e6e24093df5a7abaea940825257d8d21f9",
+    "engine/python/project_installation.py": "6cc203e7f361e3aff8391d74b07f7bb8153c8f55d42ffd31818163132b45670a",
+    "engine/python/generation_config.py": "06d71ffeaffbc1e18f3a37d517252363cf8a5ce19f603cf9d3333b27bff66842",
+    "engine/python/generation_validation.py": "bb36ae5759bc5c07cbff09e9b3ce60de0da82c0d0c964372900e7e96b4fea1a8",
+    "engine/python/generation_probe.py": "898091214c56d032edf395d00d9fdc906a8ecdfc0f1ab762462648170b5cacfb",
+    "engine/python/generation_startup.py": "9226306476d3cae28d306fccdc64be8ce1427109e00618826356919bc32fafd8",
+    "engine/python/official_service_dev.py": "df3eaa5016200bacf0376147cc71234f0f466c0f82525230ab3e420971d67bc7",
+    "engine/agents/pi/index.ts": "a5e7b632ff8749d207864494dbe3dba9755c7bdda176a4e4ac11728e9c114b04",
+    "engine/agents/pi/tools.ts": "058a5c4d48ff40dc4db1c001e76f8d7f18ea118172fc48708764e053ad30b43a",
+    "engine/agents/pi/LICENSE.pi-cognee": "affb2dca39c3a59eefffd8043ae05e72d9423663f35ddd0faea7f61d039aa7dd",
+    "scripts/test_pi_extension.mjs": "890891531758e06e3bc98b22c06c20c2c6efdf3f788ad510b309923465a9084d"
+  },
+  "pi_loader": {
+    "version": "0.84.1",
+    "status": "passed",
+    "backend": "synthetic_helper",
+    "revocation_removes_context": true
+  },
+  "final_targeted_connection_tests": {
+    "count": 6,
+    "exit_code": 0,
+    "traex_native_installer": "isolated_profile",
+    "real_hooks_or_model_adoption": false
+  },
+  "pending": [
+    "launcher_integration",
+    "claude_code",
+    "cursor",
+    "native_settings",
+    "real_provider_protocol_and_quality",
+    "real_agent_capture_recall",
+    "cross_agent_acl_e2e"
+  ]
+}
