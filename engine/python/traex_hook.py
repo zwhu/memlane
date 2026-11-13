@@ -1,6 +1,8 @@
 """TraeX command-hook payload adaptation; no transcript fallback or trust edits."""
 import json
 import sys
+import os
+from datetime import datetime, timezone
 
 import agent_memory_adapter as memory
 
@@ -8,6 +10,8 @@ EVENTS = {'SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostToolUseFailure
 
 
 def handle(event, payload):
+    if os.environ.get('MEMLANE_PROCESSING_SESSION') == '1':
+        return {}
     if event not in EVENTS or not isinstance(payload, dict):
         raise ValueError('unsupported_traex_event')
     request = {'operation': 'resolve', 'session_id': payload.get('session_id'), 'cwd': payload.get('cwd')}
@@ -22,8 +26,12 @@ def handle(event, payload):
         prompt = payload.get('prompt')
         if not isinstance(prompt, str):
             raise ValueError('traex_prompt_required')
+        submitted = datetime.now(timezone.utc).isoformat()
+        turn = str(payload.get('turn_id') or submitted)
+        memory.begin_turn({**request, 'event_id': 'prompt:' + turn}, key)
         if capture_enabled() and permit('capture'):
-            remember_pending_prompt(session, sanitize(prompt), turn_id=str(payload.get('turn_id') or ''))
+            remember_pending_prompt(session, sanitize(prompt), turn_id=str(payload.get('turn_id') or ''),
+                                    context=json.dumps({'prompt_time': submitted, 'turn_id': turn}))
         else:
             # Forget a previously pending prompt if permission was revoked;
             # restoring permission must not pair it with a later response.
@@ -39,6 +47,7 @@ def handle(event, payload):
             'type': 'trace', 'origin_function': name, 'method_params': payload.get('tool_input', {}),
             'method_return_value': payload.get('tool_response', ''),
             'status': 'error' if event == 'PostToolUseFailure' else 'success',
+            'time': datetime.now(timezone.utc).isoformat(),
         }})
     if event == 'Stop':
         answer = payload.get('last_assistant_message')
@@ -47,10 +56,17 @@ def handle(event, payload):
         pending = pop_pending_prompt(session, turn_id=str(payload.get('turn_id') or ''))
         if not pending.get('prompt'):
             return {'status': 'missing_prompt'}
-        turn = str(payload.get('turn_id') or pending.get('ts') or '')
+        try:
+            context = json.loads(pending.get('context') or '{}')
+        except (ValueError, TypeError):
+            context = {}
+        if not isinstance(context, dict):
+            context = {}
+        turn = str(payload.get('turn_id') or context.get('turn_id') or datetime.now(timezone.utc).isoformat())
         result = memory.handle({**request, 'operation': 'capture', 'event_id': 'answer:' + turn, 'entry': {
             'type': 'qa', 'question': pending['prompt'], 'answer': answer,
-            'prompt_time': pending.get('ts', ''),
+            'prompt_time': context.get('prompt_time') or None,
+            'time': datetime.now(timezone.utc).isoformat(),
         }})
         memory.handle({**request, 'operation': 'flush'})
         return result

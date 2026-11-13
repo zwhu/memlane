@@ -54,12 +54,39 @@ def setup(request):
     set_session_key(key)
     dataset = bind(request['cwd'], key)
     session, _ = ensure_launch_record(key, request['cwd'], dataset=dataset)
+    from _project_memory import begin, prepare
+    begin(dataset, session, request['cwd'])
+    prepare(dataset, session)
     from _coding_memory import _SessionState
     with _SessionState(key) as state:
         if state.acquired and 'started_at' not in state.data:
             state.data['started_at'] = time.time()
             state.save()
     return key, session, dataset
+
+
+def begin_turn(request, key):
+    """Capture only source metadata at the prompt boundary, never a transcript."""
+    from _memlane_policy import permit
+    from _coding_memory import _SessionState, git_root, git_head, git_branch, now_iso
+    event = request.get('event_id')
+    if not isinstance(event, str) or not event or len(event) > 512:
+        raise ValueError('turn_event_id_required')
+    with _SessionState(key) as state:
+        if not state.acquired:
+            raise ValueError('capture_state_locked')
+        if not permit('capture'):
+            state.data.pop('host_turn_context', None)
+            state.save()
+            return
+        identifier = hashlib.sha256(event.encode()).hexdigest()
+        if state.data.get('host_turn_context', {}).get('event_id') == identifier:
+            return
+        cwd = request['cwd']
+        state.data['host_turn_context'] = {'event_id': identifier, 'cwd': git_root(cwd) or cwd,
+                                         'session_cwd': cwd, 'start_commit': git_head(cwd),
+                                         'branch': git_branch(cwd), 'date': now_iso()[:10]}
+        state.save()
 
 
 def capture(request, key, session, dataset):
@@ -103,7 +130,15 @@ def capture(request, key, session, dataset):
         if clean['type'] == 'qa':
             clean['question'] = _truncate(clean['question'], 8000)
             clean['answer'] = _truncate(clean['answer'], 8000)
-            clean['context'] = _truncate(clean.get('context', ''), 2000)
+            from _coding_memory import git_root, git_head, git_branch, now_iso
+            context = dict(state.data.get('host_turn_context') or {})
+            context.pop('event_id', None)
+            cwd = request['cwd']
+            if not context:
+                context = {'cwd': git_root(cwd) or cwd, 'session_cwd': cwd,
+                           'start_commit': '', 'branch': git_branch(cwd), 'date': now_iso()[:10]}
+            context['end_commit'] = git_head(cwd)
+            clean['context'] = json.dumps(context, ensure_ascii=False)
         else:
             clean = trace_entry({'name': clean['origin_function'],
                                  'input': clean.get('method_params', {}),
@@ -128,11 +163,15 @@ def capture(request, key, session, dataset):
 
 
 def handle(request):
+    if os.environ.get('MEMLANE_PROCESSING_SESSION') == '1':
+        return {'status': 'skipped_processing_session'}
     request_fields(request)
     key, session, dataset = setup(request)
     from _memlane_policy import current, require
     operation = request['operation']
     if operation in ('resolve', 'status'):
+        if operation == 'resolve' and request.get('event_id'):
+            begin_turn(request, key)
         policy = current()
         return {'status': 'ready', 'session_id': session, 'dataset_id': dataset,
                 'permissions': policy['policy']['permissions']}

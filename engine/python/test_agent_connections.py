@@ -115,11 +115,14 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter.prepare(0)
         installation = self.registry.state['agents'][self.adapter.id]['installation']
         script = r'''
-import json, os, pathlib, sys
+import json, os, pathlib, sys, subprocess
 sys.path.insert(0, sys.argv[1])
 import agent_memory_adapter as memory
 import _memlane_policy as policy
 import _coding_memory as coding
+import _project_memory as projects
+projects.begin = lambda *args: None
+projects.prepare = lambda *args, **kwargs: {}
 policy.bind = lambda *args: "00000000-0000-0000-0000-000000000001"
 policy.current = lambda *args: {"ready": True, "policy":{"permissions":["read","write","delete"]}}
 allowed = [True]
@@ -129,7 +132,22 @@ delivered = []
 coding._deliver = lambda *args: delivered.extend(args[-1])
 request = {"operation":"capture", "session_id":"synthetic", "cwd":os.environ["HOME"],
            "event_id":"first", "entry":{"type":"qa","question":"synthetic prompt","answer":"synthetic answer"}}
+os.environ["MEMLANE_PROCESSING_SESSION"] = "1"
+assert memory.handle(request)["status"] == "skipped_processing_session"
+os.environ.pop("MEMLANE_PROCESSING_SESSION")
+def git(*args):
+    return subprocess.check_output(["git", "-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.com", *args], cwd=os.environ["HOME"], stderr=subprocess.DEVNULL, text=True).strip()
+git("init", "-q")
+git("commit", "--allow-empty", "-qm", "before")
+before = git("rev-parse", "HEAD")
+memory.handle({**request,"operation":"resolve","event_id":"turn-one"})
+git("commit", "--allow-empty", "-qm", "after")
+after = git("rev-parse", "HEAD")
 assert memory.handle(request)["status"] == "buffered"
+context = json.loads(delivered[0]["context"])
+assert context["start_commit"] == before and context["end_commit"] == after and before != after
+assert context["cwd"] == os.environ["HOME"] and context["session_cwd"] == os.environ["HOME"]
+assert "transcript_path" not in context
 assert memory.handle(request)["duplicate"]
 assert len(delivered) == 1
 assert os.environ["COGNEE_API_KEY"] == "synthetic-key-credential"
@@ -142,6 +160,8 @@ assert delivered[-1]["generate_feedback_with_llm"] is False
 assert isinstance(delivered[-1]["method_return_value"], str)
 delivered.pop()
 allowed[0] = False
+memory.handle({**request,"operation":"resolve","event_id":"turn-denied"})
+assert "host_turn_context" not in coding.read_state(memory.setup(request)[0])
 request["event_id"] = "denied"
 assert memory.handle(request)["status"] == "skipped_policy"
 allowed[0] = True
@@ -196,6 +216,77 @@ print("helper metadata watermark and private binding passed")
         self.assertIn('memlane-cognee', text)
         self.assertNotIn('bypass', text)
         self.assertFalse((self.workspace / '.trae/traecli.toml').exists(), 'host wrote to an unexpected default profile')
+        installation = self.registry.state['agents'][adapter.id]['installation']
+        cache = adapter.traex_installed(installation)
+        verify_artifact({**installation, 'plugin_dir': str(cache)})
+        self.assertEqual(json.loads((cache / '.codex-plugin/plugin.json').read_text())['name'], 'memlane-cognee')
+        self.assertIn('+memlane.', cache.name)
+        # An interrupted manager can establish the original result by reading
+        # the complete native receipt; review must never run the installer.
+        self.registry.state['connections'][adapter.id]['status'] = 'activation_unknown'
+        with patch('agent_connections.subprocess.run', side_effect=AssertionError('review replayed installation')):
+            reviewed = await adapter.review(self.registry.state['revision'])
+        self.assertEqual(reviewed['status'], 'configured_pending_new_session')
+        original = (cache / 'hooks.json').read_bytes()
+        (cache / 'hooks.json').write_bytes(b'{}')
+        with self.assertRaisesRegex(PolicyError, 'connection_artifact_changed'):
+            adapter.view()
+        (cache / 'hooks.json').write_bytes(original)
+        # Same instance, explicitly activated new generation: native versioned
+        # cache must preserve the old files for an already-running host.
+        adapter.config = {**self.config, 'python': '/usr/bin/python3'}
+        second = await adapter.prepare(self.registry.state['revision'])
+        with patch.dict(os.environ, {'HOME': str(self.workspace)}):
+            await adapter.activate(self.registry.state['revision'], second['preview']['proposed_sha256'])
+        newer = self.registry.state['agents'][adapter.id]['installation']
+        self.assertNotEqual(adapter.traex_installed(newer), cache)
+        verify_artifact({**installation, 'plugin_dir': str(cache)})
+        adapter.target.write_text(text.replace('enabled = true', 'enabled = false'))
+        with self.assertRaisesRegex(PolicyError, 'traex_installation_requires_review'):
+            adapter.traex_installed(installation)
+
+    async def test_real_import_order_initializes_matching_official_write_and_recall_scope(self):
+        await self.adapter.prepare(0)
+        installation = self.registry.state['agents'][self.adapter.id]['installation']
+        script = r'''
+import json, os, sys
+sys.path.insert(0, sys.argv[1])
+import agent_memory_adapter as memory
+import _memlane_policy as policy
+import _project_memory as projects
+policy.bind = lambda *args: "00000000-0000-0000-0000-000000000001"
+policy.permit = lambda *args, **kwargs: True
+# Only the server capability answer is synthetic; official begin/route and
+# production import order stay intact, unlike prematurely importing coding.
+def prepare(dataset, session, **kwargs):
+    from _plugin_common import _load_json_file, _write_json_file
+    path = projects._path(dataset, session)
+    state = _load_json_file(path)
+    assert state["node_set"]
+    state.update(pending=False, identity=projects._identity())
+    _write_json_file(path, state)
+    return state
+projects.prepare = prepare
+key, session, dataset = memory.setup({"operation":"status", "session_id":"scope-fixture", "cwd":os.environ["HOME"]})
+import _coding_memory as coding
+import _plugin_common as common
+expected = [projects.project_tag(os.environ["HOME"], "auto")]
+assert coding.project_scope(dataset, session, os.environ["HOME"]) == expected
+requests = []
+common.require_typed_dataset_id_support = lambda: None
+common._json_http_request = lambda path, payload, **kwargs: requests.append(payload) or {}
+common.remember_entry_via_http(dataset, session, {"type":"qa", "question":"synthetic", "answer":"synthetic"})
+assert requests[-1]["entry"]["node_set"] == expected
+assert coding._project_ok({"project_node_sets":expected}, expected)
+assert not coding._project_ok({"project_node_sets":[]}, expected)
+print("official capture/recall project scope matches; old unscoped rows unchanged")
+'''
+        environment = {key: value for key, value in os.environ.items() if not key.startswith(('COGNEE_', 'MEMLANE_', 'LLM_', 'EMBEDDING_'))}
+        environment['HOME'] = str(self.workspace)
+        process = await asyncio.to_thread(subprocess.run, [sys.executable, '-c', script,
+                                          str(Path(installation['plugin_dir']) / 'scripts')],
+                                          env=environment, cwd=self.workspace, capture_output=True, text=True, timeout=20)
+        self.assertEqual(process.returncode, 0, process.stderr[-3000:])
 
     async def test_traex_payloads_pair_prompt_answer_and_never_read_transcript(self):
         from project_installation import prepare
@@ -208,6 +299,12 @@ sys.path.insert(0, sys.argv[1])
 import traex_hook as hook
 import agent_memory_adapter as memory
 import _memlane_policy as policy
+import _project_memory as projects
+projects.begin = lambda *args: None
+projects.prepare = lambda *args, **kwargs: {}
+os.environ["MEMLANE_PROCESSING_SESSION"] = "1"
+assert hook.handle("SessionStart", {}) == {}
+os.environ.pop("MEMLANE_PROCESSING_SESSION")
 policy.bind = lambda *args: "00000000-0000-0000-0000-000000000001"
 policy.permit = lambda *args, **kwargs: True
 calls = []
@@ -223,10 +320,20 @@ hook.handle("Stop", {**payload,"last_assistant_message":"synthetic answer"})
 qa = next(c for c in calls if c["operation"] == "capture")
 assert qa["entry"]["question"] == "synthetic prompt"
 assert qa["entry"]["answer"] == "synthetic answer"
+assert qa["entry"]["time"] and qa["entry"]["prompt_time"]
 assert calls[-1]["operation"] == "flush"
 hook.handle("PostToolUseFailure", {**payload,"tool_use_id":"native-tool-id","tool_name":"bash","tool_input":{"command":"synthetic"},"tool_response":{"exit_code":1}})
 assert calls[-1]["entry"]["status"] == "error"
 assert calls[-1]["event_id"] == "tool:native-tool-id"
+assert calls[-1]["entry"]["time"]
+for index in range(2):
+    no_turn = {"session_id":"host-session", "cwd":os.environ["HOME"], "prompt":"another synthetic prompt"}
+    hook.handle("UserPromptSubmit", no_turn)
+    hook.handle("Stop", {**no_turn,"last_assistant_message":"another synthetic answer"})
+qas = [c for c in calls if c["operation"] == "capture" and c["entry"]["type"] == "qa"]
+assert len({c["event_id"] for c in qas}) == 3
+from datetime import datetime
+assert all(datetime.fromisoformat(c["entry"]["prompt_time"]).tzinfo for c in qas)
 assert all("transcript_path" not in c for c in calls)
 print("TraeX event adaptation passed; no transcript access")
 '''

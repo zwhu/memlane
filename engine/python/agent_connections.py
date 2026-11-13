@@ -58,7 +58,36 @@ class NativeConnection:
         if result['status'] == 'configured_pending_new_session' and self.kind == 'cursor':
             installation = self.registry.state['agents'][self.id]['installation']
             verify_artifact({**installation, 'plugin_dir': str(self.target.parent)})
+        if result['status'] == 'configured_pending_new_session' and self.kind == 'traex':
+            self.traex_installed(self.registry.state['agents'][self.id]['installation'])
         return result
+
+    def traex_installed(self, installation):
+        """Review the native direct-install receipt and cache without replay."""
+        try:
+            marketplace = installation['marketplace_name']
+            state = json.loads(safe_file(self.profile / '.tmp/marketplaces' / marketplace / '.agents/plugins/trae-direct-install.json'))
+            if (state['type'] != 'trae-direct-plugin-install' or state['marketplace'] != marketplace
+                    or state['plugins']['memlane-cognee'] != {
+                        'source_path': installation['plugin_dir'], 'source_kind': 'native'}):
+                raise ValueError()
+            settings = tomlkit.parse(safe_file(self.target).decode())
+            enabled = 'memlane-cognee@' + marketplace
+            plugins = settings.get('plugins', {})
+            if plugins.get(enabled, {}).get('enabled') is not True:
+                raise ValueError()
+            if any(name != enabled and 'cognee' in name.lower() and value.get('enabled', False)
+                   for name, value in plugins.items()):
+                raise ValueError()
+            manifest = json.loads(safe_file(Path(installation['plugin_dir']) / '.codex-plugin/plugin.json'))
+            version = manifest['version']
+            if manifest['name'] != 'memlane-cognee' or not re.fullmatch(r'[a-zA-Z0-9_+.-]+', version) or version in ('.', '..'):
+                raise ValueError()
+        except (ValueError, KeyError, TypeError):
+            raise PolicyError('traex_installation_requires_review', 409) from None
+        path = self.profile / 'plugins/cache' / marketplace / 'memlane-cognee' / version
+        verify_artifact({**installation, 'plugin_dir': str(path)})
+        return path
 
     def claude_installed(self, installation):
         raw = safe_file(self.profile / 'plugins/installed_plugins.json')
@@ -102,7 +131,7 @@ class NativeConnection:
             except (ValueError, UnicodeError):
                 raise PolicyError('traex_configuration_requires_review', 409) from None
             if any('cognee' in name.lower() and value.get('enabled', False)
-                   and not (record.get('activated') and name.startswith('memlane-cognee@'))
+                   and not (record.get('activated') and name == record.get('enabled_plugin', 'memlane-cognee@local'))
                    for name, value in plugins.items()):
                 raise PolicyError('duplicate_traex_memory_plugin_requires_review', 409)
         elif self.kind == 'claude_code':
@@ -149,7 +178,10 @@ class NativeConnection:
         if self.id not in r.state['agents']:
             await r.provision_agent(expected, self.id, '本机 ' + {'pi': 'pi', 'traex': 'TraeX', 'claude_code': 'Claude Code', 'cursor': 'Cursor'}[self.kind])
         async with r.mutex:
-            record = {'status': 'preparation_unknown', 'preview': preview}
+            previous_plugin = record.get('enabled_plugin') if record.get('activated') else record.get('previous_plugin')
+            if self.kind == 'traex' and record.get('activated') and not previous_plugin:
+                previous_plugin = 'memlane-cognee@local'
+            record = {'status': 'preparation_unknown', 'preview': preview, 'previous_plugin': previous_plugin}
             r.state['connections'][self.id] = record
             r.state['revision'] += 1
             r.save()
@@ -216,7 +248,12 @@ class NativeConnection:
                     record['enabled_plugin'] = 'cognee@' + installation['marketplace_name']
                 else:
                     env.update(TRAE_HOME=str(self.profile), TRAECLI_HOME=str(self.profile))
-                    commands = [['plugin', 'install', installation['plugin_dir'], '--name', 'memlane-cognee']]
+                    record['enabled_plugin'] = 'memlane-cognee@' + installation['marketplace_name']
+                    commands = [['plugin', 'install', installation['plugin_dir'],
+                                 '--marketplace-name', installation['marketplace_name']]]
+                    if record.get('previous_plugin') and record['previous_plugin'] != record['enabled_plugin']:
+                        commands.append(['plugin', 'disable', record['previous_plugin']])
+                r.save()
                 try:
                     for arguments in commands:
                         result = await asyncio.to_thread(subprocess.run, [self.executable, *arguments],
@@ -229,6 +266,8 @@ class NativeConnection:
                     raise PolicyError('host_installation_requires_review', 409)
                 if self.kind == 'claude_code':
                     self.claude_installed(installation)
+                else:
+                    self.traex_installed(installation)
             record.update(status='configured_pending_new_session', activated=True)
             r.save()
             return self.view()
@@ -244,20 +283,21 @@ class NativeConnection:
                     record.update(status='configured_pending_new_session', activated=True)
                     r.state['revision'] += 1
                     r.save()
-            elif record.get('status') == 'activation_unknown' and self.kind in ('claude_code', 'cursor'):
+            elif record.get('status') == 'activation_unknown' and self.kind in ('claude_code', 'cursor', 'traex'):
                 installation = r.state['agents'][self.id]['installation']
                 if self.kind == 'claude_code':
                     self.claude_installed(installation)
                     settings = json.loads(safe_file(self.target))
                     if not settings.get('enabledPlugins', {}).get('cognee@' + installation['marketplace_name']):
                         raise PolicyError('claude_configuration_requires_review', 409)
+                elif self.kind == 'traex':
+                    self.traex_installed(installation)
                 else:
                     verify_artifact({**installation, 'plugin_dir': str(self.target.parent)})
                 record.update(status='configured_pending_new_session', activated=True)
                 r.state['revision'] += 1
                 r.save()
-            # TraeX unknown install needs host confirmation; never run install
-            # again here or treat a partial config as a successful receipt.
+            # Review only the original cache and enabled binding, never install.
             return self.view()
 
 

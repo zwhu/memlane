@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import re
+import shlex
 
 from project_control import private_write, read_secret
 from project_policy import PolicyError
@@ -69,8 +70,17 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
             expected_host_files[name] = data
         expected_host_files.update(host_files)
         if host_kind == 'traex':
+            # TraeX's direct installer normalizes the manifest name. Publish
+            # that name before hashing so the native cache remains verifiable.
+            manifest = json.loads(expected_host_files['.codex-plugin/plugin.json'])
+            manifest['name'] = 'memlane-cognee'
+            # Native cache paths include plugin version, not our source path.
+            # A distinct semantic build version keeps a running host's old
+            # cache intact when another generation is explicitly activated.
+            manifest['version'] += '+memlane.' + generation
+            expected_host_files['.codex-plugin/plugin.json'] = (json.dumps(manifest, indent=2) + '\n').encode()
             events = ('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostToolUseFailure', 'Stop', 'SessionEnd')
-            command = 'python3 "${PLUGIN_ROOT}/scripts/traex_hook.py" '
+            command = shlex.quote(python) + ' "${PLUGIN_ROOT}/scripts/traex_hook.py" '
             expected_host_files['hooks.json'] = json.dumps({'hooks': {
                 event: [{'hooks': [{'type': 'command', 'command': command + event, 'timeout': 25}]}]
                 for event in events}}).encode()

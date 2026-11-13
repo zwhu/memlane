@@ -125,3 +125,19 @@ pi普通CLI链开始真实验收，当前MA08仍未通过。第一轮发现MA-TR
 外部前置现状：常用环境及pi／Claude已检查入口没有OpenAI、Anthropic、Gemini API配置，不代表全盘不存在；Cursor常用CLI与两个App目录未检测到安装。已异步询问用户私有配置路径／可用入口，不请求聊天粘贴密钥，同时继续独立工作。TraeX正常`login status`返回已登录标记，只证明登录前置，不证明hook真链或允许绕过信任。
 
 整体估算约65%（增加约5个百分点）。桥候选验证生命周期源码与上述证据已补齐；后续优先pi／TraeX普通编码材料→官方知识→新会话采用，补宿主采集上下文与知识质量的证据，其他Agent／Provider、权限、Native和启动恢复矩阵仍按原范围完成。外部前置尚未阻断所有工作，目标保持进行中。
+
+## 开发检查点八
+
+pi及TraeX普通编码→官方知识→新会话实际采用的限定链路已通过。两者保留独立官方身份、同一规范项目与dataset，后台由真实DeepSeek API处理。pi先修复合成零值bug，接着正常扩展retry_options并真实运行7项测试；官方产生4条正确项目标签知识，新pi会话自动注入1630字符、工具0次，准确采用。正常交互式TraeX也在工具0次的回合采用pi知识；随后真实新增describe_retry、运行10项测试，官方产生2条知识；全新交互式TraeX自动注入1886字符、工具0次，正确说出新函数与10项测试基线。实际官方问答、trace、知识raw、源码与独立回归已相互核对。[脱敏证据](evidence/multi-agent-development-20261114/real-coding-hosts.json)。不以TUI自动标题或ANSI截断文本判定知识采用。
+
+修复MA-RECALL01：helper绑定主体和launch record后调用官方_project_memory.begin/prepare；原先漏调用，写入无项目标签而召回按auto标签过滤。原3条试验知识和失败会话保留，无手工打标签／重放。失败1轮保留，修复后第二轮新写入与自动召回通过。[问题](agent-project-scope-20261114.md)。MA-KNOWLEDGE01原失败1轮也保留，当前证明真实编码材料可沉淀；不外推任意约定／口令样本或所有Provider质量。[质量边界](agent-knowledge-quality-20261114.md)。
+
+宿主来源元数据只取提示／回答边界的git/cwd/date，未读取历史transcript；测试区分start_commit和end_commit，不声称提交包含工作区尚未提交改动。pi只采集正常最终stop回答，跳过工具中间说明／截断／错误；处理会话提前跳过。TraeX修复官方pending返回不带ts导致空prompt_time，以及缺turn_id时事件键碰撞；保持官方pending和trace格式。hooks绑定准备时的绝对Python，不改用户默认环境。[契约](traex-event-contract-20261114.md)。
+
+TraeX原生安装器会改name并清理同插件旧cache版本；补每代独立marketplace、准备时目标manifest及完整native cache核对。新代启用后仅disable登记的旧自有入口，保留旧cache及其他插件。未知review只核对原生回执／完整cache和启用状态，不重发install。[失败计数与复验](traex-native-cache-20261114.md)。真实安装器连续两代cache均通过摘要，篡改／禁用拒绝、未知只读核对通过。原Codex产物／manifest未变。
+
+最终当前源码全量Python后端104项通过；定向7项含上述真实安装器、官方导入顺序、真实Git边界与事件契约；真实pi0.84.1 loader通过4工具、1问答、1错误trace和撤权撤下上下文。Go源码未改，无额外Go复验。测试调用均走task.py，未下载模型、升级组件或制作release包。一次loader命令误用旧npm scope路径，定位实际symlink后通过，记录为前置方法问题。
+
+资源：两轮正常交互式TraeX均退出0，最新实际PGID经内核组表确认不存在。独立服务仍由本轮dev launcher工具句柄89919持有（本轮已实际poll确认存活），仅服务81379与控制81535继续运行；官方最后一次全局索引完成。`.local/multi-agent-coding-e2e-20261114`及`/private/tmp/memlane-coding-fixture-20261114-9srdz5c9`保留供下一步同主体／同库权限与原会话回归，包含私有测试凭据副本，不提交；消费结束后先核对所属进程退出再清理。当前余量约112GiB，未触及原库、日常Agent profile、共享embedding依赖或build。
+
+整体估算约70%（较检查点七增加约5个百分点，以首批全部功能和真实验收为口径）。MA08/09的上述正常链及MA04同仓共享已补齐；逐主体权限／不同项目隔离、Claude首次采集与正常宿主、Cursor真实IDE、其他三种Provider凭据及真实质量／错误矩阵、原Codex回归、Native连续窗口仍未收口。首批范围及第二批单列规则保持，目标继续active。Codex重置卡仅限核实低于2%；尚未使用。

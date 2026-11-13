@@ -51,7 +51,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => reset(ctx));
   pi.on("before_agent_start", async (event, ctx) => {
     prompt = event.prompt; turn = randomUUID(); promptTime = new Date().toISOString();
-    await call(ctx, "resolve");
+    await call(ctx, "resolve", { event_id: turn });
   });
   pi.on("context", async (event, ctx) => {
     // Remove persisted blocks from this extension before every provider call,
@@ -64,7 +64,7 @@ export default function (pi: ExtensionAPI) {
     return { messages };
   });
   pi.on("message_end", async (event, ctx) => {
-    if (event.message.role !== "assistant" || !turn) return;
+    if (event.message.role !== "assistant" || event.message.stopReason !== "stop" || !turn) return;
     const answer = text(event.message.content);
     if (!answer) return;
     const entry = { type: "qa", question: prompt, answer, prompt_time: promptTime, time: new Date().toISOString() };

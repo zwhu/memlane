@@ -55,7 +55,9 @@ print(json.dumps({'status':'complete', 'context':'' if (root / 'denied').exists(
   assert.deepEqual(context.messages, []);
   await emit('tool_execution_start', { toolCallId: 'tool-1', toolName: 'bash', args: { command: 'synthetic' } });
   await emit('tool_execution_end', { toolCallId: 'tool-1', toolName: 'bash', result: { text: 'failed' }, isError: true });
-  await emit('message_end', { message: { role: 'assistant', content: [{ type: 'text', text: 'synthetic answer' }] } });
+  await emit('message_end', { message: { role: 'assistant', stopReason: 'toolUse', content: [{ type: 'text', text: 'intermediate tool commentary' }] } });
+  await emit('message_end', { message: { role: 'assistant', stopReason: 'length', content: [{ type: 'text', text: 'truncated answer' }] } });
+  await emit('message_end', { message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'synthetic answer' }] } });
   await emit('tool_execution_end', { toolCallId: 'own-tool', toolName: 'cognee_recall', result: { text: 'memory' }, isError: false });
   await emit('agent_end');
   await emit('session_shutdown');

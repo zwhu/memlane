@@ -66,3 +66,5 @@ UI动作→IPC请求→后台任务→模型网关各层关联操作ID／任务I
 - 新宿主工具记录复用官方trace构造器，保持字典参数契约；正常退出、采集事件回执不能替代队列排空和新会话采用。实例：[pi / TraeX工具参数不匹配](agent-trace-schema-20261114.md)。
 - 小Schema探针通过不能代替官方整理的知识质量；真链无知识时保留gate／judge和样本适用性的未知。实例：[pi知识与新会话采用未通过](agent-knowledge-quality-20261114.md)。
 - 精确文本断言须用无歧义的样本边界；先核对实际返回与指令，不把样本的句末歧义归为接口不支持。实例：[普通文本探针样本](generation-plain-probe-fixture-20261114.md)。
+- 新宿主复用官方运行时须保留项目初始化与实际导入顺序，核对写入node_set和召回scope一致。实例：[项目标签不一致](agent-project-scope-20261114.md)、[TraeX事件契约](traex-event-contract-20261114.md)。
+- 原生安装成功后核对实际cache摘要与启用入口；升级验证旧代文件仍可用，不能以源目录不可变推定宿主cache不可变。实例：[TraeX缓存与代际保护](traex-native-cache-20261114.md)。
