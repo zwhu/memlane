@@ -7,13 +7,18 @@
     "archive_sha256": "6e11047ef690efedac06653c67a11bea0c0e0a8c6af0c89dad634574f4bc01bc",
     "sdk_version": "1.6.7",
     "component_version": "1.6.7-memlane.14-coding-ec6f408",
-    "packages": ["cognee", "cognee_db_workers", "kuzu"]
+    "packages": [
+      "cognee",
+      "cognee_db_workers",
+      "kuzu"
+    ]
   },
   "plugin": {
     "repository": "https://github.com/topoteretes/cognee-integrations",
     "commit": "a176248914fdb32a78354854b300174203b15a5c",
     "archive_url": "https://codeload.github.com/topoteretes/cognee-integrations/tar.gz/a176248914fdb32a78354854b300174203b15a5c",
     "archive_sha256": "a896399a93d596c11ca1e2b10e72943a7abe04afb0a355dfbdaf5c7a71f11d5f",
-    "version": "1.8.0"
+    "version": "1.8.0",
+    "managed_patch_manifest": "managed-project-plugin.json"
   }
 }

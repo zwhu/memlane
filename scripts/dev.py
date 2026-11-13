@@ -13,6 +13,7 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 import tempfile
+import hashlib
 
 ROOT = Path(__file__).resolve().parents[1]
 GO = ROOT / '.local/toolchains/go-1.27.3/go/bin/go'
@@ -93,7 +94,82 @@ def load_config(path):
         url = urlparse(config[key])
         if url.scheme != 'http' or url.hostname != '127.0.0.1' or not url.port or url.path not in ('', '/'):
             raise ValueError(key + ' must be an explicit loopback HTTP origin')
+    control = config.get('project_control')
+    if control is not None:
+        validate_project_control(control, config)
     return config
+
+
+def validate_project_control(control, config):
+    from urllib.parse import urlparse
+    if not isinstance(control, dict) or set(control) - {'url', 'registry_file', 'management_token_file', 'agent_control_token_files', 'plugin_dir'}:
+        raise ValueError('invalid project_control configuration')
+    parsed = urlparse(control['url'])
+    if (parsed.scheme != 'http' or parsed.hostname != '127.0.0.1' or not parsed.port
+            or parsed.path not in ('', '/') or parsed.query or parsed.fragment or parsed.username):
+        raise ValueError('project_control.url must be an explicit loopback origin')
+    if parsed.port in {urlparse(config[key]).port for key in ('service_url', 'completion_url')}:
+        raise ValueError('project control requires its own explicit port')
+    for key in ('registry_file', 'management_token_file'):
+        if not Path(control[key]).is_absolute():
+            raise ValueError('project control configuration paths must be absolute')
+    credentials = [control['management_token_file'], *control.get('agent_control_token_files', {}).values()]
+    values = []
+    for credential in credentials:
+        target = Path(credential)
+        if not target.is_absolute() or target.is_symlink() or target.stat().st_mode & 0o077:
+            raise ValueError('project control credential must be a private regular file')
+        value = target.read_text().strip()
+        if len(value) < 32 or value in values:
+            raise ValueError('project control credentials must be independent and at least 32 characters')
+        values.append(value)
+    if control.get('plugin_dir'):
+        verify_managed_plugin(Path(control['plugin_dir']))
+
+
+def verify_managed_plugin(directory):
+    if not directory.is_absolute():
+        raise ValueError('managed plugin directory must be absolute')
+    expected = json.loads((ROOT / 'engine/managed-project-plugin.json').read_text())
+    receipt = json.loads((directory / '.memlane-project-access.json').read_text())
+    if receipt != expected:
+        raise ValueError('managed plugin receipt does not match fixed component input')
+    for path, key in (('engine/patches/project_access.py', 'patch_sha256'),
+                      ('engine/python/project_plugin_policy.py', 'extension_sha256'),
+                      ('engine/patches/project-access-upstream.json', 'upstream_lock_sha256')):
+        if hashlib.sha256((ROOT / path).read_bytes()).hexdigest() != expected[key]:
+            raise ValueError('managed plugin patch source changed; rebuild and review the fixed input')
+    files = {str(path.relative_to(directory)): hashlib.sha256(path.read_bytes()).hexdigest()
+             for path in directory.rglob('*') if path.is_file() and '__pycache__' not in path.parts
+             and path.suffix != '.pyc' and path.name != '.memlane-project-access.json'}
+    if files != expected['files']:
+        raise ValueError('managed plugin files do not match fixed input')
+
+
+def wait_project_control(control, process, timeout=60):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError('project control exited before readiness')
+        request = urllib.request.Request(control['url'].rstrip('/') + '/v1/projects',
+                                         headers={'Authorization': 'Bearer ' + Path(control['management_token_file']).read_text().strip()})
+        try:
+            with urllib.request.urlopen(request, timeout=1) as response:
+                if response.status == 200 and isinstance(json.load(response).get('revision'), int):
+                    return
+        except Exception:
+            pass
+        time.sleep(.2)
+    raise RuntimeError('project control readiness timed out')
+
+
+def owner_ui_children(state):
+    # Old records had exactly two services; new records explicitly name service
+    # roles so the project control process is never mistaken for a UI watcher.
+    if 'service_children' in state:
+        services = set(state['service_children'].values())
+        return [pid for pid in state.get('children', []) if pid not in services]
+    return state.get('children', [])[2:]
 
 
 def acquire(data):
@@ -257,7 +333,7 @@ def main():
             if args.watch_ui:
                 # An older detached launcher may have lost its output reader.
                 # Never attach a second watcher while its owned watcher is live.
-                for child in state.get('children', [])[2:]:
+                for child in owner_ui_children(state):
                     status = subprocess.run(['ps', '-p', str(child), '-o', 'stat='], capture_output=True, text=True)
                     if status.returncode == 0 and status.stdout.strip() and not status.stdout.strip().startswith('Z'):
                         raise RuntimeError('existing UI watcher is live; use ordinary open')
@@ -304,7 +380,7 @@ def main():
     reopen = False
     state = {'pid': os.getpid(), 'started': subprocess.check_output(['ps', '-p', str(os.getpid()), '-o', 'lstart='], text=True).strip(),
              'phase': 'starting', 'config': str(path), 'official_data': str(data),
-             'service_url': config['service_url'], 'completion_url': config['completion_url'], 'children': []}
+             'service_url': config['service_url'], 'completion_url': config['completion_url'], 'children': [], 'service_children': {}}
     def save_owner():
         state['children'] = [proc.pid for proc in processes if proc.poll() is None]
         temporary = runfile.with_name(runfile.name + '.' + str(os.getpid()) + '.tmp')
@@ -332,9 +408,18 @@ def main():
                            '--port', str(urlparse(config['completion_url']).port),
                            '--token-file', config['completion_token_file'], '--codex-executable', config['codex_executable'],
                            '--auth-home', config['auth_home'], '--model', config['model']])
+        state['service_children']['completion'] = endpoint.pid
         wait_http(config['completion_url'] + '/health', endpoint)
         service = launch([config['python'], str(ROOT / 'engine/python/official_service_dev.py'), '--config', str(path)])
+        state['service_children']['official'] = service.pid
         wait_http(config['service_url'] + '/health', service)
+        control = None
+        if config.get('project_control'):
+            port_free(config['project_control']['url'])
+            control = launch([config['python'], str(ROOT / 'engine/python/project_control_server.py'), '--config', str(path)])
+            state['service_children']['project_control'] = control.pid
+            state['project_control_url'] = config['project_control']['url']
+            wait_project_control(config['project_control'], control)
         complete_initialization(config, path)
         state['phase'] = 'ready'
         save_owner()
@@ -344,6 +429,8 @@ def main():
             track_descendants([p.pid for p in processes], descendants)
             if endpoint.poll() is not None or service.poll() is not None:
                 raise RuntimeError('official service or completion endpoint exited; no automatic restart')
+            if control is not None and control.poll() is not None:
+                raise RuntimeError('project control exited; no automatic restart or owner fallback')
             if reopen:
                 reopen = False
                 ui = reopen_ui(ui, processes, launch, path)

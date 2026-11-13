@@ -172,14 +172,47 @@ class Registry:
         return {'project_id': project['id'], 'dataset_id': project['dataset_id'],
                 'dataset_name': project['dataset_name'], 'revision': self.state['revision'],
                 'desired_revision': project['desired_revision'], 'ready': ready,
-                'applied': copy.deepcopy(applied), 'policy': values, 'code_enabled': False}
+                'applied': copy.deepcopy(applied), 'policy': values, 'code_enabled': False,
+                'common': self.common_policy(agent_id)}
+
+    def common_policy(self, agent_id):
+        common = self.state.get('common')
+        if not common:
+            return {'ready': False, 'readable': False}
+        applied = common['applied'].get(agent_id, {})
+        ready = (common['status'] == 'verified' and applied.get('status') == 'verified'
+                 and applied.get('revision') == common['desired_revision'])
+        return {'dataset_id': common['dataset_id'], 'revision': common['desired_revision'],
+                'ready': ready, 'readable': ready}
 
     def directory(self):
         return {'revision': self.state['revision'], 'defaults': copy.deepcopy(self.state['defaults']),
                 'agents': [{'id': key, 'name': value['name']} for key, value in self.state['agents'].items()],
                 'enrollments': {key: {field: value[field] for field in ('status', 'error_code') if field in value}
                                 for key, value in self.state.get('enrollments', {}).items()},
-                'projects': [copy.deepcopy(project) for project in self.state['projects'].values()]}
+                'projects': [copy.deepcopy(project) for project in self.state['projects'].values()],
+                'common': copy.deepcopy(self.state.get('common'))}
+
+    def managed_groups(self):
+        return [*self.state['projects'].values(), *([self.state['common']] if self.state.get('common') else [])]
+
+    async def ensure_common(self, expected, *, reconcile=False):
+        async with self.mutex:
+            self.check_revision(expected)
+            common = self.state.get('common')
+            if common is None:
+                self.state['revision'] += 1
+                identifier = str(uuid.uuid5(uuid.UUID(self.state['service_namespace']), 'common-knowledge'))
+                common = {'id': identifier, 'kind': 'common', 'name': '通用知识',
+                          'dataset_id': None, 'dataset_name': 'ml-common-' + identifier,
+                          'overrides': {}, 'applied': {}, 'desired_revision': self.state['revision'],
+                          'operation_id': secrets.token_hex(16), 'status': 'unconfirmed', 'code_enabled': False}
+                self.state['common'] = common
+                self.save()
+                await self.reconcile_locked(common)
+            elif reconcile:
+                await self.reconcile_locked(common)
+            return self.directory()
 
     async def reconcile(self, expected, identifier):
         async with self.mutex:
@@ -206,10 +239,10 @@ class Registry:
                 raise PolicyError('principal_already_registered', 409)
             self.state['agents'][instance_id] = agent
             self.state['revision'] += 1
-            for project in self.state['projects'].values():
+            for project in self.managed_groups():
                 project['desired_revision'] = self.state['revision']
             self.save()
-            for project in self.state['projects'].values():
+            for project in self.managed_groups():
                 await self.reconcile_locked(project)
             return self.directory()
 
@@ -251,10 +284,10 @@ class Registry:
                 self.state['agents'][instance_id] = {'name': name.strip(), 'principal_id': principal,
                                                       'key_file': str(key_file), 'control_token_file': str(control_file)}
                 enrollments[instance_id]['status'] = 'verified'
-                for project in self.state['projects'].values():
+                for project in self.managed_groups():
                     project['desired_revision'] = self.state['revision']
                 self.save()
-                for project in self.state['projects'].values():
+                for project in self.managed_groups():
                     await self.reconcile_locked(project)
             except (PolicyError, KeyError, ValueError) as error:
                 enrollments[instance_id]['error_code'] = error.code if isinstance(error, PolicyError) else 'agent_creation_result_unknown'
@@ -277,10 +310,10 @@ class Registry:
             enrollment['status'] = 'verified'
             enrollment.pop('error_code', None)
             self.state['revision'] += 1
-            for project in self.state['projects'].values():
+            for project in self.managed_groups():
                 project['desired_revision'] = self.state['revision']
             self.save()
-            for project in self.state['projects'].values():
+            for project in self.managed_groups():
                 await self.reconcile_locked(project)
             return self.directory()
 
@@ -310,6 +343,8 @@ class Registry:
                 return project
         if dataset_id and any(p['dataset_id'] == dataset_id for p in self.state['projects'].values()):
             raise PolicyError('dataset_already_linked', 409)
+        if dataset_id and self.state.get('common', {}).get('dataset_id') == dataset_id:
+            raise PolicyError('common_dataset_is_not_a_project', 409)
         identifier = project_id(self.state['service_namespace'], root)
         self.state['revision'] += 1
         project = {'id': identifier, 'name': name or Path(root).name, 'aliases': [root],
@@ -345,7 +380,9 @@ class Registry:
                 project['import_acl'] = False
                 self.save()
             for agent_id, agent in self.state['agents'].items():
-                policy = effective(self.state['defaults'], project['overrides'].get(agent_id, {}))
+                policy = (effective({'access': 'read', 'capture': False, 'auto_process': False}, {})
+                          if project.get('kind') == 'common' else
+                          effective(self.state['defaults'], project['overrides'].get(agent_id, {})))
                 await self.official.sync_acl(agent, row['id'], policy['permissions'])
                 project['applied'][agent_id] = {'status': 'verified', 'revision': project['desired_revision']}
                 self.save()

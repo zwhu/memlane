@@ -1,0 +1,287 @@
+"""Exercise the patched official entry points in an isolated host, no service/model."""
+import importlib.util
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[2]
+spec = importlib.util.spec_from_file_location('build_project_plugin', ROOT / 'scripts/build_project_plugin.py')
+builder = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(builder)
+SOURCE = ROOT / '.cache/coding-memory-components/plugin-a176248914fdb32a78354854b300174203b15a5c/integrations/codex/plugins/cognee'
+
+
+class OfficialPluginPatchTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temporary = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.temporary.name)
+        cls.artifact = cls.root / 'plugin'
+        cls.receipt = builder.build(SOURCE, cls.artifact)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temporary.cleanup()
+
+    def run_isolated(self, code):
+        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
+            home = Path(temporary)
+            (home / '.cognee').mkdir()
+            (home / '.cognee/.env').write_text('')
+            token = home / 'control.token'
+            token.write_text('c' * 40)
+            token.chmod(0o600)
+            environment = {key: value for key, value in os.environ.items()
+                           if not key.startswith(('COGNEE_', 'MEMLANE_', 'LLM_', 'EMBEDDING_'))}
+            environment.update(HOME=str(home), COGNEE_ENV_FILE=str(home / '.cognee/.env'),
+                               COGNEE_PLUGIN_IN_VENV='1', COGNEE_SESSION_KEY='synthetic-host',
+                               COGNEE_BASE_URL='http://127.0.0.1:18999', COGNEE_API_KEY='synthetic-child-key',
+                               COGNEE_CODING_MEMORY='true', MEMLANE_PROJECT_CONTROL_URL='http://127.0.0.1:18777',
+                               MEMLANE_PROJECT_CONTROL_TOKEN_FILE=str(token))
+            process = subprocess.run([sys.executable, '-c', code], cwd=home, env={**environment, 'PYTHONPATH': str(self.artifact / 'scripts')},
+                                     capture_output=True, text=True, timeout=20)
+            self.assertEqual(process.returncode, 0, process.stdout[-2000:] + process.stderr[-4000:])
+
+    def test_bound_config_disables_shared_roles_and_cached_owner(self):
+        self.run_isolated('''
+import config, _memlane_policy as policy, _plugin_common as common
+policy.dataset = lambda: "11111111-1111-4111-8111-111111111111"
+loaded = config.load_config()
+assert config.get_dataset(loaded) == policy.dataset()
+assert loaded["shared_agent_memory"] is False
+assert common.plugin_identity_mode() == "disabled"
+assert common.shared_memory_enabled() is False
+common.load_cached_api_key = lambda *a: "old-owner-key"
+common.load_cached_agent_key = lambda *a: "old-cached-key"
+assert common._api_key() == "synthetic-child-key"
+''')
+
+    def test_capture_refusal_precedes_any_transcript_open(self):
+        self.run_isolated('''
+import builtins
+from pathlib import Path
+import _coding_memory as coding, _memlane_policy as policy
+transcript = Path("transcript.jsonl").absolute()
+transcript.write_text("disabled private transcript\\n")
+policy.permit = lambda *a, **k: False
+original = builtins.open
+def guarded(path, *a, **k):
+    if Path(path) == transcript:
+        raise AssertionError("disabled transcript opened")
+    return original(path, *a, **k)
+builtins.open = guarded
+assert coding.capture({"transcript_path": str(transcript)}) == {"skipped": "managed_capture_paused"}
+''')
+
+    def test_parser_offset_skips_partial_and_pre_boundary_turn(self):
+        self.run_isolated('''
+import json
+from pathlib import Path
+import _coding_memory as coding
+def item(kind, text):
+    return json.dumps({"type": "event_msg", "timestamp": "2026-11-13T00:00:00Z", "payload": {"type": "item_completed", "item": {"type": kind, "content": text}}}) + "\\n"
+prefix = item("UserMessage", "disabled prompt")
+tail = 'discard partial suffix\\n' + item("AgentMessage", "old turn answer") + item("UserMessage", "allowed prompt") + item("AgentMessage", "allowed answer")
+path = Path("transcript.jsonl")
+path.write_text(prefix + tail)
+result = coding.parse_codex(str(path), len(prefix.encode()))
+assert len(result["units"]) == 1, result
+assert result["units"][0]["request"] == "allowed prompt", result
+assert "disabled" not in json.dumps(result)
+assert "old turn" not in json.dumps(result)
+''')
+
+    def test_explicit_save_denied_before_file_read(self):
+        self.run_isolated('''
+import _remember_http as remember, _memlane_policy as policy
+policy.permit = lambda *a, **k: False
+result = remember.do_remember("http://127.0.0.1:18999", "child", "", "11111111-1111-4111-8111-111111111111", "test", file_path="does-not-exist.txt")
+assert result["status"] == 403, result
+assert "写入权限" in result["error"], result
+''')
+
+    def test_auto_improve_all_final_triggers_skip_before_network(self):
+        self.run_isolated('''
+import _plugin_common as common, _memlane_policy as policy
+seen = []
+def permit(operation, dataset=None, automatic=False):
+    seen.append(automatic)
+    return not automatic
+policy.permit = permit
+common._backend_reachable = lambda *a: (_ for _ in ()).throw(AssertionError("unexpected network"))
+for trigger in ("auto", "idle", "final", "exit", "coding_cooldown"):
+    result = common.run_session_improve_detailed("11111111-1111-4111-8111-111111111111", "synthetic", trigger=trigger)
+    assert result["reason"] == "managed_policy_paused", result
+assert all(seen)
+''')
+
+    def test_read_revocation_checked_before_cached_delivery(self):
+        self.run_isolated('''
+import _coding_memory as coding, _memlane_policy as policy
+policy.permit = lambda *a, **k: False
+coding.read_state = lambda *a: (_ for _ in ()).throw(AssertionError("stale delivery state used"))
+coding.reset_delivery = lambda *a: None
+assert coding.deliver("synthetic-host", "query", ".") == ""
+assert coding.build_block("query", ".") == ""
+assert coding.warm_lessons(".") == 0
+''')
+
+    def test_official_buffer_403_remains_blocked_without_automatic_replay(self):
+        self.run_isolated('''
+import urllib.error
+import _plugin_common as common, _memlane_policy as policy
+dataset = "11111111-1111-4111-8111-111111111111"
+policy.current = lambda *a: {"revision": 1, "policy": {"permissions": ["read", "write", "delete"], "can_capture": True, "can_auto_process": True}}
+common.append_warmup_entry(dataset, "synthetic", {"type": "qa", "question": "synthetic", "answer": "legal pending"})
+calls = []
+def denied(*a, **k):
+    calls.append(1)
+    raise urllib.error.HTTPError("http://127.0.0.1/", 403, "Forbidden", {}, None)
+common.remember_entry_via_http = denied
+assert common.drain_warmup_entries(dataset, "synthetic") == (0, 1)
+for _ in range(3):
+    assert common.drain_warmup_entries(dataset, "synthetic") == (0, 1)
+assert len(calls) == 1
+assert not policy.permit("process", dataset, automatic=True)
+cache = common._load_json_file(common._bridge_file("synthetic"))
+assert len(cache[common._bridge_cache_key(dataset, "synthetic")]["pending_entries"]) == 1
+''')
+
+    def test_ambiguous_buffer_never_blindly_replayed_on_failed_verification(self):
+        self.run_isolated('''
+import _plugin_common as common, _memlane_policy as policy
+dataset = "11111111-1111-4111-8111-111111111111"
+policy.current = lambda *a: {"revision": 1, "policy": {"permissions": ["read", "write", "delete"], "can_capture": True, "can_auto_process": True}}
+common.append_warmup_entry(dataset, "synthetic", {"type": "qa", "question": "synthetic", "answer": "unknown outcome"}, ambiguous=True)
+common.get_session_detail_via_http = lambda *a, **k: None
+common.remember_entry_via_http = lambda *a, **k: (_ for _ in ()).throw(AssertionError("unknown write replayed"))
+assert common.drain_warmup_entries(dataset, "synthetic") == (0, 1)
+assert not policy.permit("drain", dataset)
+''')
+
+    def test_explicit_buffer_replay_and_discard_bind_reviewed_snapshot(self):
+        self.run_isolated('''
+import _plugin_common as common, _memlane_policy as policy
+dataset = "11111111-1111-4111-8111-111111111111"
+policy.dataset = lambda: dataset
+common._read_map_record = lambda *a: {"session_id": "synthetic"}
+policy.current = lambda *a: {"revision": 1, "policy": {"permissions": ["read", "write", "delete"], "can_capture": True, "can_auto_process": True}}
+entry = {"type": "qa", "question": "synthetic", "answer": "lawful pending"}
+common.append_warmup_entry(dataset, "synthetic", entry)
+policy.block(403)
+review = policy.pending_materials(dataset, "synthetic")
+assert review["pending"] == 1
+assert "lawful pending" not in str(review)
+common.append_warmup_entry(dataset, "synthetic", {**entry, "answer": "later lawful entry"})
+try:
+    policy.decide_pending(dataset, "synthetic", "discard", review["signature"])
+except policy.NotReady as error:
+    assert str(error) == "pending_materials_changed_review_again"
+else:
+    raise AssertionError("stale consent discarded new materials")
+review = policy.pending_materials(dataset, "synthetic")
+calls = []
+common.remember_entry_via_http = lambda *a, **k: calls.append(1)
+assert policy.decide_pending(dataset, "synthetic", "replay", review["signature"])["drained"] == 2
+assert len(calls) == 2
+common.append_warmup_entry(dataset, "synthetic", entry)
+policy.block(403)
+review = policy.pending_materials(dataset, "synthetic")
+assert policy.decide_pending(dataset, "synthetic", "discard", review["signature"])["discarded"] == 1
+assert policy.pending_materials(dataset, "synthetic")["pending"] == 0
+assert len(calls) == 2
+''')
+
+    def test_pending_action_refuses_inflight_send_and_unknown_write_replay(self):
+        self.run_isolated('''
+import _plugin_common as common, _memlane_policy as policy
+dataset = "11111111-1111-4111-8111-111111111111"
+policy.dataset = lambda: dataset
+common._read_map_record = lambda *a: {"session_id": "synthetic"}
+policy.current = lambda *a: {"revision": 1, "policy": {"permissions": ["read", "write", "delete"], "can_capture": True, "can_auto_process": True}}
+common.append_warmup_entry(dataset, "synthetic", {"type": "qa", "question": "synthetic", "answer": "unknown"}, ambiguous=True)
+policy.block(403)
+review = policy.pending_materials(dataset, "synthetic")
+acquire = common._try_acquire_drain_lock
+common._try_acquire_drain_lock = lambda: False
+try:
+    policy.decide_pending(dataset, "synthetic", "discard", review["signature"])
+except policy.NotReady as error:
+    assert str(error) == "buffer_send_in_progress"
+else:
+    raise AssertionError("inflight buffer changed")
+common._try_acquire_drain_lock = acquire
+common.get_session_detail_via_http = lambda *a, **k: None
+try:
+    policy.decide_pending(dataset, "synthetic", "replay", review["signature"])
+except policy.NotReady as error:
+    assert str(error) == "original_write_result_still_unknown"
+else:
+    raise AssertionError("unknown write replayed")
+assert policy.pending_materials(dataset, "synthetic")["signature"] == review["signature"]
+''')
+
+    def test_common_candidates_join_the_single_coding_block_with_empty_project(self):
+        self.run_isolated('''
+import _plugin_common as common, _memlane_policy as policy, _coding_memory as coding
+common_id = "22222222-2222-4222-8222-222222222222"
+snapshot = {"revision": 3, "policy": {"permissions": []}, "common": {"dataset_id": common_id, "revision": 3, "ready": True, "readable": True}}
+policy.current = lambda *a, **k: snapshot
+assert policy.permit("recall")
+assert not policy.permit("read")
+requests = []
+def request(path, payload=None, **kw):
+    requests.append(path)
+    if path.startswith("/api/v1/datasets/"):
+        return [{"id": "one", "datasetId": common_id, "externalMetadata": {"memlane_kind": "common_knowledge", "category": "preference", "source": "user test source"}},
+                {"id": "foreign", "datasetId": "wrong", "externalMetadata": {"memlane_kind": "common_knowledge", "category": "preference"}}]
+    assert path == "/api/v1/search"
+    assert payload["search_type"] == "CHUNKS"
+    assert payload["dataset_ids"] == [common_id]
+    return [{"dataset_id": common_id, "search_result": [{"document_id": "one"}, {"document_id": "foreign"}]}]
+common._json_http_request = request
+reads = []
+def raw(dataset, key, timeout):
+    assert dataset == common_id and key == "one"
+    reads.append(key)
+    return "# Common preference\\nUse the documented validation command."
+coding._raw_text = raw
+coding._project_build_block = lambda *a: (_ for _ in ()).throw(AssertionError("unreadable project queried"))
+result = coding.build_block("validation", ".")
+assert "Common preference" in result and "项目明确约定优先" in result
+assert "user test source" in result
+assert len(result) <= 6000 and reads == ["one"]
+assert requests.count("/api/v1/search") == 1
+snapshot["common"]["readable"] = False
+assert coding.build_block("validation", ".") == ""
+''')
+
+    def test_common_no_query_warmup_limits_candidates_and_policy_change_clears_result(self):
+        self.run_isolated('''
+import _plugin_common as common, _memlane_policy as policy, _coding_memory as coding
+common_id = "22222222-2222-4222-8222-222222222222"
+calls = []
+snapshot = {"revision": 3, "policy": {"permissions": ["read"]}, "common": {"dataset_id": common_id, "revision": 3, "ready": True, "readable": True}}
+policy.current = lambda *a, **k: snapshot
+common._json_http_request = lambda *a, **k: [{"id": str(i), "datasetId": common_id, "createdAt": str(i), "externalMetadata": {"memlane_kind": "common_knowledge", "category": "experience"}} for i in range(30)]
+def raw(dataset, key, timeout):
+    calls.append(key)
+    return "content " + key
+coding._raw_text = raw
+result = policy.merge_block("", ".", lambda *a: "project rules" * 500)
+assert len(calls) == 3 and len(result) <= 6000
+assert result.startswith("project rules")
+generation = [0]
+def changed(*a, **k):
+    generation[0] += 1
+    return {**snapshot, "revision": generation[0]}
+policy.current = changed
+assert policy.merge_block("", ".", lambda *a: "stale project") == ""
+''')
+
+
+if __name__ == '__main__':
+    unittest.main()

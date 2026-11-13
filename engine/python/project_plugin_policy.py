@@ -40,7 +40,7 @@ def _connection():
     return origin.rstrip('/'), token
 
 
-def _request(path, payload=None):
+def _request(path, payload=None, *, timeout=5):
     origin, token = _connection()
     request = urllib.request.Request(origin + path,
                                      data=json.dumps(payload).encode() if payload is not None else None,
@@ -50,7 +50,7 @@ def _request(path, payload=None):
         def redirect_request(self, *args, **kwargs):
             return None
     try:
-        with urllib.request.build_opener(NoRedirect).open(request, timeout=5) as response:
+        with urllib.request.build_opener(NoRedirect).open(request, timeout=timeout) as response:
             raw = response.read(64 * 1024 + 1)
             if len(raw) > 64 * 1024:
                 raise NotReady('control_response_limit')
@@ -65,7 +65,11 @@ def _state():
     from _plugin_common import _PLUGIN_DIR, get_session_key
     session_key = get_session_key()
     if not session_key:
-        raise NotReady('host_session_required')
+        from _plugin_common import resolve_host_key_outside_hook, set_session_key
+        session_key, _ = resolve_host_key_outside_hook()
+        if not session_key:
+            raise NotReady('host_session_required')
+        set_session_key(session_key)
     origin, token = _connection()
     digest = hashlib.sha256((origin + '\n' + token + '\n' + session_key).encode()).hexdigest()
     root = _PLUGIN_DIR / 'memlane-policy'
@@ -108,12 +112,21 @@ def bind(workspace, host_session_key):
         return result['dataset_id']
 
 
-def current(dataset=None):
+def dataset():
+    """Local immutable binding; authorization is rechecked at each operation."""
+    with _state() as state:
+        binding = state.get('binding')
+        if not binding or not binding.get('dataset_id'):
+            raise NotReady('project_binding_required')
+        return str(uuid.UUID(binding['dataset_id']))
+
+
+def current(dataset=None, *, timeout=5):
     with _state() as state:
         binding = state.get('binding')
         if not binding:
             raise NotReady('project_binding_required')
-        result = _request('/v1/project/policy?project_id=' + urllib.parse.quote(binding['project_id'], safe=''))
+        result = _request('/v1/project/policy?project_id=' + urllib.parse.quote(binding['project_id'], safe=''), timeout=timeout)
         if not result.get('ready') or result.get('dataset_id') != binding['dataset_id']:
             raise NotReady('project_policy_unconfirmed')
         if dataset and dataset != binding['dataset_id']:
@@ -127,12 +140,18 @@ def permit(operation, dataset=None, *, automatic=False):
     try:
         result = current(dataset)
         policy = result['policy']
-        permission = 'read' if operation == 'read' else 'write'
+        permission = 'read' if operation in ('read', 'recall') else 'write'
         allowed = permission in policy['permissions']
+        if operation == 'recall':
+            common = result.get('common') or {}
+            allowed = allowed or (common.get('ready') and common.get('readable'))
         if operation == 'capture':
             allowed = allowed and policy['can_capture']
         if operation == 'process' and automatic:
             allowed = allowed and policy['can_auto_process']
+            with _state() as state:
+                if state.get('blocked'):
+                    return False
         if operation == 'drain':
             with _state() as state:
                 if state.get('blocked'):
@@ -151,8 +170,13 @@ def require(operation, dataset=None, *, automatic=False):
 
 def block(status):
     if managed() and status in (401, 403):
+        hold('official_http_' + str(status))
+
+
+def hold(reason):
+    if managed():
         with _state() as state:
-            state['blocked'] = {'reason': 'official_http_' + str(status), 'at': time.time()}
+            state['blocked'] = {'reason': reason, 'at': time.time()}
 
 
 def _position(path):
@@ -161,13 +185,13 @@ def _position(path):
             'size': stat.st_size, 'at': time.time()}
 
 
-def capture_boundary(transcript):
+def capture_boundary(transcript, *, enabled=True):
     """Return parser offset, or None to skip. Disabled periods are stat-only.
 
     First allowed hook after a pause establishes a fresh boundary and skips that
     hook's complete turn. Rotation/truncation remains paused, never resets to 0.
     """
-    allowed = permit('capture')
+    allowed = permit('capture') and enabled
     with _state() as state:
         if state.get('cursor_unconfirmed'):
             return None
@@ -190,3 +214,192 @@ def capture_boundary(transcript):
             state['resume_at'] = position['at']
             return None
         return state.get('cursor', {}).get('size', 0)
+
+
+def merge_block(query, cwd, project_builder):
+    """One existing coding injection, combining verified project/common sources."""
+    from concurrent.futures import ThreadPoolExecutor, wait
+    from _plugin_common import _json_http_request
+    from _coding_memory import _raw_text
+    deadline = time.monotonic() + 8
+
+    def remaining():
+        value = deadline - time.monotonic()
+        if value <= 0:
+            raise NotReady('recall_budget_exhausted')
+        return value
+
+    try:
+        initial = current(timeout=min(2, remaining()))
+    except (NotReady, OSError, ValueError):
+        return ''
+    project = ''
+    if 'read' in initial['policy']['permissions']:
+        try:
+            project = project_builder(query, cwd, min(deadline, time.monotonic() + 5))[:4000]
+        except Exception:
+            project = ''
+    common = initial.get('common') or {}
+    common_block = ''
+    if common.get('ready') and common.get('readable') and common.get('dataset_id'):
+        identifier = common['dataset_id']
+        try:
+            rows = _json_http_request('/api/v1/datasets/' + identifier + '/data?limit=30&offset=0',
+                                      None, method='GET', timeout=remaining())
+            candidates = {}
+            for row in rows if isinstance(rows, list) else []:
+                metadata = row.get('externalMetadata') or {}
+                if (row.get('datasetId') == identifier and metadata.get('memlane_kind') == 'common_knowledge'
+                        and metadata.get('category') in ('preference', 'experience') and row.get('id')):
+                    candidates[row['id']] = row
+            ordered = sorted(candidates, key=lambda key: candidates[key].get('updatedAt') or candidates[key].get('createdAt') or '', reverse=True)
+            if query.strip():
+                groups = _json_http_request('/api/v1/search', {'query': query, 'search_type': 'CHUNKS',
+                                              'dataset_ids': [identifier], 'top_k': 30, 'only_context': False}, timeout=remaining())
+                ordered = []
+                for group in groups if isinstance(groups, list) else []:
+                    if group.get('dataset_id') != identifier:
+                        continue
+                    for chunk in group.get('search_result') or []:
+                        key = chunk.get('document_id')
+                        if key in candidates and key not in ordered:
+                            ordered.append(key)
+            else:
+                ordered = ordered[:3]
+            ordered = ordered[:8]
+            bodies = {}
+
+            def fetch(key):
+                return _raw_text(identifier, key, remaining())
+
+            pool = ThreadPoolExecutor(max_workers=4)
+            # Project builder spends at most four uncached raw reads; together
+            # with these four the single injection performs at most eight.
+            futures = {pool.submit(fetch, key): key for key in ordered[:4]}
+            try:
+                done, _ = wait(futures, timeout=remaining())
+                for future in done:
+                    try:
+                        bodies[futures[future]] = future.result()
+                    except Exception:
+                        pass
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
+            pieces = []
+            for key in ordered:
+                if bodies.get(key):
+                    category = candidates[key]['externalMetadata']['category']
+                    source = candidates[key]['externalMetadata'].get('source') or '用户手动保存'
+                    pieces.append('来源：通用知识／' + ('个人偏好' if category == 'preference' else '通用经验')
+                                  + '；' + str(source)[:160] + '\n' + bodies[key].strip())
+            if pieces:
+                common_block = ('\n\n## 跨项目参考\n项目明确约定优先于以下通用建议。\n\n' + '\n\n'.join(pieces))[:2000]
+        except Exception:
+            common_block = ''
+    try:
+        # Do not inject candidates after a policy generation/read scope change.
+        final = current(timeout=min(2, remaining()))
+        if final['revision'] != initial['revision']:
+            return ''
+        if 'read' not in final['policy']['permissions']:
+            project = ''
+        if final.get('common') != common:
+            common_block = ''
+    except Exception:
+        return ''
+    return (project + common_block)[:6000]
+
+
+def _pending_snapshot(dataset_id, session_id):
+    from _plugin_common import _bridge_file, _bridge_cache_key, _load_json_file
+    path = _bridge_file(session_id)
+    key = _bridge_cache_key(dataset_id, session_id)
+    cache = _load_json_file(path)
+    session_cache = cache.get(key) or {}
+    pending = list(session_cache.get('pending_entries') or [])
+    signature = hashlib.sha256(json.dumps(pending, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    return path, key, cache, session_cache, pending, signature
+
+
+def _pending_identity(dataset_id, session_id):
+    from _plugin_common import _read_map_record, get_session_key
+    if dataset_id != dataset() or _read_map_record(get_session_key()).get('session_id') != session_id:
+        raise NotReady('managed_buffer_session_mismatch')
+
+
+def pending_materials(dataset_id, session_id):
+    """Metadata only, for an explicit desktop review of the official buffer."""
+    _pending_identity(dataset_id, session_id)
+    from _plugin_common import _buffer_lock, _AMBIGUOUS_KEY
+    with _buffer_lock():
+        _, _, _, _, pending, signature = _pending_snapshot(dataset_id, session_id)
+    with _state() as state:
+        return {'pending': len(pending), 'signature': signature,
+                'unknown_outcomes': sum(bool(entry.get(_AMBIGUOUS_KEY)) for entry in pending),
+                'blocked': state.get('blocked')}
+
+
+def decide_pending(dataset_id, session_id, action, expected_signature):
+    """Only an explicit action can unblock old lawful entries; never touch transcript.
+
+    The signature binds consent to exactly the reviewed official buffer. Missing
+    an ambiguous write from the server's recent tail does not prove non-commit.
+    """
+    if action not in ('replay', 'discard'):
+        raise NotReady('invalid_pending_action')
+    _pending_identity(dataset_id, session_id)
+    if action == 'replay':
+        require('write', dataset_id)
+    from _plugin_common import (_buffer_lock, _write_json_file, _AMBIGUOUS_KEY,
+                                _entry_fingerprint, _server_session_fingerprints,
+                                get_session_detail_via_http, drain_warmup_entries,
+                                _try_acquire_drain_lock, _release_drain_lock)
+    if not _try_acquire_drain_lock():
+        raise NotReady('buffer_send_in_progress')
+    try:
+        with _buffer_lock():
+            path, key, cache, session_cache, pending, signature = _pending_snapshot(dataset_id, session_id)
+            if not isinstance(expected_signature, str) or expected_signature != signature:
+                raise NotReady('pending_materials_changed_review_again')
+            if action == 'replay' and any(entry.get(_AMBIGUOUS_KEY) for entry in pending):
+                detail = get_session_detail_via_http(session_id)
+                known = _server_session_fingerprints(detail) if detail is not None else set()
+                if any(entry.get(_AMBIGUOUS_KEY) and _entry_fingerprint(entry) not in known for entry in pending):
+                    raise NotReady('original_write_result_still_unknown')
+                # Authoritatively matched copies are consumed, never sent twice.
+                pending = [entry for entry in pending if not entry.get(_AMBIGUOUS_KEY)]
+            session_cache['pending_entries'] = [] if action == 'discard' else pending
+            session_cache.pop('drain_fail_count', None)
+            session_cache.pop('drain_fail_at', None)
+            cache[key] = session_cache
+            _write_json_file(path, cache)
+            with _state() as state:
+                state.pop('blocked', None)
+    finally:
+        _release_drain_lock()
+    if action == 'discard':
+        return {'action': action, 'discarded': len(pending), 'pending': 0}
+    drained, remaining = drain_warmup_entries(dataset_id, session_id)
+    return {'action': action, 'drained': drained, 'pending': remaining}
+
+
+if __name__ == '__main__':
+    import argparse
+    from _env_file import load_env_file
+    load_env_file()
+    from _plugin_common import set_session_key
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--session-key', required=True)
+    parser.add_argument('--dataset', required=True)
+    parser.add_argument('--session-id', required=True)
+    parser.add_argument('--action', choices=('show', 'replay', 'discard'), required=True)
+    parser.add_argument('--expected-signature')
+    arguments = parser.parse_args()
+    set_session_key(arguments.session_key)
+    try:
+        value = (pending_materials(arguments.dataset, arguments.session_id) if arguments.action == 'show'
+                 else decide_pending(arguments.dataset, arguments.session_id, arguments.action, arguments.expected_signature))
+        print(json.dumps(value, ensure_ascii=False))
+    except NotReady as error:
+        print(json.dumps({'error': str(error)}, ensure_ascii=False))
+        raise SystemExit(1)

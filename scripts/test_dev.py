@@ -21,6 +21,59 @@ def try_lock(root, queue):
 
 
 class OwnershipTests(unittest.TestCase):
+    def test_project_control_is_not_mistaken_for_ui_watcher(self):
+        state = {'children': [10, 11, 12, 13], 'service_children': {'completion': 10, 'official': 11, 'project_control': 12}}
+        self.assertEqual(dev.owner_ui_children(state), [13])
+        self.assertEqual(dev.owner_ui_children({'children': [10, 11, 13]}), [13])
+
+    def test_project_control_requires_private_independent_tokens_and_port(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            token = root / 'control.token'
+            token.write_text('x' * 40)
+            token.chmod(0o600)
+            control = {'url': 'http://127.0.0.1:18777', 'registry_file': str(root / 'registry.json'),
+                       'management_token_file': str(token), 'agent_control_token_files': {}}
+            config = {'service_url': 'http://127.0.0.1:61255', 'completion_url': 'http://127.0.0.1:18173'}
+            dev.validate_project_control(control, config)
+            with self.assertRaises(ValueError):
+                dev.validate_project_control({**control, 'url': config['service_url']}, config)
+            with self.assertRaises(ValueError):
+                dev.validate_project_control({**control, 'agent_control_token_files': {'a': str(token)}}, config)
+            token.chmod(0o644)
+            with self.assertRaises(ValueError):
+                dev.validate_project_control(control, config)
+
+    def test_project_control_readiness_is_authenticated_directory_read(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        import threading
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path != '/v1/projects' or self.headers.get('Authorization') != 'Bearer ' + 'x' * 40:
+                    self.send_error(401)
+                    return
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"revision":0,"projects":[]}')
+            def log_message(self, *args):
+                pass
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                token = Path(temporary) / 'token'
+                token.write_text('x' * 40)
+                token.chmod(0o600)
+                control = {'url': 'http://127.0.0.1:' + str(server.server_port), 'management_token_file': str(token)}
+                dev.wait_project_control(control, Mock(poll=Mock(return_value=None)), timeout=2)
+                with self.assertRaises(RuntimeError):
+                    dev.wait_project_control(control, Mock(poll=Mock(return_value=1)), timeout=2)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
+
     def test_symlink_and_other_process_share_store_lock(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / 'store'

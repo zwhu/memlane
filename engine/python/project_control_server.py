@@ -122,21 +122,36 @@ def create_app(registry, manager_token, agent_tokens):
         payload = fields(await body(request), ('expected_revision',))
         return web.json_response(await registry.recover_agent(payload['expected_revision'], request.match_info['id']))
 
+    async def common(request):
+        manager(request)
+        payload = fields(await body(request), ('expected_revision',))
+        return web.json_response(await registry.ensure_common(payload['expected_revision'], reconcile=request.path.endswith('/reconcile')))
+
     app.add_routes([web.post('/v1/project/resolve', resolve), web.get('/v1/project/policy', policy),
                     web.get('/v1/projects', directory), web.put('/v1/defaults', defaults),
                     web.put('/v1/projects/{id}/overrides', overrides), web.post('/v1/projects', create),
                     web.post('/v1/projects/{id}/aliases', alias), web.post('/v1/projects/{id}/reconcile', reconcile),
-                    web.post('/v1/agents', provision), web.post('/v1/agents/{id}/reconcile', recover)])
+                    web.post('/v1/agents', provision), web.post('/v1/agents/{id}/reconcile', recover),
+                    web.post('/v1/common', common), web.post('/v1/common/reconcile', common)])
     return app
 
 
 async def configured_app(config):
+    if config.get('project_control'):
+        control = config['project_control']
+        config = {**config, **control, 'project_control_url': control['url']}
     session = ClientSession()
     registry = None
     try:
         registry = Registry(config['registry_file'], Official(session, config['service_url'], config['token_file']))
+        # Explicit pre-existing runtime associations are configuration, not a
+        # content migration. Reuse their UUIDs before any new host resolves.
+        for project in config.get('projects', []):
+            await registry.create_project(registry.state['revision'], project['path'],
+                                          dataset_id=project['dataset_id'], name=project['name'])
+        await registry.ensure_common(registry.state['revision'])
         app = create_app(registry, read_secret(config['management_token_file']),
-                         {key: read_secret(value) for key, value in config['agent_control_token_files'].items()})
+                         {key: read_secret(value) for key, value in config.get('agent_control_token_files', {}).items()})
     except BaseException:
         if registry is not None:
             registry.close()
@@ -156,5 +171,5 @@ if __name__ == '__main__':
     args = parser.parse_args()
     config = json.loads(Path(args.config).read_text())
     from urllib.parse import urlparse
-    address = urlparse(loopback_origin(config['project_control_url']))
+    address = urlparse(loopback_origin(config.get('project_control', {}).get('url') or config['project_control_url']))
     web.run_app(configured_app(config), host='127.0.0.1', port=address.port, access_log=None, print=None)

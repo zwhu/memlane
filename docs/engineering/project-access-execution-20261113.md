@@ -10,11 +10,11 @@
 
 | 要求 | 影响与依赖 | 完成证据 | 当前 |
 | --- | --- | --- | --- |
-| PA01/08/09/12 | project_control 登记、官方组、桌面目录 | 并发／路径测试、真实新仓库、自动发现 | 未实现 |
-| PA02/03/06 | project_policy、独立 Agent、官方 ACL、项目设置 | 字段继承、有效 ACL 允许／拒绝、Native | 未实现 |
-| PA04/05/07/14 | 固定官方插件 patch、无正文游标、blocked、所有触发入口 | 不读取／不排队、403 停重试、显式恢复、真实任务状态 | 未实现 |
-| PA10/11 | 官方通用组、CRUD、单一 coding 注入 | 官方终态、另一真实会话采用、项目优先、拒绝不注入 | 未实现 |
-| PA13 | 启动器、控制进程、目录刷新、阅读撤权 | 关窗／重开、缓存失效、复制入口撤下 | 未实现 |
+| PA01/08/09/12 | project_control 登记、官方组、桌面目录 | 并发／路径测试、真实新仓库、自动发现 | 登记及幂等已有源码／夹具；桌面与真实链路待接 |
+| PA02/03/06 | project_policy、独立 Agent、官方 ACL、项目设置 | 字段继承、有效 ACL 允许／拒绝、Native | 策略及主体管理已有源码／夹具；真实ACL及Native待验 |
+| PA04/05/07/14 | 固定官方插件 patch、无正文游标、blocked、所有触发入口 | 不读取／不排队、403 停重试、显式恢复、真实任务状态 | 独立补丁及真实函数夹具已有；日常安装、UI及真实任务待验 |
+| PA10/11 | 官方通用组、CRUD、单一 coding 注入 | 官方终态、另一真实会话采用、项目优先、拒绝不注入 | 管理组／CRUD／合并注入代码及夹具已有；UI及真实采用待验 |
+| PA13 | 启动器、控制进程、目录刷新、阅读撤权 | 关窗／重开、缓存失效、复制入口撤下 | 启动器已有源码／夹具；目录刷新及策略UI待接，真实启停待验 |
 
 ## 连续场景与执行次序
 
@@ -62,3 +62,29 @@
 - 同一受管命令 `python3 scripts/task.py -- .local/cognee-python/bin/python -m unittest discover -s engine/python -p 'test_project*.py' -v` 扩至17项通过。插件策略测试以禁止打开transcript的断言核对stat-only、恢复边界、截短、blocked保持、手动／自动区分、既有session不迁移。测试结束未留所属服务／模型进程；日常库和并行Native watcher未动。aiohttp存在RequestKey建议告警，未影响断言。
 - 阅读session确认继续持有 app.go/client.go 及 Native 操作窗口，并拟提供 `App.InvalidateReading(dataset)` 接口。共享文件出现其未提交修改属预期，本任务不纳入提交。
 - 下一实施依赖：将策略基础接入固定官方capture/drain/idle/cooldown/exit/remember/recall各入口并生成可复现patch及摘要；完成blocked显式处置与游标解析参数，不能只接SessionStart；再接通用组与单次注入、启动器、桌面管理及真实PA场景。整体Goal仍active，未达到交付定义。
+
+## 官方补丁、通用知识与启动器接线阶段
+
+本轮前一Goal turn归类为progress：已提交基础接口及17项检查；本轮继续实施，无自动等待／盲重发业务。
+
+### 已实现与证据边界
+
+- `engine/patches/project_access.py` 对固定Codex官方插件做精确锚点补丁；每个锚点恰好匹配一次，失败即停止构建。`scripts/build_project_plugin.py` 校验原版完整56文件输入，输出到新目录，编译修改后的Python；不原地修改归档、固定源码或日常安装缓存。全部最终文件摘要、patch及extension摘要锁定于 `engine/managed-project-plugin.json`，组件清单显式引用。
+- 首次SessionStart绑定前管理侧resolve、后续UUID固定；受管路径禁用共享角色刷新、身份自动创建与owner缓存回退。capture在官方正文解析前检查并推进stat-only边界；官方解析器新增offset，跨边界首行及没有新请求的旧turn尾部不采。begin_turn、prompt存储、新buffer入队、drain逐批、自动improve、显式remember及coding recall均接门禁。
+- 官方403/401保持原buffer并设置blocked；自动process同样受阻；权限恢复不移除blocked。原版detached-final自动重试在受管模式关闭；ambiguous写入无法从原官方session确认时不盲重发。HTTP409／网络未知不冒充403或主动取消。
+- 补交／丢弃函数与命令入口只处理原官方buffer，校验绑定session和已审阅snapshot摘要；发送锁仍持有则拒绝处置，不假取消在途发送。补交重查write；未知原写入仍不能补交。没有另建正文队列。桌面按钮尚待接线。
+- 通用组独立于项目目录，管理owner创建、Agent仅read；已配置原项目关联按显式UUID导入，不复制／迁移内容。coding在原build_block内合并项目与common候选，空项目可用common，注明项目优先及来源；CHUNKS结果按document ID与官方metadata核对后读取raw。最多22项目候选＋8通用候选，项目／通用各至多4次缺正文读取（合计8），通用4并发；总预算8秒、最终块6000字符（项目4000、通用2000），首次无query最多3条。策略代次变化撤下当次结果，无第二注入hook。
+- `common_knowledge.go` 使用官方普通文本multipart保存、metadata数组、单值node_set；更新上传正文且不传node_set／metadata以保留原值，拒绝改分类／原始来源。HTTP部分失败保留原pipeline回执，保存／处理／未知区分。单文档删除校验官方dataRemaining=false，HTTP200本身不代表完成。管理UI、实际保存与另一真实会话采用尚未证明。
+- `dev.py` 可按显式project_control配置管理第三个进程；就绪为带管理token的目录读取，关窗保持，退出不自动重启／切owner。运行记录显式区分service_children，第三服务不误认为UI watcher；配置token私有独立、loopback端口、受管插件完整摘要均检查。实际 `.local/daily/runtime.json` 未改，没有启动控制进程或切换Agent凭据。
+
+检查：30项Python控制／插件检查通过，含12项补丁后的真实官方函数夹具；`python3 scripts/task.py -- python3 -m unittest discover -s scripts -p test_dev.py -q` 12项通过；common Go定向检查、受影响包全量test及vet通过。源码／HTTP夹具与真实服务／模型／Native严格分开，不能据此判PA-A–H通过。
+
+### 方法观察与资源
+
+- 两次patch准备锚点检查拒绝：SessionStart相同赋值存在多个位置、缩进子串误匹配；未生成或安装产物。已将锚点连上上下文并按行首缩进核对。为准备／方法问题，不计PA产品失败轮次。
+- 一次以便携Python3.12运行启动器既有venv夹具，复制出来的解释器缺libpython动态库而SIGABRT；未启动产品服务。改用启动器原系统Python入口后12项通过，没有放宽venv路径保留规则。准备／环境观察1次。
+- `.local/project-access-plugin-dev-03` 为本任务最新独立补丁产物，非日常安装，摘要随候选输入锁定；此前02曾通过启动器完整摘要校验。临时测试目录均由TemporaryDirectory收尾。可用空间约114GiB，未清理build或日常库。
+- 阅读session交付 `62b324f`，其后文档 `c492f32`。已明确释放app.go/client.go/overview_ui.go及Native窗口，本任务已回执接管；保留 `InvalidateReading(dataset)`、`SetReadingPolicyRevision(revision)` 和raw/VisibleBody边界。阅读因OVR01依赖尚未完成RU-G，等待后台恢复，不混为PA通过。
+- 总览session已退出，明确说不能确认当前运行所有权，之前源码释放不包含后台启停或凭据切换。故尚不启停日常后台。当前经 `dev.py status` 核对launcher69475、内核启动时间Fri Nov13 02:07:42、原配置及数据锁仍有效；这只是所有者快照，不证明图worker健康或后台操作窗口已交接。
+
+下一步：桌面项目默认／覆盖、新建关联、自动目录刷新、通用知识管理与buffer处置接线；再核对运行排他窗口、真实独立主体ACL、完整新仓采集／处理／采用和PA-A–H。OVR01后台恢复应先保留原任务与数据，不能靠重放模型／索引掩盖。整体Goal继续active。

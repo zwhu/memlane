@@ -1,0 +1,98 @@
+package simpledesktop
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestCommonKnowledgeOfficialMultipartAndPartialReceipt(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("X-Api-Key") != "synthetic-owner-key" || r.Header.Get("Authorization") != "" {
+			t.Error("wrong official credential protocol")
+		}
+		if err := r.ParseMultipartForm(1024 * 1024); err != nil {
+			t.Fatal(err)
+		}
+		if r.FormValue("session_id") != "" || r.FormValue("content_type") != "" {
+			t.Error("common knowledge was disguised as a session/type-specific ingest")
+		}
+		switch r.Method {
+		case "POST":
+			if r.URL.Path != "/api/v1/remember" || r.FormValue("datasetId") != "common-dataset" || r.FormValue("node_set") != "memlane_common" {
+				t.Error("wrong common dataset/form protocol")
+			}
+			if !strings.Contains(r.FormValue("raw_data"), "# 标题\n\n正文") {
+				t.Error("missing Markdown body")
+			}
+			var metadata []map[string]string
+			if json.Unmarshal([]byte(r.FormValue("external_metadata")), &metadata) != nil || len(metadata) != 1 || metadata[0]["memlane_kind"] != "common_knowledge" || metadata[0]["category"] != "preference" {
+				t.Error("external metadata is not a paired JSON array")
+			}
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"status":"errored","dataset_id":"common-dataset","pipeline_run_id":"original-pipeline"}`))
+		case "PATCH":
+			if r.URL.Path != "/api/v1/update" || r.URL.Query().Get("dataset_id") != "common-dataset" || r.URL.Query().Get("data_id") != "document" {
+				t.Error("wrong official update identity")
+			}
+			if _, ok := r.MultipartForm.Value["node_set"]; ok {
+				t.Error("update must retain official node_set")
+			}
+			if _, ok := r.MultipartForm.Value["external_metadata"]; ok {
+				t.Error("update must retain official metadata")
+			}
+			if len(r.MultipartForm.File["data"]) != 1 {
+				t.Error("update must upload data file")
+			}
+			_, _ = w.Write([]byte(`{"status":"incremental","dataset_id":"common-dataset","data_id":"document","pipeline_run_id":"update-pipeline"}`))
+		}
+	}))
+	defer server.Close()
+	credential := filepath.Join(t.TempDir(), "official.token")
+	if err := os.WriteFile(credential, []byte("synthetic-owner-key"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client := Client{Config: Config{ServiceURL: server.URL, TokenFile: credential}}
+	p := Project{Dataset: "common-dataset"}
+	draft := CommonDraft{Title: "标题", Body: "正文", Category: "preference"}
+	receipt, err := client.writeCommon(context.Background(), p, draft, nil)
+	if err == nil || receipt.Status != "errored" || receipt.PipelineRunID != "original-pipeline" || requests != 1 {
+		t.Fatalf("partial write identity lost or retried: %#v %v count=%d", receipt, err, requests)
+	}
+	document := Document{ID: "document", Dataset: p.Dataset, Name: "common.md", Metadata: map[string]any{"memlane_kind": "common_knowledge", "category": "preference"}}
+	receipt, err = client.writeCommon(context.Background(), p, draft, &document)
+	if err != nil || receipt.Status != "incremental" || receipt.PipelineRunID != "update-pipeline" {
+		t.Fatalf("update result: %#v %v", receipt, err)
+	}
+	draft.Category = "experience"
+	if _, err = client.writeCommon(context.Background(), p, draft, &document); err == nil || requests != 2 {
+		t.Fatal("category change must be rejected before HTTP")
+	}
+}
+
+func TestCommonDeleteRequiresVerifiedOfficialReceipt(t *testing.T) {
+	remaining := true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "DELETE" || r.URL.Path != "/api/v1/datasets/common/data/document" {
+			t.Error("wrong deletion endpoint")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "success", "datasetId": "common", "dataId": "document", "dataRemaining": remaining})
+	}))
+	defer server.Close()
+	client := Client{Config: Config{ServiceURL: server.URL}}
+	d := Document{ID: "document", Dataset: "common", Metadata: map[string]any{"memlane_kind": "common_knowledge", "category": "experience"}}
+	if err := client.deleteCommon(context.Background(), Project{Dataset: "common"}, d); err == nil {
+		t.Fatal("HTTP 200 with dataRemaining=true cannot prove deletion")
+	}
+	remaining = false
+	if err := client.deleteCommon(context.Background(), Project{Dataset: "common"}, d); err != nil {
+		t.Fatal(err)
+	}
+}

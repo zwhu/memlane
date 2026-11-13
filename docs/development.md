@@ -1,5 +1,9 @@
 # 本地开发
 
+2026-11-13 PA项目权限增补正在实施，进度以[项目权限执行记录](engineering/project-access-execution-20261113.md)为准。原D01–D09的共用owner和只读通用知识规则是此前交付事实；受管PA将使用独立Agent主体、官方dataset ACL与本机项目控制进程，未自动迁移现有会话或日常配置。
+
+PA配置模板新增可选 `project_control`：显式loopback `url`、私有 `registry_file`、独立 `management_token_file`、安装实例 `agent_control_token_files` 以及固定 `plugin_dir`。启用后启动器一并管理控制进程，关窗保持，明确stop才收尾。未配置时保留原启动流程；模板路径仍是占位符。受管插件在独立目录重放 `engine/patches/project_access.py`，启动器核对 `engine/managed-project-plugin.json` 的全部摘要；禁止手改日常插件缓存。当前仅源码及合成检查，真实接入与Native尚未交付。
+
 2026-11-13 起，精简版唯一开发入口为 `scripts/dev.py`。本轮接管与验收已完成，实际范围和限制见[交付记录](engineering/client-simplification-delivery-20261113.md)，阶段证据见[执行记录](engineering/client-simplification-execution-20261113.md)。配置模板为 [`config/daily-runtime.example.json`](../config/daily-runtime.example.json)，其中路径均为占位符，不能直接启动。
 
 从仓库根目录执行，所有操作使用同一个私有配置文件的绝对路径。先在一个终端启动并保持前台：

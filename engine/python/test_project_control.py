@@ -144,6 +144,19 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.registry.policy(project, 'b')['policy']['access'], 'none')
         self.assertEqual(self.official.acls[(self.registry.state['agents']['a']['principal_id'], row['id'])], {'read'})
 
+    async def test_common_dataset_is_independent_and_read_only_for_agents(self):
+        directory = await self.registry.ensure_common(self.registry.state['revision'])
+        common = directory['common']
+        self.assertEqual(len(directory['projects']), 0)
+        self.assertTrue(self.registry.common_policy('a')['readable'])
+        self.assertEqual(self.official.acls[(self.registry.state['agents']['a']['principal_id'], common['dataset_id'])], {'read'})
+        result = await self.registry.resolve('a', str(self.repo), 'one')
+        self.assertNotEqual(result['dataset_id'], common['dataset_id'])
+        self.assertEqual(result['common']['dataset_id'], common['dataset_id'])
+        again = await self.registry.ensure_common(self.registry.state['revision'])
+        self.assertEqual(again['common']['dataset_id'], common['dataset_id'])
+        self.assertEqual(self.official.creates, 2)
+
     async def test_http_separates_principals_and_rejects_content(self):
         client = TestClient(TestServer(create_app(self.registry, 'm' * 40, {'a': 'a' * 40, 'b': 'b' * 40})))
         await client.start_server()
