@@ -14,7 +14,10 @@ import (
 
 func TestProjectCheckboxBundlesPermissionAndConfirmsUnknownWithoutRetry(t *testing.T) {
 	a := settingsFixture()
-	directory := a.access.Directory
+	var directory AccessDirectory
+	// Decode into a zero value so slices and nested maps cannot alias UI state.
+	encoded, _ := json.Marshal(a.access.Directory)
+	json.Unmarshal(encoded, &directory)
 	var writes atomic.Int32
 	var fail atomic.Bool
 	var lastFields map[string]any

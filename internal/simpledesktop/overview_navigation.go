@@ -7,23 +7,7 @@ import (
 )
 
 func (a *App) overviewShell(c *ui.Context) {
-	ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() {
-		ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-			a.overviewNavigation(c)
-			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-				ui.Row(c).Height(homeHeaderHeight).Shrink(0).BorderWidth(0, 0, 1, 0).BorderColor(ui.Hex("#edf0f3")).Padding(0, 28).DragWindow().Children(func() {
-					homeText(c, "总览", homeTopTitle)
-					ui.Spacer(c)
-					a.unifiedSearchTrigger(c)
-				})
-				if a.configError != "" {
-					homeText(c, "运行配置不可用："+a.configError, homeBody).Margin(24)
-					return
-				}
-				a.overviewHome(c)
-			})
-		})
-	})
+	ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.mainShell(c) })
 }
 
 func overviewReadingTitle(i Item) string {
@@ -55,65 +39,33 @@ func (a *App) showOverviewProjects() {
 }
 
 func (a *App) overviewNavigation(c *ui.Context) {
-	ui.Column(c).Width(homeSidebarWidth).Shrink(0).Font("system-ui").FontWeight(400).Background(ui.Hex("#eaf1f8")).BorderWidth(0, 1, 0, 0).BorderColor(ui.Hex("#e0e8f0")).Padding(0, 14, 14, 14).Children(func() {
-		ui.Row(c).Height(112).Shrink(0).Padding(30, 12, 0, 12).Gap(10).DragWindow().Children(func() {
+	selected := a.page
+	if (a.page == "知识" || a.page == "图谱" || a.page == "检索结果") && a.project >= 0 && a.project < len(a.Config.Projects) {
+		selected = "project:" + a.Config.Projects[a.project].ID
+	}
+	if a.page == "设置" && a.settingsOrigin != nil {
+		selected = "project:" + a.access.OpenProject
+	}
+	ui.Column(c).Width(homeSidebarWidth).Shrink(0).Background(ui.Hex("#eaf1f8")).BorderWidth(0, 1, 0, 0).BorderColor(homeBorder).Children(func() {
+		ui.Row(c).Height(112).Shrink(0).Padding(30, 26, 0, 26).Gap(10).DragWindow().Children(func() {
 			ui.Icon(c, mark).FontSize(27).TextColor(ui.Hex("#4d6986"))
 			homeText(c, "Memlane", homeBrand)
 		})
-		ui.Column(c).Gap(3).Children(func() {
-			for _, page := range []string{"总览", "通用知识"} {
-				label := page
-				n := ui.Button(c, "").Key("nav-"+page).Label(label).Height(39).Padding(10, 12).Gap(11).Justify(ui.Start).Background(ui.Transparent).BorderWidth(0).Radius(7)
-				homeNavSurface(n, page == a.page)
-				n.Children(func() {
-					icon := navIcons[label]
-					if label == "通用知识" {
-						icon = homeCommon
-					} else if label == "搜索" {
-						icon = homeSearch
-					}
-					ui.Icon(c, icon).FontSize(17).TextColor(homeIconInk)
-					text := homeText(c, label, homeBody).FontSize(13).TextColor(homeNavInk)
-					if page == a.page {
-						text.FontWeight(600).TextColor(ui.Hex("#304f6d"))
-					}
-					if label == "搜索" {
-						ui.Spacer(c)
-						homeText(c, "⌘ K", homeAction).TextColor(ui.Hex("#8b9aae"))
-					}
-				}).OnClick(func() {
-					if label == "搜索" {
-						a.OpenSearch()
-					} else {
-						a.navigate(label, 0)
-					}
-				})
-			}
-		})
-		ui.Row(c).Padding(27, 12, 9, 12).Children(func() {
-			homeText(c, "项目", homeMeta).FontWeight(600).LetterSpacing(1).TextColor(ui.Hex("#8191a3"))
-			ui.Spacer(c)
-			homeLink(c, fmt.Sprintf("全部 %d", len(a.Config.Projects)), a.showOverviewProjects).FontSize(10)
-			a.projectAddMenu(c)
-		})
-		ui.Scroll(c.Key("overview-sidebar-projects")).TrackScroll(&a.overviewState.SidebarScroll).Grow(1).MinHeight(0).Gap(3).Children(func() {
+		ui.Sidebar(c.Key("main-sidebar"), &selected, func() {
+			ui.SidebarItem(c, "总览", navIcons["总览"], "总览").Height(39)
+			ui.SidebarItem(c, "通用知识", homeCommon, "通用知识").Height(39)
+			ui.Row(c).Padding(24, 8, 8, 8).AlignItems(ui.Center).Children(func() {
+				homeText(c, "项目", homeMeta)
+				ui.Spacer(c)
+				ui.Button(c, fmt.Sprintf("全部 %d", len(a.Config.Projects))).FontSize(10).OnClick(a.showOverviewProjects)
+				a.projectAddMenu(c)
+			})
 			labels := projectLabels(a.Config.Projects)
 			for idx, p := range a.Config.Projects {
 				index := idx
-				active := (a.page == "知识" || a.page == "图谱" || a.page == "检索结果") && a.project == idx
-				active = active || (a.page == "设置" && a.settingsOrigin != nil && a.access.OpenProject == p.ID)
-				row := ui.Row(c.Key("project-nav-" + p.ID)).FillWidth().AlignItems(ui.Center).Radius(7)
-				homeNavSurface(row, active).Children(func() {
-					ui.Button(c, "").Key("project-"+p.ID).Label(labels[idx]).Tooltip(p.Name+" · "+p.Path).Grow(1).MinWidth(0).Padding(8, 12).Gap(11).Justify(ui.Start).Background(ui.Transparent).BorderWidth(0).Radius(7).Children(func() {
-						ui.Icon(c, homeFolder).FontSize(17).Shrink(0).TextColor(homeIconInk)
-						ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
-							homeText(c, p.Name, homeBody).TextColor(homeNavInk).SingleLine()
-							if labels[idx] != p.Name {
-								homeText(c, p.Path, homePath).FontSize(9).TextColor(ui.Hex("#7b8ca0")).SingleLine()
-							}
-						})
-					}).OnClick(func() { a.navigate("知识", index) })
-					readingAction(c, "项目菜单："+labels[idx], readingMore, func() {}).Margin(0, 4, 0, 0).PopoverMenuButton(func(m *ui.Menu) {
+				ui.Row(c.Key("project-nav-" + p.ID)).AlignItems(ui.Center).Gap(4).Children(func() {
+					ui.SidebarItem(c, "project:"+p.ID, homeFolder, p.Name).Label(labels[idx]).Tooltip(p.Name + " · " + p.Path).MinHeight(38).Grow(1).MinWidth(0)
+					readingAction(c, "项目菜单："+labels[idx], readingMore, func() {}).PopoverMenuButton(func(m *ui.Menu) {
 						m.Item(p.Name).Disabled(true)
 						paths := []string{p.Path}
 						for _, record := range a.access.Directory.Projects {
@@ -140,25 +92,31 @@ func (a *App) overviewNavigation(c *ui.Context) {
 					})
 				})
 			}
-		})
-		ui.Column(c).Shrink(0).Margin(16, 0, 0, 0).Padding(12, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(ui.Hex("#d8e3ed")).Gap(10).Children(func() {
-			b := ui.Button(c, "").Label("设置").Padding(10, 12).Gap(11).Justify(ui.Start).BorderWidth(0).Radius(7)
-			homeNavSurface(b, false).Children(func() {
-				ui.Icon(c, homeSettings).FontSize(17).TextColor(homeMuted)
-				homeText(c, "设置", homeBody).FontSize(13).TextColor(homeNavInk)
-			}).OnClick(func() { a.settingsOrigin = nil; a.access.OpenProject = ""; a.navigate("设置", 0) })
-			ui.Row(c).Padding(0, 12).Gap(7).Children(func() {
-				color := homeMuted
-				status := "待检查"
-				if a.service == "已连接" {
-					color = ui.Hex("#729184")
-					status = "已连接"
-				} else if a.service != "尚未检查" {
-					status = "连接异常"
+		}).FillWidth().Grow(1).MinHeight(0).Padding(0, 14).Background(ui.Transparent).TrackScroll(&a.overviewState.SidebarScroll).OnChange(func() {
+			for idx, p := range a.Config.Projects {
+				if selected == "project:"+p.ID {
+					a.navigate("知识", idx)
+					return
 				}
-				ui.Column(c).Size(6, 6).Radius(3).Background(color)
-				homeText(c, "本机服务 · "+status, homeMeta).TextColor(ui.Hex("#75899d")).Tooltip(a.service)
-			})
+			}
+			a.navigate(selected, 0)
+		})
+		ui.Toolbar(c, func() {
+			ui.Button(c, "").Label("设置").Children(func() { ui.Icon(c, homeSettings).FontSize(17); ui.Text(c, "设置") }).OnClick(func() { a.settingsOrigin = nil; a.access.OpenProject = ""; a.navigate("设置", 0) })
+		}).Height(44).Shrink(0).Padding(0, 20)
+		appFooter(c, "侧栏状态栏").Padding(0, 26).Gap(7).Children(func() {
+			color := ui.Hex("#9aabbc")
+			if a.service == "已连接" {
+				color = ui.Hex("#72978a")
+			}
+			ui.Box(c).Size(6, 6).Radius(3).Background(color)
+			status := "待检查"
+			if a.service == "已连接" {
+				status = "已连接"
+			} else if a.service != "尚未检查" {
+				status = "连接异常"
+			}
+			homeText(c, "本机服务 · "+status, homeMeta).FontSize(10).SingleLine()
 		})
 	})
 }

@@ -23,6 +23,8 @@ type pane struct {
 	Error                          string
 	Query                          string
 	ListScroll                     ui.ScrollState
+	WidgetList                     ui.ListState
+	ListSelection                  int
 	DetailScroll                   map[string]*ui.ScrollState
 	Tools                          map[string]bool
 	History                        []Item
@@ -36,6 +38,7 @@ type pane struct {
 	Technical                      map[string]bool
 }
 type App struct {
+	layout              appLayoutState
 	projectUI           projectReadingState
 	searchUI            unifiedSearchState
 	searchOrigin        *readingLocation
@@ -447,11 +450,10 @@ func (a *App) viewContent(c *ui.Context) {
 		}
 	}
 	a.refreshOverviewIfDue(time.Now())
-	if a.page == "总览" {
-		a.overviewShell(c)
-		return
-	}
-	ui.Row(c).Fill().AlignItems(ui.Stretch).Background(ui.Hex("#ffffff")).Children(func() {
+	a.mainShell(c)
+}
+func (a *App) mainShell(c *ui.Context) {
+	ui.Row(c.Key("main-shell")).Fill().AlignItems(ui.Stretch).Background(ui.Hex("#ffffff")).Children(func() {
 		a.navigation(c)
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 			a.projectHeader(c)

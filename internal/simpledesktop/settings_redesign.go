@@ -27,16 +27,13 @@ func settingsTabs(c *ui.Context, current *string, labels []string) {
 	if *current == "" {
 		*current = labels[0]
 	}
-	ui.Row(c).Gap(6).Shrink(0).Padding(18, 28).BorderWidth(0, 0, 1, 0).BorderColor(homeBorder).Children(func() {
-		for _, text := range labels {
-			label := text
-			bg, ink := ui.Transparent, homeMuted
-			if *current == label {
-				bg, ink = ui.Hex("#eaf1f8"), homeInk
-			}
-			ui.Button(c, label).Label(label).FontSize(12).FontWeight(400).Padding(8, 14).Background(bg).TextColor(ink).BorderWidth(0).Radius(7).OnClick(func() { *current = label })
+	selected := 0
+	for n, label := range labels {
+		if *current == label {
+			selected = n
 		}
-	})
+	}
+	ui.Tabs(c, &selected, labels...).Label("设置分类").Margin(18, 28).OnChange(func() { *current = labels[selected] })
 }
 func settingsCard(c *ui.Context, title, description string, content func()) {
 	ui.Column(c).FillWidth().Gap(14).Padding(22).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(10).Children(func() {

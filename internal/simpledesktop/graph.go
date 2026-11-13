@@ -311,8 +311,8 @@ func (a *App) graphView(c *ui.Context) {
 				if p.CodeEnabled {
 					label = "关闭代码索引"
 				}
-				ui.Button(c, label).FontWeight(400).FontSize(12).TextColor(homeLinkInk).Background(ui.Transparent).BorderWidth(0).Disabled(a.codeBusy && !p.CodeEnabled).OnClick(func() { a.toggleCode(!p.CodeEnabled) })
-				ui.Button(c, "更新代码图谱").FontWeight(400).FontSize(12).TextColor(homeLinkInk).Background(ui.Transparent).BorderWidth(0).Disabled(!p.CodeEnabled || a.codeBusy || a.codeUnknown || a.codeRemoteActive).OnClick(func() { a.indexCode() })
+				ui.Button(c, label).Disabled(a.codeBusy && !p.CodeEnabled).OnClick(func() { a.toggleCode(!p.CodeEnabled) })
+				ui.Button(c, "更新代码图谱").Disabled(!p.CodeEnabled || a.codeBusy || a.codeUnknown || a.codeRemoteActive).OnClick(func() { a.indexCode() })
 			}
 		})
 		if p, ok := a.current(); ok && a.graphMode == "代码结构" && !p.CodeEnabled {

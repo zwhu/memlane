@@ -235,7 +235,7 @@ func (a *App) searchDialog(c *ui.Context) {
 	ui.Modal(c.Key("unified-search-modal"), &s.Open, func() {
 		ui.Row(c).Height(76).Shrink(0).Padding(0, 20).Gap(14).AlignItems(ui.Center).Children(func() {
 			ui.Icon(c, homeSearch).FontSize(23).TextColor(homeLinkInk)
-			input := ui.TextInputBase(c.Key("unified-query"), &s.Query).Label("搜索关键词").Placeholder("输入关键词，按 Enter 搜索").Grow(1).MinWidth(0).FontSize(20).OnSubmit(a.searchSubmitOrOpen)
+			input := ui.TextInput(c.Key("unified-query"), &s.Query).Label("搜索关键词").Placeholder("输入关键词，按 Enter 搜索").Grow(1).MinWidth(0).FontSize(20).OnSubmit(a.searchSubmitOrOpen)
 			if input.Changed() {
 				if s.cancel != nil {
 					s.cancel()
@@ -347,14 +347,14 @@ func (a *App) searchDialog(c *ui.Context) {
 		})
 		s.Reveal = false
 		ui.Row(c).Height(62).Shrink(0).Padding(0, 20).Gap(16).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Children(func() {
-			for _, kind := range []string{"全部", "知识", "原始记录"} {
-				k := kind
-				b := ui.Button(c, "").Label("筛选"+k).Padding(8, 12).Background(ui.Transparent).BorderWidth(0).Radius(16)
-				if k == s.Type {
-					b.Background(ui.Hex("#e7edf3"))
+			labels := []string{"全部", "知识", "原始记录"}
+			selected := 0
+			for n, label := range labels {
+				if s.Type == label {
+					selected = n
 				}
-				b.Children(func() { homeText(c, k, homeAction) }).OnClick(func() { s.Type = k; a.cancelChangedSearch() })
 			}
+			ui.Segmented(c, &selected, labels...).Label("搜索内容类型").OnChange(func() { s.Type = labels[selected]; a.cancelChangedSearch() })
 			ui.Spacer(c)
 			homeText(c, "↑↓ 选择  ↵ 搜索/打开  esc 关闭", homeMeta)
 		})

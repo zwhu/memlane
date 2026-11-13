@@ -1,7 +1,6 @@
 package simpledesktop
 
 import (
-	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -108,15 +107,7 @@ var homeSearch = homeSVG(`<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5
 var homeSettings = homeSVG(`<path d="m9 3-1 3-3 1-2 5 2 5 3 1 1 3h6l1-3 3-1 2-5-2-5-3-1-1-3z"/><circle cx="12" cy="12" r="3"/>`)
 
 func homeLink(c *ui.Context, title string, fn func()) ui.Element {
-	b := ui.Button(c, "").Label(title).FontWeight(400).Padding(4, 0).Gap(5).Background(ui.Transparent).BorderWidth(0)
-	color := homeHoverColor(b, "link", homeLinkInk, ui.Hex("#345e86"))
-	b.Children(func() {
-		homeText(c, strings.TrimSpace(strings.TrimSuffix(title, "›")), homeAction).TextColor(color)
-		if strings.HasSuffix(title, "›") {
-			ui.Icon(c, homeArrow).FontSize(13).TextColor(color)
-		}
-	})
-	return b.OnClick(fn)
+	return ui.Button(c, title).Label(title).Height(24).MinHeight(24).OnClick(fn)
 }
 
 func homeHoverColor(b ui.Element, key string, normal, hover ui.Color) ui.Color {
@@ -138,7 +129,5 @@ func homeNavSurface(b ui.Element, active bool) ui.Element {
 }
 
 func homeIconButton(c *ui.Context, label string, icon *ui.SVG, fn func()) ui.Element {
-	b := ui.Button(c, "").Label(label).Padding(4, 0).Background(ui.Transparent).BorderWidth(0)
-	color := homeHoverColor(b, "icon-action", homeLinkInk, ui.Hex("#345e86"))
-	return b.Children(func() { ui.Icon(c, icon).FontSize(14).TextColor(color) }).OnClick(fn)
+	return ui.Button(c, "").Label(label).Tooltip(label).Children(func() { ui.Icon(c, icon).FontSize(14) }).OnClick(fn)
 }

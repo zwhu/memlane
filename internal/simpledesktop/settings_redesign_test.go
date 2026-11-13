@@ -79,7 +79,7 @@ func TestProjectEmptyBackgroundAndDistinctRecordFilter(t *testing.T) {
 		t.Fatal("redundant project labels remain")
 	}
 	clickProjectUI(t, tt, "原始记录")
-	clickProjectUI(t, tt, "筛选原始记录：会话")
+	clickProjectUI(t, tt, "会话")
 	if a.kind != "会话" {
 		t.Fatal("record filter not wired")
 	}

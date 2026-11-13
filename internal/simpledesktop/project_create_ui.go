@@ -23,8 +23,7 @@ func (a *App) projectCreateDialog(c *ui.Context) {
 			readingAction(c, "关闭项目弹框", readingClose, func() { s.Open = false })
 		})
 		ui.Scroll(c.Key("project-create-content")).Width(min(float32(480), w-120)).MaxHeight(h - 260).MinHeight(0).Gap(18).Children(func() {
-			ui.Column(c).FillWidth().Gap(8).Children(func() {
-				ui.Text(c, "项目名称").FontSize(13).TextColor(homeNavInk)
+			ui.Field(c, "项目名称", func() {
 				input := ui.TextInput(c.Key("create-project-name"), &s.Name).Label("项目名称").Placeholder("项目名称").FillWidth().Disabled(s.Saving || s.Submitted || (s.TargetProject == "" && s.Selected != nil && s.Selected.Kind == "project"))
 				if s.Focus {
 					input.Focus()
@@ -35,9 +34,9 @@ func (a *App) projectCreateDialog(c *ui.Context) {
 
 				ui.Column(c).Gap(10).Children(func() {
 					homeText(c, "源文件夹", homeHeading).FontSize(13)
-					ui.Column(c).FillWidth().MinHeight(116).Padding(18).Gap(12).Border(1, homeBorder).Radius(10).Background(ui.Hex("#f8fafc")).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+					zone := ui.Column(c).FillWidth().MinHeight(116).Padding(18).Gap(12).Border(1, homeBorder).Radius(10).Background(ui.Hex("#f8fafc")).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 						if s.Folder == "" {
-							homeText(c, "添加这台电脑上的项目文件夹", homeMeta)
+							homeText(c, "选择或拖入这台电脑上的项目文件夹", homeMeta)
 							ui.Button(c, "添加文件夹").OnClick(a.selectProjectFolder).Disabled(s.Saving || s.Submitted || a.ChooseProjectFolder == nil)
 						} else {
 							ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {
@@ -50,6 +49,14 @@ func (a *App) projectCreateDialog(c *ui.Context) {
 							})
 						}
 					})
+					if !s.Saving && !s.Submitted {
+						if zone.FileDragOver() {
+							zone.BorderColor(c.Theme().Accent)
+						}
+						if files := zone.DroppedFiles(); len(files) > 0 {
+							a.acceptProjectFolderDrop(files)
+						}
+					}
 				})
 				if s.Selected != nil {
 					ui.Row(c).FillWidth().Padding(12).Gap(10).Background(ui.Hex("#edf3f9")).Radius(7).Children(func() {

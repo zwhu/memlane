@@ -64,3 +64,6 @@
 
 
 2026-11-14 后续收口覆盖上述“高级诊断”入口：项目设置为权限卡片和待处理文档两区，后者分“未保存／待整理”，未知结果明确标注；常规保存只显示紧凑状态。项目区“＋”直接打开创建弹框，无重复关联模式下拉；已关联项目仅可编辑名称。弹框与菜单采用当前固定 MyGo 的 Modal、Popover、PopoverMenuButton，并共享160ms EaseOut进入动效，减少动态效果交 SDK 处理。原始数据、权限与补交确认规则保留。见[工程记录](engineering/project-settings-queue-20261114.md)。
+
+
+2026-11-14 官方组件统一：用户要求可复用官方能力的布局和控件均优先采用官方组件。当前Sidebar、List、Split、Segmented、Tabs、Toolbar、Field、Button、AlertDialog及前轮弹框菜单已统一；底栏统一48px，界面宽度调整不丢阅读及编辑状态。业务热力图、正文与官方图谱宿主保留业务承载。证据及未验证边界见[组件替换记录](engineering/official-ui-components-20261114.md)。

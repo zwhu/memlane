@@ -45,11 +45,10 @@ func commonProcessingStatus(message string) string {
 	}
 }
 func commonButton(c *ui.Context, label string, primary bool, fn func()) ui.Element {
-	b := ui.Button(c, label).MinHeight(32).Padding(7, 14).FontSize(12).FontWeight(400).Border(1, homeBorder).Radius(6).TextColor(homeLinkInk).Background(ui.Hex("#ffffff"))
 	if primary {
-		b.Background(ui.Hex("#e5edf5")).BorderColor(ui.Hex("#d3dfeb"))
+		return ui.PrimaryButton(c, label).OnClick(fn)
 	}
-	return b.OnClick(fn)
+	return ui.Button(c, label).OnClick(fn)
 }
 func (a *App) beginCommonDraft(item *Item) {
 	e := &a.commonEdit
@@ -110,31 +109,22 @@ func (a *App) commonListToolbar(c *ui.Context) {
 		p, ok := a.current()
 		b.Disabled(a.Config.ProjectControl == nil || !ok || p.Dataset == "" || e.DeleteSubmitted)
 	})
-	ui.Row(c).Gap(4).Children(func() {
-		for _, label := range []string{"全部", "个人偏好", "通用经验"} {
-			k := label
-			active := (k == "全部" && a.commonCategoryFilter() == "") || e.Category == k
-			b := ui.Button(c, "").Label("分类"+k).Padding(7, 10).BorderWidth(0).Radius(6).Background(ui.Transparent)
-			if active {
-				b.Background(ui.Hex("#e7eef6"))
-			}
-			b.Children(func() {
-				t := homeText(c, k, homeMeta).FontSize(11)
-				if active {
-					t.FontWeight(600).TextColor(homeInk)
-				}
-			}).OnClick(func() {
-				if k == "全部" {
-					e.Category = ""
-				} else {
-					e.Category = k
-				}
-				e.Open = false
-				s := a.state()
-				s.Offset = 0
-				a.load(s)
-			})
+	labels := []string{"全部", "个人偏好", "通用经验"}
+	selected := 0
+	for n, label := range labels {
+		if e.Category == label {
+			selected = n
 		}
+	}
+	ui.Segmented(c, &selected, labels...).Label("通用知识分类").FillWidth().OnChange(func() {
+		e.Category = ""
+		if selected > 0 {
+			e.Category = labels[selected]
+		}
+		e.Open = false
+		s := a.state()
+		s.Offset = 0
+		a.load(s)
 	})
 	if len(a.Config.Common) > 1 {
 		options := projectLabels(a.Config.Common)
@@ -152,8 +142,8 @@ func (a *App) commonListToolbar(c *ui.Context) {
 func (a *App) commonKnowledgePage(c *ui.Context) {
 	s := a.state()
 	e := &a.commonEdit
-	ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
-		ui.Column(c).Width(300).Shrink(0).BorderWidth(0, 1, 0, 0).BorderColor(homeBorder).Children(func() {
+	readingSplit(c, "common-reading-split", &a.layout.CommonListWidth, func() {
+		ui.Column(c).Fill().Children(func() {
 			ui.Column(c).Shrink(0).Padding(22, 18, 10, 18).Gap(14).Children(func() {
 				a.commonListToolbar(c)
 				ui.Row(c).AlignItems(ui.Center).Children(func() {
@@ -175,31 +165,8 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 					projectLink(c, "核对原删除结果", a.confirmCommonDeletion).Disabled(e.Busy)
 				}
 			})
-			ui.Scroll(c.Key("common-list-"+a.routeKey())).Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(0, 12).Gap(6).Children(func() {
-				if s.Loaded && len(s.Items) == 0 && !s.Loading && s.Error == "" {
-					message := "还没有通用知识"
-					if a.commonCategoryFilter() != "" {
-						message = "当前分类还没有知识"
-					}
-					homeText(c, message, homeBody).Margin(14)
-					homeText(c, "可新增个人偏好或可复用的经验。", homeMeta).Margin(0, 14)
-				}
-				for _, row := range s.Items {
-					i := row
-					b := ui.Button(c, "").Key("common-row-"+i.key()).Label(i.Title).Tooltip(i.Title).FillWidth().MinWidth(0).Padding(12, 14).Justify(ui.Start).BorderWidth(0).Radius(7)
-					color := homeHoverColor(b, "common-row", ui.Hex("#f5f8fb").Alpha(0), ui.Hex("#f5f8fb"))
-					if s.Selected != nil && s.Selected.key() == i.key() {
-						color = ui.Hex("#edf3f9")
-					}
-					b.Background(color).Children(func() {
-						ui.Column(c).Grow(1).MinWidth(0).Gap(8).Children(func() {
-							homeText(c, i.Title, homeTitle).FontSize(12).MaxLines(2)
-							homeText(c, commonCategoryLabel(i.CommonCategory)+" · "+displayDate(i.Date), homeMeta).SingleLine()
-						})
-					}).OnClick(func() { e.Open = false; a.projectUI.InfoOpen = false; a.selectItem(s, i) })
-				}
-			})
-			ui.Row(c).Height(48).Shrink(0).Padding(0, 12).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Children(func() {
+			a.itemList(c, s, true)
+			appFooter(c, "通用知识分页栏").Padding(0, 12).Children(func() {
 				homeText(c, projectListStatus(s), homeMeta)
 				ui.Spacer(c)
 				readingAction(c, "上一页", readingBack, func() { s.Offset = max(0, s.Offset-30); a.load(s) }).Disabled(s.Offset == 0 || s.Loading)
@@ -207,6 +174,7 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 				readingAction(c, "下一页", homeArrow, func() { s.Offset += 30; a.load(s) }).Disabled(!s.More || s.Loading)
 			})
 		})
+	}, func() {
 		if e.Open {
 			a.commonKnowledgeEditor(c)
 		} else {
@@ -257,10 +225,11 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 					commonButton(c, "新增第一条知识", true, func() { a.beginCommonDraft(nil) })
 				}
 			})
+			appFooter(c, "通用知识阅读栏").Padding(0, 32).Children(func() { homeText(c, "跨项目参考 · 项目明确约定优先", homeMeta) })
 			return
 		}
 		i := *s.Selected
-		ui.Row(c).Height(62).Shrink(0).Padding(0, 26, 0, 32).Gap(8).AlignItems(ui.Center).Children(func() {
+		appToolbar(c, "通用知识内容工具栏", func() {
 			homeText(c, commonCategoryLabel(i.CommonCategory), homeMeta).FontWeight(500)
 			homeText(c, "· "+displayDate(i.Date), homeMeta)
 			ui.Spacer(c)
@@ -310,7 +279,7 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 				}
 			})
 		})
-		ui.Row(c).Height(40).Shrink(0).Padding(0, 32).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Children(func() { homeText(c, "跨项目参考 · 项目明确约定优先", homeMeta) })
+		appFooter(c, "通用知识阅读栏").Padding(0, 32).Children(func() { homeText(c, "跨项目参考 · 项目明确约定优先", homeMeta) })
 	})
 }
 func (a *App) commonMarkdown(c *ui.Context, key, body string) {
@@ -326,6 +295,17 @@ func (a *App) commonMarkdown(c *ui.Context, key, body string) {
 }
 func (a *App) commonDeletionBanner(c *ui.Context, i Item) {
 	e := &a.commonEdit
+	if !e.DeleteSubmitted {
+		asking := true
+		switch ui.AlertDialog(c, &asking, "删除这条通用知识？", "官方确认后将移除知识及关联索引。此操作无法在客户端撤销。", "确认删除此条", "保留知识") {
+		case 0:
+			a.deleteCommonKnowledge(*i.Document)
+		case 1, ui.AlertDismissed:
+			e.Delete = nil
+		}
+		return
+	}
+
 	ui.Column(c).Shrink(0).Margin(0, 24, 10, 24).Padding(12, 16).Gap(8).Border(1, ui.Hex("#e5d7d5")).Radius(8).Background(ui.Hex("#fcf8f7")).Children(func() {
 		message := "删除“" + i.Title + "”？官方确认后将移除此条知识及关联索引。"
 		if e.DeleteSubmitted {
@@ -389,7 +369,7 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 	_, h := c.Size()
 	locked := e.Busy || e.Submitted
 	ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
-		ui.Row(c).Height(62).Shrink(0).Padding(0, 32).Gap(12).AlignItems(ui.Center).Children(func() {
+		appToolbar(c, "通用知识编辑工具栏", func() {
 			title := "新增通用知识"
 			if e.Existing != nil {
 				title = "编辑通用知识"
@@ -413,13 +393,11 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 				if len(a.Config.Common) > 1 {
 					homeText(c, "保存到："+e.Target.Name, homeMeta)
 				}
-				ui.Column(c).Gap(7).Children(func() {
-					homeText(c, "标题", homeMeta)
-					ui.TextInput(c.Key("common-draft-title-"+fmt.Sprint(e.Generation)), &e.Draft.Title).Label("通用知识标题").Placeholder("一句话概括这条知识").FillWidth().Height(38).FontSize(14).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(6).Disabled(locked)
+				ui.Field(c, "标题", func() {
+					ui.TextInput(c.Key("common-draft-title-"+fmt.Sprint(e.Generation)), &e.Draft.Title).Label("通用知识标题").Placeholder("一句话概括这条知识").FillWidth().Height(38).FontSize(14).Disabled(locked)
 				})
-				ui.Column(c).Gap(7).Children(func() {
-					homeText(c, "正文", homeMeta)
-					ui.TextArea(c.Key("common-draft-body-"+fmt.Sprint(e.Generation)), &e.Draft.Body).Label("通用知识正文").Placeholder("写下可复用的约定或经验，支持 Markdown").FillWidth().Height(min(float32(260), max(float32(180), (h-380)/2))).FontSize(13).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(6).Disabled(locked)
+				ui.Field(c, "正文", func() {
+					ui.TextArea(c.Key("common-draft-body-"+fmt.Sprint(e.Generation)), &e.Draft.Body).Label("通用知识正文").Placeholder("写下可复用的约定或经验，支持 Markdown").FillWidth().Height(min(float32(260), max(float32(180), (h-380)/2))).FontSize(13).Disabled(locked)
 				})
 				label := "补充适用条件与来源（可选）"
 				if a.commonPage.Options {
@@ -427,13 +405,11 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 				}
 				projectLink(c, label, func() { a.commonPage.Options = !a.commonPage.Options })
 				if a.commonPage.Options {
-					ui.Column(c).Gap(7).Children(func() {
-						homeText(c, "适用条件", homeMeta)
-						ui.TextArea(c.Key("common-draft-applicability-"+fmt.Sprint(e.Generation)), &e.Draft.Applicability).Label("通用知识适用条件").Placeholder("例如：适用于 TypeScript 项目").FillWidth().Height(72).FontSize(12).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(6).Disabled(locked)
+					ui.Field(c, "适用条件", func() {
+						ui.TextArea(c.Key("common-draft-applicability-"+fmt.Sprint(e.Generation)), &e.Draft.Applicability).Label("通用知识适用条件").Placeholder("例如：适用于 TypeScript 项目").FillWidth().Height(72).FontSize(12).Disabled(locked)
 					})
-					ui.Column(c).Gap(7).Children(func() {
-						homeText(c, "原始来源", homeMeta)
-						ui.TextInput(c.Key("common-draft-source-"+fmt.Sprint(e.Generation)), &e.Draft.Source).Label("通用知识来源").Placeholder("可填写出处、链接或说明").FillWidth().Height(34).FontSize(12).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(6).Disabled(locked || e.Existing != nil)
+					ui.Field(c, "原始来源", func() {
+						ui.TextInput(c.Key("common-draft-source-"+fmt.Sprint(e.Generation)), &e.Draft.Source).Label("通用知识来源").Placeholder("可填写出处、链接或说明").FillWidth().Height(34).FontSize(12).Disabled(locked || e.Existing != nil)
 					})
 					if e.Existing != nil {
 						homeText(c, "编辑保留创建时的分类与原始来源。", homeMeta)
@@ -461,13 +437,8 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 				}
 			})
 		})
-		ui.Row(c).MinHeight(64).Shrink(0).Padding(12, 24, 12, 32).Gap(10).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Children(func() {
-			if a.commonPage.Discard {
-				homeText(c, "放弃此份未保存草稿？", homeMeta).Grow(1)
-				commonButton(c, "继续编辑", false, func() { a.commonPage.Discard = false })
-				commonButton(c, "放弃并返回", false, a.discardCommonDraft)
-				return
-			}
+		appFooter(c, "通用知识编辑栏").Padding(0, 24, 0, 32).Gap(10).Children(func() {
+
 			status := "仅保存在当前编辑草稿"
 			if e.Busy {
 				status = "正在核对官方操作…"
@@ -476,7 +447,7 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 			}
 			homeText(c, status, homeMeta).Grow(1).MinWidth(0).MaxLines(2)
 			if !e.Submitted {
-				projectLink(c, "放弃草稿", func() { a.commonPage.Discard = true }).Disabled(e.Busy)
+				projectLink(c, "放弃草稿", func() { a.commonPage.Discard = true }).AlignSelf(ui.Center).Disabled(e.Busy)
 			}
 			commonButton(c, "返回阅读", false, func() { e.Open = false }).Disabled(e.Busy)
 			if e.Submitted {
@@ -490,4 +461,9 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 			}
 		})
 	})
+	switch ui.AlertDialog(c, &a.commonPage.Discard, "放弃未保存的草稿？", "草稿尚未保存，放弃后将清除本次编辑。", "放弃并返回", "继续编辑") {
+	case 0:
+		a.discardCommonDraft()
+	}
+
 }

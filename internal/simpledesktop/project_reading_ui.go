@@ -82,8 +82,7 @@ var readingCopy = homeSVG(`<path d="M8 8h12v13H8zM4 16V3h12"/>`)
 var readingClose = homeSVG(`<path d="m6 6 12 12M18 6 6 18"/>`)
 
 func readingAction(c *ui.Context, label string, icon *ui.SVG, fn func()) ui.Element {
-	b := ui.Button(c, "").Label(label).Tooltip(label).MinHeight(32).MinWidth(32).Padding(6).Gap(6).Background(ui.Transparent).BorderWidth(0).Radius(6)
-	b.Background(homeHoverColor(b, "reading-hover", ui.Hex("#f1f5f9").Alpha(0), ui.Hex("#f1f5f9")))
+	b := ui.Button(c, "").Label(label).Tooltip(label).MinWidth(28).MinHeight(28).Padding(5).Gap(6)
 	return b.Children(func() {
 		if icon != nil {
 			ui.Icon(c, icon).FontSize(17).TextColor(homeLinkInk)
@@ -94,7 +93,7 @@ func readingAction(c *ui.Context, label string, icon *ui.SVG, fn func()) ui.Elem
 	}).OnClick(fn)
 }
 func (a *App) projectHeader(c *ui.Context) {
-	ui.Row(c).Height(62).Shrink(0).BorderWidth(0, 0, 1, 0).BorderColor(homeBorder).Padding(0, 18, 0, 12).Gap(12).DragWindow().Children(func() {
+	appToolbar(c, "页面工具栏", func() {
 		var back func()
 		label := "返回总览"
 		if a.page == "检索结果" {
@@ -164,106 +163,77 @@ func (a *App) projectHeader(c *ui.Context) {
 				}
 			})
 		}
-	})
+	}).BorderWidth(0, 0, 1, 0).BorderColor(homeBorder).Padding(0, 18, 0, 12).DragWindow()
 }
 func (a *App) projectTabs(c *ui.Context) {
-	ui.Row(c).Shrink(0).Gap(20).Children(func() {
-		for _, kind := range []string{"知识", "原始记录", "图谱"} {
-			k := kind
-			active := (k == "图谱" && a.page == "图谱") || (a.page == "知识" && ((k == "知识" && a.kind == "知识") || (k == "原始记录" && a.kind != "知识")))
-			b := ui.Button(c, "").Label(k).Padding(9, 0, 3, 0).Background(ui.Transparent).BorderWidth(0, 0, 2, 0).BorderColor(ui.Transparent).Radius(0)
-			if active {
-				b.BorderColor(homeLinkInk)
-			}
-			b.Children(func() {
-				t := homeText(c, k, homeBody).FontSize(13)
-				if active {
-					t.FontWeight(600).TextColor(homeInk)
-				} else {
-					t.TextColor(homeMuted)
-				}
-			}).OnClick(func() {
-				if k == "图谱" {
-					a.navigate("图谱", a.project)
-					a.loadGraph()
-					return
-				}
-				a.switchProjectKind(k)
-			})
+	labels := []string{"知识", "原始记录", "图谱"}
+	selected := 0
+	if a.page == "图谱" {
+		selected = 2
+	} else if a.kind != "知识" {
+		selected = 1
+	}
+	ui.Tabs(c, &selected, labels...).Label("项目视图").FillWidth().OnChange(func() {
+		a.projectUI.InfoOpen = false
+		if selected == 2 {
+			a.navigate("图谱", a.project)
+			a.loadGraph()
+			return
 		}
+		a.switchProjectKind(labels[selected])
 	})
 }
+
 func (a *App) projectReading(c *ui.Context) {
 	s := a.state()
-	ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
-		if a.page != "检索结果" {
-			ui.Column(c).Width(300).Shrink(0).BorderWidth(0, 1, 0, 0).BorderColor(homeBorder).Children(func() {
-				ui.Column(c).Padding(24, 18, 5, 18).Gap(12).Shrink(0).Children(func() {
-					a.projectTabs(c)
-					if a.kind != "知识" {
-						ui.Row(c).Gap(4).Padding(3).Background(ui.Hex("#f1f5f9")).Radius(7).Children(func() {
-							for _, f := range []string{"全部", "会话", "文档"} {
-								filter := f
-								kind := f
-								if kind == "全部" {
-									kind = "原始记录"
-								}
-								active := a.kind == kind
-								bg, ink := ui.Transparent, homeMuted
-								if active {
-									bg, ink = ui.Hex("#ffffff"), homeInk
-								}
-								ui.Button(c, filter).Label("筛选原始记录："+filter).FontSize(11).FontWeight(400).Padding(5, 12).Background(bg).TextColor(ink).BorderWidth(0).Radius(5).OnClick(func() { a.switchProjectKind(kind) })
-							}
-						})
-					}
-					ui.Row(c).AlignItems(ui.Center).Children(func() {
-						label := projectListStatus(s)
-						homeText(c, label, homeMeta)
-						ui.Spacer(c)
-						readingAction(c, "刷新列表", homeRefresh, func() { a.load(s) })
-					})
-					if s.Loading {
-						homeText(c, "正在读取…", homeMeta)
-					}
-					if s.Error != "" {
-						homeText(c, "未刷新 · "+s.Error, homeMeta).MaxLines(3)
-						projectLink(c, "重试读取", func() { a.load(s) })
-					}
-				})
-				ui.Scroll(c.Key("project-list-"+a.routeKey())).TrackScroll(&s.ListScroll).Grow(1).MinHeight(0).Padding(0, 12).Gap(8).Children(func() {
-					if s.Loaded && len(s.Items) == 0 && !s.Loading && s.Error == "" {
-						homeText(c, "此项目暂无"+a.kind, homeBody).Margin(14)
-					}
-					for _, row := range s.Items {
-						i := row
-						b := ui.Button(c, "").Key("project-row-"+i.key()).Label(i.Title).Tooltip(i.Title).FillWidth().MinWidth(0).Padding(12, 14).Justify(ui.Start).BorderWidth(0).Radius(7)
-						color := homeHoverColor(b, "row", ui.Hex("#f5f8fb").Alpha(0), ui.Hex("#f5f8fb"))
-						if s.Selected != nil && s.Selected.key() == i.key() {
-							color = ui.Hex("#edf3f9")
-						}
-						b.Background(color).Children(func() {
-							ui.Column(c).MinWidth(0).Grow(1).Gap(8).Children(func() {
-								homeText(c, i.Title, homeTitle).FontSize(12).LineHeight(1.6).MaxLines(2)
-								homeText(c, i.Kind+" · "+displayDate(i.Date), homeMeta).SingleLine()
-								if i.ReadingState == "failed" {
-									projectLink(c, "标题读取失败 · 重试", func() { a.retryReadingTitle(s, i) })
-								}
-							})
-						}).OnClick(func() { a.projectUI.InfoOpen = false; a.selectItem(s, i) })
-					}
-				})
-				ui.Row(c).Height(48).Shrink(0).Padding(0, 12).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).AlignItems(ui.Center).Children(func() {
-					homeText(c, projectListStatus(s), homeMeta)
-					ui.Spacer(c)
-					readingAction(c, "上一页", readingBack, func() { s.Offset = max(0, s.Offset-30); a.load(s) }).Disabled(s.Offset == 0 || s.Loading)
-					homeText(c, fmt.Sprint(s.Offset/30+1), homeMeta)
-					readingAction(c, "下一页", homeArrow, func() { s.Offset += 30; a.load(s) }).Disabled(!s.More || s.Loading)
-				})
-			})
-		}
+	if a.page == "检索结果" {
 		a.projectDetail(c, s)
-	})
+		return
+	}
+	readingSplit(c, "project-reading-split", &a.layout.ProjectListWidth, func() {
+		ui.Column(c).Fill().Children(func() {
+			ui.Column(c).Padding(24, 18, 5, 18).Gap(12).Shrink(0).Children(func() {
+				a.projectTabs(c)
+				if a.kind != "知识" {
+					labels := []string{"全部", "会话", "文档"}
+					selected := 0
+					if a.kind == "会话" {
+						selected = 1
+					} else if a.kind == "文档" {
+						selected = 2
+					}
+					ui.Segmented(c, &selected, labels...).Label("原始记录筛选").FillWidth().OnChange(func() {
+						kind := labels[selected]
+						if selected == 0 {
+							kind = "原始记录"
+						}
+						a.switchProjectKind(kind)
+					})
+				}
+				ui.Row(c).AlignItems(ui.Center).Children(func() {
+					label := projectListStatus(s)
+					homeText(c, label, homeMeta)
+					ui.Spacer(c)
+					readingAction(c, "刷新列表", homeRefresh, func() { a.load(s) })
+				})
+				if s.Loading {
+					homeText(c, "正在读取…", homeMeta)
+				}
+				if s.Error != "" {
+					homeText(c, "未刷新 · "+s.Error, homeMeta).MaxLines(3)
+					projectLink(c, "重试读取", func() { a.load(s) })
+				}
+			})
+			a.itemList(c, s, false)
+			appFooter(c, "项目分页栏").Padding(0, 12).Children(func() {
+				homeText(c, projectListStatus(s), homeMeta)
+				ui.Spacer(c)
+				readingAction(c, "上一页", readingBack, func() { s.Offset = max(0, s.Offset-30); a.load(s) }).Disabled(s.Offset == 0 || s.Loading)
+				homeText(c, fmt.Sprint(s.Offset/30+1), homeMeta)
+				readingAction(c, "下一页", homeArrow, func() { s.Offset += 30; a.load(s) }).Disabled(!s.More || s.Loading)
+			})
+		})
+	}, func() { a.projectDetail(c, s) })
 }
 func projectDisplayTitle(i Item) string {
 	if i.Document != nil && readableDocumentTitle(*i.Document) == "" && i.BodyLoaded {
@@ -278,11 +248,12 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 	ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
 		if s.Selected == nil {
 			a.emptyReadingBackground(c)
+			appFooter(c, "项目阅读栏").Padding(0, 32)
 			return
 		}
 		i := s.Selected
 		key := i.key()
-		ui.Row(c).Height(62).Shrink(0).Padding(0, 26, 0, 32).AlignItems(ui.Center).Gap(6).Children(func() {
+		appToolbar(c, "项目内容工具栏", func() {
 			homeText(c, i.Kind+" · "+displayDate(i.Date), homeMeta).SingleLine()
 			ui.Spacer(c)
 			anchor := readingAction(c, "内容信息", readingInfo, func() {
@@ -341,7 +312,7 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 				}
 			})
 		})
-		ui.Row(c).Height(40).Shrink(0).Padding(0, 32).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Children(func() {
+		appFooter(c, "项目阅读栏").Padding(0, 32).Children(func() {
 			homeText(c, "Cognee 提供 · 只读", homeMeta)
 			if time.Now().Before(a.projectUI.CopyUntil) {
 				ui.Spacer(c)

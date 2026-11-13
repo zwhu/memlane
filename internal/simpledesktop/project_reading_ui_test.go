@@ -252,7 +252,7 @@ func TestProjectLongTitleSearchKeyboardAndStateFixtures(t *testing.T) {
 			if a.searchUI.Selection != 1 {
 				t.Fatal("down key did not select next result")
 			}
-			clickProjectUI(t, tt, "筛选知识")
+			clickProjectUI(t, tt, "搜索内容类型")
 			if a.searchUI.Submitted == a.searchSignature() {
 				t.Fatal("type change reused stale query as current")
 			}

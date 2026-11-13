@@ -519,26 +519,26 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 								if v.ExpandedEvent == event.Key {
 									title = "收起失败详情"
 								}
-								homeLink(c, title, func() {
+								homeLink(c.Key("failure-detail-"+event.Key), title, func() {
 									if v.ExpandedEvent == event.Key {
 										v.ExpandedEvent = ""
 										return
 									}
 									v.ExpandedEvent = event.Key
 									v.ExpandedReport = failureReport(event, a.Config)
-								}).Key("failure-detail-" + event.Key)
+								})
 								copyTitle := "复制诊断信息"
 								if v.CopiedEvent == event.Key {
 									copyTitle = "诊断信息已复制"
 								}
-								homeLink(c, copyTitle, func() {
+								homeLink(c.Key("failure-copy-"+event.Key), copyTitle, func() {
 									report := v.ExpandedReport
 									if v.ExpandedEvent != event.Key {
 										report = failureReport(event, a.Config)
 									}
 									c.WriteClipboard(report)
 									v.CopiedEvent = event.Key
-								}).Key("failure-copy-" + event.Key)
+								})
 							})
 							if v.ExpandedEvent == event.Key {
 								homeText(c, v.ExpandedReport, homeMeta).LineHeight(1.6).Margin(8, 0, 0, 0)

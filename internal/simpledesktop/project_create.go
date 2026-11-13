@@ -3,6 +3,7 @@ package simpledesktop
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -238,4 +239,25 @@ func (a *App) finishProjectCreation(directory AccessDirectory, id string) {
 		}
 	}
 	s.Message = fmt.Sprintf("项目 %s 已创建", id)
+}
+
+func (a *App) acceptProjectFolderDrop(paths []string) {
+	s := &a.projectCreate
+	if s.TargetProject != "" || s.Saving || s.Submitted {
+		return
+	}
+	if len(paths) != 1 {
+		s.Message = "请一次添加一个项目文件夹"
+		return
+	}
+	info, err := os.Stat(paths[0])
+	if err != nil || !info.IsDir() || !filepath.IsAbs(paths[0]) {
+		s.Message = "请拖入本机文件夹"
+		return
+	}
+	s.Folder = filepath.Clean(paths[0])
+	s.Message = ""
+	if strings.TrimSpace(s.Name) == "" {
+		s.Name = filepath.Base(s.Folder)
+	}
 }
