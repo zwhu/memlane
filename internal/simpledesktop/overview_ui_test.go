@@ -54,7 +54,11 @@ func overviewFixture(t *testing.T) *App {
 		d := Document{ID: fmt.Sprint(n), Dataset: "0", Name: title, Created: time.Now().UTC().Format(time.RFC3339)}
 		a.overviewState.Snapshot.Knowledge = append(a.overviewState.Snapshot.Knowledge, Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Title: title, Document: &d})
 	}
-	a.overviewState.Events = []overviewEvent{{Key: "failed", Title: "读取来源", State: "失败", Project: "synthetic", At: time.Now(), Record: activityRow{ID: "fixture-row", Run: "fixture-run", ErrorClass: "BrokenPipeError"}, Failures: []activityRow{{ID: "fixture-row", Run: "fixture-run", ErrorClass: "BrokenPipeError"}}}}
+	a.overviewState.Events = []overviewEvent{
+		{Key: "complete", Title: "召回知识", State: "已完成", Project: "synthetic", At: time.Now()},
+		{Key: "running", Title: "整理知识", State: "处理中", Project: "synthetic", At: time.Now()},
+		{Key: "failed", Title: "读取来源", State: "失败", Project: "synthetic", At: time.Now(), Record: activityRow{ID: "fixture-row", Run: "fixture-run", ErrorClass: "BrokenPipeError"}, Failures: []activityRow{{ID: "fixture-row", Run: "fixture-run", ErrorClass: "BrokenPipeError"}}},
+	}
 	return a
 }
 
@@ -80,12 +84,7 @@ func TestOverviewLayoutAndContinuousUIFixture(t *testing.T) {
 		t.Run(fmt.Sprint(size[0]), func(t *testing.T) {
 			a := overviewFixture(t)
 			// Exclude lifecycle polling; exercise the actual homepage and sidebar.
-			tt := ui.NewTester(func(c *ui.Context) {
-				ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-					a.overviewNavigation(c)
-					ui.Column(c).Grow(1).MinWidth(0).Children(func() { ui.Column(c).Height(62); a.overviewHome(c) })
-				})
-			}, size[0], size[1])
+			tt := ui.NewTester(a.overviewShell, size[0], size[1])
 			fixtureImage(t, tt, fmt.Sprintf("%dx%d-home", size[0], size[1]))
 			if a.overviewState.Scroll.MaxX != 0 || a.overviewState.SidebarScroll.MaxX != 0 {
 				t.Fatal("horizontal overflow")
@@ -192,6 +191,74 @@ func TestOverviewLoadingEmptyAndPartialFailureUI(t *testing.T) {
 	fixtureImage(t, tt, "partial-refresh")
 }
 
+func TestOverviewExpandedActivityStaysAlignedAndScrollsIndependently(t *testing.T) {
+	for _, size := range [][2]int{{1200, 820}, {1440, 900}} {
+		t.Run(fmt.Sprint(size[0]), func(t *testing.T) {
+			a := overviewFixture(t)
+			v := &a.overviewState
+			for n := 0; n < 30; n++ {
+				v.Events = append(v.Events, overviewEvent{Key: fmt.Sprint(n), Title: fmt.Sprintf("Synthetic event %02d", n), State: "已完成", Project: "synthetic", At: time.Now()})
+			}
+			v.More = true
+			tt := ui.NewTester(a.overviewShell, size[0], size[1])
+			// Keep the footer controls inside the viewport at both window sizes.
+			v.Scroll.Y = 120
+			tt.Frame()
+			outerMax, outerY := v.Scroll.MaxY, v.Scroll.Y
+			if err := tt.Click("查看全部动态"); err != nil {
+				t.Fatal(err)
+			}
+			if v.Scroll.MaxY != outerMax || v.Scroll.Y != outerY || v.ActivityScroll.MaxY <= 0 {
+				t.Fatalf("expanded activity enlarged/moved the page: outer=%+v activity=%+v", v.Scroll, v.ActivityScroll)
+			}
+			left, _ := tt.Find("下一页")
+			right, _ := tt.Find("收起动态")
+			if d := (left.Y + left.H) - (right.Y + right.H); d < -2 || d > 2 {
+				t.Fatalf("section bottoms differ: knowledge=%+v activity=%+v", left, right)
+			}
+			heading, _ := tt.Find("近期动态")
+			tt.Scroll(heading.X+20, heading.Y+80, 0, 180)
+			if v.ActivityScroll.Y <= 0 || v.Scroll.Y != outerY {
+				t.Fatalf("activity wheel leaked to page: outer=%+v activity=%+v", v.Scroll, v.ActivityScroll)
+			}
+			v.ExpandedEvent = "failed"
+			v.ExpandedReport = strings.Repeat("Synthetic diagnostic line\n", 100)
+			tt.Frame()
+			if v.Scroll.MaxY != outerMax {
+				t.Fatal("diagnostic expanded the page")
+			}
+			fixtureImage(t, tt, fmt.Sprintf("%dx%d-bounded-activity", size[0], size[1]))
+			if err := tt.Click("收起动态"); err != nil {
+				t.Fatal(err)
+			}
+			if v.ActivityExpanded || v.ActivityScroll.Y != 0 || v.Scroll.MaxY != outerMax {
+				t.Fatal("collapse changed outer layout or retained hidden scroll")
+			}
+			// The last page contains one short item. It must not inherit a
+			// three-row minimum or show a clipped third activity by default.
+			v.Offset = 3
+			v.ExpandedEvent = ""
+			tt.Frame()
+			if v.Scroll.MaxY >= outerMax || v.ActivityScroll.MaxY > 6 {
+				t.Fatalf("short page kept a tall/overflowing panel: outer=%+v activity=%+v", v.Scroll, v.ActivityScroll)
+			}
+			left, _ = tt.Find("下一页")
+			right, _ = tt.Find("查看全部动态")
+			if d := (left.Y + left.H) - (right.Y + right.H); d < -2 || d > 2 {
+				t.Fatalf("short-page actions not aligned: left=%+v right=%+v", left, right)
+			}
+			fixtureImage(t, tt, fmt.Sprintf("%dx%d-compact-activity", size[0], size[1]))
+			shortMax := v.Scroll.MaxY
+			if err := tt.Click("查看全部动态"); err != nil {
+				t.Fatal(err)
+			}
+			if v.Scroll.MaxY != shortMax || v.ActivityScroll.MaxY <= 0 {
+				t.Fatal("short-page expansion grew the page")
+			}
+		})
+	}
+}
+
 func TestOverviewRefreshFailureKeepsViewAndExpandedPage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
 	defer server.Close()
@@ -207,6 +274,7 @@ func TestOverviewRefreshFailureKeepsViewAndExpandedPage(t *testing.T) {
 	v.Day = "2026-11-13"
 	v.Offset = 3
 	v.Scroll.Y = 123
+	v.ActivityScroll.Y = 42
 	v.ActivityLimit = 60
 	v.ExpandedEvent = "failed"
 	v.ExpandedReport = "kept report"
@@ -216,7 +284,7 @@ func TestOverviewRefreshFailureKeepsViewAndExpandedPage(t *testing.T) {
 	// A later selection while requests are in flight must survive their callbacks.
 	v.Day = "2026-11-12"
 	drainReading(t, updates, func() bool { return !v.Loading && !v.ActivityLoading })
-	if v.Snapshot.Raw != 9 || len(v.Snapshot.Knowledge) != 1 || v.Day != "2026-11-12" || v.Offset != 3 || v.Scroll.Y != 123 || v.ActivityLimit != 60 || v.ExpandedEvent != "failed" || v.ExpandedReport != "kept report" || !v.ActivityExpanded || !v.AllProjects {
+	if v.Snapshot.Raw != 9 || len(v.Snapshot.Knowledge) != 1 || v.Day != "2026-11-12" || v.Offset != 3 || v.Scroll.Y != 123 || v.ActivityScroll.Y != 42 || v.ActivityLimit != 60 || v.ExpandedEvent != "failed" || v.ExpandedReport != "kept report" || !v.ActivityExpanded || !v.AllProjects {
 		t.Fatal("refresh reset valid content or view state")
 	}
 	if v.Error == "" || v.ActivityError == "" {

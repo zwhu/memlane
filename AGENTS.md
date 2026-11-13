@@ -44,7 +44,8 @@ UI 工作查看 `docs/images/ui-redesign/client-simplification-20261112/` 中首
 - 环境与组件、记忆处理按 [页面复用契约](docs/ui-redesign/reusable-setup.md) 同时用于初始化与后续设置；三种配置可同时保留，仅一个当前使用，保存配置与明确启用分开，切换页签不启用。Magpie 默认自动检测本机网关，无需访问凭据；环境准备复用已有组件与后台任务，不重走首任务。
 - 初始配置最新边界同样以 [页面复用契约](docs/ui-redesign/reusable-setup.md) 为准：仅「准备环境／连接 Agent／配置记忆处理」三步，完成后进入日常首页；第一项任务与记忆结果移出初始化。此前产品文档和验收中将首任务列为初始化步骤的安排属于旧版本，不覆盖本轮纠正。「设为当前使用」置于方式状态栏右侧。
 - 开发或验收本地 Agent 模型桥接前，先读 [桥接需求与方案](docs/agent-model-bridge-requirements.md)、[研究依据](docs/research-cognee-agent-appserver.md)、[旧 pi/qwen 记录](docs/pi-model-bridge-validation.md) 和 [pi/DeepSeek 新记录](docs/pi-deepseek-validation.md)。pi 0.84.1 / Ollama 的完整包技术链路已通过但 qwen3:0.6b 事实质量未通过；随后 pi 0.84.1 / DeepSeek V4.1 Flash 的完整 Schema、六个固定样本和第五包限定闭环通过。两组结果都只覆盖各自模型、样本和隔离包；本轮「设置 → 记忆处理」只增加真实 pi UI 证据，独立 Provider、Codex app-server、Magpie、共享配置分派和其余新版 UI 仍须分别验收。
-- 开发或验收 UI 前，实际打开 [当前首页设计图](docs/images/ui-redesign/client-simplification-20261112/01-home.png) 和 [当前三栏详情设计图](docs/images/ui-redesign/client-simplification-20261112/02-knowledge.png)，不能只读 Markdown 图片路径。完成后对照实际窗口截图；工具无法看图时明确视觉验收未完成。
+- 首页 A 还原与验收先读 [A视觉规范](docs/ui-redesign/visual-standards-20261113.md)：按固定原型最终样式实施，显式字体角色，统一组件与状态；应用及浏览器均在用户指定的外接显示器操作。以同尺寸、同缩放、同内容对照真实Native，功能通过不能替代视觉通过。其他页面不因此启动改造。
+- 开发或验收 UI 前，实际打开 [当前首页设计图](docs/images/ui-redesign/client-simplification-20261112/01-home.png) 和 [当前三栏详情设计图](docs/images/ui-redesign/client-simplification-20261112/02-knowledge.png)，不能只读 Markdown 图片路径。首页A使用上述视觉规范中的更新基准；完成后对照实际窗口截图；工具无法看图时明确视觉验收未完成。
 - 实现依据 [技术方案](docs/technical-plan.md) 与 [实施清单](docs/implementation-plan.md)；区分已选框架、待验证依赖和已通过的验收。
 - 文档默认中文。区分已实现、原型演示与待验证能力，不将示例状态描述为真实接入结果。
 - 首页保留宽幅总览；列表与详情页采用三栏；普通操作在栏内完成。保持紧凑排版、单色图标和按钮、连续浅蓝侧边栏。

@@ -405,14 +405,14 @@ func (a *App) View(c *ui.Context) {
 			a.loadOverview()
 		}
 	}
+	if a.page == "总览" {
+		a.overviewShell(c)
+		return
+	}
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Background(ui.Hex("#ffffff")).Children(func() {
 		a.navigation(c)
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-			height := float32(56)
-			if a.page == "总览" {
-				height = 62
-			}
-			ui.Row(c).Height(height).Shrink(0).BorderWidth(0, 0, 1, 0).BorderColor(border).Padding(0, 28).DragWindow().Children(func() {
+			ui.Row(c).Height(56).Shrink(0).BorderWidth(0, 0, 1, 0).BorderColor(border).Padding(0, 28).DragWindow().Children(func() {
 				if a.fromOverview {
 					button(c, "‹ 返回", a.returnToOverview)
 				}
@@ -425,17 +425,7 @@ func (a *App) View(c *ui.Context) {
 				if p, ok := a.current(); ok && a.page == "知识" && a.Config.ProjectControl != nil {
 					button(c, "项目设置", func() { a.access.OpenProject = p.ID; a.navigate("设置", a.project) })
 				}
-				if a.page == "总览" {
-					homeLink(c, "刷新总览", a.loadOverview)
-					ui.Button(c, "").Label("搜索知识").Width(191).Padding(7, 10).Margin(0, 12).Gap(9).Background(ui.Hex("#f4f6f8")).Border(1, homeBorder).Radius(7).Children(func() {
-						ui.Icon(c, navIcons["搜索"]).FontSize(14).TextColor(homeMuted)
-						ui.Text(c, "搜索").FontSize(11).TextColor(homeMuted)
-						ui.Spacer(c)
-						ui.Text(c, "⌘ K").FontSize(10).TextColor(homeMuted)
-					}).OnClick(a.OpenSearch)
-				} else {
-					button(c, "搜索知识", a.OpenSearch)
-				}
+				button(c, "搜索知识", a.OpenSearch)
 			})
 			if a.configError != "" {
 				ui.Text(c, "运行配置不可用："+a.configError).Margin(24).TextColor(ink)
