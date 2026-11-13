@@ -1,0 +1,27 @@
+{
+  "evidence_schema": 1,
+  "issue_ids": [
+    "E24"
+  ],
+  "provenance": "Transcribed error excerpts from observed tool outputs; not an original full log",
+  "observations": [
+    {
+      "chunk_id": "470f59",
+      "stage": "delivery-document generation",
+      "exit_code": 1,
+      "error": "SyntaxError: Non-UTF-8 code starting with 0xe5 in file <stdin> on line 3"
+    },
+    {
+      "chunk_id": "c2d0c3",
+      "stage": "error-index generation",
+      "exit_code": 1,
+      "error": "SyntaxError: Non-UTF-8 code starting with 0xe8 in file <stdin> on line 13"
+    },
+    {
+      "chunk_id": "236374",
+      "stage": "error-index generation",
+      "exit_code": 1,
+      "error": "SyntaxError: Non-UTF-8 code starting with 0xe6 in file <stdin> on line 4"
+    }
+  ]
+}

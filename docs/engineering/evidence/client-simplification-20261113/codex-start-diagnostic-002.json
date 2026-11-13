@@ -1,0 +1,17 @@
+{
+  "evidence_schema": 1,
+  "issue_ids": [
+    "E10",
+    "E11"
+  ],
+  "original_private_source": ".local/daily/codex-start-diagnostic-002.json",
+  "original_source_sha256": "9acd513c2cc1ff5ab1146a57843c657c63541a982d270f1afe3e9e6ac6ff1116",
+  "scope": "Historical metadata excerpt; not a live check or original full log",
+  "snapshot": {
+    "at": "2026-11-12T16:33:24.696548+00:00",
+    "no_turn_sent": true,
+    "same_isolation_config": true,
+    "initialize_succeeded": true,
+    "exit_code_after_owned_cleanup": 0
+  }
+}

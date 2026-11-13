@@ -1,0 +1,53 @@
+{
+  "evidence_schema": 1,
+  "issue_ids": [
+    "E22"
+  ],
+  "original_private_source": ".local/daily/d01-final-window-lifecycle.json",
+  "original_source_sha256": "589cc09c8f07af0e5fe6501a8bf53ab6b378328e968b032d2c2c01ccb4f6dd46",
+  "scope": "Historical metadata excerpt; not a live check or original full log",
+  "snapshot": {
+    "before_close": {
+      "at": "2026-11-12T18:03:20.081466+00:00",
+      "health": {
+        "service_url": {
+          "status": 200
+        },
+        "completion_url": {
+          "status": 200
+        }
+      },
+      "owner": {
+        "pid": 40911,
+        "started": "Fri Nov 13 01:39:38 2026",
+        "phase": "ready",
+        "children": [
+          40916,
+          40965,
+          47937
+        ]
+      }
+    },
+    "after_close": {
+      "at": "2026-11-12T18:03:39.102910+00:00",
+      "health": {
+        "service_url": {
+          "status": 200
+        },
+        "completion_url": {
+          "status": 200
+        }
+      },
+      "owner": {
+        "pid": 40911,
+        "started": "Fri Nov 13 01:39:38 2026",
+        "phase": "ready",
+        "children": [
+          40916,
+          40965,
+          47937
+        ]
+      }
+    }
+  }
+}

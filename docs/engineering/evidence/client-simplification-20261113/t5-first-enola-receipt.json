@@ -1,0 +1,56 @@
+{
+  "evidence_schema": 1,
+  "issue_ids": [
+    "E17"
+  ],
+  "original_private_source": ".local/daily/t5-first-enola-receipt.json",
+  "original_source_sha256": "79dc9f75d9b82c53974adb01f00f1fc80e77ce645fb41d2d369dadd96a878ed4",
+  "scope": "Historical metadata excerpt; not a live check or original full log",
+  "snapshot": {
+    "snapshot_id": "sha256:9786869e566ef33d52ea712a8d5497cdd8aa0b3cec94f3055a05b9a7c1bd96d5",
+    "format_version": 1,
+    "enola_version": "0.4.30",
+    "extractor_version": "v351",
+    "generated_at": "2026-11-12T17:04:04Z",
+    "duration": "7m35.85560725s",
+    "extractors": [
+      "cpp",
+      "dotnet",
+      "go",
+      "manifests",
+      "mdintent",
+      "grpc",
+      "ansible",
+      "java",
+      "kotlin",
+      "php",
+      "python",
+      "typescript",
+      "swift",
+      "ruby",
+      "rust"
+    ],
+    "config_hash": "sha256:3adc688a0f1dadd7c001cfc90ef05ce328f08b9a61c74a15e5f9839f222d0f08",
+    "ignore_glob_hash": "sha256:9ee2ed929411f65a0acebb88a0e8d236226c27d8061975f304e3b1ff2841c318",
+    "fact_count": 1828913,
+    "insight_count": 241,
+    "output_hashes": {
+      "facts.jsonl": "sha256:e54810f49d6584dcbc97648237d246aeca27054eb3466f83ca2b42f0678f1db6",
+      "flows.json": "sha256:1edc20231737425090f5cbe4b9c7b49a00630afc7e0a0be6ad2c17616da35a53",
+      "insights.json": "sha256:0415fac5891d40a363f0e3d4b7ccc22cfd7863aae8cb0237962318eedfa6ba2e",
+      "llm_context.md": "sha256:7c3fef5cb09ab6582b0831d400f6ac6800f8405c152b9dd85e6983e9fd7959e3"
+    },
+    "git": {
+      "commit": "559eab851ec306d44ed2549e4ad575b035b829b6",
+      "dirty": true,
+      "ref": "main"
+    },
+    "quality": {
+      "files_seen": 128965,
+      "files_parsed": 61539,
+      "files_skipped": 9724,
+      "dirs_skipped": 682,
+      "parse_errors": 0
+    }
+  }
+}

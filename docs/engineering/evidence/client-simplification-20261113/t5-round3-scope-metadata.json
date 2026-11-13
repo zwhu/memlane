@@ -1,0 +1,76 @@
+{
+  "evidence_schema": 1,
+  "issue_ids": [
+    "E17"
+  ],
+  "original_private_source": ".local/daily/t5-round3-scope-metadata.json",
+  "original_source_sha256": "e33f92b95cd62bdb09d9696f1af7ecd093acd656125d25a6685de82e75443636",
+  "scope": "Historical metadata excerpt; not a live check or original full log",
+  "snapshot": {
+    "at": "2026-11-12T18:00:24.533283+00:00",
+    "facts_count": 2287,
+    "file_count": 276,
+    "prefix_counts": {
+      ".agents": 2,
+      ".trae": 1,
+      "AGENTS.md": 1,
+      "CONTEXT.md": 1,
+      "README.md": 1,
+      "assets": 1,
+      "cmd": 3,
+      "deps": 2,
+      "docs": 240,
+      "engine": 4,
+      "internal": 7,
+      "memlane": 1,
+      "scripts": 6,
+      "web": 6
+    },
+    "excluded_path_violations": [],
+    "facts_sha256": "7e8707c92be349b5cae894b1ca1211d70c807a713b645f9c8c703bab429ec796",
+    "expected_current_files": {
+      "cmd/memlane-app/main.go": true,
+      "internal/simpledesktop/graph.go": true,
+      "scripts/dev.py": true,
+      "engine/python/codex_completion_endpoint.py": true
+    },
+    "official_receipt": {
+      "snapshot_id": "sha256:2360757ef91e35b34db4c0956db1fc1faf1647acab8bf59a40773ec6cea3a84a",
+      "format_version": 1,
+      "enola_version": "0.4.30",
+      "extractor_version": "v351",
+      "generated_at": "2026-11-12T18:00:11Z",
+      "duration": "1m13.680633333s",
+      "extractors": [
+        "go",
+        "mdintent",
+        "grpc",
+        "python",
+        "typescript",
+        "swift"
+      ],
+      "config_hash": "sha256:b9abb3e696fa72d81a8cbe61a7263e1195b0660cbdd04589b4fe6b95293870d3",
+      "ignore_glob_hash": "sha256:6b70acbd3ec2c33c95bbb2b3a6b2fc8f2632cb0a78532dc84da01afe0a27d382",
+      "fact_count": 2287,
+      "insight_count": 43,
+      "output_hashes": {
+        "facts.jsonl": "sha256:7e8707c92be349b5cae894b1ca1211d70c807a713b645f9c8c703bab429ec796",
+        "flows.json": "sha256:41a257fa2f85888d849eb8a129c706bd883aa4c046f93ed755e334031571ed03",
+        "insights.json": "sha256:d566670db74cc0c1d1acfdf52281a8e7650db6c3f9d6f9fec95ae90559d03824",
+        "llm_context.md": "sha256:7e0d7f3b9ca9fbfd95cde1d48e612daaae5ec3a59b09a3bab4d826be447d289e"
+      },
+      "git": {
+        "commit": "559eab851ec306d44ed2549e4ad575b035b829b6",
+        "dirty": true,
+        "ref": "main"
+      },
+      "quality": {
+        "files_seen": 535,
+        "files_parsed": 265,
+        "files_skipped": 5,
+        "dirs_skipped": 13,
+        "parse_errors": 0
+      }
+    }
+  }
+}

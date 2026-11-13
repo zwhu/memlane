@@ -2,6 +2,8 @@
 
 本轮D01–D09已按明确范围收口，交付入口为 `docs/engineering/client-simplification-delivery-20261113.md`。下文2026-11-12的“没有启停／未清理／未打tag”等表述保留为当时设计阶段历史，不覆盖本次已完成事实；历史全量Goal继续暂停。
 
+后续Agent定位或修改精简版前，先查[分类错误与防复发索引](docs/engineering/client-simplification-errors-20261113.md)及同版JSON。沿用具体问题编号、失败计数和证据边界，不为补记录自动重跑模型、索引或启停服务。
+
 用户已明确启动本次精简版 Goal，覆盖下文旧“开发暂停／仅方案”状态。仅执行 `docs/client-simplification-spec-20261112.md` 与技术方案范围，使用 `scripts/dev.py`、MyGo dev；不恢复历史全量 Goal、不进入 release。开发前直接提交当前相关代码并创建本地 tag，不采用独立 index、快照分支或多 worktree 快照。进度与所有权见 `docs/engineering/client-simplification-execution-20261113.md`。旧具体问题停止次数与运行依赖保护继续有效。
 
 ## 2026-11-12 当前精简设计入口

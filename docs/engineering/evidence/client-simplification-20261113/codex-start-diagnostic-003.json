@@ -1,0 +1,18 @@
+{
+  "evidence_schema": 1,
+  "issue_ids": [
+    "E10",
+    "E11"
+  ],
+  "original_private_source": ".local/daily/codex-start-diagnostic-003.json",
+  "original_source_sha256": "ca510f820f73504e76807510c687b53ad3a5e5c858d2d6f5fad23ef68192102e",
+  "scope": "Historical metadata excerpt; not a live check or original full log",
+  "snapshot": {
+    "at": "2026-11-12T16:35:04.368712+00:00",
+    "same_isolation_config": true,
+    "directories_exist": true,
+    "no_initialize_or_turn_sent": true,
+    "exit_code": 127,
+    "stderr_classification": "env: node: No such file or directory (classification from execution journal; raw stderr remains private)"
+  }
+}

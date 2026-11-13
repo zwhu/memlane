@@ -1,0 +1,16 @@
+{
+  "evidence_schema": 1,
+  "issue_ids": [
+    "E18"
+  ],
+  "original_private_source": ".local/daily/t5-invalid-code-cleanup.json",
+  "original_source_sha256": "6d349edb6ed939ebe1b30799dbc9f6b53045036c01f6b09b73fcf79704c1e09e",
+  "scope": "Historical metadata excerpt; not a live check or original full log",
+  "snapshot": {
+    "target_new_invalid_code_dataset": "86845625-0288-58a3-b556-744d5c556dc4",
+    "preserved_primary_dataset": "0785e3d2-881a-58c4-883e-cc3d2dcf76ef",
+    "started_at": "2026-11-12T17:19:36.225180+00:00",
+    "phase": "delete_outcome_unknown",
+    "error_type": "timeout"
+  }
+}

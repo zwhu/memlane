@@ -1,0 +1,24 @@
+{
+  "evidence_schema": 1,
+  "issue_ids": [
+    "E18"
+  ],
+  "original_private_source": ".local/daily/t5-official-scoped-drop.json",
+  "original_source_sha256": "0bf3725f59899e0e1efec51d98fb7a40bdf28c1442f37924436efbcf1a8e4023",
+  "scope": "Historical metadata excerpt; not a live check or original full log",
+  "snapshot": {
+    "target": "86845625-0288-58a3-b556-744d5c556dc4",
+    "primary": "0785e3d2-881a-58c4-883e-cc3d2dcf76ef",
+    "created_at": "2026-11-12T16:54:19.352174+00:00",
+    "mapping_count": 5,
+    "phase": "target_dropped_primary_preserved",
+    "apply": true,
+    "session_invalidation": {
+      "sessions_considered": 0,
+      "sessions_deleted": 0
+    },
+    "graph_store_absent": true,
+    "vector_store_absent": true,
+    "finished_at": "2026-11-12T17:39:15.948202+00:00"
+  }
+}

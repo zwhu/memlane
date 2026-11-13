@@ -1,0 +1,13 @@
+{
+  "evidence_schema": 1,
+  "issue_ids": [
+    "E11"
+  ],
+  "original_private_source": ".local/daily/codex-start-diagnostic-001.json",
+  "original_source_sha256": "ace0e51f7acafc932b2c8dd76aac5e74a62de881af4fadf70bf0f2d3c4f783e8",
+  "scope": "Historical metadata excerpt; not a live check or original full log",
+  "snapshot": {
+    "at": "2026-11-12T16:32:54.625451+00:00",
+    "no_turn_sent": true
+  }
+}

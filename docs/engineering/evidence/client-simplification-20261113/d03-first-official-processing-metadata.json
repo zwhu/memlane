@@ -1,0 +1,112 @@
+{
+  "evidence_schema": 1,
+  "issue_ids": [
+    "E09"
+  ],
+  "original_private_source": ".local/daily/d03-first-official-processing-metadata.json",
+  "original_source_sha256": "4779f03330de629a7efd1dd5415ecb3645efed1817ac49cb7a9d58ce51a57e5a",
+  "scope": "Historical metadata excerpt; not a live check or original full log",
+  "snapshot": {
+    "observed_at": "2026-11-12T16:27:53.681687+00:00",
+    "activity": [
+      {
+        "kind": "operation",
+        "pipeline_name": null,
+        "status": null,
+        "dataset_id": "0785e3d2-881a-58c4-883e-cc3d2dcf76ef",
+        "pipeline_run_id": "51841b7a-94e7-415e-8f87-fa7210726417",
+        "operation_name": "improve",
+        "outcome": "failed",
+        "background": true,
+        "error_class": "CogneeSystemError",
+        "started_at": "2026-11-12T16:26:02.276159",
+        "ended_at": "2026-11-12T16:26:34.293900",
+        "parent_operation_id": null
+      },
+      {
+        "kind": "pipeline",
+        "pipeline_name": "memify_pipeline",
+        "status": "DATASET_PROCESSING_ERRORED",
+        "dataset_id": "0785e3d2-881a-58c4-883e-cc3d2dcf76ef",
+        "pipeline_run_id": "9f33b909-5ff1-4f31-a26f-e44fbeb3fe47",
+        "operation_name": "memify_pipeline",
+        "outcome": "failed",
+        "background": null,
+        "error_class": "CogneeSystemError",
+        "started_at": "2026-11-12T16:26:02.934334",
+        "ended_at": "2026-11-12T16:26:33.760930",
+        "parent_operation_id": "51841b7a-94e7-415e-8f87-fa7210726417"
+      },
+      {
+        "kind": "pipeline",
+        "pipeline_name": "add_pipeline",
+        "status": "DATASET_PROCESSING_COMPLETED",
+        "dataset_id": "0785e3d2-881a-58c4-883e-cc3d2dcf76ef",
+        "pipeline_run_id": "a21ebb77-5463-4bae-a774-cf9135aebc44",
+        "operation_name": "add_pipeline",
+        "outcome": "succeeded",
+        "background": null,
+        "error_class": null,
+        "started_at": "2026-11-12T16:26:02.996526",
+        "ended_at": "2026-11-12T16:26:03.047358",
+        "parent_operation_id": "9f33b909-5ff1-4f31-a26f-e44fbeb3fe47"
+      },
+      {
+        "kind": "pipeline",
+        "pipeline_name": "add_pipeline",
+        "status": "DATASET_PROCESSING_STARTED",
+        "dataset_id": "0785e3d2-881a-58c4-883e-cc3d2dcf76ef",
+        "pipeline_run_id": "a21ebb77-5463-4bae-a774-cf9135aebc44",
+        "operation_name": "add_pipeline",
+        "outcome": null,
+        "background": null,
+        "error_class": null,
+        "started_at": "2026-11-12T16:26:02.996526",
+        "ended_at": null,
+        "parent_operation_id": null
+      },
+      {
+        "kind": "pipeline",
+        "pipeline_name": "memify_pipeline",
+        "status": "DATASET_PROCESSING_STARTED",
+        "dataset_id": "0785e3d2-881a-58c4-883e-cc3d2dcf76ef",
+        "pipeline_run_id": "9f33b909-5ff1-4f31-a26f-e44fbeb3fe47",
+        "operation_name": "memify_pipeline",
+        "outcome": null,
+        "background": null,
+        "error_class": null,
+        "started_at": "2026-11-12T16:26:02.934334",
+        "ended_at": null,
+        "parent_operation_id": null
+      },
+      {
+        "kind": "pipeline",
+        "pipeline_name": "memify_pipeline",
+        "status": "DATASET_PROCESSING_COMPLETED",
+        "dataset_id": "0785e3d2-881a-58c4-883e-cc3d2dcf76ef",
+        "pipeline_run_id": "fe7d5bf4-b3fb-42db-b6a2-8dfc2b6925d4",
+        "operation_name": "memify_pipeline",
+        "outcome": "succeeded",
+        "background": null,
+        "error_class": null,
+        "started_at": "2026-11-12T16:26:02.826383",
+        "ended_at": "2026-11-12T16:26:02.866088",
+        "parent_operation_id": "51841b7a-94e7-415e-8f87-fa7210726417"
+      },
+      {
+        "kind": "pipeline",
+        "pipeline_name": "memify_pipeline",
+        "status": "DATASET_PROCESSING_STARTED",
+        "dataset_id": "0785e3d2-881a-58c4-883e-cc3d2dcf76ef",
+        "pipeline_run_id": "fe7d5bf4-b3fb-42db-b6a2-8dfc2b6925d4",
+        "operation_name": "memify_pipeline",
+        "outcome": null,
+        "background": null,
+        "error_class": null,
+        "started_at": "2026-11-12T16:26:02.826383",
+        "ended_at": null,
+        "parent_operation_id": null
+      }
+    ]
+  }
+}

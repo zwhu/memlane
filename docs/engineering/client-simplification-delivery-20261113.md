@@ -56,7 +56,7 @@ R/V旧Memlane SQLite及wal/shm、原文index、agent-outbox、草稿、旧权限
 
 Enola固定版`manifests`扫描器绕过ignore，会带入build历史依赖清单。本轮通过官方配置停用该扫描器，保留其余19个默认解析器及121条忽略规则；不提供其派生的跨生态依赖清单事实，语言源码符号、调用和导入继续保留。不修改官方SDK或自写过滤图。
 
-所有本轮具体失败、尝试与证据见[统一执行记录](client-simplification-execution-20261113.md)。D03三种错误分别计数，不能合并整个D03凑阈值；T5同一范围问题前两轮失败、第三轮通过，历史累计2次不重置。其他会话未跟踪的`client-simplification-errors-20261113.md`保留，不默认纳入本轮提交。
+所有本轮具体失败、尝试与证据见[统一执行记录](client-simplification-execution-20261113.md)。D03三种错误分别计数，不能合并整个D03凑阈值；T5同一范围问题前两轮失败、第三轮通过，历史累计2次不重置。错误记录原先未纳入交付提交；用户随后明确授权结构化整理并commit/push，现见[分类错误索引](client-simplification-errors-20261113.md)，原文与脱敏证据另行保留。
 
 ## 最终运行与检查
 
