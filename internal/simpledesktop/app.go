@@ -36,6 +36,10 @@ type pane struct {
 	Technical                      map[string]bool
 }
 type App struct {
+	projectUI           projectReadingState
+	searchUI            unifiedSearchState
+	searchOrigin        *readingLocation
+	settingsOrigin      *readingLocation
 	access              projectAccessState
 	commonEdit          commonEditorState
 	titles              *ReadingTitles
@@ -71,6 +75,7 @@ type App struct {
 	service, completion string
 	configError         string
 	md                  markdown.Options
+	projectMD           *markdown.Options
 	searchProject       string
 	recent              []Item
 	homeError           string
@@ -151,7 +156,17 @@ func (a *App) current() (Project, bool) {
 	}
 	return Project{}, false
 }
-func (a *App) navigate(page string, index int) {
+func (a *App) navigate(page string, index int) { a.navigateKind(page, index, "") }
+func (a *App) navigateKind(page string, index int, kind string) {
+	a.projectUI.InfoOpen = false
+	a.projectUI.MenuOpen = false
+	a.closeUnifiedSearch()
+	if page != "检索结果" {
+		a.searchOrigin = nil
+	}
+	if page != "设置" {
+		a.settingsOrigin = nil
+	}
 	if a.page == "总览" && page != "总览" {
 		a.fromOverview = true
 		a.overviewSourceFloor = make(map[*pane]int, len(a.panes))
@@ -187,11 +202,14 @@ func (a *App) navigate(page string, index int) {
 	}
 	if page == "知识" {
 		a.kind = "知识"
+		if kind != "" {
+			a.kind = kind
+		}
 	}
 	if page == "通用知识" {
 		a.kind = "知识"
 	}
-	if page != "总览" && page != "设置" && page != "图谱" {
+	if page != "总览" && page != "设置" && page != "图谱" && page != "检索结果" {
 		s := a.state()
 		a.load(s)
 	}
@@ -254,6 +272,8 @@ func (a *App) load(s *pane) {
 			err = fmt.Errorf("项目正在登记，内容归属尚未确认")
 		} else if page == "通用知识" {
 			rows, more, err = client.commonDocuments(ctx, p, offset, category)
+		} else if page == "知识" && (kind == "原始记录" || kind == "会话" || kind == "文档") {
+			rows, more, err = client.projectRecords(ctx, p, offset, kind)
 		} else if kind == "会话" {
 			rows, more, err = client.sessions(ctx, p, offset)
 		} else {
@@ -399,6 +419,9 @@ func button(c *ui.Context, label string, fn func()) {
 	ui.Button(c, label).FontSize(12).Padding(8, 12).Background(ui.Transparent).BorderWidth(0).Justify(ui.Start).OnClick(fn)
 }
 func (a *App) View(c *ui.Context) {
+	ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.viewContent(c); a.searchDialog(c) })
+}
+func (a *App) viewContent(c *ui.Context) {
 	c.After(2 * time.Second)
 	a.syncReadingIdentity()
 	if time.Now().After(a.access.Next) {
@@ -421,21 +444,7 @@ func (a *App) View(c *ui.Context) {
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Background(ui.Hex("#ffffff")).Children(func() {
 		a.navigation(c)
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-			ui.Row(c).Height(56).Shrink(0).BorderWidth(0, 0, 1, 0).BorderColor(border).Padding(0, 28).DragWindow().Children(func() {
-				if a.fromOverview {
-					button(c, "‹ 返回", a.returnToOverview)
-				}
-				title := a.page
-				if _, ok := a.current(); ok && a.page == "知识" {
-					title = projectLabels(a.Config.Projects)[a.project]
-				}
-				ui.Text(c, title).FontSize(14).Bold().TextColor(ink)
-				ui.Spacer(c)
-				if p, ok := a.current(); ok && a.page == "知识" && a.Config.ProjectControl != nil {
-					button(c, "项目设置", func() { a.access.OpenProject = p.ID; a.navigate("设置", a.project) })
-				}
-				button(c, "搜索知识", a.OpenSearch)
-			})
+			a.projectHeader(c)
 			if a.configError != "" {
 				ui.Text(c, "运行配置不可用："+a.configError).Margin(24).TextColor(ink)
 				return
@@ -446,54 +455,18 @@ func (a *App) View(c *ui.Context) {
 			case "设置":
 				a.settings(c)
 			case "图谱":
+				ui.Column(c).Shrink(0).Padding(12, 32, 0, 32).Children(func() { a.projectTabs(c) })
 				a.graphView(c)
+			case "知识", "检索结果":
+				a.projectReading(c)
 			default:
 				a.reading(c)
 			}
 		})
 	})
 }
-func (a *App) navigation(c *ui.Context) {
-	if a.page == "总览" {
-		a.overviewNavigation(c)
-		return
-	}
-	ui.Column(c).Width(196).Shrink(0).Background(blue).Children(func() {
-		ui.Row(c).Height(72).Padding(30, 24, 0, 24).DragWindow().Children(func() {
-			ui.Icon(c, mark).FontSize(19).TextColor(ui.Hex("#60758a"))
-			ui.Text(c, "Memlane").Margin(0, 10).FontSize(14).Bold().TextColor(ui.Hex("#60758a"))
-		})
-		ui.Column(c).Padding(12).Gap(6).Children(func() {
-			for _, page := range []string{"总览", "搜索", "通用知识"} {
-				label := page
-				nav := ui.Button(c, "").Label(label).Children(func() {
-					ui.Icon(c, navIcons[label]).FontSize(16).TextColor(muted)
-					ui.Text(c, label).Margin(0, 12).FontSize(13).TextColor(ink)
-				}).Key("nav-"+page).Height(38).Justify(ui.Start).Padding(8, 16).Background(ui.Transparent).BorderWidth(0).Radius(6).FontSize(13).OnClick(func() { a.navigate(label, 0) })
-				if a.page == page {
-					nav.Background(ui.Hex("#d5e1ef"))
-				}
-			}
-		})
-		ui.Text(c, "项目").FontSize(10).TextColor(muted).Margin(22, 24, 8, 24)
-		ui.Scroll(c).Grow(1).Padding(0, 12).Gap(6).Children(func() {
-			labels := projectLabels(a.Config.Projects)
-			for idx, p := range a.Config.Projects {
-				index := idx
-				nav := ui.Button(c, "").Label(labels[idx]).Children(func() {
-					ui.Icon(c, folder).FontSize(16).TextColor(muted)
-					ui.Text(c, labels[idx]).Margin(0, 12).FontSize(13).TextColor(ink)
-				}).Key("project-"+p.ID).Height(38).Justify(ui.Start).Padding(8, 16).Background(ui.Transparent).BorderWidth(0).Radius(6).OnClick(func() { a.navigate("知识", index) })
-				if a.page == "知识" && a.project == index {
-					nav.Background(ui.Hex("#d5e1ef"))
-				}
-			}
-		})
-		button(c, "设置", func() { a.navigate("设置", 0) })
-		ui.Text(c, "服务状态 · "+a.service).FontSize(10).TextColor(muted).Margin(12, 20, 18, 20).MaxLines(2)
-	})
-}
-func (a *App) home(c *ui.Context) { a.overviewHome(c) }
+func (a *App) navigation(c *ui.Context) { a.overviewNavigation(c) }
+func (a *App) home(c *ui.Context)       { a.overviewHome(c) }
 func (a *App) settings(c *ui.Context) {
 	ui.Scroll(c).Grow(1).Padding(30, 32).Gap(22).Children(func() {
 		ui.Text(c, "服务与连接").FontSize(21).Bold()
@@ -598,11 +571,7 @@ func (a *App) reading(c *ui.Context) {
 						})
 					}
 				}
-				input := ui.TextInput(c.Key("query-"+a.routeKey()), &s.Query).Placeholder("搜索当前内容").Label("官方内容搜索").Height(36).OnSubmit(func() { s.Offset = 0; a.load(s) })
-				if a.focusSearch {
-					input.Focus()
-					a.focusSearch = false
-				}
+
 				ui.Row(c).Children(func() {
 					ui.Text(c, fmt.Sprintf("已载入 %d 项", len(s.Items))).FontSize(10).TextColor(muted)
 					ui.Spacer(c)
@@ -783,7 +752,7 @@ func displayDate(date string) string {
 	return "时间未知"
 }
 
-func (a *App) OpenSearch() { a.navigate("搜索", 0); a.focusSearch = true }
+func (a *App) OpenSearch() { a.openUnifiedSearch(false) }
 func (a *App) projectEditor(c *ui.Context) {
 	if a.settingsMessage != "" {
 		ui.Text(c, a.settingsMessage).FontSize(11).TextColor(muted)

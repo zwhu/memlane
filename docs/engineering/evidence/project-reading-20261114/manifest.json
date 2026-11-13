@@ -1,0 +1,712 @@
+[
+  {
+    "file": "README.md",
+    "sha256": "7a3d04c39a72279b1e7bda1d462bd85725b54b70e050116a2e0be90604275cc7",
+    "bytes": 955
+  },
+  {
+    "file": "final/fixture-1200x820-bounded-activity.png",
+    "sha256": "2e3eb565f50b15d682ecb4e96ed728163bfbd3438bc753ed9f4bdb68edc28802",
+    "bytes": 153548,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-1200x820-compact-activity.png",
+    "sha256": "16fa080e489ad537d32bcd36b482157eab1b578f45dc2120de95bc6162480468",
+    "bytes": 116533,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-1200x820-home.png",
+    "sha256": "fcdd2d03d71b36c9db29a4b20341ff2d7f7c11fb41fb4e4b3d72256d35982363",
+    "bytes": 138437,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-1200x820-projects.png",
+    "sha256": "eaba8b93eb1b7beb3100c7618ccd426f6531f30e465c6a1e6b88470a481ed5dd",
+    "bytes": 113676,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-1200x820-selected-a.png",
+    "sha256": "295df39ec9dbdf0c79c4fc8a2e50e703c5950a0c29ca0911f940fe80ddb3a6a2",
+    "bytes": 311040,
+    "pixels": [
+      2400,
+      1640
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-1440x900-bounded-activity.png",
+    "sha256": "c05e5ce8fe1ce3dd8e5cb6ec7bca4980f562d4fbbb781951e5fefa16c3232079",
+    "bytes": 166824,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-1440x900-compact-activity.png",
+    "sha256": "aee0481131f4a9cbee411090cb180479aca2a5edf5e36b0cda2daff38186f3b8",
+    "bytes": 131189,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-1440x900-home.png",
+    "sha256": "dff52f148dd809bb8b47ddd2d497c45d25c21e23cf81e44bb11ab2685033b71e",
+    "bytes": 149603,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-1440x900-projects.png",
+    "sha256": "83c597536cd22be6242d2b1ba52f349f45c5d21fcfa25e6d9a610a6388091749",
+    "bytes": 137052,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-1440x900-selected-a.png",
+    "sha256": "4f19fb238580a1d28f4a3651196b7a45de1b63dd3f65b721ece549a7a8ab5819",
+    "bytes": 350849,
+    "pixels": [
+      2880,
+      1800
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-empty.png",
+    "sha256": "89c41fdf230044b5955b56cf9f28a7982b9bf29be1811ee2acf0771bf1931ba1",
+    "bytes": 68468,
+    "pixels": [
+      980,
+      758
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-font-antialiased.png",
+    "sha256": "24bcf1f190aaafb6d50d42fcfffe8674da8554a30c4d74b856735838ed3d94c7",
+    "bytes": 9882,
+    "pixels": [
+      400,
+      120
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-font-normal.png",
+    "sha256": "e84bf996a7cb485b70915cb076dbeacf1299628acb4ccc481a495952c176d60c",
+    "bytes": 10263,
+    "pixels": [
+      400,
+      120
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-loading.png",
+    "sha256": "0aaec65c68ef133912cd7b5f083e25dbab16721912c651341ce4d15d9f9ef776",
+    "bytes": 68801,
+    "pixels": [
+      980,
+      758
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-partial-refresh.png",
+    "sha256": "ddec3bf79d6f8d2dd51aa16b2e03b7d0391e519e9abc877ee3b0624ee7f3e2e9",
+    "bytes": 81729,
+    "pixels": [
+      980,
+      758
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-project-1200x820-empty.png",
+    "sha256": "8e0e8329ff3a7e292d97cf7bfeee71e7416fe4a9cc554491eee64d96644d9672",
+    "bytes": 82062,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-project-1200x820-graph-disabled.png",
+    "sha256": "a88b5e93560fc9f0c6ce9ee878caf895a86d30fa26fd52f1ac14d33eac174ff7",
+    "bytes": 58417,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-project-1200x820-information.png",
+    "sha256": "b673bce1eff226b4924930f11c88b463aff6c8b47ddd3ac421870f029fe71d99",
+    "bytes": 126982,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-project-1200x820-loading.png",
+    "sha256": "5543a65f8ac1d5187dabdc6cc4242e8b5ed57ec877510b8055bfc28f316d05d3",
+    "bytes": 80762,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-project-1200x820-long-title.png",
+    "sha256": "9e64ac9fed335b3b489f0d0aa21df11989f578f11b085a2d7d869c8b68f3c5f4",
+    "bytes": 133597,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-project-1200x820-reading.png",
+    "sha256": "68632b897d0e07ccc234a3b495f5536fb3bbd8751e0d3e78cfe058b27e48b44c",
+    "bytes": 141349,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-project-1200x820-search-empty.png",
+    "sha256": "0d10dfc9cbae53dcda00dd50f632c249fbbd594acd450edd5129c3f0281f85f0",
+    "bytes": 80487,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-project-1200x820-search-results.png",
+    "sha256": "d4c8380b75fa4dc563c67b7c0e1394e60f06cd2fcdeeb88c9260a7a58ffcac02",
+    "bytes": 138246,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-project-1440x900-empty.png",
+    "sha256": "d140d3705d563866402ffa1e48383aed928aefe96193fb6cef93c306c3d5a572",
+    "bytes": 96142,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-project-1440x900-information.png",
+    "sha256": "6c44524b78a6877992e95bdfa27392884e0dc2ec215520f6b66df2db354bb0ce",
+    "bytes": 171684,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-project-1440x900-loading.png",
+    "sha256": "7419110ba121d37df6666e8454b233e8a5918b0846c93b8adaae29353bd1ce35",
+    "bytes": 95023,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-project-1440x900-long-title.png",
+    "sha256": "3f38c5a41202bc98486ca5f8ae9a2660606d0ef7bb85dd8dfb3c9935aa79aaec",
+    "bytes": 150267,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-project-1440x900-reading.png",
+    "sha256": "681ca70ba86d8563f8565836882253e069ad3ed6068247025e67cc3e3ea3bf14",
+    "bytes": 156988,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-project-1440x900-search-empty.png",
+    "sha256": "beaa3f026171cce869a366867bb8db427e9f8d65e9cbc7ecdafa3c6dcc39ca4b",
+    "bytes": 104025,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "final/fixture-project-1440x900-search-results.png",
+    "sha256": "ba9b9880b74438a786c32fdfaa38b730a2cd0389c4bf2354472b93ceb63e949a",
+    "bytes": 162502,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-1/fixture-project-1200x820-information.png",
+    "sha256": "910b0c2974dca143edd3ec1b12557a23dd7a817971d51ea3bcb22cebf8681b16",
+    "bytes": 116519,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-1/fixture-project-1200x820-reading.png",
+    "sha256": "9a6bfb4d73e9941826691c05631d1efe5b08ee1fc1982d4c4d3b9ad672af5497",
+    "bytes": 139036,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-1/fixture-project-1440x900-information.png",
+    "sha256": "4c0a56b99bb70a9f22a14eb8b9aa1242a8f9b84f60d60fac25d06badd2159795",
+    "bytes": 172528,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-1/fixture-project-1440x900-reading.png",
+    "sha256": "64d4744fb36141d375587c47cd185c0ad6bafbb8e700182425a9c4e4b18b61e0",
+    "bytes": 151781,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-1/result.json",
+    "sha256": "49fa4c3ea357adf65685851bdbacc40e5b1c548082f6f8336c51b44d89efd9b8",
+    "bytes": 1092
+  },
+  {
+    "file": "round-2/fixture-project-1200x820-information.png",
+    "sha256": "057ddbbbefc62c17ba061dcca6372c48c69b613c4177330724792b3aa01da839",
+    "bytes": 116404,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-2/fixture-project-1200x820-reading.png",
+    "sha256": "8ac875ea59941a2949c169d199cd69e35f48ab9742b4a608ca0c56f12b252ffa",
+    "bytes": 138898,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-2/fixture-project-1200x820-search-empty.png",
+    "sha256": "5dd9d6b8797dc526f48f4848460b0161edc761cab04ab3996191a5ae265af5d2",
+    "bytes": 75223,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-2/fixture-project-1440x900-information.png",
+    "sha256": "6f2c5818d5d2566bd693181093e82691742f4e88798079d7a9d419e34d8ec346",
+    "bytes": 172387,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-2/fixture-project-1440x900-reading.png",
+    "sha256": "8c4346d789077b69ff155d256e6476d9085ad81bdf3e5df476c261628e30489f",
+    "bytes": 151650,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-2/fixture-project-1440x900-search-empty.png",
+    "sha256": "41d998e61d9b8238fb000d15233623ab87e5021bb8b5767e7aeab9cf3c5cc1be",
+    "bytes": 96318,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-1200x820-bounded-activity.png",
+    "sha256": "f5176db7a638105c9afad81d22c2b2cecabd96e68c0f0c786ab878549f397d88",
+    "bytes": 154121,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-1200x820-compact-activity.png",
+    "sha256": "8791b8285030f9c9e190279e4ab23fb2ded793d8c9130261c74689df660f154e",
+    "bytes": 116661,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-1200x820-home.png",
+    "sha256": "243b0e5faa8979fc5de7c053ffe022476956bb68b55891f4b9283058c54425be",
+    "bytes": 139178,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-1200x820-projects.png",
+    "sha256": "9c03f118a9c44cd2664030a1b66736aebca1bc24b9c23087a620734d4a77e27a",
+    "bytes": 113835,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-1200x820-selected-a.png",
+    "sha256": "295df39ec9dbdf0c79c4fc8a2e50e703c5950a0c29ca0911f940fe80ddb3a6a2",
+    "bytes": 311040,
+    "pixels": [
+      2400,
+      1640
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-1440x900-bounded-activity.png",
+    "sha256": "59c043bb069d61be19edbdcb15eacc5c4080d5284f506ec81c53f5d577de5e5d",
+    "bytes": 167345,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-1440x900-compact-activity.png",
+    "sha256": "af5cb0d9162a983cb8a73e06dddb7eb0b9a6beb2d3f5cc9d6b2130417c6e4324",
+    "bytes": 131387,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-1440x900-home.png",
+    "sha256": "64fcc7370209c61802049e8711d519b5c9b1d8ae1778453f27474664bef5ca74",
+    "bytes": 150484,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-1440x900-projects.png",
+    "sha256": "87e14594358fb7014b50bc2b3c1341a05cd88af43ea47d312cd60bc8886f2106",
+    "bytes": 137462,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-1440x900-selected-a.png",
+    "sha256": "4f19fb238580a1d28f4a3651196b7a45de1b63dd3f65b721ece549a7a8ab5819",
+    "bytes": 350849,
+    "pixels": [
+      2880,
+      1800
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-empty.png",
+    "sha256": "89c41fdf230044b5955b56cf9f28a7982b9bf29be1811ee2acf0771bf1931ba1",
+    "bytes": 68468,
+    "pixels": [
+      980,
+      758
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-font-antialiased.png",
+    "sha256": "24bcf1f190aaafb6d50d42fcfffe8674da8554a30c4d74b856735838ed3d94c7",
+    "bytes": 9882,
+    "pixels": [
+      400,
+      120
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-font-normal.png",
+    "sha256": "e84bf996a7cb485b70915cb076dbeacf1299628acb4ccc481a495952c176d60c",
+    "bytes": 10263,
+    "pixels": [
+      400,
+      120
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-loading.png",
+    "sha256": "0aaec65c68ef133912cd7b5f083e25dbab16721912c651341ce4d15d9f9ef776",
+    "bytes": 68801,
+    "pixels": [
+      980,
+      758
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-partial-refresh.png",
+    "sha256": "ddec3bf79d6f8d2dd51aa16b2e03b7d0391e519e9abc877ee3b0624ee7f3e2e9",
+    "bytes": 81729,
+    "pixels": [
+      980,
+      758
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-project-1200x820-empty.png",
+    "sha256": "8e0e8329ff3a7e292d97cf7bfeee71e7416fe4a9cc554491eee64d96644d9672",
+    "bytes": 82062,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-project-1200x820-information.png",
+    "sha256": "f42a11261258c0954cd5d99cd4b3870581a258eba2ac7241c6d72ecbd8453df7",
+    "bytes": 126952,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-project-1200x820-loading.png",
+    "sha256": "99c3291441010ad8d2c59ade69d111b5963fa361e64103d167630a7a48df6053",
+    "bytes": 80928,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-project-1200x820-long-title.png",
+    "sha256": "2e9725645e6ef4dcc2e8ba3929c7ab52a402e0c6f553db8d3148c42a2706bc31",
+    "bytes": 133514,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-project-1200x820-reading.png",
+    "sha256": "68632b897d0e07ccc234a3b495f5536fb3bbd8751e0d3e78cfe058b27e48b44c",
+    "bytes": 141349,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-project-1200x820-search-empty.png",
+    "sha256": "0d10dfc9cbae53dcda00dd50f632c249fbbd594acd450edd5129c3f0281f85f0",
+    "bytes": 80487,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-project-1200x820-search-results.png",
+    "sha256": "d1f541144de46629b487d14f5a6b70ad374a12111157cd62b2ab578156f83bc5",
+    "bytes": 138185,
+    "pixels": [
+      1200,
+      820
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-project-1440x900-empty.png",
+    "sha256": "d140d3705d563866402ffa1e48383aed928aefe96193fb6cef93c306c3d5a572",
+    "bytes": 96142,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-project-1440x900-information.png",
+    "sha256": "499b74e93f86853aa58dd9f3a1164bb1d7ee7d77b2433ec65927e02e30037cd6",
+    "bytes": 171387,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-project-1440x900-loading.png",
+    "sha256": "8286f68bbb8c05e8ac3e891d786ba1c4e81a36d44ed39e78e4f8be4edfadb355",
+    "bytes": 95188,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-project-1440x900-long-title.png",
+    "sha256": "1b5b7c173020e9513b318c11d5d23054c85970a5e192373fbf7f6464a58ecb5d",
+    "bytes": 150196,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-project-1440x900-reading.png",
+    "sha256": "37ba0676aefd4a581400387fc691a05a36d833dadfa654846bd397ead7e7e932",
+    "bytes": 156773,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-project-1440x900-search-empty.png",
+    "sha256": "602ea61497266a219229515200cf34167b04e99ae8b3a6d47e5714a6d3d6d4e5",
+    "bytes": 103776,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/fixture-project-1440x900-search-results.png",
+    "sha256": "3c21b4542887bb4cf86d8fc114ed425edaab4ee37466b77ce6d673c8d7df0223",
+    "bytes": 162374,
+    "pixels": [
+      1440,
+      900
+    ],
+    "kind": "isolated MyGo Tester fixture, not actual window"
+  },
+  {
+    "file": "round-3/result.json",
+    "sha256": "9af005414527b7317323f473c28b0227400c385555380db6ed444422766207ba",
+    "bytes": 527
+  },
+  {
+    "file": "verification.json",
+    "sha256": "10bdc3a295d0057854e12113da3c3f5c7c0f0497271c48ead0c5f48ac0352422",
+    "bytes": 3613
+  }
+]

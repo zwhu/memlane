@@ -15,12 +15,7 @@ func (a *App) overviewShell(c *ui.Context) {
 					homeText(c, "总览", homeTopTitle)
 					ui.Spacer(c)
 					homeLink(c, "刷新总览", a.loadOverview)
-					ui.Button(c, "").Label("搜索知识").Width(191).Padding(7, 10).Margin(0, 0, 0, 12).Gap(9).Background(ui.Hex("#f4f6f8")).Border(1, ui.Hex("#e8ecf0")).Radius(7).Children(func() {
-						ui.Icon(c, homeSearch).FontSize(14).TextColor(ui.Hex("#7c8997"))
-						homeText(c, "搜索", homeAction).TextColor(ui.Hex("#7c8997"))
-						ui.Spacer(c)
-						homeText(c, "⌘ K", homeMeta).TextColor(ui.Hex("#95a1ad"))
-					}).OnClick(a.OpenSearch)
+					a.unifiedSearchTrigger(c)
 				})
 				if a.configError != "" {
 					homeText(c, "运行配置不可用："+a.configError, homeBody).Margin(24)
@@ -67,7 +62,7 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			homeText(c, "Memlane", homeBrand)
 		})
 		ui.Column(c).Gap(3).Children(func() {
-			for _, page := range []string{"总览", "搜索", "通用知识"} {
+			for _, page := range []string{"总览", "通用知识"} {
 				label := page
 				n := ui.Button(c, "").Key("nav-"+page).Label(label).Height(39).Padding(10, 12).Gap(11).Justify(ui.Start).Background(ui.Transparent).BorderWidth(0).Radius(7)
 				homeNavSurface(n, page == a.page)
@@ -106,7 +101,7 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			for idx, p := range a.Config.Projects {
 				index := idx
 				b := ui.Button(c, "").Key("project-"+p.ID).Label(labels[idx]).Tooltip(p.Name+" · "+p.Path).FillWidth().Padding(8, 12).Gap(11).Justify(ui.Start).BorderWidth(0).Radius(7)
-				homeNavSurface(b, false).Children(func() {
+				homeNavSurface(b, (a.page == "知识" || a.page == "图谱" || a.page == "检索结果") && a.project == idx).Children(func() {
 					ui.Icon(c, homeFolder).FontSize(17).Shrink(0).TextColor(homeIconInk)
 					ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
 						homeText(c, p.Name, homeBody).TextColor(homeNavInk).SingleLine()

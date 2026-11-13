@@ -282,20 +282,46 @@ func (a *App) graphView(c *ui.Context) {
 		ui.Row(c).Padding(12, 24).Gap(8).Children(func() {
 			for _, mode := range []string{"实体关系", "代码结构"} {
 				m := mode
-				button(c, m, func() { a.graphMode = m; a.graph.clear(); a.loadGraph() })
+				label := m
+				if m == "代码结构" {
+					label = "代码图谱"
+				}
+				projectLink(c, label, func() {
+					a.graphMode = m
+					a.graph.clear()
+					if p, ok := a.current(); ok && m == "代码结构" && !p.CodeEnabled {
+						a.graphError = ""
+						a.graphLoading = false
+						return
+					}
+					a.loadGraph()
+				})
 			}
 			ui.Spacer(c)
-			button(c, "刷新图谱", func() { a.loadGraph(); a.restoreCodeState() })
+			projectLink(c, "刷新图谱", func() {
+				if p, ok := a.current(); ok && a.graphMode == "代码结构" && !p.CodeEnabled {
+					return
+				}
+				a.loadGraph()
+				a.restoreCodeState()
+			})
 			p, ok := a.current()
-			if ok {
+			if ok && a.graphMode == "代码结构" {
 				label := "开启代码图谱"
 				if p.CodeEnabled {
 					label = "关闭代码索引"
 				}
-				ui.Button(c, label).Disabled(a.codeBusy && !p.CodeEnabled).OnClick(func() { a.toggleCode(!p.CodeEnabled) })
-				ui.Button(c, "更新代码图谱").Disabled(!p.CodeEnabled || a.codeBusy || a.codeUnknown || a.codeRemoteActive).OnClick(func() { a.indexCode() })
+				ui.Button(c, label).FontWeight(400).FontSize(12).TextColor(homeLinkInk).Background(ui.Transparent).BorderWidth(0).Disabled(a.codeBusy && !p.CodeEnabled).OnClick(func() { a.toggleCode(!p.CodeEnabled) })
+				ui.Button(c, "更新代码图谱").FontWeight(400).FontSize(12).TextColor(homeLinkInk).Background(ui.Transparent).BorderWidth(0).Disabled(!p.CodeEnabled || a.codeBusy || a.codeUnknown || a.codeRemoteActive).OnClick(func() { a.indexCode() })
 			}
 		})
+		if p, ok := a.current(); ok && a.graphMode == "代码结构" && !p.CodeEnabled {
+			ui.Column(c).Padding(32).Gap(16).Children(func() {
+				homeText(c, "代码图谱尚未开启", homeHeading).FontSize(20)
+				homeText(c, "按项目显式开启，后续手动更新。访问此页不会自动创建索引。", homeBody)
+			})
+			return
+		}
 		if a.graphError != "" {
 			ui.Text(c, a.graphError).FontSize(11).TextColor(muted).Margin(10, 24)
 		}

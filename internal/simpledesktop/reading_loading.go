@@ -151,11 +151,15 @@ func (a *App) startTitles(s *pane) {
 							return
 						}
 						// Do not put preheated raw in every row. The bounded cache owns it.
-						s.Items[idx].Title = result.Title
+						title := result.Title
+						if a.page == "知识" {
+							title = projectDisplayTitle(result)
+						}
+						s.Items[idx].Title = title
 						s.Items[idx].ReadingState = "ready"
 						s.Items[idx].ReadingError = ""
 						if s.Selected != nil && s.Selected.key() == i.key() && !s.Selected.BodyLoaded {
-							s.Selected.Title = result.Title
+							s.Selected.Title = title
 						}
 						return
 					}
@@ -166,6 +170,15 @@ func (a *App) startTitles(s *pane) {
 }
 
 func (a *App) unavailableReadingItem(i Item) {
+	a.projectUI.InfoOpen = false
+	for n, r := range a.searchUI.Rows {
+		if r.Dataset == i.Dataset && (r.ID == i.ID || r.SourceDocument == i.ID) {
+			a.searchUI.Rows[n].Body = ""
+			a.searchUI.Rows[n].Preview = ""
+			a.searchUI.Rows[n].Title = "内容已失效"
+			a.searchUI.Rows[n].ReadingState = "unavailable"
+		}
+	}
 	a.titles.InvalidateObject(i.Dataset, i.ID)
 	if a.readingRevisions == nil {
 		a.readingRevisions = map[string]uint64{}
@@ -244,6 +257,8 @@ func (a *App) retryReadingTitle(s *pane, i Item) {
 // InvalidateReading must be called by policy/credential integration when access is
 // revoked. It removes raw data and copy affordances, including nested history.
 func (a *App) InvalidateReading(dataset string) {
+	a.invalidateUnifiedSearch(dataset)
+	a.projectUI.InfoOpen = false
 	a.titles.Invalidate(dataset)
 	if a.recentCancel != nil {
 		a.recentCancel()
