@@ -88,6 +88,24 @@ for kwargs in ({"target": "own-slug"}, {"workspace": os.path.dirname(os.getcwd()
         pass
 ''')
 
+    def test_shell_binding_failure_never_reaches_inherited_owner_or_curl(self):
+        self.run_isolated('''
+import json, os, pathlib, subprocess, sys
+home=pathlib.Path.home()
+(home/".cognee-plugin").mkdir()
+(home/".cognee-plugin/api_key.json").write_text(json.dumps({"api_key":"cached-owner-key"}))
+bin=home/"bin";bin.mkdir()
+curl=bin/"curl";curl.write_text("#!/bin/sh\\ntouch "+str(home/"curl-called")+"\\n");curl.chmod(0o700)
+env={k:v for k,v in os.environ.items() if not k.startswith("MEMLANE_")}
+env.update(COGNEE_API_KEY="inherited-owner-key",PATH=str(bin)+os.pathsep+os.environ["PATH"])
+scripts=pathlib.Path(sys.path[1])
+for name,arg in (("cognee-forget.sh","env"),("cognee-index-repo.sh","/unused"),("cognee-search.sh","probe"),("cognee-remember.sh","probe")):
+    result=subprocess.run(["bash",str(scripts/name),arg],env=env,capture_output=True,text=True,timeout=10)
+    assert result.returncode != 0,(name,result.stdout,result.stderr)
+    assert "owner-key" not in result.stdout,(name,result.stdout)
+    assert not (home/"curl-called").exists(),name
+''')
+
     def test_installation_pin_overrides_inherited_owner_and_shared_environment(self):
         self.run_isolated('''
 import os

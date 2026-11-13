@@ -117,6 +117,13 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         self.official.acls[(agent['principal_id'], project['dataset_id'])] = {'read','write','delete'}
         self.assertFalse((await self.registry.checked_policy(project, 'a'))['ready'])
 
+    async def test_manual_origin_is_preserved_when_automatic_hooks_find_it(self):
+        created=await self.registry.create_project(self.registry.state['revision'],str(self.repo),name='Manual')
+        self.assertEqual(created['source'],'manual')
+        bound=await self.registry.resolve('a',str(self.repo),'manual-after')
+        self.assertEqual(bound['project_id'],created['id'])
+        self.assertEqual(self.registry.state['projects'][created['id']]['source'],'manual')
+
     async def test_defaults_inherit_false_and_reset(self):
         result = await self.registry.resolve('a', str(self.repo), 'one')
         identifier = result['project_id']

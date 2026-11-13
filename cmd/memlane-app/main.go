@@ -16,6 +16,16 @@ func main() {
 	mygo.App.OnReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{Title: "Memlane", Width: 1200, Height: 820, MinWidth: 1200, MinHeight: 820, TitleBarStyle: mygo.TitleBarHidden, Content: ui.View(app.View)})
 		app.Update = func(fn func()) { win.Update(fn) }
+		// Keep the reading tree alive when the user closes the main window.
+		// An explicit app quit must still close it so dev reloads can finish.
+		quitting := false
+		mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { quitting = true })
+		win.OnClose(func(event *mygo.CloseEvent) {
+			if !quitting {
+				event.PreventDefault()
+				win.Hide()
+			}
+		})
 		win.OnFocus(func() { win.Update(app.RefreshProjectDirectory) })
 		if err := app.AttachGraph(win); err != nil {
 			log.Printf("官方图组件不可用：%v", err)

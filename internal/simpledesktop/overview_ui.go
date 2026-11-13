@@ -194,11 +194,12 @@ func (a *App) overviewHome(c *ui.Context) {
 		})
 		ui.Text(c, "项目").FontSize(15).Bold().TextColor(ink)
 		ui.Row(c).Gap(12).Children(func() {
+			labels := projectLabels(a.Config.Projects)
 			for idx, p := range a.Config.Projects {
 				index := idx
-				ui.Button(c, "").Key("home-project-"+p.ID).Label(p.Name+" · 查看项目知识").Grow(1).MinWidth(0).Justify(ui.Start).Padding(16).Height(82).Background(ui.Hex("#ffffff")).Border(1, border).Radius(8).Children(func() {
+				ui.Button(c, "").Key("home-project-"+p.ID).Label(labels[idx]+" · 查看项目知识").Grow(1).MinWidth(0).Justify(ui.Start).Padding(16).Height(82).Background(ui.Hex("#ffffff")).Border(1, border).Radius(8).Children(func() {
 					ui.Column(c).Gap(9).Children(func() {
-						ui.Text(c, p.Name).FontSize(14).Bold().TextColor(ink)
+						ui.Text(c, labels[idx]).FontSize(14).Bold().TextColor(ink)
 						ui.Text(c, "查看项目知识  ›").FontSize(11).TextColor(muted)
 					})
 				}).OnClick(func() { a.navigate("知识", index) })

@@ -289,9 +289,26 @@ if managed():
     api_key = os.environ["COGNEE_API_KEY"]
     if any(target != project_id for target in dataset_ids):
         session_id, scope = "", ["graph"]''')
-    elif name in ('cognee-remember.sh', 'cognee-search.sh'):
+    elif name in ('cognee-remember.sh', 'cognee-search.sh', 'cognee-forget.sh', 'cognee-index-repo.sh'):
         text = replace(text, 'except Exception:\n    pass\nservice_url =', 'except Exception:\n    raise SystemExit("managed_configuration_required")\nservice_url =')
-        if name == 'cognee-search.sh':
+        # The upstream shell swallows a Python config failure and falls back
+        # to inherited exports. A failed managed binding must stop the shell.
+        text = replace(text, 'SERVICE_URL="$(python3 -', '''if [ -z "$runtime_json" ]; then
+    echo '{"error":"managed_configuration_required"}' >&2
+    exit 2
+fi
+SERVICE_URL="$(python3 -''')
+        if name == 'cognee-forget.sh':
+            text = replace(text, '"${PLUGIN_DIR}" "${SELF_DIR}" 2>/dev/null || true', '"${PLUGIN_DIR}" "${SELF_DIR}" "${1:-}" "${2:-}" 2>/dev/null || true')
+            text = replace(text, '    load_env_file()\n', '''    load_env_file()
+    from _memlane_policy import require, recall_targets
+    command, target = sys.argv[3], sys.argv[4]
+    if command in ("data", "raw"):
+        recall_targets(target, [target])
+    elif command == "forget":
+        require("delete", target)
+''')
+        if name != 'cognee-remember.sh':
             return text
         text = replace(text, 'elif [ -n "$FILE_PATH" ]; then\n', '''elif [ -f "${SELF_DIR}/_memlane_policy.py" ]; then
     echo '{"error":"managed_server_unreachable","status":0}'
@@ -318,4 +335,5 @@ if managed() and not permit("capture"):
 
 FILES = ('config.py', 'session-start.py', '_coding_memory.py', '_plugin_common.py',
          '_remember_http.py', 'cognee-remember.sh', 'store-user-prompt.py', 'sync-session-to-graph.py',
-         '_env_file.py', '_recall_http.py', 'cognee-search.sh', '_code_graph.py')
+         '_env_file.py', '_recall_http.py', 'cognee-search.sh', '_code_graph.py',
+         'cognee-forget.sh', 'cognee-index-repo.sh')

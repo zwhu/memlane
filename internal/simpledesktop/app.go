@@ -75,7 +75,7 @@ type App struct {
 }
 
 func New(c Config, err error) *App {
-	a := &App{Config: c, Client: Client{Config: c}, page: "总览", kind: "知识", panes: map[string]*pane{}, service: "尚未检查", completion: "尚未检查", searchProject: "全部项目"}
+	a := &App{Config: c, Client: Client{Config: c}, page: "总览", kind: "知识", panes: map[string]*pane{}, service: "尚未检查", completion: "尚未检查"}
 	a.titles = newReadingTitles()
 	a.readingIdentity, _ = readingIdentity(a.Client)
 	if err != nil {
@@ -209,15 +209,7 @@ func (a *App) load(s *pane) {
 	}
 	ps := a.projects()
 	if page == "搜索" {
-		ps = a.Config.Projects
-		if a.searchProject != "全部项目" {
-			ps = nil
-			for _, p := range a.Config.Projects {
-				if p.Name == a.searchProject {
-					ps = append(ps, p)
-				}
-			}
-		}
+		ps = searchProjects(a.Config.Projects, a.searchProject)
 	}
 	client := a.Client
 	go func() {
@@ -401,8 +393,8 @@ func (a *App) View(c *ui.Context) {
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 			ui.Row(c).Height(56).Shrink(0).BorderWidth(0, 0, 1, 0).BorderColor(border).Padding(0, 28).DragWindow().Children(func() {
 				title := a.page
-				if p, ok := a.current(); ok && a.page == "知识" {
-					title = p.Name
+				if _, ok := a.current(); ok && a.page == "知识" {
+					title = projectLabels(a.Config.Projects)[a.project]
 				}
 				ui.Text(c, title).FontSize(14).Bold().TextColor(ink)
 				ui.Spacer(c)
@@ -448,11 +440,12 @@ func (a *App) navigation(c *ui.Context) {
 		})
 		ui.Text(c, "项目").FontSize(10).TextColor(muted).Margin(22, 24, 8, 24)
 		ui.Scroll(c).Grow(1).Padding(0, 12).Gap(6).Children(func() {
+			labels := projectLabels(a.Config.Projects)
 			for idx, p := range a.Config.Projects {
 				index := idx
-				nav := ui.Button(c, "").Label(p.Name).Children(func() {
+				nav := ui.Button(c, "").Label(labels[idx]).Children(func() {
 					ui.Icon(c, folder).FontSize(16).TextColor(muted)
-					ui.Text(c, p.Name).Margin(0, 12).FontSize(13).TextColor(ink)
+					ui.Text(c, labels[idx]).Margin(0, 12).FontSize(13).TextColor(ink)
 				}).Key("project-"+p.ID).Height(38).Justify(ui.Start).Padding(8, 16).Background(ui.Transparent).BorderWidth(0).Radius(6).OnClick(func() { a.navigate("知识", index) })
 				if a.page == "知识" && a.project == index {
 					nav.Background(ui.Hex("#d5e1ef"))
@@ -525,11 +518,29 @@ func (a *App) reading(c *ui.Context) {
 						}
 					})
 				} else {
+					catalog := append([]Project(nil), a.Config.Projects...)
 					options := []string{"全部项目"}
-					for _, p := range a.Config.Projects {
-						options = append(options, p.Name)
+					options = append(options, projectLabels(catalog)...)
+					selected := options[0]
+					for index, p := range a.Config.Projects {
+						if p.ID == a.searchProject {
+							selected = options[index+1]
+							break
+						}
 					}
-					ui.Select(c, &a.searchProject, options).Width(270).OnChange(func() { s.Offset = 0; a.load(s) })
+					ui.Select(c, &selected, options).Width(270).OnChange(func() {
+						if selected == options[0] {
+							a.searchProject = ""
+						}
+						for index, label := range options[1:] {
+							if label == selected {
+								a.searchProject = catalog[index].ID
+								break
+							}
+						}
+						s.Offset = 0
+						a.load(s)
+					})
 					ui.Select(c, &a.searchType, []string{"全部类型", "知识", "原始材料"}).Width(270).OnChange(func() { s.Offset = 0; a.load(s) })
 					ui.Text(c, "最多30个官方检索片段；类型按返回元数据筛选").FontSize(10).TextColor(muted)
 				}

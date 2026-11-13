@@ -289,9 +289,17 @@ func (a *App) accessSettings(c *ui.Context) {
 	}
 	for _, p := range directory.Projects {
 		project := p
+		label := project.Name
+		labels := projectLabels(a.Config.Projects)
+		for i, row := range a.Config.Projects {
+			if row.ID == project.ID {
+				label = labels[i]
+				break
+			}
+		}
 		ui.Column(c.Key("project-policy-"+p.ID)).Border(1, border).Radius(8).Padding(16).Gap(10).Children(func() {
 			ui.Row(c).Gap(12).Children(func() {
-				ui.Text(c, project.Name).FontSize(14).Bold()
+				ui.Text(c, label).FontSize(14).Bold()
 				ui.Spacer(c)
 				ui.Text(c, project.syncLabel(directory.Agents...)).FontSize(11).TextColor(muted)
 				button(c, "设置", func() {

@@ -12,7 +12,9 @@
     "_env_file.py": "c4d78ccb97535df8dd02021f8e5061b7536892a2140ef14d3f95fd0e9f654dc9",
     "_recall_http.py": "44a412dfc2a0f8fecb9da1343689093c466a5363b6d6588d5f2d4ad04844d1f0",
     "cognee-search.sh": "7a6780e9d85a430008db515cad473286d56238a033286565b9c9db992a9cc8ee",
-    "_code_graph.py": "173c7e291adaa26321ce8965d7820cff89413ffd6bf450df34c6dc0857997e13"
+    "_code_graph.py": "173c7e291adaa26321ce8965d7820cff89413ffd6bf450df34c6dc0857997e13",
+    "cognee-forget.sh": "8ac49d8bc7642bc3ce33c648b162018861201939e3bcf74affe5e29f0a861b1e",
+    "cognee-index-repo.sh": "2598bd9077c05fd210531d5ae90cacc80bd2327fffdfb6f2445e5fb96d003a72"
   },
   "files": {
     ".codex-plugin/plugin.json": "181be5d05735ead0cb71021db08e4997f2f529cd4bfb1f9f1ed8db9c5b98734e",

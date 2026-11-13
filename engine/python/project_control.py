@@ -428,7 +428,7 @@ class Registry:
             self.save()
             return self.policy(project, agent_id)
 
-    async def ensure_locked(self, root, dataset_id=None, name=None):
+    async def ensure_locked(self, root, dataset_id=None, name=None, source=None):
         for project in self.state['projects'].values():
             if root in project['aliases']:
                 if dataset_id and project['dataset_id'] != dataset_id:
@@ -447,7 +447,7 @@ class Registry:
                    'overrides': {}, 'applied': {}, 'desired_revision': self.state['revision'],
                    'operation_id': secrets.token_hex(16), 'status': 'unconfirmed',
                    'import_acl': bool(dataset_id),
-                   'code_enabled': False, 'source': 'associated' if dataset_id else 'discovered'}
+                   'code_enabled': False, 'source': source or ('associated' if dataset_id else 'discovered')}
         self.state['projects'][identifier] = project
         self.save()
         await self.reconcile_locked(project)
@@ -529,7 +529,7 @@ class Registry:
             dataset_id = str(uuid.UUID(dataset_id))
         async with self.mutex:
             self.check_revision(expected)
-            project = await self.ensure_locked(root, dataset_id, name)
+            project = await self.ensure_locked(root, dataset_id, name, source='associated' if dataset_id else 'manual')
             return copy.deepcopy(project)
 
     async def add_alias(self, expected, identifier, workspace):

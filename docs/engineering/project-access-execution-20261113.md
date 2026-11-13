@@ -175,3 +175,53 @@ PA-CK02 累计失败1轮：Native核对误报未找到原文。已证官方正�
 PA-CK03 累计失败1轮：普通通用Markdown被旧session-learning前缀解析标为“原文格式未识别”，标题变成通用占位。只对有明确common metadata的文档增加呈现分支，复用原阅读缓存／组件，保留raw正文原值；不重做阅读UI。新增回归通过，实际Native再读同一文档后列表／详情标题正确，正文及来源可见、误报消失，本轮修复复验通过。未再次保存或调用模型。通用列表“项目内容”小标题也已在实际新窗口核对为“通用知识”。
 
 当前剩余：第二独立主体与真实ACL矩阵、默认动态继承／覆盖／恢复、新建关联及并发分组、真实禁采游标恢复和blocked处置、通用编辑／删除及无权不注入、项目优先、空项目通用采用、完整Native连续场景与运行交接／清理。现有真实进展不缩小原Goal完成范围。
+
+
+## 后续真实连续验收与当前候选（14:49）
+
+此前“当前剩余”是当时状态，下列结果覆盖对应待验项，不覆盖未列出的完成边界。最后一次后台必要重载为13:50:46，launcher56615、completion56617、official56618、control56752；同库同原管理凭据，插件产物08。日常Agent配置未切换。原日常集成仍可能产生正常活动，不把本任务未主动重放旧任务描述为整库没有活动。
+
+### 权限、默认与项目身份
+
+- 第二独立官方主体B注册、有效ACL核对通过。真实none/read/maintain矩阵覆盖raw、session、搜索、图谱、保存；维护主体对本轮独立合成probe真实新增、读取、更新、删除通过，原知识未删。证据：私有 `real-acl-matrix.json`、`maintenance-crud.json`。官方禁止删除返回401 UnauthorizedDataAccessError，原夹具预期403误判保留并附contract_review，属于方法纠正，不算产品越权或新增验收轮。
+- 默认改变不覆盖B的显式none；恢复继承采用当前read。原全局默认maintain/capture=true/auto_process=true已恢复。证据 `default-inheritance-real.json`。B在beta的维护／采集开启／自动处理关闭覆盖仍供本轮连续验证使用，收尾前应恢复原覆盖。
+- PA-F真实控制端覆盖手动先建／自动先发现、两独立主体并发首次同仓、软链接与子目录、同名不同路径、worktree分离、移动后明确别名关联；单项目／单官方组及排除通用和代码组通过。证据 `real-project-identities.json`。这些是实际登记／ACL，不冒充额外真实模型会话。
+- PA-NAME01累计失败1轮：Native两个same显示相同名称，无法可靠选择。改为最短可区分父目录后缀；搜索底层使用稳定项目ID，未知ID不回退全项目，选择回调捕获同一目录快照。真实Native侧栏／搜索已显示same · one/two；总览卡片同样已核对。设置接线同步使用同一标签，最后设置视觉尚待覆盖。旧失败不清零。
+- 手动创建来源错误为discovered属于登记来源缺陷；源码改为manual／associated且自动再发现保留来源，42项检查包含回归。当前后台仍载入改动前模块，新的真实手动来源核对待必要重载后进行，不用旧结果当通过。
+
+### 真实禁采／恢复及待发材料
+
+- Beta空新仓在只读策略下真实编码成功，并采用更新后的通用PA_NOTE_99；官方该仓文档0、session404、pipeline0，插件仅保留stat游标和paused状态，无会话正文入buffer。证据 `readonly-beta-capture.json`。
+- 自动采集关闭但有维护权限时，主动保存独立合成probe成功；只读时同一生产helper明确拒绝写入，中文错误正确。证据 `manual-save-capture-off.json`。采集开关与主动保存权限分开。
+- 原Beta会话显式恢复采集、自动处理保持关闭，真实resume两轮正常退出。官方仅出现恢复后新内容，禁用期间原提示不在原始记录；pipeline集合与之前相同，没有新自动处理。证据 `resume-capture-real.json`。未回扫禁用区间。
+- 在最后权限检查后、真实POST前撤写，官方实际403。原合法buffer保留并blocked；恢复ACL及越过SDK退避后仍不自动重发。实际Native先核对再点击明确补交，原问题只写入一次、pending归零。证据 `blocked-buffer-real.json`（explicit_native_replay_verified）。
+- 网络未知使用本轮独立loopback RST，仅截断合成请求，未停止共享服务。未知journal保留，自动drain及显式replay均不重发。核对signature后通过生产CLI明确丢弃未知entry及新增合法tail共2条，原已补交材料仍在。证据 `unknown-buffer-real.json`（explicit_cli_discard_verified）；不宣称实际点击Native丢弃按钮。上述不重跑模型。
+
+### 通用知识与实际采用
+
+- 实际Native编辑原合成通用文档，将独有标记42改为99，保持原Data ID、分类及来源；原PATCH pipeline 46f36dc3-8e12-460e-b285-dde2bb14a8ea完成，UI核对显示官方正文已核对／处理完成。PA-CK02原失败1轮保留，实际修复复验通过。
+- Beta空项目真实新会话采用99；Alpha后续真实会话同一次coding注入同时包含项目42和通用99，实际生成代码保留项目42，项目优先通过。原提示未携带期待标记，不新增第二注入hook；证据在隔离宿主alpha-session-c／beta-session-a事件及回执。
+- 同一生产build_block进程先可读99，实际撤B通用read后直接raw403、下一次注入为空；明确reconcile后恢复99。证据 `common-revoked-no-injection.json`。不声称能撤回旧模型上下文。通用删除后的撤下仍待真实验证。
+
+### 当前补丁与源码检查
+
+产物08补齐官方forget/index shell门禁；上游shell曾吞掉配置异常并落回继承导出／owner缓存，现四个shell在配置失败时停止，forget另核对read/delete。带继承owner和缓存owner的夹具确认不能发请求；没有修改日常已安装缓存。固定上游57文件、产物58文件，现修改14个官方脚本，摘要随产物更新。当前隔离宿主A仍用07，B用08，路径及私有引用均保留，不在原目录就地替换。
+
+最新 `sh scripts/go.sh test ./...`、`vet ./...`通过；`scripts/task.py -- .local/cognee-python/bin/python -m unittest discover -s engine/python -p test_project*.py` 42项通过。Go新同名回归验证不同dataset的选择范围不合并。aiohttp NotAppKeyWarning是现有建议警告，检查结果成功。
+
+### PA-WIN01：关窗阅读状态丢失（累计失败1轮）
+
+验收目标：关窗不影响后台登记，重开保留知识／来源阅读。真实Native先选alpha知识再进入原始来源，点击关闭后watcher日志为Memlane Dev quit；后续工具自动激活bundle缺少MEMLANE_DEV_RUNTIME_CONFIG，显示配置空路径。后台56615/56617/56618/56752保持，未丢材料。之前未知原因的watcher退出仅保留未知，不归因本缺陷，不额外计轮。
+
+已证MyGo 0.7.4默认最后窗口关闭后Quit；原OnActivate只对旧窗口Show，无法保留已销毁阅读树。生产入口改为普通OnClose PreventDefault+Hide；OnBeforeQuit标记明确退出，确保CmdQ和源码重载仍可结束。未改依赖库。经统一dev open恢复配置实例后，实际关闭／激活保留同一PID5606、原来源正文及返回阅读；返回后仍是原知识。再CmdW隐藏期间，由真实控制端首次登记background-window，重开自动出现且原知识保持。私有 `native-background-discovery.json` passed；截图已实际查看。此轮修复复验通过，原失败1轮保留，与旧E22进程组EPERM问题不同。长正文滚动位置和焦点仍不据这个短正文样本宣称全覆盖。
+
+### 未完成边界
+
+整体Goal仍active。尚需日常CLI／Desktop实际受管接入与旧凭据失效、正常安装／启用入口及明确凭据排他交接；隔离A/B不代替日常接入。另需通用删除、最新手动来源真实核对、Native项目设置连续操作及撤权阅读边界、完整PA14核对、最终文档／测试与本轮物料收尾。无问题达到第4次失败停止阈值；不得为补记录重跑既有模型或索引。
+
+
+### 通用删除与最后检查补充
+
+在真实采用／优先级／撤权均有原回执后，仅删除本轮自建的合成通用Data a8e6c6d9-0c23-4d48-b0e1-d2a1d66c299b。使用与生产Client相同的官方DELETE端点（不是Native确认删除按钮），删除前核对原Data正文99及PA-G合成来源。官方receipt success、dataRemaining=false、datasetDeleted=false；随后raw404，同一生产注入进程不再出现99，实际Native通用列表0且无旧正文。证据 `common-delete-real.json` passed，model_calls=0。保留原新增／编辑／采用证据，不再为截图重建该知识。通用组仍在。
+
+最后Go受影响包race通过、diff --check通过；上述测试及真实删除不重置任何问题失败次数。当前使用本机工具链gofmt；系统PATH没有gofmt属于命令准备观察，不算产品失败。

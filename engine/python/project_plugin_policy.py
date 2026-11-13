@@ -206,7 +206,7 @@ def permit(operation, dataset=None, *, automatic=False):
     try:
         result = current(dataset)
         policy = result['policy']
-        permission = 'read' if operation in ('read', 'recall') else 'write'
+        permission = 'read' if operation in ('read', 'recall') else ('delete' if operation == 'delete' else 'write')
         allowed = permission in policy['permissions']
         if operation == 'recall':
             common = result.get('common') or {}
