@@ -225,3 +225,13 @@ PA-CK03 累计失败1轮：普通通用Markdown被旧session-learning前缀解�
 在真实采用／优先级／撤权均有原回执后，仅删除本轮自建的合成通用Data a8e6c6d9-0c23-4d48-b0e1-d2a1d66c299b。使用与生产Client相同的官方DELETE端点（不是Native确认删除按钮），删除前核对原Data正文99及PA-G合成来源。官方receipt success、dataRemaining=false、datasetDeleted=false；随后raw404，同一生产注入进程不再出现99，实际Native通用列表0且无旧正文。证据 `common-delete-real.json` passed，model_calls=0。保留原新增／编辑／采用证据，不再为截图重建该知识。通用组仍在。
 
 最后Go受影响包race通过、diff --check通过；上述测试及真实删除不重置任何问题失败次数。当前使用本机工具链gofmt；系统PATH没有gofmt属于命令准备观察，不算产品失败。
+
+
+### 日常接入缺口的依赖安排
+
+当前prepare仅产出插件目录和私有env，没有供正常宿主安装的marketplace，也没有Native登记新主体入口。先补可安装目录与稳定实例登记，再做激活预览／配置基线核对和旧消费者盘点；最后在明确凭据排他窗口执行日常启用。CLI／Desktop共享同一Codex home时按一个配置实例管理，不能凭品牌拆成两个可隔离主体；隔离HOME验收不证明该日常边界。旧owner不得直接撤销（仍被管理服务和旧消费者使用），应明确退出受管Agent配置，并核对旧采集入口与缓存，不清空旧buffer或重放旧会话。每一层保留准备／加载／真实使用状态，不以复制配置标为连接成功。
+
+本轮继续使用OpenAI Docs与现有影响分析方法。已读取当前本机plugin help，并核对[官方本地marketplace与配置说明](https://developers.openai.com/plugins/build/plugins)。该文档列明CLI与Desktop可共享本地插件设置，实际本机版本行为仍需分别拿加载回执。下一步生成独立受管marketplace，不写用户全局配置；此准备不需要重复申请已授权的源码变更许可。
+
+
+安装准备源码现生成 `managed-marketplaces/<instance>/<generation>/plugins/cognee` 及相对路径catalog，返回marketplace_root/name供后续宿主管理器使用。marketplace名称同时绑定实例与产物代次，旧受管目录与已加载cache不覆盖；catalog没有key，私有env／marker继续0600。新增回归核对实际catalog源路径、不同实例不同命名及旧marker保留；Python42项、Go受影响包检查通过。现有A/B安装回执仍保留其原路径，后续不能把生成catalog描述为日常宿主已安装／已加载。后台尚未加载本prepare源码；不为补文档而立即重载。

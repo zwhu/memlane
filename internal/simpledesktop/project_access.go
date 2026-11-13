@@ -98,12 +98,14 @@ type AccessAgent struct {
 }
 
 type AgentInstallation struct {
-	PluginDir   string `json:"plugin_dir"`
-	EnvFile     string `json:"env_file"`
-	Home        string `json:"home"`
-	HelperSHA   string `json:"helper_sha256"`
-	ManifestSHA string `json:"manifest_sha256"`
-	Status      string `json:"status"`
+	PluginDir       string `json:"plugin_dir"`
+	MarketplaceRoot string `json:"marketplace_root"`
+	MarketplaceName string `json:"marketplace_name"`
+	EnvFile         string `json:"env_file"`
+	Home            string `json:"home"`
+	HelperSHA       string `json:"helper_sha256"`
+	ManifestSHA     string `json:"manifest_sha256"`
+	Status          string `json:"status"`
 }
 type ProjectBinding struct {
 	AgentID        string `json:"agent_id"`

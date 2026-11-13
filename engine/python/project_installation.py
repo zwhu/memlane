@@ -33,7 +33,8 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
     # A code generation change gets a new artifact. Existing hosts keep their
     # exact old path until explicitly reconfigured; never replace it in place.
     generation = hashlib.sha256(json.dumps(expected, sort_keys=True).encode()).hexdigest()[:20]
-    target = root / 'managed-plugins' / instance_id / generation
+    marketplace = root / 'managed-marketplaces' / instance_id / generation
+    target = marketplace / 'plugins' / 'cognee'
     environment = root / 'agent-credentials' / (instance_id + '.env')
     values = {'COGNEE_BASE_URL': service_url, 'COGNEE_API_KEY': read_secret(agent['key_file']),
               'MEMLANE_PROJECT_CONTROL_URL': control_url,
@@ -53,7 +54,18 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
     # escapes. Keep literal Unicode/quotes; this file is never sourced by a shell.
     private_write(environment, ''.join(key + '="' + value + '"\n' for key, value in values.items()).encode())
     private_write(target / '.memlane-installation.json', json.dumps({'instance_id': instance_id, 'env_file': str(environment)}).encode())
+    # A catalog is installable through the host's own plugin manager. Each
+    # generation has a distinct marketplace/cache namespace; preparing a new
+    # generation cannot replace the files of a running host's old install.
+    marketplace_name = 'memlane-' + hashlib.sha256(instance_id.encode()).hexdigest()[:12] + '-' + generation
+    catalog = {'name': marketplace_name, 'plugins': [
+        {'name': 'cognee', 'source': {'source': 'local', 'path': './plugins/cognee'},
+         'policy': {'installation': 'AVAILABLE', 'authentication': 'ON_INSTALL'},
+         'category': 'Productivity'}]}
+    private_write(marketplace / '.agents' / 'plugins' / 'marketplace.json',
+                  json.dumps(catalog, indent=2).encode())
     return {'plugin_dir': str(target), 'env_file': str(environment), 'home': str(home),
+            'marketplace_root': str(marketplace), 'marketplace_name': marketplace_name,
             'helper_sha256': expected['extension_sha256'],
             'manifest_sha256': hashlib.sha256((target / '.memlane-project-access.json').read_bytes()).hexdigest(),
             'status': 'prepared'}

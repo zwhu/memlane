@@ -137,6 +137,14 @@ assert os.environ["COGNEE_ENV_FILE"].endswith("managed.env")
             self.assertEqual(marker.stat().st_mode & 0o777, 0o600)
             self.assertFalse((self.artifact / '.memlane-installation.json').exists())
             self.assertEqual(list(home.iterdir()), [])
+            marketplace = Path(installation['marketplace_root'])
+            catalog = json.loads((marketplace / '.agents/plugins/marketplace.json').read_text())
+            self.assertEqual(catalog['name'], installation['marketplace_name'])
+            self.assertEqual((marketplace / catalog['plugins'][0]['source']['path']).resolve(), Path(installation['plugin_dir']).resolve())
+            self.assertNotIn('prepared-child-key', json.dumps(catalog))
+            other = prepare(self.artifact, root, 'codex-other', agent, 'http://127.0.0.1:18999', 'http://127.0.0.1:18777', str(home))
+            self.assertNotEqual(other['marketplace_name'], installation['marketplace_name'])
+            self.assertTrue(marker.exists())
             environment = {**os.environ, 'HOME': str(home), 'COGNEE_PLUGIN_IN_VENV': '1',
                            'PYTHONPATH': str(Path(installation['plugin_dir']) / 'scripts'), 'COGNEE_API_KEY': 'old-owner'}
             code = 'import config,_plugin_common; assert config.load_config()["api_key"]=="prepared-child-key"; assert _plugin_common._api_key()=="prepared-child-key"'
