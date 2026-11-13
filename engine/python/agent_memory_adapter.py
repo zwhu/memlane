@@ -10,10 +10,24 @@ from pathlib import Path
 import sys
 import uuid
 import urllib.request
+import urllib.error
 import time
 
 MAX_INPUT = 128 * 1024
 OPERATIONS = {'resolve', 'status', 'recall', 'remember', 'forget', 'capture', 'flush'}
+
+
+class AccessDenied(Exception):
+    def __init__(self, permission):
+        self.permission = permission
+
+
+def explicit_access(permission, dataset):
+    # A failed policy fetch remains unconfirmed, rather than being presented
+    # as an authoritative denial. current() checks the live official ACL.
+    from _memlane_policy import current
+    if permission not in current(dataset)['policy']['permissions']:
+        raise AccessDenied(permission)
 
 
 def request_fields(request):
@@ -206,6 +220,7 @@ def handle(request):
             _maybe_cooldown_improve(dataset, session, key)
         return {'status': 'flush_requested'}
     if operation == 'remember':
+        explicit_access('write', dataset)
         require('write', dataset)
         content = request.get('content')
         if not isinstance(content, str) or not content.strip() or len(content) > 32000:
@@ -214,12 +229,15 @@ def handle(request):
         from _remember_http import do_remember
         result = do_remember(os.environ['COGNEE_BASE_URL'], os.environ['COGNEE_API_KEY'],
                              sanitize(content), dataset, 'memory', dataset_id=dataset)
+        if isinstance(result, dict) and result.get('status') in (401, 403):
+            return {'status': 'denied', 'http_status': result['status'], 'error': 'official_access_denied'}
         if not isinstance(result, dict) or not result.get('ok'):
             return {'status': 'result_unconfirmed', 'error': 'official_remember_unconfirmed'}
         return {'status': 'submitted'}
+    explicit_access('delete', dataset)
     require('delete', dataset)
     data_id = str(uuid.UUID(request.get('data_id', '')))
-    # Official endpoint accepts a dataset-scoped list of explicit DataIDs only.
+    # Only one explicit DataID in the bound dataset; never a dataset deletion.
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):
             return None
@@ -233,12 +251,26 @@ def handle(request):
     return {'status': 'submitted'}
 
 
+def execute(request):
+    try:
+        return handle(request)
+    except AccessDenied as error:
+        return {'status': 'denied', 'http_status': 403, 'error': 'project_' + error.permission + '_denied'}
+    except urllib.error.HTTPError as error:
+        if error.code in (401, 403):
+            return {'status': 'denied', 'http_status': error.code, 'error': 'official_access_denied'}
+    except Exception:
+        pass
+    # No provider body, credentials or exception text leaves the helper.
+    return {'status': 'unavailable', 'error': 'memory_operation_unconfirmed'}
+
+
 def main():
     try:
         raw = sys.stdin.buffer.read(MAX_INPUT + 1)
         if len(raw) > MAX_INPUT:
             raise ValueError('request_limit')
-        result = handle(json.loads(raw))
+        result = execute(json.loads(raw))
     except Exception:
         # Upstream exception text may contain content, provider bodies or keys.
         result = {'status': 'unavailable', 'error': 'memory_operation_unconfirmed'}

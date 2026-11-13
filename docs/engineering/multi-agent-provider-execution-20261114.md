@@ -141,3 +141,15 @@ TraeX原生安装器会改name并清理同插件旧cache版本；补每代独立
 资源：两轮正常交互式TraeX均退出0，最新实际PGID经内核组表确认不存在。独立服务仍由本轮dev launcher工具句柄89919持有（本轮已实际poll确认存活），仅服务81379与控制81535继续运行；官方最后一次全局索引完成。`.local/multi-agent-coding-e2e-20261114`及`/private/tmp/memlane-coding-fixture-20261114-9srdz5c9`保留供下一步同主体／同库权限与原会话回归，包含私有测试凭据副本，不提交；消费结束后先核对所属进程退出再清理。当前余量约112GiB，未触及原库、日常Agent profile、共享embedding依赖或build。
 
 整体估算约70%（较检查点七增加约5个百分点，以首批全部功能和真实验收为口径）。MA08/09的上述正常链及MA04同仓共享已补齐；逐主体权限／不同项目隔离、Claude首次采集与正常宿主、Cursor真实IDE、其他三种Provider凭据及真实质量／错误矩阵、原Codex回归、Native连续窗口仍未收口。首批范围及第二批单列规则保持，目标继续active。Codex重置卡仅限核实低于2%；尚未使用。
+
+## 开发检查点九
+
+MA05／MA04继续以原隔离库和两独立主体验收。部署的pi／TraeX helper走真实HTTP：TraeX维护→只读→禁止→恢复，同一会话召回1886→1886→0→1886；只读写／删除及官方直连均403，pi权限不变；同一禁采事件恢复后仍返回skipped_policy duplicate，官方没有创建该材料会话。第二项目得到独立dataset、两个宿主归属相同，召回没有混入第一项目知识；原会话临时改变cwd仍保持原dataset。维护态两个主体分别完成显式remember→官方Data/raw→处理完成→指定单条DataID forget→Data消失。官方有效ACL包含角色／tenant联合核对：项目read/write/delete、通用read、均无share。[证据](evidence/multi-agent-development-20261114/real-agent-permissions.json)。
+
+发现并修复MA-ACL-REPLY01，失败1轮保留：明确写／删除拒绝曾被通用异常出口显示为未知。现在实时确认ACL后返回denied／403及固定错误码；策略查询失败、其他传输未知仍保守unconfirmed。官方401／403也单独分类，绝不输出异常正文或自动补投。[问题与方法错误](agent-policy-replies-20261114.md)。全量后端104项、定向7项通过，Go未改。权限矩阵使用真实官方服务、部署helper及私有独立凭据，不称为新增CLI模型会话。
+
+为加载候选，在确认原官方processing-status为17／17完成、pending0后，正常dev stop确认组退出；工具89919终态退出0。同一runtime与数据根正常重新启动，现由工具48466持有，未改active Provider。随后按管理API显式准备／激活新代，身份和原事件水位保留；TraeX新代独立marketplace，旧自有入口禁用、旧cache及第三方插件保留。两条合成显式remember均仅提交一次；夹具遇到文件名stem／extension及后台材料化时机问题后，仅核对原操作，没有重发。
+
+本轮原日常配置和库、原Codex产物及登录未变。当前隔离根仍为`.local/multi-agent-coding-e2e-20261114`，补充标记第二合成仓库`secondary_project`，私有attempt记录显式写／删结果；供后续原Codex与Native验收，消费结束再按所有权清理。已用正常CLI的TraeX无存活进程。Claude本机auth status已实际返回loggedIn=false／authMethod=none；已异步询问可用登录或私有配置入口，不索要聊天粘贴密钥。
+
+整体约73%（比检查点八增加约3个百分点）。MA05的上述实链及MA04不同项目过滤已补；通用知识有内容时的优先级、真实buffer403／显式补交、Claude正常宿主／首轮、Cursor、其他三类Provider、原Codex与Native仍未完成，不以此缩减首批范围。无release，未使用重置卡。

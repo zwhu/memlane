@@ -151,6 +151,14 @@ assert "transcript_path" not in context
 assert memory.handle(request)["duplicate"]
 assert len(delivered) == 1
 assert os.environ["COGNEE_API_KEY"] == "synthetic-key-credential"
+original_policy = policy.current
+policy.current = lambda *args, **kwargs: {"ready": True, "policy":{"permissions":["read"]}}
+for operation, extra, permission in [("remember", {"content":"denied synthetic"}, "write"), ("forget", {"data_id":"00000000-0000-0000-0000-000000000002"}, "delete")]:
+    assert memory.execute({**request, "operation":operation, **extra}) == {"status":"denied", "http_status":403, "error":"project_"+permission+"_denied"}
+def unavailable(*args, **kwargs): raise policy.NotReady("synthetic policy unavailable")
+policy.current = unavailable
+assert memory.execute({**request,"operation":"remember","content":"must remain unknown"}) == {"status":"unavailable","error":"memory_operation_unconfirmed"}
+policy.current = original_policy
 trace = {**request, "event_id":"tool-one", "entry":{"type":"trace", "origin_function":"bash",
          "method_params":{"command":"printf synthetic"}, "method_return_value":{"text":"synthetic"},
          "status":"success", "time":"2026-11-14T00:00:00Z"}}
