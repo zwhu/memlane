@@ -1,0 +1,599 @@
+{
+  "date": "2026-11-14",
+  "purpose": "Implementation design contract inspection; no model calls or daily service changes",
+  "repository_head": "d4a7388807e6f9e47eb4ea94468e82c427127bac",
+  "pi": {
+    "version": "0.84.1",
+    "extension_docs_sha256": "2d186190be6fdebfcf23188f73f0819daa34b7496c95e590289b9f93d9e6a87b",
+    "types_sha256": "19fd4e71f4706245192bad73dffb1e7c9d762b12cf099b23b6ec2040a6cd9001",
+    "global_extension_directory": "~/.pi/agent/extensions/",
+    "recall_events": [
+      "before_agent_start",
+      "context"
+    ],
+    "capture_events": [
+      "message_end",
+      "tool_execution_end"
+    ],
+    "lifecycle_events": [
+      "session_start",
+      "agent_end",
+      "session_shutdown"
+    ],
+    "evidence_level": "Installed documentation and types; real events not exercised"
+  },
+  "traex": {
+    "installed_release_directory": "0.214.1-aarch64-apple-darwin",
+    "binary_sha256": "7a75cefe0eb106cdd7357c5969196dcf97b3a11b1ecb6bf3d4f651117f268e01",
+    "protocol_export_exit_code": 0,
+    "hooks_protocol_sha256": "637d787e312a30a47d579a56338b1c50f6617a5a2ea72d605797ececb145d2e9",
+    "declared_hook_events": [
+      "preModelRequest",
+      "postModelRequest",
+      "preToolUse",
+      "permissionRequest",
+      "postToolUse",
+      "postToolUseFailure",
+      "notification",
+      "subagentStart",
+      "subagentStop",
+      "preCompact",
+      "postCompact",
+      "sessionStart",
+      "sessionEnd",
+      "userPromptSubmit",
+      "stop",
+      "interrupt"
+    ],
+    "embedded_hook_wire_schemas": [
+      {
+        "title": "subagent-stop.command.input",
+        "required": [
+          "agent_id",
+          "agent_transcript_path",
+          "agent_type",
+          "cwd",
+          "event_type",
+          "hook_event_name",
+          "last_assistant_message",
+          "model",
+          "permission_mode",
+          "session_id",
+          "stop_hook_active",
+          "subagent_stop",
+          "transcript_path",
+          "turn_id"
+        ],
+        "fields": {
+          "agent_id": {
+            "type": "string"
+          },
+          "agent_transcript_path": {
+            "$ref": "#/definitions/NullableString"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "hook_event_name": {
+            "type": "string",
+            "const": "SubagentStop"
+          },
+          "last_assistant_message": {
+            "$ref": "#/definitions/NullableString"
+          },
+          "model": {
+            "type": "string"
+          },
+          "permission_mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto",
+              "acceptEdits",
+              "plan",
+              "dontAsk",
+              "bypassPermissions"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "session_name": {
+            "type": "string"
+          },
+          "stop_hook_active": {
+            "type": "boolean"
+          },
+          "subagent_stop": {
+            "$ref": "#/definitions/CocoSubagentStopCompatInput"
+          },
+          "thread_name": {
+            "type": "string"
+          },
+          "transcript_path": {
+            "$ref": "#/definitions/NullableString"
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        },
+        "output_definitions": {}
+      },
+      {
+        "title": "subagent-stop.command.output",
+        "required": [],
+        "fields": {
+          "continue": {
+            "type": "boolean"
+          },
+          "decision": {},
+          "reason": {
+            "type": "string"
+          },
+          "stopReason": {
+            "type": "string"
+          },
+          "suppressOutput": {
+            "type": "boolean"
+          },
+          "systemMessage": {
+            "type": "string"
+          }
+        },
+        "output_definitions": {}
+      },
+      {
+        "title": "post-tool-use.command.input",
+        "required": [
+          "cwd",
+          "hook_event_name",
+          "model",
+          "permission_mode",
+          "session_id",
+          "tool_input",
+          "tool_name",
+          "tool_response",
+          "tool_use_id",
+          "transcript_path",
+          "turn_id"
+        ],
+        "fields": {
+          "agent_id": {
+            "type": "string"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "hook_event_name": {
+            "type": "string",
+            "const": "PostToolUse"
+          },
+          "model": {
+            "type": "string"
+          },
+          "permission_mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto",
+              "acceptEdits",
+              "plan",
+              "dontAsk",
+              "bypassPermissions"
+            ]
+          },
+          "post_tool_use": {},
+          "session_id": {
+            "type": "string"
+          },
+          "session_name": {
+            "type": "string"
+          },
+          "thread_name": {
+            "type": "string"
+          },
+          "tool_input": true,
+          "tool_name": {
+            "type": "string"
+          },
+          "tool_response": true,
+          "tool_use_id": {
+            "type": "string"
+          },
+          "transcript_path": {
+            "$ref": "#/definitions/NullableString"
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        },
+        "output_definitions": {}
+      },
+      {
+        "title": "post-tool-use.command.output",
+        "required": [],
+        "fields": {
+          "continue": {
+            "type": "boolean"
+          },
+          "decision": {},
+          "hookSpecificOutput": {},
+          "reason": {
+            "type": "string"
+          },
+          "stopReason": {
+            "type": "string"
+          },
+          "suppressOutput": {
+            "type": "boolean"
+          },
+          "systemMessage": {
+            "type": "string"
+          }
+        },
+        "output_definitions": {
+          "PostToolUseHookSpecificOutputWire": {
+            "additionalProperties": false,
+            "properties": {
+              "additionalContext": {
+                "default": null,
+                "type": "string"
+              },
+              "hookEventName": {
+                "const": "PostToolUse",
+                "default": null,
+                "type": "string"
+              },
+              "updatedMCPToolOutput": {
+                "default": null
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      {
+        "title": "session-start.command.input",
+        "required": [
+          "cwd",
+          "hook_event_name",
+          "model",
+          "permission_mode",
+          "session_id",
+          "source",
+          "transcript_path"
+        ],
+        "fields": {
+          "agent_id": {
+            "type": "string"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "hook_event_name": {
+            "type": "string",
+            "const": "SessionStart"
+          },
+          "model": {
+            "type": "string"
+          },
+          "permission_mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto",
+              "acceptEdits",
+              "plan",
+              "dontAsk",
+              "bypassPermissions"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "session_name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "startup",
+              "resume",
+              "clear",
+              "compact",
+              "fork"
+            ]
+          },
+          "thread_name": {
+            "type": "string"
+          },
+          "transcript_path": {
+            "$ref": "#/definitions/NullableString"
+          }
+        },
+        "output_definitions": {}
+      },
+      {
+        "title": "session-start.command.output",
+        "required": [],
+        "fields": {
+          "continue": {
+            "type": "boolean"
+          },
+          "hookSpecificOutput": {},
+          "stopReason": {
+            "type": "string"
+          },
+          "suppressOutput": {
+            "type": "boolean"
+          },
+          "systemMessage": {
+            "type": "string"
+          }
+        },
+        "output_definitions": {
+          "SessionStartHookSpecificOutputWire": {
+            "additionalProperties": false,
+            "properties": {
+              "additionalContext": {
+                "default": null,
+                "type": "string"
+              },
+              "hookEventName": {
+                "const": "SessionStart",
+                "default": null,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      {
+        "title": "user-prompt-submit.command.input",
+        "required": [
+          "cwd",
+          "event_type",
+          "hook_event_name",
+          "model",
+          "permission_mode",
+          "prompt",
+          "session_id",
+          "transcript_path",
+          "turn_id",
+          "user_prompt_submit"
+        ],
+        "fields": {
+          "agent_id": {
+            "type": "string"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "hook_event_name": {
+            "type": "string",
+            "const": "UserPromptSubmit"
+          },
+          "model": {
+            "type": "string"
+          },
+          "permission_mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto",
+              "acceptEdits",
+              "plan",
+              "dontAsk",
+              "bypassPermissions"
+            ]
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "session_name": {
+            "type": "string"
+          },
+          "thread_name": {
+            "type": "string"
+          },
+          "transcript_path": {
+            "$ref": "#/definitions/NullableString"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "user_prompt_submit": {}
+        },
+        "output_definitions": {}
+      },
+      {
+        "title": "user-prompt-submit.command.output",
+        "required": [],
+        "fields": {
+          "continue": {
+            "type": "boolean"
+          },
+          "decision": {},
+          "hookSpecificOutput": {},
+          "reason": {
+            "type": "string"
+          },
+          "stopReason": {
+            "type": "string"
+          },
+          "suppressOutput": {
+            "type": "boolean"
+          },
+          "systemMessage": {
+            "type": "string"
+          }
+        },
+        "output_definitions": {
+          "UserPromptSubmitHookSpecificOutputWire": {
+            "additionalProperties": false,
+            "properties": {
+              "additionalContext": {
+                "default": null,
+                "type": "string"
+              },
+              "hookEventName": {
+                "const": "UserPromptSubmit",
+                "default": null,
+                "description": "Legacy-compatible hooks may omit this redundant event marker.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      {
+        "title": "stop.command.input",
+        "required": [
+          "cwd",
+          "hook_event_name",
+          "last_assistant_message",
+          "model",
+          "permission_mode",
+          "session_id",
+          "stop_hook_active",
+          "transcript_path",
+          "turn_id"
+        ],
+        "fields": {
+          "agent_id": {
+            "type": "string"
+          },
+          "agent_type": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "hook_event_name": {
+            "type": "string",
+            "const": "Stop"
+          },
+          "last_assistant_message": {
+            "$ref": "#/definitions/NullableString"
+          },
+          "model": {
+            "type": "string"
+          },
+          "permission_mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "auto",
+              "acceptEdits",
+              "plan",
+              "dontAsk",
+              "bypassPermissions"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "session_name": {
+            "type": "string"
+          },
+          "stop_hook_active": {
+            "type": "boolean"
+          },
+          "thread_name": {
+            "type": "string"
+          },
+          "transcript_path": {
+            "$ref": "#/definitions/NullableString"
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        },
+        "output_definitions": {}
+      },
+      {
+        "title": "stop.command.output",
+        "required": [],
+        "fields": {
+          "continue": {
+            "type": "boolean"
+          },
+          "decision": {},
+          "reason": {
+            "type": "string"
+          },
+          "stopReason": {
+            "type": "string"
+          },
+          "suppressOutput": {
+            "type": "boolean"
+          },
+          "systemMessage": {
+            "type": "string"
+          }
+        },
+        "output_definitions": {}
+      }
+    ],
+    "plugin_validation": {
+      "exit_code": 0,
+      "reported_skills": 10,
+      "scope": "Existing fixed managed plugin root accepted under isolated TRAE_HOME; no install or activation; does not establish hook execution"
+    },
+    "evidence_level": "Native CLI help/schema export, embedded schema inspection and local plugin root validation; no conversation run"
+  },
+  "pi_community": {
+    "version": "0.1.0",
+    "commit": "5807e9e5e8231db8b04c0d1d7fb4c5dd3a28dd9b",
+    "source": "https://github.com/kerryhatcher/pi-cognee/blob/5807e9e5e8231db8b04c0d1d7fb4c5dd3a28dd9b/src/mcp/client.ts",
+    "finding": "MCP _rawPost constructs content/accept/session headers, no authentication header; entry registers tools/commands, no lifecycle capture"
+  },
+  "official": {
+    "commit": "ec6f40859e5f2df9e7862dde27d580ac3268ed43",
+    "native_adapter_source": "cognee/infrastructure/llm/structured_output_framework/litellm_native/native_adapter.py",
+    "native_adapter_sha256": "ea749c09096410de137769994229c37e3c5c5edfac2bd8fb9b0cd6ceef95edd2",
+    "native_adapter_observation": "_acreate_structured_output_native_or_json attempts strict/non-strict then JSON fallback. Preserve upstream behavior and output validation; no cross-provider fallback configured."
+  },
+  "installed_package_metadata": {
+    "litellm": "1.108.2",
+    "openai": "3.46.0",
+    "aiohttp": "3.14.5",
+    "pydantic": "2.14.3"
+  },
+  "verification_not_performed": [
+    "Agent installation/activation",
+    "Real hook invocation",
+    "Provider API calls",
+    "Native UI verification",
+    "Daily restart",
+    "Historical session reading"
+  ],
+  "cleanup": "Temporary exported protocol schemas and isolated validation home removed after retaining this small summary; no running host was started",
+  "inspection_method_note": "Initial schema-summary extractor encountered a boolean JSON Schema property; extractor corrected to preserve boolean schemas. This was metadata processing, not a product acceptance failure."
+}
