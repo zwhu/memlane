@@ -24,7 +24,9 @@ def digest(data):
 
 
 def host(config):
-    home = Path(config['auth_home']).expanduser().resolve(strict=True)
+    # Connecting installs host configuration, it does not authenticate the
+    # model bridge. A fresh Codex profile need not have been logged in yet.
+    home = Path(config['auth_home']).expanduser().resolve()
     executable = Path(config['codex_executable'])
     if not executable.is_absolute() or not executable.is_file():
         raise PolicyError('codex_executable_unavailable', 503)
@@ -37,6 +39,8 @@ def instance_id(config):
 
 
 def read_config(home):
+    if home.exists() and not home.is_dir():
+        raise PolicyError('codex_config_requires_review', 409)
     path = home / 'config.toml'
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise PolicyError('codex_config_requires_review', 409)
@@ -183,7 +187,7 @@ class CodexConnection:
             status = 'requires_review'
         if not agent and self.id in state.get('enrollments', {}):
             status = 'agent_creation_unconfirmed'
-        return {'instance_id': self.id, 'codex_home': str(self.home),
+        return {'instance_id': self.id, 'codex_home': str(self.home), 'detected': True,
                 'status': status,
                 'agent_registered': bool(agent),
                 'legacy_plugins': enabled_cognee(parsed),
@@ -195,6 +199,7 @@ class CodexConnection:
 
     async def prepare(self, expected):
         r = self.registry
+        read_config(self.home)  # Reject a bad host target before creating an identity.
         # The same stable home always refers to the original creation attempt.
         async with r.mutex:
             r.check_revision(expected)

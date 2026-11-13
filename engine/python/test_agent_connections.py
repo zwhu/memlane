@@ -111,6 +111,31 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(PolicyError, 'connection_operation_requires_review'):
             await connections.perform(self.adapter.id, 'activate', first['revision'], 'unknown', 'digest')
 
+    async def test_codex_discovery_is_independent_of_provider_bridge_login_and_does_not_write_profile(self):
+        from project_codex_connection import CodexConnection
+        profile = self.workspace / 'not-yet-created-codex'
+        config = {**self.config, 'generation_mode': 'provider', 'agent_hosts': {
+            'codex': {'profile': str(profile), 'executable': sys.executable}}}
+        before = json.loads(self.registry.path.read_text())
+        connections = Connections(self.registry, config)
+        row = next(r for r in connections.view()['connections'] if r['kind'] == 'codex')
+        self.assertTrue(row['detected'])
+        self.assertEqual(row['status'], 'not_connected')
+        self.assertEqual(row['codex_home'], str(profile.resolve()))
+        self.assertFalse(profile.exists(), 'discovery created host configuration')
+        self.assertNotIn('auth_home', config, 'Agent detection mutated bridge authentication config')
+        self.assertNotIn('codex_executable', config)
+        self.assertEqual(json.loads(self.registry.path.read_text()), before)
+        legacy = CodexConnection(self.registry, {**self.config, 'auth_home': str(profile), 'codex_executable': sys.executable})
+        self.assertEqual(row['instance_id'], legacy.id, 'same home changed the legacy Codex identity')
+        missing = Connections(self.registry, {**config, 'agent_hosts': {'codex': {
+            'profile': str(profile), 'executable': '/synthetic/unavailable-codex'}}})
+        self.assertFalse(next(r for r in missing.view()['connections'] if r['kind']=='codex')['detected'])
+        profile.write_text('not a profile directory')
+        broken = Connections(self.registry, config).view()['connections']
+        self.assertEqual(next(r for r in broken if r['kind']=='codex')['status'], 'requires_review')
+        self.assertTrue(any(r['kind']=='pi' for r in broken), 'bad Codex target hid independent Agent connections')
+
     async def test_helper_dedup_denied_watermark_and_unknown_enqueue_do_not_replay(self):
         await self.adapter.prepare(0)
         installation = self.registry.state['agents'][self.adapter.id]['installation']

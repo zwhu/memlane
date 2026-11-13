@@ -50,6 +50,12 @@ func TestGenerationNewestUnknownResultWithdrawsOldSuccessAndShowsSafeReason(t *t
 		t.Fatal("old success concealed a newer unknown result")
 	}
 	a.integrations = integrationState{Loaded: true, Editor: true, ProfileID: "api", DraftMode: "provider", ProviderLabel: "OpenAI 兼容", Model: "synthetic", Endpoint: "https://example.test/v1", Saved: ref, Generation: g, ValidationOperation: "a-new", Validation: g.Validations["a-new"]}
+	a.integrations.ValidationOperation = ""
+	a.integrations.Validation = GenerationValidation{}
+	a.integrations.editProfile("api", row)
+	if a.integrations.ValidationOperation != "a-new" || a.integrations.Validation.ErrorCode != "validation_timeout" {
+		t.Fatal("opening saved profile lost its original validation receipt")
+	}
 	tt := ui.NewTester(a.View, 1200, 820)
 	if !tt.HasText("验证等待超时，结果未确认；请核对原验证。") {
 		t.Fatal("timeout reason missing from rendered settings")

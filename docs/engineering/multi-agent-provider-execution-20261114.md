@@ -167,3 +167,17 @@ MA05／MA04继续以原隔离库和两独立主体验收。部署的pi／TraeX h
 隔离原服务仍由48466持有，保留原库／Agent状态供后续回归；其管理进程仍是检查点九启动时加载的版本，执行新版管理／Native实链前需在确认官方任务结束后正常重启该隔离实例。没有启停日常服务、重装日常插件、触碰旧停止样本或构建release。全局设置与要求的首页／三栏图片已实际查看，沿现有Native控件加状态说明，未宣称视觉通过。
 
 整体估算约76%（增加约3个百分点）。下一步原Codex及Native连续验证，补403待发补交与通用知识优先；Claude登录、Cursor和三种Provider的真实前置仍待用户可用入口。目标范围与未完成矩阵保持，未使用重置卡。
+
+## 开发检查点十一
+
+实际1200×820 Native完成独立API配置下的连接列表、保存／密码清空、合成401错误、原验证回执重开、原回执只读核对、已有配置密钥不回填，以及当前／next分开显示。截图通过CUA实际观察（2400×1640物理像素），本轮未导出仓库PNG。自有debug窗口与bundle独立于原Memlane Dev，不构建release或完整引擎运行包。[连续记录](native-settings-continuity-20261114.md)、[脱敏证据](evidence/multi-agent-development-20261114/native-settings-checkpoint.json)。
+
+发现MA-CONNECTION-API01：连接发现错误依赖模型桥runtime字段，API模式遗漏Codex；改为Agent独立配置／默认宿主探测，兼容旧home／ID和旧API。无登录、profile尚未创建时也能只读发现；缺安装显示禁用；坏目录在创建身份前拒绝且不遮住其他Agent。Native复验出现Codex，隔离目标仍未创建，原模型auth字段仍缺省。
+
+发现MA-UI-VALIDATION-RESTORE01：重开配置清空已有验证状态，官方失败无法展示；改为从配置digest的唯一最新原回执恢复操作编号与状态。实际同一原401验证重开后显示错误，核对原验证不再调用模型，测试端点全程只有1次请求。两缺陷各失败1轮、复验通过，原计数保留。一次CUA AX在Cmd+Q后隐式启动缺少dev环境的自有bundle，作为方法错误记录，原服务／库没有丢失。
+
+全量Python后端113项、Go全量及vet通过；最终坏目标前置保护加严后18项连接定向通过，Go生产代码未再改。Native本轮next选择是原已生效DeepSeek配置，不宣称完成不同Provider切换；active保持原引用。合成401端点已按实际所有权停止并确认组退出，一次性脚本移除；失败候选及原操作元数据保留，没有重复模型请求。
+
+最新隔离dev launcher为29176工具句柄（owner77579）；Native为1277工具句柄。原48466／64706等均已正常dev停止并确认，401端点2336为有意SIGTERM后退出，非产品验收失败。`.local/multi-agent-native-20261114`保存一份最新调试窗口资源供剩余Native场景，`.local/multi-agent-coding-e2e-20261114`继续保留原官方库、认证和合成repo；日常runtime、原Agent配置及其他窗口未改。后续读取owner实况，不仅凭此处PID判断存活。
+
+按首批完整功能与验收口径约80%（比检查点十增加约4个百分点）。仍需原Codex CLI／Desktop、Native批量／未知操作／项目checkbox、403待发补交、通用知识优先、Claude／Cursor及其余Provider实链；第二批边界保持单列，目标未完成。未使用重置卡。

@@ -321,12 +321,21 @@ class Connections:
     def __init__(self, registry, config):
         self.registry, self.adapters = registry, {}
         self.mutex = asyncio.Lock()
-        if (config.get('auth_home') and Path(config['auth_home']).is_dir()
-                and config.get('codex_executable') and Path(config['codex_executable']).is_file()):
-            from project_codex_connection import CodexConnection
-            adapter = CodexConnection(registry, config)
-            self.adapters[adapter.id] = adapter
         configured = config.get('agent_hosts', {})
+        codex = configured.get('codex', {})
+        executable = codex.get('executable') or config.get('codex_executable') or shutil.which('codex')
+        self.missing_codex = None
+        if executable and Path(executable).is_file():
+            from project_codex_connection import CodexConnection
+            # Separate host discovery from generation runtime/auth fields.
+            # Legacy configs keep exactly the same canonical home/instance ID.
+            host_config = {**config, 'auth_home': codex.get('profile') or config.get('auth_home') or str(Path.home() / '.codex'),
+                           'codex_executable': executable}
+            adapter = CodexConnection(registry, host_config)
+            self.adapters[adapter.id] = adapter
+        else:
+            self.missing_codex = {'instance_id': 'codex-unavailable', 'kind': 'codex', 'detected': False,
+                                  'status': 'not_connected'}
         for kind, directory, command in [('pi', Path.home() / '.pi/agent', 'pi'), ('traex', Path.home() / '.trae', 'traecli'),
                                           ('claude_code', Path.home() / '.claude', 'claude'), ('cursor', Path.home() / '.cursor', 'cursor')]:
             settings = configured.get(kind, {})
@@ -339,7 +348,7 @@ class Connections:
             self.adapters[adapter.id] = adapter
 
     def view(self):
-        rows = []
+        rows = [self.missing_codex] if self.missing_codex else []
         for adapter in self.adapters.values():
             try:
                 row = adapter.view()

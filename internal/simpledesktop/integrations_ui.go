@@ -23,7 +23,7 @@ func (a *App) agentConnectionSettings(c *ui.Context) {
 			ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
 				selected := s.Selected[row.ID]
 				configured := row.Status == "configured_pending_new_session"
-				missing := row.Kind != "codex" && !row.Detected
+				missing := !row.Detected
 				ui.Checkbox(c.Key("select-agent-"+row.ID), &selected, connectionName(row.Kind)).Disabled(s.Busy || configured || missing).OnChange(func() { s.Selected[row.ID] = selected })
 				ui.Spacer(c)
 				homeText(c, connectionStatus(row), homeMeta)

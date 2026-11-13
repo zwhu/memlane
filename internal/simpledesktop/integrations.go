@@ -105,6 +105,30 @@ func (g GenerationDirectory) validated(ref *GenerationRef) bool {
 	return found
 }
 
+func (g GenerationDirectory) latestValidation(digest string) (string, GenerationValidation) {
+	if digest == "" {
+		return "", GenerationValidation{}
+	}
+	var latest int64
+	for _, row := range g.Validations {
+		if row.Digest == digest && row.RegisteredRevision > latest {
+			latest = row.RegisteredRevision
+		}
+	}
+	operation := ""
+	var result GenerationValidation
+	for id, row := range g.Validations {
+		if row.Digest != digest || row.RegisteredRevision != latest {
+			continue
+		}
+		if operation != "" {
+			return "", GenerationValidation{}
+		}
+		operation, result = id, row
+	}
+	return operation, result
+}
+
 type integrationState struct {
 	PendingOperations                                                                           []generationUIOperation
 	Connections                                                                                 ConnectionsDirectory
@@ -157,7 +181,7 @@ func connectionStatus(row AgentConnection) string {
 	case "agent_creation_unconfirmed":
 		return "Agent 身份尚未确认"
 	}
-	if row.Kind != "codex" && !row.Detected {
+	if !row.Detected {
 		return "未检测到本机安装"
 	}
 	return "尚未连接"
@@ -309,8 +333,7 @@ func (s *integrationState) editProfile(id string, row GenerationRow) {
 	s.Saved = &GenerationRef{ID: id, Revision: row.Revision}
 	s.SavedSignature = s.signature()
 	s.SaveOperation = ""
-	s.ValidationOperation = ""
-	s.Validation = GenerationValidation{}
+	s.ValidationOperation, s.Validation = s.Generation.latestValidation(row.Digest)
 }
 func (a *App) saveGeneration() {
 	client, ok := a.accessClient()
