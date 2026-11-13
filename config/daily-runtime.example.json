@@ -9,12 +9,21 @@
   "token_file": "/absolute/private/official.token",
   "completion_token_file": "/absolute/private/completion.token",
   "service_environment_file": "/absolute/private/service-environment.json",
+  "generation_file": "/absolute/private/generation.json",
   "codex_executable": "/absolute/installed-codex-native-binary",
   "auth_home": "/absolute/existing/codex/home",
   "model": "gpt-6.1-sol",
   "graph_assets": "/absolute/web/official-graph/dist",
   "projects": [],
   "common_datasets": [],
+  "agent_host_home": "/absolute/existing/user-home",
+  "agent_hosts": {
+    "codex": { "profile": "/absolute/existing/codex/home", "executable": "/absolute/installed-codex-native-binary" },
+    "pi": { "profile": "/absolute/existing/pi-agent-profile", "executable": "/absolute/installed-pi-binary" },
+    "traex": { "profile": "/absolute/existing/traex-profile", "executable": "/absolute/installed-traecli-binary" },
+    "claude_code": { "profile": "/absolute/existing/claude-profile", "executable": "/absolute/installed-claude-binary" },
+    "cursor": { "profile": "/absolute/existing/cursor-profile", "executable": "/absolute/installed-cursor-binary" }
+  },
   "project_control": {
     "url": "http://127.0.0.1:18777",
     "registry_file": "/absolute/private/project-registry.json",

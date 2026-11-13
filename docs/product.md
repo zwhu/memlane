@@ -2,7 +2,9 @@
 
 2026-11-12。本阶段以[精简版规格](client-simplification-spec-20261112.md)和[技术方案](client-simplification-technical-plan-20261112.md)为准。2026-11-13已获明确实施授权，当前以dev模式执行；进度及实际边界见[执行记录](engineering/client-simplification-execution-20261113.md)，不恢复旧全量Goal、不进入release。
 
-Memlane 面向程序员，让编码 Agent 使用同一份项目知识，并提供独立、美观的 macOS 阅读界面。Cognee 是唯一内容数据源；Memlane 提供桌面呈现、必要配置、Codex 模型适配和开发启动入口。
+Memlane 面向程序员，让编码 Agent 使用同一份项目知识，并提供独立、美观的 macOS 阅读界面。Cognee 是唯一内容数据源；Memlane 提供桌面呈现、Agent 接入与模型配置适配和开发启动入口。
+
+2026-11-14 多Agent／Provider增补按[技术方案](multi-agent-provider-technical-plan-20261114.md)开发，覆盖此前唯一Codex接入／生成通道的相应限制。第一批范围为Codex、pi、TraeX、Claude Code、Cursor，以及Codex订阅桥和官方Provider直连。当前实现、真实闭环与未完成项以[支持矩阵](engineering/multi-agent-provider-support-20261114.md)为准，完整首批尚未交付；本次不自动改写日常配置或迁移已有材料。
 
 2026-11-13 总览增补按[产品方案](overview-product-plan-20261113.md)、[规格](overview-spec-20261113.md)和[技术方案](overview-technical-plan-20261113.md)执行；本次增补已实施，结果见[实施记录](engineering/overview-execution-20261113.md)，不改写此前交付。
 
@@ -18,7 +20,7 @@ Memlane 面向程序员，让编码 Agent 使用同一份项目知识，并提�
 | 全局搜索 | 按项目与内容类型检索官方数据 |
 | 通用知识 | 个人偏好与通用经验的阅读、搜索、新增、编辑、删除，显示真实保存与处理状态 |
 | 图谱 | 官方实体关系画布和代码图谱承载，按项目开启、手动更新 |
-| 设置 | 官方服务与本机 Codex 接入、全局默认规则、新建／关联与高级存储核对 |
+| 设置 | 官方服务与本机 Agent 接入、知识处理配置及高级存储核对 |
 | 项目设置 | 从当前项目菜单进入，按 Agent 配置访问／采集／处理覆盖；待发材料另设页签 |
 
 首页和设置采用宽幅内容，阅读采用三栏。当前设计入口见[设计目录](ui-redesign/design-catalog.md)。
@@ -35,7 +37,7 @@ Agent 采集与召回复用固定官方集成；各接入指向同一服务，�
 
 通用知识独立存储，Agent 只有可读权限时才在原 coding 注入入口内合并使用，项目明确约定优先。新项目代码图默认关闭；项目、通用和代码数据组保持区分。既有会话和合法材料不自动迁移、补采或重放。
 
-当前唯一生成模型通道为 Codex 订阅推理，embedding 沿用官方兼容模型。处理会话隔离日常采集与工具，避免重复记录自身输出。
+Agent连接与知识处理模型分别配置。保留Codex订阅推理，新增Cognee官方Provider直连；允许保存多个配置，只有一个当前使用。保存、消耗额度的验证和“下次启动使用”分开，正常重启确认成功后才应用；失败按原配置最多恢复一次，清理未知则停止。embedding沿用原配置，处理会话隔离日常采集与工具，避免重复记录自身输出。
 
 ## 开发运行
 

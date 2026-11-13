@@ -1,0 +1,28 @@
+{
+  "official_data": "/absolute/existing/official/cognee",
+  "official_source": "/absolute/fixed/upstream/source",
+  "official_archive": "/absolute/fixed/upstream/archive.tar.gz",
+  "service_commit": "ec6f40859e5f2df9e7862dde27d580ac3268ed43",
+  "python": "/absolute/existing/python",
+  "service_url": "http://127.0.0.1:61255",
+  "token_file": "/absolute/private/official.token",
+  "service_environment_file": "/absolute/private/service-environment.json",
+  "generation_file": "/absolute/private/existing-validated-api-generation.json",
+  "graph_assets": "/absolute/web/official-graph/dist",
+  "projects": [],
+  "common_datasets": [],
+  "agent_host_home": "/absolute/existing/user-home",
+  "agent_hosts": {
+    "pi": { "profile": "/absolute/existing/pi-agent-profile", "executable": "/absolute/installed-pi-binary" },
+    "traex": { "profile": "/absolute/existing/traex-profile", "executable": "/absolute/installed-traecli-binary" },
+    "claude_code": { "profile": "/absolute/existing/claude-profile", "executable": "/absolute/installed-claude-binary" },
+    "cursor": { "profile": "/absolute/existing/cursor-profile", "executable": "/absolute/installed-cursor-binary" }
+  },
+  "project_control": {
+    "url": "http://127.0.0.1:18777",
+    "registry_file": "/absolute/private/project-registry.json",
+    "management_token_file": "/absolute/private/project-management.token",
+    "agent_control_token_files": {},
+    "plugin_dir": "/absolute/fixed/managed-codex-plugin"
+  }
+}

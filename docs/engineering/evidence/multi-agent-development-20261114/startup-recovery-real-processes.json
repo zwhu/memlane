@@ -1,0 +1,108 @@
+{
+  "scope": "Real fixed official service processes and startup launcher against three independent empty synthetic data roots; injected applied-digest faults, no model/content task requests issued",
+  "cases": [
+    {
+      "scenario": "recover-original-once",
+      "error_code": null,
+      "launched_references": [
+        {
+          "id": "deepseek-e2e",
+          "revision": 1
+        },
+        {
+          "id": "deepseek-anthropic-e2e",
+          "revision": 1
+        }
+      ],
+      "real_health_checks": 2,
+      "active_unchanged": true,
+      "next_preserved": true,
+      "continuity_marker_unchanged": true,
+      "startup_error": "candidate_start_failed",
+      "model_requests_triggered": false,
+      "content_or_task_replay_requested": false,
+      "all_owned_groups_confirmed_exited": true,
+      "event_sequence": [
+        "launch",
+        "actual_health_200",
+        "inject_applied_digest_mismatch",
+        "cleanup_confirmed",
+        "launch",
+        "actual_health_200"
+      ],
+      "cleanup_unknown_retained_live_candidate": false
+    },
+    {
+      "scenario": "cleanup-unconfirmed",
+      "error_code": "generation_cleanup_unconfirmed",
+      "launched_references": [
+        {
+          "id": "deepseek-e2e",
+          "revision": 1
+        }
+      ],
+      "real_health_checks": 1,
+      "active_unchanged": true,
+      "next_preserved": true,
+      "continuity_marker_unchanged": true,
+      "startup_error": "candidate_start_failed",
+      "model_requests_triggered": false,
+      "content_or_task_replay_requested": false,
+      "all_owned_groups_confirmed_exited": true,
+      "event_sequence": [
+        "launch",
+        "actual_health_200",
+        "inject_applied_digest_mismatch",
+        "cleanup_unconfirmed"
+      ],
+      "cleanup_unknown_retained_live_candidate": true
+    },
+    {
+      "scenario": "recovery-also-fails",
+      "error_code": "generation_recovery_failed",
+      "launched_references": [
+        {
+          "id": "deepseek-e2e",
+          "revision": 1
+        },
+        {
+          "id": "deepseek-anthropic-e2e",
+          "revision": 1
+        }
+      ],
+      "real_health_checks": 2,
+      "active_unchanged": true,
+      "next_preserved": true,
+      "continuity_marker_unchanged": true,
+      "startup_error": "previous_generation_start_failed",
+      "model_requests_triggered": false,
+      "content_or_task_replay_requested": false,
+      "all_owned_groups_confirmed_exited": true,
+      "event_sequence": [
+        "launch",
+        "actual_health_200",
+        "inject_applied_digest_mismatch",
+        "cleanup_confirmed",
+        "launch",
+        "actual_health_200",
+        "inject_applied_digest_mismatch",
+        "cleanup_confirmed"
+      ],
+      "cleanup_unknown_retained_live_candidate": false
+    }
+  ],
+  "real_official_health_200_count": 5,
+  "source_registry_unchanged": true,
+  "temporary_official_data_and_credential_copies_removed": true,
+  "private_small_receipts_and_driver_retained": true,
+  "driver_sha256": "d12d819b973a9d5698481a4bb2764d26c61ae2d1a5ee2ed594092348ce917b74",
+  "source_engine_archive_modified": false,
+  "original_runtime_modified": false,
+  "limits": [
+    "Empty-root filesystem marker proves only its own retention; existing-library continuity has separate cross-protocol evidence.",
+    "No provider/model health is inferred from /health.",
+    "No unknown cleanup was followed by another launch; final owned-process termination was safety cleanup only."
+  ],
+  "source_commit": "f67edccb340e547b83d0e44c05f8adeb267f70c8",
+  "official_service_commit": "ec6f40859e5f2df9e7862dde27d580ac3268ed43"
+}

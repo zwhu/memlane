@@ -1,5 +1,7 @@
 # 本地开发
 
+2026-11-14多Agent／Provider增补已进入dev实施，覆盖下文旧“唯一Codex生成通道”的相应说明。当前支持、真实证据与未完成项见[支持矩阵](engineering/multi-agent-provider-support-20261114.md)。现有日常runtime／插件不自动迁移，仍以各自交付记录为准。
+
 2026-11-13 PA项目权限增补已完成dev自验，范围及实际日常接入见[项目权限交付](engineering/project-access-delivery-20261113.md)，详细证据见[执行记录](engineering/project-access-execution-20261113.md)。原D01–D09的共用owner和只读通用知识规则是此前交付事实；当前受管PA使用独立Agent主体、官方dataset ACL与本机项目控制进程。经用户明确交接已切换本机Codex，新CLI与普通Desktop问答均已验证；既有会话及材料未自动迁移、补采或重放。
 
 PA配置模板新增可选 `project_control`：显式loopback `url`、私有 `registry_file`、独立 `management_token_file`、安装实例 `agent_control_token_files` 以及固定 `plugin_dir`。启用后启动器一并管理控制进程，关窗保持，明确stop才收尾。未配置时保留原启动流程；模板路径仍是占位符。受管插件在独立目录重放 `engine/patches/project_access.py`，启动器核对 `engine/managed-project-plugin.json` 的全部摘要；禁止手改日常插件缓存。项目权限源码、真实隔离Agent及Native验证边界见 `docs/engineering/project-access-execution-20261113.md`；本机Codex准备、启用及实际加载分别记录，不用准备成功代替日常接入。
@@ -20,7 +22,7 @@ python3 scripts/dev.py open --config /绝对路径/runtime.json
 python3 scripts/dev.py stop --config /绝对路径/runtime.json
 ```
 
-启动器在官方服务与 completion 端点健康检查通过后启动 MyGo dev；健康检查就绪不代表真实模型推理已验证。需要先只运行这两个端点时，使用 `python3 scripts/dev.py start --no-ui --config /绝对路径/runtime.json`，随后仍可用 `open` 打开窗口。
+启动器在官方服务及当前模式所需端点健康检查通过后启动MyGo dev；桥模式启动completion，Provider模式不启动它。健康检查就绪不代表真实模型推理已验证。先只运行后台时，使用 `python3 scripts/dev.py start --no-ui --config /绝对路径/runtime.json`，随后仍可用 `open` 打开窗口。
 
 关闭桌面窗口或 MyGo 源码重载不会停止这两个端点，也不要再次执行 `start` 来重开窗口。`open` 向现有启动器发送重开请求，停止其已有 MyGo watcher（若有），再启动一个 watcher；它不会启动第二套服务，也不代表窗口已完成显示。UI 源码由 MyGo dev 增量编译、重载。
 
@@ -30,7 +32,7 @@ python3 scripts/dev.py stop --config /绝对路径/runtime.json
 
 旧启动器仍拥有健康服务、但其 MyGo watcher 已退出时，可通过 `python3 scripts/dev.py open --watch-ui --config /绝对路径/runtime.json` 在当前终端附着一个前台 UI watcher。该入口先核对现有服务所有者和就绪状态，拒绝第二个活跃 watcher；退出此 watcher 只收尾它自己的界面进程组，不停止官方服务。普通 `open` 检测到该附着锁时不再通知旧启动器另开 watcher。此方式用于开发调试，不替代日常服务的 `start`／`stop`。
 
-总览的首次初始化完成日期由启动器在必要配置、带认证官方内容检查及 completion 健康检查通过后保存。状态默认位于 `runtime.json` 同目录的 `client-state.json`；可用可选绝对路径字段 `client_state_file` 指定同一持久文件。启动、重开、模型或项目重配不会覆盖已有首日，单次运行清理不得删除该文件；损坏或写入失败保持错误，不用当前日期覆盖。实际知识与活动仍读取官方服务，不保存在此文件中。
+总览的首次初始化完成日期由启动器在必要配置、带认证官方内容检查及当前模式所需健康检查通过后保存。状态默认位于 `runtime.json` 同目录的 `client-state.json`；可用可选绝对路径字段 `client_state_file` 指定同一持久文件。启动、重开、模型或项目重配不会覆盖已有首日，单次运行清理不得删除该文件；损坏或写入失败保持错误，不用当前日期覆盖。实际知识与活动仍读取官方服务，不保存在此文件中。
 
 实际配置使用已有官方日常数据和组件，路径填写绝对路径；不静默新建空库。省略 `--config` 时默认读取仓库 `.local/daily/runtime.json`，显式指定路径更便于保证启动、停止与重开使用同一配置。
 
@@ -40,31 +42,43 @@ python3 scripts/dev.py stop --config /绝对路径/runtime.json
 | `official_source`、`official_archive`、`service_commit` | 固定上游源码目录、原始归档与提交。提交须匹配 `engine/coding-memory-components.json`；启动时校验归档摘要及官方包源码，不使用修改后的上游副本。 |
 | `python` | 已有 Python 3.12 虚拟环境的 Python 入口，保留 venv 路径，不替换成符号链接最终指向的基础 Python。复用已有依赖。 |
 | `service_url` | 桌面与官方插件共同访问的官方 Cognee API origin。 |
-| `completion_url` | 官方服务访问本机 Codex completion 端点的 origin；启动器要求这两个 URL 都是带明确端口的 `http://127.0.0.1:端口`，不含业务路径。服务侧自动追加 `/v1`。 |
+| `completion_url` | Codex桥模式所需的本机completion origin，使用带明确端口的 `http://127.0.0.1:端口`，不含业务路径；服务侧追加 `/v1`。Provider模式可省略。 |
 | `token_file` | 存放官方 Cognee 正式 API key 的私有纯文本文件路径，桌面读取并去除首尾空白后发送 `X-Api-Key`。 |
-| `completion_token_file` | 存放独立本机 completion Bearer 凭据的私有纯文本文件路径，供官方服务与 completion 端点共同读取。 |
+| `completion_token_file` | Codex桥模式所需的独立本机completion Bearer凭据文件；Provider模式可省略。 |
 | `service_environment_file` | 私有 JSON 对象文件路径，提供官方服务已有的 embedding 配置／凭据、默认用户和认证 secret 等允许项；不是 shell `.env` 文件。启动脚本拒绝允许列表之外的键，LLM 端点与凭据由运行配置生成。 |
-| `codex_executable`、`auth_home`、`model` | 已安装同版本 Codex 原生二进制的绝对路径、已有订阅登录所在的 Codex home 目录、使用的模型名。不要用依赖日常 Node/PATH 的包装脚本代替原生二进制；`auth_home` 填目录，不填认证文件。 |
+| `codex_executable`、`auth_home`、`model` | 原Codex桥配置及旧runtime首个profile的来源。原生二进制、登录home目录和模型分别配置，不能把auth文件填成home。已有Provider active配置时可省略；Agent的Codex安装发现另用 `agent_hosts.codex`。 |
+| `generation_file` | 私有schema2生成配置文件的绝对路径，保存不可变修订、active／next及验证回执；凭据只存私有引用。省略时沿旧runtime同目录生成。已有配置不能复制模板内容覆盖。 |
+| `agent_hosts`、`agent_host_home` | 各类型选定profile与原生executable；`agent_host_home`为安装器使用的已存在绝对HOME目录。Agent安装不依赖知识处理模型或对应订阅登录。 |
 | `graph_assets` | 已准备的官方图谱 Web 静态产物目录，供桌面图谱页加载。 |
 | `projects` | 项目关联数组，条目使用 `id`、`name`、`path`、官方 `dataset_id`，以及按需提供的 `code_dataset_id`、`code_enabled`。dataset ID 来自同一官方身份下的真实数据，不以项目显示名代替。 |
-| `common_datasets` | 通用文档的显式官方 dataset 关联数组，使用相同关联结构。本轮保留通用知识入口并明确官方暂不支持独立阅读，不创建通用 dataset；后续可建立所有 Agent 可读的专用数据组。空数组不会创建数据或迁移内容。 |
+| `common_datasets` | 旧显式通用文档关联数组，条目结构不变。PA管理侧另有专用通用知识数据组与独立ACL；空数组不迁移已有内容。 |
 
-`token_file`、`completion_token_file`、`service_environment_file` 必须已存在且为私有文件（0600）；实际配置与凭据保存在 Git 之外的私有位置，不写进模板、命令行或日志。不要将真实 token、环境文件或登录文件内容贴进文档。
+`token_file`、`service_environment_file` 及桥模式的 `completion_token_file` 必须已存在且为私有文件（0600）；实际配置与凭据保存在 Git 之外的私有位置，不写进模板、命令行或日志。不要将真实 token、环境文件或登录文件内容贴进文档。
 
 各条连接的凭据分别用于不同端点：
 
 | 连接 | 凭据与发送方式 |
 | --- | --- |
 | 桌面 → 官方 Cognee | `token_file` 中由目标官方服务签发、属于日常 owner 的正式 API key；请求头为 `X-Api-Key`，无 Bearer 回退。 |
-| 官方插件 → 官方 Cognee | 插件的 `COGNEE_API_KEY` 使用同一 owner 的正式 API key，`COGNEE_BASE_URL` 对齐 `service_url`。插件配置的是 key 值，不是 `token_file` 路径；通过官方插件自己的私有配置管理。 |
+| 受管官方插件 → 官方 Cognee | 使用该Agent实例独立官方子主体的key，`COGNEE_BASE_URL`对齐 `service_url`；安装绑定定位私有环境，不复制桌面owner凭据。 |
 | 官方 Cognee → 本机 completion | 服务读取 `completion_token_file` 并设置为 `LLM_API_KEY`，通过 `Authorization: Bearer …` 调用 `completion_url` 下的 `/v1` 接口；端点校验同一份凭据。它不是 Cognee API key。 |
 | completion → Codex 订阅推理 | 从 `auth_home` 仅复制必要订阅登录状态到每次请求的临时隔离 Codex home；使用独立工作目录和配置，不复制日常插件、历史或项目上下文。它不是上述两种端点 token。 |
 
-保持同一官方身份需要同时对齐服务、API key 所属 owner 与 dataset 关联。各日常官方插件设置 `COGNEE_PLUGIN_IDENTITY=false`，避免另建插件身份；设置 `COGNEE_MANAGED_ENDPOINT=true`，避免连接失败后启动本地 fallback；项目 dataset 配置与桌面的 `dataset_id` 保持一致。`dev.py` 不代装插件，也不改写插件配置。项目和 dataset 用于归属与检索分组，不新增客户端权限配置；官方服务认证继续保留。
+保持同一官方服务与数据归属，需要对齐服务、实例子主体及受管dataset。固定受管产物设置 `COGNEE_PLUGIN_IDENTITY=false` 和 `COGNEE_MANAGED_ENDPOINT=true`，不另建身份或启动fallback；项目解析和权限由管理侧既有PA协议及官方有效ACL决定。`dev.py`本身不代装插件或改写宿主配置；准备／启用经设置中的连接管理API执行。
 
 已解决的接入问题是把 owner 登录 JWT 放进 `X-Api-Key` 导致官方 hook 返回 401；修复为同 owner 正式 API key，桌面也统一使用 `X-Api-Key`，详见[接管与认证记录](engineering/client-simplification-execution-20261113.md)。不要将登录 JWT、completion Bearer 凭据或 Codex 订阅登录混填为插件／桌面 API key。出现 401 时先核对目标端点和凭据类型，不通过新建身份、另起服务或空库来规避。
 
-不启动旧 memlaned、私有内容 IPC、独立开发全文库或第二套索引。服务由固定官方原始源码提供，LLM 指向 Python Codex completion 端点；embedding 复用已有组件。源码及轻量调试容器可隔离，日常内容只有一份官方存储。
+不启动旧memlaned、私有内容IPC、独立开发全文库或第二套索引。固定官方原始源码通过当前Codex桥或Provider配置推理，embedding复用已有组件。源码及轻量调试容器可隔离，日常内容只有一份官方存储。
+
+## 多Agent与Provider配置（dev）
+
+设置“服务与连接”按类型多选准备、显式启用，再由实际宿主完成信任／重载与新会话；安装摘要不代表采集通过。选择目标profile，不读取其历史会话，不把其他类型的权限覆盖复制过来。无工具回合的Cursor当轮注入限制及尚未验证的宿主见支持矩阵。
+
+设置“知识处理”分别保存配置、验证（消耗所选账号额度）、选择“下次启动使用”；当前配置持续服务原任务。正常stop/start后，launcher确认实际配置摘要和健康才改active；候选失败仅在所属资源确认退出后恢复原配置一次，清理未知或原配置失败则停止。原操作缺失或unknown时只核对，不新建编号重发安装或模型请求。
+
+Provider协议值为 `openai`、`anthropic`、`gemini`、`custom`；DeepSeek等明确OpenAI兼容端点选 `custom`。endpoint/model/key均由用户明确配置，不猜供应商或错误后换模型。凭据0600、目录0700，不回填Native；HTTP重定向拒绝。验证记录实际adapter请求模式，不能当作远端严格Schema保证。
+
+模板 [`daily-runtime.example.json`](../config/daily-runtime.example.json)保留旧Codex桥兼容字段；[`provider-runtime.example.json`](../config/provider-runtime.example.json)展示不含Codex桥认证输入的API运行配置。两者都需已有官方环境／数据及私有凭据。API模板的 `generation_file` 必须指向已保存并已验证、含active的真实配置账本；空账本的首次初始化未由此模板证明，不能手写passed或绕过验证来启动。日常切换只修改候选配置，不编辑活动账本或复用临时验收目录。
 
 开发阶段不运行完整打包、DMG、签名、公证、更新或 helper 安装。Go/MyGo 固定版本和仓库内工具链继续复用。磁盘门禁至少保留 100 GiB，`dev.py` 与其他检查均通过既有 `scripts/task.py`；Go 检查使用 `sh scripts/go.sh`。
 
