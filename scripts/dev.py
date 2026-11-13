@@ -11,10 +11,66 @@ import subprocess
 import sys
 import time
 import urllib.request
+from datetime import datetime, timezone
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 GO = ROOT / '.local/toolchains/go-1.27.3/go/bin/go'
 DEFAULT_CONFIG = ROOT / '.local/daily/runtime.json'
+
+
+def complete_initialization(config, config_path, now=None):
+    """Commit the first successful setup once, including existing ready installs."""
+    request = urllib.request.Request(config['service_url'].rstrip('/') + '/api/v1/datasets',
+                                     headers={'X-Api-Key': Path(config['token_file']).read_text().strip()})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        if response.status != 200:
+            raise RuntimeError('authenticated content readiness failed')
+    with urllib.request.urlopen(config['completion_url'].rstrip('/') + '/health', timeout=10) as response:
+        if response.status != 200:
+            raise RuntimeError('completion readiness failed')
+    path = Path(config.get('client_state_file') or Path(config_path).parent / 'client-state.json')
+    if not path.is_absolute():
+        raise ValueError('client_state_file must be absolute')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.with_suffix('.lock').open('a+') as lock:
+        os.chmod(lock.name, 0o600)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if path.exists():
+            state = json.loads(path.read_text())
+            if state.get('schema_version') != 1:
+                raise ValueError('unsupported client state; retained unchanged')
+            datetime.strptime(state['first_used_date'], '%Y-%m-%d')
+            completed = datetime.fromisoformat(state['initialization_completed_at'].replace('Z', '+00:00'))
+            if completed.tzinfo is None or not state.get('first_used_timezone'):
+                raise ValueError('invalid initialization state; retained unchanged')
+            return state
+        instant = now or datetime.now().astimezone()
+        if instant.tzinfo is None:
+            raise ValueError('initialization time must include timezone')
+        state = {'schema_version': 1,
+                 'initialization_completed_at': instant.astimezone(timezone.utc).isoformat(),
+                 'first_used_date': instant.date().isoformat(),
+                 'first_used_timezone': str(instant.tzinfo)}
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, prefix='.client-state-', delete=False) as stream:
+                temporary = Path(stream.name)
+                os.chmod(temporary, 0o600)
+                json.dump(state, stream, indent=2)
+                stream.write('\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        return state
 
 
 def load_config(path):
@@ -171,7 +227,10 @@ def main():
     parser.add_argument('action', nargs='?', choices=('start', 'stop', 'open', 'status'), default='start')
     parser.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
     parser.add_argument('--no-ui', action='store_true')
+    parser.add_argument('--watch-ui', action='store_true', help='open: foreground UI watcher attached to the verified existing service')
     args = parser.parse_args()
+    if args.watch_ui and args.action != 'open':
+        parser.error('--watch-ui is only valid with open')
     path = args.config.expanduser().resolve(strict=True)
     config = load_config(path)
     data = Path(config['official_data'])
@@ -193,6 +252,35 @@ def main():
             raise RuntimeError('owner identity mismatch; do not signal an unknown process')
         if args.action == 'status':
             print(json.dumps(state, indent=2)); return
+        if args.action == 'open':
+            complete_initialization(config, path)
+            if args.watch_ui:
+                # An older detached launcher may have lost its output reader.
+                # Never attach a second watcher while its owned watcher is live.
+                for child in state.get('children', [])[2:]:
+                    status = subprocess.run(['ps', '-p', str(child), '-o', 'stat='], capture_output=True, text=True)
+                    if status.returncode == 0 and status.stdout.strip() and not status.stdout.strip().startswith('Z'):
+                        raise RuntimeError('existing UI watcher is live; use ordinary open')
+                with path.with_name('.ui-watch.lock').open('a+') as ui_lock:
+                    fcntl.flock(ui_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    def stop_ui(_signal, _frame):
+                        raise KeyboardInterrupt
+                    signal.signal(signal.SIGTERM, stop_ui)
+                    watcher = subprocess.Popen([str(GO), 'tool', 'mygo', 'dev'], cwd=ROOT,
+                                               env=ui_env(path), start_new_session=True)
+                    try:
+                        watcher.wait()
+                    except KeyboardInterrupt:
+                        pass
+                    finally:
+                        stop_group(watcher)
+                return
+            with path.with_name('.ui-watch.lock').open('a+') as ui_lock:
+                try:
+                    fcntl.flock(ui_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    print('Foreground UI watcher already attached; use the current window.')
+                    return
         os.kill(pid, signal.SIGTERM if args.action == 'stop' else signal.SIGUSR1)
         if args.action == 'stop':
             deadline = time.monotonic() + 35
@@ -247,6 +335,7 @@ def main():
         wait_http(config['completion_url'] + '/health', endpoint)
         service = launch([config['python'], str(ROOT / 'engine/python/official_service_dev.py'), '--config', str(path)])
         wait_http(config['service_url'] + '/health', service)
+        complete_initialization(config, path)
         state['phase'] = 'ready'
         save_owner()
         print('Daily official services ready; closing UI keeps them running. Ctrl+C explicitly stops owned services.', flush=True)

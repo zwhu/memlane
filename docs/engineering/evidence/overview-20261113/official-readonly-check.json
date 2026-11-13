@@ -1,0 +1,15 @@
+{
+  "date": "2026-11-13",
+  "first_used_date": "2026-11-13",
+  "knowledge": 3,
+  "raw_sessions": 6,
+  "raw_documents": 0,
+  "raw_total": 6,
+  "excluded_derived": 4,
+  "first_use_unchanged_on_reopen": true,
+  "official_service_pids": [
+    69477,
+    69478
+  ],
+  "launcher_pid": 69475
+}

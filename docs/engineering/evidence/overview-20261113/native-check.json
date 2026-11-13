@@ -1,0 +1,36 @@
+{
+  "date": "2026-11-13",
+  "surface": "Memlane Dev; MyGo v0.7.4",
+  "window_logical_size": [
+    1200,
+    820
+  ],
+  "screenshot_observed_in_tool": true,
+  "screenshot_file_archived": false,
+  "observed": {
+    "first_use_days": 1,
+    "knowledge": 3,
+    "raw_records": 6,
+    "heatmap_date": "2026-11-13",
+    "heatmap_count": 3,
+    "activity_initial_events": 20,
+    "activity_after_more": 22
+  },
+  "steps": [
+    "click populated date",
+    "open knowledge",
+    "open source",
+    "return to knowledge",
+    "return to overview; date preserved",
+    "load more activity"
+  ],
+  "models_or_indexes_triggered_by_acceptance": false,
+  "failure_details": {
+    "official_error_class": "BrokenPipeError",
+    "expanded_in_native": true,
+    "copy_feedback_observed": true,
+    "clipboard_read_back_in_another_app": false,
+    "log_frames_candidate_in_report": true,
+    "background_restarted": false
+  }
+}

@@ -3,7 +3,6 @@ package simpledesktop
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -33,6 +32,7 @@ type pane struct {
 	cancel                         context.CancelFunc
 }
 type App struct {
+	overviewState   overviewViewState
 	searchType      string
 	editProject     *Project
 	editIndex       int
@@ -110,34 +110,7 @@ func (a *App) health() {
 		a.Update(func() { a.service = state; a.completion = completion })
 	}()
 }
-func (a *App) loadRecent() {
-	projects := append([]Project(nil), a.Config.Projects...)
-	client := a.Client
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		defer cancel()
-		rows := []Item{}
-		errorText := ""
-		for _, p := range projects {
-			items, _, err := client.documents(ctx, p, 0, false)
-			if err != nil {
-				errorText = err.Error()
-				continue
-			}
-			rows = append(rows, items...)
-		}
-		sort.SliceStable(rows, func(i, j int) bool { return rows[i].Date > rows[j].Date })
-		if len(rows) > 8 {
-			rows = rows[:8]
-		}
-		a.Update(func() {
-			if errorText == "" {
-				a.recent = rows
-			}
-			a.homeError = errorText
-		})
-	}()
-}
+func (a *App) loadRecent()      { a.loadOverview() }
 func (a *App) routeKey() string { return fmt.Sprintf("%s/%d/%s", a.page, a.project, a.kind) }
 func (a *App) state() *pane {
 	k := a.routeKey()
@@ -176,6 +149,9 @@ func (a *App) navigate(page string, index int) {
 	}
 	a.page = page
 	a.project = index
+	if page == "总览" {
+		a.loadOverview()
+	}
 	if page == "知识" {
 		a.kind = "知识"
 	}
@@ -417,57 +393,7 @@ func (a *App) navigation(c *ui.Context) {
 		ui.Text(c, "服务状态 · "+a.service).FontSize(10).TextColor(muted).Margin(12, 20, 18, 20).MaxLines(2)
 	})
 }
-func (a *App) home(c *ui.Context) {
-	ui.Scroll(c).Grow(1).Padding(30, 32).Gap(24).Children(func() {
-		ui.Text(c, "继续积累，随时找回").FontSize(25).Bold().TextColor(ink)
-		ui.Text(c, "从项目进入知识，也可以搜索之前解决过的问题。").FontSize(12).TextColor(muted)
-		ui.Text(c, "项目").FontSize(15).Bold()
-		ui.Row(c).Gap(16).Children(func() {
-			for idx, p := range a.Config.Projects {
-				index := idx
-				project := p
-				ui.Button(c, "").Label(project.Name+" · 查看项目知识").Key("home-project-"+p.ID).Grow(1).MinWidth(0).Justify(ui.Start).Padding(20).Height(126).Border(1, border).Background(ui.Hex("#ffffff")).Radius(8).Children(func() {
-					ui.Column(c).Gap(16).Children(func() {
-						ui.Row(c).Gap(10).Children(func() {
-							ui.Icon(c, folder).FontSize(19).TextColor(ink)
-							ui.Text(c, project.Name).FontSize(15).Bold().TextColor(ink)
-						})
-						ui.Text(c, project.Path).FontSize(11).TextColor(muted).SingleLine()
-						ui.Text(c, "查看项目知识  ›").FontSize(11).TextColor(muted)
-					})
-				}).OnClick(func() { a.navigate("知识", index) })
-			}
-		})
-		if len(a.Config.Projects) == 0 {
-			ui.Text(c, "尚未关联项目，请在运行配置中关联已有官方数据组。").FontSize(12).TextColor(muted)
-		}
-		ui.Row(c).Children(func() {
-			ui.Text(c, "最近知识").FontSize(15).Bold()
-			ui.Spacer(c)
-			button(c, "刷新", a.loadRecent)
-		})
-		if a.homeError != "" {
-			ui.Text(c, "读取失败："+a.homeError).FontSize(11).TextColor(muted)
-		}
-		for _, item := range a.recent {
-			i := item
-			ui.Button(c, i.Title).Key("recent-"+i.key()).Justify(ui.Start).Padding(16).Background(ui.Hex("#ffffff")).BorderWidth(0, 0, 1, 0).BorderColor(border).OnClick(func() {
-				for idx, p := range a.Config.Projects {
-					if p.Dataset == i.Dataset {
-						a.navigate("知识", idx)
-						s := a.state()
-						a.selectItem(s, i)
-						break
-					}
-				}
-			})
-		}
-		if len(a.recent) == 0 && a.homeError == "" {
-			ui.Text(c, "暂无已载入的知识").FontSize(12).TextColor(muted)
-		}
-		ui.Text(c, "内容服务 · "+a.service+"\nCodex · "+a.completion).FontSize(11).TextColor(muted)
-	})
-}
+func (a *App) home(c *ui.Context) { a.overviewHome(c) }
 func (a *App) settings(c *ui.Context) {
 	ui.Scroll(c).Grow(1).Padding(30, 32).Gap(22).Children(func() {
 		ui.Text(c, "服务与连接").FontSize(21).Bold()

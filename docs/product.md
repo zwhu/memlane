@@ -4,7 +4,7 @@
 
 Memlane 面向程序员，让编码 Agent 使用同一份项目知识，并提供独立、美观的 macOS 阅读界面。Cognee 是唯一内容数据源；Memlane 提供桌面呈现、必要配置、Codex 模型适配和开发启动入口。
 
-2026-11-13 总览增补按[产品方案](overview-product-plan-20261113.md)、[规格](overview-spec-20261113.md)和[技术方案](overview-technical-plan-20261113.md)执行；本次新增范围待实施，不计入此前交付。
+2026-11-13 总览增补按[产品方案](overview-product-plan-20261113.md)、[规格](overview-spec-20261113.md)和[技术方案](overview-technical-plan-20261113.md)执行；本次增补已实施，结果见[实施记录](engineering/overview-execution-20261113.md)，不改写此前交付。
 
 ## 当前页面
 
