@@ -128,7 +128,14 @@ func TestProjectDefaultsUIRejectsConcurrentRevisionWithoutLosingDraft(t *testing
 }
 
 func TestProjectDirectoryFailureKeepsCatalog(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
+	var recovered atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !recovered.Load() {
+			w.WriteHeader(503)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(syntheticAccessDirectory())
+	}))
 	defer server.Close()
 	token := filepath.Join(t.TempDir(), "control.token")
 	_ = os.WriteFile(token, []byte(strings.Repeat("m", 40)), 0600)
@@ -136,13 +143,20 @@ func TestProjectDirectoryFailureKeepsCatalog(t *testing.T) {
 	a.applyAccessDirectory(syntheticAccessDirectory())
 	updates := make(chan func(), 10)
 	a.Update = func(fn func()) { updates <- fn }
+	a.access.Message = "原保存结果待核对"
 	a.RefreshProjectDirectory()
 	drainReading(t, updates, func() bool { return !a.access.Loading })
-	if len(a.Config.Projects) != 1 || !a.access.Loaded || a.access.Message == "" {
+	if len(a.Config.Projects) != 1 || !a.access.Loaded || a.access.DirectoryError == "" {
 		t.Fatal("failed refresh cleared known project")
 	}
 	if time.Until(a.access.Next) > 16*time.Second || time.Until(a.access.Next) < 0 {
 		t.Fatal("unbounded directory retry")
+	}
+	recovered.Store(true)
+	a.RefreshProjectDirectory()
+	drainReading(t, updates, func() bool { return !a.access.Loading })
+	if a.access.DirectoryError != "" || a.access.Message != "原保存结果待核对" {
+		t.Fatal("recovery kept an obsolete directory error or lost an unknown write result")
 	}
 }
 

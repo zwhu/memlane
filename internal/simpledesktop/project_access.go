@@ -114,12 +114,33 @@ type ProjectBinding struct {
 }
 
 type AccessDirectory struct {
-	Revision int64            `json:"revision"`
-	Defaults ProjectPolicy    `json:"defaults"`
-	Agents   []AccessAgent    `json:"agents"`
-	Projects []AccessProject  `json:"projects"`
-	Common   *AccessProject   `json:"common"`
-	Bindings []ProjectBinding `json:"bindings"`
+	Revision        int64            `json:"revision"`
+	Defaults        ProjectPolicy    `json:"defaults"`
+	Agents          []AccessAgent    `json:"agents"`
+	Projects        []AccessProject  `json:"projects"`
+	Common          *AccessProject   `json:"common"`
+	Bindings        []ProjectBinding `json:"bindings"`
+	CodexConnection *CodexConnection `json:"codex_connection"`
+}
+
+type CodexConnection struct {
+	InstanceID             string   `json:"instance_id"`
+	Home                   string   `json:"codex_home"`
+	Status                 string   `json:"status"`
+	AgentRegistered        bool     `json:"agent_registered"`
+	NewSessions            int      `json:"new_sessions"`
+	ProjectConfigConflicts []string `json:"project_config_conflicts"`
+	LegacyConsumers        []struct {
+		PID    int    `json:"pid"`
+		Script string `json:"script"`
+	} `json:"legacy_consumers"`
+	Preview *CodexConnectionPreview `json:"preview"`
+}
+
+type CodexConnectionPreview struct {
+	ProposedSHA     string   `json:"proposed_sha256"`
+	DisabledPlugins []string `json:"disabled_plugins"`
+	EnabledPlugin   string   `json:"enabled_plugin"`
 }
 
 type ProjectControlClient struct {

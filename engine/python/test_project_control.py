@@ -216,6 +216,9 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
             manager = {'Authorization': 'Bearer ' + 'm' * 40}
             self.assertEqual((await client.get('/v1/projects')).status, 401)
             self.assertEqual((await client.get('/v1/projects', headers=agent)).status, 403)
+            for action in ('prepare', 'activate', 'review'):
+                response = await client.post('/v1/codex/' + action, json={'expected_revision': 0}, headers=agent)
+                self.assertEqual(response.status, 403)
             payload = {'workspace': str(self.repo), 'host_session_key': 'one', 'agent_id': 'b'}
             self.assertEqual((await client.post('/v1/project/resolve', json=payload, headers=agent)).status, 400)
             payload.pop('agent_id')

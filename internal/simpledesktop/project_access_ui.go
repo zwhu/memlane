@@ -22,6 +22,7 @@ type projectAccessState struct {
 	Request                                       uint64
 	Next                                          time.Time
 	Message                                       string
+	DirectoryError                                string
 	Signature                                     string
 	Defaults                                      ProjectPolicy
 	DefaultsDirty                                 bool
@@ -59,9 +60,10 @@ func (a *App) RefreshProjectDirectory() {
 			}
 			a.access.Loading = false
 			if err != nil {
-				a.access.Message = err.Error()
+				a.access.DirectoryError = err.Error()
 				return
 			}
+			a.access.DirectoryError = ""
 			a.applyAccessDirectory(directory)
 		})
 	}()
@@ -70,6 +72,9 @@ func (a *App) RefreshProjectDirectory() {
 func (a *App) applyAccessDirectory(directory AccessDirectory) {
 	if a.access.Loaded && directory.Revision < a.access.Directory.Revision {
 		return
+	}
+	if directory.CodexConnection == nil {
+		directory.CodexConnection = a.access.Directory.CodexConnection
 	}
 	data, _ := json.Marshal(directory)
 	signature := fmt.Sprintf("%x", sha256.Sum256(data))
@@ -246,12 +251,16 @@ func (a *App) accessSettings(c *ui.Context) {
 	if a.access.Message != "" {
 		ui.Text(c, a.access.Message).FontSize(11).TextColor(muted)
 	}
+	if a.access.DirectoryError != "" {
+		ui.Text(c, a.access.DirectoryError).FontSize(11).TextColor(muted)
+	}
 	ui.Button(c, "刷新项目与权限状态").Disabled(a.access.Loading || a.access.Busy).OnClick(a.RefreshProjectDirectory)
 	if !a.access.Loaded {
 		ui.Text(c, "正在读取项目规则…").FontSize(12)
 		return
 	}
 	directory := a.access.Directory
+	a.codexConnectionSettings(c)
 	ui.Text(c, "新项目自动接入；具体项目可逐项覆盖。可写并维护包含官方删除能力，不授予分享权限。").FontSize(12).LineHeight(1.7)
 	access, capture, process := accessLabel(a.access.Defaults.Access), booleanLabel(a.access.Defaults.Capture), booleanLabel(a.access.Defaults.AutoProcess)
 	ui.Row(c).Gap(12).Children(func() {

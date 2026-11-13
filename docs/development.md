@@ -2,7 +2,7 @@
 
 2026-11-13 PA项目权限增补正在实施，进度以[项目权限执行记录](engineering/project-access-execution-20261113.md)为准。原D01–D09的共用owner和只读通用知识规则是此前交付事实；受管PA将使用独立Agent主体、官方dataset ACL与本机项目控制进程，未自动迁移现有会话或日常配置。
 
-PA配置模板新增可选 `project_control`：显式loopback `url`、私有 `registry_file`、独立 `management_token_file`、安装实例 `agent_control_token_files` 以及固定 `plugin_dir`。启用后启动器一并管理控制进程，关窗保持，明确stop才收尾。未配置时保留原启动流程；模板路径仍是占位符。受管插件在独立目录重放 `engine/patches/project_access.py`，启动器核对 `engine/managed-project-plugin.json` 的全部摘要；禁止手改日常插件缓存。当前仅源码及合成检查，真实接入与Native尚未交付。
+PA配置模板新增可选 `project_control`：显式loopback `url`、私有 `registry_file`、独立 `management_token_file`、安装实例 `agent_control_token_files` 以及固定 `plugin_dir`。启用后启动器一并管理控制进程，关窗保持，明确stop才收尾。未配置时保留原启动流程；模板路径仍是占位符。受管插件在独立目录重放 `engine/patches/project_access.py`，启动器核对 `engine/managed-project-plugin.json` 的全部摘要；禁止手改日常插件缓存。项目权限源码、真实隔离Agent及Native验证边界见 `docs/engineering/project-access-execution-20261113.md`；本机Codex准备、启用及实际加载分别记录，不用准备成功代替日常接入。
 
 2026-11-13 起，精简版唯一开发入口为 `scripts/dev.py`。本轮接管与验收已完成，实际范围和限制见[交付记录](engineering/client-simplification-delivery-20261113.md)，阶段证据见[执行记录](engineering/client-simplification-execution-20261113.md)。配置模板为 [`config/daily-runtime.example.json`](../config/daily-runtime.example.json)，其中路径均为占位符，不能直接启动。
 
@@ -71,3 +71,14 @@ python3 scripts/dev.py stop --config /绝对路径/runtime.json
 历史完整包、helper与旧索引验收命令已从当前开发说明退役。历史证据保留于对应文档及开发前tag；不得用旧脚本重启被删除链路。
 
 代码图谱使用根目录 `mcp-arch.yaml` 的官方 Enola 配置：保留除 `manifests` 外全部默认源码解析器，并排除本项目生成目录。固定版的 `manifests` 扫描器绕过 ignore、会带入 `build/` 历史依赖清单，因此当前停用该扫描器；不提供它派生的依赖清单事实。语言源码的符号、调用与导入解析继续保留。更改索引配置后在项目图谱中手动更新，不启动文件监听。
+
+
+## 本机 Codex 接入（PA 开发）
+
+在设置的「Agent 连接」中准备本机Codex接入。控制进程按实际 `auth_home` 固定安装实例，为它创建／核对独立官方主体，再用已配置原生 `codex_executable` 的插件管理器，在私有临时Codex home内安装固定受管marketplace。准备不复制OAuth、不调用模型、不修改日常配置。
+
+预览保存原配置摘要、拟启用配置摘要及待停用的Cognee入口；模型、登录和其他插件保留。共享同一Codex home的CLI／Desktop共用此主体，不提供session级权限隔离。已有项目配置若单独启用旧Cognee插件，需要先核对；旧采集watcher未交接时不允许启用。不要为了过门禁擅自结束编码会话或删除旧buffer。
+
+明确启用时再核对配置摘要与缓存全部文件，先写未知journal，再将新代次缓存放入独立目录、原子保存配置。冲突、超时或中断先「核对原接入操作」，该入口只查原配置／原缓存，不重复安装或恢复owner回退。启用成功仍显示等待新会话，直至有实际接入回执；宿主的插件加载／信任提示需按其正常流程处理，不能全局关闭信任检查。CLI与Desktop的真实hook及cwd需分别验证。
+
+控制进程复用官方Python环境中已有的 `tomlkit`，用于保留Codex配置中的注释及无关设置。本机环境已确认可用；不使用系统Python或修改用户默认工具链。接入预览、配置备份及安装日志含本机信息，保存在私有运行目录，不入Git。

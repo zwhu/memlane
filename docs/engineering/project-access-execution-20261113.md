@@ -235,3 +235,37 @@ PA-CK03 累计失败1轮：普通通用Markdown被旧session-learning前缀解�
 
 
 安装准备源码现生成 `managed-marketplaces/<instance>/<generation>/plugins/cognee` 及相对路径catalog，返回marketplace_root/name供后续宿主管理器使用。marketplace名称同时绑定实例与产物代次，旧受管目录与已加载cache不覆盖；catalog没有key，私有env／marker继续0600。新增回归核对实际catalog源路径、不同实例不同命名及旧marker保留；Python42项、Go受影响包检查通过。现有A/B安装回执仍保留其原路径，后续不能把生成catalog描述为日常宿主已安装／已加载。后台尚未加载本prepare源码；不为补文档而立即重载。
+
+
+## 本机接入流程实施与准备（15:09）
+
+新增管理侧CodexConnection和Native「Agent连接」：稳定ID由实际Codex home推导，CLI／Desktop共享配置时只建一个主体；准备先保留原创建尝试，未知不能创建替身。生产API只接受expected_revision及已审阅proposed_sha，不允许请求指定任意可执行文件或用户配置路径。Agent token调用准备／启用／核对均403。
+
+准备调用原生Codex plugin marketplace/add在私有临时home实际安装，不复制OAuth、不调用模型，不修改日常配置。独立marketplace按实例与代次分隔；全部固定文件和安装marker核对。tomlkit编辑只改变受管marketplace、Cognee入口及必须的hooks开关，保留模型、登录、其他插件和注释。原配置／拟用配置0600保存、摘要绑定预览；启用前核对两次原配置、缓存和旧采集进程，先journal未知再写缓存／原子配置。未知结果明确review原配置和原缓存，不重装、不自动恢复owner或重发材料。启用完成只表示configured_pending_new_session，不冒充真实加载。
+
+### PA-CONN01：旧消费者检查跨配置目录误阻塞（累计失败1轮）
+
+实际安装器首次在无登录／无有效官方凭据的合成profile完成安装，启用被其他profile的旧watcher误阻塞。原回执 `codex-connection-installer.json` 保留original_round。已证进程扫描没有限定Codex home，已改为只匹配当前配置目录cache并补异profile／同profile回归。沿原prepared状态、原产物继续启用成功，没有重复调用安装器、没有调用模型。该证据只证明实际安装器与合成连接配置，不冒充真实独立主体或日常加载。系统/bin/true不存在的初始单测夹具及手写preview缺字段是准备／夹具观察，不另计产品验收。
+
+### 后台和真实本机准备
+
+按用户“允许必要dev重载”加载新接口前，观察273条活动、109个不同pipeline的最新状态：86 completed、23 errored，未观察到非终态。该范围不证明所有进程均空闲；没有重放这些任务。核对旧launcher56615启动时间／锁后，统一dev stop确认owned groups退出和原库释放；新launcher26730于15:00:07同库启动，completion26732、official26741，随后control就绪。日常Agent配置及原主体未切换。
+
+只提交一次生产 `/v1/codex/prepare`：本机稳定实例codex-2564787a0a96464c49ccf335真实官方主体已注册，默认项目／通用权限按现有控制核对。固定产物08由实际安装器成功准备，revision35；原本机config摘要保持ad6ae9c4476917b38d3ef67a1f4b70f7731d7ecd2e42a5ab6d01786b9222a0db，拟用摘要ff291ac4e51d227ebad61a221b1ba1f7d817967c3d713b1b2ce4bfd3fca9beef。将停用cognee@cognee-local、启用cognee@memlane-16e71bd70ad5-f36cad920703147fb9d4。私有回执 `daily-codex-connection-prepare.json` prepared/configuration_unchanged=true/model_calls=0；不是已启用。
+
+真实旧cache仍有idle watcher8770、exit watcher56700及64233，均核对到同一Codex home；启动时间分别14:48:13、09:09:16、12:33:08。未向它们发信号、未结束编码会话。Native实际显示预览及旧采集仍在运行，启用按钮disabled；截图已打开。后续凭据排他交接按附件第4节单独取得，之前后台交接不覆盖该切换。
+
+进一步补齐trusted项目级配置检查：项目独立启用旧插件可覆盖用户级disable，激活前再次读取已登记trusted项目的.codex/config.toml并阻止此冲突；不偷偷修改项目设置。该后续守卫源码已测试，当前后台仍是本轮重载时版本，最终启用前必须加载。正常信任提示不通过全局bypass处理。
+
+### PA-DIR01：目录恢复后旧错误提示残留（累计失败1轮）
+
+Native后台恢复后目录和策略均已载入，但上方仍显示此前服务重载期间的“项目目录暂时不可用”。已证目录GET错误与未知保存结果共用Message，成功GET未清理。分为DirectoryError和操作Message：成功目录读取只清目录错误，未知保存结果保留。回归模拟503→200并验证原保存待核对消息不丢；Native新窗口已无错误残留。原失败1轮保留。
+
+### Native项目设置连续操作
+
+真实Native创建自有空仓native-manual，显示名PA Native manual；官方来源manual、verified、代码图false，项目ID6fb6103c-998e-5079-bb66-6362b2be7697。对A实际选择自动采集关闭并保存，当前规则显示关闭且其他字段继承；再实际点击恢复全部默认，规则回到采集开启／继承默认。官方最终overrides[A]={}、revision38；证据 `native-project-settings.json` passed/model_calls=0。同名设置卡片same · one/two已在实际AX核对。没有通过本场景改原memlane/item-fe内容。
+
+本轮新增检查50项Python、Go全量test、vet通过；受影响race在最后小修前通过，最终集中检查仍按最后候选执行。整体Goal保持active，正常日常CLI／Desktop加载、旧消费者／旧入口退出、PA14与最终清理／交付边界尚未完成。
+
+
+最终候选补充：连接“新会话回执”只统计本次启用后新增的host绑定，旧绑定不充当当前配置加载证据；未知原配置已提交时review仅核对原缓存和原配置。50项Python全量、Go全量、vet、受影响包race通过，最后计数小修定向8项通过。PA-CONN01原失败1轮保留，最后fixture补齐enabled_plugin字段不算新的真实验收轮次。日常预览仍未启用，旧watcher未停止。

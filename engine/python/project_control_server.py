@@ -17,7 +17,7 @@ def fields(body, required, optional=()):
     return body
 
 
-def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, control_url=None):
+def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, control_url=None, codex_config=None):
     if len(manager_token) < 32 or any(len(token) < 32 for token in agent_tokens.values()):
         raise ValueError('control tokens must contain at least 32 characters')
     tokens = [manager_token, *agent_tokens.values()]
@@ -49,6 +49,19 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
             return web.json_response({'error': 'configuration_result_unknown'}, status=503)
 
     app = web.Application(client_max_size=16 * 1024, middlewares=[boundary])
+    connection = None
+    if codex_config:
+        from project_codex_connection import CodexConnection
+        connection = CodexConnection(registry, codex_config)
+
+    def directory_result():
+        result = registry.directory()
+        if connection:
+            try:
+                result['codex_connection'] = connection.view()
+            except PolicyError as error:
+                result['codex_connection'] = {'status': 'requires_review', 'error_code': error.code}
+        return result
 
     def manager(request):
         if not request['manager']:
@@ -83,7 +96,7 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
     async def directory(request):
         manager(request)
         async with registry.mutex:
-            return web.json_response(registry.directory())
+            return web.json_response(directory_result())
 
     async def datasets(request):
         manager(request)
@@ -152,6 +165,22 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
         payload = fields(await body(request), ('expected_revision',))
         return web.json_response(await registry.ensure_common(payload['expected_revision'], reconcile=request.path.endswith('/reconcile')))
 
+    async def codex_connection(request):
+        manager(request)
+        if connection is None:
+            raise PolicyError('codex_host_not_configured', 503)
+        payload = fields(await body(request), ('expected_revision',),
+                         ('proposed_sha256',) if request.path.endswith('/activate') else ())
+        if request.path.endswith('/activate'):
+            if not isinstance(payload.get('proposed_sha256'), str):
+                raise PolicyError('reviewed_preview_required', 409)
+            await connection.activate(payload['expected_revision'], payload['proposed_sha256'])
+        elif request.path.endswith('/review'):
+            await connection.review(payload['expected_revision'])
+        else:
+            await connection.prepare(payload['expected_revision'])
+        return web.json_response(directory_result())
+
     app.add_routes([web.post('/v1/project/resolve', resolve), web.get('/v1/project/policy', policy),
                     web.get('/v1/projects', directory), web.put('/v1/defaults', defaults),
                     web.put('/v1/projects/{id}/overrides', overrides), web.post('/v1/projects', create),
@@ -159,7 +188,9 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                     web.put('/v1/projects/{id}/code', code),
                     web.post('/v1/agents', provision), web.post('/v1/agents/{id}/reconcile', recover),
                     web.post('/v1/common', common), web.post('/v1/common/reconcile', common),
-                    web.get('/v1/linkable-datasets', datasets), web.post('/v1/agents/{id}/installation', installation)])
+                    web.get('/v1/linkable-datasets', datasets), web.post('/v1/agents/{id}/installation', installation),
+                    web.post('/v1/codex/prepare', codex_connection), web.post('/v1/codex/activate', codex_connection),
+                    web.post('/v1/codex/review', codex_connection)])
     return app
 
 
@@ -186,7 +217,7 @@ async def configured_app(config):
         await registry.ensure_common(registry.state['revision'])
         app = create_app(registry, read_secret(config['management_token_file']),
                          {key: read_secret(value) for key, value in config.get('agent_control_token_files', {}).items()},
-                         plugin_source=config.get('plugin_dir'), control_url=config.get('project_control_url'))
+                         plugin_source=config.get('plugin_dir'), control_url=config.get('project_control_url'), codex_config=config)
     except BaseException:
         if registry is not None:
             registry.close()
