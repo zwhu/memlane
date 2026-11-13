@@ -1,0 +1,16 @@
+{
+  "checked_at": "2026-11-13T08:58:14Z",
+  "client_state_sha256": "97e448181b6616bbf7b11bc7b7913d2ce8b7d686be4adee9517e7b5c8a85233a",
+  "excluded_derived": 6,
+  "knowledge": 4,
+  "knowledge_dates": {
+    "2026-11-13": 4
+  },
+  "projects": 2,
+  "raw_documents": 0,
+  "raw_sessions": 16,
+  "raw_total": 16,
+  "scopes": 3,
+  "source": "live official read-only; no model/index/write",
+  "used_days": 1
+}

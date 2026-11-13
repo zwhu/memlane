@@ -45,7 +45,7 @@ func (a *App) startRecentTitles(rows []Item) {
 							a.handleReadingFailure(i, err)
 							return
 						}
-						a.overviewState.Snapshot.Knowledge[n].Title = result.Title
+						a.overviewState.Snapshot.Knowledge[n].Title = overviewReadingTitle(result)
 						a.overviewState.Snapshot.Knowledge[n].ReadingState = "ready"
 					}
 				}
@@ -77,7 +77,7 @@ func (a *App) retryRecentTitle(i Item) {
 						a.overviewState.Snapshot.Knowledge[n].ReadingState = "failed"
 						return
 					}
-					a.overviewState.Snapshot.Knowledge[n].Title = result.Title
+					a.overviewState.Snapshot.Knowledge[n].Title = overviewReadingTitle(result)
 					a.overviewState.Snapshot.Knowledge[n].ReadingState = "ready"
 				}
 			}

@@ -1,6 +1,6 @@
 # 当前设计目录
 
-2026-11-13。用户已选 [A 清晰总览](visual-refinement-selection-20261113.md)。当前整套细化入口为 [A 完整原型](http://127.0.0.1:8097/?variant=A&page=home)，固定提交及自验见[进度](visual-refinement-progress-20261113.md)，还原参数见[Native 交接](visual-refinement-handoff-20261113.md)。只完成设计与浏览器原型自验；其余细化页待用户审阅，没有执行生产 App 改造。
+2026-11-13。用户已选 [A 清晰总览](visual-refinement-selection-20261113.md)。当前整套细化入口为 [A 完整原型](http://127.0.0.1:8097/?variant=A&page=home)，固定提交及自验见[进度](visual-refinement-progress-20261113.md)，还原参数见[Native 交接](visual-refinement-handoff-20261113.md)。随后获授权的首页Native还原及本机dev自验已完成，见[首页执行记录](../engineering/overview-native-a-execution-20261113.md)；其余细化页仍待用户审阅，沿用现有生产实现。
 
 功能范围核对当前源码和[PA 执行记录](../engineering/project-access-execution-20261113.md)，不沿用旧目录的权限／通用知识只读删减，也不恢复旧 A–O 全量功能。原型所有内容和回执均为明确标记的人工静态示例，不连接业务服务。
 

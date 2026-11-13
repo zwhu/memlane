@@ -51,6 +51,7 @@ type App struct {
 	editIndex        int
 	settingsMessage  string
 	focusSearch      bool
+	fromOverview     bool
 
 	graph                                             *GraphHost
 	graphError, graphMode, graphSelection, codeStatus string
@@ -150,6 +151,12 @@ func (a *App) current() (Project, bool) {
 	return Project{}, false
 }
 func (a *App) navigate(page string, index int) {
+	if a.page == "总览" && page != "总览" {
+		a.fromOverview = true
+	}
+	if page == "总览" {
+		a.fromOverview = false
+	}
 	if a.recentCancel != nil {
 		a.recentCancel()
 		a.recentRequest++
@@ -388,10 +395,27 @@ func (a *App) View(c *ui.Context) {
 	if time.Now().After(a.access.Next) {
 		a.RefreshProjectDirectory()
 	}
+	if a.page == "总览" && a.Update != nil {
+		if a.Config.ProjectControl != nil && !a.access.Loaded {
+			if a.access.DirectoryError != "" {
+				a.overviewState.Loading, a.overviewState.ActivityLoading = false, false
+				a.overviewState.Error = a.access.DirectoryError
+			}
+		} else if a.overviewState.scope != a.overviewScope() {
+			a.loadOverview()
+		}
+	}
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Background(ui.Hex("#ffffff")).Children(func() {
 		a.navigation(c)
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-			ui.Row(c).Height(56).Shrink(0).BorderWidth(0, 0, 1, 0).BorderColor(border).Padding(0, 28).DragWindow().Children(func() {
+			height := float32(56)
+			if a.page == "总览" {
+				height = 62
+			}
+			ui.Row(c).Height(height).Shrink(0).BorderWidth(0, 0, 1, 0).BorderColor(border).Padding(0, 28).DragWindow().Children(func() {
+				if a.fromOverview {
+					button(c, "‹ 返回", a.returnToOverview)
+				}
 				title := a.page
 				if _, ok := a.current(); ok && a.page == "知识" {
 					title = projectLabels(a.Config.Projects)[a.project]
@@ -401,7 +425,17 @@ func (a *App) View(c *ui.Context) {
 				if p, ok := a.current(); ok && a.page == "知识" && a.Config.ProjectControl != nil {
 					button(c, "项目设置", func() { a.access.OpenProject = p.ID; a.navigate("设置", a.project) })
 				}
-				button(c, "搜索知识", a.OpenSearch)
+				if a.page == "总览" {
+					homeLink(c, "刷新总览", a.loadOverview)
+					ui.Button(c, "").Label("搜索知识").Width(191).Padding(7, 10).Margin(0, 12).Gap(9).Background(ui.Hex("#f4f6f8")).Border(1, homeBorder).Radius(7).Children(func() {
+						ui.Icon(c, navIcons["搜索"]).FontSize(14).TextColor(homeMuted)
+						ui.Text(c, "搜索").FontSize(11).TextColor(homeMuted)
+						ui.Spacer(c)
+						ui.Text(c, "⌘ K").FontSize(10).TextColor(homeMuted)
+					}).OnClick(a.OpenSearch)
+				} else {
+					button(c, "搜索知识", a.OpenSearch)
+				}
 			})
 			if a.configError != "" {
 				ui.Text(c, "运行配置不可用："+a.configError).Margin(24).TextColor(ink)
@@ -421,6 +455,10 @@ func (a *App) View(c *ui.Context) {
 	})
 }
 func (a *App) navigation(c *ui.Context) {
+	if a.page == "总览" {
+		a.overviewNavigation(c)
+		return
+	}
 	ui.Column(c).Width(196).Shrink(0).Background(blue).Children(func() {
 		ui.Row(c).Height(72).Padding(30, 24, 0, 24).DragWindow().Children(func() {
 			ui.Icon(c, mark).FontSize(19).TextColor(ui.Hex("#60758a"))

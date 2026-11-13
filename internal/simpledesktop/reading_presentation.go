@@ -155,6 +155,10 @@ func readingSourceLabel(i Item) string {
 }
 
 func firstReadingSentence(body string) string {
+	return firstReadingSentenceLimit(body, 80)
+}
+
+func firstReadingSentenceLimit(body string, limit int) string {
 	var paragraph []string
 	fence := ""
 	for _, line := range strings.Split(body, "\n") {
@@ -194,8 +198,8 @@ func firstReadingSentence(body string) string {
 		}
 	}
 	runes = runes[:end]
-	if len(runes) > 80 {
-		return string(runes[:80]) + "…"
+	if len(runes) > limit {
+		return string(runes[:limit]) + "…"
 	}
 	return string(runes)
 }

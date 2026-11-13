@@ -1,0 +1,174 @@
+{
+  "files": [
+    {
+      "file": "fixture-1200x820-home.png",
+      "bytes": 131301,
+      "sha256": "7bcb88cd894297d95ad9ed53cc171dcb8ab4a9e563e10f7c3b61169a60d692f0",
+      "type": "png",
+      "width": 1200,
+      "height": 820
+    },
+    {
+      "file": "fixture-1200x820-projects.png",
+      "bytes": 114668,
+      "sha256": "ff31e6b4bbaaa77df8b01ccd0d0eac40b3d49d51650a61d50ff537faad45ea2c",
+      "type": "png",
+      "width": 1200,
+      "height": 820
+    },
+    {
+      "file": "fixture-1440x900-home.png",
+      "bytes": 144178,
+      "sha256": "c62066bec2123515729df2a8b744fd30b58a044e95308b9f111acbebac070eed",
+      "type": "png",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "fixture-1440x900-projects.png",
+      "bytes": 133779,
+      "sha256": "94397db4a045a5e366cfe7dd21625917271838abdc6e1331d3ae70d826f79793",
+      "type": "png",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "fixture-empty.png",
+      "bytes": 78811,
+      "sha256": "7da7b67a85c94ecffa58f2ac75696eb5cda05c8a05eea80a8a769114e87d5501",
+      "type": "png",
+      "width": 980,
+      "height": 758
+    },
+    {
+      "file": "fixture-loading.png",
+      "bytes": 75331,
+      "sha256": "b01293fdcd8768b694a2b92a1bcbaea141ec825cccd30652a763106d62ea5ef3",
+      "type": "png",
+      "width": 980,
+      "height": 758
+    },
+    {
+      "file": "fixture-partial-refresh.png",
+      "bytes": 82020,
+      "sha256": "3a1795ef5632aca0a5a7737cd67a3966181ad270d91f1343cdd743445c604673",
+      "type": "png",
+      "width": 980,
+      "height": 758
+    },
+    {
+      "file": "fixture-round1/fixture-1200x820-home.png",
+      "bytes": 146501,
+      "sha256": "08dba5fd701bdacc17168760cb1dbfcb478fc4cded57cd1db3b4c1575a191f84",
+      "type": "png",
+      "width": 1200,
+      "height": 820
+    },
+    {
+      "file": "fixture-round1/fixture-1440x900-home.png",
+      "bytes": 158735,
+      "sha256": "d15b34738d9002d5279cba140ce75dfda4dade8502f12b122930c37028091ec7",
+      "type": "png",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "fixture-round1/fixture-empty.png",
+      "bytes": 78811,
+      "sha256": "7da7b67a85c94ecffa58f2ac75696eb5cda05c8a05eea80a8a769114e87d5501",
+      "type": "png",
+      "width": 980,
+      "height": 758
+    },
+    {
+      "file": "fixture-round1/fixture-loading.png",
+      "bytes": 75331,
+      "sha256": "b01293fdcd8768b694a2b92a1bcbaea141ec825cccd30652a763106d62ea5ef3",
+      "type": "png",
+      "width": 980,
+      "height": 758
+    },
+    {
+      "file": "fixture-round1/fixture-partial-refresh.png",
+      "bytes": 82020,
+      "sha256": "3a1795ef5632aca0a5a7737cd67a3966181ad270d91f1343cdd743445c604673",
+      "type": "png",
+      "width": 980,
+      "height": 758
+    },
+    {
+      "file": "native-1200x820-home.jpg",
+      "bytes": 341584,
+      "sha256": "26919c95147f975dfee82242c0404bdc083f09324fc6dd23d51afc579229ac94",
+      "type": "jpeg",
+      "width": 2400,
+      "height": 1640
+    },
+    {
+      "file": "native-1200x820-projects.jpg",
+      "bytes": 264965,
+      "sha256": "141a3c87c1b7406172dbd03bacb39b205ff846b4f2ba8beae6a4050d97a5ce7a",
+      "type": "jpeg",
+      "width": 2400,
+      "height": 1640
+    },
+    {
+      "file": "native-1440x900-diagnostic-refresh.jpg",
+      "bytes": 321185,
+      "sha256": "b76fdbbacbe69c239bee28893cc66619593240706b80ca18588790d443ad2143",
+      "type": "jpeg",
+      "width": 2880,
+      "height": 1800
+    },
+    {
+      "file": "native-1440x900-projects.jpg",
+      "bytes": 306498,
+      "sha256": "c8818d108ceedb059375df9e774863204ce91f5580567fbeedcfec9371abfd01",
+      "type": "jpeg",
+      "width": 2880,
+      "height": 1800
+    },
+    {
+      "file": "native-final-1200x820-home.jpg",
+      "bytes": 336752,
+      "sha256": "a021434bd2c6dd9f3a14b40879d115739e5fa0688f46669dd3ee66882bf22203",
+      "type": "jpeg",
+      "width": 2400,
+      "height": 1640
+    },
+    {
+      "file": "native-final-1200x820-projects.jpg",
+      "bytes": 306049,
+      "sha256": "d2d8da09a616af81a986f7fcc7e2f637efb462a0fe0c1951e4f7fb46b54633e0",
+      "type": "jpeg",
+      "width": 2400,
+      "height": 1640
+    },
+    {
+      "file": "native-final-1440x900-home-page2.jpg",
+      "bytes": 341547,
+      "sha256": "2a0d28c9b10b7989729db1c1248188db5e7fcb0d89a58fbb1a624dafda4a9db2",
+      "type": "jpeg",
+      "width": 2880,
+      "height": 1800
+    },
+    {
+      "file": "native-final-1440x900-projects.jpg",
+      "bytes": 373280,
+      "sha256": "c31bb386a0e29d5867fd5161c71cab52697a66f3b04407c66d8c135f63f2d136",
+      "type": "jpeg",
+      "width": 2880,
+      "height": 1800
+    },
+    {
+      "file": "official-readonly.json",
+      "bytes": 400,
+      "sha256": "58ae039c83562210631c157ecc3778f943c7cba01be7b25ebe1d19bec5de6672"
+    },
+    {
+      "file": "verification.json",
+      "bytes": 3399,
+      "sha256": "42ec38030dec33c16164b1cf355530aecbd2ebd28b6a0343daab016d887be1d1"
+    }
+  ]
+}
