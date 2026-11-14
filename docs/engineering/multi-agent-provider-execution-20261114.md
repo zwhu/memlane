@@ -610,3 +610,9 @@ v2／v3验收宿主已按PID＋lstart＋完整argv正常停止并确认退出，
 按原所有权目录核对12份带PID的OpenCode宿主／CLI回执，kernel当前均无对应PID；其中首次loader回执没有lstart，只能证明此PID当前不存在，不能推定过去退出时间。进程快照无OpenCode serve／run／attach。两个已知私有profile的loader均与各自绑定installation逐字节一致，固定artifact完整manifest通过，编译runtime带共享sender租约；旧real-chain与当前Native实例的原Outbox目录不同，未合并或搬迁。没有写队列、重放、停未知进程或清理旧依赖。
 
 据此收口本轮已知私有环境“仍有无租约旧发送者”的未核实前置，不声称支持任意外部旧宿主与新worker并行。旧产物仍保留；日常接入前仍须对实际使用profile做同样核对。实际SDK只读capture／tree确认窗口仍在全局Agent连接设置，项目积压区未打开；未重试已停止的CUA定位或悬停菜单。[安全核对与界面状态](evidence/multi-agent-development-20261114/opencode-old-generation-safety.json)。其余Native积压、Ollama质量及外部门槛不因此通过；本轮继续核对独立模型候选的可行性。
+
+### 后续候选准备进行中
+
+已核对[Qwen官方模型卡](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507)与[Ollama固定tag](https://ollama.com/library/qwen3:4b-thinking-2507-q4_K_M)：Thinking-2507为另一4B候选，官方介绍强化推理与指令遵循，但不作为本项目质量通过证据。registry manifest摘要359d7dd4…，本机缺少2,497,282,593字节；下载前预计余量113,241,755,103字节，高于105GiB运行门禁。仅在本轮私有Ollama缓存启动一次原pull，保留原Instruct权重和active配置；不自动启用新模型。当前原任务仍运行，尚未开始验证。[运行中回执](evidence/multi-agent-development-20261114/thinking-candidate-preparation.json)。
+
+继续消费原exec session43235及driver PID／lstart，观察超时不重新pull；模型完成后先核对原manifest，再以独立GenerationStore执行原固定验证，通过后才安排完整知识链。下载末段速度下降，尚无终态或失败证据；保留部分产物及其消费者，不在任务仍活跃时清理。MA-OLLAMA-CODING-QUALITY01保持2轮，不能把换模型或下载进度记为质量通过。
