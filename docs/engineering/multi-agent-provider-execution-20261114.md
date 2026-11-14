@@ -604,3 +604,9 @@ v2／v3验收宿主已按PID＋lstart＋完整argv正常停止并确认退出，
 **MA-OLLAMA-CODING-QUALITY01累计失败2轮**：原真实官方处理／新会话采用1轮，本次同原材料隔离模型实验1轮，保守纳入同一问题计数，不因未落库或换执行路径清零。实验不含原novelty／glossary，也没有原运行中间请求，因此不能声称精确重放或已证原轮的完整根因；未记录实际wire token计数，不能将字符未截断外推为所有上下文均无影响。固定官方prompt已要求FINAL STATE ONLY，尚未修改上游或强制手工修正结果。[脱敏证据](evidence/multi-agent-development-20261114/ollama-original-quality-isolation.json)。
 
 首次诊断驱动将launcher配置误作已编译active配置，runtime_generation在模型初始化前KeyError退出；保留原owner／log，核对原live launcher后改读其active配置，准备错误1、不增加模型质量失败次数。默认用户模型目录只读发现qwen3:0.6b，原质量失败保持且不重测；当前私有cache仅有本轮4B模型。下一步需选择磁盘及运行门禁允许的更合适模型或已有可用端点，再按原完整场景验收；不靠重复同配置实验宣布通过。原库与处理记录、未知积压、当前配置和服务全部保留；Native积压按钮、外部原生账号／Desktop／日常采用仍待完成，完整Goal保持active。
+
+## 检查点五十二：已知旧OpenCode发送者安全前置核实
+
+按原所有权目录核对12份带PID的OpenCode宿主／CLI回执，kernel当前均无对应PID；其中首次loader回执没有lstart，只能证明此PID当前不存在，不能推定过去退出时间。进程快照无OpenCode serve／run／attach。两个已知私有profile的loader均与各自绑定installation逐字节一致，固定artifact完整manifest通过，编译runtime带共享sender租约；旧real-chain与当前Native实例的原Outbox目录不同，未合并或搬迁。没有写队列、重放、停未知进程或清理旧依赖。
+
+据此收口本轮已知私有环境“仍有无租约旧发送者”的未核实前置，不声称支持任意外部旧宿主与新worker并行。旧产物仍保留；日常接入前仍须对实际使用profile做同样核对。实际SDK只读capture／tree确认窗口仍在全局Agent连接设置，项目积压区未打开；未重试已停止的CUA定位或悬停菜单。[安全核对与界面状态](evidence/multi-agent-development-20261114/opencode-old-generation-safety.json)。其余Native积压、Ollama质量及外部门槛不因此通过；本轮继续核对独立模型候选的可行性。

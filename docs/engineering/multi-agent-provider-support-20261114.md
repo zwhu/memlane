@@ -114,3 +114,7 @@ OpenCode管理Node持续保存worker与Python协议适配完成，固定原目�
 ### 检查点五十一增量
 
 同原QA及5条候选隔离执行固定官方curator／writer，1＋4次模型请求正常结束，无落库或原任务重跑。curator阶段已把旧错误写成现状，writer继续接受，同时生成正确规则；MA-OLLAMA-CODING-QUALITY01累计失败2轮（原真实场景1、本次隔离实验1）。原字符限制未截断这些输入，但原中间请求／完整wire token未知，不能声称已证全部历史根因或已修复。继续保留质量未通过状态与原数据，下一步选择合适模型／端点完成原连续验收。[证据](evidence/multi-agent-development-20261114/ollama-original-quality-isolation.json)。
+
+### 检查点五十二增量
+
+已知12份旧OpenCode进程回执的PID当前均不存在，两套私有profile的loader／完整artifact／sender租约核对一致、原队列独立，当前未见serve／run／attach进程。收口这些已知环境的旧发送者安全前置，不外推未知日常profile或自动迁移。未清理旧依赖或重放数据。[证据](evidence/multi-agent-development-20261114/opencode-old-generation-safety.json)。

@@ -1,0 +1,149 @@
+{
+  "scope": "Known task-owned OpenCode old-generation safety audit only; not arbitrary user profiles or a cleanup authorization",
+  "known_process_receipts": [
+    {
+      "owner_file": "native-loader-owner.json",
+      "pid": 47120,
+      "recorded_start": null,
+      "recorded_phase": null,
+      "kernel_start": null,
+      "original_process_live": false
+    },
+    {
+      "owner_file": "real-chain/adoption-current-target-owner.json",
+      "pid": 36959,
+      "recorded_start": "Sat Nov 14 12:13:00 2026",
+      "recorded_phase": "terminal",
+      "kernel_start": null,
+      "original_process_live": false
+    },
+    {
+      "owner_file": "real-chain/adoption-owner.json",
+      "pid": 1448,
+      "recorded_start": "Sat Nov 14 11:46:20 2026",
+      "recorded_phase": "terminal",
+      "kernel_start": null,
+      "original_process_live": false
+    },
+    {
+      "owner_file": "real-chain/adoption-round2-owner.json",
+      "pid": 9674,
+      "recorded_start": "Sat Nov 14 11:53:17 2026",
+      "recorded_phase": "terminal",
+      "kernel_start": null,
+      "original_process_live": false
+    },
+    {
+      "owner_file": "real-chain/adoption-round3-owner.json",
+      "pid": 16071,
+      "recorded_start": "Sat Nov 14 11:57:55 2026",
+      "recorded_phase": "terminal",
+      "kernel_start": null,
+      "original_process_live": false
+    },
+    {
+      "owner_file": "real-chain/coding-owner.json",
+      "pid": 97289,
+      "recorded_start": "Sat Nov 14 11:42:43 2026",
+      "recorded_phase": "terminal",
+      "kernel_start": null,
+      "original_process_live": false
+    },
+    {
+      "owner_file": "real-chain/native-owner-after-current-adoption.json",
+      "pid": 36739,
+      "recorded_start": "Sat Nov 14 12:12:49 2026",
+      "recorded_phase": "confirmed_stopped",
+      "kernel_start": null,
+      "original_process_live": false
+    },
+    {
+      "owner_file": "real-chain/native-owner-after-source-validation.json",
+      "pid": 15856,
+      "recorded_start": "Sat Nov 14 11:57:44 2026",
+      "recorded_phase": "confirmed_stopped",
+      "kernel_start": null,
+      "original_process_live": false
+    },
+    {
+      "owner_file": "real-chain/native-owner-after-target-validation.json",
+      "pid": 32688,
+      "recorded_start": "Sat Nov 14 12:09:32 2026",
+      "recorded_phase": "confirmed_stopped",
+      "kernel_start": null,
+      "original_process_live": false
+    },
+    {
+      "owner_file": "real-chain/native-owner-before-recall-fix.json",
+      "pid": 96565,
+      "recorded_start": "Sat Nov 14 11:41:59 2026",
+      "recorded_phase": "confirmed_stopped",
+      "kernel_start": null,
+      "original_process_live": false
+    },
+    {
+      "owner_file": "real-chain/native-owner-before-source-fix.json",
+      "pid": 9460,
+      "recorded_start": "Sat Nov 14 11:53:07 2026",
+      "recorded_phase": "confirmed_stopped",
+      "kernel_start": null,
+      "original_process_live": false
+    },
+    {
+      "owner_file": "real-chain/target-coding-owner.json",
+      "pid": 32872,
+      "recorded_start": "Sat Nov 14 12:09:42 2026",
+      "recorded_phase": "terminal",
+      "kernel_start": null,
+      "original_process_live": false
+    }
+  ],
+  "current_host_process_snapshot": [],
+  "known_profiles": [
+    {
+      "scope": "prior_real_chain",
+      "manifest_sha256": "9f3a31944dd6e8bffcfe634223a17b17c94c357a29d4ad1daa335fec3b4ef31d",
+      "artifact_file_count": 3673,
+      "loader_matches_bound_installation": true,
+      "sender_lease_present": true,
+      "outbox_metadata_files": 1,
+      "outbox_hashes": {
+        "5d4acf883592a3fc2a0a6d0b0d195570b262690457c4c46a551149b357d75b25.json": "fc17b8d4ebe0d39c32c6960ef48ac1b614472a2d5cfd10fed93c9a3136c9b5a0"
+      }
+    },
+    {
+      "scope": "current_native",
+      "manifest_sha256": "92c7af0713449f5a06a8cc8db2ab536462a761237f345882793631a6b3458262",
+      "artifact_file_count": 3674,
+      "loader_matches_bound_installation": true,
+      "sender_lease_present": true,
+      "outbox_metadata_files": 1,
+      "outbox_hashes": {
+        "e59d8b0f242c5200c9a2d5f823f36f0cbaff03ac6caa67ee7662ea7954231213.json": "73e307872a70406025d7866aebe1ece7d0a0213604cb8ed276cd33a3c8328830"
+      }
+    }
+  ],
+  "outbox_directories_independent": true,
+  "old_no_lease_host_currently_observed": false,
+  "outbox_writes_or_replays": 0,
+  "files_or_components_deleted": 0,
+  "limitations": [
+    "Initial loader PID receipt lacks start time; kernel currently confirms that PID absent, not its past exit timing",
+    "No process census proves historical absence or all external/unknown profiles",
+    "Prior fixed artifacts and data remain retained because original bindings/evidence refer to them"
+  ],
+  "ready_for_known_scope_management_without_old_sender_race": true,
+  "checkpoint": 52,
+  "native_menu_precondition": {
+    "observation_only": true,
+    "sdk_actual_window_tree_received": true,
+    "global_connection_settings_visible": true,
+    "project_backlog_section_visible": false,
+    "known_action_buttons": [
+      "重新检测"
+    ],
+    "menu_navigation_or_cua_location_retried": false
+  },
+  "complete": false,
+  "scope_limit": "Known owned pre-lease producer safety precondition is checked at this snapshot; this is not interoperability support for an arbitrary old host still in memory."
+}
