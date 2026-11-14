@@ -189,3 +189,11 @@ MA-OPENCODE-UNKNOWN-TARGET01累计失败1轮。沿原主体／原项目，用一
 独立下载Llama 3.2 3B Q4_K_M约2.02GB。32K首次加载被105GiB门禁中断1次，原状态保留；已知进程退出、空间恢复后，复用原模型及账本，以8K上下文／单并发执行同一nested-unicode-null-3。普通输出通过，实际JSON对象模式嵌套Schema校验失败，MA-OLLAMA-LOCAL-SCHEMA01累计失败1轮，质量不通过，active／next为空。4次adapter调用仍是同轮普通／结构化及自纠正；具体错误字段未知，不改样本、不注册伪Schema能力、不补知识。新旧进程组均已核对退出，唯一模型供后续消费保留，旧qwen记录保持。[证据与方法记录](evidence/multi-agent-development-20261114/ollama-local-provider.json)。
 
 下一步查明并完成真实Schema／质量及官方知识处理与采用链，继续Native增量及日常收口。共享Native check计数另有源码口径差异：OpenCode返回核对后剩余unknown，当前文案再次减matched可能为负；实际验收轮次0，实窗前须修正。首批外部前置仍保留，完整Goal保持active。
+
+## Schema回显定位与核对计数（检查点四十三）
+
+OpenCode核对计数已按“确认后剩余”修正，保留Python只读tail匹配的独立含义，2项基于真实回执的Go回归通过。只接线共享UI的check分支，其余WIP保留，实窗仍未验。
+
+新增无正文的字段／错误类型与响应类别诊断，20项Python通过；同模型同样本固定官方adapter重验仍失败，MA-OLLAMA-LOCAL-SCHEMA01累计2轮。实际三次结构化响应均schema_definition，缺project／ports／source，定位到JSON对象路径回显定义。独立SDK显式原生Schema实验从同一探针AST复用类、事实和期望值，结构通过、事实精确比较失败（MA-OLLAMA-LOCAL-NATIVE-FACT01独立实验失败1次），不代表原路径修复或知识链通过。具体错误事实值未留存；首个实验上下文TypeError另记方法错误，未请求模型，不重置／合并原计数。
+
+进程组及独立daemon已核对退出，账本／原回执／模型保留，未改日常、下载新模型或打完整包。[证据](evidence/multi-agent-development-20261114/ollama-schema-diagnostics.json)。仍须确定有实际证据的原生Schema策略、完成事实质量与官方知识链，继续Native增量、日常收口和首批外部前置，完整Goal保持active。

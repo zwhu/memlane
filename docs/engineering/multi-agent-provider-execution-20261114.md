@@ -508,3 +508,15 @@ OpenCode 1.3.5／DeepSeek Flash以独立官方子主体、私有profile和合成
 真实恢复轮普通输出通过，实际JSON对象模式的嵌套Schema校验失败，质量未通过；MA-OLLAMA-LOCAL-SCHEMA01累计验收失败1轮。4次adapter调用含普通输出及同轮结构化自纠正，不拆成4轮；没有采集错误正文、生成知识、手工补结果或启用该模型。确切失败字段未知。旧qwen3:0.6b质量记录保持。新验证进程组及独立daemon均退出，active／next仍空；保留唯一模型供后续质量与官方处理链消费，不重复下载。[脱敏证据](evidence/multi-agent-development-20261114/ollama-local-provider.json)。
 
 Native增量、Ollama真实质量及完整处理／采用链、日常收口和外部账号门槛仍未完成。源码审阅另发现当前共享Native的check文案把OpenCode“核对后剩余unknown”再次减去matched，可能显示负数；尚未实际点击验收，失败轮次0，须在后续实窗前统一口径。未修改日常配置、未用重置卡、未构建完整App／release，完整Goal继续active。
+
+## 检查点四十三：核对计数修正与Ollama失败定位
+
+OpenCode check已经原地确认匹配项，返回的是剩余unknown；共享UI曾再减matched，检查点四十一真实pending0／unknown0／matched1会显示负数。现增加协议感知的呈现函数：OpenCode直接显示剩余量，不宣称最近20条限制；Python只读tail匹配保留原含义，不冒充队列确认。不一致负数回执显示未确认，不钳成0。2项Go回归通过（0.872秒），使用已导出的真实correct／shadow回执及Python口径；未重投材料，尚非实际窗口点击验收。只暂存共享UI的check分支接线，其余会话／backlog／身份观察WIP保持。
+
+固定样本验证新增安全诊断：最多8条、仅已知字段路径与错误类型，未知键名统一other；响应结构仅固定类别，不导出值／正文／异常文本。验证管理器接受对应回执，探针启动也清除继承的Ollama变量。20项Python诊断／验证／真实固定SDK协议回归通过（112.183秒）。
+
+同模型／同账本／同8K上下文、nested-unicode-null-3再次经固定官方adapter失败，MA-OLLAMA-LOCAL-SCHEMA01累计2轮。三次结构化输出全部为schema_definition，project／ports／source缺失，证实该路径回显定义而非填充目标数据。普通输出仍通过；没有改prompt、样本或质量条件，也没有注册原生Schema能力。
+
+独立SDK实验从探针AST复用原类定义、事实、system prompt及期望值，只显式请求原生Schema。实际Ollama 0.34.0／同Llama 3.2 3B返回data_object、结构校验通过，但精确事实比较失败，MA-OLLAMA-LOCAL-NATIVE-FACT01实验失败1次；具体值未留存，尚未完成质量定位。它不将原固定adapter路径改为通过，也不重置其2轮计数。实验首次有同步stdout上下文误用的TypeError，发生于模型请求前；保留方法失败回执、修正后执行，不合并成Schema第三轮。
+
+已核对正式诊断验证进程组退出，两个独立daemon均wait退出；原账本、失败回执及唯一模型保留，日常配置／服务未变，无重置卡、模型下载或完整App构建。[脱敏证据](evidence/multi-agent-development-20261114/ollama-schema-diagnostics.json)。下一步确定有真实证据的Ollama原生Schema策略，再验事实质量及官方处理／采用；Native实窗、日常收口、旧代际和外部前置继续待完成，完整Goal保持active。

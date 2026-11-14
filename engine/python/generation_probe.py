@@ -18,6 +18,42 @@ class ProbeFailure(Exception):
         self.reason, self.unknown = reason, unknown
 
 
+def schema_error_summary(error):
+    """Bounded field/type diagnostics for this synthetic schema, never values."""
+    from pydantic import ValidationError
+    seen = set()
+    while error is not None and id(error) not in seen and len(seen) < 16:
+        seen.add(id(error))
+        if isinstance(error, ValidationError):
+            fields = {'project', 'name', 'rules', 'contact', 'ports', 'source'}
+            kinds = {'missing', 'extra_forbidden', 'string_type', 'list_type', 'int_type',
+                     'int_parsing', 'model_type', 'json_invalid', 'none_required'}
+            result = []
+            for issue in error.errors(include_input=False, include_context=False, include_url=False)[:8]:
+                path = [str(part) if type(part) is int and 0 <= part <= 999 else
+                        part if isinstance(part, str) and part in fields else 'other'
+                        for part in issue.get('loc', ())[:6]]
+                result.append({'field': '.'.join(path) or 'root',
+                               'kind': issue['type'] if issue.get('type') in kinds else 'validation_error'})
+            return result
+        error = error.__cause__ or error.__context__
+    return []
+
+
+def synthetic_response_shape(content):
+    try:
+        value = json.loads(content)
+    except (ValueError, TypeError):
+        return 'not_json'
+    if not isinstance(value, dict):
+        return 'non_object_json'
+    if value.get('type') == 'object' and isinstance(value.get('properties'), dict):
+        return 'schema_definition'
+    if any(key in value for key in ('project', 'ports', 'source')):
+        return 'data_object'
+    return 'other_object'
+
+
 def failure(error, *, structured=False):
     """Return fixed codes only; never return exception text/provider bodies."""
     if isinstance(error, ProbeFailure):
@@ -78,6 +114,7 @@ class CompletionObservation:
     def __init__(self, client, complete):
         self.client, self.complete = client, complete
         self.mode, self.calls = 'unknown', 0
+        self.structured_shapes = []
 
     async def __call__(self, *args, **kwargs):
         # Refuse a changed destination before issuing a request. This does not
@@ -103,6 +140,8 @@ class CompletionObservation:
             raise ProbeFailure('provider_refusal')
         if reason != 'stop':
             raise ProbeFailure('completion_result_unconfirmed', unknown=True)
+        if shape and len(self.structured_shapes) < 8:
+            self.structured_shapes.append(synthetic_response_shape(getattr(choice.message, 'content', None)))
         return response
 
 
@@ -170,6 +209,9 @@ async def _probe(config):
             receipt['error_code'] = 'extraction_quality_failed'
     except Exception as error:
         receipt['status'], receipt['error_code'] = failure(error, structured=structured)
+        if receipt['error_code'] == 'schema_validation_failed':
+            receipt['schema_errors'] = schema_error_summary(error)
+            receipt['schema_response_shapes'] = observation.structured_shapes
     finally:
         litellm.acompletion = observation.complete
         receipt.update(structured_mode=observation.mode, adapter_calls=observation.calls)
@@ -189,7 +231,7 @@ def main():
         # inside it before importing Cognee; no daily database is opened.
         root = Path(os.environ['HOME'])
         for key in list(os.environ):
-            if key.startswith(('LLM_', 'FALLBACK_', 'COGNEE_', 'EMBEDDING_', 'MEMLANE_', 'OPENAI_', 'ANTHROPIC_', 'GEMINI_')):
+            if key.startswith(('LLM_', 'FALLBACK_', 'COGNEE_', 'EMBEDDING_', 'MEMLANE_', 'OPENAI_', 'ANTHROPIC_', 'GEMINI_', 'OLLAMA_')):
                 del os.environ[key]
         os.environ.update(request['environment'])
         os.environ.update(SYSTEM_ROOT_DIRECTORY=str(root / 'system'), DATA_ROOT_DIRECTORY=str(root / 'data'),

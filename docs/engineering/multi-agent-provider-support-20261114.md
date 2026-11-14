@@ -74,3 +74,5 @@ OpenCode受管HTTP／outbox覆盖源码已实现，5项Python及10项实际编�
 检查点四十一已实现管理认证的固定OpenCode worker及Native源码分派，实际原服务8次Go→Node核对／补交／丢弃／拒绝调用通过；合成材料、处理关闭，无新增模型或实窗证据。原策略恢复，独立shadow unknown保留，日常未切换。设置自动检测／重新检测及多选准备／启用继续复用现有入口，实窗增量待验；Ollama与外部门槛保持。[证据](evidence/multi-agent-development-20261114/opencode-pending-management.json)。
 
 检查点四十二已接Ollama本机profile／无个人密钥表单／原生adapter及模型metadata地址隔离。41项Python、10项Go定向检查通过，实际0.34.0缺模型拒绝与进程回收通过。独立Llama 3.2 3B首次加载遇105GiB门禁中断1次；确认退出和空间回升后以同模型／同账本／同样本、8K上下文验证，普通输出通过、JSON对象模式嵌套Schema失败（MA-OLLAMA-LOCAL-SCHEMA01失败1轮），未启用或生成知识。保留模型和失败证据，真实质量及完整官方处理链仍待完成；Native实窗未由组件检查代替。[证据](evidence/multi-agent-development-20261114/ollama-local-provider.json)。
+
+检查点四十三修正OpenCode确认后unknown计数的呈现，2项Go回归通过，实际点击仍待验。安全字段／结构诊断及验证协议20项Python通过；同模型官方adapter原Schema问题累计失败2轮，实际三个响应都回显定义。独立原生SDK Schema实验结构通过但事实比较未通过（独立质量实验失败1次），不把它算作原路径或完整知识处理通过。方法TypeError另记，已知验证进程组及daemon退出，无新模型下载或日常变更。[证据](evidence/multi-agent-development-20261114/ollama-schema-diagnostics.json)。

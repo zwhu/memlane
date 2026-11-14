@@ -127,7 +127,8 @@ class GenerationValidation:
                 raise ValueError('probe_result_unconfirmed')
             result = json.loads(stdout)
             allowed = {'status', 'plain_passed', 'schema_passed', 'quality_passed', 'structured_mode',
-                       'sample_version', 'boundary', 'error_code', 'structured_mode_evidence', 'adapter_calls'}
+                       'sample_version', 'boundary', 'error_code', 'structured_mode_evidence', 'adapter_calls',
+                       'schema_errors', 'schema_response_shapes'}
             if not isinstance(result, dict) or set(result) - allowed or result.get('status') not in ('passed', 'failed', 'result_unknown'):
                 raise ValueError('probe_result_unconfirmed')
             row.update(result)

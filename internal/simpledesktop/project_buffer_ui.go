@@ -90,10 +90,14 @@ func (a *App) runPendingAction(view *pendingBufferView, p AccessProject, agent A
 				view.Message = err.Error()
 				return
 			}
-			if action == "show" {
+			if action == "show" || action == "check" {
 				view.Status = result
 				view.Loaded = true
-				view.Message = "仅核对原待发材料，不读取禁用期间的新正文。"
+				if action == "check" {
+					view.Message = pendingCheckMessage(installation, result)
+				} else {
+					view.Message = "仅核对原待发材料，不读取禁用期间的新正文。"
+				}
 			} else {
 				view.Loaded = false
 				if action == "discard" {
