@@ -48,15 +48,21 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
         else:
             host_files['scripts/traex_hook.py'] = (ENGINE / 'python/traex_hook.py').read_bytes()
         host_files['host-binding.json'] = json.dumps({'python': python, 'host_kind': host_kind}).encode()
-    generation_input = {'upstream': expected}
+    from project_tool_patch import forget_response, remember_response
+    tool_patch = hashlib.sha256((ENGINE / 'python/project_tool_patch.py').read_bytes()).hexdigest()
+    generation_input = {'upstream': expected, 'host_kind': host_kind, 'instance_id': instance_id,
+                        'builder_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                        'tool_patch_sha256': tool_patch}
     if host_files:
         generation_input.update(host_kind=host_kind, instance_id=instance_id,
                                 builder_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                                 files={name: hashlib.sha256(data).hexdigest() for name, data in host_files.items()})
-    generation = hashlib.sha256(json.dumps(expected if host_kind == 'codex' else generation_input, sort_keys=True).encode()).hexdigest()[:20]
+    generation = hashlib.sha256(json.dumps(generation_input, sort_keys=True).encode()).hexdigest()[:20]
     marketplace = root / 'managed-marketplaces' / instance_id / generation
     target = marketplace / 'plugins' / 'cognee'
     expected_host_files = {}
+    if host_kind == 'codex':
+        expected_host_files = {name: (source / name).read_bytes() for name in expected['files']}
     if host_kind != 'codex':
         namespace = host_kind + '-' + instance_id
         for name in expected['files']:
@@ -84,6 +90,8 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
             expected_host_files['hooks.json'] = json.dumps({'hooks': {
                 event: [{'hooks': [{'type': 'command', 'command': command + event, 'timeout': 25}]}]
                 for event in events}}).encode()
+    expected_host_files['scripts/cognee-forget.sh'] = forget_response(expected_host_files['scripts/cognee-forget.sh'].decode()).encode()
+    expected_host_files['scripts/_remember_http.py'] = remember_response(expected_host_files['scripts/_remember_http.py'].decode()).encode()
     environment = root / 'agent-credentials' / (instance_id + '.env')
     values = {'COGNEE_BASE_URL': service_url, 'COGNEE_API_KEY': read_secret(agent['key_file']),
               'MEMLANE_PROJECT_CONTROL_URL': control_url,
@@ -95,21 +103,22 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
     if not target.exists():
         target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         shutil.copytree(source, target, ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.memlane-installation.json'))
-        if host_kind != 'codex':
+        if expected_host_files:
             for name, data in expected_host_files.items():
                 path = target / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(data)
             host_receipt = {**expected, 'host_kind': host_kind, 'host_generation': generation,
+                            'tool_patch_sha256': tool_patch,
                             'files': {str(path.relative_to(target)): hashlib.sha256(path.read_bytes()).hexdigest()
                                       for path in target.rglob('*') if path.is_file() and path.name != '.memlane-project-access.json'}}
             private_write(target / '.memlane-project-access.json', json.dumps(host_receipt, sort_keys=True).encode())
     installed_receipt = json.loads((target / '.memlane-project-access.json').read_text())
     host_hashes = {name: hashlib.sha256(data).hexdigest() for name, data in expected_host_files.items()}
-    if host_kind != 'codex' and (installed_receipt.get('host_generation') != generation or installed_receipt.get('host_kind') != host_kind
-                               or installed_receipt.get('files') != host_hashes):
+    if (installed_receipt.get('host_generation') != generation or installed_receipt.get('host_kind') != host_kind
+            or installed_receipt.get('tool_patch_sha256') != tool_patch or installed_receipt.get('files') != host_hashes):
         raise PolicyError('existing_installation_changed', 409)
-    for name, digest in (expected['files'] if host_kind == 'codex' else installed_receipt['files']).items():
+    for name, digest in installed_receipt['files'].items():
         path = target / name
         if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
             raise PolicyError('existing_installation_changed', 409)
@@ -146,6 +155,9 @@ def prepare_official_host(root, instance_id, agent, service_url, control_url, ho
         raise PolicyError('absolute_host_home_required')
     root = Path(root)
     files, upstream = files_for(host_kind)
+    from project_tool_patch import forget_response, remember_response
+    files['scripts/cognee-forget.sh'] = forget_response(files['scripts/cognee-forget.sh'].decode()).encode()
+    files['scripts/_remember_http.py'] = remember_response(files['scripts/_remember_http.py'].decode()).encode()
     namespace = host_kind + '-' + instance_id
     old = 'claude-code' if host_kind == 'claude_code' else 'cursor'
     for name, raw in list(files.items()):
@@ -156,6 +168,7 @@ def prepare_official_host(root, instance_id, agent, service_url, control_url, ho
     files['host-binding.json'] = json.dumps({'python': python, 'host_kind': host_kind}).encode()
     hashes = {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()}
     receipt = {**upstream, 'files': hashes,
+               'tool_patch_sha256': hashlib.sha256((ENGINE / 'python/project_tool_patch.py').read_bytes()).hexdigest(),
                'builder_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     generation = hashlib.sha256(json.dumps(receipt, sort_keys=True).encode()).hexdigest()[:20]
     marketplace_name = 'memlane-' + hashlib.sha256(instance_id.encode()).hexdigest()[:12] + '-' + generation

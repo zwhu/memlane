@@ -1,6 +1,6 @@
 # 多 Agent / Provider 当前支持与验收矩阵
 
-2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)检查点十六为准。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
+2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)检查点十七为准。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
 
 ## 第一批 Agent
 
@@ -17,7 +17,7 @@
 | 要求 | 当前证据 | 未完成或限制 |
 | --- | --- | --- |
 | MA04 跨Agent／项目／通用知识 | pi→TraeX／Codex新会话采用；pi／TraeX不同项目隔离；真实Native通用默认5与项目明确3由Claude正确采用；[通用优先级](evidence/multi-agent-development-20261114/real-common-priority.json) | Cursor实链依赖宿主；来源新鲜度及错误知识不能由“召回成功”抵消 |
-| MA05 独立主体、read/write/delete、无share | pi／TraeX真实官方ACL、维护CRUD、只读／禁止、禁采恢复不回扫；四主体／八组实际项目ACL在跨协议重启后完全保持；实际Native Claude卡片连续变更；[权限矩阵](evidence/multi-agent-development-20261114/real-agent-permissions.json)、[Native卡片](evidence/multi-agent-development-20261114/native-cross-agent-checkpoint.json) | Claude／Codex完整主动CRUD及通用知识内容操作矩阵不能仅据ACL列表判为通过；Cursor仍待真实宿主 |
+| MA05 独立主体、read/write/delete、无share | pi／TraeX真实官方ACL、维护CRUD、只读／禁止、禁采恢复不回扫；四主体／八组实际项目ACL在跨协议重启后完全保持；实际Native Claude卡片连续变更；[权限矩阵](evidence/multi-agent-development-20261114/real-agent-permissions.json)、[Native卡片](evidence/multi-agent-development-20261114/native-cross-agent-checkpoint.json) | Codex／Claude已补显式脚本CRUD及四主体通用知识门禁，见[新增证据](evidence/multi-agent-development-20261114/real-explicit-tools-and-common.json)；新准备代际的明确拒绝复验通过，旧启用代际正常升级仍待补；Cursor仍待真实宿主 |
 | MA06 安装部分成功／取消／配置冲突／未知 | 实际Native+生产控制代码+合成主体，真实文件系统准备、丢弃响应、取消、重开原回执与仅处理剩余项；配置冲突及摘要有定向检查；[批量恢复](evidence/multi-agent-development-20261114/native-batch-recovery.json) | 合成Native故障不替代各真实宿主升级／退出行为；真正unknown继续保留，不因回执不存在自动重装 |
 | MA06 服务不可达／403明确补交 | 固定插件禁止owner／CLI fallback；实际官方403后恢复不自动发送，明确replay恰好一条；[403回执](evidence/multi-agent-development-20261114/real-403-replay.json) | 403为受控真实ACL竞态注入，不冒充普通宿主自然发生；其他宿主仍按共用核心与各自独立证据说明 |
 
