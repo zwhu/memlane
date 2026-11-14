@@ -106,3 +106,13 @@ Provider协议值为 `openai`、`anthropic`、`gemini`、`custom`；DeepSeek等�
 明确启用时再核对配置摘要与缓存全部文件，先写未知journal，再将新代次缓存放入独立目录、原子保存配置。冲突、超时或中断先「核对原接入操作」，该入口只查原配置／原缓存，不重复安装或恢复owner回退。启用成功仍显示等待新会话，直至有实际接入回执；宿主的插件加载／信任提示需按其正常流程处理，不能全局关闭信任检查。CLI与Desktop的真实hook及cwd需分别验证。
 
 控制进程复用官方Python环境中已有的 `tomlkit`，用于保留Codex配置中的注释及无关设置。本机环境已确认可用；不使用系统Python或修改用户默认工具链。接入预览、配置备份及安装日志含本机信息，保存在私有运行目录，不入Git。
+
+### OpenCode 第二批插件组件（dev）
+
+当前可离线构造独立插件组件，不是完整运行包；连接adapter尚未启用。使用固定上游lock预先填充的npm缓存，不读取已安装node_modules作为可信源码，不在宿主启动时联网安装。每次输出必须是新目录，保留CLI返回的manifest SHA用于prepare，不能仅信产物自报摘要。
+
+```sh
+python3 scripts/task.py -- .local/cognee-python/bin/python scripts/build_opencode_plugin.py --output /绝对路径/新组件目录 --npm-cache /绝对路径/固定npm缓存
+```
+
+安装检查入口：`python3 scripts/task.py -- env PYTHONPATH=engine/python MEMLANE_OPENCODE_TEST_NPM_CACHE=/绝对路径/固定npm缓存 .local/cognee-python/bin/python -m unittest test_opencode_installation`。缺缓存明确skip，不算完整通过。构造临时依赖自动清理，已保留组件的消费者与实际范围见[第二批账本](engineering/multi-agent-second-batch-20261114.md)。

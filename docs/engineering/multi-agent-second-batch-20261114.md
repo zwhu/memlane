@@ -97,3 +97,15 @@ outbox已确认seen项同时保存原target元数据，`completedTarget`只在�
 最终9项Python／38项编译Node通过（4.743秒，无skip），[证据](evidence/multi-agent-development-20261114/opencode-managed-actions.json)。覆盖真实控制HTTP与loopback官方请求、同内容并发两实例、三类丢响应重启、换message ID、处理新水位阻断、回执无正文、权限拒绝、明确／自动行为及官方hook连续流程。派生插件已无静态dataset直接变更／ambient Cognee字段／整段消息列表；仍为固定SDK夹具，未调用模型或实际宿主。
 
 下一步构造不可变安装与固定依赖／license清单、配置和独立主体绑定，再接管理侧认证核对／补交／丢弃和实际1.3.5兼容。原unknown尚不具备自动核对终态依据时继续保留，不通过新动作规避；当前组合尚未安装启用，真实知识与完整Goal未交付。
+
+## 离线不可变产物与绑定入口（检查点三十五）
+
+新增`opencode_installation.py`与离线构造入口。从固定官方归档校验SHA256，再按原package-lock逐个校验本机缓存tarball的SHA512，拒绝链接／越界／重复路径；按当前平台排除5个不兼容的optional包。临时目录严格编译受管插件，保留原13份源码和官方LICENSE、依赖原license文件及清单；运行产物排除TypeScript／types等dev依赖、未受管CLI及安装脚本。没有网络下载或npm脚本执行。
+
+4项安装检查通过（43.852秒，无skip）。实际Node加载生成入口并得到派生hooks；key变更、额外未登记文件、错误固定manifest摘要均拒绝。prepare必须接收控制侧预先固定的artifact SHA，校验整个tree及上游commit／归档来源；私有binding只存key路径与摘要、独立主体／服务／控制地址，0600且相同内容复用、endpoint变化形成新代际，旧binding不覆盖。全局薄入口在dynamic import之前核对全部文件／binding／key，不继承宿主传入选项；处理会话直接跳过。
+
+用正式CLI又离线构造一份保留组件，generation `b6ff5a4ef91da122b559b56f`，manifest `df1714c0573ea57fef2a8a5fc313d6fd090bf6cd53faeaa99dd2432d9a93a6ff`，3671文件／55,378,054字节，之后重新校验tree与builder源码摘要。[回执](evidence/multi-agent-development-20261114/opencode-immutable-artifact.json)。组件位于本任务临时根，后续连接适配消费前保留；开发临时构造／测试目录已由上下文正常清理，没有完整App／引擎／模型副本。
+
+本地反馈分别记录：MA-OPENCODE-ARTIFACT-PREFIX01失败1次（@types/node固定包根为node v20.19），MA-OPENCODE-LOADER01失败1次（Python拼接只对末段encode）；两项均在当前构造／入口检查通过，不与旧问题或两个断言合并计数。不是实际OpenCode宿主验收。
+
+尚未写入本机OpenCode配置，也未把Connections的开发中卡片改为可绑定。下一步新增电脑级OpenCode连接adapter，接准备／启用／原操作核对，处理全局重复插件与配置冲突；再接认证补交／丢弃和真实1.3.5宿主。Node加载夹具不替代native加载、真实ACL或知识质量，原库及其他主体／会话保持。

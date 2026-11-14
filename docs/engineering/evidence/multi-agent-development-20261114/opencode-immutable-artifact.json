@@ -1,0 +1,65 @@
+{
+  "scope": "offline managed OpenCode component and immutable private binding/loader; real Node module initialization without native host, sessions, service requests or model calls",
+  "validation": {
+    "installation_tests": 4,
+    "seconds": 43.852,
+    "skips": 0,
+    "generated_entry_syntax_checked": true,
+    "cli_build_verified": true,
+    "retained_tree_verified_against_fixed_manifest": true
+  },
+  "retained_component": {
+    "relative_path": ".local/multi-agent-opencode-20261114/artifacts/b6ff5a4ef91da122b559b56f",
+    "generation": "b6ff5a4ef91da122b559b56f",
+    "manifest_sha256": "df1714c0573ea57fef2a8a5fc313d6fd090bf6cd53faeaa99dd2432d9a93a6ff",
+    "files": 3671,
+    "bytes": 55378054,
+    "verified_cached_packages": 30,
+    "node_version": "v22.23.1",
+    "omitted_optional_dependencies": [
+      "node_modules/@msgpackr-extract/msgpackr-extract-darwin-x64",
+      "node_modules/@msgpackr-extract/msgpackr-extract-linux-arm",
+      "node_modules/@msgpackr-extract/msgpackr-extract-linux-arm64",
+      "node_modules/@msgpackr-extract/msgpackr-extract-linux-x64",
+      "node_modules/@msgpackr-extract/msgpackr-extract-win32-x64"
+    ]
+  },
+  "proven": [
+    "fixed official archive SHA256 and each selected locked npm tarball SHA512 verified",
+    "no network, npm scripts or unmanaged CLI installed",
+    "original 13 upstream files and repository license retained",
+    "runtime dependencies and license inventory pinned; dev dependencies omitted",
+    "whole tree, binding and credential hashes checked before dynamic import",
+    "extra files, changed key and wrong expected manifest rejected",
+    "private bindings immutable; endpoint changes use distinct generation and preserve old binding",
+    "same installation and service inputs reproduce binding",
+    "existing artifact cannot be replaced"
+  ],
+  "local_feedback": [
+    {
+      "issue": "MA-OPENCODE-ARTIFACT-PREFIX01",
+      "failures": 1,
+      "cause": "fixed @types/node archive root is node v20.19 rather than package",
+      "result": "fixed explicit archive prefix; current build passes"
+    },
+    {
+      "issue": "MA-OPENCODE-LOADER01",
+      "failures": 1,
+      "cause": "loader string concatenation encoded only final segment",
+      "result": "parenthesized complete generated source; syntax and loader tests pass"
+    }
+  ],
+  "not_yet_proven": [
+    "connection adapter prepare/activate/review wiring and duplicate global config handling",
+    "authenticated management review/retry/discard",
+    "native OpenCode 1.3.5 loading and API compatibility",
+    "real official ACL/capture/knowledge/adoption",
+    "Ollama/local-provider and remaining first-batch gates"
+  ],
+  "no_daily_configuration_or_service_change": true,
+  "source_sha256": {
+    "engine/python/opencode_installation.py": "e9e49470b9a52a7fc4fa96008cab2181457afd924c4fe1bfcde13d4bc0572aea",
+    "engine/python/test_opencode_installation.py": "a22f5918bb2a3a4aeccddc335b53730d823fdba6eb828429778640b13736b4aa",
+    "scripts/build_opencode_plugin.py": "fb980ae950ad174d20429d0770ab71ed34a7ebfa700e7b2859d6da5fb0fc7f67"
+  }
+}

@@ -1,6 +1,6 @@
 # 多 Agent / Provider 当前支持与验收矩阵
 
-2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)检查点三十四为准。用户已暂缓未安装Agent／Cursor后续测试、免除Claude Code追加测试；未验项不改为通过，既有结果保留。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
+2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)检查点三十五为准。用户已暂缓未安装Agent／Cursor后续测试、免除Claude Code追加测试；未验项不改为通过，既有结果保留。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
 
 ## 第一批 Agent
 
@@ -56,3 +56,5 @@ OpenCode受管HTTP／outbox覆盖源码已实现，5项Python及10项实际编�
 检查点三十三补私有安装key／显式本地地址配置及实时common／project召回、注入撤权和处理会话初始化隔离；8项Python／32项编译Node通过，[证据](evidence/multi-agent-development-20261114/opencode-managed-recall.json)。lifecycle／处理／显式工具／操作账本及不可变安装仍待完成，当前组合未安装启用；真实OpenCode与知识内容未验收。
 
 检查点三十四接原目标lifecycle／自动处理／明确remember及metadata操作回执，稳定安装／native namespace与已保存水位；9项Python／38项编译Node通过，[动作回执证据](evidence/multi-agent-development-20261114/opencode-managed-actions.json)。unknown不随时间、新材料或新message ID重投，running不冒充完成。不可变安装／来源绑定、认证管理处置及真实1.3.5宿主仍待完成，未安装启用。
+
+检查点三十五补离线不可变组件／固定manifest prepare／私有全局入口；4项安装检查及正式CLI产物复核通过，[证据](evidence/multi-agent-development-20261114/opencode-immutable-artifact.json)。已保留3671文件、约55.4MB组件，Node入口初始化不等于实际1.3.5宿主；Connections接线及认证处置仍待完成，本机配置未写入，卡片继续开发中。

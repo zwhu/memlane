@@ -454,3 +454,11 @@ outbox明确401／403持久化blocked，重启／timer不重发；阻塞项不�
 9项Python／38项编译Node检查通过（4.743秒，无skip），[回执和摘要](evidence/multi-agent-development-20261114/opencode-managed-actions.json)。控制HTTP实际执行，官方内容／ACL及SDK仍是夹具；无实际宿主、模型、日常修改或服务重启，无新增失败轮次。其他会话WIP保持。
 
 下一步不可变安装产物、来源／私有绑定及管理侧认证核对／补交／丢弃，再验1.3.5实际宿主、真实编码→知识→采用；Ollama、首批外部前置、Native增量及日常收口仍待完成，完整Goal保持active。
+
+## 开发检查点三十五：不可变OpenCode组件与私有入口
+
+上轮动作回执为实际进展。本轮新增离线构造器、固定manifest校验的prepare及生成全局薄入口；原归档和30份当前平台依赖tarball逐份校验，不运行npm脚本、不联网，保留源码／license。入口核对完整tree、私有binding和key后再import，旧产物不可替换，endpoint变化不覆盖旧binding。
+
+4项安装测试通过（43.852秒），随后正式CLI构造并复核保留组件：3671文件／55,378,054字节，generation `b6ff5a4ef91da122b559b56f`；[源码与回执](evidence/multi-agent-development-20261114/opencode-immutable-artifact.json)。两个开发反馈分别为固定types归档前缀和loader拼接encode，具体问题各失败1次、限定本地检查已通过；不是原生宿主验收，也不重置其他计数。无真实模型、日常配置写入或服务启停。测试临时目录正常清理，保留一份约55.4MB组件供接线；既有依赖与共享WIP未动。
+
+下一步独立OpenCode电脑级adapter接Connections的prepare／activate／review并核对重复插件；认证管理处置、实际1.3.5加载与真实编码链继续推进。Ollama、首批外部前置、Native增量及日常收口保持未完成，完整Goal继续active；当前OpenCode仍是开发中不可绑定。
