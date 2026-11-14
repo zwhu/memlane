@@ -1,0 +1,153 @@
+{
+  "scope": "dev normal host upgrade and real installed tool replies; not full first-batch delivery",
+  "source_commit": "ca8e5a9",
+  "normal_upgrade_hosts": {
+    "codex": {
+      "status": "activated_pending_new_session",
+      "reviewed_manifest_sha256": "e10b0561da12992fc8108e72278b0acc4b58fa12f989552d7088f432f28d58a8",
+      "old_cache_preserved": true,
+      "subject_and_acl_preserved": true,
+      "readiness_reply_output_tokens": 7
+    },
+    "claude_code": {
+      "status": "activated_pending_new_session",
+      "reviewed_manifest_sha256": "2b3830b2cbc317333a36f4164293cdc99fec9b8dae3264a1c8af6c74c6b46d3b",
+      "old_cache_preserved": true,
+      "subject_and_acl_preserved": true,
+      "native_startup_no_model_prompt": true
+    },
+    "pi": {
+      "status": "activated_pending_new_session",
+      "reviewed_manifest_sha256": "ca2f189120cf8ce8b8c22bda5b88d3a63ee4994bd2765180fbcf8bcb3bba829b",
+      "old_cache_preserved": true,
+      "subject_and_acl_preserved": true,
+      "native_startup_no_model_prompt": true
+    },
+    "traex": {
+      "status": "activated_pending_new_session",
+      "reviewed_manifest_sha256": "5d4131e71079aa5d483eaefa06e5a0f1aaca885691a434b78a0c77b93073a11a",
+      "old_cache_preserved": true,
+      "subject_and_acl_preserved": true,
+      "readiness_reply_observed": true
+    }
+  },
+  "native_new_sessions": {
+    "codex": {
+      "session_id": "01a1d772-561b-7b73-a46e-28993de30351",
+      "original_project_id": "f78abdbb-84ed-579f-80f3-0082cb95fbe4",
+      "new_binding_observed": true
+    },
+    "claude_code": {
+      "session_id": "6c989581-5de9-4671-a8a6-39a27661b243",
+      "original_project_id": "f78abdbb-84ed-579f-80f3-0082cb95fbe4",
+      "new_binding_observed": true
+    },
+    "pi": {
+      "session_id": "pi-8fc8705e05a1d6410df028bbd025164fcccb0da5bcdf9420d4fba293f0884c11",
+      "original_project_id": "f78abdbb-84ed-579f-80f3-0082cb95fbe4",
+      "new_binding_observed": true
+    },
+    "traex": {
+      "session_id": "traex-9ec9e024dbce6095b11e5f68485296ebc0606a66ea1d66aa17cbe7ae2cc0e79e",
+      "original_project_id": "f78abdbb-84ed-579f-80f3-0082cb95fbe4",
+      "new_binding_observed": true
+    }
+  },
+  "deployed_tool_policy": {
+    "codex": {
+      "actual_host_cache_verified": true,
+      "native_session_key": true,
+      "delete_local_denial_status": 403,
+      "write_denial_status": 403,
+      "common_raw_http_status": 200,
+      "access_restored": true,
+      "denied_delete_target": "nonexistent synthetic UUID; no original data used as delete target"
+    },
+    "claude_code": {
+      "actual_host_cache_verified": true,
+      "native_session_key": true,
+      "delete_local_denial_status": 403,
+      "write_denial_status": 403,
+      "common_raw_http_status": 200,
+      "access_restored": true,
+      "denied_delete_target": "nonexistent synthetic UUID; no original data used as delete target"
+    }
+  },
+  "preservation": {
+    "original_daily_auth_and_config_unchanged": true,
+    "owned_codex_auth_unchanged": true,
+    "old_bindings_preserved": true,
+    "subject_ids_preserved": true,
+    "datasets": [
+      {
+        "dataset_id": "26c5424d-88b7-577a-b147-6e53516d2ea6",
+        "total": 0,
+        "completed": 0,
+        "pending": 0
+      },
+      {
+        "dataset_id": "d4bafc07-7f5b-5e2c-9ed3-7e0a4499415f",
+        "total": 32,
+        "completed": 32,
+        "pending": 0
+      },
+      {
+        "dataset_id": "65d8f729-3ebf-546b-984c-7b375b7137e1",
+        "total": 1,
+        "completed": 1,
+        "pending": 0
+      }
+    ],
+    "owner_pid": 82470,
+    "native_future_runtime_path_updated": true,
+    "interrupted_install_quarantine_cleaned_bytes": 37215510,
+    "quota_remaining_percent_observed": 4,
+    "reset_card_used": false,
+    "new_readiness_data_retained": true
+  },
+  "project_override_metadata_differences": [
+    {
+      "project_id": "f78abdbb-84ed-579f-80f3-0082cb95fbe4",
+      "difference": "additional empty override metadata only"
+    }
+  ],
+  "limits": [
+    "Codex and TraeX no-tool readiness replies, pi native startup and Claude native startup prove loading/binding; they do not prove knowledge quality",
+    "Codex Desktop, Cursor and three native vendor accounts remain unverified",
+    "MA-CODEX-FACT01 failure1 unresolved; MA-ACL-REPLY01 historical failures2 retained"
+  ],
+  "source_checks": {
+    "prior_backend_tests": 127,
+    "source_changed_this_checkpoint": false,
+    "visual_acceptance_repeated": false,
+    "release_built": false
+  },
+  "operation_incident": {
+    "trigger": "status submit reached a newly appeared default CLI update prompt",
+    "global_package_affected": true,
+    "interrupted_exit": 130,
+    "original_0_167_2_package_restored_from_npm_retained_directory": true,
+    "original_native_sha256_equal": true,
+    "original_bin_symlink_restored": true,
+    "remaining_npm_processes": 0,
+    "temporary_partial_package_cleaned": true,
+    "prevention": "observe actual prompt before each input; send text and submit separately"
+  },
+  "codex_shutdown": {
+    "normal_daemon_stop_exit": 0,
+    "daemon_became_zombie": true,
+    "two_owned_detached_monitors_remained": true,
+    "scoped_sigterm_after_identity_and_task_completion_checks": true,
+    "old_cache_and_buffers_preserved": true,
+    "explicit_sync_or_replay_invoked": false
+  },
+  "method_correction": {
+    "initial_driver_import_error_before_any_policy_mutation": true,
+    "corrected_to_actual_agent_connections_verifier": true,
+    "legacy_codex_agent_kind_absent_in_first_evidence_export": true
+  },
+  "source_sha256": {
+    "engine/python/project_tool_patch.py": "a9dff713028a363ada0db259cab61c939a1c79b16d2fd225240aefb3f36626ef",
+    "engine/python/project_installation.py": "a998a6c874304c7a07afe225a61625305fd949d2301499ab9663e390214789a5"
+  }
+}

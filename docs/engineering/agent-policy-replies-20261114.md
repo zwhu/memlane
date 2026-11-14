@@ -1,6 +1,6 @@
 # 新宿主明确拒绝与未知结果
 
-当前累计 **2轮失败**。第一阶段JSON helper已复验通过；检查点十七发现Codex官方forget shell的同类错误呈现。新增不可变安装代际完成源码及真实策略复验，旧启用代际仍待正常升级。下面“1轮／通过”为第一阶段边界。[当前证据](evidence/multi-agent-development-20261114/real-explicit-tools-and-common.json)。
+当前累计 **2轮失败**。第一阶段JSON helper已复验通过；检查点十七发现Codex官方forget shell的同类错误呈现。检查点十八四宿主完成新代际正常升级及新会话绑定，Codex／Claude实际安装缓存复验明确拒绝通过。下面“1轮／通过”为第一阶段边界。[准备阶段证据](evidence/multi-agent-development-20261114/real-explicit-tools-and-common.json)、[正常部署证据](evidence/multi-agent-development-20261114/normal-host-tool-upgrade.json)。
 
 ## 第一阶段：JSON helper
 
