@@ -165,3 +165,13 @@ MA-OPENCODE-UNKNOWN-TARGET01累计失败1轮。沿原主体／原项目，用一
 定向检查：24项控制Node、7项HTTP、10项outbox、8项Python补丁通过；严格构造产物manifest `908b9ad1dbe2a077b4a0e4223bb2f2b521f9fd21a2d588c0043e25b9a4188be9`。新增检查后的首次辅助失败另记：Python仍要求23项而Node已24项通过；HTTP观察器未记录method却断言GET。两处各1次检查失败，修正观察／数量后同生产候选通过，不计为新一轮官方核对失败。
 
 本轮只完成管理处置的原目标前置。下一步将原show／check／replay／discard入口接受管OpenCode worker：复用管理身份认证，绑定原instance／project／host key／dataset，核对精确待发快照，串行排除宿主发送；重投仍沿原官方队列和实时策略，只处理已确认的原项，未知不重发，丢弃只移除本机副本。worker及运行时须在不可变产物和管理侧校验后调用，不把管理能力注册成Agent工具、不增加HTTP服务或内容队列。认证操作、并发快照和Native入口尚未实现／验收，不能将本次核对通过当补交功能完成。Ollama及首批外部前置仍保留。
+
+## 待发快照与共享发送租约（检查点四十）
+
+在固定官方outbox内加入管理处置原语，不另建内容队列。宿主flush与管理关键区共用PID所有的`.sender`租约，保留短状态锁；发送期间不持有状态锁。存活owner不按时间抢锁，记录owner实际退出后才恢复。管理关键区可持不可伪造的进程内token完成“核对→决定→仅发送所选ID”，不中途释放租约；token不等于管理身份认证，未暴露成Agent工具。
+
+`pendingSessions`仅给原target／session元数据；`reviewPending`给数量和原会话精确快照摘要，不返回正文。相同native的project／dataset／official session不一致则拒绝，缺失原target不猜归属。同一会话新增材料使旧同意失效，其他会话不扩大本次范围。unknown探针只获得marker字段，未证明原结果则不能replay；匹配项可原地确认，discard只移除本机副本，另存ID墓碑防止重启后同ID重新采集，不计saved，不伪造处理水位。发送适配增加精确ID集合，原目标策略逐项照常核对。
+
+[当前源码检查](evidence/multi-agent-development-20261114/opencode-pending-primitives.json)：24项控制、7项HTTP、14项队列Node及8项Python补丁通过。实际OS子进程持租约时父进程在任何policy／sender回调前被拒绝，文件不变；子进程已等待退出，死owner可恢复。另验证原快照、同意变化、所选项隔离、未知确认、丢弃墓碑及伪token。首次契约红灯为无发送租约／缺少管理原语；原双预检并发测试随更强互斥调整、严格补丁锚点笔误各产生1次辅助检查失败，保留私有日志，未作为真实宿主多轮失败。
+
+本阶段只为源码／真实进程锁检查，没有构造或激活新管理组件、请求模型或启动Native；仍使用检查点三十九的私有安装候选。临时队列及子进程均收尾。尚不能宣称用户可补交／丢弃：管理认证和controller原绑定核对、不可变worker及实际运行时验证、现有Native入口分派、操作回执和旧无租约开发产物共存均待接通。当前锁检查不证明任何旧进程已退出，接线前仍须按既有所有权／升级约束核实；不自动迁移或重投旧材料。

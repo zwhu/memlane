@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 
 const { Outbox } = await import(pathToFileURL(process.env.MEMLANE_OPENCODE_TEST_RUNTIME).href);
 const fixture = () => {
@@ -169,20 +171,25 @@ test("preflight outage leaves unsent state untouched and denial skips to a fresh
   } finally { f.close(); }
 });
 
-test("two process-style queues recheck the claim after asynchronous preflight", async () => {
+test("sender lease excludes a second queue during asynchronous policy preflight", async () => {
   const f = fixture();
+  let releaseGate, working;
   try {
     f.queue.enqueue("concurrent", "turn", {type: "qa"}, target());
     const second = new Outbox("same-installation-and-project", f.root);
-    let checks = 0, releaseGate;
+    let checks = 0, admitted;
     const gate = new Promise(resolve => { releaseGate = resolve; });
-    const authorize = async () => { if (++checks === 2) releaseGate(); await gate; return true; };
+    const started = new Promise(resolve => { admitted = resolve; });
+    const authorize = async () => { checks++; admitted(); await gate; return true; };
     let sends = 0;
     const send = async () => { sends++; };
-    await Promise.all([f.queue.flush(send, async () => false, authorize), second.flush(send, async () => false, authorize)]);
-    assert.equal(sends, 1);
-    assert.equal(f.queue.status().saved, 1);
-  } finally { f.close(); }
+    working = f.queue.flush(send, async () => false, authorize);
+    await started;
+    await assert.rejects(second.flush(send, async () => false, authorize), /Outbox busy/);
+    assert.equal(checks, 1); assert.equal(sends, 0);
+    releaseGate(); await working;
+    assert.equal(sends, 1); assert.equal(f.queue.status().saved, 1);
+  } finally { releaseGate?.(); await working?.catch(() => {}); f.close(); }
 });
 
 test("saved target watermark survives restart and excludes other session pending items", async () => {
@@ -197,5 +204,106 @@ test("saved target watermark survives restart and excludes other session pending
     const restarted = new Outbox("same-installation-and-project", f.root);
     assert.deepEqual(restarted.completedTarget(target().native), completed);
     assert.equal(restarted.completedTarget("other-native"), undefined);
+  } finally { f.close(); }
+});
+
+
+test("host sender lease excludes another process until the original request finishes", {timeout: 10000}, async () => {
+  const f = fixture();
+  f.queue.enqueue("inflight", "original-session", {type: "qa"}, target());
+  const code = `import {pathToFileURL} from "node:url";
+    const {Outbox}=await import(pathToFileURL(process.argv[1]).href);
+    const queue=new Outbox("same-installation-and-project",process.argv[2]);
+    await queue.flush(async()=>{process.stdout.write("sending\\n");await new Promise(resolve=>{process.stdin.once("end",resolve);process.stdin.resume();});},async()=>false);`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", code, process.env.MEMLANE_OPENCODE_TEST_RUNTIME, f.root], {stdio: ["pipe", "pipe", "pipe"]});
+  const exit = once(child, "exit");
+  let timer;
+  try {
+    await Promise.race([once(child.stdout, "data"), once(child, "error").then(([error]) => {throw error;}),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("child sender did not start")), 3000); })]);
+    clearTimeout(timer);
+    const before = readFileSync(f.queue.file);
+    let callbacks = 0;
+    await assert.rejects(f.queue.flush(async () => { callbacks++; }, async () => { callbacks++; return false; }), /Outbox busy/);
+    assert.equal(callbacks, 0); assert.deepEqual(readFileSync(f.queue.file), before);
+    child.stdin.end(); const [status] = await exit; assert.equal(status, 0);
+    assert.equal(f.queue.status().saved, 1);
+    // A dead owner is reclaimed using its recorded process, not a timed lease.
+    mkdirSync(f.queue.file + ".sender", {mode: 0o700});
+    writeFileSync(f.queue.file + ".sender/pid", String(child.pid), {mode: 0o600});
+    f.queue.enqueue("after-owner-exit", "original-session", {type: "qa"}, target());
+    await f.queue.flush(async () => { callbacks++; }, async () => false);
+    assert.equal(callbacks, 1); assert.equal(f.queue.status().saved, 2);
+  } finally {
+    clearTimeout(timer);
+    if (child.exitCode === null && child.signalCode === null) { child.kill("SIGTERM"); await exit; }
+    f.close();
+  }
+});
+
+test("review consent is scoped to exact original entries and selected replay excludes other sessions", async () => {
+  const f = fixture(), a = target(), b = {...a, native: "another-native"};
+  try {
+    f.queue.enqueue("reviewed", "official-a", {type: "qa", answer: "PRIVATE_BODY"}, a);
+    await assert.rejects(f.queue.flush(async () => {throw new Error("Cognee request failed (403)");}, async () => false));
+    const snapshot = f.queue.reviewPending(a, "official-a");
+    assert.equal(snapshot.pending, 1); assert.equal(snapshot.unknown_outcomes, 0);
+    assert.ok(!JSON.stringify(snapshot).includes("PRIVATE_BODY"));
+    f.queue.enqueue("unselected", "official-b", {type: "qa"}, b);
+    assert.equal(f.queue.reviewPending(a, "official-a").signature, snapshot.signature);
+    assert.throws(() => f.queue.decidePending(a, "official-a", snapshot.signature, "replay"), /sender_lease_required/);
+    const sent = [];
+    const result = await f.queue.withSender(async token => {
+      const decision = f.queue.decidePending(a, "official-a", snapshot.signature, "replay");
+      await f.queue.flush(async item => sent.push(item.id), async () => false, undefined, new Set(decision.released_ids), token);
+      return decision;
+    });
+    assert.deepEqual(result.released_ids, ["reviewed"]);
+    assert.deepEqual(sent, ["reviewed"]); assert.equal(f.queue.status().pending, 1);
+    assert.equal(f.queue.completedTarget(a.native).target.dataset_id, a.dataset_id);
+    assert.equal(f.queue.completedTarget(b.native), undefined);
+    assert.throws(() => f.queue.flush(async () => assert.fail("forged lease sent a write"), async () => false, undefined, undefined, {}), /sender_lease_required/);
+  } finally { f.close(); }
+});
+
+test("changed same-session snapshots cannot discard and discarded IDs never re-enter capture", async () => {
+  const f = fixture(), a = target();
+  try {
+    f.queue.enqueue("old", "official-a", {type: "qa", answer: "old body"}, a);
+    const snapshot = f.queue.reviewPending(a, "official-a");
+    f.queue.enqueue("new", "official-a", {type: "qa", answer: "new body"}, a);
+    const before = readFileSync(f.queue.file);
+    await assert.rejects(f.queue.withSender(async () => f.queue.decidePending(a, "official-a", snapshot.signature, "discard")), /pending_materials_changed_review_again/);
+    assert.deepEqual(readFileSync(f.queue.file), before);
+    const fresh = f.queue.reviewPending(a, "official-a");
+    const result = await f.queue.withSender(async () => f.queue.decidePending(a, "official-a", fresh.signature, "discard"));
+    assert.equal(result.discarded, 2); assert.equal(f.queue.status().saved, 0);
+    const restarted = new Outbox("same-installation-and-project", f.root);
+    restarted.enqueue("old", "official-a", {type: "qa", answer: "old body"}, a);
+    assert.equal(restarted.status().pending, 0); assert.equal(restarted.completedTarget(a.native), undefined);
+    assert.ok(!readFileSync(f.queue.file, "utf8").includes("old body"));
+  } finally { f.close(); }
+});
+
+test("unknown replay needs matched originals and acknowledgement never sends unmatched entries", async () => {
+  const f = fixture(), a = target();
+  try {
+    f.queue.enqueue("unknown", "official-a", {type: "qa", context: "original-marker", answer: "PRIVATE_UNKNOWN_BODY"}, a);
+    await assert.rejects(f.queue.flush(async () => {throw new Error("controlled transport failure");}, async () => false));
+    const review = f.queue.reviewPending(a, "official-a"), before = readFileSync(f.queue.file);
+    await assert.rejects(f.queue.withSender(async () => f.queue.decidePending(a, "official-a", review.signature, "replay")), /original_write_result_still_unknown/);
+    await assert.rejects(f.queue.withSender(async () => f.queue.decidePending(a, "official-a", review.signature, "acknowledge", ["other-id"])), /original_pending_marker_required/);
+    assert.deepEqual(readFileSync(f.queue.file), before);
+    const result = await f.queue.withSender(async () => {
+      const matches = await f.queue.inspectUnknown(a, "official-a", review.signature, async (session, marker, dataset) => {
+        assert.equal(session, "official-a"); assert.equal(dataset, a.dataset_id);
+        assert.ok(!JSON.stringify(marker).includes("PRIVATE_UNKNOWN_BODY"));
+        assert.deepEqual(marker, {type: "qa", context: "original-marker"}); return true;
+      });
+      return f.queue.decidePending(a, "official-a", review.signature, "acknowledge", matches);
+    });
+    assert.equal(result.matched_unknown, 1); assert.equal(result.released_ids.length, 0);
+    assert.equal(f.queue.status().saved, 1); assert.equal(f.queue.status().pending, 0);
+    assert.deepEqual(f.queue.completedTarget(a.native).target, a);
   } finally { f.close(); }
 });

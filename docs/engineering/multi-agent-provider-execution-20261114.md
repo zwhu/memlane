@@ -482,3 +482,7 @@ OpenCode 1.3.5／DeepSeek Flash以独立官方子主体、私有profile和合成
 ## 检查点三十九：unknown必须匹配原官方数据组
 
 旧client仅搜索整段session JSON marker，实际旧同名子组会话能导致本机unknown被误标saved（MA-OPENCODE-UNKNOWN-TARGET01失败1）。现已同时验证原session_id、dataset_id和对应QA／trace字段。实际服务只读复验3项通过：旧同名组不确认，原组QA／trace可确认，无POST／重投／模型或Native启动；主队列pending0，受控unknown夹具保留。24控制＋7HTTP＋10outbox Node与8项Python补丁通过。数量／观察器两处辅助检查错误各失败1后修正，与真实核对失败分别记录。管理认证、精确快照、跨进程发送互斥及Native补交／丢弃接线仍待完成。[连续记录](multi-agent-second-batch-20261114.md)、[证据](evidence/multi-agent-development-20261114/opencode-unknown-target.json)。
+
+## 检查点四十：管理处置的队列基础
+
+固定官方outbox增加PID共享发送租约、带原target的精确快照、marker-only未知探针、所选项确认／释放／丢弃及重启墓碑；所选发送使用同一租约token，防止中途放锁及顺带发送其他会话。24控制＋7HTTP＋14outbox Node与8项Python补丁通过，包含实际OS子进程互斥和死owner恢复、快照变更不修改文件、未知不重投、discard不计saved。无模型或Native启动，未单独激活新组件。token／快照不是管理认证；worker、绑定授权、Native分派和旧产物共存仍待完成。[记录](multi-agent-second-batch-20261114.md)、[证据](evidence/multi-agent-development-20261114/opencode-pending-primitives.json)。

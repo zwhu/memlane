@@ -330,3 +330,5 @@ I04/I05为第一优先交付切片，必须先由Agent自验；不能先交一�
 2026-11-14检查点三十八：OpenCode采集用`dataset_id`、登记用`dataset_ids`，禁止按同名组推定原项目。显式记忆沿官方永久上传和`memory`节点集，不将文件占位发送到session缓存；后台处理接收与正文／知识完成分开。自动注入允许`session_learnings`／`memory`，仍只取原项目及可读通用知识。旧会话或unknown材料核对须验证官方session的dataset UUID，禁止仅凭marker确认；该unknown补齐与认证处置仍在实施范围。原错误同名组及旧会话不自动迁移，当前证据见[检查点三十八](engineering/multi-agent-second-batch-20261114.md)。
 
 2026-11-14检查点三十九：OpenCode旧unknown的原session／dataset和marker字段核对已实现并以真实GET验证。后续管理处置复用现有show／check／replay／discard概念，管理认证、原instance／project／host key绑定、精确快照及宿主／管理worker发送互斥仍须单独验收；不得将这些管理能力暴露成Agent工具，也不新增服务或正文队列。
+
+2026-11-14检查点四十：管理处置在原官方outbox内使用共享PID发送租约、原target精确快照和所选ID操作，discard元数据防重采且不计保存。内部租约token仅解决并发，快照仅绑定本次同意，都不能替代管理身份认证。接线须验证不可变worker和运行时、控制侧原绑定与当前策略，复用现有待发材料入口；旧无租约开发产物是否仍运行须独立核实，不能从新锁检查推断旧进程已退出或自动迁移旧队列。

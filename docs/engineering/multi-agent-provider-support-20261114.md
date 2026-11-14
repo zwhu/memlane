@@ -66,3 +66,5 @@ OpenCode受管HTTP／outbox覆盖源码已实现，5项Python及10项实际编�
 检查点三十八纠正上轮目标证据：旧官方会话曾绑定同名子组（MA-OPENCODE-TARGET01失败1），已有正确项目Data不等于会话归属正确。当前改用UUID后，新实际Native QA1／trace2及工具0次采用的官方dataset均正确。显式文件＋session正文丢失亦修复（MA-OPENCODE-REMEMBER01失败1保留），真实正文／召回通过；真实API权限六阶段及空索引404隔离已取证。原覆盖恢复、临时文档删除，原同名组和旧会话保留，Native权限UI未由协议检查代替。待发材料及旧unknown目标核对仍未完成，[范围与计数](multi-agent-second-batch-20261114.md)、[证据](evidence/multi-agent-development-20261114/opencode-real-acl.json)。
 
 检查点三十九完成旧unknown的原官方session／dataset／marker字段核对；MA-OPENCODE-UNKNOWN-TARGET01历史失败1保留。实际原服务GET三项及41项Node／8项Python补丁通过，无内容重发或模型调用；专用unknown保持原样。补交／丢弃的管理认证、快照同意和跨进程互斥及Native接线仍未完成，[证据](evidence/multi-agent-development-20261114/opencode-unknown-target.json)。
+
+检查点四十完成待发材料内部原语及发送租约：45项Node／8项Python补丁通过，含真实子进程互斥、精确快照、所选项处理和discard墓碑。没有新增Agent管理工具或激活未鉴权入口，认证worker／Native接线仍未完成，[证据](evidence/multi-agent-development-20261114/opencode-pending-primitives.json)。

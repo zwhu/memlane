@@ -112,6 +112,35 @@ type Pending = { id: string; session: string; entry: Entry; uncertain?: boolean;
             '  enqueue(id: string, session: string, entry: Entry, target?: ProjectTarget): void {\n    const original = target === undefined ? undefined : snapshotTarget(target);')
     replace('state.pending.push({ id, session, entry: scrub(entry) as Entry });',
             'state.pending.push({ id, session, entry: scrub(entry) as Entry, ...(original ? {target: original} : {}) });')
+    replace('  private running?: Promise<void>;', '  private running?: Promise<void>;\n  private senderHeld = false;\n  private senderToken?: object;')
+    replace('state.seen.includes(id) || state.pending.some((item) => item.id === id)',
+            'state.seen.includes(id) || state.discarded?.includes(id) || state.pending.some((item) => item.id === id)')
+    replace('''  private lock<T>(run: () => T): T {
+    const path = this.file + ".lock";
+''', '''  private acquire(path: string): () => void {
+''')
+    replace('''    try { return run(); } finally { rmSync(path, { recursive: true }); }
+  }
+''', '''    return () => rmSync(path, {recursive: true});
+  }
+  private lock<T>(run: () => T): T {
+    const release = this.acquire(this.file + ".lock");
+    try { return run(); } finally { release(); }
+  }
+  // Host flush and management decisions share this process-owned lease. File
+  // mutations still use the short state lock; no state lock spans network I/O.
+  async withSender<T>(run: (token: object) => Promise<T>): Promise<T> {
+    const release = this.acquire(this.file + ".sender");
+    this.senderHeld = true; this.senderToken = Object.freeze({});
+    try { return await run(this.senderToken); }
+    finally { this.senderHeld = false; this.senderToken = undefined; release(); }
+  }
+''')
+    replace('    this.running = (async () => {', '    const run = async () => {')
+    replace('    })().finally(() => { this.running = undefined; });',
+            '    };\n    this.running = (senderToken ? run() : this.withSender(run)).finally(() => { this.running = undefined; });')
+    replace('    if (this.running) return this.running;',
+            '    if (senderToken && (!this.senderHeld || senderToken !== this.senderToken)) throw new Error("sender_lease_required");\n    if (this.running) return this.running;')
     replace('if (/(?:request|login) failed \\((?:400|401|403|404|422|429)\\)/.test(String(error))) {',
             'if (error instanceof LocalPolicyDenied || /(?:request|login) failed \\((?:400|401|403|404|422|429)\\)/.test(String(error))) {')
     replace('''  status(): { pending: number; uncertain: number; saved: number } {
@@ -159,7 +188,7 @@ type Pending = { id: string; session: string; entry: Entry; uncertain?: boolean;
                 }
               }''')
     replace('flush(send: (item: Pending) => Promise<void>, committed: (item: Pending) => Promise<boolean>): Promise<void> {',
-            'flush(send: (item: Pending) => Promise<void>, committed: (item: Pending) => Promise<boolean>, authorize?: (item: Pending) => Promise<boolean>): Promise<void> {')
+            'flush(send: (item: Pending) => Promise<void>, committed: (item: Pending) => Promise<boolean>, authorize?: (item: Pending) => Promise<boolean>, selected?: ReadonlySet<string>, senderToken?: object): Promise<void> {')
     replace('''        const item = this.lock(() => { const state = this.read(); const next = state.pending.find((entry) => !entry.blocked); if (!next) return undefined; const copy = { ...next }; next.uncertain = true; this.write(state); return copy; });
         if (!item) return;
 ''', '''        const candidate = this.lock(() => {
@@ -190,7 +219,93 @@ type Pending = { id: string; session: string; entry: Entry; uncertain?: boolean;
         if (!item) continue;
 ''')
     replace('type State = { pending: Pending[]; seen: string[] };',
-            'type State = { pending: Pending[]; seen: string[]; savedTargets?: Record<string, ProjectTarget> };')
+            'type State = { pending: Pending[]; seen: string[]; discarded?: string[]; savedTargets?: Record<string, ProjectTarget> };')
+    replace('this.read().pending.find((entry) => !entry.blocked)',
+            'this.read().pending.find((entry) => !entry.blocked && (!selected || selected.has(entry.id)))')
+    replace('  blockedIds(): string[] {', '''  private pendingFor(state: State, target: ProjectTarget, session: string): Pending[] {
+    const original = snapshotTarget(target);
+    if (typeof session !== "string" || !session || session.length > 256) throw new Error("original_pending_session_required");
+    return state.pending.filter(item => {
+      if (!item.target) throw new Error("original_project_target_required");
+      const current = snapshotTarget(item.target);
+      if (current.native !== original.native) return false;
+      if (current.project_id !== original.project_id || current.dataset_id !== original.dataset_id || item.session !== session) {
+        throw new Error("original_project_target_changed");
+      }
+      return true;
+    });
+  }
+  pendingSessions(): {target: ProjectTarget; session: string}[] {
+    return this.lock(() => {
+      const unique = new Map<string, {target: ProjectTarget; session: string}>();
+      for (const item of this.read().pending) {
+        if (!item.target || typeof item.session !== "string" || !item.session || item.session.length > 256) throw new Error("original_project_target_required");
+        const value = {target: snapshotTarget(item.target), session: item.session};
+        unique.set(JSON.stringify(value), value);
+      }
+      return [...unique.values()];
+    });
+  }
+  reviewPending(target: ProjectTarget, session: string) {
+    return this.lock(() => {
+      const items = this.pendingFor(this.read(), target, session);
+      return {pending: items.length, unknown_outcomes: items.filter(item => item.uncertain).length,
+        signature: hash(JSON.stringify(items)), session_id: session,
+        ...(items.some(item => item.blocked) ? {blocked: {reason: "operator_review_required"}} : {})};
+    });
+  }
+  // Internal primitives only. The management worker authenticates the operator,
+  // validates original policy and obtains exact official matches before calling.
+  async inspectUnknown(target: ProjectTarget, session: string, signature: string,
+                       probe: (session: string, marker: Entry, dataset: string) => Promise<boolean>): Promise<string[]> {
+    if (!this.senderHeld || this.running) throw new Error("sender_lease_required");
+    const items = this.lock(() => {
+      const selected = this.pendingFor(this.read(), target, session);
+      if (signature !== hash(JSON.stringify(selected))) throw new Error("pending_materials_changed_review_again");
+      return JSON.parse(JSON.stringify(selected.filter(item => item.uncertain))) as Pending[];
+    });
+    const matched: string[] = [];
+    for (const item of items) {
+      const value = item.entry.type === "qa" ? item.entry.context :
+        (item.entry.method_params as Record<string, unknown> | undefined)?.cognee_capture_id;
+      if (typeof value !== "string" || !value || value.length > 160) continue;
+      const marker: Entry = item.entry.type === "qa" ? {type: "qa", context: value} :
+        {type: "trace", method_params: {cognee_capture_id: value}};
+      if (await probe(item.session, marker, item.target!.dataset_id)) matched.push(item.id);
+    }
+    return matched;
+  }
+  decidePending(target: ProjectTarget, session: string, signature: string,
+                action: "replay" | "discard" | "acknowledge", matchedUnknown: string[] = []) {
+    if (!this.senderHeld || this.running) throw new Error("sender_lease_required");
+    if (!["replay", "discard", "acknowledge"].includes(action) || !Array.isArray(matchedUnknown)) throw new Error("invalid_pending_action");
+    return this.lock(() => {
+      const state = this.read(), items = this.pendingFor(state, target, session);
+      if (typeof signature !== "string" || signature !== hash(JSON.stringify(items))) throw new Error("pending_materials_changed_review_again");
+      const matched = new Set(matchedUnknown);
+      for (const id of matched) if (!items.some(item => item.id === id && item.uncertain)) throw new Error("original_pending_marker_required");
+      if (action === "replay" && items.some(item => item.uncertain && !matched.has(item.id))) throw new Error("original_write_result_still_unknown");
+      const removed = new Set<string>(), released: string[] = [];
+      for (const item of items) {
+        if (action === "discard") {
+          state.discarded ??= [];
+          if (!state.discarded.includes(item.id)) state.discarded.push(item.id);
+          removed.add(item.id);
+        } else if (matched.has(item.id)) {
+          if (!state.seen.includes(item.id)) state.seen.push(item.id);
+          state.savedTargets ??= {}; state.savedTargets[item.id] = snapshotTarget(item.target!);
+          removed.add(item.id);
+        } else if (action === "replay") {
+          item.blocked = false; delete item.blocked_reason; released.push(item.id);
+        }
+      }
+      state.pending = state.pending.filter(item => !removed.has(item.id));
+      this.write(state);
+      return {released_ids: released, matched_unknown: action === "discard" ? 0 : matched.size,
+        discarded: action === "discard" ? removed.size : 0};
+    });
+  }
+  blockedIds(): string[] {''')
     replace('  blockedIds(): string[] {', '''  completedTarget(native: string): {target: ProjectTarget; watermark: string} | undefined {
     const state = this.read();
     if (state.pending.some(item => !item.target || item.target.native === native)) return undefined;

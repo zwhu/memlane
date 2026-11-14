@@ -18,7 +18,7 @@ export class ManagedDelivery {
     return true;
   }
 
-  async flush(): Promise<void> {
+  async flush(ids?: readonly string[], senderToken?: object): Promise<void> {
     const checked = new Map<string, ProjectPolicy>();
     await this.outbox.flush(async (item: Item) => {
       const policy = checked.get(item.id);
@@ -35,6 +35,6 @@ export class ManagedDelivery {
       checked.set(item.id, policy);
       return item.uncertain ? policy.policy.permissions.includes("read") :
         policy.policy.permissions.includes("write") && policy.policy.can_capture;
-    });
+    }, ids === undefined ? undefined : new Set(ids), senderToken);
   }
 }
