@@ -319,7 +319,24 @@ import { join } from "node:path";''')
     replace('  const outbox = new Outbox([cfg.baseUrl, hash(cfg.apiKey || cfg.username || "default"), cfg.datasetName, ctx.directory].join("|"), cfg.stateDir);\n  const binding = options?.memlane as ControlOptions;\n  if (!binding) throw new Error("managed_installation_required");', '''  const binding = options?.memlane as ControlOptions;
   if (!binding) throw new Error("managed_installation_required");
   const outbox = new Outbox([cfg.baseUrl, binding.instanceId].join("|"), cfg.stateDir);''')
-    replace('  const window = new CaptureWindow();', '''  const window = new CaptureWindow();
+    replace('  const window = new CaptureWindow();', '''  const activatedAt = Date.now();
+  const window = new CaptureWindow(activatedAt);
+  let disposed = false;
+  let discovering = false;
+  // Some native versions publish the first session event during bootstrap.
+  // Reconcile only post-activation metadata in this exact host directory.
+  const discoverSessions = async () => {
+    if (disposed || discovering || !cfg.autoCapture || !ctx.client.session?.list) return;
+    discovering = true;
+    try {
+      const result = await ctx.client.session.list({query: {directory: ctx.directory}, signal: AbortSignal.timeout(2500)});
+      if (disposed || result.error || !Array.isArray(result.data)) return;
+      for (const info of result.data) {
+        if (typeof info.id === "string" && info.id && info.id.length <= 256 && info.directory === ctx.directory &&
+            Number.isFinite(info.time?.created) && info.time.created >= activatedAt && !active.has(info.id)) background(heartbeat(info.id));
+      }
+    } finally { discovering = false; }
+  };
   const actions = new ManagedActions(control, client, join(cfg.stateDir, "actions"), binding.instanceId);''')
     replace('  const sid = (id: string) => sessionId(ctx.directory, id);',
             '  const sid = (id: string) => `opencode_${hash(binding.instanceId).slice(0, 16)}_${hash(id).slice(0, 24)}`;')
@@ -342,4 +359,10 @@ import { join } from "node:path";''')
         if (receipt.status === "unknown") return "Original remember result is unknown. Do not resubmit; inspect the original receipt.";
         if (receipt.status !== "accepted") return "Remember was rejected; no automatic retry. Inspect the original receipt.";
         return "Remember request accepted. Knowledge processing is not yet confirmed.";''')
+    replace('''  const timer = setInterval(() => { for (const id of active) background(heartbeat(id)); background(pump()); }, 30000);
+  timer.unref();''', '''  const startupDiscovery = setTimeout(() => background(discoverSessions()), 250);
+  startupDiscovery.unref();
+  const timer = setInterval(() => { for (const id of active) background(heartbeat(id)); background(discoverSessions()); background(pump()); }, 30000);
+  timer.unref();''')
+    replace('''      clearInterval(timer);''', '''      disposed = true; clearTimeout(startupDiscovery); clearInterval(timer);''')
     return text

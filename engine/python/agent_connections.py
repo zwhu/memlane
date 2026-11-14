@@ -409,6 +409,13 @@ class Connections:
                                        executable)
             self.adapters[adapter.id] = adapter
 
+        from opencode_connection import OpenCodeConnection
+        settings = configured.get('opencode', {})
+        directory = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'opencode'
+        adapter = OpenCodeConnection(registry, config, settings.get('profile', directory),
+                                     detect_executable('opencode', settings))
+        self.adapters[adapter.id] = adapter
+
     def view(self):
         self.discover()
         known_codex = any(getattr(a, 'kind', 'codex') == 'codex' for a in self.adapters.values())
@@ -423,15 +430,25 @@ class Connections:
                 row = {'instance_id': adapter.id, 'kind': getattr(adapter, 'kind', 'codex'),
                        'status': 'requires_review', 'error_code': error.code}
             rows.append(row)
-        rows.append({'instance_id': 'opencode-discovery', 'kind': 'opencode',
-                     'detected': bool(detect_executable('opencode', self.config.get('agent_hosts', {}).get('opencode', {}))),
-                     'status': 'integration_pending'})
         return {'revision': self.registry.state['revision'], 'connections': rows}
 
     def operation(self, operation_id):
         receipt = self.registry.state.get('connection_operations', {}).get(operation_id)
         if receipt is None:
             return {'recorded': False}
+        if receipt.get('opencode_rejected'):
+            return {'recorded': True, 'status': 'complete', 'outcome': 'rejected',
+                    'result': copy.deepcopy(receipt.get('result')), 'error_code': receipt.get('error_code')}
+        if receipt['status'] != 'complete':
+            for adapter in self.adapters.values():
+                if getattr(adapter, 'kind', None) != 'opencode':
+                    continue
+                try:
+                    result = adapter.original_result(operation_id)
+                except (PolicyError, OSError, ValueError, KeyError):
+                    result = None
+                if result is not None:
+                    return {'recorded': True, 'status': 'complete', 'result': result, 'reconciled': True}
         return {'recorded': True, 'status': receipt['status'],
                 'result': copy.deepcopy(receipt.get('result')),
                 'error_code': receipt.get('error_code')}
@@ -459,14 +476,21 @@ class Connections:
                 r.save()
             try:
                 if action == 'preview':
-                    result = adapter.preview() if isinstance(adapter, NativeConnection) else adapter.view()
+                    result = getattr(adapter, 'preview', adapter.view)()
                 elif action == 'activate':
-                    result = await adapter.activate(r.state['revision'], reviewed_sha)
+                    result = await adapter.activate(r.state['revision'], reviewed_sha, **({'operation_id': operation_id} if getattr(adapter, 'kind', None) == 'opencode' else {}))
                 else:
-                    result = await getattr(adapter, action)(r.state['revision'])
+                    result = await getattr(adapter, action)(r.state['revision'], **({'operation_id': operation_id} if action == 'prepare' and getattr(adapter, 'kind', None) == 'opencode' else {}))
             except PolicyError as error:
                 async with r.mutex:
                     operations[operation_id]['error_code'] = error.code
+                    if getattr(adapter, 'kind', None) == 'opencode' and adapter.safely_rejected(operation_id, action):
+                        try:
+                            row = adapter.view()
+                        except PolicyError:
+                            row = {'instance_id': adapter.id, 'kind': 'opencode', 'status': 'requires_review'}
+                        operations[operation_id].update(opencode_rejected=True,
+                            result={'revision': r.state['revision'], 'connection': row})
                     r.save()
                 raise
             async with r.mutex:

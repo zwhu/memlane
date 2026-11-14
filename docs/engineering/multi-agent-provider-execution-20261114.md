@@ -462,3 +462,11 @@ outbox明确401／403持久化blocked，重启／timer不重发；阻塞项不�
 4项安装测试通过（43.852秒），随后正式CLI构造并复核保留组件：3671文件／55,378,054字节，generation `b6ff5a4ef91da122b559b56f`；[源码与回执](evidence/multi-agent-development-20261114/opencode-immutable-artifact.json)。两个开发反馈分别为固定types归档前缀和loader拼接encode，具体问题各失败1次、限定本地检查已通过；不是原生宿主验收，也不重置其他计数。无真实模型、日常配置写入或服务启停。测试临时目录正常清理，保留一份约55.4MB组件供接线；既有依赖与共享WIP未动。
 
 下一步独立OpenCode电脑级adapter接Connections的prepare／activate／review并核对重复插件；认证管理处置、实际1.3.5加载与真实编码链继续推进。Ollama、首批外部前置、Native增量及日常收口保持未完成，完整Goal继续active；当前OpenCode仍是开发中不可绑定。
+
+## 开发检查点三十六：OpenCode设置接线及真实空会话
+
+上轮不可变产物为实际进展。本轮新增电脑级OpenCode adapter和JSONC冲突／并发核对，接现有prepare／activate／review、原操作只读回执及Native明确拒绝恢复。组件未配置仍开发中，已固定组件可准备；只改本项目全局loader，保留其他配置／插件和旧代际，不创建项目作为绑定前提。运行示例增加OpenCode及顶层组件引用，原launcher共享WIP未改。
+
+11项管理／发现检查通过（39.388秒），插件9项Python含39项编译Node通过（5.290秒），Go1项通过；[管理回执](evidence/multi-agent-development-20261114/opencode-connection-manager.json)。随后实际1.3.5原生会话前两轮绑定0，MA-OPENCODE-NATIVE-BIND01累计失败2轮；探针和宿主源码／日志支持启动事件投递缺口，唯一根因未知。元数据受限核对补齐原生命周期，第三轮及去探针复验各2个空session绑定2个独立project；最终10.486秒，[实际宿主及历史记录](evidence/multi-agent-development-20261114/opencode-native-handshake.json)。历史计数保留，不宣称QA／trace或知识质量已经通过。
+
+本轮没有模型prompt、日常配置或原库变更。原生主进程已wait确认退出，夹具服务／临时目录关闭；新组件manifest为`e3bab36d3ab2fbca5707c04bade511c5b23e88870bb094a3ea037b437713af53`，原失败基线暂留后续消费者。共享app／launcher／权限／backlog WIP未暂存。下一步真实Cognee与编码→知识→新会话采用、认证待发处置，再续Ollama、Native增量、首批外部前置及日常收口，完整Goal保持active。

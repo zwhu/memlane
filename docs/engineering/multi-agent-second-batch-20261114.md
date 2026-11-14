@@ -20,7 +20,7 @@
 
 ## 当前缺口与资源
 
-固定官方OpenCode的dataset为插件级配置；outbox对明确401／403会清uncertain并由timer再投；captureConversation读取session messages列表。这些均须完成受管薄适配，尚未启用到Cognee或日常宿主。宿主SDK与固定测试SDK兼容、native消息／工具payload、激活边界、权限实时变化是下一步关键未知。
+最初基线中，官方OpenCode使用插件级dataset、拒绝后自动重投、整段session消息读取；后续受管覆盖已处理这些问题。当前以检查点三十六为准：管理侧准备／启用与原生空会话绑定通过，真实Cognee权限、编码QA／trace、知识及采用、认证待发材料处置仍待验收。以下早期检查点保留当时事实，不覆盖后续源码与证据。
 
 ## 受管HTTP／outbox底层适配
 
@@ -109,3 +109,17 @@ outbox已确认seen项同时保存原target元数据，`completedTarget`只在�
 本地反馈分别记录：MA-OPENCODE-ARTIFACT-PREFIX01失败1次（@types/node固定包根为node v20.19），MA-OPENCODE-LOADER01失败1次（Python拼接只对末段encode）；两项均在当前构造／入口检查通过，不与旧问题或两个断言合并计数。不是实际OpenCode宿主验收。
 
 尚未写入本机OpenCode配置，也未把Connections的开发中卡片改为可绑定。下一步新增电脑级OpenCode连接adapter，接准备／启用／原操作核对，处理全局重复插件与配置冲突；再接认证补交／丢弃和真实1.3.5宿主。Node加载夹具不替代native加载、真实ACL或知识质量，原库及其他主体／会话保持。
+
+## 设置接线与真实原生空会话（检查点三十六）
+
+新增`OpenCodeConnection`接现有Connections API及Native多选卡片。默认按XDG_CONFIG_HOME／opencode发现，明确profile优先；未提供固定组件继续integration_pending。开发配置在顶层提供`opencode_plugin_dir`及`opencode_manifest_sha256`，不扩展原`project_control`字段白名单、不触及其他会话的launcher改动。prepare创建独立主体和私有绑定，不创建项目／dataset或改宿主；activate只原子替换本项目全局loader，保存／核对原操作ID和配置摘要，正常重载后按真实新绑定显示回执。
+
+JSON／JSONC只读解析支持注释与尾逗号，拒绝重复键；检查已知Cognee配置入口和全局plugin目录，不覆盖外来／空loader或symlink。配置并发编辑或key／组件变化阻止启用；新代际保留旧binding。崩溃后GET原操作只核对原文件／代际，不重装或重建主体；明确preflight拒绝能作为原终态返回，Native清除待核对项但不自动重试，允许用户明确重新准备OpenCode候选。
+
+管理侧／发现11项检查通过（39.388秒），插件9项Python含39项编译Node通过（5.290秒），Go原拒绝回执1项通过（0.983秒）；[管理证据](evidence/multi-agent-development-20261114/opencode-connection-manager.json)。管理HTTP实际执行，official身份与ACL为夹具；Native增量实窗仍待验。
+
+**MA-OPENCODE-NATIVE-BIND01累计失败2轮，限定空会话绑定目标现已通过。** 前两次本机1.3.5创建两个空session但绑定0；第二轮探针init在两目录均执行，宿主有session.created发布而探针无event、控制请求0。保留版本／私有日志回执；原生订阅启动时序缺口有源码及日志支持，唯一内部根因未证明。未将其改名为准备问题或合并进旧失败项。
+
+修复复用官方`session.list`核对元数据，限当前directory、created不早于本次启用，不取正文、不回放旧会话、不新增内容采集器；启动一次核对，之后沿30秒生命周期周期核对，dispose撤销启动定时器。注册／解析仍走原独立主体和policy。第三轮使用新组件生成`cd03a4c96cfb9450b73851e6`、manifest `e3bab36d3ab2fbca5707c04bade511c5b23e88870bb094a3ea037b437713af53`，两个新目录各得独立project绑定及生命周期登记；去掉探针后最终复验仍通过（10.486秒）。[真实宿主证据](evidence/multi-agent-development-20261114/opencode-native-handshake.json)。所有轮次均无模型prompt；主进程正常terminate并等待退出，夹具服务关闭，临时profile／registry清理。
+
+当前只证明实际1.3.5加载、空会话原目标与控制协议；official内容／ACL端点仍为夹具，消息QA／trace、处理、真实知识／新会话采用没有通过声明。下一步接真实官方服务及编码链、认证管理补交／丢弃，再做Native窗口与日常收口；Ollama和首批外部前置仍保留。新组件供后续消费，旧约55MB组件暂作失败基线；原生SDK缓存及旧运行依赖继续保护，未改日常配置或原库。

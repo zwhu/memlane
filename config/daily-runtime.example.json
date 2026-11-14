@@ -22,8 +22,11 @@
     "pi": { "profile": "/absolute/existing/pi-agent-profile", "executable": "/absolute/installed-pi-binary" },
     "traex": { "profile": "/absolute/existing/traex-profile", "executable": "/absolute/installed-traecli-binary" },
     "claude_code": { "profile": "/absolute/existing/claude-profile", "executable": "/absolute/installed-claude-binary" },
-    "cursor": { "profile": "/absolute/existing/cursor-profile", "executable": "/absolute/installed-cursor-binary" }
+    "cursor": { "profile": "/absolute/existing/cursor-profile", "executable": "/absolute/installed-cursor-binary" },
+    "opencode": { "profile": "/absolute/existing/xdg-config/opencode", "executable": "/absolute/installed-opencode-binary" }
   },
+  "opencode_plugin_dir": "/absolute/fixed/managed-opencode-artifact",
+  "opencode_manifest_sha256": "replace-with-manifest-sha256-from-build-output",
   "project_control": {
     "url": "http://127.0.0.1:18777",
     "registry_file": "/absolute/private/project-registry.json",

@@ -109,10 +109,12 @@ Provider协议值为 `openai`、`anthropic`、`gemini`、`custom`；DeepSeek等�
 
 ### OpenCode 第二批插件组件（dev）
 
-当前可离线构造独立插件组件，不是完整运行包；连接adapter尚未启用。使用固定上游lock预先填充的npm缓存，不读取已安装node_modules作为可信源码，不在宿主启动时联网安装。每次输出必须是新目录，保留CLI返回的manifest SHA用于prepare，不能仅信产物自报摘要。
+当前可离线构造独立插件组件，并接现有Connections的准备／启用／核对；不是完整运行包，日常配置尚未切换。使用固定上游lock预先填充的npm缓存，不读取已安装node_modules作为可信源码，不在宿主启动时联网安装。每次输出必须是新目录，保留CLI返回的manifest SHA用于prepare，不能仅信产物自报摘要。
 
 ```sh
 python3 scripts/task.py -- .local/cognee-python/bin/python scripts/build_opencode_plugin.py --output /绝对路径/新组件目录 --npm-cache /绝对路径/固定npm缓存
 ```
 
 安装检查入口：`python3 scripts/task.py -- env PYTHONPATH=engine/python MEMLANE_OPENCODE_TEST_NPM_CACHE=/绝对路径/固定npm缓存 .local/cognee-python/bin/python -m unittest test_opencode_installation`。缺缓存明确skip，不算完整通过。构造临时依赖自动清理，已保留组件的消费者与实际范围见[第二批账本](engineering/multi-agent-second-batch-20261114.md)。
+
+OpenCode组件配置使用运行JSON的**顶层**`opencode_plugin_dir`与`opencode_manifest_sha256`（后者必须替换为CLI的实际输出），不放入`project_control`。`agent_hosts.opencode.profile`是电脑级配置目录，默认`$XDG_CONFIG_HOME/opencode`或`~/.config/opencode`；`executable`明确时不fallback。见[配置示例](../config/daily-runtime.example.json)。组件缺失保留开发中；按管理身份prepare／activate后，由宿主重载和新会话事实确认，不能据prepare成功宣称知识生成。当前真实1.3.5空会话协议通过，真实内容链及Native增量边界见[第二批账本](engineering/multi-agent-second-batch-20261114.md)。

@@ -1,0 +1,127 @@
+{
+  "scope": "installed OpenCode 1.3.5 loads the managed global entry and binds two empty Git workspaces; actual project_control HTTP, synthetic official enrollment/ACL/lifecycle endpoint; no prompt or real Cognee data",
+  "issue": {
+    "id": "MA-OPENCODE-NATIVE-BIND01",
+    "historical_failed_rounds": 2,
+    "original_goal": "two fresh empty native sessions yield two original project bindings and lifecycle registrations",
+    "first_failed_round": {
+      "seconds": 38.559,
+      "sessions_created": 2,
+      "bindings": 0,
+      "stdout": "native health/startup succeeded; no binding",
+      "private_log_export_missing": true
+    },
+    "observed": "global plugin load logs and metadata probe initialization present; session.created publishes but probe receives none and control receives no requests",
+    "cause_status": "bootstrap event-delivery gap supported by native embedded code; unique internal root cause not proven",
+    "fix": "official session.list metadata reconciliation limited to exact current directory and timestamps since plugin activation; no message bodies or old-session replay",
+    "resolution": "original two-empty-project binding target passes after patch and again without probe; QA/trace/coding/knowledge are separate pending gates"
+  },
+  "rounds": [
+    {
+      "private_evidence": "native-bind-round2",
+      "result": "failed",
+      "seconds": 21.722,
+      "probe_present": true,
+      "control_requests": [],
+      "registered": 0,
+      "bindings": 0,
+      "native_returncode": -15,
+      "model_prompts_sent": 0
+    },
+    {
+      "private_evidence": "native-bind-round3",
+      "result": "passed",
+      "seconds": 17.328,
+      "probe_present": true,
+      "control_requests": [
+        {
+          "method": "POST",
+          "path": "/v1/project/resolve",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/v1/project/policy",
+          "status": 200
+        },
+        {
+          "method": "POST",
+          "path": "/v1/project/resolve",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/v1/project/policy",
+          "status": 200
+        }
+      ],
+      "registered": 2,
+      "bindings": 2,
+      "native_returncode": -15,
+      "model_prompts_sent": 0
+    },
+    {
+      "private_evidence": "native-bind-final",
+      "result": "passed",
+      "seconds": 10.486,
+      "probe_present": false,
+      "control_requests": [
+        {
+          "method": "POST",
+          "path": "/v1/project/resolve",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/v1/project/policy",
+          "status": 200
+        },
+        {
+          "method": "POST",
+          "path": "/v1/project/resolve",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/v1/project/policy",
+          "status": 200
+        }
+      ],
+      "registered": 2,
+      "bindings": 2,
+      "native_returncode": -15,
+      "model_prompts_sent": 0
+    }
+  ],
+  "artifact": {
+    "generation": "cd03a4c96cfb9450b73851e6",
+    "manifest_sha256": "e3bab36d3ab2fbca5707c04bade511c5b23e88870bb094a3ea037b437713af53",
+    "files": 3671,
+    "relative_path": ".local/multi-agent-opencode-20261114/artifacts/native-metadata-v1"
+  },
+  "cleanup": {
+    "native_main_process_waited": true,
+    "fixture_servers_closed": true,
+    "temporary_profiles_and_registries_cleaned": true,
+    "daily_configuration_changed": false,
+    "retained_artifacts": "new component for actual coding chain; old component temporarily retained as failure baseline; original native SDK cache retained"
+  },
+  "source_sha256": {
+    "engine/python/opencode_connection.py": "d2d99817a50cda1177ed4d45ed23d077c4b80634784bfc3b3f5ca7859ac445b1",
+    "engine/python/test_opencode_connection.py": "2d79bb935428f2758d1371e20129fdffb8dd6ded120fe90e1f4e37e72b4c3bb5",
+    "engine/python/agent_connections.py": "31a3c4d4b9df381f90a7b95e56213c2d6635546cdfefad8bcc117abbf6613dca",
+    "engine/python/test_agent_discovery.py": "b29425405aee4f56d40aacfcea54dc7c15903cece960127f72f92c0f926044c8",
+    "engine/python/opencode_plugin_patch.py": "8ce4c5dac81ac288fd47e123394088e295278506451916ee06e09901ed19eeb2",
+    "engine/python/test_opencode_control.py": "297cbf0a9178500a77a101eee2558abe2f2d7f0e3e9ff6766cc82680c7058c88",
+    "engine/agents/opencode/managed-control.test.mjs": "a3a31c45109cf0b6f3cb8b23d98321de328c8e1252ac05d59da0af8f42036a0b",
+    "internal/simpledesktop/integrations.go": "7411d8f538b36b8464ba1d6fa8629396db3a58975d5c9d5ca52ff93ef676a727",
+    "internal/simpledesktop/connection_operations.go": "df8a69014f09d9983cb49e5d87f03c16cfd4251520af3391408d9df3b24c0f12",
+    "internal/simpledesktop/opencode_connection_ui_test.go": "03686e77d290e912d4344cb5d50c378a9fa37750780e82d78338ac048be00ad8",
+    "config/daily-runtime.example.json": "1ee35367d170cb7bf9f3aa90822583c8be94268297ce4deec50ad9ca64f1e4c5"
+  },
+  "not_yet_proven": [
+    "actual official service permissions and data",
+    "native coding QA/trace, improve and fresh no-tool adoption",
+    "actual Native settings view and daily cutover"
+  ]
+}

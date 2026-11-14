@@ -202,7 +202,7 @@ func connectionActionAllowed(row AgentConnection, action string) bool {
 		return false
 	}
 	if action == "prepare" {
-		return row.Status == "" || row.Status == "not_connected"
+		return row.Status == "" || row.Status == "not_connected" || (row.Kind == "opencode" && row.Status == "prepared")
 	}
 	return action == "activate" && row.Status == "prepared" && row.Preview != nil && row.Preview.ProposedSHA != ""
 }

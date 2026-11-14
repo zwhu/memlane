@@ -54,6 +54,7 @@ class LocalDiscoveryTests(unittest.TestCase):
                     row = next(r for r in connections.view()['connections'] if r['kind'] == 'opencode')
                     self.assertTrue(row['detected'])
                     self.assertEqual(row['status'], 'integration_pending')
-                    self.assertNotIn(row['instance_id'], connections.adapters)
+                    self.assertIn(row['instance_id'], connections.adapters)
+                    self.assertIsNone(connections.adapters[row['instance_id']].artifact)
             finally:
                 registry.close()

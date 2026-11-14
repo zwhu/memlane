@@ -21,6 +21,7 @@ func (a *App) reviewConnectionOperation(o generationUIOperation) {
 		var receipt struct {
 			Recorded bool   `json:"recorded"`
 			Status   string `json:"status"`
+			Outcome  string `json:"outcome"`
 			Result   struct {
 				Connection AgentConnection `json:"connection"`
 			} `json:"result"`
@@ -38,6 +39,9 @@ func (a *App) reviewConnectionOperation(o generationUIOperation) {
 			}
 			if a.finishGenerationOperation(o.Operation) {
 				s.Message = "Agent 原操作回执已核对；未重新安装"
+				if receipt.Outcome == "rejected" {
+					s.Message = "原接入操作已确认拒绝，未重新安装；处理卡片错误后可重新准备或启用。"
+				}
 				a.RefreshIntegrations()
 			}
 		})

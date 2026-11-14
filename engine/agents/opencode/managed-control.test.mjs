@@ -616,3 +616,24 @@ test("two action instances claim the same explicit fact once even with different
     assert.equal(s.remembers.length, 1);
   } finally { await s.close(); }
 });
+
+
+test("startup metadata discovery binds only new sessions in this exact directory without reading messages", async () => {
+  const { CogneeOpenCodePlugin } = await import(new URL("plugin.js", compiled));
+  const s = await officialServer({credential: "c".repeat(40)}), cfg = options("startup-discovery");
+  const apiKeyFile = join(root, "discovery-key"); writeFileSync(apiKeyFile, "c".repeat(40), {mode: 0o600});
+  let rows = [], lists = 0;
+  const hooks = await CogneeOpenCodePlugin({directory: join(root, "repo-a"), client: {session: {
+    list: async () => { lists++; return {data: rows}; },
+    messages: async () => assert.fail("metadata discovery read history"), message: async () => assert.fail("metadata discovery read body"),
+  }}}, {memlane: cfg, cognee: {baseUrl: s.url, apiKeyFile, stateDir: join(root, "startup-discovery-outbox"), autoRecall: false, improveOnSessionEnd: false}});
+  rows = [{id: "new-metadata-native", directory: join(root, "repo-a"), time: {created: Date.now()}},
+    {id: "old-metadata-native", directory: join(root, "repo-a"), time: {created: 1}},
+    {id: "wrong-directory-native", directory: join(root, "repo-b"), time: {created: Date.now()}}];
+  try {
+    for (let n = 0; n < 30 && s.lifecycles.length === 0; n++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(lists, 1); assert.equal(s.lifecycles.length, 1);
+    assert.equal(readdirSync(cfg.stateDir).filter(name => name.endsWith(".json")).length, 1);
+    assert.equal(s.writes.length, 0); assert.equal(s.recalls.length, 0);
+  } finally { await hooks.dispose(); await s.close(); }
+});
