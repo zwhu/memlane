@@ -75,3 +75,13 @@ strict TypeScript编译后，Node客户端连接实际Python project_control HTT
 实际执行固定SDK1.18.29编译后的派生官方回调，连接Python控制HTTP及loopback官方端点夹具：旧时间消息／禁采恢复／已观察后撤权／重复完成不读正文；新QA读取恰好assistant和parent两条，正确写入原dataset；新trace正常写入并清洗敏感内容，`.env`工具输出不入队。7项Python及28项编译Node通过（3.790秒，无skip），[证据](evidence/multi-agent-development-20261114/opencode-capture-callbacks.json)。宿主SDK调用是夹具，不能证明本机1.3.5兼容。
 
 此函数明确只负责采集覆盖，尚未由正式安装器启用；原插件resolveConfig仍有ambient选项、recall／lifecycle／improve／显式工具仍须完整策略覆盖，sid／队列namespace及私有安装绑定也需收敛。不能直接把当前组合安装到日常或真实验收环境。下一步完成这些剩余覆盖和独立操作账本，再构造不可变代际及真实宿主验收；旧配置、正文、原主体与待发材料保持。
+
+## 配置隔离与召回撤权（检查点三十三）
+
+`managed_config_recall`覆盖在采集覆盖之后应用。新增`managed-config.ts`只使用明确loopback服务地址与canonical／0600安装key文件，检查私有state目录；不继承Cognee环境地址、key、mode、dataset，不接受cloud／owner登录和额外readScopes。处理会话标记为1时初始化直接返回空hooks，不读取凭据或创建后台采集任务。安装key路径的来源仍待不可变安装绑定固定，当前私有文件校验不替代来源核对。
+
+`ManagedRecall`保留官方client的recall协议，按有效policy的common／project ID查询，不遍历datasets；项目权限和通用只读独立，common不挂项目session。候选片段在系统注入前再次按当前policy过滤，已撤下片段或control未知后丢弃，不因恢复权限自动复现。新prompt明确重查后才能更新。外层上下文标记包含安装ID，system／compacting先移除本安装旧块再加入有效块，保留其他插件正文。异步policy结果若属于旧片段，不得覆盖新turn或clear后的状态。
+
+8项Python／32项编译Node检查通过（4.145秒，无skip），[证据](evidence/multi-agent-development-20261114/opencode-managed-recall.json)。实际控制HTTP和固定SDK派生hook执行，官方recall与宿主消息为夹具；验证环境覆盖、私有／symlink凭据拒绝、精确数据组、撤权／恢复／control不可达、其他插件保留、压缩与处理会话隔离，以及迟到回调。未启用真实宿主、模型或日常服务。
+
+剩余lifecycle／improve／显式remember仍有旧数据组和操作语义，sid／队列namespace与安装来源也未收敛，当前组合仍不可直接安装启用。下一步完成这些策略覆盖与持久操作回执，再构造不可变代际和受认证补交入口；之后做本机1.3.5兼容、真实采集／知识／新会话采用。第二批Ollama与首批外部前置均保持原范围。

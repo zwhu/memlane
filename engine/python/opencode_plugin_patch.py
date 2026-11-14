@@ -235,3 +235,56 @@ import { CaptureWindow } from "./managed-capture-window.js";''')
             '''        window.clear(native);
         active.delete(native); prompts.delete(native); recalls.delete(native);''')
     return text
+
+
+def managed_config_recall(text):
+    """Apply after capture overlay; remaining lifecycle/tool overlays still required."""
+    def replace(old, new):
+        nonlocal text
+        if text.count(old) != 1:
+            raise ValueError('fixed OpenCode config/recall overlay anchor mismatch')
+        text = text.replace(old, new, 1)
+
+    replace('import { CaptureWindow } from "./managed-capture-window.js";', '''import { CaptureWindow } from "./managed-capture-window.js";
+import { resolveManagedConfig } from "./managed-config.js";
+import { ManagedRecall } from "./managed-recall.js";''')
+    first = text.index('const bool = ')
+    last = text.index('export const CogneeOpenCodePlugin: Plugin', first)
+    if 'process.env.COGNEE_API_KEY' not in text[first:last]:
+        raise ValueError('fixed OpenCode config overlay input mismatch')
+    text = text[:first] + 'export const resolveConfig = resolveManagedConfig;\n\n' + text[last:]
+    replace('  const cfg = resolveConfig((options?.cognee ?? options ?? {}) as CogneePluginConfig);', '''  if (process.env.MEMLANE_PROCESSING_SESSION === "1") return {};
+  const cfg = resolveConfig(options?.cognee as CogneePluginConfig);''')
+    replace('  const window = new CaptureWindow();', '''  const window = new CaptureWindow();
+  const recallClient = new ManagedRecall(control, client, cfg);
+  const memoryMarker = `<memlane_opencode_memory instance="${hash(binding.instanceId)}">`;
+  const removeOwnedMemory = (values: string[]) => { for (let i = values.length - 1; i >= 0; i--) if (values[i].startsWith(memoryMarker)) values.splice(i, 1); };
+  const wrapMemory = (value: string) => memoryMarker + value + "</memlane_opencode_memory>";''')
+    first = text.index('  async function recall(native: string, query: string, explicit = false): Promise<string> {')
+    last = text.index('  async function captureConversation', first)
+    if 'client.listDatasets()' not in text[first:last]:
+        raise ValueError('fixed OpenCode recall overlay input mismatch')
+    text = text[:first] + '''  async function recall(native: string, query: string, explicit = false): Promise<string> {
+    if ((!cfg.autoRecall && !explicit) || !query.trim()) return "";
+    await recallClient.query(native, query, sid(native));
+    return recallClient.context(native);
+  }
+''' + text[last:]
+    replace('''      if (!input.sessionID) return;
+      const memory = recalls.get(input.sessionID);
+      if (memory?.context && memory.id === prompts.get(input.sessionID)?.id && !output.system.includes(memory.context)) output.system.push(memory.context);''', '''      removeOwnedMemory(output.system);
+      if (!input.sessionID) return;
+      const memory = recalls.get(input.sessionID);
+      if (memory?.id === prompts.get(input.sessionID)?.id) {
+        const context = await recallClient.context(input.sessionID);
+        if (context) output.system.push(wrapMemory(context));
+      }''')
+    replace('''      const prompt = prompts.get(input.sessionID);
+      const context = prompt ? await recall(input.sessionID, prompt.text) : "";
+      if (context && !output.context.includes(context)) output.context.push(context);''', '''      removeOwnedMemory(output.context);
+      const prompt = prompts.get(input.sessionID);
+      const context = prompt ? await recall(input.sessionID, prompt.text) : "";
+      if (context) output.context.push(wrapMemory(context));''')
+    replace('''        window.clear(native);''', '''        recallClient.clear(native);
+        window.clear(native);''')
+    return text

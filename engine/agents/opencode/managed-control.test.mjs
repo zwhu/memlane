@@ -208,11 +208,11 @@ const compiled = new URL("./", pathToFileURL(process.env.MEMLANE_OPENCODE_TEST_C
 const { ManagedDelivery } = await import(new URL("managed-delivery.js", compiled));
 const { Outbox } = await import(new URL("runtime.js", compiled));
 const { CogneeHttpClient } = await import(new URL("client.js", compiled));
-async function officialServer({loseFirstResponse = false} = {}) {
-  const writes = [];
+async function officialServer({loseFirstResponse = false, credential = "synthetic-child-key"} = {}) {
+  const writes = [], recalls = [];
   let lookups = 0;
   const server = await listener(async (req, res) => {
-    assert.equal(req.headers["x-api-key"], "synthetic-child-key");
+    assert.equal(req.headers["x-api-key"], credential);
     assert.equal(req.headers.authorization, undefined);
     res.setHeader("Content-Type", "application/json");
     if (req.method === "POST" && req.url === "/api/v1/remember/entry") {
@@ -225,11 +225,16 @@ async function officialServer({loseFirstResponse = false} = {}) {
     if (req.method === "GET" && req.url.startsWith("/api/v1/sessions/")) {
       lookups++; res.end(JSON.stringify({entries: writes.map(item => item.entry)})); return;
     }
+    if (req.method === "POST" && req.url === "/api/v1/recall") {
+      const chunks = []; for await (const chunk of req) chunks.push(chunk);
+      const body = JSON.parse(Buffer.concat(chunks).toString()); recalls.push(body);
+      res.end(JSON.stringify([{id: "hit", text: "knowledge " + body.dataset_ids[0], score: 1}])); return;
+    }
     if (req.method === "POST" && /\/agents\/(?:un)?register$/.test(req.url)) { res.end('{"status":"ok"}'); return; }
     assert.fail("unexpected official route " + req.url);
   });
-  return {...server, writes, lookups: () => lookups,
-    client: new CogneeHttpClient(server.url, "synthetic-child-key", undefined, undefined, 500)};
+  return {...server, writes, recalls, lookups: () => lookups,
+    client: new CogneeHttpClient(server.url, credential, undefined, undefined, 500)};
 }
 
 test("delivery gates original-target official writes and keeps denied items blocked", async () => {
@@ -308,7 +313,9 @@ test("unconfirmed original target never manufactures an uncertain write or calls
 
 test("official capture callbacks read only observed post-activation messages and never backfill disabled turns", async () => {
   const { CogneeOpenCodePlugin } = await import(new URL("plugin.js", compiled));
-  const s = await officialServer();
+  const s = await officialServer({credential: "c".repeat(40)});
+  const apiKeyFile = join(root, "callback-official-key");
+  writeFileSync(apiKeyFile, "c".repeat(40), {mode: 0o600});
   const reads = [];
   const native = "callback-native";
   const cfg = options("host-capture");
@@ -317,7 +324,7 @@ test("official capture callbacks read only observed post-activation messages and
   const hooks = await CogneeOpenCodePlugin({directory: join(root, "repo-a"), client: {session: {
     messages: async () => { wholeSessionReads++; throw new Error("history reads forbidden"); },
     message: async ({path}) => { reads.push(path.messageID); return {data: messages.get(path.messageID)}; },
-  }}}, {memlane: cfg, cognee: {baseUrl: s.url, apiKey: "synthetic-child-key", stateDir: join(root, "host-capture-outbox"),
+  }}}, {memlane: cfg, cognee: {baseUrl: s.url, apiKeyFile, stateDir: join(root, "host-capture-outbox"),
     autoRecall: false, improveOnSessionEnd: false}});
   const prompt = async (id, created = Date.now()) => {
     messages.set(id, {info: {id, sessionID: native, role: "user", time: {created}}, parts: [{type: "text", text: "Question " + id}]});
@@ -374,4 +381,112 @@ test("official capture callbacks read only observed post-activation messages and
     if (p) await access(p.project_id, {access: "maintain", capture: true, auto_process: true});
     await hooks.dispose(); await s.close();
   }
+});
+
+
+const { resolveManagedConfig } = await import(new URL("managed-config.js", compiled));
+const { ManagedRecall } = await import(new URL("managed-recall.js", compiled));
+test("managed config reads only its private child key and ignores ambient owner/cloud options", async () => {
+  const apiKeyFile = join(root, "managed-config-key"); writeFileSync(apiKeyFile, "c".repeat(40), {mode: 0o600});
+  const config = {baseUrl: "http://127.0.0.1:19876", apiKeyFile, stateDir: join(root, "managed-config-state")};
+  const overrides = {COGNEE_API_KEY: "ambient-owner", COGNEE_SERVICE_URL: "https://wrong.invalid", COGNEE_MODE: "cloud", COGNEE_CAPTURE: "false", COGNEE_PLUGIN_DATASET: "wrong-dataset"};
+  const before = Object.fromEntries(Object.keys(overrides).map(key => [key, process.env[key]]));
+  try {
+    Object.assign(process.env, overrides);
+    const actual = resolveManagedConfig({...config, apiKey: "caller-owner", username: "owner", password: "secret", readScopes: {extra: "other-dataset"}});
+    assert.equal(actual.apiKey, "c".repeat(40)); assert.equal(actual.baseUrl, config.baseUrl);
+    assert.equal(actual.mode, "local"); assert.equal(actual.autoCapture, true);
+    assert.equal(actual.username, undefined); assert.equal(actual.password, undefined);
+    assert.deepEqual(actual.readScopes, {});
+    for (const bad of [{...config, mode: "cloud"}, {...config, baseUrl: "https://remote.invalid"}, {...config, apiKeyFile: undefined}, {...config, stateDir: "relative"}]) assert.throws(() => resolveManagedConfig(bad));
+    const alias = join(root, "managed-config-alias"); symlinkSync(apiKeyFile, alias);
+    assert.throws(() => resolveManagedConfig({...config, apiKeyFile: alias}));
+    chmodSync(apiKeyFile, 0o644); assert.throws(() => resolveManagedConfig(config));
+    chmodSync(apiKeyFile, 0o600);
+  } finally { for (const [key, value] of Object.entries(before)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
+});
+
+test("managed recall targets live dataset IDs and permanently drops withdrawn fragments", async () => {
+  let unavailable = false;
+  const proxy = await listener(async (req, res) => {
+    if (unavailable) { res.writeHead(503); res.end(); return; }
+    const response = await forward(req); res.writeHead(response.status, {"Content-Type": "application/json"}); res.end(await response.text());
+  });
+  const c = new ManagedProjectControl(options("recall", {origin: proxy.url}));
+  const native = "recall-native", p = await c.current(native), s = await officialServer();
+  const recall = new ManagedRecall(c, s.client, {maxResults: 3, minScore: 0.1, recallTimeoutMs: 1000, searchType: "GRAPH_COMPLETION"});
+  try {
+    await recall.query(native, "query", "official-recall-session");
+    let context = await recall.context(native);
+    assert.ok(context.includes(p.dataset_id)); assert.ok(context.includes(p.common.dataset_id));
+    assert.equal(s.recalls.length, 2);
+    assert.deepEqual(s.recalls.map(call => call.dataset_ids[0]), [p.common.dataset_id, p.dataset_id]);
+    assert.equal(s.recalls[0].session_id, undefined); assert.equal(s.recalls[1].session_id, "official-recall-session");
+    await access(p.project_id, {access: "none"});
+    context = await recall.context(native);
+    assert.ok(!context.includes(p.dataset_id)); assert.ok(context.includes(p.common.dataset_id));
+    await access(p.project_id, {access: "maintain", capture: true, auto_process: true});
+    assert.ok(!(await recall.context(native)).includes(p.dataset_id), "permission restoration resurrected a revoked fragment");
+    await recall.query(native, "fresh query", "official-recall-session");
+    assert.ok((await recall.context(native)).includes(p.dataset_id));
+    unavailable = true; assert.equal(await recall.context(native), "");
+    unavailable = false; assert.equal(await recall.context(native), "", "outage fallback resurrected cached body");
+    assert.equal(s.requests.filter(req => req.path.endsWith("/datasets")).length, 0);
+  } finally { unavailable = false; await access(p.project_id, {access: "maintain", capture: true, auto_process: true}); await proxy.close(); await s.close(); }
+});
+
+test("official system and compacting callbacks remove only owned stale context and isolate processing sessions", async () => {
+  const { CogneeOpenCodePlugin } = await import(new URL("plugin.js", compiled));
+  const s = await officialServer({credential: "c".repeat(40)});
+  const apiKeyFile = join(root, "injection-official-key"); writeFileSync(apiKeyFile, "c".repeat(40), {mode: 0o600});
+  const cfg = options("injection"), native = "injection-native";
+  const hooks = await CogneeOpenCodePlugin({directory: join(root, "repo-a"), client: {}}, {memlane: cfg,
+    cognee: {baseUrl: s.url, apiKeyFile, stateDir: join(root, "injection-outbox"), autoCapture: false, improveOnSessionEnd: false}});
+  const p = await new ManagedProjectControl(cfg).current(native);
+  const system = {system: ["OTHER_PLUGIN_CONTEXT"]};
+  try {
+    const prompt = id => hooks["chat.message"]({sessionID: native}, {message: {id, time: {created: Date.now()}}, parts: [{type: "text", text: "coding question"}]});
+    await prompt("inject-one");
+    await hooks["experimental.chat.system.transform"]({sessionID: native}, system);
+    assert.equal(system.system.length, 2); assert.ok(system.system[1].includes(p.dataset_id));
+    await access(p.project_id, {access: "none"});
+    await hooks["experimental.chat.system.transform"]({sessionID: native}, system);
+    assert.equal(system.system[0], "OTHER_PLUGIN_CONTEXT"); assert.equal(system.system.length, 2);
+    assert.ok(!system.system[1].includes(p.dataset_id)); assert.ok(system.system[1].includes(p.common.dataset_id));
+    await hooks["experimental.chat.system.transform"]({}, system);
+    assert.deepEqual(system.system, ["OTHER_PLUGIN_CONTEXT"]);
+    await access(p.project_id, {access: "maintain", capture: true, auto_process: true});
+    await prompt("inject-two");
+    const compact = {context: ["OTHER_COMPACTION_CONTEXT"]};
+    await hooks["experimental.session.compacting"]({sessionID: native}, compact);
+    assert.equal(compact.context[0], "OTHER_COMPACTION_CONTEXT"); assert.ok(compact.context[1].includes(p.dataset_id));
+    const old = process.env.MEMLANE_PROCESSING_SESSION;
+    try { process.env.MEMLANE_PROCESSING_SESSION = "1"; assert.deepEqual(await CogneeOpenCodePlugin({}, {}), {}); }
+    finally { if (old === undefined) delete process.env.MEMLANE_PROCESSING_SESSION; else process.env.MEMLANE_PROCESSING_SESSION = old; }
+  } finally { await access(p.project_id, {access: "maintain", capture: true, auto_process: true}); await hooks.dispose(); await s.close(); }
+});
+
+
+test("late context checks cannot resurrect a previous turn or overwrite a newer recall", async () => {
+  const c = new ManagedProjectControl(options("recall-race"));
+  const p = await c.current("race-native");
+  let block = false, release, started;
+  const controlPort = {current: async () => { if (block) { started(); await new Promise(resolve => { release = resolve; }); } return p; }};
+  const clientPort = {recall: async ({queryText}) => [{id: "race", text: queryText, score: 1}]};
+  const recall = new ManagedRecall(controlPort, clientPort, {maxResults: 3, minScore: 0.1, recallTimeoutMs: 1000, searchType: "GRAPH_COMPLETION"});
+  await recall.query("race-native", "PREVIOUS_TURN", "session");
+  block = true;
+  const observed = new Promise(resolve => { started = resolve; });
+  const oldContext = recall.context("race-native"); await observed;
+  block = false;
+  await recall.query("race-native", "CURRENT_TURN", "session");
+  release();
+  assert.equal(await oldContext, "");
+  assert.ok((await recall.context("race-native")).includes("CURRENT_TURN"));
+  assert.ok(!(await recall.context("race-native")).includes("PREVIOUS_TURN"));
+  block = true;
+  const clearing = new Promise(resolve => { started = resolve; });
+  const stale = recall.context("race-native"); await clearing;
+  recall.clear("race-native"); block = false; release();
+  assert.equal(await stale, ""); assert.equal(await recall.context("race-native"), "");
 });

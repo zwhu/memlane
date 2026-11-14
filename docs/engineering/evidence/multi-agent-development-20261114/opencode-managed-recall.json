@@ -1,0 +1,42 @@
+{
+  "scope": "compiled fixed official configuration/recall overlays with actual project_control HTTP; official recall responses and SDK callbacks are synthetic fixtures, not real OpenCode or knowledge-quality acceptance",
+  "validation": {
+    "python": 8,
+    "node": 32,
+    "http": 6,
+    "outbox": 9,
+    "control_delivery_callbacks": 17,
+    "seconds": 4.145,
+    "skips": 0
+  },
+  "proven": [
+    "official key read from canonical private file; no direct or ambient key fallback",
+    "only explicit loopback official service URL accepted; cloud/owner/readScopes overrides ignored or rejected",
+    "private state directory checked",
+    "recall uses current project/common IDs without listing datasets",
+    "common queries omit project session linkage",
+    "query results filtered again by live policy before injection",
+    "withdrawn or unconfirmed fragments removed and not resurrected on permission restoration",
+    "system and compaction callbacks strip only installation-marked blocks",
+    "late policy checks cannot overwrite newer query or clear state",
+    "processing session marker skips all plugin initialization",
+    "existing capture callback and HTTP/outbox contracts remain passing"
+  ],
+  "not_yet_proven": [
+    "immutable provenance of installation config and key paths",
+    "lifecycle/processing/explicit-tool policy and operation journal",
+    "stable session and queue installation namespace",
+    "actual installed OpenCode SDK compatibility",
+    "real official recall contents or coding/knowledge/adoption"
+  ],
+  "no_native_host_or_models_executed": true,
+  "no_daily_changes_or_service_restart": true,
+  "source_sha256": {
+    "engine/agents/opencode/managed-config.ts": "75559238c76bbb4190c0f075218925741eeec5e1afa49bb523715a306b872fce",
+    "engine/agents/opencode/managed-recall.ts": "794053824e0e49748976298ad2709d2f928e9b5ade79cb63bcf00d866ee3037c",
+    "engine/python/opencode_plugin_patch.py": "fc88dbb371318e6e5e75e2fb39a45e78788fa24b64ef931d31e0c8c72d73009e",
+    "engine/python/test_opencode_plugin_patch.py": "fa994eeedbfffc9294982d96008845eeadf32a5eb5d09e8e4dcd0b1c403a0121",
+    "engine/python/test_opencode_control.py": "4ac8162a1fbb44e8dd9e228028a6d5e4ebf140bca81ef42de408b282e9c65f8f",
+    "engine/agents/opencode/managed-control.test.mjs": "ea7f995c0ce4f2edda18492913623cc92351baebddc006575b9083e37b868fb6"
+  }
+}

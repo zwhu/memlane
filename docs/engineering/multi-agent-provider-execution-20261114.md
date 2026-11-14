@@ -438,3 +438,11 @@ outbox明确401／403持久化blocked，重启／timer不重发；阻塞项不�
 7项Python／28项编译Node检查通过（3.790秒，无skip），[源码及回执](evidence/multi-agent-development-20261114/opencode-capture-callbacks.json)。实际执行派生官方回调及控制HTTP，宿主消息和官方内容／ACL仍为夹具；未调用整段消息列表、原生宿主、远端模型或重启服务。本轮无验收失败轮次。其他会话仍在修改原插件／launcher／Native等共享文件，本次不包含这些修改。
 
 当前采集覆盖未被安装启用；ambient配置、召回撤权、lifecycle／improve、显式工具、稳定namespace和不可变代际仍需完成，不能据当前检查直接安装或宣布OpenCode可用。随后验实际1.3.5宿主及真实编码→知识→采用；Ollama、首批外部前置、Native增量和日常收口继续保留，完整Goal仍active。
+
+## 开发检查点三十三：安装配置隔离与召回实时撤权
+
+上轮官方采集回调为实际进展。本轮新增配置／召回覆盖：安装私有key文件＋明确loopback地址，忽略环境／owner／dataset覆盖；按实时common／project ID召回，注入前核对权限，撤权或control未知撤掉旧片段，恢复不复活。system／压缩只清本安装旧块，处理会话跳过初始化。迟到policy检查不能覆盖新turn或clear。
+
+8项Python及32项编译Node用例通过，4.145秒、无skip；[回执与摘要](evidence/multi-agent-development-20261114/opencode-managed-recall.json)。实际Python控制HTTP与派生官方hook执行，SDK消息和官方内容／ACL仍为夹具，不证明真实知识质量或已安装1.3.5宿主。未运行模型／宿主、修改日常配置或重启服务，无新增验收失败。其他会话共享WIP保持。
+
+仍须lifecycle／处理／显式工具的原目标及操作账本、稳定namespace、不可变安装绑定和管理补交，当前不可启用；之后继续真实OpenCode、Ollama、Native增量、首批外部前置与日常收口，完整Goal保持active。

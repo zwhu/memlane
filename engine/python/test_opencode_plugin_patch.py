@@ -8,7 +8,7 @@ import tarfile
 import tempfile
 import unittest
 
-from opencode_plugin_patch import managed_http_client, managed_outbox, managed_capture_callbacks
+from opencode_plugin_patch import managed_http_client, managed_outbox, managed_capture_callbacks, managed_config_recall
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -30,6 +30,12 @@ def official_sources():
 
 
 class OpenCodePatchGuardTests(unittest.TestCase):
+    def test_config_recall_overlay_rejects_changed_or_already_patched_source(self):
+        text = managed_capture_callbacks(official_sources()['plugin.ts'])
+        for candidate in (text.replace('client.listDatasets()', 'changed_list()'), managed_config_recall(text)):
+            with self.assertRaises(ValueError):
+                managed_config_recall(candidate)
+
     def test_capture_overlay_rejects_changed_or_already_patched_source(self):
         text = official_sources()['plugin.ts']
         for candidate in (text.replace('ctx.client.session.messages(', 'changed_messages('), managed_capture_callbacks(text)):
