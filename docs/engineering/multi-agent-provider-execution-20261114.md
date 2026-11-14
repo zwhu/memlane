@@ -688,3 +688,15 @@ MA-OLLAMA-KNOWLEDGE-COVERAGE01累计失败1轮：触发条件是原固定编码�
 容量证据为自有daemon上下文8192、输出上限8192、单并发，日志最大prompt8099且出现context shift；未取得请求ID关联证据，不能判定这就是遗漏的根因。暂未改上下文、并发、固定引擎或样本，也未重投原improve。进一步认证读取原QA1／trace5，并用未修改的官方_turn_block重建输入：问题460字符、回答946字符，均低于各1200字符上限；实际1424字符块明确包含全部四项语义，排除了本轮问答字符截断丢失正数／负数规则这一假设。原curator／writer中间响应未捕获，仍不能定位具体遗漏阶段。[输入边界](evidence/multi-agent-development-20261114/thinking-improve-final-gate/turn-boundary.json)。后续据此决定有依据的单变量实验，不以重复运行碰运气。完整质量与采用、Native积压及外部账号／Desktop／日常门槛仍未完成，Goal保持active。
 
 资源收尾仅移除已展开、无打开句柄的Go工具链下载tar和typesetting-utils模块下载zip；保留展开目录、执行中的Go build缓存、全部模型／数据／插件与运行资源。两个归档逻辑合计约165 MB，实际可用空间仅增加68,132,864字节，未推断文件系统原因；仓库Go版本命令通过。[精确清理与保留依赖](evidence/multi-agent-development-20261114/thinking-improve-final-gate/resource-cache-trim.json)。本轮无生产源码改动、模型下载、宿主追加测试或release；不重复运行与这些只读证据无关的测试套件。
+
+## 检查点五十九：定位curator遗漏，单变量容量检查
+
+只读打开本轮私有官方cache.db，按原pi主体／session精确过滤并启用query_only：原QA1，context表6行中仅1条实际候选，其余为来源及处理水印。候选150字符，只陈述零值／默认值的truthiness陷阱，没有正数和负数规则；原distill水印已包含该候选ID。完整QA仍按官方coding规则固定到curator，不把候选本身缺字段直接认定为最终遗漏的唯一原因。[原候选边界](evidence/multi-agent-development-20261114/thinking-curator-boundaries/original-candidate-boundary.json)。
+
+一次隔离固定官方curator检查，以同Thinking模型／温度0／输出8192、原QA及唯一候选构造1648字符批次，输入摘要6712b0b9…；未调用writer、检索新颖性或持久化，不重投原improve。实际1次adapter请求252.73秒结束、json_schema，2条proposal：测试基线正确，但另条明确把“function's use of Python truthiness causes 0 to be silently coerced to 3”作为现状，且遗漏正数保持和负数ValueError。MA-OLLAMA-CODING-QUALITY01因此累计第3轮失败（前两轮Instruct保持），MA-OLLAMA-KNOWLEDGE-COVERAGE01累计第2轮。此为新隔离模型实验，不把此前同一原正文的多次只读检查重复计轮。[实际curator结果](evidence/multi-agent-development-20261114/thinking-curator-boundaries/curator-8k.json)。
+
+原独立请求日志可定位到1334输入token，生成约6800后发生8K窗口滑移。为验证容量假设，第二次隔离检查只把请求num_ctx改为16384，温度和输出8192保持，未改daemon默认、已保存profile或固定组件。HTTP发送前断言实际num_ctx／num_predict／temperature，并拒绝第二次chat；日志亦确认16K。该请求244.59秒后以completion_truncated被生产CompletionObservation拒绝，8192生成token耗尽、无可验收答案，期间未观察到context shift。单纯扩大上下文未取得可用答案；本次没有完整语义输出，不记成原历史错误的第4轮或遗漏的第3轮，独立MA-OLLAMA-CURATOR-TRUNCATION01失败1轮。[16K结果](evidence/multi-agent-development-20261114/thinking-curator-boundaries/curator-16k-output8k.json)。上下文与内存关系参照[Ollama官方说明](https://docs.ollama.com/context-length)，实际结果不由说明替代。
+
+基于已证输出截断，第三次检查保留16K上下文，只把请求输出上限改为14336，留出原输入空间；实际wire messages摘要与第二次完全一致，温度0、单次chat、600秒SDK／660秒外部预算、无重试，不启动writer或落库。目前原exec24052／PID44549（19:00:54）经内核启动时间核对仍运行，不能因观察窗口结束重投。若同一历史错误再次出现即达到第4轮，必须停止该问题后续实验／实现／验收，不开启第5轮；若截断或其他故障则按具体缺陷及完整响应事实分类。[本轮计数与实际运行句柄](evidence/multi-agent-development-20261114/thinking-curator-boundaries/summary.json)。
+
+源码、日常配置、原生成知识及数据保持，实际采用仍未启动，完整Goal继续active。当前第三个实验的终态与正文尚待核对，不能把16K或更大输出写成已修复；其余Native积压、原生账号／Desktop／日常门槛不因本轮诊断变为通过。

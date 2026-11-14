@@ -1,0 +1,27 @@
+{
+  "scope": "one isolated unchanged official curator call on original QA and sole extracted candidate; no writer, persistence or improve; same model, temperature0 and output8192; only request num_ctx changes to16384",
+  "profile_digest": "33fa1d7a1648dd605515e101c8a224bf37ae5316d2fd3ada80383b898858178e",
+  "input_entries": 1,
+  "batch_chars": 1648,
+  "curator_prompt_chars": 3985,
+  "writer_prompt_chars": 4286,
+  "original_qa_answer_chars": 951,
+  "proposals": [],
+  "writers": [],
+  "phase": "curator_failed",
+  "started": 1794653763.788059,
+  "input_sha256": "6712b0b966b97b1e97ad6b30b022f57f7dc57267fdcf82a7825ca6d1814c4607",
+  "configured_context": 16384,
+  "requests_started": 1,
+  "wire_chat_requests": 1,
+  "wire_options": {
+    "num_ctx": 16384,
+    "num_predict": 8192,
+    "temperature": 0.0
+  },
+  "wire_model": "qwen3:4b-thinking-2507-q4_K_M",
+  "wire_message_sha256": "5f01c2afde27a67bc7402686c66ea2a782da736e707269ed923ee18de2aeb06b",
+  "error_class": "ProbeFailure",
+  "elapsed_seconds": 244.59,
+  "actual_adapter_calls": 1
+}

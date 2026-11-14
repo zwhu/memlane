@@ -1,5 +1,7 @@
 # 多 Agent / Provider 当前支持与验收矩阵
 
+检查点五十九增量：已读原候选缓存并隔离固定官方curator，完整QA仍在输入，但实际proposal再次提升旧truthiness错误为现状、遗漏正数／负数规则；历史错误累计3轮，信息遗漏累计2轮。只扩上下文到16K的独立请求耗尽8192输出token，被正式判为截断，未取得语义答案，不能凑成原错误第4轮。保留16K、只提高输出到14336的原单次检查正在运行；若原错误再次出现须在第4轮停止。未改原知识、profile或daemon默认，未验采用。见[检查点五十九](multi-agent-provider-execution-20261114.md#检查点五十九定位curator遗漏单变量容量检查)及[回执](evidence/multi-agent-development-20261114/thinking-curator-boundaries/summary.json)。
+
 检查点五十八增量：原Thinking参数场景的完整improve已有匹配ID／session／dataset的成功结束回执，数据4／4完成、pending0。重新读取两条知识正文及生产parser实际召回，均遗漏“正数保持、负数抛ValueError”，故完整质量未通过，新会话采用未启动。信息遗漏MA-OLLAMA-KNOWLEDGE-COVERAGE01失败1轮；旧历史错误提升MA-OLLAMA-CODING-QUALITY01仍2轮，不因模型或路径变更清零。上下文shift是已观察现象，尚非已证根因。见[检查点五十八](multi-agent-provider-execution-20261114.md#检查点五十八原完整处理终态与知识覆盖缺口)及[最终评审](evidence/multi-agent-development-20261114/thinking-improve-final-gate/final-quality-review.json)。
 
 检查点五十七增量：同一有界参数场景的问答材料及第一组cognify／memify已成功；工具反馈材料仍pending1，下一组原管线继续运行。900秒观察进程已退出，后台job未由此判定结束或重启。知识正文与新会话采用仍待验，失败计数保持。见[处理进展](evidence/multi-agent-development-20261114/thinking-parameters-processing-progress.json)。

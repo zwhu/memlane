@@ -1,0 +1,87 @@
+{
+  "observed_at": "2026-11-14T10:49:42.264463+00:00",
+  "scope": "read-only SQLite snapshot filtered by exact synthetic principal and original session; not an improve retry",
+  "context_entry_count": 6,
+  "qa_count": 1,
+  "entries": [
+    {
+      "id": "session_node_set",
+      "kind": "session_node_set_state",
+      "context_profile": null,
+      "section": null,
+      "confidence": null,
+      "content_characters": 0,
+      "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "contains_ValueError": false,
+      "contains_positive": false,
+      "contains_negative": false,
+      "expires_at": "2026-11-21 09:54:13.413158"
+    },
+    {
+      "id": "session_persist_watermark",
+      "kind": "session_persist_watermark_state",
+      "context_profile": null,
+      "section": null,
+      "confidence": null,
+      "content_characters": 0,
+      "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "contains_ValueError": false,
+      "contains_positive": false,
+      "contains_negative": false,
+      "expires_at": "2026-11-21 10:02:43.883527"
+    },
+    {
+      "id": "agent_trace_persist_watermark",
+      "kind": "agent_trace_persist_watermark_state",
+      "context_profile": null,
+      "section": null,
+      "confidence": null,
+      "content_characters": 0,
+      "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "contains_ValueError": false,
+      "contains_positive": false,
+      "contains_negative": false,
+      "expires_at": "2026-11-21 10:19:12.151059"
+    },
+    {
+      "id": "ab48f110-4121-43a9-941d-c8b7cb2a1d0b",
+      "kind": "context",
+      "context_profile": "agent",
+      "section": "failure_lessons",
+      "confidence": 0.95,
+      "content_characters": 150,
+      "content_sha256": "71a425a3e587aaf3c81414b593e068106552c2edcfa6240a0d3df541642c21fe",
+      "contains_ValueError": false,
+      "contains_positive": false,
+      "contains_negative": false,
+      "expires_at": "2026-11-21 10:22:05.204357"
+    },
+    {
+      "id": "__agent_context_extraction_state__",
+      "kind": "agent_context_extraction_state",
+      "context_profile": null,
+      "section": null,
+      "confidence": null,
+      "content_characters": 0,
+      "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "contains_ValueError": false,
+      "contains_positive": false,
+      "contains_negative": false,
+      "expires_at": "2026-11-21 10:22:05.210214"
+    },
+    {
+      "id": "session_distill_watermark:6d34d48a-2acb-5aac-9bb7-1aed3405e028",
+      "kind": "session_distill_watermark_state",
+      "context_profile": null,
+      "section": null,
+      "confidence": null,
+      "content_characters": 0,
+      "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "contains_ValueError": false,
+      "contains_positive": false,
+      "contains_negative": false,
+      "expires_at": "2026-11-21 10:39:55.953469"
+    }
+  ],
+  "no_model_or_write_call": true
+}
