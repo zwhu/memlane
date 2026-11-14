@@ -1,0 +1,19 @@
+{
+  "prepared_only": true,
+  "model_or_agent_launched": false,
+  "original_adoption_prompt_unchanged_sha256": "22b8ae4da6da934fcaf0b59288e6d367fe80c1f7721dab1d8817770c50ca05a9",
+  "driver_sha256": "1ed2a0fa41e9277f59eeeb1fadb772bbd55f35cf2d743511420cc1f19eddd55f",
+  "gates": [
+    "original pipelines all terminal succeeded",
+    "pending0 and actual lessons exist",
+    "actual raw knowledge independently accepted",
+    "same original improve operation has a finished succeeded receipt under the pinned deferred-close contract"
+  ],
+  "no_failed_material_replayed": true,
+  "previous_driver_sha256": "75d85c9d5cc775af94471f324326d980c3b8163dd6446bda15e380f76a725959",
+  "driver_hash_history": [
+    "1a6ef5ab232a6052437364fb5afa04a9ff43854a823e3700a3b7ac07de37de6e"
+  ],
+  "current_official_status_source": "thinking-parameters-complete-operation-status.json",
+  "observer_window_expiry_not_used_as_job_status": true
+}

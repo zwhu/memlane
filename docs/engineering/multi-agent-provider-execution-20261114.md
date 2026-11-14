@@ -676,3 +676,15 @@ Go检查基于当前共享工作树，本次只提交自有轮询源码、定向
 原只读observer exec71701／PID88874的900秒窗口结束，工具句柄终态0、PID确认退出；该终态仅属于观察进程。随后认证GET仍见上述原管线运行，official84606的内核启动时间及完整命令匹配，未停止服务、重启job或重发improve。后续继续按原编号直接核对，不从观察窗口结束推断模型／后台已退出。[处理进展与原任务标识](evidence/multi-agent-development-20261114/thinking-parameters-processing-progress.json)。
 
 新会话采用驱动已准备，prompt与原采用场景逐字节相同，另加“全部原管线成功终态、pending0、实际知识存在及正文独立通过”前置；本轮未启动Agent或模型、未创建质量通过标记。原语义质量失败2轮、Thinking处理超时1轮及普通文本失败1轮均保持。完整知识质量与采用继续待验；已停止的CUA窗口定位未重试，Native积压及外部账号／Desktop／日常门槛也未变为通过。当前服务、两个模型、原失败数据及新合成项目继续由后续质量／采用消费，完整Goal保持active。
+
+## 检查点五十八：原完整处理终态与知识覆盖缺口
+
+认证GET核对同一原任务：improve 417ef5ab…于10:39:56 UTC以succeeded结束，10:46:44 UTC数据4项全部完成、pending0、原管线均成功且无活动项。固定服务的improve显式defer_close，后台全部阶段结束后才finish_operation；因此本轮匹配原ID／dataset／session的结束回执可证明完整处理终态，不能把其他普通background操作的启动接受回执作同样解释。此前五十五的“终态”限cognify／memify失败，不代表当时已观察到整个improve结束；缺少根操作行也不能证明任务仍存活。[最终处理快照](evidence/multi-agent-development-20261114/thinking-improve-final-gate/processing-snapshot.json)、[固定源码契约与当时容量快照](evidence/multi-agent-development-20261114/thinking-improve-final-gate/capacity-and-contract.json)。
+
+原知识共2条：实际重新GET正文，与先前202／275字节及SHA一致。状态知识明确4项测试通过，变更知识明确None默认3与零值0，但未明确正数保持及负数抛ValueError。使用固定官方生产parser解析同一采用问题的only_context召回，只得到这2条相同正文，没有用原问答或实体／关系文本补足缺失结论。该只读召回0.125秒，观察到自有Ollama chat HTTP日志计数72→72；不据此声称embedding或其他请求为零。[最终正文与召回覆盖评审](evidence/multi-agent-development-20261114/thinking-improve-final-gate/final-quality-review.json)、[召回检查](evidence/multi-agent-development-20261114/thinking-improve-final-gate/recall-inspection.json)。
+
+MA-OLLAMA-KNOWLEDGE-COVERAGE01累计失败1轮：触发条件是原固定编码案例完成全部官方处理后，生成知识与实际召回仍缺少上述两项必要语义；属于信息遗漏，与MA-OLLAMA-CODING-QUALITY01已证“历史错误提升为当前事实”的2轮分开计数。本轮箭头措辞是否构成现状矛盾仍不确定，不据此新增该旧缺陷次数；旧计数和材料均保留。没有改写知识或创建质量通过标记，采用驱动因正文门禁未通过而未启动，不能将该场景记为新会话采用失败或通过。
+
+容量证据为自有daemon上下文8192、输出上限8192、单并发，日志最大prompt8099且出现context shift；未取得请求ID关联证据，不能判定这就是遗漏的根因。暂未改上下文、并发、固定引擎或样本，也未重投原improve。进一步认证读取原QA1／trace5，并用未修改的官方_turn_block重建输入：问题460字符、回答946字符，均低于各1200字符上限；实际1424字符块明确包含全部四项语义，排除了本轮问答字符截断丢失正数／负数规则这一假设。原curator／writer中间响应未捕获，仍不能定位具体遗漏阶段。[输入边界](evidence/multi-agent-development-20261114/thinking-improve-final-gate/turn-boundary.json)。后续据此决定有依据的单变量实验，不以重复运行碰运气。完整质量与采用、Native积压及外部账号／Desktop／日常门槛仍未完成，Goal保持active。
+
+资源收尾仅移除已展开、无打开句柄的Go工具链下载tar和typesetting-utils模块下载zip；保留展开目录、执行中的Go build缓存、全部模型／数据／插件与运行资源。两个归档逻辑合计约165 MB，实际可用空间仅增加68,132,864字节，未推断文件系统原因；仓库Go版本命令通过。[精确清理与保留依赖](evidence/multi-agent-development-20261114/thinking-improve-final-gate/resource-cache-trim.json)。本轮无生产源码改动、模型下载、宿主追加测试或release；不重复运行与这些只读证据无关的测试套件。

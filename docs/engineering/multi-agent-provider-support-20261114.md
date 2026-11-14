@@ -1,5 +1,7 @@
 # 多 Agent / Provider 当前支持与验收矩阵
 
+检查点五十八增量：原Thinking参数场景的完整improve已有匹配ID／session／dataset的成功结束回执，数据4／4完成、pending0。重新读取两条知识正文及生产parser实际召回，均遗漏“正数保持、负数抛ValueError”，故完整质量未通过，新会话采用未启动。信息遗漏MA-OLLAMA-KNOWLEDGE-COVERAGE01失败1轮；旧历史错误提升MA-OLLAMA-CODING-QUALITY01仍2轮，不因模型或路径变更清零。上下文shift是已观察现象，尚非已证根因。见[检查点五十八](multi-agent-provider-execution-20261114.md#检查点五十八原完整处理终态与知识覆盖缺口)及[最终评审](evidence/multi-agent-development-20261114/thinking-improve-final-gate/final-quality-review.json)。
+
 检查点五十七增量：同一有界参数场景的问答材料及第一组cognify／memify已成功；工具反馈材料仍pending1，下一组原管线继续运行。900秒观察进程已退出，后台job未由此判定结束或重启。知识正文与新会话采用仍待验，失败计数保持。见[处理进展](evidence/multi-agent-development-20261114/thinking-parameters-processing-progress.json)。
 
 检查点五十六增量：Provider参数的实际Native保存／重开、真实模型验证、明确next及正常启动应用已通过，当前为Thinking revision3、温度0／上限8192；0.6版本的精确文本失败回执保留。已修Native约180秒提前结束轮询的问题，Go覆盖第91次原回执与观察截止，实际只读核对原模型结果恢复。新真实pi编码4项断言通过，正确项目QA1／trace5，官方知识处理仍在进行，尚未验质量与采用；旧Thinking超时项目和错误知识不改写。详见[检查点五十六](multi-agent-provider-execution-20261114.md#检查点五十六参数实际保存模型验证正常应用与长轮询修复)。

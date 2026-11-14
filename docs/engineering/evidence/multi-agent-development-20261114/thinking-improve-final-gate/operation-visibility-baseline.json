@@ -1,0 +1,31 @@
+{
+  "observed_at": "2026-11-14T10:41:17.403051+00:00",
+  "scope": "existing earlier synthetic dataset, read-only; demonstrates finished improve records are visible via this API and child principal",
+  "operation_rows": [
+    {
+      "pipeline_run_id": "04ee1c7a-a58d-4de7-bbc5-8823f093e66e",
+      "operation_name": "improve",
+      "outcome": "succeeded",
+      "background": true,
+      "started_at": "2026-11-14T07:02:35.535725",
+      "ended_at": "2026-11-14T07:03:08.832807",
+      "error_class": null,
+      "session_ids": [
+        "codex_pi-38a57d969877d474bf298bce3313796ccedffd9236508e6b5c46ec50e85a0aaa"
+      ]
+    },
+    {
+      "pipeline_run_id": "1392966b-01d7-4e82-a6fb-0a1145094fa3",
+      "operation_name": "improve",
+      "outcome": "succeeded",
+      "background": true,
+      "started_at": "2026-11-14T06:58:37.563661",
+      "ended_at": "2026-11-14T07:01:49.737502",
+      "error_class": null,
+      "session_ids": [
+        "codex_pi-5b0a8c4ca08d73c388fa9b6c8de4663a2015db4ffdf6dd99651f1ad581fc4454"
+      ]
+    }
+  ],
+  "root_success_does_not_establish_knowledge_quality": true
+}

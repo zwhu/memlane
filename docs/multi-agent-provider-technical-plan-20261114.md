@@ -316,6 +316,8 @@ API 模式的超时、并发、输出上限及重试优先复用固定官方配�
 
 定向检查复用 `engine/python/test_project_control.py`、`test_project_codex_connection.py`、`test_project_plugin_patch.py`、`scripts/test_dev.py` 及现有 simpledesktop 测试；新测试集中在跨协议、迁移、状态与权限边界。Go用 `sh scripts/go.sh test ./...`；其他执行走 `python3 scripts/task.py -- <命令>`。单测、真实官方链路、模型质量与 Native各自报告；不构建完整包。
 
+完整知识场景须核对同一原improve的结束回执、全部所属管线终态及材料pending0，再独立核对实际生成正文、生产parser返回的召回片段和新会话采用。固定服务的improve采用defer_close，可按匹配原操作的结束记录判定；普通background接受回执、单条材料完成或观察窗口结束均不足以替代。缺少操作行也不证明仍在运行。原始问答、图实体中的引用及模型猜测不能补足生成知识遗漏的必要事实；正文门禁不通过时不启动采用来冒充质量通过。
+
 沿用 E／PA 既有编号及计数，尤其 E09普通completion与业务Schema分离、E15并发容量、PA未知写入与403边界。同一具体问题累计第4次验收仍失败即停止该问题并记录，不换宿主／版本／路径重置；其余不依赖工作可继续。
 
 ## 8. 数据、资源与交付要求

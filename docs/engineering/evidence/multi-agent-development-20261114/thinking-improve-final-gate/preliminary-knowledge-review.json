@@ -1,0 +1,32 @@
+{
+  "observed_at": "2026-11-14T10:38:02.409266+00:00",
+  "phase": "preliminary_body_review_before_root_completion",
+  "documents": [
+    {
+      "id": "ed5bc3bc-6a44-5254-978c-bd0941e2b45a",
+      "lesson_type": "state",
+      "sha256": "4679020fdde76ae9b720e6bb0c7d41d5bef7eeb1f9bc13f8556b88fa786a5f9b",
+      "bytes": 202
+    },
+    {
+      "id": "66b0dc2f-4cea-5db3-80d4-600d10830af5",
+      "lesson_type": "change",
+      "sha256": "09071c5c8283d8e9d7fbd8a64cdaae307dc9779c2ef308da04768395f5a19aba",
+      "bytes": 275
+    }
+  ],
+  "current_bodies_independently_cover": {
+    "zero_disables": true,
+    "none_defaults_to_three": true,
+    "positive_preserved": false,
+    "negative_raises_ValueError": false,
+    "exact_test_command_and_four_passed": true
+  },
+  "review_basis": "read both actual generated bodies; the change record mentions zero/None checks and negative test name, but does not state the negative ValueError contract or positive behavior; test-baseline states command and count only",
+  "coverage_is_provisional_until_all_original_outputs_and_actual_recall_are_checked": true,
+  "historical_truthiness_wording": "ambiguous before/after arrow; no confirmed final-state contradiction declared",
+  "quality_accepted_for_adoption": false,
+  "new_failure_round_counted": false,
+  "original_semantic_failure_count_retained": 2,
+  "no_knowledge_body_modified": true
+}
