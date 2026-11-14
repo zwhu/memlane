@@ -446,3 +446,11 @@ outbox明确401／403持久化blocked，重启／timer不重发；阻塞项不�
 8项Python及32项编译Node用例通过，4.145秒、无skip；[回执与摘要](evidence/multi-agent-development-20261114/opencode-managed-recall.json)。实际Python控制HTTP与派生官方hook执行，SDK消息和官方内容／ACL仍为夹具，不证明真实知识质量或已安装1.3.5宿主。未运行模型／宿主、修改日常配置或重启服务，无新增验收失败。其他会话共享WIP保持。
 
 仍须lifecycle／处理／显式工具的原目标及操作账本、稳定namespace、不可变安装绑定和管理补交，当前不可启用；之后继续真实OpenCode、Ollama、Native增量、首批外部前置与日常收口，完整Goal保持active。
+
+## 开发检查点三十四：生命周期／处理／显式写入回执
+
+上轮配置／召回隔离为实际进展。本轮完成`ManagedActions`及官方回调覆盖，原目标和权限控制lifecycle、自动improve、明确remember；HTTP前持久化unknown，终态／后续代次留metadata回执，未知不因重启、时间、新水位或新message ID自动重发。同fact并发实例仅一次请求。outbox已保存原target形成处理水位，同水位只提交一次；running如实保留未完成。sid与队列固定安装主体／native，未迁移旧材料。
+
+9项Python／38项编译Node检查通过（4.743秒，无skip），[回执和摘要](evidence/multi-agent-development-20261114/opencode-managed-actions.json)。控制HTTP实际执行，官方内容／ACL及SDK仍是夹具；无实际宿主、模型、日常修改或服务重启，无新增失败轮次。其他会话WIP保持。
+
+下一步不可变安装产物、来源／私有绑定及管理侧认证核对／补交／丢弃，再验1.3.5实际宿主、真实编码→知识→采用；Ollama、首批外部前置、Native增量及日常收口仍待完成，完整Goal保持active。

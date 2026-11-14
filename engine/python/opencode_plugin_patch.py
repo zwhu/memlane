@@ -49,6 +49,8 @@ def managed_http_client(text):
             'throw new Error(`Cognee request failed (${retryResponse.status})`);')
     replace('throw new Error(`Cognee request failed (${response.status}): ${errorText}`);',
             'throw new Error(`Cognee request failed (${response.status})`);')
+    replace('datasetId: response.dataset_id ?? params.datasetId ?? "",',
+            'datasetId: response.dataset_id ?? "",')
     method('  async health(): Promise<{ status: string }> {\n', '  async remember(params: {\n', '''  async health(): Promise<{ status: string }> {
     return this.fetchAPI<{ status: string }>("/health", { method: "GET" });
   }
@@ -158,6 +160,20 @@ type Pending = { id: string; session: string; entry: Entry; uncertain?: boolean;
         });
         if (!item) continue;
 ''')
+    replace('type State = { pending: Pending[]; seen: string[] };',
+            'type State = { pending: Pending[]; seen: string[]; savedTargets?: Record<string, ProjectTarget> };')
+    replace('  blockedIds(): string[] {', '''  completedTarget(native: string): {target: ProjectTarget; watermark: string} | undefined {
+    const state = this.read();
+    if (state.pending.some(item => !item.target || item.target.native === native)) return undefined;
+    const rows = Object.entries(state.savedTargets ?? {}).filter(([id, target]) => state.seen.includes(id) && target.native === native).sort(([a], [b]) => a.localeCompare(b));
+    if (!rows.length) return undefined;
+    const target = snapshotTarget(rows[0][1]);
+    if (rows.some(([, other]) => other.project_id !== target.project_id || other.dataset_id !== target.dataset_id)) throw new Error("original_project_target_changed");
+    return {target, watermark: hash(JSON.stringify(rows.map(([id]) => id)))};
+  }
+  blockedIds(): string[] {''')
+    replace('if (!state.seen.includes(item.id)) state.seen.push(item.id); this.write(state);',
+            'if (!state.seen.includes(item.id)) state.seen.push(item.id); if (item.target) { state.savedTargets ??= {}; state.savedTargets[item.id] = snapshotTarget(item.target); } this.write(state);')
     return text
 
 
@@ -287,4 +303,43 @@ import { ManagedRecall } from "./managed-recall.js";''')
       if (context) output.context.push(wrapMemory(context));''')
     replace('''        window.clear(native);''', '''        recallClient.clear(native);
         window.clear(native);''')
+    return text
+
+
+def managed_action_callbacks(text):
+    def replace(old, new):
+        nonlocal text
+        if text.count(old) != 1:
+            raise ValueError('fixed OpenCode action overlay anchor mismatch')
+        text = text.replace(old, new, 1)
+
+    replace('import { ManagedRecall } from "./managed-recall.js";', '''import { ManagedRecall } from "./managed-recall.js";
+import { ManagedActions } from "./managed-actions.js";
+import { join } from "node:path";''')
+    replace('  const outbox = new Outbox([cfg.baseUrl, hash(cfg.apiKey || cfg.username || "default"), cfg.datasetName, ctx.directory].join("|"), cfg.stateDir);\n  const binding = options?.memlane as ControlOptions;\n  if (!binding) throw new Error("managed_installation_required");', '''  const binding = options?.memlane as ControlOptions;
+  if (!binding) throw new Error("managed_installation_required");
+  const outbox = new Outbox([cfg.baseUrl, binding.instanceId].join("|"), cfg.stateDir);''')
+    replace('  const window = new CaptureWindow();', '''  const window = new CaptureWindow();
+  const actions = new ManagedActions(control, client, join(cfg.stateDir, "actions"), binding.instanceId);''')
+    replace('  const sid = (id: string) => sessionId(ctx.directory, id);',
+            '  const sid = (id: string) => `opencode_${hash(binding.instanceId).slice(0, 16)}_${hash(id).slice(0, 24)}`;')
+    replace('''    try { await client.lifecycle(sid(native), cfg.datasetName); } catch { log("lifecycle registration failed; check credentials and backend status"); }''',
+            '''    if (!cfg.autoCapture) return;
+    try { await actions.lifecycle(native, sid(native)); } catch { log("lifecycle status unconfirmed"); }''')
+    replace('''          if (cfg.improveOnSessionEnd !== false && cfg.autoCapture && outbox.status().pending === 0) await client.improve({datasetName: cfg.datasetName, sessionIds: [sid(native)]});''',
+            '''          const completed = outbox.completedTarget(native);
+          if (cfg.improveOnSessionEnd && cfg.autoCapture && completed) {
+            await control.currentTarget(completed.target);
+            await actions.improve(native, sid(native), completed.watermark);
+          }''')
+    replace('background(client.lifecycle(sid(native), cfg.datasetName, true));',
+            'background(actions.lifecycle(native, sid(native), true));')
+    replace('''      await Promise.allSettled([...active].map((native) => client.lifecycle(sid(native), cfg.datasetName, true)));''',
+            '''      await Promise.allSettled([...active].map((native) => actions.lifecycle(native, sid(native), true)));''')
+    replace('''args: {fact: tool.schema.string()}, async execute(args) {
+        await client.remember({data: args.fact, datasetName: cfg.datasetName}); return "Saved to Cognee memory.";''', '''args: {fact: tool.schema.string()}, async execute(args, context) {
+        const receipt = await actions.remember(context.sessionID, context.messageID, sid(context.sessionID), safeText(args.fact));
+        if (receipt.status === "unknown") return "Original remember result is unknown. Do not resubmit; inspect the original receipt.";
+        if (receipt.status !== "accepted") return "Remember was rejected; no automatic retry. Inspect the original receipt.";
+        return "Remember request accepted. Knowledge processing is not yet confirmed.";''')
     return text

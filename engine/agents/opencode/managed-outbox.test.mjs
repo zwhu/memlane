@@ -184,3 +184,18 @@ test("two process-style queues recheck the claim after asynchronous preflight", 
     assert.equal(f.queue.status().saved, 1);
   } finally { f.close(); }
 });
+
+test("saved target watermark survives restart and excludes other session pending items", async () => {
+  const f = fixture();
+  try {
+    f.queue.enqueue("saved-original", "turn", {type: "qa"}, target());
+    assert.equal(f.queue.completedTarget(target().native), undefined);
+    await f.queue.flush(async () => {}, async () => false);
+    const completed = f.queue.completedTarget(target().native);
+    assert.deepEqual(completed.target, target());
+    f.queue.enqueue("other-pending", "other-turn", {type: "qa"}, {...target(), native: "other-native"});
+    const restarted = new Outbox("same-installation-and-project", f.root);
+    assert.deepEqual(restarted.completedTarget(target().native), completed);
+    assert.equal(restarted.completedTarget("other-native"), undefined);
+  } finally { f.close(); }
+});

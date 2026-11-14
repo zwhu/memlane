@@ -1,0 +1,46 @@
+{
+  "scope": "compiled official action callbacks and metadata mutation receipts; actual project_control HTTP with synthetic official ACL/content endpoints; not real native host acceptance",
+  "validation": {
+    "python": 9,
+    "compiled_node": 38,
+    "http": 6,
+    "outbox": 10,
+    "control_delivery_callbacks": 22,
+    "seconds": 4.743,
+    "skips": 0
+  },
+  "proven": [
+    "lifecycle uses original policy dataset and write/capture gate",
+    "same heartbeat bucket deduplicates; accepted later bucket archives original receipt",
+    "unknown heartbeat remains unknown after time advances and process restart",
+    "saved target metadata/watermark survives outbox restart; unrelated pending native does not block this native",
+    "automatic improve uses exact dataset ID/session; same saved watermark submits once",
+    "unknown improve blocks even a newer material watermark",
+    "explicit remember uses write permission independently of auto capture/process flags",
+    "same native/fact deduplicates across different host message IDs and concurrent action instances",
+    "unknown explicit request is not resubmitted after restart or new message ID",
+    "mutation claims persisted before request and retain only metadata/hash, not fact/key/body",
+    "known HTTP rejection and accepted/running outcome stored separately; arbitrary remote status not persisted",
+    "per-generation terminal history kept before next accepted/new-material intent",
+    "stable installation/native session ID and queue namespace replace cwd/key/dataset namespace",
+    "derived official plugin has no remaining static-dataset mutations, ambient Cognee lookups or session history listing"
+  ],
+  "not_yet_proven": [
+    "managed installation provenance and immutable artifact",
+    "authenticated management review/retry/discard",
+    "actual 1.3.5 host loading and API compatibility",
+    "real official service actions/model results or knowledge quality",
+    "full coding to knowledge to fresh adoption"
+  ],
+  "no_models_or_installed_host_executed": true,
+  "no_daily_changes_or_service_restart": true,
+  "source_sha256": {
+    "engine/agents/opencode/managed-actions.ts": "396147b87ac289c87f5868921449ddaac788d07bfeb5e2e3dd39e888257d2fcc",
+    "engine/agents/opencode/managed-control.ts": "8adf9a3f7d38929fe647ea35dea8cdde65e8e0efac895ed108ab30aa09443363",
+    "engine/python/opencode_plugin_patch.py": "a0aa44b68a66185e5aa024691309c11af6ca95d1090d93383a5a571d8fd028e5",
+    "engine/python/test_opencode_plugin_patch.py": "5d68bd53cd09cf21d87a0ac591b40775e2f34a72af903d26285e2f2e3caa6f42",
+    "engine/python/test_opencode_control.py": "cfd6e57a99c7c732d18b4eecbbcea020152a79e7cd9fb381ce5e77775428b21c",
+    "engine/agents/opencode/managed-outbox.test.mjs": "f8a7d1ad21cfa533a59b9c695235a4baeefc3005cc52bc4d5032db603f386954",
+    "engine/agents/opencode/managed-control.test.mjs": "f0f784a73636014a5db624132e16a2bc33efb78a47c7d9af6516fce3cdd7439f"
+  }
+}

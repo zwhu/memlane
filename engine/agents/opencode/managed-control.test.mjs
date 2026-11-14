@@ -208,8 +208,8 @@ const compiled = new URL("./", pathToFileURL(process.env.MEMLANE_OPENCODE_TEST_C
 const { ManagedDelivery } = await import(new URL("managed-delivery.js", compiled));
 const { Outbox } = await import(new URL("runtime.js", compiled));
 const { CogneeHttpClient } = await import(new URL("client.js", compiled));
-async function officialServer({loseFirstResponse = false, credential = "synthetic-child-key"} = {}) {
-  const writes = [], recalls = [];
+async function officialServer({loseFirstResponse = false, credential = "synthetic-child-key", loseLifecycleResponse = false, loseImproveResponse = false, loseRememberResponse = false} = {}) {
+  const writes = [], recalls = [], lifecycles = [], improvements = [], remembers = [];
   let lookups = 0;
   const server = await listener(async (req, res) => {
     assert.equal(req.headers["x-api-key"], credential);
@@ -230,10 +230,29 @@ async function officialServer({loseFirstResponse = false, credential = "syntheti
       const body = JSON.parse(Buffer.concat(chunks).toString()); recalls.push(body);
       res.end(JSON.stringify([{id: "hit", text: "knowledge " + body.dataset_ids[0], score: 1}])); return;
     }
-    if (req.method === "POST" && /\/agents\/(?:un)?register$/.test(req.url)) { res.end('{"status":"ok"}'); return; }
+    if (req.method === "POST" && /\/agents\/(?:un)?register$/.test(req.url)) {
+      const chunks = []; for await (const chunk of req) chunks.push(chunk);
+      lifecycles.push(JSON.parse(Buffer.concat(chunks).toString()));
+      if (loseLifecycleResponse) { res.destroy(); return; }
+      res.end('{"status":"ok"}'); return;
+    }
+    if (req.method === "POST" && req.url === "/api/v1/improve") {
+      const chunks = []; for await (const chunk of req) chunks.push(chunk);
+      improvements.push(JSON.parse(Buffer.concat(chunks).toString()));
+      if (loseImproveResponse) { res.destroy(); return; }
+      res.end('{"status":"running"}'); return;
+    }
+    if (req.method === "POST" && req.url === "/api/v1/remember") {
+      const chunks = []; for await (const chunk of req) chunks.push(chunk);
+      const raw = Buffer.concat(chunks).toString();
+      const field = name => new RegExp('name="' + name + '"\\r\\n\\r\\n([^\\r]+)').exec(raw)?.[1];
+      const target = {dataset_id: field("datasetId"), dataset_name: field("datasetName")}; remembers.push(target);
+      if (loseRememberResponse) { res.destroy(); return; }
+      res.end(JSON.stringify({...target, status: "running"})); return;
+    }
     assert.fail("unexpected official route " + req.url);
   });
-  return {...server, writes, recalls, lookups: () => lookups,
+  return {...server, writes, recalls, lifecycles, improvements, remembers, lookups: () => lookups,
     client: new CogneeHttpClient(server.url, credential, undefined, undefined, 500)};
 }
 
@@ -489,4 +508,111 @@ test("late context checks cannot resurrect a previous turn or overwrite a newer 
   const stale = recall.context("race-native"); await clearing;
   recall.clear("race-native"); block = false; release();
   assert.equal(await stale, ""); assert.equal(await recall.context("race-native"), "");
+});
+
+const { ManagedActions } = await import(new URL("managed-actions.js", compiled));
+const { hash } = await import(new URL("runtime.js", compiled));
+test("lifecycle receipts preserve accepted history and unknown heartbeat never advances by time", async () => {
+  const c = new ManagedProjectControl(options("actions-lifecycle")), native = "actions-lifecycle-native";
+  const p = await c.current(native), s = await officialServer(), lost = await officialServer({loseLifecycleResponse: true});
+  let clock = 60000;
+  const receiptRoot = join(root, "lifecycle-actions");
+  const actions = new ManagedActions(c, s.client, receiptRoot, "opencode-fixture", () => clock);
+  try {
+    assert.equal((await actions.lifecycle(native, "original-session")).status, "accepted");
+    await actions.lifecycle(native, "original-session"); assert.equal(s.lifecycles.length, 1);
+    clock += 30000; await actions.lifecycle(native, "original-session"); assert.equal(s.lifecycles.length, 2);
+    assert.deepEqual(s.lifecycles[0].dataset_names, [p.dataset_name]);
+    assert.ok(readdirSync(receiptRoot).some(name => name.includes(".g1.json")));
+    const unknownRoot = join(root, "unknown-lifecycle-actions");
+    const unknown = new ManagedActions(c, lost.client, unknownRoot, "opencode-fixture", () => clock);
+    assert.equal((await unknown.lifecycle(native, "original-session")).status, "unknown");
+    clock += 60000;
+    assert.equal((await new ManagedActions(c, lost.client, unknownRoot, "opencode-fixture", () => clock).lifecycle(native, "original-session")).status, "unknown");
+    assert.equal(lost.lifecycles.length, 1);
+  } finally { await s.close(); await lost.close(); }
+});
+
+test("processing uses original dataset and watermark; an unknown request blocks newer watermarks", async () => {
+  const c = new ManagedProjectControl(options("actions-improve")), native = "actions-improve-native";
+  const p = await c.current(native), s = await officialServer(), lost = await officialServer({loseImproveResponse: true});
+  const actions = new ManagedActions(c, s.client, join(root, "process-actions"), "opencode-fixture");
+  try {
+    const first = await actions.improve(native, "original-process-session", hash("saved-first"));
+    assert.equal(first.status, "accepted"); assert.equal(first.result_status, "running");
+    await actions.improve(native, "original-process-session", hash("saved-first"));
+    assert.equal(s.improvements.length, 1);
+    assert.equal(s.improvements[0].dataset_id, p.dataset_id); assert.equal(s.improvements[0].dataset_name, undefined);
+    await actions.improve(native, "original-process-session", hash("saved-next")); assert.equal(s.improvements.length, 2);
+    await access(p.project_id, {access: "maintain", capture: true, auto_process: false});
+    assert.equal((await actions.improve(native, "original-process-session", hash("disabled"))).status, "rejected");
+    assert.equal(s.improvements.length, 2);
+    await access(p.project_id, {access: "maintain", capture: true, auto_process: true});
+    await actions.improve(native, "original-process-session", hash("disabled")); assert.equal(s.improvements.length, 2);
+    const lostRoot = join(root, "unknown-process-actions");
+    const unknown = new ManagedActions(c, lost.client, lostRoot, "opencode-fixture");
+    assert.equal((await unknown.improve(native, "original-process-session", hash("lost-first"))).status, "unknown");
+    const restarted = new ManagedActions(c, lost.client, lostRoot, "opencode-fixture");
+    assert.equal((await restarted.improve(native, "original-process-session", hash("new-material"))).status, "unknown");
+    assert.equal(lost.improvements.length, 1);
+  } finally { await access(p.project_id, {access: "maintain", capture: true, auto_process: true}); await s.close(); await lost.close(); }
+});
+
+test("explicit remember ignores auto-capture flag, journals only metadata and never replays unknown", async () => {
+  const c = new ManagedProjectControl(options("actions-remember")), native = "actions-remember-native";
+  const p = await c.current(native), s = await officialServer(), lost = await officialServer({loseRememberResponse: true});
+  const receiptRoot = join(root, "remember-actions");
+  const actions = new ManagedActions(c, s.client, receiptRoot, "opencode-fixture");
+  try {
+    await access(p.project_id, {access: "maintain", capture: false, auto_process: false});
+    const first = await actions.remember(native, "explicit-message", "original-session", "SYNTHETIC_FACT_DO_NOT_STORE_IN_RECEIPT");
+    assert.equal(first.status, "accepted"); assert.equal(s.remembers[0].dataset_id, p.dataset_id);
+    await actions.remember(native, "explicit-message", "original-session", "SYNTHETIC_FACT_DO_NOT_STORE_IN_RECEIPT"); assert.equal(s.remembers.length, 1);
+    for (const file of readdirSync(receiptRoot).filter(name => name.endsWith(".json"))) assert.ok(!readFileSync(join(receiptRoot, file), "utf8").includes("SYNTHETIC_FACT"));
+    await access(p.project_id, {access: "read"});
+    assert.equal((await actions.remember(native, "read-message", "original-session", "rejected fact")).status, "rejected"); assert.equal(s.remembers.length, 1);
+    await access(p.project_id, {access: "maintain", capture: true, auto_process: true});
+    const lostRoot = join(root, "unknown-remember-actions");
+    const unknown = new ManagedActions(c, lost.client, lostRoot, "opencode-fixture");
+    assert.equal((await unknown.remember(native, "lost-message", "original-session", "lost fact")).status, "unknown");
+    assert.equal((await new ManagedActions(c, lost.client, lostRoot, "opencode-fixture").remember(native, "new-message-same-unknown-fact", "original-session", "lost fact")).status, "unknown");
+    assert.equal(lost.remembers.length, 1);
+  } finally { await access(p.project_id, {access: "maintain", capture: true, auto_process: true}); await s.close(); await lost.close(); }
+});
+
+test("official action callbacks process each saved watermark once and report explicit request status", async () => {
+  const { CogneeOpenCodePlugin } = await import(new URL("plugin.js", compiled));
+  const s = await officialServer({credential: "c".repeat(40)}), cfg = options("action-hooks"), native = "action-hooks-native";
+  const apiKeyFile = join(root, "action-hooks-key"); writeFileSync(apiKeyFile, "c".repeat(40), {mode: 0o600});
+  const hooks = await CogneeOpenCodePlugin({directory: join(root, "repo-a"), client: {}}, {memlane: cfg,
+    cognee: {baseUrl: s.url, apiKeyFile, stateDir: join(root, "action-hooks-outbox"), autoRecall: false}});
+  const p = await new ManagedProjectControl(cfg).current(native);
+  try {
+    await hooks["chat.message"]({sessionID: native}, {message: {id: "hook-message", time: {created: Date.now()}}, parts: [{type: "text", text: "new coding turn"}]});
+    await hooks["tool.execute.after"]({sessionID: native, callID: "hook-edit", tool: "edit", args: {filePath: "src/main.ts"}}, {output: "changed"});
+    const idle = () => hooks.event({event: {type: "session.idle", properties: {sessionID: native}}});
+    await idle(); await idle();
+    assert.equal(s.improvements.length, 1); assert.equal(s.improvements[0].dataset_id, p.dataset_id);
+    assert.equal(s.lifecycles[0].dataset_names[0], p.dataset_name);
+    const accepted = await hooks.tool.cognee_remember.execute({fact: "synthetic explicit fact"}, {sessionID: native, messageID: "explicit-hook-message"});
+    assert.match(accepted, /accepted/); assert.match(accepted, /not yet confirmed/);
+    await access(p.project_id, {access: "read"});
+    const denied = await hooks.tool.cognee_remember.execute({fact: "not allowed"}, {sessionID: native, messageID: "denied-hook-message"});
+    assert.match(denied, /rejected/); assert.equal(s.remembers.length, 1);
+  } finally { await access(p.project_id, {access: "maintain", capture: true, auto_process: true}); await hooks.dispose(); await s.close(); }
+});
+
+
+test("two action instances claim the same explicit fact once even with different host message IDs", async () => {
+  const c = new ManagedProjectControl(options("actions-concurrent")), native = "concurrent-action-native";
+  const s = await officialServer(), receiptRoot = join(root, "concurrent-actions");
+  try {
+    const a = new ManagedActions(c, s.client, receiptRoot, "opencode-fixture");
+    const b = new ManagedActions(c, s.client, receiptRoot, "opencode-fixture");
+    const results = await Promise.all([a.remember(native, "message-a", "same-session", "same explicit fact"), b.remember(native, "message-b", "same-session", "same explicit fact")]);
+    assert.ok(results.some(receipt => receipt.status === "accepted"));
+    assert.equal(s.remembers.length, 1);
+    assert.equal((await b.remember(native, "message-c", "same-session", "same explicit fact")).status, "accepted");
+    assert.equal(s.remembers.length, 1);
+  } finally { await s.close(); }
 });

@@ -85,3 +85,15 @@ strict TypeScript编译后，Node客户端连接实际Python project_control HTT
 8项Python／32项编译Node检查通过（4.145秒，无skip），[证据](evidence/multi-agent-development-20261114/opencode-managed-recall.json)。实际控制HTTP和固定SDK派生hook执行，官方recall与宿主消息为夹具；验证环境覆盖、私有／symlink凭据拒绝、精确数据组、撤权／恢复／control不可达、其他插件保留、压缩与处理会话隔离，以及迟到回调。未启用真实宿主、模型或日常服务。
 
 剩余lifecycle／improve／显式remember仍有旧数据组和操作语义，sid／队列namespace与安装来源也未收敛，当前组合仍不可直接安装启用。下一步完成这些策略覆盖与持久操作回执，再构造不可变代际和受认证补交入口；之后做本机1.3.5兼容、真实采集／知识／新会话采用。第二批Ollama与首批外部前置均保持原范围。
+
+## 变更回执、处理水位与稳定身份（检查点三十四）
+
+新增`ManagedActions`及严格action覆盖，lifecycle／remember／improve均沿原绑定查实时policy，用原dataset／session。登记要求write与采集许可，明确remember只要求write，不因自动采集或自动处理关闭而禁用；自动improve要求write与auto_process。固定SDK的remember必须实际返回dataset ID，缺失／漂移保留unknown，不以请求参数补出成功。
+
+每个逻辑变更先在私有目录保存metadata-only unknown回执，再发HTTP。仅存原native／project／dataset／session、摘要、代次和结果分类，不存fact正文或key。短文件锁不跨网络；另一个实例领取同一动作时只见原unknown／accepted，不再发送。显式remember按native＋fact摘要固定原动作，换host message ID也不绕过unknown。accepted后新心跳／新已保存材料可产生下一代，原终态回执另存；unknown阻止后续代次，明确拒绝的同一指纹不自动再发。生命周期同进程登记与关闭串行，404不支持独立记录。
+
+outbox已确认seen项同时保存原target元数据，`completedTarget`只在本native无待发项时生成稳定已保存ID水位，其他native待发不阻塞。idle按该水位调用处理，同一水位只提交一次；未知处理即使有新水位也不自动重提。固定官方返回running只记“已接收／running”，不当作已产出知识；其后处理终态仍待官方任务核对。受管sid及队列namespace改为安装主体／native，脱离cwd、key和静态dataset，所有旧目录及材料保持，未执行迁移。
+
+最终9项Python／38项编译Node通过（4.743秒，无skip），[证据](evidence/multi-agent-development-20261114/opencode-managed-actions.json)。覆盖真实控制HTTP与loopback官方请求、同内容并发两实例、三类丢响应重启、换message ID、处理新水位阻断、回执无正文、权限拒绝、明确／自动行为及官方hook连续流程。派生插件已无静态dataset直接变更／ambient Cognee字段／整段消息列表；仍为固定SDK夹具，未调用模型或实际宿主。
+
+下一步构造不可变安装与固定依赖／license清单、配置和独立主体绑定，再接管理侧认证核对／补交／丢弃和实际1.3.5兼容。原unknown尚不具备自动核对终态依据时继续保留，不通过新动作规避；当前组合尚未安装启用，真实知识与完整Goal未交付。

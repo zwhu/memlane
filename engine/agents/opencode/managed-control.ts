@@ -192,3 +192,6 @@ export class ManagedProjectControl {
     }
   }
 }
+
+// Shared metadata helpers; callers hold only brief local locks, never network I/O.
+export { privateFile as readPrivateMetadata, locked as withMetadataLock };

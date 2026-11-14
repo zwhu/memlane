@@ -13,7 +13,7 @@ from project_control import Registry, private_write
 from project_control_server import create_app
 from test_project_control import OfficialFixture
 from test_opencode_plugin_patch import official_sources
-from opencode_plugin_patch import managed_http_client, managed_outbox, managed_capture_callbacks, managed_config_recall
+from opencode_plugin_patch import managed_http_client, managed_outbox, managed_capture_callbacks, managed_config_recall, managed_action_callbacks
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -38,8 +38,8 @@ class OpenCodeControlTests(unittest.IsolatedAsyncioTestCase):
             (root / 'client.ts').write_text(managed_http_client(official_source['client.ts']))
             (root / 'types.ts').write_text(official_source['types.ts'])
             (root / 'node_modules').symlink_to(Path(modules).resolve(), target_is_directory=True)
-            (root / 'plugin.ts').write_text(managed_config_recall(managed_capture_callbacks(official_source['plugin.ts'])))
-            for name in ('managed-config.ts', 'managed-recall.ts'):
+            (root / 'plugin.ts').write_text(managed_action_callbacks(managed_config_recall(managed_capture_callbacks(official_source['plugin.ts']))))
+            for name in ('managed-config.ts', 'managed-recall.ts', 'managed-actions.ts'):
                 (root / name).write_text((ROOT / 'engine/agents/opencode' / name).read_text())
             (root / 'managed-capture-window.ts').write_text((ROOT / 'engine/agents/opencode/managed-capture-window.ts').read_text())
             delivery = root / 'managed-delivery.ts'
@@ -65,7 +65,7 @@ class OpenCodeControlTests(unittest.IsolatedAsyncioTestCase):
                                               env=env, capture_output=True, text=True, timeout=40)
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                 counts = {key: int(value) for key, value in re.findall(r'^# (tests|pass|fail) (\d+)$', run.stdout, re.M)}
-                self.assertEqual(counts, {'tests': 17, 'pass': 17, 'fail': 0})
+                self.assertEqual(counts, {'tests': 22, 'pass': 22, 'fail': 0})
                 print(json.dumps({'node_test': 'managed-control.test.mjs', **counts}))
             finally:
                 await server.close()
