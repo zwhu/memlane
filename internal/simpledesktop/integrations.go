@@ -164,11 +164,18 @@ func connectionName(kind string) string {
 		return "Claude Code"
 	case "cursor":
 		return "Cursor"
+	case "opencode":
+		return "OpenCode"
 	}
 	return kind
 }
 func connectionStatus(row AgentConnection) string {
 	switch row.Status {
+	case "integration_pending":
+		if row.Detected {
+			return "已检测到安装，接入开发中"
+		}
+		return "未检测到本机安装，接入开发中"
 	case "prepared":
 		return "已准备，等待启用"
 	case "configured_pending_new_session":

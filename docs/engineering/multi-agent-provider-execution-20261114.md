@@ -404,3 +404,13 @@ outbox明确401／403持久化blocked，重启／timer不重发；阻塞项不�
 最终定向27项Python通过（4.591秒），包括strict编译的Node控制8项、HTTP6项、outbox4项。新TS连接实际project_control服务，但official ACL为合成夹具；另核对原绑定接口鉴权／精确query／主体隔离／无创建及外部ACL变化后不补权。[证据](evidence/multi-agent-development-20261114/opencode-project-control.json)。临时HTTP服务／Node客户端及metadata均按夹具退出清理，没有实际模型或宿主安装器请求。
 
 下一步将项目目标与权限真正接进官方回调和待发项，补激活边界及受认证补交操作，再做不可变安装和真实OpenCode编码链。其他会话Native／产品／workflow改动保留，未做其测试或暂存。Cursor／Claude免验、第一批待补、第二批剩余及旧停止计数均保持；完整Goal继续active。
+
+## 检查点二十九：设置自动检测与绑定流程补齐
+
+用户补充：新增Agent／Provider参照以前设计，在设置内自动检测本机Agent并完成绑定。已将完整入口与行为写入技术方案5.1，复用当前设置的“服务与连接／知识处理”，不重新设计整个页面。
+
+本轮源码增加连接列表每次读取时重新发现本机入口，优先明确路径，再PATH和限定常用目录；进入设置触发读取，卡片提供“重新检测”与检测中状态。保留原批量准备／启用、成功项和原操作回执。OpenCode有只读检测卡片，接入开发中不可准备／启用。云Provider不扫描宿主密钥；Ollama及OpenCode完整接入继续按第二批账本推进。
+
+3项独立Python发现检查通过，覆盖后台启动后的安装／移除、原实例ID保持、检测不创建profile／主体或写registry、明确失效路径不fallback、OpenCode私有目录发现与禁用接入；1项MyGo组件检查通过（1200×820），核对重新检测入口及未完成适配不可绑定。仅读取本机路径的盘点结果为Codex／pi／TraeX／Claude Code／OpenCode存在，Cursor未检测到；没有启动宿主、执行Cursor／Claude专项测试、读取聊天或重启服务。真实Native窗口增量视觉核对尚未执行，不能由组件检查替代。
+
+并行会话继续修改项目待处理队列等文件，本次仅提交自身文件；上一检查点提交从暂存区剔除并行新增的backlog启动接线，工作树保留原改动，证据摘要仍对应本任务候选。

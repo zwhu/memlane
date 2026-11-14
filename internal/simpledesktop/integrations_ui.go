@@ -9,6 +9,13 @@ import (
 
 func (a *App) agentConnectionSettings(c *ui.Context) {
 	s := &a.integrations
+	ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
+		homeText(c, "自动检测本机 Agent，勾选后准备并启用连接。", homeMeta).Grow(1)
+		ui.Button(c, "重新检测").Disabled(s.Busy || s.Loading).OnClick(a.RefreshIntegrations)
+	})
+	if s.Loading {
+		homeText(c, "正在检测本机 Agent…", homeMeta)
+	}
 	if !s.Loaded {
 		homeText(c, "正在读取本机 Agent 接入配置", homeMeta)
 		if s.Error != "" {

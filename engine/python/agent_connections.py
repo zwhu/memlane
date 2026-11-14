@@ -354,13 +354,41 @@ def verify_artifact(installation):
         raise PolicyError('connection_binding_changed', 409)
 
 
+def detect_executable(kind, settings, legacy=None):
+    """Read-only discovery; explicit host paths are authoritative."""
+    configured = settings.get('executable') or legacy
+    if configured:
+        path = Path(configured).expanduser()
+        return str(path) if path.is_absolute() and path.is_file() and os.access(path, os.X_OK) else None
+    commands = {'codex': ('codex',), 'pi': ('pi',), 'traex': ('traecli', 'traex'),
+                'claude_code': ('claude',), 'cursor': ('cursor',), 'opencode': ('opencode',)}[kind]
+    for command in commands:
+        found = shutil.which(command)
+        if found:
+            return found
+    home = Path.home()
+    candidates = [base / command for base in (home / '.local/bin', home / '.bun/bin',
+                  Path('/opt/homebrew/bin'), Path('/usr/local/bin')) for command in commands]
+    if kind == 'opencode':
+        candidates.append(home / '.opencode/bin/opencode')
+    if kind == 'cursor':
+        candidates.extend(base / 'Cursor.app/Contents/Resources/app/bin/cursor'
+                          for base in (Path('/Applications'), home / 'Applications'))
+    return next((str(path) for path in candidates if path.is_file() and os.access(path, os.X_OK)), None)
+
+
 class Connections:
     def __init__(self, registry, config):
         self.registry, self.adapters = registry, {}
         self.mutex = asyncio.Lock()
+        self.config = config
+        self.discover()
+
+    def discover(self):
+        registry, config = self.registry, self.config
         configured = config.get('agent_hosts', {})
         codex = configured.get('codex', {})
-        executable = codex.get('executable') or config.get('codex_executable') or shutil.which('codex')
+        executable = detect_executable('codex', codex, config.get('codex_executable'))
         self.missing_codex = None
         if executable and Path(executable).is_file():
             from project_codex_connection import CodexConnection
@@ -373,27 +401,31 @@ class Connections:
         else:
             self.missing_codex = {'instance_id': 'codex-unavailable', 'kind': 'codex', 'detected': False,
                                   'status': 'not_connected'}
-        for kind, directory, command in [('pi', Path.home() / '.pi/agent', 'pi'), ('traex', Path.home() / '.trae', 'traecli'),
-                                          ('claude_code', Path.home() / '.claude', 'claude'), ('cursor', Path.home() / '.cursor', 'cursor')]:
+        for kind, directory in [('pi', Path.home() / '.pi/agent'), ('traex', Path.home() / '.trae'),
+                                ('claude_code', Path.home() / '.claude'), ('cursor', Path.home() / '.cursor')]:
             settings = configured.get(kind, {})
-            executable = settings.get('executable') or shutil.which(command)
-            if kind == 'cursor' and not executable:
-                candidate = Path('/Applications/Cursor.app/Contents/Resources/app/bin/cursor')
-                executable = str(candidate) if candidate.is_file() else None
+            executable = detect_executable(kind, settings)
             adapter = NativeConnection(registry, config, kind, settings.get('profile', directory),
                                        executable)
             self.adapters[adapter.id] = adapter
 
     def view(self):
-        rows = [self.missing_codex] if self.missing_codex else []
+        self.discover()
+        known_codex = any(getattr(a, 'kind', 'codex') == 'codex' for a in self.adapters.values())
+        rows = [self.missing_codex] if self.missing_codex and not known_codex else []
         for adapter in self.adapters.values():
             try:
                 row = adapter.view()
                 row.setdefault('kind', 'codex')
+                if row['kind'] == 'codex' and self.missing_codex:
+                    row['detected'] = False
             except PolicyError as error:
                 row = {'instance_id': adapter.id, 'kind': getattr(adapter, 'kind', 'codex'),
                        'status': 'requires_review', 'error_code': error.code}
             rows.append(row)
+        rows.append({'instance_id': 'opencode-discovery', 'kind': 'opencode',
+                     'detected': bool(detect_executable('opencode', self.config.get('agent_hosts', {}).get('opencode', {}))),
+                     'status': 'integration_pending'})
         return {'revision': self.registry.state['revision'], 'connections': rows}
 
     def operation(self, operation_id):

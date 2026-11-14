@@ -230,6 +230,9 @@ func (a *App) navigateKind(page string, index int, kind string) {
 		}
 	}
 	a.page = page
+	if page == "设置" {
+		a.RefreshIntegrations()
+	}
 	a.project = index
 	if page == "总览" {
 		a.loadOverview()
