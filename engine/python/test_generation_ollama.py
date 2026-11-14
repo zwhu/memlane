@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 from generation_config import GenerationStore, compile_environment, runtime_generation, validate_profile
 from generation_probe import probe
-from generation_ollama import receipt_for
+from generation_ollama import receipt_for, register_verified_schema
 from project_policy import PolicyError
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -142,7 +142,31 @@ class OllamaWireTests(unittest.IsolatedAsyncioTestCase):
         cls.environment.stop()
         cls.temporary.cleanup()
 
-    async def scenario(self, mode):
+    def test_temporary_capability_restores_aliases_and_persistent_registry(self):
+        import litellm
+        from litellm.utils import _runtime_registered_model_cost
+        model, bare = 'ollama_chat/memlane-restore-fixture', 'memlane-restore-fixture'
+        endpoint = 'http://127.0.0.1:11434'
+        persistent = copy.deepcopy(_runtime_registered_model_cost)
+        original = {'mode': 'chat', 'supports_response_schema': False, 'max_tokens': 8192}
+        litellm.model_cost[bare] = copy.deepcopy(original)
+        try:
+            restore = register_verified_schema(receipt_for(model, endpoint), model, endpoint)
+            # With an existing bare entry, register_model updates that alias.
+            self.assertTrue(litellm.model_cost[bare]['supports_response_schema'])
+            # Simulate aliases materialized by the SDK while proof is active.
+            litellm.model_cost[bare]['supports_response_schema'] = True
+            litellm.model_cost['ollama/' + bare] = {'supports_response_schema': True}
+            restore()
+            self.assertEqual(litellm.model_cost[bare], original)
+            self.assertNotIn(model, litellm.model_cost)
+            self.assertNotIn('ollama/' + bare, litellm.model_cost)
+            self.assertEqual(_runtime_registered_model_cost, persistent)
+        finally:
+            for alias in (model, bare, 'ollama/' + bare):
+                litellm.model_cost.pop(alias, None)
+
+    async def scenario(self, mode, options=None):
         requests = []
         expected = {'project': {'name': '\u6837\u4f8b\u9879\u76ee', 'rules': ['pnpm', 'TypeScript'], 'contact': None},
                     'ports': [43127, 43128], 'source': 'synthetic'}
@@ -185,13 +209,21 @@ class OllamaWireTests(unittest.IsolatedAsyncioTestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         endpoint = 'http://127.0.0.1:' + str(server.server_port)
-        environment = compile_environment({**PROFILE, 'endpoint': endpoint}, {})
+        environment = compile_environment({**PROFILE, **(options or {}), 'endpoint': endpoint}, {})
+        parameters = {}
+        if 'LLM_TEMPERATURE' in environment:
+            parameters['llm_temperature'] = float(environment['LLM_TEMPERATURE'])
+        if 'LLM_ARGS' in environment:
+            parameters['llm_args'] = json.loads(environment['LLM_ARGS'])
+            parameters['llm_max_completion_tokens'] = int(environment['LLM_MAX_COMPLETION_TOKENS'])
         cfg = self.LLMConfig(llm_provider=environment['LLM_PROVIDER'], llm_model=environment['LLM_MODEL'],
             llm_api_key=environment['LLM_API_KEY'], llm_endpoint=environment['LLM_ENDPOINT'],
-            structured_output_framework='litellm_native')
+            structured_output_framework='litellm_native', **parameters)
         token = self.context.set(cfg)
         import litellm
         previous_capability = copy.deepcopy(litellm.model_cost.get(environment['LLM_MODEL']))
+        from litellm.utils import _runtime_registered_model_cost
+        previous_persistent = copy.deepcopy(_runtime_registered_model_cost)
         try:
             with patch.dict(os.environ, {'OLLAMA_API_BASE': environment['OLLAMA_API_BASE']}), contextlib.redirect_stdout(io.StringIO()):
                 result = await asyncio.wait_for(probe(self.runtime), 30)
@@ -199,11 +231,23 @@ class OllamaWireTests(unittest.IsolatedAsyncioTestCase):
         finally:
             self.assertEqual(litellm.model_cost.get(environment['LLM_MODEL']), previous_capability,
                              'validation leaked its temporary SDK capability registration')
+            self.assertEqual(_runtime_registered_model_cost, previous_persistent,
+                             'validation leaked capability into the SDK persistent replay registry')
             self.context.reset(token)
             await asyncio.to_thread(server.shutdown)
             server.server_close()
             thread.join(timeout=2)
             self.assertFalse(thread.is_alive())
+
+    async def test_explicit_sampling_and_output_limit_reach_native_chat_wire(self):
+        result, requests = await self.scenario('normal', {'temperature': .6, 'max_output_tokens': 8192})
+        self.assertEqual(result['status'], 'passed', result)
+        chats = [body for path, _, body in requests if path == '/api/chat']
+        self.assertEqual(len(chats), 3)
+        for body in chats:
+            nonce = 'proof' in body.get('format', {}).get('properties', {}) if isinstance(body.get('format'), dict) else False
+            self.assertEqual(body['options']['num_predict'], 256 if nonce else 8192)
+            self.assertEqual(body['options']['temperature'], 0 if nonce else .6)
 
     async def test_native_chat_checks_random_schema_before_registering_selected_model(self):
         result, requests = await self.scenario('normal')

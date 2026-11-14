@@ -1,5 +1,7 @@
 # 多 Agent / Provider 当前支持与验收矩阵
 
+检查点五十五增量：Provider可选温度／输出上限已接入不可变配置及Native共用表单，受控原生协议与实际草稿／默认值／验证失效检查通过；新后台的实际保存和真实模型复验待完成。临时Ollama Schema注册现恢复别名与派生缓存，不写SDK持久重放表，处理日志回调收尾。原Thinking实际官方管线已以Timeout终结，材料仍pending1，尚未通过完整知识质量／新会话采用；不再描述为仍在处理。原语义质量失败2轮保持，独立Thinking处理超时失败1轮。详见[检查点五十五](multi-agent-provider-execution-20261114.md#检查点五十五provider参数临时能力隔离与thinking处理终态)。
+
 2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)最新检查点为准。用户已暂缓未安装Agent／Cursor后续测试、免除Claude Code追加测试；未验项不改为通过，既有结果保留。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
 
 ## 第一批 Agent

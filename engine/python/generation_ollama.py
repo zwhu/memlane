@@ -66,16 +66,25 @@ def register_verified_schema(evidence, model, endpoint):
     if not evidence_matches(evidence, model, endpoint):
         raise NativeSchemaUnconfirmed()
     import litellm
-    exists = model in litellm.model_cost
-    previous = copy.deepcopy(litellm.model_cost.get(model))
-    metadata = copy.deepcopy(previous or {})
+    # Runtime metadata lookups may also materialize the unqualified model or
+    # either Ollama prefix. Restore the whole selected alias family after a
+    # validation, including the SDK caches derived from those entries.
+    bare = model.split('/', 1)[1] if model.startswith(('ollama/', 'ollama_chat/')) else model
+    aliases = {model, bare, 'ollama/' + bare, 'ollama_chat/' + bare}
+    previous = {key: copy.deepcopy(litellm.model_cost[key]) for key in aliases if key in litellm.model_cost}
+    metadata = copy.deepcopy(previous.get(model, {}))
     metadata.update(supports_response_schema=True, litellm_provider='ollama_chat', mode='chat')
-    litellm.register_model({model: metadata})
+    litellm.register_model({model: metadata}, persist_across_reloads=False)
 
     def restore():
-        if exists:
-            litellm.register_model({model: previous})
-        else:
-            litellm.model_cost.pop(model, None)
+        for key in aliases:
+            if key in previous:
+                litellm.model_cost[key] = copy.deepcopy(previous[key])
+            else:
+                litellm.model_cost.pop(key, None)
+        # The fixed SDK explicitly requires invalidation after direct catalog
+        # changes; otherwise its normalized lookup can retain the proof.
+        from litellm.utils import _invalidate_model_cost_lowercase_map
+        _invalidate_model_cost_lowercase_map()
 
     return restore

@@ -1,0 +1,87 @@
+{
+  "scope": "Dev source, real pinned SDK against synthetic HTTP peers and actual Native draft UI; no real vendor model call in this check",
+  "observed_at": "2026-11-14T09:35:19.221460+00:00",
+  "source_sha256": {
+    "engine/python/generation_config.py": "0bc971a088ae67d1b6fc4beb5a277b33a9b82c962303a0e7198d6cf52e19ce74",
+    "engine/python/generation_ollama.py": "3fa63d31403e54300668ca6a59fb427054bb812083f9931e1d901d42c4643596",
+    "engine/python/generation_probe.py": "a0dbf5f414047c81feae0756166af17152af6a42ae3477bce6ac70d250e4fed9",
+    "engine/python/test_generation_parameters.py": "a8552bc7b54fe58f4feff1ee8766a821ccef5490c08a227f3a19f774a3e13511",
+    "engine/python/test_generation_ollama.py": "cbdc7104917005901b614e5b510e082c2960092f8993b314e6ef6fc61aa4b372",
+    "engine/python/test_generation_probe.py": "9cfcd4785d13344ec71a07c3e2434d48391f7fcd226a3c88c3229e092ea2ad5b",
+    "internal/simpledesktop/generation_parameters.go": "168f133b7d60cbbafc2b894c5666c8cf70677974e6d55788561dcad47aa60d81",
+    "internal/simpledesktop/generation_parameters_test.go": "3c059a1d13418214fde7537f8ad20307d828e9074082564cbe4a9becb3dbc5c5",
+    "internal/simpledesktop/integrations.go": "bd91a1b5add6604f32cbb3088b4d8e4221c1bc8b2387f070a310b1662bf065ad",
+    "internal/simpledesktop/integrations_ui.go": "662c22b0246feb2c995352584636733f1a42efa48ac0903fbe3331ec437b8814"
+  },
+  "checks": {
+    "python": {
+      "command": "python3 scripts/task.py -- env PYTHONPATH=engine/python .local/cognee-python/bin/python -m unittest -v test_generation_parameters test_generation_config test_generation_ollama test_generation_probe",
+      "passed": 31,
+      "seconds": 105.533,
+      "exit_code": 0,
+      "log_sha256": "7aa69422c349d2af896b8352fda96cfd8128a01bc1af491079353cb4d58909bc"
+    },
+    "go": {
+      "command": "sh scripts/go.sh test ./internal/simpledesktop -run 'TestGeneration|TestFirstGeneration|TestOllama' -count=1",
+      "exit_code": 0,
+      "seconds": 0.991,
+      "log_sha256": "8c66d74cec8ead089abdf9dda470bf19d4df627da153503a6a38fc5a109cc04f"
+    },
+    "gofmt": "four owned Go sources clean",
+    "diff_check": "passed"
+  },
+  "failure_history": [
+    {
+      "issue": "MA-OLLAMA-CAPABILITY-RESTORE01",
+      "failed_rounds": 2,
+      "symptom": "earlier fixture metadata/catalog state suppressed later /api/show; controlled diagnostic proved bare alias and persistent replay leak",
+      "fixed": "nonpersistent registration; restore selected alias family and invalidate derived cache",
+      "current": "real SDK wire and direct alias test passed"
+    },
+    {
+      "issue": "MA-OLLAMA-PROBE-CALLBACK-LIFETIME01",
+      "failed_rounds": 2,
+      "symptom": "introduced callback queried metadata after fixture server shutdown; sync socket wait on main thread",
+      "versions": [
+        "alias restoration without drain",
+        "worker flush before enqueue helpers ran"
+      ],
+      "cleanup": "owned test PIDs 57148 and 60726 interrupted with SIGINT; original handles returned 254; traceback retained",
+      "fixed": "join pinned SDK enqueue helpers then bounded flush before restoration and HTTP teardown",
+      "current": "continuous original fixed SDK tests passed"
+    },
+    {
+      "issue": "MA-GEN-PARAM-UI-VALIDATION-LABEL01",
+      "failed_rounds": 1,
+      "symptom": "dirty draft displayed unqualified old validation success",
+      "fixed": "prefix saved-configuration receipt; Native new screenshot reviewed",
+      "current": "passed"
+    }
+  ],
+  "fixture_errors": {
+    "gemini_wire_key": "one camelCase assertion corrected to pinned SDK max_output_tokens",
+    "ui_hastext": "one substring-matching assertion corrected",
+    "alias_registration_key": "one fixture assumed qualified row despite existing bare row; corrected to actual SDK target",
+    "preparation": [
+      "gofmt not on default PATH; used repository toolchain",
+      "exec helper __file__ pointed at stdin; corrected namespace before UI operation"
+    ]
+  },
+  "not_proven": [
+    "source-fresh backend Native save and reopen of new parameter revision",
+    "real model validation with new parameters",
+    "full knowledge quality and fresh-session adoption",
+    "Native backlog buttons",
+    "external provider credentials, Desktop and daily gates"
+  ],
+  "runtime_unchanged": {
+    "official_pid": 20913,
+    "control_pid": 21044,
+    "ollama_pid": 79296,
+    "official_and_control_not_restarted_for_this_source": true,
+    "original_generation_files_byte_unchanged": true,
+    "new_improve_or_material_replay": false,
+    "release": false,
+    "download": false
+  }
+}

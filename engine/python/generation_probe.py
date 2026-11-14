@@ -246,7 +246,24 @@ async def _probe(config):
     finally:
         litellm.acompletion = observation.complete
         if restore_schema is not None:
-            restore_schema()
+            # The isolated probe owns this SDK worker. Success logging can
+            # perform model lookups after acompletion returns; drain it while
+            # the endpoint, HTTP policy and temporary proof are still in scope.
+            from litellm.litellm_core_utils.logging_worker import GLOBAL_LOGGING_WORKER
+            try:
+                try:
+                    # Completion schedules the enqueue helper as a task; it
+                    # may not have run when the last response returns. Join
+                    # those helpers before flush inspects the worker queue.
+                    helpers = [task for task in asyncio.all_tasks()
+                               if getattr(task.get_coro(), '__qualname__', '') == '_client_async_logging_helper']
+                    if helpers:
+                        await asyncio.wait_for(asyncio.gather(*helpers), 5)
+                    await asyncio.wait_for(GLOBAL_LOGGING_WORKER.flush(), 5)
+                except asyncio.TimeoutError:
+                    await GLOBAL_LOGGING_WORKER.stop()
+            finally:
+                restore_schema()
         receipt.update(structured_mode=observation.mode, adapter_calls=observation.calls)
     return receipt
 

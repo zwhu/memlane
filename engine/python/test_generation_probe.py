@@ -17,10 +17,21 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from generation_probe import probe, CompletionObservation, ProbeFailure
+from generation_config import compile_environment
 
 ROOT = Path(__file__).resolve().parents[2]
 EXPECTED = {'project': {'name': '样例项目', 'rules': ['pnpm', 'TypeScript'], 'contact': None},
             'ports': [43127, 43128], 'source': 'synthetic'}
+
+
+def configured_parameters(provider, model, endpoint, parameters):
+    if parameters is None:
+        return {}
+    environment = compile_environment({'mode': 'provider', 'provider': provider, 'model': model,
+        'endpoint': endpoint, 'credential_ref': 'fixture', 'credential_version': 'v1', **parameters}, {}, 'synthetic-only-key')
+    return {'llm_temperature': float(environment['LLM_TEMPERATURE']),
+            'llm_max_completion_tokens': int(environment['LLM_MAX_COMPLETION_TOKENS']),
+            'llm_args': json.loads(environment['LLM_ARGS'])}
 
 
 class ProbeTests(unittest.IsolatedAsyncioTestCase):
@@ -50,7 +61,7 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
         cls.environment.stop()
         cls.temporary.cleanup()
 
-    async def scenario(self, mode, *, native=True):
+    async def scenario(self, mode, *, native=True, parameters=None):
         requests = []
         from cognee.infrastructure.llm.structured_output_framework.litellm_native.native_adapter import clear_nonstrict_demotions
         clear_nonstrict_demotions()
@@ -93,9 +104,13 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
         server = TestServer(app)
         await server.start_server()
         model = 'openai/gpt-4o-2024-08-06' if native else 'openai/memlane-unknown-fixture'
+        endpoint = str(server.make_url('/v1'))
+        options = configured_parameters('custom', model, endpoint, parameters)
+        options.setdefault('llm_args', {})
+        if mode == 'timeout':
+            options['llm_args']['timeout'] = .1
         cfg = self.LLMConfig(llm_provider='custom', llm_model=model, llm_api_key='synthetic-only-key',
-                             llm_endpoint=str(server.make_url('/v1')), structured_output_framework='litellm_native',
-                             llm_args={'timeout': .1} if mode == 'timeout' else {})
+                             llm_endpoint=endpoint, structured_output_framework='litellm_native', **options)
         token = self.context.set(cfg)
         import litellm
         original = litellm.acompletion
@@ -119,7 +134,7 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result['structured_mode_evidence'], 'official_adapter_request')
                 self.assertEqual(len(requests), 2)
 
-    async def native_protocol(self, provider, mode):
+    async def native_protocol(self, provider, mode, parameters=None):
         """Exercise the installed vendor wire adapter, not an OpenAI-shaped proxy."""
         requests = []
 
@@ -162,7 +177,8 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
         model = 'anthropic/claude-sonnet-4-6' if provider == 'anthropic' else 'gemini/gemini-2.5-flash'
         endpoint = str(server.make_url('/anthropic' if provider == 'anthropic' else '/v1beta'))
         cfg = self.LLMConfig(llm_provider=provider, llm_model=model, llm_api_key='synthetic-only-key',
-                             llm_endpoint=endpoint, structured_output_framework='litellm_native')
+                             llm_endpoint=endpoint, structured_output_framework='litellm_native',
+                             **configured_parameters(provider, model, endpoint, parameters))
         token = self.context.set(cfg)
         try:
             with contextlib.redirect_stdout(io.StringIO()):
@@ -175,6 +191,28 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
         finally:
             self.context.reset(token)
             await server.close()
+
+    async def test_explicit_parameters_reach_each_native_vendor_wire(self):
+        parameters = {'temperature': .6, 'max_output_tokens': 4096}
+        result, requests = await self.scenario('success', parameters=parameters)
+        self.assertEqual(result['status'], 'passed', result)
+        for body in requests:
+            self.assertEqual(body['temperature'], .6)
+            self.assertEqual(body['max_tokens'], 4096)
+        for provider in ('anthropic', 'gemini'):
+            with self.subTest(provider=provider):
+                result, requests = await self.native_protocol(provider, 'success', parameters)
+                self.assertEqual(result['status'], 'passed', result)
+                for row in requests:
+                    body = row['body']
+                    if provider == 'gemini':
+                        self.assertEqual(body['generationConfig']['temperature'], .6)
+                        # The pinned SDK serializes this protobuf field in
+                        # snake_case, as used by its native Gemini transport.
+                        self.assertEqual(body['generationConfig']['max_output_tokens'], 4096)
+                    else:
+                        self.assertEqual(body['temperature'], .6)
+                        self.assertEqual(body['max_tokens'], 4096)
 
     async def test_native_anthropic_and_gemini_wire_plain_schema_and_quality(self):
         for provider in ('anthropic', 'gemini'):

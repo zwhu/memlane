@@ -165,6 +165,7 @@ func (a *App) generationSettings(c *ui.Context) {
 		}
 		ui.Button(c, "添加 Provider").Disabled(s.Busy || s.SaveOperation != "").OnClick(func() {
 			s.editProfile("api-"+integrationOperation(), GenerationRow{Profile: GenerationProfile{Mode: "provider", Provider: "openai"}})
+			s.MaxOutputTokens = "16384"
 			s.Saved = nil
 			s.SavedSignature = ""
 			s.Error = ""
@@ -191,6 +192,14 @@ func (a *App) generationSettings(c *ui.Context) {
 			ui.Field(c, "模型 ID", func() {
 				ui.TextInput(fieldKey("model"), &s.Model).Label("处理模型 ID").Placeholder("实际模型 ID").FillWidth().Disabled(locked)
 			})
+			if s.DraftMode == "provider" {
+				ui.Field(c, "采样温度（可选）", func() {
+					ui.TextInput(fieldKey("temperature"), &s.Temperature).Label("模型采样温度").Placeholder("例如 0.6").FillWidth().Disabled(locked)
+				})
+				ui.Field(c, "最大输出 Token（可选）", func() {
+					ui.TextInput(fieldKey("output-tokens"), &s.MaxOutputTokens).Label("模型最大输出 Token").Placeholder("例如 16384").FillWidth().Disabled(locked)
+				})
+			}
 			if s.DraftMode == "provider" && s.draftProfile().Provider != "ollama" {
 				ui.Field(c, "API Key", func() {
 					ui.TextInput(c.Key(fmt.Sprintf("generation-key-%d", s.KeyEpoch)), &s.APIKey).Label("Provider API Key").Placeholder("已保存时留空保留").Password().FillWidth().Disabled(locked)
@@ -223,6 +232,9 @@ func (a *App) generationSettings(c *ui.Context) {
 		}
 		if s.ValidationOperation != "" {
 			label := map[string]string{"queued": "验证已登记", "running": "正在验证", "passed": "验证通过", "failed": "验证未通过", "result_unknown": "验证结果未确认"}[s.Validation.Status]
+			if !s.cleanSaved() {
+				label = "已保存配置的原验证：" + label
+			}
 			homeText(c, label, homeMeta)
 			if message := generationValidationMessage(s.Validation.ErrorCode); message != "" {
 				homeText(c, message, homeMeta).LineHeight(1.6)

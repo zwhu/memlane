@@ -7,6 +7,7 @@ import copy
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -32,7 +33,8 @@ def fingerprint(value):
 def validate_profile(value):
     if not isinstance(value, dict):
         raise PolicyError('invalid_generation_profile')
-    allowed = {'mode', 'provider', 'bridge_kind', 'model', 'endpoint', 'credential_ref', 'credential_version'}
+    allowed = {'mode', 'provider', 'bridge_kind', 'model', 'endpoint', 'credential_ref', 'credential_version',
+               'temperature', 'max_output_tokens'}
     if set(value) - allowed:
         raise PolicyError('invalid_generation_fields')
     model = value.get('model')
@@ -45,6 +47,14 @@ def validate_profile(value):
     elif mode == 'provider':
         if value.get('provider') not in PROVIDERS or 'bridge_kind' in value:
             raise PolicyError('unsupported_generation_provider')
+        if 'temperature' in value:
+            temperature = value['temperature']
+            if type(temperature) not in (int, float) or not 0 <= temperature <= 2 or not math.isfinite(temperature):
+                raise PolicyError('invalid_generation_temperature')
+        if 'max_output_tokens' in value:
+            tokens = value['max_output_tokens']
+            if type(tokens) is not int or not 1 <= tokens <= 131072:
+                raise PolicyError('invalid_generation_output_limit')
         endpoint = value.get('endpoint', '')
         if not isinstance(endpoint, str):
             raise PolicyError('invalid_generation_endpoint')
@@ -66,7 +76,10 @@ def validate_profile(value):
             raise PolicyError('generation_credential_version_required')
     else:
         raise PolicyError('unsupported_generation_mode')
-    return copy.deepcopy(value)
+    result = copy.deepcopy(value)
+    if 'temperature' in result:
+        result['temperature'] = float(result['temperature'])
+    return result
 
 
 def compile_environment(profile, runtime, credential=None):
@@ -94,6 +107,13 @@ def compile_environment(profile, runtime, credential=None):
     # explicitly selected protocol prefix, never guess from a model name.
     qualified = model if model.startswith(prefix + '/') else prefix + '/' + model
     result.update(LLM_PROVIDER=provider, LLM_MODEL=qualified, LLM_ENDPOINT=endpoint, LLM_API_KEY=key)
+    if 'temperature' in p:
+        result['LLM_TEMPERATURE'] = str(p['temperature'])
+    if 'max_output_tokens' in p:
+        result['LLM_MAX_COMPLETION_TOKENS'] = str(p['max_output_tokens'])
+        # The pinned native adapter forwards llm_args, but does not inject its
+        # stored max_completion_tokens into ordinary requests itself.
+        result['LLM_ARGS'] = json.dumps({'max_tokens': p['max_output_tokens']}, separators=(',', ':'))
     return result
 
 
@@ -145,7 +165,7 @@ class GenerationStore:
         credential_digest = (hashlib.sha256(self.secret(validated).encode()).hexdigest()
                              if requires_credential(validated) else None)
         return {'revision': revision, 'profile': validated,
-                'digest': fingerprint({'profile': profile, 'service_commit': self.service_commit,
+                'digest': fingerprint({'profile': validated, 'service_commit': self.service_commit,
                                        'credential_digest': credential_digest})}
 
     def checked(self, expected, operation_id, request):

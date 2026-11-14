@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -36,13 +37,15 @@ type GenerationRef struct {
 	Revision int64  `json:"revision"`
 }
 type GenerationProfile struct {
-	Mode                 string `json:"mode"`
-	Provider             string `json:"provider,omitempty"`
-	BridgeKind           string `json:"bridge_kind,omitempty"`
-	Model                string `json:"model"`
-	Endpoint             string `json:"endpoint,omitempty"`
-	CredentialVersion    string `json:"credential_version,omitempty"`
-	CredentialConfigured bool   `json:"credential_configured,omitempty"`
+	Mode                 string   `json:"mode"`
+	Provider             string   `json:"provider,omitempty"`
+	BridgeKind           string   `json:"bridge_kind,omitempty"`
+	Model                string   `json:"model"`
+	Endpoint             string   `json:"endpoint,omitempty"`
+	Temperature          *float64 `json:"temperature,omitempty"`
+	MaxOutputTokens      *int     `json:"max_output_tokens,omitempty"`
+	CredentialVersion    string   `json:"credential_version,omitempty"`
+	CredentialConfigured bool     `json:"credential_configured,omitempty"`
 }
 type GenerationRow struct {
 	Revision int64             `json:"revision"`
@@ -141,6 +144,7 @@ type integrationState struct {
 	BatchStop                                                                                   *atomic.Bool
 	Editor                                                                                      bool
 	ProfileID, ProviderLabel, DraftMode, BridgeKind, Model, Endpoint, APIKey, CredentialVersion string
+	Temperature, MaxOutputTokens                                                                string
 	CredentialConfigured                                                                        bool
 	Saved                                                                                       *GenerationRef
 	SavedSignature                                                                              string
@@ -376,6 +380,7 @@ func (s *integrationState) draftProfile() GenerationProfile {
 	providers := map[string]string{"OpenAI": "openai", "Anthropic": "anthropic", "Gemini": "gemini", "OpenAI 兼容": "custom", "Ollama（本机接口）": "ollama"}
 	profile.Provider = providers[s.ProviderLabel]
 	profile.Endpoint = strings.TrimSpace(s.Endpoint)
+	profile.Temperature, profile.MaxOutputTokens, _ = generationParameters(s.Temperature, s.MaxOutputTokens)
 	if profile.Provider != "ollama" {
 		profile.CredentialVersion = s.CredentialVersion
 	}
@@ -383,10 +388,14 @@ func (s *integrationState) draftProfile() GenerationProfile {
 }
 func (s *integrationState) signature() string {
 	p := s.draftProfile()
-	return fmt.Sprintf("%s|%s|%s|%s|%s", p.Mode, p.Provider, p.Model, p.Endpoint, p.CredentialVersion)
+	base := fmt.Sprintf("%s|%s|%s|%s|%s", p.Mode, p.Provider, p.Model, p.Endpoint, p.CredentialVersion)
+	if p.Mode == "provider" {
+		base += "|" + strings.TrimSpace(s.Temperature) + "|" + strings.TrimSpace(s.MaxOutputTokens)
+	}
+	return base
 }
 func (s *integrationState) cleanSaved() bool {
-	return s.Saved != nil && (s.APIKey == "" || s.draftProfile().Provider == "ollama") && s.signature() == s.SavedSignature && s.SaveOperation == ""
+	return s.generationParameterError() == nil && s.Saved != nil && (s.APIKey == "" || s.draftProfile().Provider == "ollama") && s.signature() == s.SavedSignature && s.SaveOperation == ""
 }
 func (s *integrationState) editProfile(id string, row GenerationRow) {
 	s.KeyEpoch++
@@ -399,6 +408,13 @@ func (s *integrationState) editProfile(id string, row GenerationRow) {
 	s.DraftMode = row.Profile.Mode
 	s.Model = row.Profile.Model
 	s.Endpoint = row.Profile.Endpoint
+	s.Temperature, s.MaxOutputTokens = "", ""
+	if row.Profile.Temperature != nil {
+		s.Temperature = strconv.FormatFloat(*row.Profile.Temperature, 'g', -1, 64)
+	}
+	if row.Profile.MaxOutputTokens != nil {
+		s.MaxOutputTokens = strconv.Itoa(*row.Profile.MaxOutputTokens)
+	}
 	s.APIKey = ""
 	s.CredentialVersion = row.Profile.CredentialVersion
 	s.CredentialConfigured = row.Profile.CredentialConfigured
@@ -415,6 +431,10 @@ func (a *App) saveGeneration() {
 		return
 	}
 	profile := s.draftProfile()
+	if err := s.generationParameterError(); err != nil {
+		s.Error = err.Error()
+		return
+	}
 	if profile.Model == "" || (profile.Mode == "provider" && (profile.Endpoint == "" || (profile.Provider != "ollama" && s.APIKey == "" && !s.CredentialConfigured))) {
 		s.Error = "请填写模型、API 地址和密钥"
 		return

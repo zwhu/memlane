@@ -636,3 +636,17 @@ MA-OLLAMA-VALIDATION-BUDGET01实际失败1轮：原总预算无法容纳该冷�
 新的独立合成项目按原retry_limit场景由真实pi／DeepSeek编码：先复现、修复、独立4项测试通过，41.25秒正常退出。测试源码与原驱动AST中的固定文本逐字节相同，跟踪修改仅retry_config.py，没有Cognee主动工具调用。官方正确dataset UUID收到QA1／trace7，后台为本轮Thinking，证明编码模型与处理Provider继续解耦。新项目不清零MA-OLLAMA-CODING-QUALITY01原2轮失败，也不修改原错误知识。
 
 原官方后台已启动add／cognify／memify等管线，当前数据1项处理pending1、尚无新知识。只读observer exec34482记录同session／dataset的实际activity／pipeline_run_id，已核对observer PID／lstart；不重投improve，观察窗口结束也不重启原任务。后续待原任务终态与实际知识正文，再按原工具0次的新pi会话验采用。当前自有launcher20911、official20913、control21044及Native／Ollama保留，源码预算变更已随新control启动读取；两份模型各有当前处理／未完成切换基线消费者，完成后核对清理。质量、新会话采用、Native积压及外部门槛仍未完成，完整Goal继续active。
+
+## 检查点五十五：Provider参数、临时能力隔离与Thinking处理终态
+
+新增Provider可选采样温度与最大输出Token，分别校验有限0至2和整数1至131072，显式0保留。参数纳入不可变配置摘要，修改或清空须保存并重新验证；Codex桥不接收这些参数。通过官方LLM_TEMPERATURE／LLM_ARGS.max_tokens传递，并同步官方上限字段；无参数的旧配置摘要和行为保持。新增Provider表单预填可见16384上限，旧配置不补参。实际固定SDK对受控HTTP端点确认OpenAI／兼容、Anthropic、Gemini及Ollama原生请求的温度与上限；不是供应商账号或真实模型质量验收。
+
+原无参数Thinking模型的受控协议证据表明普通／事实请求没有num_predict，虽然官方配置默认上限字段为16384。此为已证参数传递缺口，不证明原长请求的确切根因。随后连续协议检查发现临时Schema能力进入SDK的裸模型别名和持久重放注册表；MA-OLLAMA-CAPABILITY-RESTORE01原两次检查失败。修复不修改固定Cognee或SDK源码：注册不持久重放，恢复所选Ollama模型的别名族并使派生缓存失效。
+
+首次恢复修复引入异步日志回调生命周期问题，独立MA-OLLAMA-PROBE-CALLBACK-LIFETIME01累计失败2轮：回调在临时服务关闭后同步查询元数据，均保留采样／中断堆栈和日志，确认对应自有测试进程退出；未重启真实模型处理。仅flush队列不足，已进一步等待SDK的入队helper再有界flush，超时停止本进程日志worker，然后恢复临时能力。别名原值／持久注册表保持和连续原生Schema请求的定向检查已通过；不是把整个检查命令归为同一问题累计。
+
+实际1200×820 Native共用Provider编辑器已核对：旧参数为空、新增默认16384、编辑温度0.6／上限8192、验证及下次启动按钮禁用、滚动后字段与操作可达。发现旧“验证通过”提示未明确归属，已修为“已保存配置的原验证”，实际新截图确认；重新打开原配置丢弃本轮草稿，两份GenerationStore字节摘要均未变。未点击保存、验证或选用，运行中control／official尚未加载本轮Python源码，故新参数的Native保存至新后台及真实模型复验仍待完成。[实际窗口及参数协议证据](evidence/multi-agent-development-20261114/generation-parameters/native-editor.json)。
+
+只读重新核对原Thinking session的官方activity取得终态：cognify c5abc00b…在09:20:11 UTC以Timeout失败，memify 358ba44e…在09:20:16以派生CognifyFailedError失败；原库2项中completed1／pending1。日志标明实际连接超时预算600秒，完整管线耗时不能当作单次请求耗时；activity的tokens=0也不能证明无模型调用。MA-OLLAMA-THINKING-PROCESSING-TIMEOUT01失败1轮，派生错误不重复计次；原MA-OLLAMA-CODING-QUALITY01仍为2轮。未重复投递improve、补写知识或启动采用场景，旧观察窗口到期不作为终态依据。[原管线终态证据](evidence/multi-agent-development-20261114/ollama-thinking-processing-terminal.json)。
+
+最终4个Python模块31项合并回归通过（105.533秒），Go配置／首次配置／Ollama定向检查通过（0.991秒），四个自有Go文件gofmt及diff检查通过。[检查命令、源码摘要及失败历史](evidence/multi-agent-development-20261114/generation-parameters/checks.json)。方法错误另保留：Gemini原断言误用camelCase而固定SDK发送snake_case、Go HasText为子串匹配、裸模型已存在时SDK注册更新裸别名，分别修正夹具；gofmt未使用仓库工具链路径及UI helper的__file__准备错误均在产品操作前失败，不计为模型质量失败。未追加Claude Code／Cursor或未安装宿主测试，无release、模型下载或日常配置变更。完整Goal继续active；Native积压、参数实际保存／模型复验、完整知识质量与采用及外部账号／Desktop／日常门槛仍待完成。
