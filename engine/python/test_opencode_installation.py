@@ -40,6 +40,8 @@ class OpenCodeArtifactTests(unittest.TestCase):
         self.assertEqual(len(list((self.artifact / 'upstream').rglob('*.*'))) > 10, True)
         self.assertTrue((self.artifact / 'upstream/LICENSE').is_file())
         self.assertTrue((self.artifact / 'dist/src/managed-actions.js').is_file())
+        self.assertTrue((self.artifact / 'dist/src/managed-backlog.js').is_file())
+        self.assertIn('dist/src/managed-backlog.js', manifest['files'])
         self.assertFalse((self.artifact / 'node_modules/typescript').exists())
         self.assertFalse((self.artifact / 'dist/src/cli.js').exists())
         self.assertNotIn('bin', json.loads((self.artifact / 'package.json').read_text()))

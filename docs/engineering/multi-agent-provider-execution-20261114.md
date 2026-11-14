@@ -570,3 +570,15 @@ MA-CONNECTION-COMPONENT-PREFLIGHT01源码缺口已修正：pi／TraeX未配置so
 先补固定官方Outbox内部原语：reviewBacklog仅给出definite IDs／unknown数量；releaseBacklogEntry要求共享租约，区分已被其他操作处理、原未知隔离、允许释放和原target改变，禁止从冻结清单之外顺带发送。6项补丁门禁及1驱动内17项Node（新增3场景）通过，1.095秒；包括未知／正文不进快照、新消息不并入原同意范围、发送租约及重启、已删除与跨target区别。首轮使用运行组件的node_modules，因无开发编译器在编译前退出，方法错误1；改用既有upstream开发依赖通过，无下载。
 
 本轮没有构造／激活包含新原语的组件，没有宣称worker或Native积压按钮通过。下一步实现管理认证的Node backlog worker、coordinator协议派发、新固定组件及明确升级，再按连续目标实际Native验收。Ollama质量问题另保持1轮；只读核对原QA答案850字符、小于官方1200上限且包含修复及4项回归，排除该QA答案被此上限截断的解释，其余模型／候选来源／上下文原因仍未知。服务和一个模型保留供后续；完整Goal继续active。[原语证据](evidence/multi-agent-development-20261114/opencode-backlog-primitives.json)。
+
+## 检查点四十九：OpenCode持续保存协议与实际后台连续验收
+
+新增管理认证的Node backlog worker和Python协议适配：固定原session／target的明确capture IDs，复用原官方Outbox与共享发送租约，每条重读权限；新到记录不并入，既有未知隔离，新未知暂停，不探测重发。5秒元数据心跳、协作取消及子进程PID／lstart／退出回执齐备；处理中复用原improve水位和未知账本，不追加第二次官方POST。原四类one-shot动作保留。共享project_backlog.py仅追加协议派发及处理回执两处接线，避免Node进入Python安装校验；该文件由其他任务拥有，未纳入本轮提交，精确补丁随证据保留。测试依赖当前共享工作树，不宣称本次提交单独包含整个项目积压入口。
+
+33项Node控制场景、7项Python适配检查（4项派发、3项实际固定worker）、4项既有Python积压回归及5项离线组件构建／manifest／loader检查通过；最初8项Python运行与后续7项有4项重合，不重复计数。初版组件未包含动态导入的managed-backlog.js，MA-OPENCODE-BACKLOG-ARTIFACT01失败1轮，未启用；显式加入tsc入口后v2完整产物3674文件、manifest 966c8569…通过。只清理无引用的本轮v1，保留manifest，不清理旧运行依赖。
+
+复用本轮原服务与私有OpenCode主体，明确准备后在实际Native启用v2，原主体／项目绑定保持。连接观察请求10秒超时，按原operation核对已完成且实窗已配置，没有重复启用；v2尚未新增真实宿主新会话，旧代际会话回执不外推。实际后台管理API执行4个终态任务：等待租约后仅存冻结2条，期间新增留到第二次明确启动才保存；核对只确认已落库未知，不再POST；等待中停止时队列字节不变，明确继续只保存剩余1条。最终A／B／已落库未知／新增／停止后续存各1条，无法确认未知0次POST且仍隔离；官方QA共6条，含原READY。样本均为合成数据。未知两类分别由“真实POST后应用层丢失ack”和“发送前受控失败”构造，不冒充自然断网。
+
+本轮未通过实际Native积压保存／停止／核对按钮验收。CUA共4次窗口定位准备调用失败，停止重复定位；早期3次精确参数／时间未留存，不据此认定产品验收失败4轮。实际SDK截图、可见控件动作及OS可见／授权事实成立，但侧栏悬停项目菜单未完成操作，原因未知；没有认定产品设计错误或桌面被锁。已请求可选手动打开项目设置，未收到操作回执。仅继续不依赖该入口的后台场景；工具定位问题与产品失败计数分开保留。[证据及接线补丁](evidence/multi-agent-development-20261114/opencode-continuous-backlog.json)。
+
+4个Node保存worker已确认退出，原动作回执文件未变；本轮official／control／UI及单个Ollama模型保留供实际Native与质量验收，OpenCode宿主保持已停止。仅合成项目的OpenCode auto_process=false覆盖保留，原值快照仍在，待本范围后续验收结束再恢复；日常配置、其他策略、旧服务不改。Ollama真实知识质量仍失败1轮，外部Provider／Desktop／日常采用门槛保持，完整Goal未完成；不进入release。

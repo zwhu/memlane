@@ -208,7 +208,7 @@ const compiled = new URL("./", pathToFileURL(process.env.MEMLANE_OPENCODE_TEST_C
 const { ManagedDelivery } = await import(new URL("managed-delivery.js", compiled));
 const { Outbox } = await import(new URL("runtime.js", compiled));
 const { CogneeHttpClient } = await import(new URL("client.js", compiled));
-async function officialServer({loseFirstResponse = false, credential = "synthetic-child-key", loseLifecycleResponse = false, loseImproveResponse = false, loseRememberResponse = false, sessionDetail} = {}) {
+async function officialServer({loseFirstResponse = false, credential = "synthetic-child-key", loseLifecycleResponse = false, loseImproveResponse = false, loseRememberResponse = false, sessionDetail, afterEntry} = {}) {
   const writes = [], recalls = [], lifecycles = [], improvements = [], remembers = [];
   let lookups = 0;
   const server = await listener(async (req, res) => {
@@ -219,6 +219,7 @@ async function officialServer({loseFirstResponse = false, credential = "syntheti
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       writes.push(JSON.parse(Buffer.concat(chunks).toString()));
+      if (afterEntry) await afterEntry(writes.length);
       if (loseFirstResponse && writes.length === 1) { res.destroy(); return; }
       res.end('{"status":"saved"}'); return;
     }
@@ -770,4 +771,110 @@ test("pending commands reject stale consent and withdrawn write policy without a
     const dropped = await f.manager.run({...f.command, action: "discard", signature: fresh.signature});
     assert.equal(dropped.discarded, 2); assert.equal(f.queue.status().saved, 0);
   } finally {await f.close();}
+});
+
+
+const {ManagedBacklog} = await import(new URL("managed-backlog.js", compiled));
+const backlogManager = (f, credential = join(root, "manager-token")) => new ManagedBacklog(f.control, f.server.client, f.queue,
+  new ManagedActions(f.control, f.server.client, join(root, f.native + "-backlog-actions"), "a"),
+  {origin, instanceId: "a", managementTokenFile: credential});
+const backlogSave = (f, snapshot) => ({...f.command, action: "backlog_save", tokens: snapshot.tokens,
+  session_id: snapshot.session_id, native_session: snapshot.native, cancel_file: join(root, f.native + ".stop")});
+
+test("backlog requires manager auth, freezes known IDs and leaves unknown and new arrivals untouched", async () => {
+  const f = await pendingFixture("backlog-auth"), manager = backlogManager(f);
+  try {
+    const unknown = hash("backlog unknown"), known = hash("backlog reviewed"), later = hash("backlog new arrival");
+    f.queue.enqueue(unknown, f.session, {type: "qa", context: "unknown-marker", answer: "PRIVATE_UNKNOWN"}, f.target);
+    await assert.rejects(f.queue.flush(async () => {throw new Error("lost response");}, async () => false));
+    f.queue.enqueue(known, f.session, {type: "qa", context: "reviewed-marker", answer: "PRIVATE_KNOWN"}, f.target);
+    const before = readFileSync(f.queue.file);
+    await assert.rejects(backlogManager(f, tokenFile).runBacklog({...f.command, action: "backlog_review"}, () => {}), /pending_manager_auth_required/);
+    assert.deepEqual(readFileSync(f.queue.file), before);
+    const snapshot = await manager.runBacklog({...f.command, action: "backlog_review"}, () => {});
+    assert.deepEqual(snapshot.tokens, [known]); assert.equal(snapshot.unknown, 1); assert.ok(!JSON.stringify(snapshot).includes("PRIVATE_"));
+    f.queue.enqueue(later, f.session, {type: "qa", context: "later-marker"}, f.target);
+    const progress = [], saved = await manager.runBacklog(backlogSave(f, snapshot), p => progress.push(p));
+    assert.equal(saved.status, "completed"); assert.equal(saved.saved, 1); assert.equal(saved.remaining, 0);
+    assert.equal(f.server.writes.length, 1); assert.equal(f.server.writes[0].entry.context, "reviewed-marker");
+    assert.equal(f.server.lookups(), 0); assert.equal(f.server.improvements.length, 0);
+    assert.deepEqual(f.queue.reviewBacklog(f.target, f.session), {session_id: f.session, tokens: [later], unknown: 1});
+    assert.ok(progress.every(p => p.saved + p.handled + p.isolated + p.remaining === 1));
+    await assert.rejects(manager.runBacklog({...backlogSave(f, snapshot), native_session: "changed-native"}, () => {}), /invalid_pending_action/);
+  } finally {await f.close();}
+});
+
+test("backlog waiting for another sender cooperatively stops without releasing or sending records", async () => {
+  const f = await pendingFixture("backlog-wait"), manager = backlogManager(f);
+  let release;
+  try {
+    f.queue.enqueue(hash("wait"), f.session, {type: "qa"}, f.target);
+    const snapshot = await manager.runBacklog({...f.command, action: "backlog_review"}, () => {}), command = backlogSave(f, snapshot);
+    const occupied = f.queue.withSender(async () => await new Promise(resolve => {release = resolve;}));
+    const result = await manager.runBacklog(command, p => {if (p.status === "waiting") writeFileSync(command.cancel_file, "stop", {mode: 0o600});});
+    assert.equal(result.status, "stopped"); assert.equal(result.remaining, 1); assert.equal(result.saved, 0);
+    release(); release = undefined; await occupied;
+    assert.equal(f.server.writes.length, 0); assert.equal(f.queue.status().pending, 1);
+  } finally {if (release) release(); await f.close();}
+});
+
+test("backlog stop during a POST keeps its confirmed receipt and does not send the next frozen ID", async () => {
+  let cancel;
+  const f = await pendingFixture("backlog-inflight-stop", {afterEntry: async () => writeFileSync(cancel, "stop", {mode: 0o600})});
+  try {
+    const manager = backlogManager(f);
+    for (const id of [hash("stop-first"), hash("stop-second")]) f.queue.enqueue(id, f.session, {type: "qa"}, f.target);
+    const snapshot = await manager.runBacklog({...f.command, action: "backlog_review"}, () => {}), command = backlogSave(f, snapshot); cancel = command.cancel_file;
+    const result = await manager.runBacklog(command, () => {});
+    assert.equal(result.status, "stopped"); assert.equal(result.saved, 1); assert.equal(result.remaining, 1);
+    assert.equal(f.server.writes.length, 1); assert.equal(f.queue.status().saved, 1); assert.equal(f.queue.status().pending, 1);
+  } finally {await f.close();}
+});
+
+test("backlog new lost response is isolated and pauses before another POST, without probing or replay", async () => {
+  const f = await pendingFixture("backlog-new-unknown", {loseFirstResponse: true});
+  try {
+    const manager = backlogManager(f);
+    for (const id of [hash("unknown-first"), hash("unknown-second")]) f.queue.enqueue(id, f.session, {type: "qa"}, f.target);
+    const snapshot = await manager.runBacklog({...f.command, action: "backlog_review"}, () => {});
+    const result = await manager.runBacklog(backlogSave(f, snapshot), () => {});
+    assert.equal(result.status, "paused"); assert.equal(result.reason, "request_result_unknown");
+    assert.equal(result.saved, 0); assert.equal(result.isolated, 1); assert.equal(result.remaining, 1);
+    assert.equal(f.server.writes.length, 1); assert.equal(f.server.lookups(), 0);
+    const fresh = await manager.runBacklog({...f.command, action: "backlog_review"}, () => {});
+    assert.equal(fresh.unknown, 1); assert.equal(fresh.tokens.length, 1); assert.equal(f.server.writes.length, 1);
+  } finally {await f.close();}
+});
+
+test("backlog rereads withdrawn write policy before each frozen record", async () => {
+  let project;
+  const f = await pendingFixture("backlog-revoked", {afterEntry: async () => access(project, {access: "read"})});
+  try {
+    project = f.policy.project_id; const manager = backlogManager(f);
+    for (const id of [hash("policy-first"), hash("policy-second")]) f.queue.enqueue(id, f.session, {type: "qa"}, f.target);
+    const snapshot = await manager.runBacklog({...f.command, action: "backlog_review"}, () => {});
+    const result = await manager.runBacklog(backlogSave(f, snapshot), () => {});
+    assert.equal(result.status, "paused"); assert.equal(result.reason, "write_denied");
+    assert.equal(result.saved, 1); assert.equal(result.remaining, 1); assert.equal(f.server.writes.length, 1);
+  } finally {await f.close();}
+});
+
+
+test("backlog processing follows automatic-processing policy and preserves original watermark receipts across callers", async () => {
+  for (const lost of [false, true]) {
+    const f = await pendingFixture("backlog-process-" + lost, {loseImproveResponse: lost});
+    try {
+      const manager = backlogManager(f);
+      f.queue.enqueue(hash("process"), f.session, {type: "qa"}, f.target);
+      const snapshot = await manager.runBacklog({...f.command, action: "backlog_review"}, () => {});
+      await manager.runBacklog(backlogSave(f, snapshot), () => {});
+      const command = {...backlogSave(f, snapshot), action: "backlog_process"}; delete command.tokens;
+      await access(f.policy.project_id, {auto_process: false});
+      assert.equal((await manager.runBacklog(command, () => {})).status, "disabled"); assert.equal(f.server.improvements.length, 0);
+      await access(f.policy.project_id, {auto_process: true});
+      assert.equal((await manager.runBacklog(command, () => {})).status, lost ? "unknown" : "submitted");
+      assert.equal((await backlogManager(f).runBacklog(command, () => {})).status, lost ? "unknown" : "submitted");
+      assert.equal(f.server.improvements.length, 1);
+    } finally {await f.close();}
+  }
 });

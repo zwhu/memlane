@@ -12,15 +12,15 @@ const uuid = (value: unknown) => typeof value === "string" && /^[0-9a-f]{8}-[0-9
 const failure = (code: string): never => { throw new Error(code); };
 
 export class ManagedPending {
-  private readonly options: Readonly<Options>;
-  constructor(private readonly control: ManagedProjectControl, private readonly client: CogneeHttpClient,
-              private readonly queue: Outbox, private readonly actions: ManagedActions, options: Options) {
+  protected readonly options: Readonly<Options>;
+  constructor(protected readonly control: ManagedProjectControl, protected readonly client: CogneeHttpClient,
+              protected readonly queue: Outbox, protected readonly actions: ManagedActions, options: Options) {
     const url = new URL(options.origin);
     if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port || url.username || url.password ||
         url.pathname !== "/" || url.search || url.hash || !/^[a-zA-Z0-9_-]{1,64}$/.test(options.instanceId)) failure("pending_manager_unconfirmed");
     this.options = Object.freeze({...options, origin: url.origin});
   }
-  private async authorize(command: Readonly<Command>): Promise<void> {
+  protected async authorize(command: Readonly<Command>): Promise<void> {
     let token: string;
     try { token = readPrivateMetadata(this.options.managementTokenFile).trim(); }
     catch { failure("pending_manager_auth_required"); }
@@ -55,7 +55,7 @@ export class ManagedPending {
         !directory.bindings.some((row: any) => row.agent_id === this.options.instanceId &&
           row.project_id === command.project_id && row.host_session_key === command.host_session_key)) failure("original_project_target_unconfirmed");
   }
-  private original(command: Readonly<Command>): {target: ProjectTarget; session: string} | undefined {
+  protected original(command: Readonly<Command>): {target: ProjectTarget; session: string} | undefined {
     const sessions = this.queue.pendingSessions().filter(row => this.control.hostKey(row.target.native) === command.host_session_key);
     if (!sessions.length) return undefined;
     if (sessions.length !== 1) failure("original_pending_session_unconfirmed");
@@ -66,7 +66,7 @@ export class ManagedPending {
     this.control.confirmTarget(original.target);
     return original;
   }
-  private writable(policy: ProjectPolicy): void {
+  protected writable(policy: ProjectPolicy): void {
     if (!policy.policy.permissions.includes("write")) failure("project_write_denied");
     if (!policy.policy.can_capture) failure("project_capture_disabled");
   }

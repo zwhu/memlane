@@ -18,7 +18,7 @@ from opencode_plugin_patch import (managed_http_client, managed_outbox, managed_
 
 ROOT = Path(__file__).resolve().parents[2]
 SUPPORT = ('managed-control.ts', 'managed-delivery.ts', 'managed-capture-window.ts',
-           'managed-config.ts', 'managed-recall.ts', 'managed-actions.ts', 'managed-pending.ts', 'managed-pending-cli.ts')
+           'managed-config.ts', 'managed-recall.ts', 'managed-actions.ts', 'managed-pending.ts', 'managed-backlog.ts', 'managed-pending-cli.ts')
 
 
 def digest(data):
@@ -170,7 +170,7 @@ def build(output, npm_cache, *, node='node', archive=None):
         compile_result = subprocess.run([node, str(work / 'node_modules/typescript/bin/tsc'), '--strict',
                                          '--target', 'ES2022', '--module', 'NodeNext', '--moduleResolution', 'NodeNext',
                                          '--skipLibCheck', '--types', 'node', '--rootDir', str(work),
-                                         '--outDir', str(work / 'dist'), str(work / 'index.ts'), str(work / 'src/managed-pending.ts'), str(work / 'src/managed-pending-cli.ts')],
+                                         '--outDir', str(work / 'dist'), str(work / 'index.ts'), str(work / 'src/managed-pending.ts'), str(work / 'src/managed-backlog.ts'), str(work / 'src/managed-pending-cli.ts')],
                                         cwd=work, capture_output=True, text=True, timeout=60)
         if compile_result.returncode:
             raise ValueError('fixed OpenCode TypeScript compilation failed: ' + compile_result.stdout + compile_result.stderr)

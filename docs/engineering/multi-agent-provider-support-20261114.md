@@ -100,3 +100,9 @@ pi／TraeX缺少source／manifest时卡片显示接入组件未就绪，直接pr
 OpenCode实际Native设置准备／启用、真实1.3.5新会话、官方正确dataset的QA1／trace0与Native连接回执均通过，原pi／TraeX主体不变；私有配置，投递样本自动处理关闭，不证明新知识质量。[实窗](evidence/multi-agent-development-20261114/native-opencode-binding-receipt.json)。
 
 项目设置最新后台持续保存只验证Python安装，OpenCode需新增Node协议分派；未以旧Go one-shot成功冒充新入口通过。内部冻结definite IDs／租约逐项释放原语及17项Node检查已通过，管理worker、新固定组件和实际Native积压流程未完成。[证据](evidence/multi-agent-development-20261114/opencode-backlog-primitives.json)。Ollama知识质量原失败1轮及外部门槛保持。
+
+### 检查点四十九增量
+
+OpenCode管理Node持续保存worker与Python协议适配完成，固定原目标／冻结IDs、原未知隔离、新未知暂停、实时权限、发送租约及协作停止均有检查。33项Node、7项Python适配、4项既有积压回归、5项组件检查通过。实际Native已启用新固定组件，真实官方服务后台4任务连续保存／核对／停止／明确继续通过，最终仅剩1条隔离未知，没有重投；自动处理关闭，不证明知识质量。共享coordinator两处接线已用于本机检查，未随本轮提交，精确补丁随证据保留。
+
+实际Native积压按钮仍未验：CUA累计4次定位准备失败已停止重复调用，SDK侧栏悬停菜单操作未完成，等待可选用户打开设置回执；工具问题未当成产品4次验收失败。v2新宿主会话、Ollama质量及外部门槛仍未完成。[证据](evidence/multi-agent-development-20261114/opencode-continuous-backlog.json)。

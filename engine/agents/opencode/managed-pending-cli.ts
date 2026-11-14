@@ -16,7 +16,7 @@ function keys(value: any, allowed: string[]) {
 }
 try {
   const chunks: Buffer[] = []; let size = 0;
-  for await (const chunk of process.stdin) {size += chunk.length; if (size > 65536) fail(); chunks.push(chunk);}
+  for await (const chunk of process.stdin) {size += chunk.length; if (size > 16 * 1024 * 1024) fail(); chunks.push(chunk);}
   const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   keys(input, ["installation", "agent_id", "operator", "command"]);
   keys(input.installation, ["plugin_dir", "manifest_sha256", "binding_file", "binding_sha256", "node_executable", "node_sha256"]);
@@ -65,8 +65,17 @@ try {
   const actions = new ManagedActions(control, client, join(cfg.stateDir, "actions"), binding.memlane.instanceId);
   const worker = new ManagedPending(control, client, queue, actions,
     {origin: binding.memlane.origin, instanceId: binding.instance_id, managementTokenFile: input.operator.token_file});
-  const result = await worker.run(input.command);
-  process.stdout.write(JSON.stringify(result) + "\n"); if (result.error) process.exitCode = 1;
+  if (["backlog_review", "backlog_save", "backlog_process"].includes(input.command?.action)) {
+    if (!found["dist/src/managed-backlog.js"]) fail();
+    const {ManagedBacklog} = await module("managed-backlog");
+    const backlog = new ManagedBacklog(control, client, queue, actions,
+      {origin: binding.memlane.origin, instanceId: binding.instance_id, managementTokenFile: input.operator.token_file});
+    const result = await backlog.runBacklog(input.command, (value: unknown) => process.stdout.write(JSON.stringify(value) + "\n"));
+    if (input.command.action !== "backlog_save") process.stdout.write(JSON.stringify(result) + "\n");
+  } else {
+    const result = await worker.run(input.command);
+    process.stdout.write(JSON.stringify(result) + "\n"); if (result.error) process.exitCode = 1;
+  }
 } catch (error) {
   let code = error instanceof Error ? error.message : "";
   if (code === "Outbox busy") code = "buffer_send_in_progress";
