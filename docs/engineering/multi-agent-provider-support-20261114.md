@@ -1,6 +1,6 @@
 # 多 Agent / Provider 当前支持与验收矩阵
 
-2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)检查点二十四为准。用户已暂缓Cursor后续测试、免除Claude Code追加测试；未验项不改为通过，既有结果保留。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
+2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)检查点二十五为准。用户已暂缓Cursor后续测试、免除Claude Code追加测试；未验项不改为通过，既有结果保留。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
 
 ## 第一批 Agent
 
@@ -38,5 +38,7 @@
 ## 实施与交付范围
 
 I01基线提交／tag、I02通用连接与迁移、I03官方核心薄适配、I06配置模块、I07启动接线、I09 Native源码已实现，各自证据范围见上表。I04／I05主编码闭环有真实证据。I08中Claude已补限定实链，Cursor未补；I06／I10不能因配置和SDK夹具通过而算远端账号完成，I01–I10完整冻结交付尚未完成。
+
+检查点二十五的[剩余门槛审计](evidence/multi-agent-development-20261114/remaining-gates-checkpoint25.json)确认候选7份源码摘要一致及原日常数据组带认证读取200。当前会话source为vscode，不作Desktop证据；已请求普通Desktop新会话与原生Provider私有配置路径，等待实际输入后继续相应验收及I10日常收口。
 
 MA07／LP05 OpenCode电脑级全流程与Ollama／本机模型Schema及质量属于原定第二批，仍单独待实施／验收；本轮不挤掉首批、不改为首批已交付，也不从完整目标记录中删除。旧图谱328字节README及旧helper停止问题不重跑。

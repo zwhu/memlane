@@ -8,7 +8,7 @@
 
 基线提交仅包含本轮方案、脱敏接口事实和此账本；实施前创建本地注释tag。不得提交本机凭据。
 
-## 连续场景与依赖（当前状态：检查点二十四）
+## 连续场景与依赖（当前状态：检查点二十五）
 
 逐项证据与限制统一见[当前支持矩阵](multi-agent-provider-support-20261114.md)。下方历史检查点保持原始日期状态，不代表当前仍未实施。
 
@@ -364,3 +364,13 @@ MA-CODEX-FACT01的**目标关系实链复验通过**，历史失败1轮保留；
 已停止后续Cursor／Claude Code测试。核对Cursor无存活消费者、镜像不再挂载、现有runtime不引用独立App后，清理约971MiB的临时App；303MB镜像此前已在签名核对后卸载并清理，只留小型准备／签名／方法回执与[脱敏摘要](evidence/multi-agent-development-20261114/cursor-host-preparation-deferred.json)。CUA已完成收尾，原服务、Agent配置、库及其他会话的源码修改保持。
 
 首批整体仍估算94%，不把用户免验折算为新增测试通过；完整目标继续active。后续聚焦Codex Desktop日常回归及OpenAI／Anthropic／Gemini原生Provider前置与实测；第二批仍按原方案单列，旧停止问题不恢复。
+
+## 开发检查点二十五：剩余门槛审计
+
+以当前工作树及方案第7／9节重新核对。11份已有工程JSON均可解析；Codex输入修复和Cursor代际管理器两份证据中的7个源码SHA与当前文件相符。仅做文件读取／摘要核对，不重跑Cursor／Claude测试、安装器或模型。日常服务带原owner正式key读取datasets为HTTP200，原memlane数据组`0785e3d2-881a-58c4-883e-cc3d2dcf76ef`存在；没有重启服务、改写配置或读取其知识正文来制造新成果。[审计快照](evidence/multi-agent-development-20261114/remaining-gates-checkpoint25.json)。
+
+当前线程原生metadata为source=`vscode`、originator=`codex-tui`、0.169.0；不能把当前用户问答算作Desktop普通新会话。本轮已给用户具体只读问题，请在Codex Desktop为memlane新建普通会话，仅按自动记忆回答桌面框架／记忆引擎，再由本Agent核对实际来源、QA／工具及采用。不新建委派任务冒充普通问答，也不尝试绕过既有CUA限制或恢复已停止helper问题。
+
+再次核对当前环境OpenAI／Anthropic／Gemini／Google key均未配置，私有配置路径问题仍待用户答复；不推断整台机器没有凭据，不遍历未知私有文件或使用DeepSeek替代原生账号。当前两个外部前置组为Desktop新会话和三类Provider账号；I10完整冻结／日常接管须在相应证据齐备后收口。第二批保持单列，Cursor暂缓／Claude免验及原失败计数不变。
+
+整体仍约94%。本轮取得当前来源、原日常数据组可达及候选摘要一致的新证据；完整目标未完成、继续active。其余Native／产品文件为其他会话WIP，未测试或提交；没有新的产品失败轮次、release或重置卡使用。
