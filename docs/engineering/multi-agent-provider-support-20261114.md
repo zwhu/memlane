@@ -1,6 +1,6 @@
 # 多 Agent / Provider 当前支持与验收矩阵
 
-2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)检查点二十五为准。用户已暂缓Cursor后续测试、免除Claude Code追加测试；未验项不改为通过，既有结果保留。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
+2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)检查点二十六为准。用户已暂缓未安装Agent／Cursor后续测试、免除Claude Code追加测试；未验项不改为通过，既有结果保留。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
 
 ## 第一批 Agent
 
@@ -41,4 +41,4 @@ I01基线提交／tag、I02通用连接与迁移、I03官方核心薄适配、I0
 
 检查点二十五的[剩余门槛审计](evidence/multi-agent-development-20261114/remaining-gates-checkpoint25.json)确认候选7份源码摘要一致及原日常数据组带认证读取200。当前会话source为vscode，不作Desktop证据；已请求普通Desktop新会话与原生Provider私有配置路径，等待实际输入后继续相应验收及I10日常收口。
 
-MA07／LP05 OpenCode电脑级全流程与Ollama／本机模型Schema及质量属于原定第二批，仍单独待实施／验收；本轮不挤掉首批、不改为首批已交付，也不从完整目标记录中删除。旧图谱328字节README及旧helper停止问题不重跑。
+MA07／LP05属于原定第二批，[实施入口](multi-agent-second-batch-20261114.md)已启动：本机OpenCode1.3.5的真实两项目全局加载通过、固定官方9项测试通过，但受管权限及完整知识链未实施完成；Ollama CLI已装、服务未启动，Schema／质量待验。[准备基线](evidence/multi-agent-development-20261114/opencode-second-batch-baseline.json)。第一批外部前置保留，第二批不计入首批已交付。旧图谱328字节README及旧helper停止问题不重跑。

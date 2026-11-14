@@ -8,7 +8,7 @@
 
 基线提交仅包含本轮方案、脱敏接口事实和此账本；实施前创建本地注释tag。不得提交本机凭据。
 
-## 连续场景与依赖（当前状态：检查点二十五）
+## 连续场景与依赖（当前状态：检查点二十六）
 
 逐项证据与限制统一见[当前支持矩阵](multi-agent-provider-support-20261114.md)。下方历史检查点保持原始日期状态，不代表当前仍未实施。
 
@@ -374,3 +374,13 @@ MA-CODEX-FACT01的**目标关系实链复验通过**，历史失败1轮保留；
 再次核对当前环境OpenAI／Anthropic／Gemini／Google key均未配置，私有配置路径问题仍待用户答复；不推断整台机器没有凭据，不遍历未知私有文件或使用DeepSeek替代原生账号。当前两个外部前置组为Desktop新会话和三类Provider账号；I10完整冻结／日常接管须在相应证据齐备后收口。第二批保持单列，Cursor暂缓／Claude免验及原失败计数不变。
 
 整体仍约94%。本轮取得当前来源、原日常数据组可达及候选摘要一致的新证据；完整目标未完成、继续active。其余Native／产品文件为其他会话WIP，未测试或提交；没有新的产品失败轮次、release或重置卡使用。
+
+## 开发检查点二十六：推进第二批
+
+连续核对首批外部前置仍缺；但完整方案明确包含第二批OpenCode／Ollama，有独立工作可推进，因此[阻塞审计](evidence/multi-agent-development-20261114/external-gates-blocked-audit.json)最终否决blocked结论，Goal保持active。此前只盯首批外部前置的下一步判断已纠正，不将其收窄为完整目标的全部剩余工作。
+
+用户最新明确未安装Agent可暂缓验证，并要求继续推进。实际OpenCode1.3.5和Ollama CLI均已安装；OpenCode固定官方集成13文件SHA保持，原lock依赖安装及官方9项检查通过。真实独立全局插件在两个空项目各加载一次，未写项目配置、未请求模型，原生服务正常退出；SDK版本差异和未接Cognee边界如实保留。[第二批方案](multi-agent-second-batch-20261114.md)及[实测基线](evidence/multi-agent-development-20261114/opencode-second-batch-baseline.json)。
+
+Ollama服务未运行，仅发现旧qwen3:0.6b模型manifest；未启动／下载／推理或重跑旧失败质量样本。下一步构造OpenCode受管官方代际，补动态项目主体、权限、401／403 blocked及采集激活边界，再做真实编码链。首次npm驱动误用相对task路径，随后发现task固定repo cwd；改用npm --prefix后按原lock成功，未更改官方锁文件，两项为方法纠正、不计产品失败轮次。
+
+此前94%仍为首批估算，不作为包含第二批的整体完成率。第一批外部证据继续待补，第二批已进入实施准备／实链探测，尚未交付；完整目标未完成。没有新增Cursor／Claude测试、原日常配置修改、release或重置卡。
