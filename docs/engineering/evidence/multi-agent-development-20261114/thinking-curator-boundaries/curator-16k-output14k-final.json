@@ -1,0 +1,58 @@
+{
+  "scope": "one isolated unchanged official curator call on original QA and sole extracted candidate; no writer, persistence or improve; same original input and temperature0; context16384 retained, only request output cap changes8192 to14336",
+  "profile_digest": "33fa1d7a1648dd605515e101c8a224bf37ae5316d2fd3ada80383b898858178e",
+  "input_entries": 1,
+  "batch_chars": 1648,
+  "curator_prompt_chars": 3985,
+  "writer_prompt_chars": 4286,
+  "original_qa_answer_chars": 951,
+  "proposals": [
+    {
+      "working_statement": "The `retry_config` module's `retry_limit` function is tested by `test_zero_disables` and `test_negative`.",
+      "member_entry_ids": [
+        "ab48f110-4121-43a9-941d-c8b7cb2a1d0b"
+      ],
+      "state_key": ""
+    },
+    {
+      "working_statement": "The `retry_config.retry_limit` function's use of Python truthiness causes `0` to be silently coerced to 3, failing `test_zero_disables` and `test_negative`; explicit checks for `None` (to 3) and `0` (to 0) are required.",
+      "member_entry_ids": [
+        "ab48f110-4121-43a9-941d-c8b7cb2a1d0b"
+      ],
+      "state_key": ""
+    },
+    {
+      "working_statement": "The test command `python3 -m unittest -v` passes 4 tests with 0 failures.",
+      "member_entry_ids": [],
+      "state_key": "test-baseline"
+    }
+  ],
+  "writers": [],
+  "phase": "curator_completed",
+  "started": 1794654068.143429,
+  "request_output_limit": 14336,
+  "input_sha256": "6712b0b966b97b1e97ad6b30b022f57f7dc57267fdcf82a7825ca6d1814c4607",
+  "configured_context": 16384,
+  "requests_started": 1,
+  "wire_chat_requests": 1,
+  "wire_options": {
+    "num_ctx": 16384,
+    "num_predict": 14336,
+    "temperature": 0.0
+  },
+  "wire_model": "qwen3:4b-thinking-2507-q4_K_M",
+  "wire_message_sha256": "5f01c2afde27a67bc7402686c66ea2a782da736e707269ed923ee18de2aeb06b",
+  "completion_finish_reason": "stop",
+  "usage": {
+    "completion_tokens": 10844,
+    "prompt_tokens": 1334,
+    "total_tokens": 12178,
+    "completion_tokens_details": null,
+    "prompt_tokens_details": null
+  },
+  "response_content_characters": 827,
+  "reasoning_characters": 44267,
+  "elapsed_seconds": 375.76,
+  "observed_mode": "json_schema",
+  "actual_adapter_calls": 1
+}

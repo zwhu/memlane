@@ -1,0 +1,45 @@
+{
+  "observed_at": "2026-11-14T11:08:10.702134+00:00",
+  "diagnostic_tool_session": 24052,
+  "diagnostic_pid": 44549,
+  "diagnostic_process_exited": true,
+  "diagnostic_phase": "curator_completed",
+  "diagnostic_requests": 1,
+  "ollama_loaded_model_count": 0,
+  "known_owned_services_retained": [
+    {
+      "pid": 84596,
+      "kernel_receipt": "84596 Sat Nov 14 17:52:25 2026     /Users/bytedance/.pyenv/versions/3.9.23/bin/python3 /Users/bytedance/work/AI/memlane/scripts/dev.py start --config .local/multi-agent-ollama-20261114/native-setup/runtime.json --no-ui",
+      "present": true
+    },
+    {
+      "pid": 84606,
+      "kernel_receipt": "84606 Sat Nov 14 17:52:25 2026     /Users/bytedance/work/AI/memlane/.local/cognee-python/bin/python /Users/bytedance/work/AI/memlane/engine/python/official_service_dev.py --config /Users/bytedance/work/AI/memlane/.local/multi-agent-ollama-20261114/native-setup/.runtime-active-84596.json",
+      "present": true
+    },
+    {
+      "pid": 84821,
+      "kernel_receipt": "84821 Sat Nov 14 17:52:48 2026     /Users/bytedance/work/AI/memlane/.local/cognee-python/bin/python /Users/bytedance/work/AI/memlane/engine/python/project_control_server.py --config /Users/bytedance/work/AI/memlane/.local/multi-agent-ollama-20261114/native-setup/.runtime-active-84596.json",
+      "present": true
+    },
+    {
+      "pid": 85624,
+      "kernel_receipt": "85624 Sat Nov 14 17:53:25 2026     python3 scripts/dev.py open --watch-ui --config .local/multi-agent-ollama-20261114/native-setup/runtime.json",
+      "present": true
+    },
+    {
+      "pid": 79281,
+      "kernel_receipt": "79281 Sat Nov 14 14:33:25 2026     .local/cognee-python/bin/python .local/multi-agent-ollama-20261114/native-setup/own_ollama.py",
+      "present": true
+    },
+    {
+      "pid": 79296,
+      "kernel_receipt": "79296 Sat Nov 14 14:33:25 2026     /opt/homebrew/bin/ollama serve",
+      "present": true
+    }
+  ],
+  "generation_file_sha256": "121d00958c1c65e9a632da44aa8d85560f03e5a5709aa90683e3802f151764f6",
+  "official_data_and_failed_evidence_retained": true,
+  "writer_or_improve_or_agent_not_launched": true,
+  "not_a_claim_about_unknown_processes_or_all_historical_jobs": true
+}

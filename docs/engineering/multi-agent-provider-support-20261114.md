@@ -1,5 +1,7 @@
 # 多 Agent / Provider 当前支持与验收矩阵
 
+检查点六十增量：16K上下文／14336输出的原请求375.76秒正常完成，无context shift，但curator再次返回与第3轮相同的旧错误现状表述。MA-OLLAMA-CODING-QUALITY01累计4轮，**已停止该问题及依赖它的质量／采用实验，不开始第5轮，等待用户明确方向**；信息遗漏独立累计3轮，截断仍1轮。原进程退出、自有Ollama加载模型数0，原知识／配置／依赖均保留。完整Goal未完成，其他独立门槛继续。见[停止报告](ollama-current-state-stop-20261114.md)、[四轮账本](evidence/multi-agent-development-20261114/thinking-curator-boundaries/final-stop-summary.json)及[检查点六十](multi-agent-provider-execution-20261114.md#检查点六十同一现状误写第4次失败停止该问题)。
+
 检查点五十九增量：已读原候选缓存并隔离固定官方curator，完整QA仍在输入，但实际proposal再次提升旧truthiness错误为现状、遗漏正数／负数规则；历史错误累计3轮，信息遗漏累计2轮。只扩上下文到16K的独立请求耗尽8192输出token，被正式判为截断，未取得语义答案，不能凑成原错误第4轮。保留16K、只提高输出到14336的原单次检查正在运行；若原错误再次出现须在第4轮停止。未改原知识、profile或daemon默认，未验采用。见[检查点五十九](multi-agent-provider-execution-20261114.md#检查点五十九定位curator遗漏单变量容量检查)及[回执](evidence/multi-agent-development-20261114/thinking-curator-boundaries/summary.json)。
 
 检查点五十八增量：原Thinking参数场景的完整improve已有匹配ID／session／dataset的成功结束回执，数据4／4完成、pending0。重新读取两条知识正文及生产parser实际召回，均遗漏“正数保持、负数抛ValueError”，故完整质量未通过，新会话采用未启动。信息遗漏MA-OLLAMA-KNOWLEDGE-COVERAGE01失败1轮；旧历史错误提升MA-OLLAMA-CODING-QUALITY01仍2轮，不因模型或路径变更清零。上下文shift是已观察现象，尚非已证根因。见[检查点五十八](multi-agent-provider-execution-20261114.md#检查点五十八原完整处理终态与知识覆盖缺口)及[最终评审](evidence/multi-agent-development-20261114/thinking-improve-final-gate/final-quality-review.json)。
@@ -47,11 +49,15 @@
 
 ## 实施与交付范围
 
-第二批OpenCode当前已完成电脑级prepare／activate／review、实际1.3.5编码与新会话采用、真实API权限阶段、原dataset UUID核对及认证待发worker，不能再按最初“只有全局加载”理解。Native增量／正常日常接入及旧无租约代际共存仍待完成，具体见检查点三十八至四十一。Ollama的配置与真实模型结果见后续检查点；旧qwen3:0.6b质量失败保持，不据CLI安装判定模型可用。
+第二批OpenCode已完成电脑级prepare／activate／review、实际1.3.5编码与新会话采用、真实API权限、原dataset UUID核对及认证待发worker；随后实际Native绑定和v3新会话也已取得回执，原未知未重投、后续明确记录可正常发送。[编码链](evidence/multi-agent-development-20261114/opencode-real-coding.json)、[Native绑定](evidence/multi-agent-development-20261114/native-opencode-binding-receipt.json)、[v3原未知回归](evidence/multi-agent-development-20261114/opencode-unknown-head-of-line.json)。后台连续积压4任务已通过，Native积压按钮及正常日常接入仍未验；已知12份旧进程回执安全核对不等于任意用户旧代际全部安全。[积压边界](evidence/multi-agent-development-20261114/opencode-continuous-backlog.json)、[已知旧代际](evidence/multi-agent-development-20261114/opencode-old-generation-safety.json)。Ollama配置、验证、正常启动及实际处理均有后续证据，但完整知识质量和采用尚未通过，以顶部最新检查点为准，不从检测CLI、协议或材料完成推定质量。
 
 I01基线提交／tag、I02通用连接与迁移、I03官方核心薄适配、I06配置模块、I07启动接线、I09 Native源码已实现，各自证据范围见上表。I04／I05主编码闭环有真实证据。I08中Claude已补限定实链，Cursor未补；I06／I10不能因配置和SDK夹具通过而算远端账号完成，I01–I10完整冻结交付尚未完成。
 
 检查点二十五的[剩余门槛审计](evidence/multi-agent-development-20261114/remaining-gates-checkpoint25.json)确认候选7份源码摘要一致及原日常数据组带认证读取200。当前会话source为vscode，不作Desktop证据；已请求普通Desktop新会话与原生Provider私有配置路径，等待实际输入后继续相应验收及I10日常收口。
+
+## 历史检查点（保留当时状态）
+
+以下按轮次记录当时的实现与未完成项；当前状态以上方矩阵及顶部最新增量为准，不能把旧轮的“未接通／尚未启动”当作现时结论。
 
 MA07／LP05属于原定第二批，[实施入口](multi-agent-second-batch-20261114.md)已启动：本机OpenCode1.3.5的真实两项目全局加载通过、固定官方9项测试通过，但受管权限及完整知识链未实施完成；Ollama CLI已装、服务未启动，Schema／质量待验。[准备基线](evidence/multi-agent-development-20261114/opencode-second-batch-baseline.json)。第一批外部前置保留，第二批不计入首批已交付。旧图谱328字节README及旧helper停止问题不重跑。
 
