@@ -127,4 +127,35 @@ type Pending = { id: string; session: string; entry: Entry; uncertain?: boolean;
                   pending.blocked = true; pending.blocked_reason = "official_auth_denied";
                 }
               }''')
+    replace('flush(send: (item: Pending) => Promise<void>, committed: (item: Pending) => Promise<boolean>): Promise<void> {',
+            'flush(send: (item: Pending) => Promise<void>, committed: (item: Pending) => Promise<boolean>, authorize?: (item: Pending) => Promise<boolean>): Promise<void> {')
+    replace('''        const item = this.lock(() => { const state = this.read(); const next = state.pending.find((entry) => !entry.blocked); if (!next) return undefined; const copy = { ...next }; next.uncertain = true; this.write(state); return copy; });
+        if (!item) return;
+''', '''        const candidate = this.lock(() => {
+          const next = this.read().pending.find((entry) => !entry.blocked);
+          return next ? JSON.parse(JSON.stringify(next)) as Pending : undefined;
+        });
+        if (!candidate) return;
+        // Policy lookup is read-only and occurs before marking an unsent write
+        // uncertain. A control outage cannot manufacture an ambiguous write.
+        if (authorize && !await authorize(candidate)) {
+          if (candidate.uncertain) return; // Original outcome still needs reconciliation.
+          this.lock(() => {
+            const state = this.read();
+            const next = state.pending.find((entry) => entry.id === candidate.id);
+            if (next && !next.uncertain && JSON.stringify(next) === JSON.stringify(candidate)) {
+              next.blocked = true; next.blocked_reason = "local_policy_denied"; this.write(state);
+            }
+          });
+          continue;
+        }
+        const item = this.lock(() => {
+          const state = this.read();
+          const next = state.pending.find((entry) => entry.id === candidate.id && !entry.blocked);
+          if (!next || JSON.stringify(next) !== JSON.stringify(candidate)) return undefined;
+          const copy = JSON.parse(JSON.stringify(next)) as Pending;
+          next.uncertain = true; this.write(state); return copy;
+        });
+        if (!item) continue;
+''')
     return text

@@ -12,6 +12,8 @@ from aiohttp.test_utils import TestServer
 from project_control import Registry, private_write
 from project_control_server import create_app
 from test_project_control import OfficialFixture
+from test_opencode_plugin_patch import official_sources
+from opencode_plugin_patch import managed_http_client, managed_outbox
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -31,11 +33,17 @@ class OpenCodeControlTests(unittest.IsolatedAsyncioTestCase):
             (root / 'package.json').write_text('{"type":"module"}')
             source = root / 'managed-control.ts'
             source.write_text((ROOT / 'engine/agents/opencode/managed-control.ts').read_text())
+            official_source = official_sources()
+            (root / 'runtime.ts').write_text(managed_outbox(official_source['runtime.ts']))
+            (root / 'client.ts').write_text(managed_http_client(official_source['client.ts']))
+            (root / 'types.ts').write_text(official_source['types.ts'])
+            delivery = root / 'managed-delivery.ts'
+            delivery.write_text((ROOT / 'engine/agents/opencode/managed-delivery.ts').read_text())
             build = await asyncio.to_thread(subprocess.run,
                 ['node', str(Path(modules).resolve() / 'typescript/bin/tsc'), '--strict',
                  '--target', 'ES2022', '--module', 'NodeNext', '--moduleResolution', 'NodeNext',
                  '--skipLibCheck', '--types', 'node', '--typeRoots', str(Path(modules).resolve() / '@types'),
-                 '--outDir', str(root / 'dist'), str(source)], capture_output=True, text=True, timeout=30)
+                 '--outDir', str(root / 'dist'), str(source), str(delivery)], capture_output=True, text=True, timeout=30)
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             official = OfficialFixture()
             registry = Registry(root / 'registry.json', official)
@@ -52,7 +60,7 @@ class OpenCodeControlTests(unittest.IsolatedAsyncioTestCase):
                                               env=env, capture_output=True, text=True, timeout=40)
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                 counts = {key: int(value) for key, value in re.findall(r'^# (tests|pass|fail) (\d+)$', run.stdout, re.M)}
-                self.assertEqual(counts, {'tests': 9, 'pass': 9, 'fail': 0})
+                self.assertEqual(counts, {'tests': 12, 'pass': 12, 'fail': 0})
                 print(json.dumps({'node_test': 'managed-control.test.mjs', **counts}))
             finally:
                 await server.close()

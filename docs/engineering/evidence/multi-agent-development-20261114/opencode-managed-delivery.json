@@ -1,0 +1,38 @@
+{
+  "scope": "managed delivery adapter connects compiled official HTTP client/outbox to actual project_control HTTP; official writes/marker reads are loopback fixtures, not real Cognee acceptance",
+  "checks": {
+    "python": 6,
+    "compiled_node": 27,
+    "http": 6,
+    "outbox": 9,
+    "control_and_delivery": 12,
+    "seconds": 3.396,
+    "skips": 0
+  },
+  "proven": [
+    "capture enqueue checks effective write and can_capture",
+    "fresh sends check confirmed original target and effective capture policy before marking uncertain",
+    "control lookup failure leaves unsent journal untouched",
+    "read withdrawal prevents unknown-marker reads without clearing unknown outcome",
+    "read-only restored policy can reconcile a prior ambiguous write without resending",
+    "explicit primitive release preserves original dataset/session and does not occur on restoration",
+    "official HTTP transport sends only child X-Api-Key",
+    "second process-style queue rechecks the claim after asynchronous preflight; one send",
+    "missing original target cannot create project or manufacture uncertain outcome"
+  ],
+  "not_yet_proven": [
+    "host callback integration",
+    "activation/new-message metadata boundary",
+    "managed immutable installation and authenticated operator retry",
+    "real OpenCode coding to knowledge and fresh adoption"
+  ],
+  "no_host_execution_or_model_requests": true,
+  "no_daily_configuration_or_service_restart": true,
+  "source_sha256": {
+    "engine/agents/opencode/managed-delivery.ts": "b263564905524cad67d8c1a5564064e45d3603e28a3745e324d56e36434493f5",
+    "engine/python/opencode_plugin_patch.py": "0a050431603aa341490b509ba0d3d3faa9e7ba22e70a682fa35149ff1cc62733",
+    "engine/agents/opencode/managed-control.test.mjs": "b438f206521440765a88f65faee61f2f00269039a8f1525c02b49ac0bdd057f7",
+    "engine/agents/opencode/managed-outbox.test.mjs": "6b792986d4a6a52a75223b82ec8f358d5417d32458c55c783d06156acca7623f",
+    "engine/python/test_opencode_control.py": "e564dd965680110d9497038dc8160ae1b324f9ba94d2e48fa3340e0d69ac337f"
+  }
+}

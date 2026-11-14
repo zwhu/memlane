@@ -151,3 +151,36 @@ test("local policy denial is durable and distinct from an actual official HTTP d
     assert.equal(restarted.status().blocked, 1);
   } finally { f.close(); }
 });
+
+test("preflight outage leaves unsent state untouched and denial skips to a fresh item", async () => {
+  const f = fixture();
+  try {
+    f.queue.enqueue("preflight", "turn", {type: "qa"}, target());
+    const before = readFileSync(f.queue.file);
+    await assert.rejects(f.queue.flush(async () => assert.fail("control outage sent a write"), async () => false,
+      async () => { throw new Error("control_unavailable"); }));
+    assert.deepEqual(readFileSync(f.queue.file), before);
+    f.queue.enqueue("allowed", "turn", {type: "qa"}, target());
+    const sent = [];
+    await f.queue.flush(async item => sent.push(item.id), async () => false, async item => item.id === "allowed");
+    assert.deepEqual(sent, ["allowed"]);
+    assert.equal(f.queue.status().blocked, 1);
+    assert.equal(f.queue.status().uncertain, 0);
+  } finally { f.close(); }
+});
+
+test("two process-style queues recheck the claim after asynchronous preflight", async () => {
+  const f = fixture();
+  try {
+    f.queue.enqueue("concurrent", "turn", {type: "qa"}, target());
+    const second = new Outbox("same-installation-and-project", f.root);
+    let checks = 0, releaseGate;
+    const gate = new Promise(resolve => { releaseGate = resolve; });
+    const authorize = async () => { if (++checks === 2) releaseGate(); await gate; return true; };
+    let sends = 0;
+    const send = async () => { sends++; };
+    await Promise.all([f.queue.flush(send, async () => false, authorize), second.flush(send, async () => false, authorize)]);
+    assert.equal(sends, 1);
+    assert.equal(f.queue.status().saved, 1);
+  } finally { f.close(); }
+});

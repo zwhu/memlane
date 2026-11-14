@@ -55,3 +55,13 @@ strict TypeScript编译后，Node客户端连接实际Python project_control HTT
 新增`LocalPolicyDenied`供接线后在实际HTTP发送前明确拒绝。outbox将其保存为`local_policy_denied`，清除uncertain并blocked；实际401／403记录`official_auth_denied`。二者跨重启均不自动重投，明确释放仍按原ID和原目标；底层retry函数仍不能替代管理鉴权、实时权限和操作账本。
 
 最终6项Python检查通过（3.040秒），包含22项实际编译Node用例：HTTP6／outbox7／control9。[本轮证据](evidence/multi-agent-development-20261114/opencode-original-target.json)。首次两个反馈为检查方法随新增声明和用例数未更新，纠正后全通过，不计真实宿主产品失败轮次。真实控制HTTP中的official ACL仍为夹具；尚未把以上原语接到宿主回调，不声明真实OpenCode链路通过。旧源码证据对应其原提交，当前增量摘要另列，不覆盖旧记录。
+
+## 发送适配接线（检查点三十一）
+
+新增`ManagedDelivery`把固定官方HTTP／outbox接到实际project_control客户端。入队前查write与can_capture，保存原native／project／dataset；发送前`currentTarget`核对原绑定与最新采集权限，再用官方client发送至该policy的数据组。未知结果仅在有read权限时查原session标记，撤权不查询、不清除未知；恢复只读后可核对原提交，不会再次发送。
+
+官方outbox覆盖增加可选异步authorize回调，放在标记uncertain之前。控制不可达或原目标不明时队列保持原样，不能冒充未知写入；明确拒绝的新项转blocked并允许后续合法新项发送，原unknown的拒绝保持原状态。异步核对返回后在短锁内再次核对原项快照，另一个进程已领取／完成时不重复发送。两份同namespace队列并发检查实际只发送一次。
+
+最终6项Python／27项编译Node检查通过，3.396秒，无skip；[证据与摘要](evidence/multi-agent-development-20261114/opencode-managed-delivery.json)。新增链路执行实际Python控制HTTP、固定官方TS队列／client和loopback官方端点夹具，覆盖拒绝恢复、显式底层释放、响应丢失、切换cwd／重启后的原标记核对、原目标未确认及并发领取。实际Cognee数据／ACL、正式宿主回调仍未证明；管理补交尚未接鉴权／账本，测试中显式调用底层释放只验证原语。
+
+下一步以此适配替换官方插件pump／enqueue，并只从本次启用后实际观察到的message metadata选择单条消息读取，去掉全session历史扫描；随后连接安装代际、主体及Native卡片。处理／召回、隔离、取消及真实宿主兼容仍须按原方案验收，不从当前低层检查推定完成。

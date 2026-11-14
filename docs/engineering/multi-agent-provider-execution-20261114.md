@@ -422,3 +422,11 @@ outbox明确401／403持久化blocked，重启／timer不重发；阻塞项不�
 6项Python检查、22项编译Node用例通过，无skip，3.040秒；[回执与源码摘要](evidence/multi-agent-development-20261114/opencode-original-target.json)。官方实际TS队列与Python控制HTTP均执行，official数据及ACL仍为合成夹具。两个初次方法反馈为前缀检查锚点及新增用例数量断言，修正后通过；未运行宿主或远端模型，不新增真实宿主失败轮次。未改运行配置、重启服务或执行Cursor／Claude测试。
 
 仍须接不可变官方安装代际和正式回调、水位及受认证补交，之后验真实OpenCode采集→知识→新会话采用；Ollama、设置实窗增量、首批Desktop／原生Provider凭据门槛及最终日常收口保持未完成。完整Goal继续active。其他会话正在修改的backlog、召回、Native及产品文件保持，不包含在本提交。
+
+## 开发检查点三十一：队列发送连接实时策略
+
+前轮原目标持久化是实际进展，本轮新增`ManagedDelivery`：入队及发送检查有效采集策略，发送沿原项目数据组；未知项按read权限查询原session标记，不再发送。官方outbox增加发送前异步核对，控制未知不制造写入unknown；明确拒绝blocked保持，两个同namespace进程式队列在异步核对后重新领取，避免重复发送。
+
+6项Python及27项编译Node检查通过（3.396秒，无skip），[证据](evidence/multi-agent-development-20261114/opencode-managed-delivery.json)。实际project_control HTTP、固定官方TS client/outbox、loopback官方写入／marker夹具均执行；真实Cognee与OpenCode宿主尚未接上。未重启服务、启动宿主、调用模型或更改日常配置，Cursor／Claude免验边界保持。没有新增验收失败轮次。
+
+下一步完成宿主pump／enqueue替换及新消息采集边界，再接不可变安装代际与真实编码链。Ollama、首批Desktop／原生凭据、设置增量Native及最终日常收口仍未完成，完整Goal继续active。共享app／launcher／插件及backlog等其他会话WIP未暂存或修改。

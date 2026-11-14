@@ -203,3 +203,103 @@ test("queued original target survives cwd changes and cannot discover an unbound
     assert.deepEqual((await changed.currentTarget(target)).policy.permissions, ["read"]);
   } finally { await access(original.project_id, {access: "maintain", capture: true, auto_process: true}); }
 });
+
+const compiled = new URL("./", pathToFileURL(process.env.MEMLANE_OPENCODE_TEST_CONTROL));
+const { ManagedDelivery } = await import(new URL("managed-delivery.js", compiled));
+const { Outbox } = await import(new URL("runtime.js", compiled));
+const { CogneeHttpClient } = await import(new URL("client.js", compiled));
+async function officialServer({loseFirstResponse = false} = {}) {
+  const writes = [];
+  let lookups = 0;
+  const server = await listener(async (req, res) => {
+    assert.equal(req.headers["x-api-key"], "synthetic-child-key");
+    assert.equal(req.headers.authorization, undefined);
+    res.setHeader("Content-Type", "application/json");
+    if (req.method === "POST" && req.url === "/api/v1/remember/entry") {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      writes.push(JSON.parse(Buffer.concat(chunks).toString()));
+      if (loseFirstResponse && writes.length === 1) { res.destroy(); return; }
+      res.end('{"status":"saved"}'); return;
+    }
+    if (req.method === "GET" && req.url.startsWith("/api/v1/sessions/")) {
+      lookups++; res.end(JSON.stringify({entries: writes.map(item => item.entry)})); return;
+    }
+    assert.fail("unexpected official route " + req.url);
+  });
+  return {...server, writes, lookups: () => lookups,
+    client: new CogneeHttpClient(server.url, "synthetic-child-key", undefined, undefined, 500)};
+}
+
+test("delivery gates original-target official writes and keeps denied items blocked", async () => {
+  const c = new ManagedProjectControl(options("delivery-policy"));
+  const p = await c.current("delivery-native");
+  const s = await officialServer();
+  const outbox = new Outbox("delivery", join(root, "delivery-outbox"));
+  const delivery = new ManagedDelivery(c, s.client, outbox);
+  try {
+    assert.equal(await delivery.enqueue("delivery-native", "queued-before-revoke", "original-official-session", {type: "qa", context: "marker-original"}), true);
+    await access(p.project_id, {access: "read"});
+    await delivery.flush();
+    assert.equal(s.writes.length, 0);
+    assert.equal(outbox.status().blocked, 1);
+    assert.equal(await delivery.enqueue("delivery-native", "disabled-entry", "turn", {type: "qa"}), false);
+    await access(p.project_id, {access: "maintain", capture: true, auto_process: true});
+    await delivery.flush();
+    assert.equal(s.writes.length, 0, "restoration must not release a denial");
+    // Primitive release only: production management authorization is still separate.
+    outbox.retryBlocked(["queued-before-revoke"]);
+    await delivery.flush();
+    assert.equal(s.writes.length, 1);
+    assert.equal(s.writes[0].dataset_name, p.dataset_name);
+    assert.equal(s.writes[0].session_id, "original-official-session");
+  } finally {
+    await access(p.project_id, {access: "maintain", capture: true, auto_process: true});
+    await s.close();
+  }
+});
+
+test("delivery unknown response reconciles original marker after restart in another cwd", async () => {
+  const c = new ManagedProjectControl(options("delivery-unknown"));
+  const p = await c.current("unknown-delivery-native");
+  const s = await officialServer({loseFirstResponse: true});
+  const queueRoot = join(root, "unknown-delivery-outbox");
+  const outbox = new Outbox("same-installation", queueRoot);
+  try {
+    const delivery = new ManagedDelivery(c, s.client, outbox);
+    await delivery.enqueue("unknown-delivery-native", "lost-result", "original-session", {type: "qa", context: "opencode_capture:lost-result"});
+    await assert.rejects(delivery.flush());
+    assert.equal(outbox.status().uncertain, 1);
+    await access(p.project_id, {access: "none"});
+    await delivery.flush();
+    assert.equal(outbox.status().uncertain, 1);
+    assert.equal(s.lookups(), 0, "withdrawal must prevent official session reads");
+    await access(p.project_id, {access: "read"});
+    const restarted = new ManagedDelivery(new ManagedProjectControl(options("delivery-unknown", {directory: join(root, "repo-b")})),
+      s.client, new Outbox("same-installation", queueRoot));
+    await restarted.flush();
+    assert.equal(s.writes.length, 1);
+    assert.equal(s.lookups(), 1);
+    assert.equal(restarted.outbox.status().saved, 1);
+  } finally {
+    await access(p.project_id, {access: "maintain", capture: true, auto_process: true});
+    await s.close();
+  }
+});
+
+test("unconfirmed original target never manufactures an uncertain write or calls official service", async () => {
+  const c = new ManagedProjectControl(options("delivery-unconfirmed"));
+  const p = await c.current("unconfirmed-native");
+  const s = await officialServer();
+  const outbox = new Outbox("unconfirmed", join(root, "unconfirmed-outbox"));
+  try {
+    outbox.enqueue("unbound-native", "turn", {type: "qa"},
+      {native: "unrecognized-native", project_id: p.project_id, dataset_id: p.dataset_id});
+    const delivery = new ManagedDelivery(c, s.client, outbox);
+    for (let i = 0; i < 2; i++) await assert.rejects(delivery.flush());
+    assert.equal(outbox.status().uncertain, 0);
+    assert.equal(outbox.status().pending, 1);
+    assert.equal(s.requests.length, 0);
+    assert.equal(readdirSync(options("delivery-unconfirmed").stateDir).filter(n => n.endsWith(".json")).length, 1);
+  } finally { await s.close(); }
+});
