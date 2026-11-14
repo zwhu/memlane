@@ -1,0 +1,58 @@
+{
+  "actual_window": true,
+  "settings_service_and_connections": true,
+  "redetection_clicked_once": true,
+  "registry_byte_unchanged": true,
+  "validation_operation_set_unchanged": true,
+  "active": {
+    "id": "ollama-thinking",
+    "revision": 1
+  },
+  "next": null,
+  "cards": [
+    {
+      "instance_id": "codex-f9a8c7fa219c8b9577043271",
+      "kind": "codex",
+      "status": "not_connected",
+      "detected": true,
+      "new_sessions": 0
+    },
+    {
+      "instance_id": "pi-e18044f334a06fa478ddbd27",
+      "kind": "pi",
+      "status": "configured_pending_new_session",
+      "detected": true,
+      "new_sessions": 3
+    },
+    {
+      "instance_id": "traex-a8d33590475315b81f419bb6",
+      "kind": "traex",
+      "status": "configured_pending_new_session",
+      "detected": true,
+      "new_sessions": 0
+    },
+    {
+      "instance_id": "claude_code-c0f80e5d49f13227d1b03543",
+      "kind": "claude_code",
+      "status": "not_connected",
+      "detected": true,
+      "new_sessions": 0
+    },
+    {
+      "instance_id": "cursor-20da3aca2825666c40868054",
+      "kind": "cursor",
+      "status": "not_connected",
+      "detected": false,
+      "new_sessions": 0
+    },
+    {
+      "instance_id": "opencode-8e69f81f72eca4a5902d6ca3",
+      "kind": "opencode",
+      "status": "configured_pending_new_session",
+      "detected": true,
+      "new_sessions": 1
+    }
+  ],
+  "no_prepare_activate_or_model_validation_clicked": true,
+  "receipt_status_uses_new_sessions_with_configured_status": true
+}

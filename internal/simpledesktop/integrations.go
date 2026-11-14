@@ -652,6 +652,10 @@ func (a *App) reviewGenerationNext() {
 	}()
 }
 func (a *App) pollGenerationValidation(operation string) {
+	a.pollGenerationValidationWithTiming(operation, 2*time.Second, 7*time.Minute)
+}
+
+func (a *App) pollGenerationValidationWithTiming(operation string, interval, budget time.Duration) {
 	client, ok := a.accessClient()
 	if !ok || operation == "" {
 		return
@@ -659,11 +663,23 @@ func (a *App) pollGenerationValidation(operation string) {
 	if a.integrations.ValidationCancel != nil {
 		a.integrations.ValidationCancel()
 	}
-	parent, stop := context.WithCancel(context.Background())
+	// The local provider has a 360s backend budget. Observe its terminal receipt
+	// beyond that budget without cancelling or resubmitting the model operation.
+	parent, stop := context.WithTimeout(context.Background(), budget)
 	a.integrations.ValidationCancel = stop
 	go func() {
 		defer stop()
-		for n := 0; n < 90; n++ {
+		defer func() {
+			if errors.Is(parent.Err(), context.DeadlineExceeded) {
+				a.Update(func() {
+					s := &a.integrations
+					if s.ValidationOperation == operation && (s.Validation.Status == "running" || s.Validation.Status == "queued") {
+						s.Error = "等待验证回执超时，请核对原验证；不会重新发起验证。"
+					}
+				})
+			}
+		}()
+		for {
 			ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 			var receipt GenerationValidation
 			err := client.request(ctx, "GET", "/v1/generation/validations/"+url.PathEscape(operation), nil, &receipt)
@@ -695,7 +711,7 @@ func (a *App) pollGenerationValidation(operation string) {
 				return
 			}
 			select {
-			case <-time.After(2 * time.Second):
+			case <-time.After(interval):
 			case <-parent.Done():
 				return
 			}

@@ -650,3 +650,21 @@ MA-OLLAMA-VALIDATION-BUDGET01实际失败1轮：原总预算无法容纳该冷�
 只读重新核对原Thinking session的官方activity取得终态：cognify c5abc00b…在09:20:11 UTC以Timeout失败，memify 358ba44e…在09:20:16以派生CognifyFailedError失败；原库2项中completed1／pending1。日志标明实际连接超时预算600秒，完整管线耗时不能当作单次请求耗时；activity的tokens=0也不能证明无模型调用。MA-OLLAMA-THINKING-PROCESSING-TIMEOUT01失败1轮，派生错误不重复计次；原MA-OLLAMA-CODING-QUALITY01仍为2轮。未重复投递improve、补写知识或启动采用场景，旧观察窗口到期不作为终态依据。[原管线终态证据](evidence/multi-agent-development-20261114/ollama-thinking-processing-terminal.json)。
 
 最终4个Python模块31项合并回归通过（105.533秒），Go配置／首次配置／Ollama定向检查通过（0.991秒），四个自有Go文件gofmt及diff检查通过。[检查命令、源码摘要及失败历史](evidence/multi-agent-development-20261114/generation-parameters/checks.json)。方法错误另保留：Gemini原断言误用camelCase而固定SDK发送snake_case、Go HasText为子串匹配、裸模型已存在时SDK注册更新裸别名，分别修正夹具；gofmt未使用仓库工具链路径及UI helper的__file__准备错误均在产品操作前失败，不计为模型质量失败。未追加Claude Code／Cursor或未安装宿主测试，无release、模型下载或日常配置变更。完整Goal继续active；Native积压、参数实际保存／模型复验、完整知识质量与采用及外部账号／Desktop／日常门槛仍待完成。
+
+## 检查点五十六：参数实际保存、模型验证、正常应用与长轮询修复
+
+仅在本轮私有dev目录正常重启后台加载新源码，原两项目分页activity均无未结束的管线行；旧Thinking失败材料pending1保留。实际Native先保存温度0.6／上限8192为同profile revision2，重开值一致，active仍revision1、next空、旧revision及验证保持。原生模型验证ui-7LF7…失败为plain_output_mismatch，进程组72068确认退出；MA-OLLAMA-THINKING-PLAIN01累计失败1轮。原回答正文未保留，确切差异及原因未知，不将它补写成句号或引号问题；旧MA-FIXTURE-PLAIN01句号样本2轮记录不变。
+
+保留上述失败，实际Native另存温度0／同8192上限为revision3，显式0重开保持。只改变温度的新操作ui-YKB4…在360秒总预算内通过普通文本、原生随机约束、nested-unicode-null-3嵌套Schema及精确事实，实际json_schema；组75265退出、api/ps为空。单轮通过不外推0.6必然失败或模型稳定性，未放宽样本断言。[保存／两轮模型回执及实际窗口](evidence/multi-agent-development-20261114/generation-parameters-native/checks.json)。
+
+实际界面未自动收到此终态，首次“下次启动使用”准备观察失败，未发送next；MA-OLLAMA-NATIVE-VALIDATION-POLL01累计失败1轮。已证原因是Native轮询固定90次、间隔2秒，早于本机360秒后台预算停止。现改为7分钟墙钟观察范围，过期只提示核对原验证并保留journal、原状态和操作编号，不取消后台或重投。Go定向检查通过（1.253秒），新增“90次running后第91次取得原终态”及“观察截止仅GET、原操作保留”场景。该修复未在原长模型运行期间生效；实际恢复使用新UI只读核对同一个已通过operation，验证账本逐字段不变，不冒充又一次模型验证。
+
+随后实际Native明确选择next=revision3，active及旧official applied仍revision1。核对原材料ID／处理状态／activity不变、完整registry字节不变、模型已卸载后，正常停止本轮launcher69844及其所属组，再正常start。当前launcher84596（17:52:25）、official84606、control84821；applied reference为revision3、digest33fa1d7a…，active更新、next清空，无Codex completion。原generation.json字节不变，候选profiles及全部验证保留。实际新窗口重开显示温度0／上限8192，观察无保存、验证或选用写入。
+
+设置“服务与连接”的实际重新检测也通过：registry字节及验证operation集合保持，未准备或启用Agent。pi原新会话回执3条、OpenCode1条保留；TraeX尚无新回执，Cursor未检测到，其他检测事实按卡片显示。底层configured_pending_new_session需结合new_sessions判断，不能仅凭该状态名宣称回执丢失。只读检测列表不属于追加Claude／Cursor宿主测试。[重新检测与实际卡片](evidence/multi-agent-development-20261114/generation-parameters-native/agent-redetection.json)。
+
+另补证据边界：旧管线09:20 UTC报告失败后，私有Ollama日志仍有17:22、17:27本地时间chat200及旧dev停机17:37的chat500。没有逐请求关联标识，不能确定每条请求所属job或把重复日志直接计成多个请求；也不能从管线终态推断模型工作已经停止。旧实例后续已核对整组退出；本轮应用候选前另核对api/ps为空。[HTTP时间线与未知](evidence/multi-agent-development-20261114/generation-parameters-native/model-http-lifetime.json)。不据此改写旧超时或语义质量计数。
+
+已在新参数正常应用后启动原retry_limit完整编码场景：测试源码及prompt与原驱动AST字符串一致，仅在新合成目录执行，不回放旧失败材料。真实pi／DeepSeek正常退出，37.73秒，原4项断言独立通过、跟踪修改仅retry_config.py、无Cognee主动工具。官方正确dataset 6d34d48a…收到QA1／trace5，实际处理为当前revision3，材料dc9ee67c…仍pending1、尚无知识，cognify24aa8d1f…及memify2718f41e…仍有运行记录，尚未进入采用。项目8edfe61a…及原失败项目均保留；MA-OLLAMA-CODING-QUALITY01仍2轮，原Thinking处理超时仍1轮。[新原始材料](evidence/multi-agent-development-20261114/generation-parameters-native/coding-source.json)、[运行中快照](evidence/multi-agent-development-20261114/generation-parameters-native/processing-snapshot.json)。
+
+Go检查基于当前共享工作树，本次只提交自有轮询源码、定向检查和本轮证据，不收录其他会话的界面／权限改动。只读observer原exec71701／PID88874记录原session、分页管线及实际数据，不发送improve；观察到期不代表job终态或重启依据。私有UI watcher85624与当前服务／Ollama继续留给该原任务和后续质量／采用消费。无完整包、release、重置卡、新模型下载或日常配置改写，未追加免验宿主。参数Native保存／验证／next／正常应用已补证，完整知识质量、新会话采用、Native积压与外部账号／Desktop／日常门槛继续未完成，完整Goal保持active。
