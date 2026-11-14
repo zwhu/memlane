@@ -1,12 +1,12 @@
 # 多 Agent / Provider 当前支持与验收矩阵
 
-2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)检查点十九为准。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
+2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)检查点二十为准。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
 
 ## 第一批 Agent
 
 | 要求 | 当前实现与真实证据 | 尚未证明的边界 |
 | --- | --- | --- |
-| MA01 Codex | 原实例ID／主体／ACL保持，实际隔离CLI安装、正常编码采集、采用既有pi／TraeX知识；[Codex回执](evidence/multi-agent-development-20261114/real-codex-checkpoint.json) | 本轮Desktop入口独立证据未补；MA-CODEX-FACT01错误位置知识未解决，失败1轮；不将前后端混合版本视为纯单版本通过 |
+| MA01 Codex | 原实例ID／主体／ACL保持，实际隔离CLI安装、正常编码采集、采用既有pi／TraeX知识；[初轮回执](evidence/multi-agent-development-20261114/real-codex-checkpoint.json)；后续diff返回值保留、真实25测试及新会话工具0次采用见[新证据](evidence/multi-agent-development-20261114/codex-file-change-evidence.json) | Desktop独立证据未补；MA-CODEX-FACT01失败1轮仍未结案，新知识未给相邻顺序，不能视为原错误关系已修复；旧错误Data保留；前后端混合版本不作纯单版本通过 |
 | MA08 pi | 全局扩展、独立主体、官方核心传输；实际编码→官方知识→新会话无工具采用；[编码链](evidence/multi-agent-development-20261114/real-coding-hosts.json)、[实际权限](evidence/multi-agent-development-20261114/real-agent-permissions.json) | 限固定版本及编码样本；原笼统约定／口令样本仍未通过，不泛化任意聊天沉淀；分支／恢复不回扫有定向检查，不冒充全部真实分支流程 |
 | MA09 TraeX | 正常交互式CLI原生插件安装／信任、真实问答与工具、知识及新会话采用；后续兼容协议处理也通过；[编码链](evidence/multi-agent-development-20261114/real-coding-hosts.json)、[跨协议](evidence/multi-agent-development-20261114/real-cross-protocol-switch.json) | 证明TraeX CLI，不证明TRAE IDE；后续知识类清单未列全，不能当完整源码清单验收 |
 | MA02 Claude Code | 原生CLI、受管官方插件、首轮QA／trace、官方知识及新会话无工具采用；[Claude回执](evidence/multi-agent-development-20261114/real-claude-checkpoint.json) | DeepSeek兼容端点不是Anthropic原生账号；已记录来源新鲜度／措辞限制；旧7条未投递材料保留、未补采 |

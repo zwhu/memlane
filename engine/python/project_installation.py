@@ -53,6 +53,9 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
     generation_input = {'upstream': expected, 'host_kind': host_kind, 'instance_id': instance_id,
                         'builder_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                         'tool_patch_sha256': tool_patch}
+    if host_kind == 'codex':
+        from project_trace_patch import codex_file_change_output
+        generation_input['trace_patch_sha256'] = hashlib.sha256((ENGINE / 'python/project_trace_patch.py').read_bytes()).hexdigest()
     if host_files:
         generation_input.update(host_kind=host_kind, instance_id=instance_id,
                                 builder_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -63,6 +66,8 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
     expected_host_files = {}
     if host_kind == 'codex':
         expected_host_files = {name: (source / name).read_bytes() for name in expected['files']}
+        expected_host_files['scripts/_coding_memory.py'] = codex_file_change_output(
+            expected_host_files['scripts/_coding_memory.py'].decode()).encode()
     if host_kind != 'codex':
         namespace = host_kind + '-' + instance_id
         for name in expected['files']:
@@ -112,10 +117,13 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
                             'tool_patch_sha256': tool_patch,
                             'files': {str(path.relative_to(target)): hashlib.sha256(path.read_bytes()).hexdigest()
                                       for path in target.rglob('*') if path.is_file() and path.name != '.memlane-project-access.json'}}
+            if host_kind == 'codex':
+                host_receipt['trace_patch_sha256'] = generation_input['trace_patch_sha256']
             private_write(target / '.memlane-project-access.json', json.dumps(host_receipt, sort_keys=True).encode())
     installed_receipt = json.loads((target / '.memlane-project-access.json').read_text())
     host_hashes = {name: hashlib.sha256(data).hexdigest() for name, data in expected_host_files.items()}
     if (installed_receipt.get('host_generation') != generation or installed_receipt.get('host_kind') != host_kind
+            or installed_receipt.get('trace_patch_sha256') != generation_input.get('trace_patch_sha256')
             or installed_receipt.get('tool_patch_sha256') != tool_patch or installed_receipt.get('files') != host_hashes):
         raise PolicyError('existing_installation_changed', 409)
     for name, digest in installed_receipt['files'].items():
