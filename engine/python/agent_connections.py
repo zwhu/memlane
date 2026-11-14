@@ -221,9 +221,10 @@ class NativeConnection:
             from project_installation import prepare
             agent = r.state['agents'][self.id]
             control = self.config.get('project_control', {})
+            # Rebinding a service must not move pending buffers to a new HOME.
             installation = prepare(control.get('plugin_dir') or self.config['plugin_dir'], r.path.parent,
                                    self.id, agent, r.official.url, control.get('url') or self.config['project_control_url'],
-                                   self.config.get('agent_host_home', str(Path.home())),
+                                   self.config.get('agent_host_home', agent.get('installation', {}).get('home') or str(Path.home())),
                                    host_kind=self.kind, python=self.config['python'])
             agent.update(kind=self.kind, host_profile_fingerprint=sha(str(self.profile).encode()),
                          entrypoints=['ide'] if self.kind == 'cursor' else ['cli'], capabilities=self.view()['capabilities'], installation=installation)

@@ -79,6 +79,25 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.adapter.view()['status'], 'prepared')
         self.assertEqual(self.adapter.view()['preview']['proposed_sha256'], 'fixed')
 
+    async def test_pi_reprepare_preserves_existing_buffer_home_without_runtime_override(self):
+        await self.adapter.prepare(self.registry.state['revision'])
+        original_home = self.registry.state['agents'][self.adapter.id]['installation']['home']
+        pending = Path(original_home) / '.cognee-plugin' / ('pi-' + self.adapter.id) / 'pending.json'
+        private_write(pending, b'{"pending":"synthetic-original-record"}')
+        self.adapter.config = {key: value for key, value in self.config.items() if key != 'agent_host_home'}
+        await self.adapter.prepare(self.registry.state['revision'])
+        installation = self.registry.state['agents'][self.adapter.id]['installation']
+        self.assertEqual(installation['home'], original_home)
+        self.assertEqual(pending.read_bytes(), b'{"pending":"synthetic-original-record"}')
+
+    async def test_pi_reprepare_honors_explicit_buffer_home_override(self):
+        await self.adapter.prepare(self.registry.state['revision'])
+        replacement = self.workspace / 'explicit-home'
+        replacement.mkdir()
+        self.adapter.config = {**self.config, 'agent_host_home': str(replacement)}
+        await self.adapter.prepare(self.registry.state['revision'])
+        self.assertEqual(self.registry.state['agents'][self.adapter.id]['installation']['home'], str(replacement))
+
     async def test_pi_prepare_activate_preserves_profile_and_waits_for_real_receipt(self):
         settings = self.profile / 'settings.json'
         settings.write_text('{"model":"unchanged","extensions":["other.ts"]}')

@@ -339,7 +339,7 @@ API 模式的超时、并发、输出上限及重试优先复用固定官方配�
 | I03 官方核心复用 | 新增`agent_memory_adapter.py`，扩展固定patch builder按host_kind生成产物；复用官方过滤、buffer和PA门禁 | JSON字段白名单、正文上限、身份不可伪造；403/未知/禁采水位回归；原Codex产物摘要不被改写 |
 | I04 pi优先接入 | 新增`engine/agents/pi/index.ts`与上游工具定义补丁／license；接线第3.3节事件 | I02/I03；真实pi→官方原始记录／知识→新会话采用，MA08及对应MA05/06通过 |
 | I05 TraeX优先接入 | 新增`engine/agents/traex/`manifest与`traex_hook.py`；安装器调用原生plugin命令，保留信任步骤 | I02/I03；当前0.214.1声明契约＋实际问答／工具／注入验证，MA09通过，不以IDE或exec代替交互式TraeX |
-| I06 Provider配置与验证 | 新增`engine/python/generation_config.py`、`generation_validation.py`；扩展管理API；改官方服务环境编译 | I02；合成材料、独立验证进程和隔离数据根；API凭据不触及Agent配置；LP01/04。现有停止样本排除 |
+| I06 Provider配置与验证 | 新增`engine/python/generation_config.py`、`generation_validation.py`；扩展管理API；改官方服务环境编译 | I02；明确标记的验收材料及独立验证进程；2026-11-14用户最新要求服务／内容统一日常库，不另建隔离运行库；API凭据不触及Agent配置；LP01/04。现有停止样本排除 |
 | I07 启动应用与恢复 | 改`scripts/dev.py`条件启动completion；旧runtime适配profile；增加next/active摘要确认与单次恢复 | I06；不在线切换、不自动重放；候选失败清理与锁未知停止；LP02/03 |
 | I08 Claude/Cursor | 在同一连接契约内加入固定官方产物与各自PA扩展 | I02/I03；MA02/03/04，Cursor限制单列，不挤掉pi/TraeX |
 | I09 Native接入 | 改simpledesktop配置DTO、连接客户端与设置；新增Agent连接列表、知识处理表单与验证状态 | 后端契约固定后一次集中UI开发；保留当前项目checkbox和其他session改动；实际打开最新设计图片，补新增布局与真实Native对照 |
