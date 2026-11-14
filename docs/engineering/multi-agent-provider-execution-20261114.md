@@ -582,3 +582,15 @@ MA-CONNECTION-COMPONENT-PREFLIGHT01源码缺口已修正：pi／TraeX未配置so
 本轮未通过实际Native积压保存／停止／核对按钮验收。CUA共4次窗口定位准备调用失败，停止重复定位；早期3次精确参数／时间未留存，不据此认定产品验收失败4轮。实际SDK截图、可见控件动作及OS可见／授权事实成立，但侧栏悬停项目菜单未完成操作，原因未知；没有认定产品设计错误或桌面被锁。已请求可选手动打开项目设置，未收到操作回执。仅继续不依赖该入口的后台场景；工具定位问题与产品失败计数分开保留。[证据及接线补丁](evidence/multi-agent-development-20261114/opencode-continuous-backlog.json)。
 
 4个Node保存worker已确认退出，原动作回执文件未变；本轮official／control／UI及单个Ollama模型保留供实际Native与质量验收，OpenCode宿主保持已停止。仅合成项目的OpenCode auto_process=false覆盖保留，原值快照仍在，待本范围后续验收结束再恢复；日常配置、其他策略、旧服务不改。Ollama真实知识质量仍失败1轮，外部Provider／Desktop／日常采用门槛保持，完整Goal未完成；不进入release。
+
+## 检查点五十：旧未知不能阻塞真实新会话材料
+
+上一轮提交9613d29属于实际进展。本轮核对原launcher／official／control／Ollama仍存活后，以原私有profile启动真实OpenCode1.3.5加载v2；新会话正常READY、工具0次并取得正确项目绑定，但官方session持续404、明确未发送QA一直留在原队列，跨多个30秒pump间隔不动。MA-OPENCODE-UNKNOWN-HOL01验收失败1轮，原未知记录保持，未发送。源码证实原Outbox遇到首条未知未匹配或不可读就return，后续独立目标未被检查；不是模型／项目绑定错误，不与此前Native绑定或目标问题合并计数。
+
+修复为每次pump保留未解决ID集合：原未知仅按原session／dataset／marker核对一次，未匹配或无读取权限则跳过并保留；后续明确材料独立核对策略发送。新请求发生未知仍抛出并停止当前pump，不转成重试、不放开blocked，也不改变管理侧冻结IDs。新增3项队列和1项真实控制HTTP场景；6项补丁门禁、驱动内20项Node队列与34项Node控制检查通过，共8项Python驱动／门禁、9.125秒，无模型调用。
+
+离线构造v3固定组件3674文件、manifest 92c7af07…；正常停止／启动本轮自有dev服务读取新source，Ollama当前profile与原库保持。管理API明确准备后，实际Native勾选OpenCode并启用v3通过，原主体与已有绑定不变。正常宿主加载v3的启动pump直接保存了原v2那条同capture ID／同session／同dataset的QA，官方恰好1条；恢复不需要新prompt或管理补交。原未知逐字段与原快照一致，原官方session无对应POST。随后v3独立新会话READY／工具0次／正确dataset QA1与trace0通过，Native“重新检测”显示新代际连接回执，pi保持回执、TraeX仍待新会话。[连续证据及实际窗口](evidence/multi-agent-development-20261114/opencode-unknown-head-of-line.json)。
+
+方法问题独立留痕：新驱动误复用旧stderr名在Popen前停止；进程收尾最初对argv0要求绝对路径但实际execv使用opencode，在信号前停止；组件report在成功构造后取错返回字段，核对原产物而未重建；服务就绪前GET被拒绝，没有prepare POST，观察同launcher ready后才提交；官方POST先可见、本地ack后移除导致首个观察断言过早，后续仅观察原ack，不重复初始化或发送。这些不增加产品缺陷失败次数，也不掩盖原1轮失败。
+
+v2／v3验收宿主已按PID＋lstart＋完整argv正常停止并确认退出，最终队列仅保留原未知1条。当前自有launcher74147、official74149、control74547及Native／Ollama保留供后续；原Scoped auto_process=false与恢复快照保持。未重试CUA窗口定位／悬停菜单，实际Native积压按钮仍未验；Ollama编码知识质量仍失败1轮，原生Provider账号／Desktop／日常采用继续待完成，完整Goal保持active，不进入release。

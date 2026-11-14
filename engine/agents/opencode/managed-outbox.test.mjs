@@ -98,6 +98,50 @@ test("release during a running flush is rejected; persisted credentials stay scr
 
 const target = () => ({native: "native-original", project_id: "11111111-1111-4111-8111-111111111111", dataset_id: "22222222-2222-4222-8222-222222222222"});
 
+test("unmatched unknown stays isolated while later same-session and new-session records save after restart", async () => {
+  const f = fixture();
+  try {
+    f.queue.enqueue("unknown", "old-turn", {type: "qa", answer: "original"}, target());
+    await assert.rejects(f.queue.flush(async () => { throw new Error("lost response"); }, async () => false));
+    const original = JSON.parse(readFileSync(f.queue.file)).pending[0];
+    f.queue.enqueue("same-session", "old-turn", {type: "qa"}, target());
+    f.queue.enqueue("new-session", "new-turn", {type: "qa"}, {...target(), native: "another-native"});
+    const restarted = new Outbox("same-installation-and-project", f.root), sent = [], checked = [];
+    for (let i = 0; i < 2; i++) await restarted.flush(async item => sent.push(item.id), async item => {checked.push(item.id); return false;});
+    assert.deepEqual(sent, ["same-session", "new-session"]);
+    assert.deepEqual(checked, ["unknown", "unknown"], "one exact original lookup per pump, never a resend or spin");
+    assert.deepEqual(JSON.parse(readFileSync(f.queue.file)).pending, [original]);
+  } finally { f.close(); }
+});
+
+test("unreadable original unknown does not block a separately authorized fresh target", async () => {
+  const f = fixture();
+  try {
+    f.queue.enqueue("unknown", "old-turn", {type: "qa"}, target());
+    await assert.rejects(f.queue.flush(async () => { throw new Error("lost response"); }, async () => false));
+    const original = JSON.parse(readFileSync(f.queue.file)).pending[0];
+    f.queue.enqueue("fresh", "new-turn", {type: "qa"}, {...target(), native: "authorized-native"});
+    const sent = [];
+    await f.queue.flush(async item => sent.push(item.id), async () => assert.fail("denied original must not be read"), async item => item.id === "fresh");
+    assert.deepEqual(sent, ["fresh"]);
+    assert.deepEqual(JSON.parse(readFileSync(f.queue.file)).pending, [original]);
+  } finally { f.close(); }
+});
+
+test("a newly unknown write still interrupts its current pump; later pump never resends it", async () => {
+  const f = fixture();
+  try {
+    f.queue.enqueue("first", "turn", {type: "qa"}, target());
+    f.queue.enqueue("later", "turn", {type: "qa"}, target());
+    const sent = [];
+    await assert.rejects(f.queue.flush(async item => {sent.push(item.id); throw new Error("lost response");}, async () => false));
+    assert.deepEqual(sent, ["first"]);
+    await f.queue.flush(async item => sent.push(item.id), async item => {assert.equal(item.id, "first"); return false;});
+    assert.deepEqual(sent, ["first", "later"]);
+    assert.equal(f.queue.status().uncertain, 1);
+  } finally { f.close(); }
+});
+
 test("pending target is a private snapshot of original project and native session after restart", async () => {
   const f = fixture();
   try {

@@ -136,7 +136,7 @@ type Pending = { id: string; session: string; entry: Entry; uncertain?: boolean;
     finally { this.senderHeld = false; this.senderToken = undefined; release(); }
   }
 ''')
-    replace('    this.running = (async () => {', '    const run = async () => {')
+    replace('    this.running = (async () => {', '    const run = async () => {\n      const unresolved = new Set<string>();')
     replace('    })().finally(() => { this.running = undefined; });',
             '    };\n    this.running = (senderToken ? run() : this.withSender(run)).finally(() => { this.running = undefined; });')
     replace('    if (this.running) return this.running;',
@@ -199,7 +199,7 @@ type Pending = { id: string; session: string; entry: Entry; uncertain?: boolean;
         // Policy lookup is read-only and occurs before marking an unsent write
         // uncertain. A control outage cannot manufacture an ambiguous write.
         if (authorize && !await authorize(candidate)) {
-          if (candidate.uncertain) return; // Original outcome still needs reconciliation.
+          if (candidate.uncertain) { unresolved.add(candidate.id); continue; } // Keep it isolated; later records have independent policy.
           this.lock(() => {
             const state = this.read();
             const next = state.pending.find((entry) => entry.id === candidate.id);
@@ -221,7 +221,9 @@ type Pending = { id: string; session: string; entry: Entry; uncertain?: boolean;
     replace('type State = { pending: Pending[]; seen: string[] };',
             'type State = { pending: Pending[]; seen: string[]; discarded?: string[]; savedTargets?: Record<string, ProjectTarget> };')
     replace('this.read().pending.find((entry) => !entry.blocked)',
-            'this.read().pending.find((entry) => !entry.blocked && (!selected || selected.has(entry.id)))')
+            'this.read().pending.find((entry) => !entry.blocked && !unresolved.has(entry.id) && (!selected || selected.has(entry.id)))')
+    replace('if (item.uncertain) { if (!await committed(item)) return; }',
+            'if (item.uncertain) { if (!await committed(item)) { unresolved.add(item.id); continue; } }')
     replace('  blockedIds(): string[] {', '''  private pendingFor(state: State, target: ProjectTarget, session: string): Pending[] {
     const original = snapshotTarget(target);
     if (typeof session !== "string" || !session || session.length > 256) throw new Error("original_pending_session_required");

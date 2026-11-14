@@ -320,6 +320,24 @@ test("delivery unknown response reconciles original marker after restart in anot
   }
 });
 
+test("delivery isolates unmatched original unknown and sends later real-policy targets without resubmission", async () => {
+  const c = new ManagedProjectControl(options("delivery-unknown-independent"));
+  await c.current("old-native"); await c.current("new-native");
+  const s = await officialServer({loseFirstResponse: true, sessionDetail: detail => ({...detail, qas: []})});
+  const queueRoot = join(root, "unknown-independent-outbox"), queue = new Outbox("same-installation", queueRoot);
+  try {
+    const delivery = new ManagedDelivery(c, s.client, queue);
+    await delivery.enqueue("old-native", "lost-old", "original-session", {type: "qa", context: "opencode_capture:lost-old"});
+    await assert.rejects(delivery.flush());
+    await delivery.enqueue("new-native", "fresh-new", "new-session", {type: "qa", context: "opencode_capture:fresh-new"});
+    await new ManagedDelivery(c, s.client, new Outbox("same-installation", queueRoot)).flush();
+    assert.equal(s.writes.length, 2);
+    assert.deepEqual(s.writes.map(row => row.session_id), ["original-session", "new-session"]);
+    assert.equal(s.lookups(), 1);
+    assert.deepEqual(queue.status(), {pending: 1, uncertain: 1, saved: 1, blocked: 0});
+  } finally { await s.close(); }
+});
+
 test("unknown receipt requires original official session, dataset and exact QA marker field", async () => {
   const c = new ManagedProjectControl(options("unknown-receipt-target")), native = "unknown-receipt-native";
   await c.current(native);

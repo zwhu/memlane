@@ -106,3 +106,7 @@ OpenCode实际Native设置准备／启用、真实1.3.5新会话、官方正确d
 OpenCode管理Node持续保存worker与Python协议适配完成，固定原目标／冻结IDs、原未知隔离、新未知暂停、实时权限、发送租约及协作停止均有检查。33项Node、7项Python适配、4项既有积压回归、5项组件检查通过。实际Native已启用新固定组件，真实官方服务后台4任务连续保存／核对／停止／明确继续通过，最终仅剩1条隔离未知，没有重投；自动处理关闭，不证明知识质量。共享coordinator两处接线已用于本机检查，未随本轮提交，精确补丁随证据保留。
 
 实际Native积压按钮仍未验：CUA累计4次定位准备失败已停止重复调用，SDK侧栏悬停菜单操作未完成，等待可选用户打开设置回执；工具问题未当成产品4次验收失败。v2新宿主会话、Ollama质量及外部门槛仍未完成。[证据](evidence/multi-agent-development-20261114/opencode-continuous-backlog.json)。
+
+### 检查点五十增量
+
+真实v2新会话揭示旧未知阻塞后续明确材料，MA-OPENCODE-UNKNOWN-HOL01失败1轮。已修复每pump跳过原未解决未知、独立检查后续记录；新未知仍停止当前发送。6门禁＋20项Node队列＋34项Node控制通过。实际Native启用v3后，正常宿主启动自动保存原先被阻塞的同一条QA，原未知保持且无POST；v3新会话正确官方QA1／trace0及Native连接回执通过。失败计数保留，完整目标及积压按钮／Ollama质量／外部门槛仍未完成。[证据及截图](evidence/multi-agent-development-20261114/opencode-unknown-head-of-line.json)。
