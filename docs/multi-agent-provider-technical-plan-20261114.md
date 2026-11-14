@@ -246,6 +246,8 @@ API 模式的超时、并发、输出上限及重试优先复用固定官方配�
 - 连接是电脑级操作，不先要求选择项目或配置处理模型。绑定沿用独立官方主体、私有凭据及不可变安装代际，修改范围只含Memlane接入项。项目读写权限仍从项目菜单进入设置，不与Provider混在一起。
 - “设置 → 知识处理”沿用当前配置、已保存配置及“添加Provider”入口。按协议呈现模型ID、API地址和所需密钥，保存／验证／下次启动使用分开。云Provider不以电脑安装Agent为前提，也不通过扫描Agent配置自动取得API Key。Ollama和本机兼容服务后续接入同一配置表单，其可达性、模型列表与质量须独立验证，不因检测到CLI就视为可用。
 
+第二批Ollama采用独立`provider=ollama`，通过固定Cognee原生adapter与LiteLLM的`ollama_chat/`路由调用`/api/chat`，使用本机loopback根地址，不填写`/v1`或`/api`。按[官方本机认证约定](https://docs.ollama.com/api/introduction)无需个人API Key；固定Cognee仍要求非空key时，编译器仅提供公开SDK占位值，不创建私有凭据文件。远端Ollama云地址不混用此本机配置。模型元数据查询的`OLLAMA_API_BASE`也固定为所选地址，并纳入禁止重定向的HTTP策略；清除继承的Ollama变量。Schema以实际adapter请求模式为准，沿用[官方结构化输出](https://docs.ollama.com/capabilities/structured-outputs)及既有质量验证，不给未知模型伪造能力。检测CLI、服务可达、模型已下载及质量通过分别取证；页面不自动启动服务或下载模型。
+
 本轮影响：`agent_connections.py`只读发现、既有`GET /v1/connections`、Native导航与连接卡片；原连接操作回执、Provider草稿、active／next、项目ACL保持原契约。验收覆盖启动后安装／移除、缺失的明确路径不fallback、检测不写配置或registry、未完成适配不可绑定，以及设置卡片入口。真实宿主测试仍沿用户暂缓边界执行，界面夹具不替代实际Native视觉验收。
 
 ## 6. 关键未知与实施顺序

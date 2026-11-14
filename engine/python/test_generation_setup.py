@@ -55,6 +55,24 @@ class GenerationSetupTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await self.client.get(path, headers=self.headers)).status, 404)
         self.assertEqual((await self.client.post('/v1/agents', headers=self.headers, json={})).status, 404)
 
+    async def test_local_ollama_saves_without_key_and_cannot_skip_validation(self):
+        payload = {'expected_revision': 0, 'operation_id': 'save-local', 'profile': {
+            'mode': 'provider', 'provider': 'ollama', 'model': 'llama3.2:3b',
+            'endpoint': 'http://127.0.0.1:11434'}}
+        response = await self.client.put('/v1/generation/profiles/local', headers=self.headers, json=payload)
+        self.assertEqual(response.status, 200, await response.text())
+        saved = await response.json()
+        response = await self.client.put('/v1/generation/next', headers=self.headers, json={
+            'expected_revision': saved['revision'], 'operation_id': 'select-unvalidated',
+            'profile': {k: saved['result'][k] for k in ('id', 'revision')}})
+        self.assertEqual(response.status, 409)
+        view = await (await self.client.get('/v1/generation', headers=self.headers)).json()
+        self.assertEqual(view['profiles']['local'][0]['profile'], payload['profile'])
+        self.assertIsNone(view['active'])
+        self.assertIsNone(view['next'])
+        self.assertFalse((self.root / 'generation-credentials').exists())
+        self.assertFalse((self.root / 'registry.json').exists())
+
     async def test_setup_rejects_already_active_and_releases_generation_lock(self):
         await self.client.close()
         store = GenerationStore(self.config['generation_file'], 'fixed')

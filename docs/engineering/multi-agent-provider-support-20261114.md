@@ -1,6 +1,6 @@
 # 多 Agent / Provider 当前支持与验收矩阵
 
-2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)检查点三十六为准。用户已暂缓未安装Agent／Cursor后续测试、免除Claude Code追加测试；未验项不改为通过，既有结果保留。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
+2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)最新检查点为准。用户已暂缓未安装Agent／Cursor后续测试、免除Claude Code追加测试；未验项不改为通过，既有结果保留。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
 
 ## 第一批 Agent
 
@@ -37,6 +37,8 @@
 
 ## 实施与交付范围
 
+第二批OpenCode当前已完成电脑级prepare／activate／review、实际1.3.5编码与新会话采用、真实API权限阶段、原dataset UUID核对及认证待发worker，不能再按最初“只有全局加载”理解。Native增量／正常日常接入及旧无租约代际共存仍待完成，具体见检查点三十八至四十一。Ollama的配置与真实模型结果见后续检查点；旧qwen3:0.6b质量失败保持，不据CLI安装判定模型可用。
+
 I01基线提交／tag、I02通用连接与迁移、I03官方核心薄适配、I06配置模块、I07启动接线、I09 Native源码已实现，各自证据范围见上表。I04／I05主编码闭环有真实证据。I08中Claude已补限定实链，Cursor未补；I06／I10不能因配置和SDK夹具通过而算远端账号完成，I01–I10完整冻结交付尚未完成。
 
 检查点二十五的[剩余门槛审计](evidence/multi-agent-development-20261114/remaining-gates-checkpoint25.json)确认候选7份源码摘要一致及原日常数据组带认证读取200。当前会话source为vscode，不作Desktop证据；已请求普通Desktop新会话与原生Provider私有配置路径，等待实际输入后继续相应验收及I10日常收口。
@@ -70,3 +72,5 @@ OpenCode受管HTTP／outbox覆盖源码已实现，5项Python及10项实际编�
 检查点四十完成待发材料内部原语及发送租约：45项Node／8项Python补丁通过，含真实子进程互斥、精确快照、所选项处理和discard墓碑。没有新增Agent管理工具或激活未鉴权入口，认证worker／Native接线仍未完成，[证据](evidence/multi-agent-development-20261114/opencode-pending-primitives.json)。
 
 检查点四十一已实现管理认证的固定OpenCode worker及Native源码分派，实际原服务8次Go→Node核对／补交／丢弃／拒绝调用通过；合成材料、处理关闭，无新增模型或实窗证据。原策略恢复，独立shadow unknown保留，日常未切换。设置自动检测／重新检测及多选准备／启用继续复用现有入口，实窗增量待验；Ollama与外部门槛保持。[证据](evidence/multi-agent-development-20261114/opencode-pending-management.json)。
+
+检查点四十二已接Ollama本机profile／无个人密钥表单／原生adapter及模型metadata地址隔离。41项Python、10项Go定向检查通过，实际0.34.0缺模型拒绝与进程回收通过。独立Llama 3.2 3B首次加载遇105GiB门禁中断1次；确认退出和空间回升后以同模型／同账本／同样本、8K上下文验证，普通输出通过、JSON对象模式嵌套Schema失败（MA-OLLAMA-LOCAL-SCHEMA01失败1轮），未启用或生成知识。保留模型和失败证据，真实质量及完整官方处理链仍待完成；Native实窗未由组件检查代替。[证据](evidence/multi-agent-development-20261114/ollama-local-provider.json)。

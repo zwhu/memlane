@@ -101,7 +101,7 @@ func generationLabel(g GenerationDirectory, ref *GenerationRef) string {
 	if row.Profile.Mode == "agent_bridge" {
 		return "Codex 订阅 · " + row.Profile.Model
 	}
-	provider := map[string]string{"openai": "OpenAI", "anthropic": "Anthropic", "gemini": "Gemini", "custom": "OpenAI 兼容"}[row.Profile.Provider]
+	provider := map[string]string{"openai": "OpenAI", "anthropic": "Anthropic", "gemini": "Gemini", "custom": "OpenAI 兼容", "ollama": "Ollama（本机接口）"}[row.Profile.Provider]
 	return provider + " · " + row.Profile.Model
 }
 func (a *App) generationSetupPage(c *ui.Context) {
@@ -145,7 +145,7 @@ func (a *App) generationSettings(c *ui.Context) {
 			}
 		})
 	}
-	settingsCard(c, "已保存配置", "保存、验证与下次启动使用分别操作。验证会调用所选供应商并消耗额度。", func() {
+	settingsCard(c, "已保存配置", "保存、验证与下次启动使用分别操作。验证会调用所选模型，可能消耗供应商额度或本机计算资源。", func() {
 		ids := make([]string, 0, len(s.Generation.Profiles))
 		for id := range s.Generation.Profiles {
 			ids = append(ids, id)
@@ -182,7 +182,7 @@ func (a *App) generationSettings(c *ui.Context) {
 		ui.Form(c, func() {
 			if s.DraftMode == "provider" {
 				ui.Field(c, "供应商协议", func() {
-					ui.Select(fieldKey("provider"), &s.ProviderLabel, []string{"OpenAI", "Anthropic", "Gemini", "OpenAI 兼容"}).FillWidth().Disabled(locked)
+					ui.Select(fieldKey("provider"), &s.ProviderLabel, []string{"OpenAI", "Anthropic", "Gemini", "OpenAI 兼容", "Ollama（本机接口）"}).FillWidth().Disabled(locked)
 				})
 				ui.Field(c, "API 地址", func() {
 					ui.TextInput(fieldKey("endpoint"), &s.Endpoint).Label("Provider API 地址").Placeholder("https://…").FillWidth().Disabled(locked)
@@ -191,7 +191,7 @@ func (a *App) generationSettings(c *ui.Context) {
 			ui.Field(c, "模型 ID", func() {
 				ui.TextInput(fieldKey("model"), &s.Model).Label("处理模型 ID").Placeholder("实际模型 ID").FillWidth().Disabled(locked)
 			})
-			if s.DraftMode == "provider" {
+			if s.DraftMode == "provider" && s.draftProfile().Provider != "ollama" {
 				ui.Field(c, "API Key", func() {
 					ui.TextInput(c.Key(fmt.Sprintf("generation-key-%d", s.KeyEpoch)), &s.APIKey).Label("Provider API Key").Placeholder("已保存时留空保留").Password().FillWidth().Disabled(locked)
 				})
@@ -199,13 +199,20 @@ func (a *App) generationSettings(c *ui.Context) {
 					homeText(c, "已保存密钥；不会回填显示", homeMeta)
 				}
 			}
+			if s.draftProfile().Provider == "ollama" {
+				homeText(c, "填写本机 Ollama 地址，例如 http://127.0.0.1:11434，无需 API Key；模型需已在服务中可用。", homeMeta)
+			}
 		})
 		ui.Row(c).Gap(10).Children(func() {
+			validationLabel := "验证（会消耗额度）"
+			if s.draftProfile().Provider == "ollama" {
+				validationLabel = "验证（调用模型）"
+			}
 			ui.Button(c, "保存配置").Disabled(locked || s.pendingGenerationProfile(s.ProfileID)).OnClick(a.saveGeneration)
 			if s.SaveOperation != "" {
 				ui.Button(c, "核对保存结果").Disabled(s.Busy).OnClick(a.reviewGenerationSave)
 			}
-			ui.Button(c, "验证（会消耗额度）").Disabled(s.Busy || !s.cleanSaved() || s.Validation.Status == "running" || s.Validation.Status == "queued" || s.pendingGenerationProfile(s.ProfileID)).OnClick(func() { a.generationAction("validations") })
+			ui.Button(c, validationLabel).Disabled(s.Busy || !s.cleanSaved() || s.Validation.Status == "running" || s.Validation.Status == "queued" || s.pendingGenerationProfile(s.ProfileID)).OnClick(func() { a.generationAction("validations") })
 			ui.Button(c, "下次启动使用").Disabled(s.Busy || s.NextOperation != "" || s.pendingGenerationProfile(s.ProfileID) || !s.cleanSaved() || !s.Generation.validated(s.Saved)).OnClick(func() { a.generationAction("next") })
 			if s.NextOperation != "" {
 				ui.Button(c, "核对待应用设置").Disabled(s.Busy).OnClick(a.reviewGenerationNext)

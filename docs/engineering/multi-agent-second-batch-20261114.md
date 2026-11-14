@@ -181,3 +181,11 @@ MA-OPENCODE-UNKNOWN-TARGET01累计失败1轮。沿原主体／原项目，用一
 已补固定Node worker、管理认证、原目标与运行时摘要核对及现有Native源码分派；Node预检在主体创建／binding写入之前。实际原服务8次Go→Node调用通过，覆盖Agent token拒绝、所选A补交、B本机丢弃及墓碑、正确unknown确认、旧同名组unknown保留与重投拒绝。原项目策略恢复、Agent ID保留；主队列0，独立marker-only受控unknown仍1项。A/B为新增合成材料，关闭处理且action账本未变化，无模型请求；未向原未知材料重发正文。
 
 新增错误白名单遗漏问题失败1次，限定组件检查修复通过，计数与证据保留。当前组件manifest `9f3a31944dd6e8bffcfe634223a17b17c94c357a29d4ad1daa335fec3b4ef31d`；纯Python预检顺序调整晚于该构造，TS文件未变。Go检查使用共享工作树，相关提交仅采用所需DTO字段及分派钩子，不含其他会话改动。[完整检查与边界](multi-agent-provider-execution-20261114.md)、[脱敏证据](evidence/multi-agent-development-20261114/opencode-pending-management.json)。Native实际窗口／点击、正常接入日常采用、旧无租约代际共存、Ollama及首批外部门槛继续未完成。未改日常配置，未用重置卡，保留原服务和数据，完整Goal保持active。
+
+## Ollama配置与真实Schema结果（检查点四十二）
+
+已实现本机Ollama独立profile、无需个人Key的既有表单、`ollama_chat/`原生路由和metadata同源／禁止重定向；保存、验证、next及启动编译沿用原账本。41项Python及10项Go检查通过，实际0.34.0空模型服务404拒绝通过，未运行Codex或远端Provider作为fallback。
+
+独立下载Llama 3.2 3B Q4_K_M约2.02GB。32K首次加载被105GiB门禁中断1次，原状态保留；已知进程退出、空间恢复后，复用原模型及账本，以8K上下文／单并发执行同一nested-unicode-null-3。普通输出通过，实际JSON对象模式嵌套Schema校验失败，MA-OLLAMA-LOCAL-SCHEMA01累计失败1轮，质量不通过，active／next为空。4次adapter调用仍是同轮普通／结构化及自纠正；具体错误字段未知，不改样本、不注册伪Schema能力、不补知识。新旧进程组均已核对退出，唯一模型供后续消费保留，旧qwen记录保持。[证据与方法记录](evidence/multi-agent-development-20261114/ollama-local-provider.json)。
+
+下一步查明并完成真实Schema／质量及官方知识处理与采用链，继续Native增量及日常收口。共享Native check计数另有源码口径差异：OpenCode返回核对后剩余unknown，当前文案再次减matched可能为负；实际验收轮次0，实窗前须修正。首批外部前置仍保留，完整Goal保持active。

@@ -368,10 +368,12 @@ func (s *integrationState) draftProfile() GenerationProfile {
 		profile.BridgeKind = "codex"
 		return profile
 	}
-	providers := map[string]string{"OpenAI": "openai", "Anthropic": "anthropic", "Gemini": "gemini", "OpenAI 兼容": "custom"}
+	providers := map[string]string{"OpenAI": "openai", "Anthropic": "anthropic", "Gemini": "gemini", "OpenAI 兼容": "custom", "Ollama（本机接口）": "ollama"}
 	profile.Provider = providers[s.ProviderLabel]
 	profile.Endpoint = strings.TrimSpace(s.Endpoint)
-	profile.CredentialVersion = s.CredentialVersion
+	if profile.Provider != "ollama" {
+		profile.CredentialVersion = s.CredentialVersion
+	}
 	return profile
 }
 func (s *integrationState) signature() string {
@@ -379,7 +381,7 @@ func (s *integrationState) signature() string {
 	return fmt.Sprintf("%s|%s|%s|%s|%s", p.Mode, p.Provider, p.Model, p.Endpoint, p.CredentialVersion)
 }
 func (s *integrationState) cleanSaved() bool {
-	return s.Saved != nil && s.APIKey == "" && s.signature() == s.SavedSignature && s.SaveOperation == ""
+	return s.Saved != nil && (s.APIKey == "" || s.draftProfile().Provider == "ollama") && s.signature() == s.SavedSignature && s.SaveOperation == ""
 }
 func (s *integrationState) editProfile(id string, row GenerationRow) {
 	s.KeyEpoch++
@@ -395,7 +397,7 @@ func (s *integrationState) editProfile(id string, row GenerationRow) {
 	s.APIKey = ""
 	s.CredentialVersion = row.Profile.CredentialVersion
 	s.CredentialConfigured = row.Profile.CredentialConfigured
-	s.ProviderLabel = map[string]string{"openai": "OpenAI", "anthropic": "Anthropic", "gemini": "Gemini", "custom": "OpenAI 兼容"}[row.Profile.Provider]
+	s.ProviderLabel = map[string]string{"openai": "OpenAI", "anthropic": "Anthropic", "gemini": "Gemini", "custom": "OpenAI 兼容", "ollama": "Ollama（本机接口）"}[row.Profile.Provider]
 	s.Saved = &GenerationRef{ID: id, Revision: row.Revision}
 	s.SavedSignature = s.signature()
 	s.SaveOperation = ""
@@ -408,7 +410,7 @@ func (a *App) saveGeneration() {
 		return
 	}
 	profile := s.draftProfile()
-	if profile.Model == "" || (profile.Mode == "provider" && (profile.Endpoint == "" || (s.APIKey == "" && !s.CredentialConfigured))) {
+	if profile.Model == "" || (profile.Mode == "provider" && (profile.Endpoint == "" || (profile.Provider != "ollama" && s.APIKey == "" && !s.CredentialConfigured))) {
 		s.Error = "请填写模型、API 地址和密钥"
 		return
 	}
@@ -421,6 +423,9 @@ func (a *App) saveGeneration() {
 	s.Busy = true
 	s.Error = ""
 	key := s.APIKey
+	if profile.Provider == "ollama" {
+		key = ""
+	}
 	s.APIKey = ""
 	s.KeyEpoch++
 	id := s.ProfileID

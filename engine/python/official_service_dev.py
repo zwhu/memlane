@@ -54,7 +54,7 @@ def main():
     source = verify_source(config)
     for variable in list(os.environ):
         if variable.upper().startswith(('LLM_', 'EMBEDDING_', 'COGNEE_', 'MEMLANE_', 'FALLBACK_', 'TRANSCRIPTION_', 'IMAGE_TRANSCRIBE_',
-                                        'OPENAI_', 'ANTHROPIC_', 'GEMINI_', 'GOOGLE_')):
+                                        'OPENAI_', 'ANTHROPIC_', 'GEMINI_', 'GOOGLE_', 'OLLAMA_')):
             del os.environ[variable]
     allowed = {'EMBEDDING_PROVIDER', 'EMBEDDING_MODEL', 'EMBEDDING_DIMENSIONS', 'EMBEDDING_MAX_TOKENS',
                'EMBEDDING_ENDPOINT', 'EMBEDDING_API_KEY', 'DEFAULT_USER_EMAIL', 'DEFAULT_USER_PASSWORD',

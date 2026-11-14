@@ -107,6 +107,12 @@ Provider协议值为 `openai`、`anthropic`、`gemini`、`custom`；DeepSeek等�
 
 控制进程复用官方Python环境中已有的 `tomlkit`，用于保留Codex配置中的注释及无关设置。本机环境已确认可用；不使用系统Python或修改用户默认工具链。接入预览、配置备份及安装日志含本机信息，保存在私有运行目录，不入Git。
 
+### Ollama 本机知识处理（dev）
+
+“设置 → 知识处理 → 添加 Provider”选择“Ollama（本机接口）”，填写本机根地址（例如`http://127.0.0.1:11434`）及实际模型ID，无需填写API Key。模型和服务由用户现有Ollama管理；页面不自动下载模型或启动服务。保存不切换当前配置，通过同一普通输出／嵌套Schema／事实质量验证后才能选择“下次启动使用”。实际启动仍沿正常dev停止／启动流程。
+
+配置账本中的profile示例为`{"mode":"provider","provider":"ollama","model":"llama3.2:3b","endpoint":"http://127.0.0.1:11434"}`，没有credential字段。此例不表示该模型已在用户电脑安装或通过完整知识质量验收。编译器将其交给固定官方adapter的`ollama_chat/`路由，同时固定模型元数据查询地址；不回退Codex、远端Provider或其他本机端口。缺模型返回明确验证失败，不能据“已保存”认定可用。
+
 ### OpenCode 第二批插件组件（dev）
 
 管理侧待发处置需要本机Node>=20；运行JSON顶层可用`opencode_node_executable`指定绝对路径，默认解析`node`。prepare在创建主体和写binding之前检查运行时，并将规范路径、SHA和worker摘要保存在installation元数据；Node升级后需重新准备／核对。管理token只由桌面运行配置传入本地worker，不写入Agent binding。实际worker验收及Native窗口未验边界见[检查点四十一](engineering/multi-agent-provider-execution-20261114.md)。

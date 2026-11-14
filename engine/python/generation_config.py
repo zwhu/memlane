@@ -16,8 +16,13 @@ from urllib.parse import urlparse
 from project_control import private_write, read_secret
 from project_policy import PolicyError
 
-PROVIDERS = {'openai': 'openai', 'anthropic': 'anthropic', 'gemini': 'gemini', 'custom': 'openai'}
+PROVIDERS = {'openai': 'openai', 'anthropic': 'anthropic', 'gemini': 'gemini', 'custom': 'openai',
+             'ollama': 'ollama_chat'}
 IDENTIFIER = re.compile(r'[a-zA-Z0-9_-]{1,64}')
+
+
+def requires_credential(profile):
+    return profile.get('mode') == 'provider' and profile.get('provider') != 'ollama'
 
 
 def fingerprint(value):
@@ -47,9 +52,17 @@ def validate_profile(value):
         if (not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment
                 or (parsed.scheme != 'https' and not (parsed.scheme == 'http' and parsed.hostname in ('127.0.0.1', '::1', 'localhost')))):
             raise PolicyError('invalid_generation_endpoint')
-        if not isinstance(value.get('credential_ref'), str) or not IDENTIFIER.fullmatch(value['credential_ref']):
+        if value['provider'] == 'ollama':
+            if (parsed.hostname not in ('127.0.0.1', '::1', 'localhost') or parsed.path not in ('', '/')
+                    or 'credential_ref' in value or 'credential_version' in value):
+                raise PolicyError('invalid_local_ollama_profile')
+            try:
+                parsed.port
+            except ValueError:
+                raise PolicyError('invalid_generation_endpoint') from None
+        elif not isinstance(value.get('credential_ref'), str) or not IDENTIFIER.fullmatch(value['credential_ref']):
             raise PolicyError('private_generation_credential_required')
-        if not isinstance(value.get('credential_version'), str) or not IDENTIFIER.fullmatch(value['credential_version']):
+        if requires_credential(value) and (not isinstance(value.get('credential_version'), str) or not IDENTIFIER.fullmatch(value['credential_version'])):
             raise PolicyError('generation_credential_version_required')
     else:
         raise PolicyError('unsupported_generation_mode')
@@ -67,6 +80,13 @@ def compile_environment(profile, runtime, credential=None):
     else:
         provider, prefix = p['provider'], PROVIDERS[p['provider']]
         endpoint, key = p['endpoint'], credential
+        if provider == 'ollama':
+            # The fixed Cognee adapter requires a nonempty key even for local
+            # Ollama. This public SDK placeholder is never stored as a secret.
+            key = 'ollama'
+            # LiteLLM's capability/token lookups omit api_base and consult this
+            # variable. Keep their /api/show on the selected local service too.
+            result['OLLAMA_API_BASE'] = endpoint
         if not isinstance(key, str) or not key.strip():
             raise PolicyError('generation_credential_unavailable', 503)
     model = p['model']
@@ -123,7 +143,7 @@ class GenerationStore:
     def record(self, profile, revision):
         validated = validate_profile(profile)
         credential_digest = (hashlib.sha256(self.secret(validated).encode()).hexdigest()
-                             if validated['mode'] == 'provider' else None)
+                             if requires_credential(validated) else None)
         return {'revision': revision, 'profile': validated,
                 'digest': fingerprint({'profile': profile, 'service_commit': self.service_commit,
                                        'credential_digest': credential_digest})}
@@ -170,18 +190,20 @@ class GenerationStore:
         if old is not None:
             return old
         profile = copy.deepcopy(profile)
+        if profile.get('provider') == 'ollama' and api_key is not None:
+            raise PolicyError('local_ollama_credential_not_required')
         if api_key is not None:
             if (profile.get('mode') != 'provider' or not isinstance(api_key, str) or not api_key.strip()
                     or len(api_key) > 8192 or any(c in api_key for c in '\r\n')):
                 raise PolicyError('invalid_generation_credential')
             profile['credential_ref'], profile['credential_version'] = identifier, uuid.uuid4().hex
-        elif profile.get('mode') == 'provider' and not profile.get('credential_ref'):
+        elif requires_credential(profile) and not profile.get('credential_ref'):
             rows = self.state['profiles'].get(identifier, [])
             previous = rows[-1]['profile'] if rows else {}
             if profile.get('credential_version') == previous.get('credential_version') and previous.get('credential_ref'):
                 profile['credential_ref'] = previous['credential_ref']
         validated = validate_profile(profile)
-        if validated['mode'] == 'provider':
+        if requires_credential(validated):
             path = self.credential_path(validated['credential_ref'], validated['credential_version'])
             if api_key is not None:
                 if path.exists():
@@ -219,7 +241,7 @@ class GenerationStore:
     def environment(self, reference, runtime):
         profile = self.resolve(reference)['profile']
         credential = (self.secret(profile)
-                      if profile['mode'] == 'provider' else None)
+                      if requires_credential(profile) else None)
         return compile_environment(profile, runtime, credential)
 
     def view(self):
@@ -228,7 +250,7 @@ class GenerationStore:
         for rows in result['profiles'].values():
             for row in rows:
                 profile = row['profile']
-                if profile['mode'] == 'provider':
+                if requires_credential(profile):
                     profile['credential_configured'] = self.credential_path(profile['credential_ref'], profile['credential_version']).is_file()
                     profile.pop('credential_ref', None)
         return result

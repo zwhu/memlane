@@ -496,3 +496,15 @@ OpenCode 1.3.5／DeepSeek Flash以独立官方子主体、私有profile和合成
 新增组件输入检查发现错误白名单遗漏，MA-OPENCODE-PENDING-WORKER-ERROR01累计失败1次，修正后定向测试通过；原失败证据与其他问题计数保持。组件manifest `9f3a31944dd6e8bffcfe634223a17b17c94c357a29d4ad1daa335fec3b4ef31d`；其构造早于纯Python预检顺序调整，TS运行文件不变。实际Go检查基于共享工作树，提交仅收录必要DTO字段及OpenCode分派钩子，不包含其他会话UI／backlog改动。[脱敏证据](evidence/multi-agent-development-20261114/opencode-pending-management.json)。
 
 本轮未启动Native宿主、调用模型、使用重置卡或修改日常配置，没有release／完整App打包。原服务／数据及所需组件保留。正常设置接入与待发处置的实际窗口／点击仍未验收；旧无租约代际共存、日常采用、Ollama及首批外部账号门槛仍待完成，完整Goal继续active。
+
+## 检查点四十二：Ollama本机配置与真实模型门槛
+
+新增`provider=ollama`，复用保存／验证／next／启动编译和已有Provider表单。本机loopback根地址、无需个人API Key；固定Cognee要求非空key时只提供公开SDK占位值，不创建私有凭据。使用固定原生adapter及`ollama_chat/`路由，不伪造模型Schema能力。模型元数据的同步请求同样固定所选地址、禁止重定向，服务启动清除继承的Ollama变量。切换到Ollama不提交此前云Provider草稿密钥，保存不启用。
+
+13项配置／Ollama实际SDK wire、24项原Provider／验证／启动回归、4项首次配置API检查通过；10项Go配置组件／操作回执回归通过，基于共享工作树，不冒充纯单提交或实窗验收。实际Ollama 0.34.0空模型目录返回明确404，验证失败／next拒绝，子进程及服务退出均确认。初始异步HTTP夹具未完整返回，改独立线程处理同步metadata；UI的HasText子串误匹配说明文案导致两次检查失败，改精确字段断言后通过，均另记方法记录。
+
+随后在独立目录下载唯一Llama 3.2 3B Q4_K_M（2,019,393,189字节，digest `a80c4f17acd55265feec403c7aef86be0c25983ab279d83f3bcd3abbcb5b8b72`）。首次32K上下文加载时105GiB门禁中止，MA-OLLAMA-SPACE01中断1次；原running回执保留，正常恢复为result_unknown，不认定质量失败或通过。已核实原daemon及已知进程组退出，空间回升至107GiB以上后，复用相同下载与账本、显式8K上下文／单并发执行相同样本。磁盘减少的唯一原因未证实，不能只凭时间关联归因模型。
+
+真实恢复轮普通输出通过，实际JSON对象模式的嵌套Schema校验失败，质量未通过；MA-OLLAMA-LOCAL-SCHEMA01累计验收失败1轮。4次adapter调用含普通输出及同轮结构化自纠正，不拆成4轮；没有采集错误正文、生成知识、手工补结果或启用该模型。确切失败字段未知。旧qwen3:0.6b质量记录保持。新验证进程组及独立daemon均退出，active／next仍空；保留唯一模型供后续质量与官方处理链消费，不重复下载。[脱敏证据](evidence/multi-agent-development-20261114/ollama-local-provider.json)。
+
+Native增量、Ollama真实质量及完整处理／采用链、日常收口和外部账号门槛仍未完成。源码审阅另发现当前共享Native的check文案把OpenCode“核对后剩余unknown”再次减去matched，可能显示负数；尚未实际点击验收，失败轮次0，须在后续实窗前统一口径。未修改日常配置、未用重置卡、未构建完整App／release，完整Goal继续active。
