@@ -178,7 +178,7 @@ assert policy.capture_boundary(str(wrong)) is None
 
 
 class HostInstallationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_cursor_prepare_is_readonly_then_explicit_activation_copies_verified_plugin(self):
+    async def test_cursor_prepare_activate_upgrade_keeps_immutable_paths_and_other_hooks(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             registry = Registry(root / 'private/registry.json', type('Official', (), {'url': 'http://127.0.0.1:18999'})())
@@ -190,13 +190,86 @@ class HostInstallationTests(unittest.IsolatedAsyncioTestCase):
                           'agent_hosts': {'claude_code': {'profile': str(root / 'empty-claude')}}}
                 connection = NativeConnection(registry, config, 'cursor', root / 'cursor', sys.executable)
                 registry.state['agents'][connection.id] = {'name': 'Cursor', 'key_file': str(root / 'key'), 'control_token_file': str(root / 'control')}
+                original = {'version': 1, 'hooks': {'workspaceOpen': [{'command': 'echo unrelated', 'timeout': 3}],
+                                                   'stop': [{'command': 'echo another'}]}, 'custom': 'preserve'}
+                private_write(connection.target, json.dumps(original).encode())
+                baseline = connection.target.read_bytes()
                 result = await connection.prepare(0)
-                self.assertFalse(connection.target.exists())
+                self.assertEqual(connection.target.read_bytes(), baseline)
                 result = await connection.activate(registry.state['revision'], result['preview']['proposed_sha256'])
                 self.assertEqual(result['status'], 'configured_pending_new_session')
                 self.assertEqual(result['new_sessions'], 0)
-                self.assertTrue((connection.target.parent / '.cursor-plugin/plugin.json').is_file())
+                first = dict(registry.state['agents'][connection.id]['installation'])
+                self.assertTrue((Path(first['plugin_dir']) / '.cursor-plugin/plugin.json').is_file())
+                self.assertFalse((connection.profile / 'plugins/local').exists())
+                first_files = {str(p.relative_to(Path(first['plugin_dir']))): p.read_bytes()
+                               for p in Path(first['plugin_dir']).rglob('*') if p.is_file()}
+                first_hooks = json.loads(connection.target.read_text())
+                first_loader = first_hooks['hooks']['workspaceOpen'][-1]
+                loaded = subprocess.run(first_loader['command'], shell=True, capture_output=True, text=True, check=True)
+                self.assertEqual(json.loads(loaded.stdout), {'pluginPaths': [first['plugin_dir']]})
                 self.assertEqual(connection.preview()['instance_id'], connection.id)
+                connection.config = {**config, 'python': '/usr/bin/python3'}
+                newer = await connection.prepare(registry.state['revision'])
+                self.assertEqual(json.loads(connection.target.read_text()), first_hooks, 'prepare changed active loader')
+                self.assertEqual(registry.state['connections'][connection.id]['cursor_active_installation'], first)
+                # Candidate and concurrent host edits fail before mutation.
+                proposed_path = connection.root / 'cursor-hooks-proposed.json'
+                proposed = proposed_path.read_bytes()
+                proposed_path.write_bytes(proposed + b' ')
+                with self.assertRaisesRegex(PolicyError, 'connection_preview_changed'):
+                    await connection.activate(registry.state['revision'], newer['preview']['proposed_sha256'])
+                self.assertEqual(json.loads(connection.target.read_text()), first_hooks)
+                proposed_path.write_bytes(proposed)
+                active = connection.target.read_bytes()
+                connection.target.write_bytes(active + b' ')
+                with self.assertRaisesRegex(PolicyError, 'host_configuration_changed'):
+                    await connection.activate(registry.state['revision'], newer['preview']['proposed_sha256'])
+                connection.target.write_bytes(active)
+                imported = root / 'empty-claude/settings.json'
+                private_write(imported, json.dumps({'enabledPlugins': {'cognee@other': True}}).encode())
+                with self.assertRaisesRegex(PolicyError, 'cursor_third_party_import_requires_review'):
+                    await connection.activate(registry.state['revision'], newer['preview']['proposed_sha256'])
+                self.assertEqual(connection.target.read_bytes(), active)
+                imported.unlink()
+                await connection.activate(registry.state['revision'], newer['preview']['proposed_sha256'])
+                second = registry.state['agents'][connection.id]['installation']
+                self.assertNotEqual(first['manifest_sha256'], second['manifest_sha256'])
+                hooks = json.loads(connection.target.read_text())
+                self.assertEqual(hooks['custom'], original['custom'])
+                self.assertEqual(hooks['hooks']['stop'], original['hooks']['stop'])
+                self.assertEqual(hooks['hooks']['workspaceOpen'][:-1], original['hooks']['workspaceOpen'])
+                self.assertNotEqual(hooks['hooks']['workspaceOpen'][-1], first_loader)
+                loaded = subprocess.run(hooks['hooks']['workspaceOpen'][-1]['command'], shell=True, capture_output=True, text=True, check=True)
+                self.assertEqual(json.loads(loaded.stdout), {'pluginPaths': [second['plugin_dir']]})
+                loaded = subprocess.run(first_loader['command'], shell=True, capture_output=True, text=True, check=True)
+                self.assertEqual(json.loads(loaded.stdout), {'pluginPaths': [first['plugin_dir']]})
+                self.assertEqual(first_files, {str(p.relative_to(Path(first['plugin_dir']))): p.read_bytes()
+                                             for p in Path(first['plugin_dir']).rglob('*') if p.is_file()})
+                verify_artifact(first)
+                # A crash after the host write may be reconciled read-only.
+                record = registry.state['connections'][connection.id]
+                record['status'] = 'activation_unknown'
+                before = connection.target.read_bytes()
+                registry.save()
+                registry.close()
+                registry = Registry(root / 'private/registry.json', type('Official', (), {'url': 'http://127.0.0.1:18999'})())
+                connection = NativeConnection(registry, connection.config, 'cursor', root / 'cursor', sys.executable)
+                with patch('agent_connections.private_write', side_effect=AssertionError('review wrote host')):
+                    reviewed = await connection.review(registry.state['revision'])
+                self.assertEqual(reviewed['status'], 'configured_pending_new_session')
+                self.assertEqual(connection.target.read_bytes(), before)
+                connection.target.write_text('{}')
+                with self.assertRaisesRegex(PolicyError, 'cursor_loader_changed_requires_review'):
+                    connection.view()
+                connection.target.write_bytes(before)
+                legacy = connection.profile / 'plugins/local/memlane-cognee'
+                legacy.mkdir(parents=True)
+                (legacy / 'keep.txt').write_text('old runtime dependency')
+                with self.assertRaisesRegex(PolicyError, 'duplicate_cursor_memory_plugin_requires_review'):
+                    connection.preview()
+                self.assertEqual((legacy / 'keep.txt').read_text(), 'old runtime dependency')
+                self.assertEqual(connection.target.read_bytes(), before)
             finally:
                 registry.close()
 

@@ -74,6 +74,8 @@ python3 scripts/dev.py stop --config /绝对路径/runtime.json
 
 设置“服务与连接”按类型多选准备、显式启用，再由实际宿主完成信任／重载与新会话；安装摘要不代表采集通过。选择目标profile，不读取其历史会话，不把其他类型的权限覆盖复制过来。无工具回合的Cursor当轮注入限制及尚未验证的宿主见支持矩阵。
 
+Cursor准备官方派生插件的不可变目录，显式启用时将其加载入口写入目标profile的`hooks.json`之`workspaceOpen`，通过官方`pluginPaths`返回目录。其他hook配置保持，旧代际目录不清理；重新打开工作区／重载窗口后才验证实际加载。检测到旧local Cognee插件或Claude重复导入时停止并保留原物，不自动迁移。当前仅管理器及配置切换验证通过，真实Cursor宿主仍待验。
+
 设置“知识处理”分别保存配置、验证（消耗所选账号额度）、选择“下次启动使用”；当前配置持续服务原任务。正常stop/start后，launcher确认实际配置摘要和健康才改active；候选失败仅在所属资源确认退出后恢复原配置一次，清理未知或原配置失败则停止。原操作缺失或unknown时只核对，不新建编号重发安装或模型请求。
 
 Provider协议值为 `openai`、`anthropic`、`gemini`、`custom`；DeepSeek等明确OpenAI兼容端点选 `custom`。endpoint/model/key均由用户明确配置，不猜供应商或错误后换模型。凭据0600、目录0700，不回填Native；HTTP重定向拒绝。验证记录实际adapter请求模式，不能当作远端严格Schema保证。

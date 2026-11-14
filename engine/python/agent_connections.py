@@ -35,7 +35,7 @@ class NativeConnection:
         self.root = registry.path.parent / 'connections' / self.id
         self.target = self.profile / {'pi': 'extensions/memlane-cognee/index.ts', 'traex': 'traecli.toml',
                                      'claude_code': 'settings.json',
-                                     'cursor': 'plugins/local/memlane-cognee/.memlane-installation.json'}[kind]
+                                     'cursor': 'hooks.json'}[kind]
 
     def view(self):
         record = self.registry.state.get('connections', {}).get(self.id, {})
@@ -57,12 +57,20 @@ class NativeConnection:
                 result['status'] = 'requires_review'
         if result['status'] == 'configured_pending_new_session' and self.kind == 'cursor':
             installation = self.registry.state['agents'][self.id]['installation']
-            verify_artifact({**installation, 'plugin_dir': str(self.target.parent)})
+            self.cursor_installed(installation, record)
         if result['status'] == 'configured_pending_new_session' and self.kind == 'traex':
             self.traex_installed(self.registry.state['agents'][self.id]['installation'])
         if result['status'] == 'configured_pending_new_session' and self.kind == 'claude_code':
             self.claude_installed(self.registry.state['agents'][self.id]['installation'])
         return result
+
+    def cursor_installed(self, installation, record):
+        verify_artifact(installation)
+        from cursor_connection import proposal
+        raw = safe_file(self.target)
+        if sha(raw) != record.get('cursor_proposal_sha256'):
+            raise PolicyError('cursor_loader_changed_requires_review', 409)
+        proposal(raw, record.get('cursor_next_hook'), None)
 
     def traex_installed(self, installation):
         """Review the native direct-install receipt and cache without replay."""
@@ -152,13 +160,10 @@ class NativeConnection:
                    for name, enabled in settings.get('enabledPlugins', {}).items()):
                 raise PolicyError('duplicate_claude_memory_plugin_requires_review', 409)
         else:
-            plugin = self.target.parent
-            if plugin.exists():
-                marker = json.loads(baseline) if baseline else {}
-                if marker.get('instance_id') != self.id:
-                    raise PolicyError('cursor_local_plugin_requires_review', 409)
+            from cursor_connection import proposal
+            proposal(baseline, record.get('cursor_hook'), None)
             plugins = self.profile / 'plugins'
-            if plugins.exists() and any('cognee' in path.name.lower() and path != plugin and plugin not in path.parents
+            if plugins.exists() and any('cognee' in path.name.lower()
                                          for path in plugins.rglob('*') if path.is_dir()):
                 raise PolicyError('duplicate_cursor_memory_plugin_requires_review', 409)
             # Cursor may import enabled Claude plugins as a second hook path.
@@ -189,7 +194,14 @@ class NativeConnection:
             previous_plugin = record.get('enabled_plugin') if record.get('activated') else record.get('previous_plugin')
             if self.kind == 'traex' and record.get('activated') and not previous_plugin:
                 previous_plugin = 'memlane-cognee@local'
+            cursor_hook = record.get('cursor_hook')
+            cursor_active = record.get('cursor_active_installation')
+            if self.kind == 'cursor' and record.get('activated') and cursor_active is None:
+                cursor_active = r.state['agents'][self.id].get('installation')
             record = {'status': 'preparation_unknown', 'preview': preview, 'previous_plugin': previous_plugin}
+            if self.kind == 'cursor':
+                record['cursor_hook'] = cursor_hook
+                record['cursor_active_installation'] = copy.deepcopy(cursor_active)
             r.state['connections'][self.id] = record
             r.state['revision'] += 1
             r.save()
@@ -206,6 +218,13 @@ class NativeConnection:
                 stub = 'export { default } from ' + json.dumps(str(Path(installation['plugin_dir']) / 'extension/index.ts')) + ';\n'
                 private_write(self.root / 'extension-proposed.ts', stub.encode())
                 record['proposed_sha256'] = sha(stub.encode())
+            elif self.kind == 'cursor':
+                from cursor_connection import loader, proposal
+                record['cursor_next_hook'] = loader(installation, self.config['python'])
+                proposed = proposal(safe_file(self.target), cursor_hook, record['cursor_next_hook'])
+                private_write(self.root / 'cursor-hooks-proposed.json', proposed)
+                record['cursor_proposal_sha256'] = sha(proposed)
+                record['proposed_sha256'] = sha((installation['manifest_sha256'] + sha(proposed)).encode())
             else:
                 record['proposed_sha256'] = installation['manifest_sha256']
             record['preview']['proposed_sha256'] = record['proposed_sha256']
@@ -224,6 +243,13 @@ class NativeConnection:
                 raise PolicyError('host_configuration_changed', 409)
             installation = r.state['agents'][self.id]['installation']
             verify_artifact(installation)
+            if self.kind == 'cursor':
+                proposed = safe_file(self.root / 'cursor-hooks-proposed.json')
+                if (sha(proposed) != record.get('cursor_proposal_sha256')
+                        or sha((installation['manifest_sha256'] + sha(proposed)).encode()) != reviewed_sha):
+                    raise PolicyError('connection_preview_changed', 409)
+                # Recheck duplicate imports before any host mutation.
+                self.preview()
             record.update(status='activation_unknown', sessions_before_activation=[
                 key for key in r.state['sessions'] if json.loads(key)[0] == self.id])
             r.state['revision'] += 1
@@ -238,14 +264,12 @@ class NativeConnection:
                     raise PolicyError('host_configuration_changed', 409)
                 private_write(self.target, stub)
             elif self.kind == 'cursor':
-                target = self.target.parent
-                if target.exists():
-                    # Keep every active generation immutable under its host.
-                    verify_artifact({**installation, 'plugin_dir': str(target)})
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                    shutil.copytree(installation['plugin_dir'], target)
-                    verify_artifact({**installation, 'plugin_dir': str(target)})
+                if sha(safe_file(self.target)) != record['preview']['baseline_sha256']:
+                    raise PolicyError('host_configuration_changed', 409)
+                private_write(self.target, proposed)
+                self.cursor_installed(installation, record)
+                record['cursor_hook'] = record['cursor_next_hook']
+                record['cursor_active_installation'] = copy.deepcopy(installation)
             else:
                 env = {key: value for key, value in os.environ.items()
                        if not key.startswith(('COGNEE_', 'MEMLANE_', 'TRAE_', 'TRAECLI_'))}
@@ -304,7 +328,9 @@ class NativeConnection:
                 elif self.kind == 'traex':
                     self.traex_installed(installation)
                 else:
-                    verify_artifact({**installation, 'plugin_dir': str(self.target.parent)})
+                    self.cursor_installed(installation, record)
+                    record['cursor_hook'] = record['cursor_next_hook']
+                    record['cursor_active_installation'] = copy.deepcopy(installation)
                 record.update(status='configured_pending_new_session', activated=True)
                 r.state['revision'] += 1
                 r.save()
