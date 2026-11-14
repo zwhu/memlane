@@ -8,98 +8,148 @@ import (
 )
 
 func connectionUnavailable(row AgentConnection) bool {
- return !row.Detected && row.Status != "configured_pending_new_session" && row.Status != "prepared" || row.Status == "integration_pending" || row.Status == "component_unavailable"
+	return !row.Detected && row.Status != "configured_pending_new_session" && row.Status != "prepared" || row.Status == "integration_pending" || row.Status == "component_unavailable"
 }
 
 func (s *integrationState) connectionSelectionAction() (string, []string) {
- var prepare, activate []string
- for _, row := range s.Connections.Connections {
-  if !s.Selected[row.ID] || s.pendingConnection(row.ID) != nil { continue }
-  if connectionActionAllowed(row,"activate") { activate = append(activate,row.ID)
-  } else if connectionActionAllowed(row,"prepare") { prepare = append(prepare,row.ID) }
- }
- if len(prepare)>0 { return "prepare",prepare }
- return "activate",activate
+	var prepare, activate []string
+	for _, row := range s.Connections.Connections {
+		if !s.Selected[row.ID] || s.pendingConnection(row.ID) != nil {
+			continue
+		}
+		if connectionActionAllowed(row, "activate") {
+			activate = append(activate, row.ID)
+		} else if connectionActionAllowed(row, "prepare") {
+			prepare = append(prepare, row.ID)
+		}
+	}
+	if len(prepare) > 0 {
+		return "prepare", prepare
+	}
+	return "activate", activate
 }
 
 func (a *App) agentConnectionSettings(c *ui.Context) {
- s := &a.integrations
- ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
-  homeText(c,"选择要连接的 Agent，让它自动保存会话并使用你的知识。",homeMeta).Grow(1)
-  ui.Button(c,"重新检测").Disabled(s.Busy || s.Loading).OnClick(a.RefreshIntegrations)
- })
- if s.Loading { homeText(c,"正在检测…",homeMeta) }
- if !s.Loaded {
-  homeText(c,"正在读取连接状态…",homeMeta)
-  if s.Error!="" { homeText(c,s.Error,homeMeta); commonButton(c,"重试",false,a.RefreshIntegrations) }
-  return
- }
- if s.Selected == nil { s.Selected=map[string]bool{} }
- var unavailable []AgentConnection
- for _, row := range s.Connections.Connections {
-  if connectionUnavailable(row) { unavailable=append(unavailable,row); continue }
-  a.agentConnectionRow(c,row)
- }
- if len(unavailable)>0 {
-  label:=fmt.Sprintf("其他 Agent（%d）",len(unavailable))
-  if s.ShowUnavailable { label="收起其他 Agent" }
-  projectLink(c,label,func(){ s.ShowUnavailable=!s.ShowUnavailable })
-  if s.ShowUnavailable { for _,row:=range unavailable { a.agentConnectionRow(c,row) } }
- }
- for _, pending := range s.PendingOperations {
-  if !pending.connection() { continue }
-  o:=pending
-  name:="Agent"
-  for _,row:=range s.Connections.Connections { if row.ID==o.Profile { name=connectionName(row.Kind); break } }
-  ui.Row(c.Key("pending-connection-"+o.Operation)).Gap(12).Children(func(){
-   homeText(c,name+" 的连接结果尚未确认",homeMeta).Grow(1)
-   ui.Button(c,"检查连接").Label("检查连接："+name+" "+o.Operation).Disabled(s.Busy).OnClick(func(){a.reviewConnectionOperation(o)})
-  })
- }
- action,ids:=s.connectionSelectionAction()
- if len(ids)>0 || s.Busy {
-  ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func(){
-   label:=fmt.Sprintf("连接所选（%d）",len(ids))
-   if action=="activate" { label=fmt.Sprintf("确认连接（%d）",len(ids)) }
-   if s.Busy { label="正在配置连接…" }
-   ui.Button(c,label).Disabled(s.Busy || len(ids)==0).OnClick(func(){a.connectAgents(action,ids)})
-   if s.BatchStop!=nil { ui.Button(c,"取消剩余连接").OnClick(func(){s.BatchStop.Store(true);s.Message="当前项完成后停止，已完成的连接会保留"}) }
-  })
- }
- if s.Message!="" { homeText(c,s.Message,homeMeta) }
- if s.Error!="" { homeText(c,s.Error,homeMeta) }
+	s := &a.integrations
+	ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
+		homeText(c, "选择要连接的 Agent，让它自动保存会话并使用你的知识。", homeMeta).Grow(1)
+		ui.Button(c, "重新检测").Disabled(s.Busy || s.Loading).OnClick(a.RefreshIntegrations)
+	})
+	if s.Loading {
+		homeText(c, "正在检测…", homeMeta)
+	}
+	if !s.Loaded {
+		homeText(c, "正在读取连接状态…", homeMeta)
+		if s.Error != "" {
+			homeText(c, s.Error, homeMeta)
+			commonButton(c, "重试", false, a.RefreshIntegrations)
+		}
+		return
+	}
+	if s.Selected == nil {
+		s.Selected = map[string]bool{}
+	}
+	var unavailable []AgentConnection
+	for _, row := range s.Connections.Connections {
+		if connectionUnavailable(row) {
+			unavailable = append(unavailable, row)
+			continue
+		}
+		a.agentConnectionRow(c, row)
+	}
+	if len(unavailable) > 0 {
+		label := fmt.Sprintf("其他 Agent（%d）", len(unavailable))
+		if s.ShowUnavailable {
+			label = "收起其他 Agent"
+		}
+		projectLink(c, label, func() { s.ShowUnavailable = !s.ShowUnavailable })
+		if s.ShowUnavailable {
+			for _, row := range unavailable {
+				a.agentConnectionRow(c, row)
+			}
+		}
+	}
+	for _, pending := range s.PendingOperations {
+		if !pending.connection() {
+			continue
+		}
+		o := pending
+		name := "Agent"
+		for _, row := range s.Connections.Connections {
+			if row.ID == o.Profile {
+				name = connectionName(row.Kind)
+				break
+			}
+		}
+		ui.Row(c.Key("pending-connection-" + o.Operation)).Gap(12).Children(func() {
+			homeText(c, name+" 的连接结果尚未确认", homeMeta).Grow(1)
+			ui.Button(c, "检查连接").Label("检查连接：" + name + " " + o.Operation).Disabled(s.Busy).OnClick(func() { a.reviewConnectionOperation(o) })
+		})
+	}
+	action, ids := s.connectionSelectionAction()
+	if len(ids) > 0 || s.Busy {
+		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+			label := fmt.Sprintf("连接所选（%d）", len(ids))
+			if action == "activate" {
+				label = fmt.Sprintf("确认连接（%d）", len(ids))
+			}
+			if s.Busy {
+				label = "正在配置连接…"
+			}
+			ui.Button(c, label).Disabled(s.Busy || len(ids) == 0).OnClick(func() { a.connectAgents(action, ids) })
+			if s.BatchStop != nil {
+				ui.Button(c, "取消剩余连接").OnClick(func() { s.BatchStop.Store(true); s.Message = "当前项完成后停止，已完成的连接会保留" })
+			}
+		})
+	}
+	if s.Message != "" {
+		homeText(c, s.Message, homeMeta)
+	}
+	if s.Error != "" {
+		homeText(c, s.Error, homeMeta)
+	}
 }
 
-func (a *App) agentConnectionRow(c *ui.Context,row AgentConnection) {
- s:=&a.integrations
- name:=connectionName(row.Kind)
- ui.Column(c.Key("agent-connection-"+row.ID)).FillWidth().Gap(8).Padding(12,0).Children(func(){
-  ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func(){
-   allowed:=connectionActionAllowed(row,"prepare") || connectionActionAllowed(row,"activate")
-   if allowed {
-    selected:=s.Selected[row.ID]
-    ui.Checkbox(c.Key("select-agent-"+row.ID),&selected,"").Label("选择 "+name).Disabled(s.Busy || s.pendingConnection(row.ID)!=nil).OnChange(func(){s.Selected[row.ID]=selected})
-   } else { ui.Box(c).Size(16,16) }
-   homeText(c,name,homeBody).Grow(1)
-   status:=homeText(c,connectionStatus(row),homeMeta)
-   if row.Status=="configured_pending_new_session" && row.NewSessions>0 { status.TextColor(ui.Hex("#51806b")) }
-   if row.Kind=="cursor" { status.Tooltip("会话开始时或调用工具后加载知识；仅对话的回合可能延迟加载。") }
-   if row.Status=="activation_unknown" || row.Status=="preparation_unknown" || row.Status=="requires_review" || row.Status=="staging_unknown" || row.Status=="agent_creation_unconfirmed" {
-    ui.Button(c,"检查连接").Label("检查连接："+name).Disabled(s.Busy).OnClick(func(){a.connectAgents("review",[]string{row.ID})})
-   }
-  })
-  if row.Status=="prepared" && row.Preview!=nil {
-   ui.Column(c).FillWidth().Padding(12,16).Gap(6).Radius(6).Background(ui.Hex("#f5f8fb")).Children(func(){
-    homeText(c,"将为 "+name+" 添加 Memlane 连接，确认后生效。",homeMeta)
-    if len(row.Preview.DisabledPlugins)>0 { homeText(c,fmt.Sprintf("将替换 %d 个旧 Cognee 连接，其他插件和登录设置会保留。",len(row.Preview.DisabledPlugins)),homeMeta) }
-    homeText(c,"连接后，重新打开 "+name+" 并新建会话。",homeMeta)
-   })
-  } else if row.Status=="configured_pending_new_session" && row.NewSessions==0 {
-   homeText(c,"重新打开 "+name+" 并新建会话，即可完成连接。",homeMeta).Margin(0,28)
-  }
-  if message:=s.ItemMessages[row.ID];message!="" { homeText(c,message,homeMeta).Margin(0,28).LineHeight(1.6) }
-  ui.Box(c).FillWidth().Height(1).Background(homeBorder).Margin(8,0,0,0)
- })
+func (a *App) agentConnectionRow(c *ui.Context, row AgentConnection) {
+	s := &a.integrations
+	name := connectionName(row.Kind)
+	ui.Column(c.Key("agent-connection-"+row.ID)).FillWidth().Gap(8).Padding(12, 0).Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
+			allowed := connectionActionAllowed(row, "prepare") || connectionActionAllowed(row, "activate")
+			if allowed {
+				selected := s.Selected[row.ID]
+				ui.Checkbox(c.Key("select-agent-"+row.ID), &selected, "").Label("选择 " + name).Disabled(s.Busy || s.pendingConnection(row.ID) != nil).OnChange(func() { s.Selected[row.ID] = selected })
+			} else {
+				ui.Box(c).Size(16, 16)
+			}
+			homeText(c, name, homeBody).Grow(1)
+			status := homeText(c, connectionStatus(row), homeMeta)
+			if row.Status == "configured_pending_new_session" && row.NewSessions > 0 {
+				status.TextColor(ui.Hex("#51806b"))
+			}
+			if row.Kind == "cursor" {
+				status.Tooltip("会话开始时或调用工具后加载知识；仅对话的回合可能延迟加载。")
+			}
+			if row.Status == "activation_unknown" || row.Status == "preparation_unknown" || row.Status == "requires_review" || row.Status == "staging_unknown" || row.Status == "agent_creation_unconfirmed" {
+				ui.Button(c, "检查连接").Label("检查连接：" + name).Disabled(s.Busy).OnClick(func() { a.connectAgents("review", []string{row.ID}) })
+			}
+		})
+		if row.Status == "prepared" && row.Preview != nil {
+			ui.Column(c).FillWidth().Padding(12, 16).Gap(6).Radius(6).Background(ui.Hex("#f5f8fb")).Children(func() {
+				homeText(c, "将为 "+name+" 添加 Memlane 连接，确认后生效。", homeMeta)
+				if len(row.Preview.DisabledPlugins) > 0 {
+					homeText(c, fmt.Sprintf("将替换 %d 个旧 Cognee 连接，其他插件和登录设置会保留。", len(row.Preview.DisabledPlugins)), homeMeta)
+				}
+				homeText(c, "连接后，重新打开 "+name+" 并新建会话。", homeMeta)
+			})
+		} else if row.Status == "configured_pending_new_session" && row.NewSessions == 0 {
+			homeText(c, "重新打开 "+name+" 并新建会话，即可完成连接。", homeMeta).Margin(0, 28)
+		}
+		if message := s.ItemMessages[row.ID]; message != "" {
+			homeText(c, message, homeMeta).Margin(0, 28).LineHeight(1.6)
+		}
+		ui.Box(c).FillWidth().Height(1).Background(homeBorder).Margin(8, 0, 0, 0)
+	})
 }
 
 func generationLabel(g GenerationDirectory, ref *GenerationRef) string {

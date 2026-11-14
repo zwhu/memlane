@@ -136,7 +136,7 @@ type integrationState struct {
 	PendingOperations                                                                           []generationUIOperation
 	Connections                                                                                 ConnectionsDirectory
 	Generation                                                                                  GenerationDirectory
-	ShowUnavailable bool
+	ShowUnavailable                                                                             bool
 	Loaded, Loading, Busy                                                                       bool
 	Request                                                                                     uint64
 	Error, Message                                                                              string
@@ -366,7 +366,9 @@ func (a *App) connectAgents(action string, identifiers []string) {
 						a.finishGenerationOperation(op)
 					}
 					s.ItemMessages[id] = ""
-     if action == "activate" { delete(s.Selected,id) }
+					if action == "activate" {
+						delete(s.Selected, id)
+					}
 				}
 			})
 		}

@@ -238,7 +238,7 @@ func TestIntegrationAgentListKeepsPartialSuccessAndShowsHostLimits(t *testing.T)
 		{ID: "cursor", Kind: "cursor"},
 	}}}
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"Codex", "pi", "TraeX", "Claude Code", "Cursor", "启用已准备项", "准备所选 Agent"} {
+	for _, label := range []string{"Codex", "pi", "TraeX", "Claude Code", "Cursor", "确认连接（1）", "等待确认", "已连接"} {
 		if !tt.HasText(label) {
 			t.Fatal("missing Agent control", label)
 		}
@@ -485,9 +485,9 @@ func TestConnectionMissingComponentCannotPrepare(t *testing.T) {
 		if connectionActionAllowed(row, "prepare") || connectionActionAllowed(row, "activate") {
 			t.Fatal("missing component must not allow preparation or activation")
 		}
-		expected := "接入组件未就绪"
+		expected := "暂时无法连接"
 		if !detected {
-			expected = "未检测到本机安装"
+			expected = "未安装"
 		}
 		if got := connectionStatus(row); got != expected {
 			t.Fatalf("status = %q, want %q", got, expected)
