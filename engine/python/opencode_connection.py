@@ -8,7 +8,7 @@ from pathlib import Path
 
 from project_control import private_write
 from project_policy import PolicyError
-from opencode_installation import loader, prepare as prepare_binding, verify
+from opencode_installation import loader, prepare as prepare_binding, verify, pending_runtime
 
 
 def sha(raw):
@@ -163,7 +163,14 @@ class OpenCodeConnection:
         try:
             if installation['instance_id'] != self.id or installation['profile'] != str(self.profile):
                 raise ValueError()
-            verify(installation['plugin_dir'], installation['manifest_sha256'])
+            manifest = verify(installation['plugin_dir'], installation['manifest_sha256'])
+            if 'dist/src/managed-pending-cli.js' in manifest['files']:
+                node = Path(installation['node_executable'])
+                if (not node.is_absolute() or node.resolve(strict=True) != node or node.is_symlink()
+                        or not node.is_file() or not os.access(node, os.X_OK) or node.stat().st_size > 512 * 1024 * 1024
+                        or sha(node.read_bytes()) != installation['node_sha256']
+                        or installation['helper_sha256'] != manifest['files']['dist/src/managed-pending-cli.js']):
+                    raise ValueError()
             binding = Path(installation['binding_file'])
             raw = safe_file(binding)
             if binding.stat().st_mode & 0o077 or sha(raw) != installation['binding_sha256']:
@@ -200,9 +207,10 @@ class OpenCodeConnection:
         if before.get('status') in ('preparation_unknown', 'activation_unknown'):
             raise PolicyError('connection_result_requires_review', 409)
         try:
-            verify(self.artifact, self.artifact_sha)
+            manifest = verify(self.artifact, self.artifact_sha)
         except (OSError, ValueError):
             raise PolicyError('opencode_artifact_requires_review', 409) from None
+        await asyncio.to_thread(pending_runtime, manifest, self.config.get('opencode_node_executable', 'node'))
         if self.id not in r.state['agents']:
             await r.provision_agent(expected, self.id, '本机 OpenCode')
         if self.id not in r.state['agents']:
@@ -219,7 +227,7 @@ class OpenCodeConnection:
         try:
             installation = await asyncio.to_thread(prepare_binding, self.artifact, r.path.parent, self.id, agent,
                 r.official.url, control.get('url') or self.config['project_control_url'], self.profile,
-                artifact_sha256=self.artifact_sha)
+                artifact_sha256=self.artifact_sha, node=self.config.get('opencode_node_executable', 'node'))
         except (OSError, ValueError, KeyError):
             raise PolicyError('opencode_artifact_requires_review', 409) from None
         async with r.mutex:

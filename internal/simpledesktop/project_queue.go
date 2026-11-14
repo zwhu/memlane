@@ -117,6 +117,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 		}
 	}
 	client, python := a.Client, a.Config.Python
+	operator := pendingOperatorConfig(a.Config)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
@@ -145,7 +146,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 					return
 				}
 				defer func() { <-slots }()
-				results[n].Status, results[n].Error = runPendingMaterials(ctx, python, *row.Agent.Installation, row.Binding, p.Dataset, "show", "")
+				results[n].Status, results[n].Error = runPendingMaterials(ctx, python, *row.Agent.Installation, row.Binding, p.Dataset, "show", "", operator)
 				status := results[n].Status
 				if results[n].Error == nil && (status.Signature == "" || status.Pending < 0 || status.Unknown < 0 || status.Unknown > status.Pending) {
 					results[n].Error = fmt.Errorf("会话保存状态不完整")

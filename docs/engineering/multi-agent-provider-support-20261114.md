@@ -68,3 +68,5 @@ OpenCode受管HTTP／outbox覆盖源码已实现，5项Python及10项实际编�
 检查点三十九完成旧unknown的原官方session／dataset／marker字段核对；MA-OPENCODE-UNKNOWN-TARGET01历史失败1保留。实际原服务GET三项及41项Node／8项Python补丁通过，无内容重发或模型调用；专用unknown保持原样。补交／丢弃的管理认证、快照同意和跨进程互斥及Native接线仍未完成，[证据](evidence/multi-agent-development-20261114/opencode-unknown-target.json)。
 
 检查点四十完成待发材料内部原语及发送租约：45项Node／8项Python补丁通过，含真实子进程互斥、精确快照、所选项处理和discard墓碑。没有新增Agent管理工具或激活未鉴权入口，认证worker／Native接线仍未完成，[证据](evidence/multi-agent-development-20261114/opencode-pending-primitives.json)。
+
+检查点四十一已实现管理认证的固定OpenCode worker及Native源码分派，实际原服务8次Go→Node核对／补交／丢弃／拒绝调用通过；合成材料、处理关闭，无新增模型或实窗证据。原策略恢复，独立shadow unknown保留，日常未切换。设置自动检测／重新检测及多选准备／启用继续复用现有入口，实窗增量待验；Ollama与外部门槛保持。[证据](evidence/multi-agent-development-20261114/opencode-pending-management.json)。

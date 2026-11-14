@@ -689,3 +689,85 @@ test("startup metadata discovery binds only new sessions in this exact directory
     assert.equal(s.writes.length, 0); assert.equal(s.recalls.length, 0);
   } finally { await hooks.dispose(); await s.close(); }
 });
+
+const { ManagedPending } = await import(new URL("managed-pending.js", compiled));
+async function pendingFixture(name, serverOptions = {}) {
+  const cfg = options("pending-" + name, {instanceId: "a"}), native = "pending-" + name;
+  const control = new ManagedProjectControl(cfg), policy = await control.current(native);
+  const server = await officialServer(serverOptions), queue = new Outbox("pending-" + name, join(root, "pending-queue-" + name));
+  const actions = new ManagedActions(control, server.client, join(root, "pending-actions-" + name), "a");
+  const session = `opencode_${hash("a").slice(0, 16)}_${hash(native).slice(0, 24)}`;
+  const command = {project_id: policy.project_id, dataset_id: policy.dataset_id, host_session_key: control.hostKey(native)};
+  const operator = managementTokenFile => new ManagedPending(control, server.client, queue, actions,
+    {origin, instanceId: "a", managementTokenFile});
+  return {cfg, native, policy, control, server, queue, session, command, operator,
+    target: {native, project_id: policy.project_id, dataset_id: policy.dataset_id},
+    manager: operator(join(root, "manager-token")),
+    close: async () => {await access(policy.project_id, {access: "maintain", capture: true, auto_process: true}); await server.close();}};
+}
+
+test("pending management authenticates the operator and sends only the reviewed original session", async () => {
+  const f = await pendingFixture("auth");
+  try {
+    f.queue.enqueue("selected-auth", f.session, {type: "qa", context: "opencode_capture:selected", answer: "PRIVATE_OPERATOR_BODY"}, f.target);
+    await assert.rejects(f.queue.flush(async () => {throw new Error("Cognee request failed (403)");}, async () => false));
+    const before = readFileSync(f.queue.file);
+    await assert.rejects(f.operator(tokenFile).run({...f.command, action: "show"}), /pending_manager_auth_required/);
+    await assert.rejects(f.manager.run({...f.command, project_id: "33333333-3333-4333-8333-333333333333", action: "show"}), /original_project_target_unconfirmed/);
+    assert.deepEqual(readFileSync(f.queue.file), before); assert.equal(f.server.requests.length, 0);
+    const review = await f.manager.run({...f.command, action: "show"});
+    assert.equal(review.pending, 1); assert.ok(!JSON.stringify(review).includes("PRIVATE_OPERATOR_BODY"));
+    const otherNative = "pending-auth-other", otherPolicy = await f.control.current(otherNative);
+    const otherSession = `opencode_${hash("a").slice(0,16)}_${hash(otherNative).slice(0,24)}`;
+    f.queue.enqueue("unselected-auth", otherSession, {type: "qa", context: "opencode_capture:other"},
+      {native: otherNative, project_id: otherPolicy.project_id, dataset_id: otherPolicy.dataset_id});
+    const result = await f.manager.run({...f.command, action: "replay", signature: review.signature});
+    assert.equal(result.drained, 1); assert.equal(result.pending, 0);
+    assert.equal(f.queue.status().pending, 1); assert.equal(f.server.writes.length, 1);
+    assert.equal(f.server.writes[0].session_id, f.session); assert.equal(f.server.writes[0].dataset_id, f.policy.dataset_id);
+    assert.equal(f.server.improvements.length, 1); assert.equal(result.processing_status, "running");
+  } finally {await f.close();}
+});
+
+test("authenticated unknown review acknowledges exact originals, refuses missing proof and discards only local copies", async () => {
+  for (const shadow of [false, true]) {
+    const f = await pendingFixture("unknown-" + shadow, {loseFirstResponse: true,
+      ...(shadow ? {sessionDetail: detail => ({...detail, dataset_id: "33333333-3333-4333-8333-333333333333"})} : {})});
+    try {
+      const delivery = new ManagedDelivery(f.control, f.server.client, f.queue);
+      await delivery.enqueue(f.native, "unknown-operator", f.session, {type: "qa", context: "opencode_capture:operator-unknown", answer: "PRIVATE_UNKNOWN_OPERATOR_BODY"});
+      await assert.rejects(delivery.flush());
+      const review = await f.manager.run({...f.command, action: "show"}); assert.equal(review.unknown_outcomes, 1);
+      const checked = await f.manager.run({...f.command, action: "check"});
+      assert.equal(checked.pending, shadow ? 1 : 0); assert.equal(checked.matched_unknown, shadow ? 0 : 1);
+      assert.equal(f.server.writes.length, 1); assert.equal(f.server.improvements.length, 0);
+      if (shadow) {
+        await assert.rejects(f.manager.run({...f.command, action: "replay", signature: checked.signature}), /original_write_result_still_unknown/);
+        assert.equal(f.server.writes.length, 1);
+        await access(f.policy.project_id, {access: "none"});
+        const dropped = await f.manager.run({...f.command, action: "discard", signature: checked.signature});
+        assert.equal(dropped.discarded, 1); assert.equal(f.queue.status().saved, 0);
+        assert.equal(f.server.writes.length, 1); assert.equal(f.server.improvements.length, 0);
+        assert.ok(!readFileSync(f.queue.file, "utf8").includes("PRIVATE_UNKNOWN_OPERATOR_BODY"));
+      } else assert.equal(f.queue.status().saved, 1);
+    } finally {await f.close();}
+  }
+});
+
+test("pending commands reject stale consent and withdrawn write policy without altering original material", async () => {
+  const f = await pendingFixture("consent");
+  try {
+    f.queue.enqueue("reviewed-old", f.session, {type: "qa", context: "opencode_capture:old"}, f.target);
+    const review = await f.manager.run({...f.command, action: "show"});
+    f.queue.enqueue("added-later", f.session, {type: "qa", context: "opencode_capture:new"}, f.target);
+    const before = readFileSync(f.queue.file);
+    await assert.rejects(f.manager.run({...f.command, action: "discard", signature: review.signature}), /pending_materials_changed_review_again/);
+    assert.deepEqual(readFileSync(f.queue.file), before);
+    const fresh = await f.manager.run({...f.command, action: "show"});
+    await access(f.policy.project_id, {access: "read"});
+    await assert.rejects(f.manager.run({...f.command, action: "replay", signature: fresh.signature}), /project_write_denied/);
+    assert.deepEqual(readFileSync(f.queue.file), before); assert.equal(f.server.requests.length, 0);
+    const dropped = await f.manager.run({...f.command, action: "discard", signature: fresh.signature});
+    assert.equal(dropped.discarded, 2); assert.equal(f.queue.status().saved, 0);
+  } finally {await f.close();}
+});

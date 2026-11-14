@@ -23,6 +23,9 @@ type PendingMaterials struct {
 	Drained   int    `json:"drained"`
 	Discarded int    `json:"discarded"`
 	Error     string `json:"error"`
+	Checked   bool   `json:"checked"`
+	Matched   int    `json:"matched_unknown"`
+	SessionID string `json:"session_id"`
 }
 
 type boundedBufferOutput struct{ buffer bytes.Buffer }
@@ -69,7 +72,13 @@ func verifyInstallation(installation AgentInstallation) error {
 	return nil
 }
 
-func runPendingMaterials(ctx context.Context, python string, installation AgentInstallation, binding ProjectBinding, dataset, action, signature string) (PendingMaterials, error) {
+func runPendingMaterials(ctx context.Context, python string, installation AgentInstallation, binding ProjectBinding, dataset, action, signature string, operator ...PendingOperatorConfig) (PendingMaterials, error) {
+	if installation.HostKind == "opencode" {
+		if len(operator) != 1 {
+			return PendingMaterials{}, fmt.Errorf("管理连接尚未确认，未更改记录")
+		}
+		return runOpenCodePending(ctx, installation, binding, dataset, action, signature, operator[0])
+	}
 	var result PendingMaterials
 	if !filepath.IsAbs(python) || binding.HostSessionKey == "" || dataset == "" {
 		return result, fmt.Errorf("受管会话尚未确认")

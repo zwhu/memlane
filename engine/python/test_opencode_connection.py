@@ -69,6 +69,16 @@ class OpenCodeConnectionTests(unittest.IsolatedAsyncioTestCase):
         return await self.connections.perform(self.adapter.id, 'activate', self.registry.state['revision'], op,
                                               prepared['connection']['preview']['proposed_sha256'])
 
+    async def test_missing_explicit_management_runtime_fails_before_subject_or_binding_creation(self):
+        self.config['opencode_node_executable'] = str(self.root / 'missing-node')
+        with self.assertRaisesRegex(PolicyError, 'opencode_pending_runtime_unconfirmed'):
+            await self.prepare('missing-runtime')
+        self.assertEqual(self.official.enrolled, 0)
+        self.assertFalse(self.adapter.target.exists())
+        self.assertFalse((self.registry.path.parent / 'opencode-installations').exists())
+        # The outer command may journal its rejection, but it never creates an Agent.
+        self.assertNotIn(self.adapter.id, self.registry.state['agents'])
+
     async def test_prepare_activate_reopen_uses_independent_subject_and_keeps_other_files(self):
         plugins = self.profile / 'plugins'
         plugins.mkdir()

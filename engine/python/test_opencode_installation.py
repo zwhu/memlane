@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from opencode_installation import build, digest, loader, prepare, verify
 from project_control import private_write
@@ -91,3 +92,29 @@ class OpenCodeArtifactTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build(self.artifact, os.environ['MEMLANE_OPENCODE_TEST_NPM_CACHE'])
         self.assertEqual((self.artifact / '.memlane-opencode-artifact.json').read_bytes(), before)
+
+    def test_management_worker_runtime_and_input_validation_are_separate_from_agent_binding(self):
+        root, agent = self.fixture('pending-worker')
+        with patch.dict(os.environ, {'NODE_OPTIONS': '--require /must-not-run-during-runtime-check'}):
+            installation = prepare(self.artifact, root, 'opencode-test', agent, 'http://127.0.0.1:19991',
+                                   'http://127.0.0.1:19992', root, artifact_sha256=self.receipt['manifest_sha256'])
+        self.assertTrue(Path(installation['node_executable']).is_absolute())
+        self.assertEqual(installation['node_sha256'], digest(Path(installation['node_executable']).read_bytes()))
+        binding = json.loads(Path(installation['binding_file']).read_bytes())
+        self.assertNotIn('management_token_file', json.dumps(binding))
+        self.assertEqual(len(binding['secrets']), 2)
+        request = {'agent_id': 'opencode-test', 'installation': {key: installation[key] for key in (
+            'plugin_dir', 'manifest_sha256', 'binding_file', 'binding_sha256', 'node_executable', 'node_sha256')},
+            'operator': {'token_file': str(root / 'manager-key'), 'control_url': 'http://127.0.0.1:19992',
+                         'service_url': 'http://127.0.0.1:19991'},
+            'command': {'action': 'not-an-operation'}}
+        environment = {key: value for key, value in os.environ.items() if not key.startswith('NODE_')}
+        command = [installation['node_executable'], str(self.artifact / 'dist/src/managed-pending-cli.js')]
+        # A valid tree reaches command validation; no HTTP is needed for this rejection.
+        run = subprocess.run(command, input=json.dumps(request), env=environment, capture_output=True, text=True, timeout=10)
+        self.assertEqual(json.loads(run.stdout), {'error': 'invalid_pending_action'})
+        self.assertNotEqual(run.returncode, 0)
+        request['installation']['node_sha256'] = '0' * 64
+        run = subprocess.run(command, input=json.dumps(request), env=environment, capture_output=True, text=True, timeout=10)
+        self.assertEqual(json.loads(run.stdout), {'error': 'pending_worker_unconfirmed'})
+        self.assertNotIn('c' * 40, run.stdout + run.stderr)

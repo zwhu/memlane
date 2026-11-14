@@ -18,7 +18,7 @@ from opencode_plugin_patch import (managed_http_client, managed_outbox, managed_
 
 ROOT = Path(__file__).resolve().parents[2]
 SUPPORT = ('managed-control.ts', 'managed-delivery.ts', 'managed-capture-window.ts',
-           'managed-config.ts', 'managed-recall.ts', 'managed-actions.ts')
+           'managed-config.ts', 'managed-recall.ts', 'managed-actions.ts', 'managed-pending.ts', 'managed-pending-cli.ts')
 
 
 def digest(data):
@@ -170,7 +170,7 @@ def build(output, npm_cache, *, node='node', archive=None):
         compile_result = subprocess.run([node, str(work / 'node_modules/typescript/bin/tsc'), '--strict',
                                          '--target', 'ES2022', '--module', 'NodeNext', '--moduleResolution', 'NodeNext',
                                          '--skipLibCheck', '--types', 'node', '--rootDir', str(work),
-                                         '--outDir', str(work / 'dist'), str(work / 'index.ts')],
+                                         '--outDir', str(work / 'dist'), str(work / 'index.ts'), str(work / 'src/managed-pending.ts'), str(work / 'src/managed-pending-cli.ts')],
                                         cwd=work, capture_output=True, text=True, timeout=60)
         if compile_result.returncode:
             raise ValueError('fixed OpenCode TypeScript compilation failed: ' + compile_result.stdout + compile_result.stderr)
@@ -249,7 +249,29 @@ export default async (ctx) => {
 ''').encode()
 
 
-def prepare(artifact, root, instance_id, agent, service_url, control_url, profile, *, artifact_sha256):
+def pending_runtime(manifest, node='node'):
+    """Resolve management runtime before provisioning or writing a binding."""
+    if 'dist/src/managed-pending-cli.js' not in manifest['files']:
+        return {}
+    import re
+    try:
+        if not isinstance(node, str) or (node != 'node' and not Path(node).is_absolute()):
+            raise ValueError()
+        executable = Path(shutil.which(node) or node).resolve(strict=True)
+        if not executable.is_file() or not os.access(executable, os.X_OK) or executable.stat().st_size > 512 * 1024 * 1024:
+            raise ValueError()
+        environment = {key: value for key, value in os.environ.items() if not key.startswith('NODE_')}
+        version = subprocess.run([str(executable), '--version'], env=environment, capture_output=True,
+                                 text=True, check=True, timeout=5).stdout.strip()
+        if not re.fullmatch(r'v\d+\.\d+\.\d+', version) or int(version[1:].split('.')[0]) < 20:
+            raise ValueError()
+        return {'node_executable': str(executable), 'node_sha256': digest(executable.read_bytes()),
+                'node_version': version, 'helper_sha256': manifest['files']['dist/src/managed-pending-cli.js']}
+    except (OSError, ValueError, subprocess.SubprocessError):
+        raise PolicyError('opencode_pending_runtime_unconfirmed', 503) from None
+
+
+def prepare(artifact, root, instance_id, agent, service_url, control_url, profile, *, artifact_sha256, node='node'):
     import re
     from urllib.parse import urlsplit
     if not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', instance_id):
@@ -269,6 +291,7 @@ def prepare(artifact, root, instance_id, agent, service_url, control_url, profil
     if (manifest['recipe']['upstream_commit'] != component['commit']
             or manifest['recipe']['archive_sha256'] != component['archive_sha256']):
         raise PolicyError('fixed_opencode_artifact_required')
+    runtime = pending_runtime(manifest, node)
     secrets = []
     for field in ('key_file', 'control_token_file'):
         path = Path(agent[field]).absolute()
@@ -296,4 +319,5 @@ def prepare(artifact, root, instance_id, agent, service_url, control_url, profil
                     'binding_file': str(binding_file), 'binding_sha256': digest(raw), 'generation': generation,
                     'host_kind': 'opencode', 'instance_id': instance_id, 'profile': str(profile), 'status': 'prepared'}
     installation['loader_sha256'] = digest(loader(installation))
+    installation.update(runtime)
     return installation

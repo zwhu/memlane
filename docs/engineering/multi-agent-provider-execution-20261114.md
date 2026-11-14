@@ -486,3 +486,13 @@ OpenCode 1.3.5／DeepSeek Flash以独立官方子主体、私有profile和合成
 ## 检查点四十：管理处置的队列基础
 
 固定官方outbox增加PID共享发送租约、带原target的精确快照、marker-only未知探针、所选项确认／释放／丢弃及重启墓碑；所选发送使用同一租约token，防止中途放锁及顺带发送其他会话。24控制＋7HTTP＋14outbox Node与8项Python补丁通过，包含实际OS子进程互斥和死owner恢复、快照变更不修改文件、未知不重投、discard不计saved。无模型或Native启动，未单独激活新组件。token／快照不是管理认证；worker、绑定授权、Native分派和旧产物共存仍待完成。[记录](multi-agent-second-batch-20261114.md)、[证据](evidence/multi-agent-development-20261114/opencode-pending-primitives.json)。
+
+## 检查点四十一：OpenCode管理侧核对／补交／丢弃
+
+现有Native待发入口增加OpenCode源码分派，使用固定组件中的独立Node worker；完整tree、私有binding、原服务及运行时摘要先校验，再以管理身份认证原主体／项目／host key。Agent token不能执行处置，管理凭据不写入Agent配置。show只读元数据；check只确认原官方session／dataset／marker；replay按已查看快照、原实时策略和共享发送租约发送所选项；discard仅删除本机副本并保留去重墓碑。Node>=20预检移到主体创建和binding写入之前。
+
+27项控制Node、7项HTTP、14项outbox及8项Python补丁通过；原4项安装检查和新增worker检查分别通过，8项连接检查及预检调整后的2项检查通过。Go分派2项含5种拒绝子场景通过；实际原服务上的8次Go→Node调用通过：Agent凭据拒绝、A核对／单项补交、B核对／本机丢弃、正确unknown确认、旧同名组unknown保留及重投拒绝。A/B为新增合成材料，自动处理明确关闭且action账本未变化，不声称生成知识。原项目策略恢复、原Agent ID保留，主队列0；独立marker-only受控unknown夹具仍保留1项。拒绝响应的默认0不代表队列清空，源码核对UI在错误时先返回而不覆盖旧状态。
+
+新增组件输入检查发现错误白名单遗漏，MA-OPENCODE-PENDING-WORKER-ERROR01累计失败1次，修正后定向测试通过；原失败证据与其他问题计数保持。组件manifest `9f3a31944dd6e8bffcfe634223a17b17c94c357a29d4ad1daa335fec3b4ef31d`；其构造早于纯Python预检顺序调整，TS运行文件不变。实际Go检查基于共享工作树，提交仅收录必要DTO字段及OpenCode分派钩子，不包含其他会话UI／backlog改动。[脱敏证据](evidence/multi-agent-development-20261114/opencode-pending-management.json)。
+
+本轮未启动Native宿主、调用模型、使用重置卡或修改日常配置，没有release／完整App打包。原服务／数据及所需组件保留。正常设置接入与待发处置的实际窗口／点击仍未验收；旧无租约代际共存、日常采用、Ollama及首批外部账号门槛仍待完成，完整Goal继续active。

@@ -254,6 +254,9 @@ type Pending = { id: string; session: string; entry: Entry; uncertain?: boolean;
         ...(items.some(item => item.blocked) ? {blocked: {reason: "operator_review_required"}} : {})};
     });
   }
+  pendingIds(target: ProjectTarget, session: string): string[] {
+    return this.lock(() => this.pendingFor(this.read(), target, session).map(item => item.id));
+  }
   // Internal primitives only. The management worker authenticates the operator,
   // validates original policy and obtains exact official matches before calling.
   async inspectUnknown(target: ProjectTarget, session: string, signature: string,

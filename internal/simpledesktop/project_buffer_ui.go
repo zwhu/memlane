@@ -79,10 +79,11 @@ func (a *App) runPendingAction(view *pendingBufferView, p AccessProject, agent A
 	view.Busy = true
 	view.Message = "正在核对原会话材料…"
 	python, installation, signature := a.Config.Python, *agent.Installation, view.Status.Signature
+	operator := pendingOperatorConfig(a.Config)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 		defer cancel()
-		result, err := runPendingMaterials(ctx, python, installation, binding, p.Dataset, action, signature)
+		result, err := runPendingMaterials(ctx, python, installation, binding, p.Dataset, action, signature, operator)
 		a.Update(func() {
 			view.Busy = false
 			if err != nil {

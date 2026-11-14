@@ -39,7 +39,7 @@ class OpenCodeControlTests(unittest.IsolatedAsyncioTestCase):
             (root / 'types.ts').write_text(official_source['types.ts'])
             (root / 'node_modules').symlink_to(Path(modules).resolve(), target_is_directory=True)
             (root / 'plugin.ts').write_text(managed_action_callbacks(managed_config_recall(managed_capture_callbacks(official_source['plugin.ts']))))
-            for name in ('managed-config.ts', 'managed-recall.ts', 'managed-actions.ts'):
+            for name in ('managed-config.ts', 'managed-recall.ts', 'managed-actions.ts', 'managed-pending.ts'):
                 (root / name).write_text((ROOT / 'engine/agents/opencode' / name).read_text())
             (root / 'managed-capture-window.ts').write_text((ROOT / 'engine/agents/opencode/managed-capture-window.ts').read_text())
             delivery = root / 'managed-delivery.ts'
@@ -48,7 +48,7 @@ class OpenCodeControlTests(unittest.IsolatedAsyncioTestCase):
                 ['node', str(Path(modules).resolve() / 'typescript/bin/tsc'), '--strict',
                  '--target', 'ES2022', '--module', 'NodeNext', '--moduleResolution', 'NodeNext',
                  '--skipLibCheck', '--types', 'node', '--typeRoots', str(Path(modules).resolve() / '@types'),
-                 '--outDir', str(root / 'dist'), str(source), str(delivery), str(root / 'plugin.ts')], capture_output=True, text=True, timeout=30)
+                 '--outDir', str(root / 'dist'), str(source), str(delivery), str(root / 'plugin.ts'), str(root / 'managed-pending.ts')], capture_output=True, text=True, timeout=30)
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             official = OfficialFixture()
             registry = Registry(root / 'registry.json', official)
@@ -65,7 +65,7 @@ class OpenCodeControlTests(unittest.IsolatedAsyncioTestCase):
                                               env=env, capture_output=True, text=True, timeout=40)
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                 counts = {key: int(value) for key, value in re.findall(r'^# (tests|pass|fail) (\d+)$', run.stdout, re.M)}
-                self.assertEqual(counts, {'tests': 24, 'pass': 24, 'fail': 0})
+                self.assertEqual(counts, {'tests': 27, 'pass': 27, 'fail': 0})
                 print(json.dumps({'node_test': 'managed-control.test.mjs', **counts}))
             finally:
                 await server.close()

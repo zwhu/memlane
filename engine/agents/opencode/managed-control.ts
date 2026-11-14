@@ -165,7 +165,7 @@ export class ManagedProjectControl {
     });
     return result as ProjectPolicy;
   }
-  async currentTarget(target: {native: string; project_id: string; dataset_id: string}): Promise<ProjectPolicy> {
+  confirmTarget(target: {native: string; project_id: string; dataset_id: string}): void {
     if (!target || !uuid(target.project_id) || !uuid(target.dataset_id)) throw unconfirmed();
     target = {...target};
     // Queued material must already have a confirmed original binding. Never
@@ -173,6 +173,9 @@ export class ManagedProjectControl {
     const binding = this.read(this.path(target.native));
     if (binding.state !== "bound" || binding.project_id !== target.project_id ||
         binding.dataset_id !== target.dataset_id) throw unconfirmed();
+  }
+  async currentTarget(target: {native: string; project_id: string; dataset_id: string}): Promise<ProjectPolicy> {
+    target = {...target}; this.confirmTarget(target);
     const current = await this.current(target.native);
     if (current.project_id !== target.project_id || current.dataset_id !== target.dataset_id) throw unconfirmed();
     return current;

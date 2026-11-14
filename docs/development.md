@@ -109,6 +109,8 @@ Provider协议值为 `openai`、`anthropic`、`gemini`、`custom`；DeepSeek等�
 
 ### OpenCode 第二批插件组件（dev）
 
+管理侧待发处置需要本机Node>=20；运行JSON顶层可用`opencode_node_executable`指定绝对路径，默认解析`node`。prepare在创建主体和写binding之前检查运行时，并将规范路径、SHA和worker摘要保存在installation元数据；Node升级后需重新准备／核对。管理token只由桌面运行配置传入本地worker，不写入Agent binding。实际worker验收及Native窗口未验边界见[检查点四十一](engineering/multi-agent-provider-execution-20261114.md)。
+
 当前可离线构造独立插件组件，并接现有Connections的准备／启用／核对；不是完整运行包，日常配置尚未切换。使用固定上游lock预先填充的npm缓存，不读取已安装node_modules作为可信源码，不在宿主启动时联网安装。每次输出必须是新目录，保留CLI返回的manifest SHA用于prepare，不能仅信产物自报摘要。
 
 ```sh

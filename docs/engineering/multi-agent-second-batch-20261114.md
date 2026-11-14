@@ -175,3 +175,9 @@ MA-OPENCODE-UNKNOWN-TARGET01累计失败1轮。沿原主体／原项目，用一
 [当前源码检查](evidence/multi-agent-development-20261114/opencode-pending-primitives.json)：24项控制、7项HTTP、14项队列Node及8项Python补丁通过。实际OS子进程持租约时父进程在任何policy／sender回调前被拒绝，文件不变；子进程已等待退出，死owner可恢复。另验证原快照、同意变化、所选项隔离、未知确认、丢弃墓碑及伪token。首次契约红灯为无发送租约／缺少管理原语；原双预检并发测试随更强互斥调整、严格补丁锚点笔误各产生1次辅助检查失败，保留私有日志，未作为真实宿主多轮失败。
 
 本阶段只为源码／真实进程锁检查，没有构造或激活新管理组件、请求模型或启动Native；仍使用检查点三十九的私有安装候选。临时队列及子进程均收尾。尚不能宣称用户可补交／丢弃：管理认证和controller原绑定核对、不可变worker及实际运行时验证、现有Native入口分派、操作回执和旧无租约开发产物共存均待接通。当前锁检查不证明任何旧进程已退出，接线前仍须按既有所有权／升级约束核实；不自动迁移或重投旧材料。
+
+## 管理侧处置接线（检查点四十一）
+
+已补固定Node worker、管理认证、原目标与运行时摘要核对及现有Native源码分派；Node预检在主体创建／binding写入之前。实际原服务8次Go→Node调用通过，覆盖Agent token拒绝、所选A补交、B本机丢弃及墓碑、正确unknown确认、旧同名组unknown保留与重投拒绝。原项目策略恢复、Agent ID保留；主队列0，独立marker-only受控unknown仍1项。A/B为新增合成材料，关闭处理且action账本未变化，无模型请求；未向原未知材料重发正文。
+
+新增错误白名单遗漏问题失败1次，限定组件检查修复通过，计数与证据保留。当前组件manifest `9f3a31944dd6e8bffcfe634223a17b17c94c357a29d4ad1daa335fec3b4ef31d`；纯Python预检顺序调整晚于该构造，TS文件未变。Go检查使用共享工作树，相关提交仅采用所需DTO字段及分派钩子，不含其他会话改动。[完整检查与边界](multi-agent-provider-execution-20261114.md)、[脱敏证据](evidence/multi-agent-development-20261114/opencode-pending-management.json)。Native实际窗口／点击、正常接入日常采用、旧无租约代际共存、Ollama及首批外部门槛继续未完成。未改日常配置，未用重置卡，保留原服务和数据，完整Goal保持active。

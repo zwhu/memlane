@@ -98,6 +98,12 @@ type AccessAgent struct {
 }
 
 type AgentInstallation struct {
+	HostKind       string `json:"host_kind"`
+	BindingFile    string `json:"binding_file"`
+	BindingSHA     string `json:"binding_sha256"`
+	NodeExecutable string `json:"node_executable"`
+	NodeSHA        string `json:"node_sha256"`
+
 	PluginDir       string `json:"plugin_dir"`
 	MarketplaceRoot string `json:"marketplace_root"`
 	MarketplaceName string `json:"marketplace_name"`
