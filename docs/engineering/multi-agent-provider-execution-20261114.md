@@ -594,3 +594,13 @@ MA-CONNECTION-COMPONENT-PREFLIGHT01源码缺口已修正：pi／TraeX未配置so
 方法问题独立留痕：新驱动误复用旧stderr名在Popen前停止；进程收尾最初对argv0要求绝对路径但实际execv使用opencode，在信号前停止；组件report在成功构造后取错返回字段，核对原产物而未重建；服务就绪前GET被拒绝，没有prepare POST，观察同launcher ready后才提交；官方POST先可见、本地ack后移除导致首个观察断言过早，后续仅观察原ack，不重复初始化或发送。这些不增加产品缺陷失败次数，也不掩盖原1轮失败。
 
 v2／v3验收宿主已按PID＋lstart＋完整argv正常停止并确认退出，最终队列仅保留原未知1条。当前自有launcher74147、official74149、control74547及Native／Ollama保留供后续；原Scoped auto_process=false与恢复快照保持。未重试CUA窗口定位／悬停菜单，实际Native积压按钮仍未验；Ollama编码知识质量仍失败1轮，原生Provider账号／Desktop／日常采用继续待完成，完整Goal保持active，不进入release。
+
+## 检查点五十一：Ollama原材料隔离质量诊断
+
+上一轮c701ad3为实际修复与验收进展；本轮核对自有launcher／official／control／Ollama仍存活后，按只读SQLite连接取原pi会话QA1及5条有效候选。候选已正确包含最终None→3／零→0／负值ValueError与4项测试；历史错误候选明确说它是测试失败根因，其他候选明确说已修复。原QA答案850字符，最大候选226字符，均小于官方1200／280字符限制；官方批次拼装不会在这些上限截断原材料。没有重跑原官方整理、改写候选或删除错误知识。
+
+使用当前已验证profile的同模型／地址及原Schema能力回执，隔离HOME／system／data／cache／logs；复用固定官方build_curator_batches、build_writer_input、原coding prompts、CodingCuratorBatchOutput／CodingWrittenLesson及native adapter，执行1次curator＋4次writer，36.54秒正常退出。无官方落库／novelty检索／新Schema探针／profile修改。本轮curator在看到原最终答案及全部5条候选后，仍先提出现在时的旧错误：zero默认3、负值不校验；writer随后接受并输出相同错误，同时接受正确convention。失真在本实验的curator阶段已出现，不只在最终写作阶段。
+
+**MA-OLLAMA-CODING-QUALITY01累计失败2轮**：原真实官方处理／新会话采用1轮，本次同原材料隔离模型实验1轮，保守纳入同一问题计数，不因未落库或换执行路径清零。实验不含原novelty／glossary，也没有原运行中间请求，因此不能声称精确重放或已证原轮的完整根因；未记录实际wire token计数，不能将字符未截断外推为所有上下文均无影响。固定官方prompt已要求FINAL STATE ONLY，尚未修改上游或强制手工修正结果。[脱敏证据](evidence/multi-agent-development-20261114/ollama-original-quality-isolation.json)。
+
+首次诊断驱动将launcher配置误作已编译active配置，runtime_generation在模型初始化前KeyError退出；保留原owner／log，核对原live launcher后改读其active配置，准备错误1、不增加模型质量失败次数。默认用户模型目录只读发现qwen3:0.6b，原质量失败保持且不重测；当前私有cache仅有本轮4B模型。下一步需选择磁盘及运行门禁允许的更合适模型或已有可用端点，再按原完整场景验收；不靠重复同配置实验宣布通过。原库与处理记录、未知积压、当前配置和服务全部保留；Native积压按钮、外部原生账号／Desktop／日常采用仍待完成，完整Goal保持active。

@@ -110,3 +110,7 @@ OpenCode管理Node持续保存worker与Python协议适配完成，固定原目�
 ### 检查点五十增量
 
 真实v2新会话揭示旧未知阻塞后续明确材料，MA-OPENCODE-UNKNOWN-HOL01失败1轮。已修复每pump跳过原未解决未知、独立检查后续记录；新未知仍停止当前发送。6门禁＋20项Node队列＋34项Node控制通过。实际Native启用v3后，正常宿主启动自动保存原先被阻塞的同一条QA，原未知保持且无POST；v3新会话正确官方QA1／trace0及Native连接回执通过。失败计数保留，完整目标及积压按钮／Ollama质量／外部门槛仍未完成。[证据及截图](evidence/multi-agent-development-20261114/opencode-unknown-head-of-line.json)。
+
+### 检查点五十一增量
+
+同原QA及5条候选隔离执行固定官方curator／writer，1＋4次模型请求正常结束，无落库或原任务重跑。curator阶段已把旧错误写成现状，writer继续接受，同时生成正确规则；MA-OLLAMA-CODING-QUALITY01累计失败2轮（原真实场景1、本次隔离实验1）。原字符限制未截断这些输入，但原中间请求／完整wire token未知，不能声称已证全部历史根因或已修复。继续保留质量未通过状态与原数据，下一步选择合适模型／端点完成原连续验收。[证据](evidence/multi-agent-development-20261114/ollama-original-quality-isolation.json)。

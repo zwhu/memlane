@@ -1,0 +1,126 @@
+{
+  "checkpoint": 51,
+  "scope": "Isolated current-model original-material diagnostic; official builders/native adapter, no persistence or novelty search; not full processing/adoption acceptance",
+  "issue": "MA-OLLAMA-CODING-QUALITY01",
+  "cumulative_failed_rounds": 2,
+  "rounds": [
+    {
+      "round": 1,
+      "kind": "actual official processing and fresh pi adoption",
+      "checkpoint": 45,
+      "result": "incorrect change contradicts correct convention; adoption explicitly rejects authoritative current rules"
+    },
+    {
+      "round": 2,
+      "kind": "isolated model pipeline diagnostic using original QA and all original gated candidates",
+      "result": "curator again promotes old bug to current state; writer preserves it beside correct convention",
+      "no_failure_count_reset": true
+    }
+  ],
+  "runtime": {
+    "model": "qwen3:4b-instruct-2507-q4_K_M",
+    "profile_digest": "ad557900df68f1a390a2fe37125e67089f80ca1224b1d97df58002947045121b",
+    "pinned_service_commit": "ec6f40859e5f2df9e7862dde27d580ac3268ed43",
+    "same_selected_endpoint": true,
+    "schema_mode": "json_schema",
+    "schema_registration": "prior immutable-profile verified receipt; no new schema nonce probe"
+  },
+  "inputs": {
+    "original_qa_count": 1,
+    "gated_candidates": 5,
+    "batch_chars": 2697,
+    "curator_prompt_chars": 3985,
+    "writer_prompt_chars": 4286,
+    "qa_answer_chars": 850,
+    "max_candidate_chars": 226,
+    "official_batch_character_caps_truncated_original_inputs": false,
+    "wire_token_counts_or_complete_original_run_requests_retained": false
+  },
+  "original_candidate_excerpt": "The root cause of the test failures was that int(value or 3) treated 0 as falsy, causing retry_limit(0) to return 3 instead of 0, and failed to validate negative values, allowing invalid inputs to pass.",
+  "curator_bad_proposal": {
+    "working_statement": "In retry_config.py, the retry_limit function incorrectly treats 0 as falsy in value or 3, causing 0 to default to 3; negative values are not validated and thus pass instead of raising ValueError.",
+    "member_entry_ids": [
+      "5d8b5592-88f9-4874-b953-dfc26d9abef7"
+    ],
+    "state_key": ""
+  },
+  "writer_bad_result": {
+    "accept": true,
+    "reason": null,
+    "statement": "retry_limit(0) → 3 due to 0 being falsy; negative values pass without ValueError validation.",
+    "entities": [
+      "retry_config.py",
+      "retry_limit",
+      "ValueError"
+    ],
+    "why_learned": "test failures showed invalid inputs bypassing validation",
+    "lesson_type": "pitfall",
+    "state_key": ""
+  },
+  "curator_correct_proposal": {
+    "working_statement": "The retry_limit function in retry_config.py now correctly maps None to 3, zero to 0, positive integers to themselves, and raises ValueError for negative inputs, ensuring semantic consistency with the specification.",
+    "member_entry_ids": [
+      "467b8ecf-0087-4e9a-a77a-4dfa86b33767"
+    ],
+    "state_key": ""
+  },
+  "writer_correct_result": {
+    "accept": true,
+    "reason": null,
+    "statement": "The retry_limit function in retry_config.py maps None to 3, zero to 0, positive integers to themselves, and raises ValueError for negative inputs.",
+    "entities": [
+      "retry_limit",
+      "retry_config.py"
+    ],
+    "why_learned": "Implementation validation against specification",
+    "lesson_type": "convention",
+    "state_key": ""
+  },
+  "confirmed": [
+    "Original candidates and final answer explicitly contain correct final behavior",
+    "This isolated curator produces a present-tense obsolete-bug claim before writer executes",
+    "Writer input contains proposed lesson and selected supporting candidates; no final QA in official build_writer_input",
+    "Official curator instruction already requires FINAL STATE ONLY; no prompt/source changes were made",
+    "Original character caps do not truncate this QA or these five candidates"
+  ],
+  "limits": [
+    "Original run curator/writer requests and intermediate outputs were not retained, so exact historical causal path is not proven",
+    "Isolation omitted prior lesson novelty/glossary search; diagnostic is not a full original-run replay",
+    "Model instruction following, prompt robustness, SDK context behavior and arbitrary model quality are not globally separated",
+    "No claim that expanding context or another model fixes the issue"
+  ],
+  "requests": {
+    "model_calls_started": 5,
+    "curator": 1,
+    "writers": 4,
+    "seconds": 36.54,
+    "persistence_calls": 0,
+    "official_engine_restart_or_reprocessing": false,
+    "active_profile_changed": false,
+    "child_process_confirmed_exited": true
+  },
+  "preparation_incident": {
+    "id": "MA-QUALITY-ISOLATION-CONFIG01",
+    "count": 1,
+    "fact": "Root runtime file was launcher configuration, not compiled active profile; runtime_generation raised KeyError before model setup. Preserved initial owner/log and then used verified live launcher active config; no request was repeated."
+  },
+  "available_local_models": {
+    "private_validation_cache": [
+      "qwen3:4b-instruct-2507-q4_K_M"
+    ],
+    "default_user_manifest_names": [
+      "qwen3:0.6b"
+    ],
+    "default_models_not_modified_or_retested": true
+  },
+  "next_action": "Select a capable model subject to disk/runtime gates or obtain an existing suitable endpoint; then rerun full unchanged official coding/knowledge/adoption scenario. Do not patch source lessons, remove history or silently reuse failed output.",
+  "preserved": [
+    "Original QA/traces/candidates/lessons and processing records",
+    "Original quality failure and all unrelated counters",
+    "Existing active/next/config credentials",
+    "Scoped original unknown and current runtimes"
+  ],
+  "private_log_sha256": "b4bcd749472f7220a29bc2f9701b71442dbaa1474e09f1abc8e9f7ca4916c66d",
+  "private_source_snapshot_sha256": "17fb6e81bbe15e1284b3e24cc257f5e78bd5dd9d6c5ac13587bb58f130a5974d",
+  "full_goal_complete": false
+}

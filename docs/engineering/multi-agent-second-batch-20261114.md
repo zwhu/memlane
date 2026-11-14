@@ -219,3 +219,7 @@ OpenCode实际Native准备／启用、真实1.3.5会话与连接回执通过。�
 ### 检查点五十增量
 
 真实新会话发现旧未知堵住后续明确材料（MA-OPENCODE-UNKNOWN-HOL01失败1），已修复并通过20项Node队列／34项Node控制及6补丁门禁。实际Native启用v3后，正常宿主启动保存原来同capture ID的QA，原未知保留且无对应POST；v3独立新会话与Native代际回执通过。积压按钮／Ollama质量等未完成边界不变。[证据](evidence/multi-agent-development-20261114/opencode-unknown-head-of-line.json)。
+
+### 检查点五十一增量
+
+Ollama原QA及5条候选隔离诊断完成，未落库；curator阶段就把旧错误写成现状，writer继续接受并与正确规则并存。MA-OLLAMA-CODING-QUALITY01累计失败2轮，原完整场景1＋隔离模型实验1，不因路径变化清零。原字符上限未截断输入，其他上下文／原中间请求仍未知；不宣称已修复。下一步选择满足磁盘／运行门禁的合适模型或已有端点，再验原完整链。[证据](evidence/multi-agent-development-20261114/ollama-original-quality-isolation.json)。
