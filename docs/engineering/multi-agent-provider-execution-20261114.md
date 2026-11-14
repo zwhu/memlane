@@ -551,3 +551,22 @@ OpenCode check已经原地确认匹配项，返回的是剩余unknown；共享UI
 MA-CONNECTION-COMPONENT-PREFLIGHT01源码缺口已修正：pi／TraeX未配置source、目录不存在、缺manifest或相对路径时，新连接显示component_unavailable，已安装卡片显示“接入组件未就绪”，未安装仍显示未检测到；准备／启用不可点。直接prepare在preview、主体创建及registry写入前返回managed_plugin_input_mismatch 503。既有prepared／已配置记录不因source后续不可用而被隐藏，仍按原安装产物核对。此门槛检查缺失的source及manifest；完整固定产物摘要校验继续由既有installer执行，不声称所有摘要检查已前移。
 
 3项Python定向检查（0.891秒，缺失矩阵含pi／TraeX各4子场景、既有准备记录保留、正常pi准备启用回归）与1项Go状态／按钮检查（0.757秒）通过。源码审计发现的问题无失败验收轮次；本轮无模型调用或宿主启动，没有追加Claude／Cursor测试，未重跑缺组件Native窗口；此前正常组件的真实批量接入证据仍属检查点四十五。没有修改共享project_installation或其未提交兼容补丁。Ollama知识质量、OpenCode实际Native增量、日常及外部前置仍待完成，完整Goal保持active。[检查证据](evidence/multi-agent-development-20261114/agent-component-preflight.json)。
+
+
+## 检查点四十七：OpenCode实际设置绑定与新会话回执
+
+复用完整验证过的pending-operator-v2固定组件（manifest 9f3a319…、3673文件），独立Node摘要预检通过。仅正常停止／重启本轮自有服务，加入组件与原私有opencode-profile；Ollama active、原pi／TraeX主体保持。实际Native设置勾选OpenCode、准备、启用通过，正常配置完成后正确显示等待重载／新会话。第一次紧随backend完成的capture仍是执行中prepared／journal帧；后续实际capture确认已配置，无重发／重装或产品修复。
+
+通过官方OPENCODE_CONFIG_DIR／OPENCODE_CONFIG指向该私有配置，复用既有6MB宿主依赖及模型metadata缓存，不下载／安装依赖。真实OpenCode1.3.5 serve＋attach新会话输出READY、工具0次、CLI正常退出；原官方session问答1／trace0、dataset UUID与本轮项目一致。Native重新检测后OpenCode显示收到新会话回执；pi保持回执，TraeX保持待新会话。原日常宿主配置摘要未变，未启动Claude／Cursor。
+
+仅该验收项目的OpenCode auto_process=false，保留原覆盖快照，供后续投递／积压验收消费，结束后恢复；不因此宣称生成知识或Ollama质量通过。已按PID＋lstart＋完整argv确认并正常停止这个独立OpenCode服务，UI／官方／control／Ollama保持，原旧进程不动。[脱敏实窗证据](evidence/multi-agent-development-20261114/native-opencode-binding-receipt.json)；配置机制参考[官方配置文档](https://dev.opencode.ai/docs/config)。
+
+## 检查点四十八：持续积压入口的协议缺口与基础
+
+当前共享工作树已将项目设置改为后台持续积压保存。源码核对发现Backlog.execute仍先验证Python-only env_file／home及_memlane_policy，不能用旧Go one-shot worker证据覆盖OpenCode当前入口；尚未点击制造失败，源码缺口验收失败0。按当前页面继续补协议派发，不从旧截图恢复已经移走的按钮；单独保留显式丢弃管理能力及当前入口缺口，不推定用户已取消它。共享backlog文件由其他任务拥有，本轮尚未改动／提交其源码。
+
+连续目标：管理侧固定所有原会话的明确未发送capture IDs → 新到记录留在正常采集 → 共享发送租约内逐项核对原target／实时权限并投递 → 只有已确认项移除 → 新未知暂停且原未知隔离 → 协作停止等待正在发送项结果 → 结果／处理请求按原项目设置核对。Node管理认证、安装／绑定／运行时摘要、取消与进度接线均须在后台新增协议适配中保留；不能将Agent token、多个来源队列或未知结果混作可重试。
+
+先补固定官方Outbox内部原语：reviewBacklog仅给出definite IDs／unknown数量；releaseBacklogEntry要求共享租约，区分已被其他操作处理、原未知隔离、允许释放和原target改变，禁止从冻结清单之外顺带发送。6项补丁门禁及1驱动内17项Node（新增3场景）通过，1.095秒；包括未知／正文不进快照、新消息不并入原同意范围、发送租约及重启、已删除与跨target区别。首轮使用运行组件的node_modules，因无开发编译器在编译前退出，方法错误1；改用既有upstream开发依赖通过，无下载。
+
+本轮没有构造／激活包含新原语的组件，没有宣称worker或Native积压按钮通过。下一步实现管理认证的Node backlog worker、coordinator协议派发、新固定组件及明确升级，再按连续目标实际Native验收。Ollama质量问题另保持1轮；只读核对原QA答案850字符、小于官方1200上限且包含修复及4项回归，排除该QA答案被此上限截断的解释，其余模型／候选来源／上下文原因仍未知。服务和一个模型保留供后续；完整Goal继续active。[原语证据](evidence/multi-agent-development-20261114/opencode-backlog-primitives.json)。

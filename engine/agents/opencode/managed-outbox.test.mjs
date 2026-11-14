@@ -307,3 +307,61 @@ test("unknown replay needs matched originals and acknowledgement never sends unm
     assert.deepEqual(f.queue.completedTarget(a.native).target, a);
   } finally { f.close(); }
 });
+
+
+test("backlog snapshots exclude unknown bodies and cannot release without a shared sender lease", async () => {
+  const f = fixture(), a = target(), known = "a".repeat(64), unknown = "b".repeat(64);
+  try {
+    f.queue.enqueue(known, "original", {type: "qa", answer: "PRIVATE_KNOWN_BODY"}, a);
+    await assert.rejects(f.queue.flush(async () => {throw new Error("Cognee request failed (403)");}, async () => false));
+    f.queue.enqueue(unknown, "original", {type: "qa", answer: "PRIVATE_UNKNOWN_BODY"}, a);
+    await assert.rejects(f.queue.flush(async () => {throw new Error("response lost");}, async () => false));
+    const before = readFileSync(f.queue.file), snapshot = f.queue.reviewBacklog(a, "original");
+    assert.deepEqual(snapshot, {session_id: "original", tokens: [known], unknown: 1});
+    assert.ok(!JSON.stringify(snapshot).includes("PRIVATE_"));
+    assert.throws(() => f.queue.releaseBacklogEntry(a, "original", known), /sender_lease_required/);
+    await f.queue.withSender(async () => {
+      assert.equal(f.queue.releaseBacklogEntry(a, "original", unknown), "isolated");
+      assert.equal(f.queue.releaseBacklogEntry(a, "original", "c".repeat(64)), "handled");
+    });
+    assert.deepEqual(readFileSync(f.queue.file), before);
+  } finally { f.close(); }
+});
+
+test("frozen backlog IDs save only the reviewed known record, preserving unknown and new arrivals across restart", async () => {
+  const f = fixture(), a = target(), known = "a".repeat(64), unknown = "b".repeat(64), later = "c".repeat(64);
+  try {
+    f.queue.enqueue(unknown, "original", {type: "qa", answer: "unknown preserved"}, a);
+    await assert.rejects(f.queue.flush(async () => {throw new Error("response lost");}, async () => false));
+    f.queue.enqueue(known, "original", {type: "qa", answer: "reviewed"}, a);
+    const snapshot = f.queue.reviewBacklog(a, "original");
+    f.queue.enqueue(later, "original", {type: "qa", answer: "new arrival"}, a);
+    const sent = [];
+    await f.queue.withSender(async token => {
+      for (const id of snapshot.tokens) {
+        assert.equal(f.queue.releaseBacklogEntry(a, "original", id), "released");
+        await f.queue.flush(async item => sent.push(item.id), async () => assert.fail("unknown must not be probed or resent"), undefined, new Set([id]), token);
+      }
+    });
+    assert.deepEqual(sent, [known]);
+    const restarted = new Outbox("same-installation-and-project", f.root);
+    assert.deepEqual(restarted.reviewBacklog(a, "original"), {session_id: "original", tokens: [later], unknown: 1});
+    assert.equal(restarted.status().saved, 1);
+  } finally { f.close(); }
+});
+
+test("backlog release distinguishes a removed record from a changed original target", async () => {
+  const f = fixture(), a = target(), known = "a".repeat(64), moved = "b".repeat(64), other = {...a, native: "other-native"};
+  try {
+    f.queue.enqueue(known, "original", {type: "qa"}, a);
+    await f.queue.withSender(async () => f.queue.decidePending(a, "original", f.queue.reviewPending(a, "original").signature, "discard"));
+    f.queue.enqueue(moved, "other-session", {type: "qa"}, other);
+    const before = readFileSync(f.queue.file);
+    await f.queue.withSender(async () => {
+      assert.equal(f.queue.releaseBacklogEntry(a, "original", known), "handled");
+      assert.throws(() => f.queue.releaseBacklogEntry(a, "original", moved), /original_project_target_changed/);
+      assert.throws(() => f.queue.releaseBacklogEntry(a, "original", "not-a-capture-id"), /invalid_pending_action/);
+    });
+    assert.deepEqual(readFileSync(f.queue.file), before);
+  } finally { f.close(); }
+});

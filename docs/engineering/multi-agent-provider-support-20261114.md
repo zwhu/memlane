@@ -93,3 +93,10 @@ Ollama增加实际Schema随机约束证据，最新同digest完整质量通过�
 ### 检查点四十六增量
 
 pi／TraeX缺少source／manifest时卡片显示接入组件未就绪，直接prepare先拒绝，不创建主体或写registry；既有prepared不隐藏。3项Python（含正常pi准备启用）及1项Go状态检查通过。完整摘要仍在既有installer核对，缺组件实际窗口未重跑。[证据](evidence/multi-agent-development-20261114/agent-component-preflight.json)。
+
+
+### 检查点四十七至四十八增量
+
+OpenCode实际Native设置准备／启用、真实1.3.5新会话、官方正确dataset的QA1／trace0与Native连接回执均通过，原pi／TraeX主体不变；私有配置，投递样本自动处理关闭，不证明新知识质量。[实窗](evidence/multi-agent-development-20261114/native-opencode-binding-receipt.json)。
+
+项目设置最新后台持续保存只验证Python安装，OpenCode需新增Node协议分派；未以旧Go one-shot成功冒充新入口通过。内部冻结definite IDs／租约逐项释放原语及17项Node检查已通过，管理worker、新固定组件和实际Native积压流程未完成。[证据](evidence/multi-agent-development-20261114/opencode-backlog-primitives.json)。Ollama知识质量原失败1轮及外部门槛保持。

@@ -254,6 +254,29 @@ type Pending = { id: string; session: string; entry: Entry; uncertain?: boolean;
         ...(items.some(item => item.blocked) ? {blocked: {reason: "operator_review_required"}} : {})};
     });
   }
+  reviewBacklog(target: ProjectTarget, session: string) {
+    return this.lock(() => {
+      const items = this.pendingFor(this.read(), target, session);
+      return {session_id: session, tokens: items.filter(item => !item.uncertain).map(item => item.id),
+        unknown: items.filter(item => item.uncertain).length};
+    });
+  }
+  releaseBacklogEntry(target: ProjectTarget, session: string, id: string): "released" | "handled" | "isolated" {
+    if (!this.senderHeld || this.running) throw new Error("sender_lease_required");
+    if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("invalid_pending_action");
+    return this.lock(() => {
+      const state = this.read(), items = this.pendingFor(state, target, session);
+      const item = items.find(item => item.id === id);
+      if (!item) {
+        if (state.pending.some(item => item.id === id)) throw new Error("original_project_target_changed");
+        return "handled";
+      }
+      if (item.uncertain) return "isolated";
+      item.blocked = false; delete item.blocked_reason;
+      this.write(state);
+      return "released";
+    });
+  }
   pendingIds(target: ProjectTarget, session: string): string[] {
     return this.lock(() => this.pendingFor(this.read(), target, session).map(item => item.id));
   }
