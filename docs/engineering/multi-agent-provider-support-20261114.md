@@ -1,6 +1,6 @@
 # 多 Agent / Provider 当前支持与验收矩阵
 
-2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)检查点十八为准。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
+2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)检查点十九为准。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
 
 ## 第一批 Agent
 
@@ -30,6 +30,7 @@
 | LP01 OpenAI／Anthropic／Gemini原生 | 配置编译、隔离凭据、固定SDK的实际wire、普通／Schema／错误及完成状态检查；[原生协议](evidence/multi-agent-development-20261114/native-vendor-wire-protocols.json) | 三个远端原生账号同组质量样本仍缺。当前环境未配置相应key，已知pi配置只有DeepSeek；其他私有配置路径尚未提供，不宣称机器上绝不存在这些凭据 |
 | LP02 接入与推理解耦 | pi／TraeX／Codex／Claude采集+API处理；API启动没有Codex认证输入，独立主体及权限保持；[真实API启动](evidence/multi-agent-development-20261114/real-provider-startup.json) | 不穷举Agent×Provider；各协议远端门槛仍独立 |
 | LP03 保存／next／重启 | 真实Native保存不切换、旧验证失效、next与当前分开、重启摘要确认才active；实际旧库身份／ACL／知识保持；[切换](evidence/multi-agent-development-20261114/real-cross-protocol-switch.json) | 官方处理中的任务并非“停稳快照”，不承诺无损恢复或自动重放 |
+| LP02/03 首次Provider配置 | 从空账本运行setup，实际Native调用DeepSeek验证／选next，正常stop/start健康及摘要匹配后首个active；真实首候选摘要故障清理后停止、不回退；[首次配置](evidence/multi-agent-development-20261114/first-provider-initialization.json) | 环境／官方owner预先准备，不是新安装器；真实密钥由受认证API保存，未在Native输入；不替代三类原生账号 |
 | LP03 候选失败／清理未知／一次恢复 | 独立空库、真实固定官方服务进程：候选摘要故障→确认退出→旧配置一次；清理未知不启动旧配置；旧配置也失败后停止；[真实进程](evidence/multi-agent-development-20261114/startup-recovery-real-processes.json)；锁／stale验证另有[检查](evidence/multi-agent-development-20261114/startup-checkpoint.json) | 进程故障门禁不等于真实远端模型故障全矩阵，空库连续性标记不冒充已有知识恢复 |
 | LP04 错误与隔离 | 401/403/429、超时unknown、截断、Schema拒绝、质量错误、固定模式、无自动换模型；三协议307/308拒绝、缓存重建保护；[探针边界](generation-probe-boundaries-20261114.md)、[重定向](generation-redirect-protection-20261114.md) | wire夹具不替代远端账号；全部宿主处理输出隔离仍按宿主及桥接实际证据，不以单测作全量声明 |
 | UI01 Native | 实际1200×820列表、Provider表单、密码不回填、错误／原回执／重开、批量取消、项目checkbox与跨协议重启；[UI记录](native-settings-continuity-20261114.md)、[后续批量](connection-batch-recovery-20261114.md) | 截图在CUA会话中实际观察，部分未导出仓库PNG；原生账号及Cursor路径仍未完整验收 |

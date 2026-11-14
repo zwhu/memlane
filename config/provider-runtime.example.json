@@ -7,7 +7,7 @@
   "service_url": "http://127.0.0.1:61255",
   "token_file": "/absolute/private/official.token",
   "service_environment_file": "/absolute/private/service-environment.json",
-  "generation_file": "/absolute/private/existing-validated-api-generation.json",
+  "generation_file": "/absolute/private/generation.json",
   "graph_assets": "/absolute/web/official-graph/dist",
   "projects": [],
   "common_datasets": [],

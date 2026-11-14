@@ -36,6 +36,9 @@ func (a *App) accessClient() (ProjectControlClient, bool) {
 }
 
 func (a *App) RefreshProjectDirectory() {
+	if a.Config.GenerationSetupOnly {
+		return
+	}
 	client, ok := a.accessClient()
 	if !ok || a.access.Loading || a.access.Busy || a.Update == nil {
 		return

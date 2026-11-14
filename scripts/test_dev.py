@@ -21,6 +21,21 @@ def try_lock(root, queue):
 
 
 class OwnershipTests(unittest.TestCase):
+    def test_first_setup_prepares_only_private_runtime_without_seeding_generation(self):
+        import json
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            generation = root / 'generation.json'
+            config = {'generation_file': str(generation), 'project_control': {'url': 'http://127.0.0.1:18998'},
+                      'service_url': 'http://127.0.0.1:18999'}
+            effective, path = dev.generation_setup_runtime(config, root / 'runtime.json')
+            self.assertTrue(effective['generation_setup_only'])
+            self.assertEqual(effective['generation_mode'], 'unconfigured')
+            self.assertEqual(json.loads(path.read_text()), effective)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertFalse(generation.exists())
+            self.assertNotIn('generation_setup_only', config)
+
     def test_provider_stack_needs_no_codex_login_and_commits_only_after_applied_digest(self):
         import json
         from generation_config import GenerationStore, runtime_generation

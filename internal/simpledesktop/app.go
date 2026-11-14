@@ -93,6 +93,10 @@ type App struct {
 
 func New(c Config, err error) *App {
 	a := &App{Config: c, Client: Client{Config: c}, page: "总览", kind: "知识", panes: map[string]*pane{}, service: "尚未检查", completion: "尚未检查"}
+	if c.GenerationSetupOnly {
+		a.page = "设置"
+		a.access.SettingsSection = "知识处理"
+	}
 	a.titles = newReadingTitles()
 	a.readingIdentity, _ = readingIdentity(a.Client)
 	if err != nil {
@@ -119,6 +123,10 @@ func New(c Config, err error) *App {
 	return a
 }
 func (a *App) Start() {
+	if a.Config.GenerationSetupOnly {
+		a.RefreshIntegrations()
+		return
+	}
 	a.health()
 	a.loadRecent()
 	a.restoreCodeState()
@@ -438,6 +446,10 @@ func button(c *ui.Context, label string, fn func()) {
 	ui.Button(c, label).FontSize(12).Padding(8, 12).Background(ui.Transparent).BorderWidth(0).Justify(ui.Start).OnClick(fn)
 }
 func (a *App) View(c *ui.Context) {
+	if a.Config.GenerationSetupOnly {
+		ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.generationSetupPage(c) })
+		return
+	}
 	ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.viewContent(c); a.searchDialog(c); a.projectCreateDialog(c) })
 }
 func (a *App) viewContent(c *ui.Context) {

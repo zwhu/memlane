@@ -97,6 +97,16 @@ func generationLabel(g GenerationDirectory, ref *GenerationRef) string {
 	provider := map[string]string{"openai": "OpenAI", "anthropic": "Anthropic", "gemini": "Gemini", "custom": "OpenAI 兼容"}[row.Profile.Provider]
 	return provider + " · " + row.Profile.Model
 }
+func (a *App) generationSetupPage(c *ui.Context) {
+	ui.Column(c).Fill().Padding(28).Gap(20).Background(ui.Hex("#f8fafc")).Children(func() {
+		homeText(c, "配置知识处理", homeHeading).FontSize(22)
+		homeText(c, "先保存配置并验证，再选择下次启动使用。完成后重新启动后台服务，所选配置才会生效。", homeMeta).LineHeight(1.7)
+		ui.Scroll(c.Key("generation-first-setup")).Grow(1).MinHeight(0).Children(func() {
+			ui.Column(c).FillWidth().MaxWidth(900).Gap(20).Children(func() { a.generationSettings(c) })
+		})
+	})
+}
+
 func (a *App) generationSettings(c *ui.Context) {
 	s := &a.integrations
 	settingsCard(c, "当前知识处理", "Agent 接入和知识处理模型独立配置。切换 Provider 不改变项目权限。", func() {

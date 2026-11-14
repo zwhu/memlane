@@ -78,7 +78,9 @@ python3 scripts/dev.py stop --config /绝对路径/runtime.json
 
 Provider协议值为 `openai`、`anthropic`、`gemini`、`custom`；DeepSeek等明确OpenAI兼容端点选 `custom`。endpoint/model/key均由用户明确配置，不猜供应商或错误后换模型。凭据0600、目录0700，不回填Native；HTTP重定向拒绝。验证记录实际adapter请求模式，不能当作远端严格Schema保证。
 
-模板 [`daily-runtime.example.json`](../config/daily-runtime.example.json)保留旧Codex桥兼容字段；[`provider-runtime.example.json`](../config/provider-runtime.example.json)展示不含Codex桥认证输入的API运行配置。两者都需已有官方环境／数据及私有凭据。API模板的 `generation_file` 必须指向已保存并已验证、含active的真实配置账本；空账本的首次初始化未由此模板证明，不能手写passed或绕过验证来启动。日常切换只修改候选配置，不编辑活动账本或复用临时验收目录。
+模板 [`daily-runtime.example.json`](../config/daily-runtime.example.json)保留旧Codex桥兼容字段；[`provider-runtime.example.json`](../config/provider-runtime.example.json)展示不含Codex桥认证输入的API运行配置。两者都需已准备的官方环境／数据及私有凭据；本入口不创建或替换内容库。已有active时正常`start`。尚无生成配置时，先执行 `python3 scripts/dev.py setup --config /绝对路径/runtime.json`：只启动受管理token认证的本机配置服务，并复用Native“知识处理”表单，不启动官方引擎、接入Agent或写初始化完成标记。
+
+首次配置依次保存Provider、点击会消耗额度的验证、选择“下次启动使用”；保存或验证不会制造active。完成后通过 `python3 scripts/dev.py stop --config /绝对路径/runtime.json` 停止配置服务，再正常 `start`。启动器只有在已验证候选的健康及完整摘要匹配后才写首个active；首个候选失败时清理并停止，不恢复不存在的旧配置。没有已验证next时不启动引擎。`setup`拒绝已存在active的账本；已有日常配置继续在正常设置页编辑。不得手写passed、复制验收账本或修改活动修订绕过验证。
 
 开发阶段不运行完整打包、DMG、签名、公证、更新或 helper 安装。Go/MyGo 固定版本和仓库内工具链继续复用。磁盘门禁至少保留 100 GiB，`dev.py` 与其他检查均通过既有 `scripts/task.py`；Go 检查使用 `sh scripts/go.sh`。
 

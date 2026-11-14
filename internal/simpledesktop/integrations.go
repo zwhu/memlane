@@ -219,7 +219,10 @@ func (a *App) RefreshIntegrations() {
 		defer cancel()
 		var connections ConnectionsDirectory
 		var generation GenerationDirectory
-		err := client.request(ctx, "GET", "/v1/connections", nil, &connections)
+		var err error
+		if !a.Config.GenerationSetupOnly {
+			err = client.request(ctx, "GET", "/v1/connections", nil, &connections)
+		}
 		if err == nil {
 			err = client.request(ctx, "GET", "/v1/generation", nil, &generation)
 		}
@@ -635,6 +638,9 @@ func (a *App) pollGenerationValidation(operation string) {
 			a.Update(func() {
 				if a.integrations.ValidationOperation != operation {
 					return
+				}
+				if terminal {
+					a.integrations.Message = ""
 				}
 				if err != nil {
 					a.integrations.Error = "验证回执暂时不可用，请核对原验证"

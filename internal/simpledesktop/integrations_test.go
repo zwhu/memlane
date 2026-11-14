@@ -14,6 +14,72 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
+func TestFirstGenerationSetupReadsOnlyConfigurationAndReusesProviderEditor(t *testing.T) {
+	root := t.TempDir()
+	token := filepath.Join(root, "manager")
+	if err := os.WriteFile(token, []byte(strings.Repeat("x", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	requests := make(chan string, 10)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r.Method + " " + r.URL.Path
+		if r.URL.Path != "/v1/generation" || r.Header.Get("Authorization") != "Bearer "+strings.Repeat("x", 40) {
+			http.Error(w, "unexpected first-setup request", 500)
+			return
+		}
+		json.NewEncoder(w).Encode(GenerationDirectory{Profiles: map[string][]GenerationRow{}, Validations: map[string]GenerationValidation{}})
+	}))
+	defer server.Close()
+	a := New(Config{GenerationSetupOnly: true, ServiceURL: server.URL,
+		GenerationFile: filepath.Join(root, "generation.json"),
+		ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}}, nil)
+	updates := make(chan func(), 10)
+	a.Update = func(fn func()) { updates <- fn }
+	a.Start()
+	a.SetWindowActive(true)
+	generationUpdate(t, updates)
+	if got := <-requests; got != "GET /v1/generation" {
+		t.Fatalf("first setup sent %q", got)
+	}
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("配置知识处理") || !tt.HasText("添加 Provider") || !a.integrations.Loaded {
+		t.Fatal("first setup did not show the existing provider editor")
+	}
+	if len(requests) != 0 || a.integrations.Generation.Active != nil || a.integrations.Generation.Next != nil {
+		t.Fatal("first setup read content or fabricated an active configuration")
+	}
+}
+
+func TestGenerationTerminalValidationClearsObsoleteRunningMessage(t *testing.T) {
+	root := t.TempDir()
+	token := filepath.Join(root, "manager")
+	if err := os.WriteFile(token, []byte(strings.Repeat("x", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(GenerationValidation{Status: "passed", Plain: true, Schema: true, Quality: true})
+	}))
+	defer server.Close()
+	a := New(Config{GenerationSetupOnly: true, GenerationFile: filepath.Join(root, "generation.json"),
+		ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}}, nil)
+	updates := make(chan func(), 10)
+	a.Update = func(fn func()) { updates <- fn }
+	operation := "ui-first-validation"
+	if err := a.recordGenerationOperation(generationUIOperation{Operation: operation, Kind: "validations", Profile: "api", Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	a.integrations.ValidationOperation = operation
+	a.integrations.Message = "正在验证，会使用所选 Provider 的额度"
+	a.pollGenerationValidation(operation)
+	generationUpdate(t, updates)
+	if a.integrations.Validation.Status != "passed" || a.integrations.Message != "" {
+		t.Fatal("completed validation still claims a model call is running")
+	}
+	if a.integrations.ValidationCancel != nil {
+		a.integrations.ValidationCancel()
+	}
+}
+
 func TestGenerationEditingSeparatesActiveRevisionAndInvalidatesDraftValidation(t *testing.T) {
 	s := integrationState{Generation: GenerationDirectory{Active: &GenerationRef{ID: "old", Revision: 1}, Profiles: map[string][]GenerationRow{
 		"api": {{Revision: 2, Digest: "verified", Profile: GenerationProfile{Mode: "provider", Provider: "custom", Model: "test-model", Endpoint: "https://example.test/v1", CredentialConfigured: true, CredentialVersion: "version"}}}},

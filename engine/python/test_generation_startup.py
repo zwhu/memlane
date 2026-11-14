@@ -66,6 +66,37 @@ class StartupTests(unittest.TestCase):
         self.assertEqual(attempts, ['existing-codex'])
         self.assertEqual(self.store.state['next_error'], 'generation_validation_required')
 
+    def test_first_candidate_has_no_active_until_health_and_digest_match(self):
+        self.store.state['active'] = None
+        def launch(ref, digest):
+            self.assertIsNone(self.store.state['active'])
+            self.assertEqual(ref, self.reference)
+            return 'first-healthy'
+        self.assertEqual(start_generation(self.store, launch, lambda: self.fail('cleanup')), 'first-healthy')
+        self.assertEqual(self.store.state['active'], self.reference)
+        self.assertIsNone(self.store.state['next'])
+
+    def test_first_candidate_failure_cleans_and_stops_without_fabricated_fallback(self):
+        self.store.state['active'] = None
+        attempts = []
+        cleanups = []
+        def fail(ref, digest):
+            attempts.append(ref)
+            raise RuntimeError('private-upstream-error')
+        with self.assertRaisesRegex(PolicyError, '^generation_start_failed$'):
+            start_generation(self.store, fail, lambda: cleanups.append(True) or True)
+        self.assertEqual(attempts, [self.reference])
+        self.assertEqual(len(cleanups), 1)
+        self.assertIsNone(self.store.state['active'])
+        self.assertEqual(self.store.state['next'], self.reference)
+
+    def test_first_setup_without_validated_selection_never_launches(self):
+        self.store.state['active'] = None
+        self.store.state['validations'].clear()
+        with self.assertRaisesRegex(PolicyError, '^active_generation_required$'):
+            start_generation(self.store, lambda *_: self.fail('unvalidated launch'), lambda: self.fail('cleanup'))
+        self.assertEqual(self.store.state['next_error'], 'generation_validation_required')
+
 
 if __name__ == '__main__':
     unittest.main()

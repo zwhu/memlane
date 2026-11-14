@@ -1,0 +1,149 @@
+{
+  "scope": "dev first Provider configuration with prepared official store; not a new installer or full first-batch delivery",
+  "initial_empty_setup": {
+    "only_configuration_process": true,
+    "official_db_unchanged": true,
+    "no_registry_or_initialization_stamp": true,
+    "active": null,
+    "next": null,
+    "profiles": {},
+    "owner_pid": 8808
+  },
+  "save_entry": "production authenticated generation API, existing DeepSeek private key copied without UI disclosure",
+  "native_actions": [
+    "observed empty ledger window and existing provider editor",
+    "opened saved provider; password blank, credential configured",
+    "clicked real remote validation",
+    "observed passed/JSON-object request mode and enabled next button",
+    "selected next while active remained null",
+    "after normal stop/start observed connected service and current OpenAI-compatible deepseek-flash; next absent"
+  ],
+  "validation": [
+    {
+      "status": "passed",
+      "plain_passed": true,
+      "schema_passed": true,
+      "quality_passed": true,
+      "structured_mode": "json_object",
+      "structured_mode_evidence": "official_adapter_request",
+      "sample_version": "nested-unicode-null-3",
+      "adapter_calls": 2
+    }
+  ],
+  "pre_start": {
+    "active": null,
+    "next": {
+      "id": "initial-deepseek",
+      "revision": 1
+    },
+    "official_db_unchanged": true,
+    "no_init_or_registry": true
+  },
+  "normal_first_start": {
+    "active": {
+      "id": "initial-deepseek",
+      "revision": 1
+    },
+    "next": null,
+    "applied_digest": "35c421cc2d8ad541a8e55f26c28cca8943fddc031a8441cc16be3b1cc4095a6c",
+    "applied_pid": 16594,
+    "owner_pid": 16590,
+    "only_official_and_control": true,
+    "authenticated_datasets_http": 200,
+    "dataset_count": 1,
+    "initialization_stamp_after_first_health": true,
+    "continuity_marker_preserved": true,
+    "codex_bridge_inputs_absent": true
+  },
+  "first_start_fault": {
+    "scenario": "first_validated_candidate_applied_mismatch",
+    "fixture_source": "actual passed first-provider receipt restaged with active null",
+    "actual_service_launches": 1,
+    "actual_health_200": true,
+    "cleanup_confirmed": true,
+    "active_remains_null": true,
+    "next_preserved": true,
+    "no_previous_or_codex_fallback": true,
+    "error_code": "generation_start_failed",
+    "model_or_content_task_requested": false,
+    "events": [
+      {
+        "event": "launch_official",
+        "pid": 21159
+      },
+      {
+        "event": "real_health_200",
+        "pid": 21159
+      },
+      {
+        "event": "cleanup_confirmed"
+      }
+    ]
+  },
+  "checks": {
+    "backend_tests": 133,
+    "backend_seconds": 122.098,
+    "generation_subset_tests": 41,
+    "generation_subset_seconds": 76.513,
+    "dev_scripts_tests": 18,
+    "initialization_tests": 5,
+    "go_all_passed": true,
+    "go_seconds": 2.683,
+    "native_debug_compile_and_actual_window": true,
+    "release_built": false
+  },
+  "issue": {
+    "id": "MA-UI-VALIDATION01",
+    "acceptance_failures": 1,
+    "symptom": "real successful validation still displayed a running message",
+    "fix": "clear obsolete message when original validation poll reaches any terminal result",
+    "verified": "targeted Go callback test; normal re-open actual window",
+    "not_repeated": "another remote validation solely for the wording fix"
+  },
+  "preservation": {
+    "original_daily_codex_auth_and_config_unchanged": true,
+    "original_isolated_active_provider_unchanged": true,
+    "original_isolated_runtime_and_ui_kept": true,
+    "reset_card_used": false,
+    "codex_subscription_inference_this_checkpoint": false
+  },
+  "limits": [
+    "DeepSeek compatible protocol is not three native vendor accounts",
+    "existing official environment and owner were prepared; setup does not create or replace the content store",
+    "real secret save was through authenticated backend API; no real key was typed or displayed in Native",
+    "screenshots observed in CUA; no repository PNG exported",
+    "Cursor, Codex Desktop and MA-CODEX-FACT01 remain separate gates"
+  ],
+  "source_sha256": {
+    "engine/python/generation_startup.py": "0ef04976b547341556ef506d7695ac90befe89d8121c8c6c7c6f32d7768c02f0",
+    "engine/python/project_control_server.py": "c62994a3644e28306fd7a2b65a2e6fff0ccc5bc1a223e1887c474bd316a19bf3",
+    "scripts/dev.py": "e7bff40fb7c0c287089dbddd16b79b7ebd79fdbcc3b77d0143e977c7a6bf1bbe",
+    "internal/simpledesktop/app.go": "adcd9e5a4eccd14151f605280b38c5656d21f0e1e8dc3689ced8e70a555a62f5",
+    "internal/simpledesktop/client.go": "f6245a1aca6ae0bf47d96618bf2473efd9c9c7e2ad30476208ad478013308e44",
+    "internal/simpledesktop/integrations.go": "b0d565930ce6628c22fd497201920986651d76b9d29c6353d48ebe2d6dee1b84",
+    "internal/simpledesktop/integrations_ui.go": "5c2542d021e17043c2ab503fc6fc5bbfcff8c94e61d3458b9fa75a915853c8fe",
+    "internal/simpledesktop/project_access_ui.go": "281043f1f7fcd430845ee3883e3d301a81fb7ee71b9da803a347c780e2b6c141"
+  },
+  "cleanup": {
+    "all_owned_services_and_ui_exited": true,
+    "validation_group_exited": true,
+    "temporary_copies_removed": [
+      "official",
+      "generation-credentials",
+      "runtime-logs",
+      "host-home",
+      "generation.json.ui-operations",
+      "Memlane First Provider.app",
+      "runtime.json",
+      "service-env.json",
+      "owner-key",
+      "manager-key",
+      "prepare.log",
+      "generation.json",
+      "generation.json.lock",
+      "registry.json",
+      "registry.json.lock"
+    ],
+    "small_receipts_and_drivers_retained": true
+  }
+}

@@ -8,7 +8,7 @@
 
 基线提交仅包含本轮方案、脱敏接口事实和此账本；实施前创建本地注释tag。不得提交本机凭据。
 
-## 连续场景与依赖（当前状态：检查点十八）
+## 连续场景与依赖（当前状态：检查点十九）
 
 逐项证据与限制统一见[当前支持矩阵](multi-agent-provider-support-20261114.md)。下方历史检查点保持原始日期状态，不代表当前仍未实施。
 
@@ -19,7 +19,7 @@
 | MA02/03/04 | Claude/Cursor同流程及跨Agent共享；限制逐项披露 | Claude限定实链／跨Agent采用已补；Cursor真实宿主待条件 |
 | MA05/06 | 独立身份、禁采不回扫、403不重投、冲突/未知/部分成功 | 四宿主正常升级及新会话绑定，Codex／Claude实际缓存明确拒绝复验通过；其余门槛按支持矩阵保留 |
 | LP01/04 | 各协议配置→验证Schema及质量→保存；错误安全、无跨供应商fallback | 实现／实际SDK协议与错误门禁、DeepSeek／Codex真实样本通过；三类原生账号待验 |
-| LP02/03 | 接入与模型独立；保存不切换→验证摘要→next→重启→active；失败单次恢复 | 真实切换／已有库保持及三类真实进程恢复门禁已补；空配置首次初始化未由此证明 |
+| LP02/03 | 接入与模型独立；保存不切换→验证摘要→next→重启→active；失败单次恢复 | 真实切换／已有库保持、空账本首次Provider配置及真实进程恢复门禁已补；不等于全新安装器或三类原生账号通过 |
 | UI01 | 真实Native 1200×820，批量连接、生成配置、错误及重开连续性 | 已有多轮实际Native证据；Cursor／原生账号关联路径仍未完整验证 |
 
 实施顺序I01→I02/I03→I04/I05→I06/I07→I08→I09→I10。单测、协议夹具、真实宿主、模型质量和Native分别留证，不相互替代。源码与各限定实链已推进，I01–I10完整冻结交付仍未完成，不能用历史初始“均未完成”或部分通过替代逐项判断。
@@ -284,3 +284,25 @@ LP03补真实进程证据：复制本轮有效配置账本及必要私有凭据�
 验收驱动首次引用了错误的verifier模块，在任何策略变更前退出；改用现有`agent_connections.verify_artifact`。证据导出首次假定旧Codex主体含kind字段，在文件写入前退出，随后按旧主体兼容规则导出。两项属于方法错误，不增加产品缺陷计数；原操作回执均保留。生产源码本轮未变，复用上一候选127项后端检查，不重复Go、视觉或停止项。32份主项目Data、1份common、空第二项目均pending0，新增两份就绪问答保留；原隔离Native保持运行，后续打开路径更新至新owner。未做release。
 
 首批整体估算约89%（相对88%增加约1个百分点），增加四宿主正常升级／新会话及两宿主部署回执证据。完整目标仍active；Cursor、三类原生账号、Codex Desktop、MA-CODEX-FACT01和API空配置首次初始化仍须推进，第二批范围保持。现有配置／模型前置不构成所有独立工作的阻塞。
+
+## 开发检查点十九
+
+### 影响与连续验收范围
+
+源码核对发现首次Provider配置循环依赖：原启动器要求已有active，而原配置管理只能在官方服务之后启动。增加`dev.py setup`，仅针对已准备官方环境／数据、尚无生成active的场景，复用原数据根锁、管理token、generation单写锁和相同保存／验证／next接口。该模式不实例化Registry、不注册项目／Agent接口、不启动官方引擎或completion，也不写初始化日期；Native直接复用知识处理卡片／表单，跳过内容及连接枚举，不创建另一份内容系统。已有active拒绝进入setup，原正常设置页及旧runtime迁移保持。
+
+正常stop确认setup退出后再start。`start_generation`允许首个已验证next在无active时启动，真实健康与applied摘要一致后才写active并清next。无有效next仍拒绝启动；首个候选失败先确认清理，再停止，不尝试不存在的旧配置或Codex。原有active的最多一次恢复规则保持。同步技术方案、产品／设计、开发说明与API模板，不把“支持首次模型配置”扩展为新安装器或自动建库。
+
+### 实际结果与证据
+
+在独立合成官方环境预先完成官方迁移和owner准备，没有复制原内容库。生成账本从不存在开始；实际setup仅有配置子进程，active／next为空、profiles为空。配置期间及真实验证／选next后，官方DB文件摘要逐一不变，无Registry或初始化完成标记。实际Native观察空窗口和Provider表单；真实DeepSeek key通过受认证API保存，未在窗口输入或显示。窗口重开后看到已保存模型及空密码框，点击真实验证，普通／嵌套Schema／Unicode／null与固定事实样本通过；记录的是官方adapter JSON-object请求，不是远端严格Schema保证。
+
+实际Native选择next时active仍为空。正常停止setup再start后，官方进程health200和applied PID／reference／digest相符，首次active成为`initial-deepseek@1`，next清空；官方带认证datasets读取200，随后才有初始化日期。重开实际Native看到服务已连接、当前OpenAI兼容DeepSeek及无待应用项。配置没有Codex model／auth_home／executable／completion输入，也没有completion子进程。[脱敏证据](evidence/multi-agent-development-20261114/first-provider-initialization.json)。不将后台API保存密钥描述为本轮完整UI输入实测，既有表单保存证据继续按原范围使用。
+
+额外的首候选故障场景复用实际通过的不可变profile／回执，在独立故障夹具明确重置为active空、next已验证；不手写passed。真实官方服务健康200后，受控修改其applied digest，实际只有一次官方进程启动；确认进程退出，active仍空、next保留，返回`generation_start_failed`，没有旧配置或Codex启动。此为预期故障注入，不增加产品缺陷失败计数。
+
+**MA-UI-VALIDATION01，失败1轮。** 首次真实验证通过后，结果标签已通过但旧Message仍称“正在验证”。仅在原验证poll到达终态时清空旧活动提示，保留真实结果／错误及未知操作回执；定向Go回调检查通过。随后实际重开新调试窗核对正常当前配置；未为文字修复重复远端模型验证，不把重开当作同进程远端终态复验。
+
+生成相关41项通过（76.513秒），后端全量133项通过（122.098秒），启动脚本18项、首次使用日期5项通过；最终Go全量通过（simpledesktop 2.683秒）。仅必要Native调试编译和实际窗口，没有release。原固定官方源／插件输入未改，原日常Codex认证／配置摘要及原隔离active保持；原隔离服务与窗口保留。新首次配置／故障夹具的服务、UI和验证组确认退出后，清理其引擎数据、凭据副本、完整日志及调试App，只留小型回执和驱动。未做Codex订阅推理、未使用重置卡。
+
+首批整体估算约91%（相对89%增加约2个百分点），增加首次Provider配置与无旧active的真实失败停止链。完整目标继续active；Cursor、三类原生供应商账号、Codex Desktop与MA-CODEX-FACT01仍未完成，第二批边界和旧停止计数保持。

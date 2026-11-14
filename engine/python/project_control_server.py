@@ -34,7 +34,7 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
             token = request.headers.get('Authorization', '')
             request['manager'] = secrets.compare_digest(token, 'Bearer ' + manager_token)
             registered_tokens = dict(agent_tokens)
-            for key, value in registry.state['agents'].items():
+            for key, value in (registry.state['agents'].items() if registry is not None else []):
                 if value.get('control_token_file'):
                     registered_tokens[key] = read_secret(value['control_token_file'])
             request['agent'] = next((key for key, value in registered_tokens.items()
@@ -240,6 +240,17 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                 result = generation_validation.start(payload['profile'], payload['expected_revision'], payload['operation_id'])
         return web.json_response({'revision': generation.state['revision'], 'result': result})
 
+    app.add_routes([web.get('/v1/generation', generation_config),
+                    web.put('/v1/generation/profiles/{id}', generation_config),
+                    web.post('/v1/generation/validations', generation_config),
+                    web.get('/v1/generation/validations/{operation_id}', generation_config),
+                    web.delete('/v1/generation/validations/{operation_id}', generation_config),
+                    web.get('/v1/generation/operations/{operation_id}', generation_config),
+                    web.put('/v1/generation/next', generation_config)])
+    # First configuration has no official service or project registry. Keep
+    # precisely the same authenticated generation API, without content routes.
+    if registry is None:
+        return app
     app.add_routes([web.post('/v1/project/resolve', resolve), web.get('/v1/project/policy', policy),
                     web.get('/v1/projects', directory), web.put('/v1/defaults', defaults),
                     web.put('/v1/projects/{id}/overrides', overrides), web.put('/v1/projects/{id}/name', rename), web.post('/v1/projects', create),
@@ -254,13 +265,6 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                     web.get('/v1/connections/operations/{operation_id}', generic_connections),
                     web.post('/v1/connections/preview', generic_connections),
                     web.post('/v1/connections/{id}/{action:prepare|activate|review}', generic_connections)])
-    app.add_routes([web.get('/v1/generation', generation_config),
-                    web.put('/v1/generation/profiles/{id}', generation_config),
-                    web.post('/v1/generation/validations', generation_config),
-                    web.get('/v1/generation/validations/{operation_id}', generation_config),
-                    web.delete('/v1/generation/validations/{operation_id}', generation_config),
-                    web.get('/v1/generation/operations/{operation_id}', generation_config),
-                    web.put('/v1/generation/next', generation_config)])
     return app
 
 
@@ -268,6 +272,27 @@ async def configured_app(config):
     if config.get('project_control'):
         control = config['project_control']
         config = {**config, **control, 'project_control_url': control['url']}
+    if config.get('generation_setup_only'):
+        from generation_config import GenerationStore
+        from generation_validation import GenerationValidation
+        generation = GenerationStore(config['generation_file'], config['service_commit'])
+        validation = None
+        try:
+            if generation.state['active'] is not None:
+                raise PolicyError('generation_setup_requires_unconfigured_store', 409)
+            validation = GenerationValidation(generation, config)
+            app = create_app(None, read_secret(config['management_token_file']), {},
+                             generation=generation, generation_validation=validation)
+        except BaseException:
+            generation.close()
+            raise
+        async def setup_cleanup(_):
+            try:
+                await validation.close()
+            finally:
+                generation.close()
+        app.on_cleanup.append(setup_cleanup)
+        return app
     session = ClientSession()
     registry = None
     generation = validation = None

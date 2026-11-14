@@ -161,12 +161,12 @@ def verify_managed_plugin(directory):
             raise ValueError('managed installation environment must be private')
 
 
-def wait_project_control(control, process, timeout=60):
+def wait_project_control(control, process, timeout=60, *, setup_only=False):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError('project control exited before readiness')
-        request = urllib.request.Request(control['url'].rstrip('/') + '/v1/projects',
+        request = urllib.request.Request(control['url'].rstrip('/') + ('/v1/generation' if setup_only else '/v1/projects'),
                                          headers={'Authorization': 'Bearer ' + Path(control['management_token_file']).read_text().strip()})
         try:
             with urllib.request.urlopen(request, timeout=1) as response:
@@ -359,6 +359,19 @@ def ui_env(config_path):
     return with_patched_sdk(env)
 
 
+def generation_setup_runtime(config, config_path):
+    """Configuration only; never seed active, start an engine, or initialize data."""
+    from project_control import private_write
+    if not config.get('project_control') or not config.get('generation_file') or not Path(config['generation_file']).is_absolute():
+        raise ValueError('generation setup requires project_control and absolute generation_file')
+    effective = {**config, 'generation_setup_only': True, 'generation_mode': 'unconfigured',
+                 'model': '', 'graph_assets': ''}
+    effective.pop('completion_url', None)
+    runtime_path = config_path.parent / ('.runtime-active-' + str(os.getpid()) + '.json')
+    private_write(runtime_path, json.dumps(effective).encode())
+    return effective, runtime_path
+
+
 def start_generation_stack(config, config_path, launch, cleanup, *, health=wait_http):
     """Start one immutable revision while holding the generation writer lock.
 
@@ -417,7 +430,7 @@ def start_generation_stack(config, config_path, launch, cleanup, *, health=wait_
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', nargs='?', choices=('start', 'stop', 'open', 'status'), default='start')
+    parser.add_argument('action', nargs='?', choices=('start', 'setup', 'stop', 'open', 'status'), default='start')
     parser.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
     parser.add_argument('--no-ui', action='store_true')
     parser.add_argument('--watch-ui', action='store_true', help='open: foreground UI watcher attached to the verified existing service')
@@ -448,7 +461,8 @@ def main():
         if args.action == 'open':
             if state.get('runtime_config'):
                 config = load_config(Path(state['runtime_config']))
-            complete_initialization(config, path)
+            if not config.get('generation_setup_only'):
+                complete_initialization(config, path)
             if args.watch_ui:
                 # An older detached launcher may have lost its output reader.
                 # Never attach a second watcher while its owned watcher is live.
@@ -542,9 +556,13 @@ def main():
         return True
     try:
         save_owner()
-        config, runtime_path, endpoint, service = start_generation_stack(config, path, launch, cleanup_stack)
+        if args.action == 'setup':
+            config, runtime_path = generation_setup_runtime(config, path)
+            endpoint = service = None
+        else:
+            config, runtime_path, endpoint, service = start_generation_stack(config, path, launch, cleanup_stack)
         state.update(runtime_config=str(runtime_path), generation_mode=config['generation_mode'],
-                     generation_reference=config['generation_reference'], completion_url=config.get('completion_url'))
+                     generation_reference=config.get('generation_reference'), completion_url=config.get('completion_url'))
         save_owner()
         control = None
         if config.get('project_control'):
@@ -552,17 +570,18 @@ def main():
             control = launch([config['python'], str(ROOT / 'engine/python/project_control_server.py'), '--config', str(runtime_path)])
             state['service_children']['project_control'] = control.pid
             state['project_control_url'] = config['project_control']['url']
-            wait_project_control(config['project_control'], control)
-        complete_initialization(config, path)
-        state['phase'] = 'ready'
+            wait_project_control(config['project_control'], control, setup_only=config.get('generation_setup_only', False))
+        if not config.get('generation_setup_only'):
+            complete_initialization(config, path)
+        state['phase'] = 'generation_setup' if config.get('generation_setup_only') else 'ready'
         save_owner()
-        report_notice('Daily official services ready; closing UI keeps them running. Ctrl+C explicitly stops owned services.')
+        report_notice('Generation setup ready; save, validate and select next, then stop setup and start normally.' if config.get('generation_setup_only') else 'Daily official services ready; closing UI keeps them running. Ctrl+C explicitly stops owned services.')
         reopen = not args.no_ui
         while True:
             for log_file in (path.parent / 'runtime-logs').glob('*.log'):
                 trim_service_log(log_file)
             track_descendants([p.pid for p in processes], descendants)
-            if (endpoint is not None and endpoint.poll() is not None) or service.poll() is not None:
+            if (endpoint is not None and endpoint.poll() is not None) or (service is not None and service.poll() is not None):
                 raise RuntimeError('official service or completion endpoint exited; no automatic restart')
             if control is not None and control.poll() is not None:
                 raise RuntimeError('project control exited; no automatic restart or owner fallback')

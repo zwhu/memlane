@@ -26,8 +26,6 @@ def start_generation(store, launch, cleanup):
     process/resource set exited. Unknown cleanup halts; it cannot start old.
     """
     active = copy.deepcopy(store.state.get('active'))
-    if active is None:
-        raise PolicyError('active_generation_required', 503)
     try:
         selected = candidate(store)
     except PolicyError as error:
@@ -35,6 +33,8 @@ def start_generation(store, launch, cleanup):
         store.save()
         selected = None
     reference = selected or active
+    if reference is None:
+        raise PolicyError('active_generation_required', 503)
     digest = store.resolve(reference)['digest']
     try:
         result = launch(reference, digest)
@@ -44,7 +44,7 @@ def start_generation(store, launch, cleanup):
         store.save()
         if cleanup() is not True:
             raise PolicyError('generation_cleanup_unconfirmed', 503) from None
-        if not selected or reference == active:
+        if active is None or not selected or reference == active:
             raise PolicyError('generation_start_failed', 503) from None
         # Exactly one attempt at the original revision. No content/task replay.
         try:
