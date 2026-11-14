@@ -257,6 +257,8 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
     # precisely the same authenticated generation API, without content routes.
     if registry is None:
         return app
+    from knowledge_recall import attach_recall
+    attach_recall(app, registry)
     app.add_routes([web.post('/v1/project/resolve', resolve), web.get('/v1/project/policy', policy),
                     web.get('/v1/project/binding', binding),
                     web.get('/v1/projects', directory), web.put('/v1/defaults', defaults),
@@ -327,6 +329,8 @@ async def configured_app(config):
                          {key: read_secret(value) for key, value in config.get('agent_control_token_files', {}).items()},
                          plugin_source=config.get('plugin_dir'), control_url=config.get('project_control_url'), codex_config=config,
                          generation=generation, generation_validation=validation)
+        from project_backlog import attach_backlog
+        attach_backlog(app, registry, config)
     except BaseException:
         if registry is not None:
             registry.close()

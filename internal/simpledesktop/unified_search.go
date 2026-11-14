@@ -2,6 +2,7 @@ package simpledesktop
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 )
 
 type unifiedSearchState struct {
+	HistoryDirty                         bool
 	Open, Focus, Loading, Loaded         bool
 	Query, Scope, Type, Error, Submitted string
 	Rows                                 []Item
@@ -73,6 +75,7 @@ func (a *App) openUnifiedSearch(restore bool) {
 	}
 }
 func (a *App) closeUnifiedSearch() {
+	a.rememberManualSearch()
 	s := &a.searchUI
 	if s.cancel != nil {
 		s.cancel()
@@ -132,7 +135,7 @@ func (a *App) submitUnifiedSearch() {
 		if query == "" {
 			rows, err = a.recentSearchItems(ctx, client, projects, signature)
 		} else {
-			rows, err = client.search(ctx, projects, query)
+			rows, err = client.searchBoth(ctx, projects, query)
 		}
 		a.Update(func() {
 			if request != s.request || signature != a.searchSignature() || identity != a.readingIdentity {
@@ -165,6 +168,7 @@ func (a *App) submitUnifiedSearch() {
 	}()
 }
 func (a *App) searchSubmitOrOpen() {
+	a.rememberManualSearch()
 	s := &a.searchUI
 	if !s.Loading && s.Loaded && s.Error == "" && s.Submitted == a.searchSignature() && len(a.visibleSearchRows()) > 0 {
 		rows := a.visibleSearchRows()
@@ -287,6 +291,7 @@ func (a *App) searchDialog(c *ui.Context) {
 			ui.Icon(c, homeSearch).FontSize(21).TextColor(homeMuted)
 			input := ui.TextInput(c.Key("unified-query"), &s.Query).Label("搜索关键词").Placeholder("搜索知识与原始记录").Grow(1).MinWidth(0).FontSize(18).Background(ui.Transparent).BorderWidth(0).OnSubmit(a.searchSubmitOrOpen)
 			if input.Changed() {
+				s.HistoryDirty = true
 				a.cancelChangedSearch()
 			}
 			if s.Focus {
@@ -333,6 +338,15 @@ func (a *App) searchDialog(c *ui.Context) {
 				ui.Button(c, "重试").OnClick(a.submitUnifiedSearch)
 			})
 		}
+		if strings.TrimSpace(s.Query) != "" && !s.Loading && s.Due.IsZero() && s.Error == "" && s.Submitted == a.searchSignature() {
+			keywords := 0
+			for _, row := range rows {
+				if row.SearchMatch == "关键词匹配" {
+					keywords++
+				}
+			}
+			homeText(c, fmt.Sprintf("关键词匹配 %d · 语义相关 %d", keywords, len(rows)-keywords), homeMeta).Margin(0, 20, 10, 20)
+		}
 		ui.Scroll(c.Key("unified-results")).Grow(1).MinHeight(0).TrackScroll(&s.Scroll).Padding(8, 10).Gap(4).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Children(func() {
 			if len(rows) == 0 {
 				message := "没有匹配内容"
@@ -358,7 +372,7 @@ func (a *App) searchDialog(c *ui.Context) {
 					homeText(c, title, homeMeta).Margin(8, 12)
 					group = kind
 				}
-				title, preview := searchRowText(i)
+				title, preview := searchHitText(i, s.Query)
 				b := ui.Button(c, "").Key("search-hit-"+i.key()).Label(title).FillWidth().MinWidth(0).Justify(ui.Start).Padding(12, 14).BorderWidth(0).Radius(8).Gap(12).Background(ui.Transparent)
 				b.Background(homeHoverColor(b, "search-hit-hover", ui.Transparent, c.Theme().SurfaceHover))
 				if s.KeyboardSelection && s.Selection == n {
@@ -378,6 +392,9 @@ func (a *App) searchDialog(c *ui.Context) {
 				b.Children(func() {
 					ui.Icon(c, homeDocument).FontSize(18).TextColor(homeMuted)
 					ui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
+						if i.SearchMatch != "" {
+							homeText(c, i.SearchMatch, homeMeta).TextColor(ui.Hex("#647f99"))
+						}
 						homeText(c, title, homeTitle).FontSize(14).MaxLines(2)
 						if preview != "" && strings.TrimSpace(s.Query) != "" {
 							homeText(c, preview, homeMeta).MaxLines(2)
@@ -399,6 +416,11 @@ func (a *App) searchDialog(c *ui.Context) {
 	}
 }
 func (a *App) visibleSearchRows() []Item {
+	// Submitted identifies the in-flight request, not the rows' provenance.
+	// Never present old rows under newly typed text while that request runs.
+	if a.searchUI.Loading || !a.searchUI.Due.IsZero() || a.searchUI.Submitted != a.searchSignature() {
+		return nil
+	}
 	result := []Item{}
 	for _, i := range a.searchUI.Rows {
 		knowledge := strings.Contains(i.Kind, "知识")
@@ -431,14 +453,14 @@ func searchRowText(i Item) (string, string) {
 	clean := []string{}
 	for _, line := range lines {
 		v := strings.TrimSpace(line)
-		if strings.HasPrefix(v, "Lesson-Type:") || strings.HasPrefix(v, "State-Key:") || strings.HasPrefix(v, "# Session learning (session ") {
+		if strings.HasPrefix(v, "Lesson-Type:") || strings.HasPrefix(v, "State-Key:") || strings.HasPrefix(v, "# Session learning (session ") || strings.HasPrefix(v, "Session ID: ") {
 			continue
 		}
 		clean = append(clean, line)
 	}
 	preview := strings.TrimSpace(strings.Join(clean, "\n"))
 	title := i.Title
-	if title == "检索片段" || readableName(title) == "" {
+	if title == "检索片段" || readableName(title) == "" || strings.HasPrefix(title, "Session ID: ") {
 		title = firstReadingSentence(preview)
 	}
 	if title == "" {

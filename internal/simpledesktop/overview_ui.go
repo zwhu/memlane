@@ -19,12 +19,17 @@ type overviewViewState struct {
 	Events                                     []overviewEvent
 	ActivityLoaded, ActivityLoading, More      bool
 	ActivityError                              string
+	SearchHistory                              bool
+	History                                    []overviewEvent
+	HistoryLoaded                              bool
+	HistoryError                               string
 	ActivityLimit                              int
 	Day                                        string
 	Offset                                     int
 	Scroll                                     ui.ScrollState
 	SidebarScroll                              ui.ScrollState
 	ActivityScroll                             ui.ScrollState
+	KnowledgeScroll                            ui.ScrollState
 	AllProjects                                bool
 	ActivityExpanded                           bool
 	RevealProjects                             bool
@@ -65,7 +70,7 @@ func (a *App) loadOverview() {
 		// A directory/range refresh invalidates content, not the user's date or
 		// reading position. Old diagnostics are dropped with the old scope.
 		*v = overviewViewState{scope: scope, generation: generation, activityGeneration: activityGeneration,
-			Day: v.Day, Offset: v.Offset, Scroll: v.Scroll, SidebarScroll: v.SidebarScroll, ActivityScroll: v.ActivityScroll, AllProjects: v.AllProjects, ActivityExpanded: v.ActivityExpanded, ActivityLimit: v.ActivityLimit}
+			Day: v.Day, Offset: v.Offset, Scroll: v.Scroll, SidebarScroll: v.SidebarScroll, ActivityScroll: v.ActivityScroll, KnowledgeScroll: v.KnowledgeScroll, AllProjects: v.AllProjects, ActivityExpanded: v.ActivityExpanded, ActivityLimit: v.ActivityLimit, SearchHistory: v.SearchHistory}
 	}
 	if v.cancel != nil {
 		v.cancel()
@@ -110,9 +115,6 @@ func (a *App) loadOverview() {
 			a.overviewState.Error = ""
 		})
 	}()
-	if v.ActivityLimit < 20 {
-		v.ActivityLimit = 20
-	}
 	a.loadOverviewActivity()
 }
 
@@ -126,19 +128,34 @@ func (a *App) loadOverviewActivity() {
 	v.activityGeneration++
 	generation := v.activityGeneration
 	v.ActivityLoading = true
-	want := v.ActivityLimit
-	if want < 20 {
-		want = 20
-	}
+	want := 50
 	client := a.Client
+	history := v.SearchHistory
 	go func() {
 		defer cancel()
-		events, more, err := client.overviewActivity(ctx, want)
+		var events []overviewEvent
+		var more bool
+		var err error
+		if history {
+			events, err = client.overviewSearchHistory(ctx)
+		} else {
+			events, more, err = client.overviewActivity(ctx, want)
+		}
 		a.Update(func() {
 			if generation != a.overviewState.activityGeneration {
 				return
 			}
 			a.overviewState.ActivityLoading = false
+			if history {
+				if err != nil {
+					a.overviewState.HistoryError = err.Error()
+					return
+				}
+				a.overviewState.History = events
+				a.overviewState.HistoryLoaded = true
+				a.overviewState.HistoryError = ""
+				return
+			}
 			if err != nil {
 				a.overviewState.ActivityError = err.Error()
 				return
@@ -242,12 +259,7 @@ func (a *App) overviewHome(c *ui.Context) {
 			a.overviewHeatmap(c, now)
 			ui.Row(c).Key("overview-paired-sections").Gap(homeColumnGap).Margin(homeSectionOffset, 0, 23, 0).AlignItems(ui.Stretch).Children(func() {
 				ui.Column(c).Key("overview-knowledge-section").Width(0).Grow(1.6).MinWidth(0).Gap(0).Children(func() { a.overviewKnowledge(c, now) })
-				// The knowledge column determines the row's natural height. The
-				// activity content fills that same box without contributing its
-				// unbounded event/diagnostic height to the parent scroll.
-				ui.Column(c).Width(0).Grow(1).MinWidth(255).Children(func() {
-					ui.Column(c).Key("overview-activity-section").Absolute().Top(0).Bottom(0).Left(0).Right(0).Gap(0).Children(func() { a.overviewActivities(c, now) })
-				})
+				ui.Column(c).Key("overview-activity-section").Width(0).Grow(1).MinWidth(255).Gap(0).Children(func() { a.overviewActivities(c, now) })
 			})
 			a.overviewProjectGrid(c)
 			if len(a.Config.Projects) == 0 {
@@ -332,7 +344,7 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 								if v.Day == date {
 									cell.Border(1, ink)
 								}
-								cell.OnClick(func() { v.Day = date; v.Offset = 0 })
+								cell.OnClick(func() { v.Day = date; v.KnowledgeScroll.Y = 0 })
 							}
 						})
 					}
@@ -374,6 +386,9 @@ func (a *App) overviewKnowledgeRows(now time.Time) []Item {
 			}
 		}
 		rows = append(rows, item)
+		if len(rows) == 20 {
+			break
+		}
 	}
 	return rows
 }
@@ -381,7 +396,7 @@ func (a *App) overviewKnowledgeRows(now time.Time) []Item {
 func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 	v := &a.overviewState
 	rows := a.overviewKnowledgeRows(now)
-	ui.Row(c).Margin(0, 0, 15, 0).Children(func() {
+	ui.Row(c).Height(28).Shrink(0).Margin(0, 0, 15, 0).Children(func() {
 		title := "最近知识"
 		if v.Day != "" {
 			title = v.Day + " 新增知识"
@@ -389,82 +404,80 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 		homeText(c, title, homeHeading)
 		ui.Spacer(c)
 		if v.Day != "" {
-			homeLink(c, "显示最近知识", func() { v.Day = ""; v.Offset = 0 })
-		} else {
-			homeLink(c, "搜索知识  ›", a.OpenSearch)
+			homeLink(c, "显示最近知识", func() { v.Day = ""; v.KnowledgeScroll.Y = 0 })
 		}
 	})
-	ui.Column(c).Height(1).Background(homeBorder)
-	offset := v.Offset
-	if offset >= len(rows) {
-		offset = 0
-	}
-	const pageSize = 3
-	end := min(offset+pageSize, len(rows))
-	a.startRecentTitles(rows[offset:end])
-	for _, item := range rows[offset:end] {
-		i := item
-		row := ui.Button(c, "").Key("recent-"+i.key()).Label(i.Title).FillWidth().Justify(ui.Start).AlignItems(ui.Start).Padding(17, 0).Gap(13).BorderWidth(0, 0, 1, 0).BorderColor(homeBorder)
-		hover := ui.Hex("#f7f9fb")
-		row.Background(homeHoverColor(row, "knowledge-surface", hover.Alpha(0), hover)).Children(func() {
-			ui.Column(c).Size(28, 33).Shrink(0).Border(1, homeBorder).Radius(6).Background(ui.Hex("#f7f9fc")).AlignItems(ui.Center).Justify(ui.Center).Children(func() { ui.Icon(c, homeDocument).FontSize(15).TextColor(homeMuted) })
-			ui.Column(c).Gap(0).Grow(1).MinWidth(0).Children(func() {
-				homeText(c, i.Title, homeTitle).MaxLines(2)
-				date := "创建日期未知"
-				if i.Document != nil {
-					if at, ok := officialTime(i.Document.Created); ok {
-						date = at.In(now.Location()).Format("01月02日 · 15:04")
+	a.startRecentTitles(rows)
+	ui.Scroll(c.Key("overview-knowledge")).Label("最近知识内容").Height(homeOverviewListHeight).Shrink(0).FillWidth().TrackScroll(&v.KnowledgeScroll).Border(1, ui.Hex("#eaf0f4")).Radius(11).Background(ui.Hex("#ffffff")).Padding(4, 0).DrawOver(func(p *ui.Painter, r ui.Rect) {
+		if v.KnowledgeScroll.MaxY-v.KnowledgeScroll.Y > 1 {
+			p.FillGradient(ui.Rect{X: r.X + 1, Y: r.Y + r.H - 25, W: r.W - 6, H: 24}, ui.LinearGradient{From: ui.Hex("#ffffff").Alpha(0), To: ui.Hex("#ffffff"), Angle: 180}, 0)
+		}
+		if v.KnowledgeScroll.Y > 1 {
+			p.FillGradient(ui.Rect{X: r.X + 1, Y: r.Y + 1, W: r.W - 6, H: 18}, ui.LinearGradient{From: ui.Hex("#ffffff"), To: ui.Hex("#ffffff").Alpha(0), Angle: 180}, 0)
+		}
+	}).Children(func() {
+		for _, item := range rows {
+			i := item
+			row := ui.Button(c, "").Key("recent-"+i.key()).Label(i.Title).FillWidth().Justify(ui.Start).AlignItems(ui.Start).Padding(17, 14).Radius(0).Gap(13).BorderWidth(0, 0, 1, 0).BorderColor(homeBorder)
+			hover := ui.Hex("#f7f9fb")
+			row.Background(homeHoverColor(row, "knowledge-surface", hover.Alpha(0), hover)).Children(func() {
+				ui.Column(c).Size(28, 33).Shrink(0).Border(1, homeBorder).Radius(6).Background(ui.Hex("#f7f9fc")).AlignItems(ui.Center).Justify(ui.Center).Children(func() { ui.Icon(c, homeDocument).FontSize(15).TextColor(homeMuted) })
+				ui.Column(c).Gap(0).Grow(1).MinWidth(0).Children(func() {
+					homeText(c, i.Title, homeTitle).MaxLines(2)
+					date := "创建日期未知"
+					if i.Document != nil {
+						if at, ok := officialTime(i.Document.Created); ok {
+							date = at.In(now.Location()).Format("01月02日 · 15:04")
+						}
 					}
-				}
-				ui.Row(c).Margin(9, 0, 0, 0).Gap(8).Children(func() {
-					homeText(c, "知识", homeMeta).Padding(2, 6).Radius(4).Background(ui.Hex("#f0f4f8")).TextColor(ui.Hex("#7d93a9"))
-					homeText(c, date, homeMeta)
+					ui.Row(c).Margin(9, 0, 0, 0).Gap(8).Children(func() {
+						homeText(c, "知识", homeMeta).Padding(2, 6).Radius(4).Background(ui.Hex("#f0f4f8")).TextColor(ui.Hex("#7d93a9"))
+						homeText(c, date, homeMeta)
+					})
 				})
-			})
-			ui.Icon(c, homeArrow).FontSize(12).TextColor(ui.Hex("#a9b4bf")).Margin(7, 0, 0, 0).Shrink(0)
-		}).OnClick(func() { a.openOverviewItem(i) })
-		if i.ReadingState == "failed" || i.ReadingState == "unavailable" {
-			button(c, "标题读取失败 · 重试", func() { a.retryRecentTitle(i) })
+				ui.Icon(c, homeArrow).FontSize(12).TextColor(ui.Hex("#a9b4bf")).Margin(7, 0, 0, 0).Shrink(0)
+			}).OnClick(func() { a.openOverviewItem(i) })
+			if i.ReadingState == "failed" || i.ReadingState == "unavailable" {
+				button(c, "标题读取失败 · 重试", func() { a.retryRecentTitle(i) })
+			}
 		}
-	}
-	if len(rows) == 0 {
-		label := "暂无知识"
-		if !v.Loaded {
-			label = "知识尚未载入"
-		}
-		ui.Column(c).MinHeight(100).Justify(ui.Center).Children(func() { homeText(c, label, homeBody) })
-	}
-	ui.Row(c).MinHeight(24).Shrink(0).Margin(12, 0, 0, 0).Gap(12).Children(func() {
-		if len(rows) > pageSize {
-			homeLink(c, "上一页", func() { v.Offset = max(0, offset-pageSize) }).Disabled(offset == 0).MinHeight(24)
-			homeText(c, fmt.Sprintf("%d / %d", offset/pageSize+1, (len(rows)+pageSize-1)/pageSize), homeMeta)
-			homeLink(c, "下一页", func() { v.Offset = end }).Disabled(end == len(rows)).MinHeight(24)
+		if len(rows) == 0 {
+			label := "暂无知识"
+			if !v.Loaded {
+				label = "知识尚未载入"
+			}
+			ui.Column(c).MinHeight(100).Justify(ui.Center).Children(func() { homeText(c, label, homeBody) })
 		}
 	})
 }
 
 func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 	v := &a.overviewState
-	rows := a.overviewKnowledgeRows(now)
-	offset := v.Offset
-	if offset >= len(rows) {
-		offset = 0
+	events, loaded, loadError := v.Events, v.ActivityLoaded, v.ActivityError
+	if v.SearchHistory {
+		events, loaded, loadError = v.History, v.HistoryLoaded, v.HistoryError
 	}
-	compactLimit := max(1, min(3, len(rows)-offset))
-	ui.Row(c).Shrink(0).MinHeight(22).Margin(0, 0, 15, 0).Children(func() {
+	events = events[:min(50, len(events))]
+	ui.Row(c).Height(28).Shrink(0).Margin(0, 0, 15, 0).Children(func() {
 		homeText(c, "近期动态", homeHeading)
+		ui.Spacer(c)
+		selected := 0
+		if v.SearchHistory {
+			selected = 1
+		}
+		previousTheme := c.Theme()
+		compactTheme := *previousTheme
+		compactTheme.FontSize, compactTheme.Spacing = 10, 2
+		c.SetTheme(&compactTheme)
+		ui.Segmented(c, &selected, "动态", "最近搜索").Label("近期动态类型").OnChange(func() {
+			v.SearchHistory = selected == 1
+			v.ActivityExpanded = false
+			v.ActivityScroll.Y = 0
+			a.loadOverviewActivity()
+		})
+		c.SetTheme(previousTheme)
 	})
-	if v.ActivityLoading && !v.ActivityLoaded {
-		ui.Text(c, "正在读取动态…").FontSize(11).TextColor(muted)
-	}
-	if v.ActivityError != "" {
-		ui.Text(c, "动态读取失败，保留上次结果 · "+v.ActivityError).FontSize(11).TextColor(muted)
-		projectLink(c, "重试读取动态", a.loadOverviewActivity)
-	}
-	if v.ActivityLoaded && len(v.Events) == 0 {
-		ui.Text(c, "暂无动态").FontSize(12).TextColor(muted)
-	}
-	ui.Scroll(c.Key("overview-activity")).Grow(1).MinHeight(0).FillWidth().TrackScroll(&v.ActivityScroll).Border(1, ui.Hex("#eaf0f4")).Background(ui.Hex("#fafbfd")).Radius(11).Padding(18, 18, 5, 18).Gap(0).DrawOver(func(p *ui.Painter, r ui.Rect) {
+	ui.Scroll(c.Key("overview-activity")).Label("近期动态内容").Height(homeOverviewListHeight).Shrink(0).FillWidth().TrackScroll(&v.ActivityScroll).Border(1, ui.Hex("#eaf0f4")).Background(ui.Hex("#fafbfd")).Radius(11).Padding(18, 18, 5, 18).Gap(0).DrawOver(func(p *ui.Painter, r ui.Rect) {
 		// A soft edge communicates more scrollable content without leaving a
 		// hard-cut half line against the rounded panel border. Keep the narrow
 		// scrollbar uncovered and remove each edge at that end of the list.
@@ -476,11 +489,37 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 			p.FillGradient(ui.Rect{X: r.X + 1, Y: r.Y + 1, W: r.W - 6, H: 18}, ui.LinearGradient{From: bg, To: bg.Alpha(0), Angle: 180}, 0)
 		}
 	}).Children(func() {
+		if len(events) == 0 {
+			ui.Column(c).Absolute().Top(0).Bottom(0).Left(0).Right(0).Padding(20).AlignItems(ui.Center).Justify(ui.Center).Gap(10).Children(func() {
+				icon, title, hint := homeDocument, "暂无动态", "保存和整理知识后，动态会显示在这里"
+				if v.SearchHistory {
+					icon, title, hint = homeSearch, "暂无搜索历史", "在搜索框中输入，记录会显示在这里"
+				}
+				if v.ActivityLoading && !loaded {
+					title, hint = "正在读取动态…", ""
+					if v.SearchHistory {
+						title = "正在读取搜索历史…"
+					}
+				} else if loadError != "" {
+					title, hint = "暂时无法读取", loadError
+				}
+				ui.Icon(c, icon).FontSize(24).TextColor(ui.Hex("#a7b5c4"))
+				homeText(c, title, homeBody)
+				if hint != "" {
+					homeText(c, hint, homeMeta).TextAlign(ui.Center).MaxLines(3)
+				}
+				if loadError != "" {
+					homeLink(c, "重试", a.loadOverviewActivity)
+				}
+			})
+			return
+		}
 		ui.Column(c).FillWidth().Shrink(0).Gap(0).Children(func() {
-			shown := v.Events
-			if !v.ActivityExpanded {
-				shown = shown[:min(compactLimit, len(shown))]
+			if loadError != "" {
+				homeText(c, "读取失败，保留上次结果 · "+loadError, homeMeta).MaxLines(2)
+				homeLink(c, "重试读取动态", a.loadOverviewActivity).Margin(0, 0, 12, 0)
 			}
+			shown := events
 			for idx, event := range shown {
 				ui.Row(c).Key("overview-event-"+event.Key).Padding(0, 0, 23, 0).Gap(9).AlignItems(ui.Stretch).Children(func() {
 					mark, color := "✓", ui.Hex("#749082")
@@ -501,7 +540,14 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 					ui.Column(c).Grow(1).MinWidth(0).Gap(0).Children(func() {
 						ui.Row(c).Gap(8).Children(func() {
 							homeText(c, event.Title, homeActivityTitle).Grow(1).MinWidth(0).MaxLines(2)
-							homeText(c, event.At.In(now.Location()).Format("15:04"), homeMeta).TextColor(ui.Hex("#a1aab4")).Shrink(0)
+							stamp := "时间未知"
+							if !event.At.IsZero() {
+								stamp = event.At.In(now.Location()).Format("15:04")
+								if event.At.In(now.Location()).Format("2006-01-02") != now.Format("2006-01-02") {
+									stamp = event.At.In(now.Location()).Format("2006/01/02 15:04")
+								}
+							}
+							homeText(c, stamp, homeMeta).TextColor(ui.Hex("#a1aab4")).Shrink(0)
 						})
 						label := event.Project + " · " + event.State
 						if event.State == "失败" {
@@ -549,18 +595,7 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 			}
 		})
 	})
-	ui.Row(c).MinHeight(24).Shrink(0).Gap(16).Margin(12, 0, 0, 0).Children(func() {
-		if len(v.Events) > compactLimit {
-			title := "查看全部动态"
-			if v.ActivityExpanded {
-				title = "收起动态"
-			}
-			homeLink(c, title, func() { v.ActivityExpanded = !v.ActivityExpanded; v.ActivityScroll.Y = 0 })
-		}
-		if v.More && (v.ActivityExpanded || len(v.Events) <= compactLimit) {
-			homeLink(c, "加载更多动态", func() { v.ActivityExpanded = true; v.ActivityLimit += 20; a.loadOverviewActivity() }).Disabled(v.ActivityLoading)
-		}
-	})
+
 }
 
 func (a *App) overviewActivityProject(event overviewEvent) (int, bool) {

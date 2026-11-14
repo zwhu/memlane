@@ -279,7 +279,7 @@ func (a *App) loadGraph() {
 }
 func (a *App) graphView(c *ui.Context) {
 	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
-		ui.Row(c).Padding(12, 24).Gap(8).Children(func() {
+		ui.Row(c).Padding(12, 32).Gap(8).Children(func() {
 			for _, mode := range []string{"实体关系", "代码结构"} {
 				m := mode
 				label := m
@@ -323,19 +323,19 @@ func (a *App) graphView(c *ui.Context) {
 			return
 		}
 		if a.graphError != "" {
-			ui.Text(c, a.graphError).FontSize(11).TextColor(muted).Margin(10, 24)
+			ui.Text(c, a.graphError).FontSize(11).TextColor(muted).Margin(10, 32)
 		}
 		if a.codeStatus != "" {
-			ui.Text(c, a.codeStatus).FontSize(11).TextColor(muted).Margin(10, 24)
+			ui.Text(c, a.codeStatus).FontSize(11).TextColor(muted).Margin(10, 32)
 		}
 		if a.graphLoading {
-			ui.Text(c, "正在读取官方子图…").FontSize(11).TextColor(muted).Margin(10, 24)
+			ui.Text(c, "正在读取官方子图…").FontSize(11).TextColor(muted).Margin(10, 32)
 		}
 		if a.graph != nil && a.graph.view != nil {
 			ui.WebView(c, a.graph.view).Grow(1).MinHeight(0)
 		}
 		if a.graphSelection != "" {
-			ui.Text(c, "选中节点 · "+a.graphSelection).FontSize(10).TextColor(muted).MaxLines(3).Margin(10, 24)
+			ui.Text(c, "选中节点 · "+a.graphSelection).FontSize(10).TextColor(muted).MaxLines(3).Margin(10, 32)
 			button(c, "查看官方文档出处", a.graphSource)
 		}
 	})

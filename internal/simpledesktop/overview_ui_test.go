@@ -149,14 +149,8 @@ func TestOverviewLayoutAndContinuousUIFixture(t *testing.T) {
 			if knowledge.X+knowledge.W > dynamic.X || knowledge.W < 200 || dynamic.X > float32(size[0]-200) {
 				t.Fatalf("columns overlap or squeeze: knowledge=%+v dynamic=%+v", knowledge, dynamic)
 			}
-			if err := tt.Click("下一页"); err != nil {
-				t.Fatal(err)
-			}
-			if a.overviewState.Offset != 3 || !tt.HasText("Fourth knowledge for pagination") {
-				t.Fatal("pagination failed")
-			}
-			if err := tt.Click("上一页"); err != nil {
-				t.Fatal(err)
+			if tt.HasText("下一页") || tt.HasText("上一页") {
+				t.Fatal("obsolete pagination visible")
 			}
 			day := time.Now().Format("2006-01-02")
 			if err := tt.Click(day + " · 新增 4 条知识"); err != nil {
@@ -246,71 +240,92 @@ func TestOverviewLoadingEmptyAndPartialFailureUI(t *testing.T) {
 	fixtureImage(t, tt, "partial-refresh")
 }
 
-func TestOverviewExpandedActivityStaysAlignedAndScrollsIndependently(t *testing.T) {
+func TestOverviewFixedListsAreCappedAndScrollIndependently(t *testing.T) {
 	for _, size := range [][2]int{{1200, 820}, {1440, 900}} {
 		t.Run(fmt.Sprint(size[0]), func(t *testing.T) {
 			a := overviewFixture(t)
 			v := &a.overviewState
-			for n := 0; n < 30; n++ {
+			v.Events = nil
+			for n := 0; n < 60; n++ {
 				v.Events = append(v.Events, overviewEvent{Key: fmt.Sprint(n), Title: fmt.Sprintf("Synthetic event %02d", n), State: "已完成", Project: "synthetic", At: time.Now()})
+				v.Snapshot.Knowledge = append(v.Snapshot.Knowledge, Item{ID: fmt.Sprint("extra", n), Dataset: "0", Title: fmt.Sprintf("Extra knowledge %02d", n)})
 			}
-			v.More = true
 			tt := ui.NewTester(a.overviewShell, size[0], size[1])
-			// Keep the footer controls inside the viewport at both window sizes.
 			v.Scroll.Y = 120
 			tt.Frame()
+			left, _ := tt.Find("最近知识内容")
+			right, _ := tt.Find("近期动态内容")
+			if left.H < homeOverviewListHeight-0.1 || left.H > homeOverviewListHeight+0.1 || right.H < homeOverviewListHeight-0.1 || right.H > homeOverviewListHeight+0.1 {
+				t.Fatalf("unbounded panels: %+v %+v", left, right)
+			}
+			if d := left.Y - right.Y; d < -2 || d > 2 {
+				t.Fatal("panel tops differ", left, right)
+			}
+			if len(a.overviewKnowledgeRows(time.Now())) != 20 || !tt.HasText("Synthetic event 49") || tt.HasText("Synthetic event 50") {
+				t.Fatal("list caps incorrect")
+			}
+			if tt.HasText("下一页") || tt.HasText("查看全部动态") || tt.HasText("加载更多动态") {
+				t.Fatal("obsolete footer controls visible")
+			}
 			outerMax, outerY := v.Scroll.MaxY, v.Scroll.Y
-			if err := tt.Click("查看全部动态"); err != nil {
-				t.Fatal(err)
+			tt.Scroll(right.X+20, right.Y+80, 0, 180)
+			if v.ActivityScroll.Y <= 0 || v.Scroll.Y != outerY || v.KnowledgeScroll.Y != 0 {
+				t.Fatal("activity scroll leaked")
 			}
-			if v.Scroll.MaxY != outerMax || v.Scroll.Y != outerY || v.ActivityScroll.MaxY <= 0 {
-				t.Fatalf("expanded activity enlarged/moved the page: outer=%+v activity=%+v", v.Scroll, v.ActivityScroll)
+			tt.Scroll(left.X+20, left.Y+80, 0, 180)
+			if v.KnowledgeScroll.Y <= 0 || v.Scroll.Y != outerY {
+				t.Fatal("knowledge scroll leaked")
 			}
-			left, _ := tt.Find("下一页")
-			right, _ := tt.Find("收起动态")
-			if d := (left.Y + left.H) - (right.Y + right.H); d < -2 || d > 2 {
-				t.Fatalf("section bottoms differ: knowledge=%+v activity=%+v", left, right)
-			}
-			heading, _ := tt.Find("近期动态")
-			tt.Scroll(heading.X+20, heading.Y+80, 0, 180)
-			if v.ActivityScroll.Y <= 0 || v.Scroll.Y != outerY {
-				t.Fatalf("activity wheel leaked to page: outer=%+v activity=%+v", v.Scroll, v.ActivityScroll)
-			}
-			v.ExpandedEvent = "failed"
-			v.ExpandedReport = strings.Repeat("Synthetic diagnostic line\n", 100)
+			v.Events = v.Events[:1]
+			v.Snapshot.Knowledge = v.Snapshot.Knowledge[:1]
 			tt.Frame()
 			if v.Scroll.MaxY != outerMax {
-				t.Fatal("diagnostic expanded the page")
+				t.Fatal("short lists changed fixed height")
 			}
-			fixtureImage(t, tt, fmt.Sprintf("%dx%d-bounded-activity", size[0], size[1]))
-			if err := tt.Click("收起动态"); err != nil {
-				t.Fatal(err)
-			}
-			if v.ActivityExpanded || v.ActivityScroll.Y != 0 || v.Scroll.MaxY != outerMax {
-				t.Fatal("collapse changed outer layout or retained hidden scroll")
-			}
-			// The last page contains one short item. It must not inherit a
-			// three-row minimum or show a clipped third activity by default.
-			v.Offset = 3
-			v.ExpandedEvent = ""
-			tt.Frame()
-			if v.Scroll.MaxY >= outerMax || v.ActivityScroll.MaxY > 6 {
-				t.Fatalf("short page kept a tall/overflowing panel: outer=%+v activity=%+v", v.Scroll, v.ActivityScroll)
-			}
-			left, _ = tt.Find("下一页")
-			right, _ = tt.Find("查看全部动态")
-			if d := (left.Y + left.H) - (right.Y + right.H); d < -2 || d > 2 {
-				t.Fatalf("short-page actions not aligned: left=%+v right=%+v", left, right)
-			}
-			fixtureImage(t, tt, fmt.Sprintf("%dx%d-compact-activity", size[0], size[1]))
-			shortMax := v.Scroll.MaxY
-			if err := tt.Click("查看全部动态"); err != nil {
-				t.Fatal(err)
-			}
-			if v.Scroll.MaxY != shortMax || v.ActivityScroll.MaxY <= 0 {
-				t.Fatal("short-page expansion grew the page")
-			}
+			fixtureImage(t, tt, fmt.Sprintf("%dx%d-fixed-lists", size[0], size[1]))
 		})
+	}
+}
+
+func TestOverviewHeaderUsesContentInsets(t *testing.T) {
+	a := overviewFixture(t)
+	tt := ui.NewTester(a.projectHeader, 980, 62)
+	title, ok := tt.Find("总览")
+	if !ok {
+		t.Fatal("missing page title")
+	}
+	search, ok := tt.Find("搜索知识与原始记录")
+	if !ok {
+		t.Fatal("missing search trigger")
+	}
+	if title.X < homePageInset-1 || title.X > homePageInset+1 || search.X+search.W < 980-homePageInset-1 || search.X+search.W > 980-homePageInset+1 {
+		t.Fatalf("toolbar does not align with body insets: title=%+v search=%+v", title, search)
+	}
+}
+
+func TestOverviewSidebarActionsShareRightEdge(t *testing.T) {
+	a := overviewFixture(t)
+	tt := ui.NewTester(a.overviewShell, 1200, 820)
+	add, ok := tt.Find("新建项目")
+	if !ok {
+		t.Fatal("missing add button")
+	}
+	labels := projectLabels(a.Config.Projects)
+	for _, label := range labels {
+		menu, ok := tt.Find("项目菜单：" + label)
+		if !ok {
+			t.Fatal("missing menu", label)
+		}
+		// Clipped sidebar children have a zero layout rect in the SDK tester.
+		if menu.W == 0 {
+			continue
+		}
+		if d := (add.X + add.W) - (menu.X + menu.W); d < -0.5 || d > 0.5 {
+			t.Fatalf("sidebar right edges differ: add=%+v menu=%+v", add, menu)
+		}
+		if add.W != menu.W {
+			t.Fatal("action columns have different widths", add, menu)
+		}
 	}
 }
 

@@ -31,6 +31,10 @@ func projectUIFixture() *App {
 }
 func clickProjectUI(t *testing.T, tt *ui.Tester, label string) {
 	t.Helper()
+	if r, ok := tt.Find(label); ok {
+		tt.Move(r.X+r.W/2, r.Y+r.H/2)
+		tt.Frame()
+	}
 	if err := tt.Click(label); err != nil {
 		t.Fatal(err)
 	}
@@ -245,6 +249,7 @@ func TestProjectLongTitleSearchKeyboardAndStateFixtures(t *testing.T) {
 			a.searchUI.Query = "凭据配置"
 			a.searchUI.Rows = []Item{{ID: "s1", Dataset: "ds", Kind: "知识片段", Title: i.Title, Preview: "credential separation, shared official identity…", BodyLoaded: true}, {ID: "s2", Dataset: "ds", Kind: "知识片段", Title: "客户端认证约定", Preview: "从 token_file 读取 X-Api-Key", BodyLoaded: true}, {ID: "s3", Dataset: "ds", Kind: "原始材料片段", Title: "开发环境与凭据配置", Preview: "启动参数与窗口重开", BodyLoaded: true}}
 			a.searchUI.Loaded = true
+			a.searchUI.Loading = false
 			a.searchUI.Submitted = a.searchSignature()
 			tt.Frame()
 			fixtureImage(t, tt, fmt.Sprintf("project-%dx%d-search-results", wh[0], wh[1]))

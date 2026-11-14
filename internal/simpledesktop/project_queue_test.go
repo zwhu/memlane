@@ -72,7 +72,7 @@ func TestProjectQueueBothTypesAndCompactPermissionFeedback(t *testing.T) {
 		t.Run(fmt.Sprint(wh), func(t *testing.T) {
 			a, q := projectQueueFixture()
 			tt := ui.NewTester(a.View, wh[0], wh[1])
-			for _, label := range []string{"权限设置", "待处理文档", "未保存", "待整理", "3 条记录", "2 份文档", "保存结果待核对"} {
+			for _, label := range []string{"权限设置", "待处理文档", "待保存与核对", "待整理", "3 条记录", "2 份文档", "保存结果待核对"} {
 				if !tt.HasText(label) {
 					t.Fatal("missing queue distinction", label)
 				}

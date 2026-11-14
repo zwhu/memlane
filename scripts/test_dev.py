@@ -21,6 +21,21 @@ def try_lock(root, queue):
 
 
 class OwnershipTests(unittest.TestCase):
+    def test_owner_control_preserves_auth_checks_without_requiring_future_plugin_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            token=root/'manager.token';token.write_text('m'*40);token.chmod(0o600)
+            control={'url':'http://127.0.0.1:18777','registry_file':str(root/'registry.json'),
+                     'management_token_file':str(token),'plugin_dir':str(root/'old-running-plugin')}
+            runtime={'service_url':'http://127.0.0.1:18172'}
+            with patch.object(dev,'verify_managed_plugin',side_effect=ValueError('new source differs')) as check:
+                dev.validate_project_control(control,runtime,verify_plugin=False)
+                check.assert_not_called()
+                with self.assertRaises(ValueError):dev.validate_project_control(control,runtime)
+                check.assert_called_once()
+            token.chmod(0o644)
+            with self.assertRaises(ValueError):dev.validate_project_control(control,runtime,verify_plugin=False)
+
     def test_first_setup_prepares_only_private_runtime_without_seeding_generation(self):
         import json
         with tempfile.TemporaryDirectory() as temporary:

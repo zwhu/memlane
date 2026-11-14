@@ -14,13 +14,17 @@ type queuedSession struct {
 	View    *pendingBufferView
 }
 type projectQueueState struct {
-	Loading, Loaded bool
-	Request         uint64
-	Next            time.Time
-	Sessions        []queuedSession
-	Documents       []Item
-	DocumentError   string
-	Offset          int
+	Loading, Loaded                bool
+	Request                        uint64
+	Next                           time.Time
+	Sessions                       []queuedSession
+	Documents                      []Item
+	DocumentError                  string
+	Offset                         int
+	Backlog                        *backlogJob
+	BacklogLoading, BacklogBusy    bool
+	BacklogNext                    time.Time
+	BacklogError, BacklogOperation string
 }
 
 func (c Client) pendingProjectDocuments(ctx context.Context, p Project) ([]Item, error) {
@@ -76,6 +80,9 @@ func (a *App) projectQueue(p AccessProject) *projectQueueState {
 		q = &projectQueueState{}
 		a.access.Queues[key] = q
 	}
+	if time.Now().After(q.BacklogNext) {
+		a.refreshBacklog(q, p)
+	}
 	if !q.Loading && !a.access.Busy && (!q.Loaded || time.Now().After(q.Next)) && a.Update != nil {
 		a.loadProjectQueue(q, p)
 	}
@@ -94,6 +101,9 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 	q.Request++
 	request := q.Request
 	q.Next = time.Now().Add(30 * time.Second)
+	if q.Backlog.active() {
+		q.Next = time.Now().Add(5 * time.Second)
+	}
 	identity, _ := readingIdentity(Client{Config: a.Client.Config})
 	if a.access.Buffers == nil {
 		a.access.Buffers = map[string]*pendingBufferView{}
@@ -166,16 +176,18 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				q.Loaded = false
 				return
 			}
+			wasLoaded := q.Loaded
 			q.Loaded = true
 			q.Sessions = sessions
 			for n, row := range sessions {
 				if results[n].Error != nil {
-					row.View.Message = "保存状态暂时无法读取"
+					row.View.ReadError = "保存状态暂时无法读取"
 					row.View.Loaded = false
 				} else {
-					row.View.Status = results[n].Status
-					row.View.Loaded = true
-					row.View.Message = ""
+					if wasLoaded && !row.View.Observed {
+						row.View.Added = results[n].Status.Pending
+					}
+					row.View.observe(results[n].Status)
 				}
 			}
 			q.DocumentError = ""

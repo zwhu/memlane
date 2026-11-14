@@ -453,5 +453,92 @@ assert policy.merge_block("", ".", lambda *a: "stale project") == ""
 ''')
 
 
+class BacklogWorkerTests(unittest.TestCase):
+    setUpClass = classmethod(OfficialPluginPatchTests.setUpClass.__func__)
+    tearDownClass = classmethod(OfficialPluginPatchTests.tearDownClass.__func__)
+    run_isolated = OfficialPluginPatchTests.run_isolated
+    # Reuse the fixed official artifact and its real buffers/locks/journals.
+    def backlog_case(self, scenario):
+        prefix = '''
+import sys, copy
+sys.path.insert(0, ENGINE_PYTHON)
+import _plugin_common as common, _memlane_policy as policy
+from project_backlog_worker import review, save
+dataset="11111111-1111-4111-8111-111111111111"
+policy.dataset=lambda:dataset
+common._read_map_record=lambda *a:{"session_id":"synthetic"}
+snapshot={"revision":1,"ready":True,"policy":{"permissions":["read","write","delete"],"can_capture":True,"can_auto_process":False}}
+policy.current=lambda *a,**k:snapshot
+def append(n,ambiguous=False):
+    common.append_warmup_entry(dataset,"synthetic",{"type":"qa","question":"q"+str(n),"answer":"answer"},ambiguous=ambiguous)
+def pending():
+    return common._load_json_file(common._bridge_file("synthetic"))[common._bridge_cache_key(dataset,"synthetic")]["pending_entries"]
+def payload():
+    return dict(review(common,policy,dataset,"synthetic-host"),dataset=dataset)
+events=[]
+'''.replace('ENGINE_PYTHON', repr(str(ROOT / 'engine/python')))
+        self.run_isolated(prefix + scenario)
+
+    def test_backlog_continues_all_reviewed_safe_entries_past_unknown_and_old_budget(self):
+        self.backlog_case('''
+append("unknown",True)
+for n in range(35):append(n)
+original=copy.deepcopy(pending()[0])
+scope=payload()
+assert len(scope["tokens"])==35 and scope["unknown"]==1
+common._drain_budget_default=lambda:0
+sent=[]
+def post(dataset,session,entry,**kw):
+    sent.append(entry["question"])
+    if len(sent)==1:append("new-after-start")
+common.remember_entry_via_http=post
+save(common,policy,scope,lambda:False,events.append)
+assert events[-1]["status"]=="completed" and events[-1]["saved"]==35,events[-1]
+assert len(sent)==35 and len(set(sent))==35
+assert pending()[0]==original and len(pending())==2
+assert pending()[1]["question"]=="qnew-after-start"
+assert not common._DRAIN_LOCK.exists()
+''')
+
+    def test_backlog_unknown_post_is_never_replayed_and_other_safe_tail_can_continue(self):
+        self.backlog_case('''
+append(1);append(2)
+sent=[]
+def fail(*a,**k):
+    sent.append(1)
+    raise TimeoutError("ambiguous")
+common.remember_entry_via_http=fail
+save(common,policy,payload(),lambda:False,events.append)
+assert events[-1]["status"]=="paused" and events[-1]["reason"]=="request_result_unknown"
+assert pending()[0][common._AMBIGUOUS_KEY]
+common.remember_entry_via_http=lambda ds,ss,e,**kw:sent.append(e["question"])
+scope=payload()
+assert scope["unknown"]==1 and len(scope["tokens"])==1
+save(common,policy,scope,lambda:False,events.append)
+assert sent==[1,"q2"] and len(pending())==1
+assert pending()[0][common._AMBIGUOUS_KEY]
+''')
+
+    def test_backlog_cancel_and_revoke_wait_for_current_result_without_resending(self):
+        self.backlog_case('''
+append(1);append(2)
+stop=[False]
+sent=[]
+def post(*a,**k):
+    sent.append(1);stop[0]=True
+common.remember_entry_via_http=post
+save(common,policy,payload(),lambda:stop[0],events.append)
+assert len(sent)==1 and events[-1]["status"]=="stopped" and events[-1]["saved"]==1
+assert len(pending())==1 and not pending()[0].get(common._AMBIGUOUS_KEY)
+append(3)
+def revoke(*a,**k):
+    sent.append(2);snapshot["policy"]["permissions"]=["read"]
+common.remember_entry_via_http=revoke
+save(common,policy,payload(),lambda:False,events.append)
+assert len(sent)==2 and events[-1]["status"]=="paused" and events[-1]["reason"]=="policy_unconfirmed"
+assert len(pending())==1 and not pending()[0].get(common._AMBIGUOUS_KEY)
+''')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -136,6 +136,7 @@ type integrationState struct {
 	PendingOperations                                                                           []generationUIOperation
 	Connections                                                                                 ConnectionsDirectory
 	Generation                                                                                  GenerationDirectory
+	ShowUnavailable bool
 	Loaded, Loading, Busy                                                                       bool
 	Request                                                                                     uint64
 	Error, Message                                                                              string
@@ -177,30 +178,30 @@ func connectionStatus(row AgentConnection) string {
 	switch row.Status {
 	case "component_unavailable":
 		if !row.Detected {
-			return "未检测到本机安装"
+			return "未安装"
 		}
-		return "接入组件未就绪"
+		return "暂时无法连接"
 	case "integration_pending":
 		if row.Detected {
-			return "已检测到安装，接入开发中"
+			return "暂不支持连接"
 		}
-		return "未检测到本机安装，接入开发中"
+		return "未安装 · 暂不支持连接"
 	case "prepared":
-		return "已准备，等待启用"
+		return "等待确认"
 	case "configured_pending_new_session":
 		if row.NewSessions > 0 {
-			return "已配置，收到新会话连接回执"
+			return "已连接"
 		}
-		return "已配置，等待重载与新会话"
+		return "等待新会话"
 	case "requires_review", "activation_unknown", "preparation_unknown", "staging_unknown":
-		return "需要核对原操作"
+		return "连接结果待确认"
 	case "agent_creation_unconfirmed":
-		return "Agent 身份尚未确认"
+		return "连接结果待确认"
 	}
 	if !row.Detected {
-		return "未检测到本机安装"
+		return "未安装"
 	}
-	return "尚未连接"
+	return "未连接"
 }
 
 func connectionActionAllowed(row AgentConnection, action string) bool {
@@ -364,7 +365,8 @@ func (a *App) connectAgents(action string, identifiers []string) {
 					if action != "review" {
 						a.finishGenerationOperation(op)
 					}
-					s.ItemMessages[id] = "操作完成；采集和召回仍以实际新会话为准"
+					s.ItemMessages[id] = ""
+     if action == "activate" { delete(s.Selected,id) }
 				}
 			})
 		}

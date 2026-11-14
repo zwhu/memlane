@@ -28,7 +28,10 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
     expected = json.loads((ENGINE / 'managed-project-plugin.json').read_text())
     receipt = json.loads((source / '.memlane-project-access.json').read_text())
     if receipt != expected:
-        raise PolicyError('managed_plugin_input_mismatch', 503)
+        previous = json.loads((ENGINE / 'managed-project-plugin-pre-recall.json').read_text())
+        if receipt != previous:
+            raise PolicyError('managed_plugin_input_mismatch', 503)
+        expected = previous
     for name, digest in expected['files'].items():
         path = source / name
         if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:

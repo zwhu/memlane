@@ -94,6 +94,7 @@ func (r *ReadingTitles) read(ctx context.Context, client Client, i Item, generat
 		r.mu.Unlock()
 		if i.Session != nil {
 			i.Title = cached.item.Title
+			i.SessionSummary = cached.item.SessionSummary
 			return i, nil
 		}
 		i.Body = cached.item.Body

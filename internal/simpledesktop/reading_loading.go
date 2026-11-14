@@ -152,7 +152,7 @@ func (a *App) startTitles(s *pane) {
 						}
 						// Do not put preheated raw in every row. The bounded cache owns it.
 						title := result.Title
-						if a.page == "知识" {
+						if a.page == "知识" && result.Session == nil {
 							title = projectDisplayTitle(result)
 						} else if a.page == "通用知识" {
 							if draft, ok := commonReadingParts(result); ok {
@@ -160,6 +160,7 @@ func (a *App) startTitles(s *pane) {
 							}
 						}
 						s.Items[idx].Title = title
+						s.Items[idx].SessionSummary = result.SessionSummary
 						s.Items[idx].ReadingState = "ready"
 						s.Items[idx].ReadingError = ""
 						if s.Selected != nil && s.Selected.key() == i.key() && !s.Selected.BodyLoaded {

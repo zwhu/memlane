@@ -162,6 +162,7 @@ type Session struct {
 	User    string `json:"user_id"`
 	Agent   string `json:"agent_id"`
 	Updated string `json:"last_activity_at"`
+	Started string `json:"started_at"`
 }
 type QA struct {
 	ID                string `json:"qa_id"`
@@ -180,11 +181,16 @@ type Trace struct {
 }
 type SessionDetail struct {
 	Session
-	QAs    []QA    `json:"qas"`
-	Traces []Trace `json:"traces"`
-	Count  int     `json:"msg_count"`
+	Label     string  `json:"label"`
+	QAs       []QA    `json:"qas"`
+	Traces    []Trace `json:"traces"`
+	Count     int     `json:"msg_count"`
+	ToolCount int     `json:"tool_calls"`
 }
 type Item struct {
+	RecallStats                                                           *KnowledgeRecallStats
+	SearchMatch                                                           string
+	SessionSummary                                                        string
 	CommonCategory                                                        string
 	ID, Dataset, Kind, Title, Date, Preview, Body, Source, SourceDocument string
 	Document                                                              *Document
@@ -264,7 +270,10 @@ func (c Client) read(ctx context.Context, i Item) (Item, error) {
 			return i, fmt.Errorf("official session identity changed")
 		}
 		i.Detail = &d
-		if len(d.QAs) > 0 {
+		i.SessionSummary = sessionCoverage(d)
+		if d.Label != "" && d.Count > 0 {
+			i.Title = sessionTitle(d.Label)
+		} else if len(d.QAs) > 0 && d.Count <= len(d.QAs) {
 			if title := sessionTitle(d.QAs[0].Question); title != "" {
 				i.Title = title
 			}
@@ -299,6 +308,10 @@ func (c Client) source(ctx context.Context, i Item) (Item, error) {
 	return i, fmt.Errorf("官方未保留此知识关联的会话")
 }
 func (c Client) search(ctx context.Context, projects []Project, q string, filters ...string) ([]Item, error) {
+	return c.searchType(ctx, projects, q, "CHUNKS", filters...)
+}
+
+func (c Client) searchType(ctx context.Context, projects []Project, q, searchType string, filters ...string) ([]Item, error) {
 	ids := []string{}
 	for _, p := range projects {
 		ids = append(ids, p.Dataset)
@@ -306,7 +319,7 @@ func (c Client) search(ctx context.Context, projects []Project, q string, filter
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("请先配置项目与官方数据组关联")
 	}
-	input := map[string]any{"query": q, "search_type": "CHUNKS", "dataset_ids": ids, "only_context": false, "top_k": 30}
+	input := map[string]any{"query": q, "search_type": searchType, "dataset_ids": ids, "only_context": false, "top_k": 30}
 	filter := ""
 	if len(filters) > 0 {
 		filter = filters[0]

@@ -19,6 +19,7 @@ func TestSearchTypeSwitchKeepsResultsClickableAndOpensThreePanes(t *testing.T) {
 	a.searchUI.Query = "sandbox"
 	a.searchUI.Rows = []Item{{ID: "knowledge-hit", Dataset: "ds", Kind: "知识片段", Title: "Knowledge hit", Body: "A knowledge result", BodyLoaded: true}, {ID: "raw-hit", Dataset: "ds", Kind: "原始材料片段", Title: "Raw hit", Body: "An original record", BodyLoaded: true}}
 	a.searchUI.Loaded = true
+	a.searchUI.Loading = false
 	a.searchUI.Submitted = a.searchSignature()
 	tt := ui.NewTester(a.View, 1200, 820)
 	clickProjectUI(t, tt, "搜索内容类型") // middle segment: knowledge
@@ -37,6 +38,37 @@ func TestSearchPreviewHidesTechnicalEnvelopeWithoutChangingSource(t *testing.T) 
 	title, preview := searchRowText(i)
 	if title != "Sandbox listeners require explicit permission." || preview != "" || i.Body != raw {
 		t.Fatal("technical envelope leaked or source changed", title, preview)
+	}
+}
+
+func TestSearchChangedQueryNeverShowsPreviousRows(t *testing.T) {
+	a := projectUIFixture()
+	a.searchUI.Query = "first"
+	a.searchUI.Rows = []Item{{ID: "old", Dataset: "ds", Title: "previous result"}}
+	a.searchUI.Loaded = true
+	a.searchUI.Loading = false
+	a.searchUI.Submitted = a.searchSignature()
+	if len(a.visibleSearchRows()) != 1 {
+		t.Fatal("completed results missing")
+	}
+	a.searchUI.Query = "second"
+	a.cancelChangedSearch()
+	if len(a.visibleSearchRows()) != 0 {
+		t.Fatal("old rows displayed while debouncing")
+	}
+	a.searchUI.Due = time.Time{}
+	a.searchUI.Loading = true
+	a.searchUI.Submitted = a.searchSignature()
+	if len(a.visibleSearchRows()) != 0 {
+		t.Fatal("old rows displayed under in-flight query")
+	}
+}
+
+func TestSearchSessionHeaderIsNotTheHitTitle(t *testing.T) {
+	i := Item{Title: "Session ID: codex_123", Preview: "Session ID: codex_123\n\nThe actual matching content.", Body: "original bytes"}
+	title, preview := searchRowText(i)
+	if title != "The actual matching content." || strings.Contains(preview, "Session ID:") || i.Body != "original bytes" {
+		t.Fatal(title, preview)
 	}
 }
 
@@ -103,8 +135,8 @@ func TestSearchRecentDefaultsAndTypeSwitchUseOneCompletedCatalog(t *testing.T) {
 	a.searchUI.Due = time.Now().Add(-time.Second)
 	tt.Frame()
 	drainReading(t, updates, func() bool { return !a.searchUI.Loading })
-	if searches.Load() != 1 {
-		t.Fatal("debounce did not submit one search")
+	if searches.Load() != 2 {
+		t.Fatal("debounce did not submit both retrieval lanes once")
 	}
 }
 func TestSearchSourceDocumentUsesNormalThreePaneReader(t *testing.T) {
@@ -157,6 +189,7 @@ func TestSearchRestingRowsHaveNoSelectionAndHoverShowsContent(t *testing.T) {
 	a.searchUI.Query = ""
 	a.searchUI.Rows = []Item{{ID: "recent", Dataset: "ds", Kind: "会话", Title: "Recent conversation", Preview: "The complete conversation preview", BodyLoaded: true}}
 	a.searchUI.Loaded = true
+	a.searchUI.Loading = false
 	a.searchUI.Submitted = a.searchSignature()
 	tt := ui.NewTester(a.View, 1200, 820)
 	if a.searchUI.KeyboardSelection || tt.HasText("The complete conversation preview") {

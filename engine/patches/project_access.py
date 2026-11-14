@@ -163,6 +163,7 @@ if managed() and not permit("read"):
         candidates = candidates[:22]
     bodies = {data_id: _cached_body(data_id) for _, _, data_id in candidates}
 ''')
+        text = replace(text, '    return render_block(dataset, max(1, sessions), chosen, root, in_git, line_for)\n', '    if managed():\n        from _memlane_policy import stage_recall\n        stage_recall(dataset_id, [(item["data_id"], line_for(item)) for item in chosen])\n    return render_block(dataset, max(1, sessions), chosen, root, in_git, line_for)\n')
         text = body(text, 'resolve_dataset_id', '''from _memlane_policy import managed
 if managed():
     from _dataset_access import dataset_id as parse_dataset_id
@@ -289,6 +290,7 @@ if managed():
     api_key = os.environ["COGNEE_API_KEY"]
     if any(target != project_id for target in dataset_ids):
         session_id, scope = "", ["graph"]''')
+        text = replace(text, '    if isinstance(data, list):\n        return data\n    return [data]\n', '    if managed():\n        from _memlane_policy import report_explicit_recall\n        report_explicit_recall(data)\n    if isinstance(data, list):\n        return data\n    return [data]\n')
     elif name in ('cognee-remember.sh', 'cognee-search.sh', 'cognee-forget.sh', 'cognee-index-repo.sh'):
         text = replace(text, 'except Exception:\n    pass\nservice_url =', 'except Exception:\n    raise SystemExit("managed_configuration_required")\nservice_url =')
         # The upstream shell swallows a Python config failure and falls back

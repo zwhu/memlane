@@ -175,7 +175,7 @@ func (a *App) projectHeader(c *ui.Context) {
 				}
 			})
 		}
-	}).BorderWidth(0, 0, 1, 0).BorderColor(homeBorder).Padding(0, 18, 0, 12).DragWindow()
+	}).BorderWidth(0, 0, 1, 0).BorderColor(homeBorder).DragWindow()
 }
 func (a *App) projectTabs(c *ui.Context) {
 	labels := []string{"知识", "原始记录", "图谱"}
@@ -185,7 +185,7 @@ func (a *App) projectTabs(c *ui.Context) {
 	} else if a.kind != "知识" {
 		selected = 1
 	}
-	ui.Tabs(c, &selected, labels...).Label("项目视图").FillWidth().OnChange(func() {
+	ui.Tabs(c, &selected, labels...).Label("项目视图").Margin(0, -12).FillWidth().OnChange(func() {
 		a.projectUI.InfoOpen = false
 		if selected == 2 {
 			a.navigate("图谱", a.project)
@@ -204,7 +204,7 @@ func (a *App) projectReading(c *ui.Context) {
 	}
 	readingSplit(c, "project-reading-split", &a.layout.ProjectListWidth, func() {
 		ui.Column(c).Fill().Children(func() {
-			ui.Column(c).Padding(24, 18, 5, 18).Gap(12).Shrink(0).Children(func() {
+			ui.Column(c).Padding(24, 32, 5, 32).Gap(12).Shrink(0).Children(func() {
 				a.projectTabs(c)
 				if a.kind != "知识" {
 					labels := []string{"全部", "会话", "文档"}
@@ -237,7 +237,7 @@ func (a *App) projectReading(c *ui.Context) {
 				}
 			})
 			a.itemList(c, s, false)
-			appFooter(c, "项目分页栏").Padding(0, 12).Children(func() {
+			appFooter(c, "项目分页栏").Padding(0, 32).Children(func() {
 				homeText(c, projectListStatus(s), homeMeta)
 				ui.Spacer(c)
 				readingAction(c, "上一页", readingBack, func() { s.Offset = max(0, s.Offset-30); a.load(s) }).Disabled(s.Offset == 0 || s.Loading)
@@ -248,6 +248,9 @@ func (a *App) projectReading(c *ui.Context) {
 	}, func() { a.projectDetail(c, s) })
 }
 func projectDisplayTitle(i Item) string {
+	if i.Session != nil {
+		return sessionIdentity(i.ID)
+	}
 	if i.Document != nil && readableDocumentTitle(*i.Document) == "" && i.BodyLoaded {
 		body := itemPresentation(i).VisibleBody
 		if t := firstReadingSentenceLimit(body, len([]rune(body))); t != "" {
@@ -267,6 +270,7 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 		key := i.key()
 		appToolbar(c, "项目内容工具栏", func() {
 			homeText(c, i.Kind+" · "+displayDate(i.Date), homeMeta).SingleLine()
+			knowledgeRecallLabel(c, *i)
 			ui.Spacer(c)
 			anchor := readingAction(c, "内容信息", readingInfo, func() {
 				a.projectUI.InfoOpen = !a.projectUI.InfoOpen
@@ -407,7 +411,17 @@ func (a *App) projectReadingBody(c *ui.Context, s *pane, i *Item) {
 		a.projectMD = &markdown.Options{Theme: &theme, CodeBlock: a.md.CodeBlock}
 	}
 	if i.Detail != nil {
-		ui.Text(c, fmt.Sprintf("官方已载入 %d/%d 条问答；工具记录独立列示", len(i.Detail.QAs), i.Detail.Count)).FontSize(10).TextColor(muted)
+		homeText(c, sessionCoverage(*i.Detail), homeBody).FontSize(12)
+		homeText(c, "同一 session 的连续记录；新消息更新此会话，不新增列表项。", homeMeta)
+		if i.Title != "" && i.Title != i.ID && i.Title != "来源会话" {
+			homeText(c, "已保存首条："+i.Title, homeMeta).MaxLines(2)
+		}
+		if len(i.Detail.QAs) < i.Detail.Count || len(i.Detail.Traces) < i.Detail.ToolCount {
+			homeText(c, fmt.Sprintf("官方接口仅返回最近 %d/%d 轮问答、%d/%d 条工具记录，当前并非完整历史。", len(i.Detail.QAs), i.Detail.Count, len(i.Detail.Traces), i.Detail.ToolCount), homeMeta)
+		}
+		if len(i.Detail.QAs) == 0 {
+			homeText(c, "此会话尚无已保存的问答；下方仅为已保存的工具记录。", homeMeta)
+		}
 		for _, q := range i.Detail.QAs {
 			ui.Column(c).Padding(11, 14).Background(blue).Border(1, border).Radius(6).Gap(6).Children(func() {
 				ui.Text(c, "用户").FontSize(10).TextColor(muted)

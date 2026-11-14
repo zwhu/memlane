@@ -36,20 +36,49 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 		}
 	}
 	s.WidgetList.Key = func(n int) any { return s.Items[n].key() }
-	s.WidgetList.Label = func(n int) string { return s.Items[n].Title }
+	s.WidgetList.Label = func(n int) string {
+		if s.Items[n].Session != nil {
+			return sessionIdentity(s.Items[n].ID)
+		}
+		return s.Items[n].Title
+	}
 	s.WidgetList.Selected = &s.ListSelection
 	ui.List(c.Key("items-"+a.routeKey()), &s.WidgetList, len(s.Items), func(n int) {
 		i := s.Items[n]
 		ui.Column(c).Padding(12, 14).Gap(8).MinWidth(0).Children(func() {
-			title := ui.Text(c, i.Title).FontSize(12).MaxLines(2)
+			label := i.Title
+			if i.Session != nil {
+				label = sessionIdentity(i.ID)
+			}
+			title := ui.Text(c, label).FontSize(12).MaxLines(2)
 			if n == s.ListSelection {
 				title.TextColor(c.Theme().AccentText)
 			}
 			kind := i.Kind
+			if i.Session != nil && i.Title != i.ID && i.Title != "来源会话" {
+				text := ui.Text(c, "已保存首条："+i.Title).FontSize(11).MaxLines(2)
+				if n == s.ListSelection {
+					text.TextColor(c.Theme().AccentText)
+				} else {
+					text.TextColor(c.Theme().TextMuted)
+				}
+			}
+			if i.Session != nil && i.SessionSummary != "" {
+				text := ui.Text(c, i.SessionSummary).FontSize(10)
+				if n == s.ListSelection {
+					text.TextColor(c.Theme().AccentText)
+				} else {
+					text.TextColor(c.Theme().TextMuted)
+				}
+			}
 			if common {
 				kind = commonCategoryLabel(i.CommonCategory)
 			}
-			meta := ui.Text(c, kind+" · "+displayDate(i.Date)).FontSize(10).SingleLine()
+			metaLabel := kind + " · " + displayDate(i.Date)
+			if i.Session != nil {
+				metaLabel = sessionListMeta(i)
+			}
+			meta := ui.Text(c, metaLabel).FontSize(10).SingleLine()
 			if n == s.ListSelection {
 				meta.TextColor(c.Theme().AccentText)
 			} else {
@@ -59,7 +88,7 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 				projectLink(c, "标题读取失败 · 重试", func() { a.retryReadingTitle(s, i) })
 			}
 		})
-	}).Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(0, 12).Gap(6).OnChange(func() {
+	}).Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(0, 18).Gap(6).OnChange(func() {
 		if s.ListSelection < 0 || s.ListSelection >= len(s.Items) {
 			return
 		}
@@ -86,5 +115,5 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 }
 
 func appToolbar(c *ui.Context, label string, fn func()) ui.Element {
-	return ui.Toolbar(c, fn).Label(label).Height(62).Shrink(0).Padding(0, 18).Gap(10)
+	return ui.Toolbar(c, fn).Label(label).Height(62).Shrink(0).Padding(0, homePageInset).Gap(10)
 }

@@ -1,0 +1,22 @@
+{
+  "date": "2026-11-14",
+  "timezone": "Asia/Shanghai",
+  "mode": "dev",
+  "issues": {
+    "SAVE-FEEDBACK01": {"failure_rounds": 1, "fixed_and_verified": true},
+    "SAVE-CHECK01": {"failure_rounds": 1, "fixed_and_verified": true},
+    "SESSION-PRESENT01": {"failure_rounds": 1, "fixed_and_verified": true}
+  },
+  "red_tests": ["TestQueueKeepsVisibleActionReceipt", "TestSessionSubjectUsesOfficialFirstLabelNotRecentTail"],
+  "checks_passed": ["go test ./internal/simpledesktop -count=1", "go test ./...", "go vet ./...", "go test -race ./internal/simpledesktop -count=1", "git diff --check"],
+  "native": {
+    "observation": "CUA actual existing daily window; no exported raw screenshots",
+    "session_detail": {"qa_total": 9, "tool_total": 511, "tool_body_returned": 20, "partial_history_explicit": true},
+    "unknown_review": {"pending_preserved": 285, "unknown_preserved": 20, "content_matched": 6, "unresolved": 14, "entries_resent": 0},
+    "concurrent_save_rejection": {"pending_preserved": 95, "reason": "buffer_send_in_progress", "message_visible": true},
+    "next_explicit_save_batch": {"before": 95, "saved": 10, "deduped": 0, "remaining": 85, "receipt_visible": true},
+    "concurrent_capture": {"first_added": 18, "later_added": 30, "added_hint_total": 48, "final_pending_total": 448, "previous_receipts_preserved": true}
+  },
+  "retained": ["original official data", "original unknown markers", "host profiles and policies", "managed daily services and UI watcher", "unrelated uncommitted work"],
+  "limits": ["official detail returns only recent 20 QAs and traces", "content match does not prove a particular POST committed", "unmatched content remains unknown", "no complete history reconstruction or prohibited-period backfill", "no release or model rerun"]
+}

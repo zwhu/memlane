@@ -9,13 +9,14 @@ import (
 // Selected A, 3c1c845: style.css followed by suite.css. Keep these roles
 // local to the overview so its correction does not restyle reading/settings.
 const (
-	homeSidebarWidth     = 220
-	homeHeaderHeight     = 62
-	homePageInset        = 32
-	homeMaxWidth         = 1320
-	homeColumnGap        = 30
-	homeCalendarMaxWidth = 900
-	homeGridGap          = 12
+	homeOverviewListHeight = 320
+	homeSidebarWidth       = 220
+	homeHeaderHeight       = 62
+	homePageInset          = 32
+	homeMaxWidth           = 1320
+	homeColumnGap          = 30
+	homeCalendarMaxWidth   = 900
+	homeGridGap            = 12
 	// Calibrate the Core Text heading band against the fixed 2x A image.
 	homeSectionOffset = 1
 )

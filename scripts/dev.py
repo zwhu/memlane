@@ -77,7 +77,7 @@ def complete_initialization(config, config_path, now=None):
         return state
 
 
-def load_config(path):
+def load_config(path, *, verify_current_sources=True):
     config = json.loads(path.read_text())
     for key in ('official_data', 'official_source', 'python', 'token_file', 'official_archive', 'service_environment_file'):
         target = Path(config[key]).expanduser().resolve(strict=True)
@@ -104,11 +104,11 @@ def load_config(path):
             raise ValueError(key + ' must be an explicit loopback HTTP origin')
     control = config.get('project_control')
     if control is not None:
-        validate_project_control(control, config)
+        validate_project_control(control, config, verify_plugin=verify_current_sources)
     return config
 
 
-def validate_project_control(control, config):
+def validate_project_control(control, config, *, verify_plugin=True):
     from urllib.parse import urlparse
     if not isinstance(control, dict) or set(control) - {'url', 'registry_file', 'management_token_file', 'agent_control_token_files', 'plugin_dir'}:
         raise ValueError('invalid project_control configuration')
@@ -131,7 +131,7 @@ def validate_project_control(control, config):
         if len(value) < 32 or value in values:
             raise ValueError('project control credentials must be independent and at least 32 characters')
         values.append(value)
-    if control.get('plugin_dir'):
+    if control.get('plugin_dir') and verify_plugin:
         verify_managed_plugin(Path(control['plugin_dir']))
 
 
@@ -140,12 +140,16 @@ def verify_managed_plugin(directory):
         raise ValueError('managed plugin directory must be absolute')
     expected = json.loads((ROOT / 'engine/managed-project-plugin.json').read_text())
     receipt = json.loads((directory / '.memlane-project-access.json').read_text())
-    if receipt != expected:
-        raise ValueError('managed plugin receipt does not match fixed component input')
+    current = receipt == expected
+    if not current:
+        previous = json.loads((ROOT / 'engine/managed-project-plugin-pre-recall.json').read_text())
+        if receipt != previous:
+            raise ValueError('managed plugin receipt does not match fixed component input')
+        expected = previous
     for path, key in (('engine/patches/project_access.py', 'patch_sha256'),
                       ('engine/python/project_plugin_policy.py', 'extension_sha256'),
                       ('engine/patches/project-access-upstream.json', 'upstream_lock_sha256')):
-        if hashlib.sha256((ROOT / path).read_bytes()).hexdigest() != expected[key]:
+        if current and hashlib.sha256((ROOT / path).read_bytes()).hexdigest() != expected[key]:
             raise ValueError('managed plugin patch source changed; rebuild and review the fixed input')
     files = {str(path.relative_to(directory)): hashlib.sha256(path.read_bytes()).hexdigest()
              for path in directory.rglob('*') if path.is_file() and '__pycache__' not in path.parts
@@ -438,7 +442,10 @@ def main():
     if args.watch_ui and args.action != 'open':
         parser.error('--watch-ui is only valid with open')
     path = args.config.expanduser().resolve(strict=True)
-    config = load_config(path)
+    # Stopping/inspecting the verified live owner must still work after source
+    # edits. They launch no new plugin; path/lock/PID/start-time checks below
+    # remain mandatory. Starts continue to verify every current fixed input.
+    config = load_config(path, verify_current_sources=args.action not in ('stop', 'status'))
     data = Path(config['official_data'])
     runfile = data / '.memlane-dev-owner.json'
     if args.action in ('stop', 'status', 'open'):

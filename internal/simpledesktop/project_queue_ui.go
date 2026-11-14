@@ -42,24 +42,43 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 			}
 		})
 		ui.Column(c).FillWidth().Border(1, homeBorder).Radius(10).Background(ui.Hex("#ffffff")).Children(func() {
+			added := 0
+			for _, row := range q.Sessions {
+				added += row.View.Added
+			}
 			ui.Row(c).Padding(16, 20).AlignItems(ui.Center).Gap(10).Children(func() {
-				homeText(c, "未保存", homeHeading).FontSize(13)
-				count, known := 0, q.Loaded
+				homeText(c, "待保存与核对", homeHeading).FontSize(13)
+				count, uncertain, known := 0, 0, q.Loaded
 				for _, row := range q.Sessions {
 					if !row.View.Loaded {
 						known = false
 					}
 					count += row.View.Status.Pending
+					uncertain += row.View.Status.Unknown
 				}
 				if known {
 					homeText(c, fmt.Sprintf("%d 条记录", count), homeMeta)
+					if uncertain > 0 {
+						label := fmt.Sprintf("含 %d 条结果待核对", uncertain)
+						if q.Backlog.active() {
+							label = fmt.Sprintf("含 %d 条等待回执或核对", uncertain)
+						}
+						homeText(c, label, homeMeta)
+					}
 				}
 				ui.Spacer(c)
-				homeText(c, "会话记录尚未确认保存", homeMeta)
+				homeText(c, "按真实会话汇总", homeMeta)
 			})
+			ui.Column(c).Padding(0, 20, 12, 20).Gap(5).Children(func() {
+				homeText(c, "新消息单独计入队列；本次积压任务持续保存已确认的范围。", homeMeta)
+				if added > 0 {
+					homeText(c, fmt.Sprintf("新增 %d 条待保存记录（包含新会话）", added), homeMeta).TextColor(homeLinkInk)
+				}
+			})
+			a.backlogControls(c, q, p)
 			shown := 0
 			unknown := false
-			for n, row := range q.Sessions {
+			for _, row := range q.Sessions {
 				session := row
 				view := row.View
 				if !view.Loaded {
@@ -70,44 +89,55 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 						homeText(c, "状态待核对", homeMeta)
 						projectLink(c, "重新读取", func() { a.loadProjectQueue(q, p) })
 					})
+					if view.Message != "" {
+						homeText(c, view.Message, homeMeta).Margin(0, 20, 12, 20)
+					}
 					continue
 				}
-				if view.Status.Pending == 0 {
+				if view.Status.Pending == 0 && view.Message == "" && !view.Busy {
 					continue
 				}
 				shown++
 				ui.Row(c).Padding(14, 20).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Gap(12).AlignItems(ui.Center).Children(func() {
 					ui.Icon(c, homeFolder).FontSize(18).TextColor(homeMuted)
 					ui.Column(c).Grow(1).MinWidth(0).Gap(5).Children(func() {
-						homeText(c, fmt.Sprintf("%s · 会话记录 %d", session.Agent.Name, n+1), homeBody).FontSize(12).Tooltip(session.Binding.HostSessionKey)
-						detail := fmt.Sprintf("%d 条记录尚未保存", view.Status.Pending)
+						homeText(c, session.Agent.Name+" · 会话 "+shortSessionLabel(session.Binding.HostSessionKey), homeBody).FontSize(12).Tooltip(session.Binding.HostSessionKey)
+						detail := fmt.Sprintf("%d 条待保存", view.Status.Pending)
 						if view.Status.Unknown > 0 {
-							detail = fmt.Sprintf("%d 条记录 · %d 条保存结果待确认", view.Status.Pending, view.Status.Unknown)
+							detail = fmt.Sprintf("%d 条待发送 · %d 条保存结果待核对", view.Status.Pending-view.Status.Unknown, view.Status.Unknown)
+							if q.Backlog.active() {
+								detail = fmt.Sprintf("%d 条待发送 · %d 条等待回执或核对", view.Status.Pending-view.Status.Unknown, view.Status.Unknown)
+							}
 						}
 						homeText(c, detail, homeMeta)
+						if view.Message != "" {
+							homeText(c, view.Message, homeMeta).TextColor(homeLinkInk)
+						}
 					})
 					label := "未保存"
 					if view.Status.Unknown > 0 {
 						label = "保存结果待核对"
+						if q.Backlog.active() {
+							label = "等待回执／核对"
+						}
 					}
 					queueBadge(c, label, ui.Hex("#a47648"))
-					tooltip := "重新保存需要此 Agent 的写入权限"
-					action := "重新保存"
+					if view.Status.Unknown == 0 {
+						return
+					}
+					tooltip := "读取服务端最近记录并比对，不发送、不删除原记录"
+					action := "核对保存结果"
 					if view.Status.Unknown > 0 {
-						action = "查看状态"
-						tooltip = "重新读取该会话的保存状态，不会重新发送记录"
+						action = "核对保存结果"
+						tooltip = "读取服务端最近记录并比对，不发送、不删除原记录"
 					}
 					if view.Busy {
 						action = "处理中…"
 					}
 					projectLink(c, action, func() {
-						mode := "replay"
-						if view.Status.Unknown > 0 {
-							mode = "show"
-						}
-						a.runPendingAction(view, p, session.Agent, session.Binding, mode)
+						a.runPendingAction(view, p, session.Agent, session.Binding, "check")
 						q.Next = time.Now().Add(time.Second)
-					}).Disabled(q.Loading || view.Busy || a.access.Busy || (view.Status.Unknown == 0 && p.Overrides[session.Agent.ID].effective(a.access.Directory.Defaults).Access != "maintain")).Tooltip(tooltip)
+					}).Disabled(q.Backlog.active() || q.Loading || view.Busy || a.access.Busy || view.Status.Pending == 0 || view.Status.Signature == "").Tooltip(tooltip)
 				})
 			}
 			if shown == 0 && !unknown {

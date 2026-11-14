@@ -144,7 +144,7 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 	e := &a.commonEdit
 	readingSplit(c, "common-reading-split", &a.layout.CommonListWidth, func() {
 		ui.Column(c).Fill().Children(func() {
-			ui.Column(c).Shrink(0).Padding(22, 18, 10, 18).Gap(14).Children(func() {
+			ui.Column(c).Shrink(0).Padding(22, 32, 10, 32).Gap(14).Children(func() {
 				a.commonListToolbar(c)
 				ui.Row(c).AlignItems(ui.Center).Children(func() {
 					homeText(c, projectListStatus(s), homeMeta)
@@ -166,7 +166,7 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 				}
 			})
 			a.itemList(c, s, true)
-			appFooter(c, "通用知识分页栏").Padding(0, 12).Children(func() {
+			appFooter(c, "通用知识分页栏").Padding(0, 32).Children(func() {
 				homeText(c, projectListStatus(s), homeMeta)
 				ui.Spacer(c)
 				readingAction(c, "上一页", readingBack, func() { s.Offset = max(0, s.Offset-30); a.load(s) }).Disabled(s.Offset == 0 || s.Loading)
@@ -232,6 +232,7 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 		appToolbar(c, "通用知识内容工具栏", func() {
 			homeText(c, commonCategoryLabel(i.CommonCategory), homeMeta).FontWeight(500)
 			homeText(c, "· "+displayDate(i.Date), homeMeta)
+			knowledgeRecallLabel(c, i)
 			ui.Spacer(c)
 			anchor := readingAction(c, "内容信息", readingInfo, func() { a.projectUI.InfoOpen = !a.projectUI.InfoOpen; a.projectUI.InfoKey = i.key() })
 			if a.projectUI.InfoKey != i.key() {
@@ -437,7 +438,7 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 				}
 			})
 		})
-		appFooter(c, "通用知识编辑栏").Padding(0, 24, 0, 32).Gap(10).Children(func() {
+		appFooter(c, "通用知识编辑栏").Padding(0, 32).Gap(10).Children(func() {
 
 			status := "仅保存在当前编辑草稿"
 			if e.Busy {

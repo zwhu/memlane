@@ -54,18 +54,18 @@ func (a *App) overviewNavigation(c *ui.Context) {
 		ui.Sidebar(c.Key("main-sidebar"), &selected, func() {
 			ui.SidebarItem(c, "总览", navIcons["总览"], "总览").Height(39)
 			ui.SidebarItem(c, "通用知识", homeCommon, "通用知识").Height(39)
-			ui.Row(c).Padding(24, 8, 8, 8).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).Padding(24, 8, 8, 8).AlignItems(ui.Center).Gap(4).Children(func() {
 				homeText(c, "项目", homeMeta)
 				ui.Spacer(c)
-				ui.Button(c, fmt.Sprintf("全部 %d", len(a.Config.Projects))).FontSize(10).OnClick(a.showOverviewProjects)
+				ui.Button(c, fmt.Sprintf("全部 %d", len(a.Config.Projects))).FontSize(10).BorderWidth(0).Background(ui.Transparent).OnClick(a.showOverviewProjects)
 				a.projectAddMenu(c)
 			})
 			labels := projectLabels(a.Config.Projects)
 			for idx, p := range a.Config.Projects {
 				index := idx
-				ui.Row(c.Key("project-nav-" + p.ID)).AlignItems(ui.Center).Gap(4).Children(func() {
-					ui.SidebarItem(c, "project:"+p.ID, homeFolder, p.Name).Label(labels[idx]).Tooltip(p.Name + " · " + p.Path).MinHeight(38).Grow(1).MinWidth(0)
-					readingAction(c, "项目菜单："+labels[idx], readingMore, func() {}).PopoverMenuButton(func(m *ui.Menu) {
+				item := ui.SidebarItem(c.Key("project-nav-"+p.ID), "project:"+p.ID, homeFolder, p.Name).Label(labels[idx]).Tooltip(p.Name + " · " + p.Path).MinHeight(38).FillWidth().MinWidth(0)
+				item.Children(func() {
+					menu := readingAction(c, "项目菜单："+labels[idx], readingMore, func() {}).Size(28, 28).BorderWidth(0).Background(ui.Transparent).PopoverMenuButton(func(m *ui.Menu) {
 						m.Item(p.Name).Disabled(true)
 						paths := []string{p.Path}
 						for _, record := range a.access.Directory.Projects {
@@ -90,9 +90,12 @@ func (a *App) overviewNavigation(c *ui.Context) {
 							a.settingsOrigin = origin
 						}
 					})
+					if !item.Hovered() && !menu.Focused() {
+						menu.Opacity(0).IgnoreInput(true)
+					}
 				})
 			}
-		}).FillWidth().Grow(1).MinHeight(0).Padding(0, 14).Background(ui.Transparent).TrackScroll(&a.overviewState.SidebarScroll).OnChange(func() {
+		}).FillWidth().Grow(1).MinHeight(0).Padding(0, 18).Background(ui.Transparent).TrackScroll(&a.overviewState.SidebarScroll).OnChange(func() {
 			for idx, p := range a.Config.Projects {
 				if selected == "project:"+p.ID {
 					a.navigate("知识", idx)
@@ -103,7 +106,7 @@ func (a *App) overviewNavigation(c *ui.Context) {
 		})
 		ui.Toolbar(c, func() {
 			ui.Button(c, "").Label("设置").Children(func() { ui.Icon(c, homeSettings).FontSize(17); ui.Text(c, "设置") }).OnClick(func() { a.settingsOrigin = nil; a.access.OpenProject = ""; a.navigate("设置", 0) })
-		}).Height(44).Shrink(0).Padding(0, 20)
+		}).Height(44).Shrink(0).Padding(0, 16)
 		appFooter(c, "侧栏状态栏").Padding(0, 26).Gap(7).Children(func() {
 			color := ui.Hex("#9aabbc")
 			if a.service == "已连接" {

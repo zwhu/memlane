@@ -33,7 +33,7 @@ func settingsTabs(c *ui.Context, current *string, labels []string) {
 			selected = n
 		}
 	}
-	ui.Tabs(c, &selected, labels...).Label("设置分类").Margin(18, 28).OnChange(func() { *current = labels[selected] })
+	ui.Tabs(c, &selected, labels...).Label("设置分类").Margin(18, 20).OnChange(func() { *current = labels[selected] })
 }
 func settingsCard(c *ui.Context, title, description string, content func()) {
 	ui.Column(c).FillWidth().Gap(14).Padding(22).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(10).Children(func() {
@@ -46,7 +46,7 @@ func settingsCard(c *ui.Context, title, description string, content func()) {
 }
 func (a *App) globalSettingsPage(c *ui.Context) {
 	settingsTabs(c, &a.access.SettingsSection, []string{"服务与连接", "知识处理", "高级"})
-	ui.Scroll(c.Key("global-settings-" + a.access.SettingsSection)).Grow(1).MinHeight(0).Padding(28).Background(ui.Hex("#f8fafc")).Children(func() {
+	ui.Scroll(c.Key("global-settings-" + a.access.SettingsSection)).Grow(1).MinHeight(0).Padding(32).Background(ui.Hex("#f8fafc")).Children(func() {
 		ui.Column(c).FillWidth().MaxWidth(900).Gap(20).Children(func() {
 			switch a.access.SettingsSection {
 			case "服务与连接":
@@ -66,7 +66,7 @@ func (a *App) globalSettingsPage(c *ui.Context) {
 					}
 				})
 				if a.Config.ProjectControl != nil {
-					settingsCard(c, "Agent 连接", "连接到当前电脑；具体项目的读写权限请进入对应项目设置。", func() { a.agentConnectionSettings(c) })
+					settingsCard(c, "Agent 连接", "将本机编码工具连接到 Memlane。", func() { a.agentConnectionSettings(c) })
 				}
 			case "知识处理":
 				a.generationSettings(c)
@@ -94,7 +94,7 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 		return
 	}
 	p := *project
-	ui.Scroll(c.Key("project-settings-" + p.ID)).Grow(1).MinHeight(0).Padding(28).Background(ui.Hex("#f8fafc")).Children(func() {
+	ui.Scroll(c.Key("project-settings-" + p.ID)).Grow(1).MinHeight(0).Padding(32).Background(ui.Hex("#f8fafc")).Children(func() {
 		ui.Column(c).FillWidth().MaxWidth(900).Gap(18).Children(func() {
 			if !p.permissionsReady(a.access.Directory.Agents...) {
 				homeText(c, "权限尚未同步完成", homeMeta)

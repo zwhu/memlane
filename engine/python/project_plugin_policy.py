@@ -4,6 +4,7 @@ Installed beside the fixed official scripts as _memlane_policy.py by the patch
 builder. Importing this module alone has no filesystem or network side effects.
 """
 import contextlib
+import contextvars
 import fcntl
 import hashlib
 import json
@@ -282,7 +283,7 @@ def capture_boundary(transcript, *, enabled=True):
         return state.get('cursor', {}).get('size', 0)
 
 
-def merge_block(query, cwd, project_builder):
+def _merge_block(query, cwd, project_builder):
     """One existing coding injection, combining verified project/common sources."""
     from concurrent.futures import ThreadPoolExecutor, wait
     from _plugin_common import _json_http_request
@@ -358,6 +359,7 @@ def merge_block(query, cwd, project_builder):
                     source = candidates[key]['externalMetadata'].get('source') or '用户手动保存'
                     pieces.append('来源：通用知识／' + ('个人偏好' if category == 'preference' else '通用经验')
                                   + '；' + str(source)[:160] + '\n' + bodies[key].strip())
+                    stage_recall(identifier, [(key, pieces[-1])])
             if pieces:
                 common_block = ('\n\n## 跨项目参考\n项目明确约定优先于以下通用建议。\n\n' + '\n\n'.join(pieces))[:2000]
         except Exception:
@@ -500,3 +502,63 @@ if __name__ == '__main__':
     except NotReady as error:
         print(json.dumps({'error': str(error)}, ensure_ascii=False))
         raise SystemExit(1)
+
+
+# Per invocation only: no raw text or pending-content queue on disk.
+_recall_candidates = contextvars.ContextVar('recall_candidates', default=None)
+
+
+def stage_recall(dataset_id, documents):
+    candidates = _recall_candidates.get()
+    if candidates is not None:
+        for document_id, rendered in documents:
+            if document_id and rendered:
+                candidates.append((dataset_id, document_id, rendered))
+
+
+def report_recall(hits, channel, event_id=None):
+    """Best effort receipt after successful delivery, never alter the result."""
+    if not managed() or not hits:
+        return
+    try:
+        _request('/v1/knowledge/recalls', {'event_id': event_id or str(uuid.uuid4()),
+                 'channel': channel, 'hits': [{'dataset_id': dataset, 'document_id': document}
+                                             for dataset, document in sorted(set(hits))]}, timeout=0.5)
+    except Exception:
+        # Recall remains usable if stats are unavailable. No automatic replay
+        # and no duplicate content storage; failed receipts are not counted.
+        import sys
+        sys.stderr.write('[memlane] recall statistics receipt unavailable\n')
+
+
+def report_explicit_recall(result):
+    """Only explicit official document references, never infer from answer text."""
+    hits = set()
+    def visit(value, dataset=None):
+        if isinstance(value, list):
+            for row in value:
+                visit(row, dataset)
+        elif isinstance(value, dict):
+            if value.get('error'):
+                return
+            dataset = value.get('dataset_id') or dataset
+            document = value.get('document_id')
+            if dataset and document:
+                hits.add((dataset, document))
+            for key in ('search_result', 'results', 'context', 'metadata', 'sources'):
+                if isinstance(value.get(key), (list, dict)):
+                    visit(value[key], dataset)
+    visit(result)
+    report_recall(hits, 'explicit')
+
+
+def merge_block(query, cwd, project_builder):
+    candidates = []
+    token = _recall_candidates.set(candidates)
+    try:
+        block = _merge_block(query, cwd, project_builder)
+        # Budget truncation and final permission checks have already run.
+        report_recall([(dataset, document) for dataset, document, text in candidates if text in block], 'automatic')
+        return block
+    finally:
+        _recall_candidates.reset(token)

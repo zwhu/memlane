@@ -225,6 +225,9 @@ func itemPresentation(i Item) Presentation {
 	if i.Kind == "会话" && (i.Title == i.ID || readableName(i.Title) == "") {
 		p.DisplayTitle = "来源会话"
 	}
+	if i.Session != nil {
+		p.TechnicalFields = []ReadingField{{"会话 ID", i.ID}, {"数据组 ID", i.Dataset}, {"所属主体 ID", i.Session.User}, {"最近活动时间", i.Date}, {"服务端首次记录时间", i.Session.Started}}
+	}
 	return p
 }
 

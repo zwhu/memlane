@@ -83,14 +83,17 @@ func runPendingMaterials(ctx context.Context, python string, installation AgentI
 	if !filepath.IsAbs(python) || binding.HostSessionKey == "" || dataset == "" {
 		return result, fmt.Errorf("受管会话尚未确认")
 	}
-	if action != "show" && action != "replay" && action != "discard" {
+	if action != "show" && action != "check" && action != "replay" && action != "discard" {
 		return result, fmt.Errorf("待发材料操作无效")
 	}
 	if err := verifyInstallation(installation); err != nil {
 		return result, err
 	}
 	arguments := []string{filepath.Join(installation.PluginDir, "scripts/_memlane_policy.py"), "--session-key", binding.HostSessionKey, "--dataset", dataset, "--action", action}
-	if action != "show" {
+	if action == "check" {
+		arguments = []string{"-c", pendingReviewScript, filepath.Join(installation.PluginDir, "scripts"), binding.HostSessionKey, dataset}
+	}
+	if action == "replay" || action == "discard" {
 		arguments = append(arguments, "--expected-signature", signature)
 	}
 	command := exec.CommandContext(ctx, python, arguments...)
@@ -119,6 +122,8 @@ func runPendingMaterials(ctx context.Context, python string, installation AgentI
 			message = "原写入结果仍未知，不重复补交"
 		case "official_session_unconfirmed":
 			message = "官方会话尚未确认"
+		case "official_review_unavailable":
+			message = "服务端保存结果暂时无法读取；保留原记录，未重新发送"
 		case "当前 Agent 没有此项目的写入权限":
 			message = result.Error
 		}

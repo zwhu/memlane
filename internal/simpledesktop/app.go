@@ -374,6 +374,7 @@ func (a *App) selectItem(s *pane, i Item) {
 		s.Selected = &i
 	}
 	client, titles := a.Client, a.titles
+	control, hasControl := a.accessClient()
 	revision := a.readingRevisions[i.key()]
 	go func() {
 		defer cancel()
@@ -383,6 +384,11 @@ func (a *App) selectItem(s *pane, i Item) {
 			result, err = titles.read(ctx, client, i, generation, true, false)
 		} else {
 			result, err = client.read(ctx, i)
+		}
+		if err == nil && result.Kind == "知识" && hasControl {
+			statsCtx, statsCancel := context.WithTimeout(ctx, 2*time.Second)
+			result.RecallStats, _ = control.knowledgeRecall(statsCtx, result)
+			statsCancel()
 		}
 		a.Update(func() {
 			if epoch != a.epoch || request != s.readRequest || revision != a.readingRevisions[i.key()] {

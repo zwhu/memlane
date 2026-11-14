@@ -12,6 +12,22 @@ type pendingBufferView struct {
 	Status       PendingMaterials
 	Loaded, Busy bool
 	Message      string
+	ReadError    string
+	Observed     bool
+	Added        int
+	Action       string
+}
+
+func (v *pendingBufferView) observe(status PendingMaterials) {
+	if v.Observed && status.Pending > v.Status.Pending {
+		v.Added += status.Pending - v.Status.Pending
+	}
+	if status.Signature == v.Status.Signature && v.Status.Checked {
+		status.Checked, status.Matched, status.SessionID = v.Status.Checked, v.Status.Matched, v.Status.SessionID
+	}
+	v.Status = status
+	v.ReadError = ""
+	v.Loaded, v.Observed = true, true
 }
 
 func (a *App) pendingMaterialsEditor(c *ui.Context, p AccessProject, agent AccessAgent) {
@@ -77,33 +93,46 @@ func (a *App) runPendingAction(view *pendingBufferView, p AccessProject, agent A
 		return
 	}
 	view.Busy = true
+	view.Action = action
 	view.Message = "正在核对原会话材料…"
 	python, installation, signature := a.Config.Python, *agent.Installation, view.Status.Signature
 	operator := pendingOperatorConfig(a.Config)
+	identity, _ := readingIdentity(a.Client)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 		defer cancel()
 		result, err := runPendingMaterials(ctx, python, installation, binding, p.Dataset, action, signature, operator)
 		a.Update(func() {
 			view.Busy = false
+			current, _ := readingIdentity(a.Client)
+			if identity != current {
+				view.Loaded = false
+				view.Message = "项目权限已变化，请重新读取保存状态"
+				return
+			}
 			if err != nil {
 				view.Message = err.Error()
 				return
 			}
 			if action == "show" || action == "check" {
-				view.Status = result
-				view.Loaded = true
+				view.observe(result)
 				if action == "check" {
 					view.Message = pendingCheckMessage(installation, result)
 				} else {
-					view.Message = "仅核对原待发材料，不读取禁用期间的新正文。"
+					view.Message = "保存状态已更新。"
 				}
 			} else {
-				view.Loaded = false
+				view.Status.Pending = result.Pending
+				view.Status.Signature = ""
+				view.Status.Checked = false
+				view.Added = 0
 				if action == "discard" {
 					view.Message = fmt.Sprintf("已丢弃 %d 条原待发材料", result.Discarded)
 				} else {
-					view.Message = fmt.Sprintf("本次补交 %d 条，仍有 %d 条待发；处理任务状态以官方记录为准。", result.Drained, result.Pending)
+					view.Message = fmt.Sprintf("本次已保存／核对消除 %d 条，剩余 %d 条待确认保存。", result.Drained, result.Pending)
+					if result.Pending > 0 {
+						view.Message += " 单批已结束，可继续保存下一批。"
+					}
 				}
 			}
 		})
