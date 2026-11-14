@@ -1,0 +1,93 @@
+{
+  "scope": "dev real Codex relative-position regression and fresh tool-free adoption; same host/profile/model and official processing",
+  "issue": {
+    "id": "MA-CODEX-FACT01",
+    "historical_failed_rounds": 1,
+    "targeted_regression": "passed",
+    "failure_history_retained": true,
+    "not_a_general_model_accuracy_guarantee": true
+  },
+  "real_coding": {
+    "session_id": "codex_01a1d7b1-00c0-7921-b880-6bb06809288d",
+    "coding_model": "gpt-6.1-sol",
+    "processing_model": "anthropic/deepseek-flash via DeepSeek compatible endpoint",
+    "qa_count": 1,
+    "trace_count": 7,
+    "position_edit_trace_id": "6598282c-74b2-4c77-979b-4723efc2a163",
+    "original_diff_retained": true,
+    "new_order": [
+      "retry_options",
+      "retry_indices",
+      "describe_retry"
+    ],
+    "function_body_unchanged": true,
+    "existing_tests": 25,
+    "independent_final_tests": 26,
+    "source_sha256": "8d0c67e2ba912329491bb2e935d8386a6b01fbef1011cedb8ea85b1d41536fe2",
+    "fresh_task_not_historical_material_replay": true
+  },
+  "official_knowledge": {
+    "new_lessons": {
+      "7041d6b9-92d1-545a-8890-83402ac040b8": "Lesson-Type: convention\n# Session learning (session codex_01a1d7b1-00c0-7921-b880-6bb06809288d)\n\ntest_retry_config.RetryFunctionOrderTests.test_retry_functions_are_adjacent_in_order asserts top-level function order for the retry_config.py function reordering task by reading source with ast.parse, not importing, and is the model for order checks.\n",
+      "073210c4-6060-5e36-b3b2-ab434b88caea": "Lesson-Type: state\nState-Key: footprint:retry-indices\n# Session learning (session codex_01a1d7b1-00c0-7921-b880-6bb06809288d)\n\nretry_config.py places retry_indices, body unchanged, between retry_options and describe_retry; RetryFunctionOrderTests in test_retry_config.py asserts that adjacency via ast.parse.\n",
+      "e4250f6e-03fc-54ad-ab03-255f9ec9ac10": "Lesson-Type: state\nState-Key: test-baseline\n# Session learning (session codex_01a1d7b1-00c0-7921-b880-6bb06809288d)\n\n`PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -v` from the repository root passes all 26 tests in test_retry_config.py with no failures.\n"
+    },
+    "old_wrong_data_id": "ca3ba590-cebb-5c15-a0dd-0b53d305b347",
+    "old_wrong_body_sha256": "cbfef55eff46cab4219d48ab5a7a346268dc8adf9cef0f62eed5efc769499b69",
+    "old_wrong_body": "retry_indices placed after retry_config.describe_retry",
+    "old_body_saved_before_official_replacement": true,
+    "official_state_replacement": {
+      "removed_from_current_listing": [
+        {
+          "id": "75351c4c-e05a-5ea6-9443-a32e60df3c0d",
+          "raw_status": 404
+        },
+        {
+          "id": "ca3ba590-cebb-5c15-a0dd-0b53d305b347",
+          "raw_status": 404
+        }
+      ],
+      "manual_delete_or_edit": false
+    },
+    "manual_edit_delete_or_replay": false,
+    "all_coding_pipeline_runs_terminal_succeeded": true
+  },
+  "fresh_adoption": {
+    "session_id": "codex_01a1d7b7-a6d1-7e02-a456-1df0e794291a",
+    "qa_count": 1,
+    "official_trace_count": 0,
+    "native_tool_calls": 0,
+    "current_position_automatically_injected": true,
+    "original_wrong_position_not_injected": true,
+    "expected_position_not_supplied_in_question": true,
+    "answer": "根据本会话自动注入的项目记忆：\n\n- `retry_indices` 位于 `retry_config.py`。\n- 紧邻的前一个顶层函数是 `retry_options`，后一个是 `describe_retry`（依据 2026-11-14 的记忆）。\n- 完整回归共 **26 条测试**，在仓库根目录执行：\n  ```sh\n  PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -v\n  ```\n\n以上仅依据注入记忆，未调用工具或读取文件。",
+    "source_unchanged_after_recall": true
+  },
+  "protection": {
+    "original_agents_projects_common_old_sessions_preserved": true,
+    "processing_generation_unchanged": true,
+    "daily_codex_auth_config_unchanged": true,
+    "snapshot_processing": {
+      "total": 40,
+      "completed": 40,
+      "pending": 0
+    },
+    "reset_card_used": false,
+    "reset_authorization": "revoked; user resets manually",
+    "release": false,
+    "cli_version": "0.167.2",
+    "managed_daemon_version": "0.169.0",
+    "mixed_version_baseline": true
+  },
+  "method_corrections": [
+    "unsupported front CLI daemon stop returned usage error; no stop executed; managed app-server daemon stop later returned stopped",
+    "initial native audit assertion failed; final assistant response_item and developer memory block were then verified in the same rollout; no prompt resubmission or assumed timing cause",
+    "system Python SQLite read-only open failed; project Python read-only access succeeded; no DB mutation"
+  ],
+  "limits": [
+    "one explicit reordering task plus original diff fix; does not prove sole model-error root cause",
+    "other older footprints may remain with changed-since warnings; their freshness was not accepted by this sample",
+    "Cursor real host, Codex Desktop and three native provider accounts remain separate gates",
+    "raw QA projection may follow the captured processing snapshot; no blanket claim of zero future background work"
+  ]
+}
