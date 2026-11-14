@@ -1,0 +1,218 @@
+{
+  "checkpoint": 37,
+  "scope": "OpenCode 1.3.5 / DeepSeek Flash, owned isolated profile and synthetic repository, actual existing official Cognee service and independent child subject; dev only",
+  "entry_boundary": "production prepare/immutable loader, isolated private profile; not the Native connection UI and not daily cutover",
+  "coding": {
+    "native_session": "ses_e27d98115ffeev6sEGhevdnyVK",
+    "tools": [
+      "read",
+      "read",
+      "read",
+      "write",
+      "bash"
+    ],
+    "cognee_tools": 0,
+    "only_source_changed": "batch_size.py",
+    "independent_unittest_pass": 7,
+    "official_qas": 1,
+    "official_traces": 5,
+    "capture_and_improve": "normal plugin callbacks; no manual sync, improve or content replay"
+  },
+  "knowledge": {
+    "snapshot_documents": 7,
+    "lesson_documents": [
+      {
+        "id": "9858945c-4b49-5067-8181-5c0bc1e21530",
+        "type": "state",
+        "state_key": "test-baseline",
+        "sha256": "368db7888e2385ab46c11bb4313387b7f8bf98fdd9488301feb1a034fca2c207"
+      },
+      {
+        "id": "b0e8078e-c9c6-57a7-8fe3-b9ac689acc0d",
+        "type": "state",
+        "state_key": "footprint:normalize-batch-size",
+        "sha256": "0a9dfbcbbc25be84e6f3335624ee5387e8271bae5a9c7aebf4ecf5fb3055b996"
+      },
+      {
+        "id": "1b5e1684-289e-5688-b1d5-e8b95b31b80f",
+        "type": "change",
+        "state_key": "",
+        "sha256": "d9056c96127f971d24d690e55de6247dbd1f16638dd2debb8bf085c9a8d889eb"
+      },
+      {
+        "id": "f0046be3-8b96-5f66-8b94-e9cf32fda12b",
+        "type": "location",
+        "state_key": "",
+        "sha256": "6d139acfcdf3ea0e97bf8b178df4f07b210c2f21b32f91f9f0535bb0bd82ba70"
+      },
+      {
+        "id": "0c568b68-fb36-5e65-9145-692558a0b232",
+        "type": "change",
+        "state_key": "",
+        "sha256": "f152b464d674b0ec32e2f662597f8d1197c4336c006a36ae816da78cc715f1f8"
+      }
+    ],
+    "processing_snapshot": {
+      "total": 7,
+      "completed": 7,
+      "pending": 0,
+      "items": [
+        {
+          "id": "9858945c-4b49-5067-8181-5c0bc1e21530",
+          "name": "text_81735eee07caf04c0f8b1f8565e056f0",
+          "completed": true
+        },
+        {
+          "id": "b0e8078e-c9c6-57a7-8fe3-b9ac689acc0d",
+          "name": "text_f9226ca5786f3755ffe7fdd824a929b2",
+          "completed": true
+        },
+        {
+          "id": "1b5e1684-289e-5688-b1d5-e8b95b31b80f",
+          "name": "text_2806b7cd3452f82d731fcb1090c8f275",
+          "completed": true
+        },
+        {
+          "id": "f0046be3-8b96-5f66-8b94-e9cf32fda12b",
+          "name": "text_4b61fa8f39ebac707c6501aee93ccd53",
+          "completed": true
+        },
+        {
+          "id": "0c568b68-fb36-5e65-9145-692558a0b232",
+          "name": "text_7802f17401f3e5fb16d037404a0b5f56",
+          "completed": true
+        },
+        {
+          "id": "d0007aba-04b5-4b8b-be5d-d8c65da80197",
+          "name": "text_fd885d62a6aa891175eaecf700ea6a9b",
+          "completed": true
+        },
+        {
+          "id": "3b23cb10-656c-47a3-949c-8415f92278ce",
+          "name": "text_cc6015920783d6cbff40dab979708129",
+          "completed": true
+        }
+      ]
+    }
+  },
+  "adoption": {
+    "issue": "MA-OPENCODE-RECALL01",
+    "historical_failed_rounds": 2,
+    "rounds": [
+      {
+        "round": 1,
+        "native_session": "ses_e27d62fcfffeOdnR0Jj9hxTr6c",
+        "tool_calls": 0,
+        "exit_code": 0,
+        "result": "failed",
+        "facts": null,
+        "symptom": "answer reported unknown / insufficient injected project memory"
+      },
+      {
+        "round": 2,
+        "native_session": "ses_e27cfd506ffeyKlfRTQ5cZfwxr",
+        "tool_calls": 0,
+        "exit_code": 0,
+        "result": "failed",
+        "facts": null,
+        "symptom": "answer reported unknown / insufficient injected project memory"
+      },
+      {
+        "round": 3,
+        "native_session": "ses_e27cb947dffe8ps3toCvW8xaqU",
+        "tool_calls": 0,
+        "exit_code": 0,
+        "result": "passed",
+        "facts": {
+          "none_default": 8,
+          "zero_disables": true,
+          "valid_integers": "1..64",
+          "bool_error": "TypeError",
+          "range_error": "ValueError",
+          "tests": 7
+        },
+        "symptom": null
+      }
+    ],
+    "diagnosis": {
+      "graph_completion_timing": {
+        "status": 200,
+        "seconds": 2.565,
+        "hits": 1,
+        "exceeds_current_deadline": true
+      },
+      "native_hook_absence": "not proven; a model denial was not proof that injection was absent",
+      "direct_managed_recall": {
+        "seconds": 6.612924041,
+        "context_chars": 493,
+        "project_permissions": [
+          "delete",
+          "read",
+          "write"
+        ],
+        "common_readable": true,
+        "deadline": 10000
+      },
+      "observed_context": "graph completion generated an unknown/insufficient-memory answer for the prefixed user query despite source lessons existing; source also contained historical bug facts and subsequent denied answers",
+      "prompt_override_probe": "did not establish trustworthy current facts; diagnostic only, not shipped",
+      "retrieval_only_probe": {
+        "status": 200,
+        "seconds": 0.074,
+        "hits": 1,
+        "exceeds_current_deadline": false
+      }
+    },
+    "fix": "default CHUNKS, only_context=true, project node_name=session_learnings, no session_id/history completion; official endpoint and child key retained; live policy rechecked before injection; 10s bounded wait, 8 retrieval candidates, 8000-character scope cap"
+  },
+  "artifact": {
+    "generation": "75e3256850a376ba4222dc72",
+    "manifest_sha256": "cea27c38492b46de2e1c48cdee211bb45b236f3268c00adba32f11ef1c4c2877",
+    "relative_path": ".local/multi-agent-opencode-20261114/artifacts/source-recall-v1"
+  },
+  "regression": {
+    "compiled_control_node": {
+      "tests": 23,
+      "pass": 23
+    },
+    "http_node": {
+      "tests": 6,
+      "pass": 6
+    },
+    "outbox_node": {
+      "tests": 10,
+      "pass": 10
+    },
+    "python_patch_tests": 8,
+    "latency_regression": "old default failed; updated default passed with 2.7s response"
+  },
+  "observations": [
+    {
+      "event": "one lifecycle register HTTP403 followed by later successful registration",
+      "cause": "unknown",
+      "status": "not silently rewritten as success; actual ACL matrix still pending"
+    }
+  ],
+  "cleanup": {
+    "owned_native_pid": 15856,
+    "start_time_verified": true,
+    "native_exit_confirmed": true,
+    "queue_pending": 0,
+    "daily_configuration_changed": false,
+    "original_official_and_control_services": "retained for ongoing work",
+    "private_original_data_bindings_and_failure_logs": "retained, not committed"
+  },
+  "not_yet_proven": [
+    "actual OpenCode maintain/read/none/common/cross-project ACL matrix",
+    "authenticated blocked-material review/retry/discard",
+    "incremental Native settings visual acceptance",
+    "ordinary daily cutover",
+    "Ollama second-batch integration",
+    "pending first-batch external-account/Desktop gates"
+  ],
+  "source_sha256": {
+    "engine/agents/opencode/managed-config.ts": "4e22f6302c644730ede8bd9fe839b32a925a52b4d42d59a1f0c4dc706e279fcf",
+    "engine/agents/opencode/managed-recall.ts": "7a06ebc80d7b8d5b399bbb4785cd2086cf72a8ec482b6e6f6e26cd21b27314e4",
+    "engine/agents/opencode/managed-control.test.mjs": "d4dbaadd806ca5b33eb7c22ac175b0b7adecdd10e57715e97f15a76088b38786",
+    "engine/python/opencode_plugin_patch.py": "6f05833ef55ff6b4c85ae85a3a613e5cd558d4a61e7b1ecdf2b1a59b391b04d1"
+  }
+}

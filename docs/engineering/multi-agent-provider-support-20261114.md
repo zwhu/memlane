@@ -60,3 +60,5 @@ OpenCode受管HTTP／outbox覆盖源码已实现，5项Python及10项实际编�
 检查点三十五补离线不可变组件／固定manifest prepare／私有全局入口；4项安装检查及正式CLI产物复核通过，[证据](evidence/multi-agent-development-20261114/opencode-immutable-artifact.json)。已保留3671文件、约55.4MB组件，Node入口初始化不等于实际1.3.5宿主；Connections接线及认证处置仍待完成，本机配置未写入，卡片继续开发中。
 
 检查点三十六已接OpenCode电脑级prepare／activate／review及设置回执：11项管理／发现、插件9项Python含39项Node、Go1项通过；[管理证据](evidence/multi-agent-development-20261114/opencode-connection-manager.json)。实际1.3.5两个空目录各得独立绑定，去探针复验通过；MA-OPENCODE-NATIVE-BIND01历史失败2轮保留，[原生证据](evidence/multi-agent-development-20261114/opencode-native-handshake.json)。official身份／ACL／内容仍为夹具，真实编码QA／trace、处理／知识及采用、认证补交和Native增量尚未完成；日常配置未切换。
+
+检查点三十七补齐OpenCode实际编码→官方QA1／trace5→自动生成5份知识→全新会话工具0次采用，独立7项回归通过。MA-OPENCODE-RECALL01历史失败2轮保留；自动召回已改为官方CHUNKS／only_context、项目知识节点集及无session完成缓存。真实权限／待发材料／Native增量仍待验，不能将本样本当完整交付；[证据](evidence/multi-agent-development-20261114/opencode-real-coding.json)。

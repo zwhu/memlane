@@ -470,3 +470,7 @@ outbox明确401／403持久化blocked，重启／timer不重发；阻塞项不�
 11项管理／发现检查通过（39.388秒），插件9项Python含39项编译Node通过（5.290秒），Go1项通过；[管理回执](evidence/multi-agent-development-20261114/opencode-connection-manager.json)。随后实际1.3.5原生会话前两轮绑定0，MA-OPENCODE-NATIVE-BIND01累计失败2轮；探针和宿主源码／日志支持启动事件投递缺口，唯一根因未知。元数据受限核对补齐原生命周期，第三轮及去探针复验各2个空session绑定2个独立project；最终10.486秒，[实际宿主及历史记录](evidence/multi-agent-development-20261114/opencode-native-handshake.json)。历史计数保留，不宣称QA／trace或知识质量已经通过。
 
 本轮没有模型prompt、日常配置或原库变更。原生主进程已wait确认退出，夹具服务／临时目录关闭；新组件manifest为`e3bab36d3ab2fbca5707c04bade511c5b23e88870bb094a3ea037b437713af53`，原失败基线暂留后续消费者。共享app／launcher／权限／backlog WIP未暂存。下一步真实Cognee与编码→知识→新会话采用、认证待发处置，再续Ollama、Native增量、首批外部前置及日常收口，完整Goal保持active。
+
+## 检查点三十七：OpenCode真实知识闭环
+
+OpenCode 1.3.5／DeepSeek Flash以独立官方子主体、私有profile和合成仓库完成正常编码，独立7项测试通过；官方QA1／trace5，自动整理5份知识。新会话采用前两轮失败，MA-OPENCODE-RECALL01累计2保留：2.5秒期限不足是真实现象，但单独延长仍不足；实际召回内容含图谱代答的“不知道”，不能把模型拒答推断成宿主完全未注入。改用官方CHUNKS／only_context、项目session_learnings节点集、不用会话完成缓存后，第三轮全新会话工具0次正确采用六项规则。23项控制Node、8项补丁Python含16项HTTP／outbox Node通过，原生进程已确认停止，原服务及数据保留。真实ACL矩阵、认证待发材料、Native增量与Ollama仍未完成。[连续记录](multi-agent-second-batch-20261114.md)、[脱敏证据](evidence/multi-agent-development-20261114/opencode-real-coding.json)。

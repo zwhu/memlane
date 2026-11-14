@@ -20,7 +20,7 @@
 
 ## 当前缺口与资源
 
-最初基线中，官方OpenCode使用插件级dataset、拒绝后自动重投、整段session消息读取；后续受管覆盖已处理这些问题。当前以检查点三十六为准：管理侧准备／启用与原生空会话绑定通过，真实Cognee权限、编码QA／trace、知识及采用、认证待发材料处置仍待验收。以下早期检查点保留当时事实，不覆盖后续源码与证据。
+最初基线中，官方OpenCode使用插件级dataset、拒绝后自动重投、整段session消息读取；后续受管覆盖已处理这些问题。当前以检查点三十七为准：管理侧准备／启用、原生空会话绑定与真实编码QA／trace→知识→新会话采用样本通过；真实Cognee权限矩阵、认证待发材料处置与Native增量仍待验收。以下早期检查点保留当时事实，不覆盖后续源码与证据。
 
 ## 受管HTTP／outbox底层适配
 
@@ -123,3 +123,15 @@ JSON／JSONC只读解析支持注释与尾逗号，拒绝重复键；检查已�
 修复复用官方`session.list`核对元数据，限当前directory、created不早于本次启用，不取正文、不回放旧会话、不新增内容采集器；启动一次核对，之后沿30秒生命周期周期核对，dispose撤销启动定时器。注册／解析仍走原独立主体和policy。第三轮使用新组件生成`cd03a4c96cfb9450b73851e6`、manifest `e3bab36d3ab2fbca5707c04bade511c5b23e88870bb094a3ea037b437713af53`，两个新目录各得独立project绑定及生命周期登记；去掉探针后最终复验仍通过（10.486秒）。[真实宿主证据](evidence/multi-agent-development-20261114/opencode-native-handshake.json)。所有轮次均无模型prompt；主进程正常terminate并等待退出，夹具服务关闭，临时profile／registry清理。
 
 当前只证明实际1.3.5加载、空会话原目标与控制协议；official内容／ACL端点仍为夹具，消息QA／trace、处理、真实知识／新会话采用没有通过声明。下一步接真实官方服务及编码链、认证管理补交／丢弃，再做Native窗口与日常收口；Ollama和首批外部前置仍保留。新组件供后续消费，旧约55MB组件暂作失败基线；原生SDK缓存及旧运行依赖继续保护，未改日常配置或原库。
+
+## 实际编码、知识与新会话采用（检查点三十七）
+
+实际OpenCode 1.3.5／DeepSeek Flash，使用生产prepare和不可变loader进入独立profile，沿原真实官方服务创建独立子主体及合成项目；未经过Native连接页，也未改日常配置。正常编码只改`batch_size.py`，宿主调用read三次、write一次、bash一次，没有调用Cognee工具；独立运行原测试7项通过。官方原始记录保存QA1／trace5，自动整理生成5份知识，编码阶段快照7份Data均处理完成。没有手动sync／improve、重放材料或手造知识。[脱敏证据](evidence/multi-agent-development-20261114/opencode-real-coding.json)。
+
+**MA-OPENCODE-RECALL01累计失败2轮，第三轮限定样本通过。** 首轮新会话工具0次，但回答不知道；第二轮仅将默认期限2.5秒增加到10秒，仍回答不知道。原版不可变产物与仅改期限的产物、原会话／数据和失败日志均保留，未换主体／项目重置计数。只读核对发现：官方GraphCompletion请求一次2.565秒，确实超过原期限；另一次实际ManagedRecall返回493字符，内容却是图谱生成的“不知道／未提供”，并非宿主注入不存在的证据。直接加grounding prompt仍混入历史拒答和旧bug关系，不能作为可信当前事实，未交付该实验。
+
+当前自动召回改用官方`CHUNKS`、`only_context=true`，项目限定官方`session_learnings`节点集；不提供session_id，不由召回模型代答或混入会话完成缓存。默认8个候选，每范围最多8000字符；当前权限核对、通用／项目隔离、撤权清除及迟到结果门禁不变。官方取源探针0.074秒返回带来源的实际知识；第三个全新原生会话工具0次，正确答出None→8、0禁用、1–64、bool TypeError、越界ValueError和7项测试。通过只限本模型／合成项目，不外推全部知识新鲜度。
+
+2.7秒延迟的query→context回归在旧默认下失败、修复后通过。当前23项编译Node控制／召回检查，8项Python补丁检查含6项HTTP与10项outbox Node检查通过；严格编译的新不可变组件3671文件。真实原生进程按PID、启动时间和端口确认后停止，队列pending0；原官方／控制服务和原库继续保留。期间观察到一次register403，后有成功注册；原因未知，尚不据此认定ACL全矩阵通过。
+
+后续仍须完成OpenCode真实权限与跨项目／通用知识矩阵、认证待发材料处置、Native增量；第二批Ollama及首批外部前置继续保留。用户暂缓的Cursor／Claude Code及未安装Agent不追加验证。

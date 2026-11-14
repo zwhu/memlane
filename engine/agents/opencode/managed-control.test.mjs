@@ -415,8 +415,20 @@ test("managed config reads only its private child key and ignores ambient owner/
     const actual = resolveManagedConfig({...config, apiKey: "caller-owner", username: "owner", password: "secret", readScopes: {extra: "other-dataset"}});
     assert.equal(actual.apiKey, "c".repeat(40)); assert.equal(actual.baseUrl, config.baseUrl);
     assert.equal(actual.mode, "local"); assert.equal(actual.autoCapture, true);
+    assert.equal(actual.searchType, "CHUNKS");
     assert.equal(actual.username, undefined); assert.equal(actual.password, undefined);
     assert.deepEqual(actual.readScopes, {});
+    // Official graph recall can legitimately take longer than the old 2.5s
+    // deadline. Exercise the real per-turn query/context path with that latency.
+    const policy = {common: {ready: false}, policy: {permissions: ["read"]}, dataset_id: "slow-project"};
+    const recall = new ManagedRecall({current: async () => policy}, {
+      recall: async () => {
+        await new Promise(resolve => setTimeout(resolve, 2700));
+        return [{id: "slow-result", text: "zero disables batching", score: 1}];
+      },
+    }, actual);
+    await recall.query("slow-native", "batch convention", "slow-session");
+    assert.ok((await recall.context("slow-native")).includes("zero disables batching"));
     for (const bad of [{...config, mode: "cloud"}, {...config, baseUrl: "https://remote.invalid"}, {...config, apiKeyFile: undefined}, {...config, stateDir: "relative"}]) assert.throws(() => resolveManagedConfig(bad));
     const alias = join(root, "managed-config-alias"); symlinkSync(apiKeyFile, alias);
     assert.throws(() => resolveManagedConfig({...config, apiKeyFile: alias}));
@@ -440,7 +452,12 @@ test("managed recall targets live dataset IDs and permanently drops withdrawn fr
     assert.ok(context.includes(p.dataset_id)); assert.ok(context.includes(p.common.dataset_id));
     assert.equal(s.recalls.length, 2);
     assert.deepEqual(s.recalls.map(call => call.dataset_ids[0]), [p.common.dataset_id, p.dataset_id]);
-    assert.equal(s.recalls[0].session_id, undefined); assert.equal(s.recalls[1].session_id, "official-recall-session");
+    for (const call of s.recalls) {
+      assert.equal(call.session_id, undefined, "automatic recall must not complete from conversation history");
+      assert.equal(call.only_context, true, "automatic recall must return source context, not an LLM answer");
+    }
+    assert.equal(s.recalls[0].node_name, undefined);
+    assert.deepEqual(s.recalls[1].node_name, ["session_learnings"]);
     await access(p.project_id, {access: "none"});
     context = await recall.context(native);
     assert.ok(!context.includes(p.dataset_id)); assert.ok(context.includes(p.common.dataset_id));

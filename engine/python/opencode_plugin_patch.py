@@ -51,6 +51,11 @@ def managed_http_client(text):
             'throw new Error(`Cognee request failed (${response.status})`);')
     replace('datasetId: response.dataset_id ?? params.datasetId ?? "",',
             'datasetId: response.dataset_id ?? "",')
+    replace('    searchPrompt?: string;\n', '    searchPrompt?: string;\n    onlyContext?: boolean;\n    nodeNames?: string[];\n')
+    replace('        ...(params.searchPrompt ? { system_prompt: params.searchPrompt } : {}),',
+            '        ...(params.searchPrompt ? { system_prompt: params.searchPrompt } : {}),\n'
+            '        ...(params.onlyContext !== undefined ? { only_context: params.onlyContext } : {}),\n'
+            '        ...(params.nodeNames ? { node_name: params.nodeNames } : {}),')
     method('  async health(): Promise<{ status: string }> {\n', '  async remember(params: {\n', '''  async health(): Promise<{ status: string }> {
     return this.fetchAPI<{ status: string }>("/health", { method: "GET" });
   }

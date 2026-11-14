@@ -17,7 +17,7 @@ export class ManagedRecall {
     if (policy.policy.permissions.includes("read")) result.push({kind: "project", dataset: policy.dataset_id});
     return result;
   }
-  async query(native: string, query: string, session: string): Promise<void> {
+  async query(native: string, query: string, _session: string): Promise<void> {
     const generation = (this.generation.get(native) ?? 0) + 1;
     this.generation.set(native, generation); this.fragments.delete(native);
     if (!query.trim()) return;
@@ -28,9 +28,12 @@ export class ManagedRecall {
         try {
           const hits = await this.client.recall({queryText: query, searchType: this.settings.searchType,
             datasetIds: [scope.dataset], topK: this.settings.maxResults,
-            ...(scope.kind === "project" ? {sessionId: session} : {}), timeoutMs: this.settings.recallTimeoutMs});
-          const selected = hits.filter(hit => hit.score >= this.settings.minScore).slice(0, this.settings.maxResults);
-          return selected.length ? {...scope, text: JSON.stringify(selected).replace(/</g, "\\u003c")} : null;
+            // The host answers the user; recall supplies source context only.
+            // Exclude raw QA/trace nodes and session-history completion caches.
+            onlyContext: true, ...(scope.kind === "project" ? {nodeNames: ["session_learnings"]} : {}),
+            timeoutMs: this.settings.recallTimeoutMs});
+          const selected = hits.filter(hit => hit.text?.trim() && hit.score >= this.settings.minScore).slice(0, this.settings.maxResults);
+          return selected.length ? {...scope, text: JSON.stringify(selected).slice(0, 8000).replace(/</g, "\\u003c")} : null;
         } catch { return null; }
       }))).filter((value): value is Fragment => value !== null);
     };

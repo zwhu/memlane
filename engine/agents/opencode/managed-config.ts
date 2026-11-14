@@ -29,10 +29,11 @@ export function resolveManagedConfig(options: InstalledConfig = {}) {
     autoCapture: options.autoCapture !== false && options.enableSessions !== false,
     autoRecall: options.autoRecall !== false, captureTools: [...(options.captureTools ?? [])],
     maxCaptureChars: bounded(options.maxCaptureChars, 8000, 100000),
-    recallTimeoutMs: bounded(options.recallTimeoutMs, 2500, 10000),
+    // Include policy and retrieval latency in a bounded per-turn budget.
+    recallTimeoutMs: bounded(options.recallTimeoutMs, 10000, 10000),
     requestTimeoutMs: bounded(options.requestTimeoutMs, 5000, 30000),
     ingestionTimeoutMs: bounded(options.ingestionTimeoutMs, 15000, 60000),
-    maxResults: bounded(options.maxResults, 3, 100), searchType: options.searchType ?? "GRAPH_COMPLETION",
+    maxResults: bounded(options.maxResults, 8, 100), searchType: options.searchType ?? "CHUNKS",
     minScore: options.minScore ?? 0.1, improveOnSessionEnd: options.improveOnSessionEnd !== false,
   };
 }
