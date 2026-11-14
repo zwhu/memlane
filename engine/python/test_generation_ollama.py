@@ -4,6 +4,7 @@ The HTTP peer is synthetic. These checks do not prove local model quality.
 """
 import contextlib
 import asyncio
+import copy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
@@ -17,6 +18,7 @@ from unittest.mock import patch
 
 from generation_config import GenerationStore, compile_environment, runtime_generation, validate_profile
 from generation_probe import probe
+from generation_ollama import receipt_for
 from project_policy import PolicyError
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,6 +40,14 @@ class OllamaProfileTests(unittest.TestCase):
                 self.assertNotIn('credential_', json.dumps(store.view()['profiles']['local']))
                 with self.assertRaisesRegex(PolicyError, 'generation_validation_required'):
                     store.select_next(row, 1, 'not-yet-validated')
+                runtime = {'generation_file': str(path), 'generation_reference': row, 'service_commit': 'fixed'}
+                with self.assertRaisesRegex(PolicyError, 'generation_native_schema_evidence_required'):
+                    runtime_generation(runtime)
+                # Synthetic receipt exercises startup binding, not model quality.
+                store.state['validations']['fixture'] = {'digest': row['digest'], 'status': 'passed',
+                    'plain_passed': True, 'schema_passed': True, 'quality_passed': True,
+                    'native_schema_evidence': receipt_for('ollama_chat/qwen3:4b', PROFILE['endpoint'])}
+                store.save()
                 profile, environment, digest = runtime_generation({
                     'generation_file': str(path), 'generation_reference': row, 'service_commit': 'fixed'})
                 self.assertEqual(profile, PROFILE)
@@ -45,6 +55,8 @@ class OllamaProfileTests(unittest.TestCase):
                 self.assertEqual(environment['LLM_MODEL'], 'ollama_chat/qwen3:4b')
                 self.assertEqual(environment['LLM_PROVIDER'], 'ollama')
                 self.assertEqual(environment['LLM_API_KEY'], 'ollama')
+                self.assertEqual(json.loads(environment['MEMLANE_OLLAMA_SCHEMA_EVIDENCE']),
+                                 store.state['validations']['fixture']['native_schema_evidence'])
                 self.assertNotIn('COMPLETION_URL', environment)
             finally:
                 store.close()
@@ -56,6 +68,30 @@ class OllamaProfileTests(unittest.TestCase):
                 self.assertEqual(reopened.resolve(row)['profile'], PROFILE)
             finally:
                 reopened.close()
+
+    def test_schema_receipt_must_match_latest_passed_model_endpoint_and_contract(self):
+        from generation_startup import candidate
+        with tempfile.TemporaryDirectory() as directory:
+            store = GenerationStore(Path(directory) / 'generation.json', 'fixed')
+            try:
+                row = store.put('local', PROFILE, 0, 'save-local')
+                passed = {'digest': row['digest'], 'status': 'passed', 'plain_passed': True,
+                          'schema_passed': True, 'quality_passed': True, 'registered_revision': 2}
+                store.state['validations']['v'] = passed
+                for evidence in (None, receipt_for('ollama_chat/other-model', PROFILE['endpoint']),
+                                 receipt_for('ollama_chat/qwen3:4b', 'http://127.0.0.1:22222'),
+                                 {**receipt_for('ollama_chat/qwen3:4b', PROFILE['endpoint']), 'contract': 'unknown'}):
+                    passed['native_schema_evidence'] = evidence
+                    with self.assertRaisesRegex(PolicyError, 'generation_native_schema_evidence_required'):
+                        store.select_next(row, 1, 'reject')
+                passed['native_schema_evidence'] = receipt_for('ollama_chat/qwen3:4b', PROFILE['endpoint'])
+                store.select_next(row, 1, 'select')
+                self.assertEqual(candidate(store), row)
+                store.state['validations']['new'] = {**passed, 'registered_revision': 3, 'status': 'failed'}
+                with self.assertRaisesRegex(PolicyError, 'generation_validation_required'):
+                    candidate(store)
+            finally:
+                store.close()
 
     def test_local_endpoint_and_auth_cannot_silently_become_cloud_or_inherit_a_key(self):
         for endpoint in ['https://ollama.com', 'http://example.test', 'http://127.0.0.1:11434/v1',
@@ -128,10 +164,15 @@ class OllamaWireTests(unittest.IsolatedAsyncioTestCase):
                     result = {'model_info': {'qwen3.context_length': 8192}, 'capabilities': ['completion']}
                 else:
                     structured = 'format' in body
-                    content = json.dumps(expected) if structured else 'MEMLANE-PROBE-OK'
+                    schema = body.get('format')
+                    capability = isinstance(schema, dict) and 'proof' in schema.get('properties', {})
+                    if capability and mode != 'ignore_schema':
+                        content = json.dumps({'proof': schema['properties']['proof']['enum'][0], 'absent': None})
+                    else:
+                        content = json.dumps(expected) if structured else 'MEMLANE-PROBE-OK'
                     result = {'model': body['model'], 'created_at': '2026-11-14T00:00:00Z',
                         'message': {'role': 'assistant', 'content': content}, 'done': True,
-                        'done_reason': 'length' if mode == 'truncated' and structured else 'stop',
+                        'done_reason': 'length' if mode == 'truncated' and structured and not capability else 'stop',
                         'prompt_eval_count': 1, 'eval_count': 1}
                 raw = json.dumps(result).encode()
                 self.send_response(200)
@@ -149,29 +190,45 @@ class OllamaWireTests(unittest.IsolatedAsyncioTestCase):
             llm_api_key=environment['LLM_API_KEY'], llm_endpoint=environment['LLM_ENDPOINT'],
             structured_output_framework='litellm_native')
         token = self.context.set(cfg)
+        import litellm
+        previous_capability = copy.deepcopy(litellm.model_cost.get(environment['LLM_MODEL']))
         try:
             with patch.dict(os.environ, {'OLLAMA_API_BASE': environment['OLLAMA_API_BASE']}), contextlib.redirect_stdout(io.StringIO()):
                 result = await asyncio.wait_for(probe(self.runtime), 30)
             return result, requests
         finally:
+            self.assertEqual(litellm.model_cost.get(environment['LLM_MODEL']), previous_capability,
+                             'validation leaked its temporary SDK capability registration')
             self.context.reset(token)
             await asyncio.to_thread(server.shutdown)
             server.server_close()
             thread.join(timeout=2)
             self.assertFalse(thread.is_alive())
 
-    async def test_native_chat_and_nested_format_use_actual_fixed_sdk_without_capability_registration(self):
+    async def test_native_chat_checks_random_schema_before_registering_selected_model(self):
         result, requests = await self.scenario('normal')
         self.assertEqual(result['status'], 'passed', result)
         self.assertTrue(result['plain_passed'] and result['schema_passed'] and result['quality_passed'])
         chats = [(path, key, body) for path, key, body in requests if path == '/api/chat']
-        self.assertEqual(len(chats), 2)
+        self.assertEqual(len(chats), 3)
         self.assertTrue(all(key in (None, 'Bearer ollama') and body['model'] == 'qwen3:4b'
                             for _, key, body in chats))
         self.assertTrue(any(path == '/api/show' for path, _, _ in requests))
         self.assertTrue(all(path in ('/api/chat', '/api/show') for path, _, _ in requests))
-        self.assertIn('format', chats[1][2])
-        self.assertIn(result['structured_mode'], ('json_schema', 'json_schema_non_strict', 'json_object'))
+        capability = chats[1][2]['format']
+        nonce = capability['properties']['proof']['enum'][0]
+        self.assertNotIn(nonce, json.dumps(chats[1][2]['messages']))
+        self.assertIn('project', chats[2][2]['format']['properties'])
+        self.assertEqual(result['structured_mode'], 'json_schema')
+        self.assertEqual(result['capability_calls'], 1)
+        self.assertEqual(result['native_schema_evidence']['contract'], 'ollama-native-nonce-v1')
+
+    async def test_ignored_native_schema_never_registers_or_runs_fact_extraction(self):
+        result, requests = await self.scenario('ignore_schema')
+        self.assertEqual(result['status'], 'failed', result)
+        self.assertEqual(result['error_code'], 'native_schema_verification_failed')
+        self.assertNotIn('native_schema_evidence', result)
+        self.assertEqual(len([r for r in requests if r[0] == '/api/chat']), 2)
 
     async def test_valid_json_with_length_finish_is_not_accepted(self):
         result, _ = await self.scenario('truncated')

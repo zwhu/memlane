@@ -54,6 +54,27 @@ def synthetic_response_shape(content):
     return 'other_object'
 
 
+def quality_mismatch_fields(actual, expected):
+    paths = []
+
+    def compare(a, e, path):
+        if len(paths) >= 8:
+            return
+        if isinstance(e, dict) and isinstance(a, dict):
+            for key in e:
+                compare(a.get(key), e[key], [*path, key])
+        elif isinstance(e, list) and isinstance(a, list):
+            if len(a) != len(e):
+                paths.append('.'.join([*path, 'length']))
+            for index, (left, right) in enumerate(zip(a, e)):
+                compare(left, right, [*path, str(index)])
+        elif a != e:
+            paths.append('.'.join(path))
+
+    compare(actual, expected, [])
+    return paths[:8]
+
+
 def failure(error, *, structured=False):
     """Return fixed codes only; never return exception text/provider bodies."""
     if isinstance(error, ProbeFailure):
@@ -77,6 +98,8 @@ def failure(error, *, structured=False):
     while link is not None and id(link) not in seen and len(seen) < 16:
         seen.add(id(link))
         name = type(link).__name__
+        if name == 'NativeSchemaUnconfirmed':
+            return 'failed', 'native_schema_verification_failed'
         code = getattr(link, 'status_code', None)
         if isinstance(code, int) and 300 <= code < 400:
             return 'failed', 'provider_redirect_rejected'
@@ -183,6 +206,7 @@ async def _probe(config):
     client = get_native_client()
     observation = CompletionObservation(client, litellm.acompletion)
     structured = False
+    restore_schema = None
     try:
         if client.fallback_model or client.fallback_api_key or client.fallback_endpoint:
             raise ProbeFailure('fallback_configuration_rejected')
@@ -196,6 +220,12 @@ async def _probe(config):
         if not receipt['plain_passed']:
             raise ProbeFailure('plain_output_mismatch')
         structured = True
+        if client.model.startswith('ollama_chat/'):
+            from generation_ollama import verify_native_schema, register_verified_schema
+            receipt['capability_calls'] = 1
+            evidence = await verify_native_schema(client, observation.complete)
+            receipt['native_schema_evidence'] = evidence
+            restore_schema = register_verified_schema(evidence, client.model, client.endpoint)
         result = await complete(client,
             'Synthetic facts: project name is 样例项目. Rules in order: pnpm, TypeScript. '
             'No contact is given. Ports in order: 43127 and 43128. Source is synthetic.',
@@ -207,6 +237,7 @@ async def _probe(config):
         receipt['status'] = 'passed' if receipt['quality_passed'] else 'failed'
         if not receipt['quality_passed']:
             receipt['error_code'] = 'extraction_quality_failed'
+            receipt['quality_fields'] = quality_mismatch_fields(result.model_dump(), expected)
     except Exception as error:
         receipt['status'], receipt['error_code'] = failure(error, structured=structured)
         if receipt['error_code'] == 'schema_validation_failed':
@@ -214,6 +245,8 @@ async def _probe(config):
             receipt['schema_response_shapes'] = observation.structured_shapes
     finally:
         litellm.acompletion = observation.complete
+        if restore_schema is not None:
+            restore_schema()
         receipt.update(structured_mode=observation.mode, adapter_calls=observation.calls)
     return receipt
 

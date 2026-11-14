@@ -260,6 +260,7 @@ func generationValidationMessage(code string) string {
 		"provider_refusal":                     "模型拒绝了验证材料，本次验证未通过。",
 		"completion_truncated":                 "模型输出被截断，本次验证未通过。",
 		"schema_validation_failed":             "模型返回内容不符合所需的数据结构。",
+		"native_schema_verification_failed":    "本机模型接口未通过结构化输出能力检测。",
 		"structured_output_unsupported":        "此模型或接口不支持所需的结构化输出。",
 		"unsupported_model_parameters":         "此模型或接口不支持所需的请求参数。",
 		"plain_output_mismatch":                "普通回答未通过固定样本校验。",

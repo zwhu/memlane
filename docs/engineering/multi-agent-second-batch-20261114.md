@@ -197,3 +197,8 @@ OpenCode核对计数已按“确认后剩余”修正，保留Python只读tail�
 新增无正文的字段／错误类型与响应类别诊断，20项Python通过；同模型同样本固定官方adapter重验仍失败，MA-OLLAMA-LOCAL-SCHEMA01累计2轮。实际三次结构化响应均schema_definition，缺project／ports／source，定位到JSON对象路径回显定义。独立SDK显式原生Schema实验从同一探针AST复用类、事实和期望值，结构通过、事实精确比较失败（MA-OLLAMA-LOCAL-NATIVE-FACT01独立实验失败1次），不代表原路径修复或知识链通过。具体错误事实值未留存；首个实验上下文TypeError另记方法错误，未请求模型，不重置／合并原计数。
 
 进程组及独立daemon已核对退出，账本／原回执／模型保留，未改日常、下载新模型或打完整包。[证据](evidence/multi-agent-development-20261114/ollama-schema-diagnostics.json)。仍须确定有实际证据的原生Schema策略、完成事实质量与官方知识链，继续Native增量、日常收口和首批外部前置，完整Goal保持active。
+
+
+### 检查点四十四增量
+
+Ollama增加实际Schema随机约束证据，最新同digest完整质量通过才允许next及启动编译。独立Qwen3 4B instruct通过不变固定样本；真实Native共用配置页保存／重开／实际验证／next通过，active仍空。49项Python及12项Go检查通过，另2项断言复验；旧Llama Schema失败2与原生事实失败2保持。正常官方启动、知识／采用及Agent连接设置实窗仍待完成，不能以首次配置页替代。详见[检查点四十四](multi-agent-provider-execution-20261114.md#检查点四十四ollama原生能力与真实native配置流程)及[脱敏证据](evidence/multi-agent-development-20261114/ollama-native-schema-ui.json)。

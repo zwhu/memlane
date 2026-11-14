@@ -2,7 +2,7 @@ import json
 import unittest
 
 from pydantic import BaseModel, ConfigDict, ValidationError
-from generation_probe import schema_error_summary, synthetic_response_shape
+from generation_probe import schema_error_summary, synthetic_response_shape, quality_mismatch_fields
 
 
 class ProbeDiagnosticTests(unittest.TestCase):
@@ -39,6 +39,12 @@ class ProbeDiagnosticTests(unittest.TestCase):
                                 (['private-value'], 'non_object_json')]:
             self.assertEqual(synthetic_response_shape(json.dumps(value)), expected)
         self.assertEqual(synthetic_response_shape('private non-json'), 'not_json')
+
+    def test_fact_diagnostics_report_only_expected_paths_without_incorrect_values(self):
+        self.assertEqual(quality_mismatch_fields(
+            {'project': {'name': 'private-wrong-name', 'contact': 'private-contact'}, 'ports': [999]},
+            {'project': {'name': 'expected', 'contact': None}, 'ports': [43127, 43128]}),
+            ['project.name', 'project.contact', 'ports.length', 'ports.0'])
 
 
 if __name__ == '__main__':

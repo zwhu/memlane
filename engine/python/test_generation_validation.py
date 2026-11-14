@@ -131,6 +131,34 @@ class ValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.validator.process)
         self.assertTrue(self.validator.task.done())
 
+    async def test_local_pass_without_bound_native_schema_receipt_is_not_trusted(self):
+        local = self.store.put('local', {'mode': 'provider', 'provider': 'ollama', 'model': 'synthetic',
+            'endpoint': 'http://127.0.0.1:43128'}, self.store.state['revision'], 'save-local')
+        self.worker('import json,sys\njson.load(sys.stdin)\nprint(json.dumps({"status":"passed","plain_passed":True,"schema_passed":True,"quality_passed":True}))\n')
+        with patch('generation_validation.ROOT', self.root):
+            self.validator.start(local, self.store.state['revision'], 'unbound')
+            await self.validator.task
+        self.assertEqual(self.validator.get('unbound')['status'], 'result_unknown')
+        self.assertIsNone(self.store.state['next'])
+        self.assertIsNone(self.validator.process)
+
+    async def test_local_bound_native_receipt_survives_worker_and_next_without_activation(self):
+        from generation_ollama import receipt_for
+        local = self.store.put('local', {'mode': 'provider', 'provider': 'ollama', 'model': 'synthetic',
+            'endpoint': 'http://127.0.0.1:43128'}, self.store.state['revision'], 'save-local')
+        evidence = receipt_for('ollama_chat/synthetic', 'http://127.0.0.1:43128')
+        result = {'status': 'passed', 'plain_passed': True, 'schema_passed': True, 'quality_passed': True,
+                  'native_schema_evidence': evidence, 'capability_calls': 1}
+        self.worker('import json,sys\njson.load(sys.stdin)\nprint(' + repr(json.dumps(result)) + ')\n')
+        with patch('generation_validation.ROOT', self.root):
+            self.validator.start(local, self.store.state['revision'], 'bound')
+            await self.validator.task
+        self.assertEqual(self.validator.get('bound')['status'], 'passed')
+        self.assertEqual(self.validator.get('bound')['native_schema_evidence'], evidence)
+        self.store.select_next(local, self.store.state['revision'], 'select-local')
+        self.assertEqual(self.store.state['next'], local)
+        self.assertEqual(self.store.state['active']['id'], 'existing-codex')
+
 
 if __name__ == '__main__':
     unittest.main()

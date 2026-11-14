@@ -97,6 +97,10 @@ def main():
     async def serve():
         from generation_http import generation_http_policy
         async with generation_http_policy():
+            if profile.get('provider') == 'ollama':
+                from generation_ollama import register_verified_schema
+                register_verified_schema(json.loads(environment['MEMLANE_OLLAMA_SCHEMA_EVIDENCE']),
+                                         environment['LLM_MODEL'], environment['LLM_ENDPOINT'])
             from cognee.api.client import app
             if config.get('generation_applied_file'):
                 from project_control import private_write

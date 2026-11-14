@@ -128,9 +128,15 @@ class GenerationValidation:
             result = json.loads(stdout)
             allowed = {'status', 'plain_passed', 'schema_passed', 'quality_passed', 'structured_mode',
                        'sample_version', 'boundary', 'error_code', 'structured_mode_evidence', 'adapter_calls',
-                       'schema_errors', 'schema_response_shapes'}
+                       'schema_errors', 'schema_response_shapes', 'capability_calls', 'native_schema_evidence', 'quality_fields'}
             if not isinstance(result, dict) or set(result) - allowed or result.get('status') not in ('passed', 'failed', 'result_unknown'):
                 raise ValueError('probe_result_unconfirmed')
+            if profile.get('provider') == 'ollama':
+                from generation_ollama import evidence_matches
+                evidence = result.get('native_schema_evidence')
+                if ((evidence is not None or result.get('status') == 'passed')
+                        and not evidence_matches(evidence, environment['LLM_MODEL'], environment['LLM_ENDPOINT'])):
+                    raise ValueError('probe_result_unconfirmed')
             row.update(result)
         except asyncio.TimeoutError:
             row.update(status='result_unknown', error_code='validation_timeout')

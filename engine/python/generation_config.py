@@ -235,6 +235,7 @@ class GenerationStore:
         row = self.resolve(reference)
         if not validation_passed(self.state['validations'], row['digest']):
             raise PolicyError('generation_validation_required', 409)
+        self.native_schema_evidence(row)
         self.state['next'] = copy.deepcopy(reference)
         return self.commit(operation_id, request, {'next': copy.deepcopy(reference)})
 
@@ -243,6 +244,20 @@ class GenerationStore:
         credential = (self.secret(profile)
                       if requires_credential(profile) else None)
         return compile_environment(profile, runtime, credential)
+
+    def native_schema_evidence(self, row):
+        if row['profile'].get('provider') != 'ollama':
+            return None
+        from generation_ollama import evidence_matches
+        matches = [v for v in self.state['validations'].values() if v.get('digest') == row['digest']]
+        if not matches or not validation_passed(self.state['validations'], row['digest']):
+            raise PolicyError('generation_native_schema_evidence_required', 409)
+        revision = max(v.get('registered_revision', 0) for v in matches)
+        latest = [v for v in matches if v.get('registered_revision', 0) == revision]
+        environment = compile_environment(row['profile'], {})
+        if any(not evidence_matches(v.get('native_schema_evidence'), environment['LLM_MODEL'], environment['LLM_ENDPOINT']) for v in latest):
+            raise PolicyError('generation_native_schema_evidence_required', 409)
+        return copy.deepcopy(latest[0]['native_schema_evidence'])
 
     def view(self):
         result = copy.deepcopy(self.state)
@@ -275,4 +290,8 @@ def runtime_generation(runtime):
     if reader.state.get('schema_version') != 2:
         raise PolicyError('unsupported_generation_config', 503)
     row = reader.resolve(reference)
-    return row['profile'], reader.environment(reference, runtime), row['digest']
+    environment = reader.environment(reference, runtime)
+    evidence = reader.native_schema_evidence(row)
+    if evidence is not None:
+        environment['MEMLANE_OLLAMA_SCHEMA_EVIDENCE'] = json.dumps(evidence, sort_keys=True)
+    return row['profile'], environment, row['digest']

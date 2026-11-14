@@ -1,0 +1,150 @@
+{
+  "checkpoint": 44,
+  "scope": "Owned Ollama fixed SDK sample and actual debug Native first-setup save/reopen/validate/next; not official engine startup or knowledge adoption",
+  "model": "qwen3:4b-instruct-2507-q4_K_M",
+  "model_metadata": [
+    {
+      "name": "qwen3:4b-instruct-2507-q4_K_M",
+      "digest": "0edcdef34593eac1aa2be9c7d06c432dcf81945adca5eca2f27662c18f168ba0",
+      "size": 2497293803,
+      "details": {
+        "parent_model": "",
+        "format": "gguf",
+        "family": "qwen3",
+        "families": [
+          "qwen3"
+        ],
+        "parameter_size": "4.0B",
+        "quantization_level": "Q4_K_M",
+        "context_length": 262144,
+        "embedding_length": 2560
+      }
+    }
+  ],
+  "local_validation": {
+    "status": "passed",
+    "digest": "ad557900df68f1a390a2fe37125e67089f80ca1224b1d97df58002947045121b",
+    "reference": {
+      "id": "ollama-local",
+      "revision": 5,
+      "digest": "ad557900df68f1a390a2fe37125e67089f80ca1224b1d97df58002947045121b"
+    },
+    "structured_mode": "json_schema",
+    "registered_revision": 10,
+    "process_group": 73944,
+    "plain_passed": true,
+    "schema_passed": true,
+    "quality_passed": true,
+    "structured_mode_evidence": "official_adapter_request",
+    "sample_version": "nested-unicode-null-3",
+    "boundary": "official_adapter_synthetic_extraction",
+    "capability_calls": 1,
+    "native_schema_evidence": {
+      "contract": "ollama-native-nonce-v1",
+      "status": "verified",
+      "model": "ollama_chat/qwen3:4b-instruct-2507-q4_K_M",
+      "endpoint_sha256": "8de9e0144809dc638a306dee98be9c6ab24d4b6b3f79b01dcdc0020140379285"
+    },
+    "adapter_calls": 2
+  },
+  "validation_groups_exited": true,
+  "one_shot_daemon_exit_waited": true,
+  "native_ui": {
+    "scope": "actual tagged debug Native window and real configuration-only controller plus owned Ollama; no official engine/knowledge acceptance",
+    "steps": [
+      "save_without_key_no_model_or_active_switch"
+    ],
+    "saved": {
+      "id": "api-ui-PBSQ6C3BWSLP323MBJXOGBP2GG",
+      "revision": 2,
+      "digest": "ad557900df68f1a390a2fe37125e67089f80ca1224b1d97df58002947045121b",
+      "active": null,
+      "next": null,
+      "validation_count": 0
+    },
+    "validation_operation": "ui-ZZY6AU7T7563RHGMWEFN3YQWUJ",
+    "validation": {
+      "status": "passed",
+      "digest": "ad557900df68f1a390a2fe37125e67089f80ca1224b1d97df58002947045121b",
+      "reference": {
+        "id": "api-ui-PBSQ6C3BWSLP323MBJXOGBP2GG",
+        "revision": 2
+      },
+      "structured_mode": "json_schema",
+      "registered_revision": 3,
+      "process_group": 82990,
+      "plain_passed": true,
+      "schema_passed": true,
+      "quality_passed": true,
+      "structured_mode_evidence": "official_adapter_request",
+      "sample_version": "nested-unicode-null-3",
+      "boundary": "official_adapter_synthetic_extraction",
+      "capability_calls": 1,
+      "native_schema_evidence": {
+        "contract": "ollama-native-nonce-v1",
+        "status": "verified",
+        "model": "ollama_chat/qwen3:4b-instruct-2507-q4_K_M",
+        "endpoint_sha256": "8de9e0144809dc638a306dee98be9c6ab24d4b6b3f79b01dcdc0020140379285"
+      },
+      "adapter_calls": 2
+    },
+    "next": {
+      "id": "api-ui-PBSQ6C3BWSLP323MBJXOGBP2GG",
+      "revision": 2
+    },
+    "active": null,
+    "outcome": "passed_ui_save_validate_next"
+  },
+  "startup_compilation": {
+    "selected": {
+      "id": "api-ui-PBSQ6C3BWSLP323MBJXOGBP2GG",
+      "revision": 2
+    },
+    "active": null,
+    "digest_matches_validation": true,
+    "model": "ollama_chat/qwen3:4b-instruct-2507-q4_K_M",
+    "schema_contract": "ollama-native-nonce-v1",
+    "validation_group_exited": true,
+    "model_calls_by_compilation": 0
+  },
+  "tests": {
+    "python_unique": 49,
+    "python_targeted_repeat": 2,
+    "go_targeted": 12,
+    "shared_worktree": true
+  },
+  "prior_failures_preserved": {
+    "MA-OLLAMA-LOCAL-SCHEMA01": 2,
+    "MA-OLLAMA-LOCAL-NATIVE-FACT01": 2,
+    "MA-OLLAMA-SPACE01_interrupted": 1
+  },
+  "llama_native_fact_fields": [
+    "project.name"
+  ],
+  "first_native_fact_fields_unknown": true,
+  "retired_private_model": {
+    "name": "llama3.2:3b",
+    "digest": "a80c4f17acd55265feec403c7aef86be0c25983ab279d83f3bcd3abbcb5b8b72",
+    "bytes": 2019393189,
+    "manifest_and_small_resources_preserved": true,
+    "active_next_none": true,
+    "official_delete_confirmed": true
+  },
+  "screenshots": [
+    "native-ollama/saved.png",
+    "native-ollama/reopened.png",
+    "native-ollama/next-start.png"
+  ],
+  "remaining": [
+    "Normal official engine startup and applied digest",
+    "Official knowledge processing and new-session adoption",
+    "Normal settings Agent connection Native incremental acceptance",
+    "External native Provider credentials and independent Desktop evidence"
+  ],
+  "runtime_boundary": {
+    "own_ui_controller_and_ollama_retained_for_next_consumer": true,
+    "original_user_model_and_libraries_untouched": true,
+    "release": false,
+    "reset_card": false
+  }
+}

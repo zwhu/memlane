@@ -520,3 +520,14 @@ OpenCode check已经原地确认匹配项，返回的是剩余unknown；共享UI
 独立SDK实验从探针AST复用原类定义、事实、system prompt及期望值，只显式请求原生Schema。实际Ollama 0.34.0／同Llama 3.2 3B返回data_object、结构校验通过，但精确事实比较失败，MA-OLLAMA-LOCAL-NATIVE-FACT01实验失败1次；具体值未留存，尚未完成质量定位。它不将原固定adapter路径改为通过，也不重置其2轮计数。实验首次有同步stdout上下文误用的TypeError，发生于模型请求前；保留方法失败回执、修正后执行，不合并成Schema第三轮。
 
 已核对正式诊断验证进程组退出，两个独立daemon均wait退出；原账本、失败回执及唯一模型保留，日常配置／服务未变，无重置卡、模型下载或完整App构建。[脱敏证据](evidence/multi-agent-development-20261114/ollama-schema-diagnostics.json)。下一步确定有真实证据的Ollama原生Schema策略，再验事实质量及官方处理／采用；Native实窗、日常收口、旧代际和外部前置继续待完成，完整Goal保持active。
+
+
+## 检查点四十四：Ollama原生能力与真实Native配置流程
+
+验证新增随机Schema约束探针，随机值只存在Schema参数中；通过后仅为所选模型登记能力，再执行不变的nested-unicode-null-3普通／结构／精确事实样本。最新整体验证及能力回执必须匹配配置digest、模型与地址，才能选择next和编译启动；启动复用回执，不追加探针调用，不修改官方SDK源码。49项Python定向检查通过，另2项针对能力登记恢复的断言复验通过；12项Go回归通过，基于共享工作树，不冒充纯提交验收。
+
+同Llama原生结构通过，但project.name事实不匹配；MA-OLLAMA-LOCAL-NATIVE-FACT01保守累计2次，首次实验字段未知，原JSON对象Schema问题累计2轮不重置。未启用Llama。确认无消费者后，通过独立daemon官方删除接口清理约2.02GB私有Llama权重，保留manifest、小文件和全部失败回执；用户原模型与库未动。随后独立Qwen3 4B instruct Q4_K_M（2,497,293,803字节）在Ollama0.34.0／8K单并发下通过同一固定样本，实际json_schema、能力探针1次／官方adapter2次。限定该模型、地址及样本，不扩大为通用质量结论。
+
+实际1200×820 MyGo调试窗口完成无密钥保存、重开后保留、真实Qwen验证、选择“下次启动使用”。Native实际回执普通／Schema／质量全通过，验证进程组82990已退出；next指向已验证revision2，active仍为空。启动编译摘要及能力绑定匹配，编译未调用模型。截图为真实窗口，非UI夹具。CUA窗口定位不可用，使用既有MyGo e2e自动化接口，未改生产自动化代码。
+
+此轮仅首次配置共用表单；独立官方目录尚未初始化，不能据编译结果声称官方引擎已启动或知识链通过。保留一个Qwen模型及自有Ollama／setup／调试窗口供下一步正常启动消费，不触碰其他会话服务；原日常旧服务owner本轮未观察到，原因未知，不声称其仍运行。Agent正常设置实窗、官方处理／采用、外部账号和独立Desktop证据仍待完成。无重置卡、release或完整运行包。完整Goal继续active。[脱敏证据与截图](evidence/multi-agent-development-20261114/ollama-native-schema-ui.json)。
