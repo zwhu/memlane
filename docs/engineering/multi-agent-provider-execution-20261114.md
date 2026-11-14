@@ -710,3 +710,15 @@ MA-OLLAMA-KNOWLEDGE-COVERAGE01累计失败1轮：触发条件是原固定编码�
 必要收尾只核对原进程退出及自有Ollama api/ps加载模型数0；保留现有dev服务、Native watcher、模型、数据／主体／绑定／配置及原失败证据供独立工作和用户决策，不推断未知任务全部退出。[收尾回执](evidence/multi-agent-development-20261114/thinking-curator-boundaries/final-stop-safety.json)。没有新增源码、Agent测试、模型下载、日常配置改写或release。另按已存在证据纠正支持矩阵的OpenCode当前摘要，并将旧检查点明确划为历史，避免用旧“未接通”掩盖后续完成事实。
 
 完整Goal尚未完成；本具体问题停止，其他工作可继续。剩余独立门槛仍为可用原生供应商私有配置、普通Codex Desktop新会话、实际Native积压按钮及日常采用／冻结；当前缺少这些外部输入或可操作回执，不能用协议夹具、CLI或后台API替代。Cursor／Claude和未安装Agent沿用户暂缓／免验边界，不补跑。
+
+## 检查点六十一：核对独立剩余门槛，未重试停止项
+
+逐项对照定稿方案MA01–MA09、LP01–LP05、UI01共15项要求及I01–I10工作包，读取相关实际报告并固定摘要；明确限定样本已有证据、用户暂缓、外部前置和停止项，没有把报告存在或JSON合法当成新一轮功能通过。8份所选连接／Provider源码与当前HEAD一致；共享未提交源码及新增积压coordinator仍保留，不外推全树可冻结。基线tag仍解析到2539147e…。[逐项审计](evidence/multi-agent-development-20261114/remaining-gates-after-stop/audit.json)。
+
+独立前置本轮重新核对：
+
+- 仅通过既有SDK socket读取当前可见树，没有定位App、导航、悬停或点击。窗口仍为知识处理页，没有持续保存／停止／明确继续等积压控件，不能执行实际Native积压用例；此前CUA第4次准备失败的停止边界保持。[当前页面](evidence/multi-agent-development-20261114/remaining-gates-after-stop/native-current-page.json)。
+- 只检查当前进程环境key存在性及此前使用的pi auth／models配置的Provider名称，OpenAI／Anthropic／Gemini原生项均未发现；不复制值、不扫描其他私有位置、不调用模型，也不声称机器上绝不存在凭据。[前置存在性](evidence/multi-agent-development-20261114/remaining-gates-after-stop/native-provider-presence.json)。
+- 只读取本Goal精确会话文件的第一条metadata：source=vscode、originator=codex-tui，仍不是普通Desktop新会话采用回执；未读聊天正文或其他Agent历史。[当前渠道](evidence/multi-agent-development-20261114/remaining-gates-after-stop/current-thread-channel.json)。
+
+这些外部前置与检查点六十一致，尚无用户针对停止项的新方向。当前为停止后连续第2个Goal轮次核对，同一问题不进入第5次；完整Goal保持未完成。可继续的编码／真实验证受上述输入及共享所有权交接限制，不能用重复检查、换入口或协议夹具制造进展。不重复发起已经提出的凭据／Desktop／页面请求，等待明确输入后继续相应项。

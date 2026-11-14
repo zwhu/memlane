@@ -1,0 +1,320 @@
+{
+  "observed_at": "2026-11-14T11:13:53.917040+00:00",
+  "checkpoint": 61,
+  "goal_objective": "阅读上面技术方案，完成技术开发",
+  "full_goal_complete": false,
+  "scope": "Remaining-dependency audit; existing reports read and hashed, not renewed model/host/visual acceptance",
+  "requirements": [
+    {
+      "id": "MA01",
+      "status": "partial_external",
+      "basis": "CLI regression evidenced; ordinary Desktop fresh-session evidence missing",
+      "evidence": [
+        {
+          "path": "real-codex-checkpoint.json",
+          "sha256": "35655b8f7124dd81751593574b61e3f29f6f02189c84658de6000c732729edf5"
+        },
+        {
+          "path": "codex-position-regression.json",
+          "sha256": "342be1950d7c1049c8dd8b72b2728e82d4c5a58a26f766d1a15d38d4d568cb5d"
+        }
+      ]
+    },
+    {
+      "id": "MA02",
+      "status": "existing_evidence_user_waives_further_tests",
+      "basis": "Claude Code limited real coding/adoption evidence retained; no new tests",
+      "evidence": [
+        {
+          "path": "real-claude-checkpoint.json",
+          "sha256": "03f1c31ff64162939d7d5d82ef37bd51db6098d36dea05fa0e53c35f4ec84bb8"
+        }
+      ]
+    },
+    {
+      "id": "MA03",
+      "status": "user_deferred",
+      "basis": "Cursor further tests explicitly deferred; no added test or installer attempt",
+      "evidence": [
+        {
+          "path": "host-adapters-checkpoint.json",
+          "sha256": "fdd6e603a5c57b042013af9da12078ae0a03756febba5b520678848e897dfb9a"
+        },
+        {
+          "path": "cursor-generation-loader.json",
+          "sha256": "13e52a6c12c83910493b20314dc843317cafe969ee239af6ed3ea294dac02ab1"
+        }
+      ]
+    },
+    {
+      "id": "MA04",
+      "status": "evidenced_for_declared_samples",
+      "basis": "Cross-Agent and project/common priority evidenced; no all-model extrapolation",
+      "evidence": [
+        {
+          "path": "real-coding-hosts.json",
+          "sha256": "aa427064036d327b5670c806adcd88c96a24598434d128b68710d3218c852324"
+        },
+        {
+          "path": "real-common-priority.json",
+          "sha256": "4050fff26e680090b192ae16e8edcbf5e09ad00f556b164b3210d9af598201b4"
+        }
+      ]
+    },
+    {
+      "id": "MA05",
+      "status": "evidenced_for_declared_samples",
+      "basis": "Independent subject CRUD/forbidden/common ACL evidence retained",
+      "evidence": [
+        {
+          "path": "real-agent-permissions.json",
+          "sha256": "cdfce20e0ac38faaa47065d7eef8221a92de92e5dc9d98746543819b80ad5d93"
+        },
+        {
+          "path": "real-explicit-tools-and-common.json",
+          "sha256": "a830520b3a1911d7c1f2322f4f19164bf9eceded2cd354ef92981d916934e014"
+        }
+      ]
+    },
+    {
+      "id": "MA06",
+      "status": "evidenced_for_declared_samples",
+      "basis": "Original unknown/403/batch cancellation boundaries evidenced; controlled fault limits remain",
+      "evidence": [
+        {
+          "path": "real-403-replay.json",
+          "sha256": "060d1aa2d27101e0b8675fd26fb83ff97d28c976cbf08b74436455f79f6377d2"
+        },
+        {
+          "path": "native-batch-recovery.json",
+          "sha256": "3599ea98002f592291cab7db22737b4dbc49fddf94de7868655a9db50e858a18"
+        }
+      ]
+    },
+    {
+      "id": "MA07",
+      "status": "partial_external",
+      "basis": "OpenCode real coding/adoption, Native binding and v3 receipt evidenced; Native backlog controls and daily cutover pending",
+      "evidence": [
+        {
+          "path": "opencode-real-coding.json",
+          "sha256": "a17d631e9f6341e9df94de613c8f670d507022f46f20f65ea22142c51f3568de"
+        },
+        {
+          "path": "native-opencode-binding-receipt.json",
+          "sha256": "ea4999cfc3b9c941e203820ddd09dce2b18f661981bdd336361de253f6b4eb00"
+        },
+        {
+          "path": "opencode-unknown-head-of-line.json",
+          "sha256": "0bf21787443136f6fde69733ea6cfad8194d5f6ee7bcded771aab10da7777dbb"
+        },
+        {
+          "path": "opencode-continuous-backlog.json",
+          "sha256": "7690c4e3ad4da30b34af3d126ec0c3e462b1fcc27bce2e50eab8ab227c0f9ac3"
+        }
+      ]
+    },
+    {
+      "id": "MA08",
+      "status": "evidenced_for_declared_samples",
+      "basis": "pi real coding to official knowledge to fresh adoption",
+      "evidence": [
+        {
+          "path": "real-coding-hosts.json",
+          "sha256": "aa427064036d327b5670c806adcd88c96a24598434d128b68710d3218c852324"
+        }
+      ]
+    },
+    {
+      "id": "MA09",
+      "status": "evidenced_for_declared_samples",
+      "basis": "TraeX ordinary interactive CLI real chain, not TRAE IDE",
+      "evidence": [
+        {
+          "path": "real-coding-hosts.json",
+          "sha256": "aa427064036d327b5670c806adcd88c96a24598434d128b68710d3218c852324"
+        },
+        {
+          "path": "real-cross-protocol-switch.json",
+          "sha256": "f21a87735e63d5be8bcb7d7782d17224c3994017c9bbcf360ac7bfd31f32de26"
+        }
+      ]
+    },
+    {
+      "id": "LP01",
+      "status": "partial_external",
+      "basis": "Codex and DeepSeek real fixed samples; native OpenAI/Anthropic/Gemini real quality gates lack credentials",
+      "evidence": [
+        {
+          "path": "bridge-lifecycle-checkpoint.json",
+          "sha256": "0dfa48dee8fb75b5f8ff5a6ddee08c40df4115e01b0ba641ca5c22c8fbe58356"
+        },
+        {
+          "path": "native-vendor-wire-protocols.json",
+          "sha256": "6682d32165c4c8cf754ef3120deea0e6f36b15de51cb3409ca12451cd776d773"
+        },
+        {
+          "path": "real-cross-protocol-switch.json",
+          "sha256": "f21a87735e63d5be8bcb7d7782d17224c3994017c9bbcf360ac7bfd31f32de26"
+        }
+      ]
+    },
+    {
+      "id": "LP02",
+      "status": "evidenced_for_declared_samples",
+      "basis": "Agent capture and processing Provider decoupled in real API startup",
+      "evidence": [
+        {
+          "path": "real-provider-startup.json",
+          "sha256": "5bc78793c7632710248bbabfc4e2ae0a4a4db95c9e5b612f97bb1bf7055a926b"
+        },
+        {
+          "path": "real-cross-protocol-switch.json",
+          "sha256": "f21a87735e63d5be8bcb7d7782d17224c3994017c9bbcf360ac7bfd31f32de26"
+        }
+      ]
+    },
+    {
+      "id": "LP03",
+      "status": "evidenced_for_declared_samples",
+      "basis": "Native save/validate/next/restart plus real bounded recovery; final daily cutover pending I10",
+      "evidence": [
+        {
+          "path": "first-provider-initialization.json",
+          "sha256": "982c04ff20e6d16cc57b56d2135c13e735d3889fc465e8058491763a15d1146c"
+        },
+        {
+          "path": "startup-recovery-real-processes.json",
+          "sha256": "94d253c802e093ec1f206d187b39b9ab4b20ce50378f4e0f402606d682924b4f"
+        },
+        {
+          "path": "generation-parameters-native/checks.json",
+          "sha256": "1cb5f2c11d9de66125496b4ff4f25598de332e29eafc227d7816ea09ffdc9349"
+        }
+      ]
+    },
+    {
+      "id": "LP04",
+      "status": "partial_remote_boundary",
+      "basis": "Fixed SDK wire error/redirect/completion checks evidenced; no native-vendor credential evidence",
+      "evidence": [
+        {
+          "path": "redirect-protection.json",
+          "sha256": "f7e1dc8ae10b30f6954ba57bbb58444b6d6fe964f31a85f43c03401c71c6a531"
+        },
+        {
+          "path": "native-vendor-wire-protocols.json",
+          "sha256": "6682d32165c4c8cf754ef3120deea0e6f36b15de51cb3409ca12451cd776d773"
+        }
+      ]
+    },
+    {
+      "id": "LP05",
+      "status": "stopped_pending_user_direction",
+      "basis": "Ollama protocol/startup passed; current-state quality defect stopped at4, full knowledge/adoption not accepted",
+      "evidence": [
+        {
+          "path": "ollama-native-schema-ui.json",
+          "sha256": "ef26614f1841220485a37bc7e346561377368f7b7e4f72e6445bff89df8c8a4c"
+        },
+        {
+          "path": "thinking-curator-boundaries/final-stop-summary.json",
+          "sha256": "cdb076c08fb514c516856bfe11e18ad8d9115fa83ee2c71f83b297bb89db5fad"
+        }
+      ]
+    },
+    {
+      "id": "UI01",
+      "status": "partial_external",
+      "basis": "Real Native Agent detection/binding and Provider settings evidenced; Native backlog controls absent from current visible page",
+      "evidence": [
+        {
+          "path": "native-agent-binding-ollama-startup.json",
+          "sha256": "656e4e8122a1f5ed21c5c7391dc9989fe1775f07a74027dac3f73b850f6b1d70"
+        },
+        {
+          "path": "native-opencode-binding-receipt.json",
+          "sha256": "ea4999cfc3b9c941e203820ddd09dce2b18f661981bdd336361de253f6b4eb00"
+        },
+        {
+          "path": "generation-parameters-native/checks.json",
+          "sha256": "1cb5f2c11d9de66125496b4ff4f25598de332e29eafc227d7816ea09ffdc9349"
+        }
+      ]
+    }
+  ],
+  "work_packages": {
+    "I01": "baseline tag resolves2539147e8847baeff653edb102fefe93b0f0790b; execution record retained",
+    "I02_I03": "implementation/evidence present; mixed shared worktree ownership preserved",
+    "I04_I05": "pi/TraeX limited true chains evidenced",
+    "I06": "implemented; native-vendor real quality gates blocked",
+    "I07": "real candidate/first setup/recovery evidenced",
+    "I08": "Claude existing evidence, Cursor user-deferred",
+    "I09": "real settings evidence; current extra Native backlog controls not accepted",
+    "I10": "not frozen or delivered; external gates, stopped Ollama issue and shared-source closure unresolved"
+  },
+  "selected_source_identity": [
+    {
+      "path": "engine/python/agent_connections.py",
+      "working_sha256": "06ba078333d048888c76c51e5a08223f009a21bdb945b9aca01eb0dcec98b672",
+      "head_sha256": "06ba078333d048888c76c51e5a08223f009a21bdb945b9aca01eb0dcec98b672",
+      "matches_HEAD": true
+    },
+    {
+      "path": "engine/python/agent_memory_adapter.py",
+      "working_sha256": "1bad5e2bdd02ea54a966811dc9c0eedc174dcf6ab606697e182ab7dd35fa0081",
+      "head_sha256": "1bad5e2bdd02ea54a966811dc9c0eedc174dcf6ab606697e182ab7dd35fa0081",
+      "matches_HEAD": true
+    },
+    {
+      "path": "engine/agents/pi/index.ts",
+      "working_sha256": "7e06414ce23609fbc4d895909b301a52deb68d80906a14983acceb5c10286fac",
+      "head_sha256": "7e06414ce23609fbc4d895909b301a52deb68d80906a14983acceb5c10286fac",
+      "matches_HEAD": true
+    },
+    {
+      "path": "engine/python/traex_hook.py",
+      "working_sha256": "200196e0c474c873c176cf849f31b1abce17f2c1e1412df80e150d21c12a314a",
+      "head_sha256": "200196e0c474c873c176cf849f31b1abce17f2c1e1412df80e150d21c12a314a",
+      "matches_HEAD": true
+    },
+    {
+      "path": "engine/python/generation_config.py",
+      "working_sha256": "0bc971a088ae67d1b6fc4beb5a277b33a9b82c962303a0e7198d6cf52e19ce74",
+      "head_sha256": "0bc971a088ae67d1b6fc4beb5a277b33a9b82c962303a0e7198d6cf52e19ce74",
+      "matches_HEAD": true
+    },
+    {
+      "path": "engine/python/generation_validation.py",
+      "working_sha256": "6131b015a649375f8979a116e8f9586b6b11880d9bbad64cfec7295f98207c73",
+      "head_sha256": "6131b015a649375f8979a116e8f9586b6b11880d9bbad64cfec7295f98207c73",
+      "matches_HEAD": true
+    },
+    {
+      "path": "engine/python/generation_startup.py",
+      "working_sha256": "cdf4e1f2fd37dd432df4201b9c8e4ba8fc38544287d68f37fde30f9bc071d8c1",
+      "head_sha256": "cdf4e1f2fd37dd432df4201b9c8e4ba8fc38544287d68f37fde30f9bc071d8c1",
+      "matches_HEAD": true
+    },
+    {
+      "path": "internal/simpledesktop/integrations_ui.go",
+      "working_sha256": "662c22b0246feb2c995352584636733f1a42efa48ac0903fbe3331ec437b8814",
+      "head_sha256": "662c22b0246feb2c995352584636733f1a42efa48ac0903fbe3331ec437b8814",
+      "matches_HEAD": true
+    }
+  ],
+  "not_a_claim_all_shared_sources_match_HEAD_or_tests_are_fresh": true,
+  "external_gates_unchanged_since_checkpoint60": true,
+  "blocked_audit_consecutive_goal_turns_since_checkpoint60": 2,
+  "stopped_issue_not_retried": true,
+  "no_new_UI_action_or_agent_or_provider_model_request": true,
+  "next_inputs": [
+    "explicit direction for stopped Ollama issue",
+    "usable native vendor configuration outside chat",
+    "ordinary Codex Desktop new-session receipt",
+    "actual project settings backlog page made available",
+    "shared-source ownership closure for final freeze"
+  ],
+  "known_diagnostic_handles_terminal": true,
+  "no_claim_about_unknown_historical_jobs": true
+}

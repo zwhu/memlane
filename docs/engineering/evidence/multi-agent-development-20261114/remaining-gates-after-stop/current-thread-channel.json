@@ -1,0 +1,10 @@
+{
+  "observed_at": "2026-11-14T11:12:18.891745+00:00",
+  "scope": "first metadata record of this exact goal thread only; no chat body or other Agent history",
+  "thread_id": "01a1d632-0bb7-7c93-9764-9c7e1f2d824d",
+  "metadata_files_found": 1,
+  "desktop_acceptance_proved": false,
+  "source": "vscode",
+  "originator": "codex-tui",
+  "cli_version": "0.169.0"
+}

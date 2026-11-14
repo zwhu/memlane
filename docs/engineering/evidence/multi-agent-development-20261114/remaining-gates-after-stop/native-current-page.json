@@ -1,0 +1,9 @@
+{
+  "observed_at": "2026-11-14T11:11:37.420143+00:00",
+  "scope": "read-only existing SDK socket capture/tree; no app locator, navigation, hover or action",
+  "visible_project_backlog_controls": [],
+  "knowledge_processing_page_visible": true,
+  "current_project_settings_visible": false,
+  "label_count": 50,
+  "no_ui_actions": true
+}

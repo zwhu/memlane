@@ -1,5 +1,7 @@
 # 多 Agent / Provider 当前支持与验收矩阵
 
+检查点六十一增量：按原15项MA／LP／UI要求及I01–I10审计已有证据，8份所选源码与HEAD一致，但未把共享工作树或全量交付标为通过。只读核对当前Native仍无积压控件，已知环境／pi配置仍缺三类原生账号，本会话渠道仍为vscode；停止项无新用户方向，没有追加模型／宿主／UI动作。完整Goal尚未完成，等待现有外部前置及共享源码收口，见[当前依赖审计](evidence/multi-agent-development-20261114/remaining-gates-after-stop/audit.json)及[检查点六十一](multi-agent-provider-execution-20261114.md#检查点六十一核对独立剩余门槛未重试停止项)。
+
 检查点六十增量：16K上下文／14336输出的原请求375.76秒正常完成，无context shift，但curator再次返回与第3轮相同的旧错误现状表述。MA-OLLAMA-CODING-QUALITY01累计4轮，**已停止该问题及依赖它的质量／采用实验，不开始第5轮，等待用户明确方向**；信息遗漏独立累计3轮，截断仍1轮。原进程退出、自有Ollama加载模型数0，原知识／配置／依赖均保留。完整Goal未完成，其他独立门槛继续。见[停止报告](ollama-current-state-stop-20261114.md)、[四轮账本](evidence/multi-agent-development-20261114/thinking-curator-boundaries/final-stop-summary.json)及[检查点六十](multi-agent-provider-execution-20261114.md#检查点六十同一现状误写第4次失败停止该问题)。
 
 检查点五十九增量：已读原候选缓存并隔离固定官方curator，完整QA仍在输入，但实际proposal再次提升旧truthiness错误为现状、遗漏正数／负数规则；历史错误累计3轮，信息遗漏累计2轮。只扩上下文到16K的独立请求耗尽8192输出token，被正式判为截断，未取得语义答案，不能凑成原错误第4轮。保留16K、只提高输出到14336的原单次检查正在运行；若原错误再次出现须在第4轮停止。未改原知识、profile或daemon默认，未验采用。见[检查点五十九](multi-agent-provider-execution-20261114.md#检查点五十九定位curator遗漏单变量容量检查)及[回执](evidence/multi-agent-development-20261114/thinking-curator-boundaries/summary.json)。
