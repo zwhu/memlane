@@ -28,7 +28,7 @@ export class ManagedDelivery {
     }, async (item: Item) => {
       // The official marker lookup reconciles the original operation only.
       if (!checked.has(item.id)) throw new Error("original_project_target_unconfirmed");
-      return this.client.hasEntry(item.session, item.entry);
+      return this.client.hasEntry(item.session, item.entry, checked.get(item.id)!.dataset_id);
     }, async (item: Item) => {
       if (!item.target) throw new Error("original_project_target_required");
       const policy = await this.control.currentTarget(item.target);

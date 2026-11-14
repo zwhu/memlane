@@ -66,6 +66,25 @@ def managed_http_client(text):
   }
 
 ''')
+    method('  async hasEntry(', '  async listDatasets():', '''  async hasEntry(session: string, entry: Record<string, unknown>, dataset: string): Promise<boolean> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(dataset)) return false;
+    const marker = entry.type === "qa" ? entry.context : entry.type === "trace"
+      ? (entry.method_params as Record<string, unknown> | undefined)?.cognee_capture_id : undefined;
+    if (typeof marker !== "string" || !marker) return false;
+    try {
+      const data = await this.fetchAPI<Record<string, unknown>>("/api/v1/sessions/" + encodeURIComponent(session), {method: "GET"}, 2500, undefined, 0);
+      if (data.session_id !== session || data.dataset_id !== dataset) return false;
+      const entries = entry.type === "qa" ? data.qas : data.traces;
+      return Array.isArray(entries) && entries.some(value => {
+        if (!value || typeof value !== "object") return false;
+        const row = value as Record<string, unknown>;
+        return (entry.type === "qa" ? row.context :
+          (row.method_params as Record<string, unknown> | undefined)?.cognee_capture_id) === marker;
+      });
+    } catch { return false; } // Unavailable or nonmatching evidence remains unknown.
+  }
+
+''')
     return text
 
 

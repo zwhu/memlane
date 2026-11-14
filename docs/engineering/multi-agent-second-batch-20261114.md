@@ -20,7 +20,7 @@
 
 ## 当前缺口与资源
 
-最初基线中，官方OpenCode使用插件级dataset、拒绝后自动重投、整段session消息读取；后续受管覆盖已处理这些问题。当前以检查点三十八为准：管理侧准备／启用、原生绑定与知识采用样本及真实API权限阶段通过；上轮同名组会话目标错误已另记并修复，认证待发材料／旧unknown目标核对与Native增量仍待完成。以下早期检查点保留当时事实，不覆盖后续源码与证据。
+最初基线中，官方OpenCode使用插件级dataset、拒绝后自动重投、整段session消息读取；后续受管覆盖已处理这些问题。当前以检查点三十九为准：管理侧准备／启用、原生绑定与知识采用样本、真实API权限阶段及旧unknown目标核对通过；同名组错误及unknown误确认均另记并修复，认证待发材料处置与Native增量仍待完成。以下早期检查点保留当时事实，不覆盖后续源码与证据。
 
 ## 受管HTTP／outbox底层适配
 
@@ -153,3 +153,15 @@ MA-OPENCODE-REMEMBER01累计失败1轮：旧显式工具上传文件同时传ses
 源码23项控制Node与8项Python补丁检查（含6项HTTP、10项outbox Node）通过；实际当前产物manifest `a2c682df90704957cbd830ae076e2859d9b4c697402632476ade7e677a63f4bf`。本轮真实Native进程均按PID／启动时间／端口确认后退出，队列pending0。专用文档已删除；4份旧知识正文摘要不变，test-baseline被官方正常整理替换为新验证会话来源，仍为7项测试，旧快照保留。原服务与控制继续保留，日常配置未改，不追加Cursor／Claude测试。
 
 下一步补受认证待发材料review／retry／discard；尤其旧unknown核对必须同时验证官方会话dataset_id，不能仅看到内容marker就当原项目已保存。当前该目标校验尚未补齐，不将本轮当完整OpenCode交付。Native设置增量、Ollama、首批外部前置仍保持原范围。
+
+## 旧unknown的原目标核对（检查点三十九）
+
+MA-OPENCODE-UNKNOWN-TARGET01累计失败1轮。沿原主体／原项目，用一条受控本机unknown记录核对真实旧官方会话：它的marker确实存在，但官方dataset是旧同名子组。旧client在整段JSON中查找marker，会把该本机项从unknown错误标成saved。受控传输故障只制造本机不确定状态，没有向官方发送请求正文；不是实际网络丢回执或新宿主采集验收。失败队列、原官方会话及前轮所有计数保留。[红绿证据](evidence/multi-agent-development-20261114/opencode-unknown-target.json)。
+
+现在`ManagedDelivery`传入已核对的原dataset UUID；官方核对必须同时满足`session_id`／`dataset_id`一致，QA只比较`qas.context`，trace只比较`traces.method_params.cognee_capture_id`。其他字段的字符串、不完整结果、无效marker或服务不可达都不确认原材料。不会根据“未找到”重新发送，仍保持unknown。
+
+当前不可变产物的真实GET复验3项通过：旧同名子组marker保持unknown／saved0；正确原项目的QA和trace分别确认saved1。全部原主体／原会话／原项目，没有新增或改绑身份，不向服务POST内容，不启动Native或模型，不重投旧材料。主队列pending0；专用核对夹具的一条unknown继续原样保留，不自行丢弃或补交。
+
+定向检查：24项控制Node、7项HTTP、10项outbox、8项Python补丁通过；严格构造产物manifest `908b9ad1dbe2a077b4a0e4223bb2f2b521f9fd21a2d588c0043e25b9a4188be9`。新增检查后的首次辅助失败另记：Python仍要求23项而Node已24项通过；HTTP观察器未记录method却断言GET。两处各1次检查失败，修正观察／数量后同生产候选通过，不计为新一轮官方核对失败。
+
+本轮只完成管理处置的原目标前置。下一步将原show／check／replay／discard入口接受管OpenCode worker：复用管理身份认证，绑定原instance／project／host key／dataset，核对精确待发快照，串行排除宿主发送；重投仍沿原官方队列和实时策略，只处理已确认的原项，未知不重发，丢弃只移除本机副本。worker及运行时须在不可变产物和管理侧校验后调用，不把管理能力注册成Agent工具、不增加HTTP服务或内容队列。认证操作、并发快照和Native入口尚未实现／验收，不能将本次核对通过当补交功能完成。Ollama及首批外部前置仍保留。

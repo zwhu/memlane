@@ -65,7 +65,7 @@ class OpenCodeControlTests(unittest.IsolatedAsyncioTestCase):
                                               env=env, capture_output=True, text=True, timeout=40)
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                 counts = {key: int(value) for key, value in re.findall(r'^# (tests|pass|fail) (\d+)$', run.stdout, re.M)}
-                self.assertEqual(counts, {'tests': 23, 'pass': 23, 'fail': 0})
+                self.assertEqual(counts, {'tests': 24, 'pass': 24, 'fail': 0})
                 print(json.dumps({'node_test': 'managed-control.test.mjs', **counts}))
             finally:
                 await server.close()

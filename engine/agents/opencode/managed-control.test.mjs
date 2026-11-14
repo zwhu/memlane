@@ -208,7 +208,7 @@ const compiled = new URL("./", pathToFileURL(process.env.MEMLANE_OPENCODE_TEST_C
 const { ManagedDelivery } = await import(new URL("managed-delivery.js", compiled));
 const { Outbox } = await import(new URL("runtime.js", compiled));
 const { CogneeHttpClient } = await import(new URL("client.js", compiled));
-async function officialServer({loseFirstResponse = false, credential = "synthetic-child-key", loseLifecycleResponse = false, loseImproveResponse = false, loseRememberResponse = false} = {}) {
+async function officialServer({loseFirstResponse = false, credential = "synthetic-child-key", loseLifecycleResponse = false, loseImproveResponse = false, loseRememberResponse = false, sessionDetail} = {}) {
   const writes = [], recalls = [], lifecycles = [], improvements = [], remembers = [];
   let lookups = 0;
   const server = await listener(async (req, res) => {
@@ -223,7 +223,13 @@ async function officialServer({loseFirstResponse = false, credential = "syntheti
       res.end('{"status":"saved"}'); return;
     }
     if (req.method === "GET" && req.url.startsWith("/api/v1/sessions/")) {
-      lookups++; res.end(JSON.stringify({entries: writes.map(item => item.entry)})); return;
+      lookups++;
+      const session = decodeURIComponent(req.url.split("/").at(-1));
+      const items = writes.filter(item => item.session_id === session);
+      const detail = {session_id: session, dataset_id: items[0]?.dataset_id,
+        qas: items.filter(item => item.entry.type === "qa").map(item => item.entry),
+        traces: items.filter(item => item.entry.type === "trace").map(item => item.entry)};
+      res.end(JSON.stringify(sessionDetail ? sessionDetail(detail) : detail)); return;
     }
     if (req.method === "POST" && req.url === "/api/v1/recall") {
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
@@ -310,6 +316,31 @@ test("delivery unknown response reconciles original marker after restart in anot
   } finally {
     await access(p.project_id, {access: "maintain", capture: true, auto_process: true});
     await s.close();
+  }
+});
+
+test("unknown receipt requires original official session, dataset and exact QA marker field", async () => {
+  const c = new ManagedProjectControl(options("unknown-receipt-target")), native = "unknown-receipt-native";
+  await c.current(native);
+  const variants = [
+    detail => ({...detail, dataset_id: "33333333-3333-4333-8333-333333333333"}),
+    detail => ({...detail, dataset_id: undefined}),
+    detail => ({...detail, session_id: "different-official-session"}),
+    detail => ({...detail, qas: detail.qas.map(qa => ({...qa, answer: qa.context, context: "other-context"}))}),
+  ];
+  for (const [index, sessionDetail] of variants.entries()) {
+    const s = await officialServer({loseFirstResponse: true, sessionDetail});
+    const queueRoot = join(root, "unknown-target-outbox-" + index);
+    const queue = new Outbox("original", queueRoot);
+    try {
+      const delivery = new ManagedDelivery(c, s.client, queue);
+      await delivery.enqueue(native, "original-marker-" + index, "original-session", {type: "qa", context: "opencode_capture:original-" + index});
+      await assert.rejects(delivery.flush());
+      await new ManagedDelivery(c, s.client, new Outbox("original", queueRoot)).flush();
+      assert.equal(queue.status().uncertain, 1, "nonmatching official evidence consumed the original unknown entry");
+      assert.equal(queue.status().saved, 0);
+      assert.equal(s.writes.length, 1, "unknown entry was resent");
+    } finally { await s.close(); }
   }
 });
 

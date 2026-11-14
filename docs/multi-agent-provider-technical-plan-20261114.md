@@ -328,3 +328,5 @@ I04/I05为第一优先交付切片，必须先由Agent自验；不能先交一�
 2026-11-14检查点三十七：OpenCode自动记忆注入采用官方`CHUNKS`和`only_context=true`，项目限定`session_learnings`，不传会话完成缓存；宿主模型据来源回答。GraphCompletion代答不能替代已生成知识的原始证据。权限在查询和注入前分别核对；实际编码／新会话采用与未完成矩阵见[第二批记录](engineering/multi-agent-second-batch-20261114.md)。
 
 2026-11-14检查点三十八：OpenCode采集用`dataset_id`、登记用`dataset_ids`，禁止按同名组推定原项目。显式记忆沿官方永久上传和`memory`节点集，不将文件占位发送到session缓存；后台处理接收与正文／知识完成分开。自动注入允许`session_learnings`／`memory`，仍只取原项目及可读通用知识。旧会话或unknown材料核对须验证官方session的dataset UUID，禁止仅凭marker确认；该unknown补齐与认证处置仍在实施范围。原错误同名组及旧会话不自动迁移，当前证据见[检查点三十八](engineering/multi-agent-second-batch-20261114.md)。
+
+2026-11-14检查点三十九：OpenCode旧unknown的原session／dataset和marker字段核对已实现并以真实GET验证。后续管理处置复用现有show／check／replay／discard概念，管理认证、原instance／project／host key绑定、精确快照及宿主／管理worker发送互斥仍须单独验收；不得将这些管理能力暴露成Agent工具，也不新增服务或正文队列。

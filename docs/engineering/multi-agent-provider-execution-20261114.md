@@ -478,3 +478,7 @@ OpenCode 1.3.5／DeepSeek Flash以独立官方子主体、私有profile和合成
 ## 检查点三十八：修复OpenCode内容目标与显式写入
 
 原官方会话metadata审计发现同名子组歧义，MA-OPENCODE-TARGET01失败1；现已将采集和登记改为策略UUID。当前真实Native QA1／trace2及新会话工具0次采用均核对到指定dataset，7项测试通过。显式remember文件＋session路径另有正文被官方占位过滤的问题，MA-OPENCODE-REMEMBER01失败1；改永久上传／后台处理和官方memory节点集后，正文及召回复验通过。原组／会话／失败回执不迁移、不重投。真实API验证维护／只读／禁止／恢复与通用只读六阶段，原覆盖恢复、临时文档删除；空项目索引404时不跨组取数或沿用正文。三个方法问题与两个真实缺陷分别计数，原失败记录保留，未冒充整轮绿色。23项控制Node、8项补丁Python含16项底层Node通过；进程退出、queue0、日常配置保持。[完整边界](multi-agent-second-batch-20261114.md)、[证据](evidence/multi-agent-development-20261114/opencode-real-acl.json)。待发材料认证处置及旧unknown的dataset核对、Native增量、Ollama与外部前置仍待完成。
+
+## 检查点三十九：unknown必须匹配原官方数据组
+
+旧client仅搜索整段session JSON marker，实际旧同名子组会话能导致本机unknown被误标saved（MA-OPENCODE-UNKNOWN-TARGET01失败1）。现已同时验证原session_id、dataset_id和对应QA／trace字段。实际服务只读复验3项通过：旧同名组不确认，原组QA／trace可确认，无POST／重投／模型或Native启动；主队列pending0，受控unknown夹具保留。24控制＋7HTTP＋10outbox Node与8项Python补丁通过。数量／观察器两处辅助检查错误各失败1后修正，与真实核对失败分别记录。管理认证、精确快照、跨进程发送互斥及Native补交／丢弃接线仍待完成。[连续记录](multi-agent-second-batch-20261114.md)、[证据](evidence/multi-agent-development-20261114/opencode-unknown-target.json)。
