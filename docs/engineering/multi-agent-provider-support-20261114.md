@@ -118,3 +118,7 @@ OpenCode管理Node持续保存worker与Python协议适配完成，固定原目�
 ### 检查点五十二增量
 
 已知12份旧OpenCode进程回执的PID当前均不存在，两套私有profile的loader／完整artifact／sender租约核对一致、原队列独立，当前未见serve／run／attach进程。收口这些已知环境的旧发送者安全前置，不外推未知日常profile或自动迁移。未清理旧依赖或重放数据。[证据](evidence/multi-agent-development-20261114/opencode-old-generation-safety.json)。
+
+### 检查点五十三增量
+
+Thinking候选下载／manifest核对完成，首次固定验证在原120秒总预算超时、结果未知，子进程组已退出，未启用。根据实际95秒／3.4秒／截止中止的请求时间线，仅将本机Ollama总预算扩为360秒，原样本及全部未知／取消／幂等规则保留，11项定向检查通过。明确新操作运行中，原超时回执不变；没有知识质量通过结论，原质量失败保持2轮。[证据](evidence/multi-agent-development-20261114/ollama-thinking-validation-budget.json)。

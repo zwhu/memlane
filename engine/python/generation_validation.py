@@ -94,6 +94,11 @@ class GenerationValidation:
     async def run(self, operation_id, environment, profile):
         row = self.store.state['validations'][operation_id]
         row['status'] = 'running'
+        # A cold local reasoning model may spend most of the remote budget on
+        # plain output alone. Keep all three checks and allow a finite total
+        # budget three times as long; cancellation/unknown rules stay shared.
+        deadline = PROBE_TIMEOUT_SECONDS * (3 if profile.get('provider') == 'ollama' else 1)
+        row['deadline_seconds'] = deadline
         self.store.save()
         # No inherited provider/auth/login environment. stdin carries the
         # credential; no key appears in process arguments or validation logs.
@@ -122,7 +127,7 @@ class GenerationValidation:
             payload = {'environment': environment, 'runtime': {
                 **{key: self.runtime[key] for key in ('official_source', 'official_archive')},
                 'generation_mode': profile['mode']}}
-            stdout, _ = await asyncio.wait_for(self.process.communicate(json.dumps(payload).encode()), PROBE_TIMEOUT_SECONDS)
+            stdout, _ = await asyncio.wait_for(self.process.communicate(json.dumps(payload).encode()), deadline)
             if self.process.returncode != 0 or len(stdout) > 16384:
                 raise ValueError('probe_result_unconfirmed')
             result = json.loads(stdout)

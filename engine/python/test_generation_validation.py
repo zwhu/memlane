@@ -92,6 +92,38 @@ class ValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.state['active']['id'], 'existing-codex')
         self.assertIsNone(self.store.state['next'])
 
+    async def test_local_model_can_finish_beyond_remote_budget_without_switching_current_configuration(self):
+        from generation_ollama import receipt_for
+        local = self.store.put('local', {'mode': 'provider', 'provider': 'ollama', 'model': 'synthetic',
+                                       'endpoint': 'http://127.0.0.1:11434'}, self.store.state['revision'], 'save-local')
+        result = {'status': 'passed', 'plain_passed': True, 'schema_passed': True, 'quality_passed': True,
+                  'structured_mode': 'json_schema', 'native_schema_evidence': receipt_for('ollama_chat/synthetic', 'http://127.0.0.1:11434')}
+        self.worker('import json,sys,time\njson.load(sys.stdin)\ntime.sleep(.4)\nprint(' + repr(json.dumps(result)) + ')\n')
+        with patch('generation_validation.ROOT', self.root), patch('generation_validation.PROBE_TIMEOUT_SECONDS', .25):
+            self.validator.start(local, self.store.state['revision'], 'local-slow')
+            await self.validator.task
+        row = self.validator.get('local-slow')
+        self.assertEqual(row['status'], 'passed')
+        self.assertFalse(group_exists(row['process_group']))
+        self.assertEqual(self.store.state['active']['id'], 'existing-codex')
+        self.assertIsNone(self.store.state['next'])
+
+    async def test_local_budget_still_expires_as_unknown_without_replay_and_reaps_its_child(self):
+        local = self.store.put('local', {'mode': 'provider', 'provider': 'ollama', 'model': 'synthetic',
+                                       'endpoint': 'http://127.0.0.1:11434'}, self.store.state['revision'], 'save-local')
+        self.worker('import json,sys,time\njson.load(sys.stdin)\ntime.sleep(60)\n')
+        with patch('generation_validation.ROOT', self.root), patch('generation_validation.PROBE_TIMEOUT_SECONDS', .05):
+            first = self.validator.start(local, self.store.state['revision'], 'local-deadline')
+            await self.validator.task
+            self.assertEqual(self.validator.start(local, 0, 'local-deadline'), first)
+        row = self.validator.get('local-deadline')
+        self.assertEqual(row['status'], 'result_unknown')
+        self.assertEqual(row['error_code'], 'validation_timeout')
+        self.assertIsNone(self.validator.process)
+        self.assertFalse(group_exists(row['process_group']))
+        self.assertEqual(self.store.state['active']['id'], 'existing-codex')
+        self.assertIsNone(self.store.state['next'])
+
     async def test_agent_cannot_manage_generation_and_get_never_starts_validation(self):
         registry = Registry(self.root / 'registry.json', None)
         client = TestClient(TestServer(create_app(registry, 'm' * 40, {'agent': 'a' * 40},

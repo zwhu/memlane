@@ -616,3 +616,13 @@ v2／v3验收宿主已按PID＋lstart＋完整argv正常停止并确认退出，
 已核对[Qwen官方模型卡](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507)与[Ollama固定tag](https://ollama.com/library/qwen3:4b-thinking-2507-q4_K_M)：Thinking-2507为另一4B候选，官方介绍强化推理与指令遵循，但不作为本项目质量通过证据。registry manifest摘要359d7dd4…，本机缺少2,497,282,593字节；下载前预计余量113,241,755,103字节，高于105GiB运行门禁。仅在本轮私有Ollama缓存启动一次原pull，保留原Instruct权重和active配置；不自动启用新模型。当前原任务仍运行，尚未开始验证。[运行中回执](evidence/multi-agent-development-20261114/thinking-candidate-preparation.json)。
 
 继续消费原exec session43235及driver PID／lstart，观察超时不重新pull；模型完成后先核对原manifest，再以独立GenerationStore执行原固定验证，通过后才安排完整知识链。下载末段速度下降，尚无终态或失败证据；保留部分产物及其消费者，不在任务仍活跃时清理。MA-OLLAMA-CODING-QUALITY01保持2轮，不能把换模型或下载进度记为质量通过。
+
+## 检查点五十三：Thinking候选下载完成与本机验证预算修正
+
+原exec43235终态0：模型下载完成，manifest359d7dd4…与事前registry回执一致，原Instruct仍保留。随后thinking-model-v1因原120秒总预算结束为result_unknown／validation_timeout，子进程组确认退出，候选active／next均空。服务HTTP时间线记录95秒与3.4秒的两次chat200，第三次在总截止点chat500；未取得probe最终回执，不凭顺序推断各阶段已通过，也不把未知当质量失败。随后api/ps模型列表为空，原daemon仍存活。原下载及验证合计1060.59秒，未重新pull。
+
+MA-OLLAMA-VALIDATION-BUDGET01实际失败1轮：原总预算无法容纳该冷本机模型的连续检查。源码仅对provider=ollama延长总预算到360秒，其余120秒不变，并把deadline_seconds记入操作。样本／事实断言、取消、截止未知、原operation幂等及进程回收保持。新增实际受管子进程检查先红（超远端预算的本机任务被截为unknown），修复后11项Python定向检查通过，含本机任务可完成、本机仍有界、超时不重投及旧远端门禁；未运行Agent宿主或追加Claude／Cursor测试。
+
+基于同一profile／digest新建明确操作thinking-model-v2-bounded（exec72011），原v1回执逐字段保持，当前新任务运行中，预算360秒。驱动首次误把resolve后的record当reference，在controller注册操作／启动worker前被拒，准备错误1，保留回执后纠正引用；没有重复模型请求。当前主control未为这项预算源码改动重启，不能声称其运行中实例已应用新预算；独立新验证使用修正后生产类。[原超时、检查和新操作证据](evidence/multi-agent-development-20261114/ollama-thinking-validation-budget.json)。
+
+原库／active配置未修改；两份候选权重暂由正在运行的新验证及后续质量场景消费，待终态及引用核对后清理无消费者项，不提前清理仍被引用的Instruct。MA-OLLAMA-CODING-QUALITY01保持2轮。新候选验证、完整知识质量、Native积压按钮及外部账号／Desktop／日常采用仍未完成，完整Goal继续active。

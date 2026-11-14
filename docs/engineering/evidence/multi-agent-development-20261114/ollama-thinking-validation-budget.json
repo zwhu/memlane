@@ -1,0 +1,185 @@
+{
+  "checkpoint": 53,
+  "scope": "Actual isolated Thinking candidate validation timeout and bounded local-budget correction; full coding quality not established",
+  "model": "qwen3:4b-thinking-2507-q4_K_M",
+  "manifest_sha256": "359d7dd4bcdab3d86b87d73ac27966f4dbb9f5efdfcc75d34a8764a09474fae7",
+  "download_completed_and_manifest_verified": true,
+  "download_and_first_validation_seconds": 1060.59,
+  "first_validation": {
+    "status": "result_unknown",
+    "digest": "457839b8ae0dc9194d0a388b32e77505599dbfb7e5c9ba87dd9029cb6377a52d",
+    "reference": {
+      "id": "ollama-thinking",
+      "revision": 1,
+      "digest": "457839b8ae0dc9194d0a388b32e77505599dbfb7e5c9ba87dd9029cb6377a52d"
+    },
+    "structured_mode": "unknown",
+    "registered_revision": 2,
+    "process_group": 8368,
+    "error_code": "validation_timeout"
+  },
+  "first_validation_groups_exited": true,
+  "old_receipt_preserved": true,
+  "http_timeline": {
+    "http_events": [
+      {
+        "finished_at": "2026/11/14 - 16:41:41",
+        "http": 200,
+        "duration": "15m40s",
+        "method": "POST",
+        "path": "/api/pull"
+      },
+      {
+        "finished_at": "2026/11/14 - 16:41:41",
+        "http": 200,
+        "duration": "4.088334ms",
+        "method": "GET",
+        "path": "/api/tags"
+      },
+      {
+        "finished_at": "2026/11/14 - 16:41:54",
+        "http": 200,
+        "duration": "128.17375ms",
+        "method": "POST",
+        "path": "/api/show"
+      },
+      {
+        "finished_at": "2026/11/14 - 16:41:55",
+        "http": 200,
+        "duration": "1.081167ms",
+        "method": "POST",
+        "path": "/api/show"
+      },
+      {
+        "finished_at": "2026/11/14 - 16:42:57",
+        "http": 200,
+        "duration": "63.583µs",
+        "method": "GET",
+        "path": "/api/ps"
+      },
+      {
+        "finished_at": "2026/11/14 - 16:43:30",
+        "http": 200,
+        "duration": "1m35s",
+        "method": "POST",
+        "path": "/api/chat"
+      },
+      {
+        "finished_at": "2026/11/14 - 16:43:31",
+        "http": 200,
+        "duration": "1.902708ms",
+        "method": "POST",
+        "path": "/api/show"
+      },
+      {
+        "finished_at": "2026/11/14 - 16:43:31",
+        "http": 200,
+        "duration": "1.515708ms",
+        "method": "POST",
+        "path": "/api/show"
+      },
+      {
+        "finished_at": "2026/11/14 - 16:43:31",
+        "http": 200,
+        "duration": "2.255375ms",
+        "method": "POST",
+        "path": "/api/show"
+      },
+      {
+        "finished_at": "2026/11/14 - 16:43:31",
+        "http": 200,
+        "duration": "1.242042ms",
+        "method": "POST",
+        "path": "/api/show"
+      },
+      {
+        "finished_at": "2026/11/14 - 16:43:31",
+        "http": 200,
+        "duration": "1.526833ms",
+        "method": "POST",
+        "path": "/api/show"
+      },
+      {
+        "finished_at": "2026/11/14 - 16:43:34",
+        "http": 200,
+        "duration": "3.439580292s",
+        "method": "POST",
+        "path": "/api/chat"
+      },
+      {
+        "finished_at": "2026/11/14 - 16:43:34",
+        "http": 200,
+        "duration": "1.405167ms",
+        "method": "POST",
+        "path": "/api/show"
+      },
+      {
+        "finished_at": "2026/11/14 - 16:43:41",
+        "http": 500,
+        "duration": "6.887619167s",
+        "method": "POST",
+        "path": "/api/chat"
+      },
+      {
+        "finished_at": "2026/11/14 - 16:43:52",
+        "http": 200,
+        "duration": "28.25µs",
+        "method": "GET",
+        "path": "/api/ps"
+      }
+    ],
+    "cancellation_indicators": []
+  },
+  "model_loaded_context_length": 8192,
+  "post_first_validation_loaded_models": 0,
+  "quality_stage_receipt": "not retained; global deadline interrupted probe before final receipt; no claim of quality pass or a new semantic failure",
+  "budget_issue": {
+    "id": "MA-OLLAMA-VALIDATION-BUDGET01",
+    "failed_actual_rounds": 1,
+    "fact": "Three chat requests: first about95 seconds, second3.4 seconds, third ended at global120 second deadline; aggregate budget prevented complete fixed probe receipt.",
+    "fix": "Local Ollama total budget360 seconds; other providers remain120. Same sample, assertions, cancellation, owned cleanup, immutable original outcomes and no implicit replay."
+  },
+  "tests": {
+    "red": "New real child requiring longer than remote budget returned result_unknown before fix, expected passed",
+    "green_python_tests": 11,
+    "green_seconds": 1.09,
+    "green_log_sha256": "31efb6934ff7c1d81f02ee67890ea792dc214081af9a0e3ceb99e1053fd88e96"
+  },
+  "new_explicit_validation": {
+    "operation_id": "thinking-model-v2-bounded",
+    "receipt_at_export": {
+      "deadline_seconds": 360,
+      "digest": "457839b8ae0dc9194d0a388b32e77505599dbfb7e5c9ba87dd9029cb6377a52d",
+      "process_group": 14766,
+      "reference": {
+        "id": "ollama-thinking",
+        "revision": 1
+      },
+      "registered_revision": 3,
+      "status": "running",
+      "structured_mode": "unknown"
+    },
+    "exec_session": 72011,
+    "state": "running unless superseded by a later terminal checkpoint"
+  },
+  "pre_model_method_incident": {
+    "count": 1,
+    "fact": "New driver initially passed resolved record where controller requires profile reference; rejected before operation registration or worker launch. Log/report retained; no model request repeated."
+  },
+  "original_active_profile_changed": false,
+  "candidate_active": null,
+  "candidate_next": null,
+  "current_main_control_restarted_for_budget_change": false,
+  "existing_semantic_quality_failure_count": 2,
+  "sources": [
+    "https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507",
+    "https://ollama.com/library/qwen3:4b-thinking-2507-q4_K_M"
+  ],
+  "not_completed": [
+    "New candidate full fixed validation outcome",
+    "Actual coding/knowledge/adoption quality",
+    "Actual Native backlog buttons",
+    "External native Provider accounts, Desktop and daily gates"
+  ],
+  "full_goal_complete": false
+}
