@@ -96,7 +96,15 @@ func (a *App) projectHeader(c *ui.Context) {
 	appToolbar(c, "页面工具栏", func() {
 		var back func()
 		label := "返回总览"
-		if a.page == "检索结果" {
+		if a.searchOrigin != nil && a.searchPane == a.state() {
+			if len(a.state().History) > 0 {
+				back = func() { a.returnFromSource(a.state()) }
+				label = "返回搜索结果"
+			} else {
+				back = a.returnToSearch
+				label = "返回搜索"
+			}
+		} else if a.page == "检索结果" {
 			if len(a.state().History) > 0 {
 				back = func() { a.returnFromSource(a.state()) }
 				label = "返回检索结果"

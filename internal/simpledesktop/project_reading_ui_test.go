@@ -109,8 +109,8 @@ func TestUnifiedSearchRequestsAndNestedReturn(t *testing.T) {
 			Datasets []string `json:"dataset_ids"`
 		}
 		json.NewDecoder(r.Body).Decode(&in)
-		if len(in.Datasets) != 1 || in.Datasets[0] != "ds" {
-			t.Errorf("scope widened: %v", in.Datasets)
+		if len(in.Datasets) != 2 || in.Datasets[0] != "ds" || in.Datasets[1] != "other" {
+			t.Errorf("global search catalog changed: %v", in.Datasets)
 		}
 		if in.Query == "old" {
 			close(oldStarted)
@@ -160,7 +160,7 @@ func TestUnifiedSearchRequestsAndNestedReturn(t *testing.T) {
 	}
 	a.openSearchResult(a.searchUI.Rows[0])
 	drainReading(t, updates, func() bool { return !a.state().Reading })
-	if a.page != "检索结果" || a.searchOrigin == nil {
+	if a.page != "知识" || a.searchOrigin == nil {
 		t.Fatal("result origin missing")
 	}
 	a.state().History = []Item{*a.state().Selected}
@@ -249,12 +249,16 @@ func TestProjectLongTitleSearchKeyboardAndStateFixtures(t *testing.T) {
 			tt.Frame()
 			fixtureImage(t, tt, fmt.Sprintf("project-%dx%d-search-results", wh[0], wh[1]))
 			tt.Key(0, ui.KeyDown)
+			if a.searchUI.Selection != 0 || !a.searchUI.KeyboardSelection {
+				t.Fatal("first down key did not select the first result")
+			}
+			tt.Key(0, ui.KeyDown)
 			if a.searchUI.Selection != 1 {
 				t.Fatal("down key did not select next result")
 			}
 			clickProjectUI(t, tt, "搜索内容类型")
-			if a.searchUI.Submitted == a.searchSignature() {
-				t.Fatal("type change reused stale query as current")
+			if a.searchUI.Submitted != a.searchSignature() {
+				t.Fatal("local type switch invalidated completed results")
 			}
 			tt.Key(0, ui.KeyEscape)
 			if a.searchUI.Open {

@@ -2,8 +2,9 @@ package simpledesktop
 
 import (
 	"context"
-	"fmt"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -14,8 +15,10 @@ type unifiedSearchState struct {
 	Query, Scope, Type, Error, Submitted string
 	Rows                                 []Item
 	Selection                            int
+	KeyboardSelection                    bool
 	Scroll                               ui.ScrollState
 	Reveal                               bool
+	Due                                  time.Time
 	request                              uint64
 	cancel                               context.CancelFunc
 }
@@ -36,7 +39,7 @@ func (a *App) searchCatalog(scope string) []Project {
 }
 func (a *App) searchSignature() string {
 	s := &a.searchUI
-	v := a.readingIdentity + "/" + strings.TrimSpace(s.Query) + "/" + s.Scope + "/" + s.Type
+	v := a.readingIdentity + "/" + strings.TrimSpace(s.Query) + "/" + s.Scope
 	for _, p := range a.searchCatalog(s.Scope) {
 		v += "/" + p.ID + ":" + p.Dataset
 	}
@@ -51,25 +54,23 @@ func (a *App) openUnifiedSearch(restore bool) {
 	a.projectUI.InfoOpen = false
 	a.projectUI.MenuOpen = false
 	if !restore {
-		scope := ""
-		if a.page == "知识" || a.page == "图谱" {
-			if p, ok := a.current(); ok {
-				scope = p.ID
-			}
-		} else if a.page == "通用知识" {
-			scope = "@common"
+		s.Scope = ""
+		if strings.TrimSpace(s.Query) != "" {
+			s.Rows = nil
+			s.Loaded = false
+			s.Submitted = ""
 		}
-		if s.Scope != scope {
-			a.closeUnifiedSearch()
-			*s = unifiedSearchState{Scope: scope, Type: "全部", request: s.request}
-		}
+		s.Query = ""
+		s.Type = "全部"
 	}
 	if s.Type == "" {
 		s.Type = "全部"
 	}
-	wasOpen := s.Open
 	s.Open = true
-	s.Focus = wasOpen
+	s.Focus = true
+	if (!restore && strings.TrimSpace(s.Query) == "") || !s.Loaded || s.Submitted != a.searchSignature() {
+		a.submitUnifiedSearch()
+	}
 }
 func (a *App) closeUnifiedSearch() {
 	s := &a.searchUI
@@ -80,6 +81,7 @@ func (a *App) closeUnifiedSearch() {
 	s.request++
 	s.Open = false
 	s.Loading = false
+	s.Due = time.Time{}
 }
 func (a *App) invalidateUnifiedSearch(dataset string) {
 	s := &a.searchUI
@@ -102,18 +104,7 @@ func (a *App) invalidateUnifiedSearch(dataset string) {
 func (a *App) submitUnifiedSearch() {
 	s := &a.searchUI
 	query := strings.TrimSpace(s.Query)
-	if query == "" {
-		if s.cancel != nil {
-			s.cancel()
-		}
-		s.request++
-		s.Rows = nil
-		s.Submitted = ""
-		s.Error = ""
-		s.Loading = false
-		s.Loaded = false
-		return
-	}
+
 	if s.Loading && s.Submitted == a.searchSignature() {
 		return
 	}
@@ -127,20 +118,22 @@ func (a *App) submitUnifiedSearch() {
 	signature := a.searchSignature()
 	s.Submitted = signature
 	s.Loading = true
+	s.Due = time.Time{}
 	s.Error = ""
 	s.Selection = 0
+	s.KeyboardSelection = false
 	projects := a.searchCatalog(s.Scope)
-	filter := ""
-	if s.Type == "知识" {
-		filter = "知识"
-	} else if s.Type == "原始记录" {
-		filter = "原始材料"
-	}
 	client := a.Client
 	identity := a.readingIdentity
 	go func() {
 		defer cancel()
-		rows, err := client.search(ctx, projects, query, filter)
+		var rows []Item
+		var err error
+		if query == "" {
+			rows, err = a.recentSearchItems(ctx, client, projects, signature)
+		} else {
+			rows, err = client.search(ctx, projects, query)
+		}
 		a.Update(func() {
 			if request != s.request || signature != a.searchSignature() || identity != a.readingIdentity {
 				return
@@ -173,8 +166,9 @@ func (a *App) submitUnifiedSearch() {
 }
 func (a *App) searchSubmitOrOpen() {
 	s := &a.searchUI
-	if !s.Loading && s.Loaded && s.Error == "" && s.Submitted == a.searchSignature() && len(s.Rows) > 0 {
-		a.openSearchResult(s.Rows[min(s.Selection, len(s.Rows)-1)])
+	if !s.Loading && s.Loaded && s.Error == "" && s.Submitted == a.searchSignature() && len(a.visibleSearchRows()) > 0 {
+		rows := a.visibleSearchRows()
+		a.openSearchResult(rows[min(s.Selection, len(rows)-1)])
 		return
 	}
 	a.submitUnifiedSearch()
@@ -187,32 +181,80 @@ func (a *App) openSearchResult(i Item) {
 	if a.searchOrigin != nil {
 		origin = a.searchOrigin
 	}
-	index := -1
-	found := false
+	page, index, kind := "知识", -1, "原始记录"
+	if strings.Contains(i.Kind, "知识") {
+		kind = "知识"
+	}
 	for n, p := range a.Config.Projects {
 		if p.Dataset == i.Dataset {
 			index = n
-			found = true
 			break
 		}
 	}
-	if !found {
-		for _, p := range a.Config.Common {
+	if index < 0 {
+		for n, p := range a.Config.Common {
 			if p.Dataset == i.Dataset {
-				found = true
+				page = "通用知识"
+				index = n
 				break
 			}
 		}
 	}
-	if !found {
+	if index < 0 {
 		a.searchUI.Error = "结果范围已失效，请重新搜索"
 		return
 	}
-	a.closeUnifiedSearch()
-	a.navigate("检索结果", index)
+	a.navigateKind(page, index, kind)
 	a.searchOrigin = origin
-	a.selectItem(a.state(), i)
+	target := a.state()
+	a.searchPane = target
+	a.searchAnchor = &i
+	if !containsReadingItem(target.Items, i.key()) {
+		target.Items = append([]Item{i}, target.Items...)
+	}
+	a.selectItem(target, i)
+	if i.SourceDocument != "" && i.Document == nil {
+		a.resolveSearchDocument(target, i)
+	}
 }
+func containsReadingItem(rows []Item, key string) bool {
+	for _, i := range rows {
+		if i.key() == key {
+			return true
+		}
+	}
+	return false
+}
+func (a *App) resolveSearchDocument(s *pane, i Item) {
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	a.searchResolveCancel = cancel
+	client, epoch := a.Client, a.epoch
+	go func() {
+		defer cancel()
+		result, err := client.documentInfoByID(ctx, i.Dataset, i.SourceDocument)
+		a.Update(func() {
+			if epoch != a.epoch || a.searchPane != s || a.searchAnchor == nil || a.searchAnchor.key() != i.key() || s.Selected == nil || s.Selected.key() != i.key() {
+				return
+			}
+			if err != nil {
+				if readingUnavailable(err) {
+					a.InvalidateReading(i.Dataset)
+				}
+				return
+			}
+			a.searchAnchor = &result
+			rows := []Item{result}
+			for _, row := range s.Items {
+				if row.key() != i.key() && row.key() != result.key() {
+					rows = append(rows, row)
+				}
+			}
+			s.Items = rows
+			a.selectItem(s, result)
+		})
+	}()
+}
+
 func (a *App) returnToSearch() {
 	v := a.searchOrigin
 	a.restoreReadingLocation(v)
@@ -231,122 +273,45 @@ func (a *App) searchDialog(c *ui.Context) {
 	if !s.Open {
 		return
 	}
+	if !s.Due.IsZero() {
+		if !time.Now().Before(s.Due) {
+			a.submitUnifiedSearch()
+		} else {
+			c.After(time.Until(s.Due))
+		}
+	}
 	w, h := c.Size()
+	rows := a.visibleSearchRows()
 	ui.Modal(c.Key("unified-search-modal"), &s.Open, func() {
-		ui.Row(c).Height(76).Shrink(0).Padding(0, 20).Gap(14).AlignItems(ui.Center).Children(func() {
-			ui.Icon(c, homeSearch).FontSize(23).TextColor(homeLinkInk)
-			input := ui.TextInput(c.Key("unified-query"), &s.Query).Label("搜索关键词").Placeholder("输入关键词，按 Enter 搜索").Grow(1).MinWidth(0).FontSize(20).OnSubmit(a.searchSubmitOrOpen)
+		ui.Row(c).Height(68).Shrink(0).Padding(0, 20).Gap(12).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, homeSearch).FontSize(21).TextColor(homeMuted)
+			input := ui.TextInput(c.Key("unified-query"), &s.Query).Label("搜索关键词").Placeholder("搜索知识与原始记录").Grow(1).MinWidth(0).FontSize(18).Background(ui.Transparent).BorderWidth(0).OnSubmit(a.searchSubmitOrOpen)
 			if input.Changed() {
-				if s.cancel != nil {
-					s.cancel()
-				}
-				s.request++
-				s.Loading = false
-				s.Error = ""
-				if strings.TrimSpace(s.Query) == "" {
-					s.Rows = nil
-					s.Loaded = false
-					s.Submitted = ""
-				}
+				a.cancelChangedSearch()
 			}
 			if s.Focus {
 				input.Focus()
 				s.Focus = false
 			}
-			if input.Shortcut(0, ui.KeyDown) && len(s.Rows) > 0 {
-				s.Selection = (s.Selection + 1) % len(s.Rows)
+			if input.Shortcut(0, ui.KeyDown) && len(rows) > 0 {
+				s.Selection = (s.Selection + 1) % len(rows)
+				if !s.KeyboardSelection {
+					s.Selection = 0
+				}
+				s.KeyboardSelection = true
 				s.Reveal = true
 			}
-			if input.Shortcut(0, ui.KeyUp) && len(s.Rows) > 0 {
-				s.Selection = (s.Selection + len(s.Rows) - 1) % len(s.Rows)
+			if input.Shortcut(0, ui.KeyUp) && len(rows) > 0 {
+				s.Selection = (s.Selection + len(rows) - 1) % len(rows)
+				if !s.KeyboardSelection {
+					s.Selection = len(rows) - 1
+				}
+				s.KeyboardSelection = true
 				s.Reveal = true
 			}
-			projects := a.Config.Projects
-			options := []string{"全部项目与通用知识", "通用知识"}
-			options = append(options, projectLabels(projects)...)
-			selected := options[0]
-			if s.Scope == "@common" {
-				selected = options[1]
-			}
-			for n, p := range projects {
-				if p.ID == s.Scope {
-					selected = options[n+2]
-				}
-			}
-			ui.Select(c, &selected, options).Label("搜索范围").Width(155).FontSize(11).OnChange(func() {
-				scope := ""
-				if selected == options[1] {
-					scope = "@common"
-				}
-				for n, label := range options[2:] {
-					if selected == label {
-						scope = projects[n].ID
-					}
-				}
-				s.Scope = scope
-				a.cancelChangedSearch()
-			})
-			readingAction(c, "关闭搜索", readingClose, func() { a.closeUnifiedSearch() })
+			readingAction(c, "关闭搜索", readingClose, a.closeUnifiedSearch)
 		})
-		ui.Column(c).Shrink(0).Padding(8, 22).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Children(func() {
-			status := "输入关键词后按 Enter 检索官方内容"
-			if s.Loading {
-				status = "正在搜索…"
-			} else if s.Error != "" {
-				status = "搜索失败 · " + s.Error + " · 按 Enter 重试"
-			} else if s.Loaded {
-				status = fmt.Sprintf("已返回 %d 条", len(s.Rows))
-				if s.Submitted != a.searchSignature() {
-					status = "条件已更改 · 按 Enter 搜索"
-				}
-			}
-			homeText(c, status, homeMeta).MaxLines(2)
-		})
-		ui.Scroll(c.Key("unified-results")).Grow(1).MinHeight(0).TrackScroll(&s.Scroll).Padding(8, 10).Gap(4).Children(func() {
-			if len(s.Rows) == 0 {
-				message := "在当前范围搜索知识和原始记录"
-				if s.Loaded && !s.Loading && s.Error == "" {
-					message = "当前范围没有匹配结果，可切换全部项目或清除筛选"
-				}
-				homeText(c, message, homeBody).TextColor(homeMuted).Margin(16)
-			}
-			group := ""
-			for n, row := range s.Rows {
-				i := row
-				index := n
-				g := "原始记录"
-				if strings.Contains(i.Kind, "知识") {
-					g = "知识"
-				}
-				if g != group {
-					homeText(c, g, homeMeta).Margin(8, 12)
-					group = g
-				}
-				b := ui.Button(c, "").Key("search-hit-"+i.key()).Label(i.Title).FillWidth().MinWidth(0).Justify(ui.Start).Padding(12, 14).BorderWidth(0).Radius(9).Gap(14).Background(ui.Transparent)
-				if s.Selection == n {
-					b.Background(ui.Hex("#edf3f9"))
-					if s.Reveal {
-						b.ScrollIntoView()
-					}
-				}
-				b.Children(func() {
-					ui.Icon(c, homeDocument).FontSize(19).TextColor(homeLinkInk)
-					ui.Column(c).Grow(1).MinWidth(0).Gap(7).Children(func() {
-						homeText(c, i.Title, homeTitle).FontSize(14).MaxLines(2)
-						homeText(c, i.Preview, homeBody).FontSize(12).TextColor(homeMuted).MaxLines(2)
-						project := "范围未知"
-						for _, p := range overviewProjects(a.Config) {
-							if p.Dataset == i.Dataset {
-								project = p.Name
-							}
-						}
-						homeText(c, project+" · "+g, homeMeta)
-					})
-				}).Disabled(s.Loading || s.Error != "" || s.Submitted != a.searchSignature() || i.ReadingState == "unavailable").OnClick(func() { s.Selection = index; a.openSearchResult(i) })
-			}
-		})
-		s.Reveal = false
-		ui.Row(c).Height(62).Shrink(0).Padding(0, 20).Gap(16).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Children(func() {
+		ui.Row(c).Padding(0, 20, 12, 20).Children(func() {
 			labels := []string{"全部", "知识", "原始记录"}
 			selected := 0
 			for n, label := range labels {
@@ -354,14 +319,95 @@ func (a *App) searchDialog(c *ui.Context) {
 					selected = n
 				}
 			}
-			ui.Segmented(c, &selected, labels...).Label("搜索内容类型").OnChange(func() { s.Type = labels[selected]; a.cancelChangedSearch() })
-			ui.Spacer(c)
-			homeText(c, "↑↓ 选择  ↵ 搜索/打开  esc 关闭", homeMeta)
+			ui.Segmented(c, &selected, labels...).Label("搜索内容类型").OnChange(func() {
+				s.Type = labels[selected]
+				s.Selection = 0
+				s.KeyboardSelection = false
+				s.Scroll.Y = 0
+				s.Reveal = true
+			})
 		})
-	}).Width(min(float32(760), w-80)).Height(min(float32(596), h-160)).Padding(0).Gap(0).Label("搜索知识与原始记录弹框").Transition(projectOverlayMotion())
+		if s.Error != "" {
+			ui.Row(c).Padding(8, 20).Gap(12).Children(func() {
+				homeText(c, s.Error, homeMeta).MaxLines(2)
+				ui.Button(c, "重试").OnClick(a.submitUnifiedSearch)
+			})
+		}
+		ui.Scroll(c.Key("unified-results")).Grow(1).MinHeight(0).TrackScroll(&s.Scroll).Padding(8, 10).Gap(4).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Children(func() {
+			if len(rows) == 0 {
+				message := "没有匹配内容"
+				if s.Loading || !s.Due.IsZero() {
+					message = "搜索中…"
+				} else if strings.TrimSpace(s.Query) == "" {
+					message = "暂无最近内容"
+				}
+				homeText(c, message, homeMeta).Margin(16)
+			}
+			group := ""
+			for n, row := range rows {
+				i, index := row, n
+				kind := "原始记录"
+				if strings.Contains(i.Kind, "知识") {
+					kind = "知识"
+				}
+				if kind != group {
+					title := kind
+					if strings.TrimSpace(s.Query) == "" {
+						title = "最近" + kind
+					}
+					homeText(c, title, homeMeta).Margin(8, 12)
+					group = kind
+				}
+				title, preview := searchRowText(i)
+				b := ui.Button(c, "").Key("search-hit-"+i.key()).Label(title).FillWidth().MinWidth(0).Justify(ui.Start).Padding(12, 14).BorderWidth(0).Radius(8).Gap(12).Background(ui.Transparent)
+				b.Background(homeHoverColor(b, "search-hit-hover", ui.Transparent, c.Theme().SurfaceHover))
+				if s.KeyboardSelection && s.Selection == n {
+					b.Background(c.Theme().SurfaceHover)
+					if s.Reveal {
+						b.ScrollIntoView()
+					}
+				}
+				tip := title
+				if preview != "" {
+					tip += "\n\n" + preview
+				}
+				if v := []rune(tip); len(v) > 800 {
+					tip = string(v[:800]) + "…"
+				}
+				b.Tooltip(tip)
+				b.Children(func() {
+					ui.Icon(c, homeDocument).FontSize(18).TextColor(homeMuted)
+					ui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
+						homeText(c, title, homeTitle).FontSize(14).MaxLines(2)
+						if preview != "" && strings.TrimSpace(s.Query) != "" {
+							homeText(c, preview, homeMeta).MaxLines(2)
+						}
+						for _, p := range overviewProjects(a.Config) {
+							if p.Dataset == i.Dataset {
+								homeText(c, p.Name, homeMeta)
+								break
+							}
+						}
+					})
+				}).Disabled(s.Submitted != a.searchSignature() || i.ReadingState == "unavailable").OnClick(func() { s.Selection = index; a.openSearchResult(i) })
+			}
+		})
+		s.Reveal = false
+	}).Width(min(float32(680), w-80)).Height(min(float32(560), h-140)).Padding(0).Gap(0).Label("搜索知识与原始记录弹框").Transition(projectOverlayMotion())
 	if !s.Open {
 		a.closeUnifiedSearch()
 	}
+}
+func (a *App) visibleSearchRows() []Item {
+	result := []Item{}
+	for _, i := range a.searchUI.Rows {
+		knowledge := strings.Contains(i.Kind, "知识")
+		if a.searchUI.Type == "知识" && !knowledge || a.searchUI.Type == "原始记录" && knowledge {
+			continue
+		}
+		result = append(result, i)
+	}
+	return result
 }
 func (a *App) cancelChangedSearch() {
 	s := &a.searchUI
@@ -370,6 +416,105 @@ func (a *App) cancelChangedSearch() {
 	}
 	s.request++
 	s.Loading = false
-	s.Focus = true
 	s.Error = ""
+	s.Selection = 0
+	s.KeyboardSelection = false
+	s.Due = time.Now().Add(300 * time.Millisecond)
+}
+func searchRowText(i Item) (string, string) {
+	body := i.Preview
+	if body == "" {
+		body = itemPresentation(i).VisibleBody
+	}
+	// Technical headers are presentation-only; keep the original source bytes.
+	lines := strings.Split(body, "\n")
+	clean := []string{}
+	for _, line := range lines {
+		v := strings.TrimSpace(line)
+		if strings.HasPrefix(v, "Lesson-Type:") || strings.HasPrefix(v, "State-Key:") || strings.HasPrefix(v, "# Session learning (session ") {
+			continue
+		}
+		clean = append(clean, line)
+	}
+	preview := strings.TrimSpace(strings.Join(clean, "\n"))
+	title := i.Title
+	if title == "检索片段" || readableName(title) == "" {
+		title = firstReadingSentence(preview)
+	}
+	if title == "" {
+		if strings.Contains(i.Kind, "知识") {
+			title = "知识"
+		} else {
+			title = "原始记录"
+		}
+	}
+	if strings.TrimSpace(preview) == strings.TrimSpace(title) {
+		preview = ""
+	}
+	return title, preview
+}
+func (a *App) recentSearchItems(ctx context.Context, client Client, projects []Project, generation string) ([]Item, error) {
+	rows := []Item{}
+	for _, p := range projects {
+		docs, err := client.overviewDocuments(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range docs {
+			if d.knowledge() {
+				copy := d
+				rows = append(rows, Item{ID: d.ID, Dataset: p.Dataset, Kind: "知识", Title: d.title(), Date: d.date(), Source: d.session(), Document: &copy})
+			}
+		}
+		records, _, err := client.projectRecords(ctx, p, 0, "原始记录")
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, records...)
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, _ := officialTime(rows[i].Date)
+		b, _ := officialTime(rows[j].Date)
+		if a.Equal(b) {
+			return rows[i].key() < rows[j].key()
+		}
+		return a.After(b)
+	})
+	result := []Item{}
+	seen := map[string]bool{}
+	counts := map[bool]int{}
+	for _, i := range rows {
+		knowledge := strings.Contains(i.Kind, "知识")
+		if counts[knowledge] >= 3 || seen[i.key()] {
+			continue
+		}
+		seen[i.key()] = true
+		counts[knowledge]++
+		result = append(result, i)
+	}
+	var workers sync.WaitGroup
+	failures := make([]error, len(result))
+	for n := range result {
+		if result[n].Document != nil && readableDocumentTitle(*result[n].Document) != "" {
+			continue
+		}
+		workers.Add(1)
+		go func(n int) {
+			defer workers.Done()
+			i, err := a.titles.read(ctx, client, result[n], generation, false, true)
+			if err == nil {
+				result[n] = i
+			} else {
+				result[n].ReadingState = "failed"
+				failures[n] = err
+			}
+		}(n)
+	}
+	workers.Wait()
+	for _, err := range failures {
+		if readingUnavailable(err) {
+			return nil, err
+		}
+	}
+	return result, nil
 }

@@ -43,6 +43,9 @@ type App struct {
 	projectUI           projectReadingState
 	searchUI            unifiedSearchState
 	searchOrigin        *readingLocation
+	searchPane          *pane
+	searchAnchor        *Item
+	searchResolveCancel context.CancelFunc
 	settingsOrigin      *readingLocation
 	access              projectAccessState
 	commonEdit          commonEditorState
@@ -188,9 +191,13 @@ func (a *App) navigateKind(page string, index int, kind string) {
 	a.projectUI.InfoOpen = false
 	a.projectUI.MenuOpen = false
 	a.closeUnifiedSearch()
-	if page != "检索结果" {
-		a.searchOrigin = nil
+	if a.searchResolveCancel != nil {
+		a.searchResolveCancel()
+		a.searchResolveCancel = nil
 	}
+	a.searchOrigin = nil
+	a.searchPane = nil
+	a.searchAnchor = nil
 	if page != "设置" {
 		a.settingsOrigin = nil
 	}
@@ -317,6 +324,9 @@ func (a *App) load(s *pane) {
 					a.InvalidateReading(p.Dataset)
 				}
 				return
+			}
+			if a.searchPane == s && a.searchAnchor != nil && !containsReadingItem(rows, a.searchAnchor.key()) {
+				rows = append([]Item{*a.searchAnchor}, rows...)
 			}
 			s.Items = rows
 			s.More = more
