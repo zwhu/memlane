@@ -1,6 +1,6 @@
 # 多 Agent / Provider 当前支持与验收矩阵
 
-2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)检查点二十三为准。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
+2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)检查点二十四为准。用户已暂缓Cursor后续测试、免除Claude Code追加测试；未验项不改为通过，既有结果保留。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
 
 ## 第一批 Agent
 
@@ -9,8 +9,8 @@
 | MA01 Codex | 原实例ID／主体／ACL保持，实际隔离CLI安装、正常编码采集、采用既有pi／TraeX知识；[初轮回执](evidence/multi-agent-development-20261114/real-codex-checkpoint.json)。diff保留后新增真实顺序调整／26项回归、官方正确替换旧状态、新会话工具0次采用，MA-CODEX-FACT01目标关系复验通过、历史失败1保留；[位置关系证据](evidence/multi-agent-development-20261114/codex-position-regression.json) | Desktop独立证据未补；其他旧footprint的新鲜度不由此样本外推；旧错误正文取证保留，原Data被官方状态替换后404；前后端混合版本不作纯单版本通过 |
 | MA08 pi | 全局扩展、独立主体、官方核心传输；实际编码→官方知识→新会话无工具采用；[编码链](evidence/multi-agent-development-20261114/real-coding-hosts.json)、[实际权限](evidence/multi-agent-development-20261114/real-agent-permissions.json) | 限固定版本及编码样本；原笼统约定／口令样本仍未通过，不泛化任意聊天沉淀；分支／恢复不回扫有定向检查，不冒充全部真实分支流程 |
 | MA09 TraeX | 正常交互式CLI原生插件安装／信任、真实问答与工具、知识及新会话采用；后续兼容协议处理也通过；[编码链](evidence/multi-agent-development-20261114/real-coding-hosts.json)、[跨协议](evidence/multi-agent-development-20261114/real-cross-protocol-switch.json) | 证明TraeX CLI，不证明TRAE IDE；后续知识类清单未列全，不能当完整源码清单验收 |
-| MA02 Claude Code | 原生CLI、受管官方插件、首轮QA／trace、官方知识及新会话无工具采用；[Claude回执](evidence/multi-agent-development-20261114/real-claude-checkpoint.json) | DeepSeek兼容端点不是Anthropic原生账号；已记录来源新鲜度／措辞限制；旧7条未投递材料保留、未补采 |
-| MA03 Cursor | 官方产物、独立主体／安装绑定、延迟召回及PA薄适配已实现并做固定SDK／适配检查；[宿主适配](evidence/multi-agent-development-20261114/host-adapters-checkpoint.json)。检查点二十二改用官方workspaceOpen加载不可变代际，管理器首次启用／升级／重启只读核对通过，原文件与其他hooks保持；[管理器回归](evidence/multi-agent-development-20261114/cursor-generation-loader.json)及后端145项通过 | 本机Cursor IDE／CLI均未检测到，未有真实宿主信任、工具／无工具回答、重复导入及采用证据；无工具当轮注入限制明确保留。MA-CONN-CURSOR-UPGRADE01累计失败1轮保留；新入口的宿主加载／代际共存、旧local安装迁移仍待实际验收 |
+| MA02 Claude Code | 原生CLI、受管官方插件、首轮QA／trace、官方知识及新会话无工具采用；[Claude回执](evidence/multi-agent-development-20261114/real-claude-checkpoint.json)。用户已明确不再要求追加测试 | 既有来源新鲜度／措辞限制、旧7条未投递材料保留；DeepSeek兼容端点不是Anthropic原生账号，后者属于独立Provider范围 |
+| MA03 Cursor | 官方产物、独立主体／安装绑定、延迟召回及PA薄适配已实现并做固定SDK／适配检查；[宿主适配](evidence/multi-agent-development-20261114/host-adapters-checkpoint.json)。官方workspaceOpen加载不可变代际的管理器回归通过；[管理器证据](evidence/multi-agent-development-20261114/cursor-generation-loader.json)及既有后端145项通过 | **用户暂缓后续测试。** 本轮独立3.30.14准备遇SIGKILL／CUA超时，未取得真实宿主证据，临时App及镜像已清；[准备边界](evidence/multi-agent-development-20261114/cursor-host-preparation-deferred.json)。原当轮注入限制、宿主加载／代际共存／迁移未知及MA-CONN-CURSOR-UPGRADE01历史失败1均保留 |
 
 ## 共享、权限与故障
 

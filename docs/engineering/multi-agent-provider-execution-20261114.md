@@ -8,11 +8,13 @@
 
 基线提交仅包含本轮方案、脱敏接口事实和此账本；实施前创建本地注释tag。不得提交本机凭据。
 
-## 连续场景与依赖（当前状态：检查点二十三）
+## 连续场景与依赖（当前状态：检查点二十四）
 
 逐项证据与限制统一见[当前支持矩阵](multi-agent-provider-support-20261114.md)。下方历史检查点保持原始日期状态，不代表当前仍未实施。
 
 2026-11-14 用户最新决定：取消此前“Codex剩余额度低于2%允许使用重置卡”的授权，由用户手动重置。后续不执行重置卡操作；下方额度条件仅保留历史记录。
+
+2026-11-14 后续范围调整原话：“cursor 可以暂时不要测试，claude 都不需要测试”。Cursor后续测试暂缓，Claude Code不再追加测试；已有能力／结果／失败计数保留，未验项标记用户暂缓／免验，不改为通过。后续必要共用检查应避开这两个宿主的专项及原生安装器测试。该调整按Agent维度执行，Anthropic原生Provider账号实测仍独立待证，不要求用户继续准备Cursor账号。
 
 | 场景 | 用户流程与验收证据 | 当前状态 |
 | --- | --- | --- |
@@ -352,3 +354,13 @@ LP03补真实进程证据：复制本轮有效配置账本及必要私有凭据�
 MA-CODEX-FACT01的**目标关系实链复验通过**，历史失败1轮保留；不声称原错误唯一因果已证或所有旧位置均新鲜，其他旧footprint的changed-since边界保持。方法错误及纠正在专档保留：不支持的stop命令未执行停止、首次原生回执断言失败后核对同一rollout最终响应、系统Python只读SQLite打开失败。随后使用受管后台支持的正常stop，官方监视器及去重保持，无手动sync／replay。原主体／项目／通用配置、旧session映射、generation及日常认证／配置摘要保持；后续真实新会话的消费者与依赖保留，没有release或重置卡。
 
 首批整体估算约94%（相对93%增加约1个百分点），增加目标事实关系的真实处理／替换／新会话采用证据。完整目标仍active；Cursor实宿主、Codex Desktop、三类原生Provider账号、其余新鲜度边界与原第二批不因此改为通过。其他会话的产品／Native修改不提交。
+
+## 开发检查点二十四：用户暂缓Cursor／免验Claude Code
+
+本轮开始再次核对：Cursor原CLI／系统与用户App入口均不存在，OpenAI／Anthropic／Gemini／Google key环境变量均未配置。已请求现有私有配置路径，不要求在聊天中发密钥。按官方下载页准备独立Cursor ARM64镜像303145279字节，实际版本3.30.14，深度严格签名校验和系统Notarized Developer ID评估均通过；未安装到日常Applications，也没有配置Agent或调用模型。
+
+独立CLI的`--help`中Electron子进程被SIGKILL，CUA选择App超时、没有取得窗口；根因未知，未移除quarantine、修改签名、换版本或继续尝试。用户随后明确暂缓Cursor测试。该事件是宿主准备前置失败，不冒充Memlane真实Agent验收；MA-CONN-CURSOR-UPGRADE01历史失败1轮仍保留，未因本次准备动作改写计数。
+
+已停止后续Cursor／Claude Code测试。核对Cursor无存活消费者、镜像不再挂载、现有runtime不引用独立App后，清理约971MiB的临时App；303MB镜像此前已在签名核对后卸载并清理，只留小型准备／签名／方法回执与[脱敏摘要](evidence/multi-agent-development-20261114/cursor-host-preparation-deferred.json)。CUA已完成收尾，原服务、Agent配置、库及其他会话的源码修改保持。
+
+首批整体仍估算94%，不把用户免验折算为新增测试通过；完整目标继续active。后续聚焦Codex Desktop日常回归及OpenAI／Anthropic／Gemini原生Provider前置与实测；第二批仍按原方案单列，旧停止问题不恢复。
