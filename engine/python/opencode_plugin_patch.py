@@ -159,3 +159,79 @@ type Pending = { id: string; session: string; entry: Entry; uncertain?: boolean;
         if (!item) continue;
 ''')
     return text
+
+
+def managed_capture_callbacks(text):
+    """Capture overlay only; config/recall/tool overlays gate production activation."""
+    def replace(old, new):
+        nonlocal text
+        if text.count(old) != 1:
+            raise ValueError('fixed OpenCode capture overlay anchor mismatch')
+        text = text.replace(old, new, 1)
+
+    replace('import type { CogneePluginConfig } from "./types.js";', '''import type { CogneePluginConfig } from "./types.js";
+import { ManagedProjectControl, type ControlOptions } from "./managed-control.js";
+import { ManagedDelivery } from "./managed-delivery.js";
+import { CaptureWindow } from "./managed-capture-window.js";''')
+    replace('  const active = new Set<string>();', '''  const binding = options?.memlane as ControlOptions;
+  if (!binding) throw new Error("managed_installation_required");
+  const control = new ManagedProjectControl({...binding, directory: ctx.directory});
+  const delivery = new ManagedDelivery(control, client, outbox);
+  const window = new CaptureWindow();
+  const active = new Set<string>();''')
+    replace('''  const pump = () => cfg.autoCapture ? outbox.flush(
+    (item) => client.entry(cfg.datasetName, item.session, item.entry),
+    (item) => client.hasEntry(item.session, item.entry),
+  ) : Promise.resolve();''', '''  const pump = () => cfg.autoCapture ? delivery.flush() : Promise.resolve();''')
+    first = text.index('  async function captureConversation(native: string): Promise<void> {')
+    last = text.index('  return {\n    "chat.message":', first)
+    original = text[first:last]
+    if 'ctx.client.session.messages(' not in original or original.count('outbox.enqueue(') != 1:
+        raise ValueError('fixed OpenCode capture method mismatch')
+    text = text[:first] + '''  async function captureConversation(native: string): Promise<void> {
+    if (!cfg.autoCapture) { window.disable(native); return; }
+    if (window.candidates(native).length === 0) return;
+    if (!await control.permits(native, "capture")) { window.disable(native); return; }
+    // Read only IDs observed after activation, never list a session's history.
+    for (const [messageID, parentID] of window.candidates(native)) {
+      if (!await control.permits(native, "capture")) { window.disable(native); return; }
+      const response = await ctx.client.session.message({path: {id: native, messageID}, query: {directory: ctx.directory}});
+      if (response.error || !response.data) throw new Error("Cannot read observed completed message");
+      const message = response.data;
+      if (message.info.id !== messageID || message.info.sessionID !== native || message.info.role !== "assistant" ||
+          message.info.parentID !== parentID || !message.info.time.completed || message.info.error) { window.finish(native, messageID); continue; }
+      if (!await control.permits(native, "capture")) { window.disable(native); return; }
+      const questionResponse = await ctx.client.session.message({path: {id: native, messageID: parentID}, query: {directory: ctx.directory}});
+      if (questionResponse.error || !questionResponse.data) throw new Error("Cannot read observed parent message");
+      const parent = questionResponse.data;
+      if (parent.info.id !== parentID || parent.info.sessionID !== native || parent.info.role !== "user") { window.finish(native, messageID); continue; }
+      const content = (parts: typeof message.parts) => parts.filter((part) => part.type === "text" && !part.synthetic).map((part) => part.type === "text" ? part.text : "").join("\\n");
+      const question = safeText(content(parent.parts)); const answer = safeText(content(message.parts));
+      if (question && answer) {
+        const id = hash(sid(native) + ":qa:" + message.info.id);
+        await delivery.enqueue(native, id, sid(native), {type: "qa", question, answer, context: `opencode_capture:${id}`});
+      }
+      window.finish(native, messageID);
+    }
+  }
+''' + text[last:]
+    replace('''      prompts.set(input.sessionID, {id: output.message.id, text});''', '''      let capture = false;
+      try { capture = cfg.autoCapture && await control.permits(input.sessionID, "capture"); } catch { /* Unconfirmed turns are never backfilled. */ }
+      window.prompt(input.sessionID, output.message.id, output.message.time?.created, capture);
+      prompts.set(input.sessionID, {id: output.message.id, text});''')
+    replace('''      if (!cfg.autoCapture || input.tool.startsWith("cognee_") || !allowedTool(input.tool, input.args, cfg.captureTools)) return;''', '''      if (!cfg.autoCapture || input.tool.startsWith("cognee_") || !allowedTool(input.tool, input.args, cfg.captureTools)) return;
+      const prompt = prompts.get(input.sessionID);
+      if (!prompt || !window.allowed(input.sessionID, prompt.id) || !await control.permits(input.sessionID, "capture")) { window.disable(input.sessionID); return; }''')
+    replace('try { outbox.enqueue(id, sid(input.sessionID), entry); background(pump()); }',
+            'try { await delivery.enqueue(input.sessionID, id, sid(input.sessionID), entry); background(pump()); }')
+    replace('''    event: async ({event}) => {
+''', '''    event: async ({event}) => {
+      if (event.type === "message.updated") {
+        const info = event.properties.info;
+        if (info.role === "assistant" && info.time.completed && !info.error) window.completed(info.sessionID, info.id, info.parentID);
+      }
+''')
+    replace('''        active.delete(native); prompts.delete(native); recalls.delete(native);''',
+            '''        window.clear(native);
+        active.delete(native); prompts.delete(native); recalls.delete(native);''')
+    return text

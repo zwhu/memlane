@@ -430,3 +430,11 @@ outbox明确401／403持久化blocked，重启／timer不重发；阻塞项不�
 6项Python及27项编译Node检查通过（3.396秒，无skip），[证据](evidence/multi-agent-development-20261114/opencode-managed-delivery.json)。实际project_control HTTP、固定官方TS client/outbox、loopback官方写入／marker夹具均执行；真实Cognee与OpenCode宿主尚未接上。未重启服务、启动宿主、调用模型或更改日常配置，Cursor／Claude免验边界保持。没有新增验收失败轮次。
 
 下一步完成宿主pump／enqueue替换及新消息采集边界，再接不可变安装代际与真实编码链。Ollama、首批Desktop／原生凭据、设置增量Native及最终日常收口仍未完成，完整Goal继续active。共享app／launcher／插件及backlog等其他会话WIP未暂存或修改。
+
+## 开发检查点三十二：官方采集回调接线与激活边界
+
+上轮队列发送策略适配为实际进展。本轮增加严格官方插件采集覆盖及metadata-only窗口：本次启用后观察的user ID与关联assistant完成事件才形成候选，只调用单条消息API，读取和入队前重新检查权限。禁采及撤权的turn恢复后不补采，重复完成不重读；官方文本／隐私清洗保留，QA及trace均接到原目标队列。
+
+7项Python／28项编译Node检查通过（3.790秒，无skip），[源码及回执](evidence/multi-agent-development-20261114/opencode-capture-callbacks.json)。实际执行派生官方回调及控制HTTP，宿主消息和官方内容／ACL仍为夹具；未调用整段消息列表、原生宿主、远端模型或重启服务。本轮无验收失败轮次。其他会话仍在修改原插件／launcher／Native等共享文件，本次不包含这些修改。
+
+当前采集覆盖未被安装启用；ambient配置、召回撤权、lifecycle／improve、显式工具、稳定namespace和不可变代际仍需完成，不能据当前检查直接安装或宣布OpenCode可用。随后验实际1.3.5宿主及真实编码→知识→采用；Ollama、首批外部前置、Native增量和日常收口继续保留，完整Goal仍active。

@@ -8,7 +8,7 @@ import tarfile
 import tempfile
 import unittest
 
-from opencode_plugin_patch import managed_http_client, managed_outbox
+from opencode_plugin_patch import managed_http_client, managed_outbox, managed_capture_callbacks
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -22,14 +22,20 @@ def official_sources():
     with tarfile.open(archive) as bundle:
         for member in bundle:
             if any(member.name.endswith('/integrations/opencode/src/' + name)
-                   for name in ('runtime.ts', 'client.ts', 'types.ts')):
+                   for name in ('runtime.ts', 'client.ts', 'types.ts', 'plugin.ts')):
                 result[Path(member.name).name] = bundle.extractfile(member).read().decode()
-    if len(result) != 3:
+    if len(result) != 4:
         raise ValueError('fixed official OpenCode files missing')
     return result
 
 
 class OpenCodePatchGuardTests(unittest.TestCase):
+    def test_capture_overlay_rejects_changed_or_already_patched_source(self):
+        text = official_sources()['plugin.ts']
+        for candidate in (text.replace('ctx.client.session.messages(', 'changed_messages('), managed_capture_callbacks(text)):
+            with self.assertRaises(ValueError):
+                managed_capture_callbacks(candidate)
+
     def test_http_overlay_rejects_changed_or_already_patched_source(self):
         text = official_sources()['client.ts']
         for candidate in (text.replace('  async health():', '  async changed_health():'), managed_http_client(text)):

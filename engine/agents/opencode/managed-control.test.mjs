@@ -225,6 +225,7 @@ async function officialServer({loseFirstResponse = false} = {}) {
     if (req.method === "GET" && req.url.startsWith("/api/v1/sessions/")) {
       lookups++; res.end(JSON.stringify({entries: writes.map(item => item.entry)})); return;
     }
+    if (req.method === "POST" && /\/agents\/(?:un)?register$/.test(req.url)) { res.end('{"status":"ok"}'); return; }
     assert.fail("unexpected official route " + req.url);
   });
   return {...server, writes, lookups: () => lookups,
@@ -302,4 +303,75 @@ test("unconfirmed original target never manufactures an uncertain write or calls
     assert.equal(s.requests.length, 0);
     assert.equal(readdirSync(options("delivery-unconfirmed").stateDir).filter(n => n.endsWith(".json")).length, 1);
   } finally { await s.close(); }
+});
+
+
+test("official capture callbacks read only observed post-activation messages and never backfill disabled turns", async () => {
+  const { CogneeOpenCodePlugin } = await import(new URL("plugin.js", compiled));
+  const s = await officialServer();
+  const reads = [];
+  const native = "callback-native";
+  const cfg = options("host-capture");
+  const messages = new Map();
+  let wholeSessionReads = 0;
+  const hooks = await CogneeOpenCodePlugin({directory: join(root, "repo-a"), client: {session: {
+    messages: async () => { wholeSessionReads++; throw new Error("history reads forbidden"); },
+    message: async ({path}) => { reads.push(path.messageID); return {data: messages.get(path.messageID)}; },
+  }}}, {memlane: cfg, cognee: {baseUrl: s.url, apiKey: "synthetic-child-key", stateDir: join(root, "host-capture-outbox"),
+    autoRecall: false, improveOnSessionEnd: false}});
+  const prompt = async (id, created = Date.now()) => {
+    messages.set(id, {info: {id, sessionID: native, role: "user", time: {created}}, parts: [{type: "text", text: "Question " + id}]});
+    await hooks["chat.message"]({sessionID: native}, {message: messages.get(id).info, parts: messages.get(id).parts});
+  };
+  const complete = async (id, parent) => {
+    const info = {id, parentID: parent, sessionID: native, role: "assistant", time: {created: Date.now(), completed: Date.now()}};
+    messages.set(id, {info, parts: [{type: "text", text: "Answer " + id}, {type: "text", synthetic: true, text: "NEVER_CAPTURE_SYNTHETIC"}]});
+    await hooks.event({event: {type: "message.updated", properties: {info}}});
+  };
+  const idle = () => hooks.event({event: {type: "session.idle", properties: {sessionID: native}}});
+  let p;
+  try {
+    await prompt("pre-activation", 1);
+    await complete("old-answer", "pre-activation");
+    await idle();
+    assert.deepEqual(reads, []);
+    await prompt("new-prompt");
+    await complete("new-answer", "new-prompt");
+    await idle();
+    assert.deepEqual(reads, ["new-answer", "new-prompt"]);
+    assert.equal(s.writes.length, 1);
+    assert.equal(s.writes[0].entry.question, "Question new-prompt");
+    assert.equal(s.writes[0].entry.answer, "Answer new-answer");
+    await complete("new-answer", "new-prompt"); await idle();
+    assert.equal(reads.length, 2, "duplicate completion reread captured message");
+    p = await new ManagedProjectControl(cfg).current(native);
+    assert.equal(s.writes[0].dataset_name, p.dataset_name);
+    await access(p.project_id, {access: "read"});
+    await prompt("disabled-prompt");
+    await access(p.project_id, {access: "maintain", capture: true, auto_process: true});
+    await complete("disabled-answer", "disabled-prompt"); await idle();
+    await hooks["tool.execute.after"]({sessionID: native, callID: "disabled-tool", tool: "edit", args: {filePath: "src/main.ts"}}, {output: "skip disabled turn"});
+    assert.equal(s.writes.length, 1);
+    assert.equal(reads.length, 2);
+    await prompt("withdrawn-prompt");
+    await complete("withdrawn-answer", "withdrawn-prompt");
+    await access(p.project_id, {access: "read"}); await idle();
+    await access(p.project_id, {access: "maintain", capture: true, auto_process: true});
+    await complete("withdrawn-answer", "withdrawn-prompt"); await idle();
+    assert.equal(reads.length, 2, "restoration backfilled a withdrawn turn");
+    await prompt("fresh-tool-prompt");
+    await hooks["tool.execute.after"]({sessionID: native, callID: "fresh-tool", tool: "edit", args: {filePath: "src/main.ts"}}, {output: "updated password=do-not-store"});
+    await idle();
+    assert.equal(s.writes.length, 2);
+    assert.equal(s.writes[1].dataset_name, p.dataset_name);
+    assert.equal(s.writes[1].entry.type, "trace");
+    assert.ok(!JSON.stringify(s.writes).includes("do-not-store"));
+    await hooks["tool.execute.after"]({sessionID: native, callID: "private-tool", tool: "read", args: {filePath: ".env"}}, {output: "never-store-private-file"});
+    await idle();
+    assert.equal(wholeSessionReads, 0);
+    assert.equal(s.writes.length, 2);
+  } finally {
+    if (p) await access(p.project_id, {access: "maintain", capture: true, auto_process: true});
+    await hooks.dispose(); await s.close();
+  }
 });

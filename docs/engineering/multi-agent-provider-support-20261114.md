@@ -1,6 +1,6 @@
 # 多 Agent / Provider 当前支持与验收矩阵
 
-2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)检查点三十一为准。用户已暂缓未安装Agent／Cursor后续测试、免除Claude Code追加测试；未验项不改为通过，既有结果保留。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
+2026-11-14，dev；以当前源码及[执行账本](multi-agent-provider-execution-20261114.md)检查点三十二为准。用户已暂缓未安装Agent／Cursor后续测试、免除Claude Code追加测试；未验项不改为通过，既有结果保留。实现、固定SDK协议、真实宿主／模型、实际Native分别列证；完整首批尚未交付。历史检查点保留当时状态，不以旧“待实施”覆盖后续事实。
 
 ## 第一批 Agent
 
@@ -50,3 +50,5 @@ OpenCode受管HTTP／outbox覆盖源码已实现，5项Python及10项实际编�
 检查点二十九已补设置进入自动读取／重新检测及OpenCode真实检测但不可绑定的卡片；3项Python＋1项组件检查通过，实际Native增量待验。检查点三十补原目标队列及`currentTarget`，本地拒绝与实际官方401／403分开持久化；6项Python／22项编译Node检查通过，[原目标证据](evidence/multi-agent-development-20261114/opencode-original-target.json)。这些仍为正式宿主接线前的原语，不代表OpenCode已经完成绑定或真实采集。
 
 检查点三十一补`ManagedDelivery`，官方TS队列／HTTP与实时原绑定策略接通；6项Python／27项编译Node检查通过，[发送接线证据](evidence/multi-agent-development-20261114/opencode-managed-delivery.json)。控制HTTP实际执行，官方写入／ACL仍为夹具；正式OpenCode回调、激活边界、安装代际和实链待完成。
+
+检查点三十二补固定官方采集回调覆盖及metadata-only启用窗口，QA／trace已接原目标队列；7项Python／28项编译Node通过，[采集回调证据](evidence/multi-agent-development-20261114/opencode-capture-callbacks.json)。宿主消息和官方内容／ACL仍为夹具，配置／召回／lifecycle／处理／显式工具覆盖与安装代际尚未齐备，当前未安装启用，不宣称真实OpenCode采集通过。

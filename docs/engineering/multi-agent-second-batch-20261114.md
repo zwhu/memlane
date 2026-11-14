@@ -65,3 +65,13 @@ strict TypeScript编译后，Node客户端连接实际Python project_control HTT
 最终6项Python／27项编译Node检查通过，3.396秒，无skip；[证据与摘要](evidence/multi-agent-development-20261114/opencode-managed-delivery.json)。新增链路执行实际Python控制HTTP、固定官方TS队列／client和loopback官方端点夹具，覆盖拒绝恢复、显式底层释放、响应丢失、切换cwd／重启后的原标记核对、原目标未确认及并发领取。实际Cognee数据／ACL、正式宿主回调仍未证明；管理补交尚未接鉴权／账本，测试中显式调用底层释放只验证原语。
 
 下一步以此适配替换官方插件pump／enqueue，并只从本次启用后实际观察到的message metadata选择单条消息读取，去掉全session历史扫描；随后连接安装代际、主体及Native卡片。处理／召回、隔离、取消及真实宿主兼容仍须按原方案验收，不从当前低层检查推定完成。
+
+## 官方采集回调与消息边界（检查点三十二）
+
+新增严格`managed_capture_callbacks`覆盖，把固定官方插件pump／QA／trace入队接到`ManagedDelivery`；原归档不修改。新增metadata-only `CaptureWindow`：只承认本次插件初始化后观察到、时间不早于初始化且当时允许采集的user ID；完成的assistant metadata须关联该user。按候选ID读取单条assistant及parent，读取前逐次检查采集权限，核对返回session／消息／parent／完成事实后沿官方文本过滤和清洗入队；不调用session.messages。
+
+禁采prompt不因恢复权限变为可采；撤权时清除该session候选并将此前prompt标记为不可采，晚到完成事件不补采。已经处理的完成ID去重；重启window为空，不从历史构造候选。每session最多保留64个turn／candidate，完成ID超过4096时停用原window、等待新prompt；不写正文或新建内容索引。
+
+实际执行固定SDK1.18.29编译后的派生官方回调，连接Python控制HTTP及loopback官方端点夹具：旧时间消息／禁采恢复／已观察后撤权／重复完成不读正文；新QA读取恰好assistant和parent两条，正确写入原dataset；新trace正常写入并清洗敏感内容，`.env`工具输出不入队。7项Python及28项编译Node通过（3.790秒，无skip），[证据](evidence/multi-agent-development-20261114/opencode-capture-callbacks.json)。宿主SDK调用是夹具，不能证明本机1.3.5兼容。
+
+此函数明确只负责采集覆盖，尚未由正式安装器启用；原插件resolveConfig仍有ambient选项、recall／lifecycle／improve／显式工具仍须完整策略覆盖，sid／队列namespace及私有安装绑定也需收敛。不能直接把当前组合安装到日常或真实验收环境。下一步完成这些剩余覆盖和独立操作账本，再构造不可变代际及真实宿主验收；旧配置、正文、原主体与待发材料保持。
