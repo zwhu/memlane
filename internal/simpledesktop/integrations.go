@@ -171,6 +171,11 @@ func connectionName(kind string) string {
 }
 func connectionStatus(row AgentConnection) string {
 	switch row.Status {
+	case "component_unavailable":
+		if !row.Detected {
+			return "未检测到本机安装"
+		}
+		return "接入组件未就绪"
 	case "integration_pending":
 		if row.Detected {
 			return "已检测到安装，接入开发中"

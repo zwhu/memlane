@@ -478,3 +478,19 @@ func TestConnectionBatchRechecksEligibilityFromServerBeforeMutation(t *testing.T
 		t.Fatal("prepared item cannot be explicitly activated")
 	}
 }
+
+func TestConnectionMissingComponentCannotPrepare(t *testing.T) {
+	for _, detected := range []bool{true, false} {
+		row := AgentConnection{ID: "pi-fixture", Kind: "pi", Status: "component_unavailable", Detected: detected}
+		if connectionActionAllowed(row, "prepare") || connectionActionAllowed(row, "activate") {
+			t.Fatal("missing component must not allow preparation or activation")
+		}
+		expected := "接入组件未就绪"
+		if !detected {
+			expected = "未检测到本机安装"
+		}
+		if got := connectionStatus(row); got != expected {
+			t.Fatalf("status = %q, want %q", got, expected)
+		}
+	}
+}

@@ -88,3 +88,8 @@ Ollama增加实际Schema随机约束证据，最新同digest完整质量通过�
 正常官方启动应用Native已验证Ollama候选通过，active／next／applied及健康鉴权一致，无Codex推理桥。真实设置自动检测／重新检测／pi与TraeX多选准备启用通过；独立验收profile，日常配置不变。真实pi编码独立4项测试通过、官方QA1／trace9正确归属，Native收到新会话回执。原Ollama处理6项完成、生成4条知识；新pi会话自动注入、工具0次。
 
 知识质量仍未通过：MA-OLLAMA-CODING-QUALITY01失败1轮，变更记录把旧错误写成结果，与正确规则矛盾，新会话明确指出冲突并拒绝权威当前答案。技术链路通过不能覆盖此质量失败；原数据与全部旧失败计数保留。TraeX本轮仅绑定，未新增宿主调用；OpenCode Native等边界待验。详见[检查点四十五](multi-agent-provider-execution-20261114.md#检查点四十五正常启动与真实native多agent绑定)、[实际证据](evidence/multi-agent-development-20261114/native-agent-binding-ollama-startup.json)。
+
+
+### 检查点四十六增量
+
+pi／TraeX缺少source／manifest时卡片显示接入组件未就绪，直接prepare先拒绝，不创建主体或写registry；既有prepared不隐藏。3项Python（含正常pi准备启用）及1项Go状态检查通过。完整摘要仍在既有installer核对，缺组件实际窗口未重跑。[证据](evidence/multi-agent-development-20261114/agent-component-preflight.json)。

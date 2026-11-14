@@ -1,0 +1,40 @@
+{
+  "checkpoint": 46,
+  "finding": "MA-CONNECTION-COMPONENT-PREFLIGHT01",
+  "scope": "pi and TraeX missing source presence guard before prepare side effects; fixed artifact integrity verification still performed by existing installer",
+  "behavior": {
+    "missing_source_or_manifest": "component_unavailable",
+    "detected_card": "接入组件未就绪",
+    "undetected_card": "未检测到本机安装",
+    "prepare_or_activate_button": false,
+    "prepare_api": "managed_plugin_input_mismatch 503",
+    "existing_prepared_record_preserved": true
+  },
+  "tests": {
+    "python": {
+      "count": 3,
+      "seconds": 0.891,
+      "scenarios": [
+        "pi/TraeX x no configured source, nonexistent absolute directory, empty source directory, relative path: no provision, registry write or profile creation",
+        "existing prepared installation preserved when source later unavailable",
+        "valid pi component prepares/activates normally with profile preserved"
+      ]
+    },
+    "go": {
+      "count": 1,
+      "seconds": 0.757,
+      "scope": "detected and undetected card status, preparation and activation disabled"
+    }
+  },
+  "acceptance_failure_count": 0,
+  "native_missing_component_actual_window": "not rerun; no claim from component checks",
+  "prior_actual_valid_component_window": "native-agent-binding-ollama-startup.json",
+  "claude_cursor_host_invocations": 0,
+  "model_calls": 0,
+  "daily_configuration_written": false,
+  "remaining": [
+    "Official Ollama coding knowledge quality failure round1",
+    "OpenCode actual Native settings/management increment",
+    "Original daily and external native account/Desktop gates"
+  ]
+}

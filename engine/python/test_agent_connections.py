@@ -50,6 +50,35 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.registry.close()
         shutil.rmtree(self.workspace)
 
+    async def test_pi_traex_missing_component_refuses_before_provision_or_state_write(self):
+        from unittest.mock import AsyncMock, patch
+        empty = self.workspace / 'empty-component'
+        empty.mkdir()
+        for kind in ('pi', 'traex'):
+            for source in (None, str(self.workspace / 'absent'), str(empty), 'relative-component'):
+                with self.subTest(kind=kind, source=source):
+                    control = {'url': 'http://127.0.0.1:18998'}
+                    if source is not None:
+                        control['plugin_dir'] = source
+                    config = {**self.config, 'project_control': control}
+                    adapter = NativeConnection(self.registry, config, kind, self.workspace / ('new-' + kind), sys.executable)
+                    before = self.registry.path.read_bytes()
+                    provision = AsyncMock(side_effect=AssertionError('must not provision without component'))
+                    with patch.object(self.registry, 'provision_agent', provision):
+                        self.assertEqual(adapter.view()['status'], 'component_unavailable')
+                        with self.assertRaises(PolicyError) as error:
+                            await adapter.prepare(self.registry.state['revision'])
+                        self.assertEqual(error.exception.code, 'managed_plugin_input_mismatch')
+                        provision.assert_not_awaited()
+                    self.assertEqual(self.registry.path.read_bytes(), before)
+                    self.assertFalse(adapter.profile.exists())
+
+    async def test_missing_source_does_not_hide_previously_prepared_installation(self):
+        self.registry.state['connections'] = {self.adapter.id: {'status': 'prepared', 'preview': {'proposed_sha256': 'fixed'}}}
+        self.adapter.config = {**self.config, 'project_control': {}}
+        self.assertEqual(self.adapter.view()['status'], 'prepared')
+        self.assertEqual(self.adapter.view()['preview']['proposed_sha256'], 'fixed')
+
     async def test_pi_prepare_activate_preserves_profile_and_waits_for_real_receipt(self):
         settings = self.profile / 'settings.json'
         settings.write_text('{"model":"unchanged","extensions":["other.ts"]}')

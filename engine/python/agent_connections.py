@@ -37,11 +37,22 @@ class NativeConnection:
                                      'claude_code': 'settings.json',
                                      'cursor': 'hooks.json'}[kind]
 
+    def component_source_available(self):
+        if self.kind not in ('pi', 'traex'):
+            return True
+        source = self.config.get('project_control', {}).get('plugin_dir') or self.config.get('plugin_dir')
+        if not isinstance(source, (str, Path)) or not source:
+            return False
+        source = Path(source)
+        marker = source / '.memlane-project-access.json'
+        return source.is_absolute() and not source.is_symlink() and source.is_dir() and not marker.is_symlink() and marker.is_file()
+
     def view(self):
         record = self.registry.state.get('connections', {}).get(self.id, {})
+        status = record.get('status', 'not_connected' if self.component_source_available() else 'component_unavailable')
         result = {'instance_id': self.id, 'kind': self.kind, 'profile': str(self.profile),
                   'detected': bool(self.executable and Path(self.executable).is_file()),
-                  'status': record.get('status', 'not_connected'),
+                  'status': status,
                   'requires_reload': True, 'entrypoints': ['ide'] if self.kind == 'cursor' else ['cli'],
                   'capabilities': {key: {'available': True, 'verified': False}
                                    for key in ('explicit_memory', 'auto_capture', 'auto_recall', 'project_policy')},
@@ -184,6 +195,8 @@ class NativeConnection:
         r.check_revision(expected)
         if not self.executable or not Path(self.executable).is_file():
             raise PolicyError('host_executable_unavailable', 503)
+        if not self.component_source_available():
+            raise PolicyError('managed_plugin_input_mismatch', 503)
         preview = self.preview()
         record = r.state.setdefault('connections', {}).get(self.id, {})
         if record.get('status') in ('activation_unknown', 'preparation_unknown'):

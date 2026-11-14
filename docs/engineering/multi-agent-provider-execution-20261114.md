@@ -544,3 +544,10 @@ OpenCode check已经原地确认匹配项，返回的是剩余unknown；共享UI
 **完整知识质量未通过：MA-OLLAMA-CODING-QUALITY01累计失败1轮。** 一条change把修复前“零值返回3、负值不报错”写成变更结果，与正确convention矛盾。全新pi明确指出矛盾与来源新鲜度，拒绝给出权威当前行为；这证明传输／注入和安全识别，不能当可用知识质量通过。正文检查与新会话断言属于同一未修改连续场景，不拆为2轮；它也不是旧canonical的project.name失败或JSON对象结构问题，旧计数保持。原知识、QA／trace、配置与回执全部保留，没有手工改答案、删除错误知识或重投原材料。模型能力、官方抽取提示／来源选取及8K上下文的各自影响尚未证实，不认定单一根因。
 
 收尾核对当前库7项处理pending0（含新召回会话的追加材料）；自有正常launcher／official／control、调试窗口与Ollama仍保留供后续消费，不触碰旧Codex进程。源码另外发现pi／TraeX缺少插件source时，prepare在创建主体后才解析source，预检前移待实现，验收失败0。OpenCode实际Native管理增量、日常采用、外部原生账号及Desktop证据等仍未完成，完整Goal继续active；不进入release、不使用重置卡。[脱敏证据及实窗](evidence/multi-agent-development-20261114/native-agent-binding-ollama-startup.json)。
+
+
+## 检查点四十六：缺失接入组件先拒绝准备
+
+MA-CONNECTION-COMPONENT-PREFLIGHT01源码缺口已修正：pi／TraeX未配置source、目录不存在、缺manifest或相对路径时，新连接显示component_unavailable，已安装卡片显示“接入组件未就绪”，未安装仍显示未检测到；准备／启用不可点。直接prepare在preview、主体创建及registry写入前返回managed_plugin_input_mismatch 503。既有prepared／已配置记录不因source后续不可用而被隐藏，仍按原安装产物核对。此门槛检查缺失的source及manifest；完整固定产物摘要校验继续由既有installer执行，不声称所有摘要检查已前移。
+
+3项Python定向检查（0.891秒，缺失矩阵含pi／TraeX各4子场景、既有准备记录保留、正常pi准备启用回归）与1项Go状态／按钮检查（0.757秒）通过。源码审计发现的问题无失败验收轮次；本轮无模型调用或宿主启动，没有追加Claude／Cursor测试，未重跑缺组件Native窗口；此前正常组件的真实批量接入证据仍属检查点四十五。没有修改共享project_installation或其未提交兼容补丁。Ollama知识质量、OpenCode实际Native增量、日常及外部前置仍待完成，完整Goal保持active。[检查证据](evidence/multi-agent-development-20261114/agent-component-preflight.json)。
