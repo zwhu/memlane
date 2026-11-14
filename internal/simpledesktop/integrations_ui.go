@@ -8,7 +8,13 @@ import (
 )
 
 func connectionUnavailable(row AgentConnection) bool {
-	return !row.Detected && row.Status != "configured_pending_new_session" && row.Status != "prepared" || row.Status == "integration_pending" || row.Status == "component_unavailable"
+	switch row.Status {
+	case "configured_pending_new_session", "prepared", "requires_review", "activation_unknown", "preparation_unknown", "staging_unknown", "agent_creation_unconfirmed":
+		return false
+	case "integration_pending", "component_unavailable":
+		return true
+	}
+	return !row.Detected
 }
 
 func (s *integrationState) connectionSelectionAction() (string, []string) {
@@ -87,9 +93,15 @@ func (a *App) agentConnectionSettings(c *ui.Context) {
 		})
 	}
 	action, ids := s.connectionSelectionAction()
+	selectionCount := 0
+	for _, row := range s.Connections.Connections {
+		if s.Selected[row.ID] && s.pendingConnection(row.ID) == nil && (connectionActionAllowed(row, "prepare") || connectionActionAllowed(row, "activate")) {
+			selectionCount++
+		}
+	}
 	if len(ids) > 0 || s.Busy {
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-			label := fmt.Sprintf("连接所选（%d）", len(ids))
+			label := fmt.Sprintf("连接所选（%d）", selectionCount)
 			if action == "activate" {
 				label = fmt.Sprintf("确认连接（%d）", len(ids))
 			}
@@ -122,7 +134,7 @@ func (a *App) agentConnectionRow(c *ui.Context, row AgentConnection) {
 			} else {
 				ui.Box(c).Size(16, 16)
 			}
-			homeText(c, name, homeBody).Grow(1)
+			homeText(c, name, homeBody).TextColor(homeInk).FontSize(13).Grow(1)
 			status := homeText(c, connectionStatus(row), homeMeta)
 			if row.Status == "configured_pending_new_session" && row.NewSessions > 0 {
 				status.TextColor(ui.Hex("#51806b"))

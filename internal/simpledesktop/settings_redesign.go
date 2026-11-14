@@ -66,7 +66,7 @@ func (a *App) globalSettingsPage(c *ui.Context) {
 					}
 				})
 				if a.Config.ProjectControl != nil {
-					settingsCard(c, "Agent 连接", "将本机编码工具连接到 Memlane。", func() { a.agentConnectionSettings(c) })
+					settingsCard(c, "Agent 连接", "", func() { a.agentConnectionSettings(c) })
 				}
 			case "知识处理":
 				a.generationSettings(c)

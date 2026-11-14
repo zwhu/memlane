@@ -238,7 +238,7 @@ func TestIntegrationAgentListKeepsPartialSuccessAndShowsHostLimits(t *testing.T)
 		{ID: "cursor", Kind: "cursor"},
 	}}}
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"Codex", "pi", "TraeX", "Claude Code", "Cursor", "确认连接（1）", "等待确认", "已连接"} {
+	for _, label := range []string{"Codex", "pi", "TraeX", "Claude Code", "其他 Agent（1）", "确认连接（1）", "等待确认", "已连接"} {
 		if !tt.HasText(label) {
 			t.Fatal("missing Agent control", label)
 		}
