@@ -531,3 +531,16 @@ OpenCode check已经原地确认匹配项，返回的是剩余unknown；共享UI
 实际1200×820 MyGo调试窗口完成无密钥保存、重开后保留、真实Qwen验证、选择“下次启动使用”。Native实际回执普通／Schema／质量全通过，验证进程组82990已退出；next指向已验证revision2，active仍为空。启动编译摘要及能力绑定匹配，编译未调用模型。截图为真实窗口，非UI夹具。CUA窗口定位不可用，使用既有MyGo e2e自动化接口，未改生产自动化代码。
 
 此轮仅首次配置共用表单；独立官方目录尚未初始化，不能据编译结果声称官方引擎已启动或知识链通过。保留一个Qwen模型及自有Ollama／setup／调试窗口供下一步正常启动消费，不触碰其他会话服务；原日常旧服务owner本轮未观察到，原因未知，不声称其仍运行。Agent正常设置实窗、官方处理／采用、外部账号和独立Desktop证据仍待完成。无重置卡、release或完整运行包。完整Goal继续active。[脱敏证据与截图](evidence/multi-agent-development-20261114/ollama-native-schema-ui.json)。
+
+
+## 检查点四十五：正常启动与真实Native多Agent绑定
+
+沿原Native已验证next，使用固定官方源码初始化独立合成库与owner，复用既有embedding组件，不复制日常内容。正常dev start通过健康及owner鉴权200，实际applied的PID／摘要／reference匹配；next清空、revision2成为active，没有Codex认证或completion进程。首次准备驱动遗漏generation_reference，在数据库／模型操作前退出，纠正后按原next初始化；记录方法错误1，不算Provider质量失败。
+
+实际1200×820 Native设置完成自动检测、重新检测、pi／TraeX多选与准备按钮状态。只读阶段registry前后不变；首次last-frame树持续显示旧loading，实际capture已显示就绪，改capture-before-tree观察后通过，无产品改动或已证卡死。随后全部宿主profile指向私有验收目录，固定插件摘要通过预检；实际窗口批量准备／启用pi与TraeX成功，独立官方主体及安装代际保留，日常配置摘要未变。新会话前两项均正确显示待重载／新会话，不冒充已采集。此轮没有启动Claude／Cursor宿主。
+
+真实pi使用原有DeepSeek编码账号，在新合成仓库复现并修复retry_limit；正常退出，独立4项测试通过。官方原session的QA1／trace9与目标dataset一致；设置重新检测后pi显示收到新会话回执，TraeX仍待新会话。后台是本轮已启用的Ollama／Qwen3 4B instruct；原整理结束，6项材料全部completed，实际生成4条知识。新真实pi会话不同session、工具0次，实际获得自动注入。正常设置“知识处理”页已实窗显示Ollama／Qwen为当前使用项，与启动回执一致。
+
+**完整知识质量未通过：MA-OLLAMA-CODING-QUALITY01累计失败1轮。** 一条change把修复前“零值返回3、负值不报错”写成变更结果，与正确convention矛盾。全新pi明确指出矛盾与来源新鲜度，拒绝给出权威当前行为；这证明传输／注入和安全识别，不能当可用知识质量通过。正文检查与新会话断言属于同一未修改连续场景，不拆为2轮；它也不是旧canonical的project.name失败或JSON对象结构问题，旧计数保持。原知识、QA／trace、配置与回执全部保留，没有手工改答案、删除错误知识或重投原材料。模型能力、官方抽取提示／来源选取及8K上下文的各自影响尚未证实，不认定单一根因。
+
+收尾核对当前库7项处理pending0（含新召回会话的追加材料）；自有正常launcher／official／control、调试窗口与Ollama仍保留供后续消费，不触碰旧Codex进程。源码另外发现pi／TraeX缺少插件source时，prepare在创建主体后才解析source，预检前移待实现，验收失败0。OpenCode实际Native管理增量、日常采用、外部原生账号及Desktop证据等仍未完成，完整Goal继续active；不进入release、不使用重置卡。[脱敏证据及实窗](evidence/multi-agent-development-20261114/native-agent-binding-ollama-startup.json)。
