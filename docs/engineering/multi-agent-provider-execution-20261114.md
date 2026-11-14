@@ -8,7 +8,7 @@
 
 基线提交仅包含本轮方案、脱敏接口事实和此账本；实施前创建本地注释tag。不得提交本机凭据。
 
-## 连续场景与依赖（当前状态：检查点二十六）
+## 连续场景与依赖（当前状态：检查点二十七）
 
 逐项证据与限制统一见[当前支持矩阵](multi-agent-provider-support-20261114.md)。下方历史检查点保持原始日期状态，不代表当前仍未实施。
 
@@ -384,3 +384,13 @@ MA-CODEX-FACT01的**目标关系实链复验通过**，历史失败1轮保留；
 Ollama服务未运行，仅发现旧qwen3:0.6b模型manifest；未启动／下载／推理或重跑旧失败质量样本。下一步构造OpenCode受管官方代际，补动态项目主体、权限、401／403 blocked及采集激活边界，再做真实编码链。首次npm驱动误用相对task路径，随后发现task固定repo cwd；改用npm --prefix后按原lock成功，未更改官方锁文件，两项为方法纠正、不计产品失败轮次。
 
 此前94%仍为首批估算，不作为包含第二批的整体完成率。第一批外部证据继续待补，第二批已进入实施准备／实链探测，尚未交付；完整目标未完成。没有新增Cursor／Claude测试、原日常配置修改、release或重置卡。
+
+## 开发检查点二十七：OpenCode受管底层实现
+
+新增`opencode_plugin_patch.py`，只对固定官方TS client／runtime生成严格覆盖；原归档、13份原始文件及已启用其他宿主均不变。client要求独立安装key，禁owner登录／cloud模式，固定X-Api-Key、不带Authorization；health同样受控，307／308禁止跟随，超时及认证拒绝无自动重试，错误正文不向上传播。
+
+outbox明确401／403持久化blocked，重启／timer不重发；阻塞项不会挡住后续新合法项。明确释放只接受完整选定blocked ID，unknown／不存在ID整组拒绝且原文件字节保持；并发flush时拒绝释放。官方unknown核对、native id去重、隐私清洗与路径／身份规则保持。释放原语尚未接入控制API，后续调用者必须先查权限并保留操作回执，当前不能宣称已可补交。
+
+先以固定原版编译构建红回归，再加入覆盖；最终5项Python检查通过（2.086秒），其中实际编译后Node HTTP6项、outbox4项均通过。另查锚点变化及重复应用拒绝、固定archive SHA与原过滤前缀保持。[证据](evidence/multi-agent-development-20261114/opencode-managed-core.json)及[第二批实施入口](multi-agent-second-batch-20261114.md)。没有Cursor／Claude测试、模型请求、服务重启、日常安装、release或重置卡。
+
+当前为未启用的受管底层源码，下一步接不可变代际、主体／动态项目策略及激活边界，再走真实OpenCode链路。其他会话正在修改Native设置／页面源码，未编辑或暂存其改动。第一批外部前置与第二批其余要求继续保留，完整目标active。

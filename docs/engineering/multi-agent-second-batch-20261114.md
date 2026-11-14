@@ -22,4 +22,16 @@
 
 固定官方OpenCode的dataset为插件级配置；outbox对明确401／403会清uncertain并由timer再投；captureConversation读取session messages列表。这些均须完成受管薄适配，尚未启用到Cognee或日常宿主。宿主SDK与固定测试SDK兼容、native消息／工具payload、激活边界、权限实时变化是下一步关键未知。
 
+## 受管HTTP／outbox底层适配
+
+`engine/python/opencode_plugin_patch.py`新增固定TS源的严格覆盖，尚未接入生产构造器／全局入口。派生client要求独立安装key，禁止owner登录和cloud模式，只发固定X-Api-Key并移除调用方Authorization；health复用同一规则，307／308不跟随，超时与401／403不自动重试，错误只报状态不回显响应正文。
+
+派生outbox将明确401／403持久化为blocked，自动pump及重启均跳过，但允许后续新合法项发送。`retryBlocked(ids)`仅释放明确选择的blocked ID，整组预检；unknown或不存在ID不改变队列，正在flush时拒绝操作。此函数是底层原语，后续管理入口仍必须先核对当前权限并登记原操作，不能直接暴露为无鉴权重投。unknown继续用官方原id核对，无额外发送；隐私清洗、身份和路径过滤保持。
+
+从固定归档提取实际TS、严格覆盖后用TypeScript编译，再运行真实Node文件队列／loopback HTTP测试。原版outbox有3个新契约用例失败、原版HTTP有4个失败；修复后5项Python检查与10项编译后Node用例通过（2.086秒），覆盖两类重启／拒绝、混合选择、并发flush、307／308读写、认证、超时和错误正文。[源码摘要与脱敏回执](evidence/multi-agent-development-20261114/opencode-managed-core.json)。这些是受管契约的本地红绿反馈，不是7轮宿主验收失败；尚无真实OpenCode／Cognee权限通过声明。
+
+检查入口：`python3 scripts/task.py -- env PYTHONPATH=engine/python MEMLANE_OPENCODE_TEST_NODE_MODULES=/绝对路径/固定npm-ci依赖/node_modules .local/cognee-python/bin/python -m unittest test_opencode_plugin_patch`。未提供组件依赖变量时，两个编译执行检查会明确skip，不能据此判定通过；本轮提供了固定lock安装的依赖，未skip。没有跑Cursor／Claude或全量宿主安装器测试。
+
+下一步将覆盖摘要、固定依赖及license纳入不可变安装产物，接入稳定主体／动态项目解析／有效权限，完成激活水位和真正的受认证补交入口，再进入真实编码与新会话采用。当前全局探针仅证明加载机制，不含这些受管能力。
+
 临时根`.local/multi-agent-opencode-20261114`仅归本任务；13份官方源、两个SDK依赖集与小型回执保留供后续补丁／兼容检查，非日常安装。全局探针的原生服务已退出；Ollama未启动。固定归档、原库、旧宿主缓存和原日常认证／配置保持；至少100GiB与105GiB运行门禁继续生效。
