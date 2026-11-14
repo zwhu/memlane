@@ -1,0 +1,1997 @@
+{
+  "captured_on": "2026-11-14",
+  "app": "Memlane Dev / Memlane",
+  "source": "CUA actual Native window; not fixtures or mockups",
+  "git_head": "149e4e0b25941fa58e8ad6e6c7f6b144b9052087",
+  "documents_are_copies": true,
+  "source_code_copied": false,
+  "files": [
+    {
+      "source": "docs/acceptance/2026-11-09/design.md",
+      "archive": "documents/docs/acceptance/2026-11-09/design.md",
+      "sha256": "2e5a7d7fb337e6b53f2dd94a900fcfcf501dee774d8812bc13bc8db96a4ee700"
+    },
+    {
+      "source": "docs/acceptance/2026-11-09/interaction.md",
+      "archive": "documents/docs/acceptance/2026-11-09/interaction.md",
+      "sha256": "58e27409f8d50c2b785a02e53308086ce2916d88bed57f797e91fed23a46d5f8"
+    },
+    {
+      "source": "docs/acceptance/2026-11-09/product.md",
+      "archive": "documents/docs/acceptance/2026-11-09/product.md",
+      "sha256": "8d2f32aefc54209882dab8a8ba1d046d919e76923ae381a3b10f3a449ecf261f"
+    },
+    {
+      "source": "docs/agent-contract.md",
+      "archive": "documents/docs/agent-contract.md",
+      "sha256": "ba350ca68a8679eb8ba00536966b32770dd24cabd2ca3446acee9324d2e2db5a"
+    },
+    {
+      "source": "docs/agent-prompts/design-mentor.md",
+      "archive": "documents/docs/agent-prompts/design-mentor.md",
+      "sha256": "dd27a20691d03644d0e246136b514e1e7872ef43aa58f6931c24aa296ac460c5"
+    },
+    {
+      "source": "docs/agent-prompts/interaction-designer.md",
+      "archive": "documents/docs/agent-prompts/interaction-designer.md",
+      "sha256": "5d710000da0f73e711a80afd9fbc2f85410e3eb5047a2343613161ae9d59e2f7"
+    },
+    {
+      "source": "docs/agent-prompts/product-manager.md",
+      "archive": "documents/docs/agent-prompts/product-manager.md",
+      "sha256": "5c891254cdd2c9a78605a9cf8cdfac0c040a3742717aa6b88cd9dc5628941dc8"
+    },
+    {
+      "source": "docs/client-simplification-spec-20261112.md",
+      "archive": "documents/docs/client-simplification-spec-20261112.md",
+      "sha256": "16130ca35dd6f42a0b160ee0717daccb6c914311d44e941e2c53822961c522a8"
+    },
+    {
+      "source": "docs/client-simplification-technical-plan-20261112.md",
+      "archive": "documents/docs/client-simplification-technical-plan-20261112.md",
+      "sha256": "b791d932bad186c423d055ec1f812e340cebda0ee9650bfce2658b9f7ebc6cc9"
+    },
+    {
+      "source": "docs/coding-memory-codex-spec.md",
+      "archive": "documents/docs/coding-memory-codex-spec.md",
+      "sha256": "4fe5752440aa1763227a024375f39c44fd875184f869ffdb589105238656417d"
+    },
+    {
+      "source": "docs/core-business-flows.md",
+      "archive": "documents/docs/core-business-flows.md",
+      "sha256": "36ddf8aa0d7da3cb8b7dcfcf8a4bb699d3ae255553097d765b22745de15555b2"
+    },
+    {
+      "source": "docs/design.md",
+      "archive": "documents/docs/design.md",
+      "sha256": "a7a16cc0b749937113fb0c8a86d91a8328e661294c3cffed8de3bef2a60fbbfa"
+    },
+    {
+      "source": "docs/engineering/agent-connection-clarity-20261114.md",
+      "archive": "documents/docs/engineering/agent-connection-clarity-20261114.md",
+      "sha256": "a1e47ceadbba3fda8e53a0d85c58cf5688b4bb944b963a1dee7f560b491a5812"
+    },
+    {
+      "source": "docs/engineering/app-alignment-audit-20261114.md",
+      "archive": "documents/docs/engineering/app-alignment-audit-20261114.md",
+      "sha256": "3b4e2139843c0764ffad2f65657aeba13a2a224c80e5f3372a0d6fd44e255481"
+    },
+    {
+      "source": "docs/engineering/common-knowledge-redesign-execution-20261114.md",
+      "archive": "documents/docs/engineering/common-knowledge-redesign-execution-20261114.md",
+      "sha256": "7fce39f52a412db4a11e7d858c0b65520587f5d9036207ff2ca089fcbaafe339"
+    },
+    {
+      "source": "docs/engineering/goal-reading-ui-prompt-20261113.md",
+      "archive": "documents/docs/engineering/goal-reading-ui-prompt-20261113.md",
+      "sha256": "0b33dbdd0c719d430f82b1111ad9ea670a88bf605cc09fc87a81753f92050b8c"
+    },
+    {
+      "source": "docs/engineering/knowledge-recall-statistics-20261114.md",
+      "archive": "documents/docs/engineering/knowledge-recall-statistics-20261114.md",
+      "sha256": "86cdc0249cad71515ba412ef665145147a3f74596758aed9ccaca39ef21e04a1"
+    },
+    {
+      "source": "docs/engineering/manual-search-history-20261114.md",
+      "archive": "documents/docs/engineering/manual-search-history-20261114.md",
+      "sha256": "096c47234bdf1b1820e7bf75272057f5b8f911a1d11136df371030dcad4d060f"
+    },
+    {
+      "source": "docs/engineering/native-settings-continuity-20261114.md",
+      "archive": "documents/docs/engineering/native-settings-continuity-20261114.md",
+      "sha256": "88c5cfd51fb0f1ea6ec709d10d019bf9b5333e51a8233c5eefd665e3820f0a8b"
+    },
+    {
+      "source": "docs/engineering/official-knowledge-edit-decision-20261112.md",
+      "archive": "documents/docs/engineering/official-knowledge-edit-decision-20261112.md",
+      "sha256": "3be213ebe166c095b43da750a87f0546681d91dd25047d9288df60faeecb24ec"
+    },
+    {
+      "source": "docs/engineering/official-knowledge-reading-20261112.md",
+      "archive": "documents/docs/engineering/official-knowledge-reading-20261112.md",
+      "sha256": "facb388b41d05cfef6e3ef9b1e0d8bfc16c604f05780a29977d86ce2622b7e28"
+    },
+    {
+      "source": "docs/engineering/official-ui-components-20261114.md",
+      "archive": "documents/docs/engineering/official-ui-components-20261114.md",
+      "sha256": "9d240496e467e0651f431df6df8605257d8f332a32573a9c92dea33867b918f5"
+    },
+    {
+      "source": "docs/engineering/overview-execution-20261113.md",
+      "archive": "documents/docs/engineering/overview-execution-20261113.md",
+      "sha256": "10ae8bc98067c01558d0293108572828f2d9429357df581242af73542dde5cf4"
+    },
+    {
+      "source": "docs/engineering/overview-native-a-execution-20261113.md",
+      "archive": "documents/docs/engineering/overview-native-a-execution-20261113.md",
+      "sha256": "d62eaf844f8c641130e79002e5d50e4c98ccccaa187f635e4f5e496a03bf8bf1"
+    },
+    {
+      "source": "docs/engineering/overview-stream-repair-20261113.md",
+      "archive": "documents/docs/engineering/overview-stream-repair-20261113.md",
+      "sha256": "52c3bbf4b11ff7eda6878787f9decbc1027dcccee50b3428456ef4035bf4b0f9"
+    },
+    {
+      "source": "docs/engineering/project-checkbox-permissions-20261114.md",
+      "archive": "documents/docs/engineering/project-checkbox-permissions-20261114.md",
+      "sha256": "6cde37bac526aeb1b446555d4df64ee4c95b469caa7f97c66427ad41513bb180"
+    },
+    {
+      "source": "docs/engineering/project-reading-execution-20261114.md",
+      "archive": "documents/docs/engineering/project-reading-execution-20261114.md",
+      "sha256": "b71347700d75054881b89b7310a1ad08cb01536a2c8d0b4ac7cb447f0db90385"
+    },
+    {
+      "source": "docs/engineering/project-settings-queue-20261114.md",
+      "archive": "documents/docs/engineering/project-settings-queue-20261114.md",
+      "sha256": "03f9f5c229438c70123a562cb923c8ad1ec367d606a69d384c2feb25f769e92c"
+    },
+    {
+      "source": "docs/engineering/reading-ui-execution-20261113.md",
+      "archive": "documents/docs/engineering/reading-ui-execution-20261113.md",
+      "sha256": "14ded0ebdbce0b9ebbd8076100ad70297109ac02e24c878d422cf01f1d17803d"
+    },
+    {
+      "source": "docs/engineering/search-interaction-20261114.md",
+      "archive": "documents/docs/engineering/search-interaction-20261114.md",
+      "sha256": "6d35f18f144006512129420122d30ab5422491ca6d54fc442dfae3003b12009b"
+    },
+    {
+      "source": "docs/engineering/search-matches-alignment-20261114.md",
+      "archive": "documents/docs/engineering/search-matches-alignment-20261114.md",
+      "sha256": "4fab1e9f987c2d8019b50ba07136c18477502f041eaac419ea085afd16832c86"
+    },
+    {
+      "source": "docs/engineering/session-records-and-save-feedback-20261114.md",
+      "archive": "documents/docs/engineering/session-records-and-save-feedback-20261114.md",
+      "sha256": "ae7cf00b005adf9baf37a520cffd24e6f10cadb5f5438dfbc8408236e6f630c0"
+    },
+    {
+      "source": "docs/engineering/session-title-sidebar-settings-20261114.md",
+      "archive": "documents/docs/engineering/session-title-sidebar-settings-20261114.md",
+      "sha256": "4b864377636be4e2e2bd54d23f3a198e1b61f360f5af9515fffb1d52da015380"
+    },
+    {
+      "source": "docs/engineering/settings-handoff-20261112.md",
+      "archive": "documents/docs/engineering/settings-handoff-20261112.md",
+      "sha256": "4ecdf2450ca7ac6baf484a139460911ca99bb0cc847c0a6742bd67242b0b423a"
+    },
+    {
+      "source": "docs/engineering/settings-redesign-20261112.md",
+      "archive": "documents/docs/engineering/settings-redesign-20261112.md",
+      "sha256": "2fb5d6606501fe4c588ee5bed6c50f9ccee67a75e39a3f14f37e6c4f7fa23605"
+    },
+    {
+      "source": "docs/engineering/ui-component-lessons-20261114.md",
+      "archive": "documents/docs/engineering/ui-component-lessons-20261114.md",
+      "sha256": "a30a7499706c5992dcec86b85fd740f391f3c9c0d1edd137c63fac730285f3dd"
+    },
+    {
+      "source": "docs/first-launch-design.md",
+      "archive": "documents/docs/first-launch-design.md",
+      "sha256": "f79e5c228d0609ca5a3aaadcd4e51cb4fe793f3474c23310e0c63c22da13555e"
+    },
+    {
+      "source": "docs/images/first-launch/confirmation.png",
+      "archive": "documents/docs/images/first-launch/confirmation.png",
+      "sha256": "f4d670e6851c691bcb1e9406a81d9b8e253df07a86cf7fd6e097795f132d23dc"
+    },
+    {
+      "source": "docs/images/first-launch/design-board.png",
+      "archive": "documents/docs/images/first-launch/design-board.png",
+      "sha256": "2548e274281d0ffb183ed5f038e61adfe7d2cff00958bd7b46f67057aa0750fb"
+    },
+    {
+      "source": "docs/images/first-launch/discovery-right-steps.png",
+      "archive": "documents/docs/images/first-launch/discovery-right-steps.png",
+      "sha256": "c72c637ead162dab3f926a2f8db54eaf584489f450be3d23ec825a1346418fbc"
+    },
+    {
+      "source": "docs/images/first-launch/discovery.png",
+      "archive": "documents/docs/images/first-launch/discovery.png",
+      "sha256": "c72c637ead162dab3f926a2f8db54eaf584489f450be3d23ec825a1346418fbc"
+    },
+    {
+      "source": "docs/images/first-launch/interaction.png",
+      "archive": "documents/docs/images/first-launch/interaction.png",
+      "sha256": "c99f45170df58fe2b5a945fc4696474dabfccd491086f5188c928549f2366b4d"
+    },
+    {
+      "source": "docs/images/first-launch/interaction.svg",
+      "archive": "documents/docs/images/first-launch/interaction.svg",
+      "sha256": "e336eb27bed6f0c21cdfa9578d095c93223ca083e8c20e203e3ea8515d5ce3bf"
+    },
+    {
+      "source": "docs/images/first-launch/preparing.png",
+      "archive": "documents/docs/images/first-launch/preparing.png",
+      "sha256": "2451d4520a7156db5920dfe060f14608e00e53845e148de87b2d4737d36b5931"
+    },
+    {
+      "source": "docs/images/first-launch/ready.png",
+      "archive": "documents/docs/images/first-launch/ready.png",
+      "sha256": "d38a738b1aa464237a1978a544fa2716c5411cd1eb7583a45449fe7f98aec733"
+    },
+    {
+      "source": "docs/images/first-launch/startup-breathing.gif",
+      "archive": "documents/docs/images/first-launch/startup-breathing.gif",
+      "sha256": "8a431b60b07ed1108bdfd09ba1143a4bb77dbe6bfc0dc76578062d0d883196a3"
+    },
+    {
+      "source": "docs/images/first-launch/startup.png",
+      "archive": "documents/docs/images/first-launch/startup.png",
+      "sha256": "305c3b075dd28f48494cef574ad47735915efdb7a410a123ee07f31d4e3541b1"
+    },
+    {
+      "source": "docs/images/p1-detail.png",
+      "archive": "documents/docs/images/p1-detail.png",
+      "sha256": "a495fde874bb9a4a8ac377de92928c24dc0aa69eeef5cf723f814d1e7e3428fc"
+    },
+    {
+      "source": "docs/images/p1-home.png",
+      "archive": "documents/docs/images/p1-home.png",
+      "sha256": "e2553425760d7308e19ec76a7ced59168f0c2e1571302bb662058b09a3897630"
+    },
+    {
+      "source": "docs/images/p2-codex.png",
+      "archive": "documents/docs/images/p2-codex.png",
+      "sha256": "1d3c9e5d6ee6efe30da574abe5090e23406d7566ce44f39bc9005e0721f93e52"
+    },
+    {
+      "source": "docs/images/p2-detail.png",
+      "archive": "documents/docs/images/p2-detail.png",
+      "sha256": "90642a706d062b0bb2f0777715c0f33be844ed2f37b0a0f7fcf6d4dd78632eaf"
+    },
+    {
+      "source": "docs/images/p2-home.png",
+      "archive": "documents/docs/images/p2-home.png",
+      "sha256": "a2027b252d435893937ae47e6e3968bcc091e9274c7b700ef6467f55dcd3504a"
+    },
+    {
+      "source": "docs/images/p2-pi.png",
+      "archive": "documents/docs/images/p2-pi.png",
+      "sha256": "603bb5a7117331157c25ffc7d1c82d91d66835d9989b0850598ddd46851c8fbf"
+    },
+    {
+      "source": "docs/images/p3-proposal/dream-review.png",
+      "archive": "documents/docs/images/p3-proposal/dream-review.png",
+      "sha256": "a7140799c9e71092c1cbafc82ebd9952cfd76b0f61d7c9ec7024a063fbf5ffd5"
+    },
+    {
+      "source": "docs/images/p3-proposal/dream-summary.png",
+      "archive": "documents/docs/images/p3-proposal/dream-summary.png",
+      "sha256": "b329354a6308d08a8e494a211dc137d88300a336108f7cd4268576804191e1d0"
+    },
+    {
+      "source": "docs/images/p3-proposal/home.png",
+      "archive": "documents/docs/images/p3-proposal/home.png",
+      "sha256": "0e57dc13972338861bcd31b02957e87ddba64db8c74e4f4db4f48d532f4083ac"
+    },
+    {
+      "source": "docs/images/p3-proposal/memory-usage.png",
+      "archive": "documents/docs/images/p3-proposal/memory-usage.png",
+      "sha256": "48678437b70ce35acb6caa00f38c40f052aa5b63a63402a0547897585dc447d6"
+    },
+    {
+      "source": "docs/images/p3-proposal/onboarding.png",
+      "archive": "documents/docs/images/p3-proposal/onboarding.png",
+      "sha256": "81f5e28fee01e64d414466e2c7a44e265af4c276231e5f4697b34a9fb287e67b"
+    },
+    {
+      "source": "docs/images/p3-proposal/settings.png",
+      "archive": "documents/docs/images/p3-proposal/settings.png",
+      "sha256": "7796821195d5862002d9fe0b424d66945c694c4501d534dca3d8f389ecb6551d"
+    },
+    {
+      "source": "docs/images/ui-redesign/client-simplification-20261112/01-home.png",
+      "archive": "documents/docs/images/ui-redesign/client-simplification-20261112/01-home.png",
+      "sha256": "7da403b4a6106c9523904f60059fbc96e9f348418d960bbd2d696c3b9cec9a69"
+    },
+    {
+      "source": "docs/images/ui-redesign/client-simplification-20261112/02-knowledge.png",
+      "archive": "documents/docs/images/ui-redesign/client-simplification-20261112/02-knowledge.png",
+      "sha256": "2f5fdbf3eae7ae407be75fc4581a129917e1b26243676112e8203f863b5c9ad2"
+    },
+    {
+      "source": "docs/images/ui-redesign/client-simplification-20261112/03-records.png",
+      "archive": "documents/docs/images/ui-redesign/client-simplification-20261112/03-records.png",
+      "sha256": "ead08dff6c4bfcbbcbd7960ebdc8b5b1641d1404b24ebf1f6252e53ea1a36c65"
+    },
+    {
+      "source": "docs/images/ui-redesign/client-simplification-20261112/04-search.png",
+      "archive": "documents/docs/images/ui-redesign/client-simplification-20261112/04-search.png",
+      "sha256": "9c59674fa765620917cff7ca606f71b3610b6ace83648f687e438d1ff928d9d7"
+    },
+    {
+      "source": "docs/images/ui-redesign/client-simplification-20261112/05-common.png",
+      "archive": "documents/docs/images/ui-redesign/client-simplification-20261112/05-common.png",
+      "sha256": "117c46f93c750d9f0862ea2ec6a7080db8d59264db34cce64d38d5daef99130a"
+    },
+    {
+      "source": "docs/images/ui-redesign/client-simplification-20261112/06-graph.png",
+      "archive": "documents/docs/images/ui-redesign/client-simplification-20261112/06-graph.png",
+      "sha256": "a63b4628ea75fb622cc69eadb0465b44d74a0ab17f89c99a51278ff71afb4787"
+    },
+    {
+      "source": "docs/images/ui-redesign/client-simplification-20261112/07-settings.png",
+      "archive": "documents/docs/images/ui-redesign/client-simplification-20261112/07-settings.png",
+      "sha256": "ac063e3c1f5bb3c4d796601af0079bea2d5979f24ad17c8710191c019c71c9dd"
+    },
+    {
+      "source": "docs/images/ui-redesign/client-simplification-20261112/render-report.json",
+      "archive": "documents/docs/images/ui-redesign/client-simplification-20261112/render-report.json",
+      "sha256": "2ebed1d6abf1d68f94d2ab8db507ae9c1a8b5a90848632d13c92796d44c885af"
+    },
+    {
+      "source": "docs/images/ui-redesign/common-settings-20261114/01-common-reading.png",
+      "archive": "documents/docs/images/ui-redesign/common-settings-20261114/01-common-reading.png",
+      "sha256": "05117b91c99fd34c7090055ff36e0e878b623f63425dc3ddab59776dc5db0c8e"
+    },
+    {
+      "source": "docs/images/ui-redesign/common-settings-20261114/01-common-reading.svg",
+      "archive": "documents/docs/images/ui-redesign/common-settings-20261114/01-common-reading.svg",
+      "sha256": "3d1845d522393d92091f62b9837072c5680b041a43345402d106915cf7f71b11"
+    },
+    {
+      "source": "docs/images/ui-redesign/common-settings-20261114/02-common-editor.png",
+      "archive": "documents/docs/images/ui-redesign/common-settings-20261114/02-common-editor.png",
+      "sha256": "1b526eb274b291e54cc70ff72e9bfe36b2747f6947838b75c120ce88272b18c0"
+    },
+    {
+      "source": "docs/images/ui-redesign/common-settings-20261114/02-common-editor.svg",
+      "archive": "documents/docs/images/ui-redesign/common-settings-20261114/02-common-editor.svg",
+      "sha256": "844d101992ba1839faf8a0dfbab1771a74b7bd664af3385598b49505f474976b"
+    },
+    {
+      "source": "docs/images/ui-redesign/common-settings-20261114/03-project-settings.png",
+      "archive": "documents/docs/images/ui-redesign/common-settings-20261114/03-project-settings.png",
+      "sha256": "340991959027e4d933ebfc2302371529017d85222b3e000f26bd6315ea95f910"
+    },
+    {
+      "source": "docs/images/ui-redesign/common-settings-20261114/03-project-settings.svg",
+      "archive": "documents/docs/images/ui-redesign/common-settings-20261114/03-project-settings.svg",
+      "sha256": "2efbb72afe7b55a381d2e1926f8dacfcb469425a51c32978233b035c6f2e0268"
+    },
+    {
+      "source": "docs/images/ui-redesign/common-settings-20261114/04-global-settings.png",
+      "archive": "documents/docs/images/ui-redesign/common-settings-20261114/04-global-settings.png",
+      "sha256": "e575e657ddbdfef14bee2889cefe2205d25fc78afc33eefc8cab17cfa49a4054"
+    },
+    {
+      "source": "docs/images/ui-redesign/common-settings-20261114/04-global-settings.svg",
+      "archive": "documents/docs/images/ui-redesign/common-settings-20261114/04-global-settings.svg",
+      "sha256": "ae3adf6844ffeda6e0573a9efecb329b3f016ee4cdb76293e77697bc4643f0ac"
+    },
+    {
+      "source": "docs/images/ui-redesign/common-settings-20261114/05-project-empty.png",
+      "archive": "documents/docs/images/ui-redesign/common-settings-20261114/05-project-empty.png",
+      "sha256": "33ae5f8070d7ab7ae09b8fc03951de93f31dd60c4088af1e9c4caad2815dd744"
+    },
+    {
+      "source": "docs/images/ui-redesign/common-settings-20261114/05-project-empty.svg",
+      "archive": "documents/docs/images/ui-redesign/common-settings-20261114/05-project-empty.svg",
+      "sha256": "8b0a1cfa49116a5f293e627b73977ebc044f4652e62d74e365e196dc02c6a416"
+    },
+    {
+      "source": "docs/images/ui-redesign/project-reading-20261114/01-project-1440-annotated.png",
+      "archive": "documents/docs/images/ui-redesign/project-reading-20261114/01-project-1440-annotated.png",
+      "sha256": "6f8632a6a9de050780f2222f2f970f095cf6bd87086073305f4a5b3e79f3e320"
+    },
+    {
+      "source": "docs/images/ui-redesign/project-reading-20261114/01-project-1440-annotated.svg",
+      "archive": "documents/docs/images/ui-redesign/project-reading-20261114/01-project-1440-annotated.svg",
+      "sha256": "6d01b2202b2db07c768ba31263a02ca1447aa80b85ea7b632368de0cd08537f6"
+    },
+    {
+      "source": "docs/images/ui-redesign/project-reading-20261114/02-project-1200-annotated.png",
+      "archive": "documents/docs/images/ui-redesign/project-reading-20261114/02-project-1200-annotated.png",
+      "sha256": "29c0395eabf1432c31a726482cc2117be1360aa59e760810191f82d18f441a7e"
+    },
+    {
+      "source": "docs/images/ui-redesign/project-reading-20261114/02-project-1200-annotated.svg",
+      "archive": "documents/docs/images/ui-redesign/project-reading-20261114/02-project-1200-annotated.svg",
+      "sha256": "bfd31a05462d08d4548b850b312759f4c3a636e588efb5ab53431f1f9547a1f3"
+    },
+    {
+      "source": "docs/images/ui-redesign/project-reading-20261114/03-search-annotated.png",
+      "archive": "documents/docs/images/ui-redesign/project-reading-20261114/03-search-annotated.png",
+      "sha256": "5fd99d30daa6abdab52f4bf0949e986dce9dca6084584232883d39fbd5b0d3a3"
+    },
+    {
+      "source": "docs/images/ui-redesign/project-reading-20261114/03-search-annotated.svg",
+      "archive": "documents/docs/images/ui-redesign/project-reading-20261114/03-search-annotated.svg",
+      "sha256": "26bfefa8a277241acaafb2c8681ad200fca2c480610c2f6186e3a129d5e16545"
+    },
+    {
+      "source": "docs/images/ui-redesign/project-reading-20261114/04-content-info-annotated.png",
+      "archive": "documents/docs/images/ui-redesign/project-reading-20261114/04-content-info-annotated.png",
+      "sha256": "a69d9f842bd5fc748881d86f8c5e39d9f1330dea7cb1ced622b9c45adba2a497"
+    },
+    {
+      "source": "docs/images/ui-redesign/project-reading-20261114/04-content-info-annotated.svg",
+      "archive": "documents/docs/images/ui-redesign/project-reading-20261114/04-content-info-annotated.svg",
+      "sha256": "1c37e1038ffa492e7d1267012178ed362fad6d2140b18206ed0d47eece56d675"
+    },
+    {
+      "source": "docs/images/ui-redesign/project-reading-20261114/05-states-annotated.png",
+      "archive": "documents/docs/images/ui-redesign/project-reading-20261114/05-states-annotated.png",
+      "sha256": "850397040fb658e23c2c93e0aea2c6e581ec83ff390a37b023c469e396f29ae1"
+    },
+    {
+      "source": "docs/images/ui-redesign/project-reading-20261114/05-states-annotated.svg",
+      "archive": "documents/docs/images/ui-redesign/project-reading-20261114/05-states-annotated.svg",
+      "sha256": "2aa1136d24ec176d1b936965ea3f6deb2548dadb4f290e3855acb89df61307e9"
+    },
+    {
+      "source": "docs/images/ui-redesign/project-reading-20261114/README.md",
+      "archive": "documents/docs/images/ui-redesign/project-reading-20261114/README.md",
+      "sha256": "959f18e0f1214b5a01577d89e192b0b5e2452a112dd2f5126cb4018e3efd0b8f"
+    },
+    {
+      "source": "docs/images/ui-redesign/project-reading-20261114/manifest.json",
+      "archive": "documents/docs/images/ui-redesign/project-reading-20261114/manifest.json",
+      "sha256": "b6878445cf76e8a9eaa272f2d3aa3bafdc5eee5f260bcf99126df23cf0ebdf0d"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/README.md",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/README.md",
+      "sha256": "9317b751bd88fc1cb35dde524190a45a6d9e9d39eb8f4e1d096c45c46469e98a"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/about-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/about-1200.json",
+      "sha256": "dda233d5d903b98290e96beaf18d0f2143cf48c8f2376b6a973dd3046cee568f"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/about-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/about-1200.png",
+      "sha256": "c5e98be6184204e6288826b93deb15e726b539cd9b6f5e868126d72937a30b49"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/about-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/about-800.json",
+      "sha256": "d17f800b52623acf14637ebc72c00825d1bc7ad0d5745e36786fbae3ead67242"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/about-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/about-800.png",
+      "sha256": "a2c214afc36639d4e0f1e078377c8ff0bb04f6d85f9cae974fef7bc9dbabb856"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/agent-detail-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/agent-detail-1200.json",
+      "sha256": "3296cf5345078cae1431720cdb2099bd6b78044ed4e73025db9ba12c6a89b8c2"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/agent-detail-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/agent-detail-1200.png",
+      "sha256": "7faf6a2d78d4f0addad6ac4ff06762e1d8ac7d2942861255cd856002dcd10c61"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/agents-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/agents-1200.json",
+      "sha256": "702d647f7ecd59efaa2817ebf3950225184fd9fe44db65c67bfd1bd960488010"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/agents-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/agents-1200.png",
+      "sha256": "f3613b28edc180dcd3845ead88b38bdec617319e1cb2fea994a4ffb1a9c08c07"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/agents-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/agents-800.json",
+      "sha256": "01f29bb72c24efe1b285fd6aa31c6ba63cf0a67d429031b4a4a082a8517fe167"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/agents-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/agents-800.png",
+      "sha256": "1e513015ff2732661a6c7d6e2948885cfe1091110a9fce49ed549662f3cf7460"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/backup-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/backup-1200.json",
+      "sha256": "955780dfa7693ee11829f294ebeec9305b16689c18ea246a6495afb5203894f8"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/backup-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/backup-1200.png",
+      "sha256": "994965a3897274c50b8a8ed43cdbd56de905082419714aab26f91ee755a6d781"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/backup-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/backup-800.json",
+      "sha256": "f948aa48bf7300a662d611405dd4bde1251e906dedd5228fedba92061ba12334"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/backup-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/backup-800.png",
+      "sha256": "b8b480700ad442e3327b4adf82bf6dcca3454ada6e8d475634a524d8e9d8e1a7"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/environment-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/environment-1200.json",
+      "sha256": "f7d4ad4b6a63116fd269e5b91558058a174b100413d529fa84c9b5dddac79e4c"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/environment-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/environment-1200.png",
+      "sha256": "845c045d9cd4ee2b7141059435da4511c0937a58ea30ff79a67a4a7a7cf1a8f7"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/environment-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/environment-800.json",
+      "sha256": "6eb12945979511d259cebbc6aa5eb5f7d60fe17d78753b26e8077854ffef59fe"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/environment-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/environment-800.png",
+      "sha256": "4062f1d35379514cf335d5d9c64a19236a298bc7c371c48941ae9aeb417f4e3f"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/environment-bottom-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/environment-bottom-800.json",
+      "sha256": "5c2703d7ded87fe0baabaede765ffe7ab631fe0415a5138c6af1694ead5ddd45"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/environment-bottom-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/environment-bottom-800.png",
+      "sha256": "4062f1d35379514cf335d5d9c64a19236a298bc7c371c48941ae9aeb417f4e3f"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/SHA256SUMS.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/SHA256SUMS.json",
+      "sha256": "f02b42ff5a8d80967fe0979d7bea6ea83b45cef495b75f85fbb648c9110f1029"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/about-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/about-1200.json",
+      "sha256": "3ae831e33726f077ba7a75c2f417967f011e32e8850ae331c4714f38b139d2f4"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/about-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/about-1200.png",
+      "sha256": "a4e168ac70d7aa20befa77ae5beab3a844382013811bbee275638b581c047eba"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/about-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/about-800.json",
+      "sha256": "5ea959f4e82f827a62895f4d85889d6825e1b8b104c5c3827b767222e8577398"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/about-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/about-800.png",
+      "sha256": "b9d9f42883573811686d41e2741ad35b654a01a46609909c15ab863fa7eea66f"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/agents-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/agents-1200.json",
+      "sha256": "5922bdc1e65e31355ff380de2cf4f31c2f03056af93c978ad482ff262e8932fa"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/agents-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/agents-1200.png",
+      "sha256": "d957cf92b0d4ae68b39b572399d0232cf14450129fb7d46de059d79af018c188"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/agents-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/agents-800.json",
+      "sha256": "d8b8a785286e4b9fae5ebc1cac0fe7b012ee5197f19c729b537f320214cba0aa"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/agents-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/agents-800.png",
+      "sha256": "5295bf2491001ecb052ff190da90c70162987992c3413d610953cf8dee700c7b"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/backup-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/backup-1200.json",
+      "sha256": "839d801234f0b84b3dfddffa824175a88f1f6adbd3dca59d1f7a6dc92fe648d4"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/backup-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/backup-1200.png",
+      "sha256": "a374cef6058f66c9d740dc090a54d46794a49b12a748471c65d2b8687d9e689d"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/backup-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/backup-800.json",
+      "sha256": "03cc4a9e5e5957a41400e5663d78a9362ff38adad3117e1cab66e6ce6040ba53"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/backup-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/backup-800.png",
+      "sha256": "3ff39f2feb67bf8965d3c3d23b48180c2a62be8acdf2e7d4fa35c0fcac23763a"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/capture-index.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/capture-index.json",
+      "sha256": "f4afdc497ed12a3c92963256669eaf9dd4adf2ac2120add2546f40709a205df8"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/environment-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/environment-1200.json",
+      "sha256": "e898955fbd14c6325e716864c181e8113a9024cc744be2029ed6a7e2f42079c5"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/environment-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/environment-1200.png",
+      "sha256": "845c045d9cd4ee2b7141059435da4511c0937a58ea30ff79a67a4a7a7cf1a8f7"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/environment-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/environment-800.json",
+      "sha256": "d1eb2eb6cedc410b6bd5810ad32cfe71e512ac0f9f1e5d607d88988d8f79224b"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/environment-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/environment-800.png",
+      "sha256": "4062f1d35379514cf335d5d9c64a19236a298bc7c371c48941ae9aeb417f4e3f"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/index-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/index-1200.json",
+      "sha256": "f86d36098268460d47bfa17ead121f0aa464ac4ec697c1531facb960de9e437f"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/index-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/index-1200.png",
+      "sha256": "062c5fc947780dcd1ff00564d58def56a122aad474ed0a330389d599aea7b1ad"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/index-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/index-800.json",
+      "sha256": "968275b48b27e028bc1337643ff6309be07d5280b7677fd267125c56a9f51af7"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/index-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/index-800.png",
+      "sha256": "130e280b7fb6d925b54c374cd64468056ac3fe7fa35e5ed687bd204b21510e8e"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/processing-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/processing-1200.json",
+      "sha256": "994e3b88a8117f19b1f4737947f679dffb5d008eda66776eed22671cce566577"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/processing-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/processing-1200.png",
+      "sha256": "ca320bc2c2135f9cc49ccc1c9049cab32a6c03927d85edce1dd4aac6862d2b05"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/processing-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/processing-800.json",
+      "sha256": "0f5976e7bf2b0c000391279414635a630d754b947064357a3e7c75fc55425610"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/processing-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/processing-800.png",
+      "sha256": "6c5c2133963a316529a90b2a947751c142a22c949857e8f5323067a9e9aa83c6"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/provider-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/provider-1200.json",
+      "sha256": "fa962bd5e8bd08230a44d849c31904951dd9e9bf5b77d673fb9f54b88d9c68ac"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/provider-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/provider-1200.png",
+      "sha256": "03904c4abb1a2b3757c0a5664e98b4824817fab3ebb28746b09a0be1285b9bdd"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/provider-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/provider-800.json",
+      "sha256": "f75d913fb1b20277bd5a3c6a39ccde61c22eb5df66947c322548a5be89febf47"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/provider-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/provider-800.png",
+      "sha256": "b5bb2bd6631d5ed9d631fb28118107b70281330a9d88a3205efb0465fd5dac1d"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/service-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/service-1200.json",
+      "sha256": "4b70dc7b3dd25d6f13de76809084347e5d58cf4c0772771c77134b54e15e1b4b"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/service-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/service-1200.png",
+      "sha256": "21a1a8b04a9cdb9627d84c8f13af11a2c673ce999628262076cf049cc1b06a31"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/service-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/service-800.json",
+      "sha256": "521bc91c1c8a3950406eceda49f8fd393c778d440ffadbc5221033684dd62af9"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/service-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/service-800.png",
+      "sha256": "c12dcfb49c94de8bab62e1e900e7ae4a5a6b892cc2680627201e474c79be38f1"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/source-info-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/source-info-1200.json",
+      "sha256": "8dddd87bcefa0c948fff57103c578caa7626da11ffffc7bf1be6b1bbd7ce83bd"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/source-info-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/source-info-800.json",
+      "sha256": "8dddd87bcefa0c948fff57103c578caa7626da11ffffc7bf1be6b1bbd7ce83bd"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/update-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/update-1200.json",
+      "sha256": "7247bbaa883e6c9c85cb3d2e459e8602fbdee7d258e2c764cd4e26ed22b4a67c"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/update-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/update-1200.png",
+      "sha256": "98262e85ea43ad66dca65816fc040f1112aa153c708a82e1d5f078963fdd73ad"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/update-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/update-800.json",
+      "sha256": "c349706b420330774815108e33ca30d06aa9443a5b9a33cb31d6a8fe94ce88c1"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/final/update-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/final/update-800.png",
+      "sha256": "1bf63350959caf054477e0d280f69f9c60d3cf271570746f20eaba94f2e3552b"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/SHA256SUMS.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/SHA256SUMS.json",
+      "sha256": "a001f2e67e1a33e93117fb3dda47dfbea7da6c11b543a1616d8cebea76725406"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/about-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/about-1200.json",
+      "sha256": "efd93ec0ce2178fe40dcc4b0f84ee10e905774771c24055a498f2f5697eef11b"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/about-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/about-1200.png",
+      "sha256": "a4e168ac70d7aa20befa77ae5beab3a844382013811bbee275638b581c047eba"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/about-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/about-800.json",
+      "sha256": "80963d4e1cd21b80ac61b2afb0319fecb58866a267b3bdfd2ce3f580ec3e9bad"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/about-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/about-800.png",
+      "sha256": "b9d9f42883573811686d41e2741ad35b654a01a46609909c15ab863fa7eea66f"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/agents-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/agents-1200.json",
+      "sha256": "c17e20be3eddd45efa93d969d4e3775419510cf243091e7a3fb304355fae72ff"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/agents-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/agents-1200.png",
+      "sha256": "4ed8233ec2a88a541ef9d5860929fcda681aa9491394d730c034de7677940c9b"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/agents-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/agents-800.json",
+      "sha256": "0b0e372e28cb8f6b76bab5d7289c1b37773d7d068612baf833c834327ec04beb"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/agents-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/agents-800.png",
+      "sha256": "8220200ddc159c394bc55a75106dc78f551d209f0472fb41ad78159d0bc20030"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/backup-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/backup-1200.json",
+      "sha256": "b8b024abf0cf853a3aa0733478aabb82b00c007db0392568fe9279e9b8166271"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/backup-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/backup-1200.png",
+      "sha256": "a374cef6058f66c9d740dc090a54d46794a49b12a748471c65d2b8687d9e689d"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/backup-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/backup-800.json",
+      "sha256": "e8c201195b3048654cd351cf1a0741859750f36a1755208c6c1774e0fcc70b6f"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/backup-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/backup-800.png",
+      "sha256": "3ff39f2feb67bf8965d3c3d23b48180c2a62be8acdf2e7d4fa35c0fcac23763a"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/environment-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/environment-1200.json",
+      "sha256": "f9e1e219361203a09a82132974413a23cd6fd4419fa51c41aac74f2ac9b2a3d0"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/environment-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/environment-1200.png",
+      "sha256": "845c045d9cd4ee2b7141059435da4511c0937a58ea30ff79a67a4a7a7cf1a8f7"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/environment-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/environment-800.json",
+      "sha256": "91767f44ef830047031ae7cd0bf39bc34d11a897a0fd1046756d2acf39b92b09"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/environment-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/environment-800.png",
+      "sha256": "4062f1d35379514cf335d5d9c64a19236a298bc7c371c48941ae9aeb417f4e3f"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/index-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/index-1200.json",
+      "sha256": "335d80c6f53fa20e74e9e00c82e1d759b8901857099ec0f426fab4afd6f60898"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/index-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/index-1200.png",
+      "sha256": "151ec1282775b763cc09fae4895eecc0cd20e83bfdbe0ec7cfa7e925fdf6efdc"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/index-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/index-800.json",
+      "sha256": "8abd955124199551e54ca1a975a76927a36b9d374f6a02e2ef69c88021b81321"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/index-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/index-800.png",
+      "sha256": "79c5cee21a6e4d09b8a64f1299bd1b1e2481cf7c049c04a6d16e4e143e6b4760"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/processing-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/processing-1200.json",
+      "sha256": "28ed487b4d4bb4500c6f7bd7cc134f226f4ca207ddc3b367ecf2e12365696cb5"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/processing-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/processing-1200.png",
+      "sha256": "ca320bc2c2135f9cc49ccc1c9049cab32a6c03927d85edce1dd4aac6862d2b05"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/processing-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/processing-800.json",
+      "sha256": "d4df558a7c3856339723e300f3f2e1f38105a72eac9dc9f1dcd918da0f5a229b"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/processing-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/processing-800.png",
+      "sha256": "6c5c2133963a316529a90b2a947751c142a22c949857e8f5323067a9e9aa83c6"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/provider-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/provider-1200.json",
+      "sha256": "458767a6ef906475231db19a818ad89feacdb48856dd22c0a3cec3973dabd629"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/provider-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/provider-1200.png",
+      "sha256": "03904c4abb1a2b3757c0a5664e98b4824817fab3ebb28746b09a0be1285b9bdd"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/provider-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/provider-800.json",
+      "sha256": "57945d267c09643850d501e8042181f251c8b0b9e079d922c0b704ce34af851f"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/provider-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/provider-800.png",
+      "sha256": "b5bb2bd6631d5ed9d631fb28118107b70281330a9d88a3205efb0465fd5dac1d"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/service-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/service-1200.json",
+      "sha256": "de6d81f34c98869e31aa0b8670198c4ea2c1d069f3a8928840dd20093b328784"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/service-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/service-1200.png",
+      "sha256": "21a1a8b04a9cdb9627d84c8f13af11a2c673ce999628262076cf049cc1b06a31"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/service-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/service-800.json",
+      "sha256": "030e69115ecd8aa2ca440c40e1123444e8c324b3491fd0367d675f74c49d512c"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/service-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/service-800.png",
+      "sha256": "c12dcfb49c94de8bab62e1e900e7ae4a5a6b892cc2680627201e474c79be38f1"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/source-info-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/source-info-1200.json",
+      "sha256": "66e8c8f687d30da0f96c226b05bfba419a63fb562ae215cc8d8d56589af194fc"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/source-info-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/source-info-800.json",
+      "sha256": "66e8c8f687d30da0f96c226b05bfba419a63fb562ae215cc8d8d56589af194fc"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/update-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/update-1200.json",
+      "sha256": "10c9a90c7ffcde5bc14acb92179b1b54d7602e7c6dbcb67c65f3b350c41fc7ae"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/update-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/update-1200.png",
+      "sha256": "98262e85ea43ad66dca65816fc040f1112aa153c708a82e1d5f078963fdd73ad"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/update-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/update-800.json",
+      "sha256": "d3986f68d9a0d613fde52f3c4d3336c6864d418acb6a80842daec938576f4c1d"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/historical-018-019/update-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/historical-018-019/update-800.png",
+      "sha256": "1bf63350959caf054477e0d280f69f9c60d3cf271570746f20eaba94f2e3552b"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/index-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/index-1200.json",
+      "sha256": "db7dc69df09e51bf82e6334a1db22371dae92265cac2eb86e70dcf51bb1449c3"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/index-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/index-1200.png",
+      "sha256": "a006dfa74c82531a1359268340f3f9ea9af700f5c842b61c376dce391c314150"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/index-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/index-800.json",
+      "sha256": "ef8fed3424465bff84c2b0e953ac634c34ed6b80287293b71b787231e6862b99"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/index-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/index-800.png",
+      "sha256": "da00bceaa2f775da9d258fb31f0e60dd0998867a3d5df3b9232dcb7f1252c6bc"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/magpie-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/magpie-800.json",
+      "sha256": "7bf7d44e15785c2f17408861500ce1d68af2435ae81e0ed126be5fae3d28c458"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/magpie-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/magpie-800.png",
+      "sha256": "5822ede902809f57c44fd6688e771d58b4333448efeb425519bb59171b363883"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/processing-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/processing-1200.json",
+      "sha256": "08e3a06bbf4bb48e0cb0ea78b89b4468f119ed20af11218ecc85afd793cf7f4c"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/processing-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/processing-1200.png",
+      "sha256": "ca320bc2c2135f9cc49ccc1c9049cab32a6c03927d85edce1dd4aac6862d2b05"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/processing-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/processing-800.json",
+      "sha256": "35944cba118fadd56c8b4b574bf1f7710ddd18c5fc16477ffc2a88287bbe144a"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/processing-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/processing-800.png",
+      "sha256": "cc2b4d47af1c2fd3bfb039151832769e47ca131b023cd6b5f9f2b982f0068d93"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/provider-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/provider-800.json",
+      "sha256": "d4c673fe8ed59799c9b5accd8e04c6d98cece8115a2add7cae1f735f376d65cc"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/provider-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/provider-800.png",
+      "sha256": "b5bb2bd6631d5ed9d631fb28118107b70281330a9d88a3205efb0465fd5dac1d"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/provider-bottom-attempt-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/provider-bottom-attempt-800.json",
+      "sha256": "06522a5f9eac856e450ffcc26e662484a53266801aa0231cb562b887455c79b6"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/provider-bottom-attempt-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/provider-bottom-attempt-800.png",
+      "sha256": "b5bb2bd6631d5ed9d631fb28118107b70281330a9d88a3205efb0465fd5dac1d"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/provider-draft-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/provider-draft-1200.json",
+      "sha256": "1890990259ec363775469696e2fc617e0422df8ada35fa77f49f1fab84bd15bf"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/provider-draft-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/provider-draft-1200.png",
+      "sha256": "dc4cd69fe4596e752e8f74ebb7ecfc21aa6b051fd55da56ca085ac1b59be4802"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/provider-form-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/provider-form-1200.json",
+      "sha256": "418dd4f84e4429e6a0185031dcdf015379ed48efc3e814d5068c6204362da6a5"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/provider-form-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/provider-form-1200.png",
+      "sha256": "bb0e1db13efe9faa874d6e06752ecdcbd6fcf26205160fcf3ecb5416b9813596"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/provider-input-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/provider-input-1200.json",
+      "sha256": "fc6b7bda9572665938a55d579054126cda8ed1179a45666ecb2f1b67dd5600a6"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/provider-input-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/provider-input-1200.png",
+      "sha256": "583a0d5b270475c4751670209fc314e0670cb38b026ceb1c8feaeccfa723acec"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/provider-input-incomplete-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/provider-input-incomplete-1200.json",
+      "sha256": "ed31b9a490ccc0dba1293864f15e8379d634ed4bf33369bb28aad90414001e56"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/provider-input-incomplete-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/provider-input-incomplete-1200.png",
+      "sha256": "0bec05ca418933a77e81f3f89520f0303dc070dad2dd944c05f2f693090d7a4e"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/provider-input-retained-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/provider-input-retained-1200.json",
+      "sha256": "5a58c27edbf4340921df135c203e7bced84827e1b7392f9bcb42cfe2c48343dd"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/provider-input-retained-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/provider-input-retained-1200.png",
+      "sha256": "7e7ca9bf7d2897463d297a1b8a7ee55b8e8dcb2b771b504888e2a764f12b93c1"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/service-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/service-1200.json",
+      "sha256": "bca5cb57e4c1f72448cc605db411753c39b987c43e2fe72804403ebcfbc740b6"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/service-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/service-1200.png",
+      "sha256": "9735b7695651bf9f78a8cf062d482567307746131785d4e37afad563ac5735c4"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/service-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/service-800.json",
+      "sha256": "1a813447effd7ae5644dae378b1cc2a16af369dabe4b379495e2dbe97f6a8ec8"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/service-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/service-800.png",
+      "sha256": "dcac7a95ec86ed432c6b2d21abf99cb423430a0801bb2f2b2ede37b00300a49b"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/source-info-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/source-info-1200.json",
+      "sha256": "a6cc87bcd6a69710833f19376ee079b4adaee340d6f97af2470c3a9181e4daa6"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/source-info-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/source-info-800.json",
+      "sha256": "42310ae28cec6eed9d7dd6ff78f5a5009d8599f0115125486036d7b12a13fcb5"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/source-info-provider-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/source-info-provider-1200.json",
+      "sha256": "42310ae28cec6eed9d7dd6ff78f5a5009d8599f0115125486036d7b12a13fcb5"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/update-1200.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/update-1200.json",
+      "sha256": "f91fe2b250df553f0b63e5b77fcfe6c43b78ffb59a053b90eff5d9553db4f256"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/update-1200.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/update-1200.png",
+      "sha256": "0e5acd35fecfd8168bb1544822e9d18c273a76795f1cbfb2e1bc2a0e60196fe9"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/update-800.json",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/update-800.json",
+      "sha256": "9c3cdf6efc1c2982465e249da9dfa849ed82bff993e80141a5868ccb4259c3a8"
+    },
+    {
+      "source": "docs/images/ui-redesign/settings-native-20261112/update-800.png",
+      "archive": "documents/docs/images/ui-redesign/settings-native-20261112/update-800.png",
+      "sha256": "8ebff9d5ff034ed126ab8e5ca62f618117013b773eeb9b524dbca317c6bf30ea"
+    },
+    {
+      "source": "docs/images/ui-redesign/visual-refinement-20261113/01-home-1200x820.png",
+      "archive": "documents/docs/images/ui-redesign/visual-refinement-20261113/01-home-1200x820.png",
+      "sha256": "9345b15105a043a5d5d160dcd7195eef49cf80ac63b6ef2f725c39945eb6f784"
+    },
+    {
+      "source": "docs/implementation-plan.md",
+      "archive": "documents/docs/implementation-plan.md",
+      "sha256": "b00623957ff6caf31e4e73b02498d2c53efaceab010e33101b8eba1ae7a0a566"
+    },
+    {
+      "source": "docs/memory-browsing-design.md",
+      "archive": "documents/docs/memory-browsing-design.md",
+      "sha256": "8bcca23d719496f00f0e37a923172f07fc93a112dbc9da97239c9a8b40a17479"
+    },
+    {
+      "source": "docs/memory-processing-runtime-contract.md",
+      "archive": "documents/docs/memory-processing-runtime-contract.md",
+      "sha256": "30894628fa17000765c248001fc2aebd13309106418e700c25440291d3288435"
+    },
+    {
+      "source": "docs/multi-agent-provider-technical-plan-20261114.md",
+      "archive": "documents/docs/multi-agent-provider-technical-plan-20261114.md",
+      "sha256": "97371028f4f9df35f70e9784f34327e35222d9f6ff3f8a00c4b1d62d01af8cde"
+    },
+    {
+      "source": "docs/onboarding-memory-contract.md",
+      "archive": "documents/docs/onboarding-memory-contract.md",
+      "sha256": "d4eea1a594e3d7a2b59644e7ca3fcf2fb21ec2c62e259c9f69eff73dcdd0ced9"
+    },
+    {
+      "source": "docs/overview-product-plan-20261113.md",
+      "archive": "documents/docs/overview-product-plan-20261113.md",
+      "sha256": "e3f575c0ca109d7cae218e125b77ebf5875aac229e5c053fa4e27b2f797e5c0d"
+    },
+    {
+      "source": "docs/overview-spec-20261113.md",
+      "archive": "documents/docs/overview-spec-20261113.md",
+      "sha256": "776b16839da9ef70eacd9c52fdabd7aab27d45c2f18c12a46436e1ca6d078aa6"
+    },
+    {
+      "source": "docs/overview-technical-plan-20261113.md",
+      "archive": "documents/docs/overview-technical-plan-20261113.md",
+      "sha256": "09c6d3d7b665e793ef1ae93d50a06c4098bb229504e4c8a81d63956f9fd13b99"
+    },
+    {
+      "source": "docs/p3-agent-contract.md",
+      "archive": "documents/docs/p3-agent-contract.md",
+      "sha256": "1c3a4499d9bd910d8bc578826eacd3b4e762321788a92935f87f40f36aed9d4c"
+    },
+    {
+      "source": "docs/p3-c2-contract.md",
+      "archive": "documents/docs/p3-c2-contract.md",
+      "sha256": "41fa1c41951d2e2208f1790e5b5e4c4ad184657531ea6f8cfefd78dfab40472d"
+    },
+    {
+      "source": "docs/p3-c4-contract.md",
+      "archive": "documents/docs/p3-c4-contract.md",
+      "sha256": "40861a0cc0865cb414e2ec662dedaff1ecf9ad53b8621c799c3820c9b125fd32"
+    },
+    {
+      "source": "docs/p3-global-contract.md",
+      "archive": "documents/docs/p3-global-contract.md",
+      "sha256": "7e1d53cec5fcdb0a076de0e096cf48dd9d3873e1614dbde30bbe0f506a4a688a"
+    },
+    {
+      "source": "docs/p3-ide-contract.md",
+      "archive": "documents/docs/p3-ide-contract.md",
+      "sha256": "97a561d46127e2bb7cebd11accc086d690b5730d092cae65b642dfc4007bd768"
+    },
+    {
+      "source": "docs/p3-interaction-design.md",
+      "archive": "documents/docs/p3-interaction-design.md",
+      "sha256": "714842c32f71bc6b182c4a9907817a737f22a2320648e634ababd5cf622cea58"
+    },
+    {
+      "source": "docs/p3-onboarding-contract.md",
+      "archive": "documents/docs/p3-onboarding-contract.md",
+      "sha256": "5629b5113151763d82092ea80db4b1f716429d3b38a82350a951bbfcb6e3eb76"
+    },
+    {
+      "source": "docs/p3-organization-contract.md",
+      "archive": "documents/docs/p3-organization-contract.md",
+      "sha256": "c3e4381ba12564280c8e2c56d2b7c0c71e10b530c10dff1444247ecfdd40ab53"
+    },
+    {
+      "source": "docs/p3-pi-rpc-contract.md",
+      "archive": "documents/docs/p3-pi-rpc-contract.md",
+      "sha256": "a65e8c896ee187922ebd0f9f26309613e5f2a36cc7792812396da7db0653b692"
+    },
+    {
+      "source": "docs/p3-product-design.md",
+      "archive": "documents/docs/p3-product-design.md",
+      "sha256": "7e0414015e2674d210ba3e2b162b2e657bbed62f19304b4c17b6ed8c56e8199c"
+    },
+    {
+      "source": "docs/p3-recovery-contract.md",
+      "archive": "documents/docs/p3-recovery-contract.md",
+      "sha256": "bd0a6d1314aa3ae03a28bd5c88c0affb84d48253d0f0dcf3403a28bd9de174a2"
+    },
+    {
+      "source": "docs/p3-schedule-contract.md",
+      "archive": "documents/docs/p3-schedule-contract.md",
+      "sha256": "f69fc573691724842c3cba3fce475afb73e3d9811db44d7debfa5b3c30de29d5"
+    },
+    {
+      "source": "docs/p3-usage-contract.md",
+      "archive": "documents/docs/p3-usage-contract.md",
+      "sha256": "6602ca22f4bfe7398f73b874cff6eaaf86b9c3332090181a473294c79d24d4ae"
+    },
+    {
+      "source": "docs/p4-background-permission-contract.md",
+      "archive": "documents/docs/p4-background-permission-contract.md",
+      "sha256": "49b15ed138d59cb316d8ad820d736033f0e94ed9b34501ad170ca7066b469c28"
+    },
+    {
+      "source": "docs/p4-backup-recovery-contract.md",
+      "archive": "documents/docs/p4-backup-recovery-contract.md",
+      "sha256": "f495816c5963bf8dd259181ce608f210d76a20556ee186de5f5e6508f7e36754"
+    },
+    {
+      "source": "docs/p4-code-contract.md",
+      "archive": "documents/docs/p4-code-contract.md",
+      "sha256": "078ed9f6c270d952cf1987a75a84c8e2009bf37c402929ba3850d79abf799946"
+    },
+    {
+      "source": "docs/p4-code-root-contract.md",
+      "archive": "documents/docs/p4-code-root-contract.md",
+      "sha256": "1efac5d95d4029b852106fc673bb1cf88a7f451875a2ab613971f6b4e30e0b54"
+    },
+    {
+      "source": "docs/p4-code-update-contract.md",
+      "archive": "documents/docs/p4-code-update-contract.md",
+      "sha256": "fc84dcc6220c659755d9bf68517a7b45b8d1d5df7c34f88f91fc2107c9f28502"
+    },
+    {
+      "source": "docs/p4-diskfull-contract.md",
+      "archive": "documents/docs/p4-diskfull-contract.md",
+      "sha256": "d37ae4abf045f9ceb8246de95fa77b4b129ab87f54e359708834332499816f1b"
+    },
+    {
+      "source": "docs/p4-index-recovery-contract.md",
+      "archive": "documents/docs/p4-index-recovery-contract.md",
+      "sha256": "913675e95590c192e7185c4b4d4f6297f32fedb7de782c363e7f3eabf3725195"
+    },
+    {
+      "source": "docs/product-memory-flow.md",
+      "archive": "documents/docs/product-memory-flow.md",
+      "sha256": "58cd6454f441b95973e847eec7042f2b6db52d6a86301b7f0cbdc0d46c1ea778"
+    },
+    {
+      "source": "docs/product-questions.md",
+      "archive": "documents/docs/product-questions.md",
+      "sha256": "412c8ac6435a6b58f92e14f1fc154df9dd94f162bdc31a72be17b77b0c9c9458"
+    },
+    {
+      "source": "docs/product.md",
+      "archive": "documents/docs/product.md",
+      "sha256": "b8aecc7487975424b61211c3ab6dd2fd6d86399f62afdb446668bba6090e9379"
+    },
+    {
+      "source": "docs/project-access-product-plan-20261113.md",
+      "archive": "documents/docs/project-access-product-plan-20261113.md",
+      "sha256": "3fbc1de0988805e70cae46fd39799ab9c47c30d64c2e26e0e930956a9a74879e"
+    },
+    {
+      "source": "docs/project-access-spec-20261113.md",
+      "archive": "documents/docs/project-access-spec-20261113.md",
+      "sha256": "50d20d0c30728e8310faa51f93027f8d87223994e09c423643e68f4c7847037b"
+    },
+    {
+      "source": "docs/project-access-technical-plan-20261113.md",
+      "archive": "documents/docs/project-access-technical-plan-20261113.md",
+      "sha256": "2ed0318ca3a401a1bd37bf25527da24ea05371f01470124815552d73b75a1373"
+    },
+    {
+      "source": "docs/reading-ui-product-plan-20261113.md",
+      "archive": "documents/docs/reading-ui-product-plan-20261113.md",
+      "sha256": "d3b9ed2f3f95dc199db58d50b32e730d923577c41c06b0c84bf8cfe66c949250"
+    },
+    {
+      "source": "docs/reading-ui-spec-20261113.md",
+      "archive": "documents/docs/reading-ui-spec-20261113.md",
+      "sha256": "57266570bc9dbfcaae251acfc8614ad85ee640ed369cb0d76e82c02b31968020"
+    },
+    {
+      "source": "docs/reading-ui-technical-plan-20261113.md",
+      "archive": "documents/docs/reading-ui-technical-plan-20261113.md",
+      "sha256": "06a7de8f4d48fa5eb2b79e742feb4dd900e312f84dbd15bdb3e7fba4449eb2a0"
+    },
+    {
+      "source": "docs/roadmap.md",
+      "archive": "documents/docs/roadmap.md",
+      "sha256": "ca2303a1cbd275216a091da47b7c8f4c9b71503afc5b9f78e6f913c147e900b8"
+    },
+    {
+      "source": "docs/technical-plan-client-first-20261112.md",
+      "archive": "documents/docs/technical-plan-client-first-20261112.md",
+      "sha256": "77a2eef045de5adf9195538be9fb5783ab15b37e8045f00544ba021adce4e95e"
+    },
+    {
+      "source": "docs/technical-plan.md",
+      "archive": "documents/docs/technical-plan.md",
+      "sha256": "38e206f0c052d03f6c8091768902f24c71005978bc54aff003a8c448048d6914"
+    },
+    {
+      "source": "docs/ui-redesign/README.md",
+      "archive": "documents/docs/ui-redesign/README.md",
+      "sha256": "56665772f05bbe581c1a561f8712f7c28eea06a016cc058e450cb317033fdd85"
+    },
+    {
+      "source": "docs/ui-redesign/a-environment.md",
+      "archive": "documents/docs/ui-redesign/a-environment.md",
+      "sha256": "789d31e88ba560fff19eb81c45c4f455d94aee3a42f334e462e285656eb54608"
+    },
+    {
+      "source": "docs/ui-redesign/a-setup-handoff.md",
+      "archive": "documents/docs/ui-redesign/a-setup-handoff.md",
+      "sha256": "0b877b31faed045a230398d66e26ab3f96a250aea7b46291c97c1ee142ece50c"
+    },
+    {
+      "source": "docs/ui-redesign/agent-connection-batch-20261110.md",
+      "archive": "documents/docs/ui-redesign/agent-connection-batch-20261110.md",
+      "sha256": "3d51c0f8cefdffa039573f7bd9fa6b1f0b0e73a30f683d04978eaf392a59c671"
+    },
+    {
+      "source": "docs/ui-redesign/agent-connection-contract.md",
+      "archive": "documents/docs/ui-redesign/agent-connection-contract.md",
+      "sha256": "540ac1be3ab7c6c82290fd297453ec321056b34a9abffef00a1e6119a7da9cf5"
+    },
+    {
+      "source": "docs/ui-redesign/agent-connection-window-20261110.md",
+      "archive": "documents/docs/ui-redesign/agent-connection-window-20261110.md",
+      "sha256": "1136823ed4e59006126515134fb25a9852627ee2ae3a3a9130353c7573eed183"
+    },
+    {
+      "source": "docs/ui-redesign/agent-settings-placement.md",
+      "archive": "documents/docs/ui-redesign/agent-settings-placement.md",
+      "sha256": "a52591f43748d0cec53abad1a7f4fb63827cc8c38462ea1cbc63c4a639ea8f66"
+    },
+    {
+      "source": "docs/ui-redesign/b-home-handoff.md",
+      "archive": "documents/docs/ui-redesign/b-home-handoff.md",
+      "sha256": "5b49c5311ce05c8fc6ff548b4fb06ddfaba915c018250b999547e676129c3c43"
+    },
+    {
+      "source": "docs/ui-redesign/backup-cancellation-20261111.md",
+      "archive": "documents/docs/ui-redesign/backup-cancellation-20261111.md",
+      "sha256": "ef4d03a78157c425596d34237edcc7bf302fb930da3cc8ff0145c584a927d5b6"
+    },
+    {
+      "source": "docs/ui-redesign/c-agent-handoff.md",
+      "archive": "documents/docs/ui-redesign/c-agent-handoff.md",
+      "sha256": "8929ce18900dac5eec093042d86f7597799ff1c71c25ef4f556fe0ae7dc9282d"
+    },
+    {
+      "source": "docs/ui-redesign/c-project-reading-handoff.md",
+      "archive": "documents/docs/ui-redesign/c-project-reading-handoff.md",
+      "sha256": "883722d434730a0f29568e4c28c1bf0b297f76ad11175e57d068d3ec5188d832"
+    },
+    {
+      "source": "docs/ui-redesign/codex-computer-connection-20261111.md",
+      "archive": "documents/docs/ui-redesign/codex-computer-connection-20261111.md",
+      "sha256": "9f61af4b8bee00b1b09347d99f781672f0f5d083cc0c49c655a6d44a266431ad"
+    },
+    {
+      "source": "docs/ui-redesign/codex-desktop-lifecycle-20261111.md",
+      "archive": "documents/docs/ui-redesign/codex-desktop-lifecycle-20261111.md",
+      "sha256": "ded3d64457312403b9f67250c05872da7f4dc804b52972f43ff765879b02eae6"
+    },
+    {
+      "source": "docs/ui-redesign/codex-processing-20261111.md",
+      "archive": "documents/docs/ui-redesign/codex-processing-20261111.md",
+      "sha256": "1d83551b2b3629c4c0da7356ec95792cffd454bb586febff18d0866f43e9cf02"
+    },
+    {
+      "source": "docs/ui-redesign/cognee-processing-gateway-20261111.md",
+      "archive": "documents/docs/ui-redesign/cognee-processing-gateway-20261111.md",
+      "sha256": "744ecc935e28d88846d29b970d39071e139ccdef686a0413a4da960f1a07bffd"
+    },
+    {
+      "source": "docs/ui-redesign/common-knowledge-fidelity-20261110.md",
+      "archive": "documents/docs/ui-redesign/common-knowledge-fidelity-20261110.md",
+      "sha256": "1fc427deff5b38976a7a87a561f51fa24f41a130cfaef99709872a9e3926dc2b"
+    },
+    {
+      "source": "docs/ui-redesign/common-knowledge-naming.md",
+      "archive": "documents/docs/ui-redesign/common-knowledge-naming.md",
+      "sha256": "193d47edae245facd850c4706564c8e0c33b1095fdc19933cb66a7895d6d2b22"
+    },
+    {
+      "source": "docs/ui-redesign/common-settings-redesign-20261114.md",
+      "archive": "documents/docs/ui-redesign/common-settings-redesign-20261114.md",
+      "sha256": "7e37f29dde74afc6f421d6ab416912389bdcb9b60c2faa54a783daf92b85ad91"
+    },
+    {
+      "source": "docs/ui-redesign/concentrated-native-20261111.md",
+      "archive": "documents/docs/ui-redesign/concentrated-native-20261111.md",
+      "sha256": "11e62458753d67e9eef103880aa5c112aea02345955af82428b26b1c27fb144d"
+    },
+    {
+      "source": "docs/ui-redesign/connection-protocol-20261110.md",
+      "archive": "documents/docs/ui-redesign/connection-protocol-20261110.md",
+      "sha256": "fd3651752ad39f0952a9d8b7fa263224ce5f906039b4b2fc8130b1b84e2f49a4"
+    },
+    {
+      "source": "docs/ui-redesign/content-continuity-20261111.md",
+      "archive": "documents/docs/ui-redesign/content-continuity-20261111.md",
+      "sha256": "53c1ebde3cf1d97d52d2372ecfdaf5fb73f8543901952cdcb3962425ae03607c"
+    },
+    {
+      "source": "docs/ui-redesign/content-model.md",
+      "archive": "documents/docs/ui-redesign/content-model.md",
+      "sha256": "ae54b3ceb99cbfc37d865ab8650e7aae163e185f8adb608b1b04e844b732b157"
+    },
+    {
+      "source": "docs/ui-redesign/content-scenario-audit-20261111.md",
+      "archive": "documents/docs/ui-redesign/content-scenario-audit-20261111.md",
+      "sha256": "141fe104d1601073ee4e9b5576d2275a6160b3f813e66fd53333b6b1a0995dbe"
+    },
+    {
+      "source": "docs/ui-redesign/conversation-reading-handoff-20261112.md",
+      "archive": "documents/docs/ui-redesign/conversation-reading-handoff-20261112.md",
+      "sha256": "14a4fe764f9eb3e923eead93d8b76371692d2d3813f74187afe6abe076d9a8b6"
+    },
+    {
+      "source": "docs/ui-redesign/daily-agent-usage-harness-20261111.md",
+      "archive": "documents/docs/ui-redesign/daily-agent-usage-harness-20261111.md",
+      "sha256": "b7477ca3009cade2bfc77a1e00ad9c9c5ca6b1b5e81f6a36d147b00de63fadfc"
+    },
+    {
+      "source": "docs/ui-redesign/delivery-assignment-20261111.md",
+      "archive": "documents/docs/ui-redesign/delivery-assignment-20261111.md",
+      "sha256": "6e50616b5c50aea284403564df4d5d135612cbbd7e4fd8e4f69b00fd3cac8a22"
+    },
+    {
+      "source": "docs/ui-redesign/delivery-assignment-ui-20261111.md",
+      "archive": "documents/docs/ui-redesign/delivery-assignment-ui-20261111.md",
+      "sha256": "79444089f3287e10c33d227d2d3f141880a206bb01e415cfd8256cfe9e3d5369"
+    },
+    {
+      "source": "docs/ui-redesign/design-audit-20261110.md",
+      "archive": "documents/docs/ui-redesign/design-audit-20261110.md",
+      "sha256": "ca1cd1c8635a1ef4ae0de49308a22117c66fb66751e931f4ef888eccd83741d3"
+    },
+    {
+      "source": "docs/ui-redesign/design-catalog.md",
+      "archive": "documents/docs/ui-redesign/design-catalog.md",
+      "sha256": "505b0b9aaf58685fddec8a8eb74b22adc92547a664080bccaa4af626325421eb"
+    },
+    {
+      "source": "docs/ui-redesign/design-cleanup-20261112.md",
+      "archive": "documents/docs/ui-redesign/design-cleanup-20261112.md",
+      "sha256": "cad431a62f3051f81a90e08692a98cf1b045b5c2ab609312b9cc762b09f41ee9"
+    },
+    {
+      "source": "docs/ui-redesign/design-cleanup-manifest-20261112.json",
+      "archive": "documents/docs/ui-redesign/design-cleanup-manifest-20261112.json",
+      "sha256": "2bf1fe42cb134c3effdc899f1ae24eb105c68f934c5d4f9e3ab3129670b58abe"
+    },
+    {
+      "source": "docs/ui-redesign/development-progress.md",
+      "archive": "documents/docs/ui-redesign/development-progress.md",
+      "sha256": "9b3218c8d1b0da12a43089197d7615383e1fccd76ecd30390125040e390b9ac2"
+    },
+    {
+      "source": "docs/ui-redesign/editor-long-draft-native-20261111.md",
+      "archive": "documents/docs/ui-redesign/editor-long-draft-native-20261111.md",
+      "sha256": "423cb9d498fe8c783e3f6b52d8961ff77c93dd5371081c2052716a8d9a7da5b6"
+    },
+    {
+      "source": "docs/ui-redesign/editor-terminology-batch-20261111.md",
+      "archive": "documents/docs/ui-redesign/editor-terminology-batch-20261111.md",
+      "sha256": "870d86b54eca578043558b341af3a0a48530752b7786dfef6f7bae00e932ed2c"
+    },
+    {
+      "source": "docs/ui-redesign/experience-distill-fidelity-20261110.md",
+      "archive": "documents/docs/ui-redesign/experience-distill-fidelity-20261110.md",
+      "sha256": "eb9af63d2a63e61c536d6791467bd50385d5d5128951b24de54dd529492789a4"
+    },
+    {
+      "source": "docs/ui-redesign/experience-recovery-fidelity-20261110.md",
+      "archive": "documents/docs/ui-redesign/experience-recovery-fidelity-20261110.md",
+      "sha256": "00f76df9fef7d3692d943c6f3ed395600ad90a4e9645f48d28996aaa34ffadd3"
+    },
+    {
+      "source": "docs/ui-redesign/fidelity-20261109.md",
+      "archive": "documents/docs/ui-redesign/fidelity-20261109.md",
+      "sha256": "449f1a1af91f88452cc175cf27ea99dba8613c858ffb3c4a3437d96176836f8f"
+    },
+    {
+      "source": "docs/ui-redesign/fidelity-20261110.md",
+      "archive": "documents/docs/ui-redesign/fidelity-20261110.md",
+      "sha256": "0e84f274f98b65e0ec90e3ef0ce0e404de4b950295100d7ce804dfa318abe218"
+    },
+    {
+      "source": "docs/ui-redesign/first-detection-20261110.md",
+      "archive": "documents/docs/ui-redesign/first-detection-20261110.md",
+      "sha256": "d2467dd5fc3b8c8377ee9d40e1af6d844e80d106aa571a4c1af9362f4f8d8559"
+    },
+    {
+      "source": "docs/ui-redesign/fixed008-native-20261111.md",
+      "archive": "documents/docs/ui-redesign/fixed008-native-20261111.md",
+      "sha256": "f13222d0f41bd1e6a9836e4ac05ff496f17fe280770f83b7e7950db0d44e06b8"
+    },
+    {
+      "source": "docs/ui-redesign/fixed009-native-20261111.md",
+      "archive": "documents/docs/ui-redesign/fixed009-native-20261111.md",
+      "sha256": "4aafde0312cce8bfa04119d61438306480705301a0916ef1a74c3066603f3b0d"
+    },
+    {
+      "source": "docs/ui-redesign/fixed010-native-20261111.md",
+      "archive": "documents/docs/ui-redesign/fixed010-native-20261111.md",
+      "sha256": "f510c745aaebef9f98e8ddf2dfdd6eda8295977a3e8f6657e5da1905ca104a2d"
+    },
+    {
+      "source": "docs/ui-redesign/fixed011-native-20261111.md",
+      "archive": "documents/docs/ui-redesign/fixed011-native-20261111.md",
+      "sha256": "bb30b6400c9c620f6c831fda3a9004d393c0dd9df1cf3bd612ec67f0ddc537f8"
+    },
+    {
+      "source": "docs/ui-redesign/full-design-handoff.md",
+      "archive": "documents/docs/ui-redesign/full-design-handoff.md",
+      "sha256": "298f09eb111eae0c39dce71281aeae8dfbe8e33f2e565fcdce860e759be9f6f8"
+    },
+    {
+      "source": "docs/ui-redesign/full-design-progress.md",
+      "archive": "documents/docs/ui-redesign/full-design-progress.md",
+      "sha256": "828dc0f97c4e2cf60f5775aa030774028663b4f2dc2892e75e9beeb1c8fe7edf"
+    },
+    {
+      "source": "docs/ui-redesign/graph-material-submission-20261111.md",
+      "archive": "documents/docs/ui-redesign/graph-material-submission-20261111.md",
+      "sha256": "91f8685db455aaf2c47f31ac2d4a8e38286ded548f32fcbd4fd835f592a7976f"
+    },
+    {
+      "source": "docs/ui-redesign/graph-presentation-20261111.md",
+      "archive": "documents/docs/ui-redesign/graph-presentation-20261111.md",
+      "sha256": "db22077c17ed96a04391e560cf1dea5785022652efcb01e802705f4cefd9b8f2"
+    },
+    {
+      "source": "docs/ui-redesign/graph-submission-desktop-20261111.md",
+      "archive": "documents/docs/ui-redesign/graph-submission-desktop-20261111.md",
+      "sha256": "58d19ea49e07d04fd8cf9fe4f50f02316bfd3975446bc1645352759928a80819"
+    },
+    {
+      "source": "docs/ui-redesign/handoff-20261111-progress.md",
+      "archive": "documents/docs/ui-redesign/handoff-20261111-progress.md",
+      "sha256": "ce1536195b778ab676b42532f1211e9d2867a21d5241892b2ff118d79540cc9d"
+    },
+    {
+      "source": "docs/ui-redesign/history-focus-native-20261111.md",
+      "archive": "documents/docs/ui-redesign/history-focus-native-20261111.md",
+      "sha256": "61415d85c5461dfc6cf86ed6979a24990c0f7070851849ca16a254118e0b0333"
+    },
+    {
+      "source": "docs/ui-redesign/home-native-implementation-20261111.md",
+      "archive": "documents/docs/ui-redesign/home-native-implementation-20261111.md",
+      "sha256": "e6fc0ae514308bf986f5a8f9765cfa171b4011ab1abada61ba4f17d9bb097d88"
+    },
+    {
+      "source": "docs/ui-redesign/implementation-20261109.md",
+      "archive": "documents/docs/ui-redesign/implementation-20261109.md",
+      "sha256": "0dadd11094321175827dd6232a6ff76803324be4c8a15d87b30781f17d550ccb"
+    },
+    {
+      "source": "docs/ui-redesign/index-cancellation-20261111.md",
+      "archive": "documents/docs/ui-redesign/index-cancellation-20261111.md",
+      "sha256": "88cefc0b6aae1e322c2298cac5303afae48ee91947069655910fbf7703020a8b"
+    },
+    {
+      "source": "docs/ui-redesign/initialization-native-20261110.md",
+      "archive": "documents/docs/ui-redesign/initialization-native-20261110.md",
+      "sha256": "1e8eaacc112f2fcd8b1c79eb637e6d666ef8c22717f80d7473040d0e1527420e"
+    },
+    {
+      "source": "docs/ui-redesign/maintenance-native-20261111.md",
+      "archive": "documents/docs/ui-redesign/maintenance-native-20261111.md",
+      "sha256": "409028635a956aa8af2fc78c46f0e928da7df566adc1853b9b10c1f97463112a"
+    },
+    {
+      "source": "docs/ui-redesign/manual-drafts-persistence-20261111.md",
+      "archive": "documents/docs/ui-redesign/manual-drafts-persistence-20261111.md",
+      "sha256": "821284af833ecbd215a2a9e4a42be5d7c0e7f4d2a630b3e1e2c406dd44491096"
+    },
+    {
+      "source": "docs/ui-redesign/material-context-fidelity-20261110.md",
+      "archive": "documents/docs/ui-redesign/material-context-fidelity-20261110.md",
+      "sha256": "c5cb1763c0540805087cc617f5b8b7a22b32a9524c991eef4195fbfd206ba094"
+    },
+    {
+      "source": "docs/ui-redesign/material-organization-fidelity-20261110.md",
+      "archive": "documents/docs/ui-redesign/material-organization-fidelity-20261110.md",
+      "sha256": "69ddd6502d87fa0e2319ae601e7da8d8f964b6a259433871ca6ae73f05144692"
+    },
+    {
+      "source": "docs/ui-redesign/material-recovery-fidelity-20261110.md",
+      "archive": "documents/docs/ui-redesign/material-recovery-fidelity-20261110.md",
+      "sha256": "0678e1315c85e07d84b49a6e9e851b73f34848b20d5dc0f9a1965a0c488c78be"
+    },
+    {
+      "source": "docs/ui-redesign/memory-processing-design.md",
+      "archive": "documents/docs/ui-redesign/memory-processing-design.md",
+      "sha256": "9d46e8b6b6c67c073a8f34425433029772e18c591d7a59e7b9b346954ecb6586"
+    },
+    {
+      "source": "docs/ui-redesign/motion-implementation.md",
+      "archive": "documents/docs/ui-redesign/motion-implementation.md",
+      "sha256": "edc7bb13ad5ee3b554dbd89bbabbbf76a0f9eb6689a807fb0f8fb1554ba8548c"
+    },
+    {
+      "source": "docs/ui-redesign/mvp-content-diagram-sources-20261111.json",
+      "archive": "documents/docs/ui-redesign/mvp-content-diagram-sources-20261111.json",
+      "sha256": "995aee9a8e71330af763e6d59e169c2afa134edd2caadd69692ffb74f5fa267c"
+    },
+    {
+      "source": "docs/ui-redesign/mvp-delivery-audit-20261111.md",
+      "archive": "documents/docs/ui-redesign/mvp-delivery-audit-20261111.md",
+      "sha256": "7cc55b20c7acf24a6a4e231e6468da28e7efe2a58a0aae27e4e6d3c082b6f8af"
+    },
+    {
+      "source": "docs/ui-redesign/mvp-design-baseline-20261111.json",
+      "archive": "documents/docs/ui-redesign/mvp-design-baseline-20261111.json",
+      "sha256": "4c3fc0f752d4107792576c569ce3f15195c715aba67c6781f34ff8f878c3d94f"
+    },
+    {
+      "source": "docs/ui-redesign/mvp-progress-20261111.md",
+      "archive": "documents/docs/ui-redesign/mvp-progress-20261111.md",
+      "sha256": "97aba06c2db69d5d06118a43eda4867ad59475191eac1008ee0f57eb446837f8"
+    },
+    {
+      "source": "docs/ui-redesign/native-capture-20261111.md",
+      "archive": "documents/docs/ui-redesign/native-capture-20261111.md",
+      "sha256": "2238480fdc399677cb03bd448c872282a36a21659ad2c3ab2a1c3999efd5d932"
+    },
+    {
+      "source": "docs/ui-redesign/non-project-handoff-20261112.md",
+      "archive": "documents/docs/ui-redesign/non-project-handoff-20261112.md",
+      "sha256": "5e51acafcd2d4055050bae9b310256603853bd983ccc905b84c0b2fd2e7394cc"
+    },
+    {
+      "source": "docs/ui-redesign/package-runtime-20261111.md",
+      "archive": "documents/docs/ui-redesign/package-runtime-20261111.md",
+      "sha256": "56c1921a056dc7e3fe650e55c3a51b91788386722ecd4d70927682beff6d1e1c"
+    },
+    {
+      "source": "docs/ui-redesign/pi-project-task-20261111.md",
+      "archive": "documents/docs/ui-redesign/pi-project-task-20261111.md",
+      "sha256": "ecfeb8c336391ebe5f4f76276a5c344fe596d7d5d099a55397006e50a4b6f2c1"
+    },
+    {
+      "source": "docs/ui-redesign/processing-diagnostics-20261111.md",
+      "archive": "documents/docs/ui-redesign/processing-diagnostics-20261111.md",
+      "sha256": "5016d81bc0f8a9350c1e133045300f646ba1c4b5903c37e1ba896ead2c62c717"
+    },
+    {
+      "source": "docs/ui-redesign/processing-revalidation-recovery-20261111.md",
+      "archive": "documents/docs/ui-redesign/processing-revalidation-recovery-20261111.md",
+      "sha256": "41f07954db3f74fd505472fafb9feeb13fed6693c588ca3809f769200d5ee78e"
+    },
+    {
+      "source": "docs/ui-redesign/project-context-20261110.md",
+      "archive": "documents/docs/ui-redesign/project-context-20261110.md",
+      "sha256": "41a04947cf460d1f30eaf6637b7f839accd730009fdcc09a7df350ffa7aa9990"
+    },
+    {
+      "source": "docs/ui-redesign/project-history-20261110.md",
+      "archive": "documents/docs/ui-redesign/project-history-20261110.md",
+      "sha256": "31bdd6c85b439cf9d5429955541e277af8c13cc33bfd47c641e4b57e07cd606a"
+    },
+    {
+      "source": "docs/ui-redesign/project-history-archive-20261110.md",
+      "archive": "documents/docs/ui-redesign/project-history-archive-20261110.md",
+      "sha256": "7380f8cf2a6808b10a1f0d100625b75fbede451115cd886b4f6414f10e1485c3"
+    },
+    {
+      "source": "docs/ui-redesign/project-index-recovery-20261110.md",
+      "archive": "documents/docs/ui-redesign/project-index-recovery-20261110.md",
+      "sha256": "4b6287f2e79d3c7b36e3e4aabe2f98a1c0d41239b725e3acffc4456d8901cf6f"
+    },
+    {
+      "source": "docs/ui-redesign/project-motion-fidelity-20261110.md",
+      "archive": "documents/docs/ui-redesign/project-motion-fidelity-20261110.md",
+      "sha256": "989a4d2cbb944b1e7c9ffec22c4337be7530181f15cb344ba6ab142714ac96db"
+    },
+    {
+      "source": "docs/ui-redesign/project-organization-fidelity-20261110.md",
+      "archive": "documents/docs/ui-redesign/project-organization-fidelity-20261110.md",
+      "sha256": "d2aea89273faceb9f1ddd65fdb4afcc9dcac0279eaf8fb4a42c13d85288645bd"
+    },
+    {
+      "source": "docs/ui-redesign/project-organizer-native-20261110.md",
+      "archive": "documents/docs/ui-redesign/project-organizer-native-20261110.md",
+      "sha256": "e58911579fa096e0c884a3ad28f8f7bc911298bd8ac340f5cfad34a054d6d9f3"
+    },
+    {
+      "source": "docs/ui-redesign/project-preference-evidence-contract-20261111.md",
+      "archive": "documents/docs/ui-redesign/project-preference-evidence-contract-20261111.md",
+      "sha256": "839eaba6c60d62825ed4e71ef7429afa0b6798c8639aa07966dd73370849808c"
+    },
+    {
+      "source": "docs/ui-redesign/project-preference-ui-20261111.md",
+      "archive": "documents/docs/ui-redesign/project-preference-ui-20261111.md",
+      "sha256": "c128cf8300921ed361559ef8f489fe037973a158a1622bf3d2d990e546069b6a"
+    },
+    {
+      "source": "docs/ui-redesign/project-reading-redesign-20261114.md",
+      "archive": "documents/docs/ui-redesign/project-reading-redesign-20261114.md",
+      "sha256": "0a2bb471a3f97f996c62f107877957722d95d911de7eddbb2d7c22419e84bb7a"
+    },
+    {
+      "source": "docs/ui-redesign/project-settings-fidelity-20261110.md",
+      "archive": "documents/docs/ui-redesign/project-settings-fidelity-20261110.md",
+      "sha256": "e2a916024e46cac31b2b9701c1f5a1d20b0194e4add2380d07d235aba9f2530c"
+    },
+    {
+      "source": "docs/ui-redesign/project-settings-placement.md",
+      "archive": "documents/docs/ui-redesign/project-settings-placement.md",
+      "sha256": "5e90d5378f44e487e6bd17f1b4b48ffc7e2e9eb27f9119934793a894e25b9b4e"
+    },
+    {
+      "source": "docs/ui-redesign/project-start-diagnostic-20261111.md",
+      "archive": "documents/docs/ui-redesign/project-start-diagnostic-20261111.md",
+      "sha256": "f9a68b6646550c8418b0d346085e68f8583b1313245af151a7f3eac6ec3678b1"
+    },
+    {
+      "source": "docs/ui-redesign/provider-magpie-http-20261111.md",
+      "archive": "documents/docs/ui-redesign/provider-magpie-http-20261111.md",
+      "sha256": "e45e1e4393376985191eda9b90143c30861ed58a2e9c2b75f92afd5bc72e54de"
+    },
+    {
+      "source": "docs/ui-redesign/provider-magpie-native-implementation-20261111.md",
+      "archive": "documents/docs/ui-redesign/provider-magpie-native-implementation-20261111.md",
+      "sha256": "172ea3d05c3ffc6bbb7ab4653d862c3984f141f79e4f96d6bb7b76e6ce3b68d1"
+    },
+    {
+      "source": "docs/ui-redesign/reading-fidelity-20261110.md",
+      "archive": "documents/docs/ui-redesign/reading-fidelity-20261110.md",
+      "sha256": "cde93f35d3f9450c1607f57139a15be0cd6a9bf9979d248329d8da3db4e4969c"
+    },
+    {
+      "source": "docs/ui-redesign/reading-filters-20261111.md",
+      "archive": "documents/docs/ui-redesign/reading-filters-20261111.md",
+      "sha256": "996f26b8b3b99bf988caae61139111d8ed0e6aabba543f5cd5b0615131417ce5"
+    },
+    {
+      "source": "docs/ui-redesign/remaining-eleven-source-audit-20261111.md",
+      "archive": "documents/docs/ui-redesign/remaining-eleven-source-audit-20261111.md",
+      "sha256": "d38742fb5b858dfceb2dd571f63685d64863ad78761acec79426008738624e5d"
+    },
+    {
+      "source": "docs/ui-redesign/reusable-setup.md",
+      "archive": "documents/docs/ui-redesign/reusable-setup.md",
+      "sha256": "b345010288b31241fa56f9a63630c157aac76c34d86e60dfe8062d2b54ea185e"
+    },
+    {
+      "source": "docs/ui-redesign/review-maintenance-20261111.md",
+      "archive": "documents/docs/ui-redesign/review-maintenance-20261111.md",
+      "sha256": "d81ef3f0fa9475a9c859dacfec5c5e001e46501beb9c39d0bd9abcf3bf3a1d51"
+    },
+    {
+      "source": "docs/ui-redesign/scenario-engineering-coverage.md",
+      "archive": "documents/docs/ui-redesign/scenario-engineering-coverage.md",
+      "sha256": "df911d84b2dbcfe1a9ed76d0835bfb75426aaedde5d881a1e73125e9e0381498"
+    },
+    {
+      "source": "docs/ui-redesign/scenarios.md",
+      "archive": "documents/docs/ui-redesign/scenarios.md",
+      "sha256": "74363dbb6a0b097d00810b0345a23a4db5a201bb558c369dbca93cee7bbc22b9"
+    },
+    {
+      "source": "docs/ui-redesign/schedule-presentation-20261111.md",
+      "archive": "documents/docs/ui-redesign/schedule-presentation-20261111.md",
+      "sha256": "e6349b5d3c53c4e047afdba3e9b52a4a9d18a5dcdc83d59a35ee468f1eff1a08"
+    },
+    {
+      "source": "docs/ui-redesign/schedule-processing-20261111.md",
+      "archive": "documents/docs/ui-redesign/schedule-processing-20261111.md",
+      "sha256": "750d617b94782ee719125e281679829afe8cf42db4728a6e6a36d1f092fdf506"
+    },
+    {
+      "source": "docs/ui-redesign/source-reading-fidelity-20261110.md",
+      "archive": "documents/docs/ui-redesign/source-reading-fidelity-20261110.md",
+      "sha256": "9ddf72b680634cd34f3250a7d609a57f3dece13d2bb8a67bd37e261b99ab306f"
+    },
+    {
+      "source": "docs/ui-redesign/ui-native-screenshots-20261111.md",
+      "archive": "documents/docs/ui-redesign/ui-native-screenshots-20261111.md",
+      "sha256": "748dc45e5a79910d1844b18fbe1646d1e51c7f0f63d6d338c167bf09afa8f546"
+    },
+    {
+      "source": "docs/ui-redesign/ui-systematic-native-20261111.md",
+      "archive": "documents/docs/ui-redesign/ui-systematic-native-20261111.md",
+      "sha256": "3b17856f8ebbf8ae01461ac26fc258054e23534364b88e1de19fb1397c13c503"
+    },
+    {
+      "source": "docs/ui-redesign/usage-events-20261111.md",
+      "archive": "documents/docs/ui-redesign/usage-events-20261111.md",
+      "sha256": "2996e4859479f46339c782ca9ab625fb452af603d58b870cfc806947fcd632b0"
+    },
+    {
+      "source": "docs/ui-redesign/usage-native-presentation-20261111.md",
+      "archive": "documents/docs/ui-redesign/usage-native-presentation-20261111.md",
+      "sha256": "1b42b1418e3822f9c5788b864cf6a75ca253974941dd01c30eab4abe859fef4f"
+    },
+    {
+      "source": "docs/ui-redesign/visual-refinement-handoff-20261113.md",
+      "archive": "documents/docs/ui-redesign/visual-refinement-handoff-20261113.md",
+      "sha256": "09631c9c118437825909df4b01b2334e143651c15cb1bcac5e56cea27c3e3ae8"
+    },
+    {
+      "source": "docs/ui-redesign/visual-refinement-progress-20261113.md",
+      "archive": "documents/docs/ui-redesign/visual-refinement-progress-20261113.md",
+      "sha256": "1836b75c85cacf4beb2db1971cfc304084713f8fdd64eebd793f6fc986c4acb5"
+    },
+    {
+      "source": "docs/ui-redesign/visual-refinement-selection-20261113.md",
+      "archive": "documents/docs/ui-redesign/visual-refinement-selection-20261113.md",
+      "sha256": "2ba6a05903a68306ac1a939c0d869231d03d0910826bcca2544817d9185122a3"
+    },
+    {
+      "source": "docs/ui-redesign/visual-standards-20261113.md",
+      "archive": "documents/docs/ui-redesign/visual-standards-20261113.md",
+      "sha256": "7519375f5c49ac57edc75bc6be8e1e4221e6a31716fe382f0efd036051ea3e80"
+    }
+  ],
+  "screenshots": [
+    {
+      "file": "screenshots/01-overview.jpg",
+      "bytes": 330022,
+      "sha256": "88e1c52d6014a5bf1a37c1dd8b5d7be49fc6d271aab98dbd5a2101f3e6f7ace9"
+    },
+    {
+      "file": "screenshots/02-search.jpg",
+      "bytes": 286077,
+      "sha256": "548e437b5b6f98793823e8f3e1f1062b28bfc752de18a63741fd389fbe816f78"
+    },
+    {
+      "file": "screenshots/03-overview-projects.jpg",
+      "bytes": 334128,
+      "sha256": "f586bb80e5b72e35bb8a9ff589bf0f51fd553f82732378dcc2d92f1dd56397b0"
+    },
+    {
+      "file": "screenshots/04-project-knowledge.jpg",
+      "bytes": 262879,
+      "sha256": "959d62201f1f84c63c7659e814b00a243fd7eb06ca8be407544f35348f1e6130"
+    },
+    {
+      "file": "screenshots/05-content-information.jpg",
+      "bytes": 273469,
+      "sha256": "80cd2e21c082cff3100bfa00d4b31e8e8be1ee122f0acfb699286720c22c290e"
+    },
+    {
+      "file": "screenshots/06-source-session.jpg",
+      "bytes": 324663,
+      "sha256": "a7b7726360da52d467d23e964bb8614fe50c7163874e0a6bdfe273e72e75276d"
+    },
+    {
+      "file": "screenshots/07-raw-records.jpg",
+      "bytes": 330147,
+      "sha256": "1a0f752f5f4ddf09e8e9c7c8a6e68e8349eb98d8744807f21e3e43303143cc32"
+    },
+    {
+      "file": "screenshots/08-session-tool-expanded.jpg",
+      "bytes": 368893,
+      "sha256": "7dd2e24e541def3ff33f241761100831abca101fece509c674c85a0286c08d59"
+    },
+    {
+      "file": "screenshots/09-graph-entities.jpg",
+      "bytes": 282780,
+      "sha256": "55252214cea3a8fa9e8c643e1d591a4c7fe38cc532d4e46db3550888b86414c8"
+    },
+    {
+      "file": "screenshots/10-code-graph-disabled.jpg",
+      "bytes": 154333,
+      "sha256": "684b9acf0e23ae8ba0b318af059db841750708d43734a677316ce01fa6850285"
+    },
+    {
+      "file": "screenshots/11-project-menu.jpg",
+      "bytes": 177245,
+      "sha256": "3f8bcc7cdd9845befb28528490a5879b2ae8e85ac0d7a8e33ceb00892e23b8e9"
+    },
+    {
+      "file": "screenshots/12-project-settings.jpg",
+      "bytes": 216300,
+      "sha256": "7d278f30e68e887a72bdab2f0479a3cd13e198cf849ce4b81f20e9e9eb917714"
+    },
+    {
+      "file": "screenshots/13-project-pending-documents.jpg",
+      "bytes": 229563,
+      "sha256": "489221ec1edb42a432291e0bec4a0f20a6007b4f270ffe365656435fa7c0faff"
+    },
+    {
+      "file": "screenshots/14-create-project.jpg",
+      "bytes": 243571,
+      "sha256": "7c093b3b930295e1000179bea80b7d5b0dcc798ad2f7fe35b4177774bf56cc44"
+    },
+    {
+      "file": "screenshots/15-common-knowledge-empty.jpg",
+      "bytes": 182300,
+      "sha256": "c3c9733cb4e0709e15c9f6a169528bac7314f7aaba05558ba70275bfdcdaf599"
+    },
+    {
+      "file": "screenshots/16-common-knowledge-editor.jpg",
+      "bytes": 200348,
+      "sha256": "eb899db8acd631cb3c0a33466d348e616bfc34cff0343a7d004febef6707e7ae"
+    },
+    {
+      "file": "screenshots/17-common-knowledge-options.jpg",
+      "bytes": 217987,
+      "sha256": "8580017c6c5b4cd2e0a37495ab0a854a8fd26f165a0fbff73da587168522ccb0"
+    },
+    {
+      "file": "screenshots/18-settings-connections.jpg",
+      "bytes": 217413,
+      "sha256": "2bea12eeb89eb62855ce93d955227d3f4297496fa3da1263ac9570ab0417aa53"
+    },
+    {
+      "file": "screenshots/19-settings-other-agents.jpg",
+      "bytes": 214741,
+      "sha256": "5042222d07af0deaf31e36d971b9c873f81e91541f119e658b27d4a82ba4a880"
+    },
+    {
+      "file": "screenshots/20-settings-processing.jpg",
+      "bytes": 204686,
+      "sha256": "f33d67a86cd51cfa69aa5d53f9e72e3905618a1ffa4b5948c6d7e0c8de55807c"
+    },
+    {
+      "file": "screenshots/21-settings-codex-model.jpg",
+      "bytes": 250889,
+      "sha256": "8ee3fff5128bca43cb4bf91005c26029bbebec3b409d0533c248a1948d104430"
+    },
+    {
+      "file": "screenshots/22-settings-provider-form.jpg",
+      "bytes": 256705,
+      "sha256": "48c59708080d40a0fadf39fb9fa3d83b0a4f94e04635d090787442465363c428"
+    },
+    {
+      "file": "screenshots/23-settings-advanced.jpg",
+      "bytes": 154620,
+      "sha256": "0ff82d95bc13da625b78ff9e1b62e1fbe7ff968065b1865b9d8e74170b9b1a2a"
+    },
+    {
+      "file": "screenshots/24-common-storage-menu.jpg",
+      "bytes": 195471,
+      "sha256": "3f14a9bc68e461fac400053bd2c28911021039e0a8554cc7ddf9b55348ff432f"
+    },
+    {
+      "file": "screenshots/25-recent-searches.jpg",
+      "bytes": 310429,
+      "sha256": "dd7a73e3710800c4ac9c7ac50933c7d4afc16c0906e15faf86759cb247730ff4"
+    },
+    {
+      "file": "screenshots/26-activity-failure-details.jpg",
+      "bytes": 365547,
+      "sha256": "befcd0b26b2cff7b30909113bca4f68449b5c5641f5c091298f78f1836001310"
+    },
+    {
+      "file": "screenshots/27-settings-connections-bottom.jpg",
+      "bytes": 208455,
+      "sha256": "6cf3ad96410e5eacef41edacfc1e13732bea7082d6f5f787d6591294ba87b7e2"
+    },
+    {
+      "file": "screenshots/28-settings-provider-form-bottom.jpg",
+      "bytes": 278966,
+      "sha256": "f7fa313b2f3b9c14fc221fc1d3a0805170670b203144350c5aad17235774246f"
+    }
+  ]
+}
