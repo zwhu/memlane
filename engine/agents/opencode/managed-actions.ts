@@ -82,7 +82,7 @@ export class ManagedActions {
       const kind = remove ? "unregister" : "register";
       return this.invoke(kind, native, "lifecycle", remove ? "remove" : String(Math.floor(this.now() / 30000)), session,
         policy => policy.policy.permissions.includes("write") && (remove || policy.policy.can_capture),
-        async policy => ({unsupported: !await this.client.lifecycle(session, policy.dataset_name, remove), status: "registered"}));
+        async policy => ({unsupported: !await this.client.lifecycle(session, policy.dataset_id, remove), status: "registered"}));
     })();
     this.lifePending.set(native, work);
     void work.finally(() => { if (this.lifePending.get(native) === work) this.lifePending.delete(native); }).catch(() => {});
@@ -92,7 +92,9 @@ export class ManagedActions {
     if (!message || message.length > 256 || !fact.trim()) throw new Error("explicit_operation_required");
     const digest = hash(fact), logical = digest;
     return this.invoke("remember", native, logical, digest, session, policy => policy.policy.permissions.includes("write"), async policy => {
-      const result = await this.client.remember({data: fact, datasetId: policy.dataset_id, datasetName: policy.dataset_name, sessionId: session});
+      // Official session storage skips file-upload placeholders. Explicit facts
+      // use permanent ingestion, tagged like the shared official remember tool.
+      const result = await this.client.remember({data: fact, datasetId: policy.dataset_id, datasetName: policy.dataset_name, nodeSet: ["memory"]});
       if (result.datasetId !== policy.dataset_id || result.datasetName !== policy.dataset_name || result.status === "errored" || result.status === "error") throw new Error("remember_target_unconfirmed");
       return {status: result.status ?? "received"};
     });

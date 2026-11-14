@@ -24,7 +24,7 @@ export class ManagedDelivery {
       const policy = checked.get(item.id);
       if (!policy || !item.target || policy.dataset_id !== item.target.dataset_id ||
           policy.project_id !== item.target.project_id) throw new Error("original_project_target_unconfirmed");
-      await this.client.entry(policy.dataset_name, item.session, item.entry);
+      await this.client.entry(policy.dataset_id, item.session, item.entry);
     }, async (item: Item) => {
       // The official marker lookup reconciles the original operation only.
       if (!checked.has(item.id)) throw new Error("original_project_target_unconfirmed");

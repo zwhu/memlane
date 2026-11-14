@@ -1,0 +1,349 @@
+{
+  "checkpoint": 38,
+  "scope": "OpenCode immutable dev component, actual existing official Cognee service, original independent subject/profile/project; Native 1.3.5 and DeepSeek Flash for fresh QA/trace and zero-tool adoption; ACL transitions invoked directly through production classes and authenticated real APIs, not a Native permission UI test",
+  "issues": [
+    {
+      "id": "MA-OPENCODE-REMEMBER01",
+      "historical_failed_rounds": 1,
+      "observed": "file upload with session_id returned accepted but original fact absent from official session and expected data; pinned server skips upload-placeholder session content",
+      "fix": "permanent upload without session_id, official memory node set, run_in_background=true; explicit facts included in source-only recall",
+      "retest": "new explicitly requested verification fact persisted with exact raw body and was recalled; original accepted/dropped request and journal retained, never replayed"
+    },
+    {
+      "id": "MA-OPENCODE-TARGET01",
+      "historical_failed_rounds": 1,
+      "observed": "old official session metadata bound to child-owned same-name shadow dataset; generated project Data existed in intended dataset but did not prove correct session binding",
+      "old_actual_dataset": "276c04a7-9671-50d8-bc05-88c946291b0d",
+      "intended_dataset": "b7ad18b8-8ff2-5c99-9637-be4db9708008",
+      "cause": "name-only lifecycle and typed-entry requests allowed ambiguous/shared-name resolution; metadata audit verified mismatch, unique origin of historical register403 not proven",
+      "fix": "dataset_ids for registration and dataset_id for typed entries; all sourced from original live project_control policy UUID",
+      "retest": "fresh actual native session QA1/trace2 and fresh zero-tool adoption both matched intended official dataset",
+      "old_sessions_and_shadow_dataset": "retained without rebind, migration, replay or deletion",
+      "shadow_owner_matches_actual_child_identity": true
+    },
+    {
+      "id": "MA-OPENCODE-RECALL01",
+      "historical_failed_rounds": 2,
+      "status": "current UUID candidate fresh zero-tool adoption passed; historical failures retained"
+    }
+  ],
+  "method_findings": [
+    {
+      "id": "MA-OPENCODE-ACL-DOC-FIXTURE01",
+      "failed_rounds": 1,
+      "observation": "first fixture assumed session upload immediately produced filename-addressable permanent Data; this did not justify expected document materialization, and separate original-session read subsequently proved actual content loss"
+    },
+    {
+      "id": "MA-OPENCODE-ACL-COMMON-FIXTURE01",
+      "failed_rounds": 1,
+      "observation": "project-bound native session reused for different common dataset was refused by binding guard400 before ACL check; corrected unbound negative session returned403"
+    },
+    {
+      "id": "MA-OPENCODE-ACL-EMPTY-FIXTURE01",
+      "failed_rounds": 1,
+      "observation": "fixture required empty project recall to return HTTP200/zero hits; actual empty index returns404. Independent read-only audit proved exact request scopes, empty official Data and fail-closed context; no claim that healthy empty recall returned200"
+    }
+  ],
+  "matrix": {
+    "verified_stages": [
+      {
+        "stage": "maintain-source",
+        "read_status": 200,
+        "recall_project": true,
+        "permissions": [
+          "delete",
+          "read",
+          "write"
+        ]
+      },
+      {
+        "stage": "maintain-write",
+        "remember_status": "accepted",
+        "raw_status": 200,
+        "body_hash_matches": true,
+        "explicit_fact_recalled": true
+      },
+      {
+        "stage": "read-only",
+        "permissions": [
+          "read"
+        ],
+        "explicit_remember": "rejected",
+        "capture_enqueued": false,
+        "official_write_status": 403,
+        "official_delete_status": 403,
+        "project_recall": true
+      },
+      {
+        "stage": "no-project-access",
+        "permissions": [],
+        "project_read_status": 403,
+        "project_fragment_withdrawn": true,
+        "common_read_status": 200,
+        "common_write_status": 403,
+        "common_delete_status": 403,
+        "common_body_hash_unchanged": true
+      },
+      {
+        "stage": "read-restored",
+        "withdrawn_cache_not_resurrected": true,
+        "fresh_query_works": true,
+        "denied_action_not_resent": true,
+        "denied_capture_not_replayed": true
+      },
+      {
+        "stage": "maintain-delete",
+        "scratch_delete_status": 200,
+        "deleted_raw_status": 404
+      }
+    ],
+    "actual_native_target": {
+      "native_session": "ses_e27c0cd28ffeQw8aOBrJ9UlVkN",
+      "official_session": "opencode_4309b3a4bc471f82_89e8d83ce1e5afa591a9a137",
+      "expected_dataset": "b7ad18b8-8ff2-5c99-9637-be4db9708008",
+      "actual_dataset": "b7ad18b8-8ff2-5c99-9637-be4db9708008",
+      "qas": 1,
+      "traces": 2,
+      "tools": [
+        "read",
+        "bash"
+      ]
+    },
+    "actual_current_adoption": {
+      "native_session": "ses_e27bdc43bffekxvUJHnG4J7M9J",
+      "official_session": "opencode_4309b3a4bc471f82_bb35e2f10cebd39dbb74ab02",
+      "dataset_matches": true,
+      "qas": 1,
+      "tools": 0,
+      "facts_match": true
+    },
+    "cross_project": {
+      "result": "passed_with_empty_index_limitation",
+      "scope": "real API and immutable component; no second native host/model conversation",
+      "original_session_target_pinned": true,
+      "second_dataset": "0f33c9a8-1570-5de8-81be-edb933a219ae",
+      "second_dataset_data_http": 200,
+      "second_dataset_documents": 0,
+      "requests": [
+        {
+          "datasets": [
+            "65d8f729-3ebf-546b-984c-7b375b7137e1"
+          ],
+          "only_context": true,
+          "node_names": [],
+          "state": "returned",
+          "hits": 1
+        },
+        {
+          "datasets": [
+            "0f33c9a8-1570-5de8-81be-edb933a219ae"
+          ],
+          "only_context": true,
+          "node_names": [
+            "session_learnings",
+            "memory"
+          ],
+          "state": "rejected",
+          "error": "Cognee request failed (404)"
+        }
+      ],
+      "context_chars": 461,
+      "project_fragment_present": false,
+      "first_project_body_absent": true,
+      "original_dataset_never_requested": true,
+      "common_scope_preserved": true,
+      "empty_index_returns_error": true
+    },
+    "official_negative_http_operations": [
+      {
+        "operation": "readonly-negative-write",
+        "http_status": 403
+      },
+      {
+        "operation": "readonly-negative-delete",
+        "http_status": 403
+      },
+      {
+        "operation": "common-negative-write",
+        "http_status": 403
+      },
+      {
+        "operation": "common-negative-delete",
+        "http_status": 403
+      },
+      {
+        "operation": "scratch-delete",
+        "http_status": 200
+      }
+    ],
+    "original_project_override_restored": true,
+    "existing_other_subject_ids_and_project_overrides_unchanged": true,
+    "new_empty_project": "registered through normal control protocol using current default ACL; not a second native model conversation",
+    "original_knowledge_hash_unchanged_at_acl_round": "final fixture assertion stopped before this assertion; see independent prior read evidence",
+    "post_case_official_data_snapshot": {
+      "current_total": 13,
+      "original_data_still_listed": [
+        "b0e8078e-c9c6-57a7-8fe3-b9ac689acc0d",
+        "1b5e1684-289e-5688-b1d5-e8b95b31b80f",
+        "f0046be3-8b96-5f66-8b94-e9cf32fda12b",
+        "0c568b68-fb36-5e65-9145-692558a0b232",
+        "d0007aba-04b5-4b8b-be5d-d8c65da80197",
+        "3b23cb10-656c-47a3-949c-8415f92278ce"
+      ],
+      "original_data_no_longer_listed": [
+        "9858945c-4b49-5067-8181-5c0bc1e21530"
+      ],
+      "current_lessons": [
+        {
+          "id": "0621b208-47a7-5f41-9931-9a6e3a9021b3",
+          "lesson_type": "state",
+          "state_key": "test-baseline",
+          "session_id": "opencode_4309b3a4bc471f82_89e8d83ce1e5afa591a9a137"
+        },
+        {
+          "id": "b0e8078e-c9c6-57a7-8fe3-b9ac689acc0d",
+          "lesson_type": "state",
+          "state_key": "footprint:normalize-batch-size",
+          "session_id": "opencode_4309b3a4bc471f82_e4125c5eca062ea144ee4b8b"
+        },
+        {
+          "id": "1b5e1684-289e-5688-b1d5-e8b95b31b80f",
+          "lesson_type": "change",
+          "state_key": "",
+          "session_id": "opencode_4309b3a4bc471f82_e4125c5eca062ea144ee4b8b"
+        },
+        {
+          "id": "f0046be3-8b96-5f66-8b94-e9cf32fda12b",
+          "lesson_type": "location",
+          "state_key": "",
+          "session_id": "opencode_4309b3a4bc471f82_e4125c5eca062ea144ee4b8b"
+        },
+        {
+          "id": "0c568b68-fb36-5e65-9145-692558a0b232",
+          "lesson_type": "change",
+          "state_key": "",
+          "session_id": "opencode_4309b3a4bc471f82_e4125c5eca062ea144ee4b8b"
+        }
+      ]
+    },
+    "post_case_original_hash_check": "four original lesson bodies unchanged; test-baseline state replaced by official automatic processing of the verified new native QA/test session, still seven tests; old private snapshot retained",
+    "post_case_verified_knowledge": [
+      {
+        "id": "0621b208-47a7-5f41-9931-9a6e3a9021b3",
+        "sha256": "e992f48221ef33ba3bb85d75463e531848518215f9572186ba42ee777063ae18",
+        "state_key": "test-baseline",
+        "replaces": "9858945c-4b49-5067-8181-5c0bc1e21530",
+        "source_session_verified": true,
+        "test_count": 7
+      },
+      {
+        "id": "b0e8078e-c9c6-57a7-8fe3-b9ac689acc0d",
+        "sha256": "0a9dfbcbbc25be84e6f3335624ee5387e8271bae5a9c7aebf4ecf5fb3055b996",
+        "state_key": "footprint:normalize-batch-size",
+        "unchanged_from_original": true
+      },
+      {
+        "id": "1b5e1684-289e-5688-b1d5-e8b95b31b80f",
+        "sha256": "d9056c96127f971d24d690e55de6247dbd1f16638dd2debb8bf085c9a8d889eb",
+        "state_key": "",
+        "unchanged_from_original": true
+      },
+      {
+        "id": "f0046be3-8b96-5f66-8b94-e9cf32fda12b",
+        "sha256": "6d139acfcdf3ea0e97bf8b178df4f07b210c2f21b32f91f9f0535bb0bd82ba70",
+        "state_key": "",
+        "unchanged_from_original": true
+      },
+      {
+        "id": "0c568b68-fb36-5e65-9145-692558a0b232",
+        "sha256": "f152b464d674b0ec32e2f662597f8d1197c4336c006a36ae816da78cc715f1f8",
+        "state_key": "",
+        "unchanged_from_original": true
+      }
+    ]
+  },
+  "rounds": [
+    {
+      "private_evidence": "acl-result-private.json",
+      "last_stage": "maintain-source",
+      "terminal_result": "failed",
+      "restored": true,
+      "failure": {
+        "name": "AssertionError",
+        "message": "accepted original write is not materialized; do not replay"
+      }
+    },
+    {
+      "private_evidence": "acl-round2-private.json",
+      "last_stage": "maintain-write",
+      "terminal_result": "failed",
+      "restored": true,
+      "failure": {
+        "name": "AssertionError",
+        "message": "Expected values to be strictly equal:\n\n400 !== 403\n"
+      }
+    },
+    {
+      "private_evidence": "acl-round3-private.json",
+      "last_stage": "read-only",
+      "terminal_result": "failed",
+      "restored": true,
+      "failure": {
+        "name": "AssertionError",
+        "message": "Expected values to be strictly equal:\n\n400 !== 403\n"
+      }
+    },
+    {
+      "private_evidence": "acl-round4-private.json",
+      "last_stage": "maintain-delete",
+      "terminal_result": "failed",
+      "restored": true,
+      "failure": {
+        "name": "AssertionError",
+        "message": "second dataset recall did not return an authoritative empty result"
+      }
+    }
+  ],
+  "artifact": {
+    "manifest_sha256": "a2c682df90704957cbd830ae076e2859d9b4c697402632476ade7e677a63f4bf",
+    "generation": "7ca7645f2fd5e96030bec68a"
+  },
+  "checks": {
+    "compiled_control_node": 23,
+    "http_node": 6,
+    "outbox_node": 10,
+    "python_patch_tests": 8,
+    "target_native_unittest_pass": 7
+  },
+  "cleanup": {
+    "queues": [
+      {
+        "pending": 0,
+        "saved": 13
+      }
+    ],
+    "scratch_data_deleted_status": 404,
+    "native_owner": {
+      "pid": 36739,
+      "scope": "owned OpenCode real coding validation",
+      "started": "Sat Nov 14 12:12:49 2026",
+      "phase": "confirmed_stopped"
+    },
+    "original_service_and_control": "retained for ongoing goal",
+    "daily_configuration_changed": false,
+    "private_synthetic_failure_evidence": "retained, no raw QA/trace or credentials exported"
+  },
+  "remaining": [
+    "authenticated blocked-material review/retry/discard and legacy unknown marker reconciliation must verify official session dataset before acknowledging saved",
+    "Native settings increment",
+    "Ollama integration and existing first-batch external gates",
+    "no full second-project native host conversation or all-protocol knowledge-quality claim"
+  ],
+  "source_sha256": {
+    "engine/agents/opencode/managed-actions.ts": "77cd14b48640d3b6c27b766cfb2c3f333d8c1faaf86e4b6a04ba58a5610530bd",
+    "engine/agents/opencode/managed-delivery.ts": "3940c8523ed5ac5152c467eff56f1534f2d891613fbc0cc85a573bab05567b5a",
+    "engine/agents/opencode/managed-recall.ts": "4fce746760abb9bcf061953bee1da05e8e200b1052c537442b94835182bba3a6",
+    "engine/agents/opencode/managed-control.test.mjs": "a3dd83dd380983820ae99e3c7f79eda75df25864e51a93b6b20ca8614b99a874",
+    "engine/python/opencode_plugin_patch.py": "3937bfcc1593fc64bf06f56e72f9f3349e74004e434b0c43cecebe9999d14511"
+  }
+}

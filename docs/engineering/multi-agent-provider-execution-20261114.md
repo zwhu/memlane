@@ -474,3 +474,7 @@ outbox明确401／403持久化blocked，重启／timer不重发；阻塞项不�
 ## 检查点三十七：OpenCode真实知识闭环
 
 OpenCode 1.3.5／DeepSeek Flash以独立官方子主体、私有profile和合成仓库完成正常编码，独立7项测试通过；官方QA1／trace5，自动整理5份知识。新会话采用前两轮失败，MA-OPENCODE-RECALL01累计2保留：2.5秒期限不足是真实现象，但单独延长仍不足；实际召回内容含图谱代答的“不知道”，不能把模型拒答推断成宿主完全未注入。改用官方CHUNKS／only_context、项目session_learnings节点集、不用会话完成缓存后，第三轮全新会话工具0次正确采用六项规则。23项控制Node、8项补丁Python含16项HTTP／outbox Node通过，原生进程已确认停止，原服务及数据保留。真实ACL矩阵、认证待发材料、Native增量与Ollama仍未完成。[连续记录](multi-agent-second-batch-20261114.md)、[脱敏证据](evidence/multi-agent-development-20261114/opencode-real-coding.json)。
+
+## 检查点三十八：修复OpenCode内容目标与显式写入
+
+原官方会话metadata审计发现同名子组歧义，MA-OPENCODE-TARGET01失败1；现已将采集和登记改为策略UUID。当前真实Native QA1／trace2及新会话工具0次采用均核对到指定dataset，7项测试通过。显式remember文件＋session路径另有正文被官方占位过滤的问题，MA-OPENCODE-REMEMBER01失败1；改永久上传／后台处理和官方memory节点集后，正文及召回复验通过。原组／会话／失败回执不迁移、不重投。真实API验证维护／只读／禁止／恢复与通用只读六阶段，原覆盖恢复、临时文档删除；空项目索引404时不跨组取数或沿用正文。三个方法问题与两个真实缺陷分别计数，原失败记录保留，未冒充整轮绿色。23项控制Node、8项补丁Python含16项底层Node通过；进程退出、queue0、日常配置保持。[完整边界](multi-agent-second-batch-20261114.md)、[证据](evidence/multi-agent-development-20261114/opencode-real-acl.json)。待发材料认证处置及旧unknown的dataset核对、Native增量、Ollama与外部前置仍待完成。

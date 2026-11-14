@@ -51,6 +51,11 @@ def managed_http_client(text):
             'throw new Error(`Cognee request failed (${response.status})`);')
     replace('datasetId: response.dataset_id ?? params.datasetId ?? "",',
             'datasetId: response.dataset_id ?? "",')
+    replace('body: JSON.stringify({ dataset_name: dataset, session_id: session, entry }),',
+            'body: JSON.stringify({ dataset_id: dataset, session_id: session, entry }),')
+    replace('dataset_names: [dataset]', 'dataset_ids: [dataset]')
+    replace('    formData.append("datasetName", params.datasetName);',
+            '    formData.append("datasetName", params.datasetName);\n    formData.append("run_in_background", "true");')
     replace('    searchPrompt?: string;\n', '    searchPrompt?: string;\n    onlyContext?: boolean;\n    nodeNames?: string[];\n')
     replace('        ...(params.searchPrompt ? { system_prompt: params.searchPrompt } : {}),',
             '        ...(params.searchPrompt ? { system_prompt: params.searchPrompt } : {}),\n'

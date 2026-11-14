@@ -246,7 +246,8 @@ async function officialServer({loseFirstResponse = false, credential = "syntheti
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const raw = Buffer.concat(chunks).toString();
       const field = name => new RegExp('name="' + name + '"\\r\\n\\r\\n([^\\r]+)').exec(raw)?.[1];
-      const target = {dataset_id: field("datasetId"), dataset_name: field("datasetName")}; remembers.push(target);
+      const target = {dataset_id: field("datasetId"), dataset_name: field("datasetName")};
+      remembers.push({...target, session_id: field("session_id"), node_set: field("node_set"), run_in_background: field("run_in_background")});
       if (loseRememberResponse) { res.destroy(); return; }
       res.end(JSON.stringify({...target, status: "running"})); return;
     }
@@ -276,7 +277,7 @@ test("delivery gates original-target official writes and keeps denied items bloc
     outbox.retryBlocked(["queued-before-revoke"]);
     await delivery.flush();
     assert.equal(s.writes.length, 1);
-    assert.equal(s.writes[0].dataset_name, p.dataset_name);
+    assert.equal(s.writes[0].dataset_id, p.dataset_id);
     assert.equal(s.writes[0].session_id, "original-official-session");
   } finally {
     await access(p.project_id, {access: "maintain", capture: true, auto_process: true});
@@ -371,7 +372,7 @@ test("official capture callbacks read only observed post-activation messages and
     await complete("new-answer", "new-prompt"); await idle();
     assert.equal(reads.length, 2, "duplicate completion reread captured message");
     p = await new ManagedProjectControl(cfg).current(native);
-    assert.equal(s.writes[0].dataset_name, p.dataset_name);
+    assert.equal(s.writes[0].dataset_id, p.dataset_id);
     await access(p.project_id, {access: "read"});
     await prompt("disabled-prompt");
     await access(p.project_id, {access: "maintain", capture: true, auto_process: true});
@@ -389,7 +390,7 @@ test("official capture callbacks read only observed post-activation messages and
     await hooks["tool.execute.after"]({sessionID: native, callID: "fresh-tool", tool: "edit", args: {filePath: "src/main.ts"}}, {output: "updated password=do-not-store"});
     await idle();
     assert.equal(s.writes.length, 2);
-    assert.equal(s.writes[1].dataset_name, p.dataset_name);
+    assert.equal(s.writes[1].dataset_id, p.dataset_id);
     assert.equal(s.writes[1].entry.type, "trace");
     assert.ok(!JSON.stringify(s.writes).includes("do-not-store"));
     await hooks["tool.execute.after"]({sessionID: native, callID: "private-tool", tool: "read", args: {filePath: ".env"}}, {output: "never-store-private-file"});
@@ -457,7 +458,7 @@ test("managed recall targets live dataset IDs and permanently drops withdrawn fr
       assert.equal(call.only_context, true, "automatic recall must return source context, not an LLM answer");
     }
     assert.equal(s.recalls[0].node_name, undefined);
-    assert.deepEqual(s.recalls[1].node_name, ["session_learnings"]);
+    assert.deepEqual(s.recalls[1].node_name, ["session_learnings", "memory"]);
     await access(p.project_id, {access: "none"});
     context = await recall.context(native);
     assert.ok(!context.includes(p.dataset_id)); assert.ok(context.includes(p.common.dataset_id));
@@ -539,7 +540,7 @@ test("lifecycle receipts preserve accepted history and unknown heartbeat never a
     assert.equal((await actions.lifecycle(native, "original-session")).status, "accepted");
     await actions.lifecycle(native, "original-session"); assert.equal(s.lifecycles.length, 1);
     clock += 30000; await actions.lifecycle(native, "original-session"); assert.equal(s.lifecycles.length, 2);
-    assert.deepEqual(s.lifecycles[0].dataset_names, [p.dataset_name]);
+    assert.deepEqual(s.lifecycles[0].dataset_ids, [p.dataset_id]);
     assert.ok(readdirSync(receiptRoot).some(name => name.includes(".g1.json")));
     const unknownRoot = join(root, "unknown-lifecycle-actions");
     const unknown = new ManagedActions(c, lost.client, unknownRoot, "opencode-fixture", () => clock);
@@ -584,6 +585,9 @@ test("explicit remember ignores auto-capture flag, journals only metadata and ne
     await access(p.project_id, {access: "maintain", capture: false, auto_process: false});
     const first = await actions.remember(native, "explicit-message", "original-session", "SYNTHETIC_FACT_DO_NOT_STORE_IN_RECEIPT");
     assert.equal(first.status, "accepted"); assert.equal(s.remembers[0].dataset_id, p.dataset_id);
+    assert.equal(s.remembers[0].session_id, undefined, "file upload must use permanent ingestion; session cache drops upload placeholders");
+    assert.equal(s.remembers[0].node_set, "memory");
+    assert.equal(s.remembers[0].run_in_background, "true");
     await actions.remember(native, "explicit-message", "original-session", "SYNTHETIC_FACT_DO_NOT_STORE_IN_RECEIPT"); assert.equal(s.remembers.length, 1);
     for (const file of readdirSync(receiptRoot).filter(name => name.endsWith(".json"))) assert.ok(!readFileSync(join(receiptRoot, file), "utf8").includes("SYNTHETIC_FACT"));
     await access(p.project_id, {access: "read"});
@@ -610,7 +614,7 @@ test("official action callbacks process each saved watermark once and report exp
     const idle = () => hooks.event({event: {type: "session.idle", properties: {sessionID: native}}});
     await idle(); await idle();
     assert.equal(s.improvements.length, 1); assert.equal(s.improvements[0].dataset_id, p.dataset_id);
-    assert.equal(s.lifecycles[0].dataset_names[0], p.dataset_name);
+    assert.equal(s.lifecycles[0].dataset_ids[0], p.dataset_id);
     const accepted = await hooks.tool.cognee_remember.execute({fact: "synthetic explicit fact"}, {sessionID: native, messageID: "explicit-hook-message"});
     assert.match(accepted, /accepted/); assert.match(accepted, /not yet confirmed/);
     await access(p.project_id, {access: "read"});

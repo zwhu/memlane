@@ -30,7 +30,7 @@ export class ManagedRecall {
             datasetIds: [scope.dataset], topK: this.settings.maxResults,
             // The host answers the user; recall supplies source context only.
             // Exclude raw QA/trace nodes and session-history completion caches.
-            onlyContext: true, ...(scope.kind === "project" ? {nodeNames: ["session_learnings"]} : {}),
+            onlyContext: true, ...(scope.kind === "project" ? {nodeNames: ["session_learnings", "memory"]} : {}),
             timeoutMs: this.settings.recallTimeoutMs});
           const selected = hits.filter(hit => hit.text?.trim() && hit.score >= this.settings.minScore).slice(0, this.settings.maxResults);
           return selected.length ? {...scope, text: JSON.stringify(selected).slice(0, 8000).replace(/</g, "\\u003c")} : null;
