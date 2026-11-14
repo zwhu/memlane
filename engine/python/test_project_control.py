@@ -74,6 +74,42 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.official.acls[(''+self.registry.state['agents']['a']['principal_id'], results[0]['dataset_id'])],
                          {'read', 'write', 'delete'})
 
+    async def test_original_session_binding_lookup_never_discovers_and_is_subject_scoped(self):
+        before = self.path.read_bytes()
+        with self.assertRaises(PolicyError) as error:
+            await self.registry.session_binding('a', 'missing')
+        self.assertEqual(error.exception.code, 'session_binding_not_found')
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(self.official.creates, 0)
+        original = await self.registry.resolve('a', str(self.repo), 'native')
+        before = self.path.read_bytes()
+        self.assertEqual(await self.registry.session_binding('a', 'native'), original)
+        with self.assertRaises(PolicyError):
+            await self.registry.session_binding('b', 'native')
+        self.assertEqual(self.path.read_bytes(), before)
+        key = (self.registry.state['agents']['a']['principal_id'], original['dataset_id'])
+        self.official.acls[key] = {'read'}
+        checked = await self.registry.session_binding('a', 'native')
+        self.assertFalse(checked['ready'])
+        self.assertEqual(self.official.acls[key], {'read'}, 'lookup repaired permissions')
+
+    async def test_http_binding_lookup_requires_original_subject_and_exact_query(self):
+        original = await self.registry.resolve('a', str(self.repo), 'native')
+        client = TestClient(TestServer(create_app(self.registry, 'm' * 40, {'a': 'a' * 40, 'b': 'b' * 40})))
+        await client.start_server()
+        try:
+            path = '/v1/project/binding?host_session_key=native'
+            self.assertEqual((await client.get(path)).status, 401)
+            self.assertEqual((await client.get(path, headers={'Authorization': 'Bearer ' + 'm' * 40})).status, 403)
+            self.assertEqual((await client.get(path, headers={'Authorization': 'Bearer ' + 'b' * 40})).status, 404)
+            response = await client.get(path, headers={'Authorization': 'Bearer ' + 'a' * 40})
+            self.assertEqual(response.status, 200)
+            self.assertEqual((await response.json())['dataset_id'], original['dataset_id'])
+            for suffix in ('&agent_id=b', '&host_session_key=other'):
+                self.assertEqual((await client.get(path + suffix, headers={'Authorization': 'Bearer ' + 'a' * 40})).status, 400)
+        finally:
+            await client.close()
+
     async def test_same_name_distinct_paths_and_pinned_session(self):
         another = self.root / 'other/repo'
         another.mkdir(parents=True)

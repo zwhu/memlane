@@ -97,6 +97,12 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                 raise PolicyError('project_not_found', 404)
             return web.json_response(await registry.checked_policy(project, identity))
 
+    async def binding(request):
+        identity = agent(request)
+        if len(request.query) != 1 or set(request.query) != {'host_session_key'}:
+            raise PolicyError('invalid_request_fields')
+        return web.json_response(await registry.session_binding(identity, request.query['host_session_key']))
+
     async def directory(request):
         manager(request)
         async with registry.mutex:
@@ -252,6 +258,7 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
     if registry is None:
         return app
     app.add_routes([web.post('/v1/project/resolve', resolve), web.get('/v1/project/policy', policy),
+                    web.get('/v1/project/binding', binding),
                     web.get('/v1/projects', directory), web.put('/v1/defaults', defaults),
                     web.put('/v1/projects/{id}/overrides', overrides), web.put('/v1/projects/{id}/name', rename), web.post('/v1/projects', create),
                     web.post('/v1/projects/{id}/aliases', alias), web.post('/v1/projects/{id}/reconcile', reconcile),

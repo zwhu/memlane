@@ -8,7 +8,7 @@
 
 基线提交仅包含本轮方案、脱敏接口事实和此账本；实施前创建本地注释tag。不得提交本机凭据。
 
-## 连续场景与依赖（当前状态：检查点二十七）
+## 连续场景与依赖（当前状态：检查点二十八）
 
 逐项证据与限制统一见[当前支持矩阵](multi-agent-provider-support-20261114.md)。下方历史检查点保持原始日期状态，不代表当前仍未实施。
 
@@ -394,3 +394,13 @@ outbox明确401／403持久化blocked，重启／timer不重发；阻塞项不�
 先以固定原版编译构建红回归，再加入覆盖；最终5项Python检查通过（2.086秒），其中实际编译后Node HTTP6项、outbox4项均通过。另查锚点变化及重复应用拒绝、固定archive SHA与原过滤前缀保持。[证据](evidence/multi-agent-development-20261114/opencode-managed-core.json)及[第二批实施入口](multi-agent-second-batch-20261114.md)。没有Cursor／Claude测试、模型请求、服务重启、日常安装、release或重置卡。
 
 当前为未启用的受管底层源码，下一步接不可变代际、主体／动态项目策略及激活边界，再走真实OpenCode链路。其他会话正在修改Native设置／页面源码，未编辑或暂存其改动。第一批外部前置与第二批其余要求继续保留，完整目标active。
+
+## 开发检查点二十八：OpenCode项目控制接线
+
+新增TS `ManagedProjectControl`：安装选项快照、私有凭据、稳定native键和metadata绑定。首次resolve前记unknown；每次操作GET实时有效策略，绑定固定，不用模型或环境变量指定主体／dataset。项目read/write/delete、自动capture/process和common独立读取分别判断，非法／未知策略不返回许可。
+
+现有控制API增加主体限定的原绑定GET；无映射404，不创建项目、不修补权限，禁止管理token或其他主体读取该原映射。丢响应后新客户端／重启客户端用原键GET核对；未提交始终unknown且POST只出现一次。API仍只接metadata，旧resolve和其他宿主入口保持。实际运行的日常及隔离服务未重启，尚未加载该路由，也未启用OpenCode代际。
+
+最终定向27项Python通过（4.591秒），包括strict编译的Node控制8项、HTTP6项、outbox4项。新TS连接实际project_control服务，但official ACL为合成夹具；另核对原绑定接口鉴权／精确query／主体隔离／无创建及外部ACL变化后不补权。[证据](evidence/multi-agent-development-20261114/opencode-project-control.json)。临时HTTP服务／Node客户端及metadata均按夹具退出清理，没有实际模型或宿主安装器请求。
+
+下一步将项目目标与权限真正接进官方回调和待发项，补激活边界及受认证补交操作，再做不可变安装和真实OpenCode编码链。其他会话Native／产品／workflow改动保留，未做其测试或暂存。Cursor／Claude免验、第一批待补、第二批剩余及旧停止计数均保持；完整Goal继续active。

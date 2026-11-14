@@ -34,4 +34,14 @@
 
 下一步将覆盖摘要、固定依赖及license纳入不可变安装产物，接入稳定主体／动态项目解析／有效权限，完成激活水位和真正的受认证补交入口，再进入真实编码与新会话采用。当前全局探针仅证明加载机制，不含这些受管能力。
 
+## 项目控制客户端与原绑定核对
+
+新增`managed-control.ts`，复用现有project_control，单独快照安装选项，只从私有安装控制token文件读取凭据。安装／native键哈希为稳定主键；元数据仅存原workspace、project／dataset ID与绑定状态，不存问答、工具正文或owner凭据。每次read／capture／process／write／delete均读取实时policy，项目和dataset身份漂移、非法权限、common目标异常、unconfirmed均拒绝；项目无读取权限时仍可按独立common只读策略召回。
+
+首次解析前原子保存unknown。新增`GET /v1/project/binding?host_session_key=...`按调用主体核对原映射，缺失时404且不发现／创建项目。原解析响应丢失后，客户端及重启客户端仅GET核对，不重发POST；不存在的绑定持续unknown。查询沿用有效ACL核对，允许撤下失效策略，不修补grant；管理token和其他主体不能借此读原会话绑定。控制端点仅固定loopback HTTP，拒绝重定向、非私有／symlink凭据及超过64KiB响应。
+
+strict TypeScript编译后，Node客户端连接实际Python project_control HTTP服务，官方数据／ACL由合成夹具提供。覆盖两项目、原会话固定／重启、实时maintain→read→none、common独立、自动／明确行为、已提交／未提交的丢响应、选项快照及协议异常。27项Python定向检查通过（4.591秒），包含控制8项＋HTTP6项＋outbox4项编译后Node用例；[脱敏回执](evidence/multi-agent-development-20261114/opencode-project-control.json)。这不代表真实Cognee主体或OpenCode宿主权限已验收。
+
+下一步构造安装代际并接官方回调：待发项须携带可核对的原项目／dataset绑定元数据，发送／补交按原目标查实时策略；不能用新cwd或全局固定dataset改写旧材料归属。本地策略拒绝须单独标记，不能伪称官方HTTP403；unknown提交仍只核对。注入前重新查权限并撤旧context，激活前历史保持水位。原控制服务需正常加载新增只读路由后再启用对应代际，旧服务未提供该路由时保持未知，不回退。
+
 临时根`.local/multi-agent-opencode-20261114`仅归本任务；13份官方源、两个SDK依赖集与小型回执保留供后续补丁／兼容检查，非日常安装。全局探针的原生服务已退出；Ollama未启动。固定归档、原库、旧宿主缓存和原日常认证／配置保持；至少100GiB与105GiB运行门禁继续生效。

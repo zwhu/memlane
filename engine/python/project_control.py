@@ -423,6 +423,19 @@ class Registry:
                 await self.reconcile_locked(project)
             return self.directory()
 
+    async def session_binding(self, agent_id, host_session_key):
+        """Read this subject's original binding; never discover or create a project."""
+        if not isinstance(host_session_key, str) or not 1 <= len(host_session_key) <= 256:
+            raise PolicyError('host_session_key_required')
+        async with self.mutex:
+            if agent_id not in self.state['agents']:
+                raise PolicyError('agent_not_registered', 403)
+            identifier = self.state['sessions'].get(json.dumps([agent_id, host_session_key]))
+            project = self.state['projects'].get(identifier)
+            if project is None:
+                raise PolicyError('session_binding_not_found', 404)
+            return await self.checked_policy(project, agent_id)
+
     async def resolve(self, agent_id, workspace, host_session_key, *, explicit=False):
         if not isinstance(host_session_key, str) or not 1 <= len(host_session_key) <= 256:
             raise PolicyError('host_session_key_required')
