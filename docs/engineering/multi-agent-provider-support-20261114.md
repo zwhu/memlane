@@ -122,3 +122,7 @@ OpenCode管理Node持续保存worker与Python协议适配完成，固定原目�
 ### 检查点五十三增量
 
 Thinking候选下载／manifest核对完成，首次固定验证在原120秒总预算超时、结果未知，子进程组已退出，未启用。根据实际95秒／3.4秒／截止中止的请求时间线，仅将本机Ollama总预算扩为360秒，原样本及全部未知／取消／幂等规则保留，11项定向检查通过。明确新操作运行中，原超时回执不变；没有知识质量通过结论，原质量失败保持2轮。[证据](evidence/multi-agent-development-20261114/ollama-thinking-validation-budget.json)。
+
+### 检查点五十四增量
+
+Thinking明确新验证276.23秒通过原普通／Schema／固定事实样本，组退出、旧超时回执不变。独立候选账本正常启动应用成功，原账本／数据7项／主体／绑定保留，实际Native显示当前Thinking；不冒充原账本内的新模型UI切换。真实pi按不变4项断言完成编码，正确官方dataset收到QA1／trace7；Thinking原后台管线运行中，数据pending1、无新知识，完整质量与新会话采用仍待验。原质量失败2轮保留。[证据与实窗](evidence/multi-agent-development-20261114/ollama-thinking-normal-coding.json)。

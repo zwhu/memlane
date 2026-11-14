@@ -626,3 +626,13 @@ MA-OLLAMA-VALIDATION-BUDGET01实际失败1轮：原总预算无法容纳该冷�
 基于同一profile／digest新建明确操作thinking-model-v2-bounded（exec72011），原v1回执逐字段保持，当前新任务运行中，预算360秒。驱动首次误把resolve后的record当reference，在controller注册操作／启动worker前被拒，准备错误1，保留回执后纠正引用；没有重复模型请求。当前主control未为这项预算源码改动重启，不能声称其运行中实例已应用新预算；独立新验证使用修正后生产类。[原超时、检查和新操作证据](evidence/multi-agent-development-20261114/ollama-thinking-validation-budget.json)。
 
 原库／active配置未修改；两份候选权重暂由正在运行的新验证及后续质量场景消费，待终态及引用核对后清理无消费者项，不提前清理仍被引用的Instruct。MA-OLLAMA-CODING-QUALITY01保持2轮。新候选验证、完整知识质量、Native积压按钮及外部账号／Desktop／日常采用仍未完成，完整Goal继续active。
+
+## 检查点五十四：Thinking固定验证通过与真实编码材料
+
+原exec72011终态0：同Thinking配置明确新操作thinking-model-v2-bounded在276.23秒完成，普通输出／原生Schema随机约束证据／原nested-unicode-null-3事实样本均通过，实际json_schema；进程组已确认退出，原120秒超时回执逐字段保留。该通过仅为固定验证，不覆盖真实知识质量。
+
+确认原项目处理pending0并保留原数据／主体／绑定快照后，在独立候选GenerationStore明确select_next，正常停止本轮原dev服务／watcher，再将本轮私有runtime指向候选账本并正常start。Thinking applied实际PID／摘要／reference匹配，active更新且next清空；原generation.json字节摘要不变，原数据7项ID及主体／绑定保持，无Codex completion。此为独立账本候选的正常启动，不声称本模型已经过原账本内的Native添加／切换；已有同账本多配置UI证据按原范围复用。当前真实Native“知识处理”页已显示Thinking，观察未执行保存／选用动作。[回执与实窗](evidence/multi-agent-development-20261114/ollama-thinking-normal-coding.json)。
+
+新的独立合成项目按原retry_limit场景由真实pi／DeepSeek编码：先复现、修复、独立4项测试通过，41.25秒正常退出。测试源码与原驱动AST中的固定文本逐字节相同，跟踪修改仅retry_config.py，没有Cognee主动工具调用。官方正确dataset UUID收到QA1／trace7，后台为本轮Thinking，证明编码模型与处理Provider继续解耦。新项目不清零MA-OLLAMA-CODING-QUALITY01原2轮失败，也不修改原错误知识。
+
+原官方后台已启动add／cognify／memify等管线，当前数据1项处理pending1、尚无新知识。只读observer exec34482记录同session／dataset的实际activity／pipeline_run_id，已核对observer PID／lstart；不重投improve，观察窗口结束也不重启原任务。后续待原任务终态与实际知识正文，再按原工具0次的新pi会话验采用。当前自有launcher20911、official20913、control21044及Native／Ollama保留，源码预算变更已随新control启动读取；两份模型各有当前处理／未完成切换基线消费者，完成后核对清理。质量、新会话采用、Native积压及外部门槛仍未完成，完整Goal继续active。
