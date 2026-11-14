@@ -183,3 +183,23 @@ test("native identifiers and installation namespaces do not alias or become path
   assert.deepEqual(readdirSync(options("ids").stateDir), []);
   assert.equal((await a.current("snapshot-native")).ready, true);
 });
+
+
+test("queued original target survives cwd changes and cannot discover an unbound native", async () => {
+  const c = new ManagedProjectControl(options("queued-target"));
+  const original = await c.current("queued-original");
+  const target = {native: "queued-original", project_id: original.project_id, dataset_id: original.dataset_id};
+  const changed = new ManagedProjectControl(options("queued-target", {directory: join(root, "repo-b")}));
+  assert.equal((await changed.currentTarget(target)).dataset_id, original.dataset_id);
+  const before = readdirSync(options("queued-target").stateDir).sort();
+  const directory = await admin("/v1/projects");
+  await assert.rejects(changed.currentTarget({...target, native: "never-bound"}));
+  await assert.rejects(changed.currentTarget({...target, project_id: "33333333-3333-4333-8333-333333333333"}));
+  await assert.rejects(changed.currentTarget({...target, dataset_id: "33333333-3333-4333-8333-333333333333"}));
+  assert.deepEqual(readdirSync(options("queued-target").stateDir).sort(), before);
+  assert.equal((await admin("/v1/projects")).revision, directory.revision);
+  try {
+    await access(original.project_id, {access: "read"});
+    assert.deepEqual((await changed.currentTarget(target)).policy.permissions, ["read"]);
+  } finally { await access(original.project_id, {access: "maintain", capture: true, auto_process: true}); }
+});

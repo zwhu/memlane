@@ -45,7 +45,7 @@ class OpenCodePatchGuardTests(unittest.TestCase):
     def test_upstream_filters_identity_and_enqueued_entry_scrubbing_stay_exact(self):
         text = official_sources()['runtime.ts']
         patched = managed_outbox(text)
-        self.assertEqual(text.split('type Pending =')[0], patched.split('type Pending =')[0])
+        self.assertEqual(text.split('type Pending =')[0], patched.split('export type ProjectTarget =')[0])
         self.assertIn('entry: scrub(entry) as Entry', patched)
 
 

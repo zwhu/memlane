@@ -414,3 +414,11 @@ outbox明确401／403持久化blocked，重启／timer不重发；阻塞项不�
 3项独立Python发现检查通过，覆盖后台启动后的安装／移除、原实例ID保持、检测不创建profile／主体或写registry、明确失效路径不fallback、OpenCode私有目录发现与禁用接入；1项MyGo组件检查通过（1200×820），核对重新检测入口及未完成适配不可绑定。仅读取本机路径的盘点结果为Codex／pi／TraeX／Claude Code／OpenCode存在，Cursor未检测到；没有启动宿主、执行Cursor／Claude专项测试、读取聊天或重启服务。真实Native窗口增量视觉核对尚未执行，不能由组件检查替代。
 
 并行会话继续修改项目待处理队列等文件，本次仅提交自身文件；上一检查点提交从暂存区剔除并行新增的backlog启动接线，工作树保留原改动，证据摘要仍对应本任务候选。
+
+## 开发检查点三十：OpenCode待发材料固定原目标
+
+上轮完成设置自动检测，属于实际源码进展；本轮继续第二批实际接入的前置实现。官方outbox薄适配新增原native／project／dataset快照，控制客户端新增仅查既有原绑定的`currentTarget`；重启／cwd变化不改变目标，非法／未知绑定不创建项目。新增本地权限拒绝类型和持久化来源，与官方401／403分开，自动pump跳过blocked，明确释放保持原目标。
+
+6项Python检查、22项编译Node用例通过，无skip，3.040秒；[回执与源码摘要](evidence/multi-agent-development-20261114/opencode-original-target.json)。官方实际TS队列与Python控制HTTP均执行，official数据及ACL仍为合成夹具。两个初次方法反馈为前缀检查锚点及新增用例数量断言，修正后通过；未运行宿主或远端模型，不新增真实宿主失败轮次。未改运行配置、重启服务或执行Cursor／Claude测试。
+
+仍须接不可变官方安装代际和正式回调、水位及受认证补交，之后验真实OpenCode采集→知识→新会话采用；Ollama、设置实窗增量、首批Desktop／原生Provider凭据门槛及最终日常收口保持未完成。完整Goal继续active。其他会话正在修改的backlog、召回、Native及产品文件保持，不包含在本提交。

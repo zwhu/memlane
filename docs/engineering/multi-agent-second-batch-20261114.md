@@ -45,3 +45,13 @@ strict TypeScript编译后，Node客户端连接实际Python project_control HTT
 下一步构造安装代际并接官方回调：待发项须携带可核对的原项目／dataset绑定元数据，发送／补交按原目标查实时策略；不能用新cwd或全局固定dataset改写旧材料归属。本地策略拒绝须单独标记，不能伪称官方HTTP403；unknown提交仍只核对。注入前重新查权限并撤旧context，激活前历史保持水位。原控制服务需正常加载新增只读路由后再启用对应代际，旧服务未提供该路由时保持未知，不回退。
 
 临时根`.local/multi-agent-opencode-20261114`仅归本任务；13份官方源、两个SDK依赖集与小型回执保留供后续补丁／兼容检查，非日常安装。全局探针的原生服务已退出；Ollama未启动。固定归档、原库、旧宿主缓存和原日常认证／配置保持；至少100GiB与105GiB运行门禁继续生效。
+
+## 原目标队列与拒绝来源（检查点三十）
+
+受管官方outbox的enqueue新增可选原目标metadata，严格校验native／project／dataset后只保存这三个字段的快照，避免携带额外凭据。原目标在caller修改、重启和明确补交后保持。兼容原有底层无target用例不等于允许正式受管宿主发送无绑定材料；正式回调仍须只使用有原目标的项。
+
+控制客户端新增`currentTarget`，先核对本机已确认原映射与队列目标一致，再GET有效policy；未绑定native／项目或dataset不一致直接拒绝，不调用resolve、不创建metadata、不从当前cwd登记新项目。该方法只返回事实，后续发送入口必须据此检查capture／write等权限，不能把返回policy等同许可。
+
+新增`LocalPolicyDenied`供接线后在实际HTTP发送前明确拒绝。outbox将其保存为`local_policy_denied`，清除uncertain并blocked；实际401／403记录`official_auth_denied`。二者跨重启均不自动重投，明确释放仍按原ID和原目标；底层retry函数仍不能替代管理鉴权、实时权限和操作账本。
+
+最终6项Python检查通过（3.040秒），包含22项实际编译Node用例：HTTP6／outbox7／control9。[本轮证据](evidence/multi-agent-development-20261114/opencode-original-target.json)。首次两个反馈为检查方法随新增声明和用例数未更新，纠正后全通过，不计真实宿主产品失败轮次。真实控制HTTP中的official ACL仍为夹具；尚未把以上原语接到宿主回调，不声明真实OpenCode链路通过。旧源码证据对应其原提交，当前增量摘要另列，不覆盖旧记录。

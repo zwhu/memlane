@@ -64,8 +64,25 @@ def managed_outbox(text):
             raise ValueError('fixed OpenCode outbox overlay anchor mismatch')
         text = text.replace(old, new, 1)
 
-    replace('type Pending = { id: string; session: string; entry: Entry; uncertain?: boolean };',
-            'type Pending = { id: string; session: string; entry: Entry; uncertain?: boolean; blocked?: boolean };')
+    replace('type Pending = { id: string; session: string; entry: Entry; uncertain?: boolean };', '''export type ProjectTarget = { native: string; project_id: string; dataset_id: string };
+export class LocalPolicyDenied extends Error {
+  constructor() { super("local_policy_denied"); this.name = "LocalPolicyDenied"; }
+}
+function snapshotTarget(target: ProjectTarget): ProjectTarget {
+  const uuid = (value: unknown) => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+  if (!target || typeof target.native !== "string" || !target.native || target.native.length > 256 ||
+      /[\\x00-\\x1f]/.test(target.native) || !uuid(target.project_id) || !uuid(target.dataset_id)) {
+    throw new Error("original_project_target_required");
+  }
+  return {native: target.native, project_id: target.project_id, dataset_id: target.dataset_id};
+}
+type Pending = { id: string; session: string; entry: Entry; uncertain?: boolean; blocked?: boolean; blocked_reason?: "local_policy_denied" | "official_auth_denied"; target?: ProjectTarget };''')
+    replace('  enqueue(id: string, session: string, entry: Entry): void {',
+            '  enqueue(id: string, session: string, entry: Entry, target?: ProjectTarget): void {\n    const original = target === undefined ? undefined : snapshotTarget(target);')
+    replace('state.pending.push({ id, session, entry: scrub(entry) as Entry });',
+            'state.pending.push({ id, session, entry: scrub(entry) as Entry, ...(original ? {target: original} : {}) });')
+    replace('if (/(?:request|login) failed \\((?:400|401|403|404|422|429)\\)/.test(String(error))) {',
+            'if (error instanceof LocalPolicyDenied || /(?:request|login) failed \\((?:400|401|403|404|422|429)\\)/.test(String(error))) {')
     replace('''  status(): { pending: number; uncertain: number; saved: number } {
     const state = this.read();
     return { pending: state.pending.length, uncertain: state.pending.filter((item) => item.uncertain).length, saved: state.seen.length };
@@ -93,7 +110,7 @@ def managed_outbox(text):
         }
       }
       for (const item of state.pending) {
-        if (selected.has(item.id)) item.blocked = false;
+        if (selected.has(item.id)) { item.blocked = false; delete item.blocked_reason; }
       }
       this.write(state);
       return selected.size;
@@ -104,6 +121,10 @@ def managed_outbox(text):
             'const next = state.pending.find((entry) => !entry.blocked); if (!next) return undefined;')
     replace('if (pending) pending.uncertain = false;', '''if (pending) {
                 pending.uncertain = false;
-                if (/(?:request|login) failed \\((?:401|403)\\)/.test(String(error))) pending.blocked = true;
+                if (error instanceof LocalPolicyDenied) {
+                  pending.blocked = true; pending.blocked_reason = "local_policy_denied";
+                } else if (/(?:request|login) failed \\((?:401|403)\\)/.test(String(error))) {
+                  pending.blocked = true; pending.blocked_reason = "official_auth_denied";
+                }
               }''')
     return text
