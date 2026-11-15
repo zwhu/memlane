@@ -32,9 +32,11 @@ def review(common, policy, dataset, host):
     policy._pending_identity(dataset, session)
     with common._buffer_lock():
         _, _, _, _, pending, _ = policy._pending_snapshot(dataset, session)
+    with policy._state() as state:
+        blocked = state.get('blocked')
     return {'session_id': session,
             'tokens': [entry_key(e) for e in pending if not e.get(common._AMBIGUOUS_KEY)],
-            'unknown': sum(bool(e.get(common._AMBIGUOUS_KEY)) for e in pending)}
+            'unknown': sum(bool(e.get(common._AMBIGUOUS_KEY)) for e in pending), 'blocked': blocked}
 
 
 def save(common, policy, payload, stopped, report=emit):
@@ -68,6 +70,8 @@ def save(common, policy, payload, stopped, report=emit):
                 return
             os.utime(common._DRAIN_LOCK, None, follow_symlinks=False)
             policy.require('write', dataset)
+            if payload.get('automatic'):
+                policy.require('capture', dataset)
             policy._pending_identity(dataset, session)
             token = tokens[0]
             with common._buffer_lock():

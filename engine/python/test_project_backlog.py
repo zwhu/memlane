@@ -66,6 +66,86 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.count,1)
         self.assertNotIn('targets',result)
 
+    async def test_automatic_save_continues_new_tail_without_ui_and_keeps_unknown_isolated(self):
+        self.policy['policy']['can_capture'] = True
+        pending = ['a'*64]
+        async def worker(row, target, action, update):
+            if action == 'review':
+                return {'session_id': 'native-session', 'tokens': list(pending), 'unknown': 20}
+            saved = len(pending)
+            pending.clear()
+            result = {'status':'completed','saved':saved,'handled':0,'isolated':0,'remaining':0}
+            update(result)
+            return result
+        self.backlog.worker = worker
+        await self.backlog.automatic_tick()
+        await self.backlog.task
+        first = self.backlog.get('p')['job']
+        self.assertEqual((first['status'], first['saved'], first['isolated']), ('watching', 1, 20))
+        self.assertEqual(self.posts, [], 'saving a tiny tail must not run a model immediately')
+        pending.extend(['b'*64, 'c'*64])
+        await self.backlog.automatic_tick()
+        await self.backlog.task
+        second = self.backlog.get('p')['job']
+        self.assertEqual(second['operation_id'], first['operation_id'])
+        self.assertEqual(second['saved'], 3)
+        self.assertEqual(second['isolated'], 20)
+        for target in self.backlog.jobs[first['operation_id']]['pending_processing'].values():
+            target['due_at'] = 0
+        await self.backlog.automatic_tick()
+        self.assertEqual(len(self.posts), 1)
+        await self.backlog.automatic_tick()
+        self.assertEqual(len(self.posts), 1)
+        self.backlog.stop('p', first['operation_id'])
+        pending.append('d'*64)
+        await self.backlog.automatic_tick()
+        self.assertEqual(pending, ['d'*64], 'explicit stop must persist')
+
+    async def test_automatic_save_respects_disabled_capture_retirement_and_unknown_processing(self):
+        self.gate.set()
+        self.policy['policy']['can_capture'] = False
+        await self.backlog.automatic_tick()
+        self.assertIsNone(self.backlog.task)
+        self.policy['policy']['can_capture'] = True
+        self.registry.state['agent_retirements'] = {'a': {'status':'unconfirmed'}}
+        await self.backlog.automatic_tick()
+        self.assertIsNone(self.backlog.task)
+        self.registry.state['agent_retirements'] = {}
+        await self.backlog.automatic_tick()
+        await self.backlog.task
+        row = next(r for r in self.backlog.jobs.values() if r.get('automatic'))
+        async def fail(*args, **kwargs):
+            self.posts.append(1)
+            raise PolicyError('official_result_unknown',503)
+        self.registry.official.request = fail
+        for target in row['pending_processing'].values(): target['due_at'] = 0
+        await self.backlog.automatic_tick()
+        self.assertEqual(self.posts, [1])
+        for _ in range(2):
+            await self.backlog.automatic_tick()
+            if self.backlog.task: await self.backlog.task
+        self.assertEqual(self.posts, [1], 'unknown model submit was repeated')
+
+    async def test_automatic_restart_reviews_fresh_buffer_but_user_pause_persists(self):
+        self.policy['policy']['can_capture'] = True
+        self.gate.set()
+        await self.backlog.automatic_tick()
+        await self.backlog.task
+        row = next(r for r in self.backlog.jobs.values() if r.get('automatic'))
+        row.update(status='running', owner_shutdown=True)
+        self.backlog.persist()
+        restarted = Backlog(self.registry, {}, worker=self.backlog.worker)
+        self.assertIsNone(restarted.task, 'constructor replayed an old token list')
+        self.assertEqual(restarted.jobs[row['operation_id']]['status'], 'watching')
+        await restarted.automatic_tick()
+        await restarted.task
+        restarted.stop('p', row['operation_id'])
+        paused = Backlog(self.registry, {}, worker=self.backlog.worker)
+        await paused.automatic_tick()
+        self.assertIsNone(paused.task, 'restart bypassed user pause')
+        await restarted.close()
+        await paused.close()
+
     async def test_restart_does_not_replay_and_completed_lookup_is_chronological(self):
         op=str(uuid.uuid4());self.backlog.start('p',op)
         await asyncio.sleep(.01)

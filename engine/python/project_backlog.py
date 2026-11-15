@@ -47,7 +47,16 @@ class Backlog:
             raise PolicyError('backlog_journal_unconfirmed', 503)
         self.jobs = json.loads(self.path.read_bytes()) if self.path.exists() else {}
         self.task = None
+        self.monitor = None
+        self.auto_cursor = 0
         for row in self.jobs.values():
+            if (row.get('automatic') and not row.get('automatic_user_paused')
+                    and (row['status'] in ACTIVE or row.get('owner_shutdown'))):
+                # A new owner reviews the current official buffer afresh. It
+                # never resumes the old token list; ambiguous sends stay out.
+                row.update(status='watching', reason='', owner_shutdown=False)
+                self.cancel_file(row).unlink(missing_ok=True)
+                continue
             if row['status'] in ACTIVE:
                 private_write(self.cancel_file(row), b'stop')
                 row.update(status='interrupted', reason='owner_interrupted')
@@ -60,28 +69,31 @@ class Backlog:
         return self.root / (row['operation_id'] + '.stop')
 
     def public(self, row):
-        result = {k: v for k, v in row.items() if k not in ('targets',)}
+        result = {k: v for k, v in row.items() if k not in ('targets', 'pending_processing')}
         targets = row['targets']
-        result.update(saved=sum(t.get('saved', 0) for t in targets),
-                      handled=sum(t.get('handled', 0) for t in targets),
+        result.update(saved=row.get('saved_before', 0) + sum(t.get('saved', 0) for t in targets),
+                      handled=row.get('handled_before', 0) + sum(t.get('handled', 0) for t in targets),
                       isolated=sum(t.get('unknown', 0) + t.get('isolated', 0) for t in targets),
                       remaining=sum(t.get('remaining', len(t.get('tokens', []))) for t in targets),
                       total=sum(len(t.get('tokens', [])) for t in targets),
                       sessions=len(targets),
-                      processing_submitted=sum(t.get('processing') == 'submitted' for t in targets),
-                      processing_failed=sum(t.get('processing') in ('unknown', 'failed') for t in targets),
-                      processing_disabled=sum(t.get('processing') == 'disabled' for t in targets))
+                      processing_submitted=sum(t.get('processing') == 'submitted' for t in (row.get('pending_processing', {}).values() if row.get('automatic') else targets)),
+                      processing_failed=sum(t.get('processing') in ('submitting', 'unknown', 'failed') for t in (row.get('pending_processing', {}).values() if row.get('automatic') else targets)),
+                      processing_disabled=sum(t.get('processing') == 'disabled' for t in (row.get('pending_processing', {}).values() if row.get('automatic') else targets)),
+                      processing_pending=sum(t.get('processing') == 'queued' for t in row.get('pending_processing', {}).values()))
         return result
 
     def get(self, project):
         rows = [r for r in self.jobs.values() if r['project_id'] == project]
-        return {'job': self.public(max(rows, key=lambda r: r['created_at'])) if rows else None}
+        latest = max(rows, key=lambda r: r['created_at']) if rows else None
+        enabled = bool(self.monitor and not self.monitor.done()) and (not latest or latest['status'] not in ('paused','stopped','interrupted','stopping'))
+        return {'job': self.public(latest) if latest else None, 'automatic_enabled': enabled}
 
     def checked_target(self, project_id, target, *, write=True):
         project = self.registry.state['projects'].get(project_id)
         agent = self.registry.state['agents'].get(target['agent_id'])
         binding = json.dumps([target['agent_id'], target['host']], ensure_ascii=True)
-        if (not project or not agent or self.registry.state['sessions'].get(binding) != project_id
+        if (not project or not agent or target['agent_id'] in self.registry.state.get('agent_retirements', {}) or self.registry.state['sessions'].get(binding) != project_id
                 or project.get('dataset_id') != target['dataset']):
             raise PolicyError('backlog_binding_changed', 409)
         view = self.registry.policy(project, target['agent_id'])
@@ -89,14 +101,14 @@ class Backlog:
             raise PolicyError('backlog_write_denied', 403)
         return agent, view
 
-    def start(self, project_id, operation_id):
+    def start(self, project_id, operation_id, *, automatic=False, selected=None):
         try:
             if str(uuid.UUID(operation_id)) != operation_id:
                 raise ValueError()
         except (ValueError, TypeError, AttributeError):
             raise PolicyError('backlog_operation_id_required') from None
         old = self.jobs.get(operation_id)
-        if old is not None:
+        if old is not None and not (automatic and old.get('automatic') and old['status'] == 'watching'):
             if old['project_id'] != project_id:
                 raise PolicyError('backlog_operation_conflict', 409)
             return self.public(old)
@@ -109,7 +121,7 @@ class Backlog:
             raise PolicyError('backlog_sender_busy', 409)
         if project_id not in self.registry.state['projects']:
             raise PolicyError('project_not_found', 404)
-        if len(self.jobs) >= 100:
+        if old is None and len(self.jobs) >= 100:
             raise PolicyError('backlog_journal_limit', 409)
         project = self.registry.state['projects'][project_id]
         targets = []
@@ -118,25 +130,39 @@ class Backlog:
                 continue
             agent_id, host = json.loads(key)
             agent = self.registry.state['agents'].get(agent_id, {})
-            if not agent.get('installation'):
+            if not agent.get('installation') or agent_id in self.registry.state.get('agent_retirements', {}):
+                continue
+            if selected is not None and (agent_id, host) not in selected:
                 continue
             target = {'agent_id': agent_id, 'host': host, 'dataset': project['dataset_id']}
             self.checked_target(project_id, target)
             targets.append(target)
         row = {'operation_id': operation_id, 'project_id': project_id, 'status': 'queued',
                'reason': '', 'created_at': time.time(), 'targets': targets}
+        if automatic:
+            row['automatic'] = True
+            row['pending_processing'] = copy.deepcopy((old or {}).get('pending_processing', {}))
+            if old:
+                previous = self.public(old)
+                row.update(saved_before=previous['saved'], handled_before=previous['handled'],
+                           created_at=old['created_at'])
         self.jobs[operation_id] = row
         self.persist()
         self.task = asyncio.create_task(self.run(row))
         return self.public(row)
 
-    def stop(self, project_id, operation_id):
+    def stop(self, project_id, operation_id, *, owner_shutdown=False):
         row = self.jobs.get(operation_id)
         if row is None or row['project_id'] != project_id:
             raise PolicyError('backlog_job_not_found', 404)
+        if row.get('automatic'):
+            row['owner_shutdown' if owner_shutdown else 'automatic_user_paused'] = True
         if row['status'] in ACTIVE:
             private_write(self.cancel_file(row), b'stop')
             row['status'] = 'stopping'
+            self.persist()
+        elif row.get('automatic') and row['status'] == 'watching':
+            row.update(status='stopped', reason='user_stopped')
             self.persist()
         return self.public(row)
 
@@ -153,7 +179,7 @@ class Backlog:
                if not k.startswith(('COGNEE_', 'MEMLANE_', 'LLM_', 'EMBEDDING_'))}
         env.update(HOME=installation['home'], COGNEE_ENV_FILE=installation['env_file'],
                    COGNEE_SESSION_KEY=target['host'], COGNEE_PLUGIN_IN_VENV='1')
-        payload = {**target, 'action': action, 'scripts': str(Path(installation['plugin_dir']) / 'scripts'),
+        payload = {**target, 'action': action, 'automatic': bool(row.get('automatic')), 'scripts': str(Path(installation['plugin_dir']) / 'scripts'),
                    'cancel_file': str(self.cancel_file(row))}
         process = await asyncio.create_subprocess_exec(
             sys.executable, str(WORKER), cwd=installation['home'], env=env,
@@ -180,7 +206,8 @@ class Backlog:
         except BaseException:
             # Never abandon a sender then blindly retry it. Signal cooperative
             # stop; its HTTP result/unknown journal remains the original truth.
-            private_write(self.cancel_file(row), b'stop')
+            if action != 'review':
+                private_write(self.cancel_file(row), b'stop')
             try:
                 process.terminate()
             except ProcessLookupError:
@@ -198,6 +225,15 @@ class Backlog:
         if not policy['policy']['can_auto_process']:
             target['processing'] = 'disabled'
             return
+        if row.get('automatic'):
+            for previous in self.jobs.values():
+                candidates = list(previous.get('targets', [])) + list(previous.get('pending_processing', {}).values())
+                if any(t is not target and t.get('agent_id') == target['agent_id']
+                       and t.get('host') == target['host'] and t.get('processing') in ('submitting', 'unknown')
+                       for t in candidates):
+                    target.update(processing='unknown', reason='previous_submission_unconfirmed')
+                    self.persist()
+                    return
         # Journal before POST. An unknown submit is never automatically repeated.
         target['processing'] = 'submitting'
         self.persist()
@@ -261,8 +297,19 @@ class Backlog:
             row['status'] = 'processing'
             self.persist()
             for target in row['targets']:
-                await self.process_saved(row, target)
+                if row.get('automatic') and (target.get('saved') or target.get('handled')):
+                    key = json.dumps([target['agent_id'], target['host']])
+                    previous = row['pending_processing'].get(key, {})
+                    if previous.get('processing') not in ('submitting', 'unknown'):
+                        first = previous.get('first_saved_at', time.time()) if previous.get('processing') == 'queued' else time.time()
+                        pending = {k: target[k] for k in ('agent_id','host','dataset','session_id','saved','handled')}
+                        row['pending_processing'][key] = {**pending, 'first_saved_at': first,
+                            'due_at': min(time.time() + 30, first + 300), 'processing': 'queued'}
+                else:
+                    await self.process_saved(row, target)
             row.update(status='stopped' if self.cancel_file(row).exists() else 'completed', reason='')
+            if row.get('automatic') and row['status'] == 'completed':
+                row['status'] = 'watching'
         except PolicyError as error:
             row.update(status='paused', reason=error.code)
         except Exception:
@@ -272,11 +319,83 @@ class Backlog:
             self.persist()
 
     async def close(self):
+        if self.monitor:
+            self.monitor.cancel()
+            try:
+                await self.monitor
+            except asyncio.CancelledError:
+                pass
         for row in self.jobs.values():
             if row['status'] in ACTIVE:
-                self.stop(row['project_id'], row['operation_id'])
+                self.stop(row['project_id'], row['operation_id'], owner_shutdown=True)
         if self.task and not self.task.done():
             await asyncio.wait_for(asyncio.shield(self.task), 40)
+
+    async def automatic_tick(self):
+        """Continue lawful, definitely-unsent buffers without requiring a window.
+
+        Each project keeps one durable automatic operation. Explicit stops and
+        unknown/failed operations remain paused; a new UUID never bypasses them.
+        """
+        if self.task and not self.task.done():
+            return
+        projects = list(self.registry.state['projects'])
+        if not projects:
+            return
+        project_id = projects[self.auto_cursor % len(projects)]
+        self.auto_cursor += 1
+        rows = [r for r in self.jobs.values() if r['project_id'] == project_id]
+        previous = max(rows, key=lambda r: r['created_at']) if rows else None
+        if previous and previous['status'] in ('paused', 'stopped', 'interrupted', 'stopping'):
+            return
+        automatic = previous if previous and previous.get('automatic') else None
+        if automatic:
+            for target in automatic.get('pending_processing', {}).values():
+                if target.get('processing') != 'queued' or time.time() < target['due_at']:
+                    continue
+                try:
+                    await self.process_saved(automatic, target)
+                except PolicyError as error:
+                    target.update(processing='disabled', reason=error.code)
+                    self.persist()
+                return
+        operation = automatic['operation_id'] if automatic else str(uuid.uuid4())
+        candidate = {'operation_id': operation, 'project_id': project_id}
+        selected = set()
+        has_unsent = False
+        for raw, bound in list(self.registry.state['sessions'].items()):
+            if bound != project_id:
+                continue
+            agent_id, host = json.loads(raw)
+            agent = self.registry.state['agents'].get(agent_id, {})
+            if not agent.get('installation') or agent_id in self.registry.state.get('agent_retirements', {}):
+                continue
+            target = {'agent_id': agent_id, 'host': host,
+                      'dataset': self.registry.state['projects'][project_id]['dataset_id']}
+            try:
+                _, view = self.checked_target(project_id, target)
+                if not view['policy'].get('can_capture'):
+                    continue
+                snapshot = await self.execute(candidate, target, 'review')
+                if snapshot.get('blocked'):
+                    continue
+                if snapshot.get('tokens') or snapshot.get('unknown'):
+                    selected.add((agent_id, host))
+                has_unsent = has_unsent or bool(snapshot.get('tokens'))
+            except (PolicyError, OSError, ValueError):
+                # The normal queue view exposes the original unconfirmed state;
+                # do not install, repair permissions or replay in this scanner.
+                continue
+        if has_unsent and not (self.task and not self.task.done()):
+            self.start(project_id, operation, automatic=True, selected=selected)
+
+    async def automatic_loop(self):
+        while True:
+            try:
+                await self.automatic_tick()
+            except (PolicyError, OSError, ValueError):
+                pass
+            await asyncio.sleep(10)
 
 
 def attach_backlog(app, registry, runtime):
@@ -300,5 +419,8 @@ def attach_backlog(app, registry, runtime):
                     web.post('/v1/projects/{id}/backlog/stop', endpoint)])
     async def cleanup(_):
         await backlog.close()
+    async def startup(_):
+        backlog.monitor = asyncio.create_task(backlog.automatic_loop())
+    app.on_startup.append(startup)
     app.on_cleanup.append(cleanup)
     return backlog
