@@ -33,7 +33,7 @@ func (a *App) withdrawCommonEditor(dataset string) {
 		e.Existing = nil
 		e.Draft = CommonDraft{}
 		e.Baseline = [32]byte{}
-		e.Message = "原知识已失效或无权读取，编辑内容已撤下；在途操作仍按实际回执核对。"
+		e.Message = "原记忆已失效或无权读取，编辑内容已撤下；在途操作仍按实际回执核对。"
 	}
 }
 
@@ -78,7 +78,7 @@ func (a *App) deleteCommonKnowledge(document Document) {
 		return
 	}
 	if document.Dataset != p.Dataset || commonCategory(document) == "" {
-		a.commonEdit.Message = "请选择当前知识库的有效通用知识"
+		a.commonEdit.Message = "请选择当前记忆库的有效通用记忆"
 		return
 	}
 	a.commonEdit.Busy = true
@@ -149,7 +149,7 @@ func (a *App) saveCommonKnowledge() {
 						a.InvalidateReading(p.Dataset)
 						return
 					}
-					e.Message = "原知识已变化或无法读取，请刷新后重新编辑；本次未提交修改。"
+					e.Message = "原记忆已变化或无法读取，请刷新后重新编辑；本次未提交修改。"
 				})
 				return
 			}

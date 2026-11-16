@@ -23,6 +23,8 @@ type pane struct {
 	Error                          string
 	Query                          string
 	ListScroll                     ui.ScrollState
+	Knowledge                      knowledgeFeedState
+	RawCatalog                     []Item
 	WidgetList                     ui.ListState
 	ListSelection                  int
 	DetailScroll                   map[string]*ui.ScrollState
@@ -47,6 +49,7 @@ type pane struct {
 	Technical                      map[string]bool
 }
 type App struct {
+	userProfiles        userProfilesState
 	integrations        integrationState
 	layout              appLayoutState
 	projectUI           projectReadingState
@@ -240,6 +243,9 @@ func (a *App) navigateKind(page string, index int, kind string) {
 		}
 	}
 	a.page = page
+	if page == "用户画像" {
+		a.refreshUserProfiles()
+	}
 	if page == "设置" {
 		a.RefreshIntegrations()
 	}
@@ -256,13 +262,21 @@ func (a *App) navigateKind(page string, index int, kind string) {
 	if page == "通用知识" {
 		a.kind = "知识"
 	}
-	if page != "总览" && page != "设置" && page != "图谱" && page != "检索结果" {
+	if page != "总览" && page != "设置" && page != "图谱" && page != "检索结果" && page != "用户画像" {
 		s := a.state()
-		a.load(s)
+		if page == "知识" && a.kind == "知识" {
+			a.loadKnowledgeFeed(s)
+		} else {
+			a.load(s)
+		}
 	}
 }
 func (a *App) load(s *pane) {
 	a.syncReadingIdentity()
+	if a.page == "知识" && a.kind == "知识" && s.Knowledge.Initialized && s.HomeAnchor == nil && s.Query == "" {
+		a.loadKnowledgeFeed(s)
+		return
+	}
 	if s.HomeAnchor != nil && len(s.History) == 0 {
 		if a.page == "通用知识" && s.HomeCategory != a.commonCategoryFilter() {
 			s.HomeAnchor = nil
@@ -288,6 +302,8 @@ func (a *App) load(s *pane) {
 	s.Error = ""
 	p, ok := a.current()
 	page, kind, offset, q := a.page, a.kind, s.Offset, s.Query
+	rawFeed := page == "知识" && (kind == "原始记录" || kind == "会话" || kind == "文档") && q == ""
+	rawCount := max(30, len(s.Items))
 	category := a.commonCategoryFilter()
 	filter := a.searchType
 	if page != "搜索" {
@@ -305,6 +321,7 @@ func (a *App) load(s *pane) {
 	go func() {
 		defer cancel()
 		var rows []Item
+		var rawCatalog []Item
 		var more bool
 		var err error
 		if page == "搜索" || q != "" {
@@ -332,7 +349,10 @@ func (a *App) load(s *pane) {
 		} else if page == "通用知识" {
 			rows, more, err = client.commonDocuments(ctx, p, offset, category)
 		} else if page == "知识" && (kind == "原始记录" || kind == "会话" || kind == "文档") {
-			rows, more, err = client.projectRecords(ctx, p, offset, kind)
+			rawCatalog, err = client.projectRecordCatalog(ctx, p, kind)
+			end := min(rawCount, len(rawCatalog))
+			rows = append([]Item{}, rawCatalog[:end]...)
+			more = end < len(rawCatalog)
 		} else if kind == "会话" {
 			rows, more, err = client.sessions(ctx, p, offset)
 		} else {
@@ -360,6 +380,10 @@ func (a *App) load(s *pane) {
 				preserveResolvedReadingTitles(rows, s.Items)
 			}
 			s.Items = rows
+			if rawFeed {
+				s.RawCatalog = rawCatalog
+				s.Offset = 0
+			}
 			s.More = more
 			s.Loaded = true
 			a.startTitles(s)
@@ -384,6 +408,9 @@ func (a *App) load(s *pane) {
 	}()
 }
 func (a *App) selectItem(s *pane, i Item) {
+	if a.page == "知识" && a.kind == "知识" {
+		s.Knowledge.Detail = true
+	}
 	if s.Locating {
 		if s.cancel != nil {
 			s.cancel()
@@ -509,6 +536,9 @@ func (a *App) source(s *pane) {
 				return
 			}
 			s.Selected = &i
+			if a.page == "知识" && a.kind == "知识" {
+				s.Knowledge.Detail = true
+			}
 			s.SourcePage, s.SessionTools = sessionPage, false
 		})
 	}()
@@ -521,7 +551,16 @@ func (a *App) View(c *ui.Context) {
 		ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.generationSetupPage(c) })
 		return
 	}
-	ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.viewContent(c); a.searchDialog(c); a.projectCreateDialog(c); a.toolGraphDialog(c) })
+	ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() {
+		a.viewContent(c)
+		a.knowledgeDialog(c)
+		a.searchDialog(c)
+		a.projectCreateDialog(c)
+		a.toolGraphDialog(c)
+		if a.page == "用户画像" {
+			a.userProfileImportDialog(c)
+		}
+	})
 }
 func (a *App) viewContent(c *ui.Context) {
 	c.After(2 * time.Second)
@@ -556,6 +595,8 @@ func (a *App) mainShell(c *ui.Context) {
 				a.projectNavigation(c)
 			}
 			switch a.page {
+			case "用户画像":
+				a.userProfilesPage(c)
 			case "总览":
 				a.home(c)
 			case "设置":
@@ -588,7 +629,7 @@ func (a *App) reading(c *ui.Context) {
 			ui.Column(c).Padding(24, 18, 16, 18).Gap(12).Children(func() {
 				label := "项目内容"
 				if a.page == "通用知识" {
-					label = "通用知识"
+					label = "通用记忆"
 				}
 				ui.Text(c, label).FontSize(10).TextColor(muted)
 				if a.page != "搜索" {
@@ -605,7 +646,7 @@ func (a *App) reading(c *ui.Context) {
 							if k == "会话" {
 								label = "原始记录"
 							}
-							button(c, label, func() {
+							button(c, memoryKindLabel(label), func() {
 								a.cancelTitles(s)
 								a.epoch++
 								if s.cancel != nil {
@@ -683,7 +724,7 @@ func (a *App) reading(c *ui.Context) {
 						label = "输入关键词搜索官方内容"
 					}
 					if a.page == "通用知识" && len(a.Config.Common) == 0 {
-						label = "官方当前暂不支持个人偏好与通用经验的独立阅读。后续可使用独立的通用知识数据组，供所有 Agent 读取。"
+						label = "官方当前暂不支持个人偏好与通用经验的独立阅读。后续可使用独立的通用记忆数据组，供所有 Agent 读取。"
 					}
 					if s.Query != "" {
 						label = "没有匹配结果"
@@ -700,7 +741,7 @@ func (a *App) reading(c *ui.Context) {
 					b := ui.Button(c, "").Key("item-"+i.key()).Justify(ui.Start).Padding(14, 12).Background(ui.Transparent).BorderWidth(0).Radius(6).Children(func() {
 						ui.Column(c).Grow(1).MinWidth(0).Gap(8).Children(func() {
 							ui.Text(c, i.Title).MinWidth(0).FontSize(13).Bold().SingleLine().TextColor(ink)
-							ui.Text(c, i.Kind+" · "+displayDate(i.Date)).MinWidth(0).FontSize(10).TextColor(muted).SingleLine()
+							ui.Text(c, memoryKindLabel(i.Kind)+" · "+displayDate(i.Date)).MinWidth(0).FontSize(10).TextColor(muted).SingleLine()
 							if i.ReadingState == "failed" || i.ReadingState == "unavailable" {
 								button(c, "标题读取失败 · 重试", func() { a.retryReadingTitle(s, i) })
 							}
@@ -742,7 +783,7 @@ func (a *App) detail(c *ui.Context, s *pane) {
 			s.DetailScroll[i.key()] = scroll
 		}
 		ui.Scroll(c.Key("detail-"+i.key())).Grow(1).MinHeight(0).TrackScroll(scroll).Padding(28, 30).Gap(18).Children(func() {
-			ui.Text(c, i.Kind+" / 只读").FontSize(10).TextColor(muted)
+			ui.Text(c, memoryKindLabel(i.Kind)+" / 只读").FontSize(10).TextColor(muted)
 			presentation := itemPresentation(*i)
 			ui.Text(c, presentation.DisplayTitle).FontSize(21).Bold().TextColor(ink)
 			ui.Text(c, displayDate(i.Date)).FontSize(10).TextColor(muted)
@@ -774,7 +815,7 @@ func (a *App) detail(c *ui.Context, s *pane) {
 						label = "⌄ " + t.Name + " · " + t.Status
 					}
 					ui.Column(c).Border(1, border).Radius(6).Padding(8).Children(func() {
-						button(c, label, func() { s.Tools[key] = !s.Tools[key] })
+						button(c, memoryKindLabel(label), func() { s.Tools[key] = !s.Tools[key] })
 						if s.Tools[key] {
 							markdown.View(c.Key("tool-"+key), "```json\n"+string(t.Params)+"\n```\n\n```json\n"+string(t.Result)+"\n```\n\n"+t.Error, &a.md)
 						}
@@ -802,7 +843,7 @@ func (a *App) detail(c *ui.Context, s *pane) {
 			if s.Technical[i.key()] {
 				label = "⌄ 技术详情"
 			}
-			button(c, label, func() { s.Technical[i.key()] = !s.Technical[i.key()] })
+			button(c, memoryKindLabel(label), func() { s.Technical[i.key()] = !s.Technical[i.key()] })
 			if s.Technical[i.key()] {
 				fields := presentation.TechnicalFields
 				if len(fields) == 0 {
@@ -826,7 +867,7 @@ func (a *App) detail(c *ui.Context, s *pane) {
 				if i.BodyLoaded || i.Detail != nil || i.Preview != "" {
 					label := "复制已载入内容"
 					if i.Kind == "知识" {
-						label = "复制知识内容"
+						label = "复制记忆内容"
 					}
 					hoverCopyAction(c, row, label, func() { c.WriteClipboard(itemPresentation(*i).VisibleBody) })
 				}
@@ -866,7 +907,7 @@ func (a *App) projectEditor(c *ui.Context) {
 		for _, field := range []struct {
 			Label string
 			Value *string
-		}{{"项目标识", &p.ID}, {"显示名称", &p.Name}, {"仓库路径", &p.Path}, {"知识数据组 ID", &p.Dataset}, {"代码数据组 ID（可选）", &p.CodeDataset}} {
+		}{{"项目标识", &p.ID}, {"显示名称", &p.Name}, {"仓库路径", &p.Path}, {"记忆数据组 ID", &p.Dataset}, {"代码数据组 ID（可选）", &p.CodeDataset}} {
 			ui.Text(c, field.Label).FontSize(10).TextColor(muted)
 			ui.TextInput(c.Key("project-field-"+field.Label), field.Value).Height(32).Label(field.Label)
 		}

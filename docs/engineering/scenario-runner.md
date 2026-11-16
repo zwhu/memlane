@@ -1,5 +1,9 @@
 # 当前执行边界
 
+模型服务并发回归复用task.py与现有unittest，覆盖多协议、缓存重建、取消、超时及桥接准入；命令与边界见[模型服务容量控制](model-service-capacity-20261116.md)。不调用真实模型或启停日常服务。
+
+当前可执行的待整理文档连续回归入口：`sh scripts/regress-project-queue.sh`。用例、证据目录、Native核对和未覆盖边界见[待整理链路回归](project-queue-regression.md)。该入口只复用当前Go/MyGo测试，不恢复下文退役的旧编排器。
+
 2026-11-13精简版使用现有命令和实际Native操作直接验证，不恢复旧全量矩阵。旧run-scenario.py及旧业务专属驱动已随模块退役。下文仅为历史工程说明，不构成当前可执行入口；当前进度见[执行记录](client-simplification-execution-20261113.md)。
 
 # 连续场景执行入口

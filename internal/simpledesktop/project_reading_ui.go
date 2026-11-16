@@ -26,11 +26,13 @@ type readingLocation struct {
 	Floors                map[*pane]int
 	SettingsParent        *readingLocation
 	SettingsProject       string
+	FeedDetail            bool
 }
 
 func (a *App) readingLocation() *readingLocation {
 	p, _ := a.current()
 	location := &readingLocation{Page: a.page, Kind: a.kind, ProjectID: p.ID, Index: a.project, FromOverview: a.fromOverview, Floors: a.overviewSourceFloor}
+	location.FeedDetail = a.state().Knowledge.Detail
 	if a.page == "设置" {
 		location.SettingsParent = a.settingsOrigin
 		if a.settingsOrigin != nil {
@@ -62,6 +64,7 @@ func (a *App) restoreReadingLocation(v *readingLocation) {
 		}
 	}
 	a.navigateKind(v.Page, index, v.Kind)
+	a.state().Knowledge.Detail = v.FeedDetail
 	if v.Page == "设置" {
 		a.settingsOrigin = v.SettingsParent
 		a.access.OpenProject = v.SettingsProject
@@ -109,19 +112,19 @@ func (a *App) projectHeader(c *ui.Context) {
 			}
 		} else if (a.page == "知识" || a.page == "通用知识") && len(a.state().History) > a.overviewSourceFloor[a.state()] {
 			back = func() { a.returnFromSource(a.state()) }
-			label = "返回知识"
+			label = "返回记忆"
 		} else if a.page == "设置" && a.settingsOrigin != nil {
 			back = func() { v := a.settingsOrigin; a.restoreReadingLocation(v) }
 			label = "返回项目"
 			switch a.settingsOrigin.Page {
 			case "通用知识", "总览", "设置", "检索结果":
-				label = "返回" + a.settingsOrigin.Page
+				label = "返回" + memoryKindLabel(a.settingsOrigin.Page)
 			}
 		}
 		if back != nil {
 			readingAction(c, label, readingBack, back)
 		}
-		title := a.page
+		title := memoryKindLabel(a.page)
 		if a.page == "设置" && a.settingsOrigin != nil {
 			for _, p := range a.Config.Projects {
 				if p.ID == a.access.OpenProject {
@@ -131,7 +134,7 @@ func (a *App) projectHeader(c *ui.Context) {
 			}
 		}
 		if a.page == "检索结果" && a.project < 0 {
-			title = "通用知识 · 搜索结果"
+			title = "通用记忆 · 搜索结果"
 		}
 		if p, ok := a.current(); ok && (a.page == "知识" || a.page == "图谱" || a.page == "检索结果") {
 			title = p.Name
@@ -140,11 +143,11 @@ func (a *App) projectHeader(c *ui.Context) {
 		ui.Spacer(c)
 		a.unifiedSearchTrigger(c)
 		if a.page == "通用知识" {
-			anchor := readingAction(c, "通用知识菜单", readingMore, func() { a.commonPage.MenuOpen = !a.commonPage.MenuOpen })
+			anchor := readingAction(c, "通用记忆菜单", readingMore, func() { a.commonPage.MenuOpen = !a.commonPage.MenuOpen })
 			ui.Popover(c, anchor, &a.commonPage.MenuOpen, func() {
 				ui.Column(c).Width(288).Padding(12).Gap(12).Children(func() {
 					if a.Config.ProjectControl == nil {
-						homeText(c, "尚未配置知识库存储服务", homeMeta)
+						homeText(c, "尚未配置记忆库存储服务", homeMeta)
 					} else {
 						a.commonDatasetSettings(c)
 					}
@@ -168,7 +171,7 @@ func (a *App) projectNavigation(c *ui.Context) {
 	ui.Row(c.Key("project-view-navigation")).Shrink(0).AlignItems(ui.Stretch).Children(func() {
 		ui.Column(c).Width(a.layout.ProjectListWidth).Shrink(0).Padding(24, 32, 0, 32).Children(func() { a.projectTabs(c) })
 		line := homeBorder
-		if a.page == "图谱" {
+		if a.page == "图谱" || (a.page == "知识" && a.kind == "知识") {
 			line = ui.Transparent
 		}
 		ui.Column(c).Width(1).Shrink(0).Background(line)
@@ -177,7 +180,7 @@ func (a *App) projectNavigation(c *ui.Context) {
 }
 
 func (a *App) projectTabs(c *ui.Context) {
-	labels := []string{"知识", "原始记录", "图谱"}
+	labels := []string{"记忆", "原始记录", "图谱"}
 	selected := 0
 	if a.page == "图谱" {
 		selected = 2
@@ -191,7 +194,7 @@ func (a *App) projectTabs(c *ui.Context) {
 			a.loadGraph()
 			return
 		}
-		a.switchProjectKind(labels[selected])
+		a.switchProjectKind([]string{"知识", "原始记录", "图谱"}[selected])
 	})
 }
 
@@ -199,6 +202,10 @@ func (a *App) projectReading(c *ui.Context) {
 	s := a.state()
 	if a.page == "检索结果" {
 		a.projectDetail(c, s)
+		return
+	}
+	if a.kind == "知识" {
+		a.knowledgePage(c, s)
 		return
 	}
 	readingSplit(c, "project-reading-split", &a.layout.ProjectListWidth, func() {
@@ -235,13 +242,18 @@ func (a *App) projectReading(c *ui.Context) {
 					projectLink(c, "重试读取", func() { a.load(s) })
 				}
 			})
+			a.rawRecordsAutoLoad(s)
 			a.itemList(c, s, false)
-			appFooter(c, "项目分页栏").Padding(0, 32).Children(func() {
+			appFooter(c, "原始记录加载状态").Padding(0, 32).Children(func() {
 				homeText(c, projectListStatus(s), homeMeta)
 				ui.Spacer(c)
-				readingAction(c, "上一页", readingBack, func() { s.Offset = max(0, s.Offset-30); a.load(s) }).Disabled(s.Offset == 0 || s.Loading)
-				homeText(c, fmt.Sprint(s.Offset/30+1), homeMeta)
-				readingAction(c, "下一页", homeArrow, func() { s.Offset += 30; a.load(s) }).Disabled(!s.More || s.Loading)
+				if s.Loaded && !s.Loading && s.Error == "" {
+					if s.More {
+						homeText(c, "向下滚动加载更多", homeMeta)
+					} else {
+						homeText(c, "已加载全部", homeMeta)
+					}
+				}
 			})
 		})
 	}, func() { a.projectDetail(c, s) })
@@ -262,7 +274,7 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 	ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
 		if s.Selected == nil {
 			if s.Locating {
-				homeText(c, "正在定位知识…", homeMeta).Margin(32)
+				homeText(c, "正在定位记忆…", homeMeta).Margin(32)
 			} else {
 				a.emptyReadingBackground(c)
 			}
@@ -272,7 +284,7 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 		i := s.Selected
 		key := i.key()
 		appToolbar(c, "项目内容工具栏", func() {
-			status := i.Kind + " · " + displayDate(i.Date)
+			status := memoryKindLabel(i.Kind) + " · " + displayDate(i.Date)
 			if s.Reading {
 				status += " · 正在读取…"
 			}
@@ -517,7 +529,11 @@ func (a *App) switchProjectKind(kind string) {
 	n := a.state()
 	// Each filter keeps its reading position, but its metadata snapshot can be
 	// older than another filter's. Revalidate on entry while retaining content.
-	a.load(n)
+	if kind == "知识" {
+		a.loadKnowledgeFeed(n)
+	} else {
+		a.load(n)
+	}
 }
 
 func projectListStatus(s *pane) string {

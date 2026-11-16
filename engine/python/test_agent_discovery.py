@@ -9,6 +9,26 @@ from project_control import Registry
 
 
 class LocalDiscoveryTests(unittest.TestCase):
+    def test_codex_app_only_discovers_bundled_runtime_without_a_path_command(self):
+        for app in ('Codex.app', 'ChatGPT.app'):
+            with self.subTest(app=app), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp)
+                runtime = home / 'Applications' / app / 'Contents/Resources/codex-cli/bin/codex'
+                runtime.parent.mkdir(parents=True)
+                runtime.write_text('# synthetic nonexecuted runtime')
+                runtime.chmod(0o700)
+                with patch('agent_connections.Path.home', return_value=home), \
+                     patch('agent_connections.shutil.which', return_value=None), \
+                     patch('pathlib.Path.is_file', autospec=True, side_effect=lambda path: path == runtime):
+                    self.assertEqual(detect_executable('codex', {}), str(runtime))
+                    runtime.chmod(0o600)
+                    self.assertIsNone(detect_executable('codex', {}))
+
+    def test_codex_explicit_missing_runtime_does_not_switch_to_the_app(self):
+        with patch('agent_connections.shutil.which', return_value='/synthetic/codex') as lookup:
+            self.assertIsNone(detect_executable('codex', {'executable': '/synthetic/missing-codex'}))
+            lookup.assert_not_called()
+
     def test_refresh_detects_install_and_removal_without_writing_host_or_registry(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)

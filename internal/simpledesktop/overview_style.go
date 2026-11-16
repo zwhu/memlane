@@ -59,7 +59,7 @@ type homeTypography struct {
 var homeType = map[homeTextRole]homeTypography{
 	homeBody:          {12, 400, homeMuted, 1.5, 0},
 	homeBrand:         {19, 650, homeInk, 1.25, -.5},
-	homeWelcome:       {25, 600, homeInk, 1.25, -.9},
+	homeWelcome:       {20, 600, homeInk, 1.25, -.5},
 	homeEyebrow:       {10, 400, ui.Hex("#8795a3"), 1.2, 1.5},
 	homeStatValue:     {27, 550, homeInk, 1.2, -1},
 	homeStatUnit:      {11, 400, ui.Hex("#8793a0"), 1.2, 0},
@@ -95,6 +95,22 @@ var homeTheme = func() *ui.Theme {
 	return &t
 }()
 
+// Keep the SDK sidebar's accent local: content controls retain their own theme.
+var sidebarTheme = func() *ui.Theme {
+	t := *homeTheme
+	t.Accent, t.AccentText = homeIconInk, homeInk
+	t.SurfacePressed = ui.Hex("#d8e3ef")
+	return &t
+}()
+
+func sidebarSelection(item ui.Element, selected bool) ui.Element {
+	item.Cursor(ui.CursorPointer)
+	if selected {
+		item.Background(ui.Hex("#d8e3ef")).TextColor(homeInk)
+	}
+	return item
+}
+
 func homeSVG(paths string) *ui.SVG {
 	return ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round">` + paths + `</svg>`))
 }
@@ -108,7 +124,7 @@ var homeSearch = homeSVG(`<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5
 var homeSettings = homeSVG(`<path d="m9 3-1 3-3 1-2 5 2 5 3 1 1 3h6l1-3 3-1 2-5-2-5-3-1-1-3z"/><circle cx="12" cy="12" r="3"/>`)
 
 func homeLink(c *ui.Context, title string, fn func()) ui.Element {
-	return ui.Button(c, title).Label(title).Height(24).MinHeight(24).OnClick(fn)
+	return textButton(c, title, fn)
 }
 
 func homeHoverColor(b ui.Element, key string, normal, hover ui.Color) ui.Color {
@@ -130,5 +146,5 @@ func homeNavSurface(b ui.Element, active bool) ui.Element {
 }
 
 func homeIconButton(c *ui.Context, label string, icon *ui.SVG, fn func()) ui.Element {
-	return ui.Button(c, "").Label(label).Tooltip(label).Children(func() { ui.Icon(c, icon).FontSize(14) }).OnClick(fn)
+	return ui.Button(c, "").Cursor(ui.CursorPointer).Label(label).Tooltip(label).Children(func() { ui.Icon(c, icon).FontSize(14) }).OnClick(fn)
 }

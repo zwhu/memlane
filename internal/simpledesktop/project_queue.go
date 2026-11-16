@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"github.com/egoist/mygo/ui"
 )
 
 type queuedSession struct {
@@ -14,20 +16,38 @@ type queuedSession struct {
 	View    *pendingBufferView
 }
 type projectQueueState struct {
+	NotificationFailures           map[string]projectFailure
+	KnowledgeRead                  knowledgeReadState
+	UnreadKnowledge                []Item
+	KnowledgeReadError             string
+	Archives                       []pendingArchiveRow
+	ArchiveError                   string
+	ArchiveHistoryOpen             bool
+	Scroll                         ui.ScrollState
+	Reader                         *pane
+	Activity                       []overviewEvent
+	ActivityError                  string
 	Loading, Loaded                bool
 	Request                        uint64
 	Next                           time.Time
 	Sessions                       []queuedSession
+	Checks                         map[string]pendingCheckState
 	Documents                      []Item
 	DocumentError                  string
 	Offset                         int
 	Backlog                        *backlogJob
+	AutomaticSave                  bool
+	SaveDetailsOpen                bool
 	BacklogLoading, BacklogBusy    bool
 	BacklogNext                    time.Time
 	BacklogError, BacklogOperation string
 }
 
 func (c Client) pendingProjectDocuments(ctx context.Context, p Project) ([]Item, error) {
+	items, _, err := c.pendingProjectCatalog(ctx, p)
+	return items, err
+}
+func (c Client) pendingProjectCatalog(ctx context.Context, p Project) ([]Item, []Document, error) {
 	var status struct {
 		Items []struct {
 			ID        string `json:"id"`
@@ -36,14 +56,14 @@ func (c Client) pendingProjectDocuments(ctx context.Context, p Project) ([]Item,
 		} `json:"items"`
 	}
 	if err := c.get(ctx, "/api/v1/datasets/"+url.PathEscape(p.Dataset)+"/processing-status?pipeline=cognify_pipeline", &status); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if status.Items == nil {
-		return nil, fmt.Errorf("整理状态缺少文档清单")
+		return nil, nil, fmt.Errorf("整理状态缺少文档清单")
 	}
 	docs, err := c.overviewDocuments(ctx, p)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	metadata := map[string]Document{}
 	for _, d := range docs {
@@ -52,24 +72,24 @@ func (c Client) pendingProjectDocuments(ctx context.Context, p Project) ([]Item,
 	result := []Item{}
 	for _, row := range status.Items {
 		if row.Completed == nil {
-			return nil, fmt.Errorf("文档整理状态不完整")
+			return nil, nil, fmt.Errorf("文档整理状态不完整")
 		}
 		if *row.Completed {
 			continue
 		}
 		d, ok := metadata[row.ID]
 		if !ok {
-			return nil, fmt.Errorf("文档列表已变化，请重新读取")
+			return nil, nil, fmt.Errorf("文档列表已变化，请重新读取")
 		}
-		if d.knowledge() {
+		if d.knowledge() || derivedMaterial(d) {
 			continue
 		}
 		copy := d
 		result = append(result, Item{ID: d.ID, Dataset: p.Dataset, Kind: "文档", Title: d.title(), Date: d.date(), Document: &copy})
 	}
-	return result, nil
+	return result, docs, nil
 }
-func (a *App) projectQueue(p AccessProject) *projectQueueState {
+func (a *App) projectQueueStateFor(p AccessProject) *projectQueueState {
 	if a.access.Queues == nil {
 		a.access.Queues = map[string]*projectQueueState{}
 	}
@@ -78,8 +98,13 @@ func (a *App) projectQueue(p AccessProject) *projectQueueState {
 	q := a.access.Queues[key]
 	if q == nil {
 		q = &projectQueueState{}
+		q.Archives, q.ArchiveError = a.readPendingArchives(p)
 		a.access.Queues[key] = q
 	}
+	return q
+}
+func (a *App) projectQueue(p AccessProject) *projectQueueState {
+	q := a.projectQueueStateFor(p)
 	if time.Now().After(q.BacklogNext) {
 		a.refreshBacklog(q, p)
 	}
@@ -128,6 +153,10 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 	}
 	client, python := a.Client, a.Config.Python
 	operator := pendingOperatorConfig(a.Config)
+	if a.access.QueueReadSlots == nil {
+		a.access.QueueReadSlots = make(chan struct{}, 4)
+	}
+	slots := a.access.QueueReadSlots
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
@@ -137,14 +166,23 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 		}
 		results := make([]result, len(sessions))
 		var documents []Item
+		var knowledgeCatalog []Document
 		var documentErr error
+		var activity []activityRow
+		var activityErr error
 		var workers sync.WaitGroup
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			documents, documentErr = client.pendingProjectDocuments(ctx, Project{ID: p.ID, Dataset: p.Dataset})
+			activityCtx, activityCancel := context.WithTimeout(ctx, 5*time.Second)
+			defer activityCancel()
+			activityErr = client.get(activityCtx, "/api/v1/activity/pipeline-runs?dataset_id="+url.QueryEscape(p.Dataset)+"&limit=100", &activity)
 		}()
-		slots := make(chan struct{}, 4)
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			documents, knowledgeCatalog, documentErr = client.pendingProjectCatalog(ctx, Project{ID: p.ID, Dataset: p.Dataset})
+		}()
 		for n, row := range sessions {
 			workers.Add(1)
 			go func(n int, row queuedSession) {
@@ -178,10 +216,31 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			}
 			wasLoaded := q.Loaded
 			q.Loaded = true
+			q.ActivityError = ""
+			if activityErr != nil {
+				q.ActivityError = "近期处理记录暂时无法读取"
+			} else {
+				projectActivity := make([]activityRow, 0, len(activity))
+				for _, row := range activity {
+					if row.Dataset == p.Dataset {
+						projectActivity = append(projectActivity, row)
+					}
+				}
+				q.Activity = nil
+				for _, event := range aggregateActivity(projectActivity, []Project{{ID: p.ID, Name: p.Name, Dataset: p.Dataset}}) {
+					if event.Title == "处理记忆" || (event.Title == "整理知识" || event.Title == "整理记忆") {
+						q.Activity = append(q.Activity, event)
+					}
+				}
+			}
 			q.Sessions = sessions
 			for n, row := range sessions {
 				if results[n].Error != nil {
 					row.View.ReadError = "保存状态暂时无法读取"
+					if results[n].Status.Error == "official_session_unconfirmed" {
+						row.View.ReadError = "尚未确认这次会话的保存状态；重新读取不会补采历史对话"
+					}
+					row.View.Message = row.View.ReadError
 					row.View.Loaded = false
 				} else {
 					if wasLoaded && !row.View.Observed {
@@ -198,8 +257,10 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				}
 			} else {
 				q.Documents = documents
+				a.observeKnowledgeCatalog(p, q, knowledgeCatalog)
 				q.Offset = min(q.Offset, max(0, len(documents)-1))
 			}
+			q.observeNotificationFailures(time.Now())
 		})
 	}()
 }

@@ -73,7 +73,7 @@ func TestProjectCheckboxBundlesPermissionAndConfirmsUnknownWithoutRetry(t *testi
 	a.access.OpenProject = "p"
 	a.settingsOrigin = &readingLocation{Page: "知识", ProjectID: "p"}
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"允许读取知识", "允许读取知识", "允许写入和删除知识"} {
+	for _, label := range []string{"允许读取记忆", "允许读取记忆", "允许写入和删除记忆"} {
 		clickProjectUI(t, tt, label)
 		drainReading(t, updates, func() bool { return !a.access.Busy })
 		tt.Frame()
@@ -85,7 +85,7 @@ func TestProjectCheckboxBundlesPermissionAndConfirmsUnknownWithoutRetry(t *testi
 		t.Fatal("checkbox values or read/write dependency lost")
 	}
 	fail.Store(true)
-	clickProjectUI(t, tt, "允许写入和删除知识")
+	clickProjectUI(t, tt, "允许写入和删除记忆")
 	drainReading(t, updates, func() bool { return !a.access.Busy })
 	tt.Frame()
 	if a.access.CheckboxPending["p/agent"] == nil {

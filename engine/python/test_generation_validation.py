@@ -30,6 +30,30 @@ from project_policy import PolicyError
 
 
 class ValidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_worker_stderr_metrics_survive_and_arbitrary_sdk_errors_are_dropped(self):
+        import io
+        from contextlib import redirect_stderr
+        row = {'schema_version': 1, 'event': 'request_finished', 'component': 'generation_http',
+               'request_id': 'a' * 32, 'at': '2026-11-16T00:00:00+00:00', 'elapsed_ms': 12,
+               'durations_ms': {'dispatch_to_headers': 11}, 'outcome': 'succeeded',
+               'backend_kind': 'custom', 'status': 200}
+        self.worker('import json,sys\njson.load(sys.stdin)\n'
+                    'print("synthetic-secret"*20000,file=sys.stderr)\n'
+                    'print(' + repr(json.dumps(row)) + ',file=sys.stderr)\n'
+                    'print(json.dumps({"status":"passed","plain_passed":True,"schema_passed":True,"quality_passed":True,"structured_mode":"unknown"}))\n')
+        output = io.StringIO()
+        with patch('generation_validation.ROOT', self.root), redirect_stderr(output):
+            self.validator.start(self.profile, 1, 'metrics')
+            await self.validator.task
+        self.assertEqual(self.validator.get('metrics')['status'], 'passed')
+        events = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith('{')]
+        child = next(row for row in events if row['component'] == 'generation_http')
+        owner = next(row for row in events if row['component'] == 'generation_validation')
+        self.assertEqual(child['validation_request_id'], owner['request_id'])
+        self.assertIn('probe', owner['durations_ms'])
+        self.assertIn('cleanup', owner['durations_ms'])
+        self.assertNotIn('synthetic-secret', output.getvalue())
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()

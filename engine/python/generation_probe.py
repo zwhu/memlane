@@ -170,7 +170,9 @@ class CompletionObservation:
 
 async def probe(config):
     from generation_http import generation_http_policy
-    async with generation_http_policy():
+    async with generation_http_policy(endpoint=os.environ.get('LLM_ENDPOINT'),
+            max_concurrent_requests=config.get('generation_max_concurrent_requests', 2),
+            backend_kind=config.get('generation_backend_kind', 'unknown')):
         return await _probe(config)
 
 

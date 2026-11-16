@@ -3,6 +3,7 @@ package simpledesktop
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -32,10 +33,10 @@ func codexConnectionLabel(connection CodexConnection) string {
 func (a *App) codexConnectionSettings(c *ui.Context) {
 	connection := a.access.Directory.CodexConnection
 	if connection == nil {
-		ui.Text(c, "正在读取本机 Codex 接入状态…").FontSize(12).TextColor(muted)
+		ui.Text(c, "正在读取Codex 接入状态…").FontSize(12).TextColor(muted)
 		return
 	}
-	ui.Text(c, "本机 Codex · "+codexConnectionLabel(*connection)).FontSize(12).Bold()
+	ui.Text(c, "Codex · "+codexConnectionLabel(*connection)).FontSize(12).Bold()
 	ui.Text(c, "CLI 与桌面端共用此连接；此前未保存的会话记录保留。").FontSize(11).LineHeight(1.7).TextColor(muted)
 	if connection.Home != "" {
 		ui.Text(c, "配置目录："+connection.Home).FontSize(10).TextColor(muted)
@@ -45,8 +46,8 @@ func (a *App) codexConnectionSettings(c *ui.Context) {
 	}
 	unknown := connection.Status == "staging_unknown" || connection.Status == "activation_unknown" || connection.Status == "requires_review" || connection.Status == "agent_creation_unconfirmed"
 	ui.Row(c).Gap(12).Children(func() {
-		ui.Button(c, "准备本机 Codex 接入").Disabled(a.access.Busy || unknown).OnClick(func() { a.changeCodexConnection("prepare", "") })
-		ui.Button(c, "核对原接入操作").Disabled(a.access.Busy).OnClick(func() { a.changeCodexConnection("review", "") })
+		ui.Button(c, "准备Codex 接入").Disabled(a.access.Busy || unknown).OnClick(func() { a.changeCodexConnection("prepare", "") })
+		textButton(c, "核对原接入操作", nil).Disabled(a.access.Busy).OnClick(func() { a.changeCodexConnection("review", "") })
 	})
 	preview := connection.Preview
 	if preview == nil {
@@ -59,7 +60,7 @@ func (a *App) codexConnectionSettings(c *ui.Context) {
 	if len(connection.ProjectConfigConflicts) > 0 {
 		ui.Text(c, "已有项目单独开启旧记忆连接，请核对这些项目设置后再启用。").FontSize(11).TextColor(muted)
 	}
-	ui.Button(c, "启用本机 Codex 连接").Disabled(a.access.Busy || connection.Status != "prepared" || len(connection.LegacyConsumers) > 0 || len(connection.ProjectConfigConflicts) > 0).OnClick(func() {
+	ui.Button(c, "启用Codex 连接").Disabled(a.access.Busy || connection.Status != "prepared" || len(connection.LegacyConsumers) > 0 || len(connection.ProjectConfigConflicts) > 0).OnClick(func() {
 		a.changeCodexConnection("activate", preview.ProposedSHA)
 	})
 }
@@ -74,4 +75,12 @@ func (a *App) changeCodexConnection(action, reviewedSHA string) {
 		err := client.request(ctx, "POST", "/v1/codex/"+action, payload, &result)
 		return result, err
 	})
+}
+
+// Display-only cleanup; registered Agent names and identities remain intact.
+func agentDisplayName(name string) string {
+	for _, prefix := range []string{"本机 ", "本地 "} {
+		name = strings.TrimPrefix(name, prefix)
+	}
+	return name
 }

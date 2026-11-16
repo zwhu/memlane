@@ -34,7 +34,7 @@ func overviewFixture(t *testing.T) *App {
 			name = "same"
 		}
 		if n == 2 {
-			name = "跨 Agent 项目知识与长期上下文管理客户端 memory-client-exploration"
+			name = "跨 Agent 项目记忆与长期上下文管理客户端 memory-client-exploration"
 		}
 		cfg.Projects = append(cfg.Projects, Project{ID: fmt.Sprint(n), Name: name, Path: path, Dataset: fmt.Sprint(n)})
 	}
@@ -48,14 +48,14 @@ func overviewFixture(t *testing.T) *App {
 	for n, title := range []string{
 		"docs/development.md documents config/daily-runtime.example.json fields, credentials and the daily development workflow.",
 		strings.Repeat("LongTechnicalIdentifier_", 22),
-		"跨 Agent 项目知识与长期上下文管理：同名项目路径、来源与逐层返回都要保持。",
+		"跨 Agent 项目记忆与长期上下文管理：同名项目路径、来源与逐层返回都要保持。",
 		"Fourth knowledge for pagination",
 	} {
 		d := Document{ID: fmt.Sprint(n), Dataset: "0", Name: title, Created: time.Now().UTC().Format(time.RFC3339)}
 		a.overviewState.Snapshot.Knowledge = append(a.overviewState.Snapshot.Knowledge, Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Title: title, Document: &d})
 	}
 	a.overviewState.Events = []overviewEvent{
-		{Key: "complete", Title: "召回知识", State: "已完成", Project: "synthetic", At: time.Now()},
+		{Key: "complete", Title: "召回记忆", State: "已完成", Project: "synthetic", At: time.Now()},
 		{Key: "running", Title: "整理知识", State: "处理中", Project: "synthetic", At: time.Now()},
 		{Key: "failed", Title: "读取来源", State: "失败", Project: "synthetic", At: time.Now(), Record: activityRow{ID: "fixture-row", Run: "fixture-run", ErrorClass: "BrokenPipeError"}, Failures: []activityRow{{ID: "fixture-row", Run: "fixture-run", ErrorClass: "BrokenPipeError"}}},
 	}
@@ -83,7 +83,7 @@ func fixtureImage(t *testing.T, tt *ui.Tester, name string) {
 // stress fixture and the live official store. No content is written to Cognee.
 func overviewSelectedAFixture(t *testing.T) *App {
 	a := overviewFixture(t)
-	names := []string{"memlane", "same", "background-window", "跨 Agent 项目知识与长期上下文管理客户端 / memory-client-exploration", "automatic", "same", "beta", "worktree", "base", "alpha", "race", "PA Native manual", "frontend-platform"}
+	names := []string{"memlane", "same", "background-window", "跨 Agent 项目记忆与长期上下文管理客户端 / memory-client-exploration", "automatic", "same", "beta", "worktree", "base", "alpha", "race", "PA Native manual", "frontend-platform"}
 	for i, name := range names {
 		a.Config.Projects[i].Name = name
 		a.Config.Projects[i].Path = "~/work/" + strings.ReplaceAll(name, " / ", "/")
@@ -153,19 +153,25 @@ func TestOverviewLayoutAndContinuousUIFixture(t *testing.T) {
 				t.Fatal("obsolete pagination visible")
 			}
 			day := time.Now().Format("2006-01-02")
-			if err := tt.Click(day + " · 新增 4 条知识"); err != nil {
+			if err := tt.Click(day + " · 新增 4 条记忆"); err != nil {
 				t.Fatal(err)
 			}
 			if a.overviewState.Day != day {
 				t.Fatal("date not selected")
 			}
-			if err := tt.Click("显示最近知识"); err != nil {
+			if err := tt.Click("显示最近记忆"); err != nil {
 				t.Fatal(err)
 			}
 			if a.overviewState.Day != "" {
 				t.Fatal("date not cleared")
 			}
+			if err := tt.Click("失败操作：failed"); err != nil {
+				t.Fatal(err)
+			}
 			if err := tt.Click("查看失败详情"); err != nil {
+				t.Fatal(err)
+			}
+			if err := tt.Click("失败操作：failed"); err != nil {
 				t.Fatal(err)
 			}
 			if err := tt.Click("复制诊断信息"); err != nil {
@@ -175,6 +181,9 @@ func TestOverviewLayoutAndContinuousUIFixture(t *testing.T) {
 				t.Fatal("diagnostic clipboard/feedback missing")
 			}
 			// Collapse diagnostic before checking project layout.
+			if err := tt.Click("失败操作：failed"); err != nil {
+				t.Fatal(err)
+			}
 			if err := tt.Click("收起失败详情"); err != nil {
 				t.Fatal(err)
 			}
@@ -190,7 +199,7 @@ func TestOverviewLayoutAndContinuousUIFixture(t *testing.T) {
 			if !tt.HasText("Project 12") {
 				t.Fatal("all projects missing")
 			}
-			footer, _ := tt.Find("本机服务 · 已连接")
+			footer, _ := tt.Find("服务 · 已连接")
 			if footer.Y > float32(size[1]) || footer.Y < float32(size[1]-70) {
 				t.Fatalf("sidebar footer moved: %+v", footer)
 			}
@@ -214,7 +223,7 @@ func TestOverviewLoadingEmptyAndPartialFailureUI(t *testing.T) {
 	v.Snapshot = overviewSnapshot{}
 	v.Events = nil
 	tt := ui.NewTester(a.overviewHome, 980, 758)
-	if !tt.HasText("正在读取统计…") || tt.HasText("暂无知识") || !tt.HasText("—") {
+	if !tt.HasText("正在读取统计…") || tt.HasText("暂无记忆") || !tt.HasText("—") {
 		t.Fatal("loading masquerades as zero/empty")
 	}
 	fixtureImage(t, tt, "loading")
@@ -224,7 +233,7 @@ func TestOverviewLoadingEmptyAndPartialFailureUI(t *testing.T) {
 	v.ActivityLoaded = true
 	v.ActivityLoading = false
 	tt.Frame()
-	if !tt.HasText("暂无知识") || !tt.HasText("暂无动态") {
+	if !tt.HasText("暂无记忆") || !tt.HasText("暂无动态") {
 		t.Fatal("successful empty missing")
 	}
 	fixtureImage(t, tt, "empty")
@@ -253,7 +262,7 @@ func TestOverviewFixedListsAreCappedAndScrollIndependently(t *testing.T) {
 			tt := ui.NewTester(a.overviewShell, size[0], size[1])
 			v.Scroll.Y = 120
 			tt.Frame()
-			left, _ := tt.Find("最近知识内容")
+			left, _ := tt.Find("最近记忆内容")
 			right, _ := tt.Find("近期动态内容")
 			if left.H < homeOverviewListHeight-0.1 || left.H > homeOverviewListHeight+0.1 || right.H < homeOverviewListHeight-0.1 || right.H > homeOverviewListHeight+0.1 {
 				t.Fatalf("unbounded panels: %+v %+v", left, right)
@@ -294,7 +303,7 @@ func TestOverviewHeaderUsesContentInsets(t *testing.T) {
 	if !ok {
 		t.Fatal("missing page title")
 	}
-	search, ok := tt.Find("搜索知识与原始记录")
+	search, ok := tt.Find("搜索记忆与原始记录")
 	if !ok {
 		t.Fatal("missing search trigger")
 	}
@@ -303,28 +312,12 @@ func TestOverviewHeaderUsesContentInsets(t *testing.T) {
 	}
 }
 
-func TestOverviewSidebarActionsShareRightEdge(t *testing.T) {
+func TestOverviewSidebarHasNoProjectMenus(t *testing.T) {
 	a := overviewFixture(t)
 	tt := ui.NewTester(a.overviewShell, 1200, 820)
-	add, ok := tt.Find("新建项目")
-	if !ok {
-		t.Fatal("missing add button")
-	}
-	labels := projectLabels(a.Config.Projects)
-	for _, label := range labels {
-		menu, ok := tt.Find("项目菜单：" + label)
-		if !ok {
-			t.Fatal("missing menu", label)
-		}
-		// Clipped sidebar children have a zero layout rect in the SDK tester.
-		if menu.W == 0 {
-			continue
-		}
-		if d := (add.X + add.W) - (menu.X + menu.W); d < -0.5 || d > 0.5 {
-			t.Fatalf("sidebar right edges differ: add=%+v menu=%+v", add, menu)
-		}
-		if add.W != menu.W {
-			t.Fatal("action columns have different widths", add, menu)
+	for _, label := range projectLabels(a.Config.Projects) {
+		if _, ok := tt.Find("项目菜单：" + label); ok {
+			t.Fatal("sidebar still contains a project menu", label)
 		}
 	}
 }
@@ -493,8 +486,8 @@ func TestOverviewCurrentRuntimeReadOnly(t *testing.T) {
 			if d.knowledge() {
 				if !knowledge[key] {
 					knowledge[key] = true
-					if at, ok := officialTime(d.Created); ok {
-						days[at.In(time.Local).Format("2006-01-02")]++
+					if day, ok := d.knowledgeDay(time.Local); ok {
+						days[day]++
 					}
 				}
 			} else if derivedMaterial(d) {
@@ -520,9 +513,12 @@ func TestOverviewCurrentRuntimeReadOnly(t *testing.T) {
 		statePath = filepath.Join(filepath.Dir(path), "client-state.json")
 	}
 	state, _ := os.ReadFile(statePath)
-	receipt := map[string]any{"checked_at": time.Now().UTC().Format(time.RFC3339), "source": "live official read-only; no model/index/write", "knowledge": len(knowledge), "raw_sessions": len(sessions), "raw_documents": len(documents), "raw_total": snapshot.Raw, "excluded_derived": excluded, "knowledge_dates": days, "used_days": first, "client_state_sha256": fmt.Sprintf("%x", sha256.Sum256(state)), "projects": len(a.Config.Projects), "scopes": len(overviewProjects(a.Config))}
+	receipt := map[string]any{"checked_at": time.Now().UTC().Format(time.RFC3339), "source": "live official read-only; client date association only, no official/model/index writes", "knowledge": len(knowledge), "raw_sessions": len(sessions), "raw_documents": len(documents), "raw_total": snapshot.Raw, "excluded_derived": excluded, "knowledge_dates": days, "used_days": first, "client_state_sha256": fmt.Sprintf("%x", sha256.Sum256(state)), "projects": len(a.Config.Projects), "scopes": len(overviewProjects(a.Config))}
 	data, _ := json.MarshalIndent(receipt, "", "  ")
 	if dir := os.Getenv("MEMLANE_OVERVIEW_UI_EVIDENCE"); dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(filepath.Join(dir, "official-readonly.json"), data, 0644); err != nil {
 			t.Fatal(err)
 		}

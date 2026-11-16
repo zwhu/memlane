@@ -62,7 +62,7 @@ func TestOverviewHasNoRoutineRefreshOrDecorativeFooter(t *testing.T) {
 	if tt.HasText("刷新总览") || tt.HasText("刷新动态") || tt.HasText("Cognee 保存与处理") {
 		t.Fatal("manual update or decorative footer remains")
 	}
-	if !tt.HasText("本机服务 · 已连接") {
+	if !tt.HasText("服务 · 已连接") {
 		t.Fatal("connection status removed with decorative footer")
 	}
 }

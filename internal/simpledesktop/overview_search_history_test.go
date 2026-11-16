@@ -83,7 +83,7 @@ func TestOverviewHistoryEmptyStateStaysInsidePanel(t *testing.T) {
 	}
 }
 
-func TestOverviewSearchHistoryCapturesDialogTypingOnClose(t *testing.T) {
+func TestOverviewSearchHistoryDiscardsUnsubmittedTypingOnClose(t *testing.T) {
 	a := overviewFixture(t)
 	a.searchUI.Open, a.searchUI.Focus, a.searchUI.Loaded = true, true, true
 	tt := ui.NewTester(a.searchDialog, 1200, 820)
@@ -93,7 +93,7 @@ func TestOverviewSearchHistoryCapturesDialogTypingOnClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := a.Client.overviewSearchHistory(context.Background())
-	if err != nil || len(rows) != 1 || rows[0].Title != "manual dialog question" {
-		t.Fatalf("dialog input was not persisted: %+v %v", rows, err)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("unsubmitted dialog input was persisted: %+v %v", rows, err)
 	}
 }

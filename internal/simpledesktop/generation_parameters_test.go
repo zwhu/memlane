@@ -71,7 +71,7 @@ func TestGenerationInvalidParametersRejectBeforeJournalOrRequest(t *testing.T) {
 	}))
 	defer server.Close()
 	a := New(Config{GenerationFile: filepath.Join(root, "generation.json"), ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}}, nil)
-	a.integrations = integrationState{Loaded: true, Editor: true, ProfileID: "local", DraftMode: "provider", ProviderLabel: "Ollama（本机接口）", Model: "synthetic", Endpoint: "http://127.0.0.1:11434"}
+	a.integrations = integrationState{Loaded: true, Editor: true, ProfileID: "local", DraftMode: "provider", ProviderLabel: "Ollama", Model: "synthetic", Endpoint: "http://127.0.0.1:11434"}
 	for _, values := range [][2]string{{"NaN", "8192"}, {"0.6", "0"}, {"0.6", "8192.0"}} {
 		a.integrations.Temperature, a.integrations.MaxOutputTokens = values[0], values[1]
 		a.saveGeneration()

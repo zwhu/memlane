@@ -20,7 +20,6 @@ type unifiedSearchState struct {
 	KeyboardSelection                    bool
 	Scroll                               ui.ScrollState
 	Reveal                               bool
-	Due                                  time.Time
 	request                              uint64
 	cancel                               context.CancelFunc
 }
@@ -70,13 +69,13 @@ func (a *App) openUnifiedSearch(restore bool) {
 	}
 	s.Open = true
 	s.Focus = true
-	if (!restore && strings.TrimSpace(s.Query) == "") || !s.Loaded || s.Submitted != a.searchSignature() {
+	if strings.TrimSpace(s.Query) == "" {
 		a.submitUnifiedSearch()
 	}
 }
 func (a *App) closeUnifiedSearch() {
-	a.rememberManualSearch()
 	s := &a.searchUI
+	s.HistoryDirty = false
 	if s.cancel != nil {
 		s.cancel()
 		s.cancel = nil
@@ -84,7 +83,6 @@ func (a *App) closeUnifiedSearch() {
 	s.request++
 	s.Open = false
 	s.Loading = false
-	s.Due = time.Time{}
 }
 func (a *App) invalidateUnifiedSearch(dataset string) {
 	s := &a.searchUI
@@ -111,6 +109,9 @@ func (a *App) submitUnifiedSearch() {
 	if s.Loading && s.Submitted == a.searchSignature() {
 		return
 	}
+	if query != "" {
+		a.rememberManualSearch()
+	}
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -121,7 +122,6 @@ func (a *App) submitUnifiedSearch() {
 	signature := a.searchSignature()
 	s.Submitted = signature
 	s.Loading = true
-	s.Due = time.Time{}
 	s.Error = ""
 	s.Selection = 0
 	s.KeyboardSelection = false
@@ -168,9 +168,8 @@ func (a *App) submitUnifiedSearch() {
 	}()
 }
 func (a *App) searchSubmitOrOpen() {
-	a.rememberManualSearch()
 	s := &a.searchUI
-	if !s.Loading && s.Loaded && s.Error == "" && s.Submitted == a.searchSignature() && len(a.visibleSearchRows()) > 0 {
+	if s.KeyboardSelection && !s.Loading && s.Loaded && s.Error == "" && s.Submitted == a.searchSignature() && len(a.visibleSearchRows()) > 0 {
 		rows := a.visibleSearchRows()
 		a.openSearchResult(rows[min(s.Selection, len(rows)-1)])
 		return
@@ -265,9 +264,9 @@ func (a *App) returnToSearch() {
 	a.openUnifiedSearch(true)
 }
 func (a *App) unifiedSearchTrigger(c *ui.Context) {
-	ui.Button(c, "").Key("unified-search-trigger").Label("搜索知识与原始记录").Width(264).Height(32).Padding(0, 11).Gap(10).Background(ui.Hex("#f6f8fa")).Border(1, homeBorder).Radius(7).Children(func() {
+	ui.Button(c, "").Cursor(ui.CursorPointer).Key("unified-search-trigger").Label("搜索记忆与原始记录").Width(264).Height(32).Padding(0, 11).Gap(10).Background(ui.Hex("#f6f8fa")).Border(1, homeBorder).Radius(7).Children(func() {
 		ui.Icon(c, homeSearch).FontSize(16).TextColor(homeMuted)
-		homeText(c, "搜索知识与原始记录", homeMeta).FontSize(12)
+		homeText(c, "搜索记忆与原始记录", homeMeta).FontSize(12)
 		ui.Spacer(c)
 		homeText(c, "⌘ K", homeMeta)
 	}).OnClick(a.OpenSearch)
@@ -277,19 +276,12 @@ func (a *App) searchDialog(c *ui.Context) {
 	if !s.Open {
 		return
 	}
-	if !s.Due.IsZero() {
-		if !time.Now().Before(s.Due) {
-			a.submitUnifiedSearch()
-		} else {
-			c.After(time.Until(s.Due))
-		}
-	}
 	w, h := c.Size()
 	rows := a.visibleSearchRows()
 	ui.Modal(c.Key("unified-search-modal"), &s.Open, func() {
 		ui.Row(c).Height(68).Shrink(0).Padding(0, 20).Gap(12).AlignItems(ui.Center).Children(func() {
 			ui.Icon(c, homeSearch).FontSize(21).TextColor(homeMuted)
-			input := ui.TextInput(c.Key("unified-query"), &s.Query).Label("搜索关键词").Placeholder("搜索知识与原始记录").Grow(1).MinWidth(0).FontSize(18).Background(ui.Transparent).BorderWidth(0).OnSubmit(a.searchSubmitOrOpen)
+			input := ui.TextInput(c.Key("unified-query"), &s.Query).Label("搜索关键词").Placeholder("输入关键词，按回车搜索").Grow(1).MinWidth(0).FontSize(18).Background(ui.Transparent).BorderWidth(0).OnSubmit(a.searchSubmitOrOpen)
 			if input.Changed() {
 				s.HistoryDirty = true
 				a.cancelChangedSearch()
@@ -324,7 +316,7 @@ func (a *App) searchDialog(c *ui.Context) {
 					selected = n
 				}
 			}
-			ui.Segmented(c, &selected, labels...).Label("搜索内容类型").OnChange(func() {
+			ui.Segmented(c, &selected, "全部", "记忆", "原始记录").Label("搜索内容类型").OnChange(func() {
 				s.Type = labels[selected]
 				s.Selection = 0
 				s.KeyboardSelection = false
@@ -335,10 +327,10 @@ func (a *App) searchDialog(c *ui.Context) {
 		if s.Error != "" {
 			ui.Row(c).Padding(8, 20).Gap(12).Children(func() {
 				homeText(c, s.Error, homeMeta).MaxLines(2)
-				ui.Button(c, "重试").OnClick(a.submitUnifiedSearch)
+				textButton(c, "重试", nil).OnClick(a.submitUnifiedSearch)
 			})
 		}
-		if strings.TrimSpace(s.Query) != "" && !s.Loading && s.Due.IsZero() && s.Error == "" && s.Submitted == a.searchSignature() {
+		if strings.TrimSpace(s.Query) != "" && !s.Loading && s.Error == "" && s.Submitted == a.searchSignature() {
 			keywords := 0
 			for _, row := range rows {
 				if row.SearchMatch == "关键词匹配" {
@@ -350,8 +342,10 @@ func (a *App) searchDialog(c *ui.Context) {
 		ui.Scroll(c.Key("unified-results")).Grow(1).MinHeight(0).TrackScroll(&s.Scroll).Padding(8, 10).Gap(4).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Children(func() {
 			if len(rows) == 0 {
 				message := "没有匹配内容"
-				if s.Loading || !s.Due.IsZero() {
+				if s.Loading {
 					message = "搜索中…"
+				} else if strings.TrimSpace(s.Query) != "" && s.Submitted != a.searchSignature() {
+					message = "按回车搜索"
 				} else if strings.TrimSpace(s.Query) == "" {
 					message = "暂无最近内容"
 				}
@@ -362,7 +356,7 @@ func (a *App) searchDialog(c *ui.Context) {
 				i, index := row, n
 				kind := "原始记录"
 				if strings.Contains(i.Kind, "知识") {
-					kind = "知识"
+					kind = "记忆"
 				}
 				if kind != group {
 					title := kind
@@ -373,7 +367,7 @@ func (a *App) searchDialog(c *ui.Context) {
 					group = kind
 				}
 				title, preview := searchHitText(i, s.Query)
-				b := ui.Button(c, "").Key("search-hit-"+i.key()).Label(title).FillWidth().MinWidth(0).Justify(ui.Start).Padding(12, 14).BorderWidth(0).Radius(8).Gap(12).Background(ui.Transparent)
+				b := ui.Button(c, "").Cursor(ui.CursorPointer).Key("search-hit-"+i.key()).Label(title).FillWidth().MinWidth(0).Justify(ui.Start).Padding(12, 14).BorderWidth(0).Radius(8).Gap(12).Background(ui.Transparent)
 				b.Background(homeHoverColor(b, "search-hit-hover", ui.Transparent, c.Theme().SurfaceHover))
 				if s.KeyboardSelection && s.Selection == n {
 					b.Background(c.Theme().SurfaceHover)
@@ -410,7 +404,7 @@ func (a *App) searchDialog(c *ui.Context) {
 			}
 		})
 		s.Reveal = false
-	}).Width(min(float32(680), w-80)).Height(min(float32(560), h-140)).Padding(0).Gap(0).Label("搜索知识与原始记录弹框").Transition(projectOverlayMotion())
+	}).Width(min(float32(680), w-80)).Height(min(float32(560), h-140)).Padding(0).Gap(0).Label("搜索记忆与原始记录弹框").Transition(projectOverlayMotion())
 	if !s.Open {
 		a.closeUnifiedSearch()
 	}
@@ -418,7 +412,7 @@ func (a *App) searchDialog(c *ui.Context) {
 func (a *App) visibleSearchRows() []Item {
 	// Submitted identifies the in-flight request, not the rows' provenance.
 	// Never present old rows under newly typed text while that request runs.
-	if a.searchUI.Loading || !a.searchUI.Due.IsZero() || a.searchUI.Submitted != a.searchSignature() {
+	if a.searchUI.Loading || a.searchUI.Submitted != a.searchSignature() {
 		return nil
 	}
 	result := []Item{}
@@ -441,7 +435,9 @@ func (a *App) cancelChangedSearch() {
 	s.Error = ""
 	s.Selection = 0
 	s.KeyboardSelection = false
-	s.Due = time.Now().Add(300 * time.Millisecond)
+	s.Loaded = false
+	s.Rows = nil
+	s.Submitted = ""
 }
 func searchRowText(i Item) (string, string) {
 	body := i.Preview
@@ -465,7 +461,7 @@ func searchRowText(i Item) (string, string) {
 	}
 	if title == "" {
 		if strings.Contains(i.Kind, "知识") {
-			title = "知识"
+			title = "记忆"
 		} else {
 			title = "原始记录"
 		}
@@ -495,8 +491,8 @@ func (a *App) recentSearchItems(ctx context.Context, client Client, projects []P
 		rows = append(rows, records...)
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
-		a, _ := officialTime(rows[i].Date)
-		b, _ := officialTime(rows[j].Date)
+		a := dateOrder(rows[i].Date)
+		b := dateOrder(rows[j].Date)
 		if a.Equal(b) {
 			return rows[i].key() < rows[j].key()
 		}

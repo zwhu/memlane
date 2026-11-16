@@ -36,9 +36,9 @@ func readableDocumentTitle(d Document) string {
 }
 func knowledgePlaceholder(date string) string {
 	if t, ok := officialTime(date); ok {
-		return "知识 · " + t.In(time.Local).Format("2006-01-02")
+		return "记忆 · " + t.In(time.Local).Format("2006-01-02")
 	}
-	return "知识"
+	return "记忆"
 }
 func uniqueLearningSession(d Document) string {
 	var source string
@@ -59,14 +59,19 @@ func uniqueLearningSession(d Document) string {
 }
 func presentKnowledge(d Document, raw string) Presentation {
 	p := Presentation{DisplayTitle: readableDocumentTitle(d), VisibleBody: raw}
-	p.TechnicalFields = []ReadingField{{"官方名称", d.Name}, {"数据组 ID", d.Dataset}, {"文档 ID", d.ID}, {"原始更新时间", d.Updated}, {"原始创建时间", d.Created}}
+	p.TechnicalFields = []ReadingField{{"官方名称", d.Name}, {"数据组 ID", d.Dataset}, {"文档 ID", d.ID}, {"原始更新时间", d.Updated}, {"入库时间", d.Created}}
+	if d.knowledge() {
+		if day, ok := d.knowledgeDay(time.Local); ok {
+			p.TechnicalFields = append(p.TechnicalFields, ReadingField{"来源日期", day})
+		}
+	}
 	if d.Label != nil {
 		p.TechnicalFields = append(p.TechnicalFields, ReadingField{"官方 label", *d.Label})
 	}
 	if category := commonCategory(d); category != "" {
 		// A managed common document is ordinary Markdown with explicit metadata;
 		// it is not a malformed session learning and has no wrapper to remove.
-		p.TechnicalFields = append(p.TechnicalFields, ReadingField{"内容类型", "通用知识"}, ReadingField{"分类", category})
+		p.TechnicalFields = append(p.TechnicalFields, ReadingField{"内容类型", "通用记忆"}, ReadingField{"分类", category})
 		if source, _ := d.Metadata["source"].(string); source != "" {
 			p.TechnicalFields = append(p.TechnicalFields, ReadingField{"原始来源", source})
 		}
@@ -242,4 +247,17 @@ func readingUnavailable(err error) bool {
 		}
 	}
 	return false
+}
+
+// memoryKindLabel changes system labels only; stored content and route keys stay intact.
+func memoryKindLabel(kind string) string {
+	switch kind {
+	case "知识":
+		return "记忆"
+	case "知识片段":
+		return "记忆片段"
+	case "通用知识":
+		return "通用记忆"
+	}
+	return kind
 }

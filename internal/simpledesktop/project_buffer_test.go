@@ -18,18 +18,36 @@ func TestBufferAdapterVerifiesInputAndUsesExactInstallation(t *testing.T) {
 	if err := os.Mkdir(scripts, 0700); err != nil {
 		t.Fatal(err)
 	}
+	common := []byte(`import contextlib
+_AMBIGUOUS_KEY = '_replay_ambiguous'
+def set_session_key(host): assert host == 'host-session'
+def _read_map_record(host): return {'session_id':'session'}
+def _buffer_lock(): return contextlib.nullcontext()
+`)
+	os.WriteFile(filepath.Join(scripts, "_plugin_common.py"), common, 0600)
 	helper := []byte(`import json,os,sys
 assert os.path.realpath(os.environ["HOME"]) == os.getcwd()
 assert os.environ["COGNEE_ENV_FILE"].endswith("managed.env")
-assert "--session-key" in sys.argv and "host-session" in sys.argv
-print(json.dumps({"pending": 1, "signature": "reviewed-snapshot"}))
+class NotReady(Exception): pass
+def pending_materials(dataset, session):
+    assert dataset == 'dataset' and session == 'session'
+    return {'pending':1,'unknown_outcomes':1,'signature':'reviewed-snapshot'}
+def _pending_snapshot(dataset, session):
+    with open("buffer.json") as f: pending=json.load(f)
+    return None,None,None,None,pending,'reviewed-snapshot'
+if __name__ == '__main__':
+    assert '--session-key' in sys.argv and 'host-session' in sys.argv
+    print(json.dumps({'pending':1,'signature':'reviewed-snapshot'}))
 `)
+	bufferPath := filepath.Join(root, "buffer.json")
+	before := []byte(`[{"type":"qa","timestamp":"stable","_replay_ambiguous":true}]`)
+	os.WriteFile(bufferPath, before, 0600)
 	path := filepath.Join(scripts, "_memlane_policy.py")
 	if err := os.WriteFile(path, helper, 0600); err != nil {
 		t.Fatal(err)
 	}
 	helperSHA := fmt.Sprintf("%x", sha256.Sum256(helper))
-	receipt, _ := json.Marshal(map[string]any{"files": map[string]string{"scripts/_memlane_policy.py": helperSHA}})
+	receipt, _ := json.Marshal(map[string]any{"files": map[string]string{"scripts/_memlane_policy.py": helperSHA, "scripts/_plugin_common.py": fmt.Sprintf("%x", sha256.Sum256(common))}})
 	if err := os.WriteFile(filepath.Join(root, ".memlane-project-access.json"), receipt, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -40,8 +58,12 @@ print(json.dumps({"pending": 1, "signature": "reviewed-snapshot"}))
 	}
 	python, _ = filepath.Abs(python)
 	result, err := runPendingMaterials(context.Background(), python, installation, ProjectBinding{HostSessionKey: "host-session"}, "dataset", "show", "")
-	if err != nil || result.Pending != 1 || result.Signature != "reviewed-snapshot" {
+	if err != nil || result.Pending != 1 || result.Signature != "reviewed-snapshot" || len(result.UnknownEntryIDs) != 1 || !validPendingHash(result.UnknownEntryIDs[0]) {
 		t.Fatalf("wrong installation result: %#v %v", result, err)
+	}
+	after, _ := os.ReadFile(bufferPath)
+	if string(after) != string(before) {
+		t.Fatal("read projection changed the official buffer")
 	}
 	if err = os.WriteFile(path, []byte("raise Exception('tampered helper must not run')"), 0600); err != nil {
 		t.Fatal(err)

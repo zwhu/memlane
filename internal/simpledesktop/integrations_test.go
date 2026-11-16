@@ -42,7 +42,7 @@ func TestFirstGenerationSetupReadsOnlyConfigurationAndReusesProviderEditor(t *te
 		t.Fatalf("first setup sent %q", got)
 	}
 	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("配置知识处理") || !tt.HasText("添加 Provider") || !a.integrations.Loaded {
+	if !tt.HasText("配置记忆处理") || !tt.HasText("添加 Provider") || !a.integrations.Loaded {
 		t.Fatal("first setup did not show the existing provider editor")
 	}
 	if len(requests) != 0 || a.integrations.Generation.Active != nil || a.integrations.Generation.Next != nil {
@@ -210,7 +210,7 @@ func TestIntegrationSettingsUseSeparatePagesAndMaskProviderKey(t *testing.T) {
 	a.integrations = integrationState{Loaded: true, Editor: true, ProfileID: "api", DraftMode: "provider", ProviderLabel: "OpenAI", Model: "synthetic", Endpoint: "https://example.test/v1", APIKey: "synthetic-secret-never-show",
 		Generation: GenerationDirectory{Active: &GenerationRef{ID: "existing-codex", Revision: 1}, Profiles: map[string][]GenerationRow{"existing-codex": {{Revision: 1, Profile: GenerationProfile{Mode: "agent_bridge", Model: "old-model"}}}}}}
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"当前知识处理", "供应商协议", "API 地址", "API Key", "保存配置", "下次启动使用"} {
+	for _, label := range []string{"当前记忆处理", "供应商协议", "API 地址", "API Key", "保存配置", "下次启动使用"} {
 		if !tt.HasText(label) {
 			t.Fatal("missing", label)
 		}

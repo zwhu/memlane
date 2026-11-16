@@ -22,7 +22,7 @@ BrokenPipeError: private-error-payload
 `
 	os.WriteFile(filepath.Join(root, "logs", "official.log"), []byte(log), 0600)
 	failed := activityRow{ID: "failure-row", Run: "run-id", Dataset: "p", Operation: "recall", Origin: "api", ErrorClass: "BrokenPipeError", Created: "2026-11-13T03:34:38.850027", Outcome: "failed"}
-	event := overviewEvent{Key: "run-id", Title: "召回知识", State: "失败", Project: "Project", At: time.Date(2026, 11, 13, 3, 34, 38, 0, time.UTC), Failures: []activityRow{failed}}
+	event := overviewEvent{Key: "run-id", Title: "召回记忆", State: "失败", Project: "Project", At: time.Date(2026, 11, 13, 3, 34, 38, 0, time.UTC), Failures: []activityRow{failed}}
 	report := failureReport(event, Config{OfficialData: root, ServiceURL: "http://user:secret-url-password@127.0.0.1:61255/?key=secret-query-token", TokenFile: "secret-token-file", ServiceCommit: "fixed-commit"})
 	for _, want := range []string{"BrokenPipeError", "run-id", "failure-row", "_flush_std_streams", "fixed-commit", "127.0.0.1:61255"} {
 		if !strings.Contains(report, want) {

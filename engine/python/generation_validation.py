@@ -11,6 +11,7 @@ import subprocess
 
 from project_policy import PolicyError
 from process_groups import group_exists
+from performance_trace import RequestTrace, drain_trace_stream
 
 ROOT = Path(__file__).resolve().parents[2]
 PROBE_TIMEOUT_SECONDS = 120
@@ -92,6 +93,9 @@ class GenerationValidation:
                                                          'local_process_exited': self.process is None and self.bridge is None and receipt_groups_exited(row)})
 
     async def run(self, operation_id, environment, profile):
+        trace = RequestTrace('generation_validation', backend_kind=profile.get('bridge_kind') or profile.get('provider'))
+        trace.transition('prepare')
+        diagnostics = None
         row = self.store.state['validations'][operation_id]
         row['status'] = 'running'
         # A cold local reasoning model may spend most of the remote budget on
@@ -114,8 +118,9 @@ class GenerationValidation:
                 environment = await self.bridge.start()
             env.update(HOME=temporary, XDG_CACHE_HOME=str(Path(temporary) / 'cache'))
             command = [self.runtime['python'], str(ROOT / 'engine/python/generation_probe.py')]
+            trace.transition('process_spawn')
             launch = asyncio.create_task(asyncio.create_subprocess_exec(*command, env=env, cwd=temporary,
-                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 start_new_session=True, limit=64 * 1024))
             try:
                 self.process = await asyncio.shield(launch)
@@ -124,10 +129,25 @@ class GenerationValidation:
                 raise
             row['process_group'] = self.process.pid
             self.store.save()
+            diagnostics = asyncio.create_task(drain_trace_stream(self.process.stderr, trace.request_id))
             payload = {'environment': environment, 'runtime': {
                 **{key: self.runtime[key] for key in ('official_source', 'official_archive')},
-                'generation_mode': profile['mode']}}
-            stdout, _ = await asyncio.wait_for(self.process.communicate(json.dumps(payload).encode()), deadline)
+                'generation_mode': profile['mode'],
+                'generation_backend_kind': profile.get('bridge_kind') or profile.get('provider'),
+                'generation_max_concurrent_requests': profile.get('max_concurrent_requests', 2)}}
+            trace.transition('probe')
+            async def communicate():
+                self.process.stdin.write(json.dumps(payload).encode())
+                await self.process.stdin.drain()
+                self.process.stdin.close()
+                stdout = bytearray()
+                while chunk := await self.process.stdout.read(4096):
+                    stdout.extend(chunk)
+                    if len(stdout) > 16384:
+                        raise ValueError('probe_result_unconfirmed')
+                await self.process.wait()
+                return bytes(stdout)
+            stdout = await asyncio.wait_for(communicate(), deadline)
             if self.process.returncode != 0 or len(stdout) > 16384:
                 raise ValueError('probe_result_unconfirmed')
             result = json.loads(stdout)
@@ -150,6 +170,7 @@ class GenerationValidation:
         except Exception:
             row.update(status='result_unknown', error_code='probe_result_unconfirmed')
         finally:
+            trace.transition('cleanup')
             try:
                 await self.stop_process()
             except Exception:
@@ -166,6 +187,17 @@ class GenerationValidation:
                 row.update(status='result_unknown', error_code='validation_cleanup_unconfirmed',
                            resources_retained=True, temporary_root=temporary)
             self.store.save()
+            if diagnostics is not None:
+                # Descendants can keep a pipe open even after the parent exits.
+                # Do not strand shutdown or retain arbitrary stderr in memory.
+                try:
+                    await asyncio.wait_for(asyncio.shield(diagnostics), 1)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    diagnostics.cancel()
+                    await asyncio.gather(diagnostics, return_exceptions=True)
+                except Exception:
+                    pass
+            trace.finish(row['status'])
 
     async def stop_process(self):
         process = self.process

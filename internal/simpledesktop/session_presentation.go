@@ -15,6 +15,11 @@ func sessionIdentity(id string) string {
 	switch strings.ToLower(host) {
 	case "codex":
 		host = "Codex"
+		if strings.HasPrefix(key, "traex-") {
+			host = "TraeX"
+		} else if strings.HasPrefix(key, "pi-") {
+			host = "pi"
+		}
 	case "claude":
 		host = "Claude Code"
 	case "pi":

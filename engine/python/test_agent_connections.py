@@ -201,7 +201,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         connections = Connections(self.registry, config)
         row = next(r for r in connections.view()['connections'] if r['kind'] == 'codex')
         self.assertTrue(row['detected'])
-        self.assertEqual(row['status'], 'not_connected')
+        self.assertEqual(row['status'], 'environment_missing')
         self.assertEqual(row['codex_home'], str(profile.resolve()))
         self.assertFalse(profile.exists(), 'discovery created host configuration')
         self.assertNotIn('auth_home', config, 'Agent detection mutated bridge authentication config')
@@ -214,8 +214,86 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(next(r for r in missing.view()['connections'] if r['kind']=='codex')['detected'])
         profile.write_text('not a profile directory')
         broken = Connections(self.registry, config).view()['connections']
-        self.assertEqual(next(r for r in broken if r['kind']=='codex')['status'], 'requires_review')
+        self.assertEqual(next(r for r in broken if r['kind']=='codex')['status'], 'environment_unavailable')
         self.assertTrue(any(r['kind']=='pi' for r in broken), 'bad Codex target hid independent Agent connections')
+
+    async def test_select_environment_persists_without_installing_or_retaining_wrong_adapter(self):
+        target = self.workspace / 'daily traex'
+        target.mkdir()
+        original = target / 'traecli.toml'
+        original.write_text('[plugins.other]\nenabled = true\n')
+        config = {**self.config, 'agent_hosts': {'traex': {
+            'profile': str(self.workspace / 'missing verification'), 'executable': sys.executable}}}
+        connections = Connections(self.registry, config)
+        old = next(r for r in connections.view()['connections'] if r['kind'] == 'traex')
+        result = await connections.select_environment('traex', str(target), self.registry.state['revision'])
+        row = next(r for r in result['connections'] if r['kind'] == 'traex')
+        self.assertNotEqual(row['instance_id'], old['instance_id'])
+        self.assertEqual(row['profile'], str(target))
+        self.assertEqual(row['status'], 'not_connected')
+        self.assertEqual(original.read_text(), '[plugins.other]\nenabled = true\n')
+        self.assertNotIn(row['instance_id'], self.registry.state['agents'])
+        self.assertNotIn(old['instance_id'], connections.adapters)
+        reopened = Connections(self.registry, config)
+        row2 = next(r for r in reopened.view()['connections'] if r['kind'] == 'traex')
+        self.assertEqual(row2['instance_id'], row['instance_id'])
+        before = self.registry.path.read_bytes()
+        with self.assertRaises(PolicyError):
+            await connections.select_environment('traex', str(target), result['revision'] - 1)
+        self.assertEqual(self.registry.path.read_bytes(), before)
+
+    async def test_environment_selection_http_requires_manager_and_does_not_install(self):
+        from aiohttp.test_utils import TestClient, TestServer
+        from project_control_server import create_app
+        target = self.workspace / 'real-profile'
+        target.mkdir()
+        client = TestClient(TestServer(create_app(self.registry, 'm'*40, {'a': 'a'*40}, codex_config=self.config)))
+        await client.start_server()
+        try:
+            body = {'expected_revision': self.registry.state['revision'], 'kind': 'traex', 'profile': str(target)}
+            denied = await client.post('/v1/connections/environment', json=body, headers={'Authorization': 'Bearer '+'a'*40})
+            self.assertEqual(denied.status, 403)
+            self.assertNotIn('host_targets', self.registry.state)
+            response = await client.post('/v1/connections/environment', json=body, headers={'Authorization': 'Bearer '+'m'*40})
+            self.assertEqual(response.status, 200)
+            self.assertEqual(self.registry.state['host_targets']['traex'], str(target))
+            self.assertFalse((target / 'traecli.toml').exists())
+        finally:
+            await client.close()
+
+    async def test_waiting_receipt_explains_timeout_without_inventing_connection(self):
+        connections = Connections(self.registry, {**self.config, 'agent_hosts': {'pi': {
+            'profile': str(self.profile), 'executable': sys.executable}}})
+        self.registry.state['connections'][self.adapter.id] = {
+            'status': 'configured_pending_new_session', 'activated': True,
+            'proposed_sha256': sha(b''), 'sessions_before_activation': [], 'activated_at': 1}
+        row = next(r for r in connections.view()['connections'] if r['instance_id'] == self.adapter.id)
+        self.assertEqual(row['new_sessions'], 0)
+        self.assertTrue(row['receipt_overdue'])
+        self.assertEqual(row['last_receipt_at'], 0)
+
+    async def test_host_upgrade_review_requires_fresh_receipt_without_reinstalling(self):
+        from unittest.mock import patch
+        connections = Connections(self.registry, {**self.config, 'agent_hosts': {'pi': {
+            'profile': str(self.profile), 'executable': sys.executable}}})
+        prepared = await connections.perform(self.adapter.id, 'prepare', 0, 'upgrade-prepare')
+        await connections.perform(self.adapter.id, 'activate', self.registry.state['revision'],
+            'upgrade-activate', prepared['connection']['preview']['proposed_sha256'])
+        record = self.registry.state['connections'][self.adapter.id]
+        record['executable_fingerprint'] = [0, 0, 0]
+        record['activated_at'] = 1
+        self.registry.state['sessions'][json.dumps([self.adapter.id, 'old-session'])] = 'project'
+        self.registry.state['connection_receipts'] = {self.adapter.id: {
+            'received_at': 2, 'environment_verified': True}}
+        row = next(r for r in connections.view()['connections'] if r['instance_id'] == self.adapter.id)
+        self.assertEqual(row['error_code'], 'host_executable_changed')
+        original = self.adapter.target.read_bytes()
+        with patch.object(NativeConnection, 'prepare', side_effect=AssertionError('must not install')):
+            await connections.perform(self.adapter.id, 'review', self.registry.state['revision'], 'upgrade-review')
+        self.assertEqual(self.adapter.target.read_bytes(), original)
+        row = next(r for r in connections.view()['connections'] if r['instance_id'] == self.adapter.id)
+        self.assertFalse(row['executable_changed'])
+        self.assertEqual(row['status'], 'environment_receipt_unconfirmed')
 
     async def test_helper_dedup_denied_watermark_and_unknown_enqueue_do_not_replay(self):
         await self.adapter.prepare(0)

@@ -37,6 +37,8 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
             for key, value in (registry.state['agents'].items() if registry is not None else []):
                 if value.get('control_token_file'):
                     registered_tokens[key] = read_secret(value['control_token_file'])
+            registered_tokens = {key: value for key, value in registered_tokens.items()
+                                 if key not in (registry.state.get('agent_retirements', {}) if registry else {})}
             request['agent'] = next((key for key, value in registered_tokens.items()
                                      if secrets.compare_digest(token, 'Bearer ' + value)), None)
             if not request['manager'] and request['agent'] is None:
@@ -49,7 +51,7 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
         except asyncio.TimeoutError:
             return web.json_response({'error': 'configuration_result_unknown'}, status=503)
 
-    app = web.Application(client_max_size=16 * 1024, middlewares=[boundary])
+    app = web.Application(client_max_size=320 * 1024, middlewares=[boundary])
     connection = None
     connections = None
     if codex_config:
@@ -83,11 +85,12 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
 
     async def resolve(request):
         identity = agent(request)
-        payload = fields(await body(request), ('workspace', 'host_session_key'), ('explicit_workspace',))
+        payload = fields(await body(request), ('workspace', 'host_session_key'), ('explicit_workspace', 'host_environment'))
         if type(payload.get('explicit_workspace', False)) is not bool:
             raise PolicyError('invalid_workspace_flag')
         return web.json_response(await registry.resolve(identity, payload['workspace'], payload['host_session_key'],
-                                                       explicit=payload.get('explicit_workspace', False)))
+                                                       explicit=payload.get('explicit_workspace', False),
+                                                       host_environment=payload.get('host_environment')))
 
     async def policy(request):
         identity = agent(request)
@@ -151,6 +154,13 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
         payload = fields(await body(request), ('expected_revision',))
         return web.json_response(await registry.reconcile(payload['expected_revision'], request.match_info['id']))
 
+    async def tool_graph_settings(request):
+        manager(request)
+        payload = fields(await body(request), ('expected_revision', 'enabled'))
+        from tool_graph_policy import configure
+        return web.json_response(await configure(registry, payload['expected_revision'], payload['enabled'],
+                                                request.match_info.get('id')))
+
     async def code(request):
         manager(request)
         payload = fields(await body(request), ('expected_revision', 'enabled'), ('dataset_id',))
@@ -166,6 +176,14 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
         manager(request)
         payload = fields(await body(request), ('expected_revision',))
         return web.json_response(await registry.recover_agent(payload['expected_revision'], request.match_info['id']))
+
+    async def retire(request):
+        manager(request)
+        payload = fields(await body(request), ('expected_revision',))
+        identifier = request.match_info['id']
+        if connections and identifier in {r.get('instance_id') for r in connections.view()['connections']}:
+            raise PolicyError('current_host_cannot_be_retired', 409)
+        return web.json_response(await registry.retire_agent(payload['expected_revision'], identifier))
 
     async def installation(request):
         manager(request)
@@ -211,6 +229,17 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
         action = 'preview' if preview else request.match_info['action']
         return web.json_response(await connections.perform(identifier, action, payload['expected_revision'],
                                                            payload['operation_id'], payload.get('proposed_sha256')))
+
+    async def select_environment(request):
+        nonlocal connection
+        manager(request)
+        payload = fields(await body(request), ('expected_revision', 'kind', 'profile'))
+        if connections is None:
+            raise PolicyError('connection_hosts_not_configured', 503)
+        result = await connections.select_environment(payload['kind'], payload['profile'], payload['expected_revision'])
+        from project_codex_connection import CodexConnection
+        connection = next((adapter for adapter in connections.adapters.values() if isinstance(adapter, CodexConnection)), None)
+        return web.json_response(result)
 
     async def generation_config(request):
         manager(request)
@@ -265,15 +294,22 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                     web.put('/v1/projects/{id}/overrides', overrides), web.put('/v1/projects/{id}/name', rename), web.post('/v1/projects', create),
                     web.post('/v1/projects/{id}/aliases', alias), web.post('/v1/projects/{id}/reconcile', reconcile),
                     web.put('/v1/projects/{id}/code', code),
+                    web.put('/v1/tool-graph/settings', tool_graph_settings),
+                    web.put('/v1/projects/{id}/tool-graph/settings', tool_graph_settings),
                     web.post('/v1/agents', provision), web.post('/v1/agents/{id}/reconcile', recover),
+                    web.post('/v1/agents/{id}/retire', retire),
                     web.post('/v1/common', common), web.post('/v1/common/reconcile', common),
                     web.get('/v1/linkable-datasets', datasets), web.post('/v1/agents/{id}/installation', installation),
                     web.post('/v1/codex/prepare', codex_connection), web.post('/v1/codex/activate', codex_connection),
                     web.post('/v1/codex/review', codex_connection)])
     app.add_routes([web.get('/v1/connections', generic_connections),
+                    web.post('/v1/connections/environment', select_environment),
                     web.get('/v1/connections/operations/{operation_id}', generic_connections),
                     web.post('/v1/connections/preview', generic_connections),
                     web.post('/v1/connections/{id}/{action:prepare|activate|review}', generic_connections)])
+    if registry is not None and connections is not None:
+        from user_profiles import attach_user_profiles
+        attach_user_profiles(app, registry, connections)
     return app
 
 
@@ -330,7 +366,11 @@ async def configured_app(config):
                          plugin_source=config.get('plugin_dir'), control_url=config.get('project_control_url'), codex_config=config,
                          generation=generation, generation_validation=validation)
         from project_backlog import attach_backlog
-        attach_backlog(app, registry, config)
+        backlog = attach_backlog(app, registry, config)
+        from incremental_processing import attach_incremental_processing
+        attach_incremental_processing(app, backlog)
+        from tool_graph_control import attach_tool_graph
+        attach_tool_graph(app, registry, config)
     except BaseException:
         if registry is not None:
             registry.close()

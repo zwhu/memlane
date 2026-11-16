@@ -1,4 +1,4 @@
-"""Run the pinned upstream API without Memlane business routes or monkey patches."""
+"""Run the verified API with SDK adapters and a versioned provenance component."""
 import argparse
 import asyncio
 import hashlib
@@ -26,6 +26,10 @@ def verify_source(config):
         names = set()
         for member in bundle:
             parts = Path(member.name).parts[1:]
+            if parts == ('pyproject.toml',):
+                target = source / 'pyproject.toml'
+                if target.is_symlink() or not target.is_file() or target.read_bytes() != bundle.extractfile(member).read():
+                    raise ValueError('official package metadata differs from pinned archive')
             if not parts or parts[0] not in manifest['packages'] or not member.isfile(): continue
             relative = Path(*parts)
             names.add(relative)
@@ -36,6 +40,10 @@ def verify_source(config):
         for target in (source / package).rglob('*.py'):
             if target.relative_to(source) not in names:
                 raise ValueError('unexpected official Python module')
+    if config.get('project_control'):
+        from lesson_provenance_patch import prepare
+        component_root = Path(config['project_control']['registry_file']).parent / 'engine-components'
+        return prepare(source, manifest, component_root)
     return source
 
 
@@ -71,7 +79,11 @@ def main():
                        LOGS_ROOT_DIRECTORY=str(root / 'logs'), COGNEE_LOGS_DIR=str(root / 'logs'),
                        TELEMETRY_DISABLED='true', COGNEE_TRACING_ENABLED='false', PYTHON_DOTENV_DISABLED='1',
                        ENABLE_BACKEND_ACCESS_CONTROL='true', REQUIRE_AUTHENTICATION='true',
-                       COGNEE_AGENT_MODE='false', DISTILLATION_MODE='coding')
+                       COGNEE_AGENT_MODE='false', DISTILLATION_MODE='coding',
+                       # User chose knowledge availability over full tool-output
+                       # graph coverage. Raw session traces and coding distill
+                       # remain upstream-owned; no filtering or cache deletion.
+                       IMPROVE_STAGES_DISABLED='persist_agent_traces')
     from generation_config import runtime_generation
     profile, generation_environment, generation_digest = runtime_generation(config)
     environment.update(generation_environment)
@@ -96,17 +108,31 @@ def main():
             raise ValueError('configured completion model must support native JSON schema')
     async def serve():
         from generation_http import generation_http_policy
-        async with generation_http_policy():
+        async with generation_http_policy(endpoint=environment['LLM_ENDPOINT'],
+                max_concurrent_requests=profile.get('max_concurrent_requests', 2),
+                backend_kind=profile.get('bridge_kind') or profile.get('provider')) as capacity:
             if profile.get('provider') == 'ollama':
                 from generation_ollama import register_verified_schema
                 register_verified_schema(json.loads(environment['MEMLANE_OLLAMA_SCHEMA_EVIDENCE']),
                                          environment['LLM_MODEL'], environment['LLM_ENDPOINT'])
             from cognee.api.client import app
+            from session_history import install_session_history
+            install_session_history(app)
+            if config.get('project_control'):
+                from tool_graph_service import install_tool_graph_routes
+                install_tool_graph_routes(app, config)
+            from cognee.modules.improve.config import get_improve_config
+            stages_disabled = get_improve_config().stages_disabled
             if config.get('generation_applied_file'):
                 from project_control import private_write
+                from cognee.modules.cognify.config import get_cognify_config
                 private_write(config['generation_applied_file'], json.dumps({
                     'pid': os.getpid(), 'digest': generation_digest, 'reference': config.get('generation_reference'),
-                    'mode': profile['mode'], 'model': profile['model']}).encode())
+                    'mode': profile['mode'], 'model': profile['model'],
+                    'improve_stages_disabled': stages_disabled,
+                    'chunks_per_batch': get_cognify_config().chunks_per_batch,
+                    'max_concurrent_requests': capacity.limit,
+                    'capacity_wait_timeout_seconds': capacity.wait_timeout}).encode())
             await uvicorn.Server(uvicorn.Config(
                 app, host='127.0.0.1', port=urlparse(config['service_url']).port,
                 access_log=False, timeout_graceful_shutdown=15)).serve()

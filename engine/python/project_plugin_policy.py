@@ -167,7 +167,23 @@ def bind(workspace, host_session_key):
     with _state() as state:
         if not state.get('binding') and _read_map_record(host_session_key).get('dataset'):
             raise NotReady('existing_session_requires_explicit_binding')
-        result = _request('/v1/project/resolve', {'workspace': workspace, 'host_session_key': host_session_key})
+        payload = {'workspace': workspace, 'host_session_key': host_session_key}
+        marker = Path(__file__).resolve().parents[1] / '.memlane-installation.json'
+        if marker.is_file() and not marker.is_symlink():
+            binding = json.loads(marker.read_text())
+            manifest = Path(__file__).resolve().parents[1] / '.codex-plugin/plugin.json'
+            payload['host_environment'] = {
+                'instance_id': binding['instance_id'],
+                'plugin_path': str(Path(__file__).resolve().parents[1]),
+                'plugin_version': str(json.loads(manifest.read_text()).get('version', '')) if manifest.is_file() else '',
+            }
+            variables = {'traex': ('TRAE_HOME', 'TRAECLI_HOME'), 'pi': ('PI_CODING_AGENT_DIR',),
+                         'codex': ('CODEX_HOME',), 'claude_code': ('CLAUDE_CONFIG_DIR',)}
+            profiles = {str(Path(os.environ[v]).expanduser().absolute())
+                        for v in variables.get(binding.get('host_kind'), ()) if os.environ.get(v)}
+            if len(profiles) == 1:
+                payload['host_environment']['runtime_profile'] = profiles.pop()
+        result = _request('/v1/project/resolve', payload)
         if not result.get('ready') or not result.get('dataset_id'):
             raise NotReady('project_policy_unconfirmed')
         uuid.UUID(result['dataset_id'])

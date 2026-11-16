@@ -39,7 +39,7 @@ func TestReadingPresentationStrictWrapperAndRaw(t *testing.T) {
 		copy := raw
 		mutate(&d, &copy)
 		p := presentKnowledge(d, copy)
-		if p.WrapperRecognized || p.VisibleBody != copy || !p.Unrecognized || !strings.HasPrefix(p.DisplayTitle, "知识") {
+		if p.WrapperRecognized || p.VisibleBody != copy || !p.Unrecognized || !strings.HasPrefix(p.DisplayTitle, "记忆") {
 			t.Fatalf("unsafe cleanup: %+v", p)
 		}
 	}

@@ -34,15 +34,19 @@ def validate_profile(value):
     if not isinstance(value, dict):
         raise PolicyError('invalid_generation_profile')
     allowed = {'mode', 'provider', 'bridge_kind', 'model', 'endpoint', 'credential_ref', 'credential_version',
-               'temperature', 'max_output_tokens'}
+               'temperature', 'max_output_tokens', 'max_concurrent_requests'}
     if set(value) - allowed:
         raise PolicyError('invalid_generation_fields')
     model = value.get('model')
     if not isinstance(model, str) or not model.strip() or len(model) > 200 or any(ord(c) < 32 for c in model):
         raise PolicyError('invalid_generation_model')
     mode = value.get('mode')
+    if 'max_concurrent_requests' in value:
+        capacity = value['max_concurrent_requests']
+        if type(capacity) is not int or not 1 <= capacity <= 256:
+            raise PolicyError('invalid_generation_capacity')
     if mode == 'agent_bridge':
-        if value.get('bridge_kind') != 'codex' or set(value) - {'mode', 'bridge_kind', 'model'}:
+        if value.get('bridge_kind') != 'codex' or set(value) - {'mode', 'bridge_kind', 'model', 'max_concurrent_requests'}:
             raise PolicyError('unsupported_generation_bridge')
     elif mode == 'provider':
         if value.get('provider') not in PROVIDERS or 'bridge_kind' in value:
@@ -90,6 +94,10 @@ def compile_environment(profile, runtime, credential=None):
         provider, prefix = 'openai', 'openai'
         endpoint = runtime['completion_url'].rstrip('/') + '/v1'
         key = read_secret(runtime['completion_token_file'])
+        # Reuse upstream chunk batching for independent extraction. The shared
+        # endpoint transport still bounds all downstream requests to its total
+        # capacity; two chunks do not create two whole processing jobs.
+        result['CHUNKS_PER_BATCH'] = '2'
     else:
         provider, prefix = p['provider'], PROVIDERS[p['provider']]
         endpoint, key = p['endpoint'], credential

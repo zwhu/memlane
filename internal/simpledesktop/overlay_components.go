@@ -29,8 +29,12 @@ func readingSplit(c *ui.Context, key string, width *float32, first, second func(
 // Official List owns selection, keyboard navigation, virtualization and scrolling.
 func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 	s.ListSelection = -1
+	listItem := s.Selected
+	if sourceSession(s) && s.SourceReturn == nil {
+		listItem = &s.History[len(s.History)-1]
+	}
 	for n, item := range s.Items {
-		if s.Selected != nil && s.Selected.key() == item.key() {
+		if listItem != nil && listItem.key() == item.key() {
 			s.ListSelection = n
 			break
 		}
@@ -43,6 +47,10 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 		return s.Items[n].Title
 	}
 	s.WidgetList.Selected = &s.ListSelection
+	if s.Selected != nil && s.RevealItem == s.Selected.key() && s.ListSelection >= 0 {
+		s.WidgetList.ScrollTo(s.ListSelection, ui.Center)
+		s.RevealItem = ""
+	}
 	ui.List(c.Key("items-"+a.routeKey()), &s.WidgetList, len(s.Items), func(n int) {
 		i := s.Items[n]
 		ui.Column(c).Padding(12, 14).Gap(8).MinWidth(0).Children(func() {
@@ -54,7 +62,7 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 			if n == s.ListSelection {
 				title.TextColor(c.Theme().AccentText)
 			}
-			kind := i.Kind
+			kind := memoryKindLabel(i.Kind)
 			if i.Session != nil && i.Title != i.ID && i.Title != "来源会话" {
 				text := ui.Text(c, "已保存首条："+i.Title).FontSize(11).MaxLines(2)
 				if n == s.ListSelection {
@@ -75,6 +83,9 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 				kind = commonCategoryLabel(i.CommonCategory)
 			}
 			metaLabel := kind + " · " + displayDate(i.Date)
+			if a.itemIsUnread(i) {
+				metaLabel = "未读 · " + metaLabel
+			}
 			if i.Session != nil {
 				metaLabel = sessionListMeta(i)
 			}
@@ -101,9 +112,9 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 		if s.Loaded && len(s.Items) == 0 && !s.Loading && s.Error == "" {
 			message := "此项目暂无" + a.kind
 			if common {
-				message = "还没有通用知识"
+				message = "还没有通用记忆"
 				if a.commonCategoryFilter() != "" {
-					message = "当前分类还没有知识"
+					message = "当前分类还没有记忆"
 				}
 			}
 			homeText(c, message, homeBody).Margin(14)

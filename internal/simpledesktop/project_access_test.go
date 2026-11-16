@@ -115,7 +115,7 @@ func TestProjectDefaultsUIRejectsConcurrentRevisionWithoutLosingDraft(t *testing
 	updates := make(chan func(), 10)
 	a.Update = func(fn func()) { updates <- fn }
 	tt := ui.NewTester(func(c *ui.Context) { ui.Scroll(c).Fill().Padding(20).Gap(10).Children(func() { a.accessSettings(c) }) }, 1004, 820)
-	if !tt.HasText("项目默认规则") || !tt.HasText("可写并维护知识（含删除）") {
+	if !tt.HasText("项目默认规则") || !tt.HasText("可写并维护记忆（含删除）") {
 		t.Fatal("policy semantics missing")
 	}
 	if err := tt.Click("保存默认规则"); err != nil {

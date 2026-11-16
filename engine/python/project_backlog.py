@@ -1,5 +1,6 @@
 """Manager-owned backlog jobs. Journals contain counts and hashes, never bodies."""
 import asyncio
+from collections import Counter
 import copy
 import hashlib
 import json
@@ -14,6 +15,7 @@ import uuid
 from aiohttp import web
 from project_control import private_write
 from project_policy import PolicyError
+from performance_trace import RequestTrace
 
 ACTIVE = {'queued', 'reviewing', 'running', 'waiting', 'stopping', 'processing'}
 WORKER = Path(__file__).with_name('project_backlog_worker.py')
@@ -49,6 +51,10 @@ class Backlog:
         self.task = None
         self.monitor = None
         self.auto_cursor = 0
+        self.check_cursor = 0
+        self.checks = {}
+        self.check_tasks = {}
+        self.check_monitor = None
         for row in self.jobs.values():
             if (row.get('automatic') and not row.get('automatic_user_paused')
                     and (row['status'] in ACTIVE or row.get('owner_shutdown'))):
@@ -80,14 +86,71 @@ class Backlog:
                       processing_submitted=sum(t.get('processing') == 'submitted' for t in (row.get('pending_processing', {}).values() if row.get('automatic') else targets)),
                       processing_failed=sum(t.get('processing') in ('submitting', 'unknown', 'failed') for t in (row.get('pending_processing', {}).values() if row.get('automatic') else targets)),
                       processing_disabled=sum(t.get('processing') == 'disabled' for t in (row.get('pending_processing', {}).values() if row.get('automatic') else targets)),
-                      processing_pending=sum(t.get('processing') == 'queued' for t in row.get('pending_processing', {}).values()))
+                      processing_pending=sum(t.get('processing') in ('queued', 'deferred') for t in row.get('pending_processing', {}).values()))
         return result
 
     def get(self, project):
         rows = [r for r in self.jobs.values() if r['project_id'] == project]
         latest = max(rows, key=lambda r: r['created_at']) if rows else None
         enabled = bool(self.monitor and not self.monitor.done()) and (not latest or latest['status'] not in ('paused','stopped','interrupted','stopping'))
-        return {'job': self.public(latest) if latest else None, 'automatic_enabled': enabled}
+        return {'job': self.public(latest) if latest else None, 'automatic_enabled': enabled,
+                'checks': [dict(value) for value in self.checks.values() if value['project_id'] == project]}
+
+    def request_check(self, project, agent_id, host, *, signature='', force=False):
+        target = {'agent_id': agent_id, 'host': host, 'dataset': self.registry.state['projects'][project]['dataset_id']}
+        self.checked_target(project, target, write=False)
+        key = (project, agent_id, host)
+        previous = self.checks.get(key, {})
+        if key in self.check_tasks or (not force and previous.get('signature') == signature and previous.get('next_at', 0) > time.time()):
+            return
+        if len(self.check_tasks) >= 2:
+            raise PolicyError('pending_check_busy', 409)
+        record = {**previous, 'project_id': project, 'agent_id': agent_id, 'host': host,
+                  'status': 'checking', 'signature': signature, 'reason': ''}
+        self.checks[key] = record
+        async def run():
+            try:
+                result = await self.execute({'project_id': project, 'operation_id': str(uuid.uuid4())}, target, 'check')
+                if result.get('status') not in ('confirmed', 'unconfirmed'):
+                    raise PolicyError('official_review_unavailable', 503)
+                record.update(status=result['status'], reason=result.get('reason', ''),
+                              matched=result.get('matched', 0), unknown=result.get('unknown', 0),
+                              signature=result.get('unknown_signature', signature))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                record.update(status='unconfirmed', reason='official_review_unavailable')
+            finally:
+                record.update(checked_at=time.time(), next_at=time.time() + 300)
+                self.check_tasks.pop(key, None)
+        self.check_tasks[key] = asyncio.create_task(run())
+
+    async def automatic_check_tick(self):
+        # Independent of saving/process submission: an unavailable receipt must
+        # not hold the sender or require an open desktop window.
+        bindings = list(self.registry.state['sessions'].items())
+        if not bindings or len(self.check_tasks) >= 2:
+            return
+        raw, project = bindings[self.check_cursor % len(bindings)]
+        self.check_cursor += 1
+        agent_id, host = json.loads(raw)
+        target = {'agent_id': agent_id, 'host': host, 'dataset': self.registry.state['projects'][project]['dataset_id']}
+        agent, view = self.checked_target(project, target, write=False)
+        if not agent.get('installation') or 'read' not in view['policy']['permissions']:
+            return
+        snapshot = await self.execute({'project_id': project, 'operation_id': str(uuid.uuid4())}, target, 'review')
+        if snapshot.get('unknown', 0) > 0:
+            self.request_check(project, agent_id, host, signature=snapshot.get('unknown_signature', ''))
+        else:
+            self.checks.pop((project, agent_id, host), None)
+
+    async def automatic_check_loop(self):
+        while True:
+            try:
+                await self.automatic_check_tick()
+            except (PolicyError, OSError, ValueError, KeyError):
+                pass
+            await asyncio.sleep(2)
 
     def checked_target(self, project_id, target, *, write=True):
         project = self.registry.state['projects'].get(project_id)
@@ -167,7 +230,29 @@ class Backlog:
         return self.public(row)
 
     async def execute(self, row, target, action, update=None):
-        agent, _ = self.checked_target(row['project_id'], target)
+        if action in ('review', 'check'):
+            # Ordinary idle polling must not flood the diagnostic log.
+            return await self._execute(row, target, action, update)
+        agent, _ = self.checked_target(row['project_id'], target, write=action not in ('review', 'check'))
+        kind = agent.get('kind')
+        host_kind = kind if kind in {'codex', 'pi', 'traex', 'claude_code', 'cursor', 'opencode'} else 'unknown'
+        trace = RequestTrace('agent_capture')
+        trace.transition({'save': 'save_worker', 'check': 'receipt_check'}.get(action, 'official_process_submission'))
+        outcome = 'failed'
+        try:
+            result = await self._execute(row, target, action, update)
+            outcome = 'returned'
+            return result
+        except asyncio.CancelledError:
+            outcome = 'cancelled'
+            raise
+        finally:
+            # A returned worker may report unknown/deferred, not knowledge
+            # success. The durable official receipt remains authoritative.
+            trace.finish(outcome, host_kind=host_kind, action=action if action in {'save', 'process', 'check'} else 'other')
+
+    async def _execute(self, row, target, action, update=None):
+        agent, _ = self.checked_target(row['project_id'], target, write=action not in ('review', 'check'))
         installation = copy.deepcopy(agent['installation'])
         if installation.get('host_kind') == 'opencode':
             from opencode_backlog import execute
@@ -206,7 +291,7 @@ class Backlog:
         except BaseException:
             # Never abandon a sender then blindly retry it. Signal cooperative
             # stop; its HTTP result/unknown journal remains the original truth.
-            if action != 'review':
+            if action not in ('review', 'check'):
                 private_write(self.cancel_file(row), b'stop')
             try:
                 process.terminate()
@@ -221,7 +306,7 @@ class Backlog:
     async def process_saved(self, row, target):
         if self.cancel_file(row).exists() or not (target.get('saved') or target.get('handled')):
             return
-        agent, policy = self.checked_target(row['project_id'], target)
+        _, policy = self.checked_target(row['project_id'], target)
         if not policy['policy']['can_auto_process']:
             target['processing'] = 'disabled'
             return
@@ -238,18 +323,13 @@ class Backlog:
         target['processing'] = 'submitting'
         self.persist()
         try:
-            if agent['installation'].get('host_kind') == 'opencode':
-                result = await self.execute(row, target, 'process')
-                status = result.get('status')
-                target['processing'] = status if status in ('submitted', 'disabled', 'deferred', 'failed', 'unknown') else 'unknown'
-                self.persist()
-                return
-            result = await self.registry.official.request('POST', '/api/v1/improve',
-                {'dataset_id': target['dataset'], 'session_ids': [target['session_id']], 'run_in_background': True},
-                token_file=agent['key_file'])
-            status = result.get('status') if isinstance(result, dict) else None
-            target['processing'] = ('submitted' if status in ('running', 'completed', 'skipped')
-                                    else 'failed' if status == 'errored' else 'unknown')
+            # Use the verified host's official plugin, including its cooldown,
+            # failure backoff and no-new-entries check. The manager is not a
+            # second improve scheduler or HTTP client.
+            result = await self.execute(row, target, 'process')
+            status = result.get('status')
+            target['processing'] = status if status in ('submitted', 'skipped', 'disabled', 'deferred', 'failed', 'unknown') else 'unknown'
+            target['processing_reason'] = str(result.get('reason') or '')
         except Exception:
             target['processing'] = 'unknown'
         self.persist()
@@ -301,10 +381,10 @@ class Backlog:
                     key = json.dumps([target['agent_id'], target['host']])
                     previous = row['pending_processing'].get(key, {})
                     if previous.get('processing') not in ('submitting', 'unknown'):
-                        first = previous.get('first_saved_at', time.time()) if previous.get('processing') == 'queued' else time.time()
                         pending = {k: target[k] for k in ('agent_id','host','dataset','session_id','saved','handled')}
-                        row['pending_processing'][key] = {**pending, 'first_saved_at': first,
-                            'due_at': min(time.time() + 30, first + 300), 'processing': 'queued'}
+                        if 'native' in target:
+                            pending['native'] = target['native']
+                        row['pending_processing'][key] = {**pending, 'processing': 'queued'}
                 else:
                     await self.process_saved(row, target)
             row.update(status='stopped' if self.cancel_file(row).exists() else 'completed', reason='')
@@ -319,6 +399,10 @@ class Backlog:
             self.persist()
 
     async def close(self):
+        tasks = [task for task in (self.check_monitor, *self.check_tasks.values()) if task]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         if self.monitor:
             self.monitor.cancel()
             try:
@@ -346,23 +430,26 @@ class Backlog:
         self.auto_cursor += 1
         rows = [r for r in self.jobs.values() if r['project_id'] == project_id]
         previous = max(rows, key=lambda r: r['created_at']) if rows else None
-        if previous and previous['status'] in ('paused', 'stopped', 'interrupted', 'stopping'):
+        recoverable = bool(previous and previous.get('automatic') and not previous.get('automatic_user_paused')
+                           and previous['status'] == 'paused' and previous.get('reason') == 'policy_unconfirmed')
+        if previous and previous['status'] in ('paused', 'stopped', 'interrupted', 'stopping') and not recoverable:
             return
         automatic = previous if previous and previous.get('automatic') else None
-        if automatic:
+        if automatic and not recoverable:
             for target in automatic.get('pending_processing', {}).values():
-                if target.get('processing') != 'queued' or time.time() < target['due_at']:
+                if target.get('processing') not in ('queued', 'deferred'):
                     continue
                 try:
                     await self.process_saved(automatic, target)
                 except PolicyError as error:
                     target.update(processing='disabled', reason=error.code)
                     self.persist()
-                return
+                break
         operation = automatic['operation_id'] if automatic else str(uuid.uuid4())
         candidate = {'operation_id': operation, 'project_id': project_id}
         selected = set()
         has_unsent = False
+        reviewed = False
         for raw, bound in list(self.registry.state['sessions'].items()):
             if bound != project_id:
                 continue
@@ -377,8 +464,21 @@ class Backlog:
                 if not view['policy'].get('can_capture'):
                     continue
                 snapshot = await self.execute(candidate, target, 'review')
+                if not isinstance(snapshot.get('tokens'), list) or 'unknown' not in snapshot:
+                    continue
                 if snapshot.get('blocked'):
                     continue
+                reviewed = True
+                if recoverable and not snapshot['unknown']:
+                    for old in previous['targets']:
+                        if old['agent_id'] != agent_id or old['host'] != host:
+                            continue
+                        # Normal official hooks may have drained this frozen
+                        # batch while the manager was paused. Reconcile counts
+                        # without re-sending or claiming their work as ours.
+                        remaining = sum((Counter(old.get('tokens', [])) & Counter(snapshot['tokens'])).values())
+                        consumed = len(old.get('tokens', [])) - remaining - old.get('saved', 0) - old.get('isolated', 0)
+                        old.update(remaining=remaining, handled=max(old.get('handled', 0), consumed))
                 if snapshot.get('tokens') or snapshot.get('unknown'):
                     selected.add((agent_id, host))
                 has_unsent = has_unsent or bool(snapshot.get('tokens'))
@@ -386,6 +486,9 @@ class Backlog:
                 # The normal queue view exposes the original unconfirmed state;
                 # do not install, repair permissions or replay in this scanner.
                 continue
+        if recoverable and reviewed:
+            previous.update(status='watching', reason='')
+            self.persist()
         if has_unsent and not (self.task and not self.task.done()):
             self.start(project_id, operation, automatic=True, selected=selected)
 
@@ -409,6 +512,13 @@ def attach_backlog(app, registry, runtime):
         if request.content_type != 'application/json':
             raise PolicyError('json_required', 415)
         payload = await request.json()
+        if request.path.endswith('/check'):
+            if not isinstance(payload, dict) or set(payload) != {'agent_id', 'host'} or not all(isinstance(v, str) and v for v in payload.values()):
+                raise PolicyError('invalid_request_fields')
+            if project not in registry.state['projects']:
+                raise PolicyError('project_not_found', 404)
+            backlog.request_check(project, payload['agent_id'], payload['host'], force=True)
+            return web.json_response(backlog.get(project))
         if not isinstance(payload, dict) or set(payload) != {'operation_id'}:
             raise PolicyError('invalid_request_fields')
         result = (backlog.stop(project, payload['operation_id']) if request.path.endswith('/stop')
@@ -416,11 +526,13 @@ def attach_backlog(app, registry, runtime):
         return web.json_response({'job': result})
     app.add_routes([web.get('/v1/projects/{id}/backlog', endpoint),
                     web.post('/v1/projects/{id}/backlog', endpoint),
+                    web.post('/v1/projects/{id}/backlog/check', endpoint),
                     web.post('/v1/projects/{id}/backlog/stop', endpoint)])
     async def cleanup(_):
         await backlog.close()
     async def startup(_):
         backlog.monitor = asyncio.create_task(backlog.automatic_loop())
+        backlog.check_monitor = asyncio.create_task(backlog.automatic_check_loop())
     app.on_startup.append(startup)
     app.on_cleanup.append(cleanup)
     return backlog

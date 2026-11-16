@@ -74,6 +74,18 @@ class OpenCodeBacklogDispatchTests(unittest.IsolatedAsyncioTestCase):
 
 
 class OpenCodeBacklogWorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_actual_check_acknowledges_exact_marker_without_a_send(self):
+        from opencode_backlog import execute
+        before=await execute(self.runtime,self.installation,self.project_id,self.target,'review',self.cancel)
+        self.assertEqual(before['unknown'],1)
+        self.session_detail={'session_id':before['session_id'],'dataset_id':self.target['dataset'],
+                             'qas':[{'context':'unknown'}],'traces':[]}
+        result=await execute(self.runtime,self.installation,self.project_id,self.target,'check',self.cancel)
+        self.assertEqual((result['status'],result['unknown'],result['matched']),('confirmed',0,1))
+        after=await execute(self.runtime,self.installation,self.project_id,self.target,'review',self.cancel)
+        self.assertEqual(after['tokens'],before['tokens'])
+        self.assertEqual(self.writes,[])
+
     async def asyncSetUp(self):
         artifact = os.environ.get('MEMLANE_OPENCODE_BACKLOG_TEST_ARTIFACT')
         if not artifact:
@@ -91,6 +103,7 @@ class OpenCodeBacklogWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.inflight = asyncio.Event()
         self.response = asyncio.Event()
         self.hold_response = False
+        self.session_detail = None
 
         async def entry(request):
             self.assertEqual(request.headers.get('X-Api-Key'), 'c' * 40)
@@ -101,6 +114,9 @@ class OpenCodeBacklogWorkerTests(unittest.IsolatedAsyncioTestCase):
             return web.json_response({'ok': True})
         app = web.Application()
         app.router.add_post('/api/v1/remember/entry', entry)
+        async def detail(request):
+            return web.json_response(self.session_detail) if self.session_detail else web.json_response({}, status=404)
+        app.router.add_get('/api/v1/sessions/{id}', detail)
         self.official_server = TestServer(app)
         await self.official_server.start_server()
         official = OfficialFixture()

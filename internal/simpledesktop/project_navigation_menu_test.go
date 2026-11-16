@@ -26,12 +26,12 @@ func TestProjectMenuOwnsCreationAndCommonOwnsStorage(t *testing.T) {
 	}
 	fixtureImage(t, tt, "project-create-suggestion")
 	tt.Key(0, ui.KeyEscape)
-	clickProjectUI(t, tt, "项目菜单：memlane")
-	if !tt.HasText("编辑项目") || !tt.HasText("/synthetic/memlane") {
+	clickProjectUI(t, tt, "项目设置")
+	if !tt.HasText("编辑名称") || !tt.HasText("/synthetic/memlane") {
 		t.Fatal("project context missing directory and actions")
 	}
 	fixtureImage(t, tt, "project-context-menu")
-	clickProjectUI(t, tt, "编辑项目")
+	clickProjectUI(t, tt, "编辑名称")
 	if a.projectCreate.TargetProject != "p" || a.projectCreate.Selected == nil || a.projectCreate.Selected.ID != "p" {
 		t.Fatal("editing did not pin current project")
 	}
@@ -42,15 +42,15 @@ func TestProjectMenuOwnsCreationAndCommonOwnsStorage(t *testing.T) {
 	tt.Key(0, ui.KeyEscape)
 	clickProjectUI(t, tt, "设置")
 	clickProjectUI(t, tt, "高级")
-	for _, label := range []string{"项目关联", "检查未保存的会话", "准备／核对通用知识", "通用知识存储"} {
+	for _, label := range []string{"项目关联", "检查未保存的会话", "准备／核对通用记忆", "通用记忆存储"} {
 		if tt.HasText(label) {
 			t.Fatal("scoped action remains global", label)
 		}
 	}
 	common := commonUIFixture()
 	ct := ui.NewTester(common.View, 1200, 820)
-	clickProjectUI(t, ct, "通用知识菜单")
-	if !ct.HasText("通用知识数据组") || !ct.HasText("准备／核对通用知识") {
+	clickProjectUI(t, ct, "通用记忆菜单")
+	if !ct.HasText("通用记忆数据组") || !ct.HasText("准备／核对通用记忆") {
 		t.Fatal("common storage controls missing")
 	}
 	fixtureImage(t, ct, "common-storage-menu")
@@ -61,8 +61,8 @@ func TestProjectMenuReturnsToGlobalSettingsAndPreservesCreationDraft(t *testing.
 	a.settingsOrigin = nil
 	a.projectCreate.Loaded = true
 	tt := ui.NewTester(a.View, 1200, 820)
-	clickProjectUI(t, tt, "项目菜单：memlane")
-	clickProjectUI(t, tt, "项目设置")
+	a.openProjectSettings(0)
+	tt.Frame()
 	clickProjectUI(t, tt, "返回设置")
 	if a.page != "设置" || a.settingsOrigin != nil || a.access.OpenProject != "" {
 		t.Fatal("project settings return loop")
@@ -82,12 +82,12 @@ func TestProjectSettingsBackLabelMatchesCommonKnowledgeOrigin(t *testing.T) {
 	a.page = "通用知识"
 	a.state().Loaded = true
 	tt := ui.NewTester(a.View, 1200, 820)
-	clickProjectUI(t, tt, "项目菜单：memlane")
-	clickProjectUI(t, tt, "项目设置")
+	a.openProjectSettings(0)
+	tt.Frame()
 	if tt.HasText("返回项目") {
 		t.Fatal("back label names a different destination")
 	}
-	clickProjectUI(t, tt, "返回通用知识")
+	clickProjectUI(t, tt, "返回通用记忆")
 	if a.page != "通用知识" {
 		t.Fatal("back did not restore the common knowledge page")
 	}

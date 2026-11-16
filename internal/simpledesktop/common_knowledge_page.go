@@ -26,7 +26,7 @@ func commonCategoryLabel(category string) string {
 	if category == "experience" {
 		return "通用经验"
 	}
-	return "通用知识"
+	return "通用记忆"
 }
 func commonHasDraft(e commonEditorState) bool {
 	return !e.Completed && (e.Open || e.Submitted || e.Existing != nil || strings.TrimSpace(e.Draft.Title+e.Draft.Body+e.Draft.Applicability+e.Draft.Source) != "")
@@ -48,7 +48,7 @@ func commonButton(c *ui.Context, label string, primary bool, fn func()) ui.Eleme
 	if primary {
 		return ui.PrimaryButton(c, label).OnClick(fn)
 	}
-	return ui.Button(c, label).OnClick(fn)
+	return textButton(c, label, fn)
 }
 func (a *App) beginCommonDraft(item *Item) {
 	e := &a.commonEdit
@@ -96,9 +96,9 @@ func (a *App) discardCommonDraft() {
 func (a *App) commonListToolbar(c *ui.Context) {
 	e := &a.commonEdit
 	ui.Row(c).AlignItems(ui.Center).Children(func() {
-		homeText(c, "知识库", homeHeading).FontSize(13)
+		homeText(c, "记忆库", homeHeading).FontSize(13)
 		ui.Spacer(c)
-		label := "新增通用知识"
+		label := "新增通用记忆"
 		if commonHasDraft(*e) {
 			label = "继续草稿"
 			if e.Submitted {
@@ -116,7 +116,7 @@ func (a *App) commonListToolbar(c *ui.Context) {
 			selected = n
 		}
 	}
-	ui.Segmented(c, &selected, labels...).Label("通用知识分类").FillWidth().OnChange(func() {
+	ui.Segmented(c, &selected, labels...).Label("通用记忆分类").FillWidth().OnChange(func() {
 		e.Category = ""
 		if selected > 0 {
 			e.Category = labels[selected]
@@ -129,7 +129,7 @@ func (a *App) commonListToolbar(c *ui.Context) {
 	if len(a.Config.Common) > 1 {
 		options := projectLabels(a.Config.Common)
 		selected := options[min(max(a.project, 0), len(options)-1)]
-		ui.Select(c, &selected, options).Label("通用知识库").FillWidth().Disabled(e.Open || e.Busy || (e.Submitted && !e.Completed) || e.DeleteSubmitted).OnChange(func() {
+		ui.Select(c, &selected, options).Label("通用记忆库").FillWidth().Disabled(e.Open || e.Busy || (e.Submitted && !e.Completed) || e.DeleteSubmitted).OnChange(func() {
 			for n, label := range options {
 				if label == selected {
 					a.navigate("通用知识", n)
@@ -149,7 +149,7 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 				ui.Row(c).AlignItems(ui.Center).Children(func() {
 					homeText(c, projectListStatus(s), homeMeta)
 					ui.Spacer(c)
-					readingAction(c, "刷新通用知识", homeRefresh, func() { a.load(s) })
+					refreshAction(c, "刷新通用记忆", func() { a.load(s) })
 				})
 				if s.Loading && s.Loaded {
 					homeText(c, "正在刷新，保留现有内容", homeMeta)
@@ -166,7 +166,7 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 				}
 			})
 			a.itemList(c, s, true)
-			appFooter(c, "通用知识分页栏").Padding(0, 32).Children(func() {
+			appFooter(c, "通用记忆分页栏").Padding(0, 32).Children(func() {
 				homeText(c, projectListStatus(s), homeMeta)
 				ui.Spacer(c)
 				readingAction(c, "上一页", readingBack, func() { s.Offset = max(0, s.Offset-30); a.load(s) }).Disabled(s.Offset == 0 || s.Loading)
@@ -214,24 +214,28 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 				ui.Icon(c, homeCommon).FontSize(30).TextColor(homeMuted)
 				title := "让通用经验延续到下一个项目"
 				if len(s.Items) > 0 {
-					title = "选择一条通用知识开始阅读"
+					title = "选择一条通用记忆开始阅读"
 				}
 				homeText(c, title, homeHeading).FontSize(20)
 				homeText(c, "个人偏好与通用经验独立保存，项目的明确约定优先。", homeBody).MaxWidth(500)
 				if len(a.Config.Common) == 0 {
-					homeText(c, "尚未关联通用知识库，请在设置中检查连接。", homeMeta)
+					homeText(c, "尚未关联通用记忆库，请在设置中检查连接。", homeMeta)
 					projectLink(c, "前往设置", func() { a.navigate("设置", 0) })
 				} else if a.Config.ProjectControl != nil {
-					commonButton(c, "新增第一条知识", true, func() { a.beginCommonDraft(nil) })
+					commonButton(c, "新增第一条记忆", true, func() { a.beginCommonDraft(nil) })
 				}
 			})
-			appFooter(c, "通用知识阅读栏").Padding(0, 32).Children(func() { homeText(c, "跨项目参考 · 项目明确约定优先", homeMeta) })
+			appFooter(c, "通用记忆阅读栏").Padding(0, 32).Children(func() { homeText(c, "跨项目参考 · 项目明确约定优先", homeMeta) })
 			return
 		}
 		i := *s.Selected
-		appToolbar(c, "通用知识内容工具栏", func() {
+		appToolbar(c, "通用记忆内容工具栏", func() {
 			homeText(c, commonCategoryLabel(i.CommonCategory), homeMeta).FontWeight(500)
-			homeText(c, "· "+displayDate(i.Date), homeMeta)
+			row := ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(4)
+			row.Children(func() {
+				homeText(c, "· "+displayDate(i.Date), homeMeta)
+				hoverCopyAction(c, row, "复制内容", func() { c.WriteClipboard(itemPresentation(i).VisibleBody); a.copyFeedback("内容") }).Disabled(!i.BodyLoaded)
+			})
 			knowledgeRecallLabel(c, i)
 			ui.Spacer(c)
 			anchor := readingAction(c, "内容信息", readingInfo, func() { a.projectUI.InfoOpen = !a.projectUI.InfoOpen; a.projectUI.InfoKey = i.key() })
@@ -239,7 +243,6 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 				a.projectUI.InfoOpen = false
 			}
 			a.contentInformation(c, anchor, i)
-			readingAction(c, "复制内容", readingCopy, func() { c.WriteClipboard(itemPresentation(i).VisibleBody); a.copyFeedback("内容") }).Disabled(!i.BodyLoaded)
 			a.commonReadActions(c, i)
 		})
 		if e.Delete != nil && e.Delete.ID == i.ID && e.Delete.Dataset == i.Dataset {
@@ -280,7 +283,7 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 				}
 			})
 		})
-		appFooter(c, "通用知识阅读栏").Padding(0, 32).Children(func() { homeText(c, "跨项目参考 · 项目明确约定优先", homeMeta) })
+		appFooter(c, "通用记忆阅读栏").Padding(0, 32).Children(func() { homeText(c, "跨项目参考 · 项目明确约定优先", homeMeta) })
 	})
 }
 func (a *App) commonMarkdown(c *ui.Context, key, body string) {
@@ -298,7 +301,7 @@ func (a *App) commonDeletionBanner(c *ui.Context, i Item) {
 	e := &a.commonEdit
 	if !e.DeleteSubmitted {
 		asking := true
-		switch ui.AlertDialog(c, &asking, "删除这条通用知识？", "官方确认后将移除知识及关联索引。此操作无法在客户端撤销。", "确认删除此条", "保留知识") {
+		switch ui.AlertDialog(c, &asking, "删除这条通用记忆？", "官方确认后将移除记忆及关联索引。此操作无法在客户端撤销。", "确认删除此条", "保留记忆") {
 		case 0:
 			a.deleteCommonKnowledge(*i.Document)
 		case 1, ui.AlertDismissed:
@@ -308,7 +311,7 @@ func (a *App) commonDeletionBanner(c *ui.Context, i Item) {
 	}
 
 	ui.Column(c).Shrink(0).Margin(0, 24, 10, 24).Padding(12, 16).Gap(8).Border(1, ui.Hex("#e5d7d5")).Radius(8).Background(ui.Hex("#fcf8f7")).Children(func() {
-		message := "删除“" + i.Title + "”？官方确认后将移除此条知识及关联索引。"
+		message := "删除“" + i.Title + "”？官方确认后将移除此条记忆及关联索引。"
 		if e.DeleteSubmitted {
 			message = "删除结果尚未确认，请核对原操作，不重复删除。"
 		}
@@ -318,7 +321,7 @@ func (a *App) commonDeletionBanner(c *ui.Context, i Item) {
 				commonButton(c, "核对原删除结果", false, a.confirmCommonDeletion).Disabled(e.Busy)
 			} else {
 				commonButton(c, "确认删除此条", false, func() { a.deleteCommonKnowledge(*i.Document) }).Disabled(e.Busy).TextColor(ui.Hex("#9a625e"))
-				projectLink(c, "保留知识", func() { e.Delete = nil })
+				projectLink(c, "保留记忆", func() { e.Delete = nil })
 			}
 		})
 	})
@@ -352,12 +355,12 @@ func (a *App) confirmCommonDeletion() {
 			}
 			if present {
 				e.DeleteSubmitted = false
-				e.Message = "官方仍保留此条知识；可重新确认删除，未自动重发。"
+				e.Message = "官方仍保留此条记忆；可重新确认删除，未自动重发。"
 				return
 			}
 			e.DeleteSubmitted = false
 			e.Delete = nil
-			e.Message = "已核对：官方知识已移除"
+			e.Message = "已核对：官方记忆已移除"
 			a.unavailableReadingItem(Item{ID: d.ID, Dataset: p.Dataset, Kind: "知识", Document: &d})
 			if cur, ok := a.current(); ok && a.page == "通用知识" && cur.Dataset == p.Dataset {
 				a.load(a.state())
@@ -370,10 +373,10 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 	_, h := c.Size()
 	locked := e.Busy || e.Submitted
 	ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
-		appToolbar(c, "通用知识编辑工具栏", func() {
-			title := "新增通用知识"
+		appToolbar(c, "通用记忆编辑工具栏", func() {
+			title := "新增通用记忆"
 			if e.Existing != nil {
-				title = "编辑通用知识"
+				title = "编辑通用记忆"
 			}
 			if e.Submitted {
 				title = "保存结果"
@@ -381,7 +384,7 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 			homeText(c, title, homeHeading).FontSize(15)
 			ui.Spacer(c)
 			category := commonCategoryLabel(e.Draft.Category)
-			ui.Select(c, &category, []string{"个人偏好", "通用经验"}).Label("知识分类").Width(126).Disabled(locked || e.Existing != nil).OnChange(func() {
+			ui.Select(c, &category, []string{"个人偏好", "通用经验"}).Label("记忆分类").Width(126).Disabled(locked || e.Existing != nil).OnChange(func() {
 				if category == "个人偏好" {
 					e.Draft.Category = "preference"
 				} else {
@@ -395,10 +398,10 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 					homeText(c, "保存到："+e.Target.Name, homeMeta)
 				}
 				ui.Field(c, "标题", func() {
-					ui.TextInput(c.Key("common-draft-title-"+fmt.Sprint(e.Generation)), &e.Draft.Title).Label("通用知识标题").Placeholder("一句话概括这条知识").FillWidth().Height(38).FontSize(14).Disabled(locked)
+					ui.TextInput(c.Key("common-draft-title-"+fmt.Sprint(e.Generation)), &e.Draft.Title).Label("通用记忆标题").Placeholder("一句话概括这条记忆").FillWidth().Height(38).FontSize(14).Disabled(locked)
 				})
 				ui.Field(c, "正文", func() {
-					ui.TextArea(c.Key("common-draft-body-"+fmt.Sprint(e.Generation)), &e.Draft.Body).Label("通用知识正文").Placeholder("写下可复用的约定或经验，支持 Markdown").FillWidth().Height(min(float32(260), max(float32(180), (h-380)/2))).FontSize(13).Disabled(locked)
+					ui.TextArea(c.Key("common-draft-body-"+fmt.Sprint(e.Generation)), &e.Draft.Body).Label("通用记忆正文").Placeholder("写下可复用的约定或经验，支持 Markdown").FillWidth().Height(min(float32(260), max(float32(180), (h-380)/2))).FontSize(13).Disabled(locked)
 				})
 				label := "补充适用条件与来源（可选）"
 				if a.commonPage.Options {
@@ -407,10 +410,10 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 				projectLink(c, label, func() { a.commonPage.Options = !a.commonPage.Options })
 				if a.commonPage.Options {
 					ui.Field(c, "适用条件", func() {
-						ui.TextArea(c.Key("common-draft-applicability-"+fmt.Sprint(e.Generation)), &e.Draft.Applicability).Label("通用知识适用条件").Placeholder("例如：适用于 TypeScript 项目").FillWidth().Height(72).FontSize(12).Disabled(locked)
+						ui.TextArea(c.Key("common-draft-applicability-"+fmt.Sprint(e.Generation)), &e.Draft.Applicability).Label("通用记忆适用条件").Placeholder("例如：适用于 TypeScript 项目").FillWidth().Height(72).FontSize(12).Disabled(locked)
 					})
 					ui.Field(c, "原始来源", func() {
-						ui.TextInput(c.Key("common-draft-source-"+fmt.Sprint(e.Generation)), &e.Draft.Source).Label("通用知识来源").Placeholder("可填写出处、链接或说明").FillWidth().Height(34).FontSize(12).Disabled(locked || e.Existing != nil)
+						ui.TextInput(c.Key("common-draft-source-"+fmt.Sprint(e.Generation)), &e.Draft.Source).Label("通用记忆来源").Placeholder("可填写出处、链接或说明").FillWidth().Height(34).FontSize(12).Disabled(locked || e.Existing != nil)
 					})
 					if e.Existing != nil {
 						homeText(c, "编辑保留创建时的分类与原始来源。", homeMeta)
@@ -438,7 +441,7 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 				}
 			})
 		})
-		appFooter(c, "通用知识编辑栏").Padding(0, 32).Gap(10).Children(func() {
+		appFooter(c, "通用记忆编辑栏").Padding(0, 32).Gap(10).Children(func() {
 
 			status := "仅保存在当前编辑草稿"
 			if e.Busy {

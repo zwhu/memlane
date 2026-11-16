@@ -14,10 +14,11 @@ import (
 )
 
 type PendingMaterials struct {
-	Pending   int    `json:"pending"`
-	Signature string `json:"signature"`
-	Unknown   int    `json:"unknown_outcomes"`
-	Blocked   *struct {
+	Pending         int      `json:"pending"`
+	UnknownEntryIDs []string `json:"unknown_entry_ids"`
+	Signature       string   `json:"signature"`
+	Unknown         int      `json:"unknown_outcomes"`
+	Blocked         *struct {
 		Reason string `json:"reason"`
 	} `json:"blocked"`
 	Drained   int    `json:"drained"`
@@ -90,6 +91,9 @@ func runPendingMaterials(ctx context.Context, python string, installation AgentI
 		return result, err
 	}
 	arguments := []string{filepath.Join(installation.PluginDir, "scripts/_memlane_policy.py"), "--session-key", binding.HostSessionKey, "--dataset", dataset, "--action", action}
+	if action == "show" {
+		arguments = []string{"-c", pendingSnapshotScript, filepath.Join(installation.PluginDir, "scripts"), binding.HostSessionKey, dataset}
+	}
 	if action == "check" {
 		arguments = []string{"-c", pendingReviewScript, filepath.Join(installation.PluginDir, "scripts"), binding.HostSessionKey, dataset}
 	}

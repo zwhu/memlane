@@ -36,7 +36,7 @@ func (d CommonDraft) markdown() (string, error) {
 		body += "\n\n## 来源\n\n" + strings.TrimSpace(d.Source)
 	}
 	if len(body) > 256*1024 {
-		return "", fmt.Errorf("通用知识超过单条大小限制")
+		return "", fmt.Errorf("通用记忆超过单条大小限制")
 	}
 	return body + "\n", nil
 }
@@ -120,7 +120,7 @@ func (c Client) writeCommon(ctx context.Context, p Project, draft CommonDraft, e
 		}
 	} else {
 		if existing.Dataset != p.Dataset || commonCategory(*existing) == "" || commonCategory(*existing) != draft.Category {
-			return receipt, fmt.Errorf("原知识归属或分类发生变化，请重新读取；分类在创建时确定")
+			return receipt, fmt.Errorf("原记忆归属或分类发生变化，请重新读取；分类在创建时确定")
 		}
 		originalSource, _ := existing.Metadata["source"].(string)
 		if strings.TrimSpace(draft.Source) != originalSource {
@@ -173,7 +173,7 @@ func (c Client) writeCommon(ctx context.Context, p Project, draft CommonDraft, e
 	}
 	if receipt.DatasetID != p.Dataset {
 		receipt.OutcomeUnknown = true
-		return receipt, fmt.Errorf("通用知识保存归属未确认")
+		return receipt, fmt.Errorf("通用记忆保存归属未确认")
 	}
 	if receipt.Status == "errored" || receipt.Status == "failed" {
 		return receipt, fmt.Errorf("官方处理失败，保留原操作并核对已保存内容")
@@ -188,7 +188,7 @@ func (c Client) writeCommon(ctx context.Context, p Project, draft CommonDraft, e
 
 func (c Client) deleteCommon(ctx context.Context, p Project, d Document) error {
 	if d.Dataset != p.Dataset || commonCategory(d) == "" {
-		return fmt.Errorf("请选择当前数据组的通用知识")
+		return fmt.Errorf("请选择当前数据组的通用记忆")
 	}
 	b, err := c.request(ctx, "DELETE", "/api/v1/datasets/"+url.PathEscape(p.Dataset)+"/data/"+url.PathEscape(d.ID), nil)
 	if err != nil {
@@ -201,7 +201,7 @@ func (c Client) deleteCommon(ctx context.Context, p Project, d Document) error {
 		DataRemaining *bool  `json:"dataRemaining"`
 	}
 	if json.Unmarshal(b, &receipt) != nil || receipt.DatasetID != p.Dataset || receipt.DataID != d.ID || receipt.Status != "success" || receipt.DataRemaining == nil || *receipt.DataRemaining {
-		return fmt.Errorf("官方删除结果未确认，请核对原知识")
+		return fmt.Errorf("官方删除结果未确认，请核对原记忆")
 	}
 	return nil
 }

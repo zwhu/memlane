@@ -191,8 +191,8 @@ func TestNestedOfficialSourceReturnsToOriginalSearch(t *testing.T) {
 			_, _ = w.Write([]byte("# Actual lesson"))
 		case "/api/v1/sessions":
 			_, _ = w.Write([]byte(`{"sessions":[{"session_id":"session","dataset_id":"d","user_id":"owner"}],"has_more":false}`))
-		case "/api/v1/sessions/session":
-			_, _ = w.Write([]byte(`{"session_id":"session","dataset_id":"d","user_id":"owner","qas":[{"qa_id":"qa","question":"actual question","answer":"actual answer"}],"msg_count":1}`))
+		case "/api/v1/sessions/session/history":
+			_, _ = w.Write([]byte(`{"session_id":"session","dataset_id":"d","user_id":"owner","history_paging":true,"page_limit":20,"qas":[{"qa_id":"qa","question":"actual question","answer":"actual answer"}],"msg_count":1}`))
 		default:
 			t.Errorf("unexpected read %s", r.URL.Path)
 			w.WriteHeader(404)

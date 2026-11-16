@@ -79,12 +79,14 @@ def verify(installation, runtime, agent_id):
 
 
 async def execute(runtime, installation, project_id, target, action, cancel_file, update=None):
-    if action not in ('review', 'save', 'process'):
+    if action not in ('review', 'save', 'process', 'check'):
         raise PolicyError('backlog_worker_unconfirmed', 503)
     node, helper, profile = await asyncio.to_thread(verify, installation, runtime, target['agent_id'])
     command = {'action': 'backlog_' + action, 'project_id': project_id,
                'dataset_id': target['dataset'], 'host_session_key': target['host']}
-    if action != 'review':
+    if action == 'check':
+        command['action'] = 'check'
+    if action not in ('review', 'check'):
         command.update(session_id=target['session_id'], native_session=target['native'], cancel_file=str(cancel_file))
     if action == 'save':
         command['tokens'] = target['tokens']
@@ -130,9 +132,17 @@ async def execute(runtime, installation, project_id, target, action, cancel_file
         await asyncio.wait_for(process.wait(), 10)
         if process.returncode != 0 or last is None:
             raise PolicyError('backlog_worker_unconfirmed', 503)
+        if action == 'check':
+            unknown = last.get('unknown_outcomes')
+            if type(unknown) is not int or unknown < 0 or last.get('checked') is not True:
+                raise PolicyError('backlog_worker_unconfirmed', 503)
+            return {'status': 'unconfirmed' if unknown else 'confirmed', 'unknown': unknown,
+                    'matched': last.get('matched_unknown', 0),
+                    'reason': 'original_receipt_unavailable' if unknown else ''}
         return last
     except BaseException:
-        private_write(cancel_file, b'stop')
+        if action not in ('review', 'check'):
+            private_write(cancel_file, b'stop')
         try:
             process.terminate()
         except ProcessLookupError:

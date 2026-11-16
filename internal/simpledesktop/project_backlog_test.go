@@ -59,7 +59,7 @@ func TestBacklogUIStartsOneOwnedJobThenOnlyPollsAndShowsIsolatedCounts(t *testin
 	maintain := "maintain"
 	p.Overrides["agent"] = ProjectOverride{Access: &maintain}
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"积压保存任务 · 后台运行", "停止后续保存", "本次已保存 20 条 · 其他操作已处理 0 条 · 剩余 75 条 · 隔离待核对 20 条"} {
+	for _, label := range []string{"正在保存会话", "停止后续保存", "75 条待保存 · 20 条保存状态待确认"} {
 		if !tt.HasText(label) {
 			t.Fatal("missing real job progress", label)
 		}
@@ -67,14 +67,15 @@ func TestBacklogUIStartsOneOwnedJobThenOnlyPollsAndShowsIsolatedCounts(t *testin
 	if tt.HasText("保存一批") {
 		t.Fatal("manual batch controls remain")
 	}
-	if !tt.HasText("含 20 条等待回执或核对") {
+	if !tt.HasText("0 条待保存 · 20 条正在确认保存结果") {
 		t.Fatal("inflight journals were shown as final unknown outcomes")
 	}
 	fixtureImage(t, tt, "project-backlog-running")
 	q.Backlog = &backlogJob{Operation: "server-operation", Status: "completed", Saved: 95, Total: 95, Isolated: 20, ProcessingSubmitted: 1}
 	q.Sessions[0].View.Status.Pending = 0
 	tt.Frame()
-	if !tt.HasText("本次可保存积压已完成。新增记录由正常采集继续接收。") || !tt.HasText("1 个会话已提交知识整理；完成状态以官方记录为准") {
+	clickProjectUI(t, tt, "保存详情 ›")
+	if !tt.HasText("上次保存已完成") || !tt.HasText("1 个会话已提交记忆整理，尚不代表整理完成。") {
 		t.Fatal("completion and processing submission were conflated")
 	}
 	fixtureImage(t, tt, "project-backlog-completed")
@@ -82,5 +83,31 @@ func TestBacklogUIStartsOneOwnedJobThenOnlyPollsAndShowsIsolatedCounts(t *testin
 	a.page = "总览"
 	if !q.Backlog.active() || posts != 1 {
 		t.Fatal("leaving page cancelled or restarted background job")
+	}
+}
+
+func TestAutomaticBacklogPresentationKeepsExistingUnknownVisible(t *testing.T) {
+	a, q := projectQueueFixture()
+	q.AutomaticSave = true
+	q.Backlog = &backlogJob{Automatic: true, Status: "running", Saved: 8, Remaining: 7}
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("自动保存已开启") || !tt.HasText("暂停自动保存") || tt.HasText("保存积压记录") {
+		t.Fatal("automatic save still requires a manual start")
+	}
+	if !tt.HasText("2 条待保存 · 1 条保存状态待确认") || tt.HasText("任务已保存 8 条 · 任务内剩余 7 条 · 待核对 0 条") {
+		t.Fatal("automatic job hid an older unknown record outside its send range")
+	}
+}
+
+func TestPausedAutomaticSaveShowsPermissionActionInsteadOfResume(t *testing.T) {
+	a, q := projectQueueFixture()
+	q.AutomaticSave = true
+	q.Backlog = &backlogJob{Automatic: true, Status: "paused", Reason: "policy_unconfirmed", Remaining: 105}
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("会话保存已暂停") || !tt.HasText("重新检查权限") || tt.HasText("正在自动保存") || tt.HasText("继续保存") {
+		t.Fatal("paused permission state presented as running or resumable")
+	}
+	if !tt.HasText("2 条待保存 · 1 条保存状态待确认") {
+		t.Fatal("live counts replaced by stale task remaining count")
 	}
 }

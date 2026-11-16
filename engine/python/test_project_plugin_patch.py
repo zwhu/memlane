@@ -57,6 +57,43 @@ class OfficialPluginPatchTests(unittest.TestCase):
                                      capture_output=True, text=True, timeout=20)
             self.assertEqual(process.returncode, 0, process.stdout[-2000:] + process.stderr[-4000:])
 
+    def test_backlog_reuses_real_official_cooldown_and_failure_state(self):
+        self.run_isolated('''
+import sys, urllib.error
+sys.path.insert(0, ''' + repr(str(ROOT / 'engine/python')) + ''')
+from project_backlog_worker import process
+import _plugin_common as common, _memlane_policy as policy, _project_memory as routing
+dataset = "11111111-1111-4111-8111-111111111111"
+session = "synthetic-backlog-delegation"
+payload = {"dataset":dataset, "session_id":session}
+policy._pending_identity = lambda *a: None
+policy.require = lambda *a, **kw: None
+policy.permit = lambda *a, **kw: True
+common._backend_reachable = lambda *a: True
+common.drain_warmup_entries = lambda *a, **kw: (0,0)
+common.ensure_dataset_via_http = lambda *a: None
+common.refresh_credits = lambda *a: None
+routing.route = lambda *a: {"write":dataset}
+common.dataset_id_for = lambda *a: dataset
+requests = []
+def transport(path, body=None, **kwargs):
+    requests.append((path, body))
+    return {"status":"running"}
+common._json_http_request = transport
+assert process(common, policy, payload) == {"status":"submitted"}
+assert requests == [("/api/v1/improve", {"dataset_id":dataset, "session_ids":[session], "run_in_background":True})]
+assert common.read_improve_state(session)["trigger"] == "auto"
+assert process(common, policy, payload) == {"status":"deferred", "reason":"cooldown"}
+assert len(requests) == 1
+# Test the official persistent failure backoff in a separate session.
+payload["session_id"] = "synthetic-backlog-failure"
+def timeout(*args, **kwargs): raise TimeoutError("synthetic submit outcome unknown")
+common._json_http_request = timeout
+assert process(common, policy, payload)["status"] == "unknown"
+assert common.improve_throttle_reason(payload["session_id"]) == "backoff"
+assert process(common, policy, payload) == {"status":"deferred", "reason":"backoff"}
+''')
+
     def test_code_default_off_blocks_index_scan_and_old_local_opt_in(self):
         self.run_isolated('''
 import _code_graph as graph, _memlane_policy as policy

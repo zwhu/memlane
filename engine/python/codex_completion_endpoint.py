@@ -17,6 +17,7 @@ import uuid
 from aiohttp import web
 from jsonschema import validators
 from process_groups import group_exists
+from performance_trace import RequestTrace, current_trace, phase, HEADER
 
 MAX_BODY = 2 * 1024 * 1024
 PROFILE = 'memlane_completion'
@@ -275,6 +276,7 @@ def track_process(args, process, owned):
 
 
 async def execute(args, system, prompt, schema, transport):
+    phase('workspace_prepare')
     with completion_workspace(args) as root:
         home, private, work = (root / name for name in ('home', 'codex', 'task'))
         for directory in (home, private, work):
@@ -295,6 +297,7 @@ async def execute(args, system, prompt, schema, transport):
             if key in os.environ:
                 environment[key] = os.environ[key]
         # The group is owned by this request, never the user's ordinary Codex.
+        phase('process_spawn')
         spawn = asyncio.create_task(asyncio.create_subprocess_exec(str(args.codex_executable), 'app-server', '--strict-config', '--stdio',
             cwd=work, env=environment, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, start_new_session=True, limit=8 * 1024 * 1024))
@@ -313,8 +316,10 @@ async def execute(args, system, prompt, schema, transport):
         try:
             track_process(args, process, True)
             async with asyncio.timeout(args.timeout):
+                phase('rpc_initialize')
                 await rpc.call('initialize', {'clientInfo': {'name': 'memlane_completion', 'version': '1'}, 'capabilities': {'experimentalApi': True}})
                 await rpc.send('initialized', {}, notification=True)
+                phase('thread_start')
                 started = await rpc.call('thread/start', {'cwd': str(work), 'runtimeWorkspaceRoots': [],
                     'permissions': PROFILE, 'model': args.model, 'modelProvider': 'openai', 'approvalPolicy': 'never',
                     'ephemeral': True, 'allowProviderModelFallback': False, 'dynamicTools': [],
@@ -322,8 +327,10 @@ async def execute(args, system, prompt, schema, transport):
                 thread_id = started.get('thread', {}).get('id')
                 if not thread_id or started.get('model') != args.model or started.get('modelProvider') != 'openai' or started.get('runtimeWorkspaceRoots') != [] or started.get('activePermissionProfile', {}).get('id') != PROFILE:
                     raise CompletionError('codex_model_or_permissions_changed')
+                phase('model_turn')
                 request_id = await rpc.send('turn/start', {'threadId': thread_id, 'input': [{'type': 'text', 'text': prompt, 'text_elements': []}], 'outputSchema': transport, 'permissions': PROFILE})
                 final, announced = None, None
+                first_output = False
                 while True:
                     event = await rpc.read()
                     method, params = event.get('method', ''), event.get('params', {})
@@ -353,6 +360,11 @@ async def execute(args, system, prompt, schema, transport):
                                 final = item.get('text')
                         elif not method.startswith(('item/agentMessage/', 'item/reasoning/')):
                             raise CompletionError('codex_unexpected_tool_execution')
+                        if not first_output and method.startswith('item/agentMessage/'):
+                            first_output = True
+                            trace = current_trace.get()
+                            if trace:
+                                trace.emit('first_output_event')
                     if method == 'turn/completed':
                         turn = params.get('turn', {})
                         if params.get('threadId') != thread_id or not turn_id or turn.get('id') != turn_id:
@@ -360,6 +372,7 @@ async def execute(args, system, prompt, schema, transport):
                         if turn.get('status') != 'completed' or turn.get('error'):
                             raise remote_error(turn.get('error'))
                         break
+                phase('schema_validation')
                 try:
                     if not isinstance(final, str) or len(final) > MAX_BODY:
                         raise ValueError()
@@ -389,6 +402,7 @@ async def execute(args, system, prompt, schema, transport):
                 raise CompletionError('codex_timeout', 504) from None
             raise
         finally:
+            phase('process_cleanup')
             # Shield cleanup even when upstream disconnects or server shuts down.
             async def finish():
                 await terminate(process)
@@ -453,6 +467,10 @@ def create_app(args):
         handler = asyncio.current_task()
         handlers.add(handler)
         handler.add_done_callback(handlers.discard)
+        trace = RequestTrace('codex_bridge', request.headers.get(HEADER))
+        context_token = current_trace.set(trace)
+        outcome = 'failed'
+        trace.transition('request_validation')
         try:
             body = await request.json()
             parsed = parse_request(body, args.model)
@@ -460,7 +478,10 @@ def create_app(args):
                 raise CompletionError('codex_busy', 429)
             admitted += 1
             try:
+                trace.transition('bridge_queue')
                 async with slot:
+                    trace.emit('bridge_admitted', active_or_waiting=admitted, max_concurrency=concurrency)
+                    trace.transition('execute')
                     task = asyncio.create_task(execute(args, *parsed))
                     try:
                         while not task.done():
@@ -482,15 +503,25 @@ def create_app(args):
                                 pass
             finally:
                 admitted -= 1
+            outcome = 'succeeded'
             return web.json_response({'id': 'chatcmpl-' + uuid.uuid4().hex, 'object': 'chat.completion',
                 'created': int(time.time()), 'model': args.model,
                 'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': result}, 'finish_reason': 'stop'}]})
         except CompletionError as error:
+            outcome = error.code
             return web.json_response({'error': {'code': error.code, 'message': error.code, 'type': 'completion_error'}}, status=error.status)
         except (ValueError, TypeError, AttributeError):
+            outcome = 'invalid_request'
             return web.json_response({'error': {'code': 'invalid_request', 'message': 'invalid_request'}}, status=400)
         except OSError:
+            outcome = 'codex_process_unavailable'
             return web.json_response({'error': {'code': 'codex_process_unavailable', 'message': 'codex_process_unavailable'}}, status=503)
+        except asyncio.CancelledError:
+            outcome = 'cancelled'
+            raise
+        finally:
+            trace.finish(outcome, input_bytes=request.content_length)
+            current_trace.reset(context_token)
 
     app.router.add_get('/health', health)
     app.router.add_post('/v1/chat/completions', complete)

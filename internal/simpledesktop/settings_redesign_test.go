@@ -29,12 +29,11 @@ func TestSettingsProjectPermissionsCardsAndNavigation(t *testing.T) {
 			a := settingsFixture()
 			original := a.state()
 			tt := ui.NewTester(a.View, wh[0], wh[1])
-			clickProjectUI(t, tt, "项目菜单：memlane")
 			clickProjectUI(t, tt, "项目设置")
 			if a.settingsOrigin == nil || a.access.OpenProject != "p" {
 				t.Fatal("project identity lost")
 			}
-			for _, label := range []string{"允许读取知识", "允许写入和删除知识"} {
+			for _, label := range []string{"允许读取记忆", "允许写入和删除记忆"} {
 				if !tt.HasText(label) {
 					t.Fatal("missing", label)
 				}
@@ -43,7 +42,7 @@ func TestSettingsProjectPermissionsCardsAndNavigation(t *testing.T) {
 				t.Fatal("unrelated settings mixed into current project")
 			}
 			fixtureImage(t, tt, fmt.Sprintf("settings-%dx%d-project", wh[0], wh[1]))
-			for _, label := range []string{"保存后续会话记录", "自动整理知识", "自动采集", "自动处理", "已生效", "继承全局默认", "继承默认", "保存此 Agent 的设置", "撤销未保存修改", "仅影响此 Agent"} {
+			for _, label := range []string{"保存后续会话记录", "自动整理记忆", "自动采集", "自动处理", "已生效", "继承全局默认", "继承默认", "保存此 Agent 的设置", "撤销未保存修改", "仅影响此 Agent"} {
 				if tt.HasText(label) {
 					t.Fatal("removed settings text remains", label)
 				}
@@ -55,7 +54,6 @@ func TestSettingsProjectPermissionsCardsAndNavigation(t *testing.T) {
 			if a.state() != original || a.page != "知识" {
 				t.Fatal("return lost reading pane")
 			}
-			clickProjectUI(t, tt, "项目菜单：memlane")
 			clickProjectUI(t, tt, "项目设置")
 			clickProjectUI(t, tt, "设置")
 			if a.settingsOrigin != nil || a.access.OpenProject != "" || !tt.HasText("服务与连接") {
@@ -86,18 +84,17 @@ func TestProjectEmptyBackgroundAndDistinctRecordFilter(t *testing.T) {
 	fixtureImage(t, tt, "project-1200x820-empty-background")
 }
 
-func TestSidebarMenuTargetsItsOwnProjectAndReturnsToOriginal(t *testing.T) {
+func TestProjectHeaderSettingsTargetsCurrentProjectAndReturnsToReading(t *testing.T) {
 	a := settingsFixture()
+	a.navigate("知识", 1)
 	original := a.state()
 	tt := ui.NewTester(a.View, 1200, 820)
-	clickProjectUI(t, tt, "项目菜单：另一个项目")
-	fixtureImage(t, tt, "sidebar-project-menu")
 	clickProjectUI(t, tt, "项目设置")
-	if a.access.OpenProject != "same" || a.project != 1 || a.settingsOrigin.ProjectID != "p" {
-		t.Fatal("sidebar menu opened selected project instead of its own row")
+	if a.access.OpenProject != "same" || a.project != 1 || a.settingsOrigin.ProjectID != "same" {
+		t.Fatal("header settings lost current project")
 	}
 	clickProjectUI(t, tt, "返回项目")
-	if a.project != 0 || a.state() != original {
-		t.Fatal("sidebar settings lost previous project reading state")
+	if a.project != 1 || a.state() != original {
+		t.Fatal("settings lost project reading state")
 	}
 }

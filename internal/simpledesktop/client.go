@@ -291,7 +291,7 @@ func (c Client) source(ctx context.Context, i Item) (Item, error) {
 			break
 		}
 	}
-	return i, fmt.Errorf("官方未保留此知识关联的会话")
+	return i, fmt.Errorf("官方未保留此记忆关联的会话")
 }
 func (c Client) search(ctx context.Context, projects []Project, q string, filters ...string) ([]Item, error) {
 	return c.searchType(ctx, projects, q, "CHUNKS", filters...)

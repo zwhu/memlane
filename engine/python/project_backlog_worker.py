@@ -36,7 +36,34 @@ def review(common, policy, dataset, host):
         blocked = state.get('blocked')
     return {'session_id': session,
             'tokens': [entry_key(e) for e in pending if not e.get(common._AMBIGUOUS_KEY)],
+            'unknown_signature': hashlib.sha256(json.dumps([entry_key(e) for e in pending if e.get(common._AMBIGUOUS_KEY)]).encode()).hexdigest(),
             'unknown': sum(bool(e.get(common._AMBIGUOUS_KEY)) for e in pending), 'blocked': blocked}
+
+
+def check(common, policy, dataset, host):
+    """Read original official receipts; content similarity is not POST identity.
+
+    Python's legacy entries have no idempotency marker. Matching its recent tail
+    is useful evidence, but cannot safely acknowledge/delete the original entry.
+    An absent item is never evidence of non-commit. No send path is called here.
+    """
+    before = review(common, policy, dataset, host)
+    session = before['session_id']
+    policy.require('read', dataset)
+    detail = common.get_session_detail_via_http(session, timeout=12)
+    if (not isinstance(detail, dict) or detail.get('session_id') != session
+            or detail.get('dataset_id') != dataset):
+        raise policy.NotReady('official_review_unavailable')
+    known = common._server_session_fingerprints(detail)
+    with common._buffer_lock():
+        _, _, _, _, pending, _ = policy._pending_snapshot(dataset, session)
+        matched = sum(bool(e.get(common._AMBIGUOUS_KEY)) and common._entry_fingerprint(e) in known for e in pending)
+    after = review(common, policy, dataset, host)
+    if after['unknown_signature'] != before['unknown_signature']:
+        raise policy.NotReady('pending_materials_changed_review_again')
+    return {'status': 'unconfirmed' if after['unknown'] else 'confirmed',
+            'reason': 'original_receipt_unavailable' if after['unknown'] else '',
+            'unknown': after['unknown'], 'matched': matched, 'unknown_signature': after['unknown_signature']}
 
 
 def save(common, policy, payload, stopped, report=emit):
@@ -149,6 +176,32 @@ def save(common, policy, payload, stopped, report=emit):
                 pass
 
 
+def process(common, policy, payload):
+    """Delegate to the installed official plugin; never implement its policy."""
+    dataset, session = payload['dataset'], payload['session_id']
+    policy._pending_identity(dataset, session)
+    policy.require('process', dataset, automatic=True)
+    # Idle admission uses the official configurable cooldown; its retry,
+    # no-new-entry and submission behavior stays owned by the installed plugin.
+    if payload.get('incremental_cooldown_seconds') == 300:
+        os.environ['COGNEE_IMPROVE_COOLDOWN'] = '300'
+    reason = common.improve_throttle_reason(session)
+    if reason:
+        return {'status': 'skipped' if reason == 'no_new_entries' else 'deferred', 'reason': reason}
+    outcome = common.run_session_improve_detailed(dataset, session, trigger='auto')
+    if outcome.get('ok'):
+        # A confirmed submit is not a completed improve or generated knowledge.
+        return {'status': 'submitted'}
+    reason = str(outcome.get('reason') or '')
+    # A busy response is a definite non-admission; unreachable means nothing
+    # was submitted. Other failures can include a timed-out accepted request.
+    if reason in ('busy', 'unreachable'):
+        return {'status': 'deferred', 'reason': reason}
+    if reason == 'managed_policy_paused':
+        return {'status': 'disabled', 'reason': reason}
+    return {'status': 'unknown', 'reason': reason or 'official_submission_unconfirmed'}
+
+
 def main():
     payload = json.load(sys.stdin)
     sys.path.insert(0, payload['scripts'])
@@ -169,8 +222,26 @@ def main():
     try:
         if payload['action'] == 'review':
             emit(review(common, policy, payload['dataset'], payload['host']))
+        elif payload['action'] == 'check':
+            emit(check(common, policy, payload['dataset'], payload['host']))
         elif payload['action'] == 'save':
             save(common, policy, payload, stopped)
+        elif payload['action'] == 'process':
+            # The official final drain can legitimately exceed the manager's
+            # silence timeout. Heartbeats report waiting, never submission.
+            done = threading.Event()
+            def heartbeat():
+                while not done.wait(10):
+                    emit({'status': 'waiting', 'reason': 'official_plugin_running'})
+            pulse = threading.Thread(target=heartbeat, daemon=True)
+            pulse.start()
+            try:
+                result = ({'status': 'disabled', 'reason': 'user_stopped'} if stopped()
+                          else process(common, policy, payload))
+            finally:
+                done.set()
+                pulse.join()
+            emit(result)
         else:
             raise policy.NotReady('invalid_backlog_action')
     except policy.NotReady:

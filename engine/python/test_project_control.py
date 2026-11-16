@@ -41,8 +41,87 @@ class OfficialFixture:
     async def effective_permissions(self, agent, dataset):
         return self.acls.get((agent['principal_id'], dataset), set())
 
+    async def retirement_datasets(self, agent):
+        return {dataset for (principal, dataset), permissions in self.acls.items()
+                if principal == agent['principal_id'] and permissions}
+
 
 class RegistryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_official_client_reads_chunked_json_to_eof(self):
+        expected = {'sessions': [{'session_id': str(n), 'padding': 'x' * 1000} for n in range(30)]}
+        async def respond(request):
+            response = web.StreamResponse(headers={'Content-Type': 'application/json'})
+            await response.prepare(request)
+            data = json.dumps(expected).encode()
+            for offset in range(0, len(data), 4000):
+                await response.write(data[offset:offset + 4000])
+                await asyncio.sleep(.01)
+            await response.write_eof()
+            return response
+        app = web.Application()
+        app.router.add_get('/large', respond)
+        server = TestServer(app)
+        await server.start_server()
+        key = self.root / 'stream-token'
+        private_write(key, b'synthetic-stream-token')
+        try:
+            async with ClientSession() as session:
+                official = Official(session, str(server.make_url('/')).rstrip('/'), key)
+                self.assertEqual(await official.request('GET', '/large'), expected)
+        finally:
+            await server.close()
+
+    async def test_retire_agent_revokes_permissions_without_deleting_projects_or_bindings(self):
+        bound = await self.registry.resolve('a', str(self.repo), 'keep-old-session')
+        await self.registry.ensure_common(self.registry.state['revision'])
+        before_sessions = dict(self.registry.state['sessions'])
+        datasets = dict(self.official.datasets)
+        other_acl = {k: set(v) for k, v in self.official.acls.items()
+                     if k[0] == self.registry.state['agents']['b']['principal_id']}
+        principal = self.registry.state['agents']['a']['principal_id']
+        self.official.acls[(principal, 'legacy-unlinked-dataset')] = {'read', 'write'}
+        await self.registry.retire_agent(self.registry.state['revision'], 'a')
+        self.assertNotIn('a', {x['id'] for x in self.registry.directory()['agents']})
+        self.assertEqual(self.registry.state['archived_agents']['a']['principal_id'], principal)
+        self.assertEqual(self.registry.state['sessions'], before_sessions)
+        self.assertEqual(self.official.datasets, datasets)
+        self.assertTrue(all(not acl for (who, _), acl in self.official.acls.items() if who == principal))
+        self.assertEqual(other_acl, {k: v for k, v in self.official.acls.items() if k in other_acl})
+        self.assertTrue(self.registry.policy(self.registry.state['projects'][bound['project_id']], 'b')['ready'])
+        with self.assertRaisesRegex(PolicyError, 'agent_not_registered'):
+            await self.registry.resolve('a', str(self.repo), 'keep-old-session')
+        await self.registry.retire_agent(-1, 'a')  # Already complete: no repeated mutation.
+
+    async def test_failed_retirement_denies_host_until_manager_resumes(self):
+        await self.registry.resolve('a', str(self.repo), 'old-session')
+        self.official.fail = True
+        with self.assertRaises(PolicyError):
+            await self.registry.retire_agent(self.registry.state['revision'], 'a')
+        self.assertIn('a', self.registry.state['agents'])
+        self.assertNotIn('a', self.registry.state.get('archived_agents', {}))
+        with self.assertRaisesRegex(PolicyError, 'agent_retired'):
+            await self.registry.resolve('a', str(self.repo), 'old-session')
+        self.official.fail = False
+        await self.registry.retire_agent(self.registry.state['revision'], 'a')
+        self.assertIn('a', self.registry.state['archived_agents'])
+
+    async def test_retirement_route_is_management_only_and_withdraws_old_control_token(self):
+        await self.registry.resolve('a', str(self.repo), 'original')
+        client = TestClient(TestServer(create_app(self.registry, 'm' * 40, {'a': 'a' * 40, 'b': 'b' * 40})))
+        await client.start_server()
+        try:
+            path = '/v1/agents/a/retire'
+            body = {'expected_revision': self.registry.state['revision']}
+            response = await client.post(path, json=body, headers={'Authorization': 'Bearer ' + 'a' * 40})
+            self.assertEqual(response.status, 403)
+            response = await client.post(path, json=body, headers={'Authorization': 'Bearer ' + 'm' * 40})
+            self.assertEqual(response.status, 200)
+            response = await client.post('/v1/project/resolve', json={'workspace': str(self.repo), 'host_session_key': 'original'},
+                                         headers={'Authorization': 'Bearer ' + 'a' * 40})
+            self.assertEqual(response.status, 401)
+        finally:
+            await client.close()
+
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name).resolve()
@@ -73,6 +152,40 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(r['ready'] and not r['code_enabled'] for r in results))
         self.assertEqual(self.official.acls[(''+self.registry.state['agents']['a']['principal_id'], results[0]['dataset_id'])],
                          {'read', 'write', 'delete'})
+
+    async def test_authenticated_resolve_records_receipt_without_replaying_session(self):
+        self.assertNotIn('connection_receipts', self.registry.state)
+        resolved = await self.registry.resolve('a', str(self.repo), 'new-real-host-key')
+        receipt = self.registry.state['connection_receipts']['a']
+        self.assertEqual(receipt['project_id'], resolved['project_id'])
+        self.assertEqual(receipt['evidence'], 'authenticated_host_resolve')
+        self.assertGreater(receipt['received_at'], 0)
+        before = self.path.read_bytes()
+        await self.registry.session_binding('a', 'new-real-host-key')
+        self.assertEqual(self.path.read_bytes(), before, 'read-only lookup created a receipt')
+        await self.registry.resolve('a', str(self.repo), 'new-real-host-key')
+        self.assertEqual(self.official.creates, 1)
+        self.assertEqual(len(self.registry.state['sessions']), 1)
+
+    async def test_loaded_environment_receipt_mismatch_never_registers_wrong_project(self):
+        profile = self.root / 'real-traex'
+        source = self.root / 'fixed-plugin'
+        source.mkdir()
+        (source / '.memlane-installation.json').write_text(json.dumps({'instance_id': 'a'}))
+        (source / '.memlane-project-access.json').write_text(json.dumps({'files': {'fixed': 'digest'}}))
+        self.registry.state['agents']['a'].update(host_profile=str(profile), installation={
+            'plugin_dir': str(source), 'marketplace_name': 'fixed-marketplace'})
+        payload = {'instance_id': 'a', 'plugin_path': str(source), 'plugin_version': 'fixed',
+                   'runtime_profile': str(profile)}
+        before = len(self.registry.state['projects'])
+        with self.assertRaises(PolicyError) as error:
+            await self.registry.resolve('a', str(self.repo), 'wrong-profile',
+                host_environment={**payload, 'runtime_profile': str(self.root / 'another-profile')})
+        self.assertEqual(error.exception.code, 'host_environment_receipt_mismatch')
+        self.assertEqual(len(self.registry.state['projects']), before)
+        await self.registry.resolve('a', str(self.repo), 'actual-profile', host_environment=payload)
+        self.assertTrue(self.registry.state['connection_receipts']['a']['environment_verified'])
+        self.assertEqual(self.registry.state['connection_receipts']['a']['plugin_version'], 'fixed')
 
     async def test_original_session_binding_lookup_never_discovers_and_is_subject_scoped(self):
         before = self.path.read_bytes()

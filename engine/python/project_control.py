@@ -4,6 +4,7 @@ import copy
 import fcntl
 import json
 import os
+import time
 from pathlib import Path
 import secrets
 import re
@@ -58,19 +59,24 @@ class Official:
     def __init__(self, session, url, token_file):
         self.session, self.url, self.token_file = session, loopback_origin(url), token_file
 
-    async def request(self, method, path, body=None, token_file=None):
+    async def request(self, method, path, body=None, token_file=None, *, adapter_token=None):
         import aiohttp
         try:
+            headers = {'X-Api-Key': read_secret(token_file or self.token_file)}
+            if adapter_token is not None:
+                headers['X-Memlane-Management'] = adapter_token
             async with self.session.request(
                 method, self.url + path, json=body,
-                headers={'X-Api-Key': read_secret(token_file or self.token_file)},
+                headers=headers,
                 timeout=aiohttp.ClientTimeout(total=15), allow_redirects=False,
             ) as response:
                 if response.status < 200 or response.status >= 300:
                     raise PolicyError('official_http_' + str(response.status), 503)
-                raw = await response.content.read(2 * 1024 * 1024 + 1)
-                if len(raw) > 2 * 1024 * 1024:
-                    raise PolicyError('official_response_limit', 503)
+                raw = bytearray()
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    raw.extend(chunk)
+                    if len(raw) > 2 * 1024 * 1024:
+                        raise PolicyError('official_response_limit', 503)
                 return json.loads(raw)
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
             raise PolicyError('official_result_unknown', 503) from None
@@ -105,6 +111,16 @@ class Official:
         actual = await self.effective_permissions(agent, dataset)
         if actual != set(permissions):
             raise PolicyError('effective_acl_mismatch', 503)
+
+    async def retirement_datasets(self, agent):
+        rows = await self.request('GET', '/api/v1/datasets', token_file=agent['key_file'])
+        identifiers = {row['id'] for row in rows}
+        principal = str(uuid.UUID(agent['principal_id']))
+        for permission in ('read', 'write', 'delete', 'share'):
+            rows = await self.request('GET', f'/api/v1/permissions/principals/{principal}/datasets?permission_name={permission}',
+                                      token_file=agent['key_file'])
+            identifiers.update(row['id'] for row in rows)
+        return identifiers
 
     async def effective_permissions(self, agent, dataset):
         me = await self.request('GET', '/api/v1/users/me', token_file=agent['key_file'])
@@ -179,6 +195,8 @@ class Registry:
     def policy(self, project, agent_id):
         if agent_id not in self.state['agents']:
             raise PolicyError('agent_not_registered', 403)
+        if agent_id in self.state.get('agent_retirements', {}):
+            raise PolicyError('agent_retired', 403)
         values = effective(self.state['defaults'], project['overrides'].get(agent_id, {}))
         applied = project['applied'].get(agent_id, {})
         ready = (project['status'] == 'verified' and
@@ -236,7 +254,9 @@ class Registry:
         return self.policy(project, agent_id)
 
     def directory(self):
+        from tool_graph_policy import settings as tool_graph_settings
         return {'revision': self.state['revision'], 'defaults': copy.deepcopy(self.state['defaults']),
+                'tool_graph': tool_graph_settings(self.state),
                 'agents': [{'id': key, 'name': value['name'], 'kind': value.get('kind', 'unknown'),
                             'capabilities': copy.deepcopy(value.get('capabilities', {})),
                             'entrypoints': copy.deepcopy(value.get('entrypoints', [])),
@@ -244,7 +264,8 @@ class Registry:
                            for key, value in self.state['agents'].items()],
                 'enrollments': {key: {field: value[field] for field in ('status', 'error_code') if field in value}
                                 for key, value in self.state.get('enrollments', {}).items()},
-                'projects': [copy.deepcopy(project) for project in self.state['projects'].values()],
+                'projects': [{**copy.deepcopy(project), 'tool_graph': tool_graph_settings(self.state, project['id'])}
+                             for project in self.state['projects'].values()],
                 'common': copy.deepcopy(self.state.get('common')),
                 'bindings': [{'agent_id': json.loads(key)[0], 'host_session_key': json.loads(key)[1], 'project_id': value}
                              for key, value in self.state['sessions'].items()]}
@@ -352,6 +373,53 @@ class Registry:
                 await self.reconcile_locked(project)
             return self.directory()
 
+    async def retire_agent(self, expected, instance_id):
+        """Revoke a retired installation's ACL before archiving its identity.
+
+        Never deletes official content, credentials, buffers or source bindings.
+        An interrupted retirement stays denied until explicitly resumed.
+        """
+        async with self.mutex:
+            if instance_id in self.state.get('archived_agents', {}):
+                return self.directory()
+            self.check_revision(expected)
+            agent = self.state['agents'].get(instance_id)
+            if not agent:
+                raise PolicyError('agent_not_registered', 404)
+            record = self.state.setdefault('agent_retirements', {}).setdefault(instance_id, {
+                'started_at': time.time(), 'status': 'revoking'})
+            record.setdefault('prior_applied', {group['id']: copy.deepcopy(group['applied'].get(instance_id))
+                                                for group in self.managed_groups()})
+            self.state['revision'] += 1
+            for group in self.managed_groups():
+                group['applied'][instance_id] = {'status': 'retiring'}
+            self.save()
+            try:
+                datasets = {group.get(field) for group in self.managed_groups()
+                            for field in ('dataset_id', 'code_dataset_id')}
+                datasets.update(await self.official.retirement_datasets(agent))
+                datasets.update(record.get('datasets', []))
+                record['datasets'] = sorted(datasets - {None, ''})
+                self.save()
+                for dataset in record['datasets']:
+                    await self.official.sync_acl(agent, dataset, set())
+            except PolicyError as error:
+                record.update(status='unconfirmed', error_code=error.code)
+                self.save()
+                raise
+            archive = copy.deepcopy(agent)
+            archive.update(retired_at=time.time(), project_policies={})
+            for group in self.managed_groups():
+                archive['project_policies'][group['id']] = {
+                    'override': group['overrides'].pop(instance_id, None),
+                    'applied': record['prior_applied'].get(group['id'])}
+                group['applied'].pop(instance_id, None)
+            self.state.setdefault('archived_agents', {})[instance_id] = archive
+            del self.state['agents'][instance_id]
+            record.update(status='complete', completed_at=time.time())
+            self.save()
+            return self.directory()
+
     async def provision_agent(self, expected, instance_id, name):
         """Persist a single creation attempt; unknown creates require explicit recovery."""
         if not isinstance(instance_id, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', instance_id):
@@ -360,6 +428,8 @@ class Registry:
             raise PolicyError('invalid_agent_name')
         async with self.mutex:
             self.check_revision(expected)
+            if instance_id in self.state.get('archived_agents', {}):
+                raise PolicyError('retired_agent_requires_explicit_restore', 409)
             enrollments = self.state.setdefault('enrollments', {})
             if instance_id in self.state['agents'] or instance_id in enrollments:
                 raise PolicyError('agent_creation_requires_review', 409)
@@ -404,6 +474,8 @@ class Registry:
         """Verify the original saved identity only; never create a replacement."""
         async with self.mutex:
             self.check_revision(expected)
+            if instance_id in self.state.get('archived_agents', {}):
+                raise PolicyError('retired_agent_requires_explicit_restore', 409)
             enrollment = self.state.get('enrollments', {}).get(instance_id)
             if not enrollment or not enrollment.get('key_file') or instance_id in self.state['agents']:
                 raise PolicyError('agent_recovery_requires_original_credentials', 409)
@@ -436,23 +508,74 @@ class Registry:
                 raise PolicyError('session_binding_not_found', 404)
             return await self.checked_policy(project, agent_id)
 
-    async def resolve(self, agent_id, workspace, host_session_key, *, explicit=False):
+    async def resolve(self, agent_id, workspace, host_session_key, *, explicit=False, host_environment=None):
         if not isinstance(host_session_key, str) or not 1 <= len(host_session_key) <= 256:
             raise PolicyError('host_session_key_required')
         async with self.mutex:
             if agent_id not in self.state['agents']:
                 raise PolicyError('agent_not_registered', 403)
+            if agent_id in self.state.get('agent_retirements', {}):
+                raise PolicyError('agent_retired', 403)
+            environment = self.check_host_environment(agent_id, host_environment)
             key = json.dumps([agent_id, host_session_key])
             existing = self.state['sessions'].get(key)
             if existing:
                 # Host binding wins over temporary cd, and unconfirmed operations are
                 # never silently retried by repeated hook events.
-                return self.policy(self.state['projects'][existing], agent_id)
+                result = self.policy(self.state['projects'][existing], agent_id)
+                self.record_connection_receipt(agent_id, existing, host_session_key, environment)
+                return result
             root = workspace_root(workspace, explicit=explicit)
             project = await self.ensure_locked(root)
             self.state['sessions'][key] = project['id']
+            self.record_connection_receipt(agent_id, project['id'], host_session_key, environment)
             self.save()
             return self.policy(project, agent_id)
+
+    def check_host_environment(self, agent_id, payload):
+        if payload is None:
+            return {'environment_verified': False}
+        allowed = {'instance_id', 'plugin_path', 'plugin_version', 'runtime_profile'}
+        if (not isinstance(payload, dict) or set(payload) - allowed
+                or any(not isinstance(v, str) or len(v) > 4096 for v in payload.values())
+                or payload.get('instance_id') != agent_id):
+            raise PolicyError('host_environment_receipt_invalid', 403)
+        agent = self.state['agents'][agent_id]
+        installation = agent.get('installation') or {}
+        profile = agent.get('host_profile')
+        if not profile or not installation.get('plugin_dir'):
+            return {**payload, 'environment_verified': False}
+        plugin = Path(payload.get('plugin_path', ''))
+        source = Path(installation['plugin_dir'])
+        cache = Path(profile) / 'plugins/cache' / installation['marketplace_name']
+        if not plugin.is_absolute() or not (plugin == source or cache in plugin.parents):
+            raise PolicyError('host_environment_receipt_mismatch', 403)
+        if payload.get('runtime_profile') and Path(payload['runtime_profile']).resolve() != Path(profile).resolve():
+            raise PolicyError('host_environment_receipt_mismatch', 403)
+        try:
+            marker = json.loads((plugin / '.memlane-installation.json').read_text())
+            if marker.get('instance_id') != agent_id:
+                raise ValueError()
+            manifest = json.loads((plugin / '.memlane-project-access.json').read_text())
+            if manifest.get('files') != json.loads((source / '.memlane-project-access.json').read_text()).get('files'):
+                raise ValueError()
+        except (OSError, ValueError, TypeError):
+            raise PolicyError('host_environment_artifact_unconfirmed', 403) from None
+        return {**payload, 'environment_verified': bool(payload.get('runtime_profile') or cache in plugin.parents),
+                'artifact_verified': True, 'profile': profile}
+
+    def record_connection_receipt(self, agent_id, project_id, session_key, environment):
+        receipts = self.state.setdefault('connection_receipts', {})
+        previous = receipts.get(agent_id, {})
+        now = time.time()
+        if (previous.get('host_session_key') == session_key
+                and previous.get('environment_verified') == environment.get('environment_verified')
+                and now - previous.get('received_at', 0) < 30):
+            return
+        receipts[agent_id] = {'received_at': now, 'project_id': project_id,
+                              'host_session_key': session_key,
+                              'evidence': 'authenticated_host_resolve', **environment}
+        self.save()
 
     async def ensure_locked(self, root, dataset_id=None, name=None, source=None):
         for project in self.state['projects'].values():
@@ -501,6 +624,9 @@ class Registry:
                 project['import_acl'] = False
                 self.save()
             for agent_id, agent in self.state['agents'].items():
+                if agent_id in self.state.get('agent_retirements', {}):
+                    project['applied'][agent_id] = {'status': 'retiring'}
+                    continue
                 policy = (effective({'access': 'read', 'capture': False, 'auto_process': False}, {})
                           if project.get('kind') == 'common' else
                           effective(self.state['defaults'], project['overrides'].get(agent_id, {})))

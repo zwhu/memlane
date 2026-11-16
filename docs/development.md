@@ -1,5 +1,7 @@
 # 本地开发
 
+2026-11-15：日常启动拒绝本项目已知验收Agent目录；stop/status保留恢复入口。环境优先级为管理侧明确选择、运行配置、宿主环境变量、默认目录；冲突需明确选择。不要将验收profile复制成日常接入，也不要为修复连接补采旧会话。真实目录修复及安全重启边界见[交付记录](engineering/agent-environment-delivery-20261115.md)。
+
 2026-11-14用户最新要求：当前只使用一套日常库，不另建或切换隔离测试库。统一配置为`.local/daily/runtime.json`，Native、服务和已接入Agent使用同一Cognee官方存储，项目仍各自分组。原本轮两库已合并，旧隔离根只保留在回滚备份；规则与真实核验见[单一日常库记录](engineering/single-daily-store-20261114.md)。下文旧隔离验收配置仅保留历史事实，不作为后续运行入口。
 
 2026-11-14多Agent／Provider增补已进入dev实施，覆盖下文旧“唯一Codex生成通道”的相应说明。当前支持、真实证据与未完成项见[支持矩阵](engineering/multi-agent-provider-support-20261114.md)。现有日常runtime／插件不自动迁移，仍以各自交付记录为准。

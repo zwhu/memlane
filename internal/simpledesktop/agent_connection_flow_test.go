@@ -84,7 +84,7 @@ func TestAgentConnectionUIRequiresConfirmationAfterPreparation(t *testing.T) {
 	if activations.Load() != 1 || a.integrations.Selected["pi"] {
 		t.Fatal("activation or selection cleanup incorrect")
 	}
-	if !tt.HasText("等待新会话") || !tt.HasText("重新打开 pi 并新建会话，即可完成连接。") {
+	if !tt.HasText("等待新会话") || !tt.HasText("在所选环境中重新打开 pi 并新建会话，收到回执后确认连接。") {
 		t.Fatal("next user action missing")
 	}
 	if tt.HasText("选择 pi") {

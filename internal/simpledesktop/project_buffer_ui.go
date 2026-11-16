@@ -9,13 +9,14 @@ import (
 )
 
 type pendingBufferView struct {
-	Status       PendingMaterials
-	Loaded, Busy bool
-	Message      string
-	ReadError    string
-	Observed     bool
-	Added        int
-	Action       string
+	Status           PendingMaterials
+	Loaded, Busy     bool
+	Message          string
+	ReadError        string
+	Observed         bool
+	Added            int
+	Action           string
+	CheckDetailsOpen bool
 }
 
 func (v *pendingBufferView) observe(status PendingMaterials) {
@@ -61,7 +62,7 @@ func (a *App) pendingMaterialsEditor(c *ui.Context, p AccessProject, agent Acces
 		ui.Column(c.Key("pending-"+key)).Gap(6).Padding(8, 0).Children(func() {
 			ui.Row(c).Gap(8).Children(func() {
 				ui.Text(c, fmt.Sprintf("会话 %d · %s", count, shortSessionLabel(binding.HostSessionKey))).FontSize(11).Bold()
-				ui.Button(c, "检查会话保存结果").Disabled(view.Busy || p.Dataset == "").OnClick(func() { a.runPendingAction(view, p, agent, binding, "show") })
+				textButton(c, "检查会话保存结果", nil).Disabled(view.Busy || p.Dataset == "").OnClick(func() { a.runPendingAction(view, p, agent, binding, "show") })
 			})
 			if view.Loaded {
 				ui.Text(c, fmt.Sprintf("尚未保存 %d 条；保存结果不明确 %d 条", view.Status.Pending, view.Status.Unknown)).FontSize(10).TextColor(muted)

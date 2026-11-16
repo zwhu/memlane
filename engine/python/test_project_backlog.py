@@ -15,6 +15,73 @@ from project_policy import PolicyError
 
 
 class BacklogTests(unittest.IsolatedAsyncioTestCase):
+    async def test_check_api_is_manager_only_and_never_starts_a_save(self):
+        app=create_app(self.registry,'m'*40,{'a':'a'*40})
+        managed=attach_backlog(app,self.registry,{})
+        app.on_startup.clear()
+        release=asyncio.Event()
+        calls=[]
+        async def worker(row,target,action,update):
+            calls.append(action)
+            await release.wait()
+            return {'status':'unconfirmed','unknown':20,'matched':0,'reason':'original_receipt_unavailable'}
+        managed.worker=worker
+        client=TestClient(TestServer(app));await client.start_server()
+        try:
+            payload={'agent_id':'a','host':'host'}
+            response=await client.post('/v1/projects/p/backlog/check',json=payload,headers={'Authorization':'Bearer '+'a'*40})
+            self.assertEqual(response.status,403)
+            headers={'Authorization':'Bearer '+'m'*40}
+            response=await client.post('/v1/projects/p/backlog/check',json={'agent_id':'a','host':'another-host'},headers=headers)
+            self.assertEqual(response.status,409)
+            self.assertEqual(calls,[])
+            for _ in range(2):
+                response=await client.post('/v1/projects/p/backlog/check',json=payload,headers=headers)
+                self.assertEqual(response.status,200)
+                self.assertEqual((await response.json())['checks'][0]['status'],'checking')
+            self.assertEqual(calls,['check'])
+            self.assertEqual(managed.jobs,{})
+            release.set();await asyncio.gather(*managed.check_tasks.values())
+            response=await client.get('/v1/projects/p/backlog',headers=headers)
+            self.assertEqual((await response.json())['checks'][0]['unknown'],20)
+            self.assertEqual(self.posts,[])
+        finally:
+            release.set();await client.close()
+
+    async def test_unknown_checks_run_without_ui_and_do_not_hold_new_saves(self):
+        self.policy['policy']['can_capture'] = True
+        pending = ['a'*64]
+        release_check = asyncio.Event()
+        actions = []
+        async def worker(row,target,action,update):
+            actions.append(action)
+            if action == 'review': return {'session_id':'native-session','tokens':list(pending),'unknown':20,'unknown_signature':'stable'}
+            if action == 'check':
+                await release_check.wait()
+                return {'status':'unconfirmed','unknown':20,'matched':0,'reason':'original_receipt_unavailable'}
+            if action == 'process': return {'status':'submitted'}
+            count=len(pending);pending.clear()
+            result={'status':'completed','saved':count,'handled':0,'isolated':0,'remaining':0}
+            update(result);return result
+        self.backlog.worker=worker
+        await self.backlog.automatic_check_tick()
+        await asyncio.sleep(0)
+        self.assertEqual(self.backlog.get('p')['checks'][0]['status'],'checking')
+        await self.backlog.automatic_tick()
+        await self.backlog.task
+        self.assertEqual(pending,[])
+        self.assertEqual(self.backlog.get('p')['job']['saved'],1)
+        release_check.set()
+        await asyncio.gather(*self.backlog.check_tasks.values())
+        result=self.backlog.get('p')['checks'][0]
+        self.assertEqual((result['status'],result['unknown']),('unconfirmed',20))
+        self.assertGreater(result['checked_at'],0)
+        await self.backlog.automatic_check_tick()
+        self.assertEqual(actions.count('check'),1,'idle polling hot-looped the same unknown set')
+        self.backlog.request_check('p','a','host',force=True)
+        await asyncio.gather(*self.backlog.check_tasks.values())
+        self.assertEqual(actions.count('check'),2)
+        self.assertEqual(actions.count('save'),1,'retry check retransmitted contents')
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -32,9 +99,13 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
         self.verify=patch('project_backlog.verify_installation')
         self.verify.start()
         self.count=0
+        self.processing=[]
         self.gate=asyncio.Event()
         async def worker(row,target,action,update):
             if action=='review':return {'session_id':'native-session','tokens':['a'*64]*32,'unknown':2}
+            if action=='process':
+                self.processing.append((target['dataset'], target['session_id']))
+                return {'status':'submitted'}
             await self.gate.wait()
             self.count+=1
             result={'status':'completed','saved':32,'handled':0,'isolated':0,'remaining':0}
@@ -60,8 +131,8 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
         result=self.backlog.get('p')['job']
         self.assertEqual((result['status'],result['saved'],result['isolated']),('completed',32,2))
         self.assertEqual(self.count,1)
-        self.assertEqual(len(self.posts),1)
-        self.assertEqual(self.posts[0][2],{'dataset_id':'ds','session_ids':['native-session'],'run_in_background':True})
+        self.assertEqual(self.posts, [], 'manager must not bypass the official plugin')
+        self.assertEqual(self.processing, [('ds', 'native-session')])
         self.backlog.start('p',operation)
         self.assertEqual(self.count,1)
         self.assertNotIn('targets',result)
@@ -72,6 +143,9 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
         async def worker(row, target, action, update):
             if action == 'review':
                 return {'session_id': 'native-session', 'tokens': list(pending), 'unknown': 20}
+            if action == 'process':
+                self.processing.append((target['dataset'], target['session_id']))
+                return {'status': 'submitted'}
             saved = len(pending)
             pending.clear()
             result = {'status':'completed','saved':saved,'handled':0,'isolated':0,'remaining':0}
@@ -90,12 +164,11 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second['operation_id'], first['operation_id'])
         self.assertEqual(second['saved'], 3)
         self.assertEqual(second['isolated'], 20)
-        for target in self.backlog.jobs[first['operation_id']]['pending_processing'].values():
-            target['due_at'] = 0
         await self.backlog.automatic_tick()
-        self.assertEqual(len(self.posts), 1)
+        self.assertEqual(self.processing, [('ds', 'native-session')] * 2)
         await self.backlog.automatic_tick()
-        self.assertEqual(len(self.posts), 1)
+        self.assertEqual(len(self.processing), 2)
+        self.assertEqual(self.posts, [])
         self.backlog.stop('p', first['operation_id'])
         pending.append('d'*64)
         await self.backlog.automatic_tick()
@@ -114,17 +187,18 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
         await self.backlog.automatic_tick()
         await self.backlog.task
         row = next(r for r in self.backlog.jobs.values() if r.get('automatic'))
-        async def fail(*args, **kwargs):
-            self.posts.append(1)
+        original = self.backlog.worker
+        async def fail(row, target, action, update):
+            if action != 'process': return await original(row, target, action, update)
+            self.processing.append(1)
             raise PolicyError('official_result_unknown',503)
-        self.registry.official.request = fail
-        for target in row['pending_processing'].values(): target['due_at'] = 0
+        self.backlog.worker = fail
         await self.backlog.automatic_tick()
-        self.assertEqual(self.posts, [1])
+        self.assertEqual(self.processing, [1])
         for _ in range(2):
             await self.backlog.automatic_tick()
             if self.backlog.task: await self.backlog.task
-        self.assertEqual(self.posts, [1], 'unknown model submit was repeated')
+        self.assertEqual(self.processing, [1], 'unknown model submit was repeated')
 
     async def test_automatic_restart_reviews_fresh_buffer_but_user_pause_persists(self):
         self.policy['policy']['can_capture'] = True
@@ -146,6 +220,40 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
         await restarted.close()
         await paused.close()
 
+    async def test_official_defer_does_not_block_saving_new_material(self):
+        self.policy['policy']['can_capture'] = True
+        self.gate.set()
+        await self.backlog.automatic_tick()
+        await self.backlog.task
+        original = self.backlog.worker
+        async def deferred(row, target, action, update):
+            if action == 'process': return {'status': 'deferred', 'reason': 'cooldown'}
+            return await original(row, target, action, update)
+        self.backlog.worker = deferred
+        await self.backlog.automatic_tick()
+        await self.backlog.task
+        self.assertEqual(self.backlog.get('p')['job']['saved'], 64)
+        self.assertEqual(self.posts, [])
+
+    async def test_transient_policy_pause_rechecks_fresh_buffer_and_retires_stale_remaining(self):
+        self.policy['policy']['can_capture'] = True
+        self.gate.set()
+        await self.backlog.automatic_tick()
+        await self.backlog.task
+        row = next(iter(self.backlog.jobs.values()))
+        target = row['targets'][0]
+        target.update(saved=0, handled=0, remaining=32)
+        row.update(status='paused', reason='policy_unconfirmed')
+        original = self.backlog.worker
+        async def empty(row, target, action, update):
+            if action == 'review': return {'session_id':'native-session','tokens':[], 'unknown':0, 'blocked':None}
+            return await original(row, target, action, update)
+        self.backlog.worker = empty
+        await self.backlog.automatic_tick()
+        result = self.backlog.get('p')['job']
+        self.assertEqual((result['status'],result['remaining'],result['handled']), ('watching',0,32))
+        self.assertEqual(result['saved'], 0, 'another sender is not our confirmed save')
+
     async def test_restart_does_not_replay_and_completed_lookup_is_chronological(self):
         op=str(uuid.uuid4());self.backlog.start('p',op)
         await asyncio.sleep(.01)
@@ -163,13 +271,15 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.posts,[])
         self.assertEqual(self.backlog.get('p')['job']['processing_disabled'],1)
         self.policy['policy']['can_auto_process']=True
-        async def fail(*a,**kw):
-            self.posts.append(1);raise PolicyError('official_result_unknown',503)
-        self.registry.official.request=fail
+        original = self.backlog.worker
+        async def fail(row, target, action, update):
+            if action != 'process': return await original(row, target, action, update)
+            self.processing.append(1);raise PolicyError('official_result_unknown',503)
+        self.backlog.worker=fail
         op=str(uuid.uuid4());self.backlog.start('p',op);await self.backlog.task
         self.assertEqual(self.backlog.get('p')['job']['processing_failed'],1)
         for _ in range(3):self.backlog.get('p');self.backlog.start('p',op)
-        self.assertEqual(self.posts,[1])
+        self.assertEqual(self.processing,[1])
 
     async def test_manager_only_http_and_stop_does_not_claim_inflight_cancelled(self):
         app=create_app(self.registry,'m'*40,{'a':'a'*40})

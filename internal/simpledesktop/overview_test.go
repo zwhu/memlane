@@ -17,7 +17,7 @@ import (
 func TestOverviewFullPagesScopeAndDerivedMaterials(t *testing.T) {
 	docs := make([]Document, 0, 106)
 	for n := 0; n < 103; n++ {
-		docs = append(docs, Document{ID: fmt.Sprint(n), Dataset: "p", Created: "2026-11-12T23:00:00", Metadata: map[string]any{"node_set": []any{"session_learnings"}}})
+		docs = append(docs, Document{ID: fmt.Sprint(n), Dataset: "p", Created: "2026-11-16T23:00:00", Metadata: map[string]any{"node_set": []any{"session_learnings"}, "session_date": "2026-11-13"}})
 	}
 	docs = append(docs, Document{ID: "session-copy", Dataset: "p", Metadata: map[string]any{"node_set": []any{"user_sessions_from_cache"}}}, Document{ID: "trace-copy", Dataset: "p", Metadata: map[string]any{"node_set": []any{"agent_trace_feedbacks"}}}, Document{ID: "attachment", Dataset: "p", Metadata: map[string]any{"session_id": "s0"}})
 	sessionCalls, docCalls := 0, 0
@@ -57,7 +57,7 @@ func TestOverviewFullPagesScopeAndDerivedMaterials(t *testing.T) {
 	}
 	zone := time.FixedZone("+8", 8*3600)
 	if got := overviewBuckets(snapshot, zone)["2026-11-13"]; got != 103 {
-		t.Fatalf("UTC to local date: %d", got)
+		t.Fatalf("source date must be independent of processing date: %d", got)
 	}
 }
 
@@ -136,7 +136,7 @@ func TestOverviewActivityGroupsRunsAndNeverAssumesBackgroundCompletion(t *testin
 	if len(events) != 3 {
 		t.Fatalf("events=%+v", events)
 	}
-	if events[0].Title != "召回知识" || events[0].State != "失败" || events[0].Project != "全局" {
+	if events[0].Title != "召回记忆" || events[0].State != "失败" || events[0].Project != "全局" {
 		t.Fatalf("failed recall lost: %+v", events[0])
 	}
 	if events[1].State != "已启动" {
@@ -166,5 +166,24 @@ func TestOverviewActivityReadsBeyondOnePageAndFiltersScope(t *testing.T) {
 	events, more, err := (Client{Config: Config{ServiceURL: server.URL, Projects: []Project{{Dataset: "p", Name: "P"}}}}).overviewActivity(context.Background(), 20)
 	if err != nil || calls != 2 || len(events) != 20 || !more {
 		t.Fatalf("events=%d calls=%d more=%v err=%v", len(events), calls, more, err)
+	}
+}
+
+func TestCompletedBackgroundOperationUsesOfficialEndTime(t *testing.T) {
+	row := activityRow{ID: "dcim-improve", Operation: "improve", Background: true, Outcome: "succeeded"}
+	if activityState(row) != "已启动" {
+		t.Fatal("submission alone was treated as completed")
+	}
+	row.Ended = "unknown"
+	if activityState(row) != "已启动" {
+		t.Fatal("invalid timestamp was treated as completion")
+	}
+	row.Ended = "2026-11-15T01:51:05.610946"
+	if activityState(row) != "已完成" {
+		t.Fatal("completed background operation still shows started")
+	}
+	row.Outcome = "failed"
+	if activityState(row) != "失败" {
+		t.Fatal("end time hid failure")
 	}
 }

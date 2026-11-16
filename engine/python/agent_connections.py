@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
 import tomlkit
 
 from project_control import private_write
@@ -400,7 +401,17 @@ class Connections:
 
     def discover(self):
         registry, config = self.registry, self.config
-        configured = config.get('agent_hosts', {})
+        from agent_environments import DEFAULTS, environment
+        self.environments = {}
+        for kind in DEFAULTS:
+            try:
+                self.environments[kind] = environment(config, registry.state, kind)
+            except (PolicyError, OSError, ValueError, TypeError):
+                self.environments[kind] = environment({}, {}, kind, environ={})
+                self.environments[kind]['environment_issue'] = 'environment_unavailable'
+        configured = {kind: {**config.get('agent_hosts', {}).get(kind, {}), 'profile': row['profile']}
+                      for kind, row in self.environments.items()}
+        self.adapters = {}
         codex = configured.get('codex', {})
         executable = detect_executable('codex', codex, config.get('codex_executable'))
         self.missing_codex = None
@@ -443,8 +454,52 @@ class Connections:
             except PolicyError as error:
                 row = {'instance_id': adapter.id, 'kind': getattr(adapter, 'kind', 'codex'),
                        'status': 'requires_review', 'error_code': error.code}
+            details = self.environments[row['kind']]
+            row.update(details)
+            if details['environment_issue']:
+                row['status'] = details['environment_issue']
+            records = 'codex_connections' if row['kind'] == 'codex' else 'connections'
+            record = self.registry.state.get(records, {}).get(adapter.id, {})
+            receipt = self.registry.state.get('connection_receipts', {}).get(adapter.id)
+            row['last_receipt_at'] = receipt.get('received_at', 0) if receipt else 0
+            row['environment_verified'] = bool(receipt and receipt.get('environment_verified')
+                and receipt.get('received_at', 0) >= record.get('activated_at', 0))
+            row['plugin_version'] = receipt.get('plugin_version', '') if receipt else ''
+            if (row['status'] == 'configured_pending_new_session' and row.get('new_sessions')
+                    and record.get('environment_receipt_required') and not row['environment_verified']):
+                row['status'] = 'environment_receipt_unconfirmed'
+            if row['status'] == 'configured_pending_new_session' and not row.get('new_sessions'):
+                activated_at = record.get('activated_at')
+                row['receipt_overdue'] = not activated_at or time.time() - activated_at > 120
+            try:
+                binary = Path(getattr(adapter, 'executable', '')).stat()
+                row['executable_changed'] = bool(record.get('executable_fingerprint') and
+                    record['executable_fingerprint'] != [binary.st_ino, binary.st_size, binary.st_mtime_ns])
+                if row['executable_changed']:
+                    row['status'] = 'requires_review'
+                    row['error_code'] = 'host_executable_changed'
+            except (OSError, TypeError):
+                pass
             rows.append(row)
         return {'revision': self.registry.state['revision'], 'connections': rows}
+
+    async def select_environment(self, kind, profile, expected):
+        from agent_environments import DEFAULTS, profile_path, verification_profile
+        if kind not in DEFAULTS:
+            raise PolicyError('unknown_host_kind')
+        profile = profile_path(profile)
+        if verification_profile(profile) and not self.config.get('allow_verification_agent_profiles', False):
+            raise PolicyError('verification_environment_not_allowed', 409)
+        if not Path(profile).is_dir():
+            raise PolicyError('host_environment_not_directory', 409)
+        async with self.mutex:
+            async with self.registry.mutex:
+                self.registry.check_revision(expected)
+                self.registry.state.setdefault('host_targets', {})[kind] = profile
+                self.registry.state['revision'] += 1
+                self.registry.save()
+            self.discover()
+        return self.view()
 
     def operation(self, operation_id):
         receipt = self.registry.state.get('connection_operations', {}).get(operation_id)
@@ -472,6 +527,9 @@ class Connections:
             raise PolicyError('invalid_operation_id')
         if action not in ('preview', 'prepare', 'activate', 'review') or identifier not in self.adapters:
             raise PolicyError('connection_not_found', 404)
+        kind = getattr(self.adapters[identifier], 'kind', 'codex')
+        if self.environments[kind]['environment_issue']:
+            raise PolicyError(self.environments[kind]['environment_issue'], 409)
         r, adapter = self.registry, self.adapters[identifier]
         signature = sha(json.dumps([identifier, action, reviewed_sha]).encode())
         async with self.mutex:
@@ -508,6 +566,27 @@ class Connections:
                     r.save()
                 raise
             async with r.mutex:
+                records = 'codex_connections' if kind == 'codex' else 'connections'
+                record = r.state.get(records, {}).get(identifier, {})
+                binary_changed = False
+                try:
+                    binary = Path(adapter.executable).stat()
+                    fingerprint = [binary.st_ino, binary.st_size, binary.st_mtime_ns]
+                    binary_changed = bool(record.get('executable_fingerprint') and
+                        record['executable_fingerprint'] != fingerprint)
+                except (OSError, TypeError):
+                    fingerprint = None
+                # Explicit review checks the existing installation before acknowledging
+                # a host upgrade. Require a fresh host receipt; never reinstall here.
+                if action == 'activate' or (action == 'review' and binary_changed and
+                        result.get('status') == 'configured_pending_new_session'):
+                    if action == 'review':
+                        verify_artifact(r.state['agents'][identifier]['installation'])
+                    record['activated_at'] = time.time()
+                    record['environment_receipt_required'] = kind != 'opencode'
+                    r.state['agents'][identifier]['host_profile'] = self.environments[kind]['profile']
+                    if fingerprint is not None:
+                        record['executable_fingerprint'] = fingerprint
                 result = {'revision': r.state['revision'], 'connection': result}
                 operations[operation_id].update(status='complete', result=copy.deepcopy(result))
                 r.save()

@@ -281,6 +281,87 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
             await source.close()
             await target.close()
 
+    async def test_capacity_across_native_protocols_and_client_cache_rebuild(self):
+        import litellm
+        from generation_http import generation_http_policy
+        from pydantic import BaseModel
+        from tenacity import stop_after_attempt, wait_none
+        from cognee.infrastructure.llm.structured_output_framework.litellm_native.get_native_client import get_native_client
+        from cognee.infrastructure.llm import overload_policy
+        # Earlier negative probes intentionally produce 429s. Their global
+        # cooldown must not turn this capacity test into a 60-RPM timing test.
+        isolated_overload = patch.object(overload_policy, 'llm_overload_policy', overload_policy.OverloadPolicy())
+        isolated_overload.start()
+        self.addCleanup(isolated_overload.stop)
+
+        class Output(BaseModel):
+            value: str
+
+        for provider, model in (('custom', 'openai/gpt-4o-2024-08-06'),
+                                ('openai', 'openai/gpt-4o-2024-08-06'),
+                                ('anthropic', 'anthropic/claude-sonnet-4-6'),
+                                ('gemini', 'gemini/gemini-2.5-flash')):
+            with self.subTest(provider=provider):
+                active = peak = calls = 0
+                async def completion(request):
+                    nonlocal active, peak, calls
+                    body = await request.json()
+                    active += 1
+                    calls += 1
+                    peak = max(peak, active)
+                    try:
+                        await asyncio.sleep(.005)
+                        content = '{"value":"ok"}'
+                        if provider == 'anthropic':
+                            result = {'id': 'msg_synthetic', 'type': 'message', 'role': 'assistant', 'model': body['model'],
+                                'content': [{'type': 'text', 'text': content}], 'stop_reason': 'end_turn',
+                                'usage': {'input_tokens': 1, 'output_tokens': 1}}
+                        elif provider == 'gemini':
+                            result = {'candidates': [{'content': {'role': 'model', 'parts': [{'text': content}]},
+                                'finishReason': 'STOP', 'index': 0}],
+                                'usageMetadata': {'promptTokenCount': 1, 'candidatesTokenCount': 1, 'totalTokenCount': 2}}
+                        else:
+                            result = {'id': 'synthetic', 'object': 'chat.completion', 'created': 1, 'model': body['model'],
+                                'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': content}, 'finish_reason': 'stop'}],
+                                'usage': {'prompt_tokens': 1, 'completion_tokens': 1, 'total_tokens': 2}}
+                        return web.json_response(result)
+                    finally:
+                        active -= 1
+                app = web.Application()
+                app.router.add_post('/{path:.*}', completion)
+                server = TestServer(app)
+                await server.start_server()
+                endpoint = str(server.make_url('/v1'))
+                cfg = self.LLMConfig(llm_provider=provider, llm_model=model,
+                    llm_api_key='synthetic-only-key', llm_endpoint=endpoint,
+                    structured_output_framework='litellm_native')
+                token = self.context.set(cfg)
+                try:
+                    metrics = io.StringIO()
+                    async with generation_http_policy(endpoint=endpoint, backend_kind=provider) as capacity:
+                        for batch in range(2):
+                            if batch:
+                                litellm.in_memory_llm_clients_cache.flush_cache()
+                            client = get_native_client()
+                            complete = client.acreate_structured_output.retry_with(stop=stop_after_attempt(1), wait=wait_none())
+                            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(metrics):
+                                results = await asyncio.wait_for(asyncio.gather(*(complete(client,
+                                    'Synthetic input', 'Return value ok', Output if n % 2 else str,
+                                    num_retries=0) for n in range(32))), 30)
+                            self.assertEqual(len(results), 32)
+                        self.assertEqual(calls, 64)
+                        self.assertEqual(peak, 2)
+                        self.assertEqual(capacity.active, 0)
+                    events = [json.loads(line) for line in metrics.getvalue().splitlines() if line.startswith('{')]
+                    finished = [row for row in events if row.get('event') == 'request_finished' and row.get('component') == 'generation_http']
+                    self.assertEqual(len(finished), 64)
+                    self.assertTrue(all(row['backend_kind'] == provider for row in finished))
+                    self.assertTrue(all({'capacity_queue', 'dispatch_to_headers', 'response_body'} <= row['durations_ms'].keys() for row in finished))
+                    self.assertNotIn('synthetic-only-key', metrics.getvalue())
+                finally:
+                    self.context.reset(token)
+                    await server.close()
+
     async def test_native_anthropic_and_gemini_denial_rate_and_truncation(self):
         for provider in ('anthropic', 'gemini'):
             for mode, error in (('401', 'authentication_failed'), ('429', 'rate_or_quota_limit'),

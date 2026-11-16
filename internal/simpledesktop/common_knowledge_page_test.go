@@ -51,19 +51,19 @@ func TestCommonPageCompactEditorAndDraftContinuity(t *testing.T) {
 			tt := ui.NewTester(a.View, wh[0], wh[1])
 			size := fmt.Sprintf("%dx%d", wh[0], wh[1])
 			commonFixtureImage(t, tt, size+"-reading")
-			if tt.HasText("全部分类") || tt.HasText("管理通用知识") {
+			if tt.HasText("全部分类") || tt.HasText("管理通用记忆") {
 				t.Fatal("redundant old controls remain")
 			}
-			clickProjectUI(t, tt, "新增通用知识")
+			clickProjectUI(t, tt, "新增通用记忆")
 			if !a.commonEdit.Open || a.commonEdit.Existing != nil {
 				t.Fatal("new editor not opened")
 			}
-			if tt.HasText("通用知识适用条件") {
+			if tt.HasText("通用记忆适用条件") {
 				t.Fatal("optional fields expanded by default")
 			}
-			clickProjectUI(t, tt, "通用知识标题")
+			clickProjectUI(t, tt, "通用记忆标题")
 			tt.Type("保留编辑草稿")
-			clickProjectUI(t, tt, "通用知识正文")
+			clickProjectUI(t, tt, "通用记忆正文")
 			tt.Type("阅读其他内容后仍可继续编辑。")
 			generation := a.commonEdit.Generation
 			footer, ok := tt.Find("保存")
@@ -116,7 +116,7 @@ func TestCommonEditorSubmittedLockedAndNeverReplaced(t *testing.T) {
 	}
 	tt := ui.NewTester(a.View, 1200, 820)
 	before := a.commonEdit.Draft
-	clickProjectUI(t, tt, "通用知识标题")
+	clickProjectUI(t, tt, "通用记忆标题")
 	tt.Type("should not edit")
 	hasSave := false
 	for _, label := range tt.Texts() {

@@ -20,12 +20,12 @@ func TestOverviewAntialiasingKeepsGeometryAndSiblingRendering(t *testing.T) {
 		tt := ui.NewTester(func(c *ui.Context) {
 			ui.Column(c).Fill().Background(ui.Hex("#ffffff")).Children(func() {
 				ui.Themed(c, &theme).Height(70).FillWidth().Children(func() {
-					ui.Text(c, "Memory connected 项目知识").FontSize(22).FontWeight(400).TextColor(ui.Hex("#748395"))
+					ui.Text(c, "Memory connected 项目记忆").FontSize(22).FontWeight(400).TextColor(ui.Hex("#748395"))
 				})
 				ui.Text(c, "Sibling reading remains unchanged").FontSize(16).FontWeight(400).TextColor(ui.Hex("#748395"))
 			})
 		}, 400, 120)
-		text, _ := tt.Find("Memory connected 项目知识")
+		text, _ := tt.Find("Memory connected 项目记忆")
 		sibling, _ := tt.Find("Sibling reading remains unchanged")
 		name := "font-normal"
 		if flat {

@@ -206,16 +206,16 @@ func (a *App) finishGenerationOperation(operation string) bool {
 	}
 	lock, err := lockGenerationOperations(a.generationOperationsDir())
 	if err != nil {
-		a.integrations.Error = "本机操作记录暂时不可用，请重新核对"
+		a.integrations.Error = "操作记录暂时不可用，请重新核对"
 		return false
 	}
 	defer lock.Close()
 	if err := os.Remove(filepath.Join(a.generationOperationsDir(), operation+".json")); err != nil && !errors.Is(err, os.ErrNotExist) {
-		a.integrations.Error = "原回执已确认，但本机操作记录尚未清理，请重新核对"
+		a.integrations.Error = "原回执已确认，但操作记录尚未清理，请重新核对"
 		return false
 	}
 	if err := syncOperationDirectory(a.generationOperationsDir()); err != nil {
-		a.integrations.Error = "本机操作记录的清理尚未确认，请重新核对"
+		a.integrations.Error = "操作记录的清理尚未确认，请重新核对"
 		return false
 	}
 	var pending []generationUIOperation

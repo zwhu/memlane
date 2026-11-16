@@ -24,6 +24,7 @@ func projectUIFixture() *App {
 	d := Document{ID: "k", Dataset: "ds", Name: "Development runtime configuration", Created: "2026-11-12T16:56:00Z", Metadata: map[string]any{"node_set": []any{"session_learnings:s"}, "session_id": "s"}}
 	i := Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Title: "docs/development.md documents config/daily-runtime.example.json fields, credential separation, shared official identity, and source-development startup, shutdown, and window reopening through scripts/dev.py.", Date: d.Created, Document: &d, BodyLoaded: true, Body: strings.Repeat("A readable paragraph about local development and credentials.\n\n", 18), Source: "s"}
 	s := a.state()
+	s.Knowledge.Initialized = true
 	s.Items = []Item{i}
 	s.Selected = &i
 	s.Loaded = true
@@ -43,6 +44,7 @@ func TestProjectReadingModalFocusCopyAndIndependentGeometry(t *testing.T) {
 	for _, wh := range [][2]int{{1200, 820}, {1440, 900}} {
 		t.Run(fmt.Sprint(wh), func(t *testing.T) {
 			a := projectUIFixture()
+			a.state().Knowledge.Detail = true
 			tt := ui.NewTester(a.View, wh[0], wh[1])
 			fixtureImage(t, tt, fmt.Sprintf("project-%dx%d-reading", wh[0], wh[1]))
 			if tt.HasText("搜索当前内容") || tt.HasText("技术详情") {
@@ -53,16 +55,12 @@ func TestProjectReadingModalFocusCopyAndIndependentGeometry(t *testing.T) {
 				t.Fatal("reader title missing")
 			}
 			clickProjectUI(t, tt, "内容信息")
-			if !tt.HasText("复制诊断信息") {
+			if !tt.HasText("复制文档 ID") || tt.HasText("复制诊断信息") {
 				t.Fatal("information panel did not open")
 			}
 			clickProjectUI(t, tt, "复制文档 ID")
 			if tt.Clipboard() != "k" {
 				t.Fatal("field copy changed value")
-			}
-			clickProjectUI(t, tt, "复制诊断信息")
-			if !strings.Contains(tt.Clipboard(), "文档 ID: k") || strings.Contains(tt.Clipboard(), "A readable paragraph") {
-				t.Fatal("diagnostic leaked body or lost identity")
 			}
 			fixtureImage(t, tt, fmt.Sprintf("project-%dx%d-information", wh[0], wh[1]))
 			tt.Key(0, ui.KeyEscape)
@@ -70,7 +68,8 @@ func TestProjectReadingModalFocusCopyAndIndependentGeometry(t *testing.T) {
 			if before != after {
 				t.Fatal("information panel moved reading geometry")
 			}
-			clickProjectUI(t, tt, "搜索知识与原始记录")
+			clickProjectUI(t, tt, "关闭记忆详情")
+			clickProjectUI(t, tt, "搜索记忆与原始记录")
 			if a.page != "知识" || !tt.Focused("搜索关键词") {
 				t.Fatal("opening search navigated or did not focus input")
 			}
@@ -80,7 +79,7 @@ func TestProjectReadingModalFocusCopyAndIndependentGeometry(t *testing.T) {
 			}
 			tt.Key(0, ui.KeyEscape)
 			if !a.searchUI.Open { // Escape may first dismiss a Select popup; either way do not close the reader.
-				if !tt.Focused("搜索知识与原始记录") {
+				if !tt.Focused("搜索记忆与原始记录") {
 					t.Fatal("search did not return focus")
 				}
 			} else {
@@ -89,7 +88,7 @@ func TestProjectReadingModalFocusCopyAndIndependentGeometry(t *testing.T) {
 			if a.searchUI.Open || a.page != "知识" {
 				t.Fatal("escape did not restore reader")
 			}
-			clickProjectUI(t, tt, "搜索知识与原始记录")
+			clickProjectUI(t, tt, "搜索记忆与原始记录")
 			fixtureImage(t, tt, fmt.Sprintf("project-%dx%d-search-empty", wh[0], wh[1]))
 			tt.ClickAt(225, 80)
 			if a.searchUI.Open {
@@ -226,6 +225,7 @@ func TestProjectLongTitleSearchKeyboardAndStateFixtures(t *testing.T) {
 		t.Run(fmt.Sprint(wh), func(t *testing.T) {
 			a := projectUIFixture()
 			s := a.state()
+			s.Knowledge.Detail = true
 			i := s.Items[0]
 			i.Document.Name = i.Title
 			i.Body = "A readable local development guide.\n\n## Startup\n\nUse the existing launcher to reopen the application.\n\n```sh\npython3 scripts/dev.py open\n```"
@@ -245,7 +245,8 @@ func TestProjectLongTitleSearchKeyboardAndStateFixtures(t *testing.T) {
 				t.Fatal("expansion altered title")
 			}
 			clickProjectUI(t, tt, "收起标题")
-			clickProjectUI(t, tt, "搜索知识与原始记录")
+			clickProjectUI(t, tt, "关闭记忆详情")
+			clickProjectUI(t, tt, "搜索记忆与原始记录")
 			a.searchUI.Query = "凭据配置"
 			a.searchUI.Rows = []Item{{ID: "s1", Dataset: "ds", Kind: "知识片段", Title: i.Title, Preview: "credential separation, shared official identity…", BodyLoaded: true}, {ID: "s2", Dataset: "ds", Kind: "知识片段", Title: "客户端认证约定", Preview: "从 token_file 读取 X-Api-Key", BodyLoaded: true}, {ID: "s3", Dataset: "ds", Kind: "原始材料片段", Title: "开发环境与凭据配置", Preview: "启动参数与窗口重开", BodyLoaded: true}}
 			a.searchUI.Loaded = true
@@ -308,14 +309,28 @@ func TestProjectKindSwitchCancelsInFlightAndKeepsPane(t *testing.T) {
 	}
 }
 func TestProjectCodeGraphEmptyDoesNotStartWork(t *testing.T) {
-	a := projectUIFixture()
-	a.page = "图谱"
-	a.graphMode = "代码结构"
-	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("代码图谱尚未开启") || a.codeBusy || a.graphLoading {
-		t.Fatal("disabled code graph was not an idle empty state")
+	for _, wh := range [][2]int{{1200, 820}, {1440, 900}} {
+		a := projectUIFixture()
+		a.page = "图谱"
+		a.graphMode = "代码结构"
+		a.codeStatus = "官方代码索引状态：DATASET_PROCESSING_COMPLETED · historical-run"
+		tt := ui.NewTester(a.View, wh[0], wh[1])
+		if !tt.HasText("代码图谱尚未开启") || a.codeBusy || a.graphLoading {
+			t.Fatal("disabled code graph was not an idle empty state")
+		}
+		if tt.HasText("更新代码图谱") || tt.HasText("刷新图谱") || tt.HasText(a.codeStatus) {
+			t.Fatal("disabled code graph exposes irrelevant toolbar actions")
+		}
+		if _, ok := tt.Find("开启代码图谱"); !ok {
+			t.Fatal("empty state has no explicit enable action")
+		}
+		fixtureImage(t, tt, fmt.Sprintf("project-%dx%d-graph-disabled", wh[0], wh[1]))
+		a.graphError = "代码设置尚未确认，请先核对原操作"
+		tt.Frame()
+		if !tt.HasText(a.graphError) {
+			t.Fatal("empty state hid the failed enable result")
+		}
 	}
-	fixtureImage(t, tt, "project-1200x820-graph-disabled")
 }
 
 func TestProjectTitlePreparationKeepsFullSentenceWithoutRawRows(t *testing.T) {
@@ -342,7 +357,7 @@ func TestSessionTitlesPreloadBeforeSelectionAndReuseTitleOnlyCache(t *testing.T)
 	var reads atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reads.Add(1)
-		json.NewEncoder(w).Encode(SessionDetail{Session: Session{ID: "codex_session", Dataset: "dataset", User: "owner"}, QAs: []QA{{Question: "自动载入会话的可读标题", Answer: "Private answer"}}, Traces: []Trace{{ID: "private-tool"}}})
+		json.NewEncoder(w).Encode(SessionHistoryPage{Paging: true, Limit: 20, SessionDetail: SessionDetail{Session: Session{ID: "codex_session", Dataset: "dataset", User: "owner"}, Count: 1, ToolCount: 1, QAs: []QA{{Question: "自动载入会话的可读标题", Answer: "Private answer"}}, Traces: []Trace{{ID: "private-tool"}}}})
 	}))
 	defer server.Close()
 	a := New(Config{ServiceURL: server.URL, Projects: []Project{{ID: "p", Dataset: "dataset"}}}, nil)
@@ -354,6 +369,8 @@ func TestSessionTitlesPreloadBeforeSelectionAndReuseTitleOnlyCache(t *testing.T)
 	s := a.state()
 	s.Items = []Item{{ID: session.ID, Dataset: session.Dataset, Kind: "会话", Title: session.ID, Session: &session}}
 	for round := 0; round < 2; round++ {
+		// Wait for this round's callback, including the title-cache hit.
+		s.Items[0].ReadingState = ""
 		a.startTitles(s)
 		drainReading(t, updates, func() bool { return s.Items[0].ReadingState != "pending" })
 		if s.Selected != nil || s.Items[0].Title != "自动载入会话的可读标题" || s.Items[0].Body != "" || s.Items[0].Detail != nil {
@@ -363,6 +380,8 @@ func TestSessionTitlesPreloadBeforeSelectionAndReuseTitleOnlyCache(t *testing.T)
 	if reads.Load() != 1 {
 		t.Fatalf("cached title fetched again: %d", reads.Load())
 	}
+	a.titles.mu.Lock()
+	defer a.titles.mu.Unlock()
 	for _, entry := range a.titles.cache {
 		if entry.item.Detail != nil || entry.item.Body != "" {
 			t.Fatal("session preheat retained answers or tools")

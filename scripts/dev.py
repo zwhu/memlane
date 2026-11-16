@@ -79,6 +79,9 @@ def complete_initialization(config, config_path, now=None):
 
 def load_config(path, *, verify_current_sources=True):
     config = json.loads(path.read_text())
+    from agent_environments import validate_daily_environments
+    if verify_current_sources:
+        validate_daily_environments(config)
     for key in ('official_data', 'official_source', 'python', 'token_file', 'official_archive', 'service_environment_file'):
         target = Path(config[key]).expanduser().resolve(strict=True)
         # Resolving a venv's Python symlink bypasses its pyvenv.cfg and dependencies.
@@ -142,10 +145,11 @@ def verify_managed_plugin(directory):
     receipt = json.loads((directory / '.memlane-project-access.json').read_text())
     current = receipt == expected
     if not current:
-        previous = json.loads((ROOT / 'engine/managed-project-plugin-pre-recall.json').read_text())
-        if receipt != previous:
+        previous = [json.loads((ROOT / 'engine' / name).read_text()) for name in
+                    ('managed-project-plugin-pre-recall.json', 'managed-project-plugin-pre-environment.json')]
+        if receipt not in previous:
             raise ValueError('managed plugin receipt does not match fixed component input')
-        expected = previous
+        expected = receipt
     for path, key in (('engine/patches/project_access.py', 'patch_sha256'),
                       ('engine/python/project_plugin_policy.py', 'extension_sha256'),
                       ('engine/patches/project-access-upstream.json', 'upstream_lock_sha256')):

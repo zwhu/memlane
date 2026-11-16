@@ -1,5 +1,5 @@
 /** Managed pi lifecycle adapter; no SDK, MCP server or transcript scanning. */
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -23,6 +23,9 @@ export default function (pi: ExtensionAPI) {
     }
     const child = spawn(binding.python, [resolve(root, "scripts/agent_memory_adapter.py")], {
       stdio: ["pipe", "pipe", "ignore"],
+      // Use pi's own resolved directory, including its default and overrides.
+      // A helper's HOME alone does not prove which host profile loaded us.
+      env: { ...process.env, PI_CODING_AGENT_DIR: getAgentDir() },
     });
     let output = "", finished = false;
     const finish = (value: Record<string, unknown>) => {

@@ -26,6 +26,8 @@ type projectAccessState struct {
 	Queues                       map[string]*projectQueueState
 	CheckboxPending              map[string]*projectCheckboxPending
 	Buffers                      map[string]*pendingBufferView
+	SidebarQueueIndex            int
+	QueueReadSlots               chan struct{}
 }
 
 func (a *App) accessClient() (ProjectControlClient, bool) {
@@ -109,7 +111,7 @@ func (a *App) applyAccessDirectory(directory AccessDirectory) {
 	}
 	a.Config.Projects = projects
 	if directory.Common != nil && directory.Common.Dataset != "" {
-		common := Project{ID: directory.Common.ID, Name: "通用知识", Dataset: directory.Common.Dataset}
+		common := Project{ID: directory.Common.ID, Name: "通用记忆", Dataset: directory.Common.Dataset}
 		found := false
 		for idx, old := range a.Config.Common {
 			if old.Dataset == common.Dataset {
@@ -149,6 +151,7 @@ func accessPolicyChanged(before, after AccessDirectory) bool {
 			found = true
 			old.Name, current.Name = "", ""
 			old.Aliases, current.Aliases = nil, nil
+			old.ToolGraph, current.ToolGraph = ToolGraphSettings{}, ToolGraphSettings{}
 			if encode(old) != encode(current) {
 				return true
 			}
@@ -200,7 +203,7 @@ func accessLabel(access string) string {
 	case "read":
 		return "只读"
 	case "maintain":
-		return "可写并维护知识（含删除）"
+		return "可写并维护记忆（含删除）"
 	}
 	return "未知"
 }
@@ -210,7 +213,7 @@ func accessValue(label string) string {
 		return "none"
 	case "只读":
 		return "read"
-	case "可写并维护知识（含删除）":
+	case "可写并维护记忆（含删除）":
 		return "maintain"
 	}
 	return ""
@@ -252,7 +255,7 @@ func (a *App) accessSettings(c *ui.Context) {
 	if a.access.DirectoryError != "" {
 		ui.Text(c, a.access.DirectoryError).FontSize(11).TextColor(muted)
 	}
-	ui.Button(c, "重新读取默认规则").Disabled(a.access.Loading || a.access.Busy).OnClick(a.RefreshProjectDirectory)
+	refreshAction(c, "重新读取默认规则", a.RefreshProjectDirectory).Disabled(a.access.Loading || a.access.Busy)
 	if !a.access.Loaded {
 		ui.Text(c, "正在读取项目规则…").FontSize(12)
 		return
@@ -261,12 +264,12 @@ func (a *App) accessSettings(c *ui.Context) {
 	ui.Text(c, "新项目自动接入；具体项目可逐项覆盖。可写并维护包含官方删除能力，不授予分享权限。").FontSize(12).LineHeight(1.7)
 	access, capture, process := accessLabel(a.access.Defaults.Access), booleanLabel(a.access.Defaults.Capture), booleanLabel(a.access.Defaults.AutoProcess)
 	policySettingRow(c, "Agent 默认访问权限", "可写并维护包含读取、写入和删除；不授予分享权限。", accessLabel(directory.Defaults.Access), false, func() {
-		ui.Select(c.Key("default-access"), &access, []string{"不可访问", "只读", "可写并维护知识（含删除）"}).Width(260).Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.Access = accessValue(access); a.access.DefaultsDirty = true })
+		ui.Select(c.Key("default-access"), &access, []string{"不可访问", "只读", "可写并维护记忆（含删除）"}).Width(260).Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.Access = accessValue(access); a.access.DefaultsDirty = true })
 	})
 	policySettingRow(c, "默认自动采集", "保存 Agent 后续的新会话材料；不补采关闭期间的内容。", booleanLabel(directory.Defaults.Capture), false, func() {
 		ui.Select(c.Key("default-capture"), &capture, []string{"开启", "关闭"}).Width(180).Label("默认自动采集").Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.Capture = capture == "开启"; a.access.DefaultsDirty = true })
 	})
-	policySettingRow(c, "默认自动处理", "收到新材料后自动整理知识；关闭不取消已经运行的任务。", booleanLabel(directory.Defaults.AutoProcess), false, func() {
+	policySettingRow(c, "默认自动处理", "收到新材料后自动整理记忆；关闭不取消已经运行的任务。", booleanLabel(directory.Defaults.AutoProcess), false, func() {
 		ui.Select(c.Key("default-process"), &process, []string{"开启", "关闭"}).Width(180).Label("默认自动处理").Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.AutoProcess = process == "开启"; a.access.DefaultsDirty = true })
 	})
 	ui.Text(c, fmt.Sprintf("保存将更新 %d 个项目中的 %d 个继承字段；明确覆盖的字段保持。关闭自动处理只停止后续触发，已运行任务保留真实状态。", len(directory.Projects), inheritedFields(directory))).FontSize(11).TextColor(muted).LineHeight(1.7)
@@ -278,7 +281,7 @@ func (a *App) accessSettings(c *ui.Context) {
 		}, func() { a.access.DefaultsDirty = false })
 	})
 	if a.access.DefaultsDirty {
-		ui.Button(c, "重新载入默认规则").Disabled(a.access.Busy).OnClick(func() {
+		textButton(c, "重新载入默认规则", nil).Disabled(a.access.Busy).OnClick(func() {
 			a.access.Defaults = a.access.Directory.Defaults
 			a.access.DefaultsDirty = false
 			a.access.DefaultsRevision = a.access.Directory.Revision
@@ -288,11 +291,11 @@ func (a *App) accessSettings(c *ui.Context) {
 
 func (a *App) commonDatasetSettings(c *ui.Context) {
 	directory := a.access.Directory
-	ui.Text(c, "通用知识数据组").FontSize(13).Bold()
+	ui.Text(c, "通用记忆数据组").FontSize(13).Bold()
 	if directory.Common != nil {
 		ui.Text(c, directory.Common.syncLabel(directory.Agents...)).FontSize(11).TextColor(muted)
 	}
-	ui.Button(c, "准备／核对通用知识").Disabled(a.access.Busy).OnClick(func() {
+	textButton(c, "准备／核对通用记忆", nil).Disabled(a.access.Busy).OnClick(func() {
 		a.mutateAccess(func(ctx context.Context, client ProjectControlClient, revision int64) (AccessDirectory, error) {
 			var result AccessDirectory
 			path := "/v1/common"
@@ -319,23 +322,20 @@ func (a *App) agentPolicyEditor(c *ui.Context, p AccessProject, agent AccessAgen
 		}
 	}
 	locked := a.access.Busy || pending != nil
-	ui.Column(c.Key("agent-policy-" + key)).Gap(20).Children(func() {
-		ui.Column(c).Gap(14).Children(func() {
-			ui.Checkbox(c.Key("project-read-"+key), &read, "允许读取知识").Disabled(locked).OnChange(func() {
-				value := "none"
-				if read {
-					value = "read"
-				}
-				a.saveProjectCheckbox(p.ID, agent.ID, "access", value)
-			})
-			ui.Checkbox(c.Key("project-write-"+key), &maintain, "允许写入和删除知识").Disabled(locked || !read).OnChange(func() {
-				value := "read"
-				if maintain {
-					value = "maintain"
-				}
-				a.saveProjectCheckbox(p.ID, agent.ID, "access", value)
-			})
+	ui.Row(c.Key("agent-policy-" + key)).AlignItems(ui.Center).Gap(28).Children(func() {
+		ui.Checkbox(c.Key("project-read-"+key), &read, "允许读取记忆").Disabled(locked).OnChange(func() {
+			value := "none"
+			if read {
+				value = "read"
+			}
+			a.saveProjectCheckbox(p.ID, agent.ID, "access", value)
 		})
-
+		ui.Checkbox(c.Key("project-write-"+key), &maintain, "允许写入和删除记忆").Disabled(locked || !read).OnChange(func() {
+			value := "read"
+			if maintain {
+				value = "maintain"
+			}
+			a.saveProjectCheckbox(p.ID, agent.ID, "access", value)
+		})
 	})
 }

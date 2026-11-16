@@ -111,7 +111,7 @@ def _pending_snapshot(dataset,session): return None,None,None,None,snapshot(),'o
 
 func TestSessionSubjectUsesOfficialFirstLabelNotRecentTail(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"session_id": "codex_real-session", "dataset_id": "ds", "user_id": "owner", "label": "会话最初的问题", "msg_count": 41, "tool_calls": 60, "qas": []QA{{Question: "最近20条中的第一句", Answer: "later"}}})
+		json.NewEncoder(w).Encode(map[string]any{"session_id": "codex_real-session", "dataset_id": "ds", "user_id": "owner", "label": "会话最初的问题", "msg_count": 1, "tool_calls": 0, "history_paging": true, "page_limit": 20, "qas": []QA{{Question: "带有首条label的保存问答", Answer: "saved"}}})
 	}))
 	defer server.Close()
 	s := Session{ID: "codex_real-session", Dataset: "ds", User: "owner"}

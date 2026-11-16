@@ -18,7 +18,7 @@ func TestOfficialFooterBaselinesAndSplitKeepDraft(t *testing.T) {
 			tt := ui.NewTester(a.View, size[0], size[1])
 			assertFooters := func() {
 				var baseline float32
-				for n, label := range []string{"侧栏状态栏", "通用知识分页栏", "通用知识编辑栏"} {
+				for n, label := range []string{"侧栏状态栏", "通用记忆分页栏", "通用记忆编辑栏"} {
 					r, ok := tt.Find(label)
 					if !ok {
 						t.Fatal("missing footer", label)

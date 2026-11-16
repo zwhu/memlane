@@ -2,6 +2,7 @@ package simpledesktop
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -39,6 +40,7 @@ func (a *App) showOverviewProjects() {
 }
 
 func (a *App) overviewNavigation(c *ui.Context) {
+	a.refreshSidebarQueueIfDue(time.Now())
 	selected := a.page
 	if (a.page == "知识" || a.page == "图谱" || a.page == "检索结果") && a.project >= 0 && a.project < len(a.Config.Projects) {
 		selected = "project:" + a.Config.Projects[a.project].ID
@@ -46,52 +48,37 @@ func (a *App) overviewNavigation(c *ui.Context) {
 	if a.page == "设置" && a.settingsOrigin != nil {
 		selected = "project:" + a.access.OpenProject
 	}
-	ui.Column(c).Width(homeSidebarWidth).Shrink(0).Background(ui.Hex("#eaf1f8")).BorderWidth(0, 1, 0, 0).BorderColor(homeBorder).Children(func() {
+	ui.Themed(c, sidebarTheme).Width(homeSidebarWidth).Shrink(0).Background(ui.Hex("#eaf1f8")).BorderWidth(0, 1, 0, 0).BorderColor(homeBorder).Children(func() {
 		ui.Row(c).Height(112).Shrink(0).Padding(30, 26, 0, 26).Gap(10).DragWindow().Children(func() {
 			ui.Icon(c, mark).FontSize(27).TextColor(ui.Hex("#4d6986"))
 			homeText(c, "Memlane", homeBrand)
 		})
 		ui.Sidebar(c.Key("main-sidebar"), &selected, func() {
-			ui.SidebarItem(c, "总览", navIcons["总览"], "总览").Height(39)
-			ui.SidebarItem(c, "通用知识", homeCommon, "通用知识").Height(39)
+			sidebarSelection(ui.SidebarItem(c, "总览", navIcons["总览"], "总览").Height(39), selected == "总览")
+			sidebarSelection(ui.SidebarItem(c, "通用知识", homeCommon, "通用记忆").Height(39), selected == "通用知识")
+			sidebarSelection(ui.SidebarItem(c, "用户画像", userProfileIcon, "用户画像").Height(39), selected == "用户画像")
 			ui.Row(c).Padding(24, 8, 8, 8).AlignItems(ui.Center).Gap(4).Children(func() {
 				homeText(c, "项目", homeMeta)
 				ui.Spacer(c)
-				ui.Button(c, fmt.Sprintf("全部 %d", len(a.Config.Projects))).FontSize(10).BorderWidth(0).Background(ui.Transparent).OnClick(a.showOverviewProjects)
+				ui.Button(c, fmt.Sprintf("全部 %d", len(a.Config.Projects))).Cursor(ui.CursorPointer).FontSize(10).BorderWidth(0).Background(ui.Transparent).OnClick(a.showOverviewProjects)
 				a.projectAddMenu(c)
 			})
 			labels := projectLabels(a.Config.Projects)
 			for idx, p := range a.Config.Projects {
 				index := idx
-				item := ui.SidebarItem(c.Key("project-nav-"+p.ID), "project:"+p.ID, homeFolder, p.Name).Label(labels[idx]).Tooltip(p.Name + " · " + p.Path).MinHeight(38).FillWidth().MinWidth(0)
+				item := ui.SidebarItem(c.Key("project-nav-"+p.ID), "project:"+p.ID, homeFolder, middleProjectName(labels[idx])).Label(labels[idx]).Tooltip(p.Name + " · " + p.Path).MinHeight(38).FillWidth().MinWidth(0).Gap(6)
+				sidebarSelection(item, selected == "project:"+p.ID)
 				item.Children(func() {
-					menu := readingAction(c, "项目菜单："+labels[idx], readingMore, func() {}).Size(28, 28).BorderWidth(0).Background(ui.Transparent).PopoverMenuButton(func(m *ui.Menu) {
-						m.Item(p.Name).Disabled(true)
-						paths := []string{p.Path}
-						for _, record := range a.access.Directory.Projects {
-							if record.ID == p.ID && len(record.Aliases) > 0 {
-								paths = record.Aliases
-								break
+					a.unreadProjectBadge(c, p, index)
+					if label, detail := a.sidebarQueueBadge(p); label != "" {
+						openQueue := func() { a.openProjectSettings(index) }
+						ui.Column(c).Shrink(0).Height(28).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+							if label == "!" {
+								ui.Button(c, "").Cursor(ui.CursorPointer).Label("待处理文档："+p.Name).Tooltip(detail).Size(10, 10).Padding(0).Radius(5).Background(ui.Hex("#e77e38")).Border(2, ui.Hex("#f3dac8")).OnClick(openQueue)
+							} else {
+								ui.Button(c, label).Cursor(ui.CursorPointer).Label("待处理文档："+p.Name).Tooltip(detail).FontSize(10).FontWeight(600).Padding(2, 6).Radius(8).Background(ui.Hex("#dce6ef")).TextColor(ui.Hex("#536b81")).BorderWidth(0).OnClick(openQueue)
 							}
-						}
-						for _, path := range paths {
-							if path != "" {
-								m.Item(path).Disabled(true)
-							}
-						}
-						m.Separator()
-						if m.Item("编辑项目").Chosen() {
-							a.openProjectCreation(p.ID)
-						}
-						if m.Item("项目设置").Chosen() {
-							origin := a.readingLocation()
-							a.navigate("设置", index)
-							a.access.OpenProject = p.ID
-							a.settingsOrigin = origin
-						}
-					})
-					if !item.Hovered() && !menu.Focused() {
-						menu.Opacity(0).IgnoreInput(true)
+						})
 					}
 				})
 			}
@@ -105,8 +92,14 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			a.navigate(selected, 0)
 		})
 		ui.Toolbar(c, func() {
-			ui.Button(c, "").Label("设置").Children(func() { ui.Icon(c, homeSettings).FontSize(17); ui.Text(c, "设置") }).OnClick(func() { a.settingsOrigin = nil; a.access.OpenProject = ""; a.navigate("设置", 0) })
-		}).Height(44).Shrink(0).Padding(0, 16)
+			entry := ui.Button(c, "").Cursor(ui.CursorPointer).Label("设置").FillWidth().Height(38).Padding(0, 10).Gap(10).Justify(ui.Start).BorderWidth(0)
+			if a.page == "设置" && a.settingsOrigin == nil {
+				entry.Background(ui.Hex("#d8e3ef"))
+			} else {
+				entry.Background(ui.Transparent)
+			}
+			entry.Children(func() { ui.Icon(c, homeSettings).FontSize(17).TextColor(homeIconInk); ui.Text(c, "设置") }).OnClick(func() { a.settingsOrigin = nil; a.access.OpenProject = ""; a.navigate("设置", 0) })
+		}).Height(44).Shrink(0).Padding(0, 18)
 		appFooter(c, "侧栏状态栏").Padding(0, 26).Gap(7).Children(func() {
 			color := ui.Hex("#9aabbc")
 			if a.service == "已连接" {
@@ -119,7 +112,7 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			} else if a.service != "尚未检查" {
 				status = "连接异常"
 			}
-			homeText(c, "本机服务 · "+status, homeMeta).FontSize(10).SingleLine()
+			homeText(c, "服务 · "+status, homeMeta).FontSize(10).SingleLine()
 		})
 	})
 }
@@ -156,7 +149,7 @@ func (a *App) overviewProjectGrid(c *ui.Context) {
 						continue
 					}
 					p := a.Config.Projects[idx]
-					card := ui.Button(c, "").Key("home-project-"+p.ID).Label(p.Name+" · "+p.Path+" · 查看项目知识").Width(0).Grow(1).MinWidth(0).MinHeight(94).Padding(15).Gap(11).Justify(ui.Start).Border(1, homeBorder).Radius(8)
+					card := ui.Button(c, "").Cursor(ui.CursorPointer).Key("home-project-"+p.ID).Label(p.Name+" · "+p.Path+" · 查看项目记忆").Width(0).Grow(1).MinWidth(0).MinHeight(94).Padding(15).Gap(11).Justify(ui.Start).Border(1, homeBorder).Radius(8)
 					card.Background(homeHoverColor(card, "card-surface", ui.Hex("#ffffff"), ui.Hex("#f8fafc")))
 					if card.Hovered() {
 						card.BorderColor(ui.Hex("#b4c7d9"))
@@ -167,7 +160,7 @@ func (a *App) overviewProjectGrid(c *ui.Context) {
 							homeText(c, p.Name, homeTitle).LineHeight(1.6).MaxLines(2).TextColor(homeInk)
 							path := p.Path
 							if path == "" {
-								path = "未关联本机路径"
+								path = "未关联路径"
 							}
 							homeText(c, path, homePath)
 						})

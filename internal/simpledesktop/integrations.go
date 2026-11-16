@@ -18,15 +18,28 @@ type ConnectionCapability struct {
 	Condition string `json:"condition"`
 }
 type AgentConnection struct {
-	ID              string                          `json:"instance_id"`
-	Kind            string                          `json:"kind"`
-	Status          string                          `json:"status"`
-	Detected        bool                            `json:"detected"`
-	AgentRegistered bool                            `json:"agent_registered"`
-	NewSessions     int                             `json:"new_sessions"`
-	ErrorCode       string                          `json:"error_code"`
-	Preview         *CodexConnectionPreview         `json:"preview"`
-	Capabilities    map[string]ConnectionCapability `json:"capabilities"`
+	ID                  string                          `json:"instance_id"`
+	Kind                string                          `json:"kind"`
+	Status              string                          `json:"status"`
+	Detected            bool                            `json:"detected"`
+	AgentRegistered     bool                            `json:"agent_registered"`
+	NewSessions         int                             `json:"new_sessions"`
+	ErrorCode           string                          `json:"error_code"`
+	Preview             *CodexConnectionPreview         `json:"preview"`
+	Capabilities        map[string]ConnectionCapability `json:"capabilities"`
+	Profile             string                          `json:"profile"`
+	EnvironmentIssue    string                          `json:"environment_issue"`
+	Environments        []AgentEnvironment              `json:"environments"`
+	ReceiptOverdue      bool                            `json:"receipt_overdue"`
+	LastReceiptAt       float64                         `json:"last_receipt_at"`
+	PluginVersion       string                          `json:"plugin_version"`
+	EnvironmentVerified bool                            `json:"environment_verified"`
+}
+type AgentEnvironment struct {
+	Profile      string `json:"profile"`
+	Source       string `json:"source"`
+	Exists       bool   `json:"exists"`
+	Verification bool   `json:"verification"`
 }
 type ConnectionsDirectory struct {
 	Revision    int64             `json:"revision"`
@@ -137,6 +150,9 @@ type integrationState struct {
 	Connections                                                                                 ConnectionsDirectory
 	Generation                                                                                  GenerationDirectory
 	ShowUnavailable                                                                             bool
+	EnvironmentOpen                                                                             map[string]bool
+	ReceiptCheckLoading                                                                         bool
+	NextReceiptCheck                                                                            time.Time
 	Loaded, Loading, Busy                                                                       bool
 	Request                                                                                     uint64
 	Error, Message                                                                              string
@@ -176,6 +192,14 @@ func connectionName(kind string) string {
 }
 func connectionStatus(row AgentConnection) string {
 	switch row.Status {
+	case "verification_environment":
+		return "接入目标需要更正"
+	case "environment_ambiguous":
+		return "请选择使用的环境"
+	case "environment_missing", "environment_unavailable":
+		return "配置目录不可用"
+	case "environment_receipt_unconfirmed":
+		return "会话已接入，环境待核对"
 	case "component_unavailable":
 		if !row.Detected {
 			return "未安装"
@@ -191,6 +215,9 @@ func connectionStatus(row AgentConnection) string {
 	case "configured_pending_new_session":
 		if row.NewSessions > 0 {
 			return "已连接"
+		}
+		if row.ReceiptOverdue {
+			return "尚未收到接入回执"
 		}
 		return "等待新会话"
 	case "requires_review", "activation_unknown", "preparation_unknown", "staging_unknown":
@@ -224,7 +251,7 @@ func (a *App) RefreshIntegrations() {
 	}
 	pending, err := a.loadGenerationOperations()
 	if err != nil {
-		s.Error = "无法读取本机待核对操作，已停止发送新配置请求"
+		s.Error = "无法读取待核对操作，已停止发送新配置请求"
 		return
 	}
 	s.PendingOperations = pending
@@ -273,7 +300,7 @@ func (a *App) connectAgents(action string, identifiers []string) {
 	}
 	pending, err := a.loadGenerationOperations()
 	if err != nil {
-		s.Error = "无法读取本机待核对操作，已停止发送新接入请求"
+		s.Error = "无法读取待核对操作，已停止发送新接入请求"
 		return
 	}
 	s.PendingOperations = pending
@@ -381,7 +408,7 @@ func (s *integrationState) draftProfile() GenerationProfile {
 		profile.BridgeKind = "codex"
 		return profile
 	}
-	providers := map[string]string{"OpenAI": "openai", "Anthropic": "anthropic", "Gemini": "gemini", "OpenAI 兼容": "custom", "Ollama（本机接口）": "ollama"}
+	providers := map[string]string{"OpenAI": "openai", "Anthropic": "anthropic", "Gemini": "gemini", "OpenAI 兼容": "custom", "Ollama": "ollama"}
 	profile.Provider = providers[s.ProviderLabel]
 	profile.Endpoint = strings.TrimSpace(s.Endpoint)
 	profile.Temperature, profile.MaxOutputTokens, _ = generationParameters(s.Temperature, s.MaxOutputTokens)
@@ -422,7 +449,7 @@ func (s *integrationState) editProfile(id string, row GenerationRow) {
 	s.APIKey = ""
 	s.CredentialVersion = row.Profile.CredentialVersion
 	s.CredentialConfigured = row.Profile.CredentialConfigured
-	s.ProviderLabel = map[string]string{"openai": "OpenAI", "anthropic": "Anthropic", "gemini": "Gemini", "custom": "OpenAI 兼容", "ollama": "Ollama（本机接口）"}[row.Profile.Provider]
+	s.ProviderLabel = map[string]string{"openai": "OpenAI", "anthropic": "Anthropic", "gemini": "Gemini", "custom": "OpenAI 兼容", "ollama": "Ollama"}[row.Profile.Provider]
 	s.Saved = &GenerationRef{ID: id, Revision: row.Revision}
 	s.SavedSignature = s.signature()
 	s.SaveOperation = ""
@@ -741,7 +768,7 @@ func (a *App) cancelGenerationValidation() {
 			if err != nil {
 				s.Error = "停止验证的结果未确认，请核对原验证"
 			} else {
-				s.Message = "已请求停止本机验证；远端请求结果仍以回执为准"
+				s.Message = "已请求停止验证；远端请求结果仍以回执为准"
 			}
 			a.pollGenerationValidation(operation)
 		})

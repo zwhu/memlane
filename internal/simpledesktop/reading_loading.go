@@ -121,7 +121,7 @@ func (a *App) startTitles(s *pane) {
 	generation := a.readingGeneration(s)
 	client := a.Client
 	for n, row := range s.Items {
-		if n >= 30 {
+		if n >= 30 && !(a.page == "知识" && a.kind != "知识" && s.RawCatalog != nil) {
 			break
 		}
 		if row.Session == nil && (row.Kind != "知识" || row.Document == nil || (a.page != "通用知识" && readableDocumentTitle(*row.Document) != "")) {
@@ -216,6 +216,7 @@ func (a *App) unavailableReadingItem(i Item) {
 			if row.key() == i.key() {
 				s.Items[n].Body = ""
 				s.Items[n].BodyLoaded = false
+				s.Items[n].RecallStats = nil
 				s.Items[n].ReadingState = "unavailable"
 				s.Items[n].ReadingError = "内容不可用"
 				if row.Document != nil {
@@ -291,6 +292,10 @@ func (a *App) InvalidateReading(dataset string) {
 	}
 	for _, s := range a.panes {
 		a.cancelTitles(s)
+		if len(s.RawCatalog) > 0 && (dataset == "" || s.RawCatalog[0].Dataset == dataset) {
+			s.RawCatalog = nil
+			s.More = false
+		}
 		if s.SourcePage != nil && (dataset == "" || s.SourcePage.Dataset == dataset) {
 			s.SourcePage = nil
 		}
@@ -314,6 +319,7 @@ func (a *App) InvalidateReading(dataset string) {
 			if dataset == "" || i.Dataset == dataset {
 				s.Items[n].Body = ""
 				s.Items[n].BodyLoaded = false
+				s.Items[n].RecallStats = nil
 				s.Items[n].ReadingState = "unavailable"
 				s.Items[n].ReadingError = "内容不可用"
 				if i.Document != nil {

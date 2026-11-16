@@ -7,13 +7,14 @@ import (
 	"github.com/egoist/mygo/ui"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func TestSearchTypeSwitchKeepsResultsClickableAndOpensThreePanes(t *testing.T) {
+func TestSearchTypeSwitchKeepsResultsClickableAndOpensReader(t *testing.T) {
 	a := projectUIFixture()
 	a.OpenSearch()
 	a.searchUI.Query = "sandbox"
@@ -27,8 +28,8 @@ func TestSearchTypeSwitchKeepsResultsClickableAndOpensThreePanes(t *testing.T) {
 	if a.searchUI.Open {
 		t.Fatal("switching result type disabled an already returned result")
 	}
-	if a.page != "知识" || a.project != 0 || a.kind != "知识" || !tt.HasText("项目分页栏") {
-		t.Fatal("result did not open the corresponding three-pane reader", a.page, a.kind)
+	if a.page != "知识" || a.project != 0 || a.kind != "知识" || !tt.HasText("项目内容工具栏") || !tt.HasText("A knowledge result") {
+		t.Fatal("result did not open the corresponding knowledge reader", a.page, a.kind)
 	}
 }
 
@@ -56,7 +57,6 @@ func TestSearchChangedQueryNeverShowsPreviousRows(t *testing.T) {
 	if len(a.visibleSearchRows()) != 0 {
 		t.Fatal("old rows displayed while debouncing")
 	}
-	a.searchUI.Due = time.Time{}
 	a.searchUI.Loading = true
 	a.searchUI.Submitted = a.searchSignature()
 	if len(a.visibleSearchRows()) != 0 {
@@ -87,7 +87,7 @@ func TestSearchRecentDefaultsAndTypeSwitchUseOneCompletedCatalog(t *testing.T) {
 		if strings.HasPrefix(r.URL.Path, "/api/v1/datasets/ds/data") {
 			docs := []Document{}
 			for n := 0; n < 8; n++ {
-				docs = append(docs, Document{ID: fmt.Sprintf("k%d", n), Dataset: "ds", Name: fmt.Sprintf("Recent knowledge %d", n), Created: fmt.Sprintf("2026-11-%02dT10:00:00Z", n+1), Metadata: map[string]any{"node_set": []any{"session_learnings"}}}, Document{ID: fmt.Sprintf("r%d", n), Dataset: "ds", Name: fmt.Sprintf("Recent record %d", n), Created: fmt.Sprintf("2026-11-%02dT11:00:00Z", n+1)})
+				docs = append(docs, Document{ID: fmt.Sprintf("k%d", n), Dataset: "ds", Name: fmt.Sprintf("Recent knowledge %d", n), Created: fmt.Sprintf("2026-11-%02dT10:00:00Z", n+1), Metadata: map[string]any{"node_set": []any{"session_learnings"}, "session_date": fmt.Sprintf("2026-11-%02d", n+1)}}, Document{ID: fmt.Sprintf("r%d", n), Dataset: "ds", Name: fmt.Sprintf("Recent record %d", n), Created: fmt.Sprintf("2026-11-%02dT11:00:00Z", n+1)})
 			}
 			json.NewEncoder(w).Encode(docs)
 			return
@@ -97,6 +97,7 @@ func TestSearchRecentDefaultsAndTypeSwitchUseOneCompletedCatalog(t *testing.T) {
 	defer server.Close()
 	a := projectUIFixture()
 	a.Config.ServiceURL = server.URL
+	a.Config.ClientStateFile = filepath.Join(t.TempDir(), "client.json")
 	a.Client.Config = a.Config
 	a.readingIdentity, _ = readingIdentity(a.Client)
 	updates := make(chan func(), 30)
@@ -127,16 +128,23 @@ func TestSearchRecentDefaultsAndTypeSwitchUseOneCompletedCatalog(t *testing.T) {
 		}
 	}
 	fixtureImage(t, tt, "search-recent-defaults")
-	a.searchUI.Query = "new"
-	a.cancelChangedSearch()
-	if a.searchUI.Due.IsZero() {
-		t.Fatal("typing did not schedule search")
-	}
-	a.searchUI.Due = time.Now().Add(-time.Second)
+	a.searchUI.Focus = true
 	tt.Frame()
+	tt.Type("new")
+	tt.Advance(time.Second)
+	if searches.Load() != 0 || a.searchUI.Loading {
+		t.Fatal("typing submitted a search")
+	}
+	if rows, err := a.Client.manualSearchHistory(); err != nil || len(rows) != 0 {
+		t.Fatal("typing recorded an unsubmitted query", rows, err)
+	}
+	tt.Key(0, ui.KeyEnter)
 	drainReading(t, updates, func() bool { return !a.searchUI.Loading })
 	if searches.Load() != 2 {
-		t.Fatal("debounce did not submit both retrieval lanes once")
+		t.Fatal("Enter did not submit both retrieval lanes once")
+	}
+	if rows, err := a.Client.manualSearchHistory(); err != nil || len(rows) != 1 || rows[0].Query != "new" {
+		t.Fatal("Enter did not record the submitted query", rows, err)
 	}
 }
 func TestSearchSourceDocumentUsesNormalThreePaneReader(t *testing.T) {

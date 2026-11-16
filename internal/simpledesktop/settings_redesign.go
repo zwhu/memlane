@@ -33,7 +33,13 @@ func settingsTabs(c *ui.Context, current *string, labels []string) {
 			selected = n
 		}
 	}
-	ui.Tabs(c, &selected, labels...).Label("设置分类").Margin(18, 20).OnChange(func() { *current = labels[selected] })
+	displayLabels := append([]string(nil), labels...)
+	for n, label := range displayLabels {
+		if label == "知识处理" {
+			displayLabels[n] = "记忆处理"
+		}
+	}
+	ui.Tabs(c, &selected, displayLabels...).Label("设置分类").Margin(18, 20).OnChange(func() { *current = labels[selected] })
 }
 func settingsCard(c *ui.Context, title, description string, content func()) {
 	ui.Column(c).FillWidth().Gap(14).Padding(22).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(10).Children(func() {
@@ -46,39 +52,43 @@ func settingsCard(c *ui.Context, title, description string, content func()) {
 }
 func (a *App) globalSettingsPage(c *ui.Context) {
 	settingsTabs(c, &a.access.SettingsSection, []string{"服务与连接", "知识处理", "高级"})
+	contentWidth := float32(1100)
 	ui.Scroll(c.Key("global-settings-" + a.access.SettingsSection)).Grow(1).MinHeight(0).Padding(32).Background(ui.Hex("#f8fafc")).Children(func() {
-		ui.Column(c).FillWidth().MaxWidth(900).Gap(20).Children(func() {
+		ui.Column(c).FillWidth().MaxWidth(contentWidth).Gap(16).Children(func() {
 			switch a.access.SettingsSection {
 			case "服务与连接":
-				settingsCard(c, "服务状态", "显示最近一次连接检查结果；服务地址和模型来自当前开发配置。", func() {
-					homeText(c, "Cognee · "+a.service, homeHeading).FontSize(13)
-					homeText(c, a.Config.ServiceURL, homeMeta)
-					mode := "Codex 订阅推理"
-					if a.Config.GenerationMode == "provider" {
-						mode = "Provider API"
-					}
-					homeText(c, mode+" · "+a.Config.Model, homeHeading).FontSize(13)
-					if a.Config.GenerationMode != "provider" {
-						homeText(c, a.completion, homeMeta)
-					}
-					if a.service != "已连接" {
-						commonButton(c, "重新检查连接", false, a.health)
-					}
-				})
+				a.serviceConnectionOverview(c)
 				if a.Config.ProjectControl != nil {
-					settingsCard(c, "Agent 连接", "", func() { a.agentConnectionSettings(c) })
+					ui.Column(c).FillWidth().Gap(12).Margin(8, 0, 0, 0).Children(func() {
+						a.agentConnectionSettings(c)
+					})
 				}
 			case "知识处理":
+				languageSettingsCard(c)
 				a.generationSettings(c)
 			case "高级":
-				settingsCard(c, "开发运行", "关闭窗口后后台服务继续运行。电脑重启后通过开发启动器重新启动。", func() {
-					homeText(c, "python3 scripts/dev.py", homeBody)
-					homeText(c, "服务与模型配置变更后，重新启动后台生效。向量模型由 Cognee 官方配置管理。", homeMeta).LineHeight(1.7)
-				})
+				a.advancedSettingsCards(c)
 			}
 		})
 	})
 }
+
+// Preserve the caller's reading location for both header and badge entry points.
+func (a *App) openProjectSettings(index int) {
+	if index < 0 || index >= len(a.Config.Projects) {
+		return
+	}
+	id, origin := a.Config.Projects[index].ID, a.readingLocation()
+	a.navigate("设置", index)
+	a.access.OpenProject, a.settingsOrigin = id, origin
+	for _, p := range a.access.Directory.Projects {
+		if p.ID == id {
+			a.projectQueueStateFor(p).Reader = nil
+			break
+		}
+	}
+}
+
 func (a *App) projectSettingsPage(c *ui.Context) {
 	var project *AccessProject
 	for _, row := range a.access.Directory.Projects {
@@ -90,17 +100,36 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 	}
 	if project == nil {
 		homeText(c, "项目设置尚未载入", homeHeading).Margin(28)
-		commonButton(c, "重新读取项目", false, a.RefreshProjectDirectory)
+		refreshAction(c, "重新读取项目", a.RefreshProjectDirectory)
 		return
 	}
 	p := *project
-	ui.Scroll(c.Key("project-settings-" + p.ID)).Grow(1).MinHeight(0).Padding(32).Background(ui.Hex("#f8fafc")).Children(func() {
+	q := a.projectQueueStateFor(p)
+	if q.Reader != nil {
+		a.queuedDocumentDetail(c, p, q)
+		return
+	}
+	ui.Scroll(c.Key("project-settings-" + p.ID)).Grow(1).MinHeight(0).TrackScroll(&q.Scroll).Padding(32).Background(ui.Hex("#f8fafc")).Children(func() {
 		ui.Column(c).FillWidth().MaxWidth(900).Gap(18).Children(func() {
+			ui.Column(c).FillWidth().Padding(16).Gap(10).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(8).Children(func() {
+				ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
+					homeText(c, p.Name, homeHeading).FontSize(15).Grow(1).MinWidth(0).SingleLine().Tooltip(p.Name)
+					textButton(c, "编辑名称", nil).FontSize(12).OnClick(func() { a.openProjectCreation(p.ID) })
+				})
+				for _, path := range p.Aliases {
+					if path == "" {
+						continue
+					}
+					copyableText(c, path, path, "复制项目路径", homePath, func() { c.WriteClipboard(path) })
+				}
+			})
 			if !p.permissionsReady(a.access.Directory.Agents...) {
-				homeText(c, "权限尚未同步完成", homeMeta)
-				commonButton(c, "核对权限", false, func() {
-					a.mutateAccess(func(ctx context.Context, client ProjectControlClient, revision int64) (AccessDirectory, error) {
-						return client.reconcile(ctx, revision, p.ID)
+				ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
+					homeText(c, "权限尚未同步完成", homeMeta)
+					commonButton(c, "核对权限", false, func() {
+						a.mutateAccess(func(ctx context.Context, client ProjectControlClient, revision int64) (AccessDirectory, error) {
+							return client.reconcile(ctx, revision, p.ID)
+						})
 					})
 				})
 			}
@@ -114,10 +143,15 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 				homeText(c, "尚无已连接的 Agent；请先在全局设置中连接。", homeMeta)
 			}
 			homeText(c, "权限设置", homeHeading).FontSize(15)
-			for _, row := range a.access.Directory.Agents {
-				agent := row
-				a.projectPermissionCard(c, p, agent)
-			}
+			ui.Column(c).FillWidth().Gap(0).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(8).Children(func() {
+				for i, row := range a.access.Directory.Agents {
+					if i > 0 {
+						ui.Column(c).FillWidth().Height(1).Background(homeBorder)
+					}
+					a.projectPermissionCard(c, p, row)
+				}
+			})
+			a.projectToolGraphSettings(c, p)
 			a.projectQueueSection(c, p)
 		})
 	})

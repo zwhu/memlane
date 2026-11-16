@@ -51,6 +51,7 @@ type AccessApplied struct {
 }
 
 type AccessProject struct {
+	ToolGraph       ToolGraphSettings          `json:"tool_graph"`
 	ID              string                     `json:"id"`
 	Name            string                     `json:"name"`
 	Aliases         []string                   `json:"aliases"`
@@ -120,13 +121,14 @@ type ProjectBinding struct {
 }
 
 type AccessDirectory struct {
-	Revision        int64            `json:"revision"`
-	Defaults        ProjectPolicy    `json:"defaults"`
-	Agents          []AccessAgent    `json:"agents"`
-	Projects        []AccessProject  `json:"projects"`
-	Common          *AccessProject   `json:"common"`
-	Bindings        []ProjectBinding `json:"bindings"`
-	CodexConnection *CodexConnection `json:"codex_connection"`
+	ToolGraph       ToolGraphSettings `json:"tool_graph"`
+	Revision        int64             `json:"revision"`
+	Defaults        ProjectPolicy     `json:"defaults"`
+	Agents          []AccessAgent     `json:"agents"`
+	Projects        []AccessProject   `json:"projects"`
+	Common          *AccessProject    `json:"common"`
+	Bindings        []ProjectBinding  `json:"bindings"`
+	CodexConnection *CodexConnection  `json:"codex_connection"`
 }
 
 type CodexConnection struct {

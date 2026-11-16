@@ -32,7 +32,7 @@ func TestOllamaEditorHidesCloudCredentialAndKeepsSavedConfiguration(t *testing.T
 			t.Fatal("local provider showed a cloud credential field")
 		}
 	}
-	if !tt.HasText("Ollama（本机接口）") || !tt.HasText("填写本机 Ollama 地址，例如 http://127.0.0.1:11434，无需 API Key；模型需已在服务中可用。") {
+	if !tt.HasText("Ollama") || !tt.HasText("填写Ollama 地址，例如 http://127.0.0.1:11434，无需 API Key；模型需已在服务中可用。") {
 		t.Fatalf("local provider editor did not explain its address/auth contract: %q", tt.Texts())
 	}
 }

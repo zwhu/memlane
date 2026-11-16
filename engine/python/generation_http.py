@@ -9,26 +9,49 @@ from weakref import WeakSet
 
 
 @asynccontextmanager
-async def generation_http_policy():
+async def generation_http_policy(*, endpoint=None, max_concurrent_requests=2, wait_timeout=300, backend_kind='unknown'):
     import httpx
     import litellm
     from litellm.caching.llm_caching_handler import LLMClientCache
-    from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
+    from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler, _environment_proxy_mounts
 
     previous = (litellm.aclient_session, litellm.client_session,
                 litellm.in_memory_llm_clients_cache, litellm.module_level_client, litellm.module_level_aclient)
     handlers = WeakSet()
+    closing_clients = set()
+    gate = None
+    if endpoint:
+        from generation_capacity import EndpointCapacity, CapacityAsyncTransport, CapacityTransport
+        gate = EndpointCapacity(endpoint, max_concurrent_requests, wait_timeout, backend_kind=backend_kind)
 
     class ClientCache(LLMClientCache):
         def set_cache(self, key, value, **kwargs):
             if isinstance(value, (AsyncHTTPHandler, HTTPHandler)):
                 value.follow_redirects = False
                 value.client.follow_redirects = False
+                if gate is not None:
+                    # Public SDK client injection. Sharing these clients also
+                    # survives SDK cache eviction. No SDK methods are patched.
+                    displaced = value.client
+                    shared = async_client if isinstance(value, AsyncHTTPHandler) else sync_client
+                    if displaced is not shared:
+                        if isinstance(displaced, httpx.AsyncClient):
+                            import asyncio
+                            closing = asyncio.create_task(displaced.aclose())
+                            closing_clients.add(closing)
+                            closing.add_done_callback(closing_clients.discard)
+                        else:
+                            displaced.close()
+                        value.client = shared
                 handlers.add(value)
             return super().set_cache(key, value, **kwargs)
 
-    async_client = httpx.AsyncClient(follow_redirects=False)
-    sync_client = httpx.Client(follow_redirects=False)
+    async_client = httpx.AsyncClient(follow_redirects=False,
+        **({'transport': CapacityAsyncTransport(gate),
+            'mounts': _environment_proxy_mounts(lambda proxy: CapacityAsyncTransport(gate, httpx.AsyncHTTPTransport(proxy=proxy)))} if gate else {}))
+    sync_client = httpx.Client(follow_redirects=False,
+        **({'transport': CapacityTransport(gate),
+            'mounts': _environment_proxy_mounts(lambda proxy: CapacityTransport(gate, httpx.HTTPTransport(proxy=proxy)))} if gate else {}))
     cache = ClientCache()
     # Ollama model metadata uses these handlers directly, outside the cache.
     metadata_sync = HTTPHandler(follow_redirects=False)
@@ -37,7 +60,7 @@ async def generation_http_policy():
     litellm.in_memory_llm_clients_cache = cache
     litellm.module_level_client, litellm.module_level_aclient = metadata_sync, metadata_async
     try:
-        yield
+        yield gate
     finally:
         (litellm.aclient_session, litellm.client_session, litellm.in_memory_llm_clients_cache,
          litellm.module_level_client, litellm.module_level_aclient) = previous
@@ -50,5 +73,8 @@ async def generation_http_policy():
                 handler.close()
         await async_client.aclose()
         sync_client.close()
+        if closing_clients:
+            import asyncio
+            await asyncio.gather(*closing_clients)
         metadata_sync.close()
         await metadata_async.close()

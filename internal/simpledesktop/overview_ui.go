@@ -172,8 +172,8 @@ func overviewBuckets(snapshot overviewSnapshot, location *time.Location) map[str
 	days := map[string]int{}
 	for _, item := range snapshot.Knowledge {
 		if item.Document != nil {
-			if t, ok := officialTime(item.Document.Created); ok {
-				days[t.In(location).Format("2006-01-02")]++
+			if day, ok := item.Document.knowledgeDay(location); ok {
+				days[day]++
 			}
 		}
 	}
@@ -184,14 +184,15 @@ func (a *App) openOverviewItem(item Item) {
 	for idx, p := range a.Config.Projects {
 		if p.Dataset == item.Dataset {
 			a.navigate("知识", idx)
-			a.selectItem(a.state(), item)
+			a.locateOverviewItem(a.state(), item)
 			return
 		}
 	}
 	for idx, p := range a.Config.Common {
 		if p.Dataset == item.Dataset {
 			a.navigate("通用知识", idx)
-			a.selectItem(a.state(), item)
+			a.commonEdit.Category = ""
+			a.locateOverviewItem(a.state(), item)
 			return
 		}
 	}
@@ -202,7 +203,7 @@ func (a *App) overviewHome(c *ui.Context) {
 	now := time.Now()
 	midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
 	c.After(midnight.Sub(now))
-	ui.Scroll(c.Key("overview-scroll")).Grow(1).MinHeight(0).TrackScroll(&v.Scroll).Padding(homePageInset, homePageInset, 76, homePageInset).Font("system-ui").FontWeight(400).Children(func() {
+	ui.Scroll(c.Key("overview-scroll")).Grow(1).MinHeight(0).TrackScroll(&v.Scroll).Padding(18, homePageInset, 40, homePageInset).Font("system-ui").FontWeight(400).Children(func() {
 		ui.Column(c).FillWidth().MaxWidth(homeMaxWidth).AlignSelf(ui.Center).Shrink(0).Gap(0).Children(func() {
 			usage := "—"
 			if n, err := firstUseDays(a.Config, now); err == nil {
@@ -215,13 +216,13 @@ func (a *App) overviewHome(c *ui.Context) {
 			if v.RawLoaded {
 				raw = fmt.Sprint(v.Snapshot.Raw)
 			}
-			ui.Row(c).Margin(0, 0, 28, 0).Children(func() {
-				ui.Column(c).Grow(1).MinWidth(0).Gap(9).Children(func() {
+			ui.Row(c).Margin(0, 0, 16, 0).Children(func() {
+				ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
 					homeText(c, "YOUR MEMORY, CONNECTED", homeEyebrow)
 					homeText(c, "每一次积累，都能找回。", homeWelcome)
-					homeText(c, "项目中的知识与经验，在这里继续。", homeBody)
+					homeText(c, "项目中的记忆与经验，在这里继续。", homeBody)
 				})
-				for idx, metric := range []struct{ label, value, unit string }{{"已使用", usage, "天"}, {"知识", knowledge, "条"}, {"原始记录", raw, "条"}} {
+				for idx, metric := range []struct{ label, value, unit string }{{"已使用", usage, "天"}, {"记忆", knowledge, "条"}, {"原始记录", raw, "条"}} {
 					left, right := float32(28), float32(28)
 					if idx == 0 {
 						left = 0
@@ -257,7 +258,7 @@ func (a *App) overviewHome(c *ui.Context) {
 				projectLink(c, "重试读取记录统计", a.loadOverview)
 			}
 			a.overviewHeatmap(c, now)
-			ui.Row(c).Key("overview-paired-sections").Gap(homeColumnGap).Margin(homeSectionOffset, 0, 23, 0).AlignItems(ui.Stretch).Children(func() {
+			ui.Row(c).Key("overview-paired-sections").Gap(homeColumnGap).Margin(12, 0, 16, 0).AlignItems(ui.Stretch).Children(func() {
 				ui.Column(c).Key("overview-knowledge-section").Width(0).Grow(1.6).MinWidth(0).Gap(0).Children(func() { a.overviewKnowledge(c, now) })
 				ui.Column(c).Key("overview-activity-section").Width(0).Grow(1).MinWidth(255).Gap(0).Children(func() { a.overviewActivities(c, now) })
 			})
@@ -280,9 +281,9 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 	if gridStart.AddDate(0, 0, weeks*7-1).Before(today) {
 		weeks++
 	}
-	ui.Column(c).Gap(0).Margin(0, 0, 25, 0).Padding(18, 21, 15, 21).Border(1, homeBorder).Radius(11).Background(ui.Hex("#ffffff")).Children(func() {
+	ui.Column(c).Gap(0).Margin(0, 0, 0, 0).Padding(18, 21, 15, 21).Border(1, homeBorder).Radius(11).Background(ui.Hex("#ffffff")).Children(func() {
 		ui.Row(c).Margin(0, 0, 18, 0).Children(func() {
-			homeText(c, "知识积累", homePanelHeading)
+			homeText(c, "记忆积累", homePanelHeading)
 			homeText(c, "过去一年", homeMeta).Margin(0, 7)
 			ui.Spacer(c)
 			homeText(c, start.Format("2006.01")+" — "+today.Format("2006.01"), homeMeta)
@@ -339,7 +340,7 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 									ui.Column(c).Key("overview-empty-" + date).FillWidth().AspectRatio(1).Radius(2).Background(color)
 									continue
 								}
-								label := fmt.Sprintf("%s · 新增 %d 条知识", date, count)
+								label := fmt.Sprintf("%s · 新增 %d 条记忆", date, count)
 								cell := ui.Button(c, "").Key("overview-day-" + date).Label(label).Tooltip(label).Padding(0).MinHeight(0).MinWidth(0).FillWidth().AspectRatio(1).Radius(2).BorderWidth(0).Background(color)
 								if v.Day == date {
 									cell.Border(1, ink)
@@ -354,7 +355,7 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 		ui.Row(c).Margin(13, 0, 0, 0).Children(func() {
 			text := "读取中…"
 			if v.Loaded {
-				text = fmt.Sprintf("今天新增 %d 条知识", buckets[today.Format("2006-01-02")])
+				text = fmt.Sprintf("今天新增 %d 条记忆", buckets[today.Format("2006-01-02")])
 			}
 			homeText(c, text, homeMeta)
 			ui.Spacer(c)
@@ -367,7 +368,7 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 			})
 		})
 		if v.Snapshot.MissingDates > 0 {
-			ui.Text(c, "部分知识缺少创建日期，未计入热力图。").FontSize(10).TextColor(muted)
+			ui.Text(c, "部分记忆缺少来源日期，未计入热力图。").FontSize(10).TextColor(muted)
 		}
 	})
 }
@@ -380,8 +381,8 @@ func (a *App) overviewKnowledgeRows(now time.Time) []Item {
 			if item.Document == nil {
 				continue
 			}
-			t, ok := officialTime(item.Document.Created)
-			if !ok || t.In(now.Location()).Format("2006-01-02") != v.Day {
+			day, ok := item.Document.knowledgeDay(now.Location())
+			if !ok || day != v.Day {
 				continue
 			}
 		}
@@ -396,19 +397,19 @@ func (a *App) overviewKnowledgeRows(now time.Time) []Item {
 func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 	v := &a.overviewState
 	rows := a.overviewKnowledgeRows(now)
-	ui.Row(c).Height(28).Shrink(0).Margin(0, 0, 15, 0).Children(func() {
-		title := "最近知识"
+	ui.Row(c).Height(28).Shrink(0).Margin(0, 0, 6, 0).Children(func() {
+		title := "最近记忆"
 		if v.Day != "" {
-			title = v.Day + " 新增知识"
+			title = v.Day + " 新增记忆"
 		}
 		homeText(c, title, homeHeading)
 		ui.Spacer(c)
 		if v.Day != "" {
-			homeLink(c, "显示最近知识", func() { v.Day = ""; v.KnowledgeScroll.Y = 0 })
+			homeLink(c, "显示最近记忆", func() { v.Day = ""; v.KnowledgeScroll.Y = 0 })
 		}
 	})
 	a.startRecentTitles(rows)
-	ui.Scroll(c.Key("overview-knowledge")).Label("最近知识内容").Height(homeOverviewListHeight).Shrink(0).FillWidth().TrackScroll(&v.KnowledgeScroll).Border(1, ui.Hex("#eaf0f4")).Radius(11).Background(ui.Hex("#ffffff")).Padding(4, 0).DrawOver(func(p *ui.Painter, r ui.Rect) {
+	ui.Scroll(c.Key("overview-knowledge")).Label("最近记忆内容").Height(homeOverviewListHeight).Shrink(0).FillWidth().TrackScroll(&v.KnowledgeScroll).Border(1, ui.Hex("#eaf0f4")).Radius(11).Background(ui.Hex("#ffffff")).Padding(4, 0).DrawOver(func(p *ui.Painter, r ui.Rect) {
 		if v.KnowledgeScroll.MaxY-v.KnowledgeScroll.Y > 1 {
 			p.FillGradient(ui.Rect{X: r.X + 1, Y: r.Y + r.H - 25, W: r.W - 6, H: 24}, ui.LinearGradient{From: ui.Hex("#ffffff").Alpha(0), To: ui.Hex("#ffffff"), Angle: 180}, 0)
 		}
@@ -416,6 +417,10 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 			p.FillGradient(ui.Rect{X: r.X + 1, Y: r.Y + 1, W: r.W - 6, H: 18}, ui.LinearGradient{From: ui.Hex("#ffffff"), To: ui.Hex("#ffffff").Alpha(0), Angle: 180}, 0)
 		}
 	}).Children(func() {
+		if !v.Loaded && v.Loading && len(rows) == 0 {
+			overviewLoadingRows(c, "正在读取记忆", false)
+			return
+		}
 		for _, item := range rows {
 			i := item
 			row := ui.Button(c, "").Key("recent-"+i.key()).Label(i.Title).FillWidth().Justify(ui.Start).AlignItems(ui.Start).Padding(17, 14).Radius(0).Gap(13).BorderWidth(0, 0, 1, 0).BorderColor(homeBorder)
@@ -423,15 +428,16 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 			row.Background(homeHoverColor(row, "knowledge-surface", hover.Alpha(0), hover)).Children(func() {
 				ui.Column(c).Size(28, 33).Shrink(0).Border(1, homeBorder).Radius(6).Background(ui.Hex("#f7f9fc")).AlignItems(ui.Center).Justify(ui.Center).Children(func() { ui.Icon(c, homeDocument).FontSize(15).TextColor(homeMuted) })
 				ui.Column(c).Gap(0).Grow(1).MinWidth(0).Children(func() {
-					homeText(c, i.Title, homeTitle).MaxLines(2)
-					date := "创建日期未知"
+					homeText(c, knowledgePreview(i.Title), homeTitle).MaxLines(1).Tooltip(i.Title)
+					date := "来源日期未知"
 					if i.Document != nil {
-						if at, ok := officialTime(i.Document.Created); ok {
-							date = at.In(now.Location()).Format("01月02日 · 15:04")
+						if day, ok := i.Document.knowledgeDay(now.Location()); ok {
+							date = day
 						}
 					}
 					ui.Row(c).Margin(9, 0, 0, 0).Gap(8).Children(func() {
-						homeText(c, "知识", homeMeta).Padding(2, 6).Radius(4).Background(ui.Hex("#f0f4f8")).TextColor(ui.Hex("#7d93a9"))
+						source := a.overviewSourceName(i)
+						homeText(c, middleProjectName(source), homeMeta).Tooltip(source).MaxLines(1).Padding(2, 6).Radius(4).Background(ui.Hex("#f0f4f8")).TextColor(ui.Hex("#7d93a9"))
 						homeText(c, date, homeMeta)
 					})
 				})
@@ -442,9 +448,9 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 			}
 		}
 		if len(rows) == 0 {
-			label := "暂无知识"
+			label := "暂无记忆"
 			if !v.Loaded {
-				label = "知识尚未载入"
+				label = "记忆尚未载入"
 			}
 			ui.Column(c).MinHeight(100).Justify(ui.Center).Children(func() { homeText(c, label, homeBody) })
 		}
@@ -458,7 +464,7 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 		events, loaded, loadError = v.History, v.HistoryLoaded, v.HistoryError
 	}
 	events = events[:min(50, len(events))]
-	ui.Row(c).Height(28).Shrink(0).Margin(0, 0, 15, 0).Children(func() {
+	ui.Row(c).Height(28).Shrink(0).Margin(0, 0, 6, 0).Children(func() {
 		homeText(c, "近期动态", homeHeading)
 		ui.Spacer(c)
 		selected := 0
@@ -489,9 +495,13 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 			p.FillGradient(ui.Rect{X: r.X + 1, Y: r.Y + 1, W: r.W - 6, H: 18}, ui.LinearGradient{From: bg, To: bg.Alpha(0), Angle: 180}, 0)
 		}
 	}).Children(func() {
+		if !loaded && v.ActivityLoading && len(events) == 0 {
+			overviewLoadingRows(c, "正在读取动态", true)
+			return
+		}
 		if len(events) == 0 {
 			ui.Column(c).Absolute().Top(0).Bottom(0).Left(0).Right(0).Padding(20).AlignItems(ui.Center).Justify(ui.Center).Gap(10).Children(func() {
-				icon, title, hint := homeDocument, "暂无动态", "保存和整理知识后，动态会显示在这里"
+				icon, title, hint := homeDocument, "暂无动态", "保存和整理记忆后，动态会显示在这里"
 				if v.SearchHistory {
 					icon, title, hint = homeSearch, "暂无搜索历史", "在搜索框中输入，记录会显示在这里"
 				}
@@ -519,7 +529,7 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 				homeText(c, "读取失败，保留上次结果 · "+loadError, homeMeta).MaxLines(2)
 				homeLink(c, "重试读取动态", a.loadOverviewActivity).Margin(0, 0, 12, 0)
 			}
-			shown := events
+			shown := groupOverviewFailures(events)
 			for idx, event := range shown {
 				ui.Row(c).Key("overview-event-"+event.Key).Padding(0, 0, 23, 0).Gap(9).AlignItems(ui.Stretch).Children(func() {
 					mark, color := "✓", ui.Hex("#749082")
@@ -560,31 +570,23 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 							}
 						}
 						if event.State == "失败" {
-							ui.Row(c).Margin(8, 0, 0, 0).Gap(8).Children(func() {
+							textButton(c, "更多", nil).Label("失败操作："+event.Key).FontSize(11).Padding(3, 0).BorderWidth(0).Background(ui.Transparent).AlignSelf(ui.Start).PopoverMenuButton(func(m *ui.Menu) {
 								title := "查看失败详情"
 								if v.ExpandedEvent == event.Key {
 									title = "收起失败详情"
 								}
-								homeLink(c.Key("failure-detail-"+event.Key), title, func() {
+								if m.Item(title).Chosen() {
 									if v.ExpandedEvent == event.Key {
 										v.ExpandedEvent = ""
-										return
+									} else {
+										v.ExpandedEvent = event.Key
+										v.ExpandedReport = failureReport(event, a.Config)
 									}
-									v.ExpandedEvent = event.Key
-									v.ExpandedReport = failureReport(event, a.Config)
-								})
-								copyTitle := "复制诊断信息"
-								if v.CopiedEvent == event.Key {
-									copyTitle = "诊断信息已复制"
 								}
-								homeLink(c.Key("failure-copy-"+event.Key), copyTitle, func() {
-									report := v.ExpandedReport
-									if v.ExpandedEvent != event.Key {
-										report = failureReport(event, a.Config)
-									}
-									c.WriteClipboard(report)
+								if m.Item("复制诊断信息").Chosen() {
+									c.WriteClipboard(failureReport(event, a.Config))
 									v.CopiedEvent = event.Key
-								})
+								}
 							})
 							if v.ExpandedEvent == event.Key {
 								homeText(c, v.ExpandedReport, homeMeta).LineHeight(1.6).Margin(8, 0, 0, 0)

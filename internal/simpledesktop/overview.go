@@ -178,7 +178,7 @@ func aggregateOverview(projects []Project, docs map[string][]Document, sessions 
 			if d.knowledge() {
 				copy := d
 				out.Knowledge = append(out.Knowledge, Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Title: d.title(), Date: d.date(), Source: d.session(), Document: &copy})
-				if _, ok := officialTime(d.Created); !ok {
+				if _, ok := d.knowledgeDay(time.Local); !ok {
 					out.MissingDates++
 				}
 			} else if !derivedMaterial(d) {
@@ -189,12 +189,12 @@ func aggregateOverview(projects []Project, docs map[string][]Document, sessions 
 	}
 	out.Raw = len(raw)
 	sort.SliceStable(out.Knowledge, func(i, j int) bool {
-		a, _ := officialTime(out.Knowledge[i].Document.Created)
-		b, _ := officialTime(out.Knowledge[j].Document.Created)
-		if a.Equal(b) {
+		a, _ := out.Knowledge[i].Document.knowledgeDay(time.Local)
+		b, _ := out.Knowledge[j].Document.knowledgeDay(time.Local)
+		if a == b {
 			return out.Knowledge[i].key() < out.Knowledge[j].key()
 		}
-		return a.After(b)
+		return a > b
 	})
 	return out
 }
@@ -271,11 +271,11 @@ func activityName(name string) string {
 	case "cognify_pipeline", "cognify":
 		return "处理记忆"
 	case "memify_pipeline", "memify", "improve":
-		return "整理知识"
+		return "整理记忆"
 	case "search":
-		return "搜索知识"
+		return "搜索记忆"
 	case "recall":
-		return "召回知识"
+		return "召回记忆"
 	case "forget", "delete", "prune":
 		return "清理内容"
 	case "code_graph_pipeline":
@@ -294,7 +294,8 @@ func activityState(r activityRow) string {
 	if r.Outcome == "noop" {
 		return "未执行"
 	}
-	if r.Outcome == "succeeded" && !r.Background {
+	_, hasEnd := officialTime(r.Ended)
+	if r.Outcome == "succeeded" && (!r.Background || hasEnd) {
 		return "已完成"
 	}
 	if r.Background {

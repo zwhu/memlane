@@ -225,7 +225,8 @@ class OllamaWireTests(unittest.IsolatedAsyncioTestCase):
         from litellm.utils import _runtime_registered_model_cost
         previous_persistent = copy.deepcopy(_runtime_registered_model_cost)
         try:
-            with patch.dict(os.environ, {'OLLAMA_API_BASE': environment['OLLAMA_API_BASE']}), contextlib.redirect_stdout(io.StringIO()):
+            with patch.dict(os.environ, {'OLLAMA_API_BASE': environment['OLLAMA_API_BASE'],
+                    'LLM_ENDPOINT': environment['LLM_ENDPOINT']}), contextlib.redirect_stdout(io.StringIO()):
                 result = await asyncio.wait_for(probe(self.runtime), 30)
             return result, requests
         finally:
@@ -233,6 +234,77 @@ class OllamaWireTests(unittest.IsolatedAsyncioTestCase):
                              'validation leaked its temporary SDK capability registration')
             self.assertEqual(_runtime_registered_model_cost, previous_persistent,
                              'validation leaked capability into the SDK persistent replay registry')
+            self.context.reset(token)
+            await asyncio.to_thread(server.shutdown)
+            server.server_close()
+            thread.join(timeout=2)
+            self.assertFalse(thread.is_alive())
+
+    async def test_native_ollama_capacity_survives_cache_rebuild(self):
+        import time
+        import litellm
+        from generation_http import generation_http_policy
+        from cognee.infrastructure.llm import overload_policy
+        from cognee.infrastructure.llm.structured_output_framework.litellm_native.get_native_client import get_native_client
+        from tenacity import stop_after_attempt, wait_none
+        active = peak = calls = 0
+        lock = threading.Lock()
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+            def do_POST(self):
+                nonlocal active, peak, calls
+                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                if self.path == '/api/show':
+                    result = {'model_info': {'qwen3.context_length': 8192}, 'capabilities': ['completion']}
+                else:
+                    with lock:
+                        active += 1
+                        calls += 1
+                        peak = max(peak, active)
+                    try:
+                        time.sleep(.005)
+                        result = {'model': body['model'], 'message': {'role': 'assistant', 'content': 'ok'},
+                            'done': True, 'done_reason': 'stop', 'prompt_eval_count': 1, 'eval_count': 1}
+                    finally:
+                        with lock:
+                            active -= 1
+                raw = json.dumps(result).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        endpoint = 'http://127.0.0.1:' + str(server.server_port)
+        cfg = self.LLMConfig(llm_provider='ollama', llm_model='ollama_chat/synthetic',
+            llm_api_key='ollama', llm_endpoint=endpoint, structured_output_framework='litellm_native')
+        token = self.context.set(cfg)
+        try:
+            with patch.dict(os.environ, {'OLLAMA_API_BASE': endpoint}), \
+                    patch.object(overload_policy, 'llm_overload_policy', overload_policy.OverloadPolicy()):
+                metrics = io.StringIO()
+                async with generation_http_policy(endpoint=endpoint, backend_kind='ollama') as capacity:
+                    for batch in range(2):
+                        if batch:
+                            litellm.in_memory_llm_clients_cache.flush_cache()
+                        client = get_native_client()
+                        complete = client.acreate_structured_output.retry_with(stop=stop_after_attempt(1), wait=wait_none())
+                        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(metrics):
+                            result = await asyncio.wait_for(asyncio.gather(*(complete(client,
+                                'Synthetic', 'Return ok', str, num_retries=0) for _ in range(32))), 30)
+                        self.assertTrue(all(item == 'ok' for item in result))
+                    self.assertEqual(calls, 64)
+                    self.assertEqual(peak, 2)
+                    self.assertEqual(capacity.active, 0)
+                events = [json.loads(line) for line in metrics.getvalue().splitlines() if line.startswith('{')]
+                finished = [row for row in events if row.get('event') == 'request_finished' and row.get('component') == 'generation_http']
+                self.assertEqual(len(finished), 64)
+                self.assertTrue(all(row['backend_kind'] == 'ollama' for row in finished))
+                self.assertTrue(all({'capacity_queue', 'dispatch_to_headers', 'response_body'} <= row['durations_ms'].keys() for row in finished))
+        finally:
             self.context.reset(token)
             await asyncio.to_thread(server.shutdown)
             server.server_close()

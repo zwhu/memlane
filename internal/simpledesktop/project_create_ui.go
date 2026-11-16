@@ -37,7 +37,7 @@ func (a *App) projectCreateDialog(c *ui.Context) {
 					zone := ui.Column(c).FillWidth().MinHeight(116).Padding(18).Gap(12).Border(1, homeBorder).Radius(10).Background(ui.Hex("#f8fafc")).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 						if s.Folder == "" {
 							homeText(c, "选择或拖入这台电脑上的项目文件夹", homeMeta)
-							ui.Button(c, "添加文件夹").OnClick(a.selectProjectFolder).Disabled(s.Saving || s.Submitted || a.ChooseProjectFolder == nil)
+							textButton(c, "添加文件夹", nil).OnClick(a.selectProjectFolder).Disabled(s.Saving || s.Submitted || a.ChooseProjectFolder == nil)
 						} else {
 							ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {
 								ui.Icon(c, homeFolder).FontSize(24).TextColor(homeMuted)
@@ -80,7 +80,7 @@ func (a *App) projectCreateDialog(c *ui.Context) {
 						if s.SuggestionError != "" {
 							ui.Row(c).Gap(12).Children(func() {
 								homeText(c, s.SuggestionError, homeMeta)
-								projectLink(c, "重新读取", a.loadProjectSuggestions)
+								refreshAction(c, "重新读取", a.loadProjectSuggestions)
 							})
 						}
 						if s.Loaded && len(s.Suggestions) == 0 && s.SuggestionError == "" {
@@ -106,7 +106,7 @@ func (a *App) projectCreateDialog(c *ui.Context) {
 		})
 		ui.Row(c).FillWidth().Padding(12, 0, 0, 0).Gap(12).AlignItems(ui.Center).Children(func() {
 			ui.Spacer(c)
-			ui.Button(c, "取消").OnClick(func() { s.Open = false })
+			textButton(c, "取消", nil).OnClick(func() { s.Open = false })
 			if s.Submitted && !s.Saving {
 				ui.PrimaryButton(c, "核对保存结果").OnClick(a.confirmProjectCreation)
 			} else {

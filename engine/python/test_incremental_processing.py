@@ -1,0 +1,166 @@
+import asyncio
+import copy
+import json
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import AsyncMock
+
+from incremental_processing import IncrementalProcessing
+
+
+class IncrementalProcessingTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.now = 1000.0
+        self.allowed = True
+        self.calls = []
+        self.detail = {'session_id': 'source', 'dataset_id': 'ds', 'user_id': 'actor',
+            'msg_count': 1, 'tool_calls': 3, 'last_activity_at': '1970-01-01T00:16:41Z',
+            'qas': [{'time': '1970-01-01T00:16:41Z'}], 'traces': []}
+        self.snapshot = {'session_id': 'source', 'tokens': [], 'unknown': 20}
+        self.result = {'status': 'submitted'}
+        self.registry = SimpleNamespace(path=Path(self.temp.name) / 'registry.json', state={
+            'sessions': {json.dumps(['a', 'host']): 'p'}, 'projects': {'p': {'dataset_id': 'ds'}}},
+            official=SimpleNamespace(request=AsyncMock(side_effect=lambda *a, **k: copy.deepcopy(self.detail))))
+        async def execute(row, target, action):
+            self.calls.append((action, copy.deepcopy(target)))
+            return copy.deepcopy(self.snapshot if action == 'review' else self.result)
+        self.backlog = SimpleNamespace(registry=self.registry, jobs={}, runtime={}, execute=execute,
+            checked_target=lambda *a, **k: ({'installation': {}, 'principal_id': 'actor', 'key_file': '/original'},
+                {'policy': {'permissions': ['read', 'write'], 'can_auto_process': self.allowed}}))
+        # Installations are verified by the existing executor in production.
+        self.backlog.checked_target = lambda *a, **k: ({'installation': {'verified': True}, 'principal_id': 'actor', 'key_file': '/original'},
+                {'policy': {'permissions': ['read', 'write'], 'can_auto_process': self.allowed}})
+        self.available = AsyncMock(return_value=True)
+        self.processing = IncrementalProcessing(self.backlog, clock=lambda: self.now, available=self.available)
+
+    async def asyncTearDown(self):
+        await self.processing.close()
+        self.temp.cleanup()
+
+    def submissions(self):
+        return [target for action, target in self.calls if action == 'process']
+
+    async def test_saved_units_start_after_quiet_without_session_end_or_ui(self):
+        await self.processing.tick()
+        self.assertEqual(self.submissions(), [])
+        self.now += 31
+        await self.processing.tick()
+        self.assertEqual(len(self.submissions()), 1)
+        self.assertEqual(self.submissions()[0]['incremental_cooldown_seconds'], 300)
+        self.assertEqual(self.submissions()[0]['session_id'], 'source')
+        self.now += 600
+        await self.processing.tick()
+        self.assertEqual(len(self.submissions()), 1, 'unchanged source was resubmitted')
+        self.detail['msg_count'] += 1
+        await self.processing.tick()
+        self.now += 31
+        await self.processing.tick()
+        self.assertEqual(len(self.submissions()), 2, 'new units never reached next increment')
+
+    async def test_continuous_arrivals_do_not_starve_and_busy_never_forces_admission(self):
+        await self.processing.tick()
+        self.available.return_value = False
+        for _ in range(32):
+            self.now += 10
+            self.detail['msg_count'] += 1
+            await self.processing.tick()
+        self.assertEqual(self.submissions(), [])
+        self.available.return_value = True
+        await self.processing.tick()
+        self.assertEqual(len(self.submissions()), 1)
+
+    async def test_multiple_hosts_rotate_and_only_one_job_is_admitted_per_pass(self):
+        self.registry.state['sessions'] = {json.dumps(['a', host]): 'p' for host in ('codex', 'pi', 'traex')}
+        await self.processing.tick()
+        self.now += 31
+        await self.processing.tick()
+        self.assertEqual(len(self.submissions()), 1)
+        await self.processing.tick()
+        self.assertEqual(len(self.submissions()), 2)
+        await self.processing.tick()
+        self.assertEqual({t['host'] for t in self.submissions()}, {'codex', 'pi', 'traex'})
+        await self.processing.tick()
+        self.assertEqual(len(self.submissions()), 3, 'unchanged units were processed twice')
+
+    async def test_unknown_is_durable_and_new_arrivals_cannot_clear_it(self):
+        self.result = {'status': 'unknown'}
+        await self.processing.tick(); self.now += 31; await self.processing.tick()
+        self.detail['msg_count'] += 1
+        self.now += 600
+        self.processing = IncrementalProcessing(self.backlog, clock=lambda: self.now, available=self.available)
+        await self.processing.tick()
+        self.assertEqual(len(self.submissions()), 1)
+        self.assertNotIn('question', self.processing.path.read_text())
+
+    async def test_permissions_pause_unsaved_and_wrong_actor_block_dispatch(self):
+        await self.processing.tick(); self.now += 31
+        self.allowed = False
+        await self.processing.tick()
+        self.allowed = True
+        await self.processing.tick()
+        self.assertEqual(self.submissions(), [], 'disabled-period source replayed')
+        self.detail['msg_count'] += 1
+        self.snapshot['tokens'] = ['unsent']
+        await self.processing.tick(); self.now += 31; await self.processing.tick()
+        self.assertEqual(self.submissions(), [])
+        self.snapshot['tokens'] = []
+        self.detail['user_id'] = 'another-actor'
+        with self.assertRaises(Exception):
+            await self.processing.tick()
+        self.assertEqual(self.submissions(), [])
+
+    async def test_installation_does_not_replay_old_saved_history(self):
+        self.detail['last_activity_at'] = '1970-01-01T00:01:00Z'
+        await self.processing.tick(); self.now += 600; await self.processing.tick()
+        self.assertEqual(self.submissions(), [])
+        self.detail['msg_count'] += 1
+        await self.processing.tick(); self.now += 31; await self.processing.tick()
+        self.assertEqual(len(self.submissions()), 1)
+
+    async def test_cancelled_submit_stays_unknown_on_restart(self):
+        execute = self.backlog.execute
+        async def cancel(row, target, action):
+            if action == 'process':
+                raise asyncio.CancelledError
+            return await execute(row, target, action)
+        self.backlog.execute = cancel
+        await self.processing.tick(); self.now += 31
+        with self.assertRaises(asyncio.CancelledError):
+            await self.processing.tick()
+        self.assertEqual(next(iter(self.processing.state['sessions'].values()))['status'], 'unknown')
+
+    async def test_partial_tool_turn_never_dispatches_even_after_maximum_wait(self):
+        await self.processing.tick()
+        self.detail['tool_calls'] += 1
+        self.detail['traces'] = [{'time': '1970-01-01T00:17:00Z'}]
+        self.now += 600
+        await self.processing.tick()
+        self.assertEqual(self.submissions(), [])
+        self.detail['msg_count'] += 1
+        self.detail['qas'] = [{'time': '1970-01-01T00:27:00Z'}]
+        await self.processing.tick()
+        self.assertEqual(len(self.submissions()), 1)
+
+    async def test_official_cooldown_does_not_hot_loop_submissions(self):
+        self.result = {'status': 'deferred', 'reason': 'cooldown'}
+        await self.processing.tick(); self.now += 31; await self.processing.tick()
+        for _ in range(5):
+            self.now += 5
+            await self.processing.tick()
+        self.assertEqual(len(self.submissions()), 1)
+        self.now += 300
+        await self.processing.tick()
+        self.assertEqual(len(self.submissions()), 2)
+
+    async def test_capacity_checks_original_child_identity_not_only_manager(self):
+        self.registry.state['agents'] = {'a': {'key_file': '/original', 'installation': {'verified': True}}}
+        async def activity(*args, **kwargs):
+            if kwargs.get('token_file'):
+                return [{'kind': 'pipeline', 'status': 'DATASET_PROCESSING_STARTED', 'pipeline_run_id': 'child-run'}]
+            return []
+        self.registry.official.request = AsyncMock(side_effect=activity)
+        self.assertFalse(await self.processing.capacity_available())
+        self.assertEqual(self.registry.official.request.await_count, 2)

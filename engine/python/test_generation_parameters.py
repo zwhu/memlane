@@ -11,6 +11,28 @@ LOCAL = {'mode': 'provider', 'provider': 'ollama', 'model': 'synthetic', 'endpoi
 
 
 class GenerationParameterTests(unittest.TestCase):
+    def test_endpoint_capacity_is_model_and_agent_independent(self):
+        profiles = [LOCAL, {'mode': 'agent_bridge', 'bridge_kind': 'codex', 'model': 'synthetic'}]
+        for profile in profiles:
+            self.assertEqual(validate_profile({**profile, 'max_concurrent_requests': 4})['max_concurrent_requests'], 4)
+            for invalid in (None, True, 0, -1, 257, 1.5, '2'):
+                with self.assertRaisesRegex(PolicyError, 'invalid_generation_capacity'):
+                    validate_profile({**profile, 'max_concurrent_requests': invalid})
+        self.assertNotEqual(fingerprint(validate_profile(LOCAL)),
+                            fingerprint(validate_profile({**LOCAL, 'max_concurrent_requests': 4})))
+
+    def test_bridge_uses_official_chunk_batch_without_timed_pacing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            token = Path(temporary) / 'bridge.key'
+            token.write_text('synthetic-private-key'); token.chmod(0o600)
+            profile = {'mode':'agent_bridge', 'bridge_kind':'codex', 'model':'synthetic'}
+            env = compile_environment(profile, {'completion_url':'http://127.0.0.1:18173', 'completion_token_file':str(token)})
+            self.assertEqual(env['CHUNKS_PER_BATCH'], '2')
+            for key in ('LLM_RATE_LIMIT_ENABLED','LLM_RATE_LIMIT_REQUESTS','LLM_RATE_LIMIT_INTERVAL'):
+                self.assertNotIn(key, env)
+        self.assertNotIn('LLM_RATE_LIMIT_ENABLED', compile_environment(LOCAL, {}))
+        self.assertNotIn('CHUNKS_PER_BATCH', compile_environment(LOCAL, {}))
+
     def test_rejects_invalid_or_unbounded_values_and_bridge_overrides(self):
         for value in (True, None, '0.6', float('nan'), float('inf'), -0.1, 2.1, 10**1000):
             with self.subTest(temperature=str(value)), self.assertRaisesRegex(PolicyError, 'invalid_generation_temperature'):

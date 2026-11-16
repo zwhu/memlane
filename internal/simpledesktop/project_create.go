@@ -252,7 +252,7 @@ func (a *App) acceptProjectFolderDrop(paths []string) {
 	}
 	info, err := os.Stat(paths[0])
 	if err != nil || !info.IsDir() || !filepath.IsAbs(paths[0]) {
-		s.Message = "请拖入本机文件夹"
+		s.Message = "请拖入文件夹"
 		return
 	}
 	s.Folder = filepath.Clean(paths[0])
