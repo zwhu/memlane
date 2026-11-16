@@ -146,7 +146,8 @@ def verify_managed_plugin(directory):
     current = receipt == expected
     if not current:
         previous = [json.loads((ROOT / 'engine' / name).read_text()) for name in
-                    ('managed-project-plugin-pre-recall.json', 'managed-project-plugin-pre-environment.json')]
+                    ('managed-project-plugin-pre-recall.json', 'managed-project-plugin-pre-environment.json',
+                     'managed-project-plugin-pre-convergence.json')]
         if receipt not in previous:
             raise ValueError('managed plugin receipt does not match fixed component input')
         expected = receipt

@@ -151,8 +151,9 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
 
     async def reconcile(request):
         manager(request)
-        payload = fields(await body(request), ('expected_revision',))
-        return web.json_response(await registry.reconcile(payload['expected_revision'], request.match_info['id']))
+        payload = fields(await body(request), ('expected_revision',), ('verify_only',))
+        return web.json_response(await registry.reconcile(payload['expected_revision'], request.match_info['id'],
+                                                        verify_only=payload.get('verify_only', False)))
 
     async def tool_graph_settings(request):
         manager(request)

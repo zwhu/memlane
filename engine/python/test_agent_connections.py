@@ -480,6 +480,46 @@ print("official capture/recall project scope matches; old unscoped rows unchange
                                           env=environment, cwd=self.workspace, capture_output=True, text=True, timeout=20)
         self.assertEqual(process.returncode, 0, process.stderr[-3000:])
 
+    async def test_traex_explicit_skill_resolves_hook_binding_with_shared_cwd(self):
+        private_write(self.workspace / 'control', b'fixture-control-token-with-valid-length-0001')
+        from project_installation import prepare
+        installation = prepare(self.plugin, self.registry.path.parent, 'synthetic-traex',
+            self.registry.state['agents'][self.adapter.id], 'http://127.0.0.1:18999', 'http://127.0.0.1:18998',
+            str(self.workspace), host_kind='traex', python=sys.executable)
+        script = r'''
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import agent_memory_adapter as memory
+import _memlane_policy as policy
+import _project_memory as projects
+dataset = "00000000-0000-0000-0000-000000000001"
+decision = {"ready":True, "revision":1, "project_id":"fixture-project", "dataset_id":dataset,
+            "policy":{"permissions":["read","write","delete"], "can_capture":True, "can_auto_process":False}}
+policy._request = lambda *a, **kw: decision
+projects.prepare = lambda *a, **kw: {}
+key, session, _ = memory.setup({"operation":"status", "session_id":"11111111-1111-4111-8111-111111111111", "cwd":os.environ["HOME"]})
+import _plugin_common as common
+# Several hook launches at one cwd must never make a shell skill guess a session.
+common.ensure_launch_record("other-host", os.environ["HOME"], dataset=dataset)
+os.environ.pop("COGNEE_SESSION_KEY", None)
+os.environ["TRAECLI_THREAD_ID"] = "11111111-1111-4111-8111-111111111111"
+import _env_file
+_env_file._loaded = False
+_env_file.load_env_file()
+resolved, reason = common.resolve_host_key_outside_hook()
+assert resolved == key, (resolved, reason)
+assert policy.dataset() == dataset
+assert policy.permit("read")
+print("explicit skill and hooks resolve one binding without cwd fallback")
+'''
+        environment = {key: value for key, value in os.environ.items() if not key.startswith(
+            ('COGNEE_', 'MEMLANE_', 'LLM_', 'EMBEDDING_', 'TRAECLI_', 'CODEX_'))}
+        environment['HOME'] = str(self.workspace)
+        process = await asyncio.to_thread(subprocess.run, [sys.executable, '-c', script,
+                                          str(Path(installation['plugin_dir']) / 'scripts')],
+                                          env=environment, cwd=self.workspace, capture_output=True, text=True, timeout=20)
+        self.assertEqual(process.returncode, 0, process.stderr[-3000:])
+
     async def test_traex_payloads_pair_prompt_answer_and_never_read_transcript(self):
         from project_installation import prepare
         installation = prepare(self.plugin, self.registry.path.parent, 'synthetic-traex',

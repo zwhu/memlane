@@ -11,6 +11,9 @@ func knowledgeBasisFields(i Item) []ReadingField {
 	if i.Kind != "知识" || i.Document == nil || !i.Document.knowledge() || commonCategory(*i.Document) != "" {
 		return nil
 	}
+	if i.Document.directMemory() {
+		return []ReadingField{{"保存方式", "直接保存"}}
+	}
 	meta := i.Document.Metadata
 	value := func(key string) string {
 		s, _ := meta[key].(string)

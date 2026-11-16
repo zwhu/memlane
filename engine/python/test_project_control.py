@@ -266,6 +266,51 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         self.official.acls[(agent['principal_id'], project['dataset_id'])] = {'read','write','delete'}
         self.assertFalse((await self.registry.checked_policy(project, 'a'))['ready'])
 
+    async def test_verify_only_recovers_unknown_acl_without_mutating_official_data(self):
+        from unittest.mock import AsyncMock, patch
+        bound = await self.registry.resolve('a', str(self.repo), 'one')
+        project = self.registry.state['projects'][bound['project_id']]
+        project['status'] = 'unconfirmed'
+        project['error_code'] = 'official_result_unknown'
+        project['applied']['a'] = {'status': 'unconfirmed', 'error_code': 'official_result_unknown'}
+        self.registry.save()
+        before_sessions = dict(self.registry.state['sessions'])
+        before_acls = {k: set(v) for k, v in self.official.acls.items()}
+        with patch.object(self.official, 'sync_acl', AsyncMock(side_effect=AssertionError('no ACL writes'))), \
+                patch.object(self.official, 'owned_dataset', AsyncMock(side_effect=AssertionError('no dataset writes'))):
+            client = TestClient(TestServer(create_app(self.registry, 'm' * 40, {'a': 'a' * 40})))
+            await client.start_server()
+            try:
+                payload = {'expected_revision': self.registry.state['revision'], 'verify_only': True}
+                route = '/v1/projects/' + project['id'] + '/reconcile'
+                denied = await client.post(route, json=payload, headers={'Authorization': 'Bearer ' + 'a' * 40})
+                self.assertEqual(denied.status, 403)
+                response = await client.post(route, json=payload, headers={'Authorization': 'Bearer ' + 'm' * 40})
+                self.assertEqual(response.status, 200, await response.text())
+            finally:
+                await client.close()
+        self.assertTrue(self.registry.policy(project, 'a')['ready'])
+        self.assertNotIn('error_code', project)
+        self.assertEqual(before_sessions, self.registry.state['sessions'])
+        self.assertEqual(before_acls, self.official.acls)
+
+    async def test_verify_only_never_repairs_missing_or_excess_grants(self):
+        from unittest.mock import AsyncMock, patch
+        bound = await self.registry.resolve('a', str(self.repo), 'one')
+        project = self.registry.state['projects'][bound['project_id']]
+        agent = self.registry.state['agents']['a']
+        for rights in (set(), {'read', 'write', 'delete', 'share'}):
+            self.official.acls[(agent['principal_id'], project['dataset_id'])] = rights
+            with patch.object(self.official, 'sync_acl', AsyncMock(side_effect=AssertionError('no ACL writes'))):
+                await self.registry.reconcile(self.registry.state['revision'], project['id'], verify_only=True)
+            self.assertFalse(self.registry.policy(project, 'a')['ready'])
+            self.assertEqual(self.official.acls[(agent['principal_id'], project['dataset_id'])], rights)
+        with patch.object(self.official, 'effective_permissions', AsyncMock(side_effect=PolicyError('official_result_unknown', 503))), \
+                patch.object(self.official, 'sync_acl', AsyncMock(side_effect=AssertionError('no ACL writes'))):
+            await self.registry.reconcile(self.registry.state['revision'], project['id'], verify_only=True)
+        self.assertFalse(self.registry.policy(project, 'a')['ready'])
+        self.assertEqual(project['error_code'], 'official_result_unknown')
+
     async def test_manual_origin_is_preserved_when_automatic_hooks_find_it(self):
         created=await self.registry.create_project(self.registry.state['revision'],str(self.repo),name='Manual')
         self.assertEqual(created['source'],'manual')

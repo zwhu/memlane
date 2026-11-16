@@ -1,7 +1,7 @@
 {
   "plugin_commit": "a176248914fdb32a78354854b300174203b15a5c",
-  "patch_sha256": "37e46c303936eac345e9556583f8ec69f7584c2e36492c14957e6961d78f5088",
-  "extension_sha256": "1b81dcac09b3930a113fd26c65290f660c1d093e2a88f5d458249d49e91fd552",
+  "patch_sha256": "55fd6c62c8635cc0f6e8e99607b4540c6828c325c21c74710c9d3058d377dc71",
+  "extension_sha256": "874ae3e658be71819e49caa82bd9e85e690e8d67a6359051c640931f7f3ffd8e",
   "upstream_lock_sha256": "9151009975b168c8f9e0fa2ee7e6b7e74bdf4af4a92ab823d31d1539e9011148",
   "files": {
     "CHANGELOG.md": "fca7cf57f9a971d37bebde4ad9917132b80d65267aaa175b3660042445284258",
@@ -12,18 +12,17 @@
     "scripts/store-user-prompt.py": "ebf192127805c2372782ce10d614dcea3467b9cdfe70dbf8f236e7a4062f4793",
     "scripts/_cognee_client.py": "f6f4f23f0fb420edc27b0dd5fb864c2178c9b87c11cfe27c6a04ba0ecc8ea096",
     "scripts/_code_graph.py": "dbbe3e64246c3034d4f957e5a6783515e3cded72c68eaceecb8ca982b65180d6",
-    "scripts/_coding_memory.py": "832c7e902fb55ba324c212cb124d29fafc50000a19313f81e0e25e2d4e3dc19e",
+    "scripts/_coding_memory.py": "f36a0092402454753090fdf09567e37d5ca2b41a591fa76ce2bcb6764c6d4c1f",
     "scripts/hook_runner.py": "ab1caf6d8cf79ec9d5c4c48b5b6fed7300b45e816e6bd258ee27e165fd3b6976",
     "scripts/cognee-plugin": "14dd5edac1372d5b5c87ca5a5a8a4ad9e5213d543cd2c89255c5d33c2be6996a",
     "scripts/cognee_plugin.py": "829652f3e7aa2945551b7553ec39e24aef4f1bf8e818b05d0d4132e97dadce78",
     "scripts/idle-watcher.py": "a7ba7482eaa982645a4eb02caffdd2f3bac90bb33aedb745fbe65dfdac2c1728",
     "scripts/config.py": "2885501526f39c5a0ba2e8305e3d89ade8a6ac721f719d2bd4a3f2de06df613f",
     "scripts/_recall_text.py": "ed2fac8aed4d58f3b497f1879bb60e15fd68768f9f52d7b1106b80d77d0535ba",
-    "scripts/_recall_http.py": "f8b8273171d4e7c55cca286dd3878ee03f5ceaa1e5457e0c95e7b9a2f4c5151a",
+    "scripts/_recall_http.py": "f6fcaf45a034d0f2d7fc406db6e45924cf4bb23f0cff3c4bd7695173d4b931cf",
     "scripts/cognee-forget.sh": "2fc08940af93c7bd8cab27b216e7016684a97cba0789534e00ce6f4d27b3de19",
     "scripts/exit-watcher.py": "dfea43ee048d06a69ad2830e49bcd2f974a5b448d2f2598bfa02b4c0158e10b0",
     "scripts/session-start.py": "9f91548588ff552a8f33a5f183453d801d22f7e003125d2d5dc866ad774e0b30",
-    "scripts/_memlane_policy.py": "1b81dcac09b3930a113fd26c65290f660c1d093e2a88f5d458249d49e91fd552",
     "scripts/_deadlines.py": "f9a73573a0818653188dcd5dcc69e6175150956b5358ea6e57e313c38dbe243a",
     "scripts/session-context-lookup.py": "c760dbf717b9b88cbb36a8dc51be6282edfdee9fde721ed7b4d11513174430df",
     "scripts/_project_memory.py": "e44e7fcfca47f96d3b1f8da120dc06929ceb486a09e0cf39953aa6932ffdf0a7",
@@ -33,7 +32,7 @@
     "scripts/cognee-cli.sh": "26f47007d858023063e2de95f7af11da109e14ae28a352f174653c52720bd3d3",
     "scripts/sync-session-to-graph.py": "5b3d94c8f1c374f66bd7344135c7c71f88f779179f9beb5d226d1d4815d288d2",
     "scripts/switch-dataset.py": "adbcdd5865aa2017ec6969c978524bda2deee016692406137914c18c278c1ca3",
-    "scripts/cognee-search.sh": "1703561b55267ef500883bb74109d393a66b14f272fbd020038bfa7ee4cda849",
+    "scripts/cognee-search.sh": "b3a1ce532dfa675a34b690469d0bb0791efdb9c2993156db76f34d6e1f583f8d",
     "scripts/cognee-remember.sh": "b312acc3b9f726a66ad61dc7a12650e96b555ba7054803faa64eb789a90b0f79",
     "scripts/pre-compact.py": "c4fb8352862529563e54da2c8da77e965ecf0ae8d4328e743f850e22cd946207",
     "scripts/_logfiles.py": "fe00da7935c9267c220f55540379c290ccc8c320212ee2c0c301f33077459141",
@@ -61,6 +60,7 @@
     "skills/cognee-switch-datasets/SKILL.md": "fa37f901cb9cd1efda02ae70a715b411302d27ac0d8d2ecb686274f62551c53c",
     "skills/cognee-standup/SKILL.md": "1ac45dddf167b7c4976e7db9accc42425c0d68933e551f012fdc47d1cbebd07c",
     "assets/logo.svg": "93874bfb4a0cbac680240769119d8e27c1769aea64b7a741423c2986326e15e6",
-    ".codex-plugin/plugin.json": "181be5d05735ead0cb71021db08e4997f2f529cd4bfb1f9f1ed8db9c5b98734e"
+    ".codex-plugin/plugin.json": "181be5d05735ead0cb71021db08e4997f2f529cd4bfb1f9f1ed8db9c5b98734e",
+    "scripts/_memlane_policy.py": "874ae3e658be71819e49caa82bd9e85e690e8d67a6359051c640931f7f3ffd8e"
   }
 }

@@ -17,6 +17,37 @@ SOURCE = ROOT / '.cache/coding-memory-components/plugin-a176248914fdb32a78354854
 
 
 class OfficialPluginPatchTests(unittest.TestCase):
+    def test_explicit_recall_policy_io_failure_is_unknown_without_transport(self):
+        self.run_isolated('''
+import _memlane_policy as policy, _recall_http as tool, os
+def unavailable(*a, **kw):
+    raise PermissionError("synthetic read-only host")
+policy.recall_targets = unavailable
+def no_transport(*a, **kw):
+    raise AssertionError("policy-unconfirmed request reached server")
+result = tool.do_recall(os.environ["COGNEE_BASE_URL"], "unused", "synthetic", "", "graph", 3, opener=no_transport)
+assert result["status"] == 0 and result["error"] == "project_policy_unconfirmed", result
+''')
+
+    def test_managed_search_never_falls_back_to_local_cli(self):
+        self.run_isolated('''
+from pathlib import Path
+import _plugin_common as common, os, subprocess
+scripts = Path(common.__file__).parent
+(scripts / "_cognee_client.py").write_text('print("UNREACHABLE")\\n')
+binary = Path(os.environ["HOME"]) / "probe-bin"
+binary.mkdir()
+sentinel = binary / "cli-used"
+cli = binary / "cognee-cli"
+cli.write_text("#!/bin/sh\\ntouch '" + str(sentinel) + "'\\n")
+cli.chmod(0o700)
+env = {**os.environ, "PATH": str(binary) + os.pathsep + os.environ["PATH"]}
+result = subprocess.run(["sh", str(scripts / "cognee-search.sh"), "synthetic", "3", "--graph"], env=env, capture_output=True, text=True, timeout=15)
+assert not sentinel.exists(), "managed search invoked local CLI"
+assert "managed_recall_unconfirmed" in result.stdout, (result.stdout, result.stderr)
+assert result.returncode != 0
+''', pinned=True)
+
     @classmethod
     def setUpClass(cls):
         cls.temporary = tempfile.TemporaryDirectory()

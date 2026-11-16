@@ -29,7 +29,8 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
     receipt = json.loads((source / '.memlane-project-access.json').read_text())
     if receipt != expected:
         previous = [json.loads((ENGINE / name).read_text()) for name in
-                    ('managed-project-plugin-pre-recall.json', 'managed-project-plugin-pre-environment.json')]
+                    ('managed-project-plugin-pre-recall.json', 'managed-project-plugin-pre-environment.json',
+                     'managed-project-plugin-pre-convergence.json')]
         if receipt not in previous:
             raise PolicyError('managed_plugin_input_mismatch', 503)
         expected = receipt

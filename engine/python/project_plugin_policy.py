@@ -50,6 +50,13 @@ def prepare_environment(parse_env_file):
         os.environ['COGNEE_ENV_FILE'] = str(path)
         for key in required:
             os.environ[key] = values[key]
+        # TraeX's shell tools export the raw thread id, whereas its event
+        # adapter namespaces that id per installation. Use the same key for
+        # both entry points; cwd is ambiguous when several sessions coexist.
+        if binding.get('host_kind') == 'traex' and os.environ.get('TRAECLI_THREAD_ID'):
+            thread = str(uuid.UUID(os.environ['TRAECLI_THREAD_ID'].strip()))
+            identity = binding['instance_id'] + '\0' + thread
+            os.environ['COGNEE_SESSION_KEY'] = 'traex-' + hashlib.sha256(identity.encode()).hexdigest()
     if not managed() or not os.environ.get('COGNEE_API_KEY') or not os.environ.get('COGNEE_BASE_URL'):
         raise NotReady('managed_installation_configuration_required')
     os.environ.update(COGNEE_PLUGIN_IDENTITY='false', COGNEE_SHARED_AGENT_MEMORY='false',
@@ -128,7 +135,7 @@ def _request(path, payload=None, *, timeout=5):
 
 
 @contextlib.contextmanager
-def _state():
+def _state(*, writable=True):
     from _plugin_common import _PLUGIN_DIR, get_session_key
     session_key = get_session_key()
     if not session_key:
@@ -140,8 +147,15 @@ def _state():
     origin, token = _connection()
     digest = hashlib.sha256((origin + '\n' + token + '\n' + session_key).encode()).hexdigest()
     root = _PLUGIN_DIR / 'memlane-policy'
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = root / (digest + '.json')
+    if not writable:
+        # Explicit tools may run in a workspace sandbox. Reading an existing
+        # binding must not create/chmod/rewrite files in the Agent's home.
+        with (root / (digest + '.lock')).open('r') as lock:
+            fcntl.flock(lock, fcntl.LOCK_SH)
+            yield json.loads(path.read_text())
+        return
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (root / (digest + '.lock')).open('a+') as lock:
         os.chmod(lock.name, 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -197,7 +211,7 @@ def bind(workspace, host_session_key):
 
 def dataset():
     """Local immutable binding; authorization is rechecked at each operation."""
-    with _state() as state:
+    with _state(writable=False) as state:
         binding = state.get('binding')
         if not binding or not binding.get('dataset_id'):
             raise NotReady('project_binding_required')
@@ -205,7 +219,7 @@ def dataset():
 
 
 def current(dataset=None, *, timeout=5):
-    with _state() as state:
+    with _state(writable=False) as state:
         binding = state.get('binding')
         if not binding:
             raise NotReady('project_binding_required')
@@ -356,8 +370,8 @@ def _merge_block(query, cwd, project_builder):
                 return _raw_text(identifier, key, remaining())
 
             pool = ThreadPoolExecutor(max_workers=4)
-            # Project builder spends at most four uncached raw reads; together
-            # with these four the single injection performs at most eight.
+            # Common-memory reads have their own bounded fan-out. The project
+            # builder retains the official plugin's own candidate/read limits.
             futures = {pool.submit(fetch, key): key for key in ordered[:4]}
             try:
                 done, _ = wait(futures, timeout=remaining())

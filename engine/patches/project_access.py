@@ -157,12 +157,6 @@ if managed() and not permit("read"):
     return ""''')
         text = replace(text, 'def build_block(query: str, cwd: str) -> str:\n', 'def _project_build_block(query: str, cwd: str, deadline=None) -> str:\n')
         text = replace(text, '    deadline = time.monotonic() + DELIVERY_BUDGET_SECONDS\n    session_id, dataset = _session()\n', '    deadline = deadline or (time.monotonic() + DELIVERY_BUDGET_SECONDS)\n    session_id, dataset = _session()\n')
-        text = replace(text, '    dataset_id, lessons = list_lessons(dataset, project, deadline)\n', '    dataset_id, lessons = list_lessons(dataset, project, deadline, max_fetches=4 if managed() else MAX_BODY_FETCHES_ON_PROMPT)\n')
-        text = replace(text, '    bodies = {data_id: _cached_body(data_id) for _, _, data_id in candidates}\n', '''    from _memlane_policy import managed
-    if managed():
-        candidates = candidates[:22]
-    bodies = {data_id: _cached_body(data_id) for _, _, data_id in candidates}
-''')
         text = replace(text, '    return render_block(dataset, max(1, sessions), chosen, root, in_git, line_for)\n', '    if managed():\n        from _memlane_policy import stage_recall\n        stage_recall(dataset_id, [(item["data_id"], line_for(item)) for item in chosen])\n    return render_block(dataset, max(1, sessions), chosen, root, in_git, line_for)\n')
         text = body(text, 'resolve_dataset_id', '''from _memlane_policy import managed
 if managed():
@@ -284,8 +278,9 @@ if managed():
         return _error(403, "managed_service_mismatch")
     try:
         dataset_ids, project_id = recall_targets(dataset, dataset_ids)
-    except NotReady:
-        return _error(403, "project_read_denied")
+    except (NotReady, OSError, ValueError, KeyError, TypeError) as error:
+        denied = isinstance(error, NotReady) and str(error) == "project_read_denied"
+        return _error(403 if denied else 0, "project_read_denied" if denied else "project_policy_unconfirmed")
     dataset = ""
     api_key = os.environ["COGNEE_API_KEY"]
     if any(target != project_id for target in dataset_ids):
@@ -311,6 +306,12 @@ SERVICE_URL="$(python3 -''')
         require("delete", target)
 ''')
         if name != 'cognee-remember.sh':
+            if name == 'cognee-search.sh':
+                text = replace(text, 'elif [ "$MODE" = "code" ] || [ -n "$FOREIGN" ]; then\n', '''elif [ -f "${SELF_DIR}/_memlane_policy.py" ]; then
+    echo '{"error":"managed_recall_unconfirmed","status":0,"authoritative":false}'
+    exit 1
+elif [ "$MODE" = "code" ] || [ -n "$FOREIGN" ]; then
+''')
             return text
         text = replace(text, 'elif [ -n "$FILE_PATH" ]; then\n', '''elif [ -f "${SELF_DIR}/_memlane_policy.py" ]; then
     echo '{"error":"managed_server_unreachable","status":0}'

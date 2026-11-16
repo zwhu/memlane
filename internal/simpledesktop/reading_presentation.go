@@ -16,7 +16,7 @@ type Presentation struct {
 }
 type ReadingField struct{ Name, Value string }
 
-var machineName = regexp.MustCompile(`^(?:text_[0-9a-fA-F]{32}(?:\.(?:md|txt))?|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$`)
+var machineName = regexp.MustCompile(`^(?:text_[0-9a-fA-F]{32}(?:\.(?:md|txt))?|(?:user_context|memory)-[0-9a-fA-F]{32}(?:\.txt)?|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$`)
 var imageOnly = regexp.MustCompile(`^!\[[^\]]*\]\([^)]*\)$`)
 
 func readableName(s string) string {
@@ -68,10 +68,14 @@ func presentKnowledge(d Document, raw string) Presentation {
 	if d.Label != nil {
 		p.TechnicalFields = append(p.TechnicalFields, ReadingField{"官方 label", *d.Label})
 	}
-	if category := commonCategory(d); category != "" {
+	if category := commonCategory(d); category != "" || d.directMemory() {
 		// A managed common document is ordinary Markdown with explicit metadata;
 		// it is not a malformed session learning and has no wrapper to remove.
-		p.TechnicalFields = append(p.TechnicalFields, ReadingField{"内容类型", "通用记忆"}, ReadingField{"分类", category})
+		if d.directMemory() {
+			p.TechnicalFields = append(p.TechnicalFields, ReadingField{"内容类型", "直接保存的记忆"})
+		} else {
+			p.TechnicalFields = append(p.TechnicalFields, ReadingField{"内容类型", "通用记忆"}, ReadingField{"分类", category})
+		}
 		if source, _ := d.Metadata["source"].(string); source != "" {
 			p.TechnicalFields = append(p.TechnicalFields, ReadingField{"原始来源", source})
 		}

@@ -153,7 +153,26 @@ func (d Document) knowledge() bool {
 		return true
 	}
 	for _, n := range nodeSets(d) {
+		if n == "session_learnings" || n == "user_context" || n == "memory" {
+			return true
+		}
+	}
+	return false
+}
+
+// These official document tags identify direct saves, not model-distilled
+// lessons. Project documents and agent activity remain source material.
+func (d Document) directMemory() bool {
+	if commonCategory(d) != "" {
+		return false
+	}
+	for _, n := range nodeSets(d) {
 		if n == "session_learnings" {
+			return false
+		}
+	}
+	for _, n := range nodeSets(d) {
+		if n == "user_context" || n == "memory" {
 			return true
 		}
 	}
@@ -311,7 +330,7 @@ func (c Client) searchType(ctx context.Context, projects []Project, q, searchTyp
 		filter = filters[0]
 	}
 	if filter == "知识" {
-		input["node_name"] = []string{"session_learnings", "memlane_common"}
+		input["node_name"] = []string{"session_learnings", "memlane_common", "user_context", "memory"}
 		input["node_name_filter_operator"] = "OR"
 	}
 	b, e := c.request(ctx, "POST", "/api/v1/search", input)

@@ -304,13 +304,42 @@ class Registry:
                 await self.reconcile_locked(common)
             return self.directory()
 
-    async def reconcile(self, expected, identifier):
+    async def reconcile(self, expected, identifier, *, verify_only=False):
+        if type(verify_only) is not bool:
+            raise PolicyError('invalid_verify_only')
         async with self.mutex:
             self.check_revision(expected)
             project = self.state['projects'].get(identifier)
             if project is None:
                 raise PolicyError('project_not_found', 404)
-            await self.reconcile_locked(project)
+            if verify_only:
+                # Recovery from an unknown read must not repeat permission
+                # mutations or create a missing dataset. Check every live
+                # principal before publishing a verified project again.
+                applied = {}
+                try:
+                    if project.get('import_acl') or not project.get('dataset_id'):
+                        raise PolicyError('existing_acl_requires_review', 409)
+                    for agent_id, agent in self.state['agents'].items():
+                        if agent_id in self.state.get('agent_retirements', {}):
+                            applied[agent_id] = {'status': 'retiring'}
+                            continue
+                        permissions = set(effective(self.state['defaults'], project['overrides'].get(agent_id, {}))['permissions'])
+                        if await self.official.effective_permissions(agent, project['dataset_id']) != permissions:
+                            raise PolicyError('effective_acl_changed', 503)
+                        if project.get('code_dataset_id'):
+                            expected_code = permissions if project.get('code_enabled') else set()
+                            if await self.official.effective_permissions(agent, project['code_dataset_id']) != expected_code:
+                                raise PolicyError('effective_code_acl_changed', 503)
+                        applied[agent_id] = {'status': 'verified', 'revision': project['desired_revision']}
+                    project['applied'] = applied
+                    project['status'] = 'verified'
+                    project.pop('error_code', None)
+                except PolicyError as error:
+                    project['status'], project['error_code'] = 'unconfirmed', error.code
+                self.save()
+            else:
+                await self.reconcile_locked(project)
             return self.directory()
 
     async def configure_code(self, expected, identifier, dataset_id, enabled, *, apply=True):

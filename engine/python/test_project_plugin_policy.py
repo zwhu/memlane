@@ -45,6 +45,22 @@ class PluginPolicyTests(unittest.TestCase):
             self.assertEqual(state['cursor']['size'], transcript.stat().st_size)
             self.assertNotIn('private', json.dumps(state))
 
+    def test_explicit_reads_do_not_require_writable_policy_files(self):
+        dataset = '11111111-1111-4111-8111-111111111111'
+        with policy._state() as state:
+            state['binding'] = {'project_id': 'fixture', 'dataset_id': dataset}
+        files = {p: p.read_bytes() for p in (self.root / 'memlane-policy').iterdir()}
+        original = Path.open
+        def read_only(path, mode='r', *args, **kwargs):
+            if any(flag in mode for flag in ('w', 'a', '+')):
+                raise PermissionError('fixture: sandbox denies writes outside workspace')
+            return original(path, mode, *args, **kwargs)
+        with patch.object(Path, 'open', read_only), patch.object(Path, 'mkdir', side_effect=PermissionError('read only')), \
+                patch.object(policy, '_request', return_value={'ready': True, 'dataset_id': dataset, 'policy': {'permissions': ['read']}}):
+            self.assertEqual(policy.dataset(), dataset)
+            self.assertTrue(policy.permit('read'))
+        self.assertEqual({p: p.read_bytes() for p in files}, files)
+
     def test_restore_establishes_boundary_and_never_backfills(self):
         transcript = self.root / 'transcript.jsonl'
         transcript.write_text('disabled\n')
