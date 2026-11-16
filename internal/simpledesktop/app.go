@@ -28,6 +28,15 @@ type pane struct {
 	DetailScroll                   map[string]*ui.ScrollState
 	Tools                          map[string]bool
 	History                        []Item
+	HomeAnchor                     *Item
+	HomeOffset                     int
+	HomeCategory                   string
+	Locating                       bool
+	RevealItem                     string
+	SourcePage                     *SessionHistoryPage
+	SourceReturn                   *readingLocation
+	SessionTools                   bool
+	SessionLoadMaxY                float32
 	request                        uint64
 	readRequest                    uint64
 	readCancel                     context.CancelFunc
@@ -77,6 +86,8 @@ type App struct {
 
 	ChooseProjectFolder func() (string, error)
 	projectCreate       projectCreateState
+	toolGraph           toolGraphUIState
+	graphPending        graphPendingState
 	Config              Config
 	Client              Client
 	Update              func(func())
@@ -115,10 +126,10 @@ func New(c Config, err error) *App {
 	}
 	a.md = markdown.Options{Theme: &markdown.Theme{FontSize: 12, LineHeight: 1.9, Text: ink, Muted: muted, CodeSize: 11.0 / 12, CodeBlockBackground: ui.Hex("#f5f8fb"), CodeBlockBorder: border}, CodeBlock: func(c *ui.Context, b *markdown.CodeBlockView) {
 		ui.Column(c).Background(ui.Hex("#f5f8fb")).Border(1, border).Radius(6).Children(func() {
-			ui.Row(c).Padding(6, 12).Children(func() {
+			row := ui.Row(c).Padding(6, 12).Gap(4).AlignItems(ui.Center)
+			row.Children(func() {
 				ui.Text(c, strings.ToUpper(b.Language)).FontSize(10).TextColor(muted)
-				ui.Spacer(c)
-				ui.Button(c, "复制代码").OnClick(func() { c.WriteClipboard(b.Code()) })
+				hoverCopyAction(c, row, "复制代码", func() { c.WriteClipboard(b.Code()) })
 			})
 			b.Body(c).Label("代码横向滚动")
 		})
@@ -186,8 +197,6 @@ func (a *App) current() (Project, bool) {
 func (a *App) navigate(page string, index int) { a.navigateKind(page, index, "") }
 func (a *App) navigateKind(page string, index int, kind string) {
 	a.commonPage.MenuOpen = false
-	a.projectUI.QueueBack = nil
-	a.projectUI.QueueProject = ""
 	a.projectUI.InfoOpen = false
 	a.projectUI.MenuOpen = false
 	a.closeUnifiedSearch()
@@ -219,6 +228,7 @@ func (a *App) navigateKind(page string, index int, kind string) {
 	a.epoch++
 	a.graph.clear()
 	for _, p := range a.panes {
+		p.HomeAnchor, p.Locating, p.RevealItem = nil, false, ""
 		a.cancelTitles(p)
 		if p.readCancel != nil {
 			p.readCancel()
@@ -253,6 +263,18 @@ func (a *App) navigateKind(page string, index int, kind string) {
 }
 func (a *App) load(s *pane) {
 	a.syncReadingIdentity()
+	if s.HomeAnchor != nil && len(s.History) == 0 {
+		if a.page == "通用知识" && s.HomeCategory != a.commonCategoryFilter() {
+			s.HomeAnchor = nil
+		}
+	}
+	if s.HomeAnchor != nil && len(s.History) == 0 {
+		if s.Offset == s.HomeOffset && (s.Selected == nil || s.Selected.key() == s.HomeAnchor.key()) {
+			a.locateOverviewItem(s, *s.HomeAnchor)
+			return
+		}
+		s.HomeAnchor = nil
+	}
 	a.cancelTitles(s)
 	if s.cancel != nil {
 		s.cancel()
@@ -331,6 +353,12 @@ func (a *App) load(s *pane) {
 			if a.searchPane == s && a.searchAnchor != nil && !containsReadingItem(rows, a.searchAnchor.key()) {
 				rows = append([]Item{*a.searchAnchor}, rows...)
 			}
+			if s.SourceReturn != nil && sourceSession(s) && !containsReadingItem(rows, s.Selected.key()) {
+				rows = append([]Item{*s.Selected}, rows...)
+			}
+			if refreshing {
+				preserveResolvedReadingTitles(rows, s.Items)
+			}
 			s.Items = rows
 			s.More = more
 			s.Loaded = true
@@ -356,6 +384,17 @@ func (a *App) load(s *pane) {
 	}()
 }
 func (a *App) selectItem(s *pane, i Item) {
+	if s.Locating {
+		if s.cancel != nil {
+			s.cancel()
+		}
+		s.request++
+		s.Loading, s.Locating = false, false
+	}
+	if s.HomeAnchor != nil && s.HomeAnchor.key() != i.key() {
+		s.HomeAnchor = nil
+	}
+	s.SourcePage, s.SessionTools, s.SessionLoadMaxY = nil, false, 0
 	if s.readCancel != nil {
 		s.readCancel()
 	}
@@ -366,6 +405,7 @@ func (a *App) selectItem(s *pane, i Item) {
 	generation := a.readingGeneration(s)
 	s.Reading = true
 	s.History = nil
+	s.SourceReturn = nil
 	if a.fromOverview {
 		a.overviewSourceFloor[s] = 0
 	}
@@ -379,9 +419,12 @@ func (a *App) selectItem(s *pane, i Item) {
 	go func() {
 		defer cancel()
 		var result Item
+		var sessionPage *SessionHistoryPage
 		var err error
 		if i.Document != nil {
 			result, err = titles.read(ctx, client, i, generation, true, false)
+		} else if i.Session != nil {
+			result, sessionPage, err = client.readSessionHistory(ctx, i)
 		} else {
 			result, err = client.read(ctx, i)
 		}
@@ -404,6 +447,8 @@ func (a *App) selectItem(s *pane, i Item) {
 				return
 			}
 			s.Selected = &result
+			s.SourcePage = sessionPage
+			a.publishOverviewTitle(result)
 			for idx, row := range s.Items {
 				if row.key() == result.key() {
 					s.Items[idx].Title = result.Title
@@ -430,6 +475,7 @@ func (a *App) source(s *pane) {
 	go func() {
 		defer cancel()
 		var i Item
+		var sessionPage *SessionHistoryPage
 		var err error
 		if original.SourceDocument != "" {
 			i, err = client.documentInfoByID(ctx, original.Dataset, original.SourceDocument)
@@ -437,7 +483,7 @@ func (a *App) source(s *pane) {
 				i, err = titles.read(ctx, client, i, generation, true, false)
 			}
 		} else {
-			i, err = client.source(ctx, original)
+			i, sessionPage, err = client.sourceWithHistory(ctx, original)
 		}
 		a.Update(func() {
 			if epoch != a.epoch || request != s.readRequest {
@@ -457,7 +503,13 @@ func (a *App) source(s *pane) {
 				return
 			}
 			s.History = append(s.History, original)
+			if i.Session != nil && a.page == "知识" && a.kind == "知识" && a.state() == s {
+				s.History = s.History[:len(s.History)-1]
+				a.openSourceRecord(s, original, i, sessionPage)
+				return
+			}
 			s.Selected = &i
+			s.SourcePage, s.SessionTools = sessionPage, false
 		})
 	}()
 }
@@ -469,7 +521,7 @@ func (a *App) View(c *ui.Context) {
 		ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.generationSetupPage(c) })
 		return
 	}
-	ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.viewContent(c); a.searchDialog(c); a.projectCreateDialog(c) })
+	ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.viewContent(c); a.searchDialog(c); a.projectCreateDialog(c); a.toolGraphDialog(c) })
 }
 func (a *App) viewContent(c *ui.Context) {
 	c.After(2 * time.Second)
@@ -499,13 +551,16 @@ func (a *App) mainShell(c *ui.Context) {
 				ui.Text(c, "运行配置不可用："+a.configError).Margin(24).TextColor(ink)
 				return
 			}
+			// The graph owns its navigation row; reading tabs live in the list pane.
+			if a.page == "图谱" {
+				a.projectNavigation(c)
+			}
 			switch a.page {
 			case "总览":
 				a.home(c)
 			case "设置":
 				a.settings(c)
 			case "图谱":
-				ui.Column(c).Shrink(0).Padding(12, 32, 0, 32).Children(func() { a.projectTabs(c) })
 				a.graphView(c)
 			case "通用知识":
 				a.commonKnowledgePage(c)
@@ -612,7 +667,7 @@ func (a *App) reading(c *ui.Context) {
 				ui.Row(c).Children(func() {
 					ui.Text(c, fmt.Sprintf("已载入 %d 项", len(s.Items))).FontSize(10).TextColor(muted)
 					ui.Spacer(c)
-					button(c, "刷新", func() { a.load(s) })
+					refreshAction(c, "刷新列表", func() { a.load(s) })
 				})
 				if s.Loading {
 					ui.Text(c, "正在读取…").FontSize(10).TextColor(muted)
@@ -756,30 +811,34 @@ func (a *App) detail(c *ui.Context, s *pane) {
 				for _, field := range fields {
 					f := field
 					if f.Value != "" {
-						ui.Text(c, f.Name+"："+f.Value).FontSize(10).TextColor(muted)
-						button(c, "复制"+f.Name, func() { c.WriteClipboard(f.Value) })
+						copyableText(c, f.Name+"："+f.Value, f.Value, "复制"+f.Name, homeMeta, func() { c.WriteClipboard(f.Value) })
 					}
 				}
 				if i.BodyLoaded || i.Detail != nil || i.Preview != "" {
-					button(c, "复制原文", func() { c.WriteClipboard(i.Body) })
+					copyableText(c, "原文", i.Body, "复制原文", homeMeta, func() { c.WriteClipboard(i.Body) })
 				}
 			}
 		})
 		ui.Row(c).Height(48).Shrink(0).Padding(0, 24).BorderWidth(1, 0, 0, 0).BorderColor(border).Children(func() {
-			ui.Text(c, "只读 · 内容由 Cognee 提供").FontSize(10).TextColor(muted)
-			ui.Spacer(c)
-			if i.BodyLoaded || i.Detail != nil || i.Preview != "" {
-				label := "复制已载入内容"
-				if i.Kind == "知识" {
-					label = "复制知识内容"
+			row := ui.Row(c).AlignItems(ui.Center).Gap(4)
+			row.Children(func() {
+				ui.Text(c, "只读 · 内容由 Cognee 提供").FontSize(10).TextColor(muted)
+				if i.BodyLoaded || i.Detail != nil || i.Preview != "" {
+					label := "复制已载入内容"
+					if i.Kind == "知识" {
+						label = "复制知识内容"
+					}
+					hoverCopyAction(c, row, label, func() { c.WriteClipboard(itemPresentation(*i).VisibleBody) })
 				}
-				button(c, label, func() { c.WriteClipboard(itemPresentation(*i).VisibleBody) })
-			}
+			})
 		})
 	})
 }
 
 func displayDate(date string) string {
+	if day, ok := sourceCalendarDate(date); ok {
+		return day
+	}
 	if date == "" {
 		return "时间未知"
 	}
@@ -790,7 +849,7 @@ func displayDate(date string) string {
 }
 
 func (a *App) OpenSearch() {
-	if !a.projectCreate.Open {
+	if !a.projectCreate.Open && !a.toolGraph.Open {
 		a.openUnifiedSearch(false)
 	}
 }
@@ -855,6 +914,12 @@ func (a *App) projectEditor(c *ui.Context) {
 }
 
 func (a *App) returnFromSource(s *pane) {
+	if s.SourceReturn != nil {
+		location := s.SourceReturn
+		s.SourceReturn, s.History = nil, nil
+		a.restoreReadingLocation(location)
+		return
+	}
 	if len(s.History) == 0 {
 		return
 	}

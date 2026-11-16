@@ -26,7 +26,7 @@ func (a *App) startRecentTitles(rows []Item) {
 	request, epoch := a.recentRequest, a.epoch
 	client := a.Client
 	generation := fmt.Sprint(a.overviewState.generation)
-	for _, row := range rows[:min(8, len(rows))] {
+	for _, row := range rows {
 		i := row
 		if i.Document == nil || readableDocumentTitle(*i.Document) != "" {
 			continue
@@ -129,7 +129,9 @@ func (a *App) startTitles(s *pane) {
 		}
 		i := row
 		revision := a.readingRevisions[i.key()]
-		s.Items[n].ReadingState = "pending"
+		if s.Items[n].ReadingState != "ready" {
+			s.Items[n].ReadingState = "pending"
+		}
 		go func() {
 			result, err := a.titles.read(ctx, client, i, generation, false, true)
 			a.Update(func() {
@@ -154,6 +156,12 @@ func (a *App) startTitles(s *pane) {
 						title := result.Title
 						if a.page == "知识" && result.Session == nil {
 							title = projectDisplayTitle(result)
+							if title == "" {
+								// List rows need a content preview; the detail heading
+								// only uses an actual document name/label.
+								body := itemPresentation(result).VisibleBody
+								title = firstReadingSentenceLimit(body, len([]rune(body)))
+							}
 						} else if a.page == "通用知识" {
 							if draft, ok := commonReadingParts(result); ok {
 								title = draft.Title
@@ -190,6 +198,9 @@ func (a *App) unavailableReadingItem(i Item) {
 	}
 	a.readingRevisions[i.key()]++
 	for _, s := range a.panes {
+		if s.SourcePage != nil && s.SourcePage.ID == i.ID && s.SourcePage.Dataset == i.Dataset {
+			s.SourcePage = nil
+		}
 		if s.Selected != nil && s.Selected.key() == i.key() {
 			s.Selected = nil
 			s.Reading = false
@@ -280,6 +291,9 @@ func (a *App) InvalidateReading(dataset string) {
 	}
 	for _, s := range a.panes {
 		a.cancelTitles(s)
+		if s.SourcePage != nil && (dataset == "" || s.SourcePage.Dataset == dataset) {
+			s.SourcePage = nil
+		}
 		if s.Selected != nil && (dataset == "" || s.Selected.Dataset == dataset) {
 			if s.readCancel != nil {
 				s.readCancel()
@@ -333,4 +347,31 @@ func (a *App) syncReadingIdentity() bool {
 		return false
 	}
 	return err == nil
+}
+
+// Keep presentation metadata for an explicitly unchanged content revision while
+// title hydration runs. Never carry raw bodies or unknown document revisions.
+func preserveResolvedReadingTitles(rows, previous []Item) {
+	old := make(map[string]Item, len(previous))
+	for _, item := range previous {
+		if item.ReadingState == "ready" {
+			old[item.key()] = item
+		}
+	}
+	for n, row := range rows {
+		before, ok := old[row.key()]
+		if !ok {
+			continue
+		}
+		same := false
+		if row.Document != nil && before.Document != nil && (row.Document.ContentHash != "" || row.Document.Updated != "") {
+			same = keyForReading("", row, "") == keyForReading("", before, "") && readableDocumentTitle(*row.Document) == ""
+		} else if row.Session != nil && before.Session != nil {
+			same = row.Session.Updated != "" && row.Session.Updated == before.Session.Updated
+		}
+		if same {
+			rows[n].Title, rows[n].SessionSummary = before.Title, before.SessionSummary
+			rows[n].ReadingState = before.ReadingState
+		}
+	}
 }

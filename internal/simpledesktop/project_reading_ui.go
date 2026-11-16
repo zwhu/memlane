@@ -13,8 +13,6 @@ type projectReadingState struct {
 	MenuOpen, InfoOpen bool
 	SidebarMenuOpen    bool
 	SidebarProject     string
-	QueueBack          *readingLocation
-	QueueProject       string
 	InfoKey            string
 	Expanded           map[string]bool
 	Copied             string
@@ -82,13 +80,10 @@ var readingCopy = homeSVG(`<path d="M8 8h12v13H8zM4 16V3h12"/>`)
 var readingClose = homeSVG(`<path d="m6 6 12 12M18 6 6 18"/>`)
 
 func readingAction(c *ui.Context, label string, icon *ui.SVG, fn func()) ui.Element {
-	b := ui.Button(c, "").Label(label).Tooltip(label).MinWidth(28).MinHeight(28).Padding(5).Gap(6)
+	b := ui.Button(c, "").Cursor(ui.CursorPointer).Label(label).Tooltip(label).MinWidth(28).MinHeight(28).Padding(5).Gap(6)
 	return b.Children(func() {
 		if icon != nil {
 			ui.Icon(c, icon).FontSize(17).TextColor(homeLinkInk)
-		}
-		if label == "复制内容" {
-			homeText(c, label, homeAction)
 		}
 	}).OnClick(fn)
 }
@@ -115,15 +110,6 @@ func (a *App) projectHeader(c *ui.Context) {
 		} else if (a.page == "知识" || a.page == "通用知识") && len(a.state().History) > a.overviewSourceFloor[a.state()] {
 			back = func() { a.returnFromSource(a.state()) }
 			label = "返回知识"
-		} else if a.page == "知识" && a.projectUI.QueueProject != "" {
-			label = "返回项目设置"
-			back = func() {
-				origin, id := a.projectUI.QueueBack, a.projectUI.QueueProject
-				index := a.project
-				a.navigate("设置", index)
-				a.access.OpenProject = id
-				a.settingsOrigin = origin
-			}
 		} else if a.page == "设置" && a.settingsOrigin != nil {
 			back = func() { v := a.settingsOrigin; a.restoreReadingLocation(v) }
 			label = "返回项目"
@@ -165,18 +151,31 @@ func (a *App) projectHeader(c *ui.Context) {
 				})
 			})
 		}
-		if p, ok := a.current(); ok && (a.page == "知识" || a.page == "图谱") {
-
-			readingAction(c, "项目菜单", readingMore, func() {}).PopoverMenuButton(func(m *ui.Menu) {
-				m.Item(p.Name).Disabled(true)
-				m.Separator()
-				if m.Item("复制项目路径").Chosen() {
-					c.WriteClipboard(p.Path)
-				}
-			})
+		if _, ok := a.current(); ok && (a.page == "知识" || a.page == "图谱" || (a.page == "检索结果" && a.project >= 0)) {
+			ui.Button(c, "").Cursor(ui.CursorPointer).Label("项目设置").Height(30).Padding(0, 10).Gap(6).BorderWidth(0).Background(ui.Transparent).TextColor(homeNavInk).Children(func() {
+				ui.Icon(c, homeSettings).FontSize(15).TextColor(homeIconInk)
+				ui.Text(c, "项目设置").FontSize(12)
+			}).OnClick(func() { a.openProjectSettings(a.project) })
 		}
 	}).BorderWidth(0, 0, 1, 0).BorderColor(homeBorder).DragWindow()
 }
+
+// One stable tab host, with the reading divider continuing to the toolbar.
+func (a *App) projectNavigation(c *ui.Context) {
+	if a.layout.ProjectListWidth == 0 {
+		a.layout.ProjectListWidth = 300
+	}
+	ui.Row(c.Key("project-view-navigation")).Shrink(0).AlignItems(ui.Stretch).Children(func() {
+		ui.Column(c).Width(a.layout.ProjectListWidth).Shrink(0).Padding(24, 32, 0, 32).Children(func() { a.projectTabs(c) })
+		line := homeBorder
+		if a.page == "图谱" {
+			line = ui.Transparent
+		}
+		ui.Column(c).Width(1).Shrink(0).Background(line)
+		ui.Spacer(c)
+	})
+}
+
 func (a *App) projectTabs(c *ui.Context) {
 	labels := []string{"知识", "原始记录", "图谱"}
 	selected := 0
@@ -204,8 +203,8 @@ func (a *App) projectReading(c *ui.Context) {
 	}
 	readingSplit(c, "project-reading-split", &a.layout.ProjectListWidth, func() {
 		ui.Column(c).Fill().Children(func() {
-			ui.Column(c).Padding(24, 32, 5, 32).Gap(12).Shrink(0).Children(func() {
-				a.projectTabs(c)
+			ui.Column(c.Key("project-view-navigation")).Padding(24, 32, 0, 32).Shrink(0).Children(func() { a.projectTabs(c) })
+			ui.Column(c).Padding(12, 32, 5, 32).Gap(12).Shrink(0).Children(func() {
 				if a.kind != "知识" {
 					labels := []string{"全部", "会话", "文档"}
 					selected := 0
@@ -224,13 +223,13 @@ func (a *App) projectReading(c *ui.Context) {
 				}
 				ui.Row(c).AlignItems(ui.Center).Children(func() {
 					label := projectListStatus(s)
+					if s.Loading && s.Loaded {
+						label += " · 更新中"
+					}
 					homeText(c, label, homeMeta)
 					ui.Spacer(c)
-					readingAction(c, "刷新列表", homeRefresh, func() { a.load(s) })
+					refreshAction(c, "刷新列表", func() { a.load(s) })
 				})
-				if s.Loading {
-					homeText(c, "正在读取…", homeMeta)
-				}
 				if s.Error != "" {
 					homeText(c, "未刷新 · "+s.Error, homeMeta).MaxLines(3)
 					projectLink(c, "重试读取", func() { a.load(s) })
@@ -251,25 +250,37 @@ func projectDisplayTitle(i Item) string {
 	if i.Session != nil {
 		return sessionIdentity(i.ID)
 	}
-	if i.Document != nil && readableDocumentTitle(*i.Document) == "" && i.BodyLoaded {
-		body := itemPresentation(i).VisibleBody
-		if t := firstReadingSentenceLimit(body, len([]rune(body))); t != "" {
-			return t
+	if i.Kind == "知识" {
+		if i.Document != nil {
+			return readableDocumentTitle(*i.Document)
 		}
+		return ""
 	}
 	return itemPresentation(i).DisplayTitle
 }
 func (a *App) projectDetail(c *ui.Context, s *pane) {
 	ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
 		if s.Selected == nil {
-			a.emptyReadingBackground(c)
+			if s.Locating {
+				homeText(c, "正在定位知识…", homeMeta).Margin(32)
+			} else {
+				a.emptyReadingBackground(c)
+			}
 			appFooter(c, "项目阅读栏").Padding(0, 32)
 			return
 		}
 		i := s.Selected
 		key := i.key()
 		appToolbar(c, "项目内容工具栏", func() {
-			homeText(c, i.Kind+" · "+displayDate(i.Date), homeMeta).SingleLine()
+			status := i.Kind + " · " + displayDate(i.Date)
+			if s.Reading {
+				status += " · 正在读取…"
+			}
+			row := ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(4)
+			row.Children(func() {
+				homeText(c, status, homeMeta).SingleLine()
+				hoverCopyAction(c, row, "复制内容", func() { c.WriteClipboard(sessionCopyBody(s, *i)); a.copyFeedback("内容") }).Disabled(!(i.BodyLoaded || i.Detail != nil || i.Preview != ""))
+			})
 			knowledgeRecallLabel(c, *i)
 			ui.Spacer(c)
 			anchor := readingAction(c, "内容信息", readingInfo, func() {
@@ -281,39 +292,44 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 				a.projectUI.InfoOpen = false
 			}
 			a.contentInformation(c, anchor, *i)
-			readingAction(c, "复制内容", readingCopy, func() { c.WriteClipboard(itemPresentation(*i).VisibleBody); a.copyFeedback("内容") }).Disabled(!(i.BodyLoaded || i.Detail != nil || i.Preview != ""))
-		})
-		scroll := s.DetailScroll[key]
+		}).Height(44)
+		scrollKey := key
+		if i.Session != nil && s.SessionTools {
+			scrollKey += "/tools"
+		}
+		scroll := s.DetailScroll[scrollKey]
 		if scroll == nil {
 			scroll = &ui.ScrollState{}
-			s.DetailScroll[key] = scroll
+			s.DetailScroll[scrollKey] = scroll
 		}
-		ui.Scroll(c.Key("project-detail-"+key)).Grow(1).MinHeight(0).TrackScroll(scroll).Padding(10, 32, 32, 32).Children(func() {
-			ui.Column(c).FillWidth().MaxWidth(820).Gap(20).Children(func() {
+		ui.Scroll(c.Key("project-detail-"+scrollKey)).Grow(1).MinHeight(0).TrackScroll(scroll).Padding(0, 32, 24, 32).Children(func() {
+			ui.Column(c).FillWidth().MaxWidth(820).Gap(12).Children(func() {
 				title := projectDisplayTitle(*i)
-				t := homeText(c, title, homeHeading).FontSize(22).LineHeight(1.41).MinWidth(0)
-				if !a.projectUI.Expanded[key] {
-					t.MaxLines(3)
-				}
-				if len([]rune(title)) > 80 {
-					label := "展开完整标题"
-					if a.projectUI.Expanded[key] {
-						label = "收起标题"
-					}
-					projectLink(c, label, func() {
-						if a.projectUI.Expanded == nil {
-							a.projectUI.Expanded = map[string]bool{}
+				if title != "" {
+					ui.Column(c).FillWidth().Gap(4).Children(func() {
+						t := homeText(c, title, homeHeading).FontSize(22).LineHeight(1.41).MinWidth(0)
+						if !a.projectUI.Expanded[key] {
+							t.MaxLines(3)
 						}
-						a.projectUI.Expanded[key] = !a.projectUI.Expanded[key]
+						if len([]rune(title)) > 80 {
+							label := "展开完整标题"
+							if a.projectUI.Expanded[key] {
+								label = "收起标题"
+							}
+							projectLink(c, label, func() {
+								if a.projectUI.Expanded == nil {
+									a.projectUI.Expanded = map[string]bool{}
+								}
+								a.projectUI.Expanded[key] = !a.projectUI.Expanded[key]
+							})
+						}
 					})
-				}
-				if s.Reading {
-					homeText(c, "正在读取…", homeMeta)
 				}
 				if s.Error != "" {
 					homeText(c, "内容未刷新 · "+s.Error, homeMeta)
 				}
 				a.projectReadingBody(c, s, i)
+				knowledgeBasis(c, *i)
 				if i.Source != "" || i.SourceDocument != "" {
 					ui.Row(c).FillWidth().BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Padding(20, 0, 0, 0).Gap(12).AlignItems(ui.Center).Children(func() {
 						ui.Icon(c, homeDocument).FontSize(18).TextColor(homeMuted)
@@ -321,7 +337,11 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 							homeText(c, "出处 · "+readingSourceLabel(*i), homeBody).FontSize(12).MaxLines(2)
 							homeText(c, "官方关联材料", homeMeta)
 						})
-						projectLink(c, "查看原始记录  ›", func() { a.projectUI.InfoOpen = false; a.source(s) })
+						label := "查看来源会话  ›"
+						if i.SourceDocument != "" {
+							label = "查看来源文档  ›"
+						}
+						projectLink(c, label, func() { a.projectUI.InfoOpen = false; a.source(s) })
 					})
 				} else if i.Kind == "知识" {
 					homeText(c, "官方未提供可定位的会话出处", homeMeta)
@@ -353,53 +373,44 @@ func (a *App) contentInformation(c *ui.Context, anchor ui.Element, i Item) {
 			count++
 		}
 	}
-	height := min(float32(560), h-160, float32(148+62*count))
+	height := min(float32(400), h-160, float32(64+44*count))
 	ui.Popover(c, anchor, &a.projectUI.InfoOpen, func() {
-		ui.Row(c).Padding(14, 20).Shrink(0).AlignItems(ui.Center).Children(func() {
-			homeText(c, "内容信息", homeHeading).FontSize(15)
+		ui.Row(c).Padding(10, 18).Shrink(0).AlignItems(ui.Center).Children(func() {
+			homeText(c, "内容信息", homeHeading).FontSize(14)
 			ui.Spacer(c)
+			if time.Now().Before(a.projectUI.CopyUntil) {
+				homeText(c, "已复制", homeMeta)
+			}
 			readingAction(c, "关闭内容信息", readingClose, func() { a.projectUI.InfoOpen = false })
 		})
-		ui.Scroll(c.Key("content-info-fields-"+i.key())).Grow(1).MinHeight(0).TrackScroll(&a.projectUI.InfoScroll).Padding(0, 20).Gap(8).Children(func() {
+		ui.Scroll(c.Key("content-info-fields-"+i.key())).Grow(1).MinHeight(0).TrackScroll(&a.projectUI.InfoScroll).Padding(0, 18, 14, 18).Gap(6).Children(func() {
 			for _, field := range fields {
 				f := field
 				if f.Value == "" {
 					continue
 				}
-				ui.Row(c).MinHeight(54).AlignItems(ui.Center).Gap(10).Children(func() {
-					ui.Column(c).Grow(1).MinWidth(0).Gap(5).Children(func() {
-						homeText(c, f.Name, homeMeta)
+				ui.Row(c).MinHeight(38).AlignItems(ui.Center).Gap(12).Children(func() {
+					ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
+						homeText(c, f.Name, homeMeta).FontSize(10)
 						value := f.Value
 						if strings.Contains(f.Name, "时间") {
 							if t, ok := officialTime(f.Value); ok {
 								value = t.In(time.Local).Format("2006-01-02 15:04:05 -07:00")
 							}
+						} else if r := []rune(value); len(r) > 32 {
+							value = string(r[:16]) + "…" + string(r[len(r)-12:])
 						}
-						homeText(c, value, homeBody).FontSize(11).TextColor(homeInk).Tooltip(f.Value)
+						row := ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(4)
+						row.Children(func() {
+							homeText(c, value, homeBody).FontSize(11).MinWidth(0).SingleLine().TextColor(homeInk).Tooltip(f.Value)
+							hoverCopyAction(c, row, "复制"+f.Name, func() { c.WriteClipboard(f.Value); a.copyFeedback(f.Name) })
+						})
 					})
-					readingAction(c, "复制"+f.Name, readingCopy, func() { c.WriteClipboard(f.Value); a.copyFeedback(f.Name) })
 				})
 			}
 		})
-		ui.Row(c).Shrink(0).MinHeight(60).Padding(12, 20).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Children(func() {
-			projectLink(c, "复制诊断信息", func() { c.WriteClipboard(readingDiagnostic(fields)); a.copyFeedback("诊断信息") })
-			ui.Spacer(c)
-			if time.Now().Before(a.projectUI.CopyUntil) {
-				homeText(c, a.projectUI.Copied+"已复制", homeMeta)
-			}
-		})
-	}).Modal().Role(ui.RoleDialog).Width(450).Height(height).Padding(0).Transition(projectOverlayMotion())
+	}).Modal().Role(ui.RoleDialog).Width(360).Height(height).Padding(0).Transition(projectOverlayMotion())
 }
-func readingDiagnostic(fields []ReadingField) string {
-	var b strings.Builder
-	for _, f := range fields {
-		if f.Value != "" {
-			fmt.Fprintf(&b, "%s: %s\n", f.Name, f.Value)
-		}
-	}
-	return b.String()
-}
-
 func (a *App) projectReadingBody(c *ui.Context, s *pane, i *Item) {
 	presentation := itemPresentation(*i)
 	if a.projectMD == nil {
@@ -411,18 +422,39 @@ func (a *App) projectReadingBody(c *ui.Context, s *pane, i *Item) {
 		a.projectMD = &markdown.Options{Theme: &theme, CodeBlock: a.md.CodeBlock}
 	}
 	if i.Detail != nil {
+		if sourceSession(s) {
+			a.sourceContext(c, s)
+		}
+		paged := a.sessionHistoryControls(c, s, *i)
 		homeText(c, sessionCoverage(*i.Detail), homeBody).FontSize(12)
 		homeText(c, "同一 session 的连续记录；新消息更新此会话，不新增列表项。", homeMeta)
 		if i.Title != "" && i.Title != i.ID && i.Title != "来源会话" {
 			homeText(c, "已保存首条："+i.Title, homeMeta).MaxLines(2)
 		}
-		if len(i.Detail.QAs) < i.Detail.Count || len(i.Detail.Traces) < i.Detail.ToolCount {
-			homeText(c, fmt.Sprintf("官方接口仅返回最近 %d/%d 轮问答、%d/%d 条工具记录，当前并非完整历史。", len(i.Detail.QAs), i.Detail.Count, len(i.Detail.Traces), i.Detail.ToolCount), homeMeta)
+		if !paged && (len(i.Detail.QAs) < i.Detail.Count || len(i.Detail.Traces) < i.Detail.ToolCount) {
+			homeText(c, "当前是最近记录，可读取按时间排列的完整会话。", homeMeta)
+			projectLink(c, "读取完整会话", func() { a.loadSessionPage(s, 0, 0) }).Disabled(s.Reading)
 		}
-		if len(i.Detail.QAs) == 0 {
-			homeText(c, "此会话尚无已保存的问答；下方仅为已保存的工具记录。", homeMeta)
+		if len(i.Detail.QAs) == 0 && (!paged || !s.SessionTools) {
+			message := "此会话尚无已保存的问答；下方仅为已保存的工具记录。"
+			if paged {
+				message = "此会话尚无已保存的问答，可切换到工具记录查看。"
+			}
+			homeText(c, message, homeMeta)
 		}
-		for _, q := range i.Detail.QAs {
+		if paged && s.SessionTools && i.Detail.ToolCount == 0 {
+			homeText(c, "此会话尚无已保存的工具记录。", homeMeta)
+		}
+		qas := i.Detail.QAs
+		traces := i.Detail.Traces
+		if paged {
+			if s.SessionTools {
+				qas = nil
+			} else {
+				traces = nil
+			}
+		}
+		for _, q := range qas {
 			ui.Column(c).Padding(11, 14).Background(blue).Border(1, border).Radius(6).Gap(6).Children(func() {
 				ui.Text(c, "用户").FontSize(10).TextColor(muted)
 				markdown.View(c.Key("q-"+q.ID), q.Question, a.projectMD)
@@ -436,7 +468,7 @@ func (a *App) projectReadingBody(c *ui.Context, s *pane, i *Item) {
 				ui.Text(c, "官方内容已截断").FontSize(10).TextColor(muted)
 			}
 		}
-		for _, trace := range i.Detail.Traces {
+		for _, trace := range traces {
 			t := trace
 			key := i.key() + "/" + t.ID
 			label := "› " + t.Name + " · " + t.Status
@@ -449,6 +481,9 @@ func (a *App) projectReadingBody(c *ui.Context, s *pane, i *Item) {
 					markdown.View(c.Key("tool-"+key), "```json\n"+string(t.Params)+"\n```\n\n```json\n"+string(t.Result)+"\n```\n\n"+t.Error, a.projectMD)
 				}
 			})
+		}
+		if paged {
+			a.sessionLoadMore(c, s, *i)
 		}
 	} else {
 		markdown.View(c.Key("body-"+i.key()), presentation.VisibleBody, a.projectMD)
@@ -480,9 +515,9 @@ func (a *App) switchProjectKind(kind string) {
 	a.kind = kind
 	a.projectUI.InfoOpen = false
 	n := a.state()
-	if !n.Loaded {
-		a.load(n)
-	}
+	// Each filter keeps its reading position, but its metadata snapshot can be
+	// older than another filter's. Revalidate on entry while retaining content.
+	a.load(n)
 }
 
 func projectListStatus(s *pane) string {

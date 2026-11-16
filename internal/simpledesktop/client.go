@@ -117,19 +117,26 @@ func (c Client) get(ctx context.Context, path string, out any) error {
 	if e != nil {
 		return e
 	}
-	return json.Unmarshal(b, out)
+	if e := json.Unmarshal(b, out); e != nil {
+		return e
+	}
+	if rows, ok := out.(*[]Document); ok {
+		return c.rememberKnowledgeDays(*rows)
+	}
+	return nil
 }
 
 type Document struct {
-	ID          string         `json:"id"`
-	Dataset     string         `json:"datasetId"`
-	Name        string         `json:"name"`
-	Label       *string        `json:"label"`
-	MIME        string         `json:"mimeType"`
-	Metadata    map[string]any `json:"externalMetadata"`
-	Updated     string         `json:"updatedAt"`
-	Created     string         `json:"createdAt"`
-	ContentHash string         `json:"contentHash"`
+	FirstSourceDate string         `json:"-"`
+	ID              string         `json:"id"`
+	Dataset         string         `json:"datasetId"`
+	Name            string         `json:"name"`
+	Label           *string        `json:"label"`
+	MIME            string         `json:"mimeType"`
+	Metadata        map[string]any `json:"externalMetadata"`
+	Updated         string         `json:"updatedAt"`
+	Created         string         `json:"createdAt"`
+	ContentHash     string         `json:"contentHash"`
 }
 
 func (d Document) title() string {
@@ -261,29 +268,8 @@ func (c Client) read(ctx context.Context, i Item) (Item, error) {
 		return i, nil
 	}
 	if i.Session != nil {
-		var d SessionDetail
-		e := c.get(ctx, "/api/v1/sessions/"+url.PathEscape(i.ID), &d)
-		if e != nil {
-			return i, e
-		}
-		if d.Dataset != i.Dataset || d.ID != i.ID || d.User != i.Session.User {
-			return i, fmt.Errorf("official session identity changed")
-		}
-		i.Detail = &d
-		i.SessionSummary = sessionCoverage(d)
-		if d.Label != "" && d.Count > 0 {
-			i.Title = sessionTitle(d.Label)
-		} else if len(d.QAs) > 0 && d.Count <= len(d.QAs) {
-			if title := sessionTitle(d.QAs[0].Question); title != "" {
-				i.Title = title
-			}
-		}
-		var b strings.Builder
-		for _, q := range d.QAs {
-			fmt.Fprintf(&b, "## 用户\n\n%s\n\n## Agent\n\n%s\n\n", q.Question, q.Answer)
-		}
-		i.Body = b.String()
-		return i, nil
+		item, _, err := c.readSessionHistory(ctx, i)
+		return item, err
 	}
 	return i, nil
 }
@@ -298,7 +284,7 @@ func (c Client) source(ctx context.Context, i Item) (Item, error) {
 		}
 		for _, s := range page.Sessions {
 			if s.Dataset == i.Dataset && s.ID == i.Source {
-				return c.read(ctx, Item{ID: s.ID, Dataset: s.Dataset, Kind: "会话", Title: s.ID, Date: s.Updated, Session: &s})
+				return Item{ID: s.ID, Dataset: s.Dataset, Kind: "会话", Title: s.ID, Date: s.Updated, Session: &s}, nil
 			}
 		}
 		if !page.HasMore {
@@ -416,6 +402,12 @@ func (c Client) documentInfoByID(ctx context.Context, dataset, id string) (Item,
 }
 
 func (d Document) date() string {
+	if d.knowledge() {
+		if day, ok := d.knowledgeDay(time.Local); ok {
+			return day
+		}
+		return ""
+	}
 	if d.Updated != "" {
 		return d.Updated
 	}
