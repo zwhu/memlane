@@ -95,9 +95,7 @@ func (a *App) discardCommonDraft() {
 }
 func (a *App) commonListToolbar(c *ui.Context) {
 	e := &a.commonEdit
-	ui.Row(c).AlignItems(ui.Center).Children(func() {
-		homeText(c, "记忆库", homeHeading).FontSize(13)
-		ui.Spacer(c)
+	paneHeading(c, "记忆库", func() {
 		label := "新增通用记忆"
 		if commonHasDraft(*e) {
 			label = "继续草稿"
@@ -144,7 +142,7 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 	e := &a.commonEdit
 	readingSplit(c, "common-reading-split", &a.layout.CommonListWidth, func() {
 		ui.Column(c).Fill().Children(func() {
-			ui.Column(c).Shrink(0).Padding(22, 32, 10, 32).Gap(14).Children(func() {
+			ui.Column(c).Shrink(0).Padding(pageTopInset, paneInset, controlGap, paneInset).Gap(controlGap).Children(func() {
 				a.commonListToolbar(c)
 				ui.Row(c).AlignItems(ui.Center).Children(func() {
 					homeText(c, projectListStatus(s), homeMeta)
@@ -166,7 +164,7 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 				}
 			})
 			a.itemList(c, s, true)
-			appFooter(c, "通用记忆分页栏").Padding(0, 32).Children(func() {
+			appFooter(c, "通用记忆分页栏").Padding(0, paneInset).Children(func() {
 				homeText(c, projectListStatus(s), homeMeta)
 				ui.Spacer(c)
 				readingAction(c, "上一页", readingBack, func() { s.Offset = max(0, s.Offset-30); a.load(s) }).Disabled(s.Offset == 0 || s.Loading)
@@ -210,7 +208,7 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 	e := &a.commonEdit
 	ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
 		if s.Selected == nil {
-			ui.Column(c).Grow(1).MinHeight(0).Padding(32).Gap(14).Children(func() {
+			ui.Column(c).Grow(1).MinHeight(0).Padding(paneInset).Gap(controlGap).Children(func() {
 				ui.Icon(c, homeCommon).FontSize(30).TextColor(homeMuted)
 				title := "让通用经验延续到下一个项目"
 				if len(s.Items) > 0 {
@@ -225,7 +223,7 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 					commonButton(c, "新增第一条记忆", true, func() { a.beginCommonDraft(nil) })
 				}
 			})
-			appFooter(c, "通用记忆阅读栏").Padding(0, 32).Children(func() { homeText(c, "跨项目参考 · 项目明确约定优先", homeMeta) })
+			appFooter(c, "通用记忆阅读栏").Padding(0, paneInset).Children(func() { homeText(c, "跨项目参考 · 项目明确约定优先", homeMeta) })
 			return
 		}
 		i := *s.Selected
@@ -237,6 +235,7 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 				hoverCopyAction(c, row, "复制内容", func() { c.WriteClipboard(itemPresentation(i).VisibleBody); a.copyFeedback("内容") }).Disabled(!i.BodyLoaded)
 			})
 			knowledgeRecallLabel(c, i)
+			knowledgeBasisTag(c, i)
 			ui.Spacer(c)
 			anchor := readingAction(c, "内容信息", readingInfo, func() { a.projectUI.InfoOpen = !a.projectUI.InfoOpen; a.projectUI.InfoKey = i.key() })
 			if a.projectUI.InfoKey != i.key() {
@@ -253,7 +252,7 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 			scroll = &ui.ScrollState{}
 			s.DetailScroll[i.key()] = scroll
 		}
-		ui.Scroll(c.Key("common-detail-"+i.key())).Grow(1).MinHeight(0).TrackScroll(scroll).Padding(10, 32, 32, 32).Children(func() {
+		ui.Scroll(c.Key("common-detail-"+i.key())).Grow(1).MinHeight(0).TrackScroll(scroll).Padding(controlGap, paneInset, paneInset, paneInset).Children(func() {
 			ui.Column(c).FillWidth().MaxWidth(760).Gap(20).Children(func() {
 				parts, canonical := commonReadingParts(i)
 				title := projectDisplayTitle(i)
@@ -283,7 +282,7 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 				}
 			})
 		})
-		appFooter(c, "通用记忆阅读栏").Padding(0, 32).Children(func() { homeText(c, "跨项目参考 · 项目明确约定优先", homeMeta) })
+		appFooter(c, "通用记忆阅读栏").Padding(0, paneInset).Children(func() { homeText(c, "跨项目参考 · 项目明确约定优先", homeMeta) })
 	})
 }
 func (a *App) commonMarkdown(c *ui.Context, key, body string) {
@@ -392,7 +391,7 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 				}
 			})
 		})
-		ui.Scroll(c.Key("common-compact-editor")).Grow(1).MinHeight(0).TrackScroll(&a.commonPage.EditorScroll).Padding(8, 32, 24, 32).Children(func() {
+		ui.Scroll(c.Key("common-compact-editor")).Grow(1).MinHeight(0).TrackScroll(&a.commonPage.EditorScroll).Padding(controlGap, paneInset, paneInset, paneInset).Children(func() {
 			ui.Column(c).FillWidth().MaxWidth(760).Gap(16).Children(func() {
 				if len(a.Config.Common) > 1 {
 					homeText(c, "保存到："+e.Target.Name, homeMeta)
@@ -441,7 +440,7 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 				}
 			})
 		})
-		appFooter(c, "通用记忆编辑栏").Padding(0, 32).Gap(10).Children(func() {
+		appFooter(c, "通用记忆编辑栏").Padding(0, paneInset).Gap(10).Children(func() {
 
 			status := "仅保存在当前编辑草稿"
 			if e.Busy {

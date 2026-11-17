@@ -46,13 +46,12 @@ func knowledgeBasisFields(i Item) []ReadingField {
 
 func knowledgeBasis(c *ui.Context, i Item) {
 	fields := knowledgeBasisFields(i)
-	if len(fields) == 0 {
+	if len(fields) <= 1 {
 		return
 	}
 	ui.Column(c.Key("knowledge-basis-"+i.key())).FillWidth().Gap(8).Padding(12, 14).Background(ui.Hex("#f6f8fa")).Radius(6).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
 			homeText(c, "记忆点", homeBody).FontSize(12).FontWeight(500)
-			homeText(c, fields[0].Value, homeMeta).FontSize(11).Padding(3, 8).Background(ui.Hex("#e8eef4")).Radius(4)
 		})
 		missing := []string{}
 		for _, field := range fields[1:] {
@@ -70,4 +69,10 @@ func knowledgeBasis(c *ui.Context, i Item) {
 			homeText(c, strings.Join(missing, "、")+"未记录", homeMeta).FontSize(11)
 		}
 	})
+}
+
+func knowledgeBasisTag(c *ui.Context, i Item) {
+	if fields := knowledgeBasisFields(i); len(fields) > 0 {
+		homeText(c, fields[0].Value, homeMeta).Tooltip("记忆点分类："+fields[0].Value).SingleLine().Padding(2, 5).Radius(4).Background(ui.Hex("#f3eff8")).TextColor(ui.Hex("#847196"))
+	}
 }

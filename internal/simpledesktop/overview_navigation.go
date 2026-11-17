@@ -48,17 +48,17 @@ func (a *App) overviewNavigation(c *ui.Context) {
 	if a.page == "设置" && a.settingsOrigin != nil {
 		selected = "project:" + a.access.OpenProject
 	}
-	ui.Themed(c, sidebarTheme).Width(homeSidebarWidth).Shrink(0).Background(ui.Hex("#eaf1f8")).BorderWidth(0, 1, 0, 0).BorderColor(homeBorder).Children(func() {
-		ui.Row(c).Height(112).Shrink(0).Padding(30, 26, 0, 26).Gap(10).DragWindow().Children(func() {
-			ui.Icon(c, mark).FontSize(27).TextColor(ui.Hex("#4d6986"))
-			homeText(c, "Memlane", homeBrand)
+	ui.Themed(c, sidebarTheme).Width(homeSidebarWidth).Shrink(0).Background(shellBackground).Children(func() {
+		ui.Row(c).Height(48).Margin(48, 0, 0, 0).Shrink(0).Padding(4, 24, 0, 24).AlignItems(ui.Start).Gap(10).DragWindow().Children(func() {
+			ui.Icon(c, mark).FontSize(32).TextColor(ui.Hex("#777b82"))
+			homeText(c, "Memlane", homeBrand).FontSize(21).TextColor(ui.Hex("#64686f"))
 		})
 		ui.Sidebar(c.Key("main-sidebar"), &selected, func() {
-			sidebarSelection(ui.SidebarItem(c, "总览", navIcons["总览"], "总览").Height(39), selected == "总览")
-			sidebarSelection(ui.SidebarItem(c, "通用知识", homeCommon, "通用记忆").Height(39), selected == "通用知识")
-			sidebarSelection(ui.SidebarItem(c, "用户画像", userProfileIcon, "用户画像").Height(39), selected == "用户画像")
-			ui.Row(c).Padding(24, 8, 8, 8).AlignItems(ui.Center).Gap(4).Children(func() {
-				homeText(c, "项目", homeMeta)
+			sidebarSelection(ui.SidebarItem(c, "总览", navIcons["总览"], "总览").Height(32), selected == "总览")
+			sidebarSelection(ui.SidebarItem(c, "通用知识", homeCommon, "通用记忆").Height(32), selected == "通用知识")
+			sidebarSelection(ui.SidebarItem(c, "用户画像", userProfileIcon, "用户画像").Height(32), selected == "用户画像")
+			ui.Row(c).Padding(12, 8, 8, 8).AlignItems(ui.Center).Gap(4).Children(func() {
+				homeText(c, "项目", homeMeta).FontSize(14)
 				ui.Spacer(c)
 				ui.Button(c, fmt.Sprintf("全部 %d", len(a.Config.Projects))).Cursor(ui.CursorPointer).FontSize(10).BorderWidth(0).Background(ui.Transparent).OnClick(a.showOverviewProjects)
 				a.projectAddMenu(c)
@@ -66,7 +66,7 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			labels := projectLabels(a.Config.Projects)
 			for idx, p := range a.Config.Projects {
 				index := idx
-				item := ui.SidebarItem(c.Key("project-nav-"+p.ID), "project:"+p.ID, homeFolder, middleProjectName(labels[idx])).Label(labels[idx]).Tooltip(p.Name + " · " + p.Path).MinHeight(38).FillWidth().MinWidth(0).Gap(6)
+				item := ui.SidebarItem(c.Key("project-nav-"+p.ID), "project:"+p.ID, homeFolder, middleProjectName(labels[idx])).Label(labels[idx]).Tooltip(p.Name + " · " + p.Path).MinHeight(32).FillWidth().MinWidth(0).Gap(6)
 				sidebarSelection(item, selected == "project:"+p.ID)
 				item.Children(func() {
 					a.unreadProjectBadge(c, p, index)
@@ -82,7 +82,7 @@ func (a *App) overviewNavigation(c *ui.Context) {
 					}
 				})
 			}
-		}).FillWidth().Grow(1).MinHeight(0).Padding(0, 18).Background(ui.Transparent).TrackScroll(&a.overviewState.SidebarScroll).OnChange(func() {
+		}).FillWidth().Grow(1).MinHeight(0).Padding(0, 8).Background(ui.Transparent).TrackScroll(&a.overviewState.SidebarScroll).OnChange(func() {
 			for idx, p := range a.Config.Projects {
 				if selected == "project:"+p.ID {
 					a.navigate("知识", idx)
@@ -92,15 +92,15 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			a.navigate(selected, 0)
 		})
 		ui.Toolbar(c, func() {
-			entry := ui.Button(c, "").Cursor(ui.CursorPointer).Label("设置").FillWidth().Height(38).Padding(0, 10).Gap(10).Justify(ui.Start).BorderWidth(0)
+			entry := ui.Button(c, "").Cursor(ui.CursorPointer).Label("设置").FillWidth().Height(32).Padding(0, 10).Gap(10).Justify(ui.Start).BorderWidth(0)
 			if a.page == "设置" && a.settingsOrigin == nil {
 				entry.Background(ui.Hex("#d8e3ef"))
 			} else {
 				entry.Background(ui.Transparent)
 			}
 			entry.Children(func() { ui.Icon(c, homeSettings).FontSize(17).TextColor(homeIconInk); ui.Text(c, "设置") }).OnClick(func() { a.settingsOrigin = nil; a.access.OpenProject = ""; a.navigate("设置", 0) })
-		}).Height(44).Shrink(0).Padding(0, 18)
-		appFooter(c, "侧栏状态栏").Padding(0, 26).Gap(7).Children(func() {
+		}).Height(44).Shrink(0).Padding(0, 8)
+		appFooter(c, "侧栏状态栏").Padding(0, 24).Gap(7).Children(func() {
 			color := ui.Hex("#9aabbc")
 			if a.service == "已连接" {
 				color = ui.Hex("#72978a")
@@ -149,7 +149,7 @@ func (a *App) overviewProjectGrid(c *ui.Context) {
 						continue
 					}
 					p := a.Config.Projects[idx]
-					card := ui.Button(c, "").Cursor(ui.CursorPointer).Key("home-project-"+p.ID).Label(p.Name+" · "+p.Path+" · 查看项目记忆").Width(0).Grow(1).MinWidth(0).MinHeight(94).Padding(15).Gap(11).Justify(ui.Start).Border(1, homeBorder).Radius(8)
+					card := ui.Button(c, "").Cursor(ui.CursorPointer).Key("home-project-"+p.ID).Label(p.Name+" · "+p.Path+" · 查看项目记忆").Width(0).Grow(1).MinWidth(0).MinHeight(94).Padding(15).Gap(11).Justify(ui.Start).BorderWidth(0, 0, 1, 0).BorderColor(homeBorder).Radius(0)
 					card.Background(homeHoverColor(card, "card-surface", ui.Hex("#ffffff"), ui.Hex("#f8fafc")))
 					if card.Hovered() {
 						card.BorderColor(ui.Hex("#b4c7d9"))

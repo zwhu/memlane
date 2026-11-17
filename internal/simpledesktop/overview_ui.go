@@ -108,6 +108,7 @@ func (a *App) loadOverview() {
 				}
 			}
 			a.overviewState.Snapshot = snapshot
+			a.loadOverviewRecallStats(generation)
 			// A new catalog may have the same IDs as the already preheated old
 			// catalog. Let that publication consume cached titles again.
 			a.recentScope = ""
@@ -203,7 +204,7 @@ func (a *App) overviewHome(c *ui.Context) {
 	now := time.Now()
 	midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
 	c.After(midnight.Sub(now))
-	ui.Scroll(c.Key("overview-scroll")).Grow(1).MinHeight(0).TrackScroll(&v.Scroll).Padding(18, homePageInset, 40, homePageInset).Font("system-ui").FontWeight(400).Children(func() {
+	ui.Scroll(c.Key("overview-scroll")).Grow(1).MinHeight(0).TrackScroll(&v.Scroll).Padding(pageTopInset, homePageInset, pageInset, homePageInset).Font("system-ui").FontWeight(400).Children(func() {
 		ui.Column(c).FillWidth().MaxWidth(homeMaxWidth).AlignSelf(ui.Center).Shrink(0).Gap(0).Children(func() {
 			usage := "—"
 			if n, err := firstUseDays(a.Config, now); err == nil {
@@ -216,10 +217,10 @@ func (a *App) overviewHome(c *ui.Context) {
 			if v.RawLoaded {
 				raw = fmt.Sprint(v.Snapshot.Raw)
 			}
-			ui.Row(c).Margin(0, 0, 16, 0).Children(func() {
+			ui.Row(c).Key("overview-welcome-module").Padding(24).Margin(0, 0, sectionGap, 0).Background(ui.Hex("#f0f5fb")).Border(1, ui.Hex("#dce6f2")).Radius(12).Children(func() {
 				ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
-					homeText(c, "YOUR MEMORY, CONNECTED", homeEyebrow)
-					homeText(c, "每一次积累，都能找回。", homeWelcome)
+					homeText(c, "YOUR MEMORY, CONNECTED", homeEyebrow).TextColor(ui.Hex("#7a91ae"))
+					homeText(c, "每一次积累，都能找回。", homeWelcome).TextColor(ui.Hex("#365474"))
 					homeText(c, "项目中的记忆与经验，在这里继续。", homeBody)
 				})
 				for idx, metric := range []struct{ label, value, unit string }{{"已使用", usage, "天"}, {"记忆", knowledge, "条"}, {"原始记录", raw, "条"}} {
@@ -258,9 +259,26 @@ func (a *App) overviewHome(c *ui.Context) {
 				projectLink(c, "重试读取记录统计", a.loadOverview)
 			}
 			a.overviewHeatmap(c, now)
-			ui.Row(c).Key("overview-paired-sections").Gap(homeColumnGap).Margin(12, 0, 16, 0).AlignItems(ui.Stretch).Children(func() {
-				ui.Column(c).Key("overview-knowledge-section").Width(0).Grow(1.6).MinWidth(0).Gap(0).Children(func() { a.overviewKnowledge(c, now) })
-				ui.Column(c).Key("overview-activity-section").Width(0).Grow(1).MinWidth(255).Gap(0).Children(func() { a.overviewActivities(c, now) })
+			ui.Row(c).Key("overview-paired-sections").Gap(homeColumnGap).Margin(sectionGap, 0, sectionGap, 0).AlignItems(ui.Stretch).Children(func() {
+				ui.Column(c).Key("overview-knowledge-section").Width(0).Grow(1.6).MinWidth(0).Gap(8).Children(func() {
+					v := &a.overviewState
+					ui.Row(c).Height(28).Shrink(0).Children(func() {
+						title := "最近记忆"
+						if v.Day != "" {
+							title = v.Day + " 新增记忆"
+						}
+						homeText(c, title, homeHeading)
+						ui.Spacer(c)
+						if v.Day != "" {
+							homeLink(c, "显示最近记忆", func() { v.Day = ""; v.KnowledgeScroll.Y = 0 })
+						}
+					})
+					ui.Column(c).Padding(8).Border(1, homeBorder).Radius(12).Children(func() { a.overviewKnowledge(c, now) })
+				})
+				ui.Column(c).Key("overview-activity-section").Width(0).Grow(1).MinWidth(255).Gap(8).Children(func() {
+					ui.Row(c).Height(28).Children(func() { homeText(c, "近期动态", homeHeading); ui.Spacer(c); a.overviewActivityTabs(c) })
+					ui.Column(c).Padding(8).Border(1, homeBorder).Radius(12).Children(func() { a.overviewActivities(c, now) })
+				})
 			})
 			a.overviewProjectGrid(c)
 			if len(a.Config.Projects) == 0 {
@@ -281,18 +299,16 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 	if gridStart.AddDate(0, 0, weeks*7-1).Before(today) {
 		weeks++
 	}
-	ui.Column(c).Gap(0).Margin(0, 0, 0, 0).Padding(18, 21, 15, 21).Border(1, homeBorder).Radius(11).Background(ui.Hex("#ffffff")).Children(func() {
+	ui.Column(c).Key("overview-heatmap-module").Gap(0).Padding(16).Border(1, homeBorder).Radius(12).Background(ui.Hex("#ffffff")).Children(func() {
 		ui.Row(c).Margin(0, 0, 18, 0).Children(func() {
-			homeText(c, "记忆积累", homePanelHeading)
-			homeText(c, "过去一年", homeMeta).Margin(0, 7)
 			ui.Spacer(c)
-			homeText(c, start.Format("2006.01")+" — "+today.Format("2006.01"), homeMeta)
+			homeText(c, start.Format("2006.01")+" — "+today.Format("2006.01"), homeReadableMeta)
 		})
 		ui.Column(c).FillWidth().MaxWidth(900).AlignSelf(ui.Center).Gap(8).Children(func() {
 			ui.Row(c).FillWidth().MaxWidth(879).AlignSelf(ui.Center).Justify(ui.SpaceBetween).Children(func() {
 				month := time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, now.Location())
 				for !month.After(today) {
-					homeText(c, fmt.Sprint(int(month.Month()))+"月", homeMeta).FontSize(9).SingleLine().Shrink(0).TextColor(ui.Hex("#98a3ae"))
+					homeText(c, fmt.Sprint(int(month.Month()))+"月", homeReadableMeta).FontSize(9).SingleLine().Shrink(0).TextColor(ui.Hex("#677383"))
 					month = month.AddDate(0, 1, 0)
 				}
 			})
@@ -309,7 +325,7 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 						if weekday == 5 {
 							label = "五"
 						}
-						ui.Column(c).Height(0).Grow(1).Justify(ui.Center).Children(func() { homeText(c, label, homeMeta).FontSize(8) })
+						ui.Column(c).Height(0).Grow(1).Justify(ui.Center).Children(func() { homeText(c, label, homeReadableMeta).FontSize(8) })
 					}
 				})
 				ui.Row(c).Width(0).Grow(1).AspectRatio(53.0 / 7).Gap(3).Children(func() {
@@ -320,18 +336,18 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 								date := day.Format("2006-01-02")
 								count := buckets[date]
 								visible := !day.Before(start) && !day.After(today)
-								color := ui.Hex("#f0f3f6")
+								color := ui.Hex("#f0f2f5")
 								if count > 0 {
-									color = ui.Hex("#edf1f5")
+									color = ui.Hex("#a9c9ee")
 								}
 								if count >= 3 {
-									color = ui.Hex("#d6e2ee")
+									color = ui.Hex("#74a7e1")
 								}
 								if count >= 6 {
-									color = ui.Hex("#b0c6db")
+									color = ui.Hex("#4381cb")
 								}
 								if count >= 10 {
-									color = ui.Hex("#89a8c8")
+									color = ui.Hex("#245ba5")
 								}
 								if !visible {
 									color = ui.Transparent
@@ -357,11 +373,11 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 			if v.Loaded {
 				text = fmt.Sprintf("今天新增 %d 条记忆", buckets[today.Format("2006-01-02")])
 			}
-			homeText(c, text, homeMeta)
+			homeText(c, text, homeReadableMeta)
 			ui.Spacer(c)
 			ui.Row(c).Gap(4).Children(func() {
 				ui.Text(c, "少").FontSize(10).TextColor(homeMuted)
-				for _, color := range []string{"#edf1f5", "#d6e2ee", "#b0c6db", "#89a8c8"} {
+				for _, color := range []string{"#a9c9ee", "#74a7e1", "#4381cb", "#245ba5"} {
 					ui.Column(c).Size(8, 8).Radius(2).Background(ui.Hex(color))
 				}
 				ui.Text(c, "多").FontSize(10).TextColor(homeMuted)
@@ -397,19 +413,8 @@ func (a *App) overviewKnowledgeRows(now time.Time) []Item {
 func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 	v := &a.overviewState
 	rows := a.overviewKnowledgeRows(now)
-	ui.Row(c).Height(28).Shrink(0).Margin(0, 0, 6, 0).Children(func() {
-		title := "最近记忆"
-		if v.Day != "" {
-			title = v.Day + " 新增记忆"
-		}
-		homeText(c, title, homeHeading)
-		ui.Spacer(c)
-		if v.Day != "" {
-			homeLink(c, "显示最近记忆", func() { v.Day = ""; v.KnowledgeScroll.Y = 0 })
-		}
-	})
 	a.startRecentTitles(rows)
-	ui.Scroll(c.Key("overview-knowledge")).Label("最近记忆内容").Height(homeOverviewListHeight).Shrink(0).FillWidth().TrackScroll(&v.KnowledgeScroll).Border(1, ui.Hex("#eaf0f4")).Radius(11).Background(ui.Hex("#ffffff")).Padding(4, 0).DrawOver(func(p *ui.Painter, r ui.Rect) {
+	ui.Scroll(c.Key("overview-knowledge")).Label("最近记忆内容").Height(homeOverviewListHeight).Shrink(0).FillWidth().TrackScroll(&v.KnowledgeScroll).BorderWidth(0).Radius(0).Background(ui.Hex("#ffffff")).Padding(0).DrawOver(func(p *ui.Painter, r ui.Rect) {
 		if v.KnowledgeScroll.MaxY-v.KnowledgeScroll.Y > 1 {
 			p.FillGradient(ui.Rect{X: r.X + 1, Y: r.Y + r.H - 25, W: r.W - 6, H: 24}, ui.LinearGradient{From: ui.Hex("#ffffff").Alpha(0), To: ui.Hex("#ffffff"), Angle: 180}, 0)
 		}
@@ -421,12 +426,15 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 			overviewLoadingRows(c, "正在读取记忆", false)
 			return
 		}
-		for _, item := range rows {
+		for index, item := range rows {
 			i := item
-			row := ui.Button(c, "").Key("recent-"+i.key()).Label(i.Title).FillWidth().Justify(ui.Start).AlignItems(ui.Start).Padding(17, 14).Radius(0).Gap(13).BorderWidth(0, 0, 1, 0).BorderColor(homeBorder)
+			row := ui.Button(c, "").Key("recent-" + i.key()).Label(i.Title).FillWidth().Justify(ui.Start).AlignItems(ui.Start).Padding(8).Radius(0).Gap(10).BorderWidth(0)
+			if index < len(rows)-1 {
+				row.BorderWidth(0, 0, 1, 0).BorderColor(homeBorder)
+			}
 			hover := ui.Hex("#f7f9fb")
 			row.Background(homeHoverColor(row, "knowledge-surface", hover.Alpha(0), hover)).Children(func() {
-				ui.Column(c).Size(28, 33).Shrink(0).Border(1, homeBorder).Radius(6).Background(ui.Hex("#f7f9fc")).AlignItems(ui.Center).Justify(ui.Center).Children(func() { ui.Icon(c, homeDocument).FontSize(15).TextColor(homeMuted) })
+				ui.Column(c).Size(24, 24).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() { ui.Icon(c, recentAgentIcon(i)).FontSize(20).TextColor(homeMuted) })
 				ui.Column(c).Gap(0).Grow(1).MinWidth(0).Children(func() {
 					homeText(c, knowledgePreview(i.Title), homeTitle).MaxLines(1).Tooltip(i.Title)
 					date := "来源日期未知"
@@ -435,10 +443,15 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 							date = day
 						}
 					}
-					ui.Row(c).Margin(9, 0, 0, 0).Gap(8).Children(func() {
+					ui.Row(c).Margin(4, 0, 0, 0).Gap(8).Children(func() {
 						source := a.overviewSourceName(i)
-						homeText(c, middleProjectName(source), homeMeta).Tooltip(source).MaxLines(1).Padding(2, 6).Radius(4).Background(ui.Hex("#f0f4f8")).TextColor(ui.Hex("#7d93a9"))
-						homeText(c, date, homeMeta)
+						homeText(c, middleProjectName(source), homeReadableMeta).Tooltip("所属项目：" + source).MaxLines(1).TextColor(ui.Hex("#7d93a9"))
+						recall, tip := knowledgeCardRecall(i)
+						homeText(c, recall, homeReadableMeta).Tooltip(tip).Padding(2, 5).Radius(4).Background(ui.Hex("#edf5f1")).TextColor(ui.Hex("#5e8272"))
+						if fields := knowledgeBasisFields(i); len(fields) > 0 {
+							homeText(c, fields[0].Value, homeReadableMeta).Tooltip("记忆点分类："+fields[0].Value).Padding(2, 5).Radius(4).Background(ui.Hex("#f3eff8")).TextColor(ui.Hex("#847196"))
+						}
+						homeText(c, date, homeReadableMeta).TextColor(ui.Hex("#68717d"))
 					})
 				})
 				ui.Icon(c, homeArrow).FontSize(12).TextColor(ui.Hex("#a9b4bf")).Margin(7, 0, 0, 0).Shrink(0)
@@ -464,26 +477,7 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 		events, loaded, loadError = v.History, v.HistoryLoaded, v.HistoryError
 	}
 	events = events[:min(50, len(events))]
-	ui.Row(c).Height(28).Shrink(0).Margin(0, 0, 6, 0).Children(func() {
-		homeText(c, "近期动态", homeHeading)
-		ui.Spacer(c)
-		selected := 0
-		if v.SearchHistory {
-			selected = 1
-		}
-		previousTheme := c.Theme()
-		compactTheme := *previousTheme
-		compactTheme.FontSize, compactTheme.Spacing = 10, 2
-		c.SetTheme(&compactTheme)
-		ui.Segmented(c, &selected, "动态", "最近搜索").Label("近期动态类型").OnChange(func() {
-			v.SearchHistory = selected == 1
-			v.ActivityExpanded = false
-			v.ActivityScroll.Y = 0
-			a.loadOverviewActivity()
-		})
-		c.SetTheme(previousTheme)
-	})
-	ui.Scroll(c.Key("overview-activity")).Label("近期动态内容").Height(homeOverviewListHeight).Shrink(0).FillWidth().TrackScroll(&v.ActivityScroll).Border(1, ui.Hex("#eaf0f4")).Background(ui.Hex("#fafbfd")).Radius(11).Padding(18, 18, 5, 18).Gap(0).DrawOver(func(p *ui.Painter, r ui.Rect) {
+	ui.Scroll(c.Key("overview-activity")).Label("近期动态内容").Height(homeOverviewListHeight).Shrink(0).FillWidth().TrackScroll(&v.ActivityScroll).BorderWidth(0).Background(ui.Hex("#ffffff")).Radius(0).Padding(8, 8, 5, 8).Gap(0).DrawOver(func(p *ui.Painter, r ui.Rect) {
 		// A soft edge communicates more scrollable content without leaving a
 		// hard-cut half line against the rounded panel border. Keep the narrow
 		// scrollbar uncovered and remove each edge at that end of the list.
@@ -516,7 +510,7 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 				ui.Icon(c, icon).FontSize(24).TextColor(ui.Hex("#a7b5c4"))
 				homeText(c, title, homeBody)
 				if hint != "" {
-					homeText(c, hint, homeMeta).TextAlign(ui.Center).MaxLines(3)
+					homeText(c, hint, homeReadableMeta).TextAlign(ui.Center).MaxLines(3)
 				}
 				if loadError != "" {
 					homeLink(c, "重试", a.loadOverviewActivity)
@@ -526,7 +520,7 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 		}
 		ui.Column(c).FillWidth().Shrink(0).Gap(0).Children(func() {
 			if loadError != "" {
-				homeText(c, "读取失败，保留上次结果 · "+loadError, homeMeta).MaxLines(2)
+				homeText(c, "读取失败，保留上次结果 · "+loadError, homeReadableMeta).MaxLines(2)
 				homeLink(c, "重试读取动态", a.loadOverviewActivity).Margin(0, 0, 12, 0)
 			}
 			shown := groupOverviewFailures(events)
@@ -542,14 +536,14 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 						border, background = ui.Hex("#c1cede"), ui.Hex("#f3f6fb")
 					}
 					ui.Column(c).Width(17).Shrink(0).Padding(2, 0, 0, 0).AlignItems(ui.Start).Children(func() {
-						ui.Column(c).Size(13, 13).Shrink(0).Border(1, border).Radius(7).Background(background).Justify(ui.Center).AlignItems(ui.Center).Children(func() { homeText(c, mark, homeMeta).FontSize(8).TextColor(color) })
+						ui.Column(c).Size(13, 13).Shrink(0).Border(1, border).Radius(7).Background(background).Justify(ui.Center).AlignItems(ui.Center).Children(func() { homeText(c, mark, homeReadableMeta).FontSize(8).TextColor(color) })
 						if idx < len(shown)-1 {
 							ui.Column(c).Width(1).Grow(1).Margin(2, 0, -21, 6).Background(ui.Hex("#e4eaf0"))
 						}
 					})
 					ui.Column(c).Grow(1).MinWidth(0).Gap(0).Children(func() {
 						ui.Row(c).Gap(8).Children(func() {
-							homeText(c, event.Title, homeActivityTitle).Grow(1).MinWidth(0).MaxLines(2)
+							homeText(c, event.Title, homeActivityTitle).TextColor(ui.Hex("#3f4d5c")).Grow(1).MinWidth(0).MaxLines(2)
 							stamp := "时间未知"
 							if !event.At.IsZero() {
 								stamp = event.At.In(now.Location()).Format("15:04")
@@ -557,13 +551,13 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 									stamp = event.At.In(now.Location()).Format("2006/01/02 15:04")
 								}
 							}
-							homeText(c, stamp, homeMeta).TextColor(ui.Hex("#a1aab4")).Shrink(0)
+							homeText(c, stamp, homeReadableMeta).TextColor(ui.Hex("#687483")).Shrink(0)
 						})
 						label := event.Project + " · " + event.State
 						if event.State == "失败" {
 							label += " · " + eventFailureReason(event)
 						}
-						homeText(c, label, homeMeta).TextColor(homeMuted).Margin(5, 0, 0, 0)
+						homeText(c, label, homeReadableMeta).TextColor(ui.Hex("#596675")).Margin(5, 0, 0, 0)
 						if event.State != "已完成" && event.State != "失败" {
 							if index, ok := a.overviewActivityProject(event); ok {
 								homeLink(c, "查看项目", func() { a.navigate("知识", index) }).AlignSelf(ui.Start).Justify(ui.Start)
@@ -589,7 +583,7 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 								}
 							})
 							if v.ExpandedEvent == event.Key {
-								homeText(c, v.ExpandedReport, homeMeta).LineHeight(1.6).Margin(8, 0, 0, 0)
+								homeText(c, v.ExpandedReport, homeReadableMeta).LineHeight(1.6).Margin(8, 0, 0, 0)
 							}
 						}
 					})
@@ -615,4 +609,23 @@ func (a *App) overviewActivityProject(event overviewEvent) (int, bool) {
 		}
 	}
 	return index, index >= 0
+}
+
+func (a *App) overviewActivityTabs(c *ui.Context) {
+	v := &a.overviewState
+	selected := 0
+	if v.SearchHistory {
+		selected = 1
+	}
+	previousTheme := c.Theme()
+	compactTheme := *previousTheme
+	compactTheme.FontSize, compactTheme.Spacing = 10, 2
+	c.SetTheme(&compactTheme)
+	ui.Segmented(c, &selected, "动态", "最近搜索").Label("近期动态类型").OnChange(func() {
+		v.SearchHistory = selected == 1
+		v.ActivityExpanded = false
+		v.ActivityScroll.Y = 0
+		a.loadOverviewActivity()
+	})
+	c.SetTheme(previousTheme)
 }

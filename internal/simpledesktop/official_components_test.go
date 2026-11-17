@@ -26,7 +26,14 @@ func TestOfficialFooterBaselinesAndSplitKeepDraft(t *testing.T) {
 					if n == 0 {
 						baseline = r.Y
 					}
-					if math.Abs(float64(r.Y-baseline)) > 1 || r.H != 48 || r.Y+r.H != float32(size[1]) {
+					// Content footers sit inside the inset workspace; the sidebar stays in the outer shell.
+					wantBottom := float32(size[1])
+					wantY := baseline
+					if n > 0 {
+						wantBottom -= 11 // 10px shell gap + 1px workspace border
+						wantY -= 11
+					}
+					if math.Abs(float64(r.Y-wantY)) > 1 || r.H != 48 || r.Y+r.H != wantBottom {
 						t.Fatalf("misaligned footer %s: %+v baseline=%v", label, r, baseline)
 					}
 				}

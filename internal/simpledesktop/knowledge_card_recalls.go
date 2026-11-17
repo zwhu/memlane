@@ -76,3 +76,37 @@ func (a *App) loadKnowledgeCardRecalls(s *pane) {
 		}()
 	}
 }
+
+// Fetch existing recall receipts for the recent overview rows without blocking its catalog.
+func (a *App) loadOverviewRecallStats(generation uint64) {
+	client, ok := a.accessClient()
+	if !ok || a.Update == nil {
+		return
+	}
+	rows := a.overviewKnowledgeRows(time.Now())
+	jobs := make(chan Item, len(rows))
+	for _, i := range rows {
+		jobs <- i
+	}
+	close(jobs)
+	for worker := 0; worker < min(4, len(rows)); worker++ {
+		go func() {
+			for i := range jobs {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				stats, _ := client.knowledgeRecall(ctx, i)
+				cancel()
+				a.Update(func() {
+					if generation != a.overviewState.generation {
+						return
+					}
+					for n, row := range a.overviewState.Snapshot.Knowledge {
+						if row.key() == i.key() {
+							a.overviewState.Snapshot.Knowledge[n].RecallStats = stats
+							break
+						}
+					}
+				})
+			}
+		}()
+	}
+}

@@ -9,17 +9,20 @@ import (
 // Selected A, 3c1c845: style.css followed by suite.css. Keep these roles
 // local to the overview so its correction does not restyle reading/settings.
 const (
-	homeOverviewListHeight = 320
-	homeSidebarWidth       = 220
-	homeHeaderHeight       = 62
-	homePageInset          = 32
+	homeOverviewListHeight = 280
+	homeSidebarWidth       = 200
+	homeHeaderHeight       = 48
+	homePageInset          = pageInset
 	homeMaxWidth           = 1320
-	homeColumnGap          = 30
+	homeColumnGap          = 32
 	homeCalendarMaxWidth   = 900
 	homeGridGap            = 12
 	// Calibrate the Core Text heading band against the fixed 2x A image.
 	homeSectionOffset = 1
 )
+
+var shellBackground = ui.Hex("#ededee")
+var shellBorder = ui.Hex("#dedee1")
 
 var homeInk = ui.Hex("#273340")
 var homeMuted = ui.Hex("#7b8998")
@@ -27,7 +30,7 @@ var homeBorder = ui.Hex("#e6ebef")
 var homeNavInk = ui.Hex("#536679")
 var homeIconInk = ui.Hex("#7189a1")
 var homeLinkInk = ui.Hex("#7e90a3")
-var homeBackground = ui.Hex("#fdfefe")
+var homeBackground = ui.Hex("#ffffff")
 
 type homeTextRole uint8
 
@@ -47,6 +50,7 @@ const (
 	homeActivityTitle
 	homePath
 	homeTopTitle
+	homeReadableMeta
 )
 
 type homeTypography struct {
@@ -57,6 +61,7 @@ type homeTypography struct {
 }
 
 var homeType = map[homeTextRole]homeTypography{
+	homeReadableMeta:  {10, 400, ui.Hex("#596675"), 1.4, 0},
 	homeBody:          {12, 400, homeMuted, 1.5, 0},
 	homeBrand:         {19, 650, homeInk, 1.25, -.5},
 	homeWelcome:       {20, 600, homeInk, 1.25, -.5},

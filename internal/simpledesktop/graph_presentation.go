@@ -11,7 +11,7 @@ var graphEmptyIcon = homeSVG(`<rect x="2" y="9" width="6" height="6" rx="1.5"/><
 func (a *App) graphToolbar(c *ui.Context) {
 	p, ok := a.current()
 	code := a.graphMode == "代码结构"
-	ui.Row(c).Shrink(0).Padding(12, 32).Gap(12).AlignItems(ui.Center).Children(func() {
+	ui.Row(c).Shrink(0).Padding(controlGap, pageInset).Gap(12).AlignItems(ui.Center).Children(func() {
 		selected := 0
 		if code {
 			selected = 1
@@ -53,7 +53,7 @@ func (a *App) graphToolbar(c *ui.Context) {
 }
 
 func (a *App) codeGraphEmpty(c *ui.Context) {
-	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Padding(24, 32, 48, 32).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Padding(pageTopInset, pageInset, pageInset, pageInset).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 		ui.Column(c).MaxWidth(480).FillWidth().AlignItems(ui.Center).Gap(14).Children(func() {
 			ui.Column(c).Size(88, 88).Radius(24).Background(ui.Hex("#f1f6fa")).AlignItems(ui.Center).Justify(ui.Center).Margin(0, 0, 8, 0).Children(func() {
 				ui.Icon(c, graphEmptyIcon).FontSize(42).TextColor(ui.Hex("#91a9bf"))
@@ -76,7 +76,7 @@ func (a *App) codeGraphEmpty(c *ui.Context) {
 			}
 		})
 	})
-	appFooter(c, "图谱状态栏").Padding(0, 32).Children(func() {
+	appFooter(c, "图谱状态栏").Padding(0, pageInset).Children(func() {
 		homeText(c, "仅当前项目 · 由你选择是否开启", homeMeta)
 	})
 }

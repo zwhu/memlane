@@ -1,8 +1,10 @@
 package simpledesktop
 
 import (
-	"github.com/egoist/mygo/ui"
+	"strings"
 	"time"
+
+	"github.com/egoist/mygo/ui"
 )
 
 // The SDK owns focus, dismissal, theme and reduced-motion handling. This shared
@@ -51,17 +53,34 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 		s.WidgetList.ScrollTo(s.ListSelection, ui.Center)
 		s.RevealItem = ""
 	}
+	listInset := paneInset
+	if !common {
+		listInset = pageInset
+	}
 	ui.List(c.Key("items-"+a.routeKey()), &s.WidgetList, len(s.Items), func(n int) {
 		i := s.Items[n]
-		ui.Column(c).Padding(12, 14).Gap(8).MinWidth(0).Children(func() {
+		ui.Column(c).Padding(12, listItemInset).Gap(8).MinWidth(0).Children(func() {
 			label := i.Title
 			if i.Session != nil {
 				label = sessionIdentity(i.ID)
 			}
-			title := ui.Text(c, label).FontSize(12).MaxLines(2)
-			if n == s.ListSelection {
-				title.TextColor(c.Theme().AccentText)
-			}
+
+			ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(8).Children(func() {
+				display := label
+				if i.Session != nil {
+					icon := ui.Icon(c, recentAgentIcon(i)).FontSize(16).TextColor(c.Theme().Text).Tooltip(label)
+					if n == s.ListSelection {
+						icon.TextColor(c.Theme().AccentText)
+					}
+					if _, key, ok := strings.Cut(label, " · "); ok {
+						display = key
+					}
+				}
+				title := ui.Text(c, display).FontSize(12).MaxLines(2).Grow(1).MinWidth(0).Tooltip(label)
+				if n == s.ListSelection {
+					title.TextColor(c.Theme().AccentText)
+				}
+			})
 			kind := memoryKindLabel(i.Kind)
 			if i.Session != nil && i.Title != i.ID && i.Title != "来源会话" {
 				text := ui.Text(c, "已保存首条："+i.Title).FontSize(11).MaxLines(2)
@@ -99,7 +118,7 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 				projectLink(c, "标题读取失败 · 重试", func() { a.retryReadingTitle(s, i) })
 			}
 		})
-	}).Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(0, 18).Gap(6).OnChange(func() {
+	}).Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(0, listInset-listItemInset).Gap(6).OnChange(func() {
 		if s.ListSelection < 0 || s.ListSelection >= len(s.Items) {
 			return
 		}
@@ -117,14 +136,14 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 					message = "当前分类还没有记忆"
 				}
 			}
-			homeText(c, message, homeBody).Margin(14)
+			homeText(c, message, homeBody).Margin(16, listItemInset)
 			if common {
-				homeText(c, "可新增个人偏好或可复用的经验。", homeMeta).Margin(0, 14)
+				homeText(c, "可新增个人偏好或可复用的经验。", homeMeta).Margin(0, listItemInset)
 			}
 		}
 	})
 }
 
 func appToolbar(c *ui.Context, label string, fn func()) ui.Element {
-	return ui.Toolbar(c, fn).Label(label).Height(62).Shrink(0).Padding(0, homePageInset).Gap(10)
+	return ui.Toolbar(c, fn).Label(label).Height(62).Shrink(0).Padding(0, paneInset).Gap(10)
 }

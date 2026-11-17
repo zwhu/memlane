@@ -119,6 +119,10 @@ func TestProjectHeaderDividerAndFilterInsets(t *testing.T) {
 	a := projectUIFixture()
 	tt := ui.NewTester(a.View, 1200, 820)
 	clickProjectUI(t, tt, "原始记录")
+	recordTab, ok := tt.Find("记忆")
+	if !ok {
+		t.Fatal("record navigation absent")
+	}
 	divider, ok := tt.Find("Divider")
 	if !ok {
 		t.Fatal("raw-record split divider absent")
@@ -139,7 +143,17 @@ func TestProjectHeaderDividerAndFilterInsets(t *testing.T) {
 	if !ok {
 		t.Fatal("graph filter absent")
 	}
+	// Project tabs and their secondary filters retain the same page baseline across views.
 	if graph.Y != filter.Y || graph.X != filter.X {
 		t.Fatalf("secondary filter insets differ: records=%+v graph=%+v", filter, graph)
+	}
+	graphTab, ok := tt.Find("记忆")
+	if !ok || graphTab.X != recordTab.X || graphTab.Y != recordTab.Y {
+		t.Fatalf("project tabs shifted between records and graph: %v %v", recordTab, graphTab)
+	}
+	clickProjectUI(t, tt, "记忆")
+	knowledgeTab, ok := tt.Find("记忆")
+	if !ok || knowledgeTab.X != recordTab.X || knowledgeTab.Y != recordTab.Y {
+		t.Fatalf("project tabs shifted between records and knowledge: %v %v", recordTab, knowledgeTab)
 	}
 }

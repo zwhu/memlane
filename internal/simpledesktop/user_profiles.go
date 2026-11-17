@@ -231,12 +231,10 @@ func (a *App) userProfilesPage(c *ui.Context) {
 	}
 	ui.Row(c.Key("user-profiles-page")).Fill().MinHeight(0).Children(func() {
 		ui.Column(c).Width(216).Shrink(0).FillHeight().BorderWidth(0, 1, 0, 0).BorderColor(homeBorder).Children(func() {
-			ui.Row(c).Height(62).Shrink(0).Padding(0, 18).AlignItems(ui.Center).Children(func() {
-				homeText(c, "来源", homeHeading).FontSize(12)
-				ui.Spacer(c)
-				readingAction(c, "刷新画像列表", homeRefresh, func() { s.BodyKey = ""; a.refreshUserProfiles() }).Disabled(s.Loading)
-			})
-			ui.Scroll(c.Key("profile-sources")).Grow(1).MinHeight(0).Padding(0, 10, 16, 10).Gap(3).Children(func() {
+			paneHeading(c, "来源", func() {
+				refreshAction(c, "刷新画像列表", func() { s.BodyKey = ""; a.refreshUserProfiles() }).Disabled(s.Loading)
+			}).Margin(pageTopInset, 0, 0, 0).Padding(0, paneInset)
+			ui.Scroll(c.Key("profile-sources")).Grow(1).MinHeight(0).Padding(0, paneInset-listItemInset, paneInset, paneInset-listItemInset).Gap(3).Children(func() {
 				if !s.Loaded {
 					homeText(c, "正在加载来源…", homeMeta).Margin(8)
 				}
@@ -248,10 +246,10 @@ func (a *App) userProfilesPage(c *ui.Context) {
 						group = "其他 AI"
 					}
 					if group != previousGroup {
-						homeText(c, group, homeMeta).FontSize(10).Margin(12, 9, 6, 9)
+						homeText(c, group, homeMeta).FontSize(10).Margin(16, listItemInset, 8, listItemInset)
 						previousGroup = group
 					}
-					button := ui.Button(c.Key("profile-source-"+p.ID), "").Label(p.Name+"用户画像").FillWidth().Height(44).Padding(0, 10).Gap(10).Justify(ui.Start).BorderWidth(0).Radius(6).Cursor(ui.CursorPointer)
+					button := ui.Button(c.Key("profile-source-"+p.ID), "").Label(p.Name+"用户画像").FillWidth().Height(40).Padding(0, listItemInset).Gap(10).Justify(ui.Start).BorderWidth(0).Radius(6).Cursor(ui.CursorPointer)
 					if s.Selected == p.ID {
 						button.Background(ui.Hex("#edf3fa"))
 					} else {
@@ -276,13 +274,13 @@ func (a *App) userProfilesPage(c *ui.Context) {
 		ui.Column(c).Grow(1).MinWidth(0).FillHeight().Children(func() {
 			p, ok := a.selectedUserProfile()
 			if !ok {
-				homeText(c, "选择一个 AI，查看它对你的了解", homeBody).Margin(32)
+				homeText(c, "选择一个 AI，查看它对你的了解", homeBody).Margin(paneInset)
 				if s.Message != "" {
-					homeText(c, s.Message, homeMeta).Margin(32)
+					homeText(c, s.Message, homeMeta).Margin(paneInset)
 				}
 				return
 			}
-			ui.Row(c).FillWidth().Padding(24, 28, 20, 28).AlignItems(ui.Center).Gap(10).Children(func() {
+			ui.Row(c).FillWidth().Padding(pageTopInset, paneInset, controlGap, paneInset).AlignItems(ui.Center).Gap(10).Children(func() {
 				ui.Column(c).Grow(1).Gap(6).Children(func() {
 					homeText(c, p.Name+" 对你的了解", homeHeading).FontSize(18)
 					label := p.label()
@@ -306,26 +304,26 @@ func (a *App) userProfilesPage(c *ui.Context) {
 				}
 			})
 			if s.Message != "" {
-				homeText(c, s.Message, homeMeta).Margin(0, 28, 12, 28)
+				homeText(c, s.Message, homeMeta).Margin(0, paneInset, controlGap, paneInset)
 			}
 			if p.SaveUnknown {
-				ui.Row(c).Padding(0, 28, 12, 28).Gap(12).Children(func() {
+				ui.Row(c).Padding(0, paneInset, controlGap, paneInset).Gap(12).Children(func() {
 					homeText(c, "保存结果尚未确认，已保留本次文档", homeMeta)
 					homeLink(c, "核对保存结果", func() { a.userProfileAction(p, "reconcile", "") })
 				})
 			}
 			if s.Body != "" {
-				ui.Scroll(c.Key("user-profile-document-"+s.BodyKey)).Grow(1).MinHeight(0).Padding(8, 28, 28, 28).TrackScroll(&s.Scroll).Children(func() {
+				ui.Scroll(c.Key("user-profile-document-"+s.BodyKey)).Grow(1).MinHeight(0).Padding(controlGap, paneInset, paneInset, paneInset).TrackScroll(&s.Scroll).Children(func() {
 					a.commonMarkdown(c, "user-profile-markdown-"+s.BodyKey, s.Body)
 				})
-				ui.Row(c).FillWidth().Padding(12, 28).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Children(func() {
+				ui.Row(c).FillWidth().Padding(12, paneInset).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Children(func() {
 					homeText(c, "来源独立保留 · 不自动合并为通用记忆", homeMeta)
 					ui.Spacer(c)
 					textButton(c, "复制文档", nil).OnClick(func() { c.WriteClipboard(s.Body) })
 				})
 			} else {
-				ui.Scroll(c.Key("profile-import-overview")).Grow(1).FillWidth().MinHeight(0).Padding(4, 28, 28, 28).Children(func() {
-					ui.Column(c).FillWidth().MaxWidth(680).Padding(24).Gap(18).Border(1, homeBorder).Radius(10).Background(ui.Hex("#fafbfd")).Children(func() {
+				ui.Scroll(c.Key("profile-import-overview")).Grow(1).FillWidth().MinHeight(0).Padding(controlGap, paneInset, paneInset, paneInset).Children(func() {
+					ui.Column(c).FillWidth().MaxWidth(680).Padding(moduleInset).Gap(18).Border(1, homeBorder).Radius(10).Background(ui.Hex("#fafbfd")).Children(func() {
 						title, explanation := "导入 "+p.Name+" 的用户画像", "将它记住的背景、偏好与协作约定，独立保存在这里。"
 						if s.Reading {
 							title, explanation = "正在加载画像", "正在读取已保存的文档"

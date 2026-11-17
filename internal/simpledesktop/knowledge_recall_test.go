@@ -31,17 +31,17 @@ func TestKnowledgeRecallOfficialIdentityAndDisplay(t *testing.T) {
 	}
 	i.RecallStats = stats
 	tt := ui.NewTester(func(c *ui.Context) { knowledgeRecallLabel(c, i) }, 500, 100)
-	if !tt.HasText("· 召回 7 次") {
+	if !tt.HasText("召回 7 次") {
 		t.Fatal("count absent")
 	}
 	i.RecallStats = nil
 	tt = ui.NewTester(func(c *ui.Context) { knowledgeRecallLabel(c, i) }, 500, 100)
-	if !tt.HasText("· 召回 0 次") {
+	if !tt.HasText("召回 0 次") {
 		t.Fatal("default zero absent")
 	}
 	i.Kind = "原始记录"
 	tt = ui.NewTester(func(c *ui.Context) { knowledgeRecallLabel(c, i) }, 500, 100)
-	if tt.HasText("· 召回 0 次") {
+	if tt.HasText("召回 0 次") {
 		t.Fatal("raw records counted as knowledge")
 	}
 }

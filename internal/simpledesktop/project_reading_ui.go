@@ -124,24 +124,13 @@ func (a *App) projectHeader(c *ui.Context) {
 		if back != nil {
 			readingAction(c, label, readingBack, back)
 		}
-		title := memoryKindLabel(a.page)
-		if a.page == "设置" && a.settingsOrigin != nil {
-			for _, p := range a.Config.Projects {
-				if p.ID == a.access.OpenProject {
-					title = p.Name + " · 设置"
-					break
-				}
-			}
+		if _, ok := a.current(); ok && (a.page == "知识" || a.page == "图谱" || (a.page == "检索结果" && a.project >= 0)) {
+			ui.Button(c, "").Cursor(ui.CursorPointer).Label("项目设置").Height(30).Padding(0).Gap(6).BorderWidth(0).Background(ui.Transparent).TextColor(homeNavInk).Children(func() {
+				ui.Icon(c, homeSettings).FontSize(15).TextColor(homeIconInk)
+				ui.Text(c, "项目设置").FontSize(12)
+			}).OnClick(func() { a.openProjectSettings(a.project) })
 		}
-		if a.page == "检索结果" && a.project < 0 {
-			title = "通用记忆 · 搜索结果"
-		}
-		if p, ok := a.current(); ok && (a.page == "知识" || a.page == "图谱" || a.page == "检索结果") {
-			title = p.Name
-		}
-		homeText(c, title, homeTopTitle).FontSize(15).FontWeight(600).MaxWidth(280).SingleLine().Tooltip(title)
 		ui.Spacer(c)
-		a.unifiedSearchTrigger(c)
 		if a.page == "通用知识" {
 			anchor := readingAction(c, "通用记忆菜单", readingMore, func() { a.commonPage.MenuOpen = !a.commonPage.MenuOpen })
 			ui.Popover(c, anchor, &a.commonPage.MenuOpen, func() {
@@ -154,13 +143,9 @@ func (a *App) projectHeader(c *ui.Context) {
 				})
 			})
 		}
-		if _, ok := a.current(); ok && (a.page == "知识" || a.page == "图谱" || (a.page == "检索结果" && a.project >= 0)) {
-			ui.Button(c, "").Cursor(ui.CursorPointer).Label("项目设置").Height(30).Padding(0, 10).Gap(6).BorderWidth(0).Background(ui.Transparent).TextColor(homeNavInk).Children(func() {
-				ui.Icon(c, homeSettings).FontSize(15).TextColor(homeIconInk)
-				ui.Text(c, "项目设置").FontSize(12)
-			}).OnClick(func() { a.openProjectSettings(a.project) })
-		}
-	}).BorderWidth(0, 0, 1, 0).BorderColor(homeBorder).DragWindow()
+
+		a.unifiedSearchTrigger(c)
+	}).Height(48).Padding(0, 12).Background(shellBackground).BorderWidth(0).DragWindow()
 }
 
 // One stable tab host, with the reading divider continuing to the toolbar.
@@ -169,7 +154,7 @@ func (a *App) projectNavigation(c *ui.Context) {
 		a.layout.ProjectListWidth = 300
 	}
 	ui.Row(c.Key("project-view-navigation")).Shrink(0).AlignItems(ui.Stretch).Children(func() {
-		ui.Column(c).Width(a.layout.ProjectListWidth).Shrink(0).Padding(24, 32, 0, 32).Children(func() { a.projectTabs(c) })
+		ui.Column(c).Width(a.layout.ProjectListWidth).Shrink(0).Padding(pageTopInset, pageInset, 0, pageInset).Children(func() { a.projectTabs(c) })
 		line := homeBorder
 		if a.page == "图谱" || (a.page == "知识" && a.kind == "知识") {
 			line = ui.Transparent
@@ -210,8 +195,8 @@ func (a *App) projectReading(c *ui.Context) {
 	}
 	readingSplit(c, "project-reading-split", &a.layout.ProjectListWidth, func() {
 		ui.Column(c).Fill().Children(func() {
-			ui.Column(c.Key("project-view-navigation")).Padding(24, 32, 0, 32).Shrink(0).Children(func() { a.projectTabs(c) })
-			ui.Column(c).Padding(12, 32, 5, 32).Gap(12).Shrink(0).Children(func() {
+			ui.Column(c.Key("project-view-navigation")).Padding(pageTopInset, pageInset, 0, pageInset).Shrink(0).Children(func() { a.projectTabs(c) })
+			ui.Column(c).Padding(controlGap, pageInset, controlGap, pageInset).Gap(controlGap).Shrink(0).Children(func() {
 				if a.kind != "知识" {
 					labels := []string{"全部", "会话", "文档"}
 					selected := 0
@@ -244,7 +229,7 @@ func (a *App) projectReading(c *ui.Context) {
 			})
 			a.rawRecordsAutoLoad(s)
 			a.itemList(c, s, false)
-			appFooter(c, "原始记录加载状态").Padding(0, 32).Children(func() {
+			appFooter(c, "原始记录加载状态").Padding(0, pageInset).Children(func() {
 				homeText(c, projectListStatus(s), homeMeta)
 				ui.Spacer(c)
 				if s.Loaded && !s.Loading && s.Error == "" {
@@ -274,11 +259,11 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 	ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
 		if s.Selected == nil {
 			if s.Locating {
-				homeText(c, "正在定位记忆…", homeMeta).Margin(32)
+				homeText(c, "正在定位记忆…", homeMeta).Margin(paneInset)
 			} else {
 				a.emptyReadingBackground(c)
 			}
-			appFooter(c, "项目阅读栏").Padding(0, 32)
+			appFooter(c, "项目阅读栏").Padding(0, paneInset)
 			return
 		}
 		i := s.Selected
@@ -294,6 +279,7 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 				hoverCopyAction(c, row, "复制内容", func() { c.WriteClipboard(sessionCopyBody(s, *i)); a.copyFeedback("内容") }).Disabled(!(i.BodyLoaded || i.Detail != nil || i.Preview != ""))
 			})
 			knowledgeRecallLabel(c, *i)
+			knowledgeBasisTag(c, *i)
 			ui.Spacer(c)
 			anchor := readingAction(c, "内容信息", readingInfo, func() {
 				a.projectUI.InfoOpen = !a.projectUI.InfoOpen
@@ -314,7 +300,7 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 			scroll = &ui.ScrollState{}
 			s.DetailScroll[scrollKey] = scroll
 		}
-		ui.Scroll(c.Key("project-detail-"+scrollKey)).Grow(1).MinHeight(0).TrackScroll(scroll).Padding(0, 32, 24, 32).Children(func() {
+		ui.Scroll(c.Key("project-detail-"+scrollKey)).Grow(1).MinHeight(0).TrackScroll(scroll).Padding(controlGap, paneInset, paneInset, paneInset).Children(func() {
 			ui.Column(c).FillWidth().MaxWidth(820).Gap(12).Children(func() {
 				title := projectDisplayTitle(*i)
 				if title != "" {
@@ -360,7 +346,7 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 				}
 			})
 		})
-		appFooter(c, "项目阅读栏").Padding(0, 32).Children(func() {
+		appFooter(c, "项目阅读栏").Padding(0, paneInset).Children(func() {
 			homeText(c, "Cognee 提供 · 只读", homeMeta)
 			if time.Now().Before(a.projectUI.CopyUntil) {
 				ui.Spacer(c)

@@ -582,34 +582,36 @@ func (a *App) viewContent(c *ui.Context) {
 	a.mainShell(c)
 }
 func (a *App) mainShell(c *ui.Context) {
-	ui.Row(c.Key("main-shell")).Fill().AlignItems(ui.Stretch).Background(ui.Hex("#ffffff")).Children(func() {
+	ui.Row(c.Key("main-shell")).Fill().AlignItems(ui.Stretch).Background(shellBackground).Children(func() {
 		a.navigation(c)
-		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+		ui.Column(c).Grow(1).MinWidth(0).Padding(0, 10, 10, 0).Children(func() {
 			a.projectHeader(c)
-			if a.configError != "" {
-				ui.Text(c, "运行配置不可用："+a.configError).Margin(24).TextColor(ink)
-				return
-			}
-			// The graph owns its navigation row; reading tabs live in the list pane.
-			if a.page == "图谱" {
-				a.projectNavigation(c)
-			}
-			switch a.page {
-			case "用户画像":
-				a.userProfilesPage(c)
-			case "总览":
-				a.home(c)
-			case "设置":
-				a.settings(c)
-			case "图谱":
-				a.graphView(c)
-			case "通用知识":
-				a.commonKnowledgePage(c)
-			case "知识", "检索结果":
-				a.projectReading(c)
-			default:
-				a.reading(c)
-			}
+			ui.Column(c.Key("workspace")).Grow(1).MinHeight(0).FillWidth().Background(ui.Hex("#ffffff")).Border(1, shellBorder).Radius(14).Clip().Children(func() {
+				if a.configError != "" {
+					ui.Text(c, "运行配置不可用："+a.configError).Margin(24).TextColor(ink)
+					return
+				}
+				// The graph owns its navigation row; reading tabs live in the list pane.
+				if a.page == "图谱" {
+					a.projectNavigation(c)
+				}
+				switch a.page {
+				case "用户画像":
+					a.userProfilesPage(c)
+				case "总览":
+					a.home(c)
+				case "设置":
+					a.settings(c)
+				case "图谱":
+					a.graphView(c)
+				case "通用知识":
+					a.commonKnowledgePage(c)
+				case "知识", "检索结果":
+					a.projectReading(c)
+				default:
+					a.reading(c)
+				}
+			})
 		})
 	})
 }

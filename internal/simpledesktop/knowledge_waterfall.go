@@ -12,8 +12,8 @@ import (
 
 const (
 	knowledgeBatch            = 30
-	knowledgeInset    float32 = 48
-	knowledgeGap      float32 = 32
+	knowledgeInset    float32 = pageInset
+	knowledgeGap      float32 = sectionGap
 	knowledgeBodySize float32 = 16
 	knowledgeBodyLine float32 = 24
 )
@@ -50,8 +50,8 @@ func (s *knowledgeFeedState) cardHeight(i Item, width float32) float32 {
 	if i.ReadingState != "failed" && i.ReadingState != "unavailable" {
 		// Shape with the same font, exact content width, 24-DIP line box
 		// and 12-line clamp used by the rendered card, not a font-height ratio.
-		text := ui.ShapeText(body, ui.Font{Family: "system-ui", Size: knowledgeBodySize, Weight: 400, LineHeight: knowledgeBodyLine / knowledgeBodySize}, max(float32(1), width-82))
-		height = 152 + float32(min(12, max(1, len(text.Lines()))))*knowledgeBodyLine
+		text := ui.ShapeText(body, ui.Font{Family: "system-ui", Size: knowledgeBodySize, Weight: 400, LineHeight: knowledgeBodyLine / knowledgeBodySize}, max(float32(1), width-34))
+		height = 156 + float32(min(12, max(1, len(text.Lines()))))*knowledgeBodyLine
 	}
 	s.Measurements[i.key()] = knowledgeCardMeasurement{Body: body, State: i.ReadingState, Width: width, Height: height}
 	return height
@@ -248,7 +248,7 @@ func (a *App) knowledgePage(c *ui.Context, s *pane) {
 		s.Knowledge.Columns = map[string]int{}
 	}
 	width, _ := c.Size()
-	cardWidth := max(float32(200), (width-homeSidebarWidth-2*knowledgeInset-2*knowledgeGap)/3)
+	cardWidth := max(float32(200), (width-homeSidebarWidth-12-2*knowledgeInset-2*knowledgeGap)/3)
 	columns := [3][]Item{}
 	heights := [3]float32{}
 	ready := true
@@ -282,7 +282,7 @@ func (a *App) knowledgePage(c *ui.Context, s *pane) {
 	if !s.Knowledge.Detail && s.More && s.Loaded && ready && s.ListScroll.MaxY > 0 && s.ListScroll.Y >= s.ListScroll.MaxY-160 {
 		a.appendKnowledgeBatch(s)
 	}
-	ui.Scroll(c.Key("knowledge-feed-"+a.routeKey())).Label("记忆瀑布流").Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(32, knowledgeInset, 48, knowledgeInset).Gap(32).Children(func() {
+	ui.Scroll(c.Key("knowledge-feed-"+a.routeKey())).Label("记忆瀑布流").Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(sectionGap, knowledgeInset, pageInset, knowledgeInset).Gap(sectionGap).Children(func() {
 		if s.Error != "" {
 			homeText(c, "读取未完成 · "+s.Error, homeMeta)
 			projectLink(c, "重试读取记忆", func() { a.loadKnowledgeFeed(s) })
@@ -311,11 +311,15 @@ func (a *App) knowledgePage(c *ui.Context, s *pane) {
 }
 
 func (a *App) knowledgeCard(c *ui.Context, s *pane, i Item) {
-	card := ui.Column(c.Key("knowledge-card-"+i.key())).Label("记忆卡片").FillWidth().MinWidth(0).Padding(32, 40).Gap(16).Radius(24).Border(1, homeBorder).Background(ui.Transparent)
+	card := ui.Column(c.Key("knowledge-card-"+i.key())).Label("记忆卡片").FillWidth().MinWidth(0).Padding(moduleInset).Gap(16).Radius(12).Border(1, homeBorder).Background(ui.Hex("#ffffff"))
 	card.Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 			ui.Icon(c, knowledgeQuote).FontSize(24).TextColor(ui.Hex("#a5b2bf"))
 			ui.Spacer(c)
+			ui.Row(c).Gap(5).AlignItems(ui.Center).Margin(0, 8, 0, 0).Children(func() {
+				ui.Icon(c, recentAgentIcon(i)).FontSize(14).TextColor(homeNavInk)
+				homeText(c, sourceAgentName(i), homeMeta).TextColor(homeNavInk).Tooltip("来源 Agent")
+			})
 			if a.itemIsUnread(i) {
 				homeText(c, "未读", homeMeta)
 			}
@@ -338,6 +342,14 @@ func (a *App) knowledgeCard(c *ui.Context, s *pane, i Item) {
 				ui.Text(c, body).Font("system-ui").FontSize(knowledgeBodySize).FontWeight(400).FixedLineHeight(knowledgeBodyLine).TextColor(homeInk).FillWidth().MinWidth(0).MaxLines(12)
 			}).OnClick(func() { s.Knowledge.Detail = true; a.selectItem(s, i) })
 		}
+
+		ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(8).Children(func() {
+			label, tip := knowledgeCardRecall(i)
+			homeText(c, label, homeMeta).SingleLine().Tooltip(tip).Padding(2, 5).Radius(4).Background(ui.Hex("#edf5f1")).TextColor(ui.Hex("#5e8272"))
+			if fields := knowledgeBasisFields(i); len(fields) > 0 {
+				homeText(c, fields[0].Value, homeMeta).Tooltip("记忆点分类："+fields[0].Value).Padding(2, 5).Radius(4).Background(ui.Hex("#f3eff8")).TextColor(ui.Hex("#847196"))
+			}
+		})
 		ui.Row(c).FillWidth().MinWidth(0).Margin(8, 0, 0, 0).AlignItems(ui.Center).Gap(8).Children(func() {
 			date := i.Date
 			if i.Document != nil {
@@ -356,9 +368,6 @@ func (a *App) knowledgeCard(c *ui.Context, s *pane, i Item) {
 			ui.Spacer(c)
 			if s.Knowledge.Copied == i.key() && time.Now().Before(s.Knowledge.CopyUntil) {
 				homeText(c, "已复制", homeMeta)
-			} else {
-				label, tip := knowledgeCardRecall(i)
-				homeText(c, label, homeMeta).SingleLine().Tooltip(tip)
 			}
 			hoverCopyAction(c, card, "复制记忆", func() {
 				c.WriteClipboard(body)

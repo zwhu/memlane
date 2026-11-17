@@ -39,5 +39,5 @@ func knowledgeRecallLabel(c *ui.Context, i Item) {
 			tip += " 最近召回：" + displayDate(stats.LastRecalledAt)
 		}
 	}
-	homeText(c, fmt.Sprintf("· 召回 %d 次", count), homeMeta).SingleLine().Tooltip(tip)
+	homeText(c, fmt.Sprintf("召回 %d 次", count), homeMeta).SingleLine().Tooltip(tip).Padding(2, 5).Radius(4).Background(ui.Hex("#edf5f1")).TextColor(ui.Hex("#5e8272"))
 }

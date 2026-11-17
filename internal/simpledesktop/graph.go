@@ -312,7 +312,9 @@ func (a *App) graphView(c *ui.Context) {
 			ui.Text(c, a.codeStatus).FontSize(11).TextColor(muted).Margin(10, 32)
 		}
 		if a.graph != nil && a.graph.view != nil {
-			ui.WebView(c.Key("official-graph-canvas"), a.graph.view).Grow(1).MinHeight(0)
+			ui.Column(c.Key("graph-canvas-container")).Grow(1).MinHeight(0).Margin(0, pageInset, pageInset, pageInset).Radius(12).Clip().Children(func() {
+				ui.WebView(c.Key("official-graph-canvas"), a.graph.view).Grow(1).MinHeight(0)
+			})
 		}
 		if a.graphSelection != "" {
 			ui.Text(c, "选中节点 · "+a.graphSelection).FontSize(10).TextColor(muted).MaxLines(3).Margin(10, 32)

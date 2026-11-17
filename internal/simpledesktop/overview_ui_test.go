@@ -298,17 +298,16 @@ func TestOverviewFixedListsAreCappedAndScrollIndependently(t *testing.T) {
 
 func TestOverviewHeaderUsesContentInsets(t *testing.T) {
 	a := overviewFixture(t)
-	tt := ui.NewTester(a.projectHeader, 980, 62)
-	title, ok := tt.Find("总览")
-	if !ok {
-		t.Fatal("missing page title")
+	tt := ui.NewTester(a.projectHeader, 980, 48)
+	if _, ok := tt.Find("总览"); ok {
+		t.Fatal("outer toolbar should omit page title")
 	}
 	search, ok := tt.Find("搜索记忆与原始记录")
 	if !ok {
 		t.Fatal("missing search trigger")
 	}
-	if title.X < homePageInset-1 || title.X > homePageInset+1 || search.X+search.W < 980-homePageInset-1 || search.X+search.W > 980-homePageInset+1 {
-		t.Fatalf("toolbar does not align with body insets: title=%+v search=%+v", title, search)
+	if search.X+search.W < 980-12-1 || search.X+search.W > 980-12+1 {
+		t.Fatalf("toolbar does not align with body insets: search=%+v", search)
 	}
 }
 
