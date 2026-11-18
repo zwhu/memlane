@@ -195,10 +195,11 @@ def failure_reason(stderr):
     return 'agent_exited'
 
 
-async def bounded_stderr(stream):
+async def bounded_stderr(stream, activity=None):
     tail = bytearray()
     while chunk := await stream.read(16384):
         tail.extend(chunk)
+        if activity: activity()
         del tail[:-16384]
     return bytes(tail)
 
@@ -210,11 +211,18 @@ async def generate(adapter, row):
         process = await asyncio.create_subprocess_exec(*args, cwd=work, env=env,
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, start_new_session=True)
-        stderr_task = asyncio.create_task(bounded_stderr(process.stderr))
+        started=time.monotonic()
+        last_activity=started
+        progress=row.get('_progress')
+        def activity():
+            nonlocal last_activity
+            last_activity=time.monotonic()
+        stderr_task = asyncio.create_task(bounded_stderr(process.stderr, activity))
         async def collect():
             data = bytearray()
             while chunk := await process.stdout.read(16384):
                 data.extend(chunk)
+                activity()
                 if len(data) > LIMIT:
                     raise PolicyError('profile_output_too_large', 503)
             await process.wait()
@@ -232,9 +240,23 @@ async def generate(adapter, row):
                     raise PolicyError('profile_agent_failed', 503)
                 text = result.get('result')
             return valid_body(text)
+        collection=asyncio.create_task(collect())
+        exit_seen=None
         try:
-            return await asyncio.wait_for(collect(), 180)
+            while not collection.done():
+                await asyncio.wait({collection}, timeout=1)
+                if progress:
+                    progress({'elapsed_seconds':round(time.monotonic()-started),
+                              'idle_seconds':round(time.monotonic()-last_activity),
+                              'process_state':'running' if process.returncode is None else 'exited'})
+                if process.returncode is not None and not collection.done():
+                    exit_seen=exit_seen or time.monotonic()
+                if exit_seen is not None and time.monotonic()-exit_seen>=5 and not collection.done():
+                    raise ProfileAgentFailure(process.returncode, 'output_pipe_open', 'Agent 已退出，但输出通道仍未关闭')
+            return await collection
         finally:
+            collection.cancel()
+            await asyncio.gather(collection,return_exceptions=True)
             # Own the process group, including a child still holding stdout.
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
@@ -337,7 +359,10 @@ class UserProfiles:
                 if body is None:
                     row['status'] = 'generating'
                     self.persist()
-                    body = await self.runner(adapter, source)
+                    def progress(value):
+                        row.update(progress=value)
+                        self.persist()
+                    body = await self.runner(adapter, {**source, '_progress':progress})
                 # Verify the same instance is still usable before publishing.
                 current = self.source(row['instance_id'])
                 if row['method'] == 'agent' and not self.eligible(current):
@@ -362,7 +387,7 @@ class UserProfiles:
                 row.pop('pending_file', None)
                 self.persist()
         except asyncio.CancelledError:
-            row.update(status='unknown', error_code='profile_interrupted')
+            row.update(status='cancelled' if row.get('cancel_requested') and row.get('status')!='saving' else 'unknown', error_code='profile_cancelled' if row.get('cancel_requested') and row.get('status')!='saving' else 'profile_interrupted')
             self.persist()
             raise
         except Exception as error:
@@ -400,6 +425,21 @@ class UserProfiles:
             self.persist()
         return self.view()
 
+    async def cancel(self, identifier, operation):
+        self.source(identifier)
+        row=self.state['profiles'].get(identifier,{})
+        task=self.tasks.get(identifier)
+        if row.get('operation_id')!=operation or row.get('status') not in ('queued','generating') or not task:
+            raise PolicyError('profile_cancel_unavailable',409)
+        row['cancel_requested']=True
+        task.cancel()
+        await asyncio.gather(task,return_exceptions=True)
+        # A task cancelled before entering run has no exception handler yet.
+        if row['status']=='queued':
+            row.update(status='cancelled',error_code='profile_cancelled')
+            self.persist()
+        return self.view()
+
     async def close(self):
         tasks = list(self.tasks.values())
         for task in tasks:
@@ -427,6 +467,9 @@ def attach_user_profiles(app, registry, connections):
             if payload != {}:
                 raise PolicyError('invalid_request_fields')
             return web.json_response(await profiles.reconcile(identifier))
+        if action=='cancel':
+            if not isinstance(payload,dict) or set(payload)!={'operation_id'}:raise PolicyError('invalid_request_fields')
+            return web.json_response(await profiles.cancel(identifier,payload['operation_id']))
         expected = {'operation_id', 'body'} if action == 'import' else {'operation_id'}
         if not isinstance(payload, dict) or set(payload) != expected:
             raise PolicyError('invalid_request_fields')
@@ -434,7 +477,7 @@ def attach_user_profiles(app, registry, connections):
             valid_body(payload['body'])
         return web.json_response(await profiles.start(identifier, payload['operation_id'], body=payload.get('body')))
     app.add_routes([web.get('/v1/user-profiles', handler), web.get('/v1/user-profiles/{id}/document', handler),
-                    web.post('/v1/user-profiles/{id}/{action:generate|import|reconcile}', handler)])
+                    web.post('/v1/user-profiles/{id}/{action:generate|import|reconcile|cancel}', handler)])
     async def cleanup(_):
         await profiles.close()
     app.on_cleanup.append(cleanup)

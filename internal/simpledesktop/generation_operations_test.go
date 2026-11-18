@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -199,4 +200,24 @@ func TestGenerationOperationRecoveryProcess(t *testing.T) {
 	if err != nil || !strings.Contains(string(output), "independent-process-recovered-original-operation") {
 		t.Fatal("independent process lost recovery", string(output), err)
 	}
+}
+
+func TestGenerationJournalReleaseDoesNotWaitForInheritedDescriptor(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "journal")
+	first, err := lockGenerationOperations(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := syscall.Dup(int(first.Fd()))
+	if err != nil {
+		first.Close()
+		t.Fatal(err)
+	}
+	defer syscall.Close(duplicate)
+	unlockGenerationOperations(first)
+	next, err := lockGenerationOperations(root)
+	if err != nil {
+		t.Fatal("released journal still locked by inherited descriptor", err)
+	}
+	unlockGenerationOperations(next)
 }

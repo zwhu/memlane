@@ -16,16 +16,21 @@ type userProfileDocument struct {
 }
 
 type userProfile struct {
-	ID            string               `json:"instance_id"`
-	Kind          string               `json:"kind"`
-	Name          string               `json:"name"`
-	Status        string               `json:"status"`
-	Error         string               `json:"error_code"`
+	ID        string `json:"instance_id"`
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	Error     string `json:"error_code"`
+	Operation string `json:"operation_id"`
+	Progress  struct {
+		Elapsed int    `json:"elapsed_seconds"`
+		Idle    int    `json:"idle_seconds"`
+		Process string `json:"process_state"`
+	} `json:"progress"`
 	FailureReason string               `json:"failure_reason"`
 	ErrorDetail   string               `json:"error_detail"`
 	ExitCode      *int                 `json:"exit_code"`
 	Method        string               `json:"method"`
-	Operation     string               `json:"operation_id"`
 	CanGenerate   bool                 `json:"can_generate"`
 	SaveUnknown   bool                 `json:"save_unconfirmed"`
 	Updated       float64              `json:"updated_at"`
@@ -100,6 +105,9 @@ func (p userProfile) failureLabel() string {
 			"connection_failed":       "无法连接 Agent 服务",
 			"agent_exited":            "Agent 异常退出",
 		}[p.FailureReason]
+	}
+	if message == "" && p.Error == "profile_generation_timeout" {
+		message = "Agent 导出超时，未生成完整文档（profile_generation_timeout）"
 	}
 	if message == "" {
 		message = p.Error
@@ -223,6 +231,9 @@ func (a *App) userProfileAction(p userProfile, action, body string) {
 	if action != "reconcile" {
 		payload["operation_id"] = integrationOperation()
 	}
+	if action == "cancel" {
+		payload["operation_id"] = p.Operation
+	}
 	if action == "import" {
 		payload["body"] = body
 	}
@@ -324,20 +335,37 @@ func (a *App) userProfilesPage(c *ui.Context) {
 				ui.Spacer(c)
 				automatic := "自动导入"
 				if p.working() {
-					automatic = "导入中…"
+					automatic = "停止导入"
 				}
 				if p.SaveUnknown {
 					automatic = "核对保存结果"
 				}
+				automaticLabel := "从" + p.Name + "导入画像"
+				if p.working() {
+					automaticLabel = "停止从" + p.Name + "导入画像"
+				}
+				if p.Status == "saving" {
+					automatic = "保存中…"
+					automaticLabel = "保存" + p.Name + "画像"
+				}
 				commonButton(c, automatic, true, func() {
-					if p.SaveUnknown {
+					if p.working() {
+						a.userProfileAction(p, "cancel", "")
+					} else if p.SaveUnknown {
 						a.userProfileAction(p, "reconcile", "")
 					} else {
 						a.userProfileAction(p, "generate", "")
 					}
-				}).Label("从" + p.Name + "导入画像").Tooltip("使用 Agent 默认模型").Disabled(s.Busy || p.working() || (!p.CanGenerate && !p.SaveUnknown) || (p.Status == "unknown" && !p.SaveUnknown))
+				}).Label(automaticLabel).Tooltip("使用 Agent 默认模型").Disabled(s.Busy || p.Status == "saving" || (!p.CanGenerate && !p.SaveUnknown) || (p.Status == "unknown" && !p.SaveUnknown))
 				commonButton(c, "手动导入", false, func() { a.beginProfileImport(p) }).Label("导入此来源画像").Disabled(s.Busy || p.working() || p.SaveUnknown)
 			})
+			if p.Status == "generating" {
+				label := fmt.Sprintf("正在导出 · %d 秒", p.Progress.Elapsed)
+				if p.Progress.Idle >= 30 {
+					label = fmt.Sprintf("等待 Agent 返回 · %d 秒，%d 秒未收到新输出", p.Progress.Elapsed, p.Progress.Idle)
+				}
+				homeText(c, label, homeMeta).Margin(0, paneInset, controlGap, paneInset)
+			}
 			message := p.failureLabel()
 			if message == "" && !p.working() {
 				message = s.Message
@@ -347,7 +375,7 @@ func (a *App) userProfilesPage(c *ui.Context) {
 			}
 			if s.Body != "" {
 				ui.Scroll(c.Key("user-profile-document-"+s.BodyKey)).Grow(1).MinHeight(0).Padding(controlGap, paneInset, paneInset, paneInset).TrackScroll(&s.Scroll).Children(func() {
-					a.commonMarkdown(c, "user-profile-markdown-"+s.BodyKey, s.Body)
+					a.commonMarkdown(c, "user-profile-markdown-"+s.BodyKey, profileReadingMarkdown(s.Body))
 				})
 			} else {
 				ui.Spacer(c)
@@ -355,6 +383,49 @@ func (a *App) userProfilesPage(c *ui.Context) {
 
 		})
 	})
+}
+
+// profileReadingMarkdown unwraps an export envelope, never saved content or inner code.
+func profileReadingMarkdown(body string) string {
+	text := strings.TrimSpace(body)
+	lines := strings.Split(text, "\n")
+	if len(lines) < 3 {
+		return body
+	}
+	opener := strings.TrimSpace(lines[0])
+	marker := ""
+	if strings.HasPrefix(opener, "```") {
+		marker = "```"
+	} else if strings.HasPrefix(opener, "~~~") {
+		marker = "~~~"
+	} else {
+		return body
+	}
+	language := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(opener, marker)))
+	if language != "" && language != "text" && language != "plaintext" && language != "markdown" && language != "md" {
+		return body
+	}
+	end := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == marker {
+			end = i
+			break
+		}
+	}
+	if end < 0 {
+		return body
+	}
+	inner := strings.Join(lines[1:end], "\n")
+	// Only document-like exports qualify; a real fenced text/code sample stays intact.
+	first := strings.TrimSpace(inner)
+	if !strings.HasPrefix(first, "# ") && !strings.HasPrefix(first, "## ") {
+		return body
+	}
+	tail := strings.TrimSpace(strings.Join(lines[end+1:], "\n"))
+	if tail != "" {
+		return inner + "\n\n" + tail
+	}
+	return inner
 }
 
 func (a *App) userProfileImportDialog(c *ui.Context) {

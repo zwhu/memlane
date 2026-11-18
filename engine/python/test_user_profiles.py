@@ -201,6 +201,36 @@ class UserProfilesTests(unittest.IsolatedAsyncioTestCase):
                          ('failed', 2, 'arguments_rejected'))
         self.assertNotIn('SECRET_TOKEN', self.service.path.read_text())
 
+    async def test_slow_agent_is_not_interrupted_at_the_old_deadline(self):
+        import os
+        from unittest.mock import patch
+        root=Path(self.tmp.name)
+        executable=root/'slow-agent'
+        executable.write_text('#!/usr/bin/env python3\nimport time\ntime.sleep(.15)\nprint("# Slow profile\\n\\nPreserve words.")\n')
+        executable.chmod(0o700)
+        progress=[]
+        real_wait_for=asyncio.wait_for
+        async def accelerated_deadline(awaitable,seconds):
+            return await real_wait_for(awaitable,.02 if seconds==180 else seconds)
+        with patch('user_profiles.asyncio.wait_for',side_effect=accelerated_deadline):
+            result=await generate(SimpleNamespace(executable=str(executable)),{'kind':'pi','profile':str(root),'_progress':progress.append})
+        self.assertIn('Slow profile',result)
+        self.assertTrue(progress)
+        self.assertNotIn('Preserve words',json.dumps(progress))
+
+    async def test_explicit_cancel_stops_generation_and_never_writes_a_document(self):
+        entered=asyncio.Event()
+        async def wait(*args):
+            entered.set()
+            await asyncio.Event().wait()
+        self.service.runner=wait
+        await self.service.start('codex-test','cancel-slow-generation')
+        await entered.wait()
+        result=await self.service.cancel('codex-test','cancel-slow-generation')
+        self.assertEqual(self.service.state['profiles']['codex-test']['status'],'cancelled')
+        self.assertEqual(self.documents.writes,0)
+        self.assertFalse(self.service.tasks)
+
     async def test_fixed_cli_uses_original_profile_readonly_and_no_shared_tools(self):
         root = Path(self.tmp.name)
         (root / 'config.toml').write_text('model="agent-default-fixture"\n[mcp_servers.shared]\ncommand="must-not-run"\n')
@@ -256,6 +286,22 @@ class UserProfilesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await documents.find('daily', 'hash', 'original'), '60729eae-264c-46f9-88ce-02680140b9c3')
         with self.assertRaises(PolicyError):
             await documents.find('other-dataset', 'hash', 'original')
+
+    async def test_cancel_requires_same_operation_and_cannot_interrupt_saving(self):
+        entered=asyncio.Event()
+        async def wait(*args):
+            entered.set()
+            await asyncio.Event().wait()
+        self.service.runner=wait
+        await self.service.start('codex-test','cancel-owner-operation')
+        await entered.wait()
+        with self.assertRaisesRegex(PolicyError,'profile_cancel_unavailable'):
+            await self.service.cancel('codex-test','different-operation')
+        self.service.state['profiles']['codex-test']['status']='saving'
+        with self.assertRaisesRegex(PolicyError,'profile_cancel_unavailable'):
+            await self.service.cancel('codex-test','cancel-owner-operation')
+        self.service.state['profiles']['codex-test']['status']='generating'
+        await self.service.cancel('codex-test','cancel-owner-operation')
 
     async def test_http_routes_manager_only_and_large_manual_document(self):
         @web.middleware

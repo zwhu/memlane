@@ -368,6 +368,7 @@ func (a *App) generationConfiguration(c *ui.Context, showToolGraph bool) {
 	a.generationDeleteModal(c)
 	a.generationEditorModal(c)
 	a.generationHandoffModal(c)
+	a.generationModeConfigurationModal(c)
 }
 
 func (a *App) generationEditorModal(c *ui.Context) {

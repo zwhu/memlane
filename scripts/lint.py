@@ -90,6 +90,12 @@ def check_source(source, path):
                     injected(node, target.slice, node.value)
                 elif node.value is not None and isinstance(target, ast.Attribute):
                     injected(node, ast.Constant(value=target.attr), node.value)
+    if Path(path).name == 'user_profiles.py':
+        for function in ast.walk(tree):
+            if isinstance(function, ast.AsyncFunctionDef) and function.name == 'generate':
+                for call in ast.walk(function):
+                    if isinstance(call,ast.Call) and ((isinstance(call.func,ast.Attribute) and call.func.attr=='wait_for') or (isinstance(call.func,ast.Name) and call.func.id=='wait_for')):
+                        report(call,'ML006','画像生成不能用总时长超时中断；观察进程/活动并提供明确停止')
     return sorted(set(issues))
 
 
@@ -103,6 +109,8 @@ def check_go_source(source, path):
     end = source.find('\nfunc ', start + 1)
     body = source[start:end if end >= 0 else len(source)]
     issues = []
+    for match in re.finditer(r'ui\.Tabs\(', source):
+        issues.append((source[:match.start()].count('\n')+1, 'ML005', '处理方式使用绑定实际状态的单选项，禁止改为浏览配置的页签'))
     for match in re.finditer(r'\.Profile\.(?:Model|Provider|BridgeKind)\b|\.Generation\.Profiles\b', body):
         line = source[:start + match.start()].count('\n') + 1
         issues.append((line, 'ML004', '配置列表必须使用统一分组投影；Agent按身份展示，Provider按连接分组'))

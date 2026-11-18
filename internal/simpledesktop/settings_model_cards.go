@@ -46,13 +46,40 @@ func generationAgentMark(c *ui.Context, g GenerationDirectory, ref *GenerationRe
 func (a *App) generationSummaryCards(c *ui.Context) {
 	s := &a.integrations
 	settingsListSurface(c, func() {
+		mode := ""
+		if row, ok := s.Generation.row(s.Generation.Active); ok {
+			mode = row.Profile.Mode
+		}
+		selected := mode
+		if mode == "" {
+			selected = s.GenerationDraftMode
+		}
+		settingsListRow(c, func() {
+			homeText(c, "处理方式", homeBody).FontSize(13).FontWeight(500).Width(100)
+			ui.RadioGroup(c, func() {
+				for _, option := range []struct{ Value, Label string }{{"agent_bridge", "Agent 桥接"}, {"provider", "Provider"}} {
+					option := option
+					ui.Radio(c, &selected, option.Value, option.Label).Disabled(s.Busy || s.HandoffOperation != "").OnChange(func() {
+						if mode == "" {
+							s.GenerationDraftMode = option.Value
+							return
+						}
+						if option.Value != mode {
+							a.openGenerationHandoff(nil)
+							s.HandoffMode = option.Value
+						}
+					})
+				}
+			}).Label("实际记忆处理方式").Gap(18)
+		})
+		settingsListDivider(c)
 		settingsListRow(c, func() {
 			homeText(c, "当前使用", homeBody).FontSize(13).FontWeight(500).TextColor(homeInk).Width(100)
 			generationAgentMark(c, s.Generation, s.Generation.Active)
 			label := generationLabel(s.Generation, s.Generation.Active)
 			homeText(c, label, homeBody).FontSize(13).TextColor(homeInk).Grow(1).MinWidth(0).SingleLine().Tooltip(label)
 			if s.Generation.HandoffAvailable {
-				textButton(c, "更换", func() { a.openGenerationHandoff(nil) }).Disabled(s.Busy || s.HandoffOperation != "")
+				textButton(c, "更换配置", func() { a.openGenerationHandoff(nil); s.HandoffMode = mode }).Disabled(s.Busy || s.HandoffOperation != "")
 			}
 		})
 		if s.Generation.Next != nil || s.Generation.NextError != "" || s.Generation.StartupError != "" {
@@ -78,44 +105,36 @@ func (a *App) generationSummaryCards(c *ui.Context) {
 func (a *App) generationProfileCards(c *ui.Context) {
 	s := &a.integrations
 	groups := generationProfileGroups(s.Generation)
-	if s.GenerationModeTab == "" {
-		s.GenerationModeTab = "agent_bridge"
+	if row, ok := s.Generation.row(s.Generation.Active); ok {
+		s.GenerationDraftMode = row.Profile.Mode
+	}
+	if s.GenerationDraftMode == "" {
+		s.GenerationDraftMode = "agent_bridge"
 		if len(groups) > 0 && groups[0].Key != "agent" {
-			s.GenerationModeTab = "provider"
+			s.GenerationDraftMode = "provider"
 		}
 		if row, ok := s.Generation.row(s.Generation.Active); ok {
-			s.GenerationModeTab = row.Profile.Mode
+			s.GenerationDraftMode = row.Profile.Mode
 		}
 	}
 	ui.Column(c).FillWidth().Gap(10).Children(func() {
 		ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
-			homeText(c, "处理方式", homeHeading).FontSize(15).FontWeight(500)
+			homeText(c, "配置", homeHeading).FontSize(15).FontWeight(500)
 			ui.Spacer(c)
 			textButton(c, "添加配置", nil).Disabled(s.Busy || s.SaveOperation != "").OnClick(func() {
 				profile := GenerationProfile{Mode: "provider", Provider: "openai"}
-				if s.GenerationModeTab == "agent_bridge" {
+				if s.GenerationDraftMode == "agent_bridge" {
 					profile = GenerationProfile{Mode: "agent_bridge", BridgeKind: "codex"}
 				}
 				s.editProfile("api-"+integrationOperation(), GenerationRow{Profile: profile})
 				s.MaxOutputTokens, s.Saved, s.SavedSignature, s.Error, s.Message = "", nil, "", "", ""
 			})
 		})
-		selected := 0
-		if s.GenerationModeTab == "provider" {
-			selected = 1
-		}
-		ui.Tabs(c, &selected, "Agent 桥接", "Provider").Label("记忆处理方式配置").OnChange(func() {
-			if selected == 0 {
-				s.GenerationModeTab = "agent_bridge"
-			} else {
-				s.GenerationModeTab = "provider"
-			}
-		})
 		if len(groups) == 0 {
 			homeText(c, "尚未添加配置", homeMeta)
 		}
 		for _, group := range groups {
-			if (group.Key == "agent") != (s.GenerationModeTab == "agent_bridge") {
+			if (group.Key == "agent") != (s.GenerationDraftMode == "agent_bridge") {
 				continue
 			}
 			if group.Key != "agent" {

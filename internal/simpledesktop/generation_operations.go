@@ -94,6 +94,13 @@ func lockGenerationOperations(root string) (*os.File, error) {
 	return f, nil
 }
 
+// Release the advisory lock before closing: a concurrent child process may
+// briefly retain a duplicate descriptor between fork and exec on macOS.
+func unlockGenerationOperations(lock *os.File) {
+	_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	_ = lock.Close()
+}
+
 func (s *integrationState) pendingGenerationProfile(id string) bool {
 	for _, o := range s.PendingOperations {
 		if !o.connection() && o.Profile == id {
@@ -118,7 +125,7 @@ func (a *App) recordGenerationOperation(o generationUIOperation) error {
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
+	defer unlockGenerationOperations(lock)
 	pending, err := a.loadGenerationOperations()
 	if err != nil {
 		return err
@@ -210,7 +217,7 @@ func (a *App) finishGenerationOperation(operation string) bool {
 		a.integrations.Error = "操作记录暂时不可用，请重新核对"
 		return false
 	}
-	defer lock.Close()
+	defer unlockGenerationOperations(lock)
 	if err := os.Remove(filepath.Join(a.generationOperationsDir(), operation+".json")); err != nil && !errors.Is(err, os.ErrNotExist) {
 		a.integrations.Error = "原回执已确认，但操作记录尚未清理，请重新核对"
 		return false

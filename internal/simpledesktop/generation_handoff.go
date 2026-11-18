@@ -34,6 +34,7 @@ func (a *App) openGenerationHandoff(ref *GenerationRef) {
 	s.HandoffReady = false
 	s.HandoffRequest++
 	request := s.HandoffRequest
+	s.HandoffMode = ""
 	s.HandoffRef = nil
 	s.HandoffChoice = GenerationRef{}
 	if ref != nil {
@@ -72,11 +73,20 @@ func (a *App) generationHandoffModal(c *ui.Context) {
 		return
 	}
 	modal := ui.Modal(c.Key("generation-handoff-modal"), &s.HandoffOpen, func() {
-		homeText(c, "更换处理模型", homeHeading).FontSize(18)
+		title := "更换处理模型"
+		if s.HandoffMode == "agent_bridge" {
+			title = "切换到 Agent 桥接"
+		} else if s.HandoffMode == "provider" {
+			title = "切换到 Provider"
+		}
+		homeText(c, title, homeHeading).FontSize(18)
 		homeText(c, "当前："+generationLabel(s.Generation, s.Generation.Active), homeMeta)
 		refs := []GenerationRef{}
 		for id, rows := range s.Generation.Profiles {
 			if len(rows) == 0 {
+				continue
+			}
+			if s.HandoffMode != "" && rows[len(rows)-1].Profile.Mode != s.HandoffMode {
 				continue
 			}
 			ref := GenerationRef{ID: id, Revision: rows[len(rows)-1].Revision}
@@ -97,6 +107,9 @@ func (a *App) generationHandoffModal(c *ui.Context) {
 				homeText(c, "暂无其他已验证的模型", homeMeta)
 			}
 		})
+		if s.HandoffMode != "" {
+			textButton(c, "管理此方式的配置", func() { s.HandoffOpen = false; a.openGenerationModeConfiguration(s.HandoffMode) })
+		}
 		if s.HandoffLoading {
 			homeText(c, "正在读取待整理数量…", homeMeta)
 		} else {
@@ -231,4 +244,42 @@ func (a *App) pollGenerationHandoff(operation string) {
 			}
 		})
 	}()
+}
+
+func (a *App) openGenerationModeConfiguration(mode string) {
+	s := &a.integrations
+	s.ModeConfiguration = mode
+	s.ModeConfigurationOpen = true
+}
+func (a *App) generationModeConfigurationModal(c *ui.Context) {
+	s := &a.integrations
+	if !s.ModeConfigurationOpen {
+		return
+	}
+	ui.Modal(c.Key("generation-mode-configuration"), &s.ModeConfigurationOpen, func() {
+		title := "Provider 配置"
+		if s.ModeConfiguration == "agent_bridge" {
+			title = "Agent 桥接配置"
+		}
+		homeText(c, title, homeHeading).FontSize(18)
+		for _, group := range generationProfileGroups(s.Generation) {
+			if (group.Key == "agent") != (s.ModeConfiguration == "agent_bridge") {
+				continue
+			}
+			for _, item := range group.Items {
+				item := item
+				textButton(c, item.Title, func() { s.ModeConfigurationOpen = false; s.editProfile(item.ID, item.Row) })
+			}
+		}
+		textButton(c, "添加配置", func() {
+			s.ModeConfigurationOpen = false
+			profile := GenerationProfile{Mode: "provider", Provider: "openai"}
+			if s.ModeConfiguration == "agent_bridge" {
+				profile = GenerationProfile{Mode: "agent_bridge", BridgeKind: "codex"}
+			}
+			s.editProfile("api-"+integrationOperation(), GenerationRow{Profile: profile})
+			s.MaxOutputTokens = ""
+		})
+		textButton(c, "关闭", func() { s.ModeConfigurationOpen = false })
+	}).Width(500).Padding(24).Gap(16)
 }

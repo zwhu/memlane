@@ -113,3 +113,6 @@ UI 工作查看 `docs/images/ui-redesign/client-simplification-20261112/` 中首
 用户要求所有 Agent 均复用自身模型设置，后续接入先读[统一技术契约](docs/engineering/agent-effective-model-contract-20261118.md)。优先使用明确绑定会话的官方元数据，再继承 Agent 配置中的显式选项；无会话身份只读默认配置并区分来源，不猜最近会话。模型、思考级别及 Fast 等服务 tier 按同一请求快照传入，不固定替代模型，不改全局配置或复制登录密钥到 Provider。桥接、画像、启动、验证与切换共用规则；每种 Agent 的临时会话覆盖支持程度按实际证据记录。
 
 记忆处理允许 Agent 桥接与 Provider 配置并存，实际执行只有一个 active，初始化与设置规则相同。查看另一配置方式不启用；桥接按 Agent 身份展示、Provider 按供应商及地址分组。配置列表必须使用统一 generationProfileGroups 投影，提交前通过 ML004 lint 和对应 Go 行为检查，禁止恢复将桥接渲染为固定模型的旧列表。
+
+
+2026-11-18 22:35后续纠正：Provider与Agent配置在同一个记忆处理页签，使用绑定实际active的单选方式，切换确认成功后再更新选中，取消保持原方式，禁止用浏览配置页签冒充已选择。画像导出不能因180秒等固定总时长判失败或杀进程；区分输出活动、等待、进程退出与用户停止，慢任务继续等，保存中禁止取消并声称未写入。ML005/ML006及行为检查防回归，见[本次纠正](docs/engineering/profile-reading-and-mode-20261118.md)。

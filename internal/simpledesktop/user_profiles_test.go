@@ -143,3 +143,33 @@ func TestUserProfileExplicitImportEntryAfterFailure(t *testing.T) {
 		t.Fatal("unknown result offered another attempt")
 	}
 }
+
+func TestUserProfileWrappedMarkdownUsesTheSameReadingStyle(t *testing.T) {
+	a := profileUIFixture(t)
+	a.userProfiles.Body = "```text\n## Instructions\n\n[unknown] - 保留用户原话。\n```\n\nThis is the complete set."
+	tt := ui.NewTester(a.View, 1200, 820)
+	if _, ok := tt.Find("代码横向滚动"); ok {
+		t.Fatal("entire profile rendered as a horizontal code block")
+	}
+	if !tt.HasText("Instructions") || !tt.HasText("[unknown] - 保留用户原话。") {
+		t.Fatal("Markdown exported inside an outer text fence is displayed as source code")
+	}
+	if !tt.HasText("This is the complete set.") {
+		t.Fatal("export completeness note was lost")
+	}
+}
+
+func TestProfileExportEnvelopeKeepsInnerCodeAndSavedSource(t *testing.T) {
+	for _, source := range []string{"## Instructions\n\nplain", "```go\npackage main\n```", "Before\n```text\n## sample\n```", "```text\nno closing fence"} {
+		if profileReadingMarkdown(source) != source {
+			t.Fatal("non-envelope content changed", source)
+		}
+	}
+	body := "```markdown\n## Instructions\n\n- 原话\n```\n\nComplete."
+	if got := profileReadingMarkdown(body); got != "## Instructions\n\n- 原话\n\nComplete." {
+		t.Fatal(got)
+	}
+	if got := (userProfile{Status: "failed", Error: "profile_generation_timeout"}).failureLabel(); !strings.Contains(got, "导出超时") {
+		t.Fatal(got)
+	}
+}

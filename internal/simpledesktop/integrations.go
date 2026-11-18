@@ -181,6 +181,9 @@ type integrationState struct {
 	HandoffOpen, HandoffLoading                                                                                 bool
 	HandoffRef                                                                                                  *GenerationRef
 	HandoffOperation                                                                                            string
+	ModeConfigurationOpen                                                                                       bool
+	ModeConfiguration                                                                                           string
+	HandoffMode                                                                                                 string
 	HandoffChoice                                                                                               GenerationRef
 	HandoffReady                                                                                                bool
 	HandoffRequest                                                                                              uint64
@@ -206,7 +209,7 @@ type integrationState struct {
 	DeleteOpen                                                                                                  bool
 	DeleteError                                                                                                 string
 	ProfileID, ProviderLabel, DraftMode, BridgeKind, BridgeProvider, Model, Endpoint, APIKey, CredentialVersion string
-	GenerationModeTab                                                                                           string
+	GenerationDraftMode                                                                                         string
 	Temperature, MaxOutputTokens                                                                                string
 	CredentialConfigured                                                                                        bool
 	Saved                                                                                                       *GenerationRef

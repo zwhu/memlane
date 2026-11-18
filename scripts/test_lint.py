@@ -89,5 +89,16 @@ class GenerationPresentationLintTests(unittest.TestCase):
         self.assertEqual(check_go_source('func (a *App) generationProfileCards(c *ui.Context) { groups := generationProfileGroups(s.Generation) }', 'settings_model_cards.go'), [])
 
 
+    def test_processing_modes_cannot_be_reintroduced_as_browsing_tabs(self):
+        from lint import check_go_source
+        source = 'func (a *App) generationProfileCards(c *ui.Context) { groups := generationProfileGroups(s.Generation); ui.Tabs(c, &selected, "Agent", "Provider") }'
+        self.assertEqual({row[1] for row in check_go_source(source, 'settings_model_cards.go')}, {'ML005'})
+
+
+    def test_profile_generation_cannot_restore_total_deadline(self):
+        source='async def generate(adapter,row):\n return await asyncio.wait_for(collect(),180)'
+        self.assertEqual({row[1] for row in check_source(source,'user_profiles.py')},{'ML006'})
+
+
 if __name__ == '__main__':
     unittest.main()

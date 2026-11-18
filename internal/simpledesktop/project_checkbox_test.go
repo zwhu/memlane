@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -21,7 +22,10 @@ func TestProjectCheckboxBundlesPermissionAndConfirmsUnknownWithoutRetry(t *testi
 	var writes atomic.Int32
 	var fail atomic.Bool
 	var lastFields map[string]any
+	var fixtureLock sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fixtureLock.Lock()
+		defer fixtureLock.Unlock()
 		if r.Method == "PUT" {
 			writes.Add(1)
 			var input struct {
@@ -81,7 +85,10 @@ func TestProjectCheckboxBundlesPermissionAndConfirmsUnknownWithoutRetry(t *testi
 			t.Fatal("confirmed change stayed locked")
 		}
 	}
-	if writes.Load() != 3 || lastFields["access"] != "maintain" || directory.Projects[0].Overrides["agent"].effective(directory.Defaults).Access != "maintain" {
+	fixtureLock.Lock()
+	valid := writes.Load() == 3 && lastFields["access"] == "maintain" && directory.Projects[0].Overrides["agent"].effective(directory.Defaults).Access == "maintain"
+	fixtureLock.Unlock()
+	if !valid {
 		t.Fatal("checkbox values or read/write dependency lost")
 	}
 	fail.Store(true)
