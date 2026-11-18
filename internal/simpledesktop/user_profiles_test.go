@@ -39,10 +39,6 @@ func TestUserProfileReadManualImportAndDraftContinuity(t *testing.T) {
 			if !tt.HasText("Codex 对你的了解") || !tt.HasText("用户原话：先给结论，再说明依据。") {
 				t.Fatal("saved profile not presented")
 			}
-			clickProjectUI(t, tt, "复制文档")
-			if !strings.Contains(tt.Clipboard(), "职业未知") {
-				t.Fatal("wrong document copied")
-			}
 			clickProjectUI(t, tt, "Grok用户画像")
 			if a.userProfiles.Body != "" || tt.HasText("用户原话：先给结论，再说明依据。") {
 				t.Fatal("previous source body leaked into new source")
@@ -52,8 +48,12 @@ func TestUserProfileReadManualImportAndDraftContinuity(t *testing.T) {
 				t.Fatal("import action did not open dialog")
 			}
 			fixtureImage(t, tt, fmt.Sprintf("profiles-%dx%d-import", wh[0], wh[1]))
-			if !tt.HasText("1  复制提示词，到对应 AI 的聊天中运行") || !tt.HasText("2  将生成结果粘贴到下方") {
-				t.Fatal("manual workflow steps missing")
+			if !tt.HasText("复制提示词") {
+				t.Fatal("manual import prompt action missing")
+			}
+			clickProjectUI(t, tt, "复制提示词")
+			if tt.Clipboard() != a.userProfiles.Directory.Prompt {
+				t.Fatal("wrong manual prompt copied")
 			}
 			footer, ok := tt.Find("保存画像")
 			if !ok || footer.Y+footer.H > float32(wh[1]) {
@@ -72,7 +72,7 @@ func TestUserProfileReadManualImportAndDraftContinuity(t *testing.T) {
 
 func TestUserProfileBusyAndUnknownNeverOfferAnotherAutomaticRun(t *testing.T) {
 	a := profileUIFixture(t)
-	a.userProfiles.Directory.Profiles[0].Automatic = true
+	a.userProfiles.Directory.Profiles[0].CanGenerate = true
 	a.userProfiles.Directory.Profiles[0].Status = "unknown"
 	a.userProfiles.Directory.Profiles[0].SaveUnknown = true
 	tt := ui.NewTester(a.View, 1200, 820)
@@ -111,5 +111,35 @@ func TestUserProfileLateReadCannotReplaceAnotherSource(t *testing.T) {
 	}
 	if a.userProfiles.Body != "" || a.userProfiles.Selected != "manual:grok" {
 		t.Fatal("late read crossed source boundaries")
+	}
+}
+
+func TestUserProfileExplicitImportEntryAfterFailure(t *testing.T) {
+	a := profileUIFixture(t)
+	a.userProfiles.Body, a.userProfiles.BodyKey = "", ""
+	a.userProfiles.Directory.Profiles[0].Status = "failed"
+	a.userProfiles.Directory.Profiles[0].CanGenerate = true
+	a.userProfiles.Directory.Profiles[0].ErrorDetail = "Error loading config.toml: invalid transport"
+	exit := 1
+	a.userProfiles.Directory.Profiles[0].ExitCode = &exit
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("自动导入") || !tt.HasText("手动导入") || tt.HasText("自动生成") {
+		t.Fatal("explicit attempt or paste fallback missing")
+	}
+	if !tt.HasText("导入失败：Error loading config.toml: invalid transport（退出码 1）") {
+		t.Fatal("actual CLI error missing")
+	}
+	for _, label := range []string{"上次导入未完成", "复制提示词", "来源独立保留 · 不自动合并为通用记忆", "将它记住的背景、偏好与协作约定，独立保存在这里。"} {
+		if tt.HasText(label) {
+			t.Fatal("retired explanatory content remains", label)
+		}
+	}
+	if a.userProfiles.Busy {
+		t.Fatal("view started a profile operation")
+	}
+	a.userProfiles.Directory.Profiles[0].Status = "unknown"
+	tt = ui.NewTester(a.View, 1200, 820)
+	if tt.HasText("尝试导入") {
+		t.Fatal("unknown result offered another attempt")
 	}
 }

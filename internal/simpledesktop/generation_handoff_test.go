@@ -79,7 +79,7 @@ func TestGenerationHandoffConfirmsThenRecoversOriginalOperationWithoutResending(
 	clickProjectUI(t, tt, "更换")
 	drainReading(t, updates, func() bool { return !a.integrations.HandoffLoading })
 	tt.Frame()
-	clickProjectUI(t, tt, "OpenAI · fast-model")
+	clickProjectUI(t, tt, "Provider · OpenAI · fast-model")
 	clickProjectUI(t, tt, "切换并接续")
 	drainReading(t, updates, func() bool { return !a.integrations.Busy })
 	if posts.Load() != 1 || a.integrations.HandoffOperation == "" {

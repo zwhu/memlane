@@ -8,7 +8,7 @@ from pathlib import Path
 from jsonschema import validators
 
 from codex_completion_endpoint import (CompletionError, MAX_BODY, collect_stderr,
-                                       completion_workspace, terminate, track_process)
+                                       completion_workspace, default_request_args, terminate, track_process)
 
 EXTENSION = Path(__file__).resolve().parents[1] / 'prompts/pi-schema-output.ts'
 
@@ -78,6 +78,7 @@ def check_state(state, args):
 
 
 async def execute(args, system, prompt, schema, transport):
+    args = default_request_args(args)
     with completion_workspace(args) as root:
         home, private, work = (root / name for name in ('home', 'pi', 'task'))
         for directory in (home, private, work):
@@ -95,7 +96,10 @@ async def execute(args, system, prompt, schema, transport):
             target.chmod(0o400)
         if args.bridge_provider not in ('deepseek', 'ollama'):
             raise CompletionError('pi_provider_schema_unsupported', 409)
-        (private / 'settings.json').write_text(json.dumps({'retry': {'enabled': False}, 'compaction': {'enabled': False}}))
+        settings = {'retry': {'enabled': False}, 'compaction': {'enabled': False}}
+        if 'thinking_level' in args.agent_defaults_snapshot:
+            settings['defaultThinkingLevel'] = args.agent_defaults_snapshot['thinking_level']
+        (private / 'settings.json').write_text(json.dumps(settings))
         (private / 'settings.json').chmod(0o600)
         digest = hashlib.sha256(json.dumps(transport, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
         extension = EXTENSION.read_text().replace('__MEMLANE_OUTPUT_SCHEMA__', json.dumps(transport, ensure_ascii=False))

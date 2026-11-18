@@ -16,17 +16,20 @@ type userProfileDocument struct {
 }
 
 type userProfile struct {
-	ID          string               `json:"instance_id"`
-	Kind        string               `json:"kind"`
-	Name        string               `json:"name"`
-	Status      string               `json:"status"`
-	Error       string               `json:"error_code"`
-	Method      string               `json:"method"`
-	Operation   string               `json:"operation_id"`
-	Automatic   bool                 `json:"automatic"`
-	SaveUnknown bool                 `json:"save_unconfirmed"`
-	Updated     float64              `json:"updated_at"`
-	Document    *userProfileDocument `json:"document"`
+	ID            string               `json:"instance_id"`
+	Kind          string               `json:"kind"`
+	Name          string               `json:"name"`
+	Status        string               `json:"status"`
+	Error         string               `json:"error_code"`
+	FailureReason string               `json:"failure_reason"`
+	ErrorDetail   string               `json:"error_detail"`
+	ExitCode      *int                 `json:"exit_code"`
+	Method        string               `json:"method"`
+	Operation     string               `json:"operation_id"`
+	CanGenerate   bool                 `json:"can_generate"`
+	SaveUnknown   bool                 `json:"save_unconfirmed"`
+	Updated       float64              `json:"updated_at"`
+	Document      *userProfileDocument `json:"document"`
 }
 
 type userProfilesDirectory struct {
@@ -69,13 +72,45 @@ func (p userProfile) label() string {
 	case "unknown":
 		return "结果待核对"
 	case "failed":
-		return "生成未完成 · 可手动导入"
+		return "上次导入未完成"
 	default:
-		if p.Automatic {
-			return "等待自动生成"
+		if p.CanGenerate {
+			return "尚未导入"
 		}
 		return "手动导入"
 	}
+}
+
+func (p userProfile) failureLabel() string {
+	if p.Status == "unknown" {
+		if p.Error != "" {
+			return "导入结果未确认：" + p.Error
+		}
+		return "导入结果未确认"
+	}
+	if p.Status != "failed" {
+		return ""
+	}
+	message := p.ErrorDetail
+	if message == "" {
+		message = map[string]string{
+			"arguments_rejected":      "Agent 不接受调用参数",
+			"authentication_required": "Agent 登录失效",
+			"quota_unavailable":       "Agent 额度不足",
+			"connection_failed":       "无法连接 Agent 服务",
+			"agent_exited":            "Agent 异常退出",
+		}[p.FailureReason]
+	}
+	if message == "" {
+		message = p.Error
+	}
+	if message == "" {
+		message = "未返回错误详情"
+	}
+	if p.ExitCode != nil {
+		message += fmt.Sprintf("（退出码 %d）", *p.ExitCode)
+	}
+	return "导入失败：" + message
 }
 
 func (a *App) selectedUserProfile() (userProfile, bool) {
@@ -202,14 +237,17 @@ func (a *App) userProfileAction(p userProfile, action, body string) {
 			s.Busy = false
 			if err != nil {
 				// Inspect the journal first; never automatically replay a POST.
-				s.Message = "操作未确认，正在核对；请保留粘贴的内容"
+				s.Message = "操作未确认，正在核对结果"
 				a.refreshUserProfiles()
 				return
 			}
 			s.Directory, s.Loaded = result, true
+			if action == "generate" {
+				s.Message = ""
+			}
 			if action == "import" {
 				s.Open = false
-				s.Message = "结果已接收，正在保存"
+				s.Message = ""
 			}
 			a.readUserProfile()
 		})
@@ -257,7 +295,7 @@ func (a *App) userProfilesPage(c *ui.Context) {
 					}
 					button.Children(func() {
 						ui.Box(c).Size(20, 20).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-							ui.Icon(c, agentBrandIcon(p.Kind)).FontSize(16).TextColor(homeIconInk)
+							agentLogo(c, agentBrandIconFor(p.Kind, p.Name), 16)
 						})
 						homeText(c, p.Name, homeBody).FontSize(12).SingleLine().Grow(1).MinWidth(0)
 						if p.Status == "ready" {
@@ -281,78 +319,40 @@ func (a *App) userProfilesPage(c *ui.Context) {
 				return
 			}
 			ui.Row(c).FillWidth().Padding(pageTopInset, paneInset, controlGap, paneInset).AlignItems(ui.Center).Gap(10).Children(func() {
-				ui.Column(c).Grow(1).Gap(6).Children(func() {
-					homeText(c, p.Name+" 对你的了解", homeHeading).FontSize(18)
-					label := p.label()
-					if p.Status == "manual" {
-						label = "尚未导入"
-					}
-					if p.Updated > 0 {
-						label += " · " + time.Unix(int64(p.Updated), 0).Local().Format("2006-01-02 15:04")
-					}
-					homeText(c, label, homeMeta)
-				})
-				if p.Automatic && p.Status != "unknown" {
-					label := "自动生成"
-					if p.Document != nil {
-						label = "重新生成"
-					}
-					commonButton(c, label, false, func() { a.userProfileAction(p, "generate", "") }).Tooltip("使用此 Agent 当前账号和模型，会消耗相应额度").Disabled(s.Busy || p.working())
+				agentLogo(c, agentBrandIconFor(p.Kind, p.Name), 22)
+				homeText(c, p.Name+" 对你的了解", homeHeading).FontSize(18)
+				ui.Spacer(c)
+				automatic := "自动导入"
+				if p.working() {
+					automatic = "导入中…"
 				}
-				if s.Body != "" || p.working() || p.SaveUnknown {
-					commonButton(c, "手动导入", false, func() { a.beginProfileImport(p) }).Label("导入此来源画像").Disabled(s.Busy || p.working() || p.SaveUnknown)
+				if p.SaveUnknown {
+					automatic = "核对保存结果"
 				}
+				commonButton(c, automatic, true, func() {
+					if p.SaveUnknown {
+						a.userProfileAction(p, "reconcile", "")
+					} else {
+						a.userProfileAction(p, "generate", "")
+					}
+				}).Label("从" + p.Name + "导入画像").Tooltip("使用 Agent 默认模型").Disabled(s.Busy || p.working() || (!p.CanGenerate && !p.SaveUnknown) || (p.Status == "unknown" && !p.SaveUnknown))
+				commonButton(c, "手动导入", false, func() { a.beginProfileImport(p) }).Label("导入此来源画像").Disabled(s.Busy || p.working() || p.SaveUnknown)
 			})
-			if s.Message != "" {
-				homeText(c, s.Message, homeMeta).Margin(0, paneInset, controlGap, paneInset)
+			message := p.failureLabel()
+			if message == "" && !p.working() {
+				message = s.Message
 			}
-			if p.SaveUnknown {
-				ui.Row(c).Padding(0, paneInset, controlGap, paneInset).Gap(12).Children(func() {
-					homeText(c, "保存结果尚未确认，已保留本次文档", homeMeta)
-					homeLink(c, "核对保存结果", func() { a.userProfileAction(p, "reconcile", "") })
-				})
+			if message != "" {
+				homeText(c, message, homeMeta).TextColor(ui.Hex("#b34747")).Margin(0, paneInset, controlGap, paneInset)
 			}
 			if s.Body != "" {
 				ui.Scroll(c.Key("user-profile-document-"+s.BodyKey)).Grow(1).MinHeight(0).Padding(controlGap, paneInset, paneInset, paneInset).TrackScroll(&s.Scroll).Children(func() {
 					a.commonMarkdown(c, "user-profile-markdown-"+s.BodyKey, s.Body)
 				})
-				ui.Row(c).FillWidth().Padding(12, paneInset).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Children(func() {
-					homeText(c, "来源独立保留 · 不自动合并为通用记忆", homeMeta)
-					ui.Spacer(c)
-					textButton(c, "复制文档", nil).OnClick(func() { c.WriteClipboard(s.Body) })
-				})
 			} else {
-				ui.Scroll(c.Key("profile-import-overview")).Grow(1).FillWidth().MinHeight(0).Padding(controlGap, paneInset, paneInset, paneInset).Children(func() {
-					ui.Column(c).FillWidth().MaxWidth(680).Padding(moduleInset).Gap(18).Border(1, homeBorder).Radius(10).Background(ui.Hex("#fafbfd")).Children(func() {
-						title, explanation := "导入 "+p.Name+" 的用户画像", "将它记住的背景、偏好与协作约定，独立保存在这里。"
-						if s.Reading {
-							title, explanation = "正在加载画像", "正在读取已保存的文档"
-						} else if p.working() {
-							title, explanation = p.label(), "由该 Agent 使用自己的现有记忆生成，完成后自动显示。"
-						} else if p.Status == "failed" || p.Status == "unknown" {
-							title = "可以先手动导入"
-						}
-						homeText(c, title, homeHeading).FontSize(15)
-						homeText(c, explanation, homeMeta).FontSize(12)
-						ui.Column(c).Gap(14).Padding(4, 0).Children(func() {
-							for n, step := range []string{"复制提示词，到 " + p.Name + " 的日常会话中运行", "将返回的内容粘贴保存，随时回来阅读"} {
-								ui.Row(c).AlignItems(ui.Center).Gap(10).Children(func() {
-									ui.Box(c).Size(22, 22).Radius(11).Background(ui.Hex("#eaf0f6")).AlignItems(ui.Center).Justify(ui.Center).Children(func() { homeText(c, fmt.Sprint(n+1), homeMeta).FontSize(11) })
-									homeText(c, step, homeBody).FontSize(12)
-								})
-							}
-						})
-						ui.Row(c).Gap(14).AlignItems(ui.Center).Children(func() {
-							commonButton(c, "开始导入", true, func() { a.beginProfileImport(p) }).Label("导入此来源画像").Disabled(s.Busy || p.working() || p.SaveUnknown)
-							textButton(c, "复制提示词", func() {
-								c.WriteClipboard(s.Directory.Prompt)
-								s.Message = "提示词已复制，请到对应 AI 运行"
-							}).Disabled(s.Directory.Prompt == "")
-						})
-					})
-					homeText(c, "各家来源独立保留，未知信息不作推断。", homeMeta).FontSize(11).Margin(14, 2)
-				})
+				ui.Spacer(c)
 			}
+
 		})
 	})
 }
@@ -371,19 +371,16 @@ func (a *App) userProfileImportDialog(c *ui.Context) {
 	_, h := c.Size()
 	ui.Modal(c.Key("user-profile-import-"+s.DraftSource), &s.Open, func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			homeText(c, "导入 "+source.Name+" 用户画像", homeHeading).FontSize(20)
+			ui.Row(c).AlignItems(ui.Center).Gap(10).Children(func() {
+				agentLogo(c, agentBrandIconFor(source.Kind, source.Name), 22)
+				homeText(c, "导入 "+source.Name+" 用户画像", homeHeading).FontSize(20)
+			})
 			ui.Spacer(c)
 			readingAction(c, "关闭画像导入", readingClose, func() { s.Open = false })
 		})
 		ui.Scroll(c.Key("profile-import-steps")).Width(600).MaxHeight(h - 240).Gap(14).Children(func() {
-			homeText(c, "仅整理该 AI 自己对你的了解，尽量保留你的原话。", homeMeta)
-			homeText(c, "1  复制提示词，到对应 AI 的聊天中运行", homeHeading).FontSize(13)
-			ui.Column(c).Padding(14).Gap(10).Background(ui.Hex("#f5f8fb")).Border(1, homeBorder).Radius(8).Children(func() {
-				homeText(c, s.Directory.Prompt, homeBody).FontSize(12).MaxLines(5)
-				textButton(c, "复制提示词", nil).OnClick(func() { c.WriteClipboard(s.Directory.Prompt) }).Disabled(s.Directory.Prompt == "")
-			})
-			homeText(c, "2  将生成结果粘贴到下方", homeHeading).FontSize(13)
-			ui.TextArea(c.Key("profile-import-body-"+s.DraftSource), &s.Draft).Label("用户画像文档").Placeholder("在此粘贴该 AI 返回的 Markdown 文档").FillWidth().Height(190).FontSize(13).Disabled(s.Busy).OnChange(func() { s.Drafts[s.DraftSource] = s.Draft })
+			textButton(c, "复制提示词", nil).OnClick(func() { c.WriteClipboard(s.Directory.Prompt) }).Disabled(s.Directory.Prompt == "")
+			ui.TextArea(c.Key("profile-import-body-"+s.DraftSource), &s.Draft).Label("用户画像文档").Placeholder("粘贴画像内容").FillWidth().Height(190).FontSize(13).Disabled(s.Busy).OnChange(func() { s.Drafts[s.DraftSource] = s.Draft })
 			if s.Message != "" {
 				homeText(c, s.Message, homeMeta)
 			}

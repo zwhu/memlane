@@ -56,7 +56,9 @@ class GenerationValidation:
         row = s.resolve(reference)
         if row['profile']['mode'] == 'agent_bridge':
             from generation_bridge import check_bridge_runtime
-            check_bridge_runtime(self.runtime, row['profile'])
+            from agent_bridge_runtime import read_agent_defaults
+            selected = check_bridge_runtime(self.runtime, row['profile'])
+            defaults = read_agent_defaults(selected['kind'], selected['home'])
             environment = None
         else:
             # Check the private key before registering a model operation.
@@ -64,6 +66,8 @@ class GenerationValidation:
         s.state['validations'][operation_id] = {'status': 'queued', 'digest': row['digest'],
                                               'reference': copy.deepcopy(reference), 'structured_mode': 'unknown',
                                               'registered_revision': s.state['revision'] + 1}
+        if row['profile']['mode'] == 'agent_bridge':
+            s.state['validations'][operation_id]['agent_defaults'] = defaults
         result = s.commit(operation_id, request, {'operation_id': operation_id, 'status': 'queued'})
         self.operation_id = operation_id
         self.task = asyncio.create_task(self.run(operation_id, environment, row['profile']))
@@ -165,7 +169,10 @@ class GenerationValidation:
                     raise ValueError('probe_result_unconfirmed')
             if profile['mode'] == 'agent_bridge':
                 from generation_bridge import bridge_runtime_fingerprint
-                if row['bridge_runtime_fingerprint'] != bridge_runtime_fingerprint(self.runtime, profile):
+                from agent_bridge_runtime import read_agent_defaults, check_bridge_runtime
+                selected = check_bridge_runtime(self.runtime, profile)
+                if (row['bridge_runtime_fingerprint'] != bridge_runtime_fingerprint(self.runtime, profile)
+                        or row['agent_defaults'] != read_agent_defaults(selected['kind'], selected['home'])):
                     result = {'status':'failed', 'error_code':'generation_bridge_changed_revalidate',
                               'plain_passed':False, 'schema_passed':False, 'quality_passed':False}
             row.update(result)

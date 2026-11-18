@@ -157,17 +157,24 @@ def parse_request(body, model):
     return '\n\n'.join(system), json.dumps(prompt, ensure_ascii=False), schema, transport
 
 
-def private_config(model, work, provider='openai'):
+def private_config(model, work, provider='openai', defaults=None):
     features = ('shell_tool unified_exec apps plugins hooks memories multi_agent multi_agent_v2 browser_use browser_use_external computer_use image_generation skill_search skill_mcp_dependency_install workspace_dependencies code_mode_host view_image remote_plugin').split()
     if provider == 'trae':
         # Pinned TraeX 0.215.0 exposes neither feature key. Strict config must
         # still reject unknown options rather than silently ignoring them.
         features = [name for name in features if name not in ('view_image', 'remote_plugin')]
+    options = []
+    if defaults and 'reasoning_effort' in defaults:
+        options.append('model_reasoning_effort = ' + json.dumps(defaults['reasoning_effort']))
+    if defaults and 'service_tier' in defaults:
+        options.append('service_tier = ' + json.dumps(defaults['service_tier']))
     return '\n'.join([
         'model = ' + json.dumps(model), 'model_provider = ' + json.dumps(provider),
+        *options,
         'default_permissions = "' + PROFILE + '"', 'web_search = "disabled"',
         'project_doc_max_bytes = 0', '[features]',
         *[name + ' = false' for name in features],
+        '[memories]', 'extract_model = ' + json.dumps(model), 'consolidation_model = ' + json.dumps(model),
         '[skills]', 'include_instructions = false', '[skills.bundled]', 'enabled = false',
         '[analytics]', 'enabled = false', '[feedback]', 'enabled = false',
         '[permissions.' + PROFILE + '.filesystem]', '"/" = "deny"', '":minimal" = "read"', json.dumps(str(work)) + ' = "read"',
@@ -301,6 +308,7 @@ def track_process(args, process, owned):
 
 
 async def execute(args, system, prompt, schema, transport):
+    args = default_request_args(args)
     phase('workspace_prepare')
     kind = getattr(args, 'bridge_kind', 'codex')
     if kind not in ('codex', 'traex'):
@@ -311,7 +319,7 @@ async def execute(args, system, prompt, schema, transport):
         for directory in (home, private, work):
             directory.mkdir(mode=0o700)
         config = private / ('traecli.toml' if kind == 'traex' else 'config.toml')
-        config.write_text(private_config(args.model, work, provider))
+        config.write_text(private_config(args.model, work, provider, args.agent_defaults_snapshot))
         config.chmod(0o600)
         # Copy only subscription authentication, never daily config/plugins/history.
         auth = args.auth_home / ('cli/auth.json' if kind == 'traex' else 'auth.json')
@@ -460,6 +468,15 @@ async def execute(args, system, prompt, schema, transport):
                 raise
 
 
+def default_request_args(args):
+    from agent_bridge_runtime import snapshot_agent_defaults
+    from project_policy import PolicyError
+    try:
+        return snapshot_agent_defaults(args)
+    except PolicyError as error:
+        raise CompletionError(error.code, error.status) from None
+
+
 def create_app(args):
     token = args.token_file.read_text().strip()
     if len(token) < 24:
@@ -500,7 +517,11 @@ def create_app(args):
     app.on_shutdown.append(shutdown)
 
     async def health(request):
-        return web.json_response({'status': 'ready', 'model': args.model, 'provider': getattr(args, 'bridge_kind', 'codex'), 'active_or_waiting': admitted, 'max_concurrency': concurrency, 'max_inflight': inflight})
+        try:
+            selected = default_request_args(args).agent_defaults_snapshot
+        except CompletionError as error:
+            return web.json_response({'status':'unavailable', 'error_code':error.code}, status=error.status)
+        return web.json_response({'status': 'ready', 'model': args.model, 'agent_default':selected, 'provider': getattr(args, 'bridge_kind', 'codex'), 'active_or_waiting': admitted, 'max_concurrency': concurrency, 'max_inflight': inflight})
 
     async def complete(request):
         nonlocal admitted
@@ -525,7 +546,8 @@ def create_app(args):
                 async with slot:
                     trace.emit('bridge_admitted', active_or_waiting=admitted, max_concurrency=concurrency)
                     trace.transition('execute')
-                    task = asyncio.create_task(getattr(args, 'execute_request', execute)(args, *parsed))
+                    execution_args = default_request_args(args)
+                    task = asyncio.create_task(getattr(args, 'execute_request', execute)(execution_args, *parsed))
                     try:
                         while not task.done():
                             if request.transport is None or request.transport.is_closing():
@@ -548,7 +570,7 @@ def create_app(args):
                 admitted -= 1
             outcome = 'succeeded'
             return web.json_response({'id': 'chatcmpl-' + uuid.uuid4().hex, 'object': 'chat.completion',
-                'created': int(time.time()), 'model': args.model,
+                'created': int(time.time()), 'model': execution_args.model,
                 'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': result}, 'finish_reason': 'stop'}]})
         except CompletionError as error:
             outcome = error.code

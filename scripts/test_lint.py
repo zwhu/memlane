@@ -76,5 +76,18 @@ def parameters(profile):
                 self.assertFalse(lint.main())
 
 
+
+class GenerationPresentationLintTests(unittest.TestCase):
+    def test_flat_model_and_provider_rendering_is_rejected(self):
+        from lint import check_go_source
+        source = 'func (a *App) generationProfileCards(c *ui.Context) {\n model := row.Profile.Model\n provider := row.Profile.Provider\n}'
+        self.assertTrue(all(row[1] == 'ML004' for row in check_go_source(source, 'settings_model_cards.go')))
+        self.assertEqual(len(check_go_source(source, 'settings_model_cards.go')), 3)
+
+    def test_shared_projection_is_allowed(self):
+        from lint import check_go_source
+        self.assertEqual(check_go_source('func (a *App) generationProfileCards(c *ui.Context) { groups := generationProfileGroups(s.Generation) }', 'settings_model_cards.go'), [])
+
+
 if __name__ == '__main__':
     unittest.main()

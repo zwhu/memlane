@@ -79,18 +79,27 @@ type GenerationRow struct {
 	Profile  GenerationProfile `json:"profile"`
 }
 type GenerationValidation struct {
-	Reference          *GenerationRef `json:"reference,omitempty"`
-	Status             string         `json:"status"`
-	Digest             string         `json:"digest"`
-	ErrorCode          string         `json:"error_code"`
-	Plain              bool           `json:"plain_passed"`
-	Schema             bool           `json:"schema_passed"`
-	Quality            bool           `json:"quality_passed"`
-	RegisteredRevision int64          `json:"registered_revision"`
-	StructuredMode     string         `json:"structured_mode"`
-	ModeEvidence       string         `json:"structured_mode_evidence"`
+	AgentDefaults      *AgentModelDefaults `json:"agent_defaults,omitempty"`
+	Reference          *GenerationRef      `json:"reference,omitempty"`
+	Status             string              `json:"status"`
+	Digest             string              `json:"digest"`
+	ErrorCode          string              `json:"error_code"`
+	Plain              bool                `json:"plain_passed"`
+	Schema             bool                `json:"schema_passed"`
+	Quality            bool                `json:"quality_passed"`
+	RegisteredRevision int64               `json:"registered_revision"`
+	StructuredMode     string              `json:"structured_mode"`
+	ModeEvidence       string              `json:"structured_mode_evidence"`
+}
+type AgentModelDefaults struct {
+	Model           string `json:"model"`
+	Provider        string `json:"provider"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	ThinkingLevel   string `json:"thinking_level,omitempty"`
+	ServiceTier     string `json:"service_tier,omitempty"`
 }
 type GenerationDirectory struct {
+	AgentDefaults    map[string]AgentModelDefaults   `json:"agent_defaults"`
 	AgentBridges     map[string]GenerationProfile    `json:"agent_bridges"`
 	HandoffAvailable bool                            `json:"handoff_available"`
 	Revision         int64                           `json:"revision"`
@@ -132,6 +141,12 @@ func (g GenerationDirectory) validated(ref *GenerationRef) bool {
 		found = true
 		if v.Status != "passed" || !v.Plain || !v.Schema || !v.Quality {
 			return false
+		}
+		if row.Profile.Mode == "agent_bridge" {
+			if actual, present := g.AgentDefaults[row.Profile.BridgeKind]; present &&
+				(v.AgentDefaults == nil || actual != *v.AgentDefaults) {
+				return false
+			}
 		}
 	}
 	return found
@@ -191,6 +206,7 @@ type integrationState struct {
 	DeleteOpen                                                                                                  bool
 	DeleteError                                                                                                 string
 	ProfileID, ProviderLabel, DraftMode, BridgeKind, BridgeProvider, Model, Endpoint, APIKey, CredentialVersion string
+	GenerationModeTab                                                                                           string
 	Temperature, MaxOutputTokens                                                                                string
 	CredentialConfigured                                                                                        bool
 	Saved                                                                                                       *GenerationRef
@@ -504,6 +520,9 @@ func (s *integrationState) draftProfile() GenerationProfile {
 		}
 		if profile.BridgeKind == "pi" {
 			profile.BridgeProvider = s.BridgeProvider
+		}
+		if defaults, ok := s.Generation.AgentBridges[profile.BridgeKind]; ok {
+			profile.Model, profile.BridgeProvider = defaults.Model, defaults.BridgeProvider
 		}
 		return profile
 	}

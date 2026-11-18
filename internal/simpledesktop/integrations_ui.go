@@ -319,10 +319,10 @@ func generationLabel(g GenerationDirectory, ref *GenerationRef) string {
 		return "尚未确认"
 	}
 	if row.Profile.Mode == "agent_bridge" {
-		return generationBridgeLabel(row.Profile.BridgeKind) + " · " + row.Profile.Model
+		return "Agent 桥接 · " + generationBridgeLabel(row.Profile.BridgeKind) + " · " + generationDefaultModel(g, row.Profile.BridgeKind)
 	}
 	provider := map[string]string{"openai": "OpenAI", "anthropic": "Anthropic", "gemini": "Gemini", "custom": "OpenAI 兼容", "ollama": "Ollama"}[row.Profile.Provider]
-	return provider + " · " + row.Profile.Model
+	return "Provider · " + provider + " · " + row.Profile.Model
 }
 func (a *App) generationSetupPage(c *ui.Context) {
 	ui.Column(c).Fill().Padding(28).Gap(20).Background(ui.Hex("#f8fafc")).Children(func() {
@@ -418,11 +418,6 @@ func (a *App) generationEditorModal(c *ui.Context) {
 						})
 					})
 				}
-				if s.DraftMode == "agent_bridge" && s.BridgeKind == "pi" {
-					ui.Field(c, "pi 供应商", func() {
-						ui.Select(fieldKey("pi-provider"), &s.BridgeProvider, []string{"deepseek", "ollama"}).Label("pi已有供应商").FillWidth().Disabled(locked)
-					})
-				}
 				if s.DraftMode == "provider" {
 					ui.Field(c, "供应商协议", func() {
 						ui.Select(fieldKey("provider"), &s.ProviderLabel, []string{"OpenAI", "Anthropic", "Gemini", "OpenAI 兼容", "Ollama"}).FillWidth().Disabled(locked)
@@ -431,9 +426,16 @@ func (a *App) generationEditorModal(c *ui.Context) {
 						ui.TextInput(fieldKey("endpoint"), &s.Endpoint).Label("Provider API 地址").Placeholder("https://…").FillWidth().Disabled(locked)
 					})
 				}
-				ui.Field(c, "模型 ID", func() {
-					ui.TextInput(fieldKey("model"), &s.Model).Label("处理模型 ID").Placeholder("实际模型 ID").FillWidth().Disabled(locked)
-				})
+				if s.DraftMode == "agent_bridge" {
+					ui.Field(c, "Agent 当前模型", func() {
+						homeText(c, generationDefaultModel(s.Generation, s.BridgeKind), homeBody)
+						homeText(c, "模型与思考设置跟随 Agent。", homeMeta)
+					})
+				} else {
+					ui.Field(c, "模型 ID", func() {
+						ui.TextInput(fieldKey("model"), &s.Model).Label("处理模型 ID").Placeholder("实际模型 ID").FillWidth().Disabled(locked)
+					})
+				}
 				if s.DraftMode == "provider" {
 					ui.Field(c, "采样温度（可选）", func() {
 						ui.TextInput(fieldKey("temperature"), &s.Temperature).Label("模型采样温度").Placeholder("例如 0.6").FillWidth().Disabled(locked)
@@ -459,7 +461,8 @@ func (a *App) generationEditorModal(c *ui.Context) {
 				if s.draftProfile().Provider == "ollama" {
 					validationLabel = "验证（调用模型）"
 				}
-				ui.Button(c, "保存配置").Disabled(locked || s.pendingGenerationProfile(s.ProfileID)).OnClick(a.saveGeneration)
+				_, defaultAvailable := s.Generation.AgentBridges[s.BridgeKind]
+				ui.Button(c, "保存配置").Disabled(locked || s.pendingGenerationProfile(s.ProfileID) || (s.DraftMode == "agent_bridge" && !defaultAvailable)).OnClick(a.saveGeneration)
 				if s.SaveOperation != "" {
 					textButton(c, "核对保存结果", nil).Disabled(s.Busy).OnClick(a.reviewGenerationSave)
 				}

@@ -102,6 +102,8 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.auth.mkdir()
         (self.auth/'auth.json').write_text('{"synthetic":true}')
         (self.auth/'daily-marker').write_text('must not copy')
+        (self.auth/'config.toml').write_text('model = "fixture-model"\n')
+        (self.auth/'traecli.toml').write_text('model = "fixture-model"\n')
         self.executable = self.root / 'codex'
         self.args = SimpleNamespace(model='fixture-model',codex_executable=self.executable,auth_home=self.auth,timeout=2,diagnostics_dir=self.root/'diagnostics')
         self.processes = []
@@ -133,6 +135,29 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_success_process_exit_and_auth_unchanged(self):
         self.assertEqual(json.loads(await self.run_fake('success')), {'answer':'ok'})
         self.assertEqual((self.auth/'auth.json').read_text(), '{"synthetic":true}')
+
+    async def test_native_request_inherits_default_effort_and_internal_memory_models(self):
+        for kind in ('codex', 'traex'):
+            with self.subTest(kind=kind):
+                self.args.bridge_kind = kind
+                self.args.model = 'obsolete-saved-model'
+                filename = 'config.toml' if kind == 'codex' else 'traecli.toml'
+                (self.auth/filename).write_text('model="fixture-model"\nmodel_reasoning_effort="medium"\nservice_tier="fast"\n')
+                if kind == 'traex':
+                    (self.auth/'cli').mkdir(exist_ok=True)
+                    (self.auth/'cli/auth.json').write_text('{"synthetic":true}')
+                self.fake('success')
+                source = self.executable.read_text()
+                if kind == 'traex':
+                    source = source.replace("'openai'", "'trae'").replace("'CODEX_HOME'", "'TRAE_HOME'").replace("'config.toml'", "'traecli.toml'")
+                source = source.replace('def send(x):', '''assert 'model_reasoning_effort = "medium"' in config
+assert 'service_tier = "fast"' in config
+assert 'extract_model = "fixture-model"' in config
+assert 'consolidation_model = "fixture-model"' in config
+def send(x):''')
+                self.executable.write_text(source)
+                self.assertEqual(json.loads(await endpoint.execute(self.args,'system','prompt',SCHEMA,endpoint.strict_schema(SCHEMA))),{'answer':'ok'})
+                self.assertEqual(self.args.model,'obsolete-saved-model')
 
     async def test_traex_keeps_subscription_auth_in_its_own_cli_layout(self):
         self.fake('success')

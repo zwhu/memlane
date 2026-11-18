@@ -84,6 +84,7 @@ class BridgeValidationTests(unittest.IsolatedAsyncioTestCase):
         (auth/'auth.json').write_text('{"synthetic":true}')
         (auth/'auth.json').chmod(0o600)
         (auth/'daily-marker').write_text('must not be copied')
+        (auth/'config.toml').write_text('model = "fixture-model"\n')
         self.executable = self.root / 'fake-codex'
         self.fake('success')
         self.runtime = {'python':sys.executable, 'official_source':'unused-fixed-source',
@@ -118,6 +119,20 @@ class BridgeValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((Path(self.runtime['auth_home'])/'auth.json').read_text(),'{"synthetic":true}')
         self.assertNotIn('completion_url',self.runtime)
         self.assertNotIn('synthetic-key',json.dumps(row))
+
+    async def test_default_changed_during_validation_cannot_produce_a_passed_receipt(self):
+        self.fake('slow-success')
+        self.validator.start(self.bridge_ref,self.store.state['revision'],'changing-default')
+        for _ in range(500):
+            row=self.validator.get('changing-default')
+            if row.get('bridge_process_groups'):break
+            await asyncio.sleep(.01)
+        self.assertTrue(row.get('bridge_process_groups'))
+        (Path(self.runtime['auth_home'])/'config.toml').write_text('model="next-native-default"\n')
+        await self.validator.task
+        row=self.validator.get('changing-default')
+        self.assertEqual((row['status'],row['error_code']),('failed','generation_bridge_changed_revalidate'))
+        self.assertEqual(row['agent_defaults']['model'],'fixture-model')
 
     async def test_cancel_confirms_probe_and_separate_app_server_group_exit(self):
         self.fake('hang')

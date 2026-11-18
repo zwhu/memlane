@@ -318,8 +318,12 @@ class OllamaWireTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(chats), 3)
         for body in chats:
             nonce = 'proof' in body.get('format', {}).get('properties', {}) if isinstance(body.get('format'), dict) else False
-            self.assertEqual(body['options']['num_predict'], 256 if nonce else 8192)
-            self.assertEqual(body['options']['temperature'], 0 if nonce else .6)
+            if nonce:
+                self.assertNotIn('num_predict', body.get('options', {}))
+                self.assertNotIn('temperature', body.get('options', {}))
+            else:
+                self.assertEqual(body['options']['num_predict'], 8192)
+                self.assertEqual(body['options']['temperature'], .6)
 
     async def test_native_chat_checks_random_schema_before_registering_selected_model(self):
         result, requests = await self.scenario('normal')

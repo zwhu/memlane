@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Dependency-free project lint. Reports source locations and never loads the SDK."""
 import ast
+import re
 import sys
 from pathlib import Path
 
@@ -92,6 +93,24 @@ def check_source(source, path):
     return sorted(set(issues))
 
 
+def check_go_source(source, path):
+    """Presentation architecture checks; Go behavior is covered by Native UI tests."""
+    if Path(path).name != 'settings_model_cards.go':
+        return []
+    start = source.find('func (a *App) generationProfileCards(')
+    if start < 0:
+        return []
+    end = source.find('\nfunc ', start + 1)
+    body = source[start:end if end >= 0 else len(source)]
+    issues = []
+    for match in re.finditer(r'\.Profile\.(?:Model|Provider|BridgeKind)\b|\.Generation\.Profiles\b', body):
+        line = source[:start + match.start()].count('\n') + 1
+        issues.append((line, 'ML004', '配置列表必须使用统一分组投影；Agent按身份展示，Provider按连接分组'))
+    if 'generationProfileGroups(' not in body:
+        issues.append((source[:start].count('\n') + 1, 'ML004', '配置列表必须使用 generationProfileGroups'))
+    return issues
+
+
 def main():
     failures = 0
     paths = sorted((ROOT / 'engine/python').glob('*.py'))
@@ -102,8 +121,14 @@ def main():
         for line, code, message in check_source(path.read_text(encoding='utf-8'), path):
             print('{}:{}: {} {}'.format(path.relative_to(ROOT), line, code, message))
             failures += 1
+    for path in sorted((ROOT / 'internal/simpledesktop').glob('*.go')):
+        if path.name.endswith('_test.go'):
+            continue
+        for line, code, message in check_go_source(path.read_text(encoding='utf-8'), path):
+            print('{}:{}: {} {}'.format(path.relative_to(ROOT), line, code, message))
+            failures += 1
     if not failures:
-        print('Lint passed: 模型参数配置边界（桥接 / 直连）')
+        print('Lint passed: 模型参数与桥接 / Provider 展示边界')
     return bool(failures)
 
 

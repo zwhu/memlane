@@ -107,3 +107,9 @@ UI 工作查看 `docs/images/ui-redesign/client-simplification-20261112/` 中首
 提交相关修改前必须运行`python3 scripts/task.py -- python3 scripts/lint.py`。这是不依赖第三方库的AST检查，覆盖全部Python生产模块；ML001禁止绕过共享构造器，ML002禁止注入字面量参数，ML003禁止参数回退值。规则回归使用`python3 scripts/task.py -- python3 -m unittest discover -s scripts -p test_lint.py`。静态检查不替代下述真实协议回归。
 
 用户明确要求两种模式都防止本次参数错误复发。未配置的选项保持未配置，不补成客户端显式采样/输出默认值；用户显式填写的0必须保留。启动、验证和切换统一使用`generation_config.native_llm_configuration` / `native_llm_kwargs`，消费者不得独立构造`LLMConfig`或继承前一配置环境。修改这些路径必须通过`test_generation_parameters`、`test_generation_probe`、`test_generation_handoff`、`test_generation_startup`，使用`scripts/task.py`执行。实际原生协议请求体须覆盖桥接/直连、未填写、显式0/上限及旧环境隔离。复盘与证据见[处理配置接续](docs/engineering/processing-handoff-20261118.md)，执行要求见[工程规范](docs/engineering/workflow.md)。
+
+## 2026-11-18 Agent 有效模型继承
+
+用户要求所有 Agent 均复用自身模型设置，后续接入先读[统一技术契约](docs/engineering/agent-effective-model-contract-20261118.md)。优先使用明确绑定会话的官方元数据，再继承 Agent 配置中的显式选项；无会话身份只读默认配置并区分来源，不猜最近会话。模型、思考级别及 Fast 等服务 tier 按同一请求快照传入，不固定替代模型，不改全局配置或复制登录密钥到 Provider。桥接、画像、启动、验证与切换共用规则；每种 Agent 的临时会话覆盖支持程度按实际证据记录。
+
+记忆处理允许 Agent 桥接与 Provider 配置并存，实际执行只有一个 active，初始化与设置规则相同。查看另一配置方式不启用；桥接按 Agent 身份展示、Provider 按供应商及地址分组。配置列表必须使用统一 generationProfileGroups 投影，提交前通过 ML004 lint 和对应 Go 行为检查，禁止恢复将桥接渲染为固定模型的旧列表。

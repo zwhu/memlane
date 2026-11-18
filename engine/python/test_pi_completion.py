@@ -39,11 +39,12 @@ class PiCompletionTests(unittest.IsolatedAsyncioTestCase):
         self.home = self.root / 'daily'
         self.home.mkdir(mode=0o700)
         self.auth = self.home / 'auth.json'
+        (self.home / 'settings.json').write_text('{"defaultProvider":"deepseek","defaultModel":"fixture"}')
         self.auth.write_text('{"synthetic":"do-not-export"}')
         self.auth.chmod(0o600)
         self.executable = self.root / 'pi'
         self.args = SimpleNamespace(agent_executable=self.executable, auth_home=self.home,
-            bridge_provider='deepseek', model='fixture', timeout=3,
+            bridge_kind='pi', bridge_provider='deepseek', model='fixture', timeout=3,
             owned_processes={}, ownership_changed=lambda: None, workspace_root=self.root)
         self.schema = {'type':'object','properties':{'text':{'type':'string'}},'required':['text'],'additionalProperties':False}
 
@@ -68,6 +69,20 @@ class PiCompletionTests(unittest.IsolatedAsyncioTestCase):
                 self.fake(mode)
                 with self.assertRaises(CompletionError):
                     await execute(self.args, 'system', 'prompt', None, self.schema)
+
+    async def test_default_provider_model_and_thinking_are_used_in_native_rpc(self):
+        (self.home/'settings.json').write_text('{"defaultProvider":"deepseek","defaultModel":"fixture","defaultThinkingLevel":"high"}')
+        self.args.model,self.args.bridge_provider='obsolete-model','ollama'
+        self.fake('success')
+        source=self.executable.read_text().replace('args=sys.argv', '''args=sys.argv
+import os
+settings=json.loads((pathlib.Path(os.environ['PI_CODING_AGENT_DIR'])/'settings.json').read_text())
+assert settings['defaultThinkingLevel']=='high'
+assert args[args.index('--model')+1]=='fixture'
+assert args[args.index('--provider')+1]=='deepseek' ''')
+        self.executable.write_text(source)
+        await execute(self.args,'system','prompt',None,self.schema)
+        self.assertEqual((self.args.model,self.args.bridge_provider),('obsolete-model','ollama'))
 
     async def test_cancel_reaps_the_owned_process(self):
         self.fake('hang')

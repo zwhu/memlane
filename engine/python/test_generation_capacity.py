@@ -31,7 +31,8 @@ class CapacityTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temporary:
             token = Path(temporary) / 'token'
             token.write_text('synthetic-private-bridge-token')
-            args = SimpleNamespace(token_file=token, model='synthetic')
+            (Path(temporary) / 'config.toml').write_text('model="synthetic"\n')
+            args = SimpleNamespace(token_file=token, model='synthetic', bridge_kind='codex', auth_home=Path(temporary))
             with patch.object(endpoint, 'execute', execute):
                 server = TestClient(TestServer(endpoint.create_app(args), handler_cancellation=True))
                 await server.start_server()

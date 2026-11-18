@@ -1,0 +1,60 @@
+{
+  "stage": "dev",
+  "codex_native": {
+    "status": "passed",
+    "native_default": {
+      "model": "gpt-6.1-sol",
+      "source": "agent_session",
+      "provider": "openai",
+      "service_tier": "fast",
+      "reasoning_effort": "medium"
+    },
+    "answer": {
+      "text": "default-ready"
+    },
+    "owned_groups": [],
+    "saved_model_override_ignored": true
+  },
+  "profile_import": {
+    "status": "ready",
+    "reread_bytes": 19058,
+    "reread_matches_document": true
+  },
+  "preservation": {
+    "original_raw_files": 346,
+    "original_raw_hashes_unchanged": true,
+    "runtime_config_unchanged": true,
+    "traex_global_config_restored": true
+  },
+  "native_ui_observed": {
+    "effective_model_and_options": true,
+    "agent_and_provider_config_views_exclusive": true,
+    "provider_view_did_not_switch_active": true,
+    "ollama_group_count": 1,
+    "ollama_models": 2,
+    "profile_two_import_actions_and_saved_document": true
+  },
+  "limitations": [
+    "Exact session identity is required for session overrides; otherwise configured defaults are identified as such.",
+    "pi session overrides are not implemented.",
+    "Independent TraeX native memory default is a vendor behavior outside Memlane calls."
+  ],
+  "checks": {
+    "generation_suite": {
+      "tests": 92,
+      "status": "passed",
+      "seconds": 101.21
+    },
+    "staged_python": {
+      "tests": 43,
+      "status": "passed",
+      "seconds": 7.067
+    },
+    "lint_rules": {
+      "tests": 8,
+      "status": "passed"
+    },
+    "go_all": "passed",
+    "staged_go_all": "passed"
+  }
+}
