@@ -3,19 +3,34 @@ package main
 import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/internal/bootstrap"
 	"github.com/zwhu/memlane/internal/simpledesktop"
 	"log"
 	"os"
 )
 
 func main() {
-	cfg, err := simpledesktop.LoadConfig(os.Getenv("MEMLANE_DEV_RUNTIME_CONFIG"))
+	configuration := os.Getenv("MEMLANE_DEV_RUNTIME_CONFIG")
+	firstDefault := configuration == ""
+	var pathError error
+	if firstDefault {
+		configuration, pathError = bootstrap.DefaultRuntimeConfig()
+	}
+	cfg, err := simpledesktop.LoadConfig(configuration)
+	if pathError != nil {
+		err = pathError
+	}
+	cfg.FirstInstallDefault = firstDefault
 	// Each UI process verifies and loads the current official graph asset bundle.
 	app := simpledesktop.New(cfg, err)
 	mygo.Theme.SetSource(mygo.ThemeLight)
 	mygo.App.OnReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{Title: "Memlane", Width: 1200, Height: 820, MinWidth: 1200, MinHeight: 820, TitleBarStyle: mygo.TitleBarHidden, Content: ui.View(app.View)})
 		app.Update = func(fn func()) { win.Update(fn) }
+		app.ChooseDiagnosticPath = func() (string, error) {
+			return mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: win, Title: "导出安装诊断", DefaultPath: "Memlane-diagnostic.zip", ButtonLabel: "导出", Filters: []mygo.FileFilter{{Name: "ZIP", Extensions: []string{"zip"}}}})
+		}
+		app.OpenExistingAgent = func(path string) error { return mygo.Shell.OpenPath(path) }
 		app.ChooseProjectFolder = func() (string, error) {
 			paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: win, Title: "选择源文件夹", ButtonLabel: "添加", Directory: true})
 			if err != nil || len(paths) == 0 {

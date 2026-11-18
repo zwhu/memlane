@@ -33,7 +33,7 @@ def fingerprint(value):
 def validate_profile(value):
     if not isinstance(value, dict):
         raise PolicyError('invalid_generation_profile')
-    allowed = {'mode', 'provider', 'bridge_kind', 'model', 'endpoint', 'credential_ref', 'credential_version',
+    allowed = {'mode', 'provider', 'bridge_kind', 'bridge_provider', 'model', 'endpoint', 'credential_ref', 'credential_version',
                'temperature', 'max_output_tokens', 'max_concurrent_requests'}
     if set(value) - allowed:
         raise PolicyError('invalid_generation_fields')
@@ -46,10 +46,15 @@ def validate_profile(value):
         if type(capacity) is not int or not 1 <= capacity <= 256:
             raise PolicyError('invalid_generation_capacity')
     if mode == 'agent_bridge':
-        if value.get('bridge_kind') != 'codex' or set(value) - {'mode', 'bridge_kind', 'model', 'max_concurrent_requests'}:
+        if value.get('bridge_kind') not in ('codex', 'pi', 'traex') or set(value) - {'mode', 'bridge_kind', 'bridge_provider', 'model', 'max_concurrent_requests'}:
             raise PolicyError('unsupported_generation_bridge')
+        if value['bridge_kind'] == 'pi':
+            if value.get('bridge_provider') not in ('deepseek', 'ollama'):
+                raise PolicyError('unsupported_pi_generation_provider')
+        elif 'bridge_provider' in value:
+            raise PolicyError('invalid_generation_bridge_provider')
     elif mode == 'provider':
-        if value.get('provider') not in PROVIDERS or 'bridge_kind' in value:
+        if value.get('provider') not in PROVIDERS or 'bridge_kind' in value or 'bridge_provider' in value:
             raise PolicyError('unsupported_generation_provider')
         if 'temperature' in value:
             temperature = value['temperature']
@@ -123,6 +128,32 @@ def compile_environment(profile, runtime, credential=None):
         # stored max_completion_tokens into ordinary requests itself.
         result['LLM_ARGS'] = json.dumps({'max_tokens': p['max_output_tokens']}, separators=(',', ':'))
     return result
+
+
+def native_llm_kwargs(environment):
+    """One explicit-only boundary for startup, validation and live handoff.
+
+    Never synthesize sampling/output values. In particular, an omitted option
+    is different from an explicit zero. The isolated prefix also prevents the
+    previous profile's process environment from becoming the new profile.
+    """
+    fields = {'LLM_PROVIDER':'llm_provider', 'LLM_MODEL':'llm_model',
+              'LLM_ENDPOINT':'llm_endpoint', 'LLM_API_KEY':'llm_api_key',
+              'LLM_TEMPERATURE':'llm_temperature',
+              'LLM_MAX_COMPLETION_TOKENS':'llm_max_completion_tokens',
+              'LLM_ARGS':'llm_args', 'STRUCTURED_OUTPUT_FRAMEWORK':'structured_output_framework'}
+    result = {'_env_file':None, '_env_prefix':'MEMLANE_HANDOFF_ISOLATED_'}
+    for key, field in fields.items():
+        if key in environment:
+            result[field] = json.loads(environment[key]) if key == 'LLM_ARGS' else environment[key]
+    return result
+
+
+def native_llm_configuration(environment):
+    # Import only after the caller has selected the verified SDK. Keeping the
+    # builder pure above lets all modes enforce the same omission contract.
+    from cognee.infrastructure.llm.config import LLMConfig
+    return LLMConfig(**native_llm_kwargs(environment))
 
 
 def validation_passed(validations, digest):
@@ -217,6 +248,8 @@ class GenerationStore:
         old = self.checked(expected, operation_id, request)
         if old is not None:
             return old
+        if identifier in self.state.get('removed_profiles', {}):
+            raise PolicyError('generation_profile_removed', 409)
         profile = copy.deepcopy(profile)
         if profile.get('provider') == 'ollama' and api_key is not None:
             raise PolicyError('local_ollama_credential_not_required')
@@ -246,6 +279,8 @@ class GenerationStore:
 
     def resolve(self, reference):
         try:
+            if reference['id'] in self.state.get('removed_profiles', {}):
+                raise KeyError()
             if type(reference['revision']) is not int or reference['revision'] < 1:
                 raise KeyError()
             row = self.state['profiles'][reference['id']][reference['revision'] - 1]
@@ -254,6 +289,29 @@ class GenerationStore:
         if row['digest'] != self.record(row['profile'], row['revision'])['digest']:
             raise PolicyError('generation_validation_stale', 409)
         return copy.deepcopy(row)
+
+    def remove(self, identifier, revision, expected, operation_id):
+        request = {'action': 'remove', 'id': identifier, 'revision': revision}
+        old = self.checked(expected, operation_id, request)
+        if old is not None:
+            return old
+        rows = self.state['profiles'].get(identifier, [])
+        if (not rows or identifier in self.state.get('removed_profiles', {}) or type(revision) is not int
+                or rows[-1]['revision'] != revision or rows[-1]['profile']['mode'] != 'provider'):
+            raise PolicyError('generation_profile_changed', 409)
+        if any((self.state.get(key) or {}).get('id') == identifier for key in ('active', 'next')):
+            raise PolicyError('generation_profile_in_use', 409)
+        if any(row.get('reference', {}).get('id') == identifier and row.get('status') in
+               ('queued','preparing','stopping','applying','unknown') for row in self.state.get('handoffs', {}).values()):
+            raise PolicyError('generation_profile_operation_pending', 409)
+        if any(value.get('reference', {}).get('id') == identifier
+               and value.get('status') in ('queued', 'running', 'result_unknown')
+               for value in self.state['validations'].values()):
+            raise PolicyError('generation_profile_operation_pending', 409)
+        # Retain immutable history and credentials for original operation receipts,
+        # but withdraw the configuration from all new selection/validation paths.
+        self.state.setdefault('removed_profiles', {})[identifier] = {'revision': revision}
+        return self.commit(operation_id, request, {'id': identifier, 'deleted': True})
 
     def select_next(self, reference, expected, operation_id):
         request = {'action': 'next', 'reference': reference}
@@ -289,7 +347,10 @@ class GenerationStore:
 
     def view(self):
         result = copy.deepcopy(self.state)
+        result['handoff_available'] = bool(getattr(self, 'runtime_handoff', False))
         result.pop('operations', None)
+        for identifier in result.pop('removed_profiles', {}):
+            result['profiles'].pop(identifier, None)
         for rows in result['profiles'].values():
             for row in rows:
                 profile = row['profile']

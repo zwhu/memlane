@@ -22,11 +22,12 @@ var generationOperationID = regexp.MustCompile(`^ui-[A-Za-z0-9_-]{1,61}$`)
 
 func (o generationUIOperation) valid() bool {
 	return generationOperationID.MatchString(o.Operation) && o.Profile != "" &&
-		(o.Kind == "save" || o.Kind == "next" || o.Kind == "validations" || o.connection())
+		(o.Kind == "save" || o.Kind == "next" || o.Kind == "handoffs" || o.Kind == "validations" || o.Kind == "delete" || o.connection())
 }
 
 func (o generationUIOperation) connection() bool {
-	return o.Kind == "connection_prepare" || o.Kind == "connection_activate"
+	return o.Kind == "connection_prepare" || o.Kind == "connection_activate" ||
+		o.Kind == "connection_allow_capture" || o.Kind == "connection_defer_capture"
 }
 
 func (s *integrationState) pendingConnection(id string) *generationUIOperation {
@@ -234,6 +235,11 @@ func (a *App) reviewPendingGeneration(o generationUIOperation) {
 		return
 	}
 	switch o.Kind {
+	case "handoffs":
+		s.HandoffOperation = o.Operation
+		a.pollGenerationHandoff(o.Operation)
+	case "delete":
+		a.reviewGenerationDelete(o)
 	case "save":
 		s.SaveOperation = o.Operation
 		a.reviewGenerationSave()

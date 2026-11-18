@@ -26,18 +26,18 @@ func TestAgentEnvironmentChoiceBlocksWrongTargetAndExplainsReceipt(t *testing.T)
 		}}
 	a.integrations = integrationState{Loaded: true, Connections: ConnectionsDirectory{Connections: []AgentConnection{row}}}
 	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("接入目标需要更正") || connectionActionAllowed(row, "prepare") {
+	if !tt.HasText("需要更换配置目录") || connectionActionAllowed(row, "prepare") {
 		t.Fatal("verification environment was offered as a valid daily connection")
 	}
-	clickProjectUI(t, tt, "查看或更换连接环境")
-	if !tt.HasText("默认环境：/synthetic/daily traex") || !tt.HasText("使用环境：/synthetic/daily traex") {
+	clickProjectUI(t, tt, "查看配置目录：TraeX")
+	if !tt.HasText("默认目录：/synthetic/daily traex") || !tt.HasText("使用目录：/synthetic/daily traex") {
 		t.Fatal("real daily environment choice is not visible")
 	}
-	if tt.HasText("使用环境：/synthetic/native-setup/traex") {
+	if tt.HasText("使用目录：/synthetic/native-setup/traex") {
 		t.Fatal("verification environment can be selected")
 	}
 	row.Status, row.NewSessions, row.ReceiptOverdue = "configured_pending_new_session", 0, true
-	if connectionStatus(row) != "尚未收到接入回执" {
+	if connectionStatus(row) != "等待保存验证" {
 		t.Fatal("expired wait was presented as a connected host")
 	}
 	row.Status, row.NewSessions = "environment_receipt_unconfirmed", 1
@@ -71,7 +71,7 @@ func TestWaitingAgentReceiptsRefreshWithoutInstallingOrLosingSelection(t *testin
 	a.refreshAgentReceiptsIfDue(now)
 	drainReading(t, updates, func() bool { return !a.integrations.ReceiptCheckLoading })
 	a.refreshAgentReceiptsIfDue(now.Add(time.Second))
-	if requests != 1 || !a.integrations.Selected["other"] || a.integrations.Connections.Revision != 8 || connectionStatus(a.integrations.Connections.Connections[0]) != "已连接" {
+	if requests != 1 || !a.integrations.Selected["other"] || a.integrations.Connections.Revision != 8 || connectionStatus(a.integrations.Connections.Connections[0]) != "等待保存验证" {
 		t.Fatal("receipt refresh did not preserve selection and settle the real connection")
 	}
 }
@@ -148,13 +148,14 @@ func TestWaitingAgentReceiptSettlesFromIdleViewTimer(t *testing.T) {
 			tt.Advance(2 * time.Second)
 			drainReading(t, updates, func() bool { return a.integrations.Connections.Revision == 9 })
 			tt.Frame() // the HTTP completion's native win.Update redraw
-			if requests.Load() != 1 || !a.integrations.Selected["other"] || !tt.HasText("已连接") {
+			if requests.Load() != 1 || !a.integrations.Selected["other"] || !tt.HasText("等待保存验证") {
 				t.Fatal("idle page did not settle the receipt while preserving selection")
 			}
 			a.integrations.NextReceiptCheck = time.Time{}
 			tt.Advance(time.Minute)
-			if requests.Load() != 1 || a.integrations.ReceiptCheckLoading {
-				t.Fatal("settled connection kept polling")
+			drainReading(t, updates, func() bool { return !a.integrations.ReceiptCheckLoading })
+			if requests.Load() != 2 {
+				t.Fatal("bound connection stopped checking actual saved-message evidence")
 			}
 		})
 	}
@@ -193,7 +194,7 @@ func TestAgentReceiptRecoveryClearsOnlyItsOwnError(t *testing.T) {
 	fail.Store(false)
 	a.refreshAgentReceiptsIfDue(now.Add(10 * time.Second))
 	drainReading(t, updates, func() bool { return !a.integrations.ReceiptCheckLoading })
-	if a.integrations.Error != "" || connectionStatus(a.integrations.Connections.Connections[0]) != "已连接" {
+	if a.integrations.Error != "" || connectionStatus(a.integrations.Connections.Connections[0]) != "等待保存验证" {
 		t.Fatal("successful receipt recovery retained a stale polling error")
 	}
 	a.integrations.Connections = waiting

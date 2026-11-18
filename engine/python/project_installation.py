@@ -53,11 +53,15 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
         else:
             host_files['scripts/traex_hook.py'] = (ENGINE / 'python/traex_hook.py').read_bytes()
         host_files['host-binding.json'] = json.dumps({'python': python, 'host_kind': host_kind}).encode()
-    from project_tool_patch import forget_response, remember_response
+    from project_tool_patch import common_recall_response, forget_response, remember_response
     tool_patch = hashlib.sha256((ENGINE / 'python/project_tool_patch.py').read_bytes()).hexdigest()
     generation_input = {'upstream': expected, 'host_kind': host_kind, 'instance_id': instance_id,
                         'builder_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                         'tool_patch_sha256': tool_patch}
+    from project_capture_patch import apply as capture_patch
+    capture_sources = {name: (ENGINE / 'python' / name).read_bytes()
+                       for name in ('project_capture_patch.py', 'plugin_capture.py')}
+    generation_input['capture_patch_sha256'] = hashlib.sha256(b''.join(capture_sources.values())).hexdigest()
     if host_kind == 'codex':
         from project_trace_patch import codex_file_change_output
         generation_input['trace_patch_sha256'] = hashlib.sha256((ENGINE / 'python/project_trace_patch.py').read_bytes()).hexdigest()
@@ -100,8 +104,11 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
             expected_host_files['hooks.json'] = json.dumps({'hooks': {
                 event: [{'hooks': [{'type': 'command', 'command': command + event, 'timeout': 25}]}]
                 for event in events}}).encode()
+    expected_host_files['scripts/_memlane_policy.py'] = common_recall_response(expected_host_files['scripts/_memlane_policy.py'].decode()).encode()
     expected_host_files['scripts/cognee-forget.sh'] = forget_response(expected_host_files['scripts/cognee-forget.sh'].decode()).encode()
     expected_host_files['scripts/_remember_http.py'] = remember_response(expected_host_files['scripts/_remember_http.py'].decode()).encode()
+    expected_host_files['scripts/_plugin_common.py'] = capture_patch(expected_host_files['scripts/_plugin_common.py'].decode()).encode()
+    expected_host_files['scripts/_memlane_capture.py'] = capture_sources['plugin_capture.py']
     environment = root / 'agent-credentials' / (instance_id + '.env')
     values = {'COGNEE_BASE_URL': service_url, 'COGNEE_API_KEY': read_secret(agent['key_file']),
               'MEMLANE_PROJECT_CONTROL_URL': control_url,

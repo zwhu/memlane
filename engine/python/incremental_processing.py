@@ -98,6 +98,8 @@ class IncrementalProcessing:
         return True
 
     async def tick(self):
+        if getattr(self, 'handoff', None) and self.handoff.pending():
+            return
         bindings = list(self.registry.state['sessions'].items())
         if not bindings:
             return
@@ -193,6 +195,8 @@ class IncrementalProcessing:
             if not access['policy'].get('can_auto_process'):
                 continue
             target.update(snapshot, incremental_cooldown_seconds=COOLDOWN_SECONDS)
+            if row.get('handoff_operation'):
+                target['handoff_operation'] = row['handoff_operation']
             row.update(status='submitting', operation_id=str(uuid.uuid4()), waiting_reason='', dispatch_counts=list(counts))
             operation['operation_id'] = row['operation_id']
             self.save()
@@ -204,6 +208,7 @@ class IncrementalProcessing:
                 row.update(status=status, reason=result.get('reason', ''), attempted_at=now)
                 if status in ('submitted', 'skipped'):
                     row.update(submitted_counts=list(counts), pending_since=0)
+                    row.pop('handoff_operation', None)
                 elif status == 'deferred':
                     row['next_attempt_at'] = now + (300 if result.get('reason') in ('cooldown', 'backoff') else 30)
                 elif status not in ('deferred', 'disabled'):

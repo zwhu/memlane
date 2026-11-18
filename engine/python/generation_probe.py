@@ -179,11 +179,24 @@ async def probe(config):
 async def _probe(config):
     source = verify_source(config)
     sys.path.insert(0, str(source))
+    if 'generation_environment' not in config:
+        return await _probe_in_context(config)
+    from generation_config import native_llm_configuration
+    from cognee.context_global_variables import llm_config
+    token = llm_config.set(native_llm_configuration(config['generation_environment']))
+    try:
+        return await _probe_in_context(config)
+    finally:
+        llm_config.reset(token)
+
+
+async def _probe_in_context(config):
     if config.get('generation_mode') == 'agent_bridge':
         # Only the local bridge enforces this contract itself. Never advertise
         # native schema capability for an arbitrary API provider/model.
         import litellm
-        litellm.register_model({os.environ['LLM_MODEL']: {'supports_response_schema': True,
+        selected = config.get('generation_environment', os.environ)
+        litellm.register_model({selected['LLM_MODEL']: {'supports_response_schema': True,
                               'supports_function_calling': False, 'litellm_provider': 'openai', 'mode': 'chat'}})
     from pydantic import BaseModel, ConfigDict
     import litellm
@@ -291,7 +304,7 @@ def main():
                           LOGS_ROOT_DIRECTORY=str(root / 'logs'), COGNEE_LOGS_DIR=str(root / 'logs'),
                           TELEMETRY_DISABLED='true', COGNEE_TRACING_ENABLED='false', PYTHON_DOTENV_DISABLED='1')
         with contextlib.redirect_stdout(io.StringIO()):
-            result = asyncio.run(probe(request['runtime']))
+            result = asyncio.run(probe({**request['runtime'], 'generation_environment':request['environment']}))
     except Exception as error:
         status, reason = failure(error)
         result = {'status': status, 'error_code': reason, 'structured_mode': 'unknown'}

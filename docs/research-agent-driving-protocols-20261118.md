@@ -1,0 +1,41 @@
+# 多 Agent 驱动协议参考
+
+记录日期：2026-11-18。用户要求：「这个方案值得记录下来，后续我们也需要连接大量的 Agent」。本次记录后续方向，不启动新 Agent 接入或迁移现有调用。
+
+## 来源与适用边界
+
+- [supezen 原帖](https://x.com/supezen/status/2122953944280551914/photo/1)
+- [原始方案图](https://pbs.twimg.com/media/HXY_SlLacAAaxoc.jpg?name=orig)：《Todos 工作台驱动 23 个 Coding Agent 的秘密》。本次已实际读取图片。
+
+图中思路是运行本机已登录的官方 CLI，根据各家提供的接口统一驱动。作者将接口分为 Claude Agent SDK、各家 RPC、ACP、stream-json 四类，并比较回合中插话、回退检查点和上下文压缩。图中的品牌、启动参数和能力标记是作者当时的观察，未在 Memlane 中逐项验证；不能直接作为我们的支持矩阵或兼容承诺。图中没有 pi，`omp` 不能视为 pi。
+
+## 后续可复用的方向
+
+后续连接大量 Agent 时，按协议与能力建立适配层，避免每新增一家都重写任务调度、取消、状态展示和错误处理。
+
+1. 优先使用各家正式提供的 SDK、RPC 或 ACP；仅有命令行输出接口时，再适配其结构化输出。具体选择需核对目标版本的官方文档和实际协议。
+2. 对上统一任务生命周期：启动、发送输入、流式事件、完成、失败、取消、退出确认与重连核对；对下保留各协议差异。
+3. 能力逐项声明和验证：持续会话、历史恢复、回合中插话、工具审批、结构化结果、回退、压缩。协议名称相同不代表能力相同；不支持或未知的能力不能显示为可用。
+4. 实例身份包含 Agent 类型、客户端形态、配置目录、执行路径及版本。复用用户已有登录，但不复制所有宿主配置，不覆盖其他插件或历史会话。
+5. 保留可诊断的操作记录：操作编号、协议阶段、退出码、经过脱敏且有体积限制的错误、所属进程及取消结果。结果未知时核对原操作，不能盲目重投。
+
+这些是后续设计输入，尚未确定公共接口或实施排期。接入继续遵循[现有连接契约](ui-redesign/agent-connection-contract.md)。
+
+## Memlane 当前代码对照
+
+2026-11-18后续实施更新：用户已明确要求Codex、TraeX、pi三种处理桥，覆盖下表原调查时的Codex-only状态。当前`generation_config.py`与启动/验证/切换支持三者；pi使用RPC与受信完整Schema扩展，TraeX使用其0.215.0实际app-server协议及原生outputSchema。pi与TraeX分别通过当前Cognee适配器普通响应、嵌套Schema和固定事实质量检查；观察真实流式输出后取消，确认所属进程组退出。净室pi/deepseek-v4-flash进一步由Native自动填入、保存、Schema验证通过、明确首次启用并进入首页，内容服务HTTP200。此结果仍不覆盖完整采集/整理/召回或其他工作台能力，持续证据见[工程接续](engineering/processing-handoff-20261118.md)。以下保留原调查表，不能作为最新支持矩阵。
+
+| 用途 | 当前实现 | 边界 |
+|---|---|---|
+| Codex 处理记忆的模型桥接 | `engine/python/codex_completion_endpoint.py` 启动 `codex app-server --strict-config --stdio`，调用 `initialize`、`thread/start`、`turn/start`，取消使用 `turn/interrupt` | 与图中 Codex 的 app-server 路径一致，不代表实现了图中所有工作台能力 |
+| Codex 自动生成用户画像 | `engine/python/user_profiles.py` 启动 `codex exec`，通过输出文件读取结果 | 一次性调用，不是上述 app-server 任务入口 |
+| pi 自动生成用户画像 | 同文件启动 `pi --print` 并读取输出 | 一次性调用；不能据此宣称具备 RPC 会话控制 |
+| 旧版 pi 模型桥接 | 历史 [pi 模型桥验证](pi-model-bridge-validation.md)记录过 RPC 实现 | 属于历史验证；当前 `generation_config.py` 的 Agent 桥接只接受 Codex |
+
+画像调用目前将 stderr 丢弃，只记录通用失败码，导致 Codex 失败原因无法追溯。后续统一驱动时应补齐错误证据；本次仅记录，未修复或重跑模型。
+
+## 分开验证三类接入
+
+驱动 Agent 执行任务、通过官方 Cognee 集成采集/召回、读取 Agent 已有记忆生成画像，是三种能力。工作台能启动 Agent，不等于能取得旧会话或已有记忆；支持模型桥接，也不等于采集和召回已经接通。
+
+后续先选实际需要的 Agent 核对官方接口，再验证正常完成、流式输出、失败诊断、取消与进程回收、重启后的未知结果核对，并分别验证采集和召回。不得为接入新协议另建并行采集器或第二套日常库。

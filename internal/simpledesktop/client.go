@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/zwhu/memlane/internal/bootstrap"
 )
 
 type Project struct {
@@ -24,22 +26,31 @@ type Project struct {
 	CodeEnabled bool   `json:"code_enabled"`
 }
 type Config struct {
-	Python              string                `json:"python"`
-	ProjectControl      *ProjectControlConfig `json:"project_control"`
-	ClientStateFile     string                `json:"client_state_file"`
-	OfficialData        string                `json:"official_data"`
-	ServiceCommit       string                `json:"service_commit"`
-	GraphAssets         string                `json:"graph_assets"`
-	ConfigFile          string                `json:"-"`
-	ServiceURL          string                `json:"service_url"`
-	TokenFile           string                `json:"token_file"`
-	CompletionURL       string                `json:"completion_url"`
-	Model               string                `json:"model"`
-	GenerationMode      string                `json:"generation_mode"`
-	GenerationFile      string                `json:"generation_file"`
-	GenerationSetupOnly bool                  `json:"generation_setup_only"`
-	Projects            []Project             `json:"projects"`
-	Common              []Project             `json:"common_datasets"`
+	CodexExecutable string `json:"codex_executable"`
+	AgentHosts      map[string]struct {
+		Executable string `json:"executable"`
+	} `json:"agent_hosts"`
+	FirstInstall           *bootstrap.FirstInstallation `json:"first_install,omitempty"`
+	FirstInstallDefault    bool                         `json:"-"`
+	Python                 string                       `json:"python"`
+	ProjectControl         *ProjectControlConfig        `json:"project_control"`
+	ClientStateFile        string                       `json:"client_state_file"`
+	OfficialData           string                       `json:"official_data"`
+	OfficialSource         string                       `json:"official_source"`
+	OfficialArchive        string                       `json:"official_archive"`
+	ServiceEnvironmentFile string                       `json:"service_environment_file"`
+	ServiceCommit          string                       `json:"service_commit"`
+	GraphAssets            string                       `json:"graph_assets"`
+	ConfigFile             string                       `json:"-"`
+	ServiceURL             string                       `json:"service_url"`
+	TokenFile              string                       `json:"token_file"`
+	CompletionURL          string                       `json:"completion_url"`
+	Model                  string                       `json:"model"`
+	GenerationMode         string                       `json:"generation_mode"`
+	GenerationFile         string                       `json:"generation_file"`
+	GenerationSetupOnly    bool                         `json:"generation_setup_only"`
+	Projects               []Project                    `json:"projects"`
+	Common                 []Project                    `json:"common_datasets"`
 }
 
 func LoadConfig(path string) (Config, error) {

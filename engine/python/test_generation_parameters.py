@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from generation_config import GenerationStore, compile_environment, fingerprint, validate_profile
+from generation_config import GenerationStore, compile_environment, fingerprint, validate_profile, native_llm_kwargs
 from project_policy import PolicyError
 
 
@@ -12,7 +12,9 @@ LOCAL = {'mode': 'provider', 'provider': 'ollama', 'model': 'synthetic', 'endpoi
 
 class GenerationParameterTests(unittest.TestCase):
     def test_endpoint_capacity_is_model_and_agent_independent(self):
-        profiles = [LOCAL, {'mode': 'agent_bridge', 'bridge_kind': 'codex', 'model': 'synthetic'}]
+        profiles = [LOCAL, {'mode': 'agent_bridge', 'bridge_kind': 'codex', 'model': 'synthetic'},
+                    {'mode': 'agent_bridge', 'bridge_kind': 'pi', 'bridge_provider': 'deepseek', 'model': 'synthetic'},
+                    {'mode': 'agent_bridge', 'bridge_kind': 'traex', 'model': 'synthetic'}]
         for profile in profiles:
             self.assertEqual(validate_profile({**profile, 'max_concurrent_requests': 4})['max_concurrent_requests'], 4)
             for invalid in (None, True, 0, -1, 257, 1.5, '2'):
@@ -82,3 +84,45 @@ class GenerationParameterTests(unittest.TestCase):
                 self.assertEqual(store.state['active']['id'], 'existing-codex')
             finally:
                 store.close()
+
+
+class NativeParameterBoundaryTests(unittest.TestCase):
+    def test_unset_sampling_stays_unset_for_bridge_and_every_direct_protocol(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            token=Path(temporary)/'completion-key';token.write_text('synthetic-only-key');token.chmod(0o600)
+            runtime={'completion_url':'http://127.0.0.1:18173','completion_token_file':str(token)}
+            profiles=[{'mode':'agent_bridge','bridge_kind':'codex','model':'gpt-6.1-sol'}]
+            profiles.extend({**LOCAL,'provider':provider,**({} if provider=='ollama' else
+                {'credential_ref':'fixture','credential_version':'one'})}
+                for provider in ('openai','anthropic','gemini','custom','ollama'))
+            for profile in profiles:
+                with self.subTest(mode=profile['mode'],provider=profile.get('provider')):
+                    values=native_llm_kwargs(compile_environment(profile,runtime,'synthetic-only-key'))
+                    for field in ('llm_temperature','llm_max_completion_tokens','llm_args'):
+                        self.assertNotIn(field,values)
+                    self.assertIsNone(values['_env_file'])
+                    self.assertTrue(values['_env_prefix'])
+
+    def test_explicit_zero_and_output_limit_are_preserved_without_default_injection(self):
+        for provider in ('openai','anthropic','gemini','custom','ollama'):
+            profile={**LOCAL,'provider':provider,'temperature':0,'max_output_tokens':4096,
+                **({} if provider=='ollama' else {'credential_ref':'fixture','credential_version':'one'})}
+            values=native_llm_kwargs(compile_environment(profile,{},'synthetic-only-key'))
+            self.assertEqual(float(values['llm_temperature']),0)
+            self.assertEqual(int(values['llm_max_completion_tokens']),4096)
+            self.assertEqual(values['llm_args'],{'max_tokens':4096})
+
+    def test_production_consumers_cannot_bypass_shared_native_configuration_factory(self):
+        import ast
+        root=Path(__file__).resolve().parent
+        for path in root.glob('generation_*.py'):
+            if path.name=='generation_config.py':continue
+            tree=ast.parse(path.read_text())
+            aliases={'LLMConfig'}
+            for node in ast.walk(tree):
+                if isinstance(node,ast.ImportFrom):
+                    aliases.update(item.asname or item.name for item in node.names if item.name=='LLMConfig')
+            calls=[node for node in ast.walk(tree) if isinstance(node,ast.Call) and
+                ((isinstance(node.func,ast.Name) and node.func.id in aliases) or
+                 (isinstance(node.func,ast.Attribute) and node.func.attr=='LLMConfig'))]
+            self.assertEqual(calls,[],path.name+' constructs native LLM config outside the shared boundary')

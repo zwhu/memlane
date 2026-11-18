@@ -14,7 +14,7 @@ func (a *App) refreshAgentReceiptsIfDue(now time.Time) {
 	}
 	waiting := false
 	for _, row := range s.Connections.Connections {
-		waiting = waiting || (row.Status == "configured_pending_new_session" && row.NewSessions == 0) || row.Status == "environment_receipt_unconfirmed"
+		waiting = waiting || captureConnection(row) || (row.Status == "configured_pending_new_session" && row.NewSessions == 0) || row.Status == "environment_receipt_unconfirmed"
 	}
 	client, ok := a.accessClient()
 	if !ok || !waiting {
@@ -24,7 +24,7 @@ func (a *App) refreshAgentReceiptsIfDue(now time.Time) {
 	s.ReceiptCheckLoading = true
 	request := s.Request
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		var result ConnectionsDirectory
 		err := client.request(ctx, "GET", "/v1/connections", nil, &result)
@@ -35,6 +35,7 @@ func (a *App) refreshAgentReceiptsIfDue(now time.Time) {
 			}
 			if err != nil {
 				s.Error = agentReceiptCheckError
+				a.captureReadFailed()
 				return
 			}
 			if s.Error == agentReceiptCheckError {

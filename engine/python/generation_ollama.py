@@ -50,7 +50,7 @@ async def verify_native_schema(client, complete):
         messages=[{'role': 'user', 'content': 'Return exactly the plain text MEMLANE-SCHEMA-CHECK.'}],
         response_format={'type': 'json_schema', 'json_schema': {
             'name': 'MemlaneNativeSchemaCheck', 'strict': True, 'schema': schema}},
-        temperature=0, max_tokens=256, num_retries=0)
+        num_retries=0)
     try:
         choice = response.choices[0]
         if (choice.finish_reason != 'stop' or getattr(choice.message, 'refusal', None)

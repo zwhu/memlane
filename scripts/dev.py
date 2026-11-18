@@ -15,11 +15,34 @@ import urllib.request
 from datetime import datetime, timezone
 import tempfile
 import hashlib
+import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'engine/python'))
 GO = ROOT / '.local/toolchains/go-1.27.3/go/bin/go'
 DEFAULT_CONFIG = ROOT / '.local/daily/runtime.json'
+
+
+def app_runtime_resources():
+    """Identify the private resource tree materialized and verified by the App.
+
+    Checkout tasks keep their 50/55 GiB development reserve. An installed App
+    must never run that checkout cleaner or inherit its free-space threshold.
+    """
+    marker = ROOT / '.memlane-runtime.json'
+    try:
+        info = marker.lstat()
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
+        raise RuntimeError('App runtime resource marker must be a private regular file')
+    identity = json.loads(marker.read_text())
+    digest = identity.get('sha256', '')
+    if (not isinstance(digest, str) or len(digest) != 64 or
+            any(character not in '0123456789abcdef' for character in digest) or
+            ROOT.name != 'runtime-' + digest[:16]):
+        raise RuntimeError('App runtime resource identity differs')
+    return True
 
 
 def complete_initialization(config, config_path, now=None):
@@ -311,6 +334,11 @@ def process_tree():
 
 def track_descendants(roots, known):
     table = process_tree()
+    # A PID is not a durable identity. Retain only still-live observations;
+    # reparented descendants survive this filter, exited/reused PIDs do not.
+    for pid, started in list(known.items()):
+        if pid not in table or table[pid][2] != started:
+            del known[pid]
     parents = set(roots)
     while True:
         children = {pid for pid, value in table.items() if value[0] in parents}
@@ -324,12 +352,19 @@ def track_descendants(roots, known):
 def stop_descendants(known):
     # Codex owns request sessions distinct from the endpoint group. Only signal
     # previously observed descendants whose kernel start identity still matches.
+    if not known:
+        return
     for sig in (signal.SIGTERM, signal.SIGKILL):
-        for pid, started in known.items():
-            current = process_tree().get(pid)
-            if current is not None and current[2] == started:
-                try: os.kill(pid, sig)
-                except ProcessLookupError: pass
+        # One snapshot per phase, not a full-system ps for every historical PID.
+        # Recheck identities on each phase and poll; never signal a reused PID.
+        table = process_tree()
+        live = {pid: started for pid, started in known.items()
+                if pid in table and table[pid][2] == started}
+        if not live:
+            return
+        for pid in live:
+            try: os.kill(pid, sig)
+            except ProcessLookupError: pass
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             table = process_tree()
@@ -381,6 +416,22 @@ def generation_setup_runtime(config, config_path):
     return effective, runtime_path
 
 
+def first_install_runtime(config, config_path, launch, *, health=wait_http):
+    """Start authenticated Agent management without a generation model."""
+    from first_install_mode import first_install_setup
+    from first_install_runtime import confirm_service_owner
+    from project_control import private_write
+    if not first_install_setup(config):
+        raise ValueError('explicit first installation setup required')
+    runtime_path = config_path.parent / ('.runtime-active-' + str(os.getpid()) + '.json')
+    private_write(runtime_path, json.dumps(config).encode())
+    port_free(config['service_url'])
+    service = launch([config['python'], str(ROOT / 'engine/python/official_service_dev.py'), '--config', str(runtime_path)])
+    health(config['service_url'] + '/health', service)
+    confirm_service_owner(config)
+    return config, runtime_path, None, service
+
+
 def start_generation_stack(config, config_path, launch, cleanup, *, health=wait_http):
     """Start one immutable revision while holding the generation writer lock.
 
@@ -407,7 +458,10 @@ def start_generation_stack(config, config_path, launch, cleanup, *, health=wait_
                 effective.pop('completion_url', None)
             endpoint = None
             if profile['mode'] == 'agent_bridge':
-                for key in ('completion_token_file', 'codex_executable', 'auth_home'):
+                from agent_bridge_runtime import check_bridge_runtime, require_bridge_validation
+                require_bridge_validation(store, config, store.resolve(reference))
+                selected_bridge = check_bridge_runtime(config, profile)
+                for key in ('completion_token_file',):
                     if key == 'completion_token_file' and Path(config[key]).expanduser().is_symlink():
                         raise ValueError('completion credential must not be a symlink')
                     effective[key] = str(Path(config[key]).expanduser().resolve(strict=True))
@@ -418,10 +472,13 @@ def start_generation_stack(config, config_path, launch, cleanup, *, health=wait_
             applied_path.unlink(missing_ok=True)
             private_write(runtime_path, json.dumps(effective).encode())
             if profile['mode'] == 'agent_bridge':
-                endpoint = launch([effective['python'], str(ROOT / 'engine/python/codex_completion_endpoint.py'),
+                command = [effective['python'], str(ROOT / 'engine/python/agent_completion_endpoint.py'),
                     '--port', str(urlparse(effective['completion_url']).port),
-                    '--token-file', effective['completion_token_file'], '--codex-executable', effective['codex_executable'],
-                    '--auth-home', effective['auth_home'], '--model', effective['model']])
+                    '--token-file', effective['completion_token_file'], '--agent-executable', str(selected_bridge['executable']),
+                    '--auth-home', str(selected_bridge['home']), '--bridge-kind', selected_bridge['kind'], '--model', effective['model']]
+                if profile.get('bridge_provider'):
+                    command.extend(['--bridge-provider', profile['bridge_provider']])
+                endpoint = launch(command)
                 health(effective['completion_url'] + '/health', endpoint)
             port_free(effective['service_url'])
             service = launch([effective['python'], str(ROOT / 'engine/python/official_service_dev.py'), '--config', str(runtime_path)])
@@ -439,13 +496,23 @@ def start_generation_stack(config, config_path, launch, cleanup, *, health=wait_
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', nargs='?', choices=('start', 'setup', 'stop', 'open', 'status'), default='start')
+    parser.add_argument('action', nargs='?', choices=('start', 'setup', 'prepare', 'stop', 'open', 'status'), default='start')
     parser.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument('--component-root', type=Path, help='prepare: private engine component directory, never a content store')
+    parser.add_argument('--uv', help='prepare: uv executable (defaults to discovery)')
     parser.add_argument('--no-ui', action='store_true')
     parser.add_argument('--watch-ui', action='store_true', help='open: foreground UI watcher attached to the verified existing service')
     args = parser.parse_args()
     if args.watch_ui and args.action != 'open':
         parser.error('--watch-ui is only valid with open')
+    if args.action == 'prepare':
+        if not args.component_root or args.no_ui or args.watch_ui:
+            parser.error('prepare requires --component-root; it prepares components without starting services or UI')
+        from local_prepare import prepare
+        print(json.dumps(prepare(args.component_root, args.uv), indent=2))
+        return
+    if args.component_root or args.uv:
+        parser.error('--component-root and --uv are only valid with prepare')
     path = args.config.expanduser().resolve(strict=True)
     # Stopping/inspecting the verified live owner must still work after source
     # edits. They launch no new plugin; path/lock/PID/start-time checks below
@@ -473,7 +540,8 @@ def main():
         if args.action == 'open':
             if state.get('runtime_config'):
                 config = load_config(Path(state['runtime_config']))
-            if not config.get('generation_setup_only'):
+            from first_install_mode import first_install_setup
+            if not config.get('generation_setup_only') and not first_install_setup(config):
                 complete_initialization(config, path)
             if args.watch_ui:
                 # An older detached launcher may have lost its output reader.
@@ -517,6 +585,10 @@ def main():
                 except BlockingIOError: time.sleep(.2)
             raise RuntimeError('stop not confirmed; ownership remains reserved')
         return
+    from first_install_mode import first_install_setup
+    first_setup = first_install_setup(config)
+    if first_setup and args.action == 'setup':
+        raise ValueError('first installation uses start; generation-only setup cannot replace it')
     lock = acquire(data)
     if runfile.exists():
         lock.close()
@@ -547,7 +619,7 @@ def main():
         trim_service_log(log_file)
         proc = launch_owned(command, cwd=cwd, env=env, log_file=log_file)
         processes.append(proc)
-        role = {'codex_completion_endpoint': 'completion', 'official_service_dev': 'official',
+        role = {'codex_completion_endpoint': 'completion', 'agent_completion_endpoint': 'completion', 'official_service_dev': 'official',
                 'project_control_server': 'project_control'}.get(entry)
         if role:
             state['service_children'][role] = proc.pid
@@ -571,8 +643,13 @@ def main():
         if args.action == 'setup':
             config, runtime_path = generation_setup_runtime(config, path)
             endpoint = service = None
+        elif first_setup:
+            config, runtime_path, endpoint, service = first_install_runtime(config, path, launch)
         else:
             config, runtime_path, endpoint, service = start_generation_stack(config, path, launch, cleanup_stack)
+            if config.get('first_install'):
+                from first_install_runtime import confirm_service_owner
+                confirm_service_owner(config)
         state.update(runtime_config=str(runtime_path), generation_mode=config['generation_mode'],
                      generation_reference=config.get('generation_reference'), completion_url=config.get('completion_url'))
         save_owner()
@@ -583,13 +660,22 @@ def main():
             state['service_children']['project_control'] = control.pid
             state['project_control_url'] = config['project_control']['url']
             wait_project_control(config['project_control'], control, setup_only=config.get('generation_setup_only', False))
-        if not config.get('generation_setup_only'):
+        if not config.get('generation_setup_only') and not first_setup:
             complete_initialization(config, path)
-        state['phase'] = 'generation_setup' if config.get('generation_setup_only') else 'ready'
+            if config.get('first_install'):
+                from first_install_runtime import finish_activation
+                finish_activation(config, path)
+        state['phase'] = ('first_install_setup' if first_setup else
+                          'generation_setup' if config.get('generation_setup_only') else 'ready')
         save_owner()
-        report_notice('Generation setup ready; save, validate and select next, then stop setup and start normally.' if config.get('generation_setup_only') else 'Daily official services ready; closing UI keeps them running. Ctrl+C explicitly stops owned services.')
+        report_notice('First installation ready for Agent and generation setup; content processing remains unavailable.' if first_setup else
+                      'Generation setup ready; save, validate and select next, then stop setup and start normally.' if config.get('generation_setup_only') else
+                      'Daily official services ready; closing UI keeps them running. Ctrl+C explicitly stops owned services.')
         reopen = not args.no_ui
         while True:
+            if (not app_runtime_resources() and config.get('first_install') and
+                    shutil.disk_usage(data).free < 55 * 1024**3):
+                raise RuntimeError('first installation store disk reserve below 55 GiB; stopping owned services')
             for log_file in (path.parent / 'runtime-logs').glob('*.log'):
                 trim_service_log(log_file)
             track_descendants([p.pid for p in processes], descendants)
@@ -620,7 +706,11 @@ def main():
         lock.close()
 
 
+def run_entrypoint():
+    if not app_runtime_resources() and os.environ.get('MEMLANE_DISK_TASK') != '1':
+        return subprocess.call([sys.executable, str(ROOT / 'scripts/task.py'), '--', sys.executable, __file__, *sys.argv[1:]])
+    return main()
+
+
 if __name__ == '__main__':
-    if os.environ.get('MEMLANE_DISK_TASK') != '1':
-        raise SystemExit(subprocess.call([sys.executable, str(ROOT / 'scripts/task.py'), '--', sys.executable, __file__, *sys.argv[1:]]))
-    main()
+    raise SystemExit(run_entrypoint())

@@ -30,9 +30,9 @@ def main():
         try:
             process = subprocess.Popen(command, cwd=ROOT, env=env, start_new_session=True)
             while process.poll() is None:
-                # Stop before crossing the 100 GiB floor, with a 5 GiB margin.
-                if shutil.disk_usage(ROOT).free < 105 * 1024**3:
-                    print('磁盘余量低于105 GiB，停止任务以保护100 GiB安全空间。', file=sys.stderr)
+                # Stop before crossing the 50 GiB floor, with a 5 GiB margin.
+                if shutil.disk_usage(ROOT).free < 55 * 1024**3:
+                    print('磁盘余量低于55 GiB，停止任务以保护50 GiB安全空间。', file=sys.stderr)
                     os.killpg(process.pid, signal.SIGTERM)
                     try: process.wait(timeout=10)
                     except subprocess.TimeoutExpired:

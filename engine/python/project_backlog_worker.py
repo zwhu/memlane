@@ -14,6 +14,14 @@ import time
 import urllib.error
 
 
+def numbered(entry):
+    try:
+        from _memlane_capture import numbered as supported
+    except ImportError:
+        return False
+    return supported(entry)
+
+
 def entry_key(entry):
     # The original buffered timestamp distinguishes otherwise identical turns.
     value = {k: v for k, v in entry.items() if k != '_replay_ambiguous'}
@@ -34,8 +42,12 @@ def review(common, policy, dataset, host):
         _, _, _, _, pending, _ = policy._pending_snapshot(dataset, session)
     with policy._state() as state:
         blocked = state.get('blocked')
+    safe = [e for e in pending if not e.get(common._AMBIGUOUS_KEY) or numbered(e)]
+    # A legacy unknown must not prevent separately numbered messages being saved.
+    if blocked and blocked.get('reason') == 'write_result_unknown' and any(numbered(e) for e in safe):
+        blocked = None
     return {'session_id': session,
-            'tokens': [entry_key(e) for e in pending if not e.get(common._AMBIGUOUS_KEY)],
+            'tokens': [entry_key(e) for e in safe],
             'unknown_signature': hashlib.sha256(json.dumps([entry_key(e) for e in pending if e.get(common._AMBIGUOUS_KEY)]).encode()).hexdigest(),
             'unknown': sum(bool(e.get(common._AMBIGUOUS_KEY)) for e in pending), 'blocked': blocked}
 
@@ -55,14 +67,31 @@ def check(common, policy, dataset, host):
             or detail.get('dataset_id') != dataset):
         raise policy.NotReady('official_review_unavailable')
     known = common._server_session_fingerprints(detail)
+    confirmed = []
     with common._buffer_lock():
-        _, _, _, _, pending, _ = policy._pending_snapshot(dataset, session)
-        matched = sum(bool(e.get(common._AMBIGUOUS_KEY)) and common._entry_fingerprint(e) in known for e in pending)
+        _, _, _, _, snapshot, _ = policy._pending_snapshot(dataset, session)
+    for entry in snapshot:
+        if entry.get(common._AMBIGUOUS_KEY) and numbered(entry):
+            from _memlane_capture import confirmed as receipt_confirmed
+            if receipt_confirmed(common, dataset, session, entry):
+                confirmed.append(entry)
+    with common._buffer_lock():
+        path, key, cache, state, pending, _ = policy._pending_snapshot(dataset, session)
+        matched = sum(bool(e.get(common._AMBIGUOUS_KEY)) and not numbered(e) and common._entry_fingerprint(e) in known for e in pending)
+        # Only exact original IDs with verified receipts may be consumed.
+        for entry in confirmed:
+            if entry in pending:
+                pending.remove(entry)
+        if confirmed:
+            state['pending_entries'] = pending
+            cache[key] = state
+            common._write_json_file(path, cache)
     after = review(common, policy, dataset, host)
-    if after['unknown_signature'] != before['unknown_signature']:
+    if not confirmed and after['unknown_signature'] != before['unknown_signature']:
         raise policy.NotReady('pending_materials_changed_review_again')
+    legacy = sum(bool(e.get(common._AMBIGUOUS_KEY)) and not numbered(e) for e in pending)
     return {'status': 'unconfirmed' if after['unknown'] else 'confirmed',
-            'reason': 'original_receipt_unavailable' if after['unknown'] else '',
+            'reason': 'original_receipt_unavailable' if legacy else 'capture_retry_pending' if after['unknown'] else '',
             'unknown': after['unknown'], 'matched': matched, 'unknown_signature': after['unknown_signature']}
 
 
@@ -104,7 +133,7 @@ def save(common, policy, payload, stopped, report=emit):
             with common._buffer_lock():
                 _, _, _, _, pending, _ = policy._pending_snapshot(dataset, session)
                 matches = [e for e in pending if entry_key(e) == token]
-                entry = next((dict(e) for e in matches if not e.get(common._AMBIGUOUS_KEY)),
+                entry = next((dict(e) for e in matches if not e.get(common._AMBIGUOUS_KEY) or numbered(e)),
                              dict(matches[0]) if matches else None)
             if entry is None:
                 # Another lawful sender/discard may have consumed it. Do not
@@ -113,7 +142,7 @@ def save(common, policy, payload, stopped, report=emit):
                 tokens.pop(0)
                 progress()
                 continue
-            if entry.get(common._AMBIGUOUS_KEY):
+            if entry.get(common._AMBIGUOUS_KEY) and not numbered(entry):
                 isolated += 1
                 tokens.pop(0)
                 progress()
@@ -128,23 +157,28 @@ def save(common, policy, payload, stopped, report=emit):
             try:
                 common.remember_entry_via_http(dataset, session, outgoing, timeout=12)
             except policy.NotReady:
-                policy.stamp_pending_entry(dataset, session, entry, False)
-                progress('paused', 'policy_unconfirmed')
+                if not numbered(entry):
+                    policy.stamp_pending_entry(dataset, session, entry, False)
+                progress('paused', 'capture_retry_pending' if numbered(entry) else 'policy_unconfirmed')
                 return
             except urllib.error.HTTPError as error:
                 if error.code in (401, 403):
                     policy.stamp_pending_entry(dataset, session, entry, False)
                     policy.block(error.code)
                     progress('paused', 'write_denied')
+                elif numbered(entry) and error.code in (400, 409, 413, 422):
+                    progress('paused', 'capture_request_rejected')
                 else:
-                    isolated += 1
-                    tokens.pop(0)
-                    progress('paused', 'request_result_unknown')
+                    if not numbered(entry):
+                        isolated += 1
+                        tokens.pop(0)
+                    progress('paused', 'capture_retry_pending' if numbered(entry) else 'request_result_unknown')
                 return
             except Exception:
-                isolated += 1
-                tokens.pop(0)
-                progress('paused', 'request_result_unknown')
+                if not numbered(entry):
+                    isolated += 1
+                    tokens.pop(0)
+                progress('paused', 'capture_retry_pending' if numbered(entry) else 'request_result_unknown')
                 return
             saved += 1
             tokens.pop(0)
@@ -185,10 +219,14 @@ def process(common, policy, payload):
     # no-new-entry and submission behavior stays owned by the installed plugin.
     if payload.get('incremental_cooldown_seconds') == 300:
         os.environ['COGNEE_IMPROVE_COOLDOWN'] = '300'
-    reason = common.improve_throttle_reason(session)
+    # A confirmed-cancelled original submit is not a completed improve. Reuse
+    # the official switch trigger and native applied markers/watermarks; do
+    # not delete its throttle history or reset any content processing watermark.
+    handoff = bool(payload.get('handoff_operation'))
+    reason = '' if handoff else common.improve_throttle_reason(session)
     if reason:
         return {'status': 'skipped' if reason == 'no_new_entries' else 'deferred', 'reason': reason}
-    outcome = common.run_session_improve_detailed(dataset, session, trigger='auto')
+    outcome = common.run_session_improve_detailed(dataset, session, trigger='switch' if handoff else 'auto')
     if outcome.get('ok'):
         # A confirmed submit is not a completed improve or generated knowledge.
         return {'status': 'submitted'}

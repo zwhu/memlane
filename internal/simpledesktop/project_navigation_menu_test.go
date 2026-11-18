@@ -41,7 +41,9 @@ func TestProjectMenuOwnsCreationAndCommonOwnsStorage(t *testing.T) {
 	fixtureImage(t, tt, "project-edit-name-only")
 	tt.Key(0, ui.KeyEscape)
 	clickProjectUI(t, tt, "设置")
-	clickProjectUI(t, tt, "高级")
+	if tt.HasText("高级") {
+		t.Fatal("retired advanced tab remains")
+	}
 	for _, label := range []string{"项目关联", "检查未保存的会话", "准备／核对通用记忆", "通用记忆存储"} {
 		if tt.HasText(label) {
 			t.Fatal("scoped action remains global", label)

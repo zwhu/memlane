@@ -12,6 +12,7 @@ import signal
 import threading
 import time
 import tarfile
+from contextlib import AsyncExitStack
 from urllib.parse import urlparse
 
 
@@ -58,6 +59,8 @@ def main():
         os.kill(os.getpid(), signal.SIGTERM)
     threading.Thread(target=watch_owner, daemon=True).start()
     config = json.loads(args.config.read_text())
+    from first_install_mode import first_install_setup
+    setup_only = first_install_setup(config)
     root = Path(config['official_data']).resolve(strict=True)
     source = verify_source(config)
     for variable in list(os.environ):
@@ -84,8 +87,12 @@ def main():
                        # graph coverage. Raw session traces and coding distill
                        # remain upstream-owned; no filtering or cache deletion.
                        IMPROVE_STAGES_DISABLED='persist_agent_traces')
-    from generation_config import runtime_generation
-    profile, generation_environment, generation_digest = runtime_generation(config)
+    if setup_only:
+        profile, generation_environment, generation_digest = {'mode': 'unconfigured', 'model': ''}, {}, None
+        environment['LITELLM_LOCAL_MODEL_COST_MAP'] = 'true'
+    else:
+        from generation_config import runtime_generation
+        profile, generation_environment, generation_digest = runtime_generation(config)
     environment.update(generation_environment)
     os.environ.update(environment)
     sys.path.insert(0, str(source))
@@ -107,10 +114,13 @@ def main():
         if not litellm.supports_response_schema(model=environment['LLM_MODEL']):
             raise ValueError('configured completion model must support native JSON schema')
     async def serve():
-        from generation_http import generation_http_policy
-        async with generation_http_policy(endpoint=environment['LLM_ENDPOINT'],
-                max_concurrent_requests=profile.get('max_concurrent_requests', 2),
-                backend_kind=profile.get('bridge_kind') or profile.get('provider')) as capacity:
+        async with AsyncExitStack() as stack:
+            capacity = None
+            if not setup_only:
+                from generation_http import generation_http_policy
+                capacity = await stack.enter_async_context(generation_http_policy(endpoint=environment['LLM_ENDPOINT'],
+                    max_concurrent_requests=profile.get('max_concurrent_requests', 2),
+                    backend_kind=profile.get('bridge_kind') or profile.get('provider')))
             if profile.get('provider') == 'ollama':
                 from generation_ollama import register_verified_schema
                 register_verified_schema(json.loads(environment['MEMLANE_OLLAMA_SCHEMA_EVIDENCE']),
@@ -118,12 +128,24 @@ def main():
             from cognee.api.client import app
             from session_history import install_session_history
             install_session_history(app)
+            from capture_receipts import install_capture_routes
+            install_capture_routes(app)
+            if not setup_only and config.get('project_control'):
+                from generation_handoff_runtime import install_generation_handoff
+                handoff = install_generation_handoff(app, config, profile,
+                    {**generation_environment, '_digest': generation_digest}, capacity)
+                stack.push_async_callback(handoff.close)
+            if setup_only:
+                from first_install_mode import SetupOnlyMiddleware
+                app.add_middleware(SetupOnlyMiddleware)
             if config.get('project_control'):
                 from tool_graph_service import install_tool_graph_routes
                 install_tool_graph_routes(app, config)
             from cognee.modules.improve.config import get_improve_config
             stages_disabled = get_improve_config().stages_disabled
             if config.get('generation_applied_file'):
+                if setup_only:
+                    raise ValueError('unconfigured service cannot publish a generation-applied receipt')
                 from project_control import private_write
                 from cognee.modules.cognify.config import get_cognify_config
                 private_write(config['generation_applied_file'], json.dumps({

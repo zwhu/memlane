@@ -2,12 +2,15 @@ package simpledesktop
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
+	"github.com/zwhu/memlane/internal/bootstrap"
 )
 
 var ink = ui.Hex("#29343e")
@@ -50,6 +53,8 @@ type pane struct {
 }
 type App struct {
 	userProfiles        userProfilesState
+	environment         environmentSetupState
+	initialSetup        bool
 	integrations        integrationState
 	layout              appLayoutState
 	projectUI           projectReadingState
@@ -87,25 +92,27 @@ type App struct {
 	codeUnknown                                       bool
 	codeRemoteActive                                  bool
 
-	ChooseProjectFolder func() (string, error)
-	projectCreate       projectCreateState
-	toolGraph           toolGraphUIState
-	graphPending        graphPendingState
-	Config              Config
-	Client              Client
-	Update              func(func())
-	page                string
-	project             int
-	kind                string
-	panes               map[string]*pane
-	epoch               uint64
-	service, completion string
-	configError         string
-	md                  markdown.Options
-	projectMD           *markdown.Options
-	searchProject       string
-	recent              []Item
-	homeError           string
+	ChooseProjectFolder  func() (string, error)
+	ChooseDiagnosticPath func() (string, error)
+	OpenExistingAgent    func(string) error
+	projectCreate        projectCreateState
+	toolGraph            toolGraphUIState
+	graphPending         graphPendingState
+	Config               Config
+	Client               Client
+	Update               func(func())
+	page                 string
+	project              int
+	kind                 string
+	panes                map[string]*pane
+	epoch                uint64
+	service, completion  string
+	configError          string
+	md                   markdown.Options
+	projectMD            *markdown.Options
+	searchProject        string
+	recent               []Item
+	homeError            string
 }
 
 func New(c Config, err error) *App {
@@ -118,6 +125,21 @@ func New(c Config, err error) *App {
 	a.readingIdentity, _ = readingIdentity(a.Client)
 	if err != nil {
 		a.configError = err.Error()
+		a.initialSetup = c.ConfigFile == "" || (c.FirstInstallDefault && errors.Is(err, os.ErrNotExist))
+	}
+	if err == nil && c.FirstInstall != nil {
+		complete, stateError := bootstrap.FirstInitializationComplete(c.ConfigFile)
+		a.initialSetup = !complete
+		if stateError != nil {
+			a.environment.Error = bootstrap.RedactInstallerText(stateError.Error())
+		}
+		if a.initialSetup {
+			step, stepError := bootstrap.FirstWizardStep(c.ConfigFile)
+			a.environment.InitialStep = step
+			if stepError != nil {
+				a.environment.Error = bootstrap.RedactInstallerText(stepError.Error())
+			}
+		}
 	}
 	a.searchType = "全部类型"
 	a.graphMode = "实体关系"
@@ -140,6 +162,22 @@ func New(c Config, err error) *App {
 	return a
 }
 func (a *App) Start() {
+	if a.initialSetup {
+		if a.Config.FirstInstall != nil && !a.environment.RuntimeStarted {
+			a.beginFirstRuntime(a.environment.InitialStep)
+			return
+		}
+		if a.environment.InitialStep >= 2 {
+			a.RefreshIntegrations()
+			return
+		}
+		a.refreshEnvironment()
+		return
+	}
+	if a.Config.FirstInstall != nil && !a.environment.RuntimeStarted {
+		a.beginFirstRuntime(0)
+		return
+	}
 	if a.Config.GenerationSetupOnly {
 		a.RefreshIntegrations()
 		return
@@ -547,6 +585,10 @@ func button(c *ui.Context, label string, fn func()) {
 	ui.Button(c, label).FontSize(12).Padding(8, 12).Background(ui.Transparent).BorderWidth(0).Justify(ui.Start).OnClick(fn)
 }
 func (a *App) View(c *ui.Context) {
+	if a.initialSetup {
+		ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.initialEnvironmentPage(c) })
+		return
+	}
 	if a.Config.GenerationSetupOnly {
 		ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.generationSetupPage(c) })
 		return

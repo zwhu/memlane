@@ -64,11 +64,13 @@ UI 工作查看 `docs/images/ui-redesign/client-simplification-20261112/` 中首
 
 当前开发命令见 [开发说明](docs/development.md)，统一使用 `python3 scripts/dev.py`；Go检查使用 `sh scripts/go.sh test ./...`，Python端点检查通过已有环境及 `scripts/task.py`。旧完整builder和helper专属驱动已随旧链退役，不作为当前命令；P0记录保留历史事实。工具链保存在仓库内，不替换用户默认环境。
 
-## 开发磁盘安全空间（用户2026-11-10明确要求）
+## 开发磁盘安全空间（用户2026-11-17调整为50 GiB）
+
+用户本轮将最低保留空间从100 GiB放宽到50 GiB，运行监测继续提前5 GiB停止受管任务。历史交付记录中的100／105 GiB保留为当时事实，不覆盖当前50／55 GiB规则；此调整不恢复暂停的开发或授权安装新依赖。
 
 - 开发Goal暂停期间不恢复研发。清理、磁盘防护按用户本次授权执行。
-- 至少保留100 GiB可用空间；不足先清理本项目可再生缓存／任务载荷，仍不足则停止，不继续下载或构建。
-- Go和完整builder已接入scripts/task.py；其他验收／组件准备一律通过 `python3 scripts/task.py -- <命令>` 执行。运行中余量监测低于105 GiB停止受管任务。
+- 至少保留50 GiB可用空间；不足先清理本项目可再生缓存／任务载荷，仍不足则停止，不继续下载或构建。
+- Go和完整builder已接入scripts/task.py；其他验收／组件准备一律通过 `python3 scripts/task.py -- <命令>` 执行。运行中余量监测低于55 GiB停止受管任务。新阈值对新启动的包装器生效；已运行的旧包装器须在后续明确授权的正常收尾／重启后才加载新值，不因修改门禁擅自停止共享服务。
 - 临时环境、引擎／模型重复副本跑完任务即清；长期仅留报告、截图、小型回执及一个最新可运行包。不得继续无限保留完整隔离环境。禁止清空build：其中p3-prototype是有未提交修改的Git工作树。
 
 ## 工程执行与问题闭环
@@ -99,3 +101,9 @@ UI 工作查看 `docs/images/ui-redesign/client-simplification-20261112/` 中首
 1/ This codebase is yours: what it's for and how it's built are your call, and you'll keep building on it.
 
 2/ Before you start, say in a line what you're about to do; brief updates while you work help the user follow along. Close with a short recap that stands on its own (what you found, what you did, and what's next), so a reader who only sees the last message has the full picture.
+
+## 2026-11-18 桥接与直连的模型参数防回归
+
+提交相关修改前必须运行`python3 scripts/task.py -- python3 scripts/lint.py`。这是不依赖第三方库的AST检查，覆盖全部Python生产模块；ML001禁止绕过共享构造器，ML002禁止注入字面量参数，ML003禁止参数回退值。规则回归使用`python3 scripts/task.py -- python3 -m unittest discover -s scripts -p test_lint.py`。静态检查不替代下述真实协议回归。
+
+用户明确要求两种模式都防止本次参数错误复发。未配置的选项保持未配置，不补成客户端显式采样/输出默认值；用户显式填写的0必须保留。启动、验证和切换统一使用`generation_config.native_llm_configuration` / `native_llm_kwargs`，消费者不得独立构造`LLMConfig`或继承前一配置环境。修改这些路径必须通过`test_generation_parameters`、`test_generation_probe`、`test_generation_handoff`、`test_generation_startup`，使用`scripts/task.py`执行。实际原生协议请求体须覆盖桥接/直连、未填写、显式0/上限及旧环境隔离。复盘与证据见[处理配置接续](docs/engineering/processing-handoff-20261118.md)，执行要求见[工程规范](docs/engineering/workflow.md)。

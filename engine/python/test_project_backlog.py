@@ -15,6 +15,85 @@ from project_policy import PolicyError
 
 
 class BacklogTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unconfirmed_review_isolated_before_healthy_session_save(self):
+        # A legacy host can return a paused record rather than a snapshot.
+        # It must not prevent later healthy hosts from reaching the sender.
+        self.registry.state['sessions'] = {json.dumps(['a', host]): 'p' for host in ('old-traex', 'healthy-codex')}
+        actions = []
+        async def worker(row, target, action, update):
+            actions.append((target['host'], action))
+            if action == 'review':
+                if target['host'] == 'old-traex':
+                    return {'status': 'paused', 'reason': 'policy_unconfirmed'}
+                return {'session_id': 'native-codex', 'tokens': ['b'*64], 'unknown': 20}
+            if action == 'process': return {'status': 'disabled'}
+            result = {'status': 'completed', 'saved': 1, 'handled': 0, 'isolated': 0, 'remaining': 0}
+            update(result)
+            return result
+        self.backlog.worker = worker
+        operation = str(uuid.uuid4())
+        self.backlog.start('p', operation)
+        await self.backlog.task
+        result = self.backlog.get('p')['job']
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(result['review_failed'], 1)
+        self.assertEqual(result['saved'], 1)
+        self.assertEqual(result['isolated'], 20)
+        self.assertNotIn(('old-traex', 'save'), actions)
+        self.assertIn(('healthy-codex', 'save'), actions)
+        self.assertEqual(self.backlog.jobs[operation]['targets'][0]['review_reason'], 'policy_unconfirmed')
+
+    async def test_review_exception_and_invalid_token_never_send_bad_target(self):
+        self.registry.state['sessions'] = {json.dumps(['a', host]): 'p' for host in ('missing-map', 'invalid-token', 'healthy')}
+        sent = []
+        async def worker(row, target, action, update):
+            if action == 'review':
+                if target['host'] == 'missing-map': raise PolicyError('official_session_unconfirmed', 503)
+                return {'session_id': target['host'], 'tokens': [None] if target['host'] == 'invalid-token' else ['b'*64], 'unknown': 0}
+            if action == 'process': return {'status': 'disabled'}
+            sent.append(target['host'])
+            result = {'status': 'completed', 'saved': 1, 'handled': 0, 'isolated': 0, 'remaining': 0}
+            update(result); return result
+        self.backlog.worker = worker
+        self.backlog.start('p', str(uuid.uuid4()))
+        await self.backlog.task
+        self.assertEqual(sent, ['healthy'])
+        self.assertEqual(self.backlog.get('p')['job']['review_failed'], 2)
+
+    async def test_numbered_retry_backoff_keeps_operation_and_respects_explicit_pause(self):
+        self.policy['policy']['can_capture'] = True
+        calls = []
+        async def worker(row, target, action, update):
+            calls.append(action)
+            if action == 'review':
+                return {'session_id':'native-session','tokens':['b'*64],'unknown':1,'unknown_signature':'numbered'}
+            if action == 'save':
+                result = {'status':'paused','reason':'capture_retry_pending','saved':0,'handled':0,'isolated':0,'remaining':1}
+                update(result)
+                return result
+            return {'status':'disabled'}
+        self.backlog.worker = worker
+        await self.backlog.automatic_tick()
+        await self.backlog.task
+        row = next(iter(self.backlog.jobs.values()))
+        original_id = row['operation_id']
+        self.assertEqual(row['reason'],'capture_retry_pending')
+        self.assertEqual(row['isolated'] if 'isolated' in row else row['targets'][0]['isolated'],0)
+        self.assertEqual(row['capture_retry_count'],1)
+        before = len(calls)
+        await self.backlog.automatic_tick()
+        self.assertEqual(len(calls),before,'ignored retry backoff')
+        row['capture_retry_at'] = 0
+        await self.backlog.automatic_tick()
+        await self.backlog.task
+        row = self.backlog.jobs[original_id]
+        self.assertEqual(len(self.backlog.jobs),1,'changed operation to bypass unknown')
+        self.assertEqual(row['capture_retry_count'],2)
+        self.backlog.stop('p',original_id)
+        before = len(calls)
+        await self.backlog.automatic_tick()
+        self.assertEqual(len(calls),before,'explicit user pause resumed automatically')
+
     async def test_check_api_is_manager_only_and_never_starts_a_save(self):
         app=create_app(self.registry,'m'*40,{'a':'a'*40})
         managed=attach_backlog(app,self.registry,{})
@@ -219,6 +298,44 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(paused.task, 'restart bypassed user pause')
         await restarted.close()
         await paused.close()
+
+    async def test_cooling_first_session_does_not_starve_later_session(self):
+        self.policy['policy']['can_capture'] = True
+        first = {'agent_id':'a', 'host':'host', 'dataset':'ds', 'session_id':'one', 'saved':1, 'processing':'queued'}
+        second = {**first, 'host':'other', 'session_id':'two'}
+        self.registry.state['sessions'][json.dumps(['a','other'])] = 'p'
+        row = {'operation_id':'fair-processing', 'project_id':'p', 'created_at':1,
+               'status':'watching', 'automatic':True, 'targets':[],
+               'pending_processing':{'first':first, 'second':second}}
+        self.backlog.jobs[row['operation_id']] = row
+        calls = []
+        async def worker(row, target, action, update):
+            if action == 'review': return {'session_id':'one', 'tokens':[], 'unknown':0}
+            calls.append(target['session_id'])
+            return {'status':'deferred', 'reason':'cooldown'} if target['session_id']=='one' else {'status':'submitted'}
+        self.backlog.worker = worker
+        await self.backlog.automatic_tick()
+        await self.backlog.automatic_tick()
+        self.assertEqual(calls, ['one','two'])
+        self.assertGreater(first['next_processing_at'], 0)
+        # The deadline remains durable after restart and must not hot-poll one.
+        reopened = Backlog(self.registry, {}, worker=worker)
+        try:
+            await reopened.automatic_tick()
+            self.assertEqual(calls, ['one','two'])
+        finally:
+            await reopened.close()
+
+    async def test_automatic_processing_passes_incremental_cooldown_to_worker(self):
+        target = {'agent_id':'a', 'host':'host', 'dataset':'ds', 'session_id':'one', 'saved':1}
+        row = {'operation_id':'cooldown-config', 'project_id':'p', 'automatic':True, 'targets':[]}
+        received = []
+        async def worker(row, target, action, update):
+            received.append(target.get('incremental_cooldown_seconds'))
+            return {'status':'submitted'}
+        self.backlog.worker = worker
+        await self.backlog.process_saved(row,target)
+        self.assertEqual(received,[300])
 
     async def test_official_defer_does_not_block_saving_new_material(self):
         self.policy['policy']['can_capture'] = True

@@ -17,7 +17,7 @@ _write_lock = threading.Lock()
 class RequestTrace:
     def __init__(self, component, request_id=None, *, backend_kind='unknown'):
         self.component = component
-        self.backend_kind = backend_kind if backend_kind in {'codex', 'openai', 'anthropic', 'gemini', 'custom', 'ollama'} else 'unknown'
+        self.backend_kind = backend_kind if backend_kind in {'codex', 'pi', 'traex', 'openai', 'anthropic', 'gemini', 'custom', 'ollama'} else 'unknown'
         if component == 'codex_bridge':
             self.backend_kind = 'codex'
         self.request_id = request_id if isinstance(request_id, str) and re.fullmatch(r'[0-9a-f]{32}', request_id) else uuid.uuid4().hex

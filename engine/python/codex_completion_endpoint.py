@@ -41,6 +41,19 @@ def remote_error(raw):
              'contextWindowExceeded': ('codex_context_exceeded', 400),
              'badRequest': ('codex_request_invalid', 400),
              'sandboxError': ('codex_isolation_failed', 502)}
+    # App-server can wrap a provider's machine error in an `other` message.
+    # Read only the JSON machine code; never return arbitrary provider prose.
+    if info == 'other' and isinstance(raw.get('message'), str):
+        try:
+            detail = json.loads(raw['message'])
+            if isinstance(detail, dict) and isinstance(detail.get('error'), dict):
+                machine_code = detail['error'].get('code')
+                if machine_code == 'invalid_json_schema':
+                    return CompletionError('codex_schema_unsupported', 400)
+                if detail.get('status') == 400 and detail['error'].get('type') == 'invalid_request_error':
+                    return CompletionError('codex_request_invalid', 400)
+        except (ValueError, TypeError):
+            pass
     code, status = codes.get(info, ('codex_model_failed', 502)) if isinstance(info, str) else ('codex_model_failed', 502)
     return CompletionError(code, status)
 
@@ -59,6 +72,14 @@ def strict_schema(source):
         if any(key in node and (not isinstance(node[key], str) or not node[key].startswith('#')) for key in ('$ref', '$dynamicRef', '$recursiveRef')):
             raise CompletionError('codex_schema_unsupported', 400)
         node.pop('default', None)
+        if 'oneOf' in node:
+            # Pydantic discriminated unions use oneOf, which native strict
+            # output rejects. Transport accepts any branch; the original
+            # oneOf remains authoritative in execute's second validation.
+            if 'anyOf' in node or not isinstance(node.get('discriminator'), dict):
+                raise CompletionError('codex_schema_unsupported', 400)
+            node['anyOf'] = node.pop('oneOf')
+        node.pop('discriminator', None)
         if node.get('type') == 'object' or 'properties' in node:
             props = node.get('properties')
             if props is None:
@@ -136,10 +157,14 @@ def parse_request(body, model):
     return '\n\n'.join(system), json.dumps(prompt, ensure_ascii=False), schema, transport
 
 
-def private_config(model, work):
+def private_config(model, work, provider='openai'):
     features = ('shell_tool unified_exec apps plugins hooks memories multi_agent multi_agent_v2 browser_use browser_use_external computer_use image_generation skill_search skill_mcp_dependency_install workspace_dependencies code_mode_host view_image remote_plugin').split()
+    if provider == 'trae':
+        # Pinned TraeX 0.215.0 exposes neither feature key. Strict config must
+        # still reject unknown options rather than silently ignoring them.
+        features = [name for name in features if name not in ('view_image', 'remote_plugin')]
     return '\n'.join([
-        'model = ' + json.dumps(model), 'model_provider = "openai"',
+        'model = ' + json.dumps(model), 'model_provider = ' + json.dumps(provider),
         'default_permissions = "' + PROFILE + '"', 'web_search = "disabled"',
         'project_doc_max_bytes = 0', '[features]',
         *[name + ' = false' for name in features],
@@ -277,22 +302,33 @@ def track_process(args, process, owned):
 
 async def execute(args, system, prompt, schema, transport):
     phase('workspace_prepare')
+    kind = getattr(args, 'bridge_kind', 'codex')
+    if kind not in ('codex', 'traex'):
+        raise CompletionError('unsupported_generation_bridge', 400)
+    provider = 'trae' if kind == 'traex' else 'openai'
     with completion_workspace(args) as root:
         home, private, work = (root / name for name in ('home', 'codex', 'task'))
         for directory in (home, private, work):
             directory.mkdir(mode=0o700)
-        config = private / 'config.toml'
-        config.write_text(private_config(args.model, work))
+        config = private / ('traecli.toml' if kind == 'traex' else 'config.toml')
+        config.write_text(private_config(args.model, work, provider))
         config.chmod(0o600)
         # Copy only subscription authentication, never daily config/plugins/history.
-        auth = args.auth_home / 'auth.json'
+        auth = args.auth_home / ('cli/auth.json' if kind == 'traex' else 'auth.json')
         if not auth.is_file():
             raise CompletionError('codex_authentication_required', 503)
-        auth_target = private / 'auth.json'
-        auth_target.write_bytes(auth.read_bytes())
-        auth_target.chmod(0o600)
+        auth_target = private / ('cli/auth.json' if kind == 'traex' else 'auth.json')
+        if kind == 'traex':
+            auth_target.parent.mkdir(mode=0o700)
+            auth_target.symlink_to(auth)
+        else:
+            auth_target.write_bytes(auth.read_bytes())
+            auth_target.chmod(0o600)
         environment = {'HOME': str(home), 'CODEX_HOME': str(private), 'TMPDIR': str(root),
                        'PATH': str(args.codex_executable.parent) + ':/usr/bin:/bin'}
+        if kind == 'traex':
+            environment.pop('CODEX_HOME')
+            environment.update(TRAE_HOME=str(private), TRAECLI_HOME=str(private / 'cli'), MEMLANE_PROCESSING_SESSION='1')
         for key in ('LANG', 'LC_ALL', 'HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
             if key in os.environ:
                 environment[key] = os.environ[key]
@@ -320,12 +356,18 @@ async def execute(args, system, prompt, schema, transport):
                 await rpc.call('initialize', {'clientInfo': {'name': 'memlane_completion', 'version': '1'}, 'capabilities': {'experimentalApi': True}})
                 await rpc.send('initialized', {}, notification=True)
                 phase('thread_start')
+                instructions = 'Complete only this isolated model request.'
+                if kind == 'traex':
+                    instructions += (' Return only the JSON object constrained by outputSchema, without Markdown. '
+                                     'The user message describes the answer content, not the transport encoding. '
+                                     'For a text envelope, put the requested answer in its text field. '
+                                     'Required output schema: ' + json.dumps(transport))
                 started = await rpc.call('thread/start', {'cwd': str(work), 'runtimeWorkspaceRoots': [],
-                    'permissions': PROFILE, 'model': args.model, 'modelProvider': 'openai', 'approvalPolicy': 'never',
+                    'permissions': PROFILE, 'model': args.model, 'modelProvider': provider, 'approvalPolicy': 'never',
                     'ephemeral': True, 'allowProviderModelFallback': False, 'dynamicTools': [],
-                    'baseInstructions': system, 'developerInstructions': 'Complete only this isolated model request.'})
+                    'baseInstructions': system, 'developerInstructions': instructions})
                 thread_id = started.get('thread', {}).get('id')
-                if not thread_id or started.get('model') != args.model or started.get('modelProvider') != 'openai' or started.get('runtimeWorkspaceRoots') != [] or started.get('activePermissionProfile', {}).get('id') != PROFILE:
+                if not thread_id or started.get('model') != args.model or started.get('modelProvider') != provider or started.get('runtimeWorkspaceRoots') != [] or started.get('activePermissionProfile', {}).get('id') != PROFILE:
                     raise CompletionError('codex_model_or_permissions_changed')
                 phase('model_turn')
                 request_id = await rpc.send('turn/start', {'threadId': thread_id, 'input': [{'type': 'text', 'text': prompt, 'text_elements': []}], 'outputSchema': transport, 'permissions': PROFILE})
@@ -458,7 +500,7 @@ def create_app(args):
     app.on_shutdown.append(shutdown)
 
     async def health(request):
-        return web.json_response({'status': 'ready', 'model': args.model, 'provider': 'codex', 'active_or_waiting': admitted, 'max_concurrency': concurrency, 'max_inflight': inflight})
+        return web.json_response({'status': 'ready', 'model': args.model, 'provider': getattr(args, 'bridge_kind', 'codex'), 'active_or_waiting': admitted, 'max_concurrency': concurrency, 'max_inflight': inflight})
 
     async def complete(request):
         nonlocal admitted
@@ -467,7 +509,8 @@ def create_app(args):
         handler = asyncio.current_task()
         handlers.add(handler)
         handler.add_done_callback(handlers.discard)
-        trace = RequestTrace('codex_bridge', request.headers.get(HEADER))
+        kind = getattr(args, 'bridge_kind', 'codex')
+        trace = RequestTrace(kind + '_bridge', request.headers.get(HEADER), backend_kind=kind)
         context_token = current_trace.set(trace)
         outcome = 'failed'
         trace.transition('request_validation')
@@ -482,7 +525,7 @@ def create_app(args):
                 async with slot:
                     trace.emit('bridge_admitted', active_or_waiting=admitted, max_concurrency=concurrency)
                     trace.transition('execute')
-                    task = asyncio.create_task(execute(args, *parsed))
+                    task = asyncio.create_task(getattr(args, 'execute_request', execute)(args, *parsed))
                     try:
                         while not task.done():
                             if request.transport is None or request.transport.is_closing():

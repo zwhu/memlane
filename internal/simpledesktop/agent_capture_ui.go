@@ -1,0 +1,107 @@
+package simpledesktop
+
+import (
+	"time"
+
+	"github.com/egoist/mygo/ui"
+)
+
+func (a *App) captureConnectionAction(c *ui.Context, row AgentConnection) {
+	s := &a.integrations
+	if s.CaptureReview == nil {
+		s.CaptureReview = map[string]string{}
+	}
+	if s.CaptureHelp == nil {
+		s.CaptureHelp = map[string]bool{}
+	}
+	if _, open := s.CaptureReview[row.ID]; open {
+		textButton(c, "取消", func() { delete(s.CaptureReview, row.ID) }).Disabled(s.Busy)
+		return
+	}
+	if row.Capture != nil {
+		switch row.Capture.State {
+		case "needs_permission", "deferred":
+			label := "允许自动保存"
+			if row.Capture.State == "deferred" {
+				label = "开启"
+			}
+			textButton(c, label, func() { s.CaptureReview[row.ID] = row.Capture.ReviewSHA }).Label(label + "：" + connectionName(row.Kind)).Disabled(s.Busy || row.Capture.ReviewSHA == "")
+			return
+		case "healthy", "checking":
+			return
+		case "check_failed":
+			textButton(c, "重新检测", a.RefreshIntegrations).Label("重新检测自动保存：" + connectionName(row.Kind)).Disabled(s.Busy || s.Loading)
+			return
+		}
+	}
+	label := "查看步骤"
+	if s.CaptureHelp[row.ID] {
+		label = "收起步骤"
+	}
+	textButton(c, label, func() { s.CaptureHelp[row.ID] = !s.CaptureHelp[row.ID] }).Label(label + "：" + connectionName(row.Kind))
+}
+
+func (a *App) captureConnectionDetails(c *ui.Context, row AgentConnection) {
+	s := &a.integrations
+	if reviewed, open := s.CaptureReview[row.ID]; open {
+		ui.Column(c).FillWidth().Padding(0, 0, 0, 42).Children(func() {
+			ui.Column(c.Key("capture-consent-" + row.ID)).FillWidth().Padding(12).Gap(10).Background(ui.Hex("#f5f8fb")).Radius(6).Children(func() {
+				homeText(c, "允许 Codex 自动保存已授权项目中的会话到 Memlane。", homeBody).FontSize(12)
+				ui.Row(c).Gap(14).AlignItems(ui.Center).Children(func() {
+					ui.Button(c, "确认允许").Label("确认允许自动保存："+connectionName(row.Kind)).Padding(5, 12).Disabled(s.Busy || s.Loading).OnClick(func() {
+						a.connectAgentsReviewed("allow_capture", []string{row.ID}, reviewed)
+					})
+					textButton(c, "暂不开启", func() {
+						a.connectAgentsReviewed("defer_capture", []string{row.ID}, reviewed)
+					}).Label("暂不开启自动保存：" + connectionName(row.Kind)).Disabled(s.Busy || s.Loading)
+				})
+			})
+		})
+		return
+	}
+	if row.Capture != nil && row.Capture.State == "check_failed" {
+		homeText(c, "暂时无法读取保存结果，请重新检测。", homeMeta).Margin(0, 0, 0, 42)
+	}
+	if !s.CaptureHelp[row.ID] {
+		return
+	}
+	ui.Column(c.Key("capture-steps-"+row.ID)).FillWidth().Padding(0, 0, 12, 46).Gap(6).Children(func() {
+		if row.Capture != nil && (row.Capture.State == "project_disabled" || row.Capture.State == "project_pending") {
+			message := "最近会话所属项目未开启会话保存。"
+			if row.Capture.State == "project_pending" {
+				message = "最近会话所属项目的权限设置尚未生效。"
+			}
+			homeText(c, message, homeMeta)
+			for index, project := range a.Config.Projects {
+				if project.ID == row.Capture.ProjectID {
+					textButton(c, "项目设置", func() { a.openProjectSettings(index) }).AlignSelf(ui.Start)
+					return
+				}
+			}
+			homeText(c, "在项目设置中开启会话保存后，再发送新消息。", homeMeta)
+			return
+		}
+		homeText(c, "1. 重新打开 "+connectionName(row.Kind)+"，新建会话并发送一条消息。", homeMeta)
+		homeText(c, "2. 等待回复后，点击重新检测。", homeMeta)
+		textButton(c, "重新检测", a.RefreshIntegrations).Label("重新检测自动保存：" + connectionName(row.Kind)).AlignSelf(ui.Start).Disabled(s.Busy || s.Loading)
+	})
+}
+
+func captureSavedTip(row AgentConnection) string {
+	if row.Capture != nil && row.Capture.LastSavedAt > 0 {
+		return "最近保存：" + time.Unix(int64(row.Capture.LastSavedAt), 0).Local().Format("2006-01-02 15:04")
+	}
+	return ""
+}
+
+func (a *App) captureReadFailed() {
+	for index, row := range a.integrations.Connections.Connections {
+		if captureConnection(row) {
+			capture := AgentCaptureState{State: "check_failed", Permission: "unknown"}
+			if row.Capture != nil {
+				capture.LastSavedAt = row.Capture.LastSavedAt
+			}
+			a.integrations.Connections.Connections[index].Capture = &capture
+		}
+	}
+}

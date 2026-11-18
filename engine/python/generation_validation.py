@@ -56,7 +56,7 @@ class GenerationValidation:
         row = s.resolve(reference)
         if row['profile']['mode'] == 'agent_bridge':
             from generation_bridge import check_bridge_runtime
-            check_bridge_runtime(self.runtime)
+            check_bridge_runtime(self.runtime, row['profile'])
             environment = None
         else:
             # Check the private key before registering a model operation.
@@ -110,7 +110,8 @@ class GenerationValidation:
         temporary = tempfile.mkdtemp(prefix='memlane-generation-validation-')
         try:
             if profile['mode'] == 'agent_bridge':
-                from generation_bridge import ValidationBridge
+                from generation_bridge import ValidationBridge, bridge_runtime_fingerprint
+                row['bridge_runtime_fingerprint'] = bridge_runtime_fingerprint(self.runtime, profile)
                 def changed():
                     row['bridge_process_groups'] = sorted(self.bridge.processes)
                     self.store.save()
@@ -162,6 +163,11 @@ class GenerationValidation:
                 if ((evidence is not None or result.get('status') == 'passed')
                         and not evidence_matches(evidence, environment['LLM_MODEL'], environment['LLM_ENDPOINT'])):
                     raise ValueError('probe_result_unconfirmed')
+            if profile['mode'] == 'agent_bridge':
+                from generation_bridge import bridge_runtime_fingerprint
+                if row['bridge_runtime_fingerprint'] != bridge_runtime_fingerprint(self.runtime, profile):
+                    result = {'status':'failed', 'error_code':'generation_bridge_changed_revalidate',
+                              'plain_passed':False, 'schema_passed':False, 'quality_passed':False}
             row.update(result)
         except asyncio.TimeoutError:
             row.update(status='result_unknown', error_code='validation_timeout')

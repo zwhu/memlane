@@ -140,7 +140,7 @@ def trim_caches(limit):
     for name in ['go-build', 'cognee-target', 'cognee-service-build', 'python-worker-build', 'uv', 'swift-icon']:
         p = ROOT / '.cache' / name
         if p.is_symlink() or protected_path(p, protected) or busy(p, processes): continue
-        if size(ROOT / '.cache') <= limit and shutil.disk_usage(ROOT).free >= 100*GIB: break
+        if size(ROOT / '.cache') <= limit and shutil.disk_usage(ROOT).free >= 50*GIB: break
         if p.exists(): shutil.rmtree(p); removed.append(str(p))
     return removed
 
@@ -161,14 +161,14 @@ def main():
         if args.prune_history: report['history'] = prune_history()
         report['cache_cleanup'] = trim_caches(8*GIB if args.finish else 10*GIB)
     report['free_after'] = shutil.disk_usage(ROOT).free
-    report['minimum_free_bytes'] = 100*GIB
+    report['minimum_free_bytes'] = 50*GIB
     if args.prune_history or args.finish:
         log = ROOT / 'build/disk-cleanup'
         log.mkdir(exist_ok=True)
         (log/(time.strftime('%Y%m%d-%H%M%S')+'.json')).write_text(json.dumps(report, indent=2)+'\n')
     print(json.dumps({k:v for k,v in report.items() if k!='history'}, ensure_ascii=False))
-    if report['free_after'] < 100*GIB and not args.finish:
-        raise SystemExit('磁盘不足100 GiB，已停止任务；请清理后再运行。不会删除源码、用户数据或活动目录。')
+    if report['free_after'] < 50*GIB and not args.finish:
+        raise SystemExit('磁盘不足50 GiB，已停止任务；请清理后再运行。不会删除源码、用户数据或活动目录。')
 
 if __name__ == '__main__':
     # Serialize pruning across build/test entry points.

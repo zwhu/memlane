@@ -61,9 +61,18 @@ func TestSettingsProjectPermissionsCardsAndNavigation(t *testing.T) {
 			}
 			fixtureImage(t, tt, fmt.Sprintf("settings-%dx%d-global", wh[0], wh[1]))
 			for _, text := range tt.Texts() {
-				if text == "默认规则" {
+				if text == "默认规则" || text == "高级" || text == "后台运行" || text == "配置生效" {
 					t.Fatal("removed global policy tab remains")
 				}
+			}
+			a.access.SettingsSection = "高级"
+			tt.Frame()
+			if a.access.SettingsSection != "服务与连接" || !tt.HasText("运行环境") {
+				t.Fatal("retired tab left the settings page blank after reload")
+			}
+			clickProjectUI(t, tt, "记忆处理")
+			if !tt.HasText("记忆语言") || tt.HasText("高级") {
+				t.Fatal("retained settings tab lost its content")
 			}
 
 		})

@@ -67,25 +67,28 @@ func TestAgentConnectionUIRequiresConfirmationAfterPreparation(t *testing.T) {
 	if tt.HasText("连接所选（1）") || tt.HasText("准备所选 Agent") || tt.HasText("启用已准备项") {
 		t.Fatal("technical or premature actions visible")
 	}
-	clickProjectUI(t, tt, "选择 pi")
-	clickProjectUI(t, tt, "连接所选（1）")
+	clickProjectUI(t, tt, "连接 pi")
 	drainReading(t, updates, func() bool { return !a.integrations.Busy })
 	tt.Frame()
 	if prepares.Load() != 1 || activations.Load() != 0 {
 		t.Fatal("connection activated before explicit confirmation")
 	}
-	if !tt.HasText("确认连接（1）") || !tt.HasText("将为 pi 添加 Memlane 连接，确认后生效。") {
+	if !tt.HasText("确认连接 pi") || !tt.HasText("将为 pi 添加 Memlane 连接，确认后生效。") {
 		t.Fatal("configuration preview missing")
 	}
 	fixtureImage(t, tt, "agent-connection-confirmation")
-	clickProjectUI(t, tt, "确认连接（1）")
+	clickProjectUI(t, tt, "确认连接 pi")
 	drainReading(t, updates, func() bool { return !a.integrations.Busy })
 	tt.Frame()
 	if activations.Load() != 1 || a.integrations.Selected["pi"] {
 		t.Fatal("activation or selection cleanup incorrect")
 	}
-	if !tt.HasText("等待新会话") || !tt.HasText("在所选环境中重新打开 pi 并新建会话，收到回执后确认连接。") {
+	if !tt.HasText("等待保存验证") || !tt.HasText("查看步骤：pi") {
 		t.Fatal("next user action missing")
+	}
+	clickProjectUI(t, tt, "查看步骤：pi")
+	if !tt.HasText("1. 重新打开 pi，新建会话并发送一条消息。") {
+		t.Fatal("capture verification steps missing")
 	}
 	if tt.HasText("选择 pi") {
 		t.Fatal("configured Agent remains selectable")
@@ -106,7 +109,7 @@ func TestAgentConnectionDefaultShowsClearStatusesAndCollapsesUnavailable(t *test
 	tt := ui.NewTester(func(c *ui.Context) {
 		ui.Column(c).Fill().Padding(24).Gap(12).Children(func() { a.agentConnectionSettings(c) })
 	}, 900, 560)
-	if !tt.HasText("已连接") || !tt.HasText("其他 Agent（2）") {
+	if !tt.HasText("等待保存验证") || !tt.HasText("其他 Agent（2）") {
 		t.Fatal("simple statuses absent")
 	}
 	if _, ok := tt.Find("选择 Codex"); ok {

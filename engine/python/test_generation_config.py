@@ -9,6 +9,64 @@ from project_policy import PolicyError
 
 
 class GenerationTests(unittest.TestCase):
+    def test_remove_http_requires_manager_and_uses_exact_profile_revision(self):
+        import asyncio
+        from aiohttp.test_utils import TestClient, TestServer
+        from project_control_server import create_app
+        saved = self.put()
+        async def run():
+            client = TestClient(TestServer(create_app(None, 'm'*40, {}, generation=self.store)))
+            await client.start_server()
+            try:
+                payload = {'expected_revision': self.store.state['revision'], 'operation_id': 'remove-http',
+                           'profile_revision': saved['revision']}
+                path = '/v1/generation/profiles/api/delete'
+                original = self.path.read_bytes()
+                self.assertEqual((await client.post(path, json=payload)).status, 401)
+                self.assertEqual(self.path.read_bytes(), original)
+                reply = await client.post(path, json=payload, headers={'Authorization': 'Bearer '+'m'*40})
+                self.assertEqual(reply.status, 200)
+                self.assertTrue((await reply.json())['result']['deleted'])
+                reply = await client.get('/v1/generation', headers={'Authorization': 'Bearer '+'m'*40})
+                self.assertNotIn('api', (await reply.json())['profiles'])
+            finally:
+                await client.close()
+        asyncio.run(run())
+
+    def test_remove_unused_provider_is_versioned_idempotent_and_survives_reopen(self):
+        saved = self.put()
+        active = self.store.state['active'].copy()
+        result = self.store.remove('api', saved['revision'], self.store.state['revision'], 'delete-one')
+        self.assertTrue(result['deleted'])
+        self.assertNotIn('api', self.store.view()['profiles'])
+        self.assertEqual(self.store.state['active'], active)
+        self.assertEqual(self.store.remove('api', saved['revision'], 0, 'delete-one'), result)
+        self.store.close()
+        self.store = GenerationStore(self.path, 'fixed-commit')
+        self.assertNotIn('api', self.store.view()['profiles'])
+        with self.assertRaises(PolicyError):
+            self.store.resolve({'id': 'api', 'revision': 1})
+        with self.assertRaises(PolicyError):
+            self.put(operation='do-not-resurrect')
+
+    def test_remove_blocks_active_next_unknown_validation_and_changed_revision(self):
+        saved = self.put()
+        before = self.store.state['revision']
+        with self.assertRaises(PolicyError):
+            self.store.remove('api', 50, before, 'changed-version')
+        for key in ('active', 'next'):
+            original = self.store.state.get(key)
+            self.store.state[key] = {'id': 'api', 'revision': 1}
+            with self.assertRaisesRegex(PolicyError, 'generation_profile_in_use'):
+                self.store.remove('api', 1, before, 'protected-' + key)
+            self.store.state[key] = original
+        for status in ('queued', 'running', 'result_unknown'):
+            self.store.state['validations']['busy'] = {'reference': {'id': 'api', 'revision': 1}, 'status': status}
+            with self.assertRaisesRegex(PolicyError, 'generation_profile_operation_pending'):
+                self.store.remove('api', 1, before, 'protected-' + status)
+        self.assertIn('api', self.store.view()['profiles'])
+        self.assertEqual(self.store.state['revision'], before)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

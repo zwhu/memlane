@@ -386,6 +386,10 @@ def detect_executable(kind, settings, legacy=None):
                   Path('/opt/homebrew/bin'), Path('/usr/local/bin')) for command in commands]
     if kind == 'opencode':
         candidates.append(home / '.opencode/bin/opencode')
+    if kind == 'codex':
+        candidates.extend(base / app / 'Contents/Resources/codex-cli/bin/codex'
+                          for base in (Path('/Applications'), home / 'Applications')
+                          for app in ('Codex.app', 'ChatGPT.app'))
     if kind == 'cursor':
         candidates.extend(base / 'Cursor.app/Contents/Resources/app/bin/cursor'
                           for base in (Path('/Applications'), home / 'Applications'))
@@ -397,6 +401,8 @@ class Connections:
         self.registry, self.adapters = registry, {}
         self.mutex = asyncio.Lock()
         self.config = config
+        from connection_capture import ConnectionCapture
+        self.capture = ConnectionCapture(registry, config)
         self.discover()
 
     def discover(self):
@@ -480,8 +486,17 @@ class Connections:
                     row['error_code'] = 'host_executable_changed'
             except (OSError, TypeError):
                 pass
+            capture = self.capture.view(row, adapter)
+            if capture is not None:
+                row['capture'] = capture
+                row.setdefault('capabilities', {}).setdefault('auto_capture', {'available': True})['verified'] = capture['state'] == 'healthy'
             rows.append(row)
         return {'revision': self.registry.state['revision'], 'connections': rows}
+
+    async def checked_view(self):
+        rows = self.view()['connections']
+        await self.capture.refresh(rows, self.adapters)
+        return self.view()
 
     async def select_environment(self, kind, profile, expected):
         from agent_environments import DEFAULTS, profile_path, verification_profile
@@ -505,7 +520,16 @@ class Connections:
         receipt = self.registry.state.get('connection_operations', {}).get(operation_id)
         if receipt is None:
             return {'recorded': False}
-        if receipt.get('opencode_rejected'):
+        if receipt.get('action') == 'allow_capture' and receipt.get('status') != 'complete':
+            identifier = receipt.get('instance_id')
+            adapter = self.adapters.get(identifier)
+            if adapter is not None:
+                row = next((r for r in self.view()['connections'] if r['instance_id'] == identifier), {})
+                capture = row.get('capture', {})
+                if capture.get('permission') == 'granted' and capture.get('review_sha') == receipt.get('reviewed_sha'):
+                    return {'recorded': True, 'status': 'complete', 'reconciled': True,
+                            'result': {'revision': self.registry.state['revision'], 'connection': row}}
+        if receipt.get('opencode_rejected') or receipt.get('capture_rejected'):
             return {'recorded': True, 'status': 'complete', 'outcome': 'rejected',
                     'result': copy.deepcopy(receipt.get('result')), 'error_code': receipt.get('error_code')}
         if receipt['status'] != 'complete':
@@ -525,9 +549,11 @@ class Connections:
     async def perform(self, identifier, action, expected, operation_id, reviewed_sha=None):
         if not isinstance(operation_id, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', operation_id):
             raise PolicyError('invalid_operation_id')
-        if action not in ('preview', 'prepare', 'activate', 'review') or identifier not in self.adapters:
+        if action not in ('preview', 'prepare', 'activate', 'review', 'allow_capture', 'defer_capture') or identifier not in self.adapters:
             raise PolicyError('connection_not_found', 404)
         kind = getattr(self.adapters[identifier], 'kind', 'codex')
+        if action in ('allow_capture', 'defer_capture') and kind != 'codex':
+            raise PolicyError('capture_permission_not_applicable', 409)
         if self.environments[kind]['environment_issue']:
             raise PolicyError(self.environments[kind]['environment_issue'], 409)
         r, adapter = self.registry, self.adapters[identifier]
@@ -543,11 +569,26 @@ class Connections:
                 return copy.deepcopy(old['result'])
             async with r.mutex:
                 r.check_revision(expected)
-                operations[operation_id] = {'signature': signature, 'status': 'unknown'}
+                operations[operation_id] = {'signature': signature, 'status': 'unknown',
+                    'action': action, 'instance_id': identifier, 'reviewed_sha': reviewed_sha}
                 r.state['revision'] += 1
                 r.save()
             try:
-                if action == 'preview':
+                if action in ('allow_capture', 'defer_capture'):
+                    row = next((r for r in self.view()['connections'] if r['instance_id'] == identifier), {})
+                    if row.get('status') not in ('configured_pending_new_session', 'environment_receipt_unconfirmed'):
+                        raise PolicyError('capture_connection_not_configured', 409)
+                    if action == 'allow_capture':
+                        await self.capture.allow(adapter, reviewed_sha)
+                    else:
+                        inspected = await self.capture.inspect(row, adapter)
+                        if inspected.get('permission') != 'required' or inspected.get('review_sha') != reviewed_sha:
+                            raise PolicyError('capture_permission_state_changed', 409)
+                        self.capture.record(identifier, kind)['capture_deferred'] = True
+                        self.capture.cache.pop(identifier, None)
+                    result = row
+                    result.pop('capture', None)
+                elif action == 'preview':
                     result = getattr(adapter, 'preview', adapter.view)()
                 elif action == 'activate':
                     result = await adapter.activate(r.state['revision'], reviewed_sha, **({'operation_id': operation_id} if getattr(adapter, 'kind', None) == 'opencode' else {}))
@@ -556,6 +597,12 @@ class Connections:
             except PolicyError as error:
                 async with r.mutex:
                     operations[operation_id]['error_code'] = error.code
+                    if action in ('allow_capture', 'defer_capture') and error.code in (
+                            'capture_review_changed', 'capture_config_version_unavailable',
+                            'capture_connection_not_configured', 'capture_permission_state_changed',
+                            'capture_hooks_unavailable', 'capture_hooks_source_changed', 'capture_hook_hash_unavailable'):
+                        operations[operation_id].update(capture_rejected=True,
+                            result={'revision': r.state['revision'], 'connection': row})
                     if getattr(adapter, 'kind', None) == 'opencode' and adapter.safely_rejected(operation_id, action):
                         try:
                             row = adapter.view()

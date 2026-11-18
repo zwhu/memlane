@@ -1,6 +1,6 @@
 # 工程规范
 
-2026-11-11 起实施；不改变产品、授权、设计和100 GiB磁盘规则。
+2026-11-11 起实施；不改变产品、授权和设计。磁盘规则以 AGENTS.md 最新要求为准：2026-11-17 调整为最低保留50 GiB、运行监测低于55 GiB停止受管任务。
 
 ## 开发节奏
 
@@ -38,6 +38,15 @@
 UI组件保持稳定Key，异步结果核对项目／配置代次和当前操作。任务归daemon所有；UI动效只表达真实状态。布局用实际可用宽度，长正文独立滚动、操作可达；保存与启用、知识与原文分离。实际普通／窄窗口、焦点、草稿、返回路径仍须Native验证。
 
 ## 留证契约
+
+### 模型参数契约（2026-11-18，用户明确要求桥接与直连都防复发）
+
+- 静态门禁：`python3 scripts/task.py -- python3 scripts/lint.py`，检查全部Python生产模块；违规输出文件／行号／ML规则编号并非零退出。检查器回归：`python3 scripts/task.py -- python3 -m unittest discover -s scripts -p test_lint.py`。覆盖原始setdefault错误、别名构造器、请求字面量、合法显式配置及语法错误；不能只在测试里保留架构约束而不接lint入口。
+
+- Memlane 未配置的采样/输出参数保持未配置，不补成显式0、1或其他默认值；不得把SDK已有默认行为改成客户端显式参数。桥接模式不开放温度等不受支持字段；直连用户显式填写的0必须保留。
+- 启动、验证、在线切换统一使用generation_config中的native_llm_configuration/native_llm_kwargs，不在消费者中直接构造LLMConfig，不继承前一配置的环境变量、llm_args、fallback或凭据。
+- 修改配置编译、原生客户端构造、模型验证或切换逻辑时，必须通过test_generation_parameters、test_generation_probe、test_generation_handoff、test_generation_startup。覆盖桥接/直连、未配置/显式0/显式上限、旧环境残留及真实原生协议请求体；不能用stub替掉共享构造器冒充通过。
+- 相关复盘和累计失败证据见[处理配置接续](processing-handoff-20261118.md)。真实模型调用、合成协议、Native实窗分别留证；SDK参数拒绝时检查原错误，不能把持续重试误报为模型慢。
 
 UI动作→IPC请求→后台任务→模型网关各层关联操作ID／任务ID与阶段。保留失败阶段、固定安全原因码、HTTP状态、配置代次及耗时；前置拒绝也需要明确可观测边界，不能只记录成功或模型启动后的错误。
 

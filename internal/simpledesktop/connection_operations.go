@@ -35,12 +35,21 @@ func (a *App) reviewConnectionOperation(o generationUIOperation) {
 			}
 			if !receipt.Recorded || receipt.Status != "complete" || receipt.Result.Connection.ID != o.Profile {
 				s.Message = "Agent 原操作结果仍未确认；保留原编号，未重新提交。可核对该 Agent 的安装状态。"
+				if o.Kind == "connection_allow_capture" || o.Kind == "connection_defer_capture" {
+					s.Message = "自动保存设置仍未确认，请稍后重新核对；未重复操作。"
+				}
 				return
 			}
 			if a.finishGenerationOperation(o.Operation) {
 				s.Message = "Agent 原操作回执已核对；未重新安装"
 				if receipt.Outcome == "rejected" {
 					s.Message = "原接入操作已确认拒绝，未重新安装；处理卡片错误后可重新准备或启用。"
+				}
+				if o.Kind == "connection_allow_capture" || o.Kind == "connection_defer_capture" {
+					s.Message = "自动保存设置已确认"
+					if receipt.Outcome == "rejected" {
+						s.Message = "自动保存设置未生效，请重新检测后再操作。"
+					}
 				}
 				a.RefreshIntegrations()
 			}

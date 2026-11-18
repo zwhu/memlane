@@ -34,14 +34,14 @@ func (a *App) globalToolGraphSettings(c *ui.Context) {
 	if a.Config.GenerationSetupOnly {
 		return
 	}
-	settingsCard(c, "工具记录关系图谱", "从工具记录中提取文件、函数、服务等对象及其关系，方便查看关联。", func() {
+	settingsListSurface(c, func() {
+		homeText(c, "工具记录关系图谱", homeHeading).FontSize(15).FontWeight(500).Margin(10, 0)
 		enabled := a.access.Directory.ToolGraph.GlobalEnabled
 		ui.Checkbox(c.Key("global-tool-graph"), &enabled, "自动构建关系图谱").Disabled(!a.access.Loaded || a.access.Busy).OnChange(func() {
 			a.saveToolGraphSetting("", &enabled)
 		})
-		homeText(c, "默认关闭。关闭不影响原始记录保存和记忆提炼。", homeMeta)
-		homeText(c, "项目可单独设置；开启后，后续记忆整理完成再在后台构建图谱，会消耗模型额度。", homeMeta).LineHeight(1.6)
-		homeText(c, "已有记录可在项目设置或图谱页手动创建。", homeMeta)
+		homeText(c, "关闭不影响消息保存和记忆提炼。", homeMeta).Margin(8, 0, 0, 0)
+		homeText(c, "开启后消耗模型额度，项目可单独设置。", homeMeta).Margin(4, 0, 8, 0)
 		if a.access.Message != "" {
 			message := a.access.Message
 			if message == "设置已保存；生效状态以官方核对结果为准" {

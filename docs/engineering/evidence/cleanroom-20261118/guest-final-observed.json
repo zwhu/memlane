@@ -1,0 +1,65 @@
+{
+  "evidence_kind": "metadata transcribed from observed guest final-acceptance-v2.py output; original private JSON retained in guest",
+  "guest": "macOS aarch64 UTM",
+  "candidate": "empty-common-1",
+  "binary_sha256": "7e9b2f19af2f5500deac34719e8030e222031bbd67bf86a9c499a6def2305e59",
+  "setup_complete": true,
+  "content_health": {
+    "status": "ready",
+    "health": "healthy",
+    "version": "1.6.7-local"
+  },
+  "management_connections_readable": true,
+  "empty_common_failures_before": 5,
+  "empty_common_failures_after": 5,
+  "old_failure_ids_unchanged": true,
+  "connections": [
+    {
+      "kind": "pi",
+      "capture_state": "healthy",
+      "environment_verified": true
+    },
+    {
+      "kind": "traex",
+      "capture_state": "healthy",
+      "environment_verified": true
+    }
+  ],
+  "active_bridge": "pi",
+  "active_provider": "deepseek",
+  "active_model": "deepseek-v4-flash",
+  "next": null,
+  "traex_validation": {
+    "model": "GPT-5.6-Sol",
+    "status": "passed",
+    "plain_passed": true,
+    "schema_passed": true,
+    "quality_passed": true,
+    "structured_mode": "json_schema",
+    "active_unchanged": true,
+    "next_unchanged": true
+  },
+  "knowledge_document_present": true,
+  "official_document_count": 7,
+  "native_after_navigation_refresh": {
+    "knowledge": 1,
+    "raw_records": 6,
+    "knowledge_recall_count": 3
+  },
+  "fresh_recall": {
+    "pi": {
+      "exit_code": 0,
+      "readme_recalled": true,
+      "constraint_recalled": true,
+      "no_default_invention": true,
+      "model_tool_actions": []
+    },
+    "traex": {
+      "exit_code": 0,
+      "readme_recalled": true,
+      "constraint_recalled": true,
+      "no_default_invention": true,
+      "model_tool_actions": []
+    }
+  }
+}

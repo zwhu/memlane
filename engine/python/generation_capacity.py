@@ -38,6 +38,13 @@ class EndpointCapacity:
     def matches(self, request):
         return request.url.copy_with(path='/', query=None, fragment=None) == self.origin
 
+    def reconfigure(self, endpoint, limit, backend_kind):
+        candidate = EndpointCapacity(endpoint, limit, self.wait_timeout, backend_kind=backend_kind)
+        with self._lock:
+            if self.active or self._waiting:
+                raise RuntimeError('generation_capacity_busy')
+            self.origin, self.limit, self.backend_kind = candidate.origin, candidate.limit, candidate.backend_kind
+
     def _reserve(self):
         ticket = _Ticket()
         with self._lock:

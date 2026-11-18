@@ -10,6 +10,32 @@ from session_history import install_session_history
 
 
 class SessionHistoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_capture_status_is_authorized_metadata_without_prompt_or_answer(self):
+        self.manager.get_session.return_value = [{'qa_id': 'saved', 'question': 'private prompt',
+            'answer': 'private answer', 'time': '2026-11-17T15:00:00Z'}]
+        response = await self.client.get('/api/v1/sessions/session/capture-status')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['qa_count'], 1)
+        self.assertGreater(response.json()['last_qa_at'], 0)
+        self.assertNotIn('private', response.text)
+        self.assertNotIn('qas', response.json())
+        self.assertEqual((await self.client.get('/api/v1/sessions/session/capture-status',
+            headers={'X-Api-Key': 'wrong'})).status_code, 401)
+        self.manager.is_available = False
+        self.assertEqual((await self.client.get('/api/v1/sessions/session/capture-status')).status_code, 503)
+
+    async def test_capture_status_never_uses_session_activity_or_invalid_entry_times_as_saved_evidence(self):
+        self.manager.get_session.return_value = [{'qa_id': 'no-time'}, {'qa_id': 'bad', 'time': 'bad'},
+            {'qa_id': 'future', 'time': '2999-01-01T00:00:00Z'}]
+        response = await self.client.get('/api/v1/sessions/session/capture-status')
+        self.assertIsNone(response.json()['last_qa_at'])
+
+    async def test_capture_status_reads_pinned_sdk_entry_objects_without_copying_content(self):
+        self.manager.get_session.return_value = [SimpleNamespace(qa_id='sdk-entry', time='2026-11-17T15:00:00Z')]
+        response = await self.client.get('/api/v1/sessions/session/capture-status')
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNotNone(response.json()['last_qa_at'])
+
     async def asyncSetUp(self):
         async def authenticated(x_api_key: str = Header(default='')):
             if x_api_key != 'synthetic':

@@ -1,4 +1,4 @@
-"""One validation-owned Codex endpoint, independent of the active service."""
+"""One validation-owned Agent endpoint, independent of the active service."""
 import secrets
 import socket
 from pathlib import Path
@@ -10,39 +10,34 @@ from codex_completion_endpoint import create_app, terminate
 from generation_config import compile_environment
 from process_groups import group_exists
 from project_control import private_write
-from project_policy import PolicyError
 
 
-def check_bridge_runtime(runtime):
-    try:
-        executable = Path(runtime['codex_executable'])
-        home = Path(runtime['auth_home'])
-        auth = home / 'auth.json'
-        if not executable.is_absolute() or not executable.is_file() or not home.is_absolute() or not home.is_dir():
-            raise ValueError()
-        if auth.is_symlink() or not auth.is_file() or auth.stat().st_mode & 0o077:
-            raise ValueError()
-    except (KeyError, OSError, ValueError, TypeError):
-        raise PolicyError('generation_bridge_authentication_required', 409) from None
+from agent_bridge_runtime import (resolve_bridge_runtime, check_bridge_runtime, bridge_choices,
+                                  bridge_runtime_fingerprint, require_bridge_validation)
 
 
 class ValidationBridge:
-    def __init__(self, runtime, profile, root, changed):
-        check_bridge_runtime(runtime)
+    def __init__(self, runtime, profile, root, changed, *, concurrency=1):
+        self.selected = check_bridge_runtime(runtime, profile)
         self.runtime, self.profile, self.root = runtime, profile, Path(root)
         self.processes = {}
         self.changed = changed
+        self.concurrency = concurrency
         self.runner, self.socket = None, None
 
     async def start(self):
         token_file = self.root / 'completion-token'
         private_write(token_file, secrets.token_urlsafe(48).encode())
         args = SimpleNamespace(token_file=token_file, model=self.profile['model'],
-                               codex_executable=Path(self.runtime['codex_executable']),
-                               auth_home=Path(self.runtime['auth_home']), timeout=90,
-                               max_concurrency=1, max_inflight=1,
+                               codex_executable=self.selected['executable'], agent_executable=self.selected['executable'],
+                               auth_home=self.selected['home'], bridge_kind=self.selected['kind'],
+                               bridge_provider=self.profile.get('bridge_provider'), timeout=90,
+                               max_concurrency=self.concurrency, max_inflight=self.concurrency,
                                workspace_root=self.root, diagnostics_dir=self.root / 'diagnostics',
                                owned_processes=self.processes, ownership_changed=self.changed)
+        if self.selected['kind'] == 'pi':
+            from pi_completion import execute
+            args.execute_request = execute
         self.runner = web.AppRunner(create_app(args), handle_signals=False, handler_cancellation=True,
                                     shutdown_timeout=15, access_log=None)
         await self.runner.setup()

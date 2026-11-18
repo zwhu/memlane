@@ -1,0 +1,176 @@
+package bootstrap
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"syscall"
+	"time"
+)
+
+// RuntimeDriver never syncs packages into a user's existing interpreter. A
+// compatible environment is reused; otherwise consent creates a managed venv
+// at its final location, using an already compatible base interpreter.
+type RuntimeDriver struct {
+	Lock           []byte
+	Native         *NativeSupport
+	ExistingPython string
+	Python         func(context.Context) (string, error)
+	UV             func(context.Context) (string, error)
+}
+
+func (d RuntimeDriver) Digest() string { h := sha256.Sum256(d.Lock); return hex.EncodeToString(h[:]) }
+func (d RuntimeDriver) Probe(ctx context.Context, r Requirement) (Observation, error) {
+	if r.ID != "runtime" || r.Digest != d.Digest() {
+		return Observation{}, errors.New("runtime requirement differs from fixed lock")
+	}
+	managed := filepath.Join(r.Destination, "venv/bin/python")
+	paths := []string{managed}
+	if d.Native != nil {
+		if err := d.Native.verify(r.Destination); err == nil {
+			paths = []string{nativeWrapper(r.Destination)}
+		} else {
+			paths = nil
+		}
+	}
+	if d.ExistingPython != "" {
+		paths = append(paths, d.ExistingPython)
+	}
+	o := Observation{Status: Missing, Path: managed, Reason: "需要准备引擎运行库"}
+	if d.Native != nil {
+		if _, err := os.Stat(managed); err == nil && len(paths) == 0 {
+			o.Status = Incompatible
+			o.Reason = "需要补齐可独立加载的 OpenSSL 原生依赖"
+		}
+	}
+	for _, p := range paths {
+		candidate, err := ProbeDependencies(ctx, p, d.Lock)
+		if err != nil {
+			return candidate, err
+		}
+		if candidate.Status == Available {
+			return candidate, nil
+		}
+		if candidate.Status == Incompatible {
+			o = candidate
+		}
+	}
+	return o, nil
+}
+func (d RuntimeDriver) Install(ctx context.Context, r Requirement) error {
+	if r.ID != "runtime" || r.Digest != d.Digest() {
+		return errors.New("runtime requirement differs from fixed lock")
+	}
+	base, err := d.Python(ctx)
+	if err != nil {
+		return err
+	}
+	uv, err := d.UV(ctx)
+	if err != nil {
+		return err
+	}
+	identity, _ := json.Marshal(struct{ Lock, Python string }{d.Digest(), base})
+	if err := claimComponentRoot(r.Destination, ".memlane-runtime.json", identity); err != nil {
+		return err
+	}
+	lock := filepath.Join(r.Destination, "requirements.lock")
+	if b, err := os.ReadFile(lock); err == nil && !bytes.Equal(b, d.Lock) {
+		return errors.New("managed requirements changed; retained")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.WriteFile(lock, d.Lock, 0600); err != nil {
+		return err
+	}
+	venv := filepath.Join(r.Destination, "venv")
+	python := filepath.Join(venv, "bin/python")
+	if _, err := os.Stat(python); errors.Is(err, os.ErrNotExist) {
+		if err := runManaged(ctx, r.Destination, uv, "--no-config", "--cache-dir", filepath.Join(r.Destination, "cache"), "venv", "--no-project", "--no-python-downloads", "--python", base, venv); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+	// uv splits constraint-file arguments on spaces. The process already runs
+	// in the owned destination, so keep both lock arguments relative.
+	if err := runManaged(ctx, r.Destination, uv, "--no-config", "--cache-dir", filepath.Join(r.Destination, "cache"), "pip", "sync", "--python", python, "--require-hashes", "--build-constraints", filepath.Base(lock), filepath.Base(lock)); err != nil {
+		return err
+	}
+	if d.Native != nil {
+		return d.Native.install(ctx, r.Destination)
+	}
+	return nil
+}
+
+type tailWriter struct{ data []byte }
+
+func (w *tailWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	const limit = 64 * 1024
+	if len(p) >= limit {
+		w.data = append(w.data[:0], p[len(p)-limit:]...)
+	} else {
+		w.data = append(w.data, p...)
+		if len(w.data) > limit {
+			w.data = append([]byte(nil), w.data[len(w.data)-limit:]...)
+		}
+	}
+	return n, nil
+}
+
+type CommandFailure struct {
+	ExitCode int
+	Output   string
+}
+
+func (e *CommandFailure) Error() string {
+	if e.ExitCode < 0 {
+		return "安装命令未能启动：" + e.Output
+	}
+	return fmt.Sprintf("安装命令退出 %d：%s", e.ExitCode, e.Output)
+}
+
+func runManaged(ctx context.Context, root, executable string, args ...string) error {
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(home, 0700); err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, executable, args...)
+	cmd.Dir = root
+	cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=" + home, "TMPDIR=" + root, "LANG=en_US.UTF-8", "UV_NO_CONFIG=1", "UV_PYTHON_DOWNLOADS=never", "PYTHONDONTWRITEBYTECODE=1", "HF_HUB_OFFLINE=1"}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	cmd.WaitDelay = 2 * time.Second
+	output := &tailWriter{}
+	cmd.Stdout, cmd.Stderr = output, output
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return context.Cause(ctx)
+		}
+		code := -1
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			code = exit.ExitCode()
+		} else {
+			return &CommandFailure{code, RedactInstallerText(err.Error() + "\n" + string(output.data))}
+		}
+		return &CommandFailure{code, RedactInstallerText(string(output.data))}
+	}
+	return nil
+}

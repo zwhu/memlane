@@ -1,0 +1,11 @@
+{
+  "command": "python3 scripts/task.py -- env PYTHONPATH=engine/python .local/cognee-python/bin/python .local/first-install-20261118/probe-codex-current-v1.py",
+  "kind": "codex",
+  "model": "gpt-6.2-sol",
+  "result": {
+    "text": "bridge-ready"
+  },
+  "owned_groups": [],
+  "exit_code": 0,
+  "boundary": "synthetic isolated model request; no daily service restart or configuration write"
+}

@@ -65,6 +65,10 @@ class LessonProvenanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'base'; (source / MODULE).parent.mkdir(parents=True)
             (source / MODULE).write_text(self.original)
+            from capture_service_patch import MANAGER, ADAPTER
+            for name in (MANAGER, ADAPTER):
+                (source / name).parent.mkdir(parents=True, exist_ok=True)
+                (source / name).write_bytes((self.source / name).read_bytes())
             for name in LANGUAGE_PROMPTS:
                 (source / name).parent.mkdir(parents=True, exist_ok=True)
                 (source / name).write_text((self.source / name).read_text())

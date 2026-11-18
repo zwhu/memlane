@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "purpose": "Native bootstrap download pins; existing compatible dependencies are reused first",
+  "uv": {
+    "version": "0.12.3",
+    "darwin_arm64": {
+      "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-apple-darwin.tar.gz",
+      "sha256": "546f7f8a6c70ff13a3a9d2bc958db3427298cebf3e0cb756f9177133b7068843",
+      "download_bytes": 17686637
+    },
+    "darwin_amd64": {
+      "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-apple-darwin.tar.gz",
+      "sha256": "4c9f52262a14da336e4a42ed24992d12d0c956acde87619e4611d321dffa602b",
+      "download_bytes": 19547702
+    }
+  },
+  "python": {
+    "version": "3.12.12",
+    "build": "20260211",
+    "compatible_existing": "CPython 3.12.x matching host architecture; locked dependencies and native libraries verified separately",
+    "darwin_arm64": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260211/cpython-3.12.12%2B20260211-aarch64-apple-darwin-install_only_stripped.tar.gz",
+      "sha256": "22625deaf5757e7c266cf1a096c9151a06b598b1e14632a2ec9993d58ec5fe84",
+      "download_bytes": 17667661
+    },
+    "darwin_amd64": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260211/cpython-3.12.12%2B20260211-x86_64-apple-darwin-install_only_stripped.tar.gz",
+      "sha256": "a84ac7a36d465bc6eb68db84540fdb5da04333900e2c3cb34b5d454f2022048c",
+      "download_bytes": 17563084
+    }
+  },
+  "cognee": {
+    "manifest": "coding-memory-components.json",
+    "section": "service"
+  },
+  "dependencies": {
+    "lock": "python/requirements.lock",
+    "require_hashes": true,
+    "modify_external_environment": false
+  },
+  "embedding": {
+    "status": "pinned",
+    "manifest": "embedding-components.json",
+    "model": "BAAI/bge-small-zh-v1.5",
+    "dimensions": 512,
+    "change_existing_vector_space": false
+  },
+  "native_openssl_arm64": {
+    "version": "3.5.9",
+    "artifact": {
+      "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:82b33ce156b289eaf95657b9ec16e8f49cb49c882cdeaeaf57e3e7d67fa85e25",
+      "sha256": "82b33ce156b289eaf95657b9ec16e8f49cb49c882cdeaeaf57e3e7d67fa85e25",
+      "download_bytes": 10829301
+    },
+    "archive_prefix": "openssl@3/3.5.9"
+  }
+}

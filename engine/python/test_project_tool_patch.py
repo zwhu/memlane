@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 from project_installation import prepare
-from project_tool_patch import forget_response, remember_response
+from project_tool_patch import common_recall_response, forget_response, remember_response
 from project_control import private_write
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,7 +43,7 @@ class ToolPatchTests(unittest.TestCase):
             scripts = Path(installation['plugin_dir'])/'scripts'
             project, shared = '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'
             spy = root/'spy'; spy.mkdir()
-            decision = {'ready': True, 'dataset_id': project, 'policy': {'permissions': permissions},
+            decision = {'revision': 1, 'ready': True, 'dataset_id': project, 'policy': {'permissions': permissions},
                         'common': {'ready': True, 'readable': True, 'dataset_id': shared}}
             (spy/'sitecustomize.py').write_text(
                 'import _memlane_policy as p\n'
@@ -77,10 +77,33 @@ result=tool.do_remember("http://127.0.0.1:18999", "unused", "synthetic content",
 assert result["ok"] and calls==["http://127.0.0.1:18999/api/v1/remember"]
 print("permitted official multipart request verified")
 ''']
+            if operation == 'common_recall':
+                command = [sys.executable, '-c', '''
+import _plugin_common as common, _memlane_policy as policy
+common_id = "22222222-2222-4222-8222-222222222222"
+for rows in ([], [{"id": "raw", "datasetId": common_id, "externalMetadata": {}}]):
+    calls = []
+    def request(path, payload=None, **kw):
+        calls.append(path)
+        if path.startswith("/api/v1/datasets/"):
+            return rows
+        raise AssertionError("empty common catalog reached search")
+    common._json_http_request = request
+    assert policy.merge_block("message retry", ".", lambda *a: "project rules") == "project rules"
+    assert calls == ["/api/v1/datasets/" + common_id + "/data?limit=30&offset=0"], calls
+print("empty common catalog never searched; project recall retained")
+''']
             result = subprocess.run(command, env=environment, cwd=home, text=True, capture_output=True, timeout=10)
             self.assertNotIn('synthetic-child-never-output', result.stdout+result.stderr)
             self.assertEqual((self.source/'.memlane-project-access.json').read_bytes(), self.manifest)
             return result, marker.exists()
+
+    def test_empty_common_candidates_do_not_submit_search_in_prepared_hosts(self):
+        for kind in ('codex', 'pi', 'traex'):
+            with self.subTest(kind=kind):
+                result, contacted = self.scenario(kind, 'common_recall', ['read'])
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(contacted)
 
     def test_known_delete_and_read_denials_are_structured_before_transport_for_both_hosts(self):
         for kind in ('codex','claude_code'):
@@ -140,3 +163,6 @@ print("permitted official multipart request verified")
         with self.assertRaises(ValueError):forget_response('not fixed input')
         with self.assertRaises(ValueError):forget_response(forget_response(source))
         with self.assertRaises(ValueError):remember_response('not fixed input')
+        policy = (self.source/'scripts/_memlane_policy.py').read_text()
+        with self.assertRaises(ValueError):common_recall_response('not fixed input')
+        with self.assertRaises(ValueError):common_recall_response(common_recall_response(policy))

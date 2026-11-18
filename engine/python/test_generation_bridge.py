@@ -28,6 +28,47 @@ print(json.dumps({'status':'passed','plain_passed':True,'schema_passed':True,'qu
 
 
 class BridgeValidationTests(unittest.IsolatedAsyncioTestCase):
+
+    async def test_changed_pi_program_or_provider_settings_require_new_validation(self):
+        from types import SimpleNamespace
+        from agent_bridge_runtime import bridge_runtime_fingerprint, require_bridge_validation
+        home = Path(self.runtime['auth_home'])
+        runtime = {'agent_hosts': {'pi': {'executable':str(self.executable),'profile':str(home)}}}
+        profile = {'mode':'agent_bridge','bridge_kind':'pi','bridge_provider':'deepseek','model':'fixture'}
+        row = {'profile':profile,'digest':'fixed-candidate'}
+        evidence = {'status':'passed','digest':row['digest'],'registered_revision':1,
+                    'bridge_runtime_fingerprint':bridge_runtime_fingerprint(runtime, profile)}
+        store = SimpleNamespace(state={'validations':{'original':evidence}})
+        require_bridge_validation(store, runtime, row)
+        (home/'models.json').write_text('{"providers":{}}')
+        with self.assertRaisesRegex(PolicyError, 'generation_bridge_changed_revalidate'):
+            require_bridge_validation(store, runtime, row)
+        (home/'models.json').unlink()
+        self.executable.write_text(self.executable.read_text()+'\n# changed')
+        with self.assertRaisesRegex(PolicyError, 'generation_bridge_changed_revalidate'):
+            require_bridge_validation(store, runtime, row)
+
+    async def test_host_selection_and_model_discovery_do_not_read_authentication(self):
+        from generation_bridge import bridge_choices, check_bridge_runtime
+        for kind, configuration in [('pi', '{"defaultProvider":"deepseek","defaultModel":"fixture-model"}'),
+                                    ('traex', 'model = "fixture-model"')]:
+            home = self.root / kind
+            home.mkdir(mode=0o700)
+            path = home / ('settings.json' if kind == 'pi' else 'traecli.toml')
+            path.write_text(configuration)
+            auth = home / ('auth.json' if kind == 'pi' else 'cli/auth.json')
+            auth.parent.mkdir(mode=0o700, exist_ok=True)
+            auth.write_text('deliberately not JSON: authentication belongs to Agent')
+            auth.chmod(0o600)
+            runtime = {'agent_hosts': {kind: {'executable':str(self.executable),'profile':str(home)}}}
+            profile = {'mode':'agent_bridge','bridge_kind':kind,'model':'fixture-model'}
+            if kind == 'pi':
+                profile['bridge_provider'] = 'deepseek'
+            self.assertEqual(bridge_choices(runtime)[kind], profile)
+            self.assertEqual(check_bridge_runtime(runtime, profile)['home'], home)
+            runtime['agent_hosts'][kind]['executable'] = str(self.root / 'missing-explicit-program')
+            with self.assertRaises(PolicyError):
+                check_bridge_runtime(runtime, profile)
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()

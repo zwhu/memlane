@@ -220,9 +220,12 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
         if connections is None:
             raise PolicyError('connection_hosts_not_configured', 503)
         if request.method == 'GET' and 'operation_id' in request.match_info:
+            receipt = registry.state.get('connection_operations', {}).get(request.match_info['operation_id'], {})
+            if receipt.get('action') == 'allow_capture' and receipt.get('status') != 'complete':
+                await connections.checked_view()
             return web.json_response(connections.operation(request.match_info['operation_id']))
         if request.method == 'GET':
-            return web.json_response(connections.view())
+            return web.json_response(await connections.checked_view())
         preview = request.path == '/v1/connections/preview'
         payload = fields(await body(request), ('expected_revision', 'operation_id', 'instance_id') if preview
                          else ('expected_revision', 'operation_id'), ('proposed_sha256',))
@@ -255,13 +258,21 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                 if generation_validation is None:
                     raise PolicyError('generation_validation_unavailable', 503)
                 return web.json_response(generation_validation.get(request.match_info['operation_id']))
-            return web.json_response(generation.view())
+            value = generation.view()
+            if generation_validation is not None:
+                from agent_bridge_runtime import bridge_choices
+                value['agent_bridges'] = bridge_choices(generation_validation.runtime)
+            return web.json_response(value)
         payload = await body(request)
         if request.method == 'DELETE':
             fields(payload, ('expected_revision', 'operation_id'))
             if generation_validation is None:
                 raise PolicyError('generation_validation_unavailable', 503)
             result = await generation_validation.cancel(request.match_info['operation_id'], payload['expected_revision'], payload['operation_id'])
+        elif 'id' in request.match_info and request.path.endswith('/delete'):
+            fields(payload, ('expected_revision', 'operation_id', 'profile_revision'))
+            result = generation.remove(request.match_info['id'], payload['profile_revision'],
+                                       payload['expected_revision'], payload['operation_id'])
         elif 'id' in request.match_info:
             fields(payload, ('expected_revision', 'operation_id', 'profile'), ('api_key',))
             result = generation.put(request.match_info['id'], payload['profile'], payload['expected_revision'],
@@ -278,6 +289,7 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
 
     app.add_routes([web.get('/v1/generation', generation_config),
                     web.put('/v1/generation/profiles/{id}', generation_config),
+                    web.post('/v1/generation/profiles/{id}/delete', generation_config),
                     web.post('/v1/generation/validations', generation_config),
                     web.get('/v1/generation/validations/{operation_id}', generation_config),
                     web.delete('/v1/generation/validations/{operation_id}', generation_config),
@@ -307,7 +319,11 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                     web.post('/v1/connections/environment', select_environment),
                     web.get('/v1/connections/operations/{operation_id}', generic_connections),
                     web.post('/v1/connections/preview', generic_connections),
-                    web.post('/v1/connections/{id}/{action:prepare|activate|review}', generic_connections)])
+                    web.post('/v1/connections/{id}/{action:prepare|activate|review|allow_capture|defer_capture}', generic_connections)])
+    if connections is not None:
+        async def capture_cleanup(_):
+            await connections.capture.close()
+        app.on_cleanup.append(capture_cleanup)
     if registry is not None and connections is not None:
         from user_profiles import attach_user_profiles
         attach_user_profiles(app, registry, connections)
@@ -318,6 +334,8 @@ async def configured_app(config):
     if config.get('project_control'):
         control = config['project_control']
         config = {**config, **control, 'project_control_url': control['url']}
+    from first_install_mode import first_install_setup
+    first_setup = first_install_setup(config)
     if config.get('generation_setup_only'):
         from generation_config import GenerationStore
         from generation_validation import GenerationValidation
@@ -366,12 +384,16 @@ async def configured_app(config):
                          {key: read_secret(value) for key, value in config.get('agent_control_token_files', {}).items()},
                          plugin_source=config.get('plugin_dir'), control_url=config.get('project_control_url'), codex_config=config,
                          generation=generation, generation_validation=validation)
-        from project_backlog import attach_backlog
-        backlog = attach_backlog(app, registry, config)
-        from incremental_processing import attach_incremental_processing
-        attach_incremental_processing(app, backlog)
-        from tool_graph_control import attach_tool_graph
-        attach_tool_graph(app, registry, config)
+        if not first_setup:
+            from project_backlog import attach_backlog
+            backlog = attach_backlog(app, registry, config)
+            from incremental_processing import attach_incremental_processing
+            incremental = attach_incremental_processing(app, backlog)
+            if generation is not None:
+                from generation_handoff import attach_generation_handoff
+                attach_generation_handoff(app, generation, registry, config, incremental, backlog)
+            from tool_graph_control import attach_tool_graph
+            attach_tool_graph(app, registry, config)
     except BaseException:
         if registry is not None:
             registry.close()

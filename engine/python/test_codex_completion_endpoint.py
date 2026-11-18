@@ -60,6 +60,26 @@ class SchemaTests(unittest.TestCase):
             with self.subTest(schema=item['file']):
                 endpoint.strict_schema(json.loads((fixtures / item['file']).read_text()))
 
+    def test_coding_union_transport_uses_supported_anyof_and_keeps_original_contract(self):
+        path=Path(__file__).parent/'testdata/coding-memory-schemas-ec6f408/CodingAgentContextExtraction.json'
+        source=json.loads(path.read_text())
+        converted=endpoint.strict_schema(source)
+        union=converted['$defs']['CodingCandidateLesson']['properties']['lesson']
+        self.assertNotIn('oneOf',union)
+        self.assertNotIn('discriminator',union)
+        self.assertEqual(len(union['anyOf']),5)
+        self.assertIn('oneOf',source['$defs']['CodingCandidateLesson']['properties']['lesson'])
+        # Original validation remains authoritative even when transport differs.
+        ambiguous={'lessons':[{'turn':1,'lesson':{'content':'ambiguous'}}]}
+        with self.assertRaises(Exception): endpoint.validators.validate(ambiguous,source)
+
+    def test_upstream_invalid_json_schema_is_a_client_error_not_retryable_502(self):
+        raw={'codexErrorInfo':'other', 'message':json.dumps({'type':'error','status':400,
+             'error':{'code':'invalid_json_schema','message':'PRIVATE MODEL TEXT'}})}
+        error=endpoint.remote_error(raw)
+        self.assertEqual((error.code,error.status),('codex_schema_unsupported',400))
+        self.assertNotIn('PRIVATE',str(error))
+
     def test_open_dict_and_remote_ref_rejected(self):
         for schema in ({'type':'object','additionalProperties':{'type':'string'}}, {'$ref':'https://example.invalid/schema'}):
             with self.assertRaises(endpoint.CompletionError): endpoint.strict_schema(schema)
@@ -113,6 +133,18 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_success_process_exit_and_auth_unchanged(self):
         self.assertEqual(json.loads(await self.run_fake('success')), {'answer':'ok'})
         self.assertEqual((self.auth/'auth.json').read_text(), '{"synthetic":true}')
+
+    async def test_traex_keeps_subscription_auth_in_its_own_cli_layout(self):
+        self.fake('success')
+        source = self.executable.read_text().replace("'openai'", "'trae'").replace("'CODEX_HOME'", "'TRAE_HOME'").replace("'config.toml'", "'traecli.toml'")
+        self.executable.write_text(source)
+        directory = self.auth / 'cli'
+        directory.mkdir()
+        (directory / 'auth.json').write_text('{"synthetic_traex":true}')
+        self.args.bridge_kind = 'traex'
+        result = await endpoint.execute(self.args, 'system', 'prompt', SCHEMA, endpoint.strict_schema(SCHEMA))
+        self.assertEqual(json.loads(result), {'answer':'ok'})
+        self.assertEqual((directory / 'auth.json').read_text(), '{"synthetic_traex":true}')
 
     async def test_validation_workspace_survives_unconfirmed_group_cleanup(self):
         import shutil

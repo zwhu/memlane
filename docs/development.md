@@ -1,5 +1,28 @@
 # 本地开发
 
+## 静态检查
+
+```sh
+python3 scripts/task.py -- python3 scripts/lint.py
+python3 scripts/task.py -- python3 -m unittest discover -s scripts -p test_lint.py
+```
+
+此入口不加载引擎、不调用模型。ML001限制原生模型配置只能通过共享构造入口；ML002禁止在模型配置和请求中注入字面量采样／输出值；ML003禁止通过`get`／`setdefault`补模型参数回退值。覆盖`engine/python`全部生产模块，测试夹具不参与。输出文件、行号和规则编号，违规以非零退出码阻断检查。用户明确配置的`0`通过原配置读取并保留。
+
+这项静态检查针对已知危险写法；参数真实传递和旧环境隔离仍须通过模型参数及协议回归测试。
+
+2026-11-17：新增显式引擎组件准备入口（dev）：
+
+```sh
+python3 scripts/dev.py prepare --component-root /绝对路径/私有引擎组件目录
+```
+
+此入口使用已安装的 `uv`（可通过 `--uv /绝对路径/uv` 指定）下载受管 Python 3.12.12、创建独立 venv、按现有哈希锁安装依赖，并校验／解包固定官方源码。不会使用或修改宿主 Python 环境；进度与失败步骤保存在组件目录的 `status.json`，正常完成状态为 `components_ready`。再次执行重新校验各阶段，保留已完成组件；不接管已有未知目录，不覆盖改变了固定输入的旧环境。
+
+**它目前只准备组件，不创建数据库、owner、API key 或 runtime 配置，也不安装 Agent 插件／启动服务。** 不能将该命令成功视为首次安装完成。现有日常库不经此入口迁移或替换，正常 `start` 的缺库保护保留。App 托管安装器、embedding 准备、首次存储初始化与界面接入仍待完成。实施与证据见[本地准备续作](engineering/local-prepare-20261117.md)。
+
+2026-11-18处理桥更新：当前开发链支持Codex、pi、TraeX三种`agent_bridge`，覆盖下文旧Codex-only描述。`bridge_kind`分别为`codex`/`pi`/`traex`；pi另需`bridge_provider`为已有`deepseek`或`ollama`，模型仍明确保存在不可变profile中。优先使用`agent_hosts.<kind>.executable/profile`，保留原Codex兼容字段；未明确路径时检查PATH及标准用户bin，明确但无效的路径不回退。复用Agent已有登录，pi不复制密钥到Provider；隔离处理会话不加载日常skills/hooks、历史或项目工具。保存、完整Schema验证、明确启用分开；新pi/TraeX验证绑定可执行身份、pi模型配置及受信扩展摘要，依赖漂移须重新验证。本地与净室证据、版本及限制见[处理配置接续](engineering/processing-handoff-20261118.md)，不改变开发阶段不release、日常服务所有权和同库规则。
+
 2026-11-15：日常启动拒绝本项目已知验收Agent目录；stop/status保留恢复入口。环境优先级为管理侧明确选择、运行配置、宿主环境变量、默认目录；冲突需明确选择。不要将验收profile复制成日常接入，也不要为修复连接补采旧会话。真实目录修复及安全重启边界见[交付记录](engineering/agent-environment-delivery-20261115.md)。
 
 2026-11-14用户最新要求：当前只使用一套日常库，不另建或切换隔离测试库。统一配置为`.local/daily/runtime.json`，Native、服务和已接入Agent使用同一Cognee官方存储，项目仍各自分组。原本轮两库已合并，旧隔离根只保留在回滚备份；规则与真实核验见[单一日常库记录](engineering/single-daily-store-20261114.md)。下文旧隔离验收配置仅保留历史事实，不作为后续运行入口。

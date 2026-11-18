@@ -18,6 +18,8 @@ type ConnectionCapability struct {
 	Condition string `json:"condition"`
 }
 type AgentConnection struct {
+	HostVersion         string                          `json:"host_version,omitempty"`
+	Capture             *AgentCaptureState              `json:"capture,omitempty"`
 	ID                  string                          `json:"instance_id"`
 	Kind                string                          `json:"kind"`
 	Status              string                          `json:"status"`
@@ -34,6 +36,16 @@ type AgentConnection struct {
 	LastReceiptAt       float64                         `json:"last_receipt_at"`
 	PluginVersion       string                          `json:"plugin_version"`
 	EnvironmentVerified bool                            `json:"environment_verified"`
+}
+
+type AgentCaptureState struct {
+	ProjectID   string  `json:"project_id"`
+	State       string  `json:"state"`
+	Permission  string  `json:"permission"`
+	ReviewSHA   string  `json:"review_sha"`
+	Reason      string  `json:"reason"`
+	LastSavedAt float64 `json:"last_saved_at"`
+	CheckedAt   float64 `json:"checked_at"`
 }
 type AgentEnvironment struct {
 	Profile      string `json:"profile"`
@@ -53,6 +65,7 @@ type GenerationProfile struct {
 	Mode                 string   `json:"mode"`
 	Provider             string   `json:"provider,omitempty"`
 	BridgeKind           string   `json:"bridge_kind,omitempty"`
+	BridgeProvider       string   `json:"bridge_provider,omitempty"`
 	Model                string   `json:"model"`
 	Endpoint             string   `json:"endpoint,omitempty"`
 	Temperature          *float64 `json:"temperature,omitempty"`
@@ -66,24 +79,27 @@ type GenerationRow struct {
 	Profile  GenerationProfile `json:"profile"`
 }
 type GenerationValidation struct {
-	Status             string `json:"status"`
-	Digest             string `json:"digest"`
-	ErrorCode          string `json:"error_code"`
-	Plain              bool   `json:"plain_passed"`
-	Schema             bool   `json:"schema_passed"`
-	Quality            bool   `json:"quality_passed"`
-	RegisteredRevision int64  `json:"registered_revision"`
-	StructuredMode     string `json:"structured_mode"`
-	ModeEvidence       string `json:"structured_mode_evidence"`
+	Reference          *GenerationRef `json:"reference,omitempty"`
+	Status             string         `json:"status"`
+	Digest             string         `json:"digest"`
+	ErrorCode          string         `json:"error_code"`
+	Plain              bool           `json:"plain_passed"`
+	Schema             bool           `json:"schema_passed"`
+	Quality            bool           `json:"quality_passed"`
+	RegisteredRevision int64          `json:"registered_revision"`
+	StructuredMode     string         `json:"structured_mode"`
+	ModeEvidence       string         `json:"structured_mode_evidence"`
 }
 type GenerationDirectory struct {
-	Revision     int64                           `json:"revision"`
-	Active       *GenerationRef                  `json:"active"`
-	Next         *GenerationRef                  `json:"next"`
-	Profiles     map[string][]GenerationRow      `json:"profiles"`
-	Validations  map[string]GenerationValidation `json:"validations"`
-	NextError    string                          `json:"next_error"`
-	StartupError string                          `json:"startup_error"`
+	AgentBridges     map[string]GenerationProfile    `json:"agent_bridges"`
+	HandoffAvailable bool                            `json:"handoff_available"`
+	Revision         int64                           `json:"revision"`
+	Active           *GenerationRef                  `json:"active"`
+	Next             *GenerationRef                  `json:"next"`
+	Profiles         map[string][]GenerationRow      `json:"profiles"`
+	Validations      map[string]GenerationValidation `json:"validations"`
+	NextError        string                          `json:"next_error"`
+	StartupError     string                          `json:"startup_error"`
 }
 
 func (g GenerationDirectory) row(ref *GenerationRef) (GenerationRow, bool) {
@@ -146,30 +162,44 @@ func (g GenerationDirectory) latestValidation(digest string) (string, Generation
 }
 
 type integrationState struct {
-	PendingOperations                                                                           []generationUIOperation
-	Connections                                                                                 ConnectionsDirectory
-	Generation                                                                                  GenerationDirectory
-	ShowUnavailable                                                                             bool
-	EnvironmentOpen                                                                             map[string]bool
-	ReceiptCheckLoading                                                                         bool
-	NextReceiptCheck                                                                            time.Time
-	Loaded, Loading, Busy                                                                       bool
-	Request                                                                                     uint64
-	Error, Message                                                                              string
-	Selected                                                                                    map[string]bool
-	ItemMessages                                                                                map[string]string
-	BatchStop                                                                                   *atomic.Bool
-	Editor                                                                                      bool
-	ProfileID, ProviderLabel, DraftMode, BridgeKind, Model, Endpoint, APIKey, CredentialVersion string
-	Temperature, MaxOutputTokens                                                                string
-	CredentialConfigured                                                                        bool
-	Saved                                                                                       *GenerationRef
-	SavedSignature                                                                              string
-	SaveOperation, ValidationOperation                                                          string
-	NextOperation                                                                               string
-	Validation                                                                                  GenerationValidation
-	ValidationCancel                                                                            context.CancelFunc
-	KeyEpoch                                                                                    uint64
+	HostVersions                                                                                                map[string]string
+	HandoffOpen, HandoffLoading                                                                                 bool
+	HandoffRef                                                                                                  *GenerationRef
+	HandoffOperation                                                                                            string
+	HandoffChoice                                                                                               GenerationRef
+	HandoffReady                                                                                                bool
+	HandoffRequest                                                                                              uint64
+	Handoff                                                                                                     GenerationHandoffDirectory
+	PendingOperations                                                                                           []generationUIOperation
+	Connections                                                                                                 ConnectionsDirectory
+	Generation                                                                                                  GenerationDirectory
+	ShowUnavailable                                                                                             bool
+	ConnectionBulk                                                                                              bool
+	EnvironmentOpen                                                                                             map[string]bool
+	CaptureHelp                                                                                                 map[string]bool
+	CaptureReview                                                                                               map[string]string
+	ReceiptCheckLoading                                                                                         bool
+	NextReceiptCheck                                                                                            time.Time
+	Loaded, Loading, Busy                                                                                       bool
+	Request                                                                                                     uint64
+	Error, Message                                                                                              string
+	Selected                                                                                                    map[string]bool
+	ItemMessages                                                                                                map[string]string
+	BatchStop                                                                                                   *atomic.Bool
+	Editor                                                                                                      bool
+	DeleteProfile                                                                                               *GenerationRef
+	DeleteOpen                                                                                                  bool
+	DeleteError                                                                                                 string
+	ProfileID, ProviderLabel, DraftMode, BridgeKind, BridgeProvider, Model, Endpoint, APIKey, CredentialVersion string
+	Temperature, MaxOutputTokens                                                                                string
+	CredentialConfigured                                                                                        bool
+	Saved                                                                                                       *GenerationRef
+	SavedSignature                                                                                              string
+	SaveOperation, ValidationOperation                                                                          string
+	NextOperation                                                                                               string
+	Validation                                                                                                  GenerationValidation
+	ValidationCancel                                                                                            context.CancelFunc
+	KeyEpoch                                                                                                    uint64
 }
 
 func integrationOperation() string { return "ui-" + rand.Text() }
@@ -191,15 +221,40 @@ func connectionName(kind string) string {
 	return kind
 }
 func connectionStatus(row AgentConnection) string {
+	if captureConnection(row) {
+		if row.Capture == nil {
+			return "等待保存验证"
+		}
+		switch row.Capture.State {
+		case "needs_permission":
+			return "需要允许自动保存"
+		case "deferred":
+			return "自动保存未开启"
+		case "waiting_session":
+			return "等待新会话验证"
+		case "waiting_message":
+			return "等待消息保存"
+		case "healthy":
+			return "自动保存正常"
+		case "check_failed":
+			return "保存状态读取失败"
+		case "project_disabled":
+			return "项目未开启自动保存"
+		case "project_pending":
+			return "项目设置待确认"
+		default:
+			return "正在检查自动保存…"
+		}
+	}
 	switch row.Status {
 	case "verification_environment":
-		return "接入目标需要更正"
+		return "需要更换配置目录"
 	case "environment_ambiguous":
-		return "请选择使用的环境"
+		return "请选择配置目录"
 	case "environment_missing", "environment_unavailable":
 		return "配置目录不可用"
 	case "environment_receipt_unconfirmed":
-		return "会话已接入，环境待核对"
+		return "配置目录待核对"
 	case "component_unavailable":
 		if !row.Detected {
 			return "未安装"
@@ -217,7 +272,7 @@ func connectionStatus(row AgentConnection) string {
 			return "已连接"
 		}
 		if row.ReceiptOverdue {
-			return "尚未收到接入回执"
+			return "尚未确认连接"
 		}
 		return "等待新会话"
 	case "requires_review", "activation_unknown", "preparation_unknown", "staging_unknown":
@@ -231,7 +286,16 @@ func connectionStatus(row AgentConnection) string {
 	return "未连接"
 }
 
+func captureConnection(row AgentConnection) bool {
+	return (row.Kind == "codex" || row.Kind == "pi" || row.Kind == "traex") &&
+		(row.Status == "configured_pending_new_session" || row.Status == "environment_receipt_unconfirmed")
+}
+
 func connectionActionAllowed(row AgentConnection, action string) bool {
+	if action == "allow_capture" || action == "defer_capture" {
+		return row.Kind == "codex" && captureConnection(row) && row.Capture != nil && row.Capture.ReviewSHA != "" &&
+			(row.Capture.State == "needs_permission" || row.Capture.State == "deferred")
+	}
 	if action == "review" {
 		return row.ID != ""
 	}
@@ -258,6 +322,7 @@ func (a *App) RefreshIntegrations() {
 	s.Loading = true
 	s.Request++
 	request := s.Request
+	config := a.Config
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
@@ -270,6 +335,9 @@ func (a *App) RefreshIntegrations() {
 		if err == nil {
 			err = client.request(ctx, "GET", "/v1/generation", nil, &generation)
 		}
+		if err == nil {
+			loadAgentVersions(ctx, config, connections.Connections)
+		}
 		a.Update(func() {
 			if request != s.Request {
 				return
@@ -277,11 +345,18 @@ func (a *App) RefreshIntegrations() {
 			s.Loading = false
 			if err != nil {
 				s.Error = err.Error()
+				a.captureReadFailed()
 				return
 			}
 			s.Error = ""
 			s.Loaded = true
 			s.Connections = connections
+			if s.HostVersions == nil {
+				s.HostVersions = map[string]string{}
+			}
+			for _, row := range connections.Connections {
+				s.HostVersions[row.Kind] = row.HostVersion
+			}
 			s.Generation = generation
 			if s.Selected == nil {
 				s.Selected = map[string]bool{}
@@ -293,6 +368,10 @@ func (a *App) RefreshIntegrations() {
 	}()
 }
 func (a *App) connectAgents(action string, identifiers []string) {
+	a.connectAgentsReviewed(action, identifiers, "")
+}
+
+func (a *App) connectAgentsReviewed(action string, identifiers []string, reviewedSHA string) {
 	client, ok := a.accessClient()
 	s := &a.integrations
 	if !ok || s.Busy || len(identifiers) == 0 || a.Update == nil {
@@ -343,8 +422,16 @@ func (a *App) connectAgents(action string, identifiers []string) {
 				err = fmt.Errorf("Agent 接入配置已变化，请重新读取")
 			}
 			if err == nil && !connectionActionAllowed(*target, action) {
-				cancel()
-				continue
+				if action == "allow_capture" || action == "defer_capture" {
+					err = fmt.Errorf("自动保存状态已变化，请重新检测")
+				} else {
+					cancel()
+					continue
+				}
+			}
+			if err == nil && (action == "allow_capture" || action == "defer_capture") &&
+				(target.Capture == nil || target.Capture.ReviewSHA != reviewedSHA) {
+				err = fmt.Errorf("接入配置已变化，请重新检测后再操作")
 			}
 			op := ""
 			if err == nil {
@@ -356,6 +443,9 @@ func (a *App) connectAgents(action string, identifiers []string) {
 						continue
 					}
 					payload["proposed_sha256"] = target.Preview.ProposedSHA
+				}
+				if action == "allow_capture" || action == "defer_capture" {
+					payload["proposed_sha256"] = reviewedSHA
 				}
 				if action != "review" {
 					recorded := make(chan error, 1)
@@ -396,6 +486,9 @@ func (a *App) connectAgents(action string, identifiers []string) {
 					if action == "activate" {
 						delete(s.Selected, id)
 					}
+					if action == "allow_capture" || action == "defer_capture" {
+						delete(s.CaptureReview, id)
+					}
 				}
 			})
 		}
@@ -405,7 +498,13 @@ func (a *App) connectAgents(action string, identifiers []string) {
 func (s *integrationState) draftProfile() GenerationProfile {
 	profile := GenerationProfile{Mode: s.DraftMode, Model: strings.TrimSpace(s.Model)}
 	if s.DraftMode == "agent_bridge" {
-		profile.BridgeKind = "codex"
+		profile.BridgeKind = s.BridgeKind
+		if profile.BridgeKind == "" {
+			profile.BridgeKind = "codex"
+		}
+		if profile.BridgeKind == "pi" {
+			profile.BridgeProvider = s.BridgeProvider
+		}
 		return profile
 	}
 	providers := map[string]string{"OpenAI": "openai", "Anthropic": "anthropic", "Gemini": "gemini", "OpenAI 兼容": "custom", "Ollama": "ollama"}
@@ -422,6 +521,8 @@ func (s *integrationState) signature() string {
 	base := fmt.Sprintf("%s|%s|%s|%s|%s", p.Mode, p.Provider, p.Model, p.Endpoint, p.CredentialVersion)
 	if p.Mode == "provider" {
 		base += "|" + strings.TrimSpace(s.Temperature) + "|" + strings.TrimSpace(s.MaxOutputTokens)
+	} else {
+		base += "|" + p.BridgeKind + "|" + p.BridgeProvider
 	}
 	return base
 }
@@ -437,6 +538,7 @@ func (s *integrationState) editProfile(id string, row GenerationRow) {
 	s.Editor = true
 	s.ProfileID = id
 	s.DraftMode = row.Profile.Mode
+	s.BridgeKind, s.BridgeProvider = row.Profile.BridgeKind, row.Profile.BridgeProvider
 	s.Model = row.Profile.Model
 	s.Endpoint = row.Profile.Endpoint
 	s.Temperature, s.MaxOutputTokens = "", ""

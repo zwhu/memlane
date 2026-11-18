@@ -48,6 +48,14 @@ class OfficialProcessingTests(unittest.TestCase):
         self.policy.require.assert_called_once_with('process', 'dataset', automatic=True)
         self.common.run_session_improve_detailed.assert_called_once_with('dataset', 'session', trigger='auto')
 
+    def test_confirmed_handoff_uses_official_switch_without_erasing_watermarks(self):
+        self.common.improve_throttle_reason.return_value = 'no_new_entries'
+        self.assertEqual(process(self.common, self.policy, {**self.payload, 'handoff_operation':'original-switch'}),
+                         {'status':'submitted'})
+        self.policy.require.assert_called_once_with('process', 'dataset', automatic=True)
+        self.common.improve_throttle_reason.assert_not_called()
+        self.common.run_session_improve_detailed.assert_called_once_with('dataset', 'session', trigger='switch')
+
     def test_incremental_admission_uses_official_cooldown_configuration(self):
         import os
         from unittest.mock import patch

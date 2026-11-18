@@ -256,6 +256,47 @@ class OwnershipTests(unittest.TestCase):
                 owner.wait(timeout=5)
                 owner.stdout.close()
 
+    def test_stale_descendant_history_uses_one_process_snapshot(self):
+        known = {pid: 'old-start' for pid in range(10000, 12000)}
+        with patch.object(dev, 'process_tree', return_value={}) as scan, \
+             patch.object(dev.os, 'kill') as kill:
+            dev.stop_descendants(known)
+        kill.assert_not_called()
+        self.assertLessEqual(scan.call_count, 2, 'one full process scan per stale PID delays stop')
+
+    def test_descendant_history_prunes_gone_and_reused_pids(self):
+        known = {20: 'gone', 21: 'old-start', 22: 'same-start'}
+        table = {10: (1, 10, 'root'), 21: (1, 21, 'new-start'),
+                 22: (1, 22, 'same-start'), 23: (10, 10, 'new-child')}
+        with patch.object(dev, 'process_tree', return_value=table):
+            dev.track_descendants([10], known)
+        self.assertEqual(known, {22: 'same-start', 23: 'new-child'})
+
+    def test_descendant_cleanup_stops_real_owned_child_with_stale_history(self):
+        import subprocess
+        import sys
+        import os
+        import signal
+        process = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(60)'], start_new_session=True)
+        try:
+            known = {pid: 'historical-exited' for pid in range(100000, 102000)}
+            known[process.pid] = dev.process_tree()[process.pid][2]
+            # The service parent normally reaps its child; this fixture is the
+            # direct parent, so reap concurrently rather than leaving a zombie.
+            import threading
+            reaper = threading.Thread(target=process.wait, daemon=True)
+            reaper.start()
+            with patch.object(dev, 'process_tree', wraps=dev.process_tree) as scan:
+                dev.stop_descendants(known)
+            reaper.join(timeout=5)
+            self.assertFalse(reaper.is_alive())
+            self.assertFalse(dev.group_exists(process.pid))
+            self.assertLess(scan.call_count, 20)
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)
+
     def test_stop_reaps_child_group(self):
         import subprocess
         import sys

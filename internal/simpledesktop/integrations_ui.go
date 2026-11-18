@@ -35,15 +35,26 @@ func (s *integrationState) connectionSelectionAction() (string, []string) {
 	return "activate", activate
 }
 
+func (s *integrationState) hasSelectableConnections() bool {
+	for _, row := range s.Connections.Connections {
+		if !connectionUnavailable(row) && s.pendingConnection(row.ID) == nil &&
+			(connectionActionAllowed(row, "prepare") || connectionActionAllowed(row, "activate")) {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) agentConnectionSettings(c *ui.Context) {
 	s := &a.integrations
 	a.refreshAgentReceiptsIfDue(time.Now())
-	ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
-		ui.Column(c).Grow(1).Gap(4).Children(func() {
-			homeText(c, "Agent 连接", homeHeading).FontSize(16)
-			homeText(c, "连接后，自动保存会话并使用项目记忆。", homeMeta)
-		})
-		textButton(c, "重新检测", nil).Disabled(s.Busy || s.Loading).OnClick(a.RefreshIntegrations)
+	settingsSectionHeader(c, "Agent 连接", nil, func() {
+		label := "批量连接"
+		if s.ConnectionBulk {
+			label = "完成选择"
+		}
+		textButton(c, label, func() { s.ConnectionBulk = !s.ConnectionBulk; s.Selected = map[string]bool{} }).Disabled(s.Busy)
+		refreshAction(c, "重新检测", a.RefreshIntegrations).Disabled(s.Busy || s.Loading)
 	})
 	if s.Loading {
 		homeText(c, "正在检测…", homeMeta)
@@ -67,6 +78,37 @@ func (a *App) agentConnectionSettings(c *ui.Context) {
 			available = append(available, row)
 		}
 	}
+	if s.ConnectionBulk && (s.hasSelectableConnections() || s.Busy) {
+		action, ids := s.connectionSelectionAction()
+		ui.Row(c.Key("agent-bulk-toolbar")).FillWidth().AlignItems(ui.Center).Gap(12).Padding(8, 12).Background(ui.Hex("#eef3f8")).Radius(7).Children(func() {
+			selectedCount := 0
+			for _, r := range s.Connections.Connections {
+				if s.Selected[r.ID] && s.pendingConnection(r.ID) == nil && (connectionActionAllowed(r, "prepare") || connectionActionAllowed(r, "activate")) {
+					selectedCount++
+				}
+			}
+			homeText(c, fmt.Sprintf("已选 %d 个", selectedCount), homeMeta)
+			textButton(c, "全选", func() {
+				for _, r := range s.Connections.Connections {
+					if s.pendingConnection(r.ID) == nil && (connectionActionAllowed(r, "prepare") || connectionActionAllowed(r, "activate")) {
+						s.Selected[r.ID] = true
+					}
+				}
+			}).Disabled(s.Busy)
+			ui.Spacer(c)
+			label := fmt.Sprintf("连接所选（%d）", len(ids))
+			if action == "activate" {
+				label = fmt.Sprintf("确认连接（%d）", len(ids))
+			}
+			if s.Busy {
+				label = "正在连接…"
+			}
+			ui.Button(c, label).Padding(5, 12).Disabled(s.Busy || len(ids) == 0).OnClick(func() { a.connectAgents(action, ids) })
+			if s.BatchStop != nil {
+				textButton(c, "停止后续连接", func() { s.BatchStop.Store(true) })
+			}
+		})
+	}
 	a.agentConnectionGrid(c, available)
 	if len(unavailable) > 0 {
 		label := fmt.Sprintf("其他 Agent（%d）", len(unavailable))
@@ -82,6 +124,16 @@ func (a *App) agentConnectionSettings(c *ui.Context) {
 		if !pending.connection() {
 			continue
 		}
+		found := false
+		for _, row := range s.Connections.Connections {
+			if row.ID == pending.Profile {
+				found = true
+				break
+			}
+		}
+		if found {
+			continue
+		}
 		o := pending
 		name := "Agent"
 		for _, row := range s.Connections.Connections {
@@ -91,30 +143,9 @@ func (a *App) agentConnectionSettings(c *ui.Context) {
 			}
 		}
 		ui.Row(c.Key("pending-connection-" + o.Operation)).Gap(12).Children(func() {
+			agentLogo(c, agentBrandIconFor("", name), 14)
 			homeText(c, name+" 的连接结果尚未确认", homeMeta).Grow(1)
 			textButton(c, "检查连接", nil).Label("检查连接：" + name + " " + o.Operation).Disabled(s.Busy).OnClick(func() { a.reviewConnectionOperation(o) })
-		})
-	}
-	action, ids := s.connectionSelectionAction()
-	selectionCount := 0
-	for _, row := range s.Connections.Connections {
-		if s.Selected[row.ID] && s.pendingConnection(row.ID) == nil && (connectionActionAllowed(row, "prepare") || connectionActionAllowed(row, "activate")) {
-			selectionCount++
-		}
-	}
-	if len(ids) > 0 || s.Busy {
-		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-			label := fmt.Sprintf("连接所选（%d）", selectionCount)
-			if action == "activate" {
-				label = fmt.Sprintf("确认连接（%d）", len(ids))
-			}
-			if s.Busy {
-				label = "正在配置连接…"
-			}
-			ui.Button(c, label).Disabled(s.Busy || len(ids) == 0).OnClick(func() { a.connectAgents(action, ids) })
-			if s.BatchStop != nil {
-				textButton(c, "取消剩余连接", nil).OnClick(func() { s.BatchStop.Store(true); s.Message = "当前项完成后停止，已完成的连接会保留" })
-			}
 		})
 	}
 	if s.Message != "" {
@@ -128,115 +159,157 @@ func (a *App) agentConnectionSettings(c *ui.Context) {
 func (a *App) agentConnectionRow(c *ui.Context, row AgentConnection) {
 	s := &a.integrations
 	name := connectionName(row.Kind)
-	ui.Column(c.Key("agent-connection-"+row.ID)).FillWidth().Grow(1).MinHeight(84).Gap(8).Padding(12).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(10).Children(func() {
-		ui.Row(c).AlignItems(ui.Center).Gap(10).Children(func() {
-			ui.Icon(c, agentBrandIcon(row.Kind)).FontSize(24).TextColor(homeInk).Shrink(0)
-			homeText(c, name, homeBody).TextColor(homeInk).FontSize(13).Grow(1)
-			allowed := connectionActionAllowed(row, "prepare") || connectionActionAllowed(row, "activate")
-			if allowed {
-				selected := s.Selected[row.ID]
-				ui.Checkbox(c.Key("select-agent-"+row.ID), &selected, "").Label("选择 " + name).Disabled(s.Busy || s.pendingConnection(row.ID) != nil).OnChange(func() { s.Selected[row.ID] = selected })
+	if s.EnvironmentOpen == nil {
+		s.EnvironmentOpen = map[string]bool{}
+	}
+	pending := s.pendingConnection(row.ID)
+	allowed := pending == nil && (connectionActionAllowed(row, "prepare") || connectionActionAllowed(row, "activate"))
+	ui.Column(c.Key("agent-connection-" + row.ID)).FillWidth().Gap(0).Children(func() {
+		settingsListRow(c, func() {
+			if s.ConnectionBulk && s.hasSelectableConnections() {
+				ui.Box(c).Width(20).Height(20).Shrink(0).Children(func() {
+					if allowed {
+						selected := s.Selected[row.ID]
+						ui.Checkbox(c.Key("select-agent-"+row.ID), &selected, "").Label("选择 " + name).Disabled(s.Busy).OnChange(func() { s.Selected[row.ID] = selected })
+					}
+				})
 			}
-		})
-		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-			status := homeText(c, connectionStatus(row), homeMeta)
-			if row.Status == "configured_pending_new_session" && row.NewSessions > 0 {
-				status.TextColor(ui.Hex("#51806b"))
+			ui.Box(c).Size(30, 30).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+				ui.Image(c, agentOriginalIcon(row.Kind)).Size(23, 23).Fit(ui.Contain).TextColor(ui.Hex("#000000"))
+			})
+			ui.Row(c).Width(190).Shrink(0).Gap(10).AlignItems(ui.Center).Children(func() {
+				homeText(c, name, homeHeading).FontSize(13).FontWeight(500)
+				version := row.HostVersion
+				if version == "" {
+					version = s.HostVersions[row.Kind]
+				}
+				if version == "" {
+					version = "—"
+				}
+				homeText(c, version, homeMeta).Label(name + " 版本：" + version)
+			})
+			status := connectionStatus(row)
+			color := homeMuted
+			if (captureConnection(row) && row.Capture != nil && row.Capture.State == "healthy") ||
+				(!captureConnection(row) && row.Status == "configured_pending_new_session" && row.NewSessions > 0) {
+				color = ui.Hex("#51806b")
 			}
-			if row.Kind == "cursor" {
-				status.Tooltip("会话开始时或调用工具后加载记忆；仅对话的回合可能延迟加载。")
+			if pending != nil {
+				status = "连接结果待确认"
+				if pending.Kind == "connection_allow_capture" || pending.Kind == "connection_defer_capture" {
+					status = "自动保存设置待确认"
+				}
+				if s.Busy {
+					status = "正在连接…"
+					if pending.Kind == "connection_allow_capture" || pending.Kind == "connection_defer_capture" {
+						status = "正在设置自动保存…"
+					}
+				}
 			}
+			homeText(c, status, homeMeta).TextColor(color).Tooltip(captureSavedTip(row))
 			ui.Spacer(c)
-			if row.Profile != "" {
-				if s.EnvironmentOpen == nil {
-					s.EnvironmentOpen = map[string]bool{}
-				}
-				label := "连接环境"
+			if row.Profile != "" || row.EnvironmentIssue != "" || len(row.Environments) > 0 {
+				label := "配置目录"
 				if s.EnvironmentOpen[row.ID] {
-					label = "收起环境"
+					label = "收起目录"
 				}
-				projectLink(c, label, func() { s.EnvironmentOpen[row.ID] = !s.EnvironmentOpen[row.ID] }).Label("查看或更换连接环境")
+				textButton(c, label, func() { s.EnvironmentOpen[row.ID] = !s.EnvironmentOpen[row.ID] }).Label("查看配置目录：" + name).Disabled(s.Busy)
 			}
-			if row.Status == "activation_unknown" || row.Status == "preparation_unknown" || row.Status == "requires_review" || row.Status == "staging_unknown" || row.Status == "agent_creation_unconfirmed" {
-				textButton(c, "检查连接", nil).Label("检查连接：" + name).Disabled(s.Busy).OnClick(func() { a.connectAgents("review", []string{row.ID}) })
-			}
+			ui.Row(c).Width(90).Shrink(0).Justify(ui.End).AlignItems(ui.Center).Children(func() {
+				switch {
+				case pending != nil:
+					textButton(c, "核对连接", func() { a.reviewConnectionOperation(*pending) }).Label("核对连接：" + name).Disabled(s.Busy)
+				case captureConnection(row):
+					a.captureConnectionAction(c, row)
+				case row.Status == "activation_unknown" || row.Status == "preparation_unknown" || row.Status == "requires_review" || row.Status == "staging_unknown" || row.Status == "agent_creation_unconfirmed":
+					textButton(c, "核对连接", func() { a.connectAgents("review", []string{row.ID}) }).Label("核对连接：" + name).Disabled(s.Busy)
+				case !s.ConnectionBulk && allowed:
+					action, label := "prepare", "连接"
+					if connectionActionAllowed(row, "activate") {
+						action, label = "activate", "确认连接"
+					}
+					ui.Button(c, label).Label(label+" "+name).Padding(5, 12).Disabled(s.Busy || s.Loading).OnClick(func() { a.connectAgents(action, []string{row.ID}) })
+				}
+			})
 		})
 		if row.Status == "prepared" && row.Preview != nil {
-			ui.Column(c).FillWidth().Padding(12, 16).Gap(6).Radius(6).Background(ui.Hex("#f5f8fb")).Children(func() {
+			ui.Column(c).FillWidth().Padding(0, 0, 12, 46).Gap(5).Children(func() {
 				homeText(c, "将为 "+name+" 添加 Memlane 连接，确认后生效。", homeMeta)
 				if len(row.Preview.DisabledPlugins) > 0 {
-					homeText(c, fmt.Sprintf("将替换 %d 个旧 Cognee 连接，其他插件和登录设置会保留。", len(row.Preview.DisabledPlugins)), homeMeta)
+					homeText(c, fmt.Sprintf("将替换 %d 个旧 Cognee 连接。", len(row.Preview.DisabledPlugins)), homeMeta)
 				}
-				homeText(c, "连接后，重新打开 "+name+" 并新建会话。", homeMeta)
 			})
+		} else if captureConnection(row) {
+			a.captureConnectionDetails(c, row)
 		} else if row.Status == "configured_pending_new_session" && row.NewSessions == 0 {
-			homeText(c, "在所选环境中重新打开 "+name+" 并新建会话，收到回执后确认连接。", homeMeta).Margin(0, 28)
-			if row.ReceiptOverdue {
-				homeText(c, "尚未收到这个环境的会话回执。请核对环境、插件启用与宿主信任状态，再重新检测。", homeMeta).Margin(0, 28)
-			}
+			tip := "请重新打开 " + name + " 并新建会话，Memlane 会自动检查连接。"
+			homeText(c, tip, homeMeta).Margin(0, 0, 0, 42).LineHeight(1.5)
 		}
-		if row.Profile != "" {
+		if row.Profile != "" || row.EnvironmentIssue != "" || len(row.Environments) > 0 {
 			a.agentEnvironmentDetails(c, row)
 		}
 		if row.Status == "environment_receipt_unconfirmed" {
-			homeText(c, "已收到会话，但加载的插件环境尚未核实。请检查插件版本与所选环境。", homeMeta)
+			homeText(c, "已检测到会话，但还不能确认使用的是哪个配置目录。", homeMeta).Margin(0, 0, 0, 42)
 		}
 		if message := s.ItemMessages[row.ID]; message != "" {
-			homeText(c, message, homeMeta).Margin(0, 28).LineHeight(1.6)
+			homeText(c, message, homeMeta).Margin(0, 0, 0, 42).LineHeight(1.5)
 		}
 	})
 }
 
 func (a *App) agentEnvironmentDetails(c *ui.Context, row AgentConnection) {
 	s := &a.integrations
-	if s.EnvironmentOpen == nil {
-		s.EnvironmentOpen = map[string]bool{}
-	}
 	if row.EnvironmentIssue != "" {
-		message := "请选择实际使用的 Agent 配置目录。"
+		message := "请选择你日常使用的配置目录。"
 		if row.EnvironmentIssue == "verification_environment" {
-			message = "当前指向验收环境，日常接入已阻止。请选择实际使用的环境。"
+			message = "当前是测试目录，请换成日常使用的配置目录。"
 		}
-		homeText(c, message, homeMeta).Margin(0, 28)
+		homeText(c, message, homeMeta).Margin(0, 0, 0, 42)
 	}
 	if !s.EnvironmentOpen[row.ID] {
 		return
 	}
-	ui.Column(c.Key("environment-"+row.ID)).FillWidth().Padding(10, 16).Gap(8).Children(func() {
-		homeText(c, "当前目标："+row.Profile, homeMeta)
-		if row.LastReceiptAt > 0 {
-			homeText(c, "最近会话回执已收到", homeMeta)
+	// Inset inside the measured width. FillWidth plus an external left margin
+	// made the expanded directory escape the shared list surface.
+	ui.Column(c.Key("environment-"+row.ID)).Label("Agent目录详情："+connectionName(row.Kind)).FillWidth().Padding(0, 0, 12, 46).Gap(6).Children(func() {
+		if row.Profile != "" {
+			homeText(c, "配置目录："+row.Profile, homeMeta).FillWidth().MinWidth(0).SingleLine().Tooltip(row.Profile)
 		}
 		if row.EnvironmentVerified {
-			homeText(c, "实际加载环境已核对 · 插件 "+row.PluginVersion, homeMeta)
+			homeText(c, "插件已确认 · "+row.PluginVersion, homeMeta)
+		} else if row.LastReceiptAt > 0 {
+			homeText(c, "检测到会话活动，尚未确认来自此目录。", homeMeta)
 		}
 		for _, candidate := range row.Environments {
 			option := candidate
-			label := "自定义环境"
+			if option.Profile == row.Profile {
+				continue
+			}
+			label := "其他目录"
 			if option.Source == "default" {
-				label = "默认环境"
-			} else if option.Source == "environment" {
-				label = "启动环境指定"
+				label = "默认目录"
+			}
+			if option.Source == "environment" {
+				label = "启动时指定的目录"
 			}
 			if option.Verification {
-				label = "验收环境 · 不可用于日常连接"
+				label = "测试目录 · 不可用于日常连接"
 			}
-			homeText(c, label+"："+option.Profile, homeMeta)
-			if option.Exists && !option.Verification {
-				ui.Button(c, "使用这个环境").Label("使用环境：" + option.Profile).Disabled(s.Busy || s.Loading).OnClick(func() {
-					a.selectAgentEnvironment(row, option.Profile)
-				})
-			}
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {
+				homeText(c, label+"："+option.Profile, homeMeta).Grow(1).MinWidth(0)
+				if option.Exists && !option.Verification {
+					textButton(c, "使用此目录", func() { a.selectAgentEnvironment(row, option.Profile) }).Label("使用目录：" + option.Profile).Disabled(s.Busy || s.Loading)
+				}
+			})
 		}
 		if a.ChooseProjectFolder != nil {
-			textButton(c, "选择其他配置目录", nil).Disabled(s.Busy || s.Loading).OnClick(func() {
+			textButton(c, "更换目录", func() {
 				path, err := a.ChooseProjectFolder()
 				if err == nil && path != "" {
 					a.selectAgentEnvironment(row, path)
 				}
-			})
+			}).Disabled(s.Busy || s.Loading).AlignSelf(ui.Start)
 		}
-		homeText(c, "选择只更改接入目标；安装前仍需确认连接，已有登录和其他插件保留。", homeMeta)
 	})
 }
 
@@ -246,7 +319,7 @@ func generationLabel(g GenerationDirectory, ref *GenerationRef) string {
 		return "尚未确认"
 	}
 	if row.Profile.Mode == "agent_bridge" {
-		return "Codex 订阅 · " + row.Profile.Model
+		return generationBridgeLabel(row.Profile.BridgeKind) + " · " + row.Profile.Model
 	}
 	provider := map[string]string{"openai": "OpenAI", "anthropic": "Anthropic", "gemini": "Gemini", "custom": "OpenAI 兼容", "ollama": "Ollama"}[row.Profile.Provider]
 	return provider + " · " + row.Profile.Model
@@ -262,9 +335,15 @@ func (a *App) generationSetupPage(c *ui.Context) {
 }
 
 func (a *App) generationSettings(c *ui.Context) {
+	a.generationConfiguration(c, true)
+}
+
+func (a *App) generationConfiguration(c *ui.Context, showToolGraph bool) {
 	s := &a.integrations
 	a.generationSummaryCards(c)
-	a.globalToolGraphSettings(c)
+	if showToolGraph {
+		a.globalToolGraphSettings(c)
+	}
 	if !s.Loaded {
 		homeText(c, "记忆处理配置尚未载入", homeMeta)
 		commonButton(c, "读取记忆处理配置", false, a.RefreshIntegrations)
@@ -277,7 +356,7 @@ func (a *App) generationSettings(c *ui.Context) {
 					continue
 				}
 				o := pending
-				label := map[string]string{"save": "保存配置", "next": "下次启动设置", "validations": "模型验证"}[o.Kind]
+				label := map[string]string{"save": "保存配置", "next": "下次启动设置", "handoffs": "更换处理模型", "validations": "模型验证", "delete": "删除配置"}[o.Kind]
 				ui.Row(c.Key("pending-generation-" + o.Operation)).Gap(12).Children(func() {
 					homeText(c, label+" · "+o.Profile, homeMeta).Grow(1)
 					textButton(c, "核对原操作", nil).Label("核对原操作：" + o.Operation).Disabled(s.Busy).OnClick(func() { a.reviewPendingGeneration(o) })
@@ -286,91 +365,145 @@ func (a *App) generationSettings(c *ui.Context) {
 		})
 	}
 	a.generationProfileCards(c)
+	a.generationDeleteModal(c)
+	a.generationEditorModal(c)
+	a.generationHandoffModal(c)
+}
+
+func (a *App) generationEditorModal(c *ui.Context) {
+	s := &a.integrations
 	if !s.Editor {
+		if s.APIKey != "" {
+			s.APIKey = ""
+			s.KeyEpoch++
+		}
 		return
 	}
-	settingsCard(c, "配置记忆处理模型", "填写供应商提供的实际模型 ID 和 API 地址。更换生成模型不更换向量模型。", func() {
-		locked := s.Busy || s.SaveOperation != ""
-		fieldKey := func(name string) *ui.Context {
-			return c.Key(fmt.Sprintf("generation-%s-%s-%d", name, s.ProfileID, s.KeyEpoch))
-		}
-		ui.Form(c, func() {
-			if s.DraftMode == "provider" {
-				ui.Field(c, "供应商协议", func() {
-					ui.Select(fieldKey("provider"), &s.ProviderLabel, []string{"OpenAI", "Anthropic", "Gemini", "OpenAI 兼容", "Ollama"}).FillWidth().Disabled(locked)
-				})
-				ui.Field(c, "API 地址", func() {
-					ui.TextInput(fieldKey("endpoint"), &s.Endpoint).Label("Provider API 地址").Placeholder("https://…").FillWidth().Disabled(locked)
-				})
+	_, height := c.Size()
+	ui.Modal(c.Key("generation-editor-"+s.ProfileID), &s.Editor, func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+			title := "添加模型配置"
+			if len(s.Generation.Profiles[s.ProfileID]) > 0 {
+				title = "配置模型"
 			}
-			ui.Field(c, "模型 ID", func() {
-				ui.TextInput(fieldKey("model"), &s.Model).Label("处理模型 ID").Placeholder("实际模型 ID").FillWidth().Disabled(locked)
+			homeText(c, title, homeHeading).FontSize(18)
+			ui.Spacer(c)
+			readingAction(c, "关闭模型配置", readingClose, func() { s.Editor = false; s.APIKey = ""; s.KeyEpoch++ })
+		})
+		ui.Scroll(c.Key("generation-editor-fields-" + s.ProfileID)).Width(600).MaxHeight(height - 240).Gap(14).Children(func() {
+			locked := s.Busy || s.SaveOperation != ""
+			fieldKey := func(name string) *ui.Context {
+				return c.Key(fmt.Sprintf("generation-%s-%s-%d", name, s.ProfileID, s.KeyEpoch))
+			}
+			ui.Form(c, func() {
+				if len(s.Generation.Profiles[s.ProfileID]) == 0 {
+					ui.Field(c, "处理方式", func() {
+						mode := "模型服务"
+						if s.DraftMode == "agent_bridge" {
+							mode = generationBridgeLabel(s.BridgeKind)
+						}
+						ui.Select(fieldKey("mode"), &mode, []string{"Codex 订阅", "pi", "TraeX", "模型服务"}).FillWidth().Disabled(locked).OnChange(func() {
+							if mode != "模型服务" {
+								s.DraftMode = "agent_bridge"
+								s.BridgeKind = map[string]string{"Codex 订阅": "codex", "pi": "pi", "TraeX": "traex"}[mode]
+								s.BridgeProvider, s.Model = "", ""
+								if existing, ok := s.Generation.AgentBridges[s.BridgeKind]; ok {
+									s.BridgeProvider, s.Model = existing.BridgeProvider, existing.Model
+								}
+							} else {
+								s.DraftMode = "provider"
+							}
+							s.APIKey = ""
+							s.KeyEpoch++
+						})
+					})
+				}
+				if s.DraftMode == "agent_bridge" && s.BridgeKind == "pi" {
+					ui.Field(c, "pi 供应商", func() {
+						ui.Select(fieldKey("pi-provider"), &s.BridgeProvider, []string{"deepseek", "ollama"}).Label("pi已有供应商").FillWidth().Disabled(locked)
+					})
+				}
+				if s.DraftMode == "provider" {
+					ui.Field(c, "供应商协议", func() {
+						ui.Select(fieldKey("provider"), &s.ProviderLabel, []string{"OpenAI", "Anthropic", "Gemini", "OpenAI 兼容", "Ollama"}).FillWidth().Disabled(locked)
+					})
+					ui.Field(c, "API 地址", func() {
+						ui.TextInput(fieldKey("endpoint"), &s.Endpoint).Label("Provider API 地址").Placeholder("https://…").FillWidth().Disabled(locked)
+					})
+				}
+				ui.Field(c, "模型 ID", func() {
+					ui.TextInput(fieldKey("model"), &s.Model).Label("处理模型 ID").Placeholder("实际模型 ID").FillWidth().Disabled(locked)
+				})
+				if s.DraftMode == "provider" {
+					ui.Field(c, "采样温度（可选）", func() {
+						ui.TextInput(fieldKey("temperature"), &s.Temperature).Label("模型采样温度").Placeholder("例如 0.6").FillWidth().Disabled(locked)
+					})
+					ui.Field(c, "最大输出 Token（可选）", func() {
+						ui.TextInput(fieldKey("output-tokens"), &s.MaxOutputTokens).Label("模型最大输出 Token").Placeholder("例如 16384").FillWidth().Disabled(locked)
+					})
+				}
+				if s.DraftMode == "provider" && s.draftProfile().Provider != "ollama" {
+					ui.Field(c, "API Key", func() {
+						ui.TextInput(c.Key(fmt.Sprintf("generation-key-%d", s.KeyEpoch)), &s.APIKey).Label("Provider API Key").Placeholder("已保存时留空保留").Password().FillWidth().Disabled(locked)
+					})
+					if s.CredentialConfigured {
+						homeText(c, "已保存密钥；不会回填显示", homeMeta)
+					}
+				}
+				if s.draftProfile().Provider == "ollama" {
+					homeText(c, "填写Ollama 地址，例如 http://127.0.0.1:11434，无需 API Key；模型需已在服务中可用。", homeMeta)
+				}
 			})
-			if s.DraftMode == "provider" {
-				ui.Field(c, "采样温度（可选）", func() {
-					ui.TextInput(fieldKey("temperature"), &s.Temperature).Label("模型采样温度").Placeholder("例如 0.6").FillWidth().Disabled(locked)
-				})
-				ui.Field(c, "最大输出 Token（可选）", func() {
-					ui.TextInput(fieldKey("output-tokens"), &s.MaxOutputTokens).Label("模型最大输出 Token").Placeholder("例如 16384").FillWidth().Disabled(locked)
-				})
+			ui.Row(c).Gap(10).Children(func() {
+				validationLabel := "验证（会消耗额度）"
+				if s.draftProfile().Provider == "ollama" {
+					validationLabel = "验证（调用模型）"
+				}
+				ui.Button(c, "保存配置").Disabled(locked || s.pendingGenerationProfile(s.ProfileID)).OnClick(a.saveGeneration)
+				if s.SaveOperation != "" {
+					textButton(c, "核对保存结果", nil).Disabled(s.Busy).OnClick(a.reviewGenerationSave)
+				}
+				ui.Button(c, validationLabel).Disabled(s.Busy || !s.cleanSaved() || s.Validation.Status == "running" || s.Validation.Status == "queued" || s.pendingGenerationProfile(s.ProfileID)).OnClick(func() { a.generationAction("validations") })
+				if s.Generation.HandoffAvailable {
+					ui.Button(c, "使用并接续").Disabled(s.Busy || s.HandoffOperation != "" || s.pendingGenerationProfile(s.ProfileID) || !s.cleanSaved() || !s.Generation.validated(s.Saved)).OnClick(func() { s.Editor = false; a.openGenerationHandoff(s.Saved) })
+				} else {
+					ui.Button(c, "下次启动使用").Disabled(s.Busy || s.NextOperation != "" || s.pendingGenerationProfile(s.ProfileID) || !s.cleanSaved() || !s.Generation.validated(s.Saved)).OnClick(func() { a.generationAction("next") })
+				}
+				if s.NextOperation != "" {
+					textButton(c, "核对待应用设置", nil).Disabled(s.Busy).OnClick(a.reviewGenerationNext)
+				}
+			})
+			if !s.cleanSaved() && s.SaveOperation == "" {
+				homeText(c, "配置有未保存修改，保存后才能验证与设为下次启动使用。", homeMeta)
 			}
-			if s.DraftMode == "provider" && s.draftProfile().Provider != "ollama" {
-				ui.Field(c, "API Key", func() {
-					ui.TextInput(c.Key(fmt.Sprintf("generation-key-%d", s.KeyEpoch)), &s.APIKey).Label("Provider API Key").Placeholder("已保存时留空保留").Password().FillWidth().Disabled(locked)
-				})
-				if s.CredentialConfigured {
-					homeText(c, "已保存密钥；不会回填显示", homeMeta)
+			if s.ValidationOperation != "" {
+				label := map[string]string{"queued": "验证已登记", "running": "正在验证", "passed": "验证通过", "failed": "验证未通过", "result_unknown": "验证结果未确认"}[s.Validation.Status]
+				if !s.cleanSaved() {
+					label = "已保存配置的原验证：" + label
+				}
+				homeText(c, label, homeMeta)
+				if message := generationValidationMessage(s.Validation.ErrorCode); message != "" {
+					homeText(c, message, homeMeta).LineHeight(1.6)
+				}
+				if s.Validation.ModeEvidence == "official_adapter_request" {
+					mode := map[string]string{"json_schema": "本次结构化请求：Schema", "json_schema_non_strict": "本次结构化请求：非严格 Schema", "json_object": "本次结构化请求：JSON 对象"}[s.Validation.StructuredMode]
+					if mode != "" {
+						homeText(c, mode, homeMeta).LineHeight(1.6)
+					}
+				}
+				textButton(c, "核对原验证", nil).Disabled(s.Busy).OnClick(func() { a.pollGenerationValidation(s.ValidationOperation) })
+				if s.Validation.Status == "queued" || s.Validation.Status == "running" {
+					textButton(c, "停止验证", nil).Disabled(s.Busy).OnClick(a.cancelGenerationValidation)
 				}
 			}
-			if s.draftProfile().Provider == "ollama" {
-				homeText(c, "填写Ollama 地址，例如 http://127.0.0.1:11434，无需 API Key；模型需已在服务中可用。", homeMeta)
+			if s.Message != "" {
+				homeText(c, s.Message, homeMeta).LineHeight(1.7)
+			}
+			if s.Error != "" {
+				homeText(c, s.Error, homeMeta).LineHeight(1.7)
 			}
 		})
-		ui.Row(c).Gap(10).Children(func() {
-			validationLabel := "验证（会消耗额度）"
-			if s.draftProfile().Provider == "ollama" {
-				validationLabel = "验证（调用模型）"
-			}
-			ui.Button(c, "保存配置").Disabled(locked || s.pendingGenerationProfile(s.ProfileID)).OnClick(a.saveGeneration)
-			if s.SaveOperation != "" {
-				textButton(c, "核对保存结果", nil).Disabled(s.Busy).OnClick(a.reviewGenerationSave)
-			}
-			ui.Button(c, validationLabel).Disabled(s.Busy || !s.cleanSaved() || s.Validation.Status == "running" || s.Validation.Status == "queued" || s.pendingGenerationProfile(s.ProfileID)).OnClick(func() { a.generationAction("validations") })
-			ui.Button(c, "下次启动使用").Disabled(s.Busy || s.NextOperation != "" || s.pendingGenerationProfile(s.ProfileID) || !s.cleanSaved() || !s.Generation.validated(s.Saved)).OnClick(func() { a.generationAction("next") })
-			if s.NextOperation != "" {
-				textButton(c, "核对待应用设置", nil).Disabled(s.Busy).OnClick(a.reviewGenerationNext)
-			}
-		})
-		if !s.cleanSaved() && s.SaveOperation == "" {
-			homeText(c, "配置有未保存修改，保存后才能验证与设为下次启动使用。", homeMeta)
-		}
-		if s.ValidationOperation != "" {
-			label := map[string]string{"queued": "验证已登记", "running": "正在验证", "passed": "验证通过", "failed": "验证未通过", "result_unknown": "验证结果未确认"}[s.Validation.Status]
-			if !s.cleanSaved() {
-				label = "已保存配置的原验证：" + label
-			}
-			homeText(c, label, homeMeta)
-			if message := generationValidationMessage(s.Validation.ErrorCode); message != "" {
-				homeText(c, message, homeMeta).LineHeight(1.6)
-			}
-			if s.Validation.ModeEvidence == "official_adapter_request" {
-				mode := map[string]string{"json_schema": "本次结构化请求：Schema", "json_schema_non_strict": "本次结构化请求：非严格 Schema", "json_object": "本次结构化请求：JSON 对象"}[s.Validation.StructuredMode]
-				if mode != "" {
-					homeText(c, mode, homeMeta).LineHeight(1.6)
-				}
-			}
-			textButton(c, "核对原验证", nil).Disabled(s.Busy).OnClick(func() { a.pollGenerationValidation(s.ValidationOperation) })
-			if s.Validation.Status == "queued" || s.Validation.Status == "running" {
-				textButton(c, "停止验证", nil).Disabled(s.Busy).OnClick(a.cancelGenerationValidation)
-			}
-		}
-		if s.Message != "" {
-			homeText(c, s.Message, homeMeta).LineHeight(1.7)
-		}
-		if s.Error != "" {
-			homeText(c, s.Error, homeMeta).LineHeight(1.7)
-		}
-	})
+	}).Width(656).Padding(24).Gap(16)
 }
 
 func generationValidationMessage(code string) string {

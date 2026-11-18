@@ -26,6 +26,7 @@ func TestLocalAgentDetectionSettingsShowsRefreshAndUnavailableBinding(t *testing
 	if !tt.HasText("OpenCode") || !tt.HasText("暂不支持连接") {
 		t.Fatal("expanded unavailable status missing")
 	}
+	clickProjectUI(t, tt, "批量连接")
 	clickProjectUI(t, tt, "选择 pi")
 	if !tt.HasText("连接所选（1）") {
 		t.Fatal("selected action missing")

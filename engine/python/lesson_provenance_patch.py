@@ -91,6 +91,8 @@ def prepare(source, manifest, root):
     """Copy verified packages to a content-addressed local runtime component."""
     source, root = Path(source), Path(root)
     patched = apply((source / MODULE).read_text()).encode()
+    from capture_service_patch import patch, MANAGER, ADAPTER
+    capture_modules = {name: patch(name, (source / name).read_text()).encode() for name in (MANAGER, ADAPTER)}
     # Upstream resolves its local version from this file. Preserve it so a
     # source-location change cannot change migration/version detection.
     metadata = (source / 'pyproject.toml').read_bytes() if (source / 'pyproject.toml').exists() else b''
@@ -98,7 +100,9 @@ def prepare(source, manifest, root):
                for name in LANGUAGE_PROMPTS}
     generation = hashlib.sha256(Path(__file__).read_bytes() + patched + metadata
         + json.dumps(language_settings(), sort_keys=True).encode()
-        + b''.join(prompts.values()) + manifest['commit'].encode()).hexdigest()
+        + b''.join(prompts.values()) + b''.join(capture_modules.values())
+        + (Path(__file__).parent / 'capture_receipts.py').read_bytes()
+        + manifest['commit'].encode()).hexdigest()
     target = root / ('lesson-provenance-' + generation[:20])
     expected = {}
     if metadata:
@@ -107,7 +111,7 @@ def prepare(source, manifest, root):
         for path in (source / package).rglob('*'):
             if path.is_file() and '__pycache__' not in path.parts and not any(p.startswith('.') for p in path.relative_to(source).parts):
                 relative = str(path.relative_to(source))
-                expected[relative] = patched if relative == MODULE else prompts.get(relative, path.read_bytes())
+                expected[relative] = patched if relative == MODULE else capture_modules.get(relative, prompts.get(relative, path.read_bytes()))
     root.mkdir(parents=True, exist_ok=True)
     if not target.exists():
         temporary = Path(tempfile.mkdtemp(prefix='.provenance-', dir=root))
@@ -132,6 +136,7 @@ def prepare(source, manifest, root):
     receipt = {'schema_version': VERSION, 'upstream_commit': manifest['commit'],
         'generation': generation, 'module': MODULE, 'module_sha256': hashlib.sha256(patched).hexdigest(),
         'language': language_settings(),
+        'capture_sha256': {name: hashlib.sha256(data).hexdigest() for name, data in capture_modules.items()},
         'prompt_sha256': {name: hashlib.sha256(data).hexdigest() for name, data in prompts.items()}}
     (root / 'lesson-provenance-applied.json').write_text(json.dumps(receipt, sort_keys=True))
     return target

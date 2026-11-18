@@ -61,7 +61,7 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
         cls.environment.stop()
         cls.temporary.cleanup()
 
-    async def scenario(self, mode, *, native=True, parameters=None):
+    async def scenario(self, mode, *, native=True, parameters=None, compiled_profile=None):
         requests = []
         from cognee.infrastructure.llm.structured_output_framework.litellm_native.native_adapter import clear_nonstrict_demotions
         clear_nonstrict_demotions()
@@ -105,6 +105,20 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
         await server.start_server()
         model = 'openai/gpt-4o-2024-08-06' if native else 'openai/memlane-unknown-fixture'
         endpoint = str(server.make_url('/v1'))
+        runtime = dict(self.runtime)
+        if compiled_profile is not None:
+            selected = dict(compiled_profile)
+            if selected['mode'] == 'agent_bridge':
+                key = Path(self.temporary.name)/'bridge-token'
+                key.write_text('synthetic-only-key');key.chmod(0o600)
+                compiled = compile_environment(selected, {'completion_url':str(server.make_url('/')).rstrip('/'),
+                    'completion_token_file':str(key)})
+                runtime['generation_mode'] = 'agent_bridge'
+            else:
+                selected['endpoint'] = endpoint
+                compiled = compile_environment(selected, {}, 'synthetic-only-key')
+            runtime['generation_environment'] = compiled
+            model = compiled['LLM_MODEL']
         options = configured_parameters('custom', model, endpoint, parameters)
         options.setdefault('llm_args', {})
         if mode == 'timeout':
@@ -116,7 +130,7 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
         original = litellm.acompletion
         try:
             with contextlib.redirect_stdout(io.StringIO()):
-                result = await asyncio.wait_for(probe(self.runtime), 30)
+                result = await asyncio.wait_for(probe(runtime), 30)
             self.assertIs(litellm.acompletion, original, 'probe observer leaked after completion')
             self.assertNotIn('synthetic-only-secret', json.dumps(result))
             self.assertTrue(all(r['model'] == model.removeprefix('openai/') for r in requests))
@@ -133,6 +147,21 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result['structured_mode'], mode)
                 self.assertEqual(result['structured_mode_evidence'], 'official_adapter_request')
                 self.assertEqual(len(requests), 2)
+
+    async def test_compiled_bridge_and_direct_requests_do_not_inherit_old_sampling_parameters(self):
+        profiles = [
+            {'mode':'agent_bridge','bridge_kind':'codex','model':'gpt-6.1-sol'},
+            {'mode':'provider','provider':'custom','model':'gpt-4o-2024-08-06',
+             'credential_ref':'fixture','credential_version':'one'}]
+        for profile in profiles:
+            with self.subTest(mode=profile['mode']), patch.dict(os.environ, {
+                    'LLM_TEMPERATURE':'1.8','LLM_ARGS':'{"temperature":1.8,"max_tokens":7}',
+                    'FALLBACK_MODEL':'unrelated-old-model'}):
+                result, requests = await self.scenario('success',compiled_profile=profile)
+                self.assertEqual(result['status'],'passed',result)
+                self.assertEqual(len(requests),2)
+                self.assertTrue(all('temperature' not in request for request in requests),requests)
+                self.assertTrue(all(request.get('max_tokens')!=7 for request in requests),requests)
 
     async def native_protocol(self, provider, mode, parameters=None):
         """Exercise the installed vendor wire adapter, not an OpenAI-shaped proxy."""

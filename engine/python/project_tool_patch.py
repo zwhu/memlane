@@ -24,6 +24,17 @@ def remember_response(text):
     return text.replace(old, new, 1)
 
 
+def common_recall_response(text):
+    """Do not search an empty eligible catalog; preserve official reads and ACLs."""
+    old = '''            if query.strip():
+                groups = _json_http_request('/api/v1/search', {'query': query, 'search_type': 'CHUNKS','''
+    new = '''            if candidates and query.strip():
+                groups = _json_http_request('/api/v1/search', {'query': query, 'search_type': 'CHUNKS','''
+    if text.count(old) != 1:
+        raise ValueError('fixed common recall overlay anchor mismatch')
+    return text.replace(old, new, 1)
+
+
 def forget_response(text):
     old = '''    from _memlane_policy import require, recall_targets
     command, target = sys.argv[3], sys.argv[4]

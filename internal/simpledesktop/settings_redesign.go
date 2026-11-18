@@ -24,15 +24,14 @@ func policySettingRow(c *ui.Context, title, explanation, value string, inherited
 	})
 }
 func settingsTabs(c *ui.Context, current *string, labels []string) {
-	if *current == "" {
-		*current = labels[0]
-	}
 	selected := 0
 	for n, label := range labels {
 		if *current == label {
 			selected = n
 		}
 	}
+	// Retired tabs held by a hot-reloaded window return to a real page.
+	*current = labels[selected]
 	displayLabels := append([]string(nil), labels...)
 	for n, label := range displayLabels {
 		if label == "知识处理" {
@@ -42,32 +41,35 @@ func settingsTabs(c *ui.Context, current *string, labels []string) {
 	ui.Tabs(c, &selected, displayLabels...).Label("设置分类").Margin(18, 20).OnChange(func() { *current = labels[selected] })
 }
 func settingsCard(c *ui.Context, title, description string, content func()) {
-	ui.Column(c).FillWidth().Gap(14).Padding(22).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(10).Children(func() {
-		homeText(c, title, homeHeading).FontSize(18)
-		if description != "" {
-			homeText(c, description, homeMeta).LineHeight(1.7)
-		}
-		content()
+	settingsListSurface(c, func() {
+		ui.Column(c).FillWidth().Gap(12).Padding(10, 0).Children(func() {
+			homeText(c, title, homeHeading).FontSize(15).FontWeight(500)
+			if description != "" {
+				homeText(c, description, homeMeta).LineHeight(1.7)
+			}
+			content()
+		})
 	})
 }
 func (a *App) globalSettingsPage(c *ui.Context) {
-	settingsTabs(c, &a.access.SettingsSection, []string{"服务与连接", "知识处理", "高级"})
+	settingsTabs(c, &a.access.SettingsSection, []string{"服务与连接", "知识处理"})
 	contentWidth := float32(1100)
-	ui.Scroll(c.Key("global-settings-" + a.access.SettingsSection)).Grow(1).MinHeight(0).Padding(32).Background(ui.Hex("#f8fafc")).Children(func() {
+	ui.Scroll(c.Key("global-settings-"+a.access.SettingsSection)).Grow(1).MinHeight(0).Padding(12, 32, 24, 32).Background(ui.Hex("#f8fafc")).Children(func() {
 		ui.Column(c).FillWidth().MaxWidth(contentWidth).Gap(16).Children(func() {
 			switch a.access.SettingsSection {
 			case "服务与连接":
-				a.serviceConnectionOverview(c)
-				if a.Config.ProjectControl != nil {
-					ui.Column(c).FillWidth().Gap(12).Margin(8, 0, 0, 0).Children(func() {
-						a.agentConnectionSettings(c)
-					})
-				}
+				ui.Column(c).FillWidth().Gap(24).Children(func() {
+					a.environmentSetup(c, false)
+					a.serviceConnectionOverview(c)
+					if a.Config.ProjectControl != nil {
+						ui.Column(c).FillWidth().Gap(12).Children(func() {
+							a.agentConnectionSettings(c)
+						})
+					}
+				})
 			case "知识处理":
 				languageSettingsCard(c)
 				a.generationSettings(c)
-			case "高级":
-				a.advancedSettingsCards(c)
 			}
 		})
 	})

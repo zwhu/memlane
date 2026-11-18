@@ -99,13 +99,13 @@ class DiskSafety(unittest.TestCase):
 
     def test_low_space_rejects_task(self):
         from collections import namedtuple
-        usage=namedtuple('Usage','total used free')(500*disk.GIB,401*disk.GIB,99*disk.GIB)
+        usage=namedtuple('Usage','total used free')(500*disk.GIB,451*disk.GIB,49*disk.GIB)
         with patch('sys.argv',['disk-space.py']), patch.object(disk.shutil,'disk_usage',return_value=usage), patch.object(disk,'trim_caches',return_value=[]):
             with self.assertRaises(SystemExit): disk.main()
 
     def test_sufficient_space_permits_task(self):
         from collections import namedtuple
-        usage=namedtuple('Usage','total used free')(500*disk.GIB,350*disk.GIB,150*disk.GIB)
+        usage=namedtuple('Usage','total used free')(500*disk.GIB,450*disk.GIB,50*disk.GIB)
         with patch('sys.argv',['disk-space.py']), patch.object(disk.shutil,'disk_usage',return_value=usage), patch.object(disk,'trim_caches',return_value=[]): disk.main()
 
     def test_finish_preserves_output_for_following_verification(self):
