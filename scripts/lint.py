@@ -101,20 +101,25 @@ def check_source(source, path):
 
 def check_go_source(source, path):
     """Presentation architecture checks; Go behavior is covered by Native UI tests."""
-    if Path(path).name != 'settings_model_cards.go':
+    if Path(path).name not in ('settings_model_cards.go','generation_workspace.go','generation_management.go'):
         return []
-    start = source.find('func (a *App) generationProfileCards(')
-    if start < 0:
-        return []
-    end = source.find('\nfunc ', start + 1)
-    body = source[start:end if end >= 0 else len(source)]
     issues = []
-    for match in re.finditer(r'ui\.Tabs\(', source):
-        issues.append((source[:match.start()].count('\n')+1, 'ML005', '处理方式使用绑定实际状态的单选项，禁止改为浏览配置的页签'))
+    for name in ('chooseGenerationSource','selectGenerationProfile','generationProfileCards','generationManagement','generationManagementContent'):
+        start=source.find(' '+name+'(')
+        if start<0:continue
+        end=source.find('\nfunc ',start+1)
+        function=source[start:end if end>=0 else len(source)]
+        for match in re.finditer(r'openGenerationHandoff\(|startGenerationHandoff\(|Generation\.Active\s*=',function):
+            issues.append((source[:start+match.start()].count('\n')+1,'ML005','选择或编辑配置不能启用；保存、验证与明确启用分开'))
+    if Path(path).name=='generation_workspace.go':return issues
+    start=source.find('func (a *App) generationProfileCards(')
+    if start<0:return issues
+    end=source.find('\nfunc ',start+1)
+    body=source[start:end if end>=0 else len(source)]
     for match in re.finditer(r'\.Profile\.(?:Model|Provider|BridgeKind)\b|\.Generation\.Profiles\b', body):
         line = source[:start + match.start()].count('\n') + 1
         issues.append((line, 'ML004', '配置列表必须使用统一分组投影；Agent按身份展示，Provider按连接分组'))
-    if 'generationProfileGroups(' not in body:
+    if 'generationWorkspaceGroups(' not in body and 'generationProfileGroups(' not in body:
         issues.append((source[:start].count('\n') + 1, 'ML004', '配置列表必须使用 generationProfileGroups'))
     return issues
 

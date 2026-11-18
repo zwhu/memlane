@@ -319,7 +319,10 @@ class GenerationStore:
         if old is not None:
             return old
         row = self.resolve(reference)
-        if not validation_passed(self.state['validations'], row['digest']):
+        if row['profile']['mode'] == 'agent_bridge' and getattr(self, 'connected_bridge_check', None):
+            self.connected_bridge_check(row['profile'])
+            self.state.setdefault('connected_agent_selections', {})[row['digest']] = True
+        elif not validation_passed(self.state['validations'], row['digest']):
             raise PolicyError('generation_validation_required', 409)
         self.native_schema_evidence(row)
         self.state['next'] = copy.deepcopy(reference)

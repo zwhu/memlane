@@ -4,7 +4,7 @@ import "github.com/egoist/mygo/ui"
 
 // Settings groups share the same surface, inset and divider treatment.
 func settingsListSurface(c *ui.Context, content func()) {
-	ui.Column(c).FillWidth().Gap(0).Padding(8, 22).Background(homeBackground).Border(1, homeBorder).Radius(10).Children(content)
+	listSurface(c, content)
 }
 
 func settingsListDivider(c *ui.Context) {

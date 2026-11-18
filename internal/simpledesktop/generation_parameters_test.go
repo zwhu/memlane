@@ -47,9 +47,9 @@ func TestGenerationParameterRoundTripInvalidationAndExplicitZero(t *testing.T) {
 func TestGenerationParameterDraftLabelsSavedValidation(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
-	a.access.SettingsSection = "知识处理"
+	a.access.SettingsSection = "Agent 与模型"
 	row := GenerationRow{Revision: 1, Digest: "original", Profile: GenerationProfile{Mode: "provider", Provider: "ollama", Model: "synthetic", Endpoint: "http://127.0.0.1:11434"}}
-	a.integrations = integrationState{Loaded: true, Editor: true, Generation: GenerationDirectory{Profiles: map[string][]GenerationRow{"local": {row}}, Validations: map[string]GenerationValidation{"v": {Status: "passed", Digest: "original", Plain: true, Schema: true, Quality: true}}}}
+	a.integrations = integrationState{Loaded: true, Editor: true, GenerationProviderDialog: true, Generation: GenerationDirectory{Profiles: map[string][]GenerationRow{"local": {row}}, Validations: map[string]GenerationValidation{"v": {Status: "passed", Digest: "original", Plain: true, Schema: true, Quality: true}}}}
 	a.integrations.editProfile("local", row)
 	a.integrations.MaxOutputTokens = "8192"
 	tt := ui.NewTester(a.View, 1200, 820)
@@ -71,7 +71,7 @@ func TestGenerationInvalidParametersRejectBeforeJournalOrRequest(t *testing.T) {
 	}))
 	defer server.Close()
 	a := New(Config{GenerationFile: filepath.Join(root, "generation.json"), ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}}, nil)
-	a.integrations = integrationState{Loaded: true, Editor: true, ProfileID: "local", DraftMode: "provider", ProviderLabel: "Ollama", Model: "synthetic", Endpoint: "http://127.0.0.1:11434"}
+	a.integrations = integrationState{Loaded: true, Editor: true, GenerationProviderDialog: true, ProfileID: "local", DraftMode: "provider", ProviderLabel: "Ollama", Model: "synthetic", Endpoint: "http://127.0.0.1:11434"}
 	for _, values := range [][2]string{{"NaN", "8192"}, {"0.6", "0"}, {"0.6", "8192.0"}} {
 		a.integrations.Temperature, a.integrations.MaxOutputTokens = values[0], values[1]
 		a.saveGeneration()

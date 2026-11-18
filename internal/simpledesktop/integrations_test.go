@@ -105,7 +105,7 @@ func TestGenerationEditingSeparatesActiveRevisionAndInvalidatesDraftValidation(t
 func TestGenerationNewestUnknownResultWithdrawsOldSuccessAndShowsSafeReason(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
-	a.access.SettingsSection = "知识处理"
+	a.access.SettingsSection = "Agent 与模型"
 	ref := &GenerationRef{ID: "api", Revision: 1}
 	row := GenerationRow{Revision: 1, Digest: "same", Profile: GenerationProfile{Mode: "provider", Provider: "custom", Model: "synthetic", Endpoint: "https://example.test/v1"}}
 	g := GenerationDirectory{Profiles: map[string][]GenerationRow{"api": {row}}, Validations: map[string]GenerationValidation{
@@ -115,7 +115,7 @@ func TestGenerationNewestUnknownResultWithdrawsOldSuccessAndShowsSafeReason(t *t
 	if g.validated(ref) {
 		t.Fatal("old success concealed a newer unknown result")
 	}
-	a.integrations = integrationState{Loaded: true, Editor: true, ProfileID: "api", DraftMode: "provider", ProviderLabel: "OpenAI 兼容", Model: "synthetic", Endpoint: "https://example.test/v1", Saved: ref, Generation: g, ValidationOperation: "a-new", Validation: g.Validations["a-new"]}
+	a.integrations = integrationState{Loaded: true, Editor: true, GenerationProviderDialog: true, ProfileID: "api", DraftMode: "provider", ProviderLabel: "OpenAI 兼容", Model: "synthetic", Endpoint: "https://example.test/v1", Saved: ref, Generation: g, ValidationOperation: "a-new", Validation: g.Validations["a-new"]}
 	a.integrations.ValidationOperation = ""
 	a.integrations.Validation = GenerationValidation{}
 	a.integrations.editProfile("api", row)
@@ -170,7 +170,7 @@ func TestGenerationUnknownSaveClearsInputAndDoesNotRepeatMutation(t *testing.T) 
 	a := New(Config{ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}}, nil)
 	updates := make(chan func(), 8)
 	a.Update = func(fn func()) { updates <- fn }
-	a.integrations = integrationState{Loaded: true, Editor: true, ProfileID: "api", DraftMode: "provider", ProviderLabel: "OpenAI", Model: "test", Endpoint: "https://example.test/v1", APIKey: "synthetic-secret"}
+	a.integrations = integrationState{Loaded: true, Editor: true, GenerationProviderDialog: true, ProfileID: "api", DraftMode: "provider", ProviderLabel: "OpenAI", Model: "test", Endpoint: "https://example.test/v1", APIKey: "synthetic-secret"}
 	a.saveGeneration()
 	if a.integrations.KeyEpoch == 0 {
 		t.Fatal("submitted password widget retained its old identity")
@@ -206,11 +206,11 @@ func TestGenerationUnknownSaveClearsInputAndDoesNotRepeatMutation(t *testing.T) 
 func TestIntegrationSettingsUseSeparatePagesAndMaskProviderKey(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
-	a.access.SettingsSection = "知识处理"
-	a.integrations = integrationState{Loaded: true, Editor: true, ProfileID: "api", DraftMode: "provider", ProviderLabel: "OpenAI", Model: "synthetic", Endpoint: "https://example.test/v1", APIKey: "synthetic-secret-never-show",
+	a.access.SettingsSection = "Agent 与模型"
+	a.integrations = integrationState{Loaded: true, Editor: true, GenerationProviderDialog: true, ProfileID: "api", DraftMode: "provider", ProviderLabel: "OpenAI", Model: "synthetic", Endpoint: "https://example.test/v1", APIKey: "synthetic-secret-never-show",
 		Generation: GenerationDirectory{Active: &GenerationRef{ID: "existing-codex", Revision: 1}, Profiles: map[string][]GenerationRow{"existing-codex": {{Revision: 1, Profile: GenerationProfile{Mode: "agent_bridge", Model: "old-model"}}}}}}
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"当前模型", "供应商协议", "API 地址", "API Key", "保存配置", "下次启动使用"} {
+	for _, label := range []string{"模型配置", "供应商协议", "API 地址", "API Key", "保存配置"} {
 		if !tt.HasText(label) {
 			t.Fatal("missing", label)
 		}
@@ -229,7 +229,7 @@ func TestIntegrationSettingsUseSeparatePagesAndMaskProviderKey(t *testing.T) {
 func TestIntegrationAgentListKeepsPartialSuccessAndShowsHostLimits(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
-	a.access.SettingsSection = "服务与连接"
+	a.access.SettingsSection = "Agent 与模型"
 	a.integrations = integrationState{Loaded: true, ConnectionBulk: true, Selected: map[string]bool{"pi": true}, Connections: ConnectionsDirectory{Connections: []AgentConnection{
 		{ID: "codex", Kind: "codex", Status: "configured_pending_new_session", NewSessions: 1},
 		{ID: "pi", Kind: "pi", Detected: true, Status: "prepared", Preview: &CodexConnectionPreview{ProposedSHA: "reviewed"}},
@@ -252,7 +252,7 @@ func TestIntegrationAgentListKeepsPartialSuccessAndShowsHostLimits(t *testing.T)
 func TestIntegrationRecoveryActionsRemainVisibleWithoutAnOpenEditor(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
-	a.access.SettingsSection = "知识处理"
+	a.access.SettingsSection = "Agent 与模型"
 	a.integrations = integrationState{Loaded: true, PendingOperations: []generationUIOperation{
 		{Operation: "ui-unconfirmed", Kind: "save", Profile: "saved-before-exit"},
 	}}
@@ -262,8 +262,8 @@ func TestIntegrationRecoveryActionsRemainVisibleWithoutAnOpenEditor(t *testing.T
 			t.Fatal("reopened recovery control missing", label)
 		}
 	}
-	if a.integrations.Editor {
-		t.Fatal("recovery depended on an open editor")
+	if a.integrations.SaveOperation != "" || a.integrations.APIKey != "" {
+		t.Fatal("reading recovery submitted or populated credentials")
 	}
 }
 

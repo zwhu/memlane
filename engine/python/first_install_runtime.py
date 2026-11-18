@@ -151,7 +151,8 @@ def activation_scope(config, request, *, allow_applied=False):
         raise ValueError('explicit generation reference required')
     rows = state.get('profiles', {}).get(reference['id'], [])
     row = next((row for row in rows if row['revision'] == reference['revision']), None)
-    if row is None or row['digest'] != request.get('digest') or not validation_passed(state.get('validations', {}), row['digest']):
+    connected_agent = bool(row and row['profile']['mode'] == 'agent_bridge' and state.get('connected_agent_selections', {}).get(row['digest']))
+    if row is None or row['digest'] != request.get('digest') or not (connected_agent or validation_passed(state.get('validations', {}), row['digest'])):
         raise ValueError('first activation requires the same validated generation')
     if any(row.get('status') in ('queued', 'running') for row in state.get('validations', {}).values()):
         raise ValueError('generation validation still active')

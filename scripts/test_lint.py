@@ -89,11 +89,17 @@ class GenerationPresentationLintTests(unittest.TestCase):
         self.assertEqual(check_go_source('func (a *App) generationProfileCards(c *ui.Context) { groups := generationProfileGroups(s.Generation) }', 'settings_model_cards.go'), [])
 
 
-    def test_processing_modes_cannot_be_reintroduced_as_browsing_tabs(self):
+    def test_configuring_a_source_cannot_enable_it(self):
         from lint import check_go_source
-        source = 'func (a *App) generationProfileCards(c *ui.Context) { groups := generationProfileGroups(s.Generation); ui.Tabs(c, &selected, "Agent", "Provider") }'
-        self.assertEqual({row[1] for row in check_go_source(source, 'settings_model_cards.go')}, {'ML005'})
+        source='func (a *App) chooseGenerationSource(mode string) { a.openGenerationHandoff(nil) }'
+        self.assertEqual({row[1] for row in check_go_source(source,'generation_workspace.go')},{'ML005'})
+        allowed='func (a *App) chooseGenerationSource(mode string) { a.selectGenerationProfile(id,row) }'
+        self.assertEqual(check_go_source(allowed,'generation_workspace.go'),[])
 
+    def test_management_page_cannot_enable_a_profile(self):
+        from lint import check_go_source
+        source='func (a *App) generationManagement(c *ui.Context) { a.startGenerationHandoff() }'
+        self.assertEqual({row[1] for row in check_go_source(source,'generation_management.go')},{'ML005'})
 
     def test_profile_generation_cannot_restore_total_deadline(self):
         source='async def generate(adapter,row):\n return await asyncio.wait_for(collect(),180)'

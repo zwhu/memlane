@@ -25,6 +25,10 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
     if len(set(tokens)) != len(tokens):
         raise ValueError('control credentials must be independent')
 
+    if generation is not None and registry is not None and codex_config is not None:
+        from agent_bridge_runtime import require_connected_bridge
+        generation.connected_bridge_check = lambda profile: require_connected_bridge(registry, codex_config, profile)
+
     @web.middleware
     async def boundary(request, handler):
         try:

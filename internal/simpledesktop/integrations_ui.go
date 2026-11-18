@@ -46,6 +46,9 @@ func (s *integrationState) hasSelectableConnections() bool {
 }
 
 func (a *App) agentConnectionSettings(c *ui.Context) {
+	ui.Column(c).FillWidth().Gap(12).Children(func() { a.agentConnectionSettingsContent(c) })
+}
+func (a *App) agentConnectionSettingsContent(c *ui.Context) {
 	s := &a.integrations
 	a.refreshAgentReceiptsIfDue(time.Now())
 	settingsSectionHeader(c, "Agent 连接", nil, func() {
@@ -327,7 +330,7 @@ func generationLabel(g GenerationDirectory, ref *GenerationRef) string {
 func (a *App) generationSetupPage(c *ui.Context) {
 	ui.Column(c).Fill().Padding(28).Gap(20).Background(ui.Hex("#f8fafc")).Children(func() {
 		homeText(c, "配置记忆处理", homeHeading).FontSize(22)
-		homeText(c, "先保存配置并验证，再选择下次启动使用。完成后重新启动后台服务，所选配置才会生效。", homeMeta).LineHeight(1.7)
+		homeText(c, "选择处理记忆的 Agent 或模型。", homeMeta).LineHeight(1.7)
 		ui.Scroll(c.Key("generation-first-setup")).Grow(1).MinHeight(0).Children(func() {
 			ui.Column(c).FillWidth().MaxWidth(900).Gap(20).Children(func() { a.generationSettings(c) })
 		})
@@ -335,20 +338,32 @@ func (a *App) generationSetupPage(c *ui.Context) {
 }
 
 func (a *App) generationSettings(c *ui.Context) {
-	a.generationConfiguration(c, true)
+	a.generationConfiguration(c, false)
 }
 
 func (a *App) generationConfiguration(c *ui.Context, showToolGraph bool) {
-	s := &a.integrations
-	a.generationSummaryCards(c)
+	a.generationConfigurationFor(c, true, true)
 	if showToolGraph {
 		a.globalToolGraphSettings(c)
 	}
+}
+
+func (a *App) generationConfigurationFor(c *ui.Context, edit, enable bool) {
+	s := &a.integrations
 	if !s.Loaded {
 		homeText(c, "记忆处理配置尚未载入", homeMeta)
 		commonButton(c, "读取记忆处理配置", false, a.RefreshIntegrations)
 		return
 	}
+	a.generationPendingOperations(c)
+	a.generationWorkspaceFor(c, edit, enable)
+	if edit {
+		a.generationDeleteModal(c)
+	}
+}
+
+func (a *App) generationPendingOperations(c *ui.Context) {
+	s := &a.integrations
 	if s.hasPendingGeneration() {
 		settingsCard(c, "待核对操作", "重开应用后保留原操作；核对只读取回执，不重新提交请求。", func() {
 			for _, pending := range s.PendingOperations {
@@ -364,14 +379,9 @@ func (a *App) generationConfiguration(c *ui.Context, showToolGraph bool) {
 			}
 		})
 	}
-	a.generationProfileCards(c)
-	a.generationDeleteModal(c)
-	a.generationEditorModal(c)
-	a.generationHandoffModal(c)
-	a.generationModeConfigurationModal(c)
 }
 
-func (a *App) generationEditorModal(c *ui.Context) {
+func (a *App) generationEditorPanel(c *ui.Context) {
 	s := &a.integrations
 	if !s.Editor {
 		if s.APIKey != "" {
@@ -380,45 +390,29 @@ func (a *App) generationEditorModal(c *ui.Context) {
 		}
 		return
 	}
-	_, height := c.Size()
-	ui.Modal(c.Key("generation-editor-"+s.ProfileID), &s.Editor, func() {
+	settingsListSurface(c.Key("generation-editor-"+s.ProfileID), func() { a.generationEditorContent(c) })
+}
+
+func (a *App) generationEditorContent(c *ui.Context) {
+	s := &a.integrations
+	ui.Column(c).FillWidth().Gap(14).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			title := "添加模型配置"
-			if len(s.Generation.Profiles[s.ProfileID]) > 0 {
-				title = "配置模型"
+			title := "Provider 配置"
+			if s.DraftMode == "agent_bridge" {
+				title = generationBridgeLabel(s.BridgeKind) + " 配置"
 			}
-			homeText(c, title, homeHeading).FontSize(18)
+			homeText(c, title, homeHeading).FontSize(15).FontWeight(500)
 			ui.Spacer(c)
-			readingAction(c, "关闭模型配置", readingClose, func() { s.Editor = false; s.APIKey = ""; s.KeyEpoch++ })
+			if s.GenerationProviderDialog {
+				readingAction(c, "关闭 Provider 配置", readingClose, func() { s.GenerationProviderDialog = false; s.APIKey = ""; s.KeyEpoch++ })
+			}
 		})
-		ui.Scroll(c.Key("generation-editor-fields-" + s.ProfileID)).Width(600).MaxHeight(height - 240).Gap(14).Children(func() {
+		ui.Column(c.Key("generation-editor-fields-" + s.ProfileID)).FillWidth().Gap(14).Children(func() {
 			locked := s.Busy || s.SaveOperation != ""
 			fieldKey := func(name string) *ui.Context {
 				return c.Key(fmt.Sprintf("generation-%s-%s-%d", name, s.ProfileID, s.KeyEpoch))
 			}
 			ui.Form(c, func() {
-				if len(s.Generation.Profiles[s.ProfileID]) == 0 {
-					ui.Field(c, "处理方式", func() {
-						mode := "模型服务"
-						if s.DraftMode == "agent_bridge" {
-							mode = generationBridgeLabel(s.BridgeKind)
-						}
-						ui.Select(fieldKey("mode"), &mode, []string{"Codex 订阅", "pi", "TraeX", "模型服务"}).FillWidth().Disabled(locked).OnChange(func() {
-							if mode != "模型服务" {
-								s.DraftMode = "agent_bridge"
-								s.BridgeKind = map[string]string{"Codex 订阅": "codex", "pi": "pi", "TraeX": "traex"}[mode]
-								s.BridgeProvider, s.Model = "", ""
-								if existing, ok := s.Generation.AgentBridges[s.BridgeKind]; ok {
-									s.BridgeProvider, s.Model = existing.BridgeProvider, existing.Model
-								}
-							} else {
-								s.DraftMode = "provider"
-							}
-							s.APIKey = ""
-							s.KeyEpoch++
-						})
-					})
-				}
 				if s.DraftMode == "provider" {
 					ui.Field(c, "供应商协议", func() {
 						ui.Select(fieldKey("provider"), &s.ProviderLabel, []string{"OpenAI", "Anthropic", "Gemini", "OpenAI 兼容", "Ollama"}).FillWidth().Disabled(locked)
@@ -468,17 +462,13 @@ func (a *App) generationEditorModal(c *ui.Context) {
 					textButton(c, "核对保存结果", nil).Disabled(s.Busy).OnClick(a.reviewGenerationSave)
 				}
 				ui.Button(c, validationLabel).Disabled(s.Busy || !s.cleanSaved() || s.Validation.Status == "running" || s.Validation.Status == "queued" || s.pendingGenerationProfile(s.ProfileID)).OnClick(func() { a.generationAction("validations") })
-				if s.Generation.HandoffAvailable {
-					ui.Button(c, "使用并接续").Disabled(s.Busy || s.HandoffOperation != "" || s.pendingGenerationProfile(s.ProfileID) || !s.cleanSaved() || !s.Generation.validated(s.Saved)).OnClick(func() { s.Editor = false; a.openGenerationHandoff(s.Saved) })
-				} else {
-					ui.Button(c, "下次启动使用").Disabled(s.Busy || s.NextOperation != "" || s.pendingGenerationProfile(s.ProfileID) || !s.cleanSaved() || !s.Generation.validated(s.Saved)).OnClick(func() { a.generationAction("next") })
-				}
 				if s.NextOperation != "" {
 					textButton(c, "核对待应用设置", nil).Disabled(s.Busy).OnClick(a.reviewGenerationNext)
 				}
+				textButton(c, "取消修改", a.discardGenerationDraft).Disabled(s.Busy || s.SaveOperation != "")
 			})
 			if !s.cleanSaved() && s.SaveOperation == "" {
-				homeText(c, "配置有未保存修改，保存后才能验证与设为下次启动使用。", homeMeta)
+				homeText(c, "配置有未保存修改。", homeMeta)
 			}
 			if s.ValidationOperation != "" {
 				label := map[string]string{"queued": "验证已登记", "running": "正在验证", "passed": "验证通过", "failed": "验证未通过", "result_unknown": "验证结果未确认"}[s.Validation.Status]
@@ -507,7 +497,7 @@ func (a *App) generationEditorModal(c *ui.Context) {
 				homeText(c, s.Error, homeMeta).LineHeight(1.7)
 			}
 		})
-	}).Width(656).Padding(24).Gap(16)
+	})
 }
 
 func generationValidationMessage(code string) string {

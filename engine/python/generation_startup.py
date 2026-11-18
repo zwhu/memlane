@@ -14,7 +14,7 @@ def candidate(store):
     if reference is None:
         return None
     row = store.resolve(reference)
-    if not validation_passed(store.state['validations'], row['digest']):
+    if not (row['profile']['mode'] == 'agent_bridge' and store.state.get('connected_agent_selections', {}).get(row['digest'])) and not validation_passed(store.state['validations'], row['digest']):
         raise PolicyError('generation_validation_required', 409)
     store.native_schema_evidence(row)
     return copy.deepcopy(reference)

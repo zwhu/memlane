@@ -119,7 +119,7 @@ func New(c Config, err error) *App {
 	a := &App{Config: c, Client: Client{Config: c}, page: "总览", kind: "知识", panes: map[string]*pane{}, service: "尚未检查", completion: "尚未检查"}
 	if c.GenerationSetupOnly {
 		a.page = "设置"
-		a.access.SettingsSection = "知识处理"
+		a.access.SettingsSection = "Agent 与模型"
 	}
 	a.titles = newReadingTitles()
 	a.readingIdentity, _ = readingIdentity(a.Client)

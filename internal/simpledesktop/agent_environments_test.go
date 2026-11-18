@@ -17,7 +17,7 @@ import (
 func TestAgentEnvironmentChoiceBlocksWrongTargetAndExplainsReceipt(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
-	a.access.SettingsSection = "服务与连接"
+	a.access.SettingsSection = "Agent 与模型"
 	row := AgentConnection{ID: "traex", Kind: "traex", Detected: true,
 		Status: "verification_environment", EnvironmentIssue: "verification_environment",
 		Profile: "/synthetic/native-setup/traex", Environments: []AgentEnvironment{
@@ -124,7 +124,7 @@ func TestWaitingAgentReceiptSettlesFromIdleViewTimer(t *testing.T) {
 			}))
 			defer server.Close()
 			a := settingsFixture()
-			a.page, a.access.SettingsSection = "设置", "服务与连接"
+			a.page, a.access.SettingsSection = "设置", "Agent 与模型"
 			a.access.Next = time.Now().Add(time.Hour)
 			a.Config.ProjectControl.URL = server.URL
 			key := filepath.Join(t.TempDir(), "manager.token")

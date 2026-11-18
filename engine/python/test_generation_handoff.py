@@ -99,6 +99,19 @@ class HandoffControllerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.control.close();self.store.close();self.tmp.cleanup()
 
+    async def test_connected_agent_selection_does_not_require_model_validation(self):
+        from unittest.mock import patch
+        ref = self.store.put('connected-agent', {'mode':'agent_bridge', 'bridge_kind':'codex', 'model':'native'}, self.store.state['revision'], 'save-agent')
+        ref={key:ref[key] for key in ('id','revision')}
+        self.store.environment=lambda reference,runtime: {}
+        self.control.service=AsyncMock(return_value={'status':'not_applied','reference':ref,
+            'digest':self.store.resolve(ref)['digest'],'reason':'test_no_apply'})
+        with patch('agent_bridge_runtime.require_connected_bridge') as check:
+            self.control.start(ref,self.store.state['revision'],'choose-agent')
+            check.assert_called_once_with(self.control.registry,self.control.runtime,self.store.resolve(ref)['profile'])
+        await self.control.task
+        self.assertEqual(self.store.state['handoffs']['choose-agent']['status'],'not_applied')
+
     async def test_only_confirmed_cancelled_session_is_resumed_under_new_profile(self):
         self.control.service=AsyncMock(return_value={'status':'applied','reference':self.ref,
             'digest':self.store.resolve(self.ref)['digest'],'cancelled_sources':[{'session_id':'a','credential_sha256':self.source_hash}]})

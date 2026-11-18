@@ -65,10 +65,10 @@ func TestGenerationHandoffConfirmsThenRecoversOriginalOperationWithoutResending(
 	updates := make(chan func(), 32)
 	a.Update = func(f func()) { updates <- f }
 	tt := ui.NewTester(func(c *ui.Context) { ui.Column(c).Fill().Padding(24).Children(func() { a.generationSettings(c) }) }, 1200, 820)
-	clickProjectUI(t, tt, "更换配置")
+	clickProjectUI(t, tt, "应用")
 	drainReading(t, updates, func() bool { return !a.integrations.HandoffLoading })
 	tt.Frame()
-	if !tt.HasText("待整理 12 个会话") || !tt.HasText("另有 1 个会话等待核对结果") {
+	if a.integrations.Handoff.Pending != 12 || !tt.HasText("另有 1 个会话结果待核对。") {
 		t.Fatal("missing actual backlog preview")
 	}
 	fixtureImage(t, tt, "generation-handoff-modal")
@@ -76,11 +76,10 @@ func TestGenerationHandoffConfirmsThenRecoversOriginalOperationWithoutResending(
 	if posts.Load() != 0 || a.integrations.HandoffOpen {
 		t.Fatal("cancelling preview mutated model")
 	}
-	clickProjectUI(t, tt, "更换配置")
+	clickProjectUI(t, tt, "应用")
 	drainReading(t, updates, func() bool { return !a.integrations.HandoffLoading })
 	tt.Frame()
-	clickProjectUI(t, tt, "Provider · OpenAI · fast-model")
-	clickProjectUI(t, tt, "切换并接续")
+	clickProjectUI(t, tt, "确认启用")
 	drainReading(t, updates, func() bool { return !a.integrations.Busy })
 	if posts.Load() != 1 || a.integrations.HandoffOperation == "" {
 		t.Fatal("lost reply discarded original handoff")

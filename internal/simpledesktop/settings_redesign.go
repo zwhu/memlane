@@ -52,24 +52,29 @@ func settingsCard(c *ui.Context, title, description string, content func()) {
 	})
 }
 func (a *App) globalSettingsPage(c *ui.Context) {
-	settingsTabs(c, &a.access.SettingsSection, []string{"服务与连接", "知识处理"})
-	contentWidth := float32(1100)
+	switch a.access.SettingsSection {
+	case "服务与连接":
+		a.access.SettingsSection = "服务"
+	case "知识处理":
+		a.access.SettingsSection = "记忆处理"
+	}
+	settingsTabs(c, &a.access.SettingsSection, []string{"记忆处理", "Agent 与模型", "服务"})
 	ui.Scroll(c.Key("global-settings-"+a.access.SettingsSection)).Grow(1).MinHeight(0).Padding(12, 32, 24, 32).Background(ui.Hex("#f8fafc")).Children(func() {
-		ui.Column(c).FillWidth().MaxWidth(contentWidth).Gap(16).Children(func() {
+		ui.Column(c).FillWidth().MaxWidth(1100).Gap(16).Children(func() {
 			switch a.access.SettingsSection {
-			case "服务与连接":
-				ui.Column(c).FillWidth().Gap(24).Children(func() {
-					a.environmentSetup(c, false)
-					a.serviceConnectionOverview(c)
-					if a.Config.ProjectControl != nil {
-						ui.Column(c).FillWidth().Gap(12).Children(func() {
-							a.agentConnectionSettings(c)
-						})
-					}
-				})
-			case "知识处理":
+			case "记忆处理":
+				a.generationConfigurationFor(c, false, true)
 				languageSettingsCard(c)
-				a.generationSettings(c)
+				a.globalToolGraphSettings(c)
+			case "Agent 与模型":
+				ui.Column(c).FillWidth().Gap(24).Children(func() {
+					if a.Config.ProjectControl != nil {
+						a.agentConnectionSettings(c)
+					}
+					a.generationManagement(c)
+				})
+			case "服务":
+				ui.Column(c).FillWidth().Gap(24).Children(func() { a.environmentSetup(c, false); a.serviceConnectionOverview(c) })
 			}
 		})
 	})

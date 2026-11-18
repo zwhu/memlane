@@ -118,6 +118,12 @@ func (a *App) deleteGeneration() {
 func (a *App) applyGenerationDeletion(o generationUIOperation) {
 	s := &a.integrations
 	delete(s.Generation.Profiles, o.Profile)
+	delete(s.GenerationDrafts, o.Profile)
+	for mode, id := range s.GenerationModeSelection {
+		if id == o.Profile {
+			delete(s.GenerationModeSelection, mode)
+		}
+	}
 	if s.ProfileID == o.Profile {
 		s.Editor, s.APIKey = false, ""
 		s.KeyEpoch++

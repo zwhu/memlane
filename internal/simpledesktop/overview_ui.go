@@ -273,11 +273,11 @@ func (a *App) overviewHome(c *ui.Context) {
 							homeLink(c, "显示最近记忆", func() { v.Day = ""; v.KnowledgeScroll.Y = 0 })
 						}
 					})
-					ui.Column(c).Padding(8).Border(1, homeBorder).Radius(12).Children(func() { a.overviewKnowledge(c, now) })
+					listSurface(c, func() { a.overviewKnowledge(c, now) })
 				})
 				ui.Column(c).Key("overview-activity-section").Width(0).Grow(1).MinWidth(255).Gap(8).Children(func() {
 					ui.Row(c).Height(28).Children(func() { homeText(c, "近期动态", homeHeading); ui.Spacer(c); a.overviewActivityTabs(c) })
-					ui.Column(c).Padding(8).Border(1, homeBorder).Radius(12).Children(func() { a.overviewActivities(c, now) })
+					listSurface(c, func() { a.overviewActivities(c, now) })
 				})
 			})
 			a.overviewProjectGrid(c)
@@ -428,13 +428,13 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 		}
 		for index, item := range rows {
 			i := item
-			row := ui.Button(c, "").Key("recent-" + i.key()).Label(i.Title).FillWidth().Justify(ui.Start).AlignItems(ui.Start).Padding(8).Radius(0).Gap(10).BorderWidth(0)
+			row := ui.Button(c, "").Key("recent-" + i.key()).Label(i.Title).FillWidth().Justify(ui.Start).AlignItems(ui.Center).MinHeight(56).Padding(8, 0).Radius(0).Gap(16).BorderWidth(0)
 			if index < len(rows)-1 {
 				row.BorderWidth(0, 0, 1, 0).BorderColor(homeBorder)
 			}
 			hover := ui.Hex("#f7f9fb")
 			row.Background(homeHoverColor(row, "knowledge-surface", hover.Alpha(0), hover)).Children(func() {
-				ui.Column(c).Size(24, 24).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() { ui.Icon(c, recentAgentIcon(i)).FontSize(20).TextColor(homeMuted) })
+				ui.Column(c).Size(24, 24).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() { agentLogo(c, recentAgentIcon(i), 20) })
 				ui.Column(c).Gap(0).Grow(1).MinWidth(0).Children(func() {
 					homeText(c, knowledgePreview(i.Title), homeTitle).MaxLines(1).Tooltip(i.Title)
 					date := "来源日期未知"

@@ -50,11 +50,13 @@ class GenerationHandoff:
         if self.pending():
             raise PolicyError('generation_handoff_requires_review', 409)
         candidate = self.store.resolve(reference)
-        if not validation_passed(self.store.state['validations'], candidate['digest']):
-            raise PolicyError('generation_validation_required', 409)
-        self.store.native_schema_evidence(candidate)
-        from agent_bridge_runtime import require_bridge_validation
-        require_bridge_validation(self.store, self.runtime, candidate)
+        if candidate['profile']['mode'] == 'agent_bridge':
+            from agent_bridge_runtime import require_connected_bridge
+            require_connected_bridge(self.registry, self.runtime, candidate['profile'])
+        else:
+            if not validation_passed(self.store.state['validations'], candidate['digest']):
+                raise PolicyError('generation_validation_required', 409)
+            self.store.native_schema_evidence(candidate)
         if reference == self.store.state.get('active'):
             raise PolicyError('generation_profile_already_active', 409)
         row = {'operation_id':operation, 'reference':copy.deepcopy(reference), 'digest':candidate['digest'],

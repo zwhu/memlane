@@ -209,3 +209,12 @@ def bridge_default_states(runtime):
             except PolicyError:
                 pass
     return result
+
+
+def require_connected_bridge(registry, runtime, profile):
+    from agent_connections import Connections
+    kind = profile['bridge_kind']
+    rows = Connections(registry, runtime).view()['connections']
+    if not any(row['kind'] == kind and row['status'] == 'configured_pending_new_session' for row in rows):
+        raise PolicyError('generation_agent_not_connected', 409)
+    check_bridge_runtime(runtime, profile)

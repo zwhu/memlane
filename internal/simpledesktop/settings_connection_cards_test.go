@@ -38,7 +38,7 @@ func TestConnectionCardsUseColumnsAndKeepBatchSelection(t *testing.T) {
 		t.Run(fmt.Sprint(width), func(t *testing.T) {
 			a := settingsFixture()
 			a.page = "设置"
-			a.access.SettingsSection = "服务与连接"
+			a.access.SettingsSection = "Agent 与模型"
 			a.integrations = integrationState{Loaded: true, Selected: map[string]bool{}, Connections: ConnectionsDirectory{Connections: []AgentConnection{
 				{ID: "codex", Kind: "codex", Detected: true, Status: "configured_pending_new_session", NewSessions: 1},
 				{ID: "pi", Kind: "pi", Detected: true, Status: "not_connected"},

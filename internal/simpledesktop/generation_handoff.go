@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"sort"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -34,13 +33,10 @@ func (a *App) openGenerationHandoff(ref *GenerationRef) {
 	s.HandoffReady = false
 	s.HandoffRequest++
 	request := s.HandoffRequest
-	s.HandoffMode = ""
 	s.HandoffRef = nil
-	s.HandoffChoice = GenerationRef{}
 	if ref != nil {
 		chosen := *ref
 		s.HandoffRef = &chosen
-		s.HandoffChoice = chosen
 	}
 	client, ok := a.accessClient()
 	if !ok {
@@ -67,74 +63,37 @@ func (a *App) openGenerationHandoff(ref *GenerationRef) {
 		})
 	}()
 }
-func (a *App) generationHandoffModal(c *ui.Context) {
+func (a *App) generationHandoffPanel(c *ui.Context) {
 	s := &a.integrations
 	if !s.HandoffOpen {
 		return
 	}
-	modal := ui.Modal(c.Key("generation-handoff-modal"), &s.HandoffOpen, func() {
-		title := "更换处理模型"
-		if s.HandoffMode == "agent_bridge" {
-			title = "切换到 Agent 桥接"
-		} else if s.HandoffMode == "provider" {
-			title = "切换到 Provider"
-		}
-		homeText(c, title, homeHeading).FontSize(18)
-		homeText(c, "当前："+generationLabel(s.Generation, s.Generation.Active), homeMeta)
-		refs := []GenerationRef{}
-		for id, rows := range s.Generation.Profiles {
-			if len(rows) == 0 {
-				continue
-			}
-			if s.HandoffMode != "" && rows[len(rows)-1].Profile.Mode != s.HandoffMode {
-				continue
-			}
-			ref := GenerationRef{ID: id, Revision: rows[len(rows)-1].Revision}
-			if s.Generation.validated(&ref) && (s.Generation.Active == nil || *s.Generation.Active != ref) {
-				refs = append(refs, ref)
-			}
-		}
-		sort.Slice(refs, func(i, j int) bool { return refs[i].ID < refs[j].ID })
-		ui.Scroll(c.Key("handoff-model-options")).FillWidth().MaxHeight(260).Children(func() {
-			ui.RadioGroup(c, func() {
-				for _, ref := range refs {
-					ref := ref
-					label := generationLabel(s.Generation, &ref)
-					ui.Radio(c, &s.HandoffChoice, ref, label).Disabled(s.Busy).OnChange(func() { chosen := ref; s.HandoffRef = &chosen })
+	ui.Modal(c.Key("generation-enable-review"), &s.HandoffOpen, func() {
+		ui.Column(c).Width(500).Gap(16).Children(func() {
+			homeText(c, "切换处理方式？", homeHeading).FontSize(16).FontWeight(500)
+			homeText(c, generationLabel(s.Generation, s.HandoffRef), homeBody).FontSize(13).TextColor(homeInk).MaxLines(2)
+			if s.HandoffLoading {
+				homeText(c, "正在读取任务状态…", homeMeta)
+			} else {
+				if s.Handoff.Running > 0 {
+					homeText(c, fmt.Sprintf("正在处理 %d 个会话，切换后将接续处理。", s.Handoff.Running), homeMeta)
 				}
-			}).Label("选择处理模型").Gap(12)
-			if len(refs) == 0 {
-				homeText(c, "暂无其他已验证的模型", homeMeta)
+				if s.Handoff.Unknown > 0 {
+					homeText(c, fmt.Sprintf("另有 %d 个会话结果待核对。", s.Handoff.Unknown), homeMeta)
+				}
 			}
+			if s.Error != "" {
+				homeText(c, s.Error, homeMeta).MaxLines(3)
+			}
+			ui.Row(c).FillWidth().Justify(ui.End).Gap(12).Children(func() {
+				textButton(c, "取消", func() { s.HandoffOpen = false }).Disabled(s.Busy)
+				ui.Button(c, "确认启用").Disabled(s.Busy || !s.HandoffReady || s.HandoffLoading || s.HandoffRef == nil ||
+					(s.HandoffRef != nil && s.Generation.Active != nil && *s.HandoffRef == *s.Generation.Active)).OnClick(a.startGenerationHandoff)
+			})
 		})
-		if s.HandoffMode != "" {
-			textButton(c, "管理此方式的配置", func() { s.HandoffOpen = false; a.openGenerationModeConfiguration(s.HandoffMode) })
-		}
-		if s.HandoffLoading {
-			homeText(c, "正在读取待整理数量…", homeMeta)
-		} else {
-			homeText(c, fmt.Sprintf("待整理 %d 个会话", s.Handoff.Pending), homeBody)
-			if s.Handoff.Running > 0 {
-				homeText(c, fmt.Sprintf("正在整理 %d 个会话", s.Handoff.Running), homeMeta)
-			}
-			if s.Handoff.Unknown > 0 {
-				homeText(c, fmt.Sprintf("另有 %d 个会话等待核对结果", s.Handoff.Unknown), homeMeta)
-			}
-		}
-		homeText(c, "剩余会话将使用新模型整理，并消耗相应额度。", homeMeta)
-		if s.Error != "" {
-			homeText(c, s.Error, homeMeta).MaxLines(3)
-		}
-		ui.Row(c).FillWidth().Justify(ui.End).Gap(12).Children(func() {
-			textButton(c, "取消", func() { s.HandoffOpen = false }).Disabled(s.Busy)
-			ui.Button(c, "切换并接续").Disabled(s.Busy || !s.HandoffReady || s.HandoffLoading || s.HandoffRef == nil ||
-				(s.HandoffRef != nil && s.Generation.Active != nil && *s.HandoffRef == *s.Generation.Active)).OnClick(a.startGenerationHandoff)
-		})
-	}).Width(500).Padding(24).Gap(16)
-	if modal.Dismissed() {
-		s.HandoffOpen = false
-	}
+	})
 }
+
 func (a *App) generationHandoffStatus(c *ui.Context) {
 	s := &a.integrations
 	if s.Handoff.Handoff == nil {
@@ -158,7 +117,7 @@ func (a *App) generationHandoffStatus(c *ui.Context) {
 func (a *App) startGenerationHandoff() {
 	s := &a.integrations
 	client, ok := a.accessClient()
-	if !ok || s.Busy || !s.HandoffReady || s.HandoffLoading || s.HandoffRef == nil || !s.Generation.validated(s.HandoffRef) {
+	if !ok || s.Busy || !s.HandoffReady || s.HandoffLoading || s.HandoffRef == nil || !a.generationCanUse(s.HandoffRef) {
 		return
 	}
 	ref := *s.HandoffRef
@@ -244,42 +203,4 @@ func (a *App) pollGenerationHandoff(operation string) {
 			}
 		})
 	}()
-}
-
-func (a *App) openGenerationModeConfiguration(mode string) {
-	s := &a.integrations
-	s.ModeConfiguration = mode
-	s.ModeConfigurationOpen = true
-}
-func (a *App) generationModeConfigurationModal(c *ui.Context) {
-	s := &a.integrations
-	if !s.ModeConfigurationOpen {
-		return
-	}
-	ui.Modal(c.Key("generation-mode-configuration"), &s.ModeConfigurationOpen, func() {
-		title := "Provider 配置"
-		if s.ModeConfiguration == "agent_bridge" {
-			title = "Agent 桥接配置"
-		}
-		homeText(c, title, homeHeading).FontSize(18)
-		for _, group := range generationProfileGroups(s.Generation) {
-			if (group.Key == "agent") != (s.ModeConfiguration == "agent_bridge") {
-				continue
-			}
-			for _, item := range group.Items {
-				item := item
-				textButton(c, item.Title, func() { s.ModeConfigurationOpen = false; s.editProfile(item.ID, item.Row) })
-			}
-		}
-		textButton(c, "添加配置", func() {
-			s.ModeConfigurationOpen = false
-			profile := GenerationProfile{Mode: "provider", Provider: "openai"}
-			if s.ModeConfiguration == "agent_bridge" {
-				profile = GenerationProfile{Mode: "agent_bridge", BridgeKind: "codex"}
-			}
-			s.editProfile("api-"+integrationOperation(), GenerationRow{Profile: profile})
-			s.MaxOutputTokens = ""
-		})
-		textButton(c, "关闭", func() { s.ModeConfigurationOpen = false })
-	}).Width(500).Padding(24).Gap(16)
 }

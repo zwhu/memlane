@@ -13,19 +13,19 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-func TestGenerationAddAndEditUseModalAndCloseRemovesSecret(t *testing.T) {
+func TestGenerationAddAndEditStayInlineAndDiscardRemovesSecret(t *testing.T) {
 	a := New(Config{}, nil)
 	a.integrations.Loaded = true
 	a.integrations.Generation.Profiles = map[string][]GenerationRow{"provider": {{Revision: 1, Profile: GenerationProfile{Mode: "provider", Provider: "openai", Model: "saved-model"}}}}
 	tt := ui.NewTester(func(c *ui.Context) {
 		ui.Column(c).Fill().Padding(24).Gap(16).Children(func() { a.generationSettings(c) })
 	}, 1200, 820)
-	if tt.HasText("供应商协议") {
-		t.Fatal("editor is still expanded in the settings page")
+	if !tt.HasText("供应商协议") {
+		t.Fatal("saved Provider fields are not inline")
 	}
 	clickProjectUI(t, tt, "添加配置")
-	if !a.integrations.Editor || !tt.HasText("添加模型配置") || !tt.HasText("关闭模型配置") || !tt.HasText("供应商协议") {
-		t.Fatal("add configuration did not open the shared modal")
+	if !a.integrations.Editor || !tt.HasText("Provider 配置") || !tt.HasText("供应商协议") {
+		t.Fatal("new Provider fields missing inline")
 	}
 	// A new form must not turn omitted options into client-selected values.
 	raw, err := json.Marshal(a.integrations.draftProfile())
@@ -34,12 +34,12 @@ func TestGenerationAddAndEditUseModalAndCloseRemovesSecret(t *testing.T) {
 	}
 	fixtureImage(t, tt, "generation-add-modal")
 	a.integrations.APIKey = "private-unsaved-key"
-	clickProjectUI(t, tt, "关闭模型配置")
-	if a.integrations.APIKey != "" || a.integrations.Editor || tt.HasText("供应商协议") {
+	clickProjectUI(t, tt, "取消修改")
+	if a.integrations.APIKey != "" || !tt.HasText("供应商协议") {
 		t.Fatal("dismissed editor kept a live credential field")
 	}
 	clickProjectUI(t, tt, "配置模型：provider")
-	if !tt.HasText("配置模型") || a.integrations.Model != "saved-model" {
+	if !tt.HasText("Provider 配置") || a.integrations.Model != "saved-model" {
 		t.Fatal("existing profile did not open in the shared editor")
 	}
 }

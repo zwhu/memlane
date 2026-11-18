@@ -8,7 +8,7 @@ import (
 func TestLocalAgentDetectionSettingsShowsRefreshAndUnavailableBinding(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
-	a.access.SettingsSection = "服务与连接"
+	a.access.SettingsSection = "Agent 与模型"
 	a.integrations = integrationState{Loaded: true, Selected: map[string]bool{}, Connections: ConnectionsDirectory{Connections: []AgentConnection{
 		{ID: "pi", Kind: "pi", Detected: true, Status: "not_connected"},
 		{ID: "opencode-discovery", Kind: "opencode", Detected: true, Status: "integration_pending"},

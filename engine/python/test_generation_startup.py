@@ -21,6 +21,17 @@ class StartupTests(unittest.TestCase):
         self.store.close()
         self.temp.cleanup()
 
+    def test_connected_agent_selection_starts_without_model_validation(self):
+        self.store.state['validations'].clear()
+        checks=[]
+        self.store.connected_bridge_check=lambda profile:checks.append(profile['bridge_kind'])
+        self.store.select_next(self.reference,self.store.state['revision'],'connected-next')
+        attempts=[]
+        start_generation(self.store,lambda ref,digest:attempts.append(ref['id']),lambda:True)
+        self.assertEqual(checks,['codex'])
+        self.assertEqual(attempts,['candidate'])
+        self.assertEqual(self.store.state['active'],self.reference)
+
     def test_active_commits_only_after_successful_health_and_digest_callback(self):
         def launch(ref, digest):
             self.assertEqual(self.store.state['active']['id'], 'existing-codex')

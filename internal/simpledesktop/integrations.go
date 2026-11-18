@@ -181,10 +181,6 @@ type integrationState struct {
 	HandoffOpen, HandoffLoading                                                                                 bool
 	HandoffRef                                                                                                  *GenerationRef
 	HandoffOperation                                                                                            string
-	ModeConfigurationOpen                                                                                       bool
-	ModeConfiguration                                                                                           string
-	HandoffMode                                                                                                 string
-	HandoffChoice                                                                                               GenerationRef
 	HandoffReady                                                                                                bool
 	HandoffRequest                                                                                              uint64
 	Handoff                                                                                                     GenerationHandoffDirectory
@@ -209,7 +205,11 @@ type integrationState struct {
 	DeleteOpen                                                                                                  bool
 	DeleteError                                                                                                 string
 	ProfileID, ProviderLabel, DraftMode, BridgeKind, BridgeProvider, Model, Endpoint, APIKey, CredentialVersion string
+	GenerationDrafts                                                                                            map[string]generationEditorDraft
+	GenerationModeSelection                                                                                     map[string]string
 	GenerationDraftMode                                                                                         string
+	GenerationAgentApply                                                                                        bool
+	GenerationProviderDialog                                                                                    bool
 	Temperature, MaxOutputTokens                                                                                string
 	CredentialConfigured                                                                                        bool
 	Saved                                                                                                       *GenerationRef
@@ -654,6 +654,10 @@ func (a *App) saveGeneration() {
 			}
 			s.editProfile(id, row)
 			s.Message = "配置已保存，当前使用未改变"
+			if s.GenerationAgentApply {
+				s.GenerationAgentApply = false
+				a.applySelectedProcessingAgent()
+			}
 		})
 	}()
 }

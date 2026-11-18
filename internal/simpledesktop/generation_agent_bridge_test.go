@@ -39,7 +39,7 @@ func TestAgentBridgeEditorUsesReadOnlyNativeDefaultAndRefreshesSnapshot(t *testi
 		t.Run(kind, func(t *testing.T) {
 			a := New(Config{}, nil)
 			a.integrations = integrationState{Editor: true, Loaded: true, DraftMode: "agent_bridge", BridgeKind: kind, Model: "obsolete-saved-model", ProfileID: "new", Generation: GenerationDirectory{AgentBridges: map[string]GenerationProfile{kind: {Mode: "agent_bridge", BridgeKind: kind, Model: "native-current", BridgeProvider: "deepseek"}}}}
-			tt := ui.NewTester(func(c *ui.Context) { a.generationEditorModal(c) }, 1200, 820)
+			tt := ui.NewTester(func(c *ui.Context) { a.generationEditorPanel(c) }, 1200, 820)
 			if !tt.HasText("native-current") || !tt.HasText("Agent 当前模型") {
 				t.Fatal("native default missing")
 			}

@@ -7,6 +7,7 @@ type generationProfileItem struct {
 	Row    GenerationRow
 	Title  string
 	Detail string
+	Icon   string
 }
 type generationProfileGroup struct {
 	Key   string
@@ -32,6 +33,7 @@ func generationProfileGroups(g GenerationDirectory) []generationProfileGroup {
 		key, title := "agent", "Agent 桥接"
 		item := generationProfileItem{ID: id, Row: row}
 		if row.Profile.Mode == "agent_bridge" {
+			item.Icon = row.Profile.BridgeKind
 			item.Title = generationBridgeLabel(row.Profile.BridgeKind)
 			item.Detail = generationDefaultModel(g, row.Profile.BridgeKind)
 		} else {
@@ -68,4 +70,33 @@ func generationProfileGroups(g GenerationDirectory) []generationProfileGroup {
 		result = append(result, *group)
 	}
 	return result
+}
+
+func generationWorkspaceGroups(g GenerationDirectory, mode string) []generationProfileGroup {
+	groups := []generationProfileGroup{}
+	seen := map[string]bool{}
+	for _, group := range generationProfileGroups(g) {
+		if (group.Key == "agent") != (mode == "agent_bridge") {
+			continue
+		}
+		for _, item := range group.Items {
+			seen[item.Row.Profile.BridgeKind] = true
+		}
+		groups = append(groups, group)
+	}
+	if mode == "agent_bridge" {
+		if len(groups) == 0 {
+			groups = append(groups, generationProfileGroup{Key: "agent", Title: "Agent"})
+		}
+		for _, kind := range []string{"codex", "traex", "pi"} {
+			profile, ok := g.AgentBridges[kind]
+			if !ok || seen[kind] {
+				continue
+			}
+			groups[0].Items = append(groups[0].Items, generationProfileItem{ID: "agent-" + kind, Row: GenerationRow{Profile: profile}, Title: generationBridgeLabel(kind), Icon: kind, Detail: generationDefaultModel(g, kind)})
+		}
+		order := map[string]int{"codex": 0, "pi": 1, "traex": 2}
+		sort.SliceStable(groups[0].Items, func(i, j int) bool { return order[groups[0].Items[i].Icon] < order[groups[0].Items[j].Icon] })
+	}
+	return groups
 }

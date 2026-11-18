@@ -56,7 +56,7 @@ func TestSettingsProjectPermissionsCardsAndNavigation(t *testing.T) {
 			}
 			clickProjectUI(t, tt, "项目设置")
 			clickProjectUI(t, tt, "设置")
-			if a.settingsOrigin != nil || a.access.OpenProject != "" || !tt.HasText("服务与连接") {
+			if a.settingsOrigin != nil || a.access.OpenProject != "" || !tt.HasText("Agent 与模型") {
 				t.Fatal("sidebar settings still project scoped")
 			}
 			fixtureImage(t, tt, fmt.Sprintf("settings-%dx%d-global", wh[0], wh[1]))
@@ -67,7 +67,7 @@ func TestSettingsProjectPermissionsCardsAndNavigation(t *testing.T) {
 			}
 			a.access.SettingsSection = "高级"
 			tt.Frame()
-			if a.access.SettingsSection != "服务与连接" || !tt.HasText("运行环境") {
+			if a.access.SettingsSection != "记忆处理" || !tt.HasText("记忆语言") {
 				t.Fatal("retired tab left the settings page blank after reload")
 			}
 			clickProjectUI(t, tt, "记忆处理")

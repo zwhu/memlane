@@ -35,13 +35,13 @@ func (a *App) globalToolGraphSettings(c *ui.Context) {
 		return
 	}
 	settingsListSurface(c, func() {
-		homeText(c, "工具记录关系图谱", homeHeading).FontSize(15).FontWeight(500).Margin(10, 0)
-		enabled := a.access.Directory.ToolGraph.GlobalEnabled
-		ui.Checkbox(c.Key("global-tool-graph"), &enabled, "自动构建关系图谱").Disabled(!a.access.Loaded || a.access.Busy).OnChange(func() {
-			a.saveToolGraphSetting("", &enabled)
+		settingsListRow(c, func() {
+			homeText(c, "关系图谱", homeBody).Width(100).FontSize(13).FontWeight(500).TextColor(homeInk)
+			enabled := a.access.Directory.ToolGraph.GlobalEnabled
+			ui.Checkbox(c.Key("global-tool-graph"), &enabled, "自动构建关系图谱").Disabled(!a.access.Loaded || a.access.Busy).OnChange(func() { a.saveToolGraphSetting("", &enabled) })
+			ui.Spacer(c)
+			homeText(c, "开启后消耗模型额度", homeMeta).SingleLine().Tooltip("关闭不影响消息保存和记忆提炼；项目可单独设置。")
 		})
-		homeText(c, "关闭不影响消息保存和记忆提炼。", homeMeta).Margin(8, 0, 0, 0)
-		homeText(c, "开启后消耗模型额度，项目可单独设置。", homeMeta).Margin(4, 0, 8, 0)
 		if a.access.Message != "" {
 			message := a.access.Message
 			if message == "设置已保存；生效状态以官方核对结果为准" {
