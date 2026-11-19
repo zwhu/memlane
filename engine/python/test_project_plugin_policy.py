@@ -30,6 +30,42 @@ class PluginPolicyTests(unittest.TestCase):
         self.environment.stop()
         self.temporary.cleanup()
 
+    def test_empty_common_skips_search_and_preserves_project_with_final_policy_check(self):
+        dataset = '11111111-1111-4111-8111-111111111111'
+        initial = {'revision': 4, 'policy': {'permissions': ['read']},
+                   'common': {'ready': True, 'readable': True, 'dataset_id': dataset}}
+        for rows, final, expected in (([], initial, 'project context'),
+                                      ([], {**initial, 'revision': 5}, ''),
+                                      ([{'id': 'raw', 'datasetId': dataset, 'externalMetadata': {}}], initial, 'project context')):
+            with self.subTest(rows=rows, revision=final['revision']):
+                calls = []
+                def request(path, payload=None, **options):
+                    calls.append(path)
+                    if path.startswith('/api/v1/datasets/'):
+                        return rows
+                    raise AssertionError('empty common dataset reached search')
+                self.fake_common._json_http_request = request
+                with patch.dict(sys.modules, {'_coding_memory': types.SimpleNamespace(_raw_text=lambda *a: 'unused')}),                         patch.object(policy, 'current', side_effect=[initial, final]) as current:
+                    self.assertEqual(policy._merge_block('question', '.', lambda *a: 'project context'), expected)
+                self.assertEqual(current.call_count, 2)
+                self.assertEqual(calls, ['/api/v1/datasets/' + dataset + '/data?limit=30&offset=0'])
+
+    def test_common_candidates_still_use_search_and_keep_failure_visible_upstream(self):
+        dataset = '11111111-1111-4111-8111-111111111111'
+        initial = {'revision': 4, 'policy': {'permissions': ['read']},
+                   'common': {'ready': True, 'readable': True, 'dataset_id': dataset}}
+        calls = []
+        def request(path, payload=None, **options):
+            calls.append(path)
+            if path.startswith('/api/v1/datasets/'):
+                return [{'id': 'knowledge', 'datasetId': dataset,
+                         'externalMetadata': {'memlane_kind': 'common_knowledge', 'category': 'preference'}}]
+            raise OSError('existing candidate retrieval failed')
+        self.fake_common._json_http_request = request
+        with patch.dict(sys.modules, {'_coding_memory': types.SimpleNamespace(_raw_text=lambda *a: 'unused')}),                 patch.object(policy, 'current', side_effect=[initial, initial]):
+            self.assertEqual(policy._merge_block('question', '.', lambda *a: 'project context'), 'project context')
+        self.assertEqual(calls[-1], '/api/v1/search')
+
     def test_disabled_cursor_uses_stat_without_reading_transcript(self):
         transcript = self.root / 'transcript.jsonl'
         transcript.write_text('private disabled content\n')

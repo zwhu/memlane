@@ -5,7 +5,11 @@ import contextlib
 import copy
 from unittest.mock import Mock
 
-from project_backlog_worker import process, check
+from project_backlog_worker import process, check, review, save
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+import sys
 
 
 class PendingResultCheckTests(unittest.TestCase):
@@ -19,6 +23,32 @@ class PendingResultCheckTests(unittest.TestCase):
             _pending_snapshot=lambda *args:(None,None,None,None,self.entries,None),
             _state=contextlib.nullcontext, NotReady=RuntimeError)
         self.policy._state = lambda:contextlib.nullcontext({})
+
+    def test_mixed_project_review_excludes_explicit_rejection_not_numbered_unknown(self):
+        self.entries = [{'type': 'qa', 'question': 'same', '_capture_id': 'original', '_replay_ambiguous': True}]
+        before = copy.deepcopy(self.entries)
+        with patch('project_backlog_worker.numbered', return_value=True):
+            self.policy._state = lambda: contextlib.nullcontext({'blocked': {'reason': 'capture_request_rejected'}})
+            denied = review(self.common, self.policy, 'dataset', 'rejected-source')
+            self.policy._state = lambda: contextlib.nullcontext({})
+            recoverable = review(self.common, self.policy, 'dataset', 'recoverable-source')
+        self.assertEqual(denied['tokens'], [])
+        self.assertEqual(len(recoverable['tokens']), 1)
+        self.assertEqual(self.entries, before)
+
+    def test_saved_tokens_are_rechecked_for_rejection_before_any_send(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lock = Path(directory) / 'drain.lock'; lock.write_text('owned')
+            self.common._try_acquire_drain_lock = lambda: True
+            self.common._DRAIN_LOCK = lock
+            self.common._release_drain_lock = Mock()
+            self.common.remember_entry_via_http = Mock()
+            self.policy._state = lambda: contextlib.nullcontext({'blocked': {'reason': 'capture_request_rejected'}})
+            progress = []
+            with patch.dict(sys.modules, {'_capture_policy': types.SimpleNamespace(allow_tool=lambda *a: True, sanitize=lambda e:e)}):
+                save(self.common, self.policy, {'dataset':'dataset','session_id':'session','tokens':['old-reviewed-token']}, lambda:False, progress.append)
+            self.assertEqual(progress[-1]['reason'], 'capture_request_rejected')
+            self.common.remember_entry_via_http.assert_not_called()
 
     def test_legacy_content_match_never_resends_or_deletes_original(self):
         before = copy.deepcopy(self.entries)

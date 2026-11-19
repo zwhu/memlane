@@ -43,6 +43,8 @@ def review(common, policy, dataset, host):
     with policy._state() as state:
         blocked = state.get('blocked')
     safe = [e for e in pending if not e.get(common._AMBIGUOUS_KEY) or numbered(e)]
+    if blocked and blocked.get('reason') == 'capture_request_rejected':
+        safe = []  # Explicitly rejected sources never join project-wide resume.
     # A legacy unknown must not prevent separately numbered messages being saved.
     if blocked and blocked.get('reason') == 'write_result_unknown' and any(numbered(e) for e in safe):
         blocked = None
@@ -129,6 +131,11 @@ def save(common, policy, payload, stopped, report=emit):
             if payload.get('automatic'):
                 policy.require('capture', dataset)
             policy._pending_identity(dataset, session)
+            with policy._state() as policy_state:
+                blocked = policy_state.get('blocked')
+            if blocked and blocked.get('reason') == 'capture_request_rejected':
+                progress('paused', 'capture_request_rejected')
+                return
             token = tokens[0]
             with common._buffer_lock():
                 _, _, _, _, pending, _ = policy._pending_snapshot(dataset, session)

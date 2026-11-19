@@ -350,7 +350,7 @@ def _merge_block(query, cwd, project_builder):
                         and metadata.get('category') in ('preference', 'experience') and row.get('id')):
                     candidates[row['id']] = row
             ordered = sorted(candidates, key=lambda key: candidates[key].get('updatedAt') or candidates[key].get('createdAt') or '', reverse=True)
-            if query.strip():
+            if query.strip() and candidates:
                 groups = _json_http_request('/api/v1/search', {'query': query, 'search_type': 'CHUNKS',
                                               'dataset_ids': [identifier], 'top_k': 30, 'only_context': False}, timeout=remaining())
                 ordered = []

@@ -30,6 +30,11 @@ def common_recall_response(text):
                 groups = _json_http_request('/api/v1/search', {'query': query, 'search_type': 'CHUNKS','''
     new = '''            if candidates and query.strip():
                 groups = _json_http_request('/api/v1/search', {'query': query, 'search_type': 'CHUNKS','''
+    # New fixed artifacts already contain this guard. Their full manifest is
+    # verified before this overlay; do not apply the same condition twice.
+    equivalent = new.replace('if candidates and query.strip():', 'if query.strip() and candidates:')
+    if text.count(new) == 1 or text.count(equivalent) == 1:
+        return text
     if text.count(old) != 1:
         raise ValueError('fixed common recall overlay anchor mismatch')
     return text.replace(old, new, 1)

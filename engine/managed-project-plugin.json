@@ -1,7 +1,7 @@
 {
   "plugin_commit": "a176248914fdb32a78354854b300174203b15a5c",
   "patch_sha256": "55fd6c62c8635cc0f6e8e99607b4540c6828c325c21c74710c9d3058d377dc71",
-  "extension_sha256": "874ae3e658be71819e49caa82bd9e85e690e8d67a6359051c640931f7f3ffd8e",
+  "extension_sha256": "28735b773bb0dbe1cb96d6f00d5596f80228bce76e29d27b85e24f48173a175d",
   "upstream_lock_sha256": "9151009975b168c8f9e0fa2ee7e6b7e74bdf4af4a92ab823d31d1539e9011148",
   "files": {
     "CHANGELOG.md": "fca7cf57f9a971d37bebde4ad9917132b80d65267aaa175b3660042445284258",
@@ -61,6 +61,6 @@
     "skills/cognee-standup/SKILL.md": "1ac45dddf167b7c4976e7db9accc42425c0d68933e551f012fdc47d1cbebd07c",
     "assets/logo.svg": "93874bfb4a0cbac680240769119d8e27c1769aea64b7a741423c2986326e15e6",
     ".codex-plugin/plugin.json": "181be5d05735ead0cb71021db08e4997f2f529cd4bfb1f9f1ed8db9c5b98734e",
-    "scripts/_memlane_policy.py": "874ae3e658be71819e49caa82bd9e85e690e8d67a6359051c640931f7f3ffd8e"
+    "scripts/_memlane_policy.py": "28735b773bb0dbe1cb96d6f00d5596f80228bce76e29d27b85e24f48173a175d"
   }
 }
