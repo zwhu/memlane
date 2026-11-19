@@ -121,3 +121,5 @@ Computer Use is not prepared for 'io.github.zwhu.memlane.dev'. You first must ca
 本批还修复召回计数30秒刷新重排、滚动中保持展示范围、总览按dataset批量读取及离页取消目录／统计。80条同dataset只发1次counts请求与迟到目录不启动统计由HTTP夹具及Go检查证明；未将其冒称为实际负载或全部Native通过。消息明确拒绝、编号未知恢复与激活marker中断恢复的修复另见[日常收口账本](daily-consolidation-20261119.md)。最终工作树完整Go test/vet、lint和35项相关Python检查通过，提交候选另行独立核验。
 
 剩余Native：来源→返回详情→返回日期／切日，真实滚动与位置恢复，搜索提交／类型过滤／返回，通用分类与阅读，处理候选取消及画像只浏览。环境已有能力的当前源码复核见[环境准备复核](environment-readiness-20261119.md)。不进入release，不因工具故障重启日常服务或重复模型任务。
+
+用户再次恢复后，当前窗口323748/PID97697可读；本会话MCP49710仍保留旧PID68101，最新导航点击在准备门禁被拒绝，1次，旧计数保留。已核对本次调用所属客户端、代理退出行为及CLI无已加载客户端重连入口；本轮没有继续试点或启停日常栈。准确的新Host命令、源码摘要和剩余用例见[Native接续](native-verification-resume-20261119.md)，不能将本次诊断描述为工具已恢复或Native已通过。
