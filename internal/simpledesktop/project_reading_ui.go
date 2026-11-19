@@ -27,12 +27,20 @@ type readingLocation struct {
 	SettingsParent        *readingLocation
 	SettingsProject       string
 	FeedDetail            bool
+	SearchOrigin          *readingLocation
+	SearchAnchor          *Item
+	SearchIdentity        string
 }
 
 func (a *App) readingLocation() *readingLocation {
 	p, _ := a.current()
 	location := &readingLocation{Page: a.page, Kind: a.kind, ProjectID: p.ID, Index: a.project, FromOverview: a.fromOverview, Floors: a.overviewSourceFloor}
 	location.FeedDetail = a.state().Knowledge.Detail
+	if a.searchOrigin != nil && a.searchPane == a.state() {
+		location.SearchOrigin = a.searchOrigin
+		location.SearchAnchor = a.searchAnchor
+		location.SearchIdentity = a.readingIdentity
+	}
 	if a.page == "设置" {
 		location.SettingsParent = a.settingsOrigin
 		if a.settingsOrigin != nil {
@@ -71,6 +79,11 @@ func (a *App) restoreReadingLocation(v *readingLocation) {
 	}
 	a.fromOverview = v.FromOverview
 	a.overviewSourceFloor = v.Floors
+	if p, ok := a.current(); ok && v.SearchOrigin != nil && v.SearchAnchor != nil && v.SearchIdentity == a.readingIdentity && v.SearchAnchor.Dataset == p.Dataset {
+		a.searchOrigin = v.SearchOrigin
+		a.searchPane = a.state()
+		a.searchAnchor = v.SearchAnchor
+	}
 	if v.Page == "图谱" {
 		a.loadGraph()
 	}

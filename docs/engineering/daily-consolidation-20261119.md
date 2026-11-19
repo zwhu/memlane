@@ -44,3 +44,15 @@ CE01真实新会话：pi 34.37秒、Codex45.98秒、TraeX43.26秒均退出0，�
 第二批已提交推送2f7d8ac。独立候选tree b4f4fa98b8b340342a4a00b9c8abd11337fad523 的lint、完整Go test/vet、统计/搜索相关race及9项统计/诊断Python检查全部退出0；随后只修改5份Markdown，核对全部提交源码与已通过候选一致。70文件含此前本功能未提交的生产代码和相应行为测试，私有证据、其他会话Gemini源码及其未完成处理桥保持未提交。第一批10文件与第二批70文件各自独立验证，不能用整体工作树通过替代净候选证明。
 
 当前本轮源码与环境复核已收口，剩余V3 Native返回/切日/搜索/分类/配置取消/画像浏览仍受工具prepared故障阻断；原工具失败计数不重置，不反复重开日常栈。当前为dev、唯一日常库保留，未做release、无新依赖下载／索引重建／旧消息重放。正式审查修复对照见[审查闭环](consolidation-review-20261119.md)。
+
+新Host实际导航已恢复，原CU-PREP01计数保留。用户确认其他窗口操作停止；日志也核对到此前另一客户端22658的同窗点击，混合阶段不作连续验收通过。当前owner158同库ready，9个既有V3相关源码摘要无变化；另一会话Gemini已提交0853e50，保留其真实任务待验边界。
+
+本次Native发现R19-SEARCH-RETURN01：搜索→原记忆→来源会话→返回原记忆→关闭详情后，“返回搜索”入口丢失，1轮。openSourceRecord以readingLocation保存来源返回位置，restoreReadingLocation调用普通navigateKind会清除searchOrigin/searchPane/searchAnchor，而快照未包含这三个关联。修复仅扩展已有阅读位置快照，返回恢复同一搜索及Anchor；身份或dataset变化、普通导航仍撤下，不写官方数据、计数或配置，不新调用模型。先复现行为回归，再集中修复、定向/集成门禁和真实同窗复验；不与CU-PREP01或V3分路失败问题合并。
+
+搜索45秒后画面未变化的观察已另作方法核对：只读同协议词法请求200/1.952秒，下一次输入显示已取得结果；隐藏遮挡Memlane的终端窗口后，来源读取无额外Memlane点击即自动完成。SDK按occlusion暂停绘制，截图旧画面不能证明后台请求尚在执行。本轮先保持Memlane可见再验，不为此修改生产搜索超时。原截图、终端控件ID失效及clickCount=0实际打开详情的工具/方法异常保留，私有证据在native-verified-mchgg9c3。
+
+R19-SEARCH-RETURN01旧行为回归已复现，修复后搜索返回入口与原查询/类型/位置保留分支通过。首次身份变化检查只手写readingIdentity，导航按实际连接重新计算后覆盖了假值，导致该夹具失败；改为改变真实Client连接身份，保留native-source-return-targeted.log及同期全Go失败日志为方法错误，不计为生产修复又失败1轮。来源快照恢复同时核对实际身份和当前dataset，普通导航继续清空搜索关联。旧UIwatcher86666按命令及启动时间核对后正常TERM，已退出；日常owner158及三服务未停。集中检查后通过正式dev入口重新打开当前同库窗口。
+
+最终源码全Go test/vet、相关race及lint通过；Native当前73656/324089同库实窗已复验搜索来源返回，查询/类型/非顶部位置保持。日期80条通过键盘滚至末条，阅读对应官方来源后返回仍80条且位于末端；切日恢复20/69、返回最近恢复初始范围。候选pi短Modal已明确取消、Provider只浏览，active=existing-codex revision2且generation revision17保持；画像已有文档只读，原三个operation_id不变。87事件/546命中的阶段核对不变。主要截图10–30、空分类31–33及树保存native-verified-mchgg9c3，真数据不入Git；完整边界见V3最终报告。
+
+TraeX当前requires_review/host_executable_changed是独立宿主文件指纹变化；原库、主体、旧安装/会话保留，不将先前新会话成功外推为当前执行文件已通过。其正式review可在检查旧安装后承认升级并要求新host回执，不在本轮UI验收中自动重装或发起新任务。历史applied提示来自原服务回执，不视作本次已启用pi，实际active另行核对。
