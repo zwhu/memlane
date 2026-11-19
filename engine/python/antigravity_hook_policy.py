@@ -19,7 +19,7 @@ def prepare_payload(payload, script):
     native = str(uuid.UUID(payload.get('conversationId', payload.get('session_id', ''))))
     transcript = Path(payload.get('transcriptPath', payload.get('transcript_path', '')))
     if (not transcript.is_absolute() or any(p.is_symlink() for p in (transcript, *transcript.parents))
-            or native not in transcript.parts or transcript.name != 'transcript.jsonl'):
+            or native not in transcript.parts or transcript.name not in ('transcript.jsonl', 'transcript_full.jsonl')):
         raise NotReady('native_transcript_identity_required')
     # Only new conversations are admitted. No resumed old conversation or
     # partial old turn is silently imported when the plugin is installed.
