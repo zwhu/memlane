@@ -123,7 +123,7 @@ func TestUserProfileExplicitImportEntryAfterFailure(t *testing.T) {
 	exit := 1
 	a.userProfiles.Directory.Profiles[0].ExitCode = &exit
 	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("自动导入") || !tt.HasText("手动导入") || tt.HasText("自动生成") {
+	if (!tt.HasText("尝试导入") && !tt.HasText("重新导入")) || !tt.HasText("手动导入") || tt.HasText("自动生成") {
 		t.Fatal("explicit attempt or paste fallback missing")
 	}
 	if !tt.HasText("导入失败：Error loading config.toml: invalid transport（退出码 1）") {
@@ -139,7 +139,7 @@ func TestUserProfileExplicitImportEntryAfterFailure(t *testing.T) {
 	}
 	a.userProfiles.Directory.Profiles[0].Status = "unknown"
 	tt = ui.NewTester(a.View, 1200, 820)
-	if tt.HasText("尝试导入") {
+	if tt.HasText("尝试导入") || tt.HasText("重新导入") {
 		t.Fatal("unknown result offered another attempt")
 	}
 }

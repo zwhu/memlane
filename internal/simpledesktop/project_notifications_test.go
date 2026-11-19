@@ -35,3 +35,55 @@ func TestProjectFailuresRequireDurationAndRepeatedSameProblem(t *testing.T) {
 		t.Fatal("different failures were merged")
 	}
 }
+
+func TestConfirmedNotificationDoesNotWaitForFailureWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status PendingMaterials
+		job    *backlogJob
+		want   bool
+	}{
+		{name: "unknown original write", status: PendingMaterials{Pending: 1, Unknown: 1}, want: true},
+		{name: "blocked unsent messages", status: PendingMaterials{Pending: 1, Blocked: &struct {
+			Reason string `json:"reason"`
+		}{Reason: "write_denied"}}, want: true},
+		{name: "old empty block is not an unresolved message", status: PendingMaterials{Blocked: &struct {
+			Reason string `json:"reason"`
+		}{Reason: "write_denied"}}},
+		{name: "backlog failed", job: &backlogJob{Status: "paused", Reason: "backlog_result_unconfirmed"}, want: true},
+		{name: "processing result unknown", job: &backlogJob{Status: "completed", ProcessingFailed: 1}, want: true},
+		{name: "user stopped", job: &backlogJob{Status: "stopped", Reason: "user_stopped"}},
+		{name: "normal backlog", status: PendingMaterials{Pending: 25}, job: &backlogJob{Status: "running"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := &projectQueueState{Backlog: tc.job, Sessions: []queuedSession{{View: &pendingBufferView{Loaded: true, Status: tc.status}}}}
+			if q.confirmedNotification() != tc.want {
+				t.Fatalf("fresh read: got %v want %v", q.confirmedNotification(), tc.want)
+			}
+			if len(q.NotificationFailures) != 0 {
+				t.Fatal("confirmed notification mutated timing state")
+			}
+			q.observeNotificationFailures(time.Now())
+			if q.persistentNotification(time.Now()) {
+				t.Fatal("confirmed failures entered the transient error timer")
+			}
+		})
+	}
+}
+
+func TestConfirmedWriteSurvivesReadFailureUntilObservedRecovery(t *testing.T) {
+	v := &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 20, Unknown: 20}}
+	q := &projectQueueState{Sessions: []queuedSession{{View: v}}}
+	if !q.confirmedNotification() {
+		t.Fatal("existing unknown not shown")
+	}
+	v.Loaded = false
+	v.ReadError = "temporarily offline"
+	if !q.confirmedNotification() {
+		t.Fatal("failed read cleared a known unknown write")
+	}
+	v.observe(PendingMaterials{Signature: "confirmed-empty"})
+	if q.confirmedNotification() {
+		t.Fatal("successful source recovery did not clear notification")
+	}
+}

@@ -95,6 +95,33 @@ class RecallStore:
     def close(self):
         self.db.close()
 
+    def counts(self, dataset):
+        dataset = self.identifier(dataset)
+        rows = self.db.execute('''SELECT h.document_id, COUNT(*), MAX(e.received_at)
+            FROM recall_hit h JOIN recall_event e USING(agent_id,event_id)
+            WHERE h.dataset_id=? GROUP BY h.document_id''', (dataset,)).fetchall()
+        return {'started_at': self.db.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()[0],
+                'items': [{'document_id': document, 'count': count, 'last_recalled_at': last}
+                          for document, count, last in rows]}
+
+    def events(self, allowed, limit, offset):
+        if not allowed:
+            return {'items': [], 'more': False}
+        allowed = sorted(allowed)
+        placeholders = ','.join('?' for _ in allowed)
+        rows = self.db.execute('''SELECT e.agent_id,e.event_id,e.channel,e.received_at
+            FROM recall_event e WHERE EXISTS (SELECT 1 FROM recall_hit h
+            WHERE h.agent_id=e.agent_id AND h.event_id=e.event_id AND h.dataset_id IN ('''+placeholders+'''))
+            ORDER BY e.received_at DESC,e.agent_id,e.event_id LIMIT ? OFFSET ?''', (*allowed, limit+1, offset)).fetchall()
+        items = []
+        for agent, event, channel, received in rows[:limit]:
+            hits = self.db.execute('''SELECT dataset_id,document_id FROM recall_hit
+                WHERE agent_id=? AND event_id=? AND dataset_id IN ('''+placeholders+''')
+                ORDER BY dataset_id,document_id''', (agent,event,*allowed)).fetchall()
+            items.append({'event_id': event, 'agent_id': agent, 'channel': channel, 'received_at': received,
+                          'hits': [{'dataset_id': dataset, 'document_id': document} for dataset, document in hits]})
+        return {'items': items, 'more': len(rows) > limit}
+
 
 def attach_recall(app, registry):
     store = RecallStore(registry.path.parent / 'knowledge-recall.sqlite3')
@@ -137,7 +164,35 @@ def attach_recall(app, registry):
             raise PolicyError('recall_dataset_unknown', 404)
         return web.json_response(store.stats(request.query['dataset_id'], request.query['document_id']))
 
-    app.add_routes([web.post('/v1/knowledge/recalls', record), web.get('/v1/knowledge/recalls', stats)])
+    async def counts(request):
+        if not request['manager']:
+            raise PolicyError('management_required', 403)
+        if set(request.query) != {'dataset_id'} or len(request.query) != 1:
+            raise PolicyError('invalid_recall_fields')
+        if request.query['dataset_id'] not in {g['dataset_id'] for g in registry.managed_groups()}:
+            raise PolicyError('recall_dataset_unknown', 404)
+        return web.json_response(store.counts(request.query['dataset_id']))
+
+    async def events(request):
+        if not request['manager']:
+            raise PolicyError('management_required', 403)
+        if set(request.query) - {'limit', 'offset'}:
+            raise PolicyError('invalid_recall_fields')
+        try:
+            limit, offset = int(request.query.get('limit', '50')), int(request.query.get('offset', '0'))
+        except ValueError:
+            raise PolicyError('invalid_recall_page') from None
+        if not 1 <= limit <= 100 or not 0 <= offset <= 1000000:
+            raise PolicyError('invalid_recall_page')
+        result = store.events({g['dataset_id'] for g in registry.managed_groups()}, limit, offset)
+        for item in result['items']:
+            agent = registry.state['agents'].get(item['agent_id'], {})
+            item['agent_name'] = agent.get('name') or 'Agent 未记录'
+            item['agent_kind'] = agent.get('kind') or ''
+        return web.json_response(result)
+
+    app.add_routes([web.post('/v1/knowledge/recalls', record), web.get('/v1/knowledge/recalls', stats),
+                    web.get('/v1/knowledge/recall-counts', counts), web.get('/v1/knowledge/recall-events', events)])
     async def close(_):
         store.close()
     app.on_cleanup.append(close)

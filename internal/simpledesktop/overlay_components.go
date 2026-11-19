@@ -68,30 +68,36 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 			ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(8).Children(func() {
 				display := label
 				if i.Session != nil {
-					icon := ui.Icon(c, recentAgentIcon(i)).FontSize(16).TextColor(c.Theme().Text).Tooltip(label)
+					icon := agentLogo(c, recentAgentIcon(i), 16).Tooltip(label)
 					if n == s.ListSelection {
 						icon.TextColor(c.Theme().AccentText)
 					}
-					if _, key, ok := strings.Cut(label, " · "); ok {
+					if _, key, ok := strings.Cut(i.ID, "_"); ok {
 						display = key
+					} else {
+						display = i.ID
 					}
 				}
-				title := ui.Text(c, display).FontSize(12).MaxLines(2).Grow(1).MinWidth(0).Tooltip(label)
+				title := ui.Text(c, display).FontSize(12).SingleLine().Grow(1).MinWidth(0).Tooltip(label)
 				if n == s.ListSelection {
 					title.TextColor(c.Theme().AccentText)
 				}
 			})
 			kind := memoryKindLabel(i.Kind)
-			if i.Session != nil && i.Title != i.ID && i.Title != "来源会话" {
-				text := ui.Text(c, "已保存首条："+i.Title).FontSize(11).MaxLines(2)
-				if n == s.ListSelection {
-					text.TextColor(c.Theme().AccentText)
-				} else {
-					text.TextColor(c.Theme().TextMuted)
-				}
-			}
-			if i.Session != nil && i.SessionSummary != "" {
-				text := ui.Text(c, i.SessionSummary).FontSize(10)
+			if i.Session != nil {
+				// Reserve preview and coverage slots while titles hydrate in parallel.
+				// A late response must not move every following virtualized row.
+				ui.Column(c.Key("session-preview")).Height(28).Shrink(0).Children(func() {
+					if i.Title != i.ID && i.Title != "来源会话" {
+						text := ui.Text(c, "已保存首条："+i.Title).FontSize(11).MaxLines(2)
+						if n == s.ListSelection {
+							text.TextColor(c.Theme().AccentText)
+						} else {
+							text.TextColor(c.Theme().TextMuted)
+						}
+					}
+				})
+				text := ui.Text(c.Key("session-coverage"), i.SessionSummary).FontSize(10).SingleLine().Height(14).Shrink(0)
 				if n == s.ListSelection {
 					text.TextColor(c.Theme().AccentText)
 				} else {

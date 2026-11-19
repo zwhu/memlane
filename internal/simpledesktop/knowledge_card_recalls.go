@@ -3,20 +3,39 @@ package simpledesktop
 import (
 	"context"
 	"fmt"
+	"github.com/egoist/mygo/ui"
 	"time"
 )
 
 func knowledgeCardRecall(i Item) (string, string) {
 	if i.RecallStats == nil {
-		return "召回 —", "召回统计暂未确认"
+		return "召回 —", "召回次数尚未读到，请稍后重试。"
 	}
-	tip := "Agent 召回次数，人工阅读不计入。"
+	tip := "Agent 召回次数，人工阅读不计入。自 " + displayDate(i.RecallStats.StartedAt) + " 起记录，旧历史不补算。"
+	if i.RecallStats.LastRecalledAt != "" {
+		tip += " 最近召回：" + displayDate(i.RecallStats.LastRecalledAt)
+	}
 	return fmt.Sprintf("召回 %d 次", i.RecallStats.Count), tip
+}
+
+func knowledgeRecallBadge(c *ui.Context, i Item) {
+	label, tip := knowledgeCardRecall(i)
+	background, color := ui.Hex("#f1f3f6"), ui.Hex("#637183")
+	weight := 400
+	if i.RecallStats != nil && i.RecallStats.Count > 0 {
+		background, color = ui.Hex("#e4edff"), ui.Hex("#2457a5")
+		weight = 600
+	}
+	homeText(c, label, homeMeta).FontWeight(weight).SingleLine().Tooltip(tip).Padding(2, 5).Radius(4).Background(background).TextColor(color)
 }
 
 // Read the existing receipts endpoint, never run retrieval or model inference.
 // Only displayed cards are requested; four short requests may run together.
 func (a *App) loadKnowledgeCardRecalls(s *pane) {
+	if len(s.Knowledge.Catalog) > 0 {
+		a.loadKnowledgeCatalogRecalls(s)
+		return
+	}
 	client, ok := a.accessClient()
 	if !ok || a.Update == nil || s.Loading || !s.Loaded || s.Knowledge.RecallPending != 0 {
 		return
@@ -77,32 +96,91 @@ func (a *App) loadKnowledgeCardRecalls(s *pane) {
 	}
 }
 
-// Fetch existing recall receipts for the recent overview rows without blocking its catalog.
+func (a *App) loadKnowledgeCatalogRecalls(s *pane) {
+	client, ok := a.accessClient()
+	p, hasProject := a.current()
+	if !ok || !hasProject || a.Update == nil || s.Loading || !s.Loaded || s.Knowledge.RecallPending != 0 || time.Now().Before(s.Knowledge.RecallNext) {
+		return
+	}
+	s.Knowledge.RecallNext = time.Now().Add(30 * time.Second)
+	s.Knowledge.RecallRequest++
+	request, epoch := s.Knowledge.RecallRequest, a.epoch
+	s.Knowledge.RecallPending = 1
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		counts, err := client.knowledgeRecallCounts(ctx, p.Dataset)
+		a.Update(func() {
+			if epoch != a.epoch || request != s.Knowledge.RecallRequest || !a.syncReadingIdentity() {
+				return
+			}
+			s.Knowledge.RecallPending = 0
+			if err != nil {
+				s.Knowledge.CountsError = err.Error()
+				s.Knowledge.CountsLoaded = false
+				return
+			}
+			s.Knowledge.CountsLoaded = true
+			s.Knowledge.CountsError = ""
+			applyRecallCounts(s.Knowledge.Catalog, counts)
+			applyRecallCounts(s.Items, counts)
+			if s.Knowledge.SortByRecalls {
+				if s.ListScroll.Y <= 0 {
+					a.reorderKnowledgeRange(s, max(knowledgeBatch, len(s.Items)), false)
+				} else {
+					s.Knowledge.RecallOrderPending = true
+				}
+			}
+		})
+	}()
+}
+
+// Batch existing receipts by dataset; never run retrieval or model inference.
 func (a *App) loadOverviewRecallStats(generation uint64) {
 	client, ok := a.accessClient()
 	if !ok || a.Update == nil {
 		return
 	}
-	rows := a.overviewKnowledgeRows(time.Now())
-	jobs := make(chan Item, len(rows))
-	for _, i := range rows {
-		jobs <- i
+	if a.overviewState.recallCancel != nil {
+		a.overviewState.recallCancel()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	a.overviewState.recallCancel = cancel
+	groups := map[string][]Item{}
+	for _, row := range a.overviewState.Snapshot.Knowledge {
+		if row.Dataset != "" {
+			groups[row.Dataset] = append(groups[row.Dataset], row)
+		}
+	}
+	jobs := make(chan string, len(groups))
+	for dataset := range groups {
+		jobs <- dataset
 	}
 	close(jobs)
-	for worker := 0; worker < min(4, len(rows)); worker++ {
+	for worker := 0; worker < min(4, len(groups)); worker++ {
 		go func() {
-			for i := range jobs {
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				stats, _ := client.knowledgeRecall(ctx, i)
-				cancel()
+			for dataset := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				counts, err := client.knowledgeRecallCounts(ctx, dataset)
+				rows := groups[dataset]
+				if err == nil {
+					applyRecallCounts(rows, counts)
+				}
+				stats := map[string]*KnowledgeRecallStats{}
+				for _, row := range rows {
+					if err == nil {
+						stats[row.key()] = row.RecallStats
+					}
+				}
 				a.Update(func() {
-					if generation != a.overviewState.generation {
+					if ctx.Err() != nil || generation != a.overviewState.generation {
 						return
 					}
 					for n, row := range a.overviewState.Snapshot.Knowledge {
-						if row.key() == i.key() {
-							a.overviewState.Snapshot.Knowledge[n].RecallStats = stats
-							break
+						if row.Dataset == dataset {
+							a.overviewState.Snapshot.Knowledge[n].RecallStats = stats[row.key()]
 						}
 					}
 				})

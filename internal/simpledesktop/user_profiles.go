@@ -333,7 +333,13 @@ func (a *App) userProfilesPage(c *ui.Context) {
 				agentLogo(c, agentBrandIconFor(p.Kind, p.Name), 22)
 				homeText(c, p.Name+" 对你的了解", homeHeading).FontSize(18)
 				ui.Spacer(c)
-				automatic := "自动导入"
+				automatic := "尝试导入"
+				if p.Document != nil {
+					automatic = "重新导入"
+				}
+				if p.Status == "unknown" && !p.SaveUnknown {
+					automatic = "结果待确认"
+				}
 				if p.working() {
 					automatic = "停止导入"
 				}

@@ -11,11 +11,12 @@ import (
 )
 
 const (
-	knowledgeBatch            = 30
-	knowledgeInset    float32 = pageInset
-	knowledgeGap      float32 = sectionGap
-	knowledgeBodySize float32 = 16
-	knowledgeBodyLine float32 = 24
+	knowledgeBatch                = 30
+	knowledgeInset        float32 = pageInset
+	knowledgeGap          float32 = sectionGap
+	knowledgeBodySize     float32 = 14
+	knowledgeBodyLine     float32 = 22
+	knowledgePreviewLines         = 6
 )
 
 // Only presentation metadata is retained beyond the displayed batch. Bodies
@@ -31,6 +32,11 @@ type knowledgeFeedState struct {
 	RecallRequest       uint64
 	RecallChecked       map[string]bool
 	RecallNext          time.Time
+	SortByRecalls       bool
+	CountsLoaded        bool
+	RecallOrderPending  bool
+	CountsError         string
+	RecallFilter        map[string]bool
 }
 
 type knowledgeCardMeasurement struct {
@@ -49,9 +55,9 @@ func (s *knowledgeFeedState) cardHeight(i Item, width float32) float32 {
 	height := float32(206) // unavailable text and its explicit retry control
 	if i.ReadingState != "failed" && i.ReadingState != "unavailable" {
 		// Shape with the same font, exact content width, 24-DIP line box
-		// and 12-line clamp used by the rendered card, not a font-height ratio.
+		// and preview clamp used by the rendered card, not a font-height ratio.
 		text := ui.ShapeText(body, ui.Font{Family: "system-ui", Size: knowledgeBodySize, Weight: 400, LineHeight: knowledgeBodyLine / knowledgeBodySize}, max(float32(1), width-34))
-		height = 156 + float32(min(12, max(1, len(text.Lines()))))*knowledgeBodyLine
+		height = 156 + float32(min(knowledgePreviewLines, max(1, len(text.Lines()))))*knowledgeBodyLine
 	}
 	s.Measurements[i.key()] = knowledgeCardMeasurement{Body: body, State: i.ReadingState, Width: width, Height: height}
 	return height
@@ -103,14 +109,20 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 	s.Knowledge.RecallPending = 0
 	s.Knowledge.RecallChecked = nil
 	client := a.Client
+	control, hasControl := a.accessClient()
 	go func() {
 		defer cancel()
 		var docs []Document
 		var err error
+		var counts *knowledgeRecallCounts
+		var countsError error
 		if p.Dataset == "" {
 			err = fmt.Errorf("项目正在登记，内容归属尚未确认")
 		} else {
 			docs, err = client.overviewDocuments(ctx, p)
+		}
+		if err == nil && hasControl {
+			counts, countsError = control.knowledgeRecallCounts(ctx, p.Dataset)
 		}
 		a.Update(func() {
 			if epoch != a.epoch || request != s.request || !a.syncReadingIdentity() {
@@ -126,6 +138,14 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 				return
 			}
 			rows := knowledgeCatalog(docs)
+			applyRecallCounts(rows, counts)
+			s.Knowledge.CountsLoaded = counts != nil
+			s.Knowledge.RecallNext = time.Now().Add(30 * time.Second)
+			s.Knowledge.CountsError = ""
+			if countsError != nil {
+				s.Knowledge.CountsError = countsError.Error()
+			}
+			sortKnowledgeRows(rows, s.Knowledge.SortByRecalls)
 			// Retain stable order while reading below the top; new entries join
 			// the tail rather than shifting every existing card under the pointer.
 			if s.ListScroll.Y > 0 {
@@ -151,8 +171,9 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 			for _, i := range s.Items {
 				old[i.key()] = i
 			}
-			count := min(max(knowledgeBatch, len(s.Items)), len(rows))
 			s.Knowledge.Catalog = rows
+			rows = filteredKnowledgeCatalog(s)
+			count := min(max(knowledgeBatch, len(s.Items)), len(rows))
 			s.Items = append([]Item(nil), rows[:count]...)
 			for n, i := range s.Items {
 				if before, ok := old[i.key()]; ok && before.BodyLoaded && keyForReading("", i, "") == keyForReading("", before, "") && i.Document != nil && (i.Document.Updated != "" || i.Document.ContentHash != "") {
@@ -169,13 +190,14 @@ func (a *App) appendKnowledgeBatch(s *pane) {
 	if s.Loading || s.Error != "" || !s.More {
 		return
 	}
-	end := min(len(s.Items)+knowledgeBatch, len(s.Knowledge.Catalog))
+	rows := filteredKnowledgeCatalog(s)
+	end := min(len(s.Items)+knowledgeBatch, len(rows))
 	if end <= len(s.Items) {
 		s.More = false
 		return
 	}
-	s.Items = append(s.Items, s.Knowledge.Catalog[len(s.Items):end]...)
-	s.More = end < len(s.Knowledge.Catalog)
+	s.Items = append(s.Items, rows[len(s.Items):end]...)
+	s.More = end < len(rows)
 	a.hydrateKnowledgeCards(s)
 }
 
@@ -230,6 +252,7 @@ func knowledgeCardBody(i Item) string {
 
 func (a *App) knowledgePage(c *ui.Context, s *pane) {
 	a.projectNavigation(c)
+	a.knowledgeSortBar(c, s)
 	if !s.Knowledge.Initialized && !s.Knowledge.Detail {
 		a.loadKnowledgeFeed(s)
 	}
@@ -244,6 +267,9 @@ func (a *App) knowledgePage(c *ui.Context, s *pane) {
 		a.hydrateKnowledgeCards(s)
 	}
 	a.loadKnowledgeCardRecalls(s)
+	if s.Knowledge.RecallOrderPending && s.ListScroll.Y <= 0 {
+		a.reorderKnowledgeRange(s, max(knowledgeBatch, len(s.Items)), false)
+	}
 	if s.Knowledge.Columns == nil {
 		s.Knowledge.Columns = map[string]int{}
 	}
@@ -282,7 +308,20 @@ func (a *App) knowledgePage(c *ui.Context, s *pane) {
 	if !s.Knowledge.Detail && s.More && s.Loaded && ready && s.ListScroll.MaxY > 0 && s.ListScroll.Y >= s.ListScroll.MaxY-160 {
 		a.appendKnowledgeBatch(s)
 	}
-	ui.Scroll(c.Key("knowledge-feed-"+a.routeKey())).Label("记忆瀑布流").Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(sectionGap, knowledgeInset, pageInset, knowledgeInset).Gap(sectionGap).Children(func() {
+	if s.Loaded && s.Error == "" && len(s.Items) == 0 {
+		ui.Column(c.Key("knowledge-empty")).Grow(1).MinHeight(0).FillWidth().AlignItems(ui.Center).Justify(ui.Center).Gap(16).Padding(pageInset).Children(func() {
+			ui.Column(c).Width(160).Height(160).AlignItems(ui.Center).Justify(ui.Center).Background(ui.Hex("#f5f8fb")).Radius(80).Children(func() {
+				ui.Icon(c, homeCommon).FontSize(70).TextColor(ui.Hex("#c6d5e3"))
+			})
+			label := "此项目暂无记忆"
+			if len(s.Knowledge.RecallFilter) > 0 {
+				label = "本次召回的记忆暂不可用"
+			}
+			homeText(c, label, homeBody)
+		})
+		return
+	}
+	ui.Scroll(c.Key("knowledge-feed-"+a.routeKey())).Label("记忆瀑布流").Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(4, knowledgeInset, pageInset, knowledgeInset).Gap(sectionGap).Children(func() {
 		if s.Error != "" {
 			homeText(c, "读取未完成 · "+s.Error, homeMeta)
 			projectLink(c, "重试读取记忆", func() { a.loadKnowledgeFeed(s) })
@@ -311,14 +350,13 @@ func (a *App) knowledgePage(c *ui.Context, s *pane) {
 }
 
 func (a *App) knowledgeCard(c *ui.Context, s *pane, i Item) {
-	card := ui.Column(c.Key("knowledge-card-"+i.key())).Label("记忆卡片").FillWidth().MinWidth(0).Padding(moduleInset).Gap(16).Radius(12).Border(1, homeBorder).Background(ui.Hex("#ffffff"))
+	card := ui.Column(c.Key("knowledge-card-"+i.key())).Label("记忆卡片").FillWidth().MinWidth(0).Padding(moduleInset).Gap(16).Radius(12).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Background(ui.Hex("#ffffff"))
 	card.Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			ui.Icon(c, knowledgeQuote).FontSize(24).TextColor(ui.Hex("#a5b2bf"))
+			homeText(c, "记忆", homeMeta)
 			ui.Spacer(c)
 			ui.Row(c).Gap(5).AlignItems(ui.Center).Margin(0, 8, 0, 0).Children(func() {
-				ui.Icon(c, recentAgentIcon(i)).FontSize(14).TextColor(homeNavInk)
-				homeText(c, sourceAgentName(i), homeMeta).TextColor(homeNavInk).Tooltip("来源 Agent")
+				agentLogo(c, recentAgentIcon(i), 14).Tooltip("来源 Agent：" + sourceAgentName(i)).Label("来源 Agent：" + sourceAgentName(i))
 			})
 			if a.itemIsUnread(i) {
 				homeText(c, "未读", homeMeta)
@@ -339,13 +377,12 @@ func (a *App) knowledgeCard(c *ui.Context, s *pane, i Item) {
 			homeText(c, "正在读取…", homeMeta).MinHeight(48)
 		} else {
 			ui.ButtonBase(c).Label("阅读记忆：" + body).Tooltip("阅读完整记忆").FillWidth().MinWidth(0).Padding(0).Background(ui.Transparent).BorderWidth(0).Cursor(ui.CursorPointer).Children(func() {
-				ui.Text(c, body).Font("system-ui").FontSize(knowledgeBodySize).FontWeight(400).FixedLineHeight(knowledgeBodyLine).TextColor(homeInk).FillWidth().MinWidth(0).MaxLines(12)
+				ui.Text(c, body).Font("system-ui").FontSize(knowledgeBodySize).FontWeight(400).FixedLineHeight(knowledgeBodyLine).TextColor(homeInk).FillWidth().MinWidth(0).MaxLines(knowledgePreviewLines)
 			}).OnClick(func() { s.Knowledge.Detail = true; a.selectItem(s, i) })
 		}
 
 		ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(8).Children(func() {
-			label, tip := knowledgeCardRecall(i)
-			homeText(c, label, homeMeta).SingleLine().Tooltip(tip).Padding(2, 5).Radius(4).Background(ui.Hex("#edf5f1")).TextColor(ui.Hex("#5e8272"))
+			knowledgeRecallBadge(c, i)
 			if fields := knowledgeBasisFields(i); len(fields) > 0 {
 				homeText(c, fields[0].Value, homeMeta).Tooltip("记忆点分类："+fields[0].Value).Padding(2, 5).Radius(4).Background(ui.Hex("#f3eff8")).TextColor(ui.Hex("#847196"))
 			}

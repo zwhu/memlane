@@ -15,7 +15,18 @@ type queuedSession struct {
 	Binding ProjectBinding
 	View    *pendingBufferView
 }
+type processingNotice struct {
+	Operation string `json:"operation_id"`
+	Request   string `json:"request_id"`
+	At        string `json:"at"`
+	Status    int    `json:"http_status"`
+	Code      string `json:"code"`
+	Backend   string `json:"backend"`
+}
+
 type projectQueueState struct {
+	ProcessingNotices              []processingNotice
+	ProcessingReadError            string
 	NotificationFailures           map[string]projectFailure
 	KnowledgeRead                  knowledgeReadState
 	UnreadKnowledge                []Item
@@ -151,6 +162,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			sessions = append(sessions, queuedSession{agent, binding, view})
 		}
 	}
+	control := a.Config.ProjectControl
 	client, python := a.Client, a.Config.Python
 	operator := pendingOperatorConfig(a.Config)
 	if a.access.QueueReadSlots == nil {
@@ -170,7 +182,21 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 		var documentErr error
 		var activity []activityRow
 		var activityErr error
+		var notices struct {
+			Items []processingNotice `json:"items"`
+		}
+		var noticeErr error
 		var workers sync.WaitGroup
+		if control != nil {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				noticeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
+				manager := ProjectControlClient{Config: *control, HTTP: client.HTTP}
+				noticeErr = manager.request(noticeCtx, "GET", "/v1/projects/"+url.PathEscape(p.ID)+"/processing-notices", nil, &notices)
+			}()
+		}
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
@@ -214,6 +240,12 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				q.Loaded = false
 				return
 			}
+			q.ProcessingReadError = ""
+			if noticeErr != nil {
+				q.ProcessingReadError = "记忆整理异常记录暂时无法读取"
+			} else {
+				q.ProcessingNotices = notices.Items
+			}
 			wasLoaded := q.Loaded
 			q.Loaded = true
 			q.ActivityError = ""
@@ -236,6 +268,9 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			q.Sessions = sessions
 			for n, row := range sessions {
 				if results[n].Error != nil {
+					row.View.ReadCode = results[n].Status.Error
+					row.View.Details = nil
+					row.View.DetailsLoaded = false
 					row.View.ReadError = "保存状态暂时无法读取"
 					if results[n].Status.Error == "official_session_unconfirmed" {
 						row.View.ReadError = "尚未确认这次会话的保存状态；重新读取不会补采历史对话"

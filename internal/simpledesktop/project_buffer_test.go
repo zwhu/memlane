@@ -40,7 +40,7 @@ if __name__ == '__main__':
     print(json.dumps({'pending':1,'signature':'reviewed-snapshot'}))
 `)
 	bufferPath := filepath.Join(root, "buffer.json")
-	before := []byte(`[{"type":"qa","timestamp":"stable","_replay_ambiguous":true}]`)
+	before := []byte(`[{"type":"qa","question":"synthetic local message","timestamp":"stable","_replay_ambiguous":true}]`)
 	os.WriteFile(bufferPath, before, 0600)
 	path := filepath.Join(scripts, "_memlane_policy.py")
 	if err := os.WriteFile(path, helper, 0600); err != nil {
@@ -60,6 +60,13 @@ if __name__ == '__main__':
 	result, err := runPendingMaterials(context.Background(), python, installation, ProjectBinding{HostSessionKey: "host-session"}, "dataset", "show", "")
 	if err != nil || result.Pending != 1 || result.Signature != "reviewed-snapshot" || len(result.UnknownEntryIDs) != 1 || !validPendingHash(result.UnknownEntryIDs[0]) {
 		t.Fatalf("wrong installation result: %#v %v", result, err)
+	}
+	if len(result.Details) != 0 {
+		t.Fatal("background polling leaked message excerpts")
+	}
+	detail, detailErr := runPendingMaterials(context.Background(), python, installation, ProjectBinding{HostSessionKey: "host-session"}, "dataset", "details", "")
+	if detailErr != nil || len(detail.Details) != 1 || detail.Details[0].Summary != "synthetic local message" || !detail.Details[0].Unknown || detail.Details[0].ID != result.UnknownEntryIDs[0] {
+		t.Fatal("read-only message inspection failed", detailErr)
 	}
 	after, _ := os.ReadFile(bufferPath)
 	if string(after) != string(before) {

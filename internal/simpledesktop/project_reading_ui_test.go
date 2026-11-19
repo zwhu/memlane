@@ -101,6 +101,7 @@ func TestUnifiedSearchRequestsAndNestedReturn(t *testing.T) {
 	oldStarted := make(chan struct{})
 	oldRelease := make(chan struct{})
 	var requests atomic.Int32
+	var started sync.Once
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/search" {
 			json.NewEncoder(w).Encode([]Document{})
@@ -116,7 +117,7 @@ func TestUnifiedSearchRequestsAndNestedReturn(t *testing.T) {
 			t.Errorf("global search catalog changed: %v", in.Datasets)
 		}
 		if in.Query == "old" {
-			close(oldStarted)
+			started.Do(func() { close(oldStarted) })
 			<-oldRelease
 		}
 		if in.Query == "failure" {
@@ -180,8 +181,8 @@ func TestUnifiedSearchRequestsAndNestedReturn(t *testing.T) {
 	a.searchUI.Query = "failure"
 	a.submitUnifiedSearch()
 	drainReading(t, updates, func() bool { return !a.searchUI.Loading })
-	if a.searchUI.Error == "" || len(a.searchUI.Rows) != 1 {
-		t.Fatal("failure discarded previous results")
+	if a.searchUI.Error == "" || len(a.searchUI.Rows) != 0 {
+		t.Fatal("failed new query exposed previous query results")
 	}
 	a.InvalidateReading("ds")
 	if len(a.searchUI.Rows) != 0 || a.searchUI.Open {

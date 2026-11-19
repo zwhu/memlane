@@ -30,14 +30,5 @@ func knowledgeRecallLabel(c *ui.Context, i Item) {
 	if i.Kind != "知识" {
 		return
 	}
-	count := int64(0)
-	tip := "召回统计暂不可用，当前显示默认值 0；不代表历史从未召回。"
-	if stats := i.RecallStats; stats != nil {
-		count = stats.Count
-		tip = "自 " + displayDate(stats.StartedAt) + " 起记录的 Agent 召回；人工搜索不计入，旧历史不补算。"
-		if stats.LastRecalledAt != "" {
-			tip += " 最近召回：" + displayDate(stats.LastRecalledAt)
-		}
-	}
-	homeText(c, fmt.Sprintf("召回 %d 次", count), homeMeta).SingleLine().Tooltip(tip).Padding(2, 5).Radius(4).Background(ui.Hex("#edf5f1")).TextColor(ui.Hex("#5e8272"))
+	knowledgeRecallBadge(c, i)
 }

@@ -19,12 +19,14 @@ type overviewViewState struct {
 	Events                                     []overviewEvent
 	ActivityLoaded, ActivityLoading, More      bool
 	ActivityError                              string
+	RecallError                                string
 	SearchHistory                              bool
 	History                                    []overviewEvent
 	HistoryLoaded                              bool
 	HistoryError                               string
 	ActivityLimit                              int
 	Day                                        string
+	ShowAllForDay                              bool
 	Offset                                     int
 	Scroll                                     ui.ScrollState
 	SidebarScroll                              ui.ScrollState
@@ -35,7 +37,7 @@ type overviewViewState struct {
 	RevealProjects                             bool
 	scope                                      string
 	generation, activityGeneration             uint64
-	cancel, activityCancel                     context.CancelFunc
+	cancel, activityCancel, recallCancel       context.CancelFunc
 }
 
 func (a *App) overviewScope() string {
@@ -53,6 +55,10 @@ func (a *App) overviewScope() string {
 
 func (a *App) loadOverview() {
 	v := &a.overviewState
+	if v.recallCancel != nil {
+		v.recallCancel()
+		v.recallCancel = nil
+	}
 	a.overviewRefreshAt = time.Now().Add(overviewRefreshInterval)
 	if a.Config.ProjectControl != nil && !a.access.Loaded {
 		v.Loading, v.ActivityLoading = true, true
@@ -132,15 +138,32 @@ func (a *App) loadOverviewActivity() {
 	want := 50
 	client := a.Client
 	history := v.SearchHistory
+	control, hasControl := a.accessClient()
 	go func() {
 		defer cancel()
 		var events []overviewEvent
 		var more bool
 		var err error
+		var recallErrorText string
 		if history {
 			events, err = client.overviewSearchHistory(ctx)
 		} else {
 			events, more, err = client.overviewActivity(ctx, want)
+			if err == nil && hasControl {
+				recalls, recallMore, recallError := control.recallEvents(ctx, want)
+				if recallError == nil {
+					var mergedMore bool
+					events, mergedMore = mergeRecallActivity(events, recalls, overviewProjects(client.Config), want)
+					more = more || recallMore || mergedMore
+				} else {
+					recallErrorText = "召回明细暂不可用"
+					for i := range events {
+						if events[i].Record.Operation == "recall" && events[i].State == "已完成" {
+							events[i].Title = "召回请求完成 · 明细未读取"
+						}
+					}
+				}
+			}
 		}
 		a.Update(func() {
 			if generation != a.overviewState.activityGeneration {
@@ -162,6 +185,7 @@ func (a *App) loadOverviewActivity() {
 				return
 			}
 			a.overviewState.Events = events
+			a.overviewState.RecallError = recallErrorText
 			a.overviewState.More = more
 			a.overviewState.ActivityError = ""
 			a.overviewState.ActivityLoaded = true
@@ -217,11 +241,9 @@ func (a *App) overviewHome(c *ui.Context) {
 			if v.RawLoaded {
 				raw = fmt.Sprint(v.Snapshot.Raw)
 			}
-			ui.Row(c).Key("overview-welcome-module").Padding(24).Margin(0, 0, sectionGap, 0).Background(ui.Hex("#f0f5fb")).Border(1, ui.Hex("#dce6f2")).Radius(12).Children(func() {
+			ui.Row(c).Key("overview-welcome-module").AlignItems(ui.Center).Padding(0, 0, 12, 0).Margin(0, 0, sectionGap, 0).Children(func() {
 				ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
-					homeText(c, "YOUR MEMORY, CONNECTED", homeEyebrow).TextColor(ui.Hex("#7a91ae"))
-					homeText(c, "每一次积累，都能找回。", homeWelcome).TextColor(ui.Hex("#365474"))
-					homeText(c, "项目中的记忆与经验，在这里继续。", homeBody)
+					homeText(c, "总览", homeWelcome)
 				})
 				for idx, metric := range []struct{ label, value, unit string }{{"已使用", usage, "天"}, {"记忆", knowledge, "条"}, {"原始记录", raw, "条"}} {
 					left, right := float32(28), float32(28)
@@ -245,13 +267,14 @@ func (a *App) overviewHome(c *ui.Context) {
 				}
 			})
 			if _, err := firstUseDays(a.Config, now); err != nil {
-				homeText(c, "使用天数暂不可用，请通过开发入口完成初始化。", homeAction).Margin(0, 0, 12, 0)
-			}
-			if v.Loading && !v.Loaded {
-				homeText(c, "正在读取统计…", homeAction).Margin(0, 0, 12, 0)
+				homeText(c, "使用时间暂不可用。", homeAction).Margin(0, 0, 12, 0)
 			}
 			if v.Error != "" {
-				homeText(c, "统计读取失败，保留上次结果 · "+v.Error, homeAction).Margin(0, 0, 6, 0)
+				message := "统计读取失败 · " + v.Error
+				if v.Loaded {
+					message = "未能刷新，显示上次统计 · " + v.Error
+				}
+				homeText(c, message, homeBody).Margin(0, 0, 6, 0)
 				projectLink(c, "重试读取统计", a.loadOverview)
 			}
 			if v.Snapshot.RawError != "" {
@@ -265,15 +288,25 @@ func (a *App) overviewHome(c *ui.Context) {
 					ui.Row(c).Height(28).Shrink(0).Children(func() {
 						title := "最近记忆"
 						if v.Day != "" {
-							title = v.Day + " 新增记忆"
+							title = fmt.Sprintf("%s · %d 条记忆", v.Day, len(a.overviewKnowledgeRows(now)))
 						}
 						homeText(c, title, homeHeading)
 						ui.Spacer(c)
 						if v.Day != "" {
-							homeLink(c, "显示最近记忆", func() { v.Day = ""; v.KnowledgeScroll.Y = 0 })
+							homeLink(c, "返回最近记忆", func() { a.selectOverviewDay("") })
 						}
 					})
 					listSurface(c, func() { a.overviewKnowledge(c, now) })
+					if v.Loaded && v.Day != "" {
+						total := len(a.overviewKnowledgeRows(now))
+						ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+							homeText(c, fmt.Sprintf("已显示 %d 条，共 %d 条", len(a.overviewDisplayedRows(now)), total), homeReadableMeta)
+							ui.Spacer(c)
+							if total > 20 && !v.ShowAllForDay {
+								homeLink(c, "显示全部", func() { v.ShowAllForDay = true })
+							}
+						})
+					}
 				})
 				ui.Column(c).Key("overview-activity-section").Width(0).Grow(1).MinWidth(255).Gap(8).Children(func() {
 					ui.Row(c).Height(28).Children(func() { homeText(c, "近期动态", homeHeading); ui.Spacer(c); a.overviewActivityTabs(c) })
@@ -294,22 +327,40 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	start := today.AddDate(0, 0, -364)
 	gridStart := start.AddDate(0, 0, -int(start.Weekday()))
-	weeks := int(today.Sub(gridStart).Hours()/24)/7 + 1
-	// Calendar iteration (rather than hour arithmetic) drives every actual cell.
-	if gridStart.AddDate(0, 0, weeks*7-1).Before(today) {
+	weeks := 0
+	for day := gridStart; !day.After(today); day = day.AddDate(0, 0, 7) {
 		weeks++
 	}
-	ui.Column(c).Key("overview-heatmap-module").Gap(0).Padding(16).Border(1, homeBorder).Radius(12).Background(ui.Hex("#ffffff")).Children(func() {
+	ui.Column(c).Key("overview-heatmap-module").Gap(0).Padding(16).Border(1, homeBorder).Radius(12).Background(ui.Hex("#ffffff")).Shadow(0, 2, 8, 0, panelShadowInk).Children(func() {
 		ui.Row(c).Margin(0, 0, 18, 0).Children(func() {
+			homeText(c, "记忆分布", homeHeading).Tooltip("日期优先取自原始记录，不代表整理完成时间。")
 			ui.Spacer(c)
 			homeText(c, start.Format("2006.01")+" — "+today.Format("2006.01"), homeReadableMeta)
 		})
-		ui.Column(c).FillWidth().MaxWidth(900).AlignSelf(ui.Center).Gap(8).Children(func() {
-			ui.Row(c).FillWidth().MaxWidth(879).AlignSelf(ui.Center).Justify(ui.SpaceBetween).Children(func() {
-				month := time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, now.Location())
-				for !month.After(today) {
-					homeText(c, fmt.Sprint(int(month.Month()))+"月", homeReadableMeta).FontSize(9).SingleLine().Shrink(0).TextColor(ui.Hex("#677383"))
-					month = month.AddDate(0, 1, 0)
+		ui.Column(c).FillWidth().Gap(8).Children(func() {
+			ui.Row(c).FillWidth().Padding(0, 0, 0, 18).Gap(3).Height(20).Children(func() {
+				for week := 0; week < weeks; week++ {
+					label := ""
+					if week == 0 {
+						label = fmt.Sprint(int(start.Month())) + "月"
+					} else {
+						for weekday := 0; weekday < 7; weekday++ {
+							day := gridStart.AddDate(0, 0, week*7+weekday)
+							if day.Day() == 1 && !day.After(today) {
+								label = fmt.Sprint(int(day.Month())) + "月"
+							}
+						}
+					}
+					ui.Column(c).Width(0).Grow(1).Height(20).Children(func() {
+						if label != "" {
+							text := homeText(c, label, homeReadableMeta).Absolute().Top(0).Width(36).SingleLine()
+							if week >= weeks-2 {
+								text.Right(0)
+							} else {
+								text.Left(0)
+							}
+						}
+					})
 				}
 			})
 			ui.Row(c).Gap(9).AlignItems(ui.Stretch).Children(func() {
@@ -328,7 +379,7 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 						ui.Column(c).Height(0).Grow(1).Justify(ui.Center).Children(func() { homeText(c, label, homeReadableMeta).FontSize(8) })
 					}
 				})
-				ui.Row(c).Width(0).Grow(1).AspectRatio(53.0 / 7).Gap(3).Children(func() {
+				ui.Row(c).Width(0).Grow(1).AspectRatio(float32(weeks) / 7).Gap(3).Children(func() {
 					for week := 0; week < weeks; week++ {
 						ui.Column(c).Width(0).Grow(1).Gap(3).Children(func() {
 							for weekday := 0; weekday < 7; weekday++ {
@@ -352,7 +403,7 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 								if !visible {
 									color = ui.Transparent
 								}
-								if !visible || count == 0 || !v.Loaded {
+								if !visible || !v.Loaded {
 									ui.Column(c).Key("overview-empty-" + date).FillWidth().AspectRatio(1).Radius(2).Background(color)
 									continue
 								}
@@ -361,7 +412,7 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 								if v.Day == date {
 									cell.Border(1, ink)
 								}
-								cell.OnClick(func() { v.Day = date; v.KnowledgeScroll.Y = 0 })
+								cell.OnClick(func() { a.selectOverviewDay(date) })
 							}
 						})
 					}
@@ -403,16 +454,27 @@ func (a *App) overviewKnowledgeRows(now time.Time) []Item {
 			}
 		}
 		rows = append(rows, item)
-		if len(rows) == 20 {
-			break
-		}
+	}
+	return rows
+}
+
+func (a *App) selectOverviewDay(day string) {
+	v := &a.overviewState
+	v.Day, v.ShowAllForDay = day, false
+	v.KnowledgeScroll.Y = 0
+}
+
+func (a *App) overviewDisplayedRows(now time.Time) []Item {
+	rows := a.overviewKnowledgeRows(now)
+	if a.overviewState.Day == "" || !a.overviewState.ShowAllForDay {
+		return rows[:min(20, len(rows))]
 	}
 	return rows
 }
 
 func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 	v := &a.overviewState
-	rows := a.overviewKnowledgeRows(now)
+	rows := a.overviewDisplayedRows(now)
 	a.startRecentTitles(rows)
 	ui.Scroll(c.Key("overview-knowledge")).Label("最近记忆内容").Height(homeOverviewListHeight).Shrink(0).FillWidth().TrackScroll(&v.KnowledgeScroll).BorderWidth(0).Radius(0).Background(ui.Hex("#ffffff")).Padding(0).DrawOver(func(p *ui.Painter, r ui.Rect) {
 		if v.KnowledgeScroll.MaxY-v.KnowledgeScroll.Y > 1 {
@@ -428,7 +490,7 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 		}
 		for index, item := range rows {
 			i := item
-			row := ui.Button(c, "").Key("recent-" + i.key()).Label(i.Title).FillWidth().Justify(ui.Start).AlignItems(ui.Center).MinHeight(56).Padding(8, 0).Radius(0).Gap(16).BorderWidth(0)
+			row := ui.Button(c, "").Key("recent-"+i.key()).Label(i.Title).FillWidth().Justify(ui.Start).AlignItems(ui.Center).MinHeight(56).Padding(8, 0).Radius(0).Gap(16).BorderWidth(0)
 			if index < len(rows)-1 {
 				row.BorderWidth(0, 0, 1, 0).BorderColor(homeBorder)
 			}
@@ -446,8 +508,7 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 					ui.Row(c).Margin(4, 0, 0, 0).Gap(8).Children(func() {
 						source := a.overviewSourceName(i)
 						homeText(c, middleProjectName(source), homeReadableMeta).Tooltip("所属项目：" + source).MaxLines(1).TextColor(ui.Hex("#7d93a9"))
-						recall, tip := knowledgeCardRecall(i)
-						homeText(c, recall, homeReadableMeta).Tooltip(tip).Padding(2, 5).Radius(4).Background(ui.Hex("#edf5f1")).TextColor(ui.Hex("#5e8272"))
+						knowledgeRecallBadge(c, i)
 						if fields := knowledgeBasisFields(i); len(fields) > 0 {
 							homeText(c, fields[0].Value, homeReadableMeta).Tooltip("记忆点分类："+fields[0].Value).Padding(2, 5).Radius(4).Background(ui.Hex("#f3eff8")).TextColor(ui.Hex("#847196"))
 						}
@@ -464,6 +525,11 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 			label := "暂无记忆"
 			if !v.Loaded {
 				label = "记忆尚未载入"
+				if v.Error != "" {
+					label = "记忆读取失败"
+				}
+			} else if v.Day != "" {
+				label = "这一天没有记忆"
 			}
 			ui.Column(c).MinHeight(100).Justify(ui.Center).Children(func() { homeText(c, label, homeBody) })
 		}
@@ -519,6 +585,10 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 			return
 		}
 		ui.Column(c).FillWidth().Shrink(0).Gap(0).Children(func() {
+			if !v.SearchHistory && v.RecallError != "" {
+				homeText(c, v.RecallError, homeReadableMeta)
+				homeLink(c, "重试", a.loadOverviewActivity).Margin(0, 0, 12, 0)
+			}
 			if loadError != "" {
 				homeText(c, "读取失败，保留上次结果 · "+loadError, homeReadableMeta).MaxLines(2)
 				homeLink(c, "重试读取动态", a.loadOverviewActivity).Margin(0, 0, 12, 0)
@@ -554,6 +624,9 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 							homeText(c, stamp, homeReadableMeta).TextColor(ui.Hex("#687483")).Shrink(0)
 						})
 						label := event.Project + " · " + event.State
+						if event.Recall != nil {
+							label = fmt.Sprintf("%s · %d 条记忆", event.Project, len(event.Recall.Hits))
+						}
 						if event.State == "失败" {
 							label += " · " + eventFailureReason(event)
 						}

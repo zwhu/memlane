@@ -35,7 +35,7 @@ func (a *App) projectCreateDialog(c *ui.Context) {
 				if s.Selected == nil {
 					ui.Column(c).Gap(10).Children(func() {
 						homeText(c, "源文件夹", homeHeading).FontSize(13)
-						zone := ui.Column(c).FillWidth().MinHeight(116).Padding(18).Gap(12).Border(1, homeBorder).Radius(10).Background(ui.Hex("#f8fafc")).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+						zone := ui.Column(c).FillWidth().MinHeight(116).Padding(18).Gap(12).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(10).Background(ui.Hex("#f8fafc")).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 							if s.Folder == "" {
 								homeText(c, "选择或拖入这台电脑上的项目文件夹", homeMeta)
 								textButton(c, "添加文件夹", nil).OnClick(a.selectProjectFolder).Disabled(s.Saving || s.Submitted || a.ChooseProjectFolder == nil)

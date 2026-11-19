@@ -262,6 +262,7 @@ type overviewEvent struct {
 	At                         time.Time
 	Record                     activityRow
 	Failures                   []activityRow
+	Recall                     *RecallEvent
 }
 
 func activityName(name string) string {

@@ -12,6 +12,7 @@ import (
 type backlogJob struct {
 	Automatic           bool   `json:"automatic"`
 	ProcessingPending   int    `json:"processing_pending"`
+	ReviewFailed        int    `json:"review_failed"`
 	Operation           string `json:"operation_id"`
 	Status              string `json:"status"`
 	Reason              string `json:"reason"`
@@ -206,7 +207,7 @@ func backlogReason(code string) string {
 	case "sender_busy":
 		return "正在等待当前发送结束，随后自动继续"
 	case "write_denied", "policy_unconfirmed", "backlog_write_denied":
-		return "暂时无法确认写入权限，请检查上方权限设置后重新读取。"
+		return "系统未能确认当前写入权限，保存已暂停；原消息仍保留。"
 	case "request_result_unknown":
 		return "一条新请求的结果未知，已保留原记录并暂停；不会自动重发"
 	case "owner_interrupted":
@@ -216,7 +217,7 @@ func backlogReason(code string) string {
 	case "backlog_installation_changed", "backlog_binding_changed":
 		return "Agent 接入或会话归属发生变化，请核对后继续"
 	default:
-		return "后台结果尚未确认，保留原记录；不会自动重复提交"
+		return "后台任务已暂停，但没有返回明确原因。原消息仍保留，系统不会自动重发结果未知的消息。"
 	}
 }
 

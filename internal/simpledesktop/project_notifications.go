@@ -15,6 +15,12 @@ func (q *projectQueueState) observeNotificationFailures(now time.Time) {
 	if q.KnowledgeReadError != "" {
 		current["knowledge-state"] = true
 	}
+	if q.BacklogError != "" {
+		current["backlog-read"] = true
+	}
+	if q.ActivityError != "" {
+		current["activity-read"] = true
+	}
 	if q.DocumentError != "" {
 		current["documents"] = true
 	}
@@ -22,8 +28,6 @@ func (q *projectQueueState) observeNotificationFailures(now time.Time) {
 		key := row.Agent.ID + "/" + row.Binding.HostSessionKey
 		if !row.View.Loaded || row.View.ReadError != "" {
 			current["read/"+key] = true
-		} else if q.activePending(row).Unknown > 0 {
-			current["write/"+key] = true
 		}
 	}
 	if q.NotificationFailures == nil {
@@ -43,6 +47,30 @@ func (q *projectQueueState) observeNotificationFailures(now time.Time) {
 		f.Count++
 		q.NotificationFailures[key] = f
 	}
+}
+
+// Confirmed task/queue failures come from the durable source, not the lifetime
+// of the UI process. Retain a known unknown write even if a later read fails;
+// a failed read is not proof that the original write recovered.
+func (q *projectQueueState) confirmedNotification() bool {
+	for _, row := range q.Sessions {
+		if row.View == nil {
+			continue
+		}
+		s := row.View.Status
+		if s.Unknown > 0 || (s.Pending > 0 && s.Blocked != nil) {
+			return true
+		}
+	}
+	if j := q.Backlog; j != nil {
+		if j.ProcessingFailed > 0 {
+			return true
+		}
+		if (j.Status == "paused" || j.Status == "interrupted" || j.Status == "stopped") && j.Reason != "user_stopped" {
+			return true
+		}
+	}
+	return false
 }
 func (q *projectQueueState) persistentNotification(now time.Time) bool {
 	for _, f := range q.NotificationFailures {

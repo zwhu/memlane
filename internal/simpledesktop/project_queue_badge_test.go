@@ -82,3 +82,23 @@ func TestSidebarPendingBadgeOpensProjectAndClearsAfterProcessing(t *testing.T) {
 		t.Fatal("successful recovery retained error notification")
 	}
 }
+
+func TestSidebarUnknownBadgeAppearsOnFirstReadAfterReload(t *testing.T) {
+	a := settingsFixture()
+	p := a.access.Directory.Projects[0]
+	for reload := 0; reload < 2; reload++ {
+		// Reconstruct the UI cache, as on reload. Source status, not the old counter,
+		// must restore the notification on the first successful status response.
+		a.access.Queues = nil
+		q := a.projectQueueStateFor(p)
+		q.Loaded = true
+		q.Sessions = []queuedSession{{View: &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1}}}}
+		if label, _ := a.sidebarQueueBadge(a.Config.Projects[0]); label != "!" {
+			t.Fatal("confirmed failure waits again after reload", reload, label)
+		}
+		q.Sessions[0].View.observe(PendingMaterials{Signature: "resolved"})
+		if label, _ := a.sidebarQueueBadge(a.Config.Projects[0]); label != "" {
+			t.Fatal("resolved failure left a stale dot", label)
+		}
+	}
+}

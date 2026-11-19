@@ -16,6 +16,7 @@ type unifiedSearchState struct {
 	Open, Focus, Loading, Loaded         bool
 	Query, Scope, Type, Error, Submitted string
 	Rows                                 []Item
+	Lanes                                searchLaneResult
 	Selection                            int
 	KeyboardSelection                    bool
 	Scroll                               ui.ScrollState
@@ -87,6 +88,7 @@ func (a *App) closeUnifiedSearch() {
 func (a *App) invalidateUnifiedSearch(dataset string) {
 	s := &a.searchUI
 	a.closeUnifiedSearch()
+	s.Lanes = searchLaneResult{}
 	if dataset == "" {
 		s.Rows = nil
 		s.Loaded = false
@@ -103,14 +105,26 @@ func (a *App) invalidateUnifiedSearch(dataset string) {
 	s.Submitted = ""
 }
 func (a *App) submitUnifiedSearch() {
+	a.runUnifiedSearch(false)
+}
+
+func (a *App) retryUnifiedSearch() {
+	a.runUnifiedSearch(true)
+}
+
+func (a *App) runUnifiedSearch(retry bool) {
 	s := &a.searchUI
 	query := strings.TrimSpace(s.Query)
 
 	if s.Loading && s.Submitted == a.searchSignature() {
 		return
 	}
-	if query != "" {
+	if query != "" && !retry {
 		a.rememberManualSearch()
+	}
+	previous := searchLaneResult{}
+	if retry && s.Submitted == a.searchSignature() {
+		previous = s.Lanes
 	}
 	if s.cancel != nil {
 		s.cancel()
@@ -132,22 +146,29 @@ func (a *App) submitUnifiedSearch() {
 		defer cancel()
 		var rows []Item
 		var err error
+		var lanes searchLaneResult
 		if query == "" {
 			rows, err = a.recentSearchItems(ctx, client, projects, signature)
 		} else {
-			rows, err = client.searchBoth(ctx, projects, query)
+			lanes = client.searchLanes(ctx, projects, query, previous)
+			rows, err = lanes.rows(query), lanes.err()
 		}
 		a.Update(func() {
 			if request != s.request || signature != a.searchSignature() || identity != a.readingIdentity {
 				return
 			}
 			s.Loading = false
+			s.Lanes = lanes
 			if err != nil {
-				s.Error = err.Error()
 				if readingUnavailable(err) {
 					a.InvalidateReading("")
+					return
 				}
-				return
+				s.Error = lanes.message()
+				if query == "" {
+					s.Error = "最近内容读取失败"
+					return
+				}
 			}
 			// Preserve official identity; stable grouping does not invent document ids.
 			out := []Item{}
@@ -162,14 +183,14 @@ func (a *App) submitUnifiedSearch() {
 			}
 			s.Rows = out
 			s.Reveal = true
-			s.Loaded = true
+			s.Loaded = err == nil || lanes.KeywordOK || lanes.SemanticOK
 			s.Scroll.Y = 0
 		})
 	}()
 }
 func (a *App) searchSubmitOrOpen() {
 	s := &a.searchUI
-	if s.KeyboardSelection && !s.Loading && s.Loaded && s.Error == "" && s.Submitted == a.searchSignature() && len(a.visibleSearchRows()) > 0 {
+	if s.KeyboardSelection && !s.Loading && s.Loaded && s.Submitted == a.searchSignature() && len(a.visibleSearchRows()) > 0 {
 		rows := a.visibleSearchRows()
 		a.openSearchResult(rows[min(s.Selection, len(rows)-1)])
 		return
@@ -327,10 +348,10 @@ func (a *App) searchDialog(c *ui.Context) {
 		if s.Error != "" {
 			ui.Row(c).Padding(8, 20).Gap(12).Children(func() {
 				homeText(c, s.Error, homeMeta).MaxLines(2)
-				textButton(c, "重试", nil).OnClick(a.submitUnifiedSearch)
+				textButton(c, "重试", nil).Disabled(s.Loading).OnClick(a.retryUnifiedSearch)
 			})
 		}
-		if strings.TrimSpace(s.Query) != "" && !s.Loading && s.Error == "" && s.Submitted == a.searchSignature() {
+		if strings.TrimSpace(s.Query) != "" && !s.Loading && s.Loaded && s.Submitted == a.searchSignature() {
 			keywords := 0
 			for _, row := range rows {
 				if row.SearchMatch == "关键词匹配" {
@@ -341,15 +362,19 @@ func (a *App) searchDialog(c *ui.Context) {
 		}
 		ui.Scroll(c.Key("unified-results")).Grow(1).MinHeight(0).TrackScroll(&s.Scroll).Padding(8, 10).Gap(4).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Children(func() {
 			if len(rows) == 0 {
-				message := "没有匹配内容"
+				message := "没有找到结果"
 				if s.Loading {
 					message = "搜索中…"
+				} else if s.Error != "" {
+					message = ""
 				} else if strings.TrimSpace(s.Query) != "" && s.Submitted != a.searchSignature() {
 					message = "按回车搜索"
 				} else if strings.TrimSpace(s.Query) == "" {
 					message = "暂无最近内容"
 				}
-				homeText(c, message, homeMeta).Margin(16)
+				if message != "" {
+					homeText(c, message, homeBody).Margin(16)
+				}
 			}
 			group := ""
 			for n, row := range rows {
@@ -437,6 +462,7 @@ func (a *App) cancelChangedSearch() {
 	s.KeyboardSelection = false
 	s.Loaded = false
 	s.Rows = nil
+	s.Lanes = searchLaneResult{}
 	s.Submitted = ""
 }
 func searchRowText(i Item) (string, string) {

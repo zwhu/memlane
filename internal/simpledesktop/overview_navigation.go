@@ -2,6 +2,7 @@ package simpledesktop
 
 import (
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -49,9 +50,9 @@ func (a *App) overviewNavigation(c *ui.Context) {
 		selected = "project:" + a.access.OpenProject
 	}
 	ui.Themed(c, sidebarTheme).Width(homeSidebarWidth).Shrink(0).Background(shellBackground).Children(func() {
-		ui.Row(c).Height(48).Margin(48, 0, 0, 0).Shrink(0).Padding(4, 24, 0, 24).AlignItems(ui.Start).Gap(10).DragWindow().Children(func() {
+		ui.Row(c).Height(48).Margin(48, 0, 0, 0).Shrink(0).Padding(4, 24, 0, 24).AlignItems(ui.Center).Gap(10).DragWindow().Children(func() {
 			ui.Icon(c, mark).FontSize(32).TextColor(ui.Hex("#777b82"))
-			homeText(c, "Memlane", homeBrand).FontSize(21).TextColor(ui.Hex("#64686f"))
+			homeText(c, "Memlane", homeBrand).FontSize(21).FontWeight(600).LetterSpacing(0).TextColor(homeInk)
 		})
 		ui.Sidebar(c.Key("main-sidebar"), &selected, func() {
 			sidebarSelection(ui.SidebarItem(c, "总览", navIcons["总览"], "总览").Height(32), selected == "总览")
@@ -98,9 +99,12 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			} else {
 				entry.Background(ui.Transparent)
 			}
-			entry.Children(func() { ui.Icon(c, homeSettings).FontSize(17).TextColor(homeIconInk); ui.Text(c, "设置") }).OnClick(func() { a.settingsOrigin = nil; a.access.OpenProject = ""; a.navigate("设置", 0) })
+			entry.Children(func() {
+				ui.Icon(c, homeSettings).FontSize(17).TextColor(homeIconInk)
+				ui.Text(c, "设置").Font("system-ui").FontSize(13).FontWeight(500).TextColor(homeInk)
+			}).OnClick(func() { a.settingsOrigin = nil; a.access.OpenProject = ""; a.navigate("设置", 0) })
 		}).Height(44).Shrink(0).Padding(0, 8)
-		appFooter(c, "侧栏状态栏").Padding(0, 24).Gap(7).Children(func() {
+		appFooter(c, "侧栏状态栏").Padding(0, 24).Gap(7).Tooltip(a.serviceConnectionTip()).Children(func() {
 			color := ui.Hex("#9aabbc")
 			if a.service == "已连接" {
 				color = ui.Hex("#72978a")
@@ -112,9 +116,26 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			} else if a.service != "尚未检查" {
 				status = "连接异常"
 			}
-			homeText(c, "服务 · "+status, homeMeta).FontSize(10).SingleLine()
+			homeText(c, "服务 · "+status, homeMeta).FontSize(10).SingleLine().Tooltip(a.serviceConnectionTip())
 		})
 	})
+}
+
+func (a *App) serviceConnectionTip() string {
+	address := "未配置"
+	if u, err := url.Parse(a.Config.ServiceURL); err == nil && u.Host != "" {
+		u.User = nil
+		u.RawQuery = ""
+		u.Fragment = ""
+		address = u.String()
+	}
+	state := "Cognee 记忆服务 · 待检查"
+	if a.service == "已连接" {
+		state = "Cognee 记忆服务 · 已连接"
+	} else if a.service != "尚未检查" {
+		state = "Cognee 记忆服务 · 连接异常"
+	}
+	return state + "\n地址：" + address
 }
 
 func (a *App) overviewProjectGrid(c *ui.Context) {

@@ -21,6 +21,19 @@ def event(*documents, event_id=None):
 
 
 class RecallTests(unittest.TestCase):
+    def test_event_identity_pagination_and_dataset_counts_share_original_receipts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = RecallStore(Path(folder)/'recalls.db')
+            first, second = event(K), event(K, K2)
+            store.record('agent', first); store.record('agent', second)
+            rows = store.events({D}, 1, 0)
+            self.assertTrue(rows['more'])
+            self.assertEqual(rows['items'][0]['event_id'], second['event_id'])
+            self.assertEqual(len(rows['items'][0]['hits']), 2)
+            self.assertEqual(store.events({D}, 1, 1)['items'][0]['event_id'], first['event_id'])
+            self.assertEqual(store.events({str(uuid.uuid4())}, 10, 0)['items'], [])
+            self.assertEqual({r['document_id']:r['count'] for r in store.counts(D)['items']}, {K:2,K2:1})
+            store.close()
     def test_transaction_dedup_reopen_and_conflict(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'knowledge-recall.sqlite3'
@@ -75,6 +88,17 @@ class RecallTests(unittest.TestCase):
 
 
 class RecallAPITests(unittest.IsolatedAsyncioTestCase):
+    async def test_manager_counts_and_events_do_not_recall_or_accept_agent_reads(self):
+        manager = {'Authorization': 'Bearer '+'m'*40}
+        agent = {'Authorization': 'Bearer '+'a'*40}
+        await self.client.post('/v1/knowledge/recalls', json=event(K,K2), headers=agent)
+        for path in ('/v1/knowledge/recall-events?limit=1', '/v1/knowledge/recall-counts?dataset_id='+D):
+            self.assertEqual((await self.client.get(path, headers=agent)).status, 403)
+            response = await self.client.get(path, headers=manager)
+            self.assertEqual(response.status, 200)
+            self.assertTrue((await response.json())['items'])
+        for query in ('limit=0','limit=101','offset=-1','limit=oops','unexpected=1'):
+            self.assertEqual((await self.client.get('/v1/knowledge/recall-events?'+query, headers=manager)).status, 400)
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.readable = True

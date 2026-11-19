@@ -13,10 +13,17 @@ type pendingBufferView struct {
 	Loaded, Busy     bool
 	Message          string
 	ReadError        string
+	ReadCode         string
+	Details          []pendingMessageDetail
+	DetailsLoaded    bool
+	DetailsError     string
 	Observed         bool
 	Added            int
 	Action           string
 	CheckDetailsOpen bool
+	DiagnosticsOpen  bool
+	ExpandedMessages map[string]bool
+	AllMessagesOpen  bool
 }
 
 func (v *pendingBufferView) observe(status PendingMaterials) {
@@ -26,8 +33,15 @@ func (v *pendingBufferView) observe(status PendingMaterials) {
 	if status.Signature == v.Status.Signature && v.Status.Checked {
 		status.Checked, status.Matched, status.SessionID = v.Status.Checked, v.Status.Matched, v.Status.SessionID
 	}
+	if status.Signature != v.Status.Signature {
+		v.Details = nil
+		v.DetailsLoaded = false
+		v.ExpandedMessages = nil
+		v.AllMessagesOpen = false
+	}
 	v.Status = status
 	v.ReadError = ""
+	v.ReadCode = ""
 	v.Loaded, v.Observed = true, true
 }
 
@@ -95,7 +109,11 @@ func (a *App) runPendingAction(view *pendingBufferView, p AccessProject, agent A
 	}
 	view.Busy = true
 	view.Action = action
-	view.Message = "正在核对原会话材料…"
+	if action == "details" {
+		view.DetailsError = ""
+	} else {
+		view.Message = "正在核对原会话材料…"
+	}
 	python, installation, signature := a.Config.Python, *agent.Installation, view.Status.Signature
 	operator := pendingOperatorConfig(a.Config)
 	identity, _ := readingIdentity(a.Client)
@@ -107,8 +125,29 @@ func (a *App) runPendingAction(view *pendingBufferView, p AccessProject, agent A
 			view.Busy = false
 			current, _ := readingIdentity(a.Client)
 			if identity != current {
+				view.Details = nil
+				view.DetailsLoaded = false
 				view.Loaded = false
 				view.Message = "项目权限已变化，请重新读取保存状态"
+				return
+			}
+			if action == "details" {
+				if view.Status.Signature != signature && view.Status.Signature != result.Signature {
+					view.Details = nil
+					view.DetailsLoaded = false
+					view.DetailsError = "消息列表已更新，请重新查看。"
+					return
+				}
+				if identity != current || err != nil {
+					view.Details = nil
+					view.DetailsLoaded = false
+					view.DetailsError = "消息摘要暂时无法读取，原消息未更改。"
+					return
+				}
+				view.observe(result)
+				view.Details = result.Details
+				view.DetailsLoaded = true
+				view.DetailsError = ""
 				return
 			}
 			if err != nil {
@@ -123,7 +162,7 @@ func (a *App) runPendingAction(view *pendingBufferView, p AccessProject, agent A
 					view.Message = "保存状态已更新。"
 				}
 			} else {
-				view.Status.Pending = result.Pending
+				view.observe(result)
 				view.Status.Signature = ""
 				view.Status.Checked = false
 				view.Added = 0

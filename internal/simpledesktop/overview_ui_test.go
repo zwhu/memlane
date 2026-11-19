@@ -159,7 +159,7 @@ func TestOverviewLayoutAndContinuousUIFixture(t *testing.T) {
 			if a.overviewState.Day != day {
 				t.Fatal("date not selected")
 			}
-			if err := tt.Click("显示最近记忆"); err != nil {
+			if err := tt.Click("返回最近记忆"); err != nil {
 				t.Fatal(err)
 			}
 			if a.overviewState.Day != "" {
@@ -223,7 +223,7 @@ func TestOverviewLoadingEmptyAndPartialFailureUI(t *testing.T) {
 	v.Snapshot = overviewSnapshot{}
 	v.Events = nil
 	tt := ui.NewTester(a.overviewHome, 980, 758)
-	if !tt.HasText("正在读取统计…") || tt.HasText("暂无记忆") || !tt.HasText("—") {
+	if !tt.HasText("读取中…") || tt.HasText("暂无记忆") || !tt.HasText("—") {
 		t.Fatal("loading masquerades as zero/empty")
 	}
 	fixtureImage(t, tt, "loading")
@@ -270,7 +270,7 @@ func TestOverviewFixedListsAreCappedAndScrollIndependently(t *testing.T) {
 			if d := left.Y - right.Y; d < -2 || d > 2 {
 				t.Fatal("panel tops differ", left, right)
 			}
-			if len(a.overviewKnowledgeRows(time.Now())) != 20 || !tt.HasText("Synthetic event 49") || tt.HasText("Synthetic event 50") {
+			if len(a.overviewDisplayedRows(time.Now())) != 20 || !tt.HasText("Synthetic event 49") || tt.HasText("Synthetic event 50") {
 				t.Fatal("list caps incorrect")
 			}
 			if tt.HasText("下一页") || tt.HasText("查看全部动态") || tt.HasText("加载更多动态") {

@@ -6,7 +6,7 @@ import (
 )
 
 func policySettingRow(c *ui.Context, title, explanation, value string, inherited bool, control func()) {
-	ui.Column(c).FillWidth().Padding(16).Gap(8).Background(ui.Hex("#f8fafc")).Border(1, homeBorder).Radius(8).Children(func() {
+	ui.Column(c).FillWidth().Padding(16).Gap(8).Background(ui.Hex("#f8fafc")).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
 			homeText(c, title, homeHeading).FontSize(13)
 			ui.Spacer(c)
@@ -118,7 +118,7 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 	}
 	ui.Scroll(c.Key("project-settings-" + p.ID)).Grow(1).MinHeight(0).TrackScroll(&q.Scroll).Padding(32).Background(ui.Hex("#f8fafc")).Children(func() {
 		ui.Column(c).FillWidth().MaxWidth(900).Gap(18).Children(func() {
-			ui.Column(c).FillWidth().Padding(16).Gap(10).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(8).Children(func() {
+			ui.Column(c).FillWidth().Padding(16).Gap(10).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
 				ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
 					homeText(c, p.Name, homeHeading).FontSize(15).Grow(1).MinWidth(0).SingleLine().Tooltip(p.Name)
 					textButton(c, "编辑名称", nil).FontSize(12).OnClick(func() { a.openProjectCreation(p.ID) })
@@ -150,7 +150,7 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 				homeText(c, "尚无已连接的 Agent；请先在全局设置中连接。", homeMeta)
 			}
 			homeText(c, "权限设置", homeHeading).FontSize(15)
-			ui.Column(c).FillWidth().Gap(0).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Radius(8).Children(func() {
+			ui.Column(c).FillWidth().Gap(0).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
 				for i, row := range a.access.Directory.Agents {
 					if i > 0 {
 						ui.Column(c).FillWidth().Height(1).Background(homeBorder)

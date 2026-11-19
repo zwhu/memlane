@@ -144,6 +144,11 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 		ui.Column(c).Fill().Children(func() {
 			ui.Column(c).Shrink(0).Padding(pageTopInset, paneInset, controlGap, paneInset).Gap(controlGap).Children(func() {
 				a.commonListToolbar(c)
+				if len(s.Knowledge.RecallFilter) > 0 {
+					homeText(c, fmt.Sprintf("本次召回 · %d 条", len(s.Knowledge.RecallFilter)), homeBody)
+					queueAction(c, "显示全部记忆", func() { s.Knowledge.RecallFilter = nil; s.Offset = 0; a.load(s) })
+					queueAction(c, "返回动态", func() { a.navigate("总览", 0) })
+				}
 				ui.Row(c).AlignItems(ui.Center).Children(func() {
 					homeText(c, projectListStatus(s), homeMeta)
 					ui.Spacer(c)
@@ -153,7 +158,11 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 					homeText(c, "正在刷新，保留现有内容", homeMeta)
 				}
 				if s.Error != "" {
-					homeText(c, "未刷新 · "+s.Error, homeMeta).MaxLines(3)
+					message := "读取失败 · " + s.Error
+					if s.Loaded {
+						message = "未能刷新，显示上次结果 · " + s.Error
+					}
+					homeText(c, message, homeBody).MaxLines(3)
 					projectLink(c, "重试读取", func() { a.load(s) })
 				}
 				if !e.Open && e.Message != "" {
@@ -209,18 +218,40 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 	ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
 		if s.Selected == nil {
 			ui.Column(c).Grow(1).MinHeight(0).Padding(paneInset).Gap(controlGap).Children(func() {
-				ui.Icon(c, homeCommon).FontSize(30).TextColor(homeMuted)
-				title := "让通用经验延续到下一个项目"
-				if len(s.Items) > 0 {
-					title = "选择一条通用记忆开始阅读"
-				}
-				homeText(c, title, homeHeading).FontSize(20)
-				homeText(c, "个人偏好与通用经验独立保存，项目的明确约定优先。", homeBody).MaxWidth(500)
 				if len(a.Config.Common) == 0 {
-					homeText(c, "尚未关联通用记忆库，请在设置中检查连接。", homeMeta)
+					homeText(c, "尚未连接记忆库", homeHeading)
 					projectLink(c, "前往设置", func() { a.navigate("设置", 0) })
-				} else if a.Config.ProjectControl != nil {
-					commonButton(c, "新增第一条记忆", true, func() { a.beginCommonDraft(nil) })
+					return
+				}
+				if !s.Loaded {
+					message := "正在读取…"
+					if s.Error != "" {
+						message = "读取失败"
+					}
+					homeText(c, message, homeHeading)
+					return
+				}
+				if len(s.Items) > 0 {
+					homeText(c, "选择一条记忆", homeHeading)
+					return
+				}
+				if s.Loading || s.Error != "" {
+					message := "正在刷新…"
+					if s.Error != "" {
+						message = "未能刷新，显示上次结果"
+					}
+					homeText(c, message, homeBody)
+					return
+				}
+				if e.Category != "" || s.Offset > 0 {
+					homeText(c, "当前分类没有记忆", homeHeading)
+					projectLink(c, "显示全部", func() { e.Category = ""; s.Offset = 0; a.load(s) })
+					return
+				}
+				homeText(c, "还没有通用记忆", homeHeading)
+				homeText(c, "个人偏好和跨项目经验放在这里。", homeBody).MaxWidth(400)
+				if a.Config.ProjectControl != nil {
+					commonButton(c, "添加记忆", true, func() { a.beginCommonDraft(nil) })
 				}
 			})
 			appFooter(c, "通用记忆阅读栏").Padding(0, paneInset).Children(func() { homeText(c, "跨项目参考 · 项目明确约定优先", homeMeta) })
@@ -269,7 +300,7 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 				if canonical {
 					a.commonMarkdown(c, "common-body-"+i.key(), parts.Body)
 					if parts.Applicability != "" {
-						ui.Column(c).FillWidth().Padding(14, 16).Gap(8).Background(ui.Hex("#f6f9fc")).Border(1, homeBorder).Radius(8).Children(func() {
+						ui.Column(c).FillWidth().Padding(14, 16).Gap(8).Background(ui.Hex("#f6f9fc")).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
 							homeText(c, "适用条件", homeMeta).FontWeight(500)
 							a.commonMarkdown(c, "common-conditions-"+i.key(), parts.Applicability)
 						})
@@ -419,7 +450,7 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 					}
 				}
 				if e.Submitted {
-					ui.Column(c).Padding(14, 16).Gap(9).Border(1, homeBorder).Radius(8).Background(ui.Hex("#f6f9fc")).Children(func() {
+					ui.Column(c).Padding(14, 16).Gap(9).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Background(ui.Hex("#f6f9fc")).Children(func() {
 						saved := "待核对"
 						if e.SaveVerified {
 							saved = "已核对"

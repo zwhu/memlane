@@ -2,7 +2,9 @@ package simpledesktop
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"sync"
 )
 
 func keywordMatch(i Item, query string) bool {
@@ -20,27 +22,70 @@ func keywordMatch(i Item, query string) bool {
 	return true
 }
 
+type searchLaneResult struct {
+	Keyword, Semantic           []Item
+	KeywordOK, SemanticOK       bool
+	KeywordError, SemanticError error
+}
+
+func (r searchLaneResult) err() error { return errors.Join(r.KeywordError, r.SemanticError) }
+
+func (r searchLaneResult) message() string {
+	if r.KeywordError != nil && r.SemanticError != nil {
+		return "搜索失败"
+	}
+	if r.SemanticError != nil {
+		return "暂时只能按关键词查找"
+	}
+	if r.KeywordError != nil {
+		return "暂时无法按关键词匹配"
+	}
+	return ""
+}
+
+// A retry keeps even a successful empty lane. The caller binds this snapshot
+// to its query, dataset catalog and reading identity before it may be reused.
+func (c Client) searchLanes(ctx context.Context, projects []Project, query string, previous searchLaneResult) searchLaneResult {
+	r := previous
+	var wg sync.WaitGroup
+	if !r.KeywordOK {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.Keyword, r.KeywordError = c.searchType(ctx, projects, query, "CHUNKS_LEXICAL")
+			r.KeywordOK = r.KeywordError == nil
+		}()
+	}
+	if !r.SemanticOK {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.Semantic, r.SemanticError = c.search(ctx, projects, query)
+			r.SemanticOK = r.SemanticError == nil
+		}()
+	}
+	wg.Wait()
+	return r
+}
+
 func (c Client) searchBoth(ctx context.Context, projects []Project, query string) ([]Item, error) {
+	r := c.searchLanes(ctx, projects, query, searchLaneResult{})
+	return r.rows(query), r.err()
+}
+
+func (r searchLaneResult) rows(query string) []Item {
 	// Reuse both official retrieval lanes. Lexical top-k also includes zero
 	// scores, so only visible literal hits may be labelled keyword matches.
-	lexical, err := c.searchType(ctx, projects, query, "CHUNKS_LEXICAL")
-	if err != nil {
-		return nil, err
-	}
-	semantic, err := c.search(ctx, projects, query)
-	if err != nil {
-		return nil, err
-	}
 	rows := []Item{}
 	seen := map[string]bool{}
-	for _, i := range lexical {
+	for _, i := range r.Keyword {
 		if keywordMatch(i, query) && !seen[i.key()] {
 			i.SearchMatch = "关键词匹配"
 			rows = append(rows, i)
 			seen[i.key()] = true
 		}
 	}
-	for _, i := range semantic {
+	for _, i := range r.Semantic {
 		if seen[i.key()] {
 			continue
 		}
@@ -51,7 +96,7 @@ func (c Client) searchBoth(ctx context.Context, projects []Project, query string
 		rows = append(rows, i)
 		seen[i.key()] = true
 	}
-	return rows, nil
+	return rows
 }
 
 func searchHitText(i Item, query string) (string, string) {

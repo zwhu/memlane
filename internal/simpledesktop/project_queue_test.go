@@ -119,36 +119,21 @@ func TestQueuedDocumentReaderDoesNotEnumerateAnotherCatalogAndRestoresScroll(t *
 	}
 }
 
-func TestProjectQueueActionsShareOneColumn(t *testing.T) {
-	for _, size := range [][2]int{{1200, 820}, {1440, 900}} {
-		t.Run(fmt.Sprint(size), func(t *testing.T) {
-			a, q := projectQueueFixture()
-			q.Sessions = append(q.Sessions, queuedSession{Agent: AccessAgent{Name: "本机 pi"}, View: &pendingBufferView{}})
-			// Render the queue in its production width; preceding settings cards
-			// may place these rows below the viewport.
+func TestProjectQueueActionsStayCloseToTheirText(t *testing.T) {
+	for _, width := range []int{1200, 1512, 2400} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			a, _ := projectQueueFixture()
 			tt := ui.NewTester(func(c *ui.Context) {
-				ui.Column(c).FillWidth().MaxWidth(900).Children(func() {
-					a.projectQueueSection(c, a.access.Directory.Projects[0])
-				})
-			}, size[0], size[1])
-			check, ok := tt.Find("归档此异常")
-			if !ok {
-				t.Fatal("missing check action")
+				ui.Column(c).FillWidth().MaxWidth(900).Children(func() { a.projectQueueSection(c, a.access.Directory.Projects[0]) })
+			}, width, 1200)
+			details, ok := tt.Find("查看详情")
+			if !ok || details.X > 180 {
+				t.Fatal("details drifted to distant right edge", details)
 			}
-			for _, label := range []string{"重新读取", "查看"} {
-				r, ok := tt.Find(label)
-				if !ok || r.X+r.W != check.X+check.W {
-					t.Fatalf("%s is not aligned with check: %v vs %v", label, r, check)
-				}
+			if tt.HasText("归档此异常") || tt.HasText("继续保存") {
+				t.Fatal("ambiguous recovery controls remain")
 			}
-			unsaved, ok := tt.Find("未保存")
-			uncertain, found := tt.Find("暂无法确认")
-			if !ok || !found || unsaved.X+unsaved.W != uncertain.X+uncertain.W {
-				t.Fatalf("queue statuses shift when an action is absent: %v vs %v", unsaved, uncertain)
-			}
-			if delta := (uncertain.Y + uncertain.H/2) - (check.Y + check.H/2); delta < -1 || delta > 1 {
-				t.Fatalf("status and text action are not vertically centered: %v vs %v", uncertain, check)
-			}
+			fixtureImage(t, tt, fmt.Sprintf("message-status-%d", width))
 		})
 	}
 }
@@ -157,7 +142,7 @@ func TestProjectQueueBothTypesAndCompactPermissionFeedback(t *testing.T) {
 		t.Run(fmt.Sprint(wh), func(t *testing.T) {
 			a, q := projectQueueFixture()
 			tt := ui.NewTester(a.View, wh[0], wh[1])
-			for _, label := range []string{"权限设置", "待处理内容", "会话保存", "待整理", "2 条待保存 · 1 条保存状态待确认", "2 份文档", "暂无法确认"} {
+			for _, label := range []string{"权限设置", "消息与处理状态", "需要你处理", "状态与异常提示", "2 条消息等待保存", "1 条消息未收到保存结果", "2 份文档"} {
 				if !tt.HasText(label) {
 					t.Fatal("missing queue distinction", label)
 				}
@@ -183,7 +168,7 @@ func TestProjectQueueBothTypesAndCompactPermissionFeedback(t *testing.T) {
 			q.Sessions = nil
 			q.Documents = nil
 			tt.Frame()
-			if !tt.HasText("当前没有未保存的记录") || !tt.HasText("当前没有待整理的文档") {
+			if !tt.HasText("当前没有需要你处理的事项") || !tt.HasText("当前没有消息积压或已检测到的异常") {
 				t.Fatal("successful empty states missing")
 			}
 			fixtureImage(t, tt, fmt.Sprintf("project-settings-%dx%d-empty", wh[0], wh[1]))

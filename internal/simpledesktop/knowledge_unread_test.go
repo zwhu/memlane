@@ -74,6 +74,8 @@ func TestKnowledgeUnreadBaselineReadPersistenceAndIsolation(t *testing.T) {
 }
 func TestUnreadBadgeAndListAreDistinctFromPendingWork(t *testing.T) {
 	a, q := projectQueueFixture()
+	// This scenario covers ordinary unsent work; confirmed unknown writes now notify immediately.
+	q.Sessions[1].View.Status.Unknown = 0
 	a.Update = nil
 	a.Config.ClientStateFile = filepath.Join(t.TempDir(), "client-state.json")
 	p := a.access.Directory.Projects[0]
@@ -104,5 +106,21 @@ func TestUnreadBadgeAndListAreDistinctFromPendingWork(t *testing.T) {
 	tt.Frame()
 	if tt.HasText("未读记忆：memlane") || tt.HasText("未读") {
 		t.Fatal("read item remained unread")
+	}
+}
+
+func TestProjectModelFailureAppearsWithoutChangingSavedMessageState(t *testing.T) {
+	a, q := projectQueueFixture()
+	q.ProcessingNotices = []processingNotice{{Operation: "original-operation", Status: 502, Code: "codex_model_failed", Backend: "codex"}}
+	p := a.access.Directory.Projects[0]
+	_, info := a.messageNotices(q, p)
+	found := false
+	for _, n := range info {
+		if n.Key == "processing/original-operation" {
+			found = n.Title == "记忆提炼调用失败"
+		}
+	}
+	if !found {
+		t.Fatal("model error was hidden behind message-save status")
 	}
 }

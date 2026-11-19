@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -24,15 +23,23 @@ import (
 // GraphHost passes only a bounded official payload and selected identities to
 // the pinned renderer. The page never receives credentials or a network API.
 type GraphHost struct {
-	mu               sync.Mutex
 	assets           map[string][]byte
 	view             *mygo.WebView
+	page             *mygo.Page
+	pageReady        chan struct{}
 	epoch            uint64
 	frame            map[string]any
 	ready            bool
 	nodes            map[string]json.RawMessage
 	project, dataset string
 	selected         func(json.RawMessage)
+	update           func(func())
+	eval             func(context.Context, string) (any, error)
+	onRenderError    func(error)
+	pending          *graphRender
+	rendering        bool
+	renderCancel     context.CancelFunc
+	closed           bool
 }
 
 func RegisterGraph(directory string) (*GraphHost, error) {
@@ -52,7 +59,7 @@ func RegisterGraph(directory string) (*GraphHost, error) {
 		return nil, fmt.Errorf("官方图组件版本不匹配")
 	}
 	allowed := map[string]bool{"index.html": true, "app.js": true, "app.css": true, "host.css": true, "app.js.LEGAL.txt": true, "COGNEE-LICENSE": true, "THIRD-PARTY-LICENSES.txt": true, "build.json": true}
-	g := &GraphHost{assets: map[string][]byte{}}
+	g := &GraphHost{assets: map[string][]byte{}, pageReady: make(chan struct{})}
 	size := 0
 	for name, digest := range manifest.Files {
 		if !allowed[name] {
@@ -76,14 +83,20 @@ func RegisterGraph(directory string) (*GraphHost, error) {
 	}
 	mygo.BindAs("OfficialGraph", g)
 	mygo.Protocol.Handle("memlanegraph", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		g.mu.Lock()
-		v := g.view
-		g.mu.Unlock()
+		// The page reference is published once before loading, then immutable.
+		// A closed channel publishes it to protocol workers without a state mutex.
+		select {
+		case <-g.pageReady:
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		page := g.page
 		name := r.URL.Path
 		if name == "/" {
 			name = "/index.html"
 		}
-		if v == nil || mygo.CallerPage(r.Context()) != v.Page() || r.Method != "GET" || r.URL.Host != "graph" || name != "/"+filepath.Base(name) || r.URL.RawQuery != "" {
+		if page == nil || mygo.CallerPage(r.Context()) != page || r.Method != "GET" || r.URL.Host != "graph" || name != "/"+filepath.Base(name) || r.URL.RawQuery != "" {
 			http.NotFound(w, r)
 			return
 		}
@@ -96,6 +109,7 @@ func RegisterGraph(directory string) (*GraphHost, error) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		_, _ = w.Write(b)
 	}))
+
 	return g, nil
 }
 func (g *GraphHost) attach(win *mygo.Window, selected func(json.RawMessage)) error {
@@ -103,26 +117,39 @@ func (g *GraphHost) attach(win *mygo.Window, selected func(json.RawMessage)) err
 	if e != nil {
 		return e
 	}
-	g.mu.Lock()
 	g.view = v
 	g.selected = selected
-	g.mu.Unlock()
+	g.update = win.Update
+	g.eval = v.Page().EvalContext
+	g.page = v.Page()
+	close(g.pageReady)
+
 	v.Page().OnWillNavigate(func(e *mygo.NavigateEvent) {
 		if e.URL != "memlanegraph://graph/index.html" {
 			e.PreventDefault()
 		}
 	})
-	win.OnClosed(func() { v.Destroy() })
+	win.OnClosed(func() {
+		g.closed = true
+		g.pending = nil
+		if g.renderCancel != nil {
+			g.renderCancel()
+		}
+		v.Destroy()
+	})
 	return v.Page().LoadURL("memlanegraph://graph/index.html")
 }
+
+// Ready and Select are invoked on SDK binding workers. Only their immutable
+// transport references are read there; all graph state is accessed on the UI.
 func (g *GraphHost) Ready(ctx context.Context) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.view == nil || mygo.CallerPage(ctx) != g.view.Page() {
-		return fmt.Errorf("graph page unavailable")
-	}
-	g.ready = true
-	return g.flush(ctx)
+	return g.onUI(ctx, func() error {
+		if g.closed || g.view == nil || mygo.CallerPage(ctx) != g.view.Page() {
+			return fmt.Errorf("graph page unavailable")
+		}
+		g.ready = true
+		return g.flush(ctx)
+	})
 }
 func (g *GraphHost) Select(ctx context.Context, s struct {
 	Epoch   uint64 `json:"epoch"`
@@ -130,55 +157,44 @@ func (g *GraphHost) Select(ctx context.Context, s struct {
 	Dataset string `json:"dataset"`
 	Node    string `json:"node"`
 }) error {
-	g.mu.Lock()
-	if g.view == nil || mygo.CallerPage(ctx) != g.view.Page() || s.Epoch != g.epoch || s.Project != g.project || s.Dataset != g.dataset || g.nodes[s.Node] == nil {
-		g.mu.Unlock()
-		return fmt.Errorf("selected graph identity changed")
-	}
-	raw := append(json.RawMessage(nil), g.nodes[s.Node]...)
-	fn := g.selected
-	g.mu.Unlock()
-	if fn != nil {
-		fn(raw)
-	}
-	return nil
-}
-func (g *GraphHost) flush(ctx context.Context) error {
-	if !g.ready {
-		return nil
-	}
-	code := "window.memlaneOfficialGraph.clear(" + fmt.Sprint(g.epoch) + ")"
-	if g.frame != nil {
-		b, e := json.Marshal(g.frame)
-		if e != nil {
-			return e
+	return g.onUI(ctx, func() error {
+		if g.closed || g.view == nil || mygo.CallerPage(ctx) != g.view.Page() || s.Epoch != g.epoch || s.Project != g.project || s.Dataset != g.dataset || g.nodes[s.Node] == nil {
+			return fmt.Errorf("selected graph identity changed")
 		}
-		code = "window.memlaneOfficialGraph.apply(" + string(b) + ")"
-	}
-	_, e := g.view.Page().EvalContext(ctx, code)
-	return e
+		if g.selected != nil {
+			g.selected(append(json.RawMessage(nil), g.nodes[s.Node]...))
+		}
+		return nil
+	})
 }
 func (g *GraphHost) clear() {
 	if g == nil {
 		return
 	}
-	g.mu.Lock()
 	g.epoch++
-	g.frame = nil
-	g.nodes = nil
-	g.mu.Unlock()
-	go func() {
-		g.mu.Lock()
-		defer g.mu.Unlock()
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = g.flush(ctx)
-	}()
+	g.frame, g.nodes = nil, nil
+	_ = g.flush(context.Background())
 }
 func (g *GraphHost) apply(ctx context.Context, p Project, dataset string, raw json.RawMessage) error {
 	return g.applyCurrent(ctx, p, dataset, raw, nil)
 }
 func (g *GraphHost) applyCurrent(ctx context.Context, p Project, dataset string, raw json.RawMessage, ticket *uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	data, err := decodeGraph(raw)
+	if err != nil {
+		return err
+	}
+	return g.applyParsed(p, dataset, data, ticket)
+}
+
+type graphData struct {
+	raw   json.RawMessage
+	nodes map[string]json.RawMessage
+}
+
+func decodeGraph(raw json.RawMessage) (graphData, error) {
 	var payload struct {
 		Nodes []json.RawMessage `json:"nodes"`
 		Links []struct {
@@ -188,7 +204,7 @@ func (g *GraphHost) applyCurrent(ctx context.Context, p Project, dataset string,
 		Colors map[string]any `json:"color_maps"`
 	}
 	if json.Unmarshal(raw, &payload) != nil || payload.Nodes == nil || payload.Links == nil || payload.Colors == nil || len(payload.Nodes) > 1000 || len(payload.Links) > 50000 {
-		return fmt.Errorf("官方图数据结构不匹配")
+		return graphData{}, fmt.Errorf("官方图数据结构不匹配")
 	}
 	nodes := map[string]json.RawMessage{}
 	for _, node := range payload.Nodes {
@@ -196,17 +212,21 @@ func (g *GraphHost) applyCurrent(ctx context.Context, p Project, dataset string,
 			ID string `json:"id"`
 		}
 		if json.Unmarshal(node, &n) != nil || n.ID == "" || nodes[n.ID] != nil {
-			return fmt.Errorf("官方图节点身份不匹配")
+			return graphData{}, fmt.Errorf("官方图节点身份不匹配")
 		}
 		nodes[n.ID] = node
 	}
 	for _, link := range payload.Links {
 		if nodes[link.Source] == nil || nodes[link.Target] == nil {
-			return fmt.Errorf("官方图边身份不匹配")
+			return graphData{}, fmt.Errorf("官方图边身份不匹配")
 		}
 	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
+	return graphData{raw: raw, nodes: nodes}, nil
+}
+
+// applyParsed is UI-owned. The decoder transfers an immutable result to it.
+func (g *GraphHost) applyParsed(p Project, dataset string, data graphData, ticket *uint64) error {
+	raw, nodes := data.raw, data.nodes
 	if ticket != nil && *ticket != g.epoch {
 		return fmt.Errorf("graph result superseded")
 	}
@@ -220,13 +240,18 @@ func (g *GraphHost) applyCurrent(ctx context.Context, p Project, dataset string,
 	g.dataset = dataset
 	g.nodes = nodes
 	g.frame = map[string]any{"epoch": g.epoch, "project": p.ID, "instance": "official", "dataset": dataset, "payload": raw}
-	return g.flush(ctx)
+	return g.flush(context.Background())
 }
 func (a *App) AttachGraph(win *mygo.Window) error {
 	if a.graph == nil {
 		return nil
 	}
-	return a.graph.attach(win, func(raw json.RawMessage) { a.Update(func() { a.graphSelection = string(raw) }) })
+	a.graph.onRenderError = func(err error) {
+		if a.page == "图谱" {
+			a.graphError = err.Error()
+		}
+	}
+	return a.graph.attach(win, func(raw json.RawMessage) { a.graphSelection = string(raw) })
 }
 func (a *App) loadGraph() {
 	p, ok := a.current()
@@ -249,9 +274,7 @@ func (a *App) loadGraph() {
 	a.graphLoading = true
 	var ticket uint64
 	if a.graph != nil {
-		a.graph.mu.Lock()
 		ticket = a.graph.epoch
-		a.graph.mu.Unlock()
 	}
 	epoch := a.epoch
 	client := a.Client
@@ -259,6 +282,10 @@ func (a *App) loadGraph() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		raw, e := client.request(ctx, "GET", "/api/v1/visualize/json?dataset_id="+url.QueryEscape(dataset)+"&max_nodes=1000&include_session_events=false", nil)
+		var data graphData
+		if e == nil {
+			data, e = decodeGraph(raw)
+		}
 		a.Update(func() {
 			if epoch != a.epoch {
 				return
@@ -272,29 +299,17 @@ func (a *App) loadGraph() {
 				a.graphError = "官方图组件不可用"
 				return
 			}
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				err := a.graph.applyCurrent(ctx, p, dataset, raw, &ticket)
-				a.Update(func() {
-					if epoch != a.epoch {
-						return
-					}
-					if err != nil {
-						a.graphError = err.Error()
-						return
-					}
-					if a.graphSelection != "" {
-						var selected struct {
-							ID string `json:"id"`
-						}
-						_ = json.Unmarshal([]byte(a.graphSelection), &selected)
-						a.graph.mu.Lock()
-						a.graphSelection = string(a.graph.nodes[selected.ID])
-						a.graph.mu.Unlock()
-					}
-				})
-			}()
+			if err := a.graph.applyParsed(p, dataset, data, &ticket); err != nil {
+				a.graphError = err.Error()
+				return
+			}
+			if a.graphSelection != "" {
+				var selected struct {
+					ID string `json:"id"`
+				}
+				_ = json.Unmarshal([]byte(a.graphSelection), &selected)
+				a.graphSelection = string(a.graph.nodes[selected.ID])
+			}
 		})
 	}()
 }

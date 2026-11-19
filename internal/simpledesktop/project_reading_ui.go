@@ -269,27 +269,29 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 		i := s.Selected
 		key := i.key()
 		appToolbar(c, "项目内容工具栏", func() {
-			status := memoryKindLabel(i.Kind) + " · " + displayDate(i.Date)
-			if s.Reading {
-				status += " · 正在读取…"
-			}
-			row := ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(4)
-			row.Children(func() {
-				homeText(c, status, homeMeta).SingleLine()
-				hoverCopyAction(c, row, "复制内容", func() { c.WriteClipboard(sessionCopyBody(s, *i)); a.copyFeedback("内容") }).Disabled(!(i.BodyLoaded || i.Detail != nil || i.Preview != ""))
+			ui.Row(c).FillWidth().MaxWidth(820).AlignItems(ui.Center).Gap(10).Children(func() {
+				status := memoryKindLabel(i.Kind) + " · " + displayDate(i.Date)
+				if s.Reading {
+					status += " · 正在读取…"
+				}
+				row := ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(4)
+				row.Children(func() {
+					homeText(c, status, homeMeta).SingleLine()
+					hoverCopyAction(c, row, "复制内容", func() { c.WriteClipboard(sessionCopyBody(s, *i)); a.copyFeedback("内容") }).Disabled(!(i.BodyLoaded || i.Detail != nil || i.Preview != ""))
+				})
+				knowledgeRecallLabel(c, *i)
+				knowledgeBasisTag(c, *i)
+				ui.Spacer(c)
+				anchor := readingAction(c, "内容信息", readingInfo, func() {
+					a.projectUI.InfoOpen = !a.projectUI.InfoOpen
+					a.projectUI.InfoKey = key
+					a.projectUI.MenuOpen = false
+				})
+				if a.projectUI.InfoKey != key {
+					a.projectUI.InfoOpen = false
+				}
+				a.contentInformation(c, anchor, *i)
 			})
-			knowledgeRecallLabel(c, *i)
-			knowledgeBasisTag(c, *i)
-			ui.Spacer(c)
-			anchor := readingAction(c, "内容信息", readingInfo, func() {
-				a.projectUI.InfoOpen = !a.projectUI.InfoOpen
-				a.projectUI.InfoKey = key
-				a.projectUI.MenuOpen = false
-			})
-			if a.projectUI.InfoKey != key {
-				a.projectUI.InfoOpen = false
-			}
-			a.contentInformation(c, anchor, *i)
 		}).Height(44)
 		scrollKey := key
 		if i.Session != nil && s.SessionTools {
@@ -425,10 +427,6 @@ func (a *App) projectReadingBody(c *ui.Context, s *pane, i *Item) {
 		}
 		paged := a.sessionHistoryControls(c, s, *i)
 		homeText(c, sessionCoverage(*i.Detail), homeBody).FontSize(12)
-		homeText(c, "同一 session 的连续记录；新消息更新此会话，不新增列表项。", homeMeta)
-		if i.Title != "" && i.Title != i.ID && i.Title != "来源会话" {
-			homeText(c, "已保存首条："+i.Title, homeMeta).MaxLines(2)
-		}
 		if !paged && (len(i.Detail.QAs) < i.Detail.Count || len(i.Detail.Traces) < i.Detail.ToolCount) {
 			homeText(c, "当前是最近记录，可读取按时间排列的完整会话。", homeMeta)
 			projectLink(c, "读取完整会话", func() { a.loadSessionPage(s, 0, 0) }).Disabled(s.Reading)
@@ -460,7 +458,7 @@ func (a *App) projectReadingBody(c *ui.Context, s *pane, i *Item) {
 					ui.Text(c, "官方内容已截断").FontSize(10).TextColor(muted)
 				}
 			})
-			ui.Text(c, "Agent").FontSize(10).TextColor(muted)
+			sourceAgentLabel(c, *i)
 			markdown.View(c.Key("a-"+q.ID), q.Answer, a.projectMD)
 			if q.AnswerTruncated {
 				ui.Text(c, "官方内容已截断").FontSize(10).TextColor(muted)

@@ -13,12 +13,21 @@ import (
 	"strings"
 )
 
+type pendingMessageDetail struct {
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Summary string `json:"summary"`
+	Unknown bool   `json:"unknown"`
+}
+
 type PendingMaterials struct {
-	Pending         int      `json:"pending"`
-	UnknownEntryIDs []string `json:"unknown_entry_ids"`
-	Signature       string   `json:"signature"`
-	Unknown         int      `json:"unknown_outcomes"`
-	Blocked         *struct {
+	Details          []pendingMessageDetail `json:"details,omitempty"`
+	Pending          int                    `json:"pending"`
+	UnknownEntryIDs  []string               `json:"unknown_entry_ids"`
+	Signature        string                 `json:"signature"`
+	Unknown          int                    `json:"unknown_outcomes"`
+	RetryableUnknown int                    `json:"retryable_unknown"`
+	Blocked          *struct {
 		Reason string `json:"reason"`
 	} `json:"blocked"`
 	Drained   int    `json:"drained"`
@@ -84,15 +93,18 @@ func runPendingMaterials(ctx context.Context, python string, installation AgentI
 	if !filepath.IsAbs(python) || binding.HostSessionKey == "" || dataset == "" {
 		return result, fmt.Errorf("受管会话尚未确认")
 	}
-	if action != "show" && action != "check" && action != "replay" && action != "discard" {
+	if action != "show" && action != "check" && action != "replay" && action != "discard" && action != "details" {
 		return result, fmt.Errorf("待发材料操作无效")
 	}
 	if err := verifyInstallation(installation); err != nil {
 		return result, err
 	}
 	arguments := []string{filepath.Join(installation.PluginDir, "scripts/_memlane_policy.py"), "--session-key", binding.HostSessionKey, "--dataset", dataset, "--action", action}
-	if action == "show" {
+	if action == "show" || action == "details" {
 		arguments = []string{"-c", pendingSnapshotScript, filepath.Join(installation.PluginDir, "scripts"), binding.HostSessionKey, dataset}
+		if action == "details" {
+			arguments = append(arguments, "details")
+		}
 	}
 	if action == "check" {
 		arguments = []string{"-c", pendingReviewScript, filepath.Join(installation.PluginDir, "scripts"), binding.HostSessionKey, dataset}

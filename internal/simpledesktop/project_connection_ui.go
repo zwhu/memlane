@@ -36,7 +36,10 @@ func (a *App) codexConnectionSettings(c *ui.Context) {
 		ui.Text(c, "正在读取Codex 接入状态…").FontSize(12).TextColor(muted)
 		return
 	}
-	ui.Text(c, "Codex · "+codexConnectionLabel(*connection)).FontSize(12).Bold()
+	ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+		agentLogo(c, agentBrandIcon("codex"), 16)
+		ui.Text(c, "Codex · "+codexConnectionLabel(*connection)).FontSize(12).Bold()
+	})
 	ui.Text(c, "CLI 与桌面端共用此连接；此前未保存的会话记录保留。").FontSize(11).LineHeight(1.7).TextColor(muted)
 	if connection.Home != "" {
 		ui.Text(c, "配置目录："+connection.Home).FontSize(10).TextColor(muted)

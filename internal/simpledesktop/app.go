@@ -237,6 +237,10 @@ func (a *App) current() (Project, bool) {
 }
 func (a *App) navigate(page string, index int) { a.navigateKind(page, index, "") }
 func (a *App) navigateKind(page string, index int, kind string) {
+	if a.overviewState.recallCancel != nil {
+		a.overviewState.recallCancel()
+		a.overviewState.recallCancel = nil
+	}
 	a.commonPage.MenuOpen = false
 	a.projectUI.InfoOpen = false
 	a.projectUI.MenuOpen = false
@@ -252,6 +256,11 @@ func (a *App) navigateKind(page string, index int, kind string) {
 		a.settingsOrigin = nil
 	}
 	if a.page == "总览" && page != "总览" {
+		if a.overviewState.cancel != nil {
+			a.overviewState.cancel()
+		}
+		a.overviewState.generation++
+		a.overviewState.Loading = false
 		a.fromOverview = true
 		a.overviewSourceFloor = make(map[*pane]int, len(a.panes))
 		for _, p := range a.panes {
@@ -269,6 +278,7 @@ func (a *App) navigateKind(page string, index int, kind string) {
 	a.epoch++
 	a.graph.clear()
 	for _, p := range a.panes {
+		p.Knowledge.RecallFilter = nil
 		p.HomeAnchor, p.Locating, p.RevealItem = nil, false, ""
 		a.cancelTitles(p)
 		if p.readCancel != nil {
@@ -356,6 +366,10 @@ func (a *App) load(s *pane) {
 		ps = searchProjects(a.Config.Projects, a.searchProject)
 	}
 	client := a.Client
+	recallFilter := map[string]bool{}
+	for id, yes := range s.Knowledge.RecallFilter {
+		recallFilter[id] = yes
+	}
 	go func() {
 		defer cancel()
 		var rows []Item
@@ -385,7 +399,21 @@ func (a *App) load(s *pane) {
 		} else if p.Dataset == "" {
 			err = fmt.Errorf("项目正在登记，内容归属尚未确认")
 		} else if page == "通用知识" {
-			rows, more, err = client.commonDocuments(ctx, p, offset, category)
+			if len(recallFilter) == 0 {
+				rows, more, err = client.commonDocuments(ctx, p, offset, category)
+			} else {
+				var all []Item
+				all, err = client.commonDocumentItems(ctx, p, category)
+				for _, row := range all {
+					if recallFilter[row.ID] {
+						rows = append(rows, row)
+					}
+				}
+				start := min(offset, len(rows))
+				end := min(start+30, len(rows))
+				more = end < len(rows)
+				rows = rows[start:end]
+			}
 		} else if page == "知识" && (kind == "原始记录" || kind == "会话" || kind == "文档") {
 			rawCatalog, err = client.projectRecordCatalog(ctx, p, kind)
 			end := min(rawCount, len(rawCatalog))
@@ -845,7 +873,7 @@ func (a *App) detail(c *ui.Context, s *pane) {
 							ui.Text(c, "官方内容已截断").FontSize(10).TextColor(muted)
 						}
 					})
-					ui.Text(c, "Agent").FontSize(10).TextColor(muted)
+					sourceAgentLabel(c, *i)
 					markdown.View(c.Key("a-"+q.ID), q.Answer, &a.md)
 					if q.AnswerTruncated {
 						ui.Text(c, "官方内容已截断").FontSize(10).TextColor(muted)

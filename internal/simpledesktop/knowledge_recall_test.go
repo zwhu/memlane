@@ -36,12 +36,12 @@ func TestKnowledgeRecallOfficialIdentityAndDisplay(t *testing.T) {
 	}
 	i.RecallStats = nil
 	tt = ui.NewTester(func(c *ui.Context) { knowledgeRecallLabel(c, i) }, 500, 100)
-	if !tt.HasText("召回 0 次") {
-		t.Fatal("default zero absent")
+	if !tt.HasText("召回 —") {
+		t.Fatal("unknown count displayed as zero")
 	}
 	i.Kind = "原始记录"
 	tt = ui.NewTester(func(c *ui.Context) { knowledgeRecallLabel(c, i) }, 500, 100)
-	if tt.HasText("召回 0 次") {
+	if tt.HasText("召回 —") {
 		t.Fatal("raw records counted as knowledge")
 	}
 }

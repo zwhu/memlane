@@ -65,7 +65,7 @@ func TestGenerationHandoffConfirmsThenRecoversOriginalOperationWithoutResending(
 	updates := make(chan func(), 32)
 	a.Update = func(f func()) { updates <- f }
 	tt := ui.NewTester(func(c *ui.Context) { ui.Column(c).Fill().Padding(24).Children(func() { a.generationSettings(c) }) }, 1200, 820)
-	clickProjectUI(t, tt, "应用")
+	clickProjectUI(t, tt, "切换")
 	drainReading(t, updates, func() bool { return !a.integrations.HandoffLoading })
 	tt.Frame()
 	if a.integrations.Handoff.Pending != 12 || !tt.HasText("另有 1 个会话结果待核对。") {
@@ -76,7 +76,7 @@ func TestGenerationHandoffConfirmsThenRecoversOriginalOperationWithoutResending(
 	if posts.Load() != 0 || a.integrations.HandoffOpen {
 		t.Fatal("cancelling preview mutated model")
 	}
-	clickProjectUI(t, tt, "应用")
+	clickProjectUI(t, tt, "切换")
 	drainReading(t, updates, func() bool { return !a.integrations.HandoffLoading })
 	tt.Frame()
 	clickProjectUI(t, tt, "确认启用")

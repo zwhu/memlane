@@ -132,8 +132,13 @@ func (a *App) applySelectedProcessingAgent() {
 func (a *App) generationCandidateStatus(c *ui.Context) {
 	s := &a.integrations
 	if s.DraftMode == "agent_bridge" {
+		current := s.Generation.Active != nil && s.Saved != nil && *s.Generation.Active == *s.Saved && s.cleanSaved()
 		ui.Row(c).FillWidth().MinHeight(48).Justify(ui.End).Children(func() {
-			ui.Button(c, "应用").Disabled(s.Busy || s.HandoffOpen || s.HandoffOperation != "" || s.SaveOperation != "" || !s.connectedProcessingAgent(s.BridgeKind)).OnClick(func() {
+			if current {
+				homeText(c, "使用中", homeMeta)
+				return
+			}
+			ui.Button(c, "切换").Disabled(s.Busy || s.HandoffOpen || s.HandoffOperation != "" || s.SaveOperation != "" || !s.connectedProcessingAgent(s.BridgeKind)).OnClick(func() {
 				if s.cleanSaved() {
 					a.applySelectedProcessingAgent()
 				} else {
@@ -152,7 +157,11 @@ func (a *App) generationCandidateStatus(c *ui.Context) {
 	ui.Column(c).FillWidth().Children(func() {
 		settingsListRow(c, func() {
 			ui.Spacer(c)
-			ui.Button(c, "应用").Disabled(current || s.Busy || s.HandoffOpen || s.HandoffOperation != "" || s.pendingGenerationProfile(s.ProfileID) || !s.cleanSaved() || !s.Generation.validated(s.Saved)).OnClick(func() {
+			if current {
+				homeText(c, "使用中", homeMeta)
+				return
+			}
+			ui.Button(c, "切换").Disabled(s.Busy || s.HandoffOpen || s.HandoffOperation != "" || s.pendingGenerationProfile(s.ProfileID) || !s.cleanSaved() || !s.Generation.validated(s.Saved)).OnClick(func() {
 				if s.Generation.HandoffAvailable {
 					a.openGenerationHandoff(s.Saved)
 				} else {

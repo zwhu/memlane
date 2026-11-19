@@ -81,23 +81,8 @@ func pendingIDCounts(s PendingMaterials) (map[string]int, bool) {
 	return counts, true
 }
 func (q *projectQueueState) activePending(row queuedSession) PendingMaterials {
-	s := row.View.Status
-	counts, ok := pendingIDCounts(s)
-	if !ok || q.ArchiveError != "" {
-		return s
-	}
-	for _, r := range q.Archives {
-		if r.Agent != row.Agent.ID || r.Host != row.Binding.HostSessionKey {
-			continue
-		}
-		for id, n := range counts {
-			hidden := min(n, r.Entries[id])
-			s.Pending -= hidden
-			s.Unknown -= hidden
-		}
-		break
-	}
-	return s
+	// Archives are historical acknowledgements, not evidence of successful saves.
+	return row.View.Status
 }
 func (a *App) archivePending(q *projectQueueState, p AccessProject, row queuedSession) {
 	if !row.View.Loaded || row.View.ReadError != "" {
@@ -179,7 +164,7 @@ func (a *App) pendingArchiveHistory(c *ui.Context, q *projectQueueState) {
 		if !q.ArchiveHistoryOpen {
 			return
 		}
-		ui.Column(c).FillWidth().Padding(14, 20).Gap(10).Border(1, homeBorder).Radius(8).Children(func() {
+		ui.Column(c).FillWidth().Padding(14, 20).Gap(10).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
 			homeText(c, "已归档的记录仍无法确认是否保存；原材料保留，不重复发送。", homeMeta)
 			for _, r := range q.Archives {
 				count := 0

@@ -27,6 +27,7 @@ var shellBorder = ui.Hex("#dedee1")
 var homeInk = ui.Hex("#273340")
 var homeMuted = ui.Hex("#7b8998")
 var homeBorder = ui.Hex("#e6ebef")
+var panelShadowInk = ui.RGBA(0, 0, 0, 0.045)
 var homeNavInk = ui.Hex("#536679")
 var homeIconInk = ui.Hex("#7189a1")
 var homeLinkInk = ui.Hex("#7e90a3")
@@ -61,18 +62,18 @@ type homeTypography struct {
 }
 
 var homeType = map[homeTextRole]homeTypography{
-	homeReadableMeta:  {10, 400, ui.Hex("#596675"), 1.4, 0},
-	homeBody:          {12, 400, homeMuted, 1.5, 0},
+	homeReadableMeta:  {12, 400, ui.Hex("#596675"), 20.0 / 12, 0},
+	homeBody:          {14, 400, ui.Hex("#4b5563"), 22.0 / 14, 0},
 	homeBrand:         {19, 650, homeInk, 1.25, -.5},
 	homeWelcome:       {20, 600, homeInk, 1.25, -.5},
 	homeEyebrow:       {10, 400, ui.Hex("#8795a3"), 1.2, 1.5},
 	homeStatValue:     {27, 550, homeInk, 1.2, -1},
 	homeStatUnit:      {11, 400, ui.Hex("#8793a0"), 1.2, 0},
 	homeStatLabel:     {10, 400, ui.Hex("#8b96a2"), 1.2, 0},
-	homeHeading:       {14, 600, homeInk, 1.2, -.15},
+	homeHeading:       {16, 600, homeInk, 1.5, 0},
 	homePanelHeading:  {13, 600, homeInk, 1.2, -.15},
-	homeTitle:         {12, 500, ui.Hex("#394855"), 1.7, 0},
-	homeMeta:          {10, 400, ui.Hex("#758495"), 1.4, 0},
+	homeTitle:         {14, 500, ui.Hex("#394855"), 22.0 / 14, 0},
+	homeMeta:          {12, 400, ui.Hex("#667085"), 20.0 / 12, 0},
 	homeAction:        {11, 400, homeLinkInk, 1.2, 0},
 	homeActivityTitle: {11, 400, ui.Hex("#596a79"), 18.0 / 11, 0},
 	homePath:          {10, 400, homeMuted, 1.5, 0},
@@ -103,13 +104,17 @@ var homeTheme = func() *ui.Theme {
 // Keep the SDK sidebar's accent local: content controls retain their own theme.
 var sidebarTheme = func() *ui.Theme {
 	t := *homeTheme
+	// Native sidebar labels need the system's normal font smoothing; the
+	// web-reference antialiasing override remains local to content typography.
+	t.Antialiased = false
+	t.FontSize = 13
 	t.Accent, t.AccentText = homeIconInk, homeInk
 	t.SurfacePressed = ui.Hex("#d8e3ef")
 	return &t
 }()
 
 func sidebarSelection(item ui.Element, selected bool) ui.Element {
-	item.Cursor(ui.CursorPointer)
+	item.Cursor(ui.CursorPointer).Font("system-ui").FontSize(13).FontWeight(500).LetterSpacing(0).TextColor(homeInk)
 	if selected {
 		item.Background(ui.Hex("#d8e3ef")).TextColor(homeInk)
 	}

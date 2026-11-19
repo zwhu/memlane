@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -21,7 +20,7 @@ func TestArchivePendingKeepsUnknownAndNewEntriesVisible(t *testing.T) {
 	if q.ArchiveError != "" {
 		t.Fatal(q.ArchiveError)
 	}
-	if s := q.activePending(row); s.Pending != 1 || s.Unknown != 0 {
+	if s := q.activePending(row); s.Pending != 3 || s.Unknown != 2 {
 		t.Fatal(s)
 	}
 	if row.View.Status.Pending != 3 || row.View.Status.Unknown != 2 {
@@ -29,12 +28,12 @@ func TestArchivePendingKeepsUnknownAndNewEntriesVisible(t *testing.T) {
 	}
 	// Same entry IDs with greater multiplicity, plus a new ID, are new anomalies.
 	row.View.Status = PendingMaterials{Pending: 5, Unknown: 4, UnknownEntryIDs: []string{oldID, oldID, oldID, newID}}
-	if s := q.activePending(row); s.Pending != 3 || s.Unknown != 2 {
+	if s := q.activePending(row); s.Pending != 5 || s.Unknown != 4 {
 		t.Fatal("new anomalies hidden", s)
 	}
 	reloaded := &projectQueueState{}
 	reloaded.Archives, reloaded.ArchiveError = a.readPendingArchives(p)
-	if s := reloaded.activePending(row); s.Pending != 3 || s.Unknown != 2 {
+	if s := reloaded.activePending(row); s.Pending != 5 || s.Unknown != 4 {
 		t.Fatal("archive lost on reload", s)
 	}
 	// Unrelated policy revision updates must not resurrect archived reminders.
@@ -68,43 +67,35 @@ func TestArchivePendingKeepsUnknownAndNewEntriesVisible(t *testing.T) {
 	}
 }
 
-func TestArchivePendingUIEndsReminderAndOffersHistory(t *testing.T) {
+func TestHistoricalArchiveCannotHideUnresolvedMessages(t *testing.T) {
 	a, q := projectQueueFixture()
 	a.Config.ClientStateFile = filepath.Join(t.TempDir(), "client-state.json")
-	a.Update = nil
 	q.Loaded = true
-	q.Next = time.Now().Add(time.Hour)
-	q.BacklogNext = q.Next
-	p := a.access.Directory.Projects[0]
 	q.Documents = nil
 	row := q.Sessions[1]
 	row.View.Status = PendingMaterials{Pending: 1, Unknown: 1, UnknownEntryIDs: []string{strings.Repeat("a", 64)}}
-	tt := ui.NewTester(func(c *ui.Context) { ui.Column(c).Fill().Children(func() { a.projectQueueSection(c, p) }) }, 1200, 820)
-	if !tt.HasText("归档此异常") || tt.HasText("重试检查") {
-		t.Fatal("unresolvable original write is offered another retry")
+	// Compatibility: existing archive stays intact, but no longer proves resolution.
+	a.archivePending(q, a.access.Directory.Projects[0], row)
+	before, _ := os.ReadFile(mustArchivePath(t, a, a.access.Directory.Projects[0]))
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Column(c).Fill().Children(func() { a.projectQueueSection(c, a.access.Directory.Projects[0]) })
+	}, 1200, 1000)
+	if tt.HasText("归档此异常") || !tt.HasText("1 条消息未收到保存结果") {
+		t.Fatal("legacy archive hid unresolved delivery")
 	}
-	clickProjectUI(t, tt, "归档此异常")
-	if q.ArchiveError != "" || len(q.Archives) != 1 {
-		t.Fatal(q.ArchiveError)
+	after, _ := os.ReadFile(mustArchivePath(t, a, a.access.Directory.Projects[0]))
+	if string(before) != string(after) {
+		t.Fatal("render rewrote archive")
 	}
-	if tt.HasText("归档此异常") || !tt.HasText("历史保存异常 · 1 个会话") || !tt.HasText("2 条待保存 · 0 条保存状态待确认") {
-		t.Fatal("archive did not leave active queue")
+	fixtureImage(t, tt, "message-status-historical-archive")
+}
+func mustArchivePath(t *testing.T, a *App, p AccessProject) string {
+	t.Helper()
+	path, err := a.pendingArchivePath(p)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if label, _ := a.sidebarQueueBadge(a.Config.Projects[0]); label != "" {
-		t.Fatal("normal saved queue should not raise an anomaly", label)
-	}
-	clickProjectUI(t, tt, "历史保存异常 · 1 个会话")
-	if !tt.HasText("已归档的记录仍无法确认是否保存") || !tt.HasText("保存结果未知") {
-		t.Fatal("history claims success")
-	}
-	fixtureImage(t, tt, "pending-anomaly-history")
-	row.View.Status.UnknownEntryIDs = append(row.View.Status.UnknownEntryIDs, strings.Repeat("b", 64))
-	row.View.Status.Pending++
-	row.View.Status.Unknown++
-	tt.Frame()
-	if !tt.HasText("归档此异常") {
-		t.Fatal("new unknown in archived session never reappeared")
-	}
+	return path
 }
 
 func TestArchivePendingWriteFailurePreservesReminder(t *testing.T) {
