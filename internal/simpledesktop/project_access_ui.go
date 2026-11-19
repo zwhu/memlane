@@ -86,44 +86,36 @@ func (a *App) applyAccessDirectory(directory AccessDirectory) {
 		a.access.Defaults = directory.Defaults
 		a.access.DefaultsRevision = directory.Revision
 	}
-	// Keep existing order and code associations. A newly discovered project is
-	// appended, so an unchanged catalog never moves a reading pane's index.
-	projects := append([]Project(nil), a.Config.Projects...)
+	// The registry is authoritative. Keep presentation order by stable ID only.
+	oldProjects, oldCommon := a.Config.Projects, a.Config.Common
+	registered := make(map[string]Project, len(directory.Projects))
 	for _, record := range directory.Projects {
 		p := Project{ID: record.ID, Name: record.Name, Dataset: record.Dataset, CodeEnabled: record.CodeEnabled, CodeDataset: record.CodeDataset}
 		if len(record.Aliases) > 0 {
 			p.Path = record.Aliases[0]
 		}
-		found := false
-		for idx, old := range projects {
-			if old.ID == p.ID || (p.Dataset != "" && old.Dataset == p.Dataset) {
-				if !record.CodeConfigured {
-					p.CodeDataset, p.CodeEnabled = old.CodeDataset, old.CodeEnabled
-				}
-				projects[idx] = p
-				found = true
-				break
-			}
-		}
-		if !found {
+		registered[p.ID] = p
+	}
+	projects := make([]Project, 0, len(registered))
+	for _, old := range oldProjects {
+		if p, ok := registered[old.ID]; ok {
 			projects = append(projects, p)
+			delete(registered, old.ID)
+		}
+	}
+	for _, record := range directory.Projects {
+		if p, ok := registered[record.ID]; ok {
+			projects = append(projects, p)
+			delete(registered, record.ID)
 		}
 	}
 	a.Config.Projects = projects
+	a.Config.Common = nil
 	if directory.Common != nil && directory.Common.Dataset != "" {
 		common := Project{ID: directory.Common.ID, Name: "通用记忆", Dataset: directory.Common.Dataset}
-		found := false
-		for idx, old := range a.Config.Common {
-			if old.Dataset == common.Dataset {
-				a.Config.Common[idx] = common
-				found = true
-				break
-			}
-		}
-		if !found {
-			a.Config.Common = append(a.Config.Common, common)
-		}
+		a.Config.Common = []Project{common}
 	}
+	a.reconcileProjectReading(oldProjects, oldCommon)
 	a.Client.Config = a.Config
 	if changed {
 		a.SetReadingPolicyRevision(signature)
@@ -143,12 +135,10 @@ func accessPolicyChanged(before, after AccessDirectory) bool {
 		return true
 	}
 	for _, old := range before.Projects {
-		found := false
 		for _, current := range after.Projects {
 			if old.ID != current.ID {
 				continue
 			}
-			found = true
 			old.Name, current.Name = "", ""
 			old.Aliases, current.Aliases = nil, nil
 			old.ToolGraph, current.ToolGraph = ToolGraphSettings{}, ToolGraphSettings{}
@@ -157,9 +147,8 @@ func accessPolicyChanged(before, after AccessDirectory) bool {
 			}
 			break
 		}
-		if !found {
-			return true
-		}
+		// Removed associations are withdrawn by reconcileProjectReading; they
+		// must not invalidate unrelated, still-authorized reading panes.
 	}
 	return before.Common != nil && encode(before.Common) != encode(after.Common)
 }

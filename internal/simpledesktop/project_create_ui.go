@@ -32,32 +32,34 @@ func (a *App) projectCreateDialog(c *ui.Context) {
 			})
 			if s.TargetProject == "" {
 
-				ui.Column(c).Gap(10).Children(func() {
-					homeText(c, "源文件夹", homeHeading).FontSize(13)
-					zone := ui.Column(c).FillWidth().MinHeight(116).Padding(18).Gap(12).Border(1, homeBorder).Radius(10).Background(ui.Hex("#f8fafc")).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-						if s.Folder == "" {
-							homeText(c, "选择或拖入这台电脑上的项目文件夹", homeMeta)
-							textButton(c, "添加文件夹", nil).OnClick(a.selectProjectFolder).Disabled(s.Saving || s.Submitted || a.ChooseProjectFolder == nil)
-						} else {
-							ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {
-								ui.Icon(c, homeFolder).FontSize(24).TextColor(homeMuted)
-								ui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
-									homeText(c, filepath.Base(s.Folder), homeHeading).FontSize(13)
-									homeText(c, s.Folder, homePath).SingleLine().Tooltip(s.Folder)
+				if s.Selected == nil {
+					ui.Column(c).Gap(10).Children(func() {
+						homeText(c, "源文件夹", homeHeading).FontSize(13)
+						zone := ui.Column(c).FillWidth().MinHeight(116).Padding(18).Gap(12).Border(1, homeBorder).Radius(10).Background(ui.Hex("#f8fafc")).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+							if s.Folder == "" {
+								homeText(c, "选择或拖入这台电脑上的项目文件夹", homeMeta)
+								textButton(c, "添加文件夹", nil).OnClick(a.selectProjectFolder).Disabled(s.Saving || s.Submitted || a.ChooseProjectFolder == nil)
+							} else {
+								ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {
+									ui.Icon(c, homeFolder).FontSize(24).TextColor(homeMuted)
+									ui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
+										homeText(c, filepath.Base(s.Folder), homeHeading).FontSize(13)
+										homeText(c, s.Folder, homePath).SingleLine().Tooltip(s.Folder)
+									})
+									readingAction(c, "移除源文件夹", readingClose, func() { s.Folder = "" }).Disabled(s.Saving || s.Submitted)
 								})
-								readingAction(c, "移除源文件夹", readingClose, func() { s.Folder = "" }).Disabled(s.Saving || s.Submitted)
-							})
+							}
+						})
+						if !s.Saving && !s.Submitted {
+							if zone.FileDragOver() {
+								zone.BorderColor(c.Theme().Accent)
+							}
+							if files := zone.DroppedFiles(); len(files) > 0 {
+								a.acceptProjectFolderDrop(files)
+							}
 						}
 					})
-					if !s.Saving && !s.Submitted {
-						if zone.FileDragOver() {
-							zone.BorderColor(c.Theme().Accent)
-						}
-						if files := zone.DroppedFiles(); len(files) > 0 {
-							a.acceptProjectFolderDrop(files)
-						}
-					}
-				})
+				}
 				if s.Selected != nil {
 					ui.Row(c).FillWidth().Padding(12).Gap(10).Background(ui.Hex("#edf3f9")).Radius(7).Children(func() {
 						ui.Column(c).Grow(1).MinWidth(0).Gap(5).Children(func() {
@@ -92,10 +94,10 @@ func (a *App) projectCreateDialog(c *ui.Context) {
 								ui.Icon(c, homeFolder).FontSize(17).TextColor(homeMuted)
 								ui.Column(c).Grow(1).MinWidth(0).Gap(5).Children(func() {
 									homeText(c, suggestion.Name, homeBody).FontSize(12).SingleLine()
-									homeText(c, "已有记录，尚未关联源文件夹", homeMeta)
+									homeText(c, "已有记录，尚未加入项目列表", homeMeta)
 								})
 								queueBadge(c, "建议关联", homeLinkInk)
-							}).Disabled(s.Saving || s.Submitted).OnClick(func() { s.Selected = &suggestion; s.Name = suggestion.Name })
+							}).Disabled(s.Saving || s.Submitted).OnClick(func() { s.Selected = &suggestion; s.Name = suggestion.Name; s.Folder = "" })
 						}
 					})
 				}
@@ -120,7 +122,7 @@ func (a *App) projectCreateDialog(c *ui.Context) {
 				if s.Saving {
 					label = "保存中…"
 				}
-				ui.PrimaryButton(c, label).OnClick(a.submitProjectCreation).Disabled(s.Saving || s.Submitted || strings.TrimSpace(s.Name) == "" || (s.TargetProject == "" && s.Folder == "") || !a.access.Loaded)
+				ui.PrimaryButton(c, label).OnClick(a.submitProjectCreation).Disabled(s.Saving || s.Submitted || strings.TrimSpace(s.Name) == "" || (s.TargetProject == "" && s.Selected == nil && s.Folder == "") || !a.access.Loaded)
 			}
 		})
 	}).Label("项目编辑弹框").Transition(projectOverlayMotion())

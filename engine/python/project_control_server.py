@@ -139,8 +139,8 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
 
     async def create(request):
         manager(request)
-        payload = fields(await body(request), ('expected_revision', 'workspace'), ('dataset_id', 'name'))
-        return web.json_response(await registry.create_project(payload['expected_revision'], payload['workspace'],
+        payload = fields(await body(request), ('expected_revision',), ('workspace', 'dataset_id', 'name'))
+        return web.json_response(await registry.create_project(payload['expected_revision'], payload.get('workspace'),
                                                              dataset_id=payload.get('dataset_id'), name=payload.get('name')))
 
     async def rename(request):
@@ -367,18 +367,7 @@ async def configured_app(config):
     generation = validation = None
     try:
         registry = Registry(config['registry_file'], Official(session, config['service_url'], config['token_file']))
-        reserved = {project['code_dataset_id'] for project in config.get('projects', []) if project.get('code_dataset_id')}
-        reserved.update(config.get('reserved_dataset_ids', []))
-        registry.state['reserved_datasets'] = sorted(reserved)
-        registry.save()
-        # Explicit pre-existing runtime associations are configuration, not a
-        # content migration. Reuse their UUIDs before any new host resolves.
-        for project in config.get('projects', []):
-            linked = await registry.create_project(registry.state['revision'], project['path'],
-                                                   dataset_id=project['dataset_id'], name=project['name'])
-            if project.get('code_dataset_id') and not linked.get('code_configured'):
-                await registry.configure_code(registry.state['revision'], linked['id'], project['code_dataset_id'],
-                                              project.get('code_enabled', False), apply=linked['status'] == 'verified')
+        await registry.adopt_runtime_projects(config.get('projects', []), config.get('reserved_dataset_ids', []))
         await registry.ensure_common(registry.state['revision'])
         if config.get('generation_file'):
             from generation_config import GenerationStore
@@ -419,6 +408,8 @@ async def configured_app(config):
 
 
 if __name__ == '__main__':
+    from owner_lifecycle import watch_owner
+    watch_owner()
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', required=True)
     args = parser.parse_args()

@@ -89,7 +89,10 @@ class GenerationHandoffRuntime:
         return _pending_on_current_loop()
 
     def get(self, operation):
-        return copy.deepcopy(self.rows.get(operation, {'status': 'not_found'}))
+        # An application receipt is history. Always include this process's
+        # current configuration so callers cannot mistake history for liveness.
+        return copy.deepcopy({**self.rows.get(operation, {'status': 'not_found'}),
+                              'runtime_active': self.active})
 
     async def inspect(self, operation):
         row = self.rows.get(operation)
@@ -264,10 +267,11 @@ def install_generation_handoff(app, runtime, profile, environment, gate):
         sessions = []
         if request.url.path.rstrip('/').endswith('/improve') and request.method == 'POST':
             try:
-                value = await request.json()
-                sessions = value.get('sessionIds', [])
-                if not isinstance(sessions, list) or not all(isinstance(s, str) for s in sessions):
-                    sessions = []
+                # Match the exact upstream boundary: InDTO accepts both
+                # session_ids (official plugin) and sessionIds, including its
+                # alias precedence and input validation. Do not guess fields.
+                from cognee.api.v1.improve.routers.get_improve_router import ImprovePayloadDTO
+                sessions = ImprovePayloadDTO.model_validate(await request.json()).session_ids or []
             except ValueError:
                 pass
         credential = request.headers.get('x-api-key', '')

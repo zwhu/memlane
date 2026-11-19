@@ -114,7 +114,9 @@ class HandoffControllerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_only_confirmed_cancelled_session_is_resumed_under_new_profile(self):
         self.control.service=AsyncMock(return_value={'status':'applied','reference':self.ref,
-            'digest':self.store.resolve(self.ref)['digest'],'cancelled_sources':[{'session_id':'a','credential_sha256':self.source_hash}]})
+            'digest':self.store.resolve(self.ref)['digest'],
+            'runtime_active':{'reference':self.ref,'digest':self.store.resolve(self.ref)['digest']},
+            'cancelled_sources':[{'session_id':'a','credential_sha256':self.source_hash}]})
         self.control.start(self.ref,self.store.state['revision'],'switch')
         await self.control.task
         self.assertEqual(self.store.state['active'],self.ref)
@@ -133,7 +135,8 @@ class HandoffControllerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(PolicyError,'requires_review'):
             self.control.start(self.ref,self.store.state['revision'],'another')
         self.control.service=AsyncMock(return_value={'status':'applied','reference':self.ref,
-            'digest':self.store.resolve(self.ref)['digest'],'cancelled_sessions':[]})
+            'digest':self.store.resolve(self.ref)['digest'],
+            'runtime_active':{'reference':self.ref,'digest':self.store.resolve(self.ref)['digest']},'cancelled_sessions':[]})
         await self.control.review('lost')
         self.assertEqual(self.control.service.call_args.args,('GET','lost'))
         self.assertEqual(self.store.state['active'],self.ref)
@@ -182,6 +185,7 @@ import httpx, os
 from generation_handoff_runtime import install_generation_handoff
 from cognee.modules.operations import record_operation
 from cognee.infrastructure.databases.relational import create_db_and_tables
+from cognee.api.v1.improve.routers.get_improve_router import ImprovePayloadDTO
 from generation_capacity import EndpointCapacity
 from project_control import private_write
 async def http_scenario():
@@ -193,19 +197,24 @@ async def http_scenario():
     controller=install_generation_handoff(app,{'generation_file':str(root/'generation.json'),
         'generation_reference':{'id':'old','revision':1},'project_control':{'management_token_file':str(root/'manager')}},
         {'mode':'provider'},{'_digest':'old'},EndpointCapacity('http://127.0.0.1:18999',1))
+    controller.stop_timeout = .1
     entered=asyncio.Event()
     @app.post('/api/v1/improve')
-    async def begin():
+    async def begin(payload: ImprovePayloadDTO):
         async def execute():entered.set();await asyncio.Event().wait()
-        async with record_operation('improve',session_ids=['real-sdk-session'],background=True) as operation:
+        async with record_operation('improve',session_ids=payload.session_ids,background=True) as operation:
             operation.defer_close()
             module._start_background_run(execute,SimpleNamespace(error=None,finished=False),operation)
         return {'status':'running'}
     @app.get('/api/v1/current-model')
     async def current_model():return {'model':get_llm_context_config().llm_model}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://fixture') as client:
-        assert (await client.post('/api/v1/improve',json={'sessionIds':['real-sdk-session']},headers={'X-Api-Key':'test-agent-key'})).status_code==200
+        for invalid in ({'session_ids':'wrong'}, {'sessionIds':[{}]}):
+            assert (await client.post('/api/v1/improve',json=invalid,headers={'X-Api-Key':'test-agent-key'})).status_code==422
+            assert not controller.tasks() and not controller.requests
+        assert (await client.post('/api/v1/improve',json={'session_ids':['real-sdk-session']},headers={'X-Api-Key':'test-agent-key'})).status_code==200
         await entered.wait()
+        assert controller.tasks() and all(task.get_context().get(scope)['sessions'] == ['real-sdk-session'] for task in controller.tasks())
         import hashlib
         body={'source_credentials':[hashlib.sha256(b'test-agent-key').hexdigest()],'reference':{'id':'new','revision':1},'digest':'new-digest',
             'profile':{'mode':'provider','provider':'custom','model':'new','endpoint':'http://127.0.0.1:18998',
@@ -231,8 +240,10 @@ async def http_scenario():
         # Python task without its SQL terminal row must block the next model.
         module.finish_operation=AsyncMock()
         entered.clear()
-        await client.post('/api/v1/improve',json={'sessionIds':['real-sdk-session']},headers={'X-Api-Key':'test-agent-key'})
+        await client.post('/api/v1/improve',json={'session_ids':['ignored-snake-value'],
+            'sessionIds':['real-sdk-session']},headers={'X-Api-Key':'test-agent-key'})
         await entered.wait()
+        assert all(task.get_context().get(scope)['sessions'] == ['real-sdk-session'] for task in controller.tasks())
         body['reference']={'id':'third','revision':1};body['digest']='third-digest'
         body['environment']['LLM_MODEL']='openai/third'
         blocked_path='/api/v1/memlane/generation/handoffs/missing-terminal'

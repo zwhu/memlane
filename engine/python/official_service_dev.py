@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 import sys
 import signal
-import threading
 import time
 import tarfile
 from contextlib import AsyncExitStack
@@ -52,12 +51,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True, type=Path)
     args = parser.parse_args()
-    parent = os.getppid()
-    def watch_owner():
-        while os.getppid() == parent:
-            time.sleep(.5)
-        os.kill(os.getpid(), signal.SIGTERM)
-    threading.Thread(target=watch_owner, daemon=True).start()
+    from owner_lifecycle import watch_owner
+    watch_owner()
     config = json.loads(args.config.read_text())
     from first_install_mode import first_install_setup
     setup_only = first_install_setup(config)

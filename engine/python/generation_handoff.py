@@ -101,6 +101,9 @@ class GenerationHandoff:
             if result.get('status') != 'applied':
                 row.update(status='unknown', reason=result.get('reason') or 'generation_stop_unconfirmed')
                 return
+            if not self.current_receipt(row, result):
+                row.update(status='unknown', reason='generation_current_configuration_mismatch')
+                return
             await self.apply_receipt(row, result)
         except BaseException:
             row.update(status='unknown', reason='generation_handoff_result_unknown')
@@ -111,6 +114,10 @@ class GenerationHandoff:
         return {identifier:hashlib.sha256(read_secret(actor['key_file']).encode()).hexdigest()
                 for identifier, actor in self.registry.state.get('agents', {}).items()
                 if actor.get('installation') and identifier not in self.registry.state.get('agent_retirements', {})}
+
+    @staticmethod
+    def current_receipt(row, result):
+        return result.get('runtime_active') == {'reference': row['reference'], 'digest': row['digest']}
 
     async def apply_receipt(self, row, result):
         credentials = self.source_credentials()
@@ -173,6 +180,10 @@ class GenerationHandoff:
         if row['status'] == 'unknown':
             result = await self.service('GET', operation)
             if result.get('status') == 'applied' and result.get('digest') == row['digest'] and result.get('reference') == row['reference']:
+                if not self.current_receipt(row, result):
+                    row['reason'] = 'generation_current_configuration_mismatch'
+                    self.store.save()
+                    return self.view(operation)
                 await self.apply_receipt(row, result)
                 self.store.save()
             elif result.get('status') == 'not_applied' and result.get('digest') == row['digest'] and result.get('reference') == row['reference']:

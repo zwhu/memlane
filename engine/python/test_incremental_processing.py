@@ -43,6 +43,27 @@ class IncrementalProcessingTests(unittest.IsolatedAsyncioTestCase):
     def submissions(self):
         return [target for action, target in self.calls if action == 'process']
 
+    async def test_confirmed_handoff_respects_original_stop_scope(self):
+        import hashlib
+        key=hashlib.sha256(json.dumps(['a','host']).encode()).hexdigest()
+        cases=[('unrelated',{'targets':[{'agent_id':'a','host':'older'}]},True),
+               ('same_source',{'targets':[{'agent_id':'a','host':'host'}]},False),
+               ('scope_unknown',{},False),
+               ('explicit_pause',{'targets':[{'agent_id':'a','host':'older'}],'automatic_user_paused':True},False),
+               ('unknown_submit',{'targets':[{'agent_id':'a','host':'older'}],
+                   'pending_processing':{'original':{'agent_id':'a','host':'host','processing':'unknown'}}},False)]
+        for name,fields,allowed in cases:
+            with self.subTest(name=name):
+                self.calls.clear()
+                job={'project_id':'p','status':'stopped',**fields}
+                self.backlog.jobs={'old':copy.deepcopy(job)}
+                self.processing.state['sessions']={key:{'session_id':'source','status':'watching',
+                    'counts':[1,3],'changed_at':900,'pending_since':900,'handoff_operation':'confirmed-switch'}}
+                await self.processing.tick()
+                self.assertEqual(len(self.submissions()),int(allowed))
+                self.assertEqual(self.backlog.jobs['old'],job,'original stopped scope or pause was changed')
+                if allowed:self.assertEqual(self.submissions()[0]['handoff_operation'],'confirmed-switch')
+
     async def test_saved_units_start_after_quiet_without_session_end_or_ui(self):
         await self.processing.tick()
         self.assertEqual(self.submissions(), [])

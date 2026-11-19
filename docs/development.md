@@ -57,6 +57,8 @@ python3 scripts/dev.py stop --config /绝对路径/runtime.json
 
 `status` 检查启动器所有权并输出运行记录，不是模型推理或全部子进程健康检查。未启动、配置不匹配、端口占用、数据锁被占用或残留所有权记录都应先核实；不要删除锁／运行记录或直接杀掉未知进程来绕过检查。停止未确认时保留记录，不把失败当作已停止。
 
+2026-11-19 增加异常退出后的显式恢复：`python3 scripts/dev.py recover --config /绝对路径/runtime.json`。该命令持有同库锁，核对原配置、记录中的进程及进程组全部消失、服务端口空闲、项目登记及处理配置锁已释放后，原样归档 owner 记录，再允许正常 `start`。不终止任何进程；PID 被复用、未知监听、活跃锁或身份不匹配均拒绝。Cognee、模型桥和 project_control 统一监测父进程丢失并退出。记录和实际验证见[本轮可靠性修复](engineering/roadmap-reliability-20261119.md)。
+
 旧启动器仍拥有健康服务、但其 MyGo watcher 已退出时，可通过 `python3 scripts/dev.py open --watch-ui --config /绝对路径/runtime.json` 在当前终端附着一个前台 UI watcher。该入口先核对现有服务所有者和就绪状态，拒绝第二个活跃 watcher；退出此 watcher 只收尾它自己的界面进程组，不停止官方服务。普通 `open` 检测到该附着锁时不再通知旧启动器另开 watcher。此方式用于开发调试，不替代日常服务的 `start`／`stop`。
 
 总览的首次初始化完成日期由启动器在必要配置、带认证官方内容检查及当前模式所需健康检查通过后保存。状态默认位于 `runtime.json` 同目录的 `client-state.json`；可用可选绝对路径字段 `client_state_file` 指定同一持久文件。启动、重开、模型或项目重配不会覆盖已有首日，单次运行清理不得删除该文件；损坏或写入失败保持错误，不用当前日期覆盖。实际知识与活动仍读取官方服务，不保存在此文件中。

@@ -267,8 +267,12 @@ def report_notice(message):
 def acquire(data):
     # Canonical store ownership is shared across checkouts and symlink aliases.
     lock = (Path(data).resolve(strict=True) / '.service-owner').open('a+')
-    os.chmod(lock.name, 0o600)
-    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        os.chmod(lock.name, 0o600)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BaseException:
+        lock.close()
+        raise
     return lock
 
 
@@ -496,7 +500,7 @@ def start_generation_stack(config, config_path, launch, cleanup, *, health=wait_
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', nargs='?', choices=('start', 'setup', 'prepare', 'stop', 'open', 'status'), default='start')
+    parser.add_argument('action', nargs='?', choices=('start', 'setup', 'prepare', 'stop', 'open', 'status', 'recover'), default='start')
     parser.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
     parser.add_argument('--component-root', type=Path, help='prepare: private engine component directory, never a content store')
     parser.add_argument('--uv', help='prepare: uv executable (defaults to discovery)')
@@ -517,9 +521,13 @@ def main():
     # Stopping/inspecting the verified live owner must still work after source
     # edits. They launch no new plugin; path/lock/PID/start-time checks below
     # remain mandatory. Starts continue to verify every current fixed input.
-    config = load_config(path, verify_current_sources=args.action not in ('stop', 'status'))
+    config = load_config(path, verify_current_sources=args.action not in ('stop', 'status', 'recover'))
     data = Path(config['official_data'])
     runfile = data / '.memlane-dev-owner.json'
+    if args.action == 'recover':
+        from dev_recovery import recover
+        print(json.dumps(recover(config, path, acquire=acquire, process_tree=process_tree, port_free=port_free)))
+        return
     if args.action in ('stop', 'status', 'open'):
         state = json.loads(runfile.read_text())
         # Verify the live owner via a locked store and kernel PID, not a stale file.
@@ -592,7 +600,7 @@ def main():
     lock = acquire(data)
     if runfile.exists():
         lock.close()
-        raise RuntimeError('previous ownership record needs confirmed recovery before restart')
+        raise RuntimeError('previous ownership record needs confirmed recovery before restart; use dev.py recover with the same config')
     processes = []
     descendants = {}
     ui = None
@@ -602,6 +610,7 @@ def main():
              'service_url': config['service_url'], 'completion_url': config.get('completion_url'), 'children': [], 'service_children': {}}
     def save_owner():
         state['children'] = [proc.pid for proc in processes if proc.poll() is None]
+        state['observed_descendants'] = dict(descendants)
         temporary = runfile.with_name(runfile.name + '.' + str(os.getpid()) + '.tmp')
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'w') as stream:
@@ -678,7 +687,10 @@ def main():
                 raise RuntimeError('first installation store disk reserve below 55 GiB; stopping owned services')
             for log_file in (path.parent / 'runtime-logs').glob('*.log'):
                 trim_service_log(log_file)
+            previous_descendants = dict(descendants)
             track_descendants([p.pid for p in processes], descendants)
+            if descendants != previous_descendants:
+                save_owner()
             if (endpoint is not None and endpoint.poll() is not None) or (service is not None and service.poll() is not None):
                 raise RuntimeError('official service or completion endpoint exited; no automatic restart')
             if control is not None and control.poll() is not None:

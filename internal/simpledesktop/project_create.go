@@ -61,9 +61,6 @@ func (a *App) loadProjectSuggestions() {
 		known := map[string]bool{}
 		for _, p := range registered {
 			known[p.Dataset] = true
-			if len(p.Aliases) == 0 {
-				suggestions = append(suggestions, projectSuggestion{p.ID, p.Name, "project"})
-			}
 		}
 		if err == nil {
 			for _, d := range rows {
@@ -112,7 +109,7 @@ func (a *App) submitProjectCreation() {
 		return
 	}
 	name, folder := strings.TrimSpace(s.Name), strings.TrimSpace(s.Folder)
-	if name == "" || (s.TargetProject == "" && !filepath.IsAbs(folder)) {
+	if name == "" || (s.TargetProject == "" && s.Selected == nil && folder == "") || (folder != "" && !filepath.IsAbs(folder)) {
 		s.Message = "请填写项目名称并添加源文件夹"
 		return
 	}
@@ -132,6 +129,8 @@ func (a *App) submitProjectCreation() {
 		var err error
 		if target != "" {
 			project, err = client.rename(ctx, revision, target, name)
+		} else if selected != nil && selected.Kind == "project" && folder == "" {
+			project.ID = selected.ID
 		} else if selected != nil && selected.Kind == "project" {
 			project, err = client.alias(ctx, revision, selected.ID, folder)
 		} else {
@@ -144,6 +143,19 @@ func (a *App) submitProjectCreation() {
 		var directory AccessDirectory
 		if err == nil {
 			directory, err = client.directory(ctx)
+			if err == nil && target == "" && selected != nil && selected.Kind == "project" && folder == "" {
+				found := false
+				for _, row := range directory.Projects {
+					if row.ID == selected.ID {
+						project = row
+						found = true
+						break
+					}
+				}
+				if !found {
+					err = &ControlResponseError{Status: 404, Message: "项目管理请求未确认（HTTP 404），请核对原操作"}
+				}
+			}
 		}
 		a.Update(func() {
 			if request != s.Request || a.Config.ProjectControl == nil || *a.Config.ProjectControl != client.Config {
@@ -196,6 +208,10 @@ func (a *App) confirmProjectCreation() {
 				}
 				if s.Selected != nil && ((s.Selected.Kind == "project" && p.ID != s.Selected.ID) || (s.Selected.Kind == "dataset" && p.Dataset != s.Selected.ID)) {
 					continue
+				}
+				if s.Selected != nil && s.Folder == "" && p.Name == strings.TrimSpace(s.Name) {
+					id = p.ID
+					break
 				}
 				for _, alias := range p.Aliases {
 					if filepath.Clean(alias) == filepath.Clean(s.Folder) {

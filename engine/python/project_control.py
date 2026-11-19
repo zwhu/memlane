@@ -608,7 +608,7 @@ class Registry:
 
     async def ensure_locked(self, root, dataset_id=None, name=None, source=None):
         for project in self.state['projects'].values():
-            if root in project['aliases']:
+            if root and root in project['aliases']:
                 if dataset_id and project['dataset_id'] != dataset_id:
                     raise PolicyError('project_binding_conflict', 409)
                 return project
@@ -618,9 +618,12 @@ class Registry:
                            or any(group.get('code_dataset_id') == dataset_id for group in self.state['projects'].values())
                            or dataset_id in self.state.get('reserved_datasets', [])):
             raise PolicyError('non_project_dataset_cannot_be_linked', 409)
-        identifier = project_id(self.state['service_namespace'], root)
+        if root is None:
+            row = await self.official.owned_dataset('', dataset_id)
+            name = name or row['name']
+        identifier = project_id(self.state['service_namespace'], root if root is not None else 'dataset:' + dataset_id)
         self.state['revision'] += 1
-        project = {'id': identifier, 'name': name or Path(root).name, 'aliases': [root],
+        project = {'id': identifier, 'name': name or Path(root).name, 'aliases': [root] if root is not None else [],
                    'dataset_id': dataset_id, 'dataset_name': 'ml-project-' + identifier,
                    'overrides': {}, 'applied': {}, 'desired_revision': self.state['revision'],
                    'operation_id': secrets.token_hex(16), 'status': 'unconfirmed',
@@ -704,10 +707,27 @@ class Registry:
                 await self.reconcile_locked(project)
             return self.directory()
 
-    async def create_project(self, expected, workspace, *, dataset_id=None, name=None):
-        root = workspace_root(workspace, explicit=True)
+    async def adopt_runtime_projects(self, projects, reserved=()):
+        """One-time bootstrap input; the registry owns all later associations."""
+        if self.state.get('runtime_catalog_imported'):
+            return
+        identifiers = set(self.state.get('reserved_datasets', [])) | set(reserved)
+        identifiers.update(p['code_dataset_id'] for p in projects if p.get('code_dataset_id'))
+        self.state['reserved_datasets'] = sorted(identifiers)
+        self.save()
+        for project in projects:
+            linked = await self.create_project(self.state['revision'], project['path'],
+                                               dataset_id=project['dataset_id'], name=project['name'])
+            if project.get('code_dataset_id') and not linked.get('code_configured'):
+                await self.configure_code(self.state['revision'], linked['id'], project['code_dataset_id'],
+                                          project.get('code_enabled', False), apply=linked['status'] == 'verified')
+        self.state['runtime_catalog_imported'] = True
+        self.save()
+
+    async def create_project(self, expected, workspace=None, *, dataset_id=None, name=None):
         if dataset_id:
             dataset_id = str(uuid.UUID(dataset_id))
+        root = None if dataset_id and workspace in (None, '') else workspace_root(workspace, explicit=True)
         async with self.mutex:
             self.check_revision(expected)
             project = await self.ensure_locked(root, dataset_id, name, source='associated' if dataset_id else 'manual')

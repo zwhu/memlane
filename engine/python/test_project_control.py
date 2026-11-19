@@ -47,6 +47,23 @@ class OfficialFixture:
 
 
 class RegistryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_runtime_catalog_is_adopted_once_without_replaying_removed_binding(self):
+        dataset = await self.official.owned_dataset('adopted')
+        configured = [{'path':str(self.repo), 'dataset_id':dataset['id'], 'name':'Original'}]
+        await self.registry.adopt_runtime_projects(configured, ['reserved'])
+        self.assertTrue(self.registry.state['runtime_catalog_imported'])
+        self.assertEqual(len(self.registry.state['projects']), 1)
+        project = next(iter(self.registry.state['projects'].values()))
+        await self.registry.rename_project(self.registry.state['revision'], project['id'], 'Renamed')
+        await self.registry.adopt_runtime_projects(configured, [])
+        self.assertEqual(self.registry.state['projects'][project['id']]['name'], 'Renamed')
+        self.assertIn('reserved', self.registry.state['reserved_datasets'])
+        self.registry.state['projects'].clear()
+        self.registry.save()
+        await self.registry.adopt_runtime_projects(configured, [])
+        self.assertEqual(self.registry.state['projects'], {})
+        self.assertIn('adopted', self.official.datasets)
+
     async def test_official_client_reads_chunked_json_to_eof(self):
         expected = {'sessions': [{'session_id': str(n), 'padding': 'x' * 1000} for n in range(30)]}
         async def respond(request):
@@ -373,6 +390,43 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
             await self.registry.add_alias(self.registry.state['revision'], project['id'], str(alias))
         self.assertEqual(error.exception.code, 'project_binding_locked')
         self.assertEqual(self.registry.state['projects'][project['id']]['aliases'], [str(self.repo)])
+
+    async def test_http_existing_records_link_without_workspace_and_preserve_acl(self):
+        import copy
+        row = await self.official.owned_dataset('existing-without-folder')
+        self.official.acls[(self.registry.state['agents']['a']['principal_id'], row['id'])] = {'read'}
+        before_acl = copy.deepcopy(self.official.acls)
+        before_creates = self.official.creates
+        client = TestClient(TestServer(create_app(self.registry, 'm' * 40, {'a': 'a' * 40})))
+        await client.start_server()
+        try:
+            manager = {'Authorization': 'Bearer ' + 'm' * 40}
+            revision = self.registry.state['revision']
+            payload = {'expected_revision': revision, 'dataset_id': row['id'], 'name': row['name']}
+            response = await client.post('/v1/projects', json=payload, headers=manager)
+            self.assertEqual(response.status, 200)
+            project = await response.json()
+            self.assertEqual(project['aliases'], [])
+            self.assertEqual(project['dataset_id'], row['id'])
+            self.assertEqual(project['status'], 'verified')
+            self.assertEqual(self.registry.policy(project, 'a')['policy']['access'], 'read')
+            self.assertEqual(self.registry.policy(project, 'b')['policy']['access'], 'none')
+            self.assertEqual(self.official.creates, before_creates)
+            for key, value in before_acl.items():
+                self.assertEqual(self.official.acls[key], value)
+            self.assertFalse(self.official.acls[(self.registry.state['agents']['b']['principal_id'], row['id'])])
+            self.assertEqual((await client.post('/v1/projects', json=payload, headers=manager)).status, 409)
+            self.assertEqual(len(self.registry.state['projects']), 1)
+            no_folder = {'expected_revision': self.registry.state['revision'], 'name': 'new-project'}
+            self.assertEqual((await client.post('/v1/projects', json=no_folder, headers=manager)).status, 400)
+            self.assertEqual(self.official.creates, before_creates)
+            identifier = project['id']
+        finally:
+            await client.close()
+        self.registry.close()
+        self.registry = Registry(self.path, self.official)
+        self.assertEqual(self.registry.state['projects'][identifier]['aliases'], [])
+        self.assertEqual(self.registry.state['projects'][identifier]['dataset_id'], row['id'])
 
     async def test_association_preserves_existing_acl(self):
         row = await self.official.owned_dataset('existing')

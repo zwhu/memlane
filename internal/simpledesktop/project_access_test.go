@@ -22,6 +22,7 @@ func syntheticAccessDirectory() AccessDirectory {
 func TestProjectDiscoveryKeepsReadingAndPolicyChangeInvalidates(t *testing.T) {
 	a := New(Config{ServiceURL: "http://127.0.0.1:18999", Projects: []Project{{ID: "p", Name: "Project", Dataset: "dataset", CodeDataset: "code", CodeEnabled: true}}}, nil)
 	first := syntheticAccessDirectory()
+	first.Projects[0].CodeConfigured, first.Projects[0].CodeEnabled, first.Projects[0].CodeDataset = true, true, "code"
 	a.applyAccessDirectory(first)
 	a.page = "知识"
 	s := a.state()
@@ -31,6 +32,7 @@ func TestProjectDiscoveryKeepsReadingAndPolicyChangeInvalidates(t *testing.T) {
 	s.Selected = &selected
 	s.History = []Item{selected}
 	discovered := syntheticAccessDirectory()
+	discovered.Projects[0].CodeConfigured, discovered.Projects[0].CodeEnabled, discovered.Projects[0].CodeDataset = true, true, "code"
 	discovered.Revision = 2
 	discovered.Projects = append(discovered.Projects, AccessProject{ID: "new", Name: "New", Dataset: "new-dataset", Status: "verified", DesiredRevision: 2})
 	a.applyAccessDirectory(discovered)

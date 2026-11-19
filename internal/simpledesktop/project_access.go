@@ -235,7 +235,10 @@ func (c ProjectControlClient) overrides(ctx context.Context, revision int64, pro
 
 func (c ProjectControlClient) create(ctx context.Context, revision int64, name, workspace, dataset string) (AccessProject, error) {
 	var result AccessProject
-	input := map[string]any{"expected_revision": revision, "name": name, "workspace": workspace}
+	input := map[string]any{"expected_revision": revision, "name": name}
+	if workspace != "" {
+		input["workspace"] = workspace
+	}
 	if dataset != "" {
 		input["dataset_id"] = dataset
 	}

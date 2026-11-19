@@ -22,6 +22,18 @@ MAX_WAIT_SECONDS = 300
 COOLDOWN_SECONDS = 300
 
 
+def stopped_scope_applies(job, agent, host, handoff):
+    if job.get('status') not in ('stopped', 'stopping', 'interrupted'):
+        return False
+    if not handoff:
+        return True
+    # An explicit handoff resumes only its confirmed-cancelled source. A
+    # stopped historical batch with a known disjoint scope cannot stop it.
+    # Unknown scope and stops for the same source remain protected.
+    targets = list(job.get('targets', [])) + list(job.get('pending_processing', {}).values())
+    return not targets or any(t.get('agent_id') == agent and t.get('host') == host for t in targets)
+
+
 def timestamp(value):
     try:
         at = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
@@ -127,7 +139,7 @@ class IncrementalProcessing:
             # A user pause/uncertain submit remains a barrier, including across
             # restarts. A new source count is never used to erase that barrier.
             blocked = any(r.get('project_id') == project and (
-                r.get('automatic_user_paused') or r.get('status') in ('stopped', 'stopping', 'interrupted')
+                r.get('automatic_user_paused') or stopped_scope_applies(r, agent_id, host, prior.get('handoff_operation'))
                 or any(t.get('agent_id') == agent_id and t.get('host') == host
                     and t.get('processing') in ('submitting', 'unknown') for t in
                     list(r.get('targets', [])) + list(r.get('pending_processing', {}).values())))

@@ -489,23 +489,13 @@ def create_app(args):
     slot = asyncio.Semaphore(concurrency)
     admitted = 0
     handlers = set()
-    parent_pid = os.getppid()
-
-    async def watch_parent():
-        while True:
-            await asyncio.sleep(.5)
-            if os.getppid() != parent_pid:
-                os.kill(os.getpid(), signal.SIGTERM)
-                return
-
     async def lifecycle(app):
-        monitor = asyncio.create_task(watch_parent())
-        yield
-        monitor.cancel()
+        from owner_lifecycle import watch_owner
+        monitor = watch_owner()
         try:
-            await monitor
-        except asyncio.CancelledError:
-            pass
+            yield
+        finally:
+            monitor.set()
 
     async def shutdown(app):
         active = list(handlers)
