@@ -76,6 +76,9 @@ type App struct {
 	recentScope         string
 	readingRevisions    map[string]uint64
 	overviewState       overviewViewState
+	projectVisibility   projectVisibilityState
+	allProjectsOpen     bool
+	allProjectsScroll   ui.ScrollState
 	overviewRefreshAt   time.Time
 	windowInactive      bool
 	searchType          string
@@ -626,6 +629,7 @@ func (a *App) View(c *ui.Context) {
 		a.knowledgeDialog(c)
 		a.searchDialog(c)
 		a.projectCreateDialog(c)
+		a.allProjectsDialog(c)
 		a.toolGraphDialog(c)
 		if a.page == "用户画像" {
 			a.userProfileImportDialog(c)

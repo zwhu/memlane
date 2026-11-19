@@ -61,13 +61,17 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			ui.Row(c).Padding(12, 8, 8, 8).AlignItems(ui.Center).Gap(4).Children(func() {
 				homeText(c, "项目", homeMeta).FontSize(14)
 				ui.Spacer(c)
-				ui.Button(c, fmt.Sprintf("全部 %d", len(a.Config.Projects))).Cursor(ui.CursorPointer).FontSize(10).BorderWidth(0).Background(ui.Transparent).OnClick(a.showOverviewProjects)
+				ui.Button(c, fmt.Sprintf("全部 %d", len(a.Config.Projects))).Cursor(ui.CursorPointer).FontSize(10).BorderWidth(0).Background(ui.Transparent).OnClick(a.openAllProjects)
 				a.projectAddMenu(c)
 			})
 			labels := projectLabels(a.Config.Projects)
 			for idx, p := range a.Config.Projects {
+				if a.projectIsHidden(p) {
+					continue
+				}
 				index := idx
 				item := ui.SidebarItem(c.Key("project-nav-"+p.ID), "project:"+p.ID, homeFolder, middleProjectName(labels[idx])).Label(labels[idx]).Tooltip(p.Name + " · " + p.Path).MinHeight(32).FillWidth().MinWidth(0).Gap(6)
+				a.projectNotificationMenu(c, item, p)
 				sidebarSelection(item, selected == "project:"+p.ID)
 				item.Children(func() {
 					a.unreadProjectBadge(c, p, index)
@@ -140,12 +144,21 @@ func (a *App) serviceConnectionTip() string {
 
 func (a *App) overviewProjectGrid(c *ui.Context) {
 	v := &a.overviewState
+	indices := []int{}
+	hasHidden := false
+	for idx, p := range a.Config.Projects {
+		hidden := a.projectIsHidden(p)
+		hasHidden = hasHidden || hidden
+		if v.AllProjects || !hidden {
+			indices = append(indices, idx)
+		}
+	}
 	ui.Column(c).Gap(homeGridGap).Children(func() {
 		head := ui.Row(c).Margin(0, 0, 3, 0).Children(func() {
 			homeText(c, "项目入口", homeHeading)
 			homeText(c, fmt.Sprint(len(a.Config.Projects)), homeMeta).Margin(0, 7).TextColor(ui.Hex("#a1aab3"))
 			ui.Spacer(c)
-			if len(a.Config.Projects) > 3 {
+			if len(a.Config.Projects) > 3 || hasHidden {
 				label := "查看全部  ›"
 				if v.AllProjects {
 					label = "收起项目"
@@ -157,20 +170,25 @@ func (a *App) overviewProjectGrid(c *ui.Context) {
 			head.ScrollIntoView()
 			v.RevealProjects = false
 		}
-		count := min(3, len(a.Config.Projects))
+		count := min(3, len(indices))
 		if v.AllProjects {
-			count = len(a.Config.Projects)
+			count = len(indices)
+		}
+		if count == 0 && hasHidden {
+			homeText(c, "项目已全部隐藏，可从查看全部中恢复。", homeMeta)
 		}
 		for start := 0; start < count; start += 3 {
 			ui.Row(c).Gap(homeGridGap).AlignItems(ui.Stretch).Children(func() {
 				for col := 0; col < 3; col++ {
-					idx := start + col
-					if idx >= count {
+					position := start + col
+					if position >= count {
 						ui.Column(c).Width(0).Grow(1)
 						continue
 					}
+					idx := indices[position]
 					p := a.Config.Projects[idx]
 					card := ui.Button(c, "").Cursor(ui.CursorPointer).Key("home-project-"+p.ID).Label(p.Name+" · "+p.Path+" · 查看项目记忆").Width(0).Grow(1).MinWidth(0).MinHeight(94).Padding(15).Gap(11).Justify(ui.Start).BorderWidth(0, 0, 1, 0).BorderColor(homeBorder).Radius(0)
+					a.projectNotificationMenu(c, card, p)
 					card.Background(homeHoverColor(card, "card-surface", ui.Hex("#ffffff"), ui.Hex("#f8fafc")))
 					if card.Hovered() {
 						card.BorderColor(ui.Hex("#b4c7d9"))
@@ -184,6 +202,9 @@ func (a *App) overviewProjectGrid(c *ui.Context) {
 								path = "未关联路径"
 							}
 							homeText(c, path, homePath)
+							if a.projectIsHidden(p) {
+								homeText(c, "已隐藏 · 右键取消隐藏", homeMeta)
+							}
 						})
 						ui.Icon(c, homeArrow).FontSize(12).TextColor(ui.Hex("#9aabba")).Shrink(0)
 					}).OnClick(func() { a.navigate("知识", idx) })
