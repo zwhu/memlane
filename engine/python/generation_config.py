@@ -46,7 +46,7 @@ def validate_profile(value):
         if type(capacity) is not int or not 1 <= capacity <= 256:
             raise PolicyError('invalid_generation_capacity')
     if mode == 'agent_bridge':
-        if value.get('bridge_kind') not in ('codex', 'pi', 'traex') or set(value) - {'mode', 'bridge_kind', 'bridge_provider', 'model', 'max_concurrent_requests'}:
+        if value.get('bridge_kind') not in ('codex', 'pi', 'traex', 'antigravity') or set(value) - {'mode', 'bridge_kind', 'bridge_provider', 'model', 'max_concurrent_requests'}:
             raise PolicyError('unsupported_generation_bridge')
         if value['bridge_kind'] == 'pi':
             if value.get('bridge_provider') not in ('deepseek', 'ollama'):

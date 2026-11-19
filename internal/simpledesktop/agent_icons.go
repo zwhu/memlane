@@ -21,7 +21,7 @@ var agentBrandIcons = func() map[string]*ui.SVG {
 	for kind, file := range map[string]string{
 		"codex": "codex-color", "pi": "pi", "traex": "trae-color",
 		"claude_code": "claudecode-color", "claude": "claude-color", "opencode": "opencode", "cursor": "cursor",
-		"chatgpt": "openai", "openai": "openai", "gemini": "gemini-color", "grok": "grok", "deepseek": "deepseek-color",
+		"chatgpt": "openai", "openai": "openai", "gemini": "gemini-color", "antigravity": "gemini-color", "grok": "grok", "deepseek": "deepseek-color",
 	} {
 		data, err := agentIconFiles.ReadFile("agent_icons/" + file + ".svg")
 		if err != nil {

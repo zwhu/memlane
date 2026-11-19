@@ -81,7 +81,11 @@ func (a *App) captureConnectionDetails(c *ui.Context, row AgentConnection) {
 			homeText(c, "在项目设置中开启会话保存后，再发送新消息。", homeMeta)
 			return
 		}
-		homeText(c, "1. 重新打开 "+connectionName(row.Kind)+"，新建会话并发送一条消息。", homeMeta)
+		if row.Kind == "antigravity" {
+			homeText(c, "1. 在 Gemini App 右上角打开 Antigravity，选择项目并新建会话、发送消息。", homeMeta)
+		} else {
+			homeText(c, "1. 重新打开 "+connectionName(row.Kind)+"，新建会话并发送一条消息。", homeMeta)
+		}
 		homeText(c, "2. 等待回复后，点击重新检测。", homeMeta)
 		textButton(c, "重新检测", a.RefreshIntegrations).Label("重新检测自动保存：" + connectionName(row.Kind)).AlignSelf(ui.Start).Disabled(s.Busy || s.Loading)
 	})

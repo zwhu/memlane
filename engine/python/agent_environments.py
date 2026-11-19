@@ -5,10 +5,11 @@ from pathlib import Path
 from project_policy import PolicyError
 
 DEFAULTS = {'codex': '.codex', 'pi': '.pi/agent', 'traex': '.trae',
-            'claude_code': '.claude', 'cursor': '.cursor', 'opencode': '.config/opencode'}
+            'claude_code': '.claude', 'cursor': '.cursor', 'opencode': '.config/opencode',
+            'antigravity': '.gemini/config'}
 VARIABLES = {'codex': ('CODEX_HOME',), 'pi': ('PI_CODING_AGENT_DIR',),
              'traex': ('TRAE_HOME', 'TRAECLI_HOME'), 'claude_code': ('CLAUDE_CONFIG_DIR',),
-             'cursor': (), 'opencode': ('OPENCODE_CONFIG_DIR',)}
+             'cursor': (), 'opencode': ('OPENCODE_CONFIG_DIR',), 'antigravity': ()}
 ROOT = Path(__file__).resolve().parents[2]
 
 

@@ -88,14 +88,14 @@ func generationWorkspaceGroups(g GenerationDirectory, mode string) []generationP
 		if len(groups) == 0 {
 			groups = append(groups, generationProfileGroup{Key: "agent", Title: "Agent"})
 		}
-		for _, kind := range []string{"codex", "traex", "pi"} {
+		for _, kind := range []string{"codex", "traex", "pi", "antigravity"} {
 			profile, ok := g.AgentBridges[kind]
 			if !ok || seen[kind] {
 				continue
 			}
 			groups[0].Items = append(groups[0].Items, generationProfileItem{ID: "agent-" + kind, Row: GenerationRow{Profile: profile}, Title: generationBridgeLabel(kind), Icon: kind, Detail: generationDefaultModel(g, kind)})
 		}
-		order := map[string]int{"codex": 0, "pi": 1, "traex": 2}
+		order := map[string]int{"codex": 0, "pi": 1, "traex": 2, "antigravity": 3}
 		sort.SliceStable(groups[0].Items, func(i, j int) bool { return order[groups[0].Items[i].Icon] < order[groups[0].Items[j].Icon] })
 	}
 	return groups

@@ -19,7 +19,7 @@ ENGINE = Path(__file__).resolve().parents[1]
 def prepare(source, root, instance_id, agent, service_url, control_url, host_home=None, *, host_kind='codex', python=None):
     if not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', instance_id):
         raise PolicyError('invalid_installation_id')
-    if host_kind in ('claude_code', 'cursor'):
+    if host_kind in ('claude_code', 'cursor', 'antigravity'):
         return prepare_official_host(root, instance_id, agent, service_url, control_url, host_home,
                                      host_kind=host_kind, python=python)
     if host_kind not in ('codex', 'pi', 'traex'):
@@ -179,13 +179,17 @@ def prepare_official_host(root, instance_id, agent, service_url, control_url, ho
     files['scripts/cognee-forget.sh'] = forget_response(files['scripts/cognee-forget.sh'].decode()).encode()
     files['scripts/_remember_http.py'] = remember_response(files['scripts/_remember_http.py'].decode()).encode()
     namespace = host_kind + '-' + instance_id
-    old = 'claude-code' if host_kind == 'claude_code' else 'cursor'
+    old = {'claude_code': 'claude-code', 'cursor': 'cursor', 'antigravity': 'antigravity'}[host_kind]
     for name, raw in list(files.items()):
         if Path(name).suffix in ('.py', '.sh', '.ts') or Path(name).name.startswith('run-'):
             text = raw.decode().replace('".cognee-plugin" / "' + old + '"', '".cognee-plugin" / ' + json.dumps(namespace))
             text = text.replace('.cognee-plugin/' + old, '.cognee-plugin/' + namespace)
             files[name] = text.encode()
     files['host-binding.json'] = json.dumps({'python': python, 'host_kind': host_kind}).encode()
+    if host_kind == 'antigravity':
+        files['scripts/run-agy-hook'] = ('#!/bin/sh\n'
+            'SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
+            'exec ' + shlex.quote(python) + ' "$SELF_DIR/agy_hook.py" "$@"\n').encode()
     hashes = {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()}
     receipt = {**upstream, 'files': hashes,
                'tool_patch_sha256': hashlib.sha256((ENGINE / 'python/project_tool_patch.py').read_bytes()).hexdigest(),
@@ -215,6 +219,8 @@ def prepare_official_host(root, instance_id, agent, service_url, control_url, ho
               'COGNEE_PLUGIN_IDENTITY': 'false', 'COGNEE_SHARED_AGENT_MEMORY': 'false',
               'COGNEE_MANAGED_ENDPOINT': 'true', 'COGNEE_CODING_MEMORY': 'true',
               'COGNEE_DISABLE_AUTO_MEMORY': 'false', 'COGNEE_UPDATE_CHECK': 'off', 'COGNEE_IDLE_DISABLED': 'true'}
+    if host_kind == 'antigravity':
+        values.update(COGNEE_ANTIGRAVITY_BACKEND='cloud', COGNEE_PLUGIN_IN_VENV='1')
     if any('\r' in value or '\n' in value for value in values.values()):
         raise PolicyError('installation_environment_invalid')
     private_write(environment, ''.join(key + '="' + value + '"\n' for key, value in values.items()).encode())

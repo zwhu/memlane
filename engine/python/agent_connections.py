@@ -203,7 +203,7 @@ class NativeConnection:
         if record.get('status') in ('activation_unknown', 'preparation_unknown'):
             raise PolicyError('connection_result_requires_review', 409)
         if self.id not in r.state['agents']:
-            await r.provision_agent(expected, self.id, '本机 ' + {'pi': 'pi', 'traex': 'TraeX', 'claude_code': 'Claude Code', 'cursor': 'Cursor'}[self.kind])
+            await r.provision_agent(expected, self.id, '本机 ' + {'pi': 'pi', 'traex': 'TraeX', 'claude_code': 'Claude Code', 'cursor': 'Cursor', 'antigravity': 'Gemini App'}[self.kind])
         async with r.mutex:
             previous_plugin = record.get('enabled_plugin') if record.get('activated') else record.get('previous_plugin')
             if self.kind == 'traex' and record.get('activated') and not previous_plugin:
@@ -376,7 +376,7 @@ def detect_executable(kind, settings, legacy=None):
         path = Path(configured).expanduser()
         return str(path) if path.is_absolute() and path.is_file() and os.access(path, os.X_OK) else None
     commands = {'codex': ('codex',), 'pi': ('pi',), 'traex': ('traecli', 'traex'),
-                'claude_code': ('claude',), 'cursor': ('cursor',), 'opencode': ('opencode',)}[kind]
+                           'claude_code': ('claude',), 'cursor': ('cursor',), 'opencode': ('opencode',), 'antigravity': ('agy',)}[kind]
     for command in commands:
         found = shutil.which(command)
         if found:
@@ -390,6 +390,9 @@ def detect_executable(kind, settings, legacy=None):
         candidates.extend(base / app / 'Contents/Resources/codex-cli/bin/codex'
                           for base in (Path('/Applications'), home / 'Applications')
                           for app in ('Codex.app', 'ChatGPT.app'))
+    if kind == 'antigravity':
+        candidates.extend(base / 'Gemini.app/Contents/Helpers/agy'
+                          for base in (Path('/Applications'), home / 'Applications'))
     if kind == 'cursor':
         candidates.extend(base / 'Cursor.app/Contents/Resources/app/bin/cursor'
                           for base in (Path('/Applications'), home / 'Applications'))
@@ -445,6 +448,12 @@ class Connections:
         directory = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'opencode'
         adapter = OpenCodeConnection(registry, config, settings.get('profile', directory),
                                      detect_executable('opencode', settings))
+        self.adapters[adapter.id] = adapter
+
+        from antigravity_connection import AntigravityConnection
+        settings = configured.get('antigravity', {})
+        adapter = AntigravityConnection(registry, config, settings.get('profile', Path.home() / '.gemini/config'),
+                                        detect_executable('antigravity', settings))
         self.adapters[adapter.id] = adapter
 
     def view(self):

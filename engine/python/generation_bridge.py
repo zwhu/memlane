@@ -38,6 +38,9 @@ class ValidationBridge:
         if self.selected['kind'] == 'pi':
             from pi_completion import execute
             args.execute_request = execute
+        elif self.selected['kind'] == 'antigravity':
+            from antigravity_completion import execute
+            args.execute_request = execute
         self.runner = web.AppRunner(create_app(args), handle_signals=False, handler_cancellation=True,
                                     shutdown_timeout=15, access_log=None)
         await self.runner.setup()

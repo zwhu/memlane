@@ -48,6 +48,9 @@ def current_session_model(kind, home):
 
 def read_agent_defaults(kind, home):
     """Read model scalars only; never use a saved Memlane model as a fallback."""
+    if kind == 'antigravity':
+        from antigravity_defaults import read_defaults
+        return read_defaults(home)
     import tomllib
     home = Path(home)
     name = {'codex': 'config.toml', 'traex': 'traecli.toml', 'pi': 'settings.json'}.get(kind)
@@ -120,18 +123,22 @@ def snapshot_agent_defaults(args):
 
 def resolve_bridge_runtime(runtime, profile=None):
     kind = (profile or {}).get('bridge_kind', 'codex')
-    if kind not in ('codex', 'pi', 'traex'):
+    if kind not in ('codex', 'pi', 'traex', 'antigravity'):
         raise PolicyError('unsupported_generation_bridge', 409)
     settings = runtime.get('agent_hosts', {}).get(kind, {})
-    command = {'codex': 'codex', 'pi': 'pi', 'traex': 'traecli'}[kind]
+    command = {'codex': 'codex', 'pi': 'pi', 'traex': 'traecli', 'antigravity': 'agy'}[kind]
     explicit = settings.get('executable') or runtime.get(kind + '_executable')
     executable = explicit or shutil.which(command)
     if not executable:
         executable = next((str(base / command) for base in (Path.home()/'.local/bin', Path('/opt/homebrew/bin'), Path('/usr/local/bin'))
                            if (base / command).is_file()), None)
+    if not executable and kind == 'antigravity':
+        executable = next((str(base / 'Gemini.app/Contents/Helpers/agy')
+                           for base in (Path('/Applications'), Path.home() / 'Applications')
+                           if (base / 'Gemini.app/Contents/Helpers/agy').is_file()), None)
     directory = settings.get('profile') or runtime.get('auth_home' if kind == 'codex' else kind + '_auth_home')
     if not directory and kind != 'codex':
-        directory = str(Path.home() / ('.pi/agent' if kind == 'pi' else '.trae'))
+        directory = str(Path.home() / {'pi': '.pi/agent', 'traex': '.trae', 'antigravity': '.gemini/config'}[kind])
     return {'kind': kind, 'executable': executable, 'home': directory}
 
 
@@ -143,8 +150,12 @@ def check_bridge_runtime(runtime, profile=None):
         auth = home / ('cli/auth.json' if selected['kind'] == 'traex' else 'auth.json')
         if not executable.is_absolute() or not executable.is_file() or not os.access(executable, os.X_OK) or not home.is_absolute() or not home.is_dir():
             raise ValueError()
-        if auth.is_symlink() or not auth.is_file() or auth.stat().st_mode & 0o077:
+        if selected['kind'] != 'antigravity' and (auth.is_symlink() or not auth.is_file() or auth.stat().st_mode & 0o077):
             raise ValueError()
+        if selected['kind'] == 'antigravity':
+            # Native keyring login is owned by agy. Resource discovery cannot
+            # establish Google account eligibility or inspect its secrets.
+            read_agent_defaults('antigravity', home)
     except (KeyError, OSError, ValueError, TypeError):
         raise PolicyError('generation_bridge_authentication_required', 409) from None
     return {**selected, 'executable': executable, 'home': home}
@@ -164,6 +175,9 @@ def bridge_runtime_fingerprint(runtime, profile):
         models = path.read_bytes() if path.exists() else None
         value['models_sha256'] = hashlib.sha256(models or b'').hexdigest()
         value['extension_sha256'] = hashlib.sha256(extension.read_bytes()).hexdigest()
+    if selected['kind'] == 'antigravity':
+        from antigravity_defaults import settings_path
+        value['settings_sha256'] = hashlib.sha256(settings_path(selected['home']).read_bytes()).hexdigest()
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
@@ -184,7 +198,7 @@ def require_bridge_validation(store, runtime, row):
 def bridge_choices(runtime):
     """Read only each Agent's selected model scalars, never authentication."""
     choices = {}
-    for kind in ('codex', 'pi', 'traex'):
+    for kind in ('codex', 'pi', 'traex', 'antigravity'):
         selected = resolve_bridge_runtime(runtime, {'bridge_kind': kind})
         if not selected['executable'] or not selected['home']:
             continue
@@ -201,7 +215,7 @@ def bridge_choices(runtime):
 
 def bridge_default_states(runtime):
     result = {}
-    for kind in ('codex', 'pi', 'traex'):
+    for kind in ('codex', 'pi', 'traex', 'antigravity'):
         selected = resolve_bridge_runtime(runtime, {'bridge_kind':kind})
         if selected['executable'] and selected['home']:
             try:

@@ -12,6 +12,8 @@ func generationBridgeLabel(kind string) string {
 		return "pi"
 	case "traex":
 		return "TraeX"
+	case "antigravity":
+		return "Gemini"
 	default:
 		return "Codex"
 	}
@@ -28,6 +30,9 @@ func generationDefaultModel(g GenerationDirectory, kind string) string {
 		}
 		if actual.ServiceTier != "" {
 			parts = append(parts, actual.ServiceTier)
+		}
+		if kind == "antigravity" && actual.ConfigurationSource == "agy_cli_settings" {
+			parts = append(parts, "agy 默认配置")
 		}
 		return strings.Join(parts, " / ")
 	}

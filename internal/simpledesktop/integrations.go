@@ -92,11 +92,13 @@ type GenerationValidation struct {
 	ModeEvidence       string              `json:"structured_mode_evidence"`
 }
 type AgentModelDefaults struct {
-	Model           string `json:"model"`
-	Provider        string `json:"provider"`
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
-	ThinkingLevel   string `json:"thinking_level,omitempty"`
-	ServiceTier     string `json:"service_tier,omitempty"`
+	Model               string `json:"model"`
+	Provider            string `json:"provider"`
+	Source              string `json:"source,omitempty"`
+	ConfigurationSource string `json:"configuration_source,omitempty"`
+	ReasoningEffort     string `json:"reasoning_effort,omitempty"`
+	ThinkingLevel       string `json:"thinking_level,omitempty"`
+	ServiceTier         string `json:"service_tier,omitempty"`
 }
 type GenerationDirectory struct {
 	AgentDefaults    map[string]AgentModelDefaults   `json:"agent_defaults"`
@@ -223,6 +225,9 @@ type integrationState struct {
 
 func integrationOperation() string { return "ui-" + rand.Text() }
 func connectionName(kind string) string {
+	if kind == "antigravity" {
+		return "Gemini App"
+	}
 	switch kind {
 	case "codex":
 		return "Codex"
@@ -306,7 +311,7 @@ func connectionStatus(row AgentConnection) string {
 }
 
 func captureConnection(row AgentConnection) bool {
-	return (row.Kind == "codex" || row.Kind == "pi" || row.Kind == "traex") &&
+	return (row.Kind == "codex" || row.Kind == "pi" || row.Kind == "traex" || row.Kind == "antigravity") &&
 		(row.Status == "configured_pending_new_session" || row.Status == "environment_receipt_unconfirmed")
 }
 

@@ -14,7 +14,7 @@ def main():
     parser.add_argument('--token-file', type=Path, required=True)
     parser.add_argument('--agent-executable', type=Path, required=True)
     parser.add_argument('--auth-home', type=Path, required=True)
-    parser.add_argument('--bridge-kind', choices=('codex', 'pi', 'traex'), required=True)
+    parser.add_argument('--bridge-kind', choices=('codex', 'pi', 'traex', 'antigravity'), required=True)
     parser.add_argument('--bridge-provider')
     parser.add_argument('--model', required=True)
     args = parser.parse_args()
@@ -24,6 +24,9 @@ def main():
     args.codex_executable, args.timeout = args.agent_executable, 90
     if args.bridge_kind == 'pi':
         from pi_completion import execute
+        args.execute_request = execute
+    elif args.bridge_kind == 'antigravity':
+        from antigravity_completion import execute
         args.execute_request = execute
     web.run_app(create_app(args), host='127.0.0.1', port=args.port, access_log=None, print=None,
                 handler_cancellation=True)

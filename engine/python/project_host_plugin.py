@@ -169,6 +169,9 @@ def capture_boundary(transcript, *, enabled=True):
 
 
 def files_for(kind, archive=None):
+    if kind == 'antigravity':
+        from antigravity_plugin import files_for as antigravity_files
+        return antigravity_files(archive)
     if kind not in ('claude_code', 'cursor'):
         raise ValueError('unsupported official host')
     manifest = json.loads((ENGINE / 'coding-memory-components.json').read_text())['plugin']
