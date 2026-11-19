@@ -49,13 +49,21 @@ class Backlog:
             raise PolicyError('backlog_journal_unconfirmed', 503)
         self.jobs = json.loads(self.path.read_bytes()) if self.path.exists() else {}
         self.task = None
+        self.processing_task = None
+        self.processing_operation = None
+        self.processing_target = None
         self.monitor = None
         self.auto_cursor = 0
         self.check_cursor = 0
         self.checks = {}
         self.check_tasks = {}
         self.check_monitor = None
+        self.buffer_reviews = {}
         for row in self.jobs.values():
+            for target in list(row.get('targets', [])) + list(row.get('pending_processing', {}).values()):
+                if target.get('processing') == 'unknown' and target.get('processing_reason') == 'incomplete_drain':
+                    target.update(previous_processing='unknown', processing='partial',
+                                  recovery_reason='official_partial_submission', next_processing_at=time.time()+300)
             if (row.get('automatic') and not row.get('automatic_user_paused')
                     and (row['status'] in ACTIVE or row.get('owner_shutdown'))):
                 # A new owner reviews the current official buffer afresh. It
@@ -75,18 +83,22 @@ class Backlog:
         return self.root / (row['operation_id'] + '.stop')
 
     def public(self, row):
-        result = {k: v for k, v in row.items() if k not in ('targets', 'pending_processing')}
+        result = {k: v for k, v in row.items() if k not in ('targets', 'pending_processing', 'save_retries')}
         targets = row['targets']
         result.update(saved=row.get('saved_before', 0) + sum(t.get('saved', 0) for t in targets),
+                      save_rejected=sum(t.get('rejected', 0) for t in targets),
+                      save_deferred=sum(t.get('deferred', 0) + (t.get('save_status') == 'paused') for t in targets),
                       handled=row.get('handled_before', 0) + sum(t.get('handled', 0) for t in targets),
                       isolated=sum(t.get('unknown', 0) + t.get('isolated', 0) for t in targets),
                       remaining=sum(t.get('remaining', len(t.get('tokens', []))) for t in targets),
                       total=sum(len(t.get('tokens', [])) for t in targets),
                       sessions=len(targets),
                       processing_submitted=sum(t.get('processing') == 'submitted' for t in (row.get('pending_processing', {}).values() if row.get('automatic') else targets)),
-                      processing_failed=sum(t.get('processing') in ('submitting', 'unknown', 'failed') for t in (row.get('pending_processing', {}).values() if row.get('automatic') else targets)),
+                      processing_failed=sum(t.get('processing') in ('unknown', 'failed') for t in (row.get('pending_processing', {}).values() if row.get('automatic') else targets)),
+                      processing_active=sum(t.get('processing') == 'submitting' for t in (row.get('pending_processing', {}).values() if row.get('automatic') else targets)),
+                      processing_partial=sum(t.get('processing') == 'partial' for t in (row.get('pending_processing', {}).values() if row.get('automatic') else targets)),
                       processing_disabled=sum(t.get('processing') == 'disabled' for t in (row.get('pending_processing', {}).values() if row.get('automatic') else targets)),
-                      processing_pending=sum(t.get('processing') in ('queued', 'deferred') for t in row.get('pending_processing', {}).values()))
+                      processing_pending=sum(t.get('processing') in ('queued', 'deferred', 'partial') for t in row.get('pending_processing', {}).values()))
         result['review_failed'] = sum(t.get('review_status') == 'unconfirmed' for t in targets)
         return result
 
@@ -95,7 +107,17 @@ class Backlog:
         latest = max(rows, key=lambda r: r['created_at']) if rows else None
         enabled = bool(self.monitor and not self.monitor.done()) and (not latest or latest['status'] not in ('paused','stopped','interrupted','stopping'))
         return {'job': self.public(latest) if latest else None, 'automatic_enabled': enabled,
+                'buffer_reviews': [dict(value) for value in self.buffer_reviews.values() if value['project_id'] == project],
                 'checks': [dict(value) for value in self.checks.values() if value['project_id'] == project]}
+
+    def record_buffer_review(self, project, target, snapshot):
+        # Metadata projection of the installed plugin's current source buffer.
+        # It is re-read after restart and never persisted as a content copy.
+        if isinstance(snapshot.get('signature'), str) and type(snapshot.get('filtered')) is int and snapshot['filtered'] >= 0:
+            self.buffer_reviews[(project, target['agent_id'], target['host'])] = {
+                'project_id': project, 'agent_id': target['agent_id'], 'host': target['host'],
+                'signature': snapshot['signature'], 'filtered': snapshot.get('filtered_unsent', snapshot['filtered']),
+                **{key: snapshot.get(key, 0) for key in ('rejected', 'rejected_unsent', 'rejected_unknown', 'deferred', 'deferred_unsent')}}
 
     def request_check(self, project, agent_id, host, *, signature='', force=False):
         target = {'agent_id': agent_id, 'host': host, 'dataset': self.registry.state['projects'][project]['dataset_id']}
@@ -199,13 +221,22 @@ class Backlog:
             if selected is not None and (agent_id, host) not in selected:
                 continue
             target = {'agent_id': agent_id, 'host': host, 'dataset': project['dataset_id']}
-            self.checked_target(project_id, target)
+            try:
+                self.checked_target(project_id, target)
+            except PolicyError as error:
+                target.update(admission_blocked=True, review_status='unconfirmed', review_reason=error.code,
+                              save_status='paused', save_reason=error.code, tokens=[])
             targets.append(target)
         row = {'operation_id': operation_id, 'project_id': project_id, 'status': 'queued',
                'reason': '', 'created_at': time.time(), 'targets': targets}
         if automatic:
             row['automatic'] = True
+            row['save_retries'] = copy.deepcopy((old or {}).get('save_retries', {}))
             row['pending_processing'] = copy.deepcopy((old or {}).get('pending_processing', {}))
+            if self.processing_task and not self.processing_task.done() and self.processing_operation == operation_id:
+                for key, target in (old or {}).get('pending_processing', {}).items():
+                    if target is self.processing_target:
+                        row['pending_processing'][key] = target
             if old:
                 previous = self.public(old)
                 row.update(saved_before=previous['saved'], handled_before=previous['handled'],
@@ -221,6 +252,8 @@ class Backlog:
             raise PolicyError('backlog_job_not_found', 404)
         if row.get('automatic'):
             row['owner_shutdown' if owner_shutdown else 'automatic_user_paused'] = True
+        if self.processing_task and not self.processing_task.done() and self.processing_operation == operation_id:
+            private_write(self.cancel_file(row), b'stop')
         if row['status'] in ACTIVE:
             private_write(self.cancel_file(row), b'stop')
             row['status'] = 'stopping'
@@ -340,9 +373,9 @@ class Backlog:
             # second improve scheduler or HTTP client.
             result = await self.execute(row, target, 'process')
             status = result.get('status')
-            target['processing'] = status if status in ('submitted', 'skipped', 'disabled', 'deferred', 'failed', 'unknown') else 'unknown'
+            target['processing'] = status if status in ('submitted', 'skipped', 'disabled', 'deferred', 'partial', 'failed', 'unknown') else 'unknown'
             target['processing_reason'] = str(result.get('reason') or '')
-            if target['processing'] == 'deferred':
+            if target['processing'] in ('deferred', 'partial'):
                 from incremental_processing import COOLDOWN_SECONDS
                 delay = COOLDOWN_SECONDS if target['processing_reason'] in ('cooldown', 'backoff') else 30
                 target['next_processing_at'] = time.time() + delay
@@ -362,6 +395,8 @@ class Backlog:
                 if self.cancel_file(row).exists():
                     row.update(status='stopped', reason='user_stopped')
                     return
+                if target.get('admission_blocked'):
+                    continue
                 try:
                     snapshot = await self.execute(row, target, 'review')
                     if (not isinstance(snapshot, dict) or not isinstance(snapshot.get('session_id'), str)
@@ -380,6 +415,7 @@ class Backlog:
                     self.persist()
                     continue
                 target.update(snapshot)
+                self.record_buffer_review(row['project_id'], target, snapshot)
                 target.update(review_status='confirmed', review_reason='')
                 target.update(saved=0, handled=0, isolated=0, remaining=len(target['tokens']))
                 self.persist()
@@ -397,11 +433,36 @@ class Backlog:
                             raise PolicyError('backlog_progress_unconfirmed', 503)
                     if sum(value[k] for k in ('saved', 'handled', 'isolated', 'remaining')) != len(target['tokens']):
                         raise PolicyError('backlog_progress_unconfirmed', 503)
+                    classifications = {key: value.get(key, 0) for key in ('filtered', 'rejected', 'deferred')}
+                    if any(type(count) is not int or count < 0 for count in classifications.values()) or sum(classifications.values()) > value['isolated']:
+                        raise PolicyError('backlog_progress_unconfirmed', 503)
                     target.update({k: value[k] for k in ('saved', 'handled', 'isolated', 'remaining')})
+                    target.update(classifications)
                     row.update(status='stopping' if self.cancel_file(row).exists() else 'waiting' if value['status'] == 'waiting' else 'running',
                                reason=value.get('reason', ''))
                     self.persist()
-                result = await self.execute(row, target, 'save', progress)
+                try:
+                    result = await self.execute(row, target, 'save', progress)
+                except PolicyError as error:
+                    if error.code not in ('backlog_write_denied', 'backlog_binding_changed', 'backlog_installation_changed', 'backlog_installation_unconfirmed', 'backlog_host_unsupported'):
+                        raise
+                    target.update(save_status='paused', save_reason=error.code)
+                    self.persist()
+                    continue
+                if not isinstance(result, dict) or result.get('status') not in ('completed', 'paused', 'stopped'):
+                    raise PolicyError('backlog_worker_unconfirmed', 503)
+                progress(result)
+                target.update(save_status=result['status'], save_reason=result.get('reason', ''))
+                retry_key = json.dumps([target['agent_id'], target['host']])
+                if result['status'] == 'completed':
+                    row.get('save_retries', {}).pop(retry_key, None)
+                if result['status'] == 'paused' and result.get('reason') in ('write_denied', 'policy_unconfirmed', 'capture_request_rejected', 'capture_retry_pending', 'request_result_unknown'):
+                    if result.get('reason') == 'capture_retry_pending':
+                        retries = row.setdefault('save_retries', {})
+                        attempts = min(8, retries.get(retry_key, {}).get('attempts', 0)+1)
+                        retries[retry_key] = {'attempts': attempts, 'after': time.time()+min(300, 2**attempts)}
+                    self.persist()
+                    continue
                 if result['status'] != 'completed':
                     row.update(status=result['status'], reason=result.get('reason', 'worker_state_unconfirmed'))
                     if row['reason'] == 'capture_retry_pending':
@@ -428,6 +489,8 @@ class Backlog:
             if row['status'] == 'completed':
                 if any(t.get('review_status') == 'unconfirmed' for t in row['targets']):
                     row['reason'] = 'partial_review_unconfirmed'
+                if any(t.get('save_status') == 'paused' for t in row['targets']):
+                    row['reason'] = 'partial_save_deferred'
                 row['capture_retry_count'] = 0
                 row.pop('capture_retry_at', None)
             if row.get('automatic') and row['status'] == 'completed':
@@ -441,6 +504,9 @@ class Backlog:
             self.persist()
 
     async def close(self):
+        if self.processing_task and not self.processing_task.done():
+            row = self.jobs[self.processing_operation]
+            self.stop(row['project_id'], self.processing_operation, owner_shutdown=True)
         tasks = [task for task in (self.check_monitor, *self.check_tasks.values()) if task]
         for task in tasks:
             task.cancel()
@@ -456,6 +522,8 @@ class Backlog:
                 self.stop(row['project_id'], row['operation_id'], owner_shutdown=True)
         if self.task and not self.task.done():
             await asyncio.wait_for(asyncio.shield(self.task), 40)
+        if self.processing_task and not self.processing_task.done():
+            await asyncio.wait_for(asyncio.shield(self.processing_task), 40)
 
     async def automatic_tick(self):
         """Continue lawful, definitely-unsent buffers without requiring a window.
@@ -473,25 +541,30 @@ class Backlog:
         rows = [r for r in self.jobs.values() if r['project_id'] == project_id]
         previous = max(rows, key=lambda r: r['created_at']) if rows else None
         recoverable = bool(previous and previous.get('automatic') and not previous.get('automatic_user_paused')
-                           and previous['status'] == 'paused' and previous.get('reason') in ('policy_unconfirmed', 'capture_retry_pending'))
+                           and previous['status'] == 'paused' and previous.get('reason') in ('policy_unconfirmed', 'capture_retry_pending', 'capture_filter_changed'))
         if recoverable and previous.get('reason') == 'capture_retry_pending':
             if time.time() < previous.get('capture_retry_at', 0):
                 return
         if previous and previous['status'] in ('paused', 'stopped', 'interrupted', 'stopping') and not recoverable:
             return
         automatic = previous if previous and previous.get('automatic') else None
-        if automatic and not recoverable:
+        if automatic and not recoverable and (self.processing_task is None or self.processing_task.done()):
             pending = sorted(automatic.get('pending_processing', {}).values(),
                              key=lambda target: target.get('processing_attempted_at', 0))
             for target in pending:
-                if (target.get('processing') not in ('queued', 'deferred')
+                if (target.get('processing') not in ('queued', 'deferred', 'partial')
                         or target.get('next_processing_at', 0) > time.time()):
                     continue
-                try:
-                    await self.process_saved(automatic, target)
-                except PolicyError as error:
-                    target.update(processing='disabled', reason=error.code)
-                    self.persist()
+                async def submit(owned_row, owned_target):
+                    try:
+                        await self.process_saved(owned_row, owned_target)
+                    except PolicyError as error:
+                        owned_target.update(processing='disabled', reason=error.code)
+                        self.persist()
+                self.processing_operation = automatic['operation_id']
+                self.processing_target = target
+                self.processing_task = asyncio.create_task(submit(automatic, target))
+                await asyncio.sleep(0)
                 break
         operation = automatic['operation_id'] if automatic else str(uuid.uuid4())
         candidate = {'operation_id': operation, 'project_id': project_id}
@@ -507,6 +580,9 @@ class Backlog:
                 continue
             target = {'agent_id': agent_id, 'host': host,
                       'dataset': self.registry.state['projects'][project_id]['dataset_id']}
+            retry = (automatic or {}).get('save_retries', {}).get(json.dumps([agent_id, host]), {})
+            if retry.get('after', 0) > time.time():
+                continue
             try:
                 _, view = self.checked_target(project_id, target)
                 if not view['policy'].get('can_capture'):
@@ -514,6 +590,7 @@ class Backlog:
                 snapshot = await self.execute(candidate, target, 'review')
                 if not isinstance(snapshot.get('tokens'), list) or 'unknown' not in snapshot:
                     continue
+                self.record_buffer_review(project_id, target, snapshot)
                 if snapshot.get('blocked'):
                     continue
                 reviewed = True
@@ -525,8 +602,10 @@ class Backlog:
                         # batch while the manager was paused. Reconcile counts
                         # without re-sending or claiming their work as ours.
                         remaining = sum((Counter(old.get('tokens', [])) & Counter(snapshot['tokens'])).values())
-                        consumed = len(old.get('tokens', [])) - remaining - old.get('saved', 0) - old.get('isolated', 0)
-                        old.update(remaining=remaining, handled=max(old.get('handled', 0), consumed))
+                        filtered = sum((Counter(old.get('tokens', [])) & Counter(snapshot.get('filtered_tokens', []))).values())
+                        isolated = max(0, old.get('isolated', 0)-old.get('filtered', 0)) + filtered
+                        consumed = len(old.get('tokens', [])) - remaining - old.get('saved', 0) - isolated
+                        old.update(remaining=remaining, filtered=filtered, isolated=isolated, handled=max(old.get('handled', 0), consumed))
                 if snapshot.get('tokens') or snapshot.get('unknown'):
                     selected.add((agent_id, host))
                 has_unsent = has_unsent or bool(snapshot.get('tokens'))

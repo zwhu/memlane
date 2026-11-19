@@ -45,6 +45,19 @@ func queueRefreshAction(c *ui.Context, label string, fn func()) ui.Element {
 func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	q := a.projectQueue(p)
 	needs, info := a.messageNotices(q, p)
+	var history []messageNotice
+	active := func(rows []messageNotice) []messageNotice {
+		var result []messageNotice
+		for _, n := range rows {
+			if q.noticeAcknowledged(n.Key) {
+				history = append(history, n)
+			} else {
+				result = append(result, n)
+			}
+		}
+		return result
+	}
+	needs, info = active(needs), active(info)
 	ui.Column(c.Key("message-status-"+p.ID)).FillWidth().Gap(16).Margin(8, 0, 0, 0).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
 			homeText(c, "消息与处理状态", homeHeading).FontSize(15)
@@ -61,6 +74,15 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 		})
 		a.messageNoticeGroup(c, q, p, "需要你处理", "仅列出需要你操作的事项。", needs, true)
 		a.messageNoticeGroup(c, q, p, "状态与异常提示", "无需你确认消息是否保存；系统异常会保留显示。", info, false)
+		if len(history) > 0 {
+			projectLink(c, fmt.Sprintf("已知晓的历史提示（%d）", len(history)), func() { q.NoticeHistoryOpen = !q.NoticeHistoryOpen })
+			if q.NoticeHistoryOpen {
+				a.messageNoticeGroup(c, q, p, "已知晓的历史提示", "", history, false)
+			}
+		}
+		if q.NoticeAcknowledgementError != "" {
+			homeText(c, q.NoticeAcknowledgementError, homeBody).TextColor(ui.Hex("#a47648"))
+		}
 		if !q.Loaded && len(info) == 0 {
 			homeText(c, "正在读取消息状态…", homeMeta)
 		}
@@ -126,6 +148,7 @@ func (a *App) messageNoticeGroup(c *ui.Context, q *projectQueueState, p AccessPr
 		ui.Column(c).FillWidth().Background(ui.Hex("#ffffff")).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(10).Children(func() {
 			for index, n := range rows {
 				n := n
+				acknowledged := q.noticeAcknowledged(n.Key)
 				ui.Row(c.Key(n.Key)).FillWidth().Padding(13, 16).Gap(12).AlignItems(ui.Start).Children(func() {
 					color := homeIconInk
 					icon := messageClockIcon
@@ -141,6 +164,13 @@ func (a *App) messageNoticeGroup(c *ui.Context, q *projectQueueState, p AccessPr
 						ui.Row(c).AlignItems(ui.Center).Gap(9).Children(func() {
 							homeText(c, n.Title, homeBody).FontSize(12).FontWeight(550).TextColor(homeInk)
 							queueBadge(c, n.Tag, color)
+							if acknowledged {
+								label := "已知晓 · 不再提醒"
+								if q.NoticeAcknowledgements[noticeHash(n.Key)].Deferred {
+									label = "暂不处理 · 不再提醒"
+								}
+								homeText(c, label, homeMeta)
+							}
 						})
 						if n.Source != "" {
 							ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
@@ -168,6 +198,8 @@ func (a *App) messageNoticeGroup(c *ui.Context, q *projectQueueState, p AccessPr
 								}
 							case "resume":
 								queueAction(c, "恢复保存", func() { a.changeBacklog(q, p, false) }).Disabled(q.BacklogBusy || a.access.Busy || a.Config.ProjectControl == nil)
+							case "save":
+								queueAction(c, "开始保存", func() { a.changeBacklog(q, p, false) }).Disabled(q.BacklogBusy || q.Loading || a.access.Busy || a.Config.ProjectControl == nil)
 							case "refresh":
 								queueRefreshAction(c, "重新读取状态", func() { a.loadProjectQueue(q, p); a.refreshBacklog(q, p) }).Disabled(q.Loading || a.access.Busy)
 							}
@@ -178,6 +210,15 @@ func (a *App) messageNoticeGroup(c *ui.Context, q *projectQueueState, p AccessPr
 									label = "收起详情"
 								}
 								queueAction(c, label, func() { v.CheckDetailsOpen = !v.CheckDetailsOpen })
+							}
+							if acknowledged {
+								queueAction(c, "恢复提醒", func() { a.acknowledgeNotice(q, p, n, true) })
+							} else {
+								label := "知道了，不再提醒"
+								if n.NeedsUser {
+									label = "暂不处理"
+								}
+								queueAction(c, label, func() { a.acknowledgeNotice(q, p, n, false) }).Tooltip("仅结束这项提醒，保留原消息和异常记录；出现新的异常会再次提醒。")
 							}
 						})
 						if n.Session != nil && n.Session.View.CheckDetailsOpen {

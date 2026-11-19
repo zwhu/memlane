@@ -14,14 +14,17 @@ try:
         raise policy.NotReady('official_session_unconfirmed')
     result = policy.pending_materials(dataset, session)
     with common._buffer_lock():
-        _, _, _, _, pending, signature = policy._pending_snapshot(dataset, session)
+        _, _, _, buffer_state, pending, signature = policy._pending_snapshot(dataset, session)
     if signature != result['signature']:
         raise policy.NotReady('pending_materials_changed_review_again')
     try:
         from _memlane_capture import numbered
     except ImportError:
         numbered = lambda entry: False
-    result['retryable_unknown'] = sum(bool(e.get(common._AMBIGUOUS_KEY)) and numbered(e) for e in pending)
+    rejections = buffer_state.get('capture_rejections', {})
+    if result.get('blocked') and result['blocked'].get('scope') == 'entries':
+        result['blocked'] = None
+    result['retryable_unknown'] = sum(bool(e.get(common._AMBIGUOUS_KEY)) and numbered(e) and e.get('_capture_id') not in rejections for e in pending)
     result['unknown_entry_ids'] = [hashlib.sha256(json.dumps(
         {k:v for k,v in e.items() if k != common._AMBIGUOUS_KEY},
         sort_keys=True, ensure_ascii=False).encode()).hexdigest()

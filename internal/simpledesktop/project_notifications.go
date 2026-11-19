@@ -24,8 +24,11 @@ func (q *projectQueueState) observeNotificationFailures(now time.Time) {
 	if q.DocumentError != "" {
 		current["documents"] = true
 	}
-	for _, row := range q.Sessions {
-		key := row.Agent.ID + "/" + row.Binding.HostSessionKey
+	for index, row := range q.Sessions {
+		if row.View == nil {
+			continue
+		}
+		key := noticeSessionKey(row, index)
 		if !row.View.Loaded || row.View.ReadError != "" {
 			current["read/"+key] = true
 		}

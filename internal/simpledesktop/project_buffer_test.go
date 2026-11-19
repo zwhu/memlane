@@ -34,7 +34,7 @@ def pending_materials(dataset, session):
     return {'pending':1,'unknown_outcomes':1,'signature':'reviewed-snapshot'}
 def _pending_snapshot(dataset, session):
     with open("buffer.json") as f: pending=json.load(f)
-    return None,None,None,None,pending,'reviewed-snapshot'
+    return None,None,None,{},pending,'reviewed-snapshot'
 if __name__ == '__main__':
     assert '--session-key' in sys.argv and 'host-session' in sys.argv
     print(json.dumps({'pending':1,'signature':'reviewed-snapshot'}))

@@ -221,7 +221,7 @@ class IncrementalProcessing:
                 if status in ('submitted', 'skipped'):
                     row.update(submitted_counts=list(counts), pending_since=0)
                     row.pop('handoff_operation', None)
-                elif status == 'deferred':
+                elif status in ('deferred', 'partial'):
                     row['next_attempt_at'] = now + (300 if result.get('reason') in ('cooldown', 'backoff') else 30)
                 elif status not in ('deferred', 'disabled'):
                     row['status'] = 'unknown'

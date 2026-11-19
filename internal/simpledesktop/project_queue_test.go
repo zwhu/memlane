@@ -57,6 +57,7 @@ func projectQueueFixture() (*App, *projectQueueState) {
 	a.settingsOrigin = &readingLocation{Page: "知识", ProjectID: "p"}
 	p := a.access.Directory.Projects[0]
 	q := a.projectQueue(p)
+	q.BacklogLoaded = true
 	agent := a.access.Directory.Agents[0]
 	q.Sessions = []queuedSession{
 		{Agent: agent, Binding: ProjectBinding{ProjectID: "p", AgentID: agent.ID, HostSessionKey: "synthetic-first"}, View: &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 2}}},

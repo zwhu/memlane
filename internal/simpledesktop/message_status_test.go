@@ -15,7 +15,7 @@ func TestMessageStatusClassificationUsesObservedFacts(t *testing.T) {
 		user         bool
 	}{
 		{"permission denied", "", "read", true},
-		{"waiting", "", "maintain", false},
+		{"waiting with explicit save action", "", "maintain", true},
 		{"permission unconfirmed", "policy_unconfirmed", "maintain", false},
 		{"service interrupted", "owner_interrupted", "maintain", false},
 		{"connection changed", "backlog_installation_changed", "maintain", false},

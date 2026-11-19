@@ -77,18 +77,19 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
         await self.backlog.task
         row = next(iter(self.backlog.jobs.values()))
         original_id = row['operation_id']
-        self.assertEqual(row['reason'],'capture_retry_pending')
+        self.assertEqual(row['reason'],'partial_save_deferred')
         self.assertEqual(row['isolated'] if 'isolated' in row else row['targets'][0]['isolated'],0)
-        self.assertEqual(row['capture_retry_count'],1)
+        retry_key = json.dumps(['a', 'host'])
+        self.assertEqual(row['save_retries'][retry_key]['attempts'],1)
         before = len(calls)
         await self.backlog.automatic_tick()
         self.assertEqual(len(calls),before,'ignored retry backoff')
-        row['capture_retry_at'] = 0
+        row['save_retries'][retry_key]['after'] = 0
         await self.backlog.automatic_tick()
         await self.backlog.task
         row = self.backlog.jobs[original_id]
         self.assertEqual(len(self.backlog.jobs),1,'changed operation to bypass unknown')
-        self.assertEqual(row['capture_retry_count'],2)
+        self.assertEqual(row['save_retries'][retry_key]['attempts'],2)
         self.backlog.stop('p',original_id)
         before = len(calls)
         await self.backlog.automatic_tick()
@@ -422,6 +423,418 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.posts,[])
         finally:
             self.gate.set();await client.close()
+
+    async def test_session_save_pause_preserves_original_remaining_and_saves_healthy_tail(self):
+        """QI02: a known session pause is local, with durable original reasons."""
+        self.policy['policy'].update(can_capture=True, can_auto_process=False)
+        self.registry.state['sessions'] = {json.dumps(['a', host]): 'p' for host in ('blocked', 'healthy')}
+        for reason in ('write_denied', 'policy_unconfirmed', 'capture_request_rejected'):
+            with self.subTest(reason=reason):
+                actions = []
+                held = False
+                pending = {'blocked': ['a'*64], 'healthy': ['b'*64]}
+
+                async def worker(row, target, action, update):
+                    nonlocal held
+                    host = target['host']
+                    actions.append((host, action))
+                    if action == 'review':
+                        return {'session_id': 'native-' + host, 'tokens': list(pending[host]), 'unknown': 0,
+                                'blocked': {'reason': reason} if held and host == 'blocked' else None}
+                    if action != 'save':
+                        self.fail('a paused or disabled processing target reached the submit worker')
+                    if host == 'blocked':
+                        held = True
+                        result = {'status': 'paused', 'reason': reason, 'saved': 0, 'handled': 0, 'isolated': 0, 'remaining': 1}
+                    else:
+                        pending[host].clear()
+                        result = {'status': 'completed', 'saved': 1, 'handled': 0, 'isolated': 0, 'remaining': 0}
+                    update(result)
+                    return result
+
+                self.backlog.worker = worker
+                operation = str(uuid.uuid4())
+                self.backlog.start('p', operation)
+                await self.backlog.task
+                row = self.backlog.jobs[operation]
+                blocked, healthy = row['targets']
+                self.assertEqual((blocked['saved'], blocked['handled'], blocked['isolated'], blocked['remaining']), (0, 0, 0, 1))
+                self.assertEqual(blocked.get('save_status'), 'paused')
+                self.assertIn(reason, (blocked.get('save_reason'), blocked.get('reason')))
+                self.assertEqual((healthy['saved'], healthy['remaining']), (1, 0), 'one session pause starved the healthy sender')
+                self.assertEqual(actions[:3], [('blocked', 'review'), ('healthy', 'review'), ('blocked', 'save')],
+                                 'save began before all selected sessions were frozen')
+                self.assertIn(('healthy', 'save'), actions)
+                view = self.backlog.public(row)
+                self.assertEqual((view['saved'], view['remaining']), (1, 1))
+                durable = json.loads(self.backlog.path.read_text())[operation]['targets'][0]
+                self.assertEqual(durable['remaining'], 1)
+                self.assertIn(reason, (durable.get('save_reason'), durable.get('reason')))
+                before = list(actions)
+                self.backlog.start('p', operation)
+                self.assertEqual(actions, before, 'reopening the same operation resent the rejected original')
+                await self.backlog.automatic_tick()
+                if self.backlog.task and not self.backlog.task.done():
+                    await self.backlog.task
+                self.assertEqual(actions.count(('blocked', 'save')), 1, 'automatic scanning bypassed the original session hold')
+                self.assertEqual(pending['blocked'], ['a'*64])
+
+    async def test_sender_and_progress_unknowns_keep_the_operation_barrier(self):
+        """Retained boundary: sender/ownership/statistics uncertainty is not a local skip."""
+        self.policy['policy']['can_auto_process'] = False
+        self.registry.state['sessions'] = {json.dumps(['a', host]): 'p' for host in ('unknown', 'healthy')}
+        cases = ('sender_lock_changed', 'backlog_sender_exit_unconfirmed', 'backlog_worker_unconfirmed',
+                 'progress_missing', 'progress_count', 'progress_type', 'progress_classification_count',
+                 'progress_classification_type', 'return_malformed', 'return_counts', 'return_running')
+        for failure in cases:
+            with self.subTest(failure=failure):
+                actions = []
+
+                async def worker(row, target, action, update):
+                    actions.append((target['host'], action))
+                    if action == 'review':
+                        return {'session_id': 'native-' + target['host'], 'tokens': ['a'*64], 'unknown': 0}
+                    if target['host'] == 'healthy':
+                        self.fail('an unknown original sender was bypassed')
+                    valid = {'status': 'running', 'saved': 0, 'handled': 0, 'isolated': 0, 'remaining': 1}
+                    if failure in ('backlog_sender_exit_unconfirmed', 'backlog_worker_unconfirmed'):
+                        update(valid)
+                        raise PolicyError(failure, 503)
+                    if failure == 'sender_lock_changed':
+                        result = {**valid, 'status': 'paused', 'reason': failure}
+                        update(result)
+                        return result
+                    if failure.startswith('progress_'):
+                        malformed = dict(valid)
+                        if failure == 'progress_missing':
+                            malformed.pop('isolated')
+                        elif failure == 'progress_count':
+                            malformed['saved'] = 1
+                        elif failure == 'progress_type':
+                            malformed['saved'] = True
+                        elif failure == 'progress_classification_count':
+                            malformed.update(isolated=1, remaining=0, rejected=1, deferred=1)
+                        else:
+                            malformed.update(isolated=1, remaining=0, rejected=True, deferred=0)
+                        update(malformed)
+                        return malformed
+                    update(valid)
+                    if failure == 'return_malformed':
+                        return []
+                    if failure == 'return_counts':
+                        return {**valid, 'status': 'completed', 'saved': 9, 'remaining': 0}
+                    return valid
+
+                self.backlog.worker = worker
+                operation = str(uuid.uuid4())
+                self.backlog.start('p', operation)
+                await self.backlog.task
+                row = self.backlog.jobs[operation]
+                self.assertEqual(row['status'], 'paused', 'an unconfirmed final sender result was accepted')
+                self.assertNotIn(('healthy', 'save'), actions)
+                self.assertEqual(row['targets'][1]['remaining'], 1)
+                self.assertEqual(self.backlog.public(row)['saved'], 0, 'corrupt progress was exposed as saved content')
+                if failure in ('sender_lock_changed', 'backlog_sender_exit_unconfirmed', 'backlog_worker_unconfirmed'):
+                    self.assertEqual(row['reason'], failure)
+                before = list(actions)
+                self.backlog.start('p', operation)
+                self.assertEqual(actions, before)
+
+    async def test_public_save_classifications_preserve_completed_isolation_counts(self):
+        """Worker QI01/QI03 results are completed scopes, with honest public counts."""
+        self.policy['policy']['can_auto_process'] = False
+        for rejected, deferred in ((1, 0), (0, 1), (1, 1)):
+            with self.subTest(rejected=rejected, deferred=deferred):
+                frozen = ['a'*64] * (1 + rejected + deferred)
+                submitted = []
+
+                async def worker(row, target, action, update):
+                    if action == 'review':
+                        return {'session_id': 'native-session', 'tokens': list(frozen), 'unknown': 0}
+                    if action != 'save':
+                        submitted.append(action)
+                        return {'status': 'submitted'}
+                    result = {'status': 'completed', 'saved': 1, 'handled': 0, 'isolated': rejected + deferred,
+                              'rejected': rejected, 'deferred': deferred, 'filtered': 0, 'remaining': 0}
+                    update(result)
+                    return result
+
+                self.backlog.worker = worker
+                operation = str(uuid.uuid4())
+                self.backlog.start('p', operation)
+                await self.backlog.task
+                row = self.backlog.jobs[operation]
+                view = self.backlog.public(row)
+                self.assertEqual((view['status'], view['saved'], view['handled'], view['isolated'], view['remaining']),
+                                 ('completed', 1, 0, rejected + deferred, 0))
+                self.assertEqual((view.get('save_rejected'), view.get('save_deferred')), (rejected, deferred),
+                                 'public state hid the original rejection or retry as a successful save')
+                target = row['targets'][0]
+                self.assertEqual((target.get('rejected'), target.get('deferred')), (rejected, deferred))
+                self.assertEqual(sum(target[name] for name in ('saved', 'handled', 'isolated', 'remaining')), len(frozen))
+                self.assertEqual(submitted, [], 'isolated material was treated as a processing submission')
+                self.assertNotIn('targets', view)
+
+    async def test_automatic_processing_wait_keeps_saving_and_tracks_stop_and_close(self):
+        """QI04: one owned in-flight submit does not occupy the capture scheduler."""
+        self.policy['policy'].update(can_capture=True, can_auto_process=True)
+        await self.backlog.close()
+        for ending in ('release', 'user_stop', 'owner_close'):
+            with self.subTest(ending=ending):
+                registry = types.SimpleNamespace(**vars(self.registry))
+                registry.path = self.root / ending / 'registry.json'
+                registry.state = copy.deepcopy(self.registry.state)
+                registry.state['sessions'] = {json.dumps(['a', host]): 'p' for host in ('host', 'other')}
+                entered, release, finished, saved = (asyncio.Event() for _ in range(4))
+                process_calls = []
+                owner_tasks = set()
+                pending = ['c'*64]
+                active = 0
+                maximum_active = 0
+
+                async def worker(row, target, action, update):
+                    nonlocal active, maximum_active
+                    if action == 'review':
+                        return {'session_id': 'native-' + target['host'],
+                                'tokens': list(pending) if target['host'] == 'host' else [], 'unknown': 0}
+                    if action == 'save':
+                        count = len(pending)
+                        pending.clear()
+                        result = {'status': 'completed', 'saved': count, 'handled': 0, 'isolated': 0, 'remaining': 0}
+                        update(result)
+                        saved.set()
+                        return result
+                    process_calls.append(target['session_id'])
+                    owner_tasks.add(asyncio.current_task())
+                    active += 1
+                    maximum_active = max(maximum_active, active)
+                    entered.set()
+                    try:
+                        await release.wait()
+                        return {'status': 'submitted'}
+                    finally:
+                        active -= 1
+                        finished.set()
+
+                self.backlog = Backlog(registry, {}, worker=worker)
+                operation = str(uuid.uuid4())
+                first = {'agent_id': 'a', 'host': 'host', 'dataset': 'ds', 'session_id': 'native-host',
+                         'saved': 1, 'handled': 0, 'processing': 'queued'}
+                second = {**first, 'host': 'other', 'session_id': 'native-other'}
+                row = {'operation_id': operation, 'project_id': 'p', 'created_at': 1, 'status': 'watching',
+                       'automatic': True, 'targets': [], 'pending_processing': {'first': first, 'second': second}}
+                self.backlog.jobs[operation] = row
+                self.backlog.persist()
+                tick = asyncio.create_task(self.backlog.automatic_tick())
+                closing = None
+                try:
+                    await asyncio.wait_for(entered.wait(), 1)
+                    await asyncio.wait_for(saved.wait(), 1)
+                    await tick
+                    if self.backlog.task:
+                        await self.backlog.task
+                    self.assertEqual(pending, [], 'a waiting model submit prevented a healthy capture save')
+                    current = self.backlog.jobs[operation]
+                    self.assertEqual(self.backlog.public(current)['saved'], 1)
+                    self.assertEqual(self.backlog.public(current)['processing_active'], 1)
+                    self.assertEqual(self.backlog.public(current)['processing_failed'], 0)
+                    self.assertFalse(finished.is_set())
+                    for _ in range(2):
+                        await self.backlog.automatic_tick()
+                        if self.backlog.task and not self.backlog.task.done():
+                            await self.backlog.task
+                    self.assertEqual(process_calls, ['native-host'], 'the pending submit was duplicated or a second submit was admitted')
+                    self.assertEqual(maximum_active, 1)
+                    if ending == 'user_stop':
+                        self.backlog.stop('p', operation)
+                        self.assertTrue(self.backlog.cancel_file(current).exists(), 'user stop lost ownership of the in-flight process')
+                        before = list(process_calls)
+                        await self.backlog.automatic_tick()
+                        self.assertEqual(process_calls, before)
+                    if ending == 'owner_close':
+                        closing = asyncio.create_task(self.backlog.close())
+                        observed = asyncio.Event()
+                        asyncio.get_running_loop().call_soon(observed.set)
+                        await observed.wait()
+                        self.assertFalse(closing.done() and not finished.is_set(), 'close returned while its submit task was still unowned')
+                        self.assertTrue(self.backlog.cancel_file(current).exists(), 'close did not signal its owned in-flight work')
+                    release.set()
+                    await asyncio.wait_for(finished.wait(), 1)
+                    if closing:
+                        await closing
+                    else:
+                        await self.backlog.close()
+                    self.assertEqual(active, 0)
+                    self.assertTrue(all(task.done() for task in owner_tasks))
+                    self.assertEqual(self.backlog.public(self.backlog.jobs[operation])['processing_active'], 0,
+                                     'a finished submit was still presented as an active owned task')
+                finally:
+                    release.set()
+                    await asyncio.gather(tick, *owner_tasks, *([closing] if closing else []), return_exceptions=True)
+                    if self.backlog.task:
+                        await asyncio.gather(self.backlog.task, return_exceptions=True)
+                    await self.backlog.close()
+
+    async def test_execute_subprocess_exit_uncertainty_blocks_later_senders(self):
+        """Retained _execute boundary: even valid progress cannot prove sender exit."""
+        self.policy['policy']['can_auto_process'] = False
+        self.registry.state['sessions'] = {json.dumps(['a', host]): 'p' for host in ('unknown', 'healthy')}
+        for failure in ('nonzero_exit', 'no_reply', 'invalid_reply', 'exit_unconfirmed'):
+            with self.subTest(failure=failure):
+                processes = []
+                actions = []
+
+                class Process:
+                    def __init__(child):
+                        child.payload = None
+                        child.lines = None
+                        child.returncode = None
+                        child.terminated = False
+                        child.waits = 0
+                        child.stdin = types.SimpleNamespace(write=child.write, drain=child.drain, close=lambda: None)
+                        child.stdout = types.SimpleNamespace(readline=child.readline)
+
+                    def write(child, body):
+                        child.payload = json.loads(body)
+                        actions.append((child.payload['host'], child.payload['action']))
+
+                    async def drain(child):
+                        return None
+
+                    async def readline(child):
+                        if child.lines is None:
+                            if child.payload['action'] == 'review':
+                                child.lines = [json.dumps({'session_id': 'native-' + child.payload['host'], 'tokens': ['a'*64], 'unknown': 0}).encode() + b'\n', b'']
+                            elif failure == 'no_reply':
+                                child.lines = [b'']
+                            elif failure == 'invalid_reply':
+                                child.lines = [b'{invalid-json\n']
+                            else:
+                                progress = {'status': 'running', 'saved': 0, 'handled': 0, 'isolated': 0, 'remaining': 1}
+                                child.lines = [json.dumps(progress).encode() + b'\n',
+                                               asyncio.TimeoutError() if failure == 'exit_unconfirmed' else b'']
+                        value = child.lines.pop(0)
+                        if isinstance(value, Exception):
+                            raise value
+                        return value
+
+                    async def wait(child):
+                        child.waits += 1
+                        if child.payload['action'] != 'review' and failure == 'exit_unconfirmed':
+                            raise asyncio.TimeoutError()
+                        child.returncode = 0 if child.payload['action'] == 'review' or failure != 'nonzero_exit' else 1
+                        return child.returncode
+
+                    def terminate(child):
+                        child.terminated = True
+
+                async def launch(*args, **kwargs):
+                    child = Process()
+                    processes.append(child)
+                    return child
+
+                self.backlog.worker = None
+                operation = str(uuid.uuid4())
+                with patch('project_backlog.asyncio.create_subprocess_exec', side_effect=launch):
+                    self.backlog.start('p', operation)
+                    await self.backlog.task
+                row = self.backlog.jobs[operation]
+                self.assertEqual(row['status'], 'paused')
+                self.assertNotIn(('healthy', 'save'), actions)
+                self.assertEqual(self.backlog.public(row)['saved'], 0)
+                self.assertEqual(self.backlog.public(row)['remaining'], 2)
+                sender = next(child for child in processes if child.payload['action'] == 'save')
+                self.assertTrue(sender.terminated, 'the worker process was abandoned without a stop attempt')
+                self.assertTrue(self.backlog.cancel_file(row).exists())
+                if failure == 'exit_unconfirmed':
+                    self.assertEqual(row['reason'], 'backlog_sender_exit_unconfirmed')
+                    self.assertIsNone(sender.returncode, 'unconfirmed exit was rewritten as a known process status')
+                elif failure in ('nonzero_exit', 'no_reply'):
+                    self.assertEqual(row['reason'], 'backlog_worker_unconfirmed')
+                    self.assertIsNotNone(sender.returncode)
+    async def test_manual_admission_isolates_denied_agent_without_replaying_after_permission_restore(self):
+        """QI05: manual consent covers admitted targets, not later permission changes."""
+        self.policy['policy'].update(can_capture=False, can_auto_process=False)
+        self.registry.state['agents']['denied-agent'] = copy.deepcopy(self.registry.state['agents']['a'])
+        self.registry.state['sessions'] = {
+            json.dumps(['denied-agent', 'denied-host']): 'p',
+            json.dumps(['a', 'healthy-host']): 'p',
+        }
+        for refusal in ('write_denied', 'read_denied', 'policy_not_ready'):
+            with self.subTest(refusal=refusal):
+                restored = False
+                actions = []
+                original = {'_capture_id': str(uuid.uuid4()), '_replay_ambiguous': True,
+                            'type': 'qa', 'question': 'original unknown', 'answer': 'retained'}
+                retained = [copy.deepcopy(original)]
+                healthy_tokens = ['b'*64]
+
+                def policy(project, agent_id):
+                    view = copy.deepcopy(self.policy)
+                    if agent_id == 'denied-agent' and not restored:
+                        if refusal == 'policy_not_ready':
+                            view['ready'] = False
+                        elif refusal == 'write_denied':
+                            view['policy']['permissions'] = ['read']
+                        else:
+                            view['policy']['permissions'] = ['write']
+                    return view
+
+                self.registry.policy = policy
+
+                async def worker(row, target, action, update):
+                    actions.append((target['agent_id'], target['host'], action))
+                    if target['agent_id'] == 'denied-agent':
+                        if action == 'review' and refusal == 'read_denied' and not restored:
+                            raise PolicyError('backlog_read_denied', 403)
+                        self.fail('the denied original target entered an unconsented worker action')
+                    if action == 'review':
+                        return {'session_id': 'healthy-native-session', 'tokens': list(healthy_tokens), 'unknown': 0}
+                    if action != 'save':
+                        self.fail('processing was disabled for this manual admission scenario')
+                    healthy_tokens.clear()
+                    result = {'status': 'completed', 'saved': 1, 'handled': 0, 'isolated': 0, 'remaining': 0}
+                    update(result)
+                    return result
+
+                self.backlog.worker = worker
+                operation = str(uuid.uuid4())
+                admitted = self.backlog.start('p', operation)
+                self.assertEqual(admitted['operation_id'], operation)
+                self.assertIsNotNone(self.backlog.task, 'one denied Agent prevented the healthy operation from being admitted')
+                await self.backlog.task
+                row = self.backlog.jobs[operation]
+                denied = next(target for target in row['targets'] if target['agent_id'] == 'denied-agent')
+                healthy = next(target for target in row['targets'] if target['agent_id'] == 'a')
+                self.assertEqual((denied['agent_id'], denied['host'], denied['dataset']), ('denied-agent', 'denied-host', 'ds'))
+                self.assertEqual(denied.get('review_status'), 'unconfirmed')
+                reason = denied.get('review_reason') or denied.get('admission_reason') or denied.get('reason')
+                self.assertTrue(isinstance(reason, str) and reason, 'the refused target lost its original reason')
+                self.assertEqual(denied.get('saved', 0), 0)
+                self.assertEqual((healthy['saved'], healthy['remaining']), (1, 0))
+                self.assertEqual(self.backlog.public(row)['saved'], 1, 'a retained unknown was counted as a successful save')
+                self.assertIn(('a', 'healthy-host', 'review'), actions)
+                self.assertIn(('a', 'healthy-host', 'save'), actions)
+                self.assertNotIn(('denied-agent', 'denied-host', 'save'), actions)
+                self.assertEqual(retained, [original])
+                self.assertEqual(healthy_tokens, [])
+                before = list(actions)
+                restored = True
+                # Repeated requests and a new manager view retain the same
+                # original operation and refusal, even after policy changes.
+                self.backlog.start('p', operation)
+                self.assertEqual(actions, before)
+                reopened = Backlog(self.registry, {}, worker=worker)
+                try:
+                    self.assertEqual(reopened.start('p', operation)['operation_id'], operation)
+                    self.assertIsNone(reopened.task, 'restoring permission silently expanded the original consent scope')
+                    persisted = next(target for target in reopened.jobs[operation]['targets'] if target['agent_id'] == 'denied-agent')
+                    self.assertEqual(persisted.get('review_status'), 'unconfirmed')
+                    self.assertEqual(persisted.get('review_reason') or persisted.get('admission_reason') or persisted.get('reason'), reason)
+                    self.assertEqual(actions, before)
+                    self.assertEqual(retained, [original])
+                finally:
+                    await reopened.close()
 
 
 if __name__=='__main__':unittest.main()

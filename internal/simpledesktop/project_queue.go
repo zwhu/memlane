@@ -25,6 +25,10 @@ type processingNotice struct {
 }
 
 type projectQueueState struct {
+	BufferReviews                  []bufferReview
+	NoticeAcknowledgements         map[string]noticeAcknowledgement
+	NoticeAcknowledgementError     string
+	NoticeHistoryOpen              bool
 	ProcessingNotices              []processingNotice
 	ProcessingReadError            string
 	NotificationFailures           map[string]projectFailure
@@ -50,6 +54,7 @@ type projectQueueState struct {
 	AutomaticSave                  bool
 	SaveDetailsOpen                bool
 	BacklogLoading, BacklogBusy    bool
+	BacklogLoaded                  bool
 	BacklogNext                    time.Time
 	BacklogError, BacklogOperation string
 }
@@ -110,6 +115,7 @@ func (a *App) projectQueueStateFor(p AccessProject) *projectQueueState {
 	if q == nil {
 		q = &projectQueueState{}
 		q.Archives, q.ArchiveError = a.readPendingArchives(p)
+		q.NoticeAcknowledgements, q.NoticeAcknowledgementError = a.readNoticeAcknowledgements(p)
 		a.access.Queues[key] = q
 	}
 	return q
@@ -240,6 +246,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				q.Loaded = false
 				return
 			}
+			q.NoticeAcknowledgements, q.NoticeAcknowledgementError = a.readNoticeAcknowledgements(p)
 			q.ProcessingReadError = ""
 			if noticeErr != nil {
 				q.ProcessingReadError = "记忆整理异常记录暂时无法读取"
@@ -296,6 +303,27 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				q.Offset = min(q.Offset, max(0, len(documents)-1))
 			}
 			q.observeNotificationFailures(time.Now())
+			recovered := []string{}
+			for index, row := range sessions {
+				if !row.View.Loaded || row.View.ReadError != "" {
+					continue
+				}
+				key := noticeSessionKey(row, index)
+				recovered = append(recovered, key+"/read")
+				s := row.View.Status
+				if s.Unknown == 0 {
+					recovered = append(recovered, key+"/unknown", key+"/retry")
+				}
+				if s.Pending == 0 {
+					recovered = append(recovered, key+"/pending")
+				}
+			}
+			for key, message := range map[string]string{"knowledge": q.KnowledgeReadError, "activity": q.ActivityError, "documents": q.DocumentError, "processing-read": q.ProcessingReadError} {
+				if message == "" {
+					recovered = append(recovered, key)
+				}
+			}
+			a.clearRecoveredNoticeAcknowledgements(q, p, recovered)
 		})
 	}()
 }

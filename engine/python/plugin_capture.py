@@ -17,6 +17,64 @@ def numbered(entry):
         return False
 
 
+def capture_entry_key(entry):
+    if numbered(entry):
+        return entry[KEY]
+    value = {k: v for k, v in entry.items() if k != '_replay_ambiguous'}
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def entry_held(state, entry, *, now=None):
+    key = capture_entry_key(entry)
+    if key in state.get('capture_rejections', {}):
+        return True
+    retry = state.get('capture_retries', {}).get(key, {})
+    return retry.get('after', 0) > (time.time() if now is None else now)
+
+
+def release_entry_hold(policy, state):
+    if state.get('capture_rejections') or state.get('capture_retries'):
+        return
+    with policy._state() as current:
+        if current.get('blocked', {}).get('scope') == 'entries':
+            previous = current.pop('capture_prior_block', None)
+            if previous is None:
+                current.pop('blocked', None)
+            else:
+                current['blocked'] = previous
+
+
+def retain_failure(common, policy, dataset, session, entry, *, rejected=False, status=None, reason='', was_ambiguous=False):
+    # Definitive rejection does not erase an earlier unknown write. A conflict
+    # can refer to a different body already stored under the same original ID.
+    if rejected and status != 409:
+        policy.stamp_pending_entry(dataset, session, entry, was_ambiguous)
+    with common._buffer_lock():
+        path, cache_key, cache, state, pending, _ = policy._pending_snapshot(dataset, session)
+        key = capture_entry_key(entry)
+        if not any(capture_entry_key(e) == key for e in pending):
+            raise policy.NotReady('pending_entry_changed_after_request')
+        if rejected:
+            state.setdefault('capture_rejections', {})[key] = {'reason': reason or 'capture_request_rejected',
+                                                              'http_status': status, 'at': time.time()}
+            state.get('capture_retries', {}).pop(key, None)
+        else:
+            retries = state.setdefault('capture_retries', {})
+            attempts = min(8, retries.get(key, {}).get('attempts', 0)+1)
+            retries[key] = {'reason': 'capture_retry_pending', 'http_status': status,
+                            'attempts': attempts, 'after': time.time()+min(300, 2**attempts)}
+        cache[cache_key] = state
+        common._write_json_file(path, cache)
+    # Older normal senders must not ignore the new per-entry hold metadata.
+    # Their existing session guard stops them; new senders recognize its scope.
+    with policy._state() as current:
+        blocked = current.get('blocked') or {}
+        if blocked.get('reason') in (None, 'write_result_unknown') or blocked.get('scope') == 'entries':
+            if blocked and blocked.get('scope') != 'entries':
+                current['capture_prior_block'] = dict(blocked)
+            current['blocked'] = {'reason': 'capture_request_rejected', 'scope': 'entries', 'at': time.time()}
+
+
 def wire(common, dataset, session, entry, dataset_id=None):
     from _memlane_policy import NotReady
     from _project_memory import route
@@ -92,6 +150,7 @@ def drain(common, dataset, session, *, budget_seconds=None):
         failures = min(8, int(state.get('drain_fail_count') or 0))
         if failures and time.time() - float(state.get('drain_fail_at') or 0) < min(300, 2 ** failures):
             return 0, count
+    release_entry_hold(policy, state)
     if not count or not common._try_acquire_drain_lock():
         return 0, count
     lease = common._DRAIN_LOCK.stat()
@@ -100,7 +159,8 @@ def drain(common, dataset, session, *, budget_seconds=None):
     failed = False
     try:
         with policy._state() as state:
-            if state.get('blocked', {}).get('reason') not in (None, 'write_result_unknown'):
+            blocked = state.get('blocked') or {}
+            if blocked.get('scope') != 'entries' and blocked.get('reason') not in (None, 'write_result_unknown'):
                 return 0, count
         for original in pending:
             if time.monotonic() >= deadline:
@@ -119,6 +179,8 @@ def drain(common, dataset, session, *, budget_seconds=None):
                 path, key, cache, state, fresh, _ = snapshot()
                 if entry not in fresh:
                     continue
+                if entry_held(state, entry):
+                    continue
                 if not numbered(entry):
                     replacement = {**entry, KEY: str(uuid.uuid4())}
                     fresh[fresh.index(entry)] = replacement
@@ -130,23 +192,35 @@ def drain(common, dataset, session, *, budget_seconds=None):
             if raw.get('type') == 'trace' and not allow_tool(str(raw.get('origin_function', '')), raw.get('method_params', {})):
                 continue
             raw = sanitize(raw)
+            try:
+                json.dumps(raw, allow_nan=False)
+            except (ValueError, TypeError, RecursionError):
+                retain_failure(common, policy, dataset, session, entry, rejected=True,
+                               reason='capture_payload_unserializable', was_ambiguous=bool(entry.get(common._AMBIGUOUS_KEY)))
+                continue
+            was_ambiguous = bool(entry.get(common._AMBIGUOUS_KEY))
             policy.stamp_pending_entry(dataset, session, entry, True)
             try:
                 send(common, dataset, session, raw, timeout=min(12, max(.1, deadline - time.monotonic())))
             except urllib.error.HTTPError as error:
-                policy.block(error.code)
-                if error.code in (400, 409, 413, 422):
-                    policy.hold('capture_request_rejected')
-                failed = True
-                break
+                if error.code in (401, 403):
+                    policy.stamp_pending_entry(dataset, session, entry, was_ambiguous)
+                    policy.block(error.code)
+                    failed = True
+                    break
+                retain_failure(common, policy, dataset, session, entry,
+                               rejected=error.code in (400, 409, 413, 422), status=error.code,
+                               was_ambiguous=was_ambiguous)
+                continue
             except Exception:
-                failed = True
-                break
+                retain_failure(common, policy, dataset, session, entry)
+                continue
             with common._buffer_lock():
                 path, key, cache, state, fresh, _ = snapshot()
                 if entry in fresh:
                     fresh.remove(entry)
                     state['pending_entries'] = fresh
+                    state.get('capture_retries', {}).pop(capture_entry_key(entry), None)
                     cache[key] = state
                     common._write_json_file(path, cache)
             saved += 1
@@ -160,6 +234,7 @@ def drain(common, dataset, session, *, budget_seconds=None):
                 state.pop('drain_fail_at', None)
             cache[key] = state
             common._write_json_file(path, cache)
+            release_entry_hold(policy, state)
             return saved, len(fresh)
     finally:
         try:

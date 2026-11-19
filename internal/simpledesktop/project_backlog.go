@@ -10,6 +10,8 @@ import (
 )
 
 type backlogJob struct {
+	ProcessingActive    int    `json:"processing_active"`
+	ProcessingPartial   int    `json:"processing_partial"`
 	Automatic           bool   `json:"automatic"`
 	ProcessingPending   int    `json:"processing_pending"`
 	ReviewFailed        int    `json:"review_failed"`
@@ -24,6 +26,41 @@ type backlogJob struct {
 	ProcessingSubmitted int    `json:"processing_submitted"`
 	ProcessingFailed    int    `json:"processing_failed"`
 	ProcessingDisabled  int    `json:"processing_disabled"`
+}
+
+type bufferReview struct {
+	Rejected        int    `json:"rejected"`
+	RejectedUnsent  int    `json:"rejected_unsent"`
+	RejectedUnknown int    `json:"rejected_unknown"`
+	DeferredUnsent  int    `json:"deferred_unsent"`
+	AgentID         string `json:"agent_id"`
+	Host            string `json:"host"`
+	Signature       string `json:"signature"`
+	Filtered        int    `json:"filtered"`
+}
+
+func (q *projectQueueState) heldPending(row queuedSession) bufferReview {
+	if row.View != nil && row.View.Loaded && row.View.ReadError == "" {
+		for _, review := range q.BufferReviews {
+			if review.AgentID == row.Agent.ID && review.Host == row.Binding.HostSessionKey && review.Signature != "" && review.Signature == row.View.Status.Signature {
+				return review
+			}
+		}
+	}
+	return bufferReview{}
+}
+
+func (q *projectQueueState) filteredPending(row queuedSession) int {
+	if row.View == nil || !row.View.Loaded || row.View.ReadError != "" {
+		return 0
+	}
+	s := row.View.Status
+	for _, review := range q.BufferReviews {
+		if review.AgentID == row.Agent.ID && review.Host == row.Binding.HostSessionKey && review.Signature != "" && review.Signature == s.Signature {
+			return min(max(0, review.Filtered), max(0, s.Pending-s.Unknown))
+		}
+	}
+	return 0
 }
 
 type pendingCheckState struct {
@@ -117,6 +154,7 @@ func (a *App) refreshBacklog(q *projectQueueState, p AccessProject) {
 			Job       *backlogJob         `json:"job"`
 			Automatic bool                `json:"automatic_enabled"`
 			Checks    []pendingCheckState `json:"checks"`
+			Reviews   []bufferReview      `json:"buffer_reviews"`
 		}
 		err := client.request(ctx, "GET", "/v1/projects/"+url.PathEscape(p.ID)+"/backlog", nil, &result)
 		a.Update(func() {
@@ -131,8 +169,18 @@ func (a *App) refreshBacklog(q *projectQueueState, p AccessProject) {
 			}
 			q.BacklogError = ""
 			q.Backlog = result.Job
+			q.BacklogLoaded = true
 			q.AutomaticSave = result.Automatic
+			q.BufferReviews = result.Reviews
 			a.applyPendingChecks(q, result.Checks)
+			recovered := []string{"backlog-read"}
+			if result.Job == nil || result.Job.active() || result.Job.Status == "completed" {
+				recovered = append(recovered, "backlog")
+			}
+			if result.Job == nil || result.Job.ProcessingFailed == 0 {
+				recovered = append(recovered, "processing-failed")
+			}
+			a.clearRecoveredNoticeAcknowledgements(q, p, recovered)
 			if result.Job != nil && result.Job.Operation == q.BacklogOperation {
 				q.BacklogOperation = ""
 			}
@@ -204,6 +252,8 @@ func (a *App) changeBacklog(q *projectQueueState, p AccessProject, stop bool) {
 
 func backlogReason(code string) string {
 	switch code {
+	case "capture_filter_changed":
+		return "部分工具记录不符合当前采集规则，原消息保留；系统会重新核对并继续保存其他符合规则的消息。"
 	case "sender_busy":
 		return "正在等待当前发送结束，随后自动继续"
 	case "write_denied", "policy_unconfirmed", "backlog_write_denied":

@@ -32,6 +32,14 @@ def emit(value):
     print(json.dumps(value, separators=(',', ':')), flush=True)
 
 
+def capture_allowed(common, entry):
+    raw = {k: v for k, v in entry.items() if k not in getattr(common, '_BUFFER_META_KEYS', set())}
+    if raw.get('type') != 'trace':
+        return True
+    from _capture_policy import allow_tool
+    return allow_tool(str(raw.get('origin_function', '')), raw.get('method_params', {}))
+
+
 def review(common, policy, dataset, host):
     common.set_session_key(host)
     session = common._read_map_record(host).get('session_id')
@@ -39,10 +47,19 @@ def review(common, policy, dataset, host):
         raise policy.NotReady('official_session_unconfirmed')
     policy._pending_identity(dataset, session)
     with common._buffer_lock():
-        _, _, _, _, pending, _ = policy._pending_snapshot(dataset, session)
+        _, _, _, buffer_state, pending, signature = policy._pending_snapshot(dataset, session)
     with policy._state() as state:
         blocked = state.get('blocked')
+    if blocked and blocked.get('scope') == 'entries':
+        blocked = None
     safe = [e for e in pending if not e.get(common._AMBIGUOUS_KEY) or numbered(e)]
+    from plugin_capture import capture_entry_key, entry_held
+    rejected = [e for e in safe if capture_entry_key(e) in buffer_state.get('capture_rejections', {})]
+    deferred = [e for e in safe if capture_entry_key(e) not in buffer_state.get('capture_rejections', {}) and entry_held(buffer_state, e)]
+    safe = [e for e in safe if not entry_held(buffer_state, e)]
+    classified = [(e, capture_allowed(common, e)) for e in safe]
+    filtered = [e for e, allowed in classified if not allowed]
+    safe = [e for e, allowed in classified if allowed]
     if blocked and blocked.get('reason') == 'capture_request_rejected':
         safe = []  # Explicitly rejected sources never join project-wide resume.
     # A legacy unknown must not prevent separately numbered messages being saved.
@@ -50,6 +67,13 @@ def review(common, policy, dataset, host):
         blocked = None
     return {'session_id': session,
             'tokens': [entry_key(e) for e in safe],
+            'signature': signature, 'filtered': len(filtered),
+            'rejected': len(rejected), 'deferred': len(deferred),
+            'rejected_unsent': sum(not e.get(common._AMBIGUOUS_KEY) for e in rejected),
+            'deferred_unsent': sum(not e.get(common._AMBIGUOUS_KEY) for e in deferred),
+            'rejected_unknown': sum(bool(e.get(common._AMBIGUOUS_KEY)) for e in rejected),
+            'filtered_unsent': sum(not e.get(common._AMBIGUOUS_KEY) for e in filtered),
+            'filtered_tokens': [entry_key(e) for e in filtered],
             'unknown_signature': hashlib.sha256(json.dumps([entry_key(e) for e in pending if e.get(common._AMBIGUOUS_KEY)]).encode()).hexdigest(),
             'unknown': sum(bool(e.get(common._AMBIGUOUS_KEY)) for e in pending), 'blocked': blocked}
 
@@ -85,6 +109,10 @@ def check(common, policy, dataset, host):
             if entry in pending:
                 pending.remove(entry)
         if confirmed:
+            from plugin_capture import capture_entry_key
+            for entry in confirmed:
+                state.get('capture_retries', {}).pop(capture_entry_key(entry), None)
+                state.get('capture_rejections', {}).pop(capture_entry_key(entry), None)
             state['pending_entries'] = pending
             cache[key] = state
             common._write_json_file(path, cache)
@@ -100,11 +128,12 @@ def check(common, policy, dataset, host):
 def save(common, policy, payload, stopped, report=emit):
     dataset, session = payload['dataset'], payload['session_id']
     tokens = list(payload['tokens'])
-    saved = handled = isolated = 0
+    saved = handled = isolated = filtered = rejected = deferred = 0
     lease = None
 
     def progress(status='running', reason=''):
-        report({'status': status, 'reason': reason, 'saved': saved, 'handled': handled,
+        report({'status': status, 'reason': reason, 'saved': saved, 'handled': handled, 'filtered': filtered,
+                'rejected': rejected, 'deferred': deferred,
                 'isolated': isolated, 'remaining': len(tokens)})
 
     try:
@@ -118,6 +147,7 @@ def save(common, policy, payload, stopped, report=emit):
             time.sleep(.5)
         lease = common._DRAIN_LOCK.stat()
         from _capture_policy import allow_tool, sanitize
+        from plugin_capture import capture_entry_key, entry_held, retain_failure
         while tokens:
             if stopped():
                 progress('stopped', 'user_stopped')
@@ -133,12 +163,15 @@ def save(common, policy, payload, stopped, report=emit):
             policy._pending_identity(dataset, session)
             with policy._state() as policy_state:
                 blocked = policy_state.get('blocked')
-            if blocked and blocked.get('reason') == 'capture_request_rejected':
-                progress('paused', 'capture_request_rejected')
+            if blocked and blocked.get('scope') != 'entries' and blocked.get('reason') not in (None, 'write_result_unknown'):
+                reason = blocked.get('reason')
+                if reason in ('official_http_401', 'official_http_403', 'write_denied', 'project_write_denied'):
+                    reason = 'write_denied'
+                progress('stopped' if reason == 'user_stopped' else 'paused', reason)
                 return
             token = tokens[0]
             with common._buffer_lock():
-                _, _, _, _, pending, _ = policy._pending_snapshot(dataset, session)
+                _, _, _, buffer_state, pending, _ = policy._pending_snapshot(dataset, session)
                 matches = [e for e in pending if entry_key(e) == token]
                 entry = next((dict(e) for e in matches if not e.get(common._AMBIGUOUS_KEY) or numbered(e)),
                              dict(matches[0]) if matches else None)
@@ -154,39 +187,78 @@ def save(common, policy, payload, stopped, report=emit):
                 tokens.pop(0)
                 progress()
                 continue
+            if entry_held(buffer_state, entry):
+                isolated += 1
+                if capture_entry_key(entry) in buffer_state.get('capture_rejections', {}):
+                    rejected += 1
+                else:
+                    deferred += 1
+                tokens.pop(0)
+                progress()
+                continue
             raw = {k: v for k, v in entry.items() if k not in common._BUFFER_META_KEYS}
             if raw.get('type') == 'trace' and not allow_tool(str(raw.get('origin_function', '')), raw.get('method_params', {})):
-                progress('paused', 'capture_filter_changed')
-                return
+                # Keep the original entry; exclude only this token from this
+                # send scope. Filtering is neither a save nor an unknown POST.
+                isolated += 1
+                filtered += 1
+                tokens.pop(0)
+                progress()
+                continue
             outgoing = sanitize(raw)
+            try:
+                json.dumps(outgoing, allow_nan=False)
+            except (ValueError, TypeError, RecursionError):
+                retain_failure(common, policy, dataset, session, entry, rejected=True,
+                               reason='capture_payload_unserializable', was_ambiguous=bool(entry.get(common._AMBIGUOUS_KEY)))
+                isolated += 1
+                rejected += 1
+                tokens.pop(0)
+                progress()
+                continue
+            was_ambiguous = bool(entry.get(common._AMBIGUOUS_KEY))
             # Existing official journal is the single crash/unknown boundary.
             policy.stamp_pending_entry(dataset, session, entry, True)
             try:
                 common.remember_entry_via_http(dataset, session, outgoing, timeout=12)
-            except policy.NotReady:
+            except policy.NotReady as error:
+                # A mismatched/lost receipt is message-local only when its
+                # original durable number exists; scope failures stay paused.
+                if numbered(entry) and str(error) == 'capture_receipt_unconfirmed':
+                    retain_failure(common, policy, dataset, session, entry)
+                    isolated += 1
+                    deferred += 1
+                    tokens.pop(0)
+                    progress()
+                    continue
                 if not numbered(entry):
                     policy.stamp_pending_entry(dataset, session, entry, False)
                 progress('paused', 'capture_retry_pending' if numbered(entry) else 'policy_unconfirmed')
                 return
             except urllib.error.HTTPError as error:
                 if error.code in (401, 403):
-                    policy.stamp_pending_entry(dataset, session, entry, False)
+                    policy.stamp_pending_entry(dataset, session, entry, was_ambiguous)
                     policy.block(error.code)
                     progress('paused', 'write_denied')
-                elif numbered(entry) and error.code in (400, 409, 413, 422):
-                    progress('paused', 'capture_request_rejected')
-                else:
-                    if not numbered(entry):
-                        isolated += 1
-                        tokens.pop(0)
-                    progress('paused', 'capture_retry_pending' if numbered(entry) else 'request_result_unknown')
-                return
+                    return
+                if error.code in (400, 409, 413, 422):
+                    retain_failure(common, policy, dataset, session, entry, rejected=True, status=error.code, was_ambiguous=was_ambiguous)
+                    rejected += 1
+                elif numbered(entry):
+                    retain_failure(common, policy, dataset, session, entry, status=error.code)
+                    deferred += 1
+                isolated += 1
+                tokens.pop(0)
+                progress()
+                continue
             except Exception:
-                if not numbered(entry):
-                    isolated += 1
-                    tokens.pop(0)
-                progress('paused', 'capture_retry_pending' if numbered(entry) else 'request_result_unknown')
-                return
+                if numbered(entry):
+                    retain_failure(common, policy, dataset, session, entry)
+                    deferred += 1
+                isolated += 1
+                tokens.pop(0)
+                progress()
+                continue
             saved += 1
             tokens.pop(0)
             # Trim only this confirmed entry against a fresh locked read. New
@@ -199,6 +271,7 @@ def save(common, policy, payload, stopped, report=emit):
                     return
                 fresh.pop(index)
                 state['pending_entries'] = fresh
+                state.get('capture_retries', {}).pop(capture_entry_key(entry), None)
                 cache[key] = state
                 common._write_json_file(path, cache)
             progress()
@@ -238,6 +311,11 @@ def process(common, policy, payload):
         # A confirmed submit is not a completed improve or generated knowledge.
         return {'status': 'submitted'}
     reason = str(outcome.get('reason') or '')
+    # Official contract: incomplete_drain means the improve submit landed,
+    # but some source entries have not reached the server. Preserve that fact
+    # and let the existing cooldown/watermarks govern tail continuation.
+    if reason == 'incomplete_drain':
+        return {'status': 'partial', 'reason': reason}
     # A busy response is a definite non-admission; unreachable means nothing
     # was submitted. Other failures can include a timed-out accepted request.
     if reason in ('busy', 'unreachable'):

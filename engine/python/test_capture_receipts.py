@@ -184,7 +184,8 @@ async def scenario():
             # Existing backoff prevents immediate retry; a new reader retains ID.
             assert await asyncio.to_thread(common.drain_warmup_entries,str(dataset),'session',budget_seconds=12) == (0,2)
             assert len(calls) == 1
-            raw[key]['drain_fail_at'] -= 300
+            assert message_id in raw[key]['capture_retries']
+            raw[key]['capture_retries'][message_id]['after'] = 0
             common._write_json_file(file,raw)
             importlib.reload(delivery)
             result = await asyncio.to_thread(common.drain_warmup_entries,str(dataset),'session',budget_seconds=12)
@@ -212,11 +213,9 @@ async def scenario():
                 rejected.append(url)
                 raise urllib.error.HTTPError(url,409,'synthetic conflict',{},None)
             common._json_http_request = reject
-            raw = common._load_json_file(file)
-            raw[key]['drain_fail_at'] = 0
-            common._write_json_file(file,raw)
             assert await asyncio.to_thread(common.drain_warmup_entries,str(dataset),'session',budget_seconds=12) == (0,2)
-            raw = common._load_json_file(file); raw[key]['drain_fail_at'] = 0; common._write_json_file(file,raw)
+            raw = common._load_json_file(file)
+            assert len(raw[key]['capture_rejections']) == 1
             assert await asyncio.to_thread(common.drain_warmup_entries,str(dataset),'session',budget_seconds=12) == (0,2)
             assert len(rejected) == 1
             assert common._load_json_file(file)[key]['pending_entries'][0] == legacy

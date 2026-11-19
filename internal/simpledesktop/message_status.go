@@ -47,23 +47,38 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 			continue
 		}
 		source := agentDisplayName(r.Agent.Name) + " · 会话 " + shortSessionLabel(r.Binding.HostSessionKey)
-		key := r.Agent.ID + "/" + r.Binding.HostSessionKey
-		if r.Agent.ID == "" || r.Binding.HostSessionKey == "" {
-			key = fmt.Sprintf("unidentified/%d", index)
-		}
+		key := noticeSessionKey(r, index)
 		if !v.Loaded || v.ReadError != "" {
 			detail := "未能读取这次会话的保存状态，不能据此判断消息是否已保存。"
 			if v.ReadCode == "official_session_unconfirmed" {
 				detail = "本机会话与服务端会话尚未对应，暂时无法读取保存状态。"
 			}
 			add(messageNotice{Key: key + "/read", Title: "会话保存状态读取失败", Source: source, Detail: detail, Followup: "系统会定期重新读取；本次不补采或重发消息。", Tag: "读取异常", Action: "refresh", Session: &r})
-			continue
+			if v.Status.Pending > v.Status.Unknown && v.Status.Blocked != nil {
+				add(messageNotice{Key: key + "/pending", Title: "上次读取的消息保存受阻", Source: source, Detail: "上次读取时存在未发送的受阻消息；本次读取失败，尚不能确认是否恢复。", Tag: "保存受阻", Action: "refresh", Session: &r})
+			}
+			if v.Status.Unknown == 0 {
+				continue
+			}
 		}
 		s := v.Status // Legacy dismissal must never turn an unknown write into success.
 		if s.Pending == 0 && v.Message != "" {
 			add(messageNotice{Key: key + "/receipt", Title: "上次消息操作结果", Source: source, Detail: v.Message, Tag: "操作记录"})
 		}
-		safe := max(0, s.Pending-s.Unknown)
+		filtered := q.filteredPending(r)
+		held := q.heldPending(r)
+		if held.Rejected > 0 {
+			add(messageNotice{Key: key + "/rejected", Title: fmt.Sprintf("%d 条消息保存受阻", held.Rejected), Source: source, Tag: "保存异常", Action: "details", Session: &r,
+				Detail: "这些记录未通过保存检查或被服务拒绝，原消息已单独保留。", Followup: "不会自动重复发送这些记录；其他符合规则的消息可继续保存。"})
+		}
+		if filtered > 0 {
+			add(messageNotice{Key: key + "/filtered", Title: fmt.Sprintf("%d 条消息因采集规则未保存", filtered), Source: source,
+				Detail: "这些工具记录不符合当前采集规则，原消息仍保留在本机。", Followup: "其他符合规则的消息可继续保存；不会绕过采集规则发送这些记录。", Tag: "已保留", Action: "details", Session: &r})
+		}
+		safe := max(0, s.Pending-s.Unknown-filtered-held.RejectedUnsent-held.DeferredUnsent)
+		if !v.Loaded || v.ReadError != "" {
+			safe = 0 // Retained outcomes can be acknowledged, never used to send.
+		}
 		if safe > 0 {
 			n := messageNotice{Key: key + "/pending", Title: fmt.Sprintf("%d 条消息等待保存", safe), Source: source, Tag: "待保存", Session: &r, Action: "details"}
 			access := p.Overrides[r.Agent.ID].effective(a.access.Directory.Defaults).Access
@@ -86,6 +101,10 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 				n.Detail, n.Followup = "消息仍在本机队列，尚未完成保存。", "自动保存已开启；当前尚未读到正在执行的保存任务。"
 			default:
 				n.Detail, n.Followup = "消息仍在本机队列，尚未完成保存。", "当前没有正在运行的保存任务。"
+				if access == "maintain" && q.BacklogLoaded && !q.BacklogLoading && q.BacklogError == "" && (q.Backlog == nil || q.Backlog.Status == "completed" || q.Backlog.Status == "watching") {
+					n.NeedsUser, n.Action = true, "save"
+					n.Followup = "开始项目保存任务，补存明确未发送的消息；无编号的未知消息不会重发。"
+				}
 			}
 			add(n)
 		}
@@ -107,7 +126,7 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 			}
 			add(n)
 		}
-		if legacyUnknown := s.Unknown - retryable; legacyUnknown > 0 {
+		if legacyUnknown := s.Unknown - retryable - held.RejectedUnknown; legacyUnknown > 0 {
 			check := q.pendingCheck(r)
 			n := messageNotice{Key: key + "/unknown", Title: fmt.Sprintf("%d 条消息未收到保存结果", legacyUnknown), Source: source, Detail: "发送过程没有留下可确认的保存结果；具体原因尚未确定。", Followup: "原消息保留在本机，暂不重复发送。", Tag: "系统异常", Action: "details", Session: &r}
 			switch check.Status {
@@ -166,11 +185,23 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 			case "backlog_installation_changed", "backlog_binding_changed":
 				n.Detail = "Agent 接入配置或会话所属项目发生变化，原保存任务已暂停。"
 				n.Followup = "当前不能安全沿用旧任务发送；需要先核对连接与原消息归属。"
+				n.Action = "refresh"
+			default:
+				n.Action = "refresh"
 			}
 			add(n)
 		}
 		if j.ProcessingFailed > 0 {
-			add(messageNotice{Key: "processing-failed", Title: "部分消息的记忆整理未确认完成", Tag: "整理异常", Detail: fmt.Sprintf("%d 个会话的整理提交失败或结果未确认。", j.ProcessingFailed), Followup: "这不表示原消息保存失败；整理结果未确认前不会重复提交。"})
+			add(messageNotice{Key: "processing-failed", Title: "部分消息的记忆整理未确认完成", Tag: "整理异常", Detail: fmt.Sprintf("%d 个会话的整理提交失败或结果未确认。", j.ProcessingFailed), Followup: "这不表示原消息保存失败；整理结果未确认前不会重复提交。", Action: "refresh"})
+		}
+		if j.ProcessingPartial > 0 {
+			add(messageNotice{Key: "processing-partial", Title: "部分材料已提交记忆整理", Tag: "等待接续",
+				Detail:   fmt.Sprintf("%d 个会话已有部分材料提交整理，仍有消息尚未完成同步。", j.ProcessingPartial),
+				Followup: "剩余消息保存后，系统会按已有整理进度继续；提交成功不代表整理已完成。", Action: "refresh"})
+		}
+		if j.ProcessingActive > 0 {
+			add(messageNotice{Key: "processing-active", Title: "正在提交记忆整理", Tag: "处理中",
+				Detail: fmt.Sprintf("%d 个会话正在提交，尚未取得提交结果。", j.ProcessingActive), Action: "refresh"})
 		}
 	}
 	if q.BacklogError != "" {
@@ -191,7 +222,8 @@ func queueSafeCount(q *projectQueueState) int {
 	n := 0
 	for _, r := range q.Sessions {
 		if r.View != nil && r.View.Loaded && r.View.ReadError == "" {
-			n += max(0, r.View.Status.Pending-r.View.Status.Unknown)
+			held := q.heldPending(r)
+			n += max(0, r.View.Status.Pending-r.View.Status.Unknown-q.filteredPending(r)-held.RejectedUnsent-held.DeferredUnsent)
 		}
 	}
 	return n
@@ -208,7 +240,8 @@ func queueRecoverableCount(q *projectQueueState) int {
 		if s.Blocked != nil && s.Blocked.Reason == "capture_request_rejected" {
 			continue
 		}
-		n += max(0, s.Pending-s.Unknown) + min(max(0, s.RetryableUnknown), max(0, s.Unknown), max(0, s.Pending))
+		held := q.heldPending(row)
+		n += max(0, s.Pending-s.Unknown-q.filteredPending(row)-held.RejectedUnsent-held.DeferredUnsent) + min(max(0, s.RetryableUnknown), max(0, s.Unknown-held.RejectedUnknown), max(0, s.Pending))
 	}
 	return n
 }

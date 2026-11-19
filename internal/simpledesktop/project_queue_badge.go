@@ -41,8 +41,8 @@ func (a *App) sidebarQueueBadge(p Project) (string, string) {
 	if q == nil || !q.Loaded {
 		return "", ""
 	}
-	if q.confirmedNotification() || q.persistentNotification(time.Now()) {
-		return "!", "消息保存或处理存在异常，打开项目设置查看原因与所需操作。"
+	if q.unacknowledgedNotification(time.Now()) {
+		return "!", "有尚未处理的消息提醒，打开项目设置处理或选择不再提醒。"
 	}
 	return "", ""
 }
