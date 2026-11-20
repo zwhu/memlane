@@ -1,8 +1,0 @@
-{
-  "operation_id": "6eca872f-559b-405f-8139-43fd64ad7765",
-  "source_trace_count": 1,
-  "pending_after": 0,
-  "global_enabled": false,
-  "elapsed_seconds": 22.140246,
-  "source": "real original Codex actor, official SDK pipeline, single frozen saved trace; not 10x benchmark"
-}

@@ -1,9 +1,0 @@
-{
-  "status": "passed",
-  "error_code": null,
-  "plain_passed": true,
-  "schema_passed": true,
-  "quality_passed": true,
-  "structured_mode": "json_schema",
-  "bridge_process_groups": []
-}
