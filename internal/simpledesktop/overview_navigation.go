@@ -2,7 +2,6 @@ package simpledesktop
 
 import (
 	"fmt"
-	"net/url"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -42,6 +41,7 @@ func (a *App) showOverviewProjects() {
 
 func (a *App) overviewNavigation(c *ui.Context) {
 	a.refreshSidebarQueueIfDue(time.Now())
+	a.refreshServiceMonitorIfDue(time.Now())
 	selected := a.page
 	if (a.page == "知识" || a.page == "图谱" || a.page == "检索结果") && a.project >= 0 && a.project < len(a.Config.Projects) {
 		selected = "project:" + a.Config.Projects[a.project].ID
@@ -108,9 +108,24 @@ func (a *App) overviewNavigation(c *ui.Context) {
 				ui.Text(c, "设置").Font("system-ui").FontSize(13).FontWeight(500).TextColor(homeInk)
 			}).OnClick(func() { a.settingsOrigin = nil; a.access.OpenProject = ""; a.navigate("设置", 0) })
 		}).Height(44).Shrink(0).Padding(0, 8)
-		appFooter(c, "侧栏状态栏").Padding(0, 24).Gap(7).Tooltip(a.serviceConnectionTip()).Children(func() {
+		appFooter(c, "侧栏状态栏").Padding(0, 24).Gap(7).Tooltip(a.serviceConnectionTip()).Cursor(ui.CursorPointer).OnClick(func() {
+			a.settingsOrigin = nil
+			a.access.OpenProject = ""
+			a.access.SettingsSection = "服务"
+			a.monitor.Expanded = true
+			a.navigate("设置", 0)
+		}).Children(func() {
 			color := ui.Hex("#9aabbc")
-			if a.service == "已连接" {
+			hookErrors := 0
+			if a.monitor.Snapshot != nil && a.monitor.Snapshot.Summary != nil {
+				hookErrors = a.monitor.Snapshot.Summary.HookErrorsCount
+			}
+			switch {
+			case a.monitor.State == "degraded" || a.monitor.State == "exited" || (a.service != "已连接" && a.service != "尚未检查"):
+				color = ui.Hex("#c95c4a")
+			case a.monitor.State == "warning" || hookErrors > 0:
+				color = ui.Hex("#d08a2f")
+			case a.service == "已连接":
 				color = ui.Hex("#72978a")
 			}
 			ui.Box(c).Size(6, 6).Radius(3).Background(color)
@@ -126,20 +141,24 @@ func (a *App) overviewNavigation(c *ui.Context) {
 }
 
 func (a *App) serviceConnectionTip() string {
-	address := "未配置"
-	if u, err := url.Parse(a.Config.ServiceURL); err == nil && u.Host != "" {
-		u.User = nil
-		u.RawQuery = ""
-		u.Fragment = ""
-		address = u.String()
-	}
+	address := sanitizedMonitorURL(a.Config.ServiceURL)
 	state := "Cognee 记忆服务 · 待检查"
 	if a.service == "已连接" {
 		state = "Cognee 记忆服务 · 已连接"
+		if a.monitor.State == "warning" {
+			state = "Cognee 记忆服务 · 短暂波动"
+		}
 	} else if a.service != "尚未检查" {
 		state = "Cognee 记忆服务 · 连接异常"
 	}
-	return state + "\n地址：" + address
+	tip := state + "\n地址：" + address
+	if summary := serviceMonitorSummaryLine(a.monitor); summary != "" {
+		tip += "\n" + summary
+	}
+	if a.monitor.LastError != "" && a.monitor.State != "ready" {
+		tip += "\n错误：" + a.monitor.LastError
+	}
+	return tip
 }
 
 func (a *App) overviewProjectGrid(c *ui.Context) {

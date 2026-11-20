@@ -166,7 +166,8 @@ func (a *App) submitProjectCreation() {
 			s.ResultID = project.ID
 			if err != nil {
 				s.Message = "保存结果尚未确认，请核对本次操作。"
-				if strings.Contains(err.Error(), "设置已变化") || strings.Contains(err.Error(), "HTTP 400") || strings.Contains(err.Error(), "HTTP 403") || strings.Contains(err.Error(), "HTTP 404") {
+				status, hasStatus := httpStatusCode(err)
+				if strings.Contains(err.Error(), "设置已变化") || (hasStatus && (status == 400 || status == 403 || status == 404)) {
 					s.Submitted = false
 					s.Message = "未能保存，请检查项目名称与记录后重试。"
 					a.RefreshProjectDirectory()

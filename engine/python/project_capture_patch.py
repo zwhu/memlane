@@ -2,10 +2,11 @@
 import ast
 
 
+from _runtime_common import replace_exact
+
+
 def replace(text, old, new):
-    if text.count(old) != 1:
-        raise ValueError('capture plugin anchor changed')
-    return text.replace(old, new, 1)
+    return replace_exact(text, old, new, label='capture plugin anchor')
 
 
 def apply(text):

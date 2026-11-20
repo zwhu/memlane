@@ -244,8 +244,11 @@ func readingUnavailable(err error) bool {
 	if err == nil {
 		return false
 	}
+	if status, ok := httpStatusCode(err); ok && (status == 401 || status == 403 || status == 404) {
+		return true
+	}
 	s := err.Error()
-	for _, reason := range []string{"HTTP 401", "HTTP 403", "HTTP 404", "identity changed", "dataset changed", "credential unavailable"} {
+	for _, reason := range []string{"identity changed", "dataset changed", "credential unavailable"} {
 		if strings.Contains(s, reason) {
 			return true
 		}

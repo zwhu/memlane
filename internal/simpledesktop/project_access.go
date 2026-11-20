@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 )
@@ -167,12 +166,8 @@ func (c ProjectControlClient) request(ctx context.Context, method, path string, 
 	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.Port() == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
 		return fmt.Errorf("项目管理服务尚未配置")
 	}
-	info, err := os.Lstat(c.Config.ManagementTokenFile)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-		return fmt.Errorf("项目管理连接凭据不可用")
-	}
-	key, err := os.ReadFile(c.Config.ManagementTokenFile)
-	if err != nil || len(strings.TrimSpace(string(key))) < 32 {
+	key, err := readCachedToken(c.Config.ManagementTokenFile, 32, true)
+	if err != nil {
 		return fmt.Errorf("项目管理连接凭据不可用")
 	}
 	var body io.Reader
@@ -187,13 +182,9 @@ func (c ProjectControlClient) request(ctx context.Context, method, path string, 
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(key)))
+	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
-	hc := http.Client{Timeout: 125 * time.Second}
-	if c.HTTP != nil {
-		hc = *c.HTTP
-	}
-	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	hc := newHTTPClient(c.HTTP, 125*time.Second)
 	response, err := hc.Do(req)
 	if err != nil {
 		if method != "GET" {

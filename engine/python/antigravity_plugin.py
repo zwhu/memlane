@@ -98,8 +98,12 @@ if _EXECUTION_STOP_ARG in sys.argv:
     return 0''')
     files['scripts/sync-session-to-graph.py'] = text.encode()
     text = files['scripts/agy_hook.py'].decode()
+    text = patch.replace(text, '    stop = "--stop" in args[1:]\n    try:\n',
+                         '    stop = "--stop" in args[1:]\n    payload = {}\n    try:\n')
     text = patch.replace(text, '        normalized = normalize_payload(payload, script, stop=stop)\n',
                          '        from _memlane_antigravity import prepare_payload\n        payload = prepare_payload(payload, script)\n        normalized = normalize_payload(payload, script, stop=stop)\n')
+    text = patch.replace(text, '    except Exception:\n        translated = {}\n',
+                         '    except Exception as error:\n        try:\n            from _memlane_antigravity import record_hook_error\n            record_hook_error(script, payload, error)\n        except Exception:\n            pass\n        translated = {}\n')
     files['scripts/agy_hook.py'] = text.encode()
     policy = (ENGINE / 'python/project_plugin_policy.py').read_text()
     policy = patch.replace(policy, "'codex': ('CODEX_HOME',), 'claude_code': ('CLAUDE_CONFIG_DIR',)}",

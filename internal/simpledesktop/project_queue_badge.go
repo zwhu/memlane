@@ -36,7 +36,7 @@ func (a *App) refreshSidebarQueueIfDue(now time.Time) {
 }
 
 func (a *App) sidebarQueueBadge(p Project) (string, string) {
-	identity, _ := readingIdentity(Client{Config: a.Client.Config})
+	identity := a.cachedBaseReadingIdentity()
 	q := a.access.Queues[identity+"/"+p.ID+"/"+p.Dataset]
 	if q == nil || !q.Loaded {
 		return "", ""

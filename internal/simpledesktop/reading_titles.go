@@ -43,16 +43,20 @@ type ReadingTitles struct {
 func newReadingTitles() *ReadingTitles {
 	return &ReadingTitles{flights: map[readingKey]*readingFlight{}, cache: map[readingKey]readingCacheEntry{}, timeout: 15 * time.Second}
 }
-func readingIdentity(c Client) (string, error) {
+func readingIdentityPair(c Client) (full, base string, err error) {
 	var token []byte
-	var err error
 	if c.Config.TokenFile != "" {
 		token, err = os.ReadFile(c.Config.TokenFile)
 		if err != nil {
-			return "", fmt.Errorf("official credential unavailable")
+			return "", "", fmt.Errorf("official credential unavailable")
 		}
 	}
-	return fmt.Sprintf("%s/%x/%s", strings.TrimRight(c.Config.ServiceURL, "/"), sha256.Sum256([]byte(strings.TrimSpace(string(token)))), c.PolicyRevision), nil
+	prefix := fmt.Sprintf("%s/%x/", strings.TrimRight(c.Config.ServiceURL, "/"), sha256.Sum256([]byte(strings.TrimSpace(string(token)))))
+	return prefix + c.PolicyRevision, prefix, nil
+}
+func readingIdentity(c Client) (string, error) {
+	full, _, err := readingIdentityPair(c)
+	return full, err
 }
 func keyForReading(identity string, i Item, catalogGeneration string) readingKey {
 	version := ""

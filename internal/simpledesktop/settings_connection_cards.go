@@ -36,20 +36,54 @@ func settingsSection(c *ui.Context, title string, status, actions, content func(
 }
 
 func (a *App) serviceConnectionOverview(c *ui.Context) {
-	settingsSection(c, "记忆服务", nil, nil, func() {
-		settingsListRow(c, func() {
-			ui.Row(c).Grow(1).MinWidth(0).Gap(12).AlignItems(ui.Center).Children(func() {
-				homeText(c, "Cognee", homeBody).FontSize(13).TextColor(homeInk)
-				homeText(c, a.Config.ServiceURL, homeMeta).SingleLine().Tooltip(a.Config.ServiceURL)
+	settingsSection(c, "记忆服务", nil, func() {
+		label := "展开指标"
+		if a.monitor.Expanded {
+			label = "收起指标"
+		}
+		textButton(c, label, func() {
+			a.monitor.Expanded = !a.monitor.Expanded
+			if a.monitor.Expanded {
+				a.refreshServiceMonitor()
+			}
+		}).Label(label + "：记忆服务")
+		refreshAction(c, "重新检查", a.health).Disabled(a.monitor.Polling)
+	}, func() {
+		ui.Column(c).FillWidth().Gap(4).Children(func() {
+			settingsListRow(c, func() {
+				ui.Row(c).Grow(1).MinWidth(0).Gap(12).AlignItems(ui.Center).Children(func() {
+					homeText(c, "Cognee", homeBody).FontSize(13).TextColor(homeInk)
+					homeText(c, a.Config.ServiceURL, homeMeta).SingleLine().Tooltip(a.Config.ServiceURL)
+				})
+				status := a.service
+				color := homeMuted
+				switch a.monitor.State {
+				case "ready":
+					status = "已连接"
+					color = ui.Hex("#4d7a66")
+				case "warning":
+					status = "短暂波动"
+					color = ui.Hex("#a6671c")
+				case "exited":
+					status = "服务已退出"
+					color = ui.Hex("#b54738")
+				case "degraded":
+					status = "响应异常"
+					color = ui.Hex("#b54738")
+				default:
+					if a.service == "已连接" {
+						color = ui.Hex("#4d7a66")
+					}
+				}
+				homeText(c, status, homeMeta).TextColor(color)
+				if a.service != "已连接" || a.monitor.State == "degraded" || a.monitor.State == "exited" {
+					textButton(c, "重新检查", a.health).Disabled(a.monitor.Polling)
+				}
 			})
-			color := homeMuted
-			if a.service == "已连接" {
-				color = ui.Hex("#4d7a66")
+			if summary := serviceMonitorSummaryLine(a.monitor); summary != "" {
+				homeText(c, summary, homeMeta).Padding(0, 0, 8, 0)
 			}
-			homeText(c, a.service, homeMeta).TextColor(color)
-			if a.service != "已连接" {
-				textButton(c, "重新检查", a.health)
-			}
+			a.serviceMonitorDetails(c)
 		})
 	})
 }

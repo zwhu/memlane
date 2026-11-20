@@ -7,6 +7,9 @@ import (
 )
 
 func (a *App) startRecentTitles(rows []Item) {
+	if a.Update == nil {
+		return
+	}
 	var scope strings.Builder
 	fmt.Fprintf(&scope, "%d/%d/%s", a.epoch, a.overviewState.generation, a.readingIdentity)
 	for _, i := range rows {
@@ -99,7 +102,8 @@ func (a *App) handleReadingFailure(i Item, err error) {
 		return
 	}
 	a.withdrawCommonEditor(i.Dataset)
-	if strings.Contains(err.Error(), "HTTP 401") || strings.Contains(err.Error(), "identity changed") || strings.Contains(err.Error(), "credential unavailable") {
+	status, ok := httpStatusCode(err)
+	if (ok && status == 401) || strings.Contains(err.Error(), "identity changed") || strings.Contains(err.Error(), "credential unavailable") {
 		a.InvalidateReading("")
 	} else {
 		a.unavailableReadingItem(i)
@@ -329,10 +333,33 @@ func (a *App) InvalidateReading(dataset string) {
 		}
 	}
 }
+func (a *App) cachedBaseReadingIdentity() string {
+	if a.baseReadingIdentity != "" &&
+		a.baseIdentityURL == a.Client.Config.ServiceURL &&
+		a.baseIdentityTokenFile == a.Client.Config.TokenFile {
+		return a.baseReadingIdentity
+	}
+	_, base, err := readingIdentityPair(a.Client)
+	if err != nil {
+		return ""
+	}
+	if a.baseReadingIdentity != base || a.baseIdentityURL != a.Client.Config.ServiceURL || a.baseIdentityTokenFile != a.Client.Config.TokenFile {
+		a.baseReadingIdentity = base
+		a.baseIdentityURL = a.Client.Config.ServiceURL
+		a.baseIdentityTokenFile = a.Client.Config.TokenFile
+	}
+	return base
+}
 func (a *App) syncReadingIdentity() bool {
-	identity, err := readingIdentity(a.Client)
+	identity, base, err := readingIdentityPair(a.Client)
 	if err != nil {
 		identity = "unavailable"
+		base = ""
+	}
+	if a.baseReadingIdentity != base || a.baseIdentityURL != a.Client.Config.ServiceURL || a.baseIdentityTokenFile != a.Client.Config.TokenFile {
+		a.baseReadingIdentity = base
+		a.baseIdentityURL = a.Client.Config.ServiceURL
+		a.baseIdentityTokenFile = a.Client.Config.TokenFile
 	}
 	if identity != a.readingIdentity {
 		if a.commonEdit.Existing != nil {

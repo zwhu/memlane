@@ -9,7 +9,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -145,17 +144,13 @@ func (c Client) writeCommon(ctx context.Context, p Project, draft CommonDraft, e
 	if err != nil {
 		return receipt, err
 	}
-	key, err := os.ReadFile(c.Config.TokenFile)
-	if err != nil || strings.TrimSpace(string(key)) == "" {
+	key, err := readCachedToken(c.Config.TokenFile, 1, false)
+	if err != nil {
 		return receipt, fmt.Errorf("official credential unavailable")
 	}
-	req.Header.Set("X-Api-Key", strings.TrimSpace(string(key)))
+	req.Header.Set("X-Api-Key", key)
 	req.Header.Set("Content-Type", w.FormDataContentType())
-	hc := http.Client{Timeout: 120 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	if c.HTTP != nil {
-		hc = *c.HTTP
-		hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	}
+	hc := newHTTPClient(c.HTTP, 120*time.Second)
 	response, err := hc.Do(req)
 	if err != nil {
 		receipt.OutcomeUnknown = true

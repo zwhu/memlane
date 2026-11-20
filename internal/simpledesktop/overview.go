@@ -113,6 +113,9 @@ func (c Client) overviewDocuments(ctx context.Context, p Project) ([]Document, e
 		if err := c.get(ctx, fmt.Sprintf("/api/v1/datasets/%s/data?limit=100&offset=%d", url.PathEscape(p.Dataset), offset), &page); err != nil {
 			return nil, err
 		}
+		if err := c.rememberKnowledgeDays(page); err != nil {
+			return nil, err
+		}
 		for _, d := range page {
 			if d.ID == "" || d.Dataset != p.Dataset {
 				return nil, fmt.Errorf("官方内容身份不匹配")

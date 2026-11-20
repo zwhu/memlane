@@ -186,7 +186,7 @@ func (q *projectQueueState) unreadCount() int {
 	return n
 }
 func (a *App) projectUnread(p Project) int {
-	identity, _ := readingIdentity(Client{Config: a.Client.Config})
+	identity := a.cachedBaseReadingIdentity()
 	q := a.access.Queues[identity+"/"+p.ID+"/"+p.Dataset]
 	if q == nil {
 		return 0
@@ -201,7 +201,7 @@ func (a *App) itemIsUnread(i Item) bool {
 		if p.Dataset != i.Dataset {
 			continue
 		}
-		identity, _ := readingIdentity(Client{Config: a.Client.Config})
+		identity := a.cachedBaseReadingIdentity()
 		q := a.access.Queues[identity+"/"+p.ID+"/"+p.Dataset]
 		if q == nil || q.KnowledgeReadError != "" {
 			return false
@@ -221,7 +221,7 @@ func (a *App) unreadProjectBadge(c *ui.Context, p Project, index int) {
 		label = "99+"
 	}
 	ui.Button(c, label).Cursor(ui.CursorPointer).Label("未读记忆："+p.Name).Tooltip(fmt.Sprintf("%d 条未读记忆，点击查看", count)).Font("system-ui").FontSize(11).FontWeight(600).LetterSpacing(0).Padding(2, 6).Radius(8).Background(ui.Hex("#dce6ef")).TextColor(ui.Hex("#334a5f")).BorderWidth(0).OnClick(func() {
-		identity, _ := readingIdentity(Client{Config: a.Client.Config})
+		identity := a.cachedBaseReadingIdentity()
 		q := a.access.Queues[identity+"/"+p.ID+"/"+p.Dataset]
 		if q != nil {
 			for _, i := range q.UnreadKnowledge {

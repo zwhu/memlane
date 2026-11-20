@@ -141,3 +141,34 @@ func TestCodexCaptureConsentIsReviewedAndUnknownWriteIsOnlyReconciled(t *testing
 		})
 	}
 }
+
+func TestAntigravityHookErrorDisplayAndHealthyHide(t *testing.T) {
+	a := New(Config{}, nil)
+	a.integrations.Loaded = true
+	a.integrations.Connections.Connections = []AgentConnection{
+		{
+			ID:       "antigravity-test",
+			Kind:     "antigravity",
+			Detected: true,
+			Status:   "configured_pending_new_session",
+			Capture:  &AgentCaptureState{State: "waiting_session", Permission: "observed"},
+			LastHookError: &AgentHookError{
+				At:        1795096000,
+				Script:    "store-user-prompt.py",
+				ErrorType: "NotReady",
+				Reason:    "native_transcript_identity_required",
+			},
+		},
+	}
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Column(c).Fill().Padding(24).Children(func() { a.agentConnectionSettings(c) })
+	}, 1000, 650)
+	if !tt.HasText("最近一次 Hook 未记录：会话文件路径未通过校验（native_transcript_identity_required）") {
+		t.Fatal("expected hook error diagnostic message to render when waiting_session")
+	}
+	a.integrations.Connections.Connections[0].Capture = &AgentCaptureState{State: "healthy", LastSavedAt: 1795096100}
+	tt.Frame()
+	if tt.HasText("最近一次 Hook 未记录：") {
+		t.Fatal("expected hook error diagnostic message to hide once capture is healthy")
+	}
+}

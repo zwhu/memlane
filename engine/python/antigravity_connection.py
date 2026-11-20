@@ -23,12 +23,49 @@ class AntigravityConnection(NativeConnection):
         self.root = registry.path.parent / 'connections' / self.id
         self.target = self.profile / 'config.json'
 
+    def last_hook_error(self):
+        agent = self.registry.state.get('agents', {}).get(self.id, {})
+        home = (agent.get('installation') or {}).get('home') or str(Path.home())
+        path = Path(home) / '.cognee-plugin' / ('antigravity-' + self.id) / 'last-hook-error.json'
+        try:
+            if not path.exists() or path.is_symlink() or not path.is_file() or path.stat().st_size > 16384:
+                return None
+            data = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError, TypeError):
+            return None
+        entries = data.get('entries') if isinstance(data, dict) else None
+        if not isinstance(entries, list):
+            return None
+        record = self.registry.state.get('connections', {}).get(self.id, {})
+        activated_at = record.get('activated_at')
+        for item in reversed(entries):
+            if not isinstance(item, dict):
+                continue
+            at = item.get('at')
+            if type(at) not in (int, float):
+                continue
+            if type(activated_at) in (int, float) and at < activated_at:
+                continue
+            keys = item.get('payload_keys')
+            clean_keys = [str(k)[:80] for k in keys[:32]] if isinstance(keys, list) else []
+            return {
+                'at': float(at),
+                'script': str(item.get('script', ''))[:80],
+                'error_type': str(item.get('error_type', ''))[:80],
+                'reason': str(item.get('reason', ''))[:120],
+                'payload_keys': clean_keys,
+            }
+        return None
+
     def view(self):
         row = super().view()
         row['entrypoints'] = ['desktop']
         row['capabilities']['auto_capture']['condition'] = 'Gemini App task/CodeMode; new conversations only; ordinary chat not verified'
         if row['status'] == 'configured_pending_new_session':
             self.installed()
+        hook_error = self.last_hook_error()
+        if hook_error is not None:
+            row['last_hook_error'] = hook_error
         return row
 
     def settings(self):

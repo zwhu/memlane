@@ -71,6 +71,24 @@ class RuntimeHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await restored.apply('lost',{'id':'new','revision':1},'d',{},{}))['status'],'unknown')
         self.factory.assert_not_awaited()
 
+    async def test_switching_away_from_ollama_clears_ollama_api_base(self):
+        import os
+        from unittest.mock import patch
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('OLLAMA_API_BASE', None)
+            ollama = await self.runtime.apply(
+                'to-ollama', {'id': 'ollama-1', 'revision': 1}, 'digest-ollama',
+                {'mode': 'provider', 'provider': 'ollama'},
+                {'LLM_ENDPOINT': 'http://127.0.0.1:11434'}, ['source'])
+            self.assertEqual(ollama['status'], 'applied')
+            self.assertEqual(os.environ.get('OLLAMA_API_BASE'), 'http://127.0.0.1:11434')
+            openai = await self.runtime.apply(
+                'to-openai', {'id': 'openai-1', 'revision': 1}, 'digest-openai',
+                {'mode': 'provider', 'provider': 'openai'},
+                {'LLM_ENDPOINT': 'https://example.invalid/v1'}, ['source'])
+            self.assertEqual(openai['status'], 'applied')
+            self.assertNotIn('OLLAMA_API_BASE', os.environ)
+
 
 class HandoffControllerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

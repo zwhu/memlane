@@ -7,6 +7,7 @@ import secrets
 
 from aiohttp import ClientSession, web
 
+from _runtime_common import CachedSecretReader
 from project_control import Official, Registry, loopback_origin, read_secret
 from project_policy import PolicyError
 
@@ -18,7 +19,7 @@ def fields(body, required, optional=()):
 
 
 def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, control_url=None, codex_config=None,
-               generation=None, generation_validation=None):
+               generation=None, generation_validation=None, monitor=None):
     if len(manager_token) < 32 or any(len(token) < 32 for token in agent_tokens.values()):
         raise ValueError('control tokens must contain at least 32 characters')
     tokens = [manager_token, *agent_tokens.values()]
@@ -28,6 +29,8 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
     if generation is not None and registry is not None and codex_config is not None:
         from agent_bridge_runtime import require_connected_bridge
         generation.connected_bridge_check = lambda profile: require_connected_bridge(registry, codex_config, profile)
+
+    secret_cache = CachedSecretReader()
 
     @web.middleware
     async def boundary(request, handler):
@@ -40,7 +43,7 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
             registered_tokens = dict(agent_tokens)
             for key, value in (registry.state['agents'].items() if registry is not None else []):
                 if value.get('control_token_file'):
-                    registered_tokens[key] = read_secret(value['control_token_file'])
+                    registered_tokens[key] = secret_cache.read(value['control_token_file'])
             registered_tokens = {key: value for key, value in registered_tokens.items()
                                  if key not in (registry.state.get('agent_retirements', {}) if registry else {})}
             request['agent'] = next((key for key, value in registered_tokens.items()
@@ -303,6 +306,9 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
     # First configuration has no official service or project registry. Keep
     # precisely the same authenticated generation API, without content routes.
     if registry is None:
+        if monitor is not None:
+            from service_monitor import attach_service_monitor
+            attach_service_monitor(app, codex_config or {}, registry=None, connections=connections, monitor=monitor)
         return app
     from knowledge_recall import attach_recall
     attach_recall(app, registry)
@@ -335,6 +341,8 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
     if registry is not None and connections is not None:
         from user_profiles import attach_user_profiles
         attach_user_profiles(app, registry, connections)
+    from service_monitor import attach_service_monitor
+    attach_service_monitor(app, codex_config or {}, registry=registry, connections=connections, monitor=monitor)
     return app
 
 

@@ -1,3 +1,5 @@
+> **状态说明（已退役，仅作 P0 历史记录保留）**：文中引用的 `scripts/build-engine.sh`、`scripts/bootstrap-engine.py`、`scripts/apply-engine-patches.py` 已随旧版 Rust 原文构建链路退役并移除，不再作为当前运行入口。本目录中的锁文件与补丁文件按历史材料冻结保留。
+
 # Cognee-RS 构建候选锁文件
 
 - 上游：<https://github.com/topoteretes/cognee-rs>

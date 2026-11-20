@@ -1,11 +1,5 @@
 package simpledesktop
 
-import (
-	"fmt"
-	"strconv"
-	"strings"
-)
-
 // Remap retained reading panes by project identity, never by a reused index.
 func (a *App) reconcileProjectReading(oldProjects, oldCommon []Project) {
 	for _, old := range append(append([]Project(nil), oldProjects...), oldCommon...) {
@@ -35,22 +29,15 @@ func (a *App) reconcileProjectReading(oldProjects, oldCommon []Project) {
 		}
 		return -1
 	}
-	scoped := func(page string) bool {
-		return page == "知识" || page == "通用知识" || page == "图谱" || page == "检索结果"
-	}
 	panes := make(map[string]*pane, len(a.panes))
 	for key, state := range a.panes {
-		parts := strings.SplitN(key, "/", 3)
-		if len(parts) != 3 || !scoped(parts[0]) {
+		r, ok := parsePaneRoute(key)
+		if !ok || !r.IsProjectScoped() {
 			panes[key] = state
 			continue
 		}
-		index, err := strconv.Atoi(parts[1])
-		if err != nil {
-			continue
-		}
-		if next := indexFor(parts[0], index); next >= 0 {
-			if next != index {
+		if next := indexFor(r.Page, r.Project); next >= 0 {
+			if next != r.Project {
 				if state.cancel != nil {
 					state.cancel()
 					state.Loading = false
@@ -60,7 +47,7 @@ func (a *App) reconcileProjectReading(oldProjects, oldCommon []Project) {
 					state.Reading = false
 				}
 			}
-			panes[fmt.Sprintf("%s/%d/%s", parts[0], next, parts[2])] = state
+			panes[appRoute{Page: r.Page, Project: next, Kind: r.Kind}.Key()] = state
 		} else {
 			a.cancelTitles(state)
 			if state.cancel != nil {
@@ -72,7 +59,7 @@ func (a *App) reconcileProjectReading(oldProjects, oldCommon []Project) {
 		}
 	}
 	a.panes = panes
-	if scoped(a.page) {
+	if a.currentRoute().IsProjectScoped() {
 		if next := indexFor(a.page, a.project); next >= 0 {
 			a.project = next
 		} else {

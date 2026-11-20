@@ -105,6 +105,33 @@ class GenerationPresentationLintTests(unittest.TestCase):
         source='async def generate(adapter,row):\n return await asyncio.wait_for(collect(),180)'
         self.assertEqual({row[1] for row in check_source(source,'user_profiles.py')},{'ML006'})
 
+    def test_missing_protected_go_targets_fail_instead_of_silently_passing(self):
+        from lint import check_go_source
+        renamed = 'func (a *App) renamedCards(c *ui.Context) {}'
+        self.assertEqual({row[1] for row in check_go_source(renamed, 'settings_model_cards.go')}, {'ML004'})
+        partial = 'func (a *App) chooseGenerationSource(mode string) {}'
+        self.assertEqual(check_go_source(partial, 'generation_workspace.go'), [])
+        self.assertEqual({row[1] for row in check_go_source(partial, 'generation_workspace.go', require_all_targets=True)}, {'ML005'})
+
+    def test_scripts_directory_is_scanned_and_lint_or_test_scripts_skipped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'engine/python').mkdir(parents=True)
+            scripts_dir = root / 'scripts'
+            scripts_dir.mkdir(parents=True)
+            bad = scripts_dir / 'helper.py'
+            bad.write_text('LLMConfig(llm_temperature=0)')
+            (scripts_dir / 'lint.py').write_text('LLMConfig(llm_temperature=0)')
+            (scripts_dir / 'test_helper.py').write_text('LLMConfig(llm_temperature=0)')
+            output = io.StringIO()
+            with patch.object(lint, 'ROOT', root), contextlib.redirect_stdout(output):
+                self.assertTrue(lint.main())
+                self.assertIn('scripts/helper.py:1: ML001', output.getvalue())
+                self.assertNotIn('scripts/lint.py', output.getvalue())
+                self.assertNotIn('scripts/test_helper.py', output.getvalue())
+                bad.write_text('native_llm_configuration(environment)')
+                self.assertFalse(lint.main())
+
 
 if __name__ == '__main__':
     unittest.main()

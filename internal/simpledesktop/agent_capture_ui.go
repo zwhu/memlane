@@ -62,6 +62,9 @@ func (a *App) captureConnectionDetails(c *ui.Context, row AgentConnection) {
 	if row.Capture != nil && row.Capture.State == "check_failed" {
 		homeText(c, "暂时无法读取保存结果，请重新检测。", homeMeta).Margin(0, 0, 0, 42)
 	}
+	if row.LastHookError != nil && (row.Capture == nil || row.Capture.State != "healthy") {
+		homeText(c, "最近一次 Hook 未记录："+hookErrorSummary(row.LastHookError), homeMeta).Margin(0, 0, 0, 42).LineHeight(1.5)
+	}
 	if !s.CaptureHelp[row.ID] {
 		return
 	}
@@ -89,6 +92,24 @@ func (a *App) captureConnectionDetails(c *ui.Context, row AgentConnection) {
 		homeText(c, "2. 等待回复后，点击重新检测。", homeMeta)
 		textButton(c, "重新检测", a.RefreshIntegrations).Label("重新检测自动保存：" + connectionName(row.Kind)).AlignSelf(ui.Start).Disabled(s.Busy || s.Loading)
 	})
+}
+
+func hookErrorSummary(e *AgentHookError) string {
+	switch e.Reason {
+	case "native_transcript_identity_required":
+		return "会话文件路径未通过校验（" + e.Reason + "）"
+	case "existing_conversation_not_captured":
+		return "当前仍是安装前的旧会话（仅记录新会话）（" + e.Reason + "）"
+	case "host_workspace_required":
+		return "未收到当前项目工作目录（" + e.Reason + "）"
+	case "project_policy_unconfirmed":
+		return "无法确认项目权限或控制服务未响应（" + e.Reason + "）"
+	default:
+		if e.Reason != "" {
+			return e.Reason
+		}
+		return e.ErrorType
+	}
 }
 
 func captureSavedTip(row AgentConnection) string {

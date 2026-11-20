@@ -207,6 +207,8 @@ class GenerationHandoffRuntime:
             row['status'] = 'applying'; self.save()
             if profile.get('provider') == 'ollama':
                 os.environ['OLLAMA_API_BASE'] = environment['LLM_ENDPOINT']
+            else:
+                os.environ.pop('OLLAMA_API_BASE', None)
             self.gate.reconfigure(environment['LLM_ENDPOINT'], profile.get('max_concurrent_requests', 2),
                                   profile.get('bridge_kind') or profile.get('provider'))
             self.config, self.bridge = candidate, new_bridge

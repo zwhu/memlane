@@ -68,8 +68,11 @@ type App struct {
 	commonEdit          commonEditorState
 	commonPage          commonKnowledgePageState
 	commonGeneration    uint64
-	titles              *ReadingTitles
-	readingIdentity     string
+	titles                *ReadingTitles
+	readingIdentity       string
+	baseReadingIdentity   string
+	baseIdentityURL       string
+	baseIdentityTokenFile string
 	recentCancel        context.CancelFunc
 	recentCtx           context.Context
 	recentRequest       uint64
@@ -110,6 +113,7 @@ type App struct {
 	panes                map[string]*pane
 	epoch                uint64
 	service, completion  string
+	monitor              serviceMonitorState
 	configError          string
 	md                   markdown.Options
 	projectMD            *markdown.Options
@@ -125,7 +129,12 @@ func New(c Config, err error) *App {
 		a.access.SettingsSection = "Agent 与模型"
 	}
 	a.titles = newReadingTitles()
-	a.readingIdentity, _ = readingIdentity(a.Client)
+	if full, base, idErr := readingIdentityPair(a.Client); idErr == nil {
+		a.readingIdentity = full
+		a.baseReadingIdentity = base
+		a.baseIdentityURL = a.Client.Config.ServiceURL
+		a.baseIdentityTokenFile = a.Client.Config.TokenFile
+	}
 	if err != nil {
 		a.configError = err.Error()
 		a.initialSetup = c.ConfigFile == "" || (c.FirstInstallDefault && errors.Is(err, os.ErrNotExist))
@@ -185,6 +194,7 @@ func (a *App) Start() {
 		a.RefreshIntegrations()
 		return
 	}
+	a.monitor.PollEnabled = true
 	a.health()
 	a.loadRecent()
 	a.restoreCodeState()
@@ -192,30 +202,10 @@ func (a *App) Start() {
 	a.RefreshIntegrations()
 }
 func (a *App) health() {
-	client := a.Client
-	completionURL := a.Config.CompletionURL
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_, err := client.request(ctx, "GET", "/health", nil)
-		state := "已连接"
-		if err != nil {
-			state = err.Error()
-		}
-		completion := "未配置"
-		if completionURL != "" {
-			cc := Client{Config: Config{ServiceURL: completionURL}}
-			_, e := cc.request(ctx, "GET", "/health", nil)
-			completion = "端点已连接（登录状态以实际请求为准）"
-			if e != nil {
-				completion = e.Error()
-			}
-		}
-		a.Update(func() { a.service = state; a.completion = completion })
-	}()
+	a.refreshServiceMonitor()
 }
 func (a *App) loadRecent()      { a.loadOverview() }
-func (a *App) routeKey() string { return fmt.Sprintf("%s/%d/%s", a.page, a.project, a.kind) }
+func (a *App) routeKey() string { return a.currentRoute().Key() }
 func (a *App) state() *pane {
 	k := a.routeKey()
 	s := a.panes[k]
@@ -593,7 +583,7 @@ func (a *App) source(s *pane) {
 				s.Error = err.Error()
 				if i.ID != "" {
 					a.handleReadingFailure(i, err)
-				} else if strings.Contains(err.Error(), "HTTP 401") {
+				} else if status, ok := httpStatusCode(err); ok && status == 401 {
 					a.InvalidateReading("")
 				}
 				return

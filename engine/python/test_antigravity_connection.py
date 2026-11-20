@@ -409,6 +409,77 @@ for case in ('standard', 'full', 'other_name', 'wrong_uuid', 'relative', 'file_s
                     shutil.rmtree(self.root / '.gemini'); shutil.rmtree(self.root / 'private')
                     shutil.rmtree(self.root / 'connections', ignore_errors=True)
 
+    def test_hook_error_observability_records_reason_without_secrets_and_exposes_via_view(self):
+        profile = self.root / '.gemini/config'
+        profile.mkdir(parents=True)
+        registry = Registry(self.root / 'registry.json', types.SimpleNamespace(url='http://127.0.0.1:18999'))
+        connection = AntigravityConnection(registry, {'python': sys.executable, 'project_control': {
+            'url': 'http://127.0.0.1:18998'}}, profile, '/synthetic/agy')
+        agent = {'key_file': str(self.root / 'child.key'), 'control_token_file': str(self.root / 'control.key')}
+        installation = prepare(None, self.root / 'private', connection.id, agent,
+                               'http://127.0.0.1:18999', 'http://127.0.0.1:18998', str(self.root),
+                               host_kind='antigravity', python=sys.executable)
+        marker = Path(installation['plugin_dir']) / '.memlane-installation.json'
+        marker_data = json.loads(marker.read_text())
+        marker_data.update(runtime_profile=str(profile), activated_at=1)
+        private_write(marker, json.dumps(marker_data).encode())
+        native = profile / 'plugins/memlane-cognee'
+        shutil.copytree(installation['plugin_dir'], native)
+        private_write(profile / 'config.json', json.dumps({'plugins': {'memlane-cognee': {'enabled': True}}}).encode())
+        agent.update(kind='antigravity', host_profile=str(profile), installation=installation)
+        registry.state['agents'][connection.id] = agent
+        registry.state.setdefault('connections', {})[connection.id] = {
+            'status': 'configured_pending_new_session', 'activated': True, 'activated_at': 1,
+            'native_plugin_dir': str(native), 'enabled_plugin': native.name}
+        try:
+            import uuid as _uuid
+            env = {k: v for k, v in os.environ.items() if not k.startswith(('COGNEE_', 'MEMLANE_', 'LLM_', 'EMBEDDING_'))}
+            env.update(HOME=str(self.root), COGNEE_PLUGIN_IN_VENV='1')
+            hook_script = str(native / 'scripts/agy_hook.py')
+            error_file = self.root / '.cognee-plugin' / ('antigravity-' + connection.id) / 'last-hook-error.json'
+            for idx in range(7):
+                cid = str(_uuid.uuid4())
+                bad_path = self.root / cid / 'arbitrary.jsonl'
+                payload = {
+                    'conversationId': cid,
+                    'transcriptPath': str(bad_path),
+                    'workspacePaths': [str(self.root)],
+                    'lastUserInput': 'secret-prompt-never-log-' + str(idx),
+                }
+                result = subprocess.run(
+                    [sys.executable, hook_script, 'store-user-prompt.py'],
+                    input=json.dumps(payload), env=env, cwd=self.root,
+                    capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), '{}')
+            self.assertTrue(error_file.exists())
+            self.assertEqual(error_file.stat().st_mode & 0o777, 0o600)
+            raw_text = error_file.read_text(encoding='utf-8')
+            self.assertNotIn('secret-prompt-never-log', raw_text)
+            entries = json.loads(raw_text)['entries']
+            self.assertEqual(len(entries), 5)
+            latest = entries[-1]
+            self.assertEqual(latest['script'], 'store-user-prompt.py')
+            self.assertEqual(latest['error_type'], 'NotReady')
+            self.assertEqual(latest['reason'], 'native_transcript_identity_required')
+            self.assertIn('conversationId', latest['payload_keys'])
+            with patch('antigravity_connection.Path.home', return_value=self.root):
+                row = connection.view()
+                self.assertEqual(row.get('last_hook_error'), latest)
+                # Symlink diagnostic file must be ignored both for write and read.
+                target = self.root / 'outside-error.json'
+                target.write_text('keep-intact', encoding='utf-8')
+                error_file.unlink()
+                error_file.symlink_to(target)
+                subprocess.run(
+                    [sys.executable, hook_script, 'store-user-prompt.py'],
+                    input=json.dumps({'conversationId': str(_uuid.uuid4()), 'lastUserInput': 'secret-prompt-never-log-sym'}),
+                    env=env, cwd=self.root, capture_output=True, text=True, timeout=20)
+                self.assertEqual(target.read_text(encoding='utf-8'), 'keep-intact')
+                self.assertNotIn('last_hook_error', connection.view())
+        finally:
+            registry.close()
+
 
 if __name__ == '__main__':
     unittest.main()

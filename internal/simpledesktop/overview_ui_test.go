@@ -40,7 +40,9 @@ func overviewFixture(t *testing.T) *App {
 	}
 	a := New(cfg, nil)
 	a.service = "已连接"
-	a.Update = func(fn func()) { fn() }
+	// Static overview fixture has no server; ignore background callbacks instead
+	// of executing them unsynchronized off the UI thread.
+	a.Update = func(func()) {}
 	a.overviewState.Loaded = true
 	a.overviewState.RawLoaded = true
 	a.overviewState.ActivityLoaded = true

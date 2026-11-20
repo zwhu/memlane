@@ -17,9 +17,17 @@ type ConnectionCapability struct {
 	Verified  bool   `json:"verified"`
 	Condition string `json:"condition"`
 }
+type AgentHookError struct {
+	At          float64  `json:"at"`
+	Script      string   `json:"script"`
+	ErrorType   string   `json:"error_type"`
+	Reason      string   `json:"reason"`
+	PayloadKeys []string `json:"payload_keys,omitempty"`
+}
 type AgentConnection struct {
 	HostVersion         string                          `json:"host_version,omitempty"`
 	Capture             *AgentCaptureState              `json:"capture,omitempty"`
+	LastHookError       *AgentHookError                 `json:"last_hook_error,omitempty"`
 	ID                  string                          `json:"instance_id"`
 	Kind                string                          `json:"kind"`
 	Status              string                          `json:"status"`
@@ -353,7 +361,7 @@ func (a *App) RefreshIntegrations() {
 		var connections ConnectionsDirectory
 		var generation GenerationDirectory
 		var err error
-		if !a.Config.GenerationSetupOnly {
+		if !config.GenerationSetupOnly {
 			err = client.request(ctx, "GET", "/v1/connections", nil, &connections)
 		}
 		if err == nil {
@@ -426,6 +434,7 @@ func (a *App) connectAgentsReviewed(action string, identifiers []string, reviewe
 	if s.ItemMessages == nil {
 		s.ItemMessages = map[string]string{}
 	}
+	opsDir := a.generationOperationsDir()
 	go func() {
 		for _, id := range identifiers {
 			if stop.Load() {
@@ -472,14 +481,10 @@ func (a *App) connectAgentsReviewed(action string, identifiers []string, reviewe
 					payload["proposed_sha256"] = reviewedSHA
 				}
 				if action != "review" {
-					recorded := make(chan error, 1)
-					a.Update(func() {
-						recorded <- a.recordGenerationOperation(generationUIOperation{Operation: op, Kind: "connection_" + action, Profile: id})
-					})
-					select {
-					case err = <-recorded:
-					case <-ctx.Done():
-						err = ctx.Err()
+					var updatedPending []generationUIOperation
+					updatedPending, err = recordGenerationOperationAt(opsDir, generationUIOperation{Operation: op, Kind: "connection_" + action, Profile: id})
+					if err == nil {
+						a.Update(func() { s.PendingOperations = updatedPending })
 					}
 				}
 				var result struct {

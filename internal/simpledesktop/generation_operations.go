@@ -110,35 +110,33 @@ func (s *integrationState) pendingGenerationProfile(id string) bool {
 	return false
 }
 
-func (a *App) recordGenerationOperation(o generationUIOperation) error {
-	root := a.generationOperationsDir()
+func recordGenerationOperationAt(root string, o generationUIOperation) ([]generationUIOperation, error) {
 	if root == "" || !filepath.IsAbs(root) || !o.valid() {
-		return errors.New("generation operation journal unavailable")
+		return nil, errors.New("generation operation journal unavailable")
 	}
 	if err := os.MkdirAll(root, 0700); err != nil {
-		return err
+		return nil, err
 	}
 	if err := privateOperationPath(root, true); err != nil {
-		return err
+		return nil, err
 	}
 	lock, err := lockGenerationOperations(root)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer unlockGenerationOperations(lock)
-	pending, err := a.loadGenerationOperations()
+	pending, err := loadGenerationOperationsFromDir(root)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	a.integrations.PendingOperations = pending
-	for _, pending := range a.integrations.PendingOperations {
-		if pending.Profile == o.Profile && pending.connection() == o.connection() {
-			return errors.New("review the original operation first")
+	for _, existing := range pending {
+		if existing.Profile == o.Profile && existing.connection() == o.connection() {
+			return nil, errors.New("review the original operation first")
 		}
 	}
 	f, err := os.OpenFile(filepath.Join(root, o.Operation+".json"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	err = json.NewEncoder(f).Encode(o)
 	if err == nil {
@@ -152,14 +150,25 @@ func (a *App) recordGenerationOperation(o generationUIOperation) error {
 		err = syncOperationDirectory(root)
 	}
 	if err != nil {
+		return nil, err
+	}
+	return append(pending, o), nil
+}
+
+func (a *App) recordGenerationOperation(o generationUIOperation) error {
+	pending, err := recordGenerationOperationAt(a.generationOperationsDir(), o)
+	if err != nil {
 		return err
 	}
-	a.integrations.PendingOperations = append(a.integrations.PendingOperations, o)
+	a.integrations.PendingOperations = pending
 	return nil
 }
 
 func (a *App) loadGenerationOperations() ([]generationUIOperation, error) {
-	root := a.generationOperationsDir()
+	return loadGenerationOperationsFromDir(a.generationOperationsDir())
+}
+
+func loadGenerationOperationsFromDir(root string) ([]generationUIOperation, error) {
 	if root == "" {
 		return nil, nil
 	}

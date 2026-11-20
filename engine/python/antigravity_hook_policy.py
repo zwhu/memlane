@@ -3,7 +3,63 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import tempfile
+import time
 import uuid
+
+
+def _hook_error_state_dir():
+    try:
+        from _plugin_common import _PLUGIN_DIR
+        return Path(_PLUGIN_DIR)
+    except Exception:
+        marker = Path(__file__).resolve().parents[1] / '.memlane-installation.json'
+        binding = json.loads(marker.read_text(encoding='utf-8'))
+        instance_id = str(binding['instance_id'])
+        return Path.home() / '.cognee-plugin' / ('antigravity-' + instance_id)
+
+
+def record_hook_error(script, payload, error):
+    """Best-effort diagnostic record for silent hook exits; never writes payloads or secrets."""
+    try:
+        state_dir = _hook_error_state_dir()
+        if state_dir.is_symlink():
+            return
+        state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(state_dir, 0o700)
+        target = state_dir / 'last-hook-error.json'
+        if target.is_symlink():
+            return
+        entries = []
+        if target.exists() and target.is_file() and target.stat().st_size <= 16384:
+            try:
+                loaded = json.loads(target.read_text(encoding='utf-8'))
+                if isinstance(loaded, dict) and isinstance(loaded.get('entries'), list):
+                    entries = [item for item in loaded['entries'] if isinstance(item, dict)][-4:]
+            except (OSError, ValueError, TypeError):
+                entries = []
+        error_type = type(error).__name__[:80]
+        entry = {
+            'at': time.time(),
+            'script': str(script or '')[:80],
+            'error_type': error_type,
+            'reason': (str(error)[:120] if error_type == 'NotReady' else error_type),
+            'payload_keys': sorted(str(k)[:80] for k in payload.keys())[:32] if isinstance(payload, dict) else [],
+        }
+        entries.append(entry)
+        fd, temporary = tempfile.mkstemp(dir=state_dir, prefix='.hook-error-')
+        try:
+            os.chmod(temporary, 0o600)
+            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                json.dump({'entries': entries}, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+    except Exception:
+        pass
 
 
 def prepare_payload(payload, script):

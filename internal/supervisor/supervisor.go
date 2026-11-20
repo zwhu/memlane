@@ -1,0 +1,497 @@
+package supervisor
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"slices"
+	"sync"
+	"time"
+)
+
+// Config configures a Supervisor guarding one store root and its loopback services.
+type Config struct {
+	StoreRoot           string
+	ConfigPath          string
+	PhaseOnReady        string
+	ServiceURL          string
+	CompletionURL       string
+	ControlURL          string
+	RuntimeConfig       string
+	GenerationMode      string
+	GenerationReference string
+	LogLimitBytes       int64
+	MonitorInterval     time.Duration
+	HealthFailureMax    int
+	HealthTimeout       time.Duration
+	OnCrash             func(ServiceStatus)
+}
+
+// SupervisorSnapshot captures the supervisor's aggregate state and child statuses.
+type SupervisorSnapshot struct {
+	State    ServiceState    `json:"state"`
+	OwnerPID int             `json:"owner_pid"`
+	Phase    string          `json:"phase"`
+	Services []ServiceStatus `json:"services"`
+}
+
+// Supervisor owns an exclusive store lock, ordered service groups, log trimming,
+// and debounced loopback health monitoring without automatic restarts.
+type Supervisor struct {
+	cfg Config
+
+	mu            sync.Mutex
+	owner         *OwnerLock
+	ownerPID      int
+	ownerStarted  string
+	canonicalCfg  string
+	phase         string
+	state         ServiceState
+	order         []*ManagedProcess
+	byRole        map[string]*ManagedProcess
+	monitorCancel context.CancelFunc
+	stopped       bool
+
+	wg       sync.WaitGroup
+	exitedCh chan ServiceStatus
+}
+
+// New constructs a Supervisor with production-safe defaults.
+func New(cfg Config) *Supervisor {
+	if cfg.PhaseOnReady == "" {
+		cfg.PhaseOnReady = "ready"
+	}
+	if cfg.LogLimitBytes <= 0 {
+		cfg.LogLimitBytes = DefaultLogLimitBytes
+	}
+	if cfg.MonitorInterval <= 0 {
+		cfg.MonitorInterval = time.Second
+	}
+	if cfg.HealthFailureMax <= 0 {
+		cfg.HealthFailureMax = 3
+	}
+	if cfg.HealthTimeout <= 0 {
+		cfg.HealthTimeout = time.Second
+	}
+	return &Supervisor{
+		cfg:      cfg,
+		state:    StatePending,
+		byRole:   make(map[string]*ManagedProcess),
+		exitedCh: make(chan ServiceStatus, 16),
+	}
+}
+
+// Exited returns a buffered notification channel emitting unexpected child exits.
+func (s *Supervisor) Exited() <-chan ServiceStatus {
+	return s.exitedCh
+}
+
+func (s *Supervisor) buildOwnerRecord(phase string, procs []*ManagedProcess) OwnerRecord {
+	children := make([]int, 0, len(procs))
+	serviceChildren := make(map[string]int, len(procs))
+	for _, proc := range procs {
+		if !proc.Exited() {
+			children = append(children, proc.PID())
+		}
+		serviceChildren[proc.Spec().Role] = proc.PID()
+	}
+	return OwnerRecord{
+		PID:                 s.ownerPID,
+		Started:             s.ownerStarted,
+		Phase:               phase,
+		Config:              s.canonicalCfg,
+		OfficialData:        s.owner.StoreRoot(),
+		ServiceURL:          s.cfg.ServiceURL,
+		CompletionURL:       s.cfg.CompletionURL,
+		ProjectControlURL:   s.cfg.ControlURL,
+		RuntimeConfig:       s.cfg.RuntimeConfig,
+		GenerationMode:      s.cfg.GenerationMode,
+		GenerationReference: s.cfg.GenerationReference,
+		Children:            children,
+		ServiceChildren:     serviceChildren,
+	}
+}
+
+func validateSupervisorInputs(cfg Config, specs []ServiceSpec) error {
+	for _, origin := range []string{cfg.ServiceURL, cfg.CompletionURL, cfg.ControlURL} {
+		if origin == "" {
+			continue
+		}
+		if _, err := ValidateLoopbackURL(origin); err != nil {
+			return err
+		}
+	}
+	seenRoles := make(map[string]struct{}, len(specs))
+	for _, spec := range specs {
+		if spec.Role == "" {
+			return errors.New("service spec requires a role")
+		}
+		if _, dup := seenRoles[spec.Role]; dup {
+			return fmt.Errorf("duplicate service role: %s", spec.Role)
+		}
+		seenRoles[spec.Role] = struct{}{}
+		if spec.BindURL != "" {
+			if _, err := ValidateLoopbackURL(spec.BindURL); err != nil {
+				return fmt.Errorf("service %s invalid bind_url: %w", spec.Role, err)
+			}
+		}
+		if spec.HealthURL != "" {
+			if _, _, _, err := parseLoopbackURL(spec.HealthURL, false); err != nil {
+				return fmt.Errorf("service %s invalid health_url: %w", spec.Role, err)
+			}
+		}
+	}
+	return nil
+}
+
+// Start acquires the canonical owner lock, launches each spec sequentially, writes
+// compatible .memlane-dev-owner.json metadata, and begins background monitoring.
+func (s *Supervisor) Start(ctx context.Context, specs []ServiceSpec) error {
+	if err := validateSupervisorInputs(s.cfg, specs); err != nil {
+		return err
+	}
+	canonicalConfig, err := canonicalPathMaybeMissing(s.cfg.ConfigPath)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	if s.owner != nil || s.state == StateStarting || s.state == StateReady {
+		s.mu.Unlock()
+		return errors.New("supervisor already active")
+	}
+	s.state = StateStarting
+	s.stopped = false
+	s.canonicalCfg = canonicalConfig
+	s.mu.Unlock()
+
+	resetFailedPreLock := func() {
+		s.mu.Lock()
+		s.state = StateStopped
+		s.stopped = true
+		s.mu.Unlock()
+	}
+
+	lock, err := AcquireOwner(s.cfg.StoreRoot)
+	if err != nil {
+		resetFailedPreLock()
+		return err
+	}
+	ownerPID := os.Getpid()
+	ownerStarted, err := ProcessStartTime(ctx, ownerPID)
+	if err != nil {
+		_ = lock.Release()
+		resetFailedPreLock()
+		return err
+	}
+
+	s.mu.Lock()
+	s.owner = lock
+	s.ownerPID = ownerPID
+	s.ownerStarted = ownerStarted
+	s.phase = "starting"
+	s.order = make([]*ManagedProcess, 0, len(specs))
+	s.byRole = make(map[string]*ManagedProcess, len(specs))
+	initialRec := s.buildOwnerRecord("starting", nil)
+	s.mu.Unlock()
+
+	if err := lock.WriteRecord(initialRec); err != nil {
+		_ = lock.RemoveRecord()
+		_ = lock.Release()
+		s.mu.Lock()
+		s.owner = nil
+		s.order = nil
+		s.byRole = make(map[string]*ManagedProcess)
+		s.state = StateStopped
+		s.stopped = true
+		s.mu.Unlock()
+		return err
+	}
+
+	rollback := func(startErr error) error {
+		s.mu.Lock()
+		s.stopped = true
+		procs := slices.Clone(s.order)
+		s.mu.Unlock()
+
+		var errs []error
+		errs = append(errs, startErr)
+		allStopped := true
+		for i := len(procs) - 1; i >= 0; i-- {
+			proc := procs[i]
+			if stopErr := proc.StopGroup(proc.Spec().StopGrace, proc.Spec().KillWait); stopErr != nil {
+				allStopped = false
+				errs = append(errs, fmt.Errorf("rollback %s: %w", proc.Spec().Role, stopErr))
+			}
+		}
+		if allStopped {
+			if rmErr := lock.RemoveRecord(); rmErr != nil {
+				errs = append(errs, rmErr)
+			}
+		}
+		if relErr := lock.Release(); relErr != nil {
+			errs = append(errs, relErr)
+		}
+
+		s.mu.Lock()
+		s.owner = nil
+		s.order = nil
+		s.byRole = make(map[string]*ManagedProcess)
+		s.phase = ""
+		s.state = StateStopped
+		s.mu.Unlock()
+		return errors.Join(errs...)
+	}
+
+	for _, rawSpec := range specs {
+		if err := ctx.Err(); err != nil {
+			return rollback(err)
+		}
+		spec := rawSpec
+		if spec.LogLimitBytes <= 0 {
+			spec.LogLimitBytes = s.cfg.LogLimitBytes
+		}
+		if spec.BindURL != "" {
+			if err := CheckPortFree(spec.BindURL); err != nil {
+				return rollback(fmt.Errorf("service %s bind check failed: %w", spec.Role, err))
+			}
+		}
+		proc, err := StartManagedProcess(spec, s.handleUnexpectedExit)
+		if err != nil {
+			return rollback(fmt.Errorf("start %s: %w", spec.Role, err))
+		}
+
+		s.mu.Lock()
+		s.order = append(s.order, proc)
+		s.byRole[spec.Role] = proc
+		rec := s.buildOwnerRecord("starting", s.order)
+		s.mu.Unlock()
+
+		if err := lock.WriteRecord(rec); err != nil {
+			return rollback(err)
+		}
+		if spec.HealthURL != "" {
+			if err := WaitHTTPReady(ctx, proc, spec.HealthURL, spec.HealthHeaders, spec.ReadyTimeout); err != nil {
+				return rollback(err)
+			}
+		}
+		proc.SetHealthState(StateReady)
+	}
+
+	monitorCtx, cancel := context.WithCancel(context.Background())
+
+	s.mu.Lock()
+	s.phase = s.cfg.PhaseOnReady
+	s.state = StateReady
+	s.monitorCancel = cancel
+	readyRec := s.buildOwnerRecord(s.cfg.PhaseOnReady, s.order)
+	s.mu.Unlock()
+
+	if err := lock.WriteRecord(readyRec); err != nil {
+		cancel()
+		return rollback(err)
+	}
+
+	s.wg.Add(1)
+	go s.runMonitor(monitorCtx)
+	return nil
+}
+
+func (s *Supervisor) handleUnexpectedExit(status ServiceStatus) {
+	s.mu.Lock()
+	stopped := s.stopped
+	onCrash := s.cfg.OnCrash
+	if !stopped && (s.state == StateReady || s.state == StateDegraded) {
+		s.state = StateExited
+	}
+	s.mu.Unlock()
+
+	if stopped {
+		return
+	}
+	select {
+	case s.exitedCh <- status:
+	default:
+	}
+	if onCrash != nil {
+		onCrash(status)
+	}
+}
+
+func (s *Supervisor) runMonitor(ctx context.Context) {
+	defer s.wg.Done()
+	client := newLoopbackProbeClient(s.cfg.HealthTimeout)
+	failures := make(map[string]int)
+
+	ticker := time.NewTicker(s.cfg.MonitorInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		s.mu.Lock()
+		procs := slices.Clone(s.order)
+		s.mu.Unlock()
+
+		for _, proc := range procs {
+			if ctx.Err() != nil {
+				return
+			}
+			spec := proc.Spec()
+			if spec.LogPath != "" {
+				limit := spec.LogLimitBytes
+				if limit <= 0 {
+					limit = s.cfg.LogLimitBytes
+				}
+				_ = TrimServiceLog(spec.LogPath, limit)
+			}
+			if proc.Exited() || spec.HealthURL == "" {
+				continue
+			}
+
+			probeErr := probeEndpointOnce(ctx, client, spec.HealthURL, spec.HealthHeaders)
+			if ctx.Err() != nil {
+				return
+			}
+			if proc.Exited() {
+				continue
+			}
+			if probeErr == nil {
+				failures[spec.Role] = 0
+				proc.SetHealthState(StateReady)
+				continue
+			}
+			failures[spec.Role]++
+			if failures[spec.Role] >= s.cfg.HealthFailureMax {
+				proc.SetLastError(probeErr.Error())
+				proc.SetHealthState(StateDegraded)
+			}
+		}
+	}
+}
+
+func probeEndpointOnce(ctx context.Context, client *http.Client, rawURL string, headers map[string]string) error {
+	_, _, targetURL, err := parseLoopbackURL(rawURL, false)
+	if err != nil {
+		return err
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, client.Timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("health check returned HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// Stop stops background monitoring, shuts down children in strict reverse startup order,
+// and removes the owner receipt only when every process group exits cleanly.
+func (s *Supervisor) Stop(ctx context.Context) error {
+	s.mu.Lock()
+	cancel := s.monitorCancel
+	s.monitorCancel = nil
+	procs := slices.Clone(s.order)
+	lock := s.owner
+	s.stopped = true
+	if lock == nil && len(procs) == 0 {
+		s.state = StateStopped
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	s.wg.Wait()
+
+	var stopErrs []error
+	allStopped := true
+	for i := len(procs) - 1; i >= 0; i-- {
+		proc := procs[i]
+		if err := proc.StopGroup(proc.Spec().StopGrace, proc.Spec().KillWait); err != nil {
+			allStopped = false
+			stopErrs = append(stopErrs, fmt.Errorf("stop %s: %w", proc.Spec().Role, err))
+		}
+	}
+
+	if lock != nil {
+		if allStopped {
+			if err := lock.RemoveRecord(); err != nil {
+				stopErrs = append(stopErrs, err)
+			}
+		}
+		if err := lock.Release(); err != nil {
+			stopErrs = append(stopErrs, err)
+		}
+	}
+
+	s.mu.Lock()
+	s.owner = nil
+	s.order = nil
+	s.byRole = make(map[string]*ManagedProcess)
+	s.phase = ""
+	s.state = StateStopped
+	s.mu.Unlock()
+
+	return errors.Join(stopErrs...)
+}
+
+// Snapshot returns a defensive view of aggregate supervisor and service state.
+func (s *Supervisor) Snapshot() SupervisorSnapshot {
+	s.mu.Lock()
+	baseState := s.state
+	ownerPID := s.ownerPID
+	phase := s.phase
+	procs := slices.Clone(s.order)
+	s.mu.Unlock()
+
+	statuses := make([]ServiceStatus, 0, len(procs))
+	aggState := baseState
+	anyDegraded := false
+	anyExited := false
+	for _, proc := range procs {
+		st := proc.Status()
+		statuses = append(statuses, st)
+		switch st.State {
+		case StateExited:
+			anyExited = true
+		case StateDegraded:
+			anyDegraded = true
+		}
+	}
+	if baseState != StateStopped {
+		switch {
+		case anyExited:
+			aggState = StateExited
+		case anyDegraded:
+			aggState = StateDegraded
+		}
+	}
+	return SupervisorSnapshot{
+		State:    aggState,
+		OwnerPID: ownerPID,
+		Phase:    phase,
+		Services: statuses,
+	}
+}

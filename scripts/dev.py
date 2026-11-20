@@ -164,16 +164,13 @@ def validate_project_control(control, config, *, verify_plugin=True):
 def verify_managed_plugin(directory):
     if not directory.is_absolute():
         raise ValueError('managed plugin directory must be absolute')
-    expected = json.loads((ROOT / 'engine/managed-project-plugin.json').read_text())
+    from _runtime_common import match_managed_plugin_manifest
+    from project_policy import PolicyError
     receipt = json.loads((directory / '.memlane-project-access.json').read_text())
-    current = receipt == expected
-    if not current:
-        previous = [json.loads((ROOT / 'engine' / name).read_text()) for name in
-                    ('managed-project-plugin-pre-recall.json', 'managed-project-plugin-pre-environment.json',
-                     'managed-project-plugin-pre-convergence.json', 'managed-project-plugin-pre-empty-common.json')]
-        if receipt not in previous:
-            raise ValueError('managed plugin receipt does not match fixed component input')
-        expected = receipt
+    try:
+        expected, current = match_managed_plugin_manifest(ROOT / 'engine', receipt)
+    except PolicyError as error:
+        raise ValueError('managed plugin receipt does not match fixed component input') from error
     for path, key in (('engine/patches/project_access.py', 'patch_sha256'),
                       ('engine/python/project_plugin_policy.py', 'extension_sha256'),
                       ('engine/patches/project-access-upstream.json', 'upstream_lock_sha256')):
@@ -541,7 +538,9 @@ def main():
         pid = state['pid']
         os.kill(pid, 0)
         actual = subprocess.check_output(['ps', '-p', str(pid), '-o', 'lstart='], text=True).strip()
-        if actual != state['started'] or state['config'] != str(path):
+        actual_c = subprocess.check_output(['ps', '-p', str(pid), '-o', 'lstart='], text=True,
+                                           env={**os.environ, 'LC_ALL': 'C'}).strip()
+        if state['started'] not in (actual, actual_c) or state['config'] != str(path):
             raise RuntimeError('owner identity mismatch; do not signal an unknown process')
         if args.action == 'status':
             print(json.dumps(state, indent=2)); return

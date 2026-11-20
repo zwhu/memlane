@@ -95,24 +95,22 @@ func (c Client) request(ctx context.Context, method, path string, input any) ([]
 		return nil, e
 	}
 	if c.Config.TokenFile != "" {
-		b, e := os.ReadFile(c.Config.TokenFile)
+		token, e := readCachedToken(c.Config.TokenFile, 0, false)
 		if e != nil {
 			return nil, fmt.Errorf("official credential unavailable")
 		}
-		req.Header.Set("X-Api-Key", strings.TrimSpace(string(b)))
+		req.Header.Set("X-Api-Key", token)
 	}
 	req.Header.Set("Content-Type", contentType)
-	hc := c.HTTP
-	if hc == nil {
-		hc = &http.Client{Timeout: 45 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	}
+	hc := newHTTPClient(c.HTTP, 45*time.Second)
 	res, e := hc.Do(req)
 	if e != nil {
 		return nil, e
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, fmt.Errorf("official HTTP %d", res.StatusCode)
+		snippet, _ := io.ReadAll(io.LimitReader(res.Body, 256))
+		return nil, &OfficialHTTPError{Status: res.StatusCode, Body: strings.TrimSpace(string(snippet))}
 	}
 	b, e := io.ReadAll(io.LimitReader(res.Body, 8*1024*1024+1))
 	if e != nil {
@@ -128,13 +126,7 @@ func (c Client) get(ctx context.Context, path string, out any) error {
 	if e != nil {
 		return e
 	}
-	if e := json.Unmarshal(b, out); e != nil {
-		return e
-	}
-	if rows, ok := out.(*[]Document); ok {
-		return c.rememberKnowledgeDays(*rows)
-	}
-	return nil
+	return json.Unmarshal(b, out)
 }
 
 type Document struct {
@@ -242,6 +234,9 @@ func (c Client) documents(ctx context.Context, p Project, offset int, raw bool) 
 	var rows []Document
 	e := c.get(ctx, "/api/v1/datasets/"+url.PathEscape(p.Dataset)+"/data?limit=31&offset="+strconv.Itoa(offset), &rows)
 	if e != nil {
+		return nil, false, e
+	}
+	if e := c.rememberKnowledgeDays(rows); e != nil {
 		return nil, false, e
 	}
 	more := len(rows) > 30
@@ -410,6 +405,9 @@ func (c Client) documentInfoByID(ctx context.Context, dataset, id string) (Item,
 	for offset := 0; offset <= 100000; offset += 100 {
 		var rows []Document
 		if e := c.get(ctx, "/api/v1/datasets/"+url.PathEscape(dataset)+"/data?limit=100&offset="+strconv.Itoa(offset), &rows); e != nil {
+			return Item{}, e
+		}
+		if e := c.rememberKnowledgeDays(rows); e != nil {
 			return Item{}, e
 		}
 		for _, d := range rows {

@@ -10,6 +10,7 @@ import shutil
 import re
 import shlex
 
+from _runtime_common import match_managed_plugin_manifest
 from project_control import private_write, read_secret
 from project_policy import PolicyError
 
@@ -25,15 +26,8 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
     if host_kind not in ('codex', 'pi', 'traex'):
         raise PolicyError('unsupported_installation_host')
     source, root = Path(source), Path(root)
-    expected = json.loads((ENGINE / 'managed-project-plugin.json').read_text())
     receipt = json.loads((source / '.memlane-project-access.json').read_text())
-    if receipt != expected:
-        previous = [json.loads((ENGINE / name).read_text()) for name in
-                    ('managed-project-plugin-pre-recall.json', 'managed-project-plugin-pre-environment.json',
-                     'managed-project-plugin-pre-convergence.json', 'managed-project-plugin-pre-empty-common.json')]
-        if receipt not in previous:
-            raise PolicyError('managed_plugin_input_mismatch', 503)
-        expected = receipt
+    expected, _ = match_managed_plugin_manifest(ENGINE, receipt)
     for name, digest in expected['files'].items():
         path = source / name
         if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:

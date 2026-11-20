@@ -28,22 +28,8 @@ def read_private(path):
 
 
 def write_private(path, value):
-    path = Path(path)
-    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as stream:
-        temporary = Path(stream.name)
-        try:
-            os.fchmod(stream.fileno(), 0o600)
-            stream.write(value)
-            stream.flush()
-            os.fsync(stream.fileno())
-            os.replace(temporary, path)
-            directory = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-        finally:
-            temporary.unlink(missing_ok=True)
+    from _runtime_common import private_write
+    private_write(path, value.encode('utf-8'))
 
 
 def validate_spec(spec):

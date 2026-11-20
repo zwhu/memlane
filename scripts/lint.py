@@ -99,23 +99,45 @@ def check_source(source, path):
     return sorted(set(issues))
 
 
-def check_go_source(source, path):
+GO_TARGETS = {
+    'settings_model_cards.go': ('generationProfileCards',),
+    'generation_workspace.go': ('chooseGenerationSource', 'selectGenerationProfile'),
+    'generation_management.go': ('generationManagement', 'generationManagementContent'),
+}
+
+
+def check_go_source(source, path, *, require_all_targets=False):
     """Presentation architecture checks; Go behavior is covered by Native UI tests."""
-    if Path(path).name not in ('settings_model_cards.go','generation_workspace.go','generation_management.go'):
+    filename = Path(path).name
+    if filename not in GO_TARGETS:
         return []
     issues = []
-    for name in ('chooseGenerationSource','selectGenerationProfile','generationProfileCards','generationManagement','generationManagementContent'):
-        start=source.find(' '+name+'(')
-        if start<0:continue
-        end=source.find('\nfunc ',start+1)
-        function=source[start:end if end>=0 else len(source)]
-        for match in re.finditer(r'openGenerationHandoff\(|startGenerationHandoff\(|Generation\.Active\s*=',function):
-            issues.append((source[:start+match.start()].count('\n')+1,'ML005','选择或编辑配置不能启用；保存、验证与明确启用分开'))
-    if Path(path).name=='generation_workspace.go':return issues
-    start=source.find('func (a *App) generationProfileCards(')
-    if start<0:return issues
-    end=source.find('\nfunc ',start+1)
-    body=source[start:end if end>=0 else len(source)]
+    targets = GO_TARGETS[filename]
+    found = []
+    for name in targets:
+        start = source.find(' ' + name + '(')
+        if start < 0:
+            if require_all_targets:
+                code = 'ML004' if name == 'generationProfileCards' else 'ML005'
+                issues.append((1, code, f'未找到受保护函数 {name}；重命名或移动后须同步更新 lint 规则'))
+            continue
+        found.append(name)
+        if name in ('chooseGenerationSource', 'selectGenerationProfile', 'generationProfileCards', 'generationManagement', 'generationManagementContent'):
+            end = source.find('\nfunc ', start + 1)
+            function = source[start:end if end >= 0 else len(source)]
+            for match in re.finditer(r'openGenerationHandoff\(|startGenerationHandoff\(|Generation\.Active\s*=', function):
+                issues.append((source[:start + match.start()].count('\n') + 1, 'ML005', '选择或编辑配置不能启用；保存、验证与明确启用分开'))
+    if not require_all_targets and not found:
+        first = targets[0]
+        code = 'ML004' if first == 'generationProfileCards' else 'ML005'
+        issues.append((1, code, f'未找到受保护函数 {first}；重命名或移动后须同步更新 lint 规则'))
+    if filename == 'generation_workspace.go':
+        return issues
+    start = source.find('func (a *App) generationProfileCards(')
+    if start < 0:
+        return issues
+    end = source.find('\nfunc ', start + 1)
+    body = source[start:end if end >= 0 else len(source)]
     for match in re.finditer(r'\.Profile\.(?:Model|Provider|BridgeKind)\b|\.Generation\.Profiles\b', body):
         line = source[:start + match.start()].count('\n') + 1
         issues.append((line, 'ML004', '配置列表必须使用统一分组投影；Agent按身份展示，Provider按连接分组'))
@@ -134,12 +156,29 @@ def main():
         for line, code, message in check_source(path.read_text(encoding='utf-8'), path):
             print('{}:{}: {} {}'.format(path.relative_to(ROOT), line, code, message))
             failures += 1
-    for path in sorted((ROOT / 'internal/simpledesktop').glob('*.go')):
-        if path.name.endswith('_test.go'):
-            continue
-        for line, code, message in check_go_source(path.read_text(encoding='utf-8'), path):
-            print('{}:{}: {} {}'.format(path.relative_to(ROOT), line, code, message))
-            failures += 1
+    scripts_dir = ROOT / 'scripts'
+    if scripts_dir.is_dir():
+        for path in sorted(scripts_dir.glob('*.py')):
+            if path.name.startswith('test_') or path.name == 'lint.py':
+                continue
+            for line, code, message in check_source(path.read_text(encoding='utf-8'), path):
+                print('{}:{}: {} {}'.format(path.relative_to(ROOT), line, code, message))
+                failures += 1
+    go_dir = ROOT / 'internal/simpledesktop'
+    if go_dir.is_dir():
+        for filename, targets in GO_TARGETS.items():
+            expected_path = go_dir / filename
+            if not expected_path.is_file():
+                code = 'ML004' if 'generationProfileCards' in targets else 'ML005'
+                print('{}:1: {} 未找到受保护文件 {}；重命名或移动后须同步更新 lint 规则'.format(
+                    expected_path.relative_to(ROOT), code, filename))
+                failures += 1
+        for path in sorted(go_dir.glob('*.go')):
+            if path.name.endswith('_test.go'):
+                continue
+            for line, code, message in check_go_source(path.read_text(encoding='utf-8'), path, require_all_targets=True):
+                print('{}:{}: {} {}'.format(path.relative_to(ROOT), line, code, message))
+                failures += 1
     if not failures:
         print('Lint passed: 模型参数与桥接 / Provider 展示边界')
     return bool(failures)

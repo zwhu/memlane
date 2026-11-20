@@ -13,37 +13,8 @@ import uuid
 from urllib.parse import urlparse
 from urllib.parse import quote
 
+from _runtime_common import private_write, read_secret
 from project_policy import ACCESS, DEFAULTS, PolicyError, effective, project_id, validate_fields, workspace_root
-
-
-def private_write(path, data):
-    path = Path(path)
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix='.' + path.name + '-', dir=path.parent)
-    try:
-        with os.fdopen(fd, 'wb') as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(name, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    finally:
-        if os.path.exists(name):
-            os.unlink(name)
-
-
-def read_secret(path):
-    path = Path(path)
-    if path.is_symlink() or path.stat().st_mode & 0o077:
-        raise PolicyError('private_credential_required', 503)
-    value = path.read_text().strip()
-    if not value:
-        raise PolicyError('credential_unavailable', 503)
-    return value
 
 
 def loopback_origin(value):
