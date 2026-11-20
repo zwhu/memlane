@@ -32,6 +32,40 @@ func TestEnvironmentManualSelectionRestoresAcrossAppInstances(t *testing.T) {
 		t.Fatal(restored, err)
 	}
 }
+
+func TestEnvironmentPathDialogCancelPreservesSelectedPaths(t *testing.T) {
+	for _, action := range []string{"取消", "关闭路径编辑"} {
+		t.Run(action, func(t *testing.T) {
+			a, _ := environmentFixture()
+			s := &a.environment
+			s.Plan.Items[0].Observation.Status = bootstrap.Available
+			s.Python, s.ModelCache, s.Source = "/selected/python", "/selected/model", "/selected/source"
+			s.Details, s.SelectionLoaded = true, true
+			tt := ui.NewTester(func(c *ui.Context) {
+				ui.Themed(c, homeTheme).Fill().Children(func() {
+					ui.Scroll(c).Fill().Children(func() { a.environmentSetup(c, false) })
+				})
+			}, 1200, 820)
+			clickProjectUI(t, tt, "指定已有路径")
+			if !s.PathDialog || s.PathDraft.Python != "/selected/python" {
+				t.Fatal("editor did not snapshot the selected paths")
+			}
+			clickProjectUI(t, tt, "输入Python 路径")
+			tt.Type("/draft")
+			if s.Python != "/selected/python" || s.PathDraft.Python == s.Python {
+				t.Fatalf("typing did not edit only the draft: selected=%q draft=%q", s.Python, s.PathDraft.Python)
+			}
+			clickProjectUI(t, tt, action)
+			if s.PathDialog || s.PathDraft != (environmentPathDraft{}) || s.Python != "/selected/python" || s.ModelCache != "/selected/model" || s.Source != "/selected/source" || s.Generation != 0 {
+				t.Fatal("cancel or close applied the draft or started detection")
+			}
+			clickProjectUI(t, tt, "指定已有路径")
+			if s.PathDraft.Python != "/selected/python" || s.PathDraft.ModelCache != "/selected/model" {
+				t.Fatal("reopen restored the cancelled draft")
+			}
+		})
+	}
+}
 func TestEnvironmentDiagnosticExportWithoutServiceUsesNativeSaveChoice(t *testing.T) {
 	a, _ := environmentFixture()
 	path := filepath.Join(t.TempDir(), "failure.zip")

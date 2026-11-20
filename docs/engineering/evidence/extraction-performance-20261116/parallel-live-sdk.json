@@ -1,0 +1,45 @@
+{
+  "operation_id": "064c391d-2d78-4280-9d58-35e2aea26630",
+  "scope": "actual official pipeline HTTP spans; includes transport overhead",
+  "requests": [
+    {
+      "schema_version": 1,
+      "event": "request_finished",
+      "component": "generation_http",
+      "request_id": "70b22ec1ccce462385d724e70b8d7adf",
+      "backend_kind": "codex",
+      "at": "2026-11-16T07:04:54.819104+00:00",
+      "elapsed_ms": 21665.162,
+      "durations_ms": {
+        "capacity_queue": 1.778,
+        "dispatch_to_headers": 21663.023,
+        "response_body": 0.319
+      },
+      "operation_id": "064c391d-2d78-4280-9d58-35e2aea26630",
+      "dataset_id": "0785e3d2-881a-58c4-883e-cc3d2dcf76ef",
+      "outcome": "succeeded",
+      "status": 200,
+      "output_bytes": 2406
+    },
+    {
+      "schema_version": 1,
+      "event": "request_finished",
+      "component": "generation_http",
+      "request_id": "4ae4f1e32ad940be86e12e04962df28d",
+      "backend_kind": "codex",
+      "at": "2026-11-16T07:04:56.506984+00:00",
+      "elapsed_ms": 23352.241,
+      "durations_ms": {
+        "capacity_queue": 1.554,
+        "dispatch_to_headers": 23350.172,
+        "response_body": 0.497
+      },
+      "operation_id": "064c391d-2d78-4280-9d58-35e2aea26630",
+      "dataset_id": "0785e3d2-881a-58c4-883e-cc3d2dcf76ef",
+      "outcome": "succeeded",
+      "status": 200,
+      "output_bytes": 5116
+    }
+  ],
+  "overlap_seconds": 21.664361
+}

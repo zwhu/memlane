@@ -1,0 +1,18 @@
+{
+  "checks": {
+    "python_session_history": "4 tests passed",
+    "go_all": "passed, simpledesktop 2.903s",
+    "go_vet_all": "passed",
+    "go_source_race": "passed, 1.971s"
+  },
+  "source_trace_01_prior_failed_rounds": 1,
+  "runtime_validation": "live same-store first/middle/last pages passed; Native blocked by cgWindowNotFound; synthetic layout inspected",
+  "source_sha256": {
+    "engine/python/session_history.py": "d8b8010920310a50ef261e4faa95760ca69772030dc1f65248301dd0b7ac6757",
+    "engine/python/test_session_history.py": "473819683f60a40fffb855f942f6eee236b37e53d8546cd8bbe06fb644d756f3",
+    "internal/simpledesktop/session_history.go": "8efa3eb888b650880dc991d5a079d56289685ae42c09b6a208c233d938162e90",
+    "internal/simpledesktop/session_history_test.go": "e4afedcd3f2b4b027e1c8045b1a9ffcc00228670d1b3c201d5f5730089f84eb1"
+  },
+  "runtime_owner": 81462,
+  "native_validation": "pending; no repeat opening after owner instruction"
+}

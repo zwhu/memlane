@@ -21,11 +21,11 @@ python3 scripts/dev.py prepare --component-root /绝对路径/私有引擎组件
 
 **它目前只准备组件，不创建数据库、owner、API key 或 runtime 配置，也不安装 Agent 插件／启动服务。** 不能将该命令成功视为首次安装完成。现有日常库不经此入口迁移或替换，正常 `start` 的缺库保护保留。App 托管安装器、embedding 准备、首次存储初始化与界面接入仍待完成。实施与证据见[本地准备续作](engineering/local-prepare-20261117.md)。
 
-2026-11-18处理桥更新：当前开发链支持Codex、pi、TraeX三种`agent_bridge`，覆盖下文旧Codex-only描述。`bridge_kind`分别为`codex`/`pi`/`traex`；pi另需`bridge_provider`为已有`deepseek`或`ollama`，模型仍明确保存在不可变profile中。优先使用`agent_hosts.<kind>.executable/profile`，保留原Codex兼容字段；未明确路径时检查PATH及标准用户bin，明确但无效的路径不回退。复用Agent已有登录，pi不复制密钥到Provider；隔离处理会话不加载日常skills/hooks、历史或项目工具。保存、完整Schema验证、明确启用分开；新pi/TraeX验证绑定可执行身份、pi模型配置及受信扩展摘要，依赖漂移须重新验证。本地与净室证据、版本及限制见[处理配置接续](engineering/processing-handoff-20261118.md)，不改变开发阶段不release、日常服务所有权和同库规则。
-
 2026-11-15：日常启动拒绝本项目已知验收Agent目录；stop/status保留恢复入口。环境优先级为管理侧明确选择、运行配置、宿主环境变量、默认目录；冲突需明确选择。不要将验收profile复制成日常接入，也不要为修复连接补采旧会话。真实目录修复及安全重启边界见[交付记录](engineering/agent-environment-delivery-20261115.md)。
 
 2026-11-14用户最新要求：当前只使用一套日常库，不另建或切换隔离测试库。统一配置为`.local/daily/runtime.json`，Native、服务和已接入Agent使用同一Cognee官方存储，项目仍各自分组。原本轮两库已合并，旧隔离根只保留在回滚备份；规则与真实核验见[单一日常库记录](engineering/single-daily-store-20261114.md)。下文旧隔离验收配置仅保留历史事实，不作为后续运行入口。
+
+2026-11-18处理桥更新：当前开发链支持Codex、pi、TraeX三种`agent_bridge`，覆盖下文旧Codex-only描述。`bridge_kind`分别为`codex`/`pi`/`traex`；pi另需`bridge_provider`为已有`deepseek`或`ollama`，模型仍明确保存在不可变profile中。优先使用`agent_hosts.<kind>.executable/profile`，保留原Codex兼容字段；未明确路径时检查PATH及标准用户bin，明确但无效的路径不回退。复用Agent已有登录，pi不复制密钥到Provider；隔离处理会话不加载日常skills/hooks、历史或项目工具。保存、完整Schema验证、明确启用分开；新pi/TraeX验证绑定可执行身份、pi模型配置及受信扩展摘要，依赖漂移须重新验证。本地与净室证据、版本及限制见[处理配置接续](engineering/processing-handoff-20261118.md)，不改变开发阶段不release、日常服务所有权和同库规则。
 
 2026-11-14多Agent／Provider增补已进入dev实施，覆盖下文旧“唯一Codex生成通道”的相应说明。当前支持、真实证据与未完成项见[支持矩阵](engineering/multi-agent-provider-support-20261114.md)。现有日常runtime／插件不自动迁移，仍以各自交付记录为准。
 
@@ -67,7 +67,7 @@ python3 scripts/dev.py stop --config /绝对路径/runtime.json
 
 | 模板字段 | 配置含义 |
 | --- | --- |
-| `official_data` | 已有官方日常存储根目录，必须含 `system/`、`data/`；规范路径持有单实例锁，跨源码目录或符号链接也不能启动第二个写者。 |
+| `official_data` | 已有官方日常存储根目录，必须含 `system/`、`data/`；规范路径持有单实例锁，跨源码目录或符号链接也不能启动第二个写者。日常库须使用持久目录，不得沿用 `TMPDIR`／`memlane-task-*` 验收临时目录；本机已迁至 `.local/daily/official-store`，恢复记录见 `engineering/vector-fragment-missing-20261118.md`。 |
 | `official_source`、`official_archive`、`service_commit` | 固定上游源码目录、原始归档与提交。提交须匹配 `engine/coding-memory-components.json`；启动时校验归档摘要及官方包源码，不使用修改后的上游副本。 |
 | `python` | 已有 Python 3.12 虚拟环境的 Python 入口，保留 venv 路径，不替换成符号链接最终指向的基础 Python。复用已有依赖。 |
 | `service_url` | 桌面与官方插件共同访问的官方 Cognee API origin。 |
@@ -115,7 +115,7 @@ Provider协议值为 `openai`、`anthropic`、`gemini`、`custom`；DeepSeek等�
 
 首次配置依次保存Provider、点击会消耗额度的验证、选择“下次启动使用”；保存或验证不会制造active。完成后通过 `python3 scripts/dev.py stop --config /绝对路径/runtime.json` 停止配置服务，再正常 `start`。启动器只有在已验证候选的健康及完整摘要匹配后才写首个active；首个候选失败时清理并停止，不恢复不存在的旧配置。没有已验证next时不启动引擎。`setup`拒绝已存在active的账本；已有日常配置继续在正常设置页编辑。不得手写passed、复制验收账本或修改活动修订绕过验证。
 
-开发阶段不运行完整打包、DMG、签名、公证、更新或 helper 安装。Go/MyGo 固定版本和仓库内工具链继续复用。磁盘门禁至少保留 100 GiB，`dev.py` 与其他检查均通过既有 `scripts/task.py`；Go 检查使用 `sh scripts/go.sh`。
+开发阶段不运行完整打包、DMG、签名、公证、更新或 helper 安装。Go/MyGo 固定版本和仓库内工具链继续复用。2026-11-17 用户将磁盘门禁调整为至少保留 50 GiB，运行中低于 55 GiB 停止受管任务；`dev.py` 与其他检查均通过既有 `scripts/task.py`，Go 检查使用 `sh scripts/go.sh`。新阈值对新启动的包装器生效，已运行的旧包装器不会自动重载；正常收尾／重启须遵守现有运行资源交接规则。
 
 首页A的字体需要与稿件的`-webkit-font-smoothing: antialiased`一致。MyGo0.7.4只在自绘字形公开此能力，当前以`scripts/patches/mygo-antialiased.json`固定两个SDK源文件及其SHA，补充主题内的可选`Antialiased`绘制标志；仅首页主题启用，其他页面默认绘制不变。`go.sh`及`dev.py`通过`scripts/mygo_sdk.py`准备一份约24 MiB的私有SDK及临时`-modfile`，路径在`.local/mygo-sdk/`，不会改模块缓存、仓库`go.mod/go.sum`或系统字体偏好。Go不允许用`-overlay`替换模块缓存中的文件，因此不采用该方式。
 

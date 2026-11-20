@@ -1,0 +1,26 @@
+{
+  "date": "2026-11-16",
+  "native_observed": true,
+  "archived_count": 20,
+  "archived_sessions": 1,
+  "before_buffer": {
+    "pending": 20,
+    "unknown": 20,
+    "sha256": "6cc995dec8df22589a4b4f5a3e2a365d43b84ebe76f07f8de2ca25f974c48253"
+  },
+  "after_buffer": {
+    "pending": 20,
+    "unknown": 20,
+    "sha256": "6cc995dec8df22589a4b4f5a3e2a365d43b84ebe76f07f8de2ca25f974c48253"
+  },
+  "visible_active_pending": 0,
+  "visible_active_unknown": 0,
+  "sidebar_badge_present_after": false,
+  "history_label": "20 条 · 已归档 · 保存结果未知",
+  "refresh_retains_archive": true,
+  "archive_mode": "0600",
+  "go_test": "passed",
+  "go_vet": "passed",
+  "no_model_submitted_by_this_task": true,
+  "no_official_content_write_by_archive": true
+}

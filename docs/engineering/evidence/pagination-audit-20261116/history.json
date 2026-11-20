@@ -1,0 +1,9 @@
+{
+  "qas": 28,
+  "traces": 245,
+  "qas_equal_across_batch_sizes": true,
+  "traces_equal_across_batch_sizes": true,
+  "qa_sequence_sha256": "a926894eff514d21a9c281cf3844fa2591feab2ff66199bd070f8d2fe8e6b512",
+  "trace_sequence_sha256": "1ef7d879ccc7d1f836cb3463d0dbf81926e66e2b1ef41e60f0a2c39fcf5c7b69",
+  "method": "read-only history limit20 vs limit13; exact sequence comparison; no bodies persisted"
+}

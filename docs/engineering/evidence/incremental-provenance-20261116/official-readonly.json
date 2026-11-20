@@ -1,0 +1,20 @@
+{
+  "checked_at": "2026-11-16T05:41:48Z",
+  "client_state_sha256": "97e448181b6616bbf7b11bc7b7913d2ce8b7d686be4adee9517e7b5c8a85233a",
+  "excluded_derived": 33,
+  "knowledge": 43,
+  "knowledge_dates": {
+    "2026-11-12": 3,
+    "2026-11-13": 1,
+    "2026-11-14": 20,
+    "2026-11-15": 15,
+    "2026-11-16": 4
+  },
+  "projects": 7,
+  "raw_documents": 0,
+  "raw_sessions": 41,
+  "raw_total": 41,
+  "scopes": 8,
+  "source": "live official read-only; client date association only, no official/model/index writes",
+  "used_days": 4
+}

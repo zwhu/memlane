@@ -9,13 +9,13 @@ import (
 func generationBridgeLabel(kind string) string {
 	switch kind {
 	case "pi":
-		return "pi"
+		return "pi CLI"
 	case "traex":
-		return "TraeX"
+		return "TraeX CLI"
 	case "antigravity":
-		return "Gemini"
+		return "Gemini CLI"
 	default:
-		return "Codex"
+		return "Codex CLI"
 	}
 }
 
@@ -32,7 +32,7 @@ func generationDefaultModel(g GenerationDirectory, kind string) string {
 			parts = append(parts, actual.ServiceTier)
 		}
 		if kind == "antigravity" && actual.ConfigurationSource == "agy_cli_settings" {
-			parts = append(parts, "agy 默认配置")
+			parts = append(parts, "agy CLI 默认配置")
 		}
 		return strings.Join(parts, " / ")
 	}
@@ -68,7 +68,7 @@ func (a *App) generationProfileCards(c *ui.Context, editable ...bool) {
 			ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
 				title := "选择模型"
 				if s.DraftMode == "agent_bridge" {
-					title = "选择 Agent"
+					title = "选择 Agent CLI"
 				}
 				homeText(c, title, homeHeading).FontSize(15).FontWeight(500)
 				ui.Spacer(c)
@@ -103,7 +103,7 @@ func (a *App) generationProfileCards(c *ui.Context, editable ...bool) {
 							homeText(c, item.Title, homeBody).Width(90).Shrink(0).FontSize(13).FontWeight(500).TextColor(homeInk).SingleLine()
 							homeText(c, item.Detail, homeMeta).Grow(1).MinWidth(0).SingleLine().Tooltip(item.Detail)
 							if !s.connectedProcessingAgent(item.Icon) {
-								homeText(c, "未连接", homeMeta).SingleLine()
+								homeText(c, "CLI 未绑定", homeMeta).SingleLine()
 							}
 						} else {
 							homeText(c, item.Title, homeBody).Grow(1).MinWidth(0).FontSize(13).TextColor(homeInk).SingleLine().Tooltip(item.Title)

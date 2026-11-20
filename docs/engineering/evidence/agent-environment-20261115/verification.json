@@ -1,0 +1,39 @@
+{
+  "date": "2026-11-15",
+  "stage": "dev",
+  "real_traex": {
+    "profile": "~/.trae",
+    "native_installer": true,
+    "other_configuration_preserved": true,
+    "actual_new_session_exit_code": 0,
+    "environment_verified": true,
+    "plugin_version": "1.8.0+memlane.beb6f6bef3f837deb098",
+    "automatic_project_discovered": "item-fe",
+    "official_session_qa_returned": 1,
+    "native_settings_verified": true,
+    "native_project_record_body_verified": false
+  },
+  "checks": {
+    "python_unittests": 95,
+    "python_result": "passed",
+    "go_tests": "passed",
+    "go_vet": "passed",
+    "git_diff_check": "passed"
+  },
+  "retained": [
+    "original official storage",
+    "old Agent installations and buffers",
+    "original login and third-party plugins"
+  ],
+  "activation_boundary": {
+    "core_environment_fix": "active and real host verified",
+    "last_host_upgrade_review_refinement": "source tested; loaded on next safe service restart",
+    "background_requests_at_final_restart_check": 32
+  },
+  "unverified": [
+    "real pi connection",
+    "real OpenCode connection",
+    "other host binary version strings"
+  ],
+  "screenshot": "native-traex-connected.jpg"
+}

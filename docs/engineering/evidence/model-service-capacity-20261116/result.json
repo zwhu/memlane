@@ -1,0 +1,58 @@
+{
+  "synthetic_only": true,
+  "real_model_calls": 0,
+  "runtime_restarted": false,
+  "source_sha256": {
+    "generation_capacity.py": "9ee5b7e912eaf1f4c5a3029e1be2fd71408cc619bc483d3badd201848988f2eb",
+    "generation_http.py": "61bf706c9548177d9aa91266c697f28be834beaf982e99c1604727737df3cc2a",
+    "generation_config.py": "061cf702df169d282fef1c8512f82ab8c8fc1367ba8a27ba9eb2a7fd78679b99",
+    "generation_probe.py": "0b69ecde0cf1c461f07d8808f9d46dec330899a9f2de9674c1525f906232ee32",
+    "generation_validation.py": "969372c79b468c2d55047fe9f6850a004be0a472a0cde2fbec25b24f4a7be1d5",
+    "official_service_dev.py": "910daef8356fd91610f7e696603214e460e78c868e6196a76f1306296b3b817a",
+    "test_generation_capacity.py": "edb1adeb3abdcb79c96cd5148bc3a7fbe20bb208c4697f641e691cb102b2cf6b",
+    "test_generation_probe.py": "972dfccfbaca9dd82cf13738be686593f9d25fe6a7921a2c7d3afbd9e75fbd35",
+    "test_generation_parameters.py": "3a1605bb055c0b000a07fad5362047f8150382b677e71b7c77895c2ccd42817b",
+    "test_generation_ollama.py": "b0a25a5b177b837a3cc73287757771975fa3e9fba2fd94dc8c0e1010d8bbf852"
+  },
+  "checks": [
+    {
+      "suite": "generation regression",
+      "tests": 55,
+      "passed": true,
+      "seconds": 86.388
+    },
+    {
+      "suite": "final capacity",
+      "tests": 8,
+      "passed": true,
+      "seconds": 5.211
+    },
+    {
+      "suite": "final native ollama",
+      "tests": 10,
+      "passed": true,
+      "seconds": 24.15
+    }
+  ],
+  "overlapping_suites": true,
+  "assertions": {
+    "protocols": [
+      "openai-compatible",
+      "anthropic",
+      "gemini",
+      "ollama"
+    ],
+    "burst_per_protocol": 64,
+    "peak_capacity": 2,
+    "final_occupied": 0,
+    "cache_rebuild": true,
+    "sdk_retry_via_local_proxy": true,
+    "delayed_body": true,
+    "sync_async_shared": true,
+    "independent_loops_shared": true,
+    "queued_and_active_cancellation": true,
+    "bounded_wait_timeout": true,
+    "bridge_64_without_sdk_retry": true
+  },
+  "runtime_boundary": "existing real operation continues on previously loaded code; no restart"
+}

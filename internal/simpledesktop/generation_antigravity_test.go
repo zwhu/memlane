@@ -21,7 +21,7 @@ func TestGeminiProcessingChoiceKeepsOrderAndCurrentProcessor(t *testing.T) {
 			t.Fatal("existing order changed", items)
 		}
 	}
-	if items[3].Title != "Gemini" || !strings.Contains(items[3].Detail, "agy 默认配置") {
+	if items[3].Title != "Gemini CLI" || !strings.Contains(items[3].Detail, "agy CLI 默认配置") {
 		t.Fatal("Gemini identity or model source missing", items[3])
 	}
 	a := New(Config{}, nil)

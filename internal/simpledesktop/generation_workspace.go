@@ -211,13 +211,16 @@ func (a *App) generationWorkspaceContent(c *ui.Context, edit, enable bool) {
 	if s.DraftMode == "provider" {
 		selected = 1
 	}
-	ui.Segmented(c, &selected, "使用 Agent", "模型 Provider").Label("处理来源").AlignSelf(ui.Start).Disabled(s.Busy).OnChange(func() {
+	ui.Segmented(c, &selected, "使用 Agent CLI", "模型 Provider").Label("处理来源").AlignSelf(ui.Start).Disabled(s.Busy).OnChange(func() {
 		mode := "agent_bridge"
 		if selected == 1 {
 			mode = "provider"
 		}
 		a.chooseGenerationSource(mode)
 	})
+	if s.DraftMode == "agent_bridge" {
+		homeText(c, "需先在「Agent 与模型」中绑定对应 CLI，才能用于整理记忆。", homeMeta)
+	}
 	if !edit {
 		settingsListSurface(c, func() {
 			a.generationProfileCards(c, false)

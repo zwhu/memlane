@@ -1,0 +1,65 @@
+{
+  "restored_files": [
+    {
+      "repository": "BAAI/bge-small-zh-v1.5",
+      "revision": "7999e1d3359715c523056ef9478215996d62a620",
+      "file": "tokenizer.json",
+      "bytes": 439125,
+      "digest": "cdb3043fc938fc918c06e66cf704c2ba58f88747"
+    },
+    {
+      "repository": "BAAI/bge-small-zh-v1.5",
+      "revision": "7999e1d3359715c523056ef9478215996d62a620",
+      "file": "tokenizer_config.json",
+      "bytes": 367,
+      "digest": "3a59388f0fd1bd22dec2ce7902c1be8e1fb84107"
+    },
+    {
+      "repository": "Qdrant/bge-small-zh-v1.5",
+      "revision": "46fbe35fd4374a00fee7de77dfddaeb6dd6a2c59",
+      "file": "config.json",
+      "bytes": 739,
+      "digest": "60938626ad1097a0c1a14be4f8340e32c714a056"
+    },
+    {
+      "repository": "Qdrant/bge-small-zh-v1.5",
+      "revision": "46fbe35fd4374a00fee7de77dfddaeb6dd6a2c59",
+      "file": "model_optimized.onnx",
+      "bytes": 94781076,
+      "digest": "1294ea4b6331115a353d81f96b85e8c8d7fdcc284453d5b2fab5b016230aad38"
+    },
+    {
+      "repository": "Qdrant/bge-small-zh-v1.5",
+      "revision": "46fbe35fd4374a00fee7de77dfddaeb6dd6a2c59",
+      "file": "special_tokens_map.json",
+      "bytes": 125,
+      "digest": "a8b3208c2884c4efb86e49300fdd3dc877220cdf"
+    },
+    {
+      "repository": "Qdrant/bge-small-zh-v1.5",
+      "revision": "46fbe35fd4374a00fee7de77dfddaeb6dd6a2c59",
+      "file": "tokenizer.json",
+      "bytes": 439125,
+      "digest": "cdb3043fc938fc918c06e66cf704c2ba58f88747"
+    },
+    {
+      "repository": "Qdrant/bge-small-zh-v1.5",
+      "revision": "46fbe35fd4374a00fee7de77dfddaeb6dd6a2c59",
+      "file": "tokenizer_config.json",
+      "bytes": 367,
+      "digest": "3a59388f0fd1bd22dec2ce7902c1be8e1fb84107"
+    }
+  ],
+  "restored_bytes": 95660924,
+  "owner_pid": 55101,
+  "same_daily_store": true,
+  "model_changed": false,
+  "indexes_rebuilt": false,
+  "recall_counts": {
+    "daily_cli": 3,
+    "memlane": 4
+  },
+  "actual_native_traex_environment_verified": true,
+  "owner_started_at": "2026-11-15 09:58:06",
+  "phase_at_verification": "ready"
+}

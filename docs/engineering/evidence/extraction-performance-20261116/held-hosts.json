@@ -1,0 +1,39 @@
+{
+  "owner": 72239,
+  "chunks_per_batch": 2,
+  "shared_endpoint_capacity": 2,
+  "hosts": {
+    "codex": {
+      "session_id": "codex_01a1e327-544a-7971-aa43-103e7e4ad760",
+      "qa_count": 1,
+      "tool_count": 4,
+      "host_turn_end": "2026-11-16T07:00:16.874935+00:00",
+      "observed_at": "2026-11-16T07:06:29.411050+00:00",
+      "host_was_open_at_terminal_observation": true,
+      "operation": {
+        "id": "546ba543-7743-4208-aaed-2ba6db0bdb87",
+        "outcome": "succeeded",
+        "started_at": "2026-11-16T07:04:31.669945",
+        "ended_at": "2026-11-16T07:06:23.480762",
+        "background": true
+      },
+      "seconds": 111.810817
+    },
+    "traex": {
+      "session_id": "codex_traex-512048b28f46acd698550ff18aefdf51e5cd80934bc45e1ce29c17b87bb6ed0d",
+      "qa_count": 1,
+      "tool_count": 9,
+      "host_turn_end": "2026-11-16T07:01:34.325750+00:00",
+      "observed_at": "2026-11-16T07:09:00.822422+00:00",
+      "host_was_open_at_terminal_observation": true,
+      "operation": {
+        "id": "7bd9986a-4d48-445d-b185-7e1a00fccad4",
+        "outcome": "succeeded",
+        "started_at": "2026-11-16T07:06:49.321144",
+        "ended_at": "2026-11-16T07:08:53.755656",
+        "background": true
+      },
+      "seconds": 124.434512
+    }
+  }
+}

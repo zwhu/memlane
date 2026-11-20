@@ -71,3 +71,15 @@ G01/G02沿前轮各一次官方契约差异观察，非当前产品验收失败�
 本轮明确文件所有权：`engine/managed-project-plugin.json`、`engine/managed-project-plugin-pre-convergence.json`、`engine/patches/project_access.py`、`engine/python/project_installation.py`、`engine/python/project_plugin_policy.py`、`engine/python/test_agent_connections.py`、`engine/python/test_project_plugin_patch.py`、`engine/python/test_project_plugin_policy.py`、`internal/simpledesktop/client.go`、`internal/simpledesktop/knowledge_basis.go`、`internal/simpledesktop/reading_presentation.go`、`internal/simpledesktop/direct_memory_test.go`、`scripts/dev.py`、`scripts/probe_daily_direct_memory.py`、本执行文档及公开配置研究。`docs/product.md`只拥有“官方直接保存增补”段，部署方向段归其他会话。其余未跟踪资料不纳入本提交。
 
 恢复后新增所有权：`engine/python/project_control.py`、`engine/python/project_control_server.py`、`engine/python/test_project_control.py`。其他会话新增的 `agent_connections.py` Codex App发现修改未纳入本提交。
+
+## 2026-11-17 handoff续作：Codex已激活
+
+用户明确“我已经杀掉了那个进程，你直接切换吧”。重新核对日常Codex的旧插件消费者为空、无项目配置冲突；原prepared预览的baseline与当前config摘要完全一致，proposed为`2426652678d3c49469e6e43a0cb63940e7c9413f928aaa355994b27d229f2a3a`，无需重新prepare。
+
+在官方服务未运行时，取得原registry单写锁，调用现有`Connections.perform`／`CodexConnection.activate`（与管理API同实现，不手改配置或registry），operation=`handoff-codex-activate-20261117`。完成后registry revision116，配置摘要与原proposed一致，新cache逐文件通过现有`verify_cache`，状态`configured_pending_new_session`，new_sessions=0。启用marketplace为`memlane-16e71bd70ad5-a47cbd4ac0fbfe221122`。插件元数据version仍为1.8.0，不能仅凭此版本号区分新旧代；固定输入／cache校验与marketplace标识分别保留。旧cache、buffer及其他plugin均保留，没有迁移、补采或重放。
+
+随后只读检查原owner92567及子进程／进程组不存在，三个端口均可绑定，官方存储无lsof打开句柄；持原库排他锁备份陈旧owner至私有回执再移除登记。按`dev.py start --no-ui --config .local/daily/runtime.json`恢复同一日常库，工具session60054是第一次被陈旧owner保护拒绝的启动，未启动任何服务；成功启动工具session为39851，launcher登记PID14559。一次备份脚本错误引用`dev.private_write`在写入前失败，后改用已有`project_control.private_write`；该方法错误与真实内容／模型验收轮次无关。
+
+新服务official/completion健康、owner认证datasets和管理connections均HTTP200；官方datasets数量12；completion活动／等待0。连接卡仍等待新会话，不能报告新代实际加载、自然语言保存或完整主链通过。私有回执`codex-activated-20261117.json`、`stale-owner-before-restart-20261117.json`。本次未发起模型调用或修改信任hash。
+
+补充真实宿主只读核对：调用日常配置选定的原生Codex `plugin list --marketplace memlane-16e71bd70ad5-a47cbd4ac0fbfe221122 --json`，退出0，实际宿主返回对应plugin installed=true、enabled=true。它证明宿主能识别新配置，仍不等于会话hooks已运行。私有回执`codex-host-plugin-list-20261117.json`。最初只读探测有导入路径和旧runtime无agent_hosts.codex键的方法错误，均发生在宿主命令前；修正为现有环境及legacy auth_home/executable回退后执行，没有反复激活或产生新会话。

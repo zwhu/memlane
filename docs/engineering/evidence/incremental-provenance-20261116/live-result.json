@@ -1,0 +1,62 @@
+{
+  "checked_at": "2026-11-16T05:38:57.489294+00:00",
+  "host": "pi default profile; real read-only repository task",
+  "source_qa": 1,
+  "source_tools": 11,
+  "host_open_when_knowledge_created": true,
+  "knowledge_count": 4,
+  "knowledge": [
+    {
+      "id": "5235d471-3063-5730-afdf-14954ee2e0d4",
+      "created_at": "2026-11-16T05:36:07.136749",
+      "session_id": "codex_pi-0b38a5bcdec23f3289084487aa5d0322b9b7901ac52583db80b0c0ab1d9646af",
+      "first_source_date": "2026-11-16",
+      "source_date_status": "linked_qa",
+      "source_qa_ids": [
+        "dcef991a-9213-4a5f-8133-2dfb3a2f536f"
+      ]
+    },
+    {
+      "id": "ea42b74a-c7cb-540b-aac2-2130651f8b5d",
+      "created_at": "2026-11-16T05:36:07.135522",
+      "session_id": "codex_pi-0b38a5bcdec23f3289084487aa5d0322b9b7901ac52583db80b0c0ab1d9646af",
+      "first_source_date": "2026-11-16",
+      "source_date_status": "linked_qa",
+      "source_qa_ids": [
+        "dcef991a-9213-4a5f-8133-2dfb3a2f536f"
+      ]
+    },
+    {
+      "id": "a5203bf7-1a7b-5473-913e-bb93498d6a47",
+      "created_at": "2026-11-16T05:36:07.124490",
+      "session_id": "codex_pi-0b38a5bcdec23f3289084487aa5d0322b9b7901ac52583db80b0c0ab1d9646af",
+      "first_source_date": "2026-11-16",
+      "source_date_status": "linked_qa",
+      "source_qa_ids": [
+        "dcef991a-9213-4a5f-8133-2dfb3a2f536f"
+      ]
+    },
+    {
+      "id": "c7a68b16-9a5d-5144-8117-3dd6809fc9ca",
+      "created_at": "2026-11-16T05:36:07.120007",
+      "session_id": "codex_pi-0b38a5bcdec23f3289084487aa5d0322b9b7901ac52583db80b0c0ab1d9646af",
+      "first_source_date": "2026-11-16",
+      "source_date_status": "linked_qa",
+      "source_qa_ids": [
+        "dcef991a-9213-4a5f-8133-2dfb3a2f536f"
+      ]
+    }
+  ],
+  "operation": {
+    "id": "478e7f95-700e-43bb-a6bb-9c6ed95ca058",
+    "outcome": "succeeded",
+    "started_at": "2026-11-16T05:33:50.464492",
+    "ended_at": "2026-11-16T05:36:45.022371"
+  },
+  "seconds_from_agent_end_to_first_knowledge": 210.392581,
+  "seconds_from_agent_end_to_processing_complete": 248.294945,
+  "processing_seconds": 174.557879,
+  "source_qa_ids_checked_against_original": true,
+  "same_workload_10x_verified": false,
+  "native_visual_verified": false
+}

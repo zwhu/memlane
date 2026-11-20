@@ -1,0 +1,18 @@
+{
+  "scope": "real model with exact official writer prompt and response schema; no data writes",
+  "language": "zh-CN",
+  "model": "gpt-6.1-sol",
+  "lesson": {
+    "accept": true,
+    "reason": null,
+    "statement": "engine/python/language_settings.py 的 language_settings() 将知识语言固定为 zh-CN，当前不可配置。lesson_provenance_patch.py 的 prepare() 将 knowledge_language_instructions() 追加到六个官方提示词，要求使用简体中文并保留技术标识符。",
+    "entities": [
+      "language_settings()",
+      "prepare()",
+      "knowledge_language_instructions()"
+    ],
+    "why_learned": "在落实用户批准的默认知识语言并验证生成组件时确认。",
+    "lesson_type": "state",
+    "state_key": "footprint:knowledge-language"
+  }
+}

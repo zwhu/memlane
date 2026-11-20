@@ -41,6 +41,13 @@
 - **已确认**。服务固定于 Cognee `ec6f408`，图谱前端固定于 `8853378`。Go 已检查节点 ID 唯一、边端点存在和数量上限，前端仍依赖 `color_maps.node_set` 等渲染字段。本次只核对了固定版本与数据路径，尚未复现该版本组合引起的渲染错误。见[服务清单](../engine/coding-memory-components.json#L3)、[前端清单](../web/official-graph/vendor/cognee/upstream.json#L2)、[Go 校验](../internal/simpledesktop/graph.go#L197)、[前端渲染](../web/official-graph/src/main.tsx#L36)。
 - **建议与验收**。用固定后端的真实图谱响应验证当前渲染器，覆盖空图、节点与边、节点点击和来源跳转。根据结果补充实际消费字段的契约校验，再决定是否需要调整固定版本。
 
+## 大量 Agent 的统一驱动适配
+
+- **记录日期**：2026-11-18，用户明确要求保留 Todos 多 Agent 驱动方案，供后续连接大量 Agent 参考。
+- [ ] 核对各家官方 SDK／RPC／ACP／结构化 CLI 接口，按协议复用任务生命周期与诊断，按实例和版本逐项记录能力。
+- **参考与现状**：[多 Agent 驱动协议参考](research-agent-driving-protocols-20261118.md)，包含原帖、原图、当前 Codex／pi 路径及验证边界。
+- **状态**：已记录，未排期；本次不新增 Agent、不迁移现有调用。任务驱动、官方采集／召回、已有记忆导出分别验证。
+
 ## 桌面端管理其他主机的记忆
 
 - **记录日期**：2026-11-07，用户明确提出。

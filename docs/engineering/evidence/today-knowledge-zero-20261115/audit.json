@@ -1,0 +1,91 @@
+{
+  "knowledge_total": 10,
+  "today_new": 0,
+  "improve_operations": [
+    {
+      "id": "46fdae5a-34c9-4821-9b23-01de149a6e3a",
+      "dataset_id": "0785e3d2-881a-58c4-883e-cc3d2dcf76ef",
+      "outcome": "failed",
+      "started_at": "2026-11-15T03:50:21.256319",
+      "ended_at": "2026-11-15T04:00:44.800324",
+      "error_class": "CogneeSystemError",
+      "tokens_in": 0,
+      "tokens_out": 0,
+      "session_ids": [
+        "codex_01a1daed-4113-7431-8f22-5635f9b17dc3"
+      ]
+    },
+    {
+      "id": "23d57139-d846-41e9-855b-eede9abce886",
+      "dataset_id": "0785e3d2-881a-58c4-883e-cc3d2dcf76ef",
+      "outcome": "failed",
+      "started_at": "2026-11-15T03:49:04.168538",
+      "ended_at": "2026-11-15T03:56:19.075005",
+      "error_class": "CogneeSystemError",
+      "tokens_in": 0,
+      "tokens_out": 0,
+      "session_ids": [
+        "codex_01a1d7bc-c5f2-7af3-9584-2f8bd0926b68"
+      ]
+    },
+    {
+      "id": "a11b578b-8b00-457d-8a00-a95e7b829a3c",
+      "dataset_id": "0785e3d2-881a-58c4-883e-cc3d2dcf76ef",
+      "outcome": "failed",
+      "started_at": "2026-11-15T03:47:41.048940",
+      "ended_at": "2026-11-15T03:52:05.860213",
+      "error_class": "CogneeSystemError",
+      "tokens_in": 1,
+      "tokens_out": 1,
+      "session_ids": [
+        "codex_01a1d632-0bb7-7c93-9764-9c7e1f2d824d"
+      ]
+    },
+    {
+      "id": "81e4a10b-6ef7-4ea1-9688-7fce82ef7c85",
+      "dataset_id": "52e4a298-e58c-5607-bf79-712b2e4fb9d9",
+      "outcome": "succeeded",
+      "started_at": "2026-11-15T01:50:50.304879",
+      "ended_at": "2026-11-15T01:51:05.610946",
+      "error_class": null,
+      "tokens_in": 0,
+      "tokens_out": 0,
+      "session_ids": [
+        "codex_traex-f30da90e44d8377689ff6e02d2873e1a3f0675c66ab6f8d73a90a1e88c784ad2"
+      ]
+    },
+    {
+      "id": "5db2fbe9-9d56-4d49-87d7-4452541ceae0",
+      "dataset_id": "0785e3d2-881a-58c4-883e-cc3d2dcf76ef",
+      "outcome": "failed",
+      "started_at": "2026-11-14T17:24:04.003296",
+      "ended_at": "2026-11-14T17:28:17.982797",
+      "error_class": "CogneeSystemError",
+      "tokens_in": 0,
+      "tokens_out": 0,
+      "session_ids": [
+        "codex_traex-8e261150601dd646ad29f15d80a999d59be2c4bbec91bc777e37bbfd4131c5ea"
+      ]
+    },
+    {
+      "id": "de9b815c-8a60-4076-ac84-cefb011af2db",
+      "dataset_id": "6bb25766-235b-5c9b-85a9-42696ff1b766",
+      "outcome": "succeeded",
+      "started_at": "2026-11-14T17:21:17.497322",
+      "ended_at": "2026-11-14T17:22:14.057045",
+      "error_class": null,
+      "tokens_in": 1,
+      "tokens_out": 1,
+      "session_ids": [
+        "codex_traex-93ee3cc7075d31717081e21d67d945f4c3ac4cb56ec3d6dc02a2d1b3e9b6235d"
+      ]
+    }
+  ],
+  "confirmed_recent_error": "429 codex_busy",
+  "failed_stage": "persist_session_qa",
+  "bridge_limits": {
+    "executing": 2,
+    "active_or_waiting": 32
+  },
+  "current_active_or_waiting": 0
+}

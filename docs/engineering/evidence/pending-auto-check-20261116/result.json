@@ -1,0 +1,32 @@
+{
+  "runtime_read_only": true,
+  "content_replayed": false,
+  "manual_check_clicked": false,
+  "automatic_enabled": true,
+  "checks": [
+    {
+      "status": "unconfirmed",
+      "reason": "original_receipt_unavailable",
+      "matched": 0,
+      "unknown": 20,
+      "checked_at": 1794801594.768096
+    }
+  ],
+  "go_all_passed": true,
+  "go_vet_passed": true,
+  "go_race_passed": true,
+  "opencode_fixed_worker_tests": 8,
+  "opencode_fixed_worker_passed": true,
+  "source_sha256": {
+    "engine/python/project_backlog.py": "9fad0988b0f65ef355995ea1064e2e5fbd0a297c69eb27732ddac1a5dc9a09ce",
+    "engine/python/project_backlog_worker.py": "4129e6402c5a64da3637585982bc2ebe27f0d843e517d58ec6abb90bcf0efe47",
+    "engine/python/opencode_backlog.py": "1188e76538733f301ebbc1420c89e351671837cca8ccf8b24b06a4c088f148bd",
+    "internal/simpledesktop/project_backlog.go": "1fe76b33788e59460a308086433c3c6c537e6df66cde5f81635f3fd9007f7b38",
+    "internal/simpledesktop/project_queue_ui.go": "4eb617daa98fb4057e568d87699e1394bf71835770a5a6a7c93f26a1ad04cc8f",
+    "internal/simpledesktop/pending_auto_check_test.go": "609193cecd32af63bd399eecfe40faa1b27f3f0c17f697a449dd5856937f169d"
+  },
+  "native_after_restart": "blocked: cgWindowNotFound after frontend hot rebuild; owner restoring GUI, no duplicate launch",
+  "native_before_restart": "observed updated labels and waiting-for-check state",
+  "backend_targeted_tests": 17,
+  "backend_targeted_passed": true
+}

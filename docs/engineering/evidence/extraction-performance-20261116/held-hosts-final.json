@@ -1,0 +1,123 @@
+{
+  "owner": 72239,
+  "chunks_per_batch": 2,
+  "shared_endpoint_capacity": 2,
+  "hosts": {
+    "codex": {
+      "session_id": "codex_01a1e327-544a-7971-aa43-103e7e4ad760",
+      "qa_count": 1,
+      "tool_count": 4,
+      "host_turn_end": "2026-11-16T07:00:16.874935+00:00",
+      "observed_at": "2026-11-16T07:06:29.411050+00:00",
+      "host_was_open_at_terminal_observation": true,
+      "operation": {
+        "id": "546ba543-7743-4208-aaed-2ba6db0bdb87",
+        "outcome": "succeeded",
+        "started_at": "2026-11-16T07:04:31.669945",
+        "ended_at": "2026-11-16T07:06:23.480762",
+        "background": true
+      },
+      "seconds": 111.810817,
+      "host_exit_code": 0,
+      "knowledge": [
+        {
+          "id": "6574ccff-00c6-5d50-b770-56c72b27f964",
+          "created_at": "2026-11-16T07:06:01.143860",
+          "first_source_date": "2026-11-16",
+          "source_date_status": "linked_qa",
+          "source_qa_ids": [
+            "e7cc64a1-321b-426b-9342-cac687e5aa37"
+          ],
+          "source_qa_verified": true
+        }
+      ],
+      "saved_counts_after_close": [
+        1,
+        4
+      ],
+      "incremental": [
+        {
+          "status": "submitted",
+          "operation_id": "5cff31b4-6455-4e31-b491-24f26709d3d9",
+          "dispatch_counts": [
+            1,
+            4
+          ],
+          "submitted_counts": [
+            1,
+            4
+          ],
+          "attempted_at": 1794812668.2597382
+        }
+      ]
+    },
+    "traex": {
+      "session_id": "codex_traex-512048b28f46acd698550ff18aefdf51e5cd80934bc45e1ce29c17b87bb6ed0d",
+      "qa_count": 1,
+      "tool_count": 9,
+      "host_turn_end": "2026-11-16T07:01:34.325750+00:00",
+      "observed_at": "2026-11-16T07:09:00.822422+00:00",
+      "host_was_open_at_terminal_observation": true,
+      "operation": {
+        "id": "7bd9986a-4d48-445d-b185-7e1a00fccad4",
+        "outcome": "succeeded",
+        "started_at": "2026-11-16T07:06:49.321144",
+        "ended_at": "2026-11-16T07:08:53.755656",
+        "background": true
+      },
+      "seconds": 124.434512,
+      "host_exit_code": 0,
+      "knowledge": [
+        {
+          "id": "90680a78-5442-5c27-a305-3ef35acde822",
+          "created_at": "2026-11-16T07:08:27.493794",
+          "first_source_date": "2026-11-16",
+          "source_date_status": "linked_qa",
+          "source_qa_ids": [
+            "e5d3c2e6-6ffc-49b9-87aa-adc1e4ceee1f"
+          ],
+          "source_qa_verified": true
+        }
+      ],
+      "saved_counts_after_close": [
+        1,
+        9
+      ],
+      "incremental": [
+        {
+          "status": "submitted",
+          "operation_id": "ded39074-b516-4f93-80f4-8a0ca0222f18",
+          "dispatch_counts": [
+            1,
+            9
+          ],
+          "submitted_counts": [
+            1,
+            9
+          ],
+          "attempted_at": 1794812806.858839
+        }
+      ]
+    }
+  },
+  "applied": {
+    "pid": 72242,
+    "digest": "d737ee2e184fbaf9f7cbc101e54b263cede5fe0c626155a5691eed24486b2750",
+    "reference": {
+      "id": "existing-codex",
+      "revision": 1
+    },
+    "mode": "agent_bridge",
+    "model": "gpt-6.1-sol",
+    "improve_stages_disabled": [
+      "persist_agent_traces"
+    ],
+    "chunks_per_batch": 2,
+    "max_concurrent_requests": 2,
+    "capacity_wait_timeout_seconds": 300
+  },
+  "capacity_after": {
+    "pending_background_tasks": 0,
+    "tool_graph_jobs_running": 0
+  }
+}

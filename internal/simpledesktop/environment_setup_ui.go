@@ -15,6 +15,9 @@ import (
 )
 
 type environmentSetupState struct {
+	PathDialog                                     bool
+	PathDraft                                      environmentPathDraft
+	CopiedPath                                     string
 	Loaded, Loading, Busy, Review, Details, Manual bool
 	Plan                                           bootstrap.Plan
 	Journal                                        bootstrap.Journal
@@ -364,8 +367,8 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 				settingsListRow(c, func() {
 					dependencyMark(c, row.Requirement.ID)
 					ui.Row(c).Grow(1).MinWidth(0).AlignItems(ui.Center).Gap(12).Children(func() {
-						homeText(c, dependencyDisplayName(row.Requirement), homeBody).FontSize(13).FontWeight(500).TextColor(homeInk)
-						homeText(c, dependencyDisplayVersion(row, s.Environment), homeMeta).Grow(1).MinWidth(0).SingleLine().Tooltip(row.Requirement.Version)
+						homeText(c, dependencyDisplayName(row.Requirement), homeBody).FontSize(14).FontWeight(500).TextColor(homeInk).Width(104).Shrink(0)
+						homeText(c, dependencyDisplayVersion(row, s.Environment), homeMeta).TextColor(ui.Hex("#596675")).Grow(1).MinWidth(0).SingleLine().Tooltip(row.Requirement.Version)
 					})
 					color := homeMuted
 					if status == bootstrap.Available || status == bootstrap.Ready {
@@ -373,11 +376,8 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 					}
 					homeText(c, environmentLabel(status), homeMeta).TextColor(color)
 				})
-				if s.Details && row.Observation.Reason != "" {
-					homeText(c, bootstrap.RedactInstallerText(row.Observation.Reason), homeMeta).LineHeight(1.5)
-				}
-				if s.Details {
-					homeText(c, row.Observation.Path, homePath).LineHeight(1.5)
+				if s.Details && row.Observation.Reason != "" && status != bootstrap.Available && status != bootstrap.Ready {
+					homeText(c, bootstrap.RedactInstallerText(row.Observation.Reason), homeMeta).LineHeight(1.5).Margin(0, 0, 8, 36)
 				}
 			})
 		}
@@ -425,26 +425,21 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 		})
 		a.environmentDiagnosticAgents(c)
 		if s.Details {
-			textButton(c, "复制诊断材料", nil).OnClick(func() {
-				report, _ := a.environmentDiagnostic()
-				c.WriteClipboard(report)
-				s.Message = "脱敏诊断材料已复制"
+			a.environmentLocations(c)
+			ui.Row(c.Key("environment-detail-actions")).FillWidth().AlignItems(ui.Center).Gap(20).Padding(12, 0, 0, 0).Children(func() {
+				textButton(c, "复制诊断材料", nil).OnClick(func() {
+					report, _ := a.environmentDiagnostic()
+					c.WriteClipboard(report)
+					s.Message = "脱敏诊断材料已复制"
+				})
+				textButton(c, "导出诊断包", nil).Disabled(s.Exporting || a.ChooseDiagnosticPath == nil).OnClick(a.exportEnvironmentDiagnostic)
+				ui.Spacer(c)
+				textButton(c, "指定已有路径", a.openEnvironmentPaths).Disabled(s.Busy || s.Loading)
 			})
-			textButton(c, "导出诊断包", nil).Disabled(s.Exporting || a.ChooseDiagnosticPath == nil).OnClick(a.exportEnvironmentDiagnostic)
-			textButton(c, "指定已有路径", nil).Disabled(s.Busy || s.Loading).OnClick(func() { s.Manual = !s.Manual })
-		}
-		if s.Manual {
-			for _, field := range []struct {
-				Label string
-				Value *string
-			}{{"Python 路径", &s.Python}, {"uv 路径", &s.UV}, {"Cognee 源码目录", &s.Source}, {"固定源码归档", &s.Archive}, {"已有模型缓存目录", &s.ModelCache}, {"已有 Agent 插件目录", &s.Plugin}} {
-				homeText(c, field.Label, homeMeta)
-				ui.TextInput(c.Key(field.Label), field.Value).FillWidth().Label(field.Label).Disabled(s.Busy || s.Loading)
-			}
-			commonButton(c, "检测这些路径", false, func() { a.detectEnvironment(true) }).Disabled(s.Busy || s.Loading)
 		}
 	})
 	a.environmentReviewModal(c)
+	a.environmentPathsDialog(c)
 }
 
 func (a *App) initialEnvironmentPage(c *ui.Context) {

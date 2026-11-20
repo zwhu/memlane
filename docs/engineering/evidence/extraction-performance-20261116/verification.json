@@ -1,0 +1,39 @@
+{
+  "checked_at": "2026-11-16T03:03:30.278611+00:00",
+  "dev_phase": "ready",
+  "model": "gpt-6.1-sol",
+  "max_concurrent_requests": 2,
+  "capacity_wait_timeout_seconds": 300,
+  "improve_stages_disabled": [
+    "persist_agent_traces"
+  ],
+  "original_main_knowledge_preserved": 32,
+  "bridge_active_or_waiting": 0,
+  "source_digests": {
+    "engine/python/performance_trace.py": "22657ab70db24e623405d5fe8274ea01ad748834f4fd1701d7cfe8e55d8065ba",
+    "engine/python/codex_completion_endpoint.py": "b9ba288556a1a64e15641430d19fa10f16d07d8ee9e5339709547a025e7c0a91",
+    "engine/python/generation_capacity.py": "b5208fde176e4b1208fc4814f193b8ba6ed48dfb30f913a00c2a80e10500ccaf",
+    "engine/python/official_service_dev.py": "f20ea13f10aed22775a2ccd6c9ab8e73f6bcb9b8b702cffb0e09afe442e24cf9"
+  },
+  "background_smoke": {
+    "checked_at": "2026-11-16T02:58:55.458548+00:00",
+    "session_id": "codex_01a1e248-2914-77d1-8e9c-86de920b09c1",
+    "dataset_id": "0785e3d2-881a-58c4-883e-cc3d2dcf76ef",
+    "qa": 1,
+    "traces": 1,
+    "new_tool_graph_documents": 0,
+    "new_knowledge_documents": 0,
+    "result": "no_gated_entries",
+    "improve_operation": "1aaf9df1-0e25-4c1f-89a3-84bf5b74a0cb",
+    "improve_duration_seconds": 46.344344,
+    "same_workload_10x_verified": false,
+    "completed_without_manual_trigger": true,
+    "scope": "read-only smoke session, not representative large extraction workload"
+  },
+  "regression": {
+    "tests": 35,
+    "passed": true,
+    "seconds": 11.926
+  },
+  "same_workload_10x_verified": false
+}

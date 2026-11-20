@@ -17,7 +17,7 @@ func TestGenerationCardsSeparateBridgeAndGroupProviderModels(t *testing.T) {
 		AgentDefaults: map[string]AgentModelDefaults{"codex": {Model: "session-model", ReasoningEffort: "medium", ServiceTier: "fast"}},
 	}
 	tt := ui.NewTester(func(c *ui.Context) { a.generationProfileCards(c) }, 1200, 820)
-	for _, text := range []string{"Codex", "session-model / medium / fast"} {
+	for _, text := range []string{"Codex CLI", "session-model / medium / fast"} {
 		if !tt.HasText(text) {
 			t.Fatalf("missing %s", text)
 		}
@@ -81,7 +81,7 @@ func TestProcessingSourcesKeepDraftsAndDoNotEnableWhileConfiguring(t *testing.T)
 		a.integrations.Model = "private-draft-model"
 		a.integrations.APIKey = "unsaved-key"
 		a.integrations.Temperature = "0"
-		clickProjectUI(t, tt, "使用 Agent")
+		clickProjectUI(t, tt, "使用 Agent CLI")
 		if a.integrations.DraftMode != "agent_bridge" || a.integrations.APIKey != "" || a.integrations.Generation.Active != active {
 			t.Fatal("Provider draft leaked into Agent")
 		}
@@ -127,7 +127,7 @@ func TestSettingsSeparateProcessingSelectionFromConfigurationAndService(t *testi
 	if !a.integrations.GenerationProviderDialog {
 		t.Fatal("model configuration did not open a dialog")
 	}
-	if !tt.HasText("保存配置") || !tt.HasText("API Key") || tt.HasText("切换") || tt.HasText("使用 Agent") || tt.HasText("选择 Agent") || tt.HasText("模型 Provider") {
+	if !tt.HasText("保存配置") || !tt.HasText("API Key") || tt.HasText("切换") || tt.HasText("使用 Agent CLI") || tt.HasText("选择 Agent CLI") || tt.HasText("模型 Provider") {
 		t.Fatal("configuration tab mixes activation or hides editable fields")
 	}
 	fixtureImage(t, tt, "settings-agent-model-management")

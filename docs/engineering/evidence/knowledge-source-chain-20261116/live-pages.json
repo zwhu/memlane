@@ -1,0 +1,47 @@
+{
+  "source_session_id": "codex_01a1daed-4113-7431-8f22-5635f9b17dc3",
+  "msg_count": 43,
+  "tool_calls": 997,
+  "same_dataset_and_owner": true,
+  "pages": [
+    {
+      "qa_offset": 0,
+      "trace_offset": 0,
+      "qa_count": 20,
+      "trace_count": 20,
+      "qa_more": true,
+      "trace_more": true
+    },
+    {
+      "qa_offset": 20,
+      "trace_offset": 20,
+      "qa_count": 20,
+      "trace_count": 20,
+      "qa_more": true,
+      "trace_more": true
+    },
+    {
+      "qa_offset": 40,
+      "trace_offset": 980,
+      "qa_count": 3,
+      "trace_count": 17,
+      "qa_more": false,
+      "trace_more": false
+    }
+  ],
+  "all_assertions_passed": true,
+  "qas_have_timestamp": false,
+  "qa_fields": [
+    "answer",
+    "context",
+    "feedback_score",
+    "feedback_text",
+    "memify_metadata",
+    "prompt_time",
+    "qa_id",
+    "question",
+    "time",
+    "used_graph_element_ids",
+    "used_session_context_ids"
+  ]
+}

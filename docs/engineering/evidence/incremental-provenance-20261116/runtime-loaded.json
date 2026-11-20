@@ -1,0 +1,14 @@
+{
+  "owner": 85217,
+  "capacity": {
+    "pending_background_tasks": 0,
+    "tool_graph_jobs_running": 0
+  },
+  "incremental_enabled": true,
+  "quiet_seconds": 30,
+  "max_wait_seconds": 300,
+  "states": {
+    "watching": 17,
+    "submitted": 1
+  }
+}

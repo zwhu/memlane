@@ -30,7 +30,7 @@ func generationProfileGroups(g GenerationDirectory) []generationProfileGroup {
 			continue
 		}
 		row := rows[len(rows)-1]
-		key, title := "agent", "Agent 桥接"
+		key, title := "agent", "Agent CLI"
 		item := generationProfileItem{ID: id, Row: row}
 		if row.Profile.Mode == "agent_bridge" {
 			item.Icon = row.Profile.BridgeKind
@@ -86,7 +86,7 @@ func generationWorkspaceGroups(g GenerationDirectory, mode string) []generationP
 	}
 	if mode == "agent_bridge" {
 		if len(groups) == 0 {
-			groups = append(groups, generationProfileGroup{Key: "agent", Title: "Agent"})
+			groups = append(groups, generationProfileGroup{Key: "agent", Title: "Agent CLI"})
 		}
 		for _, kind := range []string{"codex", "traex", "pi", "antigravity"} {
 			profile, ok := g.AgentBridges[kind]
