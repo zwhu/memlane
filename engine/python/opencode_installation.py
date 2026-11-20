@@ -18,7 +18,8 @@ from opencode_plugin_patch import (managed_http_client, managed_outbox, managed_
 
 ROOT = Path(__file__).resolve().parents[2]
 SUPPORT = ('managed-control.ts', 'managed-delivery.ts', 'managed-capture-window.ts',
-           'managed-config.ts', 'managed-recall.ts', 'managed-actions.ts', 'managed-pending.ts', 'managed-backlog.ts', 'managed-pending-cli.ts')
+           'managed-config.ts', 'managed-recall.ts', 'managed-actions.ts', 'managed-pending.ts', 'managed-backlog.ts', 'managed-pending-cli.ts',
+           'managed-http.ts', 'managed-outbox.ts', 'managed-hooks.ts')
 
 
 def digest(data):

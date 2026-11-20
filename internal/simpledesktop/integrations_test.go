@@ -226,11 +226,11 @@ func TestIntegrationSettingsUseSeparatePagesAndMaskProviderKey(t *testing.T) {
 	fixtureImage(t, tt, "multi-agent-provider-1200x820-editor")
 }
 
-func TestIntegrationAgentListKeepsPartialSuccessAndShowsHostLimits(t *testing.T) {
+func TestIntegrationAgentListShowsDirectActionsAndHostLimits(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
 	a.access.SettingsSection = "Agent 与模型"
-	a.integrations = integrationState{Loaded: true, ConnectionBulk: true, Selected: map[string]bool{"pi": true}, Connections: ConnectionsDirectory{Connections: []AgentConnection{
+	a.integrations = integrationState{Loaded: true, Connections: ConnectionsDirectory{Connections: []AgentConnection{
 		{ID: "codex", Kind: "codex", Status: "configured_pending_new_session", NewSessions: 1},
 		{ID: "pi", Kind: "pi", Detected: true, Status: "prepared", Preview: &CodexConnectionPreview{ProposedSHA: "reviewed"}},
 		{ID: "traex", Kind: "traex", Detected: true, Status: "activation_unknown"},
@@ -238,15 +238,105 @@ func TestIntegrationAgentListKeepsPartialSuccessAndShowsHostLimits(t *testing.T)
 		{ID: "cursor", Kind: "cursor"},
 	}}}
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"Codex", "pi", "TraeX", "Claude Code", "其他 Agent（1）", "确认连接（1）", "等待确认", "等待保存验证"} {
+	for _, label := range []string{"Codex", "pi", "TraeX", "Claude Code", "其他 Agent（1）", "确认连接 pi", "连接 Claude Code", "等待确认", "等待保存验证"} {
 		if !tt.HasText(label) {
 			t.Fatal("missing Agent control", label)
 		}
 	}
-	if !a.integrations.Selected["pi"] {
-		t.Fatal("prepared selection lost")
+	if tt.HasText("批量连接") {
+		t.Fatal("bulk connection toggle should be removed")
 	}
 	fixtureImage(t, tt, "multi-agent-1200x820-connections")
+}
+
+func TestHostExecutableChangedShowsClearReviewNoticeAndStatus(t *testing.T) {
+	a := settingsFixture()
+	a.page = "设置"
+	a.access.SettingsSection = "Agent 与模型"
+	a.integrations = integrationState{Loaded: true, Connections: ConnectionsDirectory{Connections: []AgentConnection{
+		{ID: "antigravity-1", Kind: "antigravity", Detected: true, Status: "requires_review", ErrorCode: "host_executable_changed", HostVersion: "1.5.13"},
+	}}}
+	tt := ui.NewTester(a.View, 1200, 820)
+	for _, want := range []string{
+		"Gemini App",
+		"1.5.13",
+		"应用已更新，待核对",
+		"检测到 Gemini App 应用已更新，点击右侧「核对连接」确认后即可恢复正常。",
+		"核对连接",
+	} {
+		if !tt.HasText(want) {
+			t.Fatalf("missing expected text %q", want)
+		}
+	}
+}
+
+func TestAgentRefreshUsesForceAndKeepsLayoutStableWhileSpinning(t *testing.T) {
+	root := t.TempDir()
+	token := filepath.Join(root, "manager.token")
+	if err := os.WriteFile(token, []byte(strings.Repeat("x", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var gotQuery string
+	var gotGeneration atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/generation" {
+			gotGeneration.Add(1)
+		}
+		if r.URL.Path == "/v1/connections" {
+			gotQuery = r.URL.RawQuery
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-release
+			json.NewEncoder(w).Encode(ConnectionsDirectory{Revision: 2, Connections: []AgentConnection{
+				{ID: "codex", Kind: "codex", Detected: true, Status: "configured_pending_new_session", Capture: &AgentCaptureState{State: "healthy"}},
+			}})
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer server.Close()
+
+	a := settingsFixture()
+	a.Config.ProjectControl = &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}
+	updates := make(chan func(), 16)
+	a.Update = func(fn func()) { updates <- fn }
+	a.integrations = integrationState{Loaded: true, Connections: ConnectionsDirectory{Revision: 1, Connections: []AgentConnection{
+		{ID: "codex", Kind: "codex", Detected: true, Status: "configured_pending_new_session", Capture: &AgentCaptureState{State: "waiting_message"}},
+	}}}
+
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Column(c).Fill().Padding(24).Children(func() { a.agentConnectionSettings(c) })
+	}, 1000, 650)
+	beforeCodex, ok := tt.Find("Codex")
+	if !ok {
+		t.Fatal("missing Codex row before refresh")
+	}
+
+	clickProjectUI(t, tt, "重新检测")
+	<-started
+	if tt.HasText("正在检测…") {
+		t.Fatal("loading text banner should not appear above connections list")
+	}
+	loadingCodex, ok := tt.Find("Codex")
+	if !ok || loadingCodex.Y != beforeCodex.Y {
+		t.Fatalf("refresh shifted Codex row Y from %v to %v", beforeCodex.Y, loadingCodex.Y)
+	}
+	close(release)
+	drainReading(t, updates, func() bool { return !a.integrations.Loading })
+	tt.Frame()
+	if gotQuery != "force=1" {
+		t.Fatalf("expected force=1 query, got %q", gotQuery)
+	}
+	if gotGeneration.Load() != 0 {
+		t.Fatal("connection recheck unexpectedly blocked on /v1/generation")
+	}
+	if !tt.HasText("自动保存正常") {
+		t.Fatal("forced refresh did not update capture status")
+	}
 }
 
 func TestIntegrationRecoveryActionsRemainVisibleWithoutAnOpenEditor(t *testing.T) {

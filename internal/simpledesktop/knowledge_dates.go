@@ -17,22 +17,13 @@ func sourceCalendarDate(value string) (string, bool) {
 	return t.Format("2006-01-02"), err == nil && len(value) == 10
 }
 
-// A calendar date has no time zone or invented hour. Manual knowledge uses its
-// original creation date; session-derived knowledge needs source provenance.
+// A calendar date has no time zone or invented hour. Under the zero-patch Cognee
+// model (Option B), knowledge resolves dates by: earliest remembered key ->
+// explicit first_source_date -> native session_date -> local createdAt fallback.
 func (d Document) knowledgeDay(location *time.Location) (string, bool) {
-	// A patched lesson without linked QAs explicitly reports unknown provenance.
-	// Its latest session context must not masquerade as a first occurrence.
-	if metadataString(d, "source_date_status") == "unconfirmed" && metadataString(d, "first_source_date") == "" {
-		return "", false
-	}
 	for _, value := range []string{d.FirstSourceDate, metadataString(d, "first_source_date"), metadataString(d, "session_date")} {
 		if day, ok := sourceCalendarDate(value); ok {
 			return day, true
-		}
-	}
-	for _, set := range nodeSets(d) {
-		if set == "session_learnings" {
-			return "", false
 		}
 	}
 	if at, ok := officialTime(d.Created); ok {

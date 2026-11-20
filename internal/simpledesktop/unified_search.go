@@ -74,8 +74,8 @@ func (a *App) openUnifiedSearch(restore bool) {
 		a.submitUnifiedSearch()
 	}
 }
-func (a *App) closeUnifiedSearch() {
-	s := &a.searchUI
+func (c *searchController) closeUnifiedSearch() {
+	s := &c.searchUI
 	s.HistoryDirty = false
 	if s.cancel != nil {
 		s.cancel()
@@ -85,9 +85,9 @@ func (a *App) closeUnifiedSearch() {
 	s.Open = false
 	s.Loading = false
 }
-func (a *App) invalidateUnifiedSearch(dataset string) {
-	s := &a.searchUI
-	a.closeUnifiedSearch()
+func (c *searchController) invalidateUnifiedSearch(dataset string) {
+	s := &c.searchUI
+	c.closeUnifiedSearch()
 	s.Lanes = searchLaneResult{}
 	if dataset == "" {
 		s.Rows = nil

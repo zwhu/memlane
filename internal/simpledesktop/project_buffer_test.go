@@ -93,3 +93,105 @@ func TestCommonEditorWithdrawsRevokedBodyWithoutClaimingInflightCancel(t *testin
 		t.Fatal("revocation pretended inflight operation was cancelled")
 	}
 }
+
+func TestBufferAdapterAcceptsManifestVerifiedOfficialHostWithoutLegacyHelperSHA(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	scripts := filepath.Join(root, "scripts")
+	if err := os.Mkdir(scripts, 0700); err != nil {
+		t.Fatal(err)
+	}
+	common := []byte(`import contextlib
+_AMBIGUOUS_KEY = '_replay_ambiguous'
+def set_session_key(host): assert host == 'host-session'
+def _read_map_record(host): return {'session_id':'session'}
+def _buffer_lock(): return contextlib.nullcontext()
+`)
+	helper := []byte(`import json
+class NotReady(Exception): pass
+def pending_materials(dataset, session):
+    return {'pending':0,'unknown_outcomes':0,'signature':'legacy-official-snapshot'}
+def _pending_snapshot(dataset, session):
+    return None,None,None,{},[],'legacy-official-snapshot'
+`)
+	commonPath := filepath.Join(scripts, "_plugin_common.py")
+	helperPath := filepath.Join(scripts, "_memlane_policy.py")
+	if err := os.WriteFile(commonPath, common, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(helperPath, helper, 0600); err != nil {
+		t.Fatal(err)
+	}
+	helperSHA := fmt.Sprintf("%x", sha256.Sum256(helper))
+	commonSHA := fmt.Sprintf("%x", sha256.Sum256(common))
+	receiptPath := filepath.Join(root, ".memlane-project-access.json")
+	receipt, _ := json.Marshal(map[string]any{"files": map[string]string{
+		"scripts/_memlane_policy.py": helperSHA,
+		"scripts/_plugin_common.py":  commonSHA,
+	}})
+	if err := os.WriteFile(receiptPath, receipt, 0600); err != nil {
+		t.Fatal(err)
+	}
+	manifestSHA := fmt.Sprintf("%x", sha256.Sum256(receipt))
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	python, _ = filepath.Abs(python)
+
+	legacy := AgentInstallation{
+		HostKind:    "antigravity",
+		PluginDir:   root,
+		EnvFile:     filepath.Join(root, "managed.env"),
+		Home:        root,
+		ManifestSHA: manifestSHA,
+	}
+	result, err := runPendingMaterials(context.Background(), python, legacy, ProjectBinding{HostSessionKey: "host-session"}, "dataset", "show", "")
+	if err != nil || result.Signature != "legacy-official-snapshot" {
+		t.Fatalf("legacy official-host installation without HelperSHA failed: %+v %v", result, err)
+	}
+
+	mismatched := legacy
+	mismatched.HelperSHA = strings.Repeat("0", 64)
+	if err := verifyInstallation(mismatched); err == nil || !strings.Contains(err.Error(), "受管插件输入未确认") {
+		t.Fatalf("mismatched HelperSHA accepted: %v", err)
+	}
+
+	missingCommonReceipt, _ := json.Marshal(map[string]any{"files": map[string]string{
+		"scripts/_memlane_policy.py": helperSHA,
+	}})
+	if err := os.WriteFile(receiptPath, missingCommonReceipt, 0600); err != nil {
+		t.Fatal(err)
+	}
+	missingCommon := legacy
+	missingCommon.ManifestSHA = fmt.Sprintf("%x", sha256.Sum256(missingCommonReceipt))
+	if err := verifyInstallation(missingCommon); err == nil || !strings.Contains(err.Error(), "受管插件输入未确认") {
+		t.Fatalf("manifest missing _plugin_common.py accepted: %v", err)
+	}
+
+	if err := os.WriteFile(receiptPath, receipt, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(helperPath, []byte("# tampered"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyInstallation(legacy); err == nil || !strings.Contains(err.Error(), "文件发生变化") {
+		t.Fatalf("tampered helper accepted without HelperSHA: %v", err)
+	}
+
+	outside := filepath.Join(filepath.Dir(root), "outside-receipt.json")
+	if err := os.WriteFile(outside, receipt, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(receiptPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, receiptPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyInstallation(legacy); err == nil || !strings.Contains(err.Error(), "受管插件输入发生变化") {
+		t.Fatalf("symlinked manifest accepted: %v", err)
+	}
+}

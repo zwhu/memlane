@@ -466,6 +466,19 @@ for case in ('standard', 'full', 'other_name', 'wrong_uuid', 'relative', 'file_s
             with patch('antigravity_connection.Path.home', return_value=self.root):
                 row = connection.view()
                 self.assertEqual(row.get('last_hook_error'), latest)
+                # Verified receipt newer than the hook error clears stale warnings.
+                registry.state.setdefault('connection_receipts', {})[connection.id] = {
+                    'artifact_verified': True,
+                    'environment_verified': True,
+                    'received_at': latest['at'] + 10.0,
+                }
+                self.assertNotIn('last_hook_error', connection.view())
+                # A newer hook error at/after the verified receipt still surfaces.
+                entries_data = json.loads(error_file.read_text(encoding='utf-8'))
+                newer = dict(latest, at=latest['at'] + 20.0)
+                entries_data['entries'] = entries_data['entries'][-4:] + [newer]
+                error_file.write_text(json.dumps(entries_data), encoding='utf-8')
+                self.assertEqual(connection.view().get('last_hook_error'), newer)
                 # Symlink diagnostic file must be ignored both for write and read.
                 target = self.root / 'outside-error.json'
                 target.write_text('keep-intact', encoding='utf-8')
@@ -479,6 +492,62 @@ for case in ('standard', 'full', 'other_name', 'wrong_uuid', 'relative', 'file_s
                 self.assertNotIn('last_hook_error', connection.view())
         finally:
             registry.close()
+
+    def test_official_host_prepare_and_legacy_directory_include_helper_sha256(self):
+        installation = self.artifact()
+        manifest = json.loads((Path(installation['plugin_dir']) / '.memlane-project-access.json').read_text())
+        expected_helper = manifest['files']['scripts/_memlane_policy.py']
+        self.assertEqual(installation.get('helper_sha256'), expected_helper)
+
+        registry = Registry(self.root / 'private/registry.json', object())
+        try:
+            legacy = dict(installation)
+            legacy.pop('helper_sha256', None)
+            registry.state['agents']['antigravity-legacy'] = {
+                'name': 'Gemini App',
+                'kind': 'antigravity',
+                'installation': legacy,
+            }
+            agents = {row['id']: row for row in registry.directory()['agents']}
+            self.assertEqual(agents['antigravity-legacy']['installation'].get('helper_sha256'), expected_helper)
+
+            # Tampered or symlinked manifest must not backfill helper_sha256.
+            bad_manifest = Path(installation['plugin_dir']) / '.memlane-project-access.json'
+            outside = self.root / 'outside-manifest.json'
+            outside.write_text(bad_manifest.read_text(), encoding='utf-8')
+            bad_manifest.unlink()
+            bad_manifest.symlink_to(outside)
+            agents_after = {row['id']: row for row in registry.directory()['agents']}
+            self.assertIsNone(agents_after['antigravity-legacy']['installation'].get('helper_sha256'))
+        finally:
+            registry.close()
+
+    def test_processing_session_short_circuits_agy_hook_without_error_record(self):
+        installation = self.artifact()
+        hook_script = Path(installation['plugin_dir']) / 'scripts/agy_hook.py'
+        env = {k: v for k, v in os.environ.items() if not k.startswith(('COGNEE_', 'MEMLANE_', 'LLM_', 'EMBEDDING_'))}
+        env.update(HOME=str(self.root), COGNEE_PLUGIN_IN_VENV='1', MEMLANE_PROCESSING_SESSION='1')
+        result = subprocess.run(
+            [sys.executable, str(hook_script), 'store-user-prompt.py'],
+            input='not-even-json', env=env, cwd=self.root,
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, '{}\n')
+        self.assertFalse((self.root / '.cognee-plugin').exists())
+
+    def test_prompt_context_includes_calendar_date(self):
+        self.isolated('''
+import importlib.util, json, pathlib, re, sys
+path = pathlib.Path(sys.argv[1]) / 'store-user-prompt.py'
+spec = importlib.util.spec_from_file_location('store_user_prompt', path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+encoded = mod._prompt_context({'cwd': '/tmp/repo', 'model': 'gemini', 'turn_id': '1'})
+parsed = json.loads(encoded)
+assert re.match(r'^\\d{4}-\\d{2}-\\d{2}$', parsed['date']), parsed
+assert parsed['cwd'] == '/tmp/repo', parsed
+''')
 
 
 if __name__ == '__main__':

@@ -27,6 +27,8 @@ var (
 	ErrRecoveryRefused = errors.New("stale owner recovery refused")
 	// ErrOwnerMismatch indicates recorded ownership metadata does not match the target runtime.
 	ErrOwnerMismatch = errors.New("owner record configuration mismatch")
+	// ErrOwnerProcessChanged indicates the recorded owner PID has exited or its kernel start identity changed.
+	ErrOwnerProcessChanged = errors.New("owner process identity changed or exited")
 )
 
 const (
@@ -335,12 +337,15 @@ type ProcessInfo struct {
 	Started string
 }
 
-// ProcessStartTime returns the kernel lstart string for pid.
-func ProcessStartTime(ctx context.Context, pid int) (string, error) {
+func processStartTimeWithEnv(ctx context.Context, pid int, extraEnv []string) (string, error) {
 	if pid < 1 {
 		return "", errors.New("process id must be positive")
 	}
-	out, err := exec.CommandContext(ctx, "/bin/ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
+	cmd := exec.CommandContext(ctx, "/bin/ps", "-p", strconv.Itoa(pid), "-o", "lstart=")
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
+	out, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
@@ -349,6 +354,103 @@ func ProcessStartTime(ctx context.Context, pid int) (string, error) {
 		return "", fmt.Errorf("process %d start identity unavailable", pid)
 	}
 	return started, nil
+}
+
+// ProcessStartTime returns the kernel lstart string for pid.
+func ProcessStartTime(ctx context.Context, pid int) (string, error) {
+	return processStartTimeWithEnv(ctx, pid, nil)
+}
+
+// ProcessStartMatches reports whether pid is currently running with kernel lstart
+// matching expected in either the current locale or LC_ALL=C (matching scripts/dev.py).
+func ProcessStartMatches(ctx context.Context, pid int, expected string) (bool, error) {
+	expected = strings.TrimSpace(expected)
+	if pid < 1 || expected == "" {
+		return false, nil
+	}
+	actual, err := processStartTimeWithEnv(ctx, pid, nil)
+	if err != nil {
+		return false, err
+	}
+	if actual == expected {
+		return true, nil
+	}
+	actualC, errC := processStartTimeWithEnv(ctx, pid, []string{"LC_ALL=C"})
+	if errC == nil && actualC == expected {
+		return true, nil
+	}
+	return false, nil
+}
+
+// OwnerInspection summarizes the current .service-owner flock and receipt state.
+type OwnerInspection struct {
+	StoreRoot  string
+	Locked     bool
+	HasReceipt bool
+	Record     OwnerRecord
+	ReceiptErr error
+}
+
+// InspectOwner performs a non-blocking probe of the canonical .service-owner flock
+// and reads .memlane-dev-owner.json when present without mutating ownership.
+func InspectOwner(storeRoot string) (OwnerInspection, error) {
+	canonical, err := canonicalDir(storeRoot)
+	if err != nil {
+		return OwnerInspection{}, err
+	}
+	out := OwnerInspection{StoreRoot: canonical}
+	lock, err := acquireStoreLock(canonical)
+	if errors.Is(err, ErrOwnerLocked) {
+		out.Locked = true
+	} else if err != nil {
+		return OwnerInspection{}, err
+	} else {
+		_ = lock.Release()
+	}
+
+	receiptPath := filepath.Join(canonical, ownerReceiptFilename)
+	if _, statErr := os.Lstat(receiptPath); errors.Is(statErr, os.ErrNotExist) {
+		return out, nil
+	} else if statErr != nil {
+		out.HasReceipt = true
+		out.ReceiptErr = statErr
+		return out, nil
+	}
+	out.HasReceipt = true
+	rec, _, readErr := ReadOwnerRecord(canonical)
+	if readErr != nil {
+		out.ReceiptErr = readErr
+		return out, nil
+	}
+	out.Record = rec
+	return out, nil
+}
+
+// VerifyOwnerRecord reads .memlane-dev-owner.json and confirms it matches the target
+// store/config and a currently live process with the same kernel start identity.
+func VerifyOwnerRecord(ctx context.Context, storeRoot, configPath string) (OwnerRecord, error) {
+	rec, _, err := ReadOwnerRecord(storeRoot)
+	if err != nil {
+		return OwnerRecord{}, err
+	}
+	canonicalStore, err := canonicalDir(storeRoot)
+	if err != nil {
+		return rec, err
+	}
+	canonicalConfig, err := canonicalPathMaybeMissing(configPath)
+	if err != nil {
+		return rec, fmt.Errorf("%w: %v", ErrOwnerMismatch, err)
+	}
+	recConfig, cfgErr := canonicalPathMaybeMissing(rec.Config)
+	recData, dataErr := canonicalDir(rec.OfficialData)
+	if rec.PID < 1 || cfgErr != nil || dataErr != nil || recConfig != canonicalConfig || recData != canonicalStore {
+		return rec, ErrOwnerMismatch
+	}
+	matched, err := ProcessStartMatches(ctx, rec.PID, rec.Started)
+	if err != nil || !matched {
+		return rec, ErrOwnerProcessChanged
+	}
+	return rec, nil
 }
 
 func splitFieldsN(s string, maxFields int) []string {
@@ -413,6 +515,7 @@ type RecoverOptions struct {
 	StoreRoot    string
 	ConfigPath   string
 	CheckURLs    []string
+	LockFiles    []string
 	ProcessTable func(context.Context) (map[int]ProcessInfo, error)
 }
 
@@ -504,6 +607,62 @@ func RecoverStaleOwner(ctx context.Context, opts RecoverOptions) (RecoverResult,
 		if err := CheckPortFree(raw); err != nil {
 			return RecoverResult{}, fmt.Errorf("%w: endpoint %s unavailable: %v", ErrRecoveryRefused, raw, err)
 		}
+	}
+
+	var extraLocks []*os.File
+	defer func() {
+		for _, lf := range extraLocks {
+			for {
+				if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_UN); err == nil || !errors.Is(err, syscall.EINTR) {
+					break
+				}
+			}
+			_ = lf.Close()
+		}
+	}()
+	for _, rawLock := range opts.LockFiles {
+		lockFile := strings.TrimSpace(rawLock)
+		if lockFile == "" {
+			continue
+		}
+		if !filepath.IsAbs(lockFile) {
+			return RecoverResult{}, fmt.Errorf("%w: lock file must be absolute: %s", ErrRecoveryRefused, lockFile)
+		}
+		if info, statErr := os.Lstat(lockFile); statErr == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+				return RecoverResult{}, fmt.Errorf("%w: lock file must be private regular file: %s", ErrRecoveryRefused, lockFile)
+			}
+		} else if !os.IsNotExist(statErr) {
+			return RecoverResult{}, fmt.Errorf("%w: %v", ErrRecoveryRefused, statErr)
+		}
+		f, openErr := os.OpenFile(lockFile, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+		if openErr != nil {
+			return RecoverResult{}, fmt.Errorf("%w: cannot open lock file %s: %v", ErrRecoveryRefused, lockFile, openErr)
+		}
+		fInfo, statErr := f.Stat()
+		if statErr != nil || !fInfo.Mode().IsRegular() || fInfo.Mode().Perm()&0o077 != 0 {
+			_ = f.Close()
+			return RecoverResult{}, fmt.Errorf("%w: lock file must be private regular file: %s", ErrRecoveryRefused, lockFile)
+		}
+		if chmodErr := f.Chmod(0o600); chmodErr != nil {
+			_ = f.Close()
+			return RecoverResult{}, fmt.Errorf("%w: %v", ErrRecoveryRefused, chmodErr)
+		}
+		for {
+			flockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+			if flockErr == nil {
+				break
+			}
+			if errors.Is(flockErr, syscall.EINTR) {
+				continue
+			}
+			_ = f.Close()
+			if errors.Is(flockErr, syscall.EWOULDBLOCK) || errors.Is(flockErr, syscall.EAGAIN) {
+				return RecoverResult{}, fmt.Errorf("%w: lock file %s is active", ErrRecoveryRefused, lockFile)
+			}
+			return RecoverResult{}, fmt.Errorf("%w: lock file %s check failed: %v", ErrRecoveryRefused, lockFile, flockErr)
+		}
+		extraLocks = append(extraLocks, f)
 	}
 
 	_, current, err := ReadOwnerRecord(lock.StoreRoot())

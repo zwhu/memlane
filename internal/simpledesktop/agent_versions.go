@@ -2,7 +2,9 @@ package simpledesktop
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -10,6 +12,35 @@ import (
 )
 
 var agentVersionPattern = regexp.MustCompile(`\b[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?\b`)
+
+func resolveAgentExecutable(kind, name string) string {
+	if path, err := exec.LookPath(name); err == nil {
+		return path
+	}
+	var candidates []string
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates = append(candidates, filepath.Join(home, ".local/bin", name))
+		if kind == "opencode" {
+			candidates = append(candidates, filepath.Join(home, ".opencode/bin", name))
+		}
+		if kind == "antigravity" {
+			candidates = append(candidates, filepath.Join(home, "Applications/Gemini.app/Contents/Helpers/agy"))
+		}
+	}
+	candidates = append(candidates,
+		filepath.Join("/opt/homebrew/bin", name),
+		filepath.Join("/usr/local/bin", name),
+	)
+	if kind == "antigravity" {
+		candidates = append(candidates, "/Applications/Gemini.app/Contents/Helpers/agy")
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() && info.Mode()&0111 != 0 {
+			return candidate
+		}
+	}
+	return ""
+}
 
 // Read the selected host's version only. Never launch a session or change its profile.
 func loadAgentVersions(ctx context.Context, config Config, rows []AgentConnection) {
@@ -23,11 +54,15 @@ func loadAgentVersions(ctx context.Context, config Config, rows []AgentConnectio
 			executable = config.CodexExecutable
 		}
 		if executable == "" {
-			name := map[string]string{"codex": "codex", "pi": "pi", "traex": "traecli", "claude_code": "claude", "opencode": "opencode", "cursor": "cursor"}[rows[n].Kind]
+			name := map[string]string{
+				"codex": "codex", "pi": "pi", "traex": "traecli",
+				"claude_code": "claude", "opencode": "opencode",
+				"cursor": "cursor", "antigravity": "agy",
+			}[rows[n].Kind]
 			if name == "" {
 				continue
 			}
-			executable, _ = exec.LookPath(name)
+			executable = resolveAgentExecutable(rows[n].Kind, name)
 		}
 		if executable == "" {
 			continue

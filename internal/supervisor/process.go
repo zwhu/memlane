@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -31,19 +32,48 @@ const (
 
 // ServiceSpec defines one managed background process supervised in its own process group.
 type ServiceSpec struct {
-	Role          string
-	Command       string
-	Args          []string
-	Dir           string
-	Env           []string
-	LogPath       string
-	LogLimitBytes int64
-	BindURL       string
-	HealthURL     string
-	HealthHeaders map[string]string
-	ReadyTimeout  time.Duration
-	StopGrace     time.Duration
-	KillWait      time.Duration
+	Role           string
+	Command        string
+	Args           []string
+	Dir            string
+	Env            []string
+	LogPath        string
+	LogLimitBytes  int64
+	BindURL        string
+	HealthURL      string
+	HealthHeaders  map[string]string
+	ReadyCheck     func(context.Context) (bool, error)
+	HealthCheck    func(context.Context) error
+	AllowCleanExit bool
+	ReadyTimeout   time.Duration
+	StopGrace      time.Duration
+	KillWait       time.Duration
+}
+
+// HTTPStatusError reports a non-200 HTTP response from a loopback probe.
+type HTTPStatusError struct {
+	StatusCode int
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("loopback endpoint returned HTTP %d", e.StatusCode)
+}
+
+// ExitedBeforeReadyError reports a managed process that exited before readiness succeeded.
+type ExitedBeforeReadyError struct {
+	Status ServiceStatus
+}
+
+func (e *ExitedBeforeReadyError) Error() string {
+	msg := fmt.Sprintf("owned service %s exited before readiness", e.Status.Role)
+	if e.Status.LastError != "" {
+		msg += ": " + e.Status.LastError
+	} else if e.Status.Signal != "" {
+		msg += ": signal " + e.Status.Signal
+	} else if e.Status.ExitCode != nil {
+		msg += fmt.Sprintf(": exit status %d", *e.Status.ExitCode)
+	}
+	return msg
 }
 
 // ServiceStatus captures an immutable snapshot of a managed process.
@@ -198,8 +228,9 @@ func StartManagedProcess(spec ServiceSpec, onUnexpectedExit func(ServiceStatus))
 
 		proc.mu.Lock()
 		stoppedByUs := proc.stopping
+		cleanAllowed := proc.spec.AllowCleanExit && exitCodePtr != nil && *exitCodePtr == 0 && signalName == ""
 		proc.exited = true
-		if stoppedByUs {
+		if stoppedByUs || cleanAllowed {
 			proc.status.State = StateStopped
 		} else {
 			proc.status.State = StateExited
@@ -215,7 +246,7 @@ func StartManagedProcess(spec ServiceSpec, onUnexpectedExit func(ServiceStatus))
 		proc.mu.Unlock()
 
 		close(proc.done)
-		if !stoppedByUs && onUnexpectedExit != nil {
+		if !stoppedByUs && !cleanAllowed && onUnexpectedExit != nil {
 			onUnexpectedExit(snapshot)
 		}
 	}()
@@ -404,6 +435,130 @@ func newLoopbackProbeClient(timeout time.Duration) *http.Client {
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
+	}
+}
+
+// NewLoopbackClient returns an HTTP client configured for bounded, no-redirect loopback requests.
+func NewLoopbackClient(timeout time.Duration) *http.Client {
+	return newLoopbackProbeClient(timeout)
+}
+
+// LoopbackGetJSON sends a GET request to a validated 127.0.0.1 HTTP origin + endpoint
+// and decodes a bounded (<= 2 MiB) JSON object response without following redirects.
+func LoopbackGetJSON(ctx context.Context, origin, endpoint string, headers map[string]string, timeout time.Duration) (map[string]any, error) {
+	validOrigin, err := ValidateLoopbackURL(origin)
+	if err != nil {
+		return nil, err
+	}
+	target := strings.TrimRight(validOrigin, "/") + endpoint
+	if _, _, _, err := parseLoopbackURL(target, false); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	client := newLoopbackProbeClient(timeout)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, &HTTPStatusError{StatusCode: resp.StatusCode}
+	}
+	const maxBodyBytes = 2 << 20
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxBodyBytes {
+		return nil, errors.New("loopback JSON response exceeds size limit")
+	}
+	var result map[string]any
+	if err := json.Unmarshal(b, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// WaitReady polls check until it returns (true, nil), a fatal error, context expiry,
+// or unexpected exit of proc. If timeout <= 0, wait honors ctx's own deadline directly.
+func WaitReady(ctx context.Context, proc *ManagedProcess, check func(context.Context) (bool, error), timeout, pollInterval time.Duration, allowCleanExit bool) error {
+	if check == nil {
+		return errors.New("readiness check is required")
+	}
+	if pollInterval <= 0 {
+		pollInterval = 50 * time.Millisecond
+	}
+	waitCtx := ctx
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		waitCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	var procDone <-chan struct{}
+	if proc != nil {
+		procDone = proc.Done()
+	}
+
+	checkExited := func() (bool, error) {
+		if procDone == nil {
+			return false, nil
+		}
+		select {
+		case <-procDone:
+			st := proc.Status()
+			if allowCleanExit && st.ExitCode != nil && *st.ExitCode == 0 && st.Signal == "" {
+				procDone = nil
+				return false, nil
+			}
+			return true, &ExitedBeforeReadyError{Status: st}
+		default:
+			return false, nil
+		}
+	}
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		if exited, err := checkExited(); exited {
+			return err
+		}
+		if waitCtx.Err() != nil {
+			return waitCtx.Err()
+		}
+		ready, err := check(waitCtx)
+		if err != nil {
+			if exited, exitErr := checkExited(); exited {
+				return exitErr
+			}
+			if waitCtx.Err() != nil {
+				return waitCtx.Err()
+			}
+			return err
+		}
+		if ready {
+			return nil
+		}
+		select {
+		case <-procDone:
+			st := proc.Status()
+			if allowCleanExit && st.ExitCode != nil && *st.ExitCode == 0 && st.Signal == "" {
+				procDone = nil
+				continue
+			}
+			return &ExitedBeforeReadyError{Status: st}
+		case <-waitCtx.Done():
+			return waitCtx.Err()
+		case <-ticker.C:
+		}
 	}
 }
 

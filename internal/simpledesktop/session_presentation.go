@@ -8,24 +8,43 @@ import (
 // Stable host identity is separate from the first captured question. A paused
 // capture may first see a much later turn, and the official detail is a tail.
 func sessionIdentity(id string) string {
-	host, key, ok := strings.Cut(id, "_")
-	if !ok {
-		host, key = "Agent", id
-	}
-	switch strings.ToLower(host) {
-	case "codex":
-		host = "Codex"
-		if strings.HasPrefix(key, "traex-") {
-			host = "TraeX"
-		} else if strings.HasPrefix(key, "pi-") {
-			host = "pi"
+	var host, key string
+	lowerID := strings.ToLower(id)
+	switch {
+	case strings.HasPrefix(lowerID, "antigravity-"), strings.HasPrefix(lowerID, "agy-"):
+		host, key = "Agy", id
+	case strings.HasPrefix(lowerID, "gemini-"):
+		host, key = "Gemini", id
+	default:
+		var ok bool
+		host, key, ok = strings.Cut(id, "_")
+		if !ok {
+			host, key = "Agent", id
 		}
-	case "claude":
-		host = "Claude Code"
-	case "pi":
-		host = "pi"
-	case "traex":
-		host = "TraeX"
+		switch strings.ToLower(host) {
+		case "codex":
+			host = "Codex"
+			lowerKey := strings.ToLower(key)
+			if strings.HasPrefix(lowerKey, "traex-") {
+				host = "TraeX"
+			} else if strings.HasPrefix(lowerKey, "pi-") {
+				host = "pi"
+			} else if strings.HasPrefix(lowerKey, "antigravity-") || strings.HasPrefix(lowerKey, "agy-") {
+				host = "Agy"
+			} else if strings.HasPrefix(lowerKey, "gemini-") {
+				host = "Gemini"
+			}
+		case "claude":
+			host = "Claude Code"
+		case "pi":
+			host = "pi"
+		case "traex":
+			host = "TraeX"
+		case "antigravity", "agy":
+			host = "Agy"
+		case "gemini":
+			host = "Gemini"
+		}
 	}
 	r := []rune(key)
 	if len(r) > 18 {

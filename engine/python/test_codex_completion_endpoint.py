@@ -4,12 +4,15 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from aiohttp.test_utils import TestClient, TestServer
+import agent_completion_endpoint
 import codex_completion_endpoint as endpoint
+from process_groups import group_exists
 
 SCHEMA = {'type': 'object', 'properties': {'answer': {'type': 'string'}}, 'required': ['answer']}
 FAKE = '''#!{python}
@@ -90,6 +93,22 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(endpoint.parse_request(body, 'fixture-model')[2], SCHEMA)
         for changed in ({'stream':True}, {'model':'other'}, {'tools':[{}]}, {'response_format':{'type':'json_object'}}):
             with self.assertRaises(endpoint.CompletionError): endpoint.parse_request(body | changed, 'fixture-model')
+
+    def test_activity_clock_and_cli_timeout_validation(self):
+        from contextlib import redirect_stderr
+        import io
+        for bad in (0, -1, float('nan'), float('inf'), None, 'bad'):
+            with self.assertRaises(ValueError):
+                endpoint.ActivityClock(bad)
+        base = ['--port', '8080', '--token-file', '/tmp/tok', '--agent-executable', '/tmp/bin',
+                '--auth-home', '/tmp/home', '--bridge-kind', 'codex', '--model', 'fixture-model']
+        parsed = agent_completion_endpoint.parse_args(base)
+        self.assertEqual(parsed.timeout, 90)
+        custom = agent_completion_endpoint.parse_args(base + ['--timeout', '15.5'])
+        self.assertEqual(custom.timeout, 15.5)
+        for bad in ('0', '-5', 'nan', 'inf'):
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                agent_completion_endpoint.parse_args(base + ['--timeout', bad])
 
 
 class ExecutionTests(unittest.IsolatedAsyncioTestCase):
@@ -225,6 +244,162 @@ def send(x):''')
         await asyncio.sleep(.15)
         task.cancel()
         with self.assertRaises(asyncio.CancelledError): await task
+
+    async def test_collect_stderr_fires_activity_past_retention_limit(self):
+        stream = asyncio.StreamReader()
+        hits = []
+        for _ in range(6):
+            stream.feed_data(b'x' * 4096)
+        stream.feed_eof()
+        retained = await endpoint.collect_stderr(stream, on_activity=lambda: hits.append(1))
+        self.assertEqual(len(retained), 16384)
+        self.assertGreaterEqual(len(hits), 6)
+
+    def write_idle_fake(self, kind, mode, record_path=None):
+        provider = 'trae' if kind == 'traex' else 'openai'
+        home_env = 'TRAE_HOME' if kind == 'traex' else 'CODEX_HOME'
+        config_name = 'traecli.toml' if kind == 'traex' else 'config.toml'
+        script = f'''#!{self.python}
+import json, os, subprocess, sys, time
+from pathlib import Path
+config = (Path(os.environ[{home_env!r}]) / {config_name!r}).read_text()
+assert 'hooks = false' in config and 'plugins = false' in config
+record_file = {repr(str(record_path)) if record_path else None}
+record = {{'interrupted': False, 'grandchild': None, 'turn_elapsed': 0.0}}
+def save():
+    if record_file:
+        tmp = record_file + '.tmp'
+        Path(tmp).write_text(json.dumps(record))
+        os.replace(tmp, record_file)
+def send(x):
+    print(json.dumps(x), flush=True)
+mode = {mode!r}
+for line in sys.stdin:
+    m = json.loads(line); method = m['method']
+    if method == 'initialize':
+        send({{'id': m['id'], 'result': {{}}}})
+    elif method == 'thread/start':
+        send({{'id': m['id'], 'result': {{'thread': {{'id': 't'}}, 'model': 'fixture-model', 'modelProvider': {provider!r}, 'runtimeWorkspaceRoots': [], 'activePermissionProfile': {{'id': 'memlane_completion'}}}}}})
+    elif method == 'turn/start':
+        send({{'id': m['id'], 'result': {{'turn': {{'id': 'u'}}}}}})
+        turn_started = time.monotonic()
+        if mode == 'stream-stdout':
+            for idx in range(7):
+                time.sleep(0.2)
+                send({{'method': 'item/reasoning/summaryTextDelta', 'params': {{'threadId': 't', 'turnId': 'u', 'delta': f'step-{{idx}}'}}}})
+        elif mode == 'stream-stderr':
+            for idx in range(7):
+                time.sleep(0.2)
+                sys.stderr.write(f'thinking heartbeat {{idx}}\\n')
+                sys.stderr.flush()
+        elif mode == 'silent-hang':
+            child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])
+            record['grandchild'] = child.pid
+            save()
+            send({{'method': 'item/reasoning/summaryTextDelta', 'params': {{'threadId': 't', 'turnId': 'u', 'delta': 'started'}}}})
+            continue
+        elif mode == 'unexpected-exit':
+            sys.stderr.write('fatal crash mid-turn\\n')
+            sys.stderr.flush()
+            sys.exit(1)
+        record['turn_elapsed'] = time.monotonic() - turn_started
+        save()
+        send({{'method': 'item/completed', 'params': {{'threadId': 't', 'turnId': 'u', 'item': {{'type': 'agentMessage', 'text': json.dumps({{'answer': 'ok'}})}}}}}})
+        send({{'method': 'turn/completed', 'params': {{'threadId': 't', 'turn': {{'id': 'u', 'status': 'completed', 'error': None}}}}}})
+    elif method == 'turn/interrupt':
+        record['interrupted'] = True
+        save()
+        send({{'id': m['id'], 'result': {{}}}})
+        send({{'method': 'turn/completed', 'params': {{'threadId': 't', 'turn': {{'id': 'u', 'status': 'interrupted'}}}}}})
+'''
+        self.executable.write_text(script)
+        self.executable.chmod(0o700)
+
+    def prepare_http_args(self, kind, timeout):
+        token = self.root / 'token'
+        token.write_text('synthetic-token-for-endpoint-tests')
+        if kind == 'traex':
+            cli = self.auth / 'cli'
+            cli.mkdir(exist_ok=True)
+            (cli / 'auth.json').write_text('{"synthetic_traex":true}')
+        return SimpleNamespace(
+            model='fixture-model', codex_executable=self.executable, auth_home=self.auth,
+            bridge_kind=kind, timeout=timeout, token_file=token,
+            diagnostics_dir=self.root / 'diagnostics',
+        )
+
+    async def test_slow_active_stdout_and_stderr_past_idle_timeout_complete_with_200(self):
+        request = {'model': 'fixture-model', 'messages': [{'role': 'user', 'content': 'q'}],
+                   'response_format': {'type': 'json_schema', 'json_schema': {'schema': SCHEMA}}}
+        for kind in ('codex', 'traex'):
+            for mode in ('stream-stdout', 'stream-stderr'):
+                with self.subTest(kind=kind, mode=mode):
+                    record_path = self.root / f'active-{kind}-{mode}.json'
+                    self.write_idle_fake(kind, mode, record_path=record_path)
+                    args = self.prepare_http_args(kind, timeout=0.9)
+                    client = TestClient(TestServer(endpoint.create_app(args)))
+                    await client.start_server()
+                    try:
+                        started = time.monotonic()
+                        response = await client.post('/v1/chat/completions', json=request,
+                                                     headers={'Authorization': 'Bearer ' + args.token_file.read_text()})
+                        elapsed = time.monotonic() - started
+                        payload = await response.json()
+                        self.assertEqual(response.status, 200, payload)
+                        self.assertGreater(elapsed, args.timeout)
+                        self.assertGreater(json.loads(record_path.read_text())['turn_elapsed'], args.timeout)
+                        self.assertEqual(json.loads(payload['choices'][0]['message']['content']), {'answer': 'ok'})
+                    finally:
+                        await client.close()
+
+    async def test_silent_hang_returns_504_interrupts_and_reaps_process_group(self):
+        request = {'model': 'fixture-model', 'messages': [{'role': 'user', 'content': 'q'}],
+                   'response_format': {'type': 'json_schema', 'json_schema': {'schema': SCHEMA}}}
+        for kind in ('codex', 'traex'):
+            with self.subTest(kind=kind):
+                record_path = self.root / f'hang-{kind}.json'
+                self.write_idle_fake(kind, 'silent-hang', record_path=record_path)
+                args = self.prepare_http_args(kind, timeout=0.9)
+                client = TestClient(TestServer(endpoint.create_app(args)))
+                await client.start_server()
+                before = len(self.processes)
+                try:
+                    response = await client.post('/v1/chat/completions', json=request,
+                                                 headers={'Authorization': 'Bearer ' + args.token_file.read_text()})
+                    payload = await response.json()
+                    self.assertEqual(response.status, 504, payload)
+                    self.assertEqual(payload['error']['code'], 'codex_timeout')
+                finally:
+                    await client.close()
+                record = json.loads(record_path.read_text())
+                self.assertTrue(record['interrupted'])
+                self.assertIsNotNone(record['grandchild'])
+                spawned = self.processes[before:]
+                self.assertEqual(len(spawned), 1)
+                self.assertFalse(group_exists(spawned[0].pid))
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(record['grandchild'], 0)
+
+    async def test_unexpected_exit_fails_promptly_without_waiting_for_idle_timeout(self):
+        request = {'model': 'fixture-model', 'messages': [{'role': 'user', 'content': 'q'}],
+                   'response_format': {'type': 'json_schema', 'json_schema': {'schema': SCHEMA}}}
+        for kind in ('codex', 'traex'):
+            with self.subTest(kind=kind):
+                self.write_idle_fake(kind, 'unexpected-exit')
+                args = self.prepare_http_args(kind, timeout=10)
+                client = TestClient(TestServer(endpoint.create_app(args)))
+                await client.start_server()
+                try:
+                    started = time.monotonic()
+                    response = await client.post('/v1/chat/completions', json=request,
+                                                 headers={'Authorization': 'Bearer ' + args.token_file.read_text()})
+                    elapsed = time.monotonic() - started
+                    payload = await response.json()
+                    self.assertEqual(response.status, 502, payload)
+                    self.assertEqual(payload['error']['code'], 'codex_transport_closed')
+                    self.assertLess(elapsed, 3.0)
+                finally:
+                    await client.close()
 
     async def test_http_auth_completion_and_capacity(self):
         self.fake('success')

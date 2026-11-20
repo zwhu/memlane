@@ -96,3 +96,43 @@ class FirstRuntimeTests(FirstRuntimeFixture, unittest.TestCase):
                 first_install_runtime(config, self.path, lambda args: launched.append(args), health=lambda *args: None)
         self.assertEqual(len(launched), 1)
         self.assertFalse((self.root / 'client-state.json').exists())
+
+    def test_host_home_is_passed_explicitly_without_mutating_process_environ(self):
+        import os
+        import sys
+        fake_home = self.parent / 'host-home'
+        codex_bin = fake_home / '.local/bin/codex'
+        codex_bin.parent.mkdir(parents=True)
+        codex_bin.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+        codex_bin.chmod(0o700)
+        sandbox_home = self.parent / 'sandbox-home'
+        sandbox_home.mkdir()
+        python_bin = self.parent / 'fake-python'
+        python_bin.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+        python_bin.chmod(0o700)
+        exec_calls = []
+
+        def fake_detect(kind, settings, legacy=None):
+            return settings.get('executable')
+
+        with patch.dict(os.environ, {'HOME': str(sandbox_home)}, clear=False), \
+                patch('dev.validate_project_control'), \
+                patch('agent_connections.detect_executable', side_effect=fake_detect), \
+                patch('os.execve', side_effect=lambda *args: exec_calls.append(args)), \
+                patch.object(sys, 'argv', [
+                    'first_install_runtime.py',
+                    '--store-root', str(self.root),
+                    '--runtime-config', str(self.path),
+                    '--plugin', '/synthetic/plugin',
+                    '--host-home', str(fake_home),
+                    '--python-executable', str(python_bin),
+                ]):
+            runtime.main()
+            self.assertEqual(os.environ['HOME'], str(sandbox_home))
+
+        config = json.loads(runtime.read_private(self.path))
+        self.assertEqual(config['codex_executable'], str(codex_bin))
+        self.assertEqual(config['auth_home'], str(fake_home / '.codex'))
+        self.assertEqual(len(exec_calls), 1)
+        self.assertEqual(exec_calls[0][2]['HOME'], str(fake_home))
+        self.assertEqual(exec_calls[0][2]['PYTHONDONTWRITEBYTECODE'], '1')

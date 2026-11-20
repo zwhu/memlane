@@ -43,8 +43,8 @@ func OpenPrivateLog(path string) (*os.File, error) {
 		return nil, errors.New("service log directory must be private and non-symlink")
 	}
 	if info, err := os.Lstat(path); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return nil, errors.New("service log must be a regular file")
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+			return nil, errors.New("service log must be a private regular file")
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -173,6 +173,39 @@ func TrimServiceLog(path string, limit int64) error {
 		return fmt.Errorf("truncate service log: %w", err)
 	}
 	return nil
+}
+
+// TrimServiceLogDir trims all direct regular *.log files inside a private log directory
+// while preserving live inodes and skipping symlinks or non-regular entries.
+func TrimServiceLogDir(dir string, limit int64) error {
+	if !filepath.IsAbs(dir) {
+		return errors.New("service log directory must be absolute")
+	}
+	info, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 {
+		return errors.New("service log directory must be private and non-symlink")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".log") || entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		if trimErr := TrimServiceLog(filepath.Join(dir, name), limit); trimErr != nil {
+			errs = append(errs, trimErr)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // RedactLogLine strips bearer tokens, API keys, and credential assignments.

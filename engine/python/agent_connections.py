@@ -502,9 +502,9 @@ class Connections:
             rows.append(row)
         return {'revision': self.registry.state['revision'], 'connections': rows}
 
-    async def checked_view(self):
+    async def checked_view(self, *, force=False):
         rows = self.view()['connections']
-        await self.capture.refresh(rows, self.adapters)
+        await self.capture.refresh(rows, self.adapters, force=force)
         return self.view()
 
     async def select_environment(self, kind, profile, expected):

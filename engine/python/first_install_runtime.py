@@ -65,7 +65,7 @@ def unused_origins(count):
             listener.close()
 
 
-def prepare_runtime(root, config_path, plugin, *, python=None):
+def prepare_runtime(root, config_path, plugin, *, python=None, host_home=None):
     root, config_path = Path(root), Path(config_path)
     if not config_path.is_absolute() or config_path.parent != root.parent:
         raise ValueError('first runtime config must be beside the owned store')
@@ -116,11 +116,22 @@ def prepare_runtime(root, config_path, plugin, *, python=None):
                             'management_token_file': secret_file(root / 'management.token'),
                             'plugin_dir': str(Path(plugin).absolute()), 'agent_control_token_files': {}}
     }
+    host = Path(host_home) if host_home is not None else Path.home()
     from agent_connections import detect_executable
     executable = detect_executable('codex', {})
+    if not executable and host_home is not None:
+        for candidate in (
+            host / '.local/bin/codex',
+            host / '.bun/bin/codex',
+            host / 'Applications/Codex.app/Contents/Resources/codex-cli/bin/codex',
+            host / 'Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex',
+        ):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                executable = detect_executable('codex', {'executable': str(candidate)})
+                break
     if executable:
         config['codex_executable'] = executable
-        config['auth_home'] = str(Path.home() / '.codex')
+        config['auth_home'] = str(host / '.codex')
     from dev import validate_project_control
     validate_project_control(config['project_control'], config)
     from first_install_mode import first_install_setup
@@ -163,7 +174,7 @@ def activation_scope(config, request, *, allow_applied=False):
     return applied
 
 
-def prepare_activation(config, config_path, request_path):
+def prepare_activation(config, config_path, request_path, *, host_home=None):
     # Keep simultaneous App instances from issuing overlapping shutdowns. The
     # service-owner lock remains the authority for the service itself; it cannot
     # be held here while asking the existing launcher to shut down.
@@ -176,10 +187,10 @@ def prepare_activation(config, config_path, request_path):
         if not stat.S_ISREG(identity.st_mode) or identity.st_mode & 0o077:
             raise ValueError('activation lock must be a private regular file')
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return _prepare_activation(config, config_path, request_path)
+        return _prepare_activation(config, config_path, request_path, host_home=host_home)
 
 
-def _prepare_activation(config, config_path, request_path):
+def _prepare_activation(config, config_path, request_path, *, host_home=None):
     root, config_path, request_path = Path(config['official_data']), Path(config_path), Path(request_path)
     if request_path != root / 'first-install-activation.json':
         raise ValueError('activation receipt must belong to the same first store')
@@ -200,8 +211,11 @@ def _prepare_activation(config, config_path, request_path):
         request['status'] = 'stopping'
         write_private(request_path, json.dumps(request))
         try:
+            stop_kwargs = {'stdout': subprocess.PIPE, 'stderr': subprocess.STDOUT, 'check': True}
+            if host_home is not None:
+                stop_kwargs['env'] = {**os.environ, 'HOME': str(host_home)}
             subprocess.run([sys.executable, str(ROOT / 'scripts/dev.py'), 'stop', '--config', str(config_path)],
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=True)
+                           **stop_kwargs)
         except subprocess.SubprocessError as error:
             request.update(status='result_unknown', error_code='owned_stop_unconfirmed')
             if isinstance(error, subprocess.CalledProcessError):
@@ -264,19 +278,21 @@ def main():
     if args.host_home is not None:
         if not args.host_home.is_absolute() or not args.host_home.is_dir():
             raise ValueError('existing Agent host home required')
-        os.environ['HOME'] = str(args.host_home)
     if args.python_executable is not None:
         if not args.python_executable.is_absolute() or not os.access(args.python_executable, os.X_OK):
             raise ValueError('existing runtime Python executable required')
-    config = prepare_runtime(args.store_root, args.runtime_config, args.plugin, python=args.python_executable)
+    config = prepare_runtime(args.store_root, args.runtime_config, args.plugin,
+                             python=args.python_executable, host_home=args.host_home)
     if args.activate_file is not None:
         if args.prepare_only:
             raise ValueError('activation cannot be requested during read-only preparation')
-        if not prepare_activation(config, args.runtime_config, args.activate_file):
+        if not prepare_activation(config, args.runtime_config, args.activate_file, host_home=args.host_home):
             return
     if args.prepare_only:
         return
     environment = {key: os.environ[key] for key in ('HOME', 'PATH', 'LANG', 'TMPDIR') if key in os.environ}
+    if args.host_home is not None:
+        environment['HOME'] = str(args.host_home)
     environment['PYTHONDONTWRITEBYTECODE'] = '1'
     os.execve(config['python'], [config['python'], str(ROOT / 'scripts/dev.py'), 'start',
                                '--config', str(args.runtime_config), '--no-ui'], environment)

@@ -169,12 +169,15 @@ class _Body(httpx.SyncByteStream):
 
 
 class CapacityAsyncTransport(httpx.AsyncBaseTransport):
-    def __init__(self, gate, transport=None):
+    def __init__(self, gate, transport=None, *, request_rewriter=None):
         self.gate = gate
         self.transport = transport or httpx.AsyncHTTPTransport()
+        self.request_rewriter = request_rewriter
 
     async def handle_async_request(self, request):
-        if not self.gate.matches(request):
+        if self.request_rewriter is not None:
+            request = self.request_rewriter(request)
+        if self.gate is None or not self.gate.matches(request):
             return await self.transport.handle_async_request(request)
         trace = RequestTrace('generation_http', backend_kind=self.gate.backend_kind)
         request.headers[HEADER] = trace.request_id
@@ -202,12 +205,15 @@ class CapacityAsyncTransport(httpx.AsyncBaseTransport):
 
 
 class CapacityTransport(httpx.BaseTransport):
-    def __init__(self, gate, transport=None):
+    def __init__(self, gate, transport=None, *, request_rewriter=None):
         self.gate = gate
         self.transport = transport or httpx.HTTPTransport()
+        self.request_rewriter = request_rewriter
 
     def handle_request(self, request):
-        if not self.gate.matches(request):
+        if self.request_rewriter is not None:
+            request = self.request_rewriter(request)
+        if self.gate is None or not self.gate.matches(request):
             return self.transport.handle_request(request)
         trace = RequestTrace('generation_http', backend_kind=self.gate.backend_kind)
         request.headers[HEADER] = trace.request_id

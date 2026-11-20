@@ -10,7 +10,7 @@ import (
 func TestPendingCheckMessageUsesActualOpenCodeAcknowledgementReceipt(t *testing.T) {
 	// Checkpoint41 exported this actual Go->Node->official response. A matched
 	// item has already left the uncertain queue, so subtracting it again is wrong.
-	raw, err := os.ReadFile("../../docs/engineering/evidence/multi-agent-development-20261114/opencode-pending-management.json")
+	raw, err := os.ReadFile("testdata/opencode-pending-management.json")
 	if err != nil {
 		t.Fatal(err)
 	}

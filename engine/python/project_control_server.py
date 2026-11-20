@@ -38,6 +38,8 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
             # No browser-origin clients; desktop and hook callers carry independent tokens.
             if request.headers.get('Origin'):
                 raise PolicyError('browser_origin_rejected', 403)
+            if request.path == '/cognee' or request.path.startswith('/cognee/'):
+                return await handler(request)
             token = request.headers.get('Authorization', '')
             request['manager'] = secrets.compare_digest(token, 'Bearer ' + manager_token)
             registered_tokens = dict(agent_tokens)
@@ -232,7 +234,8 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                 await connections.checked_view()
             return web.json_response(connections.operation(request.match_info['operation_id']))
         if request.method == 'GET':
-            return web.json_response(await connections.checked_view())
+            force = request.query.get('force', '').lower() in ('1', 'true', 'yes')
+            return web.json_response(await connections.checked_view(force=force))
         preview = request.path == '/v1/connections/preview'
         payload = fields(await body(request), ('expected_revision', 'operation_id', 'instance_id') if preview
                          else ('expected_revision', 'operation_id'), ('proposed_sha256',))
@@ -311,7 +314,7 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
             attach_service_monitor(app, codex_config or {}, registry=None, connections=connections, monitor=monitor)
         return app
     from knowledge_recall import attach_recall
-    attach_recall(app, registry)
+    recall_store = attach_recall(app, registry)
     app.add_routes([web.post('/v1/project/resolve', resolve), web.get('/v1/project/policy', policy),
                     web.get('/v1/project/binding', binding),
                     web.get('/v1/projects', directory), web.put('/v1/defaults', defaults),
@@ -343,6 +346,8 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
         attach_user_profiles(app, registry, connections)
     from service_monitor import attach_service_monitor
     attach_service_monitor(app, codex_config or {}, registry=registry, connections=connections, monitor=monitor)
+    from cognee_extension_gateway import attach_cognee_gateway
+    attach_cognee_gateway(app, registry, recall_store=recall_store)
     return app
 
 

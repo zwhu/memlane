@@ -38,7 +38,7 @@ func prepareRuntimeResources(ctx context.Context, root string, assets fs.FS) (st
 		if entry.IsDir() {
 			return nil
 		}
-		if strings.HasPrefix(name, "engine/python/test_") {
+		if strings.HasPrefix(name, "engine/python/") && strings.HasPrefix(path.Base(name), "test_") {
 			return nil
 		}
 		if !fs.ValidPath(name) || entry.Type()&fs.ModeSymlink != 0 {

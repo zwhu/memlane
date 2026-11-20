@@ -343,11 +343,7 @@ func (a *App) cachedBaseReadingIdentity() string {
 	if err != nil {
 		return ""
 	}
-	if a.baseReadingIdentity != base || a.baseIdentityURL != a.Client.Config.ServiceURL || a.baseIdentityTokenFile != a.Client.Config.TokenFile {
-		a.baseReadingIdentity = base
-		a.baseIdentityURL = a.Client.Config.ServiceURL
-		a.baseIdentityTokenFile = a.Client.Config.TokenFile
-	}
+	a.updateBaseReadingIdentity(base, a.Client.Config.ServiceURL, a.Client.Config.TokenFile)
 	return base
 }
 func (a *App) syncReadingIdentity() bool {
@@ -356,11 +352,7 @@ func (a *App) syncReadingIdentity() bool {
 		identity = "unavailable"
 		base = ""
 	}
-	if a.baseReadingIdentity != base || a.baseIdentityURL != a.Client.Config.ServiceURL || a.baseIdentityTokenFile != a.Client.Config.TokenFile {
-		a.baseReadingIdentity = base
-		a.baseIdentityURL = a.Client.Config.ServiceURL
-		a.baseIdentityTokenFile = a.Client.Config.TokenFile
-	}
+	a.updateBaseReadingIdentity(base, a.Client.Config.ServiceURL, a.Client.Config.TokenFile)
 	if identity != a.readingIdentity {
 		if a.commonEdit.Existing != nil {
 			a.withdrawCommonEditor("")

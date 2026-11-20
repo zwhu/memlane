@@ -2,9 +2,9 @@ package simpledesktop
 
 import "github.com/egoist/mygo/ui"
 
-func (a *App) openAllProjects() {
-	a.allProjectsOpen = true
-	a.allProjectsScroll = ui.ScrollState{}
+func (c *overviewController) openAllProjects() {
+	c.allProjectsOpen = true
+	c.allProjectsScroll = ui.ScrollState{}
 }
 
 // The sidebar's all-project entry is independent of the current page and its

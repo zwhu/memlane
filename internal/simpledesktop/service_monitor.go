@@ -2,8 +2,10 @@ package simpledesktop
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -22,12 +24,22 @@ type DiskMonitorState struct {
 	Low              bool  `json:"low"`
 }
 
+type MonitorHookError struct {
+	InstanceID string  `json:"instance_id"`
+	Kind       string  `json:"kind"`
+	At         float64 `json:"at"`
+	Script     string  `json:"script"`
+	ErrorType  string  `json:"error_type"`
+	Reason     string  `json:"reason"`
+}
+
 type MonitorBusinessSummary struct {
-	ProjectsCount             int      `json:"projects_count"`
-	GenerationMode            string   `json:"generation_mode"`
-	GenerationReceiptVerified *bool    `json:"generation_receipt_verified"`
-	RecentProcessingMs        *float64 `json:"recent_processing_ms"`
-	HookErrorsCount           int      `json:"hook_errors_count"`
+	ProjectsCount             int                `json:"projects_count"`
+	GenerationMode            string             `json:"generation_mode"`
+	GenerationReceiptVerified *bool              `json:"generation_receipt_verified"`
+	RecentProcessingMs        *float64           `json:"recent_processing_ms"`
+	HookErrorsCount           int                `json:"hook_errors_count"`
+	HookErrors                []MonitorHookError `json:"hook_errors,omitempty"`
 }
 
 type ServiceMonitorSnapshot struct {
@@ -59,6 +71,7 @@ type serviceMonitorState struct {
 	ControlError        string
 	Snapshot            *ServiceMonitorSnapshot
 	Expanded            bool
+	ShowRawLogs         bool
 	CopiedNotice        string
 	Polling             bool
 	PollEnabled         bool
@@ -194,6 +207,177 @@ func sanitizedMonitorURL(raw string) string {
 	return u.String()
 }
 
+var (
+	ansiEscapeRe       = regexp.MustCompile(`\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])`)
+	controlCharRe      = regexp.MustCompile(`[\x00-\x08\x0b-\x1f\x7f]`)
+	structlogLineRe    = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)\s+\[\s*(info|warning|warn|error|critical|debug)\s*\]\s*(.+)$`)
+	structlogLoggerRe  = regexp.MustCompile(`\s+\[([A-Za-z0-9_.:()-]+)\]\s*$`)
+	routingIndexRe     = regexp.MustCompile(`^Dataset routing index for [^:]+:\s*(\d+)\s+row\(s\)\s+written,\s*(\d+)\s+removed$`)
+	taskStartedRe      = regexp.MustCompile("^(?:Coroutine|Async Generator) task started:\\s*`([^`]+)`$")
+	taskCompletedRe    = regexp.MustCompile("^(?:Coroutine|Async Generator) task completed:\\s*`([^`]+)`$")
+	pipelineCompleteRe = regexp.MustCompile("^Pipeline item completed:\\s*`[^`]+`$")
+	neighborhoodRe     = regexp.MustCompile(`^Neighborhood retrieval \(1-hop\):\s*(\d+)\s+nodes and\s*(\d+)\s+edges in\s*([^\s]+)$`)
+	recallRe           = regexp.MustCompile(`^recall:\s*(\d+)\s+results across\b`)
+)
+
+func stripANSIEscapes(s string) string {
+	return controlCharRe.ReplaceAllString(ansiEscapeRe.ReplaceAllString(s, ""), "")
+}
+
+func formatServiceLogTimestamp(raw string) string {
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t.Local().Format("15:04:05")
+		}
+	}
+	for _, layout := range []string{"2006-01-02T15:04:05.999999999", "2006-01-02T15:04:05"} {
+		if t, err := time.ParseInLocation(layout, raw, time.UTC); err == nil {
+			return t.Local().Format("15:04:05")
+		}
+	}
+	return raw
+}
+
+func humanCogneeTask(name string) string {
+	tasks := map[string]string{
+		"build_document_index":          "建立文档索引",
+		"load_dataset_content":          "加载项目内容",
+		"add_data_points":               "写入知识图谱节点",
+		"extract_graph_and_summarize":   "提炼图谱与摘要",
+		"find_indexed_chunks":           "检查已索引片段",
+		"extract_chunks_from_documents": "切分文档片段",
+		"classify_documents":            "分类文档",
+	}
+	if label, ok := tasks[name]; ok {
+		return label
+	}
+	return name
+}
+
+func translateCogneeInfoMessage(msg string) string {
+	if m := routingIndexRe.FindStringSubmatch(msg); m != nil {
+		if m[1] == "0" && m[2] == "0" {
+			return "更新项目索引路由（无变更）"
+		}
+		return fmt.Sprintf("更新项目索引路由（写入 %s 条，移除 %s 条）", m[1], m[2])
+	}
+	if m := taskStartedRe.FindStringSubmatch(msg); m != nil {
+		return "开始后台任务：" + humanCogneeTask(m[1])
+	}
+	if m := taskCompletedRe.FindStringSubmatch(msg); m != nil {
+		return "完成后台任务：" + humanCogneeTask(m[1])
+	}
+	if pipelineCompleteRe.MatchString(msg) {
+		return "记忆处理管线完成一条记录"
+	}
+	if msg == "improve: global context index updated" {
+		return "全局上下文索引已更新"
+	}
+	if m := neighborhoodRe.FindStringSubmatch(msg); m != nil {
+		return fmt.Sprintf("图谱关联检索（%s 个节点、%s 条关系，耗时 %s）", m[1], m[2], m[3])
+	}
+	if m := recallRe.FindStringSubmatch(msg); m != nil {
+		return fmt.Sprintf("记忆召回完成（命中 %s 条）", m[1])
+	}
+	if strings.HasPrefix(msg, "Skipping startup recovery for ") {
+		return "跳过启动恢复（存在进行中的处理任务）"
+	}
+	return msg
+}
+
+func formatRequestFinishedLog(cleaned string) (string, string, bool) {
+	if !strings.HasPrefix(cleaned, "{") {
+		return "", "", false
+	}
+	var entry struct {
+		Event       string   `json:"event"`
+		At          string   `json:"at"`
+		ElapsedMs   *float64 `json:"elapsed_ms"`
+		BackendKind string   `json:"backend_kind"`
+		Component   string   `json:"component"`
+	}
+	if err := json.Unmarshal([]byte(cleaned), &entry); err != nil || entry.Event != "request_finished" {
+		return "", "", false
+	}
+	var parts []string
+	if entry.BackendKind != "" && entry.BackendKind != "unknown" {
+		parts = append(parts, entry.BackendKind)
+	} else if entry.Component != "" {
+		parts = append(parts, entry.Component)
+	}
+	if entry.ElapsedMs != nil {
+		if *entry.ElapsedMs >= 1000 {
+			parts = append(parts, fmt.Sprintf("耗时 %.1fs", *entry.ElapsedMs/1000.0))
+		} else {
+			parts = append(parts, fmt.Sprintf("耗时 %.0f ms", *entry.ElapsedMs))
+		}
+	}
+	detail := "完成处理请求"
+	if len(parts) > 0 {
+		detail += "（" + strings.Join(parts, "，") + "）"
+	}
+	prefix := ""
+	if entry.At != "" {
+		prefix = formatServiceLogTimestamp(entry.At) + " · "
+	}
+	return prefix + "正常 · " + detail, "info", true
+}
+
+func formatServiceLogLine(raw string) (string, string) {
+	cleaned := strings.TrimSpace(stripANSIEscapes(raw))
+	if cleaned == "" {
+		return "", ""
+	}
+	if display, level, ok := formatRequestFinishedLog(cleaned); ok {
+		return display, level
+	}
+	if m := structlogLineRe.FindStringSubmatch(cleaned); m != nil {
+		ts := formatServiceLogTimestamp(m[1])
+		rawLevel := strings.ToLower(m[2])
+		msg := strings.TrimSpace(m[3])
+		if lm := structlogLoggerRe.FindStringSubmatch(msg); lm != nil && lm[1] != "REDACTED" {
+			msg = strings.TrimSpace(msg[:len(msg)-len(lm[0])])
+		}
+		level, levelLabel := "info", "正常"
+		switch rawLevel {
+		case "warning", "warn":
+			level, levelLabel = "warning", "警告"
+		case "error", "critical":
+			level, levelLabel = "error", "错误"
+		case "debug":
+			level, levelLabel = "debug", "调试"
+		default:
+			msg = translateCogneeInfoMessage(msg)
+		}
+		return fmt.Sprintf("%s · %s · %s", ts, levelLabel, msg), level
+	}
+	lower := strings.ToLower(cleaned)
+	level := ""
+	switch {
+	case strings.Contains(lower, "error") || strings.Contains(lower, "exited") || strings.Contains(lower, "failed") || strings.Contains(lower, "traceback"):
+		level = "error"
+	case strings.Contains(lower, "warn"):
+		level = "warning"
+	}
+	return cleaned, level
+}
+
+func formatMonitorHookErrorLine(e MonitorHookError) string {
+	agentLabel := "Agent"
+	if e.Kind != "" {
+		agentLabel = connectionName(e.Kind)
+	}
+	timePart := ""
+	if e.At > 0 {
+		timePart = " · " + time.Unix(int64(e.At), 0).Local().Format("15:04")
+	}
+	reason := hookErrorSummary(&AgentHookError{ErrorType: e.ErrorType, Reason: e.Reason})
+	if reason == "" {
+		reason = "未记录原因"
+	}
+	return fmt.Sprintf("Hook 未记录（%s%s）：%s", agentLabel, timePart, reason)
+}
+
 func serviceMonitorSummaryLine(m serviceMonitorState) string {
 	var parts []string
 	if m.HasLatency {
@@ -209,7 +393,7 @@ func serviceMonitorSummaryLine(m serviceMonitorState) string {
 			parts = append(parts, "磁盘余量 "+formatBytesGiB(m.Snapshot.Disk.FreeBytes))
 		}
 		if m.Snapshot.Summary != nil && m.Snapshot.Summary.HookErrorsCount > 0 {
-			parts = append(parts, fmt.Sprintf("Hook 异常 %d", m.Snapshot.Summary.HookErrorsCount))
+			parts = append(parts, fmt.Sprintf("Hook 未记录 %d", m.Snapshot.Summary.HookErrorsCount))
 		}
 	}
 	return strings.Join(parts, " · ")
@@ -260,7 +444,10 @@ func (a *App) serviceDiagnosticText() string {
 		}
 		if m.Snapshot.Summary != nil {
 			s := m.Snapshot.Summary
-			fmt.Fprintf(&b, "项目数: %d | Hook 异常数: %d\n", s.ProjectsCount, s.HookErrorsCount)
+			fmt.Fprintf(&b, "项目数: %d | Hook 未记录数: %d\n", s.ProjectsCount, s.HookErrorsCount)
+			for _, he := range s.HookErrors {
+				b.WriteString("  " + formatMonitorHookErrorLine(he) + "\n")
+			}
 			if s.RecentProcessingMs != nil {
 				fmt.Fprintf(&b, "最近控制面耗时: %.1f ms\n", *s.RecentProcessingMs)
 			}
@@ -271,7 +458,7 @@ func (a *App) serviceDiagnosticText() string {
 		if len(m.Snapshot.LogTail) > 0 {
 			b.WriteString("日志尾部（已脱敏）:\n")
 			for _, line := range m.Snapshot.LogTail {
-				b.WriteString("  " + line + "\n")
+				b.WriteString("  " + stripANSIEscapes(line) + "\n")
 			}
 		}
 	}

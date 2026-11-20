@@ -55,10 +55,7 @@ func (a *App) overviewScope() string {
 
 func (a *App) loadOverview() {
 	v := &a.overviewState
-	if v.recallCancel != nil {
-		v.recallCancel()
-		v.recallCancel = nil
-	}
+	a.cancelOverviewRecall()
 	a.overviewRefreshAt = time.Now().Add(overviewRefreshInterval)
 	if a.Config.ProjectControl != nil && !a.access.Loaded {
 		v.Loading, v.ActivityLoading = true, true
@@ -434,9 +431,6 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 				ui.Text(c, "多").FontSize(10).TextColor(homeMuted)
 			})
 		})
-		if v.Snapshot.MissingDates > 0 {
-			ui.Text(c, "部分记忆缺少来源日期，未计入热力图。").FontSize(10).TextColor(muted)
-		}
 	})
 }
 

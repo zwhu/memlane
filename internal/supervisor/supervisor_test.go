@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -662,5 +663,339 @@ func TestTrimServiceLogPreservesInodeAndCreatesPrevious(t *testing.T) {
 	}
 	if err := supervisor.TrimServiceLog(symlinkLog, 64); err == nil {
 		t.Fatal("expected TrimServiceLog to reject symlink log")
+	}
+}
+
+func TestInspectVerifyOwnerAndLockFileRecovery(t *testing.T) {
+	rootParent := canonicalTestDir(t)
+	storeRoot := filepath.Join(rootParent, "library")
+	if err := os.Mkdir(storeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(rootParent, "runtime.json")
+	writePrivateJSON(t, configPath, map[string]any{"official_data": storeRoot})
+	_, serviceOrigin := reserveLoopbackEndpoint(t)
+
+	insp, err := supervisor.InspectOwner(storeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if insp.Locked || insp.HasReceipt {
+		t.Fatalf("expected clean store inspection, got %+v", insp)
+	}
+
+	lock, err := supervisor.AcquireOwner(storeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startedC, err := exec.Command("/bin/ps", "-p", strconv.Itoa(os.Getpid()), "-o", "lstart=").Output()
+	if err != nil {
+		_ = lock.Release()
+		t.Fatal(err)
+	}
+	rec := supervisor.OwnerRecord{
+		PID:          os.Getpid(),
+		Started:      strings.TrimSpace(string(startedC)),
+		Phase:        "ready",
+		Config:       configPath,
+		OfficialData: storeRoot,
+		ServiceURL:   serviceOrigin,
+	}
+	if err := lock.WriteRecord(rec); err != nil {
+		_ = lock.Release()
+		t.Fatal(err)
+	}
+
+	insp, err = supervisor.InspectOwner(storeRoot)
+	if err != nil {
+		_ = lock.Release()
+		t.Fatal(err)
+	}
+	if !insp.Locked || !insp.HasReceipt || insp.Record.PID != os.Getpid() {
+		_ = lock.Release()
+		t.Fatalf("expected locked store with receipt, got %+v", insp)
+	}
+
+	verified, err := supervisor.VerifyOwnerRecord(context.Background(), storeRoot, configPath)
+	if err != nil || verified.PID != os.Getpid() {
+		_ = lock.Release()
+		t.Fatalf("expected VerifyOwnerRecord success, got rec=%+v err=%v", verified, err)
+	}
+
+	// Replace with stale dead-PID receipt and release owner flock.
+	stale := rec
+	stale.PID = 999993
+	if err := lock.WriteRecord(stale); err != nil {
+		_ = lock.Release()
+		t.Fatal(err)
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Hold an active generation.json.lock: recovery must refuse while lock file is held.
+	genLockPath := filepath.Join(storeRoot, "generation.json.lock")
+	genLock, err := os.OpenFile(genLockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(genLock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = genLock.Close()
+		t.Fatal(err)
+	}
+
+	emptyTable := func(context.Context) (map[int]supervisor.ProcessInfo, error) {
+		return map[int]supervisor.ProcessInfo{}, nil
+	}
+	if _, err := supervisor.RecoverStaleOwner(context.Background(), supervisor.RecoverOptions{
+		StoreRoot:    storeRoot,
+		ConfigPath:   configPath,
+		LockFiles:    []string{genLockPath},
+		ProcessTable: emptyTable,
+	}); !errors.Is(err, supervisor.ErrRecoveryRefused) {
+		_ = syscall.Flock(int(genLock.Fd()), syscall.LOCK_UN)
+		_ = genLock.Close()
+		t.Fatalf("expected ErrRecoveryRefused while generation lock held, got %v", err)
+	}
+
+	_ = syscall.Flock(int(genLock.Fd()), syscall.LOCK_UN)
+	_ = genLock.Close()
+
+	res, err := supervisor.RecoverStaleOwner(context.Background(), supervisor.RecoverOptions{
+		StoreRoot:    storeRoot,
+		ConfigPath:   configPath,
+		LockFiles:    []string{genLockPath},
+		ProcessTable: emptyTable,
+	})
+	if err != nil || res.Status != "released" {
+		t.Fatalf("expected recovery after lock release, got res=%+v err=%v", res, err)
+	}
+	insp, err = supervisor.InspectOwner(storeRoot)
+	if err != nil || insp.Locked || insp.HasReceipt {
+		t.Fatalf("expected clean store after recovery, got %+v err=%v", insp, err)
+	}
+}
+
+func TestSupervisorExternalOwnerKeepOnTimeoutAndConcurrentStop(t *testing.T) {
+	rootParent := canonicalTestDir(t)
+	storeRoot := filepath.Join(rootParent, "library")
+	logsDir := filepath.Join(rootParent, "runtime-logs")
+	if err := os.Mkdir(storeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(logsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	addr, origin := reserveLoopbackEndpoint(t)
+	configPath := filepath.Join(rootParent, "runtime.json")
+	writePrivateJSON(t, configPath, map[string]any{"official_data": storeRoot})
+
+	var readyFlag atomic.Bool
+	readyCheck := func(context.Context) (bool, error) {
+		return readyFlag.Load(), nil
+	}
+
+	sup := supervisor.New(supervisor.Config{
+		StoreRoot:         storeRoot,
+		ConfigPath:        configPath,
+		ServiceURL:        origin,
+		LogDir:            logsDir,
+		LogLimitBytes:     128,
+		MonitorInterval:   40 * time.Millisecond,
+		ReadyPollInterval: 20 * time.Millisecond,
+		ExternalOwner:     true,
+		KeepOnTimeout:     true,
+	})
+	spec := helperSpec(t, "launcher", "service", addr, filepath.Join(logsDir, "launcher.log"))
+	spec.HealthURL = ""
+	spec.ReadyCheck = readyCheck
+	spec.HealthCheck = func(context.Context) error {
+		if !readyFlag.Load() {
+			return errors.New("not ready")
+		}
+		return nil
+	}
+
+	shortCtx, shortCancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer shortCancel()
+	err := sup.Start(shortCtx, []supervisor.ServiceSpec{spec})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded with KeepOnTimeout, got %v", err)
+	}
+	defer func() { _ = sup.Stop(context.Background()) }()
+
+	// Child must still be alive and no .service-owner lock held by Supervisor itself.
+	snap := sup.Snapshot()
+	if snap.State != supervisor.StateStarting || len(snap.Services) != 1 || snap.Services[0].PID <= 1 {
+		t.Fatalf("expected live StateStarting child after timeout, got %+v", snap)
+	}
+	childPID := snap.Services[0].PID
+	if err := syscall.Kill(childPID, 0); err != nil {
+		t.Fatalf("expected in-flight child %d alive after timeout, got %v", childPID, err)
+	}
+
+	// Extra log file inside LogDir must be trimmed by background monitor while keeping inode.
+	extraLog := filepath.Join(logsDir, "extra.log")
+	f, err := supervisor.OpenPrivateLog(extraLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.Write(bytes.Repeat([]byte("X"), 300)); err != nil {
+		t.Fatal(err)
+	}
+	stBefore, err := os.Stat(extraLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	rotated := false
+	for time.Now().Before(deadline) {
+		if _, prevErr := os.Stat(extraLog + ".previous"); prevErr == nil {
+			rotated = true
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !rotated {
+		t.Fatal("expected background monitor to rotate extra.log in LogDir")
+	}
+	stAfter, err := os.Stat(extraLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stAfter.Sys().(*syscall.Stat_t).Ino != stBefore.Sys().(*syscall.Stat_t).Ino {
+		t.Fatal("expected LogDir rotation to preserve live inode")
+	}
+
+	// Once ready flips true, WaitReady succeeds and state promotes to StateReady.
+	readyFlag.Store(true)
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer waitCancel()
+	if err := sup.WaitReady(waitCtx, readyCheck); err != nil {
+		t.Fatalf("expected WaitReady to succeed, got %v", err)
+	}
+	if sup.Snapshot().State != supervisor.StateReady {
+		t.Fatalf("expected StateReady, got %+v", sup.Snapshot())
+	}
+
+	// Concurrent Stop calls must serialize cleanly with zero races.
+	var wg sync.WaitGroup
+	errs := make(chan error, 4)
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- sup.Stop(context.Background())
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for stopErr := range errs {
+		if stopErr != nil {
+			t.Fatalf("concurrent Stop failed: %v", stopErr)
+		}
+	}
+	waitForPIDDead(t, childPID)
+}
+
+func TestOpenPrivateLogAndTrimDirSecurityPolicies(t *testing.T) {
+	rootParent := canonicalTestDir(t)
+	logsDir := filepath.Join(rootParent, "logs")
+	if err := os.Mkdir(logsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	publicLog := filepath.Join(logsDir, "public.log")
+	if err := os.WriteFile(publicLog, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(publicLog, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := supervisor.OpenPrivateLog(publicLog); err == nil {
+		_ = f.Close()
+		t.Fatal("expected OpenPrivateLog to reject world-readable existing file")
+	}
+
+	privateLog := filepath.Join(logsDir, "app.log")
+	if err := os.WriteFile(privateLog, bytes.Repeat([]byte("M"), 200), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(publicLog, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.TrimServiceLogDir(logsDir, 64); err != nil {
+		t.Fatalf("TrimServiceLogDir failed: %v", err)
+	}
+	if prev, err := os.ReadFile(privateLog + ".previous"); err != nil || len(prev) != 64 {
+		t.Fatalf("expected 64-byte .previous, got len=%d err=%v", len(prev), err)
+	}
+}
+
+func TestSupervisorConcurrentStartAndStopRace(t *testing.T) {
+	// Exercise concurrent Start() and Stop() across both Go-owned (.memlane-dev-owner.json WriteRecord)
+	// and ExternalOwner+KeepOnTimeout paths under -race to verify WaitGroup and receipt serialization.
+	for i := range 4 {
+		external := i%2 == 1
+		rootParent := canonicalTestDir(t)
+		storeRoot := filepath.Join(rootParent, "library")
+		logsDir := filepath.Join(rootParent, "runtime-logs")
+		if err := os.Mkdir(storeRoot, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(logsDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		addr, origin := reserveLoopbackEndpoint(t)
+		configPath := filepath.Join(rootParent, "runtime.json")
+		writePrivateJSON(t, configPath, map[string]any{"official_data": storeRoot})
+
+		sup := supervisor.New(supervisor.Config{
+			StoreRoot:         storeRoot,
+			ConfigPath:        configPath,
+			ServiceURL:        origin,
+			MonitorInterval:   25 * time.Millisecond,
+			ReadyPollInterval: 10 * time.Millisecond,
+			ExternalOwner:     external,
+			KeepOnTimeout:     external,
+		})
+		spec := helperSpec(t, "official", "service", addr, filepath.Join(logsDir, "official.log"))
+		spec.StopGrace = time.Second
+		spec.KillWait = time.Second
+
+		startDone := make(chan error, 1)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		go func() {
+			startDone <- sup.Start(ctx, []supervisor.ServiceSpec{spec})
+		}()
+
+		// Trigger Stop concurrently at staggered moments during Start/WriteRecord/monitor launch.
+		time.Sleep(time.Duration(i*35+15) * time.Millisecond)
+		if err := sup.Stop(context.Background()); err != nil {
+			cancel()
+			<-startDone
+			t.Fatalf("iteration %d Stop failed: %v", i, err)
+		}
+		<-startDone
+		cancel()
+
+		// Final Stop ensures any Start that completed just before or after is cleanly torn down.
+		if err := sup.Stop(context.Background()); err != nil {
+			t.Fatalf("iteration %d final Stop failed: %v", i, err)
+		}
+		if sup.Snapshot().State != supervisor.StateStopped {
+			t.Fatalf("iteration %d expected StateStopped, got %+v", i, sup.Snapshot())
+		}
+		if !external {
+			if _, err := os.Stat(filepath.Join(storeRoot, ".memlane-dev-owner.json")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("iteration %d expected owner receipt absent after concurrent Stop, got %v", i, err)
+			}
+			lock, err := supervisor.AcquireOwner(storeRoot)
+			if err != nil {
+				t.Fatalf("iteration %d expected .service-owner released, got %v", i, err)
+			}
+			_ = lock.Release()
+		}
 	}
 }

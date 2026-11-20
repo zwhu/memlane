@@ -103,6 +103,8 @@ func (p userProfile) failureLabel() string {
 			"authentication_required": "Agent 登录失效",
 			"quota_unavailable":       "Agent 额度不足",
 			"connection_failed":       "无法连接 Agent 服务",
+			"permission_denied":       "Agent 权限受限，未返回正文",
+			"empty_response":          "Agent 未返回画像正文",
 			"agent_exited":            "Agent 异常退出",
 		}[p.FailureReason]
 	}

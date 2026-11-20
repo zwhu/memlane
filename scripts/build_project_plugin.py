@@ -10,6 +10,7 @@ import shutil
 ROOT = Path(__file__).resolve().parents[1]
 PATCH = ROOT / 'engine/patches/project_access.py'
 EXTENSION = ROOT / 'engine/python/project_plugin_policy.py'
+ACCESS_HOOKS = ROOT / 'engine/python/project_access_hooks.py'
 INPUTS = ROOT / 'engine/patches/project-access-upstream.json'
 
 
@@ -46,10 +47,12 @@ def build(source, output):
         if name.endswith('.py'):
             compile(value, name, 'exec')
     compile(EXTENSION.read_text(), '_memlane_policy.py', 'exec')
+    compile(ACCESS_HOOKS.read_text(), '_memlane_access.py', 'exec')
     shutil.copytree(source, output, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     for name, value in changed.items():
         (output / 'scripts' / name).write_text(value)
     shutil.copyfile(EXTENSION, output / 'scripts/_memlane_policy.py')
+    shutil.copyfile(ACCESS_HOOKS, output / 'scripts/_memlane_access.py')
     receipt = {'plugin_commit': expected['commit'], 'patch_sha256': digest(PATCH),
                'extension_sha256': digest(EXTENSION), 'upstream_lock_sha256': digest(INPUTS),
                'files': {str(path.relative_to(output)): digest(path) for path in output.rglob('*') if path.is_file()}}

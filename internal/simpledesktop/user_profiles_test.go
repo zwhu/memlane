@@ -173,3 +173,43 @@ func TestProfileExportEnvelopeKeepsInnerCodeAndSavedSource(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestUserProfileAntigravityDisplaysGeminiAppAndAllowsAutomaticImport(t *testing.T) {
+	var called string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = r.Method + " " + r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"profiles":[{"instance_id":"antigravity-test","kind":"antigravity","name":"Gemini App","status":"queued","can_generate":true}],"prompt":"p"}`)
+	}))
+	defer server.Close()
+	key := filepath.Join(t.TempDir(), "manager-token")
+	if err := os.WriteFile(key, []byte(strings.Repeat("m", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a := profileUIFixture(t)
+	a.Config.ProjectControl = &ProjectControlConfig{URL: server.URL, ManagementTokenFile: key}
+	a.Update = func(fn func()) { fn() }
+	a.userProfiles.Directory.Profiles = []userProfile{
+		{ID: "antigravity-test", Kind: "antigravity", Name: "Gemini App", Status: "manual", CanGenerate: true},
+	}
+	a.userProfiles.Selected = "antigravity-test"
+	a.userProfiles.Body, a.userProfiles.BodyKey = "", ""
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("Gemini App") || !tt.HasText("Gemini App 对你的了解") {
+		t.Fatal("Gemini App label missing for antigravity source")
+	}
+	if tt.HasText("antigravity") || tt.HasText("antigravity 对你的了解") {
+		t.Fatal("raw antigravity identifier leaked into UI")
+	}
+	if _, ok := tt.Find("尝试导入"); !ok {
+		t.Fatal("automatic import button missing")
+	}
+	clickProjectUI(t, tt, "从Gemini App导入画像")
+	deadline := time.Now().Add(2 * time.Second)
+	for called == "" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if called != "POST /v1/user-profiles/antigravity-test/generate" {
+		t.Fatalf("expected enabled automatic import request, got %q", called)
+	}
+}

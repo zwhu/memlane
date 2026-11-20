@@ -144,6 +144,15 @@ class CaptureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.capture.view(self.row, self.adapter)['state'], 'checking')
         self.assertEqual((await self.refresh())['state'], 'project_disabled')
 
+    async def test_force_refresh_bypasses_15s_cache(self):
+        self.registry.official.request.return_value = {**self.saved, 'qa_count': 0, 'last_qa_at': None}
+        self.assertEqual((await self.refresh())['state'], 'waiting_message')
+        self.registry.official.request.return_value = self.saved
+        await self.capture.refresh([self.row], {self.identifier: self.adapter})
+        self.assertEqual(self.capture.view(self.row, self.adapter)['state'], 'waiting_message')
+        await self.capture.refresh([self.row], {self.identifier: self.adapter}, force=True)
+        self.assertEqual(self.capture.view(self.row, self.adapter)['state'], 'healthy')
+
     async def test_allow_requires_exact_review_and_clears_deferral_only_after_host_success(self):
         self.access['permission'] = 'required'
         self.record['capture_deferred'] = True

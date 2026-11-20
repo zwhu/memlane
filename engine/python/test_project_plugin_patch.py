@@ -569,22 +569,30 @@ assert not common._DRAIN_LOCK.exists()
 ''')
 
     def test_backlog_unknown_post_is_never_replayed_and_other_safe_tail_can_continue(self):
+        # Commit 0f0cb01 (QI01) isolates a single entry's ambiguous TimeoutError
+        # instead of pausing the entire queue: q1 stays marked _AMBIGUOUS_KEY and
+        # is never replayed, while healthy q2 completes in the same save pass and
+        # subsequent reviews exclude q1 from future tokens.
         self.backlog_case('''
 append(1);append(2)
 sent=[]
-def fail(*a,**k):
-    sent.append(1)
-    raise TimeoutError("ambiguous")
-common.remember_entry_via_http=fail
+def fail_first_only(ds,ss,e,**kw):
+    sent.append(e["question"])
+    if e["question"]=="q1":
+        raise TimeoutError("ambiguous")
+common.remember_entry_via_http=fail_first_only
 save(common,policy,payload(),lambda:False,events.append)
-assert events[-1]["status"]=="paused" and events[-1]["reason"]=="request_result_unknown"
-assert pending()[0][common._AMBIGUOUS_KEY]
+assert events[-1]["status"]=="completed" and events[-1]["saved"]==1 and events[-1]["isolated"]==1 and events[-1]["remaining"]==0,events[-1]
+assert sent==["q1","q2"],sent
+assert len(pending())==1 and pending()[0]["question"]=="q1" and pending()[0][common._AMBIGUOUS_KEY]
+append(3)
 common.remember_entry_via_http=lambda ds,ss,e,**kw:sent.append(e["question"])
 scope=payload()
-assert scope["unknown"]==1 and len(scope["tokens"])==1
+assert scope["unknown"]==1 and len(scope["tokens"])==1,scope
 save(common,policy,scope,lambda:False,events.append)
-assert sent==[1,"q2"] and len(pending())==1
-assert pending()[0][common._AMBIGUOUS_KEY]
+assert events[-1]["status"]=="completed" and events[-1]["saved"]==1 and events[-1]["isolated"]==0,events[-1]
+assert sent==["q1","q2","q3"],sent
+assert len(pending())==1 and pending()[0]["question"]=="q1" and pending()[0][common._AMBIGUOUS_KEY]
 ''')
 
     def test_backlog_cancel_and_revoke_wait_for_current_result_without_resending(self):

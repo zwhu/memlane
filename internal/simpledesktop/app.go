@@ -52,89 +52,50 @@ type pane struct {
 	Technical                      map[string]bool
 }
 type App struct {
-	userProfiles        userProfilesState
-	environment         environmentSetupState
-	initialSetup        bool
-	integrations        integrationState
-	layout              appLayoutState
-	projectUI           projectReadingState
-	searchUI            unifiedSearchState
-	searchOrigin        *readingLocation
-	searchPane          *pane
-	searchAnchor        *Item
-	searchResolveCancel context.CancelFunc
-	settingsOrigin      *readingLocation
-	access              projectAccessState
-	commonEdit          commonEditorState
-	commonPage          commonKnowledgePageState
-	commonGeneration    uint64
-	titles                *ReadingTitles
-	readingIdentity       string
-	baseReadingIdentity   string
-	baseIdentityURL       string
-	baseIdentityTokenFile string
-	recentCancel        context.CancelFunc
-	recentCtx           context.Context
-	recentRequest       uint64
-	recentScope         string
-	readingRevisions    map[string]uint64
-	overviewState       overviewViewState
-	projectVisibility   projectVisibilityState
-	allProjectsOpen     bool
-	allProjectsScroll   ui.ScrollState
-	overviewRefreshAt   time.Time
-	windowInactive      bool
-	searchType          string
-	editProject         *Project
-	editIndex           int
-	settingsMessage     string
-	focusSearch         bool
-	fromOverview        bool
-	overviewSourceFloor map[*pane]int
+	searchController
+	graphController
+	readingController
+	overviewController
 
-	graph                                             *GraphHost
-	graphError, graphMode, graphSelection, codeStatus string
-	graphLoading, codeBusy                            bool
-	codeUnknown                                       bool
-	codeRemoteActive                                  bool
-
+	userProfiles         userProfilesState
+	environment          environmentSetupState
+	initialSetup         bool
+	integrations         integrationState
+	layout               appLayoutState
+	projectUI            projectReadingState
+	settingsOrigin       *readingLocation
+	access               projectAccessState
+	commonEdit           commonEditorState
+	commonPage           commonKnowledgePageState
+	commonGeneration     uint64
+	editProject          *Project
+	editIndex            int
+	settingsMessage      string
 	ChooseProjectFolder  func() (string, error)
 	ChooseDiagnosticPath func() (string, error)
 	OpenExistingAgent    func(string) error
 	projectCreate        projectCreateState
-	toolGraph            toolGraphUIState
-	graphPending         graphPendingState
 	Config               Config
 	Client               Client
 	Update               func(func())
 	page                 string
 	project              int
 	kind                 string
-	panes                map[string]*pane
 	epoch                uint64
 	service, completion  string
 	monitor              serviceMonitorState
 	configError          string
 	md                   markdown.Options
 	projectMD            *markdown.Options
-	searchProject        string
-	recent               []Item
-	homeError            string
 }
 
 func New(c Config, err error) *App {
-	a := &App{Config: c, Client: Client{Config: c}, page: "总览", kind: "知识", panes: map[string]*pane{}, service: "尚未检查", completion: "尚未检查"}
+	a := &App{Config: c, Client: Client{Config: c}, page: "总览", kind: "知识", service: "尚未检查", completion: "尚未检查"}
 	if c.GenerationSetupOnly {
 		a.page = "设置"
 		a.access.SettingsSection = "Agent 与模型"
 	}
-	a.titles = newReadingTitles()
-	if full, base, idErr := readingIdentityPair(a.Client); idErr == nil {
-		a.readingIdentity = full
-		a.baseReadingIdentity = base
-		a.baseIdentityURL = a.Client.Config.ServiceURL
-		a.baseIdentityTokenFile = a.Client.Config.TokenFile
-	}
+	a.initReading(a.Client)
 	if err != nil {
 		a.configError = err.Error()
 		a.initialSetup = c.ConfigFile == "" || (c.FirstInstallDefault && errors.Is(err, os.ErrNotExist))
@@ -153,14 +114,8 @@ func New(c Config, err error) *App {
 			}
 		}
 	}
-	a.searchType = "全部类型"
-	a.graphMode = "实体关系"
-	if c.GraphAssets != "" {
-		a.graph, err = RegisterGraph(c.GraphAssets)
-		if err != nil {
-			a.graphError = err.Error()
-		}
-	}
+	a.initSearch()
+	a.initGraph(c.GraphAssets)
 	a.md = markdown.Options{Theme: &markdown.Theme{FontSize: 12, LineHeight: 1.9, Text: ink, Muted: muted, CodeSize: 11.0 / 12, CodeBlockBackground: ui.Hex("#f5f8fb"), CodeBlockBorder: border}, CodeBlock: func(c *ui.Context, b *markdown.CodeBlockView) {
 		ui.Column(c).Background(ui.Hex("#f5f8fb")).Border(1, border).Radius(6).Children(func() {
 			row := ui.Row(c).Padding(6, 12).Gap(4).AlignItems(ui.Center)
@@ -207,13 +162,7 @@ func (a *App) health() {
 func (a *App) loadRecent()      { a.loadOverview() }
 func (a *App) routeKey() string { return a.currentRoute().Key() }
 func (a *App) state() *pane {
-	k := a.routeKey()
-	s := a.panes[k]
-	if s == nil {
-		s = &pane{DetailScroll: map[string]*ui.ScrollState{}, Tools: map[string]bool{}, Technical: map[string]bool{}}
-		a.panes[k] = s
-	}
-	return s
+	return a.paneFor(a.routeKey())
 }
 func (a *App) projects() []Project {
 	if a.page == "通用知识" {
@@ -230,44 +179,22 @@ func (a *App) current() (Project, bool) {
 }
 func (a *App) navigate(page string, index int) { a.navigateKind(page, index, "") }
 func (a *App) navigateKind(page string, index int, kind string) {
-	if a.overviewState.recallCancel != nil {
-		a.overviewState.recallCancel()
-		a.overviewState.recallCancel = nil
-	}
+	a.cancelOverviewRecall()
 	a.commonPage.MenuOpen = false
 	a.projectUI.InfoOpen = false
 	a.projectUI.MenuOpen = false
 	a.closeUnifiedSearch()
-	if a.searchResolveCancel != nil {
-		a.searchResolveCancel()
-		a.searchResolveCancel = nil
-	}
-	a.searchOrigin = nil
-	a.searchPane = nil
-	a.searchAnchor = nil
+	a.clearSearchOrigin()
 	if page != "设置" {
 		a.settingsOrigin = nil
 	}
 	if a.page == "总览" && page != "总览" {
-		if a.overviewState.cancel != nil {
-			a.overviewState.cancel()
-		}
-		a.overviewState.generation++
-		a.overviewState.Loading = false
-		a.fromOverview = true
-		a.overviewSourceFloor = make(map[*pane]int, len(a.panes))
-		for _, p := range a.panes {
-			a.overviewSourceFloor[p] = len(p.History)
-		}
+		a.leaveOverview(a.panes)
 	}
 	if page == "总览" {
-		a.fromOverview = false
-		a.overviewSourceFloor = nil
+		a.enterOverview()
 	}
-	if a.recentCancel != nil {
-		a.recentCancel()
-		a.recentRequest++
-	}
+	a.cancelRecentTitles()
 	a.epoch++
 	a.graph.clear()
 	for _, p := range a.panes {
@@ -492,9 +419,7 @@ func (a *App) selectItem(s *pane, i Item) {
 	s.Reading = true
 	s.History = nil
 	s.SourceReturn = nil
-	if a.fromOverview {
-		a.overviewSourceFloor[s] = 0
-	}
+	a.resetOverviewFloor(s)
 	s.Error = ""
 	if s.Selected == nil || s.Selected.key() != i.key() || keyForReading("", *s.Selected, generation) != keyForReading("", i, generation) {
 		s.Selected = &i
@@ -1002,15 +927,7 @@ func (a *App) projectEditor(c *ui.Context) {
 				}
 				a.epoch++
 				a.InvalidateReading("")
-				for _, state := range a.panes {
-					if state.cancel != nil {
-						state.cancel()
-					}
-					if state.readCancel != nil {
-						state.readCancel()
-					}
-				}
-				a.panes = map[string]*pane{}
+				a.cancelAndResetPanes()
 				a.editProject = nil
 				a.settingsMessage = "关联已保存；服务与模型配置通过重启后台生效"
 				a.loadRecent()
@@ -1036,7 +953,5 @@ func (a *App) returnFromSource(s *pane) {
 	floor := a.overviewSourceFloor[s]
 	a.selectItem(s, original)
 	s.History = history
-	if a.fromOverview {
-		a.overviewSourceFloor[s] = min(floor, len(history))
-	}
+	a.clampOverviewFloor(s, floor, len(history))
 }

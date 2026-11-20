@@ -17,6 +17,9 @@ _MAX_OWNER_BYTES = 65536
 _MAX_RECEIPT_BYTES = 16384
 _MAX_CONTROL_LOG_BYTES = 32768
 
+_ANSI_ESCAPE_RE = re.compile(r'\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])')
+_CONTROL_CHAR_RE = re.compile(r'[\x00-\x08\x0b-\x1f\x7f]')
+
 _REDACTION_PATTERNS = (
     (re.compile(r'(?i)(Bearer\s+)\S+'), r'\1[REDACTED]'),
     (re.compile(r'(?i)(X-Api-Key\s*:\s*)\S+'), r'\1[REDACTED]'),
@@ -26,7 +29,8 @@ _REDACTION_PATTERNS = (
 
 
 def redact_log_line(line: str) -> str:
-    result = str(line)
+    result = _ANSI_ESCAPE_RE.sub('', str(line))
+    result = _CONTROL_CHAR_RE.sub('', result)
     for pattern, replacement in _REDACTION_PATTERNS:
         result = pattern.sub(replacement, result)
     return result
@@ -212,20 +216,34 @@ class ServiceMonitor:
                     continue
         return None
 
-    def _hook_errors_count(self):
+    def _hook_errors(self) -> list[dict]:
         adapters = getattr(self.connections, 'adapters', None)
         if not isinstance(adapters, dict):
-            return 0
-        count = 0
-        for adapter in adapters.values():
+            return []
+        errors = []
+        for adapter_id, adapter in adapters.items():
             fn = getattr(adapter, 'last_hook_error', None)
-            if callable(fn):
-                try:
-                    if fn() is not None:
-                        count += 1
-                except Exception:
-                    pass
-        return count
+            if not callable(fn):
+                continue
+            try:
+                err = fn()
+            except Exception:
+                continue
+            if not isinstance(err, dict):
+                continue
+            at_val = err.get('at')
+            errors.append({
+                'instance_id': str(getattr(adapter, 'id', adapter_id) or adapter_id)[:80],
+                'kind': str(getattr(adapter, 'kind', '') or '')[:40],
+                'at': float(at_val) if type(at_val) in (int, float) else 0.0,
+                'script': str(err.get('script', ''))[:80],
+                'error_type': str(err.get('error_type', ''))[:80],
+                'reason': str(err.get('reason', ''))[:120],
+            })
+        return errors
+
+    def _hook_errors_count(self):
+        return len(self._hook_errors())
 
     async def snapshot(self, *, include_logs: bool = False) -> dict:
         now = float(self.clock())
@@ -294,13 +312,15 @@ class ServiceMonitor:
             recent_processing_duration_ms(state_dir / 'runtime-logs/project_control_server.log')
             if state_dir is not None else None
         )
+        hook_errors = self._hook_errors()
         summary = {
             'projects_count': len(self.registry.state.get('projects', {})) if self.registry is not None else 0,
             'active_generation': owner.get('generation_reference'),
             'generation_mode': str(owner.get('generation_mode') or ''),
             'generation_receipt_verified': self._generation_receipt_verified(owner, state_dir),
             'recent_processing_ms': recent_ms,
-            'hook_errors_count': self._hook_errors_count(),
+            'hook_errors_count': len(hook_errors),
+            'hook_errors': hook_errors,
         }
 
         return {

@@ -190,3 +190,65 @@ class BridgeValidationTests(unittest.IsolatedAsyncioTestCase):
         await self.validator.bridge.close()
         self.validator.bridge=None
         shutil.rmtree(retained)
+
+    async def test_validation_bridge_idle_timeout_allows_slow_active_and_reaps_silent_hang(self):
+        import time
+        import aiohttp
+        from generation_bridge import ValidationBridge
+        profile = {'mode': 'agent_bridge', 'bridge_kind': 'codex', 'model': 'fixture-model'}
+        bridge_root = self.root / 'idle-bridge'
+        bridge_root.mkdir(mode=0o700)
+        for bad in (0, -2, float('nan'), float('inf')):
+            with self.assertRaises(ValueError):
+                ValidationBridge(self.runtime, profile, bridge_root, lambda: None, timeout=bad)
+        script = f'''#!{sys.executable}
+import json, os, sys, time
+def send(x): print(json.dumps(x), flush=True)
+for line in sys.stdin:
+    m = json.loads(line); method = m['method']
+    if method == 'initialize': send({{'id': m['id'], 'result': {{}}}})
+    elif method == 'thread/start':
+        send({{'id': m['id'], 'result': {{'thread': {{'id': 't'}}, 'model': 'fixture-model', 'modelProvider': 'openai', 'runtimeWorkspaceRoots': [], 'activePermissionProfile': {{'id': 'memlane_completion'}}}}}})
+    elif method == 'turn/start':
+        send({{'id': m['id'], 'result': {{'turn': {{'id': 'u'}}}}}})
+        if 'hang' in m['params']['input'][0]['text']:
+            continue
+        for idx in range(7):
+            time.sleep(0.2)
+            sys.stderr.write(f'bridge heartbeat {{idx}}\\n')
+            sys.stderr.flush()
+        send({{'method': 'item/completed', 'params': {{'threadId': 't', 'turnId': 'u', 'item': {{'type': 'agentMessage', 'text': json.dumps({{'answer': 'ok'}})}}}}}})
+        send({{'method': 'turn/completed', 'params': {{'threadId': 't', 'turn': {{'id': 'u', 'status': 'completed', 'error': None}}}}}})
+    elif method == 'turn/interrupt':
+        send({{'id': m['id'], 'result': {{}}}})
+        send({{'method': 'turn/completed', 'params': {{'threadId': 't', 'turn': {{'id': 'u', 'status': 'interrupted'}}}}}})
+'''
+        self.executable.write_text(script)
+        self.executable.chmod(0o700)
+        bridge = ValidationBridge(self.runtime, profile, bridge_root, lambda: None, timeout=0.9)
+        env = await bridge.start()
+        schema = {'type': 'object', 'properties': {'answer': {'type': 'string'}}, 'required': ['answer']}
+        headers = {'Authorization': 'Bearer ' + env['LLM_API_KEY']}
+        url = env['LLM_ENDPOINT'] + '/chat/completions'
+        try:
+            async with aiohttp.ClientSession() as session:
+                started = time.monotonic()
+                async with session.post(url, headers=headers, json={
+                    'model': 'fixture-model', 'messages': [{'role': 'user', 'content': 'active'}],
+                    'response_format': {'type': 'json_schema', 'json_schema': {'schema': schema}},
+                }) as response:
+                    elapsed = time.monotonic() - started
+                    payload = await response.json()
+                    self.assertEqual(response.status, 200, payload)
+                    self.assertGreater(elapsed, 0.9)
+                    self.assertEqual(json.loads(payload['choices'][0]['message']['content']), {'answer': 'ok'})
+                async with session.post(url, headers=headers, json={
+                    'model': 'fixture-model', 'messages': [{'role': 'user', 'content': 'hang'}],
+                    'response_format': {'type': 'json_schema', 'json_schema': {'schema': schema}},
+                }) as response:
+                    payload = await response.json()
+                    self.assertEqual(response.status, 504, payload)
+                    self.assertEqual(payload['error']['code'], 'codex_timeout')
+            self.assertEqual(bridge.processes, {})
+        finally:
+            await bridge.close()

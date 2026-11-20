@@ -24,6 +24,8 @@ func TestRuntimeAssetsMaterializeAndEmbedLocalScriptImports(t *testing.T) {
 		t.Fatal(err)
 	}
 	expected := []string{
+		"engine/python/user_profiles/__init__.py",
+		"engine/python/user_profiles/providers/antigravity.py",
 		"scripts/dev.py",
 		"scripts/dev_recovery.py",
 		"scripts/local_prepare.py",

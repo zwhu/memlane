@@ -62,7 +62,7 @@ func (a *App) serviceMonitorDetails(c *ui.Context) {
 						ctrlParts = append(ctrlParts, fmt.Sprintf("最近请求 %.0f ms", *s.RecentProcessingMs))
 					}
 					if s.HookErrorsCount > 0 {
-						ctrlParts = append(ctrlParts, fmt.Sprintf("Hook 异常 %d 项", s.HookErrorsCount))
+						ctrlParts = append(ctrlParts, fmt.Sprintf("Hook 未记录 %d 项", s.HookErrorsCount))
 					}
 					if s.GenerationReceiptVerified != nil {
 						if *s.GenerationReceiptVerified {
@@ -74,6 +74,16 @@ func (a *App) serviceMonitorDetails(c *ui.Context) {
 				}
 			}
 			homeText(c, strings.Join(ctrlParts, " · "), homeMeta)
+		}
+
+		if m.Snapshot != nil && m.Snapshot.Summary != nil {
+			if len(m.Snapshot.Summary.HookErrors) > 0 {
+				for _, he := range m.Snapshot.Summary.HookErrors {
+					homeText(c, formatMonitorHookErrorLine(he), homeMeta).LineHeight(1.5)
+				}
+			} else if m.Snapshot.Summary.HookErrorsCount > 0 {
+				homeText(c, fmt.Sprintf("Hook 未记录（%d 项）：请展开「Agent 与模型」核对对应 Agent 状态。", m.Snapshot.Summary.HookErrorsCount), homeMeta).LineHeight(1.5)
+			}
 		}
 
 		if m.Snapshot != nil && m.Snapshot.Disk != nil {
@@ -96,10 +106,28 @@ func (a *App) serviceMonitorDetails(c *ui.Context) {
 			if len(lines) > 8 {
 				lines = lines[len(lines)-8:]
 			}
-			homeText(c, "最近服务日志（已脱敏）：", homeMeta)
-			ui.Column(c).FillWidth().Padding(8, 10).Gap(2).Background(ui.Hex("#f5f8fb")).Radius(6).Children(func() {
+			heading := "最近服务动态（已脱敏）："
+			if m.ShowRawLogs {
+				heading = "最近服务原始日志（已脱敏）："
+			}
+			homeText(c, heading, homeMeta)
+			ui.Column(c).FillWidth().Padding(8, 10).Gap(3).Background(ui.Hex("#f5f8fb")).Radius(6).Children(func() {
 				for _, line := range lines {
-					homeText(c, line, homeMeta).FontSize(11)
+					if m.ShowRawLogs {
+						homeText(c, stripANSIEscapes(line), homeMeta).FontSize(11)
+						continue
+					}
+					display, level := formatServiceLogLine(line)
+					if display == "" {
+						continue
+					}
+					text := homeText(c, display, homeMeta).FontSize(11).LineHeight(1.4)
+					switch level {
+					case "error":
+						text.TextColor(ui.Hex("#b54738"))
+					case "warning":
+						text.TextColor(ui.Hex("#a6671c"))
+					}
 				}
 			})
 		}
@@ -109,6 +137,13 @@ func (a *App) serviceMonitorDetails(c *ui.Context) {
 				c.WriteClipboard(a.serviceDiagnosticText())
 				m.CopiedNotice = "已复制诊断信息"
 			}).Label("复制服务诊断")
+			if m.Snapshot != nil && len(m.Snapshot.LogTail) > 0 && (m.State == "exited" || m.State == "degraded" || m.Expanded) {
+				toggleLabel := "查看原始日志"
+				if m.ShowRawLogs {
+					toggleLabel = "查看可读摘要"
+				}
+				textButton(c, toggleLabel, func() { m.ShowRawLogs = !m.ShowRawLogs })
+			}
 			if m.CopiedNotice != "" {
 				homeText(c, m.CopiedNotice, homeMeta)
 			}

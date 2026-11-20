@@ -55,14 +55,22 @@ func verifyInstallation(installation AgentInstallation) error {
 	if !filepath.IsAbs(root) || !filepath.IsAbs(installation.EnvFile) || !filepath.IsAbs(installation.Home) {
 		return fmt.Errorf("受管插件配置尚未确认")
 	}
-	receipt, err := os.ReadFile(filepath.Join(root, ".memlane-project-access.json"))
+	receiptPath := filepath.Join(root, ".memlane-project-access.json")
+	receiptInfo, err := os.Lstat(receiptPath)
+	if err != nil || !receiptInfo.Mode().IsRegular() {
+		return fmt.Errorf("受管插件输入发生变化，请重新核对")
+	}
+	receipt, err := os.ReadFile(receiptPath)
 	if err != nil || fmt.Sprintf("%x", sha256.Sum256(receipt)) != installation.ManifestSHA {
 		return fmt.Errorf("受管插件输入发生变化，请重新核对")
 	}
 	var input struct {
 		Files map[string]string `json:"files"`
 	}
-	if json.Unmarshal(receipt, &input) != nil || input.Files["scripts/_memlane_policy.py"] != installation.HelperSHA {
+	if json.Unmarshal(receipt, &input) != nil || input.Files["scripts/_memlane_policy.py"] == "" || input.Files["scripts/_plugin_common.py"] == "" {
+		return fmt.Errorf("受管插件输入未确认")
+	}
+	if installation.HelperSHA != "" && input.Files["scripts/_memlane_policy.py"] != installation.HelperSHA {
 		return fmt.Errorf("受管插件输入未确认")
 	}
 	for name, expected := range input.Files {

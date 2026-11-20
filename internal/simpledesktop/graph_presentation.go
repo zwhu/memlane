@@ -17,10 +17,7 @@ func (a *App) graphToolbar(c *ui.Context) {
 			selected = 1
 		}
 		ui.Segmented(c, &selected, "实体关系", "代码图谱").Label("图谱类型").OnChange(func() {
-			a.graphMode = []string{"实体关系", "代码结构"}[selected]
-			a.graph.clear()
-			a.graphSelection, a.graphError = "", ""
-			a.graphLoading = false
+			a.resetGraphView([]string{"实体关系", "代码结构"}[selected])
 			if selected == 1 && ok && !p.CodeEnabled {
 				return
 			}
@@ -44,7 +41,7 @@ func (a *App) graphToolbar(c *ui.Context) {
 		}).Disabled(a.graphLoading)
 		if code && ok {
 			textButton(c, "关闭代码索引", nil).OnClick(func() { a.toggleCode(false) })
-			ui.PrimaryButton(c, "更新代码图谱").Disabled(a.codeBusy || a.codeUnknown || a.codeRemoteActive).OnClick(func() { a.indexCode() })
+			ui.PrimaryButton(c, "更新代码图谱").Disabled(a.codeIndexBlocked()).OnClick(func() { a.indexCode() })
 		}
 	})
 	if !code && ok {
@@ -65,7 +62,7 @@ func (a *App) codeGraphEmpty(c *ui.Context) {
 			if a.codeBusy {
 				label = "正在开启…"
 			}
-			ui.PrimaryButton(c, label).Margin(10, 0, 0, 0).Disabled(a.codeBusy || a.codeUnknown || a.codeRemoteActive).OnClick(func() { a.toggleCode(true) })
+			ui.PrimaryButton(c, label).Margin(10, 0, 0, 0).Disabled(a.codeIndexBlocked()).OnClick(func() { a.toggleCode(true) })
 			if a.graphError != "" {
 				homeText(c, a.graphError, homeBody).MaxLines(4).TextAlign(ui.Center)
 			}

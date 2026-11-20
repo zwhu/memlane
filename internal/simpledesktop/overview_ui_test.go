@@ -552,3 +552,12 @@ func TestOverviewRefreshKeepsResolvedTitles(t *testing.T) {
 		t.Fatal("catalog publication lost readable title or blocked title hydration")
 	}
 }
+
+func TestOverviewHeatmapHidesMissingDatesNotice(t *testing.T) {
+	a := overviewFixture(t)
+	a.overviewState.Snapshot.MissingDates = 5
+	tt := ui.NewTester(a.View, 1200, 820)
+	if tt.HasText("部分记忆缺少来源日期，未计入热力图。") {
+		t.Fatal("missing dates notice should not be displayed on overview")
+	}
+}

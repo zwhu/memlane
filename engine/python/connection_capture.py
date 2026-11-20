@@ -52,7 +52,7 @@ class ConnectionCapture:
             return copy.deepcopy(cached['value'])
         return {'state': 'checking', 'permission': 'unknown'}
 
-    async def refresh(self, rows, adapters):
+    async def refresh(self, rows, adapters, *, force=False):
         pending = []
         for row in rows:
             identifier = row['instance_id']
@@ -61,7 +61,7 @@ class ConnectionCapture:
                 continue
             key = self.key(row, adapter)
             cached = self.cache.get(identifier)
-            if cached and cached['key'] == key and time.time() - cached['value']['checked_at'] < 15:
+            if not force and cached and cached['key'] == key and time.time() - cached['value']['checked_at'] < 15:
                 continue
             task_key = (identifier, key)
             task = self.tasks.get(task_key)

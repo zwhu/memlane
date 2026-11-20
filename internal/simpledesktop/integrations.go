@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -308,6 +309,9 @@ func connectionStatus(row AgentConnection) string {
 		}
 		return "等待新会话"
 	case "requires_review", "activation_unknown", "preparation_unknown", "staging_unknown":
+		if row.Status == "requires_review" && row.ErrorCode == "host_executable_changed" {
+			return "应用已更新，待核对"
+		}
 		return "连接结果待确认"
 	case "agent_creation_unconfirmed":
 		return "连接结果待确认"
@@ -316,6 +320,31 @@ func connectionStatus(row AgentConnection) string {
 		return "未安装"
 	}
 	return "未连接"
+}
+
+func connectionReviewNotice(name string, row AgentConnection) string {
+	switch row.Status {
+	case "requires_review", "activation_unknown", "preparation_unknown", "staging_unknown", "agent_creation_unconfirmed":
+	default:
+		return ""
+	}
+	switch row.ErrorCode {
+	case "host_executable_changed":
+		return "检测到 " + name + " 应用已更新，点击右侧「核对连接」确认后即可恢复正常。"
+	case "antigravity_plugin_not_enabled":
+		return name + " 中 Memlane 插件尚未启用，请点击右侧「核对连接」检查。"
+	case "connection_artifact_changed", "connection_binding_changed", "antigravity_installation_binding_changed":
+		return "插件文件或绑定配置已变动，请点击右侧「核对连接」检查。"
+	case "antigravity_installation_requires_review", "traex_installation_requires_review", "claude_installation_requires_review", "cursor_loader_changed_requires_review":
+		return name + " 的插件安装状态与记录不一致，请点击右侧「核对连接」检查。"
+	case "":
+		if row.Status != "requires_review" {
+			return "上一次连接操作结果尚未确认，请点击右侧「核对连接」。"
+		}
+		return ""
+	default:
+		return "连接状态需要核对（" + row.ErrorCode + "），请点击右侧「核对连接」。"
+	}
 }
 
 func captureConnection(row AgentConnection) bool {
@@ -339,6 +368,63 @@ func connectionActionAllowed(row AgentConnection, action string) bool {
 	}
 	return action == "activate" && row.Status == "prepared" && row.Preview != nil && row.Preview.ProposedSHA != ""
 }
+func (a *App) RefreshConnections() {
+	client, ok := a.accessClient()
+	s := &a.integrations
+	if !ok || s.Loading || s.Busy || a.Update == nil {
+		return
+	}
+	pending, err := a.loadGenerationOperations()
+	if err != nil {
+		s.Error = "无法读取待核对操作，已停止发送新配置请求"
+		return
+	}
+	s.PendingOperations = pending
+	s.Loading = true
+	s.Request++
+	s.NextReceiptCheck = time.Now().Add(10 * time.Second)
+	request := s.Request
+	config := a.Config
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		var connections ConnectionsDirectory
+		var err error
+		if !config.GenerationSetupOnly {
+			err = client.request(ctx, "GET", "/v1/connections?force=1", nil, &connections)
+		}
+		if err == nil {
+			loadAgentVersions(ctx, config, connections.Connections)
+		}
+		a.Update(func() {
+			if request != s.Request {
+				return
+			}
+			s.Loading = false
+			if err != nil {
+				s.Error = err.Error()
+				a.captureReadFailed()
+				return
+			}
+			s.Error = ""
+			s.Loaded = true
+			s.Connections = connections
+			if s.HostVersions == nil {
+				s.HostVersions = map[string]string{}
+			}
+			for _, row := range connections.Connections {
+				s.HostVersions[row.Kind] = row.HostVersion
+			}
+			if s.Selected == nil {
+				s.Selected = map[string]bool{}
+			}
+			if s.ItemMessages == nil {
+				s.ItemMessages = map[string]string{}
+			}
+		})
+	}()
+}
+
 func (a *App) RefreshIntegrations() {
 	client, ok := a.accessClient()
 	s := &a.integrations
@@ -353,6 +439,7 @@ func (a *App) RefreshIntegrations() {
 	s.PendingOperations = pending
 	s.Loading = true
 	s.Request++
+	s.NextReceiptCheck = time.Now().Add(10 * time.Second)
 	request := s.Request
 	config := a.Config
 	go func() {
@@ -360,12 +447,24 @@ func (a *App) RefreshIntegrations() {
 		defer cancel()
 		var connections ConnectionsDirectory
 		var generation GenerationDirectory
-		var err error
+		var connErr, genErr error
+		var wg sync.WaitGroup
 		if !config.GenerationSetupOnly {
-			err = client.request(ctx, "GET", "/v1/connections", nil, &connections)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				connErr = client.request(ctx, "GET", "/v1/connections?force=1", nil, &connections)
+			}()
 		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			genErr = client.request(ctx, "GET", "/v1/generation", nil, &generation)
+		}()
+		wg.Wait()
+		err := connErr
 		if err == nil {
-			err = client.request(ctx, "GET", "/v1/generation", nil, &generation)
+			err = genErr
 		}
 		if err == nil {
 			loadAgentVersions(ctx, config, connections.Connections)

@@ -36,3 +36,17 @@ func TestAgentVersionSurvivesCaptureStatusRefresh(t *testing.T) {
 		t.Fatal("capture refresh erased detected host version")
 	}
 }
+
+func TestAntigravityVersionDetectionUsesAgyBinary(t *testing.T) {
+	dir := t.TempDir()
+	agy := filepath.Join(dir, "agy")
+	if err := os.WriteFile(agy, []byte("#!/bin/sh\n[ \"$1\" = --version ] || exit 7\nprintf '1.5.13\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	rows := []AgentConnection{{Kind: "antigravity", Detected: true}}
+	loadAgentVersions(context.Background(), Config{}, rows)
+	if rows[0].HostVersion != "1.5.13" {
+		t.Fatalf("expected agy version 1.5.13, got %q", rows[0].HostVersion)
+	}
+}

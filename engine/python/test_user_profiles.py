@@ -1,15 +1,30 @@
 import asyncio
 import json
+import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from project_policy import PolicyError
-from user_profiles import UserProfiles, ProfileDocuments, PROMPT, attach_user_profiles, command_for, generate, ProfileAgentFailure, failure_detail
+from user_profiles import (
+    UserProfiles,
+    ProfileDocuments,
+    PROMPT,
+    NAMES,
+    GENERATE_KINDS,
+    PROVIDERS,
+    get_provider,
+    attach_user_profiles,
+    command_for,
+    generate,
+    ProfileAgentFailure,
+    failure_detail,
+)
 
 
 class Documents:
@@ -212,7 +227,7 @@ class UserProfilesTests(unittest.IsolatedAsyncioTestCase):
         real_wait_for=asyncio.wait_for
         async def accelerated_deadline(awaitable,seconds):
             return await real_wait_for(awaitable,.02 if seconds==180 else seconds)
-        with patch('user_profiles.asyncio.wait_for',side_effect=accelerated_deadline):
+        with patch('user_profiles.runner.asyncio.wait_for',side_effect=accelerated_deadline):
             result=await generate(SimpleNamespace(executable=str(executable)),{'kind':'pi','profile':str(root),'_progress':progress.append})
         self.assertIn('Slow profile',result)
         self.assertTrue(progress)
@@ -331,6 +346,128 @@ class UserProfilesTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('文' * 12000, (await document.json())['body'])
         finally:
             await client.close()
+
+    async def test_antigravity_displays_gemini_app_and_builds_isolated_command(self):
+        import subprocess
+        import sys
+
+        self.connections.rows = [
+            {'instance_id': 'agy-detected', 'kind': 'antigravity', 'status': 'configured_pending_new_session',
+             'detected': True, 'profile': str(Path(self.tmp.name) / '.gemini/config')},
+            {'instance_id': 'agy-missing', 'kind': 'antigravity', 'status': 'not_installed',
+             'detected': False, 'profile': str(Path(self.tmp.name) / '.gemini/config')},
+            {'instance_id': 'agy-issue', 'kind': 'antigravity', 'status': 'requires_review',
+             'detected': True, 'environment_issue': 'host_executable_changed',
+             'profile': str(Path(self.tmp.name) / '.gemini/config')},
+        ]
+        profiles = {row['instance_id']: row for row in self.service.view()['profiles']}
+        self.assertEqual(profiles['agy-detected']['name'], 'Gemini App')
+        self.assertTrue(profiles['agy-detected']['can_generate'])
+        self.assertEqual(profiles['agy-missing']['name'], 'Gemini App')
+        self.assertFalse(profiles['agy-missing']['can_generate'])
+        self.assertFalse(profiles['agy-issue']['can_generate'])
+
+        root = Path(self.tmp.name)
+        profile = root / 'userhome/.gemini/config'
+        profile.mkdir(parents=True)
+        work = root / 'work'
+        work.mkdir()
+        adapter = SimpleNamespace(executable='/bin/echo')
+        with self.assertRaises(PolicyError):
+            command_for(adapter, {'kind': 'antigravity', 'profile': str(root / 'invalid')}, work)
+
+        with patch.dict(os.environ, {'COGNEE_API_KEY': 'must-not-leak', 'MEMLANE_PROJECT_CONTROL_URL': 'http://127.0.0.1:18998'}):
+            args, env, output = command_for(adapter, {'kind': 'antigravity', 'profile': str(profile)}, work)
+        self.assertIsNone(output)
+        self.assertEqual(args[0], '/bin/echo')
+        self.assertEqual(
+            args[1:],
+            ['--output-format', 'json', '--mode', 'plan', '--disable-slash-commands', '--sandbox', '--print=' + PROMPT],
+        )
+        self.assertNotIn('--agent', args)
+        self.assertNotIn('--model', args)
+        self.assertNotIn('-m', args)
+        self.assertEqual(env['HOME'], str(profile.parent.parent))
+        self.assertEqual(env['MEMLANE_PROCESSING_SESSION'], '1')
+        self.assertFalse(any(k.startswith(('COGNEE_', 'MEMLANE_PROJECT_')) for k in env))
+
+        self.assertTrue((work / '.git').is_dir())
+        agents_doc = (work / 'AGENTS.md').read_text(encoding='utf-8')
+        self.assertIn('memlane-cognee', agents_doc)
+        self.assertIn('read-only', agents_doc.lower())
+
+        hooks_data = json.loads((work / '.agents/hooks.json').read_text(encoding='utf-8'))
+        pre_tool_use = hooks_data['memlane-profile-export']['PreToolUse']
+        self.assertEqual(pre_tool_use[0]['matcher'], '*')
+
+        hook_result = subprocess.run(
+            [sys.executable, str(work / '.agents/deny-tools.py')],
+            input='{}',
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertEqual(json.loads(hook_result.stdout)['decision'], 'deny')
+
+    async def test_antigravity_generate_parses_json_success_and_redacts_errors(self):
+        root = Path(self.tmp.name)
+        profile = root / 'userhome/.gemini/config'
+        profile.mkdir(parents=True)
+
+        ok_exec = root / 'fake-agy-ok'
+        ok_exec.write_text('#!/usr/bin/env python3\nimport json\nprint(json.dumps({"status": "SUCCESS", "response": "# 用户画像\\n\\n保留原话。"}))\n')
+        ok_exec.chmod(0o700)
+        body = await generate(SimpleNamespace(executable=str(ok_exec)), {'kind': 'antigravity', 'profile': str(profile)})
+        self.assertEqual(body, '# 用户画像\n\n保留原话。')
+
+        auth_exec = root / 'fake-agy-auth'
+        auth_exec.write_text('#!/usr/bin/env python3\nimport json, sys\nprint(json.dumps({"status": "ERROR", "error": "Error: authentication required Bearer secret-token /Users/test/private"}))\nsys.exit(1)\n')
+        auth_exec.chmod(0o700)
+        with self.assertRaises(ProfileAgentFailure) as caught:
+            await generate(SimpleNamespace(executable=str(auth_exec)), {'kind': 'antigravity', 'profile': str(profile)})
+        self.assertEqual(caught.exception.diagnostic, 'authentication_required')
+        self.assertNotIn('secret-token', caught.exception.detail or '')
+        self.assertNotIn('/Users/test', caught.exception.detail or '')
+
+        denied_exec = root / 'fake-agy-denied'
+        denied_exec.write_text('#!/usr/bin/env python3\nimport json\nprint(json.dumps({"status": "SUCCESS", "response": "", "denied_actions": [{"tool": "read_file"}]}))\n')
+        denied_exec.chmod(0o700)
+        with self.assertRaises(ProfileAgentFailure) as denied:
+            await generate(SimpleNamespace(executable=str(denied_exec)), {'kind': 'antigravity', 'profile': str(profile)})
+        self.assertEqual(denied.exception.diagnostic, 'permission_denied')
+        self.assertTrue(denied.exception.detail)
+
+        empty_exec = root / 'fake-agy-empty'
+        empty_exec.write_text('#!/usr/bin/env python3\nimport json\nprint(json.dumps({"status": "SUCCESS", "response": "   "}))\n')
+        empty_exec.chmod(0o700)
+        with self.assertRaises(ProfileAgentFailure) as empty:
+            await generate(SimpleNamespace(executable=str(empty_exec)), {'kind': 'antigravity', 'profile': str(profile)})
+        self.assertEqual(empty.exception.diagnostic, 'empty_response')
+
+        canceled_exec = root / 'fake-agy-canceled'
+        canceled_exec.write_text('#!/usr/bin/env python3\nimport json\nprint(json.dumps({"status": "CANCELED", "response": "partial"}))\n')
+        canceled_exec.chmod(0o700)
+        with self.assertRaises(ProfileAgentFailure):
+            await generate(SimpleNamespace(executable=str(canceled_exec)), {'kind': 'antigravity', 'profile': str(profile)})
+
+        bad_json_exec = root / 'fake-agy-bad'
+        bad_json_exec.write_text('#!/bin/sh\necho "not-json"\n')
+        bad_json_exec.chmod(0o700)
+        with self.assertRaisesRegex(PolicyError, 'profile_agent_failed'):
+            await generate(SimpleNamespace(executable=str(bad_json_exec)), {'kind': 'antigravity', 'profile': str(profile)})
+
+    def test_provider_registry_consistency(self):
+        expected_kinds = {'codex', 'traex', 'pi', 'claude_code', 'antigravity', 'cursor', 'opencode'}
+        self.assertEqual(set(PROVIDERS), expected_kinds)
+        self.assertEqual(set(NAMES), expected_kinds)
+        self.assertEqual(GENERATE_KINDS, {'codex', 'traex', 'pi', 'claude_code', 'antigravity'})
+        for kind in expected_kinds:
+            provider = get_provider(kind)
+            self.assertIsNotNone(provider)
+            self.assertEqual(provider.kind, kind)
+            self.assertEqual(provider.display_name, NAMES[kind])
+            self.assertEqual(provider.can_generate, kind in GENERATE_KINDS)
+        self.assertIsNone(get_provider('unknown-provider'))
 
 
 if __name__ == '__main__':

@@ -3,6 +3,7 @@
 Runs under one verified installation's original host identity. Only metadata is
 written to stdout. Contents stay in the official buffer until a confirmed POST.
 """
+import contextlib
 import hashlib
 import json
 import os
@@ -290,6 +291,25 @@ def save(common, policy, payload, stopped, report=emit):
                 pass
 
 
+_UNSET = object()
+
+
+@contextlib.contextmanager
+def _scoped_improve_cooldown(value):
+    if value is None:
+        yield
+        return
+    previous = os.environ.get('COGNEE_IMPROVE_COOLDOWN', _UNSET)
+    os.environ['COGNEE_IMPROVE_COOLDOWN'] = str(value)
+    try:
+        yield
+    finally:
+        if previous is _UNSET:
+            os.environ.pop('COGNEE_IMPROVE_COOLDOWN', None)
+        else:
+            os.environ['COGNEE_IMPROVE_COOLDOWN'] = previous
+
+
 def process(common, policy, payload):
     """Delegate to the installed official plugin; never implement its policy."""
     dataset, session = payload['dataset'], payload['session_id']
@@ -297,16 +317,16 @@ def process(common, policy, payload):
     policy.require('process', dataset, automatic=True)
     # Idle admission uses the official configurable cooldown; its retry,
     # no-new-entry and submission behavior stays owned by the installed plugin.
-    if payload.get('incremental_cooldown_seconds') == 300:
-        os.environ['COGNEE_IMPROVE_COOLDOWN'] = '300'
-    # A confirmed-cancelled original submit is not a completed improve. Reuse
-    # the official switch trigger and native applied markers/watermarks; do
-    # not delete its throttle history or reset any content processing watermark.
-    handoff = bool(payload.get('handoff_operation'))
-    reason = '' if handoff else common.improve_throttle_reason(session)
-    if reason:
-        return {'status': 'skipped' if reason == 'no_new_entries' else 'deferred', 'reason': reason}
-    outcome = common.run_session_improve_detailed(dataset, session, trigger='switch' if handoff else 'auto')
+    cooldown = '300' if payload.get('incremental_cooldown_seconds') == 300 else None
+    with _scoped_improve_cooldown(cooldown):
+        # A confirmed-cancelled original submit is not a completed improve. Reuse
+        # the official switch trigger and native applied markers/watermarks; do
+        # not delete its throttle history or reset any content processing watermark.
+        handoff = bool(payload.get('handoff_operation'))
+        reason = '' if handoff else common.improve_throttle_reason(session)
+        if reason:
+            return {'status': 'skipped' if reason == 'no_new_entries' else 'deferred', 'reason': reason}
+        outcome = common.run_session_improve_detailed(dataset, session, trigger='switch' if handoff else 'auto')
     if outcome.get('ok'):
         # A confirmed submit is not a completed improve or generated knowledge.
         return {'status': 'submitted'}

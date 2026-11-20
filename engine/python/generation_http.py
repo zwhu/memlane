@@ -9,7 +9,7 @@ from weakref import WeakSet
 
 
 @asynccontextmanager
-async def generation_http_policy(*, endpoint=None, max_concurrent_requests=2, wait_timeout=300, backend_kind='unknown'):
+async def generation_http_policy(*, endpoint=None, max_concurrent_requests=2, wait_timeout=300, backend_kind='unknown', request_rewriter=None):
     import httpx
     import litellm
     from litellm.caching.llm_caching_handler import LLMClientCache
@@ -46,12 +46,19 @@ async def generation_http_policy(*, endpoint=None, max_concurrent_requests=2, wa
                 handlers.add(value)
             return super().set_cache(key, value, **kwargs)
 
+    use_transport = gate is not None or request_rewriter is not None
+    if use_transport:
+        from generation_capacity import CapacityAsyncTransport, CapacityTransport
     async_client = httpx.AsyncClient(follow_redirects=False,
-        **({'transport': CapacityAsyncTransport(gate),
-            'mounts': _environment_proxy_mounts(lambda proxy: CapacityAsyncTransport(gate, httpx.AsyncHTTPTransport(proxy=proxy)))} if gate else {}))
+        **({'transport': CapacityAsyncTransport(gate, request_rewriter=request_rewriter),
+            'mounts': _environment_proxy_mounts(lambda proxy: CapacityAsyncTransport(
+                gate, httpx.AsyncHTTPTransport(proxy=proxy), request_rewriter=request_rewriter))}
+           if use_transport else {}))
     sync_client = httpx.Client(follow_redirects=False,
-        **({'transport': CapacityTransport(gate),
-            'mounts': _environment_proxy_mounts(lambda proxy: CapacityTransport(gate, httpx.HTTPTransport(proxy=proxy)))} if gate else {}))
+        **({'transport': CapacityTransport(gate, request_rewriter=request_rewriter),
+            'mounts': _environment_proxy_mounts(lambda proxy: CapacityTransport(
+                gate, httpx.HTTPTransport(proxy=proxy), request_rewriter=request_rewriter))}
+           if use_transport else {}))
     cache = ClientCache()
     # Ollama model metadata uses these handlers directly, outside the cache.
     metadata_sync = HTTPHandler(follow_redirects=False)

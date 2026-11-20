@@ -226,5 +226,6 @@ def prepare_official_host(root, instance_id, agent, service_url, control_url, ho
             'plugins': [{'name': 'cognee', 'source': './plugins/cognee'}]}).encode())
     return {'plugin_dir': str(target), 'env_file': str(environment), 'home': str(home),
             'marketplace_root': str(marketplace), 'marketplace_name': marketplace_name,
+            'helper_sha256': hashes['scripts/_memlane_policy.py'],
             'manifest_sha256': hashlib.sha256((target / '.memlane-project-access.json').read_bytes()).hexdigest(),
             'host_kind': host_kind, 'instance_id': instance_id, 'status': 'prepared'}

@@ -1,10 +1,10 @@
-"""Small capture receipts committed in Cognee's existing SQL cache transaction.
+"""Idempotent capture receipt protocol backed by ExternalCaptureStore + read-only Cognee lookup.
 
-No message bodies, second queue, process mutex or separate database. An entry
-and its receipt either commit together or both roll back. Unmanaged writes keep
-their native behavior. This protocol deliberately cannot acknowledge legacy IDs.
+No Cognee source patching is required. Reads legacy ``cache_kv`` receipts when
+present and reconciles pending interrupted requests read-only against
+``SessionManager``.
 """
-import contextvars
+import asyncio
 import hashlib
 import json
 import uuid
@@ -37,54 +37,47 @@ class Capture:
     def entry_id(self):
         return str(uuid.uuid5(uuid.NAMESPACE_URL, self.key))
 
-    def receipt(self):
-        return dict(protocol=1, message_id=self.message, payload_sha256=self.digest,
-                    entry_id=self.entry_id, entry_type=self.kind, session_id=self.session,
-                    dataset_id=self.dataset, status='saved')
+    def receipt(self, *, entry_id=None):
+        return dict(
+            protocol=1,
+            message_id=self.message,
+            payload_sha256=self.digest,
+            entry_id=entry_id or self.entry_id,
+            entry_type=self.kind,
+            session_id=self.session,
+            dataset_id=self.dataset,
+            status='saved',
+        )
 
 
-current_capture = contextvars.ContextVar('memlane_capture', default=None)
-
-
-def entry_id():
-    capture = current_capture.get()
-    return capture.entry_id if capture else str(uuid.uuid4())
-
-
-async def reserve(session, user, session_id, identifier):
-    """Called inside the native QA/trace insert transaction, never after commit."""
-    capture = current_capture.get()
-    if capture is None:
-        return
-    if (str(user), session_id, identifier) != (capture.user, capture.session, capture.entry_id):
-        raise CaptureConflict('capture scope changed')
+async def lookup_legacy_cache_kv(adapter, capture):
+    """Read-only lookup for legacy capture receipts written to stock ``cache_kv``."""
+    from cognee.infrastructure.databases.cache.sql.SqlCacheAdapter import SqlCacheAdapter
     from cognee.infrastructure.databases.cache.sql.tables import cache_kv
     from sqlalchemy import select
-    from sqlalchemy.dialects.sqlite import insert
-    # Current product is local SQLite only. Fail closed for an unvalidated DB.
-    if session.bind.dialect.name != 'sqlite':
-        raise RuntimeError('capture receipts require the local SQL cache')
-    value = json.dumps(capture.receipt(), sort_keys=True)
-    result = await session.execute(insert(cache_kv).values(
-        key=capture.key, value=value, expires_at=None).on_conflict_do_nothing(index_elements=['key']))
-    if result.rowcount == 1:
-        return
-    existing = (await session.execute(select(cache_kv.c.value).where(cache_kv.c.key == capture.key))).scalar_one()
-    if existing != value:
-        raise CaptureConflict('message ID already used for another payload')
-    raise CaptureDuplicate()
 
-
-async def lookup(adapter, capture):
-    from cognee.infrastructure.databases.cache.sql.tables import cache_kv
-    from sqlalchemy import select
+    if not isinstance(adapter, SqlCacheAdapter) or adapter._is_postgres:
+        return None
     await adapter._ensure_initialized()
     async with adapter.sessionmaker() as session:
         value = (await session.execute(select(cache_kv.c.value).where(cache_kv.c.key == capture.key))).scalar_one_or_none()
     return json.loads(value) if value else None
 
 
-def install_capture_routes(app, *, bindings=None):
+def _legacy_matches(old, capture):
+    return (
+        isinstance(old, dict)
+        and old.get('protocol') == 1
+        and old.get('status') == 'saved'
+        and old.get('message_id') == capture.message
+        and old.get('payload_sha256') == capture.digest
+        and old.get('entry_type') == capture.kind
+        and old.get('session_id') == capture.session
+        and old.get('dataset_id') == capture.dataset
+    )
+
+
+def install_capture_routes(app, *, bindings=None, receipt_store=None):
     from fastapi import Depends, HTTPException, Query
     from pydantic import BaseModel, Field, TypeAdapter
     from cognee.memory import QAEntry, TraceEntry
@@ -94,6 +87,8 @@ def install_capture_routes(app, *, bindings=None):
     from cognee.modules.session_lifecycle.metrics import get_session_row
     from cognee.api.v1.remember.remember import _resolve_entry_dataset
     from cognee.api.v1.remember import remember
+    from external_capture_store import attach_capture_marker, ensure_qa_context_date, find_committed_capture
+
     if bindings is not None:
         get_authenticated_user = bindings.get_authenticated_user
         get_permitted_dataset_ids = bindings.get_permitted_dataset_ids
@@ -101,6 +96,8 @@ def install_capture_routes(app, *, bindings=None):
         get_session_row = bindings.get_session_row
         _resolve_entry_dataset = bindings.resolve_entry_dataset
         remember = bindings.remember
+
+    key_locks = {}
 
     class Body(BaseModel):
         dataset_id: uuid.UUID
@@ -115,13 +112,22 @@ def install_capture_routes(app, *, bindings=None):
             raise HTTPException(422, 'invalid message ID') from None
         return value
 
-    def cache():
-        from cognee.infrastructure.databases.cache.sql.SqlCacheAdapter import SqlCacheAdapter
-        adapter = get_session_manager()._cache
-        if (not isinstance(adapter, SqlCacheAdapter) or adapter._is_postgres
-                or getattr(adapter, '__memlane_capture_protocol__', None) != 1):
+    def require_ready():
+        if receipt_store is None:
+            raise HTTPException(503, 'local capture store unavailable')
+        sm = get_session_manager()
+        if not getattr(sm, 'is_available', False):
             raise HTTPException(503, 'local capture cache unavailable')
-        return adapter
+        return sm
+
+    async def legacy_lookup(sm, capture):
+        adapter = getattr(sm, '_cache', None)
+        if adapter is None:
+            return None
+        try:
+            return await lookup_legacy_cache_kv(adapter, capture)
+        except Exception:
+            return None
 
     @app.get('/api/v1/capture/entries/{message}')
     async def status(message: str, dataset_id: uuid.UUID, session_id: str = Query(min_length=1, max_length=512),
@@ -133,12 +139,16 @@ def install_capture_routes(app, *, bindings=None):
         row = await get_session_row(session_id=session_id, user_id=user.id)
         if row is None or str(row.dataset_id) != str(dataset_id):
             raise HTTPException(404, 'capture not found')
+        sm = require_ready()
         capture = Capture(str(user.id), str(dataset_id), session_id, message, '', '')
-        result = await lookup(cache(), capture)
-        if result is None:
-            # Absence does not authorize replay of an old, unnumbered request.
-            raise HTTPException(404, 'capture not found')
-        return result
+        found = receipt_store.get(capture.key)
+        if found and found['status'] == 'saved' and found.get('receipt'):
+            return found['receipt']
+        legacy = await legacy_lookup(sm, capture)
+        if legacy is not None:
+            return legacy
+        # Absence does not authorize replay of an old, unnumbered request.
+        raise HTTPException(404, 'capture not found')
 
     @app.put('/api/v1/capture/entries/{message}')
     async def store(message: str, payload: Body, user=Depends(get_authenticated_user)):
@@ -158,28 +168,68 @@ def install_capture_routes(app, *, bindings=None):
             dataset_id=payload.dataset_id, user=user)
         capture = Capture(str(user.id), str(payload.dataset_id), payload.session_id,
                           message, hashlib.sha256(encoded).hexdigest(), entry.type)
-        adapter = cache()
-        old = await lookup(adapter, capture)
-        if old:
-            if old != capture.receipt():
-                raise HTTPException(409, 'message ID already used for another payload')
-            return old
-        token = current_capture.set(capture)
+        sm = require_ready()
+        lock = key_locks.setdefault(capture.key, asyncio.Lock())
         try:
-            try:
-                await remember(entry, dataset_id=payload.dataset_id, session_id=payload.session_id, user=user)
-            except CaptureConflict:
-                raise HTTPException(409, 'message ID already used for another payload') from None
-            except Exception:
-                # A native post-save index/activity failure cannot undo committed
-                # raw content. Only the atomic receipt proves that it committed.
-                result = await lookup(adapter, capture)
-                if result == capture.receipt():
-                    return result
-                raise
-            result = await lookup(adapter, capture)
-            if result != capture.receipt():
-                raise HTTPException(503, 'capture commit not confirmed')
-            return result
+            async with lock:
+                legacy = await legacy_lookup(sm, capture)
+                if legacy is not None:
+                    if not _legacy_matches(legacy, capture):
+                        raise HTTPException(409, 'message ID already used for another payload')
+                    return legacy
+
+                baseline_count = None
+                if entry.type == 'qa' and receipt_store.get(capture.key) is None:
+                    try:
+                        existing_qas = await sm.get_session(
+                            user_id=capture.user, session_id=capture.session, formatted=False,
+                        )
+                        if isinstance(existing_qas, list):
+                            baseline_count = len(existing_qas)
+                    except Exception:
+                        baseline_count = None
+
+                try:
+                    state, record = receipt_store.reserve(capture, baseline_count=baseline_count)
+                except CaptureConflict:
+                    raise HTTPException(409, 'message ID already used for another payload') from None
+                if state == 'saved' and record.get('receipt'):
+                    return record['receipt']
+                marked_entry = ensure_qa_context_date(attach_capture_marker(entry, capture))
+                alt_contexts = (entry.context,) if getattr(entry, 'type', None) == 'qa' else ()
+                if state == 'pending':
+                    committed_id = await find_committed_capture(
+                        sm, capture, marked_entry, baseline_count=record.get('baseline_count'),
+                        alt_contexts=alt_contexts,
+                    )
+                    if committed_id:
+                        return receipt_store.mark_saved(capture, committed_id)
+
+                try:
+                    result = await remember(
+                        marked_entry, dataset_id=payload.dataset_id, session_id=payload.session_id, user=user,
+                    )
+                except Exception:
+                    committed_id = await find_committed_capture(
+                        sm, capture, marked_entry, baseline_count=record.get('baseline_count'),
+                        alt_contexts=alt_contexts,
+                    )
+                    if committed_id:
+                        return receipt_store.mark_saved(capture, committed_id)
+                    receipt_store.abort_pending(capture)
+                    raise
+
+                committed_id = result.get('entry_id') if isinstance(result, dict) else getattr(result, 'entry_id', None)
+                status_val = result.get('status') if isinstance(result, dict) else getattr(result, 'status', None)
+                if status_val == 'errored' or not committed_id:
+                    committed_id = await find_committed_capture(
+                        sm, capture, marked_entry, baseline_count=record.get('baseline_count'),
+                        alt_contexts=alt_contexts,
+                    )
+                    if not committed_id:
+                        receipt_store.abort_pending(capture)
+                        raise HTTPException(503, 'capture commit not confirmed')
+                return receipt_store.mark_saved(capture, str(committed_id))
         finally:
-            current_capture.reset(token)
+            if key_locks.get(capture.key) is lock and not lock.locked() and not getattr(lock, '_waiters', None):
+                key_locks.pop(capture.key, None)

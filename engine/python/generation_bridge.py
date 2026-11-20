@@ -1,4 +1,5 @@
 """One validation-owned Agent endpoint, independent of the active service."""
+import math
 import secrets
 import socket
 from pathlib import Path
@@ -17,12 +18,19 @@ from agent_bridge_runtime import (resolve_bridge_runtime, check_bridge_runtime, 
 
 
 class ValidationBridge:
-    def __init__(self, runtime, profile, root, changed, *, concurrency=1):
+    def __init__(self, runtime, profile, root, changed, *, concurrency=1, timeout=90):
+        try:
+            idle_timeout = float(timeout)
+        except (TypeError, ValueError):
+            raise ValueError('timeout must be a positive finite number') from None
+        if not math.isfinite(idle_timeout) or idle_timeout <= 0:
+            raise ValueError('timeout must be a positive finite number')
         self.selected = check_bridge_runtime(runtime, profile)
         self.runtime, self.profile, self.root = runtime, profile, Path(root)
         self.processes = {}
         self.changed = changed
         self.concurrency = concurrency
+        self.timeout = idle_timeout
         self.runner, self.socket = None, None
 
     async def start(self):
@@ -31,7 +39,7 @@ class ValidationBridge:
         args = SimpleNamespace(token_file=token_file, model=self.profile['model'],
                                codex_executable=self.selected['executable'], agent_executable=self.selected['executable'],
                                auth_home=self.selected['home'], bridge_kind=self.selected['kind'],
-                               bridge_provider=self.profile.get('bridge_provider'), timeout=90,
+                               bridge_provider=self.profile.get('bridge_provider'), timeout=self.timeout,
                                max_concurrency=self.concurrency, max_inflight=self.concurrency,
                                workspace_root=self.root, diagnostics_dir=self.root / 'diagnostics',
                                owned_processes=self.processes, ownership_changed=self.changed)

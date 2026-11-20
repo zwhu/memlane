@@ -6,6 +6,7 @@ import copy
 from contextlib import contextmanager
 import hmac
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -182,9 +183,60 @@ def private_config(model, work, provider='openai', defaults=None):
     ])
 
 
+class ActivityClock:
+    """Monotonic idle-activity clock; resets deadline on child stdout/stderr output."""
+
+    def __init__(self, idle_timeout):
+        try:
+            threshold = float(idle_timeout)
+        except (TypeError, ValueError):
+            raise ValueError('idle_timeout must be a positive finite number') from None
+        if not math.isfinite(threshold) or threshold <= 0:
+            raise ValueError('idle_timeout must be a positive finite number')
+        self.idle_timeout = threshold
+        self.last_activity = time.monotonic()
+
+    def touch(self):
+        self.last_activity = time.monotonic()
+
+    def remaining(self):
+        return self.idle_timeout - (time.monotonic() - self.last_activity)
+
+
+async def await_with_idle(awaitable, clock):
+    """Await an operation until completion or idle_timeout of silence on clock."""
+    task = asyncio.ensure_future(awaitable)
+    try:
+        while not task.done():
+            remaining = clock.remaining()
+            if remaining <= 0:
+                raise TimeoutError()
+            done, _ = await asyncio.wait({task}, timeout=remaining)
+            if task in done:
+                break
+        return await task
+    except BaseException:
+        if not task.done():
+            task.cancel()
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except BaseException:
+                    pass
+        raise
+
+
+async def read_line_with_idle(stream, clock):
+    """Read one line from stream, keeping the request alive while output flows."""
+    line = await await_with_idle(stream.readline(), clock)
+    if line:
+        clock.touch()
+    return line
+
+
 class RPC:
-    def __init__(self, process):
-        self.process, self.counter, self.received = process, 0, 0
+    def __init__(self, process, clock=None):
+        self.process, self.counter, self.received, self.clock = process, 0, 0, clock
 
     async def send(self, method, params, notification=False):
         message = {'method': method, 'params': params}
@@ -192,12 +244,18 @@ class RPC:
             self.counter += 1
             message['id'] = self.counter
         self.process.stdin.write(json.dumps(message).encode() + b'\n')
-        await self.process.stdin.drain()
+        if self.clock is not None:
+            await await_with_idle(self.process.stdin.drain(), self.clock)
+        else:
+            await self.process.stdin.drain()
         return message.get('id')
 
     async def read(self):
         try:
-            line = await self.process.stdout.readline()
+            if self.clock is not None:
+                line = await read_line_with_idle(self.process.stdout, self.clock)
+            else:
+                line = await self.process.stdout.readline()
             if not line:
                 raise CompletionError('codex_transport_closed')
             self.received += len(line)
@@ -246,7 +304,7 @@ async def terminate(process):
 
 
 
-async def collect_stderr(stream):
+async def collect_stderr(stream, on_activity=None):
     # Keep draining after the retained prefix fills: pipe backpressure must not
     # strand a child during failure or cleanup. This is never a public log.
     retained = bytearray()
@@ -254,6 +312,8 @@ async def collect_stderr(stream):
         chunk = await stream.read(4096)
         if not chunk:
             return bytes(retained)
+        if on_activity is not None:
+            on_activity()
         retained.extend(chunk[:max(0, 16384 - len(retained))])
 
 
@@ -355,88 +415,89 @@ async def execute(args, system, prompt, schema, transport):
                 await terminate(process)
                 track_process(args, process, False)
             raise
-        stderr_task = asyncio.create_task(collect_stderr(process.stderr))
-        rpc, thread_id, turn_id, failure = RPC(process), None, None, None
+        clock = ActivityClock(args.timeout)
+        stderr_task = asyncio.create_task(collect_stderr(process.stderr, on_activity=clock.touch))
+        rpc, thread_id, turn_id, failure = RPC(process, clock), None, None, None
         try:
             track_process(args, process, True)
-            async with asyncio.timeout(args.timeout):
-                phase('rpc_initialize')
-                await rpc.call('initialize', {'clientInfo': {'name': 'memlane_completion', 'version': '1'}, 'capabilities': {'experimentalApi': True}})
-                await rpc.send('initialized', {}, notification=True)
-                phase('thread_start')
-                instructions = 'Complete only this isolated model request.'
-                if kind == 'traex':
-                    instructions += (' Return only the JSON object constrained by outputSchema, without Markdown. '
-                                     'The user message describes the answer content, not the transport encoding. '
-                                     'For a text envelope, put the requested answer in its text field. '
-                                     'Required output schema: ' + json.dumps(transport))
-                started = await rpc.call('thread/start', {'cwd': str(work), 'runtimeWorkspaceRoots': [],
-                    'permissions': PROFILE, 'model': args.model, 'modelProvider': provider, 'approvalPolicy': 'never',
-                    'ephemeral': True, 'allowProviderModelFallback': False, 'dynamicTools': [],
-                    'baseInstructions': system, 'developerInstructions': instructions})
-                thread_id = started.get('thread', {}).get('id')
-                if not thread_id or started.get('model') != args.model or started.get('modelProvider') != provider or started.get('runtimeWorkspaceRoots') != [] or started.get('activePermissionProfile', {}).get('id') != PROFILE:
-                    raise CompletionError('codex_model_or_permissions_changed')
-                phase('model_turn')
-                request_id = await rpc.send('turn/start', {'threadId': thread_id, 'input': [{'type': 'text', 'text': prompt, 'text_elements': []}], 'outputSchema': transport, 'permissions': PROFILE})
-                final, announced = None, None
-                first_output = False
-                while True:
-                    event = await rpc.read()
-                    method, params = event.get('method', ''), event.get('params', {})
-                    if 'id' in event:
-                        if method or event['id'] != request_id or event.get('error') or turn_id:
-                            raise CompletionError('codex_tool_or_rpc_rejected')
-                        turn_id = event.get('result', {}).get('turn', {}).get('id')
-                        if not turn_id or announced and announced != turn_id:
-                            raise CompletionError('codex_event_identity_invalid')
-                        continue
-                    if method == 'error':
-                        raise remote_error(params.get('error'))
-                    if method == 'turn/started':
-                        announced = params.get('turn', {}).get('id')
-                        if params.get('threadId') != thread_id or not announced or turn_id and announced != turn_id:
-                            raise CompletionError('codex_event_identity_invalid')
-                    if method.startswith('item/'):
-                        if params.get('threadId') != thread_id or not turn_id or params.get('turnId') != turn_id:
-                            raise CompletionError('codex_event_identity_invalid')
-                        if method in ('item/started', 'item/completed'):
-                            item = params.get('item', {})
-                            if item.get('type') not in ('agentMessage', 'reasoning', 'userMessage'):
-                                raise CompletionError('codex_unexpected_tool_execution')
-                            if method == 'item/completed' and item['type'] == 'agentMessage' and item.get('phase') != 'commentary':
-                                if final is not None:
-                                    raise CompletionError('codex_multiple_final_answers')
-                                final = item.get('text')
-                        elif not method.startswith(('item/agentMessage/', 'item/reasoning/')):
+            phase('rpc_initialize')
+            await rpc.call('initialize', {'clientInfo': {'name': 'memlane_completion', 'version': '1'}, 'capabilities': {'experimentalApi': True}})
+            await rpc.send('initialized', {}, notification=True)
+            phase('thread_start')
+            instructions = 'Complete only this isolated model request.'
+            if kind == 'traex':
+                instructions += (' Return only the JSON object constrained by outputSchema, without Markdown. '
+                                 'The user message describes the answer content, not the transport encoding. '
+                                 'For a text envelope, put the requested answer in its text field. '
+                                 'Required output schema: ' + json.dumps(transport))
+            started = await rpc.call('thread/start', {'cwd': str(work), 'runtimeWorkspaceRoots': [],
+                'permissions': PROFILE, 'model': args.model, 'modelProvider': provider, 'approvalPolicy': 'never',
+                'ephemeral': True, 'allowProviderModelFallback': False, 'dynamicTools': [],
+                'baseInstructions': system, 'developerInstructions': instructions})
+            thread_id = started.get('thread', {}).get('id')
+            if not thread_id or started.get('model') != args.model or started.get('modelProvider') != provider or started.get('runtimeWorkspaceRoots') != [] or started.get('activePermissionProfile', {}).get('id') != PROFILE:
+                raise CompletionError('codex_model_or_permissions_changed')
+            phase('model_turn')
+            request_id = await rpc.send('turn/start', {'threadId': thread_id, 'input': [{'type': 'text', 'text': prompt, 'text_elements': []}], 'outputSchema': transport, 'permissions': PROFILE})
+            final, announced = None, None
+            first_output = False
+            while True:
+                event = await rpc.read()
+                method, params = event.get('method', ''), event.get('params', {})
+                if 'id' in event:
+                    if method or event['id'] != request_id or event.get('error') or turn_id:
+                        raise CompletionError('codex_tool_or_rpc_rejected')
+                    turn_id = event.get('result', {}).get('turn', {}).get('id')
+                    if not turn_id or announced and announced != turn_id:
+                        raise CompletionError('codex_event_identity_invalid')
+                    continue
+                if method == 'error':
+                    raise remote_error(params.get('error'))
+                if method == 'turn/started':
+                    announced = params.get('turn', {}).get('id')
+                    if params.get('threadId') != thread_id or not announced or turn_id and announced != turn_id:
+                        raise CompletionError('codex_event_identity_invalid')
+                if method.startswith('item/'):
+                    if params.get('threadId') != thread_id or not turn_id or params.get('turnId') != turn_id:
+                        raise CompletionError('codex_event_identity_invalid')
+                    if method in ('item/started', 'item/completed'):
+                        item = params.get('item', {})
+                        if item.get('type') not in ('agentMessage', 'reasoning', 'userMessage'):
                             raise CompletionError('codex_unexpected_tool_execution')
-                        if not first_output and method.startswith('item/agentMessage/'):
-                            first_output = True
-                            trace = current_trace.get()
-                            if trace:
-                                trace.emit('first_output_event')
-                    if method == 'turn/completed':
-                        turn = params.get('turn', {})
-                        if params.get('threadId') != thread_id or not turn_id or turn.get('id') != turn_id:
-                            raise CompletionError('codex_event_identity_invalid')
-                        if turn.get('status') != 'completed' or turn.get('error'):
-                            raise remote_error(turn.get('error'))
-                        break
-                phase('schema_validation')
-                try:
-                    if not isinstance(final, str) or len(final) > MAX_BODY:
-                        raise ValueError()
-                    value = json.loads(final)
-                    for contract in ((schema, transport) if schema is not None else (transport,)):
-                        validators.validator_for(contract)(contract).validate(value)
-                except Exception:
-                    raise CompletionError('codex_schema_failed') from None
-                return value['text'] if schema is None else final
+                        if method == 'item/completed' and item['type'] == 'agentMessage' and item.get('phase') != 'commentary':
+                            if final is not None:
+                                raise CompletionError('codex_multiple_final_answers')
+                            final = item.get('text')
+                    elif not method.startswith(('item/agentMessage/', 'item/reasoning/')):
+                        raise CompletionError('codex_unexpected_tool_execution')
+                    if not first_output and method.startswith('item/agentMessage/'):
+                        first_output = True
+                        trace = current_trace.get()
+                        if trace:
+                            trace.emit('first_output_event')
+                if method == 'turn/completed':
+                    turn = params.get('turn', {})
+                    if params.get('threadId') != thread_id or not turn_id or turn.get('id') != turn_id:
+                        raise CompletionError('codex_event_identity_invalid')
+                    if turn.get('status') != 'completed' or turn.get('error'):
+                        raise remote_error(turn.get('error'))
+                    break
+            phase('schema_validation')
+            try:
+                if not isinstance(final, str) or len(final) > MAX_BODY:
+                    raise ValueError()
+                value = json.loads(final)
+                for contract in ((schema, transport) if schema is not None else (transport,)):
+                    validators.validator_for(contract)(contract).validate(value)
+            except Exception:
+                raise CompletionError('codex_schema_failed') from None
+            return value['text'] if schema is None else final
         except CompletionError as error:
             failure = error.code
             raise
         except (TimeoutError, asyncio.CancelledError) as error:
             failure = 'codex_timeout' if isinstance(error, TimeoutError) else 'codex_cancelled'
+            rpc.clock = None
             if thread_id and turn_id:
                 try:
                     async with asyncio.timeout(2):
@@ -591,12 +652,14 @@ def main():
     parser.add_argument('--codex-executable', type=Path, required=True)
     parser.add_argument('--auth-home', type=Path, required=True)
     parser.add_argument('--model', required=True)
-    parser.add_argument('--timeout', type=float, default=120)
+    parser.add_argument('--timeout', type=float, default=120,
+                        help='Idle silence threshold in seconds (reset on child stdout/stderr output)')
     parser.add_argument('--max-concurrency', type=int, default=2)
     parser.add_argument('--max-inflight', type=int, default=32)
     parser.add_argument('--diagnostics-dir', type=Path, help='Private bounded startup failures; defaults beside the token file')
     args = parser.parse_args()
-    if not args.codex_executable.is_absolute() or not args.codex_executable.is_file() or not args.auth_home.is_absolute() or args.timeout <= 0:
+    if (not args.codex_executable.is_absolute() or not args.codex_executable.is_file()
+            or not args.auth_home.is_absolute() or not math.isfinite(args.timeout) or args.timeout <= 0):
         parser.error('absolute existing executable, absolute auth home and positive timeout required')
     web.run_app(create_app(args), host=args.host, port=args.port, access_log=None, print=None,
                 handler_cancellation=True, shutdown_timeout=15)

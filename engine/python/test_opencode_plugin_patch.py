@@ -86,6 +86,8 @@ class ManagedOpenCodeRuntimeTests(unittest.TestCase):
             (root / 'runtime.ts').write_text(managed_outbox(source_files['runtime.ts']))
             (root / 'client.ts').write_text(managed_http_client(source_files['client.ts']))
             (root / 'types.ts').write_text(source_files['types.ts'])
+            for helper in ('managed-http.ts', 'managed-outbox.ts'):
+                (root / helper).write_text((ROOT / 'engine/agents/opencode' / helper).read_text())
             build = subprocess.run(['node', str(modules / 'typescript/bin/tsc'),
                                     '--target', 'ES2022', '--module', 'NodeNext',
                                     '--moduleResolution', 'NodeNext', '--skipLibCheck',

@@ -344,7 +344,7 @@ func (a *App) toggleCode(enabled bool) {
 		a.graphError = "代码索引需要当前项目的仓库路径"
 		return
 	}
-	if enabled && (a.codeBusy || a.codeUnknown || a.codeRemoteActive) {
+	if enabled && a.codeIndexBlocked() {
 		return
 	}
 	if a.Config.ProjectControl != nil {
@@ -432,7 +432,7 @@ func (a *App) indexCode() {
 	}
 }
 func (a *App) indexProjectCode(p Project) {
-	if !p.CodeEnabled || p.CodeDataset == "" || a.codeBusy || a.codeUnknown || a.codeRemoteActive {
+	if !p.CodeEnabled || p.CodeDataset == "" || a.codeIndexBlocked() {
 		return
 	}
 	a.codeBusy = true

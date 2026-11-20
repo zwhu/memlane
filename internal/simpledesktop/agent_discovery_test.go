@@ -14,10 +14,13 @@ func TestLocalAgentDetectionSettingsShowsRefreshAndUnavailableBinding(t *testing
 		{ID: "opencode-discovery", Kind: "opencode", Detected: true, Status: "integration_pending"},
 	}}}
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"重新检测", "pi", "未连接", "其他 Agent（1）"} {
+	for _, label := range []string{"重新检测", "pi", "未连接", "连接 pi", "其他 Agent（1）"} {
 		if !tt.HasText(label) {
 			t.Fatalf("missing detection control %q", label)
 		}
+	}
+	if tt.HasText("批量连接") {
+		t.Fatal("obsolete bulk connection toggle should be removed")
 	}
 	if tt.HasText("OpenCode") || tt.HasText("暂不支持连接") {
 		t.Fatal("unavailable rows should be collapsed")
@@ -25,11 +28,6 @@ func TestLocalAgentDetectionSettingsShowsRefreshAndUnavailableBinding(t *testing
 	clickProjectUI(t, tt, "其他 Agent（1）")
 	if !tt.HasText("OpenCode") || !tt.HasText("暂不支持连接") {
 		t.Fatal("expanded unavailable status missing")
-	}
-	clickProjectUI(t, tt, "批量连接")
-	clickProjectUI(t, tt, "选择 pi")
-	if !tt.HasText("连接所选（1）") {
-		t.Fatal("selected action missing")
 	}
 	row := a.integrations.Connections.Connections[1]
 	if connectionActionAllowed(row, "prepare") || connectionActionAllowed(row, "activate") {

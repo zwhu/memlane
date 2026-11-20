@@ -185,3 +185,41 @@ func TestFirstWizardReusesConnectionsAndGenerationWithoutPrematureCompletion(t *
 		t.Fatal("unrelated global graph settings entered initialization")
 	}
 }
+
+func TestIncompatibleAgentPluginExplainsReasonAndDailyScope(t *testing.T) {
+	a := New(Config{}, nil)
+	a.initialSetup = false
+	a.service = "已连接"
+	a.environment.Loaded = true
+	a.environment.Plan = bootstrap.Plan{Items: []bootstrap.Item{{
+		Requirement: bootstrap.Requirement{
+			ID:             "agent-plugin",
+			Name:           "Agent 插件",
+			Purpose:        "为已有 Agent 准备官方 Cognee 接入插件及固定权限适配",
+			Version:        "1.8.0 · a176248 · edc059dd",
+			Source:         "https://official.example.test/plugin.tar.gz",
+			Destination:    "/synthetic/components/plugin-integrations",
+			DownloadBytes:  20 << 20,
+			InstalledBytes: 60 << 20,
+		},
+		Observation: bootstrap.Observation{
+			Status: bootstrap.Incompatible,
+			Reason: "插件固定补丁回执不同",
+		},
+	}}}
+
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Themed(c, homeTheme).Fill().Children(func() {
+			ui.Scroll(c).Fill().Children(func() { a.environmentSetup(c, false) })
+		})
+	}, 1200, 820)
+	wantHint := "已有插件目录与当前构建清单版本不同（插件固定补丁回执不同）；日常服务正常运行时可暂不安装，此处安装仅准备新的受管组件目录，不会改写现有日常配置。"
+	if !tt.HasText("不兼容") || !tt.HasText(wantHint) {
+		t.Fatalf("missing incompatible hint before expanding details: %v", tt.Texts())
+	}
+
+	clickProjectUI(t, tt, "安装缺少的依赖")
+	if !tt.HasText("原因：" + wantHint) {
+		t.Fatalf("missing incompatible reason inside approval modal: %v", tt.Texts())
+	}
+}

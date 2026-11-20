@@ -17,34 +17,6 @@ func connectionUnavailable(row AgentConnection) bool {
 	return !row.Detected
 }
 
-func (s *integrationState) connectionSelectionAction() (string, []string) {
-	var prepare, activate []string
-	for _, row := range s.Connections.Connections {
-		if !s.Selected[row.ID] || s.pendingConnection(row.ID) != nil {
-			continue
-		}
-		if connectionActionAllowed(row, "activate") {
-			activate = append(activate, row.ID)
-		} else if connectionActionAllowed(row, "prepare") {
-			prepare = append(prepare, row.ID)
-		}
-	}
-	if len(prepare) > 0 {
-		return "prepare", prepare
-	}
-	return "activate", activate
-}
-
-func (s *integrationState) hasSelectableConnections() bool {
-	for _, row := range s.Connections.Connections {
-		if !connectionUnavailable(row) && s.pendingConnection(row.ID) == nil &&
-			(connectionActionAllowed(row, "prepare") || connectionActionAllowed(row, "activate")) {
-			return true
-		}
-	}
-	return false
-}
-
 func (a *App) agentConnectionSettings(c *ui.Context) {
 	ui.Column(c).FillWidth().Gap(12).Children(func() { a.agentConnectionSettingsContent(c) })
 }
@@ -52,16 +24,8 @@ func (a *App) agentConnectionSettingsContent(c *ui.Context) {
 	s := &a.integrations
 	a.refreshAgentReceiptsIfDue(time.Now())
 	settingsSectionHeader(c, "Agent 连接", nil, func() {
-		label := "批量连接"
-		if s.ConnectionBulk {
-			label = "完成选择"
-		}
-		textButton(c, label, func() { s.ConnectionBulk = !s.ConnectionBulk; s.Selected = map[string]bool{} }).Disabled(s.Busy)
-		refreshAction(c, "重新检测", a.RefreshIntegrations).Disabled(s.Busy || s.Loading)
+		refreshActionLoading(c, "重新检测", s.Loading, a.RefreshConnections).Disabled(s.Busy || s.Loading)
 	})
-	if s.Loading {
-		homeText(c, "正在检测…", homeMeta)
-	}
 	if !s.Loaded {
 		homeText(c, "正在读取连接状态…", homeMeta)
 		if s.Error != "" {
@@ -80,37 +44,6 @@ func (a *App) agentConnectionSettingsContent(c *ui.Context) {
 		} else {
 			available = append(available, row)
 		}
-	}
-	if s.ConnectionBulk && (s.hasSelectableConnections() || s.Busy) {
-		action, ids := s.connectionSelectionAction()
-		ui.Row(c.Key("agent-bulk-toolbar")).FillWidth().AlignItems(ui.Center).Gap(12).Padding(8, 12).Background(ui.Hex("#eef3f8")).Radius(7).Children(func() {
-			selectedCount := 0
-			for _, r := range s.Connections.Connections {
-				if s.Selected[r.ID] && s.pendingConnection(r.ID) == nil && (connectionActionAllowed(r, "prepare") || connectionActionAllowed(r, "activate")) {
-					selectedCount++
-				}
-			}
-			homeText(c, fmt.Sprintf("已选 %d 个", selectedCount), homeMeta)
-			textButton(c, "全选", func() {
-				for _, r := range s.Connections.Connections {
-					if s.pendingConnection(r.ID) == nil && (connectionActionAllowed(r, "prepare") || connectionActionAllowed(r, "activate")) {
-						s.Selected[r.ID] = true
-					}
-				}
-			}).Disabled(s.Busy)
-			ui.Spacer(c)
-			label := fmt.Sprintf("连接所选（%d）", len(ids))
-			if action == "activate" {
-				label = fmt.Sprintf("确认连接（%d）", len(ids))
-			}
-			if s.Busy {
-				label = "正在连接…"
-			}
-			ui.Button(c, label).Padding(5, 12).Disabled(s.Busy || len(ids) == 0).OnClick(func() { a.connectAgents(action, ids) })
-			if s.BatchStop != nil {
-				textButton(c, "停止后续连接", func() { s.BatchStop.Store(true) })
-			}
-		})
 	}
 	a.agentConnectionGrid(c, available)
 	if len(unavailable) > 0 {
@@ -169,14 +102,6 @@ func (a *App) agentConnectionRow(c *ui.Context, row AgentConnection) {
 	allowed := pending == nil && (connectionActionAllowed(row, "prepare") || connectionActionAllowed(row, "activate"))
 	ui.Column(c.Key("agent-connection-" + row.ID)).FillWidth().Gap(0).Children(func() {
 		settingsListRow(c, func() {
-			if s.ConnectionBulk && s.hasSelectableConnections() {
-				ui.Box(c).Width(20).Height(20).Shrink(0).Children(func() {
-					if allowed {
-						selected := s.Selected[row.ID]
-						ui.Checkbox(c.Key("select-agent-"+row.ID), &selected, "").Label("选择 " + name).Disabled(s.Busy).OnChange(func() { s.Selected[row.ID] = selected })
-					}
-				})
-			}
 			ui.Box(c).Size(30, 30).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 				ui.Image(c, agentOriginalIcon(row.Kind)).Size(23, 23).Fit(ui.Contain).TextColor(ui.Hex("#000000"))
 			})
@@ -226,7 +151,7 @@ func (a *App) agentConnectionRow(c *ui.Context, row AgentConnection) {
 					a.captureConnectionAction(c, row)
 				case row.Status == "activation_unknown" || row.Status == "preparation_unknown" || row.Status == "requires_review" || row.Status == "staging_unknown" || row.Status == "agent_creation_unconfirmed":
 					textButton(c, "核对连接", func() { a.connectAgents("review", []string{row.ID}) }).Label("核对连接：" + name).Disabled(s.Busy)
-				case !s.ConnectionBulk && allowed:
+				case allowed:
 					action, label := "prepare", "连接"
 					if connectionActionAllowed(row, "activate") {
 						action, label = "activate", "确认连接"
@@ -247,6 +172,10 @@ func (a *App) agentConnectionRow(c *ui.Context, row AgentConnection) {
 		} else if row.Status == "configured_pending_new_session" && row.NewSessions == 0 {
 			tip := "请重新打开 " + name + " 并新建会话，Memlane 会自动检查连接。"
 			homeText(c, tip, homeMeta).Margin(0, 0, 0, 42).LineHeight(1.5)
+		} else if pending == nil {
+			if notice := connectionReviewNotice(name, row); notice != "" {
+				homeText(c, notice, homeMeta).Margin(0, 0, 8, 42).LineHeight(1.5)
+			}
 		}
 		if row.Profile != "" || row.EnvironmentIssue != "" || len(row.Environments) > 0 {
 			a.agentEnvironmentDetails(c, row)

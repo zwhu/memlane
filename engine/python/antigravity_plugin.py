@@ -64,6 +64,14 @@ if managed() and not numbered(entry):
     for name in ('config.py', '_env_file.py', '_remember_http.py', '_recall_http.py', '_code_graph.py',
                  'cognee-forget.sh', 'cognee-index-repo.sh', 'store-user-prompt.py'):
         files['scripts/' + name] = patch.apply(name, files['scripts/' + name].decode()).encode()
+    prompt_text = files['scripts/store-user-prompt.py'].decode()
+    prompt_text = patch.replace(
+        prompt_text,
+        '        "transcript_path": payload.get("transcript_path"),\n',
+        '        "transcript_path": payload.get("transcript_path"),\n'
+        '        "date": __import__("datetime").datetime.now().astimezone().strftime("%Y-%m-%d"),\n',
+    )
+    files['scripts/store-user-prompt.py'] = prompt_text.encode()
     # Bootstrap is owned by dev.py; no official fallback may start a second
     # service, provision another principal, or install dependencies.
     text = files['scripts/session-start.py'].decode()
@@ -98,6 +106,11 @@ if _EXECUTION_STOP_ARG in sys.argv:
     return 0''')
     files['scripts/sync-session-to-graph.py'] = text.encode()
     text = files['scripts/agy_hook.py'].decode()
+    text = patch.replace(text, '    args = list(sys.argv[1:] if argv is None else argv)\n',
+                         '    args = list(sys.argv[1:] if argv is None else argv)\n'
+                         '    if os.environ.get("MEMLANE_PROCESSING_SESSION") == "1":\n'
+                         '        print("{}")\n'
+                         '        return 0\n')
     text = patch.replace(text, '    stop = "--stop" in args[1:]\n    try:\n',
                          '    stop = "--stop" in args[1:]\n    payload = {}\n    try:\n')
     text = patch.replace(text, '        normalized = normalize_payload(payload, script, stop=stop)\n',
@@ -111,6 +124,7 @@ if _EXECUTION_STOP_ARG in sys.argv:
     policy = policy.replace("manifest = Path(__file__).resolve().parents[1] / '.codex-plugin/plugin.json'",
                             "manifest = Path(__file__).resolve().parents[1] / 'plugin.json'")
     files['scripts/_memlane_policy.py'] = policy.encode()
+    files['scripts/_memlane_access.py'] = (ENGINE / 'python/project_access_hooks.py').read_bytes()
     files['scripts/_memlane_antigravity.py'] = (ENGINE / 'python/antigravity_hook_policy.py').read_bytes()
     files['scripts/_memlane_capture.py'] = (ENGINE / 'python/plugin_capture.py').read_bytes()
     # A direct native manifest keeps installation separate from other plugins.

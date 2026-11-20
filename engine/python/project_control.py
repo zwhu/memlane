@@ -2,6 +2,7 @@
 import asyncio
 import copy
 import fcntl
+import hashlib
 import json
 import os
 import time
@@ -15,6 +16,28 @@ from urllib.parse import quote
 
 from _runtime_common import private_write, read_secret
 from project_policy import ACCESS, DEFAULTS, PolicyError, effective, project_id, validate_fields, workspace_root
+
+
+def _installation_view(installation):
+    if installation is None:
+        return None
+    view = copy.deepcopy(installation)
+    if (isinstance(view, dict) and not view.get('helper_sha256')
+            and view.get('host_kind') != 'opencode'
+            and view.get('plugin_dir') and view.get('manifest_sha256')):
+        try:
+            manifest = Path(view['plugin_dir']) / '.memlane-project-access.json'
+            if manifest.is_absolute() and not manifest.is_symlink() and manifest.is_file():
+                raw = manifest.read_bytes()
+                if hashlib.sha256(raw).hexdigest() == view['manifest_sha256']:
+                    files = json.loads(raw).get('files')
+                    if isinstance(files, dict):
+                        helper = files.get('scripts/_memlane_policy.py')
+                        if isinstance(helper, str) and helper:
+                            view['helper_sha256'] = helper
+        except (OSError, ValueError, TypeError):
+            pass
+    return view
 
 
 def loopback_origin(value):
@@ -231,7 +254,7 @@ class Registry:
                 'agents': [{'id': key, 'name': value['name'], 'kind': value.get('kind', 'unknown'),
                             'capabilities': copy.deepcopy(value.get('capabilities', {})),
                             'entrypoints': copy.deepcopy(value.get('entrypoints', [])),
-                            'installation': copy.deepcopy(value.get('installation'))}
+                            'installation': _installation_view(value.get('installation'))}
                            for key, value in self.state['agents'].items()],
                 'enrollments': {key: {field: value[field] for field in ('status', 'error_code') if field in value}
                                 for key, value in self.state.get('enrollments', {}).items()},

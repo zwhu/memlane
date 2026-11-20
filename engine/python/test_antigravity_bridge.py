@@ -5,12 +5,14 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 
+from aiohttp.test_utils import TestClient, TestServer
 from antigravity_completion import execute
 from agent_bridge_runtime import read_agent_defaults, snapshot_agent_defaults
-from codex_completion_endpoint import CompletionError
+from codex_completion_endpoint import CompletionError, create_app
 from process_groups import group_exists
 
 SCHEMA = {'type': 'object', 'properties': {'text': {'type': 'string'}},
@@ -27,8 +29,12 @@ work=pathlib.Path.cwd()
 agent=(work/'.agents/agents/memlane-processing.md').read_text()
 assert 'tools: []' in agent and 'plugins: []' in agent
 assert not any(k in os.environ for k in ('COGNEE_API_KEY','LLM_ARGS','MEMLANE_PROJECT_CONTROL_TOKEN_FILE'))
+def save_record():
+    tmp=str(record)+'.tmp'
+    pathlib.Path(tmp).write_text(json.dumps(saved))
+    os.replace(tmp,record)
 saved={'arguments':argv,'home':os.environ['HOME'],'cwd':str(work),'received':False,'model':flag('--model')}
-record.write_text(json.dumps(saved))
+save_record()
 if mode=='startup-auth':
     print(json.dumps({'event':'result','result':{'conversation_id':'controlled-conversation','status':'ERROR','error':'authentication failed'}}),flush=True)
     sys.exit(1)
@@ -39,20 +45,37 @@ if not line:sys.exit(0)
 payload=json.loads(line)
 assert payload['event']=='user' and isinstance(payload['message']['content'],str)
 assert payload['message']['content'] not in argv
-saved['received']=True;record.write_text(json.dumps(saved))
+saved['received']=True;save_record()
 print(json.dumps({'event':'step_update','step_update':{'conversation_id':'controlled-conversation','step_type':'agent_response','state':'ACTIVE','text_delta':'working'}}),flush=True)
+turn_started=time.monotonic()
 if mode=='cancel':
     child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(300)'])
-    saved['child']=child.pid;record.write_text(json.dumps(saved))
+    saved['child']=child.pid;saved['pid']=os.getpid();save_record()
     def interrupt(signum,frame):
         child.wait(timeout=2)
-        saved['interrupted']=True;record.write_text(json.dumps(saved))
+        saved['interrupted']=True;save_record()
         print(json.dumps({'event':'result','result':{'conversation_id':'controlled-conversation','status':'CANCELED','error':'interrupted'}}),flush=True)
         sys.exit(0)
     signal.signal(signal.SIGINT,interrupt)
     time.sleep(300)
+if mode=='stream-stdout':
+    for idx in range(7):
+        time.sleep(0.2)
+        print(json.dumps({'event':'step_update','step_update':{'conversation_id':'controlled-conversation','step_type':'agent_response','state':'ACTIVE','text_delta':f'part-{idx}'}}),flush=True)
+if mode=='stream-stderr':
+    for idx in range(7):
+        time.sleep(0.2)
+        print(f'agy heartbeat {idx}',file=sys.stderr,flush=True)
+if mode=='unexpected-exit':
+    print('agy unexpected crash',file=sys.stderr,flush=True)
+    sys.exit(1)
+saved['turn_elapsed']=time.monotonic()-turn_started;save_record()
 output={'text':17 if mode=='bad-schema' else 'controlled answer'}
 print(json.dumps({'event':'result','result':{'conversation_id':'controlled-conversation','status':'ERROR' if mode=='error' else 'SUCCESS','error':'authentication required' if mode=='error' else '', 'structured_output':output,'json_schema':schema}}),flush=True)
+if mode=='hang-after-result':
+    child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(300)'])
+    saved['child']=child.pid;saved['pid']=os.getpid();save_record()
+    time.sleep(300)
 sys.stdin.read()
 '''
 
@@ -151,6 +174,89 @@ class AgyBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.settings.write_text('{}')
         with self.assertRaisesRegex(Exception, 'agent_default_model_unavailable'):
             read_agent_defaults('antigravity', self.profile)
+
+    def http_args(self, mode, timeout):
+        args = self.args(mode)
+        token = self.root / ('token-' + mode)
+        token.write_text('synthetic-antigravity-token-for-tests')
+        args.token_file = token
+        args.timeout = timeout
+        args.execute_request = execute
+        return args
+
+    async def test_slow_active_stdout_and_stderr_past_idle_timeout_complete_with_200(self):
+        body = {'model': 'stale profile label', 'messages': [{'role': 'user', 'content': 'material'}],
+                'response_format': {'type': 'json_schema', 'json_schema': {'schema': SCHEMA}}}
+        for mode in ('stream-stdout', 'stream-stderr'):
+            with self.subTest(mode=mode):
+                args = self.http_args(mode, timeout=0.9)
+                client = TestClient(TestServer(create_app(args)))
+                await client.start_server()
+                try:
+                    started = time.monotonic()
+                    response = await client.post('/v1/chat/completions', json=body,
+                                                 headers={'Authorization': 'Bearer ' + args.token_file.read_text()})
+                    elapsed = time.monotonic() - started
+                    payload = await response.json()
+                    self.assertEqual(response.status, 200, payload)
+                    self.assertGreater(elapsed, args.timeout)
+                    self.assertGreater(json.loads(args.record.read_text())['turn_elapsed'], args.timeout)
+                    self.assertEqual(json.loads(payload['choices'][0]['message']['content']), {'text': 'controlled answer'})
+                    self.assertFalse(args.owned_processes)
+                finally:
+                    await client.close()
+
+    async def test_silent_hang_returns_504_interrupts_and_reaps_process_group(self):
+        body = {'model': 'stale profile label', 'messages': [{'role': 'user', 'content': 'material'}],
+                'response_format': {'type': 'json_schema', 'json_schema': {'schema': SCHEMA}}}
+        args = self.http_args('cancel', timeout=0.9)
+        client = TestClient(TestServer(create_app(args)))
+        await client.start_server()
+        try:
+            response = await client.post('/v1/chat/completions', json=body,
+                                         headers={'Authorization': 'Bearer ' + args.token_file.read_text()})
+            payload = await response.json()
+            self.assertEqual(response.status, 504, payload)
+            self.assertEqual(payload['error']['code'], 'antigravity_timeout')
+        finally:
+            await client.close()
+        recorded = json.loads(args.record.read_text())
+        self.assertTrue(recorded['interrupted'])
+        self.assertFalse(group_exists(recorded['pid']))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(recorded['child'], 0)
+        self.assertFalse(args.owned_processes)
+
+    async def test_unexpected_exit_fails_promptly_without_waiting_for_idle_timeout(self):
+        body = {'model': 'stale profile label', 'messages': [{'role': 'user', 'content': 'material'}],
+                'response_format': {'type': 'json_schema', 'json_schema': {'schema': SCHEMA}}}
+        args = self.http_args('unexpected-exit', timeout=10)
+        client = TestClient(TestServer(create_app(args)))
+        await client.start_server()
+        try:
+            started = time.monotonic()
+            response = await client.post('/v1/chat/completions', json=body,
+                                         headers={'Authorization': 'Bearer ' + args.token_file.read_text()})
+            elapsed = time.monotonic() - started
+            payload = await response.json()
+            self.assertEqual(response.status, 502, payload)
+            self.assertEqual(payload['error']['code'], 'antigravity_transport_closed_or_limit')
+            self.assertLess(elapsed, 3.0)
+            self.assertFalse(args.owned_processes)
+        finally:
+            await client.close()
+
+    async def test_hang_after_result_hits_idle_timeout_with_504_and_reaps_group(self):
+        args = self.args('hang-after-result')
+        args.timeout = 0.9
+        with self.assertRaises(CompletionError) as caught:
+            await execute(args, 'system', 'material', SCHEMA, SCHEMA)
+        self.assertEqual((caught.exception.code, caught.exception.status), ('antigravity_timeout', 504))
+        recorded = json.loads(args.record.read_text())
+        self.assertFalse(group_exists(recorded['pid']))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(recorded['child'], 0)
+        self.assertFalse(args.owned_processes)
 
 
 if __name__ == '__main__':

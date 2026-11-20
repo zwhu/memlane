@@ -7,8 +7,9 @@ from pathlib import Path
 
 from jsonschema import validators
 
-from codex_completion_endpoint import (CompletionError, MAX_BODY, collect_stderr,
-                                       completion_workspace, default_request_args, terminate, track_process)
+from codex_completion_endpoint import (ActivityClock, CompletionError, MAX_BODY, await_with_idle,
+                                       collect_stderr, completion_workspace, default_request_args,
+                                       read_line_with_idle, terminate, track_process)
 
 EXTENSION = Path(__file__).resolve().parents[1] / 'prompts/pi-schema-output.ts'
 
@@ -33,18 +34,24 @@ def checked_models(source):
 
 
 class PiRPC:
-    def __init__(self, process):
-        self.process, self.count, self.received = process, 0, 0
+    def __init__(self, process, clock=None):
+        self.process, self.count, self.received, self.clock = process, 0, 0, clock
 
     async def send(self, command, **fields):
         self.count += 1
         identity = 'memlane-' + str(self.count)
         self.process.stdin.write(json.dumps({'id': identity, 'type': command, **fields}).encode() + b'\n')
-        await self.process.stdin.drain()
+        if self.clock is not None:
+            await await_with_idle(self.process.stdin.drain(), self.clock)
+        else:
+            await self.process.stdin.drain()
         return identity
 
     async def read(self):
-        line = await self.process.stdout.readline()
+        if self.clock is not None:
+            line = await read_line_with_idle(self.process.stdout, self.clock)
+        else:
+            line = await self.process.stdout.readline()
         self.received += len(line)
         if not line or len(line) > 1024 * 1024 or self.received > 8 * 1024 * 1024:
             raise CompletionError('pi_transport_closed_or_limit')
@@ -128,56 +135,57 @@ async def execute(args, system, prompt, schema, transport):
             await terminate(process)
             track_process(args, process, False)
             raise
-        stderr = asyncio.create_task(collect_stderr(process.stderr))
-        rpc, accepted, ended, final = PiRPC(process), False, False, None
+        clock = ActivityClock(args.timeout)
+        stderr = asyncio.create_task(collect_stderr(process.stderr, on_activity=clock.touch))
+        rpc, accepted, ended, final = PiRPC(process, clock), False, False, None
         try:
             track_process(args, process, True)
-            async with asyncio.timeout(args.timeout):
-                await rpc.call('set_auto_retry', enabled=False)
-                await rpc.call('set_auto_compaction', enabled=False)
-                check_state(await rpc.call('get_state'), args)
-                identity = await rpc.send('prompt', message=prompt + '\nReturn only JSON matching:\n' + json.dumps(transport))
-                while True:
-                    row = await rpc.read()
-                    kind = row.get('type', '')
-                    if kind == 'response':
-                        if accepted or row.get('id') != identity or row.get('command') != 'prompt' or row.get('success') is not True:
-                            raise CompletionError('pi_prompt_rejected')
-                        accepted = True
-                    elif kind == 'message_end':
-                        message = row.get('message', {})
-                        if message.get('role') == 'assistant':
-                            if final is not None or message.get('stopReason') != 'stop':
-                                raise CompletionError('pi_model_failed')
-                            content = message.get('content', [])
-                            if any(item.get('type') not in ('text', 'thinking') for item in content):
-                                raise CompletionError('pi_tool_rejected')
-                            final = ''.join(item.get('text', '') for item in content if item.get('type') == 'text')
-                    elif kind == 'agent_end':
-                        if ended or row.get('willRetry') is not False:
-                            raise CompletionError('pi_retry_or_terminal_invalid')
-                        ended = True
-                    elif kind == 'agent_settled':
-                        if not accepted or not ended or not final:
-                            raise CompletionError('pi_terminal_incomplete')
-                        break
-                    elif (kind.startswith(('tool_', 'auto_', 'summarization_')) or kind == 'extension_ui_request' or
-                          kind == 'error'):
-                        raise CompletionError('pi_tool_or_retry_rejected')
-                    elif kind not in ('agent_start', 'turn_start', 'turn_end', 'message_start', 'message_update'):
-                        raise CompletionError('pi_event_unrecognized')
-                check_state(await rpc.call('get_state'), args)
-                # Extension metadata is stderr-only in pi 0.84.1. Parse it after
-                # confirmed shutdown below, never expose provider error bodies.
-                if len(final.encode()) > MAX_BODY:
-                    raise CompletionError('pi_output_limit')
-                try:
-                    value = json.loads(final)
-                    for contract in ((schema, transport) if schema is not None else (transport,)):
-                        validators.validator_for(contract)(contract).validate(value)
-                except Exception:
-                    raise CompletionError('pi_schema_failed') from None
+            await rpc.call('set_auto_retry', enabled=False)
+            await rpc.call('set_auto_compaction', enabled=False)
+            check_state(await rpc.call('get_state'), args)
+            identity = await rpc.send('prompt', message=prompt + '\nReturn only JSON matching:\n' + json.dumps(transport))
+            while True:
+                row = await rpc.read()
+                kind = row.get('type', '')
+                if kind == 'response':
+                    if accepted or row.get('id') != identity or row.get('command') != 'prompt' or row.get('success') is not True:
+                        raise CompletionError('pi_prompt_rejected')
+                    accepted = True
+                elif kind == 'message_end':
+                    message = row.get('message', {})
+                    if message.get('role') == 'assistant':
+                        if final is not None or message.get('stopReason') != 'stop':
+                            raise CompletionError('pi_model_failed')
+                        content = message.get('content', [])
+                        if any(item.get('type') not in ('text', 'thinking') for item in content):
+                            raise CompletionError('pi_tool_rejected')
+                        final = ''.join(item.get('text', '') for item in content if item.get('type') == 'text')
+                elif kind == 'agent_end':
+                    if ended or row.get('willRetry') is not False:
+                        raise CompletionError('pi_retry_or_terminal_invalid')
+                    ended = True
+                elif kind == 'agent_settled':
+                    if not accepted or not ended or not final:
+                        raise CompletionError('pi_terminal_incomplete')
+                    break
+                elif (kind.startswith(('tool_', 'auto_', 'summarization_')) or kind == 'extension_ui_request' or
+                      kind == 'error'):
+                    raise CompletionError('pi_tool_or_retry_rejected')
+                elif kind not in ('agent_start', 'turn_start', 'turn_end', 'message_start', 'message_update'):
+                    raise CompletionError('pi_event_unrecognized')
+            check_state(await rpc.call('get_state'), args)
+            # Extension metadata is stderr-only in pi 0.84.1. Parse it after
+            # confirmed shutdown below, never expose provider error bodies.
+            if len(final.encode()) > MAX_BODY:
+                raise CompletionError('pi_output_limit')
+            try:
+                value = json.loads(final)
+                for contract in ((schema, transport) if schema is not None else (transport,)):
+                    validators.validator_for(contract)(contract).validate(value)
+            except Exception:
+                raise CompletionError('pi_schema_failed') from None
         except (TimeoutError, asyncio.CancelledError) as error:
+            rpc.clock = None
             try:
                 async with asyncio.timeout(2):
                     await rpc.call('abort')

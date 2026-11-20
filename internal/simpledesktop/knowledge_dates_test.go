@@ -14,11 +14,11 @@ func sourceLesson(id, day string) Document {
 			"state_key": "example-state", "lesson_type": "state"}}
 }
 
-func TestKnowledgeUnconfirmedProvenanceDoesNotUseLatestSessionDate(t *testing.T) {
+func TestKnowledgeOptionBDatePriorityAndCreatedAtFallback(t *testing.T) {
 	d := sourceLesson("unlinked", "2026-11-15")
 	d.Metadata["source_date_status"] = "unconfirmed"
-	if _, ok := d.knowledgeDay(time.Local); ok {
-		t.Fatal("unlinked newest session date was presented as first occurrence")
+	if day, ok := d.knowledgeDay(time.Local); !ok || day != "2026-11-15" {
+		t.Fatalf("legacy unconfirmed session_date was blocked under Option B: day=%q ok=%v", day, ok)
 	}
 	d.Metadata["first_source_date"] = "2026-11-14"
 	d.Metadata["source_date_status"] = "linked_qa"
@@ -27,7 +27,7 @@ func TestKnowledgeUnconfirmedProvenanceDoesNotUseLatestSessionDate(t *testing.T)
 	}
 }
 
-func TestKnowledgeDayUsesOwnTurnDateAndKeepsCreationTime(t *testing.T) {
+func TestKnowledgeDayUsesOwnTurnDateAndFallsBackToLocalCreatedTime(t *testing.T) {
 	d := sourceLesson("lesson", "2026-11-15")
 	location := time.FixedZone("UTC-10", -10*3600)
 	day, ok := d.knowledgeDay(location)
@@ -42,9 +42,13 @@ func TestKnowledgeDayUsesOwnTurnDateAndKeepsCreationTime(t *testing.T) {
 		t.Fatalf("buckets = %#v", buckets)
 	}
 	for _, missing := range []string{"", "2026-02-30", "not-a-date"} {
-		x := sourceLesson("unknown", missing)
+		x := sourceLesson("fallback", missing)
+		if day, ok := x.knowledgeDay(location); !ok || day != "2026-11-15" {
+			t.Fatalf("expected createdAt local fallback 2026-11-15, got %q %v", day, ok)
+		}
+		x.Created = ""
 		if _, ok := x.knowledgeDay(location); ok {
-			t.Fatal("missing source was invented from processing time")
+			t.Fatal("empty createdAt produced a date")
 		}
 	}
 }

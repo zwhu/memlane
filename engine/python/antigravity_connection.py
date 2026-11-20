@@ -38,13 +38,20 @@ class AntigravityConnection(NativeConnection):
             return None
         record = self.registry.state.get('connections', {}).get(self.id, {})
         activated_at = record.get('activated_at')
+        cutoff = activated_at if type(activated_at) in (int, float) else 0.0
+        receipt = self.registry.state.get('connection_receipts', {}).get(self.id, {})
+        if (isinstance(receipt, dict) and receipt.get('artifact_verified')
+                and receipt.get('environment_verified')
+                and type(receipt.get('received_at')) in (int, float)
+                and receipt['received_at'] > cutoff):
+            cutoff = receipt['received_at']
         for item in reversed(entries):
             if not isinstance(item, dict):
                 continue
             at = item.get('at')
             if type(at) not in (int, float):
                 continue
-            if type(activated_at) in (int, float) and at < activated_at:
+            if cutoff > 0 and at < cutoff:
                 continue
             keys = item.get('payload_keys')
             clean_keys = [str(k)[:80] for k in keys[:32]] if isinstance(keys, list) else []

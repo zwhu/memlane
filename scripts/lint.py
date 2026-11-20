@@ -12,6 +12,114 @@ PARAMETERS = {
     'llm_temperature', 'llm_max_completion_tokens', 'llm_args',
     'LLM_TEMPERATURE', 'LLM_MAX_COMPLETION_TOKENS', 'LLM_ARGS',
 }
+ENVIRON_MUTATION_ALLOWLIST = {
+    'official_service_dev.py': 'service process bootstrap before importing upstream Cognee',
+    'generation_handoff_runtime.py': 'live generation handoff OLLAMA_API_BASE sync',
+    'generation_probe.py': 'isolated probe subprocess bootstrap',
+    'first_install_store.py': 'isolated first-install store subprocess bootstrap',
+    'agent_memory_adapter.py': 'single-invocation CLI adapter entrypoint',
+    'antigravity_hook_policy.py': 'single-invocation Antigravity hook script for upstream _plugin_common',
+    'project_plugin_policy.py': 'single-invocation plugin hook script for upstream _plugin_common',
+}
+ENVIRON_SCOPED_ALLOWLIST = {
+    'project_backlog_worker.py': '_scoped_improve_cooldown',
+}
+ENVIRON_MUTATING_METHODS = {'update', 'pop', 'popitem', 'clear', 'setdefault'}
+ML007_MESSAGE = '禁止在非白名单模块修改全局 os.environ；请显式传递环境变量字典或限定为白名单入口'
+
+
+def _iter_assignment_targets(target):
+    if isinstance(target, (ast.Tuple, ast.List)):
+        for element in target.elts:
+            yield from _iter_assignment_targets(element)
+    elif isinstance(target, ast.Starred):
+        yield from _iter_assignment_targets(target.value)
+    else:
+        yield target
+
+
+def _check_environ_mutations(tree, path, report):
+    path_obj = Path(path)
+    filename = path_obj.name
+    if path_obj.parent.name == 'scripts' or filename in ENVIRON_MUTATION_ALLOWLIST:
+        return
+    scoped_allowed = set()
+    scoped_name = ENVIRON_SCOPED_ALLOWLIST.get(filename)
+    if scoped_name:
+        scoped_fn = next(
+            (node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == scoped_name),
+            None,
+        )
+        if scoped_fn is not None and any(isinstance(n, ast.Try) and bool(n.finalbody) for n in ast.walk(scoped_fn)):
+            scoped_allowed = set(ast.walk(scoped_fn))
+    os_names = {'os'}
+    environ_names = set()
+    putenv_names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == 'os':
+                    os_names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == 'os':
+            for alias in node.names:
+                local = alias.asname or alias.name
+                if alias.name in ('environ', 'environb'):
+                    environ_names.add(local)
+                elif alias.name in ('putenv', 'unsetenv'):
+                    putenv_names.add(local)
+
+    def is_environ_ref(expr):
+        if isinstance(expr, ast.Name) and expr.id in environ_names:
+            return True
+        return (
+            isinstance(expr, ast.Attribute)
+            and expr.attr in ('environ', 'environb')
+            and isinstance(expr.value, ast.Name)
+            and expr.value.id in os_names
+        )
+
+    # Follow direct local aliases (e.g. env = os.environ), never dict copies.
+    for _ in range(len(tree.body) + 1):
+        previous = set(environ_names)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and is_environ_ref(node.value):
+                environ_names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+            elif isinstance(node, ast.AnnAssign) and node.value is not None and is_environ_ref(node.value):
+                if isinstance(node.target, ast.Name):
+                    environ_names.add(node.target.id)
+        if environ_names == previous:
+            break
+
+    for node in ast.walk(tree):
+        if node in scoped_allowed:
+            continue
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                for leaf in _iter_assignment_targets(target):
+                    if isinstance(leaf, ast.Subscript) and is_environ_ref(leaf.value):
+                        report(node, 'ML007', ML007_MESSAGE)
+        elif isinstance(node, ast.AnnAssign):
+            if node.value is not None and isinstance(node.target, ast.Subscript) and is_environ_ref(node.target.value):
+                report(node, 'ML007', ML007_MESSAGE)
+        elif isinstance(node, ast.AugAssign):
+            if (isinstance(node.target, ast.Subscript) and is_environ_ref(node.target.value)) or is_environ_ref(node.target):
+                report(node, 'ML007', ML007_MESSAGE)
+        elif isinstance(node, ast.Delete):
+            for target in node.targets:
+                for leaf in _iter_assignment_targets(target):
+                    if isinstance(leaf, ast.Subscript) and is_environ_ref(leaf.value):
+                        report(node, 'ML007', ML007_MESSAGE)
+        elif isinstance(node, ast.Call):
+            if (isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ENVIRON_MUTATING_METHODS
+                    and is_environ_ref(node.func.value)):
+                report(node, 'ML007', ML007_MESSAGE)
+            elif ((isinstance(node.func, ast.Attribute)
+                   and node.func.attr in ('putenv', 'unsetenv')
+                   and isinstance(node.func.value, ast.Name)
+                   and node.func.value.id in os_names)
+                  or (isinstance(node.func, ast.Name) and node.func.id in putenv_names)):
+                report(node, 'ML007', ML007_MESSAGE)
 
 
 def literal(node):
@@ -90,12 +198,13 @@ def check_source(source, path):
                     injected(node, target.slice, node.value)
                 elif node.value is not None and isinstance(target, ast.Attribute):
                     injected(node, ast.Constant(value=target.attr), node.value)
-    if Path(path).name == 'user_profiles.py':
+    if Path(path).name == 'user_profiles.py' or (Path(path).parent.name == 'user_profiles' and Path(path).name == 'runner.py'):
         for function in ast.walk(tree):
             if isinstance(function, ast.AsyncFunctionDef) and function.name == 'generate':
                 for call in ast.walk(function):
                     if isinstance(call,ast.Call) and ((isinstance(call.func,ast.Attribute) and call.func.attr=='wait_for') or (isinstance(call.func,ast.Name) and call.func.id=='wait_for')):
                         report(call,'ML006','画像生成不能用总时长超时中断；观察进程/活动并提供明确停止')
+    _check_environ_mutations(tree, path, report)
     return sorted(set(issues))
 
 
@@ -148,9 +257,9 @@ def check_go_source(source, path, *, require_all_targets=False):
 
 def main():
     failures = 0
-    paths = sorted((ROOT / 'engine/python').glob('*.py'))
+    paths = sorted((ROOT / 'engine/python').rglob('*.py'))
     for path in paths:
-        if path.name.startswith('test_'):
+        if '__pycache__' in path.parts or path.name.startswith('test_'):
             continue
         # The shared boundary applies across engine consumers, not just handoff.
         for line, code, message in check_source(path.read_text(encoding='utf-8'), path):

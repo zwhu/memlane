@@ -1,0 +1,613 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1600 1060" width="1600" height="1060" role="img" aria-label="Memlane 系统架构全景图">
+  <title>Memlane 系统架构全景图（2026-11-20）</title>
+  <defs>
+    <style>
+      .sans {
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "SF Pro Text", "Helvetica Neue", sans-serif;
+      }
+      .mono {
+        font-family: "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+      }
+      .flow-dash {
+        stroke-dasharray: 9 7;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        fill: none;
+        animation: flowDash 1.25s linear infinite;
+      }
+      .flow-dash-slow {
+        stroke-dasharray: 8 7;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        fill: none;
+        animation: flowDash 1.6s linear infinite;
+      }
+      .flow-base {
+        fill: none;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        opacity: 0.22;
+      }
+      @keyframes flowDash {
+        from { stroke-dashoffset: 32; }
+        to { stroke-dashoffset: 0; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .flow-dash, .flow-dash-slow {
+          animation: none;
+        }
+      }
+    </style>
+
+    <!-- 背景与区域渐变 -->
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F6F9FC"/>
+      <stop offset="55%" stop-color="#F1F6FB"/>
+      <stop offset="100%" stop-color="#EBF2FA"/>
+    </linearGradient>
+
+    <pattern id="dot-grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="12" cy="12" r="1.05" fill="#CBD5E1" opacity="0.42"/>
+    </pattern>
+
+    <linearGradient id="gw-highlight-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#EFF6FF"/>
+      <stop offset="100%" stop-color="#ECFEFF"/>
+    </linearGradient>
+
+    <linearGradient id="store-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#F8FAFC"/>
+    </linearGradient>
+
+    <!-- 卡片柔和阴影 & 粒子发光 -->
+    <filter id="card-shadow" x="-3%" y="-4%" width="106%" height="110%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#0F172A" flood-opacity="0.06"/>
+    </filter>
+    <filter id="chip-shadow" x="-5%" y="-8%" width="110%" height="120%">
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#0F172A" flood-opacity="0.07"/>
+    </filter>
+    <filter id="dot-glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="1.8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- 5 种语义方向箭头 -->
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="6.8" markerHeight="6.8" orient="auto">
+      <path d="M 1 1.5 L 8.8 5 L 1 8.5 z" fill="#2563EB"/>
+    </marker>
+    <marker id="arrow-teal" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="6.8" markerHeight="6.8" orient="auto">
+      <path d="M 1 1.5 L 8.8 5 L 1 8.5 z" fill="#0D9488"/>
+    </marker>
+    <marker id="arrow-indigo" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="6.8" markerHeight="6.8" orient="auto">
+      <path d="M 1 1.5 L 8.8 5 L 1 8.5 z" fill="#6366F1"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="6.8" markerHeight="6.8" orient="auto">
+      <path d="M 1 1.5 L 8.8 5 L 1 8.5 z" fill="#D97706"/>
+    </marker>
+    <marker id="arrow-rose" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="6.8" markerHeight="6.8" orient="auto">
+      <path d="M 1 1.5 L 8.8 5 L 1 8.5 z" fill="#E11D48"/>
+    </marker>
+  </defs>
+
+  <!-- 背景层 -->
+  <rect x="0" y="0" width="1600" height="1060" fill="url(#bg-grad)"/>
+  <rect x="0" y="0" width="1600" height="1060" fill="url(#dot-grid)"/>
+
+  <!-- ==================== 顶部 Header 与动态图例 ==================== -->
+  <g id="layer-header">
+    <rect x="28" y="14" width="1544" height="76" rx="14" fill="#FFFFFF" stroke="#DCE6F2" stroke-width="1.2" filter="url(#card-shadow)"/>
+
+    <!-- 官方品牌 Mark -->
+    <g transform="translate(42, 30) scale(0.44)" fill="none" stroke="#2563EB" stroke-width="6" stroke-linecap="round">
+      <path d="M72 30 A30 30 0 1 0 79 58"/>
+      <path d="M64 36 A20 20 0 1 0 69 55"/>
+      <path d="M56 43 A10 10 0 1 0 59 53"/>
+      <circle cx="78" cy="36" r="4.5" fill="#2563EB" stroke="none"/>
+    </g>
+
+    <text x="98" y="47" class="sans" font-size="21" font-weight="700" fill="#0F172A">Memlane 系统架构全景</text>
+    <text x="98" y="69" class="sans" font-size="12" fill="#475569">2026-11-20 · 零侵入 Cognee 外置网关 · 单一日常存储 · Go 原生进程守护</text>
+
+    <!-- 右侧动态图例卡 -->
+    <rect x="728" y="25" width="826" height="54" rx="10" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+
+    <!-- 图例 1：采集与召回 -->
+    <path d="M 744 52 L 776 52" class="flow-base" stroke="#2563EB" stroke-width="2.5"/>
+    <path d="M 744 52 L 776 52" class="flow-dash" stroke="#2563EB" stroke-width="2.2" marker-end="url(#arrow-blue)"/>
+    <text x="786" y="56" class="sans" font-size="12" font-weight="600" fill="#1E3A8A">采集与召回</text>
+
+    <!-- 图例 2：管理与策略 -->
+    <path d="M 888 52 L 920 52" class="flow-base" stroke="#0D9488" stroke-width="2.5"/>
+    <path d="M 888 52 L 920 52" class="flow-dash" stroke="#0D9488" stroke-width="2.2" marker-end="url(#arrow-teal)"/>
+    <text x="930" y="56" class="sans" font-size="12" font-weight="600" fill="#115E59">管理与策略</text>
+
+    <!-- 图例 3：只读正文/图谱 -->
+    <path d="M 1032 52 L 1064 52" class="flow-base" stroke="#6366F1" stroke-width="2.5"/>
+    <path d="M 1032 52 L 1064 52" class="flow-dash" stroke="#6366F1" stroke-width="2.2" marker-end="url(#arrow-indigo)"/>
+    <text x="1074" y="56" class="sans" font-size="12" font-weight="600" fill="#3730A3">只读正文/图谱</text>
+
+    <!-- 图例 4：LLM 推理出站 -->
+    <path d="M 1198 52 L 1230 52" class="flow-base" stroke="#D97706" stroke-width="2.5"/>
+    <path d="M 1198 52 L 1230 52" class="flow-dash" stroke="#D97706" stroke-width="2.2" marker-end="url(#arrow-amber)"/>
+    <text x="1240" y="56" class="sans" font-size="12" font-weight="600" fill="#92400E">LLM 推理出站</text>
+
+    <!-- 图例 5：进程守护 -->
+    <path d="M 1364 52 L 1396 52" class="flow-base" stroke="#E11D48" stroke-width="2.5"/>
+    <path d="M 1364 52 L 1396 52" class="flow-dash-slow" stroke="#E11D48" stroke-width="2.2" marker-end="url(#arrow-rose)"/>
+    <text x="1406" y="56" class="sans" font-size="12" font-weight="600" fill="#9F1239">进程守护</text>
+  </g>
+
+  <!-- ==================== Row 1：宿主 Coding Agents 层 ==================== -->
+  <g id="layer-agents">
+    <rect x="28" y="108" width="1544" height="118" rx="14" fill="#FFFFFF" stroke="#D5E2F2" stroke-width="1.2" filter="url(#card-shadow)"/>
+    <rect x="28" y="108" width="1544" height="32" rx="14" fill="#F4F8FD"/>
+    <rect x="28" y="126" width="1544" height="14" fill="#F4F8FD"/>
+    <line x1="28" y1="140" x2="1572" y2="140" stroke="#E4EDF7" stroke-width="1"/>
+
+    <text x="46" y="129" class="sans" font-size="13.5" font-weight="700" fill="#0F172A">宿主 Coding Agents（电脑级受管接入 · 独立官方主体与独立凭据）</text>
+    <rect x="1338" y="114" width="216" height="20" rx="10" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
+    <text x="1446" y="128" text-anchor="middle" class="mono" font-size="10.5" font-weight="600" fill="#1D4ED8">6 类宿主 · agent_connections.py</text>
+
+    <!-- 6 个 Agent 卡片 -->
+    <rect x="46" y="148" width="238" height="66" rx="10" fill="#F8FBFF" stroke="#DBEAFE" stroke-width="1.2"/>
+    <circle cx="62" cy="168" r="4" fill="#2563EB"/>
+    <text x="72" y="172" class="sans" font-size="13" font-weight="700" fill="#0F172A">Codex</text>
+    <text x="60" y="196" class="sans" font-size="11.5" fill="#475569">官方插件 + Hooks / Edit Diff</text>
+
+    <rect x="300" y="148" width="238" height="66" rx="10" fill="#F8FBFF" stroke="#DBEAFE" stroke-width="1.2"/>
+    <circle cx="316" cy="168" r="4" fill="#2563EB"/>
+    <text x="326" y="172" class="sans" font-size="13" font-weight="700" fill="#0F172A">Antigravity / Gemini App</text>
+    <text x="314" y="196" class="sans" font-size="11.5" fill="#475569">原生插件 · 4 Hooks + 5 Skills</text>
+
+    <rect x="554" y="148" width="238" height="66" rx="10" fill="#F8FBFF" stroke="#DBEAFE" stroke-width="1.2"/>
+    <circle cx="570" cy="168" r="4" fill="#2563EB"/>
+    <text x="580" y="172" class="sans" font-size="13" font-weight="700" fill="#0F172A">pi</text>
+    <text x="568" y="196" class="sans" font-size="11.5" fill="#475569">原生 Extension (index.ts)</text>
+
+    <rect x="808" y="148" width="238" height="66" rx="10" fill="#F8FBFF" stroke="#DBEAFE" stroke-width="1.2"/>
+    <circle cx="824" cy="168" r="4" fill="#2563EB"/>
+    <text x="834" y="172" class="sans" font-size="13" font-weight="700" fill="#0F172A">OpenCode</text>
+    <text x="822" y="196" class="sans" font-size="11.5" fill="#475569">受管插件 · Hooks / Outbox</text>
+
+    <rect x="1062" y="148" width="238" height="66" rx="10" fill="#F8FBFF" stroke="#DBEAFE" stroke-width="1.2"/>
+    <circle cx="1078" cy="168" r="4" fill="#2563EB"/>
+    <text x="1088" y="172" class="sans" font-size="13" font-weight="700" fill="#0F172A">TraeX</text>
+    <text x="1076" y="196" class="sans" font-size="11.5" fill="#475569">直装插件 · traecli.toml</text>
+
+    <rect x="1316" y="148" width="238" height="66" rx="10" fill="#F8FBFF" stroke="#DBEAFE" stroke-width="1.2"/>
+    <circle cx="1332" cy="168" r="4" fill="#2563EB"/>
+    <text x="1342" y="172" class="sans" font-size="13" font-weight="700" fill="#0F172A">Claude Code &amp; Cursor</text>
+    <text x="1330" y="196" class="sans" font-size="11.5" fill="#475569">原生 Hooks 接入适配</text>
+  </g>
+
+  <!-- ==================== Row 2 左列：桌面客户端 & Go Supervisor ==================== -->
+  <g id="layer-desktop">
+    <rect x="28" y="286" width="336" height="298" rx="14" fill="#FFFFFF" stroke="#D5E2F2" stroke-width="1.2" filter="url(#card-shadow)"/>
+    <rect x="28" y="286" width="336" height="50" rx="14" fill="#F4F8FD"/>
+    <rect x="28" y="320" width="336" height="16" fill="#F4F8FD"/>
+    <line x1="28" y1="336" x2="364" y2="336" stroke="#E4EDF7" stroke-width="1"/>
+
+    <text x="44" y="309" class="sans" font-size="14" font-weight="700" fill="#0F172A">MyGo 原生桌面客户端</text>
+    <text x="44" y="327" class="mono" font-size="10.5" fill="#475569">cmd/memlane-app · 1200×820 无 WebView</text>
+
+    <!-- 4 控制器卡片 -->
+    <rect x="44" y="346" width="146" height="64" rx="9" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1.1"/>
+    <text x="54" y="368" class="mono" font-size="11" font-weight="700" fill="#3730A3">overviewController</text>
+    <text x="54" y="391" class="sans" font-size="10.5" fill="#475569">总览热力图 · 近期动态</text>
+
+    <rect x="202" y="346" width="146" height="64" rx="9" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1.1"/>
+    <text x="212" y="368" class="mono" font-size="11" font-weight="700" fill="#3730A3">readingController</text>
+    <text x="212" y="391" class="sans" font-size="10.5" fill="#475569">项目 · 原文 · 通用记忆</text>
+
+    <rect x="44" y="420" width="146" height="64" rx="9" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1.1"/>
+    <text x="54" y="442" class="mono" font-size="11" font-weight="700" fill="#3730A3">searchController</text>
+    <text x="54" y="465" class="sans" font-size="10.5" fill="#475569">顶栏搜索 · 双路重试</text>
+
+    <rect x="202" y="420" width="146" height="64" rx="9" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1.1"/>
+    <text x="212" y="442" class="mono" font-size="11" font-weight="700" fill="#3730A3">graphController</text>
+    <text x="212" y="465" class="sans" font-size="10.5" fill="#475569">实体 / 代码 / 工具图谱</text>
+
+    <!-- 底部辅助功能卡 -->
+    <rect x="44" y="495" width="304" height="75" rx="9" fill="#F4F8FD" stroke="#DBEAFE" stroke-width="1"/>
+    <text x="56" y="516" class="sans" font-size="11.5" font-weight="600" fill="#1E293B">全局设置（记忆处理 / Agent 与模型 / 服务监控）</text>
+    <text x="56" y="536" class="sans" font-size="11" fill="#475569">用户画像 · 队列异常提醒 · 撤权正文即时撤回</text>
+    <text x="56" y="556" class="mono" font-size="10" fill="#64748B">http_transport.go · readingIdentity 缓存</text>
+  </g>
+
+  <g id="layer-supervisor">
+    <rect x="28" y="604" width="336" height="172" rx="14" fill="#FFFFFF" stroke="#FECDD3" stroke-width="1.3" filter="url(#card-shadow)"/>
+    <rect x="28" y="604" width="336" height="50" rx="14" fill="#FFF1F2"/>
+    <rect x="28" y="638" width="336" height="16" fill="#FFF1F2"/>
+    <line x1="28" y1="654" x2="364" y2="654" stroke="#FFE4E6" stroke-width="1"/>
+
+    <text x="44" y="627" class="sans" font-size="14" font-weight="700" fill="#881337">引导与 Go 原生进程守护</text>
+    <text x="44" y="645" class="mono" font-size="10.5" fill="#9F1239">internal/bootstrap · supervisor · dev.py</text>
+
+    <rect x="44" y="664" width="304" height="98" rx="9" fill="#FFFBFB" stroke="#FFE4E6" stroke-width="1"/>
+    <text x="56" y="685" class="sans" font-size="11.5" fill="#334155">• .service-owner flock 单实例独占锁 &amp; 死锁恢复</text>
+    <text x="56" y="706" class="sans" font-size="11.5" fill="#334155">• Setsid 独立进程组 · 逆序 SIGTERM→SIGKILL 清理</text>
+    <text x="56" y="727" class="sans" font-size="11.5" fill="#334155">• 20 MiB 活 inode 日志截尾脱敏 · 防抖健康监控</text>
+    <text x="56" y="748" class="sans" font-size="11.5" fill="#334155">• 依赖先复用后询问安装 · 崩溃不静默自启</text>
+  </g>
+
+  <!-- ==================== Row 2 中列上：控制面与零侵入外置网关 ==================== -->
+  <g id="layer-control-gateway">
+    <rect x="464" y="286" width="660" height="212" rx="14" fill="#FFFFFF" stroke="#99F6E4" stroke-width="1.3" filter="url(#card-shadow)"/>
+    <rect x="464" y="286" width="660" height="46" rx="14" fill="#F0FDFA"/>
+    <rect x="464" y="318" width="660" height="14" fill="#F0FDFA"/>
+    <line x1="464" y1="332" x2="1124" y2="332" stroke="#CCFBF1" stroke-width="1"/>
+
+    <text x="482" y="308" class="sans" font-size="14.5" font-weight="700" fill="#134E4A">控制面与零侵入外置网关</text>
+    <text x="482" y="325" class="mono" font-size="10.5" fill="#0F766E">project_control_server.py · Loopback aiohttp · 只存策略与状态，不存正文</text>
+
+    <!-- 守护状态角标 -->
+    <rect x="990" y="295" width="118" height="22" rx="11" fill="#FFF1F2" stroke="#FDA4AF" stroke-width="1"/>
+    <circle cx="1003" cy="306" r="3.5" fill="#E11D48"/>
+    <text x="1012" y="310" class="sans" font-size="10.5" font-weight="600" fill="#9F1239">Supervisor 守护</text>
+
+    <!-- 高亮外置网关框 -->
+    <rect x="480" y="340" width="628" height="60" rx="10" fill="url(#gw-highlight-grad)" stroke="#60A5FA" stroke-width="1.3"/>
+    <text x="494" y="359" class="sans" font-size="12.5" font-weight="700" fill="#1E3A8A">Cognee 外置扩展网关（/cognee/* · cognee_extension_gateway.py）</text>
+    <text x="494" y="376" class="sans" font-size="11" fill="#1E40AF">X-Api-Key 独立主体鉴权 · 项目/通用 ACL &amp; 采集/处理门禁 · 召回命中记录 (/v1/recall/hits)</text>
+    <text x="494" y="392" class="sans" font-size="11" fill="#1E40AF">检索透明合并可读通用记忆 · Codex Edit Diff 补齐 &amp; QA context.date 日期注入</text>
+
+    <!-- 下方 3 个控制模块卡 -->
+    <rect x="480" y="408" width="200" height="76" rx="9" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="492" y="430" class="sans" font-size="12.5" font-weight="700" fill="#0F172A">项目与权限注册表</text>
+    <text x="492" y="449" class="mono" font-size="10" fill="#0D9488">project_control · policy</text>
+    <text x="492" y="469" class="sans" font-size="11" fill="#475569">动态默认策略 &amp; 逐 Agent 覆盖</text>
+
+    <rect x="694" y="408" width="200" height="76" rx="9" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="706" y="430" class="sans" font-size="12.5" font-weight="700" fill="#0F172A">连接编排与队列调度</text>
+    <text x="706" y="449" class="mono" font-size="10" fill="#0D9488">agent_connections · backlog</text>
+    <text x="706" y="469" class="sans" font-size="11" fill="#475569">安装流 · 增量整理 · 工具图谱</text>
+
+    <rect x="908" y="408" width="200" height="76" rx="9" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="920" y="430" class="sans" font-size="12.5" font-weight="700" fill="#0F172A">配置交接与三层监控</text>
+    <text x="920" y="449" class="mono" font-size="10" fill="#0D9488">generation · service_monitor</text>
+    <text x="920" y="469" class="sans" font-size="11" fill="#475569">/v1/runtime/monitor · 50GiB</text>
+  </g>
+
+  <!-- ==================== Row 2 中列下：官方 Cognee 记忆引擎 ==================== -->
+  <g id="layer-cognee-engine">
+    <rect x="464" y="552" width="660" height="224" rx="14" fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1.3" filter="url(#card-shadow)"/>
+    <rect x="464" y="552" width="660" height="46" rx="14" fill="#EFF6FF"/>
+    <rect x="464" y="584" width="660" height="14" fill="#EFF6FF"/>
+    <line x1="464" y1="598" x2="1124" y2="598" stroke="#DBEAFE" stroke-width="1"/>
+
+    <text x="482" y="574" class="sans" font-size="14.5" font-weight="700" fill="#1E3A8A">官方 Cognee 记忆引擎（零侵入源码）</text>
+    <text x="482" y="591" class="mono" font-size="10.5" fill="#1D4ED8">official_service_dev.py · FastAPI/Uvicorn · 启动校验上游 1.6.7 (ec6f408)</text>
+
+    <!-- 守护状态角标 -->
+    <rect x="990" y="561" width="118" height="22" rx="11" fill="#FFF1F2" stroke="#FDA4AF" stroke-width="1"/>
+    <circle cx="1003" cy="572" r="3.5" fill="#E11D48"/>
+    <text x="1012" y="576" class="sans" font-size="10.5" font-weight="600" fill="#9F1239">Supervisor 守护</text>
+
+    <!-- 左子框：官方 Cognee 核心 -->
+    <rect x="480" y="608" width="306" height="154" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="494" y="629" class="sans" font-size="12.5" font-weight="700" fill="#0F172A">官方 Cognee 核心（cognee.api.client）</text>
+    <text x="494" y="650" class="sans" font-size="11.2" fill="#334155">• DISTILLATION_MODE=coding · ACL=true</text>
+    <text x="494" y="670" class="sans" font-size="11.2" fill="#334155">• 文档摄取 / 分块 / 混合检索 (search/recall)</text>
+    <text x="494" y="690" class="sans" font-size="11.2" fill="#334155">• 编码经验蒸馏 (cognify / improve)</text>
+    <text x="494" y="710" class="sans" font-size="11.2" fill="#334155">• 实体关系图谱 &amp; Enola 代码图谱</text>
+    <rect x="494" y="726" width="278" height="24" rx="6" fill="#E0E7FF" stroke="#A5B4FC" stroke-width="1"/>
+    <text x="633" y="742" text-anchor="middle" class="sans" font-size="11" font-weight="600" fill="#3730A3">本地离线 Embedding (FastEmbed)</text>
+
+    <!-- 右子框：外置中间件与扩展路由 -->
+    <rect x="798" y="608" width="310" height="154" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="812" y="629" class="sans" font-size="12.5" font-weight="700" fill="#0F172A">Memlane 外置中间件与扩展路由</text>
+    <text x="812" y="650" class="sans" font-size="11.2" fill="#334155">• capture_receipts：幂等采集回执路由</text>
+    <text x="812" y="670" class="sans" font-size="11.2" fill="#334155">• provenance_store：响应锁最早来源日期</text>
+    <text x="812" y="690" class="sans" font-size="11.2" fill="#334155">• session_history &amp; tool_graph_service</text>
+    <text x="812" y="710" class="sans" font-size="11.2" fill="#334155">• generation_handoff_runtime 热切换</text>
+    <rect x="812" y="726" width="282" height="24" rx="6" fill="#FEF3C7" stroke="#FCD34D" stroke-width="1"/>
+    <text x="953" y="742" text-anchor="middle" class="sans" font-size="11" font-weight="600" fill="#92400E">generation_http + language_egress（并发/语言）</text>
+  </g>
+
+  <!-- ==================== Row 2 右列：LLM 推理层 ==================== -->
+  <g id="layer-llm">
+    <rect x="1216" y="286" width="356" height="490" rx="14" fill="#FFFFFF" stroke="#FDE68A" stroke-width="1.3" filter="url(#card-shadow)"/>
+    <rect x="1216" y="286" width="356" height="46" rx="14" fill="#FFFBEB"/>
+    <rect x="1216" y="318" width="356" height="14" fill="#FFFBEB"/>
+    <line x1="1216" y1="332" x2="1572" y2="332" stroke="#FEF3C7" stroke-width="1"/>
+
+    <text x="1234" y="308" class="sans" font-size="14.5" font-weight="700" fill="#78350F">LLM 推理层</text>
+    <text x="1234" y="325" class="sans" font-size="10.5" fill="#B45309">保存 / 验证 / 启用分离 · 配置可并存</text>
+
+    <!-- 通道 1：本地 Agent 补全桥 -->
+    <rect x="1232" y="342" width="324" height="210" rx="10" fill="#FFFDF7" stroke="#FCD34D" stroke-width="1.1"/>
+    <text x="1246" y="363" class="sans" font-size="12.5" font-weight="700" fill="#92400E">通道 1：本地 Agent 补全桥</text>
+
+    <rect x="1444" y="349" width="102" height="20" rx="10" fill="#FFF1F2" stroke="#FDA4AF" stroke-width="1"/>
+    <circle cx="1455" cy="359" r="3" fill="#E11D48"/>
+    <text x="1463" y="363" class="sans" font-size="9.5" font-weight="600" fill="#9F1239">Supervisor 守护</text>
+
+    <text x="1246" y="381" class="mono" font-size="10" fill="#B45309">agent_completion_endpoint.py · OpenAI 兼容</text>
+    <text x="1246" y="398" class="sans" font-size="10.8" fill="#475569">单槽无工具隔离 · 空闲 Watchdog · Schema 校验</text>
+
+    <rect x="1246" y="408" width="142" height="58" rx="8" fill="#FFFFFF" stroke="#FDE68A" stroke-width="1"/>
+    <text x="1258" y="431" class="sans" font-size="12" font-weight="700" fill="#0F172A">Codex Bridge</text>
+    <text x="1258" y="451" class="mono" font-size="10.5" fill="#64748B">codex exec</text>
+
+    <rect x="1400" y="408" width="142" height="58" rx="8" fill="#FFFFFF" stroke="#FDE68A" stroke-width="1"/>
+    <text x="1412" y="431" class="sans" font-size="12" font-weight="700" fill="#0F172A">pi Bridge</text>
+    <text x="1412" y="451" class="mono" font-size="10.5" fill="#64748B">pi RPC</text>
+
+    <rect x="1246" y="478" width="142" height="58" rx="8" fill="#FFFFFF" stroke="#FDE68A" stroke-width="1"/>
+    <text x="1258" y="501" class="sans" font-size="12" font-weight="700" fill="#0F172A">TraeX Bridge</text>
+    <text x="1258" y="521" class="mono" font-size="10.5" fill="#64748B">traex CLI</text>
+
+    <rect x="1400" y="478" width="142" height="58" rx="8" fill="#FFFFFF" stroke="#FDE68A" stroke-width="1"/>
+    <text x="1412" y="501" class="sans" font-size="12" font-weight="700" fill="#0F172A">Antigravity Bridge</text>
+    <text x="1412" y="521" class="mono" font-size="10.5" fill="#64748B">agy bridge</text>
+
+    <!-- 唯一 Active 提示条 -->
+    <rect x="1232" y="563" width="324" height="24" rx="12" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="1394" y="579" text-anchor="middle" class="sans" font-size="11" font-weight="600" fill="#92400E">唯一 Active 决定运行时实际处理者</text>
+
+    <!-- 通道 2：直连 Provider / Ollama -->
+    <rect x="1232" y="598" width="324" height="164" rx="10" fill="#FFFDF7" stroke="#FCD34D" stroke-width="1.1"/>
+    <text x="1246" y="620" class="sans" font-size="12.5" font-weight="700" fill="#92400E">通道 2：直连 LLM Provider / Ollama</text>
+    <text x="1246" y="638" class="mono" font-size="10" fill="#B45309">LiteLLM 直连 · generation_http / ollama</text>
+    <text x="1246" y="655" class="sans" font-size="10.8" fill="#475569">未配参数保持为空 · 显式 0 保留 (ML001-003)</text>
+
+    <rect x="1246" y="668" width="142" height="78" rx="8" fill="#FFFFFF" stroke="#FDE68A" stroke-width="1"/>
+    <text x="1258" y="690" class="sans" font-size="12" font-weight="700" fill="#0F172A">云端 Providers</text>
+    <text x="1258" y="711" class="sans" font-size="10.5" fill="#475569">OpenAI · Claude</text>
+    <text x="1258" y="729" class="sans" font-size="10.5" fill="#475569">Gemini · DeepSeek</text>
+
+    <rect x="1400" y="668" width="142" height="78" rx="8" fill="#FFFFFF" stroke="#FDE68A" stroke-width="1"/>
+    <text x="1412" y="690" class="sans" font-size="12" font-weight="700" fill="#0F172A">本地 Ollama</text>
+    <text x="1412" y="711" class="sans" font-size="10.5" fill="#475569">Schema 实测登记</text>
+    <text x="1412" y="729" class="sans" font-size="10.5" fill="#475569">离线本地推理</text>
+  </g>
+
+  <!-- ==================== Row 3：持久化存储层 ==================== -->
+  <g id="layer-storage">
+    <!-- 左：单一日常存储 -->
+    <rect x="28" y="834" width="962" height="192" rx="14" fill="url(#store-grad)" stroke="#93C5FD" stroke-width="1.3" filter="url(#card-shadow)"/>
+    <rect x="28" y="834" width="962" height="36" rx="14" fill="#EFF6FF"/>
+    <rect x="28" y="856" width="962" height="14" fill="#EFF6FF"/>
+    <line x1="28" y1="870" x2="990" y2="870" stroke="#DBEAFE" stroke-width="1"/>
+
+    <text x="46" y="857" class="sans" font-size="14" font-weight="700" fill="#1E3A8A">单一日常存储 .local/daily/official-store（Cognee 官方存储 · 唯一内容真相）</text>
+
+    <rect x="44" y="884" width="222" height="126" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="58" y="910" class="sans" font-size="13" font-weight="700" fill="#0F172A">SQLite</text>
+    <text x="58" y="936" class="sans" font-size="11.5" fill="#334155">关系元数据 · 独立主体 ACL</text>
+    <text x="58" y="958" class="sans" font-size="11.5" fill="#334155">会话问答原文 &amp; 工具记录</text>
+    <text x="58" y="986" class="mono" font-size="10" fill="#64748B">official-store/system/databases</text>
+
+    <rect x="280" y="884" width="222" height="126" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="294" y="910" class="sans" font-size="13" font-weight="700" fill="#0F172A">LanceDB</text>
+    <text x="294" y="936" class="sans" font-size="11.5" fill="#334155">文档切片与语义向量</text>
+    <text x="294" y="958" class="sans" font-size="11.5" fill="#334155">编码经验 &amp; 代码向量索引</text>
+    <text x="294" y="986" class="mono" font-size="10" fill="#64748B">hybrid / chunks vector index</text>
+
+    <rect x="516" y="884" width="222" height="126" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="530" y="910" class="sans" font-size="13" font-weight="700" fill="#0F172A">Ladybug (_lbug)</text>
+    <text x="530" y="936" class="sans" font-size="11.5" fill="#334155">实体关系图谱 · 工具图谱</text>
+    <text x="530" y="958" class="sans" font-size="11.5" fill="#334155">Enola 项目代码依赖图谱</text>
+    <text x="530" y="986" class="mono" font-size="10" fill="#64748B">native graph extension</text>
+
+    <rect x="752" y="884" width="222" height="126" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="766" y="910" class="sans" font-size="13" font-weight="700" fill="#0F172A">Dataset 逻辑分组</text>
+    <text x="766" y="936" class="sans" font-size="11.5" fill="#334155">项目 dataset · code_dataset</text>
+    <text x="766" y="958" class="sans" font-size="11.5" fill="#334155">通用 common · 私有画像组</text>
+    <text x="766" y="986" class="mono" font-size="10" fill="#64748B">ml-user-profiles (管理私有)</text>
+
+    <!-- 右：Memlane 外置元数据与状态 -->
+    <rect x="1014" y="834" width="558" height="192" rx="14" fill="#FFFFFF" stroke="#99F6E4" stroke-width="1.3" filter="url(#card-shadow)"/>
+    <rect x="1014" y="834" width="558" height="36" rx="14" fill="#F0FDFA"/>
+    <rect x="1014" y="856" width="558" height="14" fill="#F0FDFA"/>
+    <line x1="1014" y1="870" x2="1572" y2="870" stroke="#CCFBF1" stroke-width="1"/>
+
+    <text x="1032" y="857" class="sans" font-size="14" font-weight="700" fill="#134E4A">Memlane 外置元数据与状态（私有 0600 · 零正文副本）</text>
+
+    <rect x="1030" y="884" width="256" height="58" rx="9" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="1042" y="906" class="mono" font-size="11" font-weight="700" fill="#0F766E">capture-receipts.sqlite3</text>
+    <text x="1042" y="927" class="sans" font-size="11" fill="#475569">WAL 幂等采集回执账本（无正文）</text>
+
+    <rect x="1300" y="884" width="256" height="58" rx="9" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="1312" y="906" class="mono" font-size="11" font-weight="700" fill="#0F766E">lesson-provenance.sqlite3</text>
+    <text x="1312" y="927" class="sans" font-size="11" fill="#475569">WAL 知识最早来源日期索引</text>
+
+    <rect x="1030" y="952" width="256" height="58" rx="9" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="1042" y="974" class="mono" font-size="11" font-weight="700" fill="#0F766E">project-registry &amp; generation</text>
+    <text x="1042" y="995" class="sans" font-size="11" fill="#475569">项目策略 · 连接状态 · 处理配置</text>
+
+    <rect x="1300" y="952" width="256" height="58" rx="9" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="1312" y="974" class="sans" font-size="11.5" font-weight="700" fill="#0F766E">客户端与校验缓存</text>
+    <text x="1312" y="995" class="mono" font-size="10" fill="#475569">knowledge-read · hook-err · verify</text>
+  </g>
+
+  <!-- ==================== 流动连线、保护桥接、标签胶囊与动态光点 ==================== -->
+  <g id="layer-flows">
+    <!-- 走廊 A：Agents <-> 控制面与外置网关 -->
+    <path id="flow-agent-policy" d="M 580 226 L 580 284" class="flow-base" stroke="#0D9488" stroke-width="2.5"/>
+    <path d="M 580 226 L 580 284" class="flow-dash" stroke="#0D9488" stroke-width="2.3" marker-end="url(#arrow-teal)"/>
+
+    <path id="flow-agent-ingest" d="M 812 226 L 812 284" class="flow-base" stroke="#2563EB" stroke-width="2.5"/>
+    <path d="M 812 226 L 812 284" class="flow-dash" stroke="#2563EB" stroke-width="2.3" marker-end="url(#arrow-blue)"/>
+
+    <path id="flow-gateway-recall" d="M 1034 286 L 1034 228" class="flow-base" stroke="#2563EB" stroke-width="2.5"/>
+    <path d="M 1034 286 L 1034 228" class="flow-dash" stroke="#2563EB" stroke-width="2.3" marker-end="url(#arrow-blue)"/>
+
+    <!-- 走廊 B：桌面客户端 / Supervisor -> 控制面 / Cognee -->
+    <path id="flow-ui-control" d="M 364 366 L 462 366" class="flow-base" stroke="#0D9488" stroke-width="2.5"/>
+    <path d="M 364 366 L 462 366" class="flow-dash" stroke="#0D9488" stroke-width="2.3" marker-end="url(#arrow-teal)"/>
+
+    <path id="flow-sup-control" d="M 364 654 L 380 654 L 380 446 L 462 446" class="flow-base" stroke="#E11D48" stroke-width="2.5"/>
+    <path d="M 364 654 L 380 654 L 380 446 L 462 446" class="flow-dash-slow" stroke="#E11D48" stroke-width="2.2" marker-end="url(#arrow-rose)"/>
+
+    <!-- 交叉桥接保护：flow-ui-read 在 (380, 532) 处跨过 flow-sup-control -->
+    <line x1="370" y1="532" x2="390" y2="532" stroke="#F1F6FB" stroke-width="8" stroke-linecap="round"/>
+
+    <path id="flow-ui-read" d="M 364 532 L 436 532 L 436 640 L 462 640" class="flow-base" stroke="#6366F1" stroke-width="2.5"/>
+    <path d="M 364 532 L 436 532 L 436 640 L 462 640" class="flow-dash" stroke="#6366F1" stroke-width="2.3" marker-end="url(#arrow-indigo)"/>
+
+    <path id="flow-sup-official" d="M 364 716 L 462 716" class="flow-base" stroke="#E11D48" stroke-width="2.5"/>
+    <path d="M 364 716 L 462 716" class="flow-dash-slow" stroke="#E11D48" stroke-width="2.2" marker-end="url(#arrow-rose)"/>
+
+    <!-- 走廊 C：网关 -> 官方 Cognee 核心 -->
+    <path id="flow-gw-cognee" d="M 632 498 L 632 550" class="flow-base" stroke="#2563EB" stroke-width="2.5"/>
+    <path d="M 632 498 L 632 550" class="flow-dash" stroke="#2563EB" stroke-width="2.3" marker-end="url(#arrow-blue)"/>
+
+    <path id="flow-ctrl-cognee" d="M 956 498 L 956 550" class="flow-base" stroke="#0D9488" stroke-width="2.5"/>
+    <path d="M 956 498 L 956 550" class="flow-dash" stroke="#0D9488" stroke-width="2.3" marker-end="url(#arrow-teal)"/>
+
+    <!-- 走廊 D & 走廊 E 右侧：控制面写外置元数据 + Cognee LLM 出站 -->
+    <path id="flow-ctrl-meta" d="M 1124 446 L 1142 446 L 1142 798 L 1360 798 L 1360 832" class="flow-base" stroke="#0D9488" stroke-width="2.5"/>
+    <path d="M 1124 446 L 1142 446 L 1142 798 L 1360 798 L 1360 832" class="flow-dash" stroke="#0D9488" stroke-width="2.3" marker-end="url(#arrow-teal)"/>
+
+    <!-- 交叉桥接保护：LLM 出站在 (1142, 718) 跨过 flow-ctrl-meta -->
+    <line x1="1132" y1="718" x2="1152" y2="718" stroke="#EFF5FB" stroke-width="8" stroke-linecap="round"/>
+
+    <path id="flow-llm-bridge" d="M 1124 718 L 1184 718 L 1184 440 L 1214 440" class="flow-base" stroke="#D97706" stroke-width="2.5"/>
+    <path d="M 1124 718 L 1184 718 L 1184 440 L 1214 440" class="flow-dash" stroke="#D97706" stroke-width="2.3" marker-end="url(#arrow-amber)"/>
+
+    <path id="flow-llm-direct" d="M 1124 718 L 1184 718 L 1184 674 L 1214 674" class="flow-base" stroke="#D97706" stroke-width="2.5"/>
+    <path d="M 1124 718 L 1184 718 L 1184 674 L 1214 674" class="flow-dash" stroke="#D97706" stroke-width="2.3" marker-end="url(#arrow-amber)"/>
+
+    <!-- 走廊 E 左侧：Cognee 引擎 -> 持久化存储 -->
+    <path id="flow-cognee-store" d="M 632 776 L 632 832" class="flow-base" stroke="#2563EB" stroke-width="2.5"/>
+    <path d="M 632 776 L 632 832" class="flow-dash" stroke="#2563EB" stroke-width="2.3" marker-end="url(#arrow-blue)"/>
+
+    <path id="flow-ext-wal" d="M 956 776 L 956 806 L 1110 806 L 1110 832" class="flow-base" stroke="#0D9488" stroke-width="2.5"/>
+    <path d="M 956 776 L 956 806 L 1110 806 L 1110 832" class="flow-dash" stroke="#0D9488" stroke-width="2.3" marker-end="url(#arrow-teal)"/>
+
+    <!-- 沿轨流光粒子 -->
+    <circle r="3.4" fill="#0D9488" filter="url(#dot-glow)">
+      <animateMotion dur="2.0s" repeatCount="indefinite" begin="0s">
+        <mpath href="#flow-agent-policy" xlink:href="#flow-agent-policy"/>
+      </animateMotion>
+    </circle>
+    <circle r="3.4" fill="#2563EB" filter="url(#dot-glow)">
+      <animateMotion dur="1.9s" repeatCount="indefinite" begin="0.3s">
+        <mpath href="#flow-agent-ingest" xlink:href="#flow-agent-ingest"/>
+      </animateMotion>
+    </circle>
+    <circle r="3.4" fill="#2563EB" filter="url(#dot-glow)">
+      <animateMotion dur="1.9s" repeatCount="indefinite" begin="1.1s">
+        <mpath href="#flow-gateway-recall" xlink:href="#flow-gateway-recall"/>
+      </animateMotion>
+    </circle>
+
+    <circle r="3.4" fill="#0D9488" filter="url(#dot-glow)">
+      <animateMotion dur="2.1s" repeatCount="indefinite" begin="0.2s">
+        <mpath href="#flow-ui-control" xlink:href="#flow-ui-control"/>
+      </animateMotion>
+    </circle>
+    <circle r="3.4" fill="#6366F1" filter="url(#dot-glow)">
+      <animateMotion dur="2.4s" repeatCount="indefinite" begin="0.4s">
+        <mpath href="#flow-ui-read" xlink:href="#flow-ui-read"/>
+      </animateMotion>
+    </circle>
+    <circle r="3.2" fill="#E11D48" filter="url(#dot-glow)">
+      <animateMotion dur="3.0s" repeatCount="indefinite" begin="0s">
+        <mpath href="#flow-sup-control" xlink:href="#flow-sup-control"/>
+      </animateMotion>
+    </circle>
+    <circle r="3.2" fill="#E11D48" filter="url(#dot-glow)">
+      <animateMotion dur="2.4s" repeatCount="indefinite" begin="1.0s">
+        <mpath href="#flow-sup-official" xlink:href="#flow-sup-official"/>
+      </animateMotion>
+    </circle>
+
+    <circle r="3.4" fill="#2563EB" filter="url(#dot-glow)">
+      <animateMotion dur="1.8s" repeatCount="indefinite" begin="0.5s">
+        <mpath href="#flow-gw-cognee" xlink:href="#flow-gw-cognee"/>
+      </animateMotion>
+    </circle>
+    <circle r="3.4" fill="#0D9488" filter="url(#dot-glow)">
+      <animateMotion dur="2.0s" repeatCount="indefinite" begin="0.9s">
+        <mpath href="#flow-ctrl-cognee" xlink:href="#flow-ctrl-cognee"/>
+      </animateMotion>
+    </circle>
+
+    <circle r="3.5" fill="#D97706" filter="url(#dot-glow)">
+      <animateMotion dur="2.6s" repeatCount="indefinite" begin="0s">
+        <mpath href="#flow-llm-bridge" xlink:href="#flow-llm-bridge"/>
+      </animateMotion>
+    </circle>
+    <circle r="3.5" fill="#D97706" filter="url(#dot-glow)">
+      <animateMotion dur="2.6s" repeatCount="indefinite" begin="1.3s">
+        <mpath href="#flow-llm-bridge" xlink:href="#flow-llm-bridge"/>
+      </animateMotion>
+    </circle>
+    <circle r="3.5" fill="#D97706" filter="url(#dot-glow)">
+      <animateMotion dur="2.2s" repeatCount="indefinite" begin="0.6s">
+        <mpath href="#flow-llm-direct" xlink:href="#flow-llm-direct"/>
+      </animateMotion>
+    </circle>
+
+    <circle r="3.4" fill="#2563EB" filter="url(#dot-glow)">
+      <animateMotion dur="1.8s" repeatCount="indefinite" begin="0.2s">
+        <mpath href="#flow-cognee-store" xlink:href="#flow-cognee-store"/>
+      </animateMotion>
+    </circle>
+    <circle r="3.4" fill="#0D9488" filter="url(#dot-glow)">
+      <animateMotion dur="2.4s" repeatCount="indefinite" begin="0.7s">
+        <mpath href="#flow-ext-wal" xlink:href="#flow-ext-wal"/>
+      </animateMotion>
+    </circle>
+    <circle r="3.4" fill="#0D9488" filter="url(#dot-glow)">
+      <animateMotion dur="3.4s" repeatCount="indefinite" begin="0.4s">
+        <mpath href="#flow-ctrl-meta" xlink:href="#flow-ctrl-meta"/>
+      </animateMotion>
+    </circle>
+
+    <!-- 连线标签胶囊（置顶确保可读） -->
+    <g filter="url(#chip-shadow)">
+      <!-- 走廊 A 胶囊 -->
+      <rect x="491" y="244" width="178" height="22" rx="11" fill="#FFFFFF" stroke="#99F6E4" stroke-width="1"/>
+      <text x="580" y="259" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#0F766E">策略/项目解析 (/v1/project/*)</text>
+
+      <rect x="716" y="244" width="192" height="22" rx="11" fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1"/>
+      <text x="812" y="259" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#1D4ED8">X-Api-Key 采集/检索 (/cognee/*)</text>
+
+      <rect x="950" y="244" width="168" height="22" rx="11" fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1"/>
+      <text x="1034" y="259" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#1D4ED8">召回返回（合并通用记忆）</text>
+
+      <!-- 走廊 B 胶囊 -->
+      <rect x="376" y="336" width="76" height="20" rx="10" fill="#FFFFFF" stroke="#99F6E4" stroke-width="1"/>
+      <text x="414" y="350" text-anchor="middle" class="sans" font-size="10" font-weight="600" fill="#0F766E">管理 / 监控</text>
+
+      <rect x="388" y="502" width="72" height="20" rx="10" fill="#FFFFFF" stroke="#C7D2FE" stroke-width="1"/>
+      <text x="424" y="515.5" text-anchor="middle" class="sans" font-size="9.5" font-weight="600" fill="#4338CA">只读正文/图谱</text>
+
+      <rect x="378" y="686" width="72" height="20" rx="10" fill="#FFFFFF" stroke="#FECDD3" stroke-width="1"/>
+      <text x="414" y="700" text-anchor="middle" class="sans" font-size="10" font-weight="600" fill="#BE123C">进程守护</text>
+
+      <!-- 走廊 C 胶囊 -->
+      <rect x="523" y="514" width="218" height="22" rx="11" fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1"/>
+      <text x="632" y="529" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#1D4ED8">透传合法采集 / 检索请求至官方 API</text>
+
+      <rect x="850" y="514" width="212" height="22" rx="11" fill="#FFFFFF" stroke="#99F6E4" stroke-width="1"/>
+      <text x="956" y="529" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#0F766E">ACL 同步 / 整理调度 / 热切换指令</text>
+
+      <!-- 走廊 D 胶囊 -->
+      <rect x="1152" y="556" width="62" height="22" rx="11" fill="#FFFFFF" stroke="#FCD34D" stroke-width="1"/>
+      <text x="1183" y="571" text-anchor="middle" class="sans" font-size="10" font-weight="600" fill="#B45309">LLM 出站</text>
+
+      <!-- 走廊 E 胶囊 -->
+      <rect x="509" y="794" width="246" height="22" rx="11" fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1"/>
+      <text x="632" y="809" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#1D4ED8">读写唯一内容真相（正文 / 向量 / 图谱）</text>
+
+      <rect x="942" y="794" width="172" height="22" rx="11" fill="#FFFFFF" stroke="#99F6E4" stroke-width="1"/>
+      <text x="1028" y="809" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#0F766E">写 WAL 账本（回执 / 日期）</text>
+
+      <rect x="1182" y="787" width="156" height="22" rx="11" fill="#FFFFFF" stroke="#99F6E4" stroke-width="1"/>
+      <text x="1260" y="802" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#0F766E">写注册表 / 处理配置</text>
+    </g>
+  </g>
+
+  <!-- ==================== 底部核心约束摘要 ==================== -->
+  <text x="800" y="1048" text-anchor="middle" class="sans" font-size="11.5" fill="#475569">
+    核心边界：Cognee 源码零侵入 (ec6f408) · 外置网关守住 ACL 与召回合并 · SQLite WAL 外置回执/日期不漂移 · 唯一正文真相在 official-store
+  </text>
+</svg>

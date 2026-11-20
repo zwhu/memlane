@@ -12,6 +12,7 @@ LEGACY_MANAGED_PLUGIN_MANIFESTS = (
     'managed-project-plugin-pre-environment.json',
     'managed-project-plugin-pre-convergence.json',
     'managed-project-plugin-pre-empty-common.json',
+    'managed-project-plugin-pre-plugin-extract.json',
 )
 
 

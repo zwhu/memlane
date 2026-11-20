@@ -266,6 +266,11 @@ func (a *App) environmentReviewModal(c *ui.Context) {
 					ui.Column(c.Key("plan-" + r.ID)).FillWidth().Gap(6).Children(func() {
 						ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() { dependencyMark(c, r.ID); homeText(c, r.Name+" · "+r.Version, homeTitle).FontSize(13) })
 						homeText(c, r.Purpose, homeBody).FontSize(12)
+						if item.Observation.Status == bootstrap.Incompatible {
+							if hint := environmentIncompatibleHint(a, item); hint != "" {
+								homeText(c, "原因："+hint, homeMeta).FontSize(11).LineHeight(1.5)
+							}
+						}
 						homeText(c, "下载 "+environmentSize(r.DownloadBytes)+"，占用 "+environmentSize(r.InstalledBytes), homeMeta).FontSize(11)
 						if r.SizeNote != "" {
 							homeText(c, r.SizeNote, homeMeta).FontSize(11)

@@ -271,7 +271,7 @@ class Backlog:
             return await self._execute(row, target, action, update)
         agent, _ = self.checked_target(row['project_id'], target, write=action not in ('review', 'check'))
         kind = agent.get('kind')
-        host_kind = kind if kind in {'codex', 'pi', 'traex', 'claude_code', 'cursor', 'opencode'} else 'unknown'
+        host_kind = kind if kind in {'codex', 'pi', 'traex', 'claude_code', 'cursor', 'opencode', 'antigravity'} else 'unknown'
         trace = RequestTrace('agent_capture')
         trace.transition({'save': 'save_worker', 'check': 'receipt_check'}.get(action, 'official_process_submission'))
         outcome = 'failed'

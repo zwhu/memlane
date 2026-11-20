@@ -10,8 +10,9 @@ import tempfile
 
 from jsonschema import validators
 
-from codex_completion_endpoint import (CompletionError, MAX_BODY, collect_stderr,
-                                       default_request_args, terminate, track_process)
+from codex_completion_endpoint import (ActivityClock, CompletionError, MAX_BODY, await_with_idle,
+                                       collect_stderr, default_request_args, read_line_with_idle,
+                                       terminate, track_process)
 
 AGENT = 'memlane-processing'
 
@@ -76,11 +77,14 @@ plugins: []
 
 
 class AgyStream:
-    def __init__(self, process):
-        self.process, self.received = process, 0
+    def __init__(self, process, clock=None):
+        self.process, self.received, self.clock = process, 0, clock
 
     async def read(self):
-        line = await self.process.stdout.readline()
+        if self.clock is not None:
+            line = await read_line_with_idle(self.process.stdout, self.clock)
+        else:
+            line = await self.process.stdout.readline()
         self.received += len(line)
         if not line or len(line) > MAX_BODY or self.received > 8 * MAX_BODY:
             raise CompletionError('antigravity_transport_closed_or_limit')
@@ -173,40 +177,40 @@ async def execute(args, system, prompt, schema, transport):
             await terminate(process)
             track_process(args, process, False)
             raise
-        stderr = asyncio.create_task(collect_stderr(process.stderr))
+        clock = ActivityClock(args.timeout)
+        stderr = asyncio.create_task(collect_stderr(process.stderr, on_activity=clock.touch))
         try:
             track_process(args, process, True)
-            async with asyncio.timeout(args.timeout):
-                stream = AgyStream(process)
-                # No material is sent until the native client reports the
-                # selected model, private workspace, empty tools and schema.
-                conversation = initialized(await stream.read(), args, work, transport)
-                process.stdin.write(json.dumps({'event': 'user', 'message': {'content': prompt}},
-                                               ensure_ascii=False).encode() + b'\n')
-                await process.stdin.drain()
-                while True:
-                    row = await stream.read()
-                    if row['event'] == 'init':
-                        raise CompletionError('antigravity_duplicate_initialization')
-                    event = row.get(row['event'])
-                    if not isinstance(event, dict):
-                        raise CompletionError('antigravity_transport_invalid')
-                    identity = event.get('conversation_id')
-                    if not isinstance(identity, str) or not identity:
-                        raise CompletionError('antigravity_conversation_unconfirmed')
-                    if conversation != identity:
-                        raise CompletionError('antigravity_conversation_changed')
-                    if row['event'] == 'step_update':
-                        step = str(event.get('step_type', '')).upper()
-                        if event.get('tool_name') or event.get('tool_info') or event.get('subagent_info') or 'TOOL' in step or 'SUBAGENT' in step:
-                            raise CompletionError('antigravity_tool_rejected', 409)
-                        continue
-                    value = terminal(row, schema, transport)
-                    process.stdin.close()
-                    await process.wait()
-                    if process.returncode != 0:
-                        raise CompletionError('antigravity_process_failed')
-                    return value
+            stream = AgyStream(process, clock)
+            # No material is sent until the native client reports the
+            # selected model, private workspace, empty tools and schema.
+            conversation = initialized(await stream.read(), args, work, transport)
+            process.stdin.write(json.dumps({'event': 'user', 'message': {'content': prompt}},
+                                           ensure_ascii=False).encode() + b'\n')
+            await await_with_idle(process.stdin.drain(), clock)
+            while True:
+                row = await stream.read()
+                if row['event'] == 'init':
+                    raise CompletionError('antigravity_duplicate_initialization')
+                event = row.get(row['event'])
+                if not isinstance(event, dict):
+                    raise CompletionError('antigravity_transport_invalid')
+                identity = event.get('conversation_id')
+                if not isinstance(identity, str) or not identity:
+                    raise CompletionError('antigravity_conversation_unconfirmed')
+                if conversation != identity:
+                    raise CompletionError('antigravity_conversation_changed')
+                if row['event'] == 'step_update':
+                    step = str(event.get('step_type', '')).upper()
+                    if event.get('tool_name') or event.get('tool_info') or event.get('subagent_info') or 'TOOL' in step or 'SUBAGENT' in step:
+                        raise CompletionError('antigravity_tool_rejected', 409)
+                    continue
+                value = terminal(row, schema, transport)
+                process.stdin.close()
+                await await_with_idle(process.wait(), clock)
+                if process.returncode != 0:
+                    raise CompletionError('antigravity_process_failed')
+                return value
         except (TimeoutError, asyncio.CancelledError) as error:
             # Native print mode uses the same interrupt as Ctrl+C. Await the
             # local process, then verify/reap the full group below.

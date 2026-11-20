@@ -5,17 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
-	"net/http"
-	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
+	"sync"
 	"time"
+
+	"github.com/zwhu/memlane/internal/supervisor"
 )
 
 type FirstInstallation struct {
@@ -36,14 +33,293 @@ type firstRuntimeConfig struct {
 	Commit         string             `json:"service_commit"`
 	Python         string             `json:"python"`
 	ServiceURL     string             `json:"service_url"`
+	CompletionURL  string             `json:"completion_url"`
 	TokenFile      string             `json:"token_file"`
 	GenerationFile string             `json:"generation_file"`
 	GenerationMode string             `json:"generation_mode"`
 	Model          string             `json:"model"`
 	Control        struct {
-		URL       string `json:"url"`
-		TokenFile string `json:"management_token_file"`
+		URL          string `json:"url"`
+		RegistryFile string `json:"registry_file"`
+		TokenFile    string `json:"management_token_file"`
+		PluginDir    string `json:"plugin_dir"`
 	} `json:"project_control"`
+
+	receipt StoreReceipt
+}
+
+// FirstRuntimeOption customizes supervisor parameters used for a first-runtime lifecycle.
+type FirstRuntimeOption func(*firstRuntimeOptions)
+
+type firstRuntimeOptions struct {
+	logLimitBytes     int64
+	monitorInterval   time.Duration
+	readyPollInterval time.Duration
+	healthFailureMax  int
+	healthTimeout     time.Duration
+	stopGrace         time.Duration
+	killWait          time.Duration
+	onCrash           func(supervisor.ServiceStatus)
+}
+
+func defaultFirstRuntimeOptions() firstRuntimeOptions {
+	return firstRuntimeOptions{
+		logLimitBytes:     supervisor.DefaultLogLimitBytes,
+		monitorInterval:   time.Second,
+		readyPollInterval: 150 * time.Millisecond,
+		healthFailureMax:  3,
+		healthTimeout:     3 * time.Second,
+		stopGrace:         20 * time.Second,
+		killWait:          5 * time.Second,
+	}
+}
+
+// WithFirstRuntimeLogLimit overrides the live-inode log truncation threshold (default 20 MiB).
+func WithFirstRuntimeLogLimit(limit int64) FirstRuntimeOption {
+	return func(o *firstRuntimeOptions) {
+		if limit > 0 {
+			o.logLimitBytes = limit
+		}
+	}
+}
+
+// WithFirstRuntimeMonitorInterval overrides the background log-trim and health monitor tick.
+func WithFirstRuntimeMonitorInterval(interval time.Duration) FirstRuntimeOption {
+	return func(o *firstRuntimeOptions) {
+		if interval > 0 {
+			o.monitorInterval = interval
+		}
+	}
+}
+
+// WithFirstRuntimeReadyPollInterval overrides the readiness check polling interval.
+func WithFirstRuntimeReadyPollInterval(interval time.Duration) FirstRuntimeOption {
+	return func(o *firstRuntimeOptions) {
+		if interval > 0 {
+			o.readyPollInterval = interval
+		}
+	}
+}
+
+// WithFirstRuntimeHealthPolicy overrides debounced health failure count and per-probe timeout.
+func WithFirstRuntimeHealthPolicy(failureMax int, timeout time.Duration) FirstRuntimeOption {
+	return func(o *firstRuntimeOptions) {
+		if failureMax > 0 {
+			o.healthFailureMax = failureMax
+		}
+		if timeout > 0 {
+			o.healthTimeout = timeout
+		}
+	}
+}
+
+// WithFirstRuntimeStopTimeouts overrides SIGTERM grace and SIGKILL wait periods during shutdown.
+func WithFirstRuntimeStopTimeouts(grace, killWait time.Duration) FirstRuntimeOption {
+	return func(o *firstRuntimeOptions) {
+		if grace > 0 {
+			o.stopGrace = grace
+		}
+		if killWait > 0 {
+			o.killWait = killWait
+		}
+	}
+}
+
+// WithFirstRuntimeOnCrash registers a callback invoked on unexpected child exit.
+func WithFirstRuntimeOnCrash(fn func(supervisor.ServiceStatus)) FirstRuntimeOption {
+	return func(o *firstRuntimeOptions) {
+		o.onCrash = fn
+	}
+}
+
+// FirstRuntimeHandle exposes the supervisor handle and explicit graceful shutdown hook
+// for a first-runtime instance. Callers retain full control over when to terminate
+// (for example, explicit application quit rather than macOS window close/hide).
+type FirstRuntimeHandle struct {
+	configPath string
+	storeRoot  string
+	owned      bool
+	sup        *supervisor.Supervisor
+}
+
+// Supervisor returns the backing supervisor when this handle owns the launched process(es).
+func (h *FirstRuntimeHandle) Supervisor() *supervisor.Supervisor {
+	if h == nil {
+		return nil
+	}
+	return h.sup
+}
+
+// Owned reports whether this process launched and owns the supervised process group(s).
+// Attached handles for externally started dev.py instances return false and are not killed on Shutdown.
+func (h *FirstRuntimeHandle) Owned() bool {
+	return h != nil && h.owned && h.sup != nil
+}
+
+// ConfigPath returns the runtime configuration path bound to this handle.
+func (h *FirstRuntimeHandle) ConfigPath() string {
+	if h == nil {
+		return ""
+	}
+	return h.configPath
+}
+
+// StoreRoot returns the canonical store root bound to this handle.
+func (h *FirstRuntimeHandle) StoreRoot() string {
+	if h == nil {
+		return ""
+	}
+	return h.storeRoot
+}
+
+// Snapshot returns the current aggregate supervisor and child service state.
+func (h *FirstRuntimeHandle) Snapshot() supervisor.SupervisorSnapshot {
+	if h == nil || h.sup == nil {
+		return supervisor.SupervisorSnapshot{State: supervisor.StatePending}
+	}
+	return h.sup.Snapshot()
+}
+
+// Exited returns a notification channel for unexpected child exits (nil if not owned).
+func (h *FirstRuntimeHandle) Exited() <-chan supervisor.ServiceStatus {
+	if h == nil || h.sup == nil {
+		return nil
+	}
+	return h.sup.Exited()
+}
+
+// Shutdown performs an idempotent explicit graceful shutdown (reverse-order SIGTERM -> SIGKILL)
+// when this handle owns the supervised process(es), and unregisters the handle.
+func (h *FirstRuntimeHandle) Shutdown(ctx context.Context) error {
+	if h == nil {
+		return nil
+	}
+	firstRuntimeHandles.unregister(h)
+	if !h.owned || h.sup == nil {
+		return nil
+	}
+	return h.sup.Stop(ctx)
+}
+
+type runtimeHandleRegistry struct {
+	mu      sync.Mutex
+	handles map[string]*FirstRuntimeHandle
+	locks   map[string]*sync.Mutex
+}
+
+var firstRuntimeHandles = &runtimeHandleRegistry{
+	handles: make(map[string]*FirstRuntimeHandle),
+	locks:   make(map[string]*sync.Mutex),
+}
+
+func (r *runtimeHandleRegistry) storeMutex(canonicalStore string) *sync.Mutex {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m := r.locks[canonicalStore]
+	if m == nil {
+		m = &sync.Mutex{}
+		r.locks[canonicalStore] = m
+	}
+	return m
+}
+
+func (r *runtimeHandleRegistry) get(canonicalStore string) *FirstRuntimeHandle {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.handles[canonicalStore]
+}
+
+func (r *runtimeHandleRegistry) set(h *FirstRuntimeHandle) {
+	if h == nil || h.storeRoot == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.handles[h.storeRoot] = h
+}
+
+func (r *runtimeHandleRegistry) unregister(h *FirstRuntimeHandle) {
+	if h == nil || h.storeRoot == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.handles[h.storeRoot] == h {
+		delete(r.handles, h.storeRoot)
+	}
+}
+
+func (r *runtimeHandleRegistry) findByConfig(configPath string) *FirstRuntimeHandle {
+	canonicalCfg := canonicalRuntimePath(configPath)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, h := range r.handles {
+		if canonicalRuntimePath(h.configPath) == canonicalCfg {
+			return h
+		}
+	}
+	return nil
+}
+
+func (r *runtimeHandleRegistry) all() []*FirstRuntimeHandle {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*FirstRuntimeHandle, 0, len(r.handles))
+	for _, h := range r.handles {
+		out = append(out, h)
+	}
+	return out
+}
+
+func canonicalRuntimePath(path string) string {
+	if path == "" {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		if abs, absErr := filepath.Abs(resolved); absErr == nil {
+			return abs
+		}
+		return resolved
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return filepath.Clean(path)
+}
+
+// FirstRuntimeSupervisor returns the active supervised runtime handle associated with configPath, if any.
+func FirstRuntimeSupervisor(configPath string) (*FirstRuntimeHandle, bool) {
+	if config, err := loadFirstRuntimeConfig(configPath); err == nil {
+		if h := firstRuntimeHandles.get(canonicalRuntimePath(config.Root)); h != nil {
+			return h, true
+		}
+	}
+	if h := firstRuntimeHandles.findByConfig(configPath); h != nil {
+		return h, true
+	}
+	return nil, false
+}
+
+// ShutdownFirstRuntime cleanly shuts down the owned supervised runtime bound to configPath.
+func ShutdownFirstRuntime(ctx context.Context, configPath string) error {
+	h, ok := FirstRuntimeSupervisor(configPath)
+	if !ok {
+		return nil
+	}
+	return h.Shutdown(ctx)
+}
+
+// ShutdownAllFirstRuntimes cleanly shuts down every owned supervised runtime started by this process.
+// Intended as the explicit-quit shutdown hook for desktop callers.
+func ShutdownAllFirstRuntimes(ctx context.Context) error {
+	handles := firstRuntimeHandles.all()
+	var errs []error
+	for _, h := range handles {
+		if err := h.Shutdown(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func DefaultRuntimeConfig() (string, error) {
@@ -77,7 +353,42 @@ func loadFirstRuntimeConfig(path string) (firstRuntimeConfig, error) {
 	if receipt.Schema != 1 || !receipt.StorageInitialized || receipt.OwnerID == "" || receipt.KeyID == "" || receipt.StoreID != config.First.StoreID || receipt.SourceCommit != config.Commit || config.TokenFile != filepath.Join(config.Root, "owner.token") {
 		return config, errors.New("首次运行配置与官方库身份不同，保留原配置")
 	}
+	config.receipt = receipt
 	return config, nil
+}
+
+func buildRecoverOptions(config firstRuntimeConfig, configPath string) supervisor.RecoverOptions {
+	var checkURLs []string
+	for _, raw := range []string{config.ServiceURL, config.CompletionURL, config.Control.URL} {
+		if trimmed := strings.TrimSpace(raw); trimmed != "" {
+			checkURLs = append(checkURLs, trimmed)
+		}
+	}
+	var lockFiles []string
+	for _, target := range []string{config.GenerationFile, config.Control.RegistryFile} {
+		if target == "" || !filepath.IsAbs(target) {
+			continue
+		}
+		if info, err := os.Stat(filepath.Dir(target)); err == nil && info.IsDir() {
+			lockFiles = append(lockFiles, target+".lock")
+		}
+	}
+	return supervisor.RecoverOptions{
+		StoreRoot:  config.Root,
+		ConfigPath: configPath,
+		CheckURLs:  checkURLs,
+		LockFiles:  lockFiles,
+	}
+}
+
+// RecoverFirstRuntimeOwner safely archives a stale .memlane-dev-owner.json receipt
+// after confirming via internal/supervisor that no recorded process, port, or lock remains active.
+func RecoverFirstRuntimeOwner(ctx context.Context, configPath string) (supervisor.RecoverResult, error) {
+	config, err := loadFirstRuntimeConfig(configPath)
+	if err != nil {
+		return supervisor.RecoverResult{}, err
+	}
+	return supervisor.RecoverStaleOwner(ctx, buildRecoverOptions(config, configPath))
 }
 
 // PrepareFirstRuntime never treats a broken existing daily configuration as a
@@ -154,41 +465,26 @@ func (e *Environment) PrepareFirstRuntime(ctx context.Context, configPath string
 }
 
 func loopbackJSON(ctx context.Context, origin, endpoint, tokenFile, header, prefix string) (map[string]any, error) {
-	parsed, err := url.Parse(origin)
+	validOrigin, err := supervisor.ValidateLoopbackURL(origin)
 	if err != nil {
-		return nil, err
-	}
-	port, err := strconv.Atoi(parsed.Port())
-	if err != nil || port < 1 || port > 65535 || parsed.Scheme != "http" || parsed.Hostname() != "127.0.0.1" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
 		return nil, errors.New("首次服务地址必须为明确的本机端口")
 	}
 	token, err := privateRead(tokenFile)
 	if err != nil {
 		return nil, err
 	}
-	request, err := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(origin, "/")+endpoint, nil)
+	result, err := supervisor.LoopbackGetJSON(
+		ctx,
+		validOrigin,
+		endpoint,
+		map[string]string{header: prefix + strings.TrimSpace(string(token))},
+		3*time.Second,
+	)
 	if err != nil {
-		return nil, err
-	}
-	request.Header.Set(header, prefix+strings.TrimSpace(string(token)))
-	client := &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("首次服务身份核对返回 %d", response.StatusCode)
-	}
-	b, err := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(b) > 2<<20 {
-		return nil, errors.New("首次服务回执超出限制")
-	}
-	var result map[string]any
-	if err := json.Unmarshal(b, &result); err != nil {
+		var statusErr *supervisor.HTTPStatusError
+		if errors.As(err, &statusErr) {
+			return nil, fmt.Errorf("首次服务身份核对返回 %d", statusErr.StatusCode)
+		}
 		return nil, err
 	}
 	return result, nil
@@ -199,46 +495,27 @@ func FirstRuntimeReady(ctx context.Context, configPath string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	b, err := privateRead(filepath.Join(config.Root, ".memlane-dev-owner.json"))
+	owner, err := supervisor.VerifyOwnerRecord(ctx, config.Root, configPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
-	if err != nil {
-		return false, err
-	}
-	var owner struct {
-		PID     int    `json:"pid"`
-		Started string `json:"started"`
-		Config  string `json:"config"`
-		Root    string `json:"official_data"`
-		Phase   string `json:"phase"`
-	}
-	if err := json.Unmarshal(b, &owner); err != nil {
-		return false, err
-	}
-	if owner.PID < 1 || owner.Config != configPath || owner.Root != config.Root {
+	if errors.Is(err, supervisor.ErrOwnerMismatch) {
 		return false, errors.New("首次服务所有权记录不同，保留现场")
 	}
-	started, err := exec.CommandContext(ctx, "/bin/ps", "-p", strconv.Itoa(owner.PID), "-o", "lstart=").Output()
-	if err != nil || strings.TrimSpace(string(started)) != owner.Started {
+	if errors.Is(err, supervisor.ErrOwnerProcessChanged) {
 		return false, errors.New("首次服务所有者已变化，保留原记录等待核对")
+	}
+	if err != nil {
+		return false, err
 	}
 	if owner.Phase != "first_install_setup" && owner.Phase != "ready" {
 		return false, nil
-	}
-	var receipt StoreReceipt
-	b, err = privateRead(filepath.Join(config.Root, "store-identity.json"))
-	if err != nil {
-		return false, err
-	}
-	if err := json.Unmarshal(b, &receipt); err != nil {
-		return false, err
 	}
 	me, err := loopbackJSON(ctx, config.ServiceURL, "/api/v1/users/me", config.TokenFile, "X-Api-Key", "")
 	if err != nil {
 		return false, err
 	}
-	if me["id"] != receipt.OwnerID {
+	if me["id"] != config.receipt.OwnerID {
 		return false, errors.New("首次官方服务 owner 身份不同")
 	}
 	projects, err := loopbackJSON(ctx, config.Control.URL, "/v1/projects", config.Control.TokenFile, "Authorization", "Bearer ")
@@ -251,115 +528,339 @@ func FirstRuntimeReady(ctx context.Context, configPath string) (bool, error) {
 	return true, nil
 }
 
-// StartFirstRuntime keeps the dev owner's existing process and recovery rules.
+// StartFirstRuntime keeps the dev owner's existing process and recovery rules
+// while delegating owner inspection/recovery, Setsid process-group lifecycle,
+// live-inode log truncation/redaction, and readiness/health monitoring to internal/supervisor.
 // A timeout does not kill or replace an owner whose startup is still in flight.
 func StartFirstRuntime(ctx context.Context, prepared FirstRuntime) error {
+	_, err := StartFirstRuntimeHandle(ctx, prepared)
+	return err
+}
+
+// StartFirstRuntimeHandle starts (or attaches to) the first-runtime service stack
+// via internal/supervisor and returns a handle supporting status inspection and explicit graceful shutdown.
+func StartFirstRuntimeHandle(ctx context.Context, prepared FirstRuntime, opts ...FirstRuntimeOption) (*FirstRuntimeHandle, error) {
 	for _, path := range []string{prepared.ConfigPath, prepared.StoreRoot, prepared.Resources, prepared.Python, prepared.HostHome} {
 		if !filepath.IsAbs(path) {
-			return errors.New("首次运行参数必须为明确的绝对路径")
+			return nil, errors.New("首次运行参数必须为明确的绝对路径")
 		}
 	}
 	config, err := loadFirstRuntimeConfig(prepared.ConfigPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if config.Root != prepared.StoreRoot || config.Python != prepared.Python {
-		return errors.New("首次运行参数与原配置不同，未启动")
+		return nil, errors.New("首次运行参数与原配置不同，未启动")
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	_, err = privateRead(filepath.Join(prepared.StoreRoot, ".memlane-dev-owner.json"))
-	exited := make(chan error, 1)
 	if prepared.ActivationFile != "" && prepared.ActivationFile != filepath.Join(prepared.StoreRoot, "first-install-activation.json") {
-		return errors.New("首次启用回执位置不同")
+		return nil, errors.New("首次启用回执位置不同")
 	}
-	if prepared.ActivationFile != "" && err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+
+	cfgOpts := defaultFirstRuntimeOptions()
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfgOpts)
+		}
 	}
-	if errors.Is(err, os.ErrNotExist) || prepared.ActivationFile != "" {
-		logs := filepath.Join(filepath.Dir(prepared.ConfigPath), "runtime-logs")
-		if err := os.MkdirAll(logs, 0700); err != nil {
-			return err
-		}
-		logDirectory, err := os.Lstat(logs)
-		if err != nil {
-			return err
-		}
-		if !logDirectory.IsDir() || logDirectory.Mode()&os.ModeSymlink != 0 || logDirectory.Mode().Perm()&0077 != 0 {
-			return errors.New("首次运行日志目录归属不明确，保留原目录")
-		}
-		log, err := os.OpenFile(filepath.Join(logs, "launcher.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW, 0600)
-		if err != nil {
-			return err
-		}
-		defer log.Close()
-		info, err := log.Stat()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-			return errors.New("首次运行日志必须为私有普通文件")
-		}
-		arguments := []string{filepath.Join(prepared.Resources, "scripts/dev.py"), "start", "--config", prepared.ConfigPath, "--no-ui"}
-		if prepared.ActivationFile != "" {
-			var fields struct {
-				Control struct {
-					Plugin string `json:"plugin_dir"`
-				} `json:"project_control"`
-			}
-			b, err := privateRead(prepared.ConfigPath)
-			if err != nil {
-				return err
-			}
-			if err := json.Unmarshal(b, &fields); err != nil {
-				return err
-			}
-			arguments = []string{"-I", "-B", filepath.Join(prepared.Resources, "engine/python/first_install_runtime.py"), "--store-root", prepared.StoreRoot, "--runtime-config", prepared.ConfigPath, "--plugin", fields.Control.Plugin, "--host-home", prepared.HostHome, "--activate-file", prepared.ActivationFile}
-		}
-		command := exec.Command(prepared.Python, arguments...)
-		command.Dir = prepared.Resources
-		path := os.Getenv("PATH")
-		if path == "" {
-			path = "/usr/bin:/bin:/usr/sbin:/sbin"
-		}
-		command.Env = []string{"HOME=" + prepared.HostHome, "PATH=" + filepath.Join(prepared.HostHome, ".local/bin") + ":" + path, "LANG=en_US.UTF-8", "PYTHONDONTWRITEBYTECODE=1"}
-		command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-		command.Stdout, command.Stderr = log, log
-		if err := command.Start(); err != nil {
-			return err
-		}
-		go func() { exited <- command.Wait() }()
-	} else if err != nil {
-		return err
-	}
-	ticker := time.NewTicker(300 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		ready, err := FirstRuntimeReady(ctx, prepared.ConfigPath)
-		if err != nil && prepared.ActivationFile == "" {
-			return err
+
+	canonicalStore := canonicalRuntimePath(prepared.StoreRoot)
+	storeMu := firstRuntimeHandles.storeMutex(canonicalStore)
+	storeMu.Lock()
+	defer storeMu.Unlock()
+
+	readyCheck := func(checkCtx context.Context) (bool, error) {
+		ready, readyErr := FirstRuntimeReady(checkCtx, prepared.ConfigPath)
+		if readyErr != nil && prepared.ActivationFile == "" {
+			return false, readyErr
 		}
 		if prepared.ActivationFile != "" {
-			complete, stateError := FirstInitializationComplete(prepared.ConfigPath)
-			if stateError != nil {
-				return stateError
+			complete, stateErr := FirstInitializationComplete(prepared.ConfigPath)
+			if stateErr != nil {
+				return false, stateErr
 			}
 			ready = ready && complete
 		}
-		if ready {
-			return nil
+		return ready, nil
+	}
+	healthCheck := func(checkCtx context.Context) error {
+		ready, readyErr := FirstRuntimeReady(checkCtx, prepared.ConfigPath)
+		if readyErr != nil {
+			return readyErr
 		}
-		select {
-		case <-ctx.Done():
-			return errors.New("首次服务就绪尚未确认，进度及所有权记录已保留")
-		case err := <-exited:
-			if err == nil && prepared.ActivationFile != "" {
-				exited = nil
-				continue
+		if !ready {
+			return errors.New("first runtime not ready")
+		}
+		return nil
+	}
+
+	existing := firstRuntimeHandles.get(canonicalStore)
+	if prepared.ActivationFile != "" && existing != nil && existing.sup != nil && !existing.sup.ExternalOwner() {
+		// Release an in-process Go-owned setup supervisor cleanly before handing off to first_install_runtime.py,
+		// so dev.py stop never signals the Go host process itself.
+		if err := existing.Shutdown(ctx); err != nil {
+			return nil, err
+		}
+		existing = nil
+	}
+
+	inspection, err := supervisor.InspectOwner(prepared.StoreRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	if prepared.ActivationFile == "" {
+		if existing != nil && existing.Owned() {
+			snap := existing.Snapshot()
+			if snap.State == supervisor.StateStarting || snap.State == supervisor.StateReady || snap.State == supervisor.StateDegraded {
+				// Reuse this process's in-flight or live handle instead of spawning a duplicate
+				// launcher (even if an earlier attempt timed out before dev.py acquired the flock).
+				if err := existing.sup.WaitReady(ctx, readyCheck); err != nil {
+					if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+						return existing, errors.New("首次服务就绪尚未确认，进度及所有权记录已保留")
+					}
+					var exitErr *supervisor.ExitedBeforeReadyError
+					if errors.As(err, &exitErr) {
+						_ = existing.Shutdown(context.Background())
+						return nil, fmt.Errorf("首次运行入口退出，保留日志与原库：%v", exitErr)
+					}
+					return nil, err
+				}
+				return existing, nil
 			}
-			return fmt.Errorf("首次运行入口退出，保留日志与原库：%v", err)
-		case <-ticker.C:
+			// Reap any dead monitor before inspecting and recovering the store.
+			_ = existing.Shutdown(context.Background())
+			existing = nil
+		}
+		if inspection.Locked {
+			// An active external owner already holds .service-owner; never kill or duplicate it.
+			if err := supervisor.WaitReady(ctx, nil, readyCheck, 0, cfgOpts.readyPollInterval, false); err != nil {
+				if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+					return nil, errors.New("首次服务就绪尚未确认，进度及所有权记录已保留")
+				}
+				return nil, err
+			}
+			return &FirstRuntimeHandle{
+				configPath: prepared.ConfigPath,
+				storeRoot:  canonicalStore,
+				owned:      false,
+			}, nil
+		}
+		if inspection.HasReceipt {
+			if _, recErr := supervisor.RecoverStaleOwner(ctx, buildRecoverOptions(config, prepared.ConfigPath)); recErr != nil {
+				return nil, fmt.Errorf("首次服务所有权恢复未通过，保留现场：%w", recErr)
+			}
+		}
+	} else if !inspection.Locked && inspection.HasReceipt {
+		if _, recErr := supervisor.RecoverStaleOwner(ctx, buildRecoverOptions(config, prepared.ConfigPath)); recErr != nil {
+			return nil, fmt.Errorf("首次服务所有权恢复未通过，保留现场：%w", recErr)
 		}
 	}
+
+	logsDir := filepath.Join(filepath.Dir(prepared.ConfigPath), "runtime-logs")
+	logPath := filepath.Join(logsDir, "launcher.log")
+
+	arguments := []string{filepath.Join(prepared.Resources, "scripts/dev.py"), "start", "--config", prepared.ConfigPath, "--no-ui"}
+	phaseOnReady := "ready"
+	if config.First != nil && config.First.Setup && prepared.ActivationFile == "" {
+		phaseOnReady = "first_install_setup"
+	}
+	allowCleanExit := false
+	if prepared.ActivationFile != "" {
+		arguments = []string{
+			"-I", "-B", filepath.Join(prepared.Resources, "engine/python/first_install_runtime.py"),
+			"--store-root", prepared.StoreRoot,
+			"--runtime-config", prepared.ConfigPath,
+			"--plugin", config.Control.PluginDir,
+			"--host-home", prepared.HostHome,
+			"--activate-file", prepared.ActivationFile,
+		}
+		allowCleanExit = true
+	}
+
+	envPath := os.Getenv("PATH")
+	if envPath == "" {
+		envPath = "/usr/bin:/bin:/usr/sbin:/sbin"
+	}
+	launcherEnv := []string{
+		"HOME=" + prepared.HostHome,
+		"PATH=" + filepath.Join(prepared.HostHome, ".local/bin") + ":" + envPath,
+		"LANG=en_US.UTF-8",
+		"PYTHONDONTWRITEBYTECODE=1",
+	}
+
+	sup := supervisor.New(supervisor.Config{
+		StoreRoot:         prepared.StoreRoot,
+		ConfigPath:        prepared.ConfigPath,
+		PhaseOnReady:      phaseOnReady,
+		ServiceURL:        config.ServiceURL,
+		CompletionURL:     config.CompletionURL,
+		ControlURL:        config.Control.URL,
+		GenerationMode:    config.GenerationMode,
+		LogDir:            logsDir,
+		LogLimitBytes:     cfgOpts.logLimitBytes,
+		MonitorInterval:   cfgOpts.monitorInterval,
+		ReadyPollInterval: cfgOpts.readyPollInterval,
+		HealthFailureMax:  cfgOpts.healthFailureMax,
+		HealthTimeout:     cfgOpts.healthTimeout,
+		ExternalOwner:     true,
+		KeepOnTimeout:     true,
+		OnCrash:           cfgOpts.onCrash,
+	})
+
+	spec := supervisor.ServiceSpec{
+		Role:           "launcher",
+		Command:        prepared.Python,
+		Args:           arguments,
+		Dir:            prepared.Resources,
+		Env:            launcherEnv,
+		LogPath:        logPath,
+		LogLimitBytes:  cfgOpts.logLimitBytes,
+		ReadyCheck:     readyCheck,
+		HealthCheck:    healthCheck,
+		AllowCleanExit: allowCleanExit,
+		StopGrace:      cfgOpts.stopGrace,
+		KillWait:       cfgOpts.killWait,
+	}
+
+	startErr := sup.Start(ctx, []supervisor.ServiceSpec{spec})
+	if startErr != nil {
+		snap := sup.Snapshot()
+		if (errors.Is(startErr, context.DeadlineExceeded) || errors.Is(startErr, context.Canceled)) && snap.State != supervisor.StateStopped {
+			// Startup remains in flight; preserve child, ownership record, and handle for retry or explicit quit.
+			inFlight := &FirstRuntimeHandle{
+				configPath: prepared.ConfigPath,
+				storeRoot:  canonicalStore,
+				owned:      true,
+				sup:        sup,
+			}
+			firstRuntimeHandles.set(inFlight)
+			return inFlight, errors.New("首次服务就绪尚未确认，进度及所有权记录已保留")
+		}
+		var exitErr *supervisor.ExitedBeforeReadyError
+		if errors.As(startErr, &exitErr) {
+			return nil, fmt.Errorf("首次运行入口退出，保留日志与原库：%v", exitErr)
+		}
+		return nil, startErr
+	}
+
+	// If activation exited cleanly (idempotent already-completed activation), keep the existing live handle
+	// if present rather than replacing it with an already-exited launcher supervisor.
+	snap := sup.Snapshot()
+	if allowCleanExit && len(snap.Services) == 1 && snap.Services[0].State == supervisor.StateStopped {
+		_ = sup.Stop(context.Background())
+		if existing != nil && existing.Owned() {
+			exSnap := existing.Snapshot()
+			if exSnap.State != supervisor.StateStopped && exSnap.State != supervisor.StateExited {
+				return existing, nil
+			}
+		}
+		return &FirstRuntimeHandle{
+			configPath: prepared.ConfigPath,
+			storeRoot:  canonicalStore,
+			owned:      false,
+		}, nil
+	}
+
+	handle := &FirstRuntimeHandle{
+		configPath: prepared.ConfigPath,
+		storeRoot:  canonicalStore,
+		owned:      true,
+		sup:        sup,
+	}
+	firstRuntimeHandles.set(handle)
+	if existing != nil && existing != handle {
+		// Old setup launcher was already stopped during activation; clean up its monitor goroutine.
+		_ = existing.Shutdown(context.Background())
+	}
+	return handle, nil
+}
+
+// StartFirstRuntimeSupervised directly supervises an ordered set of service specs under
+// Go-owned .service-owner flock, compatible .memlane-dev-owner.json, live-inode 20 MiB log
+// trimming, debounced health checks, and reverse-order SIGTERM -> SIGKILL shutdown.
+func StartFirstRuntimeSupervised(ctx context.Context, configPath string, specs []supervisor.ServiceSpec, opts ...FirstRuntimeOption) (*FirstRuntimeHandle, error) {
+	config, err := loadFirstRuntimeConfig(configPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	cfgOpts := defaultFirstRuntimeOptions()
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfgOpts)
+		}
+	}
+
+	canonicalStore := canonicalRuntimePath(config.Root)
+	storeMu := firstRuntimeHandles.storeMutex(canonicalStore)
+	storeMu.Lock()
+	defer storeMu.Unlock()
+
+	inspection, err := supervisor.InspectOwner(config.Root)
+	if err != nil {
+		return nil, err
+	}
+	if inspection.Locked {
+		return nil, supervisor.ErrOwnerLocked
+	}
+	if inspection.HasReceipt {
+		if _, recErr := supervisor.RecoverStaleOwner(ctx, buildRecoverOptions(config, configPath)); recErr != nil {
+			return nil, fmt.Errorf("首次服务所有权恢复未通过，保留现场：%w", recErr)
+		}
+	}
+
+	phaseOnReady := "ready"
+	if config.First != nil && config.First.Setup {
+		phaseOnReady = "first_install_setup"
+	}
+	logsDir := filepath.Join(filepath.Dir(configPath), "runtime-logs")
+	sup := supervisor.New(supervisor.Config{
+		StoreRoot:         config.Root,
+		ConfigPath:        configPath,
+		PhaseOnReady:      phaseOnReady,
+		ServiceURL:        config.ServiceURL,
+		CompletionURL:     config.CompletionURL,
+		ControlURL:        config.Control.URL,
+		GenerationMode:    config.GenerationMode,
+		LogDir:            logsDir,
+		LogLimitBytes:     cfgOpts.logLimitBytes,
+		MonitorInterval:   cfgOpts.monitorInterval,
+		ReadyPollInterval: cfgOpts.readyPollInterval,
+		HealthFailureMax:  cfgOpts.healthFailureMax,
+		HealthTimeout:     cfgOpts.healthTimeout,
+		ExternalOwner:     false,
+		OnCrash:           cfgOpts.onCrash,
+	})
+
+	effectiveSpecs := make([]supervisor.ServiceSpec, len(specs))
+	for i, s := range specs {
+		if s.StopGrace <= 0 {
+			s.StopGrace = cfgOpts.stopGrace
+		}
+		if s.KillWait <= 0 {
+			s.KillWait = cfgOpts.killWait
+		}
+		if s.LogLimitBytes <= 0 {
+			s.LogLimitBytes = cfgOpts.logLimitBytes
+		}
+		effectiveSpecs[i] = s
+	}
+
+	if err := sup.Start(ctx, effectiveSpecs); err != nil {
+		return nil, err
+	}
+	handle := &FirstRuntimeHandle{
+		configPath: configPath,
+		storeRoot:  canonicalStore,
+		owned:      true,
+		sup:        sup,
+	}
+	firstRuntimeHandles.set(handle)
+	return handle, nil
 }

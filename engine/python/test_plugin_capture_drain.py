@@ -78,7 +78,7 @@ class DrainFixture:
         # Import fresh official modules so their home paths and one-time env
         # loading cannot refer to the developer's real Agent installation.
         names = {path.stem for path in UPSTREAM.glob("*.py")}
-        names.update(("_memlane_capture", "_memlane_policy"))
+        names.update(("_memlane_capture", "_memlane_policy", "_memlane_access"))
         old = {name: sys.modules[name] for name in names if name in sys.modules}
         for name in names:
             sys.modules.pop(name, None)
@@ -108,6 +108,7 @@ class DrainFixture:
         self.access_patch = self.load("drain_fixture_project_access", ROOT / "engine/patches/project_access.py")
         self.stack.callback(sys.modules.pop, "drain_fixture_project_access", None)
         self.policy = self.load("_memlane_policy", PYTHON / "project_plugin_policy.py")
+        self.access = self.load("_memlane_access", PYTHON / "project_access_hooks.py")
         self.load("_env_file", UPSTREAM / "_env_file.py",
                   self.access_patch.apply("_env_file.py", (UPSTREAM / "_env_file.py").read_text()))
         self.load_sender()

@@ -162,7 +162,17 @@ print("empty common catalog never searched; project recall retained")
         source = (self.source/'scripts/cognee-forget.sh').read_text()
         with self.assertRaises(ValueError):forget_response('not fixed input')
         with self.assertRaises(ValueError):forget_response(forget_response(source))
+        remember = (self.source/'scripts/_remember_http.py').read_text()
         with self.assertRaises(ValueError):remember_response('not fixed input')
+        with self.assertRaises(ValueError):remember_response(remember_response(remember))
         policy = (self.source/'scripts/_memlane_policy.py').read_text()
         with self.assertRaises(ValueError):common_recall_response('not fixed input')
-        with self.assertRaises(ValueError):common_recall_response(common_recall_response(policy))
+        # Commit 3c4c43e moved the empty-common guard into project_plugin_policy.py
+        # and made common_recall_response idempotent for already-guarded artifacts
+        # while still rejecting missing or duplicated anchors.
+        self.assertEqual(common_recall_response(policy), policy)
+        legacy_policy = policy.replace('if query.strip() and candidates:', 'if query.strip():', 1)
+        upgraded = common_recall_response(legacy_policy)
+        self.assertIn('if candidates and query.strip():', upgraded)
+        self.assertEqual(common_recall_response(upgraded), upgraded)
+        with self.assertRaises(ValueError):common_recall_response(policy + policy)

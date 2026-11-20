@@ -53,13 +53,11 @@ func TestConnectionCardsUseColumnsAndKeepBatchSelection(t *testing.T) {
 			if !cOK || !pOK || !tOK || !clOK || codex.X != pi.X || pi.X != traex.X || !(codex.Y < pi.Y && pi.Y < traex.Y && traex.Y < claude.Y) {
 				t.Fatal("Agent connections are not aligned compact rows", codex, pi, traex, claude)
 			}
-			if tt.HasText("选择 pi") || tt.HasText("连接所选（1）") || !tt.HasText("连接 pi") {
-				t.Fatal("default view still requires batch selection")
+			if tt.HasText("批量连接") || tt.HasText("选择 pi") || tt.HasText("连接所选") {
+				t.Fatal("bulk connection controls should not appear")
 			}
-			clickProjectUI(t, tt, "批量连接")
-			clickProjectUI(t, tt, "选择 pi")
-			if !a.integrations.Selected["pi"] || !tt.HasText("连接所选（1）") {
-				t.Fatal("card layout lost batch selection")
+			if !tt.HasText("连接 pi") || !tt.HasText("连接 Claude Code") {
+				t.Fatal("direct per-row connect actions missing")
 			}
 		})
 	}

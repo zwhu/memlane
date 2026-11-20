@@ -29,11 +29,21 @@ var agentBrandIcons = func() map[string]*ui.SVG {
 		}
 		icons[kind] = ui.MustParseSVG(data)
 	}
+	icons["agy"] = icons["antigravity"]
 	return icons
 }()
 
+func normalizeAgentIconKind(kind string) string {
+	switch key := strings.ToLower(strings.TrimSpace(kind)); key {
+	case "agy":
+		return "antigravity"
+	default:
+		return key
+	}
+}
+
 func agentBrandIcon(kind string) *ui.SVG {
-	if icon := agentBrandIcons[kind]; icon != nil {
+	if icon := agentBrandIcons[normalizeAgentIconKind(kind)]; icon != nil {
 		return icon
 	}
 	return homeDocument
@@ -41,16 +51,20 @@ func agentBrandIcon(kind string) *ui.SVG {
 
 // Resolve manual profile sources by their explicit name, never by message text.
 func agentBrandIconFor(kind, name string) *ui.SVG {
-	if icon := agentBrandIcons[strings.ToLower(kind)]; icon != nil {
+	if icon := agentBrandIcons[normalizeAgentIconKind(kind)]; icon != nil {
 		return icon
 	}
 	key := strings.ToLower(strings.TrimSpace(agentDisplayName(name)))
 	key = strings.NewReplacer(" ", "", "-", "", "_", "").Replace(key)
-	if key == "claudecode" {
+	switch key {
+	case "claudecode":
 		key = "claude_code"
-	}
-	if key == "trae" {
+	case "trae":
 		key = "traex"
+	case "agy", "agycli", "antigravitycli", "geminiapp":
+		key = "antigravity"
+	case "geminicli":
+		key = "gemini"
 	}
 	if icon := agentBrandIcons[key]; icon != nil {
 		return icon
@@ -75,8 +89,7 @@ func sourceAgentLabel(c *ui.Context, item Item) {
 	})
 }
 
-// Use the retained source session identity, never the project name or memory text.
-func recentAgentIcon(item Item) *ui.SVG {
+func itemSourceSession(item Item) string {
 	session := ""
 	if item.Document != nil {
 		session = item.Document.session()
@@ -84,26 +97,36 @@ func recentAgentIcon(item Item) *ui.SVG {
 	if item.Session != nil {
 		session = item.Session.ID
 	}
+	return session
+}
+
+// Use the retained source session identity, never the project name or memory text.
+func recentAgentIcon(item Item) *ui.SVG {
+	session := itemSourceSession(item)
 	if session == "" {
 		return homeDocument
 	}
-	label := sessionIdentity(session)
-	for name, kind := range map[string]string{"Codex": "codex", "TraeX": "traex", "pi": "pi", "Claude Code": "claude_code", "opencode": "opencode", "cursor": "cursor"} {
-		if strings.HasPrefix(label, name+" 会话") {
-			return agentBrandIcon(kind)
-		}
+	name, _, ok := strings.Cut(sessionIdentity(session), " 会话")
+	if !ok {
+		return homeDocument
+	}
+	if kind, found := map[string]string{
+		"Codex":       "codex",
+		"TraeX":       "traex",
+		"pi":          "pi",
+		"Claude Code": "claude_code",
+		"opencode":    "opencode",
+		"cursor":      "cursor",
+		"Agy":         "antigravity",
+		"Gemini":      "gemini",
+	}[name]; found {
+		return agentBrandIcon(kind)
 	}
 	return homeDocument
 }
 
 func sourceAgentName(item Item) string {
-	session := ""
-	if item.Document != nil {
-		session = item.Document.session()
-	}
-	if item.Session != nil {
-		session = item.Session.ID
-	}
+	session := itemSourceSession(item)
 	if session == "" {
 		return "Agent 未记录"
 	}

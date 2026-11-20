@@ -331,6 +331,20 @@ func environmentRowStatus(item bootstrap.Item, j bootstrap.Journal, busy bool) b
 	return item.Observation.Status
 }
 
+func environmentIncompatibleHint(a *App, row bootstrap.Item) string {
+	if row.Observation.Status != bootstrap.Incompatible {
+		return ""
+	}
+	reason := bootstrap.RedactInstallerText(row.Observation.Reason)
+	if row.Requirement.ID == "agent-plugin" && !a.initialSetup && a.service == "已连接" {
+		if reason != "" {
+			return "已有插件目录与当前构建清单版本不同（" + reason + "）；日常服务正常运行时可暂不安装，此处安装仅准备新的受管组件目录，不会改写现有日常配置。"
+		}
+		return "已有插件目录与当前构建清单版本不同；日常服务正常运行时可暂不安装，此处安装仅准备新的受管组件目录，不会改写现有日常配置。"
+	}
+	return reason
+}
+
 func (a *App) environmentSetup(c *ui.Context, initial bool) {
 	if initial {
 		a.initialEnvironment(c)
@@ -347,6 +361,9 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 			homeText(c, "已就绪", homeMeta).TextColor(ui.Hex("#4d7a66"))
 		}
 	}, func() {
+		if s.Loading && s.Loaded {
+			ui.Spinner(c).Size(13, 13).TextColor(homeLinkInk)
+		}
 		textButton(c, "重新检测", nil).Disabled(s.Loading || s.Busy).OnClick(a.refreshEnvironment)
 		label := "查看详情"
 		if s.Details {
@@ -354,7 +371,7 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 		}
 		textButton(c, label, nil).OnClick(func() { s.Details = !s.Details })
 	}, func() {
-		if s.Loading {
+		if s.Loading && !s.Loaded {
 			homeText(c, "检测中…", homeMeta).Margin(10, 0)
 		}
 		for index, item := range s.Plan.Items {
@@ -376,7 +393,11 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 					}
 					homeText(c, environmentLabel(status), homeMeta).TextColor(color)
 				})
-				if s.Details && row.Observation.Reason != "" && status != bootstrap.Available && status != bootstrap.Ready {
+				if status == bootstrap.Incompatible {
+					if hint := environmentIncompatibleHint(a, row); hint != "" {
+						homeText(c, hint, homeMeta).LineHeight(1.5).Margin(0, 0, 8, 36)
+					}
+				} else if s.Details && row.Observation.Reason != "" && status != bootstrap.Available && status != bootstrap.Ready {
 					homeText(c, bootstrap.RedactInstallerText(row.Observation.Reason), homeMeta).LineHeight(1.5).Margin(0, 0, 8, 36)
 				}
 			})

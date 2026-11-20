@@ -47,7 +47,7 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 				a.refreshServiceMonitor()
 			}
 		}).Label(label + "：记忆服务")
-		refreshAction(c, "重新检查", a.health).Disabled(a.monitor.Polling)
+		refreshActionLoading(c, "重新检查", a.monitor.Polling, a.health).Disabled(a.monitor.Polling)
 	}, func() {
 		ui.Column(c).FillWidth().Gap(4).Children(func() {
 			settingsListRow(c, func() {

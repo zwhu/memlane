@@ -39,7 +39,8 @@ class OpenCodeControlTests(unittest.IsolatedAsyncioTestCase):
             (root / 'types.ts').write_text(official_source['types.ts'])
             (root / 'node_modules').symlink_to(Path(modules).resolve(), target_is_directory=True)
             (root / 'plugin.ts').write_text(managed_action_callbacks(managed_config_recall(managed_capture_callbacks(official_source['plugin.ts']))))
-            for name in ('managed-config.ts', 'managed-recall.ts', 'managed-actions.ts', 'managed-pending.ts', 'managed-backlog.ts'):
+            for name in ('managed-config.ts', 'managed-recall.ts', 'managed-actions.ts', 'managed-pending.ts', 'managed-backlog.ts',
+                         'managed-http.ts', 'managed-outbox.ts', 'managed-hooks.ts'):
                 (root / name).write_text((ROOT / 'engine/agents/opencode' / name).read_text())
             (root / 'managed-capture-window.ts').write_text((ROOT / 'engine/agents/opencode/managed-capture-window.ts').read_text())
             delivery = root / 'managed-delivery.ts'

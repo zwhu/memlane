@@ -36,7 +36,7 @@ func (a *App) readingLocation() *readingLocation {
 	p, _ := a.current()
 	location := &readingLocation{Page: a.page, Kind: a.kind, ProjectID: p.ID, Index: a.project, FromOverview: a.fromOverview, Floors: a.overviewSourceFloor}
 	location.FeedDetail = a.state().Knowledge.Detail
-	if a.searchOrigin != nil && a.searchPane == a.state() {
+	if a.hasSearchOriginFor(a.state()) {
 		location.SearchOrigin = a.searchOrigin
 		location.SearchAnchor = a.searchAnchor
 		location.SearchIdentity = a.readingIdentity
@@ -107,7 +107,7 @@ func (a *App) projectHeader(c *ui.Context) {
 	appToolbar(c, "页面工具栏", func() {
 		var back func()
 		label := "返回总览"
-		if a.searchOrigin != nil && a.searchPane == a.state() {
+		if a.hasSearchOriginFor(a.state()) {
 			if len(a.state().History) > 0 {
 				back = func() { a.returnFromSource(a.state()) }
 				label = "返回搜索结果"

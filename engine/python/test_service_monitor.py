@@ -44,8 +44,9 @@ class ServiceMonitorTests(unittest.IsolatedAsyncioTestCase):
             encoding='utf-8',
         )
         (self.state_dir / 'runtime-logs/official_service_dev.log').write_text(
-            'INFO starting official\n'
-            'Authorization: Bearer super-secret-token-value\n'
+            '\x1b[2m2026-11-20T06:07:54.031873\x1b[0m [\x1b[32m\x1b[1minfo     \x1b[0m] '
+            '\x1b[1mINFO starting official\x1b[0m [\x1b[0m\x1b[1m\x1b[34mrun\x1b[0m]\x1b[0m\n'
+            'Authorization: Bearer \x1b[1msuper-secret-token-value\x1b[0m\n'
             'X-Api-Key: secret-official-key\n'
             'error api_key=sk-secret-12345 failed\n',
             encoding='utf-8',
@@ -83,7 +84,18 @@ class ServiceMonitorTests(unittest.IsolatedAsyncioTestCase):
         monitor = ServiceMonitor(
             self.config,
             registry=self.registry,
-            connections=SimpleNamespace(adapters={'agy': SimpleNamespace(last_hook_error=lambda: {'reason': 'x'})}),
+            connections=SimpleNamespace(adapters={
+                'antigravity-test': SimpleNamespace(
+                    id='antigravity-test',
+                    kind='antigravity',
+                    last_hook_error=lambda: {
+                        'at': 1795100001.0,
+                        'script': 'store-user-prompt.py',
+                        'error_type': 'NotReady',
+                        'reason': 'existing_conversation_not_captured',
+                    },
+                ),
+            }),
             probe_http=probe,
             sample_process=sample,
             disk_usage=lambda _p: SimpleNamespace(free=80 * 1024 ** 3),
@@ -100,6 +112,14 @@ class ServiceMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ready['summary']['projects_count'], 1)
         self.assertEqual(ready['summary']['recent_processing_ms'], 142.3)
         self.assertEqual(ready['summary']['hook_errors_count'], 1)
+        self.assertEqual(ready['summary']['hook_errors'], [{
+            'instance_id': 'antigravity-test',
+            'kind': 'antigravity',
+            'at': 1795100001.0,
+            'script': 'store-user-prompt.py',
+            'error_type': 'NotReady',
+            'reason': 'existing_conversation_not_captured',
+        }])
         self.assertEqual(ready['log_tail'], [])
 
         warn1 = await monitor.snapshot()
@@ -115,6 +135,9 @@ class ServiceMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(degraded['state'], 'degraded')
         self.assertEqual(degraded['consecutive_failures'], 3)
         joined = '\n'.join(degraded['log_tail'])
+        self.assertNotIn('\x1b', joined)
+        self.assertNotIn('[32m', joined)
+        self.assertIn('2026-11-20T06:07:54.031873 [info     ] INFO starting official [run]', joined)
         self.assertIn('[REDACTED]', joined)
         self.assertNotIn('super-secret-token-value', joined)
         self.assertNotIn('secret-official-key', joined)

@@ -104,6 +104,7 @@ class GenerationPresentationLintTests(unittest.TestCase):
     def test_profile_generation_cannot_restore_total_deadline(self):
         source='async def generate(adapter,row):\n return await asyncio.wait_for(collect(),180)'
         self.assertEqual({row[1] for row in check_source(source,'user_profiles.py')},{'ML006'})
+        self.assertEqual({row[1] for row in check_source(source,'engine/python/user_profiles/runner.py')},{'ML006'})
 
     def test_missing_protected_go_targets_fail_instead_of_silently_passing(self):
         from lint import check_go_source
@@ -130,6 +131,123 @@ class GenerationPresentationLintTests(unittest.TestCase):
                 self.assertNotIn('scripts/lint.py', output.getvalue())
                 self.assertNotIn('scripts/test_helper.py', output.getvalue())
                 bad.write_text('native_llm_configuration(environment)')
+                self.assertFalse(lint.main())
+
+
+class GlobalEnvironLintTests(unittest.TestCase):
+    def codes(self, source, path='project_control_server.py'):
+        return {code for _, code, _ in check_source(source, path)}
+
+    def test_unallowlisted_environ_mutations_are_rejected(self):
+        cases = [
+            "import os\nos.environ['HOME'] = '/tmp'",
+            "import os\nos.environ['PATH'] += ':/bin'",
+            "import os\nos.environ |= {'FOO': '1'}",
+            "import os\nos.environ.update({'FOO': '1'})",
+            "import os\nos.environ.pop('FOO', None)",
+            "import os\nos.environ.popitem()",
+            "import os\nos.environ.clear()",
+            "import os\nos.environ.setdefault('FOO', '1')",
+            "import os\ndel os.environ['FOO']",
+            "import os\nos.environ['A'], other = '1', '2'",
+            "import os as operating_system\noperating_system.environ['FOO'] = '1'",
+            "from os import environ as env\nenv['FOO'] = '1'",
+            "from os import environ\nenviron.update(FOO='1')",
+            "import os\nenv = os.environ\nenv['FOO'] = '1'",
+            "import os\nos.environb[b'FOO'] = b'1'",
+            "import os\nos.putenv('FOO', '1')",
+            "import os\nos.unsetenv('FOO')",
+            "from os import putenv\nputenv('FOO', '1')",
+        ]
+        for source in cases:
+            with self.subTest(source=source):
+                self.assertIn('ML007', self.codes(source, 'engine/python/first_install_runtime.py'))
+
+    def test_reads_and_explicit_env_copies_are_allowed(self):
+        cases = [
+            "import os\nvalue = os.environ.get('HOME')\nother = os.environ['PATH']",
+            "import os\nenv = dict(os.environ)\nenv['HOME'] = '/tmp'\nenv.pop('X', None)",
+            "import os\nenv = {**os.environ, 'HOME': '/tmp'}\nenv.update({'Y': '2'})",
+            "import os\nenv = os.environ.copy()\ndel env['X']",
+            "import os\nenv = {k: v for k, v in os.environ.items()}\nenv['HOME'] = '/tmp'",
+        ]
+        for source in cases:
+            with self.subTest(source=source):
+                self.assertEqual(self.codes(source, 'engine/python/first_install_runtime.py'), set())
+
+    def test_allowlisted_entrypoints_and_scoped_worker_helper(self):
+        mutation = "import os\nos.environ['COGNEE_API_KEY'] = 'value'"
+        for allowed in (
+            'official_service_dev.py',
+            'generation_handoff_runtime.py',
+            'generation_probe.py',
+            'first_install_store.py',
+            'agent_memory_adapter.py',
+            'antigravity_hook_policy.py',
+            'project_plugin_policy.py',
+        ):
+            with self.subTest(allowed=allowed):
+                self.assertEqual(self.codes(mutation, 'engine/python/' + allowed), set())
+
+        self.assertIn('ML007', self.codes(mutation, 'engine/python/first_install_runtime.py'))
+        self.assertIn('ML007', self.codes(mutation, 'engine/python/project_control_server.py'))
+
+        scoped_ok = """import contextlib, os
+@contextlib.contextmanager
+def _scoped_improve_cooldown(value):
+    prev = os.environ.get('COGNEE_IMPROVE_COOLDOWN')
+    os.environ['COGNEE_IMPROVE_COOLDOWN'] = str(value)
+    try:
+        yield
+    finally:
+        os.environ.pop('COGNEE_IMPROVE_COOLDOWN', None)
+"""
+        self.assertEqual(self.codes(scoped_ok, 'engine/python/project_backlog_worker.py'), set())
+
+        scoped_without_finally = """import os
+def _scoped_improve_cooldown(value):
+    os.environ['COGNEE_IMPROVE_COOLDOWN'] = str(value)
+"""
+        self.assertIn('ML007', self.codes(scoped_without_finally, 'engine/python/project_backlog_worker.py'))
+
+        unscoped_in_worker = """import os
+def process():
+    os.environ['COGNEE_IMPROVE_COOLDOWN'] = '300'
+"""
+        self.assertIn('ML007', self.codes(unscoped_in_worker, 'engine/python/project_backlog_worker.py'))
+
+    def test_lint_main_enforces_ml007_in_engine_python_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine_dir = root / 'engine/python'
+            engine_dir.mkdir(parents=True)
+            scripts_dir = root / 'scripts'
+            scripts_dir.mkdir(parents=True)
+            bad = engine_dir / 'control_worker.py'
+            bad.write_text("import os\nos.environ['HOME'] = '/tmp'\n")
+            (engine_dir / 'test_control_worker.py').write_text("import os\nos.environ['HOME'] = '/tmp'\n")
+            (scripts_dir / 'task.py').write_text("import os\nos.environ['MEMLANE_TASK_OWNER_PID'] = '1'\n")
+            output = io.StringIO()
+            with patch.object(lint, 'ROOT', root), contextlib.redirect_stdout(output):
+                self.assertTrue(lint.main())
+                self.assertIn('engine/python/control_worker.py:2: ML007', output.getvalue())
+                self.assertNotIn('test_control_worker.py', output.getvalue())
+                self.assertNotIn('scripts/task.py', output.getvalue())
+                bad.write_text("import os\nenv = dict(os.environ, HOME='/tmp')\n")
+                self.assertFalse(lint.main())
+
+    def test_lint_main_recursively_scans_user_profile_providers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            providers_dir = root / 'engine/python/user_profiles/providers'
+            providers_dir.mkdir(parents=True)
+            bad = providers_dir / 'sample.py'
+            bad.write_text("import os\nos.environ['HOME'] = '/tmp'\n")
+            output = io.StringIO()
+            with patch.object(lint, 'ROOT', root), contextlib.redirect_stdout(output):
+                self.assertTrue(lint.main())
+                self.assertIn('engine/python/user_profiles/providers/sample.py:2: ML007', output.getvalue())
+                bad.write_text("import os\nenv = dict(os.environ, HOME='/tmp')\n")
                 self.assertFalse(lint.main())
 
 

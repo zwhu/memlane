@@ -94,12 +94,30 @@ class OfficialProcessingTests(unittest.TestCase):
         self.common.run_session_improve_detailed.assert_called_once_with('dataset', 'session', trigger='switch')
 
     def test_incremental_admission_uses_official_cooldown_configuration(self):
-        import os
-        from unittest.mock import patch
+        observed = []
+        self.common.improve_throttle_reason.side_effect = (
+            lambda session: observed.append(('throttle', os.environ.get('COGNEE_IMPROVE_COOLDOWN'))) or ''
+        )
+        self.common.run_session_improve_detailed.side_effect = (
+            lambda *args, **kwargs: observed.append(('improve', os.environ.get('COGNEE_IMPROVE_COOLDOWN'))) or {'ok': True}
+        )
         with patch.dict(os.environ, {}, clear=True):
             process(self.common, self.policy, {**self.payload, 'incremental_cooldown_seconds': 300})
-            self.assertEqual(os.environ['COGNEE_IMPROVE_COOLDOWN'], '300')
+            self.assertEqual(observed, [('throttle', '300'), ('improve', '300')])
+            self.assertNotIn('COGNEE_IMPROVE_COOLDOWN', os.environ)
         self.common.improve_throttle_reason.assert_called_once_with('session')
+
+        # Previous value is restored on both normal return and exception.
+        observed.clear()
+        with patch.dict(os.environ, {'COGNEE_IMPROVE_COOLDOWN': '42'}, clear=True):
+            process(self.common, self.policy, {**self.payload, 'incremental_cooldown_seconds': 300})
+            self.assertEqual(observed, [('throttle', '300'), ('improve', '300')])
+            self.assertEqual(os.environ['COGNEE_IMPROVE_COOLDOWN'], '42')
+
+            self.common.run_session_improve_detailed.side_effect = RuntimeError('synthetic submit error')
+            with self.assertRaisesRegex(RuntimeError, 'synthetic submit error'):
+                process(self.common, self.policy, {**self.payload, 'incremental_cooldown_seconds': 300})
+            self.assertEqual(os.environ['COGNEE_IMPROVE_COOLDOWN'], '42')
 
     def test_official_cooldown_backoff_and_no_new_entries_never_submit(self):
         for reason, status in [('cooldown','deferred'), ('backoff','deferred'), ('no_new_entries','skipped')]:

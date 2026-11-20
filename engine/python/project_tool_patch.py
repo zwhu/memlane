@@ -6,10 +6,16 @@ edited. A confirmed local denial is different from an unavailable live policy.
 
 
 def remember_response(text):
-    old = '''from _memlane_policy import managed, permit
+    extracted_old = '''from _memlane_access import is_managed as managed, prepare_managed_remember
+    _err, api_key = prepare_managed_remember(load_env_file, service_url, api_key, dataset_id or dataset, os.environ, error_fn=_error)'''
+    extracted_new = '''from _memlane_access import is_managed as managed, prepare_managed_remember_strict
+    _err, api_key = prepare_managed_remember_strict(load_env_file, service_url, api_key, dataset_id or dataset, os.environ, error_fn=_error)'''
+    if text.count(extracted_old) == 1:
+        return text.replace(extracted_old, extracted_new, 1)
+    legacy_old = '''from _memlane_policy import managed, permit
     if managed() and not permit("write", dataset_id or dataset):
         return _error(403, "当前 Agent 没有此项目的写入权限")'''
-    new = '''from _memlane_policy import managed, current, NotReady
+    legacy_new = '''from _memlane_policy import managed, current, NotReady
     if managed():
         try:
             decision = current()
@@ -19,9 +25,9 @@ def remember_response(text):
             return _error(403, "managed_dataset_mismatch")
         if "write" not in decision["policy"]["permissions"]:
             return _error(403, "当前 Agent 没有此项目的写入权限")'''
-    if text.count(old) != 1:
+    if text.count(legacy_old) != 1:
         raise ValueError('fixed managed remember tool overlay anchor mismatch')
-    return text.replace(old, new, 1)
+    return text.replace(legacy_old, legacy_new, 1)
 
 
 def common_recall_response(text):
@@ -41,14 +47,36 @@ def common_recall_response(text):
 
 
 def forget_response(text):
-    old = '''    from _memlane_policy import require, recall_targets
+    anchor = 'SERVICE_URL="$(python3 - <<\'PY\' "${runtime_json}" 2>/dev/null || true\n'
+    guard = '''# Local policy results have no credentials and must not enter upstream
+# runtime parsing or credential fallback. Read via stdin, never add keys to argv.
+memlane_local_result="$(printf '%s' "${runtime_json}" | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin).get("memlane_local_result") is True else "no")')"
+if [ "$memlane_local_result" = "yes" ]; then
+    printf '%s\\n' "${runtime_json}"
+    exit 2
+fi
+'''
+    if text.count(anchor) != 1:
+        raise ValueError('fixed managed forget tool overlay anchor mismatch')
+    extracted_old = '''    from _memlane_access import check_forget_access
+    check_forget_access(sys.argv[3], sys.argv[4])
+'''
+    extracted_new = '''    from _memlane_access import check_forget_tool_policy
+    _local_result = check_forget_tool_policy(sys.argv[3], sys.argv[4])
+    if _local_result is not None:
+        print(_local_result)
+        raise SystemExit(0)
+'''
+    if text.count(extracted_old) == 1:
+        return text.replace(extracted_old, extracted_new, 1).replace(anchor, guard + anchor, 1)
+    legacy_old = '''    from _memlane_policy import require, recall_targets
     command, target = sys.argv[3], sys.argv[4]
     if command in ("data", "raw"):
         recall_targets(target, [target])
     elif command == "forget":
         require("delete", target)
 '''
-    new = '''    from _memlane_policy import current, NotReady
+    legacy_new = '''    from _memlane_policy import current, NotReady
     command, target = sys.argv[3], sys.argv[4]
     if command in ("data", "raw", "forget"):
         try:
@@ -71,15 +99,6 @@ def forget_response(text):
                               "local_denial": True, "memlane_local_result": True}))
             raise SystemExit(0)
 '''
-    anchor = 'SERVICE_URL="$(python3 - <<\'PY\' "${runtime_json}" 2>/dev/null || true\n'
-    guard = '''# Local policy results have no credentials and must not enter upstream
-# runtime parsing or credential fallback. Read via stdin, never add keys to argv.
-memlane_local_result="$(printf '%s' "${runtime_json}" | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin).get("memlane_local_result") is True else "no")')"
-if [ "$memlane_local_result" = "yes" ]; then
-    printf '%s\\n' "${runtime_json}"
-    exit 2
-fi
-'''
-    if text.count(old) != 1 or text.count(anchor) != 1:
+    if text.count(legacy_old) != 1:
         raise ValueError('fixed managed forget tool overlay anchor mismatch')
-    return text.replace(old, new, 1).replace(anchor, guard + anchor, 1)
+    return text.replace(legacy_old, legacy_new, 1).replace(anchor, guard + anchor, 1)

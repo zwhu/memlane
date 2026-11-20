@@ -87,3 +87,24 @@ func TestRefreshIconKeepsLabelKeyboardAndDisabledState(t *testing.T) {
 		t.Fatal("disabled refresh ran")
 	}
 }
+
+func TestRefreshIconLoadingKeepsGeometryAndDisablesClicks(t *testing.T) {
+	count, loading := 0, true
+	tt := ui.NewTester(func(c *ui.Context) {
+		refreshActionLoading(c, "重新检测", loading, func() { count++ })
+	}, 160, 80)
+	r, ok := tt.Find("重新检测")
+	if !ok || r.W != 22 || r.H != 22 {
+		t.Fatal("loading refresh icon or accessible label missing", r)
+	}
+	tt.Click("重新检测")
+	if count != 0 {
+		t.Fatal("loading refresh triggered callback")
+	}
+	loading = false
+	tt.Frame()
+	tt.Click("重新检测")
+	if count != 1 {
+		t.Fatal("idle refresh did not trigger callback")
+	}
+}

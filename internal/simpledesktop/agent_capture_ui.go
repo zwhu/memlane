@@ -30,7 +30,12 @@ func (a *App) captureConnectionAction(c *ui.Context, row AgentConnection) {
 		case "healthy", "checking":
 			return
 		case "check_failed":
-			textButton(c, "重新检测", a.RefreshIntegrations).Label("重新检测自动保存：" + connectionName(row.Kind)).Disabled(s.Busy || s.Loading)
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				if s.Loading {
+					ui.Spinner(c).Size(13, 13).TextColor(homeLinkInk)
+				}
+				textButton(c, "重新检测", a.RefreshConnections).Label("重新检测自动保存：" + connectionName(row.Kind)).Disabled(s.Busy || s.Loading)
+			})
 			return
 		}
 	}
@@ -90,12 +95,22 @@ func (a *App) captureConnectionDetails(c *ui.Context, row AgentConnection) {
 			homeText(c, "1. 重新打开 "+connectionName(row.Kind)+"，新建会话并发送一条消息。", homeMeta)
 		}
 		homeText(c, "2. 等待回复后，点击重新检测。", homeMeta)
-		textButton(c, "重新检测", a.RefreshIntegrations).Label("重新检测自动保存：" + connectionName(row.Kind)).AlignSelf(ui.Start).Disabled(s.Busy || s.Loading)
+		ui.Row(c).Gap(6).AlignItems(ui.Center).AlignSelf(ui.Start).Children(func() {
+			textButton(c, "重新检测", a.RefreshConnections).Label("重新检测自动保存：" + connectionName(row.Kind)).Disabled(s.Busy || s.Loading)
+			if s.Loading {
+				ui.Spinner(c).Size(13, 13).TextColor(homeLinkInk)
+			}
+		})
 	})
 }
 
 func hookErrorSummary(e *AgentHookError) string {
+	if e == nil {
+		return ""
+	}
 	switch e.Reason {
+	case "installation_not_activated":
+		return "插件尚未完成激活（" + e.Reason + "）"
 	case "native_transcript_identity_required":
 		return "会话文件路径未通过校验（" + e.Reason + "）"
 	case "existing_conversation_not_captured":

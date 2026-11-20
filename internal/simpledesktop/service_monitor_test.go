@@ -173,3 +173,70 @@ func TestServiceMonitorDebouncePreservesReadingPanes(t *testing.T) {
 		t.Fatal("monitor recovery altered active reading state")
 	}
 }
+
+func TestServiceMonitorFormatsANSILogsAndHookErrors(t *testing.T) {
+	a := New(Config{ServiceURL: "http://127.0.0.1:61255"}, nil)
+	a.monitor.Expanded = true
+	a.monitor.ControlChecked = true
+	a.monitor.ControlReachable = true
+	a.monitor.Snapshot = &ServiceMonitorSnapshot{
+		State: "ready",
+		Summary: &MonitorBusinessSummary{
+			ProjectsCount:   8,
+			HookErrorsCount: 1,
+			HookErrors: []MonitorHookError{{
+				InstanceID: "antigravity-1",
+				Kind:       "antigravity",
+				At:         1795155000,
+				Script:     "store-user-prompt.py",
+				ErrorType:  "NotReady",
+				Reason:     "existing_conversation_not_captured",
+			}},
+		},
+		LogTail: []string{
+			"\x1b[2m2026-11-20T06:07:54.031873\x1b[0m [\x1b[32m\x1b[1minfo     \x1b[0m] \x1b[1mDataset routing index for 0785e3d2: 0 row(s) written, 0 removed\x1b[0m [\x1b[34mdataset_routing\x1b[0m]",
+			"\x1b[2m2026-11-20T06:07:54.032418\x1b[0m [\x1b[32m\x1b[1minfo     \x1b[0m] \x1b[1mCoroutine task completed: `add_data_points`\x1b[0m [\x1b[34mrun_tasks_base\x1b[0m]",
+			"\x1b[2m2026-11-20T06:07:54.049872\x1b[0m [\x1b[32m\x1b[1minfo     \x1b[0m] \x1b[1mimprove: global context index updated\x1b[0m [\x1b[34mimprove\x1b[0m]",
+			"\x1b[2m2026-11-20T06:11:36.321599\x1b[0m [\x1b[32m\x1b[1minfo     \x1b[0m] \x1b[1mrecall: 1 results across sources=['graph'] (session=-)\x1b[0m [\x1b[34mrecall\x1b[0m]",
+			`{"schema_version":1,"event":"request_finished","component":"generation_http","backend_kind":"codex","at":"2026-11-20T06:21:19.469931+00:00","elapsed_ms":1500.0}`,
+			"\x1b[2m2026-11-20T06:12:00.000000\x1b[0m [\x1b[31merror\x1b[0m] failed with Bearer [REDACTED]",
+		},
+	}
+
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Column(c).FillWidth().Padding(24).Children(func() { a.serviceConnectionOverview(c) })
+	}, 1000, 700)
+	for _, want := range []string{
+		"Hook 未记录 1 项",
+		"Gemini App",
+		"当前仍是安装前的旧会话",
+		"最近服务动态（已脱敏）：",
+		"更新项目索引路由（无变更）",
+		"完成后台任务：写入知识图谱节点",
+		"全局上下文索引已更新",
+		"记忆召回完成（命中 1 条）",
+		"完成处理请求（codex，耗时 1.5s）",
+		"failed with Bearer [REDACTED]",
+		"查看原始日志",
+	} {
+		if !tt.HasText(want) {
+			t.Fatalf("missing expected readable monitor text %q", want)
+		}
+	}
+	if tt.HasText("[2m") || tt.HasText("\x1b") {
+		t.Fatal("ANSI escape codes leaked into monitor UI")
+	}
+
+	clickProjectUI(t, tt, "查看原始日志")
+	if !tt.HasText("最近服务原始日志（已脱敏）：") || !tt.HasText("查看可读摘要") || !tt.HasText("recall: 1 results") {
+		t.Fatal("raw log toggle did not reveal cleaned raw log lines")
+	}
+	if tt.HasText("[2m") || tt.HasText("\x1b") {
+		t.Fatal("ANSI escape codes leaked into raw log mode")
+	}
+
+	diag := a.serviceDiagnosticText()
+	if !strings.Contains(diag, "Hook 未记录数: 1") || !strings.Contains(diag, "Gemini App") || strings.Contains(diag, "\x1b") {
+		t.Fatalf("unexpected diagnostic text: %q", diag)
+	}
+}
