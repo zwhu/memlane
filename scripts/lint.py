@@ -214,13 +214,166 @@ GO_TARGETS = {
     'generation_management.go': ('generationManagement', 'generationManagementContent'),
 }
 
+ANIMATION_FRAME_ALLOWLIST = {'motion_tokens.go'}
+PERF_FORBIDDEN_DRAW_CALLS = re.compile(
+    r'\b(?:http\.(?:Get|Post|Do|NewRequest)|os\.(?:ReadFile|WriteFile|Create|Open)|time\.Sleep|exec\.Command)\b'
+)
+SHORT_AFTER_RE = re.compile(r'\.After\(\s*(\d+)\s*\*\s*time\.(Millisecond|Microsecond|Nanosecond)\b')
+DRAW_CALLBACK_RE = re.compile(r'\.(?:Draw|DrawOver)\(\s*func\s*\([^)]*\)\s*\{')
+
+
+def _extract_brace_block(source, open_brace_index):
+    depth = 0
+    in_str = None
+    escaped = False
+    for idx in range(open_brace_index, len(source)):
+        ch = source[idx]
+        if in_str is not None:
+            if in_str == '"':
+                if escaped:
+                    escaped = False
+                elif ch == '\\':
+                    escaped = True
+                elif ch == '"':
+                    in_str = None
+            elif ch == '`':
+                in_str = None
+            continue
+        if ch in ('"', '`'):
+            in_str = ch
+        elif ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return source[open_brace_index:idx + 1]
+    return source[open_brace_index:]
+
+
+def _strip_go_comments(source):
+    """Replace Go // and /* */ comments with spaces while preserving line numbers."""
+    out = []
+    i = 0
+    n = len(source)
+    in_str = None
+    escaped = False
+    while i < n:
+        ch = source[i]
+        if in_str is not None:
+            out.append(ch)
+            if in_str == '"':
+                if escaped:
+                    escaped = False
+                elif ch == '\\':
+                    escaped = True
+                elif ch == '"':
+                    in_str = None
+            elif ch == '`':
+                in_str = None
+            i += 1
+            continue
+        if ch in ('"', '`'):
+            in_str = ch
+            out.append(ch)
+            i += 1
+        elif ch == '/' and i + 1 < n and source[i + 1] == '/':
+            while i < n and source[i] != '\n':
+                out.append(' ')
+                i += 1
+        elif ch == '/' and i + 1 < n and source[i + 1] == '*':
+            out.append('  ')
+            i += 2
+            while i < n:
+                if source[i] == '*' and i + 1 < n and source[i + 1] == '/':
+                    out.append('  ')
+                    i += 2
+                    break
+                out.append('\n' if source[i] == '\n' else ' ')
+                i += 1
+        else:
+            out.append(ch)
+            i += 1
+    return ''.join(out)
+
+
+def check_go_performance(source, path):
+    """Static performance guardrails for Native UI frame rate, idle CPU, and cold start."""
+    filename = Path(path).name
+    clean = _strip_go_comments(source)
+    issues = []
+
+    # ML008: AnimationFrame() is restricted to motion_tokens.go and must honor ReduceMotion.
+    for match in re.finditer(r'\.AnimationFrame\(\)', clean):
+        line = clean[:match.start()].count('\n') + 1
+        if filename not in ANIMATION_FRAME_ALLOWLIST:
+            issues.append((line, 'ML008', '禁止在非动效模块直接调用 AnimationFrame()；集中到 motion_tokens.go 并受 ReduceMotion 守护'))
+        else:
+            func_start = clean.rfind('\nfunc ', 0, match.start())
+            func_body = clean[func_start if func_start >= 0 else 0:match.end()]
+            if 'ReduceMotion' not in func_body:
+                issues.append((line, 'ML008', 'AnimationFrame() 所在动效函数必须检查 ReduceMotion，禁止空闲无限刷帧'))
+
+    # ML009: Reject delayed layout transitions on list rows and high-frequency c.After polling.
+    for match in re.finditer(r'\bv4RowEnterTransition\(', clean):
+        line = clean[:match.start()].count('\n') + 1
+        issues.append((line, 'ML009', '列表入场动效必须走合成层 Keyframes/Translation，禁止使用带延迟的布局 ElementTransition'))
+    for match in SHORT_AFTER_RE.finditer(clean):
+        amount = int(match.group(1))
+        unit = match.group(2)
+        ms = amount if unit == 'Millisecond' else (amount / 1000.0 if unit == 'Microsecond' else amount / 1e6)
+        if ms < 500:
+            line = clean[:match.start()].count('\n') + 1
+            issues.append((line, 'ML009', '禁止使用低于 500ms 的 c.After 高频轮询重绘，避免主线程空转耗电'))
+
+    # ML010: Paint callbacks (Draw / DrawOver) must never block on I/O, sleep, or network.
+    for match in DRAW_CALLBACK_RE.finditer(clean):
+        brace_idx = match.end() - 1
+        block = _extract_brace_block(clean, brace_idx)
+        for bad in PERF_FORBIDDEN_DRAW_CALLS.finditer(block):
+            line = clean[:brace_idx + bad.start()].count('\n') + 1
+            issues.append((line, 'ML010', 'Draw/DrawOver 渲染回调禁止执行磁盘 I/O、休眠或网络请求，确保高帧率绘制'))
+
+    # ML011: Cold-start & View hot-path regressions (no double overview scan, no per-page disk flush, no sync disk read in View).
+    if filename == 'overview.go':
+        ov_start = clean.find('func (c Client) overview(')
+        if ov_start >= 0:
+            ov_end = clean.find('\nfunc ', ov_start + 1)
+            ov_body = clean[ov_start:ov_end if ov_end >= 0 else len(clean)]
+            doc_calls = list(re.finditer(r'\.overviewDocuments\(', ov_body))
+            if len(doc_calls) > 1:
+                line = clean[:ov_start + doc_calls[1].start()].count('\n') + 1
+                issues.append((line, 'ML011', 'overview 禁止退回双遍全量遍历 overviewDocuments，必须保持单遍并发拉取'))
+            sess_calls = list(re.finditer(r'\.overviewSessions\(', ov_body))
+            if len(sess_calls) > 1:
+                line = clean[:ov_start + sess_calls[1].start()].count('\n') + 1
+                issues.append((line, 'ML011', 'overview 禁止退回双遍全量遍历 overviewSessions，必须保持单遍并发拉取'))
+        docs_start = clean.find('func (c Client) overviewDocuments(')
+        if docs_start >= 0:
+            docs_end = clean.find('\nfunc ', docs_start + 1)
+            docs_body = clean[docs_start:docs_end if docs_end >= 0 else len(clean)]
+            for call in re.finditer(r'\.rememberKnowledgeDays\(', docs_body):
+                prefix = docs_body[:call.start()]
+                if 'len(page) < 100' not in prefix:
+                    line = clean[:docs_start + call.start()].count('\n') + 1
+                    issues.append((line, 'ML011', 'rememberKnowledgeDays 必须在翻页结束后每数据集批量写盘一次，禁止逐页落盘'))
+    if filename == 'app.go':
+        view_start = clean.find('func (a *App) View(')
+        if view_start >= 0:
+            view_end = clean.find('\nfunc ', view_start + 1)
+            view_body = clean[view_start:view_end if view_end >= 0 else len(clean)]
+            for bad in PERF_FORBIDDEN_DRAW_CALLS.finditer(view_body):
+                line = clean[:view_start + bad.start()].count('\n') + 1
+                issues.append((line, 'ML011', 'App.View 渲染热路径禁止同步磁盘 I/O、休眠或网络调用'))
+
+    return issues
+
 
 def check_go_source(source, path, *, require_all_targets=False):
-    """Presentation architecture checks; Go behavior is covered by Native UI tests."""
+    """Presentation architecture and performance checks; Go behavior is covered by Native UI tests."""
     filename = Path(path).name
+    issues = check_go_performance(source, path)
     if filename not in GO_TARGETS:
-        return []
-    issues = []
+        return sorted(set(issues))
     targets = GO_TARGETS[filename]
     found = []
     for name in targets:
@@ -289,7 +442,7 @@ def main():
                 print('{}:{}: {} {}'.format(path.relative_to(ROOT), line, code, message))
                 failures += 1
     if not failures:
-        print('Lint passed: 模型参数与桥接 / Provider 展示边界')
+        print('Lint passed: 模型参数、展示边界与性能门禁 (ML001-ML011)')
     return bool(failures)
 
 

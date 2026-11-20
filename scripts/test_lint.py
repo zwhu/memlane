@@ -251,5 +251,52 @@ def process():
                 self.assertFalse(lint.main())
 
 
+class PerformanceLintTests(unittest.TestCase):
+    def codes(self, source, name='overview_ui.go'):
+        return {code for _, code, _ in lint.check_go_source(source, name)}
+
+    def test_animation_frame_restricted_to_motion_tokens_and_reduce_motion(self):
+        self.assertIn('ML008', self.codes('func foo(c *ui.Context) { c.AnimationFrame() }', 'overview_ui.go'))
+        self.assertIn('ML008', self.codes('func spin(c *ui.Context) { c.AnimationFrame() }', 'motion_tokens.go'))
+        ok = 'func spin(c *ui.Context) { if !c.Preferences().ReduceMotion { c.AnimationFrame() } }'
+        self.assertEqual(self.codes(ok, 'motion_tokens.go'), set())
+
+    def test_delayed_row_transition_and_high_frequency_polling_rejected(self):
+        self.assertIn('ML009', self.codes('func row() { el.Transition(v4RowEnterTransition(0)) }', 'overview_ui.go'))
+        self.assertIn('ML009', self.codes('func view(c *ui.Context) { c.After(100 * time.Millisecond) }', 'app.go'))
+        self.assertEqual(self.codes('func view(c *ui.Context) { c.After(2 * time.Second) }', 'app.go'), set())
+
+    def test_blocking_io_in_draw_callbacks_and_view_hot_path_rejected(self):
+        bad_draw = 'func paint(el ui.Element) { el.Draw(func(p *ui.Painter, r ui.Rect) { os.ReadFile("x") }) }'
+        self.assertIn('ML010', self.codes(bad_draw, 'overview_ui.go'))
+        bad_view = 'func (a *App) View(c *ui.Context) { time.Sleep(time.Millisecond) }'
+        self.assertIn('ML011', self.codes(bad_view, 'app.go'))
+        good_draw = 'func paint(el ui.Element) { el.Draw(func(p *ui.Painter, r ui.Rect) { p.Fill(r, tok.Bg, 0) }) }'
+        self.assertEqual(self.codes(good_draw, 'overview_ui.go'), set())
+
+    def test_overview_double_traversal_and_per_page_disk_flush_rejected(self):
+        double_scan = """func (c Client) overview(ctx context.Context) {
+    c.overviewDocuments(ctx, p)
+    c.overviewDocuments(ctx, p)
+}"""
+        self.assertIn('ML011', self.codes(double_scan, 'overview.go'))
+        per_page = """func (c Client) overviewDocuments(ctx context.Context, p Project) {
+    for {
+        c.rememberKnowledgeDays(page)
+        if len(page) < 100 { return }
+    }
+}"""
+        self.assertIn('ML011', self.codes(per_page, 'overview.go'))
+        batched = """func (c Client) overviewDocuments(ctx context.Context, p Project) {
+    for {
+        if len(page) < 100 {
+            c.rememberKnowledgeDays(all)
+            return
+        }
+    }
+}"""
+        self.assertEqual(self.codes(batched, 'overview.go'), set())
+
+
 if __name__ == '__main__':
     unittest.main()

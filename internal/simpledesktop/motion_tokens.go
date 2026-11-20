@@ -32,16 +32,6 @@ func v4DocTransition() ui.ElementTransition {
 	}
 }
 
-func v4RowEnterTransition(index int) ui.ElementTransition {
-	anim := v4Smooth
-	delay := time.Duration(min(index, 12)*28+40) * time.Millisecond
-	anim.Delay = delay
-	return ui.ElementTransition{
-		Animation: &anim,
-		Enter:     &ui.Motion{Y: 6, Opacity: 0},
-	}
-}
-
 // v4SmoothEase evaluates the exact critically-damped spring (Duration=0.35s,
 // Bounce=0) over 480ms, matching the V4 prototype's --spring-smooth curve.
 func v4SmoothEase(t float32) float32 {
@@ -64,25 +54,25 @@ var v4EnterFrames = []ui.Keyframe{
 	{At: 480 * time.Millisecond, Value: 1, Ease: v4SmoothEase},
 }
 
-// v4PageEnter reproduces the V4 prototype's .page-enter motion (opacity 0->1,
-// translateY 8px->0 on Smooth spring) purely on the paint/transform pass so
-// layout geometry never jitters.
+// v4PageEnter reproduces the V4 prototype's .page-enter glide (translateY 8px->0
+// on Smooth spring) without allocating a full-window offscreen opacity layer that
+// would nest with staggered child rows.
 func v4PageEnter(el ui.Element, run uint64) ui.Element {
 	p := el.Keyframes("v4-page-enter", v4EnterFrames, ui.KeyframeOptions{Run: run})
 	if p < 1 {
-		el.Opacity(p)
 		el.Transform(ui.Translation(0, (1-p)*8))
 	}
 	return el
 }
 
 // v4StaggerEnter reproduces .stagger > * (opacity 0->1, translateY 6px->0,
-// 28ms per-row stagger + 60ms base delay) for the first 12 visible rows.
+// 28ms per-row stagger + 40ms base delay) capped to the first 8 above-the-fold
+// rows to keep transient compositor textures bounded.
 func v4StaggerEnter(el ui.Element, index int, run uint64) ui.Element {
-	if index < 0 || index >= 12 {
+	if index < 0 || index >= 8 {
 		return el
 	}
-	delay := time.Duration(index*28+60) * time.Millisecond
+	delay := time.Duration(index*28+40) * time.Millisecond
 	p := el.Keyframes("v4-stagger-enter", v4EnterFrames, ui.KeyframeOptions{Run: run, Delay: delay})
 	if p < 1 {
 		el.Opacity(p)
@@ -178,10 +168,17 @@ func v4StageBlocks(c *ui.Context) ui.Element {
 }
 
 // v4EmptyState renders the V4 floating three-block illustration with subtle
-// pointer parallax. Stops animation frames when ReduceMotion is enabled.
+// pointer parallax. Only animates during its initial 2s settle or while hovered,
+// and stops immediately under ReduceMotion so idle empty views use 0% CPU.
 func v4EmptyState(c *ui.Context, key, message, hint string) {
 	reduce := c.Preferences().ReduceMotion
 	wrap := ui.Column(c.Key(key)).Grow(1).MinHeight(180).FillWidth().AlignItems(ui.Center).Justify(ui.Center).Gap(sp3).Padding(sp5)
+	hovered := wrap.Hovered()
+	intro := wrap.Keyframes("empty-intro", []ui.Keyframe{
+		{At: 0, Value: 0},
+		{At: 2 * time.Second, Value: 1},
+	})
+	animate := !reduce && (hovered || intro < 1)
 	var px, py float32
 	if !reduce {
 		if x, y, ok := wrap.PointerPosition(); ok {
@@ -199,7 +196,7 @@ func v4EmptyState(c *ui.Context, key, message, hint string) {
 	wrap.Children(func() {
 		ui.Box(c).Size(76, 60).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
 			now := float64(c.Now().UnixNano()) / 1e9
-			if !reduce {
+			if animate {
 				c.AnimationFrame()
 			}
 			blocks := []struct {
@@ -212,7 +209,7 @@ func v4EmptyState(c *ui.Context, key, message, hint string) {
 			}
 			for _, b := range blocks {
 				dy := float32(0)
-				if !reduce {
+				if animate {
 					dy = float32(math.Sin((now+b.offset)*2*math.Pi/3.2) * -4.5)
 				}
 				p.Fill(ui.Rect{X: r.X + b.x + sx, Y: r.Y + b.y + sy + dy, W: 22, H: 22}, tok.Accent.Alpha(b.alpha), 5)

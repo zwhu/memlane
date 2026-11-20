@@ -39,6 +39,37 @@ type overviewViewState struct {
 	scope                                      string
 	generation, activityGeneration             uint64
 	cancel, activityCancel, recallCancel       context.CancelFunc
+	cachedFirstUseKey                          string
+	cachedFirstUseDays                         int
+	cachedFirstUseErr                          error
+	cachedBucketsGen                           uint64
+	cachedBucketsCount                         int
+	cachedBucketsDay                           string
+	cachedBuckets                              map[string]int
+}
+
+func (a *App) overviewFirstUseDays(now time.Time) (int, error) {
+	v := &a.overviewState
+	key := a.Config.ClientStateFile + "|" + a.Config.ConfigFile + "|" + now.Format("2006-01-02")
+	if v.cachedFirstUseKey == key {
+		return v.cachedFirstUseDays, v.cachedFirstUseErr
+	}
+	days, err := firstUseDays(a.Config, now)
+	v.cachedFirstUseKey, v.cachedFirstUseDays, v.cachedFirstUseErr = key, days, err
+	return days, err
+}
+
+func (a *App) overviewCachedBuckets(now time.Time) map[string]int {
+	v := &a.overviewState
+	day := now.Format("2006-01-02")
+	if v.cachedBuckets != nil && v.cachedBucketsGen == v.generation && v.cachedBucketsCount == len(v.Snapshot.Knowledge) && v.cachedBucketsDay == day {
+		return v.cachedBuckets
+	}
+	v.cachedBuckets = overviewBuckets(v.Snapshot, now.Location())
+	v.cachedBucketsGen = v.generation
+	v.cachedBucketsCount = len(v.Snapshot.Knowledge)
+	v.cachedBucketsDay = day
+	return v.cachedBuckets
 }
 
 func (a *App) overviewScope() string {
@@ -269,7 +300,7 @@ func (a *App) overviewHome(c *ui.Context) {
 	page := ui.Column(c.Key("overview-page")).Fill().Padding(0, sp8).Font("system-ui").FontWeight(400)
 	v4PageEnter(page, a.motionRuns.overviewPage)
 	page.Children(func() {
-		if _, err := firstUseDays(a.Config, now); err != nil {
+		if _, err := a.overviewFirstUseDays(now); err != nil {
 			homeText(c, "使用时间暂不可用。", homeAction).Margin(0, 0, sp2, 0)
 		}
 		if v.Error != "" {
@@ -329,7 +360,7 @@ func (a *App) overviewHome(c *ui.Context) {
 
 func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 	v := &a.overviewState
-	buckets := overviewBuckets(v.Snapshot, now.Location())
+	buckets := a.overviewCachedBuckets(now)
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	start := today.AddDate(0, 0, -364)
 	gridStart := start.AddDate(0, 0, -int(start.Weekday()))
@@ -338,7 +369,7 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 		weeks++
 	}
 	usage := "—"
-	if n, err := firstUseDays(a.Config, now); err == nil {
+	if n, err := a.overviewFirstUseDays(now); err == nil {
 		usage = fmt.Sprint(n)
 	}
 	knowledge, raw := "—", "—"
@@ -448,13 +479,15 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 									if v.Day == date {
 										cell.Border(1.5, tok.Accent)
 									}
-									pose := ui.Pose{Scale: 1}
-									if cell.Pressed() {
-										pose.Scale = 0.72
-									} else if cell.Hovered() {
-										pose.Scale = 1.32
+									if cell.Hovered() || cell.Pressed() || cell.Transitioning() {
+										pose := ui.Pose{Scale: 1}
+										if cell.Pressed() {
+											pose.Scale = 0.72
+										} else if cell.Hovered() {
+											pose.Scale = 1.32
+										}
+										cell.AnimatePose(pose, v4Bouncy)
 									}
-									cell.AnimatePose(pose, v4Bouncy)
 									cell.OnClick(func() {
 										if v.Day == date {
 											a.selectOverviewDay("")

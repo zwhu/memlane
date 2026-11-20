@@ -48,7 +48,7 @@
 
 ## 2026-11-18 桥接与直连的模型参数防回归
 
-提交相关修改前必须运行 `python3 scripts/task.py -- python3 scripts/lint.py`。这是不依赖第三方库的 AST 检查，覆盖 `engine/python/` 全部生产模块（含子包）；`ML001` 禁止绕过共享构造器，`ML002` 禁止注入字面量参数，`ML003` 禁止参数回退值，`ML007` 禁止在非白名单模块修改全局 `os.environ`。规则回归使用 `python3 scripts/task.py -- python3 -m unittest discover -s scripts -p test_lint.py`。
+提交相关修改前必须运行 `python3 scripts/task.py -- python3 scripts/lint.py`。这是不依赖第三方库的静态检查，覆盖 `engine/python/` 全部生产模块（含子包）与 `internal/simpledesktop/` Go 界面层：`ML001` 禁止绕过共享构造器，`ML002` 禁止注入字面量参数，`ML003` 禁止参数回退值，`ML007` 禁止在非白名单模块修改全局 `os.environ`；性能验收门禁由 `ML008`–`ML011` 守护（`ML008` 禁止非 `motion_tokens.go` 或无 `ReduceMotion` 守护的 `AnimationFrame()` 刷帧空转、`ML009` 禁止列表行带延迟布局过渡与 `<500ms` 高频 `c.After` 轮询、`ML010` 禁止 `Draw`/`DrawOver` 绘制回调执行同步 I/O/休眠/网络请求、`ML011` 禁止 `overview` 退回双遍全量遍历/逐页落盘及 `App.View` 热路径同步 I/O），并由 `internal/simpledesktop/perf_budget_test.go` 在 `sh scripts/go.sh test ./...` 中自动验收单帧构建耗时（`< 16ms`）与连续切页/切外观堆内存上限（`<= 25 MiB`）。规则回归使用 `python3 scripts/task.py -- python3 -m unittest discover -s scripts -p test_lint.py`。
 
 未配置的模型选项保持未配置，不补客户端显式采样/输出默认值；用户显式填写的 `0` 必须保留。启动、验证和切换统一使用 `generation_config.native_llm_configuration` / `native_llm_kwargs`，消费者不得独立构造 `LLMConfig` 或继承前一配置环境。修改这些路径须通过 `test_generation_parameters`、`test_generation_probe`、`test_generation_handoff`、`test_generation_startup`，执行要求见[工程规范](docs/engineering/workflow.md)。
 
