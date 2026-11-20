@@ -121,3 +121,17 @@ class FirstActivationTests(FirstRuntimeFixture, unittest.TestCase):
         write_private(config['generation_file'], json.dumps(state))
         with self.assertRaises(ValueError):
             activation_scope(config, request)
+
+    def test_setup_stop_detaches_stdin_to_devnull(self):
+        config, request, path = self.prepare_candidate()
+        owner_path = self.root / '.memlane-dev-owner.json'
+        write_private(owner_path, '{"phase":"first_install_setup"}')
+
+        def fake_stop(*args, **kwargs):
+            owner_path.unlink(missing_ok=True)
+            return subprocess.CompletedProcess(args[0], 0)
+
+        with patch('subprocess.run', side_effect=fake_stop) as stop:
+            self.assertTrue(prepare_activation(config, self.path, path))
+        stop.assert_called_once()
+        self.assertEqual(stop.call_args.kwargs['stdin'], subprocess.DEVNULL)

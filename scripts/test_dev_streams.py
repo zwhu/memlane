@@ -1,4 +1,5 @@
 """OVR01 regression at the launch seam; stdlib-only, no official database/model."""
+import errno
 import importlib.util
 import json
 import os
@@ -16,8 +17,14 @@ class ServiceStreamTests(unittest.TestCase):
     def test_missing_terminal_reader_cannot_propagate_notice_failure(self):
         spec=importlib.util.spec_from_file_location('dev',ROOT/'scripts/dev.py')
         dev=importlib.util.module_from_spec(spec);spec.loader.exec_module(dev)
-        with patch('sys.stdout',Mock(write=Mock(side_effect=BrokenPipeError))):
-            dev.report_notice('synthetic lifecycle notice')
+        for error in (
+            BrokenPipeError('broken pipe'),
+            OSError(errno.ENXIO, 'Device not configured'),
+            OSError(errno.EBADF, 'Bad file descriptor'),
+            OSError(errno.EIO, 'Input/output error'),
+        ):
+            with self.subTest(error=error), patch('sys.stdout', Mock(write=Mock(side_effect=error))):
+                dev.report_notice('synthetic lifecycle notice')
 
     def test_log_retention_keeps_live_inode_and_bounded_tail(self):
         spec=importlib.util.spec_from_file_location('dev',ROOT/'scripts/dev.py')
@@ -64,6 +71,59 @@ print(json.dumps({"worker_exit":process.wait(timeout=5)}),flush=True)
             self.assertIn('"worker_exit": 0', result.stdout, result.stdout)
             self.assertIn('worker_flush_ok', log.read_text())
             self.assertIn('synthetic pending diagnostic', log.read_text())
+            self.assertEqual(os.stat(log).st_mode & 0o777, 0o600)
+
+    def test_owned_child_detaches_stdin_to_devnull_and_spawns_multiprocessing_worker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            child = root / 'worker.py'
+            child.write_text('''import json, multiprocessing as mp, os
+
+def worker_main():
+    pass
+
+if __name__ == '__main__':
+    fd0 = os.fstat(0)
+    null_stat = os.stat(os.devnull)
+    assert (fd0.st_dev, fd0.st_ino) == (null_stat.st_dev, null_stat.st_ino), (
+        (fd0.st_dev, fd0.st_ino),
+        (null_stat.st_dev, null_stat.st_ino),
+    )
+    ctx = mp.get_context('spawn')
+    proc = ctx.Process(target=worker_main)
+    proc.start()
+    proc.join(timeout=15)
+    assert proc.exitcode == 0, f'unexpected spawn exitcode: {proc.exitcode}'
+    print(json.dumps({'spawn_ok': True}), flush=True)
+''')
+            driver = root / 'driver.py'
+            driver.write_text('''import importlib.util, json, os, pathlib, pty, sys
+spec = importlib.util.spec_from_file_location('dev', sys.argv[1])
+dev = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dev)
+master, slave = pty.openpty()
+process = None
+try:
+    os.dup2(slave, 0)
+    os.close(slave)
+    slave = -1
+    process = dev.launch_owned(
+        [sys.executable, sys.argv[2]],
+        cwd=pathlib.Path(sys.argv[2]).parent,
+        log_file=pathlib.Path(sys.argv[3]),
+    )
+finally:
+    if slave >= 0:
+        os.close(slave)
+    os.close(master)
+print(json.dumps({'worker_exit': process.wait(timeout=20)}), flush=True)
+''')
+            log = root / 'official.log'
+            result = subprocess.run([sys.executable, str(driver), str(ROOT / 'scripts/dev.py'), str(child), str(log)],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('"worker_exit": 0', result.stdout, result.stdout)
+            self.assertIn('"spawn_ok": true', log.read_text())
             self.assertEqual(os.stat(log).st_mode & 0o777, 0o600)
 
 

@@ -145,7 +145,7 @@ def build(output, npm_cache, *, node='node', archive=None):
         licenses.append({'name': package['name'], 'version': spec['version'], 'integrity': spec['integrity'],
                          'development_only': bool(spec.get('dev')), 'declared_license': package.get('license'),
                          'license_files': [key for key in files if 'license' in Path(key).name.lower() or 'notice' in Path(key).name.lower()]})
-    node_version = subprocess.run([node, '--version'], capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+    node_version = subprocess.run([node, '--version'], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=True).stdout.strip()
     recipe = {'upstream_commit': component['commit'], 'archive_sha256': component['archive_sha256'],
               'lock_sha256': digest(original['package-lock.json']), 'patch_sha256': patch_digest,
               'builder_sha256': digest(Path(__file__).read_bytes()), 'node_version': node_version,
@@ -172,7 +172,7 @@ def build(output, npm_cache, *, node='node', archive=None):
                                          '--target', 'ES2022', '--module', 'NodeNext', '--moduleResolution', 'NodeNext',
                                          '--skipLibCheck', '--types', 'node', '--rootDir', str(work),
                                          '--outDir', str(work / 'dist'), str(work / 'index.ts'), str(work / 'src/managed-pending.ts'), str(work / 'src/managed-backlog.ts'), str(work / 'src/managed-pending-cli.ts')],
-                                        cwd=work, capture_output=True, text=True, timeout=60)
+                                        cwd=work, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
         if compile_result.returncode:
             raise ValueError('fixed OpenCode TypeScript compilation failed: ' + compile_result.stdout + compile_result.stderr)
         ready = work / 'artifact'
@@ -262,8 +262,8 @@ def pending_runtime(manifest, node='node'):
         if not executable.is_file() or not os.access(executable, os.X_OK) or executable.stat().st_size > 512 * 1024 * 1024:
             raise ValueError()
         environment = {key: value for key, value in os.environ.items() if not key.startswith('NODE_')}
-        version = subprocess.run([str(executable), '--version'], env=environment, capture_output=True,
-                                 text=True, check=True, timeout=5).stdout.strip()
+        version = subprocess.run([str(executable), '--version'], env=environment, stdin=subprocess.DEVNULL,
+                                 capture_output=True, text=True, check=True, timeout=5).stdout.strip()
         if not re.fullmatch(r'v\d+\.\d+\.\d+', version) or int(version[1:].split('.')[0]) < 20:
             raise ValueError()
         return {'node_executable': str(executable), 'node_sha256': digest(executable.read_bytes()),

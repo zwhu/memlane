@@ -47,7 +47,7 @@ def workspace_root(path, *, explicit=False):
         if not root.is_dir():
             raise PolicyError('workspace_not_directory')
         result = subprocess.run(['git', '-C', str(root), 'rev-parse', '--show-toplevel'],
-                                capture_output=True, timeout=5, check=False,
+                                stdin=subprocess.DEVNULL, capture_output=True, timeout=5, check=False,
                                 env={'PATH': '/usr/bin:/bin', 'GIT_CONFIG_NOSYSTEM': '1'})
     except (OSError, subprocess.TimeoutExpired):
         raise PolicyError('workspace_unavailable') from None

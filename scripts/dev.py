@@ -227,7 +227,7 @@ def launch_owned(command, *, cwd=ROOT, env=None, log_file=None):
             raise ValueError('owned process log must be a regular file')
         os.fchmod(fd, 0o600)
         return subprocess.Popen(command, cwd=cwd, env=env, start_new_session=True,
-                                stdout=fd, stderr=subprocess.STDOUT)
+                                stdin=subprocess.DEVNULL, stdout=fd, stderr=subprocess.STDOUT)
     finally:
         os.close(fd)
 
@@ -257,7 +257,7 @@ def report_notice(message):
     # A terminal observer is optional; losing it must never stop owned services.
     try:
         print(message, flush=True)
-    except BrokenPipeError:
+    except OSError:
         pass
 
 

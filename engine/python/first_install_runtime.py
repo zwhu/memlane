@@ -211,7 +211,7 @@ def _prepare_activation(config, config_path, request_path, *, host_home=None):
         request['status'] = 'stopping'
         write_private(request_path, json.dumps(request))
         try:
-            stop_kwargs = {'stdout': subprocess.PIPE, 'stderr': subprocess.STDOUT, 'check': True}
+            stop_kwargs = {'stdin': subprocess.DEVNULL, 'stdout': subprocess.PIPE, 'stderr': subprocess.STDOUT, 'check': True}
             if host_home is not None:
                 stop_kwargs['env'] = {**os.environ, 'HOME': str(host_home)}
             subprocess.run([sys.executable, str(ROOT / 'scripts/dev.py'), 'stop', '--config', str(config_path)],

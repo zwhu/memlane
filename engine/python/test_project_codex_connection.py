@@ -3,13 +3,14 @@ import copy
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 import tomlkit
-from project_codex_connection import CodexConnection, digest, proposal, legacy_consumers
+from project_codex_connection import CodexConnection, digest, proposal, legacy_consumers, stage_install
 from project_control import private_write
 from project_policy import PolicyError
 
@@ -167,3 +168,15 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             result = await self.connection.review(self.registry.state['revision'])
         self.assertEqual(result['status'], 'configured_pending_new_session')
         self.assertEqual(self.config_file.read_bytes(), edited)
+
+    def test_stage_install_detaches_stdin_to_devnull(self):
+        installation = {**self.installation, 'home': str(self.home)}
+        stage = self.root / 'new-stage'
+        with patch('project_codex_connection.subprocess.run', return_value=subprocess.CompletedProcess(['codex'], 0)) as run, \
+                patch('project_codex_connection.verify_cache') as verify:
+            cache = stage_install(Path(sys.executable), installation, stage)
+        self.assertEqual(cache, stage / 'plugins/cache' / installation['marketplace_name'] / 'cognee' / '1.8.0')
+        self.assertEqual(run.call_count, 2)
+        for call in run.call_args_list:
+            self.assertEqual(call.kwargs['stdin'], subprocess.DEVNULL)
+        verify.assert_called_once_with(cache, installation)

@@ -157,7 +157,7 @@ def stage_install(executable, installation, stage):
         with (stage / ('install-' + str(index) + '.log')).open('wb') as log:
             os.chmod(log.name, 0o600)
             try:
-                result = subprocess.run([str(executable), *arguments], env=env,
+                result = subprocess.run([str(executable), *arguments], env=env, stdin=subprocess.DEVNULL,
                                         stdout=log, stderr=subprocess.STDOUT, timeout=45)
             except subprocess.TimeoutExpired:
                 raise PolicyError('codex_staging_result_unknown', 503)
