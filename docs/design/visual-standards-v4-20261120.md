@@ -1,21 +1,21 @@
 # Memlane 视觉规范 V4
 
-2026-11-20，v1。用户在访谈中确认了 V4 方向，并在 HTML 原型上选定项目页采用三栏。本文取代 [A 视觉规范（20261113）](visual-standards-20261113.md) 和 [设计规格 V3](memlane-design-spec-v3.html)，作为后续所有 Native 界面改动的依据。
+2026-11-20，v1。用户在访谈中确认了 V4 方向，并在 HTML 原型上选定项目页采用三栏。本文取代 [A 视觉规范（20261113）](../archive/visual-standards-20261113.md) 和 [设计规格 V3](../archive/memlane-design-spec-v3.html)，作为后续所有 Native 界面改动的依据。
 
 > [!IMPORTANT]
-> 本文只是设计基线，**当前 Native 还没有按 V4 实现**。实施计划和进度见 [V4 实施记录](../engineering/visual-v4-implementation-20261120.md)。
+> 本文只是设计基线，**当前 Native 还没有按 V4 实现**。实施计划和进度见 [V4 实施记录](visual-v4-implementation-20261120.md)。
 
 ## 1. 依据与适用范围
 
 - **原型**：[visual-v4-prototype/](visual-v4-prototype/)（可交互，含浅色／深色两套主题、动效，以及「减少动态效果」开关）。令牌以 [tokens.css](visual-v4-prototype/tokens.css) 为准，组件以 [app.css](visual-v4-prototype/app.css) 为准。
-- **截图**：[docs/images/ui-redesign/visual-v4-20261120/](../images/ui-redesign/visual-v4-20261120/)。
+- **截图**：[docs/images/ui-redesign/visual-v4-20261120/](../images/visual-v4-20261120/)。
 
   | 页面 | 浅色 | 深色 |
   | --- | --- | --- |
-  | 首页 | [overview-light.png](../images/ui-redesign/visual-v4-20261120/overview-light.png) | [overview-dark.png](../images/ui-redesign/visual-v4-20261120/overview-dark.png) |
-  | 项目三栏 | [three-light.png](../images/ui-redesign/visual-v4-20261120/three-light.png) | [three-dark.png](../images/ui-redesign/visual-v4-20261120/three-dark.png) |
+  | 首页 | [overview-light.png](../images/visual-v4-20261120/overview-light.png) | [overview-dark.png](../images/visual-v4-20261120/overview-dark.png) |
+  | 项目三栏 | [three-light.png](../images/visual-v4-20261120/three-light.png) | [three-dark.png](../images/visual-v4-20261120/three-dark.png) |
 
-  另有两张状态图：[分类菜单](../images/ui-redesign/visual-v4-20261120/three-menu.png)、[召回筛选](../images/ui-redesign/visual-v4-20261120/three-recall.png)。
+  另有两张状态图：[分类菜单](../images/visual-v4-20261120/three-menu.png)、[召回筛选](../images/visual-v4-20261120/three-recall.png)。
 - **范围**：全部页面统一使用本文的令牌和组件，包括侧栏、首页、项目三栏、搜索结果、通用记忆、用户画像、设置、首次启动。原型只画了首页和项目三栏，其余页面套用同一套令牌与组件，不另起风格。
 - **原型数据**：原型里的数据都是合成示例，只代表数据的形态（正文含代码路径、召回次数、官方分类），不代表真实记忆。
 
@@ -162,8 +162,8 @@
 
 | 文档 | 处理 |
 | --- | --- |
-| [visual-standards-20261113.md](visual-standards-20261113.md) | 已被本文取代，保留作为历史记录 |
-| [memlane-design-spec-v3.html](memlane-design-spec-v3.html) | 已被本文取代，保留作为历史记录 |
+| [visual-standards-20261113.md](../archive/visual-standards-20261113.md) | 已被本文取代，保留作为历史记录 |
+| [memlane-design-spec-v3.html](../archive/memlane-design-spec-v3.html) | 已被本文取代，保留作为历史记录 |
 | `docs/images/ui-redesign/client-simplification-20261112/` | 旧设计图，不再作为改动依据 |
 | [motion-implementation.md](motion-implementation.md) | 继续有效；弹簧参数以本文第 6 节为准 |
-| [content-model.md](content-model.md)、[agent-connection-contract.md](agent-connection-contract.md) | 不受影响 |
+| [content-model.md](../product/content-model.md)、[agent-connection-contract.md](../architecture/agent-connection-contract.md) | 不受影响 |

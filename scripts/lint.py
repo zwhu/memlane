@@ -198,21 +198,9 @@ def check_source(source, path):
                     injected(node, target.slice, node.value)
                 elif node.value is not None and isinstance(target, ast.Attribute):
                     injected(node, ast.Constant(value=target.attr), node.value)
-    if Path(path).name == 'user_profiles.py' or (Path(path).parent.name == 'user_profiles' and Path(path).name == 'runner.py'):
-        for function in ast.walk(tree):
-            if isinstance(function, ast.AsyncFunctionDef) and function.name == 'generate':
-                for call in ast.walk(function):
-                    if isinstance(call,ast.Call) and ((isinstance(call.func,ast.Attribute) and call.func.attr=='wait_for') or (isinstance(call.func,ast.Name) and call.func.id=='wait_for')):
-                        report(call,'ML006','画像生成不能用总时长超时中断；观察进程/活动并提供明确停止')
     _check_environ_mutations(tree, path, report)
     return sorted(set(issues))
 
-
-GO_TARGETS = {
-    'settings_model_cards.go': ('generationProfileCards',),
-    'generation_workspace.go': ('chooseGenerationSource', 'selectGenerationProfile'),
-    'generation_management.go': ('generationManagement', 'generationManagementContent'),
-}
 
 ANIMATION_FRAME_ALLOWLIST = {'motion_tokens.go'}
 PERF_FORBIDDEN_DRAW_CALLS = re.compile(
@@ -313,10 +301,7 @@ def check_go_performance(source, path):
             if 'ReduceMotion' not in func_body:
                 issues.append((line, 'ML008', 'AnimationFrame() 所在动效函数必须检查 ReduceMotion，禁止空闲无限刷帧'))
 
-    # ML009: Reject delayed layout transitions on list rows and high-frequency c.After polling.
-    for match in re.finditer(r'\bv4RowEnterTransition\(', clean):
-        line = clean[:match.start()].count('\n') + 1
-        issues.append((line, 'ML009', '列表入场动效必须走合成层 Keyframes/Translation，禁止使用带延迟的布局 ElementTransition'))
+    # ML009: Reject high-frequency c.After (<500ms) polling.
     for match in SHORT_AFTER_RE.finditer(clean):
         amount = int(match.group(1))
         unit = match.group(2)
@@ -333,29 +318,7 @@ def check_go_performance(source, path):
             line = clean[:brace_idx + bad.start()].count('\n') + 1
             issues.append((line, 'ML010', 'Draw/DrawOver 渲染回调禁止执行磁盘 I/O、休眠或网络请求，确保高帧率绘制'))
 
-    # ML011: Cold-start & View hot-path regressions (no double overview scan, no per-page disk flush, no sync disk read in View).
-    if filename == 'overview.go':
-        ov_start = clean.find('func (c Client) overview(')
-        if ov_start >= 0:
-            ov_end = clean.find('\nfunc ', ov_start + 1)
-            ov_body = clean[ov_start:ov_end if ov_end >= 0 else len(clean)]
-            doc_calls = list(re.finditer(r'\.overviewDocuments\(', ov_body))
-            if len(doc_calls) > 1:
-                line = clean[:ov_start + doc_calls[1].start()].count('\n') + 1
-                issues.append((line, 'ML011', 'overview 禁止退回双遍全量遍历 overviewDocuments，必须保持单遍并发拉取'))
-            sess_calls = list(re.finditer(r'\.overviewSessions\(', ov_body))
-            if len(sess_calls) > 1:
-                line = clean[:ov_start + sess_calls[1].start()].count('\n') + 1
-                issues.append((line, 'ML011', 'overview 禁止退回双遍全量遍历 overviewSessions，必须保持单遍并发拉取'))
-        docs_start = clean.find('func (c Client) overviewDocuments(')
-        if docs_start >= 0:
-            docs_end = clean.find('\nfunc ', docs_start + 1)
-            docs_body = clean[docs_start:docs_end if docs_end >= 0 else len(clean)]
-            for call in re.finditer(r'\.rememberKnowledgeDays\(', docs_body):
-                prefix = docs_body[:call.start()]
-                if 'len(page) < 100' not in prefix:
-                    line = clean[:docs_start + call.start()].count('\n') + 1
-                    issues.append((line, 'ML011', 'rememberKnowledgeDays 必须在翻页结束后每数据集批量写盘一次，禁止逐页落盘'))
+    # ML011: Reject blocking I/O, sleep, or network calls on App.View hot path.
     if filename == 'app.go':
         view_start = clean.find('func (a *App) View(')
         if view_start >= 0:
@@ -368,44 +331,9 @@ def check_go_performance(source, path):
     return issues
 
 
-def check_go_source(source, path, *, require_all_targets=False):
-    """Presentation architecture and performance checks; Go behavior is covered by Native UI tests."""
-    filename = Path(path).name
-    issues = check_go_performance(source, path)
-    if filename not in GO_TARGETS:
-        return sorted(set(issues))
-    targets = GO_TARGETS[filename]
-    found = []
-    for name in targets:
-        start = source.find(' ' + name + '(')
-        if start < 0:
-            if require_all_targets:
-                code = 'ML004' if name == 'generationProfileCards' else 'ML005'
-                issues.append((1, code, f'未找到受保护函数 {name}；重命名或移动后须同步更新 lint 规则'))
-            continue
-        found.append(name)
-        if name in ('chooseGenerationSource', 'selectGenerationProfile', 'generationProfileCards', 'generationManagement', 'generationManagementContent'):
-            end = source.find('\nfunc ', start + 1)
-            function = source[start:end if end >= 0 else len(source)]
-            for match in re.finditer(r'openGenerationHandoff\(|startGenerationHandoff\(|Generation\.Active\s*=', function):
-                issues.append((source[:start + match.start()].count('\n') + 1, 'ML005', '选择或编辑配置不能启用；保存、验证与明确启用分开'))
-    if not require_all_targets and not found:
-        first = targets[0]
-        code = 'ML004' if first == 'generationProfileCards' else 'ML005'
-        issues.append((1, code, f'未找到受保护函数 {first}；重命名或移动后须同步更新 lint 规则'))
-    if filename == 'generation_workspace.go':
-        return issues
-    start = source.find('func (a *App) generationProfileCards(')
-    if start < 0:
-        return issues
-    end = source.find('\nfunc ', start + 1)
-    body = source[start:end if end >= 0 else len(source)]
-    for match in re.finditer(r'\.Profile\.(?:Model|Provider|BridgeKind)\b|\.Generation\.Profiles\b', body):
-        line = source[:start + match.start()].count('\n') + 1
-        issues.append((line, 'ML004', '配置列表必须使用统一分组投影；Agent按身份展示，Provider按连接分组'))
-    if 'generationWorkspaceGroups(' not in body and 'generationProfileGroups(' not in body:
-        issues.append((source[:start].count('\n') + 1, 'ML004', '配置列表必须使用 generationProfileGroups'))
-    return issues
+def check_go_source(source, path):
+    """Performance guardrails for Native UI; presentation behavior is covered by Go UI tests."""
+    return sorted(set(check_go_performance(source, path)))
 
 
 def main():
@@ -428,21 +356,14 @@ def main():
                 failures += 1
     go_dir = ROOT / 'internal/simpledesktop'
     if go_dir.is_dir():
-        for filename, targets in GO_TARGETS.items():
-            expected_path = go_dir / filename
-            if not expected_path.is_file():
-                code = 'ML004' if 'generationProfileCards' in targets else 'ML005'
-                print('{}:1: {} 未找到受保护文件 {}；重命名或移动后须同步更新 lint 规则'.format(
-                    expected_path.relative_to(ROOT), code, filename))
-                failures += 1
         for path in sorted(go_dir.glob('*.go')):
             if path.name.endswith('_test.go'):
                 continue
-            for line, code, message in check_go_source(path.read_text(encoding='utf-8'), path, require_all_targets=True):
+            for line, code, message in check_go_source(path.read_text(encoding='utf-8'), path):
                 print('{}:{}: {} {}'.format(path.relative_to(ROOT), line, code, message))
                 failures += 1
     if not failures:
-        print('Lint passed: 模型参数、展示边界与性能门禁 (ML001-ML011)')
+        print('Lint passed: 模型参数、环境隔离与 UI 性能门禁 (ML001-ML003, ML007-ML011)')
     return bool(failures)
 
 

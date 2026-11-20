@@ -46,14 +46,16 @@ sh scripts/go.sh test ./...
 ## 私有配置与安全边界
 
 - 实际运行配置、token、服务环境变量与本机 Agent 配置保存于 Git 跟踪范围之外的私有位置（`.local/`，`0600` 权限）；不要将密钥、真实记忆库、聊天记录或本机 Agent 配置提交到仓库。
-- 当前处于 `dev` 阶段，**不构建完整安装包**（不做 DMG、签名、公证或 helper 安装）；受管开发任务经由 `scripts/task.py` 执行并保留至少 `50 GiB` 可用磁盘空间（运行中低于 `55 GiB` 自动停止）。详细配置说明见[开发说明](docs/development.md)。
+- 当前处于 `dev` 阶段，**不构建完整安装包**（不做 DMG、签名、公证或 helper 安装）；受管开发任务经由 `scripts/task.py` 执行并保留至少 `50 GiB` 可用磁盘空间（运行中低于 `55 GiB` 自动停止）。详细配置说明见[开发说明](docs/architecture/development.md)。
 
 ## 主要参考文档
 
-- [产品定义](docs/product.md)
-- [设计决策](docs/design.md)
-- [开发说明](docs/development.md)
+- [文档总目录](docs/README.md)
+- [系统架构总览](docs/architecture/overview.md)
+- [产品定义](docs/product/product.md)
+- [设计决策](docs/design/design.md)
+- [开发说明](docs/architecture/development.md)
 - [工程规范与失败停止规则](docs/engineering/workflow.md)
-- [架构改造总览](docs/engineering/architecture-refactor-20261120.md)
+- [架构改造总览](docs/architecture/architecture-refactor-20261120.md)
 
-![V4 首页设计参考图](docs/images/ui-redesign/visual-v4-20261120/overview-light.png)
+![V4 首页设计参考图](docs/images/visual-v4-20261120/overview-light.png)

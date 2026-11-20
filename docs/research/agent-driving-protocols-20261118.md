@@ -19,18 +19,18 @@
 4. 实例身份包含 Agent 类型、客户端形态、配置目录、执行路径及版本。复用用户已有登录，但不复制所有宿主配置，不覆盖其他插件或历史会话。
 5. 保留可诊断的操作记录：操作编号、协议阶段、退出码、经过脱敏且有体积限制的错误、所属进程及取消结果。结果未知时核对原操作，不能盲目重投。
 
-这些是后续设计输入，尚未确定公共接口或实施排期。接入继续遵循[现有连接契约](ui-redesign/agent-connection-contract.md)。
+这些是后续设计输入，尚未确定公共接口或实施排期。接入继续遵循[现有连接契约](../architecture/agent-connection-contract.md)。
 
 ## Memlane 当前代码对照
 
-2026-11-18后续实施更新：用户已明确要求Codex、TraeX、pi三种处理桥，覆盖下表原调查时的Codex-only状态。当前`generation_config.py`与启动/验证/切换支持三者；pi使用RPC与受信完整Schema扩展，TraeX使用其0.215.0实际app-server协议及原生outputSchema。pi与TraeX分别通过当前Cognee适配器普通响应、嵌套Schema和固定事实质量检查；观察真实流式输出后取消，确认所属进程组退出。净室pi/deepseek-v4-flash进一步由Native自动填入、保存、Schema验证通过、明确首次启用并进入首页，内容服务HTTP200。此结果仍不覆盖完整采集/整理/召回或其他工作台能力，持续证据见[工程接续](engineering/processing-handoff-20261118.md)。以下保留原调查表，不能作为最新支持矩阵。
+2026-11-18后续实施更新：用户已明确要求Codex、TraeX、pi三种处理桥，覆盖下表原调查时的Codex-only状态。当前`generation_config.py`与启动/验证/切换支持三者；pi使用RPC与受信完整Schema扩展，TraeX使用其0.215.0实际app-server协议及原生outputSchema。pi与TraeX分别通过当前Cognee适配器普通响应、嵌套Schema和固定事实质量检查；观察真实流式输出后取消，确认所属进程组退出。净室pi/deepseek-v4-flash进一步由Native自动填入、保存、Schema验证通过、明确首次启用并进入首页，内容服务HTTP200。此结果仍不覆盖完整采集/整理/召回或其他工作台能力，持续证据见工程接续。以下保留原调查表，不能作为最新支持矩阵。
 
 | 用途 | 当前实现 | 边界 |
 |---|---|---|
 | Codex 处理记忆的模型桥接 | `engine/python/codex_completion_endpoint.py` 启动 `codex app-server --strict-config --stdio`，调用 `initialize`、`thread/start`、`turn/start`，取消使用 `turn/interrupt` | 与图中 Codex 的 app-server 路径一致，不代表实现了图中所有工作台能力 |
 | Codex 自动生成用户画像 | `engine/python/user_profiles.py` 启动 `codex exec`，通过输出文件读取结果 | 一次性调用，不是上述 app-server 任务入口 |
 | pi 自动生成用户画像 | 同文件启动 `pi --print` 并读取输出 | 一次性调用；不能据此宣称具备 RPC 会话控制 |
-| 旧版 pi 模型桥接 | 历史 [pi 模型桥验证](pi-model-bridge-validation.md)记录过 RPC 实现 | 属于历史验证；当前 `generation_config.py` 的 Agent 桥接只接受 Codex |
+| 旧版 pi 模型桥接 | 历史 pi 模型桥验证记录过 RPC 实现 | 属于历史验证；当前 `generation_config.py` 的 Agent 桥接只接受 Codex |
 
 画像调用目前将 stderr 丢弃，只记录通用失败码，导致 Codex 失败原因无法追溯。后续统一驱动时应补齐错误证据；本次仅记录，未修复或重跑模型。
 

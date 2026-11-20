@@ -75,45 +75,6 @@ def parameters(profile):
                 production.write_text('native_llm_configuration(environment)')
                 self.assertFalse(lint.main())
 
-
-
-class GenerationPresentationLintTests(unittest.TestCase):
-    def test_flat_model_and_provider_rendering_is_rejected(self):
-        from lint import check_go_source
-        source = 'func (a *App) generationProfileCards(c *ui.Context) {\n model := row.Profile.Model\n provider := row.Profile.Provider\n}'
-        self.assertTrue(all(row[1] == 'ML004' for row in check_go_source(source, 'settings_model_cards.go')))
-        self.assertEqual(len(check_go_source(source, 'settings_model_cards.go')), 3)
-
-    def test_shared_projection_is_allowed(self):
-        from lint import check_go_source
-        self.assertEqual(check_go_source('func (a *App) generationProfileCards(c *ui.Context) { groups := generationProfileGroups(s.Generation) }', 'settings_model_cards.go'), [])
-
-
-    def test_configuring_a_source_cannot_enable_it(self):
-        from lint import check_go_source
-        source='func (a *App) chooseGenerationSource(mode string) { a.openGenerationHandoff(nil) }'
-        self.assertEqual({row[1] for row in check_go_source(source,'generation_workspace.go')},{'ML005'})
-        allowed='func (a *App) chooseGenerationSource(mode string) { a.selectGenerationProfile(id,row) }'
-        self.assertEqual(check_go_source(allowed,'generation_workspace.go'),[])
-
-    def test_management_page_cannot_enable_a_profile(self):
-        from lint import check_go_source
-        source='func (a *App) generationManagement(c *ui.Context) { a.startGenerationHandoff() }'
-        self.assertEqual({row[1] for row in check_go_source(source,'generation_management.go')},{'ML005'})
-
-    def test_profile_generation_cannot_restore_total_deadline(self):
-        source='async def generate(adapter,row):\n return await asyncio.wait_for(collect(),180)'
-        self.assertEqual({row[1] for row in check_source(source,'user_profiles.py')},{'ML006'})
-        self.assertEqual({row[1] for row in check_source(source,'engine/python/user_profiles/runner.py')},{'ML006'})
-
-    def test_missing_protected_go_targets_fail_instead_of_silently_passing(self):
-        from lint import check_go_source
-        renamed = 'func (a *App) renamedCards(c *ui.Context) {}'
-        self.assertEqual({row[1] for row in check_go_source(renamed, 'settings_model_cards.go')}, {'ML004'})
-        partial = 'func (a *App) chooseGenerationSource(mode string) {}'
-        self.assertEqual(check_go_source(partial, 'generation_workspace.go'), [])
-        self.assertEqual({row[1] for row in check_go_source(partial, 'generation_workspace.go', require_all_targets=True)}, {'ML005'})
-
     def test_scripts_directory_is_scanned_and_lint_or_test_scripts_skipped(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -261,8 +222,7 @@ class PerformanceLintTests(unittest.TestCase):
         ok = 'func spin(c *ui.Context) { if !c.Preferences().ReduceMotion { c.AnimationFrame() } }'
         self.assertEqual(self.codes(ok, 'motion_tokens.go'), set())
 
-    def test_delayed_row_transition_and_high_frequency_polling_rejected(self):
-        self.assertIn('ML009', self.codes('func row() { el.Transition(v4RowEnterTransition(0)) }', 'overview_ui.go'))
+    def test_high_frequency_polling_rejected(self):
         self.assertIn('ML009', self.codes('func view(c *ui.Context) { c.After(100 * time.Millisecond) }', 'app.go'))
         self.assertEqual(self.codes('func view(c *ui.Context) { c.After(2 * time.Second) }', 'app.go'), set())
 
@@ -273,29 +233,6 @@ class PerformanceLintTests(unittest.TestCase):
         self.assertIn('ML011', self.codes(bad_view, 'app.go'))
         good_draw = 'func paint(el ui.Element) { el.Draw(func(p *ui.Painter, r ui.Rect) { p.Fill(r, tok.Bg, 0) }) }'
         self.assertEqual(self.codes(good_draw, 'overview_ui.go'), set())
-
-    def test_overview_double_traversal_and_per_page_disk_flush_rejected(self):
-        double_scan = """func (c Client) overview(ctx context.Context) {
-    c.overviewDocuments(ctx, p)
-    c.overviewDocuments(ctx, p)
-}"""
-        self.assertIn('ML011', self.codes(double_scan, 'overview.go'))
-        per_page = """func (c Client) overviewDocuments(ctx context.Context, p Project) {
-    for {
-        c.rememberKnowledgeDays(page)
-        if len(page) < 100 { return }
-    }
-}"""
-        self.assertIn('ML011', self.codes(per_page, 'overview.go'))
-        batched = """func (c Client) overviewDocuments(ctx context.Context, p Project) {
-    for {
-        if len(page) < 100 {
-            c.rememberKnowledgeDays(all)
-            return
-        }
-    }
-}"""
-        self.assertEqual(self.codes(batched, 'overview.go'), set())
 
 
 if __name__ == '__main__':

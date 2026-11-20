@@ -2,7 +2,7 @@
 
 ## 1. 背景与范围
 
-在完成 [agy 终端聊天采集路径修复](agy-capture-path-20261119.md)（`f1ea860`）后，针对全仓结构与运行稳定性推进四阶段重构，并按确认完成本机线上 `memlane-cognee` 插件升级、过时/冗余文档清理与日常入口兼容性修复。当前仍处于 `dev` 阶段，未执行 `release` 打包，未触碰 `build/`、`~/.local/daily/official-store` 数据主体或远端推送。
+在完成 agy 终端聊天采集路径修复（`f1ea860`）后，针对全仓结构与运行稳定性推进四阶段重构，并按确认完成本机线上 `memlane-cognee` 插件升级、过时/冗余文档清理与日常入口兼容性修复。当前仍处于 `dev` 阶段，未执行 `release` 打包，未触碰 `build/`、`~/.local/daily/official-store` 数据主体或远端推送。
 
 ## 2. 改造内容总览
 

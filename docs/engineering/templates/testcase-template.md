@@ -1,11 +1,11 @@
 # 主流程用例模板
 
-通用方法见 [verify-continuous-scenarios](../../.agents/skills/verify-continuous-scenarios/SKILL.md)；下列字段为本项目的包、授权及证据适配。
+通用方法见 [verify-continuous-scenarios](../../../.agents/skills/verify-continuous-scenarios/SKILL.md)；下列字段为本项目的包、授权及证据适配。
 
 - 所属[任务影响与验证说明](task-brief-template.md)及本场景消除的关键未知：
 - 上下游依赖及本轮不证明的范围：
 - 前置检查（实际包／根／来源／授权／夹具数量／有效滚动点），失败时不进入业务步骤：
-- 复用驱动与[连续场景计划](scenario-runner.md)位置；本轮共享准备、采证和幂等收尾：
+- 复用驱动与[连续场景计划](../../archive/scenario-runner.md)位置；本轮共享准备、采证和幂等收尾：
 
 - 编号／需求／设计基线：
 - 用户入口和连续操作：

@@ -1,6 +1,6 @@
 # 任务影响与验证说明
 
-方法见 [plan-change-impact](../../.agents/skills/plan-change-impact/SKILL.md)。本文件仅作Memlane填写适配，直接写入现有任务／交付账本；小改动可简化。设计基线引用当前已认可交接，命令沿用task.py与项目驱动，失败轮次引用既有缺陷记录。
+方法见 [plan-change-impact](../../../.agents/skills/plan-change-impact/SKILL.md)。本文件仅作Memlane填写适配，直接写入现有任务／交付账本；小改动可简化。设计基线引用当前已认可交接，命令沿用task.py与项目驱动，失败轮次引用既有缺陷记录。
 
 ## 目标与影响
 

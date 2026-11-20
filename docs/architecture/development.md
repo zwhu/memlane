@@ -19,21 +19,21 @@ python3 scripts/dev.py prepare --component-root /绝对路径/私有引擎组件
 
 此入口使用已安装的 `uv`（可通过 `--uv /绝对路径/uv` 指定）下载受管 Python 3.12.12、创建独立 venv、按现有哈希锁安装依赖，并校验／解包固定官方源码。不会使用或修改宿主 Python 环境；进度与失败步骤保存在组件目录的 `status.json`，正常完成状态为 `components_ready`。再次执行重新校验各阶段，保留已完成组件；不接管已有未知目录，不覆盖改变了固定输入的旧环境。
 
-**它目前只准备组件，不创建数据库、owner、API key 或 runtime 配置，也不安装 Agent 插件／启动服务。** 不能将该命令成功视为首次安装完成。现有日常库不经此入口迁移或替换，正常 `start` 的缺库保护保留。App 托管安装器、embedding 准备、首次存储初始化与界面接入仍待完成。实施与证据见[本地准备续作](engineering/local-prepare-20261117.md)。
+**它目前只准备组件，不创建数据库、owner、API key 或 runtime 配置，也不安装 Agent 插件／启动服务。** 不能将该命令成功视为首次安装完成。现有日常库不经此入口迁移或替换，正常 `start` 的缺库保护保留。App 托管安装器、embedding 准备、首次存储初始化与界面接入仍待完成。实施与证据见本地准备续作。
 
-2026-11-15：日常启动拒绝本项目已知验收Agent目录；stop/status保留恢复入口。环境优先级为管理侧明确选择、运行配置、宿主环境变量、默认目录；冲突需明确选择。不要将验收profile复制成日常接入，也不要为修复连接补采旧会话。真实目录修复及安全重启边界见[交付记录](engineering/agent-environment-delivery-20261115.md)。
+2026-11-15：日常启动拒绝本项目已知验收Agent目录；stop/status保留恢复入口。环境优先级为管理侧明确选择、运行配置、宿主环境变量、默认目录；冲突需明确选择。不要将验收profile复制成日常接入，也不要为修复连接补采旧会话。真实目录修复及安全重启边界见交付记录。
 
-2026-11-14用户最新要求：当前只使用一套日常库，不另建或切换隔离测试库。统一配置为`.local/daily/runtime.json`，Native、服务和已接入Agent使用同一Cognee官方存储，项目仍各自分组。原本轮两库已合并，旧隔离根只保留在回滚备份；规则与真实核验见[单一日常库记录](engineering/single-daily-store-20261114.md)。下文旧隔离验收配置仅保留历史事实，不作为后续运行入口。
+2026-11-14用户最新要求：当前只使用一套日常库，不另建或切换隔离测试库。统一配置为`.local/daily/runtime.json`，Native、服务和已接入Agent使用同一Cognee官方存储，项目仍各自分组。原本轮两库已合并，旧隔离根只保留在回滚备份；规则与真实核验见单一日常库记录。下文旧隔离验收配置仅保留历史事实，不作为后续运行入口。
 
-2026-11-18处理桥更新：当前开发链支持Codex、pi、TraeX三种`agent_bridge`，覆盖下文旧Codex-only描述。`bridge_kind`分别为`codex`/`pi`/`traex`；pi另需`bridge_provider`为已有`deepseek`或`ollama`，模型仍明确保存在不可变profile中。优先使用`agent_hosts.<kind>.executable/profile`，保留原Codex兼容字段；未明确路径时检查PATH及标准用户bin，明确但无效的路径不回退。复用Agent已有登录，pi不复制密钥到Provider；隔离处理会话不加载日常skills/hooks、历史或项目工具。保存、完整Schema验证、明确启用分开；新pi/TraeX验证绑定可执行身份、pi模型配置及受信扩展摘要，依赖漂移须重新验证。本地与净室证据、版本及限制见[处理配置接续](engineering/processing-handoff-20261118.md)，不改变开发阶段不release、日常服务所有权和同库规则。
+2026-11-18处理桥更新：当前开发链支持Codex、pi、TraeX三种`agent_bridge`，覆盖下文旧Codex-only描述。`bridge_kind`分别为`codex`/`pi`/`traex`；pi另需`bridge_provider`为已有`deepseek`或`ollama`，模型仍明确保存在不可变profile中。优先使用`agent_hosts.<kind>.executable/profile`，保留原Codex兼容字段；未明确路径时检查PATH及标准用户bin，明确但无效的路径不回退。复用Agent已有登录，pi不复制密钥到Provider；隔离处理会话不加载日常skills/hooks、历史或项目工具。保存、完整Schema验证、明确启用分开；新pi/TraeX验证绑定可执行身份、pi模型配置及受信扩展摘要，依赖漂移须重新验证。本地与净室证据、版本及限制见处理配置接续，不改变开发阶段不release、日常服务所有权和同库规则。
 
-2026-11-14多Agent／Provider增补已进入dev实施，覆盖下文旧“唯一Codex生成通道”的相应说明。当前支持、真实证据与未完成项见[支持矩阵](engineering/multi-agent-provider-support-20261114.md)。现有日常runtime／插件不自动迁移，仍以各自交付记录为准。
+2026-11-14多Agent／Provider增补已进入dev实施，覆盖下文旧“唯一Codex生成通道”的相应说明。当前支持、真实证据与未完成项见支持矩阵。现有日常runtime／插件不自动迁移，仍以各自交付记录为准。
 
-2026-11-13 PA项目权限增补已完成dev自验，范围及实际日常接入见[项目权限交付](engineering/project-access-delivery-20261113.md)，详细证据见[执行记录](engineering/project-access-execution-20261113.md)。原D01–D09的共用owner和只读通用知识规则是此前交付事实；当前受管PA使用独立Agent主体、官方dataset ACL与本机项目控制进程。经用户明确交接已切换本机Codex，新CLI与普通Desktop问答均已验证；既有会话及材料未自动迁移、补采或重放。
+2026-11-13 PA项目权限增补已完成dev自验，范围及实际日常接入见项目权限交付，详细证据见执行记录。原D01–D09的共用owner和只读通用知识规则是此前交付事实；当前受管PA使用独立Agent主体、官方dataset ACL与本机项目控制进程。经用户明确交接已切换本机Codex，新CLI与普通Desktop问答均已验证；既有会话及材料未自动迁移、补采或重放。
 
 PA配置模板新增可选 `project_control`：显式loopback `url`、私有 `registry_file`、独立 `management_token_file`、安装实例 `agent_control_token_files` 以及固定 `plugin_dir`。启用后启动器一并管理控制进程，关窗保持，明确stop才收尾。未配置时保留原启动流程；模板路径仍是占位符。受管插件在独立目录重放 `engine/patches/project_access.py`，启动器核对 `engine/managed-project-plugin.json` 的全部摘要；禁止手改日常插件缓存。项目权限源码、真实隔离Agent及Native验证边界见 `docs/engineering/project-access-execution-20261113.md`；本机Codex准备、启用及实际加载分别记录，不用准备成功代替日常接入。
 
-2026-11-13 起，精简版唯一开发入口为 `scripts/dev.py`。本轮接管与验收已完成，实际范围和限制见[交付记录](engineering/client-simplification-delivery-20261113.md)，阶段证据见[执行记录](engineering/client-simplification-execution-20261113.md)。配置模板为 [`config/daily-runtime.example.json`](../config/daily-runtime.example.json)，其中路径均为占位符，不能直接启动。
+2026-11-13 起，精简版唯一开发入口为 `scripts/dev.py`。本轮接管与验收已完成，实际范围和限制见交付记录，阶段证据见执行记录。配置模板为 [`config/daily-runtime.example.json`](../config/daily-runtime.example.json)，其中路径均为占位符，不能直接启动。
 
 从仓库根目录执行，所有操作使用同一个私有配置文件的绝对路径。先在一个终端启动并保持前台：
 
@@ -57,7 +57,7 @@ python3 scripts/dev.py stop --config /绝对路径/runtime.json
 
 `status` 检查启动器所有权并输出运行记录，不是模型推理或全部子进程健康检查。未启动、配置不匹配、端口占用、数据锁被占用或残留所有权记录都应先核实；不要删除锁／运行记录或直接杀掉未知进程来绕过检查。停止未确认时保留记录，不把失败当作已停止。
 
-2026-11-19 增加异常退出后的显式恢复：`python3 scripts/dev.py recover --config /绝对路径/runtime.json`。该命令持有同库锁，核对原配置、记录中的进程及进程组全部消失、服务端口空闲、项目登记及处理配置锁已释放后，原样归档 owner 记录，再允许正常 `start`。不终止任何进程；PID 被复用、未知监听、活跃锁或身份不匹配均拒绝。Cognee、模型桥和 project_control 统一监测父进程丢失并退出。记录和实际验证见[本轮可靠性修复](engineering/roadmap-reliability-20261119.md)。
+2026-11-19 增加异常退出后的显式恢复：`python3 scripts/dev.py recover --config /绝对路径/runtime.json`。该命令持有同库锁，核对原配置、记录中的进程及进程组全部消失、服务端口空闲、项目登记及处理配置锁已释放后，原样归档 owner 记录，再允许正常 `start`。不终止任何进程；PID 被复用、未知监听、活跃锁或身份不匹配均拒绝。Cognee、模型桥和 project_control 统一监测父进程丢失并退出。记录和实际验证见本轮可靠性修复。
 
 旧启动器仍拥有健康服务、但其 MyGo watcher 已退出时，可通过 `python3 scripts/dev.py open --watch-ui --config /绝对路径/runtime.json` 在当前终端附着一个前台 UI watcher。该入口先核对现有服务所有者和就绪状态，拒绝第二个活跃 watcher；退出此 watcher 只收尾它自己的界面进程组，不停止官方服务。普通 `open` 检测到该附着锁时不再通知旧启动器另开 watcher。此方式用于开发调试，不替代日常服务的 `start`／`stop`。
 
@@ -95,7 +95,7 @@ python3 scripts/dev.py stop --config /绝对路径/runtime.json
 
 保持同一官方服务与数据归属，需要对齐服务、实例子主体及受管dataset。固定受管产物设置 `COGNEE_PLUGIN_IDENTITY=false` 和 `COGNEE_MANAGED_ENDPOINT=true`，不另建身份或启动fallback；项目解析和权限由管理侧既有PA协议及官方有效ACL决定。`dev.py`本身不代装插件或改写宿主配置；准备／启用经设置中的连接管理API执行。
 
-已解决的接入问题是把 owner 登录 JWT 放进 `X-Api-Key` 导致官方 hook 返回 401；修复为同 owner 正式 API key，桌面也统一使用 `X-Api-Key`，详见[接管与认证记录](engineering/client-simplification-execution-20261113.md)。不要将登录 JWT、completion Bearer 凭据或 Codex 订阅登录混填为插件／桌面 API key。出现 401 时先核对目标端点和凭据类型，不通过新建身份、另起服务或空库来规避。
+已解决的接入问题是把 owner 登录 JWT 放进 `X-Api-Key` 导致官方 hook 返回 401；修复为同 owner 正式 API key，桌面也统一使用 `X-Api-Key`，详见接管与认证记录。不要将登录 JWT、completion Bearer 凭据或 Codex 订阅登录混填为插件／桌面 API key。出现 401 时先核对目标端点和凭据类型，不通过新建身份、另起服务或空库来规避。
 
 不启动旧memlaned、私有内容IPC、独立开发全文库或第二套索引。固定官方原始源码通过当前Codex桥或Provider配置推理，embedding复用已有组件。源码及轻量调试容器可隔离，日常内容只有一份官方存储。
 
@@ -105,7 +105,7 @@ python3 scripts/dev.py stop --config /绝对路径/runtime.json
 
 Cursor准备官方派生插件的不可变目录，显式启用时将其加载入口写入目标profile的`hooks.json`之`workspaceOpen`，通过官方`pluginPaths`返回目录。其他hook配置保持，旧代际目录不清理；重新打开工作区／重载窗口后才验证实际加载。检测到旧local Cognee插件或Claude重复导入时停止并保留原物，不自动迁移。当前仅管理器及配置切换验证通过，真实Cursor宿主仍待验。
 
-OpenCode第二批开发使用`engine/agents/opencode/managed-control.ts`访问既有控制协议；新增`GET /v1/project/binding?host_session_key=...`仅按独立Agent控制token读取原映射，不发现／创建项目，供unknown解析结果核对。配套服务尚未正常加载新路由时保持未知，不重发解析或回退。当前控制客户端／HTTP／outbox局部检查已通过，实际OpenCode受管安装与回调未接通，不能按源码存在启用日常入口；进度见[第二批记录](engineering/multi-agent-second-batch-20261114.md)。
+OpenCode第二批开发使用`engine/agents/opencode/managed-control.ts`访问既有控制协议；新增`GET /v1/project/binding?host_session_key=...`仅按独立Agent控制token读取原映射，不发现／创建项目，供unknown解析结果核对。配套服务尚未正常加载新路由时保持未知，不重发解析或回退。当前控制客户端／HTTP／outbox局部检查已通过，实际OpenCode受管安装与回调未接通，不能按源码存在启用日常入口；进度见第二批记录。
 
 设置“知识处理”分别保存配置、验证（消耗所选账号额度）、选择“下次启动使用”；当前配置持续服务原任务。正常stop/start后，launcher确认实际配置摘要和健康才改active；候选失败仅在所属资源确认退出后恢复原配置一次，清理未知或原配置失败则停止。原操作缺失或unknown时只核对，不新建编号重发安装或模型请求。
 
@@ -144,7 +144,7 @@ Provider协议值为 `openai`、`anthropic`、`gemini`、`custom`；DeepSeek等�
 
 ### OpenCode 第二批插件组件（dev）
 
-管理侧待发处置需要本机Node>=20；运行JSON顶层可用`opencode_node_executable`指定绝对路径，默认解析`node`。prepare在创建主体和写binding之前检查运行时，并将规范路径、SHA和worker摘要保存在installation元数据；Node升级后需重新准备／核对。管理token只由桌面运行配置传入本地worker，不写入Agent binding。实际worker验收及Native窗口未验边界见[检查点四十一](engineering/multi-agent-provider-execution-20261114.md)。
+管理侧待发处置需要本机Node>=20；运行JSON顶层可用`opencode_node_executable`指定绝对路径，默认解析`node`。prepare在创建主体和写binding之前检查运行时，并将规范路径、SHA和worker摘要保存在installation元数据；Node升级后需重新准备／核对。管理token只由桌面运行配置传入本地worker，不写入Agent binding。实际worker验收及Native窗口未验边界见检查点四十一。
 
 当前可离线构造独立插件组件，并接现有Connections的准备／启用／核对；不是完整运行包，日常配置尚未切换。使用固定上游lock预先填充的npm缓存，不读取已安装node_modules作为可信源码，不在宿主启动时联网安装。每次输出必须是新目录，保留CLI返回的manifest SHA用于prepare，不能仅信产物自报摘要。
 
@@ -152,6 +152,6 @@ Provider协议值为 `openai`、`anthropic`、`gemini`、`custom`；DeepSeek等�
 python3 scripts/task.py -- .local/cognee-python/bin/python scripts/build_opencode_plugin.py --output /绝对路径/新组件目录 --npm-cache /绝对路径/固定npm缓存
 ```
 
-安装检查入口：`python3 scripts/task.py -- env PYTHONPATH=engine/python MEMLANE_OPENCODE_TEST_NPM_CACHE=/绝对路径/固定npm缓存 .local/cognee-python/bin/python -m unittest test_opencode_installation`。缺缓存明确skip，不算完整通过。构造临时依赖自动清理，已保留组件的消费者与实际范围见[第二批账本](engineering/multi-agent-second-batch-20261114.md)。
+安装检查入口：`python3 scripts/task.py -- env PYTHONPATH=engine/python MEMLANE_OPENCODE_TEST_NPM_CACHE=/绝对路径/固定npm缓存 .local/cognee-python/bin/python -m unittest test_opencode_installation`。缺缓存明确skip，不算完整通过。构造临时依赖自动清理，已保留组件的消费者与实际范围见第二批账本。
 
-OpenCode组件配置使用运行JSON的**顶层**`opencode_plugin_dir`与`opencode_manifest_sha256`（后者必须替换为CLI的实际输出），不放入`project_control`。`agent_hosts.opencode.profile`是电脑级配置目录，默认`$XDG_CONFIG_HOME/opencode`或`~/.config/opencode`；`executable`明确时不fallback。见[配置示例](../config/daily-runtime.example.json)。组件缺失保留开发中；按管理身份prepare／activate后，由宿主重载和新会话事实确认，不能据prepare成功宣称知识生成。当前真实1.3.5空会话协议通过，真实内容链及Native增量边界见[第二批账本](engineering/multi-agent-second-batch-20261114.md)。
+OpenCode组件配置使用运行JSON的**顶层**`opencode_plugin_dir`与`opencode_manifest_sha256`（后者必须替换为CLI的实际输出），不放入`project_control`。`agent_hosts.opencode.profile`是电脑级配置目录，默认`$XDG_CONFIG_HOME/opencode`或`~/.config/opencode`；`executable`明确时不fallback。见[配置示例](../../config/daily-runtime.example.json)。组件缺失保留开发中；按管理身份prepare／activate后，由宿主重载和新会话事实确认，不能据prepare成功宣称知识生成。当前真实1.3.5空会话协议通过，真实内容链及Native增量边界见第二批账本。

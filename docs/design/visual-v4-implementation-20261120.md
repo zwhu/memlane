@@ -1,6 +1,6 @@
 # 视觉 V4 Native 实施记录
 
-2026-11-20 建立。依据：[视觉规范 V4](../ui-redesign/visual-standards-v4-20261120.md)，以及[可交互原型](../ui-redesign/visual-v4-prototype/)。本文是实施账本，按阶段更新进度和证据。
+2026-11-20 建立。依据：[视觉规范 V4](visual-standards-v4-20261120.md)，以及[可交互原型](visual-v4-prototype/)。本文是实施账本，按阶段更新进度和证据。
 
 ## 1. 目标、验收与不做范围
 
@@ -63,14 +63,14 @@
 
 - **不改的部分**：数据、存储，以及 `.local/daily/official-store`；
 - **测试**：会断言视觉参数的旧测试，必须随新令牌一起更新，不得删除断言了事；
-- **停止规则**：同一个具体缺陷累计 4 次验收不通过，就停止该缺陷，按[停止规则](workflow.md)汇报；
+- **停止规则**：同一个具体缺陷累计 4 次验收不通过，就停止该缺陷，按[停止规则](../engineering/workflow.md)汇报；
 - **dev 窗口**：dev 窗口会热重载，它连接的是日常库，所以只改界面层，不在验收中执行写入操作。
 
 ## 6. 进度
 
 | 阶段 | 状态 | 证据 |
 | --- | --- | --- |
-| 设计基线 | 已完成（用户确认三栏和筛选方案） | [视觉规范 V4](../ui-redesign/visual-standards-v4-20261120.md)、[原型](../ui-redesign/visual-v4-prototype/)、截图 |
+| 设计基线 | 已完成（用户确认三栏和筛选方案） | [视觉规范 V4](visual-standards-v4-20261120.md)、[原型](visual-v4-prototype/)、截图 |
 | P0 探测 | 已完成 | `VibrancySidebar` + 跟随系统外观（含 `MEMLANE_APPEARANCE` / `appearance` 开发覆盖）+ 去掉浮起内容面板，实窗双外观核对通过 |
 | P1 令牌与基础组件 | 已完成 | `design_tokens.go`（深浅两套令牌、6 级字号、动态 Markdown 主题）、`motion_tokens.go`（smooth/snappy/bouncy 弹簧与 ReduceMotion）、`v4_components.go`（线性/实心图标、中性分类标签、召回芯片、开关、弹簧下划线标签、弹簧分段控件、下拉按钮） |
 | P2 外壳 | 已完成 | 侧栏半透明中性叠层（`SidebarTint`）、4 格靛蓝品牌图标、选中项弹簧指示块 + 实心靛蓝图标（聚焦与失焦一致）、融合标题栏与全局搜索触发器 |

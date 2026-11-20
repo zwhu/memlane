@@ -145,7 +145,7 @@ CLI快速开始要求单独安装CLI，首次进入TUI引导登录；自动化�
 - [T8] 官方 [Trae Agent固定commit](https://github.com/bytedance/trae-agent/commit/e839e559ac61bdd0e057c375dd1dee391fee797d)、[README](https://github.com/bytedance/trae-agent/blob/e839e559ac61bdd0e057c375dd1dee391fee797d/README.md)、[pyproject.toml](https://github.com/bytedance/trae-agent/blob/e839e559ac61bdd0e057c375dd1dee391fee797d/pyproject.toml)、[Provider配置](https://github.com/bytedance/trae-agent/blob/e839e559ac61bdd0e057c375dd1dee391fee797d/trae_agent/utils/config.py)、[官方commit feed](https://github.com/bytedance/trae-agent/commits/main.atom)。
 - [T9] 官方 [国际版Changelog](https://docs.trae.ai/ide/changelog?_lang=en)、[CN Changelog](https://docs.trae.cn/ide/changelog?_lang=zh)，版本／渠道分别解释。
 - [L1] 同轮根代理对 `/Applications/Trae CN.app/Contents/Resources/app` 的product、modules、workbench及extension host只读核对；`agent-tool-host --help`方法副作用另行记录，不记为模型验收失败。
-- [L2] 本地历史 [IDE契约](p3-ide-contract.md)、[IDE验证](p3-ide-validation.md)、[Agent研究](research-agents.md)。只用作历史起点，未把A2a／A2b外推为当前后台处理能力。
+- [L2] 本地历史 IDE契约、IDE验证、Agent研究。只用作历史起点，未把A2a／A2b外推为当前后台处理能力。
 
 ## 8. 后续源码核对：确定的IDE推理接口
 

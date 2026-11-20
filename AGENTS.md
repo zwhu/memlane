@@ -1,68 +1,52 @@
-## 2026-11-20 方案决策原则
+# Memlane 开发指南
 
-选择技术或产品方案时，必须从全局出发思考当前最优解，不要被既有历史文档或旧阶段约束束缚。若全局最优解与历史文档或规范存在冲突：**先给出最优方案**，再明确标注与哪份旧文档/规则冲突以及冲突原因，交由用户判断；用户确认后同步更新相关文档，避免过时约束继续误导后续决策。
+Memlane 是面向程序员的 macOS 记忆客户端，采用 **MyGo Native 桌面端 + 固定版本官方 Cognee 引擎**。核心领域术语与分层定义见 [CONTEXT.md](CONTEXT.md)。
 
-## 2026-11-20 Cognee 零侵入原则与记忆日期口径（方案 B）
+## 1. 基础架构
 
-架构原则：**尽量不侵入 Cognee 源码**；Memlane 适配与扩展均保持在外置网关、外置存储或宿主插件层，不恢复 `lesson_provenance_patch.py` 等上游引擎源码补丁。
+全景图与详细分层见 [架构总览](docs/architecture/overview.md)（[架构图 SVG](docs/images/memlane-architecture-20261120.svg)）：
 
-记忆日期口径（覆盖 2026-11-16 依赖侵入 Cognee `distill.py` 输出 `source_qa_ids` 的旧规则）：优先沿用外置 `provenance_store` 与客户端日期记录按 `(dataset_id, lesson_type, state_key)` 锁定的最早日期（重整理不漂移、不重复计数）；其次采用 Cognee 原生 `session_date`（由插件及外置采集入口补齐 QA `context.date`）；缺少 `session_date` 的会话记忆回退采用 `createdAt` 对应的本地日历日，不再在总览展示「部分记忆缺少来源日期，未计入热力图。」；实际入库时间 `createdAt` 仍单独保留。
+- **宿主 Coding Agents（接入层）**：Codex、Antigravity / Gemini App、pi、OpenCode、TraeX、Claude Code & Cursor；按电脑级受管主体接入，各自持有独立官方身份与 `X-Api-Key`。
+- **MyGo 原生桌面端（`cmd/memlane-app/`、`internal/simpledesktop/`）**：`1200×820` 无 WebView 自绘客户端，划分为 `overview` / `reading` / `search` / `graph` 四个控制器，通过 `http_transport.go` 直连本地服务，不本地缓存正文副本。
+- **引导与原生守护（`internal/bootstrap/`、`internal/supervisor/`、`scripts/dev.py`）**：持有 `.service-owner` flock 单实例独占锁、以 `Setsid` 管理独立进程组、20 MiB 活 inode 日志截尾脱敏及防抖健康检查；崩溃不静默自启。
+- **控制面与零侵入外置网关（`engine/python/project_control_server.py`、`cognee_extension_gateway.py`）**：Loopback 控制面管理项目注册表、连接编排、队列调度、热切换与三层监控（`/v1/runtime/monitor`）；`/cognee/*` 网关统一执行 ACL 门禁、召回合并通用记忆、Diff/日期注入与召回打点。
+- **官方记忆引擎与外置存储（`official_service_dev.py`、`.local/daily/official-store`）**：启动前 SHA256 校验上游 `1.6.7` (`ec6f408`) 源码；通过 `capture_receipts` / `provenance_store` 私有 `0600` SQLite WAL 与 `language_egress` 扩展能力，正文、向量（LanceDB）与图谱（Ladybug）唯一真相保留在 `.local/daily/official-store`。推理端支持「本地 Agent 补全桥」与「直连 LLM Provider / Ollama」并存，运行期由唯一 `active` 决定。
 
-## 2026-11-14 单一日常库
+## 2. 运行方式
 
-当前运行、Native 展示及后续真实链路验收统一连接同一套日常 Cognee 官方存储（`.local/daily/official-store`），不再为开发另建或切换独立测试库。项目仍按各自 dataset 分组；备份只用于回滚，不作为第二运行库。未核对完成前不删除原材料或运行依赖。
+| 用途 | 命令 |
+| --- | --- |
+| 启动日常服务与 UI（默认配置 `.local/daily/runtime.json`） | `python3 scripts/dev.py start --config /绝对路径/runtime.json` |
+| 仅启动后台 / 查看状态 / 重开窗口 / 停止 / 异常恢复 | `python3 scripts/dev.py {start --no-ui \| status \| open \| stop \| recover} --config /绝对路径/runtime.json` |
+| Go 全量测试（含 `perf_budget_test.go` 帧耗时 `<16ms` 与切页堆内存 `<=25 MiB` 验收）与静态检查 | `sh scripts/go.sh test ./...`、`sh scripts/go.sh vet ./...` |
+| 零依赖静态检查（`ML001`–`ML003` 模型边界、`ML007` 环境变量隔离、`ML008`–`ML011` UI 性能红线） | `python3 scripts/task.py -- python3 scripts/lint.py` |
+| Lint 规则回归单测 | `python3 scripts/task.py -- python3 -m unittest discover -s scripts -p test_lint.py` |
+| 模型参数 / 探针 / 切换 / 启动回归（修改模型路径时必跑） | `python3 scripts/task.py -- python3 -m unittest` 运行 `test_generation_parameters`、`test_generation_probe`、`test_generation_handoff`、`test_generation_startup` |
 
-## 开发与 release 阶段边界
+运行边界：
+- **单一日常库**：日常运行、Native 界面与真实链路验收统一连接 `.local/daily/official-store`，不另建独立测试库；未核对前不删除原材料或运行依赖。
+- **磁盘门禁与目录保护**：受管任务经 `scripts/task.py` 执行，至少保留 `50 GiB` 可用空间（运行中低于 `55 GiB` 自动停止）；**禁止清空 `build/`**（其中 `build/p3-prototype` 是含未提交修改的 Git 工作树）。清理旧运行包前必须先核对 daemon/helper 所属完整包与桥接依赖，依赖未知则保留。
+- **隐私与交付范围**：实际运行配置、凭据与真实记忆库位于 Git 跟踪之外的 `.local/`；不提交密钥、真实库、聊天记录或本机 Agent 配置。除非用户明确要求，不构建 DMG 或执行签名、公证、更新与 helper 安装。
 
-- 当前处于开发阶段（`dev`），不构建或验收完整运行包（不进行 DMG、签名、公证、更新或 helper 安装），不将完整包作为开发任务完成门槛；等用户明确要求进入 release 阶段后再开始打包。
-- 开发阶段继续进行源码检查、必要测试、真实链路及实际 Native 界面验收；必要的开发调试编译不等于完整运行包交付。
-- 开发入口见[开发说明](docs/development.md)，统一使用 `python3 scripts/dev.py`；Go 检查使用 `sh scripts/go.sh test ./...`，Python 检查使用已有 venv 并经由 `python3 scripts/task.py -- <命令>` 执行。
+## 3. 文档路由
 
-## 开发磁盘安全空间（50 GiB / 55 GiB）
+全仓文档总索引见 [docs/README.md](docs/README.md)，按任务类型查阅对应基准文档：
 
-- 至少保留 50 GiB 可用空间；不足先清理本项目可再生缓存／任务载荷，仍不足则停止，不继续下载或构建。
-- Go 检查与构建包装已接入 `scripts/task.py`；其他验收／组件准备一律通过 `python3 scripts/task.py -- <命令>` 执行。运行中余量监测低于 55 GiB 停止受管任务。新阈值对新启动的包装器生效，不因修改门禁擅自停止已运行的共享服务。
-- 临时环境、引擎／模型重复副本跑完任务即清；长期仅留报告、小型回执及必要开发组件。**禁止清空 `build/`**：其中 `build/p3-prototype` 是有未提交修改的 Git 工作树。
+| 任务领域 | 查阅文档 |
+| --- | --- |
+| **产品定位、内容分层与演进** | [产品定义](docs/product/product.md)、[内容分层](docs/product/content-model.md)、[Roadmap](docs/product/roadmap.md)、[部署方向](docs/product/deployment-options-20261117.md) |
+| **系统架构、开发运维与改造记录** | [架构总览](docs/architecture/overview.md)、[开发说明](docs/architecture/development.md)、[架构改造记录](docs/architecture/architecture-refactor-20261120.md)、[环境准备报告](docs/architecture/environment-readiness-reliability-20261117.html) |
+| **Agent 接入、模型契约与队列隔离** | [电脑级接入契约](docs/architecture/agent-connection-contract.md)、[有效模型契约](docs/architecture/agent-effective-model-contract-20261118.md)、[队列隔离记录](docs/architecture/queue-isolation-20261119.md) |
+| **界面交互、V4 视觉与动效** | [设计决策](docs/design/design.md)、[视觉规范 V4](docs/design/visual-standards-v4-20261120.md)、[MyGo 动效契约](docs/design/motion-implementation.md)、[V4 可交互原型](docs/design/visual-v4-prototype/)、[V4 实施账本](docs/design/visual-v4-implementation-20261120.md) |
+| **专题技术调研** | [多 Agent 驱动协议](docs/research/agent-driving-protocols-20261118.md)、[Hindsight 审计](docs/research/hindsight-vs-memlane-20261117.md)、[macOS 更新调研](docs/research/macos-updater-20261119.md)、[TRAE IDE 整理调研](docs/research/trae-ide-memory-processing-20261119.md) |
+| **工程规范、复盘与模板** | [工程规范](docs/engineering/workflow.md)、[运行包误清理复盘](docs/engineering/runtime-package-cleanup-incident-20261111.md)、[任务说明模板](docs/engineering/templates/task-brief-template.md)、[用例模板](docs/engineering/templates/testcase-template.md)、[复盘模板](docs/engineering/templates/incident-template.md) |
+| **历史归档（仅供追溯）** | [归档目录](docs/archive/)（含 V3 设计稿、旧视觉规范与已退役脚本说明，不作新改动依据） |
 
-## 运行包与清理依赖保护
+## 4. 设计原则
 
-- 新 GUI 包不能视为完整运行时替代；清理前核对 daemon/helper 所属完整包、Agent 桥接路径、服务注册路径及组件引用。保护完整包及其资源/签名，不仅保护执行文件；不能仅凭 `ps` 命令名或无运行进程判定可删。
-- 切换保留包时同步保留实际依赖集合，只有真实迁移并验证后才清理旧包；依赖未知则保留；无安全清理候选且空间不足时停止构建/下载。
-- 复盘见[运行包误清理](docs/engineering/runtime-package-cleanup-incident-20261111.md)；后续卸载待办见[Roadmap](docs/roadmap.md)。
-
-## 工程执行与问题闭环
-
-跨模块实施使用 [plan-change-impact](.agents/skills/plan-change-impact/SKILL.md)，集成／交付验收使用 [verify-continuous-scenarios](.agents/skills/verify-continuous-scenarios/SKILL.md)；局部小改动按需简化。项目填写入口为[影响与验证模板](docs/engineering/task-brief-template.md)，命令工具见[场景执行入口](docs/engineering/scenario-runner.md)。
-
-后续编码遵循[工程规范](docs/engineering/workflow.md)：先列连续主流程用例，再集中开发和定向检查，统一集成验收；失败按同类集中修复，使用[用例模板](docs/engineering/testcase-template.md)与[复盘模板](docs/engineering/incident-template.md)。诊断不得把未知模型调用或进程事实推断为零／已回收。
-
-同一具体问题累计第 4 次验收仍未通过，停止该问题的继续尝试并汇报；「4 次」按同一具体缺陷计数，不按连续 4 轮整体验收失败计数。按触发条件、失败现象与验收标准识别问题，不得将整个页面或功能中的不同缺陷合并凑成 4 次；换版本、路径、Agent 或操作 ID 也不能拆分同一问题以重置次数。失败证据始终保留，详见[停止规则](docs/engineering/workflow.md)。不依赖该问题的工作可继续。
-
-计数示例：四轮分别发现布局、复制、焦点和来源权限问题，各问题分别记 1 次，不触发「四次失败停止」。同一具体缺陷即使中间穿插其他问题，累计第 4 次失败仍须停止该缺陷；停止范围限于该问题及确实依赖它的工作。
-
-## Codebase ownership and communication
-
-1/ This codebase is yours: what it's for and how it's built are your call, and you'll keep building on it.
-
-2/ Before you start, say in a line what you're about to do; brief updates while you work help the user follow along. Close with a short recap that stands on its own (what you found, what you did, and what's next), so a reader who only sees the last message has the full picture.
-
-## 2026-11-18 桥接与直连的模型参数防回归
-
-提交相关修改前必须运行 `python3 scripts/task.py -- python3 scripts/lint.py`。这是不依赖第三方库的静态检查，覆盖 `engine/python/` 全部生产模块（含子包）与 `internal/simpledesktop/` Go 界面层：`ML001` 禁止绕过共享构造器，`ML002` 禁止注入字面量参数，`ML003` 禁止参数回退值，`ML007` 禁止在非白名单模块修改全局 `os.environ`；性能验收门禁由 `ML008`–`ML011` 守护（`ML008` 禁止非 `motion_tokens.go` 或无 `ReduceMotion` 守护的 `AnimationFrame()` 刷帧空转、`ML009` 禁止列表行带延迟布局过渡与 `<500ms` 高频 `c.After` 轮询、`ML010` 禁止 `Draw`/`DrawOver` 绘制回调执行同步 I/O/休眠/网络请求、`ML011` 禁止 `overview` 退回双遍全量遍历/逐页落盘及 `App.View` 热路径同步 I/O），并由 `internal/simpledesktop/perf_budget_test.go` 在 `sh scripts/go.sh test ./...` 中自动验收单帧构建耗时（`< 16ms`）与连续切页/切外观堆内存上限（`<= 25 MiB`）。规则回归使用 `python3 scripts/task.py -- python3 -m unittest discover -s scripts -p test_lint.py`。
-
-未配置的模型选项保持未配置，不补客户端显式采样/输出默认值；用户显式填写的 `0` 必须保留。启动、验证和切换统一使用 `generation_config.native_llm_configuration` / `native_llm_kwargs`，消费者不得独立构造 `LLMConfig` 或继承前一配置环境。修改这些路径须通过 `test_generation_parameters`、`test_generation_probe`、`test_generation_handoff`、`test_generation_startup`，执行要求见[工程规范](docs/engineering/workflow.md)。
-
-## 2026-11-18 Agent 有效模型继承与设置边界
-
-所有 Agent 均复用自身模型设置，技术契约见[统一技术契约](docs/engineering/agent-effective-model-contract-20261118.md)。优先使用明确绑定会话的官方元数据，再继承 Agent 配置中的显式选项；无会话身份只读默认配置并区分来源，不猜最近会话。桥接与 Provider 配置并存时唯一 `active` 决定实际执行；查看、编辑或保存不启用，只有确认后的服务回执更新 `active`（由 `ML004` / `ML005` 守护）。
-
-设置页按「记忆处理 → Agent 与模型 → 服务」组织：列表卡片外使用 `Segmented` 切换处理来源、编辑与确认使用 `Modal`、列表行按固定顺序展示且保留只读模型详情。用户画像生成与导出不得按固定总时长超时中断（由 `ML006` 守护），应观测进程/输出活动并提供显式停止，保存阶段禁止取消并声称未写入。
-
-# Memlane 产品与架构约束
-
-这是面向程序员的 macOS 记忆客户端（MyGo Native，固定版本官方 Cognee 引擎），工作前阅读[产品定义](docs/product.md)、[设计决策](docs/design.md)与领域术语[CONTEXT](CONTEXT.md)。
-
-- **唯一数据源与内容分层**：知识与原始记录以 Cognee 官方存储为唯一主数据源，术语与分层见[内容分层](docs/ui-redesign/content-model.md)；通用记忆（个人偏好／通用经验）与用户画像按来源独立保存，不自动合并为通用记忆。AI 提出的合并、覆盖、删除或跨项目移动在用户确认前不得改变已有有效知识。
-- **官方采集与电脑级连接**：Agent 连接与信息采集按[电脑级配置与官方优先规则](docs/ui-redesign/agent-connection-contract.md)执行，优先复用官方插件并用受管独立主体接入；单条拒收与回执未知隔离见[队列隔离记录](docs/engineering/queue-isolation-20261119.md)，当前整体结构见[架构改造记录](docs/engineering/architecture-refactor-20261120.md)。
-- **界面与视觉规范**：默认与最小窗口 1200×820（允许放大），首页保留宽幅总览，详情页采用三栏，普通操作在栏内完成，无全局「全部记忆」侧栏入口。项目页的列表栏使用「分类／仅未读／排序」筛选工具条，关键词搜索交给全局 ⌘K。UI 改动须实际查看[视觉规范 V4](docs/ui-redesign/visual-standards-v4-20261120.md)及其[可交互原型](docs/ui-redesign/visual-v4-prototype/)，在浅色和深色两套外观下验收；动效开发遵循[MyGo 动效契约](docs/ui-redesign/motion-implementation.md)，弹簧参数以 V4 为准。旧的 20261112 设计图、设计规格 V3 和 20261113 视觉规范已被 V4 取代，只作历史参考。
-- **协作与安全底线**：文档默认中文，区分已实现与待验证，不将示例状态描述为真实接入结果。保留用户无关修改，不提交密钥、真实记忆库、聊天记录或本机 Agent 配置。
+- **全局最优决策**：从全局出发思考当前最优解，不被过时文档约束；若最优解与旧文档冲突，先提出最优解并标明冲突所在与原因，经用户确认后同步更新相关文档。
+- **Cognee 零侵入与记忆日期口径**：所有扩展保持在外置网关、外置存储或宿主插件层，不修改上游 Cognee 源码。记忆日期优先取外置 `provenance_store` 按 `(dataset_id, lesson_type, state_key)` 锁定的最早日期，其次取原生 `session_date`，缺失时回退 `createdAt` 对应本地日历日（`createdAt` 单独保留）。
+- **唯一真相与用户确认边界**：Cognee 官方存储为唯一主数据源；通用记忆与用户画像按来源独立保存，不自动合并为通用记忆。AI 提出的合并、覆盖、删除或跨项目移动，在用户明确确认前不得改变已有有效知识。
+- **模型参数与设置契约**：未配置的模型选项保持省略，用户显式填写的 `0` 必须保留；启动、验证与热切换统一使用 `generation_config.native_llm_configuration` / `native_llm_kwargs`，不继承前一配置环境。桥接与 Provider 并存时查看、编辑或保存均不激活，仅确认后的服务回执更新唯一 `active`；用户画像生成不得按固定总时长超时中断，保存阶段不可取消。
+- **桌面界面与视觉验收**：保持 `1200×820` 默认与最小窗口（允许放大），首页宽幅总览、详情页三栏、关键词搜索统一交给全局 `⌘K`、无全局「全部记忆」侧栏入口。UI 改动须对照 V4 规范与原型在浅色、深色两套外观下实际验收。
+- **工程闭环与协作底线**：跨模块实施与集成验收优先使用 [plan-change-impact](.agents/skills/plan-change-impact/SKILL.md) 与 [verify-continuous-scenarios](.agents/skills/verify-continuous-scenarios/SKILL.md)。同一具体缺陷累计第 4 次验收仍未通过时停止该缺陷尝试并保留证据汇报（规则细节见 [工程规范](docs/engineering/workflow.md)）。诊断区分已实现与待验证，不将未知模型调用或进程状态推断为零；保留无关修改。文档与交流默认使用中文，动工前用一行说明即将执行的工作，结束时给出可独立读懂的简短小结。

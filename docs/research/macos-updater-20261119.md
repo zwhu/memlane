@@ -19,11 +19,11 @@
 
 ## Memlane 当前可复用的基础
 
-- [runtime_assets.go](../runtime_assets.go) 内嵌小型适配代码和固定清单，Python、Cognee 原生依赖及 embedding 权重仍在 App 外。
-- [resources.go](../internal/bootstrap/resources.go) 根据全部运行资源摘要生成 `runtime-<摘要>` 私有目录，逐文件检查原内容，不就地覆盖不同版本。这是升级时同时保留旧运行资源与候选资源的基础，不代表更新事务已经实现。
-- [first_runtime.go](../internal/bootstrap/first_runtime.go) 从明确资源目录启动后台，保存官方库路径与身份；当前仍复用资源目录中的开发启动器，正式更新协调未接入。
-- [组件清单](../engine/coding-memory-components.json) 固定官方服务和插件输入；[安装器](../internal/bootstrap/installer.go)已有绑定具体计划摘要的确认及恢复机制。
-- [插件准备](../engine/python/project_installation.py)生成独立安装产物，宿主的启用与信任仍按现有流程处理；新 App 不自动证明已有 Agent 已切换插件。
+- [runtime_assets.go](../../runtime_assets.go) 内嵌小型适配代码和固定清单，Python、Cognee 原生依赖及 embedding 权重仍在 App 外。
+- [resources.go](../../internal/bootstrap/resources.go) 根据全部运行资源摘要生成 `runtime-<摘要>` 私有目录，逐文件检查原内容，不就地覆盖不同版本。这是升级时同时保留旧运行资源与候选资源的基础，不代表更新事务已经实现。
+- [first_runtime.go](../../internal/bootstrap/first_runtime.go) 从明确资源目录启动后台，保存官方库路径与身份；当前仍复用资源目录中的开发启动器，正式更新协调未接入。
+- [组件清单](../../engine/coding-memory-components.json) 固定官方服务和插件输入；[安装器](../../internal/bootstrap/installer.go)已有绑定具体计划摘要的确认及恢复机制。
+- [插件准备](../../engine/python/project_installation.py)生成独立安装产物，宿主的启用与信任仍按现有流程处理；新 App 不自动证明已有 Agent 已切换插件。
 
 ## 用户流程
 
@@ -56,7 +56,7 @@
 
 进入 release 后至少验证：正常更新；下载中断及坏签名保持原版本；正在处理时等待／稍后；GUI 意外退出及整机重启后的原记录恢复；候选后台失败；同库内容和主体／权限／配置保持；插件需重新审阅；旧资源仍被引用时不清理。App 内检查应避免为升级验证另发模型调用；最终端到端验收按明确范围执行。
 
-本建议未改变产品／设计基线，未启用 MyGo updater、生成签名密钥或发布任何制品。旧运行包误清理与失败计数继续见[事故记录](engineering/runtime-package-cleanup-incident-20261111.md)，不以本报告恢复该已停止实验。
+本建议未改变产品／设计基线，未启用 MyGo updater、生成签名密钥或发布任何制品。旧运行包误清理与失败计数继续见[事故记录](../engineering/runtime-package-cleanup-incident-20261111.md)，不以本报告恢复该已停止实验。
 
 ## 核对来源补充
 

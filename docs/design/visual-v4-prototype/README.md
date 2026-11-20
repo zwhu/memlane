@@ -5,7 +5,7 @@
 ## 打开方式
 
 ```sh
-cd docs/ui-redesign/visual-v4-prototype
+cd docs/design/visual-v4-prototype
 python3 -m http.server 18790 --bind 127.0.0.1
 # 浏览器打开 http://127.0.0.1:18790/
 ```
