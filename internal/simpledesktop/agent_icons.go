@@ -13,7 +13,7 @@ var agentIconFiles embed.FS
 func agentOriginalIcon(kind string) *ui.SVG { return agentBrandIcon(kind) }
 
 func agentLogo(c *ui.Context, mark *ui.SVG, size float32) ui.Element {
-	return ui.Image(c, mark).Size(size, size).Fit(ui.Contain).TextColor(ui.Hex("#000000"))
+	return ui.Image(c, mark).Size(size, size).Fit(ui.Contain).TextColor(tok.Text1)
 }
 
 var agentBrandIcons = func() map[string]*ui.SVG {

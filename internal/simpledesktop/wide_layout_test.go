@@ -20,11 +20,12 @@ func TestHeatmapUsesAvailableWidth(t *testing.T) {
 			if !ok {
 				t.Fatal("last calendar cell missing")
 			}
-			if math.Abs(float64(day.X+day.W-float32(width-17))) > 2 {
-				t.Fatalf("calendar retains a wide right gutter: %+v", day)
-			}
 			if day.X+day.W > float32(width) {
 				t.Fatal("calendar overflows")
+			}
+			today, ok := tt.Find("今天新增 1 条")
+			if !ok || today.X <= day.X+day.W {
+				t.Fatalf("V4 heatmap right summary misplaced: day=%+v today=%+v", day, today)
 			}
 		})
 	}
@@ -39,7 +40,7 @@ func TestReaderInfoFollowsBodyWidth(t *testing.T) {
 			if !ok {
 				t.Fatal("information action missing")
 			}
-			right := paneInset + min(float32(width)-2*paneInset, float32(820))
+			right := sp10 + min(float32(width)-2*sp10, readerMaxW)
 			if math.Abs(float64(info.X+info.W-right)) > 2 {
 				t.Fatalf("information action detached from body edge: %+v expected right %v", info, right)
 			}

@@ -47,8 +47,8 @@ func TestOverviewOpenLocatesSecondPageAndScrollsToTarget(t *testing.T) {
 	tt := ui.NewTester(a.View, 1200, 820)
 	tt.Frame()
 	r, ok := tt.Find("Knowledge 58")
-	if !ok || r.H <= 0 || r.Y < 120 || r.Y+r.H > 800 {
-		t.Fatal("target is not visible and selected", r)
+	if !ok || r.H <= 0 || r.Y < 96 || r.Y+r.H > 800 || s.ListSelection != 28 {
+		t.Fatalf("target is not visible and selected: rect=%+v listSelection=%d", r, s.ListSelection)
 	}
 	a.load(s)
 	drainReading(t, updates, func() bool { return !s.Loading && !s.Reading })

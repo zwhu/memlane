@@ -302,7 +302,7 @@ func (a *App) userProfilesPage(c *ui.Context) {
 					}
 					button := ui.Button(c.Key("profile-source-"+p.ID), "").Label(p.Name+"用户画像").FillWidth().Height(40).Padding(0, listItemInset).Gap(10).Justify(ui.Start).BorderWidth(0).Radius(6).Cursor(ui.CursorPointer)
 					if s.Selected == p.ID {
-						button.Background(ui.Hex("#edf3fa"))
+						button.Background(tok.AccentSoft)
 					} else {
 						button.Background(ui.Transparent)
 					}
@@ -312,7 +312,7 @@ func (a *App) userProfilesPage(c *ui.Context) {
 						})
 						homeText(c, p.Name, homeBody).FontSize(12).SingleLine().Grow(1).MinWidth(0)
 						if p.Status == "ready" {
-							ui.Box(c).Size(5, 5).Radius(3).Background(ui.Hex("#72978a")).Tooltip(p.label())
+							ui.Box(c).Size(5, 5).Radius(3).Background(tok.OK).Tooltip(p.label())
 						} else if p.Status == "failed" || p.Status == "unknown" {
 							homeText(c, "!", homeMeta).FontSize(11).Tooltip(p.label())
 						} else if p.working() {
@@ -379,7 +379,7 @@ func (a *App) userProfilesPage(c *ui.Context) {
 				message = s.Message
 			}
 			if message != "" {
-				homeText(c, message, homeMeta).TextColor(ui.Hex("#b34747")).Margin(0, paneInset, controlGap, paneInset)
+				homeText(c, message, homeMeta).TextColor(tok.Danger).Margin(0, paneInset, controlGap, paneInset)
 			}
 			if s.Body != "" {
 				ui.Scroll(c.Key("user-profile-document-"+s.BodyKey)).Grow(1).MinHeight(0).Padding(controlGap, paneInset, paneInset, paneInset).TrackScroll(&s.Scroll).Children(func() {

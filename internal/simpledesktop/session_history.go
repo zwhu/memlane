@@ -175,11 +175,35 @@ func (a *App) openSourceRecord(origin *pane, knowledge, session Item, page *Sess
 
 func (a *App) sourceContext(c *ui.Context, s *pane) {
 	origin := s.History[len(s.History)-1]
-	ui.Column(c).FillWidth().Gap(6).Children(func() {
-		homeText(c, "来源记忆", homeMeta)
-		homeText(c, projectDisplayTitle(origin), homeBody).TextColor(homeInk).MaxLines(2)
-		homeText(c, "会话级出处 · 未提供具体问答或工具记录的位置。", homeMeta).MaxLines(2)
-		projectLink(c, "返回来源记忆", func() { a.returnFromSource(s) })
+	summary := stripInlineBackticks(knowledgePreview(overviewReadingTitle(origin)))
+	if summary == "" {
+		summary = projectDisplayTitle(origin)
+	}
+	ui.Column(c).FillWidth().Padding(sp2+2, sp3).Gap(6).Radius(radius).Background(tok.AccentSofter).Border(1, tok.AccentSoft).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+			back := ui.ButtonBase(c.Key("source-return-btn")).Role(ui.RoleButton).Label("返回来源记忆").
+				Cursor(ui.CursorPointer).Height(24).Padding(0, sp2).Gap(4).Radius(radiusSmall).BorderWidth(0).AlignItems(ui.Center).Shrink(0)
+			back.Background(homeHoverColor(back, "src-back-bg", ui.Transparent, tok.AccentSoft))
+			v4ButtonPress(back, 0.96)
+			back.Children(func() {
+				ui.Icon(c, readingBack).FontSize(12).TextColor(tok.Accent).Shrink(0)
+				ui.Text(c, "返回来源记忆").Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Accent).SingleLine()
+			}).OnClick(func() { a.returnFromSource(s) })
+			ui.Box(c).Size(1, 12).Background(tok.Border).Shrink(0)
+			homeText(c, "来源记忆", homeMeta).Shrink(0)
+			ui.Spacer(c)
+			if a.page == "知识" && a.kind == "知识" && s.Selected != nil && s.Selected.Session != nil {
+				selectedCopy := *s.Selected
+				pageCopy := s.SourcePage
+				homeLink(c, "在原始记录中打开", func() {
+					a.openSourceRecord(s, origin, selectedCopy, pageCopy)
+				}).FontSize(fsCaption).Shrink(0)
+			}
+		})
+		if summary != "" {
+			ui.Text(c, summary).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text1).MaxLines(2).LineHeight(1.5)
+		}
+		homeText(c, "会话级出处 · 未提供具体问答或工具记录的位置。", homeMeta)
 	})
 }
 
@@ -192,13 +216,16 @@ func (a *App) sessionHistoryControls(c *ui.Context, s *pane, item Item) bool {
 	if s.SessionTools {
 		selected = 1
 	}
-	ui.Segmented(c, &selected, "问答", "工具记录").Label("会话内容类型").OnChange(func() { s.SessionTools = selected == 1; s.SessionLoadMaxY = 0 })
 	name, total, loaded := "问答", page.Count, len(page.QAs)
 	if s.SessionTools {
 		name, total, loaded = "工具记录", page.ToolCount, len(page.Traces)
 	}
-	ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-		homeText(c, fmt.Sprintf("%s · 已加载 %d / %d", name, loaded, total), homeMeta)
+	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp3).Margin(sp1, 0, sp1, 0).Children(func() {
+		v4Segmented(c, "session-content-type", "会话内容类型", &selected, []string{"问答", "工具记录"}, func() {
+			s.SessionTools = selected == 1
+			s.SessionLoadMaxY = 0
+		})
+		homeText(c, fmt.Sprintf("%s · 已加载 %d / %d", name, loaded, total), homeMeta).FontFeatures("tnum")
 		ui.Spacer(c)
 		refreshAction(c, "重新读取会话", func() { s.SessionLoadMaxY = 0; a.loadSessionPage(s, 0, 0) }).Disabled(s.Reading)
 	})

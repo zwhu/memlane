@@ -68,7 +68,6 @@ func TestProjectReadingModalFocusCopyAndIndependentGeometry(t *testing.T) {
 			if before != after {
 				t.Fatal("information panel moved reading geometry")
 			}
-			clickProjectUI(t, tt, "关闭记忆详情")
 			clickProjectUI(t, tt, "搜索记忆与原始记录")
 			if a.page != "知识" || !tt.Focused("搜索关键词") {
 				t.Fatal("opening search navigated or did not focus input")
@@ -246,7 +245,6 @@ func TestProjectLongTitleSearchKeyboardAndStateFixtures(t *testing.T) {
 				t.Fatal("expansion altered title")
 			}
 			clickProjectUI(t, tt, "收起标题")
-			clickProjectUI(t, tt, "关闭记忆详情")
 			clickProjectUI(t, tt, "搜索记忆与原始记录")
 			a.searchUI.Query = "凭据配置"
 			a.searchUI.Rows = []Item{{ID: "s1", Dataset: "ds", Kind: "知识片段", Title: i.Title, Preview: "credential separation, shared official identity…", BodyLoaded: true}, {ID: "s2", Dataset: "ds", Kind: "知识片段", Title: "客户端认证约定", Preview: "从 token_file 读取 X-Api-Key", BodyLoaded: true}, {ID: "s3", Dataset: "ds", Kind: "原始材料片段", Title: "开发环境与凭据配置", Preview: "启动参数与窗口重开", BodyLoaded: true}}

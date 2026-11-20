@@ -6,9 +6,9 @@ import (
 )
 
 func policySettingRow(c *ui.Context, title, explanation, value string, inherited bool, control func()) {
-	ui.Column(c).FillWidth().Padding(16).Gap(8).Background(ui.Hex("#f8fafc")).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
-		ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
-			homeText(c, title, homeHeading).FontSize(13)
+	ui.Column(c).FillWidth().Padding(sp4).Gap(sp2).Background(tok.Fill1).Border(1, tok.Border).Radius(radius).Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(sp3).Children(func() {
+			homeText(c, title, homeHeading).FontSize(fsBody)
 			ui.Spacer(c)
 			source := "独立设置"
 			if inherited {
@@ -17,7 +17,7 @@ func policySettingRow(c *ui.Context, title, explanation, value string, inherited
 			homeText(c, source, homeMeta)
 		})
 		homeText(c, explanation, homeMeta).LineHeight(1.6)
-		ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(sp3).Children(func() {
 			control()
 			homeText(c, "已保存："+value, homeMeta)
 		})
@@ -38,14 +38,16 @@ func settingsTabs(c *ui.Context, current *string, labels []string) {
 			displayLabels[n] = "记忆处理"
 		}
 	}
-	ui.Tabs(c, &selected, displayLabels...).Label("设置分类").Margin(18, 20).OnChange(func() { *current = labels[selected] })
+	ui.Row(c).FillWidth().Shrink(0).Padding(0, sp8).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+		v4UnderlineTabs(c, "settings-tabs", "设置分类", &selected, displayLabels, func() { *current = labels[selected] })
+	})
 }
 func settingsCard(c *ui.Context, title, description string, content func()) {
 	settingsListSurface(c, func() {
-		ui.Column(c).FillWidth().Gap(12).Padding(10, 0).Children(func() {
-			homeText(c, title, homeHeading).FontSize(15).FontWeight(500)
+		ui.Column(c).FillWidth().Gap(sp3).Padding(10, 0).Children(func() {
+			homeText(c, title, homeHeading).FontSize(fsReading).FontWeight(600)
 			if description != "" {
-				homeText(c, description, homeMeta).LineHeight(1.7)
+				homeText(c, description, homeMeta).LineHeight(1.6)
 			}
 			content()
 		})
@@ -59,12 +61,13 @@ func (a *App) globalSettingsPage(c *ui.Context) {
 		a.access.SettingsSection = "记忆处理"
 	}
 	settingsTabs(c, &a.access.SettingsSection, []string{"记忆处理", "Agent 与模型", "服务"})
-	ui.Scroll(c.Key("global-settings-"+a.access.SettingsSection)).Grow(1).MinHeight(0).Padding(12, 32, 24, 32).Background(ui.Hex("#f8fafc")).Children(func() {
+	ui.Scroll(c.Key("global-settings-"+a.access.SettingsSection)).Grow(1).MinHeight(0).Padding(sp5, sp8, sp6, sp8).Background(tok.Bg).Children(func() {
 		ui.Column(c).FillWidth().MaxWidth(1100).Gap(16).Children(func() {
 			switch a.access.SettingsSection {
 			case "记忆处理":
 				a.generationConfigurationFor(c, false, true)
 				languageSettingsCard(c)
+				a.appearanceSettingsCard(c)
 				a.globalToolGraphSettings(c)
 			case "Agent 与模型":
 				ui.Column(c).FillWidth().Gap(24).Children(func() {
@@ -80,13 +83,13 @@ func (a *App) globalSettingsPage(c *ui.Context) {
 	})
 }
 
-// Preserve the caller's reading location for both header and badge entry points.
+// Open the project's inline Management tab while preserving caller location.
 func (a *App) openProjectSettings(index int) {
 	if index < 0 || index >= len(a.Config.Projects) {
 		return
 	}
 	id, origin := a.Config.Projects[index].ID, a.readingLocation()
-	a.navigate("设置", index)
+	a.navigateKind("知识", index, "管理")
 	a.access.OpenProject, a.settingsOrigin = id, origin
 	for _, p := range a.access.Directory.Projects {
 		if p.ID == id {
@@ -116,12 +119,12 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 		a.queuedDocumentDetail(c, p, q)
 		return
 	}
-	ui.Scroll(c.Key("project-settings-" + p.ID)).Grow(1).MinHeight(0).TrackScroll(&q.Scroll).Padding(32).Background(ui.Hex("#f8fafc")).Children(func() {
-		ui.Column(c).FillWidth().MaxWidth(900).Gap(18).Children(func() {
-			ui.Column(c).FillWidth().Padding(16).Gap(10).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
-				ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
-					homeText(c, p.Name, homeHeading).FontSize(15).Grow(1).MinWidth(0).SingleLine().Tooltip(p.Name)
-					textButton(c, "编辑名称", nil).FontSize(12).OnClick(func() { a.openProjectCreation(p.ID) })
+	ui.Scroll(c.Key("project-settings-" + p.ID)).Grow(1).MinHeight(0).TrackScroll(&q.Scroll).Padding(sp8).Background(tok.Bg).Children(func() {
+		ui.Column(c).FillWidth().MaxWidth(900).Gap(sp5).Children(func() {
+			ui.Column(c).FillWidth().Padding(sp4).Gap(10).Background(tok.BgElevated).Border(1, tok.Border).Radius(radius).Children(func() {
+				ui.Row(c).AlignItems(ui.Center).Gap(sp3).Children(func() {
+					homeText(c, p.Name, homeHeading).FontSize(fsReading).Grow(1).MinWidth(0).SingleLine().Tooltip(p.Name)
+					textButton(c, "编辑名称", nil).OnClick(func() { a.openProjectCreation(p.ID) })
 				})
 				for _, path := range p.Aliases {
 					if path == "" {
@@ -131,7 +134,7 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 				}
 			})
 			if !p.permissionsReady(a.access.Directory.Agents...) {
-				ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
+				ui.Row(c).AlignItems(ui.Center).Gap(sp3).Children(func() {
 					homeText(c, "权限尚未同步完成", homeMeta)
 					commonButton(c, "核对权限", false, func() {
 						a.mutateAccess(func(ctx context.Context, client ProjectControlClient, revision int64) (AccessDirectory, error) {
@@ -149,11 +152,11 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 			if len(a.access.Directory.Agents) == 0 {
 				homeText(c, "尚无已连接的 Agent；请先在全局设置中连接。", homeMeta)
 			}
-			homeText(c, "权限设置", homeHeading).FontSize(15)
-			ui.Column(c).FillWidth().Gap(0).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
+			homeText(c, "权限设置", homeHeading).FontSize(fsReading)
+			ui.Column(c).FillWidth().Gap(0).Background(tok.BgElevated).Border(1, tok.Border).Radius(radius).Children(func() {
 				for i, row := range a.access.Directory.Agents {
 					if i > 0 {
-						ui.Column(c).FillWidth().Height(1).Background(homeBorder)
+						ui.Column(c).FillWidth().Height(1).Background(tok.Border)
 					}
 					a.projectPermissionCard(c, p, row)
 				}
@@ -167,9 +170,5 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 var emptyReadingArt = homeSVG(`<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h3"/>`)
 
 func (a *App) emptyReadingBackground(c *ui.Context) {
-	ui.Column(c).Grow(1).FillWidth().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-		ui.Column(c).Width(160).Height(160).AlignItems(ui.Center).Justify(ui.Center).Background(ui.Hex("#f5f8fb")).Radius(80).Children(func() {
-			ui.Icon(c, emptyReadingArt).FontSize(70).TextColor(ui.Hex("#c6d5e3"))
-		})
-	})
+	v4EmptyState(c, "empty-reading-art", "", "")
 }

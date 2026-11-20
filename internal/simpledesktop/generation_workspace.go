@@ -148,7 +148,7 @@ func (a *App) generationCandidateStatus(c *ui.Context) {
 			})
 		})
 		if s.Error != "" {
-			homeText(c, s.Error, homeMeta).TextColor(ui.Hex("#b42318"))
+			homeText(c, s.Error, homeMeta).TextColor(tok.Danger)
 		}
 		return
 	}

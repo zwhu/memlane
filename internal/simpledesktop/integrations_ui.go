@@ -103,7 +103,7 @@ func (a *App) agentConnectionRow(c *ui.Context, row AgentConnection) {
 	ui.Column(c.Key("agent-connection-" + row.ID)).FillWidth().Gap(0).Children(func() {
 		settingsListRow(c, func() {
 			ui.Box(c).Size(30, 30).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-				ui.Image(c, agentOriginalIcon(row.Kind)).Size(23, 23).Fit(ui.Contain).TextColor(ui.Hex("#000000"))
+				ui.Image(c, agentOriginalIcon(row.Kind)).Size(23, 23).Fit(ui.Contain).TextColor(tok.Text1)
 			})
 			ui.Row(c).Width(190).Shrink(0).Gap(10).AlignItems(ui.Center).Children(func() {
 				homeText(c, name, homeHeading).FontSize(13).FontWeight(500)
@@ -120,7 +120,7 @@ func (a *App) agentConnectionRow(c *ui.Context, row AgentConnection) {
 			color := homeMuted
 			if (captureConnection(row) && row.Capture != nil && row.Capture.State == "healthy") ||
 				(!captureConnection(row) && row.Status == "configured_pending_new_session" && row.NewSessions > 0) {
-				color = ui.Hex("#51806b")
+				color = tok.OK
 			}
 			if pending != nil {
 				status = "连接结果待确认"
@@ -257,7 +257,7 @@ func generationLabel(g GenerationDirectory, ref *GenerationRef) string {
 	return "Provider · " + provider + " · " + row.Profile.Model
 }
 func (a *App) generationSetupPage(c *ui.Context) {
-	ui.Column(c).Fill().Padding(28).Gap(20).Background(ui.Hex("#f8fafc")).Children(func() {
+	ui.Column(c).Fill().Padding(28).Gap(20).Background(tok.Bg).Children(func() {
 		homeText(c, "配置记忆处理", homeHeading).FontSize(22)
 		homeText(c, "选择处理记忆的 Agent 或模型。", homeMeta).LineHeight(1.7)
 		ui.Scroll(c.Key("generation-first-setup")).Grow(1).MinHeight(0).Children(func() {

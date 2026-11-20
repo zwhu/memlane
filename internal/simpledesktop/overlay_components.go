@@ -2,28 +2,25 @@ package simpledesktop
 
 import (
 	"strings"
-	"time"
 
 	"github.com/egoist/mygo/ui"
 )
 
-// The SDK owns focus, dismissal, theme and reduced-motion handling. This shared
-// transition expresses opening only; it never advances a request or marks success.
 func projectOverlayMotion() ui.ElementTransition {
-	return ui.ElementTransition{Duration: 160 * time.Millisecond, Ease: ui.EaseOut, Enter: &ui.Motion{Y: 8, Scale: .98}}
+	return v4ModalTransition()
 }
 
 const appFooterHeight float32 = 48
 
 func appFooter(c *ui.Context, label string) ui.Element {
-	return ui.Row(c).Label(label).Height(appFooterHeight).Shrink(0).Padding(0, 16).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).AlignItems(ui.Center)
+	return ui.Row(c).Label(label).Height(appFooterHeight).Shrink(0).Padding(0, sp4).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).AlignItems(ui.Center)
 }
 
 type appLayoutState struct{ ProjectListWidth, CommonListWidth float32 }
 
 func readingSplit(c *ui.Context, key string, width *float32, first, second func()) {
 	if *width == 0 {
-		*width = 300
+		*width = listPaneW
 	}
 	ui.Split(c.Key(key), width, first, second).Grow(1).MinHeight(0).FillWidth()
 }
@@ -53,78 +50,58 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 		s.WidgetList.ScrollTo(s.ListSelection, ui.Center)
 		s.RevealItem = ""
 	}
-	listInset := paneInset
-	if !common {
-		listInset = pageInset
-	}
-	ui.List(c.Key("items-"+a.routeKey()), &s.WidgetList, len(s.Items), func(n int) {
-		i := s.Items[n]
-		ui.Column(c).Padding(12, listItemInset).Gap(8).MinWidth(0).Children(func() {
-			label := i.Title
-			if i.Session != nil {
-				label = sessionIdentity(i.ID)
-			}
-
-			ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(8).Children(func() {
-				display := label
+	ui.Themed(c, listTheme).Grow(1).MinHeight(0).FillWidth().Background(ui.Transparent).Children(func() {
+		ui.List(c.Key("items-"+a.routeKey()), &s.WidgetList, len(s.Items), func(n int) {
+			i := s.Items[n]
+			ui.Column(c).FillWidth().Padding(10, sp3).Gap(6).MinWidth(0).Children(func() {
 				if i.Session != nil {
-					icon := agentLogo(c, recentAgentIcon(i), 16).Tooltip(label)
-					if n == s.ListSelection {
-						icon.TextColor(c.Theme().AccentText)
+					idLabel := sessionIdentity(i.ID)
+					topic := strings.TrimSpace(i.Title)
+					hasTopic := topic != "" && topic != i.ID && topic != "来源会话"
+					// Reserve fixed 2-line title slot so async title hydration never
+					// shifts following virtualized rows.
+					ui.Column(c.Key("session-title-slot")).FillWidth().Height(36).Shrink(0).Justify(ui.Start).Children(func() {
+						if hasTopic {
+							v4InlineMarkdown(c, topic, fsFootnote, 500, 1.45, tok.Text1).MaxLines(2).Tooltip(idLabel)
+						} else {
+							ui.Text(c, idLabel).Font("system-ui").FontSize(fsFootnote).FontWeight(500).LineHeight(1.45).TextColor(tok.Text1).MaxLines(2).Tooltip(idLabel)
+						}
+					})
+					ui.Row(c).FillWidth().MinWidth(0).Height(18).Shrink(0).AlignItems(ui.Center).Gap(sp2).Children(func() {
+						agentLogo(c, recentAgentIcon(i), 16).Tooltip(idLabel)
+						v4CategoryChip(c, "会话")
+						if i.SessionSummary != "" {
+							homeText(c, i.SessionSummary, homeReadableMeta).SingleLine().Grow(1).MinWidth(0)
+						} else if hasTopic {
+							homeText(c, idLabel, homeReadableMeta).SingleLine().Grow(1).MinWidth(0)
+						} else {
+							ui.Spacer(c)
+						}
+						homeText(c, displayDate(i.Date), homeReadableMeta).FontFeatures("tnum").SingleLine().Shrink(0)
+					})
+					if i.ReadingState == "failed" {
+						projectLink(c, "标题读取失败 · 重试", func() { a.retryReadingTitle(s, i) })
 					}
-					if _, key, ok := strings.Cut(i.ID, "_"); ok {
-						display = key
-					} else {
-						display = i.ID
-					}
+					return
 				}
-				title := ui.Text(c, display).FontSize(12).SingleLine().Grow(1).MinWidth(0).Tooltip(label)
-				if n == s.ListSelection {
-					title.TextColor(c.Theme().AccentText)
+				v4InlineMarkdown(c, i.Title, fsFootnote, 500, 1.45, tok.Text1).MaxLines(2).Tooltip(i.Title)
+				kind := memoryKindLabel(i.Kind)
+				if common {
+					kind = commonCategoryLabel(i.CommonCategory)
+				}
+				ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(sp2).Children(func() {
+					if a.itemIsUnread(i) {
+						v4UnreadDot(c)
+					}
+					v4CategoryChip(c, kind)
+					ui.Spacer(c)
+					homeText(c, displayDate(i.Date), homeReadableMeta).FontFeatures("tnum").SingleLine().Shrink(0)
+				})
+				if i.ReadingState == "failed" {
+					projectLink(c, "标题读取失败 · 重试", func() { a.retryReadingTitle(s, i) })
 				}
 			})
-			kind := memoryKindLabel(i.Kind)
-			if i.Session != nil {
-				// Reserve preview and coverage slots while titles hydrate in parallel.
-				// A late response must not move every following virtualized row.
-				ui.Column(c.Key("session-preview")).Height(28).Shrink(0).Children(func() {
-					if i.Title != i.ID && i.Title != "来源会话" {
-						text := ui.Text(c, "已保存首条："+i.Title).FontSize(11).MaxLines(2)
-						if n == s.ListSelection {
-							text.TextColor(c.Theme().AccentText)
-						} else {
-							text.TextColor(c.Theme().TextMuted)
-						}
-					}
-				})
-				text := ui.Text(c.Key("session-coverage"), i.SessionSummary).FontSize(10).SingleLine().Height(14).Shrink(0)
-				if n == s.ListSelection {
-					text.TextColor(c.Theme().AccentText)
-				} else {
-					text.TextColor(c.Theme().TextMuted)
-				}
-			}
-			if common {
-				kind = commonCategoryLabel(i.CommonCategory)
-			}
-			metaLabel := kind + " · " + displayDate(i.Date)
-			if a.itemIsUnread(i) {
-				metaLabel = "未读 · " + metaLabel
-			}
-			if i.Session != nil {
-				metaLabel = sessionListMeta(i)
-			}
-			meta := ui.Text(c, metaLabel).FontSize(10).SingleLine()
-			if n == s.ListSelection {
-				meta.TextColor(c.Theme().AccentText)
-			} else {
-				meta.TextColor(c.Theme().TextMuted)
-			}
-			if i.ReadingState == "failed" {
-				projectLink(c, "标题读取失败 · 重试", func() { a.retryReadingTitle(s, i) })
-			}
-		})
-	}).Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(0, listInset-listItemInset).Gap(6).OnChange(func() {
+		}).Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(sp1, sp2, sp3, sp2).Gap(2).OnChange(func() {
 		if s.ListSelection < 0 || s.ListSelection >= len(s.Items) {
 			return
 		}
@@ -147,6 +124,7 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 				homeText(c, "可新增个人偏好或可复用的经验。", homeMeta).Margin(0, listItemInset)
 			}
 		}
+	})
 	})
 }
 

@@ -9,6 +9,10 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
+var v4KnowledgeCategories = []string{
+	"项目状态", "踩坑经验", "项目约定", "代码位置与关联", "代码变更", "约束条件", "其他",
+}
+
 type knowledgeRecallCounts struct {
 	StartedAt string `json:"started_at"`
 	Items     []struct {
@@ -71,21 +75,54 @@ func sortKnowledgeRows(rows []Item, byRecalls bool) {
 	})
 }
 
-func filteredKnowledgeCatalog(s *pane) []Item {
+func (a *App) knowledgeBaseRows(s *pane) []Item {
 	rows := s.Knowledge.Catalog
-	if len(s.Knowledge.RecallFilter) == 0 {
+	if len(rows) == 0 && len(s.Items) > 0 {
+		rows = s.Items
+	}
+	if len(s.Knowledge.RecallFilter) == 0 && !s.Knowledge.UnreadOnly {
 		return rows
 	}
-	filtered := []Item{}
+	filtered := make([]Item, 0, len(rows))
 	for _, row := range rows {
-		if s.Knowledge.RecallFilter[row.ID] {
+		if len(s.Knowledge.RecallFilter) > 0 && !s.Knowledge.RecallFilter[row.ID] {
+			continue
+		}
+		if s.Knowledge.UnreadOnly && !a.itemIsUnread(row) {
+			continue
+		}
+		filtered = append(filtered, row)
+	}
+	return filtered
+}
+
+func (a *App) filteredKnowledgeCatalog(s *pane) []Item {
+	rows := a.knowledgeBaseRows(s)
+	if s.Knowledge.CategoryFilter == "" {
+		return rows
+	}
+	filtered := make([]Item, 0, len(rows))
+	for _, row := range rows {
+		if knowledgeCategoryLabel(row) == s.Knowledge.CategoryFilter {
 			filtered = append(filtered, row)
 		}
 	}
 	return filtered
 }
 
+func (a *App) knowledgeCategoryCounts(s *pane) (int, map[string]int) {
+	base := a.knowledgeBaseRows(s)
+	counts := map[string]int{}
+	for _, row := range base {
+		if cat := knowledgeCategoryLabel(row); cat != "" {
+			counts[cat]++
+		}
+	}
+	return len(base), counts
+}
+
 func (a *App) reorderKnowledge(s *pane) {
+	a.motionRuns.projectList++
 	a.reorderKnowledgeRange(s, knowledgeBatch, true)
 }
 
@@ -95,7 +132,7 @@ func (a *App) reorderKnowledgeRange(s *pane, limit int, resetScroll bool) {
 		before[row.key()] = row
 	}
 	sortKnowledgeRows(s.Knowledge.Catalog, s.Knowledge.SortByRecalls)
-	rows := filteredKnowledgeCatalog(s)
+	rows := a.filteredKnowledgeCatalog(s)
 	s.Items = append([]Item(nil), rows[:min(limit, len(rows))]...)
 	for n, row := range s.Items {
 		if old, ok := before[row.key()]; ok {
@@ -111,33 +148,97 @@ func (a *App) reorderKnowledgeRange(s *pane, limit int, resetScroll bool) {
 	a.hydrateKnowledgeCards(s)
 }
 
-func (a *App) knowledgeSortBar(c *ui.Context, s *pane) {
-	ui.Row(c).FillWidth().Padding(0, knowledgeInset, 8, knowledgeInset).AlignItems(ui.Center).Gap(12).Children(func() {
-		if len(s.Knowledge.RecallFilter) > 0 {
-			homeText(c, fmt.Sprintf("本次召回 · %d 条", len(s.Knowledge.RecallFilter)), homeBody).FontSize(12).FontWeight(550)
-			if s.Loaded && !s.Loading {
-				if missing := len(s.Knowledge.RecallFilter) - len(filteredKnowledgeCatalog(s)); missing > 0 {
-					homeText(c, fmt.Sprintf("%d 条暂不可用", missing), homeMeta)
+// knowledgeFilterBar renders the V4 single-line filter toolbar (category dropdown
+// with counts + unread-only switch + sort dropdown) and optional recall filter bar.
+func (a *App) knowledgeFilterBar(c *ui.Context, s *pane) {
+	ui.Column(c).FillWidth().Padding(sp3, sp4, sp2, sp4).Gap(sp2).Shrink(0).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+			catValue := s.Knowledge.CategoryFilter
+			if catValue == "" {
+				catValue = "全部"
+			}
+			total, counts := a.knowledgeCategoryCounts(s)
+			v4DropdownButton(c, "knowledge-category-btn", "记忆分类筛选", "分类", catValue, s.Knowledge.CategoryFilter != "").PopoverMenuButton(func(m *ui.Menu) {
+				allLabel := fmt.Sprintf("全部 (%d)", total)
+				if s.Knowledge.CategoryFilter == "" {
+					allLabel = "✓ " + allLabel
 				}
-			}
-			queueAction(c, "显示全部记忆", func() { s.Knowledge.RecallFilter = nil; a.reorderKnowledge(s) })
-			queueAction(c, "返回动态", func() { a.navigate("总览", 0) })
-		}
-		ui.Spacer(c)
-		if s.Knowledge.CountsError != "" {
-			homeText(c, "召回次数读取失败", homeMeta)
-			queueAction(c, "重试", func() { a.loadKnowledgeFeed(s) })
+				if m.Item(allLabel).Chosen() {
+					s.Knowledge.CategoryFilter = ""
+					a.reorderKnowledge(s)
+				}
+				m.Separator()
+				for _, cat := range v4KnowledgeCategories {
+					label := fmt.Sprintf("%s (%d)", cat, counts[cat])
+					if s.Knowledge.CategoryFilter == cat {
+						label = "✓ " + label
+					}
+					if m.Item(label).Chosen() {
+						s.Knowledge.CategoryFilter = cat
+						a.reorderKnowledge(s)
+					}
+				}
+			})
+
+			v4Switch(c, "knowledge-unread-sw", &s.Knowledge.UnreadOnly, "仅未读", func() {
+				a.reorderKnowledge(s)
+			})
+
+			ui.Spacer(c)
+
+			sortLabel := "按时间"
 			if s.Knowledge.SortByRecalls {
-				queueAction(c, "改按时间", func() { s.Knowledge.SortByRecalls = false; a.reorderKnowledge(s) })
+				sortLabel = "按召回次数"
 			}
-		}
-		selected := 0
-		if s.Knowledge.SortByRecalls {
-			selected = 1
-		}
-		ui.Segmented(c, &selected, "按时间", "按召回次数").Label("记忆排序").Disabled(!s.Knowledge.CountsLoaded).OnChange(func() {
-			s.Knowledge.SortByRecalls = selected == 1
-			a.reorderKnowledge(s)
+			v4DropdownButton(c, "knowledge-sort-btn", "记忆排序", "", sortLabel, false).PopoverMenuButton(func(m *ui.Menu) {
+				timeLabel := "按时间"
+				if !s.Knowledge.SortByRecalls {
+					timeLabel = "✓ " + timeLabel
+				}
+				if m.Item(timeLabel).Chosen() {
+					s.Knowledge.SortByRecalls = false
+					a.reorderKnowledge(s)
+				}
+				recallLabel := "按召回次数"
+				if s.Knowledge.SortByRecalls {
+					recallLabel = "✓ " + recallLabel
+				}
+				if !s.Knowledge.CountsLoaded {
+					recallLabel += "（暂不可用）"
+				}
+				item := m.Item(recallLabel)
+				if !s.Knowledge.CountsLoaded {
+					item.Disabled(true)
+				} else if item.Chosen() {
+					s.Knowledge.SortByRecalls = true
+					a.reorderKnowledge(s)
+				}
+			})
 		})
+
+		if len(s.Knowledge.RecallFilter) > 0 {
+			ui.Row(c).FillWidth().Padding(6, sp2, 6, sp3).Radius(radius).Background(tok.AccentSofter).AlignItems(ui.Center).Gap(sp2).Children(func() {
+				ui.Icon(c, v4IconRecall).FontSize(13).TextColor(tok.Accent).Shrink(0)
+				ui.Text(c, fmt.Sprintf("本次召回 · %d 条", len(s.Knowledge.RecallFilter))).Font("system-ui").FontSize(fsFootnote).FontWeight(600).TextColor(tok.Accent).SingleLine()
+				if s.Loaded && !s.Loading {
+					if missing := len(s.Knowledge.RecallFilter) - len(a.filteredKnowledgeCatalog(s)); missing > 0 && s.Knowledge.CategoryFilter == "" && !s.Knowledge.UnreadOnly {
+						homeText(c, fmt.Sprintf("%d 条暂不可用", missing), homeMeta)
+					}
+				}
+				ui.Spacer(c)
+				homeLink(c, "显示全部记忆", func() { s.Knowledge.RecallFilter = nil; a.reorderKnowledge(s) })
+				homeLink(c, "返回动态", func() { a.navigate("总览", 0) })
+			})
+		}
+
+		if s.Knowledge.CountsError != "" {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+				homeText(c, "召回次数读取失败", homeMeta)
+				homeLink(c, "重试", func() { a.loadKnowledgeFeed(s) })
+				if s.Knowledge.SortByRecalls {
+					homeLink(c, "改按时间", func() { s.Knowledge.SortByRecalls = false; a.reorderKnowledge(s) })
+				}
+			})
+		}
 	})
 }

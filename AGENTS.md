@@ -64,5 +64,5 @@
 
 - **唯一数据源与内容分层**：知识与原始记录以 Cognee 官方存储为唯一主数据源，术语与分层见[内容分层](docs/ui-redesign/content-model.md)；通用记忆（个人偏好／通用经验）与用户画像按来源独立保存，不自动合并为通用记忆。AI 提出的合并、覆盖、删除或跨项目移动在用户确认前不得改变已有有效知识。
 - **官方采集与电脑级连接**：Agent 连接与信息采集按[电脑级配置与官方优先规则](docs/ui-redesign/agent-connection-contract.md)执行，优先复用官方插件并用受管独立主体接入；单条拒收与回执未知隔离见[队列隔离记录](docs/engineering/queue-isolation-20261119.md)，当前整体结构见[架构改造记录](docs/engineering/architecture-refactor-20261120.md)。
-- **界面与视觉规范**：默认与最小窗口 1200×820（允许放大），首页保留宽幅总览，详情页采用三栏，普通操作在栏内完成，无全局「全部记忆」侧栏入口。UI 改动须实际查看[当前首页设计图](docs/images/ui-redesign/client-simplification-20261112/01-home.png)、[当前三栏详情设计图](docs/images/ui-redesign/client-simplification-20261112/02-knowledge.png)、[设计规格 V3](docs/ui-redesign/memlane-design-spec-v3.html) 与[视觉规范](docs/ui-redesign/visual-standards-20261113.md)；动效开发遵循[MyGo 动效契约](docs/ui-redesign/motion-implementation.md)。
+- **界面与视觉规范**：默认与最小窗口 1200×820（允许放大），首页保留宽幅总览，详情页采用三栏，普通操作在栏内完成，无全局「全部记忆」侧栏入口。项目页的列表栏使用「分类／仅未读／排序」筛选工具条，关键词搜索交给全局 ⌘K。UI 改动须实际查看[视觉规范 V4](docs/ui-redesign/visual-standards-v4-20261120.md)及其[可交互原型](docs/ui-redesign/visual-v4-prototype/)，在浅色和深色两套外观下验收；动效开发遵循[MyGo 动效契约](docs/ui-redesign/motion-implementation.md)，弹簧参数以 V4 为准。旧的 20261112 设计图、设计规格 V3 和 20261113 视觉规范已被 V4 取代，只作历史参考。
 - **协作与安全底线**：文档默认中文，区分已实现与待验证，不将示例状态描述为真实接入结果。保留用户无关修改，不提交密钥、真实记忆库、聊天记录或本机 Agent 配置。

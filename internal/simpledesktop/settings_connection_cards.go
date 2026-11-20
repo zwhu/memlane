@@ -60,19 +60,19 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 				switch a.monitor.State {
 				case "ready":
 					status = "已连接"
-					color = ui.Hex("#4d7a66")
+					color = tok.OK
 				case "warning":
 					status = "短暂波动"
-					color = ui.Hex("#a6671c")
+					color = tok.Warning
 				case "exited":
 					status = "服务已退出"
-					color = ui.Hex("#b54738")
+					color = tok.Danger
 				case "degraded":
 					status = "响应异常"
-					color = ui.Hex("#b54738")
+					color = tok.Danger
 				default:
 					if a.service == "已连接" {
-						color = ui.Hex("#4d7a66")
+						color = tok.OK
 					}
 				}
 				homeText(c, status, homeMeta).TextColor(color)

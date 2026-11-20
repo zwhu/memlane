@@ -211,26 +211,36 @@ func (a *App) itemIsUnread(i Item) bool {
 	}
 	return false
 }
-func (a *App) unreadProjectBadge(c *ui.Context, p Project, index int) {
+func (a *App) unreadProjectBadge(c *ui.Context, p Project, index int, active bool) {
 	count := a.projectUnread(p)
 	if count == 0 {
 		return
 	}
-	label := fmt.Sprint(count)
-	if count > 99 {
-		label = "99+"
+	label := formatBadgeCount(count)
+	bg, fg := tok.Fill2, tok.Text2
+	if active {
+		bg, fg = tok.Accent, tok.OnAccent
 	}
-	ui.Button(c, label).Cursor(ui.CursorPointer).Label("未读记忆："+p.Name).Tooltip(fmt.Sprintf("%d 条未读记忆，点击查看", count)).Font("system-ui").FontSize(11).FontWeight(600).LetterSpacing(0).Padding(2, 6).Radius(8).Background(ui.Hex("#dce6ef")).TextColor(ui.Hex("#334a5f")).BorderWidth(0).OnClick(func() {
-		identity := a.cachedBaseReadingIdentity()
-		q := a.access.Queues[identity+"/"+p.ID+"/"+p.Dataset]
-		if q != nil {
-			for _, i := range q.UnreadKnowledge {
-				if !q.KnowledgeRead.Read[i.ID] {
-					a.openOverviewItem(i)
-					return
-				}
-			}
-		}
+	btn := ui.ButtonBase(c.Key("unread-badge-"+p.ID)).Role(ui.RoleButton).Cursor(ui.CursorPointer).
+		Label("未读记忆："+p.Name).Tooltip(fmt.Sprintf("%d 条未读记忆，点击查看", count)).
+		MinWidth(20).Height(18).Padding(0, 6).Radius(9).BorderWidth(0).AlignItems(ui.Center).Justify(ui.Center).Shrink(0)
+	hoverBg := tok.Accent
+	btn.Background(homeHoverColor(btn, "badge-bg", bg, hoverBg))
+	if btn.Hovered() {
+		fg = tok.OnAccent
+	}
+	v4ButtonPress(btn, 0.92)
+	btn.Children(func() {
+		ui.Text(c, label).Font("system-ui").FontSize(fsCaption).FontWeight(600).FontFeatures("tnum").TextColor(fg).SingleLine()
+	}).OnClick(func() {
 		a.navigate("知识", index)
+		s := a.state()
+		s.Knowledge.UnreadOnly = true
+		s.Knowledge.CategoryFilter = ""
+		s.Knowledge.RecallFilter = nil
+		a.reorderKnowledge(s)
+		if len(s.Items) > 0 {
+			a.selectItem(s, s.Items[0])
+		}
 	})
 }

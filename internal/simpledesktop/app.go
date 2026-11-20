@@ -13,16 +13,17 @@ import (
 	"github.com/zwhu/memlane/internal/bootstrap"
 )
 
-var ink = ui.Hex("#29343e")
-var muted = ui.Hex("#8798aa")
-var border = ui.Hex("#e8ecf0")
-var blue = ui.Hex("#e7eff9")
+var ink = lightPalette.Text1
+var muted = lightPalette.Text3
+var border = lightPalette.Border
+var blue = lightPalette.Fill1
 
 type pane struct {
 	Items                          []Item
 	Selected                       *Item
 	Offset                         int
 	More, Loaded, Loading, Reading bool
+	ReadingSource                  bool
 	Error                          string
 	Query                          string
 	ListScroll                     ui.ScrollState
@@ -71,9 +72,18 @@ type App struct {
 	editProject          *Project
 	editIndex            int
 	settingsMessage      string
-	ChooseProjectFolder  func() (string, error)
-	ChooseDiagnosticPath func() (string, error)
-	OpenExistingAgent    func(string) error
+	ChooseProjectFolder   func() (string, error)
+	ChooseDiagnosticPath  func() (string, error)
+	OpenExistingAgent     func(string) error
+	ApplyAppearanceSource func(string)
+	appearance            appearanceState
+	motionRuns            struct {
+		overviewPage      uint64
+		overviewKnowledge uint64
+		overviewActivity  uint64
+		projectPage       uint64
+		projectList       uint64
+	}
 	projectCreate        projectCreateState
 	Config               Config
 	Client               Client
@@ -116,8 +126,8 @@ func New(c Config, err error) *App {
 	}
 	a.initSearch()
 	a.initGraph(c.GraphAssets)
-	a.md = markdown.Options{Theme: &markdown.Theme{FontSize: 12, LineHeight: 1.9, Text: ink, Muted: muted, CodeSize: 11.0 / 12, CodeBlockBackground: ui.Hex("#f5f8fb"), CodeBlockBorder: border}, CodeBlock: func(c *ui.Context, b *markdown.CodeBlockView) {
-		ui.Column(c).Background(ui.Hex("#f5f8fb")).Border(1, border).Radius(6).Children(func() {
+	a.md = markdown.Options{Theme: &markdown.Theme{FontSize: 12, LineHeight: 1.9, Text: ink, Muted: muted, CodeSize: 11.0 / 12, CodeBlockBackground: lightPalette.Fill1, CodeBlockBorder: border}, CodeBlock: func(c *ui.Context, b *markdown.CodeBlockView) {
+		ui.Column(c).Background(tok.Fill1).Border(1, tok.Border).Radius(radius).Children(func() {
 			row := ui.Row(c).Padding(6, 12).Gap(4).AlignItems(ui.Center)
 			row.Children(func() {
 				ui.Text(c, strings.ToUpper(b.Language)).FontSize(10).TextColor(muted)
@@ -193,12 +203,22 @@ func (a *App) navigateKind(page string, index int, kind string) {
 	}
 	if page == "总览" {
 		a.enterOverview()
+		a.motionRuns.overviewPage++
+		a.motionRuns.overviewKnowledge++
+		a.motionRuns.overviewActivity++
+	}
+	if page == "知识" {
+		a.motionRuns.projectPage++
+		a.motionRuns.projectList++
 	}
 	a.cancelRecentTitles()
 	a.epoch++
 	a.graph.clear()
 	for _, p := range a.panes {
 		p.Knowledge.RecallFilter = nil
+		p.Knowledge.CategoryFilter = ""
+		p.Knowledge.UnreadOnly = false
+		p.Knowledge.Detail = false
 		p.HomeAnchor, p.Locating, p.RevealItem = nil, false, ""
 		a.cancelTitles(p)
 		if p.readCancel != nil {
@@ -226,11 +246,14 @@ func (a *App) navigateKind(page string, index int, kind string) {
 		if kind != "" {
 			a.kind = kind
 		}
+		if a.kind == "管理" && index >= 0 && index < len(a.Config.Projects) {
+			a.access.OpenProject = a.Config.Projects[index].ID
+		}
 	}
 	if page == "通用知识" {
 		a.kind = "知识"
 	}
-	if page != "总览" && page != "设置" && page != "图谱" && page != "检索结果" && page != "用户画像" {
+	if page != "总览" && page != "设置" && page != "图谱" && page != "检索结果" && page != "用户画像" && !(page == "知识" && a.kind == "管理") {
 		s := a.state()
 		if page == "知识" && a.kind == "知识" {
 			a.loadKnowledgeFeed(s)
@@ -481,6 +504,7 @@ func (a *App) source(s *pane) {
 	s.readRequest++
 	request, epoch := s.readRequest, a.epoch
 	s.Reading = true
+	s.ReadingSource = true
 	client := a.Client
 	titles, generation := a.titles, a.readingGeneration(s)
 	go func() {
@@ -504,6 +528,7 @@ func (a *App) source(s *pane) {
 				return
 			}
 			s.Reading = false
+			s.ReadingSource = false
 			if err != nil {
 				s.Error = err.Error()
 				if i.ID != "" {
@@ -513,16 +538,11 @@ func (a *App) source(s *pane) {
 				}
 				return
 			}
+			// Stay in place on the current reading pane so the memory list
+			// remains visible and returning is one click. Users can still jump
+			// to the Raw Records tab via the action in the source context bar.
 			s.History = append(s.History, original)
-			if i.Session != nil && a.page == "知识" && a.kind == "知识" && a.state() == s {
-				s.History = s.History[:len(s.History)-1]
-				a.openSourceRecord(s, original, i, sessionPage)
-				return
-			}
 			s.Selected = &i
-			if a.page == "知识" && a.kind == "知识" {
-				s.Knowledge.Detail = true
-			}
 			s.SourcePage, s.SessionTools = sessionPage, false
 		})
 	}()
@@ -531,6 +551,7 @@ func button(c *ui.Context, label string, fn func()) {
 	ui.Button(c, label).FontSize(12).Padding(8, 12).Background(ui.Transparent).BorderWidth(0).Justify(ui.Start).OnClick(fn)
 }
 func (a *App) View(c *ui.Context) {
+	applyAppearance(a.effectiveDark(c.Theme().Dark))
 	if a.initialSetup {
 		ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.initialEnvironmentPage(c) })
 		return
@@ -539,7 +560,13 @@ func (a *App) View(c *ui.Context) {
 		ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.generationSetupPage(c) })
 		return
 	}
-	ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() {
+	root := ui.Themed(c, homeTheme).Fill().FontWeight(400)
+	if c.Vibrancy() {
+		// The sidebar sits over the window material; content paints its own background.
+		c.Root().Background(ui.Transparent)
+		root.Background(ui.Transparent)
+	}
+	root.Children(func() {
 		a.viewContent(c)
 		a.knowledgeDialog(c)
 		a.searchDialog(c)
@@ -571,11 +598,16 @@ func (a *App) viewContent(c *ui.Context) {
 	a.mainShell(c)
 }
 func (a *App) mainShell(c *ui.Context) {
-	ui.Row(c.Key("main-shell")).Fill().AlignItems(ui.Stretch).Background(shellBackground).Children(func() {
+	shell := ui.Row(c.Key("main-shell")).Fill().AlignItems(ui.Stretch)
+	if !c.Vibrancy() {
+		shell.Background(tok.Sidebar)
+	}
+	shell.Children(func() {
 		a.navigation(c)
-		ui.Column(c).Grow(1).MinWidth(0).Padding(0, 10, 10, 0).Children(func() {
+		// V4: the title bar and content share one opaque surface; no floating panel.
+		ui.Column(c).Grow(1).MinWidth(0).Background(tok.Bg).BorderWidth(0, 0, 0, 1).BorderColor(tok.Border).Children(func() {
 			a.projectHeader(c)
-			ui.Column(c.Key("workspace")).Grow(1).MinHeight(0).FillWidth().Background(ui.Hex("#ffffff")).Border(1, shellBorder).Radius(14).Clip().Children(func() {
+			ui.Column(c.Key("workspace")).Grow(1).MinHeight(0).FillWidth().Clip().Children(func() {
 				if a.configError != "" {
 					ui.Text(c, "运行配置不可用："+a.configError).Margin(24).TextColor(ink)
 					return
@@ -739,7 +771,7 @@ func (a *App) reading(c *ui.Context) {
 						})
 					}).OnClick(func() { a.selectItem(s, i) })
 					if s.Selected != nil && s.Selected.key() == i.key() {
-						b.Background(ui.Hex("#edf3fa"))
+						b.Background(tok.AccentSoft)
 					}
 				}
 			})
@@ -783,19 +815,20 @@ func (a *App) detail(c *ui.Context, s *pane) {
 				ui.Text(c, "正在读取…").FontSize(10).TextColor(muted)
 			}
 			if i.Detail != nil {
-				ui.Text(c, fmt.Sprintf("官方已载入 %d/%d 条问答；工具记录独立列示", len(i.Detail.QAs), i.Detail.Count)).FontSize(10).TextColor(muted)
+				mdOpts := a.v4MarkdownOptions(fsReading)
+				ui.Text(c, fmt.Sprintf("官方已载入 %d/%d 条问答；工具记录独立列示", len(i.Detail.QAs), i.Detail.Count)).FontSize(fsCaption).TextColor(tok.Text3)
 				for _, q := range i.Detail.QAs {
-					ui.Column(c).Padding(11, 14).Background(blue).Border(1, border).Radius(6).Gap(6).Children(func() {
-						ui.Text(c, "用户").FontSize(10).TextColor(muted)
-						markdown.View(c.Key("q-"+q.ID), q.Question, &a.md)
+					ui.Column(c).Padding(11, 14).Background(tok.Fill1).Border(1, tok.Border).Radius(radius).Gap(6).Children(func() {
+						ui.Text(c, "用户").FontSize(fsCaption).TextColor(tok.Text3)
+						markdown.View(c.Key("q-"+q.ID), q.Question, mdOpts)
 						if q.QuestionTruncated {
-							ui.Text(c, "官方内容已截断").FontSize(10).TextColor(muted)
+							ui.Text(c, "官方内容已截断").FontSize(fsCaption).TextColor(tok.Text3)
 						}
 					})
 					sourceAgentLabel(c, *i)
-					markdown.View(c.Key("a-"+q.ID), q.Answer, &a.md)
+					markdown.View(c.Key("a-"+q.ID), q.Answer, mdOpts)
 					if q.AnswerTruncated {
-						ui.Text(c, "官方内容已截断").FontSize(10).TextColor(muted)
+						ui.Text(c, "官方内容已截断").FontSize(fsCaption).TextColor(tok.Text3)
 					}
 				}
 				for _, trace := range i.Detail.Traces {
@@ -805,17 +838,17 @@ func (a *App) detail(c *ui.Context, s *pane) {
 					if s.Tools[key] {
 						label = "⌄ " + t.Name + " · " + t.Status
 					}
-					ui.Column(c).Border(1, border).Radius(6).Padding(8).Children(func() {
+					ui.Column(c).Border(1, tok.Border).Radius(radius).Padding(sp2).Children(func() {
 						button(c, memoryKindLabel(label), func() { s.Tools[key] = !s.Tools[key] })
 						if s.Tools[key] {
-							markdown.View(c.Key("tool-"+key), "```json\n"+string(t.Params)+"\n```\n\n```json\n"+string(t.Result)+"\n```\n\n"+t.Error, &a.md)
+							markdown.View(c.Key("tool-"+key), "```json\n"+string(t.Params)+"\n```\n\n```json\n"+string(t.Result)+"\n```\n\n"+t.Error, mdOpts)
 						}
 					})
 				}
 			} else {
-				markdown.View(c.Key("body-"+i.key()), presentation.VisibleBody, &a.md)
+				markdown.View(c.Key("body-"+i.key()), presentation.VisibleBody, a.v4MarkdownOptions(fsReading))
 				if presentation.Unrecognized {
-					ui.Text(c, "原文格式未识别，保留原文").FontSize(10).TextColor(muted)
+					ui.Text(c, "原文格式未识别，保留原文").FontSize(fsCaption).TextColor(tok.Text3)
 				}
 			}
 			if i.Source != "" || i.SourceDocument != "" {

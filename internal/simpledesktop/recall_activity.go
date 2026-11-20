@@ -120,12 +120,13 @@ func (a *App) openRecalledCards(event RecallEvent, dataset string) {
 	}
 }
 
-func (a *App) recallActivityAction(c *ui.Context, event RecallEvent) {
-	type group struct {
-		dataset, name string
-		count         int
-	}
-	groups := []group{}
+type recallActivityGroup struct {
+	dataset, name string
+	count         int
+}
+
+func (a *App) recallActivityGroups(event RecallEvent) []recallActivityGroup {
+	groups := []recallActivityGroup{}
 	for _, p := range append(append([]Project{}, a.Config.Projects...), a.Config.Common...) {
 		count := 0
 		for _, hit := range event.Hits {
@@ -134,18 +135,30 @@ func (a *App) recallActivityAction(c *ui.Context, event RecallEvent) {
 			}
 		}
 		if count > 0 {
-			groups = append(groups, group{p.Dataset, p.Name, count})
+			groups = append(groups, recallActivityGroup{p.Dataset, p.Name, count})
 		}
 	}
+	return groups
+}
+
+func (a *App) recallActivityAction(c *ui.Context, event RecallEvent) {
+	groups := a.recallActivityGroups(event)
 	if len(groups) == 1 {
-		queueAction(c, fmt.Sprintf("查看 %d 条记忆", groups[0].count), func() { a.openRecalledCards(event, groups[0].dataset) }).AlignSelf(ui.Start)
+		b := textButton(c, fmt.Sprintf("查看 %d 条记忆", groups[0].count), func() { a.openRecalledCards(event, groups[0].dataset) }).AlignSelf(ui.Start).FontSize(fsCaption).Padding(0, 2)
+		if !b.Hovered() {
+			b.TextColor(tok.Text3)
+		}
 		return
 	}
 	if len(groups) == 0 {
 		homeText(c, "记忆库暂不可用", homeMeta)
 		return
 	}
-	queueAction(c, "查看召回记忆", nil).AlignSelf(ui.Start).PopoverMenuButton(func(m *ui.Menu) {
+	b := textButton(c, "查看召回记忆", nil).AlignSelf(ui.Start).FontSize(fsCaption).Padding(0, 2)
+	if !b.Hovered() {
+		b.TextColor(tok.Text3)
+	}
+	b.PopoverMenuButton(func(m *ui.Menu) {
 		for _, g := range groups {
 			if m.Item(fmt.Sprintf("%s · %d 条", g.name, g.count)).Chosen() {
 				a.openRecalledCards(event, g.dataset)

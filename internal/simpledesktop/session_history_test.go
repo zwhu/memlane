@@ -60,15 +60,15 @@ func TestSourceHistoryStartsAtFirstPageAndReturnsToKnowledge(t *testing.T) {
 	a.source(s)
 	drainReading(t, updates, func() bool { return !s.Reading })
 	s = a.state()
-	if a.kind != "原始记录" || s == knowledgePane || !containsReadingItem(s.Items, s.Selected.key()) {
-		t.Fatal("source stayed under the knowledge tab or lacks selected raw record")
+	if a.kind != "知识" || s != knowledgePane || !sourceSession(s) {
+		t.Fatal("source did not stay in place under the knowledge tab")
 	}
 	if s.Selected.Detail.QAs[0].Question != "source question 0" {
 		t.Fatal("source still opens an arbitrary recent tail")
 	}
 	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("来源记忆") || !tt.HasText("原始记录筛选") || !tt.HasText("项目视图") {
-		t.Fatal("opening source hides the knowledge list or project tabs")
+	if !tt.HasText("来源记忆") || !tt.HasText("在原始记录中打开") || !tt.HasText("项目视图") {
+		t.Fatal("opening source in place missing context bar or project tabs")
 	}
 	if s.ListSelection != 0 || !tt.HasText("返回来源记忆") {
 		t.Fatal("source lost the originating knowledge highlight or return action")
@@ -186,9 +186,8 @@ func TestSourceReturnsToKnowledgeFeedForAnotherSelection(t *testing.T) {
 	s.Knowledge.Detail = true
 	s.Selected = &Item{ID: "session", Dataset: "ds", Session: &Session{ID: "session", Dataset: "ds"}, Detail: &SessionDetail{Session: Session{ID: "session", Dataset: "ds"}}}
 	tt := ui.NewTester(a.View, 1200, 820)
-	clickProjectUI(t, tt, "关闭记忆详情")
-	clickProjectUI(t, tt, "阅读记忆：Another knowledge entry")
-	if s.Selected == nil || s.Selected.key() != other.key() || len(s.History) != 0 || !s.Knowledge.Detail {
+	clickProjectUI(t, tt, "Another knowledge entry")
+	if s.Selected == nil || s.Selected.key() != other.key() || len(s.History) != 0 {
 		t.Fatal("cannot read another knowledge after source return")
 	}
 }

@@ -109,10 +109,10 @@ func (a *App) generationProfileCards(c *ui.Context, editable ...bool) {
 							homeText(c, item.Title, homeBody).Grow(1).MinWidth(0).FontSize(13).TextColor(homeInk).SingleLine().Tooltip(item.Title)
 							state, color := "未验证", homeMuted
 							if s.Generation.validated(ref) {
-								state, color = "已验证", ui.Hex("#4d7a66")
+								state, color = "已验证", tok.OK
 							}
 							if active := s.Generation.Active; active != nil && *active == *ref {
-								state, color = "当前使用", ui.Hex("#4d7a66")
+								state, color = "当前使用", tok.OK
 							}
 							homeText(c, state, homeMeta).TextColor(color).SingleLine()
 						}

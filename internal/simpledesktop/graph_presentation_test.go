@@ -39,20 +39,15 @@ func TestProjectRefreshKeepsListAndReadingGeometry(t *testing.T) {
 	s.Selected.Title = "Stable list title"
 	s.Selected.Body = "Stable reading body"
 	tt := ui.NewTester(a.View, 1200, 820)
-	list, ok := tt.Find("阅读记忆：Stable reading body")
+	list, ok := tt.Find("Stable reading body")
 	if !ok {
 		t.Fatal("list title absent")
 	}
-	body, ok := tt.Find("阅读记忆：Stable reading body")
-	if !ok {
-		t.Fatal("body absent")
-	}
 	s.Loading, s.Reading = true, true
 	tt.Frame()
-	afterList, _ := tt.Find("阅读记忆：Stable reading body")
-	afterBody, _ := tt.Find("阅读记忆：Stable reading body")
-	if list != afterList || body != afterBody {
-		t.Fatalf("refresh moved content: list %+v -> %+v; body %+v -> %+v", list, afterList, body, afterBody)
+	afterList, _ := tt.Find("Stable reading body")
+	if list != afterList {
+		t.Fatalf("refresh moved content: list %+v -> %+v", list, afterList)
 	}
 }
 

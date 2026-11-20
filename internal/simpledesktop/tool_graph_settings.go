@@ -59,7 +59,7 @@ func (a *App) globalToolGraphSettings(c *ui.Context) {
 }
 
 func (a *App) projectToolGraphSettings(c *ui.Context, project AccessProject) {
-	ui.Column(c.Key("project-tool-graph-card-"+project.ID)).FillWidth().Gap(14).Padding(22).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(10).Children(func() {
+	ui.Column(c.Key("project-tool-graph-card-"+project.ID)).FillWidth().Gap(14).Padding(22).Background(tok.BgElevated).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(10).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(16).Children(func() {
 			homeText(c, "工具记录关系图谱", homeHeading).FontSize(18)
 			ui.Spacer(c)

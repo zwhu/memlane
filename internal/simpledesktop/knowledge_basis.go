@@ -6,7 +6,6 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// Explain recorded classification, never reconstruct a model's acceptance decision.
 func knowledgeBasisFields(i Item) []ReadingField {
 	if i.Kind != "知识" || i.Document == nil || !i.Document.knowledge() || commonCategory(*i.Document) != "" {
 		return nil
@@ -44,14 +43,25 @@ func knowledgeBasisFields(i Item) []ReadingField {
 	return append(fields, ReadingField{"学习情境", why}, ReadingField{"具体接受理由", "未记录"})
 }
 
+// knowledgeCategoryLabel returns the official category label for filtering.
+func knowledgeCategoryLabel(i Item) string {
+	fields := knowledgeBasisFields(i)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0].Value
+}
+
 func knowledgeBasis(c *ui.Context, i Item) {
 	fields := knowledgeBasisFields(i)
 	if len(fields) <= 1 {
 		return
 	}
-	ui.Column(c.Key("knowledge-basis-"+i.key())).FillWidth().Gap(8).Padding(12, 14).Background(ui.Hex("#f6f8fa")).Radius(6).Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
-			homeText(c, "记忆点", homeBody).FontSize(12).FontWeight(500)
+	// V4: hairline divider section instead of filled gray card.
+	ui.Column(c.Key("knowledge-basis-"+i.key())).FillWidth().Gap(6).Margin(sp4, 0, 0, 0).Padding(sp4, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+			ui.Icon(c, v4IconInfo).FontSize(14).TextColor(tok.Text3).Shrink(0)
+			ui.Text(c, "记忆点").Font("system-ui").FontSize(fsFootnote).FontWeight(600).TextColor(tok.Text1)
 		})
 		missing := []string{}
 		for _, field := range fields[1:] {
@@ -63,16 +73,16 @@ func knowledgeBasis(c *ui.Context, i Item) {
 			if field.Name == "学习情境" {
 				text = "学习情境：" + text
 			}
-			homeText(c, text, homeBody).FontSize(12).MinWidth(0)
+			homeText(c, text, homeBody).MinWidth(0)
 		}
 		if len(missing) > 0 {
-			homeText(c, strings.Join(missing, "、")+"未记录", homeMeta).FontSize(11)
+			homeText(c, strings.Join(missing, "、")+"未记录", homeMeta)
 		}
 	})
 }
 
 func knowledgeBasisTag(c *ui.Context, i Item) {
 	if fields := knowledgeBasisFields(i); len(fields) > 0 {
-		homeText(c, fields[0].Value, homeMeta).Tooltip("记忆点分类："+fields[0].Value).SingleLine().Padding(2, 5).Radius(4).Background(ui.Hex("#f3eff8")).TextColor(ui.Hex("#847196"))
+		v4CategoryChip(c, fields[0].Value)
 	}
 }

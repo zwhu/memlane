@@ -189,17 +189,8 @@ func TestOverviewLayoutAndContinuousUIFixture(t *testing.T) {
 			if err := tt.Click("收起失败详情"); err != nil {
 				t.Fatal(err)
 			}
-			a.showOverviewProjects()
-			tt.Frame()
-			// Reach the real bottom without replacing the dataset or resetting views.
-			a.overviewState.Scroll.Y = a.overviewState.Scroll.MaxY
-			tt.Frame()
-			fixtureImage(t, tt, fmt.Sprintf("%dx%d-projects", size[0], size[1]))
-			if a.overviewState.Scroll.MaxX != 0 || a.overviewState.Scroll.MaxY == 0 {
-				t.Fatalf("project grid scroll: %+v", a.overviewState.Scroll)
-			}
-			if !tt.HasText("Project 12") {
-				t.Fatal("all projects missing")
+			if tt.HasText("项目入口") {
+				t.Fatal("obsolete project grid visible on V4 overview")
 			}
 			footer, _ := tt.Find("服务 · 已连接")
 			if footer.Y > float32(size[1]) || footer.Y < float32(size[1]-70) {
@@ -207,8 +198,11 @@ func TestOverviewLayoutAndContinuousUIFixture(t *testing.T) {
 			}
 			a.overviewState.SidebarScroll.Y = a.overviewState.SidebarScroll.MaxY
 			tt.Frame()
-			if a.overviewState.Scroll.Y != a.overviewState.Scroll.MaxY {
-				t.Fatal("sidebar scrolling changed body position")
+			if err := tt.Click(fmt.Sprintf("全部 %d", len(a.Config.Projects))); err != nil {
+				t.Fatal(err)
+			}
+			if !tt.HasText("Project 12") {
+				t.Fatal("all projects dialog missing Project 12")
 			}
 		})
 	}
@@ -262,12 +256,12 @@ func TestOverviewFixedListsAreCappedAndScrollIndependently(t *testing.T) {
 				v.Snapshot.Knowledge = append(v.Snapshot.Knowledge, Item{ID: fmt.Sprint("extra", n), Dataset: "0", Title: fmt.Sprintf("Extra knowledge %02d", n)})
 			}
 			tt := ui.NewTester(a.overviewShell, size[0], size[1])
-			v.Scroll.Y = 120
 			tt.Frame()
 			left, _ := tt.Find("最近记忆内容")
 			right, _ := tt.Find("近期动态内容")
-			if left.H < homeOverviewListHeight-0.1 || left.H > homeOverviewListHeight+0.1 || right.H < homeOverviewListHeight-0.1 || right.H > homeOverviewListHeight+0.1 {
-				t.Fatalf("unbounded panels: %+v %+v", left, right)
+			// V4: dual columns fill remaining height rather than a fixed 280px cap.
+			if left.H < 350 || right.H < 350 || left.H-right.H < -2 || left.H-right.H > 2 {
+				t.Fatalf("dual columns did not fill remaining height evenly: %+v %+v", left, right)
 			}
 			if d := left.Y - right.Y; d < -2 || d > 2 {
 				t.Fatal("panel tops differ", left, right)
@@ -278,38 +272,31 @@ func TestOverviewFixedListsAreCappedAndScrollIndependently(t *testing.T) {
 			if tt.HasText("下一页") || tt.HasText("查看全部动态") || tt.HasText("加载更多动态") {
 				t.Fatal("obsolete footer controls visible")
 			}
-			outerMax, outerY := v.Scroll.MaxY, v.Scroll.Y
 			tt.Scroll(right.X+20, right.Y+80, 0, 180)
-			if v.ActivityScroll.Y <= 0 || v.Scroll.Y != outerY || v.KnowledgeScroll.Y != 0 {
+			if v.ActivityScroll.Y <= 0 || v.KnowledgeScroll.Y != 0 {
 				t.Fatal("activity scroll leaked")
 			}
 			tt.Scroll(left.X+20, left.Y+80, 0, 180)
-			if v.KnowledgeScroll.Y <= 0 || v.Scroll.Y != outerY {
-				t.Fatal("knowledge scroll leaked")
+			if v.KnowledgeScroll.Y <= 0 {
+				t.Fatal("knowledge scroll failed")
 			}
-			v.Events = v.Events[:1]
-			v.Snapshot.Knowledge = v.Snapshot.Knowledge[:1]
-			tt.Frame()
-			if v.Scroll.MaxY != outerMax {
-				t.Fatal("short lists changed fixed height")
-			}
-			fixtureImage(t, tt, fmt.Sprintf("%dx%d-fixed-lists", size[0], size[1]))
+			fixtureImage(t, tt, fmt.Sprintf("%dx%d-v4-lists", size[0], size[1]))
 		})
 	}
 }
 
 func TestOverviewHeaderUsesContentInsets(t *testing.T) {
 	a := overviewFixture(t)
-	tt := ui.NewTester(a.projectHeader, 980, 48)
-	if _, ok := tt.Find("总览"); ok {
-		t.Fatal("outer toolbar should omit page title")
+	tt := ui.NewTester(a.projectHeader, 980, int(titlebarH))
+	if _, ok := tt.Find("总览"); !ok {
+		t.Fatal("V4 fused titlebar should show page title")
 	}
 	search, ok := tt.Find("搜索记忆与原始记录")
 	if !ok {
 		t.Fatal("missing search trigger")
 	}
-	if search.X+search.W < 980-12-1 || search.X+search.W > 980-12+1 {
-		t.Fatalf("toolbar does not align with body insets: search=%+v", search)
+	if search.X+search.W < 980-sp4-1 || search.X+search.W > 980-sp4+1 {
+		t.Fatalf("toolbar does not align with V4 titlebar right inset: search=%+v", search)
 	}
 }
 

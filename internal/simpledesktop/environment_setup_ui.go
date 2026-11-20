@@ -358,7 +358,7 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 	}
 	settingsSection(c, "运行环境", func() {
 		if s.Plan.Complete() && !s.Busy {
-			homeText(c, "已就绪", homeMeta).TextColor(ui.Hex("#4d7a66"))
+			homeText(c, "已就绪", homeMeta).TextColor(tok.OK)
 		}
 	}, func() {
 		if s.Loading && s.Loaded {
@@ -385,11 +385,11 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 					dependencyMark(c, row.Requirement.ID)
 					ui.Row(c).Grow(1).MinWidth(0).AlignItems(ui.Center).Gap(12).Children(func() {
 						homeText(c, dependencyDisplayName(row.Requirement), homeBody).FontSize(14).FontWeight(500).TextColor(homeInk).Width(104).Shrink(0)
-						homeText(c, dependencyDisplayVersion(row, s.Environment), homeMeta).TextColor(ui.Hex("#596675")).Grow(1).MinWidth(0).SingleLine().Tooltip(row.Requirement.Version)
+						homeText(c, dependencyDisplayVersion(row, s.Environment), homeMeta).TextColor(tok.Text2).Grow(1).MinWidth(0).SingleLine().Tooltip(row.Requirement.Version)
 					})
 					color := homeMuted
 					if status == bootstrap.Available || status == bootstrap.Ready {
-						color = ui.Hex("#4d7a66")
+						color = tok.OK
 					}
 					homeText(c, environmentLabel(status), homeMeta).TextColor(color)
 				})

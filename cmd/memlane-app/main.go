@@ -7,6 +7,8 @@ import (
 	"github.com/zwhu/memlane/internal/simpledesktop"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 func main() {
@@ -23,9 +25,14 @@ func main() {
 	cfg.FirstInstallDefault = firstDefault
 	// Each UI process verifies and loads the current official graph asset bundle.
 	app := simpledesktop.New(cfg, err)
-	mygo.Theme.SetSource(mygo.ThemeLight)
+	// Visual V4 follows the system appearance unless overridden by the saved
+	// in-app preference or dev-only MEMLANE_APPEARANCE / appearance file.
+	mygo.Theme.SetSource(appearanceSource(configuration, app.AppearancePreference()))
+	app.ApplyAppearanceSource = func(mode string) {
+		mygo.Theme.SetSource(themeSourceForMode(mode))
+	}
 	mygo.App.OnReady(func() {
-		win := mygo.NewWindow(mygo.WindowOptions{Title: "Memlane", Width: 1200, Height: 820, MinWidth: 1200, MinHeight: 820, TitleBarStyle: mygo.TitleBarHidden, Content: ui.View(app.View)})
+		win := mygo.NewWindow(mygo.WindowOptions{Title: "Memlane", Width: 1200, Height: 820, MinWidth: 1200, MinHeight: 820, TitleBarStyle: mygo.TitleBarHidden, Vibrancy: mygo.VibrancySidebar, Content: ui.View(app.View)})
 		app.Update = func(fn func()) { win.Update(fn) }
 		app.ChooseDiagnosticPath = func() (string, error) {
 			return mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: win, Title: "导出安装诊断", DefaultPath: "Memlane-diagnostic.zip", ButtonLabel: "导出", Filters: []mygo.FileFilter{{Name: "ZIP", Extensions: []string{"zip"}}}})
@@ -67,4 +74,29 @@ func main() {
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// appearanceSource is read at startup; dev overrides take precedence over the
+// persisted in-app preference so both appearances can be checked quickly.
+func appearanceSource(configuration, saved string) mygo.ThemeSource {
+	value := os.Getenv("MEMLANE_APPEARANCE")
+	if value == "" && configuration != "" {
+		if data, err := os.ReadFile(filepath.Join(filepath.Dir(configuration), "appearance")); err == nil {
+			value = string(data)
+		}
+	}
+	if strings.TrimSpace(value) == "" {
+		value = saved
+	}
+	return themeSourceForMode(value)
+}
+
+func themeSourceForMode(value string) mygo.ThemeSource {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "light":
+		return mygo.ThemeLight
+	case "dark":
+		return mygo.ThemeDark
+	}
+	return mygo.ThemeSystem
 }

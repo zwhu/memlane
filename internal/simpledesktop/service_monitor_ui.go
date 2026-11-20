@@ -19,9 +19,9 @@ func (a *App) serviceMonitorDetails(c *ui.Context) {
 			if m.State == "exited" {
 				banner = "Cognee 进程已退出，服务未自动重启，请核对原因后手动重启服务。"
 			}
-			homeText(c, banner, homeMeta).TextColor(ui.Hex("#b54738")).LineHeight(1.5)
+			homeText(c, banner, homeMeta).TextColor(tok.Danger).LineHeight(1.5)
 		} else if m.State == "warning" {
-			homeText(c, fmt.Sprintf("检测到短暂健康波动（连续失败 %d/3 次），正在继续观测。", m.ConsecutiveFailures), homeMeta).TextColor(ui.Hex("#a6671c"))
+			homeText(c, fmt.Sprintf("检测到短暂健康波动（连续失败 %d/3 次），正在继续观测。", m.ConsecutiveFailures), homeMeta).TextColor(tok.Warning)
 		}
 
 		var cogneeParts []string
@@ -93,7 +93,7 @@ func (a *App) serviceMonitorDetails(c *ui.Context) {
 			}
 			text := homeText(c, diskText, homeMeta)
 			if m.Snapshot.Disk.Low {
-				text.TextColor(ui.Hex("#b54738"))
+				text.TextColor(tok.Danger)
 			}
 		}
 
@@ -111,7 +111,7 @@ func (a *App) serviceMonitorDetails(c *ui.Context) {
 				heading = "最近服务原始日志（已脱敏）："
 			}
 			homeText(c, heading, homeMeta)
-			ui.Column(c).FillWidth().Padding(8, 10).Gap(3).Background(ui.Hex("#f5f8fb")).Radius(6).Children(func() {
+			ui.Column(c).FillWidth().Padding(8, 10).Gap(3).Background(tok.Fill1).Radius(6).Children(func() {
 				for _, line := range lines {
 					if m.ShowRawLogs {
 						homeText(c, stripANSIEscapes(line), homeMeta).FontSize(11)
@@ -124,9 +124,9 @@ func (a *App) serviceMonitorDetails(c *ui.Context) {
 					text := homeText(c, display, homeMeta).FontSize(11).LineHeight(1.4)
 					switch level {
 					case "error":
-						text.TextColor(ui.Hex("#b54738"))
+						text.TextColor(tok.Danger)
 					case "warning":
-						text.TextColor(ui.Hex("#a6671c"))
+						text.TextColor(tok.Warning)
 					}
 				}
 			})

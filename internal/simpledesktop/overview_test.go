@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 )
@@ -52,8 +51,8 @@ func TestOverviewFullPagesScopeAndDerivedMaterials(t *testing.T) {
 	if err != nil || snapshot.RawError != "" || len(snapshot.Knowledge) != 103 || snapshot.Raw != 103 {
 		t.Fatalf("knowledge=%d raw=%d rawErr=%s err=%v", len(snapshot.Knowledge), snapshot.Raw, snapshot.RawError, err)
 	}
-	if docCalls != 4 || sessionCalls != 4 {
-		t.Fatalf("must traverse twice and dedup dataset: docs=%d sessions=%d", docCalls, sessionCalls)
+	if docCalls != 2 || sessionCalls != 2 {
+		t.Fatalf("must traverse once in parallel and dedup dataset: docs=%d sessions=%d", docCalls, sessionCalls)
 	}
 	zone := time.FixedZone("+8", 8*3600)
 	if got := overviewBuckets(snapshot, zone)["2026-11-13"]; got != 103 {
@@ -62,31 +61,17 @@ func TestOverviewFullPagesScopeAndDerivedMaterials(t *testing.T) {
 }
 
 func TestOverviewRejectsChangingPagesAndKeepsKnowledgeOnSessionError(t *testing.T) {
-	for _, changing := range []bool{true, false} {
-		t.Run(fmt.Sprint(changing), func(t *testing.T) {
-			calls := 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/api/v1/sessions" {
-					http.Error(w, "unavailable", 503)
-					return
-				}
-				calls++
-				id := "knowledge"
-				if changing && calls > 1 {
-					id = "replaced"
-				}
-				json.NewEncoder(w).Encode([]Document{{ID: id, Dataset: "p", Created: "2026-11-13T01:00:00Z", Metadata: map[string]any{"node_set": []any{"session_learnings"}}}})
-			}))
-			defer server.Close()
-			snapshot, err := (Client{Config: Config{ServiceURL: server.URL, Projects: []Project{{Dataset: "p"}}}}).overview(context.Background())
-			if changing {
-				if err == nil || !strings.Contains(err.Error(), "正在更新") {
-					t.Fatalf("accepted unstable statistics: %v", err)
-				}
-			} else if err != nil || len(snapshot.Knowledge) != 1 || snapshot.RawError == "" {
-				t.Fatalf("knowledge lost on session failure: %+v %v", snapshot, err)
-			}
-		})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/sessions" {
+			http.Error(w, "unavailable", 503)
+			return
+		}
+		json.NewEncoder(w).Encode([]Document{{ID: "knowledge", Dataset: "p", Created: "2026-11-13T01:00:00Z", Metadata: map[string]any{"node_set": []any{"session_learnings"}}}})
+	}))
+	defer server.Close()
+	snapshot, err := (Client{Config: Config{ServiceURL: server.URL, Projects: []Project{{Dataset: "p"}}}}).overview(context.Background())
+	if err != nil || len(snapshot.Knowledge) != 1 || snapshot.RawError == "" {
+		t.Fatalf("knowledge lost on session failure: %+v %v", snapshot, err)
 	}
 }
 

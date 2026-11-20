@@ -81,7 +81,7 @@ func (a *App) environmentLocations(c *ui.Context) {
 			homeText(c, "使用位置", homeMeta).FontWeight(500).TextColor(homeInk)
 			ui.Spacer(c)
 			if s.CopiedPath != "" {
-				homeText(c, "路径已复制", homeMeta).TextColor(ui.Hex("#4d7a66"))
+				homeText(c, "路径已复制", homeMeta).TextColor(tok.OK)
 			}
 		})
 		for _, location := range rows {
@@ -89,7 +89,7 @@ func (a *App) environmentLocations(c *ui.Context) {
 			line := ui.Row(c.Key("environment-location-" + row.Path)).FillWidth().MinWidth(0).MinHeight(26).AlignItems(ui.Center).Gap(12)
 			line.Children(func() {
 				homeText(c, row.Label, homeMeta).Width(132).Shrink(0).SingleLine().Tooltip(row.Label)
-				homeText(c, environmentDisplayPath(row.Path), homeMeta).FontSize(12).TextColor(ui.Hex("#596675")).Grow(1).MinWidth(0).SingleLine().Tooltip(row.Path)
+				homeText(c, environmentDisplayPath(row.Path), homeMeta).FontSize(12).TextColor(tok.Text2).Grow(1).MinWidth(0).SingleLine().Tooltip(row.Path)
 				hoverCopyAction(c, line, "复制"+row.Label+"位置", func() {
 					c.WriteClipboard(row.Path)
 					s.CopiedPath = row.Path

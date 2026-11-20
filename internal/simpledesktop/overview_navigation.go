@@ -8,6 +8,7 @@ import (
 )
 
 func (a *App) overviewShell(c *ui.Context) {
+	applyAppearance(a.effectiveDark(c.Theme().Dark))
 	ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.mainShell(c) })
 }
 
@@ -32,11 +33,7 @@ func (a *App) returnToOverview() {
 }
 
 func (a *App) showOverviewProjects() {
-	if a.page != "总览" {
-		a.navigate("总览", 0)
-	}
-	a.overviewState.AllProjects = true
-	a.overviewState.RevealProjects = true
+	a.openAllProjects()
 }
 
 func (a *App) overviewNavigation(c *ui.Context) {
@@ -49,19 +46,50 @@ func (a *App) overviewNavigation(c *ui.Context) {
 	if a.page == "设置" && a.settingsOrigin != nil {
 		selected = "project:" + a.access.OpenProject
 	}
-	ui.Themed(c, sidebarTheme).Width(homeSidebarWidth).Shrink(0).Background(shellBackground).Children(func() {
-		ui.Row(c).Height(48).Margin(48, 0, 0, 0).Shrink(0).Padding(4, 24, 0, 24).AlignItems(ui.Center).Gap(10).DragWindow().Children(func() {
-			ui.Icon(c, mark).FontSize(32).TextColor(ui.Hex("#777b82"))
-			homeText(c, "Memlane", homeBrand).FontSize(21).FontWeight(600).LetterSpacing(0).TextColor(homeInk)
+	sidebar := ui.Themed(c, sidebarTheme).Width(sidebarW).Shrink(0).Background(tok.SidebarTint)
+	if !c.Vibrancy() {
+		sidebar.Background(tok.Sidebar)
+	}
+	sidebar.Children(func() {
+		// Drag region below macOS traffic lights + V4 brand header.
+		ui.Row(c).Height(titlebarH).Shrink(0).DragWindow()
+		ui.Row(c).Height(32).Shrink(0).Padding(0, sp4, sp2, sp4).AlignItems(ui.Center).Gap(sp2).DragWindow().Children(func() {
+			ui.Image(c, tok.BrandMark).Size(18, 18).Fit(ui.Contain)
+			homeText(c, "Memlane", homeBrand)
 		})
-		ui.Sidebar(c.Key("main-sidebar"), &selected, func() {
-			sidebarSelection(ui.SidebarItem(c, "总览", navIcons["总览"], "总览").Height(32), selected == "总览")
-			sidebarSelection(ui.SidebarItem(c, "通用知识", homeCommon, "通用记忆").Height(32), selected == "通用知识")
-			sidebarSelection(ui.SidebarItem(c, "用户画像", userProfileIcon, "用户画像").Height(32), selected == "用户画像")
-			ui.Row(c).Padding(12, 8, 8, 8).AlignItems(ui.Center).Gap(4).Children(func() {
-				homeText(c, "项目", homeMeta).FontSize(14)
+		var activeItem ui.Element
+		sb := ui.Sidebar(c.Key("main-sidebar"), &selected, func() {
+			navEntry := func(id, label string, linear, solid *ui.SVG) {
+				on := selected == id
+				buildItem := func() {
+					icon := linear
+					if on {
+						icon = solid
+					}
+					item := ui.SidebarItem(c, id, icon, label).Height(rowHeight1).Gap(10).Padding(0, sp2)
+					if on {
+						activeItem = item
+					}
+					sidebarSelection(item, on, activeItem.Bounds().H > 0)
+				}
+				if on {
+					ui.Themed(c, sidebarSelectedTheme).FillWidth().Background(ui.Transparent).Children(buildItem)
+				} else {
+					buildItem()
+				}
+			}
+			navEntry("总览", "总览", v4IconOverview, tok.SolidOverview)
+			navEntry("通用知识", "通用记忆", v4IconCommon, tok.SolidCommon)
+			navEntry("用户画像", "用户画像", v4IconProfile, tok.SolidProfile)
+
+			ui.Row(c).Padding(sp5, sp1, sp1, sp2).AlignItems(ui.Center).Gap(sp1).Children(func() {
+				ui.Text(c, "项目").Font("system-ui").FontSize(fsCaption).FontWeight(550).TextColor(tok.Text3)
 				ui.Spacer(c)
-				ui.Button(c, fmt.Sprintf("全部 %d", len(a.Config.Projects))).Cursor(ui.CursorPointer).FontSize(10).BorderWidth(0).Background(ui.Transparent).OnClick(a.openAllProjects)
+				allBtn := ui.ButtonBase(c).Role(ui.RoleButton).Label(fmt.Sprintf("全部 %d", len(a.Config.Projects))).
+					Cursor(ui.CursorPointer).Height(22).Padding(0, 6).Radius(radiusSmall).BorderWidth(0)
+				allBtn.Background(homeHoverColor(allBtn, "all-proj-bg", ui.Transparent, tok.Hover)).Children(func() {
+					ui.Text(c, fmt.Sprintf("全部 %d", len(a.Config.Projects))).Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Text3).SingleLine()
+				}).OnClick(a.openAllProjects)
 				a.projectAddMenu(c)
 			})
 			labels := projectLabels(a.Config.Projects)
@@ -70,24 +98,43 @@ func (a *App) overviewNavigation(c *ui.Context) {
 					continue
 				}
 				index := idx
-				item := ui.SidebarItem(c.Key("project-nav-"+p.ID), "project:"+p.ID, homeFolder, middleProjectName(labels[idx])).Label(labels[idx]).Tooltip(p.Name + " · " + p.Path).MinHeight(32).FillWidth().MinWidth(0).Gap(6)
-				a.projectNotificationMenu(c, item, p)
-				sidebarSelection(item, selected == "project:"+p.ID)
-				item.Children(func() {
-					a.unreadProjectBadge(c, p, index)
-					if label, detail := a.sidebarQueueBadge(p); label != "" {
-						openQueue := func() { a.openProjectSettings(index) }
-						ui.Column(c).Shrink(0).Height(28).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-							if label == "!" {
-								ui.Button(c, "").Cursor(ui.CursorPointer).Label("待处理文档："+p.Name).Tooltip(detail).Size(10, 10).Padding(0).Radius(5).Background(ui.Hex("#e77e38")).Border(2, ui.Hex("#f3dac8")).OnClick(openQueue)
-							} else {
-								ui.Button(c, label).Cursor(ui.CursorPointer).Label("待处理文档："+p.Name).Tooltip(detail).FontSize(10).FontWeight(600).Padding(2, 6).Radius(8).Background(ui.Hex("#dce6ef")).TextColor(ui.Hex("#536b81")).BorderWidth(0).OnClick(openQueue)
-							}
-						})
+				proj := p
+				id := "project:" + proj.ID
+				on := selected == id
+				buildProject := func() {
+					icon := v4IconFolder
+					if on {
+						icon = tok.SolidFolder
 					}
-				})
+					item := ui.SidebarItem(c.Key("project-nav-"+proj.ID), id, icon, middleProjectName(labels[index])).
+						Label(labels[index]).Tooltip(proj.Name + " · " + proj.Path).
+						MinHeight(rowHeight1).Height(rowHeight1).FillWidth().MinWidth(0).Gap(8).Padding(0, sp2)
+					a.projectNotificationMenu(c, item, proj)
+					if on {
+						activeItem = item
+					}
+					sidebarSelection(item, on, activeItem.Bounds().H > 0)
+					item.Children(func() {
+						a.unreadProjectBadge(c, proj, index, on)
+						if label, detail := a.sidebarQueueBadge(proj); label != "" {
+							openQueue := func() { a.openProjectSettings(index) }
+							ui.Column(c).Shrink(0).Height(24).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+								if label == "!" {
+									ui.Button(c, "").Cursor(ui.CursorPointer).Label("待处理文档："+proj.Name).Tooltip(detail).Size(8, 8).Padding(0).Radius(4).Background(tok.Warning).BorderWidth(0).OnClick(openQueue)
+								} else {
+									ui.Button(c, label).Cursor(ui.CursorPointer).Label("待处理文档："+proj.Name).Tooltip(detail).FontSize(fsCaption).FontWeight(600).Padding(1, 6).Radius(8).Background(tok.Fill2).TextColor(tok.Text2).BorderWidth(0).OnClick(openQueue)
+								}
+							})
+						}
+					})
+				}
+				if on {
+					ui.Themed(c, sidebarSelectedTheme).FillWidth().Background(ui.Transparent).Children(buildProject)
+				} else {
+					buildProject()
+				}
 			}
-		}).FillWidth().Grow(1).MinHeight(0).Padding(0, 8).Background(ui.Transparent).TrackScroll(&a.overviewState.SidebarScroll).OnChange(func() {
+		}).FillWidth().Grow(1).MinHeight(0).Padding(0, sp2).Background(ui.Transparent).TrackScroll(&a.overviewState.SidebarScroll).OnChange(func() {
 			for idx, p := range a.Config.Projects {
 				if selected == "project:"+p.ID {
 					a.navigate("知识", idx)
@@ -96,46 +143,79 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			}
 			a.navigate(selected, 0)
 		})
+		// Spring-sliding accent-soft indicator behind the selected nav item.
+		sbBox := sb.Bounds()
+		itemBox := activeItem.Bounds()
+		hasActive := itemBox.H > 0 && sbBox.H > 0 && selected != "设置"
+		targetY := itemBox.Y - sbBox.Y
+		targetH := itemBox.H
+		indY := sb.Spring("nav-ind-y", targetY, v4Snappy.Spring)
+		indH := sb.Spring("nav-ind-h", targetH, v4Snappy.Spring)
+		sb.Draw(func(p *ui.Painter, r ui.Rect) {
+			if !hasActive || indH <= 0 {
+				return
+			}
+			if indY+indH < 0 || indY > r.H {
+				return
+			}
+			p.Fill(ui.Rect{X: r.X + sp2, Y: r.Y + indY, W: r.W - 2*sp2, H: indH}, tok.AccentSoft, radius)
+		})
+
 		ui.Toolbar(c, func() {
-			entry := ui.Button(c, "").Cursor(ui.CursorPointer).Label("设置").FillWidth().Height(32).Padding(0, 10).Gap(10).Justify(ui.Start).BorderWidth(0)
-			if a.page == "设置" && a.settingsOrigin == nil {
-				entry.Background(ui.Hex("#d8e3ef"))
+			on := a.page == "设置" && a.settingsOrigin == nil
+			entry := ui.ButtonBase(c).Role(ui.RoleButton).Cursor(ui.CursorPointer).Label("设置").
+				FillWidth().Height(rowHeight1).Padding(0, sp2).Gap(10).Radius(radius).
+				AlignItems(ui.Center).Justify(ui.Start).BorderWidth(0)
+			if on {
+				entry.Background(tok.AccentSoft)
 			} else {
-				entry.Background(ui.Transparent)
+				entry.Background(homeHoverColor(entry, "settings-nav-bg", ui.Transparent, tok.Hover))
+			}
+			v4ButtonPress(entry, 0.98)
+			icoColor, txtColor, weight := tok.Text2, tok.Text1, 400
+			if on {
+				icoColor, txtColor, weight = tok.Accent, tok.Accent, 500
 			}
 			entry.Children(func() {
-				ui.Icon(c, homeSettings).FontSize(17).TextColor(homeIconInk)
-				ui.Text(c, "设置").Font("system-ui").FontSize(13).FontWeight(500).TextColor(homeInk)
+				ui.Icon(c, v4IconSettings).FontSize(16).TextColor(icoColor)
+				ui.Text(c, "设置").Font("system-ui").FontSize(fsBody).FontWeight(weight).TextColor(txtColor)
 			}).OnClick(func() { a.settingsOrigin = nil; a.access.OpenProject = ""; a.navigate("设置", 0) })
-		}).Height(44).Shrink(0).Padding(0, 8)
-		appFooter(c, "侧栏状态栏").Padding(0, 24).Gap(7).Tooltip(a.serviceConnectionTip()).Cursor(ui.CursorPointer).OnClick(func() {
-			a.settingsOrigin = nil
-			a.access.OpenProject = ""
-			a.access.SettingsSection = "服务"
-			a.monitor.Expanded = true
-			a.navigate("设置", 0)
-		}).Children(func() {
-			color := ui.Hex("#9aabbc")
+		}).Height(40).Shrink(0).Padding(0, sp2)
+
+		appFooter(c, "侧栏状态栏").Padding(0, sp3, 0, sp4).Gap(sp2).Children(func() {
+			color := tok.Text4
 			hookErrors := 0
 			if a.monitor.Snapshot != nil && a.monitor.Snapshot.Summary != nil {
 				hookErrors = a.monitor.Snapshot.Summary.HookErrorsCount
 			}
 			switch {
 			case a.monitor.State == "degraded" || a.monitor.State == "exited" || (a.service != "已连接" && a.service != "尚未检查"):
-				color = ui.Hex("#c95c4a")
+				color = tok.Danger
 			case a.monitor.State == "warning" || hookErrors > 0:
-				color = ui.Hex("#d08a2f")
+				color = tok.Warning
 			case a.service == "已连接":
-				color = ui.Hex("#72978a")
+				color = tok.OK
 			}
-			ui.Box(c).Size(6, 6).Radius(3).Background(color)
 			status := "待检查"
 			if a.service == "已连接" {
 				status = "已连接"
 			} else if a.service != "尚未检查" {
 				status = "连接异常"
 			}
-			homeText(c, "服务 · "+status, homeMeta).FontSize(10).SingleLine().Tooltip(a.serviceConnectionTip())
+			svcBtn := ui.ButtonBase(c.Key("sidebar-service-status")).Role(ui.RoleButton).Label("服务 · "+status).
+				Cursor(ui.CursorPointer).Grow(1).MinWidth(0).Height(28).Padding(0, 4).Radius(radiusSmall).BorderWidth(0).
+				AlignItems(ui.Center).Justify(ui.Start).Gap(sp2).Tooltip(a.serviceConnectionTip())
+			svcBtn.Background(homeHoverColor(svcBtn, "svc-foot-bg", ui.Transparent, tok.Hover)).Children(func() {
+				ui.Box(c).Size(6, 6).Radius(3).Background(color).Shrink(0)
+				homeText(c, "服务 · "+status, homeMeta).SingleLine()
+			}).OnClick(func() {
+				a.settingsOrigin = nil
+				a.access.OpenProject = ""
+				a.access.SettingsSection = "服务"
+				a.monitor.Expanded = true
+				a.navigate("设置", 0)
+			})
+			a.sidebarAppearanceButton(c)
 		})
 	})
 }
@@ -161,6 +241,8 @@ func (a *App) serviceConnectionTip() string {
 	return tip
 }
 
+// overviewProjectGrid is retained for direct project visibility tests; V4 removes
+// the duplicate project cards section from the overview home page.
 func (a *App) overviewProjectGrid(c *ui.Context) {
 	v := &a.overviewState
 	indices := []int{}
@@ -175,7 +257,7 @@ func (a *App) overviewProjectGrid(c *ui.Context) {
 	ui.Column(c).Gap(homeGridGap).Children(func() {
 		head := ui.Row(c).Margin(0, 0, 3, 0).Children(func() {
 			homeText(c, "项目入口", homeHeading)
-			homeText(c, fmt.Sprint(len(a.Config.Projects)), homeMeta).Margin(0, 7).TextColor(ui.Hex("#a1aab3"))
+			homeText(c, fmt.Sprint(len(a.Config.Projects)), homeMeta).Margin(0, 7)
 			ui.Spacer(c)
 			if len(a.Config.Projects) > 3 || hasHidden {
 				label := "查看全部  ›"
@@ -206,16 +288,13 @@ func (a *App) overviewProjectGrid(c *ui.Context) {
 					}
 					idx := indices[position]
 					p := a.Config.Projects[idx]
-					card := ui.Button(c, "").Cursor(ui.CursorPointer).Key("home-project-"+p.ID).Label(p.Name+" · "+p.Path+" · 查看项目记忆").Width(0).Grow(1).MinWidth(0).MinHeight(94).Padding(15).Gap(11).Justify(ui.Start).BorderWidth(0, 0, 1, 0).BorderColor(homeBorder).Radius(0)
+					card := ui.Button(c, "").Cursor(ui.CursorPointer).Key("home-project-"+p.ID).Label(p.Name+" · "+p.Path+" · 查看项目记忆").Width(0).Grow(1).MinWidth(0).MinHeight(94).Padding(15).Gap(11).Justify(ui.Start).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Radius(0)
 					a.projectNotificationMenu(c, card, p)
-					card.Background(homeHoverColor(card, "card-surface", ui.Hex("#ffffff"), ui.Hex("#f8fafc")))
-					if card.Hovered() {
-						card.BorderColor(ui.Hex("#b4c7d9"))
-					}
+					card.Background(homeHoverColor(card, "card-surface", tok.Bg, tok.Hover))
 					card.Children(func() {
-						ui.Column(c).Size(30, 31).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Radius(6).Background(ui.Hex("#edf3f8")).Children(func() { ui.Icon(c, homeFolder).FontSize(16).TextColor(ui.Hex("#7d96ae")) })
+						ui.Column(c).Size(30, 31).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Radius(radius).Background(tok.Fill1).Children(func() { ui.Icon(c, homeFolder).FontSize(16).TextColor(tok.Text2) })
 						ui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
-							homeText(c, p.Name, homeTitle).LineHeight(1.6).MaxLines(2).TextColor(homeInk)
+							homeText(c, p.Name, homeTitle).MaxLines(2)
 							path := p.Path
 							if path == "" {
 								path = "未关联路径"
@@ -225,7 +304,7 @@ func (a *App) overviewProjectGrid(c *ui.Context) {
 								homeText(c, "已隐藏 · 右键取消隐藏", homeMeta)
 							}
 						})
-						ui.Icon(c, homeArrow).FontSize(12).TextColor(ui.Hex("#9aabba")).Shrink(0)
+						ui.Icon(c, homeArrow).FontSize(12).TextColor(tok.Text4).Shrink(0)
 					}).OnClick(func() { a.navigate("知识", idx) })
 				}
 			})

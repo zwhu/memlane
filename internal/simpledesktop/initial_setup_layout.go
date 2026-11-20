@@ -35,15 +35,15 @@ func (a *App) initialSetupShell(c *ui.Context) {
 		ui.Row(c).Grow(1).MinHeight(0).FillWidth().AlignItems(ui.Stretch).Children(func() {
 			ui.Column(c.Key("first-use-navigation")).Width(homeSidebarWidth).Shrink(0).Padding(8, 12, 20, 12).Gap(6).Children(func() {
 				ui.Row(c).Height(48).Padding(0, 12).Gap(10).AlignItems(ui.Center).Margin(0, 0, 20, 0).Children(func() {
-					ui.Icon(c, mark).FontSize(26).TextColor(ui.Hex("#777b82"))
-					homeText(c, "Memlane", homeBrand).FontSize(20).TextColor(ui.Hex("#64686f"))
+					ui.Image(c, tok.BrandMark).Size(20, 20).Fit(ui.Contain)
+					homeText(c, "Memlane", homeBrand).FontSize(fsHeading).TextColor(tok.Text1)
 				})
 				for index, title := range titles {
 					number := index + 1
 					active := number == step
 					selected := ui.Transparent
 					if active {
-						selected = ui.Hex("#dce7f2")
+						selected = tok.AccentSoft
 					}
 					ui.Button(c.Key(fmt.Sprintf("setup-step-%d", number)), "").Label(title).FillWidth().Height(44).Padding(0, 12).Background(selected).BorderWidth(0).Radius(9).Disabled(s.Busy || a.integrations.Busy || (number > 1 && !s.RuntimeStarted)).OnClick(func() { a.setInitialStep(number) }).Children(func() {
 						ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
@@ -175,7 +175,7 @@ func (a *App) initialEnvironment(c *ui.Context) {
 								status := environmentRowStatus(row, s.Journal, s.Busy)
 								color := homeMuted
 								if status == bootstrap.Available || status == bootstrap.Ready {
-									color = ui.Hex("#4d7a66")
+									color = tok.OK
 								}
 								homeText(c, environmentLabel(status), homeMeta).FontSize(11).TextColor(color)
 							})
@@ -186,7 +186,7 @@ func (a *App) initialEnvironment(c *ui.Context) {
 					homeText(c, "检测中…", homeMeta).Margin(20)
 				}
 			})
-			ui.Column(c.Key("environment-summary")).Width(235).Padding(20).Gap(12).Background(ui.Hex("#f8f9fa")).Border(1, homeBorder).Radius(10).Children(func() {
+			ui.Column(c.Key("environment-summary")).Width(235).Padding(20).Gap(12).Background(tok.Fill1).Border(1, homeBorder).Radius(10).Children(func() {
 				homeText(c, "准备概览", homePanelHeading).FontSize(13)
 				count := 0
 				for _, item := range s.Plan.Items {

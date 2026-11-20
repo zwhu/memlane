@@ -68,6 +68,46 @@ func keyForReading(identity string, i Item, catalogGeneration string) readingKey
 	}
 	return readingKey{identity, i.Dataset, i.ID, version}
 }
+func (r *ReadingTitles) cachedItem(client Client, i Item, generation string) (Item, bool) {
+	if r == nil {
+		return i, false
+	}
+	identity, err := readingIdentity(client)
+	if err != nil {
+		return i, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.identity != identity {
+		return i, false
+	}
+	if cached, ok := r.cache[keyForReading(identity, i, generation)]; ok && cached.item.BodyLoaded {
+		i.Body = cached.item.Body
+		i.BodyLoaded = true
+		i.ReadingState = "ready"
+		if i.Title == "" {
+			i.Title = itemPresentation(i).DisplayTitle
+		}
+		return i, true
+	}
+	// Fall back to matching dataset+ID when content hash matches or overview used a different catalog generation.
+	for k, entry := range r.cache {
+		if k.Identity == identity && k.Dataset == i.Dataset && k.ID == i.ID && entry.item.BodyLoaded {
+			if i.Document != nil && entry.item.Document != nil && i.Document.ContentHash != "" && entry.item.Document.ContentHash != "" && i.Document.ContentHash != entry.item.Document.ContentHash {
+				continue
+			}
+			i.Body = entry.item.Body
+			i.BodyLoaded = true
+			i.ReadingState = "ready"
+			if i.Title == "" {
+				i.Title = itemPresentation(i).DisplayTitle
+			}
+			return i, true
+		}
+	}
+	return i, false
+}
+
 func (r *ReadingTitles) read(ctx context.Context, client Client, i Item, generation string, priority, useCache bool) (Item, error) {
 	if err := ctx.Err(); err != nil {
 		return i, err

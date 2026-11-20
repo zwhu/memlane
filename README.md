@@ -56,4 +56,4 @@ sh scripts/go.sh test ./...
 - [工程规范与失败停止规则](docs/engineering/workflow.md)
 - [架构改造总览](docs/engineering/architecture-refactor-20261120.md)
 
-![当前首页设计参考图](docs/images/ui-redesign/client-simplification-20261112/01-home.png)
+![V4 首页设计参考图](docs/images/ui-redesign/visual-v4-20261120/overview-light.png)

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<title>Memlane 视觉 V4 原型</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="proto-bar" aria-label="原型控制">
+  <strong>Memlane V4 原型</strong>
+  <span class="proto-note">示例数据 · 系统字体 · 仅用 MyGo 可对应的绘制与动画能力</span>
+  <div class="proto-group" role="group" aria-label="主题">
+    <button data-theme-choice="light">浅色</button><button data-theme-choice="dark">深色</button><button data-theme-choice="system">跟随系统</button>
+  </div>
+  <div class="proto-group" role="group" aria-label="页面">
+    <button data-page-choice="overview">总览</button><button data-page-choice="project">项目</button>
+  </div>
+  <button id="simulate">模拟新记忆入库</button>
+  <button id="replay">重放入场</button>
+  <label class="proto-check"><input type="checkbox" id="reduce"> 减少动态效果</label>
+</header>
+
+<main class="desk">
+  <div class="window" id="window">
+    <aside class="sidebar">
+      <div class="traffic"><i></i><i></i><i></i></div>
+      <div class="brand">
+        <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="2" y="2" width="7" height="7" rx="2" fill="var(--accent)"/><rect x="11" y="2" width="7" height="7" rx="2" fill="var(--accent)" opacity=".55"/><rect x="2" y="11" width="7" height="7" rx="2" fill="var(--accent)" opacity=".55"/><rect x="11" y="11" width="7" height="7" rx="2" fill="var(--accent)" opacity=".25"/></svg>
+        Memlane
+      </div>
+      <nav class="nav" id="nav">
+        <span class="nav-indicator" id="navIndicator"></span>
+        <div id="navItems"></div>
+        <div class="nav-section"><span>项目</span><span class="spacer"></span><button class="mini-link" id="allProjects">全部 8</button><button class="icon-btn" id="addProject" title="关联项目">＋</button></div>
+        <div id="navProjects"></div>
+      </nav>
+      <div class="sidebar-foot">
+        <button class="nav-item" data-nav="settings"><span class="ico" id="settingsIco"></span><span class="label">设置</span></button>
+        <div class="service"><span class="dot ok"></span>服务 · 已连接</div>
+      </div>
+    </aside>
+    <section class="main" id="main"></section>
+  </div>
+</main>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

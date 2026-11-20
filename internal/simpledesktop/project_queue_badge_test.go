@@ -72,8 +72,8 @@ func TestSidebarPendingBadgeOpensProjectAndClearsAfterProcessing(t *testing.T) {
 		t.Fatal("persistent failure was hidden")
 	}
 	clickProjectUI(t, tt, "待处理文档：memlane")
-	if a.access.OpenProject != p.ID || a.page != "设置" {
-		t.Fatal("persistent notification did not open project settings")
+	if a.access.OpenProject != p.ID || a.page != "知识" || a.kind != "管理" {
+		t.Fatal("persistent notification did not open project management tab")
 	}
 	q.Sessions[0].View.Loaded = true
 	q.observeNotificationFailures(time.Now())

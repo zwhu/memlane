@@ -88,7 +88,7 @@ func TestKnowledgeFeedFiltersBeforeBatchAndKeepsScroll(t *testing.T) {
 	}
 }
 
-func TestKnowledgeWaterfallCardActionsAndMasonry(t *testing.T) {
+func TestKnowledgeThreePaneSelectionCopyAndScroll(t *testing.T) {
 	for _, wh := range [][2]int{{1200, 820}, {1536, 1024}} {
 		a := projectUIFixture()
 		s := a.state()
@@ -98,36 +98,34 @@ func TestKnowledgeWaterfallCardActionsAndMasonry(t *testing.T) {
 			d := lessonDocument()
 			d.ID = fmt.Sprint(n)
 			d.Dataset = "ds"
-			body := strings.Repeat("保留真实知识内容，不能凭空生成标题。", n%3+1)
+			body := fmt.Sprintf("第 %d 条记忆：%s", n, strings.Repeat("保留真实知识内容，不能凭空生成标题。", n%3+1))
 			s.Items = append(s.Items, Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Document: &d, Body: "# Session learning (session s)\n\n" + body, BodyLoaded: true, ReadingState: "ready", Date: "2026-11-16", Source: "s"})
 		}
+		s.Knowledge.Catalog = append([]Item(nil), s.Items...)
+		s.Selected = &s.Items[0]
 		tt := ui.NewTester(a.View, wh[0], wh[1])
-		fixtureImage(t, tt, fmt.Sprintf("knowledge-waterfall-%d", wh[0]))
-		for _, obsolete := range []string{"最近知识", "最近更新", "上一页", "下一页", "展开完整标题"} {
+		fixtureImage(t, tt, fmt.Sprintf("knowledge-three-pane-%d", wh[0]))
+		for _, obsolete := range []string{"最近知识", "最近更新", "上一页", "下一页", "展开完整标题", "搜索当前内容"} {
 			if tt.HasText(obsolete) {
 				t.Fatalf("obsolete control %s", obsolete)
 			}
 		}
-		clickProjectUI(t, tt, "复制记忆")
+		clickProjectUI(t, tt, "复制正文")
 		if tt.Clipboard() != knowledgeCardBody(s.Items[0]) {
 			t.Fatal("copy did not use complete visible statement")
 		}
-		card, ok := tt.Find("记忆卡片")
-		if !ok || card.W <= 0 {
-			t.Fatal("card missing")
+		if _, ok := tt.Find("记忆列表"); !ok {
+			t.Fatal("three-pane list missing")
 		}
 		if a.page != "知识" || a.kind != "知识" {
 			t.Fatal("copy navigated away")
 		}
-		// A selected source/detail does not remove the feed's independent scroll.
 		s.ListScroll.Y = min(float32(100), s.ListScroll.MaxY)
 		tt.Frame()
 		beforeScroll := s.ListScroll.Y
-		s.Knowledge.Detail = true
-		tt.Frame()
-		clickProjectUI(t, tt, "关闭记忆详情")
-		if s.Knowledge.Detail || s.ListScroll.Y != beforeScroll {
-			t.Fatalf("detail return reset feed state: size=%v detail=%v scroll=%v before=%v max=%v", wh, s.Knowledge.Detail, s.ListScroll.Y, beforeScroll, s.ListScroll.MaxY)
+		clickProjectUI(t, tt, knowledgeCardBody(s.Items[4]))
+		if s.Selected == nil || s.Selected.ID != "4" || s.ListScroll.Y != beforeScroll {
+			t.Fatalf("selecting visible item changed feed scroll: sel=%v scroll=%v before=%v", s.Selected, s.ListScroll.Y, beforeScroll)
 		}
 	}
 }
@@ -135,7 +133,15 @@ func TestKnowledgeWaterfallCardActionsAndMasonry(t *testing.T) {
 func TestKnowledgeFeedRejectsLateProjectReply(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		close(started)
+		if strings.HasSuffix(r.URL.Path, "/raw") {
+			fmt.Fprint(w, "body")
+			return
+		}
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
 		<-release
 		d := lessonDocument()
 		json.NewEncoder(w).Encode([]Document{d})
@@ -161,119 +167,86 @@ func TestKnowledgeFeedRejectsLateProjectReply(t *testing.T) {
 	}
 }
 
-func TestKnowledgeModalEscapePreservesFeed(t *testing.T) {
+func TestKnowledgeThreePaneInlineDetailAndDarkAppearance(t *testing.T) {
 	a := projectUIFixture()
 	s := a.state()
 	s.Items[0].Document.Name = ""
 	s.Items[0].Body = "第一句正文。第二句正文，不能当成另一个标题。"
 	s.Selected = &s.Items[0]
-	tt := ui.NewTester(a.View, 1200, 820)
-	before, _ := tt.Find("记忆卡片")
-	clickProjectUI(t, tt, "阅读记忆："+knowledgeCardBody(s.Items[0]))
-	if !s.Knowledge.Detail || !tt.HasText("记忆详情弹框") || !tt.HasText("关闭记忆详情") || tt.HasText("展开完整标题") {
-		t.Fatal("knowledge did not open as an untitled modal")
-	}
-	tt.Key(0, ui.KeyEscape)
-	if s.Knowledge.Detail || tt.HasText("记忆详情弹框") {
-		t.Fatal("Escape did not dismiss modal")
-	}
-	after, _ := tt.Find("记忆卡片")
-	if before != after {
-		t.Fatal("closing modal moved underlying feed", before, after)
-	}
-	clickProjectUI(t, tt, "阅读记忆："+knowledgeCardBody(s.Items[0]))
-	tt.ClickAt(10, 80)
-	if s.Knowledge.Detail {
-		t.Fatal("outside click did not dismiss modal")
+	for _, dark := range []bool{false, true} {
+		tt := ui.NewTester(a.View, 1200, 820)
+		tt.SetDark(dark)
+		tt.Frame()
+		if !tt.HasText("第一句正文。第二句正文，不能当成另一个标题。") || tt.HasText("展开完整标题") || tt.HasText("记忆详情弹框") {
+			t.Fatalf("three-pane detail wrong (dark=%v)", dark)
+		}
+		if tok.Dark != dark {
+			t.Fatalf("V4 tokens did not follow dark=%v", dark)
+		}
 	}
 }
 
-// A batch arrives as metadata, then its very different body heights resolve.
-// Equal pending placeholders must not permanently choose unequal final columns.
-func TestKnowledgeWaterfallAsyncBodiesDoNotLeaveAnEmptyColumn(t *testing.T) {
+func TestKnowledgeThreePaneAsyncHydrationUpdatesListAndReader(t *testing.T) {
 	a := projectUIFixture()
 	a.Update = nil
 	s := a.state()
 	s.Knowledge = knowledgeFeedState{Initialized: true}
 	s.Items = nil
-	for n := 0; n < 9; n++ {
+	for n := 0; n < 5; n++ {
 		d := lessonDocument()
 		d.ID = fmt.Sprint(n)
 		d.Dataset = "ds"
 		s.Items = append(s.Items, Item{ID: d.ID, Dataset: "ds", Kind: "知识", Document: &d, ReadingState: "pending"})
 	}
+	s.Selected = &s.Items[0]
 	tt := ui.NewTester(a.View, 1200, 820)
 	for n := range s.Items {
-		body := strings.Repeat("这段真实正文比较长，需要按实际高度排布，避免中间一列出现大片空白。", 20)
-		if n%3 == 1 {
-			body = "短记忆。"
-		}
-		s.Items[n].Body = fmt.Sprintf("%d %s", n, body)
+		s.Items[n].Body = fmt.Sprintf("水合完成条目 %d 正文", n)
 		s.Items[n].BodyLoaded = true
 		s.Items[n].ReadingState = "ready"
 	}
+	s.Selected = &s.Items[0]
 	tt.Frame()
-	bottoms := [3]float32{}
-	maxBody := float32(0)
-	for _, i := range s.Items {
-		r, ok := tt.Find("阅读记忆：" + knowledgeCardBody(i))
-		if !ok {
-			t.Fatal("resolved body missing")
-		}
-		col := s.Knowledge.Columns[i.key()]
-		bottoms[col] = max(bottoms[col], r.Y+r.H)
-		maxBody = max(maxBody, r.H)
+	if !tt.HasText("水合完成条目 0 正文") || !tt.HasText("水合完成条目 4 正文") {
+		t.Fatal("hydrated bodies missing in three-pane list")
 	}
-	gap := max(bottoms[0], bottoms[1], bottoms[2]) - min(bottoms[0], bottoms[1], bottoms[2])
-	if gap > maxBody+192 {
-		t.Fatalf("resolved masonry has an empty column: bottoms=%v gap=%.0f maxBody=%.0f", bottoms, gap, maxBody)
-	}
-	fixtureImage(t, tt, "waterfall-asynchronous-heights")
+	fixtureImage(t, tt, "three-pane-hydrated")
 }
 
-func TestKnowledgeWaterfallPendingAppendKeepsExistingCards(t *testing.T) {
+func TestKnowledgeThreePanePendingAppendKeepsExistingRows(t *testing.T) {
 	a := projectUIFixture()
 	a.Update = nil
 	s := a.state()
 	s.Knowledge = knowledgeFeedState{Initialized: true}
 	s.Items = nil
-	for n := 0; n < 9; n++ {
+	for n := 0; n < 5; n++ {
 		d := lessonDocument()
 		d.ID = fmt.Sprint(n)
-		body := fmt.Sprintf("%d %s", n, strings.Repeat("正文内容长短不同，按完整文本排列。", n%3+1))
+		body := fmt.Sprintf("条目%d %s", n, strings.Repeat("正文内容长短不同，按完整文本排列。", n%2+1))
 		s.Items = append(s.Items, Item{ID: d.ID, Dataset: "ds", Kind: "知识", Document: &d, Body: body, BodyLoaded: true, ReadingState: "ready"})
 	}
+	s.Selected = &s.Items[0]
 	tt := ui.NewTester(a.View, 1200, 820)
-	before := map[string]ui.Rect{}
-	for _, i := range s.Items {
-		before[i.key()], _ = tt.Find("阅读记忆：" + knowledgeCardBody(i))
+	before, ok := tt.Find(knowledgeCardBody(s.Items[0]))
+	if !ok {
+		t.Fatal("existing row missing")
 	}
-	for n := 9; n < 18; n++ {
+	for n := 5; n < 10; n++ {
 		s.Items = append(s.Items, Item{ID: fmt.Sprint(n), Dataset: "ds", Kind: "知识", ReadingState: "pending"})
 	}
 	tt.Frame()
-	for _, i := range s.Items[:9] {
-		r, _ := tt.Find("阅读记忆：" + knowledgeCardBody(i))
-		if r != before[i.key()] {
-			t.Fatal("pending append moved an existing card")
-		}
+	after, _ := tt.Find(knowledgeCardBody(s.Items[0]))
+	if after != before {
+		t.Fatalf("pending append moved an existing row: %+v -> %+v", before, after)
 	}
-	if len(s.Knowledge.Columns) != 9 {
-		t.Fatal("pending placeholders permanently assigned a column")
-	}
-	for n := 9; n < 18; n++ {
-		s.Items[n].Body = fmt.Sprintf("%d 新批次完成后才参与排布。", n)
+	for n := 5; n < 10; n++ {
+		s.Items[n].Body = fmt.Sprintf("条目%d 新批次完成。", n)
 		s.Items[n].BodyLoaded = true
 		s.Items[n].ReadingState = "ready"
 	}
 	tt.Frame()
-	for _, i := range s.Items[:9] {
-		r, _ := tt.Find("阅读记忆：" + knowledgeCardBody(i))
-		if r != before[i.key()] {
-			t.Fatal("completed append moved an existing card")
-		}
-	}
-	if len(s.Knowledge.Columns) != 18 {
-		t.Fatal("completed batch not placed")
+	final, _ := tt.Find(knowledgeCardBody(s.Items[0]))
+	if final != before {
+		t.Fatalf("completed append moved an existing row: %+v -> %+v", before, final)
 	}
 }

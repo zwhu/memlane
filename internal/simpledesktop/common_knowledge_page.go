@@ -203,7 +203,7 @@ func (a *App) commonReadActions(c *ui.Context, i Item) {
 		}
 	}
 	commonButton(c, label, false, func() { a.beginCommonDraft(&i) }).Disabled(e.Busy || e.DeleteSubmitted)
-	commonButton(c, "删除", false, func() { d := *i.Document; e.Delete = &d; e.Message = "" }).TextColor(ui.Hex("#9a625e")).Disabled(e.Busy || pending || e.DeleteSubmitted)
+	commonButton(c, "删除", false, func() { d := *i.Document; e.Delete = &d; e.Message = "" }).TextColor(tok.Danger).Disabled(e.Busy || pending || e.DeleteSubmitted)
 }
 func commonReadingParts(i Item) (CommonDraft, bool) {
 	if i.Document == nil {
@@ -300,7 +300,7 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 				if canonical {
 					a.commonMarkdown(c, "common-body-"+i.key(), parts.Body)
 					if parts.Applicability != "" {
-						ui.Column(c).FillWidth().Padding(14, 16).Gap(8).Background(ui.Hex("#f6f9fc")).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
+						ui.Column(c).FillWidth().Padding(14, 16).Gap(8).Background(tok.Fill1).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
 							homeText(c, "适用条件", homeMeta).FontWeight(500)
 							a.commonMarkdown(c, "common-conditions-"+i.key(), parts.Applicability)
 						})
@@ -325,7 +325,7 @@ func (a *App) commonMarkdown(c *ui.Context, key, body string) {
 		theme.FontSize = 13
 		a.projectMD = &markdown.Options{Theme: &theme, CodeBlock: a.md.CodeBlock}
 	}
-	markdown.View(c.Key(key), body, a.projectMD)
+	markdown.View(c.Key(key), body, a.v4MarkdownOptions(fsReading))
 }
 func (a *App) commonDeletionBanner(c *ui.Context, i Item) {
 	e := &a.commonEdit
@@ -340,7 +340,7 @@ func (a *App) commonDeletionBanner(c *ui.Context, i Item) {
 		return
 	}
 
-	ui.Column(c).Shrink(0).Margin(0, 24, 10, 24).Padding(12, 16).Gap(8).Border(1, ui.Hex("#e5d7d5")).Radius(8).Background(ui.Hex("#fcf8f7")).Children(func() {
+	ui.Column(c).Shrink(0).Margin(0, 24, 10, 24).Padding(12, 16).Gap(8).Border(1, tok.Danger.Alpha(.35)).Radius(8).Background(tok.Danger.Alpha(.08)).Children(func() {
 		message := "删除“" + i.Title + "”？官方确认后将移除此条记忆及关联索引。"
 		if e.DeleteSubmitted {
 			message = "删除结果尚未确认，请核对原操作，不重复删除。"
@@ -350,7 +350,7 @@ func (a *App) commonDeletionBanner(c *ui.Context, i Item) {
 			if e.DeleteSubmitted {
 				commonButton(c, "核对原删除结果", false, a.confirmCommonDeletion).Disabled(e.Busy)
 			} else {
-				commonButton(c, "确认删除此条", false, func() { a.deleteCommonKnowledge(*i.Document) }).Disabled(e.Busy).TextColor(ui.Hex("#9a625e"))
+				commonButton(c, "确认删除此条", false, func() { a.deleteCommonKnowledge(*i.Document) }).Disabled(e.Busy).TextColor(tok.Danger)
 				projectLink(c, "保留记忆", func() { e.Delete = nil })
 			}
 		})
@@ -450,7 +450,7 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 					}
 				}
 				if e.Submitted {
-					ui.Column(c).Padding(14, 16).Gap(9).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Background(ui.Hex("#f6f9fc")).Children(func() {
+					ui.Column(c).Padding(14, 16).Gap(9).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Background(tok.Fill1).Children(func() {
 						saved := "待核对"
 						if e.SaveVerified {
 							saved = "已核对"

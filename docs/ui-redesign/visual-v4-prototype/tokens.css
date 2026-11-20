@@ -1,0 +1,103 @@
+/* Memlane 视觉 V4 设计令牌（原型）。数值为逻辑 px，对应 MyGo DIP。 */
+:root {
+  /* 字体：系统字体 + 苹方；代码 SF Mono */
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  --font-mono: "SF Mono", ui-monospace, Menlo, monospace;
+
+  /* 字号层级（6 级） */
+  --fs-caption: 11px;   /* 元信息、徽标、分组标题 */
+  --fs-footnote: 12px;  /* 摘要、次要说明、按钮 */
+  --fs-body: 13px;      /* 列表标题、导航、正文控件 */
+  --fs-reading: 14px;   /* 阅读区正文 */
+  --fs-heading: 16px;   /* 区块标题、阅读小节 */
+  --fs-title: 22px;     /* 页面／文档标题、统计数字 */
+
+  /* 4px 网格 */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 20px; --s6: 24px; --s8: 32px; --s10: 40px;
+
+  --radius: 6px;
+  --radius-sm: 4px;
+  --row-1: 32px;   /* 单行 */
+  --row-2: 54px;   /* 双行 */
+  --bar: 52px;     /* 与标题栏融合的顶栏 */
+  --sidebar-w: 220px;
+
+  /* 动效：弹簧在 app.js 中生成 linear() 并覆盖下列回退值 */
+  --ease-smooth: cubic-bezier(.25,.1,.25,1);
+  --ease-snappy: cubic-bezier(.2,.9,.3,1.15);
+  --ease-bouncy: cubic-bezier(.2,.9,.3,1.3);
+  --dur-fast: 120ms;
+  --dur-smooth: 380ms;
+  --dur-snappy: 320ms;
+  --dur-bouncy: 520ms;
+}
+
+/* 浅色 */
+:root[data-theme="light"] {
+  --accent: #5E6AD2;
+  --accent-hover: #5260C8;
+  --accent-soft: rgba(94,106,210,.10);
+  --accent-softer: rgba(94,106,210,.06);
+  --on-accent: #FFFFFF;
+
+  --bg: #FFFFFF;
+  --bg-elevated: #FFFFFF;
+  --sidebar-bg: rgba(244,244,246,.86);
+  --fill-1: #F5F5F7;          /* 代码块、输入框 */
+  --fill-2: #EDEDF0;          /* 热力图空格、分段底 */
+  --hover: rgba(0,0,0,.04);
+  --pressed: rgba(0,0,0,.07);
+  --border: #E6E6EA;
+  --border-strong: #D5D5DB;
+
+  --text-1: #1B1B1F;          /* 主文字 16.8:1 */
+  --text-2: #55585F;          /* 次文字 7.3:1 */
+  --text-3: #7A7D85;          /* 元信息 4.4:1 */
+  --text-4: #A3A6AD;          /* 占位、禁用 */
+
+  --ok: #2E9E5B;
+  --danger: #D64545;
+  --shadow-lift: 0 1px 2px rgba(0,0,0,.05), 0 4px 12px rgba(0,0,0,.06);
+  --shadow-window: 0 0 0 .5px rgba(0,0,0,.18), 0 24px 64px rgba(0,0,0,.22);
+  --heat-0: var(--fill-2);
+  --heat-1: rgba(94,106,210,.22);
+  --heat-2: rgba(94,106,210,.42);
+  --heat-3: rgba(94,106,210,.68);
+  --heat-4: rgba(94,106,210,.95);
+  color-scheme: light;
+}
+
+/* 深色 */
+:root[data-theme="dark"] {
+  --accent: #7C86E8;
+  --accent-hover: #8E97EE;
+  --accent-soft: rgba(124,134,232,.16);
+  --accent-softer: rgba(124,134,232,.08);
+  --on-accent: #FFFFFF;
+
+  --bg: #1C1C1F;
+  --bg-elevated: #242428;
+  --sidebar-bg: rgba(36,36,40,.84);
+  --fill-1: #26262A;
+  --fill-2: #2D2D32;
+  --hover: rgba(255,255,255,.05);
+  --pressed: rgba(255,255,255,.08);
+  --border: #2E2E33;
+  --border-strong: #3A3A40;
+
+  --text-1: #EDEDF0;
+  --text-2: #A8A9B0;
+  --text-3: #808189;
+  --text-4: #5C5D64;
+
+  --ok: #3FBF73;
+  --danger: #EF6363;
+  --shadow-lift: 0 1px 2px rgba(0,0,0,.3), 0 4px 12px rgba(0,0,0,.3);
+  --shadow-window: 0 0 0 .5px rgba(255,255,255,.12), 0 24px 64px rgba(0,0,0,.55);
+  --heat-0: var(--fill-2);
+  --heat-1: rgba(124,134,232,.25);
+  --heat-2: rgba(124,134,232,.45);
+  --heat-3: rgba(124,134,232,.70);
+  --heat-4: rgba(124,134,232,.98);
+  color-scheme: dark;
+}

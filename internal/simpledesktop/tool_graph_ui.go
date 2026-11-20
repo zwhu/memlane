@@ -143,7 +143,7 @@ func (a *App) toolGraphDialog(c *ui.Context) {
 			homeText(c, "将已有工具记录整理成关系图谱。", homeMeta)
 		})
 		if s.Preview != nil {
-			ui.Column(c).FillWidth().Padding(12, 14).Gap(6).Background(ui.Hex("#f6f8fa")).Radius(6).Children(func() {
+			ui.Column(c).FillWidth().Padding(12, 14).Gap(6).Background(tok.Fill1).Radius(6).Children(func() {
 				homeText(c, fmt.Sprintf("待处理：%d 个会话 · %d 条工具记录", s.Preview.Sessions, s.Preview.Steps), homeBody).FontSize(14).FontWeight(500)
 				homeText(c, "已处理的会跳过，新记录下次再处理。", homeMeta).FontSize(11)
 			})

@@ -93,7 +93,7 @@ func TestUnreadBadgeAndListAreDistinctFromPendingWork(t *testing.T) {
 	s.Error = ""
 	s.Loading = false
 	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("未读记忆：memlane") || !tt.HasText("未读") {
+	if !tt.HasText("未读记忆：memlane") || !tt.HasText("未读标记") {
 		t.Fatal("unread badge/list marker absent")
 	}
 	if tt.HasText("待处理文档：memlane") {
@@ -104,7 +104,7 @@ func TestUnreadBadgeAndListAreDistinctFromPendingWork(t *testing.T) {
 	i.BodyLoaded = true
 	a.publishOverviewTitle(i)
 	tt.Frame()
-	if tt.HasText("未读记忆：memlane") || tt.HasText("未读") {
+	if tt.HasText("未读记忆：memlane") || tt.HasText("未读标记") {
 		t.Fatal("read item remained unread")
 	}
 }

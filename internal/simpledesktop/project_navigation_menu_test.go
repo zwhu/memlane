@@ -26,7 +26,7 @@ func TestProjectMenuOwnsCreationAndCommonOwnsStorage(t *testing.T) {
 	}
 	fixtureImage(t, tt, "project-create-suggestion")
 	tt.Key(0, ui.KeyEscape)
-	clickProjectUI(t, tt, "项目设置")
+	clickProjectUI(t, tt, "管理")
 	if !tt.HasText("编辑名称") || !tt.HasText("/synthetic/memlane") {
 		t.Fatal("project context missing directory and actions")
 	}
@@ -65,7 +65,10 @@ func TestProjectMenuReturnsToGlobalSettingsAndPreservesCreationDraft(t *testing.
 	tt := ui.NewTester(a.View, 1200, 820)
 	a.openProjectSettings(0)
 	tt.Frame()
-	clickProjectUI(t, tt, "返回设置")
+	if a.page != "知识" || a.kind != "管理" || a.access.OpenProject != "p" {
+		t.Fatal("openProjectSettings did not open inline management tab")
+	}
+	clickProjectUI(t, tt, "设置")
 	if a.page != "设置" || a.settingsOrigin != nil || a.access.OpenProject != "" {
 		t.Fatal("project settings return loop")
 	}

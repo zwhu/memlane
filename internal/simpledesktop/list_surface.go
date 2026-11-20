@@ -2,7 +2,7 @@ package simpledesktop
 
 import "github.com/egoist/mygo/ui"
 
-// List surfaces have one treatment across the overview and settings.
+// List surfaces in V4 use dividers and whitespace instead of nested bordered cards.
 func listSurface(c *ui.Context, content func()) {
-	ui.Column(c).FillWidth().Gap(0).Padding(8, 20).Background(homeBackground).Border(1, homeBorder).Radius(10).Children(content)
+	ui.Column(c).FillWidth().Gap(0).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Padding(sp2, sp4).Children(content)
 }

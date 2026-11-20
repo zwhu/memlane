@@ -35,7 +35,7 @@ func (a *App) projectCreateDialog(c *ui.Context) {
 				if s.Selected == nil {
 					ui.Column(c).Gap(10).Children(func() {
 						homeText(c, "源文件夹", homeHeading).FontSize(13)
-						zone := ui.Column(c).FillWidth().MinHeight(116).Padding(18).Gap(12).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(10).Background(ui.Hex("#f8fafc")).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+						zone := ui.Column(c).FillWidth().MinHeight(116).Padding(18).Gap(12).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(10).Background(tok.Fill1).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 							if s.Folder == "" {
 								homeText(c, "选择或拖入这台电脑上的项目文件夹", homeMeta)
 								textButton(c, "添加文件夹", nil).OnClick(a.selectProjectFolder).Disabled(s.Saving || s.Submitted || a.ChooseProjectFolder == nil)
@@ -61,7 +61,7 @@ func (a *App) projectCreateDialog(c *ui.Context) {
 					})
 				}
 				if s.Selected != nil {
-					ui.Row(c).FillWidth().Padding(12).Gap(10).Background(ui.Hex("#edf3f9")).Radius(7).Children(func() {
+					ui.Row(c).FillWidth().Padding(12).Gap(10).Background(tok.AccentSofter).Radius(7).Children(func() {
 						ui.Column(c).Grow(1).MinWidth(0).Gap(5).Children(func() {
 							homeText(c, "将关联已有项目记录", homeMeta)
 							homeText(c, s.Selected.Name, homeBody).FontSize(12).SingleLine()
@@ -90,7 +90,7 @@ func (a *App) projectCreateDialog(c *ui.Context) {
 						}
 						for _, row := range s.Suggestions {
 							suggestion := row
-							ui.Button(c, "").Label("建议关联："+suggestion.Name).FillWidth().MinWidth(0).Padding(12).Background(ui.Hex("#f8fafc")).Border(1, homeBorder).Radius(7).Gap(10).Children(func() {
+							ui.Button(c, "").Label("建议关联："+suggestion.Name).FillWidth().MinWidth(0).Padding(12).Background(tok.Fill1).Border(1, homeBorder).Radius(7).Gap(10).Children(func() {
 								ui.Icon(c, homeFolder).FontSize(17).TextColor(homeMuted)
 								ui.Column(c).Grow(1).MinWidth(0).Gap(5).Children(func() {
 									homeText(c, suggestion.Name, homeBody).FontSize(12).SingleLine()

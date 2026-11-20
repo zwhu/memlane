@@ -285,11 +285,20 @@ func (a *App) returnToSearch() {
 	a.openUnifiedSearch(true)
 }
 func (a *App) unifiedSearchTrigger(c *ui.Context) {
-	ui.Button(c, "").Cursor(ui.CursorPointer).Key("unified-search-trigger").Label("搜索记忆与原始记录").Width(264).Height(32).Padding(0, 11).Gap(10).Background(ui.Hex("#f6f8fa")).Border(1, homeBorder).Radius(7).Children(func() {
-		ui.Icon(c, homeSearch).FontSize(16).TextColor(homeMuted)
-		homeText(c, "搜索记忆与原始记录", homeMeta).FontSize(12)
+	b := ui.ButtonBase(c.Key("unified-search-trigger")).Role(ui.RoleButton).Cursor(ui.CursorPointer).
+		Label("搜索记忆与原始记录").Width(260).Height(28).Padding(0, sp2).Gap(sp2).
+		Background(tok.Fill1).Radius(radius).AlignItems(ui.Center).Shrink(0)
+	borderCol := ui.Transparent
+	if b.Hovered() {
+		borderCol = tok.BorderStrong
+	}
+	b.Border(1, b.AnimateColor("search-border", borderCol, v4Fast))
+	v4ButtonPress(b, 0.98)
+	b.Children(func() {
+		ui.Icon(c, v4IconSearch).FontSize(14).TextColor(tok.Text3).Shrink(0)
+		ui.Text(c, "搜索记忆与原始记录").Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text3).SingleLine()
 		ui.Spacer(c)
-		homeText(c, "⌘ K", homeMeta)
+		ui.Text(c, "⌘ K").Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Text4).SingleLine()
 	}).OnClick(a.OpenSearch)
 }
 func (a *App) searchDialog(c *ui.Context) {
@@ -412,7 +421,7 @@ func (a *App) searchDialog(c *ui.Context) {
 					ui.Icon(c, homeDocument).FontSize(18).TextColor(homeMuted)
 					ui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
 						if i.SearchMatch != "" {
-							homeText(c, i.SearchMatch, homeMeta).TextColor(ui.Hex("#647f99"))
+							homeText(c, i.SearchMatch, homeMeta).TextColor(tok.Accent)
 						}
 						homeText(c, title, homeTitle).FontSize(14).MaxLines(2)
 						if preview != "" && strings.TrimSpace(s.Query) != "" {

@@ -31,7 +31,7 @@ func (a *App) allProjectsDialog(c *ui.Context) {
 				a.projectNotificationMenu(c, row, p)
 				row.Children(func() {
 					open := ui.Button(c, "").Label("打开项目："+p.Name).Grow(1).MinWidth(0).Justify(ui.Start).Gap(10).Padding(10, 4).BorderWidth(0)
-					open.Background(homeHoverColor(open, "all-project-surface", ui.Transparent, ui.Hex("#f8fafc")))
+					open.Background(homeHoverColor(open, "all-project-surface", ui.Transparent, tok.Hover))
 					open.Children(func() {
 						ui.Icon(c, homeFolder).FontSize(17).TextColor(homeIconInk)
 						ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {

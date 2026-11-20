@@ -29,8 +29,11 @@ func TestSettingsProjectPermissionsCardsAndNavigation(t *testing.T) {
 			a := settingsFixture()
 			original := a.state()
 			tt := ui.NewTester(a.View, wh[0], wh[1])
-			clickProjectUI(t, tt, "项目设置")
-			if a.settingsOrigin == nil || a.access.OpenProject != "p" {
+			if tt.HasText("项目设置") {
+				t.Fatal("duplicate titlebar 项目设置 button should be removed in favor of 管理 tab")
+			}
+			clickProjectUI(t, tt, "管理")
+			if a.kind != "管理" || a.access.OpenProject != "p" {
 				t.Fatal("project identity lost")
 			}
 			for _, label := range []string{"允许读取记忆", "允许写入和删除记忆"} {
@@ -50,11 +53,11 @@ func TestSettingsProjectPermissionsCardsAndNavigation(t *testing.T) {
 			if tt.HasText("待发材料") || tt.HasText("Agent 权限") {
 				t.Fatal("removed tab remains")
 			}
-			clickProjectUI(t, tt, "返回项目")
-			if a.state() != original || a.page != "知识" {
+			clickProjectUI(t, tt, "记忆")
+			if a.state() != original || a.page != "知识" || a.kind != "知识" {
 				t.Fatal("return lost reading pane")
 			}
-			clickProjectUI(t, tt, "项目设置")
+			clickProjectUI(t, tt, "管理")
 			clickProjectUI(t, tt, "设置")
 			if a.settingsOrigin != nil || a.access.OpenProject != "" || !tt.HasText("Agent 与模型") {
 				t.Fatal("sidebar settings still project scoped")
@@ -98,12 +101,12 @@ func TestProjectHeaderSettingsTargetsCurrentProjectAndReturnsToReading(t *testin
 	a.navigate("知识", 1)
 	original := a.state()
 	tt := ui.NewTester(a.View, 1200, 820)
-	clickProjectUI(t, tt, "项目设置")
-	if a.access.OpenProject != "same" || a.project != 1 || a.settingsOrigin.ProjectID != "same" {
-		t.Fatal("header settings lost current project")
+	clickProjectUI(t, tt, "管理")
+	if a.access.OpenProject != "same" || a.project != 1 || a.kind != "管理" {
+		t.Fatal("management tab lost current project")
 	}
-	clickProjectUI(t, tt, "返回项目")
-	if a.project != 1 || a.state() != original {
-		t.Fatal("settings lost project reading state")
+	clickProjectUI(t, tt, "记忆")
+	if a.project != 1 || a.state() != original || a.kind != "知识" {
+		t.Fatal("management tab lost project reading state")
 	}
 }

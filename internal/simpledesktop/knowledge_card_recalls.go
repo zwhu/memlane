@@ -19,14 +19,7 @@ func knowledgeCardRecall(i Item) (string, string) {
 }
 
 func knowledgeRecallBadge(c *ui.Context, i Item) {
-	label, tip := knowledgeCardRecall(i)
-	background, color := ui.Hex("#f1f3f6"), ui.Hex("#637183")
-	weight := 400
-	if i.RecallStats != nil && i.RecallStats.Count > 0 {
-		background, color = ui.Hex("#e4edff"), ui.Hex("#2457a5")
-		weight = 600
-	}
-	homeText(c, label, homeMeta).FontWeight(weight).SingleLine().Tooltip(tip).Padding(2, 5).Radius(4).Background(background).TextColor(color)
+	v4RecallChip(c, i)
 }
 
 // Read the existing receipts endpoint, never run retrieval or model inference.

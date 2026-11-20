@@ -3,6 +3,7 @@ package simpledesktop
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -52,8 +53,15 @@ func TestRecallActivityFiltersExactReceiptsWithoutRunningRetrieval(t *testing.T)
 	a, s := recallSortFixture()
 	a.page = "总览"
 	event := RecallEvent{ID: "event", AgentID: "codex", Hits: []RecallHit{{"dataset", "44"}, {"dataset", "40"}}}
-	tt := ui.NewTester(func(c *ui.Context) { a.recallActivityAction(c, event) }, 400, 100)
-	clickProjectUI(t, tt, "查看 2 条记忆")
+	a.overviewState.ActivityLoaded = true
+	a.overviewState.Events = []overviewEvent{{Key: "recall-event", Title: "Codex 自动召回", Project: "项目", State: "已完成", Recall: &event}}
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Column(c).Fill().Children(func() { a.overviewActivities(c, time.Now()) })
+	}, 400, 300)
+	if tt.HasText("查看 2 条记忆") {
+		t.Fatal("redundant recall link line should not appear in V4 overview activity")
+	}
+	clickProjectUI(t, tt, "Codex 自动召回 · 项目 · 2 条记忆")
 	if a.page != "知识" || len(s.Items) != 2 || !s.Knowledge.RecallFilter["44"] {
 		t.Fatal("activity failed to locate exact cards")
 	}
@@ -89,10 +97,25 @@ func TestRecallActivityReplacesGenericSuccessWithExactReceiptIDs(t *testing.T) {
 
 func TestKnowledgeSortAndRecallBadgeUI(t *testing.T) {
 	a, s := recallSortFixture()
+	d0 := lessonDocument()
+	d0.ID = "44"
+	d0.Metadata = map[string]any{"node_set": []any{"session_learnings"}, "lesson_type": "pitfall"}
+	for n := range s.Knowledge.Catalog {
+		if s.Knowledge.Catalog[n].ID == "44" {
+			s.Knowledge.Catalog[n].Document = &d0
+		}
+	}
+	a.reorderKnowledge(s)
 	tt := ui.NewTester(func(c *ui.Context) { ui.Column(c).Fill().Children(func() { a.knowledgePage(c, s) }) }, 1200, 820)
+	clickProjectUI(t, tt, "记忆排序")
 	clickProjectUI(t, tt, "按召回次数")
 	if s.Items[0].ID != "44" || !tt.HasText("召回 9 次") {
-		t.Fatal("sort selection did not reorder actual cards")
+		t.Fatal("sort selection did not reorder actual list")
 	}
-	fixtureImage(t, tt, "recall-sorted-cards")
+	clickProjectUI(t, tt, "记忆分类筛选")
+	clickProjectUI(t, tt, "踩坑经验 (1)")
+	if len(s.Items) != 1 || s.Items[0].ID != "44" {
+		t.Fatalf("category filter failed: len=%d", len(s.Items))
+	}
+	fixtureImage(t, tt, "recall-sorted-three-pane")
 }

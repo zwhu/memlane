@@ -50,7 +50,7 @@ func (a *App) captureConnectionDetails(c *ui.Context, row AgentConnection) {
 	s := &a.integrations
 	if reviewed, open := s.CaptureReview[row.ID]; open {
 		ui.Column(c).FillWidth().Padding(0, 0, 0, 42).Children(func() {
-			ui.Column(c.Key("capture-consent-" + row.ID)).FillWidth().Padding(12).Gap(10).Background(ui.Hex("#f5f8fb")).Radius(6).Children(func() {
+			ui.Column(c.Key("capture-consent-" + row.ID)).FillWidth().Padding(12).Gap(10).Background(tok.Fill1).Radius(6).Children(func() {
 				homeText(c, "允许 Codex 自动保存已授权项目中的会话到 Memlane。", homeBody).FontSize(12)
 				ui.Row(c).Gap(14).AlignItems(ui.Center).Children(func() {
 					ui.Button(c, "确认允许").Label("确认允许自动保存："+connectionName(row.Kind)).Padding(5, 12).Disabled(s.Busy || s.Loading).OnClick(func() {

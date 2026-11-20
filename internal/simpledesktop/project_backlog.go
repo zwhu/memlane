@@ -278,7 +278,7 @@ func (a *App) backlogControls(c *ui.Context, q *projectQueueState, p AccessProje
 			safe += row.View.Status.Pending - row.View.Status.Unknown
 		}
 	}
-	ui.Column(c).FillWidth().Padding(12, 20).Gap(8).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Background(ui.Hex("#f8fafc")).Children(func() {
+	ui.Column(c).FillWidth().Padding(12, 20).Gap(8).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Background(tok.Fill1).Children(func() {
 		j := q.Backlog
 		paused := j != nil && (j.Status == "paused" || j.Status == "stopped" || j.Status == "interrupted")
 		ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {

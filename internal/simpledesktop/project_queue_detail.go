@@ -60,7 +60,7 @@ func (a *App) queuedDocumentDetail(c *ui.Context, p AccessProject, q *projectQue
 		return
 	}
 	item := s.Selected
-	ui.Column(c).Fill().Background(ui.Hex("#f8fafc")).Children(func() {
+	ui.Column(c).Fill().Background(tok.Bg).Children(func() {
 		ui.Row(c).FillWidth().Padding(12, 32).Gap(12).AlignItems(ui.Center).Children(func() {
 			textButton(c, "返回待处理内容", func() { a.closeQueuedDocument(p, q) })
 			ui.Spacer(c)
@@ -68,7 +68,7 @@ func (a *App) queuedDocumentDetail(c *ui.Context, p AccessProject, q *projectQue
 		})
 		ui.Scroll(c.Key("queue-detail-"+item.key())).Grow(1).MinHeight(0).Padding(12, 32, 32, 32).Children(func() {
 			ui.Column(c).FillWidth().MaxWidth(900).Gap(16).Children(func() {
-				ui.Column(c).FillWidth().Padding(18).Gap(10).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
+				ui.Column(c).FillWidth().Padding(18).Gap(10).Background(tok.BgElevated).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
 					homeText(c, queuedDocumentTitle(*item), homeHeading).FontSize(20).MaxLines(3)
 					homeText(c, p.Name+" · 原始文档 · "+displayDate(item.Date), homeMeta)
 					if q.DocumentError != "" {
@@ -83,7 +83,7 @@ func (a *App) queuedDocumentDetail(c *ui.Context, p AccessProject, q *projectQue
 						}
 					}
 				})
-				ui.Column(c).FillWidth().Padding(18).Gap(10).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
+				ui.Column(c).FillWidth().Padding(18).Gap(10).Background(tok.BgElevated).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
 					row := ui.Row(c).AlignItems(ui.Center).Gap(4)
 					row.Children(func() {
 						homeText(c, "原文", homeHeading).FontSize(14)
@@ -97,17 +97,18 @@ func (a *App) queuedDocumentDetail(c *ui.Context, p AccessProject, q *projectQue
 						refreshAction(c, "重试读取", func() { a.selectItem(s, *item) }).Disabled(s.Reading)
 					}
 					if item.BodyLoaded {
+						mdOpts := a.v4MarkdownOptions(fsReading)
 						if question, answer, ok := savedDocumentQA(item.Body); ok {
 							homeText(c, "用户", homeMeta)
-							markdown.View(c.Key("queue-question-"+item.key()), question, &a.md)
+							markdown.View(c.Key("queue-question-"+item.key()), question, mdOpts)
 							sourceAgentLabel(c, *item)
-							markdown.View(c.Key("queue-answer-"+item.key()), answer, &a.md)
+							markdown.View(c.Key("queue-answer-"+item.key()), answer, mdOpts)
 						} else {
-							markdown.View(c.Key("queue-body-"+item.key()), item.Body, &a.md)
+							markdown.View(c.Key("queue-body-"+item.key()), item.Body, mdOpts)
 						}
 					}
 				})
-				ui.Column(c).FillWidth().Padding(18).Gap(10).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
+				ui.Column(c).FillWidth().Padding(18).Gap(10).Background(tok.BgElevated).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
 					homeText(c, "项目近期处理", homeHeading).FontSize(14)
 					homeText(c, "以下为项目级处理记录，文档完成状态以顶部核对结果为准。", homeMeta)
 					if q.ActivityError != "" {

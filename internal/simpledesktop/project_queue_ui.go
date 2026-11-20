@@ -36,7 +36,7 @@ func queueStatus(c *ui.Context, label string, color ui.Color) {
 	ui.Row(c).Height(24).Shrink(0).Justify(ui.Start).AlignItems(ui.Center).Children(func() { queueBadge(c, label, color) })
 }
 func queueAction(c *ui.Context, label string, fn func()) ui.Element {
-	return textButton(c, label, fn).Shrink(0).Padding(0).AlignSelf(ui.Center).Justify(ui.Start).TextColor(ui.Hex("#35649b"))
+	return textButton(c, label, fn).Shrink(0).Padding(0).AlignSelf(ui.Center).Justify(ui.Start).TextColor(tok.Accent)
 }
 func queueRefreshAction(c *ui.Context, label string, fn func()) ui.Element {
 	return refreshAction(c, label, fn)
@@ -81,7 +81,7 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 			}
 		}
 		if q.NoticeAcknowledgementError != "" {
-			homeText(c, q.NoticeAcknowledgementError, homeBody).TextColor(ui.Hex("#a47648"))
+			homeText(c, q.NoticeAcknowledgementError, homeBody).TextColor(tok.Warning)
 		}
 		if !q.Loaded && len(info) == 0 {
 			homeText(c, "正在读取消息状态…", homeMeta)
@@ -97,7 +97,7 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 				end := min(start+5, len(q.Documents))
 				for _, item := range q.Documents[start:end] {
 					item := item
-					ui.Column(c.Key("document-"+item.ID)).FillWidth().Padding(14, 16).Gap(6).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(10).Children(func() {
+					ui.Column(c.Key("document-"+item.ID)).FillWidth().Padding(14, 16).Gap(6).Background(tok.BgElevated).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(10).Children(func() {
 						homeText(c, queuedDocumentTitle(item), homeBody).FontSize(12).SingleLine()
 						ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
 							queueBadge(c, "已保存 · 未完成整理", homeLinkInk)
@@ -145,7 +145,7 @@ func (a *App) messageNoticeGroup(c *ui.Context, q *projectQueueState, p AccessPr
 		if len(rows) == 0 {
 			return
 		}
-		ui.Column(c).FillWidth().Background(ui.Hex("#ffffff")).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(10).Children(func() {
+		ui.Column(c).FillWidth().Background(tok.BgElevated).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(10).Children(func() {
 			for index, n := range rows {
 				n := n
 				acknowledged := q.noticeAcknowledged(n.Key)
@@ -154,7 +154,7 @@ func (a *App) messageNoticeGroup(c *ui.Context, q *projectQueueState, p AccessPr
 					icon := messageClockIcon
 					switch n.Tag {
 					case "系统异常", "读取异常", "整理异常", "保存受阻", "需要授权", "需要补交":
-						color = ui.Hex("#a47648")
+						color = tok.Warning
 						icon = messageAlertIcon
 					case "已暂停":
 						icon = messagePauseIcon
@@ -177,10 +177,10 @@ func (a *App) messageNoticeGroup(c *ui.Context, q *projectQueueState, p AccessPr
 								if n.Session != nil {
 									agentLogo(c, accessAgentIcon(n.Session.Agent), 12)
 								}
-								homeText(c, n.Source, homeMeta).FontSize(10).TextColor(ui.Hex("#657487"))
+								homeText(c, n.Source, homeMeta).FontSize(10).TextColor(tok.Text3)
 							})
 						}
-						homeText(c, n.Detail, homeBody).FontSize(11).TextColor(ui.Hex("#53616f")).LineHeight(1.45)
+						homeText(c, n.Detail, homeBody).FontSize(11).TextColor(tok.Text2).LineHeight(1.45)
 						if n.Followup != "" {
 							homeText(c, n.Followup, homeMeta).LineHeight(1.45)
 						}
@@ -236,7 +236,7 @@ func (a *App) messageNoticeGroup(c *ui.Context, q *projectQueueState, p AccessPr
 func (a *App) messageNoticeDetails(c *ui.Context, q *projectQueueState, p AccessProject, row queuedSession) {
 	v := row.View
 	check := q.pendingCheck(row)
-	ui.Column(c).FillWidth().Margin(7, 0, 0, 0).Padding(14, 16).Gap(12).Background(ui.Hex("#ffffff")).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
+	ui.Column(c).FillWidth().Margin(7, 0, 0, 0).Padding(14, 16).Gap(12).Background(tok.BgElevated).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {
 			homeText(c, "保存详情", homeHeading).FontSize(12).TextColor(homeInk)
 			label := "诊断信息"
@@ -246,12 +246,12 @@ func (a *App) messageNoticeDetails(c *ui.Context, q *projectQueueState, p Access
 			queueAction(c, label, func() { v.DiagnosticsOpen = !v.DiagnosticsOpen })
 			ui.Spacer(c)
 			if check.CheckedAt > 0 {
-				homeText(c, "检查于 "+time.Unix(int64(check.CheckedAt), 0).Format("01月02日 15:04"), homeMeta).TextColor(ui.Hex("#657487"))
+				homeText(c, "检查于 "+time.Unix(int64(check.CheckedAt), 0).Format("01月02日 15:04"), homeMeta).TextColor(tok.Text3)
 			}
 		})
-		homeText(c, "会话："+shortSessionLabel(row.Binding.HostSessionKey), homeMeta).TextColor(ui.Hex("#657487")).Tooltip(row.Binding.HostSessionKey)
+		homeText(c, "会话："+shortSessionLabel(row.Binding.HostSessionKey), homeMeta).TextColor(tok.Text3).Tooltip(row.Binding.HostSessionKey)
 		if v.DiagnosticsOpen {
-			ui.Column(c).FillWidth().Padding(10, 12).Gap(6).Background(ui.Hex("#f5f7fa")).Radius(6).Children(func() {
+			ui.Column(c).FillWidth().Padding(10, 12).Gap(6).Background(tok.Fill1).Radius(6).Children(func() {
 				homeText(c, "会话："+row.Binding.HostSessionKey, homeMeta)
 				if v.ReadCode != "" {
 					homeText(c, "诊断代码："+v.ReadCode, homeMeta)
@@ -282,12 +282,12 @@ func (a *App) messageNoticeDetails(c *ui.Context, q *projectQueueState, p Access
 			}
 		}
 		if v.DetailsError != "" {
-			homeText(c, v.DetailsError, homeBody).FontSize(11).TextColor(ui.Hex("#9a622f"))
+			homeText(c, v.DetailsError, homeBody).FontSize(11).TextColor(tok.Warning)
 		}
 		if v.DetailsLoaded {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 				homeText(c, "本机消息", homeHeading).FontSize(12).TextColor(homeInk)
-				homeText(c, fmt.Sprintf("已读取 %d 条 · 最多 20 条", len(v.Details)), homeMeta).TextColor(ui.Hex("#657487"))
+				homeText(c, fmt.Sprintf("已读取 %d 条 · 最多 20 条", len(v.Details)), homeMeta).TextColor(tok.Text3)
 			})
 			visible := len(v.Details)
 			if !v.AllMessagesOpen {
@@ -296,15 +296,15 @@ func (a *App) messageNoticeDetails(c *ui.Context, q *projectQueueState, p Access
 			for index, entry := range v.Details[:visible] {
 				entry := entry
 				key := fmt.Sprintf("%s/%d", entry.ID, index)
-				ui.Column(c.Key(key)).FillWidth().Gap(7).Padding(10, 12).Background(ui.Hex("#f5f7fa")).Radius(6).Children(func() {
+				ui.Column(c.Key(key)).FillWidth().Gap(7).Padding(10, 12).Background(tok.Fill1).Radius(6).Children(func() {
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-						homeText(c, fmt.Sprintf("%02d", index+1), homeMeta).TextColor(ui.Hex("#657487")).Width(20)
+						homeText(c, fmt.Sprintf("%02d", index+1), homeMeta).TextColor(tok.Text3).Width(20)
 						homeText(c, entry.Kind, homeBody).FontSize(11).FontWeight(550).TextColor(homeInk)
 						ui.Spacer(c)
 						if entry.Unknown {
-							queueBadge(c, "结果未确认", ui.Hex("#9a622f"))
+							queueBadge(c, "结果未确认", tok.Warning)
 						} else {
-							queueBadge(c, "待保存", ui.Hex("#526b87"))
+							queueBadge(c, "待保存", tok.Text2)
 						}
 						label := "展开"
 						if v.ExpandedMessages[key] {

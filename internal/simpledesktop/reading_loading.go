@@ -52,6 +52,7 @@ func (a *App) startRecentTitles(rows []Item) {
 						a.overviewState.Snapshot.Knowledge[n].ReadingState = "ready"
 					}
 				}
+				a.saveOverviewCache(a.overviewState.scope, a.overviewState.Snapshot, a.overviewState.RawLoaded)
 			})
 		}()
 	}

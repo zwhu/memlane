@@ -11,12 +11,12 @@ var graphEmptyIcon = homeSVG(`<rect x="2" y="9" width="6" height="6" rx="1.5"/><
 func (a *App) graphToolbar(c *ui.Context) {
 	p, ok := a.current()
 	code := a.graphMode == "代码结构"
-	ui.Row(c).Shrink(0).Padding(controlGap, pageInset).Gap(12).AlignItems(ui.Center).Children(func() {
+	ui.Row(c).Shrink(0).Padding(sp3, sp4, sp2, sp4).Gap(sp3).AlignItems(ui.Center).Children(func() {
 		selected := 0
 		if code {
 			selected = 1
 		}
-		ui.Segmented(c, &selected, "实体关系", "代码图谱").Label("图谱类型").OnChange(func() {
+		v4Segmented(c, "graph-mode-seg", "图谱类型", &selected, []string{"实体关系", "代码图谱"}, func() {
 			a.resetGraphView([]string{"实体关系", "代码结构"}[selected])
 			if selected == 1 && ok && !p.CodeEnabled {
 				return
@@ -52,8 +52,8 @@ func (a *App) graphToolbar(c *ui.Context) {
 func (a *App) codeGraphEmpty(c *ui.Context) {
 	ui.Column(c).Grow(1).MinHeight(0).FillWidth().Padding(pageTopInset, pageInset, pageInset, pageInset).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 		ui.Column(c).MaxWidth(480).FillWidth().AlignItems(ui.Center).Gap(14).Children(func() {
-			ui.Column(c).Size(88, 88).Radius(24).Background(ui.Hex("#f1f6fa")).AlignItems(ui.Center).Justify(ui.Center).Margin(0, 0, 8, 0).Children(func() {
-				ui.Icon(c, graphEmptyIcon).FontSize(42).TextColor(ui.Hex("#91a9bf"))
+			ui.Column(c).Size(88, 88).Radius(24).Background(tok.Fill1).AlignItems(ui.Center).Justify(ui.Center).Margin(0, 0, sp2, 0).Children(func() {
+				ui.Icon(c, graphEmptyIcon).FontSize(42).TextColor(tok.Text3)
 			})
 			homeText(c, "代码图谱尚未开启", homeHeading).FontSize(20).FontWeight(600).TextAlign(ui.Center)
 			homeText(c, "从文件、函数与调用关系，了解这个项目的代码结构。", homeBody).TextAlign(ui.Center)
