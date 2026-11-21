@@ -118,6 +118,7 @@ func (q *projectQueueState) activeDetailNotice(needs, info, history []messageNot
 func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	q := a.projectQueue(p)
 	needs, info := a.messageNotices(q, p)
+	anomalies, progress := partitionInfoNotices(info)
 	var history []messageNotice
 	active := func(rows []messageNotice) []messageNotice {
 		var result []messageNotice
@@ -130,17 +131,19 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 		}
 		return result
 	}
-	needs, info = active(needs), active(info)
+	needs, anomalies = active(needs), active(anomalies)
 
 	reveal := a.access.RevealQueueProject == p.ID
 	var targetKey string
 	var targetAckErr bool
 	if reveal {
-		targetKey, targetAckErr = pickProjectQueueAlertTarget(q, needs, info, time.Now())
+		targetKey, targetAckErr = pickProjectQueueAlertTarget(q, needs, anomalies, time.Now())
 		q.LocatedNoticeKey = targetKey
 	}
 
-	hasAlerts := len(needs) > 0 || len(info) > 0
+	hasAlerts := len(needs) > 0 || len(anomalies) > 0
+	hasDocs := q.Loaded && len(q.Documents) > 0 && q.DocumentError == ""
+	hasProgress := len(progress) > 0 || hasDocs
 	groupDesc := ""
 	if hasAlerts && q.AutomaticSave {
 		groupDesc = "自动采集已开启"
@@ -161,12 +164,12 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	var headerActions func()
 	if hasAlerts {
 		headerActions = func() {
-			count := len(needs) + len(info)
+			count := len(needs) + len(anomalies)
 			ui.Text(c, fmt.Sprintf("%d 项待处理", count)).Font("system-ui").FontSize(fsCaption).FontWeight(500).FontFeatures("tnum").TextColor(tok.Warning).SingleLine()
 			autoSaveControl("head", "自动采集")
 			queueRefreshAction(c, "刷新", func() { a.loadProjectQueue(q, p); a.refreshBacklog(q, p) }).Disabled(q.Loading || q.BacklogLoading || a.access.Busy)
 		}
-	} else if !q.Loaded {
+	} else if !q.Loaded && !hasProgress {
 		headerActions = func() {
 			queueRefreshAction(c, "刷新", func() { a.loadProjectQueue(q, p); a.refreshBacklog(q, p) }).Disabled(q.Loading || q.BacklogLoading || a.access.Busy)
 		}
@@ -176,7 +179,7 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	hasTarget := false
 	section := v4Group(c.Key("project-queue-section-"+p.ID), "消息与采集状态", groupDesc, headerActions, func() {
 		ui.Column(c.Key("message-status-"+p.ID)).FillWidth().Gap(0).Children(func() {
-			if !q.Loaded && !hasAlerts {
+			if !q.Loaded && !hasAlerts && !hasProgress {
 				v4SkeletonRow(c, 1, false, false)
 			} else if !hasAlerts {
 				// Healthy collapsed single-row state.
@@ -185,6 +188,9 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 				if q.AutomaticSave {
 					dotTone = "ok"
 					title = "自动采集已开启 · 正常"
+				} else if q.Backlog.active() {
+					dotTone = "run"
+					title = "正在采集消息"
 				}
 				v4Row(c, v4RowOptions{
 					Key:   "proj-msg-healthy-" + p.ID,
@@ -199,12 +205,12 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 				})
 			} else {
 				if len(needs) > 0 {
-					if el, ok := a.messageNoticeBucket(c, q, p, "需要你处理", "warn", needs, targetKey, q.LocatedNoticeKey); ok {
+					if el, ok := a.messageNoticeBucket(c, q, p, "需要你处理", "warn", needs, targetKey, q.LocatedNoticeKey, true); ok {
 						targetEl, hasTarget = el, true
 					}
 				}
-				if len(info) > 0 {
-					if el, ok := a.messageNoticeBucket(c, q, p, "系统异常", "fail", info, targetKey, q.LocatedNoticeKey); ok {
+				if len(anomalies) > 0 {
+					if el, ok := a.messageNoticeBucket(c, q, p, "系统异常", "fail", anomalies, targetKey, q.LocatedNoticeKey, true); ok {
 						targetEl, hasTarget = el, true
 					}
 				}
@@ -221,8 +227,8 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 				})
 			}
 
-			if q.Loaded && len(q.Documents) > 0 && q.DocumentError == "" {
-				a.projectQueuedDocumentsBucket(c, q, p)
+			if hasProgress {
+				a.projectProgressBucket(c, q, p, progress, hasDocs)
 			}
 
 			if len(history) > 0 {
@@ -241,7 +247,7 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 					OnClick: func() { q.NoticeHistoryOpen = !q.NoticeHistoryOpen },
 				})
 				if q.NoticeHistoryOpen {
-					a.messageNoticeBucket(c, q, p, "", "", history, "", "")
+					a.messageNoticeBucket(c, q, p, "", "", history, "", "", true)
 				}
 			}
 
@@ -253,7 +259,8 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 		})
 	})
 
-	if activeNotice, ok := q.activeDetailNotice(needs, info, history); ok {
+	detailNotices := append(append([]messageNotice(nil), anomalies...), progress...)
+	if activeNotice, ok := q.activeDetailNotice(needs, detailNotices, history); ok {
 		a.renderMessageNoticeDialog(c, q, p, activeNotice)
 	}
 
@@ -268,46 +275,63 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	}
 }
 
-func (a *App) projectQueuedDocumentsBucket(c *ui.Context, q *projectQueueState, p AccessProject) {
-	ui.Column(c.Key("proj-queued-docs-" + p.ID)).FillWidth().Gap(0).Children(func() {
+func (a *App) projectProgressBucket(c *ui.Context, q *projectQueueState, p AccessProject, progress []messageNotice, hasDocs bool) {
+	ui.Column(c.Key("proj-progress-" + p.ID)).FillWidth().Gap(0).Children(func() {
 		ui.Row(c).FillWidth().Padding(sp2, sp1, sp1, sp1).Gap(sp2).AlignItems(ui.Center).Children(func() {
 			v4StatusDot(c, "run")
 			ui.Text(c, "进行中与待提炼").Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
-			ui.Text(c, fmt.Sprintf("%d 份文档", len(q.Documents))).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
-		})
-		start := min(q.Offset, len(q.Documents))
-		end := min(start+5, len(q.Documents))
-		for _, item := range q.Documents[start:end] {
-			item := item
-			desc := "已采集 · 等待提炼"
-			if item.Date != "" {
-				desc = displayDate(item.Date) + " · " + desc
+			if len(progress) > 0 && hasDocs {
+				ui.Text(c, fmt.Sprintf("%d 项", len(progress))).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
+				ui.Text(c, "·").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
+				ui.Text(c, fmt.Sprintf("%d 份文档", len(q.Documents))).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
+			} else if hasDocs {
+				ui.Text(c, fmt.Sprintf("%d 份文档", len(q.Documents))).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
+			} else {
+				ui.Text(c, fmt.Sprintf("%d", len(progress))).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
 			}
-			v4Row(c, v4RowOptions{
-				Key:   "document-" + item.ID,
-				Title: queuedDocumentTitle(item),
-				Desc:  desc,
-				Control: func() {
-					queueAction(c, "查看", func() { a.openQueuedDocument(p, item) })
-				},
-			})
+		})
+		if len(progress) > 0 {
+			a.messageNoticeBucket(c, q, p, "", "", progress, "", "", false)
 		}
-		if len(q.Documents) > 5 {
-			ui.Row(c).FillWidth().Padding(sp2, sp1).Gap(sp3).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
-				queueAction(c, "上一页", func() { q.Offset = max(0, q.Offset-5) }).Disabled(start == 0)
-				homeText(c, fmt.Sprintf("%d–%d / %d", start+1, end, len(q.Documents)), homeMeta)
-				queueAction(c, "下一页", func() { q.Offset += 5 }).Disabled(end == len(q.Documents))
-			})
+		if hasDocs {
+			start := min(q.Offset, len(q.Documents))
+			end := min(start+5, len(q.Documents))
+			for _, item := range q.Documents[start:end] {
+				item := item
+				desc := "已采集 · 等待提炼"
+				if item.Date != "" {
+					desc = displayDate(item.Date) + " · " + desc
+				}
+				v4Row(c, v4RowOptions{
+					Key:   "document-" + item.ID,
+					Title: queuedDocumentTitle(item),
+					Desc:  desc,
+					Control: func() {
+						queueAction(c, "查看", func() { a.openQueuedDocument(p, item) })
+					},
+				})
+			}
+			if len(q.Documents) > 5 {
+				ui.Row(c).FillWidth().Padding(sp2, sp1).Gap(sp3).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+					queueAction(c, "上一页", func() { q.Offset = max(0, q.Offset-5) }).Disabled(start == 0)
+					homeText(c, fmt.Sprintf("%d–%d / %d", start+1, end, len(q.Documents)), homeMeta)
+					queueAction(c, "下一页", func() { q.Offset += 5 }).Disabled(end == len(q.Documents))
+				})
+			}
 		}
 	})
 }
 
-func (a *App) messageNoticeBucket(c *ui.Context, q *projectQueueState, p AccessProject, title, dotTone string, rows []messageNotice, targetKey, highlightKey string) (ui.Element, bool) {
+func (a *App) messageNoticeBucket(c *ui.Context, q *projectQueueState, p AccessProject, title, dotTone string, rows []messageNotice, targetKey, highlightKey string, allowAcknowledge bool) (ui.Element, bool) {
 	var targetEl ui.Element
 	hasTarget := false
 	key := title
 	if key == "" {
-		key = "history-rows"
+		if allowAcknowledge {
+			key = "history-rows"
+		} else {
+			key = "progress-rows"
+		}
 	}
 	ui.Column(c.Key(key)).FillWidth().Gap(0).Children(func() {
 		if title != "" {
@@ -383,8 +407,10 @@ func (a *App) messageNoticeBucket(c *ui.Context, q *projectQueueState, p AccessP
 					}
 					queueAction(c, "查看详情", func() { q.openDetailDialog(n) })
 					if acknowledged {
-						queueAction(c, "恢复提醒", func() { a.acknowledgeNotice(q, p, n, true) })
-					} else {
+						if allowAcknowledge {
+							queueAction(c, "恢复提醒", func() { a.acknowledgeNotice(q, p, n, true) })
+						}
+					} else if allowAcknowledge {
 						label := "知道了，不再提醒"
 						if n.NeedsUser {
 							label = "暂不处理"
@@ -404,6 +430,8 @@ func (a *App) renderMessageNoticeDialog(c *ui.Context, q *projectQueueState, p A
 	hint := "原消息保留在本机，未确认前不会自动重发"
 	if diagCode != "" {
 		hint = "诊断码：" + diagCode
+	} else if n.isActiveProgressNotice() {
+		hint = "后台按队列顺序自动处理，切换页面不会中断"
 	}
 
 	var leading func()
@@ -522,8 +550,12 @@ func (a *App) renderMessageNoticeDialog(c *ui.Context, q *projectQueueState, p A
 			if len(safetyLines) > 0 {
 				ui.Row(c).FillWidth().Padding(sp2, sp3).Gap(sp2).AlignItems(ui.Start).
 					Radius(radius).Background(tok.Fill1).Border(1, tok.Border).Children(func() {
+					calloutDot := "warn"
+					if n.isProgressNotice() {
+						calloutDot = n.dotTone()
+					}
 					ui.Row(c).Padding(5, 0, 0, 0).Shrink(0).Children(func() {
-						v4StatusDot(c, "warn")
+						v4StatusDot(c, calloutDot)
 					})
 					ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
 						for _, line := range safetyLines {

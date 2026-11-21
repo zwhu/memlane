@@ -40,6 +40,9 @@ func (v *pendingBufferView) observe(status PendingMaterials) {
 		v.AllMessagesOpen = false
 	}
 	v.Status = status
+	if v.ReadError != "" && v.Message == v.ReadError {
+		v.Message = ""
+	}
 	v.ReadError = ""
 	v.ReadCode = ""
 	v.Loaded, v.Observed = true, true

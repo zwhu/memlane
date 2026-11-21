@@ -593,14 +593,38 @@ class Registry:
     def record_connection_receipt(self, agent_id, project_id, session_key, environment):
         receipts = self.state.setdefault('connection_receipts', {})
         previous = receipts.get(agent_id, {})
+        agent_kind = self.state.get('agents', {}).get(agent_id, {}).get('kind')
+        records = 'codex_connections' if agent_kind == 'codex' else 'connections'
+        activated_at = self.state.get(records, {}).get(agent_id, {}).get('activated_at', 0)
         now = time.time()
         if (previous.get('host_session_key') == session_key
                 and previous.get('environment_verified') == environment.get('environment_verified')
+                and previous.get('received_at', 0) >= activated_at
                 and now - previous.get('received_at', 0) < 30):
             return
+        recent = [{'host_session_key': session_key, 'project_id': project_id, 'received_at': now}]
+        seen = {session_key}
+        candidates = list(previous.get('recent_sessions') or [])
+        if previous.get('host_session_key') and previous.get('project_id'):
+            candidates.append({'host_session_key': previous.get('host_session_key'),
+                               'project_id': previous.get('project_id'),
+                               'received_at': previous.get('received_at', 0)})
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            cand_key = item.get('host_session_key')
+            cand_project = item.get('project_id')
+            if not cand_key or not cand_project or cand_key in seen:
+                continue
+            seen.add(cand_key)
+            recent.append({'host_session_key': cand_key, 'project_id': cand_project,
+                           'received_at': item.get('received_at', 0)})
+            if len(recent) >= 8:
+                break
         receipts[agent_id] = {'received_at': now, 'project_id': project_id,
                               'host_session_key': session_key,
-                              'evidence': 'authenticated_host_resolve', **environment}
+                              'evidence': 'authenticated_host_resolve',
+                              'recent_sessions': recent, **environment}
         self.save()
 
     async def ensure_locked(self, root, dataset_id=None, name=None, source=None):

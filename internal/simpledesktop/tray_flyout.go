@@ -251,6 +251,7 @@ func trayCompRow(c *ui.Context, name, dotState, metric string, metricColor ui.Co
 
 func (a *App) trayFlyoutAlertsSection(c *ui.Context) {
 	alerts := a.trayProjectAlerts()
+	progress := a.trayProjectProgressItems()
 	ui.Column(c.Key("tray-alerts")).FillWidth().Padding(sp2, sp3).Gap(4).
 		BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 		if len(alerts) == 0 {
@@ -258,40 +259,70 @@ func (a *App) trayFlyoutAlertsSection(c *ui.Context) {
 				v4StatusDot(c, "ok")
 				ui.Text(c, "所有项目消息状态正常").Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text3).SingleLine()
 			})
-			return
-		}
-		ui.Text(c, "项目待处理提醒").Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
-		for _, alert := range alerts {
-			al := alert
-			total := al.ActionCount + al.ErrorCount
-			dotState := "warn"
-			badgeTone := "warn"
-			if al.ErrorCount > 0 {
-				dotState = "fail"
-				badgeTone = "danger"
+		} else {
+			ui.Text(c, "项目待处理提醒").Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
+			for _, alert := range alerts {
+				al := alert
+				total := al.ActionCount + al.ErrorCount
+				dotState := "warn"
+				badgeTone := "warn"
+				if al.ErrorCount > 0 {
+					dotState = "fail"
+					badgeTone = "danger"
+				}
+				row := ui.ButtonBase(c.Key("tray-alert-"+al.ProjectID)).Role(ui.RoleButton).
+					Label(fmt.Sprintf("打开项目提醒：%s", al.ProjectName)).
+					Cursor(ui.CursorPointer).FillWidth().MinHeight(28).Padding(4, 6).Gap(6).
+					Radius(radiusSmall).BorderWidth(0).AlignItems(ui.Center).Justify(ui.Start)
+				row.Background(homeHoverColor(row, "tray-alert-bg", ui.Transparent, tok.Hover))
+				v4ButtonPress(row, 0.99)
+				row.Children(func() {
+					v4StatusDot(c, dotState).Margin(1, 0, 0, 0)
+					ui.Text(c, al.ProjectName).Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).SingleLine().Padding(0, 0, 1, 0).Grow(1).MinWidth(0)
+					v4Badge(c, fmt.Sprintf("%d 项待处理", total), badgeTone)
+					ui.Icon(c, v4IconChev).FontSize(12).TextColor(tok.Text4).Shrink(0)
+				}).OnClick(func() {
+					if a.HideTrayFlyoutFn != nil {
+						a.HideTrayFlyoutFn()
+					}
+					if a.ShowMainWindowFn != nil {
+						a.ShowMainWindowFn()
+					}
+					if al.ProjectIndex >= 0 {
+						a.openProjectQueueStatus(al.ProjectIndex)
+					}
+				})
 			}
-			row := ui.ButtonBase(c.Key("tray-alert-"+al.ProjectID)).Role(ui.RoleButton).
-				Label(fmt.Sprintf("打开项目提醒：%s", al.ProjectName)).
-				Cursor(ui.CursorPointer).FillWidth().MinHeight(28).Padding(4, 6).Gap(6).
-				Radius(radiusSmall).BorderWidth(0).AlignItems(ui.Center).Justify(ui.Start)
-			row.Background(homeHoverColor(row, "tray-alert-bg", ui.Transparent, tok.Hover))
-			v4ButtonPress(row, 0.99)
-			row.Children(func() {
-				v4StatusDot(c, dotState).Margin(1, 0, 0, 0)
-				ui.Text(c, al.ProjectName).Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).SingleLine().Padding(0, 0, 1, 0).Grow(1).MinWidth(0)
-				v4Badge(c, fmt.Sprintf("%d 项待处理", total), badgeTone)
-				ui.Icon(c, v4IconChev).FontSize(12).TextColor(tok.Text4).Shrink(0)
-			}).OnClick(func() {
-				if a.HideTrayFlyoutFn != nil {
-					a.HideTrayFlyoutFn()
-				}
-				if a.ShowMainWindowFn != nil {
-					a.ShowMainWindowFn()
-				}
-				if al.ProjectIndex >= 0 {
-					a.openProjectQueueStatus(al.ProjectIndex)
-				}
+		}
+		if len(progress) > 0 {
+			ui.Row(c).FillWidth().Padding(4, 0, 0, 0).Children(func() {
+				ui.Text(c, "进行中与待提炼").Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
 			})
+			for _, item := range progress {
+				prog := item
+				row := ui.ButtonBase(c.Key("tray-progress-"+prog.ProjectID)).Role(ui.RoleButton).
+					Label(fmt.Sprintf("查看项目进度：%s", prog.ProjectName)).
+					Cursor(ui.CursorPointer).FillWidth().MinHeight(28).Padding(4, 6).Gap(6).
+					Radius(radiusSmall).BorderWidth(0).AlignItems(ui.Center).Justify(ui.Start)
+				row.Background(homeHoverColor(row, "tray-progress-bg", ui.Transparent, tok.Hover))
+				v4ButtonPress(row, 0.99)
+				row.Children(func() {
+					v4StatusDot(c, "run").Margin(1, 0, 0, 0)
+					ui.Text(c, prog.ProjectName).Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).SingleLine().Padding(0, 0, 1, 0).Grow(1).MinWidth(0)
+					v4Badge(c, fmt.Sprintf("%d 项进行中", prog.Count), "accent")
+					ui.Icon(c, v4IconChev).FontSize(12).TextColor(tok.Text4).Shrink(0)
+				}).OnClick(func() {
+					if a.HideTrayFlyoutFn != nil {
+						a.HideTrayFlyoutFn()
+					}
+					if a.ShowMainWindowFn != nil {
+						a.ShowMainWindowFn()
+					}
+					if prog.ProjectIndex >= 0 {
+						a.openProjectQueueStatus(prog.ProjectIndex)
+					}
+				})
+			}
 		}
 	})
 }

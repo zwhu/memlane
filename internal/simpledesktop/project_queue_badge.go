@@ -12,6 +12,13 @@ type trayProjectAlert struct {
 	ErrorCount   int
 }
 
+type trayProjectProgress struct {
+	ProjectID    string
+	ProjectName  string
+	ProjectIndex int
+	Count        int
+}
+
 // Reuse the settings queue reader with bounded concurrent projects. Enumeration
 // only reads status; it never saves materials or starts knowledge processing.
 func (a *App) refreshSidebarQueueIfDue(now time.Time) {
@@ -70,7 +77,7 @@ func (a *App) countProjectMessageAlerts(p AccessProject) (actionCount, errorCoun
 		}
 	}
 	for _, n := range info {
-		if n.Tag == "操作记录" {
+		if n.isProgressNotice() {
 			continue
 		}
 		if !q.noticeAcknowledged(n.Key) {
@@ -80,9 +87,48 @@ func (a *App) countProjectMessageAlerts(p AccessProject) (actionCount, errorCoun
 	return actionCount, errorCount
 }
 
+func (a *App) countProjectActiveProgress(p AccessProject) int {
+	q := a.projectQueueStateFor(p)
+	if q == nil {
+		return 0
+	}
+	_, info := a.messageNotices(q, p)
+	if !q.Loaded && len(info) == 0 {
+		return 0
+	}
+	count := 0
+	for _, n := range info {
+		if n.isActiveProgressNotice() {
+			count++
+		}
+	}
+	if q.Loaded && q.DocumentError == "" && len(q.Documents) > 0 {
+		count += len(q.Documents)
+	}
+	return count
+}
+
 func (a *App) projectHasActiveMessageAlerts(p AccessProject) bool {
 	actionCount, errorCount := a.countProjectMessageAlerts(p)
 	return actionCount+errorCount > 0
+}
+
+func (a *App) resolveTrayProjectMeta(p AccessProject) (projectIndex int, name string) {
+	projectIndex = -1
+	for i, cp := range a.Config.Projects {
+		if (p.ID != "" && cp.ID == p.ID) || (p.Dataset != "" && cp.Dataset == p.Dataset) {
+			projectIndex = i
+			break
+		}
+	}
+	name = p.Name
+	if name == "" && projectIndex >= 0 && projectIndex < len(a.Config.Projects) {
+		name = a.Config.Projects[projectIndex].Name
+	}
+	if name == "" {
+		name = p.ID
+	}
+	return projectIndex, name
 }
 
 func (a *App) trayProjectAlerts() []trayProjectAlert {
@@ -92,20 +138,7 @@ func (a *App) trayProjectAlerts() []trayProjectAlert {
 		if actionCount+errorCount == 0 {
 			continue
 		}
-		projectIndex := -1
-		for i, cp := range a.Config.Projects {
-			if (p.ID != "" && cp.ID == p.ID) || (p.Dataset != "" && cp.Dataset == p.Dataset) {
-				projectIndex = i
-				break
-			}
-		}
-		name := p.Name
-		if name == "" && projectIndex >= 0 && projectIndex < len(a.Config.Projects) {
-			name = a.Config.Projects[projectIndex].Name
-		}
-		if name == "" {
-			name = p.ID
-		}
+		projectIndex, name := a.resolveTrayProjectMeta(p)
 		alerts = append(alerts, trayProjectAlert{
 			ProjectID:    p.ID,
 			ProjectName:  name,
@@ -115,4 +148,22 @@ func (a *App) trayProjectAlerts() []trayProjectAlert {
 		})
 	}
 	return alerts
+}
+
+func (a *App) trayProjectProgressItems() []trayProjectProgress {
+	var items []trayProjectProgress
+	for _, p := range a.access.Directory.Projects {
+		count := a.countProjectActiveProgress(p)
+		if count == 0 {
+			continue
+		}
+		projectIndex, name := a.resolveTrayProjectMeta(p)
+		items = append(items, trayProjectProgress{
+			ProjectID:    p.ID,
+			ProjectName:  name,
+			ProjectIndex: projectIndex,
+			Count:        count,
+		})
+	}
+	return items
 }

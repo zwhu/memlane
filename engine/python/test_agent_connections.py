@@ -294,6 +294,39 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         row = next(r for r in connections.view()['connections'] if r['instance_id'] == self.adapter.id)
         self.assertFalse(row['executable_changed'])
         self.assertEqual(row['status'], 'environment_receipt_unconfirmed')
+        self.assertTrue(row['awaiting_post_upgrade_receipt'])
+
+    async def test_host_upgrade_review_preserves_verified_post_upgrade_receipt(self):
+        import time
+        from unittest.mock import patch
+        executable = self.workspace / 'pi-upgraded'
+        executable.write_text('#!/bin/sh\n')
+        executable.chmod(0o700)
+        past_ns = int((time.time() - 120) * 1e9)
+        os.utime(executable, ns=(past_ns, past_ns))
+        binary_mtime = executable.stat().st_mtime_ns / 1e9
+
+        connections = Connections(self.registry, {**self.config, 'agent_hosts': {'pi': {
+            'profile': str(self.profile), 'executable': str(executable)}}})
+        prepared = await connections.perform(self.adapter.id, 'prepare', 0, 'up2-prepare')
+        await connections.perform(self.adapter.id, 'activate', self.registry.state['revision'],
+            'up2-activate', prepared['connection']['preview']['proposed_sha256'])
+        record = self.registry.state['connections'][self.adapter.id]
+        record['executable_fingerprint'] = [0, 0, 0]
+        record['activated_at'] = binary_mtime - 60
+        self.registry.state['sessions'][json.dumps([self.adapter.id, 'post-upgrade-session'])] = 'project'
+        self.registry.state['connection_receipts'] = {self.adapter.id: {
+            'received_at': binary_mtime + 10,
+            'environment_verified': True,
+            'profile': str(self.profile),
+        }}
+        with patch.object(NativeConnection, 'prepare', side_effect=AssertionError('must not install')):
+            await connections.perform(self.adapter.id, 'review', self.registry.state['revision'], 'up2-review')
+        row = next(r for r in connections.view()['connections'] if r['instance_id'] == self.adapter.id)
+        self.assertEqual(record['activated_at'], binary_mtime)
+        self.assertTrue(row['environment_verified'])
+        self.assertEqual(row['status'], 'configured_pending_new_session')
+        self.assertFalse(row['awaiting_post_upgrade_receipt'])
 
     async def test_helper_dedup_denied_watermark_and_unknown_enqueue_do_not_replay(self):
         await self.adapter.prepare(0)

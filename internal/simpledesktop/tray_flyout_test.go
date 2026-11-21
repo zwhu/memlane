@@ -240,3 +240,87 @@ func TestV4BadgeAndTrayAlertVerticalAlignment(t *testing.T) {
 		t.Fatalf("tray alert row text/badge vertical mismatch %.2f DIP (mem=%+v badge=%+v)", diff, memRect, badgeRect)
 	}
 }
+
+func TestTrayIconAndFlyoutTreatInProgressStateAsHealthyLightAndDark(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		appearance string
+		trayDark   bool
+	}{
+		{name: "light", appearance: "light", trayDark: false},
+		{name: "dark", appearance: "dark", trayDark: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := settingsFixture()
+			a.Config.ConfigFile = filepath.Join(t.TempDir(), "runtime.json")
+			a.initDesktopPreferences()
+			a.setAppearancePreference(tc.appearance)
+			a.SetTrayDark(tc.trayDark)
+			a.service = "已连接"
+			a.monitor.State = "ready"
+
+			p := a.access.Directory.Projects[0]
+			agent := a.access.Directory.Agents[0]
+			maintain := "maintain"
+			p.Overrides[agent.ID] = ProjectOverride{Access: &maintain}
+			a.access.Directory.Projects[0] = p
+			q := a.projectQueueStateFor(p)
+			q.Loaded = true
+			q.AutomaticSave = true
+			q.Backlog = &backlogJob{Status: "watching", ProcessingActive: 1}
+			q.Sessions = []queuedSession{{
+				Agent:   AccessAgent{ID: agent.ID, Name: "Gemini App"},
+				Binding: ProjectBinding{ProjectID: p.ID, AgentID: agent.ID, HostSessionKey: "s-progress"},
+				View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 2}},
+			}}
+
+			// 1. Menu bar tray icon must stay healthy template icon (no warning/danger badge dot).
+			_, isTemplate, tip := a.TrayIconState()
+			if !isTemplate || tip != "Memlane" {
+				t.Fatalf("[%s] expected healthy template tray icon for pure in-progress queue, got isTemplate=%v tip=%q", tc.name, isTemplate, tip)
+			}
+
+			var shownMain, hidFlyout bool
+			a.ShowMainWindowFn = func() { shownMain = true }
+			a.HideTrayFlyoutFn = func() { hidFlyout = true }
+
+			// 2. Flyout must show quiet healthy status + 进行中与待提炼 section, never 项目待处理提醒.
+			tt := ui.NewTester(a.TrayFlyoutView, 300, 480)
+			for _, want := range []string{"所有项目消息状态正常", "进行中与待提炼", "memlane", "2 项进行中"} {
+				if !tt.HasText(want) {
+					t.Fatalf("[%s] tray flyout missing %q; texts=%v", tc.name, want, tt.Texts())
+				}
+			}
+			for _, unwanted := range []string{"项目待处理提醒", "2 项待处理", "1 项待处理"} {
+				if tt.HasText(unwanted) {
+					t.Fatalf("[%s] tray flyout unexpectedly showed alert text %q; texts=%v", tc.name, unwanted, tt.Texts())
+				}
+			}
+
+			// Clicking the progress item jumps to the project's Manage tab.
+			if err := tt.Click("查看项目进度：memlane"); err != nil {
+				t.Fatalf("[%s] failed to click progress row: %v", tc.name, err)
+			}
+			if !hidFlyout || !shownMain || a.kind != "管理" || a.access.RevealQueueProject != p.ID {
+				t.Fatalf("[%s] click did not open project queue status: hide=%v show=%v kind=%q reveal=%q", tc.name, hidFlyout, shownMain, a.kind, a.access.RevealQueueProject)
+			}
+
+			// 3. Mixed state: adding 1 real anomaly switches tray icon to danger and shows both sections accurately.
+			q.Sessions = append(q.Sessions, queuedSession{
+				Agent:   AccessAgent{ID: "agent", Name: "Codex"},
+				Binding: ProjectBinding{ProjectID: p.ID, AgentID: "agent", HostSessionKey: "s-unknown"},
+				View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1}},
+			})
+			_, isTemplateMixed, mixedTip := a.TrayIconState()
+			if isTemplateMixed || mixedTip != "Memlane · 服务或项目存在异常" {
+				t.Fatalf("[%s] expected danger tray icon when real anomaly exists, got isTemplate=%v tip=%q", tc.name, isTemplateMixed, mixedTip)
+			}
+			tt.Frame()
+			for _, want := range []string{"项目待处理提醒", "1 项待处理", "进行中与待提炼", "2 项进行中"} {
+				if !tt.HasText(want) {
+					t.Fatalf("[%s] mixed tray flyout missing %q; texts=%v", tc.name, want, tt.Texts())
+				}
+			}
+		})
+	}
+}

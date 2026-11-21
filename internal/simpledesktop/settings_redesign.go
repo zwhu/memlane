@@ -178,12 +178,10 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 	}
 	ui.Scroll(c.Key("project-settings-" + p.ID)).Grow(1).MinHeight(0).TrackScroll(&q.Scroll).Padding(sp6, sp8, sp10, sp8).Background(tok.Bg).Children(func() {
 		v4GroupWrap(c, func() {
-			hasAlerts := a.projectHasActiveMessageAlerts(p)
-			if hasAlerts {
-				a.projectQueueSection(c, p)
-			}
+			// 1. 消息与采集状态（固定顶部展示，不再随状态变化在顶部与底部之间跳动）
+			a.projectQueueSection(c, p)
 
-			// 1. 项目信息
+			// 2. 项目信息
 			v4Group(c, "项目信息", "", nil, func() {
 				v4Row(c, v4RowOptions{
 					Key:   "proj-info-name-" + p.ID,
@@ -251,13 +249,8 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 				}
 			})
 
-			// 3. 工具记录关系图谱
+			// 4. 工具记录关系图谱
 			a.projectToolGraphSettings(c, p)
-
-			// 4. 消息与处理状态（无活跃提醒时收纳在底部）
-			if !hasAlerts {
-				a.projectQueueSection(c, p)
-			}
 		})
 	})
 }

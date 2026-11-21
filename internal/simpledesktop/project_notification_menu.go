@@ -80,6 +80,9 @@ func (a *App) clearProjectNotifications(q *projectQueueState, p AccessProject) e
 	needs, info := a.messageNotices(q, p)
 	now := time.Now().UTC()
 	for _, n := range append(needs, info...) {
+		if n.isProgressNotice() {
+			continue
+		}
 		acknowledgements[noticeHash(n.Key)] = noticeAcknowledgement{
 			Fingerprint: q.noticeFingerprint(n.Key), At: now, Deferred: n.NeedsUser,
 		}

@@ -235,7 +235,11 @@ func (a *App) agentConnectionRow(c *ui.Context, row AgentConnection) {
 			a.agentEnvironmentDetails(c, row)
 		}
 		if row.Status == "environment_receipt_unconfirmed" {
-			ui.Row(c).FillWidth().Padding(sp1, sp1, sp2, 34).Children(func() { homeText(c, "已检测到会话，但还不能确认使用的是哪个配置目录。", homeMeta) })
+			msg := "已检测到会话，但还不能确认使用的是哪个配置目录。"
+			if row.AwaitingPostUpgradeReceipt {
+				msg = "应用更新后等待新一次会话回执，原有插件配置正常。"
+			}
+			ui.Row(c).FillWidth().Padding(sp1, sp1, sp2, 34).Children(func() { homeText(c, msg, homeMeta) })
 		}
 		if message := s.ItemMessages[row.ID]; message != "" {
 			ui.Row(c).FillWidth().Padding(sp1, sp1, sp2, 34).Children(func() { homeText(c, message, homeMeta).LineHeight(1.5) })
@@ -263,6 +267,8 @@ func (a *App) agentEnvironmentDetails(c *ui.Context, row AgentConnection) {
 		}
 		if row.EnvironmentVerified {
 			homeText(c, "插件已确认 · "+row.PluginVersion, homeMeta)
+		} else if row.AwaitingPostUpgradeReceipt {
+			homeText(c, "配置目录已确认，等待应用更新后的新一次会话回执。", homeMeta)
 		} else if row.LastReceiptAt > 0 {
 			homeText(c, "检测到会话活动，尚未确认来自此目录。", homeMeta)
 		}

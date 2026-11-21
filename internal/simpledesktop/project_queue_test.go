@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/egoist/mygo/ui"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/egoist/mygo/ui"
 )
 
 func TestPendingProjectDocumentsUsesOfficialCompletionNotActivityGuess(t *testing.T) {
@@ -180,6 +182,116 @@ func TestProjectQueueBothTypesAndCompactPermissionFeedback(t *testing.T) {
 			tt.Frame()
 			if tt.HasText("0 条记录") || tt.HasText("0 份文档") {
 				t.Fatal("loading faked zero counts")
+			}
+		})
+	}
+}
+
+func TestInProgressNoticesRenderInProgressBucketLightAndDark(t *testing.T) {
+	for _, appearance := range []string{"light", "dark"} {
+		t.Run(appearance, func(t *testing.T) {
+			a, q := projectQueueFixture()
+			a.Config.ConfigFile = filepath.Join(t.TempDir(), "runtime.json")
+			a.Config.ClientStateFile = filepath.Join(t.TempDir(), "client-state.json")
+			a.initDesktopPreferences()
+			a.setAppearancePreference(appearance)
+			p := a.access.Directory.Projects[0]
+			maintain := "maintain"
+			p.Overrides[a.access.Directory.Agents[0].ID] = ProjectOverride{Access: &maintain}
+			a.access.Directory.Projects[0] = p
+
+			// Pure in-progress state: 1 session "待采集" + 1 backlog "处理中".
+			q.Loaded = true
+			q.AutomaticSave = true
+			q.Documents = nil
+			q.Sessions = q.Sessions[:1]
+			q.Backlog = &backlogJob{Status: "watching", ProcessingActive: 1}
+
+			tt := ui.NewTester(a.View, 1200, 820)
+			for _, want := range []string{
+				"自动采集已开启 · 正常",
+				"进行中与待提炼",
+				"2 条消息等待采集",
+				"待采集",
+				"正在提交记忆提炼",
+				"处理中",
+				"查看详情",
+			} {
+				if !tt.HasText(want) {
+					t.Fatalf("[%s] missing expected progress UI text %q; got %v", appearance, want, tt.Texts())
+				}
+			}
+			for _, unwanted := range []string{"系统异常", "2 项待处理", "1 项待处理", "知道了，不再提醒", "暂不处理"} {
+				if tt.HasText(unwanted) {
+					t.Fatalf("[%s] unexpected alarming text %q in pure progress state; got %v", appearance, unwanted, tt.Texts())
+				}
+			}
+
+			// Queue section must stay stably pinned at the top above 项目信息 even without alerts.
+			infoRect, infoOK := tt.Find("项目信息")
+			queueRect, queueOK := tt.Find("消息与采集状态")
+			if !infoOK || !queueOK || queueRect.Y >= infoRect.Y {
+				t.Fatalf("[%s] expected 消息与采集状态 pinned above 项目信息; info=%+v(%v) queue=%+v(%v)", appearance, infoRect, infoOK, queueRect, queueOK)
+			}
+
+			// Clicking 查看详情 on a progress notice opens the detail dialog without error hint.
+			clickProjectUI(t, tt, "查看详情")
+			if !q.DetailDialogOpen || !tt.HasText("后台按队列顺序自动处理，切换页面不会中断") {
+				t.Fatalf("[%s] failed to open progress detail dialog cleanly; texts=%v", appearance, tt.Texts())
+			}
+			clickProjectUI(t, tt, "关闭")
+			tt.Frame()
+
+			// Mixed state: add 1 real unknown-outcome anomaly + 2 queued documents.
+			d1 := Document{ID: "d1", Dataset: "ds", Name: "设计草稿.md", Created: "2026-11-13T16:56:00Z"}
+			d2 := Document{ID: "d2", Dataset: "ds", Name: "会议纪要.md", Created: "2026-11-13T16:56:00Z"}
+			q.Documents = []Item{
+				{ID: d1.ID, Dataset: d1.Dataset, Kind: "文档", Title: d1.Name, Date: d1.Created, Document: &d1},
+				{ID: d2.ID, Dataset: d2.Dataset, Kind: "文档", Title: d2.Name, Date: d2.Created, Document: &d2},
+			}
+			q.Sessions = append(q.Sessions, queuedSession{
+				Agent:   a.access.Directory.Agents[0],
+				Binding: ProjectBinding{ProjectID: "p", AgentID: a.access.Directory.Agents[0].ID, HostSessionKey: "synthetic-err"},
+				View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1}},
+			})
+			tt.Frame()
+			for _, want := range []string{"1 项待处理", "系统异常", "1 条消息未收到采集结果", "知道了，不再提醒", "进行中与待提炼", "2 份文档", "2 条消息等待采集", "正在提交记忆提炼"} {
+				if !tt.HasText(want) {
+					t.Fatalf("[%s] mixed state missing %q; texts=%v", appearance, want, tt.Texts())
+				}
+			}
+			if tt.HasText("3 项待处理") {
+				t.Fatalf("[%s] mixed state must not count progress items in 待处理 header: %v", appearance, tt.Texts())
+			}
+
+			// Clearing notifications acknowledges only the real anomaly and leaves progress untouched.
+			if err := a.clearProjectNotifications(q, p); err != nil {
+				t.Fatalf("[%s] clearProjectNotifications failed: %v", appearance, err)
+			}
+			tt.Frame()
+			if tt.HasText("系统异常") || !tt.HasText("已知晓的历史提示（1）") {
+				t.Fatalf("[%s] expected only the 1 real anomaly in history; texts=%v", appearance, tt.Texts())
+			}
+			if !tt.HasText("2 条消息等待采集") || !tt.HasText("正在提交记忆提炼") {
+				t.Fatalf("[%s] progress notices should remain visible after clearing notifications; texts=%v", appearance, tt.Texts())
+			}
+
+			// Transient read failure recovery via observe() clears any matching ReadError ghost message and keeps section pinned at top.
+			q.Sessions[0].View.ReadError = "采集状态暂时无法读取"
+			q.Sessions[0].View.Message = "采集状态暂时无法读取"
+			q.Sessions[0].View.Loaded = false
+			q.Sessions[0].View.observe(PendingMaterials{Pending: 0, Signature: "recovered"})
+			q.Backlog = nil
+			q.Documents = nil
+			q.Sessions = q.Sessions[:1]
+			tt.Frame()
+			if tt.HasText("上次消息操作结果") || tt.HasText("采集状态暂时无法读取") {
+				t.Fatalf("[%s] recovered read failure left ghost receipt in UI; texts=%v", appearance, tt.Texts())
+			}
+			infoAfter, _ := tt.Find("项目信息")
+			queueAfter, _ := tt.Find("消息与采集状态")
+			if queueAfter.Y >= infoAfter.Y {
+				t.Fatalf("[%s] expected 消息与采集状态 to remain above 项目信息 after alerts clear; queue=%+v info=%+v", appearance, queueAfter, infoAfter)
 			}
 		})
 	}

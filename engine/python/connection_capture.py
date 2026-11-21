@@ -14,10 +14,21 @@ KINDS = {'codex', 'pi', 'traex', 'antigravity'}
 ELIGIBLE = {'configured_pending_new_session', 'environment_receipt_unconfirmed'}
 
 
+def valid_saved_timestamp(saved, activated, now):
+    """Return latest post-activation saved timestamp across QA and tool trace writes."""
+    candidates = []
+    for count_key, ts_key in (('qa_count', 'last_qa_at'), ('trace_count', 'last_trace_at')):
+        ts = saved.get(ts_key)
+        count = saved.get(count_key)
+        if type(ts) in (int, float) and type(count) is int and count > 0 and activated <= ts <= now + 60:
+            candidates.append(ts)
+    return max(candidates) if candidates else None
+
+
 class ConnectionCapture:
     def __init__(self, registry, config, *, host_factory=CodexHookAccess):
         self.registry, self.config, self.host_factory = registry, config, host_factory
-        self.cache, self.tasks = {}, {}
+        self.cache, self.tasks, self.last_verified_session = {}, {}, {}
 
     def record(self, identifier, kind):
         return self.registry.state.get('codex_connections' if kind == 'codex' else 'connections', {}).get(identifier, {})
@@ -35,7 +46,7 @@ class ConnectionCapture:
                 fingerprints.append(None)
         receipt = self.registry.state.get('connection_receipts', {}).get(row['instance_id'], {})
         project = self.registry.state['projects'].get(receipt.get('project_id'), {})
-        value = [row['status'], row.get('profile'), agent.get('host_profile'), agent.get('principal_id'),
+        value = [row['status'], bool(row.get('environment_verified')), row.get('profile'), agent.get('host_profile'), agent.get('principal_id'),
                  agent.get('installation', {}).get('manifest_sha256'), agent.get('installation', {}).get('marketplace_name'),
                  record.get('activated_at', 0), record.get('capture_deferred', False), fingerprints,
                  receipt.get('host_session_key'), receipt.get('environment_verified'),
@@ -85,6 +96,36 @@ class ConnectionCapture:
         if self.key(row, adapter) == key:
             self.cache[row['instance_id']] = {'key': key, 'value': value}
 
+    def _eligible_project(self, identifier, cand_host_key, cand_project_id):
+        if not cand_host_key or not cand_project_id:
+            return None
+        if self.registry.state.get('sessions', {}).get(json.dumps([identifier, cand_host_key])) != cand_project_id:
+            return None
+        project = self.registry.state.get('projects', {}).get(cand_project_id, {})
+        policy = effective(self.registry.state.get('defaults', DEFAULTS), project.get('overrides', {}).get(identifier, {}))
+        if not policy['can_capture']:
+            return None
+        applied = project.get('applied', {}).get(identifier, {})
+        if (project.get('status') != 'verified' or applied.get('status') != 'verified'
+                or applied.get('revision') != project.get('desired_revision')):
+            return None
+        return project
+
+    async def _probe_saved_at(self, agent, project, host_key, activated, timeout):
+        safe = ''.join(ch if ch.isascii() and (ch.isalnum() or ch in '-_.') else '_' for ch in host_key).strip('._')[:120]
+        session_id = 'codex_' + safe
+        try:
+            saved = await asyncio.wait_for(self.registry.official.request('GET',
+                '/api/v1/sessions/' + quote(session_id, safe='') + '/capture-status', token_file=agent['key_file']), timeout)
+        except PolicyError as error:
+            if error.code == 'official_http_404':
+                return None
+            raise
+        if (saved.get('session_id') != session_id or saved.get('user_id') != agent['principal_id']
+                or saved.get('dataset_id') != project.get('dataset_id')):
+            raise PolicyError('capture_saved_identity_mismatch', 503)
+        return valid_saved_timestamp(saved, activated, time.time())
+
     async def inspect(self, row, adapter):
         identifier, kind = row['instance_id'], row['kind']
         agent = self.registry.state['agents'][identifier]
@@ -116,22 +157,60 @@ class ConnectionCapture:
         if (project.get('status') != 'verified' or applied.get('status') != 'verified'
                 or applied.get('revision') != project.get('desired_revision')):
             return {**value, 'state': 'project_pending', 'project_id': receipt['project_id']}
-        safe = ''.join(ch if ch.isascii() and (ch.isalnum() or ch in '-_.') else '_' for ch in host_key).strip('._')[:120]
-        session_id = 'codex_' + safe
-        try:
-            saved = await asyncio.wait_for(self.registry.official.request('GET',
-                '/api/v1/sessions/' + quote(session_id, safe='') + '/capture-status', token_file=agent['key_file']), 4)
-        except PolicyError as error:
-            if error.code == 'official_http_404':
-                return value
-            raise
-        if (saved.get('session_id') != session_id or saved.get('user_id') != agent['principal_id']
-                or saved.get('dataset_id') != project.get('dataset_id')):
-            raise PolicyError('capture_saved_identity_mismatch', 503)
-        last = saved.get('last_qa_at')
-        if (type(last) in (int, float) and activated <= last <= time.time() + 60
-                and type(saved.get('qa_count')) is int and saved['qa_count'] > 0):
+        last = await self._probe_saved_at(agent, project, host_key, activated, 4)
+        if last is not None:
+            self.last_verified_session[identifier] = (host_key, receipt['project_id'])
             value.update(state='healthy', last_saved_at=last)
+            return value
+        # New empty sessions must not regress previously verified auto-capture health.
+        candidates = []
+        seen_keys = {host_key}
+        last_verified = self.last_verified_session.get(identifier)
+        if last_verified:
+            cand_key, cand_pid = last_verified
+            if cand_key not in seen_keys:
+                cand_proj = self._eligible_project(identifier, cand_key, cand_pid)
+                if cand_proj is not None:
+                    seen_keys.add(cand_key)
+                    candidates.append((cand_key, cand_pid, cand_proj))
+        for item in receipt.get('recent_sessions') or []:
+            if len(candidates) >= 6:
+                break
+            if not isinstance(item, dict):
+                continue
+            cand_key, cand_pid = item.get('host_session_key', ''), item.get('project_id', '')
+            if cand_key in seen_keys:
+                continue
+            cand_proj = self._eligible_project(identifier, cand_key, cand_pid)
+            if cand_proj is not None:
+                seen_keys.add(cand_key)
+                candidates.append((cand_key, cand_pid, cand_proj))
+        before_activation = set(record.get('sessions_before_activation') or ())
+        for session_json, cand_pid in reversed(list(self.registry.state.get('sessions', {}).items())):
+            if len(candidates) >= 6:
+                break
+            if session_json in before_activation:
+                continue
+            try:
+                parsed = json.loads(session_json)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(parsed, list) or len(parsed) != 2 or parsed[0] != identifier:
+                continue
+            cand_key = parsed[1]
+            if cand_key in seen_keys:
+                continue
+            cand_proj = self._eligible_project(identifier, cand_key, cand_pid)
+            if cand_proj is not None:
+                seen_keys.add(cand_key)
+                candidates.append((cand_key, cand_pid, cand_proj))
+        for cand_key, cand_pid, cand_proj in candidates:
+            last = await self._probe_saved_at(agent, cand_proj, cand_key, activated, 2)
+            if last is not None:
+                self.last_verified_session[identifier] = (cand_key, cand_pid)
+                value.update(state='healthy', last_saved_at=last)
+                return value
+        self.last_verified_session.pop(identifier, None)
         return value
 
     async def allow(self, adapter, reviewed_sha):
@@ -140,6 +219,7 @@ class ConnectionCapture:
             await host.allow(agent['installation'], reviewed_sha)
         self.record(adapter.id, 'codex')['capture_deferred'] = False
         self.cache.pop(adapter.id, None)
+        self.last_verified_session.pop(adapter.id, None)
 
     async def close(self):
         tasks = list(self.tasks.values())

@@ -589,3 +589,49 @@ func TestConnectionMissingComponentCannotPrepare(t *testing.T) {
 		}
 	}
 }
+
+func TestPostUpgradeReceiptNoticeDoesNotClaimUnconfirmedDirectoryLightAndDark(t *testing.T) {
+	for _, appearance := range []string{"light", "dark"} {
+		t.Run(appearance, func(t *testing.T) {
+			a := settingsFixture()
+			a.Config.ConfigFile = filepath.Join(t.TempDir(), "runtime.json")
+			a.initDesktopPreferences()
+			a.setAppearancePreference(appearance)
+			a.page = "设置"
+			a.access.SettingsSection = "Agent 与模型"
+			a.integrations = integrationState{
+				Loaded:          true,
+				EnvironmentOpen: map[string]bool{"antigravity-1": true},
+				Connections: ConnectionsDirectory{Connections: []AgentConnection{{
+					ID:                         "antigravity-1",
+					Kind:                       "antigravity",
+					Detected:                   true,
+					Status:                     "environment_receipt_unconfirmed",
+					HostVersion:                "1.5.14",
+					Profile:                    "/Users/example/.gemini/config",
+					EnvironmentVerified:        false,
+					AwaitingPostUpgradeReceipt: true,
+					LastReceiptAt:              1700000000,
+					Capture:                    &AgentCaptureState{State: "waiting_session"},
+				}}},
+			}
+			tt := ui.NewTester(a.View, 1200, 820)
+			if !tt.HasText("应用更新后等待新一次会话回执，原有插件配置正常。") {
+				t.Fatalf("[%s] missing calm post-upgrade message; texts=%v", appearance, tt.Texts())
+			}
+			if !tt.HasText("配置目录已确认，等待应用更新后的新一次会话回执。") {
+				t.Fatalf("[%s] missing expanded directory post-upgrade message; texts=%v", appearance, tt.Texts())
+			}
+			if tt.HasText("已检测到会话，但还不能确认使用的是哪个配置目录。") {
+				t.Fatalf("[%s] misleading directory unconfirmed copy appeared during post-upgrade wait; texts=%v", appearance, tt.Texts())
+			}
+
+			// Without AwaitingPostUpgradeReceipt, genuine unconfirmed directory still renders original guidance.
+			a.integrations.Connections.Connections[0].AwaitingPostUpgradeReceipt = false
+			tt.Frame()
+			if !tt.HasText("已检测到会话，但还不能确认使用的是哪个配置目录。") {
+				t.Fatalf("[%s] expected genuine directory-unconfirmed copy when not awaiting upgrade receipt; texts=%v", appearance, tt.Texts())
+			}
+		})
+	}
+}

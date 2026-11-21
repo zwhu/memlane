@@ -162,6 +162,72 @@ class CaptureTests(unittest.IsolatedAsyncioTestCase):
         await self.capture.allow(self.adapter, 'review')
         self.assertFalse(self.record['capture_deferred'])
 
+    async def test_post_activation_trace_proves_healthy_and_rejects_old_or_future_trace(self):
+        # Old QA (< activated) + valid post-activation trace proves active capture.
+        self.registry.official.request.return_value = {
+            **self.saved,
+            'qa_count': 1,
+            'last_qa_at': self.now - 200,
+            'trace_count': 5,
+            'last_trace_at': self.now - 5,
+        }
+        got = await self.refresh()
+        self.assertEqual(got['state'], 'healthy')
+        self.assertEqual(got['last_saved_at'], self.now - 5)
+
+        for bad_trace in (self.now - 200, self.now + 3600):
+            with self.subTest(bad_trace=bad_trace):
+                self.capture.cache.clear()
+                self.registry.official.request.return_value = {
+                    **self.saved,
+                    'qa_count': 0,
+                    'last_qa_at': None,
+                    'trace_count': 5,
+                    'last_trace_at': bad_trace,
+                }
+                self.assertEqual((await self.refresh())['state'], 'waiting_message')
+
+    async def test_new_empty_session_falls_back_to_verified_session_without_regressing(self):
+        # Simulate prior verified session recorded in recent_sessions and a newly opened empty session returning 404.
+        old_host = 'prior-verified-session'
+        self.registry.state['sessions'][json.dumps([self.identifier, old_host])] = 'project'
+        receipt = self.registry.state['connection_receipts'][self.identifier]
+        receipt['recent_sessions'] = [
+            {'host_session_key': self.host, 'project_id': 'project', 'received_at': self.now},
+            {'host_session_key': old_host, 'project_id': 'project', 'received_at': self.now - 20},
+        ]
+
+        async def request(method, path, **kwargs):
+            if old_host in path:
+                return {**self.saved, 'session_id': 'codex_' + old_host, 'last_qa_at': self.now - 20}
+            raise PolicyError('official_http_404', 404)
+
+        self.registry.official.request.side_effect = request
+        got = await self.refresh()
+        self.assertEqual(got['state'], 'healthy')
+        self.assertEqual(got['last_saved_at'], self.now - 20)
+
+        # Fallback also works via post-activation registry.state['sessions'] when recent_sessions is absent,
+        # while ignoring sessions_before_activation.
+        self.capture.cache.clear()
+        self.capture.last_verified_session.clear()
+        receipt.pop('recent_sessions', None)
+        pre_host = 'pre-activation-session'
+        self.registry.state['sessions'][json.dumps([self.identifier, pre_host])] = 'project'
+        self.record['sessions_before_activation'] = [json.dumps([self.identifier, pre_host])]
+        got = await self.refresh()
+        self.assertEqual(got['state'], 'healthy')
+
+        # Hard permission/server errors on primary MUST still fail closed (never masked by fallback).
+        self.capture.cache.clear()
+        self.registry.official.request.side_effect = PolicyError('official_http_403', 403)
+        self.assertEqual((await self.refresh())['state'], 'check_failed')
+
+        # Project capture revocation on the active receipt project MUST still report project_disabled.
+        self.registry.official.request.side_effect = request
+        self.registry.state['projects']['project']['overrides'] = {self.identifier: {'capture': False}}
+        self.assertEqual((await self.refresh())['state'], 'project_disabled')
+
 
 class HostTrustTests(unittest.IsolatedAsyncioTestCase):
     async def test_allow_uses_host_hashes_scoped_edits_and_version_guard(self):

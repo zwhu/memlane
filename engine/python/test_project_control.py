@@ -204,6 +204,29 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.registry.state['connection_receipts']['a']['environment_verified'])
         self.assertEqual(self.registry.state['connection_receipts']['a']['plugin_version'], 'fixed')
 
+    async def test_connection_receipt_tracks_recent_sessions_and_bypasses_throttle_after_activation(self):
+        self.registry.state['agents']['a']['kind'] = 'antigravity'
+        self.registry.state['connections'] = {'a': {'activated_at': 1.0}}
+        for idx in range(10):
+            self.registry.record_connection_receipt('a', f'proj-{idx % 2}', f'sess-{idx}', {'environment_verified': True})
+        receipt = self.registry.state['connection_receipts']['a']
+        recent = receipt['recent_sessions']
+        self.assertEqual(len(recent), 8)
+        self.assertEqual([item['host_session_key'] for item in recent], [f'sess-{i}' for i in range(9, 1, -1)])
+
+        # Stale receipt within 30s (< activated_at) bypasses 30s throttle immediately.
+        stale_at = receipt['received_at'] - 5
+        receipt['received_at'] = stale_at
+        self.registry.state['connections']['a']['activated_at'] = stale_at + 1
+        self.registry.record_connection_receipt('a', 'proj-1', 'sess-9', {'environment_verified': True})
+        after_receipt = self.registry.state['connection_receipts']['a']
+        self.assertGreater(after_receipt['received_at'], stale_at + 1)
+
+        # Repeated receipt >= activated_at within 30s IS throttled.
+        throttled_at = after_receipt['received_at']
+        self.registry.record_connection_receipt('a', 'proj-1', 'sess-9', {'environment_verified': True})
+        self.assertEqual(self.registry.state['connection_receipts']['a']['received_at'], throttled_at)
+
     async def test_original_session_binding_lookup_never_discovers_and_is_subject_scoped(self):
         before = self.path.read_bytes()
         with self.assertRaises(PolicyError) as error:

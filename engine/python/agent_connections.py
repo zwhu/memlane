@@ -477,8 +477,19 @@ class Connections:
             record = self.registry.state.get(records, {}).get(adapter.id, {})
             receipt = self.registry.state.get('connection_receipts', {}).get(adapter.id)
             row['last_receipt_at'] = receipt.get('received_at', 0) if receipt else 0
-            row['environment_verified'] = bool(receipt and receipt.get('environment_verified')
-                and receipt.get('received_at', 0) >= record.get('activated_at', 0))
+            receipt_profile_verified = bool(
+                receipt and receipt.get('environment_verified')
+                and (not receipt.get('profile') or receipt.get('profile') == row.get('profile'))
+            )
+            row['environment_verified'] = bool(
+                receipt_profile_verified
+                and receipt.get('received_at', 0) >= record.get('activated_at', 0)
+            )
+            row['awaiting_post_upgrade_receipt'] = bool(
+                receipt_profile_verified
+                and not row['environment_verified']
+                and record.get('upgraded_at')
+            )
             row['plugin_version'] = receipt.get('plugin_version', '') if receipt else ''
             if (row['status'] == 'configured_pending_new_session' and row.get('new_sessions')
                     and record.get('environment_receipt_required') and not row['environment_verified']):
@@ -625,9 +636,11 @@ class Connections:
                 records = 'codex_connections' if kind == 'codex' else 'connections'
                 record = r.state.get(records, {}).get(identifier, {})
                 binary_changed = False
+                binary_mtime = None
                 try:
                     binary = Path(adapter.executable).stat()
                     fingerprint = [binary.st_ino, binary.st_size, binary.st_mtime_ns]
+                    binary_mtime = binary.st_mtime_ns / 1e9
                     binary_changed = bool(record.get('executable_fingerprint') and
                         record['executable_fingerprint'] != fingerprint)
                 except (OSError, TypeError):
@@ -638,7 +651,17 @@ class Connections:
                         result.get('status') == 'configured_pending_new_session'):
                     if action == 'review':
                         verify_artifact(r.state['agents'][identifier]['installation'])
-                    record['activated_at'] = time.time()
+                    now = time.time()
+                    if action == 'activate':
+                        record['activated_at'] = now
+                        record.pop('upgraded_at', None)
+                    else:
+                        previous_activated = record.get('activated_at') or 0
+                        if binary_mtime is not None and previous_activated < binary_mtime <= now:
+                            record['activated_at'] = binary_mtime
+                        else:
+                            record['activated_at'] = now
+                        record['upgraded_at'] = now
                     record['environment_receipt_required'] = kind != 'opencode'
                     r.state['agents'][identifier]['host_profile'] = self.environments[kind]['profile']
                     if fingerprint is not None:

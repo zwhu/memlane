@@ -33,9 +33,9 @@ func (n messageNotice) dotTone() string {
 	switch n.Tag {
 	case "系统异常", "读取异常", "提炼异常", "采集异常", "采集受阻":
 		return "fail"
-	case "需要授权", "需要补交", "等待恢复", "状态未确认", "已暂停":
+	case "需要授权", "需要补交", "等待授权", "等待恢复", "状态未确认", "已暂停":
 		return "warn"
-	case "处理中", "正在检查", "正在核对", "等待重试", "自动重试":
+	case "待采集", "处理中", "等待接续", "正在检查", "正在核对", "等待重试", "自动重试":
 		return "run"
 	default:
 		return ""
@@ -49,13 +49,48 @@ func (n messageNotice) badgeTone() string {
 	switch n.Tag {
 	case "系统异常", "读取异常", "提炼异常", "采集异常", "采集受阻":
 		return "danger"
-	case "需要授权", "需要补交", "等待恢复", "状态未确认", "已暂停":
+	case "需要授权", "需要补交", "等待授权", "等待恢复", "状态未确认", "已暂停":
 		return "warn"
-	case "处理中", "正在检查", "正在核对", "等待重试", "自动重试", "待采集", "等待核对":
+	case "处理中", "正在检查", "正在核对", "等待重试", "自动重试", "待采集", "等待接续", "等待核对":
 		return "accent"
 	default:
 		return ""
 	}
+}
+
+func (n messageNotice) isProgressNotice() bool {
+	if n.NeedsUser {
+		return false
+	}
+	switch n.Tag {
+	case "待采集", "处理中", "等待接续", "已保留", "操作记录", "已暂停":
+		return true
+	default:
+		return false
+	}
+}
+
+func (n messageNotice) isActiveProgressNotice() bool {
+	if n.NeedsUser {
+		return false
+	}
+	switch n.Tag {
+	case "待采集", "处理中", "等待接续":
+		return true
+	default:
+		return false
+	}
+}
+
+func partitionInfoNotices(info []messageNotice) (anomalies, progress []messageNotice) {
+	for _, n := range info {
+		if n.isProgressNotice() {
+			progress = append(progress, n)
+		} else {
+			anomalies = append(anomalies, n)
+		}
+	}
+	return anomalies, progress
 }
 
 func (n messageNotice) diagCode(q *projectQueueState) string {

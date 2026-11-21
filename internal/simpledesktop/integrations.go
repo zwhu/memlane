@@ -41,10 +41,11 @@ type AgentConnection struct {
 	Profile             string                          `json:"profile"`
 	EnvironmentIssue    string                          `json:"environment_issue"`
 	Environments        []AgentEnvironment              `json:"environments"`
-	ReceiptOverdue      bool                            `json:"receipt_overdue"`
-	LastReceiptAt       float64                         `json:"last_receipt_at"`
-	PluginVersion       string                          `json:"plugin_version"`
-	EnvironmentVerified bool                            `json:"environment_verified"`
+	ReceiptOverdue           bool                            `json:"receipt_overdue"`
+	LastReceiptAt            float64                         `json:"last_receipt_at"`
+	PluginVersion            string                          `json:"plugin_version"`
+	EnvironmentVerified      bool                            `json:"environment_verified"`
+	AwaitingPostUpgradeReceipt bool                          `json:"awaiting_post_upgrade_receipt,omitempty"`
 }
 
 type AgentCaptureState struct {

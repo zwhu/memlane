@@ -271,6 +271,9 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				}
 				defer func() { <-slots }()
 				results[n].Status, results[n].Error = runPendingMaterials(ctx, python, *row.Agent.Installation, row.Binding, p.Dataset, "show", "", operator)
+				if results[n].Error != nil && results[n].Status.Error == "pending_materials_changed_review_again" && ctx.Err() == nil {
+					results[n].Status, results[n].Error = runPendingMaterials(ctx, python, *row.Agent.Installation, row.Binding, p.Dataset, "show", "", operator)
+				}
 				status := results[n].Status
 				if results[n].Error == nil && (status.Signature == "" || status.Pending < 0 || status.Unknown < 0 || status.Unknown > status.Pending) {
 					results[n].Error = fmt.Errorf("会话采集状态不完整")
@@ -342,7 +345,6 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 					if results[n].Status.Error == "official_session_unconfirmed" {
 						row.View.ReadError = "尚未确认这次会话的采集状态；重新读取不会补采历史对话"
 					}
-					row.View.Message = row.View.ReadError
 					row.View.Loaded = false
 				} else {
 					if wasLoaded && !row.View.Observed {

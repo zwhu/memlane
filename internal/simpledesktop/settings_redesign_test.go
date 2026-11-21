@@ -149,13 +149,13 @@ func TestSettingsServiceDesktopRuntimeSyncWithTray(t *testing.T) {
 	}
 }
 
-func TestProjectSettingsDynamicOrderPrioritizesActiveAlerts(t *testing.T) {
+func TestProjectSettingsKeepsMessageStatusStableAtTop(t *testing.T) {
 	a := settingsFixture()
 	p := a.access.Directory.Projects[0]
 	q := a.projectQueueStateFor(p)
 	q.Loaded = true
 
-	// Healthy project: 项目信息 appears above 消息与保存状态.
+	// Healthy project: 消息与采集状态 stays stably pinned above 项目信息.
 	a.openProjectSettings(0)
 	tt := ui.NewTester(a.View, 1200, 820)
 	infoRect, okInfo := tt.Find("项目信息")
@@ -163,11 +163,11 @@ func TestProjectSettingsDynamicOrderPrioritizesActiveAlerts(t *testing.T) {
 	if !okInfo || !okMsg {
 		t.Fatalf("expected healthy project sections; info=%v msg=%v", okInfo, okMsg)
 	}
-	if infoRect.Y >= msgRect.Y {
-		t.Fatalf("healthy project should render 项目信息 (y=%.1f) above 消息与保存状态 (y=%.1f)", infoRect.Y, msgRect.Y)
+	if msgRect.Y >= infoRect.Y {
+		t.Fatalf("healthy project should render 消息与采集状态 (y=%.1f) above 项目信息 (y=%.1f)", msgRect.Y, infoRect.Y)
 	}
 
-	// Active alert: 消息与保存状态 moves above 项目信息.
+	// Active alert: 消息与采集状态 remains at the exact top position without jumping.
 	q.Sessions = []queuedSession{{
 		Agent:   AccessAgent{ID: "agent", Name: "本机 Codex"},
 		Binding: ProjectBinding{HostSessionKey: "s1"},
@@ -180,6 +180,6 @@ func TestProjectSettingsDynamicOrderPrioritizesActiveAlerts(t *testing.T) {
 		t.Fatalf("expected alerted project sections; info=%v msg=%v", okInfo, okMsg)
 	}
 	if msgTitleRect.Y >= infoRect.Y {
-		t.Fatalf("alerted project should render 消息与保存状态 (y=%.1f) above 项目信息 (y=%.1f)", msgTitleRect.Y, infoRect.Y)
+		t.Fatalf("alerted project should render 消息与采集状态 (y=%.1f) above 项目信息 (y=%.1f)", msgTitleRect.Y, infoRect.Y)
 	}
 }

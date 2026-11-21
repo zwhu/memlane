@@ -268,3 +268,85 @@ func TestProjectActiveMessageAlertsAndTrayProjectAlerts(t *testing.T) {
 		t.Fatalf("unexpected tray alert summary: %+v", alerts[0])
 	}
 }
+
+func TestInProgressAndNeutralNoticesDoNotCountAsProjectAlerts(t *testing.T) {
+	a := settingsFixture()
+	agent := a.access.Directory.Agents[0]
+	p0 := a.access.Directory.Projects[0]
+	maintain := "maintain"
+	p0.Overrides[agent.ID] = ProjectOverride{Access: &maintain}
+	a.access.Directory.Projects[0] = p0
+	q0 := a.projectQueueStateFor(p0)
+	q0.Loaded = true
+	q0.BacklogLoaded = true
+	q0.AutomaticSave = true
+	q0.Documents = []Item{{ID: "doc-1", Dataset: p0.Dataset, Title: "queued.md"}}
+	q0.Backlog = &backlogJob{
+		Status:            "watching",
+		ProcessingActive:  1,
+		ProcessingPartial: 1,
+	}
+	q0.Sessions = []queuedSession{
+		{
+			Agent:   agent,
+			Binding: ProjectBinding{ProjectID: p0.ID, AgentID: agent.ID, HostSessionKey: "s-active"},
+			View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 4, Signature: "sig-a"}},
+		},
+		{
+			Agent:   agent,
+			Binding: ProjectBinding{ProjectID: p0.ID, AgentID: agent.ID, HostSessionKey: "s-receipt"},
+			View:    &pendingBufferView{Loaded: true, Message: "上次采集已完成", Status: PendingMaterials{Pending: 0}},
+		},
+	}
+	q0.BufferReviews = []bufferReview{{AgentID: agent.ID, Host: "s-active", Signature: "sig-a", Filtered: 2}}
+
+	actionCount, errorCount := a.countProjectMessageAlerts(p0)
+	if actionCount != 0 || errorCount != 0 {
+		t.Fatalf("expected 0 alerts for normal in-progress/filtered/receipt state, got action=%d error=%d", actionCount, errorCount)
+	}
+	if a.projectHasActiveMessageAlerts(p0) {
+		t.Fatal("in-progress state must not pin alerts or show orange dot")
+	}
+	if alerts := a.trayProjectAlerts(); len(alerts) != 0 {
+		t.Fatalf("expected empty trayProjectAlerts, got %+v", alerts)
+	}
+	progress := a.trayProjectProgressItems()
+	if len(progress) != 1 || progress[0].ProjectID != p0.ID || progress[0].Count != 4 {
+		// 1 pending ("待采集") + 1 ProcessingActive ("处理中") + 1 ProcessingPartial ("等待接续") + 1 queued document = 4; Filtered/Receipt/Paused excluded.
+		t.Fatalf("unexpected trayProjectProgressItems: %+v", progress)
+	}
+
+	// Non-actionable user_stopped pause (0 recoverable) is also neutral and excluded from both alerts and active progress.
+	q0.Documents = nil
+	q0.Sessions = nil
+	q0.Backlog = &backlogJob{Status: "stopped", Reason: "user_stopped"}
+	if a.projectHasActiveMessageAlerts(p0) {
+		t.Fatal("non-actionable user_stopped pause should not trigger active alerts")
+	}
+	if got := a.trayProjectProgressItems(); len(got) != 0 {
+		t.Fatalf("paused backlog with 0 recoverable should not show as active progress, got %+v", got)
+	}
+
+	// Mixed state: 1 real anomaly + 2 active progress items -> alerts count = 1, progress count = 2.
+	q0.Backlog = &backlogJob{Status: "watching", ProcessingActive: 1}
+	q0.Sessions = []queuedSession{
+		{
+			Agent:   agent,
+			Binding: ProjectBinding{ProjectID: p0.ID, AgentID: agent.ID, HostSessionKey: "s-wait"},
+			View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 2}},
+		},
+		{
+			Agent:   agent,
+			Binding: ProjectBinding{ProjectID: p0.ID, AgentID: agent.ID, HostSessionKey: "s-err"},
+			View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1}},
+		},
+	}
+	actionCount, errorCount = a.countProjectMessageAlerts(p0)
+	if actionCount != 0 || errorCount != 1 {
+		t.Fatalf("expected action=0 error=1 in mixed state, got action=%d error=%d", actionCount, errorCount)
+	}
+	progress = a.trayProjectProgressItems()
+	if len(progress) != 1 || progress[0].Count != 2 {
+		t.Fatalf("expected progress count=2 in mixed state, got %+v", progress)
+	}
+}
