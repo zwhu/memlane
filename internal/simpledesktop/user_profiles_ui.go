@@ -268,6 +268,8 @@ func (a *App) userProfileReaderPane(c *ui.Context) {
 				switch {
 				case s.Body != "":
 					markdown.View(c.Key("user-profile-markdown-"+s.BodyKey), profileReadingMarkdown(s.Body), a.v4MarkdownOptions(fsReading))
+				case s.Reading:
+					v4SkeletonGroup(c, 3, 2, false, false)
 				case !p.working():
 					emptyMsg := fmt.Sprintf("尚未从 %s 导入画像，可点击底部「尝试导入」或「手动导入」", p.Name)
 					if !p.CanGenerate {

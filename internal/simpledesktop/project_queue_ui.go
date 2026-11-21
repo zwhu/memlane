@@ -142,9 +142,7 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 
 	hasAlerts := len(needs) > 0 || len(info) > 0
 	groupDesc := ""
-	if q.Loading {
-		groupDesc = "更新中…"
-	} else if hasAlerts && q.AutomaticSave {
+	if hasAlerts && q.AutomaticSave {
 		groupDesc = "自动采集已开启"
 	}
 
@@ -179,7 +177,7 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	section := v4Group(c.Key("project-queue-section-"+p.ID), "消息与采集状态", groupDesc, headerActions, func() {
 		ui.Column(c.Key("message-status-"+p.ID)).FillWidth().Gap(0).Children(func() {
 			if !q.Loaded && !hasAlerts {
-				v4Row(c, v4RowOptions{Title: "正在读取消息状态…"})
+				v4SkeletonRow(c, 1, false, false)
 			} else if !hasAlerts {
 				// Healthy collapsed single-row state.
 				dotTone := "warn"

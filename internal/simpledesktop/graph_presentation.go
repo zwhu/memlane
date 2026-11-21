@@ -22,11 +22,6 @@ func (a *App) graphToolbar(c *ui.Context) {
 			}
 			a.loadGraph()
 		})
-		readStatus := ""
-		if a.graphLoading {
-			readStatus = "正在读取…"
-		}
-		homeText(c.Key("graph-read-status"), readStatus, homeMeta).SingleLine()
 		ui.Spacer(c.Key("graph-toolbar-spacer"))
 		if !code && ok && a.Config.ProjectControl != nil {
 			v4SmallButton(c, "创建工具图谱", nil, func() { a.previewToolGraph(p.ID) })

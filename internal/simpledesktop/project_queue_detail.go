@@ -95,8 +95,8 @@ func (a *App) queuedDocumentDetail(c *ui.Context, p AccessProject, q *projectQue
 						ui.Spacer(c)
 						v4SmallButton(c, "复制原文", v4IconCopy, func() { c.WriteClipboard(item.Body); a.copyFeedback("原文") }).Disabled(!item.BodyLoaded)
 					})
-					if s.Reading {
-						ui.Text(c, "正在读取原文…").Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text3)
+					if !item.BodyLoaded && s.Reading {
+						v4SkeletonGroup(c, 2, 2, false, false)
 					}
 					if s.Error != "" {
 						ui.Row(c).AlignItems(ui.Center).Gap(sp2).Children(func() {

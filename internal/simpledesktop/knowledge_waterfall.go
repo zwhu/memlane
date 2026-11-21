@@ -348,11 +348,12 @@ func (a *App) knowledgePage(c *ui.Context, s *pane) {
 			})
 			totalFiltered := len(a.filteredKnowledgeCatalog(s))
 			appFooter(c, "记忆加载状态").Padding(0, sp4).Children(func() {
-				homeText(c, fmt.Sprintf("已载入 %d 项", len(s.Items)), homeMeta)
+				if s.Loaded || len(s.Items) > 0 {
+					homeText(c, fmt.Sprintf("已载入 %d 项", len(s.Items)), homeMeta)
+				}
 				ui.Spacer(c)
 				switch {
-				case !s.Loaded && s.Loading:
-					homeText(c, "正在读取…", homeMeta)
+				case !s.Loaded:
 				case s.More:
 					homeText(c, fmt.Sprintf("共 %d 条 · 向下滚动加载", totalFiltered), homeMeta)
 				case totalFiltered > 0:
@@ -449,7 +450,10 @@ func (a *App) knowledgeListItem(c *ui.Context, s *pane, i Item, index int, selec
 			preview := strings.TrimSpace(i.Title)
 			ui.Column(c).FillWidth().MinHeight(54).Children(func() {
 				if preview == "" {
-					ui.Text(c, "正在读取…").Font("system-ui").FontSize(fsFootnote).FontWeight(400).LineHeight(1.55).TextColor(tok.Text2).MaxLines(knowledgePreviewLines)
+					ui.Column(c).FillWidth().Gap(6).Children(func() {
+						ui.Box(c).FillWidth().Height(11).Radius(radiusSmall).Background(tok.Fill2)
+						ui.Box(c).Width(180).Height(11).Radius(radiusSmall).Background(tok.Fill1)
+					})
 				} else {
 					v4InlineMarkdown(c, preview, fsFootnote, 400, 1.55, tok.Text2).MaxLines(knowledgePreviewLines)
 				}

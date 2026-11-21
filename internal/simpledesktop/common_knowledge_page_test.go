@@ -373,3 +373,69 @@ func TestCommonKnowledgeV4ThreePaneAndEditImmutability(t *testing.T) {
 		t.Fatal("empty common knowledge state missing V4 empty state or primary CTA")
 	}
 }
+
+func TestCommonKnowledgeRefreshNoTransientTextOrLayoutShift(t *testing.T) {
+	// 1. Existing items & body: background reload must not flash transient labels or shift geometry.
+	a := commonUIFixture()
+	s := a.state()
+	tt := ui.NewTester(a.View, 1200, 820)
+	firstItemBefore, ok := tt.Find("提交前运行项目约定的检查")
+	if !ok {
+		t.Fatal("missing second common item before refresh")
+	}
+	readerTitleBefore, ok := tt.Find("代码示例使用 TypeScript")
+	if !ok {
+		t.Fatal("missing reader title before refresh")
+	}
+
+	s.Loading = true
+	s.Reading = true
+	tt.Frame()
+	for _, unwanted := range []string{"正在刷新，保留现有内容", "正在读取正文…", "正在刷新…", "正在读取…"} {
+		if tt.HasText(unwanted) {
+			t.Fatalf("common knowledge flashed transient loading text %q during background refresh; texts=%v", unwanted, tt.Texts())
+		}
+	}
+	firstItemAfter, _ := tt.Find("提交前运行项目约定的检查")
+	readerTitleAfter, _ := tt.Find("代码示例使用 TypeScript")
+	if firstItemBefore != firstItemAfter {
+		t.Fatalf("background refresh shifted list geometry: %+v -> %+v", firstItemBefore, firstItemAfter)
+	}
+	if readerTitleBefore != readerTitleAfter {
+		t.Fatalf("background refresh shifted reader geometry: %+v -> %+v", readerTitleBefore, readerTitleAfter)
+	}
+
+	// 2. Empty common library revisiting while background refresh runs: keeps empty state cleanly.
+	s.Selected = nil
+	s.Items = nil
+	s.Loaded = true
+	s.Loading = true
+	s.Reading = false
+	s.Error = ""
+	tt.Frame()
+	if !tt.HasText("还没有通用记忆") || tt.HasText("正在刷新…") || tt.HasText("正在读取…") {
+		t.Fatalf("empty common page flashed refresh state: texts=%v", tt.Texts())
+	}
+
+	// 3. Initial load before Loaded=true: no transient "正在读取…" text or false "已载入 0 条".
+	s.Loaded = false
+	s.Loading = true
+	tt.Frame()
+	if tt.HasText("正在读取…") || tt.HasText("正在刷新") || tt.HasText("已载入 0 条") {
+		t.Fatalf("initial common load showed unwanted text: texts=%v", tt.Texts())
+	}
+	for _, txt := range tt.Texts() {
+		if txt == "正在读取" {
+			t.Fatalf("initial common load showed unwanted status text %q: texts=%v", txt, tt.Texts())
+		}
+	}
+
+	// 4. Unhydrated item title uses silent placeholder bars rather than "正在读取…".
+	s.Loaded = true
+	s.Loading = false
+	s.Items = []Item{{ID: "pending-doc", Dataset: "common", Kind: "知识", CommonCategory: "preference"}}
+	tt.Frame()
+	if tt.HasText("正在读取…") {
+		t.Fatalf("unhydrated common list card showed raw loading text: texts=%v", tt.Texts())
+	}
+}

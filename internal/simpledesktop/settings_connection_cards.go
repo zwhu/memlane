@@ -48,11 +48,7 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 	}
 
 	v4Group(c, "记忆服务", checkedDesc, func() {
-		recheckLabel := "重新检查"
-		if m.Polling {
-			recheckLabel = "检测中…"
-		}
-		v4SmallButton(c, recheckLabel, v4IconRefresh, a.health).Disabled(m.Polling)
+		v4SmallButton(c, "重新检查", v4IconRefresh, a.health).Disabled(m.Polling)
 	}, func() {
 		if m.Polling && m.Snapshot == nil && m.LastCheckedAt.IsZero() {
 			v4SkeletonGroup(c, 3, 2, false, true)

@@ -163,9 +163,6 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 						v4SmallButton(c, "返回动态", nil, func() { a.navigate("总览", 0) })
 					})
 				}
-				if s.Loading && s.Loaded {
-					homeText(c, "正在刷新，保留现有内容", homeMeta)
-				}
 				if s.Error != "" {
 					message := "读取失败 · " + s.Error
 					if s.Loaded {
@@ -293,7 +290,10 @@ func (a *App) commonListItem(c *ui.Context, s *pane, i Item, index int, selected
 			homeText(c, "标题读取失败", homeMeta)
 			v4SmallButton(c, "重试读取", nil, func() { a.retryReadingTitle(s, i) })
 		case preview == "":
-			ui.Text(c, "正在读取…").Font("system-ui").FontSize(fsFootnote).FontWeight(400).LineHeight(1.55).TextColor(tok.Text2).MaxLines(knowledgePreviewLines)
+			ui.Column(c).FillWidth().MinHeight(38).Gap(6).Justify(ui.Center).Children(func() {
+				ui.Box(c).FillWidth().Height(11).Radius(radiusSmall).Background(tok.Fill2)
+				ui.Box(c).Width(180).Height(11).Radius(radiusSmall).Background(tok.Fill1)
+			})
 		default:
 			colText := tok.Text1
 			if !i.BodyLoaded {
@@ -356,19 +356,15 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 					v4OutlineButton(c, "前往设置", nil, func() { a.navigate("设置", 0) })
 				})
 			case !s.Loaded:
-				message := "正在读取…"
 				if s.Error != "" {
-					message = "读取失败"
+					v4EmptyState(c, "common-loading", "读取失败", "")
+				} else {
+					ui.Column(c).Grow(1).MinHeight(0).FillWidth()
 				}
-				v4EmptyState(c, "common-loading", message, "")
 			case len(s.Items) > 0:
 				v4EmptyState(c, "common-select", "选择一条记忆", "")
-			case s.Loading || s.Error != "":
-				message := "正在刷新…"
-				if s.Error != "" {
-					message = "未能刷新，显示上次结果"
-				}
-				v4EmptyState(c, "common-refresh", message, "")
+			case s.Error != "":
+				v4EmptyState(c, "common-refresh", "未能刷新，显示上次结果", "")
 			case e.Category != "" || s.Offset > 0:
 				commonEmptyWithAction(c, "common-filter-empty", "当前分类没有记忆", "", func() {
 					v4OutlineButton(c, "显示全部", nil, func() { e.Category = ""; s.Offset = 0; a.load(s) })
@@ -419,13 +415,12 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 					title = parts.Title
 				}
 				homeText(c, title, homeHeading).FontSize(fsTitle).LineHeight(1.35)
-				if s.Reading {
-					homeText(c, "正在读取正文…", homeMeta)
-				}
 				if s.Error != "" {
 					homeText(c, "内容未刷新 · "+s.Error, homeMeta)
 				}
-				if canonical {
+				if !i.BodyLoaded && s.Reading {
+					v4SkeletonGroup(c, 3, 2, false, false)
+				} else if canonical {
 					a.commonMarkdown(c, "common-body-"+i.key(), parts.Body)
 					if parts.Applicability != "" {
 						ui.Column(c).FillWidth().Margin(sp2, 0, 0, 0).Padding(sp4, 0, 0, 0).Gap(sp2).
