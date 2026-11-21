@@ -18,15 +18,15 @@ class _DummyOfficial:
 
 
 def _agy_sid(iid, cid):
-    return 'codex_antigravity-' + hashlib.sha256(f'{iid}\0{cid}'.encode('utf-8')).hexdigest()
+    return 'antigravity-' + hashlib.sha256(f'{iid}\0{cid}'.encode('utf-8')).hexdigest()
 
 
 def _oc_sid(iid, cid):
-    return 'codex_opencode-' + hashlib.sha256(f'{iid}\0{cid}'.encode('utf-8')).hexdigest()
+    return 'opencode-' + hashlib.sha256(f'{iid}\0{cid}'.encode('utf-8')).hexdigest()
 
 
 def _pi_sid(iid, cid):
-    return 'codex_pi-' + hashlib.sha256(f'{iid}\0{cid}'.encode('utf-8')).hexdigest()
+    return 'pi-' + hashlib.sha256(f'{iid}\0{cid}'.encode('utf-8')).hexdigest()
 
 
 class SessionRelationsTest(unittest.TestCase):

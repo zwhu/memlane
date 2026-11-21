@@ -25,6 +25,15 @@ def valid_saved_timestamp(saved, activated, now):
     return max(candidates) if candidates else None
 
 
+def expected_session_id(kind, host_key):
+    safe = ''.join(ch if ch.isascii() and (ch.isalnum() or ch in '-_.') else '_' for ch in host_key).strip('._')[:120]
+    if kind == 'codex':
+        return 'codex_' + safe
+    if kind and safe.startswith((kind + '-', kind + '_')):
+        return safe
+    return (kind + '_' if kind else '') + safe
+
+
 class ConnectionCapture:
     def __init__(self, registry, config, *, host_factory=CodexHookAccess):
         self.registry, self.config, self.host_factory = registry, config, host_factory
@@ -111,9 +120,8 @@ class ConnectionCapture:
             return None
         return project
 
-    async def _probe_saved_at(self, agent, project, host_key, activated, timeout):
-        safe = ''.join(ch if ch.isascii() and (ch.isalnum() or ch in '-_.') else '_' for ch in host_key).strip('._')[:120]
-        session_id = 'codex_' + safe
+    async def _probe_saved_at(self, kind, agent, project, host_key, activated, timeout):
+        session_id = expected_session_id(kind, host_key)
         try:
             saved = await asyncio.wait_for(self.registry.official.request('GET',
                 '/api/v1/sessions/' + quote(session_id, safe='') + '/capture-status', token_file=agent['key_file']), timeout)
@@ -157,7 +165,7 @@ class ConnectionCapture:
         if (project.get('status') != 'verified' or applied.get('status') != 'verified'
                 or applied.get('revision') != project.get('desired_revision')):
             return {**value, 'state': 'project_pending', 'project_id': receipt['project_id']}
-        last = await self._probe_saved_at(agent, project, host_key, activated, 4)
+        last = await self._probe_saved_at(kind, agent, project, host_key, activated, 4)
         if last is not None:
             self.last_verified_session[identifier] = (host_key, receipt['project_id'])
             value.update(state='healthy', last_saved_at=last)
@@ -205,7 +213,7 @@ class ConnectionCapture:
                 seen_keys.add(cand_key)
                 candidates.append((cand_key, cand_pid, cand_proj))
         for cand_key, cand_pid, cand_proj in candidates:
-            last = await self._probe_saved_at(agent, cand_proj, cand_key, activated, 2)
+            last = await self._probe_saved_at(kind, agent, cand_proj, cand_key, activated, 2)
             if last is not None:
                 self.last_verified_session[identifier] = (cand_key, cand_pid)
                 value.update(state='healthy', last_saved_at=last)

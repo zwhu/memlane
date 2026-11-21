@@ -32,7 +32,7 @@ func TestBuildRawRecordsGroupsNestedAndOrphanSubagents(t *testing.T) {
 			// Subagent with BOTH agent-to-agent QAs AND tool calls
 			{
 				Session: Session{
-					ID:              "codex_antigravity-child-qa",
+					ID:              "antigravity-child-qa",
 					Dataset:         "ds-sub",
 					User:            "u1",
 					Updated:         ts(2),
@@ -48,7 +48,7 @@ func TestBuildRawRecordsGroupsNestedAndOrphanSubagents(t *testing.T) {
 			// 0-QA tool-only subagent
 			{
 				Session: Session{
-					ID:              "codex_antigravity-child-tools",
+					ID:              "antigravity-child-tools",
 					Dataset:         "ds-sub",
 					User:            "u1",
 					Updated:         ts(3),
@@ -68,7 +68,7 @@ func TestBuildRawRecordsGroupsNestedAndOrphanSubagents(t *testing.T) {
 					User:            "u1",
 					Updated:         ts(4),
 					IsSubagent:      true,
-					ParentSessionID: "codex_antigravity-child-qa",
+					ParentSessionID: "antigravity-child-qa",
 					SubagentRole:    "worker",
 					NestingDepth:    2,
 				},
@@ -79,7 +79,7 @@ func TestBuildRawRecordsGroupsNestedAndOrphanSubagents(t *testing.T) {
 			// Orphan subagent (no ParentSessionID in this dataset) -> must stay visible in top list
 			{
 				Session: Session{
-					ID:           "codex_antigravity-orphan",
+					ID:           "antigravity-orphan",
 					Dataset:      "ds-sub",
 					User:         "u1",
 					Updated:      ts(5),
@@ -108,13 +108,13 @@ func TestBuildRawRecordsGroupsNestedAndOrphanSubagents(t *testing.T) {
 	if len(parent.Subagents) != 3 {
 		t.Fatalf("expected 3 grouped subagents (including depth=2 grandchild), got %d", len(parent.Subagents))
 	}
-	if parent.Subagents[0].ID != "codex_antigravity-child-qa" || parent.Subagents[2].Session.NestingDepth != 2 {
+	if parent.Subagents[0].ID != "antigravity-child-qa" || parent.Subagents[2].Session.NestingDepth != 2 {
 		t.Fatalf("unexpected subagent ordering/depth: %+v", parent.Subagents)
 	}
 	if parent.Subagents[0].ParentTitle != "梳理多 Agent 会话关联主任务" {
 		t.Fatalf("expected ParentTitle propagated, got %q", parent.Subagents[0].ParentTitle)
 	}
-	if orphan.ID != "codex_antigravity-orphan" || orphan.Session == nil || !orphan.Session.IsSubagent {
+	if orphan.ID != "antigravity-orphan" || orphan.Session == nil || !orphan.Session.IsSubagent {
 		t.Fatalf("expected orphan subagent kept in top-level list, got %+v", orphan)
 	}
 }
@@ -122,10 +122,10 @@ func TestBuildRawRecordsGroupsNestedAndOrphanSubagents(t *testing.T) {
 func TestSubagentUILinkingQAsToolsAndReturnLightDark(t *testing.T) {
 	now := time.Now().UTC()
 	parentID := "codex_parent-main"
-	childQAID := "codex_antigravity-child-qa"
-	childToolsID := "codex_antigravity-child-tools"
+	childQAID := "antigravity-child-qa"
+	childToolsID := "antigravity-child-tools"
 	childNestedID := "codex_child-nested"
-	orphanID := "codex_antigravity-orphan-1"
+	orphanID := "antigravity-orphan-1"
 
 	rawResp := rawRecordsResponse{
 		DatasetID:  "ds-sub",

@@ -493,6 +493,7 @@ def prepare(dataset, session, **kwargs):
     return state
 projects.prepare = prepare
 key, session, dataset = memory.setup({"operation":"status", "session_id":"scope-fixture", "cwd":os.environ["HOME"]})
+assert key.startswith("pi-") and session == key, (key, session)
 import _coding_memory as coding
 import _plugin_common as common
 expected = [projects.project_tag(os.environ["HOME"], "auto")]
@@ -531,6 +532,7 @@ decision = {"ready":True, "revision":1, "project_id":"fixture-project", "dataset
 policy._request = lambda *a, **kw: decision
 projects.prepare = lambda *a, **kw: {}
 key, session, _ = memory.setup({"operation":"status", "session_id":"11111111-1111-4111-8111-111111111111", "cwd":os.environ["HOME"]})
+assert key.startswith("traex-") and session == key, (key, session)
 import _plugin_common as common
 # Several hook launches at one cwd must never make a shell skill guess a session.
 common.ensure_launch_record("other-host", os.environ["HOME"], dataset=dataset)

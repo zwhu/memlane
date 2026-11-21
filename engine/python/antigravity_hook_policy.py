@@ -86,7 +86,7 @@ def prepare_payload(payload, script):
             raise NotReady('existing_conversation_not_captured')
     profile = Path(binding['runtime_profile'])
     os.environ['MEMLANE_ANTIGRAVITY_PROFILE'] = str(profile)
-    os.environ['COGNEE_SESSION_PREFIX'] = 'codex'
+    os.environ['COGNEE_SESSION_PREFIX'] = 'antigravity'
     key = 'antigravity-' + hashlib.sha256((binding['instance_id'] + '\0' + native).encode()).hexdigest()
     set_session_key(key)
     workspace = payload.get('workspacePaths', [])

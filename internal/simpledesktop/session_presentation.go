@@ -15,6 +15,12 @@ func sessionIdentity(id string) string {
 		host, key = "Agy", id
 	case strings.HasPrefix(lowerID, "gemini-"):
 		host, key = "Gemini", id
+	case strings.HasPrefix(lowerID, "traex-"):
+		host, key = "TraeX", id
+	case strings.HasPrefix(lowerID, "pi-"):
+		host, key = "pi", id
+	case strings.HasPrefix(lowerID, "opencode-"):
+		host, key = "opencode", id
 	default:
 		var ok bool
 		host, key, ok = strings.Cut(id, "_")
@@ -24,18 +30,6 @@ func sessionIdentity(id string) string {
 		switch strings.ToLower(host) {
 		case "codex":
 			host = "Codex"
-			lowerKey := strings.ToLower(key)
-			if strings.HasPrefix(lowerKey, "traex-") {
-				host = "TraeX"
-			} else if strings.HasPrefix(lowerKey, "pi-") {
-				host = "pi"
-			} else if strings.HasPrefix(lowerKey, "opencode-") {
-				host = "opencode"
-			} else if strings.HasPrefix(lowerKey, "antigravity-") || strings.HasPrefix(lowerKey, "agy-") {
-				host = "Agy"
-			} else if strings.HasPrefix(lowerKey, "gemini-") {
-				host = "Gemini"
-			}
 		case "claude":
 			host = "Claude Code"
 		case "pi":

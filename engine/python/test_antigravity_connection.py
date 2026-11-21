@@ -202,6 +202,7 @@ marker = pathlib.Path(sys.argv[1]).parent / '.memlane-installation.json'
 binding = json.loads(marker.read_text())
 calls = []
 policy.bind = lambda cwd, host: calls.append((cwd, host)) or 'dataset'
+orig_ensure = common.ensure_launch_record
 common.ensure_launch_record = lambda *a, **k: ('session', {})
 common.mark_server_ready = lambda *a, **k: None
 memory.begin = lambda *a, **k: None
@@ -247,6 +248,10 @@ for case in ('standard', 'full', 'other_name', 'wrong_uuid', 'relative', 'file_s
         assert calls == [(str(home), host)], (case, calls)
         assert result['conversationId'] == host and result['session_id'] == host
         assert result['transcriptPath'] == str(path)
+        assert os.environ.get('COGNEE_SESSION_PREFIX') == 'antigravity'
+        if case == 'standard':
+            launched_sid, _ = orig_ensure(host, str(home), dataset='dataset')
+            assert launched_sid == host, launched_sid
 ''')
 
     def test_app_only_runtime_discovery_and_explicit_path_precedence(self):

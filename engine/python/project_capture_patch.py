@@ -43,6 +43,11 @@ def apply(text):
 ''')
     text = replace(text, '            if ambiguous and verified and _entry_fingerprint(send_entry) in server_prints:\n',
         '            if not managed() and ambiguous and verified and _entry_fingerprint(send_entry) in server_prints:\n')
+    text = replace(
+        text,
+        '    if host:\n        return f"{agent}_{host}"\n',
+        '    if host:\n        if host.startswith((agent + "-", agent + "_")):\n            return host\n        return f"{agent}_{host}"\n',
+    )
     # Numbered sends retain the existing buffer/backoff, and never fall back to
     # the non-idempotent endpoint when the new endpoint fails or is unavailable.
     compile(text, '_plugin_common.py', 'exec')

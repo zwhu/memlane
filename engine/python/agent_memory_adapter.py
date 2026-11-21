@@ -65,6 +65,7 @@ def setup(request):
     from _memlane_policy import bind
     key = binding['host_kind'] + '-' + hashlib.sha256(
         (binding['instance_id'] + '\0' + request['session_id']).encode()).hexdigest()
+    os.environ['COGNEE_SESSION_PREFIX'] = binding['host_kind']
     set_session_key(key)
     dataset = bind(request['cwd'], key)
     session, _ = ensure_launch_record(key, request['cwd'], dataset=dataset)

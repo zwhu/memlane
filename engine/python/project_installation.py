@@ -80,6 +80,10 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
                 if name == 'scripts/_plugin_common.py':
                     text = text.replace('suffix = "_codex"', 'suffix = ' + json.dumps('_' + host_kind))
                     text = text.replace('_normalize("codex-agent")', '_normalize(' + json.dumps(host_kind + '-agent') + ')')
+                    text = text.replace(
+                        'os.environ.get("COGNEE_SESSION_PREFIX", "") or "codex") or "codex"',
+                        'os.environ.get("COGNEE_SESSION_PREFIX", "") or ' + json.dumps(host_kind) + ') or ' + json.dumps(host_kind),
+                    )
                 data = text.replace('.cognee-plugin/codex', '.cognee-plugin/' + namespace).encode()
             expected_host_files[name] = data
         expected_host_files.update(host_files)

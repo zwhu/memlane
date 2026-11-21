@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from connection_capture import ConnectionCapture
+from connection_capture import ConnectionCapture, expected_session_id
 from codex_hook_access import CodexHookAccess
 from project_policy import PolicyError
 
@@ -64,17 +64,24 @@ class CaptureTests(unittest.IsolatedAsyncioTestCase):
         return self.capture.view(self.row, self.adapter)
 
     async def test_installed_bound_and_trusted_still_need_real_saved_message_for_all_three_hosts(self):
-        for kind in ('codex', 'pi', 'traex'):
+        for kind, host, sid in (('codex', 'host-session', 'codex_host-session'),
+                                ('pi', 'pi-host-session', 'pi-host-session'),
+                                ('traex', 'traex-host-session', 'traex-host-session')):
             with self.subTest(kind=kind):
                 self.row['kind'] = kind
+                self.registry.state['connection_receipts'][self.identifier]['host_session_key'] = host
+                self.registry.state['sessions'] = {json.dumps([self.identifier, host]): 'project'}
+                saved = {**self.saved, 'session_id': sid}
                 self.capture.cache.clear()
-                self.registry.official.request.return_value = {**self.saved, 'qa_count': 0, 'last_qa_at': None}
+                self.capture.last_verified_session.clear()
+                self.registry.official.request.return_value = {**saved, 'qa_count': 0, 'last_qa_at': None}
                 self.assertEqual((await self.refresh())['state'], 'waiting_message')
                 self.capture.cache.clear()
-                self.registry.official.request.return_value = self.saved
+                self.capture.last_verified_session.clear()
+                self.registry.official.request.return_value = saved
                 self.assertEqual((await self.refresh())['state'], 'healthy')
                 self.registry.official.request.assert_awaited_with('GET',
-                    '/api/v1/sessions/codex_host-session/capture-status', token_file='agent-key')
+                    f'/api/v1/sessions/{sid}/capture-status', token_file='agent-key')
         self.assertEqual(self.host_calls, 2, 'pi/TraeX must not use Codex trust inspection')
 
     async def test_codex_untrusted_or_explicitly_deferred_overrides_old_success(self):
@@ -227,6 +234,33 @@ class CaptureTests(unittest.IsolatedAsyncioTestCase):
         self.registry.official.request.side_effect = request
         self.registry.state['projects']['project']['overrides'] = {self.identifier: {'capture': False}}
         self.assertEqual((await self.refresh())['state'], 'project_disabled')
+
+    async def test_non_codex_hosts_probe_without_codex_prefix(self):
+        self.assertEqual(expected_session_id('codex', 'uuid-123'), 'codex_uuid-123')
+        self.assertEqual(expected_session_id('antigravity', 'antigravity-abc'), 'antigravity-abc')
+        self.assertEqual(expected_session_id('traex', 'traex-abc'), 'traex-abc')
+        self.assertEqual(expected_session_id('pi', 'pi-abc'), 'pi-abc')
+
+        for kind, host in (('antigravity', 'antigravity-host123'),
+                           ('traex', 'traex-host123'),
+                           ('pi', 'pi-host123')):
+            with self.subTest(kind=kind):
+                self.capture.cache.clear()
+                self.capture.last_verified_session.clear()
+                self.registry.official.request.reset_mock()
+                self.registry.official.request.side_effect = None
+                self.row['kind'] = kind
+                self.registry.state['connection_receipts'][self.identifier]['host_session_key'] = host
+                self.registry.state['sessions'] = {json.dumps([self.identifier, host]): 'project'}
+                self.registry.official.request.return_value = {
+                    **self.saved,
+                    'session_id': host,
+                    'last_qa_at': self.now - 5,
+                }
+                got = await self.refresh()
+                self.assertEqual(got['state'], 'healthy')
+                self.registry.official.request.assert_awaited_once_with(
+                    'GET', f'/api/v1/sessions/{host}/capture-status', token_file='agent-key')
 
 
 class HostTrustTests(unittest.IsolatedAsyncioTestCase):

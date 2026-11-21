@@ -26,29 +26,15 @@ func TestSessionIdentityAndRecentAgentIcon(t *testing.T) {
 		notCodex bool
 	}{
 		{
-			id:       "codex_antigravity-1234567890abcdef",
-			identity: "Agy 会话 · antigrav…90abcdef",
-			agent:    "Agy",
-			icon:     agyIcon,
-			notCodex: true,
-		},
-		{
-			id:       "codex_antigravity-short",
-			identity: "Agy 会话 · antigravity-short",
-			agent:    "Agy",
-			icon:     agyIcon,
-			notCodex: true,
-		},
-		{
-			id:       "codex_agy-1234567890abcdef",
-			identity: "Agy 会话 · agy-1234…90abcdef",
-			agent:    "Agy",
-			icon:     agyIcon,
-			notCodex: true,
-		},
-		{
 			id:       "antigravity-1234567890abcdef",
 			identity: "Agy 会话 · antigrav…90abcdef",
+			agent:    "Agy",
+			icon:     agyIcon,
+			notCodex: true,
+		},
+		{
+			id:       "antigravity-short",
+			identity: "Agy 会话 · antigravity-short",
 			agent:    "Agy",
 			icon:     agyIcon,
 			notCodex: true,
@@ -82,13 +68,6 @@ func TestSessionIdentityAndRecentAgentIcon(t *testing.T) {
 			notCodex: true,
 		},
 		{
-			id:       "codex_gemini-1234567890abcdef",
-			identity: "Gemini 会话 · gemini-1…90abcdef",
-			agent:    "Gemini",
-			icon:     geminiIcon,
-			notCodex: true,
-		},
-		{
 			id:       "gemini-1234567890abcdef",
 			identity: "Gemini 会话 · gemini-1…90abcdef",
 			agent:    "Gemini",
@@ -103,17 +82,24 @@ func TestSessionIdentityAndRecentAgentIcon(t *testing.T) {
 			notCodex: true,
 		},
 		{
-			id:       "codex_traex-1234567890abcdef",
+			id:       "traex-1234567890abcdef",
 			identity: "TraeX 会话 · traex-12…90abcdef",
 			agent:    "TraeX",
 			icon:     agentBrandIcon("traex"),
 			notCodex: true,
 		},
 		{
-			id:       "codex_pi-1234567890abcdef",
+			id:       "pi-1234567890abcdef",
 			identity: "pi 会话 · pi-12345…90abcdef",
 			agent:    "pi",
 			icon:     agentBrandIcon("pi"),
+			notCodex: true,
+		},
+		{
+			id:       "opencode-1234567890abcdef",
+			identity: "opencode 会话 · opencode…90abcdef",
+			agent:    "opencode",
+			icon:     agentBrandIcon("opencode"),
 			notCodex: true,
 		},
 		{
