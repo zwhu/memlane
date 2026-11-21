@@ -25,6 +25,7 @@ from _runtime_common import (
 )
 from project_policy import PolicyError
 from session_relations import descendant_ids_for_session, resolve_session_relations
+from sqlite_ro import open_official_sqlite_ro
 
 MAX_RAW_HISTORY_BYTES = 8 * 1024 * 1024
 _VALID_KINDS = frozenset({'all', 'session', 'document'})
@@ -134,7 +135,10 @@ def read_cache_session_history(cache_db, *, owner, session_id, qa_offset=0, trac
     bounds = _cache_expiry_bounds()
     now_space = bounds[0]
 
-    con = sqlite3.connect(f'file:{cache_path}?mode=ro', uri=True, timeout=2.0)
+    try:
+        con = open_official_sqlite_ro(cache_path, timeout_ms=2000)
+    except PolicyError as err:
+        raise sqlite3.OperationalError(str(err)) from err
     try:
         verify_sqlite_schema(con, _CACHE_REQUIRED_SCHEMA)
         qa_expired = _cache_table_has_expired(con, 'cache_qa_entries', bounds)
@@ -209,8 +213,8 @@ def _hydrate_session_summaries(cache_db, sessions):
     bounds = _cache_expiry_bounds()
     now_space = bounds[0]
     try:
-        con = sqlite3.connect(f'file:{cache_db}?mode=ro', uri=True, timeout=2.0)
-    except sqlite3.Error:
+        con = open_official_sqlite_ro(cache_db, timeout_ms=2000)
+    except (PolicyError, sqlite3.Error):
         return False
 
     try:
@@ -331,8 +335,8 @@ def _read_raw_records_catalog(official_data, dataset_id, kind='all', *, registry
     ds_sql, ds_params = sql_in_clause(ds_variants)
 
     try:
-        con = sqlite3.connect(f'file:{cognee_db}?mode=ro', uri=True, timeout=2.0)
-    except sqlite3.Error as err:
+        con = open_official_sqlite_ro(cognee_db, timeout_ms=2000)
+    except (PolicyError, sqlite3.Error) as err:
         raise PolicyError('raw_records_store_unavailable', 503) from err
 
     documents = []
@@ -446,8 +450,8 @@ def _read_session_history_page(
     ds_sql, ds_params = sql_in_clause(ds_variants)
 
     try:
-        con = sqlite3.connect(f'file:{cognee_db}?mode=ro', uri=True, timeout=2.0)
-    except sqlite3.Error as err:
+        con = open_official_sqlite_ro(cognee_db, timeout_ms=2000)
+    except (PolicyError, sqlite3.Error) as err:
         raise PolicyError('session_history_unavailable', 503) from err
 
     ds_sessions = {}

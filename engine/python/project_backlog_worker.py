@@ -221,11 +221,19 @@ def check(common, policy, dataset, host):
             'unknown': after['unknown'], 'matched': matched, 'unknown_signature': after['unknown_signature']}
 
 
+FLUSH_BATCH_SIZE = 10
+
+
+class _ConfirmedQueueChanged(Exception):
+    pass
+
+
 def save(common, policy, payload, stopped, report=emit):
     dataset, session = payload['dataset'], payload['session_id']
     tokens = list(payload['tokens'])
     saved = handled = isolated = filtered = rejected = deferred = 0
     lease = None
+    confirmed_batch = []
 
     def progress(status='running', reason=''):
         report({'status': status, 'reason': reason, 'saved': saved, 'handled': handled, 'filtered': filtered,
@@ -244,12 +252,44 @@ def save(common, policy, payload, stopped, report=emit):
         lease = common._DRAIN_LOCK.stat()
         from _capture_policy import allow_tool, sanitize
         from plugin_capture import capture_entry_key, entry_held, release_entry_hold, retain_failure
+
+        def flush_confirmed():
+            if not confirmed_batch:
+                return
+            with common._buffer_lock():
+                path, key, cache, state, fresh, _ = policy._pending_snapshot(dataset, session)
+                for done_entry in confirmed_batch:
+                    index = next((i for i, e in enumerate(fresh) if e == done_entry), None)
+                    if index is None:
+                        # Entry may have been stamped ambiguous on disk right before HTTP send.
+                        stamped = {**done_entry, common._AMBIGUOUS_KEY: True}
+                        index = next((i for i, e in enumerate(fresh) if e == stamped), None)
+                    if index is None:
+                        raise _ConfirmedQueueChanged()
+                    fresh.pop(index)
+                    state.get('capture_retries', {}).pop(capture_entry_key(done_entry), None)
+                state['pending_entries'] = fresh
+                cache[key] = state
+                common._write_json_file(path, cache)
+                release_entry_hold(policy, state)
+            confirmed_batch.clear()
+
+        def flush_confirmed_best_effort():
+            if not confirmed_batch:
+                return
+            try:
+                flush_confirmed()
+            except Exception:
+                confirmed_batch.clear()
+
         while tokens:
             if stopped():
+                flush_confirmed()
                 progress('stopped', 'user_stopped')
                 return
             current = common._DRAIN_LOCK.stat()
             if (current.st_dev, current.st_ino) != (lease.st_dev, lease.st_ino):
+                flush_confirmed_best_effort()
                 progress('paused', 'sender_lock_changed')
                 return
             os.utime(common._DRAIN_LOCK, None, follow_symlinks=False)
@@ -260,6 +300,7 @@ def save(common, policy, payload, stopped, report=emit):
             with policy._state() as policy_state:
                 blocked = policy_state.get('blocked')
             if blocked and blocked.get('scope') != 'entries' and blocked.get('reason') not in (None, 'write_result_unknown'):
+                flush_confirmed()
                 reason = blocked.get('reason')
                 if reason in ('official_http_401', 'official_http_403', 'write_denied', 'project_write_denied'):
                     reason = 'write_denied'
@@ -268,6 +309,17 @@ def save(common, policy, payload, stopped, report=emit):
             token = tokens[0]
             with common._buffer_lock():
                 _, _, _, buffer_state, pending, _ = policy._pending_snapshot(dataset, session)
+                if confirmed_batch:
+                    # Exclude entries already confirmed in-memory and pending batch flush.
+                    remaining_pending = list(pending)
+                    for done_entry in confirmed_batch:
+                        idx = next((i for i, e in enumerate(remaining_pending) if e == done_entry), None)
+                        if idx is None:
+                            stamped = {**done_entry, common._AMBIGUOUS_KEY: True}
+                            idx = next((i for i, e in enumerate(remaining_pending) if e == stamped), None)
+                        if idx is not None:
+                            remaining_pending.pop(idx)
+                    pending = remaining_pending
                 matches = [e for e in pending if entry_key(e) == token]
                 entry = next((dict(e) for e in matches if not e.get(common._AMBIGUOUS_KEY) or numbered(e)),
                              dict(matches[0]) if matches else None)
@@ -305,6 +357,7 @@ def save(common, policy, payload, stopped, report=emit):
             try:
                 json.dumps(outgoing, allow_nan=False)
             except (ValueError, TypeError, RecursionError):
+                flush_confirmed()
                 retain_failure(common, policy, dataset, session, entry, rejected=True,
                                reason='capture_payload_unserializable', was_ambiguous=bool(entry.get(common._AMBIGUOUS_KEY)))
                 isolated += 1
@@ -318,6 +371,7 @@ def save(common, policy, payload, stopped, report=emit):
             try:
                 common.remember_entry_via_http(dataset, session, outgoing, timeout=12)
             except policy.NotReady as error:
+                flush_confirmed()
                 # A mismatched/lost receipt is message-local only when its
                 # original durable number exists; scope failures stay paused.
                 if numbered(entry) and str(error) == 'capture_receipt_unconfirmed':
@@ -332,6 +386,7 @@ def save(common, policy, payload, stopped, report=emit):
                 progress('paused', 'capture_retry_pending' if numbered(entry) else 'policy_unconfirmed')
                 return
             except urllib.error.HTTPError as error:
+                flush_confirmed()
                 if error.code in (401, 403):
                     policy.stamp_pending_entry(dataset, session, entry, was_ambiguous)
                     policy.block(error.code)
@@ -348,6 +403,7 @@ def save(common, policy, payload, stopped, report=emit):
                 progress()
                 continue
             except Exception:
+                flush_confirmed()
                 if numbered(entry):
                     retain_failure(common, policy, dataset, session, entry)
                     deferred += 1
@@ -357,27 +413,22 @@ def save(common, policy, payload, stopped, report=emit):
                 continue
             saved += 1
             tokens.pop(0)
-            # Trim only this confirmed entry against a fresh locked read. New
-            # arrivals and every other unknown entry are left byte-for-byte.
-            with common._buffer_lock():
-                path, key, cache, state, fresh, _ = policy._pending_snapshot(dataset, session)
-                index = next((i for i, e in enumerate(fresh) if e == entry), None)
-                if index is None:
-                    progress('paused', 'confirmed_queue_changed')
-                    return
-                fresh.pop(index)
-                state['pending_entries'] = fresh
-                state.get('capture_retries', {}).pop(capture_entry_key(entry), None)
-                cache[key] = state
-                common._write_json_file(path, cache)
-                release_entry_hold(policy, state)
+            confirmed_batch.append(entry)
+            if len(confirmed_batch) >= FLUSH_BATCH_SIZE:
+                flush_confirmed()
             progress()
+        flush_confirmed()
         progress('completed')
+    except _ConfirmedQueueChanged:
+        progress('paused', 'confirmed_queue_changed')
     except policy.NotReady:
+        flush_confirmed_best_effort()
         progress('paused', 'policy_unconfirmed')
     except Exception:
+        flush_confirmed_best_effort()
         progress('paused', 'worker_state_unconfirmed')
     finally:
+        flush_confirmed_best_effort()
         if lease is not None:
             try:
                 current = common._DRAIN_LOCK.stat()

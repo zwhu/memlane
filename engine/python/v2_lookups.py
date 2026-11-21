@@ -41,6 +41,7 @@ WAVE1_FEATURES = (
     'raw_records_v2',
     'search_v2',
     'message_summary_v2',
+    'provenance_backfill_v2',
 )
 
 _ACTIVE_PIPELINE_STATUSES = frozenset({'DATASET_PROCESSING_STARTED', 'DATASET_PROCESSING_INITIATED'})
@@ -427,7 +428,7 @@ def attach_v2_lookups(
         )
         if recall_store is not None:
             try:
-                stats = recall_store.stats(ds_id, doc['id'])
+                stats = await asyncio.to_thread(recall_store.stats, ds_id, doc['id'])
                 doc['recall_count'] = int(stats.get('count') or 0)
             except Exception:
                 doc['recall_count'] = 0

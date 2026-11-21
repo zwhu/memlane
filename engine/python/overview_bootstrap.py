@@ -22,6 +22,7 @@ from _runtime_common import (
     verify_sqlite_schema,
 )
 from project_policy import PolicyError
+from sqlite_ro import open_official_sqlite_ro
 from provenance_store import (
     calendar_date,
     is_lesson_metadata,
@@ -101,7 +102,7 @@ def _read_overview_snapshot(official_data, provenance_path, allowed_datasets, ac
     doc_prov, key_prov = load_provenance_maps(provenance_path, canonical_datasets)
 
     try:
-        con = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True, timeout=2.0)
+        con = open_official_sqlite_ro(db_path)
     except sqlite3.Error as err:
         raise PolicyError('overview_store_unavailable', 503) from err
 

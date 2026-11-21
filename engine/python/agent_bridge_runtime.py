@@ -8,6 +8,7 @@ import copy
 import sqlite3
 
 from project_policy import PolicyError
+from sqlite_ro import open_official_sqlite_ro
 
 
 def current_session_model(kind, home):
@@ -26,23 +27,27 @@ def current_session_model(kind, home):
     candidates = sorted(root.glob('state_*.sqlite'), key=lambda path:path.name, reverse=True)
     for path in candidates:
         try:
-            with sqlite3.connect(path.absolute().as_uri() + '?mode=ro', uri=True, timeout=1) as connection:
-                connection.execute('PRAGMA query_only=ON')
-                columns = {r[1] for r in connection.execute('PRAGMA table_info(threads)')}
-                if 'id' not in columns:
-                    continue
-                fields = [name for name in ('model', 'model_provider', 'reasoning_effort', 'service_tier') if name in columns]
-                if not fields:
-                    continue
-                row = connection.execute('SELECT ' + ','.join(fields) + ' FROM threads WHERE id=?', (identity,)).fetchone()
-                if row is None:
-                    continue
-                values = dict(zip(fields, row))
-                if not values.get('model'):
-                    raise PolicyError('agent_session_model_unavailable', 409)
-                return {**{key:value for key,value in values.items() if value is not None}, 'session_id':identity}
+            connection = open_official_sqlite_ro(path, timeout_ms=1000)
+        except (OSError, sqlite3.Error, PolicyError):
+            raise PolicyError('agent_session_state_unavailable', 409) from None
+        try:
+            columns = {r[1] for r in connection.execute('PRAGMA table_info(threads)')}
+            if 'id' not in columns:
+                continue
+            fields = [name for name in ('model', 'model_provider', 'reasoning_effort', 'service_tier') if name in columns]
+            if not fields:
+                continue
+            row = connection.execute('SELECT ' + ','.join(fields) + ' FROM threads WHERE id=?', (identity,)).fetchone()
+            if row is None:
+                continue
+            values = dict(zip(fields, row))
+            if not values.get('model'):
+                raise PolicyError('agent_session_model_unavailable', 409)
+            return {**{key:value for key,value in values.items() if value is not None}, 'session_id':identity}
         except (OSError, sqlite3.Error):
             raise PolicyError('agent_session_state_unavailable', 409) from None
+        finally:
+            connection.close()
     return None
 
 

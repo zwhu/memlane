@@ -4,7 +4,8 @@ Replaces source edits to Cognee's ``distill.py`` and full-package copying.
 Stores ONLY dataset/document/QA identifiers, ``lesson_type``, ``state_key``,
 and normalized ``YYYY-MM-DD`` calendar dates — never lesson text or transcripts.
 """
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
@@ -41,19 +42,32 @@ def _iso_now():
     return datetime.now(timezone.utc).isoformat(timespec='microseconds')
 
 
+@lru_cache(maxsize=4096)
+def _validate_calendar_head(head: str):
+    if len(head) != 10 or head[4] != '-' or head[7] != '-':
+        return None
+    try:
+        date.fromisoformat(head)
+    except ValueError:
+        return None
+    return head
+
+
 def _calendar_date(value):
     """Extract a validated ``YYYY-MM-DD`` calendar date from a date or ISO-8601 timestamp."""
     if not isinstance(value, str):
         return None
+    n = len(value)
+    if n == 10 and value[4] == '-' and value[7] == '-':
+        return _validate_calendar_head(value)
     text = value.strip()
-    if len(text) < 10 or not _CALENDAR_RE.match(text[:10]):
+    n = len(text)
+    if n < 10:
         return None
-    head = text[:10]
-    try:
-        datetime.strptime(head, '%Y-%m-%d')
-    except ValueError:
+    head = _validate_calendar_head(text[:10])
+    if head is None:
         return None
-    if len(text) == 10:
+    if n == 10:
         return head
     try:
         datetime.fromisoformat(text.replace('Z', '+00:00'))
@@ -823,6 +837,39 @@ class ProvenanceStore:
         if batch:
             self.record_documents_batch(batch)
 
+    def backfill_legacy_dates(self, entries) -> dict:
+        """Batch-record verified legacy ``knowledge-source-dates`` entries as ``legacy_json_locked`` (rank 2).
+
+        Never upgrades evidence to ``linked_qa`` and never overwrites an earlier
+        or higher-ranked date.
+        """
+        if not isinstance(entries, list):
+            raise ValueError('entries must be a list')
+        batch = []
+        skipped = 0
+        for item in entries:
+            if not isinstance(item, dict):
+                skipped += 1
+                continue
+            ds = uuid_text(item.get('dataset_id'))
+            doc_id = uuid_text(item.get('document_id'))
+            day = _calendar_date(item.get('first_source_date'))
+            if not ds or not doc_id or not day:
+                skipped += 1
+                continue
+            batch.append({
+                'dataset_id': ds,
+                'document_id': doc_id,
+                'lesson_type': str(item.get('lesson_type') or '').strip(),
+                'state_key': str(item.get('state_key') or '').strip(),
+                'candidate_dates': [day],
+                'source_qa_ids': [],
+                'explicit_status': 'legacy_json_locked',
+            })
+        if batch:
+            self.record_documents_batch(batch)
+        return {'imported': len(batch), 'skipped': skipped}
+
     def checkpoint(self, mode: str = 'TRUNCATE') -> bool:
         """Run WAL checkpoint to truncate WAL and prevent unbounded growth, safely handling locks."""
         try:
@@ -947,3 +994,32 @@ def install_provenance_middleware(app, store, *, sync_hook=None):
 
     app.add_middleware(_ProvenanceMiddleware)
     return store
+
+
+def install_provenance_routes(app, store, config):
+    """Mount management-authenticated single-writer provenance backfill endpoint on official_service_dev."""
+    import asyncio
+    import hmac
+    from fastapi import APIRouter, HTTPException, Request
+    from _runtime_common import read_secret
+
+    secret = read_secret(config['project_control']['management_token_file'])
+    router = APIRouter(prefix='/api/v1/memlane/provenance')
+
+    @router.post('/backfill-legacy-dates')
+    async def backfill_legacy_dates_route(request: Request):
+        if not hmac.compare_digest(request.headers.get('x-memlane-management', ''), secret):
+            raise HTTPException(403, 'management_required')
+        try:
+            payload = await request.json()
+        except ValueError:
+            raise HTTPException(400, 'invalid_request_fields') from None
+        if not isinstance(payload, dict) or set(payload) != {'entries'} or not isinstance(payload['entries'], list):
+            raise HTTPException(400, 'invalid_request_fields')
+        if len(payload['entries']) > 2000:
+            raise HTTPException(400, 'invalid_request_fields')
+        result = await asyncio.to_thread(store.backfill_legacy_dates, payload['entries'])
+        return result
+
+    app.include_router(router)
+    return router

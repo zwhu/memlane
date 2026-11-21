@@ -25,6 +25,7 @@ import heapq
 import hmac
 import inspect
 import json
+import os
 from pathlib import Path
 import re
 import secrets
@@ -659,6 +660,8 @@ def _query_session_children_v2(
 def _recall_event_doc_ids(recall_store, dataset_id: str, agent_id: str, event_id: str) -> set[str]:
     if recall_store is None:
         return set()
+    if hasattr(recall_store, 'event_doc_ids'):
+        return recall_store.event_doc_ids(dataset_id, agent_id, event_id)
     event_uuid = recall_store.identifier(event_id)
     ds_uuid = recall_store.identifier(dataset_id)
     rows = recall_store.db.execute(
@@ -677,8 +680,11 @@ def _read_recall_events_summary(recall_store, allowed_datasets: set[str], agents
         agent = agents_state.get(item['agent_id'], {})
         item['agent_name'] = agent.get('name') or 'Agent 未记录'
         item['agent_kind'] = agent.get('kind') or ''
-    started_row = recall_store.db.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()
-    started_at = str(started_row[0]) if started_row else ''
+    if hasattr(recall_store, 'started_at'):
+        started_at = recall_store.started_at()
+    else:
+        started_row = recall_store.db.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()
+        started_at = str(started_row[0]) if started_row else ''
     return page['items'], bool(page['more']), started_at
 
 
@@ -877,9 +883,25 @@ def attach_v2_api(
         ) = await asyncio.to_thread(_build_sync)
 
         agents_snapshot = {k: dict(v) for k, v in registry.state.get('agents', {}).items()}
-        rec_events, rec_more, rec_started = _read_recall_events_summary(
-            recall_store, set(allowed_ds), agents_snapshot, recall_limit
+        rec_events, rec_more, rec_started = await asyncio.to_thread(
+            _read_recall_events_summary,
+            recall_store,
+            set(allowed_ds),
+            agents_snapshot,
+            recall_limit,
         )
+        # Pre-cap oversized recall hit lists before JSON budget binary search to avoid
+        # multi-hundred-KiB serialization churn under the Python GIL.
+        total_rec_hits = sum(len(ev.get('hits') or ()) for ev in rec_events)
+        if total_rec_hits > 100:
+            capped_events = []
+            for ev in rec_events:
+                ev_copy = dict(ev)
+                if isinstance(ev_copy.get('hits'), list) and len(ev_copy['hits']) > 5:
+                    ev_copy['hits'] = ev_copy['hits'][:5]
+                    rec_more = True
+                capped_events.append(ev_copy)
+            rec_events = capped_events
 
         def _make_payload(items_subset, _trimmed):
             return {
@@ -902,6 +924,25 @@ def attach_v2_api(
             recent_items,
             max_json_bytes=DEFAULT_OVERVIEW_JSON_BUDGET_BYTES,
         )
+        # Hard-enforce 128 KiB serialized budget even when recall_events have large hit lists.
+        def _serialized_len(obj) -> int:
+            return len(json.dumps(obj, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+
+        if _serialized_len(payload) > DEFAULT_OVERVIEW_JSON_BUDGET_BYTES:
+            trimmed_rec = []
+            for ev in payload['recall_events']:
+                ev_copy = dict(ev)
+                if isinstance(ev_copy.get('hits'), list) and len(ev_copy['hits']) > 5:
+                    ev_copy['hits'] = ev_copy['hits'][:5]
+                    payload['recall_events_more'] = True
+                trimmed_rec.append(ev_copy)
+            payload['recall_events'] = trimmed_rec
+            while payload['recall_events'] and _serialized_len(payload) > DEFAULT_OVERVIEW_JSON_BUDGET_BYTES:
+                payload['recall_events'].pop()
+                payload['recall_events_more'] = True
+            while payload['pipeline_runs'] and _serialized_len(payload) > DEFAULT_OVERVIEW_JSON_BUDGET_BYTES:
+                payload['pipeline_runs'].pop()
+                payload['pipeline_runs_more'] = True
         return web.json_response(payload)
 
     # 3. GET /v2/overview/day
@@ -1841,6 +1882,167 @@ def attach_v2_api(
         )
         return web.json_response(res)
 
+    # 12. POST /v2/provenance/backfill-legacy-dates (single-writer via official_service_dev)
+    _LEGACY_KEY_RE = re.compile(r'^[0-9a-f]{64}$')
+
+    async def provenance_backfill_legacy_dates(request):
+        _require_manager(request)
+        body = await _json_body(request)
+        if set(body) - {'reading_identity', 'days'} or 'reading_identity' not in body:
+            raise PolicyError('invalid_request_fields', 400)
+        identity = body['reading_identity']
+        if not isinstance(identity, str) or not identity:
+            raise PolicyError('invalid_reading_identity', 400)
+
+        legacy_path = None
+        if 'days' in body:
+            raw_days = body['days']
+            if not isinstance(raw_days, dict) or len(raw_days) > 200000:
+                raise PolicyError('invalid_legacy_dates', 400)
+            days = {}
+            for k, v in raw_days.items():
+                if not isinstance(k, str) or not _LEGACY_KEY_RE.match(k):
+                    raise PolicyError('invalid_legacy_dates', 400)
+                day = _calendar_date(v)
+                if not day:
+                    raise PolicyError('invalid_legacy_dates', 400)
+                days[k] = day
+        else:
+            # Never blind-scan state_dir; locate ONLY the exact reading_identity file.
+            digest = hashlib.sha256(identity.encode('utf-8')).hexdigest()
+            legacy_path = state_dir / f'knowledge-source-dates-{digest}.json'
+            if not legacy_path.exists():
+                return web.json_response({
+                    'status': 'absent',
+                    'matched': 0,
+                    'imported': 0,
+                    'skipped': 0,
+                    'backup_path': '',
+                })
+            try:
+                st = os.lstat(legacy_path)
+            except OSError as exc:
+                raise PolicyError('invalid_legacy_dates', 400) from exc
+            if legacy_path.is_symlink() or (st.st_mode & 0o077) != 0 or st.st_size > 8 * 1024 * 1024:
+                raise PolicyError('invalid_legacy_dates', 400)
+            try:
+                parsed = json.loads(legacy_path.read_text(encoding='utf-8'))
+            except (OSError, ValueError) as exc:
+                raise PolicyError('invalid_legacy_dates', 400) from exc
+            if (
+                not isinstance(parsed, dict)
+                or parsed.get('schema_version') != 1
+                or not isinstance(parsed.get('days'), dict)
+                or len(parsed['days']) > 200000
+            ):
+                raise PolicyError('invalid_legacy_dates', 400)
+            days = {}
+            for k, v in parsed['days'].items():
+                if not isinstance(k, str) or not _LEGACY_KEY_RE.match(k):
+                    raise PolicyError('invalid_legacy_dates', 400)
+                day = _calendar_date(v)
+                if not day:
+                    raise PolicyError('invalid_legacy_dates', 400)
+                days[k] = day
+
+        if not days:
+            backup_path = ''
+            if legacy_path is not None:
+                bak = legacy_path.with_name(legacy_path.name + '.migrated.bak')
+                os.replace(legacy_path, bak)
+                backup_path = str(bak)
+            return web.json_response({
+                'status': 'empty',
+                'matched': 0,
+                'imported': 0,
+                'skipped': 0,
+                'backup_path': backup_path,
+            })
+
+        official_client = getattr(registry, 'official', None)
+        if official_client is None:
+            raise PolicyError('provenance_backfill_unavailable', 503)
+
+        projects, common = await _ensure_synced()
+        allowed_ds = [p['dataset_id'] for p in projects]
+        if common is not None:
+            allowed_ds.append(common['dataset_id'])
+
+        def _resolve_entries():
+            entries = []
+            matched_keys = set()
+            if not allowed_ds:
+                return entries, len(days)
+            con = cat._get_reader()
+            for start in range(0, len(allowed_ds), 400):
+                batch = allowed_ds[start : start + 400]
+                ph = ','.join('?' for _ in batch)
+                for ds_id, doc_id, lt, sk in con.execute(
+                    f'''SELECT dataset_id, doc_id, lesson_type, state_key
+                        FROM catalog_docs
+                        WHERE dataset_id IN ({ph}) AND is_knowledge = 1''',
+                    batch,
+                ):
+                    ds_s = str(ds_id)
+                    doc_s = str(doc_id)
+                    lt_s = str(lt or '').strip()
+                    sk_s = str(sk or '').strip()
+                    stable = f'{lt_s}/{sk_s}' if sk_s else doc_s
+                    primary_key = hashlib.sha256(f'{ds_s}/{stable}'.encode('utf-8')).hexdigest()
+                    found = []
+                    if primary_key in days:
+                        found.append(days[primary_key])
+                        matched_keys.add(primary_key)
+                    if sk_s:
+                        fallback_key = hashlib.sha256(f'{ds_s}/{doc_s}'.encode('utf-8')).hexdigest()
+                        if fallback_key != primary_key and fallback_key in days:
+                            found.append(days[fallback_key])
+                            matched_keys.add(fallback_key)
+                    if found:
+                        entries.append({
+                            'dataset_id': ds_s,
+                            'document_id': doc_s,
+                            'lesson_type': lt_s,
+                            'state_key': sk_s,
+                            'first_source_date': min(found),
+                        })
+            return entries, len(days) - len(matched_keys)
+
+        entries, unmapped_count = await asyncio.to_thread(_resolve_entries)
+
+        total_imported = 0
+        total_server_skipped = 0
+        chunk_size = 500
+        for start in range(0, len(entries), chunk_size):
+            chunk = entries[start : start + chunk_size]
+            try:
+                resp = await official_client.request(
+                    'POST',
+                    '/api/v1/memlane/provenance/backfill-legacy-dates',
+                    {'entries': chunk},
+                    adapter_token=manager_token,
+                )
+            except PolicyError as exc:
+                raise PolicyError('provenance_backfill_unavailable', 503) from exc
+            if not isinstance(resp, dict):
+                raise PolicyError('provenance_backfill_unavailable', 503)
+            total_imported += int(resp.get('imported') or 0)
+            total_server_skipped += int(resp.get('skipped') or 0)
+
+        backup_path = ''
+        if legacy_path is not None:
+            bak = legacy_path.with_name(legacy_path.name + '.migrated.bak')
+            os.replace(legacy_path, bak)
+            backup_path = str(bak)
+
+        return web.json_response({
+            'status': 'migrated',
+            'matched': len(entries),
+            'imported': total_imported,
+            'skipped': unmapped_count + total_server_skipped,
+            'backup_path': backup_path,
+        })
+
     app.add_routes([
         web.get('/v2/datasets/{ds}/documents/{doc}/body', document_body),
         web.get('/v2/overview/bootstrap', overview_bootstrap_v2),
@@ -1858,6 +2060,7 @@ def attach_v2_api(
         web.post('/v2/reading-state/import/commit', reading_import_commit),
         web.post('/v2/reading-state/mark-read', reading_mark_read),
         web.post('/v2/reading-state/mark-all-read', reading_mark_all_read),
+        web.post('/v2/provenance/backfill-legacy-dates', provenance_backfill_legacy_dates),
     ])
 
     async def cleanup(_app):

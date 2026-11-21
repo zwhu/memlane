@@ -68,7 +68,10 @@ class ReadingStateStore:
 
     def __init__(self, path):
         self.path = Path(path)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._mutation_rev = 0
+        self._unread_cache: dict[tuple[str, str], tuple[int, int, str, set[str]]] = {}
+        self._explicit_read_cache: dict[tuple[str, int], frozenset[str]] = {}
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.path.parent, 0o700)
         if self.path.is_symlink():
@@ -203,6 +206,7 @@ class ReadingStateStore:
                         (horizon, horizon, now_iso, scope_hash),
                     )
                 self.db.execute('COMMIT')
+                self._bump_mutation_rev_locked()
             except Exception:
                 if self.db.in_transaction:
                     self.db.execute('ROLLBACK')
@@ -425,6 +429,7 @@ class ReadingStateStore:
                     catalog_index=catalog_index,
                 )
                 self.db.execute('COMMIT')
+                self._bump_mutation_rev_locked()
             except Exception:
                 if self.db.in_transaction:
                     self.db.execute('ROLLBACK')
@@ -478,6 +483,7 @@ class ReadingStateStore:
                     (batch_id, scope_hash, project_id, dataset_id, 1 if initialized else 0, enabled_ns, _iso_now()),
                 )
                 self.db.execute('COMMIT')
+                self._bump_mutation_rev_locked()
             except Exception:
                 if self.db.in_transaction:
                     self.db.execute('ROLLBACK')
@@ -517,6 +523,7 @@ class ReadingStateStore:
                     rows,
                 )
                 self.db.execute('COMMIT')
+                self._bump_mutation_rev_locked()
             except Exception:
                 if self.db.in_transaction:
                     self.db.execute('ROLLBACK')
@@ -562,6 +569,7 @@ class ReadingStateStore:
                 self.db.execute('DELETE FROM ui_read_migration_staging WHERE batch_id = ?', (batch_id,))
                 self.db.execute('DELETE FROM ui_read_migration_batches WHERE batch_id = ?', (batch_id,))
                 self.db.execute('COMMIT')
+                self._bump_mutation_rev_locked()
             except Exception:
                 if self.db.in_transaction:
                     self.db.execute('ROLLBACK')
@@ -593,6 +601,29 @@ class ReadingStateStore:
 
     # ============ Sparse 3-branch unread computation & watermark compaction ============
 
+    def _bump_mutation_rev_locked(self):
+        self._mutation_rev += 1
+        self._unread_cache.clear()
+        self._explicit_read_cache.clear()
+
+    def _get_explicit_read_set(self, scope_hash: str) -> frozenset[str]:
+        with self._lock:
+            key = (scope_hash, self._mutation_rev)
+            cached = self._explicit_read_cache.get(key)
+            if cached is not None:
+                return cached
+            rows = frozenset(
+                str(r[0])
+                for r in self.db.execute(
+                    'SELECT doc_id FROM ui_read_items WHERE scope_hash = ? AND is_read = 1',
+                    (scope_hash,),
+                ).fetchall()
+            )
+            if len(self._explicit_read_cache) >= 32:
+                self._explicit_read_cache.clear()
+            self._explicit_read_cache[key] = rows
+            return rows
+
     def compute_unread_ids(
         self,
         reading_identity: str,
@@ -600,18 +631,36 @@ class ReadingStateStore:
         dataset_id: str,
         catalog_index,
     ) -> set[str]:
-        """Compute exact unread doc_id set in O(U log N) via 3 sparse indexed branches.
-
-        - Branch A: explicit ``is_read = 0`` in ``ui_read_items`` (via ``idx_read_items_state``),
-          intersected with existing knowledge docs in ``catalog_docs``.
-        - Branch B: ``catalog_docs`` with ``created_at_ns > read_horizon_at_ns`` (via ``idx_cdocs_proj_created``),
-          minus explicit ``is_read = 1``.
-        - Branch C: ``catalog_docs`` with ``created_at_invalid = 1`` (via partial index ``idx_cdocs_proj_invalid_ts``),
-          minus explicit ``is_read = 1``.
+        """Compute exact unread doc_id set in O(U log N) via 3 sparse indexed branches,
+        with generation-keyed O(1) cache & append-only delta updates.
         """
         scope = self.ensure_scope(reading_identity, project_id, dataset_id, catalog_index=catalog_index)
         scope_hash = scope['scope_hash']
         horizon_ns = scope['read_horizon_at_ns']
+        cur_gen = int(catalog_index.generation()) if hasattr(catalog_index, 'generation') else -1
+        cache_key = (scope_hash, dataset_id)
+
+        with self._lock:
+            mut_rev = self._mutation_rev
+            cached = self._unread_cache.get(cache_key)
+            if cached is not None:
+                c_gen, c_mut, c_horizon, c_unread = cached
+                if c_mut == mut_rev and c_horizon == horizon_ns and cur_gen >= 0:
+                    if c_gen == cur_gen:
+                        return set(c_unread)
+                    if hasattr(catalog_index, 'get_append_deltas'):
+                        deltas = catalog_index.get_append_deltas(c_gen, cur_gen, dataset_id)
+                        if deltas is not None:
+                            updated = set(c_unread)
+                            if deltas:
+                                exp_read = self._get_explicit_read_set(scope_hash)
+                                for did, cns, c_inv in deltas:
+                                    if did in exp_read:
+                                        continue
+                                    if c_inv == 1 or (cns and cns > horizon_ns):
+                                        updated.add(did)
+                            self._unread_cache[cache_key] = (cur_gen, mut_rev, horizon_ns, updated)
+                            return set(updated)
 
         # Branch A: explicit is_read=0
         with self._lock:
@@ -633,21 +682,30 @@ class ReadingStateStore:
         candidates.extend(invalid_docs)
 
         if candidates:
-            unique_candidates = list(dict.fromkeys(candidates))
-            explicit_read = set()
-            with self._lock:
-                for start in range(0, len(unique_candidates), _MAX_IN_BATCH):
-                    batch = unique_candidates[start : start + _MAX_IN_BATCH]
-                    ph = ','.join('?' for _ in batch)
+            if len(candidates) > _MAX_IN_BATCH:
+                # Single covering-index scan cached per mutation_rev instead of 125x IN-batch queries
+                explicit_read = self._get_explicit_read_set(scope_hash)
+            else:
+                unique_candidates = list(dict.fromkeys(candidates))
+                explicit_read = set()
+                with self._lock:
+                    ph = ','.join('?' for _ in unique_candidates)
                     for (did,) in self.db.execute(
                         f'''SELECT doc_id FROM ui_read_items
                             WHERE scope_hash = ? AND is_read = 1 AND doc_id IN ({ph})''',
-                        (scope_hash, *batch),
+                        (scope_hash, *unique_candidates),
                     ):
                         explicit_read.add(str(did))
-            for did in unique_candidates:
+            for did in candidates:
                 if did not in explicit_read:
                     unread.add(did)
+
+        if cur_gen >= 0:
+            with self._lock:
+                if self._mutation_rev == mut_rev:
+                    if len(self._unread_cache) >= 64:
+                        self._unread_cache.clear()
+                    self._unread_cache[cache_key] = (cur_gen, mut_rev, horizon_ns, set(unread))
         return unread
 
     def page_unread_flags(
@@ -766,6 +824,7 @@ class ReadingStateStore:
                         (scope_hash, *batch),
                     )
                 self.db.execute('COMMIT')
+                self._bump_mutation_rev_locked()
             except Exception:
                 if self.db.in_transaction:
                     self.db.execute('ROLLBACK')
@@ -798,6 +857,7 @@ class ReadingStateStore:
                         [(scope_hash, did, now_iso) for did in clean_ids],
                     )
                     self.db.execute('COMMIT')
+                    self._bump_mutation_rev_locked()
                 except Exception:
                     if self.db.in_transaction:
                         self.db.execute('ROLLBACK')
@@ -855,6 +915,7 @@ class ReadingStateStore:
                         [(scope_hash, did, now_iso) for did in invalid_docs],
                     )
                 self.db.execute('COMMIT')
+                self._bump_mutation_rev_locked()
             except Exception:
                 if self.db.in_transaction:
                     self.db.execute('ROLLBACK')
@@ -886,6 +947,7 @@ class ReadingStateStore:
                                 (scope_hash, *batch),
                             )
                         self.db.execute('COMMIT')
+                        self._bump_mutation_rev_locked()
                     except Exception:
                         if self.db.in_transaction:
                             self.db.execute('ROLLBACK')

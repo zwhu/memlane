@@ -5,12 +5,13 @@ only capture scope hashes, SHA-256 digests, status, and official entry IDs
 (plus an optional integer ``baseline_count`` for QA crash reconciliation), never
 message bodies or conversation text.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
 import re
 import sqlite3
+import threading
 
 from capture_receipts import CaptureConflict
 
@@ -55,6 +56,7 @@ class ExternalCaptureStore:
         fd = os.open(self.path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
         os.close(fd)
         os.chmod(self.path, 0o600)
+        self._lock = threading.RLock()
         self.db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('PRAGMA journal_size_limit=4194304')
@@ -75,6 +77,8 @@ class ExternalCaptureStore:
             status TEXT NOT NULL CHECK(status IN ('pending','saved')),
             updated_at TEXT NOT NULL
           );
+          CREATE INDEX IF NOT EXISTS idx_capture_receipts_status_updated
+            ON capture_receipts(status, updated_at);
         ''')
 
     @staticmethod
@@ -110,84 +114,117 @@ class ExternalCaptureStore:
         return info
 
     def get(self, capture_key):
-        row = self.db.execute(
-            '''SELECT capture_key,user_id,dataset_id,session_id,message_id,
-                      payload_sha256,entry_type,entry_id,baseline_count,status,updated_at
-               FROM capture_receipts WHERE capture_key=?''',
-            (capture_key,),
-        ).fetchone()
-        return self._row_to_dict(row) if row is not None else None
-
-    def reserve(self, capture, *, baseline_count=None):
-        now = _iso_now()
-        self.db.execute('BEGIN IMMEDIATE')
-        try:
+        with self._lock:
             row = self.db.execute(
                 '''SELECT capture_key,user_id,dataset_id,session_id,message_id,
                           payload_sha256,entry_type,entry_id,baseline_count,status,updated_at
                    FROM capture_receipts WHERE capture_key=?''',
-                (capture.key,),
+                (capture_key,),
             ).fetchone()
-            if row is None:
-                self.db.execute(
-                    '''INSERT INTO capture_receipts
-                       (capture_key,user_id,dataset_id,session_id,message_id,
-                        payload_sha256,entry_type,entry_id,baseline_count,status,updated_at)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?)''',
-                    (
-                        capture.key, capture.user, capture.dataset, capture.session,
-                        capture.message, capture.digest, capture.kind,
-                        None, baseline_count, 'pending', now,
-                    ),
-                )
-                created = self.db.execute(
+        return self._row_to_dict(row) if row is not None else None
+
+    def reserve(self, capture, *, baseline_count=None):
+        now = _iso_now()
+        with self._lock:
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                row = self.db.execute(
                     '''SELECT capture_key,user_id,dataset_id,session_id,message_id,
                               payload_sha256,entry_type,entry_id,baseline_count,status,updated_at
                        FROM capture_receipts WHERE capture_key=?''',
                     (capture.key,),
                 ).fetchone()
+                if row is None:
+                    self.db.execute(
+                        '''INSERT INTO capture_receipts
+                           (capture_key,user_id,dataset_id,session_id,message_id,
+                            payload_sha256,entry_type,entry_id,baseline_count,status,updated_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?)''',
+                        (
+                            capture.key, capture.user, capture.dataset, capture.session,
+                            capture.message, capture.digest, capture.kind,
+                            None, baseline_count, 'pending', now,
+                        ),
+                    )
+                    created = self.db.execute(
+                        '''SELECT capture_key,user_id,dataset_id,session_id,message_id,
+                                  payload_sha256,entry_type,entry_id,baseline_count,status,updated_at
+                           FROM capture_receipts WHERE capture_key=?''',
+                        (capture.key,),
+                    ).fetchone()
+                    self.db.execute('COMMIT')
+                    return 'reserved', self._row_to_dict(created)
+                info = self._row_to_dict(row)
+                if (info['payload_sha256'] != capture.digest or info['entry_type'] != capture.kind
+                        or info['dataset_id'] != capture.dataset or info['session_id'] != capture.session
+                        or info['user_id'] != capture.user or info['message_id'] != capture.message):
+                    raise CaptureConflict('message ID already used for another payload')
                 self.db.execute('COMMIT')
-                return 'reserved', self._row_to_dict(created)
-            info = self._row_to_dict(row)
-            if (info['payload_sha256'] != capture.digest or info['entry_type'] != capture.kind
-                    or info['dataset_id'] != capture.dataset or info['session_id'] != capture.session
-                    or info['user_id'] != capture.user or info['message_id'] != capture.message):
-                raise CaptureConflict('message ID already used for another payload')
-            self.db.execute('COMMIT')
-            return info['status'], info
-        except Exception:
-            if self.db.in_transaction:
-                self.db.execute('ROLLBACK')
-            raise
+                return info['status'], info
+            except Exception:
+                if self.db.in_transaction:
+                    self.db.execute('ROLLBACK')
+                raise
 
     def mark_saved(self, capture, entry_id):
         now = _iso_now()
-        self.db.execute('BEGIN IMMEDIATE')
-        try:
-            self.db.execute(
-                '''UPDATE capture_receipts SET status='saved', entry_id=?, updated_at=?
-                   WHERE capture_key=?''',
-                (str(entry_id), now, capture.key),
-            )
-            self.db.execute('COMMIT')
-        except Exception:
-            if self.db.in_transaction:
-                self.db.execute('ROLLBACK')
-            raise
+        with self._lock:
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                self.db.execute(
+                    '''UPDATE capture_receipts SET status='saved', entry_id=?, updated_at=?
+                       WHERE capture_key=?''',
+                    (str(entry_id), now, capture.key),
+                )
+                self.db.execute('COMMIT')
+            except Exception:
+                if self.db.in_transaction:
+                    self.db.execute('ROLLBACK')
+                raise
         return capture.receipt(entry_id=str(entry_id))
 
     def abort_pending(self, capture):
-        self.db.execute('BEGIN IMMEDIATE')
-        try:
-            self.db.execute(
-                "DELETE FROM capture_receipts WHERE capture_key=? AND status='pending'",
-                (capture.key,),
-            )
-            self.db.execute('COMMIT')
-        except Exception:
-            if self.db.in_transaction:
-                self.db.execute('ROLLBACK')
-            raise
+        with self._lock:
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                self.db.execute(
+                    "DELETE FROM capture_receipts WHERE capture_key=? AND status='pending'",
+                    (capture.key,),
+                )
+                self.db.execute('COMMIT')
+            except Exception:
+                if self.db.in_transaction:
+                    self.db.execute('ROLLBACK')
+                raise
+
+    def prune_expired(self, *, max_age_seconds: float = 30 * 86400, batch_limit: int = 1000) -> int:
+        """Delete at most ``batch_limit`` (capped at 1000) old terminal ``saved`` receipts.
+
+        Never deletes ``pending`` receipts so in-flight crash reconciliation is untouched.
+        """
+        age = max(0.0, float(max_age_seconds))
+        limit = max(1, min(int(batch_limit), 1000))
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat(timespec='microseconds')
+        with self._lock:
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                cur = self.db.execute(
+                    '''DELETE FROM capture_receipts
+                       WHERE capture_key IN (
+                           SELECT capture_key FROM capture_receipts
+                           WHERE status = 'saved' AND updated_at < ?
+                           ORDER BY updated_at ASC
+                           LIMIT ?
+                       )''',
+                    (cutoff, limit),
+                )
+                deleted = int(cur.rowcount or 0)
+                self.db.execute('COMMIT')
+                return deleted
+            except Exception:
+                if self.db.in_transaction:
+                    self.db.execute('ROLLBACK')
+                raise
 
     def checkpoint(self, mode: str = 'TRUNCATE') -> bool:
         """Run WAL checkpoint to truncate WAL and prevent unbounded growth, safely handling locks."""
@@ -195,8 +232,9 @@ class ExternalCaptureStore:
             mode_str = str(mode or 'TRUNCATE').upper()
             if mode_str not in ('PASSIVE', 'FULL', 'RESTART', 'TRUNCATE'):
                 mode_str = 'TRUNCATE'
-            cur = self.db.execute(f'PRAGMA wal_checkpoint({mode_str})')
-            row = cur.fetchone()
+            with self._lock:
+                cur = self.db.execute(f'PRAGMA wal_checkpoint({mode_str})')
+                row = cur.fetchone()
             return bool(row and row[0] == 0)
         except (sqlite3.OperationalError, sqlite3.Error):
             return False
@@ -208,7 +246,8 @@ class ExternalCaptureStore:
             self.checkpoint('TRUNCATE')
         except Exception:
             pass
-        self.db.close()
+        with self._lock:
+            self.db.close()
 
 
 def attach_capture_marker(entry, capture):

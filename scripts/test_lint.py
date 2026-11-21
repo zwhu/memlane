@@ -778,5 +778,78 @@ class DocsProcessBoundaryLintTests(unittest.TestCase):
                 self.assertFalse(lint.main())
 
 
+class ScalingGuardrailLintTests(unittest.TestCase):
+    def py_codes(self, source, path):
+        return {code for _, code, _ in check_source(source, path)}
+
+    def go_codes(self, source, name):
+        return {code for _, code, _ in lint.check_go_source(source, name)}
+
+    def test_ml018_bans_new_go_full_table_calls_while_allowing_legacy_fallbacks(self):
+        # New file calling overviewDocuments / overviewSessions / /v1/overview/bootstrap must fail ML018.
+        self.assertIn('ML018', self.go_codes('func f(c Client) { c.overviewDocuments(ctx, p) }', 'new_feature.go'))
+        self.assertIn('ML018', self.go_codes('func f(c Client) { c.overviewSessions(ctx, ps) }', 'new_feature.go'))
+        self.assertIn('ML018', self.go_codes('func f() { _ = "/v1/overview/bootstrap" }', 'new_feature.go'))
+        # Comments mentioning /v1/overview/bootstrap do not trigger ML018.
+        self.assertEqual(self.go_codes('// fallback for /v1/overview/bootstrap\nfunc f() {}', 'new_feature.go'), set())
+        # Legacy fallback file allows 1 existing site, rejects a 2nd new call site.
+        one_legacy = 'func legacy(c Client) { c.overviewDocuments(ctx, p) }'
+        two_legacy = 'func a(c Client) { c.overviewDocuments(ctx, p) }\nfunc b(c Client) { c.overviewDocuments(ctx, p) }'
+        self.assertEqual(self.go_codes(one_legacy, 'unified_search.go'), set())
+        self.assertIn('ML018', self.go_codes(two_legacy, 'unified_search.go'))
+
+    def test_ml019_enforces_v2_list_limit_and_byte_budget(self):
+        bad_missing_budget = """_MAX_PAGE_LIMIT = 50
+def attach(app):
+    async def list_items(request):
+        limit = _parse_limit(request.query.get('limit'))
+        return web.json_response({'items': []})
+    app.add_routes([web.get('/v2/projects/{id}/knowledge', list_items)])
+"""
+        self.assertIn('ML019', self.py_codes(bad_missing_budget, 'engine/python/v2_api.py'))
+
+        bad_high_limit = """_MAX_PAGE_LIMIT = 200
+def attach(app):
+    async def list_items(request):
+        limit = _parse_limit(request.query.get('limit'))
+        payload, _, _ = fit_items_to_json_budget(fn, [])
+        return web.json_response(payload)
+    app.add_routes([web.get('/v2/projects/{id}/knowledge', list_items)])
+"""
+        self.assertIn('ML019', self.py_codes(bad_high_limit, 'engine/python/v2_api.py'))
+
+        good = """_MAX_PAGE_LIMIT = 50
+def attach(app):
+    async def list_items(request):
+        limit = _parse_limit(request.query.get('limit'))
+        payload, _, _ = fit_items_to_json_budget(fn, [])
+        return web.json_response(payload)
+    async def doc_body(request):
+        return web.json_response({})
+    app.add_routes([
+        web.get('/v2/projects/{id}/knowledge', list_items),
+        web.get('/v2/datasets/{ds}/documents/{doc}/body', doc_body),
+    ])
+"""
+        self.assertEqual(self.py_codes(good, 'engine/python/v2_api.py'), set())
+
+    def test_ml020_sqlite_connect_allowlist_and_immutable_ban(self):
+        self.assertIn('ML020', self.py_codes("import sqlite3\ndef f(p):\n    return sqlite3.connect(p)\n", 'engine/python/new_reader.py'))
+        self.assertIn('ML020', self.py_codes("from sqlite3 import connect\ndef f(p):\n    return connect(p)\n", 'engine/python/new_reader.py'))
+        self.assertEqual(self.py_codes("import sqlite3\ndef f(p):\n    return sqlite3.connect(p)\n", 'engine/python/sqlite_ro.py'), set())
+        self.assertIn('ML020', self.py_codes("def f(p):\n    return f'file:{p}?mode=ro&immutable=1'\n", 'engine/python/sqlite_ro.py'))
+        self.assertEqual(self.py_codes('"""Never use immutable=1 online."""\ndef f():\n    return 1\n', 'engine/python/sqlite_ro.py'), set())
+
+    def test_ml021_catalog_index_forbids_body_columns_and_sessions_table(self):
+        for col in ('body', 'raw_text', 'why_learned', 'metadata_json'):
+            src = f"SQL = '''CREATE TABLE IF NOT EXISTS catalog_docs (doc_id TEXT, {col} TEXT)'''\n"
+            with self.subTest(col=col):
+                self.assertIn('ML021', self.py_codes(src, 'engine/python/catalog_index.py'))
+        sess_src = "SQL = '''CREATE TABLE IF NOT EXISTS catalog_sessions (session_id TEXT)'''\n"
+        self.assertIn('ML021', self.py_codes(sess_src, 'engine/python/catalog_index.py'))
+        good_src = "SQL = '''CREATE TABLE IF NOT EXISTS catalog_docs (dataset_id TEXT, doc_id TEXT, doc_label TEXT)'''\n"
+        self.assertEqual(self.py_codes(good_src, 'engine/python/catalog_index.py'), set())
+
+
 if __name__ == '__main__':
     unittest.main()

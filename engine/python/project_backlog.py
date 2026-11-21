@@ -1269,9 +1269,22 @@ class Backlog:
         has_unsent = False
         reviewed = False
         review_cleared = False
-        for raw, bound in list(self.registry.state['sessions'].items()):
-            if bound != project_id:
-                continue
+        project_bindings = (
+            self.registry.sessions_for_project(project_id)
+            if hasattr(self.registry, 'sessions_for_project')
+            else [raw for raw, bound in list(self.registry.state['sessions'].items()) if bound == project_id]
+        )
+        max_reviews = getattr(self, 'MAX_AUTO_REVIEWS_PER_TICK', 8)
+        session_cursors = getattr(self, '_auto_session_cursors', None)
+        if session_cursors is None:
+            session_cursors = {}
+            self._auto_session_cursors = session_cursors
+        start_idx = session_cursors.get(project_id, 0) % len(project_bindings) if project_bindings else 0
+        rotated_bindings = project_bindings[start_idx:] + project_bindings[:start_idx]
+        inspected = 0
+        for offset, raw in enumerate(rotated_bindings):
+            if inspected >= max_reviews:
+                break
             agent_id, host = json.loads(raw)
             agent = self.registry.state['agents'].get(agent_id, {})
             if not agent.get('installation') or agent_id in self.registry.state.get('agent_retirements', {}):
@@ -1281,6 +1294,8 @@ class Backlog:
             retry = (automatic or {}).get('save_retries', {}).get(json.dumps([agent_id, host]), {})
             if retry.get('after', 0) > time.time():
                 continue
+            inspected += 1
+            session_cursors[project_id] = (start_idx + offset + 1) % len(project_bindings)
             try:
                 _, view = self.checked_target(project_id, target)
                 if not view['policy'].get('can_capture'):

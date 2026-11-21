@@ -435,13 +435,15 @@ def main():
             # never double-observes traces across gateway -> official hops.
             from capture_receipts import install_capture_routes
             install_capture_routes(app, receipt_store=capture_store)
-            from provenance_store import ProvenanceStore, install_provenance_middleware
+            from provenance_store import ProvenanceStore, install_provenance_middleware, install_provenance_routes
             provenance_store = ProvenanceStore(
                 state_dir / 'lesson-provenance.sqlite3',
                 cognee_db_path=root / 'system' / 'databases' / 'cognee_db',
             )
             stack.callback(provenance_store.close)
             install_provenance_middleware(app, provenance_store)
+            if config.get('project_control'):
+                install_provenance_routes(app, provenance_store, config)
             if not setup_only and config.get('project_control'):
                 from generation_handoff_runtime import install_generation_handoff
                 handoff = install_generation_handoff(app, config, profile,

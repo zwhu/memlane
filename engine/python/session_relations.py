@@ -12,6 +12,8 @@ import sqlite3
 import threading
 
 from _runtime_common import parse_json as _parse_json
+from project_policy import PolicyError
+from sqlite_ro import open_official_sqlite_ro
 
 _CACHE_LOCK = threading.Lock()
 _HOST_CACHE = {}
@@ -46,14 +48,10 @@ def _stat_signature(path: Path):
 def _open_readonly_sqlite(path: Path):
     if not path or not path.is_file():
         return None
-    for uri in (f'file:{path}?mode=ro', f'file:{path}?mode=ro&immutable=1'):
-        try:
-            return sqlite3.connect(uri, uri=True, timeout=0.5)
-        except sqlite3.OperationalError:
-            continue
-        except (sqlite3.Error, OSError, ValueError, TypeError):
-            return None
-    return None
+    try:
+        return open_official_sqlite_ro(path, timeout_ms=500)
+    except (PolicyError, sqlite3.Error, OSError, ValueError, TypeError):
+        return None
 
 
 def _table_columns(con, table_name):

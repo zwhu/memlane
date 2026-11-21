@@ -18,6 +18,9 @@ from _runtime_common import private_write, read_secret
 from project_policy import (
     ACCESS, DEFAULTS, PolicyError, effective, is_protected_project, project_id, validate_fields, workspace_root,
 )
+from registry_sessions_store import RegistrySessionsStore
+
+_DYNAMIC_STATE_KEYS = ('sessions', 'connection_operations', 'connection_receipts')
 
 
 def _installation_view(installation):
@@ -164,14 +167,37 @@ class Registry:
         self.path, self.official = Path(path), official
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._lock_file = os.open(str(self.path) + '.lock', os.O_CREAT | os.O_RDWR, 0o600)
+        self.sessions_store = None
         try:
             fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.sessions_store = RegistrySessionsStore(self.path.parent / 'registry-sessions.sqlite3')
+            db_sessions, db_ops, db_receipts = self.sessions_store.load_all()
             if self.path.exists():
                 if self.path.is_symlink() or self.path.stat().st_mode & 0o077:
                     raise PolicyError('private_registry_required', 503)
                 self.state = json.loads(self.path.read_text())
                 if self.state['schema_version'] not in (1, 2):
                     raise PolicyError('unsupported_registry', 503)
+                migrated_dynamic = False
+                json_sessions = self.state.get('sessions') if isinstance(self.state.get('sessions'), dict) else {}
+                json_ops = self.state.get('connection_operations') if isinstance(self.state.get('connection_operations'), dict) else {}
+                json_receipts = self.state.get('connection_receipts') if isinstance(self.state.get('connection_receipts'), dict) else {}
+                if json_sessions or json_ops or json_receipts:
+                    merged_sessions = {**json_sessions, **db_sessions}
+                    merged_ops = {**json_ops, **db_ops}
+                    merged_receipts = {**json_receipts, **db_receipts}
+                    self.sessions_store.sync_dicts(merged_sessions, merged_ops, merged_receipts)
+                    db_sessions, db_ops, db_receipts = merged_sessions, merged_ops, merged_receipts
+                    migrated_dynamic = True
+                self.state['sessions'] = db_sessions
+                if db_ops:
+                    self.state['connection_operations'] = db_ops
+                elif 'connection_operations' in self.state:
+                    self.state['connection_operations'] = {}
+                if db_receipts:
+                    self.state['connection_receipts'] = db_receipts
+                elif 'connection_receipts' in self.state:
+                    self.state['connection_receipts'] = {}
                 if self.state['schema_version'] == 1:
                     private_write(str(self.path) + '.schema1-backup', self.path.read_bytes())
                     self.state['connections'] = copy.deepcopy(self.state.get('codex_connections', {}))
@@ -182,21 +208,49 @@ class Registry:
                         agent.setdefault('entrypoints', [])
                     self.state['schema_version'] = 2
                     self.save()
+                elif migrated_dynamic:
+                    self._save_slim_json()
             else:
                 self.state = {'schema_version': 2, 'service_namespace': str(uuid.uuid4()),
                               'revision': 0, 'defaults': dict(DEFAULTS), 'agents': {},
-                              'projects': {}, 'sessions': {}, 'connections': {}}
+                              'projects': {}, 'sessions': db_sessions, 'connections': {}}
+                if db_ops:
+                    self.state['connection_operations'] = db_ops
+                if db_receipts:
+                    self.state['connection_receipts'] = db_receipts
                 self.save()
         except BaseException:
+            if self.sessions_store is not None:
+                self.sessions_store.close()
+                self.sessions_store = None
             os.close(self._lock_file)
             raise
         self.mutex = asyncio.Lock()
 
     def close(self):
+        if self.sessions_store is not None:
+            self.sessions_store.close()
+            self.sessions_store = None
         os.close(self._lock_file)
 
+    def _save_slim_json(self):
+        slim = {k: v for k, v in self.state.items() if k not in _DYNAMIC_STATE_KEYS}
+        private_write(self.path, json.dumps(slim, ensure_ascii=False, sort_keys=True).encode())
+
     def save(self):
-        private_write(self.path, json.dumps(self.state, ensure_ascii=False, sort_keys=True).encode())
+        if self.sessions_store is not None:
+            self.sessions_store.sync_dicts(
+                self.state.get('sessions'),
+                self.state.get('connection_operations'),
+                self.state.get('connection_receipts'),
+            )
+            self._save_slim_json()
+        else:
+            private_write(self.path, json.dumps(self.state, ensure_ascii=False, sort_keys=True).encode())
+
+    def sessions_for_project(self, identifier):
+        """Return raw session binding keys currently bound to ``identifier``."""
+        return [raw for raw, bound in self.state.get('sessions', {}).items() if bound == identifier]
 
     def check_revision(self, expected):
         if type(expected) is not int or expected != self.state['revision']:
@@ -747,8 +801,11 @@ class Registry:
             root = workspace_root(workspace, explicit=explicit)
             project = await self.ensure_locked(root)
             self.state['sessions'][key] = project['id']
+            if self.sessions_store is not None:
+                self.sessions_store.upsert_session(key, project['id'])
+            else:
+                self.save()
             self.record_connection_receipt(agent_id, project['id'], host_session_key, environment)
-            self.save()
             return self.policy(project, agent_id)
 
     def check_host_environment(self, agent_id, payload):
@@ -821,7 +878,10 @@ class Registry:
                               'host_session_key': session_key,
                               'evidence': 'authenticated_host_resolve',
                               'recent_sessions': recent, **environment}
-        self.save()
+        if self.sessions_store is not None:
+            self.sessions_store.upsert_receipt(agent_id, receipts[agent_id])
+        else:
+            self.save()
 
     async def ensure_locked(self, root, dataset_id=None, name=None, source=None):
         for project in self.state['projects'].values():

@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import sqlite3
 import stat
 import time
@@ -174,12 +175,26 @@ def official_sqlite_ro(
         con.close()
 
 
+_HEX32_RE = re.compile(r'^[0-9a-fA-F]{32}$')
+_UUID36_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+_JSON_DECODE = json._default_decoder.decode
+
+
 def uuid_text(value) -> str:
     if not value:
         return ''
-    text = str(value).strip()
+    if isinstance(value, str):
+        text = value if (value[0] > ' ' and value[-1] > ' ') else value.strip()
+    else:
+        text = str(value).strip()
     if not text:
         return ''
+    n = len(text)
+    if n == 32 and _HEX32_RE.match(text):
+        low = text if text.islower() else text.lower()
+        return f'{low[:8]}-{low[8:12]}-{low[12:16]}-{low[16:20]}-{low[20:]}'
+    if n == 36 and text[8] == '-' and text[13] == '-' and text[18] == '-' and text[23] == '-' and _UUID36_RE.match(text):
+        return text if text.islower() else text.lower()
     try:
         return str(uuid.UUID(text))
     except ValueError:
@@ -217,7 +232,13 @@ def id_variants(value) -> tuple[str, ...]:
 def iso_text(value) -> str:
     if not value:
         return ''
-    text = str(value).strip()
+    if isinstance(value, str):
+        n = len(value)
+        if n >= 19 and value[10] == 'T' and value[0] > ' ' and value[-1] > ' ':
+            return value
+        text = value if (value[0] > ' ' and value[-1] > ' ') else value.strip()
+    else:
+        text = str(value).strip()
     if len(text) >= 19 and text[10] == ' ':
         return text[:10] + 'T' + text[11:]
     return text
@@ -245,15 +266,25 @@ def parse_official_timestamp(value):
 def parse_json_value(raw_value):
     if isinstance(raw_value, (dict, list)):
         return raw_value
-    if not isinstance(raw_value, str) or not raw_value.strip():
+    if not isinstance(raw_value, str):
+        return None
+    if raw_value == '{}':
+        return {}
+    if raw_value == '[]':
+        return []
+    if raw_value == '["session_learnings"]':
+        return ['session_learnings']
+    if not raw_value or not raw_value.strip():
         return None
     try:
-        return json.loads(raw_value)
+        return _JSON_DECODE(raw_value)
     except ValueError:
         return None
 
 
 def parse_json_dict(raw_value) -> dict:
+    if raw_value is None or raw_value == '' or raw_value == '{}':
+        return {}
     parsed = parse_json_value(raw_value)
     if isinstance(parsed, str):
         nested = parse_json_value(parsed)
@@ -264,6 +295,22 @@ def parse_json_dict(raw_value) -> dict:
 
 def decode_node_set(raw_value) -> list[str]:
     """Decode ``node_set`` tolerating both single- and double-JSON-encoded strings."""
+    if raw_value is None or raw_value == '' or raw_value == '[]':
+        return []
+    if raw_value == '["session_learnings"]' or raw_value == '"[\\"session_learnings\\"]"':
+        return ['session_learnings']
+    if isinstance(raw_value, list):
+        if len(raw_value) == 1 and isinstance(raw_value[0], str) and raw_value[0] and raw_value[0][0] != ' ':
+            return raw_value
+        out = []
+        seen = set()
+        for item in raw_value:
+            if isinstance(item, str):
+                cleaned = item.strip()
+                if cleaned and cleaned not in seen:
+                    seen.add(cleaned)
+                    out.append(cleaned)
+        return out
     parsed = raw_value
     # Unwrap up to 2 layers of JSON encoding (Cognee SQLite stores double-encoded JSON strings).
     for _ in range(2):
@@ -300,6 +347,23 @@ def extract_trusted_metadata(system_metadata, external_metadata, node_set=None) 
     date, and classification keys from ``external_metadata`` are never trusted so
     planted external fields cannot spoof provenance dates or categories.
     """
+    # Fast path when external_metadata is empty and system_metadata is a JSON dict string.
+    if (external_metadata is None or external_metadata == '' or external_metadata == '{}') and isinstance(system_metadata, str) and system_metadata and system_metadata[0] == '{':
+        try:
+            sys_obj = _JSON_DECODE(system_metadata)
+        except ValueError:
+            sys_obj = None
+        if isinstance(sys_obj, dict) and sys_obj:
+            col_ns = decode_node_set(node_set)
+            resolved_ns = (
+                decode_node_set(sys_obj.get('node_set'))
+                if 'node_set' in sys_obj
+                else []
+            ) or col_ns
+            if resolved_ns:
+                sys_obj['node_set'] = resolved_ns
+            return sys_obj
+
     sys_meta = parse_json_dict(system_metadata)
     ext_meta = parse_json_dict(external_metadata)
     col_ns = decode_node_set(node_set)

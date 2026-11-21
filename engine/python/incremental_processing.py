@@ -15,6 +15,7 @@ import uuid
 from project_control import private_write, loopback_origin, read_secret
 from project_policy import PolicyError
 from performance_trace import RequestTrace
+from sqlite_ro import id_variants, iso_text, official_sqlite_ro, uuid_text
 from aiohttp import web
 
 QUIET_SECONDS = 30
@@ -32,6 +33,134 @@ def stopped_scope_applies(job, agent, host, handoff):
     # Unknown scope and stops for the same source remain protected.
     targets = list(job.get('targets', [])) + list(job.get('pending_processing', {}).values())
     return not targets or any(t.get('agent_id') == agent and t.get('host') == host for t in targets)
+
+
+def _in_clause(variants):
+    if len(variants) == 1:
+        return '= ?', variants
+    return f"IN ({','.join('?' for _ in variants)})", variants
+
+
+def _sqlite_capacity_available(official_data) -> bool:
+    """Check engine-wide active pipeline runs via read-only cognee_db in O(log N)."""
+    cognee_db = Path(official_data) / 'system' / 'databases' / 'cognee_db'
+    with official_sqlite_ro(cognee_db) as con:
+        active_op = con.execute(
+            '''SELECT 1 FROM pipeline_runs
+               WHERE (pipeline_name IS NULL OR pipeline_name = '')
+                 AND (ended_at IS NULL OR ended_at = '')
+               LIMIT 1'''
+        ).fetchone()
+        if active_op is not None:
+            return False
+        rows = con.execute(
+            '''SELECT pipeline_run_id, pipeline_name, status, ended_at
+               FROM pipeline_runs
+               ORDER BY created_at DESC, id DESC
+               LIMIT 500'''
+        ).fetchall()
+    terminal = {
+        uuid_text(r[0]) or str(r[0] or '')
+        for r in rows
+        if r[2] in ('DATASET_PROCESSING_COMPLETED', 'DATASET_PROCESSING_ERRORED')
+    }
+    for run_id, pipe_name, status, ended_at in rows:
+        if not pipe_name and not ended_at:
+            return False
+        canon_id = uuid_text(run_id) or str(run_id or '')
+        if status == 'DATASET_PROCESSING_STARTED' and canon_id not in terminal:
+            return False
+    return True
+
+
+def _cache_expiry_sql(con, table: str, now_space: str, now_iso: str):
+    row = con.execute(
+        f'SELECT 1 FROM {table} WHERE expires_at IS NOT NULL AND expires_at <= ? LIMIT 1',
+        (now_space,),
+    ).fetchone()
+    if row is None and now_iso != now_space:
+        row = con.execute(
+            f'SELECT 1 FROM {table} WHERE expires_at IS NOT NULL AND expires_at <= ? LIMIT 1',
+            (now_iso,),
+        ).fetchone()
+    if row is None:
+        return '', ()
+    return ' AND (expires_at IS NULL OR expires_at > ?)', (now_space,)
+
+
+def _read_session_incremental_summary_ro(official_data, session_id: str, expected_user: str, expected_dataset: str):
+    """Read session counts and latest QA/trace timestamps directly from SQLite (bypasses 2 MiB HTTP cap)."""
+    cognee_db = Path(official_data) / 'system' / 'databases' / 'cognee_db'
+    cache_db = Path(official_data) / 'system' / 'databases' / 'cache.db'
+    if not cognee_db.is_file() or not cache_db.is_file():
+        return None
+    u_variants = id_variants(expected_user)
+    with official_sqlite_ro(cognee_db) as con:
+        rows = con.execute(
+            '''SELECT session_id, user_id, dataset_id, last_activity_at
+               FROM session_records
+               WHERE session_id = ?
+               ORDER BY last_activity_at DESC''',
+            (session_id,),
+        ).fetchall()
+    if not rows:
+        return None
+    expected_user_norm = uuid_text(expected_user) or str(expected_user)
+    expected_ds_norm = uuid_text(expected_dataset) or str(expected_dataset)
+    matched = None
+    for srow in rows:
+        row_user = uuid_text(srow[1]) or str(srow[1] or '')
+        row_ds = uuid_text(srow[2]) or str(srow[2] or '')
+        if row_user == expected_user_norm and row_ds == expected_ds_norm:
+            matched = (row_user, row_ds, iso_text(srow[3]))
+            break
+    if matched is None:
+        raise PolicyError('incremental_source_identity_unconfirmed', 409)
+
+    now_dt = datetime.now(timezone.utc)
+    now_space = now_dt.strftime('%Y-%m-%d %H:%M:%S.%f')
+    now_iso = now_dt.strftime('%Y-%m-%dT%H:%M:%S.%f')
+    user_sql, user_params = _in_clause(u_variants or (expected_user,))
+
+    with official_sqlite_ro(cache_db) as ccon:
+        qa_exp_sql, qa_exp_params = _cache_expiry_sql(ccon, 'cache_qa_entries', now_space, now_iso)
+        tr_exp_sql, tr_exp_params = _cache_expiry_sql(ccon, 'cache_trace_entries', now_space, now_iso)
+        qa_where = f'user_id {user_sql} AND session_id = ?{qa_exp_sql}'
+        qa_params = (*user_params, session_id, *qa_exp_params)
+        tr_where = f'user_id {user_sql} AND session_id = ?{tr_exp_sql}'
+        tr_params = (*user_params, session_id, *tr_exp_params)
+
+        msg_count = int(ccon.execute(f'SELECT COUNT(*) FROM cache_qa_entries WHERE {qa_where}', qa_params).fetchone()[0])
+        tool_calls = int(ccon.execute(f'SELECT COUNT(*) FROM cache_trace_entries WHERE {tr_where}', tr_params).fetchone()[0])
+
+        latest_qa_row = ccon.execute(
+            f'SELECT payload FROM cache_qa_entries WHERE {qa_where} ORDER BY seq DESC LIMIT 1',
+            qa_params,
+        ).fetchone()
+        latest_tr_row = ccon.execute(
+            f'SELECT payload FROM cache_trace_entries WHERE {tr_where} ORDER BY seq DESC LIMIT 1',
+            tr_params,
+        ).fetchone()
+
+    def _payload_time(raw_row):
+        if raw_row is None or not raw_row[0]:
+            return 0.0
+        try:
+            obj = json.loads(raw_row[0]) if isinstance(raw_row[0], str) else raw_row[0]
+        except ValueError:
+            return 0.0
+        return timestamp(obj.get('time')) if isinstance(obj, dict) else 0.0
+
+    return {
+        'session_id': session_id,
+        'dataset_id': matched[1],
+        'user_id': matched[0],
+        'last_activity_at': matched[2],
+        'msg_count': msg_count,
+        'tool_calls': tool_calls,
+        'qa_at': _payload_time(latest_qa_row),
+        'trace_at': _payload_time(latest_tr_row),
+    }
 
 
 def timestamp(value):
@@ -90,8 +219,12 @@ class IncrementalProcessing:
                         return False
             except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
                 return False
-        # Processing state is engine-owned. Pair native pipeline events by ID;
-        # a STARTED event is not active after its matching terminal event.
+        # Processing state is engine-owned. Prefer direct read-only cognee_db
+        # inspection across all users (eliminating N-agent HTTP fan-out) when
+        # official_data is configured; fall back to per-actor HTTP otherwise.
+        official_data = getattr(self.backlog, 'runtime', {}).get('official_data')
+        if official_data and (Path(official_data) / 'system' / 'databases' / 'cognee_db').is_file():
+            return await asyncio.to_thread(_sqlite_capacity_available, official_data)
         rows = []
         tokens = [None] + sorted({actor['key_file'] for identifier, actor in self.registry.state.get('agents', {}).items()
             if actor.get('installation') and identifier not in self.registry.state.get('agent_retirements', {})})
@@ -157,18 +290,32 @@ class IncrementalProcessing:
                 if snapshot.get('blocked') or snapshot.get('tokens') or not snapshot.get('session_id'):
                     continue  # the existing sender owns unsaved material
                 session = snapshot['session_id']
-                detail = await self.registry.official.request('GET', '/api/v1/sessions/' + quote(session, safe=''), token_file=agent['key_file'])
-                if detail.get('dataset_id') != target['dataset'] or detail.get('user_id') != agent['principal_id']:
-                    raise PolicyError('incremental_source_identity_unconfirmed', 409)
-                counts = [detail.get('msg_count'), detail.get('tool_calls')]
-                if any(type(n) is not int or n < 0 for n in counts) or counts[0] == 0:
-                    continue
-                now = self.clock()
-                source_at = timestamp(detail.get('last_activity_at'))
-                # Tool-only progress is not a completed conversational unit. Never
-                # start on a partly answered turn merely because tools went quiet.
-                qa_at = max((timestamp(q.get('time')) for q in detail.get('qas', []) if isinstance(q, dict)), default=0)
-                trace_at = max((timestamp(t.get('time')) for t in detail.get('traces', []) if isinstance(t, dict)), default=0)
+                official_data = getattr(self.backlog, 'runtime', {}).get('official_data')
+                ro_detail = await asyncio.to_thread(
+                    _read_session_incremental_summary_ro, official_data, session,
+                    agent['principal_id'], target['dataset'],
+                ) if official_data else None
+                if ro_detail is None:
+                    detail = await self.registry.official.request('GET', '/api/v1/sessions/' + quote(session, safe=''), token_file=agent['key_file'])
+                    if detail.get('dataset_id') != target['dataset'] or detail.get('user_id') != agent['principal_id']:
+                        raise PolicyError('incremental_source_identity_unconfirmed', 409)
+                    counts = [detail.get('msg_count'), detail.get('tool_calls')]
+                    if any(type(n) is not int or n < 0 for n in counts) or counts[0] == 0:
+                        continue
+                    now = self.clock()
+                    source_at = timestamp(detail.get('last_activity_at'))
+                    # Tool-only progress is not a completed conversational unit. Never
+                    # start on a partly answered turn merely because tools went quiet.
+                    qa_at = max((timestamp(q.get('time')) for q in detail.get('qas', []) if isinstance(q, dict)), default=0)
+                    trace_at = max((timestamp(t.get('time')) for t in detail.get('traces', []) if isinstance(t, dict)), default=0)
+                else:
+                    counts = [ro_detail['msg_count'], ro_detail['tool_calls']]
+                    if any(type(n) is not int or n < 0 for n in counts) or counts[0] == 0:
+                        continue
+                    now = self.clock()
+                    source_at = timestamp(ro_detail.get('last_activity_at'))
+                    qa_at = ro_detail['qa_at']
+                    trace_at = ro_detail['trace_at']
                 changed = prior.get('counts') != counts or prior.get('session_id') != session
                 row = prior or {'session_id': session, 'status': 'watching'}
                 if changed:

@@ -50,13 +50,39 @@ ML015_OWNER_CLEANUP_MESSAGE = 'opencode_backlog.execute 必须在 finally 块中
 ML016_MESSAGE = '启用 SQLite WAL 模式时必须在同一模块显式配置 PRAGMA journal_size_limit，防止 WAL 文件无限膨胀'
 ML017_REOPEN_UI_MESSAGE = 'reopen_ui 禁止无条件调用 mygo dev 热重载轮询；默认启动须运行已构建二进制并由 watch 模式门禁守护'
 ML017_CLEANUP_RECEIPT_MESSAGE = '写入 build/disk-cleanup 清理回执时必须同时调用回执轮转清理机制（unlink 淘汰超额旧回执）'
-ML018_MESSAGE = '正式文档禁止引用本地忽略的 docs/process/ 路径；请将长期结论自包含写入正文，必要静态图移入 docs/images/'
+ML018_DOC_MESSAGE = '正式文档禁止引用本地忽略的 docs/process/ 路径；请将长期结论自包含写入正文，必要静态图移入 docs/images/'
 
 DOCS_PROCESS_REF_RE = re.compile(
     r'(?<![A-Za-z0-9_-])docs/process(?:/|(?![A-Za-z0-9_-]))'
     r'|(?<![A-Za-z0-9_-])(?:\.\./)+process(?:/|(?![A-Za-z0-9_-]))'
     r'|\]\(\s*\.?/?process(?:/|\s*\))'
 )
+ML018_MESSAGE = '禁止在 Go 桌面端新增对 overviewDocuments/overviewSessions//v1/overview/bootstrap 的全量拉表调用；请走 /v2 游标或点查接口'
+ML019_MESSAGE = '/v2 列表接口必须实施 _parse_limit (<=50) 与 JSON 字节预算裁剪 (fit_items_to_json_budget)'
+ML020_CONNECT_MESSAGE = '禁止在非白名单模块直接调用 sqlite3.connect；只读访问官方库必须经 sqlite_ro.open_official_sqlite_ro'
+ML020_IMMUTABLE_MESSAGE = '禁止在线使用 SQLite URI immutable=1（易引发 WAL 脏页/过期视图）；只读连接须走 ?mode=ro + query_only + set_authorizer'
+ML021_MESSAGE = 'catalog_index.py 严禁在表结构中存储正文/why_learned/metadata_json 或建立 catalog_sessions 表'
+
+SQLITE_CONNECT_ALLOWLIST = {
+    'sqlite_ro.py',
+    'catalog_index.py',
+    'reading_state_store.py',
+    'provenance_store.py',
+    'knowledge_recall.py',
+    'external_capture_store.py',
+    'session_drift.py',
+    'registry_sessions_store.py',
+    'local_prepare.py',
+    'bench_scaling.py',
+}
+IMMUTABLE_URI_RE = re.compile(r'\bimmutable\s*=\s*1\b', re.IGNORECASE)
+CREATE_TABLE_RE = re.compile(
+    r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\((.*?)\)',
+    re.IGNORECASE | re.DOTALL,
+)
+CATALOG_FORBIDDEN_TABLES = {'catalog_sessions'}
+CATALOG_FORBIDDEN_COLUMNS = {'body', 'raw_text', 'why_learned', 'metadata_json'}
+V2_NON_LIST_ROUTE_MARKERS = ('/body', '/message-summary', '/documents/{doc}', '/sessions/{sid}', '/code-activity')
 
 BLOCKING_SUBPROCESS_CALLS = {'run', 'check_output', 'call', 'check_call', 'Popen'}
 BLOCKING_OS_PROCESS_CALLS = {
@@ -1248,6 +1274,135 @@ def _check_runtime_hygiene(tree, path, ast_index, report):
                 report(wal_node, 'ML016', ML016_MESSAGE)
 
 
+def _check_scaling_guardrails(tree, path, ast_index, report):
+    """ML019 (/v2 list pagination & budget), ML020 (sqlite3.connect allowlist + no immutable=1), ML021 (zero-body catalog DDL)."""
+    path_obj = Path(path)
+    filename = path_obj.name
+    docstring_ids = ast_index['docstring_ids']
+    all_nodes = ast_index['all_nodes']
+    functions = ast_index['functions']
+    scope_nodes_map = ast_index['scope_nodes']
+    scope_children_map = ast_index['scope_children']
+
+    # ML020 (part 1): forbid online SQLite URI `immutable=1` outside docstrings.
+    for node in all_nodes:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstring_ids:
+            if IMMUTABLE_URI_RE.search(node.value):
+                report(node, 'ML020', ML020_IMMUTABLE_MESSAGE)
+        elif isinstance(node, (ast.JoinedStr, ast.BinOp)):
+            sql = _extract_sql_text(node)
+            if sql and IMMUTABLE_URI_RE.search(sql):
+                report(node, 'ML020', ML020_IMMUTABLE_MESSAGE)
+
+    # ML020 (part 2): restrict direct sqlite3.connect(...) calls to explicit allowlist.
+    if filename not in SQLITE_CONNECT_ALLOWLIST:
+        def walk_sqlite_scope(scope_root, base_sq, base_conn):
+            params = _param_names(scope_root)
+            sq_names = set(base_sq) - params
+            conn_names = set(base_conn) - params
+            nodes = scope_nodes_map[id(scope_root)]
+            for node in nodes:
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name == 'sqlite3':
+                            sq_names.add(alias.asname or alias.name)
+                elif isinstance(node, ast.ImportFrom) and node.module == 'sqlite3':
+                    for alias in node.names:
+                        if alias.name == 'connect':
+                            conn_names.add(alias.asname or alias.name)
+            for node in nodes:
+                if not isinstance(node, ast.Call):
+                    continue
+                is_sq_connect = (
+                    (isinstance(node.func, ast.Name) and node.func.id in conn_names)
+                    or (
+                        isinstance(node.func, ast.Attribute)
+                        and node.func.attr == 'connect'
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id in sq_names
+                    )
+                )
+                if is_sq_connect:
+                    report(node, 'ML020', ML020_CONNECT_MESSAGE)
+            for child_def in scope_children_map[id(scope_root)]:
+                walk_sqlite_scope(child_def, sq_names, conn_names)
+
+        walk_sqlite_scope(tree, {'sqlite3'}, set())
+
+    # ML021: catalog_index.py DDL must never store body/raw_text/why_learned/metadata_json or catalog_sessions.
+    if filename == 'catalog_index.py':
+        for node in all_nodes:
+            if id(node) in docstring_ids:
+                continue
+            if not isinstance(node, (ast.Constant, ast.JoinedStr, ast.BinOp)):
+                continue
+            sql = _extract_sql_text(node)
+            if not sql or 'CREATE' not in sql.upper():
+                continue
+            for match in CREATE_TABLE_RE.finditer(sql):
+                table_name = match.group(1).strip().lower()
+                if table_name in CATALOG_FORBIDDEN_TABLES:
+                    report(node, 'ML021', ML021_MESSAGE)
+                    continue
+                cols_body = match.group(2)
+                for raw_line in cols_body.split(','):
+                    tokens = raw_line.strip().split()
+                    if not tokens:
+                        continue
+                    col_name = tokens[0].strip('"`[]').lower()
+                    if col_name in CATALOG_FORBIDDEN_COLUMNS:
+                        report(node, 'ML021', ML021_MESSAGE)
+
+    # ML019: v2_api.py list handlers must enforce _parse_limit (max <= 50) & fit_items_to_json_budget.
+    if filename == 'v2_api.py':
+        numeric_consts = _collect_module_numeric_constants(tree)
+        max_limit_val = numeric_consts.get('_MAX_PAGE_LIMIT')
+        if max_limit_val is not None and not (1 <= max_limit_val <= 50):
+            for node in tree.body:
+                if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == '_MAX_PAGE_LIMIT' for t in node.targets
+                ):
+                    report(node, 'ML019', ML019_MESSAGE)
+
+        fn_by_name = {fn.name: fn for fn in functions}
+        for node in all_nodes:
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'get'):
+                continue
+            if len(node.args) < 2:
+                continue
+            route_path = string(node.args[0])
+            if not route_path or not route_path.startswith('/v2/'):
+                continue
+            if any(route_path.endswith(marker) for marker in V2_NON_LIST_ROUTE_MARKERS):
+                continue
+            handler_arg = node.args[1]
+            if not isinstance(handler_arg, ast.Name) or handler_arg.id not in fn_by_name:
+                continue
+            handler_fn = fn_by_name[handler_arg.id]
+            handler_calls = [n for n in ast.walk(handler_fn) if isinstance(n, ast.Call)]
+            has_limit = False
+            has_budget = False
+            bad_limit_bound = False
+            for call in handler_calls:
+                fname = call.func.id if isinstance(call.func, ast.Name) else (
+                    call.func.attr if isinstance(call.func, ast.Attribute) else ''
+                )
+                if fname == '_parse_limit':
+                    has_limit = True
+                    # Check explicit max_val on pagination limit (ignore days window parameter).
+                    is_days_arg = bool(call.args and 'days' in ast.dump(call.args[0]))
+                    if not is_days_arg:
+                        for kw in call.keywords:
+                            if kw.arg == 'max_val':
+                                mv = _numeric_literal(kw.value, numeric_consts)
+                                if mv is not None and mv > 50:
+                                    bad_limit_bound = True
+                elif fname == 'fit_items_to_json_budget':
+                    has_budget = True
+            if not has_limit or not has_budget or bad_limit_bound:
+                report(handler_fn, 'ML019', ML019_MESSAGE)
+
+
 def check_source(source, path):
     """Check model transport modules, including the shared configuration boundary."""
     try:
@@ -1263,6 +1418,7 @@ def check_source(source, path):
     _check_model_boundaries(tree, path, ast_index, report)
     _check_environ_mutations(tree, path, ast_index, report)
     _check_runtime_hygiene(tree, path, ast_index, report)
+    _check_scaling_guardrails(tree, path, ast_index, report)
     return sorted(set(issues))
 
 
@@ -1283,6 +1439,70 @@ GO_FUNC_HEADER_RE = re.compile(r'(?:^|\n)func\b[^{]*\{')
 GO_VIEW_FUNC_RE = re.compile(r'func\s*\(\s*\w+\s+\*App\s*\)\s*View\s*\([^)]*\)\s*\{')
 GO_LOAD_OVERVIEW_RE = re.compile(r'func\s*\(\s*\w+\s+\*App\s*\)\s*loadOverview\s*\([^)]*\)\s*\{')
 GO_START_FUNC_RE = re.compile(r'func\s*\(\s*\w+\s+\*App\s*\)\s*Start\s*\([^)]*\)\s*\{')
+GO_OVERVIEW_DOCS_CALL_RE = re.compile(r'\.\s*overviewDocuments\s*\(')
+GO_OVERVIEW_SESSIONS_CALL_RE = re.compile(r'\.\s*overviewSessions\s*\(')
+GO_V1_OVERVIEW_BOOTSTRAP_RE = re.compile(r'/v1/overview/bootstrap')
+ML018_LEGACY_OVERVIEW_DOCS_MAX = {
+    'overview.go': 1,
+    'common_knowledge.go': 1,
+    'common_knowledge_page.go': 1,
+    'knowledge_waterfall.go': 1,
+    'project_queue.go': 1,
+    'project_records.go': 1,
+    'unified_search.go': 1,
+}
+ML018_LEGACY_OVERVIEW_SESSIONS_MAX = {'overview.go': 1}
+ML018_LEGACY_V1_BOOTSTRAP_MAX = {'overview_bootstrap.go': 1}
+
+
+def _strip_go_comments_keep_strings(source):
+    """Mask Go // and /* */ comments while preserving string literals and line numbers."""
+    out = []
+    i = 0
+    n = len(source)
+    while i < n:
+        ch = source[i]
+        if ch == '"':
+            out.append(ch)
+            i += 1
+            escaped = False
+            while i < n:
+                c = source[i]
+                out.append(c)
+                i += 1
+                if escaped:
+                    escaped = False
+                elif c == '\\':
+                    escaped = True
+                elif c == '"' or c == '\n':
+                    break
+        elif ch == '`':
+            out.append(ch)
+            i += 1
+            while i < n:
+                c = source[i]
+                out.append(c)
+                i += 1
+                if c == '`':
+                    break
+        elif ch == '/' and i + 1 < n and source[i + 1] == '/':
+            while i < n and source[i] != '\n':
+                out.append(' ')
+                i += 1
+        elif ch == '/' and i + 1 < n and source[i + 1] == '*':
+            out.append('  ')
+            i += 2
+            while i < n:
+                if source[i] == '*' and i + 1 < n and source[i + 1] == '/':
+                    out.append('  ')
+                    i += 2
+                    break
+                out.append('\n' if source[i] == '\n' else ' ')
+                i += 1
+        else:
+            out.append(ch)
+            i += 1
+    return ''.join(out)
 
 
 def _extract_brace_block(source, open_brace_index):
@@ -1512,6 +1732,26 @@ def check_go_performance(source, path):
                         line = clean[:brace_idx + 1 + call_match.start()].count('\n') + 1
                         issues.append((line, 'ML012', ML012_START_MESSAGE))
 
+    # ML018: Ban new Go call sites to legacy full-table endpoints (overviewDocuments, overviewSessions, /v1/overview/bootstrap).
+    docs_matches = list(GO_OVERVIEW_DOCS_CALL_RE.finditer(clean))
+    max_docs = ML018_LEGACY_OVERVIEW_DOCS_MAX.get(filename, 0)
+    for match in docs_matches[max_docs:]:
+        line = clean[:match.start()].count('\n') + 1
+        issues.append((line, 'ML018', ML018_MESSAGE))
+
+    sess_matches = list(GO_OVERVIEW_SESSIONS_CALL_RE.finditer(clean))
+    max_sess = ML018_LEGACY_OVERVIEW_SESSIONS_MAX.get(filename, 0)
+    for match in sess_matches[max_sess:]:
+        line = clean[:match.start()].count('\n') + 1
+        issues.append((line, 'ML018', ML018_MESSAGE))
+
+    no_comments = _strip_go_comments_keep_strings(source)
+    v1_boot_matches = list(GO_V1_OVERVIEW_BOOTSTRAP_RE.finditer(no_comments))
+    max_v1_boot = ML018_LEGACY_V1_BOOTSTRAP_MAX.get(filename, 0)
+    for match in v1_boot_matches[max_v1_boot:]:
+        line = no_comments[:match.start()].count('\n') + 1
+        issues.append((line, 'ML018', ML018_MESSAGE))
+
     return issues
 
 
@@ -1579,7 +1819,7 @@ def main():
             print('{}:{}: {} {}'.format(path.relative_to(ROOT), line, code, message))
             failures += 1
     if not failures:
-        print('Lint passed: 模型参数、画像无总超时、环境隔离、UI 性能、运行时资源与正式文档边界门禁 (ML001-ML003, ML006-ML018)')
+        print('Lint passed: 模型参数、环境隔离、UI 性能、运行时资源与扩展架构门禁 (ML001-ML003, ML007-ML012, ML013-ML021)')
     return bool(failures)
 
 
