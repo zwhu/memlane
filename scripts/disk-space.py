@@ -5,6 +5,8 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -15,6 +17,17 @@ GIB = 1024 ** 3
 KEEP = ROOT / 'build/goal-agent-batch-window-20261110-002'
 RETAINED = ROOT / 'build/disk-cleanup/retained-package.txt'
 DEPENDENCIES = ROOT / 'build/disk-cleanup/retained-dependencies.txt'
+RECEIPT_NAME_RE = re.compile(r'^\d{8}-\d{6}\.json$')
+DEFAULT_RECEIPT_RETENTION = 100
+
+
+def _protect_absolute(protected, value, error_message):
+    if not value:
+        return
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise ValueError(error_message)
+    protected.append(path.resolve())
 
 
 def retained_dependencies():
@@ -35,23 +48,26 @@ def retained_dependencies():
             protected.append(config_path.resolve())
             for key in ('official_data', 'official_source', 'official_archive', 'python',
                         'graph_assets', 'service_environment_file', 'token_file',
-                        'completion_token_file', 'codex_executable', 'auth_home'):
-                value = config.get(key)
-                if value:
-                    path = Path(value).expanduser()
-                    if not path.is_absolute():
-                        raise ValueError('runtime dependency must be absolute')
-                    protected.append(path.resolve())
+                        'completion_token_file', 'codex_executable', 'auth_home',
+                        'opencode_plugin_dir'):
+                _protect_absolute(protected, config.get(key), 'runtime dependency must be absolute')
+            project_control = config.get('project_control')
+            if project_control is not None:
+                if not isinstance(project_control, dict):
+                    raise TypeError('project_control must be an object')
+                for key in ('plugin_dir', 'registry_file', 'management_token_file'):
+                    _protect_absolute(protected, project_control.get(key), 'runtime dependency must be absolute')
+                agent_tokens = project_control.get('agent_control_token_files')
+                if agent_tokens is not None:
+                    if not isinstance(agent_tokens, dict):
+                        raise TypeError('agent_control_token_files must be an object')
+                    for value in agent_tokens.values():
+                        _protect_absolute(protected, value, 'runtime dependency must be absolute')
             environment_path = config.get('service_environment_file')
             if environment_path:
                 environment = json.loads(Path(environment_path).expanduser().read_text())
                 for key in ('HF_HOME', 'ENOLA_PATH', 'TIKTOKEN_CACHE_DIR'):
-                    value = environment.get(key)
-                    if value:
-                        path = Path(value).expanduser()
-                        if not path.is_absolute():
-                            raise ValueError('component dependency must be absolute')
-                        protected.append(path.resolve())
+                    _protect_absolute(protected, environment.get(key), 'component dependency must be absolute')
         except (OSError, ValueError, TypeError, AttributeError):
             # Never include configuration contents or credentials in errors.
             raise RuntimeError('daily runtime dependencies unavailable; cleanup refused') from None
@@ -68,9 +84,76 @@ def active_arguments():
     return subprocess.check_output(['ps', '-axo', 'pid=,args='], text=True).splitlines()
 
 
+def _is_long_lived_dev_daemon(task_args):
+    """Return True when a task.py invocation wraps a long-running dev.py start/setup daemon."""
+    try:
+        tokens = shlex.split(task_args)
+    except ValueError:
+        tokens = task_args.split()
+    if len(tokens) < 2:
+        return False
+    rest = tokens[1:]
+    if rest[:1] == ['--']:
+        rest = rest[1:]
+    if not rest:
+        return False
+    if 'python' in Path(rest[0]).name and len(rest) >= 2:
+        script, dev_args = rest[1], rest[2:]
+    else:
+        script, dev_args = rest[0], rest[1:]
+    if not (script == 'scripts/dev.py' or script.endswith('/scripts/dev.py')):
+        return False
+    action = 'start'
+    skip_next = False
+    for token in dev_args:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in ('--config', '--component-root', '--uv'):
+            skip_next = True
+            continue
+        if token.startswith('-'):
+            continue
+        action = token
+        break
+    return action in ('start', 'setup')
+
+
 def other_tasks(processes):
     owner = os.environ.get('MEMLANE_TASK_OWNER_PID', '')
-    return any(len(parts := line.split(None, 2)) == 3 and parts[0] != owner and 'python' in Path(parts[1]).name and any(parts[2].startswith(prefix+' ') for prefix in (str(ROOT / 'scripts/task.py'), 'scripts/task.py')) for line in processes)
+    prefixes = (str(ROOT / 'scripts/task.py'), 'scripts/task.py')
+    for line in processes:
+        parts = line.split(None, 2)
+        if len(parts) != 3 or parts[0] == owner or 'python' not in Path(parts[1]).name:
+            continue
+        if not any(parts[2].startswith(prefix + ' ') for prefix in prefixes):
+            continue
+        if _is_long_lived_dev_daemon(parts[2]):
+            continue
+        return True
+    return False
+
+
+def prune_cleanup_receipts(log_dir, keep=DEFAULT_RECEIPT_RETENTION):
+    """Keep only the latest timestamped YYYYMMDD-HHMMSS.json receipts.
+
+    Strictly preserves retained-package.txt, retained-dependencies.txt,
+    and any non-receipt files or symlinks.
+    """
+    log_dir = Path(log_dir)
+    if not log_dir.is_dir():
+        return []
+    receipts = sorted(
+        (p for p in log_dir.iterdir()
+         if not p.is_symlink() and p.is_file() and RECEIPT_NAME_RE.match(p.name)),
+        key=lambda p: p.name,
+    )
+    stale = receipts[:-keep] if keep > 0 else receipts
+    removed = []
+    for path in stale:
+        path.unlink(missing_ok=True)
+        removed.append(str(path))
+    return removed
 
 
 def busy(path, processes):
@@ -164,8 +247,16 @@ def main():
     report['minimum_free_bytes'] = 50*GIB
     if args.prune_history or args.finish:
         log = ROOT / 'build/disk-cleanup'
-        log.mkdir(exist_ok=True)
-        (log/(time.strftime('%Y%m%d-%H%M%S')+'.json')).write_text(json.dumps(report, indent=2)+'\n')
+        deferred_noop = (
+            args.finish
+            and not args.prune_history
+            and report.get('cache_cleanup') == ['cleanup deferred: another managed task is active']
+        )
+        if not deferred_noop:
+            log.mkdir(parents=True, exist_ok=True)
+            (log/(time.strftime('%Y%m%d-%H%M%S')+'.json')).write_text(json.dumps(report, indent=2)+'\n')
+        if log.is_dir():
+            prune_cleanup_receipts(log)
     print(json.dumps({k:v for k,v in report.items() if k!='history'}, ensure_ascii=False))
     if report['free_after'] < 50*GIB and not args.finish:
         raise SystemExit('磁盘不足50 GiB，已停止任务；请清理后再运行。不会删除源码、用户数据或活动目录。')

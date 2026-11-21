@@ -5,6 +5,8 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import platform
+import re
 import signal
 import stat
 import socket
@@ -21,6 +23,42 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'engine/python'))
 GO = ROOT / '.local/toolchains/go-1.27.3/go/bin/go'
 DEFAULT_CONFIG = ROOT / '.local/daily/runtime.json'
+MONITOR_POLL_INTERVAL = 0.5
+HOUSEKEEPING_INTERVAL = 10.0
+STALE_RECEIPT_RE = re.compile(r'^\.(?:runtime-active|generation-applied)-(\d+)\.json$')
+DEV_APP_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+\t<key>CFBundleDisplayName</key>
+\t<string>Memlane Dev</string>
+\t<key>CFBundleExecutable</key>
+\t<string>Memlane Dev</string>
+\t<key>CFBundleIconFile</key>
+\t<string>AppIcon.icns</string>
+\t<key>CFBundleIdentifier</key>
+\t<string>io.github.zwhu.memlane.dev</string>
+\t<key>CFBundleInfoDictionaryVersion</key>
+\t<string>6.0</string>
+\t<key>CFBundleName</key>
+\t<string>Memlane Dev</string>
+\t<key>CFBundlePackageType</key>
+\t<string>APPL</string>
+\t<key>CFBundleShortVersionString</key>
+\t<string>0.0.1</string>
+\t<key>CFBundleVersion</key>
+\t<string>0.0.1</string>
+\t<key>LSMinimumSystemVersion</key>
+\t<string>15.0</string>
+\t<key>NSHighResolutionCapable</key>
+\t<true/>
+\t<key>NSPrincipalClass</key>
+\t<string>NSApplication</string>
+\t<key>NSSupportsAutomaticGraphicsSwitching</key>
+\t<true/>
+</dict>
+</plist>
+"""
 
 
 def app_runtime_resources():
@@ -309,13 +347,125 @@ def stop_group(process):
     raise RuntimeError('owned process group exit unconfirmed: ' + str(process.pid))
 
 
-def reopen_ui(current, processes, launch, config_path):
+def ui_arch():
+    machine = platform.machine().lower()
+    return 'arm64' if machine in ('arm64', 'aarch64') else 'amd64'
+
+
+def ui_binary_path(root=None):
+    base = Path(root) if root is not None else ROOT
+    return base / '.mygo/dev' / ('darwin-' + ui_arch()) / 'Memlane Dev.app/Contents/MacOS/Memlane Dev'
+
+
+def ui_build_stale(binary, root=None):
+    binary = Path(binary)
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        return True
+    binary_mtime = binary.stat().st_mtime
+    base = Path(root) if root is not None else ROOT
+    for rel in ('go.mod', 'go.sum', 'mygo.json', 'scripts/patches/mygo-antialiased.json'):
+        candidate = base / rel
+        if candidate.is_file() and candidate.stat().st_mtime > binary_mtime:
+            return True
+    for folder in ('cmd', 'internal', 'assets'):
+        root_dir = base / folder
+        if not root_dir.is_dir():
+            continue
+        for current_root, dirs, files in os.walk(root_dir):
+            dirs[:] = [d for d in dirs if d != '__pycache__' and not (Path(current_root) / d).is_symlink()]
+            for name in files:
+                if name == '.DS_Store' or name.endswith('_test.go'):
+                    continue
+                if folder in ('cmd', 'internal') and not name.endswith('.go'):
+                    continue
+                candidate = Path(current_root) / name
+                if candidate.is_symlink():
+                    continue
+                if candidate.stat().st_mtime > binary_mtime:
+                    return True
+    return False
+
+
+def _ensure_dev_app_bundle(binary):
+    binary = Path(binary)
+    macos_dir = binary.parent
+    contents_dir = macos_dir.parent
+    macos_dir.mkdir(parents=True, exist_ok=True)
+    pkginfo = contents_dir / 'PkgInfo'
+    if not pkginfo.exists():
+        pkginfo.write_text('APPL????')
+    plist = contents_dir / 'Info.plist'
+    if not plist.exists():
+        plist.write_text(DEV_APP_PLIST)
+
+
+def ui_runtime_env(config_path):
+    return dict(os.environ, MEMLANE_DEV_RUNTIME_CONFIG=str(config_path))
+
+
+def ensure_ui_binary(config_path, *, root=None, env=None):
+    base = Path(root) if root is not None else ROOT
+    binary = ui_binary_path(base)
+    if ui_build_stale(binary, base):
+        _ensure_dev_app_bundle(binary)
+        shutil.rmtree(binary.parent.parent / '_CodeSignature', ignore_errors=True)
+        build_env = env if env is not None else ui_env(config_path)
+        subprocess.run([str(GO), 'build', '-o', str(binary), './cmd/memlane-app'],
+                       cwd=base, env=build_env, check=True)
+    return binary
+
+
+def cleanup_stale_pid_receipts(directory, *, current_pid=None):
+    directory = Path(directory)
+    if not directory.is_dir():
+        return []
+    me = os.getpid() if current_pid is None else current_pid
+    removed = []
+    for candidate in directory.iterdir():
+        match = STALE_RECEIPT_RE.match(candidate.name)
+        if not match or candidate.is_symlink() or not candidate.is_file():
+            continue
+        pid = int(match.group(1))
+        if pid <= 0 or pid == me:
+            continue
+        try:
+            os.kill(pid, 0)
+            continue
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            continue
+        candidate.unlink(missing_ok=True)
+        removed.append(str(candidate))
+    return removed
+
+
+def run_monitor_housekeeping(log_dir, processes, descendants, save_owner, *,
+                             last_run=None, now=None, interval=HOUSEKEEPING_INTERVAL):
+    current = time.monotonic() if now is None else now
+    if last_run is not None and (current - last_run) < interval:
+        return last_run
+    log_path = Path(log_dir)
+    if log_path.is_dir():
+        for log_file in log_path.glob('*.log'):
+            trim_service_log(log_file)
+    previous_descendants = dict(descendants)
+    track_descendants([p.pid for p in processes], descendants)
+    if descendants != previous_descendants:
+        save_owner()
+    return current
+
+
+def reopen_ui(current, processes, launch, config_path, *, watch_ui=False):
     try:
         if current is not None:
             stop_group(current)
             processes.remove(current)
             current = None
-        return launch([str(GO), 'tool', 'mygo', 'dev'], env=ui_env(config_path))
+        if watch_ui:
+            return launch([str(GO), 'tool', 'mygo', 'dev'], env=ui_env(config_path))
+        binary = ensure_ui_binary(config_path)
+        return launch([str(binary)], env=ui_runtime_env(config_path))
     except Exception as error:
         # A window-only failure must not tear down the daily data services.
         # Keep the old watcher reserved if its exit could not be confirmed.
@@ -502,10 +652,12 @@ def main():
     parser.add_argument('--component-root', type=Path, help='prepare: private engine component directory, never a content store')
     parser.add_argument('--uv', help='prepare: uv executable (defaults to discovery)')
     parser.add_argument('--no-ui', action='store_true')
-    parser.add_argument('--watch-ui', action='store_true', help='open: foreground UI watcher attached to the verified existing service')
+    parser.add_argument('--watch-ui', action='store_true', help='start/open: foreground or live-reload MyGo UI watcher instead of launching the built native binary')
     args = parser.parse_args()
-    if args.watch_ui and args.action != 'open':
-        parser.error('--watch-ui is only valid with open')
+    if args.watch_ui and args.action not in ('open', 'start'):
+        parser.error('--watch-ui is only valid with start or open')
+    if args.action == 'start' and args.no_ui and args.watch_ui:
+        parser.error('--watch-ui cannot be combined with --no-ui')
     if args.action == 'prepare':
         if not args.component_root or args.no_ui or args.watch_ui:
             parser.error('prepare requires --component-root; it prepares components without starting services or UI')
@@ -523,7 +675,9 @@ def main():
     runfile = data / '.memlane-dev-owner.json'
     if args.action == 'recover':
         from dev_recovery import recover
-        print(json.dumps(recover(config, path, acquire=acquire, process_tree=process_tree, port_free=port_free)))
+        result = recover(config, path, acquire=acquire, process_tree=process_tree, port_free=port_free)
+        cleanup_stale_pid_receipts(path.parent)
+        print(json.dumps(result))
         return
     if args.action in ('stop', 'status', 'open'):
         state = json.loads(runfile.read_text())
@@ -565,9 +719,13 @@ def main():
                     watcher = launch_owned([str(GO), 'tool', 'mygo', 'dev'], cwd=ROOT,
                                            env=ui_env(Path(state.get('runtime_config', path))), log_file=path.parent / 'runtime-logs/ui-attached.log')
                     try:
+                        last_trim = None
                         while watcher.poll() is None:
-                            trim_service_log(path.parent / 'runtime-logs/ui-attached.log')
-                            time.sleep(.25)
+                            now = time.monotonic()
+                            if last_trim is None or (now - last_trim) >= HOUSEKEEPING_INTERVAL:
+                                trim_service_log(path.parent / 'runtime-logs/ui-attached.log')
+                                last_trim = now
+                            time.sleep(MONITOR_POLL_INTERVAL)
                     except KeyboardInterrupt:
                         pass
                     finally:
@@ -600,6 +758,7 @@ def main():
     if runfile.exists():
         lock.close()
         raise RuntimeError('previous ownership record needs confirmed recovery before restart; use dev.py recover with the same config')
+    cleanup_stale_pid_receipts(path.parent)
     processes = []
     descendants = {}
     ui = None
@@ -680,24 +839,23 @@ def main():
                       'Generation setup ready; save, validate and select next, then stop setup and start normally.' if config.get('generation_setup_only') else
                       'Daily official services ready; closing UI keeps them running. Ctrl+C explicitly stops owned services.')
         reopen = not args.no_ui
+        last_housekeeping = None
         while True:
             if (not app_runtime_resources() and config.get('first_install') and
                     shutil.disk_usage(data).free < 55 * 1024**3):
                 raise RuntimeError('first installation store disk reserve below 55 GiB; stopping owned services')
-            for log_file in (path.parent / 'runtime-logs').glob('*.log'):
-                trim_service_log(log_file)
-            previous_descendants = dict(descendants)
-            track_descendants([p.pid for p in processes], descendants)
-            if descendants != previous_descendants:
-                save_owner()
+            last_housekeeping = run_monitor_housekeeping(
+                path.parent / 'runtime-logs', processes, descendants, save_owner,
+                last_run=last_housekeeping, interval=HOUSEKEEPING_INTERVAL,
+            )
             if (endpoint is not None and endpoint.poll() is not None) or (service is not None and service.poll() is not None):
                 raise RuntimeError('official service or completion endpoint exited; no automatic restart')
             if control is not None and control.poll() is not None:
                 raise RuntimeError('project control exited; no automatic restart or owner fallback')
             if reopen:
                 reopen = False
-                ui = reopen_ui(ui, processes, launch, runtime_path)
-            time.sleep(.25)
+                ui = reopen_ui(ui, processes, launch, runtime_path, watch_ui=args.watch_ui)
+            time.sleep(MONITOR_POLL_INTERVAL)
     except KeyboardInterrupt: pass
     finally:
         errors = []
