@@ -326,10 +326,15 @@ func (a *App) initialEnvironment(c *ui.Context) {
 				ui.Row(c).FillWidth().Gap(sp2).AlignItems(ui.Center).Children(func() {
 					v4SmallButton(c, "指定已有环境", nil, func() { s.Details = true; s.Manual = true }).Disabled(s.Busy || s.Loading)
 					v4SmallButton(c, "查看详情", nil, func() { s.Details = true })
-					if s.Message != "" {
-						ui.Text(c, s.Message).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).Grow(1).MinWidth(0).SingleLine()
+					if !s.Plan.Complete() && len(s.Plan.Items) > 0 {
+						v4SmallButton(c, "复制安装命令", v4IconCopy, func() { a.copyManualInstallScript(c) }).Disabled(s.Busy || s.Loading)
 					}
+					ui.Spacer(c)
+					a.downloadSourceSelector(c, "initial-download-source")
 				})
+				if s.Message != "" {
+					ui.Text(c, s.Message).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.4)
+				}
 			})
 		}
 
@@ -443,6 +448,11 @@ func (a *App) environmentReviewModal(c *ui.Context) {
 		ConfirmDisabled: s.Loading || s.Busy,
 		OnCancel:        a.declineEnvironment,
 		OnConfirm:       func() { a.runEnvironment(true) },
+		ExtraFooter: func() {
+			if !dailyPluginOnly {
+				v4SmallButton(c, "复制全部安装命令", v4IconCopy, func() { a.copyManualInstallScript(c) })
+			}
+		},
 		Body: func() {
 			ui.Text(c, modalIntro).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text2).LineHeight(1.5)
 			ui.Column(c).FillWidth().Gap(0).Children(func() {
@@ -450,6 +460,7 @@ func (a *App) environmentReviewModal(c *ui.Context) {
 					if item.Observation.Status == bootstrap.Available {
 						continue
 					}
+					itemCopy := item
 					r := item.Requirement
 					ui.Column(c.Key("plan-"+r.ID)).FillWidth().Padding(sp3, 0).Gap(4).
 						BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
@@ -476,8 +487,23 @@ func (a *App) environmentReviewModal(c *ui.Context) {
 						if r.SizeNote != "" {
 							ui.Text(c, r.SizeNote).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3)
 						}
-						ui.Text(c, "来源："+r.Source).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
+						sourceLabel := "来源：" + r.Source
+						if r.OfficialSource != "" && r.OfficialSource != r.Source {
+							sourceLabel = "当前来源：" + r.Source
+						}
+						ui.Text(c, sourceLabel).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
+						if r.OfficialSource != "" && r.OfficialSource != r.Source {
+							ui.Text(c, "官方原址："+r.OfficialSource).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
+						}
 						ui.Text(c, "位置："+r.Destination).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
+						if cmd := bootstrap.ManualInstallCommand(itemCopy, s.Environment, s.DownloadSource); cmd != "" {
+							ui.Row(c).FillWidth().Padding(2, 0, 0, 0).Children(func() {
+								v4SmallButton(c, "复制此项安装命令", v4IconCopy, func() {
+									c.WriteClipboard(cmd)
+									s.Message = "已复制 " + r.Name + " 安装命令"
+								})
+							})
+						}
 					})
 				}
 			})

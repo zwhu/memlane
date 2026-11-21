@@ -26,6 +26,10 @@ func TestRuntimeAssetsMaterializeAndEmbedLocalScriptImports(t *testing.T) {
 	expected := []string{
 		"engine/python/user_profiles/__init__.py",
 		"engine/python/user_profiles/providers/antigravity.py",
+		"web/official-graph/dist/assets.json",
+		"web/official-graph/dist/index.html",
+		"web/official-graph/dist/app.js",
+		"web/official-graph/dist/build.json",
 		"scripts/dev.py",
 		"scripts/dev_recovery.py",
 		"scripts/local_prepare.py",
@@ -37,6 +41,13 @@ func TestRuntimeAssetsMaterializeAndEmbedLocalScriptImports(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(destination, filepath.FromSlash(rel))); err != nil {
 			t.Fatalf("missing materialized asset %s: %v", rel, err)
 		}
+	}
+	second, err := bootstrap.PrepareRuntimeResources(context.Background(), root, memlane.RuntimeAssets)
+	if err != nil {
+		t.Fatalf("idempotent PrepareRuntimeResources failed: %v", err)
+	}
+	if second != destination {
+		t.Fatalf("idempotent destination mismatch: got %q, want %q", second, destination)
 	}
 
 	// Dev-only UI watcher module is excluded intentionally from the App runtime bundle.

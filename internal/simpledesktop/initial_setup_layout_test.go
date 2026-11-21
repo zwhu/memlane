@@ -135,3 +135,33 @@ func TestFirstUseV4StageBannerDetailsDialogAndNoBridgeWording(t *testing.T) {
 		t.Fatal("Escape did not dismiss environment details v4Dialog")
 	}
 }
+
+func TestFirstUseSourceSwitchAndManualCommandCopy(t *testing.T) {
+	a := setupLayoutFixture()
+	a.environment.DownloadSource = "china"
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("国内镜像源") || !tt.HasText("国外官方源") || !tt.HasText("复制安装命令") {
+		t.Fatalf("download source toggle or manual copy button missing: %v", tt.Texts())
+	}
+
+	clickProjectUI(t, tt, "国外官方源")
+	if a.environment.DownloadSource != "official" {
+		t.Fatalf("expected official download source after toggle, got %q", a.environment.DownloadSource)
+	}
+	if !tt.HasText("已切换到国外官方源") {
+		t.Fatalf("expected feedback message after source toggle, got %q", a.environment.Message)
+	}
+
+	clickProjectUI(t, tt, "复制安装命令")
+	if !tt.HasText("已复制终端安装命令，执行后请点击「重新检测」") {
+		t.Fatalf("expected manual script copy message, got %q", a.environment.Message)
+	}
+
+	// Open approval modal with OfficialSource set and check per-item copy button & labels.
+	a.environment.Plan.Items[0].Requirement.OfficialSource = "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-apple-darwin.tar.gz"
+	tt.Frame()
+	clickProjectUI(t, tt, "安装缺少的依赖")
+	if !tt.HasText("当前来源：") || !tt.HasText("官方原址：") || !tt.HasText("复制全部安装命令") || !tt.HasText("复制此项安装命令") {
+		t.Fatalf("review modal missing mirror source labels or copy buttons: %v", tt.Texts())
+	}
+}

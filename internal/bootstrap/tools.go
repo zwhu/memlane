@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -30,10 +31,17 @@ type ToolDriver struct {
 	ID, Version, Executable string
 	Artifact                Artifact
 	ReusePath               string
+	DownloadSource          string
 }
 
 func (d ToolDriver) matches(r Requirement) bool {
-	return r.ID == d.ID && r.Version == d.Version && r.Source == d.Artifact.URL && r.Digest == d.Artifact.SHA256
+	if r.ID != d.ID || r.Version != d.Version || r.Digest != d.Artifact.SHA256 {
+		return false
+	}
+	if d.DownloadSource == "" {
+		return r.Source == d.Artifact.URL
+	}
+	return r.Source == d.Artifact.URL || r.Source == DisplaySourceURL(d.ID, d.Artifact.URL, d.Artifact.SHA256, d.DownloadSource)
 }
 func (d ToolDriver) Path(root string) string {
 	return filepath.Join(root, "payload", filepath.FromSlash(d.Executable))
@@ -112,9 +120,25 @@ func (d ToolDriver) Install(ctx context.Context, r Requirement) error {
 	if err := claimComponentRoot(r.Destination, ".memlane-tool.json", identity); err != nil {
 		return err
 	}
-	archive := filepath.Join(r.Destination, "artifact.tar.gz")
-	if err := fetchArchive(ctx, r.Source, r.Digest, archive); err != nil {
-		return err
+	archivePathFor := func(cand ArtifactCandidate) string {
+		if cand.Format == "wheel" {
+			return filepath.Join(r.Destination, "artifact.whl")
+		}
+		return filepath.Join(r.Destination, "artifact.tar.gz")
+	}
+	var chosen ArtifactCandidate
+	if d.DownloadSource != "" {
+		var err error
+		chosen, err = fetchArtifactCandidates(ctx, ToolCandidates(d.ID, d.Artifact.URL, r.Digest, d.DownloadSource), archivePathFor)
+		if err != nil {
+			return err
+		}
+	} else {
+		archive := filepath.Join(r.Destination, "artifact.tar.gz")
+		if err := fetchArchive(ctx, r.Source, r.Digest, archive); err != nil {
+			return err
+		}
+		chosen = ArtifactCandidate{URL: r.Source, SHA256: r.Digest, Format: "tar.gz"}
 	}
 	payload := filepath.Join(r.Destination, "payload")
 	if _, err := os.Lstat(payload); err == nil {
@@ -127,7 +151,13 @@ func (d ToolDriver) Install(ctx context.Context, r Requirement) error {
 		return err
 	}
 	defer os.RemoveAll(staging)
-	if err := extractTool(ctx, archive, staging); err != nil {
+	archive := archivePathFor(chosen)
+	if chosen.Format == "wheel" {
+		target := filepath.Join(staging, filepath.FromSlash(d.Executable))
+		if err := extractWheelExecutable(ctx, archive, chosen.ZipEntry, target); err != nil {
+			return err
+		}
+	} else if err := extractTool(ctx, archive, staging); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
@@ -336,4 +366,57 @@ func extractTool(ctx context.Context, archive, destination string) error {
 		}
 	}
 	return nil
+}
+
+func extractWheelExecutable(ctx context.Context, archive, zipEntry, destination string) error {
+	if zipEntry == "" || strings.HasPrefix(zipEntry, "/") || strings.Contains(zipEntry, "..") {
+		return errors.New("invalid wheel executable entry")
+	}
+	cleanEntry := path.Clean(zipEntry)
+	if cleanEntry != zipEntry || cleanEntry == "." || strings.HasPrefix(cleanEntry, "../") {
+		return errors.New("wheel executable entry escapes archive")
+	}
+	r, err := zip.OpenReader(archive)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	for _, f := range r.File {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if f.Name != cleanEntry {
+			continue
+		}
+		mode := f.Mode()
+		if mode&os.ModeSymlink != 0 || f.FileInfo().IsDir() {
+			return errors.New("wheel executable entry is not a regular file")
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+		defer rc.Close()
+		if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+			return err
+		}
+		out, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0700)
+		if err != nil {
+			return err
+		}
+		const maxWheelExecutableBytes = 256 << 20
+		n, copyErr := io.Copy(out, io.LimitReader(rc, maxWheelExecutableBytes+1))
+		closeErr := out.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if n > maxWheelExecutableBytes {
+			return errors.New("wheel executable exceeds maximum supported size")
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		return os.Chmod(destination, 0700)
+	}
+	return fmt.Errorf("wheel entry %q not found", cleanEntry)
 }

@@ -26,6 +26,8 @@ type environmentSetupState struct {
 	Python, UV, Source, Archive, ModelCache        string
 	Plugin                                         string
 	SelectionLoaded                                bool
+	DownloadSource                                 string
+	DownloadSourceIdx                              int
 	Generation                                     uint64
 	Cancel                                         context.CancelFunc
 	InitialStep                                    int
@@ -43,7 +45,7 @@ type environmentSetupState struct {
 
 func (a *App) environmentOptions() (bootstrap.EnvironmentOptions, error) {
 	s := &a.environment
-	options := bootstrap.EnvironmentOptions{Root: os.Getenv("MEMLANE_BOOTSTRAP_ROOT"), Python: s.Python, UV: s.UV, Source: s.Source, Archive: s.Archive, ModelCache: s.ModelCache, Plugin: s.Plugin, ProtectedStore: a.Config.OfficialData}
+	options := bootstrap.EnvironmentOptions{Root: os.Getenv("MEMLANE_BOOTSTRAP_ROOT"), Python: s.Python, UV: s.UV, Source: s.Source, Archive: s.Archive, ModelCache: s.ModelCache, Plugin: s.Plugin, ProtectedStore: a.Config.OfficialData, DownloadSource: s.DownloadSource}
 	if !s.SelectionLoaded {
 		options.Python, options.Source, options.Archive = a.Config.Python, a.Config.OfficialSource, a.Config.OfficialArchive
 		if a.Config.ProjectControl != nil {
@@ -74,12 +76,20 @@ func (a *App) environmentOptions() (bootstrap.EnvironmentOptions, error) {
 			if selection.Plugin != "" {
 				options.Plugin = selection.Plugin
 			}
+			if selection.DownloadSource != "" {
+				options.DownloadSource = selection.DownloadSource
+			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return options, err
 		}
+		options.DownloadSource = bootstrap.NormalizeDownloadSource(options.DownloadSource)
 		s.Python, s.UV, s.Source, s.Archive, s.ModelCache = options.Python, options.UV, options.Source, options.Archive, options.ModelCache
 		s.Plugin = options.Plugin
+		s.DownloadSource = options.DownloadSource
+		a.syncDownloadSourceIdx()
 		s.SelectionLoaded = true
+	} else {
+		options.DownloadSource = bootstrap.NormalizeDownloadSource(options.DownloadSource)
 	}
 	if options.Root != "" && a.Config.OfficialData != "" {
 		root, _ := filepath.Abs(options.Root)
@@ -436,6 +446,14 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 				v4SkeletonGroup(c, 3, 2, true, true)
 				return
 			}
+			v4Row(c, v4RowOptions{
+				Key:   "settings-download-source-row",
+				Title: "下载来源",
+				Desc:  "国内镜像源优先走清华 / 阿里云 / 中科大 / npmmirror / ModelScope，仍按固定 SHA256 严格校验",
+				Control: func() {
+					a.downloadSourceSelector(c, "settings-download-source")
+				},
+			})
 			for _, item := range s.Plan.Items {
 				row := item
 				status := environmentRowStatus(row, s.Journal, s.Busy)
@@ -531,6 +549,7 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 				ui.Row(c).FillWidth().Gap(sp2).AlignItems(ui.Center).Children(func() {
 					if needInstall {
 						v4SmallPrimaryButton(c, actionLabel, func() { s.Review = true }).Disabled(s.Loading)
+						v4SmallButton(c, "复制安装命令", v4IconCopy, func() { a.copyManualInstallScript(c) }).Disabled(s.Loading)
 					}
 					if s.Error != "" {
 						v4SmallButton(c, "重试", v4IconRefresh, func() {
@@ -609,4 +628,58 @@ func (a *App) environmentDiagnosticAgents(c *ui.Context) {
 			})
 		})
 	}
+}
+
+func (a *App) syncDownloadSourceIdx() {
+	s := &a.environment
+	mode := bootstrap.NormalizeDownloadSource(s.DownloadSource)
+	s.DownloadSource = mode
+	if mode == bootstrap.DownloadSourceOfficial {
+		s.DownloadSourceIdx = 1
+	} else {
+		s.DownloadSourceIdx = 0
+	}
+}
+
+func (a *App) switchDownloadSource(mode string) {
+	s := &a.environment
+	normalized := bootstrap.NormalizeDownloadSource(mode)
+	if s.Busy || s.Loading {
+		a.syncDownloadSourceIdx()
+		return
+	}
+	if s.DownloadSource == normalized {
+		a.syncDownloadSourceIdx()
+		return
+	}
+	s.DownloadSource = normalized
+	a.syncDownloadSourceIdx()
+	if normalized == bootstrap.DownloadSourceOfficial {
+		s.Message = "已切换到国外官方源"
+	} else {
+		s.Message = "已切换到国内镜像源"
+	}
+	if a.Update != nil {
+		a.detectEnvironment(true)
+	}
+}
+
+func (a *App) downloadSourceSelector(c *ui.Context, key string) {
+	s := &a.environment
+	a.syncDownloadSourceIdx()
+	labels := []string{"国内镜像源", "国外官方源"}
+	v4Segmented(c, key, "下载来源", &s.DownloadSourceIdx, labels, func() {
+		if s.DownloadSourceIdx == 1 {
+			a.switchDownloadSource(bootstrap.DownloadSourceOfficial)
+		} else {
+			a.switchDownloadSource(bootstrap.DownloadSourceChina)
+		}
+	})
+}
+
+func (a *App) copyManualInstallScript(c *ui.Context) {
+	s := &a.environment
+	script := bootstrap.ManualInstallScript(s.Plan, s.Environment, s.DownloadSource)
+	c.WriteClipboard(script)
+	s.Message = "已复制终端安装命令，执行后请点击「重新检测」"
 }

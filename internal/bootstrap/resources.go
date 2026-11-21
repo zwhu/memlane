@@ -118,7 +118,7 @@ func prepareRuntimeResources(ctx context.Context, root string, assets fs.FS) (st
 		if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
 			return "", err
 		}
-		if b, err := privateRead(target); err == nil {
+		if b, err := privateReadBounded(target, 8<<20); err == nil {
 			if string(b) != string(data[name]) {
 				return "", errors.New("runtime resource modified: " + path.Base(name))
 			}

@@ -234,14 +234,19 @@ func TestIntegrationAgentListShowsDirectActionsAndHostLimits(t *testing.T) {
 		{ID: "codex", Kind: "codex", Status: "configured_pending_new_session", NewSessions: 1},
 		{ID: "pi", Kind: "pi", Detected: true, Status: "prepared", Preview: &CodexConnectionPreview{ProposedSHA: "reviewed"}},
 		{ID: "traex", Kind: "traex", Detected: true, Status: "activation_unknown"},
+		{ID: "antigravity", Kind: "antigravity", Detected: true},
+		{ID: "antigravity-uninstalled", Kind: "antigravity"},
 		{ID: "claude", Kind: "claude_code", Detected: true},
 		{ID: "cursor", Kind: "cursor"},
 	}}}
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"Codex", "pi", "TraeX", "Claude Code", "其他 Agent（1）", "确认连接 pi", "连接 Claude Code", "等待确认", "等待采集验证"} {
+	for _, label := range []string{"Codex", "pi", "TraeX", "Gemini App", "其他 Agent（1）", "确认连接 pi", "连接 Gemini App", "等待确认", "等待采集验证"} {
 		if !tt.HasText(label) {
 			t.Fatal("missing Agent control", label)
 		}
+	}
+	if tt.HasText("Claude Code") || tt.HasText("Cursor") {
+		t.Fatal("unreleased non-beta hosts should be hidden")
 	}
 	if tt.HasText("批量连接") {
 		t.Fatal("bulk connection toggle should be removed")

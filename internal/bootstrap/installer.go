@@ -35,6 +35,7 @@ type Requirement struct {
 	Purpose        string `json:"purpose"`
 	Version        string `json:"version"`
 	Source         string `json:"source"`
+	OfficialSource string `json:"official_source,omitempty"`
 	Digest         string `json:"digest"`
 	DownloadBytes  int64  `json:"download_bytes"`
 	InstalledBytes int64  `json:"installed_bytes"`

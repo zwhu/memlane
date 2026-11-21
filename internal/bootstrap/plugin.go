@@ -22,6 +22,7 @@ type PluginDriver struct {
 	Version, ExistingPath, ResourceRoot string
 	Manifest                            []byte
 	Python                              func(context.Context) (string, error)
+	DownloadSource                      string
 }
 
 func readPluginFile(path string) ([]byte, error) {
@@ -41,7 +42,13 @@ func readPluginFile(path string) ([]byte, error) {
 }
 
 func (d PluginDriver) matches(r Requirement) bool {
-	return r.ID == "agent-plugin" && r.Version == d.Version && r.Source == d.Spec.URL && r.Digest == d.Spec.SHA256
+	if r.ID != "agent-plugin" || r.Version != d.Version || r.Digest != d.Spec.SHA256 {
+		return false
+	}
+	if d.DownloadSource == "" {
+		return r.Source == d.Spec.URL
+	}
+	return r.Source == d.Spec.URL || r.Source == DisplaySourceURL(r.ID, d.Spec.URL, d.Spec.SHA256, d.DownloadSource)
 }
 
 func VerifyPlugin(root string, expected []byte) error {
@@ -161,7 +168,7 @@ func (d PluginDriver) Install(ctx context.Context, r Requirement) error {
 	}
 	upstream := r
 	upstream.ID, upstream.Version, upstream.Destination = "cognee-source", d.Spec.Commit, filepath.Join(r.Destination, "integrations-upstream")
-	if err := (SourceDriver{Spec: d.Spec}).Install(ctx, upstream); err != nil {
+	if err := (SourceDriver{Spec: d.Spec, DownloadSource: d.DownloadSource}).Install(ctx, upstream); err != nil {
 		return err
 	}
 	// Installer.Run already holds this resource root's installation lock.

@@ -28,10 +28,19 @@ type SourceSpec struct {
 
 // SourceDriver prepares only the pinned engine source. It never starts the
 // engine, initializes a library, or claims all installation components ready.
-type SourceDriver struct{ Spec SourceSpec }
+type SourceDriver struct {
+	Spec           SourceSpec
+	DownloadSource string
+}
 
 func (d SourceDriver) matches(r Requirement) bool {
-	return r.ID == "cognee-source" && r.Version == d.Spec.Commit && r.Source == d.Spec.URL && r.Digest == d.Spec.SHA256
+	if r.ID != "cognee-source" || r.Version != d.Spec.Commit || r.Digest != d.Spec.SHA256 {
+		return false
+	}
+	if d.DownloadSource == "" {
+		return r.Source == d.Spec.URL
+	}
+	return r.Source == d.Spec.URL || r.Source == DisplaySourceURL(r.ID, d.Spec.URL, d.Spec.SHA256, d.DownloadSource)
 }
 func (d SourceDriver) Probe(ctx context.Context, r Requirement) (Observation, error) {
 	o := Observation{Status: Missing, Path: r.Destination, Version: d.Spec.Commit, Fingerprint: d.Spec.SHA256}
@@ -97,7 +106,12 @@ func (d SourceDriver) Install(ctx context.Context, r Requirement) error {
 		}
 	}
 	archive := filepath.Join(r.Destination, "service.tar.gz")
-	if err := fetchArchive(ctx, r.Source, r.Digest, archive); err != nil {
+	if d.DownloadSource != "" {
+		candidates := SourceCandidates(d.Spec.URL, r.Digest, d.DownloadSource)
+		if _, err := fetchArtifactCandidates(ctx, candidates, func(ArtifactCandidate) string { return archive }); err != nil {
+			return err
+		}
+	} else if err := fetchArchive(ctx, r.Source, r.Digest, archive); err != nil {
 		return err
 	}
 	source := filepath.Join(r.Destination, "source")
@@ -123,40 +137,77 @@ func (d SourceDriver) Install(ctx context.Context, r Requirement) error {
 	return os.Rename(staging, source)
 }
 
+type existingArchiveError struct{ msg string }
+
+func (e existingArchiveError) Error() string { return e.msg }
+
+func newArtifactHTTPClient(ctx context.Context) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = artifactProxyFunc(ctx)
+	return &http.Client{
+		Timeout:   30 * time.Minute,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if req.URL.Scheme != "https" || req.URL.User != nil || len(via) > 5 {
+				return errors.New("unsafe artifact redirect")
+			}
+			return nil
+		},
+	}
+}
+
+func fetchArtifactCandidates(ctx context.Context, candidates []ArtifactCandidate, destinationFor func(ArtifactCandidate) string) (ArtifactCandidate, error) {
+	if len(candidates) == 0 {
+		return ArtifactCandidate{}, errors.New("no download candidate configured")
+	}
+	var lastErr error
+	for _, cand := range candidates {
+		if err := ctx.Err(); err != nil {
+			return ArtifactCandidate{}, err
+		}
+		dest := destinationFor(cand)
+		err := fetchArchive(ctx, cand.URL, cand.SHA256, dest)
+		if err == nil {
+			return cand, nil
+		}
+		var existing existingArchiveError
+		if errors.As(err, &existing) {
+			return ArtifactCandidate{}, err
+		}
+		lastErr = err
+	}
+	return ArtifactCandidate{}, lastErr
+}
+
 func fetchArchive(ctx context.Context, rawURL, digest, destination string) error {
 	if len(digest) != 64 {
 		return errors.New("fixed artifact digest required")
 	}
 	if info, err := os.Lstat(destination); err == nil {
 		if !info.Mode().IsRegular() {
-			return errors.New("archive destination is not a regular file")
+			return existingArchiveError{msg: "archive destination is not a regular file"}
 		}
 		f, err := os.Open(destination)
 		if err != nil {
-			return err
+			return existingArchiveError{msg: err.Error()}
 		}
 		defer f.Close()
 		h := sha256.New()
 		if _, err := io.Copy(h, f); err != nil {
-			return err
+			return existingArchiveError{msg: err.Error()}
 		}
 		if hex.EncodeToString(h.Sum(nil)) != digest {
-			return errors.New("existing archive digest mismatch; retained")
+			return existingArchiveError{msg: "existing archive digest mismatch; retained"}
 		}
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+		return existingArchiveError{msg: err.Error()}
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
 		return errors.New("HTTPS artifact URL required")
 	}
-	client := &http.Client{Timeout: 30 * time.Minute, CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if req.URL.Scheme != "https" || req.URL.User != nil || len(via) > 5 {
-			return errors.New("unsafe artifact redirect")
-		}
-		return nil
-	}}
+	client := newArtifactHTTPClient(ctx)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return err

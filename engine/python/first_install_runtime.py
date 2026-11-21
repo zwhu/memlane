@@ -65,7 +65,7 @@ def unused_origins(count):
             listener.close()
 
 
-def prepare_runtime(root, config_path, plugin, *, python=None, host_home=None):
+def prepare_runtime(root, config_path, plugin, *, python=None, host_home=None, graph_assets=None):
     root, config_path = Path(root), Path(config_path)
     if not config_path.is_absolute() or config_path.parent != root.parent:
         raise ValueError('first runtime config must be beside the owned store')
@@ -101,6 +101,11 @@ def prepare_runtime(root, config_path, plugin, *, python=None, host_home=None):
                     'FASTAPI_USERS_VERIFICATION_TOKEN_SECRET'):
             environment[key] = secrets.token_urlsafe(48)
         write_private(environment_file, json.dumps(environment))
+    resolved_graph_assets = ''
+    if graph_assets is not None:
+        resolved_graph_assets = str(Path(graph_assets)) if str(graph_assets).strip() else ''
+    elif (ROOT / 'web/official-graph/dist/assets.json').is_file():
+        resolved_graph_assets = str(ROOT / 'web/official-graph/dist')
     service, control, completion = unused_origins(3)
     config = {
         'python': str(python or sys.executable), 'official_data': str(root),
@@ -109,7 +114,7 @@ def prepare_runtime(root, config_path, plugin, *, python=None, host_home=None):
         'service_environment_file': str(environment_file), 'service_url': service,
         'completion_url': completion, 'completion_token_file': secret_file(root / 'completion.token'),
         'generation_file': str(root / 'generation.json'), 'generation_mode': 'unconfigured', 'model': '',
-        'client_state_file': str(root / 'client-state.json'), 'graph_assets': '',
+        'client_state_file': str(root / 'client-state.json'), 'graph_assets': resolved_graph_assets,
         'projects': [], 'common_datasets': [],
         'first_install': {'schema': 1, 'store_id': specification['store_id'], 'setup': True},
         'project_control': {'url': control, 'registry_file': str(root / 'projects.json'),
@@ -273,6 +278,7 @@ def main():
     parser.add_argument('--host-home', type=Path)
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--python-executable', type=Path)
+    parser.add_argument('--graph-assets', type=Path)
     parser.add_argument('--activate-file', type=Path)
     args = parser.parse_args()
     if args.host_home is not None:
@@ -282,7 +288,8 @@ def main():
         if not args.python_executable.is_absolute() or not os.access(args.python_executable, os.X_OK):
             raise ValueError('existing runtime Python executable required')
     config = prepare_runtime(args.store_root, args.runtime_config, args.plugin,
-                             python=args.python_executable, host_home=args.host_home)
+                             python=args.python_executable, host_home=args.host_home,
+                             graph_assets=args.graph_assets)
     if args.activate_file is not None:
         if args.prepare_only:
             raise ValueError('activation cannot be requested during read-only preparation')

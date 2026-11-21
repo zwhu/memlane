@@ -43,20 +43,24 @@ func TestConnectionCardsUseColumnsAndKeepBatchSelection(t *testing.T) {
 				{ID: "codex", Kind: "codex", Detected: true, Status: "configured_pending_new_session", NewSessions: 1},
 				{ID: "pi", Kind: "pi", Detected: true, Status: "not_connected"},
 				{ID: "traex", Kind: "traex", Detected: true, Status: "configured_pending_new_session", NewSessions: 1},
+				{ID: "antigravity", Kind: "antigravity", Detected: true, Status: "not_connected"},
 				{ID: "claude", Kind: "claude_code", Detected: true, Status: "not_connected"},
 			}}}
 			tt := ui.NewTester(a.View, width, 820)
 			codex, cOK := tt.Find("Codex")
 			pi, pOK := tt.Find("pi")
 			traex, tOK := tt.Find("TraeX")
-			claude, clOK := tt.Find("Claude Code")
-			if !cOK || !pOK || !tOK || !clOK || codex.X != pi.X || pi.X != traex.X || !(codex.Y < pi.Y && pi.Y < traex.Y && traex.Y < claude.Y) {
-				t.Fatal("Agent connections are not aligned compact rows", codex, pi, traex, claude)
+			agy, aOK := tt.Find("Gemini App")
+			if !cOK || !pOK || !tOK || !aOK || codex.X != pi.X || pi.X != traex.X || !(codex.Y < pi.Y && pi.Y < traex.Y && traex.Y < agy.Y) {
+				t.Fatal("Agent connections are not aligned compact rows", codex, pi, traex, agy)
+			}
+			if tt.HasText("Claude Code") {
+				t.Fatal("unreleased Claude Code row should be hidden in beta UI")
 			}
 			if tt.HasText("批量连接") || tt.HasText("选择 pi") || tt.HasText("连接所选") {
 				t.Fatal("bulk connection controls should not appear")
 			}
-			if !tt.HasText("连接 pi") || !tt.HasText("连接 Claude Code") {
+			if !tt.HasText("连接 pi") || !tt.HasText("连接 Gemini App") {
 				t.Fatal("direct per-row connect actions missing")
 			}
 		})

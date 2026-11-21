@@ -35,7 +35,7 @@ Memlane 是面向程序员的 macOS 记忆客户端，采用 **MyGo Native 桌�
 
 | 任务领域 | 查阅文档 |
 | --- | --- |
-| **产品定位、内容分层与演进** | [产品定义](docs/product/product.md)、[内容分层](docs/product/content-model.md)、[Roadmap](docs/product/roadmap.md)、[部署方向](docs/product/deployment-options-20261117.md) |
+| **产品定位、内容分层与演进** | [产品定义](docs/product/product.md)、[内容分层](docs/product/content-model.md)、[Roadmap](docs/product/roadmap.md)、[部署方向](docs/product/deployment-options-20261117.md)、[公测发版方案](docs/product/release-v0.1.0-beta.1-20261121.md) |
 | **系统架构、开发运维与改造记录** | [架构总览](docs/architecture/overview.md)、[开发说明](docs/architecture/development.md)、[架构改造记录](docs/architecture/architecture-refactor-20261120.md)、[环境准备报告](docs/architecture/environment-readiness-reliability-20261117.html) |
 | **Agent 接入、模型契约与队列隔离** | [电脑级接入契约](docs/architecture/agent-connection-contract.md)、[有效模型契约](docs/architecture/agent-effective-model-contract-20261118.md)、[队列隔离记录](docs/architecture/queue-isolation-20261119.md) |
 | **界面交互、V4 视觉与动效** | [设计决策](docs/design/design.md)、[视觉规范 V4](docs/design/visual-standards-v4-20261120.md)、[MyGo 动效契约](docs/design/motion-implementation.md)、[V4 可交互原型](docs/design/visual-v4-prototype/)、[V4 实施账本](docs/design/visual-v4-implementation-20261120.md) |

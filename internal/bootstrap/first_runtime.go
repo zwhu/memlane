@@ -457,7 +457,7 @@ func (e *Environment) PrepareFirstRuntime(ctx context.Context, configPath string
 		return prepared, err
 	}
 	err = runManaged(ctx, root, python, "-I", "-B", filepath.Join(resources, "engine/python/first_install_runtime.py"),
-		"--store-root", root, "--runtime-config", configPath, "--plugin", plugin.Path, "--host-home", home, "--python-executable", python, "--prepare-only")
+		"--store-root", root, "--runtime-config", configPath, "--plugin", plugin.Path, "--host-home", home, "--python-executable", python, "--graph-assets", filepath.Join(resources, "web/official-graph/dist"), "--prepare-only")
 	if err != nil {
 		return prepared, err
 	}

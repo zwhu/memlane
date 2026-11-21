@@ -19,9 +19,10 @@ import (
 // NativeSupport is a pinned, separately downloaded runtime dependency. Only the
 // two required OpenSSL libraries and their license are retained from the bottle.
 type NativeSupport struct {
-	Version       string   `json:"version"`
-	Artifact      Artifact `json:"artifact"`
-	ArchivePrefix string   `json:"archive_prefix"`
+	Version        string   `json:"version"`
+	Artifact       Artifact `json:"artifact"`
+	ArchivePrefix  string   `json:"archive_prefix"`
+	DownloadSource string   `json:"-"`
 }
 
 func nativeWrapper(root string) string { return filepath.Join(root, "venv/bin/memlane-python") }
@@ -138,7 +139,12 @@ func (n NativeSupport) install(ctx context.Context, root string) error {
 		return err
 	}
 	archive := filepath.Join(dir, "artifact.tar.gz")
-	if err := fetchArchive(ctx, n.Artifact.URL, n.Artifact.SHA256, archive); err != nil {
+	if n.DownloadSource != "" {
+		candidates := NativeCandidates(n.Artifact.URL, n.Artifact.SHA256, n.DownloadSource)
+		if _, err := fetchArtifactCandidates(ctx, candidates, func(ArtifactCandidate) string { return archive }); err != nil {
+			return err
+		}
+	} else if err := fetchArchive(ctx, n.Artifact.URL, n.Artifact.SHA256, archive); err != nil {
 		return err
 	}
 	f, err := os.Open(archive)

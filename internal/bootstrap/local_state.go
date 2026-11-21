@@ -26,6 +26,10 @@ func ComponentRoot(root string) (string, error) {
 }
 
 func privateRead(path string) ([]byte, error) {
+	return privateReadBounded(path, 2<<20)
+}
+
+func privateReadBounded(path string, maxBytes int64) ([]byte, error) {
 	for p := filepath.Dir(path); ; p = filepath.Dir(p) {
 		info, err := os.Lstat(p)
 		if err != nil {
@@ -47,7 +51,7 @@ func privateRead(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() > 2<<20 {
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() > maxBytes {
 		return nil, errors.New("private state must be a bounded private regular file")
 	}
 	return io.ReadAll(f)
@@ -83,14 +87,15 @@ func atomicPrivateFile(path string, data []byte) error {
 // Selections contains only user-selected dependency paths, never environment
 // variables, account credentials, memory data, or installation permission.
 type Selections struct {
-	Schema     int    `json:"schema"`
-	Binding    string `json:"binding"`
-	Python     string `json:"python"`
-	UV         string `json:"uv"`
-	Source     string `json:"source"`
-	Archive    string `json:"archive"`
-	ModelCache string `json:"model_cache"`
-	Plugin     string `json:"plugin"`
+	Schema         int    `json:"schema"`
+	Binding        string `json:"binding"`
+	Python         string `json:"python"`
+	UV             string `json:"uv"`
+	Source         string `json:"source"`
+	Archive        string `json:"archive"`
+	ModelCache     string `json:"model_cache"`
+	Plugin         string `json:"plugin"`
+	DownloadSource string `json:"download_source,omitempty"`
 }
 
 func selectionBinding(configPath string) string {
@@ -128,6 +133,9 @@ func SaveSelections(options EnvironmentOptions, configPath string) error {
 		return err
 	}
 	s := Selections{Schema: 1, Binding: selectionBinding(configPath), Python: options.Python, UV: options.UV, Source: options.Source, Archive: options.Archive, ModelCache: options.ModelCache, Plugin: options.Plugin}
+	if options.DownloadSource != "" {
+		s.DownloadSource = NormalizeDownloadSource(options.DownloadSource)
+	}
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err

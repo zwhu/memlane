@@ -102,6 +102,7 @@ func TestAgentConnectionDefaultShowsClearStatusesAndCollapsesUnavailable(t *test
 		{ID: "codex", Kind: "codex", Status: "configured_pending_new_session", NewSessions: 1},
 		{ID: "pi", Kind: "pi", Detected: true, Status: "not_connected"},
 		{ID: "traex", Kind: "traex", Detected: true, Status: "not_connected"},
+		{ID: "antigravity", Kind: "antigravity", Detected: false, Status: "not_connected"},
 		{ID: "claude", Kind: "claude_code", Detected: true, Status: "not_connected"},
 		{ID: "cursor", Kind: "cursor", Status: "not_connected"},
 		{ID: "opencode", Kind: "opencode", Detected: true, Status: "integration_pending"},
@@ -109,14 +110,35 @@ func TestAgentConnectionDefaultShowsClearStatusesAndCollapsesUnavailable(t *test
 	tt := ui.NewTester(func(c *ui.Context) {
 		ui.Column(c).Fill().Padding(24).Gap(12).Children(func() { a.agentConnectionSettings(c) })
 	}, 900, 560)
-	if !tt.HasText("等待采集验证") || !tt.HasText("其他 Agent（2）") {
+	if !tt.HasText("等待采集验证") || !tt.HasText("其他 Agent（1）") {
 		t.Fatal("simple statuses absent")
 	}
 	if _, ok := tt.Find("选择 Codex"); ok {
 		t.Fatal("connected Agent shows a selection box")
 	}
-	if tt.HasText("Cursor") || tt.HasText("OpenCode") || tt.HasText("准备所选 Agent") || tt.HasText("启用已准备项") {
-		t.Fatal("unavailable or internal controls visible")
+	if tt.HasText("Gemini App") || tt.HasText("Claude Code") || tt.HasText("Cursor") || tt.HasText("OpenCode") || tt.HasText("准备所选 Agent") || tt.HasText("启用已准备项") {
+		t.Fatal("unavailable/unreleased or internal controls visible")
 	}
 	fixtureImage(t, tt, "agent-connection-default")
+}
+
+func TestBetaHiddenHostsStayVisibleWhenAlreadyConfiguredOrPending(t *testing.T) {
+	a := settingsFixture()
+	a.page = "设置"
+	a.access.SettingsSection = "Agent 与模型"
+	a.integrations = integrationState{Loaded: true, Connections: ConnectionsDirectory{Connections: []AgentConnection{
+		{ID: "claude-ready", Kind: "claude_code", Detected: true, Status: "configured_pending_new_session", NewSessions: 1},
+		{ID: "cursor-prepared", Kind: "cursor", Detected: true, Status: "prepared", Preview: &CodexConnectionPreview{ProposedSHA: "reviewed"}},
+		{ID: "opencode-unknown", Kind: "opencode", Detected: true, Status: "agent_creation_unconfirmed"},
+		{ID: "claude-idle", Kind: "claude_code", Detected: true, Status: "not_connected"},
+	}}}
+	tt := ui.NewTester(a.View, 1200, 820)
+	for _, visible := range []string{"Claude Code", "Cursor", "OpenCode", "确认连接 Cursor", "核对连接"} {
+		if !tt.HasText(visible) {
+			t.Fatalf("expected existing/pending connection %q to remain visible", visible)
+		}
+	}
+	if tt.HasText("连接 Claude Code") {
+		t.Fatal("unconnected non-beta Claude Code row should be hidden")
+	}
 }

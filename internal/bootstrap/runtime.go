@@ -24,6 +24,7 @@ type RuntimeDriver struct {
 	ExistingPython string
 	Python         func(context.Context) (string, error)
 	UV             func(context.Context) (string, error)
+	DownloadSource string
 }
 
 func (d RuntimeDriver) Digest() string { h := sha256.Sum256(d.Lock); return hex.EncodeToString(h[:]) }
@@ -100,7 +101,29 @@ func (d RuntimeDriver) Install(ctx context.Context, r Requirement) error {
 	}
 	// uv splits constraint-file arguments on spaces. The process already runs
 	// in the owned destination, so keep both lock arguments relative.
-	if err := runManaged(ctx, r.Destination, uv, "--no-config", "--cache-dir", filepath.Join(r.Destination, "cache"), "pip", "sync", "--python", python, "--require-hashes", "--build-constraints", filepath.Base(lock), filepath.Base(lock)); err != nil {
+	syncArgs := func(indexURL string) []string {
+		args := []string{"--no-config", "--cache-dir", filepath.Join(r.Destination, "cache"), "pip", "sync", "--python", python, "--require-hashes", "--build-constraints", filepath.Base(lock)}
+		if indexURL != "" {
+			args = append(args, "--default-index", indexURL)
+		}
+		return append(args, filepath.Base(lock))
+	}
+	if d.DownloadSource != "" {
+		indexes := PyPIIndexURLs(d.DownloadSource)
+		var syncErr error
+		for _, idxURL := range indexes {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			syncErr = runManaged(ctx, r.Destination, uv, syncArgs(idxURL)...)
+			if syncErr == nil {
+				break
+			}
+		}
+		if syncErr != nil {
+			return syncErr
+		}
+	} else if err := runManaged(ctx, r.Destination, uv, syncArgs("")...); err != nil {
 		return err
 	}
 	if d.Native != nil {
@@ -145,6 +168,7 @@ func runManaged(ctx context.Context, root, executable string, args ...string) er
 	cmd := exec.CommandContext(ctx, executable, args...)
 	cmd.Dir = root
 	cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=" + home, "TMPDIR=" + root, "LANG=en_US.UTF-8", "UV_NO_CONFIG=1", "UV_PYTHON_DOWNLOADS=never", "PYTHONDONTWRITEBYTECODE=1", "HF_HUB_OFFLINE=1"}
+	cmd.Env = append(cmd.Env, proxyEnvVars(ctx)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {

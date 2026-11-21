@@ -7,6 +7,28 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
+func isBetaSupportedAgentKind(kind string) bool {
+	switch kind {
+	case "codex", "antigravity", "pi", "traex":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAgentVisibleInBeta(row AgentConnection, pending *generationUIOperation) bool {
+	if isBetaSupportedAgentKind(row.Kind) || pending != nil {
+		return true
+	}
+	switch row.Status {
+	case "configured_pending_new_session", "prepared", "requires_review",
+		"activation_unknown", "preparation_unknown", "staging_unknown",
+		"agent_creation_unconfirmed":
+		return true
+	}
+	return false
+}
+
 func connectionUnavailable(row AgentConnection) bool {
 	switch row.Status {
 	case "configured_pending_new_session", "prepared", "requires_review", "activation_unknown", "preparation_unknown", "staging_unknown", "agent_creation_unconfirmed":
@@ -23,26 +45,20 @@ func (a *App) agentConnectionSettings(c *ui.Context) {
 func (a *App) agentConnectionSettingsContent(c *ui.Context) {
 	s := &a.integrations
 	a.refreshAgentReceiptsIfDue(time.Now())
-	recheckLabel := "重新检测"
-	if s.Loading {
-		recheckLabel = "检测中…"
-	}
 	v4Group(c, "Agent 连接", "", func() {
-		v4SmallButton(c, recheckLabel, v4IconRefresh, a.RefreshConnections).Disabled(s.Busy || s.Loading)
+		v4SmallButton(c, "重新检测", v4IconRefresh, a.RefreshConnections).Disabled(s.Busy || s.Loading)
 	}, func() {
 		if !s.Loaded {
-			if s.Loading {
-				v4SkeletonGroup(c, 3, 2, true, true)
-			} else {
+			if s.Error != "" {
 				v4Row(c, v4RowOptions{
-					Title: "正在读取连接状态…",
+					Title: "连接状态暂时不可用",
 					Desc:  s.Error,
 					Control: func() {
-						if s.Error != "" {
-							v4SmallButton(c, "重试", v4IconRefresh, a.RefreshIntegrations)
-						}
+						v4SmallButton(c, "重试", v4IconRefresh, a.RefreshIntegrations)
 					},
 				})
+			} else {
+				v4SkeletonGroup(c, 3, 2, true, true)
 			}
 			return
 		}
@@ -51,6 +67,9 @@ func (a *App) agentConnectionSettingsContent(c *ui.Context) {
 		}
 		var available, unavailable []AgentConnection
 		for _, row := range s.Connections.Connections {
+			if !isAgentVisibleInBeta(row, s.pendingConnection(row.ID)) {
+				continue
+			}
 			if connectionUnavailable(row) {
 				unavailable = append(unavailable, row)
 			} else {

@@ -75,6 +75,7 @@ type App struct {
 	ChooseProjectFolder   func() (string, error)
 	ChooseDiagnosticPath  func() (string, error)
 	OpenExistingAgent     func(string) error
+	OpenExternalURL       func(string) error
 	ApplyAppearanceSource func(string)
 	ReadOpenAtLoginFn     func() bool
 	SetOpenAtLoginFn      func(bool) error
@@ -85,6 +86,7 @@ type App struct {
 	QuitAppFn             func(stopServices bool)
 	appearance            appearanceState
 	desktopPrefs          desktopPreferencesState
+	updateCheck           updateCheckState
 	motionRuns            struct {
 		overviewPage      uint64
 		overviewKnowledge uint64

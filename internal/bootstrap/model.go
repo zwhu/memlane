@@ -48,9 +48,10 @@ func (s ModelSpec) Bytes() int64 {
 }
 
 type ModelDriver struct {
-	Spec         ModelSpec
-	ExistingRoot string
-	Python       func(context.Context) (string, error)
+	Spec           ModelSpec
+	ExistingRoot   string
+	Python         func(context.Context) (string, error)
+	DownloadSource string
 }
 
 func modelSnapshot(root string, r ModelRepository) string {
@@ -146,7 +147,13 @@ func (d ModelDriver) Install(ctx context.Context, r Requirement) error {
 			return err
 		}
 		for _, file := range repo.Files {
-			if err := fetchArchive(ctx, file.URL, file.SHA256, filepath.Join(snapshot, file.Name)); err != nil {
+			target := filepath.Join(snapshot, file.Name)
+			if d.DownloadSource != "" {
+				candidates := ModelFileCandidates(repo.Repo, file, d.DownloadSource)
+				if _, err := fetchArtifactCandidates(ctx, candidates, func(ArtifactCandidate) string { return target }); err != nil {
+					return err
+				}
+			} else if err := fetchArchive(ctx, file.URL, file.SHA256, target); err != nil {
 				return err
 			}
 		}

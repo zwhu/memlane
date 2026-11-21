@@ -2,12 +2,10 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -49,8 +47,16 @@ func main() {
 			Content:       ui.View(app.View),
 		})
 
-		quitting := false
-		mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { quitting = true })
+		quitCoord := newQuitCoordinator(
+			app.KeepAliveOnQuit,
+			bootstrap.ShutdownAllFirstRuntimes,
+			mygo.App.Quit,
+			8*time.Second,
+			log.Printf,
+		)
+		mygo.App.OnBeforeQuit(func(e *mygo.QuitEvent) {
+			quitCoord.HandleBeforeQuit(e.PreventDefault)
+		})
 
 		const (
 			trayFlyoutWidth  = 300
@@ -67,6 +73,11 @@ func main() {
 		if trayErr != nil {
 			log.Printf("菜单栏状态图标不可用：%v", trayErr)
 		}
+		mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
+			if tray != nil {
+				tray.Destroy()
+			}
+		})
 
 		var flyout *mygo.Window
 		var lastIcon []byte
@@ -100,7 +111,7 @@ func main() {
 			// Closing by blur/outside click/Escape would destroy a focusable flyout
 			// and break subsequent tray clicks unless prevented and hidden instead.
 			f.OnClose(func(event *mygo.CloseEvent) {
-				if !quitting {
+				if !quitCoord.IsQuitting() {
 					event.PreventDefault()
 					f.Hide()
 				}
@@ -191,29 +202,13 @@ func main() {
 			return mygo.App.SetOpenAtLogin(enable)
 		}
 
-		var shutdownRunning atomic.Bool
-		app.QuitAppFn = func(stopServices bool) {
-			if !stopServices {
-				mygo.App.Quit()
-				return
-			}
-			if !shutdownRunning.CompareAndSwap(false, true) {
-				return
-			}
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-				defer cancel()
-				if err := bootstrap.ShutdownAllFirstRuntimes(ctx); err != nil {
-					log.Printf("停止本地后台服务时遇到问题：%v", err)
-				}
-				mygo.App.Quit()
-			}()
-		}
+		app.QuitAppFn = quitCoord.RequestQuit
 
 		app.ChooseDiagnosticPath = func() (string, error) {
 			return mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: win, Title: "导出安装诊断", DefaultPath: "Memlane-diagnostic.zip", ButtonLabel: "导出", Filters: []mygo.FileFilter{{Name: "ZIP", Extensions: []string{"zip"}}}})
 		}
 		app.OpenExistingAgent = func(path string) error { return mygo.Shell.OpenPath(path) }
+		app.OpenExternalURL = func(raw string) error { return mygo.Shell.OpenExternal(raw) }
 		app.ChooseProjectFolder = func() (string, error) {
 			paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: win, Title: "选择源文件夹", ButtonLabel: "添加", Directory: true})
 			if err != nil || len(paths) == 0 {
@@ -224,7 +219,7 @@ func main() {
 		// Keep the reading tree alive when the user closes the main window.
 		// An explicit app quit must still close it so dev reloads can finish.
 		win.OnClose(func(event *mygo.CloseEvent) {
-			if !quitting {
+			if !quitCoord.IsQuitting() {
 				event.PreventDefault()
 				win.Hide()
 			}

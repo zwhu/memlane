@@ -10,6 +10,7 @@
 | [content-model.md](product/content-model.md) | 通用记忆、项目记忆、原始记录与用户画像的内容分层与读写归属 |
 | [roadmap.md](product/roadmap.md) | 后续演进方向与待办记录 |
 | [deployment-options-20261117.md](product/deployment-options-20261117.md) | 单人记忆库在本地、Docker 与远程部署的演进方向与兼容评估 |
+| [release-v0.1.0-beta.1-20261121.md](product/release-v0.1.0-beta.1-20261121.md) | v0.1.0-beta.1 小范围公测发版边界、国内镜像源实测调研与 M1–M4 实施清单 |
 
 ## 2. 系统架构与技术契约 (`architecture/`)
 

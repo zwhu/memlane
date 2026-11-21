@@ -8,16 +8,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"mime"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane"
 )
 
 // GraphHost passes only a bounded official payload and selected identities to
@@ -42,11 +46,42 @@ type GraphHost struct {
 	closed           bool
 }
 
-func RegisterGraph(directory string) (*GraphHost, error) {
-	if !filepath.IsAbs(directory) {
-		return nil, fmt.Errorf("官方图组件目录必须为绝对路径")
+type graphSelectRequest struct {
+	Epoch   uint64 `json:"epoch"`
+	Project string `json:"project"`
+	Dataset string `json:"dataset"`
+	Node    string `json:"node"`
+}
+
+type officialGraphBridge struct {
+	host atomic.Pointer[GraphHost]
+}
+
+func (b *officialGraphBridge) Ready(ctx context.Context) error {
+	if h := b.host.Load(); h != nil {
+		return h.Ready(ctx)
 	}
-	raw, err := os.ReadFile(filepath.Join(directory, "assets.json"))
+	return fmt.Errorf("graph host unavailable")
+}
+
+func (b *officialGraphBridge) Select(ctx context.Context, s graphSelectRequest) error {
+	if h := b.host.Load(); h != nil {
+		return h.Select(ctx, s)
+	}
+	return fmt.Errorf("graph host unavailable")
+}
+
+var (
+	officialGraphBridgeOnce sync.Once
+	officialGraphDispatcher officialGraphBridge
+
+	embeddedGraphOnce   sync.Once
+	embeddedGraphAssets map[string][]byte
+	embeddedGraphErr    error
+)
+
+func validateGraphAssets(readFile func(string) ([]byte, error)) (map[string][]byte, error) {
+	raw, err := readFile("assets.json")
 	if err != nil {
 		return nil, err
 	}
@@ -59,13 +94,13 @@ func RegisterGraph(directory string) (*GraphHost, error) {
 		return nil, fmt.Errorf("官方图组件版本不匹配")
 	}
 	allowed := map[string]bool{"index.html": true, "app.js": true, "app.css": true, "host.css": true, "app.js.LEGAL.txt": true, "COGNEE-LICENSE": true, "THIRD-PARTY-LICENSES.txt": true, "build.json": true}
-	g := &GraphHost{assets: map[string][]byte{}, pageReady: make(chan struct{})}
+	assets := make(map[string][]byte, len(manifest.Files))
 	size := 0
 	for name, digest := range manifest.Files {
 		if !allowed[name] {
 			return nil, fmt.Errorf("图组件资产不在白名单")
 		}
-		b, e := os.ReadFile(filepath.Join(directory, name))
+		b, e := readFile(name)
 		if e != nil {
 			return nil, e
 		}
@@ -74,15 +109,27 @@ func RegisterGraph(directory string) (*GraphHost, error) {
 		if size > 16<<20 || hex.EncodeToString(sum[:]) != digest {
 			return nil, fmt.Errorf("图组件校验失败")
 		}
-		g.assets[name] = b
+		assets[name] = b
 	}
 	for _, name := range []string{"index.html", "app.js", "app.css", "host.css"} {
-		if g.assets[name] == nil {
+		if assets[name] == nil {
 			return nil, fmt.Errorf("图组件资源缺失")
 		}
 	}
-	mygo.BindAs("OfficialGraph", g)
-	mygo.Protocol.Handle("memlanegraph", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return assets, nil
+}
+
+func registerGraphHostFromAssets(source map[string][]byte) *GraphHost {
+	assets := make(map[string][]byte, len(source))
+	for k, v := range source {
+		assets[k] = v
+	}
+	g := &GraphHost{assets: assets, pageReady: make(chan struct{})}
+	officialGraphDispatcher.host.Store(g)
+	officialGraphBridgeOnce.Do(func() {
+		mygo.BindAs("OfficialGraph", &officialGraphDispatcher)
+	})
+	_ = mygo.Protocol.Handle("memlanegraph", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The page reference is published once before loading, then immutable.
 		// A closed channel publishes it to protocol workers without a state mutex.
 		select {
@@ -109,8 +156,51 @@ func RegisterGraph(directory string) (*GraphHost, error) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		_, _ = w.Write(b)
 	}))
+	return g
+}
 
-	return g, nil
+func RegisterGraph(directory string) (*GraphHost, error) {
+	if !filepath.IsAbs(directory) {
+		return nil, fmt.Errorf("官方图组件目录必须为绝对路径")
+	}
+	assets, err := validateGraphAssets(func(name string) ([]byte, error) {
+		return os.ReadFile(filepath.Join(directory, name))
+	})
+	if err != nil {
+		return nil, err
+	}
+	return registerGraphHostFromAssets(assets), nil
+}
+
+// RegisterGraphFS verifies and registers official graph assets from an fs.FS.
+func RegisterGraphFS(assetsFS fs.FS) (*GraphHost, error) {
+	if assetsFS == nil {
+		return nil, fmt.Errorf("图组件文件系统不可用")
+	}
+	assets, err := validateGraphAssets(func(name string) ([]byte, error) {
+		return fs.ReadFile(assetsFS, name)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return registerGraphHostFromAssets(assets), nil
+}
+
+func loadEmbeddedGraphHost() (*GraphHost, error) {
+	embeddedGraphOnce.Do(func() {
+		sub, err := fs.Sub(memlane.RuntimeAssets, "web/official-graph/dist")
+		if err != nil {
+			embeddedGraphErr = err
+			return
+		}
+		embeddedGraphAssets, embeddedGraphErr = validateGraphAssets(func(name string) ([]byte, error) {
+			return fs.ReadFile(sub, name)
+		})
+	})
+	if embeddedGraphErr != nil {
+		return nil, embeddedGraphErr
+	}
+	return registerGraphHostFromAssets(embeddedGraphAssets), nil
 }
 func (g *GraphHost) attach(win *mygo.Window, selected func(json.RawMessage)) error {
 	v, e := win.NewWebView(mygo.WebViewOptions{URL: "about:blank", BackgroundColor: "#0E1526"})
@@ -151,12 +241,7 @@ func (g *GraphHost) Ready(ctx context.Context) error {
 		return g.flush(ctx)
 	})
 }
-func (g *GraphHost) Select(ctx context.Context, s struct {
-	Epoch   uint64 `json:"epoch"`
-	Project string `json:"project"`
-	Dataset string `json:"dataset"`
-	Node    string `json:"node"`
-}) error {
+func (g *GraphHost) Select(ctx context.Context, s graphSelectRequest) error {
 	return g.onUI(ctx, func() error {
 		if g.closed || g.view == nil || mygo.CallerPage(ctx) != g.view.Page() || s.Epoch != g.epoch || s.Project != g.project || s.Dataset != g.dataset || g.nodes[s.Node] == nil {
 			return fmt.Errorf("selected graph identity changed")
@@ -243,6 +328,13 @@ func (g *GraphHost) applyParsed(p Project, dataset string, data graphData, ticke
 	return g.flush(context.Background())
 }
 func (a *App) AttachGraph(win *mygo.Window) error {
+	if a.graph == nil && a.graphError == "" {
+		host, err := loadEmbeddedGraphHost()
+		a.graph = host
+		if err != nil {
+			a.graphError = err.Error()
+		}
+	}
 	if a.graph == nil {
 		return nil
 	}

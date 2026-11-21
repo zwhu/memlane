@@ -23,6 +23,7 @@ type EnvironmentOptions struct {
 	ModelCache     string
 	Plugin         string
 	ProtectedStore string
+	DownloadSource string
 }
 
 type Environment struct {
@@ -139,34 +140,32 @@ func NewEnvironment(ctx context.Context, assets fs.FS, options EnvironmentOption
 		}
 	}
 	if options.UV == "" {
-		options.UV, _ = exec.LookPath("uv")
-		if options.UV == "" {
-			for _, p := range []string{"/opt/homebrew/bin/uv", "/usr/local/bin/uv"} {
-				if _, err := os.Stat(p); err == nil {
-					options.UV = p
-					break
-				}
-			}
-		}
+		options.UV = discoverUV()
 	}
+	sourceMode := NormalizeDownloadSource(options.DownloadSource)
+	options.DownloadSource = sourceMode
 	e := &Environment{Options: options, CogneeSDKVersion: service.Service.SDKVersion}
-	e.Python = ToolDriver{ID: "python", Version: pins.Python.Version, Executable: "bin/python3.12", Artifact: pythonArtifact, ReusePath: options.Python}
-	e.UV = ToolDriver{ID: "uv", Version: pins.UV.Version, Executable: "uv", Artifact: uvArtifact, ReusePath: options.UV}
-	e.Runtime = RuntimeDriver{Lock: lock, ExistingPython: options.Python, Python: e.basePython, UV: e.uvPath}
-	if runtime.GOARCH == "arm64" {
-		e.Runtime.Native = pins.NativeARM
+	e.Python = ToolDriver{ID: "python", Version: pins.Python.Version, Executable: "bin/python3.12", Artifact: pythonArtifact, ReusePath: options.Python, DownloadSource: sourceMode}
+	e.UV = ToolDriver{ID: "uv", Version: pins.UV.Version, Executable: "uv", Artifact: uvArtifact, ReusePath: options.UV, DownloadSource: sourceMode}
+	e.Runtime = RuntimeDriver{Lock: lock, ExistingPython: options.Python, Python: e.basePython, UV: e.uvPath, DownloadSource: sourceMode}
+	if runtime.GOARCH == "arm64" && pins.NativeARM != nil {
+		native := *pins.NativeARM
+		native.DownloadSource = sourceMode
+		e.Runtime.Native = &native
 	}
-	e.Source = sourceLocations{Managed: SourceDriver{Spec: service.Service.SourceSpec}, ExistingSource: options.Source, ExistingArchive: options.Archive}
-	e.Model = ModelDriver{Spec: model, ExistingRoot: options.ModelCache, Python: e.runtimePython}
+	e.Source = sourceLocations{Managed: SourceDriver{Spec: service.Service.SourceSpec, DownloadSource: sourceMode}, ExistingSource: options.Source, ExistingArchive: options.Archive}
+	e.Model = ModelDriver{Spec: model, ExistingRoot: options.ModelCache, Python: e.runtimePython, DownloadSource: sourceMode}
 	e.Plugin = PluginDriver{Spec: service.Plugin.SourceSpec, Version: pluginVersion, Manifest: pluginManifest,
-		ExistingPath: options.Plugin, ResourceRoot: filepath.Join(options.Root, "installation"), Python: e.runtimePython}
+		ExistingPath: options.Plugin, ResourceRoot: filepath.Join(options.Root, "installation"), Python: e.runtimePython, DownloadSource: sourceMode}
+	officialPyPI := "https://pypi.org/simple/"
+	officialModel := "https://huggingface.co/Qdrant/bge-small-zh-v1.5"
 	e.requirements = []Requirement{
-		{ID: "uv", Name: "安装工具", Purpose: "下载并校验锁定的运行依赖", Version: pins.UV.Version, Source: uvArtifact.URL, Digest: uvArtifact.SHA256, DownloadBytes: uvArtifact.DownloadBytes, InstalledBytes: 60 << 20, Destination: filepath.Join(options.Root, "uv-"+pins.UV.Version), SizeNote: "占用为预估上限，兼容的现有工具直接复用"},
-		{ID: "python", Name: "Python", Purpose: "运行本地记忆引擎", Version: pins.Python.Version, Source: pythonArtifact.URL, Digest: pythonArtifact.SHA256, DownloadBytes: pythonArtifact.DownloadBytes, InstalledBytes: 100 << 20, Destination: filepath.Join(options.Root, "python-"+pins.Python.Version), SizeNote: "占用为预估上限，兼容的现有解释器直接复用"},
-		{ID: "runtime", Name: "引擎运行库", Purpose: "提供本地数据库、向量计算及服务能力", Version: "requirements.lock", Source: "https://pypi.org/simple/", Digest: e.Runtime.Digest(), DownloadBytes: 2 << 30, InstalledBytes: 4 << 30, Destination: filepath.Join(options.Root, "runtime-"+e.Runtime.Digest()[:12]), SizeNote: "下载和占用为估算预算，按随附锁文件及哈希安装；不会修改已有 Python 环境"},
-		{ID: "cognee-source", Name: "Cognee", Purpose: "提供官方记忆提炼与检索", Version: service.Service.Commit, Source: service.Service.URL, Digest: service.Service.SHA256, DownloadBytes: 150 << 20, InstalledBytes: 300 << 20, Destination: filepath.Join(options.Root, "cognee-"+service.Service.Commit[:12]), SizeNote: "下载和占用为估算预算，固定提交及归档 SHA256"},
-		{ID: "embedding", Name: "本地向量模型", Purpose: "在本机将文本转换为检索向量", Version: model.Model, Source: "https://huggingface.co/Qdrant/bge-small-zh-v1.5", Digest: model.Digest(), DownloadBytes: model.Bytes(), InstalledBytes: model.Bytes(), Destination: filepath.Join(options.Root, "embedding-"+model.Digest()[:12]), SizeNote: "含固定 ONNX 模型及官方分词文件，复用原有向量空间"},
-		{ID: "agent-plugin", Name: "Agent 插件", Purpose: "为已有 Agent 准备官方 Cognee 接入插件及固定权限适配", Version: pluginVersion, Source: service.Plugin.URL, Digest: service.Plugin.SHA256, DownloadBytes: 20 << 20, InstalledBytes: 60 << 20, Destination: filepath.Join(options.Root, "plugin-integrations-"+service.Plugin.Commit[:7]+"-"+hex.EncodeToString(pluginDigest[:])[:8]), SizeNote: "下载和占用为预估预算；固定官方归档及补丁，不包含账号或登录信息"},
+		{ID: "uv", Name: "安装工具", Purpose: "下载并校验锁定的运行依赖", Version: pins.UV.Version, Source: DisplaySourceURL("uv", uvArtifact.URL, uvArtifact.SHA256, sourceMode), OfficialSource: uvArtifact.URL, Digest: uvArtifact.SHA256, DownloadBytes: uvArtifact.DownloadBytes, InstalledBytes: 60 << 20, Destination: filepath.Join(options.Root, "uv-"+pins.UV.Version), SizeNote: "占用为预估上限，兼容的现有工具直接复用"},
+		{ID: "python", Name: "Python", Purpose: "运行本地记忆引擎", Version: pins.Python.Version, Source: DisplaySourceURL("python", pythonArtifact.URL, pythonArtifact.SHA256, sourceMode), OfficialSource: pythonArtifact.URL, Digest: pythonArtifact.SHA256, DownloadBytes: pythonArtifact.DownloadBytes, InstalledBytes: 100 << 20, Destination: filepath.Join(options.Root, "python-"+pins.Python.Version), SizeNote: "占用为预估上限，兼容的现有解释器直接复用"},
+		{ID: "runtime", Name: "引擎运行库", Purpose: "提供本地数据库、向量计算及服务能力", Version: "requirements.lock", Source: DisplaySourceURL("runtime", officialPyPI, e.Runtime.Digest(), sourceMode), OfficialSource: officialPyPI, Digest: e.Runtime.Digest(), DownloadBytes: 2 << 30, InstalledBytes: 4 << 30, Destination: filepath.Join(options.Root, "runtime-"+e.Runtime.Digest()[:12]), SizeNote: "下载和占用为估算预算，按随附锁文件及哈希安装；不会修改已有 Python 环境"},
+		{ID: "cognee-source", Name: "Cognee", Purpose: "提供官方记忆提炼与检索", Version: service.Service.Commit, Source: DisplaySourceURL("cognee-source", service.Service.URL, service.Service.SHA256, sourceMode), OfficialSource: service.Service.URL, Digest: service.Service.SHA256, DownloadBytes: 150 << 20, InstalledBytes: 300 << 20, Destination: filepath.Join(options.Root, "cognee-"+service.Service.Commit[:12]), SizeNote: "下载和占用为估算预算，固定提交及归档 SHA256"},
+		{ID: "embedding", Name: "本地向量模型", Purpose: "在本机将文本转换为检索向量", Version: model.Model, Source: DisplaySourceURL("embedding", officialModel, model.Digest(), sourceMode), OfficialSource: officialModel, Digest: model.Digest(), DownloadBytes: model.Bytes(), InstalledBytes: model.Bytes(), Destination: filepath.Join(options.Root, "embedding-"+model.Digest()[:12]), SizeNote: "含固定 ONNX 模型及官方分词文件，复用原有向量空间"},
+		{ID: "agent-plugin", Name: "Agent 插件", Purpose: "为已有 Agent 准备官方 Cognee 接入插件及固定权限适配", Version: pluginVersion, Source: DisplaySourceURL("agent-plugin", service.Plugin.URL, service.Plugin.SHA256, sourceMode), OfficialSource: service.Plugin.URL, Digest: service.Plugin.SHA256, DownloadBytes: 20 << 20, InstalledBytes: 60 << 20, Destination: filepath.Join(options.Root, "plugin-integrations-"+service.Plugin.Commit[:7]+"-"+hex.EncodeToString(pluginDigest[:])[:8]), SizeNote: "下载和占用为预估预算；固定官方归档及补丁，不包含账号或登录信息"},
 	}
 	if e.Runtime.Native != nil {
 		for i := range e.requirements {
@@ -360,4 +359,29 @@ func (d sourceLocations) Probe(ctx context.Context, r Requirement) (Observation,
 		}
 	}
 	return o, nil
+}
+
+func discoverUV() string {
+	home, _ := os.UserHomeDir()
+	return discoverUVWith(exec.LookPath, home)
+}
+
+func discoverUVWith(lookPath func(string) (string, error), home string) string {
+	if p, err := lookPath("uv"); err == nil && p != "" {
+		return p
+	}
+	var candidates []string
+	if home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, ".local/bin/uv"),
+			filepath.Join(home, ".cargo/bin/uv"),
+		)
+	}
+	candidates = append(candidates, "/opt/homebrew/bin/uv", "/usr/local/bin/uv")
+	for _, p := range candidates {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() && info.Mode().Perm()&0111 != 0 {
+			return p
+		}
+	}
+	return ""
 }

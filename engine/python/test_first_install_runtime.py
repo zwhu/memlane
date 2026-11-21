@@ -29,9 +29,9 @@ class FirstRuntimeFixture:
         write_private(self.root / 'owner.token', 'synthetic-owner-key-only-for-protocol-fixture')
         self.path = self.parent / 'runtime.json'
 
-    def prepare(self):
+    def prepare(self, *, graph_assets=None):
         with patch('dev.validate_project_control'), patch('agent_connections.detect_executable', return_value=None):
-            return runtime.prepare_runtime(self.root, self.path, '/synthetic/plugin', python='/synthetic/python')
+            return runtime.prepare_runtime(self.root, self.path, '/synthetic/plugin', python='/synthetic/python', graph_assets=graph_assets)
 
 
 class FirstRuntimeTests(FirstRuntimeFixture, unittest.TestCase):
@@ -136,3 +136,44 @@ class FirstRuntimeTests(FirstRuntimeFixture, unittest.TestCase):
         self.assertEqual(len(exec_calls), 1)
         self.assertEqual(exec_calls[0][2]['HOME'], str(fake_home))
         self.assertEqual(exec_calls[0][2]['PYTHONDONTWRITEBYTECODE'], '1')
+
+    def test_graph_assets_defaults_to_repo_bundle_and_accepts_explicit_cli_flag(self):
+        import os
+        import sys
+        auto_cfg = self.prepare()
+        expected_repo_dist = str(runtime.ROOT / 'web/official-graph/dist')
+        if (runtime.ROOT / 'web/official-graph/dist/assets.json').is_file():
+            self.assertEqual(auto_cfg['graph_assets'], expected_repo_dist)
+        else:
+            self.assertEqual(auto_cfg['graph_assets'], '')
+
+        # Fresh config with explicit --graph-assets CLI flag writes the path and reentry preserves it.
+        cfg_path = self.parent / 'explicit-runtime.json'
+        fake_home = self.parent / 'host-home-2'
+        fake_home.mkdir()
+        explicit_assets = self.parent / 'embedded-graph-dist'
+        explicit_assets.mkdir()
+        python_bin = self.parent / 'fake-python-2'
+        python_bin.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+        python_bin.chmod(0o700)
+        with patch.dict(os.environ, {'HOME': str(self.parent)}, clear=False), \
+                patch('dev.validate_project_control'), \
+                patch('agent_connections.detect_executable', return_value=None), \
+                patch('os.execve'), \
+                patch.object(sys, 'argv', [
+                    'first_install_runtime.py',
+                    '--store-root', str(self.root),
+                    '--runtime-config', str(cfg_path),
+                    '--plugin', '/synthetic/plugin',
+                    '--host-home', str(fake_home),
+                    '--python-executable', str(python_bin),
+                    '--graph-assets', str(explicit_assets),
+                ]):
+            runtime.main()
+        written = cfg_path.read_bytes()
+        parsed = json.loads(written)
+        self.assertEqual(parsed['graph_assets'], str(explicit_assets))
+        with patch('dev.load_config', side_effect=lambda path: json.loads(runtime.read_private(path))):
+            reentered = runtime.prepare_runtime(self.root, cfg_path, '/synthetic/plugin', graph_assets=self.parent / 'other-assets')
+        self.assertEqual(reentered['graph_assets'], str(explicit_assets))
+        self.assertEqual(cfg_path.read_bytes(), written)

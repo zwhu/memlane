@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -135,5 +137,75 @@ func TestUVProbeFingerprintChangesWhenExecutableIsReplaced(t *testing.T) {
 	second, err := d.probePath(context.Background(), path)
 	if err != nil || second.Status != Available || second.Fingerprint == first.Fingerprint {
 		t.Fatal("replaced executable retained approved identity", first, second, err)
+	}
+}
+
+func TestExtractWheelExecutableValidatesEntryAndRejectsTraversalOrSymlink(t *testing.T) {
+	dir := t.TempDir()
+	whlPath := filepath.Join(dir, "uv.whl")
+	f, err := os.Create(whlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	w, err := zw.Create(pinnedUV0123Arm64WheelEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := "#!/bin/sh\necho uv 0.12.3\n"
+	if _, err := w.Write([]byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+	symHdr := &zip.FileHeader{Name: "uv-0.12.3.data/scripts/symuv", Method: zip.Deflate}
+	symHdr.SetMode(os.ModeSymlink | 0777)
+	sw, err := zw.CreateHeader(symHdr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = sw.Write([]byte("/etc/passwd"))
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(dir, "out", "uv")
+	if err := extractWheelExecutable(context.Background(), whlPath, pinnedUV0123Arm64WheelEntry, dest); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil || string(got) != payload {
+		t.Fatalf("got %q err=%v", string(got), err)
+	}
+	info, err := os.Stat(dest)
+	if err != nil || info.Mode().Perm() != 0700 {
+		t.Fatalf("expected 0700 mode, got %v err=%v", info.Mode().Perm(), err)
+	}
+	for _, bad := range []string{"../uv", "uv-0.12.3.data/scripts/symuv", "uv-0.12.3.data/scripts/missing"} {
+		if err := extractWheelExecutable(context.Background(), whlPath, bad, filepath.Join(dir, "bad", filepath.Base(bad))); err == nil {
+			t.Fatalf("expected error for zip entry %q", bad)
+		}
+	}
+}
+
+func TestToolDriverMatchesDisplayMirrorURLWhenDownloadSourceConfigured(t *testing.T) {
+	official := "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-apple-darwin.tar.gz"
+	d := ToolDriver{
+		ID:             "uv",
+		Version:        "0.12.3",
+		Executable:     "uv",
+		Artifact:       Artifact{URL: official, SHA256: pinnedUV0123Arm64OfficialSHA256},
+		DownloadSource: DownloadSourceChina,
+	}
+	chinaDisplay := DisplaySourceURL("uv", official, pinnedUV0123Arm64OfficialSHA256, DownloadSourceChina)
+	if !strings.Contains(chinaDisplay, "pypi.tuna.tsinghua.edu.cn") {
+		t.Fatalf("unexpected china display url: %s", chinaDisplay)
+	}
+	if !d.matches(Requirement{ID: "uv", Version: "0.12.3", Source: chinaDisplay, OfficialSource: official, Digest: pinnedUV0123Arm64OfficialSHA256}) {
+		t.Fatal("expected tool driver with DownloadSource=china to match DisplaySourceURL requirement")
+	}
+	if !d.matches(Requirement{ID: "uv", Version: "0.12.3", Source: official, OfficialSource: official, Digest: pinnedUV0123Arm64OfficialSHA256}) {
+		t.Fatal("expected tool driver to still accept official URL requirement")
 	}
 }
