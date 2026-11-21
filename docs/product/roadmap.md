@@ -101,3 +101,11 @@
 - [ ] 将 Agent 家族、客户端形态、执行位置、实际配置目录及逐项能力证据纳入连接能力账本和设置反馈；同配置接入复用、未知来源保留并提示、原身份恢复与跨客户端去重。
 - **实施依据**：[多客户端接入规则](../architecture/agent-connection-contract.md)。Claude Code / Desktop 编码 / 普通聊天逐项核实，不由品牌或界面外观推定覆盖。
 - **状态**：本轮记录设计规则和TODO；仅实现 Codex 本机已观察 Desktop 来源的兼容修复，未实施通用能力账本或 Claude 接入。普通 ChatGPT 对话采集仍为独立待办，先前工作量不适用于已证实复用 hook 的本机 Codex Desktop。
+
+## 新项目记忆冷启动交互效果优化
+
+- **记录日期**：2026-11-21，用户明确提出「冷启动新的项目记忆的时候，那个交互效果非常突兀」。
+- [ ] 排查并优化冷启动首次进入新项目「记忆」页面时的加载过渡与入场交互，消除骨架占位／初始态切换到真实记忆列表与阅读区时的突兀跳变，并在浅色与深色两套外观下实窗验收。
+- **待排查重点**：冷启动首次打开尚未加载的项目记忆（`!s.Loaded`）时，页面 `Page Rise`、列表骨架占位、首批记忆预热渲染与 `Stagger Cascade` 入场、以及右侧阅读区空态／首条选中过渡之间的衔接节奏。
+- **参考位置**：[app.go](../../internal/simpledesktop/app.go)、[knowledge_waterfall.go](../../internal/simpledesktop/knowledge_waterfall.go)、[project_reading_ui.go](../../internal/simpledesktop/project_reading_ui.go)、[motion_tokens.go](../../internal/simpledesktop/motion_tokens.go)、[MyGo 动效契约](../design/motion-implementation.md)。
+- **状态**：TODO，已记录、未排期；本轮仅记录，暂不改动实现。
