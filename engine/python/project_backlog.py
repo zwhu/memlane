@@ -20,6 +20,7 @@ from project_policy import PolicyError
 from performance_trace import RequestTrace
 
 ACTIVE = {'queued', 'reviewing', 'running', 'waiting', 'stopping', 'processing'}
+MAX_BACKLOG_JOBS = 100
 WORKER = Path(__file__).with_name('project_backlog_worker.py')
 HASH_CHUNK_SIZE = 1024 * 1024
 INSTALLATION_VERIFY_TTL_SECONDS = 300.0
@@ -313,6 +314,49 @@ class Backlog:
             raise PolicyError('backlog_write_denied', 403)
         return agent, view
 
+    def _prune_finished_jobs(self, target_project_id, *, max_jobs=MAX_BACKLOG_JOBS):
+        """FIFO-evict oldest non-active historical jobs so new operations never wedged on 100 entries."""
+        if len(self.jobs) < max_jobs:
+            return
+        running_proc_op = (
+            self.processing_operation
+            if (self.processing_task and not self.processing_task.done())
+            else None
+        )
+        hard_protected = set()
+        latest_by_project = {}
+        for op_id, row in self.jobs.items():
+            status = row.get('status')
+            if status in ACTIVE or status == 'watching' or op_id == running_proc_op:
+                hard_protected.add(op_id)
+            elif row.get('automatic') and any(
+                t.get('processing') in ('queued', 'deferred', 'partial', 'submitting')
+                for t in row.get('pending_processing', {}).values()
+            ):
+                hard_protected.add(op_id)
+            pid = row.get('project_id')
+            created = float(row.get('created_at', 0.0))
+            if pid and (pid not in latest_by_project or created >= latest_by_project[pid][0]):
+                latest_by_project[pid] = (created, op_id, row)
+
+        pause_guard = set()
+        for pid, (_, op_id, row) in latest_by_project.items():
+            if pid != target_project_id and row.get('status') in ('paused', 'stopped', 'interrupted'):
+                pause_guard.add(op_id)
+
+        evictable = [
+            (float(row.get('created_at', 0.0)), op_id)
+            for op_id, row in self.jobs.items()
+            if op_id not in hard_protected and op_id not in pause_guard
+        ]
+        evictable.sort()
+        for _, op_id in evictable:
+            if len(self.jobs) < max_jobs:
+                break
+            removed = self.jobs.pop(op_id, None)
+            if removed is not None:
+                self.cancel_file(removed).unlink(missing_ok=True)
+
     def start(self, project_id, operation_id, *, automatic=False, selected=None):
         try:
             if str(uuid.UUID(operation_id)) != operation_id:
@@ -333,7 +377,9 @@ class Backlog:
             raise PolicyError('backlog_sender_busy', 409)
         if project_id not in self.registry.state['projects']:
             raise PolicyError('project_not_found', 404)
-        if old is None and len(self.jobs) >= 100:
+        if old is None and len(self.jobs) >= MAX_BACKLOG_JOBS:
+            self._prune_finished_jobs(project_id, max_jobs=MAX_BACKLOG_JOBS)
+        if old is None and len(self.jobs) >= MAX_BACKLOG_JOBS:
             raise PolicyError('backlog_journal_limit', 409)
         project = self.registry.state['projects'][project_id]
         targets = []

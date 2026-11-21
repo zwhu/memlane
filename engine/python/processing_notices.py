@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 
 from aiohttp import web
+from performance_trace import BRIDGE_BACKENDS, BRIDGE_COMPONENTS, BRIDGE_ERROR_CODES
 from project_policy import PolicyError
 
 TAIL_BYTES = 1024 * 1024
@@ -41,15 +42,13 @@ def trace_rows(path):
 
 def processing_notices(root, dataset, *, now=None):
     now = now or datetime.now(timezone.utc)
-    codes = {'codex_schema_unsupported', 'codex_request_invalid', 'codex_model_failed',
-             'codex_quota_exceeded', 'codex_rate_limited', 'codex_timeout',
-             'codex_authentication_failed', 'codex_context_exceeded',
-             'codex_connection_failed', 'codex_stream_disconnected', 'codex_upstream_error'}
     bridge = {}
     for log_name in ('codex_completion_endpoint.log', 'agent_completion_endpoint.log'):
         for r in trace_rows(Path(root) / log_name):
-            if r.get('component') == 'codex_bridge' and r.get('outcome') in codes:
-                bridge[r['request_id']] = r.get('outcome')
+            comp = r.get('component')
+            outcome = r.get('outcome')
+            if comp in BRIDGE_COMPONENTS and outcome in BRIDGE_ERROR_CODES:
+                bridge[r['request_id']] = (outcome, comp[:-len('_bridge')])
     failures = {}
     latest_success_dt = None
     latest_success_iso = ''
@@ -74,10 +73,19 @@ def processing_notices(root, dataset, *, now=None):
         operation = row.get('operation_id') or row['request_id']
         if not re.fullmatch(r'[0-9a-f-]{32,36}', str(operation)):
             continue
+        matched = bridge.get(row['request_id'])
+        code = matched[0] if matched else 'model_request_failed'
+        row_backend = row.get('backend_kind')
+        if row_backend in BRIDGE_BACKENDS:
+            backend = row_backend
+        elif matched and row_backend in (None, '', 'unknown'):
+            backend = matched[1]
+        else:
+            backend = 'provider'
         item = {'operation_id': operation, 'request_id': row['request_id'],
                 'at': at.isoformat(), 'http_status': status,
-                'code': bridge.get(row['request_id'], 'model_request_failed'),
-                'backend': 'codex' if row.get('backend_kind') == 'codex' else 'provider'}
+                'code': code,
+                'backend': backend}
         if operation not in failures or at > failures[operation][0]:
             failures[operation] = (at, item)
     # Historical request failures, not inferred task outcomes or write receipts.

@@ -966,5 +966,53 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await cold_backlog.close()
 
+    async def test_fifo_pruning_evicts_finished_jobs_while_protecting_active_and_other_paused(self):
+        self.registry.state['projects']['p-paused'] = {'id': 'p-paused', 'dataset_id': 'ds-paused'}
+        completed_ids = []
+        for idx in range(99):
+            op_id = str(uuid.UUID(int=1000 + idx))
+            completed_ids.append(op_id)
+            row = {
+                'operation_id': op_id,
+                'project_id': 'p',
+                'status': 'completed',
+                'reason': '',
+                'created_at': 1000.0 + idx,
+                'targets': [],
+            }
+            self.backlog.jobs[op_id] = row
+            self.backlog.cancel_file(row).write_bytes(b'stop')
+
+        paused_op = str(uuid.UUID(int=9999))
+        self.backlog.jobs[paused_op] = {
+            'operation_id': paused_op,
+            'project_id': 'p-paused',
+            'status': 'paused',
+            'reason': 'user_stopped',
+            'created_at': 1.0,  # oldest timestamp overall, but latest paused job for p-paused!
+            'targets': [],
+        }
+        self.assertEqual(len(self.backlog.jobs), 100)
+
+        new_op = str(uuid.uuid4())
+        started = self.backlog.start('p', new_op)
+        self.assertEqual(started['operation_id'], new_op)
+        self.gate.set()
+        await self.backlog.task
+
+        self.assertEqual(len(self.backlog.jobs), 100)
+        self.assertIn(new_op, self.backlog.jobs)
+        self.assertIn(paused_op, self.backlog.jobs)
+        self.assertNotIn(completed_ids[0], self.backlog.jobs)
+        self.assertFalse((self.backlog.root / f'{completed_ids[0]}.stop').exists())
+        self.assertIn(completed_ids[-1], self.backlog.jobs)
+
+        # When 100 jobs are all active/watching, backlog_journal_limit (409) still triggers.
+        for row in self.backlog.jobs.values():
+            row['status'] = 'watching'
+        with self.assertRaises(PolicyError) as ctx:
+            self.backlog.start('p', str(uuid.uuid4()))
+        self.assertEqual((ctx.exception.code, ctx.exception.status), ('backlog_journal_limit', 409))
+
 
 if __name__=='__main__':unittest.main()

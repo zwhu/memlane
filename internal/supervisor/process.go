@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -358,6 +359,172 @@ func (p *ManagedProcess) StopGroup(grace, killWait time.Duration) error {
 		return nil
 	}
 	return fmt.Errorf("owned process group exit unconfirmed: %d", p.pid)
+}
+
+func trackDescendantsFromTable(roots []int, known map[int]string, table map[int]ProcessInfo) bool {
+	if known == nil {
+		return false
+	}
+	changed := false
+	for pid, started := range known {
+		if pid <= 1 || started == "" {
+			delete(known, pid)
+			changed = true
+			continue
+		}
+		info, ok := table[pid]
+		if !ok || info.Started != started {
+			delete(known, pid)
+			changed = true
+		}
+	}
+	rootSet := make(map[int]struct{}, len(roots))
+	for _, pid := range roots {
+		if pid > 1 {
+			rootSet[pid] = struct{}{}
+		}
+	}
+	if len(rootSet) == 0 {
+		return changed
+	}
+	tracked := maps.Clone(rootSet)
+	for {
+		added := false
+		for pid, info := range table {
+			if pid <= 1 {
+				continue
+			}
+			if _, seen := tracked[pid]; seen {
+				continue
+			}
+			if _, isChild := tracked[info.PPID]; isChild {
+				tracked[pid] = struct{}{}
+				added = true
+				continue
+			}
+			if _, sameGroup := rootSet[info.PGID]; sameGroup {
+				tracked[pid] = struct{}{}
+				added = true
+			}
+		}
+		if !added {
+			break
+		}
+	}
+	for pid := range tracked {
+		if _, isRoot := rootSet[pid]; isRoot {
+			continue
+		}
+		info, ok := table[pid]
+		if !ok || info.Started == "" {
+			continue
+		}
+		if known[pid] != info.Started {
+			known[pid] = info.Started
+			changed = true
+		}
+	}
+	return changed
+}
+
+// StopTrackedDescendants sends SIGTERM then SIGKILL to previously observed
+// descendants whose kernel start identity still matches known.
+func StopTrackedDescendants(ctx context.Context, known map[int]string, grace, killWait time.Duration) error {
+	return stopTrackedDescendantsWith(ctx, known, grace, killWait, ProcessTable, syscall.Kill)
+}
+
+func stopTrackedDescendantsWith(
+	ctx context.Context,
+	known map[int]string,
+	grace, killWait time.Duration,
+	tableFn func(context.Context) (map[int]ProcessInfo, error),
+	signalFn func(int, syscall.Signal) error,
+) error {
+	if len(known) == 0 {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if grace <= 0 {
+		grace = 5 * time.Second
+	}
+	if killWait <= 0 {
+		killWait = 5 * time.Second
+	}
+	remaining := make(map[int]string, len(known))
+	for pid, started := range known {
+		if pid > 1 && started != "" {
+			remaining[pid] = started
+		}
+	}
+	if len(remaining) == 0 {
+		return nil
+	}
+	probeTable := func() (map[int]ProcessInfo, error) {
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		return tableFn(probeCtx)
+	}
+	phases := []struct {
+		sig  syscall.Signal
+		wait time.Duration
+	}{
+		{syscall.SIGTERM, grace},
+		{syscall.SIGKILL, killWait},
+	}
+	for _, phase := range phases {
+		table, err := probeTable()
+		if err != nil {
+			return err
+		}
+		live := make(map[int]string)
+		for pid, started := range remaining {
+			if info, ok := table[pid]; ok && info.Started == started {
+				live[pid] = started
+			}
+		}
+		remaining = live
+		if len(remaining) == 0 {
+			return nil
+		}
+		for pid := range remaining {
+			if err := signalFn(pid, phase.sig); err != nil && !errors.Is(err, syscall.ESRCH) && !errors.Is(err, syscall.EPERM) {
+				return err
+			}
+		}
+		deadline := time.Now().Add(phase.wait)
+		for time.Now().Before(deadline) {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			time.Sleep(25 * time.Millisecond)
+			table, err = probeTable()
+			if err != nil {
+				continue
+			}
+			stillAlive := make(map[int]string)
+			for pid, started := range remaining {
+				if info, ok := table[pid]; ok && info.Started == started {
+					stillAlive[pid] = started
+				}
+			}
+			remaining = stillAlive
+			if len(remaining) == 0 {
+				return nil
+			}
+		}
+	}
+	table, err := probeTable()
+	if err != nil {
+		return err
+	}
+	for pid, started := range remaining {
+		if info, ok := table[pid]; ok && info.Started == started {
+			return fmt.Errorf("owned descendant process exit unconfirmed: %d", pid)
+		}
+	}
+	return nil
 }
 
 // PID returns the OS process identifier of the direct child.

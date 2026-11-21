@@ -102,9 +102,11 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 		switch f.Code {
 		case "codex_schema_unsupported":
 			detail = "提炼请求的结构化输出格式不被 Codex 接受。"
+		case "codex_schema_failed":
+			detail = "Codex 返回内容未能通过结构化格式校验，提炼调用未完成。"
 		case "codex_quota_exceeded":
 			detail = "Codex 可用额度不足，提炼调用未完成。"
-		case "codex_authentication_failed":
+		case "codex_authentication_failed", "codex_authentication_required":
 			detail = "Codex 登录认证失败，提炼调用未完成。"
 		case "codex_context_exceeded":
 			detail = "本次提炼内容超出 Codex 的上下文限制。"
@@ -116,12 +118,63 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 			detail = fmt.Sprintf("Codex 模型响应超时（HTTP %d）。", f.Status)
 		case "codex_rate_limited":
 			detail = fmt.Sprintf("触发 Codex 请求频率限制（HTTP %d），提炼调用未完成。", f.Status)
+		case "codex_busy":
+			detail = fmt.Sprintf("Codex 代理当前队列繁忙（HTTP %d），请稍后刷新查看重试结果。", f.Status)
 		case "codex_upstream_error":
 			detail = fmt.Sprintf("Codex 上游服务返回异常（HTTP %d），尚不能据此确认记忆已生成。", f.Status)
+		case "pi_authentication_required", "pi_command_credential_unsupported":
+			detail = "Pi 登录认证失败或凭证配置不受支持，提炼调用未完成。"
+		case "pi_provider_configuration_invalid":
+			detail = "Pi 所选 Provider 或模型配置无效，提炼调用未完成。"
+		case "pi_provider_schema_unsupported", "pi_schema_failed", "pi_native_schema_unconfirmed":
+			detail = "Pi 模型未通过结构化输出格式约束或不支持当前 Schema。"
+		case "pi_timeout":
+			detail = fmt.Sprintf("Pi 模型响应超时（HTTP %d）。", f.Status)
+		case "pi_model_failed", "pi_prompt_rejected", "pi_rpc_rejected", "pi_tool_rejected",
+			"pi_tool_or_retry_rejected", "pi_transport_closed_or_limit", "pi_transport_invalid",
+			"pi_model_or_state_changed", "pi_unexpected_startup_event", "pi_interactive_request_rejected",
+			"pi_retry_or_terminal_invalid", "pi_terminal_incomplete", "pi_event_unrecognized", "pi_output_limit":
+			detail = fmt.Sprintf("Pi 记忆提炼调用异常（%s，HTTP %d），尚不能据此确认记忆已生成。", f.Code, f.Status)
+		case "antigravity_authentication_required", "antigravity_auth_home_layout_unsupported":
+			detail = "Antigravity 登录认证失败或凭据目录布局不受支持，提炼调用未完成。"
+		case "antigravity_account_location_unavailable":
+			detail = "Antigravity 账号所在地区或网络出口不可用，提炼调用未完成。"
+		case "antigravity_schema_not_bound", "antigravity_schema_failed", "antigravity_structured_output_missing":
+			detail = "Antigravity 模型未能按结构化输出契约返回有效结果。"
+		case "antigravity_timeout":
+			detail = fmt.Sprintf("Antigravity 模型响应超时（HTTP %d）。", f.Status)
+		case "antigravity_model_failed", "antigravity_process_failed", "antigravity_tool_rejected",
+			"antigravity_tools_not_isolated", "antigravity_transport_closed_or_limit", "antigravity_transport_invalid",
+			"antigravity_initialization_unconfirmed", "antigravity_duplicate_initialization",
+			"antigravity_conversation_unconfirmed", "antigravity_conversation_changed",
+			"antigravity_model_or_context_changed", "antigravity_terminal_invalid", "antigravity_cancelled":
+			detail = fmt.Sprintf("Antigravity 记忆提炼调用异常（%s，HTTP %d），尚不能据此确认记忆已生成。", f.Code, f.Status)
+		case "traex_authentication_failed", "traex_authentication_required":
+			detail = "TraeX 登录认证失败，提炼调用未完成。"
+		case "traex_quota_exceeded":
+			detail = "TraeX 可用额度不足，提炼调用未完成。"
+		case "traex_rate_limited", "traex_busy":
+			detail = fmt.Sprintf("触发 TraeX 请求频率限制或并发队列繁忙（HTTP %d）。", f.Status)
+		case "traex_schema_unsupported", "traex_schema_failed":
+			detail = "TraeX 未通过结构化输出格式约束或不支持当前 Schema。"
+		case "traex_context_exceeded":
+			detail = "本次提炼内容超出 TraeX 的上下文限制。"
+		case "traex_timeout":
+			detail = fmt.Sprintf("TraeX 模型响应超时（HTTP %d）。", f.Status)
+		case "traex_model_failed", "traex_request_invalid", "traex_connection_failed",
+			"traex_stream_disconnected", "traex_upstream_error", "traex_upstream_cancelled":
+			detail = fmt.Sprintf("TraeX 记忆提炼调用异常（%s，HTTP %d），尚不能据此确认记忆已生成。", f.Code, f.Status)
 		}
 		source := "记忆提炼服务"
-		if f.Backend == "codex" {
+		switch f.Backend {
+		case "codex":
 			source = "Codex · 记忆提炼"
+		case "pi":
+			source = "Pi · 记忆提炼"
+		case "traex":
+			source = "TraeX · 记忆提炼"
+		case "antigravity":
+			source = "Antigravity · 记忆提炼"
 		}
 		if atLabel := formatNoticeLocalClock(f.At, now); atLabel != "" {
 			source += " · " + atLabel

@@ -11,10 +11,12 @@ import (
 )
 
 type MonitoredProcess struct {
-	PID        int      `json:"pid"`
-	Alive      *bool    `json:"alive"`
-	RSSBytes   *int64   `json:"rss_bytes"`
-	CPUPercent *float64 `json:"cpu_percent"`
+	PID          int      `json:"pid"`
+	Alive        *bool    `json:"alive"`
+	RSSBytes     *int64   `json:"rss_bytes"`
+	CPUPercent   *float64 `json:"cpu_percent"`
+	ChildCount   int      `json:"child_count,omitempty"`
+	SelfRSSBytes *int64   `json:"self_rss_bytes,omitempty"`
 }
 
 type DiskMonitorState struct {
@@ -33,13 +35,25 @@ type MonitorHookError struct {
 	Reason     string  `json:"reason"`
 }
 
+type MonitorRecallQueryStats struct {
+	StartedAt    string   `json:"started_at,omitempty"`
+	TotalQueries int      `json:"total_queries"`
+	HitQueries   int      `json:"hit_queries"`
+	EmptyQueries int      `json:"empty_queries"`
+	TotalHits    int      `json:"total_hits"`
+	HitRate      *float64 `json:"hit_rate,omitempty"`
+}
+
 type MonitorBusinessSummary struct {
-	ProjectsCount             int                `json:"projects_count"`
-	GenerationMode            string             `json:"generation_mode"`
-	GenerationReceiptVerified *bool              `json:"generation_receipt_verified"`
-	RecentProcessingMs        *float64           `json:"recent_processing_ms"`
-	HookErrorsCount           int                `json:"hook_errors_count"`
-	HookErrors                []MonitorHookError `json:"hook_errors,omitempty"`
+	ProjectsCount             int                      `json:"projects_count"`
+	GenerationMode            string                   `json:"generation_mode"`
+	GenerationReceiptVerified *bool                    `json:"generation_receipt_verified"`
+	RecentProcessingMs        *float64                 `json:"recent_processing_ms"`
+	HookErrorsCount           int                      `json:"hook_errors_count"`
+	HookErrors                []MonitorHookError       `json:"hook_errors,omitempty"`
+	BacklogFilesCount         int                      `json:"backlog_files_count,omitempty"`
+	LargestGraphDBBytes       int64                    `json:"largest_graph_db_bytes,omitempty"`
+	RecallQueries             *MonitorRecallQueryStats `json:"recall_queries,omitempty"`
 }
 
 type ServiceMonitorSnapshot struct {
@@ -198,6 +212,19 @@ func formatBytesMB(b int64) string {
 
 func formatBytesGiB(b int64) string {
 	return fmt.Sprintf("%.1f GiB", float64(b)/(1024*1024*1024))
+}
+
+func formatBytesCompact(b int64) string {
+	switch {
+	case b >= 1024*1024*1024:
+		return fmt.Sprintf("%.1f GiB", float64(b)/(1024*1024*1024))
+	case b >= 1024*1024:
+		return fmt.Sprintf("%.1f MB", float64(b)/(1024*1024))
+	case b >= 1024:
+		return fmt.Sprintf("%.1f KB", float64(b)/1024)
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
 }
 
 func sanitizedMonitorURL(raw string) string {
@@ -444,6 +471,12 @@ func (a *App) serviceDiagnosticText() string {
 			if proc.RSSBytes != nil {
 				line += " rss=" + formatBytesMB(*proc.RSSBytes)
 			}
+			if proc.SelfRSSBytes != nil && (proc.RSSBytes == nil || *proc.SelfRSSBytes != *proc.RSSBytes) {
+				line += " self_rss=" + formatBytesMB(*proc.SelfRSSBytes)
+			}
+			if proc.ChildCount > 0 {
+				line += fmt.Sprintf(" children=%d", proc.ChildCount)
+			}
 			b.WriteString(line + "\n")
 		}
 		if m.Snapshot.Disk != nil {
@@ -460,6 +493,16 @@ func (a *App) serviceDiagnosticText() string {
 			}
 			if s.GenerationReceiptVerified != nil {
 				fmt.Fprintf(&b, "模型回执校验: %v\n", *s.GenerationReceiptVerified)
+			}
+			if s.BacklogFilesCount > 0 || s.LargestGraphDBBytes > 0 {
+				fmt.Fprintf(&b, "积压文件数: %d | 最大图谱库: %s\n", s.BacklogFilesCount, formatBytesCompact(s.LargestGraphDBBytes))
+			}
+			if s.RecallQueries != nil && s.RecallQueries.TotalQueries > 0 {
+				rate := ""
+				if s.RecallQueries.HitRate != nil {
+					rate = fmt.Sprintf(" (命中率 %.1f%%)", *s.RecallQueries.HitRate*100)
+				}
+				fmt.Fprintf(&b, "记忆召回统计: 查询 %d 次 | 命中 %d 次%s\n", s.RecallQueries.TotalQueries, s.RecallQueries.HitQueries, rate)
 			}
 		}
 		if len(m.Snapshot.LogTail) > 0 {

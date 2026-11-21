@@ -5,33 +5,37 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 )
 
 // Config configures a Supervisor guarding one store root and its loopback services.
 type Config struct {
-	StoreRoot           string
-	ConfigPath          string
-	PhaseOnReady        string
-	ServiceURL          string
-	CompletionURL       string
-	ControlURL          string
-	RuntimeConfig       string
-	GenerationMode      string
-	GenerationReference string
-	LogDir              string
-	LogLimitBytes       int64
-	MonitorInterval     time.Duration
-	ReadyPollInterval   time.Duration
-	HealthFailureMax    int
-	HealthTimeout       time.Duration
-	ExternalOwner       bool
-	KeepOnTimeout       bool
-	OnCrash             func(ServiceStatus)
+	StoreRoot               string
+	ConfigPath              string
+	PhaseOnReady            string
+	ServiceURL              string
+	CompletionURL           string
+	ControlURL              string
+	RuntimeConfig           string
+	GenerationMode          string
+	GenerationReference     string
+	LogDir                  string
+	LogLimitBytes           int64
+	MonitorInterval         time.Duration
+	DescendantTrackInterval time.Duration
+	ReadyPollInterval       time.Duration
+	HealthFailureMax        int
+	HealthTimeout           time.Duration
+	ExternalOwner           bool
+	KeepOnTimeout           bool
+	OnCrash                 func(ServiceStatus)
 }
 
 // SupervisorSnapshot captures the supervisor's aggregate state and child statuses.
@@ -57,6 +61,7 @@ type Supervisor struct {
 	state         ServiceState
 	order         []*ManagedProcess
 	byRole        map[string]*ManagedProcess
+	descendants   map[int]string
 	monitorCancel context.CancelFunc
 	stopped       bool
 
@@ -75,6 +80,9 @@ func New(cfg Config) *Supervisor {
 	if cfg.MonitorInterval <= 0 {
 		cfg.MonitorInterval = time.Second
 	}
+	if cfg.DescendantTrackInterval <= 0 {
+		cfg.DescendantTrackInterval = 10 * time.Second
+	}
 	if cfg.ReadyPollInterval <= 0 {
 		cfg.ReadyPollInterval = 50 * time.Millisecond
 	}
@@ -85,10 +93,11 @@ func New(cfg Config) *Supervisor {
 		cfg.HealthTimeout = time.Second
 	}
 	return &Supervisor{
-		cfg:      cfg,
-		state:    StatePending,
-		byRole:   make(map[string]*ManagedProcess),
-		exitedCh: make(chan ServiceStatus, 16),
+		cfg:         cfg,
+		state:       StatePending,
+		byRole:      make(map[string]*ManagedProcess),
+		descendants: make(map[int]string),
+		exitedCh:    make(chan ServiceStatus, 16),
 	}
 }
 
@@ -112,6 +121,13 @@ func (s *Supervisor) buildOwnerRecord(phase string, procs []*ManagedProcess) Own
 		}
 		serviceChildren[proc.Spec().Role] = proc.PID()
 	}
+	var observed map[string]string
+	if len(s.descendants) > 0 {
+		observed = make(map[string]string, len(s.descendants))
+		for pid, started := range s.descendants {
+			observed[strconv.Itoa(pid)] = started
+		}
+	}
 	return OwnerRecord{
 		PID:                 s.ownerPID,
 		Started:             s.ownerStarted,
@@ -126,7 +142,90 @@ func (s *Supervisor) buildOwnerRecord(phase string, procs []*ManagedProcess) Own
 		GenerationReference: s.cfg.GenerationReference,
 		Children:            children,
 		ServiceChildren:     serviceChildren,
+		ObservedDescendants: observed,
 	}
+}
+
+func (s *Supervisor) refreshDescendants(ctx context.Context, procs []*ManagedProcess, persistOwner bool) {
+	roots := make([]int, 0, len(procs))
+	for _, proc := range procs {
+		if pid := proc.PID(); pid > 1 {
+			roots = append(roots, pid)
+		}
+	}
+	if len(roots) == 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	table, err := ProcessTable(probeCtx)
+	cancel()
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	if s.descendants == nil {
+		s.descendants = make(map[int]string)
+	}
+	changed := trackDescendantsFromTable(roots, s.descendants, table)
+	var lock *OwnerLock
+	var rec OwnerRecord
+	if changed && persistOwner && !s.stopped && s.owner != nil {
+		lock = s.owner
+		rec = s.buildOwnerRecord(s.phase, slices.Clone(s.order))
+	}
+	s.mu.Unlock()
+	if lock != nil {
+		_ = lock.WriteRecord(rec)
+	}
+}
+
+func (s *Supervisor) teardownProcesses(ctx context.Context, procs []*ManagedProcess, errPrefix string) (bool, []error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Capture any detached-PGID grandchildren before killing parent process groups
+	// severs PPID ancestry.
+	s.refreshDescendants(ctx, procs, false)
+
+	var errs []error
+	allStopped := true
+	var descGrace, descKillWait time.Duration
+	for i := len(procs) - 1; i >= 0; i-- {
+		proc := procs[i]
+		spec := proc.Spec()
+		if spec.StopGrace > descGrace {
+			descGrace = spec.StopGrace
+		}
+		if spec.KillWait > descKillWait {
+			descKillWait = spec.KillWait
+		}
+		if err := proc.StopGroup(spec.StopGrace, spec.KillWait); err != nil {
+			allStopped = false
+			errs = append(errs, fmt.Errorf("%s %s: %w", errPrefix, spec.Role, err))
+		}
+	}
+	if descGrace > 5*time.Second {
+		descGrace = 5 * time.Second
+	}
+	if descKillWait > 5*time.Second {
+		descKillWait = 5 * time.Second
+	}
+
+	s.mu.Lock()
+	descSnapshot := maps.Clone(s.descendants)
+	s.descendants = make(map[int]string)
+	s.mu.Unlock()
+
+	if len(descSnapshot) > 0 {
+		if err := StopTrackedDescendants(ctx, descSnapshot, descGrace, descKillWait); err != nil {
+			allStopped = false
+			errs = append(errs, fmt.Errorf("%s descendants: %w", errPrefix, err))
+		}
+	}
+	return allStopped, errs
 }
 
 func validateSupervisorInputs(cfg Config, specs []ServiceSpec) error {
@@ -224,6 +323,7 @@ func (s *Supervisor) Start(ctx context.Context, specs []ServiceSpec) error {
 	s.phase = "starting"
 	s.order = make([]*ManagedProcess, 0, len(specs))
 	s.byRole = make(map[string]*ManagedProcess, len(specs))
+	s.descendants = make(map[int]string)
 	var initialRec OwnerRecord
 	if lock != nil {
 		initialRec = s.buildOwnerRecord("starting", nil)
@@ -271,14 +371,8 @@ func (s *Supervisor) Start(ctx context.Context, specs []ServiceSpec) error {
 
 		var errs []error
 		errs = append(errs, startErr)
-		allStopped := true
-		for i := len(procs) - 1; i >= 0; i-- {
-			proc := procs[i]
-			if stopErr := proc.StopGroup(proc.Spec().StopGrace, proc.Spec().KillWait); stopErr != nil {
-				allStopped = false
-				errs = append(errs, fmt.Errorf("rollback %s: %w", proc.Spec().Role, stopErr))
-			}
-		}
+		allStopped, stopErrs := s.teardownProcesses(context.Background(), procs, "rollback")
+		errs = append(errs, stopErrs...)
 		if heldLock != nil {
 			if allStopped {
 				if rmErr := heldLock.RemoveRecord(); rmErr != nil {
@@ -460,6 +554,7 @@ func (s *Supervisor) runMonitor(ctx context.Context) {
 
 	ticker := time.NewTicker(s.cfg.MonitorInterval)
 	defer ticker.Stop()
+	var lastDescendantTrack time.Time
 
 	for {
 		select {
@@ -487,6 +582,16 @@ func (s *Supervisor) runMonitor(ctx context.Context) {
 		}
 		if s.cfg.LogDir != "" {
 			_ = TrimServiceLogDir(s.cfg.LogDir, s.cfg.LogLimitBytes)
+		}
+		if s.cfg.StoreRoot != "" {
+			storeLogsDir := filepath.Join(s.cfg.StoreRoot, "logs")
+			if filepath.Clean(storeLogsDir) != filepath.Clean(s.cfg.LogDir) {
+				_ = TrimServiceLogDir(storeLogsDir, s.cfg.LogLimitBytes)
+			}
+		}
+		if len(procs) > 0 && (lastDescendantTrack.IsZero() || time.Since(lastDescendantTrack) >= s.cfg.DescendantTrackInterval) {
+			lastDescendantTrack = time.Now()
+			s.refreshDescendants(ctx, procs, !s.cfg.ExternalOwner)
 		}
 
 		allReady := len(procs) > 0
@@ -597,15 +702,7 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 	}
 	s.wg.Wait()
 
-	var stopErrs []error
-	allStopped := true
-	for i := len(procs) - 1; i >= 0; i-- {
-		proc := procs[i]
-		if err := proc.StopGroup(proc.Spec().StopGrace, proc.Spec().KillWait); err != nil {
-			allStopped = false
-			stopErrs = append(stopErrs, fmt.Errorf("stop %s: %w", proc.Spec().Role, err))
-		}
-	}
+	allStopped, stopErrs := s.teardownProcesses(ctx, procs, "stop")
 
 	if lock != nil {
 		if allStopped {

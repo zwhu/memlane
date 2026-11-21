@@ -1,10 +1,14 @@
 """Tests for the Memlane Cognee HTTP Extension Gateway mounted at /cognee."""
+import asyncio
+from contextlib import redirect_stderr
+import io
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import uuid
 
 from aiohttp import FormData, web
@@ -44,6 +48,8 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.doc_common = str(uuid.uuid4())
         self.upstream_calls = []
         self.sse_next = False
+        self.recall_override = None
+        self.recall_delay = 0.0
 
         async def upstream_handler(request):
             body = await request.read()
@@ -61,6 +67,12 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                     {'id': self.other_ds, 'name': 'unmanaged'},
                 ])
             if request.path == '/api/v1/recall':
+                if self.recall_delay > 0:
+                    await asyncio.sleep(self.recall_delay)
+                if self.recall_override is not None:
+                    override = self.recall_override
+                    self.recall_override = None
+                    return web.json_response(override)
                 if self.sse_next:
                     self.sse_next = False
                     resp = web.StreamResponse(status=200, headers={'Content-Type': 'text/event-stream'})
@@ -352,6 +364,69 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r2.status, 200)
         forwarded2 = (await r2.json())['received']['entry']
         self.assertEqual(json.loads(forwarded2['context']), {'cwd': '/repo', 'date': '2026-11-12'})
+
+    async def test_recall_zero_hit_denominator_and_content_free_gateway_trace(self):
+        output = io.StringIO()
+        with redirect_stderr(output):
+            self.recall_override = []
+            r_miss = await self.client.post(
+                '/cognee/api/v1/recall',
+                headers=self._headers(extra={'X-Memlane-Recall-Channel': 'automatic'}),
+                json={'query': 'private-miss-query', 'dataset_ids': [self.project_ds]},
+            )
+            self.assertEqual(r_miss.status, 200)
+            r_hit = await self.client.post(
+                '/cognee/api/v1/search',
+                headers=self._headers(),
+                json={'query': 'private-hit-query', 'dataset_ids': [self.project_ds]},
+            )
+            self.assertEqual(r_hit.status, 200)
+            msg_id = str(uuid.uuid4())
+            r_put = await self.client.put(
+                f'/cognee/api/v1/capture/entries/{msg_id}',
+                headers=self._headers(),
+                json={'dataset_id': self.project_ds, 'session_id': 'sess-trace', 'entry': {'type': 'qa', 'question': 'q', 'answer': 'a'}},
+            )
+            self.assertEqual(r_put.status, 200)
+
+        # Summary includes both 0-hit miss and 1-hit search -> 50% hit_rate.
+        summary_resp = await self.client.get(
+            '/v1/knowledge/recall-summary',
+            headers={'Authorization': 'Bearer ' + 'm' * 40},
+        )
+        self.assertEqual(summary_resp.status, 200)
+        summary = await summary_resp.json()
+        self.assertEqual(summary['total_queries'], 2)
+        self.assertEqual(summary['hit_queries'], 1)
+        self.assertEqual(summary['empty_queries'], 1)
+        self.assertEqual(summary['hit_rate'], 0.5)
+
+        traces = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith('{')]
+        gw = [t for t in traces if t.get('component') == 'cognee_gateway' and t.get('event') == 'request_finished']
+        self.assertEqual(len(gw), 3)
+        self.assertEqual((gw[0]['route'], gw[0]['hit_count'], gw[0]['status']), ('POST /api/v1/recall', 0, 200))
+        self.assertEqual((gw[1]['route'], gw[1]['hit_count'], gw[1]['status']), ('POST /api/v1/search', 1, 200))
+        self.assertEqual((gw[2]['route'], gw[2]['status']), ('PUT /api/v1/capture/entries/{id}', 200))
+        for secret in ('private-miss-query', 'private-hit-query', self.project_ds, msg_id, self.agent_key):
+            self.assertNotIn(secret, output.getvalue())
+
+    async def test_recall_query_uses_short_timeout_and_emits_timeout_trace(self):
+        import cognee_extension_gateway as gw_mod
+        self.recall_delay = 0.25
+        output = io.StringIO()
+        with patch.object(gw_mod, 'GATEWAY_QUERY_TIMEOUT_SECONDS', 0.05), redirect_stderr(output):
+            r = await self.client.post(
+                '/cognee/api/v1/recall',
+                headers=self._headers(),
+                json={'query': 'slow-query', 'dataset_ids': [self.project_ds]},
+            )
+        self.assertEqual(r.status, 503)
+        self.assertEqual((await r.json())['error'], 'official_result_unknown')
+        traces = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith('{')]
+        gw_traces = [t for t in traces if t.get('component') == 'cognee_gateway']
+        self.assertEqual(len(gw_traces), 1)
+        self.assertEqual((gw_traces[0]['outcome'], gw_traces[0]['route'], gw_traces[0]['status']),
+                         ('timeout', 'POST /api/v1/recall', 503))
 
 
 if __name__ == '__main__':

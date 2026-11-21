@@ -345,7 +345,7 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
         from user_profiles import attach_user_profiles
         attach_user_profiles(app, registry, connections)
     from service_monitor import attach_service_monitor
-    attach_service_monitor(app, codex_config or {}, registry=registry, connections=connections, monitor=monitor)
+    attach_service_monitor(app, codex_config or {}, registry=registry, connections=connections, monitor=monitor, recall_store=recall_store)
     from session_drift import attach_session_drift
     drift_store = attach_session_drift(app, registry)
     from cognee_extension_gateway import attach_cognee_gateway

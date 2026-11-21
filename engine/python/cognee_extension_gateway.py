@@ -19,12 +19,14 @@ from aiohttp import ClientSession, ClientTimeout, web
 
 from _runtime_common import CachedSecretReader
 from external_capture_store import ensure_qa_context_date
+from performance_trace import HEADER as TRACE_HEADER, RequestTrace
 from project_control import loopback_origin
 from project_policy import PolicyError
 from session_drift import build_project_alias_index
 
 MAX_GATEWAY_BODY_BYTES = 16 * 1024 * 1024
 GATEWAY_TIMEOUT_SECONDS = 600.0
+GATEWAY_QUERY_TIMEOUT_SECONDS = 15.0
 _HOP_HEADERS = frozenset({
     'host', 'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
     'te', 'trailer', 'transfer-encoding', 'upgrade', 'content-length', 'origin',
@@ -90,6 +92,32 @@ def _strip_mount_prefix(path, prefix):
     }:
         return path.rstrip('/')
     return path
+
+
+def _gateway_route_label(method, upstream_path):
+    """Map gateway request method+path to a fixed, ID-free allowlisted template."""
+    exact = f'{method} {upstream_path}'
+    if upstream_path in _SIMPLE_READ_PATHS and method == 'GET':
+        return exact
+    if upstream_path in ('/api/v1/recall', '/api/v1/search', '/api/v1/remember/entry', '/api/v1/remember',
+                         '/api/v1/improve', '/api/v1/cognify', '/api/v1/memify', '/api/v1/forget') and method == 'POST':
+        return exact
+    m = _DATASET_ID_RE.match(upstream_path)
+    if m and method in ('GET', 'DELETE'):
+        tail = m.group('tail')
+        if tail == 'data':
+            return f'{method} /api/v1/datasets/{{id}}/data'
+        if tail == 'graph':
+            return f'{method} /api/v1/datasets/{{id}}/graph'
+        if tail.startswith('data/') and tail.endswith('/raw'):
+            return f'{method} /api/v1/datasets/{{id}}/data/{{id}}/raw'
+        if tail.startswith('data/'):
+            return f'{method} /api/v1/datasets/{{id}}/data/{{id}}'
+    if _SESSION_ID_RE.match(upstream_path) and method == 'GET':
+        return 'GET /api/v1/sessions/{id}'
+    if _CAPTURE_ENTRY_RE.match(upstream_path) and method in ('GET', 'PUT'):
+        return f'{method} /api/v1/capture/entries/{{id}}'
+    return 'other'
 
 
 def _extract_recall_hits(payload, allowed_read_ids):
@@ -428,7 +456,8 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
         return owned_session
 
     async def proxy(request, ctx, upstream_path, *, body_bytes=b'', json_body=None,
-                    dataset_filter_fn=None, record_hits=False, recall_channel='explicit'):
+                    dataset_filter_fn=None, record_hits=False, recall_channel='explicit',
+                    timeout_seconds=None):
         upstream = resolve_upstream()
         client = await get_session()
         query = request.rel_url.query_string
@@ -447,7 +476,11 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
         else:
             send_kwargs = {}
 
-        timeout = ClientTimeout(total=GATEWAY_TIMEOUT_SECONDS, sock_connect=10)
+        effective_timeout = GATEWAY_TIMEOUT_SECONDS if timeout_seconds is None else float(timeout_seconds)
+        timeout = ClientTimeout(total=effective_timeout, sock_connect=min(10.0, effective_timeout))
+        route_label = _gateway_route_label(request.method.upper(), upstream_path)
+        trace = RequestTrace('cognee_gateway', request.headers.get(TRACE_HEADER))
+        trace.transition('upstream_request')
         try:
             async with client.request(
                 request.method, url, headers=headers, timeout=timeout, allow_redirects=False, **send_kwargs
@@ -456,19 +489,28 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
                 if ctype == 'text/event-stream':
                     stream = web.StreamResponse(status=upstream_resp.status, headers={'Content-Type': 'text/event-stream'})
                     await stream.prepare(request)
-                    async for chunk in upstream_resp.content.iter_chunked(16 * 1024):
-                        await stream.write(chunk)
-                    await stream.write_eof()
+                    stream_outcome = 'succeeded' if upstream_resp.status < 400 else 'upstream_error'
+                    try:
+                        async for chunk in upstream_resp.content.iter_chunked(16 * 1024):
+                            await stream.write(chunk)
+                        await stream.write_eof()
+                    except Exception as exc:
+                        stream_outcome = type(exc).__name__
+                        raise
+                    finally:
+                        trace.finish(stream_outcome, route=route_label, status=upstream_resp.status)
                     return stream
                 raw_resp = bytearray()
                 async for chunk in upstream_resp.content.iter_chunked(64 * 1024):
                     raw_resp.extend(chunk)
                     if len(raw_resp) > MAX_GATEWAY_BODY_BYTES:
+                        trace.finish('response_limit', route=route_label, status=503)
                         raise PolicyError('official_response_limit', 503)
                 resp_bytes = bytes(raw_resp)
                 resp_headers = {}
                 if upstream_resp.headers.get('Content-Type'):
                     resp_headers['Content-Type'] = upstream_resp.headers['Content-Type']
+                extra_trace = {}
                 if upstream_resp.status == 200 and ctype == 'application/json' and (dataset_filter_fn or record_hits):
                     try:
                         parsed = json.loads(resp_bytes)
@@ -479,20 +521,30 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
                             parsed = dataset_filter_fn(parsed)
                             resp_bytes = json.dumps(parsed, ensure_ascii=False).encode('utf-8')
                             resp_headers['Content-Type'] = 'application/json'
-                        if record_hits and recall_store is not None:
+                        if record_hits:
                             hits = _extract_recall_hits(parsed, ctx.readable_ids)
-                            if hits:
+                            extra_trace['hit_count'] = len(hits)
+                            if recall_store is not None:
                                 try:
                                     async with registry.mutex:
-                                        recall_store.record(ctx.agent_id, {
-                                            'event_id': str(uuid.uuid4()),
-                                            'channel': recall_channel,
-                                            'hits': hits,
-                                        })
+                                        if hasattr(recall_store, 'record_query'):
+                                            recall_store.record_query(recall_channel, len(hits))
+                                        if hits:
+                                            recall_store.record(ctx.agent_id, {
+                                                'event_id': str(uuid.uuid4()),
+                                                'channel': recall_channel,
+                                                'hits': hits,
+                                            })
                                 except Exception:
                                     pass
+                outcome = 'succeeded' if upstream_resp.status < 400 else 'upstream_error'
+                trace.finish(outcome, route=route_label, status=upstream_resp.status, output_bytes=len(resp_bytes), **extra_trace)
                 return web.Response(status=upstream_resp.status, body=resp_bytes, headers=resp_headers)
-        except (aiohttp.ClientError, asyncio.TimeoutError):
+        except asyncio.TimeoutError:
+            trace.finish('timeout', route=route_label, status=503)
+            raise PolicyError('official_result_unknown', 503) from None
+        except aiohttp.ClientError as exc:
+            trace.finish(type(exc).__name__, route=route_label, status=503)
             raise PolicyError('official_result_unknown', 503) from None
 
     async def handle(request):
@@ -571,7 +623,10 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
                 channel = request.headers.get('X-Memlane-Recall-Channel', 'explicit').strip().lower()
                 if channel not in ('automatic', 'explicit'):
                     channel = 'explicit'
-                return await proxy(request, ctx, rel_path, json_body=payload, record_hits=True, recall_channel=channel)
+                return await proxy(
+                    request, ctx, rel_path, json_body=payload, record_hits=True,
+                    recall_channel=channel, timeout_seconds=GATEWAY_QUERY_TIMEOUT_SECONDS,
+                )
 
             if method == 'POST' and rel_path == '/api/v1/remember/entry':
                 body_bytes = await _read_limited_body(request)

@@ -70,3 +70,41 @@ class ProcessingNoticesTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(with_recovery), 1)
             self.assertEqual(with_recovery[0]['code'], 'codex_connection_failed')
             self.assertEqual(with_recovery[0]['recovered_at'], ok_after)
+
+    def test_supports_pi_antigravity_traex_bridges_and_provider_mapping(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logs = Path(directory) / 'runtime-logs'
+            logs.mkdir()
+            now = datetime(2026, 11, 21, 2, 0, 0, tzinfo=timezone.utc)
+            cases = [
+                ('pi', 'pi_bridge', 'pi_authentication_required', 'pi'),
+                ('antigravity', 'antigravity_bridge', 'antigravity_account_location_unavailable', 'antigravity'),
+                ('traex', 'traex_bridge', 'traex_quota_exceeded', 'traex'),
+            ]
+            for idx, (backend_kind, bridge_comp, bridge_code, expected_backend) in enumerate(cases):
+                req_id = hex(10 + idx)[2:] * 32
+                at = (now - timedelta(minutes=10 - idx)).isoformat()
+                (logs / 'official_service_dev.log').write_text(json.dumps({
+                    'schema_version': 1, 'event': 'request_finished', 'component': 'generation_http',
+                    'request_id': req_id, 'operation_id': f'11111111-1234-1234-1234-123456789ab{idx}',
+                    'dataset_id': 'dataset', 'at': at, 'status': 409,
+                    'backend_kind': backend_kind, 'outcome': 'failed',
+                }) + '\n')
+                (logs / 'agent_completion_endpoint.log').write_text(json.dumps({
+                    'schema_version': 1, 'event': 'request_finished', 'component': bridge_comp,
+                    'request_id': req_id, 'backend_kind': backend_kind, 'outcome': bridge_code,
+                }) + '\n')
+                items = processing_notices(logs, 'dataset', now=now)
+                self.assertEqual(len(items), 1)
+                self.assertEqual(items[0]['code'], bridge_code)
+                self.assertEqual(items[0]['backend'], expected_backend)
+
+            # Direct OpenAI/Anthropic provider stays backend='provider'.
+            (logs / 'official_service_dev.log').write_text(json.dumps({
+                'schema_version': 1, 'event': 'request_finished', 'component': 'generation_http',
+                'request_id': 'e' * 32, 'operation_id': '22222222-1234-1234-1234-123456789abc',
+                'dataset_id': 'dataset', 'at': (now - timedelta(minutes=1)).isoformat(),
+                'status': 502, 'backend_kind': 'openai', 'outcome': 'failed',
+            }) + '\n')
+            items = processing_notices(logs, 'dataset', now=now)
+            self.assertEqual((items[0]['code'], items[0]['backend']), ('model_request_failed', 'provider'))

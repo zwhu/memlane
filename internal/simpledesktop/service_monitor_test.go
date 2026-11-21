@@ -302,3 +302,39 @@ func TestSidebarServicePopoverAndChannelNaming(t *testing.T) {
 		t.Fatalf("direct service button click did not jump to settings service tab: page=%q section=%q open=%v", a.page, a.access.SettingsSection, a.monitor.PopoverOpen)
 	}
 }
+
+func TestServiceMonitorDeserializesExtendedMetricsAndFormatsDiagnostics(t *testing.T) {
+	rawJSON := `{
+		"state": "ready",
+		"processes": {
+			"official": {"pid": 5001, "alive": true, "rss_bytes": 524288000, "child_count": 2, "self_rss_bytes": 314572800}
+		},
+		"summary": {
+			"projects_count": 4,
+			"hook_errors_count": 0,
+			"backlog_files_count": 7,
+			"largest_graph_db_bytes": 41943040,
+			"recall_queries": {"total_queries": 10, "hit_queries": 7, "empty_queries": 3, "total_hits": 12, "hit_rate": 0.7}
+		}
+	}`
+	var snap ServiceMonitorSnapshot
+	if err := json.Unmarshal([]byte(rawJSON), &snap); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	proc := snap.Processes["official"]
+	if proc.ChildCount != 2 || proc.SelfRSSBytes == nil || *proc.SelfRSSBytes != 314572800 {
+		t.Fatalf("unexpected extended process fields: %+v", proc)
+	}
+	if snap.Summary.BacklogFilesCount != 7 || snap.Summary.LargestGraphDBBytes != 41943040 || snap.Summary.RecallQueries == nil || snap.Summary.RecallQueries.HitRate == nil || *snap.Summary.RecallQueries.HitRate != 0.7 {
+		t.Fatalf("unexpected extended summary fields: %+v", snap.Summary)
+	}
+
+	a := New(Config{ServiceURL: "http://127.0.0.1:61255"}, nil)
+	a.monitor.Snapshot = &snap
+	diag := a.serviceDiagnosticText()
+	for _, want := range []string{"self_rss=300 MB", "children=2", "积压文件数: 7", "最大图谱库: 40.0 MB", "记忆召回统计: 查询 10 次 | 命中 7 次 (命中率 70.0%)"} {
+		if !strings.Contains(diag, want) {
+			t.Fatalf("serviceDiagnosticText missing %q in:\n%s", want, diag)
+		}
+	}
+}

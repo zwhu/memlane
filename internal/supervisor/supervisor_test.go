@@ -63,6 +63,20 @@ func TestSupervisorHelperProcess(t *testing.T) {
 			}
 		}
 	}
+	if dgf := os.Getenv("MEMLANE_HELPER_DETACHED_GRANDCHILD_FILE"); dgf != "" {
+		exe, err := os.Executable()
+		if err == nil {
+			child := exec.Command(exe, "-test.run=^TestSupervisorHelperProcess$")
+			child.Env = []string{
+				"MEMLANE_SUPERVISOR_HELPER=1",
+				"MEMLANE_HELPER_MODE=grandchild",
+			}
+			child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+			if child.Start() == nil {
+				_ = os.WriteFile(dgf, []byte(strconv.Itoa(child.Process.Pid)), 0o600)
+			}
+		}
+	}
 
 	addr := os.Getenv("MEMLANE_HELPER_ADDR")
 	ln, err := net.Listen("tcp4", addr)
@@ -997,5 +1011,147 @@ func TestSupervisorConcurrentStartAndStopRace(t *testing.T) {
 			}
 			_ = lock.Release()
 		}
+	}
+}
+
+func TestSupervisorTracksAndStopsDetachedSetsidDescendant(t *testing.T) {
+	rootParent := canonicalTestDir(t)
+	storeRoot := filepath.Join(rootParent, "library")
+	logsDir := filepath.Join(rootParent, "runtime-logs")
+	if err := os.Mkdir(storeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(logsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	addr, origin := reserveLoopbackEndpoint(t)
+	configPath := filepath.Join(rootParent, "runtime.json")
+	writePrivateJSON(t, configPath, map[string]any{"official_data": storeRoot})
+	detachedFile := filepath.Join(rootParent, "detached-grandchild.pid")
+
+	sup := supervisor.New(supervisor.Config{
+		StoreRoot:               storeRoot,
+		ConfigPath:              configPath,
+		ServiceURL:              origin,
+		MonitorInterval:         40 * time.Millisecond,
+		DescendantTrackInterval: 40 * time.Millisecond,
+	})
+	spec := helperSpec(t, "official", "service", addr, filepath.Join(logsDir, "official.log"),
+		"MEMLANE_HELPER_DETACHED_GRANDCHILD_FILE="+detachedFile,
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := sup.Start(ctx, []supervisor.ServiceSpec{spec}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sup.Stop(context.Background()) }()
+
+	var detachedPID int
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(detachedFile); err == nil && len(bytes.TrimSpace(b)) > 0 {
+			if parsed, convErr := strconv.Atoi(strings.TrimSpace(string(b))); convErr == nil && parsed > 1 {
+				detachedPID = parsed
+				break
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if detachedPID <= 1 {
+		t.Fatal("detached grandchild PID was not recorded")
+	}
+	t.Cleanup(func() { _ = syscall.Kill(detachedPID, syscall.SIGKILL) })
+
+	// Wait until runMonitor captures ObservedDescendants into .memlane-dev-owner.json.
+	key := strconv.Itoa(detachedPID)
+	recorded := false
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		rec, _, err := supervisor.ReadOwnerRecord(storeRoot)
+		if err == nil && rec.ObservedDescendants[key] != "" {
+			recorded = true
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if !recorded {
+		t.Fatalf("expected ObservedDescendants[%s] recorded in owner receipt", key)
+	}
+
+	if err := sup.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+	waitForPIDDead(t, detachedPID)
+	if _, err := os.Stat(filepath.Join(storeRoot, ".memlane-dev-owner.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected owner receipt removed after clean Stop, got %v", err)
+	}
+}
+
+func TestSupervisorTrimsStoreRootLogsDir(t *testing.T) {
+	rootParent := canonicalTestDir(t)
+	storeRoot := filepath.Join(rootParent, "library")
+	storeLogsDir := filepath.Join(storeRoot, "logs")
+	runtimeLogsDir := filepath.Join(rootParent, "runtime-logs")
+	for _, dir := range []string{storeRoot, storeLogsDir, runtimeLogsDir} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cogneeLog := filepath.Join(storeLogsDir, "cognee.log")
+	f, err := supervisor.OpenPrivateLog(cogneeLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.Write(bytes.Repeat([]byte("C"), 300)); err != nil {
+		t.Fatal(err)
+	}
+	stBefore, err := os.Stat(cogneeLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	addr, origin := reserveLoopbackEndpoint(t)
+	configPath := filepath.Join(rootParent, "runtime.json")
+	writePrivateJSON(t, configPath, map[string]any{"official_data": storeRoot})
+
+	sup := supervisor.New(supervisor.Config{
+		StoreRoot:       storeRoot,
+		ConfigPath:      configPath,
+		ServiceURL:      origin,
+		LogDir:          runtimeLogsDir,
+		LogLimitBytes:   128,
+		MonitorInterval: 40 * time.Millisecond,
+	})
+	spec := helperSpec(t, "official", "service", addr, filepath.Join(runtimeLogsDir, "official.log"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := sup.Start(ctx, []supervisor.ServiceSpec{spec}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sup.Stop(context.Background()) }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	rotated := false
+	for time.Now().Before(deadline) {
+		if _, prevErr := os.Stat(cogneeLog + ".previous"); prevErr == nil {
+			rotated = true
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !rotated {
+		t.Fatal("expected background monitor to trim StoreRoot/logs/cognee.log")
+	}
+	stAfter, err := os.Stat(cogneeLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stAfter.Sys().(*syscall.Stat_t).Ino != stBefore.Sys().(*syscall.Stat_t).Ino {
+		t.Fatal("expected StoreRoot/logs trim to preserve live inode")
 	}
 }

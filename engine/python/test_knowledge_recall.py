@@ -86,6 +86,34 @@ class RecallTests(unittest.TestCase):
             plugin.report_explicit_recall(rows)
             report.assert_called_once_with({(D, K)}, 'explicit')
 
+    def test_record_query_and_summary_tracks_zero_hits_and_reopens_cleanly(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'recall-summary.sqlite3'
+            store = RecallStore(path)
+            self.assertEqual(store.query_summary()['total_queries'], 0)
+            self.assertIsNone(store.query_summary()['hit_rate'])
+
+            store.record_query('automatic', 0)
+            store.record_query('automatic', 2)
+            store.record_query('explicit', 0)
+            with self.assertRaises(PolicyError):
+                store.record_query('invalid', 1)
+            with self.assertRaises(PolicyError):
+                store.record_query('explicit', -1)
+            store.close()
+
+            reopened = RecallStore(path)
+            summary = reopened.query_summary()
+            self.assertEqual(summary['total_queries'], 3)
+            self.assertEqual(summary['hit_queries'], 1)
+            self.assertEqual(summary['empty_queries'], 2)
+            self.assertEqual(summary['total_hits'], 2)
+            self.assertEqual(summary['hit_rate'], 0.3333)
+            self.assertEqual(summary['by_channel']['automatic']['total_queries'], 2)
+            self.assertEqual(summary['by_channel']['automatic']['hit_queries'], 1)
+            self.assertEqual(summary['by_channel']['explicit']['empty_queries'], 1)
+            reopened.close()
+
 
 class RecallAPITests(unittest.IsolatedAsyncioTestCase):
     async def test_manager_counts_and_events_do_not_recall_or_accept_agent_reads(self):
@@ -138,3 +166,14 @@ class RecallAPITests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.get('/v1/knowledge/recalls?dataset_id=' + D + '&document_id=' + K,
                                          headers={'Authorization': 'Bearer ' + 'm' * 40})
         self.assertEqual((await response.json())['count'], 1)
+
+    async def test_manager_recall_summary_endpoint_and_agent_denied(self):
+        manager = {'Authorization': 'Bearer ' + 'm' * 40}
+        agent = {'Authorization': 'Bearer ' + 'a' * 40}
+        denied = await self.client.get('/v1/knowledge/recall-summary', headers=agent)
+        self.assertEqual(denied.status, 403)
+        resp = await self.client.get('/v1/knowledge/recall-summary', headers=manager)
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertEqual(body['total_queries'], 0)
+        self.assertIsNone(body['hit_rate'])

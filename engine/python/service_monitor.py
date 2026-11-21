@@ -1,6 +1,8 @@
 """In-memory 3-layer runtime monitoring for Cognee, control plane, and model bridges."""
 import asyncio
+from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -14,9 +16,12 @@ from project_policy import PolicyError
 
 MINIMUM_FREE_BYTES = 50 * 1024 ** 3
 STOP_FREE_BYTES = 55 * 1024 ** 3
+USER_MINIMUM_FREE_BYTES = 2 * 1024 ** 3
+USER_STOP_FREE_BYTES = 5 * 1024 ** 3
 _MAX_OWNER_BYTES = 65536
 _MAX_RECEIPT_BYTES = 16384
 _MAX_CONTROL_LOG_BYTES = 32768
+_MAX_TRACE_SCAN_BYTES = 131072
 
 _ANSI_ESCAPE_RE = re.compile(r'\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])')
 _CONTROL_CHAR_RE = re.compile(r'[\x00-\x08\x0b-\x1f\x7f]')
@@ -206,21 +211,31 @@ def largest_graph_db_bytes(official_data) -> int:
         return 0
 
 
-def recent_processing_duration_ms(control_log: Path) -> float | None:
+def _parse_trace_timestamp(raw_at) -> float | None:
+    if not isinstance(raw_at, str) or not raw_at:
+        return None
     try:
-        target = Path(control_log)
+        return datetime.fromisoformat(raw_at).astimezone(timezone.utc).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def _read_trace_tail(path: Path) -> list[dict]:
+    try:
+        target = Path(path)
         if not target.exists() or target.is_symlink() or not target.is_file():
-            return None
+            return []
         size = target.stat().st_size
         if size <= 0:
-            return None
-        span = min(size, _MAX_CONTROL_LOG_BYTES)
+            return []
+        span = min(size, _MAX_TRACE_SCAN_BYTES)
         with target.open('rb') as stream:
             if size > span:
                 stream.seek(size - span)
             raw = stream.read(span)
     except OSError:
-        return None
+        return []
+    entries = []
     for line in reversed(raw.decode('utf-8', errors='replace').splitlines()):
         line = line.strip()
         if not line.startswith('{'):
@@ -231,8 +246,32 @@ def recent_processing_duration_ms(control_log: Path) -> float | None:
             continue
         if isinstance(entry, dict) and entry.get('event') == 'request_finished':
             elapsed = entry.get('elapsed_ms')
-            if type(elapsed) in (int, float):
-                return round(float(elapsed), 1)
+            if type(elapsed) in (int, float) and math.isfinite(elapsed):
+                entries.append(entry)
+    return entries
+
+
+def recent_processing_duration_ms(control_log: Path, *extra_logs: Path) -> float | None:
+    best_generation = None  # (has_ts, ts, elapsed_ms)
+    best_fallback = None    # (has_ts, ts, elapsed_ms)
+    for log_path in (control_log, *extra_logs):
+        if log_path is None:
+            continue
+        for entry in _read_trace_tail(log_path):
+            component = entry.get('component')
+            elapsed = float(entry['elapsed_ms'])
+            ts = _parse_trace_timestamp(entry.get('at'))
+            candidate = (ts is not None, ts or 0.0, elapsed)
+            if component == 'generation_http':
+                if best_generation is None or candidate[:2] > best_generation[:2]:
+                    best_generation = candidate
+            elif component != 'cognee_gateway':
+                if best_fallback is None or candidate[:2] > best_fallback[:2]:
+                    best_fallback = candidate
+    if best_generation is not None:
+        return round(best_generation[2], 1)
+    if best_fallback is not None:
+        return round(best_fallback[2], 1)
     return None
 
 
@@ -249,10 +288,12 @@ async def _default_probe_http(url: str):
 
 class ServiceMonitor:
     def __init__(self, config, registry=None, *, connections=None, probe_http=None,
-                 sample_process=None, disk_usage=shutil.disk_usage, clock=time.time):
+                 sample_process=None, disk_usage=shutil.disk_usage, clock=time.time,
+                 recall_store=None):
         self.config = dict(config or {})
         self.registry = registry
         self.connections = connections
+        self.recall_store = recall_store
         self.probe_http = probe_http or _default_probe_http
         self.sample_process = sample_process or default_sample_process
         self.disk_usage = disk_usage
@@ -299,7 +340,24 @@ class ServiceMonitor:
         except (OSError, ValueError, TypeError):
             return False
 
+    def _disk_thresholds(self) -> tuple[int, int]:
+        raw_min = self.config.get('disk_minimum_free_bytes')
+        raw_stop = self.config.get('disk_stop_free_bytes')
+        if type(raw_min) is int and raw_min > 0:
+            stop = raw_stop if (type(raw_stop) is int and raw_stop >= raw_min) else raw_min
+            return raw_min, stop
+        runtime_mode = str(self.config.get('runtime_mode') or '').strip().lower()
+        is_installed_mode = (
+            isinstance(self.config.get('first_install'), dict)
+            or runtime_mode in ('app', 'installed', 'user')
+            or bool(os.environ.get('MEMLANE_APP_RESOURCES'))
+        )
+        if is_installed_mode:
+            return USER_MINIMUM_FREE_BYTES, USER_STOP_FREE_BYTES
+        return MINIMUM_FREE_BYTES, STOP_FREE_BYTES
+
     def _sample_disk(self, state_dir):
+        min_free, stop_free = self._disk_thresholds()
         candidates = [self.config.get('official_data'), state_dir, Path.cwd()]
         for item in candidates:
             if not item:
@@ -310,9 +368,9 @@ class ServiceMonitor:
                     free = int(self.disk_usage(target).free)
                     return {
                         'free_bytes': free,
-                        'minimum_free_bytes': MINIMUM_FREE_BYTES,
-                        'stop_free_bytes': STOP_FREE_BYTES,
-                        'low': free < STOP_FREE_BYTES,
+                        'minimum_free_bytes': min_free,
+                        'stop_free_bytes': stop_free,
+                        'low': free < stop_free,
                     }
                 except OSError:
                     continue
@@ -346,6 +404,17 @@ class ServiceMonitor:
 
     def _hook_errors_count(self):
         return len(self._hook_errors())
+
+    def _recall_query_summary(self):
+        if self.recall_store is None:
+            return None
+        fn = getattr(self.recall_store, 'query_summary', None)
+        if not callable(fn):
+            return None
+        try:
+            return fn()
+        except Exception:
+            return None
 
     def _backlog_files_count(self, state_dir) -> int:
         return backlog_files_count(state_dir)
@@ -437,7 +506,10 @@ class ServiceMonitor:
             log_tail = read_log_tail(state_dir / 'runtime-logs/official_service_dev.log')
 
         recent_ms = (
-            recent_processing_duration_ms(state_dir / 'runtime-logs/project_control_server.log')
+            recent_processing_duration_ms(
+                state_dir / 'runtime-logs/official_service_dev.log',
+                state_dir / 'runtime-logs/project_control_server.log',
+            )
             if state_dir is not None else None
         )
         hook_errors = self._hook_errors()
@@ -452,6 +524,9 @@ class ServiceMonitor:
             'backlog_files_count': self._backlog_files_count(state_dir),
             'largest_graph_db_bytes': self._largest_graph_db_bytes(self.config.get('official_data')),
         }
+        recall_queries = self._recall_query_summary()
+        if recall_queries is not None:
+            summary['recall_queries'] = recall_queries
 
         return {
             'state': state,
@@ -470,8 +545,10 @@ class ServiceMonitor:
         }
 
 
-def attach_service_monitor(app, config, *, registry=None, connections=None, monitor=None):
-    active_monitor = monitor or ServiceMonitor(config, registry=registry, connections=connections)
+def attach_service_monitor(app, config, *, registry=None, connections=None, monitor=None, recall_store=None):
+    active_monitor = monitor or ServiceMonitor(
+        config, registry=registry, connections=connections, recall_store=recall_store
+    )
 
     async def runtime_monitor(request):
         if not request['manager']:

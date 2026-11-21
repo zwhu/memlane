@@ -380,3 +380,43 @@ func TestProcessingNoticeDetailDialogShowsDiagnostics(t *testing.T) {
 		t.Fatal("expected detail dialog to close")
 	}
 }
+
+func TestMessageNoticesSupportsAllAgentBridgeBackends(t *testing.T) {
+	a, q := projectQueueFixture()
+	p := a.access.Directory.Projects[0]
+	q.Sessions = nil
+	q.Documents = nil
+	q.Loaded = true
+	now := time.Now().UTC().Format(time.RFC3339)
+	cases := []struct {
+		backend    string
+		code       string
+		status     int
+		wantSource string
+		wantDetail string
+	}{
+		{"pi", "pi_authentication_required", 409, "Pi · 记忆提炼", "Pi 登录认证失败"},
+		{"antigravity", "antigravity_account_location_unavailable", 403, "Antigravity · 记忆提炼", "地区或网络出口不可用"},
+		{"traex", "traex_quota_exceeded", 429, "TraeX · 记忆提炼", "TraeX 可用额度不足"},
+	}
+	for _, tc := range cases {
+		q.ProcessingNotices = []processingNotice{{
+			Operation: "op-" + tc.backend,
+			Request:   "req-" + tc.backend,
+			At:        now,
+			Status:    tc.status,
+			Code:      tc.code,
+			Backend:   tc.backend,
+		}}
+		_, info := a.messageNotices(q, p)
+		if len(info) != 1 {
+			t.Fatalf("%s: expected 1 notice, got %d", tc.backend, len(info))
+		}
+		if !strings.HasPrefix(info[0].Source, tc.wantSource) {
+			t.Fatalf("%s: expected source prefix %q, got %q", tc.backend, tc.wantSource, info[0].Source)
+		}
+		if !strings.Contains(info[0].Detail, tc.wantDetail) {
+			t.Fatalf("%s: expected detail containing %q, got %q", tc.backend, tc.wantDetail, info[0].Detail)
+		}
+	}
+}

@@ -9,14 +9,19 @@ from unittest.mock import MagicMock, patch
 
 from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
 
+from knowledge_recall import RecallStore
 from project_control import Registry, private_write
 from project_control_server import create_app
 from service_monitor import (
+    STOP_FREE_BYTES,
+    USER_MINIMUM_FREE_BYTES,
+    USER_STOP_FREE_BYTES,
     ServiceMonitor,
     backlog_files_count,
     default_sample_process,
     largest_graph_db_bytes,
     read_log_tail,
+    recent_processing_duration_ms,
 )
 
 
@@ -308,6 +313,109 @@ class ServiceMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(len(call_threads) >= 1)
         for t_name in call_threads:
             self.assertNotEqual(t_name, main_thread_name)
+
+    async def test_installed_mode_uses_user_disk_thresholds_and_prefers_generation_trace(self):
+        async def probe(_url):
+            return True, 200, ''
+
+        sample = lambda pid: {'pid': pid, 'alive': True, 'rss_bytes': 1024, 'cpu_percent': 0.1}
+
+        # Dev checkout default remains 55 GiB unless installed/user mode is indicated.
+        dev_monitor = ServiceMonitor(
+            self.config,
+            registry=self.registry,
+            probe_http=probe,
+            sample_process=sample,
+            disk_usage=lambda _p: SimpleNamespace(free=20 * 1024 ** 3),
+        )
+        dev_snap = await dev_monitor.snapshot()
+        self.assertTrue(dev_snap['disk']['low'])
+        self.assertEqual(dev_snap['disk']['stop_free_bytes'], STOP_FREE_BYTES)
+
+        # Installed app via first_install uses 2 GiB / 5 GiB: 20 GiB is healthy, 4 GiB warns.
+        app_config = {**self.config, 'first_install': {'schema': 1, 'store_id': 'a' * 32, 'setup': False}}
+        app_ok = ServiceMonitor(
+            app_config,
+            registry=self.registry,
+            probe_http=probe,
+            sample_process=sample,
+            disk_usage=lambda _p: SimpleNamespace(free=20 * 1024 ** 3),
+        )
+        app_ok_snap = await app_ok.snapshot()
+        self.assertFalse(app_ok_snap['disk']['low'])
+        self.assertEqual(app_ok_snap['disk']['minimum_free_bytes'], USER_MINIMUM_FREE_BYTES)
+        self.assertEqual(app_ok_snap['disk']['stop_free_bytes'], USER_STOP_FREE_BYTES)
+
+        app_low = ServiceMonitor(
+            app_config,
+            registry=self.registry,
+            probe_http=probe,
+            sample_process=sample,
+            disk_usage=lambda _p: SimpleNamespace(free=4 * 1024 ** 3),
+        )
+        self.assertTrue((await app_low.snapshot())['disk']['low'])
+
+        with patch.dict('os.environ', {'MEMLANE_APP_RESOURCES': '/Applications/Memlane.app/Contents/Resources'}):
+            env_mon = ServiceMonitor(
+                self.config,
+                registry=self.registry,
+                probe_http=probe,
+                sample_process=sample,
+                disk_usage=lambda _p: SimpleNamespace(free=20 * 1024 ** 3),
+            )
+            self.assertFalse((await env_mon.snapshot())['disk']['low'])
+
+        # recent_processing_ms prefers generation_http from official_service_dev.log over cognee_gateway.
+        official_log = self.state_dir / 'runtime-logs/official_service_dev.log'
+        control_log = self.state_dir / 'runtime-logs/project_control_server.log'
+        official_log.write_text(
+            json.dumps({
+                'event': 'request_finished',
+                'component': 'generation_http',
+                'at': '2026-11-21T10:00:00+00:00',
+                'elapsed_ms': 815.64,
+            }) + '\n',
+            encoding='utf-8',
+        )
+        control_log.write_text(
+            json.dumps({
+                'event': 'request_finished',
+                'component': 'cognee_gateway',
+                'at': '2026-11-21T11:00:00+00:00',
+                'elapsed_ms': 9.2,
+            }) + '\n',
+            encoding='utf-8',
+        )
+        self.assertEqual((await app_ok.snapshot())['summary']['recent_processing_ms'], 815.6)
+
+        # Gateway-only control log with no generation trace returns None (not false latency).
+        official_log.write_text('2026-11-21 [info] ready\n', encoding='utf-8')
+        self.assertIsNone(recent_processing_duration_ms(official_log, control_log))
+
+    async def test_monitor_surfaces_recall_query_summary_when_attached(self):
+        async def probe(_url):
+            return True, 200, ''
+
+        recall = RecallStore(self.state_dir / 'knowledge-recall.sqlite3')
+        try:
+            recall.record_query('automatic', 0)
+            recall.record_query('explicit', 3)
+            monitor = ServiceMonitor(
+                self.config,
+                registry=self.registry,
+                probe_http=probe,
+                sample_process=lambda pid: {'pid': pid, 'alive': True, 'rss_bytes': 1024, 'cpu_percent': 0.1},
+                disk_usage=lambda _p: SimpleNamespace(free=80 * 1024 ** 3),
+                recall_store=recall,
+            )
+            snap = await monitor.snapshot()
+            rq = snap['summary']['recall_queries']
+            self.assertEqual(rq['total_queries'], 2)
+            self.assertEqual(rq['hit_queries'], 1)
+            self.assertEqual(rq['empty_queries'], 1)
+            self.assertEqual(rq['hit_rate'], 0.5)
+        finally:
+            recall.close()
 
 
 if __name__ == '__main__':

@@ -45,6 +45,14 @@ class RecallStore:
             FOREIGN KEY(agent_id,event_id) REFERENCES recall_event(agent_id,event_id)
           );
           CREATE INDEX IF NOT EXISTS recall_hit_document ON recall_hit(dataset_id,document_id);
+          CREATE TABLE IF NOT EXISTS recall_query_stats (
+            channel TEXT PRIMARY KEY CHECK(channel IN ('automatic','explicit')),
+            total_queries INTEGER NOT NULL DEFAULT 0,
+            hit_queries INTEGER NOT NULL DEFAULT 0,
+            empty_queries INTEGER NOT NULL DEFAULT 0,
+            total_hits INTEGER NOT NULL DEFAULT 0,
+            last_query_at TEXT
+          );
         ''')
         with self.db:
             self.db.execute('INSERT OR IGNORE INTO recall_meta VALUES(1,1,?)', (self.now(),))
@@ -122,6 +130,63 @@ class RecallStore:
                           'hits': [{'dataset_id': dataset, 'document_id': document} for dataset, document in hits]})
         return {'items': items, 'more': len(rows) > limit}
 
+    def record_query(self, channel: str, hit_count: int) -> dict:
+        """Record an aggregate query outcome (including 0-hit denominators) without query text."""
+        if channel not in ('automatic', 'explicit') or type(hit_count) is not int or hit_count < 0:
+            raise PolicyError('invalid_recall_event')
+        now = self.now()
+        hit_inc = 1 if hit_count > 0 else 0
+        empty_inc = 1 if hit_count == 0 else 0
+        with self.db:
+            self.db.execute(
+                '''INSERT INTO recall_query_stats(channel, total_queries, hit_queries, empty_queries, total_hits, last_query_at)
+                   VALUES(?, 1, ?, ?, ?, ?)
+                   ON CONFLICT(channel) DO UPDATE SET
+                     total_queries = total_queries + 1,
+                     hit_queries = hit_queries + excluded.hit_queries,
+                     empty_queries = empty_queries + excluded.empty_queries,
+                     total_hits = total_hits + excluded.total_hits,
+                     last_query_at = excluded.last_query_at''',
+                (channel, hit_inc, empty_inc, hit_count, now),
+            )
+        return {'recorded': True, 'channel': channel, 'hit_count': hit_count}
+
+    def query_summary(self) -> dict:
+        started_row = self.db.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()
+        started_at = started_row[0] if started_row else None
+        rows = self.db.execute(
+            'SELECT channel, total_queries, hit_queries, empty_queries, total_hits, last_query_at FROM recall_query_stats'
+        ).fetchall()
+        by_channel = {
+            ch: {'total_queries': 0, 'hit_queries': 0, 'empty_queries': 0, 'total_hits': 0, 'hit_rate': None, 'last_query_at': None}
+            for ch in ('automatic', 'explicit')
+        }
+        total_queries = hit_queries = empty_queries = total_hits = 0
+        for channel, total_q, hit_q, empty_q, hits_sum, last_at in rows:
+            if channel not in by_channel:
+                continue
+            by_channel[channel] = {
+                'total_queries': int(total_q),
+                'hit_queries': int(hit_q),
+                'empty_queries': int(empty_q),
+                'total_hits': int(hits_sum),
+                'hit_rate': round(hit_q / total_q, 4) if total_q > 0 else None,
+                'last_query_at': last_at,
+            }
+            total_queries += int(total_q)
+            hit_queries += int(hit_q)
+            empty_queries += int(empty_q)
+            total_hits += int(hits_sum)
+        return {
+            'started_at': started_at,
+            'total_queries': total_queries,
+            'hit_queries': hit_queries,
+            'empty_queries': empty_queries,
+            'total_hits': total_hits,
+            'hit_rate': round(hit_queries / total_queries, 4) if total_queries > 0 else None,
+            'by_channel': by_channel,
+        }
+
 
 def attach_recall(app, registry):
     store = RecallStore(registry.path.parent / 'knowledge-recall.sqlite3')
@@ -191,8 +256,14 @@ def attach_recall(app, registry):
             item['agent_kind'] = agent.get('kind') or ''
         return web.json_response(result)
 
+    async def summary(request):
+        if not request['manager']:
+            raise PolicyError('management_required', 403)
+        return web.json_response(store.query_summary())
+
     app.add_routes([web.post('/v1/knowledge/recalls', record), web.get('/v1/knowledge/recalls', stats),
-                    web.get('/v1/knowledge/recall-counts', counts), web.get('/v1/knowledge/recall-events', events)])
+                    web.get('/v1/knowledge/recall-counts', counts), web.get('/v1/knowledge/recall-events', events),
+                    web.get('/v1/knowledge/recall-summary', summary)])
     async def close(_):
         store.close()
     app.on_cleanup.append(close)
