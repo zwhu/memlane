@@ -259,8 +259,10 @@ class UserProfilesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(env['CODEX_HOME'], str(root))
         self.assertEqual(env['MEMLANE_PROCESSING_SESSION'], '1')
         self.assertEqual(args[-1], PROMPT)
-        self.assertIn('Only include rules from stored memories, not from conversations.', PROMPT)
-        self.assertIn('Wrap the entire export in a single code block', PROMPT)
+        for heading in ('## 协作指令', '## 个人身份', '## 职业经历', '## 核心项目', '## 通用偏好'):
+            self.assertIn(heading, PROMPT)
+        self.assertIn('单个代码块', PROMPT)
+        self.assertNotIn('[YYYY-MM-DD] - ', PROMPT)
 
     def test_error_detail_preserves_actual_error_and_redacts_sensitive_values(self):
         raw = b'Error loading config.toml: invalid transport /Users/synthetic/private.toml https://example.test/?token=hidden Bearer synthetic-secret user@example.test sk-synthetic SECRET_TOKEN'

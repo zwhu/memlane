@@ -398,6 +398,7 @@ async def configured_app(config):
                          {key: read_secret(value) for key, value in config.get('agent_control_token_files', {}).items()},
                          plugin_source=config.get('plugin_dir'), control_url=config.get('project_control_url'), codex_config=config,
                          generation=generation, generation_validation=validation)
+        backlog = None
         if not first_setup:
             from project_backlog import attach_backlog
             backlog = attach_backlog(app, registry, config)
@@ -408,6 +409,8 @@ async def configured_app(config):
                 attach_generation_handoff(app, generation, registry, config, incremental, backlog)
             from tool_graph_control import attach_tool_graph
             attach_tool_graph(app, registry, config)
+        from project_message_summary import attach_project_message_summary
+        attach_project_message_summary(app, registry, backlog=backlog)
     except BaseException:
         if registry is not None:
             registry.close()

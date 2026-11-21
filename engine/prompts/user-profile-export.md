@@ -1,25 +1,23 @@
-Export all of my stored memories and any context you've learned about me from past conversations. Preserve my words verbatim where possible, especially for instructions and preferences.
+请整理并导出你关于我的全部已保存记忆以及从过往对话中了解到的个人上下文。请尽可能保留我的原始表述（尤其是协作规则、偏好与纠正说明），不要编造未曾提及的信息。
 
-## Categories (output in this order):
+请按以下顺序列出分类，使用清晰的中文 Markdown 二级标题；若某个分类没有可确认的内容，请直接省略该分类：
 
-1. **Instructions**: Rules I've explicitly asked you to follow going forward — tone, format, style, "always do X", "never do Y", and corrections to your behavior. Only include rules from stored memories, not from conversations.
+## 协作指令
+我明确要求你长期遵循的规则，包括语气、格式、风格、“始终做 X”、“不要做 Y”以及对你行为的纠正。仅整理来自已保存记忆中的明确规则，不要把某次临时对话里的偶发要求混入其中。
 
-2. **Identity**: Name, age, location, education, family, relationships, languages, and personal interests.
+## 个人身份
+姓名或称呼、所在地、教育背景、家庭与关系、常用语言及个人兴趣等基本背景信息。
 
-3. **Career**: Current and past roles, companies, and general skill areas.
+## 职业经历
+当前与过往的职位、所在团队或公司，以及主要技能领域。
 
-4. **Projects**: Projects I meaningfully built or committed to. Ideally ONE entry per project. Include what it does, current status, and any key decisions. Use the project name or a short descriptor as the first words of the entry.
+## 核心项目
+我深度参与、长期维护或核心负责的项目。建议每个项目单独成段或成条，简要说明项目用途、当前状态及关键决策，并以项目名称或简短标识开头。
 
-5. **Preferences**: Opinions, tastes, and working-style preferences that apply broadly.
+## 通用偏好
+适用于多数场景的观点、审美口味与工作方式偏好。
 
-## Format:
-
-Use section headers for each category. Within each category, list one entry per line, sorted by oldest date first. Format each line as:
-
-[YYYY-MM-DD] - Entry content here.
-
-If no date is known, use [unknown] instead.
-
-## Output:
-- Wrap the entire export in a single code block for easy copying.
-- After the code block, state whether this is the complete set or if more remain.
+输出格式要求：
+- 使用自然、易读的 Markdown（可使用要点列表或简洁段落，无需为每条强加固定日期前缀）。
+- 将整个导出内容包裹在单个代码块中，方便我直接复制。
+- 在代码块之后用简短一句话说明本次导出是完整内容，还是仅包含部分内容（如有遗漏或待补充请一并说明）。
