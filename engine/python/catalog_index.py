@@ -339,13 +339,14 @@ _CATALOG_INDEX_NAMES = (
 
 
 def _create_catalog_schema(con: sqlite3.Connection, tz_name: str):
+    con.execute('PRAGMA page_size=8192')
     con.execute('PRAGMA journal_mode=WAL')
     con.execute('PRAGMA journal_size_limit=4194304')
     con.execute('PRAGMA wal_autocheckpoint=1000')
     con.execute('PRAGMA synchronous=NORMAL')
     con.execute('PRAGMA temp_store=MEMORY')
-    con.execute('PRAGMA cache_size=-32768')
-    con.execute('PRAGMA threads=4')
+    con.execute('PRAGMA cache_size=-4096')
+    con.execute('PRAGMA threads=2')
     con.execute('PRAGMA busy_timeout=5000')
     con.executescript('''
         CREATE TABLE IF NOT EXISTS catalog_meta (
@@ -491,6 +492,7 @@ class CatalogIndex:
         self._last_prov_stat = None
         self._last_recall_stat = None
         self._last_generation = 0
+        self._inflight_sync = None
         self._recent_appends: dict[int, tuple[str, list[tuple[str, str, int]]]] = {}
         self._cat_counts_cache: dict[tuple[int, str], dict[str, int]] = {}
         self._writer_ro_cons: dict[str, tuple[int, sqlite3.Connection]] = {}
@@ -523,6 +525,7 @@ class CatalogIndex:
         resolved = self.path.resolve()
         new_con = sqlite3.connect(f'file:{resolved}?mode=ro', uri=True, timeout=2.0, check_same_thread=False)
         new_con.execute('PRAGMA query_only = ON')
+        new_con.execute('PRAGMA cache_size = -1024')
         new_con.execute('PRAGMA busy_timeout = 2000')
         self._reader_local.con = new_con
         self._reader_local.epoch = epoch
@@ -1044,8 +1047,19 @@ class CatalogIndex:
         prov_stat_now = _file_stat_sig(self.provenance_path) if self.provenance_path else None
         recall_stat_now = _file_stat_sig(self.recall_path) if self.recall_path else None
         is_cold_build = force_full or not existing_states
+        stream_cold_bulk = bool(
+            is_cold_build and con.execute('SELECT 1 FROM catalog_docs LIMIT 1').fetchone() is None
+        )
         cog_con = self._get_writer_ro(cognee_db)
+        cog_in_tx = False
         try:
+            # Pin one consistent read-only WAL snapshot across Stage 1 + Fast Append + Stage 2
+            # so concurrent writers cannot split Stage 1 counts from WHERE rowid > old_max_rid.
+            try:
+                cog_con.execute('BEGIN DEFERRED')
+                cog_in_tx = True
+            except sqlite3.Error:
+                cog_in_tx = False
             data_cols = {str(r[1]) for r in cog_con.execute('PRAGMA table_info(data)').fetchall()}
             has_sys = 'system_metadata' in data_cols
             has_pipe = 'pipeline_status' in data_cols
@@ -1072,20 +1086,20 @@ class CatalogIndex:
                         p_cnt, p_max, p_sum = stage1_cov[canon]
                         stage1_cov[canon] = (p_cnt + int(cnt), max(p_max, int(max_rid)), p_sum + int(sum_rid))
 
+            stage2_updated_rowids: dict[str, list[int]] = {}
+
             def _probe_full_5tuple(target_ds_list: list[str]):
-                t_vars = []
-                for tds in target_ds_list:
-                    for v in (uuid_hex(tds), tds):
-                        if v and v not in t_vars:
-                            t_vars.append(v)
                 for tds in target_ds_list:
                     live_fingerprints[tds] = (0, 0, 0, '', 0)
-                if not t_vars:
-                    return
-                for start in range(0, len(t_vars), _MAX_IN_BATCH):
-                    batch = t_vars[start : start + _MAX_IN_BATCH]
-                    ph = ','.join('?' for _ in batch)
-                    for raw_ds, cnt, max_rid, sum_rid, max_upd, id_chk in cog_con.execute(
+                    t_vars = list(dict.fromkeys(v for v in (uuid_hex(tds), tds) if v))
+                    if not t_vars:
+                        continue
+                    prev_fp_t = existing_states.get(tds)
+                    old_upd_cut = prev_fp_t[3] if (prev_fp_t is not None and prev_fp_t[3]) else '9999-99-99T99:99:99'
+                    ph = ','.join('?' for _ in t_vars)
+                    rids_acc: list[int] = []
+                    rids_overflow = False
+                    for raw_ds, cnt, max_rid, sum_rid, max_upd, id_chk, upd_rids_csv in cog_con.execute(
                         f'''SELECT dataset_id, COUNT(*), COALESCE(MAX(rowid), 0),
                                    COALESCE(SUM(rowid), 0),
                                    COALESCE(MAX(CASE WHEN substr(updated_at, 1, 1) BETWEEN '0' AND '9' THEN updated_at END), ''),
@@ -1096,11 +1110,12 @@ class CatalogIndex:
                                        + unicode(substr(id, 25, 1))
                                        + length(coalesce(label, '')) * 7
                                        + unicode(substr(coalesce(content_hash, ''), 1, 1)) * 31
-                                   ), 0)
+                                   ), 0),
+                                   GROUP_CONCAT(CASE WHEN substr(updated_at, 1, 1) BETWEEN '0' AND '9' AND updated_at > ? THEN rowid END)
                             FROM data
                             WHERE dataset_id IN ({ph})
                             GROUP BY dataset_id''',
-                        batch,
+                        (old_upd_cut, *t_vars),
                     ):
                         canon = ds_hex_to_uuid.get(str(raw_ds))
                         if canon is None:
@@ -1114,6 +1129,17 @@ class CatalogIndex:
                             max(prev_upd, upd_str),
                             prev_chk + int(id_chk or 0),
                         )
+                        if upd_rids_csv and not rids_overflow:
+                            parts = str(upd_rids_csv).split(',')
+                            if len(rids_acc) + len(parts) <= 200:
+                                for tok in parts:
+                                    if tok:
+                                        rids_acc.append(int(tok))
+                            else:
+                                rids_overflow = True
+                                rids_acc.clear()
+                    if rids_acc and not rids_overflow:
+                        stage2_updated_rowids[tds] = rids_acc
 
             removed_datasets = [ds for ds in existing_states if ds not in allowed_set]
             changed_datasets: list[str] = []
@@ -1330,16 +1356,19 @@ class CatalogIndex:
                         and new_sum_rid == old_sum_rid
                         and new_max_upd > old_max_upd
                     ):
-                        upd_rows = cog_con.execute(
-                            f'''SELECT id, rowid, name, label, raw_data_location,
-                                       {sys_col}, external_metadata, node_set, {pipe_col},
-                                       updated_at, created_at, content_hash
-                                FROM data
-                                WHERE dataset_id IN ({ph})
-                                  AND substr(updated_at, 1, 1) BETWEEN '0' AND '9'
-                                  AND updated_at > ?''',
-                            (*ds_vars, old_max_upd),
-                        ).fetchall()
+                        cand_rids = stage2_updated_rowids.get(ds)
+                        if cand_rids:
+                            rid_ph = ','.join('?' for _ in cand_rids)
+                            upd_rows = cog_con.execute(
+                                f'''SELECT id, rowid, name, label, raw_data_location,
+                                           {sys_col}, external_metadata, node_set, {pipe_col},
+                                           updated_at, created_at, content_hash
+                                    FROM data
+                                    WHERE rowid IN ({rid_ph})''',
+                                cand_rids,
+                            ).fetchall()
+                        else:
+                            upd_rows = []
                         if 0 < len(upd_rows) <= 200:
                             upd_doc_ids = [uuid_text(r[0]) for r in upd_rows if uuid_text(r[0])]
                             if len(upd_doc_ids) == len(upd_rows):
@@ -1420,11 +1449,24 @@ class CatalogIndex:
                         '''SELECT doc_id, cognee_rowid, source_updated_at, content_hash, pipeline_status
                            FROM catalog_docs WHERE dataset_id = ?''',
                         (ds,),
-                    ).fetchall():
-                        existing_docs[str(doc_id)] = (int(rowid_val), str(upd_raw), str(chash), str(pstatus))
+                    ):
+                        existing_docs[str(doc_id)] = f'{int(rowid_val)}\x1f{upd_raw}\x1f{chash}\x1f{pstatus}'
 
                 # Cold build for this dataset: single sequential scan computing rows, 5-tuple, day buckets & category counts!
+                # When catalog_docs is empty, stream directly in bounded 4k chunks to keep RSS low (< 80 MiB).
                 if not existing_docs:
+                    if stream_cold_bulk and not con.in_transaction:
+                        con.execute('BEGIN IMMEDIATE')
+                        for idx_name in _CATALOG_INDEX_NAMES:
+                            con.execute(f'DROP INDEX IF EXISTS {idx_name}')
+                    _COLD_INSERT_SQL = '''INSERT INTO catalog_docs (
+                                   dataset_id, doc_id, cognee_rowid, kind, is_knowledge,
+                                   common_category, lesson_type, state_key, category, session_id,
+                                   doc_name, doc_label, raw_data_location, content_hash,
+                                   created_at_raw, created_at_ns, created_at_invalid, updated_at_ns,
+                                   effective_date, day_desc_key, sort_ts_desc_key,
+                                   recall_count, recall_desc_key, pipeline_status, source_updated_at
+                               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'''
                     upserts = []
                     c_cnt = c_max_rid = c_sum_rid = c_chk = 0
                     c_max_upd = ''
@@ -1470,12 +1512,23 @@ class CatalogIndex:
                                 cold_raw += 1
                             if p_kind == 'common':
                                 cold_com += 1
+                            if stream_cold_bulk and len(upserts) >= 2000:
+                                upserts.sort(key=itemgetter(0, 1))
+                                con.executemany(_COLD_INSERT_SQL, upserts)
+                                upserts.clear()
+                    if stream_cold_bulk:
+                        if upserts:
+                            upserts.sort(key=itemgetter(0, 1))
+                            con.executemany(_COLD_INSERT_SQL, upserts)
+                            upserts.clear()
                     live_fingerprints[ds] = (c_cnt, c_max_rid, c_sum_rid, c_max_upd, c_chk)
                     cold_bucket_summaries[ds] = (cold_days, cold_k, cold_raw, cold_com, cold_cats)
-                    dataset_diffs[ds] = (upserts, [])
+                    dataset_diffs[ds] = ([] if stream_cold_bulk else upserts, [])
                     continue
 
-                live_scalar = {}
+                # Streaming single-pass diff: avoids allocating a second 50k live_scalar dict!
+                to_fetch_raw_ids = []
+                derived_check_existing: set[str] = set()
                 for raw_id, rid, upd, chash, pstatus in cog_con.execute(
                     f'''SELECT id, rowid, updated_at, content_hash, {pipe_col}
                         FROM data WHERE dataset_id IN ({ph})''',
@@ -1484,20 +1537,15 @@ class CatalogIndex:
                     did = uuid_text(raw_id)
                     if not did:
                         continue
-                    live_scalar[did] = (
-                        int(rid or 0),
-                        iso_text(upd),
-                        str(chash or ''),
-                        _extract_cognify_status(pstatus, ds),
-                        raw_id,
-                    )
-
-                deleted_ids = [did for did in existing_docs if did not in live_scalar]
-                to_fetch_raw_ids = []
-                for did, (rid, upd, chash, pstatus, raw_id) in live_scalar.items():
-                    prev = existing_docs.get(did)
-                    if prev is None or prev != (rid, upd, chash, pstatus):
+                    prev = existing_docs.pop(did, None)
+                    sig_now = f'{int(rid or 0)}\x1f{iso_text(upd)}\x1f{chash or ""}\x1f{_extract_cognify_status(pstatus, ds)}'
+                    if prev is None or prev != sig_now:
                         to_fetch_raw_ids.append(raw_id)
+                        if prev is not None:
+                            derived_check_existing.add(did)
+
+                deleted_ids = list(existing_docs.keys())
+                existing_docs.clear()
 
                 upserts = []
                 for start in range(0, len(to_fetch_raw_ids), _MAX_IN_BATCH):
@@ -1523,22 +1571,41 @@ class CatalogIndex:
                         else:
                             # If previously indexed but now classified as derived, delete it
                             did = uuid_text(full_row[0])
-                            if did in existing_docs:
+                            if did in derived_check_existing:
                                 deleted_ids.append(did)
 
                 dataset_diffs[ds] = (upserts, deleted_ids)
         except (PolicyError, sqlite3.Error):
+            if con.in_transaction:
+                try:
+                    con.execute('ROLLBACK')
+                except sqlite3.Error:
+                    pass
             self._close_writer_ro_all()
             raise
+        except Exception:
+            if con.in_transaction:
+                try:
+                    con.execute('ROLLBACK')
+                except sqlite3.Error:
+                    pass
+            raise
+        finally:
+            if cog_in_tx:
+                try:
+                    cog_con.execute('COMMIT')
+                except sqlite3.Error:
+                    pass
 
         # Apply all updates atomically in one catalog_index write transaction
         dirty_datasets = set(changed_datasets)
         now_iso = _iso_now()
         total_upserts = sum(len(u) for u, _ in dataset_diffs.values())
-        use_bulk_index_build = False
-        con.execute('BEGIN IMMEDIATE')
+        use_bulk_index_build = bool(stream_cold_bulk and con.in_transaction)
+        if not con.in_transaction:
+            con.execute('BEGIN IMMEDIATE')
         try:
-            if total_upserts >= 5000 and con.execute('SELECT 1 FROM catalog_docs LIMIT 1').fetchone() is None:
+            if not use_bulk_index_build and total_upserts >= 5000 and con.execute('SELECT 1 FROM catalog_docs LIMIT 1').fetchone() is None:
                 use_bulk_index_build = True
                 for idx_name in _CATALOG_INDEX_NAMES:
                     con.execute(f'DROP INDEX IF EXISTS {idx_name}')
@@ -1801,6 +1868,8 @@ class CatalogIndex:
                     (next_gen, tz_name, new_prov_seq, new_recall_rev, now_iso),
                 )
             con.execute('COMMIT')
+            if use_bulk_index_build or (dirty_datasets and not incremental_bucket_deltas):
+                con.execute('PRAGMA shrink_memory')
             self._last_prov_stat = prov_stat_now
             self._last_recall_stat = recall_stat_now
             # Record pure append-only generation deltas and maintain O(1) category_counts cache!
@@ -1869,6 +1938,8 @@ class CatalogIndex:
 
         O(1) stat short-circuit returns immediately (<0.2ms) when none of the
         underlying SQLite stores, timezone, or managed dataset set changed.
+        Concurrent callers targeting the same dataset set coalesce onto the
+        single in-flight sync future instead of queueing redundant scans.
         """
         ds_tuple = tuple(sorted({uuid_text(ds) for ds in managed_datasets if ds}))
         if not force:
@@ -1876,24 +1947,59 @@ class CatalogIndex:
             with self._state_lock:
                 if not self._rebuilding and self._last_stat_sig == sig:
                     return self._last_generation
+                inflight = self._inflight_sync
+                if inflight is not None and inflight[0] == ds_tuple:
+                    shared_future = inflight[1]
+                else:
+                    shared_future = None
+            if shared_future is not None:
+                return shared_future.result()
 
         def _run():
             with self._write_lock:
-                sig_now = self._compute_stat_signature(ds_tuple)
+                sig_before = self._compute_stat_signature(ds_tuple)
                 if not force:
                     with self._state_lock:
-                        if not self._rebuilding and self._last_stat_sig == sig_now:
+                        if not self._rebuilding and self._last_stat_sig == sig_before:
                             return self._last_generation
                 try:
                     gen = self._sync_into_connection(self._write_con, list(ds_tuple), force_full=force)
                 except sqlite3.DatabaseError:
                     gen = self._atomic_rebuild_locked(list(ds_tuple))
                 with self._state_lock:
-                    self._last_stat_sig = self._compute_stat_signature(ds_tuple)
+                    self._last_stat_sig = sig_before
                     self._last_generation = gen
                 return gen
 
-        return self._writer_executor.submit(_run).result()
+        with self._state_lock:
+            if not force:
+                sig_check = self._compute_stat_signature(ds_tuple)
+                if not self._rebuilding and self._last_stat_sig == sig_check:
+                    return self._last_generation
+                inflight = self._inflight_sync
+                if inflight is not None and inflight[0] == ds_tuple:
+                    shared_future = inflight[1]
+                else:
+                    shared_future = None
+                if shared_future is not None:
+                    fut = shared_future
+                    owns_slot = False
+                else:
+                    fut = self._writer_executor.submit(_run)
+                    self._inflight_sync = (ds_tuple, fut)
+                    owns_slot = True
+            else:
+                fut = self._writer_executor.submit(_run)
+                self._inflight_sync = (ds_tuple, fut)
+                owns_slot = True
+
+        try:
+            return fut.result()
+        finally:
+            if owns_slot:
+                with self._state_lock:
+                    if self._inflight_sync is not None and self._inflight_sync[1] is fut:
+                        self._inflight_sync = None
 
     def _atomic_rebuild_locked(self, managed_datasets: list[str]) -> int:
         """Self-healing atomic generation rebuild: build temp DB -> quick_check -> os.replace."""
@@ -2486,6 +2592,29 @@ class CatalogIndex:
                 (ds, horizon_ns),
             ).fetchall()
         ]
+
+    def iter_knowledge_doc_ids_after_horizon(
+        self,
+        dataset_id: str,
+        horizon_ns: str,
+        *,
+        batch_size: int = _MAX_IN_BATCH,
+    ):
+        """Stream post-horizon knowledge doc_ids in bounded chunks without allocating a full list."""
+        ds = uuid_text(dataset_id)
+        con = self._get_reader()
+        cur = con.execute(
+            '''SELECT doc_id
+               FROM catalog_docs
+               WHERE dataset_id = ? AND is_knowledge = 1 AND created_at_ns > ?
+               ORDER BY created_at_ns DESC, doc_id ASC''',
+            (ds, horizon_ns),
+        )
+        while True:
+            rows = cur.fetchmany(batch_size)
+            if not rows:
+                break
+            yield [str(r[0]) for r in rows]
 
     def knowledge_docs_invalid_created(self, dataset_id: str) -> list[str]:
         """Partial-index scan on idx_cdocs_proj_invalid_ts for Branch C (created_at_invalid = 1)."""

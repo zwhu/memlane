@@ -71,7 +71,6 @@ class ReadingStateStore:
         self._lock = threading.RLock()
         self._mutation_rev = 0
         self._unread_cache: dict[tuple[str, str], tuple[int, int, str, set[str]]] = {}
-        self._explicit_read_cache: dict[tuple[str, int], frozenset[str]] = {}
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.path.parent, 0o700)
         if self.path.is_symlink():
@@ -84,6 +83,7 @@ class ReadingStateStore:
         self.db.execute('PRAGMA journal_size_limit=4194304')
         self.db.execute('PRAGMA wal_autocheckpoint=1000')
         self.db.execute('PRAGMA synchronous=NORMAL')
+        self.db.execute('PRAGMA cache_size=-2048')
         self.db.execute('PRAGMA foreign_keys=ON')
         self.db.execute('PRAGMA busy_timeout=5000')
         with self._lock:
@@ -604,25 +604,22 @@ class ReadingStateStore:
     def _bump_mutation_rev_locked(self):
         self._mutation_rev += 1
         self._unread_cache.clear()
-        self._explicit_read_cache.clear()
 
-    def _get_explicit_read_set(self, scope_hash: str) -> frozenset[str]:
-        with self._lock:
-            key = (scope_hash, self._mutation_rev)
-            cached = self._explicit_read_cache.get(key)
-            if cached is not None:
-                return cached
-            rows = frozenset(
-                str(r[0])
-                for r in self.db.execute(
-                    'SELECT doc_id FROM ui_read_items WHERE scope_hash = ? AND is_read = 1',
-                    (scope_hash,),
-                ).fetchall()
-            )
-            if len(self._explicit_read_cache) >= 32:
-                self._explicit_read_cache.clear()
-            self._explicit_read_cache[key] = rows
-            return rows
+    def _explicit_read_subset_locked(self, scope_hash: str, doc_ids: list[str]) -> set[str]:
+        """O(K log N) PK lookup on ui_read_items without ever loading the full scope into RAM."""
+        if not doc_ids:
+            return set()
+        found: set[str] = set()
+        for start in range(0, len(doc_ids), _MAX_IN_BATCH):
+            batch = doc_ids[start : start + _MAX_IN_BATCH]
+            ph = ','.join('?' for _ in batch)
+            for (did,) in self.db.execute(
+                f'''SELECT doc_id FROM ui_read_items
+                    WHERE scope_hash = ? AND is_read = 1 AND doc_id IN ({ph})''',
+                (scope_hash, *batch),
+            ):
+                found.add(str(did))
+        return found
 
     def compute_unread_ids(
         self,
@@ -632,7 +629,7 @@ class ReadingStateStore:
         catalog_index,
     ) -> set[str]:
         """Compute exact unread doc_id set in O(U log N) via 3 sparse indexed branches,
-        with generation-keyed O(1) cache & append-only delta updates.
+        with generation-keyed O(1) cache & append-only delta updates (zero full-scope RAM cache).
         """
         scope = self.ensure_scope(reading_identity, project_id, dataset_id, catalog_index=catalog_index)
         scope_hash = scope['scope_hash']
@@ -653,12 +650,16 @@ class ReadingStateStore:
                         if deltas is not None:
                             updated = set(c_unread)
                             if deltas:
-                                exp_read = self._get_explicit_read_set(scope_hash)
-                                for did, cns, c_inv in deltas:
-                                    if did in exp_read:
-                                        continue
-                                    if c_inv == 1 or (cns and cns > horizon_ns):
-                                        updated.add(did)
+                                candidate_ids = [
+                                    did
+                                    for did, cns, c_inv in deltas
+                                    if c_inv == 1 or (cns and cns > horizon_ns)
+                                ]
+                                if candidate_ids:
+                                    exp_read = self._explicit_read_subset_locked(scope_hash, candidate_ids)
+                                    for did in candidate_ids:
+                                        if did not in exp_read:
+                                            updated.add(did)
                             self._unread_cache[cache_key] = (cur_gen, mut_rev, horizon_ns, updated)
                             return set(updated)
 
@@ -669,35 +670,42 @@ class ReadingStateStore:
                 for r in self.db.execute(
                     'SELECT doc_id FROM ui_read_items WHERE scope_hash = ? AND is_read = 0',
                     (scope_hash,),
-                ).fetchall()
+                )
             ]
         unread = set()
         if explicit_unread:
             unread.update(catalog_index.existing_knowledge_doc_ids(dataset_id, explicit_unread))
 
-        # Branch B (post-horizon) + Branch C (invalid created_at)
-        post_horizon_rows = catalog_index.knowledge_docs_after_horizon(dataset_id, horizon_ns)
-        invalid_docs = catalog_index.knowledge_docs_invalid_created(dataset_id)
-        candidates = [doc_id for doc_id, _ in post_horizon_rows]
-        candidates.extend(invalid_docs)
-
-        if candidates:
-            if len(candidates) > _MAX_IN_BATCH:
-                # Single covering-index scan cached per mutation_rev instead of 125x IN-batch queries
-                explicit_read = self._get_explicit_read_set(scope_hash)
-            else:
-                unique_candidates = list(dict.fromkeys(candidates))
-                explicit_read = set()
+        # Branch B (post-horizon) streamed in bounded 400-row chunks + Branch C (invalid created_at)
+        scanned_batches = 0
+        if hasattr(catalog_index, 'iter_knowledge_doc_ids_after_horizon'):
+            for batch in catalog_index.iter_knowledge_doc_ids_after_horizon(dataset_id, horizon_ns, batch_size=_MAX_IN_BATCH):
+                scanned_batches += 1
                 with self._lock:
-                    ph = ','.join('?' for _ in unique_candidates)
-                    for (did,) in self.db.execute(
-                        f'''SELECT doc_id FROM ui_read_items
-                            WHERE scope_hash = ? AND is_read = 1 AND doc_id IN ({ph})''',
-                        (scope_hash, *unique_candidates),
-                    ):
-                        explicit_read.add(str(did))
-            for did in candidates:
-                if did not in explicit_read:
+                    exp_read = self._explicit_read_subset_locked(scope_hash, batch)
+                for did in batch:
+                    if did not in exp_read:
+                        unread.add(did)
+        else:
+            post_horizon_ids = [doc_id for doc_id, _ in catalog_index.knowledge_docs_after_horizon(dataset_id, horizon_ns)]
+            for start in range(0, len(post_horizon_ids), _MAX_IN_BATCH):
+                scanned_batches += 1
+                batch = post_horizon_ids[start : start + _MAX_IN_BATCH]
+                with self._lock:
+                    exp_read = self._explicit_read_subset_locked(scope_hash, batch)
+                for did in batch:
+                    if did not in exp_read:
+                        unread.add(did)
+        if scanned_batches >= 10:
+            with self._lock:
+                self.db.execute('PRAGMA shrink_memory')
+
+        invalid_docs = catalog_index.knowledge_docs_invalid_created(dataset_id)
+        if invalid_docs:
+            with self._lock:
+                exp_read_inv = self._explicit_read_subset_locked(scope_hash, invalid_docs)
+            for did in invalid_docs:
+                if did not in exp_read_inv:
                     unread.add(did)
 
         if cur_gen >= 0:

@@ -235,6 +235,9 @@ def save(common, policy, payload, stopped, report=emit):
     lease = None
     confirmed_batch = []
 
+    def flush_confirmed_best_effort():
+        return None
+
     def progress(status='running', reason=''):
         report({'status': status, 'reason': reason, 'saved': saved, 'handled': handled, 'filtered': filtered,
                 'rejected': rejected, 'deferred': deferred,

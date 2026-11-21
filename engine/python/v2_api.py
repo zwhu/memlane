@@ -20,6 +20,8 @@ Implements every Phase 1 control-plane endpoint specified in proposal.md §3.5:
 """
 import asyncio
 import base64
+from concurrent.futures import ThreadPoolExecutor
+import functools
 import hashlib
 import heapq
 import hmac
@@ -750,6 +752,13 @@ def attach_v2_api(
     cursors = CursorCodec(cursor_secret)
     handles = V2APIHandles(cat, read_store)
     handles.backlog = backlog
+    db_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='v2-api-read')
+
+    async def _run_db(fn, *args, **kwargs):
+        loop = asyncio.get_running_loop()
+        if kwargs:
+            return await loop.run_in_executor(db_executor, functools.partial(fn, *args, **kwargs))
+        return await loop.run_in_executor(db_executor, fn, *args)
 
     def _require_manager(request):
         if not request['manager']:
@@ -766,7 +775,7 @@ def attach_v2_api(
         managed_ds = [p['dataset_id'] for p in projects]
         if common is not None:
             managed_ds.append(common['dataset_id'])
-        await asyncio.to_thread(cat.sync, managed_ds)
+        await _run_db(cat.sync, managed_ds)
         return projects, common
 
     # 1. GET /v2/datasets/{ds}/documents/{doc}/body
@@ -880,10 +889,10 @@ def attach_v2_api(
             recent_items,
             runs,
             runs_more,
-        ) = await asyncio.to_thread(_build_sync)
+        ) = await _run_db(_build_sync)
 
         agents_snapshot = {k: dict(v) for k, v in registry.state.get('agents', {}).items()}
-        rec_events, rec_more, rec_started = await asyncio.to_thread(
+        rec_events, rec_more, rec_started = await _run_db(
             _read_recall_events_summary,
             recall_store,
             set(allowed_ds),
@@ -1002,7 +1011,7 @@ def attach_v2_api(
             ]
             return gen, formatted, has_more, total_count
 
-        gen, formatted, base_has_more, total_count = await asyncio.to_thread(_query)
+        gen, formatted, base_has_more, total_count = await _run_db(_query)
 
         def _make_payload(subset, trimmed):
             eff_more = bool(base_has_more or trimmed)
@@ -1170,7 +1179,7 @@ def attach_v2_api(
             formatted,
             cursor_keys,
             base_has_more,
-        ) = await asyncio.to_thread(_query)
+        ) = await _run_db(_query)
 
         def _make_payload(subset, trimmed):
             eff_more = bool(base_has_more or trimmed)
@@ -1266,7 +1275,7 @@ def attach_v2_api(
             ckeys = [[d['sort_ts_desc_key'], d['doc_id']] for d in rows]
             return gen, cat_ver, res['total_filtered'], res['category_counts'], formatted, ckeys, res['has_more']
 
-        gen, cat_ver, total_filtered, category_counts, formatted, ckeys, base_has_more = await asyncio.to_thread(_query)
+        gen, cat_ver, total_filtered, category_counts, formatted, ckeys, base_has_more = await _run_db(_query)
 
         def _make_payload(subset, trimmed):
             eff_more = bool(base_has_more or trimmed)
@@ -1346,7 +1355,7 @@ def attach_v2_api(
             s_items = _read_recent_sessions_for_search(official_data, ds_to_proj, hydrator, limit=limit)
             return gen, k_items, s_items
 
-        gen, k_items, s_items = await asyncio.to_thread(_query)
+        gen, k_items, s_items = await _run_db(_query)
 
         def _make_payload(subset, _trimmed):
             return {
@@ -1420,7 +1429,7 @@ def attach_v2_api(
             ]
             return gen, formatted, has_more
 
-        gen, formatted, base_has_more = await asyncio.to_thread(_query)
+        gen, formatted, base_has_more = await _run_db(_query)
 
         def _make_payload(subset, trimmed):
             return {
@@ -2064,6 +2073,7 @@ def attach_v2_api(
     ])
 
     async def cleanup(_app):
+        db_executor.shutdown(wait=True)
         if catalog_index is None:
             cat.close()
         if reading_state is None:

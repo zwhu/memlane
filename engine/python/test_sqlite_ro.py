@@ -58,6 +58,16 @@ class SqliteRoTests(unittest.TestCase):
                     with self.subTest(stmt=stmt):
                         with self.assertRaises(sqlite3.DatabaseError):
                             con.execute(stmt)
+                # Read-only deferred WAL snapshot succeeds, while write transaction & DML inside snapshot remain denied
+                con.execute('BEGIN DEFERRED')
+                try:
+                    self.assertEqual(con.execute("SELECT val FROM sample WHERE id = '1'").fetchone(), ('hello',))
+                    with self.assertRaises(sqlite3.DatabaseError):
+                        con.execute("INSERT INTO sample VALUES ('2', 'bad')")
+                finally:
+                    con.execute('COMMIT')
+                with self.assertRaises(sqlite3.DatabaseError):
+                    con.execute('BEGIN IMMEDIATE')
 
     def test_rejects_missing_and_symlink_db(self):
         with tempfile.TemporaryDirectory() as tmp:

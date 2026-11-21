@@ -62,10 +62,15 @@ _LESSON_CATEGORY_LABELS = {
 
 
 def _readonly_authorizer(action, arg1, arg2, db_name, trigger_name):
-    """SQLite C-level authorizer permitting strictly read-only queries."""
+    """SQLite C-level authorizer permitting strictly read-only queries and read snapshots."""
     del db_name, trigger_name
     if action in _ALLOWED_READONLY_ACTIONS:
         return sqlite3.SQLITE_OK
+    if action == sqlite3.SQLITE_TRANSACTION:
+        op = str(arg1 or '').strip().upper()
+        if op in ('BEGIN', 'COMMIT', 'ROLLBACK'):
+            return sqlite3.SQLITE_OK
+        return sqlite3.SQLITE_DENY
     if action == sqlite3.SQLITE_PRAGMA:
         name = str(arg1 or '').strip().lower()
         val = None if arg2 is None else str(arg2).strip().lower()
@@ -125,6 +130,7 @@ def open_official_sqlite_ro(
                 uri,
                 uri=True,
                 timeout=timeout_int / 1000.0,
+                isolation_level=None,
                 check_same_thread=False,
             )
             con.set_authorizer(_readonly_authorizer)

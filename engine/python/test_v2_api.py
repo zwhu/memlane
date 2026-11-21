@@ -91,11 +91,13 @@ class V2APITests(AioHTTPTestCase):
 
         # Embedded common doc inside project dataset (must be excluded from category_counts!)
         self.embedded_common = str(uuid.uuid4())
+        embed_fp = self.data_dir / 'embed-common.md'
+        embed_fp.write_text('# Embedded Common\n\nCommon preference note stored in project dataset.', encoding='utf-8')
         c1.execute(
             'INSERT INTO data VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (
                 uuid.UUID(self.embedded_common).hex, uuid.UUID(self.ds_proj).hex, None,
-                'embed-common.md', 'Embedded Common', 'text/markdown', '',
+                'embed-common.md', 'Embedded Common', 'text/markdown', f'file://{embed_fp}',
                 json.dumps({'memlane_kind': 'common_knowledge', 'category': 'preference'}), None, None,
                 '{}', '2026-11-21 09:00:00', '2026-11-21 09:00:00', 'he-c',
             ),

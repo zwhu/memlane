@@ -18,6 +18,7 @@ SLA threshold from ``proposal.md §6.2``:
 import argparse
 import asyncio
 from datetime import datetime, timedelta, timezone
+import gc
 import hashlib
 import json
 import os
@@ -25,6 +26,7 @@ from pathlib import Path
 import resource
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -79,12 +81,27 @@ SCALES = {
 }
 
 
-def _rss_mib() -> float:
+def _peak_rss_mib() -> float:
     val = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     # macOS reports bytes; Linux reports KiB
     if sys.platform == 'darwin':
         return val / (1024 * 1024)
     return val / 1024.0
+
+
+def _rss_mib() -> float:
+    """Measure live process RSS in MiB (falls back to peak RSS if ps/proc unavailable)."""
+    try:
+        if sys.platform.startswith('linux'):
+            for line in Path('/proc/self/status').read_text(encoding='utf-8').splitlines():
+                if line.startswith('VmRSS:'):
+                    return int(line.split()[1]) / 1024.0
+        out = subprocess.check_output(['ps', '-o', 'rss=', '-p', str(os.getpid())], text=True, timeout=2.0).strip()
+        if out:
+            return int(out) / 1024.0
+    except Exception:
+        pass
+    return _peak_rss_mib()
 
 
 def _percentile(samples_ms: list[float], pct: float) -> float:
@@ -751,7 +768,9 @@ async def run_benchmark(scale: str = '1k', concurrency_seconds: float = 2.0) -> 
         t_gen = time.perf_counter()
         fixture = generate_adversarial_fixture(root, scale=scale)
         gen_ms = (time.perf_counter() - t_gen) * 1000.0
+        gc.collect()
         rss_after_fixture = _rss_mib()
+        peak_after_fixture = _peak_rss_mib()
 
         ds_main = fixture['ds_main']
         ds_code = fixture['ds_code']
@@ -947,10 +966,12 @@ async def run_benchmark(scale: str = '1k', concurrency_seconds: float = 2.0) -> 
 
             # 4. Distribution 6: verify all 4 subtle mutations
             mutations = _verify_subtle_mutations(cat, fixture)
+            gc.collect()
+            rss_end = _rss_mib()
+            peak_end = _peak_rss_mib()
         finally:
             await client.close()
 
-    rss_end = _rss_mib()
     report = {
         'scale': scale,
         'disk_free_gib': round(disk_free_gib, 2),
@@ -985,6 +1006,7 @@ async def run_benchmark(scale: str = '1k', concurrency_seconds: float = 2.0) -> 
         'rss_end_mib': round(rss_end, 2),
         'rss_delta_mib': round(max(0.0, rss_end - rss_start), 2),
         'rss_serving_delta_mib': round(max(0.0, rss_end - rss_after_fixture), 2),
+        'rss_peak_serving_delta_mib': round(max(0.0, peak_end - peak_after_fixture), 2),
     }
     return report
 
@@ -1000,18 +1022,18 @@ def check_sla(report: dict) -> list[str]:
         failures.append(f"catalog_incremental_1doc_ms={report['catalog_incremental_1doc_ms']} > 60")
     if report['catalog_stat_shortcircuit_p95_ms'] > 0.5:
         failures.append(f"catalog_stat_shortcircuit_p95_ms={report['catalog_stat_shortcircuit_p95_ms']} > 0.5")
-    if report['overview_bootstrap']['p95_ms'] > 50.0:
-        failures.append(f"overview_bootstrap p95={report['overview_bootstrap']['p95_ms']} > 50")
+    if report['overview_bootstrap']['p95_ms'] > 25.0:
+        failures.append(f"overview_bootstrap p95={report['overview_bootstrap']['p95_ms']} > 25")
     if report['overview_bootstrap']['max_bytes'] > 128 * 1024:
         failures.append(f"overview_bootstrap bytes={report['overview_bootstrap']['max_bytes']} > 131072")
-    if report['project_knowledge']['p95_ms'] > 25.0:
-        failures.append(f"project_knowledge p95={report['project_knowledge']['p95_ms']} > 25")
+    if report['project_knowledge']['p95_ms'] > 15.0:
+        failures.append(f"project_knowledge p95={report['project_knowledge']['p95_ms']} > 15")
     if report['project_knowledge']['max_bytes'] > 256 * 1024:
         failures.append(f"project_knowledge bytes={report['project_knowledge']['max_bytes']} > 262144")
-    if report['document_body']['p95_ms'] > 20.0:
-        failures.append(f"document_body p95={report['document_body']['p95_ms']} > 20")
-    if report['raw_records']['p95_ms'] > 40.0:
-        failures.append(f"raw_records p95={report['raw_records']['p95_ms']} > 40")
+    if report['document_body']['p95_ms'] > 5.0:
+        failures.append(f"document_body p95={report['document_body']['p95_ms']} > 5")
+    if report['raw_records']['p95_ms'] > 25.0:
+        failures.append(f"raw_records p95={report['raw_records']['p95_ms']} > 25")
     if report['code_activity']['p95_ms'] > 20.0:
         failures.append(f"code_activity p95={report['code_activity']['p95_ms']} > 20")
     if report['sparse_unread']['count'] != 5:
@@ -1025,6 +1047,8 @@ def check_sla(report: dict) -> list[str]:
         failures.append(f"WAL concurrency errors: writes={wc['write_errors']} reads={wc['reader_errors']}")
     if wc['read_p99_ms'] > 80.0:
         failures.append(f"WAL concurrency read_p99_ms={wc['read_p99_ms']} > 80")
+    if report['rss_serving_delta_mib'] > 80.0:
+        failures.append(f"rss_serving_delta_mib={report['rss_serving_delta_mib']} > 80")
     return failures
 
 
@@ -1049,16 +1073,16 @@ def main():
         print(f"  catalog incremental 1-doc : {report['catalog_incremental_1doc_ms']} ms (SLA < 60 ms)")
         print(f"  deep keyset page          : {report['deep_keyset_page_p95_ms']} ms P95")
         print(f"  EQP violations            : {len(report['eqp_violations'])}")
-        print(f"  /v2/overview/bootstrap    : P95={report['overview_bootstrap']['p95_ms']} ms, bytes={report['overview_bootstrap']['max_bytes']} (SLA <50ms, <128KiB)")
-        print(f"  /v2/projects/../knowledge : P95={report['project_knowledge']['p95_ms']} ms, bytes={report['project_knowledge']['max_bytes']} (SLA <25ms, <256KiB)")
-        print(f"  /v2/.../body              : P95={report['document_body']['p95_ms']} ms (SLA <20ms)")
-        print(f"  /v2/.../raw-records       : P95={report['raw_records']['p95_ms']} ms (SLA <40ms)")
+        print(f"  /v2/overview/bootstrap    : P95={report['overview_bootstrap']['p95_ms']} ms, bytes={report['overview_bootstrap']['max_bytes']} (SLA <25ms, <128KiB)")
+        print(f"  /v2/projects/../knowledge : P95={report['project_knowledge']['p95_ms']} ms, bytes={report['project_knowledge']['max_bytes']} (SLA <15ms, <256KiB)")
+        print(f"  /v2/.../body              : P95={report['document_body']['p95_ms']} ms (SLA <5ms)")
+        print(f"  /v2/.../raw-records       : P95={report['raw_records']['p95_ms']} ms (SLA <25ms)")
         print(f"  /v2/.../code-activity     : P95={report['code_activity']['p95_ms']} ms (SLA <20ms)")
         print(f"  sparse unread             : count={report['sparse_unread']['count']} P95={report['sparse_unread']['p95_ms']} ms")
         print(f"  subtle mutations (4/4)    : {all(report['mutations'][k] for k in ('inplace_update_detected','silent_delete_detected','replace_1to1_detected','rowid_reuse_detected'))}")
         wc = report['wal_concurrency']
-        print(f"  WAL 1W+4R concurrency     : writes={wc['writes_committed']} reads={wc['reads_completed']} P99={wc['read_p99_ms']} ms errs={len(wc['write_errors'])+len(wc['reader_errors'])}")
-        print(f"  RSS serving delta         : {report['rss_serving_delta_mib']} MiB (after_fixture={report['rss_after_fixture_mib']} -> end={report['rss_end_mib']}; total={report['rss_delta_mib']} MiB)")
+        print(f"  WAL 1W+4R concurrency     : writes={wc['writes_committed']} reads={wc['reads_completed']} P99={wc['read_p99_ms']} ms errs={len(wc['write_errors'])+len(wc['reader_errors'])} (SLA <80ms)")
+        print(f"  RSS serving delta         : {report['rss_serving_delta_mib']} MiB (after_fixture={report['rss_after_fixture_mib']} -> live={report['rss_end_mib']}; peak_delta={report['rss_peak_serving_delta_mib']} MiB; SLA <80 MiB)")
         print(f"  SLA passed                : {report['sla_passed']}")
         if sla_failures:
             for item in sla_failures:
