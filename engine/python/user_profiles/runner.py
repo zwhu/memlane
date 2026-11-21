@@ -13,12 +13,24 @@ from .constants import LIMIT, profile_prompt
 from .providers import get_provider
 
 
+_ISOLATED_ENV_PREFIXES = (
+    'COGNEE_',
+    'MEMLANE_PROJECT_',
+    'LLM_',
+    'OPENAI_',
+    'ANTHROPIC_',
+    'GEMINI_',
+    'OLLAMA_',
+    'FALLBACK_',
+)
+
+
 def build_clean_env() -> dict[str, str]:
-    """Return an isolated subprocess env copy without Memlane/Cognee service overrides."""
+    """Return an isolated subprocess env copy without Memlane/Cognee/LLM overrides."""
     env = dict(os.environ, MEMLANE_PROCESSING_SESSION='1')
     # The generator must not inherit the engine's bridge/provider configuration.
     for key in list(env):
-        if key.startswith(('COGNEE_', 'MEMLANE_PROJECT_')):
+        if key.upper().startswith(_ISOLATED_ENV_PREFIXES):
             env.pop(key, None)
     return env
 

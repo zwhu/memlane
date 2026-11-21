@@ -1,7 +1,7 @@
 {
   "plugin_commit": "a176248914fdb32a78354854b300174203b15a5c",
   "patch_sha256": "0148c0e703bee92c57d9c4fb5b8ef9d9c5176681a8ce54e01e53a7529cdaeb30",
-  "extension_sha256": "28735b773bb0dbe1cb96d6f00d5596f80228bce76e29d27b85e24f48173a175d",
+  "extension_sha256": "bc1ff31e6d7982206001fc8a0fa73ac79c294572ff3d4cc6777e8cefa22c9bc9",
   "upstream_lock_sha256": "9151009975b168c8f9e0fa2ee7e6b7e74bdf4af4a92ab823d31d1539e9011148",
   "files": {
     ".codex-plugin/plugin.json": "181be5d05735ead0cb71021db08e4997f2f529cd4bfb1f9f1ed8db9c5b98734e",
@@ -19,7 +19,7 @@
     "scripts/_file_lock.py": "007bb41e7d0a81903e8902b882a77d670d3c6df913de054c18f2b0728bbbe262",
     "scripts/_logfiles.py": "fe00da7935c9267c220f55540379c290ccc8c320212ee2c0c301f33077459141",
     "scripts/_memlane_access.py": "ff5e79ec057f7bd8d2b731f743f1117166e6cb498d14b487b84af8fd16a12c81",
-    "scripts/_memlane_policy.py": "28735b773bb0dbe1cb96d6f00d5596f80228bce76e29d27b85e24f48173a175d",
+    "scripts/_memlane_policy.py": "bc1ff31e6d7982206001fc8a0fa73ac79c294572ff3d4cc6777e8cefa22c9bc9",
     "scripts/_plugin_common.py": "8710ec9d82574f3ffc57a3e00242450124bae9e4d3f3aa0f8ab347d62694841f",
     "scripts/_proc.py": "63e71cd77c111fc753f5d6828fa93a131e38095ef4b9e9adc237d87feac0838a",
     "scripts/_project_memory.py": "e44e7fcfca47f96d3b1f8da120dc06929ceb486a09e0cf39953aa6932ffdf0a7",

@@ -121,15 +121,27 @@ class ConnectionCapture:
         return project
 
     async def _probe_saved_at(self, kind, agent, project, host_key, activated, timeout):
-        session_id = expected_session_id(kind, host_key)
-        try:
-            saved = await asyncio.wait_for(self.registry.official.request('GET',
-                '/api/v1/sessions/' + quote(session_id, safe='') + '/capture-status', token_file=agent['key_file']), timeout)
-        except PolicyError as error:
-            if error.code == 'official_http_404':
-                return None
-            raise
-        if (saved.get('session_id') != session_id or saved.get('user_id') != agent['principal_id']
+        primary = expected_session_id(kind, host_key)
+        candidates = [primary]
+        if kind != 'codex':
+            legacy = expected_session_id('codex', host_key)
+            if legacy != primary:
+                candidates.append(legacy)
+        saved = None
+        probed_id = primary
+        for session_id in candidates:
+            probed_id = session_id
+            try:
+                saved = await asyncio.wait_for(self.registry.official.request('GET',
+                    '/api/v1/sessions/' + quote(session_id, safe='') + '/capture-status', token_file=agent['key_file']), timeout)
+                break
+            except PolicyError as error:
+                if error.code == 'official_http_404':
+                    continue
+                raise
+        if saved is None:
+            return None
+        if (saved.get('session_id') != probed_id or saved.get('user_id') != agent['principal_id']
                 or saved.get('dataset_id') != project.get('dataset_id')):
             raise PolicyError('capture_saved_identity_mismatch', 503)
         return valid_saved_timestamp(saved, activated, time.time())

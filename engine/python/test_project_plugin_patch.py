@@ -219,6 +219,58 @@ assert os.environ["COGNEE_ENV_FILE"].endswith("managed.env")
             result = subprocess.run([sys.executable, '-c', code], cwd=home, env=environment, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr[-2000:])
 
+    def test_non_codex_prepare_uses_replace_exact_and_fails_on_missing_anchor(self):
+        import hashlib
+        from unittest.mock import patch
+        import project_installation
+        from project_control import private_write
+        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
+            root = Path(temporary)
+            bad_source = root / 'tampered-plugin'
+            shutil.copytree(self.artifact, bad_source)
+            common_path = bad_source / 'scripts/_plugin_common.py'
+            common_path.write_text(common_path.read_text().replace('suffix = "_codex"', 'suffix = "_broken"'))
+            manifest = json.loads((bad_source / '.memlane-project-access.json').read_text())
+            manifest['files']['scripts/_plugin_common.py'] = hashlib.sha256(common_path.read_bytes()).hexdigest()
+            (bad_source / '.memlane-project-access.json').write_text(json.dumps(manifest))
+            home = root / 'host-home'
+            home.mkdir()
+            private_write(root / 'official.key', b'prepared-child-key')
+            private_write(root / 'control.key', b'c' * 40)
+            agent = {'key_file': str(root / 'official.key'), 'control_token_file': str(root / 'control.key')}
+            with patch.object(project_installation, 'match_managed_plugin_manifest', return_value=(manifest, 'synthetic')):
+                with self.assertRaisesRegex(ValueError, 'plugin host suffix'):
+                    project_installation.prepare(
+                        bad_source, root, 'pi-anchor-test', agent,
+                        'http://127.0.0.1:18777/cognee', 'http://127.0.0.1:18777',
+                        str(home), host_kind='pi', python=sys.executable,
+                    )
+
+    def test_registry_prepare_installation_targets_control_gateway(self):
+        import asyncio
+        from project_control import Registry, private_write
+        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
+            root = Path(temporary)
+            home = root / 'host-home'
+            home.mkdir()
+            private_write(root / 'official.key', b'prepared-child-key')
+            private_write(root / 'control.key', b'c' * 40)
+            registry = Registry(root / 'registry.json', type('Official', (), {'url': 'http://127.0.0.1:18999'})())
+            try:
+                registry.state['agents']['codex-gw'] = {
+                    'name': 'Codex', 'key_file': str(root / 'official.key'),
+                    'control_token_file': str(root / 'control.key'),
+                }
+                registry.save()
+                asyncio.run(registry.prepare_installation(
+                    registry.state['revision'], 'codex-gw', str(self.artifact), 'http://127.0.0.1:18777', str(home)))
+                installation = registry.state['agents']['codex-gw']['installation']
+                env_text = Path(installation['env_file']).read_text()
+                self.assertIn('COGNEE_BASE_URL="http://127.0.0.1:18777/cognee"', env_text)
+                self.assertNotIn('COGNEE_BASE_URL="http://127.0.0.1:18999"', env_text)
+            finally:
+                registry.close()
+
     def test_missing_managed_config_cannot_fall_back_to_global_owner_or_cli(self):
         self.run_isolated('''
 import os, subprocess

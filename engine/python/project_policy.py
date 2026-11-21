@@ -7,6 +7,15 @@ FIELDS = frozenset({'access', 'capture', 'auto_process'})
 ACCESS = {'none': frozenset(), 'read': frozenset({'read'}),
           'maintain': frozenset({'read', 'write', 'delete'})}
 DEFAULTS = {'access': 'maintain', 'capture': True, 'auto_process': True}
+PROTECTED_PROJECT_NAMES = frozenset({'ml-user-profiles'})
+PROTECTED_DEFAULTS = {'access': 'none', 'capture': False, 'auto_process': False}
+
+
+def is_protected_project(project):
+    if not isinstance(project, dict):
+        return False
+    return (project.get('name') in PROTECTED_PROJECT_NAMES
+            or project.get('dataset_name') in PROTECTED_PROJECT_NAMES)
 
 
 class PolicyError(Exception):
@@ -29,8 +38,8 @@ def validate_fields(values, *, allow_reset=False):
     return dict(values)
 
 
-def effective(defaults, overrides):
-    result = dict(defaults)
+def effective(defaults, overrides, *, protected=False):
+    result = dict(PROTECTED_DEFAULTS if protected else defaults)
     result.update(overrides)
     permissions = sorted(ACCESS[result['access']])
     return {**result, 'permissions': permissions,

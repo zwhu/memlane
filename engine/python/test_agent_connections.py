@@ -611,6 +611,126 @@ print("TraeX event adaptation passed; no transcript access")
                                           env=environment, cwd=self.workspace, capture_output=True, text=True, timeout=20)
         self.assertEqual(process.returncode, 0, process.stderr[-3000:])
 
+    async def test_prepare_routes_host_traffic_to_control_gateway_and_proxies_with_child_key(self):
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+        from project_control_server import create_app
+        import uuid
+
+        owner_ds = str(uuid.uuid4())
+        allowed_ds = str(uuid.uuid4())
+        denied_ds = str(uuid.uuid4())
+        seen_headers = []
+
+        async def handle_health(request):
+            seen_headers.append(('health', request.headers.get('X-Api-Key')))
+            return web.json_response({'status': 'ready'})
+
+        async def handle_datasets(request):
+            seen_headers.append(('datasets', request.headers.get('X-Api-Key')))
+            return web.json_response([
+                {'id': allowed_ds, 'name': 'allowed'},
+                {'id': denied_ds, 'name': 'denied'},
+                {'id': owner_ds, 'name': 'other'},
+            ])
+
+        official_app = web.Application()
+        official_app.router.add_get('/health', handle_health)
+        official_app.router.add_get('/api/v1/datasets', handle_datasets)
+        official_server = TestServer(official_app)
+        await official_server.start_server()
+        try:
+            official_url = str(official_server.make_url('')).rstrip('/')
+            self.registry.official = type('OfficialFixture', (), {'url': official_url})()
+            # Pre-seed valid project records on the registry.
+            self.registry.state['projects']['proj-allowed'] = {
+                'id': 'proj-allowed', 'name': 'Allowed', 'dataset_id': allowed_ds,
+                'dataset_name': 'ml-project-allowed', 'status': 'verified',
+                'desired_revision': 1, 'applied': {self.adapter.id: {'status': 'verified', 'revision': 1}},
+                'overrides': {self.adapter.id: {'access': 'none'}},
+                'aliases': [], 'code_enabled': False, 'code_configured': False,
+            }
+            self.registry.state['projects']['proj-denied'] = {
+                'id': 'proj-denied', 'name': 'Denied', 'dataset_id': denied_ds,
+                'dataset_name': 'ml-project-denied', 'status': 'verified',
+                'desired_revision': 1, 'applied': {self.adapter.id: {'status': 'verified', 'revision': 1}},
+                'overrides': {self.adapter.id: {'access': 'none'}},
+                'aliases': [], 'code_enabled': False, 'code_configured': False,
+            }
+            self.registry.save()
+            client = TestClient(TestServer(create_app(self.registry, 'm' * 40, {}, codex_config=self.config)))
+            await client.start_server()
+            try:
+                control_url = str(client.make_url('')).rstrip('/')
+                self.adapter.config = {
+                    **self.config,
+                    'project_control': {'plugin_dir': str(self.plugin), 'url': control_url},
+                }
+                await self.adapter.prepare(self.registry.state['revision'])
+                env_file = Path(self.registry.state['agents'][self.adapter.id]['installation']['env_file'])
+                env_text = env_file.read_text()
+                self.assertIn(f'COGNEE_BASE_URL="{control_url}/cognee"', env_text)
+                self.assertNotIn(f'COGNEE_BASE_URL="{official_url}"', env_text)
+                child_key = (self.workspace / 'key').read_text().strip()
+                # /cognee/health forwards child key and responds 200.
+                resp = await client.get('/cognee/health', headers={'X-Api-Key': child_key})
+                self.assertEqual(resp.status, 200, await resp.text())
+                # Before project grant, /cognee/api/v1/datasets filters out unauthorized datasets.
+                resp = await client.get('/cognee/api/v1/datasets', headers={'X-Api-Key': child_key})
+                self.assertEqual(resp.status, 200, await resp.text())
+                self.assertEqual(await resp.json(), [])
+                # Grant explicit read on proj-allowed; only allowed_ds is visible through gateway.
+                self.registry.state['projects']['proj-allowed']['overrides'][self.adapter.id] = {'access': 'read'}
+                self.registry.save()
+                resp = await client.get('/cognee/api/v1/datasets', headers={'X-Api-Key': child_key})
+                self.assertEqual(resp.status, 200, await resp.text())
+                rows = await resp.json()
+                self.assertEqual([r['id'] for r in rows], [allowed_ds])
+                self.assertTrue(any(key == child_key for _, key in seen_headers))
+            finally:
+                await client.close()
+        finally:
+            await official_server.close()
+
+    async def test_component_source_available_checks_archive_and_plugin_dir_sibling(self):
+        from unittest.mock import patch
+        from antigravity_connection import AntigravityConnection
+        import project_host_plugin
+
+        manifest = json.loads((ROOT / 'engine/coding-memory-components.json').read_text())['plugin']
+        real_archive = ROOT / '.cache/coding-memory-components' / (manifest['commit'] + '.tar.gz')
+        if not real_archive.is_file():
+            self.skipTest('pinned integration archive not cached locally')
+
+        empty_repo = self.workspace / 'empty-repo'
+        empty_repo.mkdir()
+        bundle_root = self.workspace / 'packaged-runtime'
+        plugin_dir = bundle_root / 'managed-plugin'
+        plugin_dir.mkdir(parents=True)
+
+        def make_adapter(kind, cfg):
+            profile = self.workspace / ('p-' + kind)
+            if kind == 'antigravity':
+                return AntigravityConnection(self.registry, cfg, profile, sys.executable)
+            return NativeConnection(self.registry, cfg, kind, profile, sys.executable)
+
+        with patch.object(project_host_plugin, 'ROOT', empty_repo):
+            project_host_plugin._ARCHIVE_DIGEST_CACHE.clear()
+            for kind in ('claude_code', 'cursor', 'antigravity'):
+                cfg = {**self.config, 'project_control': {'url': 'http://127.0.0.1:18998', 'plugin_dir': str(plugin_dir)}}
+                adapter = make_adapter(kind, cfg)
+                self.assertFalse(adapter.component_source_available(), f'{kind} must report unavailable without archive')
+                self.assertEqual(adapter.view()['status'], 'component_unavailable')
+
+            sibling = bundle_root / 'integrations-upstream' / 'service.tar.gz'
+            sibling.parent.mkdir(parents=True)
+            shutil.copyfile(real_archive, sibling)
+            project_host_plugin._ARCHIVE_DIGEST_CACHE.clear()
+            for kind in ('claude_code', 'cursor', 'antigravity'):
+                cfg = {**self.config, 'project_control': {'url': 'http://127.0.0.1:18998', 'plugin_dir': str(plugin_dir)}}
+                adapter = make_adapter(kind, cfg)
+                self.assertTrue(adapter.component_source_available(), f'{kind} must resolve plugin_dir sibling archive')
+
 
 if __name__ == '__main__':
     unittest.main()

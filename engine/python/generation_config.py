@@ -14,11 +14,13 @@ import re
 import uuid
 from urllib.parse import urlparse
 
-from project_control import private_write, read_secret
+from _runtime_common import private_write, read_secret
 from project_policy import PolicyError
 
 PROVIDERS = {'openai': 'openai', 'anthropic': 'anthropic', 'gemini': 'gemini', 'custom': 'openai',
              'ollama': 'ollama_chat'}
+AGENT_BRIDGE_MAX_CONCURRENT_REQUESTS = 32
+PROVIDER_MAX_CONCURRENT_REQUESTS = 256
 IDENTIFIER = re.compile(r'[a-zA-Z0-9_-]{1,64}')
 
 
@@ -43,7 +45,9 @@ def validate_profile(value):
     mode = value.get('mode')
     if 'max_concurrent_requests' in value:
         capacity = value['max_concurrent_requests']
-        if type(capacity) is not int or not 1 <= capacity <= 256:
+        max_capacity = (AGENT_BRIDGE_MAX_CONCURRENT_REQUESTS if mode == 'agent_bridge'
+                        else PROVIDER_MAX_CONCURRENT_REQUESTS)
+        if type(capacity) is not int or not 1 <= capacity <= max_capacity:
             raise PolicyError('invalid_generation_capacity')
     if mode == 'agent_bridge':
         if value.get('bridge_kind') not in ('codex', 'pi', 'traex', 'antigravity') or set(value) - {'mode', 'bridge_kind', 'bridge_provider', 'model', 'max_concurrent_requests'}:
@@ -302,7 +306,7 @@ class GenerationStore:
         if any((self.state.get(key) or {}).get('id') == identifier for key in ('active', 'next')):
             raise PolicyError('generation_profile_in_use', 409)
         if any(row.get('reference', {}).get('id') == identifier and row.get('status') in
-               ('queued','preparing','stopping','applying','unknown') for row in self.state.get('handoffs', {}).values()):
+               ('queued', 'preparing', 'stopping', 'applying', 'reconciling', 'unknown') for row in self.state.get('handoffs', {}).values()):
             raise PolicyError('generation_profile_operation_pending', 409)
         if any(value.get('reference', {}).get('id') == identifier
                and value.get('status') in ('queued', 'running', 'result_unknown')
@@ -321,7 +325,8 @@ class GenerationStore:
         row = self.resolve(reference)
         if row['profile']['mode'] == 'agent_bridge' and getattr(self, 'connected_bridge_check', None):
             self.connected_bridge_check(row['profile'])
-            self.state.setdefault('connected_agent_selections', {})[row['digest']] = True
+            from agent_bridge_runtime import mark_connected_bridge_selection
+            mark_connected_bridge_selection(self.state, row)
         elif not validation_passed(self.state['validations'], row['digest']):
             raise PolicyError('generation_validation_required', 409)
         self.native_schema_evidence(row)

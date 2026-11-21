@@ -244,6 +244,57 @@ class SessionRelationsTest(unittest.TestCase):
         rels2 = resolve_session_relations(['codex_p1', 'codex_c1', 'codex_c2'], registry=self.registry)
         self.assertIn('codex_c2', rels2)
 
+    def test_legacy_codex_prefixed_non_codex_sessions_preserve_relations(self):
+        agy_iid = 'antigravity-legacy01'
+        agy_profile = self.root / '.gemini' / 'config'
+        agy_cli = self.root / '.gemini' / 'antigravity-cli'
+        agy_cli.mkdir(parents=True)
+        agy_db = agy_cli / 'conversation_summaries.db'
+        con = sqlite3.connect(agy_db)
+        con.execute('CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, parent_conversation_id TEXT, agent_name TEXT, nesting_depth INTEGER)')
+        con.execute('INSERT INTO conversation_summaries VALUES (?,?,?,?)', ('p-agy', '', '', 0))
+        con.execute('INSERT INTO conversation_summaries VALUES (?,?,?,?)', ('c-agy', 'p-agy', 'worker', 1))
+        con.commit()
+        con.close()
+
+        oc_iid = 'opencode-legacy01'
+        oc_db = self.root / 'legacy-opencode.db'
+        con = sqlite3.connect(oc_db)
+        con.execute('CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT)')
+        con.execute('INSERT INTO session VALUES (?,?)', ('ses_p', None))
+        con.execute('INSERT INTO session VALUES (?,?)', ('ses_c', 'ses_p'))
+        con.commit()
+        con.close()
+
+        pi_iid = 'pi-legacy01'
+        pi_sessions = self.root / 'pi-legacy' / 'sessions' / 'proj'
+        pi_sessions.mkdir(parents=True)
+        pi_parent = pi_sessions / '001.jsonl'
+        pi_child = pi_sessions / '002.jsonl'
+        pi_parent.write_text(json.dumps({'type': 'session', 'id': 'pi-p'}) + '\n', encoding='utf-8')
+        pi_child.write_text(json.dumps({'type': 'session', 'id': 'pi-c', 'parentSession': str(pi_parent)}) + '\n', encoding='utf-8')
+
+        self.registry.state['agents'] = {
+            agy_iid: {'kind': 'antigravity', 'host_profile': str(agy_profile)},
+            oc_iid: {'kind': 'opencode'},
+            pi_iid: {'kind': 'pi', 'host_profile': str(self.root / 'pi-legacy')},
+        }
+        leg_agy_p = 'codex_' + _agy_sid(agy_iid, 'p-agy')
+        leg_agy_c = 'codex_' + _agy_sid(agy_iid, 'c-agy')
+        leg_oc_p = 'codex_' + _oc_sid(oc_iid, 'ses_p')
+        leg_oc_c = 'codex_' + _oc_sid(oc_iid, 'ses_c')
+        leg_pi_p = 'codex_' + _pi_sid(pi_iid, 'pi-p')
+        leg_pi_c = 'codex_' + _pi_sid(pi_iid, 'pi-c')
+
+        rels = resolve_session_relations(
+            [leg_agy_p, leg_agy_c, leg_oc_p, leg_oc_c, leg_pi_p, leg_pi_c],
+            registry=self.registry,
+            codex_config={'opencode_db': str(oc_db)},
+        )
+        self.assertEqual(rels[leg_agy_c]['parent_session_id'], leg_agy_p)
+        self.assertEqual(rels[leg_oc_c]['parent_session_id'], leg_oc_p)
+        self.assertEqual(rels[leg_pi_c]['parent_session_id'], leg_pi_p)
+
 
 if __name__ == '__main__':
     unittest.main()

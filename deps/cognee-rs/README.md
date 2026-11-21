@@ -9,7 +9,7 @@
 
 上游未提交 `Cargo.lock`。这里保留本轮由 Cargo 生成的 workspace 依赖解析结果；`scripts/build-engine.sh` 将它复制到隔离源码目录，并使用 `--locked` 构建。源码归档的 SHA-256 固定在 `scripts/bootstrap-engine.py`。
 
-锁文件包含 workspace 中未被当前 CLI feature 选中的依赖，不能用锁文件条目数推算产品依赖数量或下载包大小。此文件冻结实验候选，**不代表已通过发布验收**。实际结果与缺口见 [P0 验证记录](../../docs/p0-validation.md)。
+锁文件包含 workspace 中未被当前 CLI feature 选中的依赖，不能用锁文件条目数推算产品依赖数量或下载包大小。此文件冻结实验候选，**不代表已通过发布验收**（原 P0 验证记录已随旧版 Rust 原文构建链路退役移除；现行架构见 [系统架构总览](../../docs/architecture/overview.md)）。
 
 ## 已验收的原文模型适配补丁
 

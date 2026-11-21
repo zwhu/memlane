@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestBaseReadingIdentityCachedAndSyncedOnTokenChange(t *testing.T) {
@@ -74,5 +75,67 @@ func TestBaseReadingIdentityCachedAndSyncedOnTokenChange(t *testing.T) {
 	}
 	if a.readingIdentity != rotatedFull {
 		t.Fatalf("full readingIdentity %q != expected %q", a.readingIdentity, rotatedFull)
+	}
+}
+
+func TestRenderPathQueueHelpersAvoidSyncTokenAndLocalJSONReads(t *testing.T) {
+	root := t.TempDir()
+	tokenPath := filepath.Join(root, "official.token")
+	if err := os.WriteFile(tokenPath, []byte("cached-token-value\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stateFile := filepath.Join(root, "client-state.json")
+	project := Project{ID: "p1", Name: "memlane", Dataset: "ds1"}
+	accessProject := AccessProject{ID: "p1", Name: "memlane", Dataset: "ds1"}
+	a := New(Config{
+		ServiceURL:      "http://127.0.0.1:61255",
+		TokenFile:       tokenPath,
+		ClientStateFile: stateFile,
+		Projects:        []Project{project},
+	}, nil)
+	a.access.Loaded = true
+	a.access.Directory.Projects = []AccessProject{accessProject}
+
+	// Corrupt the local acknowledgement JSON on disk so any synchronous read would set NoticeAcknowledgementError.
+	ackPath, err := a.noticeAcknowledgementPath(accessProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ackPath, []byte("{corrupt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remove token file after initial cache population: render-path helpers must use cachedBaseReadingIdentity
+	// and never synchronously read local JSON state files on missing queue entries.
+	if err := os.Remove(tokenPath); err != nil {
+		t.Fatal(err)
+	}
+	if alerts := a.trayProjectAlerts(); len(alerts) != 0 {
+		t.Fatalf("expected 0 tray alerts for unloaded queue without sync disk reads, got %+v", alerts)
+	}
+	if progress := a.trayProjectProgressItems(); len(progress) != 0 {
+		t.Fatalf("expected 0 tray progress for unloaded queue, got %+v", progress)
+	}
+	if a.existingProjectQueueState(accessProject) != nil {
+		t.Fatal("tray read paths unexpectedly allocated queue state on cache miss")
+	}
+
+	// projectQueueStateForAsync allocates without reading local JSON synchronously.
+	q := a.projectQueueStateForAsync(accessProject)
+	if q == nil || q.NoticeAcknowledgementError != "" || q.localStateLoaded {
+		t.Fatalf("projectQueueStateForAsync unexpectedly read disk synchronously: %+v", q)
+	}
+	q.Next = time.Now().Add(time.Hour)
+	a.refreshSidebarQueueIfDue(time.Now())
+	if q.NoticeAcknowledgementError != "" {
+		t.Fatal("refreshSidebarQueueIfDue performed synchronous local JSON read")
+	}
+
+	// Meanwhile syncReadingIdentity must immediately detect the removed token file via readCachedToken.
+	if a.syncReadingIdentity() {
+		t.Fatal("expected syncReadingIdentity to detect removed token file")
+	}
+	if a.readingIdentity != "unavailable" {
+		t.Fatalf("expected readingIdentity=unavailable after token removal, got %q", a.readingIdentity)
 	}
 }

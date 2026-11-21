@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,6 +53,7 @@ type OwnerRecord struct {
 	GenerationReference string            `json:"generation_reference,omitempty"`
 	Children            []int             `json:"children"`
 	ServiceChildren     map[string]int    `json:"service_children"`
+	ChildStartTimes     map[string]string `json:"child_start_times,omitempty"`
 	ObservedDescendants map[string]string `json:"observed_descendants,omitempty"`
 }
 
@@ -558,18 +560,35 @@ func RecoverStaleOwner(ctx context.Context, opts RecoverOptions) (RecoverResult,
 	}
 
 	pids := map[int]struct{}{rec.PID: {}}
+	expectedStarts := make(map[int]string)
+	if started := strings.TrimSpace(rec.Started); started != "" {
+		expectedStarts[rec.PID] = started
+	}
 	for _, pid := range rec.Children {
 		pids[pid] = struct{}{}
 	}
 	for _, pid := range rec.ServiceChildren {
 		pids[pid] = struct{}{}
 	}
-	for rawPID := range rec.ObservedDescendants {
+	for rawPID, rawStart := range rec.ChildStartTimes {
+		pid, parseErr := strconv.Atoi(rawPID)
+		if parseErr != nil {
+			return RecoverResult{}, fmt.Errorf("%w: invalid child start pid %q", ErrRecoveryRefused, rawPID)
+		}
+		pids[pid] = struct{}{}
+		if started := strings.TrimSpace(rawStart); started != "" {
+			expectedStarts[pid] = started
+		}
+	}
+	for rawPID, rawStart := range rec.ObservedDescendants {
 		pid, parseErr := strconv.Atoi(rawPID)
 		if parseErr != nil {
 			return RecoverResult{}, fmt.Errorf("%w: invalid descendant pid %q", ErrRecoveryRefused, rawPID)
 		}
 		pids[pid] = struct{}{}
+		if started := strings.TrimSpace(rawStart); started != "" && expectedStarts[pid] == "" {
+			expectedStarts[pid] = started
+		}
 	}
 	for pid := range pids {
 		if pid <= 1 {
@@ -585,8 +604,35 @@ func RecoverStaleOwner(ctx context.Context, opts RecoverOptions) (RecoverResult,
 	if err != nil {
 		return RecoverResult{}, fmt.Errorf("%w: process inspection failed: %v", ErrRecoveryRefused, err)
 	}
+	isReusedPID := func(pid int, info ProcessInfo) bool {
+		expected := expectedStarts[pid]
+		curStarted := strings.TrimSpace(info.Started)
+		if expected == "" || curStarted == "" {
+			return false
+		}
+		if curStarted == expected {
+			return false
+		}
+		// When inspecting the live process table (not an injected mock table),
+		// double-check with ProcessStartMatches to tolerate LC_ALL/locale formatting differences.
+		if opts.ProcessTable == nil {
+			pCtx, cancel := context.WithTimeout(ctx, time.Second)
+			matched, mErr := ProcessStartMatches(pCtx, pid, expected)
+			cancel()
+			if mErr != nil || matched {
+				return false
+			}
+		}
+		return true
+	}
 	for pid := range pids {
-		if _, exists := table[pid]; exists {
+		if info, exists := table[pid]; exists {
+			if isReusedPID(pid, info) {
+				// POSIX/macOS kernels never recycle pid while any process still has
+				// PID/PGID/SID == pid, so a proven lstart mismatch means the original
+				// process and its process group have already exited.
+				continue
+			}
 			return RecoverResult{}, fmt.Errorf("%w: recorded process %d remains", ErrRecoveryRefused, pid)
 		}
 		for _, info := range table {
@@ -679,4 +725,317 @@ func RecoverStaleOwner(ctx context.Context, opts RecoverOptions) (RecoverResult,
 		return RecoverResult{}, err
 	}
 	return RecoverResult{Status: "released", Archive: archivePath}, nil
+}
+
+// collectVerifiedOwnerChildren builds the killable descendant set strictly from
+// kernel-start-verified identities (ObservedDescendants and ChildStartTimes) plus
+// live direct children whose current PPID equals the verified live ownerPID.
+// Bare PIDs from legacy receipts without a verified lstart or live parent link are
+// never trusted, preventing PID-reuse kills of unrelated processes.
+func collectVerifiedOwnerChildren(
+	ctx context.Context,
+	rec OwnerRecord,
+	ownerAlive bool,
+	table map[int]ProcessInfo,
+) map[int]string {
+	tracked := make(map[int]string)
+	if len(table) == 0 {
+		return tracked
+	}
+	selfPID := os.Getpid()
+	matchesRecordedStart := func(pid int, expected string) (string, bool) {
+		expected = strings.TrimSpace(expected)
+		if pid <= 1 || pid == selfPID || expected == "" {
+			return "", false
+		}
+		info, ok := table[pid]
+		if !ok || info.Started == "" {
+			return "", false
+		}
+		if info.Started == expected {
+			return info.Started, true
+		}
+		base := ctx
+		if base == nil || base.Err() != nil {
+			base = context.Background()
+		}
+		pCtx, cancel := context.WithTimeout(base, time.Second)
+		defer cancel()
+		matched, err := ProcessStartMatches(pCtx, pid, expected)
+		if err == nil && matched {
+			return info.Started, true
+		}
+		return "", false
+	}
+
+	// 1. Seed strictly from persisted ObservedDescendants (preserving their recorded identity).
+	for rawPID, started := range rec.ObservedDescendants {
+		pid, convErr := strconv.Atoi(rawPID)
+		if convErr != nil {
+			continue
+		}
+		if canonicalStarted, ok := matchesRecordedStart(pid, started); ok {
+			tracked[pid] = canonicalStarted
+		}
+	}
+
+	// 2. Verify direct children via persisted ChildStartTimes or (only while ownerAlive)
+	// strict kernel PPID == rec.PID parentage. Never overwrite an existing tracked entry.
+	var verifiedRoots []int
+	if ownerAlive && rec.PID > 1 && rec.PID != selfPID {
+		verifiedRoots = append(verifiedRoots, rec.PID)
+	}
+	childCandidates := make(map[int]struct{}, len(rec.Children)+len(rec.ServiceChildren))
+	for _, cpid := range rec.Children {
+		if cpid > 1 && cpid != selfPID {
+			childCandidates[cpid] = struct{}{}
+		}
+	}
+	for _, cpid := range rec.ServiceChildren {
+		if cpid > 1 && cpid != selfPID {
+			childCandidates[cpid] = struct{}{}
+		}
+	}
+	for cpid := range childCandidates {
+		key := strconv.Itoa(cpid)
+		if recorded, hasStart := rec.ChildStartTimes[key]; hasStart && strings.TrimSpace(recorded) != "" {
+			if canonicalStarted, ok := matchesRecordedStart(cpid, recorded); ok {
+				verifiedRoots = append(verifiedRoots, cpid)
+				if _, exists := tracked[cpid]; !exists {
+					tracked[cpid] = canonicalStarted
+				}
+			}
+			continue
+		}
+		// Legacy receipt without child_start_times: only accept when the verified owner
+		// is still alive and the kernel process table confirms PPID == rec.PID.
+		if ownerAlive {
+			if info, ok := table[cpid]; ok && info.PPID == rec.PID && info.Started != "" {
+				verifiedRoots = append(verifiedRoots, cpid)
+				if _, exists := tracked[cpid]; !exists {
+					tracked[cpid] = info.Started
+				}
+			}
+		}
+	}
+
+	if len(verifiedRoots) > 0 {
+		trackDescendantsFromTable(verifiedRoots, tracked, table)
+	}
+	delete(tracked, selfPID)
+	delete(tracked, rec.PID)
+	return tracked
+}
+
+// StopVerifiedOwner gracefully stops a live external owner (such as scripts/dev.py or a
+// previous Memlane session) after strictly verifying .memlane-dev-owner.json matches
+// storeRoot, configPath, and kernel lstart identity. Foreign or mismatched owners are refused.
+// When the owner exits or had already died leaving a dirty receipt, verified children are
+// stopped and the receipt is reconciled under the exclusive .service-owner flock before returning nil.
+func StopVerifiedOwner(ctx context.Context, storeRoot, configPath string, grace, killWait time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	insp, err := InspectOwner(storeRoot)
+	if err != nil {
+		return err
+	}
+	if !insp.Locked && !insp.HasReceipt {
+		return nil
+	}
+
+	// If another launcher just acquired .service-owner milliseconds ago and hasn't
+	// written .memlane-dev-owner.json yet, wait briefly for the receipt to appear.
+	if insp.Locked && !insp.HasReceipt {
+		waitDeadline := time.Now().Add(time.Second)
+		if d, ok := ctx.Deadline(); ok && d.Before(waitDeadline) {
+			waitDeadline = d
+		}
+		for time.Now().Before(waitDeadline) {
+			if ctx.Err() != nil {
+				break
+			}
+			time.Sleep(40 * time.Millisecond)
+			if nextInsp, nextErr := InspectOwner(storeRoot); nextErr == nil {
+				insp = nextInsp
+				if !insp.Locked || insp.HasReceipt {
+					break
+				}
+			}
+		}
+		if !insp.Locked && !insp.HasReceipt {
+			return nil
+		}
+	}
+
+	reconcileReceipt := func() error {
+		recBase := ctx
+		if recBase.Err() != nil {
+			recBase = context.Background()
+		}
+		recCtx, recCancel := context.WithTimeout(recBase, 2*time.Second)
+		defer recCancel()
+		_, recErr := RecoverStaleOwner(recCtx, RecoverOptions{
+			StoreRoot:  storeRoot,
+			ConfigPath: configPath,
+		})
+		return recErr
+	}
+
+	rec, err := VerifyOwnerRecord(ctx, storeRoot, configPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if nextInsp, nextErr := InspectOwner(storeRoot); nextErr == nil && !nextInsp.Locked {
+				return nil
+			}
+		}
+		if errors.Is(err, ErrOwnerProcessChanged) {
+			nextInsp, nextErr := InspectOwner(storeRoot)
+			if nextErr != nil {
+				return nextErr
+			}
+			if !nextInsp.Locked {
+				// Owner already died and released flock, but receipt remained (dirty/unconfirmed stop).
+				// Stop any kernel-start-verified children/descendants and reconcile the receipt under lock.
+				var errs []error
+				probeBase := ctx
+				if probeBase.Err() != nil {
+					probeBase = context.Background()
+				}
+				pCtx, pCancel := context.WithTimeout(probeBase, 2*time.Second)
+				table, tableErr := ProcessTable(pCtx)
+				pCancel()
+				if tableErr == nil {
+					tracked := collectVerifiedOwnerChildren(ctx, rec, false, table)
+					if len(tracked) > 0 {
+						effGrace, effKill := partitionStopBudget(ctx, grace, killWait)
+						if stopErr := StopTrackedDescendants(ctx, tracked, effGrace, effKill); stopErr != nil {
+							errs = append(errs, stopErr)
+						}
+					}
+				}
+				if recErr := reconcileReceipt(); recErr != nil {
+					errs = append(errs, recErr)
+				}
+				return errors.Join(errs...)
+			}
+		}
+		return err
+	}
+	if rec.PID <= 1 || rec.PID == os.Getpid() {
+		return nil
+	}
+
+	// If the external owner is a dev launcher that directly supervises this UI process,
+	// send SIGTERM and return immediately so this process can exit without deadlocking
+	// the launcher's reverse-order UI teardown.
+	if slices.Contains(rec.Children, os.Getpid()) && os.Getppid() == rec.PID {
+		if err := syscall.Kill(rec.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return err
+		}
+		return nil
+	}
+
+	// Snapshot strictly verified child/descendant kernel identities before signaling the owner.
+	var tracked map[int]string
+	probeBase := ctx
+	if probeBase.Err() != nil {
+		probeBase = context.Background()
+	}
+	probeCtx, probeCancel := context.WithTimeout(probeBase, 2*time.Second)
+	table, tableErr := ProcessTable(probeCtx)
+	probeCancel()
+	if tableErr == nil {
+		tracked = collectVerifiedOwnerChildren(ctx, rec, true, table)
+	}
+
+	effGrace, effKill := partitionStopBudget(ctx, grace, killWait)
+
+	ownerStillMatches := func() bool {
+		base := ctx
+		if base.Err() != nil {
+			base = context.Background()
+		}
+		pCtx, cancel := context.WithTimeout(base, time.Second)
+		defer cancel()
+		matched, mErr := ProcessStartMatches(pCtx, rec.PID, rec.Started)
+		return mErr == nil && matched
+	}
+
+	// Phase 1: send SIGTERM directly to the verified owner PID so dev.py / supervisor runs
+	// its own reverse-order shutdown and removes .memlane-dev-owner.json cleanly.
+	if effGrace > 0 && ctx.Err() == nil {
+		if !ownerStillMatches() {
+			goto escalate
+		}
+		if err := syscall.Kill(rec.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+			if !errors.Is(err, syscall.EPERM) || ownerStillMatches() {
+				return err
+			}
+		}
+		graceDeadline := time.Now().Add(effGrace)
+		for time.Now().Before(graceDeadline) {
+			inspNow, inspErr := InspectOwner(storeRoot)
+			alive := ownerStillMatches()
+			if !alive && inspErr == nil && !inspNow.Locked && !inspNow.HasReceipt {
+				return nil
+			}
+			if !alive && inspErr == nil && !inspNow.Locked {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				goto escalate
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}
+
+escalate:
+	// Phase 2: if the verified owner or any verified children remain alive, escalate to SIGKILL.
+	var errs []error
+	if ownerStillMatches() {
+		if err := syscall.Kill(rec.PID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			errs = append(errs, err)
+		}
+	}
+	killWindow := effKill
+	if killWindow <= 0 || ctx.Err() != nil {
+		killWindow = 500 * time.Millisecond
+	}
+	if len(tracked) > 0 {
+		descCtx, descCancel := context.WithTimeout(context.Background(), killWindow)
+		if err := StopTrackedDescendants(descCtx, tracked, killWindow/3, killWindow*2/3); err != nil {
+			errs = append(errs, err)
+		}
+		descCancel()
+	}
+	killDeadline := time.Now().Add(killWindow)
+	for time.Now().Before(killDeadline) {
+		inspNow, inspErr := InspectOwner(storeRoot)
+		if !ownerStillMatches() && inspErr == nil && !inspNow.Locked {
+			if !inspNow.HasReceipt {
+				return errors.Join(errs...)
+			}
+			// Reconcile the retained receipt under exclusive flock so we never leave a
+			// dirty receipt blocking the next start nor claim success while children/ports live.
+			if recErr := reconcileReceipt(); recErr != nil {
+				errs = append(errs, recErr)
+			}
+			return errors.Join(errs...)
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if ownerStillMatches() {
+		errs = append(errs, fmt.Errorf("external owner process exit unconfirmed: %d", rec.PID))
+	} else if inspNow, inspErr := InspectOwner(storeRoot); inspErr == nil {
+		if inspNow.Locked {
+			errs = append(errs, ErrOwnerLocked)
+		} else if inspNow.HasReceipt {
+			if recErr := reconcileReceipt(); recErr != nil {
+				errs = append(errs, recErr)
+			}
+		}
+	}
+	return errors.Join(errs...)
 }

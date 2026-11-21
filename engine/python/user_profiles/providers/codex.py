@@ -53,15 +53,26 @@ class _CodexFamilyProvider(ProfileProvider):
         # individual MCP entries with quoted dotted keys can create phantom
         # servers that fail native transport deserialization before generation.
         config = Path(profile) / self.config_filename
-        parsed = tomlkit.parse(config.read_text()) if config.is_file() else {}
+        parsed = dict(tomlkit.parse(config.read_text())) if config.is_file() else {}
+        selected_profile = None
+        if parsed.get('profile') and isinstance(parsed.get('profiles'), dict):
+            candidate = parsed['profiles'].get(parsed['profile'])
+            if isinstance(candidate, dict):
+                selected_profile = candidate
         if 'reasoning_effort' in defaults:
             args[-1:-1] = ['-c', 'model_reasoning_effort=' + json.dumps(defaults['reasoning_effort'])]
         if 'service_tier' in defaults:
             args[-1:-1] = ['-c', 'service_tier=' + json.dumps(defaults['service_tier'])]
-        features = parsed.get('features', {})
+        features = dict(parsed.get('features', {})) if isinstance(parsed.get('features'), dict) else {}
+        memories = dict(parsed.get('memories', {})) if isinstance(parsed.get('memories'), dict) else {}
+        if selected_profile is not None:
+            if isinstance(selected_profile.get('features'), dict):
+                features.update(selected_profile['features'])
+            if isinstance(selected_profile.get('memories'), dict):
+                memories.update(selected_profile['memories'])
         if isinstance(features.get('memories'), bool):
             args[-1:-1] = ['-c', 'features.memories=' + str(features['memories']).lower()]
-        for name, value in parsed.get('memories', {}).items():
+        for name, value in memories.items():
             if name == 'use_memories' and isinstance(value, bool):
                 args[-1:-1] = ['-c', 'memories.' + name + '=' + str(value).lower()]
         return CommandSpec(args=args, env=env, output_file=output)

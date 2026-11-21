@@ -170,16 +170,22 @@ def verify(installation, runtime, agent_id, *, force=False):
             raise ValueError('binding changed')
         binding = json.loads(raw)
         control = runtime['project_control']
-        for value in (control['url'], runtime['service_url']):
+        for value, allowed_paths in (
+            (control['url'], ('', '/')),
+            (runtime['service_url'], ('', '/', '/cognee', '/cognee/')),
+        ):
             parsed = urlparse(value)
             if (parsed.scheme != 'http' or parsed.hostname != '127.0.0.1' or not parsed.port
-                    or parsed.path not in ('', '/') or parsed.username or parsed.query or parsed.fragment):
+                    or parsed.path not in allowed_paths or parsed.username or parsed.query or parsed.fragment):
                 raise ValueError('explicit original loopback required')
+        control_origin = control['url'].rstrip('/')
+        allowed_base_urls = {control_origin + '/cognee', runtime['service_url'].rstrip('/')}
+        base_url = binding['cognee']['baseUrl']
         if (binding.get('version') != 1 or binding.get('instance_id') != agent_id
                 or binding.get('plugin_root') != str(root)
                 or binding.get('profile') != installation['profile']
-                or binding['memlane']['origin'] != control['url'].rstrip('/')
-                or binding['cognee']['baseUrl'] != runtime['service_url'].rstrip('/')):
+                or binding['memlane']['origin'] != control_origin
+                or base_url not in allowed_base_urls):
             raise ValueError('original target changed')
         if not isinstance(binding.get('secrets'), list) or len(binding['secrets']) != 2:
             raise ValueError('binding secrets changed')
@@ -198,7 +204,7 @@ def verify(installation, runtime, agent_id, *, force=False):
         profile = Path(installation['profile'])
         if not profile.is_absolute() or profile.resolve() != profile or not profile.is_dir():
             raise ValueError('profile changed')
-        return node, helper, profile
+        return node, helper, profile, base_url
     except PolicyError:
         raise
     except (OSError, ValueError, TypeError, KeyError):
@@ -209,7 +215,7 @@ async def execute(runtime, installation, project_id, target, action, cancel_file
     if action not in ('review', 'save', 'process', 'check'):
         raise PolicyError('backlog_worker_unconfirmed', 503)
     read_only = action in ('review', 'check')
-    node, helper, profile = await asyncio.to_thread(
+    node, helper, profile, expected_service_url = await asyncio.to_thread(
         verify, installation, runtime, target['agent_id'], force=not read_only)
     command = {'action': 'backlog_' + action, 'project_id': project_id,
                'dataset_id': target['dataset'], 'host_session_key': target['host']}
@@ -222,7 +228,7 @@ async def execute(runtime, installation, project_id, target, action, cancel_file
     allowed = ('plugin_dir', 'manifest_sha256', 'binding_file', 'binding_sha256', 'node_executable', 'node_sha256')
     payload = {'installation': {key: installation[key] for key in allowed}, 'agent_id': target['agent_id'],
                'operator': {'token_file': runtime['project_control']['management_token_file'],
-                            'control_url': runtime['project_control']['url'], 'service_url': runtime['service_url']},
+                            'control_url': runtime['project_control']['url'], 'service_url': expected_service_url},
                'command': command}
     raw = json.dumps(payload).encode()
     if len(raw) > LIMIT:

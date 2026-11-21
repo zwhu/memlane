@@ -107,7 +107,7 @@ func (a *App) generationHandoffStatus(c *ui.Context) {
 		return
 	}
 	row := s.Handoff.Handoff
-	label := map[string]string{"queued": "切换已登记", "preparing": "正在准备新模型", "stopping": "正在停止旧任务并核对结果", "applying": "正在切换模型", "applied": "已切换，剩余会话继续提炼", "not_applied": "未切换，仍使用原模型", "unknown": "切换结果待核对"}[row.Status]
+	label := map[string]string{"queued": "切换已登记", "preparing": "正在准备新模型", "stopping": "正在停止旧任务并核对结果", "applying": "正在切换模型", "reconciling": "正在恢复剩余会话提炼", "applied": "已切换，剩余会话继续提炼", "not_applied": "未切换，仍使用原模型", "unknown": "切换结果待核对"}[row.Status]
 	if label == "" {
 		return
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -130,7 +131,7 @@ func TestCommonEditorSubmittedLockedAndNeverReplaced(t *testing.T) {
 	commonFixtureImage(t, tt, "1200x820-unknown-save")
 	a.commonEdit.SaveVerified = true
 	a.commonEdit.Processing = "STARTED"
-	a.commonEdit.Message = "官方正文已核对；处理状态：STARTED"
+	a.commonEdit.Message = "官方正文已核对；提炼状态：STARTED"
 	tt.Frame()
 	commonFixtureImage(t, tt, "1200x820-saved-processing")
 	if tt.HasText("完成") {
@@ -321,15 +322,46 @@ func TestCommonDeleteAndDiscardV4DialogsIgnoreEnterAndCancelOnEsc(t *testing.T) 
 		t.Fatal("discard v4Dialog did not open")
 	}
 	tt.Key(0, ui.KeyEnter)
-	if !a.commonEdit.Open || !commonHasDraft(a.commonEdit) {
-		t.Fatal("Enter unexpectedly confirmed destructive draft discard")
-	}
-	if !a.commonPage.Discard {
-		clickProjectUI(t, tt, "放弃草稿")
+	if !a.commonPage.Discard || !a.commonEdit.Open || !commonHasDraft(a.commonEdit) {
+		t.Fatal("Enter unexpectedly confirmed or dismissed destructive draft discard")
 	}
 	tt.Key(0, ui.KeyEscape)
 	if a.commonPage.Discard || !a.commonEdit.Open || !commonHasDraft(a.commonEdit) {
 		t.Fatal("Escape did not cancel discard dialog cleanly")
+	}
+}
+
+func TestV4DangerDialogConsumesEnterWithoutLeakingToBackground(t *testing.T) {
+	open := true
+	bgClicks := 0
+	bgShortcuts := 0
+	dangerConfirms := 0
+	dangerCancels := 0
+
+	tt := ui.NewTester(func(c *ui.Context) {
+		if c.Shortcut(0, ui.KeyEnter) {
+			bgShortcuts++
+		}
+		ui.Column(c).Fill().Children(func() {
+			ui.Button(c, "背景按钮").OnClick(func() { bgClicks++ })
+		})
+		v4Dialog(c, &open, v4DialogOptions{
+			Key:         "danger-enter-test",
+			Title:       "危险确认",
+			Danger:      true,
+			ConfirmText: "确认删除",
+			OnCancel:    func() { dangerCancels++ },
+			OnConfirm:   func() { dangerConfirms++ },
+			Body: func() {
+				ui.Text(c, "此操作不可恢复")
+			},
+		})
+	}, 800, 600)
+
+	tt.Key(0, ui.KeyEnter)
+	if !open || dangerConfirms != 0 || dangerCancels != 0 || bgClicks != 0 || bgShortcuts != 0 {
+		t.Fatalf("danger dialog leaked Enter: open=%v confirms=%d cancels=%d bgClicks=%d bgShortcuts=%d",
+			open, dangerConfirms, dangerCancels, bgClicks, bgShortcuts)
 	}
 }
 
@@ -437,5 +469,223 @@ func TestCommonKnowledgeRefreshNoTransientTextOrLayoutShift(t *testing.T) {
 	tt.Frame()
 	if tt.HasText("正在读取…") {
 		t.Fatalf("unhydrated common list card showed raw loading text: texts=%v", tt.Texts())
+	}
+}
+
+func TestCommonKnowledgePerAgentReadAccessToggleAndUnconfirmedRollback(t *testing.T) {
+	noneAccess := "none"
+	readAccess := "read"
+	var mu sync.Mutex
+	directory := AccessDirectory{
+		Revision: 1,
+		Defaults: ProjectPolicy{Access: "maintain", Capture: true, AutoProcess: true},
+		Agents: []AccessAgent{
+			{ID: "codex", Name: "Codex"},
+			{ID: "claude", Name: "Claude Code"},
+		},
+		Common: &AccessProject{
+			ID:              "common-1",
+			Name:            "通用记忆",
+			Dataset:         "common",
+			Status:          "verified",
+			DesiredRevision: 1,
+			Overrides: map[string]ProjectOverride{
+				"codex":  {Access: &noneAccess},
+				"claude": {Access: &readAccess},
+			},
+			Applied: map[string]AccessApplied{
+				"codex":  {Status: "verified", Revision: 1},
+				"claude": {Status: "verified", Revision: 1},
+			},
+		},
+	}
+
+	var writes atomic.Int32
+	var failStatus atomic.Int32
+	var lastAgent, lastAccess string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == "PUT" {
+			writes.Add(1)
+			if r.URL.Path != "/v1/projects/common-1/overrides" {
+				t.Errorf("unexpected common override path: %s", r.URL.Path)
+				w.WriteHeader(404)
+				return
+			}
+			var input struct {
+				Revision int64          `json:"expected_revision"`
+				Agent    string         `json:"agent_id"`
+				Fields   map[string]any `json:"fields"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Errorf("decode override payload: %v", err)
+				w.WriteHeader(400)
+				return
+			}
+			if input.Revision != directory.Revision {
+				w.WriteHeader(409)
+				return
+			}
+			// Enforce project_control.py common_read_only contract: only "access" in {"none","read"}.
+			accessVal, ok := input.Fields["access"].(string)
+			if len(input.Fields) != 1 || !ok || (accessVal != "none" && accessVal != "read") {
+				t.Errorf("invalid common override fields (must be access-only none|read): %+v", input.Fields)
+				w.WriteHeader(400)
+				return
+			}
+			lastAgent = input.Agent
+			lastAccess = accessVal
+			if code := int(failStatus.Load()); code != 0 {
+				w.WriteHeader(code)
+				return
+			}
+			valCopy := accessVal
+			directory.Common.Overrides[input.Agent] = ProjectOverride{Access: &valCopy}
+			directory.Revision++
+			directory.Common.DesiredRevision = directory.Revision
+			for _, ag := range directory.Agents {
+				directory.Common.Applied[ag.ID] = AccessApplied{Status: "verified", Revision: directory.Revision}
+			}
+			_ = json.NewEncoder(w).Encode(directory)
+			return
+		}
+		if r.Method == "GET" && r.URL.Path == "/v1/projects" {
+			_ = json.NewEncoder(w).Encode(directory)
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer server.Close()
+
+	token := filepath.Join(t.TempDir(), "control.token")
+	if err := os.WriteFile(token, []byte(strings.Repeat("m", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	a := commonUIFixture()
+	a.Config.ProjectControl = &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}
+	encodedDir, _ := json.Marshal(directory)
+	var initialDir AccessDirectory
+	_ = json.Unmarshal(encodedDir, &initialDir)
+	a.applyAccessDirectory(initialDir)
+	a.page = "通用知识"
+	a.state().Loaded = true
+	updates := make(chan func(), 30)
+	a.Update = func(fn func()) { updates <- fn }
+
+	// Verify light and dark mode rendering of titlebar badge and popover controls.
+	for _, pref := range []string{appearanceLight, appearanceDark} {
+		a.setAppearancePreference(pref)
+		a.commonPage.MenuOpen = false
+		tt := ui.NewTester(a.View, 1200, 820)
+		if !tt.HasText("Agent 权限 · 1/2 只读") {
+			t.Fatalf("%s mode missing titlebar common access badge; texts=%v", pref, tt.Texts())
+		}
+		clickProjectUI(t, tt, "Agent 权限 · 1/2 只读")
+		if !a.commonPage.MenuOpen {
+			t.Fatalf("%s mode clicking titlebar badge did not open common menu popover", pref)
+		}
+		for _, want := range []string{"通用记忆数据组", "Agent 访问权限", "Codex", "Claude Code", "不可访问", "只读"} {
+			if !tt.HasText(want) {
+				t.Fatalf("%s mode popover missing %q; texts=%v", pref, want, tt.Texts())
+			}
+		}
+	}
+	a.setAppearancePreference(appearanceLight)
+	tt := ui.NewTester(a.View, 1200, 820)
+	a.commonPage.MenuOpen = true
+	tt.Frame()
+
+	// 1. Grant read access to newly connected Codex agent (none -> read) via UI segmented control.
+	codexSeg, ok := tt.Find("Codex 通用记忆访问权限")
+	if !ok {
+		t.Fatal("missing Codex common access segmented control")
+	}
+	tt.ClickAt(codexSeg.X+codexSeg.W*0.75, codexSeg.Y+codexSeg.H/2)
+	drainReading(t, updates, func() bool { return !a.access.Busy })
+	tt.Frame()
+	mu.Lock()
+	gotAgent, gotAccess := lastAgent, lastAccess
+	mu.Unlock()
+	if writes.Load() != 1 || gotAgent != "codex" || gotAccess != "read" {
+		t.Fatalf("grant read sent unexpected request: writes=%d agent=%q access=%q", writes.Load(), gotAgent, gotAccess)
+	}
+	if commonAgentAccess(*a.access.Directory.Common, "codex") != "read" {
+		t.Fatal("directory state did not update codex common access to read")
+	}
+	if a.access.CheckboxPending["common-1/codex"] != nil {
+		t.Fatal("verified common access grant stayed pending")
+	}
+	if !tt.HasText("Agent 权限 · 2/2 只读") || !tt.HasText("已保存") {
+		t.Fatalf("UI did not reflect 2/2 readable after grant; texts=%v", tt.Texts())
+	}
+
+	// 2. Revoke Claude Code common access (read -> none) via UI segmented control.
+	claudeSeg, ok := tt.Find("Claude Code 通用记忆访问权限")
+	if !ok {
+		t.Fatal("missing Claude Code common access segmented control")
+	}
+	tt.ClickAt(claudeSeg.X+claudeSeg.W*0.25, claudeSeg.Y+claudeSeg.H/2)
+	drainReading(t, updates, func() bool { return !a.access.Busy })
+	tt.Frame()
+	mu.Lock()
+	gotAgent, gotAccess = lastAgent, lastAccess
+	mu.Unlock()
+	if writes.Load() != 2 || gotAgent != "claude" || gotAccess != "none" {
+		t.Fatalf("revoke read sent unexpected request: writes=%d agent=%q access=%q", writes.Load(), gotAgent, gotAccess)
+	}
+	if commonAgentAccess(*a.access.Directory.Common, "claude") != "none" || !tt.HasText("Agent 权限 · 1/2 只读") {
+		t.Fatalf("UI did not reflect 1/2 readable after revoke; texts=%v", tt.Texts())
+	}
+
+	// 3. Client-side guard must reject invalid "maintain" tier for common memory without network write.
+	a.saveCommonAgentAccess("common-1", "codex", "maintain")
+	if writes.Load() != 2 {
+		t.Fatalf("maintain tier unexpectedly triggered write: writes=%d", writes.Load())
+	}
+
+	// 4. Definitive 400/403/404 rejection releases pending lock immediately (nothing mutated).
+	failStatus.Store(404)
+	a.saveCommonAgentAccess("common-1", "claude", "read")
+	drainReading(t, updates, func() bool { return !a.access.Busy })
+	if writes.Load() != 3 || a.access.CheckboxPending["common-1/claude"] != nil {
+		t.Fatalf("definite 404 rejection kept pending locked: writes=%d pending=%v", writes.Load(), a.access.CheckboxPending["common-1/claude"])
+	}
+
+	// 5. Failed/unconfirmed 500 write must lock control, preserve server-confirmed value, and never auto-retry.
+	failStatus.Store(500)
+	claudeSeg, _ = tt.Find("Claude Code 通用记忆访问权限")
+	tt.ClickAt(claudeSeg.X+claudeSeg.W*0.75, claudeSeg.Y+claudeSeg.H/2)
+	drainReading(t, updates, func() bool { return !a.access.Busy })
+	tt.Frame()
+	if writes.Load() != 4 || a.access.CheckboxPending["common-1/claude"] == nil {
+		t.Fatalf("failed write did not stay locked pending verification: writes=%d pending=%v", writes.Load(), a.access.CheckboxPending["common-1/claude"])
+	}
+	if commonAgentAccess(*a.access.Directory.Common, "claude") != "none" {
+		t.Fatal("failed write falsely mutated displayed common access")
+	}
+	if !tt.HasText("待核对") || !tt.HasText("重新核对") {
+		t.Fatalf("failed write missing unconfirmed rollback hint or verify action; texts=%v", tt.Texts())
+	}
+	// Clicking again while unconfirmed must not send a duplicate PUT.
+	a.saveCommonAgentAccess("common-1", "claude", "read")
+	if writes.Load() != 4 {
+		t.Fatalf("unconfirmed common access write was retried: writes=%d", writes.Load())
+	}
+
+	// 6. Explicit GET verification resolves pending state once backend revision advances.
+	failStatus.Store(0)
+	mu.Lock()
+	directory.Revision++
+	directory.Common.DesiredRevision = directory.Revision
+	for _, ag := range directory.Agents {
+		directory.Common.Applied[ag.ID] = AccessApplied{Status: "verified", Revision: directory.Revision}
+	}
+	mu.Unlock()
+	clickProjectUI(t, tt, "重新核对")
+	drainReading(t, updates, func() bool { return !a.access.Loading })
+	if a.access.CheckboxPending["common-1/claude"] != nil || writes.Load() != 4 {
+		t.Fatalf("explicit GET verification did not clear pending without extra write: pending=%v writes=%d", a.access.CheckboxPending["common-1/claude"], writes.Load())
 	}
 }

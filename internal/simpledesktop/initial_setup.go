@@ -47,8 +47,10 @@ func (a *App) beginFirstRuntime(step int) {
 	s.Busy, s.Error, s.RuntimeStage = true, "", "启动记忆服务"
 	s.RuntimeStarted = false
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		baseCtx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
+		ctx, releaseStartup := bootstrap.TrackStartupContext(baseCtx)
+		defer releaseStartup()
 		environment, err := bootstrap.NewEnvironment(ctx, engine.BootstrapAssets, options)
 		var prepared bootstrap.FirstRuntime
 		if err == nil {
@@ -128,8 +130,10 @@ func (a *App) enableFirstRuntime() {
 	a.integrations.Request++
 	a.integrations.Loading = false
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		baseCtx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
+		ctx, releaseStartup := bootstrap.TrackStartupContext(baseCtx)
+		defer releaseStartup()
 		err := bootstrap.ActivateFirstRuntime(ctx, prepared, reference, row.Digest, g.Revision)
 		loaded, loadError := LoadConfig(prepared.ConfigPath)
 		if err == nil && loadError != nil {

@@ -635,3 +635,121 @@ func TestPostUpgradeReceiptNoticeDoesNotClaimUnconfirmedDirectoryLightAndDark(t 
 		})
 	}
 }
+
+func TestGenerationAgentApplyClearedOnErrorAndNavigation(t *testing.T) {
+	root := t.TempDir()
+	token := filepath.Join(root, "manager.token")
+	if err := os.WriteFile(token, []byte(strings.Repeat("x", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var nextRequests atomic.Int32
+	var handoffRequests atomic.Int32
+	var putCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/v1/generation/profiles/"):
+			n := putCount.Add(1)
+			if n == 1 {
+				w.WriteHeader(400)
+				w.Write([]byte(`{"error":"invalid_generation_profile"}`))
+				return
+			}
+			w.Write([]byte(`{"result":{"id":"prov-1","revision":1}}`))
+		case r.Method == "GET" && r.URL.Path == "/v1/generation":
+			json.NewEncoder(w).Encode(GenerationDirectory{
+				Revision:         2,
+				HandoffAvailable: false,
+				Active:           &GenerationRef{ID: "existing-codex", Revision: 1},
+				Profiles: map[string][]GenerationRow{
+					"prov-1": {{
+						Revision: 1,
+						Digest:   "d-prov",
+						Profile:  GenerationProfile{Mode: "provider", Provider: "openai", Model: "gpt-test", Endpoint: "https://example.test/v1", CredentialConfigured: true, CredentialVersion: "v1"},
+					}},
+				},
+				Validations: map[string]GenerationValidation{},
+			})
+		case r.Method == "PUT" && r.URL.Path == "/v1/generation/next":
+			nextRequests.Add(1)
+			w.WriteHeader(200)
+			w.Write([]byte(`{}`))
+		case strings.Contains(r.URL.Path, "/v1/generation/handoffs"):
+			handoffRequests.Add(1)
+			w.WriteHeader(200)
+			w.Write([]byte(`{}`))
+		default:
+			w.WriteHeader(200)
+			w.Write([]byte(`{}`))
+		}
+	}))
+	defer server.Close()
+
+	a := New(Config{
+		GenerationFile: filepath.Join(root, "generation.json"),
+		ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token},
+	}, nil)
+	updates := make(chan func(), 16)
+	a.Update = func(fn func()) { updates <- fn }
+
+	// 1. Synchronous validation failure must clear GenerationAgentApply immediately.
+	a.integrations = integrationState{
+		Loaded:               true,
+		Editor:               true,
+		ProfileID:            "agent-pi",
+		DraftMode:            "agent_bridge",
+		BridgeKind:           "pi",
+		Model:                "",
+		GenerationAgentApply: true,
+	}
+	a.saveGeneration()
+	if a.integrations.GenerationAgentApply {
+		t.Fatal("GenerationAgentApply leaked after synchronous save validation error")
+	}
+
+	// 2. Navigation helpers must clear GenerationAgentApply.
+	a.integrations.GenerationAgentApply = true
+	a.selectGenerationProfile("other", GenerationRow{Profile: GenerationProfile{Mode: "provider", Provider: "openai"}})
+	if a.integrations.GenerationAgentApply {
+		t.Fatal("selectGenerationProfile did not clear GenerationAgentApply")
+	}
+	a.integrations.GenerationAgentApply = true
+	a.chooseGenerationSource("agent_bridge")
+	if a.integrations.GenerationAgentApply {
+		t.Fatal("chooseGenerationSource did not clear GenerationAgentApply")
+	}
+	a.integrations.GenerationAgentApply = true
+	a.discardGenerationDraft()
+	if a.integrations.GenerationAgentApply {
+		t.Fatal("discardGenerationDraft did not clear GenerationAgentApply")
+	}
+
+	// 3. Failed 4xx agent save followed by successful Provider save must never trigger apply/next/handoff.
+	a.integrations = integrationState{
+		Loaded:               true,
+		Editor:               true,
+		ProfileID:            "agent-pi",
+		DraftMode:            "agent_bridge",
+		BridgeKind:           "pi",
+		BridgeProvider:       "deepseek",
+		Model:                "pi-model",
+		GenerationAgentApply: true,
+	}
+	a.saveGeneration()
+	generationUpdate(t, updates)
+	if a.integrations.GenerationAgentApply {
+		t.Fatal("GenerationAgentApply leaked after 4xx save failure")
+	}
+
+	a.integrations.ProfileID = "prov-1"
+	a.integrations.DraftMode = "provider"
+	a.integrations.ProviderLabel = "OpenAI"
+	a.integrations.Model = "gpt-test"
+	a.integrations.Endpoint = "https://example.test/v1"
+	a.integrations.APIKey = "synthetic-key"
+	a.saveGeneration()
+	generationUpdate(t, updates)
+	if nextRequests.Load() != 0 || handoffRequests.Load() != 0 || a.integrations.HandoffOpen {
+		t.Fatalf("saving provider after failed agent apply triggered switch: next=%d handoff=%d open=%v",
+			nextRequests.Load(), handoffRequests.Load(), a.integrations.HandoffOpen)
+	}
+}

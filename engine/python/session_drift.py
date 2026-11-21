@@ -157,13 +157,15 @@ class RegistryProjectIndex:
                 if sig != self._sig:
                     fd = os.open(self.path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
                     try:
-                        raw = os.fdopen(fd, 'rb').read()
+                        fh = os.fdopen(fd, 'rb')
                     except Exception:
                         try:
                             os.close(fd)
                         except OSError:
                             pass
                         raise
+                    with fh:
+                        raw = fh.read()
                     loaded = json.loads(raw.decode('utf-8'))
                     projects = loaded.get('projects') if isinstance(loaded, dict) else None
                     if isinstance(projects, dict):

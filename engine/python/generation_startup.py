@@ -16,7 +16,8 @@ def candidate(store):
     if reference is None:
         return None
     row = store.resolve(reference)
-    if not (row['profile']['mode'] == 'agent_bridge' and store.state.get('connected_agent_selections', {}).get(row['digest'])) and not validation_passed(store.state['validations'], row['digest']):
+    from agent_bridge_runtime import bridge_selection_authorized
+    if not bridge_selection_authorized(store.state, row) and not validation_passed(store.state['validations'], row['digest']):
         raise PolicyError('generation_validation_required', 409)
     store.native_schema_evidence(row)
     return copy.deepcopy(reference)
@@ -25,7 +26,7 @@ def candidate(store):
 def interrupted_applied_candidate(store):
     """Recover only a matching durable application whose management reply was lost."""
     pending = {key: row for key, row in store.state.get('handoffs', {}).items()
-               if row.get('status') in ('queued', 'preparing', 'stopping', 'applying', 'unknown')}
+               if row.get('status') in ('queued', 'preparing', 'stopping', 'applying', 'reconciling', 'unknown')}
     if not pending:
         return None
     path = Path(store.path).with_name('generation-handoff-runtime.json')
@@ -43,6 +44,8 @@ def interrupted_applied_candidate(store):
         if (receipt.get('reference') != reference or receipt.get('digest') != row['digest']
                 or store.resolve(reference)['digest'] != row['digest']):
             raise PolicyError('generation_handoff_recovery_mismatch', 503)
+        if row.get('active_committed') and store.state.get('active') == reference:
+            continue
         recovered.append(reference)
     if len(recovered) > 1:
         raise PolicyError('generation_handoff_recovery_ambiguous', 503)
@@ -90,6 +93,9 @@ def start_generation(store, launch, cleanup):
             raise PolicyError('generation_recovery_failed', 503) from None
         return result
     if recovered or selected:
+        if recovered:
+            from agent_bridge_runtime import mark_connected_bridge_selection
+            mark_connected_bridge_selection(store.state, store.resolve(reference))
         store.state.update(active=reference, next=None)
         store.state.pop('next_error', None)
         store.state.pop('startup_error', None)

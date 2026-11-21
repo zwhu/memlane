@@ -72,16 +72,34 @@ export class ManagedBacklog extends ManagedPending {
               const id = tokens[0], decision = this.queue.releaseBacklogEntry(target, command.session_id!, id);
               if (decision === "handled") {progress.handled++; tokens.shift(); send("running"); continue;}
               if (decision === "isolated") {progress.isolated++; tokens.shift(); send("running"); continue;}
-              let failed = false;
+              if (decision === "deferred") {return send("paused", "rate_limited");}
+              let flushError: unknown = undefined;
               try {await new ManagedDelivery(this.control, this.client, this.queue).flush([id], lease);}
-              catch {failed = true;}
+              catch (error) {flushError = error;}
               const pending = this.queue.pendingIds(target, command.session_id!);
               if (!pending.includes(id)) {progress.saved++; tokens.shift(); send("running"); continue;}
+              const entryState = this.queue.entryState(target, command.session_id!, id);
+              const errText = flushError instanceof Error ? flushError.message : String(flushError ?? "");
+              const isAuthDenied = entryState === "auth_denied" ||
+                /(?:request|login) failed \((?:401|403)\)/.test(errText) ||
+                ["local_policy_denied", "project_write_denied", "project_capture_disabled"].includes(errText);
+              if (isAuthDenied) {
+                return send("paused", "write_denied");
+              }
+              if (entryState === "deferred") {
+                return send("paused", "rate_limited");
+              }
+              if (entryState === "rejected" || entryState === "uncertain") {
+                progress.isolated++; tokens.shift(); send("running"); continue;
+              }
               const current = this.queue.reviewBacklog(target, command.session_id!);
               if (!current.tokens.includes(id)) {
-                progress.isolated++; tokens.shift(); return send("paused", "request_result_unknown");
+                progress.isolated++; tokens.shift(); send("running"); continue;
               }
-              return send("paused", failed ? "write_denied" : "worker_state_unconfirmed");
+              if (flushError !== undefined) {
+                progress.isolated++; tokens.shift(); send("running"); continue;
+              }
+              return send("paused", "worker_state_unconfirmed");
             }
             return send("completed");
           });

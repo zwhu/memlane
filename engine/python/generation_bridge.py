@@ -10,11 +10,12 @@ from aiohttp import web
 from codex_completion_endpoint import create_app, terminate
 from generation_config import compile_environment
 from process_groups import group_exists
-from project_control import private_write
+from _runtime_common import private_write
 
 
 from agent_bridge_runtime import (resolve_bridge_runtime, check_bridge_runtime, bridge_choices,
-                                  bridge_runtime_fingerprint, require_bridge_validation)
+                                  bridge_runtime_fingerprint, bridge_selection_authorized,
+                                  require_bridge_startup, require_bridge_validation)
 
 
 class ValidationBridge:

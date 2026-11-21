@@ -91,6 +91,8 @@ class OpenCodeConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.adapter.target.exists())
         self.assertEqual(self.official.enrolled, 1)
         self.assertNotEqual(self.registry.state['agents'][self.adapter.id]['principal_id'], self.official.owner)
+        binding = json.loads(Path(self.adapter.record()['installation']['binding_file']).read_bytes())
+        self.assertEqual(binding['cognee']['baseUrl'], 'http://127.0.0.1:19992/cognee')
         activated = await self.activate(prepared)
         self.assertEqual(activated['connection']['status'], 'configured_pending_new_session')
         self.assertEqual(activated['connection']['new_sessions'], 0)
@@ -168,10 +170,12 @@ class OpenCodeConnectionTests(unittest.IsolatedAsyncioTestCase):
         await self.activate(first)
         original = self.adapter.record()['active_installation']
         original_binding = Path(original['binding_file']).read_bytes()
-        self.official.url = 'http://127.0.0.1:19993'
+        self.assertEqual(json.loads(original_binding)['cognee']['baseUrl'], 'http://127.0.0.1:19992/cognee')
+        self.config['project_control']['url'] = 'http://127.0.0.1:19993'
         second = await self.prepare('prepare-next-generation')
         next_installation = self.adapter.record()['installation']
         self.assertNotEqual(next_installation['binding_file'], original['binding_file'])
+        self.assertEqual(json.loads(Path(next_installation['binding_file']).read_bytes())['cognee']['baseUrl'], 'http://127.0.0.1:19993/cognee')
         self.assertEqual(Path(original['binding_file']).read_bytes(), original_binding)
         active_entry = self.adapter.target.read_bytes()
         key = Path(self.registry.state['agents'][self.adapter.id]['key_file'])

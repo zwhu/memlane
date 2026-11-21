@@ -112,12 +112,6 @@ class AntigravityConnection(NativeConnection):
             active = copy.deepcopy(self.registry.state['agents'][self.id]['installation'])
             active_boundary = json.loads(safe_file(Path(previous['native_plugin_dir']) / '.memlane-installation.json'))['activated_at']
         await super().prepare(expected)
-        # AI profile exports remain private to the management owner. A new
-        # Agent does not inherit access to this explicitly protected source.
-        for project in list(self.registry.state['projects'].values()):
-            if active is None and project.get('name') == 'ml-user-profiles':
-                await self.registry.set_policy(self.registry.state['revision'], {'access': 'none'},
-                                               project_id=project['id'], agent_id=self.id)
         async with self.registry.mutex:
             agent = self.registry.state['agents'][self.id]
             agent['host_profile'] = str(self.profile)

@@ -130,7 +130,7 @@ func (a *App) saveCommonKnowledge() {
 		return
 	}
 	e.Busy = true
-	e.Message = "正在提交，保存和处理结果将分别核对…"
+	e.Message = "正在提交，保存和提炼结果将分别核对…"
 	op := e.Generation
 	client, p, draft, existing, baseline := a.Client, e.Target, e.Draft, e.Existing, e.Baseline
 	go func() {
@@ -170,7 +170,7 @@ func (a *App) saveCommonKnowledge() {
 				e.Message = err.Error()
 				return
 			}
-			e.Message = "官方已接收本次操作；正文保存和处理终态尚待核对。"
+			e.Message = "官方已接收本次操作；正文保存和提炼终态尚待核对。"
 			if existing != nil {
 				a.unavailableReadingItem(Item{ID: existing.ID, Dataset: p.Dataset, Kind: "知识", Document: existing})
 			}

@@ -24,7 +24,7 @@ func recordLintInputs(t *testing.T) {
 				return walkErr
 			}
 			if entry.IsDir() {
-				if entry.Name() == "__pycache__" {
+				if entry.Name() == "__pycache__" || entry.Name() == ".local" {
 					return filepath.SkipDir
 				}
 				return nil

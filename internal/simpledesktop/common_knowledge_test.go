@@ -49,18 +49,18 @@ func TestCommonConfirmKeepsSavedBodyAndProcessingStatusSeparate(t *testing.T) {
 	c := Client{Config: Config{ServiceURL: server.URL}}
 	receipt := CommonWriteReceipt{Status: "running", DatasetID: "common", ContentHash: "hash", PipelineRunID: "original-run"}
 	d, message, err := c.confirmCommon(context.Background(), Project{Dataset: "common"}, receipt, draft)
-	if err != nil || d.ID != "document" || !strings.Contains(message, "正文已核对") || strings.Contains(message, "处理已完成") {
+	if err != nil || d.ID != "document" || !strings.Contains(message, "正文已核对") || strings.Contains(message, "提炼已完成") {
 		t.Fatalf("running confused with completion: %s %v", message, err)
 	}
 	outcome = "succeeded"
 	kind = "operation"
 	_, message, err = c.confirmCommon(context.Background(), Project{Dataset: "common"}, receipt, draft)
-	if err != nil || strings.Contains(message, "处理已完成") {
+	if err != nil || strings.Contains(message, "提炼已完成") {
 		t.Fatalf("background launch confused with processing: %s %v", message, err)
 	}
 	kind = "pipeline"
 	_, message, err = c.confirmCommon(context.Background(), Project{Dataset: "common"}, receipt, draft)
-	if err != nil || !strings.Contains(message, "处理已完成") {
+	if err != nil || !strings.Contains(message, "提炼已完成") {
 		t.Fatalf("terminal result missing: %s %v", message, err)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/zwhu/memlane/internal/supervisor"
@@ -69,8 +70,8 @@ func defaultFirstRuntimeOptions() firstRuntimeOptions {
 		readyPollInterval: 150 * time.Millisecond,
 		healthFailureMax:  3,
 		healthTimeout:     3 * time.Second,
-		stopGrace:         20 * time.Second,
-		killWait:          5 * time.Second,
+		stopGrace:         10 * time.Second,
+		killWait:          3 * time.Second,
 	}
 }
 
@@ -139,7 +140,14 @@ type FirstRuntimeHandle struct {
 	configPath string
 	storeRoot  string
 	owned      bool
+	attached   bool
+	stopGrace  time.Duration
+	killWait   time.Duration
 	sup        *supervisor.Supervisor
+
+	mu                sync.Mutex
+	cancelStart       context.CancelFunc
+	shutdownRequested bool
 }
 
 // Supervisor returns the backing supervisor when this handle owns the launched process(es).
@@ -151,9 +159,31 @@ func (h *FirstRuntimeHandle) Supervisor() *supervisor.Supervisor {
 }
 
 // Owned reports whether this process launched and owns the supervised process group(s).
-// Attached handles for externally started dev.py instances return false and are not killed on Shutdown.
 func (h *FirstRuntimeHandle) Owned() bool {
 	return h != nil && h.owned && h.sup != nil
+}
+
+// Attached reports whether this handle tracks an externally locked owner for the same store/config.
+func (h *FirstRuntimeHandle) Attached() bool {
+	return h != nil && h.attached
+}
+
+func (h *FirstRuntimeHandle) clearCancelStart() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.cancelStart = nil
+	h.mu.Unlock()
+}
+
+func (h *FirstRuntimeHandle) isShutdownRequested() bool {
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.shutdownRequested
 }
 
 // ConfigPath returns the runtime configuration path bound to this handle.
@@ -188,28 +218,52 @@ func (h *FirstRuntimeHandle) Exited() <-chan supervisor.ServiceStatus {
 	return h.sup.Exited()
 }
 
-// Shutdown performs an idempotent explicit graceful shutdown (reverse-order SIGTERM -> SIGKILL)
-// when this handle owns the supervised process(es), and unregisters the handle.
+// Shutdown performs an idempotent explicit graceful shutdown (reverse-order SIGTERM -> SIGKILL
+// for owned handles, or verified same-store owner shutdown for attached handles), cancels any
+// in-flight startup wait, and unregisters the handle.
 func (h *FirstRuntimeHandle) Shutdown(ctx context.Context) error {
 	if h == nil {
 		return nil
 	}
-	firstRuntimeHandles.unregister(h)
-	if !h.owned || h.sup == nil {
-		return nil
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return h.sup.Stop(ctx)
+	h.mu.Lock()
+	h.shutdownRequested = true
+	cancel := h.cancelStart
+	h.cancelStart = nil
+	h.mu.Unlock()
+
+	firstRuntimeHandles.unregister(h)
+	if h.sup != nil {
+		h.sup.MarkStopping()
+	}
+	if cancel != nil {
+		cancel()
+	}
+	if h.owned && h.sup != nil {
+		return h.sup.Stop(ctx)
+	}
+	if h.attached && h.storeRoot != "" && h.configPath != "" {
+		return supervisor.StopVerifiedOwner(ctx, h.storeRoot, h.configPath, h.stopGrace, h.killWait)
+	}
+	return nil
 }
 
 type runtimeHandleRegistry struct {
-	mu      sync.Mutex
-	handles map[string]*FirstRuntimeHandle
-	locks   map[string]*sync.Mutex
+	mu             sync.Mutex
+	handles        map[string]*FirstRuntimeHandle
+	active         map[*FirstRuntimeHandle]struct{}
+	locks          map[string]*sync.Mutex
+	nextStartupID  uint64
+	startupCancels map[uint64]context.CancelFunc
 }
 
 var firstRuntimeHandles = &runtimeHandleRegistry{
-	handles: make(map[string]*FirstRuntimeHandle),
-	locks:   make(map[string]*sync.Mutex),
+	handles:        make(map[string]*FirstRuntimeHandle),
+	active:         make(map[*FirstRuntimeHandle]struct{}),
+	locks:          make(map[string]*sync.Mutex),
+	startupCancels: make(map[uint64]context.CancelFunc),
 }
 
 func (r *runtimeHandleRegistry) storeMutex(canonicalStore string) *sync.Mutex {
@@ -229,22 +283,36 @@ func (r *runtimeHandleRegistry) get(canonicalStore string) *FirstRuntimeHandle {
 	return r.handles[canonicalStore]
 }
 
+func (r *runtimeHandleRegistry) registerInFlight(h *FirstRuntimeHandle) {
+	if h == nil || h.storeRoot == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.active[h] = struct{}{}
+	if r.handles[h.storeRoot] == nil {
+		r.handles[h.storeRoot] = h
+	}
+}
+
 func (r *runtimeHandleRegistry) set(h *FirstRuntimeHandle) {
 	if h == nil || h.storeRoot == "" {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.active[h] = struct{}{}
 	r.handles[h.storeRoot] = h
 }
 
 func (r *runtimeHandleRegistry) unregister(h *FirstRuntimeHandle) {
-	if h == nil || h.storeRoot == "" {
+	if h == nil {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.handles[h.storeRoot] == h {
+	delete(r.active, h)
+	if h.storeRoot != "" && r.handles[h.storeRoot] == h {
 		delete(r.handles, h.storeRoot)
 	}
 }
@@ -258,17 +326,74 @@ func (r *runtimeHandleRegistry) findByConfig(configPath string) *FirstRuntimeHan
 			return h
 		}
 	}
+	for h := range r.active {
+		if canonicalRuntimePath(h.configPath) == canonicalCfg {
+			return h
+		}
+	}
 	return nil
 }
 
 func (r *runtimeHandleRegistry) all() []*FirstRuntimeHandle {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]*FirstRuntimeHandle, 0, len(r.handles))
-	for _, h := range r.handles {
+	seen := make(map[*FirstRuntimeHandle]struct{}, len(r.active)+len(r.handles))
+	out := make([]*FirstRuntimeHandle, 0, len(r.active)+len(r.handles))
+	for h := range r.active {
+		seen[h] = struct{}{}
 		out = append(out, h)
 	}
+	for _, h := range r.handles {
+		if _, ok := seen[h]; !ok {
+			out = append(out, h)
+		}
+	}
 	return out
+}
+
+func (r *runtimeHandleRegistry) registerStartup(cancel context.CancelFunc) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextStartupID++
+	id := r.nextStartupID
+	r.startupCancels[id] = cancel
+	return id
+}
+
+func (r *runtimeHandleRegistry) unregisterStartup(id uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.startupCancels, id)
+}
+
+func (r *runtimeHandleRegistry) cancelAllStartups() {
+	r.mu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(r.startupCancels))
+	for _, fn := range r.startupCancels {
+		cancels = append(cancels, fn)
+	}
+	r.mu.Unlock()
+	for _, fn := range cancels {
+		fn()
+	}
+}
+
+// TrackStartupContext derives a cancellable startup context that is canceled immediately
+// when ShutdownAllFirstRuntimes runs, preventing in-flight setup/launch goroutines from
+// spawning orphan background services during application quit.
+func TrackStartupContext(parent context.Context) (context.Context, func()) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	id := firstRuntimeHandles.registerStartup(cancel)
+	var once sync.Once
+	return ctx, func() {
+		once.Do(func() {
+			firstRuntimeHandles.unregisterStartup(id)
+			cancel()
+		})
+	}
 }
 
 func canonicalRuntimePath(path string) string {
@@ -300,18 +425,20 @@ func FirstRuntimeSupervisor(configPath string) (*FirstRuntimeHandle, bool) {
 	return nil, false
 }
 
-// ShutdownFirstRuntime cleanly shuts down the owned supervised runtime bound to configPath.
+// ShutdownFirstRuntime cleanly shuts down the owned or attached runtime bound to configPath.
 func ShutdownFirstRuntime(ctx context.Context, configPath string) error {
 	h, ok := FirstRuntimeSupervisor(configPath)
 	if !ok {
-		return nil
+		return ShutdownExternalRuntime(ctx, configPath)
 	}
 	return h.Shutdown(ctx)
 }
 
-// ShutdownAllFirstRuntimes cleanly shuts down every owned supervised runtime started by this process.
+// ShutdownAllFirstRuntimes cancels any in-flight runtime startups and cleanly shuts down
+// every owned or attached supervised runtime tracked by this process.
 // Intended as the explicit-quit shutdown hook for desktop callers.
 func ShutdownAllFirstRuntimes(ctx context.Context) error {
+	firstRuntimeHandles.cancelAllStartups()
 	handles := firstRuntimeHandles.all()
 	var errs []error
 	for _, h := range handles {
@@ -320,6 +447,41 @@ func ShutdownAllFirstRuntimes(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// ShutdownExternalRuntime stops a verified external owner holding the store referenced by
+// configPath (for example, after keep-alive quit + reopen or a pre-existing dev launcher).
+func ShutdownExternalRuntime(ctx context.Context, configPath string) error {
+	if configPath == "" || !filepath.IsAbs(configPath) {
+		return nil
+	}
+	f, err := os.OpenFile(configPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 2<<20 {
+		return nil
+	}
+	raw := make([]byte, info.Size())
+	if _, err := f.Read(raw); err != nil {
+		return nil
+	}
+	var cfg struct {
+		Root string `json:"official_data"`
+	}
+	if json.Unmarshal(raw, &cfg) != nil || cfg.Root == "" || !filepath.IsAbs(cfg.Root) {
+		return nil
+	}
+	if _, statErr := os.Stat(cfg.Root); errors.Is(statErr, os.ErrNotExist) {
+		return nil
+	}
+	opts := defaultFirstRuntimeOptions()
+	return supervisor.StopVerifiedOwner(ctx, cfg.Root, configPath, opts.stopGrace, opts.killWait)
 }
 
 func DefaultRuntimeConfig() (string, error) {
@@ -635,18 +797,38 @@ func StartFirstRuntimeHandle(ctx context.Context, prepared FirstRuntime, opts ..
 			existing = nil
 		}
 		if inspection.Locked {
-			// An active external owner already holds .service-owner; never kill or duplicate it.
-			if err := supervisor.WaitReady(ctx, nil, readyCheck, 0, cfgOpts.readyPollInterval, false); err != nil {
-				if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-					return nil, errors.New("首次服务就绪尚未确认，进度及所有权记录已保留")
-				}
-				return nil, err
+			// An active external owner already holds .service-owner; never duplicate it,
+			// but register an attached handle so explicit stop-and-quit can cleanly stop it.
+			waitCtx, waitCancel := context.WithCancel(ctx)
+			attached := &FirstRuntimeHandle{
+				configPath:  prepared.ConfigPath,
+				storeRoot:   canonicalStore,
+				owned:       false,
+				attached:    true,
+				stopGrace:   cfgOpts.stopGrace,
+				killWait:    cfgOpts.killWait,
+				cancelStart: waitCancel,
 			}
-			return &FirstRuntimeHandle{
-				configPath: prepared.ConfigPath,
-				storeRoot:  canonicalStore,
-				owned:      false,
-			}, nil
+			firstRuntimeHandles.set(attached)
+			waitErr := supervisor.WaitReady(waitCtx, nil, readyCheck, 0, cfgOpts.readyPollInterval, false)
+			attached.clearCancelStart()
+			waitCancel()
+			if waitErr != nil {
+				if attached.isShutdownRequested() {
+					firstRuntimeHandles.unregister(attached)
+					return nil, context.Canceled
+				}
+				if errors.Is(waitErr, context.DeadlineExceeded) || errors.Is(waitErr, context.Canceled) {
+					return attached, errors.New("首次服务就绪尚未确认，进度及所有权记录已保留")
+				}
+				firstRuntimeHandles.unregister(attached)
+				return nil, waitErr
+			}
+			return attached, nil
+		}
+		if existing != nil && !existing.Owned() {
+			firstRuntimeHandles.unregister(existing)
+			existing = nil
 		}
 		if inspection.HasReceipt {
 			if _, recErr := supervisor.RecoverStaleOwner(ctx, buildRecoverOptions(config, prepared.ConfigPath)); recErr != nil {
@@ -725,20 +907,36 @@ func StartFirstRuntimeHandle(ctx context.Context, prepared FirstRuntime, opts ..
 		KillWait:       cfgOpts.killWait,
 	}
 
-	startErr := sup.Start(ctx, []supervisor.ServiceSpec{spec})
+	startCtx, startCancel := context.WithCancel(ctx)
+	handle := &FirstRuntimeHandle{
+		configPath:  prepared.ConfigPath,
+		storeRoot:   canonicalStore,
+		owned:       true,
+		stopGrace:   cfgOpts.stopGrace,
+		killWait:    cfgOpts.killWait,
+		sup:         sup,
+		cancelStart: startCancel,
+	}
+	// Register immediately before sup.Start spawns the Setsid child so explicit quit
+	// during the first-startup window cancels and terminates it cleanly without orphans.
+	firstRuntimeHandles.registerInFlight(handle)
+
+	startErr := sup.Start(startCtx, []supervisor.ServiceSpec{spec})
+	handle.clearCancelStart()
+	startCancel()
+
+	if handle.isShutdownRequested() {
+		firstRuntimeHandles.unregister(handle)
+		return nil, context.Canceled
+	}
 	if startErr != nil {
 		snap := sup.Snapshot()
 		if (errors.Is(startErr, context.DeadlineExceeded) || errors.Is(startErr, context.Canceled)) && snap.State != supervisor.StateStopped {
 			// Startup remains in flight; preserve child, ownership record, and handle for retry or explicit quit.
-			inFlight := &FirstRuntimeHandle{
-				configPath: prepared.ConfigPath,
-				storeRoot:  canonicalStore,
-				owned:      true,
-				sup:        sup,
-			}
-			firstRuntimeHandles.set(inFlight)
-			return inFlight, errors.New("首次服务就绪尚未确认，进度及所有权记录已保留")
+			firstRuntimeHandles.set(handle)
+			return handle, errors.New("首次服务就绪尚未确认，进度及所有权记录已保留")
 		}
+		firstRuntimeHandles.unregister(handle)
 		var exitErr *supervisor.ExitedBeforeReadyError
 		if errors.As(startErr, &exitErr) {
 			return nil, fmt.Errorf("首次运行入口退出，保留日志与原库：%v", exitErr)
@@ -750,6 +948,7 @@ func StartFirstRuntimeHandle(ctx context.Context, prepared FirstRuntime, opts ..
 	// if present rather than replacing it with an already-exited launcher supervisor.
 	snap := sup.Snapshot()
 	if allowCleanExit && len(snap.Services) == 1 && snap.Services[0].State == supervisor.StateStopped {
+		firstRuntimeHandles.unregister(handle)
 		_ = sup.Stop(context.Background())
 		if existing != nil && existing.Owned() {
 			exSnap := existing.Snapshot()
@@ -757,23 +956,26 @@ func StartFirstRuntimeHandle(ctx context.Context, prepared FirstRuntime, opts ..
 				return existing, nil
 			}
 		}
-		return &FirstRuntimeHandle{
+		attached := &FirstRuntimeHandle{
 			configPath: prepared.ConfigPath,
 			storeRoot:  canonicalStore,
 			owned:      false,
-		}, nil
+			attached:   true,
+			stopGrace:  cfgOpts.stopGrace,
+			killWait:   cfgOpts.killWait,
+		}
+		firstRuntimeHandles.set(attached)
+		return attached, nil
 	}
 
-	handle := &FirstRuntimeHandle{
-		configPath: prepared.ConfigPath,
-		storeRoot:  canonicalStore,
-		owned:      true,
-		sup:        sup,
-	}
 	firstRuntimeHandles.set(handle)
 	if existing != nil && existing != handle {
 		// Old setup launcher was already stopped during activation; clean up its monitor goroutine.
-		_ = existing.Shutdown(context.Background())
+		if existing.Owned() {
+			_ = existing.Shutdown(context.Background())
+		} else {
+			firstRuntimeHandles.unregister(existing)
+		}
 	}
 	return handle, nil
 }
@@ -852,14 +1054,27 @@ func StartFirstRuntimeSupervised(ctx context.Context, configPath string, specs [
 		effectiveSpecs[i] = s
 	}
 
-	if err := sup.Start(ctx, effectiveSpecs); err != nil {
-		return nil, err
-	}
+	startCtx, startCancel := context.WithCancel(ctx)
 	handle := &FirstRuntimeHandle{
-		configPath: configPath,
-		storeRoot:  canonicalStore,
-		owned:      true,
-		sup:        sup,
+		configPath:  configPath,
+		storeRoot:   canonicalStore,
+		owned:       true,
+		stopGrace:   cfgOpts.stopGrace,
+		killWait:    cfgOpts.killWait,
+		sup:         sup,
+		cancelStart: startCancel,
+	}
+	firstRuntimeHandles.registerInFlight(handle)
+	err = sup.Start(startCtx, effectiveSpecs)
+	handle.clearCancelStart()
+	startCancel()
+	if handle.isShutdownRequested() {
+		firstRuntimeHandles.unregister(handle)
+		return nil, context.Canceled
+	}
+	if err != nil {
+		firstRuntimeHandles.unregister(handle)
+		return nil, err
 	}
 	firstRuntimeHandles.set(handle)
 	return handle, nil

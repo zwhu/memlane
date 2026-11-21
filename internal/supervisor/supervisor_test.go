@@ -620,8 +620,8 @@ func TestTrimServiceLogPreservesInodeAndCreatesPrevious(t *testing.T) {
 	}
 	defer f.Close()
 
-	payload := bytes.Repeat([]byte("A"), 150)
-	tailExpected := bytes.Repeat([]byte("Z"), 64)
+	payload := append(bytes.Repeat([]byte("A"), 150), '\n')
+	tailExpected := append(bytes.Repeat([]byte("Z"), 63), '\n')
 	if _, err := f.Write(payload); err != nil {
 		t.Fatal(err)
 	}
@@ -933,7 +933,8 @@ func TestOpenPrivateLogAndTrimDirSecurityPolicies(t *testing.T) {
 	}
 
 	privateLog := filepath.Join(logsDir, "app.log")
-	if err := os.WriteFile(privateLog, bytes.Repeat([]byte("M"), 200), 0o600); err != nil {
+	privatePayload := append(append(bytes.Repeat([]byte("A"), 136), '\n'), append(bytes.Repeat([]byte("M"), 63), '\n')...)
+	if err := os.WriteFile(privateLog, privatePayload, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(publicLog, 0o600); err != nil {
@@ -1154,4 +1155,463 @@ func TestSupervisorTrimsStoreRootLogsDir(t *testing.T) {
 	if stAfter.Sys().(*syscall.Stat_t).Ino != stBefore.Sys().(*syscall.Stat_t).Ino {
 		t.Fatal("expected StoreRoot/logs trim to preserve live inode")
 	}
+}
+
+func TestSupervisorStopRespectsContextBudgetAndCleansDescendants(t *testing.T) {
+	rootParent := canonicalTestDir(t)
+	storeRoot := filepath.Join(rootParent, "library")
+	logsDir := filepath.Join(rootParent, "runtime-logs")
+	if err := os.Mkdir(storeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(logsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	addr, origin := reserveLoopbackEndpoint(t)
+	configPath := filepath.Join(rootParent, "runtime.json")
+	writePrivateJSON(t, configPath, map[string]any{"official_data": storeRoot})
+	detachedFile := filepath.Join(rootParent, "detached-grandchild.pid")
+
+	sup := supervisor.New(supervisor.Config{
+		StoreRoot:               storeRoot,
+		ConfigPath:              configPath,
+		ServiceURL:              origin,
+		MonitorInterval:         40 * time.Millisecond,
+		DescendantTrackInterval: 40 * time.Millisecond,
+	})
+	spec := helperSpec(t, "stubborn", "ignore_sigterm", addr, filepath.Join(logsDir, "stubborn.log"),
+		"MEMLANE_HELPER_DETACHED_GRANDCHILD_FILE="+detachedFile,
+	)
+	// Deliberately configure huge StopGrace + KillWait (25s) to prove StopGroup respects
+	// a tight 1.8s context deadline AND still reserves time to kill detached descendants.
+	spec.StopGrace = 20 * time.Second
+	spec.KillWait = 5 * time.Second
+
+	startCtx, startCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer startCancel()
+	if err := sup.Start(startCtx, []supervisor.ServiceSpec{spec}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sup.Stop(context.Background()) }()
+
+	stubbornPID := sup.Snapshot().Services[0].PID
+	var detachedPID int
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(detachedFile); err == nil && len(bytes.TrimSpace(b)) > 0 {
+			if parsed, convErr := strconv.Atoi(strings.TrimSpace(string(b))); convErr == nil && parsed > 1 {
+				detachedPID = parsed
+				break
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if detachedPID <= 1 {
+		t.Fatal("detached grandchild PID was not recorded")
+	}
+	t.Cleanup(func() { _ = syscall.Kill(detachedPID, syscall.SIGKILL) })
+
+	key := strconv.Itoa(detachedPID)
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		rec, _, err := supervisor.ReadOwnerRecord(storeRoot)
+		if err == nil && rec.ObservedDescendants[key] != "" {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	stopStart := time.Now()
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 1800*time.Millisecond)
+	defer stopCancel()
+	if err := sup.Stop(stopCtx); err != nil {
+		t.Fatalf("context-bounded Stop failed: %v", err)
+	}
+	elapsed := time.Since(stopStart)
+	if elapsed > 4*time.Second {
+		t.Fatalf("Stop ignored ctx deadline: took %v with 1.8s ctx", elapsed)
+	}
+
+	waitForPIDDead(t, stubbornPID)
+	waitForPIDDead(t, detachedPID)
+	if _, err := os.Stat(filepath.Join(storeRoot, ".memlane-dev-owner.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected owner receipt removed after clean context-bounded Stop, got %v", err)
+	}
+}
+
+func TestTrimServiceLogRedactsSecretsInPrevious(t *testing.T) {
+	rootParent := canonicalTestDir(t)
+	logPath := filepath.Join(rootParent, "logs", "service.log")
+
+	f, err := supervisor.OpenPrivateLog(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	secretLines := strings.Join([]string{
+		"prefix " + strings.Repeat("P", 120),
+		"Authorization: Bearer top-secret-bearer-token",
+		"X-Api-Key: secret-api-key-999",
+		"openai=sk-secretkey123456789",
+		"api_key=kv-secret-value",
+		"proxy=socks5://u1:p1@10.0.0.2:1080",
+	}, "\n") + "\n"
+	if _, err := f.WriteString(secretLines); err != nil {
+		t.Fatal(err)
+	}
+	infoBefore, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inodeBefore := infoBefore.Sys().(*syscall.Stat_t).Ino
+
+	if err := supervisor.TrimServiceLog(logPath, 220); err != nil {
+		t.Fatalf("TrimServiceLog failed: %v", err)
+	}
+	prevBytes, err := os.ReadFile(logPath + ".previous")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := string(prevBytes)
+	for _, leaked := range []string{"top-secret-bearer-token", "secret-api-key-999", "sk-secretkey123456789", "kv-secret-value", "u1:p1"} {
+		if strings.Contains(prev, leaked) {
+			t.Fatalf("secret %q leaked into .previous:\n%s", leaked, prev)
+		}
+	}
+	for _, marker := range []string{"Bearer [REDACTED]", "X-Api-Key: [REDACTED]", "sk-[REDACTED]", "api_key=[REDACTED]", "socks5://[REDACTED]@10.0.0.2:1080"} {
+		if !strings.Contains(prev, marker) {
+			t.Fatalf("expected redaction marker %q in .previous:\n%s", marker, prev)
+		}
+	}
+	infoAfter, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if infoAfter.Sys().(*syscall.Stat_t).Ino != inodeBefore {
+		t.Fatal("expected live inode preserved during redacted trim")
+	}
+}
+
+func TestTrimServiceLogDropsSplitPartialFirstLineBeforeRedaction(t *testing.T) {
+	rootParent := canonicalTestDir(t)
+	logPath := filepath.Join(rootParent, "logs", "split.log")
+
+	f, err := supervisor.OpenPrivateLog(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	prefix := "prefix-line\nAuthorization: Bearer "
+	remainder := "split-boundary-secret-9999\nsafe-line-after\n"
+	if _, err := f.WriteString(prefix + remainder); err != nil {
+		t.Fatal(err)
+	}
+
+	// Choose limit == len(remainder) so seek(offset) lands immediately after "Bearer ".
+	if err := supervisor.TrimServiceLog(logPath, int64(len(remainder))); err != nil {
+		t.Fatalf("TrimServiceLog failed: %v", err)
+	}
+	prevBytes, err := os.ReadFile(logPath + ".previous")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := string(prevBytes)
+	if strings.Contains(prev, "split-boundary-secret-9999") {
+		t.Fatalf("partial credential line leaked into .previous: %q", prev)
+	}
+	if prev != "safe-line-after\n" {
+		t.Fatalf("expected only complete trailing line retained, got %q", prev)
+	}
+
+	// Overlong single line without any newline inside the bounded tail must be dropped completely.
+	overlongPath := filepath.Join(rootParent, "logs", "overlong.log")
+	overlongFile, err := supervisor.OpenPrivateLog(overlongPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlongSuffix := "overlong-secret-without-newline-9999"
+	if _, err := overlongFile.WriteString("Authorization: Bearer " + overlongSuffix); err != nil {
+		_ = overlongFile.Close()
+		t.Fatal(err)
+	}
+	_ = overlongFile.Close()
+	if err := supervisor.TrimServiceLog(overlongPath, int64(len(overlongSuffix))); err != nil {
+		t.Fatalf("TrimServiceLog overlong failed: %v", err)
+	}
+	overlongPrev, err := os.ReadFile(overlongPath + ".previous")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(overlongPrev) != 0 {
+		t.Fatalf("expected empty .previous when single overlong line has no newline in tail, got %q", string(overlongPrev))
+	}
+}
+
+func TestStopVerifiedOwnerNeverSignalsReusedChildPID(t *testing.T) {
+	rootParent := canonicalTestDir(t)
+	storeRoot := filepath.Join(rootParent, "library")
+	if err := os.Mkdir(storeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(rootParent, "runtime.json")
+	writePrivateJSON(t, configPath, map[string]any{"official_data": storeRoot})
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Start an unrelated process (PPID == test process, NOT ownerPID) to simulate a reused PID.
+	unrelated := exec.Command(exe, "-test.run=^TestSupervisorHelperProcess$")
+	unrelated.Env = []string{"MEMLANE_SUPERVISOR_HELPER=1", "MEMLANE_HELPER_MODE=grandchild"}
+	unrelated.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := unrelated.Start(); err != nil {
+		t.Fatal(err)
+	}
+	unrelatedPID := unrelated.Process.Pid
+	t.Cleanup(func() {
+		_ = syscall.Kill(-unrelatedPID, syscall.SIGKILL)
+		_ = unrelated.Wait()
+	})
+
+	// Start an external owner that ignores SIGTERM and holds .service-owner.
+	addr, origin := reserveLoopbackEndpoint(t)
+	owner := exec.Command(exe, "-test.run=^TestSupervisorHelperProcess$")
+	owner.Env = []string{
+		"MEMLANE_SUPERVISOR_HELPER=1",
+		"MEMLANE_HELPER_ROLE=ext_owner",
+		"MEMLANE_HELPER_MODE=ignore_sigterm",
+		"MEMLANE_HELPER_ADDR=" + addr,
+	}
+	owner.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := owner.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ownerPID := owner.Process.Pid
+	ownerDone := make(chan error, 1)
+	go func() { ownerDone <- owner.Wait() }()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-ownerPID, syscall.SIGKILL)
+		select {
+		case <-ownerDone:
+		case <-time.After(time.Second):
+		}
+	})
+
+	ownerStarted, err := supervisor.ProcessStartTime(context.Background(), ownerPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Case 1: Legacy receipt listing unrelatedPID as a bare child without ChildStartTimes/ObservedDescendants.
+	// StopVerifiedOwner must NOT signal unrelatedPID, and RecoverStaleOwner must fail-closed with ErrRecoveryRefused.
+	rec := supervisor.OwnerRecord{
+		PID:          ownerPID,
+		Started:      ownerStarted,
+		Phase:        "ready",
+		Config:       configPath,
+		OfficialData: storeRoot,
+		ServiceURL:   origin,
+		Children:     []int{unrelatedPID},
+		ServiceChildren: map[string]int{
+			"official": unrelatedPID,
+		},
+	}
+	writePrivateJSON(t, filepath.Join(storeRoot, ".memlane-dev-owner.json"), rec)
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stopCancel()
+	stopErr := supervisor.StopVerifiedOwner(stopCtx, storeRoot, configPath, 250*time.Millisecond, 750*time.Millisecond)
+	if !errors.Is(stopErr, supervisor.ErrRecoveryRefused) {
+		t.Fatalf("expected ErrRecoveryRefused when an unverified bare recorded PID still exists, got %v", stopErr)
+	}
+	waitForPIDDead(t, ownerPID)
+
+	// Unrelated reused PID must still be alive and completely untouched.
+	if err := syscall.Kill(unrelatedPID, 0); err != nil {
+		t.Fatalf("PID reuse guard failed: unrelated process %d was signaled/killed: %v", unrelatedPID, err)
+	}
+
+	// Case 2: Receipt with persisted ChildStartTimes / ObservedDescendants proving unrelatedPID was reused.
+	// StopVerifiedOwner must still never signal unrelatedPID, AND RecoverStaleOwner must skip the proven-reused PID
+	// and cleanly archive the dirty receipt instead of wedging recovery.
+	recWithKnownReuse := supervisor.OwnerRecord{
+		PID:          999994,
+		Started:      "Mon Jan  1 00:00:00 1999",
+		Phase:        "ready",
+		Config:       configPath,
+		OfficialData: storeRoot,
+		ServiceURL:   origin,
+		Children:     []int{unrelatedPID},
+		ServiceChildren: map[string]int{
+			"official": unrelatedPID,
+		},
+		ChildStartTimes: map[string]string{
+			strconv.Itoa(unrelatedPID): "Mon Jan  1 00:00:00 1999",
+		},
+		ObservedDescendants: map[string]string{
+			strconv.Itoa(unrelatedPID): "Mon Jan  1 00:00:00 1999",
+		},
+	}
+	writePrivateJSON(t, filepath.Join(storeRoot, ".memlane-dev-owner.json"), recWithKnownReuse)
+
+	stopCtx2, stopCancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stopCancel2()
+	if err := supervisor.StopVerifiedOwner(stopCtx2, storeRoot, configPath, 250*time.Millisecond, 750*time.Millisecond); err != nil {
+		t.Fatalf("expected StopVerifiedOwner to archive dirty receipt when lstart proves PID reuse, got %v", err)
+	}
+	if err := syscall.Kill(unrelatedPID, 0); err != nil {
+		t.Fatalf("PID reuse guard failed in Case 2: unrelated process %d was signaled/killed: %v", unrelatedPID, err)
+	}
+	lock, err := supervisor.AcquireOwner(storeRoot)
+	if err != nil {
+		t.Fatalf("expected clean store after archiving receipt with proven reused PID, got %v", err)
+	}
+	_ = lock.Release()
+}
+
+func TestStopVerifiedOwnerReconcilesDirtyReceiptAndDeadOwnerVerifiedChild(t *testing.T) {
+	rootParent := canonicalTestDir(t)
+	storeRoot := filepath.Join(rootParent, "library")
+	if err := os.Mkdir(storeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(rootParent, "runtime.json")
+	writePrivateJSON(t, configPath, map[string]any{"official_data": storeRoot})
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Case A: Stubborn owner (ignores SIGTERM) + verified child (persisted ChildStartTimes).
+	// StopVerifiedOwner must SIGKILL owner, stop verified child, AND reconcile/archive the dirty receipt.
+	childA := exec.Command(exe, "-test.run=^TestSupervisorHelperProcess$")
+	childA.Env = []string{"MEMLANE_SUPERVISOR_HELPER=1", "MEMLANE_HELPER_MODE=grandchild"}
+	childA.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := childA.Start(); err != nil {
+		t.Fatal(err)
+	}
+	childAPID := childA.Process.Pid
+	childADone := make(chan error, 1)
+	go func() { childADone <- childA.Wait() }()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-childAPID, syscall.SIGKILL)
+		select {
+		case <-childADone:
+		case <-time.After(time.Second):
+		}
+	})
+	childAStarted, err := supervisor.ProcessStartTime(context.Background(), childAPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	addrA, originA := reserveLoopbackEndpoint(t)
+	ownerA := exec.Command(exe, "-test.run=^TestSupervisorHelperProcess$")
+	ownerA.Env = []string{
+		"MEMLANE_SUPERVISOR_HELPER=1",
+		"MEMLANE_HELPER_ROLE=stubborn_owner",
+		"MEMLANE_HELPER_MODE=ignore_sigterm",
+		"MEMLANE_HELPER_ADDR=" + addrA,
+	}
+	ownerA.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := ownerA.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ownerAPID := ownerA.Process.Pid
+	ownerADone := make(chan error, 1)
+	go func() { ownerADone <- ownerA.Wait() }()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-ownerAPID, syscall.SIGKILL)
+		select {
+		case <-ownerADone:
+		case <-time.After(time.Second):
+		}
+	})
+	ownerAStarted, err := supervisor.ProcessStartTime(context.Background(), ownerAPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writePrivateJSON(t, filepath.Join(storeRoot, ".memlane-dev-owner.json"), supervisor.OwnerRecord{
+		PID:          ownerAPID,
+		Started:      ownerAStarted,
+		Phase:        "ready",
+		Config:       configPath,
+		OfficialData: storeRoot,
+		ServiceURL:   originA,
+		Children:     []int{childAPID},
+		ServiceChildren: map[string]int{
+			"official": childAPID,
+		},
+		ChildStartTimes: map[string]string{
+			strconv.Itoa(childAPID): childAStarted,
+		},
+	})
+
+	stopCtxA, stopCancelA := context.WithTimeout(context.Background(), 3*time.Second)
+	defer stopCancelA()
+	if err := supervisor.StopVerifiedOwner(stopCtxA, storeRoot, configPath, 250*time.Millisecond, 1200*time.Millisecond); err != nil {
+		t.Fatalf("StopVerifiedOwner failed to stop stubborn owner + verified child and reconcile receipt: %v", err)
+	}
+	waitForPIDDead(t, ownerAPID)
+	waitForPIDDead(t, childAPID)
+	lock, err := supervisor.AcquireOwner(storeRoot)
+	if err != nil {
+		t.Fatalf("expected clean store after dirty receipt reconciliation, got %v", err)
+	}
+	_ = lock.Release()
+
+	// Case B: Owner already died and released flock, leaving a dirty receipt + live verified child.
+	childB := exec.Command(exe, "-test.run=^TestSupervisorHelperProcess$")
+	childB.Env = []string{"MEMLANE_SUPERVISOR_HELPER=1", "MEMLANE_HELPER_MODE=grandchild"}
+	childB.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := childB.Start(); err != nil {
+		t.Fatal(err)
+	}
+	childBPID := childB.Process.Pid
+	childBDone := make(chan error, 1)
+	go func() { childBDone <- childB.Wait() }()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-childBPID, syscall.SIGKILL)
+		select {
+		case <-childBDone:
+		case <-time.After(time.Second):
+		}
+	})
+	childBStarted, err := supervisor.ProcessStartTime(context.Background(), childBPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writePrivateJSON(t, filepath.Join(storeRoot, ".memlane-dev-owner.json"), supervisor.OwnerRecord{
+		PID:          999997,
+		Started:      "Mon Jan  1 00:00:00 1999",
+		Phase:        "ready",
+		Config:       configPath,
+		OfficialData: storeRoot,
+		Children:     []int{childBPID},
+		ServiceChildren: map[string]int{
+			"official": childBPID,
+		},
+		ChildStartTimes: map[string]string{
+			strconv.Itoa(childBPID): childBStarted,
+		},
+	})
+
+	stopCtxB, stopCancelB := context.WithTimeout(context.Background(), 3*time.Second)
+	defer stopCancelB()
+	if err := supervisor.StopVerifiedOwner(stopCtxB, storeRoot, configPath, 250*time.Millisecond, 1200*time.Millisecond); err != nil {
+		t.Fatalf("StopVerifiedOwner failed for dead owner with live verified child: %v", err)
+	}
+	waitForPIDDead(t, childBPID)
+	lockB, err := supervisor.AcquireOwner(storeRoot)
+	if err != nil {
+		t.Fatalf("expected clean store after dead-owner reconciliation, got %v", err)
+	}
+	_ = lockB.Release()
 }

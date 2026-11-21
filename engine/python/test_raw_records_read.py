@@ -369,6 +369,47 @@ class RawRecordsReadTest(AioHTTPTestCase):
         self.assertEqual(child_hist['parent_label'], '如何优化原始记录加载性能？')
         self.assertEqual(child_hist['subagent_role'], 'research')
 
+    async def test_schema_guards_fail_closed_with_503_and_never_return_silent_empty_page(self):
+        mgr = {'Authorization': 'Bearer ' + self.manager_token}
+
+        # Existing session with 0 rows in cache.db must return 503 (never silent 200 empty page).
+        empty_hist = await self.client.get(
+            f'/v1/raw-records/session-history?dataset_id={self.ds_managed}&session_id=codex_s2',
+            headers=mgr,
+        )
+        self.assertEqual(empty_hist.status, 503)
+
+        # Dropping a required cache table degrades /v1/raw-records to cache_ready=False and fails history with 503.
+        c2 = sqlite3.connect(self.cache_db)
+        c2.execute('DROP TABLE cache_trace_entries')
+        c2.commit()
+        c2.close()
+        cat = await (await self.client.get(f'/v1/raw-records?dataset_id={self.ds_managed}', headers=mgr)).json()
+        self.assertFalse(cat['cache_ready'])
+        self.assertNotIn('label', cat['sessions'][0])
+        hist_broken_cache = await self.client.get(
+            f'/v1/raw-records/session-history?dataset_id={self.ds_managed}&session_id=codex_s1',
+            headers=mgr,
+        )
+        self.assertEqual(hist_broken_cache.status, 503)
+
+        # Dropping a required cognee_db table fails both endpoints closed with 503.
+        c1 = sqlite3.connect(self.cognee_db)
+        c1.execute('DROP TABLE session_records')
+        c1.commit()
+        c1.close()
+        self.assertEqual(
+            (await self.client.get(f'/v1/raw-records?dataset_id={self.ds_managed}&kind=session', headers=mgr)).status,
+            503,
+        )
+        self.assertEqual(
+            (await self.client.get(
+                f'/v1/raw-records/session-history?dataset_id={self.ds_managed}&session_id=codex_s1',
+                headers=mgr,
+            )).status,
+            503,
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

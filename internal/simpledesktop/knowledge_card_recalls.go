@@ -139,6 +139,7 @@ func (a *App) loadOverviewRecallStats(generation uint64) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	a.overviewState.recallCancel = cancel
+	epoch, identity := a.epoch, a.readingIdentity
 	groups := map[string][]Item{}
 	for _, row := range a.overviewState.Snapshot.Knowledge {
 		if row.Dataset != "" {
@@ -167,8 +168,11 @@ func (a *App) loadOverviewRecallStats(generation uint64) {
 						stats[row.key()] = row.RecallStats
 					}
 				}
+				if ctx.Err() != nil {
+					return
+				}
 				a.Update(func() {
-					if ctx.Err() != nil || generation != a.overviewState.generation {
+					if ctx.Err() != nil || generation != a.overviewState.generation || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
 						return
 					}
 					for n, row := range a.overviewState.Snapshot.Knowledge {

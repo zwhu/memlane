@@ -1,6 +1,6 @@
 # 工程规范
 
-2026-11-11 起实施；不改变产品、授权和设计。磁盘规则以 AGENTS.md 最新要求为准：2026-11-17 调整为最低保留50 GiB、运行监测低于55 GiB停止受管任务。
+2026-11-11 起实施；不改变产品、授权和设计。磁盘规则以 AGENTS.md 最新要求为准：开发态（`scripts/task.py`）最低保留 50 GiB、运行监测低于 55 GiB 停止受管任务；独立 `.app` 安装态监控阈值为最低 2 GiB / 告警线 5 GiB。
 
 ## 开发节奏
 
@@ -41,7 +41,7 @@ UI组件保持稳定Key，异步结果核对项目／配置代次和当前操作
 
 ### 模型参数契约（2026-11-18，用户明确要求桥接与直连都防复发）
 
-- 静态门禁：`python3 scripts/task.py -- python3 scripts/lint.py`，检查全部Python生产模块；违规输出文件／行号／ML规则编号并非零退出。检查器回归：`python3 scripts/task.py -- python3 -m unittest discover -s scripts -p test_lint.py`。覆盖原始setdefault错误、别名构造器、请求字面量、合法显式配置及语法错误；不能只在测试里保留架构约束而不接lint入口。
+- 静态门禁：`python3 scripts/task.py -- python3 scripts/lint.py`，覆盖 Python 与 Go 生产模块（含 `scripts/*.py`），执行 `ML001`–`ML003`、`ML006`–`ML017`（其中 `ML006` 守卫画像无固定总超时、`ML015` 扩展覆盖 `scripts/*.py`），并由 `sh scripts/go.sh test ./...` 经 `lint_gate_test.go` 自动强制执行；违规输出文件／行号／ML规则编号并非零退出。检查器回归：`python3 scripts/task.py -- python3 -m unittest discover -s scripts -p test_lint.py`。覆盖原始 `setdefault` 错误、别名构造器、请求字面量、合法显式配置及语法错误；不能只在测试里保留架构约束而不接 lint 入口。
 
 - Memlane 未配置的采样/输出参数保持未配置，不补成显式0、1或其他默认值；不得把SDK已有默认行为改成客户端显式参数。桥接模式不开放温度等不受支持字段；直连用户显式填写的0必须保留。
 - 启动、验证、在线切换统一使用generation_config中的native_llm_configuration/native_llm_kwargs，不在消费者中直接构造LLMConfig，不继承前一配置的环境变量、llm_args、fallback或凭据。
@@ -56,7 +56,7 @@ UI动作→IPC请求→后台任务→模型网关各层关联操作ID／任务I
 
 通用验收设计、证据审阅与缺陷归类方法已抽到 [verify-continuous-scenarios](../../.agents/skills/verify-continuous-scenarios/SKILL.md)。本项目命令编排见[run-scenario使用说明](../archive/scenario-runner.md)，复用task.py磁盘门禁。现有具体驱动按任务逐步接入，不把新入口描述为全部Native验收已统一；失败阈值及停止范围继续按上文执行。
 
-优先复用现有MyGo Tester／headless组件测试、e2e automation、IPC与实际窗口驱动，不搭另一套UI引擎。`scripts/verify-window.py`含旧“全部记忆”等导航，仅作协议参考，未迁移前不能用作当前设计通过证据。普通包不能携带e2e探针。
+优先复用现有 MyGo Tester／headless 组件测试（`internal/simpledesktop/*_test.go`、`perf_budget_test.go`）、受控图谱验证（`web/official-graph/verify.mjs` 与 `-tags memlane_graph_e2e` 调试入口）、IPC 与实际窗口核验，不搭另一套 UI 引擎（早期 `scripts/verify-window.py` 已随旧导航精简移除）。普通包不能携带 e2e 探针。
 
 每个驱动须校验synthetic_only标记、bundle/root、实际可执行文件与版本；输出阶段结果和证据，超时不得静默重跑收费任务。数据库快照与进程退出分别验证；不要把无窗口capture当实际Native截图。当前统一Harness尚未完成，见清单。
 

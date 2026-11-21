@@ -15,24 +15,59 @@ type projectMessageSummaryDocument struct {
 	Document *Document `json:"document,omitempty"`
 }
 
-type projectMessageSummaryResponse struct {
-	ProjectID         string                          `json:"project_id"`
-	DatasetID         string                          `json:"dataset_id"`
-	AutomaticSave     bool                            `json:"automatic_save"`
-	Backlog           *backlogJob                     `json:"backlog"`
-	Checks            []pendingCheckState             `json:"checks,omitempty"`
-	BufferReviews     []bufferReview                  `json:"buffer_reviews,omitempty"`
-	ProcessingIssues  []processingIssue               `json:"processing_issues,omitempty"`
-	ProcessingNotices []processingNotice              `json:"processing_notices"`
-	PendingDocuments  []projectMessageSummaryDocument `json:"pending_documents"`
-	Activity          []activityRow                   `json:"activity"`
-	Errors            map[string]string               `json:"errors"`
+type projectMessageSummaryKnowledge struct {
+	ID        string `json:"id"`
+	CreatedAt string `json:"created_at"`
 }
 
-func (c ProjectControlClient) projectMessageSummary(ctx context.Context, projectID string) (projectMessageSummaryResponse, error) {
+type projectMessageSummaryResponse struct {
+	ProjectID                 string                           `json:"project_id"`
+	DatasetID                 string                           `json:"dataset_id"`
+	AutomaticSave             bool                             `json:"automatic_save"`
+	Backlog                   *backlogJob                      `json:"backlog"`
+	Checks                    []pendingCheckState              `json:"checks,omitempty"`
+	BufferReviews             []bufferReview                   `json:"buffer_reviews,omitempty"`
+	ProcessingIssues          []processingIssue                `json:"processing_issues,omitempty"`
+	ProcessingNotices         []processingNotice               `json:"processing_notices"`
+	PendingDocuments          []projectMessageSummaryDocument  `json:"pending_documents"`
+	KnowledgeCatalog          []projectMessageSummaryKnowledge `json:"knowledge_catalog"`
+	KnowledgeCatalogVersion   string                           `json:"knowledge_catalog_version,omitempty"`
+	KnowledgeCatalogUnchanged bool                             `json:"knowledge_catalog_unchanged,omitempty"`
+	Activity                  []activityRow                    `json:"activity"`
+	Errors                    map[string]string                `json:"errors"`
+}
+
+func (c ProjectControlClient) projectMessageSummary(ctx context.Context, projectID, knownKnowledgeVersion string) (projectMessageSummaryResponse, error) {
 	var result projectMessageSummaryResponse
-	err := c.request(ctx, "GET", "/v1/projects/"+url.PathEscape(projectID)+"/message-summary", nil, &result)
+	path := "/v1/projects/" + url.PathEscape(projectID) + "/message-summary"
+	if knownKnowledgeVersion != "" {
+		path += "?knowledge_version=" + url.QueryEscape(knownKnowledgeVersion)
+	}
+	err := c.request(ctx, "GET", path, nil, &result)
 	return result, err
+}
+
+func (r projectMessageSummaryResponse) knowledgeDocuments(defaultDataset string) []Document {
+	if r.KnowledgeCatalog == nil {
+		return nil
+	}
+	ds := r.DatasetID
+	if ds == "" {
+		ds = defaultDataset
+	}
+	docs := make([]Document, 0, len(r.KnowledgeCatalog))
+	for _, row := range r.KnowledgeCatalog {
+		if row.ID == "" {
+			continue
+		}
+		docs = append(docs, Document{
+			ID:       row.ID,
+			Dataset:  ds,
+			Created:  row.CreatedAt,
+			Metadata: map[string]any{"node_set": []any{"session_learnings"}},
+		})
+	}
+	return docs
 }
 
 func isControlNotFound(err error) bool {

@@ -5,7 +5,7 @@ import uuid
 
 import aiohttp
 
-from project_control import read_secret
+from _runtime_common import read_secret
 from project_policy import PolicyError
 
 from .constants import LIMIT

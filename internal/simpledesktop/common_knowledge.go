@@ -171,7 +171,7 @@ func (c Client) writeCommon(ctx context.Context, p Project, draft CommonDraft, e
 		return receipt, fmt.Errorf("通用记忆保存归属未确认")
 	}
 	if receipt.Status == "errored" || receipt.Status == "failed" {
-		return receipt, fmt.Errorf("官方处理失败，保留原操作并核对已保存内容")
+		return receipt, fmt.Errorf("官方提炼失败，保留原操作并核对已保存内容")
 	}
 	valid := receipt.Status == "running" || receipt.Status == "completed" || receipt.Status == "incremental" || receipt.Status == "unchanged" || receipt.Status == "full_rebuild"
 	if !valid {
@@ -241,9 +241,9 @@ func (c Client) confirmCommon(ctx context.Context, p Project, receipt CommonWrit
 	if document.ID == "" {
 		return Document{}, "保存尚未核对", fmt.Errorf("未找到与本次正文一致的官方文档；保留原操作，不重复提交")
 	}
-	processing := "处理状态未确认"
+	processing := "提炼状态未确认"
 	if receipt.Status == "completed" || receipt.Status == "incremental" || receipt.Status == "unchanged" || receipt.Status == "full_rebuild" {
-		processing = "处理已完成"
+		processing = "提炼已完成"
 	}
 	if receipt.PipelineRunID != "" {
 		var runs []struct {
@@ -256,23 +256,23 @@ func (c Client) confirmCommon(ctx context.Context, p Project, receipt CommonWrit
 		}
 		err = c.get(ctx, "/api/v1/activity/pipeline-runs?dataset_id="+url.QueryEscape(p.Dataset)+"&limit=100&offset=0", &runs)
 		if err != nil {
-			return document, "正文已核对；处理状态未确认", err
+			return document, "正文已核对；提炼状态未确认", err
 		}
 		for _, run := range runs {
 			if run.Dataset == p.Dataset && run.Run == receipt.PipelineRunID && run.Kind == "pipeline" {
 				switch strings.ToLower(run.Outcome) {
 				case "succeeded", "success":
-					processing = "处理已完成"
+					processing = "提炼已完成"
 				case "failed", "errored", "abandoned":
-					processing = "处理失败，已保存内容保留"
+					processing = "提炼失败，已保存内容保留"
 				default:
 					switch strings.ToLower(run.Status) {
 					case "pipelineruncompleted", "completed":
-						processing = "处理已完成"
+						processing = "提炼已完成"
 					case "pipelinerunerrored", "errored", "failed":
-						processing = "处理失败，已保存内容保留"
+						processing = "提炼失败，已保存内容保留"
 					default:
-						processing = "处理状态：" + run.Status
+						processing = "提炼状态：" + run.Status
 					}
 				}
 				break

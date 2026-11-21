@@ -21,11 +21,19 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
+REQUIRED_GRAPH_DIST_FILES = (
+    'index.html',
+    'app.js',
+    'app.css',
+    'host.css',
+    'app.js.LEGAL.txt',
+    'COGNEE-LICENSE',
+    'THIRD-PARTY-LICENSES.txt',
+    'build.json',
+)
 REQUIRED_GRAPH_FILES = (
     'web/official-graph/dist/assets.json',
-    'web/official-graph/dist/index.html',
-    'web/official-graph/dist/app.js',
-    'web/official-graph/dist/build.json',
+    *(f'web/official-graph/dist/{name}' for name in REQUIRED_GRAPH_DIST_FILES),
 )
 CHUNK_SIZE = 1 << 20
 
@@ -58,6 +66,9 @@ def load_release_manifest(root: Path = ROOT) -> dict:
 
 
 def verify_graph_assets(root: Path = ROOT) -> list[str]:
+    dist_dir = root / 'web' / 'official-graph' / 'dist'
+    if dist_dir.is_symlink() or not dist_dir.is_dir():
+        raise ValueError(f'missing or invalid embedded graph assets directory: {dist_dir}')
     missing: list[str] = []
     for rel in REQUIRED_GRAPH_FILES:
         path = root / rel
@@ -65,6 +76,47 @@ def verify_graph_assets(root: Path = ROOT) -> list[str]:
             missing.append(rel)
     if missing:
         raise ValueError('missing or invalid embedded graph assets: ' + ', '.join(missing))
+
+    assets_path = dist_dir / 'assets.json'
+    try:
+        with assets_path.open('r', encoding='utf-8') as fh:
+            manifest = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f'invalid graph assets.json: {exc}') from exc
+
+    if not isinstance(manifest, dict) or manifest.get('protocol') != 1 or not str(manifest.get('upstream', '')).strip():
+        raise ValueError('invalid graph assets.json protocol or upstream metadata')
+    files_map = manifest.get('files')
+    if not isinstance(files_map, dict) or not files_map:
+        raise ValueError('graph assets.json missing files digest map')
+
+    required_set = set(REQUIRED_GRAPH_DIST_FILES)
+    missing_entries = sorted(required_set - set(files_map))
+    if missing_entries:
+        raise ValueError('graph assets.json missing required entries: ' + ', '.join(missing_entries))
+
+    for name, expected_digest in sorted(files_map.items()):
+        if not isinstance(name, str) or not name or Path(name).name != name or '/' in name or '\\' in name:
+            raise ValueError(f'invalid graph asset filename in assets.json: {name!r}')
+        if not isinstance(expected_digest, str) or len(expected_digest) != 64:
+            raise ValueError(f'invalid sha256 digest in assets.json for {name}')
+        target = dist_dir / name
+        if target.is_symlink() or not target.is_file() or target.stat().st_size == 0:
+            raise ValueError(f'missing or invalid graph asset listed in assets.json: {name}')
+        actual_digest = sha256_file(target)
+        if actual_digest != expected_digest:
+            raise ValueError(f'graph asset sha256 mismatch for {name}: got {actual_digest}, expected {expected_digest}')
+
+    build_path = dist_dir / 'build.json'
+    try:
+        with build_path.open('r', encoding='utf-8') as fh:
+            build_meta = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f'invalid graph build.json: {exc}') from exc
+    missing_licenses = build_meta.get('missingLicenseTexts') if isinstance(build_meta, dict) else None
+    if not isinstance(missing_licenses, list) or len(missing_licenses) > 0:
+        raise ValueError(f'graph build.json has unresolved missingLicenseTexts: {missing_licenses!r}')
+
     return list(REQUIRED_GRAPH_FILES)
 
 
@@ -168,12 +220,6 @@ def _worktree_for_ref(repo_root: Path, commit: str):
             if src.exists() and not dst.exists() and not dst.is_symlink():
                 os.symlink(src, dst)
                 linked.append(dst)
-        graph_src = repo_abs / 'web' / 'official-graph' / 'dist'
-        graph_dst = wt / 'web' / 'official-graph' / 'dist'
-        if graph_src.is_dir() and not graph_src.is_symlink() and not graph_dst.exists():
-            # go:embed forbids symlinks; copy gitignored prebuilt graph assets into the temporary worktree.
-            graph_dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(graph_src, graph_dst, symlinks=False)
         yield wt
     finally:
         # Unlink shared toolchain/cache symlinks before any worktree directory cleanup.
@@ -331,18 +377,6 @@ def run_build(argv: list[str] | None = None, *, root: Path = ROOT, prepare_sdk_f
     git_ref = args.git_ref.strip()
     if git_ref:
         commit = _resolve_git_commit(root, git_ref)
-        if args.dry_run:
-            return _execute_build(
-                repo_root=root,
-                build_root=root,
-                out_dir_arg=args.out_dir,
-                platform=args.platform,
-                skip_dmg=args.skip_dmg,
-                dry_run=True,
-                prepare_sdk_fn=prepare_sdk_fn,
-                git_ref=git_ref,
-                commit=commit,
-            )
         with _worktree_for_ref(root, commit) as wt:
             return _execute_build(
                 repo_root=root,
@@ -350,7 +384,7 @@ def run_build(argv: list[str] | None = None, *, root: Path = ROOT, prepare_sdk_f
                 out_dir_arg=args.out_dir,
                 platform=args.platform,
                 skip_dmg=args.skip_dmg,
-                dry_run=False,
+                dry_run=args.dry_run,
                 prepare_sdk_fn=prepare_sdk_fn,
                 git_ref=git_ref,
                 commit=commit,

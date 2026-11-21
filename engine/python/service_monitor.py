@@ -552,7 +552,7 @@ def attach_service_monitor(app, config, *, registry=None, connections=None, moni
 
     async def runtime_monitor(request):
         if not request['manager']:
-            raise PolicyError('management_permission_required', 403)
+            raise PolicyError('management_required', 403)
         include_logs = request.query.get('include_logs', '').lower() in ('1', 'true', 'yes')
         return web.json_response(await active_monitor.snapshot(include_logs=include_logs))
 

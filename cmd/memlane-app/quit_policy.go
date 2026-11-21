@@ -22,6 +22,8 @@ type quitCoordinator struct {
 	logf            func(string, ...any)
 }
 
+const defaultShutdownTimeout = 15 * time.Second
+
 func newQuitCoordinator(
 	keepAlive func() bool,
 	shutdown func(context.Context) error,
@@ -30,7 +32,7 @@ func newQuitCoordinator(
 	logf func(string, ...any),
 ) *quitCoordinator {
 	if timeout <= 0 {
-		timeout = 8 * time.Second
+		timeout = defaultShutdownTimeout
 	}
 	if keepAlive == nil {
 		keepAlive = func() bool { return true }

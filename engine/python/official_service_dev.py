@@ -17,7 +17,41 @@ from urllib.parse import urlparse
 
 
 COMPONENT_MANIFEST = Path(__file__).resolve().parents[1] / 'coding-memory-components.json'
-_VERIFY_CACHE_SCHEMA_VERSION = 1
+_VERIFY_CACHE_SCHEMA_VERSION = 2
+_BYTECODE_SUFFIXES = ('.pyc', '.pyo')
+
+
+class _SourceOnlyFileLoader(importlib.machinery.SourceFileLoader):
+    """Compile strictly from verified .py files, never executing cached .pyc bytecode."""
+
+    def get_code(self, fullname):
+        source_bytes = self.get_data(self.path)
+        return self.source_to_code(source_bytes, self.path)
+
+
+def _install_source_only_import_hook(source):
+    """Install a path hook scoped to ``source`` that refuses .pyc/.pyo bytecode loading."""
+    source_root = Path(source).resolve(strict=True)
+
+    def _source_only_path_hook(path):
+        try:
+            resolved = Path(path).resolve(strict=True)
+            resolved.relative_to(source_root)
+        except (OSError, ValueError):
+            raise ImportError('outside verified source root') from None
+        return importlib.machinery.FileFinder(
+            path,
+            (_SourceOnlyFileLoader, importlib.machinery.SOURCE_SUFFIXES),
+        )
+
+    sys.path_hooks.insert(0, _source_only_path_hook)
+    for cached_path in list(sys.path_importer_cache):
+        try:
+            Path(cached_path).resolve(strict=True).relative_to(source_root)
+        except (OSError, ValueError):
+            continue
+        sys.path_importer_cache.pop(cached_path, None)
+    return _source_only_path_hook
 
 
 def _source_verify_cache_path(config):
@@ -78,8 +112,10 @@ def _write_verify_cache(cache_path, payload):
         return
 
 
-def _scan_package_py_files(source, packages):
+def _scan_package_files(source, packages):
+    """Return ``(py_files_set, has_bytecode)`` or ``None`` on symlink/filesystem error."""
     found = set()
+    has_bytecode = False
     for package in packages:
         pkg_root = source / package
         try:
@@ -102,9 +138,15 @@ def _scan_package_py_files(source, packages):
                             if not entry.is_file(follow_symlinks=False):
                                 return None
                             found.add(rel)
+                        elif entry.name.endswith(_BYTECODE_SUFFIXES):
+                            has_bytecode = True
             except OSError:
                 return None
-    return found
+    return found, has_bytecode
+
+
+def _is_sha256_hex(value):
+    return isinstance(value, str) and len(value) == 64 and all(ch in '0123456789abcdef' for ch in value)
 
 
 def _try_verify_source_cache(source_raw, source, archive_raw, archive, manifest, cache_path):
@@ -159,8 +201,9 @@ def _try_verify_source_cache(source_raw, source, archive_raw, archive, manifest,
             return False
         if rel != 'pyproject.toml' and (not rel_path.parts or rel_path.parts[0] not in packages_set):
             return False
-        if (not isinstance(meta, list) or len(meta) != 2
-                or type(meta[0]) is not int or type(meta[1]) is not int or meta[1] < 0):
+        if (not isinstance(meta, list) or len(meta) != 3
+                or type(meta[0]) is not int or type(meta[1]) is not int or meta[1] < 0
+                or not _is_sha256_hex(meta[2])):
             return False
         for parent in rel_path.parents:
             if parent == Path('.'):
@@ -173,13 +216,11 @@ def _try_verify_source_cache(source_raw, source, archive_raw, archive, manifest,
                 except OSError:
                     return False
                 checked_dirs.add(parent_key)
-        try:
-            info = (source / rel_path).lstat()
-        except OSError:
-            return False
-        if (not stat.S_ISREG(info.st_mode)
+        content, info = _read_regular_file_with_stat(source / rel_path)
+        if (content is None or info is None
                 or info.st_mtime_ns != meta[0]
-                or info.st_size != meta[1]):
+                or info.st_size != meta[1]
+                or hashlib.sha256(content).hexdigest() != meta[2]):
             return False
         if rel_path.parts[0] in packages_set and rel_path.suffix == '.py':
             expected_py_files.add(rel)
@@ -190,8 +231,12 @@ def _try_verify_source_cache(source_raw, source, archive_raw, archive, manifest,
     pyproject = source / 'pyproject.toml'
     if (pyproject.exists() or pyproject.is_symlink()) and 'pyproject.toml' not in files:
         return False
-    found_py_files = _scan_package_py_files(source, packages)
-    if found_py_files is None or found_py_files != expected_py_files:
+    scanned = _scan_package_files(source, packages)
+    if scanned is None:
+        return False
+    found_py_files, has_bytecode = scanned
+    # Reject fast-path cache whenever unverified .pyc/.pyo bytecode exists under source.
+    if has_bytecode or found_py_files != expected_py_files:
         return False
     return True
 
@@ -262,7 +307,7 @@ def verify_source(config):
                     content, info = _read_regular_file_with_stat(target)
                     if extracted is None or content is None or content != extracted.read():
                         raise ValueError('official package metadata differs from pinned archive')
-                    verified_files['pyproject.toml'] = [info.st_mtime_ns, info.st_size]
+                    verified_files['pyproject.toml'] = [info.st_mtime_ns, info.st_size, hashlib.sha256(content).hexdigest()]
                 if not parts or parts[0] not in manifest['packages'] or not member.isfile(): continue
                 relative = Path(*parts)
                 names.add(relative)
@@ -270,12 +315,15 @@ def verify_source(config):
                 content, info = (None, None) if not _verify_real_parents(source, relative, verified_dirs) else _read_regular_file_with_stat(target)
                 if content is None or content != bundle.extractfile(member).read():
                     raise ValueError('official package differs from pinned archive: ' + str(relative))
-                verified_files[relative.as_posix()] = [info.st_mtime_ns, info.st_size]
+                verified_files[relative.as_posix()] = [info.st_mtime_ns, info.st_size, hashlib.sha256(content).hexdigest()]
     for package in manifest['packages']:
         for target in (source / package).rglob('*.py'):
             if target.relative_to(source) not in names:
                 raise ValueError('unexpected official Python module')
+    scanned = _scan_package_files(source, manifest['packages'])
+    has_bytecode = scanned is None or scanned[1]
     if (cache_path is not None
+            and not has_bytecode
             and not archive_raw.is_symlink()
             and not source_raw.is_symlink()
             and stat.S_ISREG(archive_info.st_mode)):
@@ -336,6 +384,8 @@ def main():
         profile, generation_environment, generation_digest = runtime_generation(config)
     environment.update(generation_environment)
     os.environ.update(environment)
+    sys.dont_write_bytecode = True
+    _install_source_only_import_hook(source)
     sys.path.insert(0, str(source))
     # Upstream's kuzu package is its Ladybug compatibility shim. Reuse the
     # installed Python ABI-matched native extension; never install/download one.
@@ -379,21 +429,12 @@ def main():
             from external_capture_store import ExternalCaptureStore
             capture_store = ExternalCaptureStore(state_dir / 'capture-receipts.sqlite3')
             stack.callback(capture_store.close)
-            drift_observer = None
-            if config.get('project_control'):
-                from session_drift import RegistryProjectIndex, SessionDriftStore
-                drift_store = SessionDriftStore(state_dir / 'session-drift.sqlite3')
-                stack.callback(drift_store.close)
-                drift_projects = RegistryProjectIndex(config['project_control']['registry_file'])
-
-                def drift_observer(bound_dataset_id, session_id, entry, message_id):
-                    drift_store.observe_trace(
-                        bound_dataset_id, session_id, entry, drift_projects.alias_index(),
-                        message_id=message_id,
-                    )
-
+            # session-drift.sqlite3 is owned exclusively by project_control_server
+            # (session_drift.attach_session_drift + cognee_extension_gateway) so
+            # only one process holds a write connection and PUT /capture/entries
+            # never double-observes traces across gateway -> official hops.
             from capture_receipts import install_capture_routes
-            install_capture_routes(app, receipt_store=capture_store, drift_observer=drift_observer)
+            install_capture_routes(app, receipt_store=capture_store)
             from provenance_store import ProvenanceStore, install_provenance_middleware
             provenance_store = ProvenanceStore(state_dir / 'lesson-provenance.sqlite3')
             stack.callback(provenance_store.close)
@@ -414,7 +455,7 @@ def main():
             if config.get('generation_applied_file'):
                 if setup_only:
                     raise ValueError('unconfigured service cannot publish a generation-applied receipt')
-                from project_control import private_write
+                from _runtime_common import private_write
                 from cognee.modules.cognify.config import get_cognify_config
                 private_write(config['generation_applied_file'], json.dumps({
                     'pid': os.getpid(), 'digest': generation_digest, 'reference': config.get('generation_reference'),

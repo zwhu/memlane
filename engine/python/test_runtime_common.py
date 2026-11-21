@@ -9,11 +9,21 @@ from _runtime_common import (
     CachedSecretReader,
     LEGACY_MANAGED_PLUGIN_MANIFESTS,
     bytes_sha256,
+    decode_node_set,
     file_sha256,
+    id_variants,
+    is_derived_material,
+    is_knowledge_doc,
+    iso_text,
     match_managed_plugin_manifest,
+    parse_json,
     private_write,
     read_secret,
     replace_exact,
+    sql_in_clause,
+    uuid_hex,
+    uuid_text,
+    verify_sqlite_schema,
 )
 from project_policy import PolicyError
 
@@ -88,6 +98,36 @@ class RuntimeCommonTests(unittest.TestCase):
         self.assertEqual(match_managed_plugin_manifest(engine_dir, legacy), (legacy, False))
         with self.assertRaises(PolicyError):
             match_managed_plugin_manifest(engine_dir, {'files': {'unexpected': 'deadbeef'}})
+        self.assertIn('managed-project-plugin-pre-cursor-policy.json', LEGACY_MANAGED_PLUGIN_MANIFESTS)
+
+    def test_shared_uuid_sqlite_and_doc_classification_helpers(self):
+        import sqlite3
+        import uuid
+
+        u = str(uuid.uuid4())
+        h = uuid.UUID(u).hex
+        self.assertEqual(uuid_text(h), u)
+        self.assertEqual(uuid_hex(u), h)
+        self.assertEqual(id_variants(u), (u, h))
+        self.assertEqual(sql_in_clause((u,)), ('= ?', (u,)))
+        self.assertEqual(sql_in_clause((u, h)), ('IN (?,?)', (u, h)))
+        self.assertEqual(iso_text('2026-11-21 10:00:00'), '2026-11-21T10:00:00')
+        self.assertEqual(decode_node_set(json.dumps(json.dumps(['session_learnings']))), ['session_learnings'])
+        self.assertTrue(is_knowledge_doc({'node_set': ['session_learnings']}))
+        self.assertTrue(is_knowledge_doc({'externalMetadata': {'common_category': 'prefs'}}))
+        self.assertFalse(is_knowledge_doc({'externalMetadata': {'node_set': ['project_docs']}}))
+        self.assertTrue(is_derived_material({'node_set': ['agent_trace_feedbacks']}))
+        self.assertTrue(is_derived_material({'externalMetadata': {'node_set': ['user_sessions_from_cache']}}))
+        self.assertFalse(is_derived_material({'externalMetadata': {}}))
+
+        con = sqlite3.connect(':memory:')
+        con.execute('CREATE TABLE sample (a TEXT, b INTEGER)')
+        verify_sqlite_schema(con, {'sample': {'a', 'b'}})
+        with self.assertRaises(sqlite3.OperationalError):
+            verify_sqlite_schema(con, {'sample': {'a', 'missing_col'}})
+        with self.assertRaises(sqlite3.OperationalError):
+            verify_sqlite_schema(con, {'missing_table': {'a'}})
+        con.close()
 
 
 if __name__ == '__main__':

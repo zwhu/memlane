@@ -324,3 +324,49 @@ func TestTrayIconAndFlyoutTreatInProgressStateAsHealthyLightAndDark(t *testing.T
 		})
 	}
 }
+
+func TestTrayFlyoutControlAndChannelLatencies(t *testing.T) {
+	a := settingsFixture()
+	a.Config.ConfigFile = filepath.Join(t.TempDir(), "runtime.json")
+	a.initDesktopPreferences()
+	a.Config.CompletionURL = "http://127.0.0.1:18173"
+	a.service = "已连接"
+	a.completion = "端点已连接（登录状态以实际请求为准）"
+	a.monitor.State = "ready"
+	a.monitor.HasLatency = true
+	a.monitor.LastLatencyMs = 9.0
+	a.monitor.ControlChecked = true
+	a.monitor.ControlReachable = true
+	a.monitor.HasControlLatency = true
+	a.monitor.ControlLatencyMs = 18.0
+	a.monitor.HasCompletionLatency = true
+	a.monitor.CompletionLatencyMs = 3.0
+
+	recentGenMs := 41494.0
+	a.monitor.Snapshot = &ServiceMonitorSnapshot{
+		State: "ready",
+		Summary: &MonitorBusinessSummary{
+			ProjectsCount:      9,
+			RecentProcessingMs: &recentGenMs,
+		},
+	}
+
+	ctrlDot, ctrlMetric, _ := a.trayControlStatus()
+	if ctrlDot != "ok" || ctrlMetric != "已连接 · 18 ms" {
+		t.Fatalf("trayControlStatus() = (%q, %q), want (%q, %q)", ctrlDot, ctrlMetric, "ok", "已连接 · 18 ms")
+	}
+	chDot, chMetric, _ := a.trayChannelStatus()
+	if chDot != "ok" || chMetric != "已连接 · 3 ms" {
+		t.Fatalf("trayChannelStatus() = (%q, %q), want (%q, %q)", chDot, chMetric, "ok", "已连接 · 3 ms")
+	}
+
+	tt := ui.NewTester(a.TrayFlyoutView, 300, 480)
+	for _, want := range []string{"已连接 · 9 ms", "已连接 · 18 ms", "已连接 · 3 ms"} {
+		if !tt.HasText(want) {
+			t.Fatalf("tray flyout missing %q; texts=%v", want, tt.Texts())
+		}
+	}
+	if tt.HasText("41494") {
+		t.Fatalf("tray flyout must not leak RecentProcessingMs onto gateway row: %v", tt.Texts())
+	}
+}

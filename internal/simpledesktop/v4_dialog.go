@@ -9,7 +9,7 @@ const (
 
 // v4DialogOptions configures a V4 modal dialog built on top of ui.Modal.
 // Confirm/delete dialogs use v4DialogSmall (480); forms/details use v4DialogLarge (640).
-// Danger dialogs render a solid danger primary button and intentionally do NOT bind Enter.
+// Danger dialogs render a solid danger primary button and explicitly consume Enter as a no-op.
 type v4DialogOptions struct {
 	Key             string
 	Title           string
@@ -175,7 +175,9 @@ func v4Dialog(c *ui.Context, open *bool, opts v4DialogOptions) ui.Element {
 		} else if opts.OnCancel != nil {
 			opts.OnCancel()
 		}
-	} else if !opts.Danger && !opts.HideConfirm && !opts.ConfirmDisabled && opts.OnConfirm != nil && modal.Shortcut(0, ui.KeyEnter) {
+	} else if opts.Danger {
+		_ = modal.Shortcut(0, ui.KeyEnter)
+	} else if !opts.HideConfirm && !opts.ConfirmDisabled && opts.OnConfirm != nil && modal.Shortcut(0, ui.KeyEnter) {
 		handleConfirm()
 	}
 

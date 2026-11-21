@@ -32,6 +32,33 @@ class StartupTests(unittest.TestCase):
         self.assertEqual(attempts,['candidate'])
         self.assertEqual(self.store.state['active'],self.reference)
 
+    def test_connected_non_codex_agent_passes_startup_and_restart_gate(self):
+        from agent_bridge_runtime import require_bridge_startup
+        pi_row = self.store.put('pi-agent', {'mode': 'agent_bridge', 'bridge_kind': 'pi',
+            'bridge_provider': 'deepseek', 'model': 'pi-native'}, self.store.state['revision'], 'save-pi')
+        pi_ref = {'id': pi_row['id'], 'revision': pi_row['revision']}
+        self.store.connected_bridge_check = lambda profile: None
+        self.store.select_next(pi_ref, self.store.state['revision'], 'select-pi')
+        home = Path(self.temp.name) / 'pi-home'
+        home.mkdir(mode=0o700)
+        (home / 'settings.json').write_text('{"defaultProvider":"deepseek","defaultModel":"pi-native"}')
+        (home / 'auth.json').write_text('{}'); (home / 'auth.json').chmod(0o600)
+        exe = Path(self.temp.name) / 'fake-pi'
+        exe.write_text('#!/bin/sh\nexit 0\n'); exe.chmod(0o700)
+        runtime = {'agent_hosts': {'pi': {'executable': str(exe), 'profile': str(home)}}}
+        launched = []
+        def launch(ref, digest):
+            selected = require_bridge_startup(self.store, runtime, self.store.resolve(ref))
+            launched.append((ref['id'], selected['kind']))
+            return 'ok'
+        self.assertEqual(start_generation(self.store, launch, lambda: True), 'ok')
+        self.assertEqual(launched, [('pi-agent', 'pi')])
+        self.assertEqual(self.store.state['active'], pi_ref)
+        # Subsequent restart with active=pi-agent also succeeds.
+        launched.clear()
+        self.assertEqual(start_generation(self.store, launch, lambda: True), 'ok')
+        self.assertEqual(launched, [('pi-agent', 'pi')])
+
     def test_active_commits_only_after_successful_health_and_digest_callback(self):
         def launch(ref, digest):
             self.assertEqual(self.store.state['active']['id'], 'existing-codex')

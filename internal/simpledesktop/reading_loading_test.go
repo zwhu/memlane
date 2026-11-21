@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -207,4 +209,522 @@ func TestReadingTimeoutKeepsConfirmedBody(t *testing.T) {
 	if s.Selected == nil || s.Selected.Body != i.Body || !s.Selected.BodyLoaded || s.Error == "" || len(s.Items) != 1 {
 		t.Fatal("timeout erased valid body or claimed success")
 	}
+}
+
+func TestRevocationAndIdentityChangeClearAllMemoryCopiesGraphAndProfile(t *testing.T) {
+	dir := t.TempDir()
+	tokenFile := filepath.Join(dir, "official.token")
+	if err := os.WriteFile(tokenFile, []byte("initial-secret-token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	makePopulatedApp := func() (*App, *pane, Item, Item) {
+		a := New(Config{
+			ServiceURL: "http://127.0.0.1:61255",
+			TokenFile:  tokenFile,
+			Projects:   []Project{{ID: "p1", Name: "memlane", Dataset: "ds1"}, {ID: "p2", Name: "other", Dataset: "ds2"}},
+		}, nil)
+		a.Update = func(func()) {}
+		a.syncReadingIdentity()
+
+		parentSess := Session{ID: "parent-sess", Dataset: "ds1", User: "u1"}
+		childSess := Session{ID: "child-sess", Dataset: "ds1", User: "u1", IsSubagent: true, ParentSessionID: "parent-sess"}
+		childItem := Item{
+			ID: "child-sess", Dataset: "ds1", Kind: "会话", Title: "child",
+			Body: "secret child body", BodyLoaded: true, Preview: "child preview",
+			Session: &childSess,
+			Detail:  &SessionDetail{Session: childSess, Count: 1, QAs: []QA{{ID: "q-c", Question: "cq", Answer: "ca"}}},
+		}
+		parentItem := Item{
+			ID: "parent-sess", Dataset: "ds1", Kind: "会话", Title: "parent",
+			Body: "secret parent body", BodyLoaded: true, Preview: "parent preview",
+			Session:   &parentSess,
+			Detail:    &SessionDetail{Session: parentSess, Count: 1, QAs: []QA{{ID: "q-p", Question: "pq", Answer: "pa"}}},
+			Subagents: []Item{childItem},
+		}
+		otherDoc := Document{ID: "doc-ds2", Dataset: "ds2", Name: "Keep.md"}
+		otherItem := Item{
+			ID: "doc-ds2", Dataset: "ds2", Kind: "知识", Title: "Keep.md",
+			Body: "ds2 body", BodyLoaded: true, Preview: "ds2 preview",
+			Document: &otherDoc,
+		}
+
+		a.page = "知识"
+		s := a.state()
+		parentCopy := parentItem
+		childCopy := childItem
+		s.Selected = &childCopy
+		s.SourcePage = &SessionHistoryPage{SessionDetail: *childItem.Detail, Paging: true}
+		s.SubagentParent = &parentCopy
+		s.SubagentParentPage = &SessionHistoryPage{SessionDetail: *parentItem.Detail, Paging: true}
+		homeAnchor := parentItem
+		s.HomeAnchor = &homeAnchor
+		s.Items = []Item{parentItem, otherItem}
+		s.RawCatalog = []Item{parentItem}
+		s.Knowledge.Catalog = []Item{parentItem, otherItem}
+		s.Knowledge.Measurements = map[string]knowledgeCardMeasurement{
+			parentItem.key(): {Body: "secret card body"},
+			otherItem.key():  {Body: "ds2 card body"},
+		}
+
+		anchor := parentItem
+		a.searchAnchor = &anchor
+		a.searchPane = s
+		a.searchOrigin = &readingLocation{Page: "总览"}
+		a.searchUI.Rows = []Item{parentItem, otherItem}
+
+		// Overview snapshot contains both a nil-Document row (must not panic!) and a loaded body row.
+		a.overviewState.Snapshot.Knowledge = []Item{
+			{ID: parentItem.ID, Dataset: "ds1", Kind: "会话", Title: "no-doc-row", Body: "secret overview body", BodyLoaded: true, Preview: "ov preview", Document: nil},
+			otherItem,
+		}
+
+		// Graph canvas + selection.
+		a.graph = &GraphHost{
+			project: "p1",
+			dataset: "ds1",
+			epoch:   3,
+			frame:   map[string]any{"dataset": "ds1"},
+			nodes:   map[string]json.RawMessage{"n1": json.RawMessage(`{"id":"n1","dataset":"ds1"}`)},
+		}
+		a.graphSelection = `{"id":"n1","dataset":"ds1"}`
+		a.graphLoading = true
+
+		// User profile cached body.
+		a.userProfiles = userProfilesState{
+			Loaded:         true,
+			Next:           time.Now().Add(time.Hour),
+			Selected:       "codex",
+			Body:           "# Secret Profile Body",
+			BodyKey:        "codex/ml-user-profiles/prof-1",
+			ReadAt:         time.Now(),
+			ReadGeneration: 5,
+			Directory: userProfilesDirectory{
+				Profiles: []userProfile{{
+					ID: "codex", Kind: "codex", Name: "Codex", Status: "ready",
+					Document: &userProfileDocument{Dataset: "ml-user-profiles", ID: "prof-1"},
+				}},
+			},
+		}
+		return a, s, parentItem, otherItem
+	}
+
+	// 1. Object-level revocation (unavailableReadingItem) clears parent subagent cache, item Detail/Preview/Subagents,
+	//    HomeAnchor, searchAnchor, and overview body WITHOUT panicking on nil Document.
+	a, s, parentItem, _ := makePopulatedApp()
+	a.unavailableReadingItem(parentItem)
+	if s.SubagentParent != nil || s.SubagentParentPage != nil {
+		t.Fatal("unavailableReadingItem retained SubagentParent or SubagentParentPage")
+	}
+	if s.HomeAnchor != nil || a.searchAnchor != nil {
+		t.Fatal("unavailableReadingItem retained HomeAnchor or searchAnchor")
+	}
+	if s.Items[0].Body != "" || s.Items[0].BodyLoaded || s.Items[0].Detail != nil || s.Items[0].Preview != "" || len(s.Items[0].Subagents) != 0 {
+		t.Fatalf("unavailableReadingItem retained item content copies: %+v", s.Items[0])
+	}
+	if a.overviewState.Snapshot.Knowledge[0].Body != "" || a.overviewState.Snapshot.Knowledge[0].BodyLoaded {
+		t.Fatalf("unavailableReadingItem retained overview knowledge body: %+v", a.overviewState.Snapshot.Knowledge[0])
+	}
+
+	// 2. Dataset-level InvalidateReading("ds1") clears all ds1 state & graph while preserving ds2.
+	a, s, _, _ = makePopulatedApp()
+	a.InvalidateReading("ds1")
+	if s.SubagentParent != nil || s.SubagentParentPage != nil || s.HomeAnchor != nil || a.searchAnchor != nil {
+		t.Fatal("InvalidateReading(ds1) retained parent/anchor pointers")
+	}
+	if s.Items[0].Detail != nil || s.Items[0].Preview != "" || len(s.Items[0].Subagents) != 0 || s.Items[0].Body != "" {
+		t.Fatalf("InvalidateReading(ds1) retained ds1 item copies: %+v", s.Items[0])
+	}
+	if s.Items[1].Body != "ds2 body" || !s.Items[1].BodyLoaded {
+		t.Fatal("InvalidateReading(ds1) unexpectedly cleared unrelated ds2 item")
+	}
+	if len(s.Knowledge.Catalog) != 1 || s.Knowledge.Catalog[0].Dataset != "ds2" {
+		t.Fatalf("InvalidateReading(ds1) did not strip ds1 from Knowledge.Catalog: %+v", s.Knowledge.Catalog)
+	}
+	if a.graph.frame != nil || a.graph.nodes != nil || a.graph.epoch <= 3 || a.graphSelection != "" || a.graphLoading {
+		t.Fatalf("InvalidateReading(ds1) did not clear graph canvas/selection: frame=%v nodes=%v epoch=%d sel=%q", a.graph.frame, a.graph.nodes, a.graph.epoch, a.graphSelection)
+	}
+	if a.overviewState.Snapshot.Knowledge[0].Body != "" || a.overviewState.Snapshot.Knowledge[0].BodyLoaded {
+		t.Fatal("InvalidateReading(ds1) retained overview body")
+	}
+
+	// 3. Global revocation / identity change via SetReadingPolicyRevision clears EVERYTHING including userProfiles.Body/BodyKey
+	//    and immediately disables the "复制正文" copy button.
+	a, s, _, _ = makePopulatedApp()
+	prevGen := a.userProfiles.ReadGeneration
+	a.SetReadingPolicyRevision("revoked-v2")
+	if a.userProfiles.Body != "" || a.userProfiles.BodyKey != "" || a.userProfiles.ReadGeneration <= prevGen {
+		t.Fatalf("identity change retained user profile body/key: body=%q key=%q gen=%d", a.userProfiles.Body, a.userProfiles.BodyKey, a.userProfiles.ReadGeneration)
+	}
+	if a.graph.frame != nil || a.graph.nodes != nil || a.graphSelection != "" {
+		t.Fatal("identity change retained graph canvas or selection")
+	}
+	if s.SubagentParent != nil || s.SubagentParentPage != nil || s.HomeAnchor != nil || len(s.Knowledge.Catalog) != 0 || a.searchAnchor != nil {
+		t.Fatal("identity change retained pane/search/catalog state")
+	}
+	for n, row := range s.Items {
+		if row.Body != "" || row.BodyLoaded || row.Detail != nil || row.Preview != "" || len(row.Subagents) != 0 {
+			t.Fatalf("identity change retained item %d content: %+v", n, row)
+		}
+	}
+	// Verify "复制正文" button on 用户画像 page is disabled after revocation.
+	a.page = "用户画像"
+	tt := ui.NewTester(a.View, 1200, 820)
+	_ = tt.Click("复制正文")
+	if tt.Clipboard() != "" {
+		t.Fatalf("revoked user profile body was still copyable: %q", tt.Clipboard())
+	}
+}
+
+func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
+	bootstrapResp := overviewBootstrapResponse{
+		Documents: []Document{{
+			ID:       "doc-secret",
+			Dataset:  "ds1",
+			Name:     "",
+			Created:  "2026-11-21T10:00:00Z",
+			Metadata: map[string]any{"node_set": []any{"session_learnings"}},
+		}},
+		Previews: map[string]string{
+			"ds1/doc-secret": "SECRET_REVOKED_PREVIEW: confidential memory preview content",
+		},
+		PipelineRuns: []activityRow{{
+			ID:        "run-1",
+			Run:       "run-1",
+			Dataset:   "ds1",
+			Operation: "improve",
+			Outcome:   "completed",
+			Created:   "2026-11-21T10:05:00Z",
+		}},
+		RecallStartedAt: "2026-11-21T00:00:00Z",
+		RecallCounts:    map[string]*KnowledgeRecallStats{},
+	}
+
+	// 1. In-flight /v1/overview/bootstrap is cancelled immediately on InvalidateReading("ds1").
+	t.Run("bootstrap_cancelled_in_flight", func(t *testing.T) {
+		started := make(chan struct{}, 1)
+		cancelled := make(chan struct{}, 1)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/v1/overview/bootstrap") {
+				select {
+				case started <- struct{}{}:
+				default:
+				}
+				<-r.Context().Done()
+				select {
+				case cancelled <- struct{}{}:
+				default:
+				}
+				return
+			}
+			w.WriteHeader(404)
+		}))
+		defer server.Close()
+
+		dir := t.TempDir()
+		token := filepath.Join(dir, "control.token")
+		if err := os.WriteFile(token, []byte(strings.Repeat("m", 40)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		a := New(Config{
+			ServiceURL:     server.URL,
+			Projects:       []Project{{ID: "p1", Name: "P1", Dataset: "ds1"}},
+			ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token},
+		}, nil)
+		a.access.Loaded = true
+		updates := make(chan func(), 20)
+		a.Update = func(fn func()) { updates <- fn }
+
+		a.loadOverview()
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("bootstrap request never started")
+		}
+		genBefore := a.overviewState.generation
+		actGenBefore := a.overviewState.activityGeneration
+
+		a.InvalidateReading("ds1")
+
+		select {
+		case <-cancelled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("InvalidateReading did not cancel in-flight bootstrap HTTP context")
+		}
+		if a.overviewState.generation <= genBefore || a.overviewState.activityGeneration <= actGenBefore {
+			t.Fatalf("InvalidateReading did not bump overview generations: gen %d->%d act %d->%d",
+				genBefore, a.overviewState.generation, actGenBefore, a.overviewState.activityGeneration)
+		}
+		if a.overviewState.Loading || a.overviewState.ActivityLoading {
+			t.Fatal("InvalidateReading left overview loading flags true")
+		}
+	})
+
+	// 2. Already-queued /v1/overview/bootstrap callback is dropped after identity/policy revocation.
+	t.Run("bootstrap_queued_callback_dropped_after_policy_revision", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/v1/overview/bootstrap") {
+				_ = json.NewEncoder(w).Encode(bootstrapResp)
+				return
+			}
+			w.WriteHeader(404)
+		}))
+		defer server.Close()
+
+		dir := t.TempDir()
+		token := filepath.Join(dir, "control.token")
+		if err := os.WriteFile(token, []byte(strings.Repeat("m", 40)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		a := New(Config{
+			ServiceURL:     server.URL,
+			Projects:       []Project{{ID: "p1", Name: "P1", Dataset: "ds1"}},
+			ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token},
+		}, nil)
+		a.access.Loaded = true
+		updates := make(chan func(), 20)
+		a.Update = func(fn func()) { updates <- fn }
+
+		a.loadOverview()
+		var queued func()
+		select {
+		case queued = <-updates:
+		case <-time.After(2 * time.Second):
+			t.Fatal("bootstrap callback not queued")
+		}
+
+		// Revocation occurs before the queued UI callback runs.
+		a.SetReadingPolicyRevision("revoked-v2")
+		queued()
+
+		if a.overviewState.Loaded || len(a.overviewState.Snapshot.Knowledge) != 0 || len(a.overviewState.Events) != 0 {
+			t.Fatalf("stale bootstrap callback repopulated overview after revocation: loaded=%v knowledge=%d events=%d",
+				a.overviewState.Loaded, len(a.overviewState.Snapshot.Knowledge), len(a.overviewState.Events))
+		}
+	})
+
+	// 3. Legacy overview + activity queued callbacks are dropped after dataset invalidation.
+	t.Run("legacy_and_activity_callbacks_dropped_after_invalidation", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case strings.Contains(r.URL.Path, "/data"):
+				_ = json.NewEncoder(w).Encode(bootstrapResp.Documents)
+			case strings.HasSuffix(r.URL.Path, "/raw"):
+				_, _ = fmt.Fprint(w, "SECRET_REVOKED_PREVIEW: legacy body")
+			case strings.Contains(r.URL.Path, "/sessions"):
+				_ = json.NewEncoder(w).Encode(map[string]any{"sessions": []Session{}, "has_more": false})
+			case strings.Contains(r.URL.Path, "/pipeline-runs"):
+				_ = json.NewEncoder(w).Encode(bootstrapResp.PipelineRuns)
+			default:
+				_ = json.NewEncoder(w).Encode([]any{})
+			}
+		}))
+		defer server.Close()
+
+		a := New(Config{
+			ServiceURL: server.URL,
+			Projects:   []Project{{ID: "p1", Name: "P1", Dataset: "ds1"}},
+		}, nil)
+		updates := make(chan func(), 20)
+		a.Update = func(fn func()) { updates <- fn }
+
+		a.loadOverview()
+		var cb1, cb2 func()
+		select {
+		case cb1 = <-updates:
+		case <-time.After(2 * time.Second):
+			t.Fatal("first legacy overview callback not queued")
+		}
+		select {
+		case cb2 = <-updates:
+		case <-time.After(2 * time.Second):
+			t.Fatal("second legacy overview callback not queued")
+		}
+
+		a.InvalidateReading("ds1")
+		cb1()
+		cb2()
+
+		if a.overviewState.Loaded || len(a.overviewState.Snapshot.Knowledge) != 0 || len(a.overviewState.Events) != 0 {
+			t.Fatalf("stale legacy/activity callbacks repopulated overview after InvalidateReading: loaded=%v knowledge=%d events=%d",
+				a.overviewState.Loaded, len(a.overviewState.Snapshot.Knowledge), len(a.overviewState.Events))
+		}
+	})
+
+	// 4. Token rotation on disk during in-flight overview bootstrap is rejected by callback identity guard.
+	t.Run("token_rotation_on_disk_drops_in_flight_overview", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/v1/overview/bootstrap") {
+				_ = json.NewEncoder(w).Encode(bootstrapResp)
+				return
+			}
+			w.WriteHeader(404)
+		}))
+		defer server.Close()
+
+		dir := t.TempDir()
+		controlToken := filepath.Join(dir, "control.token")
+		officialToken := filepath.Join(dir, "official.key")
+		if err := os.WriteFile(controlToken, []byte(strings.Repeat("m", 40)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(officialToken, []byte("token-v1-secret"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		a := New(Config{
+			ServiceURL:     server.URL,
+			TokenFile:      officialToken,
+			Projects:       []Project{{ID: "p1", Name: "P1", Dataset: "ds1"}},
+			ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: controlToken},
+		}, nil)
+		a.access.Loaded = true
+		updates := make(chan func(), 20)
+		a.Update = func(fn func()) { updates <- fn }
+
+		a.loadOverview()
+		var queued func()
+		select {
+		case queued = <-updates:
+		case <-time.After(2 * time.Second):
+			t.Fatal("bootstrap callback not queued")
+		}
+
+		// Rotate credential file on disk (different size + mtime) without calling InvalidateReading manually.
+		if err := os.WriteFile(officialToken, []byte("token-v2-rotated-credential"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		future := time.Now().Add(2 * time.Second)
+		_ = os.Chtimes(officialToken, future, future)
+
+		queued()
+
+		if a.overviewState.Loaded || len(a.overviewState.Snapshot.Knowledge) != 0 || len(a.overviewState.Events) != 0 {
+			t.Fatalf("overview callback committed after on-disk token rotation: loaded=%v knowledge=%d events=%d",
+				a.overviewState.Loaded, len(a.overviewState.Snapshot.Knowledge), len(a.overviewState.Events))
+		}
+	})
+
+	// 5. Natural DeadlineExceeded clears Loading/ActivityLoading and reports timeout instead of locking periodic refresh.
+	t.Run("deadline_exceeded_clears_loading_and_reports_error", func(t *testing.T) {
+		origLoad, origAct := overviewLoadTimeout, overviewActivityTimeout
+		overviewLoadTimeout = 40 * time.Millisecond
+		overviewActivityTimeout = 40 * time.Millisecond
+		defer func() {
+			overviewLoadTimeout = origLoad
+			overviewActivityTimeout = origAct
+		}()
+
+		unblock := make(chan struct{})
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case <-r.Context().Done():
+			case <-unblock:
+			}
+		}))
+		defer func() { close(unblock); server.Close() }()
+
+		// 5a. Fast-path /v1/overview/bootstrap timeout clears both Loading and ActivityLoading.
+		dir := t.TempDir()
+		token := filepath.Join(dir, "control.token")
+		if err := os.WriteFile(token, []byte(strings.Repeat("m", 40)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		a := New(Config{
+			ServiceURL:     server.URL,
+			Projects:       []Project{{ID: "p1", Name: "P1", Dataset: "ds1"}},
+			ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token},
+		}, nil)
+		a.access.Loaded = true
+		updates := make(chan func(), 20)
+		a.Update = func(fn func()) { updates <- fn }
+		a.loadOverview()
+		drainReading(t, updates, func() bool { return !a.overviewState.Loading && !a.overviewState.ActivityLoading })
+		if a.overviewState.Error == "" || a.overviewState.ActivityError == "" {
+			t.Fatalf("bootstrap timeout cleared loading without recording error: err=%q actErr=%q",
+				a.overviewState.Error, a.overviewState.ActivityError)
+		}
+
+		// 5b. Legacy overview + activity timeouts both clear loading and record errors.
+		b := New(Config{
+			ServiceURL: server.URL,
+			Projects:   []Project{{ID: "p1", Name: "P1", Dataset: "ds1"}},
+		}, nil)
+		updatesB := make(chan func(), 20)
+		b.Update = func(fn func()) { updatesB <- fn }
+		b.loadOverview()
+		drainReading(t, updatesB, func() bool { return !b.overviewState.Loading && !b.overviewState.ActivityLoading })
+		if b.overviewState.Error == "" || b.overviewState.ActivityError == "" {
+			t.Fatalf("legacy/activity timeout cleared loading without recording error: err=%q actErr=%q",
+				b.overviewState.Error, b.overviewState.ActivityError)
+		}
+	})
+
+	// 6. HTTP 401 withdraws overview data while preserving scope and error so subsequent App.View frames do not loop.
+	t.Run("http_401_preserves_scope_and_prevents_per_frame_storm", func(t *testing.T) {
+		var calls atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer server.Close()
+
+		a := New(Config{
+			ServiceURL: server.URL,
+			Projects:   []Project{{ID: "p1", Name: "P1", Dataset: "ds1"}},
+		}, nil)
+		a.page = "总览"
+		a.overviewState.scope = a.overviewScope()
+		a.overviewState.Loaded = true
+		a.overviewState.Snapshot.Knowledge = []Item{{ID: "old", Dataset: "ds1", Body: "secret", BodyLoaded: true}}
+		a.overviewState.Events = []overviewEvent{{Key: "ev-old", Record: activityRow{Dataset: "ds1"}}}
+		updates := make(chan func(), 20)
+		a.Update = func(fn func()) { updates <- fn }
+
+		a.loadOverview()
+		drainReading(t, updates, func() bool { return !a.overviewState.Loading && !a.overviewState.ActivityLoading })
+
+		if a.overviewState.scope != a.overviewScope() {
+			t.Fatalf("401 cleared overview scope: got %q want %q", a.overviewState.scope, a.overviewScope())
+		}
+		if a.overviewState.Error == "" && a.overviewState.ActivityError == "" {
+			t.Fatal("401 did not preserve visible error state")
+		}
+		if (len(a.overviewState.Snapshot.Knowledge) > 0 && a.overviewState.Snapshot.Knowledge[0].Body != "") || len(a.overviewState.Events) != 0 {
+			t.Fatal("401 failed to withdraw overview bodies/events")
+		}
+		genAfter401 := a.overviewState.generation
+
+		// Render multiple frames: scope matches so App.View must NOT re-trigger loadOverview().
+		tt := ui.NewTester(a.View, 1200, 820)
+		for i := 0; i < 4; i++ {
+			tt.Frame()
+		}
+		if a.overviewState.generation != genAfter401 || a.overviewState.Loading || a.overviewState.ActivityLoading {
+			t.Fatalf("401 triggered per-frame request storm: gen %d -> %d loading=%v/%v calls=%d",
+				genAfter401, a.overviewState.generation, a.overviewState.Loading, a.overviewState.ActivityLoading, calls.Load())
+		}
+	})
+
+	// 7. Single-dataset InvalidateReading filters revoked dataset events (record/failure/recall) and clears matching expanded detail.
+	t.Run("dataset_invalidation_filters_overview_events", func(t *testing.T) {
+		a := New(Config{ServiceURL: "http://127.0.0.1:60000"}, nil)
+		a.overviewState.Events = []overviewEvent{
+			{Key: "ev-ds1-rec", Record: activityRow{Dataset: "ds1"}},
+			{Key: "ev-ds1-fail", Record: activityRow{Dataset: ""}, Failures: []activityRow{{Dataset: "ds1"}}},
+			{Key: "ev-ds1-recall", Recall: &RecallEvent{ID: "r1", Hits: []RecallHit{{Dataset: "ds1", Document: "d1"}}}},
+			{Key: "ev-ds2-keep", Record: activityRow{Dataset: "ds2"}},
+		}
+		a.overviewState.ExpandedEvent = "ev-ds1-fail"
+		a.overviewState.ExpandedReport = "secret failure report"
+		a.overviewState.ExpandedDetail = &failureDetailModel{}
+
+		a.InvalidateReading("ds1")
+
+		if len(a.overviewState.Events) != 1 || a.overviewState.Events[0].Key != "ev-ds2-keep" {
+			t.Fatalf("dataset invalidation left revoked events or dropped unrelated ds2 event: %+v", a.overviewState.Events)
+		}
+		if a.overviewState.ExpandedEvent != "" || a.overviewState.ExpandedReport != "" || a.overviewState.ExpandedDetail != nil {
+			t.Fatal("dataset invalidation retained expanded detail of revoked event")
+		}
+	})
 }

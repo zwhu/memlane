@@ -9,10 +9,11 @@ import asyncio
 import email.parser
 import email.policy
 import hmac
+import inspect
 import json
 import re
 import uuid
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 
 import aiohttp
 from aiohttp import ClientSession, ClientTimeout, web
@@ -32,13 +33,22 @@ _HOP_HEADERS = frozenset({
     'te', 'trailer', 'transfer-encoding', 'upgrade', 'content-length', 'origin',
     'authorization', 'x-memlane-management',
 })
-_DATASET_ID_RE = re.compile(r'^/api/v1/datasets/(?P<dataset_id>[^/]+)/(?P<tail>data|data/[^/]+/raw|data/[^/]+|graph)$')
-_SESSION_ID_RE = re.compile(r'^/api/v1/sessions/(?P<session_id>[^/]+)$')
+_DATASET_ID_RE = re.compile(
+    r'^/api/v1/datasets/(?P<dataset_id>[^/]+)/(?P<tail>data/count|data/[^/]+/raw|data/[^/]+|data|graph|processing-status)$'
+)
+_SESSION_ID_RE = re.compile(
+    r'^/api/v1/sessions/(?P<session_id>[^/]+)(?:/(?P<subroute>capture-status|history))?$'
+)
+_RESERVED_SESSION_SEGMENTS = frozenset({
+    'stats', 'cost-by-model', 'with-agent-info', 'cost-by-user-agent',
+})
 _CAPTURE_ENTRY_RE = re.compile(r'^/api/v1/capture/entries/(?P<message>[^/]+)$')
+_UNAUTH_READ_PATHS = frozenset({'/health', '/api/v1/health'})
 _SIMPLE_READ_PATHS = frozenset({
     '/openapi.json', '/health', '/api/v1/health', '/api/v1/users/me',
-    '/api/v1/datasets', '/api/v1/datasets/status', '/api/v1/sessions',
-    '/api/v1/activity/pipeline-runs',
+    '/api/v1/datasets', '/api/v1/datasets/status', '/api/v1/datasets/status/progress',
+    '/api/v1/sessions', '/api/v1/activity/pipeline-runs',
+    '/api/v1/agents/connections/me',
 })
 
 
@@ -87,7 +97,10 @@ def _strip_mount_prefix(path, prefix):
     if prefix and path.startswith(prefix + '/'):
         path = path[len(prefix):]
     if len(path) > 1 and path.endswith('/') and path.rstrip('/') in {
-        '/api/v1/datasets', '/api/v1/recall', '/api/v1/search', '/api/v1/remember',
+        '/api/v1/datasets', '/api/v1/datasets/status', '/api/v1/datasets/status/progress',
+        '/api/v1/sessions', '/api/v1/activity/pipeline-runs', '/api/v1/agents/connections/me',
+        '/api/v1/agents/register', '/api/v1/agents/unregister',
+        '/api/v1/recall', '/api/v1/search', '/api/v1/remember',
         '/api/v1/improve', '/api/v1/cognify', '/api/v1/memify', '/api/v1/forget',
     }:
         return path.rstrip('/')
@@ -99,22 +112,31 @@ def _gateway_route_label(method, upstream_path):
     exact = f'{method} {upstream_path}'
     if upstream_path in _SIMPLE_READ_PATHS and method == 'GET':
         return exact
-    if upstream_path in ('/api/v1/recall', '/api/v1/search', '/api/v1/remember/entry', '/api/v1/remember',
-                         '/api/v1/improve', '/api/v1/cognify', '/api/v1/memify', '/api/v1/forget') and method == 'POST':
+    if upstream_path in (
+        '/api/v1/recall', '/api/v1/search', '/api/v1/remember/entry', '/api/v1/remember',
+        '/api/v1/improve', '/api/v1/cognify', '/api/v1/memify', '/api/v1/forget',
+        '/api/v1/agents/register', '/api/v1/agents/unregister',
+    ) and method == 'POST':
         return exact
     m = _DATASET_ID_RE.match(upstream_path)
     if m and method in ('GET', 'DELETE'):
         tail = m.group('tail')
         if tail == 'data':
             return f'{method} /api/v1/datasets/{{id}}/data'
+        if tail == 'data/count':
+            return f'{method} /api/v1/datasets/{{id}}/data/count'
         if tail == 'graph':
             return f'{method} /api/v1/datasets/{{id}}/graph'
+        if tail == 'processing-status':
+            return f'{method} /api/v1/datasets/{{id}}/processing-status'
         if tail.startswith('data/') and tail.endswith('/raw'):
             return f'{method} /api/v1/datasets/{{id}}/data/{{id}}/raw'
         if tail.startswith('data/'):
             return f'{method} /api/v1/datasets/{{id}}/data/{{id}}'
-    if _SESSION_ID_RE.match(upstream_path) and method == 'GET':
-        return 'GET /api/v1/sessions/{id}'
+    m = _SESSION_ID_RE.match(upstream_path)
+    if m and method == 'GET':
+        subroute = m.group('subroute')
+        return f'GET /api/v1/sessions/{{id}}/{subroute}' if subroute else 'GET /api/v1/sessions/{id}'
     if _CAPTURE_ENTRY_RE.match(upstream_path) and method in ('GET', 'PUT'):
         return f'{method} /api/v1/capture/entries/{{id}}'
     return 'other'
@@ -421,6 +443,183 @@ def _rewrite_query_datasets(ctx, payload):
     return updated
 
 
+def _filter_datasets_list(ctx, data):
+    if not isinstance(data, list):
+        raise PolicyError('official_result_unknown', 503)
+    return [row for row in data if isinstance(row, dict) and _uuid_str(row.get('id')) in ctx.readable_ids]
+
+
+def _filter_datasets_status(ctx, data):
+    if not isinstance(data, dict):
+        raise PolicyError('official_result_unknown', 503)
+    return {key: val for key, val in data.items() if _uuid_str(key) in ctx.readable_ids}
+
+
+def _filter_sessions_list(ctx, data):
+    if isinstance(data, dict) and isinstance(data.get('sessions'), list):
+        orig = data['sessions']
+        filtered = [
+            row for row in orig
+            if isinstance(row, dict) and _uuid_str(row.get('dataset_id')) in ctx.readable_ids
+        ]
+        removed = len(orig) - len(filtered)
+        out = {**data, 'sessions': filtered}
+        if isinstance(out.get('total'), int):
+            if not out.get('has_more') and out.get('offset', 0) == 0:
+                out['total'] = len(filtered)
+            else:
+                out['total'] = max(len(filtered), out['total'] - removed)
+        return out
+    if isinstance(data, list):
+        return [
+            row for row in data
+            if isinstance(row, dict) and _uuid_str(row.get('dataset_id')) in ctx.readable_ids
+        ]
+    raise PolicyError('official_result_unknown', 503)
+
+
+def _filter_pipeline_runs(ctx, data):
+    if not isinstance(data, list):
+        raise PolicyError('official_result_unknown', 503)
+    return [
+        row for row in data
+        if isinstance(row, dict) and _uuid_str(row.get('dataset_id')) in ctx.readable_ids
+    ]
+
+
+def _filter_session_detail(ctx, data):
+    if not isinstance(data, dict):
+        raise PolicyError('dataset_read_denied', 403)
+    ds_id = _uuid_str(data.get('dataset_id'))
+    if not ds_id or ds_id not in ctx.readable_ids:
+        raise PolicyError('dataset_read_denied', 403)
+    return data
+
+
+def _agent_dataset_ref_id(ctx, item):
+    if isinstance(item, str):
+        return _uuid_str(item)
+    if isinstance(item, dict):
+        uid = _uuid_str(item.get('id')) or _uuid_str(item.get('dataset_id'))
+        if uid:
+            return uid
+        name = item.get('name')
+        if isinstance(name, str) and name.strip():
+            info = ctx.by_name.get(name.strip())
+            if info:
+                return info['dataset_id']
+    return None
+
+
+def _norm_user_id(value):
+    if value is None:
+        return None
+    uid = _uuid_str(value)
+    if uid:
+        return uid
+    text = str(value).strip()
+    return text or None
+
+
+async def _filter_agent_connection_me(ctx, data, *, lookup_session_dataset=None):
+    if not isinstance(data, dict):
+        raise PolicyError('official_result_unknown', 503)
+    out = dict(data)
+    if isinstance(out.get('memory_sources'), list):
+        out['memory_sources'] = [
+            src for src in out['memory_sources']
+            if isinstance(src, dict)
+            and (_uuid_str(src.get('dataset_id')) or _uuid_str(src.get('id'))) in ctx.readable_ids
+        ]
+
+    orig_agent_refs = []
+    agent_session_id = ''
+    agent_user_id = None
+    if isinstance(out.get('agent'), dict):
+        agent_obj = dict(out['agent'])
+        raw_agent_sid = agent_obj.get('session_id')
+        if isinstance(raw_agent_sid, str) and raw_agent_sid.strip():
+            agent_session_id = raw_agent_sid.strip()
+        agent_user_id = _norm_user_id(agent_obj.get('user_id'))
+        for key in ('dataset_ids', 'datasets'):
+            if isinstance(agent_obj.get(key), list):
+                orig_agent_refs.extend(agent_obj[key])
+                agent_obj[key] = [
+                    item for item in agent_obj[key]
+                    if _agent_dataset_ref_id(ctx, item) in ctx.readable_ids
+                ]
+        out['agent'] = agent_obj
+
+    agent_all_datasets_readable = (
+        bool(orig_agent_refs)
+        and all(_agent_dataset_ref_id(ctx, item) in ctx.readable_ids for item in orig_agent_refs)
+    )
+    has_session_content = bool(out.get('recent_qas')) or bool(out.get('recent_traces'))
+
+    if isinstance(out.get('recent_sessions'), list):
+        orig_sess = out['recent_sessions']
+        filtered_sess = []
+        session_lookup_cache = {}
+        for row in orig_sess:
+            if not isinstance(row, dict):
+                continue
+            explicit_ds = row.get('dataset_id')
+            if explicit_ds is not None:
+                if _uuid_str(explicit_ds) in ctx.readable_ids:
+                    filtered_sess.append(row)
+                continue
+            sid = str(row.get('session_id') or '').strip()
+            if not sid or not _safe_path_segment(sid) or sid in _RESERVED_SESSION_SEGMENTS:
+                continue
+            expected_uid = _norm_user_id(row.get('user_id')) or agent_user_id
+            status, resolved_ds, resolved_uid = 'error', None, None
+            if lookup_session_dataset is not None:
+                if sid not in session_lookup_cache:
+                    session_lookup_cache[sid] = await lookup_session_dataset(sid)
+                status, resolved_ds, resolved_uid = session_lookup_cache[sid]
+            if status == 'found':
+                if (
+                    resolved_ds in ctx.readable_ids
+                    and expected_uid is not None
+                    and resolved_uid is not None
+                    and resolved_uid == expected_uid
+                ):
+                    filtered_sess.append(row)
+            elif (
+                status == 'not_found'
+                and agent_all_datasets_readable
+                and not has_session_content
+                and (not agent_session_id or sid == agent_session_id)
+            ):
+                filtered_sess.append(row)
+        out['recent_sessions'] = filtered_sess
+        if not filtered_sess or len(filtered_sess) != len(orig_sess):
+            if isinstance(out.get('recent_traces'), list):
+                out['recent_traces'] = []
+            if isinstance(out.get('recent_qas'), list):
+                out['recent_qas'] = []
+    else:
+        if isinstance(out.get('recent_traces'), list):
+            out['recent_traces'] = []
+        if isinstance(out.get('recent_qas'), list):
+            out['recent_qas'] = []
+    return out
+
+
+def _trace_message_id(entry_obj):
+    if not isinstance(entry_obj, dict):
+        return None
+    params = entry_obj.get('method_params')
+    if isinstance(params, dict):
+        cap_id = params.get('cognee_capture_id')
+        if isinstance(cap_id, str) and cap_id.strip():
+            return cap_id.strip()
+    trace_id = entry_obj.get('trace_id')
+    if isinstance(trace_id, str) and trace_id.strip():
+        return trace_id.strip()
+    return None
+
+
 def create_gateway_app(registry, *, recall_store=None, drift_store=None, official_url=None, session=None, prefix='/cognee'):
     """Create the Cognee HTTP Extension Gateway ``aiohttp.web.Application``."""
     secret_cache = CachedSecretReader()
@@ -455,6 +654,39 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
             owned_session = ClientSession()
         return owned_session
 
+    async def _lookup_session_dataset(ctx, sid):
+        if not sid or not _safe_path_segment(sid) or sid in _RESERVED_SESSION_SEGMENTS:
+            return 'error', None, None
+        try:
+            upstream = resolve_upstream()
+            client = await get_session()
+            url = f'{upstream}/api/v1/sessions/{quote(sid, safe="")}'
+            timeout = ClientTimeout(total=min(5.0, GATEWAY_QUERY_TIMEOUT_SECONDS), sock_connect=5.0)
+            async with client.get(
+                url,
+                headers={'X-Api-Key': ctx.api_key},
+                timeout=timeout,
+                allow_redirects=False,
+            ) as resp:
+                if resp.status == 404:
+                    return 'not_found', None, None
+                if resp.status != 200:
+                    return 'error', None, None
+                ctype = (resp.headers.get('Content-Type') or '').split(';', 1)[0].strip().lower()
+                if ctype != 'application/json':
+                    return 'error', None, None
+                raw = bytearray()
+                async for chunk in resp.content.iter_chunked(64 * 1024):
+                    raw.extend(chunk)
+                    if len(raw) > MAX_GATEWAY_BODY_BYTES:
+                        return 'error', None, None
+                parsed = json.loads(bytes(raw))
+                if not isinstance(parsed, dict):
+                    return 'error', None, None
+                return 'found', _uuid_str(parsed.get('dataset_id')), _norm_user_id(parsed.get('user_id'))
+        except Exception:
+            return 'error', None, None
+
     async def proxy(request, ctx, upstream_path, *, body_bytes=b'', json_body=None,
                     dataset_filter_fn=None, record_hits=False, recall_channel='explicit',
                     timeout_seconds=None):
@@ -467,7 +699,8 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
             if k.lower() in _HOP_HEADERS or k.lower() == 'x-api-key':
                 continue
             headers[k] = v
-        headers['X-Api-Key'] = ctx.api_key
+        if ctx is not None:
+            headers['X-Api-Key'] = ctx.api_key
         if json_body is not None:
             headers['Content-Type'] = 'application/json'
             send_kwargs = {'json': json_body}
@@ -486,7 +719,7 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
                 request.method, url, headers=headers, timeout=timeout, allow_redirects=False, **send_kwargs
             ) as upstream_resp:
                 ctype = (upstream_resp.headers.get('Content-Type') or '').split(';', 1)[0].strip().lower()
-                if ctype == 'text/event-stream':
+                if ctype == 'text/event-stream' and dataset_filter_fn is None:
                     stream = web.StreamResponse(status=upstream_resp.status, headers={'Content-Type': 'text/event-stream'})
                     await stream.prepare(request)
                     stream_outcome = 'succeeded' if upstream_resp.status < 400 else 'upstream_error'
@@ -511,17 +744,32 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
                 if upstream_resp.headers.get('Content-Type'):
                     resp_headers['Content-Type'] = upstream_resp.headers['Content-Type']
                 extra_trace = {}
-                if upstream_resp.status == 200 and ctype == 'application/json' and (dataset_filter_fn or record_hits):
-                    try:
-                        parsed = json.loads(resp_bytes)
-                    except ValueError:
+                if upstream_resp.status == 200 and (dataset_filter_fn or record_hits):
+                    if ctype != 'application/json':
+                        if dataset_filter_fn is not None:
+                            trace.finish('upstream_error', route=route_label, status=503)
+                            raise PolicyError('official_result_unknown', 503)
                         parsed = None
+                    else:
+                        try:
+                            parsed = json.loads(resp_bytes)
+                        except ValueError:
+                            if dataset_filter_fn is not None:
+                                trace.finish('upstream_error', route=route_label, status=503)
+                                raise PolicyError('official_result_unknown', 503) from None
+                            parsed = None
                     if parsed is not None:
                         if dataset_filter_fn is not None:
-                            parsed = dataset_filter_fn(parsed)
+                            try:
+                                parsed = dataset_filter_fn(parsed)
+                                if inspect.isawaitable(parsed):
+                                    parsed = await parsed
+                            except PolicyError as err:
+                                trace.finish('denied' if err.status == 403 else 'upstream_error', route=route_label, status=err.status)
+                                raise
                             resp_bytes = json.dumps(parsed, ensure_ascii=False).encode('utf-8')
                             resp_headers['Content-Type'] = 'application/json'
-                        if record_hits:
+                        if record_hits and ctx is not None:
                             hits = _extract_recall_hits(parsed, ctx.readable_ids)
                             extra_trace['hit_count'] = len(hits)
                             if recall_store is not None:
@@ -558,13 +806,35 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
             if '..' in rel_path or '\\' in rel_path:
                 raise PolicyError('gateway_route_not_allowed', 403)
 
-            ctx = await _authenticate_and_snapshot(registry, secret_cache, request.headers.get('X-Api-Key', '').strip())
             method = request.method.upper()
+            presented_key = request.headers.get('X-Api-Key', '').strip()
+            if method == 'GET' and rel_path in _UNAUTH_READ_PATHS:
+                ctx = await _authenticate_and_snapshot(registry, secret_cache, presented_key) if presented_key else None
+                return await proxy(request, ctx, rel_path)
+
+            ctx = await _authenticate_and_snapshot(registry, secret_cache, presented_key)
 
             if method == 'GET' and rel_path in _SIMPLE_READ_PATHS:
                 filt = None
                 if rel_path == '/api/v1/datasets':
-                    filt = lambda rows: [r for r in rows if isinstance(r, dict) and r.get('id') in ctx.readable_ids] if isinstance(rows, list) else rows
+                    filt = lambda rows: _filter_datasets_list(ctx, rows)
+                elif rel_path in ('/api/v1/datasets/status', '/api/v1/datasets/status/progress'):
+                    for raw_ds in request.query.getall('dataset', []):
+                        _authorize_target(_resolve_target(ctx, raw_ds), 'read')
+                    filt = lambda data: _filter_datasets_status(ctx, data)
+                elif rel_path == '/api/v1/sessions':
+                    filt = lambda data: _filter_sessions_list(ctx, data)
+                elif rel_path == '/api/v1/activity/pipeline-runs':
+                    raw_ds = request.query.get('dataset_id', '').strip()
+                    if raw_ds:
+                        _authorize_target(_resolve_target(ctx, raw_ds), 'read')
+                    filt = lambda rows: _filter_pipeline_runs(ctx, rows)
+                elif rel_path == '/api/v1/agents/connections/me':
+                    filt = lambda data: _filter_agent_connection_me(
+                        ctx,
+                        data,
+                        lookup_session_dataset=lambda sid: _lookup_session_dataset(ctx, sid),
+                    )
                 return await proxy(request, ctx, rel_path, dataset_filter_fn=filt)
 
             m = _DATASET_ID_RE.match(rel_path)
@@ -579,7 +849,7 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
                 if method == 'GET':
                     _authorize_target(_resolve_target(ctx, ds_id), 'read')
                     return await proxy(request, ctx, f'/api/v1/datasets/{ds_id}/{tail}')
-                if method == 'DELETE' and tail.startswith('data/'):
+                if method == 'DELETE' and tail.startswith('data/') and tail != 'data/count' and not tail.endswith('/raw'):
                     _authorize_target(_resolve_target(ctx, ds_id), 'delete')
                     return await proxy(request, ctx, f'/api/v1/datasets/{ds_id}/{tail}')
                 raise PolicyError('gateway_route_not_allowed', 403)
@@ -587,9 +857,16 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
             m = _SESSION_ID_RE.match(rel_path)
             if m and method == 'GET':
                 sid = m.group('session_id')
-                if not _safe_path_segment(sid):
+                subroute = m.group('subroute')
+                if not _safe_path_segment(sid) or (subroute is None and sid in _RESERVED_SESSION_SEGMENTS):
                     raise PolicyError('gateway_route_not_allowed', 403)
-                return await proxy(request, ctx, f'/api/v1/sessions/{sid}')
+                upstream_session_path = f'/api/v1/sessions/{sid}/{subroute}' if subroute else f'/api/v1/sessions/{sid}'
+                return await proxy(
+                    request,
+                    ctx,
+                    upstream_session_path,
+                    dataset_filter_fn=lambda data: _filter_session_detail(ctx, data),
+                )
 
             m = _CAPTURE_ENTRY_RE.match(rel_path)
             if m and method in ('GET', 'PUT'):
@@ -636,28 +913,42 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
                 updated = {**payload, 'dataset_id': info['dataset_id']}
                 updated.pop('datasetId', None)
                 updated.pop('datasetName', None)
+                updated.pop('dataset_name', None)
                 entry_obj = updated.get('entry')
                 if isinstance(entry_obj, dict):
                     entry_obj = ensure_qa_context_date(enrich_codex_file_change_entry(entry_obj))
                     updated['entry'] = entry_obj
                 resp = await proxy(request, ctx, rel_path, json_body=updated)
                 if 200 <= resp.status < 300:
-                    await _observe_trace_drift(info['dataset_id'], updated.get('session_id') or updated.get('sessionId'), entry_obj)
+                    await _observe_trace_drift(
+                        info['dataset_id'],
+                        updated.get('session_id') or updated.get('sessionId'),
+                        entry_obj,
+                        message_id=_trace_message_id(entry_obj),
+                    )
                 return resp
 
             if method == 'POST' and rel_path == '/api/v1/remember':
                 body_bytes = await _read_limited_body(request)
                 fields = _parse_remember_fields(request.headers.get('Content-Type', ''), body_bytes)
-                ref = fields.get('datasetId') or fields.get('dataset_id') or fields.get('datasetName') or fields.get('dataset_name')
+                id_ref = fields.get('datasetId') or fields.get('dataset_id')
+                name_ref = fields.get('datasetName') or fields.get('dataset_name')
+                ref = id_ref or name_ref
                 op = 'code_write' if fields.get('content_type') == 'code' else 'capture'
                 info = _authorize_target(_resolve_target(ctx, ref), op)
+                if id_ref and name_ref:
+                    expected_name = info.get('dataset_name')
+                    if expected_name and str(name_ref).strip() != expected_name:
+                        raise PolicyError('dataset_access_denied', 403)
                 ctype = (request.headers.get('Content-Type') or '').split(';', 1)[0].strip().lower()
                 if ctype == 'application/json':
                     payload = _read_json_bytes(body_bytes)
                     payload['dataset_id'] = info['dataset_id']
                     payload.pop('datasetId', None)
+                    payload.pop('datasetName', None)
+                    payload.pop('dataset_name', None)
                     return await proxy(request, ctx, rel_path, json_body=payload)
-                if not (fields.get('datasetId') or fields.get('dataset_id')):
+                if not id_ref:
                     if ctype == 'multipart/form-data':
                         body_bytes = _append_multipart_field(request.headers.get('Content-Type', ''), body_bytes, 'datasetId', info['dataset_id'])
                     elif ctype == 'application/x-www-form-urlencoded':
@@ -699,6 +990,40 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
                 updated.pop('datasetId', None)
                 updated.pop('dataset', None)
                 return await proxy(request, ctx, rel_path, json_body=updated)
+
+            if method == 'POST' and rel_path == '/api/v1/agents/register':
+                body_bytes = await _read_limited_body(request)
+                payload = _read_json_bytes(body_bytes)
+                raw_ids = payload.get('dataset_ids')
+                raw_names = payload.get('dataset_names')
+                resolved_ids = []
+                if raw_ids is not None:
+                    if not isinstance(raw_ids, list):
+                        raise PolicyError('invalid_request', 400)
+                    for item in raw_ids:
+                        uid = _uuid_str(str(item)) if item is not None else None
+                        if uid is None:
+                            raise PolicyError('dataset_access_denied', 403)
+                        info = _authorize_target(_resolve_target(ctx, uid), 'read')
+                        if info['dataset_id'] not in resolved_ids:
+                            resolved_ids.append(info['dataset_id'])
+                if raw_names is not None:
+                    if not isinstance(raw_names, list):
+                        raise PolicyError('invalid_request', 400)
+                    for name in raw_names:
+                        info = _authorize_target(_resolve_target(ctx, name), 'read')
+                        if info['dataset_id'] not in resolved_ids:
+                            resolved_ids.append(info['dataset_id'])
+                updated = dict(payload)
+                if raw_ids is not None or raw_names is not None:
+                    updated['dataset_ids'] = resolved_ids
+                    updated.pop('dataset_names', None)
+                return await proxy(request, ctx, rel_path, json_body=updated)
+
+            if method == 'POST' and rel_path == '/api/v1/agents/unregister':
+                body_bytes = await _read_limited_body(request)
+                payload = _read_json_bytes(body_bytes)
+                return await proxy(request, ctx, rel_path, json_body=payload)
 
             raise PolicyError('gateway_route_not_allowed', 403)
         except PolicyError as error:

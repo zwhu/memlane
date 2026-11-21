@@ -701,7 +701,7 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
                         },
                     }
                     registry.state['common'] = {
-                        'id': 'c1', 'kind': 'common', 'name': '通用知识',
+                        'id': 'c1', 'kind': 'common', 'name': '通用记忆',
                         'dataset_id': common_ds, 'dataset_name': 'ml-common-c1',
                         'overrides': {}, 'desired_revision': 10, 'status': 'verified', 'code_enabled': False,
                         'applied': {'a': {'status': 'verified', 'revision': 10}},
@@ -862,6 +862,82 @@ class OfficialContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(recovered['enrollments']['codex-test']['status'], 'verified')
                 self.assertEqual(registry.state['agents']['codex-test']['principal_id'], child)
                 self.assertEqual(len([path for method, path, _ in calls if method == 'POST']), 1)
+            finally:
+                registry.close()
+
+    async def test_computer_level_provision_grants_no_project_or_common_acl_and_protects_profiles(self):
+        from unittest.mock import AsyncMock, patch
+        fixture = OfficialFixture()
+        owner, existing_child, new_child = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+        key_map = {}
+
+        async def official(method, path, body=None, token_file=None):
+            if path.startswith('/api/v1/agents/create?name='):
+                key = 'new-child-secret-token-' + uuid.uuid4().hex
+                key_map[key] = new_child
+                return {'agentId': new_child, 'agentApiKey': key}
+            if path == '/api/v1/users/me':
+                if token_file:
+                    secret = Path(token_file).read_text().strip()
+                    return {'id': key_map[secret], 'parent_user_id': owner}
+                return {'id': owner, 'parent_user_id': None}
+            raise AssertionError((method, path))
+
+        fixture.request = official
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repo1 = root / 'repo1'
+            repo2 = root / 'repo2'
+            profiles_dir = root / 'profiles-repo'
+            for d in (repo1, repo2, profiles_dir):
+                d.mkdir()
+                subprocess.run(['git', 'init', '-q', str(d)], check=True)
+            registry = Registry(root / 'registry.json', fixture)
+            try:
+                registry.state['agents']['existing'] = {'name': 'Existing', 'principal_id': existing_child}
+                registry.save()
+                common_dir = await registry.ensure_common(registry.state['revision'])
+                self.assertEqual(common_dir['common']['name'], '通用记忆')
+                proj1 = await registry.create_project(registry.state['revision'], str(repo1), name='Repo1')
+                profiles_proj = await registry.create_project(registry.state['revision'], str(profiles_dir), name='ml-user-profiles')
+
+                # Protected ml-user-profiles defaults to access='none' for ALL existing hosts too!
+                self.assertEqual(registry.policy(registry.state['projects'][profiles_proj['id']], 'existing')['policy']['access'], 'none')
+                self.assertEqual(fixture.acls.get((existing_child, profiles_proj['dataset_id']), set()), set())
+
+                # Computer-level provision_agent MUST NOT call sync_acl or grant any project/common ACL!
+                with patch.object(fixture, 'sync_acl', AsyncMock(side_effect=AssertionError('provision must not write ACLs'))):
+                    await registry.provision_agent(registry.state['revision'], 'pi-new', '本机 pi')
+
+                self.assertEqual(fixture.acls.get((new_child, proj1['dataset_id']), set()), set())
+                self.assertEqual(fixture.acls.get((new_child, profiles_proj['dataset_id']), set()), set())
+                self.assertEqual(fixture.acls.get((new_child, common_dir['common']['dataset_id']), set()), set())
+                self.assertEqual(registry.policy(registry.state['projects'][proj1['id']], 'pi-new')['policy']['access'], 'none')
+                self.assertTrue(registry.policy(registry.state['projects'][proj1['id']], 'pi-new')['ready'])
+                self.assertEqual(registry.policy(registry.state['projects'][profiles_proj['id']], 'pi-new')['policy']['access'], 'none')
+                self.assertFalse(registry.common_policy('pi-new')['readable'])
+
+                # New project created after provision still keeps ungranted agent at access='none'.
+                proj2 = await registry.create_project(registry.state['revision'], str(repo2), name='Repo2')
+                self.assertEqual(registry.policy(registry.state['projects'][proj2['id']], 'pi-new')['policy']['access'], 'none')
+                self.assertEqual(fixture.acls.get((new_child, proj2['dataset_id']), set()), set())
+
+                # Explicit project-level authorization grants ONLY that project.
+                await registry.set_policy(registry.state['revision'], {'access': 'maintain'},
+                                          project_id=proj1['id'], agent_id='pi-new')
+                self.assertEqual(fixture.acls[(new_child, proj1['dataset_id'])], {'read', 'write', 'delete'})
+                self.assertEqual(fixture.acls.get((new_child, proj2['dataset_id']), set()), set())
+                self.assertEqual(fixture.acls.get((new_child, profiles_proj['dataset_id']), set()), set())
+                self.assertFalse(registry.common_policy('pi-new')['readable'])
+
+                # Explicit common authorization grants read-only (rejecting maintain).
+                with self.assertRaisesRegex(PolicyError, 'common_read_only'):
+                    await registry.set_policy(registry.state['revision'], {'access': 'maintain'},
+                                              project_id=common_dir['common']['id'], agent_id='pi-new')
+                await registry.set_policy(registry.state['revision'], {'access': 'read'},
+                                          project_id=common_dir['common']['id'], agent_id='pi-new')
+                self.assertEqual(fixture.acls[(new_child, common_dir['common']['dataset_id'])], {'read'})
+                self.assertTrue(registry.common_policy('pi-new')['readable'])
             finally:
                 registry.close()
 

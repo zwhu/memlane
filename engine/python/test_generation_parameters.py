@@ -17,9 +17,12 @@ class GenerationParameterTests(unittest.TestCase):
                     {'mode': 'agent_bridge', 'bridge_kind': 'traex', 'model': 'synthetic'}]
         for profile in profiles:
             self.assertEqual(validate_profile({**profile, 'max_concurrent_requests': 4})['max_concurrent_requests'], 4)
-            for invalid in (None, True, 0, -1, 257, 1.5, '2'):
+            limit = 32 if profile['mode'] == 'agent_bridge' else 256
+            self.assertEqual(validate_profile({**profile, 'max_concurrent_requests': limit})['max_concurrent_requests'], limit)
+            for invalid in (None, True, 0, -1, limit + 1, 257, 1.5, '2'):
                 with self.assertRaisesRegex(PolicyError, 'invalid_generation_capacity'):
                     validate_profile({**profile, 'max_concurrent_requests': invalid})
+        self.assertEqual(validate_profile({**LOCAL, 'max_concurrent_requests': 33})['max_concurrent_requests'], 33)
         self.assertNotEqual(fingerprint(validate_profile(LOCAL)),
                             fingerprint(validate_profile({**LOCAL, 'max_concurrent_requests': 4})))
 

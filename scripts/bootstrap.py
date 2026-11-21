@@ -40,7 +40,11 @@ def main():
                 while chunk := response.read(1024 * 1024):
                     output.write(chunk)
         partial.replace(archive)
-    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    hasher = hashlib.sha256()
+    with archive.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            hasher.update(chunk)
+    digest = hasher.hexdigest()
     if digest != expected:
         raise SystemExit("Go 归档 SHA-256 不匹配；未解包，请移走错误归档后重试。")
     destination.mkdir(exist_ok=True)

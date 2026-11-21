@@ -147,10 +147,11 @@ func CheckPortFree(rawURL string) error {
 
 // ManagedProcess owns one child started in a detached session/process group.
 type ManagedProcess struct {
-	spec ServiceSpec
-	cmd  *exec.Cmd
-	pid  int
-	done chan struct{}
+	spec          ServiceSpec
+	cmd           *exec.Cmd
+	pid           int
+	startIdentity string
+	done          chan struct{}
 
 	mu       sync.Mutex
 	stopping bool
@@ -199,11 +200,15 @@ func StartManagedProcess(spec ServiceSpec, onUnexpectedExit func(ServiceStatus))
 	specCopy := spec
 	specCopy.Args = slices.Clone(spec.Args)
 	specCopy.Env = slices.Clone(spec.Env)
+	startCtx, startCancel := context.WithTimeout(context.Background(), time.Second)
+	startIdentity, _ := ProcessStartTime(startCtx, cmd.Process.Pid)
+	startCancel()
 	proc := &ManagedProcess{
-		spec: specCopy,
-		cmd:  cmd,
-		pid:  cmd.Process.Pid,
-		done: make(chan struct{}),
+		spec:          specCopy,
+		cmd:           cmd,
+		pid:           cmd.Process.Pid,
+		startIdentity: startIdentity,
+		done:          make(chan struct{}),
 		status: ServiceStatus{
 			Role:      spec.Role,
 			PID:       cmd.Process.Pid,
@@ -292,16 +297,54 @@ func isChannelClosed(ch <-chan struct{}) bool {
 	}
 }
 
-// StopGroup terminates the entire child process group using SIGTERM then SIGKILL.
-func (p *ManagedProcess) StopGroup(grace, killWait time.Duration) error {
-	if p == nil {
-		return nil
-	}
+// partitionStopBudget bounds grace + killWait to fit inside ctx's deadline while
+// reserving a slice for SIGKILL escalation so SIGTERM never starves SIGKILL.
+func partitionStopBudget(ctx context.Context, grace, killWait time.Duration) (time.Duration, time.Duration) {
 	if grace <= 0 {
 		grace = 15 * time.Second
 	}
 	if killWait <= 0 {
 		killWait = 5 * time.Second
+	}
+	if ctx == nil {
+		return grace, killWait
+	}
+	deadline, hasDeadline := ctx.Deadline()
+	if !hasDeadline {
+		return grace, killWait
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return 0, 0
+	}
+	if grace+killWait <= remaining {
+		return grace, killWait
+	}
+	effKill := remaining / 3
+	if remaining >= 900*time.Millisecond && effKill < 500*time.Millisecond {
+		effKill = 500 * time.Millisecond
+	}
+	if effKill > killWait {
+		effKill = killWait
+	}
+	if effKill > remaining/2 {
+		effKill = remaining / 2
+	}
+	effGrace := remaining - effKill
+	if effGrace < 0 {
+		effGrace = 0
+	}
+	return effGrace, effKill
+}
+
+// StopGroup terminates the entire child process group using SIGTERM then SIGKILL,
+// respecting ctx's deadline while reserving time for SIGKILL escalation.
+func (p *ManagedProcess) StopGroup(ctx context.Context, grace, killWait time.Duration) error {
+	if p == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	p.mu.Lock()
@@ -315,19 +358,13 @@ func (p *ManagedProcess) StopGroup(grace, killWait time.Duration) error {
 		return nil
 	}
 
-	phases := []struct {
-		sig  syscall.Signal
-		wait time.Duration
-	}{
-		{syscall.SIGTERM, grace},
-		{syscall.SIGKILL, killWait},
-	}
+	effGrace, effKill := partitionStopBudget(ctx, grace, killWait)
 
-	for _, phase := range phases {
+	sendAndWait := func(sig syscall.Signal, wait time.Duration, honorCtx bool) error {
 		if isChannelClosed(p.done) && !ProcessGroupExists(p.pid) {
 			return nil
 		}
-		if err := syscall.Kill(-p.pid, phase.sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+		if err := syscall.Kill(-p.pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
 			if errors.Is(err, syscall.EPERM) {
 				if ProcessGroupExists(p.pid) {
 					return err
@@ -336,27 +373,64 @@ func (p *ManagedProcess) StopGroup(grace, killWait time.Duration) error {
 				return err
 			}
 		}
-		deadline := time.Now().Add(phase.wait)
+		deadline := time.Now().Add(wait)
 		for {
 			if isChannelClosed(p.done) && !ProcessGroupExists(p.pid) {
 				return nil
 			}
 			if !time.Now().Before(deadline) {
-				break
+				return nil
 			}
-			select {
-			case <-p.done:
-				if !ProcessGroupExists(p.pid) {
+			if honorCtx {
+				select {
+				case <-p.done:
+					if !ProcessGroupExists(p.pid) {
+						return nil
+					}
+					time.Sleep(25 * time.Millisecond)
+				case <-ctx.Done():
 					return nil
+				case <-time.After(25 * time.Millisecond):
 				}
-				time.Sleep(25 * time.Millisecond)
-			case <-time.After(25 * time.Millisecond):
+			} else {
+				select {
+				case <-p.done:
+					if !ProcessGroupExists(p.pid) {
+						return nil
+					}
+					time.Sleep(25 * time.Millisecond)
+				case <-time.After(25 * time.Millisecond):
+				}
 			}
 		}
 	}
 
+	if effGrace > 0 && ctx.Err() == nil {
+		if err := sendAndWait(syscall.SIGTERM, effGrace, true); err != nil {
+			return err
+		}
+		if isChannelClosed(p.done) && !ProcessGroupExists(p.pid) {
+			return nil
+		}
+	}
+
+	// Escalate to SIGKILL. If ctx already expired, still deliver SIGKILL and allow
+	// a brief bounded reap window so stubborn groups do not survive as orphans.
+	killWindow := effKill
+	honorKillCtx := true
+	if killWindow <= 0 || ctx.Err() != nil {
+		killWindow = 250 * time.Millisecond
+		honorKillCtx = false
+	}
+	if err := sendAndWait(syscall.SIGKILL, killWindow, honorKillCtx); err != nil {
+		return err
+	}
+
 	if isChannelClosed(p.done) && !ProcessGroupExists(p.pid) {
 		return nil
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("owned process group exit unconfirmed: %d: %w", p.pid, ctx.Err())
 	}
 	return fmt.Errorf("owned process group exit unconfirmed: %d", p.pid)
 }
@@ -462,18 +536,16 @@ func stopTrackedDescendantsWith(
 		return nil
 	}
 	probeTable := func() (map[int]ProcessInfo, error) {
-		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		base := ctx
+		if base.Err() != nil {
+			base = context.Background()
+		}
+		probeCtx, cancel := context.WithTimeout(base, 2*time.Second)
 		defer cancel()
 		return tableFn(probeCtx)
 	}
-	phases := []struct {
-		sig  syscall.Signal
-		wait time.Duration
-	}{
-		{syscall.SIGTERM, grace},
-		{syscall.SIGKILL, killWait},
-	}
-	for _, phase := range phases {
+	effGrace, effKill := partitionStopBudget(ctx, grace, killWait)
+	runPhase := func(sig syscall.Signal, wait time.Duration, honorCtx bool) error {
 		table, err := probeTable()
 		if err != nil {
 			return err
@@ -489,14 +561,14 @@ func stopTrackedDescendantsWith(
 			return nil
 		}
 		for pid := range remaining {
-			if err := signalFn(pid, phase.sig); err != nil && !errors.Is(err, syscall.ESRCH) && !errors.Is(err, syscall.EPERM) {
+			if err := signalFn(pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) && !errors.Is(err, syscall.EPERM) {
 				return err
 			}
 		}
-		deadline := time.Now().Add(phase.wait)
+		deadline := time.Now().Add(wait)
 		for time.Now().Before(deadline) {
-			if ctx.Err() != nil {
-				return ctx.Err()
+			if honorCtx && ctx.Err() != nil {
+				return nil
 			}
 			time.Sleep(25 * time.Millisecond)
 			table, err = probeTable()
@@ -514,6 +586,27 @@ func stopTrackedDescendantsWith(
 				return nil
 			}
 		}
+		return nil
+	}
+	if effGrace > 0 && ctx.Err() == nil {
+		if err := runPhase(syscall.SIGTERM, effGrace, true); err != nil {
+			return err
+		}
+		if len(remaining) == 0 {
+			return nil
+		}
+	}
+	killWindow := effKill
+	honorKillCtx := true
+	if killWindow <= 0 || ctx.Err() != nil {
+		killWindow = 250 * time.Millisecond
+		honorKillCtx = false
+	}
+	if err := runPhase(syscall.SIGKILL, killWindow, honorKillCtx); err != nil {
+		return err
+	}
+	if len(remaining) == 0 {
+		return nil
 	}
 	table, err := probeTable()
 	if err != nil {
@@ -521,6 +614,9 @@ func stopTrackedDescendantsWith(
 	}
 	for pid, started := range remaining {
 		if info, ok := table[pid]; ok && info.Started == started {
+			if ctx.Err() != nil {
+				return fmt.Errorf("owned descendant process exit unconfirmed: %d: %w", pid, ctx.Err())
+			}
 			return fmt.Errorf("owned descendant process exit unconfirmed: %d", pid)
 		}
 	}
@@ -530,6 +626,14 @@ func stopTrackedDescendantsWith(
 // PID returns the OS process identifier of the direct child.
 func (p *ManagedProcess) PID() int {
 	return p.pid
+}
+
+// StartIdentity returns the kernel lstart recorded when this child was spawned.
+func (p *ManagedProcess) StartIdentity() string {
+	if p == nil {
+		return ""
+	}
+	return p.startIdentity
 }
 
 // Spec returns a defensive copy of the process specification.

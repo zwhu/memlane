@@ -221,6 +221,13 @@ func (a *App) v4MarkdownOptions(size float32) *markdown.Options {
 	if size <= 0 {
 		size = fsReading
 	}
+	key := v4MDKey{dark: tok.Dark, size: size}
+	if a.v4MD == nil {
+		a.v4MD = map[v4MDKey]*markdown.Options{}
+	}
+	if opts, ok := a.v4MD[key]; ok {
+		return opts
+	}
 	theme := &markdown.Theme{
 		FontSize:            size,
 		LineHeight:          1.8,
@@ -230,7 +237,9 @@ func (a *App) v4MarkdownOptions(size float32) *markdown.Options {
 		CodeBlockBackground: tok.Fill1,
 		CodeBlockBorder:     tok.Border,
 	}
-	return &markdown.Options{Theme: theme, CodeBlock: a.md.CodeBlock}
+	opts := &markdown.Options{Theme: theme, CodeBlock: a.md.CodeBlock}
+	a.v4MD[key] = opts
+	return opts
 }
 
 func buildTypography() map[homeTextRole]homeTypography {

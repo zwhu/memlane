@@ -19,6 +19,8 @@
 # 构建产物、依赖与工具缓存
 node_modules/
 dist/
+!web/official-graph/dist/
+!web/official-graph/dist/**
 build/
 target/
 .venv/

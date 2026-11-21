@@ -21,6 +21,27 @@ import (
 func perfFixture(t *testing.T) *App {
 	t.Helper()
 	a := overviewFixture(t)
+	tokenFile := filepath.Join(t.TempDir(), "official.token")
+	if err := os.WriteFile(tokenFile, []byte(strings.Repeat("k", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a.Config.TokenFile = tokenFile
+	a.Client.Config.TokenFile = tokenFile
+	a.syncReadingIdentity()
+	a.access.Loaded = true
+	a.access.Next = time.Now().Add(time.Hour)
+	a.access.Queues = map[string]*projectQueueState{}
+	baseIdentity := a.cachedBaseReadingIdentity()
+	a.access.Directory.Projects = make([]AccessProject, 0, len(a.Config.Projects))
+	for _, p := range a.Config.Projects {
+		ap := AccessProject{ID: p.ID, Name: p.Name, Dataset: p.Dataset}
+		a.access.Directory.Projects = append(a.access.Directory.Projects, ap)
+		a.access.Queues[baseIdentity+"/"+p.ID+"/"+p.Dataset] = &projectQueueState{
+			Loaded:           true,
+			Next:             time.Now().Add(time.Hour),
+			localStateLoaded: true,
+		}
+	}
 	now := time.Now()
 	items := make([]Item, 0, 200)
 	for n := 0; n < 200; n++ {
@@ -221,8 +242,13 @@ func TestColdStartOverviewPerformanceBudget(t *testing.T) {
 	if err := os.WriteFile(tokenFile, []byte(strings.Repeat("m", 40)), 0600); err != nil {
 		t.Fatal(err)
 	}
+	officialTokenFile := filepath.Join(dir, "official.token")
+	if err := os.WriteFile(officialTokenFile, []byte(strings.Repeat("k", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
 	cfg := Config{
 		ServiceURL:      server.URL,
+		TokenFile:       officialTokenFile,
 		ClientStateFile: filepath.Join(dir, "state.json"),
 		ProjectControl:  &ProjectControlConfig{URL: server.URL, ManagementTokenFile: tokenFile},
 		Projects:        []Project{{ID: "p1", Name: "memlane", Dataset: "ds-main"}},
@@ -231,6 +257,15 @@ func TestColdStartOverviewPerformanceBudget(t *testing.T) {
 	tStart := time.Now()
 	a := New(cfg, nil)
 	a.access.Loaded = true
+	a.access.Next = time.Now().Add(time.Hour)
+	a.access.Directory.Projects = []AccessProject{{ID: "p1", Name: "memlane", Dataset: "ds-main"}}
+	a.access.Queues = map[string]*projectQueueState{
+		a.cachedBaseReadingIdentity() + "/p1/ds-main": {
+			Loaded:           true,
+			Next:             time.Now().Add(time.Hour),
+			localStateLoaded: true,
+		},
+	}
 	updates := make(chan func(), 16)
 	a.Update = func(fn func()) { updates <- fn }
 	a.loadOverview()

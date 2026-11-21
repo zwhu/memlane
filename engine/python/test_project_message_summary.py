@@ -3,6 +3,7 @@ import copy
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 import uuid
@@ -103,9 +104,9 @@ class ProjectMessageSummaryTests(unittest.IsolatedAsyncioTestCase):
         )
         return req_id, op_id
 
-    async def _client(self, backlog=None):
+    async def _client(self, backlog=None, codex_config=None):
         app = create_app(self.registry, 'm' * 40, {'a': 'a' * 40})
-        attach_project_message_summary(app, self.registry, backlog=backlog)
+        attach_project_message_summary(app, self.registry, backlog=backlog, codex_config=codex_config)
         client = TestClient(TestServer(app))
         await client.start_server()
         return client
@@ -240,6 +241,15 @@ class ProjectMessageSummaryTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(body['activity'], [{'id': 'run-1', 'dataset_id': self.dataset_id, 'status': 'completed'}])
+        self.assertEqual(
+            body['knowledge_catalog'],
+            [
+                {'id': 'doc-knowledge', 'created_at': ''},
+                {'id': 'doc-common', 'created_at': ''},
+            ],
+        )
+        self.assertTrue(body['knowledge_catalog_version'])
+        self.assertFalse(body['knowledge_catalog_unchanged'])
         self.assertEqual(body['errors'], {})
         # Read-only guarantee: only GET calls to official API and registry file untouched.
         self.assertTrue(all(method == 'GET' for method, _, _ in self.official.calls))
@@ -322,6 +332,318 @@ class ProjectMessageSummaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(body['errors'], {})
         finally:
             await client_none.close()
+
+    async def test_knowledge_catalog_version_delta_and_query_validation(self):
+        k_doc = {
+            'id': 'k-1',
+            'datasetId': self.dataset_id,
+            'name': 'lesson.md',
+            'createdAt': '2026-11-21T08:00:00Z',
+            'externalMetadata': {'node_set': ['session_learnings']},
+        }
+        self.official.responses = {
+            f'/api/v1/datasets/{self.dataset_id}/processing-status?pipeline=cognify_pipeline': {
+                'items': [{'id': 'k-1', 'name': 'lesson.md', 'completed': True}],
+            },
+            f'/api/v1/datasets/{self.dataset_id}/data?limit=500': [k_doc],
+            f'/api/v1/activity/pipeline-runs?dataset_id={self.dataset_id}&limit=20': [],
+        }
+
+        client = await self._client()
+        try:
+            first = await client.get(
+                f'/v1/projects/{self.project_id}/message-summary',
+                headers=self.manager_headers,
+            )
+            self.assertEqual(first.status, 200)
+            b1 = await first.json()
+            ver = b1['knowledge_catalog_version']
+            self.assertTrue(ver)
+            self.assertFalse(b1['knowledge_catalog_unchanged'])
+            self.assertEqual(b1['knowledge_catalog'], [{'id': 'k-1', 'created_at': '2026-11-21T08:00:00Z'}])
+
+            unchanged = await client.get(
+                f'/v1/projects/{self.project_id}/message-summary?knowledge_version={ver}',
+                headers=self.manager_headers,
+            )
+            self.assertEqual(unchanged.status, 200)
+            b2 = await unchanged.json()
+            self.assertEqual(b2['knowledge_catalog_version'], ver)
+            self.assertTrue(b2['knowledge_catalog_unchanged'])
+            self.assertIsNone(b2['knowledge_catalog'])
+
+            stale = await client.get(
+                f'/v1/projects/{self.project_id}/message-summary?knowledge_version=stale-ver',
+                headers=self.manager_headers,
+            )
+            self.assertEqual(stale.status, 200)
+            b3 = await stale.json()
+            self.assertEqual(b3['knowledge_catalog_version'], ver)
+            self.assertFalse(b3['knowledge_catalog_unchanged'])
+            self.assertEqual(b3['knowledge_catalog'], [{'id': 'k-1', 'created_at': '2026-11-21T08:00:00Z'}])
+
+            bad = await client.get(
+                f'/v1/projects/{self.project_id}/message-summary?extra=1',
+                headers=self.manager_headers,
+            )
+            self.assertEqual(bad.status, 400)
+            self.assertEqual((await bad.json())['error'], 'invalid_summary_query')
+        finally:
+            await client.close()
+
+    async def test_http_fallback_paginates_past_500_items(self):
+        page1 = [
+            {
+                'id': f'done-{i}',
+                'datasetId': self.dataset_id,
+                'name': f'done-{i}.md',
+                'externalMetadata': {},
+            }
+            for i in range(499)
+        ]
+        page1.append({
+            'id': 'k-page1',
+            'datasetId': self.dataset_id,
+            'name': 'k1.md',
+            'createdAt': '2026-11-20T01:00:00Z',
+            'externalMetadata': {'node_set': ['session_learnings']},
+        })
+        page2 = [
+            {
+                'id': 'raw-page2',
+                'datasetId': self.dataset_id,
+                'name': 'late-pending.md',
+                'createdAt': '2026-11-21T09:00:00Z',
+                'externalMetadata': {},
+            },
+            {
+                'id': 'k-page2',
+                'datasetId': self.dataset_id,
+                'name': 'k2.md',
+                'createdAt': '2026-11-21T10:00:00Z',
+                'externalMetadata': {'node_set': ['session_learnings']},
+            },
+        ]
+        status_items = [{'id': d['id'], 'name': d['name'], 'completed': True} for d in page1]
+        status_items.append({'id': 'raw-page2', 'name': 'late-pending.md', 'completed': False})
+        status_items.append({'id': 'k-page2', 'name': 'k2.md', 'completed': True})
+
+        self.official.responses = {
+            f'/api/v1/datasets/{self.dataset_id}/processing-status?pipeline=cognify_pipeline': {'items': status_items},
+            f'/api/v1/datasets/{self.dataset_id}/data?limit=500': page1,
+            f'/api/v1/datasets/{self.dataset_id}/data?limit=500&offset=500': page2,
+            f'/api/v1/activity/pipeline-runs?dataset_id={self.dataset_id}&limit=20': [],
+        }
+
+        client = await self._client()
+        try:
+            res = await client.get(
+                f'/v1/projects/{self.project_id}/message-summary',
+                headers=self.manager_headers,
+            )
+            self.assertEqual(res.status, 200)
+            body = await res.json()
+        finally:
+            await client.close()
+
+        self.assertEqual([d['id'] for d in body['pending_documents']], ['raw-page2'])
+        self.assertEqual(
+            body['knowledge_catalog'],
+            [
+                {'id': 'k-page1', 'created_at': '2026-11-20T01:00:00Z'},
+                {'id': 'k-page2', 'created_at': '2026-11-21T10:00:00Z'},
+            ],
+        )
+        self.assertEqual(body['errors'], {})
+
+    async def test_sqlite_fast_path_reads_store_without_official_http(self):
+        official_data = self.root / 'official-store'
+        db_dir = official_data / 'system' / 'databases'
+        db_dir.mkdir(parents=True)
+
+        ds_hex = uuid.UUID(self.dataset_id).hex
+        other_ds_hex = uuid.uuid4().hex
+        doc_pending = str(uuid.uuid4())
+        doc_done = str(uuid.uuid4())
+        doc_knowledge = str(uuid.uuid4())
+        doc_common = str(uuid.uuid4())
+        doc_derived = str(uuid.uuid4())
+        doc_other = str(uuid.uuid4())
+        run_id = str(uuid.uuid4())
+
+        con = sqlite3.connect(db_dir / 'cognee_db')
+        con.executescript('''
+            CREATE TABLE data (
+                id CHAR(32) PRIMARY KEY, dataset_id CHAR(32), name VARCHAR, label VARCHAR,
+                mime_type VARCHAR, raw_data_location VARCHAR, external_metadata JSON,
+                node_set JSON, pipeline_status JSON, updated_at DATETIME, created_at DATETIME,
+                content_hash VARCHAR
+            );
+            CREATE TABLE pipeline_runs (
+                id CHAR(32) PRIMARY KEY, pipeline_run_id CHAR(32), parent_operation_id CHAR(32),
+                dataset_id CHAR(32), pipeline_name VARCHAR, operation_name VARCHAR,
+                status VARCHAR, outcome VARCHAR, background BOOLEAN, error_class VARCHAR,
+                origin VARCHAR, created_at DATETIME, started_at DATETIME, ended_at DATETIME
+            );
+        ''')
+        rows = [
+            (
+                uuid.UUID(doc_pending).hex, ds_hex, 'notes.md', 'Notes', 'text/markdown',
+                '', '{}', None, '{}', '2026-11-21 08:00:00', '2026-11-21 07:00:00', 'h1',
+            ),
+            (
+                uuid.UUID(doc_done).hex, ds_hex, 'done.md', None, 'text/markdown',
+                '', '{}', None,
+                json.dumps({'cognify_pipeline': {self.dataset_id: {'status': 'DATA_ITEM_PROCESSING_COMPLETED'}}}),
+                '2026-11-21 06:00:00', '2026-11-21 06:00:00', 'h2',
+            ),
+            # Double-encoded node_set column (matches SQLite column storage) without external_metadata.node_set
+            (
+                uuid.UUID(doc_knowledge).hex, ds_hex, 'lesson.md', None, 'text/markdown',
+                '', '{}', json.dumps(json.dumps(['session_learnings'])),
+                json.dumps({'cognify_pipeline': {self.dataset_id: 'DATA_ITEM_PROCESSING_COMPLETED'}}),
+                '2026-11-21 09:00:00', '2026-11-21 09:00:00', 'h3',
+            ),
+            (
+                uuid.UUID(doc_common).hex, ds_hex, 'common.md', None, 'text/markdown',
+                '', json.dumps({'common_category': 'preferences'}), None, '{}',
+                '2026-11-21 08:30:00', '2026-11-21 08:30:00', 'h4',
+            ),
+            (
+                uuid.UUID(doc_derived).hex, ds_hex, 'cache.txt', None, 'text/plain',
+                '', json.dumps({'node_set': ['user_sessions_from_cache']}), None, '{}',
+                '2026-11-21 08:15:00', '2026-11-21 08:15:00', 'h5',
+            ),
+            (
+                uuid.UUID(doc_other).hex, other_ds_hex, 'foreign.md', None, 'text/markdown',
+                '', json.dumps({'node_set': ['session_learnings']}), None, '{}',
+                '2026-11-21 09:30:00', '2026-11-21 09:30:00', 'h6',
+            ),
+        ]
+        con.executemany('INSERT INTO data VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', rows)
+        con.execute(
+            'INSERT INTO pipeline_runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (
+                uuid.uuid4().hex, uuid.UUID(run_id).hex, None, ds_hex,
+                'cognify_pipeline', None, 'DATASET_PROCESSING_COMPLETED', 'succeeded', 1, None,
+                'api', '2026-11-21 09:10:00', '2026-11-21 09:09:00', '2026-11-21 09:10:00',
+            ),
+        )
+        con.execute(
+            'INSERT INTO pipeline_runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (
+                uuid.uuid4().hex, uuid.uuid4().hex, None, other_ds_hex,
+                'cognify_pipeline', None, 'DATASET_PROCESSING_COMPLETED', 'succeeded', 1, None,
+                'api', '2026-11-21 09:20:00', '2026-11-21 09:19:00', '2026-11-21 09:20:00',
+            ),
+        )
+        con.commit()
+        con.close()
+
+        client = await self._client(codex_config={'official_data': str(official_data)})
+        try:
+            res = await client.get(
+                f'/v1/projects/{self.project_id}/message-summary',
+                headers=self.manager_headers,
+            )
+            self.assertEqual(res.status, 200)
+            body = await res.json()
+
+            self.assertEqual(self.official.calls, [])
+            self.assertEqual(body['errors'], {})
+            self.assertEqual([d['id'] for d in body['pending_documents']], [doc_pending])
+            self.assertEqual(body['pending_documents'][0]['title'], 'Notes')
+            self.assertEqual(body['pending_documents'][0]['date'], '2026-11-21T08:00:00')
+            self.assertEqual(
+                body['knowledge_catalog'],
+                [
+                    {'id': doc_knowledge, 'created_at': '2026-11-21T09:00:00'},
+                    {'id': doc_common, 'created_at': '2026-11-21T08:30:00'},
+                ],
+            )
+            self.assertEqual(len(body['activity']), 1)
+            self.assertEqual(body['activity'][0]['pipeline_run_id'], run_id)
+            self.assertEqual(body['activity'][0]['dataset_id'], self.dataset_id)
+
+            ver = body['knowledge_catalog_version']
+            res2 = await client.get(
+                f'/v1/projects/{self.project_id}/message-summary?knowledge_version={ver}',
+                headers=self.manager_headers,
+            )
+            self.assertEqual(res2.status, 200)
+            body2 = await res2.json()
+            self.assertTrue(body2['knowledge_catalog_unchanged'])
+            self.assertIsNone(body2['knowledge_catalog'])
+            self.assertEqual(self.official.calls, [])
+        finally:
+            await client.close()
+
+    async def test_provenance_date_and_sqlite_schema_guard(self):
+        from provenance_store import ProvenanceStore
+
+        official_data = self.root / 'official-store'
+        db_dir = official_data / 'system' / 'databases'
+        db_dir.mkdir(parents=True)
+        ds_hex = uuid.UUID(self.dataset_id).hex
+        doc_lesson = str(uuid.uuid4())
+
+        prov = ProvenanceStore(self.root / 'lesson-provenance.sqlite3')
+        prov.record_document(
+            self.dataset_id,
+            doc_lesson,
+            lesson_type='state',
+            state_key='k-msg',
+            candidate_dates=('2026-11-12',),
+            source_qa_ids=('qa-1',),
+        )
+        prov.close()
+
+        con = sqlite3.connect(db_dir / 'cognee_db')
+        con.executescript('''
+            CREATE TABLE data (
+                id CHAR(32) PRIMARY KEY, dataset_id CHAR(32), name VARCHAR, label VARCHAR,
+                mime_type VARCHAR, raw_data_location VARCHAR, external_metadata JSON,
+                system_metadata JSON, node_set JSON, pipeline_status JSON,
+                updated_at DATETIME, created_at DATETIME, content_hash VARCHAR
+            );
+            CREATE TABLE pipeline_runs (
+                id CHAR(32) PRIMARY KEY, pipeline_run_id CHAR(32), parent_operation_id CHAR(32),
+                dataset_id CHAR(32), pipeline_name VARCHAR, operation_name VARCHAR,
+                status VARCHAR, outcome VARCHAR, background BOOLEAN, error_class VARCHAR,
+                origin VARCHAR, created_at DATETIME, started_at DATETIME, ended_at DATETIME
+            );
+        ''')
+        con.execute(
+            'INSERT INTO data VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (
+                uuid.UUID(doc_lesson).hex, ds_hex, 'lesson.md', None, 'text/markdown', '',
+                json.dumps({'lesson_type': 'state', 'state_key': 'k-msg', 'first_source_date': '1999-01-01', 'node_set': ['session_learnings']}),
+                json.dumps({'lesson_type': 'state', 'state_key': 'k-msg', 'session_date': '2026-11-16', 'node_set': ['session_learnings']}),
+                json.dumps(['session_learnings']), '{}',
+                '2026-11-21 09:00:00', '2026-11-21 09:00:00', 'h-lesson',
+            ),
+        )
+        con.commit()
+        con.close()
+
+        client = await self._client(codex_config={'official_data': str(official_data)})
+        try:
+            res = await client.get(f'/v1/projects/{self.project_id}/message-summary', headers=self.manager_headers)
+            self.assertEqual(res.status, 200)
+            body = await res.json()
+            self.assertEqual(body['knowledge_catalog'][0]['first_source_date'], '2026-11-12')
+
+            # Break schema: drop pipeline_runs; with no official fallback responses, must fail closed 503.
+            con = sqlite3.connect(db_dir / 'cognee_db')
+            con.execute('DROP TABLE pipeline_runs')
+            con.commit()
+            con.close()
+            self.registry.official = None
+            broken = await client.get(f'/v1/projects/{self.project_id}/message-summary', headers=self.manager_headers)
+            self.assertEqual(broken.status, 503)
+            self.assertEqual((await broken.json())['error'], 'message_summary_store_unavailable')
+        finally:
+            await client.close()
 
 
 if __name__ == '__main__':

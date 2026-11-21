@@ -11,14 +11,91 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sys
 import time
 import uuid
 from types import SimpleNamespace
 
-from project_control import private_write, read_secret
+from _runtime_common import private_write, read_secret
 from project_policy import PolicyError
 
 scope = contextvars.ContextVar('memlane_generation_scope', default=None)
+
+
+def _clear_cognify_config_cache():
+    module = sys.modules.get('cognee.modules.cognify.config')
+    if module is None:
+        return
+    get_cognify_config = getattr(module, 'get_cognify_config', None)
+    clear = getattr(get_cognify_config, 'cache_clear', None)
+    if callable(clear):
+        clear()
+
+
+def _local_litellm_baseline():
+    import litellm
+    backup = Path(litellm.__file__).with_name('model_prices_and_context_window_backup.json')
+    if backup.is_file():
+        try:
+            data = json.loads(backup.read_text(encoding='utf-8'))
+            if isinstance(data, dict):
+                return data
+        except (OSError, ValueError):
+            pass
+    return {}
+
+
+def _register_bridge_model(model):
+    import litellm
+    bare = model.split('/', 1)[1] if model.startswith('openai/') else model
+    aliases = {model, bare, 'openai/' + bare}
+    previous = {key: copy.deepcopy(litellm.model_cost[key]) for key in aliases if key in litellm.model_cost}
+    litellm.register_model({model: {'supports_response_schema': True,
+        'supports_function_calling': False, 'litellm_provider': 'openai', 'mode': 'chat'}},
+        persist_across_reloads=False)
+
+    def restore():
+        for key in aliases:
+            if key in previous:
+                litellm.model_cost[key] = copy.deepcopy(previous[key])
+            else:
+                litellm.model_cost.pop(key, None)
+        from litellm.utils import _invalidate_model_cost_lowercase_map
+        _invalidate_model_cost_lowercase_map()
+
+    return restore
+
+
+def _initial_model_restore(profile, environment):
+    mode = (profile or {}).get('mode')
+    provider = (profile or {}).get('provider')
+    model = (environment or {}).get('LLM_MODEL')
+    if not isinstance(model, str) or not model:
+        return None
+    if mode == 'agent_bridge':
+        bare = model.split('/', 1)[1] if model.startswith('openai/') else model
+        aliases = {model, bare, 'openai/' + bare}
+    elif provider == 'ollama':
+        bare = model.split('/', 1)[1] if model.startswith(('ollama/', 'ollama_chat/')) else model
+        aliases = {model, bare, 'ollama/' + bare, 'ollama_chat/' + bare}
+    else:
+        return None
+
+    def restore():
+        try:
+            import litellm
+        except ImportError:
+            return
+        baseline = _local_litellm_baseline()
+        for key in aliases:
+            if key in baseline:
+                litellm.model_cost[key] = copy.deepcopy(baseline[key])
+            else:
+                litellm.model_cost.pop(key, None)
+        from litellm.utils import _invalidate_model_cost_lowercase_map
+        _invalidate_model_cost_lowercase_map()
+
+    return restore
 
 
 def improve_task(task):
@@ -74,6 +151,7 @@ class GenerationHandoffRuntime:
         self.switching = False
         self.bridge = None
         self.task = None
+        self._model_restore = _initial_model_restore(profile, environment)
         for row in self.rows.values():
             if row['status'] in ('preparing', 'stopping', 'applying'):
                 row.update(status='unknown', reason='service_interrupted')
@@ -153,13 +231,10 @@ class GenerationHandoffRuntime:
                         raise PolicyError('generation_provider_unavailable', 409) from None
                 candidate = native_llm_configuration(environment)
                 if profile.get('provider') == 'ollama':
-                    from generation_ollama import register_verified_schema
-                    register_verified_schema(json.loads(environment['MEMLANE_OLLAMA_SCHEMA_EVIDENCE']),
-                                             candidate.llm_model, candidate.llm_endpoint)
-                if profile['mode'] == 'agent_bridge':
-                    import litellm
-                    litellm.register_model({candidate.llm_model: {'supports_response_schema': True,
-                        'supports_function_calling': False, 'litellm_provider': 'openai', 'mode': 'chat'}})
+                    from generation_ollama import NativeSchemaUnconfirmed, evidence_matches
+                    if not evidence_matches(json.loads(environment['MEMLANE_OLLAMA_SCHEMA_EVIDENCE']),
+                                            candidate.llm_model, candidate.llm_endpoint):
+                        raise NativeSchemaUnconfirmed()
             row['status'] = 'stopping'; self.save()
             tasks = {t for t in self.tasks() if not t.done()}
             operations = {t:self.operation_for(t) for t in tasks if improve_task(t)}
@@ -205,12 +280,51 @@ class GenerationHandoffRuntime:
                         if response.status != 200 or (await response.json()).get('active_or_waiting') != 0:
                             raise PolicyError('generation_stop_unconfirmed', 409)
             row['status'] = 'applying'; self.save()
-            if profile.get('provider') == 'ollama':
-                os.environ['OLLAMA_API_BASE'] = environment['LLM_ENDPOINT']
-            else:
-                os.environ.pop('OLLAMA_API_BASE', None)
-            self.gate.reconfigure(environment['LLM_ENDPOINT'], profile.get('max_concurrent_requests', 2),
-                                  profile.get('bridge_kind') or profile.get('provider'))
+            if self._model_restore is not None:
+                self._model_restore()
+                self._model_restore = None
+            next_restore = None
+            try:
+                if profile.get('provider') == 'ollama' and environment.get('MEMLANE_OLLAMA_SCHEMA_EVIDENCE'):
+                    from generation_ollama import register_verified_schema
+                    model_name = getattr(candidate, 'llm_model', None) or environment.get('LLM_MODEL')
+                    endpoint_url = getattr(candidate, 'llm_endpoint', None) or environment.get('LLM_ENDPOINT')
+                    if model_name and endpoint_url:
+                        next_restore = register_verified_schema(
+                            json.loads(environment['MEMLANE_OLLAMA_SCHEMA_EVIDENCE']),
+                            model_name, endpoint_url)
+                elif profile['mode'] == 'agent_bridge':
+                    model_name = getattr(candidate, 'llm_model', None) or environment.get('LLM_MODEL')
+                    if model_name:
+                        next_restore = _register_bridge_model(model_name)
+                if profile.get('provider') == 'ollama':
+                    os.environ['OLLAMA_API_BASE'] = environment['LLM_ENDPOINT']
+                else:
+                    os.environ.pop('OLLAMA_API_BASE', None)
+                if 'CHUNKS_PER_BATCH' in environment:
+                    os.environ['CHUNKS_PER_BATCH'] = str(environment['CHUNKS_PER_BATCH'])
+                else:
+                    os.environ.pop('CHUNKS_PER_BATCH', None)
+                _clear_cognify_config_cache()
+                self.gate.reconfigure(environment['LLM_ENDPOINT'], profile.get('max_concurrent_requests', 2),
+                                      profile.get('bridge_kind') or profile.get('provider'))
+            except BaseException:
+                if next_restore is not None:
+                    next_restore()
+                if self.profile.get('provider') == 'ollama' and self.environment.get('MEMLANE_OLLAMA_SCHEMA_EVIDENCE'):
+                    from generation_ollama import register_verified_schema
+                    prev_model = getattr(self.config, 'llm_model', None) or self.environment.get('LLM_MODEL')
+                    prev_endpoint = getattr(self.config, 'llm_endpoint', None) or self.environment.get('LLM_ENDPOINT')
+                    if prev_model and prev_endpoint:
+                        self._model_restore = register_verified_schema(
+                            json.loads(self.environment['MEMLANE_OLLAMA_SCHEMA_EVIDENCE']),
+                            prev_model, prev_endpoint)
+                elif self.profile.get('mode') == 'agent_bridge':
+                    prev_model = getattr(self.config, 'llm_model', None) or self.environment.get('LLM_MODEL')
+                    if prev_model:
+                        self._model_restore = _register_bridge_model(prev_model)
+                raise
+            self._model_restore = next_restore
             self.config, self.bridge = candidate, new_bridge
             self.profile, self.environment = copy.deepcopy(profile), environment
             self.active = {'reference': copy.deepcopy(reference), 'digest': digest}
@@ -234,6 +348,9 @@ class GenerationHandoffRuntime:
             await asyncio.gather(self.task, return_exceptions=True)
         if self.bridge:
             await self.bridge.close()
+        if self._model_restore is not None:
+            self._model_restore()
+            self._model_restore = None
 
 
 def install_generation_handoff(app, runtime, profile, environment, gate):

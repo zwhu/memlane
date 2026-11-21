@@ -3,10 +3,6 @@
 DEFAULT_LANGUAGE = 'zh-CN'
 
 
-def language_settings():
-    return {'language': DEFAULT_LANGUAGE, 'display_name': '简体中文', 'configurable': False}
-
-
 def knowledge_language_instructions():
     return '''
 

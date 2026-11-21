@@ -115,6 +115,31 @@ class RecallTests(unittest.TestCase):
             reopened.close()
 
 
+    def test_sqlite_wal_pragmas_symlink_rejection_and_counts_for_datasets(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            db_path = root / 'knowledge-recall.sqlite3'
+            link = root / 'link-recall.sqlite3'
+            link.symlink_to(db_path)
+            with self.assertRaisesRegex(ValueError, 'symlink'):
+                RecallStore(link)
+
+            store = RecallStore(db_path)
+            self.assertEqual(db_path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(store.db.execute('PRAGMA journal_mode').fetchone()[0].lower(), 'wal')
+            self.assertEqual(store.db.execute('PRAGMA journal_size_limit').fetchone()[0], 4194304)
+            self.assertEqual(store.db.execute('PRAGMA wal_autocheckpoint').fetchone()[0], 1000)
+            self.assertEqual(store.db.execute('PRAGMA busy_timeout').fetchone()[0], 5000)
+            store.record('agent', event(K, K2))
+            store.record('agent', event(K))
+            summary = store.counts_for_datasets({D})
+            self.assertTrue(summary['started_at'])
+            self.assertEqual(summary['counts'][f'{D}/{K}']['count'], 2)
+            self.assertEqual(summary['counts'][f'{D}/{K2}']['count'], 1)
+            self.assertTrue(store.checkpoint('TRUNCATE'))
+            store.close()
+
+
 class RecallAPITests(unittest.IsolatedAsyncioTestCase):
     async def test_manager_counts_and_events_do_not_recall_or_accept_agent_reads(self):
         manager = {'Authorization': 'Bearer '+'m'*40}

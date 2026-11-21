@@ -420,7 +420,27 @@ def process(common, policy, payload):
                 release_entry_hold(policy, buffer_state)
         except (AttributeError, KeyError, OSError, ValueError):
             pass
-    policy.require('process', dataset, automatic=True)
+    not_ready = getattr(policy, 'NotReady', ())
+    try:
+        policy.require('process', dataset, automatic=True)
+    except not_ready:
+        if callable(getattr(policy, 'current', None)):
+            snapshot = policy.current(dataset)
+            pol = snapshot.get('policy') if isinstance(snapshot, dict) else None
+            if (isinstance(snapshot, dict) and snapshot.get('ready')
+                    and isinstance(pol, dict)
+                    and 'write' in (pol.get('permissions') or ())
+                    and pol.get('can_auto_process')):
+                blocked = False
+                if callable(getattr(policy, '_state', None)):
+                    try:
+                        with policy._state(writable=False) as state:
+                            blocked = bool(state.get('blocked'))
+                    except Exception:
+                        return {'status': 'deferred', 'reason': 'policy_unconfirmed'}
+                if not blocked:
+                    return {'status': 'deferred', 'reason': 'policy_unconfirmed'}
+        raise
     # Idle admission uses the official configurable cooldown; its retry,
     # no-new-entry and submission behavior stays owned by the installed plugin.
     cooldown = '300' if payload.get('incremental_cooldown_seconds') == 300 else None
@@ -449,6 +469,22 @@ def process(common, policy, payload):
     if reason == 'managed_policy_paused':
         return {'status': 'disabled', 'reason': reason}
     return {'status': 'unknown', 'reason': reason or 'official_submission_unconfirmed'}
+
+
+_PERMANENT_PROCESS_NOT_READY = frozenset({
+    '当前 Agent 没有此项目的写入权限',
+    'project_read_denied',
+    'project_write_denied',
+    'project_binding_required',
+    'managed_dataset_mismatch',
+    'managed_buffer_session_mismatch',
+    'host_session_required',
+    'existing_session_requires_explicit_binding',
+    'session_binding_conflict',
+    'control_configuration_invalid',
+    'control_credential_invalid',
+    'invalid_backlog_action',
+})
 
 
 def main():
@@ -493,9 +529,14 @@ def main():
             emit(result)
         else:
             raise policy.NotReady('invalid_backlog_action')
-    except policy.NotReady:
+    except policy.NotReady as error:
+        reason = str(error) or 'policy_unconfirmed'
         if payload.get('action') == 'process':
-            emit({'status': 'deferred', 'reason': 'policy_unconfirmed'})
+            if reason in _PERMANENT_PROCESS_NOT_READY:
+                code = reason if reason.isascii() and ' ' not in reason and len(reason) <= 80 else 'managed_policy_paused'
+                emit({'status': 'disabled', 'reason': code})
+            else:
+                emit({'status': 'deferred', 'reason': 'policy_unconfirmed'})
         else:
             emit({'status': 'paused', 'reason': 'policy_unconfirmed'})
 

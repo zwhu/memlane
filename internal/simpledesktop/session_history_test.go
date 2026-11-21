@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -220,5 +222,225 @@ func TestSessionListAndSourceUseSameHistoryReader(t *testing.T) {
 	fromSource, page, err := a.Client.sourceWithHistory(context.Background(), Item{Dataset: "ds", Source: "session"})
 	if err != nil || page == nil || fromSource.Detail.QAs[0].Question != s.Selected.Detail.QAs[0].Question {
 		t.Fatal("source and direct session differ", err)
+	}
+}
+
+func TestSessionDetailStationaryPanelTabSwitchAndVirtualization(t *testing.T) {
+	for _, appearance := range []string{"light", "dark"} {
+		t.Run(appearance, func(t *testing.T) {
+			a := projectUIFixture()
+			setTestAppearance(t, a, appearance)
+			a.kind = "原始记录"
+			s := a.state()
+
+			now := time.Now().UTC().Format(time.RFC3339)
+			sess1 := Session{ID: "codex_large-session", Dataset: "ds", User: "owner", Updated: now}
+			page1 := SessionHistoryPage{
+				Paging:      true,
+				Limit:       20,
+				SessionDetail: SessionDetail{Session: sess1},
+			}
+			var longAnswer strings.Builder
+			for n := 0; n < 60; n++ {
+				fmt.Fprintf(&longAnswer, "Detailed session answer paragraph %03d explaining layout and virtualization.\n\n", n)
+			}
+			longAnswer.WriteString("END_OF_LONG_ANSWER_000")
+			for n := 0; n < 160; n++ {
+				ans := "Saved concise answer."
+				if n == 0 {
+					ans = longAnswer.String()
+				}
+				page1.QAs = append(page1.QAs, QA{
+					ID:       fmt.Sprintf("qa-%03d", n),
+					Question: fmt.Sprintf("history question %03d", n),
+					Answer:   ans,
+				})
+			}
+			var longJSON strings.Builder
+			longJSON.WriteString("{\n")
+			for n := 0; n < 150; n++ {
+				comma := ","
+				if n == 149 {
+					comma = ""
+				}
+				fmt.Fprintf(&longJSON, "  \"k%03d\": \"step %03d\"%s\n", n, n, comma)
+			}
+			longJSON.WriteString("}")
+			for n := 0; n < 200; n++ {
+				params := json.RawMessage(`{"path":"a.go"}`)
+				result := json.RawMessage(`{"ok":true}`)
+				if n == 0 {
+					params = json.RawMessage(longJSON.String())
+					result = json.RawMessage(longJSON.String())
+				}
+				page1.Traces = append(page1.Traces, Trace{
+					ID:     fmt.Sprintf("tr-%03d", n),
+					Name:   fmt.Sprintf("history tool %03d", n),
+					Status: "success",
+					Params: params,
+					Result: result,
+				})
+			}
+			page1.Count, page1.ToolCount = len(page1.QAs), len(page1.Traces)
+
+			item1, history1 := sessionItemFromHistoryPage(Item{Title: "Large history session", Kind: "会话"}, page1)
+			for n := 0; n < 3; n++ {
+				subSess := Session{
+					ID:              fmt.Sprintf("codex_sub-%d", n),
+					Dataset:         "ds",
+					User:            "owner",
+					Updated:         now,
+					IsSubagent:      true,
+					ParentSessionID: sess1.ID,
+					SubagentRole:    "research",
+				}
+				item1.Subagents = append(item1.Subagents, Item{
+					ID:             subSess.ID,
+					Dataset:        "ds",
+					Kind:           "会话",
+					Title:          fmt.Sprintf("subagent topic %d", n),
+					SessionSummary: "已保存 2 轮问答 · 5 条工具记录",
+					Date:           now,
+					Session:        &subSess,
+				})
+			}
+
+			sess2 := Session{ID: "codex_second-session", Dataset: "ds", User: "owner", Updated: now}
+			page2 := SessionHistoryPage{
+				Paging: true,
+				Limit:  20,
+				SessionDetail: SessionDetail{
+					Session:   sess2,
+					Label:     "Second session title",
+					Count:     1,
+					ToolCount: 0,
+					QAs:       []QA{{ID: "s2-q0", Question: "second session question", Answer: "second session answer"}},
+				},
+			}
+			item2, history2 := sessionItemFromHistoryPage(Item{Title: "Second session title", Kind: "会话"}, page2)
+
+			s.Items = []Item{item1, item2}
+			s.RawCatalog = s.Items
+			s.Loaded = true
+			s.Selected = &item1
+			s.SourcePage = history1
+
+			tt := ui.NewTester(a.View, 1200, 820)
+			tt.Advance(350 * time.Millisecond)
+			tt.Frame()
+			fixtureImage(t, tt, "raw-session-qa-"+appearance)
+
+			toolbarBefore, okBar := tt.Find("项目内容工具栏")
+			tabsBefore, okTabs := tt.Find("会话内容类型")
+			if !okBar || !okTabs || !tt.HasText("history question 000") {
+				t.Fatalf("[%s] missing stationary header or initial QA row: bar=%v tabs=%v", appearance, okBar, okTabs)
+			}
+			if tt.HasText("history question 159") {
+				t.Fatalf("[%s] QA history should be virtualized without building row 159", appearance)
+			}
+			assertHeaderStationary := func(stage string) {
+				t.Helper()
+				toolbarNow, ok1 := tt.Find("项目内容工具栏")
+				tabsNow, ok2 := tt.Find("会话内容类型")
+				if !ok1 || !ok2 || toolbarNow != toolbarBefore ||
+					tabsNow.X != tabsBefore.X || tabsNow.Y != tabsBefore.Y || tabsNow.H != tabsBefore.H ||
+					math.Abs(float64(tabsNow.W-tabsBefore.W)) > 2 {
+					t.Fatalf("[%s] %s moved header or segmented bar: bar %+v->%+v tabs %+v->%+v",
+						appearance, stage, toolbarBefore, toolbarNow, tabsBefore, tabsNow)
+				}
+			}
+			docEnter0 := a.motionRuns.docEnter
+			fade0 := a.motionRuns.docBodyFade
+
+			// 1. Switch 问答 -> 工具记录: header/tabs stationary, no docEnter replay, body fades cleanly, virtualized.
+			clickProjectUI(t, tt, "工具记录")
+			tt.Advance(350 * time.Millisecond)
+			tt.Frame()
+			assertHeaderStationary("switching to tools")
+			if a.motionRuns.docEnter != docEnter0 || a.motionRuns.docBodyFade <= fade0 {
+				t.Fatalf("[%s] expected no docEnter replay (%d->%d) and incremented docBodyFade (%d->%d)",
+					appearance, docEnter0, a.motionRuns.docEnter, fade0, a.motionRuns.docBodyFade)
+			}
+			if !tt.HasText("history tool 000") || tt.HasText("history tool 199") {
+				t.Fatalf("[%s] tool history should virtualize rows", appearance)
+			}
+			toolFrames := make([]time.Duration, 0, 15)
+			for n := 0; n < 15; n++ {
+				t0 := time.Now()
+				tt.Frame()
+				toolFrames = append(toolFrames, time.Since(t0))
+			}
+			sort.Slice(toolFrames, func(i, j int) bool { return toolFrames[i] < toolFrames[j] })
+			if med := toolFrames[len(toolFrames)/2]; med > 12*time.Millisecond {
+				t.Errorf("[%s] tools view median frame %v exceeds 12ms budget", appearance, med)
+			}
+
+			// Expanding a trace with long JSON keeps header stationary and does not trigger content fade.
+			fadeBeforeExpand := a.motionRuns.docBodyFade
+			clickProjectUI(t, tt, "history tool 000 · success")
+			tt.Frame()
+			fixtureImage(t, tt, "raw-session-tools-expanded-"+appearance)
+			if !s.Tools[item1.key()+"/"+item1.Detail.Traces[0].ID] || !tt.HasText("step 000") {
+				t.Fatalf("[%s] expanding trace 0 did not reveal JSON body: %v", appearance, tt.Texts())
+			}
+			if a.motionRuns.docBodyFade != fadeBeforeExpand {
+				t.Fatalf("[%s] expanding trace must not trigger docBodyFade (%d->%d)", appearance, fadeBeforeExpand, a.motionRuns.docBodyFade)
+			}
+			assertHeaderStationary("expanding trace")
+
+			// 2. Switch 工具记录 -> 子会话 (3) -> 问答.
+			fadeBeforeSub := a.motionRuns.docBodyFade
+			clickProjectUI(t, tt, "子会话 (3)")
+			tt.Advance(350 * time.Millisecond)
+			tt.Frame()
+			if !s.SessionSubagents || !tt.HasText("subagent topic 0") || a.motionRuns.docEnter != docEnter0 || a.motionRuns.docBodyFade <= fadeBeforeSub {
+				t.Fatalf("[%s] subagents switch failed stationary/fade invariants", appearance)
+			}
+			assertHeaderStationary("subagents switch")
+
+			fadeBeforeQA := a.motionRuns.docBodyFade
+			clickProjectUI(t, tt, "问答")
+			tt.Advance(350 * time.Millisecond)
+			tt.Frame()
+			if s.SessionTools || s.SessionSubagents || !tt.HasText("history question 000") || tt.HasText("history question 159") {
+				t.Fatalf("[%s] switching back to 问答 failed virtualization or state", appearance)
+			}
+			if a.motionRuns.docEnter != docEnter0 || a.motionRuns.docBodyFade <= fadeBeforeQA {
+				t.Fatalf("[%s] switching back to 问答 replayed docEnter or missed docBodyFade", appearance)
+			}
+			assertHeaderStationary("switching back to QA")
+			qaFrames := make([]time.Duration, 0, 15)
+			for n := 0; n < 15; n++ {
+				t0 := time.Now()
+				tt.Frame()
+				qaFrames = append(qaFrames, time.Since(t0))
+			}
+			sort.Slice(qaFrames, func(i, j int) bool { return qaFrames[i] < qaFrames[j] })
+			if med := qaFrames[len(qaFrames)/2]; med > 12*time.Millisecond {
+				t.Errorf("[%s] QA view median frame %v exceeds 12ms budget", appearance, med)
+			}
+
+			// 3. Switch to another record: panel/header toolbar Y stays stationary, text & fade update.
+			fadeBeforeItem2 := a.motionRuns.docBodyFade
+			s.Selected = &item2
+			s.SourcePage = history2
+			s.SessionTools = false
+			s.SessionSubagents = false
+			tt.Advance(350 * time.Millisecond)
+			tt.Frame()
+			toolbarItem2, _ := tt.Find("项目内容工具栏")
+			if toolbarItem2.Y != toolbarBefore.Y {
+				t.Fatalf("[%s] switching item shifted header toolbar Y: %v -> %v", appearance, toolbarBefore.Y, toolbarItem2.Y)
+			}
+			if !tt.HasText("Second session title") || !tt.HasText("second session question") {
+				t.Fatalf("[%s] second record content missing: %v", appearance, tt.Texts())
+			}
+			if a.motionRuns.docEnter <= docEnter0 || a.motionRuns.docBodyFade <= fadeBeforeItem2 {
+				t.Fatalf("[%s] switching item did not arm docBodyFade/docEnter", appearance)
+			}
+
+			tt.SetPreferences(ui.Preferences{ReduceMotion: true})
+			tt.Frame()
+		})
 	}
 }

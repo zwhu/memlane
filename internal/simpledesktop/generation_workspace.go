@@ -27,6 +27,7 @@ func (s *integrationState) rememberGenerationDraft() {
 }
 func (a *App) selectGenerationProfile(id string, row GenerationRow) {
 	s := &a.integrations
+	s.GenerationAgentApply = false
 	if s.Editor && s.ProfileID == id {
 		return
 	}
@@ -62,6 +63,7 @@ func (a *App) selectGenerationProfile(id string, row GenerationRow) {
 }
 func (a *App) chooseGenerationSource(mode string) {
 	s := &a.integrations
+	s.GenerationAgentApply = false
 	if s.Busy || (s.Editor && s.DraftMode == mode) {
 		return
 	}
@@ -92,6 +94,7 @@ func (a *App) discardGenerationDraft() {
 	if s.SaveOperation != "" || s.Busy {
 		return
 	}
+	s.GenerationAgentApply = false
 	id := s.ProfileID
 	delete(s.GenerationDrafts, id)
 	rows := s.Generation.Profiles[id]

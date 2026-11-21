@@ -682,6 +682,44 @@ def main(ROOT):
 """
         self.assertEqual(self.codes(two_hop_disk, 'scripts/disk-space.py'), set())
 
+    def test_ml006_and_ml015_scripts_coverage(self):
+        bad_profile_wait_for = """import asyncio
+async def generate(adapter, row):
+    return await asyncio.wait_for(collect(), timeout=60)
+"""
+        self.assertIn('ML006', self.codes(bad_profile_wait_for, 'engine/python/user_profiles/runner.py'))
+
+        bad_profile_timeout = """import asyncio
+async def generate(adapter, row):
+    async with asyncio.timeout(60):
+        return await collect()
+"""
+        self.assertIn('ML006', self.codes(bad_profile_timeout, 'engine/python/user_profiles/runner.py'))
+
+        good_profile_heartbeat = """import asyncio
+async def generate(adapter, row):
+    while not collection.done():
+        await asyncio.wait({collection}, timeout=1)
+    return await collection
+"""
+        self.assertEqual(self.codes(good_profile_heartbeat, 'engine/python/user_profiles/runner.py'), set())
+
+        bad_script_archive_hash = """import hashlib
+def main(archive):
+    return hashlib.sha256(archive.read_bytes()).hexdigest()
+"""
+        self.assertIn('ML015', self.codes(bad_script_archive_hash, 'scripts/bootstrap.py'))
+
+        good_script_chunked_hash = """import hashlib
+def main(archive):
+    h = hashlib.sha256()
+    with archive.open('rb') as stream:
+        while chunk := stream.read(1024 * 1024):
+            h.update(chunk)
+    return h.hexdigest()
+"""
+        self.assertEqual(self.codes(good_script_chunked_hash, 'scripts/bootstrap.py'), set())
+
 
 if __name__ == '__main__':
     unittest.main()

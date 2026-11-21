@@ -105,8 +105,8 @@ func (a *App) trayControlStatus() (dotState, metric string, col ui.Color) {
 		return "fail", "异常", tok.Danger
 	}
 	if m.ControlReachable || m.Snapshot != nil {
-		if m.Snapshot != nil && m.Snapshot.Summary != nil && m.Snapshot.Summary.RecentProcessingMs != nil {
-			return "ok", fmt.Sprintf("已连接 · %.0f ms", *m.Snapshot.Summary.RecentProcessingMs), tok.Text2
+		if m.HasControlLatency {
+			return "ok", "已连接 · " + formatDurationCompact(m.ControlLatencyMs), tok.Text2
 		}
 		return "ok", "已连接", tok.Text2
 	}
@@ -118,6 +118,9 @@ func (a *App) trayChannelStatus() (dotState, metric string, col ui.Color) {
 		return "neutral", "未配置", tok.Text3
 	}
 	if strings.HasPrefix(a.completion, "端点已连接") {
+		if a.monitor.HasCompletionLatency {
+			return "ok", "已连接 · " + formatDurationCompact(a.monitor.CompletionLatencyMs), tok.Text2
+		}
 		return "ok", "已连接", tok.Text2
 	}
 	if a.completion == "" || a.completion == "尚未检查" {
@@ -218,7 +221,7 @@ func (a *App) trayFlyoutComponentsSection(c *ui.Context) {
 	cogDot, cogStatus, cogCol := a.serviceCogneeStatus()
 	cogMetric := cogStatus
 	if a.monitor.HasLatency && cogDot == "ok" {
-		cogMetric = fmt.Sprintf("%s · %.0f ms", cogStatus, a.monitor.LastLatencyMs)
+		cogMetric = fmt.Sprintf("%s · %s", cogStatus, formatDurationCompact(a.monitor.LastLatencyMs))
 	}
 	if cogDot == "ok" {
 		cogCol = tok.Text2

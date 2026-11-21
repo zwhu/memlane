@@ -32,6 +32,7 @@ ML002_LITERAL_MESSAGE = '模型参数不得注入字面量默认值；从明确�
 ML002_CALL_MESSAGE = '模型参数不得在调用中硬编码；使用明确配置'
 ML003_OR_MESSAGE = '模型参数不得用 or 补回退值；显式0必须保留'
 ML003_FALLBACK_MESSAGE = '模型参数不得使用 get/setdefault 回退值；保留未配置状态'
+ML006_MESSAGE = '画像生成不得使用固定总时长超时中断；请观察进程活动并提供明确停止'
 ML007_MESSAGE = '禁止在非白名单模块修改全局 os.environ；请显式传递环境变量字典或限定为白名单入口'
 ML008_ALLOW_MESSAGE = '禁止在非动效模块直接调用 AnimationFrame()；集中到 motion_tokens.go 并受 ReduceMotion 守护'
 ML008_GUARD_MESSAGE = 'AnimationFrame() 所在动效函数必须检查 ReduceMotion，禁止空闲无限刷帧'
@@ -57,6 +58,8 @@ BLOCKING_OS_PROCESS_CALLS = {
 BLOCKING_SAMPLER_NAMES = {'sample_process', 'default_sample_process'}
 HASH_DIGEST_NAMES = {'sha256', 'sha512', 'sha1', 'md5'}
 BINARY_EXPR_NAMES = {'node', 'executable', 'binary', 'bin_path', 'node_executable', 'node_path', 'node_bin'}
+SCRIPT_ARCHIVE_EXPR_NAMES = {'archive', 'tarball', 'dmg', 'installer', 'bundle'}
+PROFILE_TIMEOUT_CALLS = {'wait_for', 'timeout', 'timeout_at'}
 SQLITE_EXEC_METHODS = {'execute', 'executescript'}
 WAL_MODE_RE = re.compile(r"pragma\s+(?:\w+\.)?journal_mode\s*=\s*['\"]?wal['\"]?\b", re.IGNORECASE)
 WAL_SIZE_LIMIT_RE = re.compile(r'pragma\s+(?:\w+\.)?journal_size_limit\b', re.IGNORECASE)
@@ -662,11 +665,12 @@ def _walk_live_nodes(stmt):
         stack.extend(reversed(children))
 
 
-def _expr_references_binary(expr):
+def _expr_references_binary(expr, extra_names=None):
+    target_names = BINARY_EXPR_NAMES if not extra_names else (BINARY_EXPR_NAMES | extra_names)
     return any(
-        (isinstance(t, ast.Name) and t.id in BINARY_EXPR_NAMES)
-        or (isinstance(t, ast.Attribute) and t.attr in BINARY_EXPR_NAMES)
-        or (isinstance(t, ast.Constant) and isinstance(t.value, str) and t.value in BINARY_EXPR_NAMES)
+        (isinstance(t, ast.Name) and t.id in target_names)
+        or (isinstance(t, ast.Attribute) and t.attr in target_names)
+        or (isinstance(t, ast.Constant) and isinstance(t.value, str) and t.value in target_names)
         for t in ast.walk(expr)
     )
 
@@ -1063,8 +1067,54 @@ def _check_runtime_hygiene(tree, path, ast_index, report):
                 for write_call in write_calls:
                     report(write_call, 'ML017', ML017_CLEANUP_RECEIPT_MESSAGE)
 
+    # ML015 (part 1): Reject hashlib.<hash>(<binary_or_archive_expr>.read_bytes()) across both engine and scripts.
+    extra_binary_names = SCRIPT_ARCHIVE_EXPR_NAMES if is_scripts else None
+    for fn_or_mod in [tree, *functions]:
+        nodes = scope_nodes_map[id(fn_or_mod)]
+        binary_byte_vars = set()
+        for sub in nodes:
+            if isinstance(sub, ast.Assign) and len(sub.targets) == 1 and isinstance(sub.targets[0], ast.Name):
+                var_name = sub.targets[0].id
+                if (isinstance(sub.value, ast.Call)
+                        and isinstance(sub.value.func, ast.Attribute)
+                        and sub.value.func.attr == 'read_bytes'
+                        and _expr_references_binary(sub.value.func.value, extra_binary_names)):
+                    binary_byte_vars.add(var_name)
+                else:
+                    binary_byte_vars.discard(var_name)
+            elif is_hash_call(sub):
+                payload = sub.args[0] if sub.args else next(
+                    (kw.value for kw in sub.keywords if kw.arg == 'data'), None
+                )
+                if payload is None:
+                    continue
+                if isinstance(payload, ast.Name) and payload.id in binary_byte_vars:
+                    report(sub, 'ML015', ML015_BINARY_HASH_MESSAGE)
+                    continue
+                for inner in ast.walk(payload):
+                    if (isinstance(inner, ast.Call)
+                            and isinstance(inner.func, ast.Attribute)
+                            and inner.func.attr == 'read_bytes'
+                            and _expr_references_binary(inner.func.value, extra_binary_names)):
+                        report(inner, 'ML015', ML015_BINARY_HASH_MESSAGE)
+
     if is_scripts:
         return
+
+    # ML006: User profile generation must not enforce a fixed wall-clock timeout wrapper.
+    if filename == 'user_profiles.py' or (path_obj.parent.name == 'user_profiles' and filename == 'runner.py'):
+        for node in functions:
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == 'generate':
+                for sub in _iter_scope_nodes(node):
+                    if not isinstance(sub, ast.Call):
+                        continue
+                    if (isinstance(sub.func, ast.Name) and sub.func.id in PROFILE_TIMEOUT_CALLS) or (
+                        isinstance(sub.func, ast.Attribute)
+                        and sub.func.attr in PROFILE_TIMEOUT_CALLS
+                        and isinstance(sub.func.value, ast.Name)
+                        and sub.func.value.id in base_asyncio
+                    ):
+                        report(sub, 'ML006', ML006_MESSAGE)
 
     # Same-module sync functions whose direct scope calls a blocking subprocess helper.
     sync_subprocess_helpers = set()
@@ -1127,36 +1177,6 @@ def _check_runtime_hygiene(tree, path, ast_index, report):
                 and sub.func.value.id in {'self', 'cls'}
             ):
                 report(sub, 'ML014', ML014_MESSAGE)
-
-    # ML015 (part 1): Reject hashlib.<hash>(<binary_expr>.read_bytes()) direct or via simple local assignment.
-    for fn_or_mod in [tree, *functions]:
-        nodes = scope_nodes_map[id(fn_or_mod)]
-        binary_byte_vars = set()
-        for sub in nodes:
-            if isinstance(sub, ast.Assign) and len(sub.targets) == 1 and isinstance(sub.targets[0], ast.Name):
-                var_name = sub.targets[0].id
-                if (isinstance(sub.value, ast.Call)
-                        and isinstance(sub.value.func, ast.Attribute)
-                        and sub.value.func.attr == 'read_bytes'
-                        and _expr_references_binary(sub.value.func.value)):
-                    binary_byte_vars.add(var_name)
-                else:
-                    binary_byte_vars.discard(var_name)
-            elif is_hash_call(sub):
-                payload = sub.args[0] if sub.args else next(
-                    (kw.value for kw in sub.keywords if kw.arg == 'data'), None
-                )
-                if payload is None:
-                    continue
-                if isinstance(payload, ast.Name) and payload.id in binary_byte_vars:
-                    report(sub, 'ML015', ML015_BINARY_HASH_MESSAGE)
-                    continue
-                for inner in ast.walk(payload):
-                    if (isinstance(inner, ast.Call)
-                            and isinstance(inner.func, ast.Attribute)
-                            and inner.func.attr == 'read_bytes'
-                            and _expr_references_binary(inner.func.value)):
-                        report(inner, 'ML015', ML015_BINARY_HASH_MESSAGE)
 
     # ML015 (part 2): In opencode_backlog.py, execute() must unlink owner_path in a live finally block.
     if filename == 'opencode_backlog.py':
@@ -1520,7 +1540,7 @@ def main():
                 print('{}:{}: {} {}'.format(path.relative_to(ROOT), line, code, message))
                 failures += 1
     if not failures:
-        print('Lint passed: 模型参数、环境隔离、UI 性能与运行时资源门禁 (ML001-ML003, ML007-ML012, ML013-ML017)')
+        print('Lint passed: 模型参数、画像无总超时、环境隔离、UI 性能与运行时资源门禁 (ML001-ML003, ML006-ML017)')
     return bool(failures)
 
 

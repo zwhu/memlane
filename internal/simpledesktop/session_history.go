@@ -340,9 +340,51 @@ func (a *App) sessionHistoryControls(c *ui.Context, s *pane, item Item) bool {
 		})
 		homeText(c, statusText, homeMeta).FontFeatures("tnum")
 		ui.Spacer(c)
+		if !s.SessionSubagents {
+			name, more := "问答", page.QAMore
+			scrollKey := item.key()
+			if s.SessionTools {
+				name, more = "工具记录", page.TraceMore
+				scrollKey += "/tools"
+			}
+			if more {
+				if s.Reading {
+					homeText(c, "正在加载更多"+name+"…", homeMeta).Shrink(0)
+				} else {
+					scroll := projectDetailScroll(s, scrollKey)
+					projectLink(c, "继续加载"+name, func() {
+						s.SessionLoadMaxY = scroll.MaxY
+						a.loadMoreSession(s)
+					}).AlignSelf(ui.Center).Shrink(0)
+				}
+			}
+		}
 		refreshAction(c, "重新读取会话", func() { s.SessionLoadMaxY = 0; a.loadSessionPage(s, 0, 0) }).Disabled(s.Reading)
 	})
 	return true
+}
+
+func sessionHistoryFor(s *pane, item Item) *SessionHistoryPage {
+	page := s.SourcePage
+	if page == nil || page.ID != item.ID || page.Dataset != item.Dataset {
+		return nil
+	}
+	return page
+}
+
+func (a *App) checkSessionAutoLoad(s *pane, item Item, scroll *ui.ScrollState) {
+	p := sessionHistoryFor(s, item)
+	if p == nil || s.SessionSubagents || s.Reading || s.Error != "" || scroll == nil {
+		return
+	}
+	more := p.QAMore
+	if s.SessionTools {
+		more = p.TraceMore
+	}
+	if more && scroll.MaxY > 0 && scroll.MaxY > s.SessionLoadMaxY && scroll.Y >= scroll.MaxY-120 {
+		s.SessionLoadMaxY = scroll.MaxY
+		a.loadMoreSession(s)
+	}
 }
 
 func (a *App) openSubagentSession(s *pane, parent, child Item) {
@@ -505,43 +547,50 @@ func (a *App) subagentContext(c *ui.Context, s *pane, i Item) {
 	})
 }
 
+func (a *App) renderSubagentCard(c *ui.Context, s *pane, parent, child Item) {
+	childTitle := projectDisplayTitle(child)
+	label := fmt.Sprintf("%s：%s", subagentBadgeLabel(child.Session), childTitle)
+	card := ui.ButtonBase(c.Key("subagent-card-"+child.key())).Role(ui.RoleButton).Label(label).
+		Cursor(ui.CursorPointer).FillWidth().Padding(sp3, sp3+2).Radius(radius).Border(1, tok.Border).
+		AlignItems(ui.Stretch).Justify(ui.Start)
+	if card.Hovered() {
+		card.Background(tok.Hover)
+	} else {
+		card.Background(tok.BgElevated)
+	}
+	v4ButtonPress(card, 0.99)
+	card.Children(func() {
+		ui.Column(c).FillWidth().Gap(6).Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+				agentLogo(c, recentAgentIcon(child), 14)
+				v4SubagentChip(c, subagentBadgeLabel(child.Session), sessionIdentity(child.ID))
+				if child.Session != nil && child.Session.NestingDepth > 1 {
+					v4CategoryChip(c, fmt.Sprintf("L%d", child.Session.NestingDepth))
+				}
+				ui.Spacer(c)
+				ui.Text(c, displayDate(child.Date)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
+			})
+			if sessionHasTopic(child) {
+				v4InlineMarkdown(c, strings.TrimSpace(child.Title), fsBody, 500, 1.45, tok.Text1).MaxLines(2)
+			} else {
+				homeText(c, sessionIdentity(child.ID), homeBody).TextColor(tok.Text2).SingleLine()
+			}
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+				summary := child.SessionSummary
+				if summary == "" {
+					summary = sessionIdentity(child.ID)
+				}
+				homeText(c, summary, homeReadableMeta).SingleLine().Grow(1).MinWidth(0)
+				ui.Text(c, "查看完整记录 ›").Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Accent).SingleLine().Shrink(0)
+			})
+		})
+	}).OnClick(func() { a.openSubagentSession(s, parent, child) })
+}
+
 func (a *App) subagentsListView(c *ui.Context, s *pane, parent Item) {
 	homeText(c, "以下子会话由当前主会话派生，可能包含 Agent 之间的问答对话与工具调用，点击查看完整记录。", homeMeta)
 	for _, childItem := range parent.Subagents {
-		child := childItem
-		childTitle := projectDisplayTitle(child)
-		label := fmt.Sprintf("%s：%s", subagentBadgeLabel(child.Session), childTitle)
-		card := ui.ButtonBase(c.Key("subagent-card-"+child.key())).Role(ui.RoleButton).Label(label).
-			Cursor(ui.CursorPointer).FillWidth().Padding(sp3, sp3+2).Radius(radius).Border(1, tok.Border).
-			AlignItems(ui.Stretch).Justify(ui.Start)
-		card.Background(homeHoverColor(card, "sub-card-bg-"+child.key(), tok.BgElevated, tok.Hover))
-		v4ButtonPress(card, 0.99)
-		card.Children(func() {
-			ui.Column(c).FillWidth().Gap(6).Children(func() {
-				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
-					agentLogo(c, recentAgentIcon(child), 14)
-					v4SubagentChip(c, subagentBadgeLabel(child.Session), sessionIdentity(child.ID))
-					if child.Session != nil && child.Session.NestingDepth > 1 {
-						v4CategoryChip(c, fmt.Sprintf("L%d", child.Session.NestingDepth))
-					}
-					ui.Spacer(c)
-					ui.Text(c, displayDate(child.Date)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
-				})
-				if sessionHasTopic(child) {
-					v4InlineMarkdown(c, strings.TrimSpace(child.Title), fsBody, 500, 1.45, tok.Text1).MaxLines(2)
-				} else {
-					homeText(c, sessionIdentity(child.ID), homeBody).TextColor(tok.Text2).SingleLine()
-				}
-				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
-					summary := child.SessionSummary
-					if summary == "" {
-						summary = sessionIdentity(child.ID)
-					}
-					homeText(c, summary, homeReadableMeta).SingleLine().Grow(1).MinWidth(0)
-					ui.Text(c, "查看完整记录 ›").Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Accent).SingleLine().Shrink(0)
-				})
-			})
-		}).OnClick(func() { a.openSubagentSession(s, parent, child) })
+		a.renderSubagentCard(c, s, parent, childItem)
 	}
 }
 
@@ -581,10 +630,7 @@ func (a *App) sessionLoadMore(c *ui.Context, s *pane, item Item) {
 		return
 	}
 	scroll := s.DetailScroll[key]
-	if !s.Reading && s.Error == "" && scroll != nil && scroll.MaxY > 0 && scroll.MaxY > s.SessionLoadMaxY && scroll.Y >= scroll.MaxY-120 {
-		s.SessionLoadMaxY = scroll.MaxY
-		a.loadMoreSession(s)
-	}
+	a.checkSessionAutoLoad(s, item, scroll)
 	if s.Reading {
 		homeText(c, "正在加载更多"+name+"…", homeMeta)
 	} else {

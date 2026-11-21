@@ -120,3 +120,45 @@ class OpenCodeArtifactTests(unittest.TestCase):
         run = subprocess.run(command, input=json.dumps(request), env=environment, capture_output=True, text=True, timeout=10)
         self.assertEqual(json.loads(run.stdout), {'error': 'pending_worker_unconfirmed'})
         self.assertNotIn('c' * 40, run.stdout + run.stderr)
+
+
+class OpenCodeEndpointValidationTests(unittest.TestCase):
+    def test_prepare_accepts_cognee_gateway_path_and_rejects_arbitrary_paths(self):
+        import opencode_installation
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            artifact = root / 'artifact'
+            artifact.mkdir()
+            component = json.loads((opencode_installation.ROOT / 'engine/coding-memory-components.json').read_text())['plugin']
+            manifest = {
+                'protocol': 1,
+                'recipe': {'upstream_commit': component['commit'], 'archive_sha256': component['archive_sha256']},
+                'files': {},
+            }
+            manifest_bytes = json.dumps(manifest, sort_keys=True).encode()
+            (artifact / '.memlane-opencode-artifact.json').write_bytes(manifest_bytes)
+            manifest_sha = digest(manifest_bytes)
+            private_write(root / 'official-key', b'c' * 40)
+            private_write(root / 'control-key', b'a' * 40)
+            agent = {'key_file': str(root / 'official-key'), 'control_token_file': str(root / 'control-key')}
+            with patch.object(opencode_installation, 'verify', return_value=manifest), \
+                 patch.object(opencode_installation, 'pending_runtime', return_value={}):
+                installation = prepare(
+                    artifact, root, 'opencode-gw', agent,
+                    'http://127.0.0.1:19992/cognee', 'http://127.0.0.1:19992',
+                    root, artifact_sha256=manifest_sha,
+                )
+                binding = json.loads(Path(installation['binding_file']).read_bytes())
+                self.assertEqual(binding['cognee']['baseUrl'], 'http://127.0.0.1:19992/cognee')
+                with self.assertRaisesRegex(PolicyError, 'installation_local_endpoint_required'):
+                    prepare(
+                        artifact, root, 'opencode-gw', agent,
+                        'http://127.0.0.1:19992/other', 'http://127.0.0.1:19992',
+                        root, artifact_sha256=manifest_sha,
+                    )
+                with self.assertRaisesRegex(PolicyError, 'installation_local_endpoint_required'):
+                    prepare(
+                        artifact, root, 'opencode-gw', agent,
+                        'http://127.0.0.1:19992/cognee', 'http://127.0.0.1:19992/cognee',
+                        root, artifact_sha256=manifest_sha,
+                    )

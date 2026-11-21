@@ -4,105 +4,50 @@ Serves the desktop Overview in a single authenticated loopback call (~30-50ms)
 without modifying upstream Cognee source or keeping a second cache on disk.
 """
 import asyncio
-from datetime import datetime
-import json
 from pathlib import Path
 import sqlite3
 from urllib.parse import unquote, urlparse
-import uuid
 
 from aiohttp import web
 
+from _runtime_common import (
+    decode_node_set,
+    id_variants,
+    is_knowledge_doc,
+    iso_text,
+    parse_json,
+    sql_in_clause,
+    sqlite_table_columns,
+    uuid_text,
+    verify_sqlite_schema,
+)
 from project_policy import PolicyError
-from provenance_store import _calendar_date, _is_lesson_metadata, _local_calendar_date
+from provenance_store import (
+    calendar_date,
+    is_lesson_metadata,
+    load_provenance_maps,
+    local_calendar_date,
+    resolve_lesson_date,
+)
 
 _MAX_PREVIEW_DOCS = 30
 _MAX_PREVIEW_BYTES = 4096
-
-
-def _uuid_text(value):
-    if not value:
-        return ''
-    text = str(value).strip()
-    if not text:
-        return ''
-    try:
-        return str(uuid.UUID(text))
-    except ValueError:
-        return text
-
-
-def _uuid_hex(value):
-    try:
-        return uuid.UUID(str(value)).hex
-    except (ValueError, AttributeError):
-        return ''
-
-
-def _iso_text(value):
-    if not value:
-        return ''
-    text = str(value).strip()
-    if len(text) >= 19 and text[10] == ' ':
-        return text[:10] + 'T' + text[11:]
-    return text
-
-
-def _parse_json(value):
-    if isinstance(value, (dict, list)):
-        return value
-    if not isinstance(value, str) or not value.strip():
-        return None
-    try:
-        return json.loads(value)
-    except ValueError:
-        return None
-
-
-def _is_knowledge_doc(meta):
-    if not isinstance(meta, dict):
-        return False
-    if str(meta.get('common_category') or '').strip():
-        return True
-    ns = meta.get('node_set')
-    if isinstance(ns, str):
-        ns = [ns]
-    if isinstance(ns, list):
-        for tag in ns:
-            if tag in ('session_learnings', 'user_context', 'memory'):
-                return True
-    return False
-
-
-def _load_provenance_maps(provenance_path, allowed_datasets):
-    doc_dates = {}
-    key_dates = {}
-    if not provenance_path or not provenance_path.is_file() or not allowed_datasets:
-        return doc_dates, key_dates
-    placeholders = ','.join('?' for _ in allowed_datasets)
-    params = tuple(sorted(allowed_datasets))
-    try:
-        con = sqlite3.connect(f'file:{provenance_path}?mode=ro', uri=True, timeout=2.0)
-    except sqlite3.Error:
-        return doc_dates, key_dates
-    try:
-        for ds, doc_id, lt, sk, first_date in con.execute(
-            f'''SELECT dataset_id, document_id, lesson_type, state_key, first_source_date
-                FROM document_provenance WHERE dataset_id IN ({placeholders})''',
-            params,
-        ):
-            doc_dates[(str(ds), str(doc_id))] = (str(lt or '').strip(), str(sk or '').strip(), str(first_date or '').strip())
-        for ds, lt, sk, first_date in con.execute(
-            f'''SELECT dataset_id, lesson_type, state_key, first_source_date
-                FROM keyed_provenance WHERE dataset_id IN ({placeholders})''',
-            params,
-        ):
-            key_dates[(str(ds), str(lt or '').strip(), str(sk or '').strip())] = str(first_date or '').strip()
-    except sqlite3.Error:
-        return {}, {}
-    finally:
-        con.close()
-    return doc_dates, key_dates
+# Compatibility alias for sibling modules outside this track (session_relations.py).
+_parse_json = parse_json
+_OVERVIEW_REQUIRED_SCHEMA = {
+    'data': frozenset({
+        'id', 'dataset_id', 'name', 'label', 'mime_type', 'raw_data_location',
+        'external_metadata', 'node_set', 'updated_at', 'created_at', 'content_hash',
+    }),
+    'session_records': frozenset({
+        'session_id', 'user_id', 'dataset_id', 'agent_id', 'last_activity_at', 'started_at',
+    }),
+    'pipeline_runs': frozenset({
+        'id', 'pipeline_run_id', 'parent_operation_id', 'dataset_id',
+        'pipeline_name', 'operation_name', 'status', 'outcome', 'background',
+        'error_class', 'origin', 'created_at', 'started_at', 'ended_at',
+    }),
+}
 
 
 def _read_local_preview(raw_location, official_root):
@@ -132,24 +77,28 @@ def _read_local_preview(raw_location, official_root):
 
 def _effective_knowledge_day(meta, created_at):
     for key in ('first_source_date', 'session_date'):
-        day = _calendar_date(meta.get(key))
+        day = calendar_date(meta.get(key))
         if day:
             return day
-    return _local_calendar_date(created_at) or ''
+    return local_calendar_date(created_at) or ''
 
 
 def _read_overview_snapshot(official_data, provenance_path, allowed_datasets, activity_limit):
     official_root = Path(official_data).resolve()
     db_path = official_root / 'system' / 'databases' / 'cognee_db'
-    if not db_path.is_file():
+    if db_path.is_symlink() or not db_path.is_file():
         raise PolicyError('overview_store_unavailable', 503)
 
-    ds_hex_map = {}
+    ds_variant_map = {}
+    canonical_datasets = set()
     for ds in allowed_datasets:
-        h = _uuid_hex(ds)
-        if h:
-            ds_hex_map[h] = ds
-    doc_prov, key_prov = _load_provenance_maps(provenance_path, allowed_datasets)
+        canon = uuid_text(ds)
+        if not canon:
+            continue
+        canonical_datasets.add(canon)
+        for variant in id_variants(canon):
+            ds_variant_map[variant] = canon
+    doc_prov, key_prov = load_provenance_maps(provenance_path, canonical_datasets)
 
     try:
         con = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True, timeout=2.0)
@@ -162,56 +111,51 @@ def _read_overview_snapshot(official_data, provenance_path, allowed_datasets, ac
     pipeline_runs_more = False
     knowledge_candidates = []
     try:
-        if ds_hex_map:
-            hex_list = sorted(ds_hex_map.keys())
-            placeholders = ','.join('?' for _ in hex_list)
+        verify_sqlite_schema(con, _OVERVIEW_REQUIRED_SCHEMA)
+        has_system_metadata = 'system_metadata' in sqlite_table_columns(con, 'data')
+        if ds_variant_map:
+            variant_list = tuple(sorted(ds_variant_map.keys()))
+            ds_sql, ds_params = sql_in_clause(variant_list)
+            sys_col_sql = ', system_metadata' if has_system_metadata else ''
             for row in con.execute(
                 f'''SELECT id, dataset_id, name, label, mime_type, raw_data_location,
-                           external_metadata, node_set, updated_at, created_at, content_hash
-                    FROM data WHERE dataset_id IN ({placeholders})''',
-                hex_list,
+                           external_metadata, node_set, updated_at, created_at, content_hash{sys_col_sql}
+                    FROM data WHERE dataset_id {ds_sql}''',
+                ds_params,
             ):
-                doc_id = _uuid_text(row[0])
-                ds_id = ds_hex_map.get(str(row[1]), _uuid_text(row[1]))
+                doc_id = uuid_text(row[0])
+                ds_id = ds_variant_map.get(str(row[1]), uuid_text(row[1]))
                 if not doc_id or not ds_id:
                     continue
-                meta = _parse_json(row[6])
-                if not isinstance(meta, dict):
-                    meta = {}
-                else:
-                    meta = dict(meta)
-                ns = _parse_json(row[7])
-                if ns and 'node_set' not in meta:
-                    meta['node_set'] = ns
-                created_at = _iso_text(row[9])
-                updated_at = _iso_text(row[8])
-                if _is_lesson_metadata(meta):
-                    lt = str(meta.get('lesson_type') or '').strip()
-                    sk = str(meta.get('state_key') or '').strip()
-                    dates = []
-                    prov = doc_prov.get((ds_id, doc_id))
-                    if prov:
-                        if not lt and prov[0]:
-                            lt = prov[0]
-                        if not sk and prov[1]:
-                            sk = prov[1]
-                        if _calendar_date(prov[2]):
-                            dates.append(prov[2])
-                    if lt and sk:
-                        kd = key_prov.get((ds_id, lt, sk))
-                        if _calendar_date(kd):
-                            dates.append(kd)
-                    if not dates:
-                        if _calendar_date(meta.get('first_source_date')):
-                            dates.append(meta['first_source_date'])
-                        elif _calendar_date(meta.get('session_date')):
-                            dates.append(meta['session_date'])
-                        else:
-                            cd = _local_calendar_date(created_at)
-                            if cd:
-                                dates.append(cd)
-                    if dates:
-                        meta['first_source_date'] = min(dates)
+                raw_ext = parse_json(row[6])
+                ext_meta = dict(raw_ext) if isinstance(raw_ext, dict) else {}
+                raw_sys = parse_json(row[11]) if has_system_metadata else None
+                sys_meta = dict(raw_sys) if isinstance(raw_sys, dict) and raw_sys else None
+                ns = decode_node_set(row[7])
+                if ns and 'node_set' not in ext_meta:
+                    ext_meta['node_set'] = ns
+                if sys_meta is not None and ns and 'node_set' not in sys_meta:
+                    sys_meta['node_set'] = ns
+                trusted = sys_meta if sys_meta is not None else ext_meta
+                meta = dict(ext_meta)
+                created_at = iso_text(row[9])
+                updated_at = iso_text(row[8])
+                if is_lesson_metadata(trusted):
+                    if sys_meta is not None:
+                        for key in ('lesson_type', 'state_key', 'session_date', 'source_qa_ids'):
+                            if sys_meta.get(key) is not None:
+                                meta[key] = sys_meta[key]
+                    resolved_day = resolve_lesson_date(
+                        ds_id,
+                        doc_id,
+                        system_metadata=sys_meta,
+                        external_metadata=ext_meta,
+                        created_at=created_at,
+                        doc_prov=doc_prov,
+                        key_prov=key_prov,
+                    )
+                    if resolved_day:
+                        meta['first_source_date'] = resolved_day
                 doc_obj = {
                     'id': doc_id,
                     'datasetId': ds_id,
@@ -224,25 +168,25 @@ def _read_overview_snapshot(official_data, provenance_path, allowed_datasets, ac
                     'contentHash': row[10] or '',
                 }
                 documents.append(doc_obj)
-                if _is_knowledge_doc(meta) and row[5]:
+                if is_knowledge_doc(meta) and row[5]:
                     day = _effective_knowledge_day(meta, created_at)
                     knowledge_candidates.append((day, f'{ds_id}/{doc_id}', row[5]))
 
             for srow in con.execute(
                 f'''SELECT session_id, user_id, dataset_id, agent_id, last_activity_at, started_at
-                    FROM session_records WHERE dataset_id IN ({placeholders})''',
-                hex_list,
+                    FROM session_records WHERE dataset_id {ds_sql}''',
+                ds_params,
             ):
                 sid = str(srow[0] or '')
                 if not sid:
                     continue
                 sessions.append({
                     'session_id': sid,
-                    'user_id': _uuid_text(srow[1]),
-                    'dataset_id': ds_hex_map.get(str(srow[2]), _uuid_text(srow[2])),
+                    'user_id': uuid_text(srow[1]),
+                    'dataset_id': ds_variant_map.get(str(srow[2]), uuid_text(srow[2])),
                     'agent_id': str(srow[3] or ''),
-                    'last_activity_at': _iso_text(srow[4]),
-                    'started_at': _iso_text(srow[5]),
+                    'last_activity_at': iso_text(srow[4]),
+                    'started_at': iso_text(srow[5]),
                 })
 
         pipe_rows = con.execute(
@@ -255,10 +199,10 @@ def _read_overview_snapshot(official_data, provenance_path, allowed_datasets, ac
         pipeline_runs_more = len(pipe_rows) > activity_limit
         for pr in pipe_rows[:activity_limit]:
             pipeline_runs.append({
-                'id': _uuid_text(pr[0]),
-                'pipeline_run_id': _uuid_text(pr[1]),
-                'parent_operation_id': _uuid_text(pr[2]),
-                'dataset_id': _uuid_text(pr[3]),
+                'id': uuid_text(pr[0]),
+                'pipeline_run_id': uuid_text(pr[1]),
+                'parent_operation_id': uuid_text(pr[2]),
+                'dataset_id': uuid_text(pr[3]),
                 'kind': 'pipeline' if pr[4] else 'operation',
                 'pipeline_name': pr[4] or '',
                 'operation_name': pr[5] or '',
@@ -267,9 +211,9 @@ def _read_overview_snapshot(official_data, provenance_path, allowed_datasets, ac
                 'background': bool(pr[8]),
                 'error_class': pr[9] or '',
                 'origin': pr[10] or '',
-                'created_at': _iso_text(pr[11]),
-                'started_at': _iso_text(pr[12]),
-                'ended_at': _iso_text(pr[13]),
+                'created_at': iso_text(pr[11]),
+                'started_at': iso_text(pr[12]),
+                'ended_at': iso_text(pr[13]),
             })
     except sqlite3.Error as err:
         raise PolicyError('overview_store_unavailable', 503) from err
@@ -303,28 +247,12 @@ def _read_recall_summary(recall_store, allowed_datasets, agents_state, recall_li
         agent = agents_state.get(item['agent_id'], {})
         item['agent_name'] = agent.get('name') or 'Agent 未记录'
         item['agent_kind'] = agent.get('kind') or ''
-    allowed_sorted = sorted(allowed_datasets)
-    placeholders = ','.join('?' for _ in allowed_sorted)
-    started_row = recall_store.db.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()
-    started_at = started_row[0] if started_row else ''
-    counts = {}
-    for ds_id, doc_id, count, last_at in recall_store.db.execute(
-        f'''SELECT h.dataset_id, h.document_id, COUNT(*), MAX(e.received_at)
-            FROM recall_hit h JOIN recall_event e USING(agent_id,event_id)
-            WHERE h.dataset_id IN ({placeholders})
-            GROUP BY h.dataset_id, h.document_id''',
-        allowed_sorted,
-    ):
-        counts[f'{ds_id}/{doc_id}'] = {
-            'count': int(count),
-            'last_recalled_at': last_at or '',
-            'started_at': started_at,
-        }
+    counts_summary = recall_store.counts_for_datasets(allowed_datasets)
     return {
         'recall_events': events_page['items'],
         'recall_events_more': bool(events_page['more']),
-        'recall_started_at': started_at,
-        'recall_counts': counts,
+        'recall_started_at': counts_summary['started_at'],
+        'recall_counts': counts_summary['counts'],
     }
 
 

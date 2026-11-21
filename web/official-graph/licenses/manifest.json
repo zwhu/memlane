@@ -10,5 +10,17 @@
     "url": "https://raw.githubusercontent.com/mantinedev/mantine/4f34d7fb0b5032adf70567b0f9be817ce8f7fae8/LICENSE",
     "gitHead": "4f34d7fb0b5032adf70567b0f9be817ce8f7fae8",
     "sha256": "61c765e625bc25d55143f14de7554685c52f21d9e671d3d204304691a163d06a"
+  },
+  "react-remove-scroll-bar@2.3.8": {
+    "file": "react-remove-scroll-bar@2.3.8.txt",
+    "url": "https://raw.githubusercontent.com/theKashey/react-remove-scroll-bar/8ca9ba5ea52de03308fe8ced94f7b159a44d28ff/LICENSE",
+    "gitHead": "8ca9ba5ea52de03308fe8ced94f7b159a44d28ff",
+    "sha256": "a79aae0c0f21990d9d963bb3c5a79cdcea9a46f8523ba55c58d7fe776b6ebc84"
+  },
+  "use-composed-ref@1.4.0": {
+    "file": "use-composed-ref@1.4.0.txt",
+    "url": "https://raw.githubusercontent.com/Andarist/use-composed-ref/ea2c9d969f2f90a349f4c99338b806423824cea2/package.json",
+    "gitHead": "ea2c9d969f2f90a349f4c99338b806423824cea2",
+    "sha256": "56495442eed7b749a6406e875fd15a8b40f60a5fa20b96b5bf8562a0f4acb781"
   }
 }

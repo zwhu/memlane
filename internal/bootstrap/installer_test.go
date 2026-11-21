@@ -227,6 +227,41 @@ func TestDiagnosticsWithoutRuntimeAndRedaction(t *testing.T) {
 	}
 }
 
+func TestRedactInstallerTextCoversProxyURLsAndSocksSchemes(t *testing.T) {
+	input := strings.Join([]string{
+		"HTTP_PROXY=http://alice:topsecret@corp-proxy.internal:8080",
+		"HTTPS_PROXY=https://bob:pw123@10.20.30.40:8443",
+		"ALL_PROXY=socks5h://carol:s3cr3t@10.0.0.5:1080",
+		"failed via proxy http://192.168.55.9:7890",
+		"Get https://github.com/astral-sh/uv/releases/download/0.12.3/uv.tar.gz: proxyconnect tcp: dial tcp 172.16.8.4:3128: i/o timeout",
+		"dial socks5://dave:pw456@198.51.100.7:1081 refused",
+		"socks5h://127.0.0.1:7891 handshake failed",
+		"bare cred url http://eve:secretpass@private-host.corp:9090/internal",
+	}, "\n")
+
+	out := RedactInstallerText(input)
+	for _, leaked := range []string{
+		"alice", "topsecret", "corp-proxy.internal", "8080",
+		"bob", "pw123", "10.20.30.40", "8443",
+		"carol", "s3cr3t", "10.0.0.5", "1080",
+		"192.168.55.9", "7890",
+		"172.16.8.4", "3128",
+		"dave", "pw456", "198.51.100.7", "1081",
+		"127.0.0.1:7891",
+		"eve", "secretpass", "private-host.corp", "9090",
+	} {
+		if strings.Contains(out, leaked) {
+			t.Fatalf("proxy or credential token %q leaked in redacted output:\n%s", leaked, out)
+		}
+	}
+	if !strings.Contains(out, "https://github.com/astral-sh/uv/releases/download/0.12.3/uv.tar.gz") {
+		t.Fatalf("public download URL should remain readable:\n%s", out)
+	}
+	if !strings.Contains(out, "socks5://[代理已脱敏]") || !strings.Contains(out, "socks5h://[代理已脱敏]") {
+		t.Fatalf("expected socks proxy placeholders in redacted output:\n%s", out)
+	}
+}
+
 // The installed App has no checkout disk reserve. Development callers may still
 // supply a guard, covered by the cancellation and pre-install guard tests above.
 func TestAppInstallationDoesNotRequireDevelopmentDiskGuard(t *testing.T) {

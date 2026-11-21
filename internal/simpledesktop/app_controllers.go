@@ -80,6 +80,7 @@ func (c *graphController) resetGraphView(mode string) {
 // reading revisions, and recent-title hydration state.
 type readingController struct {
 	titles                *ReadingTitles
+	detailChunks          *detailChunkCache
 	readingIdentity       string
 	baseReadingIdentity   string
 	baseIdentityURL       string
@@ -96,6 +97,7 @@ type readingController struct {
 func (c *readingController) initReading(client Client) {
 	c.panes = map[string]*pane{}
 	c.titles = newReadingTitles()
+	c.detailChunks = newDetailChunkCache()
 	if full, base, err := readingIdentityPair(client); err == nil {
 		c.readingIdentity = full
 		c.updateBaseReadingIdentity(base, client.Config.ServiceURL, client.Config.TokenFile)
@@ -116,7 +118,12 @@ func (c *readingController) paneFor(key string) *pane {
 	}
 	s := c.panes[key]
 	if s == nil {
-		s = &pane{DetailScroll: map[string]*ui.ScrollState{}, Tools: map[string]bool{}, Technical: map[string]bool{}}
+		s = &pane{
+			DetailScroll: map[string]*ui.ScrollState{},
+			DetailLists:  map[string]*ui.ListState{},
+			Tools:        map[string]bool{},
+			Technical:    map[string]bool{},
+		}
 		c.panes[key] = s
 	}
 	return s

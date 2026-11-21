@@ -121,122 +121,132 @@ class IncrementalProcessing:
         for _ in range(min(4, len(bindings))):
             raw, project = bindings[self.cursor % len(bindings)]
             self.cursor += 1
-            agent_id, host = json.loads(raw)
-            key = hashlib.sha256(raw.encode()).hexdigest()
-            target = {'agent_id': agent_id, 'host': host,
-                'dataset': self.registry.state['projects'][project]['dataset_id']}
             try:
-                agent, access = self.backlog.checked_target(project, target, write=False)
-            except PolicyError:
-                if key in self.state['sessions']:
-                    self.state['sessions'][key].update(status='disabled', pending_since=0)
+                agent_id, host = json.loads(raw)
+                key = hashlib.sha256(raw.encode()).hexdigest()
+                project_row = self.registry.state['projects'].get(project)
+                if not project_row:
+                    continue
+                target = {'agent_id': agent_id, 'host': host,
+                    'dataset': project_row['dataset_id']}
+                try:
+                    agent, access = self.backlog.checked_target(project, target, write=False)
+                except PolicyError:
+                    if key in self.state['sessions']:
+                        self.state['sessions'][key].update(status='disabled', pending_since=0)
+                        self.save()
+                    continue
+                if not agent.get('installation') or 'read' not in access['policy']['permissions']:
+                    if key in self.state['sessions']:
+                        self.state['sessions'][key].update(status='disabled', pending_since=0)
+                        self.save()
+                    continue
+                prior = self.state['sessions'].get(key, {})
+                # A user pause/uncertain submit remains a barrier, including across
+                # restarts. A new source count is never used to erase that barrier.
+                blocked = any(r.get('project_id') == project and (
+                    r.get('automatic_user_paused') or stopped_scope_applies(r, agent_id, host, prior.get('handoff_operation'))
+                    or any(t.get('agent_id') == agent_id and t.get('host') == host
+                        and t.get('processing') in ('submitting', 'unknown') for t in
+                        list(r.get('targets', [])) + list(r.get('pending_processing', {}).values())))
+                    for r in self.backlog.jobs.values())
+                if blocked or prior.get('status') in ('submitting', 'unknown'):
+                    continue
+                operation = {'project_id': project, 'operation_id': prior.get('operation_id') or str(uuid.uuid4()), 'automatic': True}
+                snapshot = await self.backlog.execute(operation, target, 'review')
+                if snapshot.get('blocked') or snapshot.get('tokens') or not snapshot.get('session_id'):
+                    continue  # the existing sender owns unsaved material
+                session = snapshot['session_id']
+                detail = await self.registry.official.request('GET', '/api/v1/sessions/' + quote(session, safe=''), token_file=agent['key_file'])
+                if detail.get('dataset_id') != target['dataset'] or detail.get('user_id') != agent['principal_id']:
+                    raise PolicyError('incremental_source_identity_unconfirmed', 409)
+                counts = [detail.get('msg_count'), detail.get('tool_calls')]
+                if any(type(n) is not int or n < 0 for n in counts) or counts[0] == 0:
+                    continue
+                now = self.clock()
+                source_at = timestamp(detail.get('last_activity_at'))
+                # Tool-only progress is not a completed conversational unit. Never
+                # start on a partly answered turn merely because tools went quiet.
+                qa_at = max((timestamp(q.get('time')) for q in detail.get('qas', []) if isinstance(q, dict)), default=0)
+                trace_at = max((timestamp(t.get('time')) for t in detail.get('traces', []) if isinstance(t, dict)), default=0)
+                changed = prior.get('counts') != counts or prior.get('session_id') != session
+                row = prior or {'session_id': session, 'status': 'watching'}
+                if changed:
+                    # No historical replay on initial installation. A newly saved
+                    # unit or subsequent change starts the incremental admission.
+                    fresh = (not prior and source_at >= self.state['enabled_at']) or (
+                        prior and prior.get('status') != 'disabled' and prior.get('session_id') == session and counts[0] > prior['counts'][0])
+                    row.update(counts=counts, session_id=session, changed_at=now)
+                    if fresh and not row.get('pending_since'):
+                        row['pending_since'] = now
+                allowed = access['policy'].get('can_auto_process', False)
+                if not allowed:
+                    row.update(pending_since=0, status='disabled')
+                elif row.get('status') == 'disabled':
+                    row['status'] = 'watching'
+                self.state['sessions'][key] = row
+                self.save()
+                if (not allowed or not row.get('pending_since') or row.get('submitted_counts') == counts
+                        or now < row.get('next_attempt_at', 0)):
+                    continue
+                if not qa_at or trace_at > qa_at:
+                    row['waiting_reason'] = 'waiting_for_completed_turn'
                     self.save()
-                continue
-            if not agent.get('installation') or 'read' not in access['policy']['permissions']:
-                if key in self.state['sessions']:
-                    self.state['sessions'][key].update(status='disabled', pending_since=0)
+                    continue
+                quiet = now - row['changed_at'] >= QUIET_SECONDS
+                overdue = now - row['pending_since'] >= MAX_WAIT_SECONDS
+                if not quiet and not overdue:
+                    continue
+                try:
+                    available = await self.available()
+                except (PolicyError, OSError, ValueError, asyncio.TimeoutError):
+                    row['waiting_reason'] = 'processing_state_unconfirmed'
                     self.save()
-                continue
-            prior = self.state['sessions'].get(key, {})
-            # A user pause/uncertain submit remains a barrier, including across
-            # restarts. A new source count is never used to erase that barrier.
-            blocked = any(r.get('project_id') == project and (
-                r.get('automatic_user_paused') or stopped_scope_applies(r, agent_id, host, prior.get('handoff_operation'))
-                or any(t.get('agent_id') == agent_id and t.get('host') == host
-                    and t.get('processing') in ('submitting', 'unknown') for t in
-                    list(r.get('targets', [])) + list(r.get('pending_processing', {}).values())))
-                for r in self.backlog.jobs.values())
-            if blocked or prior.get('status') in ('submitting', 'unknown'):
-                continue
-            operation = {'project_id': project, 'operation_id': prior.get('operation_id') or str(uuid.uuid4()), 'automatic': True}
-            snapshot = await self.backlog.execute(operation, target, 'review')
-            if snapshot.get('blocked') or snapshot.get('tokens') or not snapshot.get('session_id'):
-                continue  # the existing sender owns unsaved material
-            session = snapshot['session_id']
-            detail = await self.registry.official.request('GET', '/api/v1/sessions/' + quote(session, safe=''), token_file=agent['key_file'])
-            if detail.get('dataset_id') != target['dataset'] or detail.get('user_id') != agent['principal_id']:
-                raise PolicyError('incremental_source_identity_unconfirmed', 409)
-            counts = [detail.get('msg_count'), detail.get('tool_calls')]
-            if any(type(n) is not int or n < 0 for n in counts) or counts[0] == 0:
-                continue
-            now = self.clock()
-            source_at = timestamp(detail.get('last_activity_at'))
-            # Tool-only progress is not a completed conversational unit. Never
-            # start on a partly answered turn merely because tools went quiet.
-            qa_at = max((timestamp(q.get('time')) for q in detail.get('qas', []) if isinstance(q, dict)), default=0)
-            trace_at = max((timestamp(t.get('time')) for t in detail.get('traces', []) if isinstance(t, dict)), default=0)
-            changed = prior.get('counts') != counts or prior.get('session_id') != session
-            row = prior or {'session_id': session, 'status': 'watching'}
-            if changed:
-                # No historical replay on initial installation. A newly saved
-                # unit or subsequent change starts the incremental admission.
-                fresh = (not prior and source_at >= self.state['enabled_at']) or (
-                    prior and prior.get('status') != 'disabled' and prior.get('session_id') == session and counts[0] > prior['counts'][0])
-                row.update(counts=counts, session_id=session, changed_at=now)
-                if fresh and not row.get('pending_since'):
-                    row['pending_since'] = now
-            allowed = access['policy'].get('can_auto_process', False)
-            if not allowed:
-                row.update(pending_since=0, status='disabled')
-            elif row.get('status') == 'disabled':
-                row['status'] = 'watching'
-            self.state['sessions'][key] = row
-            self.save()
-            if (not allowed or not row.get('pending_since') or row.get('submitted_counts') == counts
-                    or now < row.get('next_attempt_at', 0)):
-                continue
-            if not qa_at or trace_at > qa_at:
-                row['waiting_reason'] = 'waiting_for_completed_turn'
+                    return
+                if not available:
+                    row['waiting_reason'] = 'processing_busy'
+                    self.save()
+                    return
+                # Recheck binding/permissions at admission; the plugin checks again
+                # before submitting under the original installation credentials.
+                _, access = self.backlog.checked_target(project, target)
+                if not access['policy'].get('can_auto_process'):
+                    continue
+                target.update(snapshot, incremental_cooldown_seconds=COOLDOWN_SECONDS)
+                if row.get('handoff_operation'):
+                    target['handoff_operation'] = row['handoff_operation']
+                row.update(status='submitting', operation_id=str(uuid.uuid4()), waiting_reason='', dispatch_counts=list(counts))
+                operation['operation_id'] = row['operation_id']
                 self.save()
-                continue
-            quiet = now - row['changed_at'] >= QUIET_SECONDS
-            overdue = now - row['pending_since'] >= MAX_WAIT_SECONDS
-            if not quiet and not overdue:
-                continue
-            try:
-                available = await self.available()
-            except (PolicyError, OSError, ValueError, asyncio.TimeoutError):
-                row['waiting_reason'] = 'processing_state_unconfirmed'
-                self.save()
-                return
-            if not available:
-                row['waiting_reason'] = 'processing_busy'
-                self.save()
-                return
-            # Recheck binding/permissions at admission; the plugin checks again
-            # before submitting under the original installation credentials.
-            _, access = self.backlog.checked_target(project, target)
-            if not access['policy'].get('can_auto_process'):
-                continue
-            target.update(snapshot, incremental_cooldown_seconds=COOLDOWN_SECONDS)
-            if row.get('handoff_operation'):
-                target['handoff_operation'] = row['handoff_operation']
-            row.update(status='submitting', operation_id=str(uuid.uuid4()), waiting_reason='', dispatch_counts=list(counts))
-            operation['operation_id'] = row['operation_id']
-            self.save()
-            trace = RequestTrace('incremental_processing')
-            trace.transition('official_submission')
-            try:
-                result = await self.backlog.execute(operation, target, 'process')
-                status = result.get('status', 'unknown')
-                reason = str(result.get('reason') or '')
-                if status == 'paused' and reason == 'policy_unconfirmed':
-                    status = 'deferred'
-                row.update(status=status, reason=reason, attempted_at=now)
-                if status in ('submitted', 'skipped'):
-                    row.update(submitted_counts=list(counts), pending_since=0)
-                    row.pop('handoff_operation', None)
-                elif status in ('deferred', 'partial'):
-                    row['next_attempt_at'] = now + (300 if result.get('reason') in ('cooldown', 'backoff') else 30)
-                elif status not in ('deferred', 'disabled'):
+                trace = RequestTrace('incremental_processing')
+                trace.transition('official_submission')
+                try:
+                    result = await self.backlog.execute(operation, target, 'process')
+                    status = result.get('status', 'unknown')
+                    reason = str(result.get('reason') or '')
+                    if status == 'paused' and reason == 'policy_unconfirmed':
+                        status = 'deferred'
+                    row.update(status=status, reason=reason, attempted_at=now)
+                    if status in ('submitted', 'skipped'):
+                        row.update(submitted_counts=list(counts), pending_since=0)
+                        row.pop('handoff_operation', None)
+                    elif status in ('deferred', 'partial'):
+                        row['next_attempt_at'] = now + (300 if result.get('reason') in ('cooldown', 'backoff') else 30)
+                    elif status not in ('deferred', 'disabled'):
+                        row['status'] = 'unknown'
+                except BaseException:
                     row['status'] = 'unknown'
-            except BaseException:
-                row['status'] = 'unknown'
-                raise
-            finally:
-                self.save()
-                trace.finish(row['status'])
-            return  # at most one improve admission per pass
+                    raise
+                finally:
+                    self.save()
+                    trace.finish(row['status'])
+                return  # at most one improve admission per pass
+            except PolicyError as error:
+                if error.code == 'incremental_source_identity_unconfirmed':
+                    raise
+                continue
+            except (OSError, ValueError, KeyError, TypeError, asyncio.TimeoutError):
+                continue
 
     async def loop(self):
         while True:

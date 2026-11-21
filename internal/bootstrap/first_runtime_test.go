@@ -1153,3 +1153,198 @@ func TestStartFirstRuntimeRetryCrashCleansUpHandleAndMonitor(t *testing.T) {
 	}
 	waitPIDDead(t, inFlightPID)
 }
+
+func TestAttachedExternalOwnerShutdownStopsVerifiedOwnerAndRefusesForeign(t *testing.T) {
+	t.Cleanup(func() { _ = ShutdownAllFirstRuntimes(context.Background()) })
+
+	metaDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	grandchildFile := filepath.Join(metaDir, "grandchild.pid")
+	fix, prepared := newSyntheticFirstRuntimeFixture(t, "launcher", map[string]string{
+		"MEMLANE_BOOTSTRAP_GRANDCHILD_FILE": grandchildFile,
+	})
+
+	// Launch an external owner process (simulating a prior Memlane.app session that kept
+	// services alive on quit, or an external dev.py owner holding .service-owner).
+	extCmd := exec.Command(fix.wrapperPath)
+	extCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := extCmd.Start(); err != nil {
+		t.Fatalf("start external owner failed: %v", err)
+	}
+	extPID := extCmd.Process.Pid
+	extDone := make(chan error, 1)
+	go func() { extDone <- extCmd.Wait() }()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-extPID, syscall.SIGKILL)
+		select {
+		case <-extDone:
+		case <-time.After(time.Second):
+		}
+	})
+
+	// Wait until the external owner acquires .service-owner and reaches ready state.
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer waitCancel()
+	for {
+		insp, inspErr := supervisor.InspectOwner(fix.storeRoot)
+		ready, _ := FirstRuntimeReady(waitCtx, fix.configPath)
+		if inspErr == nil && insp.Locked && ready {
+			break
+		}
+		if waitCtx.Err() != nil {
+			t.Fatalf("external owner did not become ready: insp=%+v err=%v", insp, inspErr)
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+
+	var grandchildPID int
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, readErr := os.ReadFile(grandchildFile); readErr == nil && len(bytes.TrimSpace(b)) > 0 {
+			grandchildPID, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+			if grandchildPID > 1 {
+				break
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	// Re-opening Memlane attaches to the locked external owner (owned=false, attached=true).
+	handle, err := StartFirstRuntimeHandle(
+		waitCtx,
+		prepared,
+		WithFirstRuntimeReadyPollInterval(25*time.Millisecond),
+		WithFirstRuntimeStopTimeouts(2*time.Second, 2*time.Second),
+	)
+	if err != nil {
+		t.Fatalf("StartFirstRuntimeHandle attach failed: %v", err)
+	}
+	if handle.Owned() {
+		t.Fatal("expected attached handle to report Owned()=false")
+	}
+	if !handle.Attached() {
+		t.Fatal("expected attached handle to report Attached()=true")
+	}
+	if got, ok := FirstRuntimeSupervisor(fix.configPath); !ok || got != handle {
+		t.Fatalf("expected attached handle registered in FirstRuntimeSupervisor, got %v %v", got, ok)
+	}
+
+	// Foreign config must never stop this external owner.
+	foreignCfg := filepath.Join(fix.parent, "foreign-runtime.json")
+	if err := supervisor.StopVerifiedOwner(waitCtx, fix.storeRoot, foreignCfg, time.Second, time.Second); !errors.Is(err, supervisor.ErrOwnerMismatch) {
+		t.Fatalf("expected ErrOwnerMismatch for foreign config, got %v", err)
+	}
+	if err := syscall.Kill(extPID, 0); err != nil {
+		t.Fatalf("foreign config must not have signaled external owner %d: %v", extPID, err)
+	}
+
+	// Explicit quit (ShutdownAllFirstRuntimes) must genuinely stop the attached external owner.
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopCancel()
+	if err := ShutdownAllFirstRuntimes(stopCtx); err != nil {
+		t.Fatalf("ShutdownAllFirstRuntimes failed on attached handle: %v", err)
+	}
+	select {
+	case <-extDone:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("external owner %d did not exit after ShutdownAllFirstRuntimes", extPID)
+	}
+	waitPIDDead(t, extPID)
+	if grandchildPID > 1 {
+		_ = syscall.Kill(grandchildPID, syscall.SIGKILL)
+	}
+
+	lock, err := supervisor.AcquireOwner(fix.storeRoot)
+	if err != nil {
+		t.Fatalf("expected .service-owner cleanly released after attached shutdown, got %v", err)
+	}
+	_ = lock.Release()
+	if _, ok := FirstRuntimeSupervisor(fix.configPath); ok {
+		t.Fatal("expected attached handle unregistered after shutdown")
+	}
+}
+
+func TestShutdownAllFirstRuntimesCancelsInFlightStartupWithoutOrphan(t *testing.T) {
+	t.Cleanup(func() { _ = ShutdownAllFirstRuntimes(context.Background()) })
+
+	metaDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	triggerFile := filepath.Join(metaDir, "never-ready")
+	grandchildFile := filepath.Join(metaDir, "grandchild.pid")
+	fix, prepared := newSyntheticFirstRuntimeFixture(t, "launcher", map[string]string{
+		"MEMLANE_BOOTSTRAP_TRIGGER_FILE":    triggerFile,
+		"MEMLANE_BOOTSTRAP_GRANDCHILD_FILE": grandchildFile,
+	})
+
+	// Also verify TrackStartupContext is canceled by ShutdownAllFirstRuntimes.
+	trackedCtx, releaseTracked := TrackStartupContext(context.Background())
+	defer releaseTracked()
+
+	startDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, err := StartFirstRuntimeHandle(
+			ctx,
+			prepared,
+			WithFirstRuntimeReadyPollInterval(25*time.Millisecond),
+			WithFirstRuntimeStopTimeouts(2*time.Second, 2*time.Second),
+		)
+		startDone <- err
+	}()
+
+	// Wait until the Setsid launcher & grandchild have spawned and written starting owner receipt,
+	// while StartFirstRuntimeHandle is still blocked waiting for readiness.
+	var launcherPID, grandchildPID int
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if rec, _, readErr := supervisor.ReadOwnerRecord(fix.storeRoot); readErr == nil && rec.PID > 1 {
+			launcherPID = rec.PID
+		}
+		if b, readErr := os.ReadFile(grandchildFile); readErr == nil && len(bytes.TrimSpace(b)) > 0 {
+			grandchildPID, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		}
+		if launcherPID > 1 && grandchildPID > 1 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if launcherPID <= 1 || grandchildPID <= 1 {
+		t.Fatalf("expected in-flight launcher (%d) and grandchild (%d) to spawn before readiness", launcherPID, grandchildPID)
+	}
+
+	// Simulate keep-alive-disabled quit during the first-startup window.
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopCancel()
+	if err := ShutdownAllFirstRuntimes(stopCtx); err != nil {
+		t.Fatalf("ShutdownAllFirstRuntimes during in-flight startup failed: %v", err)
+	}
+
+	if trackedCtx.Err() == nil {
+		t.Fatal("expected TrackStartupContext to be canceled by ShutdownAllFirstRuntimes")
+	}
+	select {
+	case err := <-startDone:
+		if err == nil {
+			t.Fatal("expected canceled StartFirstRuntimeHandle to return error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("StartFirstRuntimeHandle hung after ShutdownAllFirstRuntimes")
+	}
+
+	waitPIDDead(t, launcherPID)
+	waitPIDDead(t, grandchildPID)
+
+	if _, ok := FirstRuntimeSupervisor(fix.configPath); ok {
+		t.Fatal("in-flight handle must not remain registered after shutdown")
+	}
+	lock, err := supervisor.AcquireOwner(fix.storeRoot)
+	if err != nil {
+		t.Fatalf("expected .service-owner released after in-flight startup shutdown, got %v", err)
+	}
+	_ = lock.Release()
+}

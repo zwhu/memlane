@@ -1,0 +1,14 @@
+{
+  "protocol": 1,
+  "upstream": "8853378eae5366addb064e758e560a456146ae1a",
+  "files": {
+    "index.html": "06743e5f556553c526e7a46aa0c9c4d216a8da475e6bfc8ad967f57f1182f490",
+    "app.js": "f1e04bc413d2b8519bf12da1ccd5eae9cb4184053d885beccebbeadf3c1f6a90",
+    "app.css": "1894624f83e5627df281e1325263c78e7c0b69400cec753e4e411d585382b003",
+    "host.css": "0f71badc711400dae59623f3a420e8e97749f9de2b0746535cee774cd97a3fec",
+    "app.js.LEGAL.txt": "7dff61d0cd5b7cff2403db6cf5c586b1218c9e663784caeda7fd06916c997d46",
+    "COGNEE-LICENSE": "a471e34908f50c3f120e9a56f3c30cb34e133e4ede01a9cbd5ce718fc358ecd4",
+    "THIRD-PARTY-LICENSES.txt": "68f1898beb0c0e4928e0082275de12e00a993791d6253d2c25853d042cfb250f",
+    "build.json": "c888eef18c12cb50f65d7703e007c07b47f9dd81aed766327890b041d109a03a"
+  }
+}

@@ -77,7 +77,7 @@ class VerifySourceCacheTests(unittest.TestCase):
         self.assertEqual(self.cache_path.parent.stat().st_mode & 0o777, 0o700)
 
         cached = json.loads(self.cache_path.read_text(encoding='utf-8'))
-        self.assertEqual(cached['schema_version'], 1)
+        self.assertEqual(cached['schema_version'], 2)
         self.assertEqual(cached['commit'], self.service_manifest['commit'])
         self.assertEqual(cached['archive_sha256'], self.service_manifest['archive_sha256'])
         self.assertEqual(cached['archive_path'], str(self.archive))
@@ -88,19 +88,85 @@ class VerifySourceCacheTests(unittest.TestCase):
             set(cached['files']),
             {'pyproject.toml', 'cognee/__init__.py', 'cognee/api/client.py', 'cognee/prompts/sample.txt', 'kuzu/__init__.py'},
         )
+        for rel, meta in cached['files'].items():
+            self.assertEqual(len(meta), 3, rel)
+            self.assertEqual(meta[2], hashlib.sha256((self.source / rel).read_bytes()).hexdigest())
         self.assertEqual(
             cached['py_files'],
             ['cognee/__init__.py', 'cognee/api/client.py', 'kuzu/__init__.py'],
         )
 
-        # Bytecode caches (.pyc) must not invalidate a clean fast-path hit.
+        # Clean directory hits fast-path cache without opening the tar archive.
+        with patch.object(service_dev.tarfile, 'open', side_effect=AssertionError('tar opened on cache hit')):
+            self.assertEqual(service_dev.verify_source(self.config), self.source)
+
+        # Unverified bytecode (.pyc) inside source must invalidate cache and force full archive verification.
         pycache = self.source / 'cognee' / '__pycache__'
         pycache.mkdir()
-        (pycache / '__init__.cpython-312.pyc').write_bytes(b'synthetic-pyc')
-
-        with patch.object(service_dev.tarfile, 'open', side_effect=AssertionError('tar opened on cache hit')), \
-                patch.object(service_dev.hashlib, 'sha256', side_effect=AssertionError('archive hashed on cache hit')):
+        pyc_file = pycache / '__init__.cpython-312.pyc'
+        pyc_file.write_bytes(b'synthetic-pyc')
+        with patch.object(service_dev.tarfile, 'open', wraps=tarfile.open) as open_tar:
             self.assertEqual(service_dev.verify_source(self.config), self.source)
+            self.assertEqual(open_tar.call_count, 1)
+
+        # Removing bytecode allows fast-path cache hit again.
+        pyc_file.unlink()
+        pycache.rmdir()
+        with patch.object(service_dev.tarfile, 'open', side_effect=AssertionError('tar opened on clean hit')):
+            self.assertEqual(service_dev.verify_source(self.config), self.source)
+
+    def test_same_mtime_same_size_tampering_invalidates_cache_and_source_only_hook_blocks_pyc(self):
+        import importlib
+        import importlib.util
+        import py_compile
+        import sys
+
+        service_dev.verify_source(self.config)
+
+        # Same-size AND identical-mtime_ns tampering must fail content SHA256 cache check and full archive verify.
+        client_py = self.source / 'cognee/api/client.py'
+        original = client_py.read_bytes()
+        original_stat = client_py.stat()
+        tampered = b'app = object()#'  # exact same length (15 bytes) as b'app = object()\n'
+        self.assertEqual(len(tampered), len(original))
+        client_py.write_bytes(tampered)
+        os.utime(client_py, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+        with patch.object(service_dev.tarfile, 'open', wraps=tarfile.open) as open_tar:
+            with self.assertRaisesRegex(ValueError, 'official package differs from pinned archive'):
+                service_dev.verify_source(self.config)
+            self.assertEqual(open_tar.call_count, 1)
+        client_py.write_bytes(original)
+        os.utime(client_py, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+
+        # Source-only import hook ignores a pre-planted poisoned .pyc matching source mtime+size.
+        mod_dir = self.root / 'hook_source'
+        pkg = mod_dir / 'verified_pkg_test_only'
+        pkg.mkdir(parents=True)
+        mod_file = pkg / '__init__.py'
+        mod_file.write_text('VALUE = "poisoned"\n', encoding='utf-8')
+        pyc_path = Path(importlib.util.cache_from_source(str(mod_file)))
+        py_compile.compile(str(mod_file), cfile=str(pyc_path), doraise=True)
+        pyc_stat = mod_file.stat()
+        # Overwrite .py with legitimate code of identical byte length and identical mtime_ns.
+        legit = 'VALUE = "verified"\n'
+        self.assertEqual(len(legit), len('VALUE = "poisoned"\n'))
+        mod_file.write_text(legit, encoding='utf-8')
+        os.utime(mod_file, ns=(pyc_stat.st_atime_ns, pyc_stat.st_mtime_ns))
+
+        hook = service_dev._install_source_only_import_hook(mod_dir)
+        sys.path.insert(0, str(mod_dir))
+        try:
+            sys.modules.pop('verified_pkg_test_only', None)
+            loaded = importlib.import_module('verified_pkg_test_only')
+            self.assertEqual(loaded.VALUE, 'verified')
+        finally:
+            sys.modules.pop('verified_pkg_test_only', None)
+            if str(mod_dir) in sys.path:
+                sys.path.remove(str(mod_dir))
+            if hook in sys.path_hooks:
+                sys.path_hooks.remove(hook)
+            sys.path_importer_cache.pop(str(mod_dir), None)
+            sys.path_importer_cache.pop(str(pkg), None)
 
     def test_official_data_cache_path_and_no_cache_when_stateless(self):
         data_dir = self.root / 'daily-data'

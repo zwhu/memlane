@@ -46,7 +46,7 @@ func describeFailureClass(class string) failureExplanation {
 		}
 	case "BadGatewayError":
 		return failureExplanation{
-			Label:   "模型服务网关异常",
+			Label:   "Agent 模型代理异常",
 			Summary: "上游模型代理返回网关错误（HTTP 502），未能完成本次生成。",
 			Hint:    "常见于代理/网络瞬时波动或 Codex 上游连接中断，可稍后重试。",
 		}

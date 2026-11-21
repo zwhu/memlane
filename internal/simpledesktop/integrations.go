@@ -692,6 +692,8 @@ func (s *integrationState) editProfile(id string, row GenerationRow) {
 func (a *App) saveGeneration() {
 	client, ok := a.accessClient()
 	s := &a.integrations
+	applyAfterSave := s.GenerationAgentApply
+	s.GenerationAgentApply = false
 	if !ok || s.Busy || s.SaveOperation != "" {
 		return
 	}
@@ -709,6 +711,7 @@ func (a *App) saveGeneration() {
 		s.Error = "无法保存操作回执位置，本次配置尚未发送"
 		return
 	}
+	applyAfterSave = applyAfterSave && profile.Mode == "agent_bridge"
 	s.SaveOperation = op
 	s.Busy = true
 	s.Error = ""
@@ -741,6 +744,7 @@ func (a *App) saveGeneration() {
 		a.Update(func() {
 			s.Busy = false
 			if err != nil {
+				s.GenerationAgentApply = false
 				var rejected *ControlResponseError
 				if !submitted && errors.As(err, &rejected) && rejected.Status >= 400 && rejected.Status < 500 {
 					if !a.finishGenerationOperation(op) {
@@ -756,15 +760,17 @@ func (a *App) saveGeneration() {
 			s.Generation = directory
 			row, found := directory.row(&response.Result)
 			if !found {
+				s.GenerationAgentApply = false
 				s.Error = "尚未找到原保存回执"
 				return
 			}
 			if !a.finishGenerationOperation(op) {
+				s.GenerationAgentApply = false
 				return
 			}
 			s.editProfile(id, row)
 			s.Message = "配置已保存，当前使用未改变"
-			if s.GenerationAgentApply {
+			if applyAfterSave && row.Profile.Mode == "agent_bridge" {
 				s.GenerationAgentApply = false
 				a.applySelectedProcessingAgent()
 			}

@@ -145,6 +145,62 @@ class PluginPolicyTests(unittest.TestCase):
                 policy.bind(str(self.root), 'host-one')
             request.assert_not_called()
 
+    def test_cursor_bind_reports_cursor_manifest_version_and_runtime_profile(self):
+        plugin_root = self.root / 'cursor-plugin'
+        scripts = plugin_root / 'scripts'
+        scripts.mkdir(parents=True)
+        (plugin_root / '.cursor-plugin').mkdir()
+        (plugin_root / '.cursor-plugin/plugin.json').write_text(json.dumps({'name': 'cognee', 'version': '1.9.0'}))
+        cursor_profile = self.root / 'cursor-profile'
+        cursor_profile.mkdir()
+        (plugin_root / '.memlane-installation.json').write_text(json.dumps({
+            'instance_id': 'cursor-test',
+            'host_kind': 'cursor',
+            'env_file': str(self.root / 'cursor.env'),
+            'runtime_profile': str(cursor_profile),
+        }))
+        captured = {}
+        dataset = '11111111-1111-4111-8111-111111111111'
+
+        def fake_request(path, payload=None, **kwargs):
+            captured['path'] = path
+            captured['payload'] = payload
+            return {'ready': True, 'project_id': 'proj-1', 'dataset_id': dataset}
+
+        with patch.object(policy, '__file__', str(scripts / '_memlane_policy.py')), \
+                patch.object(policy, '_request', side_effect=fake_request):
+            self.assertEqual(policy.bind(str(self.root), 'cursor-host-1'), dataset)
+        env = captured['payload']['host_environment']
+        self.assertEqual(env['plugin_version'], '1.9.0')
+        self.assertEqual(Path(env['runtime_profile']).resolve(), cursor_profile.resolve())
+
+        # Explicit CURSOR_CONFIG_DIR overrides binding runtime_profile fallback.
+        override_profile = self.root / 'cursor-env-profile'
+        override_profile.mkdir()
+        with patch.dict('os.environ', {'CURSOR_CONFIG_DIR': str(override_profile)}), \
+                patch.object(policy, '__file__', str(scripts / '_memlane_policy.py')), \
+                patch.object(policy, '_request', side_effect=fake_request):
+            self.assertEqual(policy.bind(str(self.root), 'cursor-host-2'), dataset)
+        self.assertEqual(Path(captured['payload']['host_environment']['runtime_profile']).resolve(), override_profile.resolve())
+
+    def test_merge_block_uses_common_memory_terminology(self):
+        dataset = '11111111-1111-4111-8111-111111111111'
+        initial = {'revision': 4, 'policy': {'permissions': ['read']},
+                   'common': {'ready': True, 'readable': True, 'dataset_id': dataset}}
+
+        def request(path, payload=None, **options):
+            if path.startswith('/api/v1/datasets/'):
+                return [{'id': 'doc-1', 'datasetId': dataset,
+                         'externalMetadata': {'memlane_kind': 'common_knowledge', 'category': 'preference', 'source': 'manual'}}]
+            return [{'dataset_id': dataset, 'search_result': [{'document_id': 'doc-1'}]}]
+
+        self.fake_common._json_http_request = request
+        with patch.dict(sys.modules, {'_coding_memory': types.SimpleNamespace(_raw_text=lambda *a: 'prefer concise answers')}), \
+                patch.object(policy, 'current', side_effect=[initial, initial]):
+            block = policy._merge_block('question', '.', lambda *a: 'project context')
+        self.assertIn('来源：通用记忆／个人偏好', block)
+        self.assertNotIn('来源：通用知识／', block)
+
 
 if __name__ == '__main__':
     unittest.main()

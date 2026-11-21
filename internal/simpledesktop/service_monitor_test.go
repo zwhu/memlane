@@ -92,9 +92,9 @@ func TestServiceMonitorPollAndSettingsCardMetrics(t *testing.T) {
 	}
 	drainReading(t, updates, func() bool { return !a.monitor.Polling })
 
-	if a.service != "已连接" || a.monitor.State != "ready" || !a.monitor.ControlReachable {
-		t.Fatalf("unexpected monitor state after healthy poll: service=%q state=%q ctrl=%v err=%q",
-			a.service, a.monitor.State, a.monitor.ControlReachable, a.monitor.ControlError)
+	if a.service != "已连接" || a.monitor.State != "ready" || !a.monitor.ControlReachable || !a.monitor.HasControlLatency {
+		t.Fatalf("unexpected monitor state after healthy poll: service=%q state=%q ctrl=%v hasCtrlLatency=%v err=%q",
+			a.service, a.monitor.State, a.monitor.ControlReachable, a.monitor.HasControlLatency, a.monitor.ControlError)
 	}
 	summary := serviceMonitorSummaryLine(a.monitor)
 	if !strings.Contains(summary, "内存 420 MB") || !strings.Contains(summary, "磁盘余量 82.0 GiB") {
@@ -108,6 +108,12 @@ func TestServiceMonitorPollAndSettingsCardMetrics(t *testing.T) {
 	}, 1000, 700)
 	if !tt.HasText("记忆引擎（Cognee）") || !tt.HasText("接入网关：已连接") || !tt.HasText("复制诊断") {
 		t.Fatal("expected expanded service monitor details in settings card")
+	}
+	if tt.HasText("最近请求") {
+		t.Fatalf("gateway row must not display misleading 最近请求 label: %v", tt.Texts())
+	}
+	if !tt.HasText("最近模型生成 125 ms") {
+		t.Fatalf("expected Cognee row to display direct-provider generation duration when channel row is absent: %v", tt.Texts())
 	}
 	if tt.HasText("API Key") || tt.HasText("切换") {
 		t.Fatal("service card must never expose generation controls")
@@ -125,8 +131,11 @@ func TestServiceMonitorPollAndSettingsCardMetrics(t *testing.T) {
 		t.Fatal("expected non-auto-restart notice and redacted log tail in UI")
 	}
 	diag := a.serviceDiagnosticText()
-	if !strings.Contains(diag, "Cognee 服务状态: exited") || strings.Contains(diag, strings.Repeat("m", 40)) {
+	if !strings.Contains(diag, "记忆引擎（Cognee）状态: exited") || strings.Contains(diag, strings.Repeat("m", 40)) {
 		t.Fatalf("unexpected diagnostic output: %q", diag)
+	}
+	if !strings.Contains(diag, "最近模型生成耗时: 125 ms") || strings.Contains(diag, "最近接入网关耗时") || !strings.Contains(diag, "接入网关状态: 已连接 (延迟 ") {
+		t.Fatalf("unexpected diagnostic latency attribution:\n%s", diag)
 	}
 }
 
@@ -139,14 +148,14 @@ func TestServiceMonitorDebouncePreservesReadingPanes(t *testing.T) {
 	p.Selected = &p.Items[0]
 
 	now := time.Now()
-	a.applyServiceMonitorResult(now, nil, 12.0, "未配置", false, nil, nil)
+	a.applyServiceMonitorResult(now, nil, 12.0, "未配置", 0, false, false, nil, nil, 0, false)
 	if a.monitor.State != "ready" || a.service != "已连接" {
 		t.Fatalf("expected ready, got %q / %q", a.monitor.State, a.service)
 	}
 
 	// Failures 1 & 2 enter warning while preserving connected indicator and reading content.
 	for step := 1; step <= 2; step++ {
-		a.applyServiceMonitorResult(now.Add(time.Duration(step)*10*time.Second), errors.New("timeout"), 0, "未配置", false, nil, nil)
+		a.applyServiceMonitorResult(now.Add(time.Duration(step)*10*time.Second), errors.New("timeout"), 0, "未配置", 0, false, false, nil, nil, 0, false)
 		if a.monitor.State != "warning" || a.monitor.ConsecutiveFailures != step || a.service != "已连接" {
 			t.Fatalf("step %d: expected warning preserving connected state, got state=%q failures=%d service=%q",
 				step, a.monitor.State, a.monitor.ConsecutiveFailures, a.service)
@@ -154,7 +163,7 @@ func TestServiceMonitorDebouncePreservesReadingPanes(t *testing.T) {
 	}
 
 	// 3rd failure enters degraded, still preserving reading pane items & selection.
-	a.applyServiceMonitorResult(now.Add(30*time.Second), errors.New("connection refused"), 0, "未配置", false, nil, nil)
+	a.applyServiceMonitorResult(now.Add(30*time.Second), errors.New("connection refused"), 0, "未配置", 0, false, false, nil, nil, 0, false)
 	if a.monitor.State != "degraded" || a.monitor.ConsecutiveFailures != 3 || a.service != "connection refused" {
 		t.Fatalf("expected degraded on 3rd failure, got state=%q failures=%d service=%q",
 			a.monitor.State, a.monitor.ConsecutiveFailures, a.service)
@@ -164,7 +173,7 @@ func TestServiceMonitorDebouncePreservesReadingPanes(t *testing.T) {
 	}
 
 	// Recovery resets consecutive failures and restores ready state.
-	a.applyServiceMonitorResult(now.Add(40*time.Second), nil, 9.0, "未配置", false, nil, nil)
+	a.applyServiceMonitorResult(now.Add(40*time.Second), nil, 9.0, "未配置", 0, false, false, nil, nil, 0, false)
 	if a.monitor.State != "ready" || a.monitor.ConsecutiveFailures != 0 || a.service != "已连接" {
 		t.Fatalf("expected recovery to ready, got state=%q failures=%d service=%q",
 			a.monitor.State, a.monitor.ConsecutiveFailures, a.service)
@@ -336,5 +345,91 @@ func TestServiceMonitorDeserializesExtendedMetricsAndFormatsDiagnostics(t *testi
 		if !strings.Contains(diag, want) {
 			t.Fatalf("serviceDiagnosticText missing %q in:\n%s", want, diag)
 		}
+	}
+}
+
+func TestServiceConnectionCardsAttributeGenerationLatencyLightAndDark(t *testing.T) {
+	if got := formatDurationCompact(9.2); got != "9 ms" {
+		t.Fatalf("formatDurationCompact(9.2) = %q, want %q", got, "9 ms")
+	}
+	if got := formatDurationCompact(999.6); got != "1.0 s" {
+		t.Fatalf("formatDurationCompact(999.6) = %q, want %q", got, "1.0 s")
+	}
+	if got := formatDurationCompact(41494.0); got != "41.5 s" {
+		t.Fatalf("formatDurationCompact(41494.0) = %q, want %q", got, "41.5 s")
+	}
+
+	for _, appearance := range []string{"light", "dark"} {
+		t.Run(appearance, func(t *testing.T) {
+			a := settingsFixture()
+			a.Config.ConfigFile = filepath.Join(t.TempDir(), "runtime.json")
+			a.initDesktopPreferences()
+			a.setAppearancePreference(appearance)
+			t.Cleanup(func() { applyAppearance(false) })
+			a.service = "已连接"
+			a.Config.CompletionURL = "http://127.0.0.1:18173"
+			a.completion = "端点已连接（登录状态以实际请求为准）"
+			a.monitor.State = "ready"
+			a.monitor.HasLatency = true
+			a.monitor.LastLatencyMs = 9.0
+			a.monitor.ControlChecked = true
+			a.monitor.ControlReachable = true
+			a.monitor.HasControlLatency = true
+			a.monitor.ControlLatencyMs = 18.0
+			a.monitor.HasCompletionLatency = true
+			a.monitor.CompletionLatencyMs = 3.0
+
+			officialRSS := int64(1818 * 1024 * 1024)
+			controlRSS := int64(70 * 1024 * 1024)
+			completionRSS := int64(214 * 1024 * 1024)
+			recentGenMs := 41494.0
+			verified := true
+			a.monitor.Snapshot = &ServiceMonitorSnapshot{
+				State: "ready",
+				Processes: map[string]MonitoredProcess{
+					"official":        {PID: 54545, RSSBytes: &officialRSS},
+					"project_control": {PID: 54555, RSSBytes: &controlRSS},
+					"completion":      {PID: 54540, RSSBytes: &completionRSS},
+				},
+				Summary: &MonitorBusinessSummary{
+					ProjectsCount:             9,
+					GenerationReceiptVerified: &verified,
+					RecentProcessingMs:        &recentGenMs,
+				},
+			}
+
+			tt := ui.NewTester(func(c *ui.Context) {
+				applyAppearance(a.effectiveDark(c.Theme().Dark))
+				ui.Themed(c, homeTheme).Children(func() {
+					ui.Column(c).FillWidth().Padding(24).Children(func() { a.serviceConnectionOverview(c) })
+				})
+			}, 1000, 700)
+
+			texts := tt.Texts()
+			for _, want := range []string{
+				"延迟 18 ms",
+				"延迟 3 ms",
+				"最近模型生成 41.5 s",
+			} {
+				if !tt.HasText(want) {
+					t.Fatalf("missing %q in %v", want, texts)
+				}
+			}
+			for _, forbidden := range []string{"最近请求", "41494"} {
+				if tt.HasText(forbidden) {
+					t.Fatalf("unexpected forbidden text %q in %v", forbidden, texts)
+				}
+			}
+			// Generation duration belongs to Agent 模型代理 row, not 记忆引擎 or 接入网关 rows when channel row exists.
+			cogBox, ok := tt.Find("记忆引擎（Cognee）")
+			ctrlDescBox, cok := tt.Find("延迟 18 ms · 内存 70 MB · 项目 9 个 · 配置回执一致")
+			genDescBox, gok := tt.Find("http://127.0.0.1:18173 · 延迟 3 ms · 内存 214 MB · 最近模型生成 41.5 s")
+			if !ok || !cok || !gok {
+				t.Fatalf("missing expected service rows: cogOK=%v ctrlOK=%v genOK=%v texts=%v", ok, cok, gok, texts)
+			}
+			if !(cogBox.Y < ctrlDescBox.Y && ctrlDescBox.Y < genDescBox.Y) {
+				t.Fatalf("unexpected row vertical order: cog=%+v ctrlDesc=%+v genDesc=%+v", cogBox, ctrlDescBox, genDescBox)
+			}
+		})
 	}
 }

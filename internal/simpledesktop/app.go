@@ -33,6 +33,7 @@ type pane struct {
 	WidgetList                     ui.ListState
 	ListSelection                  int
 	DetailScroll                   map[string]*ui.ScrollState
+	DetailLists                    map[string]*ui.ListState
 	Tools                          map[string]bool
 	History                        []Item
 	HomeAnchor                     *Item
@@ -101,6 +102,8 @@ type App struct {
 		rawList           uint64
 		docScrollKey      string
 		docEnter          uint64
+		docBodyKey        string
+		docBodyFade       uint64
 	}
 	poseEnter             poseEnterTracker
 	projectCreate        projectCreateState
@@ -115,7 +118,12 @@ type App struct {
 	monitor              serviceMonitorState
 	configError          string
 	md                   markdown.Options
-	projectMD            *markdown.Options
+	v4MD                 map[v4MDKey]*markdown.Options
+}
+
+type v4MDKey struct {
+	dark bool
+	size float32
 }
 
 func New(c Config, err error) *App {

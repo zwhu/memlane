@@ -97,4 +97,9 @@ func TestGenerationHandoffConfirmsThenRecoversOriginalOperationWithoutResending(
 	if posts.Load() != 1 || reopened.integrations.HandoffOperation != "" || reopened.integrations.Generation.Active == nil || *reopened.integrations.Generation.Active != ref {
 		t.Fatal("reopen did not reconcile without another POST")
 	}
+	reopened.integrations.Handoff.Handoff = &GenerationHandoffReceipt{Operation: "op-reconciling", Reference: ref, Status: "reconciling"}
+	reconcilingView := ui.NewTester(func(c *ui.Context) { ui.Column(c).Fill().Children(func() { reopened.generationHandoffStatus(c) }) }, 1200, 820)
+	if !reconcilingView.HasText("正在恢复剩余会话提炼") {
+		t.Fatalf("missing reconciling handoff label; texts=%v", reconcilingView.Texts())
+	}
 }

@@ -230,6 +230,250 @@ class UninstallScriptTests(unittest.TestCase):
             self.assertTrue(any('symlink-rejected' in s for s in res['skipped']))
             self.assertTrue((external / 'precious.txt').is_file())
 
+    def test_toml_array_tables_preserved_after_removed_memlane_sections(self):
+        codex_raw = (
+            '# User Codex config\n'
+            'model = "gpt-5"\n\n'
+            '[marketplaces.community]\n'
+            'source_type = "git"\n'
+            'source = "https://example.test/community"\n\n'
+            '[[hooks]]\n'
+            'name = "user-hook"\n'
+            'source = "/Users/me/memlane-unrelated-tool"\n\n'
+            '[marketplaces.memlane]\n'
+            'source_type = "local"\n'
+            'source = "/tmp/memlane-marketplace"\n\n'
+            '[[projects]]\n'
+            'path = "/Users/me/work/important"\n'
+            'trust_level = "trusted"\n\n'
+            '[plugins."cognee@memlane"]\n'
+            'enabled = true\n\n'
+            '[[mcp_servers.custom.env]]\n'
+            'key = "KEEP_ME"\n'
+            'value = "1"\n'
+        )
+        updated_codex, removed_codex = uninstall._edit_codex_toml(codex_raw)
+        self.assertEqual(removed_codex, ['marketplaces.memlane', 'plugins.cognee@memlane'])
+        self.assertIn('[marketplaces.community]', updated_codex)
+        self.assertIn('[[hooks]]', updated_codex)
+        self.assertIn('source = "/Users/me/memlane-unrelated-tool"', updated_codex)
+        self.assertIn('[[projects]]', updated_codex)
+        self.assertIn('path = "/Users/me/work/important"', updated_codex)
+        self.assertIn('[[mcp_servers.custom.env]]', updated_codex)
+        self.assertIn('key = "KEEP_ME"', updated_codex)
+        self.assertNotIn('[marketplaces.memlane]', updated_codex)
+        self.assertNotIn('[plugins."cognee@memlane"]', updated_codex)
+
+        traex_raw = (
+            'theme = "dark"\n\n'
+            '[marketplaces.memlane-local]\n'
+            'url = "/tmp/memlane"\n\n'
+            '[[user_rules]]\n'
+            'name = "keep-this-rule"\n\n'
+            '[plugins.memlane-cognee]\n'
+            'enabled = true\n\n'
+            '[[agents.profiles]]\n'
+            'name = "keep-profile"\n'
+        )
+        updated_traex, removed_traex = uninstall._edit_traex_toml(traex_raw)
+        self.assertEqual(removed_traex, ['marketplaces.memlane-local', 'plugins.memlane-cognee'])
+        self.assertIn('[[user_rules]]', updated_traex)
+        self.assertIn('name = "keep-this-rule"', updated_traex)
+        self.assertIn('[[agents.profiles]]', updated_traex)
+        self.assertIn('name = "keep-profile"', updated_traex)
+        self.assertNotIn('[marketplaces.memlane-local]', updated_traex)
+        self.assertNotIn('[plugins.memlane-cognee]', updated_traex)
+
+    def test_unconfirmed_stop_receipt_without_flock_blocks_apply(self):
+        import socket
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp).resolve()
+            home, runtime_dir, components_dir, store_dir = self._build_fixture(tmp)
+
+            # Case 1: supervisor released .service-owner flock while leaving .memlane-dev-owner.json
+            # pointing at a still-live process (current PID).
+            started = subprocess.check_output(['ps', '-p', str(os.getpid()), '-o', 'lstart='], text=True).strip()
+            receipt = store_dir / '.memlane-dev-owner.json'
+            receipt.write_text(json.dumps({
+                'pid': os.getpid(),
+                'started': started,
+                'config': str(runtime_dir / 'runtime.json'),
+                'official_data': str(store_dir),
+            }), encoding='utf-8')
+
+            code, res = uninstall.run_uninstall([
+                '--apply', '--home', str(home), '--runtime-dir', str(runtime_dir), '--components-dir', str(components_dir),
+            ])
+            self.assertEqual(code, 1)
+            self.assertEqual(res['status'], 'refused_service_running')
+            self.assertTrue(any('active owner pid' in entry for entry in res['locked_owners']))
+            self.assertTrue((components_dir / 'uv-0.12.3').exists())
+
+            # Case 2: dead PID in receipt, no flock, but service_url loopback port is still listening.
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listener.bind(('127.0.0.1', 0))
+                listener.listen()
+                port = listener.getsockname()[1]
+                receipt.write_text(json.dumps({
+                    'pid': 999998,
+                    'started': 'dead-start-time',
+                    'service_url': f'http://127.0.0.1:{port}',
+                    'config': str(runtime_dir / 'runtime.json'),
+                    'official_data': str(store_dir),
+                }), encoding='utf-8')
+                code2, res2 = uninstall.run_uninstall([
+                    '--apply', '--home', str(home), '--runtime-dir', str(runtime_dir), '--components-dir', str(components_dir),
+                ])
+            self.assertEqual(code2, 1)
+            self.assertEqual(res2['status'], 'refused_service_running')
+            self.assertTrue(any('active endpoint' in entry for entry in res2['locked_owners']))
+            self.assertTrue((components_dir / 'uv-0.12.3').exists())
+
+    def test_apply_holds_service_owner_flock_across_critical_section(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp).resolve()
+            home, runtime_dir, components_dir, store_dir = self._build_fixture(tmp)
+            owner_lock = store_dir / '.service-owner'
+            owner_lock.write_text('', encoding='utf-8')
+
+            lock_held_during_removal = []
+            orig_remove = uninstall._remove_dir_action
+
+            def spy_remove(*args, **kwargs):
+                if not lock_held_during_removal:
+                    probe = subprocess.run(
+                        [
+                            sys.executable, '-c',
+                            'import fcntl, sys; f = open(sys.argv[1], "r+"); '
+                            'fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)',
+                            str(owner_lock),
+                        ],
+                        capture_output=True,
+                        check=False,
+                    )
+                    lock_held_during_removal.append(probe.returncode != 0)
+                return orig_remove(*args, **kwargs)
+
+            with patch.object(uninstall, '_remove_dir_action', side_effect=spy_remove):
+                code, res = uninstall.run_uninstall([
+                    '--apply', '--home', str(home), '--runtime-dir', str(runtime_dir), '--components-dir', str(components_dir),
+                ])
+            self.assertEqual(code, 0, res)
+            self.assertTrue(lock_held_during_removal and lock_held_during_removal[0],
+                            'expected .service-owner flock to remain held during uninstall removals')
+
+            # After uninstall completes, flock must be released.
+            with owner_lock.open('r+', encoding='utf-8') as f:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+    def test_library_store_dir_bundle_id_launch_agent_and_smappservice_note(self):
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp).resolve()
+            home, runtime_dir, components_dir, _ = self._build_fixture(tmp)
+            library_dir = runtime_dir / 'library'
+            library_dir.mkdir(parents=True)
+            (library_dir / 'store-identity.json').write_text('{"schema":1}\n', encoding='utf-8')
+            new_plist = home / 'Library' / 'LaunchAgents' / 'io.github.zwhu.memlane.plist'
+            new_plist.write_text('<plist>io.github.zwhu.memlane</plist>\n', encoding='utf-8')
+
+            # Lock inside standalone .app's library/ store must block --apply.
+            lib_lock = library_dir / '.service-owner'
+            with lib_lock.open('w', encoding='utf-8') as f:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try:
+                    code_blk, res_blk = uninstall.run_uninstall([
+                        '--apply', '--home', str(home), '--runtime-dir', str(runtime_dir), '--components-dir', str(components_dir),
+                    ])
+                    self.assertEqual(code_blk, 1)
+                    self.assertEqual(res_blk['status'], 'refused_service_running')
+                    self.assertTrue(any(str(lib_lock) in item for item in res_blk['locked_owners']))
+                finally:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+            # Once unlocked, --apply preserves library/, removes both current and legacy plists,
+            # and emits SMAppService login-item guidance.
+            code, res = uninstall.run_uninstall([
+                '--apply', '--home', str(home), '--runtime-dir', str(runtime_dir), '--components-dir', str(components_dir),
+            ])
+            self.assertEqual(code, 0, res)
+            self.assertIn(str(library_dir), res['preserved'])
+            self.assertTrue((library_dir / 'store-identity.json').is_file())
+            self.assertFalse(new_plist.exists())
+            self.assertFalse((home / 'Library' / 'LaunchAgents' / 'com.memlane.desktop.plist').exists())
+            self.assertTrue(any('SMAppService' in note and 'io.github.zwhu.memlane' in note for note in res.get('notes', [])))
+
+    def test_toml_multiline_strings_with_fake_headers_preserved_and_validated(self):
+        codex_raw = (
+            'model = "gpt-5"\n'
+            'system_prompt = """\n'
+            '[marketplaces.memlane]\n'
+            'source = "memlane"\n'
+            '[plugins."cognee@memlane"]\n'
+            'enabled = true\n'
+            '"""\n'
+            "notes = '''\n"
+            '[plugins.memlane-cognee]\n'
+            "'''\n\n"
+            '[marketplaces.community]\n'
+            'description = """\n'
+            'source = "memlane-mentioned-inside-multiline"\n'
+            '"""\n'
+            'source = "https://example.test/community"\n\n'
+            '[marketplaces.memlane]\n'
+            'source = "/tmp/memlane-real"\n\n'
+            '[plugins."cognee@memlane"]\n'
+            'enabled = true\n\n'
+            '[user.keep]\n'
+            'value = "intact"\n'
+        )
+        updated_codex, removed_codex = uninstall._edit_codex_toml(codex_raw)
+        self.assertEqual(removed_codex, ['marketplaces.memlane', 'plugins.cognee@memlane'])
+        self.assertIn('system_prompt = """\n[marketplaces.memlane]\n', updated_codex)
+        self.assertIn("notes = '''\n[plugins.memlane-cognee]\n'''", updated_codex)
+        self.assertIn('[marketplaces.community]', updated_codex)
+        self.assertIn('[user.keep]\nvalue = "intact"\n', updated_codex)
+        self.assertNotIn('/tmp/memlane-real', updated_codex)
+        uninstall._validate_toml_text(updated_codex)
+
+        traex_raw = (
+            'prompt = """\n'
+            '[plugins.memlane-cognee]\n'
+            'enabled = true\n'
+            '"""\n\n'
+            '[plugins.memlane-cognee]\n'
+            'enabled = true\n\n'
+            '[other]\n'
+            'keep = true\n'
+        )
+        updated_traex, removed_traex = uninstall._edit_traex_toml(traex_raw)
+        self.assertEqual(removed_traex, ['plugins.memlane-cognee'])
+        self.assertIn('prompt = """\n[plugins.memlane-cognee]\nenabled = true\n"""', updated_traex)
+        self.assertIn('[other]\nkeep = true\n', updated_traex)
+        uninstall._validate_toml_text(updated_traex)
+
+        # Fail-closed validation: broken TOML output must refuse overwrite and report an error.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp).resolve()
+            home, runtime_dir, components_dir, _ = self._build_fixture(tmp)
+            codex_toml = home / '.codex' / 'config.toml'
+            original = (
+                'broken = """unterminated\n'
+                'still open\n'
+            )
+            codex_toml.write_text(original, encoding='utf-8')
+            # Force _edit_codex_toml to return invalid TOML with a fake removal to verify fail-closed guard.
+            from unittest.mock import patch
+            with patch.object(uninstall, '_edit_codex_toml', return_value=(original, ['plugins.memlane-cognee'])):
+                code, res = uninstall.run_uninstall([
+                    '--apply', '--home', str(home), '--runtime-dir', str(runtime_dir), '--components-dir', str(components_dir),
+                ])
+            self.assertEqual(code, 1)
+            self.assertTrue(any('config.toml' in err for err in res['errors']))
+            self.assertEqual(codex_toml.read_text(encoding='utf-8'), original)
+
 
 if __name__ == '__main__':
     unittest.main()

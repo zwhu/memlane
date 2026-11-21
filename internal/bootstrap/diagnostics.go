@@ -8,24 +8,64 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
 
 var diagnosticSecrets = regexp.MustCompile(`(?im)(authorization\s*[:=]\s*|(?:api[_-]?key|token|password|passwd|secret|credential|cookie)\s*["']?\s*[:=]\s*["']?)([^\r\n,;}]+)`)
 var diagnosticBearer = regexp.MustCompile(`(?i)\b(Bearer|Basic)\s+[^\s"'<>]+`)
 var diagnosticTokens = regexp.MustCompile(`\b(?:sk-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b`)
-var diagnosticURLs = regexp.MustCompile(`https?://[^\s"'<>]+`)
+var diagnosticProxyKV = regexp.MustCompile(`(?im)(\b(?:https?|all|ftp|socks)_proxy\b\s*[:=]\s*|\bproxy(?:[_-]?url|\s+url)?\s*[:=]\s*)(["']?)(?:(https?|socks(?:4a?|5h?))://[^\s"'<>,;]+|[^\s"'<>,;]+)(["']?)`)
+var diagnosticProxyConnect = regexp.MustCompile(`(?i)(\bproxyconnect\s+\w+\s*:\s*dial\s+\w+\s+)(?:\[[^\]]+\]:\d+|[^\s"'<>:;]+:\d+)`)
+var diagnosticProxyPhrase = regexp.MustCompile(`(?i)(\b(?:via|using|connecting\s+to|through)\s+proxy\s+)(["']?)(?:(https?|socks(?:4a?|5h?))://[^\s"'<>,;]+|[^\s"'<>,;]+)(["']?)`)
+var diagnosticSocksURLs = regexp.MustCompile(`(?i)\b(socks(?:4a?|5h?))://[^\s"'<>]+`)
+var diagnosticURLs = regexp.MustCompile(`(?i)https?://[^\s"'<>]+`)
 var diagnosticHomes = regexp.MustCompile(`/(?:Users|home)/[^/\s"'<>]+`)
+
+func redactProxyMatch(re *regexp.Regexp, s string) string {
+	return re.ReplaceAllStringFunc(s, func(match string) string {
+		parts := re.FindStringSubmatch(match)
+		if len(parts) < 5 {
+			return "[代理已脱敏]"
+		}
+		prefix, openQuote, scheme, closeQuote := parts[1], parts[2], parts[3], parts[4]
+		if scheme != "" {
+			return prefix + openQuote + strings.ToLower(scheme) + "://[代理已脱敏]" + closeQuote
+		}
+		return prefix + openQuote + "[代理已脱敏]" + closeQuote
+	})
+}
 
 // RedactInstallerText accepts installer output only. It is deliberately not a
 // collector: callers must never pass chat, memory, login files or environment
-// dumps. URL query/fragment/userinfo are removed even with unfamiliar key names.
+// dumps. Proxy URLs (including socks5/socks5h/http/https userinfo and host:port)
+// and URL query/fragment/userinfo are removed even with unfamiliar key names.
 func RedactInstallerText(s string) string {
+	s = redactProxyMatch(diagnosticProxyKV, s)
+	s = diagnosticProxyConnect.ReplaceAllString(s, "${1}[代理已脱敏]")
+	s = redactProxyMatch(diagnosticProxyPhrase, s)
+	s = diagnosticSocksURLs.ReplaceAllStringFunc(s, func(raw string) string {
+		parts := diagnosticSocksURLs.FindStringSubmatch(raw)
+		if len(parts) >= 2 && parts[1] != "" {
+			return strings.ToLower(parts[1]) + "://[代理已脱敏]"
+		}
+		return "[代理已脱敏]"
+	})
 	s = diagnosticURLs.ReplaceAllStringFunc(s, func(raw string) string {
 		u, err := url.Parse(raw)
 		if err != nil {
 			return "[URL已脱敏]"
 		}
+		hasCreds := u.User != nil
+		isProxyHost := strings.Contains(strings.ToLower(u.Hostname()), "proxy")
 		u.User, u.RawQuery, u.Fragment = nil, "", ""
+		if hasCreds || isProxyHost {
+			u.Host = ""
+			scheme := strings.ToLower(u.Scheme)
+			if isProxyHost {
+				return scheme + "://[代理已脱敏]"
+			}
+			return scheme + "://[已脱敏主机]" + u.Path
+		}
 		return u.String()
 	})
 	s = diagnosticSecrets.ReplaceAllString(s, "${1}[已脱敏]")

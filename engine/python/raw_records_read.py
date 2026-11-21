@@ -12,24 +12,38 @@ import uuid
 
 from aiohttp import web
 
-from overview_bootstrap import (
-    _is_knowledge_doc,
-    _iso_text,
-    _parse_json,
-    _uuid_hex,
-    _uuid_text,
+from _runtime_common import (
+    decode_node_set,
+    id_variants,
+    is_derived_material,
+    is_knowledge_doc,
+    iso_text,
+    parse_json,
+    sql_in_clause,
+    uuid_text,
+    verify_sqlite_schema,
 )
 from project_policy import PolicyError
 from session_relations import descendant_ids_for_session, resolve_session_relations
 
 MAX_RAW_HISTORY_BYTES = 8 * 1024 * 1024
 _VALID_KINDS = frozenset({'all', 'session', 'document'})
-_DERIVED_NODE_SETS = frozenset({
-    'user_sessions_from_cache',
-    'agent_trace_feedbacks',
-    'session_learnings',
-})
 _SQL_IN_BATCH = 400
+_COGNEE_DATA_SCHEMA = {
+    'data': frozenset({
+        'id', 'dataset_id', 'name', 'label', 'mime_type',
+        'external_metadata', 'node_set', 'updated_at', 'created_at', 'content_hash',
+    }),
+}
+_COGNEE_SESSION_SCHEMA = {
+    'session_records': frozenset({
+        'session_id', 'user_id', 'dataset_id', 'agent_id', 'last_activity_at', 'started_at',
+    }),
+}
+_CACHE_REQUIRED_SCHEMA = {
+    'cache_qa_entries': frozenset({'seq', 'user_id', 'session_id', 'qa_id', 'payload', 'expires_at'}),
+    'cache_trace_entries': frozenset({'seq', 'user_id', 'session_id', 'payload', 'expires_at'}),
+}
 
 
 def _is_uuid(value):
@@ -48,30 +62,6 @@ def _safe_session_id(value):
     if '/' in value or '\\' in value or '..' in value:
         return False
     return not any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
-
-
-def _id_variants(value):
-    text = str(value or '').strip()
-    if not text:
-        return ()
-    variants = []
-    for candidate in (text, _uuid_text(text), _uuid_hex(text)):
-        if candidate and candidate not in variants:
-            variants.append(candidate)
-    return tuple(variants)
-
-
-def _is_derived_material(meta):
-    if not isinstance(meta, dict):
-        return False
-    ns = meta.get('node_set')
-    if isinstance(ns, str):
-        tags = [ns]
-    elif isinstance(ns, list):
-        tags = [t for t in ns if isinstance(t, str)]
-    else:
-        return False
-    return any(tag in _DERIVED_NODE_SETS for tag in tags)
 
 
 def _cache_expiry_bounds():
@@ -102,7 +92,7 @@ def _expiry_sql(has_expired, now_space):
 
 
 def _extract_question_label(payload):
-    data = payload if isinstance(payload, dict) else _parse_json(payload)
+    data = payload if isinstance(payload, dict) else parse_json(payload)
     if not isinstance(data, dict):
         return None
     q = data.get('question')
@@ -111,10 +101,20 @@ def _extract_question_label(payload):
     return None
 
 
-def _in_clause(variants):
-    if len(variants) == 1:
-        return '= ?', variants
-    return f"IN ({','.join('?' for _ in variants)})", variants
+def _cache_schema_ready(cache_db):
+    if cache_db.is_symlink() or not cache_db.is_file():
+        return False
+    try:
+        con = sqlite3.connect(f'file:{cache_db}?mode=ro', uri=True, timeout=2.0)
+    except sqlite3.Error:
+        return False
+    try:
+        verify_sqlite_schema(con, _CACHE_REQUIRED_SCHEMA)
+        return True
+    except sqlite3.Error:
+        return False
+    finally:
+        con.close()
 
 
 def read_cache_session_history(cache_db, *, owner, session_id, qa_offset=0, trace_offset=0, limit=20):
@@ -124,15 +124,19 @@ def read_cache_session_history(cache_db, *, owner, session_id, qa_offset=0, trac
     ``qas``, and ``traces``. Raises ``sqlite3.Error`` on database/schema failures
     so callers can surface 503 or fall back when appropriate.
     """
-    owner_variants = _id_variants(owner)
+    cache_path = Path(cache_db)
+    if cache_path.is_symlink() or not cache_path.is_file():
+        raise sqlite3.OperationalError('cache database unavailable')
+    owner_variants = id_variants(owner)
     if not owner_variants:
         raise sqlite3.OperationalError('missing session owner')
-    user_sql, user_params = _in_clause(owner_variants)
+    user_sql, user_params = sql_in_clause(owner_variants)
     bounds = _cache_expiry_bounds()
     now_space = bounds[0]
 
-    con = sqlite3.connect(f'file:{cache_db}?mode=ro', uri=True, timeout=2.0)
+    con = sqlite3.connect(f'file:{cache_path}?mode=ro', uri=True, timeout=2.0)
     try:
+        verify_sqlite_schema(con, _CACHE_REQUIRED_SCHEMA)
         qa_expired = _cache_table_has_expired(con, 'cache_qa_entries', bounds)
         tr_expired = _cache_table_has_expired(con, 'cache_trace_entries', bounds)
         qa_exp_sql, qa_exp_params = _expiry_sql(qa_expired, now_space)
@@ -157,7 +161,7 @@ def read_cache_session_history(cache_db, *, owner, session_id, qa_offset=0, trac
             f'SELECT payload FROM cache_qa_entries WHERE {qa_where} ORDER BY seq ASC LIMIT ? OFFSET ?',
             (*qa_base_params, limit, qa_offset),
         ):
-            parsed = _parse_json(raw_payload)
+            parsed = parse_json(raw_payload)
             if not isinstance(parsed, dict):
                 raise ValueError('corrupt qa payload')
             qas.append(parsed)
@@ -167,7 +171,7 @@ def read_cache_session_history(cache_db, *, owner, session_id, qa_offset=0, trac
             f'SELECT payload FROM cache_trace_entries WHERE {tr_where} ORDER BY seq ASC LIMIT ? OFFSET ?',
             (*tr_base_params, limit, trace_offset),
         ):
-            parsed = _parse_json(raw_payload)
+            parsed = parse_json(raw_payload)
             if not isinstance(parsed, dict):
                 raise ValueError('corrupt trace payload')
             traces.append(parsed)
@@ -200,7 +204,7 @@ def read_cache_session_history(cache_db, *, owner, session_id, qa_offset=0, trac
 
 
 def _hydrate_session_summaries(cache_db, sessions):
-    if not cache_db.is_file():
+    if cache_db.is_symlink() or not cache_db.is_file():
         return False
     bounds = _cache_expiry_bounds()
     now_space = bounds[0]
@@ -210,6 +214,7 @@ def _hydrate_session_summaries(cache_db, sessions):
         return False
 
     try:
+        verify_sqlite_schema(con, _CACHE_REQUIRED_SCHEMA)
         qa_expired = _cache_table_has_expired(con, 'cache_qa_entries', bounds)
         tr_expired = _cache_table_has_expired(con, 'cache_trace_entries', bounds)
         qa_exp_sql, qa_exp_params = _expiry_sql(qa_expired, now_space)
@@ -225,8 +230,8 @@ def _hydrate_session_summaries(cache_db, sessions):
         min_seq_owner = {}
 
         for user_id, sids in by_user.items():
-            user_variants = _id_variants(user_id)
-            user_sql, user_params = _in_clause(user_variants)
+            user_variants = id_variants(user_id)
+            user_sql, user_params = sql_in_clause(user_variants)
             unique_sids = list(dict.fromkeys(sids))
             for i in range(0, len(unique_sids), _SQL_IN_BATCH):
                 batch = unique_sids[i:i + _SQL_IN_BATCH]
@@ -273,8 +278,8 @@ def _hydrate_session_summaries(cache_db, sessions):
                     fallback_needed.append((key[0], key[1], int(seq_val)))
 
         for user_id, sid, first_seq in fallback_needed:
-            user_variants = _id_variants(user_id)
-            user_sql, user_params = _in_clause(user_variants)
+            user_variants = id_variants(user_id)
+            user_sql, user_params = sql_in_clause(user_variants)
             for (raw_payload,) in con.execute(
                 f'''SELECT payload FROM cache_qa_entries
                     WHERE user_id {user_sql} AND session_id = ? AND seq > ?{qa_exp_sql}
@@ -318,12 +323,12 @@ def _read_raw_records_catalog(official_data, dataset_id, kind='all', *, registry
     official_root = Path(official_data).resolve()
     cognee_db = official_root / 'system' / 'databases' / 'cognee_db'
     cache_db = official_root / 'system' / 'databases' / 'cache.db'
-    if not cognee_db.is_file():
+    if cognee_db.is_symlink() or not cognee_db.is_file():
         raise PolicyError('raw_records_store_unavailable', 503)
 
-    ds_norm = _uuid_text(dataset_id)
-    ds_variants = _id_variants(ds_norm)
-    ds_sql, ds_params = _in_clause(ds_variants)
+    ds_norm = uuid_text(dataset_id)
+    ds_variants = id_variants(ds_norm)
+    ds_sql, ds_params = sql_in_clause(ds_variants)
 
     try:
         con = sqlite3.connect(f'file:{cognee_db}?mode=ro', uri=True, timeout=2.0)
@@ -333,6 +338,13 @@ def _read_raw_records_catalog(official_data, dataset_id, kind='all', *, registry
     documents = []
     sessions = []
     try:
+        required_schema = {}
+        if kind != 'session':
+            required_schema.update(_COGNEE_DATA_SCHEMA)
+        if kind != 'document':
+            required_schema.update(_COGNEE_SESSION_SCHEMA)
+        verify_sqlite_schema(con, required_schema)
+
         if kind != 'session':
             for row in con.execute(
                 f'''SELECT id, dataset_id, name, label, mime_type, external_metadata,
@@ -340,18 +352,18 @@ def _read_raw_records_catalog(official_data, dataset_id, kind='all', *, registry
                     FROM data WHERE dataset_id {ds_sql}''',
                 ds_params,
             ):
-                doc_id = _uuid_text(row[0])
+                doc_id = uuid_text(row[0])
                 if not doc_id:
                     continue
-                meta = _parse_json(row[5])
+                meta = parse_json(row[5])
                 if not isinstance(meta, dict):
                     meta = {}
                 else:
                     meta = dict(meta)
-                ns = _parse_json(row[6])
+                ns = decode_node_set(row[6])
                 if ns and 'node_set' not in meta:
                     meta['node_set'] = ns
-                if _is_knowledge_doc(meta) or _is_derived_material(meta):
+                if is_knowledge_doc(meta) or is_derived_material(meta):
                     continue
                 documents.append({
                     'id': doc_id,
@@ -360,8 +372,8 @@ def _read_raw_records_catalog(official_data, dataset_id, kind='all', *, registry
                     'label': row[3],
                     'mimeType': row[4] or '',
                     'externalMetadata': meta,
-                    'updatedAt': _iso_text(row[7]),
-                    'createdAt': _iso_text(row[8]),
+                    'updatedAt': iso_text(row[7]),
+                    'createdAt': iso_text(row[8]),
                     'contentHash': row[9] or '',
                 })
 
@@ -378,11 +390,11 @@ def _read_raw_records_catalog(official_data, dataset_id, kind='all', *, registry
                     raise PolicyError('session_identity_missing', 503)
                 sessions.append({
                     'session_id': sid,
-                    'user_id': _uuid_text(srow[1]),
+                    'user_id': uuid_text(srow[1]),
                     'dataset_id': ds_norm,
                     'agent_id': str(srow[3] or ''),
-                    'last_activity_at': _iso_text(srow[4]),
-                    'started_at': _iso_text(srow[5]),
+                    'last_activity_at': iso_text(srow[4]),
+                    'started_at': iso_text(srow[5]),
                 })
     except PolicyError:
         raise
@@ -393,7 +405,7 @@ def _read_raw_records_catalog(official_data, dataset_id, kind='all', *, registry
 
     cache_ready = False
     if kind != 'document':
-        cache_ready = _hydrate_session_summaries(cache_db, sessions) if sessions else cache_db.is_file()
+        cache_ready = _hydrate_session_summaries(cache_db, sessions) if sessions else _cache_schema_ready(cache_db)
         if sessions and (registry is not None or codex_config):
             relations = resolve_session_relations(
                 [row['session_id'] for row in sessions],
@@ -426,12 +438,12 @@ def _read_session_history_page(
     official_root = Path(official_data).resolve()
     cognee_db = official_root / 'system' / 'databases' / 'cognee_db'
     cache_db = official_root / 'system' / 'databases' / 'cache.db'
-    if not cognee_db.is_file():
+    if cognee_db.is_symlink() or not cognee_db.is_file():
         raise PolicyError('session_history_unavailable', 503)
 
-    ds_norm = _uuid_text(dataset_id)
-    ds_variants = _id_variants(ds_norm)
-    ds_sql, ds_params = _in_clause(ds_variants)
+    ds_norm = uuid_text(dataset_id)
+    ds_variants = id_variants(ds_norm)
+    ds_sql, ds_params = sql_in_clause(ds_variants)
 
     try:
         con = sqlite3.connect(f'file:{cognee_db}?mode=ro', uri=True, timeout=2.0)
@@ -440,9 +452,10 @@ def _read_session_history_page(
 
     ds_sessions = {}
     try:
+        verify_sqlite_schema(con, _COGNEE_SESSION_SCHEMA)
         if user_id:
-            u_variants = _id_variants(user_id)
-            u_sql, u_params = _in_clause(u_variants)
+            u_variants = id_variants(user_id)
+            u_sql, u_params = sql_in_clause(u_variants)
             srow = con.execute(
                 f'''SELECT session_id, user_id, dataset_id, agent_id, last_activity_at, started_at
                     FROM session_records
@@ -470,11 +483,11 @@ def _read_session_history_page(
                 if ds_sid and ds_sid not in ds_sessions:
                     ds_sessions[ds_sid] = {
                         'session_id': ds_sid,
-                        'user_id': _uuid_text(dsrow[1]),
+                        'user_id': uuid_text(dsrow[1]),
                         'dataset_id': ds_norm,
                         'agent_id': str(dsrow[3] or ''),
-                        'last_activity_at': _iso_text(dsrow[4]),
-                        'started_at': _iso_text(dsrow[5]),
+                        'last_activity_at': iso_text(dsrow[4]),
+                        'started_at': iso_text(dsrow[5]),
                     }
     except sqlite3.Error as err:
         raise PolicyError('session_history_unavailable', 503) from err
@@ -484,8 +497,8 @@ def _read_session_history_page(
     if srow is None:
         raise PolicyError('session_not_found', 404)
 
-    owner = _uuid_text(srow[1])
-    if not owner or not cache_db.is_file():
+    owner = uuid_text(srow[1])
+    if not owner or cache_db.is_symlink() or not cache_db.is_file():
         raise PolicyError('session_history_unavailable', 503)
 
     try:
@@ -505,6 +518,11 @@ def _read_session_history_page(
 
     msg_count = page['msg_count']
     tool_calls = page['tool_calls']
+    # Never silently serve an empty 200 page for an existing session from the
+    # derived SQLite projection; surface 503 so desktop falls back to official
+    # Cognee SessionManager HTTP to distinguish a genuinely empty session.
+    if msg_count == 0 and tool_calls == 0:
+        raise PolicyError('session_history_unavailable', 503)
     qas = page['qas']
     traces = page['traces']
     record = {
@@ -512,8 +530,8 @@ def _read_session_history_page(
         'user_id': owner,
         'dataset_id': ds_norm,
         'agent_id': str(srow[3] or ''),
-        'last_activity_at': _iso_text(srow[4]),
-        'started_at': _iso_text(srow[5]),
+        'last_activity_at': iso_text(srow[4]),
+        'started_at': iso_text(srow[5]),
         'label': page['label'],
         'msg_count': msg_count,
         'tool_calls': tool_calls,
@@ -568,7 +586,7 @@ def attach_raw_records_read(app, registry, *, codex_config=None):
     def require_managed_dataset(raw_dataset):
         if not _is_uuid(raw_dataset):
             raise PolicyError('dataset_access_denied', 403)
-        ds_id = _uuid_text(raw_dataset)
+        ds_id = uuid_text(raw_dataset)
         allowed = {g['dataset_id'] for g in registry.managed_groups() if g.get('dataset_id')}
         if ds_id not in allowed:
             raise PolicyError('dataset_access_denied', 403)
@@ -610,7 +628,7 @@ def attach_raw_records_read(app, registry, *, codex_config=None):
             user_id = user_id.strip()
             if user_id and not _is_uuid(user_id):
                 raise PolicyError('invalid_raw_records_query')
-            user_id = _uuid_text(user_id) if user_id else None
+            user_id = uuid_text(user_id) if user_id else None
         try:
             qa_offset = int(request.query.get('qa_offset', '0'))
             trace_offset = int(request.query.get('trace_offset', '0'))

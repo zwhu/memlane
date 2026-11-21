@@ -354,5 +354,139 @@ class OwnershipTests(unittest.TestCase):
                     self.assertEqual(client.recv(1), b'')
         dev.port_free('http://127.0.0.1:' + str(address[1]))
 
+    def test_non_codex_connected_agent_bridge_starts_via_unified_startup_gate(self):
+        import contextlib
+        import json
+        import sys
+        import types
+        from agent_bridge_runtime import mark_connected_bridge_selection
+        from generation_config import GenerationStore, runtime_generation
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            # Create synthetic pi bridge executable, auth.json, and settings.json.
+            pi_bin = root / 'fake-pi'
+            pi_bin.write_text('#!/bin/sh\nexit 0\n')
+            pi_bin.chmod(0o700)
+            pi_home = root / 'pi-agent'
+            pi_home.mkdir()
+            (pi_home / 'auth.json').write_text('{"deepseek":{"access":"tok"}}')
+            (pi_home / 'auth.json').chmod(0o600)
+            (pi_home / 'settings.json').write_text(json.dumps({
+                'defaultProvider': 'deepseek',
+                'defaultModel': 'deepseek-chat',
+            }))
+            comp_token = root / 'completion.token'
+            comp_token.write_text('t' * 40)
+            comp_token.chmod(0o600)
+
+            generation = root / 'generation.json'
+            store = GenerationStore(generation, 'fixed', legacy_model='original')
+            ref = store.put(
+                'connected-pi',
+                {'mode': 'agent_bridge', 'bridge_kind': 'pi', 'bridge_provider': 'deepseek', 'model': 'deepseek-chat'},
+                0,
+                'save-pi',
+            )
+            row = store.resolve({'id': ref['id'], 'revision': ref['revision']})
+            mark_connected_bridge_selection(store.state, row)
+            store.state['active'] = {'id': ref['id'], 'revision': ref['revision']}
+            store.save()
+            store.close()
+
+            config = {
+                'generation_file': str(generation),
+                'service_commit': 'fixed',
+                'python': 'unused-python',
+                'service_url': 'http://127.0.0.1:18999',
+                'completion_url': 'http://127.0.0.1:18998',
+                'completion_token_file': str(comp_token),
+                'pi_executable': str(pi_bin),
+                'pi_home': str(pi_home),
+            }
+            launches = []
+
+            def launch(command):
+                launches.append(command)
+                if 'official_service_dev.py' in command[1]:
+                    effective = json.loads(Path(command[-1]).read_text())
+                    _, _, digest = runtime_generation(effective)
+                    Path(effective['generation_applied_file']).write_text(json.dumps({
+                        'pid': 77, 'digest': digest, 'reference': effective['generation_reference'],
+                    }))
+                    Path(effective['generation_applied_file']).chmod(0o600)
+                    return Mock(pid=77)
+                return Mock(pid=66)
+
+            # agent_bridge_runtime.read_agent_defaults imports stdlib tomllib (3.11+)
+            # even though pi reads settings.json; allow running this suite under host Python 3.9.
+            tomllib_guard = (
+                patch.dict(sys.modules, {'tomllib': types.ModuleType('tomllib')})
+                if importlib.util.find_spec('tomllib') is None
+                else contextlib.nullcontext()
+            )
+            with patch.object(dev, 'port_free'), tomllib_guard:
+                effective, _, endpoint, service = dev.start_generation_stack(
+                    config, root / 'runtime.json', launch, lambda: self.fail('unexpected cleanup'),
+                    health=lambda *args: None,
+                )
+            self.assertEqual(len(launches), 2)
+            self.assertEqual(endpoint.pid, 66)
+            self.assertEqual(service.pid, 77)
+            self.assertEqual(effective['generation_mode'], 'agent_bridge')
+            self.assertIn('--bridge-kind', launches[0])
+            self.assertIn('pi', launches[0])
+            self.assertIn('--bridge-provider', launches[0])
+            self.assertIn('deepseek', launches[0])
+
+    def test_owner_lock_receipt_nofollow_and_dev_plist_min_os(self):
+        self.assertIn('<key>LSMinimumSystemVersion</key>\n\t<string>14.0</string>', dev.DEV_APP_PLIST)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / 'outside.txt'
+            target.write_text('keep')
+            store = root / 'store'
+            store.mkdir()
+
+            # acquire() must reject a symlinked .service-owner.
+            (store / '.service-owner').symlink_to(target)
+            with self.assertRaises(ValueError):
+                dev.acquire(store)
+            (store / '.service-owner').unlink()
+
+            # write_owner_record() & read_owner_record() must reject symlinked receipts
+            # and write 0600 regular files with fsync.
+            runfile = store / '.memlane-dev-owner.json'
+            runfile.symlink_to(target)
+            with self.assertRaises(ValueError):
+                dev.write_owner_record(runfile, {'pid': 123})
+            with self.assertRaises(ValueError):
+                dev.read_owner_record(runfile)
+            runfile.unlink()
+
+            dev.write_owner_record(runfile, {'pid': 456, 'phase': 'ready'})
+            self.assertEqual(runfile.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(dev.read_owner_record(runfile), {'pid': 456, 'phase': 'ready'})
+
+    def test_stop_groups_parallel_stops_stubborn_groups_within_shared_budget(self):
+        import subprocess
+        import sys
+        import time
+        stubborn = 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)'
+        p1 = subprocess.Popen([sys.executable, '-c', stubborn], start_new_session=True)
+        p2 = subprocess.Popen([sys.executable, '-c', stubborn], start_new_session=True)
+        try:
+            started = time.monotonic()
+            errors = dev.stop_groups_parallel([p1, p2], grace=0.3, kill_wait=1.0)
+            elapsed = time.monotonic() - started
+            self.assertEqual(errors, [])
+            self.assertLess(elapsed, 2.0)
+            self.assertFalse(dev.group_exists(p1.pid))
+            self.assertFalse(dev.group_exists(p2.pid))
+        finally:
+            for proc in (p1, p2):
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=5)
+
 
 if __name__ == '__main__': unittest.main()

@@ -208,7 +208,7 @@ const compiled = new URL("./", pathToFileURL(process.env.MEMLANE_OPENCODE_TEST_C
 const { ManagedDelivery } = await import(new URL("managed-delivery.js", compiled));
 const { Outbox } = await import(new URL("runtime.js", compiled));
 const { CogneeHttpClient } = await import(new URL("client.js", compiled));
-async function officialServer({loseFirstResponse = false, credential = "synthetic-child-key", loseLifecycleResponse = false, loseImproveResponse = false, loseRememberResponse = false, sessionDetail, afterEntry} = {}) {
+async function officialServer({loseFirstResponse = false, rejectFirstStatus = 0, credential = "synthetic-child-key", loseLifecycleResponse = false, loseImproveResponse = false, loseRememberResponse = false, sessionDetail, afterEntry} = {}) {
   const writes = [], recalls = [], lifecycles = [], improvements = [], remembers = [];
   let lookups = 0;
   const server = await listener(async (req, res) => {
@@ -221,6 +221,7 @@ async function officialServer({loseFirstResponse = false, credential = "syntheti
       writes.push(JSON.parse(Buffer.concat(chunks).toString()));
       if (afterEntry) await afterEntry(writes.length);
       if (loseFirstResponse && writes.length === 1) { res.destroy(); return; }
+      if (rejectFirstStatus && writes.length === 1) { res.writeHead(rejectFirstStatus); res.end('{"error":"rejected"}'); return; }
       res.end('{"status":"saved"}'); return;
     }
     if (req.method === "GET" && req.url.startsWith("/api/v1/sessions/")) {
@@ -849,18 +850,71 @@ test("backlog stop during a POST keeps its confirmed receipt and does not send t
   } finally {await f.close();}
 });
 
-test("backlog new lost response is isolated and pauses before another POST, without probing or replay", async () => {
+test("backlog new lost response is isolated while healthy tail continues without probing or replay", async () => {
   const f = await pendingFixture("backlog-new-unknown", {loseFirstResponse: true});
   try {
     const manager = backlogManager(f);
     for (const id of [hash("unknown-first"), hash("unknown-second")]) f.queue.enqueue(id, f.session, {type: "qa"}, f.target);
     const snapshot = await manager.runBacklog({...f.command, action: "backlog_review"}, () => {});
     const result = await manager.runBacklog(backlogSave(f, snapshot), () => {});
-    assert.equal(result.status, "paused"); assert.equal(result.reason, "request_result_unknown");
-    assert.equal(result.saved, 0); assert.equal(result.isolated, 1); assert.equal(result.remaining, 1);
-    assert.equal(f.server.writes.length, 1); assert.equal(f.server.lookups(), 0);
+    assert.equal(result.status, "completed");
+    assert.equal(result.saved, 1); assert.equal(result.isolated, 1); assert.equal(result.remaining, 0);
+    assert.equal(f.server.writes.length, 2); assert.equal(f.server.lookups(), 0);
     const fresh = await manager.runBacklog({...f.command, action: "backlog_review"}, () => {});
-    assert.equal(fresh.unknown, 1); assert.equal(fresh.tokens.length, 1); assert.equal(f.server.writes.length, 1);
+    assert.equal(fresh.unknown, 1); assert.equal(fresh.tokens.length, 0); assert.equal(f.server.writes.length, 2);
+  } finally {await f.close();}
+});
+
+test("backlog HTTP 413/422 isolates rejected entry without misreporting write_denied or halting healthy tail", async () => {
+  for (const status of [413, 422]) {
+    const f = await pendingFixture("backlog-rejected-" + status, {rejectFirstStatus: status});
+    try {
+      const manager = backlogManager(f);
+      const badId = hash("rejected-first-" + status), goodId = hash("rejected-second-" + status);
+      f.queue.enqueue(badId, f.session, {type: "qa", question: "bad"}, f.target);
+      f.queue.enqueue(goodId, f.session, {type: "qa", question: "good"}, f.target);
+      const snapshot = await manager.runBacklog({...f.command, action: "backlog_review"}, () => {});
+      const result = await manager.runBacklog(backlogSave(f, snapshot), () => {});
+      assert.equal(result.status, "completed");
+      assert.notEqual(result.reason, "write_denied");
+      assert.equal(result.saved, 1); assert.equal(result.isolated, 1); assert.equal(result.remaining, 0);
+      assert.equal(f.queue.entryState(f.target, f.session, badId), "rejected");
+      const fresh = await manager.runBacklog({...f.command, action: "backlog_review"}, () => {});
+      assert.equal(fresh.unknown, 0); assert.equal(fresh.tokens.length, 0);
+    } finally {await f.close();}
+  }
+});
+
+test("backlog HTTP 429 persists session cooldown across calls without retrying sibling tokens or blocking other sessions", async () => {
+  const f = await pendingFixture("backlog-rate-limit", {rejectFirstStatus: 429});
+  try {
+    const manager = backlogManager(f);
+    const t1 = hash("rl-first"), t2 = hash("rl-second"), otherId = hash("rl-other-session");
+    f.queue.enqueue(t1, f.session, {type: "qa", question: "first"}, f.target);
+    f.queue.enqueue(t2, f.session, {type: "qa", question: "second"}, f.target);
+    const otherNative = "pending-backlog-rate-limit-other";
+    const otherPolicy = await f.control.current(otherNative);
+    const otherSession = `opencode_${hash("a").slice(0, 16)}_${hash(otherNative).slice(0, 24)}`;
+    const otherTarget = {native: otherNative, project_id: otherPolicy.project_id, dataset_id: otherPolicy.dataset_id};
+    f.queue.enqueue(otherId, otherSession, {type: "qa", question: "other"}, otherTarget);
+
+    const snapshot = await manager.runBacklog({...f.command, action: "backlog_review"}, () => {});
+    const first = await manager.runBacklog(backlogSave(f, snapshot), () => {});
+    assert.equal(first.status, "paused"); assert.equal(first.reason, "rate_limited");
+    assert.equal(first.saved, 0); assert.equal(first.isolated, 0); assert.equal(first.remaining, 2);
+    assert.equal(f.server.writes.length, 1);
+    // Immediate repeat runBacklog must NOT clear cooldown or send t1/t2.
+    const repeat = await manager.runBacklog(backlogSave(f, snapshot), () => {});
+    assert.equal(repeat.status, "paused"); assert.equal(repeat.reason, "rate_limited");
+    assert.equal(repeat.remaining, 2);
+    assert.equal(f.server.writes.length, 1);
+    // Other session in the same shared Outbox drains immediately with zero interference.
+    const otherCmd = {project_id: otherPolicy.project_id, dataset_id: otherPolicy.dataset_id, host_session_key: f.control.hostKey(otherNative)};
+    const otherSnap = await manager.runBacklog({...otherCmd, action: "backlog_review"}, () => {});
+    const otherRes = await manager.runBacklog({...otherCmd, action: "backlog_save", tokens: otherSnap.tokens,
+      session_id: otherSnap.session_id, native_session: otherSnap.native, cancel_file: join(root, otherNative + ".stop")}, () => {});
+    assert.equal(otherRes.status, "completed"); assert.equal(otherRes.saved, 1); assert.equal(otherRes.remaining, 0);
+    assert.equal(f.server.writes.length, 2);
   } finally {await f.close();}
 });
 

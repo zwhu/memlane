@@ -201,7 +201,7 @@ func TestOverviewFailureDurationLocalWindowAndExplanations(t *testing.T) {
 		"ReadTimeout":           "等待响应超时",
 		"TimeoutError":          "操作超时",
 		"ConnectError":          "网络连接失败",
-		"BadGatewayError":       "模型服务网关异常",
+		"BadGatewayError":       "Agent 模型代理异常",
 		"BrokenPipeError":       "连接管道已断开",
 		"PermissionDeniedError": "访问被拒绝",
 		"RateLimitError":        "请求频率受限",

@@ -7,8 +7,8 @@ import secrets
 
 from aiohttp import ClientSession, web
 
-from _runtime_common import CachedSecretReader
-from project_control import Official, Registry, loopback_origin, read_secret
+from _runtime_common import CachedSecretReader, read_secret
+from project_control import Official, Registry, loopback_origin
 from project_policy import PolicyError
 
 
@@ -412,7 +412,7 @@ async def configured_app(config):
             from tool_graph_control import attach_tool_graph
             attach_tool_graph(app, registry, config)
         from project_message_summary import attach_project_message_summary
-        attach_project_message_summary(app, registry, backlog=backlog)
+        attach_project_message_summary(app, registry, backlog=backlog, codex_config=config)
     except BaseException:
         if registry is not None:
             registry.close()

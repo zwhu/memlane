@@ -280,10 +280,13 @@ def prepare(artifact, root, instance_id, agent, service_url, control_url, profil
     root, artifact, profile = Path(root).absolute(), Path(artifact).resolve(strict=True), Path(profile).absolute()
     if root.resolve() != root or profile.resolve() != profile:
         raise PolicyError('canonical_host_paths_required')
-    for value in (service_url, control_url):
+    for value, allowed_paths in (
+        (service_url, ('', '/', '/cognee', '/cognee/')),
+        (control_url, ('', '/')),
+    ):
         url = urlsplit(value)
         if (url.scheme != 'http' or url.hostname != '127.0.0.1' or not url.port or url.username or url.password
-                or url.path not in ('', '/') or url.query or url.fragment):
+                or url.path not in allowed_paths or url.query or url.fragment):
             raise PolicyError('installation_local_endpoint_required')
     if not isinstance(artifact_sha256, str) or not re.fullmatch(r'[0-9a-f]{64}', artifact_sha256):
         raise PolicyError('fixed_opencode_artifact_required')

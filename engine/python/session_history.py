@@ -84,7 +84,7 @@ def install_session_history(app, *, bindings=None, cache_db_path=None):
         if not sm.is_available or not owner:
             raise HTTPException(503, 'session history unavailable')
         page = None
-        if read_cache_page is not None and cache_db.is_file():
+        if read_cache_page is not None and not cache_db.is_symlink() and cache_db.is_file():
             try:
                 page = await asyncio.to_thread(
                     read_cache_page,
@@ -96,6 +96,10 @@ def install_session_history(app, *, bindings=None, cache_db_path=None):
                     limit=limit,
                 )
             except (sqlite3.Error, ValueError):
+                page = None
+            if page is not None and not page['conflict'] and page['msg_count'] == 0 and page['tool_calls'] == 0:
+                # Confirm emptiness through the official SessionManager instead of
+                # returning an unverified 200 empty page from the derived SQLite cache.
                 page = None
         if page is not None:
             if page['conflict']:

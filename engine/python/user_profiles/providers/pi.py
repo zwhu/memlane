@@ -9,13 +9,21 @@ class PiProvider(ProfileProvider):
     display_name = 'pi'
 
     def build_command(self, executable, row, work, prompt, env):
-        env['PI_CODING_AGENT_DIR'] = row['profile']
+        from agent_bridge_runtime import read_agent_defaults
+
+        profile = row['profile']
+        defaults = read_agent_defaults(self.kind, profile)
+        env['PI_CODING_AGENT_DIR'] = profile
         args = [
             executable,
             '--print',
             '--no-session',
             '--no-extensions',
             '--no-skills',
+            '--provider',
+            defaults['provider'],
+            '--model',
+            defaults['model'],
             '--tools',
             'read,grep,find,ls',
             prompt,

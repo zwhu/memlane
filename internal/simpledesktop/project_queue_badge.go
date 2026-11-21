@@ -31,7 +31,7 @@ func (a *App) refreshSidebarQueueIfDue(now time.Time) {
 	}
 	active := 0
 	for _, p := range projects {
-		if a.projectQueueStateFor(p).Loading {
+		if q := a.existingProjectQueueState(p); q != nil && q.Loading {
 			active++
 		}
 	}
@@ -39,7 +39,7 @@ func (a *App) refreshSidebarQueueIfDue(now time.Time) {
 	for offset := 0; offset < len(projects) && active < 3; offset++ {
 		index := (start + offset) % len(projects)
 		p := projects[index]
-		q := a.projectQueueStateFor(p)
+		q := a.projectQueueStateForAsync(p)
 		if !q.Loading && (!q.Loaded || now.After(q.Next)) {
 			a.loadProjectQueue(q, p)
 			if q.Loading {
@@ -63,8 +63,11 @@ func (a *App) sidebarQueueBadge(p Project) (string, string) {
 }
 
 func (a *App) countProjectMessageAlerts(p AccessProject) (actionCount, errorCount int) {
-	q := a.projectQueueStateFor(p)
+	q := a.existingProjectQueueState(p)
 	if q == nil {
+		if p.policySyncUnconfirmed() {
+			return 0, 1
+		}
 		return 0, 0
 	}
 	needs, info := a.messageNotices(q, p)
@@ -88,7 +91,7 @@ func (a *App) countProjectMessageAlerts(p AccessProject) (actionCount, errorCoun
 }
 
 func (a *App) countProjectActiveProgress(p AccessProject) int {
-	q := a.projectQueueStateFor(p)
+	q := a.existingProjectQueueState(p)
 	if q == nil {
 		return 0
 	}

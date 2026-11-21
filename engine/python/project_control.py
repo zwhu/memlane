@@ -15,7 +15,9 @@ from urllib.parse import urlparse
 from urllib.parse import quote
 
 from _runtime_common import private_write, read_secret
-from project_policy import ACCESS, DEFAULTS, PolicyError, effective, project_id, validate_fields, workspace_root
+from project_policy import (
+    ACCESS, DEFAULTS, PolicyError, effective, is_protected_project, project_id, validate_fields, workspace_root,
+)
 
 
 def _installation_view(installation):
@@ -200,12 +202,27 @@ class Registry:
         if type(expected) is not int or expected != self.state['revision']:
             raise PolicyError('revision_conflict', 409)
 
+    def _project_policy_values(self, project, agent_id):
+        return effective(
+            self.state['defaults'],
+            project.get('overrides', {}).get(agent_id, {}),
+            protected=is_protected_project(project),
+        )
+
+    def _group_expected_permissions(self, group, agent_id):
+        if group.get('kind') == 'common':
+            override = (group.get('overrides') or {}).get(agent_id, {})
+            if override.get('access') == 'none':
+                return set()
+            return {'read'}
+        return set(self._project_policy_values(group, agent_id)['permissions'])
+
     def policy(self, project, agent_id):
         if agent_id not in self.state['agents']:
             raise PolicyError('agent_not_registered', 403)
         if agent_id in self.state.get('agent_retirements', {}):
             raise PolicyError('agent_retired', 403)
-        values = effective(self.state['defaults'], project['overrides'].get(agent_id, {}))
+        values = self._project_policy_values(project, agent_id)
         applied = project['applied'].get(agent_id, {})
         ready = (project['status'] == 'verified' and
                  applied.get('revision') == project['desired_revision'] and applied.get('status') == 'verified')
@@ -226,8 +243,9 @@ class Registry:
         applied = common['applied'].get(agent_id, {})
         ready = (common['status'] == 'verified' and applied.get('status') == 'verified'
                  and applied.get('revision') == common['desired_revision'])
+        allowed = bool(self._group_expected_permissions(common, agent_id))
         return {'dataset_id': common['dataset_id'], 'revision': common['desired_revision'],
-                'ready': ready, 'readable': ready}
+                'ready': ready, 'readable': ready and allowed}
 
     def _can_batch_effective_permissions(self):
         return (
@@ -255,8 +273,7 @@ class Registry:
         transient_errors = {}
         if verified_groups:
             def _expected_permissions(group):
-                return ({'read'} if group.get('kind') == 'common' else
-                        effective(self.state['defaults'], group['overrides'].get(agent_id, {}))['permissions'])
+                return self._group_expected_permissions(group, agent_id)
 
             def _mark_unconfirmed(group, error_code):
                 nonlocal changed
@@ -345,8 +362,9 @@ class Registry:
             if not agent or not agent.get('control_token_file'):
                 raise PolicyError('managed_agent_required', 409)
             from project_installation import prepare
+            gateway_url = loopback_origin(control_url) + '/cognee'
             agent['installation'] = prepare(plugin_source, self.path.parent, instance_id, agent,
-                                             self.official.url, control_url, host_home)
+                                             gateway_url, control_url, host_home)
             self.state['revision'] += 1
             self.save()
             return self.directory()
@@ -378,10 +396,7 @@ class Registry:
                 if agent_id in self.state.get('agent_retirements', {}):
                     applied[agent_id] = {'status': 'retiring'}
                     continue
-                permissions = (
-                    {'read'} if is_common
-                    else set(effective(self.state['defaults'], group['overrides'].get(agent_id, {}))['permissions'])
-                )
+                permissions = self._group_expected_permissions(group, agent_id)
                 if use_batch and group.get('code_dataset_id'):
                     perm_map = await self.official.effective_permissions_batch(
                         agent, [group['dataset_id'], group['code_dataset_id']])
@@ -436,9 +451,14 @@ class Registry:
             if common is None:
                 self.state['revision'] += 1
                 identifier = str(uuid.uuid5(uuid.UUID(self.state['service_namespace']), 'common-knowledge'))
-                common = {'id': identifier, 'kind': 'common', 'name': '通用知识',
+                common_overrides = {
+                    aid: {'access': 'none'}
+                    for aid, agent in self.state['agents'].items()
+                    if agent.get('default_access') == 'none'
+                }
+                common = {'id': identifier, 'kind': 'common', 'name': '通用记忆',
                           'dataset_id': None, 'dataset_name': 'ml-common-' + identifier,
-                          'overrides': {}, 'applied': {}, 'desired_revision': self.state['revision'],
+                          'overrides': common_overrides, 'applied': {}, 'desired_revision': self.state['revision'],
                           'operation_id': secrets.token_hex(16), 'status': 'unconfirmed', 'code_enabled': False}
                 self.state['common'] = common
                 self.save()
@@ -503,6 +523,47 @@ class Registry:
                 self.save()
             return self.directory()
 
+    async def _verify_ungranted_agent_locked(self, instance_id):
+        """Read-only check confirming a newly provisioned computer-level identity has zero ACLs."""
+        agent = self.state['agents'][instance_id]
+        groups = [group for group in self.managed_groups() if group.get('status') == 'verified' and group.get('dataset_id')]
+        if not groups:
+            return
+        use_batch = self._can_batch_effective_permissions()
+        if use_batch:
+            dataset_ids = []
+            for group in groups:
+                dataset_ids.append(group['dataset_id'])
+                if group.get('code_dataset_id'):
+                    dataset_ids.append(group['code_dataset_id'])
+            try:
+                perm_map = await self.official.effective_permissions_batch(agent, dataset_ids)
+            except PolicyError as error:
+                for group in groups:
+                    group['applied'][instance_id] = {'status': 'unconfirmed', 'error_code': error.code}
+                return
+            for group in groups:
+                has_grant = bool(perm_map.get(group['dataset_id'], set())) or bool(
+                    group.get('code_dataset_id') and perm_map.get(group['code_dataset_id'], set())
+                )
+                if has_grant:
+                    group['applied'][instance_id] = {'status': 'unconfirmed', 'error_code': 'effective_acl_mismatch'}
+                else:
+                    group['applied'][instance_id] = {'status': 'verified', 'revision': group['desired_revision']}
+            return
+        for group in groups:
+            try:
+                actual = await self.official.effective_permissions(agent, group['dataset_id'])
+                if actual:
+                    raise PolicyError('effective_acl_mismatch', 503)
+                if group.get('code_dataset_id'):
+                    actual_code = await self.official.effective_permissions(agent, group['code_dataset_id'])
+                    if actual_code:
+                        raise PolicyError('effective_acl_mismatch', 503)
+                group['applied'][instance_id] = {'status': 'verified', 'revision': group['desired_revision']}
+            except PolicyError as error:
+                group['applied'][instance_id] = {'status': 'unconfirmed', 'error_code': error.code}
+
     async def add_agent(self, instance_id, name, principal_id, key_file, expected):
         """Only management can enroll a provisioned official sub-user, never an owner."""
         async with self.mutex:
@@ -510,7 +571,7 @@ class Registry:
             if instance_id in self.state['agents']:
                 raise PolicyError('agent_already_registered', 409)
             agent = {'name': name, 'principal_id': str(uuid.UUID(principal_id)),
-                     'key_file': str(Path(key_file).absolute())}
+                     'key_file': str(Path(key_file).absolute()), 'default_access': 'none'}
             me = await self.official.request('GET', '/api/v1/users/me', token_file=agent['key_file'])
             owner = await self.official.request('GET', '/api/v1/users/me')
             if me['id'] != agent['principal_id'] or me.get('parent_user_id') != owner['id']:
@@ -519,11 +580,11 @@ class Registry:
                 raise PolicyError('principal_already_registered', 409)
             self.state['agents'][instance_id] = agent
             self.state['revision'] += 1
-            for project in self.managed_groups():
-                project['desired_revision'] = self.state['revision']
+            for group in self.managed_groups():
+                group.setdefault('overrides', {}).setdefault(instance_id, {}).setdefault('access', 'none')
             self.save()
-            for project in self.managed_groups():
-                await self.reconcile_locked(project)
+            await self._verify_ungranted_agent_locked(instance_id)
+            self.save()
             return self.directory()
 
     async def retire_agent(self, expected, instance_id):
@@ -611,13 +672,16 @@ class Registry:
                 if me['id'] != principal or me.get('parent_user_id') != owner['id']:
                     raise PolicyError('independent_agent_required', 503)
                 self.state['agents'][instance_id] = {'name': name.strip(), 'principal_id': principal,
-                                                      'key_file': str(key_file), 'control_token_file': str(control_file)}
+                                                      'key_file': str(key_file), 'control_token_file': str(control_file),
+                                                      'default_access': 'none'}
                 enrollments[instance_id]['status'] = 'verified'
-                for project in self.managed_groups():
-                    project['desired_revision'] = self.state['revision']
+                # Computer-level provisioning establishes an independent subject
+                # without granting project or common memory access.
+                for group in self.managed_groups():
+                    group.setdefault('overrides', {}).setdefault(instance_id, {}).setdefault('access', 'none')
                 self.save()
-                for project in self.managed_groups():
-                    await self.reconcile_locked(project)
+                await self._verify_ungranted_agent_locked(instance_id)
+                self.save()
             except (PolicyError, KeyError, ValueError) as error:
                 enrollments[instance_id]['error_code'] = error.code if isinstance(error, PolicyError) else 'agent_creation_result_unknown'
                 self.save()
@@ -636,16 +700,18 @@ class Registry:
             owner = await self.official.request('GET', '/api/v1/users/me')
             if me['id'] != enrollment['principal_id'] or me.get('parent_user_id') != owner['id']:
                 raise PolicyError('independent_agent_required', 503)
-            self.state['agents'][instance_id] = {field: enrollment[field] for field in
-                                                  ('name', 'principal_id', 'key_file', 'control_token_file')}
+            self.state['agents'][instance_id] = {
+                **{field: enrollment[field] for field in ('name', 'principal_id', 'key_file', 'control_token_file')},
+                'default_access': 'none',
+            }
             enrollment['status'] = 'verified'
             enrollment.pop('error_code', None)
             self.state['revision'] += 1
-            for project in self.managed_groups():
-                project['desired_revision'] = self.state['revision']
+            for group in self.managed_groups():
+                group.setdefault('overrides', {}).setdefault(instance_id, {}).setdefault('access', 'none')
             self.save()
-            for project in self.managed_groups():
-                await self.reconcile_locked(project)
+            await self._verify_ungranted_agent_locked(instance_id)
+            self.save()
             return self.directory()
 
     async def session_binding(self, agent_id, host_session_key):
@@ -773,10 +839,18 @@ class Registry:
             row = await self.official.owned_dataset('', dataset_id)
             name = name or row['name']
         identifier = project_id(self.state['service_namespace'], root if root is not None else 'dataset:' + dataset_id)
+        project_name = name or Path(root).name
+        dataset_name = 'ml-project-' + identifier
+        protected = is_protected_project({'name': project_name, 'dataset_name': dataset_name})
+        initial_overrides = {}
+        if not dataset_id:
+            for aid, agent in self.state['agents'].items():
+                if protected or agent.get('default_access') == 'none':
+                    initial_overrides[aid] = {'access': 'none'}
         self.state['revision'] += 1
-        project = {'id': identifier, 'name': name or Path(root).name, 'aliases': [root] if root is not None else [],
-                   'dataset_id': dataset_id, 'dataset_name': 'ml-project-' + identifier,
-                   'overrides': {}, 'applied': {}, 'desired_revision': self.state['revision'],
+        project = {'id': identifier, 'name': project_name, 'aliases': [root] if root is not None else [],
+                   'dataset_id': dataset_id, 'dataset_name': dataset_name,
+                   'overrides': initial_overrides, 'applied': {}, 'desired_revision': self.state['revision'],
                    'operation_id': secrets.token_hex(16), 'status': 'unconfirmed',
                    'import_acl': bool(dataset_id),
                    'code_enabled': False, 'source': source or ('associated' if dataset_id else 'discovered')}
@@ -810,16 +884,14 @@ class Registry:
                 if agent_id in self.state.get('agent_retirements', {}):
                     project['applied'][agent_id] = {'status': 'retiring'}
                     continue
-                policy = (effective({'access': 'read', 'capture': False, 'auto_process': False}, {})
-                          if project.get('kind') == 'common' else
-                          effective(self.state['defaults'], project['overrides'].get(agent_id, {})))
-                await self.official.sync_acl(agent, row['id'], policy['permissions'])
+                permissions = self._group_expected_permissions(project, agent_id)
+                await self.official.sync_acl(agent, row['id'], permissions)
                 if project.get('code_dataset_id'):
                     # The optional group follows project access only while
                     # explicitly enabled, including effective-role verification.
                     await self.official.owned_dataset('', project['code_dataset_id'])
                     await self.official.sync_acl(agent, project['code_dataset_id'],
-                                                policy['permissions'] if project.get('code_enabled') else set())
+                                                permissions if project.get('code_enabled') else set())
                 project['applied'][agent_id] = {'status': 'verified', 'revision': project['desired_revision']}
                 self.save()
             project['status'] = 'verified'
@@ -836,16 +908,30 @@ class Registry:
         async with self.mutex:
             self.check_revision(expected)
             if project_id:
-                project = self.state['projects'].get(project_id)
-                if not project or agent_id not in self.state['agents']:
-                    raise PolicyError('project_or_agent_not_found', 404)
-                overrides = project['overrides'].setdefault(agent_id, {})
-                for key, value in values.items():
-                    if value is None:
-                        overrides.pop(key, None)
-                    else:
-                        overrides[key] = value
-                affected = [project]
+                common = self.state.get('common')
+                if common and project_id == common['id']:
+                    if agent_id not in self.state['agents']:
+                        raise PolicyError('project_or_agent_not_found', 404)
+                    if set(values) - {'access'} or values.get('access') == 'maintain':
+                        raise PolicyError('common_read_only', 400)
+                    overrides = common.setdefault('overrides', {}).setdefault(agent_id, {})
+                    if 'access' in values:
+                        if values['access'] is None:
+                            overrides.pop('access', None)
+                        else:
+                            overrides['access'] = values['access']
+                    affected = [common]
+                else:
+                    project = self.state['projects'].get(project_id)
+                    if not project or agent_id not in self.state['agents']:
+                        raise PolicyError('project_or_agent_not_found', 404)
+                    overrides = project['overrides'].setdefault(agent_id, {})
+                    for key, value in values.items():
+                        if value is None:
+                            overrides.pop(key, None)
+                        else:
+                            overrides[key] = value
+                    affected = [project]
             else:
                 self.state['defaults'].update(values)
                 affected = list(self.state['projects'].values())

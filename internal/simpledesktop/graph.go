@@ -588,7 +588,7 @@ func (c Client) indexProject(ctx context.Context, p Project) (codeIndexResult, e
 	if state.Active {
 		return codeIndexResult{}, errOfficialCodeActive
 	}
-	c.HTTP = &http.Client{Timeout: 30 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	c.HTTP = &http.Client{Timeout: 30 * time.Minute, Transport: sharedHTTPTransport, CheckRedirect: noRedirectFunc}
 	b, err := c.request(ctx, "POST", "/api/v1/remember", url.Values{"raw_data": {p.Path}, "datasetId": {p.CodeDataset}, "content_type": {"code"}, "run_in_background": {"false"}, "index_vectors": {"false"}, "self_improvement": {"false"}})
 	var result codeIndexResult
 	if err != nil {

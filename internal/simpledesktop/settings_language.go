@@ -7,7 +7,7 @@ func languageSettingsCard(c *ui.Context) {
 	v4Row(c, v4RowOptions{
 		Key:   "settings-language-row",
 		Title: "记忆语言",
-		Desc:  "中文提炼提示词仅作用于受管副本，不修改上游 Cognee 源码",
+		Desc:  "中文提炼指令在模型请求出口自动注入，不修改上游 Cognee 源码",
 		Value: "简体中文",
 	})
 }

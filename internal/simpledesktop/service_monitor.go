@@ -73,31 +73,35 @@ type ServiceMonitorSnapshot struct {
 }
 
 type serviceMonitorState struct {
-	State               string
-	ConsecutiveFailures int
-	LastLatencyMs       float64
-	HasLatency          bool
-	LastOKAt            time.Time
-	LastCheckedAt       time.Time
-	LastError           string
-	ControlReachable    bool
-	ControlChecked      bool
-	ControlError        string
-	Snapshot            *ServiceMonitorSnapshot
-	Expanded            bool
-	ShowRawLogs         bool
-	CopiedNotice        string
-	Polling             bool
-	PollEnabled         bool
-	NextPollAt          time.Time
-	Request             uint64
-	PopoverOpen         bool
-	popoverBtnHover     bool
-	popoverBtnFocus     bool
-	popoverClicked      bool
-	popoverPanelHover   bool
-	popoverShowTimer    *time.Timer
-	popoverHideTimer    *time.Timer
+	State                string
+	ConsecutiveFailures  int
+	LastLatencyMs        float64
+	HasLatency           bool
+	ControlLatencyMs     float64
+	HasControlLatency    bool
+	CompletionLatencyMs  float64
+	HasCompletionLatency bool
+	LastOKAt             time.Time
+	LastCheckedAt        time.Time
+	LastError            string
+	ControlReachable     bool
+	ControlChecked       bool
+	ControlError         string
+	Snapshot             *ServiceMonitorSnapshot
+	Expanded             bool
+	ShowRawLogs          bool
+	CopiedNotice         string
+	Polling              bool
+	PollEnabled          bool
+	NextPollAt           time.Time
+	Request              uint64
+	PopoverOpen          bool
+	popoverBtnHover      bool
+	popoverBtnFocus      bool
+	popoverClicked       bool
+	popoverPanelHover    bool
+	popoverShowTimer     *time.Timer
+	popoverHideTimer     *time.Timer
 }
 
 func (a *App) refreshServiceMonitor() {
@@ -122,9 +126,16 @@ func (a *App) refreshServiceMonitor() {
 		latencyMs := float64(time.Since(started).Microseconds()) / 1000.0
 
 		completion := "未配置"
+		var completionLatencyMs float64
+		var hasCompletionLatency bool
 		if completionURL != "" {
 			cc := Client{Config: Config{ServiceURL: completionURL}}
+			compStarted := time.Now()
 			_, e := cc.request(ctx, "GET", "/health", nil)
+			if e == nil {
+				completionLatencyMs = float64(time.Since(compStarted).Microseconds()) / 1000.0
+				hasCompletionLatency = true
+			}
 			completion = "端点已连接（登录状态以实际请求为准）"
 			if e != nil {
 				completion = e.Error()
@@ -133,14 +144,19 @@ func (a *App) refreshServiceMonitor() {
 
 		var snap *ServiceMonitorSnapshot
 		var controlErr error
+		var controlLatencyMs float64
+		var hasControlLatency bool
 		if hasControl {
 			var fetched ServiceMonitorSnapshot
 			path := "/v1/runtime/monitor"
 			if includeLogs || healthErr != nil {
 				path += "?include_logs=1"
 			}
+			ctrlStarted := time.Now()
 			controlErr = controlClient.request(ctx, "GET", path, nil, &fetched)
 			if controlErr == nil {
+				controlLatencyMs = float64(time.Since(ctrlStarted).Microseconds()) / 1000.0
+				hasControlLatency = true
 				snap = &fetched
 			}
 		}
@@ -149,17 +165,31 @@ func (a *App) refreshServiceMonitor() {
 			if request != a.monitor.Request {
 				return
 			}
-			a.applyServiceMonitorResult(time.Now(), healthErr, latencyMs, completion, hasControl, snap, controlErr)
+			a.applyServiceMonitorResult(time.Now(), healthErr, latencyMs, completion, completionLatencyMs, hasCompletionLatency, hasControl, snap, controlErr, controlLatencyMs, hasControlLatency)
 		})
 	}()
 }
 
-func (a *App) applyServiceMonitorResult(now time.Time, healthErr error, latencyMs float64, completion string, hasControl bool, snap *ServiceMonitorSnapshot, controlErr error) {
+func (a *App) applyServiceMonitorResult(now time.Time, healthErr error, latencyMs float64, completion string, completionLatencyMs float64, hasCompletionLatency bool, hasControl bool, snap *ServiceMonitorSnapshot, controlErr error, controlLatencyMs float64, hasControlLatency bool) {
 	a.completion = completion
 	a.monitor.Polling = false
 	a.monitor.LastCheckedAt = now
 	a.monitor.ControlChecked = hasControl
 	a.monitor.ControlReachable = hasControl && controlErr == nil
+	if a.monitor.ControlReachable && hasControlLatency {
+		a.monitor.ControlLatencyMs = controlLatencyMs
+		a.monitor.HasControlLatency = true
+	} else {
+		a.monitor.ControlLatencyMs = 0
+		a.monitor.HasControlLatency = false
+	}
+	if strings.HasPrefix(completion, "端点已连接") && hasCompletionLatency {
+		a.monitor.CompletionLatencyMs = completionLatencyMs
+		a.monitor.HasCompletionLatency = true
+	} else {
+		a.monitor.CompletionLatencyMs = 0
+		a.monitor.HasCompletionLatency = false
+	}
 	if hasControl && controlErr != nil {
 		a.monitor.ControlError = controlErr.Error()
 	} else {
@@ -225,6 +255,16 @@ func formatBytesCompact(b int64) string {
 	default:
 		return fmt.Sprintf("%d B", b)
 	}
+}
+
+func formatDurationCompact(ms float64) string {
+	if ms < 0 {
+		ms = 0
+	}
+	if ms >= 999.5 {
+		return fmt.Sprintf("%.1f s", ms/1000.0)
+	}
+	return fmt.Sprintf("%.0f ms", ms)
 }
 
 func sanitizedMonitorURL(raw string) string {
@@ -415,9 +455,9 @@ func formatMonitorHookErrorLine(e MonitorHookError) string {
 func serviceMonitorSummaryLine(m serviceMonitorState) string {
 	var parts []string
 	if m.HasLatency {
-		parts = append(parts, fmt.Sprintf("延迟 %.0f ms", m.LastLatencyMs))
+		parts = append(parts, "延迟 "+formatDurationCompact(m.LastLatencyMs))
 	} else if m.Snapshot != nil && m.Snapshot.LatencyMs != nil {
-		parts = append(parts, fmt.Sprintf("延迟 %.0f ms", *m.Snapshot.LatencyMs))
+		parts = append(parts, "延迟 "+formatDurationCompact(*m.Snapshot.LatencyMs))
 	}
 	if m.Snapshot != nil {
 		if proc, ok := m.Snapshot.Processes["official"]; ok && proc.RSSBytes != nil {
@@ -440,7 +480,7 @@ func (a *App) serviceDiagnosticText() string {
 	if state == "" {
 		state = a.service
 	}
-	fmt.Fprintf(&b, "Cognee 服务状态: %s\n", state)
+	fmt.Fprintf(&b, "记忆引擎（Cognee）状态: %s\n", state)
 	fmt.Fprintf(&b, "服务地址: %s\n", sanitizedMonitorURL(a.Config.ServiceURL))
 	if m.HasLatency {
 		fmt.Fprintf(&b, "健康检查延迟: %.1f ms\n", m.LastLatencyMs)
@@ -453,7 +493,11 @@ func (a *App) serviceDiagnosticText() string {
 	}
 	if m.ControlChecked {
 		if m.ControlReachable {
-			b.WriteString("接入网关状态: 已连接\n")
+			if m.HasControlLatency {
+				fmt.Fprintf(&b, "接入网关状态: 已连接 (延迟 %.1f ms)\n", m.ControlLatencyMs)
+			} else {
+				b.WriteString("接入网关状态: 已连接\n")
+			}
 		} else if m.ControlError != "" {
 			fmt.Fprintf(&b, "接入网关状态: 异常 (%s)\n", m.ControlError)
 		}
@@ -489,7 +533,7 @@ func (a *App) serviceDiagnosticText() string {
 				b.WriteString("  " + formatMonitorHookErrorLine(he) + "\n")
 			}
 			if s.RecentProcessingMs != nil {
-				fmt.Fprintf(&b, "最近接入网关耗时: %.1f ms\n", *s.RecentProcessingMs)
+				fmt.Fprintf(&b, "最近模型生成耗时: %s\n", formatDurationCompact(*s.RecentProcessingMs))
 			}
 			if s.GenerationReceiptVerified != nil {
 				fmt.Fprintf(&b, "模型回执校验: %v\n", *s.GenerationReceiptVerified)

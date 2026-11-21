@@ -21,15 +21,16 @@ async def generation_http_policy(*, endpoint=None, max_concurrent_requests=2, wa
     closing_clients = set()
     gate = None
     if endpoint:
-        from generation_capacity import EndpointCapacity, CapacityAsyncTransport, CapacityTransport
+        from generation_capacity import EndpointCapacity
         gate = EndpointCapacity(endpoint, max_concurrent_requests, wait_timeout, backend_kind=backend_kind)
+    use_transport = gate is not None or request_rewriter is not None
 
     class ClientCache(LLMClientCache):
         def set_cache(self, key, value, **kwargs):
             if isinstance(value, (AsyncHTTPHandler, HTTPHandler)):
                 value.follow_redirects = False
                 value.client.follow_redirects = False
-                if gate is not None:
+                if use_transport:
                     # Public SDK client injection. Sharing these clients also
                     # survives SDK cache eviction. No SDK methods are patched.
                     displaced = value.client
@@ -46,7 +47,6 @@ async def generation_http_policy(*, endpoint=None, max_concurrent_requests=2, wa
                 handlers.add(value)
             return super().set_cache(key, value, **kwargs)
 
-    use_transport = gate is not None or request_rewriter is not None
     if use_transport:
         from generation_capacity import CapacityAsyncTransport, CapacityTransport
     async_client = httpx.AsyncClient(follow_redirects=False,

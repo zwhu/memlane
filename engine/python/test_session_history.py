@@ -169,3 +169,51 @@ class SessionHistoryTests(unittest.IsolatedAsyncioTestCase):
                 fallback_resp = await fast_client.get('/api/v1/sessions/session/history')
                 self.assertEqual(fallback_resp.status_code, 200)
                 self.manager.get_session.assert_awaited_once()
+
+    async def test_broken_or_empty_cache_db_falls_back_to_session_manager_and_503_when_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_db = Path(tmp) / 'cache.db'
+            # Missing cache_trace_entries table (schema drift)
+            con = sqlite3.connect(cache_db)
+            con.execute('CREATE TABLE cache_qa_entries (seq INTEGER PRIMARY KEY)')
+            con.commit()
+            con.close()
+
+            fast_app = FastAPI()
+            install_session_history(fast_app, bindings=self.bindings, cache_db_path=cache_db)
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=fast_app),
+                base_url='http://test',
+                headers={'X-Api-Key': 'synthetic'},
+            ) as fast_client:
+                # Schema drift falls back to SessionManager rather than returning 200 empty.
+                resp = await fast_client.get('/api/v1/sessions/session/history')
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(resp.json()['msg_count'], 43)
+                self.manager.get_session.assert_awaited_once()
+
+                # Valid empty tables also confirm through SessionManager instead of trusting 0.
+                con = sqlite3.connect(cache_db)
+                con.executescript('''
+                    DROP TABLE cache_qa_entries;
+                    CREATE TABLE cache_qa_entries (
+                        seq INTEGER PRIMARY KEY, user_id TEXT, session_id TEXT,
+                        qa_id TEXT, payload JSON, expires_at DATETIME
+                    );
+                    CREATE TABLE cache_trace_entries (
+                        seq INTEGER PRIMARY KEY, user_id TEXT, session_id TEXT,
+                        payload JSON, expires_at DATETIME
+                    );
+                ''')
+                con.commit()
+                con.close()
+                self.manager.get_session.reset_mock()
+                resp2 = await fast_client.get('/api/v1/sessions/session/history')
+                self.assertEqual(resp2.status_code, 200)
+                self.assertEqual(resp2.json()['msg_count'], 43)
+                self.manager.get_session.assert_awaited_once()
+
+                # When SessionManager fails, must return 503 (never 200 empty).
+                self.manager.get_session.side_effect = RuntimeError('down')
+                resp3 = await fast_client.get('/api/v1/sessions/session/history')
+                self.assertEqual(resp3.status_code, 503)

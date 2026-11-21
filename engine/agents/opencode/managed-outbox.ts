@@ -9,14 +9,18 @@ export type ManagedPending = {
   entry: OutboxEntry;
   uncertain?: boolean;
   blocked?: boolean;
-  blocked_reason?: "local_policy_denied" | "official_auth_denied";
+  blocked_reason?: "local_policy_denied" | "official_auth_denied" | "official_request_rejected";
+  retry_after?: number;
+  retry_count?: number;
   target?: ProjectTarget;
 };
+export type SessionRateLimit = { retry_after: number; retry_count: number };
 export type ManagedState = {
   pending: ManagedPending[];
   seen: string[];
   discarded?: string[];
   savedTargets?: Record<string, ProjectTarget>;
+  sessionRateLimits?: Record<string, SessionRateLimit>;
 };
 
 export interface OutboxStore {
@@ -34,6 +38,34 @@ export class LocalPolicyDenied extends Error {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
+
+function sessionCooldownKey(session: string, target?: ProjectTarget): string {
+  return target
+    ? JSON.stringify([session, target.project_id, target.dataset_id, target.native])
+    : JSON.stringify([session]);
+}
+
+function activeSessionCooldown(
+  state: ManagedState,
+  session: string,
+  target?: ProjectTarget,
+  now = Date.now(),
+): number {
+  const limit = state.sessionRateLimits?.[sessionCooldownKey(session, target)];
+  return limit && typeof limit.retry_after === "number" && limit.retry_after > now ? limit.retry_after : 0;
+}
+
+function pruneExpiredRateLimits(state: ManagedState, now = Date.now()): void {
+  if (!state.sessionRateLimits) return;
+  for (const [key, limit] of Object.entries(state.sessionRateLimits)) {
+    if (!limit || typeof limit.retry_after !== "number" || limit.retry_after <= now) {
+      delete state.sessionRateLimits[key];
+    }
+  }
+  if (Object.keys(state.sessionRateLimits).length === 0) {
+    delete state.sessionRateLimits;
+  }
+}
 
 export function snapshotTarget(target: ProjectTarget): ProjectTarget {
   const uuid = (value: unknown) => typeof value === "string" && UUID_PATTERN.test(value);
@@ -74,6 +106,8 @@ export function retryBlockedEntries(store: OutboxStore, running: boolean, ids: s
       if (selected.has(item.id)) {
         item.blocked = false;
         delete item.blocked_reason;
+        delete item.retry_after;
+        delete item.retry_count;
       }
     }
     store.write(state);
@@ -129,9 +163,35 @@ export function buildBacklogReview(store: OutboxStore, target: ProjectTarget, se
     const items = pendingForTarget(store.read(), target, session);
     return {
       session_id: session,
-      tokens: items.filter((item) => !item.uncertain).map((item) => item.id),
+      tokens: items
+        .filter((item) => !item.uncertain && !(item.blocked && item.blocked_reason === "official_request_rejected"))
+        .map((item) => item.id),
       unknown: items.filter((item) => item.uncertain).length,
     };
+  });
+}
+
+export function inspectBacklogEntry(
+  store: OutboxStore,
+  target: ProjectTarget,
+  session: string,
+  id: string,
+): "saved" | "uncertain" | "rejected" | "auth_denied" | "deferred" | "pending" {
+  return store.lock(() => {
+    const state = store.read();
+    const items = pendingForTarget(state, target, session);
+    const item = items.find((entry) => entry.id === id);
+    if (!item) return "saved";
+    if (item.uncertain) return "uncertain";
+    if (item.blocked) {
+      return item.blocked_reason === "official_request_rejected" ? "rejected" : "auth_denied";
+    }
+    const now = Date.now();
+    if ((typeof item.retry_after === "number" && item.retry_after > now) ||
+        activeSessionCooldown(state, session, target, now) > now) {
+      return "deferred";
+    }
+    return "pending";
   });
 }
 
@@ -142,7 +202,7 @@ export function releaseBacklogItem(
   target: ProjectTarget,
   session: string,
   id: string,
-): "released" | "handled" | "isolated" {
+): "released" | "handled" | "isolated" | "deferred" {
   if (!senderHeld || running) throw new Error("sender_lease_required");
   if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("invalid_pending_action");
   return store.lock(() => {
@@ -153,9 +213,17 @@ export function releaseBacklogItem(
       if (state.pending.some((entry) => entry.id === id)) throw new Error("original_project_target_changed");
       return "handled";
     }
-    if (item.uncertain) return "isolated";
+    if (item.uncertain || (item.blocked && item.blocked_reason === "official_request_rejected")) return "isolated";
+    const now = Date.now();
+    if ((typeof item.retry_after === "number" && item.retry_after > now) ||
+        activeSessionCooldown(state, session, target, now) > now) {
+      return "deferred";
+    }
     item.blocked = false;
     delete item.blocked_reason;
+    delete item.retry_after;
+    delete item.retry_count;
+    pruneExpiredRateLimits(state, now);
     store.write(state);
     return "released";
   });
@@ -275,10 +343,19 @@ export async function runManagedOutboxFlush(
   selected?: ReadonlySet<string>,
 ): Promise<void> {
   const unresolved = new Set<string>();
+  const rateLimitedSessions = new Set<string>();
   for (;;) {
     const candidate = store.lock(() => {
-      const next = store.read().pending.find(
-        (entry) => !entry.blocked && !unresolved.has(entry.id) && (!selected || selected.has(entry.id)),
+      const now = Date.now();
+      const state = store.read();
+      const next = state.pending.find(
+        (entry) =>
+          !entry.blocked &&
+          !unresolved.has(entry.id) &&
+          !rateLimitedSessions.has(sessionCooldownKey(entry.session, entry.target)) &&
+          !(typeof entry.retry_after === "number" && entry.retry_after > now) &&
+          !(activeSessionCooldown(state, entry.session, entry.target, now) > now) &&
+          (!selected || selected.has(entry.id)),
       );
       return next ? JSON.parse(JSON.stringify(next)) as ManagedPending : undefined;
     });
@@ -320,22 +397,46 @@ export async function runManagedOutboxFlush(
       try {
         await send(item);
       } catch (error) {
-        if (error instanceof LocalPolicyDenied || /(?:request|login) failed \((?:400|401|403|404|422|429)\)/.test(String(error))) {
+        const message = String(error);
+        const isLocalDenied = error instanceof LocalPolicyDenied;
+        const isAuthDenied = /(?:request|login) failed \((?:401|403)\)/.test(message);
+        const isRequestRejected = /(?:request|login) failed \((?:400|404|409|413|422)\)/.test(message);
+        const isRateLimited = /(?:request|login) failed \(429\)/.test(message);
+        if (isLocalDenied || isAuthDenied || isRequestRejected || isRateLimited) {
           store.lock(() => {
             const state = store.read();
             const pending = state.pending.find((p) => p.id === item.id);
             if (pending) {
               pending.uncertain = false;
-              if (error instanceof LocalPolicyDenied) {
+              if (isLocalDenied) {
                 pending.blocked = true;
                 pending.blocked_reason = "local_policy_denied";
-              } else if (/(?:request|login) failed \((?:401|403)\)/.test(String(error))) {
+              } else if (isAuthDenied) {
                 pending.blocked = true;
                 pending.blocked_reason = "official_auth_denied";
+              } else if (isRequestRejected) {
+                pending.blocked = true;
+                pending.blocked_reason = "official_request_rejected";
+              } else if (isRateLimited) {
+                const key = sessionCooldownKey(item.session, item.target);
+                state.sessionRateLimits ??= {};
+                const prevCount = Math.max(pending.retry_count ?? 0, state.sessionRateLimits[key]?.retry_count ?? 0);
+                const count = Math.min(prevCount + 1, 6);
+                const retryAfter = Date.now() + Math.min(5000 * (2 ** (count - 1)), 60000);
+                pending.retry_count = count;
+                pending.retry_after = retryAfter;
+                state.sessionRateLimits[key] = { retry_after: retryAfter, retry_count: count };
               }
             }
             store.write(state);
           });
+          if (isRequestRejected) {
+            continue;
+          }
+          if (isRateLimited) {
+            rateLimitedSessions.add(sessionCooldownKey(item.session, item.target));
+            continue;
+          }
         }
         throw error;
       }
@@ -347,6 +448,10 @@ export async function runManagedOutboxFlush(
       if (item.target) {
         state.savedTargets ??= {};
         state.savedTargets[item.id] = snapshotTarget(item.target);
+      }
+      if (state.sessionRateLimits) {
+        delete state.sessionRateLimits[sessionCooldownKey(item.session, item.target)];
+        pruneExpiredRateLimits(state);
       }
       store.write(state);
     });

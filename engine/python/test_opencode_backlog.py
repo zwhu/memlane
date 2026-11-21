@@ -463,6 +463,34 @@ class OpenCodeBacklogHygieneAndCacheTests(unittest.IsolatedAsyncioTestCase):
                 opencode_backlog.verify(self.installation, self.runtime, 'oc')
             self.assertEqual(err.exception.code, 'backlog_installation_changed')
 
+    async def test_gateway_cognee_base_url_verified_and_passed_to_worker(self):
+        import opencode_backlog
+        binding = json.loads(self.binding_file.read_bytes())
+        binding['cognee']['baseUrl'] = 'http://127.0.0.1:19100/cognee'
+        raw = json.dumps(binding).encode()
+        self.binding_file.write_bytes(raw)
+        os.chmod(self.binding_file, 0o600)
+        installation = {**self.installation, 'binding_sha256': hashlib.sha256(raw).hexdigest()}
+        _, _, _, base_url = opencode_backlog.verify(installation, self.runtime, 'oc')
+        self.assertEqual(base_url, 'http://127.0.0.1:19100/cognee')
+
+        sent_stdin = []
+        proc = self._fake_process([json.dumps({'session_id': 'official', 'tokens': [], 'unknown': 0}).encode() + b'\n', b''])
+        proc.stdin.write = lambda data: sent_stdin.append(data)
+        with patch('opencode_backlog.asyncio.create_subprocess_exec', AsyncMock(return_value=proc)):
+            await opencode_backlog.execute(self.runtime, installation, 'p', self.target, 'review', self.root / 'gw.stop')
+        payload = json.loads(b''.join(sent_stdin).decode())
+        self.assertEqual(payload['operator']['service_url'], 'http://127.0.0.1:19100/cognee')
+
+        binding['cognee']['baseUrl'] = 'http://127.0.0.1:19100/other'
+        bad_raw = json.dumps(binding).encode()
+        self.binding_file.write_bytes(bad_raw)
+        os.chmod(self.binding_file, 0o600)
+        bad_install = {**self.installation, 'binding_sha256': hashlib.sha256(bad_raw).hexdigest()}
+        with self.assertRaises(PolicyError) as err:
+            opencode_backlog.verify(bad_install, self.runtime, 'oc')
+        self.assertEqual(err.exception.code, 'backlog_installation_changed')
+
 
 if __name__ == '__main__':
     unittest.main()

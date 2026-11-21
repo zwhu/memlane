@@ -14,7 +14,7 @@ from pathlib import Path
 import uuid
 
 from performance_trace import RequestTrace
-from project_control import private_write, read_secret
+from _runtime_common import private_write, read_secret
 from project_policy import PolicyError
 
 

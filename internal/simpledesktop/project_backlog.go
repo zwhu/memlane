@@ -105,7 +105,7 @@ func (a *App) retryPendingCheck(q *projectQueueState, p AccessProject, session q
 		q.Checks = map[string]pendingCheckState{}
 	}
 	q.Checks[key] = pendingCheckState{AgentID: session.Agent.ID, Host: session.Binding.HostSessionKey, Status: "checking"}
-	identity, _ := readingIdentity(a.Client)
+	identity := a.cachedBaseReadingIdentity() + a.Client.PolicyRevision
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
@@ -114,7 +114,7 @@ func (a *App) retryPendingCheck(q *projectQueueState, p AccessProject, session q
 		}
 		err := client.request(ctx, "POST", "/v1/projects/"+url.PathEscape(p.ID)+"/backlog/check", map[string]string{"agent_id": session.Agent.ID, "host": session.Binding.HostSessionKey}, &result)
 		a.Update(func() {
-			current, _ := readingIdentity(a.Client)
+			current := a.cachedBaseReadingIdentity() + a.Client.PolicyRevision
 			if current != identity {
 				return
 			}
@@ -146,7 +146,7 @@ func (a *App) refreshBacklog(q *projectQueueState, p AccessProject) {
 	}
 	q.BacklogLoading = true
 	q.BacklogNext = time.Now().Add(2 * time.Second)
-	identity, _ := readingIdentity(a.Client)
+	identity := a.cachedBaseReadingIdentity() + a.Client.PolicyRevision
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
@@ -160,7 +160,7 @@ func (a *App) refreshBacklog(q *projectQueueState, p AccessProject) {
 		err := client.request(ctx, "GET", "/v1/projects/"+url.PathEscape(p.ID)+"/backlog", nil, &result)
 		a.Update(func() {
 			q.BacklogLoading = false
-			current, _ := readingIdentity(a.Client)
+			current := a.cachedBaseReadingIdentity() + a.Client.PolicyRevision
 			if current != identity {
 				return
 			}
@@ -232,7 +232,7 @@ func (a *App) changeBacklog(q *projectQueueState, p AccessProject, stop bool) {
 		return
 	}
 	q.BacklogBusy = true
-	identity, _ := readingIdentity(a.Client)
+	identity := a.cachedBaseReadingIdentity() + a.Client.PolicyRevision
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -242,7 +242,7 @@ func (a *App) changeBacklog(q *projectQueueState, p AccessProject, stop bool) {
 		err := client.request(ctx, "POST", path, map[string]any{"operation_id": operation}, &result)
 		a.Update(func() {
 			q.BacklogBusy = false
-			current, _ := readingIdentity(a.Client)
+			current := a.cachedBaseReadingIdentity() + a.Client.PolicyRevision
 			if current != identity {
 				return
 			}
@@ -277,7 +277,7 @@ func (a *App) runProcessingAction(q *projectQueueState, p AccessProject, suffix,
 	}
 	q.ProcessingActionBusy = true
 	q.ProcessingActionError = ""
-	identity, _ := readingIdentity(a.Client)
+	identity := a.cachedBaseReadingIdentity() + a.Client.PolicyRevision
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -291,7 +291,7 @@ func (a *App) runProcessingAction(q *projectQueueState, p AccessProject, suffix,
 		err := client.request(ctx, "POST", "/v1/projects/"+url.PathEscape(p.ID)+suffix, map[string]any{}, &result)
 		a.Update(func() {
 			q.ProcessingActionBusy = false
-			current, _ := readingIdentity(a.Client)
+			current := a.cachedBaseReadingIdentity() + a.Client.PolicyRevision
 			if current != identity {
 				return
 			}

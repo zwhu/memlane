@@ -52,12 +52,25 @@ for (const name of Object.keys(result.metafile.inputs).filter((name) => name.inc
     directory = path.dirname(directory);
   }
 }
+if (missingLicenseTexts.length > 0) {
+  throw Error(`Missing distribution license texts: ${missingLicenseTexts.join(', ')}`);
+}
+const compactInputs = Object.fromEntries(
+  Object.entries(result.metafile.inputs)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, meta]) => [name, { bytes: meta.bytes }]),
+);
+const compactOutputs = Object.fromEntries(
+  Object.entries(result.metafile.outputs)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, meta]) => [name, { bytes: meta.bytes, ...(meta.entryPoint ? { entryPoint: meta.entryPoint } : {}) }]),
+);
 execFileSync('pnpm', ['exec', 'tailwindcss', '-i', 'src/host.css', '-o', 'dist/host.css', '--minify'], {stdio: 'inherit'});
 await copyFile('index.html', 'dist/index.html');
 await copyFile('vendor/cognee/LICENSE', 'dist/COGNEE-LICENSE');
 await writeFile('dist/THIRD-PARTY-LICENSES.txt', [...notices.entries()].sort().map(([, text]) => text).join('\n\n'));
 await writeFile('dist/build.json', JSON.stringify({upstream: upstream.commit, modifications: upstream.modifications,
-  missingLicenseTexts, inputs: result.metafile.inputs, outputs: result.metafile.outputs}, null, 2) + '\n');
+  missingLicenseTexts, inputs: compactInputs, outputs: compactOutputs}, null, 2) + '\n');
 const assetFiles = ['index.html','app.js','app.css','host.css','app.js.LEGAL.txt','COGNEE-LICENSE','THIRD-PARTY-LICENSES.txt','build.json'];
 const assetHashes = {};
 for (const name of assetFiles) assetHashes[name] = createHash('sha256').update(await readFile('dist/'+name)).digest('hex');

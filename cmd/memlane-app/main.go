@@ -2,11 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -49,9 +50,17 @@ func main() {
 
 		quitCoord := newQuitCoordinator(
 			app.KeepAliveOnQuit,
-			bootstrap.ShutdownAllFirstRuntimes,
+			func(ctx context.Context) error {
+				err := bootstrap.ShutdownAllFirstRuntimes(ctx)
+				if configuration != "" {
+					if extErr := bootstrap.ShutdownExternalRuntime(ctx, configuration); extErr != nil {
+						err = errors.Join(err, extErr)
+					}
+				}
+				return err
+			},
 			mygo.App.Quit,
-			8*time.Second,
+			defaultShutdownTimeout,
 			log.Printf,
 		)
 		mygo.App.OnBeforeQuit(func(e *mygo.QuitEvent) {

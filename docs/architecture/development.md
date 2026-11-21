@@ -7,9 +7,14 @@ python3 scripts/task.py -- python3 scripts/lint.py
 python3 scripts/task.py -- python3 -m unittest discover -s scripts -p test_lint.py
 ```
 
-此入口不加载引擎、不调用模型。ML001限制原生模型配置只能通过共享构造入口；ML002禁止在模型配置和请求中注入字面量采样／输出值；ML003禁止通过`get`／`setdefault`补模型参数回退值。覆盖`engine/python`全部生产模块，测试夹具不参与。输出文件、行号和规则编号，违规以非零退出码阻断检查。用户明确配置的`0`通过原配置读取并保留。
+此入口不加载引擎、不调用模型，现行静态规则覆盖 `ML001`–`ML003` 与 `ML006`–`ML017`（测试夹具不参与，且由 `sh scripts/go.sh test ./...` 经 `lint_gate_test.go` 自动联动强制执行）：
+- **模型与画像边界**：`ML001` 限制原生模型配置只能通过共享构造入口（`native_llm_configuration`）；`ML002` 禁止在模型配置和请求中注入字面量采样／输出值；`ML003` 禁止通过 `or` / `get` / `setdefault` 补模型参数回退值（用户明确配置的 `0` 必须保留）；`ML006` 禁止用户画像生成（`user_profiles/runner.py`）使用固定总时长超时中断（`wait_for` / `timeout` / `timeout_at`）。
+- **环境隔离与 UI 性能**：`ML007` 禁止在非白名单模块修改全局 `os.environ`；`ML008`–`ML012` 守卫 MyGo 桌面端动效 `ReduceMotion`、禁止 `<500ms` 高频重绘、禁止 `Draw`/`App.View` 渲染热路径同步磁盘 I/O 或网络调用、禁止桌面端落盘首页 SWR 缓存并强制首页冷启动经 `overviewBootstrap` 聚合及延迟 `RefreshIntegrations`。
+- **运行时资源门禁**：`ML013`–`ML017` 守卫异步高频轮询、异步函数内阻塞子进程、二进制/大归档全量 `read_bytes()` 哈希与 worker 清理（**`ML015` 扩展覆盖 `scripts/*.py`**）、SQLite WAL 必须显式配置 `PRAGMA journal_size_limit`，以及默认启动禁止无条件 `mygo dev` 热重载与磁盘清理回执轮转淘汰。
 
-这项静态检查针对已知危险写法；参数真实传递和旧环境隔离仍须通过模型参数及协议回归测试。
+输出文件、行号和规则编号，违规以非零退出码阻断检查。这项静态检查针对已知危险写法；参数真实传递和旧环境隔离仍须通过模型参数及协议回归测试。
+
+> **术语说明（2026-11-21 起）**：下文保留历史日期记录原貌；当前规范术语统一以 [CONTEXT.md](../../CONTEXT.md) 为准——系统三组件称为「记忆引擎（Cognee）」「接入网关」「Agent 模型代理（`agent_bridge`）」，业务动作区分「自动采集」与「记忆提炼」。
 
 2026-11-17：新增显式引擎组件准备入口（dev）：
 
@@ -25,7 +30,7 @@ python3 scripts/dev.py prepare --component-root /绝对路径/私有引擎组件
 
 2026-11-14用户最新要求：当前只使用一套日常库，不另建或切换隔离测试库。统一配置为`.local/daily/runtime.json`，Native、服务和已接入Agent使用同一Cognee官方存储，项目仍各自分组。原本轮两库已合并，旧隔离根只保留在回滚备份；规则与真实核验见单一日常库记录。下文旧隔离验收配置仅保留历史事实，不作为后续运行入口。
 
-2026-11-18处理桥更新：当前开发链支持Codex、pi、TraeX三种`agent_bridge`，覆盖下文旧Codex-only描述。`bridge_kind`分别为`codex`/`pi`/`traex`；pi另需`bridge_provider`为已有`deepseek`或`ollama`，模型仍明确保存在不可变profile中。优先使用`agent_hosts.<kind>.executable/profile`，保留原Codex兼容字段；未明确路径时检查PATH及标准用户bin，明确但无效的路径不回退。复用Agent已有登录，pi不复制密钥到Provider；隔离处理会话不加载日常skills/hooks、历史或项目工具。保存、完整Schema验证、明确启用分开；新pi/TraeX验证绑定可执行身份、pi模型配置及受信扩展摘要，依赖漂移须重新验证。本地与净室证据、版本及限制见处理配置接续，不改变开发阶段不release、日常服务所有权和同库规则。
+2026-11-18 Agent 模型代理（原称「处理桥」）更新：当前开发链支持 Codex、Antigravity（Gemini App，`agy`）、pi、TraeX 四种 `agent_bridge`，覆盖下文旧 Codex-only 描述。`bridge_kind` 分别为 `codex` / `antigravity` / `pi` / `traex`；pi 另需 `bridge_provider` 为已有 `deepseek` 或 `ollama`，模型仍明确保存在不可变 profile 中。优先使用 `agent_hosts.<kind>.executable/profile`，保留原 Codex 兼容字段；未明确路径时检查 PATH 及标准用户 bin（Antigravity 同时检查 `Gemini.app/Contents/Helpers/agy`），明确但无效的路径不回退。复用 Agent 已有登录，pi 不复制密钥到 Provider；隔离提炼会话不加载日常 skills/hooks、历史或项目工具。启动与热切换统一经 `agent_bridge_runtime.require_bridge_startup` 核验：通过已连接 Agent 选择（`connected_agent_selections`）或既有已 `applied` 热切换授权的修订在重启时核对运行环境与有效模型后放行；未授权的新 `pi` / `TraeX` / `Antigravity` 显式验证仍绑定可执行身份、配置与扩展摘要，依赖漂移须重新验证。本地与净室证据、版本及限制见处理配置接续，不改变开发阶段不 release、日常服务所有权和同库规则。
 
 2026-11-14多Agent／Provider增补已进入dev实施，覆盖下文旧“唯一Codex生成通道”的相应说明。当前支持、真实证据与未完成项见支持矩阵。现有日常runtime／插件不自动迁移，仍以各自交付记录为准。
 
@@ -33,7 +38,7 @@ python3 scripts/dev.py prepare --component-root /绝对路径/私有引擎组件
 
 PA配置模板新增可选 `project_control`：显式loopback `url`、私有 `registry_file`、独立 `management_token_file`、安装实例 `agent_control_token_files` 以及固定 `plugin_dir`。启用后启动器一并管理控制进程，关窗保持，明确stop才收尾。未配置时保留原启动流程；模板路径仍是占位符。受管插件在独立目录重放 `engine/patches/project_access.py`，启动器核对 `engine/managed-project-plugin.json` 的全部摘要；禁止手改日常插件缓存。项目权限源码、真实隔离Agent及Native验证边界见 `docs/engineering/project-access-execution-20261113.md`；本机Codex准备、启用及实际加载分别记录，不用准备成功代替日常接入。
 
-2026-11-13 起，精简版唯一开发入口为 `scripts/dev.py`。本轮接管与验收已完成，实际范围和限制见交付记录，阶段证据见执行记录。配置模板为 [`config/daily-runtime.example.json`](../config/daily-runtime.example.json)，其中路径均为占位符，不能直接启动。
+2026-11-13 起，精简版唯一开发入口为 `scripts/dev.py`。本轮接管与验收已完成，实际范围和限制见交付记录，阶段证据见执行记录。配置模板为 [`config/daily-runtime.example.json`](../../config/daily-runtime.example.json)，其中路径均为占位符，不能直接启动。
 
 从仓库根目录执行，所有操作使用同一个私有配置文件的绝对路径。先在一个终端启动并保持前台：
 
@@ -111,11 +116,11 @@ OpenCode第二批开发使用`engine/agents/opencode/managed-control.ts`访问�
 
 Provider协议值为 `openai`、`anthropic`、`gemini`、`custom`；DeepSeek等明确OpenAI兼容端点选 `custom`。endpoint/model/key均由用户明确配置，不猜供应商或错误后换模型。凭据0600、目录0700，不回填Native；HTTP重定向拒绝。验证记录实际adapter请求模式，不能当作远端严格Schema保证。
 
-模板 [`daily-runtime.example.json`](../config/daily-runtime.example.json)保留旧Codex桥兼容字段；[`provider-runtime.example.json`](../config/provider-runtime.example.json)展示不含Codex桥认证输入的API运行配置。两者都需已准备的官方环境／数据及私有凭据；本入口不创建或替换内容库。已有active时正常`start`。尚无生成配置时，先执行 `python3 scripts/dev.py setup --config /绝对路径/runtime.json`：只启动受管理token认证的本机配置服务，并复用Native“知识处理”表单，不启动官方引擎、接入Agent或写初始化完成标记。
+模板 [`daily-runtime.example.json`](../../config/daily-runtime.example.json) 保留旧 Codex 代理兼容字段；[`provider-runtime.example.json`](../../config/provider-runtime.example.json) 展示不含 Agent 代理认证输入的 API 运行配置。两者都需已准备的官方环境／数据及私有凭据；本入口不创建或替换内容库。已有 active 时正常 `start`。尚无生成配置时，先执行 `python3 scripts/dev.py setup --config /绝对路径/runtime.json`：只启动受管理 token 认证的本机配置服务，并复用 Native“记忆提炼”表单，不启动官方引擎、接入 Agent 或写初始化完成标记。
 
-首次配置依次保存Provider、点击会消耗额度的验证、选择“下次启动使用”；保存或验证不会制造active。完成后通过 `python3 scripts/dev.py stop --config /绝对路径/runtime.json` 停止配置服务，再正常 `start`。启动器只有在已验证候选的健康及完整摘要匹配后才写首个active；首个候选失败时清理并停止，不恢复不存在的旧配置。没有已验证next时不启动引擎。`setup`拒绝已存在active的账本；已有日常配置继续在正常设置页编辑。不得手写passed、复制验收账本或修改活动修订绕过验证。
+首次配置依次保存 Provider、点击会消耗额度的验证、选择“下次启动使用”；保存或验证不会制造 active。完成后通过 `python3 scripts/dev.py stop --config /绝对路径/runtime.json` 停止配置服务，再正常 `start`。启动器只有在已验证候选的健康及完整摘要匹配后才写首个 active；首个候选失败时清理并停止，不恢复不存在的旧配置。没有已验证 next 时不启动引擎。`setup` 拒绝已存在 active 的账本；已有日常配置继续在正常设置页编辑。不得手写 passed、复制验收账本或修改活动修订绕过验证。
 
-开发阶段不运行完整打包、DMG、签名、公证、更新或 helper 安装。Go/MyGo 固定版本和仓库内工具链继续复用。2026-11-17 用户将磁盘门禁调整为至少保留 50 GiB，运行中低于 55 GiB 停止受管任务；`dev.py` 与其他检查均通过既有 `scripts/task.py`，Go 检查使用 `sh scripts/go.sh`。新阈值对新启动的包装器生效，已运行的旧包装器不会自动重载；正常收尾／重启须遵守现有运行资源交接规则。
+开发阶段不运行完整打包、DMG、签名、公证、更新或 helper 安装。Go/MyGo 固定版本和仓库内工具链继续复用。2026-11-17 用户将开发态磁盘门禁调整为至少保留 50 GiB，运行中低于 55 GiB 停止受管任务（独立 `.app` 安装态监控阈值为最低 `2 GiB` / 告警线 `5 GiB`）；`dev.py` 与其他检查均通过既有 `scripts/task.py`，Go 检查使用 `sh scripts/go.sh`。新阈值对新启动的包装器生效，已运行的旧包装器不会自动重载；正常收尾／重启须遵守现有运行资源交接规则。
 
 首页A的字体需要与稿件的`-webkit-font-smoothing: antialiased`一致。MyGo0.7.4只在自绘字形公开此能力，当前以`scripts/patches/mygo-antialiased.json`固定两个SDK源文件及其SHA，补充主题内的可选`Antialiased`绘制标志；仅首页主题启用，其他页面默认绘制不变。`go.sh`及`dev.py`通过`scripts/mygo_sdk.py`准备一份约24 MiB的私有SDK及临时`-modfile`，路径在`.local/mygo-sdk/`，不会改模块缓存、仓库`go.mod/go.sum`或系统字体偏好。Go不允许用`-overlay`替换模块缓存中的文件，因此不采用该方式。
 

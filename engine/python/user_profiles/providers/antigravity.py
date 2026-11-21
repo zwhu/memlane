@@ -69,9 +69,12 @@ class AntigravityProvider(ProfileProvider):
     display_name = 'Gemini App'
 
     def build_command(self, executable, row, work, prompt, env):
+        from agent_bridge_runtime import read_agent_defaults
+
         profile_path = Path(row['profile']).expanduser()
         if profile_path.name != 'config' or profile_path.parent.name != '.gemini':
             raise PolicyError('profile_automatic_unavailable', 409)
+        defaults = read_agent_defaults(self.kind, profile_path)
         # Keep the native HOME so agy finds Keychain login and default CLI model.
         env['HOME'] = str(profile_path.parent.parent)
         _write_isolated_workspace(work)
@@ -81,6 +84,8 @@ class AntigravityProvider(ProfileProvider):
             'json',
             '--mode',
             'plan',
+            '--model',
+            defaults['model'],
             '--disable-slash-commands',
             '--sandbox',
             '--print=' + prompt,

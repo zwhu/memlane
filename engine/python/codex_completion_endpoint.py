@@ -554,10 +554,11 @@ def create_app(args):
     if len(token) < 24:
         raise ValueError('completion token must contain at least 24 characters')
     app = web.Application(client_max_size=MAX_BODY)
+    from generation_config import AGENT_BRIDGE_MAX_CONCURRENT_REQUESTS
     concurrency = getattr(args, 'max_concurrency', 2)
-    inflight = getattr(args, 'max_inflight', 32)
-    if not 1 <= concurrency <= inflight <= 32:
-        raise ValueError('completion limits require 1 <= concurrency <= inflight <= 32')
+    inflight = getattr(args, 'max_inflight', AGENT_BRIDGE_MAX_CONCURRENT_REQUESTS)
+    if not 1 <= concurrency <= inflight <= AGENT_BRIDGE_MAX_CONCURRENT_REQUESTS:
+        raise ValueError(f'completion limits require 1 <= concurrency <= inflight <= {AGENT_BRIDGE_MAX_CONCURRENT_REQUESTS}')
     slot = asyncio.Semaphore(concurrency)
     admitted = 0
     handlers = set()

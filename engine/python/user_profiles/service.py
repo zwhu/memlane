@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import time
 
-from project_control import private_write
+from _runtime_common import private_write
 from project_policy import PolicyError
 
 from .constants import MANUAL_SOURCES, valid_body

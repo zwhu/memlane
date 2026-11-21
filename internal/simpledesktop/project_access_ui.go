@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -279,13 +280,88 @@ func (a *App) accessSettings(c *ui.Context) {
 	}
 }
 
+func commonAgentAccess(common AccessProject, agentID string) string {
+	if ov, ok := common.Overrides[agentID]; ok && ov.Access != nil && *ov.Access == "none" {
+		return "none"
+	}
+	return "read"
+}
+
+func commonAccessButtonLabel(directory AccessDirectory) string {
+	if directory.Common == nil || len(directory.Agents) == 0 {
+		return ""
+	}
+	readable := 0
+	for _, agent := range directory.Agents {
+		if commonAgentAccess(*directory.Common, agent.ID) == "read" {
+			readable++
+		}
+	}
+	return fmt.Sprintf("Agent 权限 · %d/%d 只读", readable, len(directory.Agents))
+}
+
+func (a *App) saveCommonAgentAccess(commonID, agentID, access string) {
+	if access != "none" && access != "read" {
+		return
+	}
+	client, ok := a.accessClient()
+	key := commonID + "/" + agentID
+	if !ok || commonID == "" || agentID == "" || !a.access.Loaded || a.access.Busy || a.access.CheckboxPending[key] != nil || a.Update == nil {
+		return
+	}
+	if a.access.CheckboxPending == nil {
+		a.access.CheckboxPending = map[string]*projectCheckboxPending{}
+	}
+	pending := &projectCheckboxPending{Project: commonID, Agent: agentID, Field: "common_access", Value: access, Revision: a.access.Directory.Revision}
+	a.access.CheckboxPending[key] = pending
+	a.access.Busy = true
+	a.access.Loading = false
+	a.access.Request++
+	request := a.access.Request
+	a.access.Message = ""
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
+		defer cancel()
+		directory, err := client.overrides(ctx, pending.Revision, commonID, agentID, map[string]any{"access": access})
+		a.Update(func() {
+			if request != a.access.Request {
+				return
+			}
+			a.access.Busy = false
+			if err != nil {
+				// Unknown writes stay locked until explicitly verified via directory refresh;
+				// definitive 400/403/404 rejections mutated nothing and release the lock.
+				a.access.Message = "未能确认修改，请核对后再操作：" + err.Error()
+				if status, ok := httpStatusCode(err); ok {
+					switch status {
+					case 409:
+						delete(a.access.CheckboxPending, key)
+						a.RefreshProjectDirectory()
+					case 400, 403, 404:
+						delete(a.access.CheckboxPending, key)
+					}
+				} else if strings.Contains(err.Error(), "设置已变化") {
+					delete(a.access.CheckboxPending, key)
+					a.RefreshProjectDirectory()
+				}
+				return
+			}
+			a.applyAccessDirectory(directory)
+		})
+	}()
+}
+
 func (a *App) commonDatasetSettings(c *ui.Context) {
 	directory := a.access.Directory
-	ui.Text(c, "通用记忆数据组").FontSize(13).Bold()
-	if directory.Common != nil {
-		ui.Text(c, directory.Common.syncLabel(directory.Agents...)).FontSize(11).TextColor(muted)
+	ui.Text(c, "通用记忆数据组").Font("system-ui").FontSize(fsBody).FontWeight(600).TextColor(tok.Text1)
+	if !a.access.Loaded {
+		ui.Text(c, "正在读取通用记忆权限配置…").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3)
+	} else if directory.Common != nil {
+		ui.Text(c, directory.Common.syncLabel(directory.Agents...)).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text2)
+	} else {
+		ui.Text(c, "尚未准备通用记忆数据组，准备后可按 Agent 开启只读权限。").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.5)
 	}
-	textButton(c, "准备／核对通用记忆", nil).Disabled(a.access.Busy).OnClick(func() {
+	textButton(c, "准备／核对通用记忆", nil).Disabled(!a.access.Loaded || a.access.Busy).OnClick(func() {
 		a.mutateAccess(func(ctx context.Context, client ProjectControlClient, revision int64) (AccessDirectory, error) {
 			var result AccessDirectory
 			path := "/v1/common"
@@ -295,6 +371,95 @@ func (a *App) commonDatasetSettings(c *ui.Context) {
 			err := client.request(ctx, "POST", path, map[string]any{"expected_revision": revision}, &result)
 			return result, err
 		})
+	})
+	if !a.access.Loaded || directory.Common == nil {
+		return
+	}
+	common := *directory.Common
+	ui.Column(c).FillWidth().Padding(sp3, 0, 0, 0).Gap(sp2).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
+		ui.Text(c, "Agent 访问权限").Font("system-ui").FontSize(fsFootnote).FontWeight(600).TextColor(tok.Text1)
+		ui.Text(c, "新接入的 Agent 默认不可访问；可按需开启只读权限（通用记忆不支持 Agent 写入）。").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
+		if len(directory.Agents) == 0 {
+			ui.Text(c, "尚未连接任何 Agent").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3)
+			return
+		}
+		renderAgentRows := func() {
+			for _, ag := range directory.Agents {
+				agent := ag
+				current := commonAgentAccess(common, agent.ID)
+				key := common.ID + "/" + agent.ID
+				pending := a.access.CheckboxPending[key]
+				saving := pending != nil && a.access.Busy
+				savedRecently := pending == nil && time.Now().Before(a.access.PermissionSaved[key])
+				displayVal := current
+				if saving {
+					if pv, ok := pending.Value.(string); ok {
+						displayVal = pv
+					}
+				}
+				selected := 0
+				if displayVal == "read" {
+					selected = 1
+				}
+				disabled := a.access.Busy || pending != nil
+				agentUnconfirmed := common.agentPolicyUnconfirmed(agent.ID)
+				ui.Column(c.Key("common-access-row-"+key)).FillWidth().Gap(4).Children(func() {
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+						agentLogo(c, accessAgentIcon(agent), 18)
+						ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
+							ui.Text(c, agentDisplayName(agent.Name)).Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).SingleLine().MaxLines(1)
+							switch {
+							case saving:
+								ui.Row(c).AlignItems(ui.Center).Gap(4).Children(func() {
+									v4Spinner(c)
+									ui.Text(c, "保存中…").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
+								})
+							case savedRecently:
+								ui.Text(c, "已保存").Font("system-ui").FontSize(fsCaption).TextColor(tok.OK).SingleLine()
+							case pending != nil:
+								ui.Text(c, "待核对").Font("system-ui").FontSize(fsCaption).TextColor(tok.Danger).SingleLine()
+							case agentUnconfirmed:
+								ui.Text(c, "权限未确认").Font("system-ui").FontSize(fsCaption).TextColor(tok.Danger).SingleLine()
+							}
+						})
+						seg := v4Segmented(c, "common-access-seg-"+key, agentDisplayName(agent.Name)+" 通用记忆访问权限", &selected, []string{"不可访问", "只读"}, func() {
+							if disabled {
+								return
+							}
+							next := "none"
+							if selected == 1 {
+								next = "read"
+							}
+							if next == current {
+								return
+							}
+							a.saveCommonAgentAccess(common.ID, agent.ID, next)
+						})
+						if disabled {
+							seg.Disabled(true).Opacity(0.55)
+						}
+					})
+					if pending != nil && !a.access.Busy {
+						errText := "尚未确认保存，已保留原权限"
+						if a.access.Message != "" {
+							errText = "尚未确认保存：" + a.access.Message
+						}
+						ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+							ui.Text(c, errText).Font("system-ui").FontSize(fsCaption).TextColor(tok.Danger).Grow(1).MinWidth(0).MaxLines(2)
+							v4SmallButton(c, "重新核对", v4IconRefresh, a.RefreshProjectDirectory).Disabled(a.access.Loading)
+						})
+					}
+				})
+			}
+		}
+		if len(directory.Agents) > 6 {
+			ui.Scroll(c.Key("common-access-scroll")).FillWidth().MaxHeight(260).TrackScroll(&a.commonPage.AccessScroll).Gap(sp2).Children(renderAgentRows)
+		} else {
+			ui.Column(c).FillWidth().Gap(sp2).Children(renderAgentRows)
+		}
+		if a.access.Message != "" && len(a.access.CheckboxPending) == 0 {
+			ui.Text(c, a.access.Message).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
+		}
 	})
 }
 

@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import hashlib
 import json
 from pathlib import Path
 import plistlib
@@ -11,7 +14,15 @@ import build_release
 
 
 class BuildReleaseTests(unittest.TestCase):
-    def _write_fake_repo(self, root: Path, *, version: str = '0.1.0-beta.1', min_sys: str = '14.0', with_graph: bool = True) -> None:
+    def _write_fake_repo(
+        self,
+        root: Path,
+        *,
+        version: str = '0.1.0-beta.1',
+        min_sys: str = '14.0',
+        with_graph: bool = True,
+        missing_licenses: list[str] | None = None,
+    ) -> None:
         (root / 'mygo.json').write_text(json.dumps({
             'name': 'Memlane',
             'slug': 'memlane',
@@ -23,12 +34,37 @@ class BuildReleaseTests(unittest.TestCase):
             'macos': {'minimumSystemVersion': min_sys, 'signingIdentity': '-'},
         }), encoding='utf-8')
         if with_graph:
-            for rel in build_release.REQUIRED_GRAPH_FILES:
-                p = root / rel
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text('{"ok":true}\n', encoding='utf-8')
+            dist = root / 'web' / 'official-graph' / 'dist'
+            dist.mkdir(parents=True, exist_ok=True)
+            payloads = {
+                'index.html': '<!doctype html><html></html>\n',
+                'app.js': 'console.log("ok");\n',
+                'app.css': 'body{margin:0}\n',
+                'host.css': '.host{display:block}\n',
+                'app.js.LEGAL.txt': '/* MIT */\n',
+                'COGNEE-LICENSE': 'Apache License 2.0\n',
+                'THIRD-PARTY-LICENSES.txt': 'react@19.2.4\nMIT\n',
+                'build.json': json.dumps({
+                    'upstream': '8853378eae5366addb064e758e560a456146ae1a',
+                    'modifications': [],
+                    'missingLicenseTexts': list(missing_licenses or []),
+                    'inputs': {},
+                    'outputs': {},
+                }) + '\n',
+            }
+            hashes = {}
+            for name, content in payloads.items():
+                target = dist / name
+                raw = content.encode('utf-8')
+                target.write_bytes(raw)
+                hashes[name] = hashlib.sha256(raw).hexdigest()
+            (dist / 'assets.json').write_text(json.dumps({
+                'protocol': 1,
+                'upstream': '8853378eae5366addb064e758e560a456146ae1a',
+                'files': hashes,
+            }, indent=2) + '\n', encoding='utf-8')
 
-    def test_validate_manifest_and_missing_graph_assets(self):
+    def test_validate_manifest_and_graph_assets_integrity(self):
         with tempfile.TemporaryDirectory() as raw_tmp:
             root = Path(raw_tmp).resolve()
             self._write_fake_repo(root, version='0.0.1')
@@ -44,6 +80,30 @@ class BuildReleaseTests(unittest.TestCase):
             self._write_fake_repo(no_graph, version='0.1.0-beta.1', min_sys='14.0', with_graph=False)
             with self.assertRaises(ValueError):
                 build_release.verify_graph_assets(no_graph)
+
+            # Tampering app.css or host.css must fail SHA-256 verification.
+            tampered = root / 'tampered'
+            tampered.mkdir()
+            self._write_fake_repo(tampered)
+            build_release.verify_graph_assets(tampered)
+            (tampered / 'web/official-graph/dist/app.css').write_text('body{color:red}\n', encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'sha256 mismatch for app.css'):
+                build_release.verify_graph_assets(tampered)
+
+            # Missing host.css must fail verification.
+            missing_css = root / 'missing-css'
+            missing_css.mkdir()
+            self._write_fake_repo(missing_css)
+            (missing_css / 'web/official-graph/dist/host.css').unlink()
+            with self.assertRaisesRegex(ValueError, 'host.css'):
+                build_release.verify_graph_assets(missing_css)
+
+            # Unresolved missingLicenseTexts in build.json must fail verification.
+            bad_lic = root / 'bad-lic'
+            bad_lic.mkdir()
+            self._write_fake_repo(bad_lic, missing_licenses=['example-pkg@1.0.0'])
+            with self.assertRaisesRegex(ValueError, 'missingLicenseTexts'):
+                build_release.verify_graph_assets(bad_lic)
 
     def test_dry_run_validates_without_writing_output_directory(self):
         with tempfile.TemporaryDirectory() as raw_tmp:
@@ -90,8 +150,8 @@ class BuildReleaseTests(unittest.TestCase):
             expected_line = f'{sums[canonical.name]}  Memlane-0.1.0-beta.1-arm64.dmg'
             self.assertIn(expected_line, sums_path.read_text(encoding='utf-8'))
 
-    def _init_git_repo(self, repo: Path) -> str:
-        self._write_fake_repo(repo)
+    def _init_git_repo(self, repo: Path, *, with_graph: bool = True) -> str:
+        self._write_fake_repo(repo, with_graph=with_graph)
         (repo / 'README.md').write_text('# fixture\n', encoding='utf-8')
         subprocess.run(['git', 'init'], cwd=repo, check=True, capture_output=True)
         subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=repo, check=True, capture_output=True)
@@ -100,11 +160,17 @@ class BuildReleaseTests(unittest.TestCase):
         subprocess.run(['git', 'commit', '-m', 'init'], cwd=repo, check=True, capture_output=True)
         return subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
 
-    def test_dry_run_git_ref_resolves_commit_and_worktree_preserves_symlink_targets(self):
+    def test_dry_run_git_ref_validates_target_ref_not_dirty_workspace(self):
         with tempfile.TemporaryDirectory() as raw_tmp:
             repo = Path(raw_tmp).resolve()
             head_sha = self._init_git_repo(repo)
             out_dir = repo / 'out'
+
+            # Mutate the dirty working tree to an invalid version & tampered CSS;
+            # --git-ref HEAD --dry-run must still validate the clean HEAD commit.
+            self._write_fake_repo(repo, version='0.0.1')
+            (repo / 'web/official-graph/dist/app.css').write_text('dirty-tamper\n', encoding='utf-8')
+
             code, res = build_release.run_build(
                 ['--git-ref', 'HEAD', '--out-dir', str(out_dir), '--dry-run', '--json'],
                 root=repo,
@@ -113,6 +179,7 @@ class BuildReleaseTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(res['git_ref'], 'HEAD')
             self.assertEqual(res['commit'], head_sha)
+            self.assertEqual(res['manifest']['version'], '0.1.0-beta.1')
             self.assertFalse(out_dir.exists())
 
             local_dir = repo / '.local'
@@ -128,30 +195,25 @@ class BuildReleaseTests(unittest.TestCase):
                 self.assertEqual((wt / '.local' / 'toolchain.txt').read_text(encoding='utf-8'), 'keep-local\n')
                 wt_parent = wt.parent
 
-            # Also verify gitignored web/official-graph/dist is copied (not symlinked) into worktree.
-            with tempfile.TemporaryDirectory() as raw_tmp2:
-                gitignored_repo = Path(raw_tmp2).resolve()
-                self._write_fake_repo(gitignored_repo, with_graph=False)
-                (gitignored_repo / '.gitignore').write_text('dist/\n', encoding='utf-8')
-                subprocess.run(['git', 'init'], cwd=gitignored_repo, check=True, capture_output=True)
-                subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=gitignored_repo, check=True, capture_output=True)
-                subprocess.run(['git', 'config', 'user.name', 'Tester'], cwd=gitignored_repo, check=True, capture_output=True)
-                subprocess.run(['git', 'add', '.'], cwd=gitignored_repo, check=True, capture_output=True)
-                subprocess.run(['git', 'commit', '-m', 'no-dist'], cwd=gitignored_repo, check=True, capture_output=True)
-                no_dist_sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=gitignored_repo, text=True).strip()
-                for rel in build_release.REQUIRED_GRAPH_FILES:
-                    p = gitignored_repo / rel
-                    p.parent.mkdir(parents=True, exist_ok=True)
-                    p.write_text('{"ok":true}\n', encoding='utf-8')
-                with build_release._worktree_for_ref(gitignored_repo, no_dist_sha) as wt2:
-                    self.assertFalse((wt2 / 'web' / 'official-graph' / 'dist').is_symlink())
-                    build_release.verify_graph_assets(wt2)
-
             self.assertFalse(wt_parent.exists())
             self.assertTrue((local_dir / 'toolchain.txt').is_file())
             self.assertTrue((cache_dir / 'go-build.txt').is_file())
             worktrees = subprocess.check_output(['git', 'worktree', 'list', '--porcelain'], cwd=repo, text=True)
             self.assertNotIn(str(wt_parent), worktrees)
+
+            # A commit lacking tracked web/official-graph/dist must fail --git-ref even if
+            # the host working tree contains untracked dist/ assets (no dirty-workspace copy).
+            with tempfile.TemporaryDirectory() as raw_tmp2:
+                no_dist_repo = Path(raw_tmp2).resolve()
+                no_dist_sha = self._init_git_repo(no_dist_repo, with_graph=False)
+                # Populate untracked dist/ in the host working tree only.
+                self._write_fake_repo(no_dist_repo, with_graph=True)
+                with self.assertRaises(ValueError):
+                    build_release.run_build(
+                        ['--git-ref', no_dist_sha, '--dry-run', '--json'],
+                        root=no_dist_repo,
+                        prepare_sdk_fn=lambda: '/tmp/fake-patched.mod',
+                    )
 
 
 if __name__ == '__main__':

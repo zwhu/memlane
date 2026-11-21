@@ -11,7 +11,7 @@ import re
 import sqlite3
 import threading
 
-from overview_bootstrap import _parse_json
+from _runtime_common import parse_json as _parse_json
 
 _CACHE_LOCK = threading.Lock()
 _HOST_CACHE = {}
@@ -250,12 +250,12 @@ def _load_antigravity_map(db_path: Path, instance_ids: tuple[str, ...]):
         for iid in instance_ids:
             ch = hashlib.sha256(f'{iid}\0{cid}'.encode('utf-8')).hexdigest()
             ph = hashlib.sha256(f'{iid}\0{pid}'.encode('utf-8')).hexdigest() if pid else ''
-            for prefix in ('antigravity-',):
+            for prefix in ('antigravity-', 'codex_antigravity-'):
                 csid = prefix + ch
                 psid = (prefix + ph) if ph else ''
                 record_pair(csid, psid, role, depth, is_sub)
         if is_sub or pid:
-            for prefix in ('antigravity-', ''):
+            for prefix in ('antigravity-', 'codex_antigravity-', ''):
                 csid = prefix + cid
                 psid = (prefix + pid) if pid else ''
                 record_pair(csid, psid, role, depth, is_sub)
@@ -418,7 +418,7 @@ def _load_opencode_map(db_path: Path, instance_ids: tuple[str, ...]):
         for iid in instance_ids:
             ch = hashlib.sha256(f'{iid}\0{cid}'.encode('utf-8')).hexdigest()
             ph = hashlib.sha256(f'{iid}\0{pid}'.encode('utf-8')).hexdigest()
-            for prefix in ('opencode-',):
+            for prefix in ('opencode-', 'codex_opencode-'):
                 csid = prefix + ch
                 psid = prefix + ph
                 parent_map.setdefault(csid, psid)
@@ -498,7 +498,7 @@ def _load_pi_map(sessions_dir: Path, instance_ids: tuple[str, ...]):
         for iid in instance_ids:
             ch = hashlib.sha256(f'{iid}\0{cid}'.encode('utf-8')).hexdigest()
             ph = hashlib.sha256(f'{iid}\0{pid}'.encode('utf-8')).hexdigest()
-            for prefix in ('pi-',):
+            for prefix in ('pi-', 'codex_pi-'):
                 csid = prefix + ch
                 psid = prefix + ph
                 parent_map.setdefault(csid, psid)
@@ -555,7 +555,11 @@ def _load_all_host_relations(sid_set, registry=None, codex_config=None):
             _merge_loaded(_load_antigravity_map(db_path, agy_iids), parent_map, info_map)
 
     # 2. Codex
-    needs_codex = any(sid.startswith('codex_') for sid in sid_set)
+    needs_codex = any(
+        sid.startswith('codex_')
+        and not sid.lower().startswith(('codex_antigravity-', 'codex_opencode-', 'codex_pi-'))
+        for sid in sid_set
+    )
     if needs_codex:
         codex_dbs = []
         seen_paths = set()
@@ -608,7 +612,7 @@ def _load_all_host_relations(sid_set, registry=None, codex_config=None):
         or 'pi' in host_targets
         or any(_agent_kind(row) == 'pi' for row in agents.values())
     )
-    if has_pi_cfg and any(sid.lower().startswith('pi-') for sid in sid_set):
+    if has_pi_cfg and any(sid.lower().startswith(('pi-', 'codex_pi-')) for sid in sid_set):
         pi_dirs = []
         seen_dirs = set()
         if isinstance(cfg.get('pi_sessions_dir'), (str, Path)) and str(cfg['pi_sessions_dir']).strip():

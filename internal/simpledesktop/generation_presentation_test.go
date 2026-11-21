@@ -133,7 +133,7 @@ func TestSettingsSeparateProcessingSelectionFromConfigurationAndService(t *testi
 	fixtureImage(t, tt, "settings-agent-model-management")
 	clickProjectUI(t, tt, "关闭 Provider 配置")
 	clickProjectUI(t, tt, "服务")
-	if !tt.HasText("运行环境") || !tt.HasText("记忆服务") || tt.HasText("API Key") || tt.HasText("切换") {
+	if !tt.HasText("运行环境") || !tt.HasText("组件状态") || tt.HasText("API Key") || tt.HasText("切换") {
 		t.Fatal("service tab includes processing controls")
 	}
 	fixtureImage(t, tt, "settings-service")

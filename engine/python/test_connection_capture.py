@@ -262,6 +262,42 @@ class CaptureTests(unittest.IsolatedAsyncioTestCase):
                 self.registry.official.request.assert_awaited_once_with(
                     'GET', f'/api/v1/sessions/{host}/capture-status', token_file='agent-key')
 
+    async def test_non_codex_hosts_fallback_to_legacy_codex_prefix_on_404_only(self):
+        for kind, host in (('antigravity', 'antigravity-legacy123'),
+                           ('traex', 'traex-legacy123'),
+                           ('pi', 'pi-legacy123')):
+            with self.subTest(kind=kind):
+                self.capture.cache.clear()
+                self.capture.last_verified_session.clear()
+                self.registry.official.request.reset_mock()
+                self.row['kind'] = kind
+                self.registry.state['connection_receipts'][self.identifier]['host_session_key'] = host
+                self.registry.state['sessions'] = {json.dumps([self.identifier, host]): 'project'}
+                probed = []
+
+                async def request(method, path, **kwargs):
+                    probed.append(path)
+                    if path == f'/api/v1/sessions/{host}/capture-status':
+                        raise PolicyError('official_http_404', 503)
+                    if path == f'/api/v1/sessions/codex_{host}/capture-status':
+                        return {**self.saved, 'session_id': f'codex_{host}', 'last_qa_at': self.now - 5}
+                    raise PolicyError('official_http_404', 503)
+
+                self.registry.official.request.side_effect = request
+                got = await self.refresh()
+                self.assertEqual(got['state'], 'healthy')
+                self.assertEqual(probed, [
+                    f'/api/v1/sessions/{host}/capture-status',
+                    f'/api/v1/sessions/codex_{host}/capture-status',
+                ])
+
+                # Non-404 errors on primary must NOT fall back to legacy.
+                self.capture.cache.clear()
+                probed.clear()
+                self.registry.official.request.side_effect = PolicyError('official_http_403', 503)
+                got_err = await self.refresh()
+                self.assertEqual(got_err['state'], 'check_failed')
+
 
 class HostTrustTests(unittest.IsolatedAsyncioTestCase):
     async def test_allow_uses_host_hashes_scoped_edits_and_version_guard(self):

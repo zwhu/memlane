@@ -186,6 +186,13 @@ def bind(workspace, host_session_key):
         if marker.is_file() and not marker.is_symlink():
             binding = json.loads(marker.read_text())
             manifest = Path(__file__).resolve().parents[1] / '.codex-plugin/plugin.json'
+            manifest_override = {
+                'cursor': '.cursor-plugin/plugin.json',
+                'claude_code': '.claude-plugin/plugin.json',
+                'antigravity': 'plugin.json',
+            }.get(binding.get('host_kind'))
+            if manifest_override:
+                manifest = Path(__file__).resolve().parents[1] / manifest_override
             payload['host_environment'] = {
                 'instance_id': binding['instance_id'],
                 'plugin_path': str(Path(__file__).resolve().parents[1]),
@@ -193,10 +200,14 @@ def bind(workspace, host_session_key):
             }
             variables = {'traex': ('TRAE_HOME', 'TRAECLI_HOME'), 'pi': ('PI_CODING_AGENT_DIR',),
                          'codex': ('CODEX_HOME',), 'claude_code': ('CLAUDE_CONFIG_DIR',)}
+            variables.setdefault('cursor', ('CURSOR_CONFIG_DIR', 'MEMLANE_CURSOR_PROFILE'))
             profiles = {str(Path(os.environ[v]).expanduser().absolute())
                         for v in variables.get(binding.get('host_kind'), ()) if os.environ.get(v)}
             if len(profiles) == 1:
                 payload['host_environment']['runtime_profile'] = profiles.pop()
+            elif (not profiles and binding.get('host_kind') == 'cursor'
+                  and isinstance(binding.get('runtime_profile'), str) and binding['runtime_profile']):
+                payload['host_environment']['runtime_profile'] = str(Path(binding['runtime_profile']).expanduser().absolute())
         result = _request('/v1/project/resolve', payload)
         if not result.get('ready') or not result.get('dataset_id'):
             raise NotReady('project_policy_unconfirmed')
@@ -387,7 +398,7 @@ def _merge_block(query, cwd, project_builder):
                 if bodies.get(key):
                     category = candidates[key]['externalMetadata']['category']
                     source = candidates[key]['externalMetadata'].get('source') or '用户手动保存'
-                    pieces.append('来源：通用知识／' + ('个人偏好' if category == 'preference' else '通用经验')
+                    pieces.append('来源：通用记忆／' + ('个人偏好' if category == 'preference' else '通用经验')
                                   + '；' + str(source)[:160] + '\n' + bodies[key].strip())
                     stage_recall(identifier, [(key, pieces[-1])])
             if pieces:

@@ -48,6 +48,60 @@ class BridgeValidationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(PolicyError, 'generation_bridge_changed_revalidate'):
             require_bridge_validation(store, runtime, row)
 
+    async def test_connected_non_codex_bridges_pass_startup_validation_without_probe_receipt(self):
+        from types import SimpleNamespace
+        from agent_bridge_runtime import require_bridge_startup, require_bridge_validation
+        for kind, setup in (
+            ('pi', lambda home: (
+                (home / 'settings.json').write_text('{"defaultProvider":"deepseek","defaultModel":"pi-native"}'),
+                (home / 'auth.json').write_text('{}'),
+                (home / 'auth.json').chmod(0o600),
+            )),
+            ('traex', lambda home: (
+                (home / 'traecli.toml').write_text('model = "traex-native"\n'),
+                (home / 'cli').mkdir(mode=0o700, exist_ok=True),
+                (home / 'cli/auth.json').write_text('{}'),
+                (home / 'cli/auth.json').chmod(0o600),
+            )),
+            ('antigravity', lambda home: (
+                (home.parent / 'antigravity-cli').mkdir(mode=0o700, exist_ok=True),
+                (home.parent / 'antigravity-cli/settings.json').write_text('{"model":"agy-native"}'),
+            )),
+        ):
+            with self.subTest(kind=kind):
+                home = (self.root / (kind + '-connected') / '.gemini/config') if kind == 'antigravity' else (self.root / (kind + '-connected'))
+                home.mkdir(parents=True, mode=0o700, exist_ok=True)
+                setup(home)
+                runtime = {'agent_hosts': {kind: {'executable': str(self.executable), 'profile': str(home)}}}
+                profile = {'mode': 'agent_bridge', 'bridge_kind': kind, 'model': 'saved-model'}
+                if kind == 'pi':
+                    profile['bridge_provider'] = 'deepseek'
+                row = {'profile': profile, 'digest': 'digest-' + kind}
+                # Unconnected and unvalidated non-Codex bridge is still rejected.
+                with self.assertRaisesRegex(PolicyError, 'generation_bridge_changed_revalidate'):
+                    require_bridge_validation(SimpleNamespace(state={'validations': {}}), runtime, row)
+                # Authorized via connected_agent_selections passes startup without manual validation.
+                selected = require_bridge_startup(
+                    SimpleNamespace(state={'validations': {}, 'connected_agent_selections': {row['digest']: True}}),
+                    runtime, row)
+                self.assertEqual(selected['kind'], kind)
+                # Legacy applied handoff without connected_agent_selections also passes restart.
+                selected_legacy = require_bridge_startup(
+                    SimpleNamespace(state={'validations': {}, 'handoffs': {'h1': {'status': 'applied', 'digest': row['digest']}}}),
+                    runtime, row)
+                self.assertEqual(selected_legacy['home'], home)
+                # Broken native defaults still fail explicitly rather than falling back.
+                if kind == 'pi':
+                    (home / 'settings.json').write_text('{}')
+                elif kind == 'traex':
+                    (home / 'traecli.toml').write_text('')
+                else:
+                    (home.parent / 'antigravity-cli/settings.json').write_text('{}')
+                with self.assertRaisesRegex(PolicyError, 'agent_default_model_unavailable'):
+                    require_bridge_startup(
+                        SimpleNamespace(state={'validations': {}, 'connected_agent_selections': {row['digest']: True}}),
+                        runtime, row)
+
     async def test_host_selection_and_model_discovery_do_not_read_authentication(self):
         from generation_bridge import bridge_choices, check_bridge_runtime
         for kind, configuration in [('pi', '{"defaultProvider":"deepseek","defaultModel":"fixture-model"}'),

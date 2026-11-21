@@ -10,10 +10,11 @@ import (
 // Visual V4 motion tokens (docs/ui-redesign/visual-standards-v4-20261120.md#6-动效).
 // Motion always reads real state; animations never announce task completion.
 var (
-	v4Smooth = ui.Animation{Spring: ui.SpringOptions{Duration: 350 * time.Millisecond, Bounce: 0}}
-	v4Snappy = ui.Animation{Spring: ui.SpringOptions{Duration: 300 * time.Millisecond, Bounce: 0.15}}
-	v4Bouncy = ui.Animation{Spring: ui.SpringOptions{Duration: 420 * time.Millisecond, Bounce: 0.30}}
-	v4Fast   = ui.Animation{Duration: 120 * time.Millisecond, Ease: ui.Linear}
+	v4Smooth    = ui.Animation{Spring: ui.SpringOptions{Duration: 350 * time.Millisecond, Bounce: 0}}
+	v4Snappy    = ui.Animation{Spring: ui.SpringOptions{Duration: 300 * time.Millisecond, Bounce: 0.15}}
+	v4Bouncy    = ui.Animation{Spring: ui.SpringOptions{Duration: 420 * time.Millisecond, Bounce: 0.30}}
+	v4Fast      = ui.Animation{Duration: 120 * time.Millisecond, Ease: ui.Linear}
+	v4QuickFade = ui.Animation{Duration: 140 * time.Millisecond, Ease: ui.EaseOut}
 )
 
 func v4PageTransition() ui.ElementTransition {
@@ -44,6 +45,10 @@ type poseEnterTracker struct {
 }
 
 func (t *poseEnterTracker) apply(c *ui.Context, el ui.Element, key string, run uint64, start, rest ui.Pose, delay time.Duration, restAnim ui.Animation) ui.Element {
+	return t.applyWith(c, el, key, run, start, rest, delay, v4Smooth, restAnim)
+}
+
+func (t *poseEnterTracker) applyWith(c *ui.Context, el ui.Element, key string, run uint64, start, rest ui.Pose, delay time.Duration, enterAnim, restAnim ui.Animation) ui.Element {
 	reduce := c.Preferences().ReduceMotion
 	if run == 0 || reduce {
 		return el.AnimatePose(rest, restAnim)
@@ -59,15 +64,15 @@ func (t *poseEnterTracker) apply(c *ui.Context, el ui.Element, key string, run u
 	if t.armed[key] != run {
 		t.armed[key] = run
 		delete(t.launched, key)
-		el.AnimatePose(start, v4Smooth)
+		el.AnimatePose(start, enterAnim)
 		c.AnimationFrame()
 		return el
 	}
 	if t.launched[key] != run {
 		t.launched[key] = run
-		enterAnim := v4Smooth
-		enterAnim.Delay = delay
-		return el.AnimatePose(rest, enterAnim)
+		anim := enterAnim
+		anim.Delay = delay
+		return el.AnimatePose(rest, anim)
 	}
 	return el.AnimatePose(rest, restAnim)
 }
@@ -105,6 +110,13 @@ func (a *App) v4StaggerEnter(c *ui.Context, el ui.Element, key string, index int
 // translateX +8px -> 0, opacity 0 -> 1 on Smooth spring.
 func (a *App) v4DocEnter(c *ui.Context, el ui.Element, key string, run uint64) ui.Element {
 	return a.poseEnter.apply(c, el, "doc:"+key, run, ui.Pose{X: 8, Scale: 1, Fade: 1}, ui.Pose{Scale: 1}, 0, v4Smooth)
+}
+
+// v4ContentFade applies an ultra-short paint-only opacity fade-in (0.15 -> 1.0,
+// 140ms EaseOut) with zero X/Y translation when swapping detail content inside a
+// stationary reading panel.
+func (a *App) v4ContentFade(c *ui.Context, el ui.Element, key string, run uint64) ui.Element {
+	return a.poseEnter.applyWith(c, el, "fade:"+key, run, ui.Pose{Scale: 1, Fade: 0.85}, ui.Pose{Scale: 1}, 0, v4QuickFade, v4QuickFade)
 }
 
 // v4HeatmapWaveElapsed advances the left-to-right staggered wave grow animation

@@ -63,6 +63,7 @@ type Supervisor struct {
 	byRole        map[string]*ManagedProcess
 	descendants   map[int]string
 	monitorCancel context.CancelFunc
+	startDone     chan struct{}
 	stopped       bool
 
 	wg       sync.WaitGroup
@@ -107,6 +108,14 @@ func (s *Supervisor) ExternalOwner() bool {
 	return s.cfg.ExternalOwner
 }
 
+// MarkStopping marks the supervisor as stopping before canceling an in-flight Start
+// context so KeepOnTimeout cannot preserve a process whose shutdown was requested.
+func (s *Supervisor) MarkStopping() {
+	s.mu.Lock()
+	s.stopped = true
+	s.mu.Unlock()
+}
+
 // Exited returns a buffered notification channel emitting unexpected child exits.
 func (s *Supervisor) Exited() <-chan ServiceStatus {
 	return s.exitedCh
@@ -115,11 +124,18 @@ func (s *Supervisor) Exited() <-chan ServiceStatus {
 func (s *Supervisor) buildOwnerRecord(phase string, procs []*ManagedProcess) OwnerRecord {
 	children := make([]int, 0, len(procs))
 	serviceChildren := make(map[string]int, len(procs))
+	var childStartTimes map[string]string
 	for _, proc := range procs {
 		if !proc.Exited() {
 			children = append(children, proc.PID())
 		}
 		serviceChildren[proc.Spec().Role] = proc.PID()
+		if started := proc.StartIdentity(); started != "" {
+			if childStartTimes == nil {
+				childStartTimes = make(map[string]string, len(procs))
+			}
+			childStartTimes[strconv.Itoa(proc.PID())] = started
+		}
 	}
 	var observed map[string]string
 	if len(s.descendants) > 0 {
@@ -142,6 +158,7 @@ func (s *Supervisor) buildOwnerRecord(phase string, procs []*ManagedProcess) Own
 		GenerationReference: s.cfg.GenerationReference,
 		Children:            children,
 		ServiceChildren:     serviceChildren,
+		ChildStartTimes:     childStartTimes,
 		ObservedDescendants: observed,
 	}
 }
@@ -190,6 +207,25 @@ func (s *Supervisor) teardownProcesses(ctx context.Context, procs []*ManagedProc
 	// severs PPID ancestry.
 	s.refreshDescendants(ctx, procs, false)
 
+	s.mu.Lock()
+	hasDescendants := len(s.descendants) > 0
+	s.mu.Unlock()
+
+	deadline, hasDeadline := ctx.Deadline()
+	var descReserve time.Duration
+	if hasDeadline && hasDescendants {
+		rem := time.Until(deadline)
+		if rem > 0 {
+			descReserve = rem / 4
+			if descReserve < 500*time.Millisecond {
+				descReserve = rem / 3
+			}
+			if descReserve > 3*time.Second {
+				descReserve = 3 * time.Second
+			}
+		}
+	}
+
 	var errs []error
 	allStopped := true
 	var descGrace, descKillWait time.Duration
@@ -202,9 +238,24 @@ func (s *Supervisor) teardownProcesses(ctx context.Context, procs []*ManagedProc
 		if spec.KillWait > descKillWait {
 			descKillWait = spec.KillWait
 		}
-		if err := proc.StopGroup(spec.StopGrace, spec.KillWait); err != nil {
+		procCtx := ctx
+		var procCancel context.CancelFunc
+		if hasDeadline {
+			avail := time.Until(deadline) - descReserve
+			if avail > 0 {
+				perProc := avail / time.Duration(i+1)
+				if perProc > 0 {
+					procCtx, procCancel = context.WithTimeout(ctx, perProc)
+				}
+			}
+		}
+		stopErr := proc.StopGroup(procCtx, spec.StopGrace, spec.KillWait)
+		if procCancel != nil {
+			procCancel()
+		}
+		if stopErr != nil {
 			allStopped = false
-			errs = append(errs, fmt.Errorf("%s %s: %w", errPrefix, spec.Role, err))
+			errs = append(errs, fmt.Errorf("%s %s: %w", errPrefix, spec.Role, stopErr))
 		}
 	}
 	if descGrace > 5*time.Second {
@@ -273,6 +324,10 @@ func (s *Supervisor) Start(ctx context.Context, specs []ServiceSpec) error {
 	}
 
 	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return errors.New("supervisor stopped during start")
+	}
 	if s.owner != nil || len(s.order) > 0 || s.state == StateStarting || s.state == StateReady {
 		s.mu.Unlock()
 		return errors.New("supervisor already active")
@@ -280,7 +335,17 @@ func (s *Supervisor) Start(ctx context.Context, specs []ServiceSpec) error {
 	s.state = StateStarting
 	s.stopped = false
 	s.canonicalCfg = canonicalConfig
+	startDone := make(chan struct{})
+	s.startDone = startDone
 	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		if s.startDone == startDone {
+			s.startDone = nil
+		}
+		s.mu.Unlock()
+		close(startDone)
+	}()
 
 	resetFailedPreLock := func() {
 		s.mu.Lock()
@@ -413,7 +478,9 @@ func (s *Supervisor) Start(ctx context.Context, specs []ServiceSpec) error {
 		s.mu.Lock()
 		if s.stopped {
 			s.mu.Unlock()
-			_ = proc.StopGroup(proc.Spec().StopGrace, proc.Spec().KillWait)
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_ = proc.StopGroup(stopCtx, proc.Spec().StopGrace, proc.Spec().KillWait)
+			stopCancel()
 			s.stopMu.Unlock()
 			return rollback(errors.New("supervisor stopped during start"))
 		}
@@ -677,50 +744,71 @@ func probeEndpointOnce(ctx context.Context, client *http.Client, rawURL string, 
 // Stop stops background monitoring, shuts down children in strict reverse startup order,
 // and removes the owner receipt only when every process group exits cleanly.
 func (s *Supervisor) Stop(ctx context.Context) error {
-	s.stopMu.Lock()
-	defer s.stopMu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var startDone chan struct{}
+	stopOnce := func() error {
+		s.stopMu.Lock()
+		defer s.stopMu.Unlock()
 
-	s.mu.Lock()
-	cancel := s.monitorCancel
-	s.monitorCancel = nil
-	procs := slices.Clone(s.order)
-	lock := s.owner
-	s.order = nil
-	s.byRole = make(map[string]*ManagedProcess)
-	s.owner = nil
-	s.phase = ""
-	s.stopped = true
-	if cancel == nil && lock == nil && len(procs) == 0 {
-		s.state = StateStopped
+		s.mu.Lock()
+		cancel := s.monitorCancel
+		s.monitorCancel = nil
+		procs := slices.Clone(s.order)
+		lock := s.owner
+		startDone = s.startDone
+		s.order = nil
+		s.byRole = make(map[string]*ManagedProcess)
+		s.owner = nil
+		s.phase = ""
+		s.stopped = true
+		if cancel == nil && lock == nil && len(procs) == 0 {
+			s.state = StateStopped
+			s.mu.Unlock()
+			return nil
+		}
 		s.mu.Unlock()
-		return nil
-	}
-	s.mu.Unlock()
 
-	if cancel != nil {
-		cancel()
-	}
-	s.wg.Wait()
+		if cancel != nil {
+			cancel()
+		}
+		s.wg.Wait()
 
-	allStopped, stopErrs := s.teardownProcesses(ctx, procs, "stop")
+		allStopped, stopErrs := s.teardownProcesses(ctx, procs, "stop")
 
-	if lock != nil {
-		if allStopped {
-			if err := lock.RemoveRecord(); err != nil {
+		if lock != nil {
+			if allStopped {
+				if err := lock.RemoveRecord(); err != nil {
+					stopErrs = append(stopErrs, err)
+				}
+			}
+			if err := lock.Release(); err != nil {
 				stopErrs = append(stopErrs, err)
 			}
 		}
-		if err := lock.Release(); err != nil {
-			stopErrs = append(stopErrs, err)
-		}
+
+		s.mu.Lock()
+		s.ownerPID = 0
+		s.state = StateStopped
+		s.mu.Unlock()
+
+		return errors.Join(stopErrs...)
 	}
 
-	s.mu.Lock()
-	s.ownerPID = 0
-	s.state = StateStopped
-	s.mu.Unlock()
-
-	return errors.Join(stopErrs...)
+	err := stopOnce()
+	if startDone != nil {
+		// Wait for any concurrent in-flight Start() (e.g. mid-StartManagedProcess) to
+		// observe s.stopped and finish rolling back so no Setsid child escapes as an orphan.
+		select {
+		case <-startDone:
+			if err2 := stopOnce(); err2 != nil {
+				err = errors.Join(err, err2)
+			}
+		case <-ctx.Done():
+		}
+	}
+	return err
 }
 
 // Snapshot returns a defensive view of aggregate supervisor and service state.

@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-from project_control import private_write
+from project_control import loopback_origin, private_write
 from project_policy import PolicyError
 from opencode_installation import loader, prepare as prepare_binding, verify, pending_runtime
 
@@ -224,9 +224,11 @@ class OpenCodeConnection:
             r.save()
             agent = copy.deepcopy(r.state['agents'][self.id])
         control = self.config.get('project_control', {})
+        control_url = control.get('url') or self.config['project_control_url']
+        gateway_url = loopback_origin(control_url) + '/cognee'
         try:
             installation = await asyncio.to_thread(prepare_binding, self.artifact, r.path.parent, self.id, agent,
-                r.official.url, control.get('url') or self.config['project_control_url'], self.profile,
+                gateway_url, control_url, self.profile,
                 artifact_sha256=self.artifact_sha, node=self.config.get('opencode_node_executable', 'node'))
         except (OSError, ValueError, KeyError):
             raise PolicyError('opencode_artifact_requires_review', 409) from None

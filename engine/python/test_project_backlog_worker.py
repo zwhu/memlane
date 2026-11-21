@@ -169,6 +169,83 @@ class OfficialProcessingTests(unittest.TestCase):
                     pbw.main()
                 self.assertEqual(emitted[-1], {'status': want_status, 'reason': 'policy_unconfirmed'})
 
+    def test_main_process_distinguishes_permanent_not_ready_from_transient_policy_outage(self):
+        import io
+        import project_backlog_worker as pbw
+
+        class NotReady(RuntimeError):
+            pass
+
+        cases = [
+            ('project_policy_unconfirmed', {'status': 'deferred', 'reason': 'policy_unconfirmed'}),
+            ('buffer_send_in_progress', {'status': 'deferred', 'reason': 'policy_unconfirmed'}),
+            ('control_credential_unavailable', {'status': 'deferred', 'reason': 'policy_unconfirmed'}),
+            ('control_response_limit', {'status': 'deferred', 'reason': 'policy_unconfirmed'}),
+            ('control_configuration_invalid', {'status': 'disabled', 'reason': 'control_configuration_invalid'}),
+            ('control_credential_invalid', {'status': 'disabled', 'reason': 'control_credential_invalid'}),
+            ('project_binding_required', {'status': 'disabled', 'reason': 'project_binding_required'}),
+            ('managed_buffer_session_mismatch', {'status': 'disabled', 'reason': 'managed_buffer_session_mismatch'}),
+            ('当前 Agent 没有此项目的写入权限', {'status': 'disabled', 'reason': 'managed_policy_paused'}),
+        ]
+        for msg, expected in cases:
+            with self.subTest(msg=msg):
+                emitted = []
+                fake_common = types.SimpleNamespace(set_session_key=Mock())
+                fake_policy = types.SimpleNamespace(NotReady=NotReady)
+                payload = json.dumps({
+                    'action': 'process',
+                    'scripts': '/nonexistent',
+                    'host': 'host-key',
+                    'dataset': 'dataset-id',
+                    'session_id': 'session-id',
+                    'cancel_file': '/tmp/definitely-absent-cancel-file',
+                })
+                with patch.dict(sys.modules, {'_plugin_common': fake_common, '_memlane_policy': fake_policy}), \
+                     patch.object(sys, 'stdin', io.StringIO(payload)), \
+                     patch.object(pbw, 'emit', side_effect=emitted.append), \
+                     patch.object(pbw, 'process', side_effect=NotReady(msg)):
+                    pbw.main()
+                self.assertEqual(emitted[-1], expected)
+
+        # process() re-classifies transient control outage via policy.current() when require() raises NotReady.
+        transient_policy = types.SimpleNamespace(
+            NotReady=NotReady,
+            _pending_identity=Mock(),
+            require=Mock(side_effect=NotReady('当前 Agent 没有此项目的写入权限')),
+            current=Mock(side_effect=NotReady('project_policy_unconfirmed')),
+        )
+        with self.assertRaisesRegex(NotReady, 'project_policy_unconfirmed'):
+            process(self.common, transient_policy, self.payload)
+
+        # If control recovers between require() failing transiently and current()
+        # probing, process() returns deferred instead of re-raising stale denial.
+        recovered_policy = types.SimpleNamespace(
+            NotReady=NotReady,
+            _pending_identity=Mock(),
+            require=Mock(side_effect=NotReady('当前 Agent 没有此项目的写入权限')),
+            current=Mock(return_value={
+                'ready': True,
+                'policy': {'permissions': ['read', 'write'], 'can_auto_process': True},
+            }),
+        )
+        self.assertEqual(
+            process(self.common, recovered_policy, self.payload),
+            {'status': 'deferred', 'reason': 'policy_unconfirmed'},
+        )
+
+        # Real denial (can_auto_process=False) still raises NotReady -> disabled.
+        denied_policy = types.SimpleNamespace(
+            NotReady=NotReady,
+            _pending_identity=Mock(),
+            require=Mock(side_effect=NotReady('当前 Agent 没有此项目的写入权限')),
+            current=Mock(return_value={
+                'ready': True,
+                'policy': {'permissions': ['read', 'write'], 'can_auto_process': False},
+            }),
+        )
+        with self.assertRaisesRegex(NotReady, '写入权限'):
+            process(self.common, denied_policy, self.payload)
+
 
 class WorkerDrainFixture(DrainFixture):
     """Real installed sender overlay, adding controlled original-receipt GETs."""

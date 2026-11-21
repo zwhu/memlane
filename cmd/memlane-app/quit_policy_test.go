@@ -238,3 +238,39 @@ func TestQuitCoordinatorStillQuitsWhenShutdownErrors(t *testing.T) {
 		t.Fatal("expected IsQuitting() to be true even after shutdown error")
 	}
 }
+
+func TestQuitCoordinatorDefaultTimeoutAligned(t *testing.T) {
+	quitCh := make(chan struct{}, 1)
+	deadlineCh := make(chan time.Duration, 1)
+
+	coord := newQuitCoordinator(
+		func() bool { return false },
+		func(ctx context.Context) error {
+			dl, ok := ctx.Deadline()
+			if !ok {
+				t.Error("expected shutdown ctx to carry a deadline")
+				return nil
+			}
+			deadlineCh <- time.Until(dl)
+			return nil
+		},
+		func() { quitCh <- struct{}{} },
+		0,
+		nil,
+	)
+
+	coord.RequestQuit(true)
+	select {
+	case rem := <-deadlineCh:
+		if rem < defaultShutdownTimeout-2*time.Second || rem > defaultShutdownTimeout+time.Second {
+			t.Fatalf("unexpected default shutdown deadline: got %v, want ~%v", rem, defaultShutdownTimeout)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for shutdown ctx")
+	}
+	select {
+	case <-quitCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for requestQuit")
+	}
+}

@@ -220,6 +220,7 @@ class UserProfilesTests(unittest.IsolatedAsyncioTestCase):
         import os
         from unittest.mock import patch
         root=Path(self.tmp.name)
+        (root / 'settings.json').write_text(json.dumps({'defaultProvider': 'deepseek', 'defaultModel': 'native-pi-model'}))
         executable=root/'slow-agent'
         executable.write_text('#!/usr/bin/env python3\nimport time\ntime.sleep(.15)\nprint("# Slow profile\\n\\nPreserve words.")\n')
         executable.chmod(0o700)
@@ -274,23 +275,74 @@ class UserProfilesTests(unittest.IsolatedAsyncioTestCase):
     async def test_every_profile_agent_keeps_native_default_and_memory_subtasks_follow_it(self):
         root = Path(self.tmp.name)
         adapter = SimpleNamespace(executable='/bin/echo')
+        (root / 'settings.json').write_text(json.dumps({'defaultProvider': 'deepseek', 'defaultModel': 'native-pi-model'}))
         for kind in ('codex', 'traex', 'pi', 'claude_code'):
             with self.subTest(kind=kind):
                 name = 'config.toml' if kind == 'codex' else 'traecli.toml'
                 (root / name).write_text('model="native-selected-model"\n')
                 args, env, _ = command_for(adapter, {'kind':kind,'profile':str(root)}, root)
-                self.assertNotIn('--model', args)
-                self.assertNotIn('-m', args)
+                if kind == 'pi':
+                    self.assertIn('--provider', args)
+                    self.assertEqual(args[args.index('--provider') + 1], 'deepseek')
+                    self.assertIn('--model', args)
+                    self.assertEqual(args[args.index('--model') + 1], 'native-pi-model')
+                    self.assertEqual(env['PI_CODING_AGENT_DIR'],str(root))
+                else:
+                    self.assertNotIn('--model', args)
+                    self.assertNotIn('-m', args)
                 if kind in ('codex', 'traex'):
                     for key in ('model', 'memories.extract_model', 'memories.consolidation_model'):
                         self.assertIn(key+'="native-selected-model"', args)
                 if kind == 'traex':
                     self.assertNotIn('--no-daemon', args)
                     self.assertEqual(env['TRAECLI_HOME'],str(root/'cli'))
-                if kind == 'pi':
-                    self.assertEqual(env['PI_CODING_AGENT_DIR'],str(root))
                 if kind == 'claude_code':
                     self.assertEqual(env['CLAUDE_CONFIG_DIR'],str(root))
+
+    async def test_codex_named_profile_merges_memories_and_env_strips_llm_provider_vars(self):
+        root = Path(self.tmp.name)
+        (root / 'config.toml').write_text(
+            'model = "base-model"\n'
+            'profile = "work"\n'
+            '[features]\nmemories = false\n'
+            '[memories]\nuse_memories = false\n'
+            '[profiles.work]\n'
+            'model = "profile-model"\n'
+            '[profiles.work.features]\nmemories = true\n'
+            '[profiles.work.memories]\nuse_memories = true\n'
+        )
+        adapter = SimpleNamespace(executable='/bin/echo')
+        polluted = {
+            'COGNEE_API_KEY': 'strip-me',
+            'MEMLANE_PROJECT_CONTROL_URL': 'http://127.0.0.1:18998',
+            'LLM_MODEL': 'openai/polluted',
+            'LLM_API_KEY': 'secret',
+            'OPENAI_API_KEY': 'sk-polluted',
+            'ANTHROPIC_API_KEY': 'ant-polluted',
+            'GEMINI_API_KEY': 'gem-polluted',
+            'OLLAMA_API_BASE': 'http://127.0.0.1:11434',
+            'FALLBACK_MODEL': 'polluted-fallback',
+        }
+        with patch.dict(os.environ, polluted):
+            args, env, _ = command_for(adapter, {'kind': 'codex', 'profile': str(root)}, root)
+        self.assertIn('model="profile-model"', args)
+        self.assertIn('features.memories=true', args)
+        self.assertIn('memories.use_memories=true', args)
+        self.assertEqual(env['MEMLANE_PROCESSING_SESSION'], '1')
+        for key in polluted:
+            self.assertNotIn(key, env)
+
+    async def test_pi_and_antigravity_reject_missing_native_default_model_via_shared_reader(self):
+        root = Path(self.tmp.name)
+        adapter = SimpleNamespace(executable='/bin/echo')
+        empty_pi = root / 'empty-pi'
+        empty_pi.mkdir()
+        with self.assertRaisesRegex(PolicyError, 'agent_default_model_unavailable'):
+            command_for(adapter, {'kind': 'pi', 'profile': str(empty_pi)}, root)
+        empty_agy = root / 'empty-agy/.gemini/config'
+        empty_agy.mkdir(parents=True)
+        with self.assertRaisesRegex(PolicyError, 'agent_default_model_unavailable'):
+            command_for(adapter, {'kind': 'antigravity', 'profile': str(empty_agy)}, root)
 
     async def test_official_document_identity_uses_actual_camelcase_dto_and_scope(self):
         class Official:
@@ -372,26 +424,29 @@ class UserProfilesTests(unittest.IsolatedAsyncioTestCase):
         root = Path(self.tmp.name)
         profile = root / 'userhome/.gemini/config'
         profile.mkdir(parents=True)
+        agy_settings = profile.parent / 'antigravity-cli/settings.json'
+        agy_settings.parent.mkdir(parents=True)
+        agy_settings.write_text(json.dumps({'model': 'native-agy-model'}))
         work = root / 'work'
         work.mkdir()
         adapter = SimpleNamespace(executable='/bin/echo')
         with self.assertRaises(PolicyError):
             command_for(adapter, {'kind': 'antigravity', 'profile': str(root / 'invalid')}, work)
 
-        with patch.dict(os.environ, {'COGNEE_API_KEY': 'must-not-leak', 'MEMLANE_PROJECT_CONTROL_URL': 'http://127.0.0.1:18998'}):
+        with patch.dict(os.environ, {'COGNEE_API_KEY': 'must-not-leak', 'MEMLANE_PROJECT_CONTROL_URL': 'http://127.0.0.1:18998',
+                                     'LLM_API_KEY': 'must-not-leak', 'GEMINI_API_KEY': 'must-not-leak'}):
             args, env, output = command_for(adapter, {'kind': 'antigravity', 'profile': str(profile)}, work)
         self.assertIsNone(output)
         self.assertEqual(args[0], '/bin/echo')
         self.assertEqual(
             args[1:],
-            ['--output-format', 'json', '--mode', 'plan', '--disable-slash-commands', '--sandbox', '--print=' + PROMPT],
+            ['--output-format', 'json', '--mode', 'plan', '--model', 'native-agy-model', '--disable-slash-commands', '--sandbox', '--print=' + PROMPT],
         )
         self.assertNotIn('--agent', args)
-        self.assertNotIn('--model', args)
         self.assertNotIn('-m', args)
         self.assertEqual(env['HOME'], str(profile.parent.parent))
         self.assertEqual(env['MEMLANE_PROCESSING_SESSION'], '1')
-        self.assertFalse(any(k.startswith(('COGNEE_', 'MEMLANE_PROJECT_')) for k in env))
+        self.assertFalse(any(k.startswith(('COGNEE_', 'MEMLANE_PROJECT_', 'LLM_', 'GEMINI_')) for k in env))
 
         self.assertTrue((work / '.git').is_dir())
         agents_doc = (work / 'AGENTS.md').read_text(encoding='utf-8')
@@ -415,6 +470,9 @@ class UserProfilesTests(unittest.IsolatedAsyncioTestCase):
         root = Path(self.tmp.name)
         profile = root / 'userhome/.gemini/config'
         profile.mkdir(parents=True)
+        agy_settings = profile.parent / 'antigravity-cli/settings.json'
+        agy_settings.parent.mkdir(parents=True)
+        agy_settings.write_text(json.dumps({'model': 'native-agy-model'}))
 
         ok_exec = root / 'fake-agy-ok'
         ok_exec.write_text('#!/usr/bin/env python3\nimport json\nprint(json.dumps({"status": "SUCCESS", "response": "# 用户画像\\n\\n保留原话。"}))\n')

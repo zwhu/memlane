@@ -3,6 +3,7 @@ package simpledesktop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,6 +11,11 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+)
+
+var (
+	overviewLoadTimeout     = 90 * time.Second
+	overviewActivityTimeout = 60 * time.Second
 )
 
 type overviewViewState struct {
@@ -172,8 +178,25 @@ func (a *App) overviewScope() string {
 	return string(scope)
 }
 
+func (a *App) invalidateOverviewOn401(err error) bool {
+	status, ok := httpStatusCode(err)
+	if !ok || status != 401 {
+		return false
+	}
+	// Preserve the failed scope so subsequent App.View frames do not treat
+	// scope=="" as a scope change and trigger a per-frame 401 request storm.
+	scope := a.overviewState.scope
+	if scope == "" {
+		scope = a.overviewScope()
+	}
+	a.InvalidateReading("")
+	a.overviewState.scope = scope
+	return true
+}
+
 func (a *App) loadOverview() {
 	v := &a.overviewState
+	a.syncReadingIdentity()
 	a.cancelOverviewRecall()
 	a.overviewRefreshAt = time.Now().Add(overviewRefreshInterval)
 	if a.Config.ProjectControl != nil && !a.access.Loaded {
@@ -198,10 +221,11 @@ func (a *App) loadOverview() {
 	if v.cancel != nil {
 		v.cancel()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), overviewLoadTimeout)
 	v.cancel = cancel
 	v.generation++
 	generation := v.generation
+	epoch, identity := a.epoch, a.readingIdentity
 	v.Loading = true
 	client := a.Client
 	genStr := fmt.Sprint(generation)
@@ -230,8 +254,11 @@ func (a *App) loadOverview() {
 				if searchHistory {
 					historyEvents, historyErr = client.overviewSearchHistory(ctx)
 				}
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return
+				}
 				a.Update(func() {
-					if generation != a.overviewState.generation {
+					if generation != a.overviewState.generation || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
 						return
 					}
 					a.overviewState.Loading = false
@@ -285,12 +312,26 @@ func (a *App) loadOverview() {
 				})
 				return
 			}
-			if ctx.Err() != nil {
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return
+			}
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				a.Update(func() {
+					if generation != a.overviewState.generation || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
+						return
+					}
+					a.overviewState.Loading = false
+					a.overviewState.Error = err.Error()
+					if actGen == a.overviewState.activityGeneration {
+						a.overviewState.ActivityLoading = false
+						a.overviewState.ActivityError = err.Error()
+					}
+				})
 				return
 			}
 			// Fallback when control server does not serve /v1/overview/bootstrap.
 			a.Update(func() {
-				if generation != a.overviewState.generation {
+				if generation != a.overviewState.generation || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
 					return
 				}
 				a.loadOverviewLegacy(generation, wasLoaded)
@@ -307,8 +348,9 @@ func (a *App) loadOverviewLegacy(generation uint64, wasLoaded bool) {
 	if v.cancel != nil {
 		v.cancel()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), overviewLoadTimeout)
 	v.cancel = cancel
+	epoch, identity := a.epoch, a.readingIdentity
 	v.Loading = true
 	client := a.Client
 	titles := a.titles
@@ -321,7 +363,9 @@ func (a *App) loadOverviewLegacy(generation uint64, wasLoaded bool) {
 			case <-activityDone:
 			case <-ctx.Done():
 				wait.Stop()
-				return
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return
+				}
 			case <-wait.C:
 			}
 			wait.Stop()
@@ -352,12 +396,16 @@ func (a *App) loadOverviewLegacy(generation uint64, wasLoaded bool) {
 			wg.Wait()
 			preCancel()
 		}
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return
+		}
 		a.Update(func() {
-			if generation != a.overviewState.generation {
+			if generation != a.overviewState.generation || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
 				return
 			}
 			a.overviewState.Loading = false
 			if err != nil {
+				a.invalidateOverviewOn401(err)
 				a.overviewState.Error = err.Error()
 				return
 			}
@@ -407,10 +455,11 @@ func (a *App) startOverviewActivity() <-chan struct{} {
 	if v.activityCancel != nil {
 		v.activityCancel()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), overviewActivityTimeout)
 	v.activityCancel = cancel
 	v.activityGeneration++
 	generation := v.activityGeneration
+	epoch, identity := a.epoch, a.readingIdentity
 	v.ActivityLoading = true
 	want := 50
 	client := a.Client
@@ -461,13 +510,17 @@ func (a *App) startOverviewActivity() <-chan struct{} {
 			}
 		}
 		signalDone()
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return
+		}
 		a.Update(func() {
-			if generation != a.overviewState.activityGeneration {
+			if generation != a.overviewState.activityGeneration || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
 				return
 			}
 			a.overviewState.ActivityLoading = false
 			if history {
 				if err != nil {
+					a.invalidateOverviewOn401(err)
 					a.overviewState.HistoryError = err.Error()
 					return
 				}
@@ -477,6 +530,7 @@ func (a *App) startOverviewActivity() <-chan struct{} {
 				return
 			}
 			if err != nil {
+				a.invalidateOverviewOn401(err)
 				a.overviewState.ActivityError = err.Error()
 				return
 			}

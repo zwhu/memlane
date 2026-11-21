@@ -338,7 +338,7 @@ class CaptureReceiptTests(unittest.TestCase):
     def test_three_prepared_host_senders_keep_original_id_after_response_loss(self):
         import importlib.util
         from project_installation import prepare
-        from project_control import private_write
+        from _runtime_common import private_write
 
         spec = importlib.util.spec_from_file_location('capture_builder', ROOT / 'scripts/build_project_plugin.py')
         builder = importlib.util.module_from_spec(spec)
@@ -372,7 +372,9 @@ class CaptureReceiptTests(unittest.TestCase):
             env.update(
                 HOME=str(home), SYSTEM_ROOT_DIRECTORY=str(home / 'system'), DATA_ROOT_DIRECTORY=str(home / 'data'),
                 CACHE_ROOT_DIRECTORY=str(home / 'cache'), LOGS_ROOT_DIRECTORY=str(home / 'logs'),
-                COGNEE_LOGS_DIR=str(home / 'logs'), TELEMETRY_DISABLED='true', COGNEE_TRACING_ENABLED='false',
+                COGNEE_LOGS_DIR=str(home / 'logs'), HF_HOME=str(home / 'hf'),
+                HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1',
+                TELEMETRY_DISABLED='true', COGNEE_TRACING_ENABLED='false',
                 PYTHON_DOTENV_DISABLED='1', LITELLM_LOCAL_MODEL_COST_MAP='true',
                 PYTHONPATH=os.pathsep.join([str(source), str(ROOT / 'engine/python')]),
             )

@@ -49,7 +49,7 @@ DEV_APP_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 \t<key>CFBundleVersion</key>
 \t<string>0.0.1</string>
 \t<key>LSMinimumSystemVersion</key>
-\t<string>15.0</string>
+\t<string>14.0</string>
 \t<key>NSHighResolutionCapable</key>
 \t<true/>
 \t<key>NSPrincipalClass</key>
@@ -270,22 +270,85 @@ def launch_owned(command, *, cwd=ROOT, env=None, log_file=None):
         os.close(fd)
 
 
+LOG_REDACTION_RULES = (
+    (re.compile(rb'(?i)(Bearer[ \t]+)\S+'), rb'\1[REDACTED]'),
+    (re.compile(rb'(?i)(Basic[ \t]+)\S+'), rb'\1[REDACTED]'),
+    (re.compile(rb'(?i)(X-Api-Key[ \t]*:[ \t]*)\S+'), rb'\1[REDACTED]'),
+    (re.compile(rb'(?i)(X-Memlane-Management[ \t]*:[ \t]*)\S+'), rb'\1[REDACTED]'),
+    (re.compile(rb'\bsk-[A-Za-z0-9_-]{8,}'), rb'sk-[REDACTED]'),
+    (re.compile(rb'\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b'), rb'[REDACTED]'),
+    (re.compile(rb'(?i)((?:https?|socks(?:4a?|5h?))://)[^/\s"\'<>@]+@'), rb'\1[REDACTED]@'),
+    (re.compile(rb'(?i)(\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password)\b[ \t]*[=:][ \t]*)([^\s,;]+)'), rb'\1[REDACTED]'),
+)
+
+
+def redact_log_bytes(raw):
+    redacted = raw
+    for pattern, replacement in LOG_REDACTION_RULES:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
+
+
 def trim_service_log(path, limit=20 * 1024 * 1024):
     path = Path(path)
     if path.is_symlink():
         raise ValueError('service log cannot be a symlink')
-    if not path.exists() or path.stat().st_size <= limit:
+    if not path.exists():
         return
-    # Keep a bounded tail and truncate the same live inode. Child processes
-    # retain an O_APPEND regular-file fd, never a pipe or replaced log inode.
-    with path.open('rb') as source:
-        source.seek(-limit, os.SEEK_END)
-        tail = source.read(limit)
-    fd = os.open(str(path) + '.previous', os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'wb') as previous:
-        previous.write(tail)
+    src_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        src_stat = os.fstat(src_fd)
+        if not stat.S_ISREG(src_stat.st_mode):
+            raise ValueError('service log must be a regular file')
+        if src_stat.st_size <= limit:
+            return
+        offset = src_stat.st_size - limit
+        # Keep a bounded tail and truncate the same live inode. Child processes
+        # retain an O_APPEND regular-file fd, never a pipe or replaced log inode.
+        with os.fdopen(src_fd, 'rb') as source:
+            src_fd = -1
+            if offset > 0:
+                source.seek(offset - 1, os.SEEK_SET)
+                raw = source.read(limit + 1)
+                if len(raw) > 1:
+                    prev_byte = raw[:1]
+                    tail = raw[1:]
+                else:
+                    prev_byte = b''
+                    tail = b''
+            else:
+                prev_byte = b'\n'
+                tail = source.read(limit)
+    finally:
+        if src_fd >= 0:
+            os.close(src_fd)
+    if offset > 0 and prev_byte != b'\n':
+        newline = tail.find(b'\n')
+        if newline >= 0:
+            tail = tail[newline + 1:]
+        else:
+            tail = b''
+    redacted_tail = redact_log_bytes(tail)
+    prev_path = Path(str(path) + '.previous')
+    if prev_path.is_symlink():
+        raise ValueError('previous service log cannot be a symlink')
+    fd = os.open(prev_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError('previous service log must be a regular file')
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'wb') as previous:
+            fd = -1
+            previous.write(redacted_tail)
+            previous.flush()
+            os.fsync(previous.fileno())
+    finally:
+        if fd >= 0:
+            os.close(fd)
     fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW)
     try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError('service log must be a regular file')
         os.ftruncate(fd, 0)
     finally:
         os.close(fd)
@@ -301,14 +364,67 @@ def report_notice(message):
 
 def acquire(data):
     # Canonical store ownership is shared across checkouts and symlink aliases.
-    lock = (Path(data).resolve(strict=True) / '.service-owner').open('a+')
+    lock_path = Path(data).resolve(strict=True) / '.service-owner'
+    if lock_path.is_symlink():
+        raise ValueError('service owner lock cannot be a symlink')
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
-        os.chmod(lock.name, 0o600)
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError('service owner lock must be a regular file')
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BaseException:
-        lock.close()
+        os.close(fd)
         raise
-    return lock
+    return os.fdopen(fd, 'r+')
+
+
+def read_owner_record(runfile):
+    runfile = Path(runfile)
+    if runfile.is_symlink():
+        raise ValueError('owner receipt cannot be a symlink')
+    fd = os.open(runfile, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError('owner receipt must be a regular file')
+        with os.fdopen(fd, 'r', encoding='utf-8') as stream:
+            fd = -1
+            return json.load(stream)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def write_owner_record(runfile, state):
+    runfile = Path(runfile)
+    if runfile.is_symlink():
+        raise ValueError('owner receipt cannot be a symlink')
+    temporary = runfile.with_name(runfile.name + '.' + str(os.getpid()) + '.tmp')
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    replaced = False
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError('owner receipt temp must be a regular file')
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            fd = -1
+            json.dump(state, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if runfile.is_symlink():
+            raise ValueError('owner receipt cannot be a symlink')
+        os.replace(temporary, runfile)
+        replaced = True
+        dir_fd = os.open(runfile.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if not replaced:
+            temporary.unlink(missing_ok=True)
 
 
 def group_exists(pid):
@@ -323,8 +439,8 @@ def group_exists(pid):
         return any(row.strip() == str(pid) for row in rows.splitlines())
 
 
-def stop_group(process):
-    for sig, seconds in ((signal.SIGTERM, 15), (signal.SIGKILL, 5)):
+def stop_group(process, *, grace=4, kill_wait=2):
+    for sig, seconds in ((signal.SIGTERM, grace), (signal.SIGKILL, kill_wait)):
         process.poll()
         if not group_exists(process.pid):
             process.wait(timeout=5)
@@ -345,6 +461,64 @@ def stop_group(process):
                 return
             time.sleep(.1)
     raise RuntimeError('owned process group exit unconfirmed: ' + str(process.pid))
+
+
+def stop_groups_parallel(processes, *, grace=4, kill_wait=2):
+    """Stop owned process groups in reverse order with a shared SIGTERM -> SIGKILL budget."""
+    remaining = list(reversed(processes))
+    errors = []
+    for sig, seconds in ((signal.SIGTERM, grace), (signal.SIGKILL, kill_wait)):
+        still_live = []
+        for proc in remaining:
+            proc.poll()
+            if not group_exists(proc.pid):
+                try:
+                    proc.wait(timeout=2)
+                except Exception as error:
+                    errors.append(str(error))
+                continue
+            try:
+                os.killpg(proc.pid, sig)
+            except ProcessLookupError:
+                try:
+                    proc.wait(timeout=2)
+                except Exception as error:
+                    errors.append(str(error))
+                continue
+            except PermissionError as error:
+                proc.poll()
+                if group_exists(proc.pid):
+                    errors.append(str(error))
+                continue
+            still_live.append(proc)
+        remaining = still_live
+        if not remaining:
+            return errors
+        deadline = time.monotonic() + seconds
+        while remaining and time.monotonic() < deadline:
+            next_live = []
+            for proc in remaining:
+                proc.poll()
+                if not group_exists(proc.pid):
+                    try:
+                        proc.wait(timeout=2)
+                    except Exception as error:
+                        errors.append(str(error))
+                else:
+                    next_live.append(proc)
+            remaining = next_live
+            if remaining:
+                time.sleep(.1)
+    for proc in remaining:
+        proc.poll()
+        if group_exists(proc.pid):
+            errors.append('owned process group exit unconfirmed: ' + str(proc.pid))
+        else:
+            try:
+                proc.wait(timeout=2)
+            except Exception as error:
+                errors.append(str(error))
+    return errors
 
 
 def ui_arch():
@@ -496,9 +670,14 @@ def run_monitor_housekeeping(log_dir, processes, descendants, save_owner, *,
     if last_run is not None and (current - last_run) < interval:
         return last_run
     log_path = Path(log_dir)
-    if log_path.is_dir():
+    if log_path.is_dir() and not log_path.is_symlink():
         for log_file in log_path.glob('*.log'):
-            trim_service_log(log_file)
+            if log_file.is_symlink() or not log_file.is_file():
+                continue
+            try:
+                trim_service_log(log_file)
+            except (OSError, ValueError) as error:
+                report_notice('skipping unsafe service log ' + str(log_file) + ': ' + str(error))
     previous_descendants = dict(descendants)
     track_descendants([p.pid for p in processes], descendants)
     if descendants != previous_descendants:
@@ -550,12 +729,12 @@ def track_descendants(roots, known):
         if pid in table: known[pid] = table[pid][2]
 
 
-def stop_descendants(known):
+def stop_descendants(known, *, grace=1.5, kill_wait=1.5):
     # Codex owns request sessions distinct from the endpoint group. Only signal
     # previously observed descendants whose kernel start identity still matches.
     if not known:
         return
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+    for sig, seconds in ((signal.SIGTERM, grace), (signal.SIGKILL, kill_wait)):
         # One snapshot per phase, not a full-system ps for every historical PID.
         # Recheck identities on each phase and poll; never signal a reused PID.
         table = process_tree()
@@ -566,7 +745,7 @@ def stop_descendants(known):
         for pid in live:
             try: os.kill(pid, sig)
             except ProcessLookupError: pass
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             table = process_tree()
             if not any(pid in table and table[pid][2] == started for pid, started in known.items()): return
@@ -651,7 +830,8 @@ def start_generation_stack(config, config_path, launch, cleanup, *, health=wait_
     applied_path = config_path.parent / ('.generation-applied-' + str(os.getpid()) + '.json')
     try:
         def start(reference, digest):
-            profile = store.resolve(reference)['profile']
+            row = store.resolve(reference)
+            profile = row['profile']
             effective = {**config, 'generation_file': str(generation_file), 'generation_reference': reference,
                          'generation_mode': profile['mode'], 'model': profile['model'],
                          'generation_applied_file': str(applied_path)}
@@ -659,9 +839,8 @@ def start_generation_stack(config, config_path, launch, cleanup, *, health=wait_
                 effective.pop('completion_url', None)
             endpoint = None
             if profile['mode'] == 'agent_bridge':
-                from agent_bridge_runtime import check_bridge_runtime, require_bridge_validation
-                require_bridge_validation(store, config, store.resolve(reference))
-                selected_bridge = check_bridge_runtime(config, profile)
+                from agent_bridge_runtime import require_bridge_startup
+                selected_bridge = require_bridge_startup(store, config, row)
                 for key in ('completion_token_file',):
                     if key == 'completion_token_file' and Path(config[key]).expanduser().is_symlink():
                         raise ValueError('completion credential must not be a symlink')
@@ -730,7 +909,7 @@ def main():
         print(json.dumps(result))
         return
     if args.action in ('stop', 'status', 'open'):
-        state = json.loads(runfile.read_text())
+        state = read_owner_record(runfile)
         # Verify the live owner via a locked store and kernel PID, not a stale file.
         try:
             lock = acquire(data)
@@ -810,20 +989,20 @@ def main():
         raise RuntimeError('previous ownership record needs confirmed recovery before restart; use dev.py recover with the same config')
     cleanup_stale_pid_receipts(path.parent)
     processes = []
+    child_start_times = {}
     descendants = {}
     ui = None
     reopen = False
     state = {'pid': os.getpid(), 'started': subprocess.check_output(['ps', '-p', str(os.getpid()), '-o', 'lstart='], text=True).strip(),
              'phase': 'starting', 'config': str(path), 'official_data': str(data),
-             'service_url': config['service_url'], 'completion_url': config.get('completion_url'), 'children': [], 'service_children': {}}
+             'service_url': config['service_url'], 'completion_url': config.get('completion_url'),
+             'children': [], 'service_children': {}, 'child_start_times': {}}
     def save_owner():
-        state['children'] = [proc.pid for proc in processes if proc.poll() is None]
+        live_pids = [proc.pid for proc in processes if proc.poll() is None]
+        state['children'] = live_pids
+        state['child_start_times'] = {str(pid): child_start_times[pid] for pid in live_pids if pid in child_start_times}
         state['observed_descendants'] = dict(descendants)
-        temporary = runfile.with_name(runfile.name + '.' + str(os.getpid()) + '.tmp')
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, 'w') as stream:
-            json.dump(state, stream)
-        os.replace(temporary, runfile)
+        write_owner_record(runfile, state)
     def stop(_signal, _frame): raise KeyboardInterrupt
     def open_window(_signal, _frame):
         nonlocal reopen
@@ -836,6 +1015,12 @@ def main():
         trim_service_log(log_file)
         proc = launch_owned(command, cwd=cwd, env=env, log_file=log_file)
         processes.append(proc)
+        try:
+            started = subprocess.check_output(['ps', '-p', str(proc.pid), '-o', 'lstart='], text=True).strip()
+            if started:
+                child_start_times[proc.pid] = started
+        except Exception:
+            pass
         role = {'codex_completion_endpoint': 'completion', 'agent_completion_endpoint': 'completion', 'official_service_dev': 'official',
                 'project_control_server': 'project_control'}.get(entry)
         if role:
@@ -845,12 +1030,14 @@ def main():
     def cleanup_stack():
         try:
             track_descendants([p.pid for p in processes], descendants)
-            for proc in reversed(processes):
-                stop_group(proc)
+            stop_errors = stop_groups_parallel(processes)
+            if stop_errors:
+                return False
             stop_descendants(descendants)
         except Exception:
             return False
         processes.clear()
+        child_start_times.clear()
         descendants.clear()
         state['service_children'].clear()
         save_owner()
@@ -910,9 +1097,7 @@ def main():
     finally:
         errors = []
         track_descendants([p.pid for p in processes], descendants)
-        for proc in reversed(processes):
-            try: stop_group(proc)
-            except Exception as error: errors.append(str(error))
+        errors.extend(stop_groups_parallel(processes))
         try: stop_descendants(descendants)
         except Exception as error: errors.append(str(error))
         if errors:

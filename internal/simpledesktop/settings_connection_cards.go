@@ -47,13 +47,15 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 		checkedDesc = "更新于 " + m.LastCheckedAt.Local().Format("15:04:05")
 	}
 
-	v4Group(c, "记忆服务", checkedDesc, func() {
+	v4Group(c, "组件状态", checkedDesc, func() {
 		v4SmallButton(c, "重新检查", v4IconRefresh, a.health).Disabled(m.Polling)
 	}, func() {
 		if m.Polling && m.Snapshot == nil && m.LastCheckedAt.IsZero() {
 			v4SkeletonGroup(c, 3, 2, false, true)
 			return
 		}
+
+		hasChannelRow := a.Config.CompletionURL != "" || (m.Snapshot != nil && m.Snapshot.Processes["completion"].PID > 0)
 
 		// 1) 记忆引擎（Cognee）服务行
 		cogneeState, cogneeStatus, cogneeColor := a.serviceCogneeStatus()
@@ -62,7 +64,7 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 			cogneeParts = append(cogneeParts, addr)
 		}
 		if m.HasLatency {
-			cogneeParts = append(cogneeParts, fmt.Sprintf("延迟 %.0f ms", m.LastLatencyMs))
+			cogneeParts = append(cogneeParts, "延迟 "+formatDurationCompact(m.LastLatencyMs))
 		}
 		if m.ConsecutiveFailures > 0 {
 			cogneeParts = append(cogneeParts, fmt.Sprintf("连续失败 %d 次", m.ConsecutiveFailures))
@@ -75,6 +77,9 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 				if proc.RSSBytes != nil {
 					cogneeParts = append(cogneeParts, "内存 "+formatBytesMB(*proc.RSSBytes))
 				}
+			}
+			if !hasChannelRow && m.Snapshot.Summary != nil && m.Snapshot.Summary.RecentProcessingMs != nil {
+				cogneeParts = append(cogneeParts, "最近模型生成 "+formatDurationCompact(*m.Snapshot.Summary.RecentProcessingMs))
 			}
 		}
 		v4Row(c, v4RowOptions{
@@ -95,6 +100,9 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 				ctrlDot, ctrlVal, ctrlCol = "fail", "接入网关：异常", tok.Danger
 			}
 			var ctrlParts []string
+			if m.ControlReachable && m.HasControlLatency {
+				ctrlParts = append(ctrlParts, "延迟 "+formatDurationCompact(m.ControlLatencyMs))
+			}
 			if m.Snapshot != nil {
 				if proc, ok := m.Snapshot.Processes["project_control"]; ok && proc.RSSBytes != nil {
 					ctrlParts = append(ctrlParts, "内存 "+formatBytesMB(*proc.RSSBytes))
@@ -102,9 +110,6 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 				if m.Snapshot.Summary != nil {
 					s := m.Snapshot.Summary
 					ctrlParts = append(ctrlParts, fmt.Sprintf("项目 %d 个", s.ProjectsCount))
-					if s.RecentProcessingMs != nil {
-						ctrlParts = append(ctrlParts, fmt.Sprintf("最近请求 %.0f ms", *s.RecentProcessingMs))
-					}
 					if s.HookErrorsCount > 0 {
 						ctrlParts = append(ctrlParts, fmt.Sprintf("Hook 未记录 %d 项", s.HookErrorsCount))
 					}
@@ -130,7 +135,7 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 		}
 
 		// 3) Agent 模型代理行
-		if a.Config.CompletionURL != "" || (m.Snapshot != nil && m.Snapshot.Processes["completion"].PID > 0) {
+		if hasChannelRow {
 			compDot, compVal, compCol := "neutral", "待检查", tok.Text3
 			if strings.HasPrefix(a.completion, "端点已连接") {
 				compDot, compVal, compCol = "ok", "已连接", tok.OK
@@ -141,9 +146,15 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 			if u := sanitizedMonitorURL(a.Config.CompletionURL); u != "" && u != "未配置" {
 				compParts = append(compParts, u)
 			}
+			if strings.HasPrefix(a.completion, "端点已连接") && m.HasCompletionLatency {
+				compParts = append(compParts, "延迟 "+formatDurationCompact(m.CompletionLatencyMs))
+			}
 			if m.Snapshot != nil {
 				if proc, ok := m.Snapshot.Processes["completion"]; ok && proc.RSSBytes != nil {
 					compParts = append(compParts, "内存 "+formatBytesMB(*proc.RSSBytes))
+				}
+				if m.Snapshot.Summary != nil && m.Snapshot.Summary.RecentProcessingMs != nil {
+					compParts = append(compParts, "最近模型生成 "+formatDurationCompact(*m.Snapshot.Summary.RecentProcessingMs))
 				}
 			}
 			v4Row(c, v4RowOptions{

@@ -211,3 +211,32 @@ class IncrementalProcessingTests(unittest.IsolatedAsyncioTestCase):
         reopened = IncrementalProcessing(self.backlog, clock=lambda: self.now, available=self.available)
         reopened_entry = next(iter(reopened.state['sessions'].values()))
         self.assertEqual((reopened_entry['status'], reopened_entry['reason']), ('unknown', 'owner_interrupted'))
+
+    async def test_tick_isolates_per_session_review_and_fetch_errors(self):
+        from project_policy import PolicyError
+        self.registry.state['sessions'] = {
+            json.dumps(['a', 'broken-review']): 'p',
+            json.dumps(['a', 'missing-404']): 'p',
+            json.dumps(['a', 'healthy']): 'p',
+        }
+        orig_execute = self.backlog.execute
+
+        async def faulty_execute(row, target, action):
+            if target['host'] == 'broken-review' and action == 'review':
+                raise PolicyError('review_unavailable', 503)
+            snap = await orig_execute(row, target, action)
+            if action == 'review':
+                snap['session_id'] = 'sid-' + target['host']
+            return snap
+
+        async def faulty_official(method, path, **kwargs):
+            if 'sid-missing-404' in path:
+                raise PolicyError('official_http_404', 503)
+            return {**copy.deepcopy(self.detail), 'session_id': 'sid-healthy'}
+
+        self.backlog.execute = faulty_execute
+        self.registry.official.request = AsyncMock(side_effect=faulty_official)
+        await self.processing.tick()
+        self.now += 31
+        await self.processing.tick()
+        self.assertEqual([t['host'] for t in self.submissions()], ['healthy'])

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import threading
 import uuid
 from datetime import datetime, timezone
 
@@ -15,12 +16,19 @@ class RecallStore:
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.path.parent, 0o700)
         if self.path.is_symlink():
             raise ValueError('recall database must not be a symlink')
-        fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
+        fd = os.open(self.path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
         os.close(fd)
         os.chmod(self.path, 0o600)
-        self.db = sqlite3.connect(self.path)
+        self._lock = threading.Lock()
+        self.db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
+        self.db.execute('PRAGMA journal_mode=WAL')
+        self.db.execute('PRAGMA journal_size_limit=4194304')
+        self.db.execute('PRAGMA wal_autocheckpoint=1000')
+        self.db.execute('PRAGMA synchronous=NORMAL')
+        self.db.execute('PRAGMA busy_timeout=5000')
         self.db.execute('PRAGMA foreign_keys=ON')
         self.db.executescript('''
           CREATE TABLE IF NOT EXISTS recall_meta (
@@ -54,8 +62,15 @@ class RecallStore:
             last_query_at TEXT
           );
         ''')
-        with self.db:
-            self.db.execute('INSERT OR IGNORE INTO recall_meta VALUES(1,1,?)', (self.now(),))
+        with self._lock:
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                self.db.execute('INSERT OR IGNORE INTO recall_meta VALUES(1,1,?)', (self.now(),))
+                self.db.execute('COMMIT')
+            except Exception:
+                if self.db.in_transaction:
+                    self.db.execute('ROLLBACK')
+                raise
 
     @staticmethod
     def now():
@@ -83,51 +98,119 @@ class RecallStore:
                 raise PolicyError('invalid_recall_hit')
             hits.add((self.identifier(row['dataset_id']), self.identifier(row['document_id'])))
         fingerprint = hashlib.sha256(json.dumps([channel, sorted(hits)]).encode()).hexdigest()
-        with self.db:
-            old = self.db.execute('SELECT payload_hash FROM recall_event WHERE agent_id=? AND event_id=?', (agent, event)).fetchone()
-            if old:
-                if old[0] != fingerprint:
-                    raise PolicyError('recall_event_conflict', 409)
-                return {'recorded': False}
-            self.db.execute('INSERT INTO recall_event VALUES(?,?,?,?,?)', (agent, event, channel, self.now(), fingerprint))
-            self.db.executemany('INSERT INTO recall_hit VALUES(?,?,?,?)', [(agent, event, *hit) for hit in sorted(hits)])
+        with self._lock:
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                old = self.db.execute(
+                    'SELECT payload_hash FROM recall_event WHERE agent_id=? AND event_id=?',
+                    (agent, event),
+                ).fetchone()
+                if old:
+                    if old[0] != fingerprint:
+                        self.db.execute('ROLLBACK')
+                        raise PolicyError('recall_event_conflict', 409)
+                    self.db.execute('COMMIT')
+                    return {'recorded': False}
+                self.db.execute(
+                    'INSERT INTO recall_event VALUES(?,?,?,?,?)',
+                    (agent, event, channel, self.now(), fingerprint),
+                )
+                self.db.executemany(
+                    'INSERT INTO recall_hit VALUES(?,?,?,?)',
+                    [(agent, event, *hit) for hit in sorted(hits)],
+                )
+                self.db.execute('COMMIT')
+            except Exception:
+                if self.db.in_transaction:
+                    self.db.execute('ROLLBACK')
+                raise
         return {'recorded': True}
 
     def stats(self, dataset, document):
         dataset, document = self.identifier(dataset), self.identifier(document)
-        count, last = self.db.execute('''SELECT COUNT(*), MAX(e.received_at) FROM recall_hit h
-            JOIN recall_event e USING(agent_id,event_id) WHERE dataset_id=? AND document_id=?''', (dataset, document)).fetchone()
-        return {'count': count, 'last_recalled_at': last,
-                'started_at': self.db.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()[0]}
+        with self._lock:
+            count, last = self.db.execute('''SELECT COUNT(*), MAX(e.received_at) FROM recall_hit h
+                JOIN recall_event e USING(agent_id,event_id) WHERE dataset_id=? AND document_id=?''', (dataset, document)).fetchone()
+            started_at = self.db.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()[0]
+        return {'count': count, 'last_recalled_at': last, 'started_at': started_at}
+
+    def checkpoint(self, mode: str = 'TRUNCATE') -> bool:
+        """Run WAL checkpoint to truncate WAL and prevent unbounded growth, safely handling locks."""
+        with self._lock:
+            try:
+                mode_str = str(mode or 'TRUNCATE').upper()
+                if mode_str not in ('PASSIVE', 'FULL', 'RESTART', 'TRUNCATE'):
+                    mode_str = 'TRUNCATE'
+                cur = self.db.execute(f'PRAGMA wal_checkpoint({mode_str})')
+                row = cur.fetchone()
+                return bool(row and row[0] == 0)
+            except (sqlite3.OperationalError, sqlite3.Error):
+                return False
+            except Exception:
+                return False
 
     def close(self):
-        self.db.close()
+        with self._lock:
+            try:
+                self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            except Exception:
+                pass
+            self.db.close()
 
     def counts(self, dataset):
         dataset = self.identifier(dataset)
-        rows = self.db.execute('''SELECT h.document_id, COUNT(*), MAX(e.received_at)
-            FROM recall_hit h JOIN recall_event e USING(agent_id,event_id)
-            WHERE h.dataset_id=? GROUP BY h.document_id''', (dataset,)).fetchall()
-        return {'started_at': self.db.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()[0],
+        with self._lock:
+            rows = self.db.execute('''SELECT h.document_id, COUNT(*), MAX(e.received_at)
+                FROM recall_hit h JOIN recall_event e USING(agent_id,event_id)
+                WHERE h.dataset_id=? GROUP BY h.document_id''', (dataset,)).fetchall()
+            started_at = self.db.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()[0]
+        return {'started_at': started_at,
                 'items': [{'document_id': document, 'count': count, 'last_recalled_at': last}
                           for document, count, last in rows]}
+
+    def counts_for_datasets(self, allowed):
+        """Return aggregate per-document recall counts across allowed datasets."""
+        with self._lock:
+            started_row = self.db.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()
+            started_at = started_row[0] if started_row else ''
+            if not allowed:
+                return {'started_at': started_at, 'counts': {}}
+            allowed_sorted = sorted({self.identifier(ds) for ds in allowed})
+            placeholders = ','.join('?' for _ in allowed_sorted)
+            rows = self.db.execute(
+                f'''SELECT h.dataset_id, h.document_id, COUNT(*), MAX(e.received_at)
+                    FROM recall_hit h JOIN recall_event e USING(agent_id,event_id)
+                    WHERE h.dataset_id IN ({placeholders})
+                    GROUP BY h.dataset_id, h.document_id''',
+                allowed_sorted,
+            ).fetchall()
+        counts = {
+            f'{ds_id}/{doc_id}': {
+                'count': int(count),
+                'last_recalled_at': last_at or '',
+                'started_at': started_at,
+            }
+            for ds_id, doc_id, count, last_at in rows
+        }
+        return {'started_at': started_at, 'counts': counts}
 
     def events(self, allowed, limit, offset):
         if not allowed:
             return {'items': [], 'more': False}
         allowed = sorted(allowed)
         placeholders = ','.join('?' for _ in allowed)
-        rows = self.db.execute('''SELECT e.agent_id,e.event_id,e.channel,e.received_at
-            FROM recall_event e WHERE EXISTS (SELECT 1 FROM recall_hit h
-            WHERE h.agent_id=e.agent_id AND h.event_id=e.event_id AND h.dataset_id IN ('''+placeholders+'''))
-            ORDER BY e.received_at DESC,e.agent_id,e.event_id LIMIT ? OFFSET ?''', (*allowed, limit+1, offset)).fetchall()
-        items = []
-        for agent, event, channel, received in rows[:limit]:
-            hits = self.db.execute('''SELECT dataset_id,document_id FROM recall_hit
-                WHERE agent_id=? AND event_id=? AND dataset_id IN ('''+placeholders+''')
-                ORDER BY dataset_id,document_id''', (agent,event,*allowed)).fetchall()
-            items.append({'event_id': event, 'agent_id': agent, 'channel': channel, 'received_at': received,
-                          'hits': [{'dataset_id': dataset, 'document_id': document} for dataset, document in hits]})
+        with self._lock:
+            rows = self.db.execute('''SELECT e.agent_id,e.event_id,e.channel,e.received_at
+                FROM recall_event e WHERE EXISTS (SELECT 1 FROM recall_hit h
+                WHERE h.agent_id=e.agent_id AND h.event_id=e.event_id AND h.dataset_id IN ('''+placeholders+'''))
+                ORDER BY e.received_at DESC,e.agent_id,e.event_id LIMIT ? OFFSET ?''', (*allowed, limit+1, offset)).fetchall()
+            items = []
+            for agent, event, channel, received in rows[:limit]:
+                hits = self.db.execute('''SELECT dataset_id,document_id FROM recall_hit
+                    WHERE agent_id=? AND event_id=? AND dataset_id IN ('''+placeholders+''')
+                    ORDER BY dataset_id,document_id''', (agent, event, *allowed)).fetchall()
+                items.append({'event_id': event, 'agent_id': agent, 'channel': channel, 'received_at': received,
+                              'hits': [{'dataset_id': dataset, 'document_id': document} for dataset, document in hits]})
         return {'items': items, 'more': len(rows) > limit}
 
     def record_query(self, channel: str, hit_count: int) -> dict:
@@ -137,26 +220,34 @@ class RecallStore:
         now = self.now()
         hit_inc = 1 if hit_count > 0 else 0
         empty_inc = 1 if hit_count == 0 else 0
-        with self.db:
-            self.db.execute(
-                '''INSERT INTO recall_query_stats(channel, total_queries, hit_queries, empty_queries, total_hits, last_query_at)
-                   VALUES(?, 1, ?, ?, ?, ?)
-                   ON CONFLICT(channel) DO UPDATE SET
-                     total_queries = total_queries + 1,
-                     hit_queries = hit_queries + excluded.hit_queries,
-                     empty_queries = empty_queries + excluded.empty_queries,
-                     total_hits = total_hits + excluded.total_hits,
-                     last_query_at = excluded.last_query_at''',
-                (channel, hit_inc, empty_inc, hit_count, now),
-            )
+        with self._lock:
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                self.db.execute(
+                    '''INSERT INTO recall_query_stats(channel, total_queries, hit_queries, empty_queries, total_hits, last_query_at)
+                       VALUES(?, 1, ?, ?, ?, ?)
+                       ON CONFLICT(channel) DO UPDATE SET
+                         total_queries = total_queries + 1,
+                         hit_queries = hit_queries + excluded.hit_queries,
+                         empty_queries = empty_queries + excluded.empty_queries,
+                         total_hits = total_hits + excluded.total_hits,
+                         last_query_at = excluded.last_query_at''',
+                    (channel, hit_inc, empty_inc, hit_count, now),
+                )
+                self.db.execute('COMMIT')
+            except Exception:
+                if self.db.in_transaction:
+                    self.db.execute('ROLLBACK')
+                raise
         return {'recorded': True, 'channel': channel, 'hit_count': hit_count}
 
     def query_summary(self) -> dict:
-        started_row = self.db.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()
-        started_at = started_row[0] if started_row else None
-        rows = self.db.execute(
-            'SELECT channel, total_queries, hit_queries, empty_queries, total_hits, last_query_at FROM recall_query_stats'
-        ).fetchall()
+        with self._lock:
+            started_row = self.db.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()
+            started_at = started_row[0] if started_row else None
+            rows = self.db.execute(
+                'SELECT channel, total_queries, hit_queries, empty_queries, total_hits, last_query_at FROM recall_query_stats'
+            ).fetchall()
         by_channel = {
             ch: {'total_queries': 0, 'hit_queries': 0, 'empty_queries': 0, 'total_hits': 0, 'hit_rate': None, 'last_query_at': None}
             for ch in ('automatic', 'explicit')

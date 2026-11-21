@@ -48,6 +48,7 @@ type projectQueueState struct {
 	ProcessingReadError            string
 	NotificationFailures           map[string]projectFailure
 	KnowledgeRead                  knowledgeReadState
+	KnowledgeCatalogVersion        string
 	UnreadKnowledge                []Item
 	KnowledgeReadError             string
 	Archives                       []pendingArchiveRow
@@ -76,6 +77,7 @@ type projectQueueState struct {
 	BacklogLoaded                  bool
 	BacklogNext                    time.Time
 	BacklogError, BacklogOperation string
+	localStateLoaded               bool
 }
 
 func (c Client) pendingProjectDocuments(ctx context.Context, p Project) ([]Item, error) {
@@ -124,23 +126,56 @@ func (c Client) pendingProjectCatalog(ctx context.Context, p Project) ([]Item, [
 	}
 	return result, docs, nil
 }
+func (a *App) existingProjectQueueState(p AccessProject) *projectQueueState {
+	if a.access.Queues == nil {
+		return nil
+	}
+	identity := a.cachedBaseReadingIdentity()
+	return a.access.Queues[identity+"/"+p.ID+"/"+p.Dataset]
+}
+
+func (a *App) projectQueueStateForAsync(p AccessProject) *projectQueueState {
+	if a.access.Queues == nil {
+		a.access.Queues = map[string]*projectQueueState{}
+	}
+	identity := a.cachedBaseReadingIdentity()
+	key := identity + "/" + p.ID + "/" + p.Dataset
+	q := a.access.Queues[key]
+	if q == nil {
+		q = &projectQueueState{}
+		a.access.Queues[key] = q
+	}
+	return q
+}
+
 func (a *App) projectQueueStateFor(p AccessProject) *projectQueueState {
 	if a.access.Queues == nil {
 		a.access.Queues = map[string]*projectQueueState{}
 	}
-	identity, _ := readingIdentity(Client{Config: a.Client.Config})
+	identity := a.cachedBaseReadingIdentity()
 	key := identity + "/" + p.ID + "/" + p.Dataset
 	q := a.access.Queues[key]
 	if q == nil {
 		q = &projectQueueState{}
 		q.Archives, q.ArchiveError = a.readPendingArchives(p)
 		q.NoticeAcknowledgements, q.NoticeAcknowledgementError = a.readNoticeAcknowledgements(p)
+		if path, err := a.knowledgeReadPath(p); err == nil {
+			if s, readErr := readKnowledgeState(path); readErr == nil && s.Initialized {
+				q.KnowledgeRead = s
+			}
+		}
+		q.localStateLoaded = true
 		a.access.Queues[key] = q
 	}
 	return q
 }
 func (a *App) projectQueue(p AccessProject) *projectQueueState {
-	q := a.projectQueueStateFor(p)
+	var q *projectQueueState
+	if a.Update != nil {
+		q = a.projectQueueStateForAsync(p)
+	} else {
+		q = a.projectQueueStateFor(p)
+	}
 	if time.Now().After(q.BacklogNext) {
 		a.refreshBacklog(q, p)
 	}
@@ -165,7 +200,8 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 	if q.Backlog.active() {
 		q.Next = time.Now().Add(5 * time.Second)
 	}
-	identity, _ := readingIdentity(Client{Config: a.Client.Config})
+	identity := a.cachedBaseReadingIdentity()
+	needLocalState := !q.localStateLoaded
 	if a.access.Buffers == nil {
 		a.access.Buffers = map[string]*pendingBufferView{}
 	}
@@ -190,6 +226,10 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 	control := a.Config.ProjectControl
 	client, python := a.Client, a.Config.Python
 	operator := pendingOperatorConfig(a.Config)
+	knownKnowledgeVersion := ""
+	if q.KnowledgeRead.Initialized && q.KnowledgeReadError == "" {
+		knownKnowledgeVersion = q.KnowledgeCatalogVersion
+	}
 	if a.access.QueueReadSlots == nil {
 		a.access.QueueReadSlots = make(chan struct{}, 4)
 	}
@@ -204,6 +244,8 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 		results := make([]result, len(sessions))
 		var documents []Item
 		var knowledgeCatalog []Document
+		var knowledgeVersion string
+		var knowledgeUnchanged bool
 		var documentErr error
 		var activity []activityRow
 		var activityErr error
@@ -221,7 +263,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			if control != nil {
 				summaryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 				manager := ProjectControlClient{Config: *control, HTTP: client.HTTP}
-				res, err := manager.projectMessageSummary(summaryCtx, p.ID)
+				res, err := manager.projectMessageSummary(summaryCtx, p.ID, knownKnowledgeVersion)
 				cancel()
 				if err == nil {
 					summary = res
@@ -235,6 +277,11 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 						documentErr = fmt.Errorf("%s", msg)
 					} else {
 						documents = res.pendingItems(p.Dataset)
+						knowledgeVersion = res.KnowledgeCatalogVersion
+						knowledgeUnchanged = res.KnowledgeCatalogUnchanged
+						if !knowledgeUnchanged {
+							knowledgeCatalog = res.knowledgeDocuments(p.Dataset)
+						}
 					}
 					if msg := res.Errors["activity"]; msg != "" {
 						activityErr = fmt.Errorf("%s", msg)
@@ -294,20 +341,47 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				}
 			}(n, row)
 		}
+		var localArchives []pendingArchiveRow
+		var localArchiveErr string
+		var localKnowledgeRead knowledgeReadState
+		var noticeAcks map[string]noticeAcknowledgement
+		var noticeAckErr string
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			noticeAcks, noticeAckErr = a.readNoticeAcknowledgements(p)
+			if needLocalState {
+				localArchives, localArchiveErr = a.readPendingArchives(p)
+				if path, err := a.knowledgeReadPath(p); err == nil {
+					if s, readErr := readKnowledgeState(path); readErr == nil && s.Initialized {
+						localKnowledgeRead = s
+					}
+				}
+			}
+		}()
 		workers.Wait()
 		a.Update(func() {
 			if request != q.Request {
 				return
 			}
 			q.Loading = false
-			current, _ := readingIdentity(Client{Config: a.Client.Config})
+			_, current, _ := readingIdentityPair(Client{Config: a.Client.Config})
 			if identity != current {
 				q.Sessions = nil
 				q.Documents = nil
 				q.Loaded = false
 				return
 			}
-			q.NoticeAcknowledgements, q.NoticeAcknowledgementError = a.readNoticeAcknowledgements(p)
+			if !q.localStateLoaded {
+				if len(q.Archives) == 0 && q.ArchiveError == "" {
+					q.Archives, q.ArchiveError = localArchives, localArchiveErr
+				}
+				if !q.KnowledgeRead.Initialized && localKnowledgeRead.Initialized {
+					q.KnowledgeRead = localKnowledgeRead
+				}
+				q.localStateLoaded = true
+			}
+			q.NoticeAcknowledgements, q.NoticeAcknowledgementError = noticeAcks, noticeAckErr
 			if summaryOK {
 				if summaryBacklogErr != "" {
 					q.BacklogError = "后台采集状态暂时无法读取；任务不会因此重复启动"
@@ -378,6 +452,11 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				q.Documents = documents
 				if knowledgeCatalog != nil {
 					a.observeKnowledgeCatalog(p, q, knowledgeCatalog)
+					if q.KnowledgeReadError == "" {
+						q.KnowledgeCatalogVersion = knowledgeVersion
+					}
+				} else if knowledgeUnchanged && knowledgeVersion != "" {
+					q.KnowledgeCatalogVersion = knowledgeVersion
 				}
 				q.Offset = min(q.Offset, max(0, len(documents)-1))
 			}

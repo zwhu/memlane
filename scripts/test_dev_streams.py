@@ -31,18 +31,68 @@ class ServiceStreamTests(unittest.TestCase):
         dev=importlib.util.module_from_spec(spec);spec.loader.exec_module(dev)
         with tempfile.TemporaryDirectory() as temporary:
             path=Path(temporary)/'official.log'
-            path.write_bytes(b'old-prefix-'+b'x'*200)
+            tail_expected = b'x' * 63 + b'\n'
+            path.write_bytes(b'old-prefix-' + b'a' * 150 + b'\n' + tail_expected)
             inode=path.stat().st_ino
             fd=os.open(path,os.O_WRONLY|os.O_APPEND)
             try:
                 dev.trim_service_log(path,limit=64)
                 self.assertEqual(path.stat().st_ino,inode)
-                self.assertEqual(Path(str(path)+'.previous').read_bytes(),b'x'*64)
+                self.assertEqual(Path(str(path)+'.previous').read_bytes(),tail_expected)
                 self.assertEqual(Path(str(path)+'.previous').stat().st_mode&0o777,0o600)
                 os.write(fd,b'new diagnostic')
                 self.assertEqual(path.read_bytes(),b'new diagnostic')
             finally:
                 os.close(fd)
+
+    def test_log_retention_redacts_secrets_before_writing_previous(self):
+        spec = importlib.util.spec_from_file_location('dev', ROOT / 'scripts/dev.py')
+        dev = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(dev)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'official.log'
+            payload = (
+                b'prefix-' + b'A' * 120 + b'\n'
+                b'Authorization: Bearer secret-bearer-xyz\n'
+                b'X-Api-Key: secret-apikey-123\n'
+                b'key=sk-secret987654321\n'
+                b'api_key=kv-secret-abc\n'
+                b'proxy=socks5://u2:p2@10.0.0.8:1080\n'
+            )
+            path.write_bytes(payload)
+            dev.trim_service_log(path, limit=220)
+            prev = Path(str(path) + '.previous').read_text(encoding='utf-8')
+            for secret in ('secret-bearer-xyz', 'secret-apikey-123', 'sk-secret987654321', 'kv-secret-abc', 'u2:p2'):
+                self.assertNotIn(secret, prev)
+            self.assertIn('Bearer [REDACTED]', prev)
+            self.assertIn('X-Api-Key: [REDACTED]', prev)
+            self.assertIn('sk-[REDACTED]', prev)
+            self.assertIn('api_key=[REDACTED]', prev)
+            self.assertIn('socks5://[REDACTED]@10.0.0.8:1080', prev)
+
+    def test_log_retention_drops_split_partial_first_line_before_redaction(self):
+        spec = importlib.util.spec_from_file_location('dev', ROOT / 'scripts/dev.py')
+        dev = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(dev)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'official.log'
+            prefix = b'prefix-line\nAuthorization: Bearer '
+            remainder = b'split-secret-token-8888\nsafe-tail-line\n'
+            path.write_bytes(prefix + remainder)
+            # Seek lands immediately after b'Bearer ', splitting the credential mid-line.
+            dev.trim_service_log(path, limit=len(remainder))
+            prev = Path(str(path) + '.previous').read_text(encoding='utf-8')
+            self.assertNotIn('split-secret-token-8888', prev)
+            self.assertEqual(prev, 'safe-tail-line\n')
+
+            # Overlong single line with NO newline inside the bounded tail must be dropped entirely.
+            overlong_path = Path(temporary) / 'overlong.log'
+            overlong_suffix = b'overlong-secret-without-newline-8888'
+            overlong_path.write_bytes(b'Authorization: Bearer ' + overlong_suffix)
+            dev.trim_service_log(overlong_path, limit=len(overlong_suffix))
+            overlong_prev = Path(str(overlong_path) + '.previous').read_bytes()
+            self.assertNotIn(b'overlong-secret-without-newline-8888', overlong_prev)
+            self.assertEqual(overlong_prev, b'')
 
     def test_worker_flush_survives_closed_launcher_stderr_reader(self):
         with tempfile.TemporaryDirectory() as temporary:

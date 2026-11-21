@@ -71,6 +71,27 @@ class DevMonitorHygieneTests(unittest.TestCase):
                 self.assertEqual(track.call_count, 2)
                 self.assertEqual(save_owner.call_count, 1)
 
+    def test_housekeeping_safely_skips_symlink_logs_without_crashing_monitor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log_dir = root / 'runtime-logs'
+            log_dir.mkdir()
+            outside = root / 'outside.log'
+            outside.write_bytes(b'X' * 500)
+            (log_dir / 'linked.log').symlink_to(outside)
+            healthy = log_dir / 'official.log'
+            healthy.write_bytes(b'ok')
+            descendants = {}
+            save_owner = Mock()
+
+            with patch.object(dev, 'track_descendants'):
+                ts = dev.run_monitor_housekeeping(
+                    log_dir, [Mock(pid=1001)], descendants, save_owner, last_run=None, now=50.0,
+                )
+            self.assertEqual(ts, 50.0)
+            self.assertEqual(outside.read_bytes(), b'X' * 500)
+            self.assertFalse(Path(str(outside) + '.previous').exists())
+
 
 class DevUILaunchTests(unittest.TestCase):
     def test_reopen_ui_default_launches_native_binary_without_mygo_dev(self):

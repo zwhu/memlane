@@ -174,6 +174,54 @@ class OverviewBootstrapTest(AioHTTPTestCase):
         self.assertIn(f'{self.ds_managed}/{self.doc_id}', payload['previews'])
         self.assertIn('bootstrap preview sentence', payload['previews'][f'{self.ds_managed}/{self.doc_id}'])
 
+    async def test_overview_respects_system_metadata_hyphenated_uuids_and_schema_guard(self):
+        # Add system_metadata column and a hyphenated-UUID lesson whose external_metadata has a planted date.
+        doc_sys = str(uuid.uuid4())
+        con = sqlite3.connect(self.official_data / 'system' / 'databases' / 'cognee_db')
+        con.execute('ALTER TABLE data ADD COLUMN system_metadata JSON')
+        con.execute(
+            'INSERT INTO data VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+            (
+                doc_sys,  # hyphenated UUID
+                self.ds_managed,  # hyphenated dataset UUID
+                'sys_lesson.txt',
+                None,
+                'text/plain',
+                '',
+                json.dumps({'lesson_type': 'state', 'state_key': 'planted', 'first_source_date': '1999-01-01', 'node_set': ['session_learnings']}),
+                json.dumps(['session_learnings']),
+                '2026-11-20 12:00:00',
+                '2026-11-20 12:00:00',
+                'hash-sys',
+                json.dumps({'lesson_type': 'state', 'state_key': 'real-key', 'session_date': '2026-11-18', 'node_set': ['session_learnings']}),
+            ),
+        )
+        con.commit()
+        con.close()
+
+        resp = await self.client.get(
+            '/v1/overview/bootstrap',
+            headers={'Authorization': 'Bearer ' + self.manager_token},
+        )
+        self.assertEqual(resp.status, 200)
+        payload = await resp.json()
+        by_id = {d['id']: d for d in payload['documents']}
+        self.assertIn(doc_sys, by_id)
+        self.assertEqual(by_id[doc_sys]['externalMetadata']['first_source_date'], '2026-11-18')
+
+        # Schema guard: dropping a required table must fail closed with 503 for Go HTTP fallback.
+        con = sqlite3.connect(self.official_data / 'system' / 'databases' / 'cognee_db')
+        con.execute('DROP TABLE pipeline_runs')
+        con.commit()
+        con.close()
+
+        broken = await self.client.get(
+            '/v1/overview/bootstrap',
+            headers={'Authorization': 'Bearer ' + self.manager_token},
+        )
+        self.assertEqual(broken.status, 503)
+        self.assertEqual((await broken.json())['error'], 'overview_store_unavailable')
+
 
 if __name__ == '__main__':
     unittest.main()

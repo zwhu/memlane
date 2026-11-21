@@ -409,3 +409,85 @@ test("backlog release distinguishes a removed record from a changed original tar
     assert.deepEqual(readFileSync(f.queue.file), before);
   } finally { f.close(); }
 });
+
+test("HTTP 400/404/409/413/422 isolates single entry without halting healthy tail", async () => {
+  for (const status of [400, 404, 409, 413, 422]) {
+    const f = fixture(), a = target(), b = {...a, native: "other-session"};
+    const badId = "1".repeat(64), healthySameId = "2".repeat(64), healthyOtherId = "3".repeat(64);
+    try {
+      f.queue.enqueue(badId, "session-a", {type: "qa", question: "too big", answer: "payload"}, a);
+      f.queue.enqueue(healthySameId, "session-a", {type: "qa", question: "good same", answer: "ok"}, a);
+      f.queue.enqueue(healthyOtherId, "session-b", {type: "qa", question: "good other", answer: "ok"}, b);
+      const sent = [];
+      await f.queue.flush(async item => {
+        sent.push(item.id);
+        if (item.id === badId) throw new Error(`Cognee request failed (${status}): rejected`);
+      }, async () => assert.fail("definite 4xx rejection must not probe uncertain"));
+      assert.deepEqual(sent, [badId, healthySameId, healthyOtherId]);
+      assert.equal(f.queue.status().saved, 2);
+      assert.equal(f.queue.status().blocked, 1);
+      assert.equal(f.queue.status().uncertain, 0);
+      const state = JSON.parse(readFileSync(f.queue.file, "utf8"));
+      assert.equal(state.pending.length, 1);
+      assert.equal(state.pending[0].blocked, true);
+      assert.equal(state.pending[0].blocked_reason, "official_request_rejected");
+      assert.equal(state.pending[0].uncertain, false);
+      assert.deepEqual(f.queue.reviewBacklog(a, "session-a"), {session_id: "session-a", tokens: [], unknown: 0});
+      assert.equal(f.queue.entryState(a, "session-a", badId), "rejected");
+      await f.queue.withSender(async () => {
+        assert.equal(f.queue.releaseBacklogEntry(a, "session-a", badId), "isolated");
+      });
+    } finally { f.close(); }
+  }
+});
+
+test("HTTP 429 persists session cooldown across flushes and releaseBacklogEntry without blocking other sessions", async () => {
+  const f = fixture(), a = target(), b = {...a, native: "other-session"};
+  const s1First = "4".repeat(64), s1Second = "5".repeat(64), s2First = "6".repeat(64), s2Second = "7".repeat(64);
+  try {
+    f.queue.enqueue(s1First, "session-1", {type: "qa", question: "q1", answer: "a1"}, a);
+    f.queue.enqueue(s1Second, "session-1", {type: "qa", question: "q2", answer: "a2"}, a);
+    f.queue.enqueue(s2First, "session-2", {type: "qa", question: "q3", answer: "a3"}, b);
+    const sent = [];
+    await f.queue.flush(async item => {
+      sent.push(item.id);
+      if (item.id === s1First) throw new Error("Cognee request failed (429): rate limited");
+    }, async () => assert.fail("429 backoff must not probe uncertain"));
+    assert.deepEqual(sent, [s1First, s2First]);
+    assert.equal(f.queue.status().saved, 1);
+    assert.equal(f.queue.status().uncertain, 0);
+    assert.equal(f.queue.status().blocked, 0);
+    assert.equal(f.queue.entryState(a, "session-1", s1First), "deferred");
+    assert.equal(f.queue.entryState(a, "session-1", s1Second), "deferred");
+    const state = JSON.parse(readFileSync(f.queue.file, "utf8"));
+    const deferred = state.pending.find(item => item.id === s1First);
+    assert.equal(deferred.retry_count, 1);
+    assert.ok(typeof deferred.retry_after === "number" && deferred.retry_after > Date.now());
+    assert.ok(state.sessionRateLimits && Object.keys(state.sessionRateLimits).length === 1);
+    // Restarting Outbox preserves persisted session cooldown: neither s1First nor s1Second sends,
+    // while another session drains immediately and releaseBacklogEntry keeps unexpired cooldown intact.
+    const restarted = new Outbox("same-installation-and-project", f.root);
+    restarted.enqueue(s2Second, "session-2", {type: "qa", question: "q4", answer: "a4"}, b);
+    await restarted.withSender(async () => {
+      assert.equal(restarted.releaseBacklogEntry(a, "session-1", s1First), "deferred");
+      assert.equal(restarted.releaseBacklogEntry(a, "session-1", s1Second), "deferred");
+    });
+    const secondPass = [];
+    await restarted.flush(async item => secondPass.push(item.id), async () => false);
+    assert.deepEqual(secondPass, [s2Second]);
+    // Once cooldown expires, releaseBacklogEntry releases and both session-1 items drain, clearing sessionRateLimits.
+    const expired = JSON.parse(readFileSync(restarted.file, "utf8"));
+    for (const item of expired.pending) { if (item.retry_after) item.retry_after = Date.now() - 1000; }
+    for (const key of Object.keys(expired.sessionRateLimits ?? {})) expired.sessionRateLimits[key].retry_after = Date.now() - 1000;
+    writeFileSync(restarted.file, JSON.stringify(expired));
+    await restarted.withSender(async () => {
+      assert.equal(restarted.releaseBacklogEntry(a, "session-1", s1First), "released");
+      assert.equal(restarted.releaseBacklogEntry(a, "session-1", s1Second), "released");
+    });
+    const thirdPass = [];
+    await restarted.flush(async item => thirdPass.push(item.id), async () => false);
+    assert.deepEqual(thirdPass, [s1First, s1Second]);
+    const finalState = JSON.parse(readFileSync(restarted.file, "utf8"));
+    assert.equal(finalState.sessionRateLimits, undefined);
+  } finally { f.close(); }
+});

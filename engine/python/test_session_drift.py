@@ -471,3 +471,50 @@ class SessionDriftIntegrationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             capture_store.close()
             drift_store.close()
+
+    async def test_single_writer_ownership_and_gateway_idempotent_observe(self):
+        # official_service_dev must not open a competing write connection to session-drift.sqlite3.
+        import ast
+        official_src = (Path(__file__).resolve().parent / 'official_service_dev.py').read_text(encoding='utf-8')
+        tree = ast.parse(official_src)
+        imported = {
+            node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module
+        }
+        self.assertNotIn('session_drift', imported)
+        self.assertNotIn('SessionDriftStore', official_src)
+
+        # Replaying PUT /capture/entries/{msg} or POST /remember/entry with same cognee_capture_id counts once.
+        msg1 = str(uuid.uuid4())
+        put_payload = {
+            'dataset_id': self.ds_item,
+            'session_id': 'sess-idem',
+            'entry': _trace('edit_file', {'Path': str(self.memlane_dir / 'a.py')}),
+        }
+        for _ in range(2):
+            r = await self.client.put(
+                f'/cognee/api/v1/capture/entries/{msg1}',
+                headers={'X-Api-Key': self.agent_key},
+                json=put_payload,
+            )
+            self.assertEqual(r.status, 200)
+
+        rem_payload = {
+            'dataset_id': self.ds_item,
+            'session_id': 'sess-idem',
+            'entry': _trace('read_file', {'Path': str(self.memlane_dir / 'b.py'), 'cognee_capture_id': 'cap-99'}),
+        }
+        for _ in range(2):
+            r = await self.client.post(
+                '/cognee/api/v1/remember/entry',
+                headers={'X-Api-Key': self.agent_key},
+                json=rem_payload,
+            )
+            self.assertEqual(r.status, 200)
+
+        proj_resp = await self.client.get('/v1/projects/proj-item/session-drift', headers=self._manager_headers())
+        self.assertEqual(proj_resp.status, 200)
+        items = (await proj_resp.json())['items']
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['session_id'], 'sess-idem')
+        self.assertEqual(items[0]['target_write_count'], 1)
+        self.assertEqual(items[0]['target_read_count'], 1)

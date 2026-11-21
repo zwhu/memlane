@@ -6,16 +6,17 @@ import json
 import time
 from urllib.parse import quote
 from generation_config import validation_passed
-from project_control import read_secret
+from _runtime_common import read_secret
 from project_policy import PolicyError
 
-ACTIVE = {'queued', 'preparing', 'stopping', 'applying'}
+ACTIVE = {'queued', 'preparing', 'stopping', 'applying', 'reconciling'}
 
 
 class GenerationHandoff:
     def __init__(self, store, registry, runtime, *, incremental=None, backlog=None):
         self.store, self.registry, self.runtime = store, registry, runtime
         self.incremental, self.backlog, self.task = incremental, backlog, None
+        self._lock = asyncio.Lock()
         for row in self.store.state.setdefault('handoffs', {}).values():
             if row['status'] in ACTIVE:
                 row.update(status='unknown', reason='controller_interrupted')
@@ -51,8 +52,9 @@ class GenerationHandoff:
             raise PolicyError('generation_handoff_requires_review', 409)
         candidate = self.store.resolve(reference)
         if candidate['profile']['mode'] == 'agent_bridge':
-            from agent_bridge_runtime import require_connected_bridge
+            from agent_bridge_runtime import mark_connected_bridge_selection, require_connected_bridge
             require_connected_bridge(self.registry, self.runtime, candidate['profile'])
+            mark_connected_bridge_selection(self.store.state, candidate)
         else:
             if not validation_passed(self.store.state['validations'], candidate['digest']):
                 raise PolicyError('generation_validation_required', 409)
@@ -110,28 +112,83 @@ class GenerationHandoff:
         finally:
             self.store.save()
 
-    def source_credentials(self):
-        return {identifier:hashlib.sha256(read_secret(actor['key_file']).encode()).hexdigest()
-                for identifier, actor in self.registry.state.get('agents', {}).items()
-                if actor.get('installation') and identifier not in self.registry.state.get('agent_retirements', {})}
+    def source_credentials(self, *, warnings=None):
+        result = {}
+        for identifier, actor in self.registry.state.get('agents', {}).items():
+            if not actor.get('installation') or identifier in self.registry.state.get('agent_retirements', {}):
+                continue
+            if warnings is None:
+                result[identifier] = hashlib.sha256(read_secret(actor['key_file']).encode()).hexdigest()
+                continue
+            try:
+                key_file = actor.get('key_file')
+                if not key_file:
+                    raise PolicyError('credential_unavailable', 503)
+                result[identifier] = hashlib.sha256(read_secret(key_file).encode()).hexdigest()
+            except Exception as error:
+                warnings.append({
+                    'scope': 'agent_credential',
+                    'agent_id': identifier,
+                    'error_code': error.code if isinstance(error, PolicyError) else 'credential_unavailable',
+                })
+        return result
 
     @staticmethod
     def current_receipt(row, result):
         return result.get('runtime_active') == {'reference': row['reference'], 'digest': row['digest']}
 
     async def apply_receipt(self, row, result):
-        credentials = self.source_credentials()
+        async with self._lock:
+            await self._apply_receipt_locked(row, result)
+
+    async def _apply_receipt_locked(self, row, result):
+        if row.get('status') == 'applied':
+            return
         cancelled = {(source['session_id'], source['credential_sha256'])
                      for source in result.get('cancelled_sources', []) + row.get('carried_sources', [])}
-        bindings = {hashlib.sha256(raw.encode()).hexdigest():(json.loads(raw), project)
-                    for raw,project in self.registry.state.get('sessions', {}).items()}
+        # Phase 1: Atomically persist the confirmed engine active state with an
+        # idempotent commit marker and intermediate 'reconciling' status BEFORE
+        # reading agent credentials or running per-session reconciliation. This
+        # prevents control-plane/engine active split-brain (even if an unrelated
+        # agent key file is missing) while ensuring crashes mid-reconciliation
+        # remain resumable via review() without double-incrementing revision.
+        if not row.get('active_committed'):
+            candidate = self.store.resolve(row['reference'])
+            if candidate['profile']['mode'] == 'agent_bridge':
+                from agent_bridge_runtime import mark_connected_bridge_selection
+                mark_connected_bridge_selection(self.store.state, candidate)
+            self.store.state['active'] = copy.deepcopy(row['reference'])
+            for identifier in row.get('carried_operations', []):
+                if identifier in self.store.state.get('handoffs', {}):
+                    self.store.state['handoffs'][identifier]['superseded_by'] = row['operation_id']
+            if self.store.state.get('next') in (row.get('previous_next'), row['reference']):
+                self.store.state['next'] = None
+            self.store.state.pop('next_error', None)
+            self.store.state['revision'] += 1
+            row['active_committed'] = True
+        row.update(status='reconciling', cancelled_sessions=len(cancelled), reason='')
+        self.store.save()
+
+        # Phase 2: Best-effort, per-agent/per-session isolated reconciliation of
+        # confirmed cancelled sessions. Only advance to terminal 'applied' after
+        # incremental/backlog state persistence succeeds; otherwise keep the
+        # operation resumable as 'unknown' (with active_committed=True).
+        warnings = []
+        persist_failed = False
+        credentials = self.source_credentials(warnings=warnings)
+        bindings = {}
+        for raw, project in self.registry.state.get('sessions', {}).items():
+            try:
+                bindings[hashlib.sha256(raw.encode()).hexdigest()] = (json.loads(raw), project)
+            except (TypeError, ValueError):
+                continue
         if self.incremental:
-            for key,session in self.incremental.state['sessions'].items():
+            for key, session in self.incremental.state['sessions'].items():
                 # Only a confirmed-cancelled original improve can be resumed.
                 # Unrelated/unknown submissions retain their original barrier.
-                binding, _ = bindings.get(key, ([None,None],None))
+                binding, _ = bindings.get(key, ([None, None], None))
                 if ((session.get('session_id'), credentials.get(binding[0])) in cancelled
-                        and session.get('status') not in ('unknown','submitting','disabled')):
+                        and session.get('status') not in ('unknown', 'submitting', 'disabled')):
                     session.update(status='watching', pending_since=time.time(), waiting_reason='', next_attempt_at=0)
                     session['handoff_operation'] = row['operation_id']
                     session.pop('submitted_counts', None)
@@ -139,7 +196,7 @@ class GenerationHandoff:
             # observed that host. Resolve its original binding, not a new
             # owner/session or a guessed session prefix, before scheduling it.
             if self.backlog:
-                for key,(binding,project) in bindings.items():
+                for key, (binding, project) in bindings.items():
                     if key in self.incremental.state['sessions']:
                         continue
                     agent_id, host = binding
@@ -147,49 +204,80 @@ class GenerationHandoff:
                                if credential == credentials.get(agent_id)}
                     if not sources:
                         continue
-                    target = {'agent_id':agent_id, 'host':host,
-                              'dataset':self.registry.state['projects'][project]['dataset_id']}
-                    self.backlog.checked_target(project, target)
-                    snapshot = await self.backlog.execute({'project_id':project,'operation_id':row['operation_id']},target,'review')
-                    if snapshot.get('session_id') not in sources:
-                        continue
-                    self.incremental.state['sessions'][key] = {'session_id':snapshot['session_id'],
-                        'status':'watching', 'counts':[0,0], 'pending_since':time.time(),
-                        'changed_at':time.time(), 'handoff_operation':row['operation_id']}
-            self.incremental.save()
+                    try:
+                        project_row = self.registry.state.get('projects', {}).get(project)
+                        if not project_row or not project_row.get('dataset_id'):
+                            raise PolicyError('backlog_binding_changed', 409)
+                        target = {'agent_id': agent_id, 'host': host, 'dataset': project_row['dataset_id']}
+                        checked = self.backlog.checked_target(project, target, write=False)
+                        if isinstance(checked, tuple) and len(checked) == 2 and isinstance(checked[1], dict):
+                            permissions = checked[1].get('policy', {}).get('permissions')
+                            if permissions is not None and 'read' not in permissions:
+                                raise PolicyError('backlog_read_denied', 403)
+                        snapshot = await self.backlog.execute(
+                            {'project_id': project, 'operation_id': row['operation_id']}, target, 'review')
+                        if snapshot.get('session_id') not in sources:
+                            continue
+                        self.incremental.state['sessions'][key] = {'session_id': snapshot['session_id'],
+                            'status': 'watching', 'counts': [0, 0], 'pending_since': time.time(),
+                            'changed_at': time.time(), 'handoff_operation': row['operation_id']}
+                    except Exception as error:
+                        warnings.append({
+                            'project_id': project,
+                            'agent_id': agent_id,
+                            'error_code': error.code if isinstance(error, PolicyError) else 'handoff_session_reconcile_failed',
+                        })
+            try:
+                self.incremental.save()
+            except Exception as error:
+                persist_failed = True
+                warnings.append({
+                    'scope': 'incremental',
+                    'error_code': error.code if isinstance(error, PolicyError) else 'incremental_save_failed',
+                })
         if self.backlog:
-            for job in self.backlog.jobs.values():
-                for target in job.get('pending_processing', {}).values():
-                    if (target.get('session_id'), credentials.get(target.get('agent_id'))) in cancelled and target.get('processing') == 'submitted':
-                        target['processing'] = 'queued'
-                        target['handoff_operation'] = row['operation_id']
-            self.backlog.persist()
-        self.store.state['active'] = copy.deepcopy(row['reference'])
-        for identifier in row.get('carried_operations', []):
-            self.store.state['handoffs'][identifier]['superseded_by'] = row['operation_id']
-        if self.store.state.get('next') in (row.get('previous_next'), row['reference']):
-            self.store.state['next'] = None
-        self.store.state.pop('next_error', None)
+            try:
+                for job in self.backlog.jobs.values():
+                    for target in job.get('pending_processing', {}).values():
+                        if (target.get('session_id'), credentials.get(target.get('agent_id'))) in cancelled and target.get('processing') == 'submitted':
+                            target['processing'] = 'queued'
+                            target['handoff_operation'] = row['operation_id']
+                self.backlog.persist()
+            except Exception as error:
+                persist_failed = True
+                warnings.append({
+                    'scope': 'backlog',
+                    'error_code': error.code if isinstance(error, PolicyError) else 'backlog_save_failed',
+                })
+        if warnings:
+            row['reconcile_warnings'] = warnings
+        else:
+            row.pop('reconcile_warnings', None)
+        if persist_failed:
+            row.update(status='unknown', cancelled_sessions=len(cancelled),
+                       reason='handoff_reconcile_persist_failed')
+            self.store.save()
+            return
         row.update(status='applied', cancelled_sessions=len(cancelled), ended_at=time.time(), reason='')
-        self.store.state['revision'] += 1
+        self.store.save()
 
     async def review(self, operation):
-        row = self.store.state['handoffs'].get(operation)
-        if row is None:
-            raise PolicyError('generation_handoff_not_found', 404)
-        if row['status'] == 'unknown':
-            result = await self.service('GET', operation)
-            if result.get('status') == 'applied' and result.get('digest') == row['digest'] and result.get('reference') == row['reference']:
-                if not self.current_receipt(row, result):
-                    row['reason'] = 'generation_current_configuration_mismatch'
+        async with self._lock:
+            row = self.store.state['handoffs'].get(operation)
+            if row is None:
+                raise PolicyError('generation_handoff_not_found', 404)
+            if row['status'] in ('unknown', 'reconciling'):
+                result = await self.service('GET', operation)
+                if result.get('status') == 'applied' and result.get('digest') == row['digest'] and result.get('reference') == row['reference']:
+                    if not self.current_receipt(row, result):
+                        row['reason'] = 'generation_current_configuration_mismatch'
+                        self.store.save()
+                        return self.view(operation)
+                    await self._apply_receipt_locked(row, result)
+                elif result.get('status') == 'not_applied' and result.get('digest') == row['digest'] and result.get('reference') == row['reference']:
+                    row.update(status='not_applied', reason=result.get('reason',''), cancelled_sources=result.get('cancelled_sources', []))
                     self.store.save()
-                    return self.view(operation)
-                await self.apply_receipt(row, result)
-                self.store.save()
-            elif result.get('status') == 'not_applied' and result.get('digest') == row['digest'] and result.get('reference') == row['reference']:
-                row.update(status='not_applied', reason=result.get('reason',''), cancelled_sources=result.get('cancelled_sources', []))
-                self.store.save()
-        return self.view(operation)
+            return self.view(operation)
 
     async def close(self):
         if self.task and not self.task.done():

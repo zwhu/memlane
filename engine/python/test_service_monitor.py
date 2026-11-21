@@ -9,8 +9,9 @@ from unittest.mock import MagicMock, patch
 
 from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
 
+from _runtime_common import private_write
 from knowledge_recall import RecallStore
-from project_control import Registry, private_write
+from project_control import Registry
 from project_control_server import create_app
 from service_monitor import (
     STOP_FREE_BYTES,
@@ -213,6 +214,7 @@ class ServiceMonitorTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(unauth.status, 401)
             forbidden = await client.get('/v1/runtime/monitor', headers={'Authorization': 'Bearer ' + agent})
             self.assertEqual(forbidden.status, 403)
+            self.assertEqual((await forbidden.json())['error'], 'management_required')
             ok = await client.get('/v1/runtime/monitor?include_logs=1', headers={'Authorization': 'Bearer ' + manager})
             self.assertEqual(ok.status, 200)
             body = await ok.json()

@@ -264,3 +264,241 @@ func TestRawRecordsUIParityAndMotionWithKnowledge(t *testing.T) {
 		})
 	}
 }
+
+func TestRawRecordsLargeDocumentVirtualizationAndPerfBudget(t *testing.T) {
+	var docBuilder strings.Builder
+	for sec := 0; sec < 80; sec++ {
+		fmt.Fprintf(&docBuilder, "## Doc Section %03d", sec)
+		if sec == 0 {
+			docBuilder.WriteString(" TOP_MARKER")
+		}
+		docBuilder.WriteString("\n\n")
+		for p := 0; p < 5; p++ {
+			fmt.Fprintf(&docBuilder,
+				"Section %03d paragraph %d documents `internal/simpledesktop/detail_virtualized.go` chunking, balanced fenced blocks, table preservation, and stationary header rendering across light and dark appearances without destroying the panel container.\n\n",
+				sec, p,
+			)
+		}
+		if sec%10 == 0 {
+			docBuilder.WriteString("| Module | Responsibility | Status |\n| --- | --- | --- |\n| reader | virtualized list | active |\n| cache | bounded lru | active |\n\n")
+		}
+		if sec%4 == 0 {
+			docBuilder.WriteString("```go\n")
+			lineCount := 18
+			if sec == 4 {
+				lineCount = 180
+			}
+			for l := 0; l < lineCount; l++ {
+				if sec == 4 && l == 179 {
+					docBuilder.WriteString("func longBlockLine179() string { return \"ok\" }\n")
+				} else {
+					fmt.Fprintf(&docBuilder, "func section%03dStep%03d(v int) int { return v + %d }\n", sec, l, l)
+				}
+			}
+			docBuilder.WriteString("```\n\n")
+		}
+	}
+	body := docBuilder.String()
+	if len(body) < 520*1024 {
+		// Pad deterministically past 520 KB so benchmark matches real large raw records.
+		padUnit := strings.Repeat("Large raw document padding line with `code` and **markdown** tokens for realistic layout stress testing.\n\n", 10)
+		var big strings.Builder
+		big.WriteString(body)
+		for sec := 80; big.Len() < 540*1024; sec++ {
+			fmt.Fprintf(&big, "## Extra Section %03d\n\n", sec)
+			big.WriteString(padUnit)
+		}
+		body = big.String()
+	}
+	body += "\nEND_TAIL_MARKER_SECTION_079\n"
+	if len(body) < 500*1024 {
+		t.Fatalf("expected >500KB test document, got %d bytes", len(body))
+	}
+
+	chunks := splitMarkdownChunks(body)
+	if len(chunks) <= 50 {
+		t.Fatalf("expected >50 markdown chunks, got %d", len(chunks))
+	}
+	for idx, ch := range chunks {
+		fences := 0
+		for _, line := range strings.Split(ch, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "```") {
+				fences++
+			}
+		}
+		if fences%2 != 0 {
+			t.Fatalf("chunk %d has unbalanced code fence (%d fence lines):\n%s", idx, fences, ch)
+		}
+	}
+	joined := strings.Join(chunks, "\n")
+	for _, marker := range []string{"TOP_MARKER", "func longBlockLine179()", "END_TAIL_MARKER_SECTION_079"} {
+		if !strings.Contains(joined, marker) {
+			t.Fatalf("chunking dropped expected marker %q", marker)
+		}
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, appearance := range []string{"light", "dark"} {
+		t.Run(appearance, func(t *testing.T) {
+			a := projectUIFixture()
+			setTestAppearance(t, a, appearance)
+			a.kind = "原始记录"
+			s := a.state()
+			doc := Document{ID: "large-doc", Dataset: "ds-main", Name: "large_architecture_spec.md", Updated: now, Created: now}
+			item := Item{ID: doc.ID, Dataset: "ds-main", Kind: "文档", Title: doc.Name, Date: now, Document: &doc, BodyLoaded: true, Body: body}
+			s.Loaded = true
+			s.Items = []Item{item}
+			s.RawCatalog = s.Items
+			s.Selected = &item
+
+			tt := ui.NewTester(a.View, 1200, 820)
+			tt.Advance(200 * time.Millisecond)
+			tt.Frame()
+			fixtureImage(t, tt, "raw-large-doc-"+appearance)
+			if !tt.HasText("Doc Section 000 TOP_MARKER") {
+				t.Fatalf("[%s] missing top marker in virtualized document", appearance)
+			}
+			if tt.HasText("END_TAIL_MARKER_SECTION_079") {
+				t.Fatalf("[%s] tail marker should not be built while scrolled at top", appearance)
+			}
+
+			scroll := projectDetailScroll(s, item.key())
+			frames := make([]time.Duration, 0, 15)
+			for n := 0; n < 15; n++ {
+				scroll.Y += 480
+				t0 := time.Now()
+				tt.Frame()
+				frames = append(frames, time.Since(t0))
+			}
+			sort.Slice(frames, func(i, j int) bool { return frames[i] < frames[j] })
+			if med := frames[len(frames)/2]; med > 12*time.Millisecond {
+				t.Errorf("[%s] large document scroll median frame %v exceeds 12ms budget", appearance, med)
+			}
+			if worst := frames[len(frames)-1]; worst > 25*time.Millisecond {
+				t.Errorf("[%s] large document scroll worst frame %v exceeds 25ms budget", appearance, worst)
+			}
+
+			scroll.Y = scroll.MaxY
+			tt.Frame()
+			tt.Frame()
+			if !tt.HasText("END_TAIL_MARKER_SECTION_079") {
+				t.Fatalf("[%s] scrolling to bottom did not render tail marker (scrollY=%v maxY=%v)", appearance, scroll.Y, scroll.MaxY)
+			}
+			if tt.HasText("Doc Section 000 TOP_MARKER") {
+				t.Fatalf("[%s] top marker should be unmounted when scrolled to bottom", appearance)
+			}
+
+			a.InvalidateReading("ds-main")
+			if len(a.detailChunks.entries) != 0 || len(s.DetailLists) != 0 {
+				t.Fatalf("[%s] InvalidateReading failed to clear chunk cache (%d) or detail lists (%d)",
+					appearance, len(a.detailChunks.entries), len(s.DetailLists))
+			}
+		})
+	}
+}
+
+func TestDetailChunkCacheHitSessionQATraceAndByteEviction(t *testing.T) {
+	// 1. Direct cache hit & byte-budget eviction (oldest-stamp evicted first, oversize uncached).
+	cache := &detailChunkCache{maxEntries: 16, maxBytes: 300}
+	var splits int
+	makeChunk := func(ch string, n int) func() []string {
+		return func() []string {
+			splits++
+			return []string{strings.Repeat(ch, n)}
+		}
+	}
+	c1 := cache.getOrSplit("ds", "id1", "s1", markdownContentKey("a"), makeChunk("a", 120))
+	c1Again := cache.getOrSplit("ds", "id1", "s1", markdownContentKey("a"), makeChunk("a", 120))
+	if splits != 1 || len(c1) != 1 || c1[0] != c1Again[0] {
+		t.Fatalf("expected cache hit with 1 split, got splits=%d", splits)
+	}
+	// Insert s2 (120B, total 240B), then touch s1 so s2 becomes oldest, then insert s3 (120B -> evicts s2).
+	cache.getOrSplit("ds", "id1", "s2", markdownContentKey("b"), makeChunk("b", 120))
+	cache.getOrSplit("ds", "id1", "s1", markdownContentKey("a"), makeChunk("a", 120))
+	cache.getOrSplit("ds", "id1", "s3", markdownContentKey("c"), makeChunk("c", 120))
+	if cache.totalBytes > cache.maxBytes || len(cache.entries) != 2 {
+		t.Fatalf("byte eviction violated cap: entries=%d totalBytes=%d maxBytes=%d", len(cache.entries), cache.totalBytes, cache.maxBytes)
+	}
+	// s1 should still hit (was refreshed); s2 should have been evicted.
+	before := splits
+	cache.getOrSplit("ds", "id1", "s1", markdownContentKey("a"), makeChunk("a", 120))
+	if splits != before {
+		t.Fatalf("recently used entry s1 was evicted prematurely (splits %d->%d)", before, splits)
+	}
+	// Oversize entry (> maxBytes) must be returned without exceeding cap or being stored.
+	oversize := cache.getOrSplit("ds", "id1", "big", markdownContentKey("big"), makeChunk("z", 500))
+	if len(oversize) != 1 || len(oversize[0]) != 500 || cache.totalBytes > cache.maxBytes {
+		t.Fatalf("oversize entry broke cache bounds: totalBytes=%d maxBytes=%d", cache.totalBytes, cache.maxBytes)
+	}
+	cache.InvalidateObject("ds", "id1")
+	if len(cache.entries) != 0 || cache.totalBytes != 0 {
+		t.Fatalf("InvalidateObject left entries=%d totalBytes=%d", len(cache.entries), cache.totalBytes)
+	}
+
+	// 2. Session with 12 large QAs (24 slots) + 4 expanded traces fits without thrashing; short QAs stay uncached.
+	a := projectUIFixture()
+	s := a.state()
+	largeText := strings.Repeat("Large session markdown paragraph with `code` and **bold** text.\n\n", 140)
+	if !shouldVirtualizeMarkdown(largeText) {
+		t.Fatal("test largeText must trigger virtualization")
+	}
+	qas := make([]QA, 0, 13)
+	qas = append(qas, QA{ID: "short", Question: "short question", Answer: "short answer"})
+	for n := 0; n < 12; n++ {
+		qas = append(qas, QA{
+			ID:       fmt.Sprintf("qa-%02d", n),
+			Question: fmt.Sprintf("## Q%d\n\n%s", n, largeText),
+			Answer:   fmt.Sprintf("## A%d\n\n%s", n, largeText),
+		})
+	}
+	traces := make([]Trace, 0, 4)
+	sess := Session{ID: "sess-cache", Dataset: "ds-main", User: "u1"}
+	item := Item{
+		ID:      sess.ID,
+		Dataset: "ds-main",
+		Kind:    "会话",
+		Session: &sess,
+		Detail:  &SessionDetail{Session: sess, Count: len(qas), ToolCount: 4, QAs: qas},
+	}
+	for n := 0; n < 4; n++ {
+		tr := Trace{
+			ID:     fmt.Sprintf("tr-%02d", n),
+			Name:   "Bash",
+			Status: "ok",
+			Params: json.RawMessage(fmt.Sprintf(`{"cmd":"echo %d"}`, n)),
+			Result: json.RawMessage(`{"out":"` + strings.Repeat("x", 4000) + `"}`),
+		}
+		traces = append(traces, tr)
+		s.Tools[item.key()+"/"+tr.ID] = true
+	}
+	item.Detail.Traces = traces
+
+	rows1 := buildSessionDetailRows(a, s, item, false)
+	if len(rows1) == 0 {
+		t.Fatal("expected session detail rows")
+	}
+	if len(a.detailChunks.entries) != 28 {
+		t.Fatalf("expected 28 cached slots (24 large QA + 4 expanded traces, excluding short QA), got %d", len(a.detailChunks.entries))
+	}
+	clockBefore := a.detailChunks.clock
+	rows2 := buildSessionDetailRows(a, s, item, false)
+	if len(rows2) != len(rows1) || len(a.detailChunks.entries) != 28 {
+		t.Fatalf("second build altered row/cache count: rows %d->%d entries=%d", len(rows1), len(rows2), len(a.detailChunks.entries))
+	}
+	if a.detailChunks.clock != clockBefore+28 {
+		t.Fatalf("expected 28 pure cache hits advancing clock by 28, got %d->%d", clockBefore, a.detailChunks.clock)
+	}
+	// Mutating trace Error must invalidate that trace's content key and update output.
+	item.Detail.Traces[0].Error = "trace error changed"
+	rows3 := buildSessionDetailRows(a, s, item, false)
+	foundUpdated := false
+	for _, r := range rows3 {
+		if r.kind == detailRowTraceBody && strings.Contains(r.text, "trace error changed") {
+			foundUpdated = true
+			break
+		}
+	}
+	if !foundUpdated {
+		t.Fatal("mutated trace content did not invalidate cached trace chunks")
+	}
+}

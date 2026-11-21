@@ -10,8 +10,9 @@ export function resolveManagedConfig(options: InstalledConfig = {}) {
   let url: URL;
   try { url = new URL(options.baseUrl ?? ""); } catch { throw new Error("managed_local_service_required"); }
   if (options.mode && options.mode !== "local") throw new Error("managed_local_service_required");
+  const normalizedPath = url.pathname.replace(/\/+$/, "");
   if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port || url.username || url.password ||
-      url.pathname !== "/" || url.search || url.hash) throw new Error("managed_local_service_required");
+      (normalizedPath !== "" && normalizedPath !== "/cognee") || url.search || url.hash) throw new Error("managed_local_service_required");
   const keyFile = options.apiKeyFile;
   if (!keyFile || !isAbsolute(keyFile) || realpathSync(keyFile) !== keyFile) throw new Error("managed_credential_required");
   const stat = lstatSync(keyFile);
@@ -24,7 +25,7 @@ export function resolveManagedConfig(options: InstalledConfig = {}) {
   if (realpathSync(stateDir) !== resolve(stateDir) || (lstatSync(stateDir).mode & 0o077)) throw new Error("managed_state_directory_required");
   if (options.captureTools && (!Array.isArray(options.captureTools) || options.captureTools.some(v => typeof v !== "string"))) throw new Error("managed_capture_filter_invalid");
   return {
-    mode: "local" as const, baseUrl: url.origin, apiKey, username: undefined, password: undefined,
+    mode: "local" as const, baseUrl: url.origin + normalizedPath, apiKey, username: undefined, password: undefined,
     datasetName: "managed_target_only", readScopes: {}, stateDir,
     autoCapture: options.autoCapture !== false && options.enableSessions !== false,
     autoRecall: options.autoRecall !== false, captureTools: [...(options.captureTools ?? [])],

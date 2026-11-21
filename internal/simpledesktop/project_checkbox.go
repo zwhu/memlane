@@ -56,6 +56,23 @@ func (a *App) confirmProjectCheckboxes(directory AccessDirectory) {
 		if directory.Revision <= pending.Revision {
 			continue
 		}
+		if pending.Field == "common_access" {
+			if directory.Common == nil || directory.Common.ID != pending.Project || !directory.Common.permissionsReady(directory.Agents...) {
+				continue
+			}
+			actual := commonAgentAccess(*directory.Common, pending.Agent)
+			delete(a.access.CheckboxPending, key)
+			if actual != pending.Value {
+				a.access.Message = "设置已由其他操作更新，已显示最新值。"
+			} else if len(a.access.CheckboxPending) == 0 {
+				a.access.Message = ""
+				if a.access.PermissionSaved == nil {
+					a.access.PermissionSaved = map[string]time.Time{}
+				}
+				a.access.PermissionSaved[key] = time.Now().Add(2 * time.Second)
+			}
+			continue
+		}
 		for _, p := range directory.Projects {
 			if p.ID != pending.Project || !p.permissionsReady(directory.Agents...) {
 				continue

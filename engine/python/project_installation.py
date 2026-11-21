@@ -10,7 +10,7 @@ import shutil
 import re
 import shlex
 
-from _runtime_common import match_managed_plugin_manifest
+from _runtime_common import match_managed_plugin_manifest, replace_exact
 from project_control import private_write, read_secret
 from project_policy import PolicyError
 
@@ -22,7 +22,7 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
         raise PolicyError('invalid_installation_id')
     if host_kind in ('claude_code', 'cursor', 'antigravity'):
         return prepare_official_host(root, instance_id, agent, service_url, control_url, host_home,
-                                     host_kind=host_kind, python=python)
+                                     host_kind=host_kind, python=python, source=source)
     if host_kind not in ('codex', 'pi', 'traex'):
         raise PolicyError('unsupported_installation_host')
     source, root = Path(source), Path(root)
@@ -78,11 +78,15 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
             if name.startswith('scripts/') and Path(name).suffix in ('.py', '.sh'):
                 text = data.decode().replace('".cognee-plugin" / "codex"', '".cognee-plugin" / ' + json.dumps(namespace))
                 if name == 'scripts/_plugin_common.py':
-                    text = text.replace('suffix = "_codex"', 'suffix = ' + json.dumps('_' + host_kind))
-                    text = text.replace('_normalize("codex-agent")', '_normalize(' + json.dumps(host_kind + '-agent') + ')')
-                    text = text.replace(
+                    text = replace_exact(text, 'suffix = "_codex"', 'suffix = ' + json.dumps('_' + host_kind),
+                                         label='plugin host suffix')
+                    text = replace_exact(text, '_normalize("codex-agent")', '_normalize(' + json.dumps(host_kind + '-agent') + ')',
+                                         label='plugin host normalize')
+                    text = replace_exact(
+                        text,
                         'os.environ.get("COGNEE_SESSION_PREFIX", "") or "codex") or "codex"',
                         'os.environ.get("COGNEE_SESSION_PREFIX", "") or ' + json.dumps(host_kind) + ') or ' + json.dumps(host_kind),
+                        label='plugin session prefix',
                     )
                 data = text.replace('.cognee-plugin/codex', '.cognee-plugin/' + namespace).encode()
             expected_host_files[name] = data
@@ -164,7 +168,7 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
             'status': 'prepared'}
 
 
-def prepare_official_host(root, instance_id, agent, service_url, control_url, host_home, *, host_kind, python):
+def prepare_official_host(root, instance_id, agent, service_url, control_url, host_home, *, host_kind, python, source=None):
     from project_host_plugin import files_for
     if not python or not Path(python).is_absolute() or not Path(python).is_file():
         raise PolicyError('host_helper_python_required')
@@ -172,7 +176,7 @@ def prepare_official_host(root, instance_id, agent, service_url, control_url, ho
     if not home.is_absolute() or not home.is_dir():
         raise PolicyError('absolute_host_home_required')
     root = Path(root)
-    files, upstream = files_for(host_kind)
+    files, upstream = files_for(host_kind, source=source)
     from project_tool_patch import forget_response, remember_response
     files['scripts/cognee-forget.sh'] = forget_response(files['scripts/cognee-forget.sh'].decode()).encode()
     files['scripts/_remember_http.py'] = remember_response(files['scripts/_remember_http.py'].decode()).encode()

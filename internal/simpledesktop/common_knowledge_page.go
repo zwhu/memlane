@@ -14,6 +14,7 @@ import (
 type commonKnowledgePageState struct {
 	Options, Discard, MenuOpen bool
 	EditorScroll               ui.ScrollState
+	AccessScroll               ui.ScrollState
 }
 
 var commonPlus = homeSVG(`<path d="M12 5v14M5 12h14"/>`)
@@ -33,12 +34,12 @@ func commonHasDraft(e commonEditorState) bool {
 }
 func commonProcessingStatus(message string) string {
 	switch {
-	case strings.Contains(message, "处理已完成"):
+	case strings.Contains(message, "提炼已完成"):
 		return "已完成"
-	case strings.Contains(message, "处理失败"):
+	case strings.Contains(message, "提炼失败"):
 		return "失败 · 内容保留"
-	case strings.Contains(message, "处理状态："):
-		_, v, _ := strings.Cut(message, "处理状态：")
+	case strings.Contains(message, "提炼状态："):
+		_, v, _ := strings.Cut(message, "提炼状态：")
 		return v
 	default:
 		return "待核对"
@@ -463,14 +464,6 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 	})
 }
 func (a *App) commonMarkdown(c *ui.Context, key, body string) {
-	if a.projectMD == nil {
-		theme := markdown.Theme{}
-		if a.md.Theme != nil {
-			theme = *a.md.Theme
-		}
-		theme.FontSize = 13
-		a.projectMD = &markdown.Options{Theme: &theme, CodeBlock: a.md.CodeBlock}
-	}
 	markdown.View(c.Key(key), body, a.v4MarkdownOptions(fsReading))
 }
 func (a *App) commonDeletionBanner(c *ui.Context, i Item) {
@@ -620,9 +613,9 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 							processing = "待核对"
 						}
 						homeText(c, "正文保存："+saved, homeBody).FontSize(fsFootnote)
-						homeText(c, "处理状态："+processing, homeBody).FontSize(fsFootnote)
+						homeText(c, "提炼状态："+processing, homeBody).FontSize(fsFootnote)
 						if e.Receipt.PipelineRunID != "" {
-							homeText(c, "原处理记录："+e.Receipt.PipelineRunID, homeMeta).MaxLines(2)
+							homeText(c, "原提炼记录："+e.Receipt.PipelineRunID, homeMeta).MaxLines(2)
 						}
 					})
 				}

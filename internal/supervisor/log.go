@@ -19,11 +19,14 @@ var redactionRules = []struct {
 	pattern     *regexp.Regexp
 	replacement string
 }{
-	{regexp.MustCompile(`(?i)(Bearer\s+)\S+`), `${1}[REDACTED]`},
-	{regexp.MustCompile(`(?i)(X-Api-Key\s*:\s*)\S+`), `${1}[REDACTED]`},
-	{regexp.MustCompile(`(?i)(X-Memlane-Management\s*:\s*)\S+`), `${1}[REDACTED]`},
+	{regexp.MustCompile(`(?i)(Bearer[ \t]+)\S+`), `${1}[REDACTED]`},
+	{regexp.MustCompile(`(?i)(Basic[ \t]+)\S+`), `${1}[REDACTED]`},
+	{regexp.MustCompile(`(?i)(X-Api-Key[ \t]*:[ \t]*)\S+`), `${1}[REDACTED]`},
+	{regexp.MustCompile(`(?i)(X-Memlane-Management[ \t]*:[ \t]*)\S+`), `${1}[REDACTED]`},
 	{regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{8,}`), `sk-[REDACTED]`},
-	{regexp.MustCompile(`(?i)(\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password)\b\s*[=:]\s*)(\S+)`), `${1}[REDACTED]`},
+	{regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`), `[REDACTED]`},
+	{regexp.MustCompile(`(?i)((?:https?|socks(?:4a?|5h?))://)[^/\s"'<>@]+@`), `${1}[REDACTED]@`},
+	{regexp.MustCompile(`(?i)(\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password)\b[ \t]*[=:][ \t]*)([^\s,;]+)`), `${1}[REDACTED]`},
 }
 
 // OpenPrivateLog opens or creates an append-only 0600 regular log file.
@@ -110,14 +113,38 @@ func TrimServiceLog(path string, limit int64) error {
 		return nil
 	}
 	offset := srcInfo.Size() - limit
-	if _, err := source.Seek(offset, io.SeekStart); err != nil {
+	var tail []byte
+	if offset > 0 {
+		if _, err := source.Seek(offset-1, io.SeekStart); err != nil {
+			_ = source.Close()
+			return err
+		}
+		buf, readErr := io.ReadAll(io.LimitReader(source, limit+1))
 		_ = source.Close()
-		return err
-	}
-	tail, err := io.ReadAll(io.LimitReader(source, limit))
-	_ = source.Close()
-	if err != nil {
-		return err
+		if readErr != nil {
+			return readErr
+		}
+		if len(buf) > 1 {
+			prevByte := buf[0]
+			tail = buf[1:]
+			if prevByte != '\n' {
+				// Seeking landed mid-line: drop the split partial line so a cut credential
+				// prefix (e.g. after "Bearer ") cannot leak its remaining secret suffix.
+				// If the entire tail contains no newline (a single overlong line), drop it all.
+				if idx := bytes.IndexByte(tail, '\n'); idx >= 0 {
+					tail = tail[idx+1:]
+				} else {
+					tail = nil
+				}
+			}
+		}
+	} else {
+		var readErr error
+		tail, readErr = io.ReadAll(io.LimitReader(source, limit))
+		_ = source.Close()
+		if readErr != nil {
+			return readErr
+		}
 	}
 
 	prevPath := path + ".previous"
@@ -145,7 +172,7 @@ func TrimServiceLog(path string, limit int64) error {
 		_ = prevFile.Close()
 		return err
 	}
-	if _, err := prevFile.Write(tail); err != nil {
+	if _, err := prevFile.Write(RedactLogBytes(tail)); err != nil {
 		_ = prevFile.Close()
 		return err
 	}
@@ -206,6 +233,16 @@ func TrimServiceLogDir(dir string, limit int64) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// RedactLogBytes strips bearer tokens, API keys, proxy credentials, and credential assignments
+// from raw log bytes before persisting rotated tails.
+func RedactLogBytes(raw []byte) []byte {
+	result := raw
+	for _, rule := range redactionRules {
+		result = rule.pattern.ReplaceAll(result, []byte(rule.replacement))
+	}
+	return result
 }
 
 // RedactLogLine strips bearer tokens, API keys, and credential assignments.

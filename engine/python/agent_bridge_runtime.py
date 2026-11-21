@@ -181,18 +181,57 @@ def bridge_runtime_fingerprint(runtime, profile):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+def mark_connected_bridge_selection(state, row):
+    """Record that an agent_bridge revision was authorized via connected-agent selection."""
+    if row['profile'].get('mode') != 'agent_bridge':
+        return
+    state.setdefault('connected_agent_selections', {})[row['digest']] = True
+
+
+def bridge_selection_authorized(state, row):
+    """Return True when an agent_bridge row was authorized via connected selection or an applied handoff."""
+    if row['profile'].get('mode') != 'agent_bridge':
+        return False
+    state = state or {}
+    digest = row['digest']
+    if state.get('connected_agent_selections', {}).get(digest):
+        return True
+    return any(
+        entry.get('status') == 'applied' and entry.get('digest') == digest
+        for entry in state.get('handoffs', {}).values()
+    )
+
+
 def require_bridge_validation(store, runtime, row):
     profile = row['profile']
     if profile['mode'] != 'agent_bridge':
         return
-    records = [r for r in store.state['validations'].values() if r.get('digest') == row['digest'] and r.get('status') == 'passed']
+    state = getattr(store, 'state', None) or {}
+    if bridge_selection_authorized(state, row):
+        selected = check_bridge_runtime(runtime, profile)
+        read_agent_defaults(selected['kind'], selected['home'])
+        if selected['kind'] == 'pi':
+            models = selected['home'] / 'models.json'
+            if models.is_symlink() or (models.exists() and models.stat().st_size > 1024 * 1024):
+                raise PolicyError('pi_provider_configuration_invalid', 409)
+        return
+    records = [r for r in state.get('validations', {}).values() if r.get('digest') == row['digest'] and r.get('status') == 'passed']
     latest = max(records, key=lambda r: r.get('registered_revision', 0), default={})
     expected = latest.get('bridge_runtime_fingerprint')
-    # Preserve existing Codex validations. New bridges require current evidence.
+    # Preserve existing Codex validations. Unconnected non-Codex bridges require current evidence.
     if expected is None and profile['bridge_kind'] == 'codex':
         return
     if expected is None or expected != bridge_runtime_fingerprint(runtime, profile):
         raise PolicyError('generation_bridge_changed_revalidate', 409)
+
+
+def require_bridge_startup(store, runtime, row):
+    """Single startup gate for agent_bridge profiles; returns resolved bridge runtime."""
+    profile = row['profile']
+    if profile['mode'] != 'agent_bridge':
+        return None
+    require_bridge_validation(store, runtime, row)
+    return check_bridge_runtime(runtime, profile)
 
 
 def bridge_choices(runtime):

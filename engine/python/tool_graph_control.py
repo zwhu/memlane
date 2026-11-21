@@ -8,7 +8,7 @@ from pathlib import Path
 import uuid
 
 from aiohttp import web
-from project_control import private_write, read_secret
+from _runtime_common import private_write, read_secret
 from project_policy import PolicyError
 from tool_graph_policy import settings
 

@@ -11,7 +11,7 @@ import subprocess
 import time
 import tomlkit
 
-from project_control import private_write
+from project_control import loopback_origin, private_write
 from project_policy import PolicyError
 
 
@@ -39,9 +39,10 @@ class NativeConnection:
                                      'cursor': 'hooks.json'}[kind]
 
     def component_source_available(self):
-        if self.kind not in ('pi', 'traex'):
-            return True
         source = self.config.get('project_control', {}).get('plugin_dir') or self.config.get('plugin_dir')
+        if self.kind not in ('pi', 'traex'):
+            from project_host_plugin import archive_available
+            return archive_available(source)
         if not isinstance(source, (str, Path)) or not source:
             return False
         source = Path(source)
@@ -222,12 +223,19 @@ class NativeConnection:
             from project_installation import prepare
             agent = r.state['agents'][self.id]
             control = self.config.get('project_control', {})
+            control_url = control.get('url') or self.config['project_control_url']
+            gateway_url = loopback_origin(control_url) + '/cognee'
             # Rebinding a service must not move pending buffers to a new HOME.
-            installation = prepare(control.get('plugin_dir') or self.config['plugin_dir'], r.path.parent,
-                                   self.id, agent, r.official.url, control.get('url') or self.config['project_control_url'],
+            installation = prepare(control.get('plugin_dir') or self.config.get('plugin_dir'), r.path.parent,
+                                   self.id, agent, gateway_url, control_url,
                                    self.config.get('agent_host_home', agent.get('installation', {}).get('home') or str(Path.home())),
                                    host_kind=self.kind, python=self.config['python'])
-            agent.update(kind=self.kind, host_profile_fingerprint=sha(str(self.profile).encode()),
+            if self.kind == 'cursor':
+                marker = Path(installation['plugin_dir']) / '.memlane-installation.json'
+                marker_data = json.loads(marker.read_text())
+                marker_data['runtime_profile'] = str(self.profile)
+                private_write(marker, json.dumps(marker_data).encode())
+            agent.update(kind=self.kind, host_profile=str(self.profile), host_profile_fingerprint=sha(str(self.profile).encode()),
                          entrypoints=['ide'] if self.kind == 'cursor' else ['cli'], capabilities=self.view()['capabilities'], installation=installation)
             if self.kind == 'pi':
                 stub = 'export { default } from ' + json.dumps(str(Path(installation['plugin_dir']) / 'extension/index.ts')) + ';\n'

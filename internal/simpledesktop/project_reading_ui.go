@@ -165,9 +165,18 @@ func (a *App) projectHeader(c *ui.Context) {
 		}
 		ui.Spacer(c)
 		if a.page == "通用知识" {
-			anchor := readingAction(c, "通用记忆菜单", readingMore, func() { a.commonPage.MenuOpen = !a.commonPage.MenuOpen })
+			var anchor ui.Element
+			ui.Row(c).AlignItems(ui.Center).Gap(sp2).Shrink(0).Children(func() {
+				if a.Config.ProjectControl != nil && a.access.Loaded {
+					if label := commonAccessButtonLabel(a.access.Directory); label != "" {
+						v4SmallButton(c, label, nil, func() { a.commonPage.MenuOpen = !a.commonPage.MenuOpen }).
+							Tooltip("按 Agent 设置通用记忆的只读访问权限")
+					}
+				}
+				anchor = readingAction(c, "通用记忆菜单", readingMore, func() { a.commonPage.MenuOpen = !a.commonPage.MenuOpen })
+			})
 			ui.Popover(c, anchor, &a.commonPage.MenuOpen, func() {
-				ui.Column(c).Width(288).Padding(12).Gap(12).Children(func() {
+				ui.Column(c).Width(360).Padding(12).Gap(12).Children(func() {
 					if a.Config.ProjectControl == nil {
 						homeText(c, "尚未配置记忆库存储服务", homeMeta)
 					} else {
@@ -301,7 +310,7 @@ func projectDisplayTitle(i Item) string {
 	return itemPresentation(i).DisplayTitle
 }
 func (a *App) projectDetail(c *ui.Context, s *pane) {
-	ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Background(tok.Bg).Children(func() {
+	ui.Column(c.Key("project-detail-panel")).Grow(1).MinWidth(0).MinHeight(0).Background(tok.Bg).Children(func() {
 		if s.Selected == nil {
 			switch {
 			case s.Locating:
@@ -320,114 +329,79 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 		}
 		i := s.Selected
 		key := i.key()
+		paged := i.Detail != nil && sessionHistoryFor(s, *i) != nil
 		scrollKey := key
-		if i.Session != nil && s.SessionSubagents {
+		if i.Session != nil && s.SessionSubagents && len(i.Subagents) > 0 {
 			scrollKey += "/subagents"
 		} else if i.Session != nil && s.SessionTools {
 			scrollKey += "/tools"
 		}
-		scroll := s.DetailScroll[scrollKey]
-		if scroll == nil {
-			scroll = &ui.ScrollState{}
-			s.DetailScroll[scrollKey] = scroll
-		}
-		if a.motionRuns.docScrollKey != scrollKey {
-			a.motionRuns.docScrollKey = scrollKey
+		scroll := projectDetailScroll(s, scrollKey)
+		if a.motionRuns.docScrollKey != key {
+			a.motionRuns.docScrollKey = key
 			a.motionRuns.docEnter++
 		}
-		ui.Scroll(c.Key("project-detail-"+scrollKey)).Grow(1).MinHeight(0).TrackScroll(scroll).Padding(sp6, sp10, sp8, sp10).Children(func() {
-			docKey := fmt.Sprintf("doc-content-%d-%s", a.motionRuns.docEnter, scrollKey)
-			doc := ui.Column(c.Key(docKey)).FillWidth().MaxWidth(readerMaxW).Gap(sp4)
-			a.v4DocEnter(c, doc, "doc-content", a.motionRuns.docEnter)
-			doc.Children(func() {
-				if sourceSession(s) {
-					a.sourceContext(c, s)
-				}
-				a.subagentContext(c, s, *i)
-				ui.Row(c).Label("项目内容工具栏").FillWidth().MinHeight(28).Padding(0, 0, sp4, 0).Gap(sp2).AlignItems(ui.Center).
-					BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
-					agentLogo(c, recentAgentIcon(*i), 18)
-					status := sourceAgentName(*i)
-					if p, ok := a.current(); ok && p.Name != "" {
-						status += " · " + p.Name
-					}
-					status += " · " + displayDate(i.Date)
-					row := ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(4)
-					row.Children(func() {
-						homeText(c, status, homeBody).SingleLine()
-						hoverCopyAction(c, row, "复制内容", func() { c.WriteClipboard(sessionCopyBody(s, *i)); a.copyFeedback("内容") }).Disabled(!(i.BodyLoaded || i.Detail != nil || i.Preview != ""))
-					})
-					knowledgeRecallLabel(c, *i)
-					knowledgeBasisTag(c, *i)
-					ui.Spacer(c)
-					anchor := readingAction(c, "内容信息", readingInfo, func() {
-						a.projectUI.InfoOpen = !a.projectUI.InfoOpen
-						a.projectUI.InfoKey = key
-						a.projectUI.MenuOpen = false
-					})
-					if a.projectUI.InfoKey != key {
-						a.projectUI.InfoOpen = false
-					}
-					a.contentInformation(c, anchor, *i)
-				})
-				title := projectDisplayTitle(*i)
-				if title != "" {
-					ui.Column(c).FillWidth().Gap(4).Children(func() {
-						t := homeText(c, title, homeHeading).FontSize(fsTitle).LineHeight(1.35).MinWidth(0)
-						if !a.projectUI.Expanded[key] {
-							t.MaxLines(3)
-						}
-						if i.Session != nil {
-							if idLabel := sessionIdentity(i.ID); idLabel != title {
-								homeText(c, idLabel, homeMeta)
-							}
-						}
-						if len([]rune(title)) > 80 {
-							label := "展开完整标题"
-							if a.projectUI.Expanded[key] {
-								label = "收起标题"
-							}
-							projectLink(c, label, func() {
-								if a.projectUI.Expanded == nil {
-									a.projectUI.Expanded = map[string]bool{}
-								}
-								a.projectUI.Expanded[key] = !a.projectUI.Expanded[key]
-							})
-						}
-					})
-				}
-				if s.Error != "" {
-					homeText(c, "内容未刷新 · "+s.Error, homeMeta)
-				}
-				a.projectReadingBody(c, s, i)
-				knowledgeBasis(c, *i)
-				if i.Source != "" || i.SourceDocument != "" {
-					ui.Row(c).FillWidth().Margin(sp4, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Padding(sp4, 0, 0, 0).Gap(sp3).AlignItems(ui.Center).Children(func() {
-						ui.Icon(c, v4IconDoc).FontSize(16).TextColor(tok.Text3).Shrink(0)
-						ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
-							ui.Text(c, "出处 · "+readingSourceLabel(*i)).Font("system-ui").FontSize(fsFootnote).FontWeight(550).TextColor(tok.Text1).MaxLines(2)
-							sub := "官方关联材料"
-							if i.Source != "" {
-								sub = sessionIdentity(i.Source)
-							}
-							homeText(c, sub, homeMeta).SingleLine()
-							a.itemSessionDriftNote(c, *i)
-						})
-						label := "查看来源会话"
-						if i.SourceDocument != "" {
-							label = "查看来源文档"
-						}
-						loadingSource := s.Reading && s.ReadingSource
-						if loadingSource {
-							label = "正在读取…"
-						}
-						v4OutlineButton(c, label, nil, func() { a.projectUI.InfoOpen = false; a.source(s) }).Disabled(loadingSource)
-					})
-				} else if i.Kind == "知识" {
-					homeText(c, "官方未提供可定位的会话出处", homeMeta).Margin(sp3, 0, 0, 0)
-				}
+		bodyLoading := !i.BodyLoaded && i.Detail == nil && i.Preview == "" && i.Body == "" && s.Reading
+		bodyState := scrollKey + ":ready"
+		if bodyLoading {
+			bodyState = scrollKey + ":loading"
+		}
+		if a.motionRuns.docBodyKey != bodyState {
+			a.motionRuns.docBodyKey = bodyState
+			if !bodyLoading {
+				a.motionRuns.docBodyFade++
+			}
+		}
+		if !bodyLoading && i.Detail != nil && paged {
+			a.checkSessionAutoLoad(s, *i, scroll)
+		}
+
+		headerBorder := ui.Transparent
+		if paged || scroll.Y > 2 {
+			headerBorder = tok.Border
+		}
+		ui.Column(c.Key("project-detail-header")).FillWidth().Shrink(0).Padding(sp6, sp10, sp2, sp10).
+			BorderWidth(0, 0, 1, 0).BorderColor(headerBorder).Children(func() {
+			ui.Column(c).FillWidth().MaxWidth(readerMaxW).Gap(sp3).Children(func() {
+				a.projectDetailHeader(c, s, i, paged)
 			})
 		})
+
+		fadeKey := fmt.Sprintf("project-detail-body-%d", a.motionRuns.docBodyFade)
+		bodyHost := ui.Column(c.Key(fadeKey)).Grow(1).MinHeight(0).FillWidth()
+		if !bodyLoading {
+			a.v4ContentFade(c, bodyHost, "detail-body", a.motionRuns.docBodyFade)
+		}
+		bodyHost.Children(func() {
+			switch {
+			case bodyLoading:
+				ui.Column(c).Grow(1).FillWidth().Padding(sp3, sp10, sp8, sp10).Children(func() {
+					ui.Column(c).FillWidth().MaxWidth(readerMaxW).Children(func() {
+						v4SkeletonGroup(c, 3, 2, false, false)
+					})
+				})
+			case i.Detail != nil:
+				rows := buildSessionDetailRows(a, s, *i, paged)
+				a.renderDetailRowList(c, s, *i, scrollKey, scroll, rows)
+			default:
+				presentation := itemPresentation(*i)
+				if shouldVirtualizeMarkdown(presentation.VisibleBody) {
+					rows := buildDocumentDetailRows(a, *i, presentation)
+					a.renderDetailRowList(c, s, *i, scrollKey, scroll, rows)
+				} else {
+					ui.Scroll(c.Key("project-detail-scroll-"+scrollKey)).Grow(1).MinHeight(0).FillWidth().TrackScroll(scroll).Padding(sp3, sp10, sp8, sp10).Children(func() {
+						ui.Column(c).FillWidth().MaxWidth(readerMaxW).Gap(sp4).Children(func() {
+							markdown.View(c.Key("body-"+key), presentation.VisibleBody, a.v4MarkdownOptions(fsReading))
+							if presentation.Unrecognized {
+								ui.Text(c, "原文格式未识别，保留原文").FontSize(fsCaption).TextColor(tok.Text3)
+							}
+							a.projectDetailTail(c, s, i)
+						})
+					})
+				}
+			}
+		})
+
 		canCopy := i.BodyLoaded || i.Detail != nil || i.Preview != ""
 		appFooter(c, "项目阅读栏").Padding(0, sp6).Gap(sp2).Children(func() {
 			homeText(c, "Cognee 提供 · 只读", homeMeta)
@@ -441,6 +415,101 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 			}).Disabled(!canCopy)
 		})
 	})
+}
+
+func (a *App) projectDetailHeader(c *ui.Context, s *pane, i *Item, paged bool) {
+	key := i.key()
+	if sourceSession(s) {
+		a.sourceContext(c, s)
+	}
+	a.subagentContext(c, s, *i)
+	ui.Row(c).Label("项目内容工具栏").FillWidth().MinHeight(28).Padding(0, 0, sp4, 0).Gap(sp2).AlignItems(ui.Center).
+		BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+		agentLogo(c, recentAgentIcon(*i), 18)
+		status := sourceAgentName(*i)
+		if p, ok := a.current(); ok && p.Name != "" {
+			status += " · " + p.Name
+		}
+		status += " · " + displayDate(i.Date)
+		row := ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(4)
+		row.Children(func() {
+			homeText(c, status, homeBody).SingleLine()
+			hoverCopyAction(c, row, "复制内容", func() { c.WriteClipboard(sessionCopyBody(s, *i)); a.copyFeedback("内容") }).Disabled(!(i.BodyLoaded || i.Detail != nil || i.Preview != ""))
+		})
+		knowledgeRecallLabel(c, *i)
+		knowledgeBasisTag(c, *i)
+		ui.Spacer(c)
+		anchor := readingAction(c, "内容信息", readingInfo, func() {
+			a.projectUI.InfoOpen = !a.projectUI.InfoOpen
+			a.projectUI.InfoKey = key
+			a.projectUI.MenuOpen = false
+		})
+		if a.projectUI.InfoKey != key {
+			a.projectUI.InfoOpen = false
+		}
+		a.contentInformation(c, anchor, *i)
+	})
+	title := projectDisplayTitle(*i)
+	if title != "" {
+		ui.Column(c).FillWidth().Gap(4).Children(func() {
+			t := homeText(c, title, homeHeading).FontSize(fsTitle).LineHeight(1.35).MinWidth(0)
+			if !a.projectUI.Expanded[key] {
+				t.MaxLines(3)
+			}
+			if i.Session != nil {
+				if idLabel := sessionIdentity(i.ID); idLabel != title {
+					homeText(c, idLabel, homeMeta)
+				}
+			}
+			if len([]rune(title)) > 80 {
+				label := "展开完整标题"
+				if a.projectUI.Expanded[key] {
+					label = "收起标题"
+				}
+				projectLink(c, label, func() {
+					if a.projectUI.Expanded == nil {
+						a.projectUI.Expanded = map[string]bool{}
+					}
+					a.projectUI.Expanded[key] = !a.projectUI.Expanded[key]
+				})
+			}
+		})
+	}
+	if s.Error != "" {
+		homeText(c, "内容未刷新 · "+s.Error, homeMeta)
+	}
+	if paged {
+		a.sessionHistoryControls(c, s, *i)
+	}
+}
+
+func (a *App) projectDetailTail(c *ui.Context, s *pane, i *Item) {
+	knowledgeBasis(c, *i)
+	if i.Source != "" || i.SourceDocument != "" {
+		ui.Row(c).FillWidth().Margin(sp4, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Padding(sp4, 0, 0, 0).Gap(sp3).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, v4IconDoc).FontSize(16).TextColor(tok.Text3).Shrink(0)
+			ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
+				ui.Text(c, "出处 · "+readingSourceLabel(*i)).Font("system-ui").FontSize(fsFootnote).FontWeight(550).TextColor(tok.Text1).MaxLines(2)
+				sub := "官方关联材料"
+				if i.Source != "" {
+					sub = sessionIdentity(i.Source)
+				}
+				homeText(c, sub, homeMeta).SingleLine()
+				a.itemSessionDriftNote(c, *i)
+			})
+			label := "查看来源会话"
+			if i.SourceDocument != "" {
+				label = "查看来源文档"
+			}
+			loadingSource := s.Reading && s.ReadingSource
+			if loadingSource {
+				label = "正在读取…"
+			}
+			v4OutlineButton(c, label, nil, func() { a.projectUI.InfoOpen = false; a.source(s) }).Disabled(loadingSource)
+		})
+	} else if i.Kind == "知识" {
+		homeText(c, "官方未提供可定位的会话出处", homeMeta).Margin(sp3, 0, 0, 0)
+	}
 }
 func (a *App) copyFeedback(name string) {
 	a.projectUI.Copied = name
@@ -496,105 +565,6 @@ func (a *App) contentInformation(c *ui.Context, anchor ui.Element, i Item) {
 		})
 	}).Modal().Role(ui.RoleDialog).Width(360).Height(height).Padding(0).Transition(projectOverlayMotion())
 }
-func (a *App) projectReadingBody(c *ui.Context, s *pane, i *Item) {
-	if !i.BodyLoaded && i.Detail == nil && i.Preview == "" && i.Body == "" && s.Reading {
-		v4SkeletonGroup(c, 3, 2, false, false)
-		return
-	}
-	presentation := itemPresentation(*i)
-	mdOpts := a.v4MarkdownOptions(fsReading)
-	if i.Detail != nil {
-		paged := a.sessionHistoryControls(c, s, *i)
-		if paged && s.SessionSubagents && len(i.Subagents) > 0 {
-			a.subagentsListView(c, s, *i)
-			return
-		}
-		if !paged {
-			homeText(c, sessionCoverage(*i.Detail), homeBody).FontSize(fsFootnote)
-		}
-		if !paged && (len(i.Detail.QAs) < i.Detail.Count || len(i.Detail.Traces) < i.Detail.ToolCount) {
-			homeText(c, "当前是最近记录，可读取按时间排列的完整会话。", homeMeta)
-			projectLink(c, "读取完整会话", func() { a.loadSessionPage(s, 0, 0) }).Disabled(s.Reading)
-		}
-		if len(i.Detail.QAs) == 0 && (!paged || !s.SessionTools) {
-			message := "此会话尚无已保存的问答；下方仅为已保存的工具记录。"
-			if paged {
-				message = "此会话尚无已保存的问答，可切换到工具记录查看。"
-			}
-			homeText(c, message, homeMeta)
-		}
-		if paged && s.SessionTools && i.Detail.ToolCount == 0 {
-			homeText(c, "此会话尚无已保存的工具记录。", homeMeta)
-		}
-		qas := i.Detail.QAs
-		traces := i.Detail.Traces
-		if paged {
-			if s.SessionTools {
-				qas = nil
-			} else {
-				traces = nil
-			}
-		}
-		promptRole := "用户"
-		if i.Session != nil && i.Session.IsSubagent {
-			promptRole = "上游消息"
-		}
-		for _, q := range qas {
-			ui.Column(c).FillWidth().Padding(11, 14).Background(tok.Fill1).Border(1, tok.Border).Radius(radius).Gap(6).Children(func() {
-				ui.Text(c, promptRole).Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Text3)
-				markdown.View(c.Key("q-"+q.ID), q.Question, mdOpts)
-				if q.QuestionTruncated {
-					ui.Text(c, "官方内容已截断").FontSize(fsCaption).TextColor(tok.Text3)
-				}
-			})
-			sourceAgentLabel(c, *i)
-			markdown.View(c.Key("a-"+q.ID), q.Answer, mdOpts)
-			if q.AnswerTruncated {
-				ui.Text(c, "官方内容已截断").FontSize(fsCaption).TextColor(tok.Text3)
-			}
-		}
-		for _, trace := range traces {
-			t := trace
-			key := i.key() + "/" + t.ID
-			expanded := s.Tools[key]
-			statusCol := tok.OK
-			if strings.Contains(strings.ToLower(t.Status), "err") || strings.Contains(strings.ToLower(t.Status), "fail") || t.Error != "" {
-				statusCol = tok.Danger
-			}
-			ui.Column(c).FillWidth().Border(1, tok.Border).Radius(radius).Background(tok.BgElevated).Children(func() {
-				head := ui.ButtonBase(c.Key("tool-head-"+key)).Role(ui.RoleButton).Label(t.Name + " · " + t.Status).
-					Cursor(ui.CursorPointer).FillWidth().Padding(sp2, sp3).Gap(sp2).AlignItems(ui.Center).Justify(ui.Start).BorderWidth(0).Radius(radius)
-				head.Background(homeHoverColor(head, "tool-bg", ui.Transparent, tok.Hover))
-				head.Children(func() {
-					ico := v4IconChev
-					if expanded {
-						ico = v4IconDown
-					}
-					ui.Icon(c, ico).FontSize(12).TextColor(tok.Text3).Shrink(0)
-					ui.Box(c).Size(6, 6).Radius(3).Background(statusCol).Shrink(0)
-					ui.Text(c, t.Name).Font("SF Mono").FontSize(fsFootnote).TextColor(tok.Text1).SingleLine().Grow(1).MinWidth(0)
-					if t.Status != "" {
-						homeText(c, t.Status, homeMeta).SingleLine().Shrink(0)
-					}
-				}).OnClick(func() { s.Tools[key] = !s.Tools[key] })
-				if expanded {
-					ui.Column(c).FillWidth().Padding(0, sp3, sp3, sp3).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
-						markdown.View(c.Key("tool-"+key), "```json\n"+string(t.Params)+"\n```\n\n```json\n"+string(t.Result)+"\n```\n\n"+t.Error, mdOpts)
-					})
-				}
-			})
-		}
-		if paged {
-			a.sessionLoadMore(c, s, *i)
-		}
-	} else {
-		markdown.View(c.Key("body-"+i.key()), presentation.VisibleBody, mdOpts)
-		if presentation.Unrecognized {
-			ui.Text(c, "原文格式未识别，保留原文").FontSize(fsCaption).TextColor(tok.Text3)
-		}
-	}
-}
-
 func isRawRecordKind(kind string) bool {
 	return kind == "原始记录" || kind == "会话" || kind == "文档"
 }
