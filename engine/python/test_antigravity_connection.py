@@ -549,6 +549,91 @@ assert re.match(r'^\\d{4}-\\d{2}-\\d{2}$', parsed['date']), parsed
 assert parsed['cwd'] == '/tmp/repo', parsed
 ''')
 
+    def test_write_denied_buffers_numbered_entry_without_ambiguous_duplicate(self):
+        self.isolated('''
+import asyncio, contextlib, importlib.util, json, os, pathlib, sys
+scripts = pathlib.Path(sys.argv[1])
+sys.path.insert(0, str(scripts))
+os.environ['COGNEE_CAPTURE_TOOLS'] = 'Read'
+import _plugin_common as common, _memlane_policy as policy, _memlane_capture as capture
+dataset = '11111111-1111-4111-8111-111111111111'
+session_id = 'synthetic-session'
+policy.permit = lambda op, *a, **k: op == 'capture'
+policy.require = lambda op, *a, **k: None if op == 'capture' else (_ for _ in ()).throw(policy.NotReady('当前 Agent 没有此项目的写入权限'))
+policy._pending_identity = lambda *a, **k: None
+policy.dataset = lambda: dataset
+policy._state = lambda *a, **k: contextlib.nullcontext({})
+spec = importlib.util.spec_from_file_location('store_to_session', scripts / 'store-to-session.py')
+store_mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(store_mod)
+store_mod._load_session = lambda: (session_id, dataset, '')
+store_mod.resolve_runtime_mode = lambda: {'mode': 'http', 'base_url': 'http://127.0.0.1:18999'}
+store_mod.load_config = lambda: {'backend': 'cloud'}
+store_mod.server_usable = lambda *a, **k: True
+store_mod.pop_pending_prompt = lambda *a, **k: {'prompt': 'synthetic user prompt'}
+asyncio.run(store_mod._store_tool_call({'tool_name': 'Read', 'tool_input': {'file_path': '/tmp/a.py'}, 'tool_response': 'ok'}))
+bridge_file = common._bridge_file(session_id)
+cache = json.loads(bridge_file.read_text(encoding='utf-8'))
+pending = cache[common._bridge_cache_key(dataset, session_id)]['pending_entries']
+assert len(pending) == 1, pending
+assert capture.numbered(pending[0]), pending
+assert not pending[0].get('_replay_ambiguous'), pending
+bridge_file.unlink()
+policy.require = lambda op, *a, **k: (_ for _ in ()).throw(policy.NotReady('capture_denied'))
+asyncio.run(store_mod._store_tool_call({'tool_name': 'Read', 'tool_input': {'file_path': '/tmp/b.py'}, 'tool_response': 'ok'}))
+asyncio.run(store_mod._store_assistant_stop({'assistant_message': 'synthetic answer', 'turn_id': '1'}))
+assert not bridge_file.exists(), bridge_file.read_text(encoding='utf-8')
+''')
+
+    def test_run_session_improve_detailed_returns_structured_reasons(self):
+        self.isolated('''
+import contextlib, sys, time
+sys.path.insert(0, sys.argv[1])
+import _plugin_common as common, _memlane_policy as policy
+dataset = '11111111-1111-4111-8111-111111111111'
+session_id = 'synthetic-session'
+time.sleep = lambda *_: None
+common.hook_log = lambda *_: None
+common.ensure_dataset_via_http = lambda *_: None
+common.record_improve_success = lambda *_: None
+common.refresh_credits = lambda *_: None
+common.clear_payment_required = lambda: None
+common.record_payment_required = lambda *_: None
+
+policy.permit = lambda *a, **k: False
+res = common.run_session_improve_detailed(dataset, session_id, trigger='auto')
+assert res['ok'] is False and res['reason'] == 'managed_policy_paused', res
+
+policy.permit = lambda *a, **k: True
+common.improve_session_lock = lambda *a, **k: contextlib.nullcontext(False)
+res = common.run_session_improve_detailed(dataset, session_id, trigger='auto')
+assert res == {'ok': False, 'reason': 'busy', 'error': ''}, res
+
+common.improve_session_lock = lambda *a, **k: contextlib.nullcontext(True)
+common._backend_reachable = lambda *_: False
+res = common.run_session_improve_detailed(dataset, session_id, trigger='auto')
+assert res['ok'] is False and res['reason'] == 'unreachable', res
+
+common._backend_reachable = lambda *_: True
+common.drain_warmup_entries = lambda *a, **k: (1, 1)
+common.improve_session_via_http = lambda *a, **k: {'ok': True}
+res = common.run_session_improve_detailed(dataset, session_id, trigger='auto')
+assert res == {'ok': False, 'reason': 'incomplete_drain', 'error': ''}, res
+
+common.drain_warmup_entries = lambda *a, **k: (1, 0)
+common.improve_session_via_http = lambda *a, **k: {'ok': False, 'busy': True}
+res = common.run_session_improve_detailed(dataset, session_id, trigger='auto')
+assert res['ok'] is False and res['reason'] == 'busy', res
+
+common.improve_session_via_http = lambda *a, **k: {'ok': False, 'error': 'boom'}
+res = common.run_session_improve_detailed(dataset, session_id, trigger='auto')
+assert res == {'ok': False, 'reason': 'failed', 'error': 'boom'}, res
+
+common.improve_session_via_http = lambda *a, **k: {'ok': True}
+res = common.run_session_improve_detailed(dataset, session_id, trigger='auto')
+assert res == {'ok': True, 'reason': '', 'error': ''}, res
+''')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -46,18 +46,79 @@ def live_server_record(port):
     return record if isinstance(record, dict) else {}
 
 def run_session_improve_detailed(dataset, session_id, *, trigger="final"):
-    return {"ok": run_session_improve(dataset, session_id, trigger=trigger)}
+    remaining = 0
+    with improve_session_lock(session_id, "run_session_improve_detailed") as claimed:
+        if not claimed:
+            return {"ok": False, "reason": "busy", "error": ""}
+        if not _backend_reachable(_local_api_url()):
+            result = {"ok": False, "error": "backend unreachable"}
+            reason = "unreachable"
+        else:
+            final_budget = _improve_float_env("COGNEE_DRAIN_BUDGET_FINAL", 120.0)
+            _, remaining = drain_warmup_entries(dataset, session_id, budget_seconds=final_budget)
+            if remaining:
+                time.sleep(_DRAIN_RETRY_PAUSE_SECONDS)
+                _, remaining = drain_warmup_entries(dataset, session_id, budget_seconds=final_budget)
+            ensure_dataset_via_http(dataset)
+            result = improve_session_via_http(dataset, session_id)
+            if result.get("unsupported"):
+                hook_log(
+                    "improve_unsupported",
+                    {"dataset": dataset, "session": session_id, "status": result.get("status")},
+                )
+            if result.get("ok"):
+                reason = "incomplete_drain" if remaining else ""
+            elif result.get("busy"):
+                reason = "busy"
+            else:
+                reason = "failed"
+        ok = bool(result.get("ok"))
+        error = str(result.get("error") or "")
+        if result.get("status") == 402:
+            record_payment_required("improve")
+        elif ok:
+            clear_payment_required()
+        hook_log(
+            "improve_fired",
+            {
+                "dataset": dataset,
+                "session": session_id,
+                "trigger": trigger,
+                "ok": ok,
+                "busy": bool(result.get("busy")),
+                "reason": reason,
+                "error": error[:120],
+            },
+        )
+        if ok:
+            record_improve_success(session_id, dataset, trigger)
+            refresh_credits("improve")
+        if remaining:
+            hook_log(
+                "improve_incomplete_drain",
+                {
+                    "dataset": dataset,
+                    "session": session_id,
+                    "remaining": remaining,
+                    "improve_ok": ok,
+                },
+            )
+        return {"ok": ok and not remaining, "reason": reason, "error": error}
 '''
     common = patch.apply('_plugin_common.py', common)
     common = patch.body(common, 'run_session_improve', '''from _memlane_policy import permit
 if not permit("process", dataset, automatic=trigger not in ("manual", "switch")):
     return False''')
     # Persist a new number before any first send, using the official buffer.
-    common = patch.body(common, 'remember_entry_via_http', '''from _memlane_policy import managed
+    common = patch.body(common, 'remember_entry_via_http', '''from _memlane_policy import NotReady, managed
 from _memlane_capture import numbered
 if managed() and not numbered(entry):
     append_warmup_entry(dataset, session_id, entry)
-    drained, remaining = drain_warmup_entries(dataset, session_id)
+    try:
+        drained, remaining = drain_warmup_entries(dataset, session_id)
+    except NotReady as exc:
+        hook_log("drain_deferred_policy", {"dataset": dataset, "session": session_id, "error": str(exc)[:200]})
+        return {"drained": 0, "buffered": 1}
     return {"drained": drained, "buffered": remaining}''')
     from project_capture_patch import apply as capture_patch
     files['scripts/_plugin_common.py'] = capture_patch(common).encode()
@@ -91,6 +152,30 @@ if not permit("capture"):
     return''')
     text = patch.replace(text, '    pending = pop_pending_prompt(session_id, turn_id=str(payload.get("turn_id") or ""))\n',
                          '    pending = pop_pending_prompt(session_id, turn_id=str(payload.get("turn_id") or ""))\n    if not pending.get("prompt"):\n        return\n')
+    text = patch.replace(
+        text,
+        '        status_code = exc.code if isinstance(exc, urllib.error.HTTPError) else None\n',
+        '        from _memlane_policy import NotReady, managed\n'
+        '        if managed() and isinstance(exc, NotReady):\n'
+        '            hook_log(\n'
+        '                "trace_store_error",\n'
+        '                {"tool": tool_name, "error": str(exc)[:200], "status": None, "buffered": False},\n'
+        '            )\n'
+        '            return\n'
+        '        status_code = exc.code if isinstance(exc, urllib.error.HTTPError) else None\n',
+    )
+    text = patch.replace(
+        text,
+        '        status = exc.code if isinstance(exc, urllib.error.HTTPError) else None\n',
+        '        from _memlane_policy import NotReady, managed\n'
+        '        if managed() and isinstance(exc, NotReady):\n'
+        '            hook_log(\n'
+        '                "stop_store_error",\n'
+        '                {"error": str(exc)[:200], "status": None, "buffered": False},\n'
+        '            )\n'
+        '            return\n'
+        '        status = exc.code if isinstance(exc, urllib.error.HTTPError) else None\n',
+    )
     files['scripts/store-to-session.py'] = text.encode()
     text = files['scripts/sync-session-to-graph.py'].decode()
     text = patch.body(text, '_spawn_detached_sync', 'return False')
