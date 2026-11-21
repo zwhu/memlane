@@ -321,6 +321,17 @@ class CaptureReceiptTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ExternalCaptureStore(link)
 
+    def test_sqlite_wal_pragmas_and_checkpoint(self):
+        from external_capture_store import ExternalCaptureStore
+        with tempfile.TemporaryDirectory() as temporary:
+            store_path = Path(temporary) / 'capture-receipts.sqlite3'
+            store = ExternalCaptureStore(store_path)
+            self.assertEqual(store.db.execute('PRAGMA journal_mode').fetchone()[0].lower(), 'wal')
+            self.assertEqual(store.db.execute('PRAGMA journal_size_limit').fetchone()[0], 4194304)
+            self.assertEqual(store.db.execute('PRAGMA wal_autocheckpoint').fetchone()[0], 1000)
+            self.assertTrue(store.checkpoint('TRUNCATE'))
+            store.close()
+
     def test_pinned_native_sqlite_and_http_recovery(self):
         self.run_worker()
 

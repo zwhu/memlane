@@ -1,4 +1,5 @@
 """In-memory 3-layer runtime monitoring for Cognee, control plane, and model bridges."""
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -73,35 +74,136 @@ def read_log_tail(path: Path, *, max_lines: int = 20, max_bytes: int = 4096) -> 
 
 def default_sample_process(pid: int) -> dict:
     if type(pid) is not int or pid <= 1:
-        return {'pid': pid if isinstance(pid, int) else 0, 'alive': False, 'rss_bytes': None, 'cpu_percent': None}
+        return {
+            'pid': pid if isinstance(pid, int) else 0,
+            'alive': False,
+            'rss_bytes': None,
+            'cpu_percent': None,
+            'child_count': 0,
+            'self_rss_bytes': None,
+        }
     try:
         os.kill(pid, 0)
         alive = True
     except ProcessLookupError:
-        return {'pid': pid, 'alive': False, 'rss_bytes': None, 'cpu_percent': None}
+        return {
+            'pid': pid,
+            'alive': False,
+            'rss_bytes': None,
+            'cpu_percent': None,
+            'child_count': 0,
+            'self_rss_bytes': None,
+        }
     except PermissionError:
         alive = True
     except OSError:
-        return {'pid': pid, 'alive': False, 'rss_bytes': None, 'cpu_percent': None}
+        return {
+            'pid': pid,
+            'alive': False,
+            'rss_bytes': None,
+            'cpu_percent': None,
+            'child_count': 0,
+            'self_rss_bytes': None,
+        }
 
     rss_bytes = None
     cpu_percent = None
+    child_count = 0
+    self_rss_bytes = None
     try:
         result = subprocess.run(
-            ['ps', '-o', 'rss=,pcpu=', '-p', str(pid)],
+            ['ps', '-axo', 'pid=,ppid=,rss=,pcpu='],
             capture_output=True, text=True, timeout=2, check=False,
         )
         if result.returncode == 0:
-            parts = result.stdout.strip().split()
-            if len(parts) >= 1:
-                rss_kib = int(parts[0])
-                if rss_kib >= 0:
-                    rss_bytes = rss_kib * 1024
-            if len(parts) >= 2:
-                cpu_percent = round(float(parts[1]), 1)
+            proc_map = {}
+            children_map = {}
+            for line in result.stdout.splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 4:
+                    try:
+                        p = int(parts[0])
+                        pp = int(parts[1])
+                        rss_kib = int(parts[2])
+                        cpu = float(parts[3])
+                        proc_map[p] = (pp, rss_kib, cpu)
+                        children_map.setdefault(pp, []).append(p)
+                    except ValueError:
+                        continue
+            if pid in proc_map:
+                descendants = set()
+                queue = [pid]
+                while queue:
+                    curr = queue.pop()
+                    for child in children_map.get(curr, ()):
+                        if child not in descendants and child != pid:
+                            descendants.add(child)
+                            queue.append(child)
+                child_count = len(descendants)
+                self_kib = proc_map[pid][1]
+                self_rss_bytes = self_kib * 1024 if self_kib >= 0 else 0
+                total_kib = self_kib if self_kib >= 0 else 0
+                total_cpu = proc_map[pid][2]
+                for c in descendants:
+                    c_info = proc_map.get(c)
+                    if c_info:
+                        if c_info[1] >= 0:
+                            total_kib += c_info[1]
+                        total_cpu += c_info[2]
+                rss_bytes = total_kib * 1024
+                cpu_percent = round(total_cpu, 1)
     except (OSError, ValueError, subprocess.SubprocessError):
         pass
-    return {'pid': pid, 'alive': alive, 'rss_bytes': rss_bytes, 'cpu_percent': cpu_percent}
+    return {
+        'pid': pid,
+        'alive': alive,
+        'rss_bytes': rss_bytes,
+        'cpu_percent': cpu_percent,
+        'child_count': child_count,
+        'self_rss_bytes': self_rss_bytes,
+    }
+
+
+def backlog_files_count(state_dir, *, max_count: int = 100000) -> int:
+    if state_dir is None:
+        return 0
+    backlog_dir = Path(state_dir) / 'backlog'
+    try:
+        if not backlog_dir.exists() or not backlog_dir.is_dir() or backlog_dir.is_symlink():
+            return 0
+        count = 0
+        with os.scandir(backlog_dir) as it:
+            for _ in it:
+                count += 1
+                if count >= max_count:
+                    break
+        return count
+    except OSError:
+        return 0
+
+
+def largest_graph_db_bytes(official_data) -> int:
+    if not official_data:
+        return 0
+    db_dir = Path(official_data) / 'system' / 'databases'
+    try:
+        if not db_dir.exists() or not db_dir.is_dir() or db_dir.is_symlink():
+            return 0
+        largest = 0
+        for root, _, files in os.walk(db_dir):
+            for file_name in files:
+                if file_name.endswith('.lbug'):
+                    full_path = os.path.join(root, file_name)
+                    try:
+                        if not os.path.islink(full_path):
+                            size = os.path.getsize(full_path)
+                            if size > largest:
+                                largest = size
+                    except OSError:
+                        continue
+        return largest
+    except OSError:
+        return 0
 
 
 def recent_processing_duration_ms(control_log: Path) -> float | None:
@@ -245,6 +347,27 @@ class ServiceMonitor:
     def _hook_errors_count(self):
         return len(self._hook_errors())
 
+    def _backlog_files_count(self, state_dir) -> int:
+        return backlog_files_count(state_dir)
+
+    def _largest_graph_db_bytes(self, official_data) -> int:
+        return largest_graph_db_bytes(official_data)
+
+    async def _sample_process_async(self, pid: int) -> dict:
+        try:
+            if asyncio.iscoroutinefunction(self.sample_process):
+                return await self.sample_process(pid)
+            return await asyncio.to_thread(self.sample_process, pid)
+        except Exception:
+            return {
+                'pid': pid,
+                'alive': False,
+                'rss_bytes': None,
+                'cpu_percent': None,
+                'child_count': 0,
+                'self_rss_bytes': None,
+            }
+
     async def snapshot(self, *, include_logs: bool = False) -> dict:
         now = float(self.clock())
         self.last_checked_at = now
@@ -271,13 +394,18 @@ class ServiceMonitor:
 
         owner = self._owner_receipt()
         service_children = owner.get('service_children') if isinstance(owner.get('service_children'), dict) else {}
-        processes = {}
+        pids_to_sample = {}
         for role in ('official', 'project_control', 'completion'):
             pid = service_children.get(role)
             if type(pid) is int:
-                processes[role] = self.sample_process(pid)
-        if 'project_control' not in processes:
-            processes['project_control'] = self.sample_process(os.getpid())
+                pids_to_sample[role] = pid
+        if 'project_control' not in pids_to_sample:
+            pids_to_sample['project_control'] = os.getpid()
+
+        sampled_results = await asyncio.gather(
+            *(self._sample_process_async(p) for p in pids_to_sample.values())
+        )
+        processes = dict(zip(pids_to_sample.keys(), sampled_results))
 
         official_proc = processes.get('official')
         if isinstance(official_proc, dict) and official_proc.get('alive') is False:
@@ -321,6 +449,8 @@ class ServiceMonitor:
             'recent_processing_ms': recent_ms,
             'hook_errors_count': len(hook_errors),
             'hook_errors': hook_errors,
+            'backlog_files_count': self._backlog_files_count(state_dir),
+            'largest_graph_db_bytes': self._largest_graph_db_bytes(self.config.get('official_data')),
         }
 
         return {

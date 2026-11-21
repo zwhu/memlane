@@ -72,6 +72,15 @@ class SessionDriftUnitTests(unittest.TestCase):
     def tearDown(self):
         self.tempdir.cleanup()
 
+    def test_sqlite_wal_pragmas_and_checkpoint(self):
+        db_path = self.root / 'session-drift.sqlite3'
+        store = SessionDriftStore(db_path)
+        self.assertEqual(store.db.execute('PRAGMA journal_mode').fetchone()[0].lower(), 'wal')
+        self.assertEqual(store.db.execute('PRAGMA journal_size_limit').fetchone()[0], 4194304)
+        self.assertEqual(store.db.execute('PRAGMA wal_autocheckpoint').fetchone()[0], 1000)
+        self.assertTrue(store.checkpoint('TRUNCATE'))
+        store.close()
+
     def test_longest_prefix_and_strict_boundary_matching(self):
         self.assertEqual(match_project_for_path(str(self.memlane / 'scripts/dev.py'), self.alias_index), 'proj-memlane')
         self.assertEqual(match_project_for_path(str(self.memlane_sub / 'pkg/main.go'), self.alias_index), 'proj-sub')

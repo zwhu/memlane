@@ -190,6 +190,8 @@ class SessionDriftStore:
         self._lock = threading.Lock()
         self.db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
         self.db.execute('PRAGMA journal_mode=WAL')
+        self.db.execute('PRAGMA journal_size_limit=4194304')
+        self.db.execute('PRAGMA wal_autocheckpoint=1000')
         self.db.execute('PRAGMA synchronous=NORMAL')
         self.db.execute('PRAGMA busy_timeout=5000')
         self.db.executescript('''
@@ -431,8 +433,27 @@ class SessionDriftStore:
                     self.db.execute('ROLLBACK')
                 raise
 
+    def checkpoint(self, mode: str = 'TRUNCATE') -> bool:
+        """Run WAL checkpoint to truncate WAL and prevent unbounded growth, safely handling locks."""
+        with self._lock:
+            try:
+                mode_str = str(mode or 'TRUNCATE').upper()
+                if mode_str not in ('PASSIVE', 'FULL', 'RESTART', 'TRUNCATE'):
+                    mode_str = 'TRUNCATE'
+                cur = self.db.execute(f'PRAGMA wal_checkpoint({mode_str})')
+                row = cur.fetchone()
+                return bool(row and row[0] == 0)
+            except (sqlite3.OperationalError, sqlite3.Error):
+                return False
+            except Exception:
+                return False
+
     def close(self):
         with self._lock:
+            try:
+                self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            except Exception:
+                pass
             self.db.close()
 
 

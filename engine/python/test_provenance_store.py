@@ -36,6 +36,16 @@ class ProvenanceStoreTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 ProvenanceStore(link)
 
+    def test_sqlite_wal_pragmas_and_checkpoint(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            db_path = Path(temporary) / 'lesson-provenance.sqlite3'
+            store = ProvenanceStore(db_path)
+            self.assertEqual(store.db.execute('PRAGMA journal_mode').fetchone()[0].lower(), 'wal')
+            self.assertEqual(store.db.execute('PRAGMA journal_size_limit').fetchone()[0], 4194304)
+            self.assertEqual(store.db.execute('PRAGMA wal_autocheckpoint').fetchone()[0], 1000)
+            self.assertTrue(store.checkpoint('TRUNCATE'))
+            store.close()
+
     def test_state_key_min_date_preservation_and_option_b_fallbacks(self):
         from datetime import datetime
         with tempfile.TemporaryDirectory() as temporary:

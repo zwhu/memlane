@@ -2,14 +2,22 @@
 import json
 from pathlib import Path
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
+from unittest.mock import MagicMock, patch
 
 from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
 
 from project_control import Registry, private_write
 from project_control_server import create_app
-from service_monitor import ServiceMonitor, read_log_tail
+from service_monitor import (
+    ServiceMonitor,
+    backlog_files_count,
+    default_sample_process,
+    largest_graph_db_bytes,
+    read_log_tail,
+)
 
 
 class ServiceMonitorTests(unittest.IsolatedAsyncioTestCase):
@@ -205,6 +213,101 @@ class ServiceMonitorTests(unittest.IsolatedAsyncioTestCase):
             body = await ok.json()
             self.assertEqual(body['state'], 'ready')
             self.assertTrue(body['log_tail'])
+
+    @patch('subprocess.run')
+    @patch('os.kill')
+    def test_default_sample_process_tree_aggregation(self, mock_kill, mock_run):
+        mock_kill.return_value = None
+        # Parent 100, children 101 and 102, grandchild 103 under 101, unrelated 200
+        mock_ps_stdout = (
+            "  100     1 20000  1.0\n"
+            "  101   100  5000  0.5\n"
+            "  102   100 10000  0.8\n"
+            "  103   101  3000  0.2\n"
+            "  200     1  8000  0.1\n"
+        )
+        mock_run.return_value = MagicMock(returncode=0, stdout=mock_ps_stdout)
+
+        sample = default_sample_process(100)
+        self.assertEqual(sample['pid'], 100)
+        self.assertTrue(sample['alive'])
+        self.assertEqual(sample['child_count'], 3)
+        self.assertEqual(sample['self_rss_bytes'], 20000 * 1024)
+        self.assertEqual(sample['rss_bytes'], (20000 + 5000 + 10000 + 3000) * 1024)
+        self.assertEqual(sample['cpu_percent'], 2.5)
+
+        # Single process without children
+        sample_leaf = default_sample_process(103)
+        self.assertEqual(sample_leaf['child_count'], 0)
+        self.assertEqual(sample_leaf['self_rss_bytes'], 3000 * 1024)
+        self.assertEqual(sample_leaf['rss_bytes'], 3000 * 1024)
+        self.assertEqual(sample_leaf['cpu_percent'], 0.2)
+
+    @patch('os.kill')
+    def test_default_sample_process_dead_and_invalid(self, mock_kill):
+        mock_kill.side_effect = ProcessLookupError()
+        res = default_sample_process(9999)
+        self.assertEqual(res, {
+            'pid': 9999,
+            'alive': False,
+            'rss_bytes': None,
+            'cpu_percent': None,
+            'child_count': 0,
+            'self_rss_bytes': None,
+        })
+
+        res_zero = default_sample_process(0)
+        self.assertFalse(res_zero['alive'])
+        res_neg = default_sample_process(-1)
+        self.assertFalse(res_neg['alive'])
+        res_str = default_sample_process('123')
+        self.assertFalse(res_str['alive'])
+
+    async def test_async_snapshot_non_blocking_and_summary_metrics(self):
+        async def probe(_url):
+            return True, 200, ''
+
+        call_threads = []
+        def sample(pid):
+            call_threads.append(threading.current_thread().name)
+            return {
+                'pid': pid,
+                'alive': True,
+                'rss_bytes': pid * 1024,
+                'cpu_percent': 0.5,
+                'child_count': 2,
+                'self_rss_bytes': (pid - 500) * 1024,
+            }
+
+        # Populate backlog files
+        backlog_dir = self.state_dir / 'backlog'
+        backlog_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(5):
+            (backlog_dir / f'{i}.stop.worker.json').write_text('{}')
+
+        # Populate graph database files
+        db_dir = self.official_data / 'system' / 'databases' / 'test-uuid'
+        db_dir.mkdir(parents=True, exist_ok=True)
+        (db_dir / 'small.lbug').write_bytes(b'x' * 1500)
+        (db_dir / 'large.lbug').write_bytes(b'x' * 8500)
+        (db_dir / 'ignored.lbug.wal').write_bytes(b'x' * 99999)
+
+        monitor = ServiceMonitor(
+            self.config,
+            registry=self.registry,
+            probe_http=probe,
+            sample_process=sample,
+            disk_usage=lambda _p: SimpleNamespace(free=80 * 1024 ** 3),
+        )
+
+        snap = await monitor.snapshot()
+        self.assertEqual(snap['state'], 'ready')
+        self.assertEqual(snap['summary']['backlog_files_count'], 5)
+        self.assertEqual(snap['summary']['largest_graph_db_bytes'], 8500)
+        main_thread_name = threading.current_thread().name
+        self.assertTrue(len(call_threads) >= 1)
+        for t_name in call_threads:
+            self.assertNotEqual(t_name, main_thread_name)
 
 
 if __name__ == '__main__':
