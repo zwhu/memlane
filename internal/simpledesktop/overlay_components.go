@@ -17,7 +17,7 @@ func appFooter(c *ui.Context, label string) ui.Element {
 	return ui.Row(c).Label(label).Height(appFooterHeight).Shrink(0).Padding(0, sp4).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).AlignItems(ui.Center)
 }
 
-type appLayoutState struct{ ProjectListWidth, CommonListWidth float32 }
+type appLayoutState struct{ ProjectListWidth, CommonListWidth, ProfileListWidth float32 }
 
 func readingSplit(c *ui.Context, key string, width *float32, first, second func()) {
 	if *width == 0 {

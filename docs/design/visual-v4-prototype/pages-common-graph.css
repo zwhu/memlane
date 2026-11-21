@@ -6,17 +6,17 @@
  * 1. 通用记忆（Common Memory）三栏页
  * ========================================================================== */
 .cm-list-head {
-  padding: var(--s3) var(--s4) var(--s3);
+  height: 36px;
+  padding: 0 var(--s3) 0 var(--s4);
   border-bottom: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: var(--s2);
-  flex: none;
-}
-.cm-list-head-top {
   display: flex;
   align-items: center;
   gap: var(--s2);
+  flex: none;
+}
+.cm-list-tools {
+  padding: var(--s3) var(--s4) var(--s2);
+  flex: none;
 }
 .cm-list-title {
   font-size: var(--fs-body);
@@ -85,6 +85,7 @@
 
 /* 右侧阅读区 */
 .cm-meta-bar {
+  min-height: 28px;
   display: flex;
   align-items: center;
   gap: var(--s2);
@@ -143,7 +144,7 @@
 
 /* 原位 V4 编辑器（无带框卡片） */
 .cm-editor-head {
-  height: 48px;
+  height: 36px;
   flex: none;
   display: flex;
   align-items: center;

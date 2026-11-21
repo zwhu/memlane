@@ -127,6 +127,7 @@ const (
 	titlebarH   float32 = 52
 	sidebarW    float32 = 220
 	listPaneW   float32 = 360
+	listHeaderH float32 = 36
 	readerMaxW  float32 = 680
 )
 

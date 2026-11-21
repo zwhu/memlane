@@ -859,6 +859,7 @@
               <span class="profile-ind" id="profileInd"></span>
               ${srcHTML}
             </div>
+            <div class="listfoot">共 ${state.profiles.length} 个来源</div>
           </aside>
           <section class="profile-reader">
             <div class="doc scroll" id="profileDoc">${sel ? profileReaderHTML(sel) : emptyHTML("选择一个 AI，查看它对你的了解")}</div>

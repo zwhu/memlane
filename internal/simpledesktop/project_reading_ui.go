@@ -111,28 +111,8 @@ func readingAction(c *ui.Context, label string, icon *ui.SVG, fn func()) ui.Elem
 		}
 	}).OnClick(fn)
 }
-func (a *App) headerScrolled() bool {
-	if a.page == "总览" {
-		return a.overviewState.KnowledgeScroll.Y > 2 || a.overviewState.ActivityScroll.Y > 2
-	}
-	s := a.state()
-	if s.ListScroll.Y > 2 {
-		return true
-	}
-	if s.Selected != nil {
-		if sc := s.DetailScroll[s.Selected.key()]; sc != nil && sc.Y > 2 {
-			return true
-		}
-	}
-	return false
-}
-
 func (a *App) projectHeader(c *ui.Context) {
-	borderCol := ui.Transparent
-	if a.headerScrolled() {
-		borderCol = tok.Border
-	}
-	tb := appToolbar(c, "页面工具栏", func() {
+	appToolbar(c, "页面工具栏", func() {
 		var back func()
 		label := "返回总览"
 		if a.hasSearchOriginFor(a.state()) {
@@ -162,14 +142,17 @@ func (a *App) projectHeader(c *ui.Context) {
 		case a.page == "总览":
 			homeText(c, "总览", homeTopTitle).SingleLine()
 		case a.page == "通用知识":
+			ui.Icon(c, v4IconCommon).FontSize(16).TextColor(tok.Text2).Shrink(0)
 			homeText(c, "通用记忆", homeTopTitle).SingleLine()
 		case a.page == "用户画像":
+			ui.Icon(c, v4IconProfile).FontSize(16).TextColor(tok.Text2).Shrink(0)
 			homeText(c, "用户画像", homeTopTitle).SingleLine()
 		case a.page == "设置":
 			title := "设置"
 			if a.settingsOrigin != nil {
 				title = "项目设置"
 			}
+			ui.Icon(c, v4IconSettings).FontSize(16).TextColor(tok.Text2).Shrink(0)
 			homeText(c, title, homeTopTitle).SingleLine()
 		case a.page == "知识" || a.page == "图谱":
 			if p, ok := a.current(); ok {
@@ -194,8 +177,7 @@ func (a *App) projectHeader(c *ui.Context) {
 			})
 		}
 		a.unifiedSearchTrigger(c)
-	}).Height(titlebarH).Padding(0, sp4, 0, sp6).Background(tok.Bg).BorderWidth(0, 0, 1, 0).DragWindow()
-	tb.BorderColor(tb.AnimateColor("titlebar-border", borderCol, v4Fast))
+	}).Height(titlebarH).Padding(0, sp4, 0, sp6).Background(tok.Bg).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).DragWindow()
 }
 
 // One stable tab host, with the reading divider continuing to the toolbar.
@@ -203,7 +185,7 @@ func (a *App) projectNavigation(c *ui.Context) {
 	if a.layout.ProjectListWidth == 0 {
 		a.layout.ProjectListWidth = listPaneW
 	}
-	ui.Row(c.Key("project-view-navigation")).Shrink(0).Padding(0, sp4).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).AlignItems(ui.End).Children(func() {
+	ui.Row(c.Key("project-view-navigation")).Label("项目列表头部").Height(listHeaderH).Shrink(0).Padding(0, sp4).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).AlignItems(ui.Center).Children(func() {
 		a.projectTabs(c)
 		ui.Spacer(c)
 	})
@@ -249,8 +231,9 @@ func (a *App) projectReading(c *ui.Context) {
 	}
 	readingSplit(c, "project-reading-split", &a.layout.ProjectListWidth, func() {
 		ui.Column(c.Key("raw-list-pane")).Fill().Background(tok.Bg).Children(func() {
-			ui.Column(c.Key("project-view-navigation")).Padding(0, sp4).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Shrink(0).Children(func() {
+			ui.Row(c.Key("project-view-navigation")).Label("项目列表头部").Height(listHeaderH).Shrink(0).Padding(0, sp4).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).AlignItems(ui.Center).Children(func() {
 				a.projectTabs(c)
+				ui.Spacer(c)
 			})
 			bodyKey := fmt.Sprintf("raw-list-body-%d", a.motionRuns.rawPage)
 			body := ui.Column(c.Key(bodyKey)).Grow(1).MinHeight(0).FillWidth()
@@ -337,33 +320,6 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 		}
 		i := s.Selected
 		key := i.key()
-		appToolbar(c, "项目内容工具栏", func() {
-			ui.Row(c).FillWidth().MaxWidth(readerMaxW).AlignItems(ui.Center).Gap(sp2).Children(func() {
-				agentLogo(c, recentAgentIcon(*i), 18)
-				status := sourceAgentName(*i)
-				if p, ok := a.current(); ok && p.Name != "" {
-					status += " · " + p.Name
-				}
-				status += " · " + displayDate(i.Date)
-				row := ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(4)
-				row.Children(func() {
-					homeText(c, status, homeBody).SingleLine()
-					hoverCopyAction(c, row, "复制内容", func() { c.WriteClipboard(sessionCopyBody(s, *i)); a.copyFeedback("内容") }).Disabled(!(i.BodyLoaded || i.Detail != nil || i.Preview != ""))
-				})
-				knowledgeRecallLabel(c, *i)
-				knowledgeBasisTag(c, *i)
-				ui.Spacer(c)
-				anchor := readingAction(c, "内容信息", readingInfo, func() {
-					a.projectUI.InfoOpen = !a.projectUI.InfoOpen
-					a.projectUI.InfoKey = key
-					a.projectUI.MenuOpen = false
-				})
-				if a.projectUI.InfoKey != key {
-					a.projectUI.InfoOpen = false
-				}
-				a.contentInformation(c, anchor, *i)
-			})
-		}).Height(44).Padding(0, sp10)
 		scrollKey := key
 		if i.Session != nil && s.SessionSubagents {
 			scrollKey += "/subagents"
@@ -379,15 +335,41 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 			a.motionRuns.docScrollKey = scrollKey
 			a.motionRuns.docEnter++
 		}
-		ui.Scroll(c.Key("project-detail-"+scrollKey)).Grow(1).MinHeight(0).TrackScroll(scroll).Padding(sp3, sp10, sp8, sp10).Children(func() {
+		ui.Scroll(c.Key("project-detail-"+scrollKey)).Grow(1).MinHeight(0).TrackScroll(scroll).Padding(sp6, sp10, sp8, sp10).Children(func() {
 			docKey := fmt.Sprintf("doc-content-%d-%s", a.motionRuns.docEnter, scrollKey)
-			doc := ui.Column(c.Key(docKey)).FillWidth().MaxWidth(readerMaxW).Gap(sp3)
+			doc := ui.Column(c.Key(docKey)).FillWidth().MaxWidth(readerMaxW).Gap(sp4)
 			a.v4DocEnter(c, doc, "doc-content", a.motionRuns.docEnter)
 			doc.Children(func() {
 				if sourceSession(s) {
 					a.sourceContext(c, s)
 				}
 				a.subagentContext(c, s, *i)
+				ui.Row(c).Label("项目内容工具栏").FillWidth().MinHeight(28).Padding(0, 0, sp4, 0).Gap(sp2).AlignItems(ui.Center).
+					BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+					agentLogo(c, recentAgentIcon(*i), 18)
+					status := sourceAgentName(*i)
+					if p, ok := a.current(); ok && p.Name != "" {
+						status += " · " + p.Name
+					}
+					status += " · " + displayDate(i.Date)
+					row := ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(4)
+					row.Children(func() {
+						homeText(c, status, homeBody).SingleLine()
+						hoverCopyAction(c, row, "复制内容", func() { c.WriteClipboard(sessionCopyBody(s, *i)); a.copyFeedback("内容") }).Disabled(!(i.BodyLoaded || i.Detail != nil || i.Preview != ""))
+					})
+					knowledgeRecallLabel(c, *i)
+					knowledgeBasisTag(c, *i)
+					ui.Spacer(c)
+					anchor := readingAction(c, "内容信息", readingInfo, func() {
+						a.projectUI.InfoOpen = !a.projectUI.InfoOpen
+						a.projectUI.InfoKey = key
+						a.projectUI.MenuOpen = false
+					})
+					if a.projectUI.InfoKey != key {
+						a.projectUI.InfoOpen = false
+					}
+					a.contentInformation(c, anchor, *i)
+				})
 				title := projectDisplayTitle(*i)
 				if title != "" {
 					ui.Column(c).FillWidth().Gap(4).Children(func() {

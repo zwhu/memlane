@@ -168,15 +168,16 @@ func v4PrimaryButton(c *ui.Context, label string, fn func()) ui.Element {
 
 // v4UnderlineTabs renders underline tabs with a paint-only AnimatePose 2px accent bar.
 func v4UnderlineTabs(c *ui.Context, key, label string, selected *int, labels []string, onChange func()) ui.Element {
+	tabH := listHeaderH - 1
 	parts := ui.TabsBase(c.Key(key), selected, len(labels))
-	list := parts.List.Label(label).Height(36).Gap(sp5).AlignItems(ui.Stretch).Shrink(0)
+	list := parts.List.Label(label).Height(tabH).Gap(sp5).AlignItems(ui.Stretch).Shrink(0)
 	var activeTab ui.Element
 	var bar ui.Element
 	list.Children(func() {
 		bar = ui.Box(c.Key(key + "-bar")).Absolute().Bottom(0).Left(0).Height(2).Radius(1).Background(tok.Accent).PassThrough()
 		for idx, text := range labels {
 			on := idx == *selected
-			tab := parts.Tab(idx).Cursor(ui.CursorPointer).Height(36).Padding(0, 1).AlignItems(ui.Center).FocusRing(false)
+			tab := parts.Tab(idx).Cursor(ui.CursorPointer).Height(tabH).Padding(0, 1).AlignItems(ui.Center).FocusRing(false)
 			color := tok.Text2
 			weight := 400
 			if on {

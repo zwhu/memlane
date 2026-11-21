@@ -134,7 +134,7 @@ code { font-family: var(--font-mono); font-size: .9em; padding: 0 3px; border-ra
 
 /* ---------- 主区域：标题栏与内容融合，不再有浮起面板 ---------- */
 .main { flex: 1; min-width: 0; background: var(--bg); display: flex; flex-direction: column; position: relative; }
-.titlebar { height: var(--bar); flex: none; display: flex; align-items: center; gap: var(--s3); padding: 0 var(--s4) 0 var(--s6); border-bottom: 1px solid transparent; transition: border-color var(--dur-fast) linear; }
+.titlebar { height: var(--bar); flex: none; display: flex; align-items: center; gap: var(--s3); padding: 0 var(--s4) 0 var(--s6); border-bottom: 1px solid var(--border); }
 .titlebar.scrolled { border-bottom-color: var(--border); }
 .titlebar h1 { font-size: var(--fs-body); font-weight: 600; }
 .titlebar .ico { width: 16px; height: 16px; color: var(--text-2); }
@@ -293,7 +293,7 @@ code { font-family: var(--font-mono); font-size: .9em; padding: 0 3px; border-ra
 /* ---------- 项目页：三栏与单栏管理页 ---------- */
 .three { flex: 1; min-height: 0; display: flex; }
 .listcol { width: 360px; flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--border); min-height: 0; }
-.listcol .head { padding: 0 var(--s4); border-bottom: 1px solid var(--border); }
+.listcol .head { height: 36px; flex: none; display: flex; align-items: center; padding: 0 var(--s4); border-bottom: 1px solid var(--border); }
 .listcol .tools { padding: var(--s3) var(--s4) var(--s2); display: flex; flex-direction: column; gap: var(--s2); }
 .proj-full { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .proj-full-head { padding: 0 var(--s4); border-bottom: 1px solid var(--border); flex: none; }
@@ -306,7 +306,7 @@ code { font-family: var(--font-mono); font-size: .9em; padding: 0 3px; border-ra
 .item .s { font-size: var(--fs-footnote); color: var(--text-1); line-height: 19px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .item .m { display: flex; align-items: center; gap: var(--s2); margin-top: 6px; font-size: var(--fs-caption); color: var(--text-3); }
 .item .m .r { margin-left: auto; }
-.listfoot, .readfoot { height: 44px; flex: none; display: flex; align-items: center; padding: 0 var(--s4); border-top: 1px solid var(--border); font-size: var(--fs-caption); color: var(--text-3); gap: var(--s2); }
+.listfoot, .readfoot { height: 48px; flex: none; display: flex; align-items: center; padding: 0 var(--s4); border-top: 1px solid var(--border); font-size: var(--fs-caption); color: var(--text-3); gap: var(--s2); }
 .reader { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .doc { flex: 1; min-height: 0; overflow: auto; padding: var(--s6) var(--s10) var(--s8); }
 .doc-enter { animation: docIn var(--dur-smooth) var(--spring-smooth, var(--ease-smooth)) both; }
@@ -314,7 +314,7 @@ code { font-family: var(--font-mono); font-size: .9em; padding: 0 3px; border-ra
 
 /* 详情内容（三栏阅读区） */
 .detail { max-width: var(--content-max); }
-.detail .dm { display: flex; align-items: center; gap: var(--s2); font-size: var(--fs-footnote); color: var(--text-3); flex-wrap: wrap; }
+.detail .dm { min-height: 28px; display: flex; align-items: center; gap: var(--s2); font-size: var(--fs-footnote); color: var(--text-3); flex-wrap: wrap; padding-bottom: var(--s4); border-bottom: 1px solid var(--border); }
 .detail .bodytext { font-size: var(--fs-reading); line-height: 1.8; color: var(--text-1); margin-top: var(--s4); }
 .detail .bodytext code { font-size: 12.5px; }
 .detail .sec { margin-top: var(--s6); padding-top: var(--s4); border-top: 1px solid var(--border); }
@@ -326,9 +326,9 @@ code { font-family: var(--font-mono); font-size: .9em; padding: 0 3px; border-ra
 
 /* ---------- 用户画像页（Q4：216 来源栏 + 680 正文日期列条目） ---------- */
 .profile-layout { flex: 1; min-height: 0; display: flex; }
-.profile-col { width: 216px; flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--border); min-height: 0; }
+.profile-col { width: 360px; flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--border); min-height: 0; }
 .profile-col-head { height: 36px; display: flex; align-items: center; justify-content: space-between; padding: 0 var(--s3) 0 var(--s4); border-bottom: 1px solid var(--border); flex: none; }
-.profile-col-head span { font-size: var(--fs-caption); font-weight: 600; color: var(--text-3); }
+.profile-col-head span { font-size: var(--fs-body); font-weight: 600; color: var(--text-1); }
 .profile-col-head .icon-btn { display: inline-flex; align-items: center; justify-content: center; padding: 4px; }
 .profile-sources { flex: 1; min-height: 0; overflow: auto; padding: var(--s2); position: relative; }
 .profile-group-label { font-size: var(--fs-caption); font-weight: 600; color: var(--text-3); padding: var(--s3) var(--s2) var(--s1); }
@@ -347,7 +347,7 @@ code { font-family: var(--font-mono); font-size: .9em; padding: 0 3px; border-ra
 .profile-reader { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .profile-doc-enter { animation: profileFade var(--dur-smooth) var(--spring-smooth, var(--ease-smooth)) both; }
 @keyframes profileFade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-.profile-meta-bar { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; font-size: var(--fs-footnote); color: var(--text-3); padding-bottom: var(--s4); border-bottom: 1px solid var(--border); }
+.profile-meta-bar { min-height: 28px; display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; font-size: var(--fs-footnote); color: var(--text-3); padding-bottom: var(--s4); border-bottom: 1px solid var(--border); }
 .profile-meta-name { font-size: var(--fs-heading); font-weight: 600; color: var(--text-1); margin-right: var(--s1); }
 .profile-alert { margin-top: var(--s4); padding: var(--s3); border-radius: var(--radius); background: var(--danger-soft); color: var(--danger); font-size: var(--fs-footnote); line-height: 1.5; }
 .profile-progress { margin-top: var(--s4); display: flex; align-items: center; gap: var(--s2); font-size: var(--fs-footnote); color: var(--text-2); }

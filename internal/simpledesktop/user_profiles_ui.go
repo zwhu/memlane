@@ -57,7 +57,7 @@ func (a *App) userProfilesPage(c *ui.Context) {
 		a.refreshUserProfiles()
 	}
 
-	pageRow := ui.Row(c.Key("user-profiles-page")).Fill().MinHeight(0)
+	pageCol := ui.Column(c.Key("user-profiles-page")).Fill().MinHeight(0)
 	// Window-level ↑ / ↓ navigation across profile sources when no dialog is open,
 	// so switching works immediately upon entering from the sidebar.
 	if len(s.Directory.Profiles) > 0 && !s.Open && !a.searchUI.Open {
@@ -69,9 +69,12 @@ func (a *App) userProfilesPage(c *ui.Context) {
 		}
 	}
 
-	pageRow.Children(func() {
-		a.userProfileSourceColumn(c)
-		a.userProfileReaderPane(c)
+	pageCol.Children(func() {
+		readingSplit(c, "profile-reading-split", &a.layout.ProfileListWidth, func() {
+			a.userProfileSourceColumn(c)
+		}, func() {
+			a.userProfileReaderPane(c)
+		})
 	})
 }
 
@@ -93,12 +96,11 @@ func (a *App) stepUserProfile(delta int) {
 
 func (a *App) userProfileSourceColumn(c *ui.Context) {
 	s := &a.userProfiles
-	ui.Column(c.Key("profile-source-col")).Width(216).Shrink(0).FillHeight().
-		BorderWidth(0, 1, 0, 0).BorderColor(tok.Border).Background(tok.Bg).Children(func() {
+	ui.Column(c.Key("profile-source-col")).Fill().Background(tok.Bg).Children(func() {
 		// Header (36px)
-		ui.Row(c).Height(36).Shrink(0).Padding(0, sp3, 0, sp4).AlignItems(ui.Center).
+		ui.Row(c).Label("用户画像来源头部").Height(listHeaderH).Shrink(0).Padding(0, sp3, 0, sp4).AlignItems(ui.Center).
 			BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
-			ui.Text(c, "来源").Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3)
+			ui.Text(c, "来源").Font("system-ui").FontSize(fsBody).FontWeight(550).TextColor(tok.Text1).SingleLine()
 			ui.Spacer(c)
 			refreshAction(c, "刷新画像列表", func() { s.BodyKey = ""; a.refreshUserProfiles() }).Disabled(s.Loading)
 		})
@@ -116,8 +118,12 @@ func (a *App) userProfileSourceColumn(c *ui.Context) {
 			hasList = true
 			listHost = ui.Column(c.Key("profile-sources-host")).FillWidth().MinWidth(0)
 			listHost.Children(func() {
+				indW := a.layout.ProfileListWidth
+				if indW <= 0 {
+					indW = listPaneW
+				}
 				ui.Box(c.Key("profile-ind-bg")).Size(0, 0).Shrink(0).PassThrough().Children(func() {
-					ind = ui.Box(c.Key("profile-ind")).Width(216 - 2*sp2).Height(52).
+					ind = ui.Box(c.Key("profile-ind")).Width(max(float32(180), indW-2*sp2)).Height(52).
 						Radius(radius).Background(tok.AccentSoft).PassThrough()
 				})
 				previousGroup := ""
@@ -189,15 +195,25 @@ func (a *App) userProfileSourceColumn(c *ui.Context) {
 			}
 			ind.AnimatePose(ui.Pose{Y: targetY, Scale: 1, Fade: fade}, v4Snappy)
 		}
+		appFooter(c, "用户画像来源状态").Padding(0, sp4).Children(func() {
+			if !s.Loaded && s.Loading {
+				homeText(c, "正在读取…", homeMeta)
+			} else {
+				homeText(c, fmt.Sprintf("共 %d 个来源", len(s.Directory.Profiles)), homeMeta)
+			}
+		})
 	})
 }
 
 func (a *App) userProfileReaderPane(c *ui.Context) {
 	s := &a.userProfiles
-	ui.Column(c.Key("profile-reader-pane")).Grow(1).MinWidth(0).FillHeight().Background(tok.Bg).Children(func() {
+	ui.Column(c.Key("profile-reader-pane")).Grow(1).MinWidth(0).MinHeight(0).FillHeight().Background(tok.Bg).Children(func() {
 		p, ok := a.selectedUserProfile()
 		if !ok {
 			v4EmptyState(c, "profile-empty-select", "选择一个 AI，查看它对你的了解", s.Message)
+			appFooter(c, "用户画像操作栏").Padding(0, sp6).Children(func() {
+				homeText(c, "独立来源 · 仅作个人参考", homeMeta)
+			})
 			return
 		}
 		if s.docKey != p.ID {
@@ -227,7 +243,7 @@ func (a *App) userProfileReaderPane(c *ui.Context) {
 				} else if p.Status == "failed" {
 					methodLabel = "导入未完成"
 				}
-				ui.Row(c).FillWidth().Padding(0, 0, sp4, 0).Gap(sp2).AlignItems(ui.Center).
+				ui.Row(c).Label("用户画像内容工具栏").FillWidth().MinHeight(28).Padding(0, 0, sp4, 0).Gap(sp2).AlignItems(ui.Center).
 					BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 					agentLogo(c, agentBrandIconFor(p.Kind, p.Name), 22)
 					ui.Text(c, p.Name+" 对你的了解").Font("system-ui").FontSize(fsHeading).FontWeight(600).TextColor(tok.Text1).SingleLine()

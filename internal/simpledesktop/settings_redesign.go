@@ -39,7 +39,7 @@ func settingsTabs(c *ui.Context, current *string, labels []string) {
 			displayLabels[n] = "记忆提炼"
 		}
 	}
-	ui.Row(c).FillWidth().Shrink(0).Padding(0, sp8).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+	ui.Row(c).Height(listHeaderH).FillWidth().Shrink(0).Padding(0, sp8).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).AlignItems(ui.Center).Children(func() {
 		v4UnderlineTabs(c, "settings-tabs", "设置分类", &selected, displayLabels, func() { *current = labels[selected] })
 	})
 }

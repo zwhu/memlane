@@ -329,8 +329,9 @@ func (a *App) knowledgePage(c *ui.Context, s *pane) {
 
 	readingSplit(c, "project-reading-split", &a.layout.ProjectListWidth, func() {
 		ui.Column(c.Key("knowledge-list-pane")).Fill().Background(tok.Bg).Children(func() {
-			ui.Column(c.Key("project-view-navigation")).Padding(0, sp4).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Shrink(0).Children(func() {
+			ui.Row(c.Key("project-view-navigation")).Label("项目列表头部").Height(listHeaderH).Shrink(0).Padding(0, sp4).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).AlignItems(ui.Center).Children(func() {
 				a.projectTabs(c)
+				ui.Spacer(c)
 			})
 			bodyKey := fmt.Sprintf("knowledge-list-body-%d", a.motionRuns.projectPage)
 			body := ui.Column(c.Key(bodyKey)).Grow(1).MinHeight(0).FillWidth()

@@ -505,14 +505,12 @@
           <div class="three">
             <section class="listcol cm-listcol">
               <div class="cm-list-head">
-                <div class="cm-list-head-top">
-                  <span class="cm-list-title">记忆库</span>
-                  <span class="spacer"></span>
-                  ${UI.buttonHTML({ id: "commonAddBtn", label: "新增", size: "sm", icon: ctx.icon("plus") })}
-                  <button type="button" class="cm-refresh-btn" id="commonRefreshBtn" title="刷新通用记忆">${ctx.icon("refresh")}</button>
-                </div>
-                ${filterSeg}
+                <span class="cm-list-title">记忆库</span>
+                <span class="spacer"></span>
+                ${UI.buttonHTML({ id: "commonAddBtn", label: "新增", size: "sm", icon: ctx.icon("plus") })}
+                <button type="button" class="cm-refresh-btn" id="commonRefreshBtn" title="刷新通用记忆">${ctx.icon("refresh")}</button>
               </div>
+              <div class="cm-list-tools">${filterSeg}</div>
               <div class="items stagger cm-items" id="commonItems">
                 <span class="sel-ind" id="commonSelInd"></span>
                 ${list.length ? list.map((it, i) => cmItemHTML(it, i, sel && it.id === sel.id, ctx)).join("") : ctx.emptyHTML("当前分类没有通用记忆")}
