@@ -19,9 +19,15 @@ from .runner import generate
 class UserProfiles:
     """Manage profile sources, generation/import lifecycle, and Cognee persistence."""
 
-    def __init__(self, registry, connections, documents=None, runner=generate):
+    def __init__(self, registry, connections, documents=None, runner=generate, *, official_data=None):
         self.registry, self.connections = registry, connections
-        self.documents, self.runner = documents or ProfileDocuments(registry.official), runner
+        resolved_official_data = official_data
+        if resolved_official_data is None and connections is not None:
+            cfg = getattr(connections, 'config', None)
+            if isinstance(cfg, dict):
+                resolved_official_data = cfg.get('official_data')
+        self.documents = documents or ProfileDocuments(registry.official, official_data=resolved_official_data)
+        self.runner = runner
         self.path = registry.path.parent / 'user-profiles.json'
         self.state = json.loads(self.path.read_text()) if self.path.exists() else {'profiles': {}}
         self.tasks = {}

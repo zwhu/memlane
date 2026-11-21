@@ -356,6 +356,14 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
     attach_raw_records_read(app, registry, codex_config=codex_config)
     from v2_lookups import attach_v2_lookups
     attach_v2_lookups(app, registry, recall_store=recall_store, codex_config=codex_config)
+    from v2_api import attach_v2_api
+    app['v2_api_handles'] = attach_v2_api(
+        app,
+        registry,
+        manager_token=manager_token,
+        recall_store=recall_store,
+        codex_config=codex_config,
+    )
     return app
 
 
@@ -415,6 +423,8 @@ async def configured_app(config):
             attach_tool_graph(app, registry, config)
         from project_message_summary import attach_project_message_summary
         attach_project_message_summary(app, registry, backlog=backlog, codex_config=config)
+        if 'v2_api_handles' in app and backlog is not None:
+            app['v2_api_handles'].set_backlog(backlog)
     except BaseException:
         if registry is not None:
             registry.close()

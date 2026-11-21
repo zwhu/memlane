@@ -32,6 +32,15 @@ WAVE1_FEATURES = (
     'session_lookup_v2',
     'code_activity_v2',
     'tool_graph_batched_v2',
+    'catalog_index_v2',
+    'reading_state_v2',
+    'local_body_fastpath_v2',
+    'overview_v2',
+    'knowledge_cursor_v2',
+    'common_knowledge_cursor_v2',
+    'raw_records_v2',
+    'search_v2',
+    'message_summary_v2',
 )
 
 _ACTIVE_PIPELINE_STATUSES = frozenset({'DATASET_PROCESSING_STARTED', 'DATASET_PROCESSING_INITIATED'})

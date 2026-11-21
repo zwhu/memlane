@@ -321,10 +321,22 @@ class V2LookupsTests(AioHTTPTestCase):
         self.assertEqual(resp.status, 200)
         body = await resp.json()
         self.assertEqual(body['api_versions'], ['v1', 'v2'])
-        self.assertEqual(
-            body['features'],
-            ['document_lookup_v2', 'session_lookup_v2', 'code_activity_v2', 'tool_graph_batched_v2'],
-        )
+        for feat in (
+            'document_lookup_v2',
+            'session_lookup_v2',
+            'code_activity_v2',
+            'tool_graph_batched_v2',
+            'catalog_index_v2',
+            'reading_state_v2',
+            'local_body_fastpath_v2',
+            'overview_v2',
+            'knowledge_cursor_v2',
+            'common_knowledge_cursor_v2',
+            'raw_records_v2',
+            'search_v2',
+            'message_summary_v2',
+        ):
+            self.assertIn(feat, body['features'])
 
     async def test_v2_document_lookup_acl_unconfirmed_and_trusted_enrichment(self):
         # Unconfirmed group -> Fail-Closed 403 project_unconfirmed

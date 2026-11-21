@@ -14,8 +14,9 @@ from .constants import LIMIT
 class ProfileDocuments:
     """Store, verify, and retrieve user profile documents in the official Cognee store."""
 
-    def __init__(self, official):
+    def __init__(self, official, *, official_data=None):
         self.official = official
+        self.official_data = official_data
 
     async def dataset(self):
         """Return the dataset ID owning user profile documents."""
@@ -68,24 +69,46 @@ class ProfileDocuments:
         return await self.find(dataset, digest, row['operation_id'])
 
     async def read(self, dataset, document):
-        """Fetch raw profile content from Cognee and strip the identity marker header."""
-        official = self.official
-        async with official.session.get(
-            official.url + f'/api/v1/datasets/{dataset}/data/{document}/raw',
-            headers={'X-Api-Key': read_secret(official.token_file)},
-            allow_redirects=False,
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as response:
-            if response.status != 200:
-                raise PolicyError('profile_document_unavailable', 503)
-            body = bytearray()
-            async for chunk in response.content.iter_chunked(16384):
-                body.extend(chunk)
-                if len(body) > LIMIT + 4096:
+        """Fetch raw profile content via safe local fast-path (H8) with official /raw fallback."""
+        text = None
+        if self.official_data:
+            from local_body_reader import LocalPathSecurityError, read_document_body_with_fallback
+            try:
+                result = await read_document_body_with_fallback(
+                    self.official_data,
+                    str(dataset),
+                    str(document),
+                    official=self.official,
+                    max_bytes=LIMIT + 4096,
+                )
+                if result.get('truncated'):
                     raise PolicyError('profile_document_too_large', 503)
-            text = bytes(body).decode('utf-8')
-            if text.startswith('<!-- memlane-user-profile '):
-                _, separator, rest = text.partition('-->\n\n')
-                if separator:
-                    text = rest
-            return text
+                text = result['body']
+            except LocalPathSecurityError:
+                raise PolicyError('profile_document_unavailable', 503) from None
+            except PolicyError as err:
+                if err.code == 'profile_document_too_large':
+                    raise
+                text = None
+
+        if text is None:
+            official = self.official
+            async with official.session.get(
+                official.url + f'/api/v1/datasets/{dataset}/data/{document}/raw',
+                headers={'X-Api-Key': read_secret(official.token_file)},
+                allow_redirects=False,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as response:
+                if response.status != 200:
+                    raise PolicyError('profile_document_unavailable', 503)
+                body = bytearray()
+                async for chunk in response.content.iter_chunked(16384):
+                    body.extend(chunk)
+                    if len(body) > LIMIT + 4096:
+                        raise PolicyError('profile_document_too_large', 503)
+                text = bytes(body).decode('utf-8')
+        if text.startswith('<!-- memlane-user-profile '):
+            _, separator, rest = text.partition('-->\n\n')
+            if separator:
+                text = rest
+        return text
