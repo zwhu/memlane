@@ -241,5 +241,228 @@ console.log(JSON.stringify({project_id:p.project_id,host:c.hostKey(native),datas
                 self.assertEqual(self.writes, [])
 
 
+class OpenCodeBacklogHygieneAndCacheTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        import opencode_backlog
+        opencode_backlog.clear_verification_caches()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        self.plugin_dir = self.root / 'plugin'
+        (self.plugin_dir / 'dist/src').mkdir(parents=True)
+        backlog_js = self.plugin_dir / 'dist/src/managed-backlog.js'
+        helper_js = self.plugin_dir / 'dist/src/managed-pending-cli.js'
+        backlog_js.write_bytes(b'export const backlog = 1;\n')
+        helper_js.write_bytes(b'export const helper = 1;\n')
+        files = {
+            'dist/src/managed-backlog.js': hashlib.sha256(backlog_js.read_bytes()).hexdigest(),
+            'dist/src/managed-pending-cli.js': hashlib.sha256(helper_js.read_bytes()).hexdigest(),
+        }
+        manifest_raw = json.dumps({'protocol': 1, 'files': files}, sort_keys=True).encode()
+        (self.plugin_dir / '.memlane-opencode-artifact.json').write_bytes(manifest_raw)
+
+        self.profile = self.root / 'profile'
+        self.profile.mkdir()
+
+        def write_private(path, data):
+            path.write_bytes(data)
+            os.chmod(path, 0o600)
+            return hashlib.sha256(data).hexdigest()
+
+        self.manager_token = self.root / 'manager.token'
+        write_private(self.manager_token, b'm' * 40)
+        self.secret_a = self.root / 'secret-a.token'
+        secret_a_sha = write_private(self.secret_a, b'a' * 40)
+        self.secret_b = self.root / 'secret-b.token'
+        secret_b_sha = write_private(self.secret_b, b'b' * 40)
+
+        self.node = self.root / 'fake-node'
+        self.node.write_bytes(b'#!/bin/sh\nexit 0\n' + b'x' * 4096)
+        os.chmod(self.node, 0o755)
+        self.node_sha = hashlib.sha256(self.node.read_bytes()).hexdigest()
+
+        binding = {
+            'version': 1,
+            'instance_id': 'oc',
+            'plugin_root': str(self.plugin_dir),
+            'profile': str(self.profile),
+            'memlane': {'origin': 'http://127.0.0.1:19100'},
+            'cognee': {'baseUrl': 'http://127.0.0.1:19000'},
+            'secrets': [
+                {'path': str(self.secret_a), 'sha256': secret_a_sha},
+                {'path': str(self.secret_b), 'sha256': secret_b_sha},
+            ],
+        }
+        self.binding_file = self.root / 'binding.json'
+        binding_sha = write_private(self.binding_file, json.dumps(binding).encode())
+
+        self.runtime = {
+            'service_url': 'http://127.0.0.1:19000',
+            'project_control': {
+                'url': 'http://127.0.0.1:19100',
+                'management_token_file': str(self.manager_token),
+            },
+        }
+        self.installation = {
+            'host_kind': 'opencode',
+            'instance_id': 'oc',
+            'plugin_dir': str(self.plugin_dir),
+            'manifest_sha256': hashlib.sha256(manifest_raw).hexdigest(),
+            'helper_sha256': files['dist/src/managed-pending-cli.js'],
+            'binding_file': str(self.binding_file),
+            'binding_sha256': binding_sha,
+            'node_executable': str(self.node),
+            'node_sha256': self.node_sha,
+            'profile': str(self.profile),
+        }
+        self.target = {
+            'agent_id': 'oc',
+            'host': 'host',
+            'dataset': 'ds',
+            'session_id': 'official',
+            'native': 'native',
+            'tokens': ['a' * 64],
+        }
+
+    def tearDown(self):
+        import opencode_backlog
+        opencode_backlog.clear_verification_caches()
+        self.tmp.cleanup()
+
+    def _fake_process(self, lines, *, returncode=0, hang_on_wait=False):
+        class FakeProcess:
+            def __init__(self):
+                self.pid = 424242
+                self.returncode = None
+                self._lines = list(lines)
+                self.terminated = False
+                self.stdin = types.SimpleNamespace(
+                    write=lambda data: None,
+                    drain=AsyncMock(return_value=None),
+                    close=lambda: None,
+                )
+                self.stdout = types.SimpleNamespace(readline=self._readline)
+
+            async def _readline(self):
+                if not self._lines:
+                    return b''
+                item = self._lines.pop(0)
+                if isinstance(item, BaseException):
+                    raise item
+                return item
+
+            async def wait(self):
+                if hang_on_wait:
+                    raise asyncio.TimeoutError()
+                self.returncode = returncode
+                return returncode
+
+            def terminate(self):
+                self.terminated = True
+
+        return FakeProcess()
+
+    async def test_review_and_check_unlink_worker_file_and_skip_ps_while_save_retains_it(self):
+        import opencode_backlog
+        for action, payload in (
+            ('review', {'session_id': 'official', 'tokens': [], 'unknown': 0}),
+            ('check', {'checked': True, 'unknown_outcomes': 0, 'matched_unknown': 0}),
+        ):
+            with self.subTest(action=action):
+                cancel = self.root / f'{action}.stop'
+                owner_path = Path(str(cancel) + '.opencode-worker.json')
+                owner_path.write_text('{"stale":true}')
+                proc = self._fake_process([json.dumps(payload).encode() + b'\n', b''])
+                with patch('opencode_backlog.asyncio.create_subprocess_exec', AsyncMock(return_value=proc)), \
+                     patch('opencode_backlog._process_start_time', side_effect=AssertionError('ps must not run')):
+                    result = await opencode_backlog.execute(
+                        self.runtime, self.installation, 'p', self.target, action, cancel)
+                self.assertFalse(owner_path.exists(), f'{action} leaked .opencode-worker.json')
+                self.assertEqual(result['status'] if action == 'check' else result['unknown'],
+                                 'confirmed' if action == 'check' else 0)
+
+        # Mutating save retains durable owner_path and records ps start time.
+        cancel = self.root / 'save.stop'
+        owner_path = Path(str(cancel) + '.opencode-worker.json')
+        proc = self._fake_process([
+            json.dumps({'status': 'completed', 'saved': 1, 'handled': 0, 'isolated': 0, 'remaining': 0}).encode() + b'\n',
+            b'',
+        ])
+        with patch('opencode_backlog.asyncio.create_subprocess_exec', AsyncMock(return_value=proc)), \
+             patch('opencode_backlog._process_start_time', return_value='Fri Nov 21 06:00:00 2026') as ps_mock:
+            result = await opencode_backlog.execute(
+                self.runtime, self.installation, 'p', self.target, 'save', cancel)
+        self.assertEqual(result['status'], 'completed')
+        ps_mock.assert_called_once_with(proc.pid)
+        self.assertTrue(owner_path.exists(), 'mutating save must retain .opencode-worker.json')
+        owner = json.loads(owner_path.read_text())
+        self.assertEqual(owner['phase'], 'confirmed_exited')
+        self.assertEqual(owner['exit_code'], 0)
+        self.assertEqual(owner['started'], 'Fri Nov 21 06:00:00 2026')
+
+    async def test_read_only_exit_unconfirmed_retains_owner_file(self):
+        import opencode_backlog
+        cancel = self.root / 'hung-review.stop'
+        owner_path = Path(str(cancel) + '.opencode-worker.json')
+        proc = self._fake_process([asyncio.TimeoutError()], hang_on_wait=True)
+        with patch('opencode_backlog.asyncio.create_subprocess_exec', AsyncMock(return_value=proc)):
+            with self.assertRaises(PolicyError) as err:
+                await opencode_backlog.execute(
+                    self.runtime, self.installation, 'p', self.target, 'review', cancel)
+        self.assertEqual(err.exception.code, 'backlog_sender_exit_unconfirmed')
+        self.assertTrue(owner_path.exists())
+        self.assertEqual(json.loads(owner_path.read_text())['phase'], 'exit_unconfirmed')
+
+    def test_node_and_manifest_digest_cache_avoids_reread_and_rejects_modifications(self):
+        import opencode_backlog
+        import opencode_installation
+
+        real_sha = opencode_backlog._sha256_file
+        real_verify_artifact = opencode_installation.verify
+        sha_calls = []
+        artifact_calls = []
+
+        def counting_sha(path, **kwargs):
+            sha_calls.append(Path(path))
+            return real_sha(path, **kwargs)
+
+        def counting_artifact(root, expected=None):
+            artifact_calls.append((Path(root), expected))
+            return real_verify_artifact(root, expected)
+
+        with patch('opencode_backlog._sha256_file', side_effect=counting_sha), \
+             patch('opencode_installation.verify', side_effect=counting_artifact):
+            opencode_backlog.verify(self.installation, self.runtime, 'oc')
+            opencode_backlog.verify(self.installation, self.runtime, 'oc')
+            self.assertEqual(len(sha_calls), 1, 'unchanged node binary was hashed more than once')
+            self.assertEqual(len(artifact_calls), 1, 'unchanged artifact tree was hashed more than once')
+
+            # Force re-verification (mutating path) bypasses cache and streams digest.
+            opencode_backlog.verify(self.installation, self.runtime, 'oc', force=True)
+            self.assertEqual(len(sha_calls), 2)
+            self.assertEqual(len(artifact_calls), 2)
+
+            # Modified expected node_sha256 fails immediately even while cache is warm.
+            bad_digest_install = {**self.installation, 'node_sha256': '0' * 64}
+            with self.assertRaises(PolicyError) as err:
+                opencode_backlog.verify(bad_digest_install, self.runtime, 'oc')
+            self.assertEqual(err.exception.code, 'backlog_installation_changed')
+
+            # Modified node binary on disk invalidates stat key immediately.
+            self.node.write_bytes(b'#!/bin/sh\nexit 1\n' + b'y' * 4097)
+            os.chmod(self.node, 0o755)
+            with self.assertRaises(PolicyError) as err:
+                opencode_backlog.verify(self.installation, self.runtime, 'oc')
+            self.assertEqual(err.exception.code, 'backlog_installation_changed')
+
+            # Restore node binary, then tamper with plugin artifact tree.
+            self.node.write_bytes(b'#!/bin/sh\nexit 0\n' + b'x' * 4096)
+            os.chmod(self.node, 0o755)
+            opencode_backlog.verify(self.installation, self.runtime, 'oc')
+            (self.plugin_dir / 'dist/src/extra.js').write_bytes(b'evil();\n')
+            with self.assertRaises(PolicyError) as err:
+                opencode_backlog.verify(self.installation, self.runtime, 'oc')
+            self.assertEqual(err.exception.code, 'backlog_installation_changed')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -239,7 +239,7 @@ class IncrementalProcessing:
                 await self.tick()
             except (PolicyError, OSError, ValueError, KeyError, TypeError, asyncio.TimeoutError):
                 pass
-            await asyncio.sleep(5)
+            await asyncio.sleep(15)
 
     async def close(self):
         if self.monitor:

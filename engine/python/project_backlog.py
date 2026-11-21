@@ -7,7 +7,9 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
+import threading
 import time
 from urllib.parse import quote
 import uuid
@@ -19,29 +21,109 @@ from performance_trace import RequestTrace
 
 ACTIVE = {'queued', 'reviewing', 'running', 'waiting', 'stopping', 'processing'}
 WORKER = Path(__file__).with_name('project_backlog_worker.py')
+HASH_CHUNK_SIZE = 1024 * 1024
+INSTALLATION_VERIFY_TTL_SECONDS = 300.0
+INSTALLATION_VERIFY_MAX_ENTRIES = 256
+REVIEW_CACHE_TTL_SECONDS = 25.0
+REVIEW_CACHE_MAX_ENTRIES = 512
+
+_INSTALLATION_VERIFY_LOCK = threading.Lock()
+_INSTALLATION_VERIFY_CACHE = {}
 
 
-def verify_installation(installation):
+def clear_installation_verify_cache():
+    with _INSTALLATION_VERIFY_LOCK:
+        _INSTALLATION_VERIFY_CACHE.clear()
+
+
+def _sha256_file(path, *, chunk_size=HASH_CHUNK_SIZE):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _stat_signature(st):
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def verify_installation(installation, *, force=False, ttl=INSTALLATION_VERIFY_TTL_SECONDS, clock=time.monotonic):
     root = Path(installation['plugin_dir'])
     if not all(Path(installation[k]).is_absolute() for k in ('plugin_dir', 'env_file', 'home')):
         raise PolicyError('backlog_installation_unconfirmed', 409)
     manifest = root / '.memlane-project-access.json'
-    if manifest.is_symlink() or hashlib.sha256(manifest.read_bytes()).hexdigest() != installation['manifest_sha256']:
+    try:
+        manifest_st = os.lstat(manifest)
+    except OSError:
+        raise PolicyError('backlog_installation_changed', 409) from None
+    if stat.S_ISLNK(manifest_st.st_mode) or not stat.S_ISREG(manifest_st.st_mode):
         raise PolicyError('backlog_installation_changed', 409)
-    files = json.loads(manifest.read_bytes())['files']
+    expected_manifest = installation['manifest_sha256']
+    manifest_sig = _stat_signature(manifest_st)
+    cache_key = (str(root), expected_manifest)
+    now = clock()
+    if not force and ttl > 0:
+        with _INSTALLATION_VERIFY_LOCK:
+            cached = _INSTALLATION_VERIFY_CACHE.get(cache_key)
+        if cached is not None and cached[0] > now and cached[1] == manifest_sig:
+            all_match = True
+            for name, expected_sig in cached[2]:
+                try:
+                    file_st = os.lstat(root / name)
+                except OSError:
+                    all_match = False
+                    break
+                if (stat.S_ISLNK(file_st.st_mode) or not stat.S_ISREG(file_st.st_mode)
+                        or _stat_signature(file_st) != expected_sig):
+                    all_match = False
+                    break
+            if all_match:
+                return
+    try:
+        raw = manifest.read_bytes()
+    except OSError:
+        raise PolicyError('backlog_installation_changed', 409) from None
+    if hashlib.sha256(raw).hexdigest() != expected_manifest:
+        raise PolicyError('backlog_installation_changed', 409)
+    files = json.loads(raw)['files']
     if 'scripts/_memlane_policy.py' not in files or 'scripts/_plugin_common.py' not in files:
         raise PolicyError('backlog_host_unsupported', 409)
+    file_stats = []
     for name, expected in files.items():
         relative = Path(name)
         path = root / relative
-        if (relative.is_absolute() or '..' in relative.parts or path.is_symlink() or not path.is_file()
-                or hashlib.sha256(path.read_bytes()).hexdigest() != expected):
+        if relative.is_absolute() or '..' in relative.parts:
             raise PolicyError('backlog_installation_changed', 409)
+        try:
+            file_st = os.lstat(path)
+        except OSError:
+            raise PolicyError('backlog_installation_changed', 409) from None
+        if (stat.S_ISLNK(file_st.st_mode) or not stat.S_ISREG(file_st.st_mode)
+                or _sha256_file(path) != expected):
+            raise PolicyError('backlog_installation_changed', 409)
+        file_stats.append((name, _stat_signature(file_st)))
+    if ttl > 0:
+        with _INSTALLATION_VERIFY_LOCK:
+            expired = [key for key, value in _INSTALLATION_VERIFY_CACHE.items() if value[0] <= now]
+            for key in expired:
+                _INSTALLATION_VERIFY_CACHE.pop(key, None)
+            while len(_INSTALLATION_VERIFY_CACHE) >= INSTALLATION_VERIFY_MAX_ENTRIES:
+                _INSTALLATION_VERIFY_CACHE.pop(next(iter(_INSTALLATION_VERIFY_CACHE)))
+            _INSTALLATION_VERIFY_CACHE[cache_key] = (now + ttl, manifest_sig, tuple(file_stats))
 
 
 class Backlog:
-    def __init__(self, registry, runtime, *, worker=None):
+    def __init__(self, registry, runtime, *, worker=None, review_cache_ttl=REVIEW_CACHE_TTL_SECONDS, clock=time.monotonic):
         self.registry, self.runtime, self.worker = registry, runtime, worker
+        self.review_cache_ttl = review_cache_ttl
+        self._clock = clock
+        self._review_cache = {}
+        self._review_inflight = {}
+        self._review_gen = {}
         self.root = registry.path.parent / 'backlog'
         self.path = self.root / 'jobs.json'
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -173,7 +255,7 @@ class Backlog:
                 await self.automatic_check_tick()
             except (PolicyError, OSError, ValueError, KeyError):
                 pass
-            await asyncio.sleep(2)
+            await asyncio.sleep(20)
 
     def checked_target(self, project_id, target, *, write=True):
         project = self.registry.state['projects'].get(project_id)
@@ -265,10 +347,68 @@ class Backlog:
             self.persist()
         return self.public(row)
 
-    async def execute(self, row, target, action, update=None):
-        if action in ('review', 'check'):
+    def invalidate_review_cache(self, project_id, agent_id=None, host=None):
+        if agent_id is not None and host is not None:
+            key = (project_id, agent_id, host)
+            self._review_gen[key] = self._review_gen.get(key, 0) + 1
+            self._review_cache.pop(key, None)
+            self._review_inflight.pop(key, None)
+            return
+        for key in [k for k in set(self._review_cache) | set(self._review_inflight) if k[0] == project_id]:
+            self._review_gen[key] = self._review_gen.get(key, 0) + 1
+            self._review_cache.pop(key, None)
+            self._review_inflight.pop(key, None)
+
+    async def execute(self, row, target, action, update=None, *, force=False):
+        cache_key = (row['project_id'], target['agent_id'], target['host'])
+        if action == 'review':
             # Ordinary idle polling must not flood the diagnostic log.
-            return await self._execute(row, target, action, update)
+            self.checked_target(row['project_id'], target, write=False)
+            use_cache = not force and update is None and self.review_cache_ttl > 0
+            if use_cache:
+                cached = self._review_cache.get(cache_key)
+                if cached is not None and self._clock() < cached[0] and cached[1] == target.get('dataset'):
+                    return copy.deepcopy(cached[2])
+                inflight = self._review_inflight.get(cache_key)
+                if inflight is not None and not inflight.done():
+                    ok, payload = await asyncio.shield(inflight)
+                    if ok:
+                        return copy.deepcopy(payload)
+                    raise payload
+            gen = self._review_gen.get(cache_key, 0)
+            fut = None
+            if use_cache and cache_key not in self._review_inflight:
+                fut = asyncio.get_running_loop().create_future()
+                self._review_inflight[cache_key] = fut
+            try:
+                result = await self._execute(row, target, action, update)
+                if isinstance(result, dict) and self.review_cache_ttl > 0 and self._review_gen.get(cache_key, 0) == gen:
+                    now = self._clock()
+                    expired = [k for k, v in self._review_cache.items() if v[0] <= now]
+                    for k in expired:
+                        self._review_cache.pop(k, None)
+                    while len(self._review_cache) >= REVIEW_CACHE_MAX_ENTRIES:
+                        self._review_cache.pop(next(iter(self._review_cache)))
+                    self._review_cache[cache_key] = (
+                        now + self.review_cache_ttl, target.get('dataset'), copy.deepcopy(result))
+                if fut is not None and not fut.done():
+                    fut.set_result((True, result))
+                return result
+            except BaseException as exc:
+                if fut is not None and not fut.done():
+                    fut.set_result((False, exc))
+                raise
+            finally:
+                if fut is not None and self._review_inflight.get(cache_key) is fut:
+                    self._review_inflight.pop(cache_key, None)
+        if action == 'check':
+            # Ordinary idle polling must not flood the diagnostic log.
+            self.invalidate_review_cache(*cache_key)
+            try:
+                return await self._execute(row, target, action, update)
+            finally:
+                self.invalidate_review_cache(*cache_key)
+        self.invalidate_review_cache(*cache_key)
         agent, _ = self.checked_target(row['project_id'], target, write=action not in ('review', 'check'))
         kind = agent.get('kind')
         host_kind = kind if kind in {'codex', 'pi', 'traex', 'claude_code', 'cursor', 'opencode', 'antigravity'} else 'unknown'
@@ -283,6 +423,7 @@ class Backlog:
             outcome = 'cancelled'
             raise
         finally:
+            self.invalidate_review_cache(*cache_key)
             # A returned worker may report unknown/deferred, not knowledge
             # success. The durable official receipt remains authoritative.
             trace.finish(outcome, host_kind=host_kind, action=action if action in {'save', 'process', 'check'} else 'other')
@@ -293,7 +434,7 @@ class Backlog:
         if installation.get('host_kind') == 'opencode':
             from opencode_backlog import execute
             return await execute(self.runtime, installation, row['project_id'], target, action, self.cancel_file(row), update)
-        verify_installation(installation)
+        await asyncio.to_thread(verify_installation, installation)
         if self.worker:
             return await self.worker(row, target, action, update)
         env = {k: v for k, v in os.environ.items()
@@ -398,6 +539,7 @@ class Backlog:
                 if target.get('admission_blocked'):
                     continue
                 try:
+                    self.invalidate_review_cache(row['project_id'], target['agent_id'], target['host'])
                     snapshot = await self.execute(row, target, 'review')
                     if (not isinstance(snapshot, dict) or not isinstance(snapshot.get('session_id'), str)
                             or not snapshot['session_id'] or not isinstance(snapshot.get('tokens'), list)
@@ -587,6 +729,8 @@ class Backlog:
                 _, view = self.checked_target(project_id, target)
                 if not view['policy'].get('can_capture'):
                     continue
+                if recoverable:
+                    self.invalidate_review_cache(project_id, agent_id, host)
                 snapshot = await self.execute(candidate, target, 'review')
                 if not isinstance(snapshot.get('tokens'), list) or 'unknown' not in snapshot:
                     continue
@@ -625,7 +769,7 @@ class Backlog:
                 await self.automatic_tick()
             except (PolicyError, OSError, ValueError):
                 pass
-            await asyncio.sleep(10)
+            await asyncio.sleep(30)
 
 
 def attach_backlog(app, registry, runtime):
