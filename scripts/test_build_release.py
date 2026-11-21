@@ -128,6 +128,25 @@ class BuildReleaseTests(unittest.TestCase):
                 self.assertEqual((wt / '.local' / 'toolchain.txt').read_text(encoding='utf-8'), 'keep-local\n')
                 wt_parent = wt.parent
 
+            # Also verify gitignored web/official-graph/dist is copied (not symlinked) into worktree.
+            with tempfile.TemporaryDirectory() as raw_tmp2:
+                gitignored_repo = Path(raw_tmp2).resolve()
+                self._write_fake_repo(gitignored_repo, with_graph=False)
+                (gitignored_repo / '.gitignore').write_text('dist/\n', encoding='utf-8')
+                subprocess.run(['git', 'init'], cwd=gitignored_repo, check=True, capture_output=True)
+                subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=gitignored_repo, check=True, capture_output=True)
+                subprocess.run(['git', 'config', 'user.name', 'Tester'], cwd=gitignored_repo, check=True, capture_output=True)
+                subprocess.run(['git', 'add', '.'], cwd=gitignored_repo, check=True, capture_output=True)
+                subprocess.run(['git', 'commit', '-m', 'no-dist'], cwd=gitignored_repo, check=True, capture_output=True)
+                no_dist_sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=gitignored_repo, text=True).strip()
+                for rel in build_release.REQUIRED_GRAPH_FILES:
+                    p = gitignored_repo / rel
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_text('{"ok":true}\n', encoding='utf-8')
+                with build_release._worktree_for_ref(gitignored_repo, no_dist_sha) as wt2:
+                    self.assertFalse((wt2 / 'web' / 'official-graph' / 'dist').is_symlink())
+                    build_release.verify_graph_assets(wt2)
+
             self.assertFalse(wt_parent.exists())
             self.assertTrue((local_dir / 'toolchain.txt').is_file())
             self.assertTrue((cache_dir / 'go-build.txt').is_file())

@@ -168,6 +168,12 @@ def _worktree_for_ref(repo_root: Path, commit: str):
             if src.exists() and not dst.exists() and not dst.is_symlink():
                 os.symlink(src, dst)
                 linked.append(dst)
+        graph_src = repo_abs / 'web' / 'official-graph' / 'dist'
+        graph_dst = wt / 'web' / 'official-graph' / 'dist'
+        if graph_src.is_dir() and not graph_src.is_symlink() and not graph_dst.exists():
+            # go:embed forbids symlinks; copy gitignored prebuilt graph assets into the temporary worktree.
+            graph_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(graph_src, graph_dst, symlinks=False)
         yield wt
     finally:
         # Unlink shared toolchain/cache symlinks before any worktree directory cleanup.
