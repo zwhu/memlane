@@ -2,6 +2,7 @@ package simpledesktop
 
 import (
 	"context"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -9,6 +10,19 @@ import (
 
 	"github.com/egoist/mygo/ui"
 )
+
+var searchWrapperPrefixRe = regexp.MustCompile(`^(?:Lesson-Type:\s*\S+|State-Key:\s*\S+|(?:#\s*)?Session learning \(session [^\s)]+\)|Session ID:\s*\S+)\s*`)
+
+func stripSearchWrapperPrefixes(s string) string {
+	out := strings.TrimSpace(s)
+	for {
+		next := strings.TrimSpace(searchWrapperPrefixRe.ReplaceAllString(out, ""))
+		if next == out {
+			return out
+		}
+		out = next
+	}
+}
 
 type unifiedSearchState struct {
 	HistoryDirty                         bool
@@ -55,17 +69,13 @@ func (a *App) openUnifiedSearch(restore bool) {
 	}
 	a.projectUI.InfoOpen = false
 	a.projectUI.MenuOpen = false
-	if !restore {
+	hasCachedSearch := strings.TrimSpace(s.Query) != "" && (s.Loaded || len(s.Rows) > 0 || s.Submitted != "")
+	if !restore && !hasCachedSearch {
 		s.Scope = ""
 		if a.page == "知识" || a.page == "图谱" {
 			if p, ok := a.current(); ok && p.ID != "" {
 				s.Scope = p.ID
 			}
-		}
-		if strings.TrimSpace(s.Query) != "" {
-			s.Rows = nil
-			s.Loaded = false
-			s.Submitted = ""
 		}
 		s.Query = ""
 		s.Type = "全部"
@@ -75,6 +85,7 @@ func (a *App) openUnifiedSearch(restore bool) {
 	}
 	s.Open = true
 	s.Focus = true
+	s.Reveal = true
 	if strings.TrimSpace(s.Query) == "" {
 		a.submitUnifiedSearch()
 	}
@@ -344,17 +355,22 @@ func searchRowText(i Item) (string, string) {
 	}
 	// Technical headers are presentation-only; keep the original source bytes.
 	lines := strings.Split(body, "\n")
-	clean := []string{}
+	clean := make([]string, 0, len(lines))
 	for _, line := range lines {
 		v := strings.TrimSpace(line)
-		if strings.HasPrefix(v, "Lesson-Type:") || strings.HasPrefix(v, "State-Key:") || strings.HasPrefix(v, "# Session learning (session ") || strings.HasPrefix(v, "Session ID: ") {
+		if searchWrapperPrefixRe.MatchString(v) {
+			rest := stripSearchWrapperPrefixes(v)
+			if rest == "" {
+				continue
+			}
+			clean = append(clean, rest)
 			continue
 		}
 		clean = append(clean, line)
 	}
-	preview := strings.TrimSpace(strings.Join(clean, "\n"))
+	preview := stripSearchWrapperPrefixes(strings.Join(clean, "\n"))
 	title := i.Title
-	if title == "检索片段" || readableName(title) == "" || strings.HasPrefix(title, "Session ID: ") {
+	if title == "检索片段" || readableName(title) == "" || strings.HasPrefix(title, "Session ID: ") || searchWrapperPrefixRe.MatchString(strings.TrimSpace(title)) {
 		title = firstReadingSentence(preview)
 	}
 	if title == "" {

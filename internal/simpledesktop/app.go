@@ -76,7 +76,15 @@ type App struct {
 	ChooseDiagnosticPath  func() (string, error)
 	OpenExistingAgent     func(string) error
 	ApplyAppearanceSource func(string)
+	ReadOpenAtLoginFn     func() bool
+	SetOpenAtLoginFn      func(bool) error
+	ShowMainWindowFn      func()
+	OpenGlobalSearchFn    func()
+	HideTrayFlyoutFn      func()
+	SyncTrayIconFn        func()
+	QuitAppFn             func(stopServices bool)
 	appearance            appearanceState
+	desktopPrefs          desktopPreferencesState
 	motionRuns            struct {
 		overviewPage      uint64
 		overviewKnowledge uint64
@@ -111,6 +119,7 @@ func New(c Config, err error) *App {
 		a.access.SettingsSection = "Agent 与模型"
 	}
 	a.initReading(a.Client)
+	a.initDesktopPreferences()
 	if err != nil {
 		a.configError = err.Error()
 		a.initialSetup = c.ConfigFile == "" || (c.FirstInstallDefault && errors.Is(err, os.ErrNotExist))
@@ -287,7 +296,7 @@ func (a *App) navigateKind(page string, index int, kind string) {
 	if page == "通用知识" {
 		a.kind = "知识"
 	}
-	if page != "总览" && page != "设置" && page != "图谱" && page != "检索结果" && page != "用户画像" && !(page == "知识" && a.kind == "管理") {
+	if page != "总览" && page != "设置" && page != "图谱" && page != "用户画像" && !(page == "知识" && a.kind == "管理") {
 		s := a.state()
 		if page == "知识" && a.kind == "知识" {
 			if s.Loaded && len(s.Items) > 0 {
@@ -614,6 +623,7 @@ func (a *App) View(c *ui.Context) {
 		a.projectCreateDialog(c)
 		a.allProjectsDialog(c)
 		a.toolGraphDialog(c)
+		a.forceQuitConfirmDialog(c)
 		if a.page == "用户画像" {
 			a.userProfileImportDialog(c)
 		}
@@ -668,7 +678,7 @@ func (a *App) mainShell(c *ui.Context) {
 					a.graphView(c)
 				case "通用知识":
 					a.commonKnowledgePage(c)
-				case "知识", "检索结果":
+				case "知识":
 					a.projectReading(c)
 				default:
 					a.reading(c)

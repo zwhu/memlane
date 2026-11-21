@@ -35,8 +35,8 @@ func settingsTabs(c *ui.Context, current *string, labels []string) {
 	*current = labels[selected]
 	displayLabels := append([]string(nil), labels...)
 	for n, label := range displayLabels {
-		if label == "知识处理" {
-			displayLabels[n] = "记忆处理"
+		if label == "知识处理" || label == "记忆处理" {
+			displayLabels[n] = "记忆提炼"
 		}
 	}
 	ui.Row(c).FillWidth().Shrink(0).Padding(0, sp8).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
@@ -54,16 +54,16 @@ func (a *App) globalSettingsPage(c *ui.Context) {
 	switch a.access.SettingsSection {
 	case "服务与连接":
 		a.access.SettingsSection = "服务"
-	case "知识处理":
-		a.access.SettingsSection = "记忆处理"
+	case "知识处理", "记忆处理":
+		a.access.SettingsSection = "记忆提炼"
 	}
-	settingsTabs(c, &a.access.SettingsSection, []string{"记忆处理", "Agent 与模型", "服务"})
+	settingsTabs(c, &a.access.SettingsSection, []string{"记忆提炼", "Agent 与模型", "服务"})
 	ui.Scroll(c.Key("global-settings-"+a.access.SettingsSection)).Grow(1).MinHeight(0).Padding(sp6, sp8, sp10, sp8).Background(tok.Bg).Children(func() {
 		v4GroupWrap(c, func() {
 			switch a.access.SettingsSection {
-			case "记忆处理":
+			case "记忆提炼":
 				a.generationConfigurationFor(c, false, true)
-				v4Group(c, "整理与记忆策略", "", nil, func() {
+				v4Group(c, "提炼与记忆策略", "", nil, func() {
 					a.globalToolGraphSettings(c)
 					languageSettingsCard(c)
 				})
@@ -75,8 +75,37 @@ func (a *App) globalSettingsPage(c *ui.Context) {
 				a.generationManagement(c)
 			case "服务":
 				a.serviceConnectionOverview(c)
+				a.desktopRuntimeSettings(c)
 				a.environmentSetup(c, false)
 			}
+		})
+	})
+}
+
+func (a *App) desktopRuntimeSettings(c *ui.Context) {
+	keepAlive := a.KeepAliveOnQuit()
+	openAtLogin := a.OpenAtLogin()
+	v4Group(c, "桌面端运行方式", "与顶部菜单栏状态面板实时同步", nil, func() {
+		v4Row(c, v4RowOptions{
+			Key:   "settings-keep-alive-row",
+			Title: "退出时保持后台运行",
+			Desc:  "关闭桌面窗口或退出界面时，本地记忆引擎（Cognee）与接入网关继续在后台运行",
+			Control: func() {
+				v4Switch(c, "settings-keep-alive", &keepAlive, "", func() {
+					a.SetKeepAliveOnQuit(keepAlive)
+				}).Label("退出时保持后台运行开关")
+			},
+		})
+		v4Row(c, v4RowOptions{
+			Key:   "settings-open-at-login-row",
+			Title: "登录时静默启动",
+			Desc:  "系统登录时在后台启动 Memlane 与顶部菜单栏图标，不自动弹出主窗口",
+			Error: a.desktopPrefs.LoginError,
+			Control: func() {
+				v4Switch(c, "settings-open-at-login", &openAtLogin, "", func() {
+					a.ToggleOpenAtLogin(openAtLogin)
+				}).Label("登录时静默启动开关")
+			},
 		})
 	})
 }
@@ -148,6 +177,11 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 	}
 	ui.Scroll(c.Key("project-settings-" + p.ID)).Grow(1).MinHeight(0).TrackScroll(&q.Scroll).Padding(sp6, sp8, sp10, sp8).Background(tok.Bg).Children(func() {
 		v4GroupWrap(c, func() {
+			hasAlerts := a.projectHasActiveMessageAlerts(p)
+			if hasAlerts {
+				a.projectQueueSection(c, p)
+			}
+
 			// 1. 项目信息
 			v4Group(c, "项目信息", "", nil, func() {
 				v4Row(c, v4RowOptions{
@@ -219,8 +253,10 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 			// 3. 工具记录关系图谱
 			a.projectToolGraphSettings(c, p)
 
-			// 4. 消息与处理状态
-			a.projectQueueSection(c, p)
+			// 4. 消息与处理状态（无活跃提醒时收纳在底部）
+			if !hasAlerts {
+				a.projectQueueSection(c, p)
+			}
 		})
 	})
 }

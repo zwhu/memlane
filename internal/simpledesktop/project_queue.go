@@ -41,6 +41,9 @@ type projectQueueState struct {
 	ArchiveHistoryOpen             bool
 	Scroll                         ui.ScrollState
 	LocatedNoticeKey               string
+	DetailNoticeKey                string
+	DetailDialogOpen               bool
+	DetailDiagnosticsOpen          bool
 	Reader                         *pane
 	Activity                       []overviewEvent
 	ActivityError                  string
@@ -77,7 +80,7 @@ func (c Client) pendingProjectCatalog(ctx context.Context, p Project) ([]Item, [
 		return nil, nil, err
 	}
 	if status.Items == nil {
-		return nil, nil, fmt.Errorf("整理状态缺少文档清单")
+		return nil, nil, fmt.Errorf("提炼状态缺少文档清单")
 	}
 	docs, err := c.overviewDocuments(ctx, p)
 	if err != nil {
@@ -90,7 +93,7 @@ func (c Client) pendingProjectCatalog(ctx context.Context, p Project) ([]Item, [
 	result := []Item{}
 	for _, row := range status.Items {
 		if row.Completed == nil {
-			return nil, nil, fmt.Errorf("文档整理状态不完整")
+			return nil, nil, fmt.Errorf("文档提炼状态不完整")
 		}
 		if *row.Completed {
 			continue
@@ -194,28 +197,67 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			Items []processingNotice `json:"items"`
 		}
 		var noticeErr error
+		var summary projectMessageSummaryResponse
+		var summaryOK bool
+		var summaryBacklogErr string
 		var workers sync.WaitGroup
-		if control != nil {
-			workers.Add(1)
-			go func() {
-				defer workers.Done()
-				noticeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				defer cancel()
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			if control != nil {
+				summaryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 				manager := ProjectControlClient{Config: *control, HTTP: client.HTTP}
-				noticeErr = manager.request(noticeCtx, "GET", "/v1/projects/"+url.PathEscape(p.ID)+"/processing-notices", nil, &notices)
+				res, err := manager.projectMessageSummary(summaryCtx, p.ID)
+				cancel()
+				if err == nil {
+					summary = res
+					summaryOK = true
+					if msg := res.Errors["processing_notices"]; msg != "" {
+						noticeErr = fmt.Errorf("%s", msg)
+					} else {
+						notices.Items = res.ProcessingNotices
+					}
+					if msg := res.Errors["documents"]; msg != "" {
+						documentErr = fmt.Errorf("%s", msg)
+					} else {
+						documents = res.pendingItems(p.Dataset)
+					}
+					if msg := res.Errors["activity"]; msg != "" {
+						activityErr = fmt.Errorf("%s", msg)
+					} else {
+						activity = res.Activity
+					}
+					summaryBacklogErr = res.Errors["backlog"]
+					return
+				}
+				if !isControlNotFound(err) {
+					noticeErr = err
+				}
+			}
+			var fallback sync.WaitGroup
+			if control != nil && noticeErr == nil {
+				fallback.Add(1)
+				go func() {
+					defer fallback.Done()
+					noticeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					defer cancel()
+					manager := ProjectControlClient{Config: *control, HTTP: client.HTTP}
+					noticeErr = manager.request(noticeCtx, "GET", "/v1/projects/"+url.PathEscape(p.ID)+"/processing-notices", nil, &notices)
+				}()
+			}
+			fallback.Add(1)
+			go func() {
+				defer fallback.Done()
+				activityCtx, activityCancel := context.WithTimeout(ctx, 5*time.Second)
+				defer activityCancel()
+				activityErr = client.get(activityCtx, "/api/v1/activity/pipeline-runs?dataset_id="+url.QueryEscape(p.Dataset)+"&limit=100", &activity)
 			}()
-		}
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			activityCtx, activityCancel := context.WithTimeout(ctx, 5*time.Second)
-			defer activityCancel()
-			activityErr = client.get(activityCtx, "/api/v1/activity/pipeline-runs?dataset_id="+url.QueryEscape(p.Dataset)+"&limit=100", &activity)
-		}()
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			documents, knowledgeCatalog, documentErr = client.pendingProjectCatalog(ctx, Project{ID: p.ID, Dataset: p.Dataset})
+			fallback.Add(1)
+			go func() {
+				defer fallback.Done()
+				documents, knowledgeCatalog, documentErr = client.pendingProjectCatalog(ctx, Project{ID: p.ID, Dataset: p.Dataset})
+			}()
+			fallback.Wait()
 		}()
 		for n, row := range sessions {
 			workers.Add(1)
@@ -231,7 +273,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				results[n].Status, results[n].Error = runPendingMaterials(ctx, python, *row.Agent.Installation, row.Binding, p.Dataset, "show", "", operator)
 				status := results[n].Status
 				if results[n].Error == nil && (status.Signature == "" || status.Pending < 0 || status.Unknown < 0 || status.Unknown > status.Pending) {
-					results[n].Error = fmt.Errorf("会话保存状态不完整")
+					results[n].Error = fmt.Errorf("会话采集状态不完整")
 				}
 			}(n, row)
 		}
@@ -249,9 +291,25 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				return
 			}
 			q.NoticeAcknowledgements, q.NoticeAcknowledgementError = a.readNoticeAcknowledgements(p)
+			if summaryOK {
+				if summaryBacklogErr != "" {
+					q.BacklogError = "后台采集状态暂时无法读取；任务不会因此重复启动"
+				} else {
+					q.BacklogError = ""
+					q.Backlog = summary.Backlog
+					q.BacklogLoaded = true
+					q.AutomaticSave = summary.AutomaticSave
+					if summary.BufferReviews != nil {
+						q.BufferReviews = summary.BufferReviews
+					}
+					if summary.Checks != nil {
+						a.applyPendingChecks(q, summary.Checks)
+					}
+				}
+			}
 			q.ProcessingReadError = ""
 			if noticeErr != nil {
-				q.ProcessingReadError = "记忆整理异常记录暂时无法读取"
+				q.ProcessingReadError = "记忆提炼异常记录暂时无法读取"
 			} else {
 				q.ProcessingNotices = notices.Items
 			}
@@ -259,7 +317,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			q.Loaded = true
 			q.ActivityError = ""
 			if activityErr != nil {
-				q.ActivityError = "近期处理记录暂时无法读取"
+				q.ActivityError = "近期提炼记录暂时无法读取"
 			} else {
 				projectActivity := make([]activityRow, 0, len(activity))
 				for _, row := range activity {
@@ -269,7 +327,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				}
 				q.Activity = nil
 				for _, event := range aggregateActivity(projectActivity, []Project{{ID: p.ID, Name: p.Name, Dataset: p.Dataset}}) {
-					if event.Title == "处理记忆" || (event.Title == "整理知识" || event.Title == "整理记忆") {
+					if event.Title == "提炼记忆" || event.Title == "处理记忆" || (event.Title == "整理知识" || event.Title == "整理记忆") {
 						q.Activity = append(q.Activity, event)
 					}
 				}
@@ -280,9 +338,9 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 					row.View.ReadCode = results[n].Status.Error
 					row.View.Details = nil
 					row.View.DetailsLoaded = false
-					row.View.ReadError = "保存状态暂时无法读取"
+					row.View.ReadError = "采集状态暂时无法读取"
 					if results[n].Status.Error == "official_session_unconfirmed" {
-						row.View.ReadError = "尚未确认这次会话的保存状态；重新读取不会补采历史对话"
+						row.View.ReadError = "尚未确认这次会话的采集状态；重新读取不会补采历史对话"
 					}
 					row.View.Message = row.View.ReadError
 					row.View.Loaded = false
@@ -295,13 +353,15 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			}
 			q.DocumentError = ""
 			if documentErr != nil {
-				q.DocumentError = "整理状态暂时无法读取"
+				q.DocumentError = "提炼状态暂时无法读取"
 				if readingUnavailable(documentErr) {
 					q.Documents = nil
 				}
 			} else {
 				q.Documents = documents
-				a.observeKnowledgeCatalog(p, q, knowledgeCatalog)
+				if knowledgeCatalog != nil {
+					a.observeKnowledgeCatalog(p, q, knowledgeCatalog)
+				}
 				q.Offset = min(q.Offset, max(0, len(documents)-1))
 			}
 			q.observeNotificationFailures(time.Now())

@@ -134,7 +134,7 @@ func TestSidebarAlertBadgeScrollsDirectlyToStatusAnomaly(t *testing.T) {
 			{
 				Agent:   a.access.Directory.Agents[2],
 				Binding: ProjectBinding{ProjectID: p.ID, AgentID: "agent", HostSessionKey: "codex-ok"},
-				View:    &pendingBufferView{Loaded: true, Message: "上次保存已完成", Status: PendingMaterials{Pending: 0}},
+				View:    &pendingBufferView{Loaded: true, Message: "上次采集已完成", Status: PendingMaterials{Pending: 0}},
 			},
 			{
 				Agent:   a.access.Directory.Agents[5],
@@ -150,28 +150,22 @@ func TestSidebarAlertBadgeScrollsDirectlyToStatusAnomaly(t *testing.T) {
 		if a.access.OpenProject != p.ID || a.page != "知识" || a.kind != "管理" {
 			t.Fatalf("did not open project management tab: page=%q kind=%q open=%q", a.page, a.kind, a.access.OpenProject)
 		}
-		if q.Scroll.Y <= 0 {
-			t.Fatalf("expected management page to scroll down to anomaly, got Scroll.Y=%v", q.Scroll.Y)
-		}
 		if a.access.RevealQueueProject != "" {
-			t.Fatalf("expected RevealQueueProject cleared after scroll, got %q", a.access.RevealQueueProject)
+			t.Fatalf("expected RevealQueueProject cleared after reveal, got %q", a.access.RevealQueueProject)
 		}
 		if q.LocatedNoticeKey != wantKey {
 			t.Fatalf("LocatedNoticeKey = %q, want %q", q.LocatedNoticeKey, wantKey)
 		}
-		r, ok := tt.Find("1 条消息未收到保存结果")
+		r, ok := tt.Find("1 条消息未收到采集结果")
 		if !ok || r.Y < 80 || r.Y+r.H > 820 {
 			t.Fatalf("target anomaly not visible inside viewport: ok=%v bounds=%+v", ok, r)
 		}
 
-		// Reset scroll while already on 管理 tab and click the sidebar alert dot again.
-		q.Scroll.Y = 0
+		// Scroll down away from top while already on 管理 tab and click the sidebar alert dot again.
+		q.Scroll.Y = 300
 		tt.Frame()
 		clickProjectUI(t, tt, "待处理文档：memlane")
-		if q.Scroll.Y <= 0 {
-			t.Fatalf("expected repeated sidebar alert click to re-scroll, got Scroll.Y=%v", q.Scroll.Y)
-		}
-		if r2, ok := tt.Find("1 条消息未收到保存结果"); !ok || r2.Y < 80 || r2.Y+r2.H > 820 {
+		if r2, ok := tt.Find("1 条消息未收到采集结果"); !ok || r2.Y < 80 || r2.Y+r2.H > 820 {
 			t.Fatalf("target anomaly not visible after repeated click: ok=%v bounds=%+v", ok, r2)
 		}
 
@@ -212,14 +206,65 @@ func TestSidebarAlertBadgeScrollsDirectlyToStatusAnomaly(t *testing.T) {
 		tt := ui.NewTester(a.View, 1200, 820)
 
 		clickProjectUI(t, tt, "待处理文档：memlane")
-		if q.Scroll.Y <= 0 {
-			t.Fatalf("expected scroll to needs-user anomaly, got Scroll.Y=%v", q.Scroll.Y)
-		}
 		if q.LocatedNoticeKey != wantKey {
 			t.Fatalf("LocatedNoticeKey = %q, want %q", q.LocatedNoticeKey, wantKey)
 		}
-		if r, ok := tt.Find("2 条消息等待保存"); !ok || r.Y < 80 || r.Y+r.H > 820 {
+		if r, ok := tt.Find("2 条消息等待采集"); !ok || r.Y < 80 || r.Y+r.H > 820 {
 			t.Fatalf("needs-user anomaly not visible inside viewport: ok=%v bounds=%+v", ok, r)
 		}
 	})
+}
+
+func TestProjectActiveMessageAlertsAndTrayProjectAlerts(t *testing.T) {
+	a := settingsFixture()
+	p0 := a.access.Directory.Projects[0]
+	q0 := a.projectQueueStateFor(p0)
+	q0.Loaded = true
+	q0.BacklogLoaded = true
+
+	// Pure queued documents awaiting cognify must NOT trigger yellow alert dots.
+	q0.Documents = []Item{{ID: "doc-1", Dataset: p0.Dataset, Title: "queued.md"}}
+	if a.projectHasActiveMessageAlerts(p0) {
+		t.Fatal("queued documents alone should not trigger active message alerts")
+	}
+	if alerts := a.trayProjectAlerts(); len(alerts) != 0 {
+		t.Fatalf("expected no tray alerts for queued docs only, got %+v", alerts)
+	}
+
+	// Pure completed receipt notice must NOT trigger active alert dots.
+	q0.Sessions = []queuedSession{{
+		Agent:   a.access.Directory.Agents[0],
+		Binding: ProjectBinding{ProjectID: p0.ID, AgentID: a.access.Directory.Agents[0].ID, HostSessionKey: "ok-sess"},
+		View:    &pendingBufferView{Loaded: true, Message: "上次采集已完成", Status: PendingMaterials{Pending: 0}},
+	}}
+	if a.projectHasActiveMessageAlerts(p0) {
+		t.Fatal("receipt-only info should not trigger active message alerts")
+	}
+
+	// Add 1 needs-user alert (permission denied) and 1 system anomaly (unknown outcome).
+	read := "read"
+	p0.Overrides[a.access.Directory.Agents[0].ID] = ProjectOverride{Access: &read}
+	a.access.Directory.Projects[0] = p0
+	q0.Sessions = []queuedSession{
+		{
+			Agent:   a.access.Directory.Agents[0],
+			Binding: ProjectBinding{ProjectID: p0.ID, AgentID: a.access.Directory.Agents[0].ID, HostSessionKey: "s-needs"},
+			View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 2}},
+		},
+		{
+			Agent:   a.access.Directory.Agents[0],
+			Binding: ProjectBinding{ProjectID: p0.ID, AgentID: a.access.Directory.Agents[0].ID, HostSessionKey: "s-err"},
+			View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1}},
+		},
+	}
+	if !a.projectHasActiveMessageAlerts(p0) {
+		t.Fatal("expected active message alerts for needs + error")
+	}
+	alerts := a.trayProjectAlerts()
+	if len(alerts) != 1 {
+		t.Fatalf("expected 1 tray alert, got %+v", alerts)
+	}
+	if alerts[0].ProjectID != p0.ID || alerts[0].ProjectIndex != 0 || alerts[0].ActionCount != 1 || alerts[0].ErrorCount != 1 {
+		t.Fatalf("unexpected tray alert summary: %+v", alerts[0])
+	}
 }

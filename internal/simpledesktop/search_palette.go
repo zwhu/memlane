@@ -204,6 +204,14 @@ func searchItemPrimaryText(i Item, query string) (string, string) {
 		return topic, preview
 	}
 	title, preview := searchHitText(i, query)
+	if preview != "" {
+		trimmedTitle := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(title), "…"))
+		if strings.Contains(i.Kind, "知识") ||
+			title == "记忆" || title == "原始记录" || title == "检索片段" ||
+			(trimmedTitle != "" && strings.HasPrefix(strings.TrimSpace(preview), trimmedTitle)) {
+			return preview, ""
+		}
+	}
 	if looksLikeBareUUID(title) {
 		if preview != "" {
 			return firstReadingSentence(preview), preview
@@ -259,9 +267,11 @@ func v4ScopeChip(c *ui.Context, key, label, text string, active bool, onClick fu
 
 func v4KbdHint(c *ui.Context, keycap, desc string) {
 	ui.Row(c).AlignItems(ui.Center).Gap(5).Shrink(0).Children(func() {
-		ui.Text(c, keycap).Font("system-ui").FontSize(10).FontWeight(500).
-			MinWidth(18).Height(18).Padding(0, 5).Radius(radiusSmall).
-			Background(tok.Fill2).TextColor(tok.Text2).TextAlign(ui.Center).SingleLine()
+		ui.Row(c).MinWidth(18).Height(18).Padding(0, 5).Radius(radiusSmall).
+			Background(tok.Fill2).AlignItems(ui.Center).Justify(ui.Center).Shrink(0).Children(func() {
+			ui.Text(c, keycap).Font("system-ui").FontSize(10).FontWeight(500).
+				TextColor(tok.Text2).SingleLine()
+		})
 		ui.Text(c, desc).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
 	})
 }
@@ -481,15 +491,16 @@ func (a *App) searchDialog(c *ui.Context) {
 					BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
 					v4KbdHint(c, "↑↓", "选择")
 					v4KbdHint(c, "↵", "打开")
-					v4KbdHint(c, "⌘↵", "检索结果页")
 					v4KbdHint(c, "Esc", "关闭")
 					ui.Spacer(c)
-					v4SmallButton(c, "查看全部结果", nil, a.openSearchResultsPage)
+					if !s.Loading && len(rows) > 0 {
+						homeText(c, fmt.Sprintf("共 %d 项", len(rows)), homeMeta).FontFeatures("tnum").SingleLine()
+					}
 				})
 			})
 	})
 
-	// Overlay-level shortcuts keep ↑↓ and ⌘↵ working even after clicking
+	// Overlay-level shortcuts keep ↑↓ working even after clicking
 	// segmented tabs or the project-only scope chip.
 	if s.Open {
 		if panel.OverlayShortcut(0, ui.KeyDown) && len(rows) > 0 {
@@ -509,9 +520,6 @@ func (a *App) searchDialog(c *ui.Context) {
 			}
 			s.KeyboardSelection = true
 			s.Reveal = true
-		}
-		if panel.OverlayShortcut(ui.Cmd, ui.KeyEnter) {
-			a.openSearchResultsPage()
 		}
 	}
 	if !s.Open {

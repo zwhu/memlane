@@ -1,14 +1,19 @@
 package main
 
 import (
-	"github.com/egoist/mygo"
-	"github.com/egoist/mygo/ui"
-	"github.com/zwhu/memlane/internal/bootstrap"
-	"github.com/zwhu/memlane/internal/simpledesktop"
+	"bytes"
+	"context"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/internal/bootstrap"
+	"github.com/zwhu/memlane/internal/simpledesktop"
 )
 
 func main() {
@@ -32,8 +37,179 @@ func main() {
 		mygo.Theme.SetSource(themeSourceForMode(mode))
 	}
 	mygo.App.OnReady(func() {
-		win := mygo.NewWindow(mygo.WindowOptions{Title: "Memlane", Width: 1200, Height: 820, MinWidth: 1200, MinHeight: 820, TitleBarStyle: mygo.TitleBarHidden, Vibrancy: mygo.VibrancySidebar, Content: ui.View(app.View)})
-		app.Update = func(fn func()) { win.Update(fn) }
+		win := mygo.NewWindow(mygo.WindowOptions{
+			Title:         "Memlane",
+			Width:         1200,
+			Height:        820,
+			MinWidth:      1200,
+			MinHeight:     820,
+			Hidden:        true,
+			TitleBarStyle: mygo.TitleBarHidden,
+			Vibrancy:      mygo.VibrancySidebar,
+			Content:       ui.View(app.View),
+		})
+
+		quitting := false
+		mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { quitting = true })
+
+		const (
+			trayFlyoutWidth  = 300
+			trayFlyoutHeight = 480
+		)
+
+		initialIcon, initialTemplate, initialTip := app.TrayIconState()
+		tray, trayErr := mygo.NewTray(mygo.TrayOptions{
+			ID:             "memlane-tray",
+			Icon:           initialIcon,
+			IconIsTemplate: initialTemplate,
+			ToolTip:        initialTip,
+		})
+		if trayErr != nil {
+			log.Printf("菜单栏状态图标不可用：%v", trayErr)
+		}
+
+		var flyout *mygo.Window
+		var lastIcon []byte
+		var lastTemplate bool
+		var lastTip string
+		if tray != nil {
+			lastIcon = initialIcon
+			lastTemplate = initialTemplate
+			lastTip = initialTip
+			app.SetTrayDark(tray.Dark())
+		}
+		ensureFlyout := func() *mygo.Window {
+			if tray == nil {
+				return nil
+			}
+			if flyout != nil && !flyout.IsDestroyed() {
+				return flyout
+			}
+			f := mygo.NewFlyout(mygo.FlyoutOptions{
+				Tray:         tray,
+				Placement:    mygo.PlacementBottom,
+				Gap:          4,
+				Width:        trayFlyoutWidth,
+				Height:       trayFlyoutHeight,
+				Focusable:    true,
+				Shadow:       true,
+				CornerRadius: 10,
+				Hidden:       true,
+				Content:      ui.View(app.TrayFlyoutView),
+			})
+			// Closing by blur/outside click/Escape would destroy a focusable flyout
+			// and break subsequent tray clicks unless prevented and hidden instead.
+			f.OnClose(func(event *mygo.CloseEvent) {
+				if !quitting {
+					event.PreventDefault()
+					f.Hide()
+				}
+			})
+			flyout = f
+			return f
+		}
+
+		syncTrayIcon := func() {
+			if tray == nil {
+				return
+			}
+			pngBytes, isTemplate, tip := app.TrayIconState()
+			if !bytes.Equal(pngBytes, lastIcon) || isTemplate != lastTemplate {
+				if err := tray.SetIcon(pngBytes, isTemplate); err == nil {
+					lastIcon = pngBytes
+					lastTemplate = isTemplate
+				}
+			}
+			if tip != lastTip {
+				tray.SetToolTip(tip)
+				lastTip = tip
+			}
+		}
+
+		if tray != nil {
+			syncTrayIcon()
+			tray.OnClick(func() {
+				app.SetTrayDark(tray.Dark())
+				syncTrayIcon()
+				f := ensureFlyout()
+				if f == nil {
+					win.Show()
+					win.Focus()
+					return
+				}
+				if f.IsVisible() {
+					f.Hide()
+					return
+				}
+				app.RefreshOpenAtLogin()
+				// Re-anchor against the live clicked tray icon bounds (handles
+				// initial layout, icon shifts, and multi-monitor menu bars).
+				f.SetSize(trayFlyoutWidth, trayFlyoutHeight)
+				f.Update(func() {})
+				f.Show()
+			})
+			tray.OnAppearanceChange(func() {
+				app.SetTrayDark(tray.Dark())
+				syncTrayIcon()
+				if flyout != nil && !flyout.IsDestroyed() && flyout.IsVisible() {
+					flyout.Update(func() {})
+				}
+			})
+		}
+
+		app.Update = func(fn func()) {
+			win.Update(func() {
+				if fn != nil {
+					fn()
+				}
+				syncTrayIcon()
+			})
+			if flyout != nil && !flyout.IsDestroyed() && flyout.IsVisible() {
+				flyout.Update(func() {})
+			}
+		}
+		app.ShowMainWindowFn = func() {
+			win.Update(func() {})
+			win.Show()
+			win.Focus()
+		}
+		app.OpenGlobalSearchFn = func() {
+			win.Update(app.OpenSearch)
+			win.Show()
+			win.Focus()
+		}
+		app.HideTrayFlyoutFn = func() {
+			if flyout != nil && !flyout.IsDestroyed() {
+				flyout.Hide()
+			}
+		}
+		app.SyncTrayIconFn = syncTrayIcon
+		app.ReadOpenAtLoginFn = func() bool {
+			return mygo.App.OpenAtLogin()
+		}
+		app.SetOpenAtLoginFn = func(enable bool) error {
+			return mygo.App.SetOpenAtLogin(enable)
+		}
+
+		var shutdownRunning atomic.Bool
+		app.QuitAppFn = func(stopServices bool) {
+			if !stopServices {
+				mygo.App.Quit()
+				return
+			}
+			if !shutdownRunning.CompareAndSwap(false, true) {
+				return
+			}
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+				defer cancel()
+				if err := bootstrap.ShutdownAllFirstRuntimes(ctx); err != nil {
+					log.Printf("停止本地后台服务时遇到问题：%v", err)
+				}
+				mygo.App.Quit()
+			}()
+		}
+
 		app.ChooseDiagnosticPath = func() (string, error) {
 			return mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: win, Title: "导出安装诊断", DefaultPath: "Memlane-diagnostic.zip", ButtonLabel: "导出", Filters: []mygo.FileFilter{{Name: "ZIP", Extensions: []string{"zip"}}}})
 		}
@@ -47,8 +223,6 @@ func main() {
 		}
 		// Keep the reading tree alive when the user closes the main window.
 		// An explicit app quit must still close it so dev reloads can finish.
-		quitting := false
-		mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { quitting = true })
 		win.OnClose(func(event *mygo.CloseEvent) {
 			if !quitting {
 				event.PreventDefault()
@@ -61,14 +235,27 @@ func main() {
 		if err := app.AttachGraph(win); err != nil {
 			log.Printf("官方图组件不可用：%v", err)
 		}
-		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{{Role: mygo.RoleAppMenu}, {Label: "文件", Submenu: []*mygo.MenuItem{{Label: "搜索知识", Accelerator: "CmdOrCtrl+K", Click: func(*mygo.MenuItem, *mygo.Window) { win.Update(app.OpenSearch); win.Show(); win.Focus() }}, {Label: "打开 Memlane", Click: func(*mygo.MenuItem, *mygo.Window) { win.Show(); win.Focus() }}, {Label: "关闭窗口", Accelerator: "CmdOrCtrl+W", Click: func(*mygo.MenuItem, *mygo.Window) { win.Close() }}}}, {Role: mygo.RoleEditMenu}, {Role: mygo.RoleWindowMenu}}))
+		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
+			{Role: mygo.RoleAppMenu},
+			{Label: "文件", Submenu: []*mygo.MenuItem{
+				{Label: "搜索记忆", Accelerator: "CmdOrCtrl+K", Click: func(*mygo.MenuItem, *mygo.Window) { win.Update(app.OpenSearch); win.Show(); win.Focus() }},
+				{Label: "打开 Memlane", Click: func(*mygo.MenuItem, *mygo.Window) { win.Show(); win.Focus() }},
+				{Label: "关闭窗口", Accelerator: "CmdOrCtrl+W", Click: func(*mygo.MenuItem, *mygo.Window) { win.Close() }},
+			}},
+			{Role: mygo.RoleEditMenu},
+			{Role: mygo.RoleWindowMenu},
+		}))
 		mygo.App.OnActivate(func(visible bool) {
 			if !visible {
 				win.Show()
 				win.Focus()
 			}
 		})
-		win.Show()
+
+		app.RefreshOpenAtLogin()
+		if !mygo.App.WasOpenedAtLogin() {
+			win.Show()
+		}
 		app.Start()
 	})
 	if err := mygo.App.Run(); err != nil {

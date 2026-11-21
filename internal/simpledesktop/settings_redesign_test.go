@@ -45,7 +45,7 @@ func TestSettingsProjectPermissionsCardsAndNavigation(t *testing.T) {
 				t.Fatal("unrelated settings mixed into current project")
 			}
 			fixtureImage(t, tt, fmt.Sprintf("settings-%dx%d-project", wh[0], wh[1]))
-			for _, label := range []string{"保存后续会话记录", "自动整理记忆", "自动采集", "自动处理", "已生效", "继承全局默认", "继承默认", "保存此 Agent 的设置", "撤销未保存修改", "仅影响此 Agent"} {
+			for _, label := range []string{"保存后续会话记录", "自动整理记忆", "自动处理", "已生效", "继承全局默认", "继承默认", "保存此 Agent 的设置", "撤销未保存修改", "仅影响此 Agent"} {
 				if tt.HasText(label) {
 					t.Fatal("removed settings text remains", label)
 				}
@@ -70,10 +70,10 @@ func TestSettingsProjectPermissionsCardsAndNavigation(t *testing.T) {
 			}
 			a.access.SettingsSection = "高级"
 			tt.Frame()
-			if a.access.SettingsSection != "记忆处理" || !tt.HasText("记忆语言") {
+			if a.access.SettingsSection != "记忆提炼" || !tt.HasText("记忆语言") {
 				t.Fatal("retired tab left the settings page blank after reload")
 			}
-			clickProjectUI(t, tt, "记忆处理")
+			clickProjectUI(t, tt, "记忆提炼")
 			if !tt.HasText("记忆语言") || tt.HasText("高级") {
 				t.Fatal("retained settings tab lost its content")
 			}
@@ -108,5 +108,78 @@ func TestProjectHeaderSettingsTargetsCurrentProjectAndReturnsToReading(t *testin
 	clickProjectUI(t, tt, "记忆")
 	if a.project != 1 || a.state() != original || a.kind != "知识" {
 		t.Fatal("management tab lost project reading state")
+	}
+}
+
+func TestSettingsServiceDesktopRuntimeSyncWithTray(t *testing.T) {
+	a := settingsFixture()
+	a.Config.ConfigFile = t.TempDir() + "/runtime.json"
+	a.initDesktopPreferences()
+	a.SetOpenAtLoginFn = func(enable bool) error { return fmt.Errorf("non-.app binary") }
+	a.access.SettingsSection = "服务"
+	a.navigate("设置", 0)
+
+	mainTT := ui.NewTester(a.View, 1200, 820)
+	if !mainTT.HasText("桌面端运行方式") || !mainTT.HasText("退出时保持后台运行") || !mainTT.HasText("登录时静默启动") {
+		t.Fatalf("missing 桌面端运行方式 section in 设置 › 服务; texts=%v", mainTT.Texts())
+	}
+
+	if err := mainTT.Click("退出时保持后台运行开关"); err != nil {
+		t.Fatalf("failed to click 退出时保持后台运行开关 in 设置 › 服务: %v", err)
+	}
+	if a.KeepAliveOnQuit() {
+		t.Fatal("expected KeepAliveOnQuit=false after toggling in settings")
+	}
+
+	// Verify TrayFlyoutView reflects the updated KeepAliveOnQuit state.
+	trayTT := ui.NewTester(a.TrayFlyoutView, 300, 480)
+	if !trayTT.HasText("退出并停止服务") {
+		t.Fatalf("tray flyout did not sync KeepAliveOnQuit=false from settings; texts=%v", trayTT.Texts())
+	}
+
+	// Toggling open-at-login in settings records honest error without faking enabled.
+	if err := mainTT.Click("登录时静默启动开关"); err != nil {
+		t.Fatalf("failed to click 登录时静默启动开关 in 设置 › 服务: %v", err)
+	}
+	if a.OpenAtLogin() {
+		t.Fatal("OpenAtLogin must stay false when OS hook fails")
+	}
+	if !mainTT.HasText("non-.app binary") {
+		t.Fatalf("expected inline LoginError in settings, got %v", mainTT.Texts())
+	}
+}
+
+func TestProjectSettingsDynamicOrderPrioritizesActiveAlerts(t *testing.T) {
+	a := settingsFixture()
+	p := a.access.Directory.Projects[0]
+	q := a.projectQueueStateFor(p)
+	q.Loaded = true
+
+	// Healthy project: 项目信息 appears above 消息与保存状态.
+	a.openProjectSettings(0)
+	tt := ui.NewTester(a.View, 1200, 820)
+	infoRect, okInfo := tt.Find("项目信息")
+	msgRect, okMsg := tt.Find("消息与采集状态")
+	if !okInfo || !okMsg {
+		t.Fatalf("expected healthy project sections; info=%v msg=%v", okInfo, okMsg)
+	}
+	if infoRect.Y >= msgRect.Y {
+		t.Fatalf("healthy project should render 项目信息 (y=%.1f) above 消息与保存状态 (y=%.1f)", infoRect.Y, msgRect.Y)
+	}
+
+	// Active alert: 消息与保存状态 moves above 项目信息.
+	q.Sessions = []queuedSession{{
+		Agent:   AccessAgent{ID: "agent", Name: "本机 Codex"},
+		Binding: ProjectBinding{HostSessionKey: "s1"},
+		View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1}},
+	}}
+	tt.Frame()
+	infoRect, okInfo = tt.Find("项目信息")
+	msgTitleRect, okMsg := tt.Find("消息与采集状态")
+	if !okInfo || !okMsg {
+		t.Fatalf("expected alerted project sections; info=%v msg=%v", okInfo, okMsg)
+	}
+	if msgTitleRect.Y >= infoRect.Y {
+		t.Fatalf("alerted project should render 消息与保存状态 (y=%.1f) above 项目信息 (y=%.1f)", msgTitleRect.Y, infoRect.Y)
 	}
 }

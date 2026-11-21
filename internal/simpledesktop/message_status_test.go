@@ -53,7 +53,7 @@ func TestPausedBacklogDoesNotAttributeLegacyStopToUser(t *testing.T) {
 			notice = n
 		}
 	}
-	if notice.Title != "积压消息保存已暂停" || !strings.Contains(notice.Detail, "触发来源未记录") {
+	if notice.Title != "积压消息采集已暂停" || !strings.Contains(notice.Detail, "触发来源未记录") {
 		t.Fatalf("legacy stop was attributed to user: %+v", needs)
 	}
 	if notice.Action != "resume" {
@@ -148,13 +148,22 @@ func TestNoticeRecoveryAndDetailsDoNotChangeQueue(t *testing.T) {
 		ui.Column(c).FillWidth().MaxWidth(900).Children(func() { a.projectQueueSection(c, a.access.Directory.Projects[0]) })
 	}, 1200, 1000)
 	clickProjectUI(t, tt, "查看详情")
-	if !tt.HasText("会话：synthetic-second") || q.Sessions[0].View.Status.Pending != before.Pending || q.Sessions[0].View.Status.Unknown != before.Unknown {
-		t.Fatal("details mutated message status")
+	if !q.DetailDialogOpen || !tt.HasText("会话：synthetic-second") || q.Sessions[0].View.Status.Pending != before.Pending || q.Sessions[0].View.Status.Unknown != before.Unknown {
+		t.Fatal("details mutated message status or failed to open dialog")
+	}
+	clickProjectUI(t, tt, "关闭")
+	if q.DetailDialogOpen {
+		t.Fatal("detail dialog did not close")
 	}
 	q.Sessions[0].View.observe(PendingMaterials{Signature: "confirmed"})
 	tt.Frame()
-	if tt.HasText("1 条消息未收到保存结果") || !tt.HasText("当前没有消息积压或已检测到的异常") {
-		t.Fatal("confirmed recovery did not remove notice")
+	if tt.HasText("1 条消息未收到采集结果") || !tt.HasText("自动采集已暂停") {
+		t.Fatal("confirmed recovery did not transition to healthy single-row state")
+	}
+	q.AutomaticSave = true
+	tt.Frame()
+	if !tt.HasText("自动采集已开启 · 正常") {
+		t.Fatal("healthy automatic-save state missing")
 	}
 }
 func TestMessageStatusVisualScenarios(t *testing.T) {
@@ -243,7 +252,7 @@ func TestMessageDetailsSeparatePreviewAndDiagnostics(t *testing.T) {
 	if tt.HasText("诊断代码：capture_retry_pending") || tt.HasText("消息标识：synthetic-id-00") || tt.HasText("Bash · synthetic message 05") {
 		t.Fatal("default view exposes diagnostic noise or more than five previews")
 	}
-	if !tt.HasText("结果未确认") || !tt.HasText("待保存") || !tt.HasText("显示其余 15 条") {
+	if !tt.HasText("结果未确认") || !tt.HasText("待采集") || !tt.HasText("显示其余 15 条") {
 		t.Fatal("missing message state distinction or progressive disclosure")
 	}
 	fixtureImage(t, tt, "message-details-readable")
@@ -318,5 +327,56 @@ func TestOfficial403CanOnlyReplayAfterPermissionRestored(t *testing.T) {
 		if n.Action == "replay" {
 			t.Fatal("403 replay bypassed current permission")
 		}
+	}
+}
+
+func TestProcessingNoticeDetailDialogShowsDiagnostics(t *testing.T) {
+	a, q := projectQueueFixture()
+	p := a.access.Directory.Projects[0]
+	q.Sessions = nil
+	q.Documents = nil
+	q.Loaded = true
+	q.AutomaticSave = true
+	q.ProcessingNotices = []processingNotice{{
+		Operation:   "op-504",
+		Request:     "req-504",
+		At:          "2026-11-21T07:51:57Z",
+		RecoveredAt: "2026-11-21T09:00:24Z",
+		Status:      504,
+		Code:        "codex_timeout",
+		Backend:     "codex",
+	}}
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Column(c).FillWidth().MaxWidth(900).Children(func() { a.projectQueueSection(c, p) })
+	}, 1200, 1000)
+	for _, want := range []string{"系统异常", "记忆提炼调用失败", "提炼异常", "查看详情", "知道了，不再提醒"} {
+		if !tt.HasText(want) {
+			t.Fatalf("missing expected text %q", want)
+		}
+	}
+	for _, legacy := range []string{"当前没有需要你处理的事项", "状态与异常提示", "重新读取状态"} {
+		if tt.HasText(legacy) {
+			t.Fatalf("unexpected legacy text %q remained", legacy)
+		}
+	}
+	clickProjectUI(t, tt, "查看详情")
+	if !q.DetailDialogOpen {
+		t.Fatal("expected detail dialog to open")
+	}
+	for _, want := range []string{"codex_timeout", "诊断信息", "复制诊断", "刷新状态"} {
+		if !tt.HasText(want) {
+			t.Fatalf("missing expected detail dialog text %q", want)
+		}
+	}
+	if tt.HasText("op-504") {
+		t.Fatal("technical diagnostics exposed before expanding")
+	}
+	clickProjectUI(t, tt, "诊断信息")
+	if !tt.HasText("op-504") || !tt.HasText("req-504") {
+		t.Fatal("expanded diagnostics missing operation_id or request_id")
+	}
+	clickProjectUI(t, tt, "关闭")
+	if q.DetailDialogOpen {
+		t.Fatal("expected detail dialog to close")
 	}
 }

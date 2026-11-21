@@ -107,7 +107,7 @@ func TestQueuedDocumentReaderDoesNotEnumerateAnotherCatalogAndRestoresScroll(t *
 	drainReading(t, updates, func() bool { return !reader.Reading })
 	a.Update = nil
 	tt.Frame()
-	if a.page != "设置" || reader.Error != "" || reader.Selected == nil || !reader.Selected.BodyLoaded || !tt.HasText("如何启动本地服务？") || !tt.HasText("刷新处理状态") {
+	if a.page != "设置" || reader.Error != "" || reader.Selected == nil || !reader.Selected.BodyLoaded || !tt.HasText("如何启动本地服务？") || !tt.HasText("刷新提炼状态") {
 		t.Fatal("pending detail lost its body, title, context or next read action")
 	}
 	if tt.HasText("已载入 0 条") || tt.HasText("选中内容已不在当前官方页面，请重新选择") || tt.HasText("Session ID: synthetic-session") {
@@ -128,10 +128,10 @@ func TestProjectQueueActionsStayCloseToTheirText(t *testing.T) {
 				ui.Column(c).FillWidth().MaxWidth(900).Children(func() { a.projectQueueSection(c, a.access.Directory.Projects[0]) })
 			}, width, 1200)
 			details, ok := tt.Find("查看详情")
-			if !ok || details.X > 180 {
-				t.Fatal("details drifted to distant right edge", details)
+			if !ok || details.X+details.W > 900 {
+				t.Fatal("details drifted outside bounded V4 container", details)
 			}
-			if tt.HasText("归档此异常") || tt.HasText("继续保存") {
+			if tt.HasText("归档此异常") || tt.HasText("继续采集") {
 				t.Fatal("ambiguous recovery controls remain")
 			}
 			fixtureImage(t, tt, fmt.Sprintf("message-status-%d", width))
@@ -143,7 +143,7 @@ func TestProjectQueueBothTypesAndCompactPermissionFeedback(t *testing.T) {
 		t.Run(fmt.Sprint(wh), func(t *testing.T) {
 			a, q := projectQueueFixture()
 			tt := ui.NewTester(a.View, wh[0], wh[1])
-			for _, label := range []string{"权限设置", "消息与处理状态", "需要你处理", "状态与异常提示", "2 条消息等待保存", "1 条消息未收到保存结果", "2 份文档"} {
+			for _, label := range []string{"Agent 访问权限", "消息与采集状态", "需要你处理", "系统异常", "进行中与待提炼", "2 条消息等待采集", "1 条消息未收到采集结果", "2 份文档"} {
 				if !tt.HasText(label) {
 					t.Fatal("missing queue distinction", label)
 				}
@@ -168,9 +168,10 @@ func TestProjectQueueBothTypesAndCompactPermissionFeedback(t *testing.T) {
 			a.access.CheckboxPending = nil
 			q.Sessions = nil
 			q.Documents = nil
+			q.AutomaticSave = true
 			tt.Frame()
-			if !tt.HasText("当前没有需要你处理的事项") || !tt.HasText("当前没有消息积压或已检测到的异常") {
-				t.Fatal("successful empty states missing")
+			if !tt.HasText("自动采集已开启 · 正常") {
+				t.Fatal("successful healthy collapsed row missing")
 			}
 			fixtureImage(t, tt, fmt.Sprintf("project-settings-%dx%d-empty", wh[0], wh[1]))
 			q.Loaded = false

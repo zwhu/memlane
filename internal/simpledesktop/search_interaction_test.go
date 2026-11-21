@@ -24,7 +24,7 @@ func TestSearchTypeSwitchKeepsResultsClickableAndOpensReader(t *testing.T) {
 	a.searchUI.Submitted = a.searchSignature()
 	tt := ui.NewTester(a.View, 1200, 820)
 	clickProjectUI(t, tt, "搜索内容类型") // middle segment: knowledge
-	clickProjectUI(t, tt, "Knowledge hit")
+	clickProjectUI(t, tt, "A knowledge result")
 	if a.searchUI.Open {
 		t.Fatal("switching result type disabled an already returned result")
 	}
@@ -215,9 +215,9 @@ func TestSearchRestingRowsHaveNoSelectionAndHoverShowsContent(t *testing.T) {
 	fixtureImage(t, tt, "search-hover-preview")
 }
 
-func TestSearchPaletteV4ProjectScopeChipAndResultsPage(t *testing.T) {
+func TestSearchPaletteV4ProjectScopeChipAndPersistence(t *testing.T) {
 	a := projectUIFixture()
-	// Opening from a project page defaults "仅当前项目" to active.
+	// Opening from a project page with empty query defaults "仅当前项目" to active.
 	a.page = "知识"
 	a.project = 0
 	a.OpenSearch()
@@ -234,8 +234,11 @@ func TestSearchPaletteV4ProjectScopeChipAndResultsPage(t *testing.T) {
 	a.searchUI.Submitted = a.searchSignature()
 
 	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("仅当前项目") || !tt.HasText("查看全部结果") || !tt.HasText("检索结果页") {
+	if !tt.HasText("仅当前项目") || !tt.HasText("共 2 项") {
 		t.Fatalf("V4 palette controls missing: %v", tt.Texts())
+	}
+	if tt.HasText("查看全部结果") || tt.HasText("检索结果页") {
+		t.Fatalf("removed search results page controls remain in ⌘K footer: %v", tt.Texts())
 	}
 	// Verify ~120px top offset regardless of window height.
 	if panel, ok := tt.Find("搜索记忆与原始记录弹框"); !ok || panel.Y < 110 || panel.Y > 130 {
@@ -246,51 +249,55 @@ func TestSearchPaletteV4ProjectScopeChipAndResultsPage(t *testing.T) {
 		t.Fatal("bare UUID leaked in search palette row")
 	}
 
-	// Clicking v4Segmented / filter controls must keep ↑↓ and ⌘↵ working via overlay shortcuts.
+	// Clicking v4Segmented keeps ↑↓ working via overlay shortcuts, and ⌘↵ no longer navigates to 检索结果.
 	clickProjectUI(t, tt, "搜索内容类型")
 	tt.Key(0, ui.KeyDown)
 	if !a.searchUI.KeyboardSelection || a.searchUI.Selection != 0 {
 		t.Fatalf("↑↓ keyboard selection broke after clicking segmented filter: kb=%v sel=%d", a.searchUI.KeyboardSelection, a.searchUI.Selection)
 	}
 	tt.Key(ui.Cmd, ui.KeyEnter)
-	if a.page != "检索结果" || a.searchUI.Open {
-		t.Fatalf("⌘↵ did not open 检索结果 page after clicking filter: page=%q open=%v", a.page, a.searchUI.Open)
-	}
-	if !tt.HasText("检索结果") || !tt.HasText("复制正文") || !tt.HasText("在项目中打开") {
-		t.Fatalf("three-pane search results page missing V4 elements: %v", tt.Texts())
+	if a.page == "检索结果" || !a.searchUI.Open {
+		t.Fatalf("⌘↵ should not open removed 检索结果 page: page=%q open=%v", a.page, a.searchUI.Open)
 	}
 
-	// Raw record / session in search results must also offer "在项目中打开" and render highlighted session QAs.
-	a.searchUI.Type = "全部"
-	rawItem := Item{
-		ID:      "codex_sess1",
-		Dataset: "ds",
-		Kind:    "会话",
-		Title:   "Sandbox session topic",
-		Session: &Session{ID: "codex_sess1", Dataset: "ds"},
-		Detail: &SessionDetail{
-			Count: 1,
-			QAs:   []QA{{ID: "q1", Question: "How does sandbox work?", Answer: "Sandbox uses explicit opt-in."}},
-		},
-		BodyLoaded: true,
-	}
-	a.searchUI.Rows = []Item{rawItem}
-	a.state().Selected = &rawItem
-	tt.Frame()
-	if !tt.HasText("在项目中打开") || !tt.HasText("How does sandbox work?") {
-		t.Fatalf("raw session search result missing open-in-project or Q&A text: %v", tt.Texts())
-	}
-
-	// Opening from overview defaults "仅当前项目" to unchecked.
+	// Closing and reopening ⌘K preserves last non-empty query, scope, type, rows, selection, and scroll.
+	a.searchUI.Scroll.Y = 48
+	a.closeUnifiedSearch()
 	a.navigate("总览", 0)
 	a.OpenSearch()
+	if !a.searchUI.Open || a.searchUI.Query != "sandbox" || a.searchUI.Scope != a.Config.Projects[0].ID || a.searchUI.Type != "知识" || !a.searchUI.KeyboardSelection || a.searchUI.Selection != 0 || a.searchUI.Scroll.Y != 48 || len(a.searchUI.Rows) != 2 {
+		t.Fatalf("reopening ⌘K lost last search context: %+v", a.searchUI)
+	}
+
+	// Clearing query resets cached search; subsequent reopen on overview defaults to global scope.
+	tt.Frame()
+	clickProjectUI(t, tt, "清空关键词")
+	if a.searchUI.Query != "" {
+		t.Fatalf("clear button did not empty query: %q", a.searchUI.Query)
+	}
+	a.closeUnifiedSearch()
+	a.OpenSearch()
 	if a.searchUI.Scope != "" {
-		t.Fatalf("expected global scope when opened from overview, got %q", a.searchUI.Scope)
+		t.Fatalf("expected global scope when reopened with empty query on overview, got %q", a.searchUI.Scope)
 	}
 }
 
-func TestSearchResultsFromProjectManageTabAndHiddenProjectSkipped(t *testing.T) {
+func TestSearchPaletteFromProjectManageTabAndCommonMemoryJump(t *testing.T) {
 	a := projectUIFixture()
+	a.Config.Common = []Project{{ID: "common-user", Name: "通用记忆", Dataset: "ds-common"}}
+	// Confirm searchCatalog("") includes a.Config.Common alongside projects.
+	catalog := a.searchCatalog("")
+	hasCommon := false
+	for _, p := range catalog {
+		if p.Dataset == "ds-common" {
+			hasCommon = true
+			break
+		}
+	}
+	if !hasCommon {
+		t.Fatalf("searchCatalog(\"\") missing common memory dataset: %+v", catalog)
+	}
+
 	// Mark first project hidden; second project is visible.
 	p0 := a.Config.Projects[0]
 	a.projectVisibility = projectVisibilityState{
@@ -302,14 +309,13 @@ func TestSearchResultsFromProjectManageTabAndHiddenProjectSkipped(t *testing.T) 
 		t.Fatalf("expected visible project %q on overview, got ok=%v proj=%+v", a.Config.Projects[1].ID, ok, proj)
 	}
 
-	// Open ⌘K from project "管理" tab, press ⌘↵, and verify three-pane search results
-	// renders instead of being occluded by the project management view.
+	// Open ⌘K from project "管理" tab and jump directly to a common memory hit via Enter.
 	a.navigateKind("知识", 1, "管理")
 	a.OpenSearch()
+	a.searchUI.Scope = ""
 	a.searchUI.Query = "sandbox"
-	a.searchUI.Rows = []Item{
-		{ID: "k-manage", Dataset: a.Config.Projects[1].Dataset, Kind: "知识片段", Title: "Sandbox from manage", Body: "Sandbox rule body", Preview: "Sandbox rule body", BodyLoaded: true, SearchMatch: "关键词匹配", Date: "2026-11-20"},
-	}
+	commonHit := Item{ID: "cm-1", Dataset: "ds-common", Kind: "知识片段", Title: "Common sandbox preference", Body: "Always use explicit opt-in.", Preview: "Always use explicit opt-in.", BodyLoaded: true, SearchMatch: "关键词匹配", Date: "2026-11-20"}
+	a.searchUI.Rows = []Item{commonHit}
 	a.searchUI.Loaded = true
 	a.searchUI.Loading = false
 	a.searchUI.Submitted = a.searchSignature()
@@ -318,15 +324,10 @@ func TestSearchResultsFromProjectManageTabAndHiddenProjectSkipped(t *testing.T) 
 	if !tt.HasText("清空") {
 		t.Fatal("distinct clear text button missing when query is non-empty")
 	}
-	tt.Key(ui.Cmd, ui.KeyEnter)
-	if a.page != "检索结果" || a.searchUI.Open {
-		t.Fatalf("⌘↵ from manage tab failed: page=%q open=%v", a.page, a.searchUI.Open)
-	}
-	if _, ok := tt.Find("检索结果列表"); !ok {
-		t.Fatalf("search results three-pane list occluded by manage tab: %v", tt.Texts())
-	}
-	if !tt.HasText("复制正文") || !tt.HasText("在项目中打开") {
-		t.Fatalf("search results reader controls missing after opening from manage tab: %v", tt.Texts())
+	tt.Key(0, ui.KeyDown)
+	a.searchSubmitOrOpen()
+	if a.searchUI.Open || a.page != "通用知识" || a.project != 0 || a.state().Selected == nil || a.state().Selected.ID != "cm-1" {
+		t.Fatalf("Enter on common memory hit did not open 通用知识 and select item: open=%v page=%q proj=%d sel=%+v", a.searchUI.Open, a.page, a.project, a.state().Selected)
 	}
 }
 
@@ -338,5 +339,38 @@ func TestSearchPaletteLoadingSkeletonAndReduceMotion(t *testing.T) {
 	tt := ui.NewTester(a.View, 1200, 820)
 	if !tt.HasText("搜索中…") {
 		t.Fatal("loading state missing skeleton status")
+	}
+}
+
+func TestSearchSpaceCollapsedWrapperStrippingAndNoKnowledgeTitleDuplication(t *testing.T) {
+	raw := "Lesson-Type: state State-Key: desktop/window Session learning (session codex_s1) Session ID: codex_s1 Window stays 1200x820 by default."
+	item := Item{
+		ID:          "chunk-collapsed",
+		Dataset:     "ds",
+		Kind:        "知识片段",
+		Title:       "检索片段",
+		Body:        raw,
+		Preview:     raw,
+		SearchMatch: "关键词匹配",
+	}
+	title, preview := searchRowText(item)
+	if title != "Window stays 1200x820 by default." || preview != "" || item.Body != raw {
+		t.Fatalf("space-collapsed wrapper leaked or source mutated: title=%q preview=%q body=%q", title, preview, item.Body)
+	}
+
+	// Knowledge hit with multi-sentence body and non-empty query must not duplicate "title — preview".
+	longBody := "First sentence explains the rule. Second sentence mentions sandbox opt-in details."
+	knowledgeHit := Item{
+		ID:          "chunk-know",
+		Dataset:     "ds",
+		Kind:        "知识片段",
+		Title:       "First sentence explains the rule.",
+		Body:        longBody,
+		Preview:     longBody,
+		SearchMatch: "关键词匹配",
+	}
+	primary, secondary := searchItemPrimaryText(knowledgeHit, "sandbox")
+	if secondary != "" || !strings.Contains(primary, "sandbox") || strings.Contains(primary, " — ") {
+		t.Fatalf("knowledge hit duplicated title and preview: primary=%q secondary=%q", primary, secondary)
 	}
 }

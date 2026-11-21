@@ -4,6 +4,14 @@ import (
 	"time"
 )
 
+type trayProjectAlert struct {
+	ProjectID    string
+	ProjectName  string
+	ProjectIndex int
+	ActionCount  int
+	ErrorCount   int
+}
+
 // Reuse the settings queue reader with bounded concurrent projects. Enumeration
 // only reads status; it never saves materials or starts knowledge processing.
 func (a *App) refreshSidebarQueueIfDue(now time.Time) {
@@ -45,4 +53,66 @@ func (a *App) sidebarQueueBadge(p Project) (string, string) {
 		return "!", "有尚未处理的消息提醒，打开项目设置处理或选择不再提醒。"
 	}
 	return "", ""
+}
+
+func (a *App) countProjectMessageAlerts(p AccessProject) (actionCount, errorCount int) {
+	q := a.projectQueueStateFor(p)
+	if q == nil {
+		return 0, 0
+	}
+	needs, info := a.messageNotices(q, p)
+	if !q.Loaded && len(needs) == 0 && len(info) == 0 {
+		return 0, 0
+	}
+	for _, n := range needs {
+		if !q.noticeAcknowledged(n.Key) {
+			actionCount++
+		}
+	}
+	for _, n := range info {
+		if n.Tag == "操作记录" {
+			continue
+		}
+		if !q.noticeAcknowledged(n.Key) {
+			errorCount++
+		}
+	}
+	return actionCount, errorCount
+}
+
+func (a *App) projectHasActiveMessageAlerts(p AccessProject) bool {
+	actionCount, errorCount := a.countProjectMessageAlerts(p)
+	return actionCount+errorCount > 0
+}
+
+func (a *App) trayProjectAlerts() []trayProjectAlert {
+	var alerts []trayProjectAlert
+	for _, p := range a.access.Directory.Projects {
+		actionCount, errorCount := a.countProjectMessageAlerts(p)
+		if actionCount+errorCount == 0 {
+			continue
+		}
+		projectIndex := -1
+		for i, cp := range a.Config.Projects {
+			if (p.ID != "" && cp.ID == p.ID) || (p.Dataset != "" && cp.Dataset == p.Dataset) {
+				projectIndex = i
+				break
+			}
+		}
+		name := p.Name
+		if name == "" && projectIndex >= 0 && projectIndex < len(a.Config.Projects) {
+			name = a.Config.Projects[projectIndex].Name
+		}
+		if name == "" {
+			name = p.ID
+		}
+		alerts = append(alerts, trayProjectAlert{
+			ProjectID:    p.ID,
+			ProjectName:  name,
+			ProjectIndex: projectIndex,
+			ActionCount:  actionCount,
+			ErrorCount:   errorCount,
+		})
+	}
+	return alerts
 }

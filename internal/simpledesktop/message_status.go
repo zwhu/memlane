@@ -23,6 +23,65 @@ type messageNotice struct {
 	Key, Title, Source, Detail, Followup, Tag, Action string
 	NeedsUser                                         bool
 	Session                                           *queuedSession
+	Processing                                        *processingNotice
+}
+
+func (n messageNotice) dotTone() string {
+	if n.NeedsUser {
+		return "warn"
+	}
+	switch n.Tag {
+	case "系统异常", "读取异常", "提炼异常", "采集异常", "采集受阻":
+		return "fail"
+	case "需要授权", "需要补交", "等待恢复", "状态未确认", "已暂停":
+		return "warn"
+	case "处理中", "正在检查", "正在核对", "等待重试", "自动重试":
+		return "run"
+	default:
+		return ""
+	}
+}
+
+func (n messageNotice) badgeTone() string {
+	if n.NeedsUser {
+		return "warn"
+	}
+	switch n.Tag {
+	case "系统异常", "读取异常", "提炼异常", "采集异常", "采集受阻":
+		return "danger"
+	case "需要授权", "需要补交", "等待恢复", "状态未确认", "已暂停":
+		return "warn"
+	case "处理中", "正在检查", "正在核对", "等待重试", "自动重试", "待采集", "等待核对":
+		return "accent"
+	default:
+		return ""
+	}
+}
+
+func (n messageNotice) diagCode(q *projectQueueState) string {
+	if n.Session != nil && n.Session.View != nil {
+		if n.Session.View.ReadCode != "" {
+			return n.Session.View.ReadCode
+		}
+		if check := q.pendingCheck(*n.Session); check.Reason != "" {
+			return check.Reason
+		}
+		if n.Session.View.Status.Blocked != nil && n.Session.View.Status.Blocked.Reason != "" {
+			return n.Session.View.Status.Blocked.Reason
+		}
+	}
+	if n.Processing != nil {
+		if n.Processing.Code != "" {
+			return n.Processing.Code
+		}
+		if n.Processing.Status > 0 {
+			return fmt.Sprintf("HTTP %d", n.Processing.Status)
+		}
+	}
+	if q.Backlog != nil && q.Backlog.Reason != "" && n.Key == "backlog" {
+		return q.Backlog.Reason
+	}
+	return ""
 }
 
 func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info []messageNotice) {
@@ -38,8 +97,9 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 	}
 	now := time.Now()
 	for _, failure := range q.ProcessingNotices {
-		detail := fmt.Sprintf("最近一次提炼调用返回 HTTP %d，尚不能据此确认记忆已生成。", failure.Status)
-		switch failure.Code {
+		f := failure
+		detail := fmt.Sprintf("最近一次提炼调用返回 HTTP %d，尚不能据此确认记忆已生成。", f.Status)
+		switch f.Code {
 		case "codex_schema_unsupported":
 			detail = "提炼请求的结构化输出格式不被 Codex 接受。"
 		case "codex_quota_exceeded":
@@ -49,29 +109,29 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 		case "codex_context_exceeded":
 			detail = "本次提炼内容超出 Codex 的上下文限制。"
 		case "codex_connection_failed":
-			detail = fmt.Sprintf("连接 Codex 上游模型服务失败（HTTP %d），常见于网络波动或代理中断。", failure.Status)
+			detail = fmt.Sprintf("连接 Codex 上游模型服务失败（HTTP %d），常见于网络波动或代理中断。", f.Status)
 		case "codex_stream_disconnected":
-			detail = fmt.Sprintf("与 Codex 上游模型服务的连接中途断开（HTTP %d）。", failure.Status)
+			detail = fmt.Sprintf("与 Codex 上游模型服务的连接中途断开（HTTP %d）。", f.Status)
 		case "codex_timeout":
-			detail = fmt.Sprintf("Codex 模型响应超时（HTTP %d）。", failure.Status)
+			detail = fmt.Sprintf("Codex 模型响应超时（HTTP %d）。", f.Status)
 		case "codex_rate_limited":
-			detail = fmt.Sprintf("触发 Codex 请求频率限制（HTTP %d），提炼调用未完成。", failure.Status)
+			detail = fmt.Sprintf("触发 Codex 请求频率限制（HTTP %d），提炼调用未完成。", f.Status)
 		case "codex_upstream_error":
-			detail = fmt.Sprintf("Codex 上游服务返回异常（HTTP %d），尚不能据此确认记忆已生成。", failure.Status)
+			detail = fmt.Sprintf("Codex 上游服务返回异常（HTTP %d），尚不能据此确认记忆已生成。", f.Status)
 		}
-		source := "记忆处理服务"
-		if failure.Backend == "codex" {
+		source := "记忆提炼服务"
+		if f.Backend == "codex" {
 			source = "Codex · 记忆提炼"
 		}
-		if atLabel := formatNoticeLocalClock(failure.At, now); atLabel != "" {
+		if atLabel := formatNoticeLocalClock(f.At, now); atLabel != "" {
 			source += " · " + atLabel
 		}
-		followup := "这是近期调用异常记录，不代表原始消息未保存；后续整理结果需另行核对。"
-		if recLabel := formatNoticeLocalClock(failure.RecoveredAt, now); recLabel != "" {
-			followup = fmt.Sprintf("后续调用已在 %s 恢复正常；但本次失败对应的提炼结果仍需另行核对，不代表原始消息未保存。", recLabel)
+		followup := "这是近期调用异常记录，不代表原始消息未采集；后续提炼结果需另行核对。"
+		if recLabel := formatNoticeLocalClock(f.RecoveredAt, now); recLabel != "" {
+			followup = fmt.Sprintf("后续调用已在 %s 恢复正常；但本次失败对应的提炼结果仍需另行核对，不代表原始消息未采集。", recLabel)
 		}
-		add(messageNotice{Key: "processing/" + failure.Operation, Title: "记忆提炼调用失败", Source: source,
-			Detail: detail, Followup: followup, Tag: "整理异常", Action: "refresh"})
+		add(messageNotice{Key: "processing/" + f.Operation, Title: "记忆提炼调用失败", Source: source,
+			Detail: detail, Followup: followup, Tag: "提炼异常", Action: "refresh", Processing: &f})
 	}
 	for index, row := range q.Sessions {
 		r := row
@@ -82,13 +142,13 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 		source := agentDisplayName(r.Agent.Name) + " · 会话 " + shortSessionLabel(r.Binding.HostSessionKey)
 		key := noticeSessionKey(r, index)
 		if !v.Loaded || v.ReadError != "" {
-			detail := "未能读取这次会话的保存状态，不能据此判断消息是否已保存。"
+			detail := "未能读取这次会话的采集状态，不能据此判断消息是否已采集。"
 			if v.ReadCode == "official_session_unconfirmed" {
-				detail = "本机会话与服务端会话尚未对应，暂时无法读取保存状态。"
+				detail = "本机会话与服务端会话尚未对应，暂时无法读取采集状态。"
 			}
-			add(messageNotice{Key: key + "/read", Title: "会话保存状态读取失败", Source: source, Detail: detail, Followup: "系统会定期重新读取；本次不补采或重发消息。", Tag: "读取异常", Action: "refresh", Session: &r})
+			add(messageNotice{Key: key + "/read", Title: "会话采集状态读取失败", Source: source, Detail: detail, Followup: "系统会定期重新读取；本次不补采或重发消息。", Tag: "读取异常", Action: "refresh", Session: &r})
 			if v.Status.Pending > v.Status.Unknown && v.Status.Blocked != nil {
-				add(messageNotice{Key: key + "/pending", Title: "上次读取的消息保存受阻", Source: source, Detail: "上次读取时存在未发送的受阻消息；本次读取失败，尚不能确认是否恢复。", Tag: "保存受阻", Action: "refresh", Session: &r})
+				add(messageNotice{Key: key + "/pending", Title: "上次读取的消息采集受阻", Source: source, Detail: "上次读取时存在未发送的受阻消息；本次读取失败，尚不能确认是否恢复。", Tag: "采集受阻", Action: "refresh", Session: &r})
 			}
 			if v.Status.Unknown == 0 {
 				continue
@@ -101,76 +161,76 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 		filtered := q.filteredPending(r)
 		held := q.heldPending(r)
 		if held.Rejected > 0 {
-			add(messageNotice{Key: key + "/rejected", Title: fmt.Sprintf("%d 条消息保存受阻", held.Rejected), Source: source, Tag: "保存异常", Action: "details", Session: &r,
-				Detail: "这些记录未通过保存检查或被服务拒绝，原消息已单独保留。", Followup: "不会自动重复发送这些记录；其他符合规则的消息可继续保存。"})
+			add(messageNotice{Key: key + "/rejected", Title: fmt.Sprintf("%d 条消息采集受阻", held.Rejected), Source: source, Tag: "采集异常", Action: "details", Session: &r,
+				Detail: "这些记录未通过采集检查或被服务拒绝，原消息已单独保留。", Followup: "不会自动重复发送这些记录；其他符合规则的消息可继续采集。"})
 		}
 		if filtered > 0 {
-			add(messageNotice{Key: key + "/filtered", Title: fmt.Sprintf("%d 条消息因采集规则未保存", filtered), Source: source,
-				Detail: "这些工具记录不符合当前采集规则，原消息仍保留在本机。", Followup: "其他符合规则的消息可继续保存；不会绕过采集规则发送这些记录。", Tag: "已保留", Action: "details", Session: &r})
+			add(messageNotice{Key: key + "/filtered", Title: fmt.Sprintf("%d 条消息因采集规则未采集", filtered), Source: source,
+				Detail: "这些工具记录不符合当前采集规则，原消息仍保留在本机。", Followup: "其他符合规则的消息可继续采集；不会绕过采集规则发送这些记录。", Tag: "已保留", Action: "details", Session: &r})
 		}
 		safe := max(0, s.Pending-s.Unknown-filtered-held.RejectedUnsent-held.DeferredUnsent)
 		if !v.Loaded || v.ReadError != "" {
 			safe = 0 // Retained outcomes can be acknowledged, never used to send.
 		}
 		if safe > 0 {
-			n := messageNotice{Key: key + "/pending", Title: fmt.Sprintf("%d 条消息等待保存", safe), Source: source, Tag: "待保存", Session: &r, Action: "details"}
+			n := messageNotice{Key: key + "/pending", Title: fmt.Sprintf("%d 条消息等待采集", safe), Source: source, Tag: "待采集", Session: &r, Action: "details"}
 			access := p.Overrides[r.Agent.ID].effective(a.access.Directory.Defaults).Access
 			denied := access == "read" || access == "none"
 			previouslyDenied := s.Blocked != nil && (s.Blocked.Reason == "write_denied" || s.Blocked.Reason == "project_write_denied" || s.Blocked.Reason == "official_http_403")
 			switch {
 			case denied:
 				n.NeedsUser, n.Tag, n.Action = true, "需要授权", "permissions"
-				n.Detail = "这个 Agent 没有当前项目的写入权限，消息尚未保存。"
-				n.Followup = "如需保存，请检查权限设置；权限恢复后，原来被拒绝的消息仍需明确选择补交。"
+				n.Detail = "这个 Agent 没有当前项目的写入权限，消息尚未采集。"
+				n.Followup = "如需采集，请检查权限设置；权限恢复后，原来被拒绝的消息仍需明确选择补交。"
 			case previouslyDenied && access == "maintain" && s.Unknown == 0:
 				n.NeedsUser, n.Tag, n.Action = true, "需要补交", "replay"
 				n.Detail = "这些消息曾因没有写入权限被暂停，目前权限已允许写入。"
 				n.Followup = "请先查看本机消息，确认后补交；系统不会自动补交原来被拒绝的消息。"
 			case s.Blocked != nil:
-				n.Tag, n.Detail, n.Followup = "保存受阻", "本机保存队列已被暂停，当前不能继续发送这些消息。", "原消息保留；暂停原因见详情，系统不会绕过限制重新发送。"
+				n.Tag, n.Detail, n.Followup = "采集受阻", "本机采集队列已被暂停，当前不能继续发送这些消息。", "原消息保留；暂停原因见详情，系统不会绕过限制重新发送。"
 			case q.Backlog.active():
-				n.Detail, n.Followup = "消息仍在本机队列，尚未完成保存。", "后台保存任务正在运行，切换页面不会停止。"
+				n.Detail, n.Followup = "消息仍在本机队列，尚未完成采集。", "后台采集任务正在运行，切换页面不会停止。"
 			case q.AutomaticSave:
-				n.Detail, n.Followup = "消息仍在本机队列，尚未完成保存。", "自动保存已开启；当前尚未读到正在执行的保存任务。"
+				n.Detail, n.Followup = "消息仍在本机队列，尚未完成采集。", "自动采集已开启；当前尚未读到正在执行的采集任务。"
 			default:
-				n.Detail, n.Followup = "消息仍在本机队列，尚未完成保存。", "当前没有正在运行的保存任务。"
+				n.Detail, n.Followup = "消息仍在本机队列，尚未完成采集。", "当前没有正在运行的采集任务。"
 				if access == "maintain" && q.BacklogLoaded && !q.BacklogLoading && q.BacklogError == "" && (q.Backlog == nil || q.Backlog.Status == "completed" || q.Backlog.Status == "watching") {
 					n.NeedsUser, n.Action = true, "save"
-					n.Followup = "开始项目保存任务，补存明确未发送的消息；无编号的未知消息不会重发。"
+					n.Followup = "开始项目采集任务，补采明确未发送的消息；无编号的未知消息不会重发。"
 				}
 			}
 			add(n)
 		}
 		retryable := min(max(0, s.RetryableUnknown), max(0, s.Unknown))
 		if retryable > 0 {
-			n := messageNotice{Key: key + "/retry", Title: fmt.Sprintf("%d 条消息等待核对保存结果", retryable), Source: source, Detail: "尚未收到保存结果，原消息保留在本机。", Followup: "当前没有正在执行的保存任务，消息仍待核对。", Tag: "等待核对", Action: "details", Session: &r}
+			n := messageNotice{Key: key + "/retry", Title: fmt.Sprintf("%d 条消息等待核对采集结果", retryable), Source: source, Detail: "尚未收到采集结果，原消息保留在本机。", Followup: "当前没有正在执行的采集任务，消息仍待核对。", Tag: "等待核对", Action: "details", Session: &r}
 			if p.Overrides[r.Agent.ID].effective(a.access.Directory.Defaults).Access != "maintain" {
 				n.Tag, n.Followup = "等待授权", "当前没有写入权限，系统不会重试发送。"
 			} else if (s.Blocked != nil && s.Blocked.Reason == "capture_request_rejected") || (q.Backlog != nil && q.Backlog.Reason == "capture_request_rejected") {
-				n.Tag, n.Followup = "保存异常", "服务拒绝了这次保存请求，原消息保留；系统已停止重试。"
+				n.Tag, n.Followup = "采集异常", "服务拒绝了这次采集请求，原消息保留；系统已停止重试。"
 			} else if q.Backlog != nil && (q.Backlog.Status == "paused" || q.Backlog.Status == "stopped" || q.Backlog.Status == "interrupted" || q.Backlog.Status == "stopping") {
-				n.Tag, n.Followup = "等待恢复", "保存任务已暂停；恢复后才会按原编号核对并重试。"
+				n.Tag, n.Followup = "等待恢复", "采集任务已暂停；恢复后才会按原编号核对并重试。"
 			} else if q.BacklogError != "" {
-				n.Tag, n.Followup = "状态未确认", "暂时无法读取保存任务状态，尚不能确认是否会重试。"
+				n.Tag, n.Followup = "状态未确认", "暂时无法读取采集任务状态，尚不能确认是否会重试。"
 			} else if q.pendingCheck(r).Status == "checking" {
-				n.Tag, n.Followup = "正在核对", "正在查询原消息的保存结果。"
+				n.Tag, n.Followup = "正在核对", "正在查询原消息的采集结果。"
 			} else if q.AutomaticSave || q.Backlog.active() {
-				n.Tag, n.Followup = "等待重试", "后台将按原编号核对并重试，避免重复保存。"
+				n.Tag, n.Followup = "等待重试", "后台将按原编号核对并重试，避免重复采集。"
 			}
 			add(n)
 		}
 		if legacyUnknown := s.Unknown - retryable - held.RejectedUnknown; legacyUnknown > 0 {
 			check := q.pendingCheck(r)
-			n := messageNotice{Key: key + "/unknown", Title: fmt.Sprintf("%d 条消息未收到保存结果", legacyUnknown), Source: source, Detail: "发送过程没有留下可确认的保存结果；具体原因尚未确定。", Followup: "原消息保留在本机，暂不重复发送。", Tag: "系统异常", Action: "details", Session: &r}
+			n := messageNotice{Key: key + "/unknown", Title: fmt.Sprintf("%d 条消息未收到采集结果", legacyUnknown), Source: source, Detail: "发送过程没有留下可确认的采集结果；具体原因尚未确定。", Followup: "原消息保留在本机，暂不重复发送。", Tag: "系统异常", Action: "details", Session: &r}
 			switch check.Status {
 			case "checking":
-				n.Tag, n.Followup = "正在检查", "系统正在查询保存结果，不会重复发送。"
+				n.Tag, n.Followup = "正在检查", "系统正在查询采集结果，不会重复发送。"
 			case "unconfirmed":
 				if check.Reason == "original_receipt_unavailable" {
-					n.Detail = "这批消息缺少可查询的唯一保存凭证，系统无法核实这次保存。"
-					n.Followup = "这是 Memlane 的保存机制缺陷，目前无法自动恢复。原消息保留，不重复发送，也不需要你判断是否保存。"
+					n.Detail = "这批消息缺少可查询的唯一采集凭证，系统无法核实这次采集。"
+					n.Followup = "这是 Memlane 的采集机制缺陷，目前无法自动恢复。原消息保留，不重复发送，也不需要你判断是否采集。"
 				} else {
-					n.Detail = "系统未能读取服务端保存结果；目前无法确定是否已保存。"
+					n.Detail = "系统未能读取服务端采集结果；目前无法确定是否已采集。"
 					n.Followup = "系统会定期重新检查；原消息保留，不重复发送。"
 				}
 			default:
@@ -181,14 +241,14 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 	}
 	if j := q.Backlog; j != nil {
 		if j.ReviewFailed > 0 {
-			add(messageNotice{Key: "review-failed", Title: "部分会话暂未保存", Tag: "读取异常", Detail: fmt.Sprintf("%d 个会话的保存状态未能核对，已单独保留。", j.ReviewFailed), Followup: "其他会话可继续保存；失败会话不会被当成已保存。"})
+			add(messageNotice{Key: "review-failed", Title: "部分会话暂未采集", Tag: "读取异常", Detail: fmt.Sprintf("%d 个会话的采集状态未能核对，已单独保留。", j.ReviewFailed), Followup: "其他会话可继续采集；失败会话不会被当成已采集。"})
 		}
 		paused := j.Status == "paused" || j.Status == "stopped" || j.Status == "interrupted"
 		if paused {
-			n := messageNotice{Key: "backlog", Title: "后台保存已暂停", Tag: "系统异常", Detail: backlogReason(j.Reason), Followup: "此状态不代表所有消息都未保存；具体消息见上方会话。"}
+			n := messageNotice{Key: "backlog", Title: "后台采集已暂停", Tag: "系统异常", Detail: backlogReason(j.Reason), Followup: "此状态不代表所有消息都未采集；具体消息见上方会话。"}
 			switch j.Reason {
 			case "user_stopped":
-				n.Title, n.Tag = "积压消息保存已暂停", "已暂停"
+				n.Title, n.Tag = "积压消息采集已暂停", "已暂停"
 				n.Detail = "暂停原因：任务留有停止标记，触发来源未记录。"
 				if queueRecoverableCount(q) > 0 {
 					n.NeedsUser, n.Action = true, "resume"
@@ -199,24 +259,24 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 			case "write_denied", "backlog_write_denied":
 				n.NeedsUser, n.Action, n.Tag = true, "permissions", "需要授权"
 			case "policy_unconfirmed":
-				n.Detail = "系统尚未确认权限是否已生效，后台保存暂缓。"
+				n.Detail = "系统尚未确认权限是否已生效，后台采集暂缓。"
 				n.Followup = "这是权限状态核对问题，不表示你需要重新授权。"
 				n.Action = "refresh"
 			case "capture_retry_pending":
-				n.Title, n.Tag = "消息保存等待重试", "自动重试"
-				n.Detail, n.Followup = "尚未收到保存结果，系统将按原编号自动核对并重试。", "原消息保留在本机，不会重复保存。"
+				n.Title, n.Tag = "消息采集等待重试", "自动重试"
+				n.Detail, n.Followup = "尚未收到采集结果，系统将按原编号自动核对并重试。", "原消息保留在本机，不会重复采集。"
 				if !j.Automatic {
-					n.Title, n.Tag = "消息保存已暂停", "等待恢复"
-					n.Detail, n.Followup = "手动保存任务尚未收到结果，原消息保留。", "恢复后按原编号核对并重试，不会重复保存。"
+					n.Title, n.Tag = "消息采集已暂停", "等待恢复"
+					n.Detail, n.Followup = "手动采集任务尚未收到结果，原消息保留。", "恢复后按原编号核对并重试，不会重复采集。"
 					if queueRecoverableCount(q) > 0 {
 						n.NeedsUser, n.Action = true, "resume"
 					}
 				}
 			case "capture_request_rejected":
-				n.Title, n.Tag = "保存请求被拒绝", "系统异常"
-				n.Detail, n.Followup = "服务拒绝了这次保存请求，系统已停止重试。", "原消息保留在本机。"
+				n.Title, n.Tag = "采集请求被拒绝", "系统异常"
+				n.Detail, n.Followup = "服务拒绝了这次采集请求，系统已停止重试。", "原消息保留在本机。"
 			case "backlog_installation_changed", "backlog_binding_changed":
-				n.Detail = "Agent 接入配置或会话所属项目发生变化，原保存任务已暂停。"
+				n.Detail = "Agent 接入配置或会话所属项目发生变化，原采集任务已暂停。"
 				n.Followup = "当前不能安全沿用旧任务发送；需要先核对连接与原消息归属。"
 				n.Action = "refresh"
 			default:
@@ -225,29 +285,29 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 			add(n)
 		}
 		if j.ProcessingFailed > 0 {
-			add(messageNotice{Key: "processing-failed", Title: "部分消息的记忆整理未确认完成", Tag: "整理异常", Detail: fmt.Sprintf("%d 个会话的整理提交失败或结果未确认。", j.ProcessingFailed), Followup: "这不表示原消息保存失败；整理结果未确认前不会重复提交。", Action: "refresh"})
+			add(messageNotice{Key: "processing-failed", Title: "部分消息的记忆提炼未确认完成", Tag: "提炼异常", Detail: fmt.Sprintf("%d 个会话的提炼提交失败或结果未确认。", j.ProcessingFailed), Followup: "这不表示原消息采集失败；提炼结果未确认前不会重复提交。", Action: "refresh"})
 		}
 		if j.ProcessingPartial > 0 {
-			add(messageNotice{Key: "processing-partial", Title: "部分材料已提交记忆整理", Tag: "等待接续",
-				Detail:   fmt.Sprintf("%d 个会话已有部分材料提交整理，仍有消息尚未完成同步。", j.ProcessingPartial),
-				Followup: "剩余消息保存后，系统会按已有整理进度继续；提交成功不代表整理已完成。", Action: "refresh"})
+			add(messageNotice{Key: "processing-partial", Title: "部分材料已提交记忆提炼", Tag: "等待接续",
+				Detail:   fmt.Sprintf("%d 个会话已有部分材料提交提炼，仍有消息尚未完成同步。", j.ProcessingPartial),
+				Followup: "剩余消息采集后，系统会按已有提炼进度继续；提交成功不代表提炼已完成。", Action: "refresh"})
 		}
 		if j.ProcessingActive > 0 {
-			add(messageNotice{Key: "processing-active", Title: "正在提交记忆整理", Tag: "处理中",
+			add(messageNotice{Key: "processing-active", Title: "正在提交记忆提炼", Tag: "处理中",
 				Detail: fmt.Sprintf("%d 个会话正在提交，尚未取得提交结果。", j.ProcessingActive), Action: "refresh"})
 		}
 	}
 	if q.BacklogError != "" {
-		add(messageNotice{Key: "backlog-read", Title: "后台保存状态读取失败", Tag: "读取异常", Detail: "暂时无法读取后台保存任务；不能据此判断消息是否保存。", Followup: "系统会定期重新读取，不会重新启动同一个保存请求。", Action: "refresh"})
+		add(messageNotice{Key: "backlog-read", Title: "后台采集状态读取失败", Tag: "读取异常", Detail: "暂时无法读取后台采集任务；不能据此判断消息是否采集。", Followup: "系统会定期重新读取，不会重新启动同一个采集请求。", Action: "refresh"})
 	}
 	if q.DocumentError != "" {
-		add(messageNotice{Key: "documents", Title: "记忆整理状态读取失败", Tag: "读取异常", Detail: "暂时无法获取已保存文档的整理进度。", Followup: "这不表示原消息丢失；系统会定期重新读取。", Action: "refresh"})
+		add(messageNotice{Key: "documents", Title: "记忆提炼状态读取失败", Tag: "读取异常", Detail: "暂时无法获取已采集文档的提炼进度。", Followup: "这不表示原消息丢失；系统会定期重新读取。", Action: "refresh"})
 	}
 	if q.KnowledgeReadError != "" {
 		add(messageNotice{Key: "knowledge", Title: "记忆阅读状态读取失败", Tag: "读取异常", Detail: "暂时无法核对记忆的已读状态，未读数量可能不完整。", Action: "refresh"})
 	}
 	if q.ActivityError != "" {
-		add(messageNotice{Key: "activity", Title: "近期处理记录读取失败", Tag: "读取异常", Detail: "暂时无法获取近期记忆整理记录；这不表示消息保存失败。", Action: "refresh"})
+		add(messageNotice{Key: "activity", Title: "近期提炼记录读取失败", Tag: "读取异常", Detail: "暂时无法获取近期记忆提炼记录；这不表示消息采集失败。", Action: "refresh"})
 	}
 	return
 }
