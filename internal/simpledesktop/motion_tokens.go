@@ -91,7 +91,7 @@ func (a *App) v4StaggerEnter(c *ui.Context, el ui.Element, key string, index int
 			rest.Y = -1
 		}
 	}
-	if index < 0 || index >= 12 {
+	if index < 0 || index >= 8 {
 		if interactive {
 			return el.AnimatePose(rest, v4Snappy)
 		}
@@ -109,18 +109,18 @@ func (a *App) v4DocEnter(c *ui.Context, el ui.Element, key string, run uint64) u
 
 // v4HeatmapWaveElapsed advances the left-to-right staggered wave grow animation
 // for the heatmap canvas. Stops requesting frames once settled or under ReduceMotion.
-func v4HeatmapWaveElapsed(c *ui.Context, start time.Time, total time.Duration) (float64, bool) {
+func v4HeatmapWaveElapsed(c *ui.Context, p *ui.Painter, start time.Time, total time.Duration) (float64, bool) {
 	if c.Preferences().ReduceMotion || start.IsZero() {
 		return total.Seconds(), false
 	}
-	elapsed := c.Now().Sub(start)
+	elapsed := p.Now().Sub(start)
 	if elapsed < 0 {
 		elapsed = 0
 	}
 	if elapsed >= total {
 		return total.Seconds(), false
 	}
-	c.AnimationFrame()
+	p.AnimationFrame()
 	return elapsed.Seconds(), true
 }
 
@@ -179,8 +179,8 @@ func v4Spinner(c *ui.Context) ui.Element {
 		rad := float32(4.5)
 		angle := float64(0)
 		if !reduce {
-			c.AnimationFrame()
-			now := float64(c.Now().UnixNano()) / 1e9
+			p.AnimationFrame()
+			now := float64(p.Now().UnixNano()) / 1e9
 			angle = math.Mod(now/0.7, 1) * 2 * math.Pi
 		}
 		for i := 0; i < 8; i++ {
@@ -215,8 +215,8 @@ func v4SkeletonBar(c *ui.Context, width, height, cornerRadius float32) ui.Elemen
 		if reduce || r.W <= 0 {
 			return
 		}
-		c.AnimationFrame()
-		now := float64(c.Now().UnixNano()) / 1e9
+		p.AnimationFrame()
+		now := float64(p.Now().UnixNano()) / 1e9
 		phase := math.Mod(now/1.4, 1)
 		bandW := r.W * 0.36
 		x := r.X - bandW + float32(phase)*(r.W+bandW)
@@ -259,9 +259,9 @@ func v4ButtonPress(el ui.Element, pressedScale float32) ui.Element {
 func v4StageBlocks(c *ui.Context) ui.Element {
 	reduce := c.Preferences().ReduceMotion
 	return ui.Box(c).Size(19, 12).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
-		now := float64(c.Now().UnixNano()) / 1e9
+		now := float64(p.Now().UnixNano()) / 1e9
 		if !reduce {
-			c.AnimationFrame()
+			p.AnimationFrame()
 		}
 		for k := 0; k < 6; k++ {
 			col, row := k%3, k/3
@@ -314,9 +314,9 @@ func v4EmptyState(c *ui.Context, key, message, hint string) {
 	sy := wrap.Spring("empty-py", py, v4Smooth.Spring)
 	wrap.Children(func() {
 		ui.Box(c).Size(76, 60).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
-			now := float64(c.Now().UnixNano()) / 1e9
+			now := float64(p.Now().UnixNano()) / 1e9
 			if animate {
-				c.AnimationFrame()
+				p.AnimationFrame()
 			}
 			blocks := []struct {
 				x, y, alpha float32

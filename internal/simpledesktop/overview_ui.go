@@ -45,21 +45,48 @@ type overviewViewState struct {
 	cachedFirstUseKey                          string
 	cachedFirstUseDays                         int
 	cachedFirstUseErr                          error
-	cachedBucketsGen                           uint64
+	snapshotVersion                            uint64
+	cachedBucketsVersion                       uint64
 	cachedBucketsCount                         int
+	cachedBucketsFirstKey                      string
+	cachedBucketsLastKey                       string
 	cachedBucketsDay                           string
 	cachedBuckets                              map[string]int
+	cachedHeatmapVersion                       uint64
+	cachedHeatmapCount                         int
+	cachedHeatmapFirstKey                      string
+	cachedHeatmapLastKey                       string
+	cachedHeatmapDay                           string
+	cachedHeatmapLoaded                        bool
+	cachedHeatmapWeeks                         int
+	cachedHeatmapCells                         []overviewHeatmapCell
 	heatmapGrowStart                           time.Time
 	heatmapTapDay                              string
 	heatmapTapStart                            time.Time
+	heatmapTapPending                          bool
 	heatmapRingPrevDay                         string
 	heatmapRingStart                           time.Time
+	heatmapRingPending                         bool
 	lastNavIndY                                float32
 	activityFetchedAt                          time.Time
 	cachedGroupedGen                           uint64
 	cachedGroupedHistory                       bool
 	cachedGroupedCount                         int
 	cachedGroupedEvents                        []overviewEvent
+}
+
+type overviewHeatmapCell struct {
+	w     int
+	wd    int
+	date  string
+	level int
+}
+
+func overviewKnowledgeBounds(items []Item) (firstKey, lastKey string) {
+	if len(items) == 0 {
+		return "", ""
+	}
+	return items[0].key(), items[len(items)-1].key()
 }
 
 func (a *App) overviewFirstUseDays(now time.Time) (int, error) {
@@ -76,14 +103,60 @@ func (a *App) overviewFirstUseDays(now time.Time) (int, error) {
 func (a *App) overviewCachedBuckets(now time.Time) map[string]int {
 	v := &a.overviewState
 	day := now.Format("2006-01-02")
-	if v.cachedBuckets != nil && v.cachedBucketsGen == v.generation && v.cachedBucketsCount == len(v.Snapshot.Knowledge) && v.cachedBucketsDay == day {
+	firstKey, lastKey := overviewKnowledgeBounds(v.Snapshot.Knowledge)
+	if v.cachedBuckets != nil && v.cachedBucketsVersion == v.snapshotVersion && v.cachedBucketsCount == len(v.Snapshot.Knowledge) && v.cachedBucketsFirstKey == firstKey && v.cachedBucketsLastKey == lastKey && v.cachedBucketsDay == day {
 		return v.cachedBuckets
 	}
 	v.cachedBuckets = overviewBuckets(v.Snapshot, now.Location())
-	v.cachedBucketsGen = v.generation
+	v.cachedBucketsVersion = v.snapshotVersion
 	v.cachedBucketsCount = len(v.Snapshot.Knowledge)
+	v.cachedBucketsFirstKey = firstKey
+	v.cachedBucketsLastKey = lastKey
 	v.cachedBucketsDay = day
 	return v.cachedBuckets
+}
+
+func (a *App) overviewCachedHeatmapCells(now, today, start, gridStart time.Time, weeks int, buckets map[string]int) []overviewHeatmapCell {
+	v := &a.overviewState
+	day := now.Format("2006-01-02")
+	firstKey, lastKey := overviewKnowledgeBounds(v.Snapshot.Knowledge)
+	if v.cachedHeatmapCells != nil && v.cachedHeatmapVersion == v.snapshotVersion && v.cachedHeatmapCount == len(v.Snapshot.Knowledge) && v.cachedHeatmapFirstKey == firstKey && v.cachedHeatmapLastKey == lastKey && v.cachedHeatmapDay == day && v.cachedHeatmapLoaded == v.Loaded && v.cachedHeatmapWeeks == weeks {
+		return v.cachedHeatmapCells
+	}
+	cells := make([]overviewHeatmapCell, 0, weeks*7)
+	for w := 0; w < weeks; w++ {
+		for wd := 0; wd < 7; wd++ {
+			d := gridStart.AddDate(0, 0, w*7+wd)
+			if d.Before(start) || d.After(today) {
+				continue
+			}
+			date := d.Format("2006-01-02")
+			level := 0
+			if v.Loaded {
+				count := buckets[date]
+				switch {
+				case count >= 10:
+					level = 4
+				case count >= 6:
+					level = 3
+				case count >= 3:
+					level = 2
+				case count > 0:
+					level = 1
+				}
+			}
+			cells = append(cells, overviewHeatmapCell{w: w, wd: wd, date: date, level: level})
+		}
+	}
+	v.cachedHeatmapCells = cells
+	v.cachedHeatmapVersion = v.snapshotVersion
+	v.cachedHeatmapCount = len(v.Snapshot.Knowledge)
+	v.cachedHeatmapFirstKey = firstKey
+	v.cachedHeatmapLastKey = lastKey
+	v.cachedHeatmapDay = day
+	v.cachedHeatmapLoaded = v.Loaded
+	v.cachedHeatmapWeeks = weeks
+	return v.cachedHeatmapCells
 }
 
 func (a *App) overviewScope() string {
@@ -118,7 +191,7 @@ func (a *App) loadOverview() {
 		generation, activityGeneration := v.generation+1, v.activityGeneration+1
 		// A directory/range refresh invalidates content, not the user's date or
 		// reading position. Old diagnostics are dropped with the old scope.
-		*v = overviewViewState{scope: scope, generation: generation, activityGeneration: activityGeneration,
+		*v = overviewViewState{scope: scope, generation: generation, activityGeneration: activityGeneration, snapshotVersion: v.snapshotVersion + 1,
 			Day: v.Day, Offset: v.Offset, Scroll: v.Scroll, SidebarScroll: v.SidebarScroll, ActivityScroll: v.ActivityScroll, KnowledgeScroll: v.KnowledgeScroll, AllProjects: v.AllProjects, ActivityExpanded: v.ActivityExpanded, ActivityLimit: v.ActivityLimit, SearchHistory: v.SearchHistory}
 	}
 	wasLoaded := v.Loaded
@@ -178,6 +251,7 @@ func (a *App) loadOverview() {
 						}
 					}
 					a.overviewState.Snapshot = snapshot
+					a.overviewState.snapshotVersion++
 					if !hasRecallCounts {
 						a.loadOverviewRecallStats(generation)
 					}
@@ -188,7 +262,7 @@ func (a *App) loadOverview() {
 						a.motionRuns.overviewPage++
 						a.motionRuns.overviewKnowledge++
 						a.motionRuns.overviewActivity++
-						a.overviewState.heatmapGrowStart = time.Now()
+						a.overviewState.heatmapGrowStart = time.Time{}
 					}
 					if actGen == a.overviewState.activityGeneration {
 						a.overviewState.ActivityLoading = false
@@ -307,6 +381,7 @@ func (a *App) loadOverviewLegacy(generation uint64, wasLoaded bool) {
 				}
 			}
 			a.overviewState.Snapshot = snapshot
+			a.overviewState.snapshotVersion++
 			a.loadOverviewRecallStats(generation)
 			// A new catalog may have the same IDs as the already preheated old
 			// catalog. Let that publication consume cached titles again.
@@ -317,7 +392,7 @@ func (a *App) loadOverviewLegacy(generation uint64, wasLoaded bool) {
 				a.motionRuns.overviewPage++
 				a.motionRuns.overviewKnowledge++
 				a.motionRuns.overviewActivity++
-				a.overviewState.heatmapGrowStart = time.Now()
+				a.overviewState.heatmapGrowStart = time.Time{}
 			}
 		})
 	}()
@@ -849,10 +924,19 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 							}
 						})
 					}
+					cells := a.overviewCachedHeatmapCells(now, today, start, gridStart, weeks, buckets)
 					selDay := v.Day
 					loaded := v.Loaded
 					if loaded && v.heatmapGrowStart.IsZero() && a.motionRuns.overviewPage > 0 {
 						a.overviewState.heatmapGrowStart = c.Now()
+					}
+					if v.heatmapTapPending {
+						a.overviewState.heatmapTapPending = false
+						a.overviewState.heatmapTapStart = c.Now()
+					}
+					if v.heatmapRingPending {
+						a.overviewState.heatmapRingPending = false
+						a.overviewState.heatmapRingStart = c.Now()
 					}
 					growStart := time.Time{}
 					if loaded {
@@ -864,90 +948,77 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 					ringStart := v.heatmapRingStart
 					waveTotal := time.Duration(max(0, weeks-1)*7)*time.Millisecond + 420*time.Millisecond
 					canvas.Draw(func(p *ui.Painter, r ui.Rect) {
-						elapsed, waving := v4HeatmapWaveElapsed(c, growStart, waveTotal)
-						tapElapsed, tapping := v4HeatmapWaveElapsed(c, tapStart, 650*time.Millisecond)
-						ringElapsed, ringing := v4HeatmapWaveElapsed(c, ringStart, 140*time.Millisecond)
-						for w := 0; w < weeks; w++ {
-							x := r.X + float32(w*14)
-							// Wave Grow: left-to-right per-week 7ms cascade.
-							scale := float32(1)
-							alpha := float32(1)
-							if waving {
-								t := elapsed - float64(w)*0.007
-								scale = v4BouncyScale(t)
-								if t <= 0 {
-									alpha = 0
-								} else if t < 0.14 {
-									alpha = float32(t / 0.14)
+						elapsed, waving := v4HeatmapWaveElapsed(c, p, growStart, waveTotal)
+						tapElapsed, tapping := v4HeatmapWaveElapsed(c, p, tapStart, 650*time.Millisecond)
+						ringElapsed, ringing := v4HeatmapWaveElapsed(c, p, ringStart, 140*time.Millisecond)
+						lastW := -1
+						var x, scale, alpha float32
+						skipWeek := false
+						for _, cell := range cells {
+							if cell.w != lastW {
+								lastW = cell.w
+								x = r.X + float32(cell.w*14)
+								// Wave Grow: left-to-right per-week 7ms cascade.
+								scale = 1
+								alpha = 1
+								if waving {
+									t := elapsed - float64(cell.w)*0.007
+									scale = v4BouncyScale(t)
+									if t <= 0 {
+										alpha = 0
+									} else if t < 0.14 {
+										alpha = float32(t / 0.14)
+									}
 								}
+								skipWeek = scale <= 0.01 || alpha <= 0.01
 							}
-							if scale <= 0.01 || alpha <= 0.01 {
+							if skipWeek {
 								continue
 							}
-							for wd := 0; wd < 7; wd++ {
-								day := gridStart.AddDate(0, 0, w*7+wd)
-								if day.Before(start) || day.After(today) {
-									continue
+							y := r.Y + float32(cell.wd*14)
+							date := cell.date
+							color := tok.Heat[cell.level]
+							if alpha < 1 {
+								color = color.Alpha(alpha)
+							}
+							cellScale := scale
+							if !waving {
+								targetScale := float32(1)
+								if cell.w == hoverW && cell.wd == hoverWD {
+									targetScale = 1.35
 								}
-								y := r.Y + float32(wd*14)
-								date := day.Format("2006-01-02")
-								level := 0
-								if loaded {
-									count := buckets[date]
-									switch {
-									case count >= 10:
-										level = 4
-									case count >= 6:
-										level = 3
-									case count >= 3:
-										level = 2
-									case count > 0:
-										level = 1
+								if tapping && date == tapDay {
+									// Cell Tap: Bouncy spring 0.6 -> targetScale (1.35 if still hovered,
+									// 1.0 otherwise) so there is zero snap when the spring settles at 650ms.
+									cellScale = 0.6 + (targetScale-0.6)*v4BouncyScale(tapElapsed)
+								} else {
+									cellScale = targetScale
+								}
+							}
+							if cellScale != 1 {
+								sz := 11 * cellScale
+								off := (11 - sz) / 2
+								p.Fill(ui.Rect{X: x + off, Y: y + off, W: sz, H: sz}, color, max(1, 2*cellScale))
+							} else {
+								p.Fill(ui.Rect{X: x, Y: y, W: 11, H: 11}, color, 2)
+							}
+							// Double-ring halo matching prototype .cell.sel:
+							// 1.5px bg gap + 1.5px accent outline with smooth fade in/out.
+							if loaded {
+								ringAlpha := float32(0)
+								if selDay == date {
+									ringAlpha = 1
+									if ringing {
+										ringAlpha = min(1, float32(ringElapsed/0.12))
 									}
+								} else if ringing && ringPrevDay == date && selDay == "" {
+									ringAlpha = max(0, 1-float32(ringElapsed/0.12))
 								}
-								color := tok.Heat[level]
-								if alpha < 1 {
-									color = color.Alpha(alpha)
-								}
-								cellScale := scale
-								if !waving {
-									targetScale := float32(1)
-									if w == hoverW && wd == hoverWD {
-										targetScale = 1.35
-									}
-									if tapping && date == tapDay {
-										// Cell Tap: Bouncy spring 0.6 -> targetScale (1.35 if still hovered,
-										// 1.0 otherwise) so there is zero snap when the spring settles at 650ms.
-										cellScale = 0.6 + (targetScale-0.6)*v4BouncyScale(tapElapsed)
-									} else {
-										cellScale = targetScale
-									}
-								}
-								if cellScale != 1 {
+								if ringAlpha > 0.01 {
 									sz := 11 * cellScale
 									off := (11 - sz) / 2
-									p.Fill(ui.Rect{X: x + off, Y: y + off, W: sz, H: sz}, color, max(1, 2*cellScale))
-								} else {
-									p.Fill(ui.Rect{X: x, Y: y, W: 11, H: 11}, color, 2)
-								}
-								// Double-ring halo matching prototype .cell.sel:
-								// 1.5px bg gap + 1.5px accent outline with smooth fade in/out.
-								if loaded {
-									ringAlpha := float32(0)
-									if selDay == date {
-										ringAlpha = 1
-										if ringing {
-											ringAlpha = min(1, float32(ringElapsed/0.12))
-										}
-									} else if ringing && ringPrevDay == date && selDay == "" {
-										ringAlpha = max(0, 1-float32(ringElapsed/0.12))
-									}
-									if ringAlpha > 0.01 {
-										sz := 11 * cellScale
-										off := (11 - sz) / 2
-										p.Stroke(ui.Rect{X: x + off - 0.75, Y: y + off - 0.75, W: sz + 1.5, H: sz + 1.5}, tok.Bg.Alpha(ringAlpha), 2.5, 1.5)
-										p.Stroke(ui.Rect{X: x + off - 2.25, Y: y + off - 2.25, W: sz + 4.5, H: sz + 4.5}, tok.Accent.Alpha(ringAlpha), 3.8, 1.5)
-									}
+									p.Stroke(ui.Rect{X: x + off - 0.75, Y: y + off - 0.75, W: sz + 1.5, H: sz + 1.5}, tok.Bg.Alpha(ringAlpha), 2.5, 1.5)
+									p.Stroke(ui.Rect{X: x + off - 2.25, Y: y + off - 2.25, W: sz + 4.5, H: sz + 4.5}, tok.Accent.Alpha(ringAlpha), 3.8, 1.5)
 								}
 							}
 						}
@@ -1041,7 +1112,6 @@ func (a *App) overviewKnowledgeRows(now time.Time) []Item {
 func (a *App) selectOverviewDay(day string) {
 	v := &a.overviewState
 	prev := v.Day
-	now := time.Now()
 	if day != "" {
 		v.heatmapTapDay = day
 		v.heatmapRingPrevDay = prev
@@ -1049,8 +1119,10 @@ func (a *App) selectOverviewDay(day string) {
 		v.heatmapTapDay = prev
 		v.heatmapRingPrevDay = prev
 	}
-	v.heatmapTapStart = now
-	v.heatmapRingStart = now
+	v.heatmapTapStart = time.Time{}
+	v.heatmapRingStart = time.Time{}
+	v.heatmapTapPending = true
+	v.heatmapRingPending = true
 	v.Day, v.ShowAllForDay = day, false
 	v.KnowledgeScroll.Y = 0
 	a.motionRuns.overviewKnowledge++

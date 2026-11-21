@@ -1,6 +1,7 @@
 package simpledesktop
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -308,5 +310,173 @@ func TestKnowledgeUnreadToggleKeepsFirstItemVisible(t *testing.T) {
 		if first != 0 {
 			t.Fatalf("unread=%v top visible row=%d, expected 0", unread, first)
 		}
+	}
+}
+
+func TestSwitchProjectToOverviewIsPaintOnlyAndZeroTitleStorm(t *testing.T) {
+	a := overviewFixture(t)
+	now := time.Now()
+	items := make([]Item, 0, 200)
+	for n := 0; n < 200; n++ {
+		day := now.AddDate(0, 0, -(n % 90)).Format("2006-01-02")
+		d := Document{
+			ID:      fmt.Sprintf("perf-%d", n),
+			Dataset: a.Config.Projects[0].Dataset,
+			Created: day + "T08:00:00Z",
+			Metadata: map[string]any{
+				"node_set":     []any{"session_learnings"},
+				"lesson_type":  "code_location",
+				"session_date": day,
+			},
+		}
+		if readableDocumentTitle(d) != "" {
+			t.Fatalf("expected opaque fixture filename for item %d", n)
+		}
+		body := fmt.Sprintf("`internal/simpledesktop/perf_%d.go` 在返回总览时保持行高稳定。", n)
+		items = append(items, Item{
+			ID:           d.ID,
+			Dataset:      d.Dataset,
+			Kind:         "知识",
+			Title:        body,
+			Body:         body,
+			BodyLoaded:   true,
+			ReadingState: "ready",
+			Date:         day,
+			Document:     &d,
+			RecallStats:  &KnowledgeRecallStats{Count: int64(n % 12)},
+		})
+	}
+	events := make([]overviewEvent, 0, 30)
+	for n := 0; n < 30; n++ {
+		events = append(events, overviewEvent{
+			Key:     fmt.Sprintf("ev-%d", n),
+			Title:   "Gemini App 自动召回",
+			Project: a.Config.Projects[0].Name,
+			State:   "已完成",
+			At:      now.Add(-time.Duration(n) * time.Minute),
+		})
+	}
+	a.overviewState.scope = a.overviewScope()
+	a.overviewState.Loaded = true
+	a.overviewState.RawLoaded = true
+	a.overviewState.Snapshot = overviewSnapshot{Knowledge: items, Raw: 83}
+	a.overviewState.ActivityLoaded = true
+	a.overviewState.Events = events
+	a.overviewRefreshAt = now.Add(time.Hour)
+
+	a.Config.Projects[1].Name = "dcim-fe"
+	a.navigate("知识", 1)
+	dcimPane := a.state()
+	dcimPane.Loaded = true
+	dcimPane.Loading = false
+	dcimPane.Knowledge.Initialized = true
+	dcimPane.Knowledge.CountsLoaded = true
+	dcimPane.Items = nil
+	a.navigate("总览", 0)
+
+	var builds int
+	var updateCalls atomic.Int64
+	a.Update = func(func()) {
+		updateCalls.Add(1)
+	}
+	tt := ui.NewTester(func(c *ui.Context) {
+		builds++
+		a.View(c)
+	}, 1200, 820)
+	tt.Frame()
+	if len(a.overviewState.cachedBuckets) == 0 || len(a.overviewState.cachedHeatmapCells) == 0 {
+		t.Fatalf("expected overview heatmap caches to be populated on initial render")
+	}
+
+	// Switch to empty project dcim-fe and confirm v4EmptyState animates on paint-only path.
+	if err := tt.Click("dcim-fe"); err != nil {
+		t.Fatalf("click dcim-fe: %v", err)
+	}
+	tt.Frame()
+	builds = 0
+	tt.Advance(300 * time.Millisecond)
+	if !tt.FramePending() {
+		t.Fatalf("expected empty project breathing animation to keep running")
+	}
+	if builds != 0 {
+		t.Fatalf("empty project breathing animation triggered %d App.View rebuilds, want 0", builds)
+	}
+
+	// Switch back to Overview via sidebar click: no title goroutine/Update storm, Overview
+	// animations launch cleanly and advance purely on paint-only frames until settling.
+	prevReq := a.recentRequest
+	updateCalls.Store(0)
+	if err := tt.Click("总览"); err != nil {
+		t.Fatalf("click overview: %v", err)
+	}
+	if a.page != "总览" {
+		t.Fatalf("expected page 总览, got %q", a.page)
+	}
+	if a.recentRequest != prevReq || updateCalls.Load() != 0 {
+		t.Fatalf("returning to overview restarted ready titles: req %d->%d updates=%d", prevReq, a.recentRequest, updateCalls.Load())
+	}
+	if a.overviewState.heatmapGrowStart.IsZero() {
+		t.Fatalf("expected heatmapGrowStart to latch on frame 1")
+	}
+	imgStart := tt.Image()
+
+	builds = 0
+	tt.Advance(150 * time.Millisecond)
+	if !tt.FramePending() {
+		t.Fatalf("expected Overview enter/wave animations to remain active at 150ms")
+	}
+	if builds != 0 {
+		t.Fatalf("Overview enter animation triggered %d App.View rebuilds in first 150ms, want 0", builds)
+	}
+	imgMid := tt.Image()
+
+	tt.Advance(850 * time.Millisecond)
+	if builds != 0 {
+		t.Fatalf("Overview enter animation triggered %d App.View rebuilds across 1000ms, want 0", builds)
+	}
+	if tt.FramePending() {
+		t.Fatalf("Overview still requesting frames after 1000ms settle (idle CPU not zero)")
+	}
+	imgEnd := tt.Image()
+	if bytes.Equal(imgStart.Pix, imgMid.Pix) {
+		t.Fatalf("Overview animation pixels did not change between 0ms and 150ms (animation broken/static)")
+	}
+	if bytes.Equal(imgMid.Pix, imgEnd.Pix) {
+		t.Fatalf("Overview animation pixels did not progress between 150ms and 1000ms")
+	}
+
+	// Heatmap Cell Tap must also animate purely on paint frames and settle cleanly.
+	a.selectOverviewDay(time.Now().Format("2006-01-02"))
+	tt.Frame()
+	builds = 0
+	tt.Advance(150 * time.Millisecond)
+	if !tt.FramePending() {
+		t.Fatalf("expected Cell Tap animation to be active at 150ms")
+	}
+	if builds != 0 {
+		t.Fatalf("Cell Tap animation triggered %d App.View rebuilds at 150ms, want 0", builds)
+	}
+	tt.Advance(600 * time.Millisecond)
+	if builds != 0 {
+		t.Fatalf("Cell Tap animation triggered %d App.View rebuilds to settle, want 0", builds)
+	}
+	if tt.FramePending() {
+		t.Fatalf("Cell Tap animation still pending after 750ms")
+	}
+
+	// ReduceMotion must settle both empty state and Overview immediately.
+	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
+	if err := tt.Click("dcim-fe"); err != nil {
+		t.Fatalf("click dcim-fe under ReduceMotion: %v", err)
+	}
+	tt.Frame()
+	if tt.FramePending() {
+		t.Fatalf("ReduceMotion empty project still requesting frames")
+	}
+	if err := tt.Click("总览"); err != nil {
+		t.Fatalf("click overview under ReduceMotion: %v", err)
+	}
+	if tt.FramePending() {
+		t.Fatalf("ReduceMotion Overview still requesting frames")
 	}
 }

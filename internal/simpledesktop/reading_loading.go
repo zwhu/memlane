@@ -18,6 +18,21 @@ func (a *App) startRecentTitles(rows []Item) {
 	if a.recentScope == scope.String() {
 		return
 	}
+	pending := make([]Item, 0, len(rows))
+	for _, row := range rows {
+		if row.Document == nil || readableDocumentTitle(*row.Document) != "" || row.ReadingState == "ready" {
+			continue
+		}
+		pending = append(pending, row)
+	}
+	if len(pending) == 0 {
+		a.recentScope = scope.String()
+		if a.recentCancel != nil {
+			a.recentCancel()
+			a.recentCancel = nil
+		}
+		return
+	}
 	a.recentScope = scope.String()
 	if a.recentCancel != nil {
 		a.recentCancel()
@@ -29,11 +44,8 @@ func (a *App) startRecentTitles(rows []Item) {
 	request, epoch := a.recentRequest, a.epoch
 	client := a.Client
 	generation := fmt.Sprint(a.overviewState.generation)
-	for _, row := range rows {
+	for _, row := range pending {
 		i := row
-		if i.Document == nil || readableDocumentTitle(*i.Document) != "" {
-			continue
-		}
 		revision := a.readingRevisions[i.key()]
 		go func() {
 			result, err := a.titles.read(ctx, client, i, generation, false, true)
@@ -284,6 +296,7 @@ func (a *App) InvalidateReading(dataset string) {
 	a.invalidateUnifiedSearch(dataset)
 	a.projectUI.InfoOpen = false
 	a.titles.Invalidate(dataset)
+	a.recentScope = ""
 	if a.recentCancel != nil {
 		a.recentCancel()
 		a.recentRequest++
@@ -292,6 +305,7 @@ func (a *App) InvalidateReading(dataset string) {
 		if dataset == "" || i.Dataset == dataset {
 			a.overviewState.Snapshot.Knowledge[n].Body = ""
 			a.overviewState.Snapshot.Knowledge[n].BodyLoaded = false
+			a.overviewState.Snapshot.Knowledge[n].ReadingState = ""
 			if i.Document != nil {
 				a.overviewState.Snapshot.Knowledge[n].Title = i.Document.title()
 			}

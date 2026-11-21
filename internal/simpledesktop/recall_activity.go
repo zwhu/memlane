@@ -127,7 +127,7 @@ type recallActivityGroup struct {
 
 func (a *App) recallActivityGroups(event RecallEvent) []recallActivityGroup {
 	groups := []recallActivityGroup{}
-	for _, p := range append(append([]Project{}, a.Config.Projects...), a.Config.Common...) {
+	appendGroup := func(p Project) {
 		count := 0
 		for _, hit := range event.Hits {
 			if hit.Dataset == p.Dataset {
@@ -137,6 +137,12 @@ func (a *App) recallActivityGroups(event RecallEvent) []recallActivityGroup {
 		if count > 0 {
 			groups = append(groups, recallActivityGroup{p.Dataset, p.Name, count})
 		}
+	}
+	for _, p := range a.Config.Projects {
+		appendGroup(p)
+	}
+	for _, p := range a.Config.Common {
+		appendGroup(p)
 	}
 	return groups
 }

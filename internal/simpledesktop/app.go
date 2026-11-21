@@ -239,7 +239,7 @@ func (a *App) navigateKind(page string, index int, kind string) {
 		a.motionRuns.overviewPage++
 		a.motionRuns.overviewKnowledge++
 		a.motionRuns.overviewActivity++
-		a.overviewState.heatmapGrowStart = time.Now()
+		a.overviewState.heatmapGrowStart = time.Time{}
 	}
 	if page == "知识" {
 		a.motionRuns.projectPage++
