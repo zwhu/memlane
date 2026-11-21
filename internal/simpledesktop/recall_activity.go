@@ -101,8 +101,12 @@ func (a *App) openRecalledCards(event RecallEvent, dataset string) {
 		a.navigate("知识", index)
 		s := a.state()
 		s.Knowledge.RecallFilter = filter
+		s.Knowledge.RecallAgentID = event.AgentID
+		s.Knowledge.RecallEventID = event.ID
 		s.Knowledge.Detail = false
-		a.reorderKnowledge(s)
+		if !s.Knowledge.V2Mode {
+			a.reorderKnowledge(s)
+		}
 		a.loadKnowledgeFeed(s)
 		return
 	}

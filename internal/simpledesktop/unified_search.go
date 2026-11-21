@@ -152,39 +152,42 @@ func (a *App) runUnifiedSearch(retry bool) {
 	signature := a.searchSignature()
 	s.Submitted = signature
 	s.Loading = true
+	s.Loaded = false
 	s.Error = ""
 	s.Selection = 0
 	s.KeyboardSelection = false
 	projects := a.searchCatalog(s.Scope)
+	scope := s.Scope
 	client := a.Client
+	control, hasControl := a.accessClient()
 	identity := a.readingIdentity
-	go func() {
-		defer cancel()
-		var rows []Item
-		var err error
-		var lanes searchLaneResult
-		if query == "" {
-			rows, err = a.recentSearchItems(ctx, client, projects, signature)
-		} else {
-			lanes = client.searchLanes(ctx, projects, query, previous)
-			rows, err = lanes.rows(query), lanes.err()
-		}
+	recallStartedAt := a.overviewState.V2RecallStartedAt
+	publishRows := func(lanes searchLaneResult, rows []Item, err error, done bool) {
 		a.Update(func() {
 			if request != s.request || signature != a.searchSignature() || identity != a.readingIdentity {
 				return
 			}
-			s.Loading = false
+			if done {
+				s.Loading = false
+			}
 			s.Lanes = lanes
 			if err != nil {
 				if readingUnavailable(err) {
 					a.InvalidateReading("")
 					return
 				}
-				s.Error = lanes.message()
 				if query == "" {
 					s.Error = "最近内容读取失败"
+					if done {
+						s.Loading = false
+					}
 					return
 				}
+				if done || lanes.KeywordTimedOut {
+					s.Error = lanes.message()
+				}
+			} else if done {
+				s.Error = ""
 			}
 			// Preserve official identity; stable grouping does not invent document ids.
 			out := []Item{}
@@ -198,10 +201,106 @@ func (a *App) runUnifiedSearch(retry bool) {
 				}
 			}
 			s.Rows = out
-			s.Reveal = true
-			s.Loaded = err == nil || lanes.KeywordOK || lanes.SemanticOK
-			s.Scroll.Y = 0
+			if !s.Loaded || len(out) > 0 {
+				s.Reveal = true
+			}
+			if query == "" {
+				s.Loaded = err == nil
+			} else {
+				s.Loaded = err == nil || lanes.hasAnySuccess()
+			}
+			if !s.KeyboardSelection {
+				s.Scroll.Y = 0
+			}
 		})
+	}
+	go func() {
+		defer cancel()
+		if query == "" {
+			rows, err := a.recentSearchItems(ctx, client, projects, signature)
+			publishRows(searchLaneResult{}, rows, err, true)
+			return
+		}
+		if hasControl && control.hasFeature(ctx, v2FeatureSearch) {
+			projectID := ""
+			if scope != "" && scope != "@common" && len(projects) == 1 {
+				projectID = projects[0].ID
+			}
+			allowedDatasets := make(map[string]bool, len(projects))
+			for _, p := range projects {
+				allowedDatasets[p.Dataset] = true
+			}
+			var mu sync.Mutex
+			lanes := previous
+			publishProgressive := func(done bool) {
+				mu.Lock()
+				snap := lanes
+				mu.Unlock()
+				publishRows(snap, snap.rows(query), snap.err(), done)
+			}
+			var wg sync.WaitGroup
+			if !lanes.MetadataOK {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					resp, err := control.searchMetadataV2(ctx, query, "all", 30, projectID)
+					var items []Item
+					if err == nil {
+						items = make([]Item, 0, len(resp.Items))
+						for _, row := range resp.Items {
+							if row.DocID == "" {
+								continue
+							}
+							if len(allowedDatasets) > 0 && !allowedDatasets[row.DatasetID] {
+								continue
+							}
+							items = append(items, row.toItem(recallStartedAt))
+						}
+					}
+					mu.Lock()
+					lanes.Metadata = items
+					lanes.MetadataError = err
+					lanes.MetadataOK = err == nil
+					mu.Unlock()
+					publishProgressive(false)
+				}()
+			}
+			if !lanes.SemanticOK {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					items, err := client.search(ctx, projects, query)
+					mu.Lock()
+					lanes.Semantic = items
+					lanes.SemanticError = err
+					lanes.SemanticOK = err == nil
+					mu.Unlock()
+					publishProgressive(false)
+				}()
+			}
+			if !lanes.KeywordOK {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					lexCtx, lexCancel := context.WithTimeout(ctx, lexicalSearchSoftTimeout)
+					items, err := client.searchType(lexCtx, projects, query, "CHUNKS_LEXICAL")
+					timedOut := err != nil && ctx.Err() == nil && (lexCtx.Err() == context.DeadlineExceeded || strings.Contains(err.Error(), context.DeadlineExceeded.Error()))
+					lexCancel()
+					mu.Lock()
+					lanes.Keyword = items
+					lanes.KeywordError = err
+					lanes.KeywordOK = err == nil
+					lanes.KeywordTimedOut = timedOut
+					mu.Unlock()
+					publishProgressive(false)
+				}()
+			}
+			wg.Wait()
+			publishProgressive(true)
+			return
+		}
+		lanes := client.searchLanes(ctx, projects, query, previous)
+		publishRows(lanes, lanes.rows(query), lanes.err(), true)
 	}()
 }
 func (a *App) searchSubmitOrOpen() {
@@ -319,8 +418,9 @@ func (a *App) unifiedSearchTrigger(c *ui.Context) {
 }
 func (a *App) visibleSearchRows() []Item {
 	// Submitted identifies the in-flight request, not the rows' provenance.
-	// Never present old rows under newly typed text while that request runs.
-	if a.searchUI.Loading || a.searchUI.Submitted != a.searchSignature() {
+	// Never present old rows under newly typed text while that request runs,
+	// while allowing progressive v2 lanes to render as soon as Lane 1 resolves.
+	if (a.searchUI.Loading && !a.searchUI.Loaded) || a.searchUI.Submitted != a.searchSignature() {
 		return nil
 	}
 	result := []Item{}
@@ -386,6 +486,58 @@ func searchRowText(i Item) (string, string) {
 	return title, preview
 }
 func (a *App) recentSearchItems(ctx context.Context, client Client, projects []Project, generation string) ([]Item, error) {
+	if control, ok := client.controlClient(); ok && control.hasFeature(ctx, v2FeatureSearch) {
+		projectID := ""
+		if len(projects) == 1 && a.searchUI.Scope != "" && a.searchUI.Scope != "@common" {
+			projectID = projects[0].ID
+		}
+		allowed := make(map[string]bool, len(projects))
+		for _, p := range projects {
+			allowed[p.Dataset] = true
+		}
+		resp, err := control.searchRecentV2(ctx, 20, projectID)
+		if err == nil {
+			recallStartedAt := a.overviewState.V2RecallStartedAt
+			result := make([]Item, 0, 12)
+			seen := map[string]bool{}
+			kCount := 0
+			for _, row := range resp.KnowledgeItems {
+				if row.DocID == "" || (len(allowed) > 0 && !allowed[row.DatasetID]) {
+					continue
+				}
+				item := row.toItem(recallStartedAt)
+				if seen[item.key()] {
+					continue
+				}
+				seen[item.key()] = true
+				result = append(result, item)
+				kCount++
+				if kCount >= 6 {
+					break
+				}
+			}
+			sCount := 0
+			for _, row := range resp.SessionItems {
+				if row.SessionID == "" || (len(allowed) > 0 && !allowed[row.DatasetID]) {
+					continue
+				}
+				item := row.toItem()
+				if seen[item.key()] {
+					continue
+				}
+				seen[item.key()] = true
+				result = append(result, item)
+				sCount++
+				if sCount >= 6 {
+					break
+				}
+			}
+			return result, nil
+		}
+		if isControlFailClosedV2(err) {
+			return nil, err
+		}
+	}
 	rows := []Item{}
 	for _, p := range projects {
 		docs, err := client.overviewDocuments(ctx, p)

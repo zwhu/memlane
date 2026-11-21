@@ -1,9 +1,71 @@
 package simpledesktop
 
-// Appending only reveals metadata from the last successful catalog read. A
-// changing upstream offset cannot shift records between successive batches.
+import (
+	"context"
+	"time"
+)
+
+// Appending uses server cursor pagination in v2 mode (bounded by the 300-item
+// sliding window) or reveals metadata from the last successful legacy catalog.
 func (a *App) appendRawRecords(s *pane) {
-	if s.Loading || !s.Loaded || !s.More || len(s.RawCatalog) <= len(s.Items) {
+	if s.Loading || !s.Loaded || !s.More {
+		return
+	}
+	if s.RawV2Mode {
+		if s.RawAppending || s.RawNextCursor == "" || a.Update == nil {
+			return
+		}
+		p, ok := a.current()
+		control, hasControl := a.accessClient()
+		if !ok || !hasControl || p.ID == "" {
+			return
+		}
+		s.RawAppending = true
+		request, epoch := s.request, a.epoch
+		cursor, kind := s.RawNextCursor, a.kind
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			resp, err := control.rawRecordsV2(ctx, p.ID, kind, 30, cursor)
+			var mapped []Item
+			if err == nil {
+				mapped, err = v2RawRecordsToItems(p.Dataset, resp)
+			}
+			a.Update(func() {
+				if epoch != a.epoch || request != s.request || !a.syncReadingIdentity() {
+					return
+				}
+				s.RawAppending = false
+				if err != nil {
+					if isControlInvalidCursor(err) {
+						s.RawNextCursor = ""
+						s.More = false
+					}
+					s.Error = controlUserError(err)
+					if readingUnavailable(err) {
+						a.InvalidateReading(p.Dataset)
+					}
+					return
+				}
+				seen := make(map[string]bool, len(s.Items))
+				for _, existing := range s.Items {
+					seen[existing.key()] = true
+				}
+				for _, item := range mapped {
+					if !seen[item.key()] {
+						s.Items = append(s.Items, item)
+						seen[item.key()] = true
+					}
+				}
+				enforceListSlidingWindow(s)
+				s.RawNextCursor = resp.NextCursor
+				s.More = resp.HasMore
+				a.startTitles(s)
+			})
+		}()
+		return
+	}
+	if len(s.RawCatalog) <= len(s.Items) {
 		return
 	}
 	end := min(len(s.Items)+30, len(s.RawCatalog))

@@ -202,11 +202,50 @@ func isControlErrorCode(err error, status int, code string) bool {
 	return errors.As(err, &ce) && ce.Status == status && ce.Code == code
 }
 
+func isControlIndexRebuilding(err error) bool {
+	return isControlErrorCode(err, http.StatusServiceUnavailable, "catalog_index_rebuilding")
+}
+
+func isControlInvalidCursor(err error) bool {
+	return isControlErrorCode(err, http.StatusBadRequest, "invalid_cursor")
+}
+
+func isControlFailClosedV2(err error) bool {
+	if isControlAuthDenied(err) {
+		return true
+	}
+	return isControlIndexRebuilding(err)
+}
+
+func controlUserError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var ce *ControlResponseError
+	if errors.As(err, &ce) {
+		switch ce.Code {
+		case "project_unconfirmed":
+			return "项目尚未确认，无法读取内容"
+		case "document_path_denied":
+			return "内容路径受限，无法读取"
+		case "catalog_index_rebuilding":
+			return "索引正在构建中，请稍候刷新"
+		case "invalid_cursor":
+			return "列表分页游标已失效，请刷新列表"
+		}
+	}
+	return err.Error()
+}
+
 func (c ProjectControlClient) request(ctx context.Context, method, path string, input, output any) error {
-	return c.requestWithLimit(ctx, method, path, input, output, 2*1024*1024)
+	return c.requestWithHeaders(ctx, method, path, nil, input, output, 2*1024*1024)
 }
 
 func (c ProjectControlClient) requestWithLimit(ctx context.Context, method, path string, input, output any, maxBytes int64) error {
+	return c.requestWithHeaders(ctx, method, path, nil, input, output, maxBytes)
+}
+
+func (c ProjectControlClient) requestWithHeaders(ctx context.Context, method, path string, headers map[string]string, input, output any, maxBytes int64) error {
 	u, err := url.Parse(c.Config.URL)
 	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.Port() == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
 		return fmt.Errorf("项目管理服务尚未配置")
@@ -229,6 +268,11 @@ func (c ProjectControlClient) requestWithLimit(ctx context.Context, method, path
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		if k != "" && v != "" {
+			req.Header.Set(k, v)
+		}
+	}
 	hc := newHTTPClient(c.HTTP, 125*time.Second)
 	response, err := hc.Do(req)
 	if err != nil {
@@ -245,6 +289,10 @@ func (c ProjectControlClient) requestWithLimit(ctx context.Context, method, path
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		snippet, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
 		return &ControlResponseError{Status: response.StatusCode, Code: parseControlErrorCode(snippet), Message: fmt.Sprintf("项目管理请求未确认（HTTP %d），请核对原操作", response.StatusCode)}
+	}
+	if output == nil {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return nil
 	}
 	if maxBytes <= 0 {
 		maxBytes = 2 * 1024 * 1024

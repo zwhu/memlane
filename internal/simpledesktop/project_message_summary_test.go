@@ -22,6 +22,10 @@ func TestLoadProjectQueueUsesMessageSummaryAndHandlesPartialErrors(t *testing.T)
 	partialErrors := map[string]string{}
 
 	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/capabilities" {
+			http.NotFound(w, r)
+			return
+		}
 		if r.URL.Path == "/v1/projects/p/message-summary" {
 			atomic.AddInt32(&summaryCalls, 1)
 			json.NewEncoder(w).Encode(projectMessageSummaryResponse{
@@ -95,6 +99,10 @@ func TestLoadProjectQueueFallsBackOn404MessageSummary(t *testing.T) {
 	var sawSummary404, sawProcessingNotices, sawProcessingStatus int32
 
 	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/capabilities" {
+			http.NotFound(w, r)
+			return
+		}
 		if r.URL.Path == "/v1/projects/p/message-summary" {
 			atomic.AddInt32(&sawSummary404, 1)
 			http.NotFound(w, r)

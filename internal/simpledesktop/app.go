@@ -30,6 +30,14 @@ type pane struct {
 	ListScroll                     ui.ScrollState
 	Knowledge                      knowledgeFeedState
 	RawCatalog                     []Item
+	RawV2Mode                      bool
+	RawNextCursor                  string
+	RawAppending                   bool
+	CommonV2Mode                   bool
+	CommonCursors                  []string
+	CommonPageIndex                int
+	CommonNextCursor               string
+	CommonTotalFiltered            int
 	WidgetList                     ui.ListState
 	ListSelection                  int
 	DetailScroll                   map[string]*ui.ScrollState
@@ -118,6 +126,9 @@ type App struct {
 	monitor              serviceMonitorState
 	trayCache            trayFlyoutCache
 	knowledgeWriter      *knowledgeReadWriter
+	readingMigrateMu     sync.Mutex
+	readingMigrated      map[string]bool
+	readingMigrating     map[string]bool
 	configError          string
 	md                   markdown.Options
 	v4MD                 map[v4MDKey]*markdown.Options
@@ -259,6 +270,8 @@ func (a *App) navigateKind(page string, index int, kind string) {
 	a.graph.clear()
 	for _, p := range a.panes {
 		p.Knowledge.RecallFilter = nil
+		p.Knowledge.RecallAgentID = ""
+		p.Knowledge.RecallEventID = ""
 		p.Knowledge.CategoryFilter = ""
 		p.Knowledge.UnreadOnly = false
 		p.Knowledge.Detail = false
@@ -373,6 +386,12 @@ func (a *App) load(s *pane) {
 	rawFeed := page == "知识" && (kind == "原始记录" || kind == "会话" || kind == "文档") && q == ""
 	rawCount := max(30, len(s.Items))
 	category := a.commonCategoryFilter()
+	commonPageIdx := s.CommonPageIndex
+	commonCursor := ""
+	if commonPageIdx > 0 && commonPageIdx < len(s.CommonCursors) {
+		commonCursor = s.CommonCursors[commonPageIdx]
+	}
+	recallStartedAt := a.overviewState.V2RecallStartedAt
 	filter := a.searchType
 	if page != "搜索" {
 		if kind == "知识" {
@@ -399,6 +418,11 @@ func (a *App) load(s *pane) {
 		var rawCatalog []Item
 		var rawCacheReady bool
 		var usedFast bool
+		var usedV2Raw bool
+		var v2RawNextCursor string
+		var usedV2Common bool
+		var v2CommonNextCursor string
+		var v2CommonTotal int
 		var more bool
 		var err error
 		if page == "搜索" || q != "" {
@@ -424,63 +448,100 @@ func (a *App) load(s *pane) {
 		} else if p.Dataset == "" {
 			err = fmt.Errorf("项目正在登记，内容归属尚未确认")
 		} else if page == "通用知识" {
-			if len(recallFilter) == 0 {
-				rows, more, err = client.commonDocuments(ctx, p, offset, category)
-			} else {
-				var all []Item
-				all, err = client.commonDocumentItems(ctx, p, category)
-				for _, row := range all {
-					if recallFilter[row.ID] {
-						rows = append(rows, row)
-					}
-				}
-				start := min(offset, len(rows))
-				end := min(start+30, len(rows))
-				more = end < len(rows)
-				rows = rows[start:end]
-			}
-		} else if page == "知识" && (kind == "原始记录" || kind == "会话" || kind == "文档") {
-			if hasControl {
-				resp, fastErr := control.rawRecords(ctx, p.Dataset, kind)
-				if fastErr == nil {
-					rawCatalog, rawCacheReady = buildRawRecordsFromFast(p.Dataset, resp)
-					usedFast = true
-				} else if !shouldFallbackFromRawControlError(ctx, fastErr) {
-					err = fastErr
-				}
-			}
-			if !usedFast && err == nil {
-				rawCatalog, err = client.projectRecordCatalog(ctx, p, kind)
-			}
-			if err == nil {
-				end := min(rawCount, len(rawCatalog))
-				rows = append([]Item{}, rawCatalog[:end]...)
-				more = end < len(rawCatalog)
-				if !refreshing && !rawCacheReady && len(rows) > 0 {
-					preCtx, preCancel := context.WithTimeout(ctx, 500*time.Millisecond)
-					limit := min(10, len(rows))
-					var preMu sync.Mutex
-					var preWg sync.WaitGroup
-					for idx := 0; idx < limit; idx++ {
-						if rows[idx].Session == nil || rows[idx].ReadingState == "ready" {
+			if len(recallFilter) == 0 && hasControl && control.hasFeature(ctx, v2FeatureCommonKnowledgeCursor) {
+				v2Resp, v2Err := control.commonKnowledgeV2(ctx, p.Dataset, category, 30, commonCursor)
+				if v2Err == nil {
+					usedV2Common = true
+					v2CommonNextCursor = v2Resp.NextCursor
+					v2CommonTotal = v2Resp.TotalFiltered
+					more = v2Resp.HasMore
+					rows = make([]Item, 0, len(v2Resp.Items))
+					for _, itemRow := range v2Resp.Items {
+						if itemRow.DocID == "" {
 							continue
 						}
-						idx := idx
-						item := rows[idx]
-						preWg.Add(1)
-						go func() {
-							defer preWg.Done()
-							if res, e := titles.read(preCtx, client, item, genStr, true, true); e == nil {
-								preMu.Lock()
-								rows[idx].Title = res.Title
-								rows[idx].SessionSummary = res.SessionSummary
-								rows[idx].ReadingState = "ready"
-								preMu.Unlock()
-							}
-						}()
+						rows = append(rows, itemRow.toItem(recallStartedAt))
 					}
-					preWg.Wait()
-					preCancel()
+				} else if isControlFailClosedV2(v2Err) {
+					usedV2Common = true
+					err = v2Err
+				}
+			}
+			if !usedV2Common {
+				if len(recallFilter) == 0 {
+					rows, more, err = client.commonDocuments(ctx, p, offset, category)
+				} else {
+					var all []Item
+					all, err = client.commonDocumentItems(ctx, p, category)
+					for _, row := range all {
+						if recallFilter[row.ID] {
+							rows = append(rows, row)
+						}
+					}
+					start := min(offset, len(rows))
+					end := min(start+30, len(rows))
+					more = end < len(rows)
+					rows = rows[start:end]
+				}
+			}
+		} else if page == "知识" && (kind == "原始记录" || kind == "会话" || kind == "文档") {
+			if hasControl && p.ID != "" && control.hasFeature(ctx, v2FeatureRawRecords) {
+				v2Resp, v2Err := control.rawRecordsV2(ctx, p.ID, kind, 30, "")
+				if v2Err == nil {
+					rows, err = v2RawRecordsToItems(p.Dataset, v2Resp)
+					more = v2Resp.HasMore
+					rawCacheReady = v2Resp.CacheReady
+					v2RawNextCursor = v2Resp.NextCursor
+					usedV2Raw = true
+					usedFast = true
+				} else if isControlFailClosedV2(v2Err) {
+					usedV2Raw = true
+					err = v2Err
+				}
+			}
+			if !usedV2Raw {
+				if hasControl {
+					resp, fastErr := control.rawRecords(ctx, p.Dataset, kind)
+					if fastErr == nil {
+						rawCatalog, rawCacheReady = buildRawRecordsFromFast(p.Dataset, resp)
+						usedFast = true
+					} else if !shouldFallbackFromRawControlError(ctx, fastErr) {
+						err = fastErr
+					}
+				}
+				if !usedFast && err == nil {
+					rawCatalog, err = client.projectRecordCatalog(ctx, p, kind)
+				}
+				if err == nil {
+					end := min(rawCount, len(rawCatalog))
+					rows = append([]Item{}, rawCatalog[:end]...)
+					more = end < len(rawCatalog)
+					if !refreshing && !rawCacheReady && len(rows) > 0 {
+						preCtx, preCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+						limit := min(10, len(rows))
+						var preMu sync.Mutex
+						var preWg sync.WaitGroup
+						for idx := 0; idx < limit; idx++ {
+							if rows[idx].Session == nil || rows[idx].ReadingState == "ready" {
+								continue
+							}
+							idx := idx
+							item := rows[idx]
+							preWg.Add(1)
+							go func() {
+								defer preWg.Done()
+								if res, e := titles.read(preCtx, client, item, genStr, true, true); e == nil {
+									preMu.Lock()
+									rows[idx].Title = res.Title
+									rows[idx].SessionSummary = res.SessionSummary
+									rows[idx].ReadingState = "ready"
+									preMu.Unlock()
+								}
+							}()
+						}
+						preWg.Wait()
+						preCancel()
+					}
 				}
 			}
 		} else if kind == "会话" {
@@ -494,7 +555,7 @@ func (a *App) load(s *pane) {
 			}
 			s.Loading = false
 			if err != nil {
-				s.Error = err.Error()
+				s.Error = controlUserError(err)
 				if readingUnavailable(err) {
 					a.InvalidateReading(p.Dataset)
 				}
@@ -506,12 +567,34 @@ func (a *App) load(s *pane) {
 			if s.SourceReturn != nil && sourceSession(s) && !containsReadingItem(rows, s.Selected.key()) {
 				rows = append([]Item{*s.Selected}, rows...)
 			}
-			if refreshing && !rawCacheReady {
+			if refreshing && !rawCacheReady && !usedV2Common {
 				preserveResolvedReadingTitles(rows, s.Items)
 			}
 			s.Items = rows
+			if page == "通用知识" {
+				s.CommonV2Mode = usedV2Common
+				if usedV2Common {
+					if len(s.CommonCursors) == 0 {
+						s.CommonCursors = []string{""}
+					}
+					s.CommonNextCursor = v2CommonNextCursor
+					s.CommonTotalFiltered = v2CommonTotal
+				} else {
+					s.CommonCursors = nil
+					s.CommonPageIndex = 0
+					s.CommonNextCursor = ""
+					s.CommonTotalFiltered = 0
+				}
+			}
 			if rawFeed {
-				s.RawCatalog = rawCatalog
+				s.RawV2Mode = usedV2Raw
+				s.RawNextCursor = v2RawNextCursor
+				s.RawAppending = false
+				if usedV2Raw {
+					s.RawCatalog = nil
+				} else {
+					s.RawCatalog = rawCatalog
+				}
 				s.Offset = 0
 				if !refreshing && len(rows) > 0 && a.page == "知识" && a.kind == kind {
 					a.motionRuns.rawPage++
@@ -520,7 +603,9 @@ func (a *App) load(s *pane) {
 			}
 			s.More = more
 			s.Loaded = true
-			a.startTitles(s)
+			if !usedV2Common {
+				a.startTitles(s)
+			}
 			if len(s.History) > 0 {
 				return
 			}

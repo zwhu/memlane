@@ -111,6 +111,13 @@ func (a *App) filteredKnowledgeCatalog(s *pane) []Item {
 }
 
 func (a *App) knowledgeCategoryCounts(s *pane) (int, map[string]int) {
+	if s.Knowledge.V2Mode {
+		counts := s.Knowledge.ServerCategoryCounts
+		if counts == nil {
+			counts = map[string]int{}
+		}
+		return s.Knowledge.ServerBaseTotal, counts
+	}
 	base := a.knowledgeBaseRows(s)
 	counts := map[string]int{}
 	for _, row := range base {
@@ -123,6 +130,14 @@ func (a *App) knowledgeCategoryCounts(s *pane) (int, map[string]int) {
 
 func (a *App) reorderKnowledge(s *pane) {
 	a.motionRuns.projectList++
+	if s.Knowledge.V2Mode {
+		s.ListScroll.Y = 0
+		s.Knowledge.NextCursor = ""
+		s.Knowledge.RecallOrderPending = false
+		s.Knowledge.Columns = map[string]int{}
+		a.loadKnowledgeFeed(s)
+		return
+	}
 	a.reorderKnowledgeRange(s, knowledgeBatch, true)
 }
 
@@ -224,12 +239,21 @@ func (a *App) knowledgeFilterBar(c *ui.Context, s *pane) {
 				ui.Icon(c, v4IconRecall).FontSize(13).TextColor(tok.Accent).Shrink(0)
 				ui.Text(c, fmt.Sprintf("本次召回 · %d 条", len(s.Knowledge.RecallFilter))).Font("system-ui").FontSize(fsFootnote).FontWeight(600).TextColor(tok.Accent).SingleLine()
 				if s.Loaded && !s.Loading {
-					if missing := len(s.Knowledge.RecallFilter) - len(a.filteredKnowledgeCatalog(s)); missing > 0 && s.Knowledge.CategoryFilter == "" && !s.Knowledge.UnreadOnly {
+					shown := len(a.filteredKnowledgeCatalog(s))
+					if s.Knowledge.V2Mode {
+						shown = s.Knowledge.TotalFiltered
+					}
+					if missing := len(s.Knowledge.RecallFilter) - shown; missing > 0 && s.Knowledge.CategoryFilter == "" && !s.Knowledge.UnreadOnly {
 						homeText(c, fmt.Sprintf("%d 条暂不可用", missing), homeMeta)
 					}
 				}
 				ui.Spacer(c)
-				homeLink(c, "显示全部记忆", func() { s.Knowledge.RecallFilter = nil; a.reorderKnowledge(s) })
+				homeLink(c, "显示全部记忆", func() {
+					s.Knowledge.RecallFilter = nil
+					s.Knowledge.RecallAgentID = ""
+					s.Knowledge.RecallEventID = ""
+					a.reorderKnowledge(s)
+				})
 				homeLink(c, "返回动态", func() { a.navigate("总览", 0) })
 			})
 		}

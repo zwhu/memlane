@@ -93,8 +93,11 @@ func (a *App) countProjectActiveProgress(p AccessProject) int {
 			count++
 		}
 	}
-	if q.Loaded && q.DocumentError == "" && len(q.Documents) > 0 {
-		count += len(q.Documents)
+	if q.Loaded && q.DocumentError == "" {
+		pendingDocs := max(q.PendingDocumentsCount, len(q.Documents))
+		if pendingDocs > 0 {
+			count += pendingDocs
+		}
 	}
 	return count
 }

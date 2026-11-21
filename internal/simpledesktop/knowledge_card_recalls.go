@@ -25,6 +25,9 @@ func knowledgeRecallBadge(c *ui.Context, i Item) {
 // Read the existing receipts endpoint, never run retrieval or model inference.
 // Only displayed cards are requested; four short requests may run together.
 func (a *App) loadKnowledgeCardRecalls(s *pane) {
+	if s.Knowledge.V2Mode {
+		return
+	}
 	if len(s.Knowledge.Catalog) > 0 {
 		a.loadKnowledgeCatalogRecalls(s)
 		return

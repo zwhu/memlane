@@ -592,6 +592,88 @@ func (a *App) subagentsListView(c *ui.Context, s *pane, parent Item) {
 	for _, childItem := range parent.Subagents {
 		a.renderSubagentCard(c, s, parent, childItem)
 	}
+	if parent.SubagentsHasMore || (parent.SubagentTotalCount > len(parent.Subagents)) {
+		total := max(parent.SubagentTotalCount, len(parent.Subagents))
+		ui.Row(c.Key("subagents-load-more-row-"+parent.ID)).FillWidth().Padding(sp2, 0, 0, 0).AlignItems(ui.Center).Gap(sp2).Children(func() {
+			homeText(c, fmt.Sprintf("已显示 %d / %d 个子会话", len(parent.Subagents), total), homeMeta)
+			ui.Spacer(c)
+			label := "加载更多子会话"
+			if parent.SubagentsLoading {
+				label = "正在加载子会话…"
+			}
+			v4SmallButton(c, label, nil, func() { a.loadMoreSubagents(s, parent) }).Disabled(parent.SubagentsLoading)
+		})
+	}
+}
+
+func (a *App) loadMoreSubagents(s *pane, parent Item) {
+	if s == nil || parent.Session == nil || parent.SubagentsLoading || a.Update == nil {
+		return
+	}
+	p, ok := a.current()
+	control, hasControl := a.accessClient()
+	if !ok || !hasControl || p.ID == "" {
+		return
+	}
+	if s.Selected != nil && s.Selected.key() == parent.key() {
+		s.Selected.SubagentsLoading = true
+	}
+	for idx := range s.Items {
+		if s.Items[idx].key() == parent.key() {
+			s.Items[idx].SubagentsLoading = true
+		}
+	}
+	epoch, request := a.epoch, s.readRequest
+	cursor := parent.SubagentsNextCursor
+	parentTitle := sessionReadableParentTitle(parent)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		resp, err := control.sessionChildrenV2(ctx, p.ID, parent.ID, 30, cursor)
+		a.Update(func() {
+			if epoch != a.epoch || request != s.readRequest || !a.syncReadingIdentity() {
+				return
+			}
+			applyTarget := func(target *Item) {
+				if target == nil {
+					return
+				}
+				target.SubagentsLoading = false
+				if err != nil {
+					return
+				}
+				seen := make(map[string]bool, len(target.Subagents))
+				for _, child := range target.Subagents {
+					seen[child.key()] = true
+				}
+				for _, entry := range resp.Items {
+					if entry.ID == "" {
+						continue
+					}
+					child := rawSessionEntryToItem(parent.Dataset, entry, true)
+					child.ParentTitle = parentTitle
+					if !seen[child.key()] {
+						target.Subagents = append(target.Subagents, child)
+						seen[child.key()] = true
+					}
+				}
+				target.SubagentTotalCount = max(resp.TotalCount, len(target.Subagents))
+				target.SubagentsHasMore = resp.HasMore
+				target.SubagentsNextCursor = resp.NextCursor
+			}
+			if err != nil {
+				s.Error = controlUserError(err)
+			}
+			if s.Selected != nil && s.Selected.key() == parent.key() {
+				applyTarget(s.Selected)
+			}
+			for idx := range s.Items {
+				if s.Items[idx].key() == parent.key() {
+					applyTarget(&s.Items[idx])
+				}
+			}
+		})
+	}()
 }
 
 func (a *App) loadMoreSession(s *pane) {

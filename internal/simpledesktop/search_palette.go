@@ -379,6 +379,8 @@ func (a *App) searchDialog(c *ui.Context) {
 					ui.Spacer(c)
 					q := strings.TrimSpace(s.Query)
 					switch {
+					case s.Loading && len(rows) > 0:
+						homeText(c, "正在补充语义与全文结果…", homeMeta).FontFeatures("tnum").SingleLine()
 					case s.Loading:
 						homeText(c, "搜索中…", homeMeta).FontFeatures("tnum").SingleLine()
 					case q != "" && s.Loaded && s.Submitted == a.searchSignature():
@@ -410,7 +412,7 @@ func (a *App) searchDialog(c *ui.Context) {
 				hasList := false
 				scroll := ui.Scroll(c.Key("unified-results")).Grow(1).MinHeight(0).TrackScroll(&s.Scroll).Padding(sp2)
 				scroll.Children(func() {
-					if s.Loading {
+					if s.Loading && len(rows) == 0 {
 						ui.Column(c).FillWidth().Padding(sp2).Label("搜索中…").Children(func() {
 							v4SkeletonGroup(c, 4, 2, true, false)
 						})

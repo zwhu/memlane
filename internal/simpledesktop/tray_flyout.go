@@ -124,20 +124,24 @@ func (a *App) trayChannelStatus() (dotState, metric string, col ui.Color) {
 
 func (a *App) trayTodayMemoryCount(now time.Time) int {
 	v := &a.overviewState
-	if !v.Loaded && len(v.Snapshot.Knowledge) == 0 {
+	if !v.Loaded && len(v.Snapshot.Knowledge) == 0 && len(v.V2DayBuckets) == 0 {
 		return 0
 	}
 	day := now.Format("2006-01-02")
 	tc := &a.trayCache
+	totalCount := len(v.Snapshot.Knowledge)
+	if v.V2Mode {
+		totalCount = v.V2TotalKnowledge
+	}
 	if tc.todayValid && tc.todayGen == v.generation && tc.todayLoaded == v.Loaded &&
-		tc.todayKnowledgeCount == len(v.Snapshot.Knowledge) && tc.todayDay == day {
+		tc.todayKnowledgeCount == totalCount && tc.todayDay == day {
 		return tc.todayCount
 	}
 	buckets := a.overviewCachedBuckets(now)
 	count := buckets[day]
 	tc.todayGen = v.generation
 	tc.todayLoaded = v.Loaded
-	tc.todayKnowledgeCount = len(v.Snapshot.Knowledge)
+	tc.todayKnowledgeCount = totalCount
 	tc.todayDay = day
 	tc.todayCount = count
 	tc.todayValid = true

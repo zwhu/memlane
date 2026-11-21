@@ -5,7 +5,10 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 )
+
+var lexicalSearchSoftTimeout = 3 * time.Second
 
 func keywordMatch(i Item, query string) bool {
 	title, body := searchRowText(i)
@@ -23,14 +26,30 @@ func keywordMatch(i Item, query string) bool {
 }
 
 type searchLaneResult struct {
-	Keyword, Semantic           []Item
-	KeywordOK, SemanticOK       bool
-	KeywordError, SemanticError error
+	Metadata, Keyword, Semantic              []Item
+	MetadataOK, KeywordOK, SemanticOK        bool
+	MetadataError, KeywordError, SemanticError error
+	KeywordTimedOut                          bool
 }
 
-func (r searchLaneResult) err() error { return errors.Join(r.KeywordError, r.SemanticError) }
+func (r searchLaneResult) err() error {
+	return errors.Join(r.MetadataError, r.KeywordError, r.SemanticError)
+}
+
+func (r searchLaneResult) hasAnySuccess() bool {
+	return r.MetadataOK || r.KeywordOK || r.SemanticOK
+}
 
 func (r searchLaneResult) message() string {
+	if r.KeywordTimedOut && (r.MetadataOK || r.SemanticOK) {
+		if r.SemanticError != nil && !r.MetadataOK {
+			return "词法全文检索超时，请稍后重试"
+		}
+		return "词法全文检索超时，已展示元数据与语义结果"
+	}
+	if r.MetadataOK && r.KeywordError != nil && r.SemanticError != nil {
+		return "语义与词法检索暂不可用，已展示元数据匹配"
+	}
 	if r.KeywordError != nil && r.SemanticError != nil {
 		return "搜索失败"
 	}
@@ -39,6 +58,9 @@ func (r searchLaneResult) message() string {
 	}
 	if r.KeywordError != nil {
 		return "暂时无法按关键词匹配"
+	}
+	if r.MetadataError != nil && !r.KeywordOK && !r.SemanticOK {
+		return controlUserError(r.MetadataError)
 	}
 	return ""
 }
@@ -74,10 +96,18 @@ func (c Client) searchBoth(ctx context.Context, projects []Project, query string
 }
 
 func (r searchLaneResult) rows(query string) []Item {
-	// Reuse both official retrieval lanes. Lexical top-k also includes zero
-	// scores, so only visible literal hits may be labelled keyword matches.
+	// Reuse all retrieval lanes: instant v2 metadata hits, official lexical
+	// hits (filtered for visible literal matches), and semantic hits.
 	rows := []Item{}
 	seen := map[string]bool{}
+	for _, i := range r.Metadata {
+		if seen[i.key()] {
+			continue
+		}
+		i.SearchMatch = "关键词匹配"
+		rows = append(rows, i)
+		seen[i.key()] = true
+	}
 	for _, i := range r.Keyword {
 		if keywordMatch(i, query) && !seen[i.key()] {
 			i.SearchMatch = "关键词匹配"

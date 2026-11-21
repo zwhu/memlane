@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -113,7 +114,13 @@ func (a *App) commonListHeader(c *ui.Context) {
 		b := v4SmallButton(c, label, icon, func() { a.beginCommonDraft(nil) })
 		p, ok := a.current()
 		b.Disabled(a.Config.ProjectControl == nil || !ok || p.Dataset == "" || e.DeleteSubmitted)
-		refreshAction(c, "刷新通用记忆", func() { a.load(s) })
+		refreshAction(c, "刷新通用记忆", func() {
+			s.CommonPageIndex = 0
+			s.CommonCursors = nil
+			s.CommonNextCursor = ""
+			s.Offset = 0
+			a.load(s)
+		})
 	})
 }
 
@@ -134,6 +141,9 @@ func (a *App) commonFilterBar(c *ui.Context) {
 		}
 		e.Open = false
 		s.Offset = 0
+		s.CommonPageIndex = 0
+		s.CommonCursors = nil
+		s.CommonNextCursor = ""
 		a.load(s)
 	}).FillWidth()
 	if len(a.Config.Common) > 1 {
@@ -193,9 +203,40 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 			appFooter(c, "通用记忆分页栏").Padding(0, sp4).Gap(sp2).Children(func() {
 				homeText(c, projectListStatus(s), homeMeta)
 				ui.Spacer(c)
-				v4SmallButton(c, "上一页", nil, func() { s.Offset = max(0, s.Offset-30); a.load(s) }).Disabled(s.Offset == 0 || s.Loading)
-				ui.Text(c, fmt.Sprint(s.Offset/30+1)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
-				v4SmallButton(c, "下一页", nil, func() { s.Offset += 30; a.load(s) }).Disabled(!s.More || s.Loading)
+				pageNum := s.Offset/30 + 1
+				prevDisabled := s.Offset == 0 || s.Loading
+				if s.CommonV2Mode {
+					pageNum = s.CommonPageIndex + 1
+					prevDisabled = s.CommonPageIndex == 0 || s.Loading
+				}
+				v4SmallButton(c, "上一页", nil, func() {
+					if s.CommonV2Mode {
+						s.CommonPageIndex = max(0, s.CommonPageIndex-1)
+						s.Offset = s.CommonPageIndex * 30
+					} else {
+						s.Offset = max(0, s.Offset-30)
+					}
+					a.load(s)
+				}).Disabled(prevDisabled)
+				ui.Text(c, fmt.Sprint(pageNum)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
+				v4SmallButton(c, "下一页", nil, func() {
+					if s.CommonV2Mode {
+						if len(s.CommonCursors) == 0 {
+							s.CommonCursors = []string{""}
+						}
+						nextIdx := s.CommonPageIndex + 1
+						if nextIdx < len(s.CommonCursors) {
+							s.CommonCursors[nextIdx] = s.CommonNextCursor
+						} else {
+							s.CommonCursors = append(s.CommonCursors, s.CommonNextCursor)
+						}
+						s.CommonPageIndex = nextIdx
+						s.Offset = s.CommonPageIndex * 30
+					} else {
+						s.Offset += 30
+					}
+					a.load(s)
+				}).Disabled(!s.More || s.Loading || (s.CommonV2Mode && s.CommonNextCursor == ""))
 			})
 		})
 	}, func() {
@@ -225,6 +266,9 @@ func commonListPreview(i Item) string {
 		if body := knowledgeCardBody(i); body != "" {
 			return strings.ReplaceAll(body, "\n", " ")
 		}
+	}
+	if preview := strings.TrimSpace(i.Preview); preview != "" {
+		return strings.ReplaceAll(preview, "\n", " ")
 	}
 	return strings.TrimSpace(i.Title)
 }
@@ -305,7 +349,7 @@ func (a *App) commonListItem(c *ui.Context, s *pane, i Item, index int, selected
 			})
 		default:
 			colText := tok.Text1
-			if !i.BodyLoaded {
+			if !i.BodyLoaded && strings.TrimSpace(i.Preview) == "" {
 				colText = tok.Text2
 			}
 			v4InlineMarkdown(c, preview, fsFootnote, 400, 1.55, colText).MaxLines(knowledgePreviewLines)
@@ -448,6 +492,9 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 				} else {
 					a.commonMarkdown(c, "common-original-"+i.key(), itemPresentation(i).VisibleBody)
 				}
+				if i.BodyTruncated {
+					ui.Text(c, "正文超过 8 MiB，已截断显示").FontSize(fsCaption).TextColor(tok.Text3)
+				}
 			})
 		})
 		appFooter(c, "通用记忆阅读栏").Padding(0, sp6).Gap(sp2).Children(func() {
@@ -505,11 +552,27 @@ func (a *App) confirmCommonDeletion() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
-		docs, err := client.overviewDocuments(ctx, p)
-		present := false
-		for _, doc := range docs {
-			if doc.ID == d.ID {
+		var present bool
+		var err error
+		usedFast := false
+		if control, ok := client.controlClient(); ok && control.hasFeature(ctx, "document_lookup_v2") {
+			usedFast = true
+			_, lookErr := control.documentLookupV2(ctx, p.Dataset, d.ID)
+			if lookErr == nil {
 				present = true
+			} else if isControlErrorCode(lookErr, http.StatusNotFound, "document_not_found") {
+				present = false
+			} else {
+				err = lookErr
+			}
+		}
+		if !usedFast {
+			docs, listErr := client.overviewDocuments(ctx, p)
+			err = listErr
+			for _, doc := range docs {
+				if doc.ID == d.ID {
+					present = true
+				}
 			}
 		}
 		a.Update(func() {

@@ -79,6 +79,19 @@ type overviewViewState struct {
 	cachedGroupedHistory                       bool
 	cachedGroupedCount                         int
 	cachedGroupedEvents                        []overviewEvent
+	V2Mode                                     bool
+	V2Generation                               string
+	V2TotalKnowledge                           int
+	V2DayBuckets                               map[string]int
+	V2RecallStartedAt                          string
+	DayItems                                   []Item
+	DayTotal                                   int
+	DayNextCursor                              string
+	DayHasMore                                 bool
+	DayLoading                                 bool
+	DayError                                   string
+	dayRequest                                 uint64
+	dayCancel                                  context.CancelFunc
 }
 
 type overviewHeatmapCell struct {
@@ -108,6 +121,12 @@ func (a *App) overviewFirstUseDays(now time.Time) (int, error) {
 
 func (a *App) overviewCachedBuckets(now time.Time) map[string]int {
 	v := &a.overviewState
+	if v.V2Mode {
+		if v.V2DayBuckets == nil {
+			return map[string]int{}
+		}
+		return v.V2DayBuckets
+	}
 	day := now.Format("2006-01-02")
 	firstKey, lastKey := overviewKnowledgeBounds(v.Snapshot.Knowledge)
 	if v.cachedBuckets != nil && v.cachedBucketsVersion == v.snapshotVersion && v.cachedBucketsCount == len(v.Snapshot.Knowledge) && v.cachedBucketsFirstKey == firstKey && v.cachedBucketsLastKey == lastKey && v.cachedBucketsDay == day {
@@ -231,9 +250,9 @@ func (a *App) loadOverview() {
 	genStr := fmt.Sprint(generation)
 	control, hasControl := a.accessClient()
 
-	// Fast path: single read-only loopback bootstrap call (~30-50ms) returns
-	// documents, top-30 title previews, sessions, recall counts, pipeline runs,
-	// and recall events atomically with zero disk SWR cache.
+	// Fast path: prefer /v2/overview/bootstrap (<=128 KiB pre-aggregated buckets
+	// + top-20 recent items + activity), falling back to /v1/overview/bootstrap
+	// with zero disk SWR cache.
 	if hasControl {
 		if v.activityCancel != nil {
 			v.activityCancel()
@@ -244,8 +263,82 @@ func (a *App) loadOverview() {
 		v.ActivityLoading = true
 		searchHistory := v.SearchHistory
 		projects := overviewProjects(a.Config)
+		readingID, _ := readingIdentity(Client{Config: client.Config})
 		go func() {
 			defer cancel()
+			if control.hasFeature(ctx, v2FeatureOverview) {
+				v2Resp, v2Err := control.overviewBootstrapV2(ctx, readingID, 365, 20, 250, 50)
+				if v2Err == nil {
+					snapshot, buckets, events, more := buildOverviewFromV2Bootstrap(projects, v2Resp, 50)
+					var historyEvents []overviewEvent
+					var historyErr error
+					if searchHistory {
+						historyEvents, historyErr = client.overviewSearchHistory(ctx)
+					}
+					a.Update(func() {
+						if generation != a.overviewState.generation {
+							return
+						}
+						a.overviewState.Loading = false
+						a.overviewState.RawLoaded = true
+						a.overviewState.V2Mode = true
+						a.overviewState.V2Generation = v2Resp.Generation
+						a.overviewState.V2TotalKnowledge = v2Resp.TotalKnowledgeCount
+						a.overviewState.V2DayBuckets = buckets
+						a.overviewState.V2RecallStartedAt = v2Resp.RecallStartedAt
+						a.overviewState.Snapshot = snapshot
+						a.recentScope = ""
+						a.overviewState.Loaded = true
+						a.overviewState.Error = ""
+						a.applyOverviewV2ProjectSummaries(v2Resp.Projects)
+						if !wasLoaded {
+							a.motionRuns.overviewPage++
+							a.motionRuns.overviewKnowledge++
+							a.motionRuns.overviewActivity++
+							a.overviewState.heatmapGrowStart = time.Now()
+						}
+						if actGen == a.overviewState.activityGeneration {
+							a.overviewState.ActivityLoading = false
+							a.overviewState.Events = events
+							a.overviewState.RecallError = ""
+							a.overviewState.More = more
+							a.overviewState.ActivityError = ""
+							a.overviewState.ActivityLoaded = true
+							a.overviewState.activityFetchedAt = time.Now()
+							if searchHistory {
+								if historyErr != nil {
+									a.overviewState.HistoryError = historyErr.Error()
+								} else {
+									a.overviewState.History = historyEvents
+									a.overviewState.HistoryLoaded = true
+									a.overviewState.HistoryError = ""
+								}
+							}
+						}
+						if a.overviewState.Day != "" {
+							a.loadOverviewDayV2(a.overviewState.Day, false)
+						}
+					})
+					return
+				}
+				if ctx.Err() != nil {
+					return
+				}
+				if isControlFailClosedV2(v2Err) {
+					a.Update(func() {
+						if generation != a.overviewState.generation {
+							return
+						}
+						a.overviewState.Loading = false
+						a.overviewState.ActivityLoading = false
+						a.overviewState.Error = controlUserError(v2Err)
+						if readingUnavailable(v2Err) {
+							a.InvalidateReading("")
+						}
+					})
+					return
+				}
+			}
 			resp, err := control.overviewBootstrap(ctx, 250, 50)
 			if err == nil {
 				snapshot, events, more, hasRecallCounts := buildOverviewFromBootstrap(client, projects, resp, 50)
@@ -263,6 +356,8 @@ func (a *App) loadOverview() {
 					}
 					a.overviewState.Loading = false
 					a.overviewState.RawLoaded = true
+					a.overviewState.V2Mode = false
+					a.overviewState.V2DayBuckets = nil
 					ready := map[string]Item{}
 					for _, old := range a.overviewState.Snapshot.Knowledge {
 						ready[old.key()] = old
@@ -340,6 +435,31 @@ func (a *App) loadOverview() {
 		return
 	}
 	a.loadOverviewLegacy(generation, wasLoaded)
+}
+
+func (a *App) applyOverviewV2ProjectSummaries(summaries []v2OverviewProjectSummary) {
+	if len(summaries) == 0 {
+		return
+	}
+	byID := make(map[string]v2OverviewProjectSummary, len(summaries))
+	for _, s := range summaries {
+		if s.ProjectID != "" {
+			byID[s.ProjectID] = s
+		}
+	}
+	for _, p := range a.access.Directory.Projects {
+		summary, ok := byID[p.ID]
+		if !ok {
+			continue
+		}
+		q := a.projectQueueStateFor(p)
+		q.ServerUnreadKnown = true
+		q.ServerUnreadCount = summary.UnreadCount
+		if summary.CatalogVersion != "" {
+			q.KnowledgeCatalogVersion = summary.CatalogVersion
+		}
+		q.StateVersion++
+	}
 }
 
 func (a *App) loadOverviewLegacy(generation uint64, wasLoaded bool) {
@@ -611,7 +731,14 @@ func (a *App) overviewHome(c *ui.Context) {
 				ui.Row(c).Height(28).Shrink(0).AlignItems(ui.Center).Children(func() {
 					title := "最近记忆"
 					if v.Day != "" {
-						title = fmt.Sprintf("%s · %d 条记忆", v.Day, len(a.overviewKnowledgeRows(now)))
+						dayCount := len(a.overviewKnowledgeRows(now))
+						if v.V2Mode {
+							dayCount = v.DayTotal
+							if dayCount == 0 && v.V2DayBuckets[v.Day] > 0 {
+								dayCount = v.V2DayBuckets[v.Day]
+							}
+						}
+						title = fmt.Sprintf("%s · %d 条记忆", v.Day, dayCount)
 					}
 					homeText(c, title, homeHeading)
 					ui.Spacer(c)
@@ -621,11 +748,21 @@ func (a *App) overviewHome(c *ui.Context) {
 				})
 				a.overviewKnowledge(c, now)
 				if v.Loaded && v.Day != "" {
+					displayed := len(a.overviewDisplayedRows(now))
 					total := len(a.overviewKnowledgeRows(now))
+					if v.V2Mode {
+						total = max(v.DayTotal, displayed)
+					}
 					ui.Row(c).AlignItems(ui.Center).Gap(sp2).Padding(sp2, 0, sp3, 0).Shrink(0).Children(func() {
-						homeText(c, fmt.Sprintf("已显示 %d 条，共 %d 条", len(a.overviewDisplayedRows(now)), total), homeReadableMeta)
+						homeText(c, fmt.Sprintf("已显示 %d 条，共 %d 条", displayed, total), homeReadableMeta)
 						ui.Spacer(c)
-						if total > 20 && !v.ShowAllForDay {
+						if v.V2Mode {
+							if v.DayHasMore && !v.DayLoading {
+								homeLink(c, "加载更多", func() { a.loadOverviewDayV2(v.Day, true) })
+							} else if v.DayLoading {
+								homeText(c, "正在加载…", homeMeta)
+							}
+						} else if total > 20 && !v.ShowAllForDay {
 							homeLink(c, "显示全部", func() { v.ShowAllForDay = true })
 						}
 					})
@@ -880,7 +1017,11 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 	}
 	knowledge, raw := "—", "—"
 	if v.Loaded {
-		knowledge = fmt.Sprint(len(v.Snapshot.Knowledge))
+		if v.V2Mode {
+			knowledge = fmt.Sprint(v.V2TotalKnowledge)
+		} else {
+			knowledge = fmt.Sprint(len(v.Snapshot.Knowledge))
+		}
 	}
 	if v.RawLoaded {
 		raw = fmt.Sprint(v.Snapshot.Raw)
@@ -1147,6 +1288,9 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 
 func (a *App) overviewKnowledgeRows(now time.Time) []Item {
 	v := &a.overviewState
+	if v.V2Mode && v.Day != "" {
+		return v.DayItems
+	}
 	rows := []Item{}
 	for _, item := range v.Snapshot.Knowledge {
 		if v.Day != "" {
@@ -1161,6 +1305,81 @@ func (a *App) overviewKnowledgeRows(now time.Time) []Item {
 		rows = append(rows, item)
 	}
 	return rows
+}
+
+func (a *App) loadOverviewDayV2(day string, appendMore bool) {
+	v := &a.overviewState
+	if day == "" || !v.V2Mode || a.Update == nil {
+		return
+	}
+	control, hasControl := a.accessClient()
+	if !hasControl {
+		return
+	}
+	cursor := ""
+	if appendMore {
+		if v.DayLoading || !v.DayHasMore || v.DayNextCursor == "" {
+			return
+		}
+		cursor = v.DayNextCursor
+	} else {
+		if v.dayCancel != nil {
+			v.dayCancel()
+		}
+		v.DayItems = nil
+		v.DayNextCursor = ""
+		v.DayHasMore = false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	v.dayCancel = cancel
+	v.dayRequest++
+	reqID, gen := v.dayRequest, v.generation
+	v.DayLoading = true
+	v.DayError = ""
+	readingID, _ := readingIdentity(Client{Config: a.Client.Config})
+	recallStartedAt := v.V2RecallStartedAt
+	go func() {
+		defer cancel()
+		resp, err := control.overviewDayV2(ctx, readingID, day, 30, cursor)
+		a.Update(func() {
+			if reqID != a.overviewState.dayRequest || gen != a.overviewState.generation || a.overviewState.Day != day {
+				return
+			}
+			a.overviewState.DayLoading = false
+			if err != nil {
+				a.overviewState.DayError = controlUserError(err)
+				if readingUnavailable(err) {
+					a.InvalidateReading("")
+				}
+				return
+			}
+			a.overviewState.DayError = ""
+			a.overviewState.DayTotal = resp.TotalCount
+			a.overviewState.DayNextCursor = resp.NextCursor
+			a.overviewState.DayHasMore = resp.HasMore
+			mapped := make([]Item, 0, len(resp.Items))
+			for _, row := range resp.Items {
+				if row.DocID == "" {
+					continue
+				}
+				mapped = append(mapped, row.toItem(recallStartedAt))
+			}
+			if appendMore {
+				seen := make(map[string]bool, len(a.overviewState.DayItems))
+				for _, existing := range a.overviewState.DayItems {
+					seen[existing.key()] = true
+				}
+				for _, item := range mapped {
+					if !seen[item.key()] {
+						a.overviewState.DayItems = append(a.overviewState.DayItems, item)
+						seen[item.key()] = true
+					}
+				}
+			} else {
+				a.overviewState.DayItems = mapped
+			}
+		})
+	}()
 }
 
 func (a *App) selectOverviewDay(day string) {
@@ -1180,10 +1399,29 @@ func (a *App) selectOverviewDay(day string) {
 	v.Day, v.ShowAllForDay = day, false
 	v.KnowledgeScroll.Y = 0
 	a.motionRuns.overviewKnowledge++
+	if v.V2Mode {
+		if v.dayCancel != nil {
+			v.dayCancel()
+			v.dayCancel = nil
+		}
+		v.dayRequest++
+		v.DayItems = nil
+		v.DayTotal = 0
+		v.DayNextCursor = ""
+		v.DayHasMore = false
+		v.DayLoading = false
+		v.DayError = ""
+		if day != "" {
+			a.loadOverviewDayV2(day, false)
+		}
+	}
 }
 
 func (a *App) overviewDisplayedRows(now time.Time) []Item {
 	rows := a.overviewKnowledgeRows(now)
+	if a.overviewState.V2Mode && a.overviewState.Day != "" {
+		return rows
+	}
 	if a.overviewState.Day == "" || !a.overviewState.ShowAllForDay {
 		return rows[:min(20, len(rows))]
 	}
@@ -1203,9 +1441,15 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 			p.FillGradient(ui.Rect{X: r.X, Y: r.Y, W: r.W - 6, H: 16}, ui.LinearGradient{From: bg, To: bg.Alpha(0), Angle: 180}, 0)
 		}
 	}).Children(func() {
-		if !v.Loaded && v.Loading && len(rows) == 0 {
+		if ((!v.Loaded && v.Loading) || (v.V2Mode && v.Day != "" && v.DayLoading)) && len(rows) == 0 {
 			overviewLoadingRows(c, "正在读取记忆", false)
 			return
+		}
+		if v.V2Mode && v.Day != "" && v.DayError != "" {
+			ui.Row(c).Gap(sp2).AlignItems(ui.Center).Padding(sp2, sp2).Children(func() {
+				homeText(c, "读取失败 · "+v.DayError, homeMeta).MaxLines(2)
+				projectLink(c, "重试", func() { a.loadOverviewDayV2(v.Day, false) })
+			})
 		}
 		prevHovered := false
 		for index, item := range rows {

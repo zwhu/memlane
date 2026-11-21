@@ -23,23 +23,69 @@ const (
 // Only presentation metadata is retained beyond the displayed batch. Bodies
 // remain process-local and use the existing shared, four-slot reading scheduler.
 type knowledgeFeedState struct {
-	Initialized, Detail bool
-	Catalog             []Item
-	Columns             map[string]int
-	Measurements        map[string]knowledgeCardMeasurement
-	Copied              string
-	CopyUntil           time.Time
-	RecallPending       int
-	RecallRequest       uint64
-	RecallChecked       map[string]bool
-	RecallNext          time.Time
-	SortByRecalls       bool
-	CountsLoaded        bool
-	RecallOrderPending  bool
-	CountsError         string
-	RecallFilter        map[string]bool
-	CategoryFilter      string
-	UnreadOnly          bool
+	Initialized, Detail  bool
+	Catalog              []Item
+	Columns              map[string]int
+	Measurements         map[string]knowledgeCardMeasurement
+	Copied               string
+	CopyUntil            time.Time
+	RecallPending        int
+	RecallRequest        uint64
+	RecallChecked        map[string]bool
+	RecallNext           time.Time
+	SortByRecalls        bool
+	CountsLoaded         bool
+	RecallOrderPending   bool
+	CountsError          string
+	RecallFilter         map[string]bool
+	RecallAgentID        string
+	RecallEventID        string
+	CategoryFilter       string
+	UnreadOnly           bool
+	V2Mode               bool
+	NextCursor           string
+	TotalFiltered        int
+	ServerCategoryCounts map[string]int
+	ServerBaseTotal      int
+	CatalogVersion       string
+	NewCatalogAvailable  bool
+	Appending            bool
+}
+
+// enforceListSlidingWindow caps active list items to maxActiveListItems (300)
+// and releases evicted per-item UI state so deep cursor pagination stays bounded
+// in heap and frame time.
+func enforceListSlidingWindow(s *pane) {
+	if s == nil || len(s.Items) <= maxActiveListItems {
+		return
+	}
+	drop := len(s.Items) - maxActiveListItems
+	evicted := s.Items[:drop]
+	kept := make([]Item, maxActiveListItems)
+	copy(kept, s.Items[drop:])
+	s.Items = kept
+	selectedKey := ""
+	if s.Selected != nil {
+		selectedKey = s.Selected.key()
+	}
+	for _, row := range evicted {
+		key := row.key()
+		if key == selectedKey {
+			continue
+		}
+		delete(s.Knowledge.Measurements, key)
+		delete(s.Knowledge.Columns, key)
+		delete(s.DetailScroll, key)
+		delete(s.DetailScroll, key+"/tools")
+		delete(s.DetailScroll, key+"/subagents")
+		delete(s.Technical, key)
+	}
+	if s.ListSelection >= 0 {
+		s.ListSelection -= drop
+		if s.ListSelection < 0 {
+			s.ListSelection = -1
+		}
+	}
 }
 
 type knowledgeCardMeasurement struct {
@@ -89,6 +135,8 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 	s.request++
 	request, epoch := s.request, a.epoch
 	s.Knowledge.Initialized, s.Loading, s.Error = true, true, ""
+	s.Knowledge.Appending = false
+	s.Knowledge.NewCatalogAvailable = false
 	s.Knowledge.RecallRequest++
 	s.Knowledge.RecallPending = 0
 	s.Knowledge.RecallChecked = nil
@@ -98,8 +146,91 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 	titles := a.titles
 	genStr := a.readingGeneration(s)
 	sortByRecalls := s.Knowledge.SortByRecalls
+	categoryFilter := s.Knowledge.CategoryFilter
+	unreadOnly := s.Knowledge.UnreadOnly
+	recallAgentID := s.Knowledge.RecallAgentID
+	recallEventID := s.Knowledge.RecallEventID
+	readingID, _ := readingIdentity(Client{Config: client.Config})
+	recallStartedAt := a.overviewState.V2RecallStartedAt
 	go func() {
 		defer cancel()
+		if p.Dataset != "" && hasControl && control.hasFeature(ctx, v2FeatureKnowledgeCursor) {
+			sortParam := "date"
+			if sortByRecalls {
+				sortParam = "recall"
+			}
+			v2Resp, v2Err := control.projectKnowledgeV2(ctx, readingID, p.ID, sortParam, categoryFilter, unreadOnly, recallAgentID, recallEventID, knowledgeBatch, "")
+			if v2Err == nil {
+				mapped := make([]Item, 0, len(v2Resp.Items))
+				for _, row := range v2Resp.Items {
+					if row.DocID == "" {
+						continue
+					}
+					mapped = append(mapped, row.toItem(recallStartedAt))
+				}
+				baseTotal := v2Resp.TotalFiltered
+				if categoryFilter != "" && len(v2Resp.CategoryCounts) > 0 {
+					sum := 0
+					for _, cnt := range v2Resp.CategoryCounts {
+						sum += cnt
+					}
+					baseTotal = sum
+				}
+				a.Update(func() {
+					if epoch != a.epoch || request != s.request || !a.syncReadingIdentity() {
+						return
+					}
+					s.Loading = false
+					s.Error = ""
+					old := map[string]Item{}
+					for _, i := range s.Items {
+						old[i.key()] = i
+					}
+					for n, i := range mapped {
+						if before, ok := old[i.key()]; ok && before.BodyLoaded && keyForReading("", i, "") == keyForReading("", before, "") && i.Document != nil && (i.Document.Updated != "" || i.Document.ContentHash != "") {
+							mapped[n].Body, mapped[n].BodyLoaded = before.Body, true
+							mapped[n].BodyTruncated = before.BodyTruncated
+						}
+					}
+					s.Knowledge.V2Mode = true
+					s.Knowledge.NextCursor = v2Resp.NextCursor
+					s.Knowledge.TotalFiltered = v2Resp.TotalFiltered
+					s.Knowledge.ServerCategoryCounts = v2Resp.CategoryCounts
+					s.Knowledge.ServerBaseTotal = baseTotal
+					s.Knowledge.CatalogVersion = v2Resp.CatalogVersion
+					s.Knowledge.NewCatalogAvailable = false
+					s.Knowledge.CountsLoaded = true
+					s.Knowledge.CountsError = ""
+					s.Knowledge.Catalog = nil
+					s.Items = mapped
+					s.More = v2Resp.HasMore
+					s.Loaded = true
+					a.syncV2ProjectUnreadCount(p.ID, p.Dataset, v2Resp.UnreadCount, v2Resp.CatalogVersion)
+					a.hydrateKnowledgeCards(s)
+					if s.Selected == nil && len(s.Items) > 0 && !s.Locating {
+						a.selectItem(s, s.Items[0])
+					}
+				})
+				return
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			if isControlFailClosedV2(v2Err) {
+				a.Update(func() {
+					if epoch != a.epoch || request != s.request || !a.syncReadingIdentity() {
+						return
+					}
+					s.Loading = false
+					s.Error = controlUserError(v2Err)
+					if readingUnavailable(v2Err) {
+						a.InvalidateReading(p.Dataset)
+						s.Knowledge.Catalog = nil
+					}
+				})
+				return
+			}
+		}
 		var docs []Document
 		var err error
 		var counts *knowledgeRecallCounts
@@ -159,6 +290,8 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 				}
 				return
 			}
+			s.Knowledge.V2Mode = false
+			s.Knowledge.NextCursor = ""
 			rows := knowledgeCatalog(docs)
 			applyRecallCounts(rows, counts)
 			s.Knowledge.CountsLoaded = counts != nil
@@ -215,6 +348,72 @@ func (a *App) appendKnowledgeBatch(s *pane) {
 	if s.Loading || s.Error != "" || !s.More {
 		return
 	}
+	if s.Knowledge.V2Mode {
+		if s.Knowledge.Appending || s.Knowledge.NextCursor == "" || a.Update == nil {
+			return
+		}
+		p, ok := a.current()
+		control, hasControl := a.accessClient()
+		if !ok || !hasControl || p.ID == "" {
+			return
+		}
+		s.Knowledge.Appending = true
+		request, epoch := s.request, a.epoch
+		cursor := s.Knowledge.NextCursor
+		sortParam := "date"
+		if s.Knowledge.SortByRecalls {
+			sortParam = "recall"
+		}
+		categoryFilter := s.Knowledge.CategoryFilter
+		unreadOnly := s.Knowledge.UnreadOnly
+		recallAgentID := s.Knowledge.RecallAgentID
+		recallEventID := s.Knowledge.RecallEventID
+		readingID, _ := readingIdentity(Client{Config: a.Client.Config})
+		recallStartedAt := a.overviewState.V2RecallStartedAt
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			resp, err := control.projectKnowledgeV2(ctx, readingID, p.ID, sortParam, categoryFilter, unreadOnly, recallAgentID, recallEventID, knowledgeBatch, cursor)
+			a.Update(func() {
+				if epoch != a.epoch || request != s.request || !a.syncReadingIdentity() {
+					return
+				}
+				s.Knowledge.Appending = false
+				if err != nil {
+					if isControlInvalidCursor(err) {
+						s.Knowledge.NextCursor = ""
+						s.More = false
+						s.Knowledge.NewCatalogAvailable = true
+					}
+					s.Error = controlUserError(err)
+					if readingUnavailable(err) {
+						a.InvalidateReading(p.Dataset)
+					}
+					return
+				}
+				seen := make(map[string]bool, len(s.Items))
+				for _, existing := range s.Items {
+					seen[existing.key()] = true
+				}
+				for _, row := range resp.Items {
+					if row.DocID == "" {
+						continue
+					}
+					item := row.toItem(recallStartedAt)
+					if !seen[item.key()] {
+						s.Items = append(s.Items, item)
+						seen[item.key()] = true
+					}
+				}
+				enforceListSlidingWindow(s)
+				s.Knowledge.NextCursor = resp.NextCursor
+				s.More = resp.HasMore
+				s.Knowledge.TotalFiltered = resp.TotalFiltered
+				a.hydrateKnowledgeCards(s)
+			})
+		}()
+		return
+	}
 	rows := a.filteredKnowledgeCatalog(s)
 	end := min(len(s.Items)+knowledgeBatch, len(rows))
 	if end <= len(s.Items) {
@@ -236,7 +435,7 @@ func (a *App) hydrateKnowledgeCards(s *pane) {
 	ctx, epoch, request, generation := s.titleCtx, a.epoch, s.titleRequest, a.readingGeneration(s)
 	client := a.Client
 	for n, row := range s.Items {
-		if row.BodyLoaded || row.ReadingState == "pending" || row.ReadingState == "failed" || row.ReadingState == "unavailable" {
+		if row.BodyLoaded || row.Preview != "" || row.ReadingState == "pending" || row.ReadingState == "failed" || row.ReadingState == "unavailable" {
 			continue
 		}
 		i, revision := row, a.readingRevisions[row.key()]
@@ -313,13 +512,15 @@ func (a *App) knowledgePage(c *ui.Context, s *pane) {
 		}
 		a.hydrateKnowledgeCards(s)
 	}
-	a.loadKnowledgeCardRecalls(s)
-	if s.Knowledge.RecallOrderPending && s.ListScroll.Y <= 0 {
-		a.reorderKnowledgeRange(s, max(knowledgeBatch, len(s.Items)), false)
+	if !s.Knowledge.V2Mode {
+		a.loadKnowledgeCardRecalls(s)
+		if s.Knowledge.RecallOrderPending && s.ListScroll.Y <= 0 {
+			a.reorderKnowledgeRange(s, max(knowledgeBatch, len(s.Items)), false)
+		}
 	}
 	ready := true
 	for _, i := range s.Items {
-		if !i.BodyLoaded && i.ReadingState != "failed" && i.ReadingState != "unavailable" {
+		if !i.BodyLoaded && i.Preview == "" && i.ReadingState != "failed" && i.ReadingState != "unavailable" {
 			ready = false
 		}
 	}
@@ -338,6 +539,17 @@ func (a *App) knowledgePage(c *ui.Context, s *pane) {
 			a.v4PageEnter(c, body, "knowledge-list-body", a.motionRuns.projectPage)
 			body.Children(func() {
 				a.knowledgeFilterBar(c, s)
+				if s.Knowledge.NewCatalogAvailable {
+					ui.Row(c.Key("knowledge-new-catalog-banner")).FillWidth().Padding(sp1, sp4).Gap(sp2).AlignItems(ui.Center).Background(tok.AccentSofter).Shrink(0).Children(func() {
+						ui.Text(c, "有新记忆可用").Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Accent).SingleLine()
+						ui.Spacer(c)
+						homeLink(c, "点击刷新", func() {
+							s.Knowledge.NewCatalogAvailable = false
+							s.ListScroll.Y = 0
+							a.loadKnowledgeFeed(s)
+						})
+					})
+				}
 				a.projectSessionDriftBanner(c, s)
 				if s.Error != "" {
 					ui.Row(c).Padding(sp1, sp4).Gap(sp2).AlignItems(ui.Center).Shrink(0).Children(func() {
@@ -347,7 +559,10 @@ func (a *App) knowledgePage(c *ui.Context, s *pane) {
 				}
 				a.knowledgeList(c, s)
 			})
-			totalFiltered := len(a.filteredKnowledgeCatalog(s))
+			totalFiltered := s.Knowledge.TotalFiltered
+			if !s.Knowledge.V2Mode {
+				totalFiltered = len(a.filteredKnowledgeCatalog(s))
+			}
 			appFooter(c, "记忆加载状态").Padding(0, sp4).Children(func() {
 				if s.Loaded || len(s.Items) > 0 {
 					homeText(c, fmt.Sprintf("已载入 %d 项", len(s.Items)), homeMeta)
@@ -408,6 +623,9 @@ func (a *App) knowledgeList(c *ui.Context, s *pane) {
 		if body := knowledgeCardBody(s.Items[n]); body != "" {
 			return body
 		}
+		if preview := strings.TrimSpace(s.Items[n].Preview); preview != "" {
+			return preview
+		}
 		return s.Items[n].Title
 	}
 	s.WidgetList.Selected = &s.ListSelection
@@ -448,17 +666,22 @@ func (a *App) knowledgeListItem(c *ui.Context, s *pane, i Item, index int, selec
 				a.hydrateKnowledgeCards(s)
 			})
 		case !i.BodyLoaded:
-			preview := strings.TrimSpace(i.Title)
-			ui.Column(c).FillWidth().MinHeight(54).Children(func() {
-				if preview == "" {
-					ui.Column(c).FillWidth().Gap(6).Children(func() {
-						ui.Box(c).FillWidth().Height(11).Radius(radiusSmall).Background(tok.Fill2)
-						ui.Box(c).Width(180).Height(11).Radius(radiusSmall).Background(tok.Fill1)
-					})
-				} else {
-					v4InlineMarkdown(c, preview, fsFootnote, 400, 1.55, tok.Text2).MaxLines(knowledgePreviewLines)
-				}
-			})
+			preview := strings.TrimSpace(i.Preview)
+			if preview != "" {
+				v4InlineMarkdown(c, preview, fsFootnote, 400, 1.55, tok.Text1).MaxLines(knowledgePreviewLines)
+			} else {
+				fallbackTitle := strings.TrimSpace(i.Title)
+				ui.Column(c).FillWidth().MinHeight(54).Children(func() {
+					if fallbackTitle == "" {
+						ui.Column(c).FillWidth().Gap(6).Children(func() {
+							ui.Box(c).FillWidth().Height(11).Radius(radiusSmall).Background(tok.Fill2)
+							ui.Box(c).Width(180).Height(11).Radius(radiusSmall).Background(tok.Fill1)
+						})
+					} else {
+						v4InlineMarkdown(c, fallbackTitle, fsFootnote, 400, 1.55, tok.Text2).MaxLines(knowledgePreviewLines)
+					}
+				})
+			}
 		default:
 			v4InlineMarkdown(c, body, fsFootnote, 400, 1.55, tok.Text1).MaxLines(knowledgePreviewLines)
 		}

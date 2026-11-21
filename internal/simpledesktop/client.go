@@ -238,8 +238,16 @@ type Item struct {
 	Session                                                               *Session
 	Detail                                                                *SessionDetail
 	Subagents                                                             []Item
+	SubagentTotalCount                                                    int
+	SubagentsHasMore                                                      bool
+	SubagentsNextCursor                                                   string
+	SubagentsLoading                                                      bool
 	ReadingState, ReadingError                                            string
 	BodyLoaded                                                            bool
+	PreviewTruncated                                                      bool
+	BodyTruncated                                                         bool
+	ServerUnread                                                          bool
+	ServerUnreadKnown                                                     bool
 }
 
 func (i Item) key() string { return i.Dataset + "/" + i.Kind + "/" + i.ID }
@@ -291,6 +299,32 @@ func (c Client) sessions(ctx context.Context, p Project, offset int) ([]Item, bo
 }
 func (c Client) read(ctx context.Context, i Item) (Item, error) {
 	if i.Document != nil {
+		if control, ok := c.controlClient(); ok && i.Dataset != "" && i.ID != "" && control.hasFeature(ctx, v2FeatureLocalBodyFastpath) {
+			res, err := control.documentBodyV2(ctx, i.Dataset, i.ID)
+			if err == nil {
+				if !utf8.ValidString(res.Body) || strings.IndexByte(res.Body, 0) >= 0 {
+					return i, fmt.Errorf("此官方文档不是 UTF-8 文本")
+				}
+				i.Body = res.Body
+				i.BodyLoaded = true
+				i.BodyTruncated = res.Truncated
+				if res.ContentHash != "" && i.Document.ContentHash == "" {
+					docCopy := *i.Document
+					docCopy.ContentHash = res.ContentHash
+					i.Document = &docCopy
+				}
+				if i.Kind == "知识" {
+					i.Title = itemPresentation(i).DisplayTitle
+				}
+				return i, nil
+			}
+			if isControlAuthDenied(err) {
+				return i, err
+			}
+			if isControlErrorCode(err, http.StatusNotFound, "document_not_found") {
+				return i, &OfficialHTTPError{Status: http.StatusNotFound, Body: "document_not_found"}
+			}
+		}
 		b, e := c.request(ctx, "GET", "/api/v1/datasets/"+url.PathEscape(i.Dataset)+"/data/"+url.PathEscape(i.ID)+"/raw", nil)
 		if e != nil {
 			return i, e
@@ -300,6 +334,7 @@ func (c Client) read(ctx context.Context, i Item) (Item, error) {
 		}
 		i.Body = string(b)
 		i.BodyLoaded = true
+		i.BodyTruncated = false
 		if i.Kind == "知识" {
 			i.Title = itemPresentation(i).DisplayTitle
 		}

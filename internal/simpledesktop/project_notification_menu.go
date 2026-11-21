@@ -1,6 +1,7 @@
 package simpledesktop
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -58,15 +59,32 @@ func (a *App) projectNotificationMenu(c *ui.Context, item ui.Element, project Pr
 
 // Clear only the currently observed presentation state. Retain the knowledge
 // baseline and issue fingerprints, so new knowledge and new issues still alert.
-// Each file uses the existing atomic writer; a partial save reports a failure.
+// Uses /v2/reading-state/mark-all-read when supported, otherwise falls back to
+// the existing atomic local JSON writer; a partial save reports a failure.
 func (a *App) clearProjectNotifications(q *projectQueueState, p AccessProject) error {
-	readPath, err := a.knowledgeReadPath(p)
-	if err != nil {
-		return fmt.Errorf("通知未清空：客户端状态位置不可用")
+	useServerReadingState := false
+	var control ProjectControlClient
+	if ctrl, ok := a.accessClient(); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if ctrl.hasFeature(ctx, v2FeatureReadingState) {
+			useServerReadingState = true
+			control = ctrl
+		}
+		cancel()
 	}
-	read, err := readKnowledgeState(readPath)
-	if err != nil || (!read.Initialized && q.KnowledgeRead.Initialized) {
-		return fmt.Errorf("通知未清空：已读状态无法读取")
+
+	var readPath string
+	var read knowledgeReadState
+	if !useServerReadingState {
+		var err error
+		readPath, err = a.knowledgeReadPath(p)
+		if err != nil {
+			return fmt.Errorf("通知未清空：客户端状态位置不可用")
+		}
+		read, err = readKnowledgeState(readPath)
+		if err != nil || (!read.Initialized && q.KnowledgeRead.Initialized) {
+			return fmt.Errorf("通知未清空：已读状态无法读取")
+		}
 	}
 	ackPath, err := a.noticeAcknowledgementPath(p)
 	if err != nil {
@@ -93,6 +111,39 @@ func (a *App) clearProjectNotifications(q *projectQueueState, p AccessProject) e
 		return fmt.Errorf("通知未清空：提醒处理记录未保存")
 	}
 	q.NoticeAcknowledgements, q.NoticeAcknowledgementError = acknowledgements, ""
+	if useServerReadingState {
+		readingID, idErr := readingIdentity(Client{Config: a.Client.Config})
+		if idErr != nil || readingID == "" {
+			q.KnowledgeReadError = "已读状态未保存"
+			q.StateVersion++
+			return fmt.Errorf("异常提醒已清除，未读记忆状态未保存")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, markErr := control.readingStateMarkAllReadV2(ctx, v2ReadingStateMarkAllReadRequest{
+			ReadingIdentity: readingID,
+			ProjectID:       p.ID,
+			DatasetID:       p.Dataset,
+		})
+		cancel()
+		if markErr != nil {
+			q.KnowledgeReadError = "已读状态未保存"
+			q.StateVersion++
+			return fmt.Errorf("异常提醒已清除，未读记忆状态未保存")
+		}
+		q.ServerUnreadKnown = true
+		q.ServerUnreadCount = 0
+		q.UnreadHasMore = false
+		q.UnreadKnowledge = nil
+		q.KnowledgeReadError = ""
+		if q.KnowledgeRead.Read != nil {
+			for id := range q.KnowledgeRead.Read {
+				q.KnowledgeRead.Read[id] = true
+			}
+		}
+		a.clearDatasetServerUnread(p.Dataset)
+		q.StateVersion++
+		return nil
+	}
 	if read.Initialized {
 		for id := range read.Read {
 			read.Read[id] = true
@@ -103,6 +154,7 @@ func (a *App) clearProjectNotifications(q *projectQueueState, p AccessProject) e
 		}
 		q.KnowledgeRead, q.KnowledgeReadError = read, ""
 		q.UnreadKnowledge = nil
+		q.StateVersion++
 	}
 	return nil
 }
