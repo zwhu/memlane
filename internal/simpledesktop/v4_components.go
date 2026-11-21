@@ -39,6 +39,19 @@ func v4CategoryChip(c *ui.Context, label string) ui.Element {
 		Background(tok.Fill2).TextColor(tok.Text2)
 }
 
+// v4SubagentChip draws a calm accent-tinted pill for subagent and parent-child badges.
+func v4SubagentChip(c *ui.Context, label, tip string) ui.Element {
+	el := ui.Text(c, label).
+		Font("system-ui").FontSize(fsCaption).FontWeight(500).
+		SingleLine().Shrink(0).
+		Padding(2, 6).Radius(radiusSmall).
+		Background(tok.AccentSoft).TextColor(tok.Accent)
+	if tip != "" {
+		el.Tooltip(tip)
+	}
+	return el
+}
+
 // v4RecallChip draws the V4 recall counter: accent-soft pill with icon when > 0,
 // subtle muted text when 0 or unavailable.
 func v4RecallChip(c *ui.Context, i Item) {

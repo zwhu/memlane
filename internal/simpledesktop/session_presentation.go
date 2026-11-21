@@ -29,6 +29,8 @@ func sessionIdentity(id string) string {
 				host = "TraeX"
 			} else if strings.HasPrefix(lowerKey, "pi-") {
 				host = "pi"
+			} else if strings.HasPrefix(lowerKey, "opencode-") {
+				host = "opencode"
 			} else if strings.HasPrefix(lowerKey, "antigravity-") || strings.HasPrefix(lowerKey, "agy-") {
 				host = "Agy"
 			} else if strings.HasPrefix(lowerKey, "gemini-") {
@@ -38,6 +40,8 @@ func sessionIdentity(id string) string {
 			host = "Claude Code"
 		case "pi":
 			host = "pi"
+		case "opencode":
+			host = "opencode"
 		case "traex":
 			host = "TraeX"
 		case "antigravity", "agy":
@@ -59,4 +63,52 @@ func sessionListMeta(i Item) string {
 
 func sessionCoverage(d SessionDetail) string {
 	return fmt.Sprintf("已保存 %d 轮问答 · %d 条工具记录", d.Count, d.ToolCount)
+}
+
+func sessionHasTopic(i Item) bool {
+	t := strings.TrimSpace(i.Title)
+	return t != "" && t != i.ID && t != "来源会话"
+}
+
+func subagentRoleLabel(s *Session) string {
+	if s == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.SubagentRole)
+}
+
+func subagentBadgeLabel(s *Session) string {
+	if role := subagentRoleLabel(s); role != "" {
+		return "子会话 · " + role
+	}
+	return "子会话"
+}
+
+func sessionFallbackTitle(i Item) string {
+	if i.Session != nil && i.Session.IsSubagent {
+		if role := subagentRoleLabel(i.Session); role != "" {
+			return "子会话 · " + role
+		}
+		return "子会话 · " + sessionIdentity(i.ID)
+	}
+	return sessionIdentity(i.ID)
+}
+
+func sessionDisplaySummary(i Item) string {
+	if i.SessionSummary == "" {
+		return ""
+	}
+	if i.Session != nil && i.Session.IsSubagent && sessionHasTopic(i) {
+		if role := subagentRoleLabel(i.Session); role != "" {
+			return role + " · " + i.SessionSummary
+		}
+	}
+	return i.SessionSummary
+}
+
+func sessionReadableParentTitle(i Item) string {
+	if sessionHasTopic(i) {
+		return strings.TrimSpace(i.Title)
+	}
+	return sessionIdentity(i.ID)
 }

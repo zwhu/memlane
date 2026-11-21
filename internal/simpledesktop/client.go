@@ -186,12 +186,16 @@ func (d Document) session() string {
 }
 
 type Session struct {
-	ID      string `json:"session_id"`
-	Dataset string `json:"dataset_id"`
-	User    string `json:"user_id"`
-	Agent   string `json:"agent_id"`
-	Updated string `json:"last_activity_at"`
-	Started string `json:"started_at"`
+	ID              string `json:"session_id"`
+	Dataset         string `json:"dataset_id"`
+	User            string `json:"user_id"`
+	Agent           string `json:"agent_id"`
+	Updated         string `json:"last_activity_at"`
+	Started         string `json:"started_at"`
+	IsSubagent      bool   `json:"is_subagent,omitempty"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	SubagentRole    string `json:"subagent_role,omitempty"`
+	NestingDepth    int    `json:"nesting_depth,omitempty"`
 }
 type QA struct {
 	ID                string `json:"qa_id"`
@@ -221,10 +225,12 @@ type Item struct {
 	SearchMatch                                                           string
 	SessionSummary                                                        string
 	CommonCategory                                                        string
+	ParentTitle                                                           string
 	ID, Dataset, Kind, Title, Date, Preview, Body, Source, SourceDocument string
 	Document                                                              *Document
 	Session                                                               *Session
 	Detail                                                                *SessionDetail
+	Subagents                                                             []Item
 	ReadingState, ReadingError                                            string
 	BodyLoaded                                                            bool
 }

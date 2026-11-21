@@ -43,6 +43,9 @@ type pane struct {
 	SourcePage                     *SessionHistoryPage
 	SourceReturn                   *readingLocation
 	SessionTools                   bool
+	SessionSubagents               bool
+	SubagentParent                 *Item
+	SubagentParentPage             *SessionHistoryPage
 	SessionLoadMaxY                float32
 	request                        uint64
 	readRequest                    uint64
@@ -512,9 +515,13 @@ func (a *App) load(s *pane) {
 				return
 			}
 			if s.Selected != nil {
+				targetKey := s.Selected.key()
+				if s.SubagentParent != nil {
+					targetKey = s.SubagentParent.key()
+				}
 				for _, i := range rows {
-					if i.key() == s.Selected.key() {
-						if refreshing {
+					if i.key() == targetKey {
+						if refreshing && s.SubagentParent == nil {
 							a.selectItem(s, i)
 						}
 						return
@@ -522,6 +529,8 @@ func (a *App) load(s *pane) {
 				}
 				if page != "搜索" && q == "" {
 					s.Selected = nil
+					s.SubagentParent, s.SubagentParentPage = nil, nil
+					s.SessionSubagents = false
 					s.Error = "选中内容已不在当前官方页面，请重新选择"
 				}
 			} else if rawFeed && len(s.Items) > 0 && !s.Locating && (usedFast || s.Items[0].Session != nil) {
@@ -544,7 +553,8 @@ func (a *App) selectItem(s *pane, i Item) {
 	if s.HomeAnchor != nil && s.HomeAnchor.key() != i.key() {
 		s.HomeAnchor = nil
 	}
-	s.SourcePage, s.SessionTools, s.SessionLoadMaxY = nil, false, 0
+	s.SourcePage, s.SessionTools, s.SessionSubagents, s.SessionLoadMaxY = nil, false, false, 0
+	s.SubagentParent, s.SubagentParentPage = nil, nil
 	if s.readCancel != nil {
 		s.readCancel()
 	}
@@ -572,18 +582,7 @@ func (a *App) selectItem(s *pane, i Item) {
 		if i.Document != nil {
 			result, err = titles.read(ctx, client, i, generation, true, false)
 		} else if i.Session != nil {
-			if hasControl {
-				page, fastErr := control.rawSessionHistory(ctx, i, 0, 0)
-				if fastErr == nil {
-					result, sessionPage = sessionItemFromHistoryPage(i, page)
-				} else if !shouldFallbackFromRawControlError(ctx, fastErr) {
-					err = fastErr
-				} else {
-					result, sessionPage, err = client.readSessionHistory(ctx, i)
-				}
-			} else {
-				result, sessionPage, err = client.readSessionHistory(ctx, i)
-			}
+			result, sessionPage, err = fetchSessionHistoryPage(ctx, control, hasControl, client, i)
 		} else {
 			result, err = client.read(ctx, i)
 		}
@@ -607,12 +606,26 @@ func (a *App) selectItem(s *pane, i Item) {
 			}
 			s.Selected = &result
 			s.SourcePage = sessionPage
+			s.SessionSubagents = false
+			if subagentDefaultTools(result, sessionPage) {
+				s.SessionTools = true
+			}
 			a.publishOverviewTitle(result)
 			for idx, row := range s.Items {
 				if row.key() == result.key() {
 					s.Items[idx].Title = result.Title
 					if result.SessionSummary != "" {
 						s.Items[idx].SessionSummary = result.SessionSummary
+					}
+					if len(result.Subagents) > 0 {
+						s.Items[idx].Subagents = result.Subagents
+					}
+					if result.Session != nil {
+						sCopy := *result.Session
+						s.Items[idx].Session = &sCopy
+					}
+					if result.ParentTitle != "" {
+						s.Items[idx].ParentTitle = result.ParentTitle
 					}
 					if result.ReadingState == "ready" {
 						s.Items[idx].ReadingState = "ready"
@@ -685,7 +698,8 @@ func (a *App) source(s *pane) {
 			// to the Raw Records tab via the action in the source context bar.
 			s.History = append(s.History, original)
 			s.Selected = &i
-			s.SourcePage, s.SessionTools = sessionPage, false
+			s.SubagentParent, s.SubagentParentPage = nil, nil
+			s.SourcePage, s.SessionTools, s.SessionSubagents = sessionPage, subagentDefaultTools(i, sessionPage), false
 		})
 	}()
 }
@@ -1114,6 +1128,8 @@ func (a *App) projectEditor(c *ui.Context) {
 }
 
 func (a *App) returnFromSource(s *pane) {
+	s.SubagentParent, s.SubagentParentPage = nil, nil
+	s.SessionSubagents = false
 	if s.SourceReturn != nil {
 		location := s.SourceReturn
 		s.SourceReturn, s.History = nil, nil

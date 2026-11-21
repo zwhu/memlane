@@ -304,10 +304,10 @@ func (a *App) projectReading(c *ui.Context) {
 }
 func projectDisplayTitle(i Item) string {
 	if i.Session != nil {
-		if t := strings.TrimSpace(i.Title); t != "" && t != i.ID && t != "来源会话" {
-			return t
+		if sessionHasTopic(i) {
+			return strings.TrimSpace(i.Title)
 		}
-		return sessionIdentity(i.ID)
+		return sessionFallbackTitle(i)
 	}
 	if i.Kind == "知识" {
 		if i.Document != nil {
@@ -365,7 +365,9 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 			})
 		}).Height(44).Padding(0, sp10)
 		scrollKey := key
-		if i.Session != nil && s.SessionTools {
+		if i.Session != nil && s.SessionSubagents {
+			scrollKey += "/subagents"
+		} else if i.Session != nil && s.SessionTools {
 			scrollKey += "/tools"
 		}
 		scroll := s.DetailScroll[scrollKey]
@@ -385,6 +387,7 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 				if sourceSession(s) {
 					a.sourceContext(c, s)
 				}
+				a.subagentContext(c, s, *i)
 				title := projectDisplayTitle(*i)
 				if title != "" {
 					ui.Column(c).FillWidth().Gap(4).Children(func() {
@@ -520,6 +523,10 @@ func (a *App) projectReadingBody(c *ui.Context, s *pane, i *Item) {
 	mdOpts := a.v4MarkdownOptions(fsReading)
 	if i.Detail != nil {
 		paged := a.sessionHistoryControls(c, s, *i)
+		if paged && s.SessionSubagents && len(i.Subagents) > 0 {
+			a.subagentsListView(c, s, *i)
+			return
+		}
 		if !paged {
 			homeText(c, sessionCoverage(*i.Detail), homeBody).FontSize(fsFootnote)
 		}
@@ -546,9 +553,13 @@ func (a *App) projectReadingBody(c *ui.Context, s *pane, i *Item) {
 				traces = nil
 			}
 		}
+		promptRole := "用户"
+		if i.Session != nil && i.Session.IsSubagent {
+			promptRole = "上游消息"
+		}
 		for _, q := range qas {
 			ui.Column(c).FillWidth().Padding(11, 14).Background(tok.Fill1).Border(1, tok.Border).Radius(radius).Gap(6).Children(func() {
-				ui.Text(c, "用户").Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Text3)
+				ui.Text(c, promptRole).Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Text3)
 				markdown.View(c.Key("q-"+q.ID), q.Question, mdOpts)
 				if q.QuestionTruncated {
 					ui.Text(c, "官方内容已截断").FontSize(fsCaption).TextColor(tok.Text3)

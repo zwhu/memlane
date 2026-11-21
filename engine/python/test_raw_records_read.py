@@ -292,6 +292,83 @@ class RawRecordsReadTest(AioHTTPTestCase):
             headers=mgr,
         )).status, 503)
 
+    async def test_raw_records_and_history_include_subagent_relations(self):
+        mgr = {'Authorization': 'Bearer ' + self.manager_token}
+        root = Path(self.tmp.name)
+        codex_dir = root / '.codex'
+        codex_dir.mkdir(parents=True)
+        cdb = codex_dir / 'state_5.sqlite'
+        cc = sqlite3.connect(cdb)
+        cc.executescript('''
+            CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT, status TEXT);
+            CREATE TABLE threads (id TEXT PRIMARY KEY, source TEXT, agent_nickname TEXT, agent_role TEXT, attached_thread_parent_id TEXT);
+        ''')
+        cc.execute('INSERT INTO thread_spawn_edges VALUES (?,?,?)', ('s1', 's2', 'closed'))
+        cc.execute(
+            'INSERT INTO threads VALUES (?,?,?,?,?)',
+            ('s2', json.dumps({'subagent': {'thread_spawn': {'parent_thread_id': 's1', 'depth': 1, 'agent_role': 'research'}}}), 'Researcher', 'research', None),
+        )
+        # Child in foreign dataset must remain invisible/isolated from parent
+        cc.execute('INSERT INTO thread_spawn_edges VALUES (?,?,?)', ('s_foreign', 'orphan_sub', 'closed'))
+        cc.execute(
+            'INSERT INTO threads VALUES (?,?,?,?,?)',
+            ('orphan_sub', json.dumps({'subagent': {'other': 'guardian'}}), None, None, None),
+        )
+        cc.commit()
+        cc.close()
+
+        c1 = sqlite3.connect(self.cognee_db)
+        c1.execute(
+            'INSERT INTO session_records VALUES(?,?,?,?,?,?)',
+            ('codex_orphan_sub', self.user_hex, uuid.UUID(self.ds_managed).hex, 'codex', '2026-11-20 09:00:00', '2026-11-20 08:30:00'),
+        )
+        c1.commit()
+        c1.close()
+
+        c2 = sqlite3.connect(self.cache_db)
+        # s2 is a subagent WITH both agent-to-agent QA and a tool trace!
+        c2.execute(
+            'INSERT INTO cache_qa_entries (seq, user_id, session_id, qa_id, payload, expires_at) VALUES (?,?,?,?,?,?)',
+            (10, self.user_uuid, 'codex_s2', 'sub-qa-1', json.dumps({'qa_id': 'sub-qa-1', 'question': 'Subagent research prompt', 'answer': 'Research findings'}), None),
+        )
+        c2.execute(
+            'INSERT INTO cache_trace_entries (seq, user_id, session_id, payload, expires_at) VALUES (?,?,?,?,?)',
+            (30, self.user_uuid, 'codex_s2', json.dumps({'trace_id': 'sub-tr-1', 'origin_function': 'Grep'}), None),
+        )
+        c2.commit()
+        c2.close()
+
+        self.registry.state['agents'] = {
+            'codex-1': {'kind': 'codex', 'host_profile': str(codex_dir)},
+        }
+
+        catalog = await (await self.client.get(f'/v1/raw-records?dataset_id={self.ds_managed}&kind=session', headers=mgr)).json()
+        by_id = {s['session_id']: s for s in catalog['sessions']}
+        self.assertNotIn('is_subagent', by_id['codex_s1'])
+        self.assertTrue(by_id['codex_s2']['is_subagent'])
+        self.assertEqual(by_id['codex_s2']['parent_session_id'], 'codex_s1')
+        self.assertEqual(by_id['codex_s2']['subagent_role'], 'research')
+        self.assertTrue(by_id['codex_orphan_sub']['is_subagent'])
+        self.assertNotIn('parent_session_id', by_id['codex_orphan_sub'])
+
+        parent_hist = await (await self.client.get(
+            f'/v1/raw-records/session-history?dataset_id={self.ds_managed}&session_id=codex_s1',
+            headers=mgr,
+        )).json()
+        self.assertEqual(len(parent_hist['subagents']), 1)
+        self.assertEqual(parent_hist['subagents'][0]['session_id'], 'codex_s2')
+        self.assertEqual(parent_hist['subagents'][0]['label'], 'Subagent research prompt')
+        self.assertEqual((parent_hist['subagents'][0]['msg_count'], parent_hist['subagents'][0]['tool_calls']), (1, 1))
+
+        child_hist = await (await self.client.get(
+            f'/v1/raw-records/session-history?dataset_id={self.ds_managed}&session_id=codex_s2',
+            headers=mgr,
+        )).json()
+        self.assertTrue(child_hist['is_subagent'])
+        self.assertEqual(child_hist['parent_session_id'], 'codex_s1')
+        self.assertEqual(child_hist['parent_label'], '如何优化原始记录加载性能？')
+        self.assertEqual(child_hist['subagent_role'], 'research')
+
 
 if __name__ == '__main__':
     unittest.main()

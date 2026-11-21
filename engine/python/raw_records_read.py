@@ -20,6 +20,7 @@ from overview_bootstrap import (
     _uuid_text,
 )
 from project_policy import PolicyError
+from session_relations import descendant_ids_for_session, resolve_session_relations
 
 MAX_RAW_HISTORY_BYTES = 8 * 1024 * 1024
 _VALID_KINDS = frozenset({'all', 'session', 'document'})
@@ -301,7 +302,19 @@ def _hydrate_session_summaries(cache_db, sessions):
         con.close()
 
 
-def _read_raw_records_catalog(official_data, dataset_id, kind='all'):
+def _apply_relation_fields(target, rel):
+    if not rel:
+        return
+    target['is_subagent'] = True
+    if rel.get('parent_session_id'):
+        target['parent_session_id'] = rel['parent_session_id']
+    if rel.get('subagent_role'):
+        target['subagent_role'] = rel['subagent_role']
+    if rel.get('nesting_depth'):
+        target['nesting_depth'] = int(rel['nesting_depth'])
+
+
+def _read_raw_records_catalog(official_data, dataset_id, kind='all', *, registry=None, codex_config=None):
     official_root = Path(official_data).resolve()
     cognee_db = official_root / 'system' / 'databases' / 'cognee_db'
     cache_db = official_root / 'system' / 'databases' / 'cache.db'
@@ -381,6 +394,14 @@ def _read_raw_records_catalog(official_data, dataset_id, kind='all'):
     cache_ready = False
     if kind != 'document':
         cache_ready = _hydrate_session_summaries(cache_db, sessions) if sessions else cache_db.is_file()
+        if sessions and (registry is not None or codex_config):
+            relations = resolve_session_relations(
+                [row['session_id'] for row in sessions],
+                registry=registry,
+                codex_config=codex_config,
+            )
+            for row in sessions:
+                _apply_relation_fields(row, relations.get(row['session_id']))
 
     return {
         'dataset_id': ds_norm,
@@ -390,7 +411,18 @@ def _read_raw_records_catalog(official_data, dataset_id, kind='all'):
     }
 
 
-def _read_session_history_page(official_data, dataset_id, session_id, *, qa_offset=0, trace_offset=0, limit=20, user_id=None):
+def _read_session_history_page(
+    official_data,
+    dataset_id,
+    session_id,
+    *,
+    qa_offset=0,
+    trace_offset=0,
+    limit=20,
+    user_id=None,
+    registry=None,
+    codex_config=None,
+):
     official_root = Path(official_data).resolve()
     cognee_db = official_root / 'system' / 'databases' / 'cognee_db'
     cache_db = official_root / 'system' / 'databases' / 'cache.db'
@@ -406,6 +438,7 @@ def _read_session_history_page(official_data, dataset_id, session_id, *, qa_offs
     except sqlite3.Error as err:
         raise PolicyError('session_history_unavailable', 503) from err
 
+    ds_sessions = {}
     try:
         if user_id:
             u_variants = _id_variants(user_id)
@@ -425,6 +458,24 @@ def _read_session_history_page(official_data, dataset_id, session_id, *, qa_offs
                     ORDER BY last_activity_at DESC LIMIT 1''',
                 (session_id, *ds_params),
             ).fetchone()
+        if srow is not None and (registry is not None or codex_config):
+            for dsrow in con.execute(
+                f'''SELECT session_id, user_id, dataset_id, agent_id, last_activity_at, started_at
+                    FROM session_records
+                    WHERE dataset_id {ds_sql}
+                    ORDER BY last_activity_at DESC''',
+                ds_params,
+            ):
+                ds_sid = str(dsrow[0] or '')
+                if ds_sid and ds_sid not in ds_sessions:
+                    ds_sessions[ds_sid] = {
+                        'session_id': ds_sid,
+                        'user_id': _uuid_text(dsrow[1]),
+                        'dataset_id': ds_norm,
+                        'agent_id': str(dsrow[3] or ''),
+                        'last_activity_at': _iso_text(dsrow[4]),
+                        'started_at': _iso_text(dsrow[5]),
+                    }
     except sqlite3.Error as err:
         raise PolicyError('session_history_unavailable', 503) from err
     finally:
@@ -475,6 +526,36 @@ def _read_session_history_page(official_data, dataset_id, session_id, *, qa_offs
         'qa_more': qa_offset + len(qas) < msg_count,
         'trace_more': trace_offset + len(traces) < tool_calls,
     }
+    if ds_sessions:
+        relations = resolve_session_relations(
+            ds_sessions.keys(),
+            registry=registry,
+            codex_config=codex_config,
+        )
+        self_rel = relations.get(session_id)
+        _apply_relation_fields(record, self_rel)
+        parent_id = self_rel.get('parent_session_id', '') if self_rel else ''
+        if parent_id and parent_id in ds_sessions:
+            parent_summary_row = dict(ds_sessions[parent_id])
+            if _hydrate_session_summaries(cache_db, [parent_summary_row]) and parent_summary_row.get('label'):
+                record['parent_label'] = parent_summary_row['label']
+        child_ids = descendant_ids_for_session(session_id, relations)
+        if child_ids and qa_offset == 0 and trace_offset == 0:
+            subagent_rows = []
+            for cid in child_ids:
+                base = ds_sessions.get(cid)
+                if not base:
+                    continue
+                row = dict(base)
+                _apply_relation_fields(row, relations.get(cid))
+                subagent_rows.append(row)
+            if subagent_rows:
+                _hydrate_session_summaries(cache_db, subagent_rows)
+                subagent_rows.sort(
+                    key=lambda r: (r.get('last_activity_at') or '', r.get('session_id') or ''),
+                    reverse=True,
+                )
+                record['subagents'] = subagent_rows
     encoded = json.dumps(record, ensure_ascii=False).encode('utf-8')
     if len(encoded) > MAX_RAW_HISTORY_BYTES:
         raise PolicyError('session_history_page_too_large', 413)
@@ -505,7 +586,14 @@ def attach_raw_records_read(app, registry, *, codex_config=None):
         if not official_data:
             raise PolicyError('raw_records_store_unavailable', 503)
 
-        payload = await asyncio.to_thread(_read_raw_records_catalog, official_data, ds_id, kind)
+        payload = await asyncio.to_thread(
+            _read_raw_records_catalog,
+            official_data,
+            ds_id,
+            kind,
+            registry=registry,
+            codex_config=codex_config,
+        )
         return web.json_response(payload)
 
     async def raw_session_history(request):
@@ -543,6 +631,8 @@ def attach_raw_records_read(app, registry, *, codex_config=None):
             trace_offset=trace_offset,
             limit=limit,
             user_id=user_id,
+            registry=registry,
+            codex_config=codex_config,
         )
         return web.Response(body=body_bytes, content_type='application/json')
 

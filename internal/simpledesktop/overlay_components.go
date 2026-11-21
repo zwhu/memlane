@@ -55,6 +55,8 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 	listItem := s.Selected
 	if sourceSession(s) && s.SourceReturn == nil {
 		listItem = &s.History[len(s.History)-1]
+	} else if s.SubagentParent != nil {
+		listItem = s.SubagentParent
 	}
 	for n, item := range s.Items {
 		if listItem != nil && listItem.key() == item.key() {
@@ -86,28 +88,40 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 			col.Children(func() {
 				if i.Session != nil {
 					idLabel := sessionIdentity(i.ID)
-					topic := strings.TrimSpace(i.Title)
-					hasTopic := topic != "" && topic != i.ID && topic != "来源会话"
+					hasTopic := sessionHasTopic(i)
 					// Reserve fixed 2-line title slot (12 * 1.55 * 2 = 37.2px <= 38px) so
 					// async hydration or fallback placeholders never shift following rows.
 					ui.Column(c.Key("session-title-slot")).FillWidth().Height(38).Shrink(0).Justify(ui.Start).Children(func() {
 						switch {
 						case hasTopic:
-							v4InlineMarkdown(c, topic, fsFootnote, 400, 1.55, tok.Text1).MaxLines(2).Tooltip(idLabel)
+							v4InlineMarkdown(c, strings.TrimSpace(i.Title), fsFootnote, 400, 1.55, tok.Text1).MaxLines(2).Tooltip(idLabel)
 						case i.ReadingState == "pending":
 							ui.Column(c).FillWidth().Gap(6).Children(func() {
 								ui.Box(c).FillWidth().Height(11).Radius(radiusSmall).Background(tok.Fill2)
 								ui.Box(c).Width(180).Height(11).Radius(radiusSmall).Background(tok.Fill1)
 							})
 						default:
-							ui.Text(c, idLabel).Font("system-ui").FontSize(fsFootnote).FontWeight(400).LineHeight(1.55).TextColor(tok.Text2).MaxLines(2).Tooltip(idLabel)
+							fallback := sessionFallbackTitle(i)
+							color := tok.Text2
+							if i.Session.IsSubagent && subagentRoleLabel(i.Session) != "" {
+								color = tok.Text1
+							}
+							ui.Text(c, fallback).Font("system-ui").FontSize(fsFootnote).FontWeight(400).LineHeight(1.55).TextColor(color).MaxLines(2).Tooltip(idLabel)
 						}
 					})
 					ui.Row(c).FillWidth().MinWidth(0).Height(18).Shrink(0).AlignItems(ui.Center).Gap(sp2).Children(func() {
 						agentLogo(c, recentAgentIcon(i), 16).Tooltip(idLabel)
-						v4CategoryChip(c, "会话")
-						if i.SessionSummary != "" {
-							homeText(c, i.SessionSummary, homeReadableMeta).SingleLine().Grow(1).MinWidth(0)
+						if i.Session.IsSubagent {
+							v4SubagentChip(c, "子会话", subagentBadgeLabel(i.Session))
+						} else {
+							v4CategoryChip(c, "会话")
+						}
+						if len(i.Subagents) > 0 {
+							v4SubagentChip(c, fmt.Sprintf("含 %d 子会话", len(i.Subagents)), fmt.Sprintf("关联了 %d 个子会话，点击右侧「子会话」标签查看", len(i.Subagents)))
+						}
+						summary := sessionDisplaySummary(i)
+						if summary != "" {
+							homeText(c, summary, homeReadableMeta).SingleLine().Grow(1).MinWidth(0)
 						} else if hasTopic {
 							homeText(c, idLabel, homeReadableMeta).SingleLine().Grow(1).MinWidth(0)
 						} else {

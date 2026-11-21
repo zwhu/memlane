@@ -85,6 +85,11 @@ func sourceAgentLabel(c *ui.Context, item Item) {
 		if name == "Agent 未记录" {
 			name = "Agent"
 		}
+		if item.Session != nil && item.Session.IsSubagent {
+			if role := subagentRoleLabel(item.Session); role != "" {
+				name += " · " + role
+			}
+		}
 		homeText(c, name, homeMeta)
 	})
 }

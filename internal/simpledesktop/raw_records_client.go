@@ -75,6 +75,51 @@ func (c ProjectControlClient) rawSessionHistory(ctx context.Context, item Item, 
 	return page, nil
 }
 
+func rawSessionEntryToItem(dataset string, entry rawSessionEntry, cacheReady bool) Item {
+	sess := entry.Session
+	if sess.Dataset == "" {
+		sess.Dataset = dataset
+	}
+	title := entry.ID
+	var summary, readingState string
+	if cacheReady {
+		readingState = "ready"
+		summary = sessionCoverage(SessionDetail{Count: entry.MsgCount, ToolCount: entry.ToolCalls})
+		if strings.TrimSpace(entry.Label) != "" {
+			title = sessionTitle(entry.Label)
+		}
+	}
+	return Item{
+		ID:             entry.ID,
+		Dataset:        sess.Dataset,
+		Kind:           "会话",
+		Title:          title,
+		SessionSummary: summary,
+		Date:           entry.Updated,
+		Session:        &sess,
+		ReadingState:   readingState,
+	}
+}
+
+func rawSessionEntriesToItems(dataset string, entries []rawSessionEntry, cacheReady bool) []Item {
+	out := make([]Item, 0, len(entries))
+	for _, entry := range entries {
+		if entry.ID == "" {
+			continue
+		}
+		out = append(out, rawSessionEntryToItem(dataset, entry, cacheReady))
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		a, _ := officialTime(out[i].Date)
+		b, _ := officialTime(out[j].Date)
+		if a.Equal(b) {
+			return out[i].key() < out[j].key()
+		}
+		return a.After(b)
+	})
+	return out
+}
+
 func buildRawRecordsFromFast(dataset string, resp rawRecordsResponse) ([]Item, bool) {
 	rows := make([]Item, 0, len(resp.Documents)+len(resp.Sessions))
 	seen := make(map[string]bool, len(resp.Documents)+len(resp.Sessions))
@@ -89,37 +134,69 @@ func buildRawRecordsFromFast(dataset string, resp rawRecordsResponse) ([]Item, b
 			seen[item.key()] = true
 		}
 	}
+	sessByID := make(map[string]Item, len(resp.Sessions))
+	sessOrder := make([]string, 0, len(resp.Sessions))
 	for _, entry := range resp.Sessions {
 		if entry.ID == "" || (entry.Dataset != "" && entry.Dataset != dataset) {
 			continue
 		}
-		sess := entry.Session
-		if sess.Dataset == "" {
-			sess.Dataset = dataset
-		}
-		title := entry.ID
-		var summary, readingState string
-		if resp.CacheReady {
-			readingState = "ready"
-			summary = sessionCoverage(SessionDetail{Count: entry.MsgCount, ToolCount: entry.ToolCalls})
-			if strings.TrimSpace(entry.Label) != "" {
-				title = sessionTitle(entry.Label)
+		item := rawSessionEntryToItem(dataset, entry, resp.CacheReady)
+		if !seen[item.key()] {
+			seen[item.key()] = true
+			if _, exists := sessByID[item.ID]; !exists {
+				sessByID[item.ID] = item
+				sessOrder = append(sessOrder, item.ID)
 			}
 		}
-		item := Item{
-			ID:             entry.ID,
-			Dataset:        sess.Dataset,
-			Kind:           "会话",
-			Title:          title,
-			SessionSummary: summary,
-			Date:           entry.Updated,
-			Session:        &sess,
-			ReadingState:   readingState,
+	}
+	resolveRoot := func(sid string) string {
+		cur := sid
+		visited := map[string]bool{sid: true}
+		root := ""
+		for hops := 0; hops < 16; hops++ {
+			curItem, ok := sessByID[cur]
+			if !ok || curItem.Session == nil {
+				break
+			}
+			pid := curItem.Session.ParentSessionID
+			if pid == "" || pid == sid || visited[pid] {
+				break
+			}
+			if _, exists := sessByID[pid]; !exists {
+				break
+			}
+			visited[pid] = true
+			root = pid
+			cur = pid
 		}
-		if !seen[item.key()] {
-			rows = append(rows, item)
-			seen[item.key()] = true
+		return root
+	}
+	childrenByRoot := make(map[string][]Item)
+	topIDs := make([]string, 0, len(sessOrder))
+	for _, sid := range sessOrder {
+		rootID := resolveRoot(sid)
+		if rootID != "" {
+			child := sessByID[sid]
+			child.ParentTitle = sessionReadableParentTitle(sessByID[rootID])
+			childrenByRoot[rootID] = append(childrenByRoot[rootID], child)
+		} else {
+			topIDs = append(topIDs, sid)
 		}
+	}
+	for _, sid := range topIDs {
+		item := sessByID[sid]
+		if kids := childrenByRoot[sid]; len(kids) > 0 {
+			sort.SliceStable(kids, func(i, j int) bool {
+				a, _ := officialTime(kids[i].Date)
+				b, _ := officialTime(kids[j].Date)
+				if a.Equal(b) {
+					return kids[i].key() < kids[j].key()
+				}
+				return a.After(b)
+			})
+			item.Subagents = kids
+		}
+		rows = append(rows, item)
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		a, _ := officialTime(rows[i].Date)
