@@ -153,12 +153,15 @@ func openCodeColdGet(key openCodeColdKey) (openCodeColdEntry, bool) {
 
 func openCodeColdPut(key openCodeColdKey, entry openCodeColdEntry) {
 	openCodeColdCache.mu.Lock()
-	defer openCodeColdCache.mu.Unlock()
 	openCodeColdCache.nextSeq++
 	entry.Seq = openCodeColdCache.nextSeq
 	if elem, ok := openCodeColdCache.entries[key]; ok {
 		elem.Value.(*openCodeColdNode).Entry = entry
 		openCodeColdCache.order.MoveToFront(elem)
+		openCodeColdCache.mu.Unlock()
+		if isPersistableCleanColdResult(entry.Result) {
+			scheduleColdPendingFlush()
+		}
 		return
 	}
 	for len(openCodeColdCache.entries) >= coldPendingCacheMaxEntries {
@@ -171,23 +174,37 @@ func openCodeColdPut(key openCodeColdKey, entry openCodeColdEntry) {
 	}
 	elem := openCodeColdCache.order.PushFront(&openCodeColdNode{Key: key, Entry: entry})
 	openCodeColdCache.entries[key] = elem
+	openCodeColdCache.mu.Unlock()
+	if isPersistableCleanColdResult(entry.Result) {
+		scheduleColdPendingFlush()
+	}
 }
 
 func openCodeColdDelete(key openCodeColdKey) {
 	openCodeColdCache.mu.Lock()
-	defer openCodeColdCache.mu.Unlock()
+	deleted := false
 	if elem, ok := openCodeColdCache.entries[key]; ok {
 		openCodeColdCache.order.Remove(elem)
 		delete(openCodeColdCache.entries, key)
+		deleted = true
+	}
+	openCodeColdCache.mu.Unlock()
+	if deleted {
+		scheduleColdPendingFlush()
 	}
 }
 
 func openCodeColdDeleteIfSeq(key openCodeColdKey, seq uint64) {
 	openCodeColdCache.mu.Lock()
-	defer openCodeColdCache.mu.Unlock()
+	deleted := false
 	if elem, ok := openCodeColdCache.entries[key]; ok && elem.Value.(*openCodeColdNode).Entry.Seq == seq {
 		openCodeColdCache.order.Remove(elem)
 		delete(openCodeColdCache.entries, key)
+		deleted = true
+	}
+	openCodeColdCache.mu.Unlock()
+	if deleted {
+		scheduleColdPendingFlush()
 	}
 }
 

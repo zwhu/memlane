@@ -515,3 +515,411 @@ func TestSwitchProjectToOverviewIsPaintOnlyAndZeroTitleStorm(t *testing.T) {
 		t.Fatalf("ReduceMotion Overview still requesting frames")
 	}
 }
+
+// TestScale50kDesktopSLABudgets enforces the §6.2 50k-scale desktop SLA gates
+// across /v2/* cursor APIs, <=300 sliding window pagination, 256 KiB profile
+// virtualization, multi-project tray flyout caching, Light/Dark frame times
+// (<12ms/<16ms median, <25ms peak), cold-start Overview (<150ms), and bounded
+// heap delta (<=25 MiB) with zero legacy overviewDocuments fallbacks.
+func TestScale50kDesktopSLABudgets(t *testing.T) {
+	now := time.Now()
+	const (
+		scaleKnowledgeCount = 50000
+		scaleProjectCount   = 8
+	)
+
+	dayBuckets := make([]v2OverviewDayBucket, 0, 365)
+	for d := 0; d < 365; d++ {
+		dayBuckets = append(dayBuckets, v2OverviewDayBucket{
+			Day:   now.AddDate(0, 0, -d).Format("2006-01-02"),
+			Count: (scaleKnowledgeCount / 365) + (d % 5),
+		})
+	}
+	projects := make([]Project, 0, scaleProjectCount)
+	accessProjects := make([]AccessProject, 0, scaleProjectCount)
+	projectSummaries := make([]v2OverviewProjectSummary, 0, scaleProjectCount)
+	for i := 0; i < scaleProjectCount; i++ {
+		pid := fmt.Sprintf("p-50k-%d", i)
+		ds := fmt.Sprintf("ds-50k-%d", i)
+		name := fmt.Sprintf("workspace-%d", i)
+		projects = append(projects, Project{ID: pid, Name: name, Path: "/synthetic/" + name, Dataset: ds})
+		accessProjects = append(accessProjects, AccessProject{ID: pid, Name: name, Dataset: ds, Status: "verified"})
+		kCount := 2000
+		if i == 0 {
+			kCount = 36000
+		}
+		projectSummaries = append(projectSummaries, v2OverviewProjectSummary{
+			ProjectID:      pid,
+			DatasetID:      ds,
+			KnowledgeCount: kCount,
+			RawDocCount:    1250,
+			UnreadCount:    (i + 1) * 3,
+			CatalogVersion: "cv-50k-1",
+		})
+	}
+	recentItems := make([]v2KnowledgeItem, 0, 20)
+	for i := 0; i < 20; i++ {
+		day := now.AddDate(0, 0, -(i % 7)).Format("2006-01-02")
+		recentItems = append(recentItems, v2KnowledgeItem{
+			DocID:            fmt.Sprintf("k50k-%05d", i),
+			DatasetID:        "ds-50k-0",
+			ProjectID:        "p-50k-0",
+			Title:            fmt.Sprintf("50k 规模总览预览 #%d", i),
+			EffectiveDate:    day,
+			CreatedAt:        day + "T08:00:00Z",
+			UpdatedAt:        day + "T08:00:00Z",
+			ContentHash:      fmt.Sprintf("h-%05d", i),
+			Kind:             "knowledge",
+			Category:         "项目约定",
+			LessonType:       "convention",
+			SessionID:        fmt.Sprintf("codex_s50k-%d", i),
+			RecallCount:      int64(i % 9),
+			IsUnread:         i < 3,
+			PreviewText:      fmt.Sprintf("`internal/simpledesktop/v2_client.go` 第 %d 条 50k 规模零正文预览摘要。", i),
+			PreviewTruncated: true,
+		})
+	}
+	runs := make([]activityRow, 0, 50)
+	for i := 0; i < 50; i++ {
+		runs = append(runs, activityRow{
+			ID:        fmt.Sprintf("run-50k-%d", i),
+			Run:       fmt.Sprintf("r-%d", i),
+			Dataset:   "ds-50k-0",
+			Operation: "improve",
+			Outcome:   "succeeded",
+			Created:   now.Add(-time.Duration(i) * time.Minute).UTC().Format(time.RFC3339),
+		})
+	}
+	overviewPayload, err := json.Marshal(v2OverviewBootstrapResponse{
+		Generation:          50000,
+		LocalTZName:         "Asia/Shanghai",
+		TotalKnowledgeCount: scaleKnowledgeCount,
+		DayBuckets:          dayBuckets,
+		Projects:            projectSummaries,
+		RecentItems:         recentItems,
+		PipelineRuns:        runs,
+		RecallStartedAt:     "2026-10-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(overviewPayload) >= 128*1024 {
+		t.Fatalf("50k overview v2 payload %d bytes exceeds 128 KiB budget", len(overviewPayload))
+	}
+
+	var overviewV2Calls, v1BootstrapCalls, legacyDataCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/capabilities":
+			_ = json.NewEncoder(w).Encode(ControlCapabilities{
+				APIVersions: []string{"v1", "v2"},
+				Features: []string{
+					v2FeatureCatalogIndex,
+					v2FeatureReadingState,
+					v2FeatureLocalBodyFastpath,
+					v2FeatureOverview,
+					v2FeatureKnowledgeCursor,
+					v2FeatureRawRecords,
+					v2FeatureSearch,
+					v2FeatureMessageSummary,
+					v2FeatureProvenanceBackfill,
+				},
+			})
+		case r.URL.Path == "/v2/overview/bootstrap":
+			overviewV2Calls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(overviewPayload)
+		case r.URL.Path == "/v2/projects/p-50k-0/knowledge":
+			pageIdx := 0
+			if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+				_, _ = fmt.Sscanf(cursor, "p50k-%d", &pageIdx)
+			}
+			items := make([]v2KnowledgeItem, 0, 30)
+			for i := 0; i < 30; i++ {
+				id := fmt.Sprintf("k50k-%05d", pageIdx*30+i)
+				items = append(items, v2KnowledgeItem{
+					DocID:            id,
+					DatasetID:        "ds-50k-0",
+					ProjectID:        "p-50k-0",
+					Title:            "50k 记忆 " + id,
+					EffectiveDate:    now.Format("2006-01-02"),
+					CreatedAt:        now.UTC().Format(time.RFC3339),
+					ContentHash:      "ch-" + id,
+					Kind:             "knowledge",
+					Category:         "踩坑经验",
+					LessonType:       "pitfall",
+					SessionID:        "codex_s50k-0",
+					RecallCount:      int64(i % 7),
+					PreviewText:      fmt.Sprintf("第 %d 页第 %d 条受控截断预览文本，用于 50k 滑动窗口渲染测试。", pageIdx, i),
+					PreviewTruncated: true,
+				})
+			}
+			_ = json.NewEncoder(w).Encode(v2ProjectKnowledgeResponse{
+				ProjectID:      "p-50k-0",
+				DatasetID:      "ds-50k-0",
+				Generation:     50000,
+				CatalogVersion: "cv-50k-1",
+				Sort:           "date",
+				TotalFiltered:  36000,
+				UnreadCount:    3,
+				CategoryCounts: map[string]int{"踩坑经验": 20000, "项目约定": 16000},
+				Items:          items,
+				NextCursor:     fmt.Sprintf("p50k-%d", pageIdx+1),
+				HasMore:        pageIdx < 20,
+			})
+		case strings.HasSuffix(r.URL.Path, "/body") && strings.HasPrefix(r.URL.Path, "/v2/datasets/"):
+			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
+				ID:        "k50k-00000",
+				DatasetID: "ds-50k-0",
+				Body:      "# Session learning (session codex_s50k-0)\n\n50k 规模正文直读快路径内容。",
+				MIMEType:  "text/markdown",
+				Source:    "local_fastpath",
+			})
+		case r.URL.Path == "/v2/projects/p-50k-0/raw-records":
+			items := make([]v2RawRecordItem, 0, 30)
+			for i := 0; i < 30; i++ {
+				sid := fmt.Sprintf("codex_raw-%04d", i)
+				items = append(items, v2RawRecordItem{
+					ItemKind: "session",
+					SortTSNS: int64(100000 - i),
+					Session: &v2RawSessionEntry{
+						Session:  Session{ID: sid, Dataset: "ds-50k-0", User: "u1", Agent: "codex", Updated: now.UTC().Format(time.RFC3339)},
+						Label:    "50k 原始会话 " + sid,
+						MsgCount: 5,
+					},
+				})
+			}
+			_ = json.NewEncoder(w).Encode(v2RawRecordsResponse{
+				ProjectID:  "p-50k-0",
+				DatasetID:  "ds-50k-0",
+				Kind:       "all",
+				CacheReady: true,
+				Items:      items,
+				HasMore:    true,
+				NextCursor: "raw-1",
+			})
+		case r.URL.Path == "/v1/raw-records/session-history":
+			_ = json.NewEncoder(w).Encode(SessionHistoryPage{
+				Paging: true, Limit: 20,
+				SessionDetail: SessionDetail{
+					Session: Session{ID: r.URL.Query().Get("session_id"), Dataset: "ds-50k-0", User: "u1", Updated: now.UTC().Format(time.RFC3339)},
+					Label:   "50k 原始会话详情",
+				},
+			})
+		case r.URL.Path == "/v2/reading-state/mark-read":
+			_ = json.NewEncoder(w).Encode(v2ReadingStateMarkReadResponse{ScopeHash: "s1", Marked: 1, UnreadCount: 2, ReadHorizonAtNS: now.UTC().Format(time.RFC3339Nano)})
+		case r.URL.Path == "/v2/reading-state/migrate-local":
+			_ = json.NewEncoder(w).Encode(v2ReadingStateMigrateResponse{})
+		case r.URL.Path == "/v2/provenance/backfill-legacy-dates":
+			_ = json.NewEncoder(w).Encode(v2ProvenanceBackfillResponse{Status: "absent"})
+		case strings.HasPrefix(r.URL.Path, "/v2/projects/") && strings.HasSuffix(r.URL.Path, "/message-summary"):
+			_ = json.NewEncoder(w).Encode(v2MessageSummaryResponse{
+				ProjectID:               "p-50k-0",
+				DatasetID:               "ds-50k-0",
+				AutomaticSave:           true,
+				KnowledgeCatalogVersion: "cv-50k-1",
+				UnreadCount:             3,
+			})
+		case r.URL.Path == "/v1/user-profiles":
+			_ = json.NewEncoder(w).Encode(userProfilesDirectory{
+				Profiles: []userProfile{{
+					ID: "prof-50k", Kind: "codex", Name: "Codex", Status: "ready", Method: "manual",
+					Updated: float64(now.Unix()), Document: &userProfileDocument{Dataset: "ds-prof", ID: "doc-prof-50k"},
+				}},
+			})
+		case strings.HasPrefix(r.URL.Path, "/v1/overview/bootstrap"):
+			v1BootstrapCalls.Add(1)
+			http.Error(w, "unexpected v1 bootstrap", 500)
+		case strings.Contains(r.URL.Path, "/api/v1/datasets/"):
+			legacyDataCalls.Add(1)
+			http.Error(w, "unexpected legacy dataset scan", 500)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	tokenFile := filepath.Join(dir, "manager.token")
+	if err := os.WriteFile(tokenFile, []byte(strings.Repeat("m", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		ServiceURL:      server.URL,
+		ClientStateFile: filepath.Join(dir, "state.json"),
+		ProjectControl:  &ProjectControlConfig{URL: server.URL, ManagementTokenFile: tokenFile},
+		Projects:        projects,
+	}
+
+	// 1. Cold-start Overview via /v2/overview/bootstrap (<150ms budget).
+	tStart := time.Now()
+	a := New(cfg, nil)
+	a.access.Loaded = true
+	a.access.Next = time.Now().Add(time.Hour)
+	a.access.Directory = AccessDirectory{Projects: accessProjects}
+	a.service = "已连接"
+	updates := make(chan func(), 256)
+	a.Update = func(fn func()) { updates <- fn }
+	t.Cleanup(func() { a.cancelAndResetPanes() })
+
+	a.loadOverview()
+	drainReading(t, updates, func() bool { return a.overviewState.Loaded && a.overviewState.ActivityLoaded })
+
+	tt := ui.NewTester(a.View, 1200, 820)
+	tt.Frame()
+	coldReady := time.Since(tStart)
+
+	if overviewV2Calls.Load() != 1 || v1BootstrapCalls.Load() != 0 || legacyDataCalls.Load() != 0 {
+		t.Fatalf("expected overviewV2=1 v1=0 legacy=0, got v2=%d v1=%d legacy=%d", overviewV2Calls.Load(), v1BootstrapCalls.Load(), legacyDataCalls.Load())
+	}
+	if !a.overviewState.V2Mode || a.overviewState.V2TotalKnowledge != scaleKnowledgeCount || len(a.overviewState.Snapshot.Knowledge) != 20 {
+		t.Fatalf("unexpected 50k overview v2 state: mode=%v total=%d recent=%d", a.overviewState.V2Mode, a.overviewState.V2TotalKnowledge, len(a.overviewState.Snapshot.Knowledge))
+	}
+	if !raceDetectorEnabled && coldReady > 150*time.Millisecond {
+		t.Errorf("50k cold-start Overview ready time %v exceeds 150ms budget", coldReady)
+	}
+
+	// 2. Navigate to Project Knowledge and paginate deeply past 300 items (15 pages = 450 items -> capped at 300).
+	a.navigate("知识", 0)
+	s := a.state()
+	drainReading(t, updates, func() bool { return s.Loaded && !s.Loading && !s.Reading })
+	s.Selected = nil // allow full sliding-window eviction
+	for page := 1; page < 15; page++ {
+		a.appendKnowledgeBatch(s)
+		drainReading(t, updates, func() bool { return !s.Knowledge.Appending })
+	}
+	if len(s.Items) != maxActiveListItems || len(s.Knowledge.Catalog) != 0 {
+		t.Fatalf("expected 50k sliding window=%d and empty client catalog, got items=%d catalog=%d", maxActiveListItems, len(s.Items), len(s.Knowledge.Catalog))
+	}
+
+	// 3. Prepare 256 KiB virtualized User Profile body.
+	var profileBuf strings.Builder
+	for i := 0; i < 640; i++ {
+		fmt.Fprintf(&profileBuf, "## 50k 画像章节 %03d\n\n用户长期偏好简洁可靠的系统设计与严格的自动化性能门禁，避免在 UI 渲染热路径引入全量扫描或同步落盘。\n\n", i)
+	}
+	profileBody := profileBuf.String()
+	a.userProfiles.Loaded = true
+	a.userProfiles.Next = time.Now().Add(time.Hour)
+	a.userProfiles.ReadAt = time.Now()
+	a.userProfiles.Directory = userProfilesDirectory{
+		Profiles: []userProfile{{
+			ID:       "prof-50k",
+			Kind:     "codex",
+			Name:     "Codex",
+			Status:   "ready",
+			Method:   "manual",
+			Updated:  float64(now.Unix()),
+			Document: &userProfileDocument{Dataset: "ds-prof", ID: "doc-prof-50k"},
+		}},
+	}
+	a.userProfiles.Selected = "prof-50k"
+	a.userProfiles.Body = profileBody
+	a.userProfiles.BodyKey = "prof-50k/ds-prof/doc-prof-50k"
+
+	// 4. Frame-time SLA checks across Light and Dark themes (Overview <12ms, Project/Profile <16ms, peak <25ms).
+	measureFrames := func(label string, frames int, medianBudget, peakBudget time.Duration) {
+		// Warm up layout/font caches for current page & theme.
+		for w := 0; w < 3; w++ {
+			tt.Frame()
+		}
+		samples := make([]time.Duration, 0, frames)
+		for n := 0; n < frames; n++ {
+			f0 := time.Now()
+			tt.Frame()
+			samples = append(samples, time.Since(f0))
+		}
+		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+		if !raceDetectorEnabled {
+			if median := samples[len(samples)/2]; median > medianBudget {
+				t.Errorf("%s median frame %v exceeds %v budget", label, median, medianBudget)
+			}
+			if peak := samples[len(samples)-1]; peak > peakBudget {
+				t.Errorf("%s peak frame %v exceeds %v budget", label, peak, peakBudget)
+			}
+		}
+	}
+
+	for _, appearance := range []string{appearanceLight, appearanceDark} {
+		a.setAppearancePreference(appearance)
+		a.navigate("总览", 0)
+		measureFrames("50k-overview-"+appearance, 15, 12*time.Millisecond, 25*time.Millisecond)
+
+		a.navigate("知识", 0)
+		s = a.state()
+		drainReading(t, updates, func() bool { return s.Loaded && !s.Loading })
+		measureFrames("50k-project-knowledge-"+appearance, 15, 16*time.Millisecond, 25*time.Millisecond)
+
+		a.navigate("用户画像", 0)
+		measureFrames("50k-profile-256k-"+appearance, 15, 16*time.Millisecond, 25*time.Millisecond)
+		first, last := a.userProfiles.ReaderList.Visible()
+		if len(a.userProfiles.cachedChunks) < 20 || (last-first+1) >= len(a.userProfiles.cachedChunks) {
+			t.Fatalf("[%s] 256 KiB profile was not virtualized: chunks=%d visible=%d..%d", appearance, len(a.userProfiles.cachedChunks), first, last)
+		}
+	}
+
+	// 5. Multi-project Tray Flyout caching & frame budget (8 projects, 20 frames -> 1 computation).
+	a.trayCache = trayFlyoutCache{}
+	trayTester := ui.NewTester(a.TrayFlyoutView, 300, 440)
+	trayTester.Frame()
+	trayFrames := make([]time.Duration, 0, 20)
+	for n := 0; n < 20; n++ {
+		f0 := time.Now()
+		trayTester.Frame()
+		trayFrames = append(trayFrames, time.Since(f0))
+	}
+	sort.Slice(trayFrames, func(i, j int) bool { return trayFrames[i] < trayFrames[j] })
+	if a.trayCache.summaryComputations != 1 {
+		t.Fatalf("expected tray summary cached across 20 frames (1 computation), got %d", a.trayCache.summaryComputations)
+	}
+	if !raceDetectorEnabled && trayFrames[len(trayFrames)/2] > 12*time.Millisecond {
+		t.Errorf("50k multi-project tray median frame %v exceeds 12ms budget", trayFrames[len(trayFrames)/2])
+	}
+
+	// 6. Page switches + deep pagination + Light/Dark toggles heap delta <= 25 MiB.
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	for step := 0; step < 20; step++ {
+		if step%2 == 0 {
+			a.setAppearancePreference(appearanceDark)
+		} else {
+			a.setAppearancePreference(appearanceLight)
+		}
+		switch step % 4 {
+		case 0:
+			a.navigate("总览", 0)
+		case 1:
+			a.navigate("知识", 0)
+			cur := a.state()
+			drainReading(t, updates, func() bool { return cur.Loaded && !cur.Loading })
+			cur.Selected = nil
+			for p := 0; p < 3 && cur.More; p++ {
+				a.appendKnowledgeBatch(cur)
+				drainReading(t, updates, func() bool { return !cur.Knowledge.Appending })
+			}
+		case 2:
+			a.navigateKind("知识", 0, "原始记录")
+			cur := a.state()
+			drainReading(t, updates, func() bool { return cur.Loaded && !cur.Loading })
+		case 3:
+			a.navigate("用户画像", 0)
+		}
+		tt.Frame()
+	}
+
+	runtime.GC()
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	var delta int64
+	if after.HeapAlloc > before.HeapAlloc {
+		delta = int64(after.HeapAlloc - before.HeapAlloc)
+	}
+	const maxHeapGrowth = 25 * 1024 * 1024
+	if delta > maxHeapGrowth {
+		t.Fatalf("50k scale page/scroll/theme switch heap grew by %.1f MiB (budget <= 25 MiB)", float64(delta)/(1024*1024))
+	}
+	if legacyDataCalls.Load() != 0 {
+		t.Fatalf("50k scale SLA run triggered %d forbidden legacy dataset scans", legacyDataCalls.Load())
+	}
+}

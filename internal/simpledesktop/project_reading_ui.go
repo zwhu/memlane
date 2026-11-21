@@ -333,37 +333,7 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 		}
 		i := s.Selected
 		key := i.key()
-<<<<<<< HEAD
 		paged := i.Detail != nil && sessionHistoryFor(s, *i) != nil
-=======
-		appToolbar(c, "项目内容工具栏", func() {
-			ui.Row(c).FillWidth().MaxWidth(readerMaxW).AlignItems(ui.Center).Gap(sp2).Children(func() {
-				agentLogo(c, recentAgentIcon(*i), 18)
-				status := sourceAgentName(*i)
-				if p, ok := a.current(); ok && p.Name != "" {
-					status += " · " + p.Name
-				}
-				status += " · " + displayDate(i.Date)
-				row := ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(4)
-				row.Children(func() {
-					homeText(c, status, homeBody).SingleLine()
-					hoverCopyAction(c, row, "复制内容", func() { c.WriteClipboard(sessionCopyBody(s, *i)); a.copyFeedback("内容") }).Disabled(!(i.BodyLoaded || i.Detail != nil || (i.Document == nil && i.Preview != "")))
-				})
-				knowledgeRecallLabel(c, *i)
-				knowledgeBasisTag(c, *i)
-				ui.Spacer(c)
-				anchor := readingAction(c, "内容信息", readingInfo, func() {
-					a.projectUI.InfoOpen = !a.projectUI.InfoOpen
-					a.projectUI.InfoKey = key
-					a.projectUI.MenuOpen = false
-				})
-				if a.projectUI.InfoKey != key {
-					a.projectUI.InfoOpen = false
-				}
-				a.contentInformation(c, anchor, *i)
-			})
-		}).Height(44).Padding(0, sp10)
->>>>>>> aa8b7eb (perf(desktop): land P1 v2 cursor APIs, body fastpath, reading-state sync, sliding window, and 3-lane search)
 		scrollKey := key
 		if i.Session != nil && s.SessionSubagents && len(i.Subagents) > 0 {
 			scrollKey += "/subagents"
@@ -400,7 +370,6 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 				a.projectDetailHeader(c, s, i, paged)
 			})
 		})
-<<<<<<< HEAD
 
 		fadeKey := fmt.Sprintf("project-detail-body-%d", a.motionRuns.docBodyFade)
 		bodyHost := ui.Column(c.Key(fadeKey)).Grow(1).MinHeight(0).FillWidth()
@@ -437,10 +406,7 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 			}
 		})
 
-		canCopy := i.BodyLoaded || i.Detail != nil || i.Preview != ""
-=======
 		canCopy := i.BodyLoaded || i.Detail != nil || (i.Document == nil && i.Preview != "")
->>>>>>> aa8b7eb (perf(desktop): land P1 v2 cursor APIs, body fastpath, reading-state sync, sliding window, and 3-lane search)
 		appFooter(c, "项目阅读栏").Padding(0, sp6).Gap(sp2).Children(func() {
 			homeText(c, "Cognee 提供 · 只读", homeMeta)
 			ui.Spacer(c)
@@ -603,111 +569,6 @@ func (a *App) contentInformation(c *ui.Context, anchor ui.Element, i Item) {
 		})
 	}).Modal().Role(ui.RoleDialog).Width(360).Height(height).Padding(0).Transition(projectOverlayMotion())
 }
-<<<<<<< HEAD
-=======
-func (a *App) projectReadingBody(c *ui.Context, s *pane, i *Item) {
-	if (i.Document != nil && !i.BodyLoaded && s.Reading) || (!i.BodyLoaded && i.Detail == nil && i.Preview == "" && i.Body == "" && s.Reading) {
-		v4SkeletonGroup(c, 3, 2, false, false)
-		return
-	}
-	presentation := itemPresentation(*i)
-	mdOpts := a.v4MarkdownOptions(fsReading)
-	if i.Detail != nil {
-		paged := a.sessionHistoryControls(c, s, *i)
-		if paged && s.SessionSubagents && len(i.Subagents) > 0 {
-			a.subagentsListView(c, s, *i)
-			return
-		}
-		if !paged {
-			homeText(c, sessionCoverage(*i.Detail), homeBody).FontSize(fsFootnote)
-		}
-		if !paged && (len(i.Detail.QAs) < i.Detail.Count || len(i.Detail.Traces) < i.Detail.ToolCount) {
-			homeText(c, "当前是最近记录，可读取按时间排列的完整会话。", homeMeta)
-			projectLink(c, "读取完整会话", func() { a.loadSessionPage(s, 0, 0) }).Disabled(s.Reading)
-		}
-		if len(i.Detail.QAs) == 0 && (!paged || !s.SessionTools) {
-			message := "此会话尚无已保存的问答；下方仅为已保存的工具记录。"
-			if paged {
-				message = "此会话尚无已保存的问答，可切换到工具记录查看。"
-			}
-			homeText(c, message, homeMeta)
-		}
-		if paged && s.SessionTools && i.Detail.ToolCount == 0 {
-			homeText(c, "此会话尚无已保存的工具记录。", homeMeta)
-		}
-		qas := i.Detail.QAs
-		traces := i.Detail.Traces
-		if paged {
-			if s.SessionTools {
-				qas = nil
-			} else {
-				traces = nil
-			}
-		}
-		promptRole := "用户"
-		if i.Session != nil && i.Session.IsSubagent {
-			promptRole = "上游消息"
-		}
-		for _, q := range qas {
-			ui.Column(c).FillWidth().Padding(11, 14).Background(tok.Fill1).Border(1, tok.Border).Radius(radius).Gap(6).Children(func() {
-				ui.Text(c, promptRole).Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Text3)
-				markdown.View(c.Key("q-"+q.ID), q.Question, mdOpts)
-				if q.QuestionTruncated {
-					ui.Text(c, "官方内容已截断").FontSize(fsCaption).TextColor(tok.Text3)
-				}
-			})
-			sourceAgentLabel(c, *i)
-			markdown.View(c.Key("a-"+q.ID), q.Answer, mdOpts)
-			if q.AnswerTruncated {
-				ui.Text(c, "官方内容已截断").FontSize(fsCaption).TextColor(tok.Text3)
-			}
-		}
-		for _, trace := range traces {
-			t := trace
-			key := i.key() + "/" + t.ID
-			expanded := s.Tools[key]
-			statusCol := tok.OK
-			if strings.Contains(strings.ToLower(t.Status), "err") || strings.Contains(strings.ToLower(t.Status), "fail") || t.Error != "" {
-				statusCol = tok.Danger
-			}
-			ui.Column(c).FillWidth().Border(1, tok.Border).Radius(radius).Background(tok.BgElevated).Children(func() {
-				head := ui.ButtonBase(c.Key("tool-head-"+key)).Role(ui.RoleButton).Label(t.Name + " · " + t.Status).
-					Cursor(ui.CursorPointer).FillWidth().Padding(sp2, sp3).Gap(sp2).AlignItems(ui.Center).Justify(ui.Start).BorderWidth(0).Radius(radius)
-				head.Background(homeHoverColor(head, "tool-bg", ui.Transparent, tok.Hover))
-				head.Children(func() {
-					ico := v4IconChev
-					if expanded {
-						ico = v4IconDown
-					}
-					ui.Icon(c, ico).FontSize(12).TextColor(tok.Text3).Shrink(0)
-					ui.Box(c).Size(6, 6).Radius(3).Background(statusCol).Shrink(0)
-					ui.Text(c, t.Name).Font("SF Mono").FontSize(fsFootnote).TextColor(tok.Text1).SingleLine().Grow(1).MinWidth(0)
-					if t.Status != "" {
-						homeText(c, t.Status, homeMeta).SingleLine().Shrink(0)
-					}
-				}).OnClick(func() { s.Tools[key] = !s.Tools[key] })
-				if expanded {
-					ui.Column(c).FillWidth().Padding(0, sp3, sp3, sp3).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
-						markdown.View(c.Key("tool-"+key), "```json\n"+string(t.Params)+"\n```\n\n```json\n"+string(t.Result)+"\n```\n\n"+t.Error, mdOpts)
-					})
-				}
-			})
-		}
-		if paged {
-			a.sessionLoadMore(c, s, *i)
-		}
-	} else {
-		markdown.View(c.Key("body-"+i.key()), presentation.VisibleBody, mdOpts)
-		if i.BodyTruncated {
-			ui.Text(c, "正文超过 8 MiB，已截断显示").FontSize(fsCaption).TextColor(tok.Text3)
-		}
-		if presentation.Unrecognized {
-			ui.Text(c, "原文格式未识别，保留原文").FontSize(fsCaption).TextColor(tok.Text3)
-		}
-	}
-}
-
->>>>>>> aa8b7eb (perf(desktop): land P1 v2 cursor APIs, body fastpath, reading-state sync, sliding window, and 3-lane search)
 func isRawRecordKind(kind string) bool {
 	return kind == "原始记录" || kind == "会话" || kind == "文档"
 }

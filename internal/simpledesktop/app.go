@@ -149,6 +149,7 @@ func New(c Config, err error) *App {
 	}
 	a.initReading(a.Client)
 	a.initDesktopPreferences()
+	a.configureColdPendingStoreFromConfig()
 	if err != nil {
 		a.configError = err.Error()
 		a.initialSetup = c.ConfigFile == "" || (c.FirstInstallDefault && errors.Is(err, os.ErrNotExist))
@@ -206,6 +207,7 @@ func (a *App) Start() {
 	a.health()
 	a.loadRecent()
 	a.RefreshProjectDirectory()
+	a.triggerProvenanceBackfillOnce()
 	// Defer non-critical background host CLI probes and code-index state restore
 	// until after Overview cold-start bootstrap and entrance motion settle.
 	if a.Update != nil && a.page == "总览" {

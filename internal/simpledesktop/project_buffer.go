@@ -69,6 +69,8 @@ type coldPendingEntry struct {
 	ManifestPath    string
 	ManifestSize    int64
 	ManifestMtimeNS int64
+	ManifestIno     uint64
+	BridgeIno       uint64
 }
 
 type coldPendingNode struct {
@@ -101,12 +103,15 @@ func coldPendingCacheGet(key coldPendingKey) (coldPendingEntry, bool) {
 
 func coldPendingCachePut(key coldPendingKey, entry coldPendingEntry) {
 	coldPendingCache.mu.Lock()
-	defer coldPendingCache.mu.Unlock()
 	coldPendingCache.nextSeq++
 	entry.Seq = coldPendingCache.nextSeq
 	if elem, exists := coldPendingCache.entries[key]; exists {
 		elem.Value.(*coldPendingNode).Entry = entry
 		coldPendingCache.order.MoveToFront(elem)
+		coldPendingCache.mu.Unlock()
+		if isPersistableCleanColdResult(entry.Result) && entry.Result.SessionInactive {
+			scheduleColdPendingFlush()
+		}
 		return
 	}
 	for len(coldPendingCache.entries) >= coldPendingCacheMaxEntries {
@@ -119,23 +124,37 @@ func coldPendingCachePut(key coldPendingKey, entry coldPendingEntry) {
 	}
 	elem := coldPendingCache.order.PushFront(&coldPendingNode{Key: key, Entry: entry})
 	coldPendingCache.entries[key] = elem
+	coldPendingCache.mu.Unlock()
+	if isPersistableCleanColdResult(entry.Result) && entry.Result.SessionInactive {
+		scheduleColdPendingFlush()
+	}
 }
 
 func coldPendingCacheDelete(key coldPendingKey) {
 	coldPendingCache.mu.Lock()
-	defer coldPendingCache.mu.Unlock()
+	deleted := false
 	if elem, ok := coldPendingCache.entries[key]; ok {
 		coldPendingCache.order.Remove(elem)
 		delete(coldPendingCache.entries, key)
+		deleted = true
+	}
+	coldPendingCache.mu.Unlock()
+	if deleted {
+		scheduleColdPendingFlush()
 	}
 }
 
 func coldPendingCacheDeleteIfSeq(key coldPendingKey, seq uint64) {
 	coldPendingCache.mu.Lock()
-	defer coldPendingCache.mu.Unlock()
+	deleted := false
 	if elem, ok := coldPendingCache.entries[key]; ok && elem.Value.(*coldPendingNode).Entry.Seq == seq {
 		coldPendingCache.order.Remove(elem)
 		delete(coldPendingCache.entries, key)
+		deleted = true
+	}
+	coldPendingCache.mu.Unlock()
+	if deleted {
+		scheduleColdPendingFlush()
 	}
 }
 
@@ -259,6 +278,9 @@ func coldPendingEntryUnchanged(entry coldPendingEntry) bool {
 	if err != nil || !minfo.Mode().IsRegular() || minfo.Size() != entry.ManifestSize || minfo.ModTime().UnixNano() != entry.ManifestMtimeNS {
 		return false
 	}
+	if entry.ManifestIno != 0 && statSigFromInfo(minfo).Ino != entry.ManifestIno {
+		return false
+	}
 	if _, err := os.Lstat(entry.Watch.MapPath); !os.IsNotExist(err) {
 		return false
 	}
@@ -267,6 +289,9 @@ func coldPendingEntryUnchanged(entry coldPendingEntry) bool {
 		return os.IsNotExist(err)
 	}
 	if err != nil || !binfo.Mode().IsRegular() || binfo.Size() != entry.Watch.BridgeSize || binfo.ModTime().UnixNano() != entry.Watch.BridgeMtimeNS {
+		return false
+	}
+	if entry.BridgeIno != 0 && statSigFromInfo(binfo).Ino != entry.BridgeIno {
 		return false
 	}
 	return true
@@ -482,6 +507,12 @@ func runPendingMaterials(ctx context.Context, python string, installation AgentI
 	if action == "show" && result.SessionInactive && coldPendingWatchValid(watch) {
 		manifestPath := filepath.Join(installation.PluginDir, ".memlane-project-access.json")
 		if minfo, statErr := os.Lstat(manifestPath); statErr == nil && minfo.Mode().IsRegular() {
+			var bridgeIno uint64
+			if watch.BridgeExists {
+				if binfo, bErr := os.Lstat(watch.BridgePath); bErr == nil && binfo.Mode().IsRegular() {
+					bridgeIno = statSigFromInfo(binfo).Ino
+				}
+			}
 			stored := clonePendingMaterials(result)
 			coldPendingCachePut(cacheKey, coldPendingEntry{
 				Result:          stored,
@@ -489,6 +520,8 @@ func runPendingMaterials(ctx context.Context, python string, installation AgentI
 				ManifestPath:    manifestPath,
 				ManifestSize:    minfo.Size(),
 				ManifestMtimeNS: minfo.ModTime().UnixNano(),
+				ManifestIno:     statSigFromInfo(minfo).Ino,
+				BridgeIno:       bridgeIno,
 			})
 		} else {
 			coldPendingCacheDelete(cacheKey)

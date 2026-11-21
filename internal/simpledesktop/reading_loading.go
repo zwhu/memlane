@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 )
 
 func (a *App) startRecentTitles(rows []Item) {
@@ -19,21 +18,6 @@ func (a *App) startRecentTitles(rows []Item) {
 	if a.recentScope == scope.String() {
 		return
 	}
-	pending := make([]Item, 0, len(rows))
-	for _, row := range rows {
-		if row.Document == nil || readableDocumentTitle(*row.Document) != "" || row.ReadingState == "ready" {
-			continue
-		}
-		pending = append(pending, row)
-	}
-	if len(pending) == 0 {
-		a.recentScope = scope.String()
-		if a.recentCancel != nil {
-			a.recentCancel()
-			a.recentCancel = nil
-		}
-		return
-	}
 	a.recentScope = scope.String()
 	if a.recentCancel != nil {
 		a.recentCancel()
@@ -45,8 +29,11 @@ func (a *App) startRecentTitles(rows []Item) {
 	request, epoch := a.recentRequest, a.epoch
 	client := a.Client
 	generation := fmt.Sprint(a.overviewState.generation)
-	for _, row := range pending {
+	for _, row := range rows {
 		i := row
+		if i.Document == nil || readableDocumentTitle(*i.Document) != "" {
+			continue
+		}
 		revision := a.readingRevisions[i.key()]
 		go func() {
 			result, err := a.titles.read(ctx, client, i, generation, false, true)
@@ -226,125 +213,28 @@ func (a *App) startTitles(s *pane) {
 	}
 }
 
-func clearUnavailableItem(item *Item) {
-	item.Body = ""
-	item.BodyLoaded = false
-	item.Detail = nil
-	item.Preview = ""
-	item.Subagents = nil
-	item.RecallStats = nil
-	item.ReadingState = "unavailable"
-	item.ReadingError = "内容不可用"
-	if item.Document != nil {
-		item.Title = item.Document.title()
-	}
-}
-
-func (a *App) allReadingPanes() []*pane {
-	seen := make(map[*pane]bool, len(a.panes)+len(a.access.Queues))
-	out := make([]*pane, 0, len(a.panes)+len(a.access.Queues))
-	for _, s := range a.panes {
-		if s != nil && !seen[s] {
-			seen[s] = true
-			out = append(out, s)
-		}
-	}
-	for _, q := range a.access.Queues {
-		if q != nil && q.Reader != nil && !seen[q.Reader] {
-			seen[q.Reader] = true
-			out = append(out, q.Reader)
-		}
-	}
-	return out
-}
-
-func (a *App) clearUserProfileBody(dataset, id string) {
-	s := &a.userProfiles
-	match := dataset == ""
-	if !match && id != "" {
-		if strings.HasSuffix(s.BodyKey, "/"+dataset+"/"+id) {
-			match = true
-		}
-		if p, ok := a.selectedUserProfile(); ok && p.Document != nil && p.Document.Dataset == dataset && p.Document.ID == id {
-			match = true
-		}
-	} else if !match {
-		if s.BodyKey == "" || strings.Contains(s.BodyKey, "/"+dataset+"/") {
-			match = true
-		}
-		if p, ok := a.selectedUserProfile(); ok && p.Document != nil && p.Document.Dataset == dataset {
-			match = true
-		}
-	}
-	if match {
-		s.Body = ""
-		s.BodyKey = ""
-		s.ReadAt = time.Time{}
-		s.Reading = false
-		s.ReadGeneration++
-	}
-}
-
 func (a *App) unavailableReadingItem(i Item) {
 	a.projectUI.InfoOpen = false
 	for n, r := range a.searchUI.Rows {
 		if r.Dataset == i.Dataset && (r.ID == i.ID || r.SourceDocument == i.ID) {
 			a.searchUI.Rows[n].Body = ""
-			a.searchUI.Rows[n].BodyLoaded = false
-			a.searchUI.Rows[n].Detail = nil
 			a.searchUI.Rows[n].Preview = ""
-			a.searchUI.Rows[n].Subagents = nil
 			a.searchUI.Rows[n].Title = "内容已失效"
 			a.searchUI.Rows[n].ReadingState = "unavailable"
 		}
 	}
-	if a.searchAnchor != nil && a.searchAnchor.Dataset == i.Dataset && (a.searchAnchor.ID == i.ID || a.searchAnchor.SourceDocument == i.ID) {
-		a.clearSearchOrigin()
-	}
-	a.clearUserProfileBody(i.Dataset, i.ID)
-	if a.graph != nil && a.graph.dataset == i.Dataset {
-		a.graph.clear()
-		a.graphSelection = ""
-		a.graphLoading = false
-	} else if a.graphSelection != "" && (strings.Contains(a.graphSelection, i.ID) || (i.Dataset != "" && strings.Contains(a.graphSelection, i.Dataset))) {
-		a.graphSelection = ""
-	}
 	a.titles.InvalidateObject(i.Dataset, i.ID)
-	a.detailChunks.InvalidateObject(i.Dataset, i.ID)
 	if a.readingRevisions == nil {
 		a.readingRevisions = map[string]uint64{}
 	}
 	a.readingRevisions[i.key()]++
-	for _, s := range a.allReadingPanes() {
-		if s.DetailLists != nil {
-			k := i.key()
-			delete(s.DetailLists, k)
-			delete(s.DetailLists, k+"/tools")
-			delete(s.DetailLists, k+"/subagents")
-		}
+	for _, s := range a.panes {
 		if s.SourcePage != nil && s.SourcePage.ID == i.ID && s.SourcePage.Dataset == i.Dataset {
 			s.SourcePage = nil
-		}
-		if s.SubagentParent != nil && s.SubagentParent.key() == i.key() {
-			s.SubagentParent = nil
-			s.SubagentParentPage = nil
-		} else if s.SubagentParent != nil {
-			for idx := range s.SubagentParent.Subagents {
-				if s.SubagentParent.Subagents[idx].key() == i.key() {
-					clearUnavailableItem(&s.SubagentParent.Subagents[idx])
-				}
-			}
-		}
-		if s.SubagentParentPage != nil && s.SubagentParentPage.ID == i.ID && s.SubagentParentPage.Dataset == i.Dataset {
-			s.SubagentParentPage = nil
-		}
-		if s.HomeAnchor != nil && s.HomeAnchor.key() == i.key() {
-			s.HomeAnchor = nil
 		}
 		if s.Selected != nil && s.Selected.key() == i.key() {
 			s.Selected = nil
 			s.Reading = false
-			s.SessionSubagents = false
 		}
 		history := s.History[:0]
 		for _, h := range s.History {
@@ -352,12 +242,245 @@ func (a *App) unavailableReadingItem(i Item) {
 				history = append(history, h)
 			}
 		}
-		clear(s.History[len(history):])
 		s.History = history
 		for n, row := range s.Items {
 			if row.key() == i.key() {
+				s.Items[n].Body = ""
+				s.Items[n].Preview = ""
+				s.Items[n].BodyLoaded = false
+				s.Items[n].RecallStats = nil
+				s.Items[n].ReadingState = "unavailable"
+				s.Items[n].ReadingError = "内容不可用"
+				if row.Document != nil {
+					docCopy := *row.Document
+					docCopy.Metadata = nil
+					s.Items[n].Document = &docCopy
+					s.Items[n].Title = docCopy.title()
+				}
+			}
+		}
+	}
+	for n, row := range a.overviewState.Snapshot.Knowledge {
+		if row.key() == i.key() {
+			a.overviewState.Snapshot.Knowledge[n].Body = ""
+			a.overviewState.Snapshot.Knowledge[n].Preview = ""
+			a.overviewState.Snapshot.Knowledge[n].BodyLoaded = false
+			if row.Document != nil {
+				docCopy := *row.Document
+				docCopy.Metadata = nil
+				a.overviewState.Snapshot.Knowledge[n].Document = &docCopy
+				a.overviewState.Snapshot.Knowledge[n].Title = docCopy.title()
+			}
+			a.overviewState.Snapshot.Knowledge[n].ReadingState = "unavailable"
+		}
+	}
+}
+func (a *App) retryReadingTitle(s *pane, i Item) {
+	// A retry is user initiated and bounded to this object, with no retry loop.
+	parent := s.titleCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	for n, row := range s.Items {
+		if row.key() == i.key() {
+			s.Items[n].ReadingState = "pending"
+			s.Items[n].ReadingError = ""
+		}
+	}
+	request, epoch, generation := s.titleRequest, a.epoch, a.readingGeneration(s)
+	client := a.Client
+	revision := a.readingRevisions[i.key()]
+	go func() {
+		defer cancel()
+		result, err := a.titles.read(ctx, client, i, generation, true, false)
+		a.Update(func() {
+			if request != s.titleRequest || epoch != a.epoch || revision != a.readingRevisions[i.key()] || ctx.Err() != nil || !a.syncReadingIdentity() {
+				return
+			}
+			a.handleReadingFailure(i, err)
+			for n, row := range s.Items {
+				if row.key() == i.key() {
+					if err != nil {
+						s.Items[n].ReadingState = "failed"
+						return
+					}
+					s.Items[n].Title = result.Title
+					s.Items[n].ReadingState = "ready"
+					s.Items[n].ReadingError = ""
+				}
+			}
+		})
+	}()
+}
+
+// InvalidateReading must be called by policy/credential integration when access is
+// revoked. It removes raw data and copy affordances, including nested history.
+func (a *App) InvalidateReading(dataset string) {
+	a.invalidateUnifiedSearch(dataset)
+	a.projectUI.InfoOpen = false
+	a.titles.Invalidate(dataset)
+	a.recentScope = ""
+	if a.recentCancel != nil {
+		a.recentCancel()
+		a.recentRequest++
+	}
+	for n, i := range a.overviewState.Snapshot.Knowledge {
+		if dataset == "" || i.Dataset == dataset {
+			a.overviewState.Snapshot.Knowledge[n].Body = ""
+			a.overviewState.Snapshot.Knowledge[n].Preview = ""
+			a.overviewState.Snapshot.Knowledge[n].BodyLoaded = false
+			a.overviewState.Snapshot.Knowledge[n].ReadingState = ""
+			if i.Document != nil {
+				docCopy := *i.Document
+				docCopy.Metadata = nil
+				a.overviewState.Snapshot.Knowledge[n].Document = &docCopy
+				a.overviewState.Snapshot.Knowledge[n].Title = docCopy.title()
+			}
+		}
+	}
+	for n, i := range a.overviewState.DayItems {
+		if dataset == "" || i.Dataset == dataset {
+			a.overviewState.DayItems[n].Body = ""
+			a.overviewState.DayItems[n].Preview = ""
+			a.overviewState.DayItems[n].BodyLoaded = false
+			a.overviewState.DayItems[n].ReadingState = ""
+			if i.Document != nil {
+				docCopy := *i.Document
+				docCopy.Metadata = nil
+				a.overviewState.DayItems[n].Document = &docCopy
+				a.overviewState.DayItems[n].Title = docCopy.title()
+			}
+		}
+	}
+	for _, s := range a.panes {
+		a.cancelTitles(s)
+		if dataset == "" || (len(s.Items) > 0 && s.Items[0].Dataset == dataset) {
+			s.Knowledge.NextCursor = ""
+			s.RawNextCursor = ""
+			s.CommonNextCursor = ""
+		}
+		if len(s.RawCatalog) > 0 && (dataset == "" || s.RawCatalog[0].Dataset == dataset) {
+			s.RawCatalog = nil
+			s.More = false
+		}
+		if s.SourcePage != nil && (dataset == "" || s.SourcePage.Dataset == dataset) {
+			s.SourcePage = nil
+		}
+		if s.Selected != nil && (dataset == "" || s.Selected.Dataset == dataset) {
+			if s.readCancel != nil {
+				s.readCancel()
+			}
+			s.readRequest++
+			s.Selected = nil
+			s.Reading = false
+			s.Error = "内容已失效或无权读取，请刷新"
+		}
+		history := s.History[:0]
+		for _, i := range s.History {
+			if dataset != "" && i.Dataset != dataset {
+				history = append(history, i)
+			}
+		}
+		s.History = history
+		for n, i := range s.Items {
+			if dataset == "" || i.Dataset == dataset {
+				s.Items[n].Body = ""
+				s.Items[n].Preview = ""
+				s.Items[n].BodyLoaded = false
+				s.Items[n].RecallStats = nil
+				s.Items[n].ReadingState = "unavailable"
+				s.Items[n].ReadingError = "内容不可用"
+				if i.Document != nil {
+					docCopy := *i.Document
+					docCopy.Metadata = nil
+					s.Items[n].Document = &docCopy
+					s.Items[n].Title = docCopy.title()
+				}
 			}
 		}
 		for n, i := range s.Knowledge.Catalog {
 			if dataset == "" || i.Dataset == dataset {
-				clearUnavailableItem(&s.Knowledge.Catalog[n])
+				s.Knowledge.Catalog[n].Body = ""
+				s.Knowledge.Catalog[n].Preview = ""
+				s.Knowledge.Catalog[n].BodyLoaded = false
+				s.Knowledge.Catalog[n].RecallStats = nil
+				s.Knowledge.Catalog[n].ReadingState = "unavailable"
+				s.Knowledge.Catalog[n].ReadingError = "内容不可用"
+				if i.Document != nil {
+					docCopy := *i.Document
+					docCopy.Metadata = nil
+					s.Knowledge.Catalog[n].Document = &docCopy
+					s.Knowledge.Catalog[n].Title = docCopy.title()
+				}
+			}
+		}
+	}
+}
+func (a *App) cachedBaseReadingIdentity() string {
+	if a.baseReadingIdentity != "" &&
+		a.baseIdentityURL == a.Client.Config.ServiceURL &&
+		a.baseIdentityTokenFile == a.Client.Config.TokenFile {
+		return a.baseReadingIdentity
+	}
+	_, base, err := readingIdentityPair(a.Client)
+	if err != nil {
+		return ""
+	}
+	a.updateBaseReadingIdentity(base, a.Client.Config.ServiceURL, a.Client.Config.TokenFile)
+	return base
+}
+func (a *App) syncReadingIdentity() bool {
+	identity, base, err := readingIdentityPair(a.Client)
+	if err != nil {
+		identity = "unavailable"
+		base = ""
+	}
+	a.updateBaseReadingIdentity(base, a.Client.Config.ServiceURL, a.Client.Config.TokenFile)
+	if identity != a.readingIdentity {
+		if a.commonEdit.Existing != nil {
+			a.withdrawCommonEditor("")
+			a.commonEdit.Message = "连接或权限配置已变化，先前正文已撤下；请重新读取，原操作回执保留。"
+		}
+		a.readingIdentity = identity
+		a.epoch++
+		for _, s := range a.panes {
+			a.cancelTitles(s)
+			if s.cancel != nil {
+				s.cancel()
+			}
+			s.Loading = false
+			s.Loaded = false
+		}
+		a.InvalidateReading("")
+		return false
+	}
+	return err == nil
+}
+
+// Keep presentation metadata for an explicitly unchanged content revision while
+// title hydration runs. Never carry raw bodies or unknown document revisions.
+func preserveResolvedReadingTitles(rows, previous []Item) {
+	old := make(map[string]Item, len(previous))
+	for _, item := range previous {
+		if item.ReadingState == "ready" {
+			old[item.key()] = item
+		}
+	}
+	for n, row := range rows {
+		before, ok := old[row.key()]
+		if !ok {
+			continue
+		}
+		same := false
+		if row.Document != nil && before.Document != nil && (row.Document.ContentHash != "" || row.Document.Updated != "") {
+			same = keyForReading("", row, "") == keyForReading("", before, "") && readableDocumentTitle(*row.Document) == ""
+		} else if row.Session != nil && before.Session != nil {
+			same = row.Session.Updated != "" && row.Session.Updated == before.Session.Updated
+		}
+		if same {
+			rows[n].Title, rows[n].SessionSummary = before.Title, before.SessionSummary
+			rows[n].ReadingState = before.ReadingState
+		}
+	}
+}

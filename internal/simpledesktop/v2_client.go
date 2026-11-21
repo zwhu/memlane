@@ -20,6 +20,7 @@ const (
 	v2FeatureRawRecords            = "raw_records_v2"
 	v2FeatureSearch                = "search_v2"
 	v2FeatureMessageSummary        = "message_summary_v2"
+	v2FeatureProvenanceBackfill    = "provenance_backfill_v2"
 
 	maxActiveListItems = 300
 )
@@ -821,5 +822,24 @@ type v2ReadingStateMarkAllReadResponse struct {
 func (c ProjectControlClient) readingStateMarkAllReadV2(ctx context.Context, req v2ReadingStateMarkAllReadRequest) (v2ReadingStateMarkAllReadResponse, error) {
 	var out v2ReadingStateMarkAllReadResponse
 	err := c.requestWithLimit(ctx, "POST", "/v2/reading-state/mark-all-read", req, &out, 256*1024)
+	return out, err
+}
+
+type v2ProvenanceBackfillRequest struct {
+	ReadingIdentity string            `json:"reading_identity"`
+	Days            map[string]string `json:"days,omitempty"`
+}
+
+type v2ProvenanceBackfillResponse struct {
+	Status     string `json:"status"`
+	Matched    int    `json:"matched"`
+	Imported   int    `json:"imported"`
+	Skipped    int    `json:"skipped"`
+	BackupPath string `json:"backup_path"`
+}
+
+func (c ProjectControlClient) provenanceBackfillLegacyDatesV2(ctx context.Context, req v2ProvenanceBackfillRequest) (v2ProvenanceBackfillResponse, error) {
+	var out v2ProvenanceBackfillResponse
+	err := c.requestWithLimit(ctx, "POST", "/v2/provenance/backfill-legacy-dates", req, &out, 512*1024)
 	return out, err
 }
