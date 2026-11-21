@@ -185,3 +185,29 @@ class IncrementalProcessingTests(unittest.IsolatedAsyncioTestCase):
         self.registry.official.request = AsyncMock(side_effect=activity)
         self.assertFalse(await self.processing.capacity_available())
         self.assertEqual(self.registry.official.request.await_count, 2)
+
+    async def test_pre_submit_policy_unconfirmed_defers_and_restart_records_owner_interrupted(self):
+        self.result = {'status': 'paused', 'reason': 'policy_unconfirmed'}
+        await self.processing.tick()
+        self.now += 31
+        await self.processing.tick()
+        self.assertEqual(len(self.submissions()), 1)
+        entry = next(iter(self.processing.state['sessions'].values()))
+        self.assertEqual((entry['status'], entry['reason']), ('deferred', 'policy_unconfirmed'))
+
+        # Backoff delays immediate retry, then allows retry after 30s.
+        await self.processing.tick()
+        self.assertEqual(len(self.submissions()), 1)
+        self.now += 31
+        self.result = {'status': 'submitted'}
+        await self.processing.tick()
+        self.assertEqual(len(self.submissions()), 2)
+        self.assertEqual(next(iter(self.processing.state['sessions'].values()))['status'], 'submitted')
+
+        # Restart with in-flight submitting converges to unknown + owner_interrupted.
+        entry['status'] = 'submitting'
+        entry['reason'] = ''
+        self.processing.save()
+        reopened = IncrementalProcessing(self.backlog, clock=lambda: self.now, available=self.available)
+        reopened_entry = next(iter(reopened.state['sessions'].values()))
+        self.assertEqual((reopened_entry['status'], reopened_entry['reason']), ('unknown', 'owner_interrupted'))

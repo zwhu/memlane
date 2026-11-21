@@ -1014,5 +1014,267 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
             self.backlog.start('p', str(uuid.uuid4()))
         self.assertEqual((ctx.exception.code, ctx.exception.status), ('backlog_journal_limit', 409))
 
+    async def test_process_saved_cancellation_and_pre_submit_policy_unconfirmed(self):
+        target = {'agent_id': 'a', 'host': 'host', 'dataset': 'ds', 'session_id': 's1', 'saved': 1}
+        row = {'operation_id': 'op-cancel', 'project_id': 'p', 'automatic': True, 'targets': [], 'pending_processing': {'t': target}}
+
+        async def cancel_worker(r, t, action, update):
+            raise asyncio.CancelledError
+
+        self.backlog.worker = cancel_worker
+        with self.assertRaises(asyncio.CancelledError):
+            await self.backlog.process_saved(row, target)
+        self.assertEqual((target['processing'], target['processing_reason']), ('unknown', 'owner_interrupted'))
+
+        async def paused_worker(r, t, action, update):
+            return {'status': 'paused', 'reason': 'policy_unconfirmed'}
+
+        self.backlog.worker = paused_worker
+        await self.backlog.process_saved(row, target)
+        self.assertEqual((target['processing'], target['processing_reason']), ('deferred', 'policy_unconfirmed'))
+        self.assertGreater(target.get('next_processing_at', 0), 0)
+
+    async def test_reconcile_processing_target_outcomes_and_bounded_recovery(self):
+        from datetime import datetime, timezone
+
+        now = 1_795_275_000.0
+        iso_after = datetime.fromtimestamp(now - 20, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
+        iso_recent = datetime.fromtimestamp(now - 60, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
+
+        activity_rows = []
+        session_detail = {'session_id': 's1', 'dataset_id': 'ds', 'last_activity_at': iso_recent}
+
+        async def official_req(method, path, body=None, **kw):
+            if path.startswith('/api/v1/activity/pipeline-runs'):
+                return copy.deepcopy(activity_rows)
+            if path.startswith('/api/v1/sessions/'):
+                return copy.deepcopy(session_detail)
+            raise AssertionError(path)
+
+        self.registry.official.request = official_req
+
+        def make_row(reason='owner_interrupted', attempted_at=now - 120, retry_count=0):
+            t = {
+                'agent_id': 'a',
+                'host': 'host',
+                'dataset': 'ds',
+                'session_id': 's1',
+                'processing': 'unknown',
+                'processing_reason': reason,
+                'processing_attempted_at': attempted_at,
+            }
+            if retry_count:
+                t['reconcile_retry_count'] = retry_count
+            op = str(uuid.uuid4())
+            r = {'operation_id': op, 'project_id': 'p', 'created_at': 1, 'status': 'watching', 'automatic': True,
+                 'targets': [], 'pending_processing': {json.dumps(['a', 'host']): t}}
+            self.backlog.jobs[op] = r
+            return r, t
+
+        # 1. Naive UTC improve succeeded after attempted_at -> confirmed submitted.
+        activity_rows = [{
+            'kind': 'operation', 'operation_name': 'improve', 'outcome': 'succeeded',
+            'dataset_id': 'ds', 'session_ids': ['s1'], 'started_at': iso_after, 'ended_at': iso_after,
+        }]
+        r1, t1 = make_row()
+        await self.backlog.reconcile_processing_target('p', r1, t1, force=True, now=now)
+        self.assertEqual((t1['processing'], t1['recovery_reason'], t1['reconcile_status']),
+                         ('submitted', 'official_activity_confirmed', 'confirmed'))
+
+        # 2. Active pipeline running -> stays unknown with reconcile_status='running'.
+        activity_rows = [{
+            'kind': 'pipeline', 'pipeline_name': 'cognify_pipeline', 'pipeline_run_id': 'run-live',
+            'status': 'DATASET_PROCESSING_STARTED', 'dataset_id': 'ds', 'session_ids': ['s1'], 'started_at': iso_recent,
+        }]
+        r2, t2 = make_row()
+        await self.backlog.reconcile_processing_target('p', r2, t2, force=True, now=now)
+        self.assertEqual((t2['processing'], t2['reconcile_status']), ('unknown', 'running'))
+
+        # 3. owner_interrupted with errored run -> requeues once, second time does not auto-requeue.
+        activity_rows = [{
+            'kind': 'pipeline', 'pipeline_name': 'cognify_pipeline', 'pipeline_run_id': 'run-err',
+            'status': 'DATASET_PROCESSING_ERRORED', 'dataset_id': 'ds', 'session_ids': ['s1'], 'started_at': iso_recent,
+        }]
+        r3, t3 = make_row(reason='owner_interrupted', retry_count=0)
+        await self.backlog.reconcile_processing_target('p', r3, t3, force=True, now=now)
+        self.assertEqual((t3['processing'], t3['reconcile_status'], t3['reconcile_retry_count']),
+                         ('deferred', 'requeued', 1))
+
+        r4, t4 = make_row(reason='owner_interrupted', retry_count=1)
+        await self.backlog.reconcile_processing_target('p', r4, t4, force=True, now=now)
+        self.assertEqual((t4['processing'], t4['reconcile_status']), ('unknown', 'failed'))
+
+        # 4. Non-interrupted unknown never auto-requeues.
+        r5, t5 = make_row(reason='official_submission_unconfirmed', retry_count=0)
+        await self.backlog.reconcile_processing_target('p', r5, t5, force=True, now=now)
+        self.assertEqual((t5['processing'], t5['reconcile_status']), ('unknown', 'failed'))
+
+    async def test_processing_check_and_retry_http_endpoints(self):
+        from datetime import datetime, timezone
+        import time
+
+        now = time.time()
+        iso_after = datetime.fromtimestamp(now - 10, tz=timezone.utc).isoformat()
+        self.policy['policy']['can_auto_process'] = True
+        process_calls = []
+
+        async def worker(row, target, action, update):
+            if action == 'process':
+                process_calls.append(target['session_id'])
+                return {'status': 'submitted'}
+            return {'session_id': target['session_id'], 'tokens': [], 'unknown': 0}
+
+        self.backlog.worker = worker
+
+        confirmed_op = {'kind': 'operation', 'operation_name': 'improve', 'outcome': 'succeeded',
+                        'dataset_id': 'ds', 'session_ids': ['s-done'], 'started_at': iso_after, 'ended_at': iso_after}
+
+        async def official_req(method, path, body=None, **kw):
+            if 's-done' in path and path.startswith('/api/v1/activity/'):
+                return [confirmed_op]
+            if 's-done' in path:
+                return {'session_id': 's-done', 'dataset_id': 'ds', 'last_activity_at': iso_after}
+            if 's-fail' in path and path.startswith('/api/v1/activity/'):
+                return []
+            if 's-fail' in path:
+                return {'session_id': 's-fail', 'dataset_id': 'ds', 'last_activity_at': iso_after}
+            raise AssertionError(path)
+
+        self.registry.official.request = official_req
+        self.registry.state['sessions'][json.dumps(['a', 'host-fail'])] = 'p'
+        op = str(uuid.uuid4())
+        self.backlog.jobs[op] = {
+            'operation_id': op,
+            'project_id': 'p',
+            'created_at': 10,
+            'status': 'watching',
+            'automatic': True,
+            'targets': [],
+            'pending_processing': {
+                json.dumps(['a', 'host']): {
+                    'agent_id': 'a', 'host': 'host', 'dataset': 'ds', 'session_id': 's-done',
+                    'saved': 1, 'handled': 0,
+                    'processing': 'unknown', 'processing_reason': 'official_submission_unconfirmed',
+                    'processing_attempted_at': now - 60,
+                },
+                json.dumps(['a', 'host-fail']): {
+                    'agent_id': 'a', 'host': 'host-fail', 'dataset': 'ds', 'session_id': 's-fail',
+                    'saved': 1, 'handled': 0,
+                    'processing': 'unknown', 'processing_reason': 'official_submission_unconfirmed',
+                    'processing_attempted_at': now - 60,
+                },
+            },
+        }
+
+        app = create_app(self.registry, 'm' * 40, {'a': 'a' * 40})
+        with patch('project_backlog.Backlog', return_value=self.backlog):
+            attach_backlog(app, self.registry, {})
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            manager = {'Authorization': 'Bearer ' + 'm' * 40}
+            self.assertEqual((await client.post('/v1/projects/p/backlog/processing/check')).status, 401)
+            self.assertEqual((await client.post('/v1/projects/p/backlog/processing/retry',
+                                                headers={'Authorization': 'Bearer ' + 'a' * 40})).status, 403)
+
+            check_res = await client.post('/v1/projects/p/backlog/processing/check', headers=manager, json={})
+            self.assertEqual(check_res.status, 200)
+            check_body = await check_res.json()
+            self.assertEqual(check_body['job']['processing_failed'], 1)
+            self.assertEqual(len(check_body['processing_issues']), 1)
+            self.assertEqual(check_body['processing_issues'][0]['session_id'], 's-fail')
+            self.assertEqual(process_calls, [])
+
+            retry_res = await client.post('/v1/projects/p/backlog/processing/retry', headers=manager, json={})
+            self.assertEqual(retry_res.status, 200)
+            if self.backlog.processing_task:
+                await self.backlog.processing_task
+            self.assertEqual(process_calls, ['s-fail'])
+            final_body = await (await client.get('/v1/projects/p/backlog', headers=manager)).json()
+            self.assertEqual(final_body['job']['processing_failed'], 0)
+            self.assertEqual(final_body['processing_issues'], [])
+        finally:
+            await client.close()
+
+    async def test_automatic_tick_clears_stale_backlog_write_denied_review_failed(self):
+        self.policy['policy']['can_capture'] = True
+        op = str(uuid.uuid4())
+        self.backlog.jobs[op] = {
+            'operation_id': op,
+            'project_id': 'p',
+            'created_at': 10,
+            'status': 'watching',
+            'automatic': True,
+            'targets': [{
+                'agent_id': 'a',
+                'host': 'host',
+                'dataset': 'ds',
+                'admission_blocked': True,
+                'review_status': 'unconfirmed',
+                'review_reason': 'backlog_write_denied',
+                'save_status': 'paused',
+                'save_reason': 'backlog_write_denied',
+                'tokens': [],
+            }],
+            'pending_processing': {},
+        }
+        self.backlog.worker = lambda row, target, action, update: asyncio.sleep(
+            0, result={'session_id': 'native-session', 'tokens': [], 'unknown': 0})
+        self.assertEqual(self.backlog.get('p')['job']['review_failed'], 1)
+        await self.backlog.automatic_tick()
+        self.assertEqual(self.backlog.get('p')['job']['review_failed'], 0)
+
+    async def test_unconfirmed_policy_defers_process_saved_and_migrates_legacy_disabled(self):
+        # 1. Transient ACL unconfirmed (!ready while agent still has write + auto_process) defers, not disabled.
+        self.policy['ready'] = False
+        self.policy['policy']['permissions'] = ['read', 'write']
+        self.policy['policy']['can_auto_process'] = True
+        op = str(uuid.uuid4())
+        target = {
+            'agent_id': 'a', 'host': 'host', 'dataset': 'ds', 'session_id': 's-unconfirmed',
+            'saved': 1, 'handled': 0, 'processing': 'queued', 'reason': 'backlog_write_denied',
+        }
+        row = {
+            'operation_id': op, 'project_id': 'p', 'created_at': 10, 'status': 'watching',
+            'automatic': True, 'targets': [], 'pending_processing': {json.dumps(['a', 'host']): target},
+        }
+        self.backlog.jobs[op] = row
+        await self.backlog.process_saved(row, target)
+        self.assertEqual(target['processing'], 'deferred')
+        self.assertEqual(target['processing_reason'], 'policy_unconfirmed')
+        self.assertGreater(target.get('next_processing_at', 0), 0)
+        self.assertNotIn('reason', target)
+
+        # 2. Explicit write revocation (!write or !can_auto_process) still disables via checked_target.
+        self.policy['policy']['permissions'] = ['read']
+        self.policy['policy']['can_auto_process'] = False
+        target['processing'] = 'queued'
+        with self.assertRaises(PolicyError) as ctx:
+            await self.backlog.process_saved(row, target)
+        self.assertEqual(ctx.exception.code, 'backlog_write_denied')
+
+        # 3. Backlog.__init__ migrates historical disabled + backlog_write_denied + pre_submit_policy_unconfirmed.
+        legacy_op = str(uuid.uuid4())
+        self.backlog.jobs[legacy_op] = {
+            'operation_id': legacy_op, 'project_id': 'p', 'created_at': 20, 'status': 'watching',
+            'automatic': True, 'targets': [], 'pending_processing': {
+                json.dumps(['a', 'host']): {
+                    'agent_id': 'a', 'host': 'host', 'dataset': 'ds', 'session_id': 's-legacy',
+                    'saved': 1, 'handled': 0, 'processing': 'disabled',
+                    'reason': 'backlog_write_denied',
+                    'recovery_reason': 'pre_submit_policy_unconfirmed',
+                    'processing_reason': 'policy_unconfirmed',
+                },
+            },
+        }
+        self.backlog.persist()
+        reloaded = Backlog(self.registry, {})
+        migrated = reloaded.jobs[legacy_op]['pending_processing'][json.dumps(['a', 'host'])]
+        self.assertEqual(migrated['processing'], 'deferred')
+        self.assertEqual(migrated['previous_processing'], 'disabled')
+        self.assertEqual(migrated['recovery_reason'], 'pre_submit_policy_unconfirmed')
+        self.assertNotIn('reason', migrated)
+        self.assertGreater(migrated.get('next_processing_at', 0), 0)
+
 
 if __name__=='__main__':unittest.main()

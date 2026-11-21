@@ -91,6 +91,20 @@ func (p AccessProject) permissionsReady(agents ...AccessAgent) bool {
 	return true
 }
 
+func (p AccessProject) policySyncUnconfirmed() bool {
+	return p.Status == "unconfirmed" || p.Status == "transition"
+}
+
+func (p AccessProject) agentPolicyUnconfirmed(agentID string) bool {
+	if p.policySyncUnconfirmed() {
+		return true
+	}
+	if applied, ok := p.Applied[agentID]; ok && applied.Status != "" && applied.Status != "verified" {
+		return true
+	}
+	return false
+}
+
 type AccessAgent struct {
 	ID           string             `json:"id"`
 	Name         string             `json:"name"`

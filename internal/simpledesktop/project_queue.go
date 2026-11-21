@@ -25,12 +25,26 @@ type processingNotice struct {
 	Backend     string `json:"backend"`
 }
 
+type processingIssue struct {
+	AgentID         string  `json:"agent_id"`
+	Host            string  `json:"host"`
+	SessionID       string  `json:"session_id"`
+	Processing      string  `json:"processing"`
+	Reason          string  `json:"reason"`
+	AttemptedAt     float64 `json:"attempted_at"`
+	ReconcileStatus string  `json:"reconcile_status"`
+	ReconciledAt    float64 `json:"reconciled_at"`
+}
+
 type projectQueueState struct {
 	BufferReviews                  []bufferReview
 	NoticeAcknowledgements         map[string]noticeAcknowledgement
 	NoticeAcknowledgementError     string
 	NoticeHistoryOpen              bool
 	ProcessingNotices              []processingNotice
+	ProcessingIssues               []processingIssue
+	ProcessingActionBusy           bool
+	ProcessingActionError          string
 	ProcessingReadError            string
 	NotificationFailures           map[string]projectFailure
 	KnowledgeRead                  knowledgeReadState
@@ -302,6 +316,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 					q.Backlog = summary.Backlog
 					q.BacklogLoaded = true
 					q.AutomaticSave = summary.AutomaticSave
+					q.ProcessingIssues = summary.ProcessingIssues
 					if summary.BufferReviews != nil {
 						q.BufferReviews = summary.BufferReviews
 					}
@@ -386,6 +401,14 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				if message == "" {
 					recovered = append(recovered, key)
 				}
+			}
+			if summaryOK && summaryBacklogErr == "" {
+				if summary.Backlog == nil || summary.Backlog.ProcessingFailed == 0 {
+					recovered = append(recovered, "processing-failed")
+				}
+			}
+			if !p.policySyncUnconfirmed() {
+				recovered = append(recovered, "policy-sync")
 			}
 			a.clearRecoveredNoticeAcknowledgements(q, p, recovered)
 		})

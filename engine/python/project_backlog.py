@@ -2,6 +2,7 @@
 import asyncio
 from collections import Counter
 import copy
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -51,6 +52,16 @@ def _sha256_file(path, *, chunk_size=HASH_CHUNK_SIZE):
 
 def _stat_signature(st):
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _utc_timestamp(value):
+    if not value:
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        return parsed.replace(tzinfo=parsed.tzinfo or timezone.utc).timestamp()
+    except (ValueError, TypeError):
+        return 0.0
 
 
 def _cold_watch_valid(watch):
@@ -186,11 +197,26 @@ class Backlog:
         self.check_tasks = {}
         self.check_monitor = None
         self.buffer_reviews = {}
+        self._reconcile_cursor = 0
+        self._last_acl_verify_at = None
         for row in self.jobs.values():
             for target in list(row.get('targets', [])) + list(row.get('pending_processing', {}).values()):
                 if target.get('processing') == 'unknown' and target.get('processing_reason') == 'incomplete_drain':
                     target.update(previous_processing='unknown', processing='partial',
                                   recovery_reason='official_partial_submission', next_processing_at=time.time()+300)
+                elif target.get('processing') == 'unknown' and target.get('processing_reason') == 'policy_unconfirmed':
+                    target.update(previous_processing='unknown', processing='deferred',
+                                  recovery_reason='pre_submit_policy_unconfirmed', next_processing_at=time.time()+30)
+                elif target.get('processing') == 'submitting':
+                    target.update(previous_processing='submitting', processing='unknown',
+                                  processing_reason='owner_interrupted')
+                elif (target.get('processing') == 'disabled'
+                      and target.get('reason') == 'backlog_write_denied'
+                      and (target.get('recovery_reason') == 'pre_submit_policy_unconfirmed'
+                           or target.get('processing_reason') == 'policy_unconfirmed')):
+                    target.update(previous_processing='disabled', processing='deferred',
+                                  recovery_reason='pre_submit_policy_unconfirmed', next_processing_at=time.time()+30)
+                    target.pop('reason', None)
             if (row.get('automatic') and not row.get('automatic_user_paused')
                     and (row['status'] in ACTIVE or row.get('owner_shutdown'))):
                 # A new owner reviews the current official buffer afresh. It
@@ -229,13 +255,42 @@ class Backlog:
         result['review_failed'] = sum(t.get('review_status') == 'unconfirmed' for t in targets)
         return result
 
+    def _latest_project_job(self, project):
+        rows = [r for r in self.jobs.values() if r.get('project_id') == project]
+        return max(rows, key=lambda r: r['created_at']) if rows else None
+
+    @staticmethod
+    def _processing_targets(row):
+        if not row:
+            return []
+        return list(row.get('pending_processing', {}).values()) if row.get('automatic') else list(row.get('targets', []))
+
+    def processing_issues(self, row):
+        issues = []
+        for target in self._processing_targets(row):
+            status = target.get('processing')
+            if status not in ('unknown', 'failed', 'submitting'):
+                continue
+            issues.append({
+                'agent_id': str(target.get('agent_id') or ''),
+                'host': str(target.get('host') or ''),
+                'session_id': str(target.get('session_id') or ''),
+                'processing': str(status),
+                'reason': str(target.get('processing_reason') or target.get('reason') or ''),
+                'attempted_at': float(target.get('processing_attempted_at') or 0.0),
+                'reconcile_status': str(target.get('reconcile_status') or ''),
+                'reconciled_at': float(target.get('reconciled_at') or 0.0),
+            })
+        issues.sort(key=lambda item: (item['processing'] != 'submitting', -item['attempted_at'], item['agent_id'], item['host']))
+        return issues
+
     def get(self, project):
-        rows = [r for r in self.jobs.values() if r['project_id'] == project]
-        latest = max(rows, key=lambda r: r['created_at']) if rows else None
+        latest = self._latest_project_job(project)
         enabled = bool(self.monitor and not self.monitor.done()) and (not latest or latest['status'] not in ('paused','stopped','interrupted','stopping'))
         return {'job': self.public(latest) if latest else None, 'automatic_enabled': enabled,
                 'buffer_reviews': [dict(value) for value in self.buffer_reviews.values() if value['project_id'] == project],
-                'checks': [dict(value) for value in self.checks.values() if value['project_id'] == project]}
+                'checks': [dict(value) for value in self.checks.values() if value['project_id'] == project],
+                'processing_issues': self.processing_issues(latest)}
 
     def record_buffer_review(self, project, target, snapshot):
         # Metadata projection of the installed plugin's current source buffer.
@@ -278,21 +333,28 @@ class Backlog:
     async def automatic_check_tick(self):
         # Independent of saving/process submission: an unavailable receipt must
         # not hold the sender or require an open desktop window.
+        now = self._clock()
+        if hasattr(self.registry, 'verify_unconfirmed_groups') and (
+                self._last_acl_verify_at is None or now - self._last_acl_verify_at >= 30.0):
+            self._last_acl_verify_at = now
+            try:
+                await self.registry.verify_unconfirmed_groups()
+            except (PolicyError, OSError, ValueError):
+                pass
         bindings = list(self.registry.state['sessions'].items())
-        if not bindings or len(self.check_tasks) >= 2:
-            return
-        raw, project = bindings[self.check_cursor % len(bindings)]
-        self.check_cursor += 1
-        agent_id, host = json.loads(raw)
-        target = {'agent_id': agent_id, 'host': host, 'dataset': self.registry.state['projects'][project]['dataset_id']}
-        agent, view = self.checked_target(project, target, write=False)
-        if not agent.get('installation') or 'read' not in view['policy']['permissions']:
-            return
-        snapshot = await self.execute({'project_id': project, 'operation_id': str(uuid.uuid4())}, target, 'review')
-        if snapshot.get('unknown', 0) > 0:
-            self.request_check(project, agent_id, host, signature=snapshot.get('unknown_signature', ''))
-        else:
-            self.checks.pop((project, agent_id, host), None)
+        if bindings and len(self.check_tasks) < 2:
+            raw, project = bindings[self.check_cursor % len(bindings)]
+            self.check_cursor += 1
+            agent_id, host = json.loads(raw)
+            target = {'agent_id': agent_id, 'host': host, 'dataset': self.registry.state['projects'][project]['dataset_id']}
+            agent, view = self.checked_target(project, target, write=False)
+            if agent.get('installation') and 'read' in view['policy']['permissions']:
+                snapshot = await self.execute({'project_id': project, 'operation_id': str(uuid.uuid4())}, target, 'review')
+                if snapshot.get('unknown', 0) > 0:
+                    self.request_check(project, agent_id, host, signature=snapshot.get('unknown_signature', ''))
+                else:
+                    self.checks.pop((project, agent_id, host), None)
+        await self.reconcile_next_processing_target()
 
     async def automatic_check_loop(self):
         while True:
@@ -618,6 +680,20 @@ class Backlog:
             return
         if self.cancel_file(row).exists() or not (target.get('saved') or target.get('handled')):
             return
+        project = self.registry.state['projects'].get(row['project_id'])
+        agent = self.registry.state['agents'].get(target['agent_id'])
+        binding = json.dumps([target['agent_id'], target['host']], ensure_ascii=True)
+        if (project and agent and target['agent_id'] not in self.registry.state.get('agent_retirements', {})
+                and self.registry.state['sessions'].get(binding) == row['project_id']
+                and project.get('dataset_id') == target['dataset']):
+            pre_view = self.registry.policy(project, target['agent_id'])
+            if (not pre_view['ready'] and 'write' in pre_view['policy']['permissions']
+                    and pre_view['policy'].get('can_auto_process')):
+                target.update(processing='deferred', processing_reason='policy_unconfirmed',
+                              next_processing_at=time.time() + 30)
+                target.pop('reason', None)
+                self.persist()
+                return
         _, policy = self.checked_target(row['project_id'], target)
         if not policy['policy']['can_auto_process']:
             target['processing'] = 'disabled'
@@ -633,7 +709,10 @@ class Backlog:
                     return
         # Journal before POST. An unknown submit is never automatically repeated.
         target['processing'] = 'submitting'
+        target['processing_reason'] = ''
         target['processing_attempted_at'] = time.time()
+        for stale in ('reason', 'recovery_reason', 'reconcile_status', 'reconciled_at', 'next_reconcile_at'):
+            target.pop(stale, None)
         if row.get('automatic'):
             # Match normal incremental admission; retain the official plugin's
             # own throttle, no-new-entry checks and idempotency watermarks.
@@ -646,17 +725,286 @@ class Backlog:
             # second improve scheduler or HTTP client.
             result = await self.execute(row, target, 'process')
             status = result.get('status')
+            reason = str(result.get('reason') or '')
+            if status == 'paused' and reason == 'policy_unconfirmed':
+                status = 'deferred'
             target['processing'] = status if status in ('submitted', 'skipped', 'disabled', 'deferred', 'partial', 'failed', 'unknown') else 'unknown'
-            target['processing_reason'] = str(result.get('reason') or '')
+            target['processing_reason'] = reason
+            if target['processing'] in ('submitted', 'skipped'):
+                target.pop('reconcile_retry_count', None)
             if target['processing'] in ('deferred', 'partial'):
                 from incremental_processing import COOLDOWN_SECONDS
                 delay = COOLDOWN_SECONDS if target['processing_reason'] in ('cooldown', 'backoff') else 30
                 target['next_processing_at'] = time.time() + delay
             else:
                 target.pop('next_processing_at', None)
+        except asyncio.CancelledError:
+            target['processing'] = 'unknown'
+            target['processing_reason'] = 'owner_interrupted'
+            self.persist()
+            raise
         except Exception:
             target['processing'] = 'unknown'
+            target['processing_reason'] = target.get('processing_reason') or 'official_submission_unconfirmed'
         self.persist()
+
+    def _kick_pending_processing(self, row):
+        if not row or (self.processing_task is not None and not self.processing_task.done()):
+            return False
+        pending = sorted(self._processing_targets(row),
+                         key=lambda target: target.get('processing_attempted_at', 0))
+        now = time.time()
+        for target in pending:
+            if (target.get('processing') not in ('queued', 'deferred', 'partial')
+                    or target.get('next_processing_at', 0) > now):
+                continue
+            async def submit(owned_row, owned_target):
+                try:
+                    await self.process_saved(owned_row, owned_target)
+                except PolicyError as error:
+                    owned_target.update(processing='disabled', reason=error.code)
+                    self.persist()
+            self.processing_operation = row['operation_id']
+            self.processing_target = target
+            self.processing_task = asyncio.create_task(submit(row, target))
+            return True
+        return False
+
+    async def reconcile_processing_target(self, project_id, row, target, *, force=False, now=None):
+        now = time.time() if now is None else now
+        official = getattr(self.registry, 'official', None)
+        if official is None or target.get('processing') not in ('unknown', 'failed') or not target.get('session_id'):
+            return None
+        if not force and float(target.get('next_reconcile_at') or 0) > now:
+            return None
+        try:
+            agent, view = self.checked_target(project_id, target, write=False)
+        except PolicyError:
+            target.update(reconcile_status='unavailable', reconciled_at=now, next_reconcile_at=now + 60)
+            self.persist()
+            return target
+        if 'read' not in view['policy']['permissions'] or not agent.get('key_file'):
+            target.update(reconcile_status='unavailable', reconciled_at=now, next_reconcile_at=now + 60)
+            self.persist()
+            return target
+        dataset = target['dataset']
+        session_id = target['session_id']
+        try:
+            rows, detail = await asyncio.gather(
+                official.request(
+                    'GET',
+                    f'/api/v1/activity/pipeline-runs?dataset_id={quote(dataset, safe="")}&session_id={quote(session_id, safe="")}&limit=50',
+                    token_file=agent['key_file'],
+                ),
+                official.request(
+                    'GET',
+                    f'/api/v1/sessions/{quote(session_id, safe="")}',
+                    token_file=agent['key_file'],
+                ),
+            )
+        except (PolicyError, OSError, ValueError, asyncio.TimeoutError):
+            target.update(reconcile_status='unavailable', reconciled_at=now, next_reconcile_at=now + 120)
+            self.persist()
+            return target
+        if (not isinstance(rows, list) or not isinstance(detail, dict)
+                or detail.get('session_id') != session_id or detail.get('dataset_id') != dataset):
+            target.update(reconcile_status='unavailable', reconciled_at=now, next_reconcile_at=now + 120)
+            self.persist()
+            return target
+
+        live_row = self.jobs.get(row.get('operation_id'))
+        if live_row is not None and live_row is not row:
+            if live_row.get('automatic'):
+                key = json.dumps([target['agent_id'], target['host']])
+                candidate = live_row.get('pending_processing', {}).get(key)
+            else:
+                candidate = next(
+                    (t for t in live_row.get('targets', [])
+                     if t.get('agent_id') == target['agent_id'] and t.get('host') == target['host']),
+                    None,
+                )
+            if candidate is None or candidate.get('processing') not in ('unknown', 'failed'):
+                return None
+            row, target = live_row, candidate
+
+        session_rows = [
+            r for r in rows
+            if isinstance(r, dict)
+            and (not r.get('dataset_id') or r.get('dataset_id') == dataset)
+            and ('session_ids' not in r or session_id in (r.get('session_ids') or ()))
+        ]
+        terminal_pipelines = {
+            r.get('pipeline_run_id') for r in session_rows
+            if r.get('kind') == 'pipeline'
+            and r.get('status') in ('DATASET_PROCESSING_COMPLETED', 'DATASET_PROCESSING_ERRORED')
+            and r.get('pipeline_run_id')
+        }
+        has_active_run = False
+        for r in session_rows:
+            started_at = _utc_timestamp(r.get('started_at') or r.get('created_at'))
+            if started_at and now - started_at >= 3600:
+                continue
+            if r.get('kind') == 'operation' and r.get('operation_name') == 'improve' and not r.get('ended_at'):
+                has_active_run = True
+                break
+            if (r.get('kind') == 'pipeline' and r.get('status') == 'DATASET_PROCESSING_STARTED'
+                    and r.get('pipeline_run_id') not in terminal_pipelines):
+                has_active_run = True
+                break
+
+        attempted_at = float(target.get('processing_attempted_at') or 0)
+        last_activity_at = _utc_timestamp(detail.get('last_activity_at'))
+        succeeded_improves = [
+            (_utc_timestamp(r.get('started_at') or r.get('created_at')), _utc_timestamp(r.get('ended_at')))
+            for r in session_rows
+            if r.get('kind') == 'operation' and r.get('operation_name') == 'improve' and r.get('outcome') == 'succeeded'
+        ]
+        confirmed_a1 = bool(attempted_at > 0 and any(
+            (ended >= attempted_at or started >= attempted_at - 5) for started, ended in succeeded_improves
+        ))
+        confirmed_a2 = False
+        if not confirmed_a1 and not has_active_run and last_activity_at > 0:
+            if any(started >= last_activity_at for started, _ in succeeded_improves):
+                try:
+                    snapshot = await self.execute(
+                        {'project_id': project_id, 'operation_id': row.get('operation_id') or str(uuid.uuid4())},
+                        target, 'review',
+                    )
+                    if isinstance(snapshot, dict) and not snapshot.get('tokens') and snapshot.get('unknown', 0) == 0:
+                        confirmed_a2 = True
+                except (PolicyError, OSError, ValueError):
+                    pass
+
+        if confirmed_a1 or confirmed_a2:
+            target.update(
+                previous_processing=target['processing'],
+                processing='submitted',
+                recovery_reason='official_activity_confirmed',
+                processing_reason='',
+                reconcile_status='confirmed',
+                reconciled_at=now,
+            )
+            for key in ('next_reconcile_at', 'next_processing_at', 'reconcile_retry_count'):
+                target.pop(key, None)
+            self.persist()
+            return target
+
+        if has_active_run:
+            target.update(reconcile_status='running', reconciled_at=now, next_reconcile_at=now + 60)
+            self.persist()
+            return target
+
+        if (target.get('processing_reason') == 'owner_interrupted'
+                and int(target.get('reconcile_retry_count') or 0) < 1
+                and not row.get('automatic_user_paused')
+                and view['ready'] and view['policy'].get('can_auto_process')):
+            target.update(
+                previous_processing=target['processing'],
+                processing='deferred',
+                recovery_reason='owner_interrupted_reconciled',
+                processing_reason='',
+                reconcile_status='requeued',
+                reconciled_at=now,
+                reconcile_retry_count=int(target.get('reconcile_retry_count') or 0) + 1,
+                next_processing_at=now + 5,
+            )
+            target.pop('next_reconcile_at', None)
+            self.persist()
+            return target
+
+        post_attempt_failed = bool(attempted_at > 0 and any(
+            _utc_timestamp(r.get('started_at') or r.get('created_at')) >= attempted_at - 5
+            and (
+                (r.get('kind') == 'operation' and r.get('operation_name') == 'improve' and r.get('outcome') == 'failed')
+                or (r.get('kind') == 'pipeline' and r.get('status') == 'DATASET_PROCESSING_ERRORED')
+            )
+            for r in session_rows
+        ))
+        target.update(
+            reconcile_status='failed' if post_attempt_failed else 'unconfirmed',
+            reconciled_at=now,
+            next_reconcile_at=now + 300,
+        )
+        self.persist()
+        return target
+
+    async def reconcile_project_processing(self, project_id, *, agent_id=None, host=None, force=False):
+        if project_id not in self.registry.state['projects']:
+            raise PolicyError('project_not_found', 404)
+        latest = self._latest_project_job(project_id)
+        if not latest:
+            return []
+        updated = []
+        for target in self._processing_targets(latest):
+            if target.get('processing') not in ('unknown', 'failed'):
+                continue
+            if agent_id is not None and target.get('agent_id') != agent_id:
+                continue
+            if host is not None and target.get('host') != host:
+                continue
+            result = await self.reconcile_processing_target(project_id, latest, target, force=force)
+            if result is not None:
+                updated.append(result)
+        return updated
+
+    async def reconcile_next_processing_target(self):
+        if getattr(self.registry, 'official', None) is None:
+            return None
+        now = time.time()
+        candidates = []
+        for project_id in sorted(self.registry.state.get('projects', {})):
+            latest = self._latest_project_job(project_id)
+            if not latest:
+                continue
+            for target in self._processing_targets(latest):
+                if (target.get('processing') in ('unknown', 'failed')
+                        and target.get('session_id')
+                        and float(target.get('next_reconcile_at') or 0) <= now):
+                    candidates.append((project_id, latest, target))
+        if not candidates:
+            return None
+        project_id, row, target = candidates[self._reconcile_cursor % len(candidates)]
+        self._reconcile_cursor += 1
+        try:
+            return await self.reconcile_processing_target(project_id, row, target, force=False, now=now)
+        except (PolicyError, OSError, ValueError, KeyError):
+            return None
+
+    async def retry_project_processing(self, project_id, *, agent_id=None, host=None):
+        if project_id not in self.registry.state['projects']:
+            raise PolicyError('project_not_found', 404)
+        await self.reconcile_project_processing(project_id, agent_id=agent_id, host=host, force=True)
+        latest = self._latest_project_job(project_id)
+        if not latest:
+            return self.get(project_id)
+        requeued = 0
+        for target in self._processing_targets(latest):
+            if target.get('processing') not in ('unknown', 'failed'):
+                continue
+            if agent_id is not None and target.get('agent_id') != agent_id:
+                continue
+            if host is not None and target.get('host') != host:
+                continue
+            if target.get('reconcile_status') == 'running':
+                continue
+            _, view = self.checked_target(project_id, target, write=True)
+            if not view['policy'].get('can_auto_process'):
+                raise PolicyError('processing_retry_denied', 403)
+            target.update(
+                previous_processing=target['processing'],
+                processing='queued',
+                recovery_reason='user_retry',
+                processing_reason='',
+                next_processing_at=0,
+            )
+            for key in ('reconcile_status', 'reconciled_at', 'next_reconcile_at'):
+                target.pop(key, None)
+            requeued += 1
+        if requeued:
+            self.persist()
+            self._kick_pending_processing(latest)
+            await asyncio.sleep(0)
+        return self.get(project_id)
 
     async def run(self, row):
         try:
@@ -825,29 +1173,14 @@ class Backlog:
         if previous and previous['status'] in ('paused', 'stopped', 'interrupted', 'stopping') and not recoverable:
             return
         automatic = previous if previous and previous.get('automatic') else None
-        if automatic and not recoverable and (self.processing_task is None or self.processing_task.done()):
-            pending = sorted(automatic.get('pending_processing', {}).values(),
-                             key=lambda target: target.get('processing_attempted_at', 0))
-            for target in pending:
-                if (target.get('processing') not in ('queued', 'deferred', 'partial')
-                        or target.get('next_processing_at', 0) > time.time()):
-                    continue
-                async def submit(owned_row, owned_target):
-                    try:
-                        await self.process_saved(owned_row, owned_target)
-                    except PolicyError as error:
-                        owned_target.update(processing='disabled', reason=error.code)
-                        self.persist()
-                self.processing_operation = automatic['operation_id']
-                self.processing_target = target
-                self.processing_task = asyncio.create_task(submit(automatic, target))
-                await asyncio.sleep(0)
-                break
+        if automatic and not recoverable and self._kick_pending_processing(automatic):
+            await asyncio.sleep(0)
         operation = automatic['operation_id'] if automatic else str(uuid.uuid4())
         candidate = {'operation_id': operation, 'project_id': project_id}
         selected = set()
         has_unsent = False
         reviewed = False
+        review_cleared = False
         for raw, bound in list(self.registry.state['sessions'].items()):
             if bound != project_id:
                 continue
@@ -873,6 +1206,17 @@ class Backlog:
                 if snapshot.get('blocked'):
                     continue
                 reviewed = True
+                if automatic:
+                    for old in automatic.get('targets', []):
+                        if (old.get('agent_id') == agent_id and old.get('host') == host
+                                and old.get('review_status') == 'unconfirmed'
+                                and old.get('review_reason') in ('backlog_write_denied', 'policy_unconfirmed')):
+                            old.pop('review_status', None)
+                            old.pop('review_reason', None)
+                            if old.get('save_reason') in ('backlog_write_denied', 'policy_unconfirmed'):
+                                old.pop('save_status', None)
+                                old.pop('save_reason', None)
+                            review_cleared = True
                 if recoverable and (not snapshot['unknown'] or snapshot.get('tokens')):
                     for old in previous['targets']:
                         if old['agent_id'] != agent_id or old['host'] != host:
@@ -895,6 +1239,8 @@ class Backlog:
         if recoverable and reviewed:
             previous.update(status='watching', reason='')
             self.persist()
+        elif review_cleared:
+            self.persist()
         if has_unsent and not (self.task and not self.task.done()):
             self.start(project_id, operation, automatic=True, selected=selected)
 
@@ -915,6 +1261,26 @@ def attach_backlog(app, registry, runtime):
         project = request.match_info['id']
         if request.method == 'GET':
             return web.json_response(backlog.get(project))
+        if request.path.endswith('/processing/check') or request.path.endswith('/processing/retry'):
+            raw_body = await request.read()
+            if raw_body:
+                if request.content_type != 'application/json':
+                    raise PolicyError('json_required', 415)
+                try:
+                    payload = json.loads(raw_body)
+                except ValueError:
+                    raise PolicyError('invalid_request_fields') from None
+                if (not isinstance(payload, dict) or set(payload) not in (set(), {'agent_id', 'host'})
+                        or (payload and not all(isinstance(v, str) and v for v in payload.values()))):
+                    raise PolicyError('invalid_request_fields')
+            else:
+                payload = {}
+            agent_id = payload.get('agent_id')
+            host = payload.get('host')
+            if request.path.endswith('/processing/check'):
+                await backlog.reconcile_project_processing(project, agent_id=agent_id, host=host, force=True)
+                return web.json_response(backlog.get(project))
+            return web.json_response(await backlog.retry_project_processing(project, agent_id=agent_id, host=host))
         if request.content_type != 'application/json':
             raise PolicyError('json_required', 415)
         payload = await request.json()
@@ -933,6 +1299,8 @@ def attach_backlog(app, registry, runtime):
     app.add_routes([web.get('/v1/projects/{id}/backlog', endpoint),
                     web.post('/v1/projects/{id}/backlog', endpoint),
                     web.post('/v1/projects/{id}/backlog/check', endpoint),
+                    web.post('/v1/projects/{id}/backlog/processing/check', endpoint),
+                    web.post('/v1/projects/{id}/backlog/processing/retry', endpoint),
                     web.post('/v1/projects/{id}/backlog/stop', endpoint)])
     async def cleanup(_):
         await backlog.close()

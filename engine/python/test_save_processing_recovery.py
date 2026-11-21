@@ -109,13 +109,19 @@ class AutomaticRecoveryTests(unittest.IsolatedAsyncioTestCase):
             backlog = Backlog(registry, {})
             backlog.jobs["old"] = {"operation_id": "old", "status": "completed", "targets": [
                 {"processing": "unknown", "processing_reason": "incomplete_drain", "original_receipt": "kept"},
-                {"processing": "unknown", "processing_reason": "failed"}, {"processing": "submitting"}]}
+                {"processing": "unknown", "processing_reason": "policy_unconfirmed"},
+                {"processing": "unknown", "processing_reason": "failed"},
+                {"processing": "submitting"}]}
             backlog.persist()
             reopened = Backlog(registry, {})
             targets = reopened.jobs["old"]["targets"]
             self.assertEqual((targets[0]["processing"], targets[0]["previous_processing"], targets[0]["original_receipt"]),
                              ("partial", "unknown", "kept"))
-            self.assertEqual([t["processing"] for t in targets[1:]], ["unknown", "submitting"])
+            self.assertEqual((targets[1]["processing"], targets[1]["previous_processing"], targets[1]["recovery_reason"]),
+                             ("deferred", "unknown", "pre_submit_policy_unconfirmed"))
+            self.assertEqual((targets[2]["processing"], targets[2]["processing_reason"]), ("unknown", "failed"))
+            self.assertEqual((targets[3]["processing"], targets[3]["previous_processing"], targets[3]["processing_reason"]),
+                             ("unknown", "submitting", "owner_interrupted"))
 
     async def test_old_filter_pause_rechecks_same_operation_without_user_pause_bypass(self):
         with tempfile.TemporaryDirectory() as directory:

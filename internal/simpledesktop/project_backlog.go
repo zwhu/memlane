@@ -151,10 +151,11 @@ func (a *App) refreshBacklog(q *projectQueueState, p AccessProject) {
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
 		var result struct {
-			Job       *backlogJob         `json:"job"`
-			Automatic bool                `json:"automatic_enabled"`
-			Checks    []pendingCheckState `json:"checks"`
-			Reviews   []bufferReview      `json:"buffer_reviews"`
+			Job              *backlogJob         `json:"job"`
+			Automatic        bool                `json:"automatic_enabled"`
+			Checks           []pendingCheckState `json:"checks"`
+			Reviews          []bufferReview      `json:"buffer_reviews"`
+			ProcessingIssues []processingIssue   `json:"processing_issues"`
 		}
 		err := client.request(ctx, "GET", "/v1/projects/"+url.PathEscape(p.ID)+"/backlog", nil, &result)
 		a.Update(func() {
@@ -172,6 +173,7 @@ func (a *App) refreshBacklog(q *projectQueueState, p AccessProject) {
 			q.BacklogLoaded = true
 			q.AutomaticSave = result.Automatic
 			q.BufferReviews = result.Reviews
+			q.ProcessingIssues = result.ProcessingIssues
 			a.applyPendingChecks(q, result.Checks)
 			recovered := []string{"backlog-read"}
 			if result.Job == nil || result.Job.active() || result.Job.Status == "completed" {
@@ -179,6 +181,16 @@ func (a *App) refreshBacklog(q *projectQueueState, p AccessProject) {
 			}
 			if result.Job == nil || result.Job.ProcessingFailed == 0 {
 				recovered = append(recovered, "processing-failed")
+			}
+			currentProject := p
+			for _, candidate := range a.access.Directory.Projects {
+				if candidate.ID == p.ID {
+					currentProject = candidate
+					break
+				}
+			}
+			if !currentProject.policySyncUnconfirmed() {
+				recovered = append(recovered, "policy-sync")
 			}
 			a.clearRecoveredNoticeAcknowledgements(q, p, recovered)
 			if result.Job != nil && result.Job.Operation == q.BacklogOperation {
@@ -248,6 +260,73 @@ func (a *App) changeBacklog(q *projectQueueState, p AccessProject, stop bool) {
 			q.BacklogNext = time.Time{}
 		})
 	}()
+}
+
+func (a *App) reconcileProjectProcessing(q *projectQueueState, p AccessProject) {
+	a.runProcessingAction(q, p, "/backlog/processing/check", "核对提炼状态失败", false)
+}
+
+func (a *App) retryProjectProcessing(q *projectQueueState, p AccessProject) {
+	a.runProcessingAction(q, p, "/backlog/processing/retry", "重新提交提炼失败", true)
+}
+
+func (a *App) runProcessingAction(q *projectQueueState, p AccessProject, suffix, errPrefix string, closeIfCleared bool) {
+	client, ok := a.accessClient()
+	if !ok || a.Update == nil || q.ProcessingActionBusy || a.access.Busy {
+		return
+	}
+	q.ProcessingActionBusy = true
+	q.ProcessingActionError = ""
+	identity, _ := readingIdentity(a.Client)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		var result struct {
+			Job              *backlogJob         `json:"job"`
+			Automatic        bool                `json:"automatic_enabled"`
+			Checks           []pendingCheckState `json:"checks"`
+			Reviews          []bufferReview      `json:"buffer_reviews"`
+			ProcessingIssues []processingIssue   `json:"processing_issues"`
+		}
+		err := client.request(ctx, "POST", "/v1/projects/"+url.PathEscape(p.ID)+suffix, map[string]any{}, &result)
+		a.Update(func() {
+			q.ProcessingActionBusy = false
+			current, _ := readingIdentity(a.Client)
+			if current != identity {
+				return
+			}
+			if err != nil {
+				q.ProcessingActionError = errPrefix + "：" + err.Error()
+				return
+			}
+			q.ProcessingActionError = ""
+			q.BacklogError = ""
+			q.Backlog = result.Job
+			q.BacklogLoaded = true
+			q.AutomaticSave = result.Automatic
+			q.BufferReviews = result.Reviews
+			q.ProcessingIssues = result.ProcessingIssues
+			a.applyPendingChecks(q, result.Checks)
+			if result.Job == nil || result.Job.ProcessingFailed == 0 {
+				a.clearRecoveredNoticeAcknowledgements(q, p, []string{"processing-failed"})
+				if closeIfCleared && q.DetailNoticeKey == "processing-failed" {
+					q.closeDetailDialog(nil)
+				}
+			}
+			q.Next = time.Time{}
+			q.BacklogNext = time.Time{}
+		})
+	}()
+}
+
+func (a *App) reconcileProjectPolicy(q *projectQueueState, p AccessProject) {
+	a.mutateAccess(func(ctx context.Context, client ProjectControlClient, revision int64) (AccessDirectory, error) {
+		return client.reconcile(ctx, revision, p.ID)
+	}, func() {
+		q.BacklogNext = time.Time{}
+		q.Next = time.Time{}
+		a.clearRecoveredNoticeAcknowledgements(q, p, []string{"policy-sync"})
+	})
 }
 
 func backlogReason(code string) string {

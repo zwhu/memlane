@@ -204,13 +204,14 @@ def check(common, policy, dataset, host):
             if entry in pending:
                 pending.remove(entry)
         if confirmed:
-            from plugin_capture import capture_entry_key
+            from plugin_capture import capture_entry_key, release_entry_hold
             for entry in confirmed:
                 state.get('capture_retries', {}).pop(capture_entry_key(entry), None)
                 state.get('capture_rejections', {}).pop(capture_entry_key(entry), None)
             state['pending_entries'] = pending
             cache[key] = state
             common._write_json_file(path, cache)
+            release_entry_hold(policy, state)
     after = review(common, policy, dataset, host)
     if not confirmed and after['unknown_signature'] != before['unknown_signature']:
         raise policy.NotReady('pending_materials_changed_review_again')
@@ -242,7 +243,7 @@ def save(common, policy, payload, stopped, report=emit):
             time.sleep(.5)
         lease = common._DRAIN_LOCK.stat()
         from _capture_policy import allow_tool, sanitize
-        from plugin_capture import capture_entry_key, entry_held, retain_failure
+        from plugin_capture import capture_entry_key, entry_held, release_entry_hold, retain_failure
         while tokens:
             if stopped():
                 progress('stopped', 'user_stopped')
@@ -369,6 +370,7 @@ def save(common, policy, payload, stopped, report=emit):
                 state.get('capture_retries', {}).pop(capture_entry_key(entry), None)
                 cache[key] = state
                 common._write_json_file(path, cache)
+                release_entry_hold(policy, state)
             progress()
         progress('completed')
     except policy.NotReady:
@@ -408,6 +410,16 @@ def process(common, policy, payload):
     """Delegate to the installed official plugin; never implement its policy."""
     dataset, session = payload['dataset'], payload['session_id']
     policy._pending_identity(dataset, session)
+    if (callable(getattr(policy, '_pending_snapshot', None))
+            and callable(getattr(common, '_buffer_lock', None))
+            and callable(getattr(policy, '_state', None))):
+        try:
+            from plugin_capture import release_entry_hold
+            with common._buffer_lock():
+                _, _, _, buffer_state, _, _ = policy._pending_snapshot(dataset, session)
+                release_entry_hold(policy, buffer_state)
+        except (AttributeError, KeyError, OSError, ValueError):
+            pass
     policy.require('process', dataset, automatic=True)
     # Idle admission uses the official configurable cooldown; its retry,
     # no-new-entry and submission behavior stays owned by the installed plugin.
@@ -482,7 +494,10 @@ def main():
         else:
             raise policy.NotReady('invalid_backlog_action')
     except policy.NotReady:
-        emit({'status': 'paused', 'reason': 'policy_unconfirmed'})
+        if payload.get('action') == 'process':
+            emit({'status': 'deferred', 'reason': 'policy_unconfirmed'})
+        else:
+            emit({'status': 'paused', 'reason': 'policy_unconfirmed'})
 
 
 if __name__ == '__main__':

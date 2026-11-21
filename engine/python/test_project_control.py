@@ -351,6 +351,49 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.registry.policy(project, 'a')['ready'])
         self.assertEqual(project['error_code'], 'official_result_unknown')
 
+    async def test_verify_unconfirmed_groups_recovers_transient_unknown_read_only(self):
+        from unittest.mock import AsyncMock, patch
+        bound = await self.registry.resolve('a', str(self.repo), 'one')
+        await self.registry.ensure_common(self.registry.state['revision'])
+        project = self.registry.state['projects'][bound['project_id']]
+        common = self.registry.state['common']
+        for group in (project, common):
+            group['status'] = 'unconfirmed'
+            group['error_code'] = 'official_result_unknown'
+            group['applied']['a'] = {'status': 'unconfirmed', 'error_code': 'official_result_unknown'}
+        unresolved = {
+            'id': 'unresolved',
+            'name': 'Unresolved',
+            'dataset_id': None,
+            'status': 'unconfirmed',
+            'error_code': 'official_result_unknown',
+            'overrides': {},
+            'applied': {},
+            'desired_revision': 1,
+        }
+        self.registry.state['projects']['unresolved'] = unresolved
+        self.registry.save()
+
+        with patch.object(self.official, 'sync_acl', AsyncMock(side_effect=AssertionError('no ACL writes'))), \
+             patch.object(self.official, 'owned_dataset', AsyncMock(side_effect=AssertionError('no dataset writes'))):
+            recovered = await self.registry.verify_unconfirmed_groups()
+        self.assertEqual(recovered, 2)
+        self.assertTrue(self.registry.policy(project, 'a')['ready'])
+        self.assertTrue(self.registry.common_policy('a')['ready'])
+        self.assertEqual(unresolved['status'], 'unconfirmed')
+
+        # Real ACL drift keeps group unconfirmed without repairing grants.
+        self.registry.state['projects'].pop('unresolved', None)
+        agent = self.registry.state['agents']['a']
+        self.official.acls[(agent['principal_id'], project['dataset_id'])] = {'read'}
+        project['status'] = 'unconfirmed'
+        project['error_code'] = 'official_result_unknown'
+        with patch.object(self.official, 'sync_acl', AsyncMock(side_effect=AssertionError('no ACL writes'))):
+            recovered = await self.registry.verify_unconfirmed_groups()
+        self.assertEqual(recovered, 0)
+        self.assertEqual(project['status'], 'unconfirmed')
+        self.assertEqual(project['error_code'], 'effective_acl_changed')
+
     async def test_manual_origin_is_preserved_when_automatic_hooks_find_it(self):
         created=await self.registry.create_project(self.registry.state['revision'],str(self.repo),name='Manual')
         self.assertEqual(created['source'],'manual')

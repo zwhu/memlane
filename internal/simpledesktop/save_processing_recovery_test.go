@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/egoist/mygo/ui"
 )
 
 func TestRejectedMessageDoesNotBecomeSendableOrHideHealthyPending(t *testing.T) {
@@ -68,5 +70,43 @@ func TestPartialAndActiveProcessingAreNotFailuresOrUnknownWrites(t *testing.T) {
 	q.Backlog.ProcessingFailed = 1
 	if !q.unacknowledgedNotification(time.Now()) {
 		t.Fatal("actual unconfirmed submit was hidden")
+	}
+}
+
+func TestProcessingFailureDetailShowsIssuesAndActions(t *testing.T) {
+	a, q := projectQueueFixture()
+	p := a.access.Directory.Projects[0]
+	q.Sessions, q.Documents = nil, nil
+	q.Loaded = true
+	q.AutomaticSave = true
+	q.Backlog = &backlogJob{Status: "watching", Operation: "original", ProcessingFailed: 1}
+	q.ProcessingIssues = []processingIssue{{
+		AgentID:         a.access.Directory.Agents[0].ID,
+		Host:            "host-abcdef123456",
+		SessionID:       "codex_host-abcdef123456",
+		Processing:      "unknown",
+		Reason:          "owner_interrupted",
+		AttemptedAt:     1795266456,
+		ReconcileStatus: "failed",
+		ReconciledAt:    1795270000,
+	}}
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Column(c).FillWidth().MaxWidth(900).Children(func() { a.projectQueueSection(c, p) })
+	}, 1200, 1000)
+	if !tt.HasText("部分消息的记忆提炼未确认完成") {
+		t.Fatalf("missing processing-failed card: %v", tt.Texts())
+	}
+	clickProjectUI(t, tt, "查看详情")
+	for _, want := range []string{"相关会话", "核对提炼状态", "重新提炼", "后台服务重启或停止打断了本次提交", "诊断信息"} {
+		if !tt.HasText(want) {
+			t.Fatalf("missing expected detail text %q in %v", want, tt.Texts())
+		}
+	}
+	if tt.HasText("codex_host-abcdef123456") {
+		t.Fatal("technical session id exposed before expanding diagnostics")
+	}
+	clickProjectUI(t, tt, "诊断信息")
+	if !tt.HasText("codex_host-abcdef123456") {
+		t.Fatalf("expanded diagnostics missing session_id: %v", tt.Texts())
 	}
 }

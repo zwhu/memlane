@@ -420,3 +420,74 @@ func TestMessageNoticesSupportsAllAgentBridgeBackends(t *testing.T) {
 		}
 	}
 }
+
+func TestRetryStatesAreProgressAndPolicyUnconfirmedSurfaces(t *testing.T) {
+	a, q := projectQueueFixture()
+	p := a.access.Directory.Projects[0]
+	q.Sessions = nil
+	q.Documents = nil
+	q.Loaded = true
+	q.AutomaticSave = true
+
+	// 1. partitionInfoNotices classifies retry/checking tags as progress, not anomalies.
+	sample := []messageNotice{
+		{Key: "retry", Tag: "等待重试"},
+		{Key: "auto-retry", Tag: "自动重试"},
+		{Key: "checking-1", Tag: "正在核对"},
+		{Key: "checking-2", Tag: "正在检查"},
+		{Key: "real-err", Tag: "系统异常"},
+	}
+	anomalies, progress := partitionInfoNotices(sample)
+	if len(anomalies) != 1 || anomalies[0].Key != "real-err" || len(progress) != 4 {
+		t.Fatalf("unexpected partition: anomalies=%+v progress=%+v", anomalies, progress)
+	}
+	for _, n := range progress {
+		if !n.isProgressNotice() || !n.isActiveProgressNotice() {
+			t.Fatalf("expected active progress notice for tag %q", n.Tag)
+		}
+	}
+
+	// 2. Retryable unknown on healthy project counts as 0 project alerts.
+	q.Sessions = []queuedSession{{
+		Agent:   a.access.Directory.Agents[0],
+		Binding: ProjectBinding{ProjectID: p.ID, AgentID: a.access.Directory.Agents[0].ID, HostSessionKey: "s-retry"},
+		View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1, RetryableUnknown: 1}},
+	}}
+	maintain := "maintain"
+	p.Overrides[a.access.Directory.Agents[0].ID] = ProjectOverride{Access: &maintain}
+	actionCnt, errCnt := a.countProjectMessageAlerts(p)
+	if actionCnt != 0 || errCnt != 0 {
+		t.Fatalf("healthy 等待重试 should not count as alert: action=%d err=%d", actionCnt, errCnt)
+	}
+
+	// 3. Project ACL unconfirmed surfaces policy-sync anomaly with 核对权限 and pauses retry badge.
+	p.Status = "unconfirmed"
+	needs, info := a.messageNotices(q, p)
+	if len(needs) != 0 {
+		t.Fatalf("expected no user-fault needs, got %+v", needs)
+	}
+	var policyNotice, retryNotice *messageNotice
+	for i := range info {
+		switch info[i].Key {
+		case "policy-sync":
+			policyNotice = &info[i]
+		default:
+			if strings.HasSuffix(info[i].Key, "/retry") {
+				retryNotice = &info[i]
+			}
+		}
+	}
+	if policyNotice == nil || policyNotice.Action != "reconcile-policy" || policyNotice.Tag != "状态未确认" {
+		t.Fatalf("missing policy-sync notice: %+v", info)
+	}
+	if retryNotice == nil || retryNotice.Tag != "状态未确认" {
+		t.Fatalf("expected unconfirmed policy to suppress 等待重试 claim: %+v", retryNotice)
+	}
+	a.access.Directory.Projects[0] = p
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Column(c).FillWidth().MaxWidth(900).Children(func() { a.projectQueueSection(c, p) })
+	}, 1200, 1000)
+	if !tt.HasText("项目权限同步尚未确认") || !tt.HasText("核对权限") {
+		t.Fatalf("expected policy-sync notice and 核对权限 action in UI: %v", tt.Texts())
+	}
+}

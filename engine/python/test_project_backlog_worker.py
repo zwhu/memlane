@@ -139,6 +139,36 @@ class OfficialProcessingTests(unittest.TestCase):
         with self.assertRaises(RuntimeError): process(self.common, self.policy, self.payload)
         self.common.run_session_improve_detailed.assert_not_called()
 
+    def test_main_process_not_ready_emits_deferred_while_save_emits_paused(self):
+        import io
+        import project_backlog_worker as pbw
+
+        class NotReady(RuntimeError):
+            pass
+
+        for action, want_status in [('process', 'deferred'), ('save', 'paused'), ('review', 'paused')]:
+            with self.subTest(action=action):
+                emitted = []
+                fake_common = types.SimpleNamespace(set_session_key=Mock())
+                fake_policy = types.SimpleNamespace(NotReady=NotReady)
+                payload = json.dumps({
+                    'action': action,
+                    'scripts': '/nonexistent',
+                    'host': 'host-key',
+                    'dataset': 'dataset-id',
+                    'session_id': 'session-id',
+                    'cancel_file': '/tmp/definitely-absent-cancel-file',
+                    'tokens': [],
+                })
+                with patch.dict(sys.modules, {'_plugin_common': fake_common, '_memlane_policy': fake_policy}), \
+                     patch.object(sys, 'stdin', io.StringIO(payload)), \
+                     patch.object(pbw, 'emit', side_effect=emitted.append), \
+                     patch.object(pbw, 'process', side_effect=NotReady('project_policy_unconfirmed')), \
+                     patch.object(pbw, 'save', side_effect=NotReady('project_policy_unconfirmed')), \
+                     patch.object(pbw, 'review', side_effect=NotReady('project_policy_unconfirmed')):
+                    pbw.main()
+                self.assertEqual(emitted[-1], {'status': want_status, 'reason': 'policy_unconfirmed'})
+
 
 class WorkerDrainFixture(DrainFixture):
     """Real installed sender overlay, adding controlled original-receipt GETs."""
@@ -307,6 +337,77 @@ class WorkerQueueIsolationTests(unittest.TestCase):
                     self.assertEqual(fixture.calls[0], fixture.calls[-1], "retry changed the original ID or payload")
                     self.assertEqual(fixture.read()["pending_entries"], [])
                     self.assertNotIn(uncertain["_capture_id"], fixture.read().get("capture_retries", {}))
+
+    def test_save_and_process_release_orphaned_entry_scope_hold_only_when_empty(self):
+        # 1. save() clearing the last capture_retries releases blocked(scope='entries'), preserving capture_prior_block.
+        with tempfile.TemporaryDirectory() as directory:
+            entry = qa("retried", _replay_ambiguous=True)
+            with WorkerDrainFixture(directory, [entry]) as fixture:
+                state = fixture.read()
+                state["capture_retries"] = {
+                    entry["_capture_id"]: {"reason": "capture_retry_pending", "attempts": 1, "after": fixture.now - 1}
+                }
+                fixture.write(state)
+                with fixture.policy._state() as pol:
+                    pol["blocked"] = {"reason": "capture_request_rejected", "scope": "entries", "at": fixture.now}
+                    pol["capture_prior_block"] = {"reason": "write_result_unknown", "at": fixture.now - 5}
+                result = self.run_save(fixture, tokens=[entry_key(entry)])
+                self.assertEqual((result["status"], result["saved"]), ("completed", 1))
+                with fixture.policy._state() as pol:
+                    self.assertEqual(pol.get("blocked"), {"reason": "write_result_unknown", "at": fixture.now - 5})
+                    self.assertNotIn("capture_prior_block", pol)
+
+        auto_policy = lambda *a, **k: {
+            "ready": True, "dataset_id": DATASET, "revision": 1,
+            "policy": {"permissions": ["read", "write"], "can_capture": True, "can_auto_process": True},
+        }
+
+        # 2. process() clears orphaned blocked(scope='entries') when retries & rejections are empty.
+        with tempfile.TemporaryDirectory() as directory:
+            with WorkerDrainFixture(directory, []) as fixture:
+                with fixture.policy._state() as pol:
+                    pol["blocked"] = {"reason": "capture_request_rejected", "scope": "entries", "at": fixture.now}
+                with patch.object(fixture.policy, "_request", side_effect=auto_policy), \
+                     patch.object(fixture.common, "improve_throttle_reason", return_value=""), \
+                     patch.object(fixture.common, "run_session_improve_detailed", return_value={"ok": True}):
+                    out = process(fixture.common, fixture.policy, {"dataset": DATASET, "session_id": SESSION})
+                self.assertEqual(out, {"status": "submitted"})
+                with fixture.policy._state() as pol:
+                    self.assertNotIn("blocked", pol)
+
+        # 3. process() keeps blocked(scope='entries') when capture_rejections is still non-empty.
+        with tempfile.TemporaryDirectory() as directory:
+            rejected = qa("rejected")
+            with WorkerDrainFixture(directory, [rejected]) as fixture:
+                state = fixture.read()
+                state["capture_rejections"] = {
+                    rejected["_capture_id"]: {"reason": "capture_request_rejected", "http_status": 422, "at": fixture.now}
+                }
+                fixture.write(state)
+                with fixture.policy._state() as pol:
+                    pol["blocked"] = {"reason": "capture_request_rejected", "scope": "entries", "at": fixture.now}
+                with patch.object(fixture.policy, "_request", side_effect=auto_policy):
+                    with self.assertRaises(fixture.policy.NotReady):
+                        process(fixture.common, fixture.policy, {"dataset": DATASET, "session_id": SESSION})
+                with fixture.policy._state() as pol:
+                    self.assertEqual(pol.get("blocked", {}).get("scope"), "entries")
+
+        # 4. check() confirming the last capture_retries receipt also releases blocked(scope='entries').
+        with tempfile.TemporaryDirectory() as directory:
+            confirmed = qa("confirmed", _replay_ambiguous=True)
+            with WorkerDrainFixture(directory, [confirmed]) as fixture:
+                state = fixture.read()
+                state["capture_retries"] = {
+                    confirmed["_capture_id"]: {"reason": "capture_retry_pending", "attempts": 1, "after": fixture.now + 60}
+                }
+                fixture.write(state)
+                with fixture.policy._state() as pol:
+                    pol["blocked"] = {"reason": "capture_request_rejected", "scope": "entries", "at": fixture.now}
+                fixture.receipts[confirmed["_capture_id"]] = fixture.saved_receipt(confirmed)
+                checked = check(fixture.common, fixture.policy, DATASET, HOST)
+                self.assertEqual(checked["status"], "confirmed")
+                with fixture.policy._state() as pol:
+                    self.assertNotIn("blocked", pol)
 
     def test_save_isolates_unserializable_json_before_http(self):
         """QI03: official JSON-readable NaN/Infinity never reach the PUT boundary."""

@@ -61,6 +61,8 @@ class IncrementalProcessing:
         for row in self.state['sessions'].values():
             if row.get('status') == 'submitting':
                 row['status'] = 'unknown'
+                if not row.get('reason'):
+                    row['reason'] = 'owner_interrupted'
         self.save()
 
     def save(self):
@@ -217,7 +219,10 @@ class IncrementalProcessing:
             try:
                 result = await self.backlog.execute(operation, target, 'process')
                 status = result.get('status', 'unknown')
-                row.update(status=status, reason=result.get('reason', ''), attempted_at=now)
+                reason = str(result.get('reason') or '')
+                if status == 'paused' and reason == 'policy_unconfirmed':
+                    status = 'deferred'
+                row.update(status=status, reason=reason, attempted_at=now)
                 if status in ('submitted', 'skipped'):
                     row.update(submitted_counts=list(counts), pending_since=0)
                     row.pop('handoff_operation', None)

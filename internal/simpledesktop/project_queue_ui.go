@@ -76,6 +76,7 @@ func (q *projectQueueState) openDetailDialog(n messageNotice) {
 	q.DetailNoticeKey = n.Key
 	q.DetailDialogOpen = true
 	q.DetailDiagnosticsOpen = false
+	q.ProcessingActionError = ""
 	if n.Session != nil && n.Session.View != nil {
 		n.Session.View.CheckDetailsOpen = true
 	}
@@ -85,6 +86,7 @@ func (q *projectQueueState) closeDetailDialog(n *messageNotice) {
 	q.DetailDialogOpen = false
 	q.DetailNoticeKey = ""
 	q.DetailDiagnosticsOpen = false
+	q.ProcessingActionError = ""
 	if n != nil && n.Session != nil && n.Session.View != nil {
 		n.Session.View.CheckDetailsOpen = false
 	}
@@ -403,6 +405,8 @@ func (a *App) messageNoticeBucket(c *ui.Context, q *projectQueueState, p AccessP
 							v4SmallPrimaryButton(c, "恢复采集", func() { a.changeBacklog(q, p, false) }).Disabled(q.BacklogBusy || a.access.Busy || a.Config.ProjectControl == nil)
 						case "save":
 							v4SmallPrimaryButton(c, "开始采集", func() { a.changeBacklog(q, p, false) }).Disabled(q.BacklogBusy || q.Loading || a.access.Busy || a.Config.ProjectControl == nil)
+						case "reconcile-policy":
+							v4SmallPrimaryButton(c, "核对权限", func() { a.reconcileProjectPolicy(q, p) }).Disabled(a.access.Busy || a.Config.ProjectControl == nil)
 						}
 					}
 					queueAction(c, "查看详情", func() { q.openDetailDialog(n) })
@@ -479,6 +483,21 @@ func (a *App) renderMessageNoticeDialog(c *ui.Context, q *projectQueueState, p A
 		onConfirm = func() {
 			a.changeBacklog(q, p, false)
 			q.closeDetailDialog(&n)
+		}
+	case "reconcile-policy":
+		hideConfirm = false
+		confirmText = "核对权限"
+		confirmDisabled = a.access.Busy || a.Config.ProjectControl == nil
+		onConfirm = func() {
+			a.reconcileProjectPolicy(q, p)
+			q.closeDetailDialog(&n)
+		}
+	case "processing-retry":
+		hideConfirm = false
+		confirmText = "重新提炼"
+		confirmDisabled = q.ProcessingActionBusy || a.access.Busy || a.Config.ProjectControl == nil
+		onConfirm = func() {
+			a.retryProjectProcessing(q, p)
 		}
 	case "refresh":
 		hideConfirm = false
@@ -569,6 +588,8 @@ func (a *App) renderMessageNoticeDialog(c *ui.Context, q *projectQueueState, p A
 				a.messageNoticeDetails(c, q, p, *n.Session)
 			} else if n.Processing != nil {
 				a.processingNoticeDetails(c, q, *n.Processing)
+			} else if n.Key == "processing-failed" || n.Key == "processing-active" {
+				a.backlogProcessingDetails(c, q, p, n.Key)
 			}
 		},
 	})
@@ -766,6 +787,141 @@ func (a *App) processingNoticeDetails(c *ui.Context, q *projectQueueState, f pro
 				}
 			})
 		}
+	})
+}
+
+func (a *App) agentNameForID(agentID string) string {
+	for _, agent := range a.access.Directory.Agents {
+		if agent.ID == agentID && agent.Name != "" {
+			return agentDisplayName(agent.Name)
+		}
+	}
+	return agentID
+}
+
+func processingIssueBadge(issue processingIssue) (label, tone string) {
+	if issue.ReconcileStatus == "running" {
+		return "服务端处理中", "accent"
+	}
+	if issue.Processing == "submitting" {
+		return "处理中", "accent"
+	}
+	return "未确认", "warn"
+}
+
+func processingIssueSummary(issue processingIssue) string {
+	if issue.ReconcileStatus == "running" {
+		return "官方引擎仍在执行该会话的提炼任务，后台将继续对账，不会重复提交。"
+	}
+	switch issue.Reason {
+	case "policy_unconfirmed":
+		return "发起提炼前未能确认项目权限状态；原消息已保存，可核对后重新提炼。"
+	case "owner_interrupted":
+		return "后台服务重启或停止打断了本次提交；可先核对服务端状态或重新提炼。"
+	case "previous_submission_unconfirmed":
+		return "同会话此前存在未确认的提炼提交，因此本次暂缓重复发送。"
+	default:
+		if issue.Processing == "submitting" {
+			return "已发起记忆提炼提交，正在等待服务端回执。"
+		}
+		if issue.ReconcileStatus == "failed" {
+			return "核对显示最近一次提炼在服务端未能完成，可点击重新提炼。"
+		}
+		return "未能确认提炼请求是否已送达服务端，核对前不会自动重发。"
+	}
+}
+
+func (a *App) backlogProcessingDetails(c *ui.Context, q *projectQueueState, p AccessProject, noticeKey string) {
+	issues := make([]processingIssue, 0, len(q.ProcessingIssues))
+	for _, issue := range q.ProcessingIssues {
+		if noticeKey == "processing-active" && issue.Processing == "submitting" {
+			issues = append(issues, issue)
+		} else if noticeKey == "processing-failed" && (issue.Processing == "unknown" || issue.Processing == "failed") {
+			issues = append(issues, issue)
+		}
+	}
+	ui.Column(c).FillWidth().Gap(sp3).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+			ui.Text(c, "相关会话").Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
+			if len(issues) > 0 {
+				ui.Text(c, fmt.Sprintf("%d 个会话", len(issues))).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
+			}
+			ui.Spacer(c)
+			if noticeKey == "processing-failed" {
+				label := "核对提炼状态"
+				if q.ProcessingActionBusy {
+					label = "正在核对…"
+				}
+				queueAction(c, label, func() { a.reconcileProjectProcessing(q, p) }).Disabled(q.ProcessingActionBusy || a.access.Busy || a.Config.ProjectControl == nil)
+			}
+		})
+
+		if q.ProcessingActionError != "" {
+			ui.Text(c, q.ProcessingActionError).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Warning)
+		}
+
+		if len(issues) == 0 {
+			emptyText := "当前未读取到进行中的会话明细，可稍后刷新查看。"
+			if noticeKey == "processing-failed" {
+				emptyText = "当前未读取到具体会话明细，可点击「核对提炼状态」同步最新服务端状态。"
+			}
+			ui.Text(c, emptyText).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3)
+			return
+		}
+
+		diagLines := make([]string, 0, len(issues))
+		ui.Column(c).FillWidth().Gap(0).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
+			for idx, issue := range issues {
+				issue := issue
+				badgeLabel, badgeTone := processingIssueBadge(issue)
+				source := a.agentNameForID(issue.AgentID) + " · 会话 " + shortSessionLabel(issue.Host)
+				if issue.AttemptedAt > 0 {
+					source += " · 提交于 " + time.Unix(int64(issue.AttemptedAt), 0).Format("01/02 15:04")
+				}
+				diagLines = append(diagLines, fmt.Sprintf(
+					"agent=%s host=%s session=%s status=%s reason=%s reconcile=%s",
+					issue.AgentID, issue.Host, issue.SessionID, issue.Processing, issue.Reason, issue.ReconcileStatus,
+				))
+				ui.Row(c.Key(fmt.Sprintf("%s/%s/%d", issue.AgentID, issue.Host, idx))).FillWidth().Padding(sp2, sp1).Gap(sp2).AlignItems(ui.Start).
+					BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+					ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
+						ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+							ui.Text(c, source).Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).Tooltip(issue.Host)
+							v4Badge(c, badgeLabel, badgeTone)
+							ui.Spacer(c)
+							if issue.ReconciledAt > 0 {
+								ui.Text(c, "核对于 "+time.Unix(int64(issue.ReconciledAt), 0).Format("15:04")).
+									Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
+							}
+						})
+						ui.Text(c, processingIssueSummary(issue)).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text2).LineHeight(1.45)
+					})
+				})
+			}
+		})
+
+		diagCopyText := strings.Join(diagLines, "\n")
+		ui.Column(c).FillWidth().Gap(sp2).Padding(sp2, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+				label := "诊断信息"
+				if q.DetailDiagnosticsOpen {
+					label = "收起诊断信息"
+				}
+				queueAction(c, label, func() { q.DetailDiagnosticsOpen = !q.DetailDiagnosticsOpen })
+				ui.Spacer(c)
+				v4SmallButton(c, "复制诊断", v4IconCopy, func() {
+					c.WriteClipboard(diagCopyText)
+					a.copyFeedback("诊断信息")
+				})
+			})
+			if q.DetailDiagnosticsOpen {
+				ui.Column(c).FillWidth().Padding(sp2, sp3).Gap(4).Background(tok.Fill1).Radius(radius).Children(func() {
+					for _, line := range diagLines {
+						ui.Text(c, line).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text2)
+					}
+				})
+			}
+		})
 	})
 }
 

@@ -118,6 +118,9 @@ func (q *projectQueueState) noticeFingerprint(key string) string {
 			return noticeHash([]any{key, j.Operation, j.ReviewFailed})
 		}
 	}
+	if key == "policy-sync" {
+		return noticeHash([]string{key})
+	}
 	for _, n := range q.ProcessingNotices {
 		if key == "processing/"+n.Operation {
 			return noticeHash([]any{key, n.Code, n.Status})

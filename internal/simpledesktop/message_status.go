@@ -63,7 +63,7 @@ func (n messageNotice) isProgressNotice() bool {
 		return false
 	}
 	switch n.Tag {
-	case "待采集", "处理中", "等待接续", "已保留", "操作记录", "已暂停":
+	case "待采集", "处理中", "等待接续", "已保留", "操作记录", "已暂停", "等待重试", "自动重试", "正在核对", "正在检查":
 		return true
 	default:
 		return false
@@ -75,7 +75,7 @@ func (n messageNotice) isActiveProgressNotice() bool {
 		return false
 	}
 	switch n.Tag {
-	case "待采集", "处理中", "等待接续":
+	case "待采集", "处理中", "等待接续", "等待重试", "自动重试", "正在核对", "正在检查":
 		return true
 	default:
 		return false
@@ -129,6 +129,16 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 	}
 	if q.ProcessingReadError != "" {
 		add(messageNotice{Key: "processing-read", Title: q.ProcessingReadError, Detail: "暂时不能确认最近的模型调用状态。", Tag: "读取异常", Action: "refresh"})
+	}
+	if p.policySyncUnconfirmed() {
+		add(messageNotice{
+			Key:      "policy-sync",
+			Title:    "项目权限同步尚未确认",
+			Tag:      "状态未确认",
+			Detail:   "当前项目的 Agent 权限同步状态尚未确认，受影响的自动采集与重试已暂缓。",
+			Followup: "后台会自动只读核对，也可立即手动核对；原消息保留在本机。",
+			Action:   "reconcile-policy",
+		})
 	}
 	now := time.Now()
 	for _, failure := range q.ProcessingNotices {
@@ -276,6 +286,8 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 				n.Followup = "请先查看本机消息，确认后补交；系统不会自动补交原来被拒绝的消息。"
 			case s.Blocked != nil:
 				n.Tag, n.Detail, n.Followup = "采集受阻", "本机采集队列已被暂停，当前不能继续发送这些消息。", "原消息保留；暂停原因见详情，系统不会绕过限制重新发送。"
+			case p.agentPolicyUnconfirmed(r.Agent.ID):
+				n.Detail, n.Followup = "消息仍在本机队列，尚未完成采集。", "当前项目权限同步尚未确认，自动采集已暂缓；核对生效后将继续采集。"
 			case q.Backlog.active():
 				n.Detail, n.Followup = "消息仍在本机队列，尚未完成采集。", "后台采集任务正在运行，切换页面不会停止。"
 			case q.AutomaticSave:
@@ -294,6 +306,8 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 			n := messageNotice{Key: key + "/retry", Title: fmt.Sprintf("%d 条消息等待核对采集结果", retryable), Source: source, Detail: "尚未收到采集结果，原消息保留在本机。", Followup: "当前没有正在执行的采集任务，消息仍待核对。", Tag: "等待核对", Action: "details", Session: &r}
 			if p.Overrides[r.Agent.ID].effective(a.access.Directory.Defaults).Access != "maintain" {
 				n.Tag, n.Followup = "等待授权", "当前没有写入权限，系统不会重试发送。"
+			} else if p.agentPolicyUnconfirmed(r.Agent.ID) {
+				n.Tag, n.Followup = "状态未确认", "当前项目权限同步尚未确认，自动重试已暂缓；核对生效后将按原编号继续重试。"
 			} else if (s.Blocked != nil && s.Blocked.Reason == "capture_request_rejected") || (q.Backlog != nil && q.Backlog.Reason == "capture_request_rejected") {
 				n.Tag, n.Followup = "采集异常", "服务拒绝了这次采集请求，原消息保留；系统已停止重试。"
 			} else if q.Backlog != nil && (q.Backlog.Status == "paused" || q.Backlog.Status == "stopped" || q.Backlog.Status == "interrupted" || q.Backlog.Status == "stopping") {
@@ -373,7 +387,7 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 			add(n)
 		}
 		if j.ProcessingFailed > 0 {
-			add(messageNotice{Key: "processing-failed", Title: "部分消息的记忆提炼未确认完成", Tag: "提炼异常", Detail: fmt.Sprintf("%d 个会话的提炼提交失败或结果未确认。", j.ProcessingFailed), Followup: "这不表示原消息采集失败；提炼结果未确认前不会重复提交。", Action: "refresh"})
+			add(messageNotice{Key: "processing-failed", Title: "部分消息的记忆提炼未确认完成", Tag: "提炼异常", Detail: fmt.Sprintf("%d 个会话的提炼提交失败或结果未确认。", j.ProcessingFailed), Followup: "这不表示原消息采集失败；提炼结果未确认前不会重复提交。", Action: "processing-retry"})
 		}
 		if j.ProcessingPartial > 0 {
 			add(messageNotice{Key: "processing-partial", Title: "部分材料已提交记忆提炼", Tag: "等待接续",

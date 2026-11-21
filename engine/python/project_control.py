@@ -354,7 +354,82 @@ class Registry:
     def managed_groups(self):
         return [*self.state['projects'].values(), *([self.state['common']] if self.state.get('common') else [])]
 
-    async def ensure_common(self, expected, *, reconcile=False):
+    @staticmethod
+    def _group_needs_read_only_verify(group):
+        return bool(
+            isinstance(group, dict)
+            and group.get('status') == 'unconfirmed'
+            and group.get('error_code') == 'official_result_unknown'
+            and group.get('dataset_id')
+            and not group.get('import_acl')
+        )
+
+    async def _verify_group_locked(self, group):
+        # Recovery from an unknown read must not repeat permission
+        # mutations or create a missing dataset. Check every live
+        # principal before publishing a verified group again.
+        applied = {}
+        try:
+            if group.get('import_acl') or not group.get('dataset_id'):
+                raise PolicyError('existing_acl_requires_review', 409)
+            use_batch = self._can_batch_effective_permissions()
+            is_common = group.get('kind') == 'common'
+            for agent_id, agent in self.state['agents'].items():
+                if agent_id in self.state.get('agent_retirements', {}):
+                    applied[agent_id] = {'status': 'retiring'}
+                    continue
+                permissions = (
+                    {'read'} if is_common
+                    else set(effective(self.state['defaults'], group['overrides'].get(agent_id, {}))['permissions'])
+                )
+                if use_batch and group.get('code_dataset_id'):
+                    perm_map = await self.official.effective_permissions_batch(
+                        agent, [group['dataset_id'], group['code_dataset_id']])
+                    if perm_map.get(group['dataset_id'], set()) != permissions:
+                        raise PolicyError('effective_acl_changed', 503)
+                    expected_code = permissions if group.get('code_enabled') else set()
+                    if perm_map.get(group['code_dataset_id'], set()) != expected_code:
+                        raise PolicyError('effective_code_acl_changed', 503)
+                else:
+                    if await self.official.effective_permissions(agent, group['dataset_id']) != permissions:
+                        raise PolicyError('effective_acl_changed', 503)
+                    if group.get('code_dataset_id'):
+                        expected_code = permissions if group.get('code_enabled') else set()
+                        if await self.official.effective_permissions(agent, group['code_dataset_id']) != expected_code:
+                            raise PolicyError('effective_code_acl_changed', 503)
+                applied[agent_id] = {'status': 'verified', 'revision': group['desired_revision']}
+            group['applied'] = applied
+            group['status'] = 'verified'
+            group.pop('error_code', None)
+            return True
+        except PolicyError as error:
+            group['status'], group['error_code'] = 'unconfirmed', error.code
+            return False
+
+    async def verify_unconfirmed_groups(self):
+        if not any(self._group_needs_read_only_verify(group) for group in self.managed_groups()):
+            return 0
+        recovered = 0
+        changed = False
+        async with self.mutex:
+            for group in self.managed_groups():
+                if not self._group_needs_read_only_verify(group):
+                    continue
+                before_error = group.get('error_code')
+                if await self._verify_group_locked(group):
+                    recovered += 1
+                    changed = True
+                elif group.get('error_code') != before_error:
+                    changed = True
+            if changed:
+                if recovered:
+                    self.state['revision'] += 1
+                self.save()
+        return recovered
+
+    async def ensure_common(self, expected, *, reconcile=False, verify_only=False):
+        if type(verify_only) is not bool:
+            raise PolicyError('invalid_verify_only')
         async with self.mutex:
             self.check_revision(expected)
             common = self.state.get('common')
@@ -369,7 +444,11 @@ class Registry:
                 self.save()
                 await self.reconcile_locked(common)
             elif reconcile:
-                await self.reconcile_locked(common)
+                if verify_only:
+                    await self._verify_group_locked(common)
+                    self.save()
+                else:
+                    await self.reconcile_locked(common)
             return self.directory()
 
     async def reconcile(self, expected, identifier, *, verify_only=False):
@@ -381,30 +460,7 @@ class Registry:
             if project is None:
                 raise PolicyError('project_not_found', 404)
             if verify_only:
-                # Recovery from an unknown read must not repeat permission
-                # mutations or create a missing dataset. Check every live
-                # principal before publishing a verified project again.
-                applied = {}
-                try:
-                    if project.get('import_acl') or not project.get('dataset_id'):
-                        raise PolicyError('existing_acl_requires_review', 409)
-                    for agent_id, agent in self.state['agents'].items():
-                        if agent_id in self.state.get('agent_retirements', {}):
-                            applied[agent_id] = {'status': 'retiring'}
-                            continue
-                        permissions = set(effective(self.state['defaults'], project['overrides'].get(agent_id, {}))['permissions'])
-                        if await self.official.effective_permissions(agent, project['dataset_id']) != permissions:
-                            raise PolicyError('effective_acl_changed', 503)
-                        if project.get('code_dataset_id'):
-                            expected_code = permissions if project.get('code_enabled') else set()
-                            if await self.official.effective_permissions(agent, project['code_dataset_id']) != expected_code:
-                                raise PolicyError('effective_code_acl_changed', 503)
-                        applied[agent_id] = {'status': 'verified', 'revision': project['desired_revision']}
-                    project['applied'] = applied
-                    project['status'] = 'verified'
-                    project.pop('error_code', None)
-                except PolicyError as error:
-                    project['status'], project['error_code'] = 'unconfirmed', error.code
+                await self._verify_group_locked(project)
                 self.save()
             else:
                 await self.reconcile_locked(project)

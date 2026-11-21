@@ -79,7 +79,7 @@ def _error_code(exc, default_code):
 
 async def _read_backlog(backlog, project_id):
     if backlog is None:
-        return None, False
+        return None, False, [], [], []
     reader = getattr(backlog, 'get', None) or getattr(backlog, 'status', None)
     if reader is None:
         raise PolicyError('backlog_unavailable', 503)
@@ -93,7 +93,16 @@ async def _read_backlog(backlog, project_id):
         automatic_save = bool(result['automatic_save'])
     else:
         automatic_save = bool(result.get('automatic_enabled', False))
-    return job, automatic_save
+    buffer_reviews = result.get('buffer_reviews')
+    checks = result.get('checks')
+    processing_issues = result.get('processing_issues')
+    return (
+        job,
+        automatic_save,
+        buffer_reviews if isinstance(buffer_reviews, list) else [],
+        checks if isinstance(checks, list) else [],
+        processing_issues if isinstance(processing_issues, list) else [],
+    )
 
 
 async def _read_processing_notices(registry, dataset_id):
@@ -196,10 +205,10 @@ async def build_project_message_summary(registry, project_id, *, backlog=None):
     if isinstance(backlog_res, BaseException):
         if isinstance(backlog_res, asyncio.CancelledError):
             raise backlog_res
-        backlog_job, automatic_save = None, False
+        backlog_job, automatic_save, buffer_reviews, checks, processing_issues = None, False, [], [], []
         errors['backlog'] = _error_code(backlog_res, 'backlog_unavailable')
     else:
-        backlog_job, automatic_save = backlog_res
+        backlog_job, automatic_save, buffer_reviews, checks, processing_issues = backlog_res
 
     if isinstance(notices_res, BaseException):
         if isinstance(notices_res, asyncio.CancelledError):
@@ -230,6 +239,9 @@ async def build_project_message_summary(registry, project_id, *, backlog=None):
         'dataset_id': dataset_id,
         'automatic_save': automatic_save,
         'backlog': backlog_job,
+        'buffer_reviews': buffer_reviews,
+        'checks': checks,
+        'processing_issues': processing_issues,
         'processing_notices': notices,
         'pending_documents': pending_documents,
         'activity': activity,
