@@ -26,6 +26,20 @@ ENVIRON_SCOPED_ALLOWLIST = {
 }
 ENVIRON_MUTATING_METHODS = {'update', 'pop', 'popitem', 'clear', 'setdefault'}
 ML007_MESSAGE = '禁止在非白名单模块修改全局 os.environ；请显式传递环境变量字典或限定为白名单入口'
+ML013_ASYNC_POLL_MESSAGE = '禁止在后台 while True 循环中使用低于或等于 5s 的 asyncio.sleep 高频轮询；协程让出请使用 asyncio.sleep(0)'
+ML013_DEV_TRACK_MESSAGE = '禁止在高频主循环中无节流调用 track_descendants；须通过 monotonic 时间间隔门禁限频'
+ML014_MESSAGE = '异步函数内禁止直接调用同步阻塞子进程；请改用 asyncio.to_thread 或 asyncio.create_subprocess_exec'
+ML015_BINARY_HASH_MESSAGE = '禁止对可执行二进制直接调用 read_bytes() 全量读入内存哈希；请使用基于 stat 的缓存与流式分块摘要'
+ML015_OWNER_CLEANUP_MESSAGE = 'opencode_backlog.execute 必须在 finally 块中调用 owner_path.unlink 清理已退出的只读 worker 临时文件'
+ML016_MESSAGE = '启用 SQLite WAL 模式时必须在同一模块显式配置 PRAGMA journal_size_limit，防止 WAL 文件无限膨胀'
+ML017_REOPEN_UI_MESSAGE = 'reopen_ui 禁止无条件调用 mygo dev 热重载轮询；默认启动须运行已构建二进制并由 watch 模式门禁守护'
+ML017_CLEANUP_RECEIPT_MESSAGE = '写入 build/disk-cleanup 清理回执时必须同时调用回执轮转清理机制（unlink 淘汰超额旧回执）'
+
+BLOCKING_SUBPROCESS_CALLS = {'run', 'check_output', 'call', 'check_call', 'Popen'}
+BLOCKING_SAMPLER_NAMES = {'sample_process', 'default_sample_process'}
+BINARY_EXPR_NAMES = {'node', 'executable', 'binary', 'bin_path', 'node_executable', 'node_path', 'node_bin'}
+WAL_MODE_RE = re.compile(r'pragma\s+journal_mode\s*=\s*wal\b', re.IGNORECASE)
+WAL_SIZE_LIMIT_RE = re.compile(r'pragma\s+journal_size_limit\b', re.IGNORECASE)
 
 
 def _iter_assignment_targets(target):
@@ -134,6 +148,308 @@ def string(node):
     return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
 
+def _numeric_literal(node):
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+        return float(node.value)
+    return None
+
+
+def _is_while_true(node):
+    return isinstance(node, ast.While) and isinstance(node.test, ast.Constant) and node.test.value is True
+
+
+def _iter_scope_nodes(root, *, skip_to_thread_lambda=False, to_thread_check=None):
+    """Yield AST nodes inside a function/loop body without descending into nested def/class definitions."""
+    stack = list(getattr(root, 'body', []))
+    while stack:
+        current = stack.pop(0)
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        yield current
+        if skip_to_thread_lambda and isinstance(current, ast.Call) and to_thread_check and to_thread_check(current):
+            for arg in current.args[1:]:
+                stack.append(arg)
+            for kw in current.keywords:
+                stack.append(kw.value)
+            if current.args and not isinstance(current.args[0], ast.Lambda):
+                stack.append(current.args[0])
+            continue
+        for child in ast.iter_child_nodes(current):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            stack.append(child)
+
+
+def _node_references_watch(node):
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name) and 'watch' in sub.id.lower():
+            return True
+        if isinstance(sub, ast.Attribute) and 'watch' in sub.attr.lower():
+            return True
+    return False
+
+
+def _node_references_monotonic(node):
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name) and 'monotonic' in sub.id.lower():
+            return True
+        if isinstance(sub, ast.Attribute) and 'monotonic' in sub.attr.lower():
+            return True
+    return False
+
+
+def _check_runtime_hygiene(tree, path, report):
+    path_obj = Path(path)
+    filename = path_obj.name
+    is_scripts = path_obj.parent.name == 'scripts' or filename in {'dev.py', 'disk-space.py', 'task.py', 'bootstrap.py'}
+
+    asyncio_names = {'asyncio'}
+    asyncio_sleep_names = set()
+    to_thread_names = set()
+    time_names = {'time'}
+    time_sleep_names = set()
+    subprocess_names = {'subprocess'}
+    subprocess_call_names = set()
+    hashlib_names = {'hashlib'}
+    sha256_names = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local = alias.asname or alias.name
+                if alias.name == 'asyncio':
+                    asyncio_names.add(local)
+                elif alias.name == 'time':
+                    time_names.add(local)
+                elif alias.name == 'subprocess':
+                    subprocess_names.add(local)
+                elif alias.name == 'hashlib':
+                    hashlib_names.add(local)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == 'asyncio':
+                for alias in node.names:
+                    local = alias.asname or alias.name
+                    if alias.name == 'sleep':
+                        asyncio_sleep_names.add(local)
+                    elif alias.name == 'to_thread':
+                        to_thread_names.add(local)
+            elif node.module == 'time':
+                for alias in node.names:
+                    if alias.name == 'sleep':
+                        time_sleep_names.add(alias.asname or alias.name)
+            elif node.module == 'subprocess':
+                for alias in node.names:
+                    if alias.name in BLOCKING_SUBPROCESS_CALLS:
+                        subprocess_call_names.add(alias.asname or alias.name)
+            elif node.module == 'hashlib':
+                for alias in node.names:
+                    if alias.name == 'sha256':
+                        sha256_names.add(alias.asname or alias.name)
+
+    def is_asyncio_sleep(call):
+        if not isinstance(call, ast.Call):
+            return False
+        if isinstance(call.func, ast.Name) and call.func.id in asyncio_sleep_names:
+            return True
+        return (
+            isinstance(call.func, ast.Attribute)
+            and call.func.attr == 'sleep'
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id in asyncio_names
+        )
+
+    def is_time_sleep(call):
+        if not isinstance(call, ast.Call):
+            return False
+        if isinstance(call.func, ast.Name) and call.func.id in time_sleep_names:
+            return True
+        return (
+            isinstance(call.func, ast.Attribute)
+            and call.func.attr == 'sleep'
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id in time_names
+        )
+
+    def is_to_thread_call(call):
+        if not isinstance(call, ast.Call):
+            return False
+        if isinstance(call.func, ast.Name) and call.func.id in to_thread_names:
+            return True
+        if isinstance(call.func, ast.Attribute):
+            if call.func.attr == 'to_thread' and isinstance(call.func.value, ast.Name) and call.func.value.id in asyncio_names:
+                return True
+            if call.func.attr == 'run_in_executor':
+                return True
+        return False
+
+    def is_blocking_subprocess_func(func_expr):
+        if isinstance(func_expr, ast.Name) and (func_expr.id in subprocess_call_names or func_expr.id in BLOCKING_SAMPLER_NAMES):
+            return True
+        if isinstance(func_expr, ast.Attribute):
+            if (func_expr.attr in BLOCKING_SUBPROCESS_CALLS
+                    and isinstance(func_expr.value, ast.Name)
+                    and func_expr.value.id in subprocess_names):
+                return True
+            if func_expr.attr in BLOCKING_SAMPLER_NAMES:
+                return True
+        return False
+
+    def is_sha256_call(call):
+        if not isinstance(call, ast.Call):
+            return False
+        if isinstance(call.func, ast.Name) and call.func.id in sha256_names:
+            return True
+        return (
+            isinstance(call.func, ast.Attribute)
+            and call.func.attr == 'sha256'
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id in hashlib_names
+        )
+
+    # ML013 (part 2): In scripts/dev.py (or while True loops with time.sleep(<1.0)),
+    # reject unthrottled track_descendants(...) calls.
+    for node in ast.walk(tree):
+        if _is_while_true(node):
+            has_short_time_sleep = False
+            for sub in _iter_scope_nodes(node):
+                if is_time_sleep(sub) and sub.args:
+                    delay = _numeric_literal(sub.args[0])
+                    if delay is not None and 0 <= delay < 1.0:
+                        has_short_time_sleep = True
+                        break
+            if has_short_time_sleep:
+                loop_has_monotonic = _node_references_monotonic(node)
+                if_enclosed_nodes = set()
+                for sub in _iter_scope_nodes(node):
+                    if isinstance(sub, ast.If):
+                        for child in _iter_scope_nodes(sub):
+                            if_enclosed_nodes.add(child)
+                for sub in _iter_scope_nodes(node):
+                    if (isinstance(sub, ast.Call)
+                            and isinstance(sub.func, ast.Name)
+                            and sub.func.id == 'track_descendants'):
+                        if not (loop_has_monotonic and sub in if_enclosed_nodes):
+                            report(sub, 'ML013', ML013_DEV_TRACK_MESSAGE)
+
+    # ML017 (part 1): In scripts/dev.py reopen_ui(...), reject unconditional ['tool', 'mygo', 'dev'].
+    if filename == 'dev.py':
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == 'reopen_ui':
+                has_watch_branch = any(
+                    isinstance(sub, (ast.If, ast.IfExp)) and _node_references_watch(sub.test)
+                    for sub in ast.walk(node)
+                )
+                for sub in ast.walk(node):
+                    if isinstance(sub, (ast.List, ast.Tuple)):
+                        items = [string(el) for el in sub.elts]
+                        if 'mygo' in items and 'dev' in items and items.index('mygo') < items.index('dev'):
+                            if not has_watch_branch:
+                                report(sub, 'ML017', ML017_REOPEN_UI_MESSAGE)
+
+    # ML017 (part 2): In scripts/disk-space.py, writing JSON receipts into build/disk-cleanup
+    # must also invoke a receipt pruning/rotation mechanism (.unlink dedicated to cleanup receipts).
+    if filename == 'disk-space.py':
+        functions = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+        pruning_helpers = set()
+        for fn_name, fn_node in functions.items():
+            if fn_name == 'prune_history':
+                continue
+            if any(isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) and sub.func.attr == 'unlink'
+                   for sub in ast.walk(fn_node)):
+                pruning_helpers.add(fn_name)
+        for fn_name, fn_node in functions.items():
+            if fn_name == 'prune_history':
+                continue
+            write_calls = [
+                sub for sub in ast.walk(fn_node)
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) and sub.func.attr == 'write_text'
+            ]
+            if not write_calls:
+                continue
+            invokes_pruning = (
+                fn_name in pruning_helpers
+                or any(
+                    isinstance(sub, ast.Call)
+                    and isinstance(sub.func, ast.Name)
+                    and sub.func.id in pruning_helpers
+                    for sub in ast.walk(fn_node)
+                )
+            )
+            if not invokes_pruning:
+                for write_call in write_calls:
+                    report(write_call, 'ML017', ML017_CLEANUP_RECEIPT_MESSAGE)
+
+    if is_scripts:
+        return
+
+    # Engine Python rules: ML013 (part 1), ML014, ML015, ML016.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef):
+            # ML013 (part 1): Reject asyncio.sleep(N) with 0 < N <= 5 inside background while True loops.
+            for sub in _iter_scope_nodes(node):
+                if _is_while_true(sub):
+                    for wsub in _iter_scope_nodes(sub):
+                        if is_asyncio_sleep(wsub) and wsub.args:
+                            delay = _numeric_literal(wsub.args[0])
+                            if delay is not None and 0 < delay <= 5:
+                                report(wsub, 'ML013', ML013_ASYNC_POLL_MESSAGE)
+            # ML014: Reject direct blocking subprocess calls inside async def.
+            awaited_calls = {
+                sub.value for sub in _iter_scope_nodes(node, skip_to_thread_lambda=True, to_thread_check=is_to_thread_call)
+                if isinstance(sub, ast.Await) and isinstance(sub.value, ast.Call)
+            }
+            for sub in _iter_scope_nodes(node, skip_to_thread_lambda=True, to_thread_check=is_to_thread_call):
+                if isinstance(sub, ast.Call) and is_blocking_subprocess_func(sub.func):
+                    is_sampler = (
+                        (isinstance(sub.func, ast.Name) and sub.func.id in BLOCKING_SAMPLER_NAMES)
+                        or (isinstance(sub.func, ast.Attribute) and sub.func.attr in BLOCKING_SAMPLER_NAMES)
+                    )
+                    if is_sampler and sub in awaited_calls:
+                        continue
+                    report(sub, 'ML014', ML014_MESSAGE)
+
+    # ML015 (part 1): Reject hashlib.sha256(<binary_expr>.read_bytes()).
+    for node in ast.walk(tree):
+        if is_sha256_call(node) and node.args:
+            for sub in ast.walk(node.args[0]):
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) and sub.func.attr == 'read_bytes':
+                    target_expr = sub.func.value
+                    has_binary_ref = any(
+                        (isinstance(t, ast.Name) and t.id in BINARY_EXPR_NAMES)
+                        or (isinstance(t, ast.Attribute) and t.attr in BINARY_EXPR_NAMES)
+                        or (isinstance(t, ast.Constant) and isinstance(t.value, str) and t.value in BINARY_EXPR_NAMES)
+                        for t in ast.walk(target_expr)
+                    )
+                    if has_binary_ref:
+                        report(sub, 'ML015', ML015_BINARY_HASH_MESSAGE)
+
+    # ML015 (part 2): In opencode_backlog.py, execute() must unlink owner_path in a finally block.
+    if filename == 'opencode_backlog.py':
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == 'execute':
+                try_with_finally = [sub for sub in ast.walk(node) if isinstance(sub, ast.Try) and sub.finalbody]
+                has_owner_unlink = False
+                for try_node in try_with_finally:
+                    for final_stmt in try_node.finalbody:
+                        for sub in ast.walk(final_stmt):
+                            if (isinstance(sub, ast.Call)
+                                    and isinstance(sub.func, ast.Attribute)
+                                    and sub.func.attr == 'unlink'
+                                    and any(isinstance(t, ast.Name) and t.id == 'owner_path' for t in ast.walk(sub.func.value))):
+                                has_owner_unlink = True
+                                break
+                if not has_owner_unlink:
+                    anchor = try_with_finally[0].finalbody[0] if try_with_finally else node
+                    report(anchor, 'ML015', ML015_OWNER_CLEANUP_MESSAGE)
+
+    # ML016: Files with PRAGMA journal_mode=WAL must also configure PRAGMA journal_size_limit.
+    string_nodes = [node for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+    wal_nodes = [node for node in string_nodes if WAL_MODE_RE.search(node.value)]
+    if wal_nodes and not any(WAL_SIZE_LIMIT_RE.search(node.value) for node in string_nodes):
+        for wal_node in wal_nodes:
+            report(wal_node, 'ML016', ML016_MESSAGE)
+
+
 def check_source(source, path):
     """Check model transport modules, including the shared configuration boundary."""
     try:
@@ -199,6 +515,7 @@ def check_source(source, path):
                 elif node.value is not None and isinstance(target, ast.Attribute):
                     injected(node, ast.Constant(value=target.attr), node.value)
     _check_environ_mutations(tree, path, report)
+    _check_runtime_hygiene(tree, path, report)
     return sorted(set(issues))
 
 
@@ -387,7 +704,7 @@ def main():
                 print('{}:{}: {} {}'.format(path.relative_to(ROOT), line, code, message))
                 failures += 1
     if not failures:
-        print('Lint passed: 模型参数、环境隔离与 UI 性能门禁 (ML001-ML003, ML007-ML012)')
+        print('Lint passed: 模型参数、环境隔离、UI 性能与运行时资源门禁 (ML001-ML003, ML007-ML012, ML013-ML017)')
     return bool(failures)
 
 

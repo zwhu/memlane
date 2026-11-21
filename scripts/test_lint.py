@@ -246,5 +246,205 @@ class PerformanceLintTests(unittest.TestCase):
         self.assertEqual(self.codes(good_start, 'app.go'), set())
 
 
+class RuntimeHygieneLintTests(unittest.TestCase):
+    def codes(self, source, path='engine/python/project_backlog.py'):
+        return {code for _, code, _ in check_source(source, path)}
+
+    def test_ml013_async_background_loop_polling_and_cooperative_yield(self):
+        bad_2s = """import asyncio
+async def automatic_check_loop():
+    while True:
+        await asyncio.sleep(2)
+"""
+        bad_5s = """import asyncio
+async def loop():
+    while True:
+        await asyncio.sleep(5)
+"""
+        bad_from_import = """from asyncio import sleep
+async def worker_loop():
+    while True:
+        await sleep(0.5)
+"""
+        for src in (bad_2s, bad_5s, bad_from_import):
+            with self.subTest(source=src):
+                self.assertIn('ML013', self.codes(src))
+
+        good_yield_and_long_sleep = """import asyncio
+async def automatic_tick():
+    await asyncio.sleep(0)
+
+async def automatic_check_loop():
+    while True:
+        await asyncio.sleep(0)
+        await asyncio.sleep(15)
+
+async def terminate(deadline):
+    while asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+"""
+        self.assertEqual(self.codes(good_yield_and_long_sleep), set())
+
+    def test_ml013_dev_main_loop_track_descendants_throttling(self):
+        bad_unthrottled = """import time
+def main():
+    while True:
+        track_descendants(roots, descendants)
+        time.sleep(0.25)
+"""
+        self.assertIn('ML013', self.codes(bad_unthrottled, 'scripts/dev.py'))
+
+        bad_if_without_monotonic = """import time
+def main(flag):
+    while True:
+        if flag:
+            track_descendants(roots, descendants)
+        time.sleep(0.5)
+"""
+        self.assertIn('ML013', self.codes(bad_if_without_monotonic, 'scripts/dev.py'))
+
+        good_throttled = """import time
+def main():
+    last_track = 0.0
+    while True:
+        now = time.monotonic()
+        if now - last_track >= 10.0:
+            track_descendants(roots, descendants)
+            last_track = now
+        time.sleep(0.5)
+"""
+        self.assertEqual(self.codes(good_throttled, 'scripts/dev.py'), set())
+
+    def test_ml014_rejects_sync_subprocess_in_async_def_and_allows_to_thread_or_nested_def(self):
+        bad_cases = [
+            "import subprocess\nasync def f():\n    subprocess.run(['ps'])",
+            "import subprocess\nasync def f():\n    subprocess.check_output(['ps'])",
+            "import subprocess\nasync def f():\n    subprocess.call(['ps'])",
+            "import subprocess\nasync def f():\n    subprocess.check_call(['ps'])",
+            "import subprocess\nasync def f():\n    subprocess.Popen(['ps'])",
+            "from subprocess import check_output\nasync def f():\n    check_output(['ps'])",
+            "async def snapshot(self, pid):\n    return self.sample_process(pid)",
+            "async def snapshot(pid):\n    return default_sample_process(pid)",
+        ]
+        for src in bad_cases:
+            with self.subTest(source=src):
+                self.assertIn('ML014', self.codes(src, 'engine/python/service_monitor.py'))
+
+        good_cases = [
+            """import asyncio, subprocess
+async def execute(pid):
+    started = await asyncio.to_thread(subprocess.check_output, ['ps', '-p', str(pid)], text=True)
+    proc = await asyncio.create_subprocess_exec('ps', '-p', str(pid))
+    return started, proc
+""",
+            """import asyncio, subprocess
+async def snapshot(self, pid):
+    def _helper():
+        return subprocess.run(['ps', '-p', str(pid)], capture_output=True)
+    res1 = await asyncio.to_thread(self.sample_process, pid)
+    res2 = await asyncio.to_thread(lambda: self.sample_process(pid))
+    res3 = await asyncio.to_thread(_helper)
+    return res1, res2, res3
+""",
+        ]
+        for src in good_cases:
+            with self.subTest(source=src):
+                self.assertEqual(self.codes(src, 'engine/python/service_monitor.py'), set())
+
+    def test_ml015_rejects_binary_read_bytes_hash_and_missing_owner_path_unlink(self):
+        bad_node_hash = """import hashlib
+def verify(node):
+    return hashlib.sha256(node.read_bytes()).hexdigest()
+"""
+        self.assertIn('ML015', self.codes(bad_node_hash, 'engine/python/opencode_backlog.py'))
+
+        bad_exec_hash = """from hashlib import sha256
+def verify(executable):
+    return sha256(executable.read_bytes()).hexdigest()
+"""
+        self.assertIn('ML015', self.codes(bad_exec_hash, 'engine/python/worker.py'))
+
+        bad_execute_without_unlink = """async def execute(cancel_file, process):
+    owner_path = cancel_file
+    try:
+        await process.wait()
+    finally:
+        private_write(owner_path, b'{}')
+"""
+        self.assertIn('ML015', self.codes(bad_execute_without_unlink, 'engine/python/opencode_backlog.py'))
+
+        good_opencode_backlog = """import hashlib
+def verify(manifest_path):
+    return hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+async def execute(cancel_file, process, action):
+    owner_path = cancel_file
+    try:
+        await process.wait()
+    finally:
+        if action in ('review', 'check') and process.returncode is not None:
+            owner_path.unlink(missing_ok=True)
+"""
+        self.assertEqual(self.codes(good_opencode_backlog, 'engine/python/opencode_backlog.py'), set())
+
+    def test_ml016_requires_journal_size_limit_with_wal_mode(self):
+        bad_wal = """import sqlite3
+def open_db(path):
+    db = sqlite3.connect(path)
+    db.execute('PRAGMA journal_mode=WAL')
+    db.execute('PRAGMA synchronous=FULL')
+    return db
+"""
+        self.assertIn('ML016', self.codes(bad_wal, 'engine/python/external_capture_store.py'))
+
+        good_wal = """import sqlite3
+def open_db(path):
+    db = sqlite3.connect(path)
+    db.execute('PRAGMA journal_mode=WAL')
+    db.execute('PRAGMA journal_size_limit=4194304')
+    db.execute('PRAGMA synchronous=FULL')
+    return db
+"""
+        self.assertEqual(self.codes(good_wal, 'engine/python/external_capture_store.py'), set())
+
+    def test_ml017_dev_reopen_ui_watch_guard_and_disk_cleanup_receipt_rotation(self):
+        bad_reopen_ui = """def reopen_ui(current, processes, launch, config_path):
+    return launch([str(GO), 'tool', 'mygo', 'dev'], env=ui_env(config_path))
+"""
+        self.assertIn('ML017', self.codes(bad_reopen_ui, 'scripts/dev.py'))
+
+        good_reopen_ui_guarded = """def reopen_ui(current, processes, launch, config_path, *, watch_ui=False):
+    if watch_ui:
+        return launch([str(GO), 'tool', 'mygo', 'dev'], env=ui_env(config_path))
+    return launch([str(BINARY)], env=ui_env(config_path))
+"""
+        self.assertEqual(self.codes(good_reopen_ui_guarded, 'scripts/dev.py'), set())
+
+        good_reopen_ui_direct_binary = """def reopen_ui(current, processes, launch, config_path):
+    return launch([str(BINARY)], env=ui_env(config_path))
+"""
+        self.assertEqual(self.codes(good_reopen_ui_direct_binary, 'scripts/dev.py'), set())
+
+        bad_disk_space = """def prune_history(p):
+    p.unlink()
+
+def main(ROOT, report):
+    log = ROOT / 'build/disk-cleanup'
+    (log / '20261121-120000.json').write_text('{}')
+"""
+        self.assertIn('ML017', self.codes(bad_disk_space, 'scripts/disk-space.py'))
+
+        good_disk_space = """def prune_cleanup_receipts(log_dir, keep=100):
+    for old in sorted(log_dir.glob('*.json'))[:-keep]:
+        old.unlink(missing_ok=True)
+
+def main(ROOT, report):
+    log = ROOT / 'build/disk-cleanup'
+    (log / '20261121-120000.json').write_text('{}')
+    prune_cleanup_receipts(log)
+"""
+        self.assertEqual(self.codes(good_disk_space, 'scripts/disk-space.py'), set())
+
+
 if __name__ == '__main__':
     unittest.main()
