@@ -1,6 +1,7 @@
 package simpledesktop
 
 import (
+	"image/color"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -192,5 +193,98 @@ func TestAgentBrandIconAgyAndGeminiAliases(t *testing.T) {
 	}
 	if got := agentBrandIconFor("gemini", ""); got != geminiIcon || got == codexIcon {
 		t.Error("agentBrandIconFor(\"gemini\", \"\") did not resolve to gemini icon")
+	}
+}
+
+func TestTraeXIconUsesMonochromeCurrentColorInLightAndDarkAppearances(t *testing.T) {
+	traeIcon := agentBrandIcon("traex")
+	codexIcon := agentBrandIcon("codex")
+	if traeIcon == nil || traeIcon == homeDocument || traeIcon == codexIcon {
+		t.Fatalf("unexpected TraeX icon: %v", traeIcon)
+	}
+	if got := agentOriginalIcon("traex"); got != traeIcon {
+		t.Fatal("agentOriginalIcon(\"traex\") did not match agentBrandIcon(\"traex\")")
+	}
+	for _, name := range []string{"TraeX", "TRAE"} {
+		if got := agentBrandIconFor("", name); got != traeIcon {
+			t.Fatalf("agentBrandIconFor(\"\", %q) did not resolve to TraeX icon", name)
+		}
+	}
+
+	t.Cleanup(func() { applyAppearance(false) })
+
+	absDiff := func(a, b uint8) int {
+		if a > b {
+			return int(a - b)
+		}
+		return int(b - a)
+	}
+	closeColor := func(got color.RGBA, want ui.Color) bool {
+		return absDiff(got.R, want.R) <= 20 && absDiff(got.G, want.G) <= 20 && absDiff(got.B, want.B) <= 20
+	}
+
+	for _, tc := range []struct {
+		name string
+		dark bool
+	}{
+		{name: "light", dark: false},
+		{name: "dark", dark: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			applyAppearance(tc.dark)
+			tt := ui.NewTester(func(c *ui.Context) {
+				applyAppearance(tc.dark)
+				ui.Themed(c, homeTheme).Fill().Background(tok.Bg).
+					AlignItems(ui.Center).Justify(ui.Center).
+					Children(func() {
+						agentLogo(c, traeIcon, 24)
+					})
+			}, 48, 48)
+			tt.SetDark(tc.dark)
+			tt.Frame()
+
+			img := tt.Image()
+			b := img.Bounds()
+			fgCount := 0
+			minX, minY := b.Max.X, b.Max.Y
+			maxX, maxY := b.Min.X-1, b.Min.Y-1
+			for y := b.Min.Y; y < b.Max.Y; y++ {
+				for x := b.Min.X; x < b.Max.X; x++ {
+					p := img.RGBAAt(x, y)
+					if int(p.G)-int(p.R) > 25 && int(p.G)-int(p.B) > 25 {
+						t.Fatalf("found bright green pixel at (%d,%d): %+v", x, y, p)
+					}
+					if closeColor(p, tok.Text1) {
+						fgCount++
+						if x < minX {
+							minX = x
+						}
+						if x > maxX {
+							maxX = x
+						}
+						if y < minY {
+							minY = y
+						}
+						if y > maxY {
+							maxY = y
+						}
+					}
+				}
+			}
+			if fgCount == 0 {
+				t.Fatalf("expected foreground pixels matching tok.Text1 (%+v), found none", tok.Text1)
+			}
+			innerBgCount := 0
+			for y := minY; y <= maxY; y++ {
+				for x := minX; x <= maxX; x++ {
+					if closeColor(img.RGBAAt(x, y), tok.Bg) {
+						innerBgCount++
+					}
+				}
+			}
+			if innerBgCount == 0 {
+				t.Fatalf("expected inner background cutout pixels matching tok.Bg (%+v) within icon bbox (%d,%d)-(%d,%d)", tok.Bg, minX, minY, maxX, maxY)
+			}
+		})
 	}
 }

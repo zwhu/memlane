@@ -40,6 +40,30 @@ func queueRefreshAction(c *ui.Context, label string, fn func()) ui.Element {
 	return v4SmallButton(c, label, v4IconRefresh, fn)
 }
 
+func pickProjectQueueAlertTarget(q *projectQueueState, needs, info []messageNotice, now time.Time) (string, bool) {
+	alertKeys, ackErr := q.unacknowledgedNotificationKeys(now)
+	for _, n := range needs {
+		if n.Key != "" && alertKeys[n.Key] {
+			return n.Key, false
+		}
+	}
+	for _, n := range info {
+		if n.Key != "" && alertKeys[n.Key] {
+			return n.Key, false
+		}
+	}
+	if ackErr {
+		return "", true
+	}
+	if len(needs) > 0 {
+		return needs[0].Key, false
+	}
+	if len(info) > 0 {
+		return info[0].Key, false
+	}
+	return "", false
+}
+
 func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	q := a.projectQueue(p)
 	needs, info := a.messageNotices(q, p)
@@ -57,13 +81,23 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	}
 	needs, info = active(needs), active(info)
 
+	reveal := a.access.RevealQueueProject == p.ID
+	var targetKey string
+	var targetAckErr bool
+	if reveal {
+		targetKey, targetAckErr = pickProjectQueueAlertTarget(q, needs, info, time.Now())
+		q.LocatedNoticeKey = targetKey
+	}
+
 	groupDesc := ""
 	if q.Loading {
 		groupDesc = "更新中…"
 	} else if q.AutomaticSave {
 		groupDesc = "自动保存已开启"
 	}
-	v4Group(c, "消息与处理状态", groupDesc, func() {
+	var targetEl ui.Element
+	hasTarget := false
+	section := v4Group(c.Key("project-queue-section-"+p.ID), "消息与处理状态", groupDesc, func() {
 		if q.Backlog != nil && (q.AutomaticSave || q.Backlog.active()) {
 			queueAction(c, "暂停自动保存", func() { a.changeBacklog(q, p, true) }).Disabled(q.BacklogBusy || q.Backlog.Status == "stopping")
 		}
@@ -73,8 +107,12 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 			if !q.Loaded && len(info) == 0 {
 				v4Row(c, v4RowOptions{Title: "正在读取消息状态…"})
 			}
-			a.messageNoticeGroup(c, q, p, "需要你处理", "仅列出需要你操作的事项。", needs, true)
-			a.messageNoticeGroup(c, q, p, "状态与异常提示", "无需你确认消息是否保存；系统异常会保留显示。", info, false)
+			if el, ok := a.messageNoticeGroup(c, q, p, "需要你处理", "仅列出需要你操作的事项。", needs, true, targetKey, q.LocatedNoticeKey); ok {
+				targetEl, hasTarget = el, true
+			}
+			if el, ok := a.messageNoticeGroup(c, q, p, "状态与异常提示", "无需你确认消息是否保存；系统异常会保留显示。", info, false, targetKey, q.LocatedNoticeKey); ok {
+				targetEl, hasTarget = el, true
+			}
 			if len(history) > 0 {
 				v4Row(c, v4RowOptions{
 					Key:         "proj-notice-history-" + p.ID,
@@ -91,11 +129,16 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 					OnClick: func() { q.NoticeHistoryOpen = !q.NoticeHistoryOpen },
 				})
 				if q.NoticeHistoryOpen {
-					a.messageNoticeGroup(c, q, p, "已知晓的历史提示", "", history, false)
+					a.messageNoticeGroup(c, q, p, "已知晓的历史提示", "", history, false, "", "")
 				}
 			}
 			if q.NoticeAcknowledgementError != "" {
-				ui.Row(c).FillWidth().Padding(sp2, sp1).Children(func() {
+				ackRow := ui.Row(c.Key("notice-ack-error-" + p.ID)).FillWidth().Padding(sp2, sp1)
+				if reveal && targetAckErr {
+					ackRow.Background(tok.Warning.Alpha(.07)).Radius(radius)
+					targetEl, hasTarget = ackRow, true
+				}
+				ackRow.Children(func() {
 					homeText(c, q.NoticeAcknowledgementError, homeBody).TextColor(tok.Warning)
 				})
 			}
@@ -140,13 +183,24 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 			}
 		})
 	})
+	if reveal {
+		section.ScrollIntoView()
+		if hasTarget {
+			targetEl.ScrollIntoView()
+		}
+		if q.Loaded || !q.Loading {
+			a.access.RevealQueueProject = ""
+		}
+	}
 }
 
 var messageAlertIcon = homeSVG(`<circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 4h.01"/>`)
 var messageClockIcon = homeSVG(`<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>`)
 var messagePauseIcon = homeSVG(`<rect x="7" y="5" width="3" height="14" rx="1"/><rect x="14" y="5" width="3" height="14" rx="1"/>`)
 
-func (a *App) messageNoticeGroup(c *ui.Context, q *projectQueueState, p AccessProject, title, subtitle string, rows []messageNotice, needsUser bool) {
+func (a *App) messageNoticeGroup(c *ui.Context, q *projectQueueState, p AccessProject, title, subtitle string, rows []messageNotice, needsUser bool, targetKey, highlightKey string) (ui.Element, bool) {
+	var targetEl ui.Element
+	hasTarget := false
 	ui.Column(c.Key(title)).FillWidth().Gap(0).Children(func() {
 		if len(rows) == 0 {
 			if q.Loaded {
@@ -169,7 +223,14 @@ func (a *App) messageNoticeGroup(c *ui.Context, q *projectQueueState, p AccessPr
 		for _, n := range rows {
 			n := n
 			acknowledged := q.noticeAcknowledged(n.Key)
-			ui.Row(c.Key(n.Key)).FillWidth().Padding(10, sp1).Gap(sp3).AlignItems(ui.Start).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+			row := ui.Row(c.Key(n.Key)).FillWidth().Padding(10, sp1).Gap(sp3).AlignItems(ui.Start).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border)
+			if highlightKey != "" && n.Key == highlightKey && !acknowledged {
+				row.Background(tok.Warning.Alpha(.07)).Radius(radius)
+			}
+			if targetKey != "" && n.Key == targetKey {
+				targetEl, hasTarget = row, true
+			}
+			row.Children(func() {
 				color := tok.Text2
 				icon := messageClockIcon
 				switch n.Tag {
@@ -248,6 +309,7 @@ func (a *App) messageNoticeGroup(c *ui.Context, q *projectQueueState, p AccessPr
 			})
 		}
 	})
+	return targetEl, hasTarget
 }
 func (a *App) messageNoticeDetails(c *ui.Context, q *projectQueueState, p AccessProject, row queuedSession) {
 	v := row.View

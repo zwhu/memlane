@@ -40,6 +40,7 @@ type projectQueueState struct {
 	ArchiveError                   string
 	ArchiveHistoryOpen             bool
 	Scroll                         ui.ScrollState
+	LocatedNoticeKey               string
 	Reader                         *pane
 	Activity                       []overviewEvent
 	ActivityError                  string

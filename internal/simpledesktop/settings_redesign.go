@@ -106,12 +106,24 @@ func (a *App) openProjectSettings(index int) {
 	id, origin := a.Config.Projects[index].ID, a.readingLocation()
 	a.navigateKind("知识", index, "管理")
 	a.access.OpenProject, a.settingsOrigin = id, origin
+	a.access.RevealQueueProject = ""
 	for _, p := range a.access.Directory.Projects {
 		if p.ID == id {
-			a.projectQueueStateFor(p).Reader = nil
+			q := a.projectQueueStateFor(p)
+			q.Reader = nil
+			q.LocatedNoticeKey = ""
 			break
 		}
 	}
+}
+
+// Open the project's Management tab and scroll directly to its active status/anomaly notice.
+func (a *App) openProjectQueueStatus(index int) {
+	a.openProjectSettings(index)
+	if index < 0 || index >= len(a.Config.Projects) {
+		return
+	}
+	a.access.RevealQueueProject = a.Config.Projects[index].ID
 }
 
 func (a *App) projectSettingsPage(c *ui.Context) {

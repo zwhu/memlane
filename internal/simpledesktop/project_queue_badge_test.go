@@ -102,3 +102,124 @@ func TestSidebarUnknownBadgeAppearsOnFirstReadAfterReload(t *testing.T) {
 		}
 	}
 }
+
+func TestSidebarAlertBadgeScrollsDirectlyToStatusAnomaly(t *testing.T) {
+	t.Cleanup(func() { applyAppearance(false) })
+
+	setupApp := func() (*App, AccessProject, *projectQueueState) {
+		a := settingsFixture()
+		agents := []AccessAgent{
+			{ID: "gemini", Name: "Gemini App", Installation: &AgentInstallation{HostKind: "antigravity", Status: "configured"}},
+			{ID: "claude", Name: "Claude Code", Installation: &AgentInstallation{HostKind: "claude_code", Status: "configured"}},
+			{ID: "agent", Name: "Codex", Installation: &AgentInstallation{HostKind: "codex", Status: "configured"}},
+			{ID: "opencode", Name: "OpenCode", Installation: &AgentInstallation{HostKind: "opencode", Status: "configured"}},
+			{ID: "pi", Name: "pi", Installation: &AgentInstallation{HostKind: "pi", Status: "configured"}},
+			{ID: "traex", Name: "TraeX", Installation: &AgentInstallation{HostKind: "traex", Status: "configured"}},
+		}
+		dir := a.access.Directory
+		dir.Agents = agents
+		a.applyAccessDirectory(dir)
+		p := a.access.Directory.Projects[0]
+		q := a.projectQueueStateFor(p)
+		q.Loaded = true
+		q.Next = time.Now().Add(time.Hour)
+		q.BacklogLoaded = true
+		q.BacklogNext = time.Now().Add(time.Hour)
+		return a, p, q
+	}
+
+	t.Run("info anomaly after receipt", func(t *testing.T) {
+		a, p, q := setupApp()
+		q.Sessions = []queuedSession{
+			{
+				Agent:   a.access.Directory.Agents[2],
+				Binding: ProjectBinding{ProjectID: p.ID, AgentID: "agent", HostSessionKey: "codex-ok"},
+				View:    &pendingBufferView{Loaded: true, Message: "上次保存已完成", Status: PendingMaterials{Pending: 0}},
+			},
+			{
+				Agent:   a.access.Directory.Agents[5],
+				Binding: ProjectBinding{ProjectID: p.ID, AgentID: "traex", HostSessionKey: "traex-unknown"},
+				View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1}},
+			},
+		}
+		wantKey := noticeSessionKey(q.Sessions[1], 1) + "/unknown"
+		a.page = "总览"
+		tt := ui.NewTester(a.View, 1200, 820)
+
+		clickProjectUI(t, tt, "待处理文档：memlane")
+		if a.access.OpenProject != p.ID || a.page != "知识" || a.kind != "管理" {
+			t.Fatalf("did not open project management tab: page=%q kind=%q open=%q", a.page, a.kind, a.access.OpenProject)
+		}
+		if q.Scroll.Y <= 0 {
+			t.Fatalf("expected management page to scroll down to anomaly, got Scroll.Y=%v", q.Scroll.Y)
+		}
+		if a.access.RevealQueueProject != "" {
+			t.Fatalf("expected RevealQueueProject cleared after scroll, got %q", a.access.RevealQueueProject)
+		}
+		if q.LocatedNoticeKey != wantKey {
+			t.Fatalf("LocatedNoticeKey = %q, want %q", q.LocatedNoticeKey, wantKey)
+		}
+		r, ok := tt.Find("1 条消息未收到保存结果")
+		if !ok || r.Y < 80 || r.Y+r.H > 820 {
+			t.Fatalf("target anomaly not visible inside viewport: ok=%v bounds=%+v", ok, r)
+		}
+
+		// Reset scroll while already on 管理 tab and click the sidebar alert dot again.
+		q.Scroll.Y = 0
+		tt.Frame()
+		clickProjectUI(t, tt, "待处理文档：memlane")
+		if q.Scroll.Y <= 0 {
+			t.Fatalf("expected repeated sidebar alert click to re-scroll, got Scroll.Y=%v", q.Scroll.Y)
+		}
+		if r2, ok := tt.Find("1 条消息未收到保存结果"); !ok || r2.Y < 80 || r2.Y+r2.H > 820 {
+			t.Fatalf("target anomaly not visible after repeated click: ok=%v bounds=%+v", ok, r2)
+		}
+
+		// Regular openProjectSettings must stay at top and clear LocatedNoticeKey.
+		a.openProjectSettings(0)
+		tt.Frame()
+		if q.LocatedNoticeKey != "" || a.access.RevealQueueProject != "" {
+			t.Fatalf("openProjectSettings leaked target state: located=%q reveal=%q", q.LocatedNoticeKey, a.access.RevealQueueProject)
+		}
+
+		// Render in both light and dark appearances without issues.
+		for _, dark := range []bool{false, true} {
+			applyAppearance(dark)
+			tt.SetDark(dark)
+			tt.Frame()
+		}
+	})
+
+	t.Run("needs user anomaly", func(t *testing.T) {
+		a, p, q := setupApp()
+		q.Sessions = []queuedSession{
+			{
+				Agent:   a.access.Directory.Agents[2],
+				Binding: ProjectBinding{ProjectID: p.ID, AgentID: "agent", HostSessionKey: "codex-denied"},
+				View: &pendingBufferView{
+					Loaded: true,
+					Status: PendingMaterials{
+						Pending: 2,
+						Blocked: &struct {
+							Reason string `json:"reason"`
+						}{Reason: "write_denied"},
+					},
+				},
+			},
+		}
+		wantKey := noticeSessionKey(q.Sessions[0], 0) + "/pending"
+		a.page = "总览"
+		tt := ui.NewTester(a.View, 1200, 820)
+
+		clickProjectUI(t, tt, "待处理文档：memlane")
+		if q.Scroll.Y <= 0 {
+			t.Fatalf("expected scroll to needs-user anomaly, got Scroll.Y=%v", q.Scroll.Y)
+		}
+		if q.LocatedNoticeKey != wantKey {
+			t.Fatalf("LocatedNoticeKey = %q, want %q", q.LocatedNoticeKey, wantKey)
+		}
+		if r, ok := tt.Find("2 条消息等待保存"); !ok || r.Y < 80 || r.Y+r.H > 820 {
+			t.Fatalf("needs-user anomaly not visible inside viewport: ok=%v bounds=%+v", ok, r)
+		}
+	})
+}

@@ -11,3 +11,7 @@ share the resolver; Claude and Claude Code reuse claude.svg.
 2026-11-18: connection rows use original-color codex-color.svg, trae-color.svg
 and claudecode-color.svg from the same pinned 1.102.0 package. Render with
 ui.Image to preserve SVG fills; pi/opencode retain original black marks.
+
+2026-11-21: switched traex back to monochrome trae.svg (currentColor, rendered
+with tok.Text1) from the same pinned 1.102.0 package because trae-color.svg's
+neon green #32F08C had harsh contrast on light surfaces.

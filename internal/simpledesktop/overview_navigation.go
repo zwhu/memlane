@@ -125,7 +125,7 @@ func (a *App) overviewNavigation(c *ui.Context) {
 						item.Children(func() {
 							a.unreadProjectBadge(c, proj, index, on)
 							if label, detail := a.sidebarQueueBadge(proj); label != "" {
-								openQueue := func() { a.openProjectSettings(index) }
+								openQueue := func() { a.openProjectQueueStatus(index) }
 								ui.Column(c).Shrink(0).Height(24).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 									if label == "!" {
 										ui.Button(c, "").Cursor(ui.CursorPointer).Label("待处理文档："+proj.Name).Tooltip(detail).Size(8, 8).Padding(0).Radius(4).Background(tok.Warning).BorderWidth(0).OnClick(openQueue)

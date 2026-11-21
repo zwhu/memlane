@@ -223,10 +223,9 @@ func writeNoticeAcknowledgements(path string, b []byte) error {
 	return err
 }
 
-func (q *projectQueueState) unacknowledgedNotification(now time.Time) bool {
-	if q.NoticeAcknowledgementError != "" {
-		return true
-	}
+func (q *projectQueueState) unacknowledgedNotificationKeys(now time.Time) (map[string]bool, bool) {
+	alertKeys := map[string]bool{}
+	ackErr := q.NoticeAcknowledgementError != ""
 	for index, row := range q.Sessions {
 		if row.View == nil {
 			continue
@@ -234,24 +233,24 @@ func (q *projectQueueState) unacknowledgedNotification(now time.Time) bool {
 		key := noticeSessionKey(row, index)
 		s := row.View.Status
 		if q.heldPending(row).Rejected > 0 && !q.noticeAcknowledged(key+"/rejected") {
-			return true
+			alertKeys[key+"/rejected"] = true
 		}
 		if s.Unknown-s.RetryableUnknown-q.heldPending(row).RejectedUnknown > 0 && !q.noticeAcknowledged(key+"/unknown") {
-			return true
+			alertKeys[key+"/unknown"] = true
 		}
 		if s.RetryableUnknown > 0 && !q.noticeAcknowledged(key+"/retry") {
-			return true
+			alertKeys[key+"/retry"] = true
 		}
 		if s.Pending > s.Unknown && s.Blocked != nil && !q.noticeAcknowledged(key+"/pending") {
-			return true
+			alertKeys[key+"/pending"] = true
 		}
 	}
 	if j := q.Backlog; j != nil {
 		if j.ProcessingFailed > 0 && !q.noticeAcknowledged("processing-failed") {
-			return true
+			alertKeys["processing-failed"] = true
 		}
 		if (j.Status == "paused" || j.Status == "interrupted" || j.Status == "stopped") && j.Reason != "user_stopped" && !q.noticeAcknowledged("backlog") {
-			return true
+			alertKeys["backlog"] = true
 		}
 	}
 	keys := map[string]string{"knowledge-state": "knowledge", "backlog-read": "backlog-read", "activity-read": "activity", "documents": "documents"}
@@ -264,8 +263,13 @@ func (q *projectQueueState) unacknowledgedNotification(now time.Time) bool {
 			noticeKey = strings.TrimPrefix(key, "read/") + "/read"
 		}
 		if noticeKey == "" || !q.noticeAcknowledged(noticeKey) {
-			return true
+			alertKeys[noticeKey] = true
 		}
 	}
-	return false
+	return alertKeys, ackErr
+}
+
+func (q *projectQueueState) unacknowledgedNotification(now time.Time) bool {
+	keys, ackErr := q.unacknowledgedNotificationKeys(now)
+	return ackErr || len(keys) > 0
 }

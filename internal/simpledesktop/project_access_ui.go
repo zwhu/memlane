@@ -22,6 +22,7 @@ type projectAccessState struct {
 	DefaultsDirty                bool
 	DefaultsRevision             int64
 	OpenProject, SettingsSection string
+	RevealQueueProject           string
 	PermissionSaved              map[string]time.Time
 	Queues                       map[string]*projectQueueState
 	CheckboxPending              map[string]*projectCheckboxPending

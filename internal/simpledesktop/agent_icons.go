@@ -19,7 +19,7 @@ func agentLogo(c *ui.Context, mark *ui.SVG, size float32) ui.Element {
 var agentBrandIcons = func() map[string]*ui.SVG {
 	icons := make(map[string]*ui.SVG)
 	for kind, file := range map[string]string{
-		"codex": "codex-color", "pi": "pi", "traex": "trae-color",
+		"codex": "codex-color", "pi": "pi", "traex": "trae",
 		"claude_code": "claudecode-color", "claude": "claude-color", "opencode": "opencode", "cursor": "cursor",
 		"chatgpt": "openai", "openai": "openai", "gemini": "gemini-color", "antigravity": "gemini-color", "grok": "grok", "deepseek": "deepseek-color",
 	} {
