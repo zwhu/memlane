@@ -376,7 +376,7 @@ def ui_build_stale(binary, root=None):
             for name in files:
                 if name == '.DS_Store' or name.endswith('_test.go'):
                     continue
-                if folder in ('cmd', 'internal') and not name.endswith('.go'):
+                if folder in ('cmd', 'internal') and not name.endswith(('.go', '.png', '.svg')):
                     continue
                 candidate = Path(current_root) / name
                 if candidate.is_symlink():
@@ -386,8 +386,55 @@ def ui_build_stale(binary, root=None):
     return False
 
 
-def _ensure_dev_app_bundle(binary):
+def _sync_dev_app_icon(contents_dir, base):
+    src_png = Path(base) / 'assets/branding/memlane-icon.png'
+    if platform.system() != 'Darwin' or not src_png.is_file():
+        return
+    resources = Path(contents_dir) / 'Resources'
+    icns = resources / 'AppIcon.icns'
+    src_mtime = src_png.stat().st_mtime
+    if icns.is_file() and icns.stat().st_mtime >= src_mtime:
+        return
+    specs = [
+        ('icon_16x16.png', 16),
+        ('icon_16x16@2x.png', 32),
+        ('icon_32x32.png', 32),
+        ('icon_32x32@2x.png', 64),
+        ('icon_128x128.png', 128),
+        ('icon_128x128@2x.png', 256),
+        ('icon_256x256.png', 256),
+        ('icon_256x256@2x.png', 512),
+        ('icon_512x512.png', 512),
+        ('icon_512x512@2x.png', 1024),
+    ]
+    resources.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='memlane-iconset-') as tmpdir:
+        tmp = Path(tmpdir)
+        iconset = tmp / 'AppIcon.iconset'
+        iconset.mkdir()
+        for name, px in specs:
+            subprocess.run(
+                ['sips', '-z', str(px), str(px), str(src_png), '--out', str(iconset / name)],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        built_icns = tmp / 'AppIcon.icns'
+        subprocess.run(
+            ['iconutil', '-c', 'icns', str(iconset), '-o', str(built_icns)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        stage_icns = resources / '.AppIcon.icns.tmp'
+        shutil.copy2(built_icns, stage_icns)
+        os.replace(stage_icns, icns)
+    os.utime(Path(contents_dir).parent, None)
+
+
+def _ensure_dev_app_bundle(binary, root=None):
     binary = Path(binary)
+    base = Path(root) if root is not None else ROOT
     macos_dir = binary.parent
     contents_dir = macos_dir.parent
     macos_dir.mkdir(parents=True, exist_ok=True)
@@ -397,6 +444,7 @@ def _ensure_dev_app_bundle(binary):
     plist = contents_dir / 'Info.plist'
     if not plist.exists():
         plist.write_text(DEV_APP_PLIST)
+    _sync_dev_app_icon(contents_dir, base)
 
 
 def ui_runtime_env(config_path):
@@ -407,11 +455,13 @@ def ensure_ui_binary(config_path, *, root=None, env=None):
     base = Path(root) if root is not None else ROOT
     binary = ui_binary_path(base)
     if ui_build_stale(binary, base):
-        _ensure_dev_app_bundle(binary)
+        _ensure_dev_app_bundle(binary, root=base)
         shutil.rmtree(binary.parent.parent / '_CodeSignature', ignore_errors=True)
         build_env = env if env is not None else ui_env(config_path)
         subprocess.run([str(GO), 'build', '-o', str(binary), './cmd/memlane-app'],
                        cwd=base, env=build_env, check=True)
+    else:
+        _sync_dev_app_icon(binary.parent.parent, base)
     return binary
 
 

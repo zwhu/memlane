@@ -111,7 +111,7 @@ func (a *App) initialSetupShell(c *ui.Context) {
 			Padding(0, sp2, sp4, sp2).Children(func() {
 			ui.Row(c).FillWidth().Height(48).Shrink(0).DragWindow()
 			ui.Row(c).FillWidth().Height(36).Padding(0, sp2).Gap(10).AlignItems(ui.Center).Margin(0, 0, sp4, 0).Children(func() {
-				ui.Image(c, tok.BrandMark).Size(18, 18).Fit(ui.Contain)
+				ui.Image(c, tok.BrandMark).Size(20, 20).Fit(ui.Contain)
 				ui.Text(c, "Memlane").Font("system-ui").FontSize(fsHeading).FontWeight(600).TextColor(tok.Text1).SingleLine()
 			})
 

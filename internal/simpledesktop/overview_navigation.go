@@ -54,7 +54,7 @@ func (a *App) overviewNavigation(c *ui.Context) {
 		// Drag region below macOS traffic lights + V4 brand header.
 		ui.Row(c).Height(titlebarH).Shrink(0).DragWindow()
 		ui.Row(c).Height(32).Shrink(0).Padding(0, sp4, sp2, sp4).AlignItems(ui.Center).Gap(sp2).DragWindow().Children(func() {
-			ui.Image(c, tok.BrandMark).Size(18, 18).Fit(ui.Contain)
+			ui.Image(c, tok.BrandMark).Size(20, 20).Fit(ui.Contain)
 			homeText(c, "Memlane", homeBrand)
 		})
 		var activeItem ui.Element

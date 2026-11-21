@@ -1,6 +1,7 @@
 package simpledesktop
 
 import (
+	_ "embed"
 	"fmt"
 
 	"github.com/egoist/mygo/ui"
@@ -29,20 +30,26 @@ type palette struct {
 
 	// Accent-tinted solid icons for selected sidebar items.
 	SolidOverview, SolidCommon, SolidProfile, SolidFolder *ui.SVG
-	BrandMark                                             *ui.SVG
+	BrandMark                                             ui.ImageSource
+}
+
+//go:embed brand_icons/sidebar_brand.png
+var sidebarBrandPNG []byte
+
+var sidebarBrandMark ui.ImageSource = mustDecodeBrandBitmap(sidebarBrandPNG)
+
+func mustDecodeBrandBitmap(data []byte) *ui.Bitmap {
+	bmp, err := ui.DecodeBitmap(data)
+	if err != nil {
+		panic(fmt.Sprintf("simpledesktop: decode embedded brand bitmap: %v", err))
+	}
+	return bmp
 }
 
 func v4SolidSVG(color, paths string) *ui.SVG {
 	return ui.MustParseSVG([]byte(fmt.Sprintf(
 		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="%s" stroke="%s" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">%s</svg>`,
 		color, color, paths,
-	)))
-}
-
-func v4BrandSVG(color string) *ui.SVG {
-	return ui.MustParseSVG([]byte(fmt.Sprintf(
-		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><rect x="2" y="2" width="7" height="7" rx="2" fill="%s"/><rect x="11" y="2" width="7" height="7" rx="2" fill="%s" fill-opacity="0.55"/><rect x="2" y="11" width="7" height="7" rx="2" fill="%s" fill-opacity="0.55"/><rect x="11" y="11" width="7" height="7" rx="2" fill="%s" fill-opacity="0.25"/></svg>`,
-		color, color, color, color,
 	)))
 }
 
@@ -58,7 +65,7 @@ func makePalette(p palette) palette {
 	p.SolidCommon = v4SolidSVG(p.AccentHex, v4PathCommon)
 	p.SolidProfile = v4SolidSVG(p.AccentHex, v4PathProfile)
 	p.SolidFolder = v4SolidSVG(p.AccentHex, v4PathFolder)
-	p.BrandMark = v4BrandSVG(p.AccentHex)
+	p.BrandMark = sidebarBrandMark
 	return p
 }
 

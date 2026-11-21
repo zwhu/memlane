@@ -1,14 +1,9 @@
 package simpledesktop
 
 import (
-	"bytes"
+	_ "embed"
 	"fmt"
-	"image"
-	"image/color"
-	"image/png"
-	"math"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -16,126 +11,22 @@ import (
 
 var v4IconWindow = v4IconSVG(`<rect x="3" y="4" width="14" height="12" rx="2"/><path d="M3 8h14"/>`)
 
-type trayIconCache struct {
-	once        sync.Once
-	healthy     []byte
-	warnLight   []byte
-	warnDark    []byte
-	dangerLight []byte
-	dangerDark  []byte
-}
+// 32x32 (@2x Retina) slim tilted Fusion H1 sea otter silhouettes (H1-C) with corner status dots.
+//
+//go:embed brand_icons/tray_healthy.png
+var trayIconHealthy []byte
 
-var cachedTrayIcons trayIconCache
+//go:embed brand_icons/tray_warn_light.png
+var trayIconWarnLight []byte
 
-func ensureTrayIcons() {
-	cachedTrayIcons.once.Do(func() {
-		cachedTrayIcons.healthy = encodeTrayBrandPNG(color.NRGBA{0, 0, 0, 255}, color.NRGBA{}, false)
-		lightInk := color.NRGBA{27, 27, 31, 255}
-		darkInk := color.NRGBA{237, 237, 240, 255}
-		warnLightDot := color.NRGBA{208, 138, 47, 255}
-		warnDarkDot := color.NRGBA{227, 160, 72, 255}
-		dangerLightDot := color.NRGBA{214, 69, 69, 255}
-		dangerDarkDot := color.NRGBA{239, 99, 99, 255}
-		cachedTrayIcons.warnLight = encodeTrayBrandPNG(lightInk, warnLightDot, true)
-		cachedTrayIcons.warnDark = encodeTrayBrandPNG(darkInk, warnDarkDot, true)
-		cachedTrayIcons.dangerLight = encodeTrayBrandPNG(lightInk, dangerLightDot, true)
-		cachedTrayIcons.dangerDark = encodeTrayBrandPNG(darkInk, dangerDarkDot, true)
-	})
-}
+//go:embed brand_icons/tray_warn_dark.png
+var trayIconWarnDark []byte
 
-func encodeTrayBrandPNG(ink color.NRGBA, dot color.NRGBA, withDot bool) []byte {
-	const size = 32
-	img := image.NewNRGBA(image.Rect(0, 0, size, size))
+//go:embed brand_icons/tray_danger_light.png
+var trayIconDangerLight []byte
 
-	type rectSpec struct {
-		x, y, w, h, r float64
-		alpha         float64
-	}
-	// 4-square brand mark aligned to a 32x32 (@2x Retina) grid.
-	squares := []rectSpec{
-		{3, 3, 11.5, 11.5, 2.8, 1.0},
-		{17.5, 3, 11.5, 11.5, 2.8, 0.62},
-		{3, 17.5, 11.5, 11.5, 2.8, 0.62},
-		{17.5, 17.5, 11.5, 11.5, 2.8, 0.32},
-	}
-
-	const dotCX, dotCY = 25.5, 25.5
-	const dotR = 3.5      // 7px diameter crisp status dot
-	const haloR = 5.0     // subtle cutout separating dot from bottom-right square
-
-	for py := 0; py < size; py++ {
-		for px := 0; px < size; px++ {
-			fx, fy := float64(px)+0.5, float64(py)+0.5
-			var baseAlpha float64
-			for _, sq := range squares {
-				cov := roundedRectCoverage(fx, fy, sq.x, sq.y, sq.w, sq.h, sq.r)
-				if cov > 0 {
-					a := cov * sq.alpha
-					if a > baseAlpha {
-						baseAlpha = a
-					}
-				}
-			}
-
-			out := color.NRGBA{R: ink.R, G: ink.G, B: ink.B, A: uint8(math.Round(baseAlpha * float64(ink.A)))}
-			if withDot {
-				dist := math.Hypot(fx-dotCX, fy-dotCY)
-				if dist < haloR+0.5 {
-					haloCov := clamp01(haloR + 0.5 - dist)
-					out.A = uint8(math.Round(float64(out.A) * (1 - haloCov)))
-				}
-				if dist < dotR+0.5 {
-					dotCov := clamp01(dotR + 0.5 - dist)
-					out = blendNRGBA(out, color.NRGBA{R: dot.R, G: dot.G, B: dot.B, A: uint8(math.Round(dotCov * float64(dot.A)))})
-				}
-			}
-			img.SetNRGBA(px, py, out)
-		}
-	}
-
-	var buf bytes.Buffer
-	_ = png.Encode(&buf, img)
-	return buf.Bytes()
-}
-
-func roundedRectCoverage(px, py, x, y, w, h, r float64) float64 {
-	cx := x + w/2
-	cy := y + h/2
-	dx := math.Abs(px-cx) - (w/2 - r)
-	dy := math.Abs(py-cy) - (h/2 - r)
-	qx := math.Max(dx, 0)
-	qy := math.Max(dy, 0)
-	dist := math.Hypot(qx, qy) + math.Min(math.Max(dx, dy), 0) - r
-	return clamp01(0.5 - dist)
-}
-
-func clamp01(v float64) float64 {
-	if v < 0 {
-		return 0
-	}
-	if v > 1 {
-		return 1
-	}
-	return v
-}
-
-func blendNRGBA(dst, src color.NRGBA) color.NRGBA {
-	sa := float64(src.A) / 255.0
-	da := float64(dst.A) / 255.0
-	oa := sa + da*(1-sa)
-	if oa <= 0 {
-		return color.NRGBA{}
-	}
-	r := (float64(src.R)*sa + float64(dst.R)*da*(1-sa)) / oa
-	g := (float64(src.G)*sa + float64(dst.G)*da*(1-sa)) / oa
-	b := (float64(src.B)*sa + float64(dst.B)*da*(1-sa)) / oa
-	return color.NRGBA{
-		R: uint8(math.Round(r)),
-		G: uint8(math.Round(g)),
-		B: uint8(math.Round(b)),
-		A: uint8(math.Round(oa * 255.0)),
-	}
-}
+//go:embed brand_icons/tray_danger_dark.png
+var trayIconDangerDark []byte
 
 // SetTrayDark records whether the macOS menu bar hosting the tray icon is dark.
 func (a *App) SetTrayDark(dark bool) {
@@ -170,20 +61,19 @@ func (a *App) trayStatusLevel() string {
 // TrayIconState returns the cached 32x32 PNG bytes, template flag, and tooltip
 // for the macOS menu bar icon. Zero PNG encoding happens after first call.
 func (a *App) TrayIconState() (pngBytes []byte, isTemplate bool, tooltip string) {
-	ensureTrayIcons()
 	switch a.trayStatusLevel() {
 	case "danger":
 		if a.desktopPrefs.TrayDark {
-			return cachedTrayIcons.dangerDark, false, "Memlane · 服务或项目存在异常"
+			return trayIconDangerDark, false, "Memlane · 服务或项目存在异常"
 		}
-		return cachedTrayIcons.dangerLight, false, "Memlane · 服务或项目存在异常"
+		return trayIconDangerLight, false, "Memlane · 服务或项目存在异常"
 	case "warn":
 		if a.desktopPrefs.TrayDark {
-			return cachedTrayIcons.warnDark, false, "Memlane · 有待处理提醒"
+			return trayIconWarnDark, false, "Memlane · 有待处理提醒"
 		}
-		return cachedTrayIcons.warnLight, false, "Memlane · 有待处理提醒"
+		return trayIconWarnLight, false, "Memlane · 有待处理提醒"
 	default:
-		return cachedTrayIcons.healthy, true, "Memlane"
+		return trayIconHealthy, true, "Memlane"
 	}
 }
 
@@ -279,7 +169,7 @@ func (a *App) trayFlyoutHeader(c *ui.Context) {
 	dotState, statusLabel := a.trayOverallServiceStatus()
 	ui.Row(c.Key("tray-head")).FillWidth().Shrink(0).Padding(10, sp3).Gap(sp2).AlignItems(ui.Center).
 		BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
-		ui.Image(c, tok.BrandMark).Size(16, 16).Fit(ui.Contain).Shrink(0)
+		ui.Image(c, tok.BrandMark).Size(18, 18).Fit(ui.Contain).Shrink(0)
 		ui.Row(c).Grow(1).MinWidth(0).AlignItems(ui.Center).Gap(6).Children(func() {
 			v4StatusDot(c, dotState)
 			ui.Text(c, statusLabel).Font("system-ui").FontSize(fsFootnote).FontWeight(550).TextColor(tok.Text1).SingleLine()

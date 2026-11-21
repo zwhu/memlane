@@ -1,1 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><g fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"><path d="M72 30 A30 30 0 1 0 79 58"/><path d="M64 36 A20 20 0 1 0 69 55"/><path d="M56 43 A10 10 0 1 0 59 53"/></g><circle cx="78" cy="36" r="4" fill="currentColor"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
+<g transform="scale(1.25)">
+<path fill="currentColor" d="M2 6V5Q2 3 4 4Q5 2 8 2Q11 2 12 4Q14 3 14 5V6Q15 9 13 12Q11 14 8 14Q5 14 3 12Q1 9 2 6Z M5 6H6V7H5Z M10 6H11V7H10Z M4 8Q5 7 8 8Q11 7 12 8V10Q11 12 8 11Q5 12 4 10Z" fill-rule="evenodd"/><path fill="currentColor" d="M0 8H3V9H0Z M1 10H3V11H1Z M13 8H16V9H13Z M13 10H15V11H13Z"/>
+<path fill="currentColor" d="M6 8H10L9 10H7Z"/>
+</g>
+</svg>
