@@ -557,6 +557,152 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_checked_policy_transient_probe_failure_fails_closed_without_poisoning_state(self):
+        from unittest.mock import AsyncMock, patch
+        bound = await self.registry.resolve('a', str(self.repo), 'one')
+        code = await self.official.owned_dataset('explicit-code')
+        await self.registry.configure_code(self.registry.state['revision'], bound['project_id'], code['id'], True)
+        await self.registry.ensure_common(self.registry.state['revision'])
+        project = self.registry.state['projects'][bound['project_id']]
+        common = self.registry.state['common']
+        revision_before = self.registry.state['revision']
+
+        for error_code in ('official_result_unknown', 'official_http_503'):
+            with patch.object(self.official, 'effective_permissions', AsyncMock(side_effect=PolicyError(error_code, 503))):
+                current = await self.registry.checked_policy(project, 'a')
+                self.assertFalse(current['ready'])
+                self.assertFalse(current['code']['ready'])
+                self.assertEqual(current['applied'], {'status': 'unconfirmed', 'error_code': error_code})
+                self.assertFalse(current['common']['ready'])
+                self.assertFalse(current['common']['readable'])
+            self.assertEqual(project['status'], 'verified')
+            self.assertNotIn('error_code', project)
+            self.assertEqual(project['applied']['a']['status'], 'verified')
+            self.assertEqual(common['status'], 'verified')
+            self.assertNotIn('error_code', common)
+            self.assertEqual(self.registry.state['revision'], revision_before)
+            self.assertTrue(self.registry.policy(project, 'b')['ready'])
+
+        recovered = await self.registry.checked_policy(project, 'a')
+        self.assertTrue(recovered['ready'])
+        self.assertTrue(recovered['code']['ready'])
+        self.assertTrue(recovered['common']['ready'])
+        self.assertTrue(recovered['common']['readable'])
+
+    async def test_checked_policy_non_transient_probe_error_still_persists_unconfirmed(self):
+        from unittest.mock import AsyncMock, patch
+        bound = await self.registry.resolve('a', str(self.repo), 'one')
+        project = self.registry.state['projects'][bound['project_id']]
+        for error_code in ('official_http_401', 'independent_agent_required'):
+            revision_before = self.registry.state['revision']
+            with patch.object(self.official, 'effective_permissions', AsyncMock(side_effect=PolicyError(error_code, 503))):
+                current = await self.registry.checked_policy(project, 'a')
+                self.assertFalse(current['ready'])
+            self.assertEqual(project['status'], 'unconfirmed')
+            self.assertEqual(project['error_code'], error_code)
+            self.assertEqual(project['applied']['a'], {'status': 'unconfirmed', 'error_code': error_code})
+            self.assertGreater(self.registry.state['revision'], revision_before)
+            after = await self.registry.checked_policy(project, 'a')
+            self.assertFalse(after['ready'])
+            await self.registry.reconcile(self.registry.state['revision'], project['id'])
+
+    async def test_checked_policy_batches_official_effective_permissions_and_handles_transient_503(self):
+        owner, child, proj_ds, code_ds, common_ds = [str(uuid.uuid4()) for _ in range(5)]
+        grants = {
+            proj_ds: {'read', 'write', 'delete'},
+            code_ds: {'read', 'write', 'delete'},
+            common_ds: {'read'},
+        }
+        requests = []
+        mode = 'ok'
+        private_write(self.root / 'owner-key', b'owner-key')
+        private_write(self.root / 'child-key', b'child-key')
+
+        async def handle(request):
+            requests.append((request.method, request.path, request.query_string))
+            if mode == '503':
+                return web.Response(status=503, text='busy')
+            if mode == 'unknown':
+                return web.Response(status=200, text='truncated')
+            key = request.headers.get('X-Api-Key')
+            if request.path == '/api/v1/users/me':
+                return web.json_response({'id': owner if key == 'owner-key' else child,
+                                          'parent_user_id': None if key == 'owner-key' else owner})
+            if request.path == '/api/v1/permissions/tenants/me':
+                return web.json_response([])
+            if request.path.startswith('/api/v1/permissions/principals/'):
+                perm = request.query.get('permission_name')
+                return web.json_response([{'id': ds} for ds, perms in grants.items() if perm in perms])
+            raise AssertionError(request.path)
+
+        app = web.Application()
+        app.router.add_route('*', '/{tail:.*}', handle)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            async with ClientSession() as session:
+                official = Official(session, str(server.make_url('')).rstrip('/'), self.root / 'owner-key')
+                registry = Registry(self.root / 'batch-registry.json', official)
+                try:
+                    registry.state['agents'] = {
+                        'a': {'name': 'A', 'principal_id': child, 'key_file': str(self.root / 'child-key')},
+                    }
+                    registry.state['revision'] = 10
+                    registry.state['projects'] = {
+                        'p1': {
+                            'id': 'p1', 'name': 'repo', 'aliases': [str(self.repo)],
+                            'dataset_id': proj_ds, 'dataset_name': 'ml-project-p1',
+                            'code_configured': True, 'code_enabled': True, 'code_dataset_id': code_ds,
+                            'overrides': {}, 'desired_revision': 10, 'status': 'verified',
+                            'applied': {'a': {'status': 'verified', 'revision': 10}},
+                        },
+                    }
+                    registry.state['common'] = {
+                        'id': 'c1', 'kind': 'common', 'name': '通用知识',
+                        'dataset_id': common_ds, 'dataset_name': 'ml-common-c1',
+                        'overrides': {}, 'desired_revision': 10, 'status': 'verified', 'code_enabled': False,
+                        'applied': {'a': {'status': 'verified', 'revision': 10}},
+                    }
+                    registry.save()
+                    project = registry.state['projects']['p1']
+                    common = registry.state['common']
+
+                    ok_res = await registry.checked_policy(project, 'a')
+                    self.assertEqual(len(requests), 7)
+                    self.assertTrue(ok_res['ready'])
+                    self.assertTrue(ok_res['code']['ready'])
+                    self.assertTrue(ok_res['common']['readable'])
+
+                    for transient_mode, expected_err in (('503', 'official_http_503'), ('unknown', 'official_result_unknown')):
+                        mode = transient_mode
+                        failed = await registry.checked_policy(project, 'a')
+                        self.assertFalse(failed['ready'])
+                        self.assertFalse(failed['code']['ready'])
+                        self.assertEqual(failed['applied'], {'status': 'unconfirmed', 'error_code': expected_err})
+                        self.assertFalse(failed['common']['ready'])
+                        self.assertFalse(failed['common']['readable'])
+                        self.assertEqual(project['status'], 'verified')
+                        self.assertEqual(common['status'], 'verified')
+                        self.assertEqual(registry.state['revision'], 10)
+
+                    mode = 'ok'
+                    healed = await registry.checked_policy(project, 'a')
+                    self.assertTrue(healed['ready'])
+                    self.assertTrue(healed['code']['ready'])
+                    self.assertTrue(healed['common']['readable'])
+
+                    grants[proj_ds] = {'read'}
+                    drifted = await registry.checked_policy(project, 'a')
+                    self.assertFalse(drifted['ready'])
+                    self.assertEqual(project['status'], 'unconfirmed')
+                    self.assertEqual(project['error_code'], 'effective_acl_changed')
+                    self.assertEqual(common['status'], 'verified')
+                    self.assertTrue(drifted['common']['readable'])
+                finally:
+                    registry.close()
+        finally:
+            await server.close()
+
 
 class OfficialContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_effective_role_union_and_exact_acl_http_contract(self):

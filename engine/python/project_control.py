@@ -40,6 +40,10 @@ def _installation_view(installation):
     return view
 
 
+def _is_transient_policy_probe_error(error):
+    return error.code == 'official_result_unknown' or error.code.startswith('official_http_5')
+
+
 def loopback_origin(value):
     url = urlparse(value)
     if (url.scheme != 'http' or url.hostname != '127.0.0.1' or not url.port
@@ -116,7 +120,9 @@ class Official:
             identifiers.update(row['id'] for row in rows)
         return identifiers
 
-    async def effective_permissions(self, agent, dataset):
+    async def effective_permissions_batch(self, agent, datasets):
+        """Return effective official permissions for each non-empty dataset id in one pass."""
+        targets = [ds for ds in dict.fromkeys(datasets) if ds]
         me = await self.request('GET', '/api/v1/users/me', token_file=agent['key_file'])
         owner = await self.request('GET', '/api/v1/users/me')
         if me['id'] != agent['principal_id'] or me.get('parent_user_id') != owner['id']:
@@ -129,7 +135,10 @@ class Official:
             principals.add(tenant['id'])
             roles = await self.request('GET', f"/api/v1/permissions/tenants/{tenant['id']}/roles/users/{me['id']}")
             principals.update(role['id'] for role in roles)
-        result = set()
+        results = {ds: set() for ds in targets}
+        if not targets:
+            return results
+        target_set = set(targets)
         for permission in ('read', 'write', 'delete', 'share'):
             for principal in principals:
                 # This endpoint authorizes/scopes against the requester's
@@ -137,9 +146,14 @@ class Official:
                 # an owner without a selected tenant cannot inspect a child.
                 rows = await self.request('GET', f'/api/v1/permissions/principals/{principal}/datasets?permission_name={permission}',
                                           token_file=agent['key_file'])
-                if any(row['id'] == dataset for row in rows):
-                    result.add(permission)
-        return result
+                for row in rows:
+                    ds_id = row.get('id')
+                    if ds_id in target_set:
+                        results[ds_id].add(permission)
+        return results
+
+    async def effective_permissions(self, agent, dataset):
+        return (await self.effective_permissions_batch(agent, [dataset])).get(dataset, set())
 
 
 class Registry:
@@ -215,37 +229,97 @@ class Registry:
         return {'dataset_id': common['dataset_id'], 'revision': common['desired_revision'],
                 'ready': ready, 'readable': ready}
 
+    def _can_batch_effective_permissions(self):
+        return (
+            callable(getattr(self.official, 'effective_permissions_batch', None))
+            and 'effective_permissions' not in vars(self.official)
+            and type(self.official).effective_permissions is Official.effective_permissions
+        )
+
     async def checked_policy(self, project, agent_id):
         """Read-only recheck before local caches can be used by a hook.
 
         Out-of-band ACL/role changes must withdraw cached delivery too. This
-        never repairs grants or promotes an unconfirmed configuration.
+        never repairs grants or promotes an unconfirmed configuration. Transient
+        probe errors fail closed for the current response without poisoning
+        durable verified state across agents.
         """
         agent = self.state['agents'].get(agent_id)
         if not agent:
             raise PolicyError('agent_not_registered', 403)
+        if agent_id in self.state.get('agent_retirements', {}):
+            raise PolicyError('agent_retired', 403)
+        groups = [project, *([self.state['common']] if self.state.get('common') else [])]
+        verified_groups = [group for group in groups if group['status'] == 'verified']
         changed = False
-        for group in [project, *([self.state['common']] if self.state.get('common') else [])]:
-            if group['status'] != 'verified':
-                continue
-            expected = ({'read'} if group.get('kind') == 'common' else
+        transient_errors = {}
+        if verified_groups:
+            def _expected_permissions(group):
+                return ({'read'} if group.get('kind') == 'common' else
                         effective(self.state['defaults'], group['overrides'].get(agent_id, {}))['permissions'])
-            try:
-                actual = await self.official.effective_permissions(agent, group['dataset_id'])
-                if actual != set(expected):
-                    raise PolicyError('effective_acl_changed', 503)
-                if group.get('code_dataset_id'):
-                    actual = await self.official.effective_permissions(agent, group['code_dataset_id'])
-                    if actual != (set(expected) if group.get('code_enabled') else set()):
-                        raise PolicyError('effective_code_acl_changed', 503)
-            except PolicyError as error:
-                group['status'], group['error_code'] = 'unconfirmed', error.code
-                group['applied'][agent_id] = {'status': 'unconfirmed', 'error_code': error.code}
+
+            def _mark_unconfirmed(group, error_code):
+                nonlocal changed
+                group['status'], group['error_code'] = 'unconfirmed', error_code
+                group['applied'][agent_id] = {'status': 'unconfirmed', 'error_code': error_code}
                 changed = True
+
+            if self._can_batch_effective_permissions():
+                dataset_ids = []
+                for group in verified_groups:
+                    if group.get('dataset_id'):
+                        dataset_ids.append(group['dataset_id'])
+                    if group.get('code_dataset_id'):
+                        dataset_ids.append(group['code_dataset_id'])
+                try:
+                    perm_map = await self.official.effective_permissions_batch(agent, dataset_ids)
+                except PolicyError as error:
+                    if _is_transient_policy_probe_error(error):
+                        for group in verified_groups:
+                            transient_errors[id(group)] = error.code
+                    else:
+                        for group in verified_groups:
+                            _mark_unconfirmed(group, error.code)
+                else:
+                    for group in verified_groups:
+                        expected = _expected_permissions(group)
+                        if perm_map.get(group.get('dataset_id'), set()) != set(expected):
+                            _mark_unconfirmed(group, 'effective_acl_changed')
+                        elif group.get('code_dataset_id'):
+                            expected_code = set(expected) if group.get('code_enabled') else set()
+                            if perm_map.get(group['code_dataset_id'], set()) != expected_code:
+                                _mark_unconfirmed(group, 'effective_code_acl_changed')
+            else:
+                for group in verified_groups:
+                    expected = _expected_permissions(group)
+                    try:
+                        actual = await self.official.effective_permissions(agent, group['dataset_id'])
+                        if actual != set(expected):
+                            raise PolicyError('effective_acl_changed', 503)
+                        if group.get('code_dataset_id'):
+                            actual = await self.official.effective_permissions(agent, group['code_dataset_id'])
+                            if actual != (set(expected) if group.get('code_enabled') else set()):
+                                raise PolicyError('effective_code_acl_changed', 503)
+                    except PolicyError as error:
+                        if _is_transient_policy_probe_error(error):
+                            transient_errors[id(group)] = error.code
+                        else:
+                            _mark_unconfirmed(group, error.code)
         if changed:
             self.state['revision'] += 1
             self.save()
-        return self.policy(project, agent_id)
+        result = self.policy(project, agent_id)
+        if id(project) in transient_errors:
+            err_code = transient_errors[id(project)]
+            result['ready'] = False
+            result['applied'] = {'status': 'unconfirmed', 'error_code': err_code}
+            if isinstance(result.get('code'), dict):
+                result['code']['ready'] = False
+        common = self.state.get('common')
+        if common is not None and id(common) in transient_errors and isinstance(result.get('common'), dict):
+            result['common']['ready'] = False
+            result['common']['readable'] = False
+        return result
 
     def directory(self):
         from tool_graph_policy import settings as tool_graph_settings
