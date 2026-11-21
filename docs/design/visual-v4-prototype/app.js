@@ -67,6 +67,7 @@
   };
 
   /* ---------- 状态 ---------- */
+  const deepClone = v => (v == null ? v : JSON.parse(JSON.stringify(v)));
   const PROJECT_TABS = [
     { id: "memory", label: "记忆" },
     { id: "raw", label: "原始记录" },
@@ -90,18 +91,74 @@
     selectedProfile: D.profiles[0] ? D.profiles[0].id : "",
     profiles: D.profiles.map(p => ({ ...p })),
     profileDrafts: {},
-    // 扩展页面共享状态（供 pages-settings / pages-search / pages-setup 使用）
+    // 扩展页面共享状态（供 pages-settings / pages-search / pages-setup / pages-menubar / pages-common-graph 使用）
     settingsTab: "processing", // "processing" | "agents" | "service"
-    searchQuery: "",
-    searchScope: "all",        // "all" | "memory" | "raw"
-    searchProjectOnly: false,
-    searchSelectedId: "",
     setupStep: 0,
+    highlightMessages: false,
+    pendingDialog: "",
     // 数据副本
     memories: D.memories.map(m => ({ ...m })),
     activity: D.activity.slice(),
+    projectMessages: deepClone(D.projectMessages || {}),
+    traySettings: deepClone(D.traySettings || { keepAliveOnQuit: true, openAtLogin: false, isDevBundle: true, loginHint: "" }),
+    commonMemories: deepClone(D.commonMemories || []),
+    graphData: deepClone(D.graphData || {}),
   };
   const unreadCount = p => state.memories.filter(m => m.project === p && m.unread).length;
+
+  function projectHasAlert(projectId) {
+    const pm = state.projectMessages && state.projectMessages[projectId];
+    return !!(pm && Array.isArray(pm.notices) && pm.notices.some(n => !n.ack));
+  }
+
+  function getAllProjectAlerts() {
+    const res = [];
+    for (const p of D.projects) {
+      const pm = state.projectMessages && state.projectMessages[p.id];
+      const active = (pm && Array.isArray(pm.notices)) ? pm.notices.filter(n => !n.ack) : [];
+      if (!active.length) continue;
+      let actionCount = 0;
+      let errorCount = 0;
+      for (const n of active) {
+        if (n.group === "error") errorCount++;
+        else actionCount++;
+      }
+      res.push({ projectId: p.id, projectName: p.name, actionCount, errorCount, total: active.length });
+    }
+    return res;
+  }
+
+  function openProjectMessages(projectId) {
+    const targetId = projectId || state.project;
+    state.highlightMessages = true;
+    go("project", { project: targetId, tab: 3, force: true });
+    requestAnimationFrame(() => {
+      const body = $("#projectTabBody");
+      const msgGroup = body && (body.querySelector("#projectMessagesGroup, .proj-msg-group, .v4-group"));
+      if (msgGroup && typeof msgGroup.scrollIntoView === "function") {
+        msgGroup.scrollIntoView({ behavior: reduce.checked ? "auto" : "smooth", block: "start" });
+      } else if (body) {
+        body.scrollTop = 0;
+      }
+    });
+  }
+
+  const stateListeners = new Set();
+  function onStateChange(fn) {
+    if (typeof fn !== "function") return () => {};
+    stateListeners.add(fn);
+    return () => stateListeners.delete(fn);
+  }
+
+  function notifyExternalStateChange(opts = { rerender: true }) {
+    renderNav();
+    stateListeners.forEach(fn => {
+      try { fn(state, shellCtx); } catch (_) {}
+    });
+    if (!opts || opts.rerender !== false) {
+      render(false);
+    }
+  }
 
   /* ---------- 页面扩展注册机制（window.MemlanePages） ---------- */
   const registeredPages = new Map();
@@ -197,6 +254,8 @@
   }
   $$("[data-page-choice]").forEach(b => b.onclick = () => go(b.dataset.pageChoice));
   $("#openCmdK").onclick = () => MemlanePages.openCommandPalette();
+  const toggleMenubarBtn = $("#toggleMenubar");
+  if (toggleMenubarBtn) toggleMenubarBtn.onclick = () => window.MemlaneMenubar && window.MemlaneMenubar.toggle();
 
   function updateThemeToggleIcon() {
     const btn = $("#themeToggle");
@@ -339,8 +398,10 @@
       return `<button class="nav-item ${on ? "on" : ""}" data-nav="${id}"><span class="ico">${icon(id, on)}</span><span class="label">${label}</span></button>`;
     }).join("");
     $("#navProjects").innerHTML = D.projects.map(p => {
-      const on = state.page === "project" && state.project === p.id, n = unreadCount(p.id);
-      return `<button class="nav-item ${on ? "on" : ""}" data-nav="project" data-project="${p.id}" title="${esc(p.path)}"><span class="ico">${icon("folder", on)}</span><span class="label">${esc(p.name)}</span>${n ? `<span class="badge" data-unread="${p.id}" title="${n} 条未读记忆，点击查看">${n}</span>` : ""}</button>`;
+      const on = state.page === "project" && state.project === p.id;
+      const n = unreadCount(p.id);
+      const hasAlert = projectHasAlert(p.id);
+      return `<button class="nav-item ${on ? "on" : ""}" data-nav="project" data-project="${p.id}" title="${esc(p.path)}"><span class="ico">${icon("folder", on)}</span><span class="label">${esc(p.name)}</span>${hasAlert ? `<span class="proj-alert-dot" data-alert-project="${p.id}" title="有待处理的消息或异常，点击处理" aria-label="有待处理的消息或异常"></span>` : ""}${n ? `<span class="badge" data-unread="${p.id}" title="${n} 条未读记忆，点击查看">${n}</span>` : ""}</button>`;
     }).join("");
 
     const settingsBtn = $("#navSettings");
@@ -350,18 +411,23 @@
 
     $$(".nav-item").forEach(b => b.onclick = e => {
       const nav = b.dataset.nav;
+      const alertDot = e.target.closest(".proj-alert-dot");
+      if (alertDot && alertDot.dataset.alertProject) {
+        e.stopPropagation();
+        openProjectMessages(alertDot.dataset.alertProject);
+        return;
+      }
       if (e.target.dataset.unread) {
         state.unreadOnly = true; state.cat = ""; state.recall = null;
         return go("project", { project: e.target.dataset.unread, tab: 0, force: true });
       }
       if (nav === "overview") go("overview");
+      else if (nav === "common") go("common");
       else if (nav === "profile") go("profile");
       else if (nav === "settings") go("settings");
       else if (nav === "project") {
         state.unreadOnly = false; state.recall = null; state.cat = "";
         go("project", { project: b.dataset.project, tab: 0 });
-      } else if (nav === "common") {
-        toast("本次 V4 范围不含通用记忆");
       }
     });
     $("#allProjects").onclick = $("#addProject").onclick = () => toast("项目列表共 8 个（原型展示前 4 个）");
@@ -409,8 +475,10 @@
   }
 
   function resolveTabIndex(tab) {
-    if (typeof tab === "number") return Math.max(0, Math.min(PROJECT_TABS.length - 1, tab));
-    const idx = PROJECT_TABS.findIndex(t => t.id === tab);
+    if (typeof tab === "number" && !Number.isNaN(tab)) return Math.max(0, Math.min(PROJECT_TABS.length - 1, tab));
+    const str = String(tab ?? "").trim();
+    if (/^\d+$/.test(str)) return Math.max(0, Math.min(PROJECT_TABS.length - 1, Number(str)));
+    const idx = PROJECT_TABS.findIndex(t => t.id === str);
     return idx >= 0 ? idx : 0;
   }
 
@@ -419,22 +487,24 @@
     if (typeof projectOrOpts === "string") opts = { project: projectOrOpts, force: !!forceArg };
     else if (projectOrOpts && typeof projectOrOpts === "object") opts = projectOrOpts;
 
+    // 取消独立检索结果页：若外部仍调用 go("search", ...)，重定向到总览并在带查询词时打开 ⌘K
+    if (page === "search") {
+      const qStr = opts.query != null ? String(opts.query) : "";
+      go("overview", { force: opts.force });
+      if (qStr) setTimeout(() => MemlanePages.openCommandPalette({ query: qStr }), 40);
+      return;
+    }
+
     const prevPage = state.page;
     const nextProject = opts.project || state.project;
     const nextTab = opts.tab != null ? (page === "project" ? resolveTabIndex(opts.tab) : state.tab) : (page === "project" && page !== prevPage ? 0 : state.tab);
 
     if (page === "settings" && opts.tab) state.settingsTab = opts.tab;
-    if (page === "search") {
-      if (opts.query != null) state.searchQuery = opts.query;
-      if (opts.scope != null) state.searchScope = opts.scope;
-      if (opts.projectOnly != null) state.searchProjectOnly = !!opts.projectOnly;
-      if (opts.selectedId != null) state.searchSelectedId = opts.selectedId;
-    }
     if (page === "project" && opts.memoryId) {
       state.selected[nextProject] = opts.memoryId;
     }
 
-    const sameTarget = !opts.force && page === prevPage && nextProject === state.project && nextTab === state.tab && !(page === "settings" && opts.tab) && page !== "search";
+    const sameTarget = !opts.force && page === prevPage && nextProject === state.project && nextTab === state.tab && !(page === "settings" && opts.tab);
     if (sameTarget) return;
 
     const prevExt = registeredPages.get(activePageId);
@@ -608,11 +678,11 @@
     const curTab = PROJECT_TABS[state.tab] || PROJECT_TABS[0];
     const regTab = registeredProjectTabs.get(curTab.id);
 
-    // 注册的全宽标签（如「管理」Q5）保持 tabs 与三栏同基准不跳动，下方为单栏可滚内容
+    // 注册的全宽标签（如「管理」Q5、「图谱」）保持 tabs 与三栏同基准不跳动，下方为全宽容器
     if (curTab.id === "manage" || (regTab && regTab.fullWidth)) {
       return `${title}<div class="page"><div class="proj-full">
         <div class="proj-full-head">${tabsHTML()}</div>
-        <div class="proj-tab-body scroll" id="projectTabBody">${regTab ? "" : emptyHTML("「管理」标签模块尚未加载")}</div>
+        <div class="proj-tab-body scroll" id="projectTabBody" data-tab-id="${curTab.id}">${regTab ? "" : emptyHTML(`「${curTab.label}」标签模块尚未加载`)}</div>
       </div></div>`;
     }
 
@@ -647,42 +717,107 @@
     </article>`;
   }
 
-  /* ---------- 用户画像页（Q4） ---------- */
-  function parseProfileBody(body) {
-    const sections = [];
-    let current = { heading: "", items: [] };
-    const lines = String(body || "").split("\n");
-    for (const raw of lines) {
-      const line = raw.trim();
-      if (!line) continue;
-      if (line.startsWith("## ")) {
-        if (current.heading || current.items.length) sections.push(current);
-        current = { heading: line.slice(3).trim(), items: [] };
-        continue;
+  /* ---------- 用户画像页（统一 V4 Markdown 阅读排版，保留原文不做改写） ---------- */
+  function fmtProfileInline(text) {
+    const parts = String(text ?? "").split(/(`[^`]+`)/g);
+    return parts.map(part => {
+      if (part.length >= 2 && part.startsWith("`") && part.endsWith("`")) {
+        const code = esc(part.slice(1, -1)).replace(/([/_.])/g, "$1<wbr>");
+        return `<code>${code}</code>`;
       }
-      const m = line.match(/^(?:[-*]\s+)?\[(\d{4}-\d{2}-\d{2})\]\s*[-–—]\s*(.+)$/);
-      if (m) {
-        current.items.push({ date: m[1], text: m[2].trim() });
-      } else {
-        current.items.push({ date: "", text: line.replace(/^[-*]\s+/, "") });
-      }
-    }
-    if (current.heading || current.items.length) sections.push(current);
-    return sections;
+      return esc(part)
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
+    }).join("");
   }
 
-  function profileEntryCount(p) {
-    if (!p || !p.body) return 0;
-    return parseProfileBody(p.body).reduce((acc, s) => acc + s.items.length, 0);
+  function renderProfileMarkdown(body) {
+    const src = String(body || "").replace(/\r\n?/g, "\n");
+    if (!src.trim()) return "";
+    const lines = src.split("\n");
+    const out = [];
+    let i = 0;
+
+    while (i < lines.length) {
+      const raw = lines[i];
+      const trimmed = raw.trim();
+      if (!trimmed) { i++; continue; }
+
+      // Fenced code block
+      if (trimmed.startsWith("```")) {
+        const codeLines = [];
+        i++;
+        while (i < lines.length && !lines[i].trim().startsWith("```")) {
+          codeLines.push(lines[i]);
+          i++;
+        }
+        if (i < lines.length) i++;
+        out.push(`<pre class="profile-md-pre"><code>${esc(codeLines.join("\n"))}</code></pre>`);
+        continue;
+      }
+
+      // Headings (# / ## / ###)
+      const hm = trimmed.match(/^(#{1,3})\s+(.+)$/);
+      if (hm) {
+        const lvl = hm[1].length;
+        out.push(`<h${lvl}>${fmtProfileInline(hm[2].trim())}</h${lvl}>`);
+        i++;
+        continue;
+      }
+
+      // Blockquote
+      if (/^>\s?/.test(trimmed)) {
+        const qLines = [];
+        while (i < lines.length && /^>\s?/.test(lines[i].trim())) {
+          qLines.push(lines[i].trim().replace(/^>\s?/, ""));
+          i++;
+        }
+        out.push(`<blockquote><p>${qLines.map(fmtProfileInline).join("<br>")}</p></blockquote>`);
+        continue;
+      }
+
+      // Unordered list
+      if (/^[-*]\s+/.test(trimmed)) {
+        const items = [];
+        while (i < lines.length && /^[-*]\s+/.test(lines[i].trim())) {
+          items.push(`<li>${fmtProfileInline(lines[i].trim().replace(/^[-*]\s+/, ""))}</li>`);
+          i++;
+        }
+        out.push(`<ul>${items.join("")}</ul>`);
+        continue;
+      }
+
+      // Ordered list
+      if (/^\d+\.\s+/.test(trimmed)) {
+        const items = [];
+        while (i < lines.length && /^\d+\.\s+/.test(lines[i].trim())) {
+          items.push(`<li>${fmtProfileInline(lines[i].trim().replace(/^\d+\.\s+/, ""))}</li>`);
+          i++;
+        }
+        out.push(`<ol>${items.join("")}</ol>`);
+        continue;
+      }
+
+      // Paragraph
+      const pLines = [];
+      while (i < lines.length) {
+        const t = lines[i].trim();
+        if (!t || t.startsWith("```") || /^#{1,3}\s+/.test(t) || /^>\s?/.test(t) || /^[-*]\s+/.test(t) || /^\d+\.\s+/.test(t)) break;
+        pLines.push(t);
+        i++;
+      }
+      if (pLines.length) out.push(`<p>${pLines.map(fmtProfileInline).join("<br>")}</p>`);
+    }
+
+    return `<div class="profile-md">${out.join("")}</div>`;
   }
 
   function profileStatusMeta(p) {
     if (p.status === "generating") return { text: `正在导出 · ${p.progress ? p.progress.elapsed : 6} 秒`, fail: false, dot: "run" };
     if (p.status === "failed") return { text: "上次导入未完成", fail: true, dot: "fail" };
     if (p.status === "ready") {
-      const n = profileEntryCount(p);
-      const tag = p.method === "manual" ? `手动导入 · ${n} 条` : `${n} 条`;
-      return { text: `${p.updated || "今天"} · ${tag}`, fail: false, dot: "ok" };
+      const mode = p.method === "manual" ? "手动导入" : "自动生成";
+      return { text: `${p.updated || "今天"} · ${mode}`, fail: false, dot: "ok" };
     }
     return { text: p.canGenerate ? "尚未导入" : "待手动导入", fail: false, dot: "" };
   }
@@ -735,7 +870,7 @@
 
   function profileReaderHTML(p) {
     const meta = profileStatusMeta(p);
-    const sections = parseProfileBody(p.body);
+    const hasBody = !!(p.body && String(p.body).trim());
     const methodLabel = p.status === "ready" ? (p.method === "manual" ? "手动导入" : "自动生成") : meta.text;
     let bodyBlock = "";
     if (p.status === "generating") {
@@ -744,20 +879,12 @@
     } else if (p.status === "failed") {
       bodyBlock = `<div class="profile-alert">导入失败：${esc(p.error || "Agent 未返回完整画像正文")}</div>
         ${emptyHTML("可点击下方「重新导入」重试，或使用「手动导入」粘贴正文")}`;
-    } else if (!sections.length) {
+    } else if (!hasBody) {
       bodyBlock = emptyHTML(p.canGenerate ? `尚未从 ${p.name} 导入画像，可点击底部「重新导入」或「手动导入」` : `该来源支持手动导入：复制提示词后粘贴画像正文`);
     } else {
-      bodyBlock = `<div class="profile-sections">${sections.map(sec => `
-        <section class="profile-sec">
-          ${sec.heading ? `<h3>${esc(sec.heading)}</h3>` : ""}
-          <div>${sec.items.map(it => it.date
-            ? `<div class="profile-entry"><span class="profile-entry-date">${esc(it.date)}</span><div class="profile-entry-text">${fmt(it.text)}</div></div>`
-            : `<p class="profile-plain">${fmt(it.text)}</p>`
-          ).join("")}</div>
-        </section>`).join("")}</div>`;
+      bodyBlock = renderProfileMarkdown(p.body);
     }
 
-    const count = sections.reduce((acc, s) => acc + s.items.length, 0);
     return `<article class="detail profile-doc-enter">
       <div class="profile-meta-bar">
         ${logo(p.agent, 22)}
@@ -767,7 +894,6 @@
         <span>·</span>
         <span class="chip">${esc(methodLabel)}</span>
         ${p.updated ? `<span>更新于 ${esc(p.updated)}</span>` : ""}
-        ${count ? `<span>·</span><span>${count} 条记录</span>` : ""}
       </div>
       ${bodyBlock}
     </article>`;
@@ -822,7 +948,7 @@
       cancelText: "取消",
       confirmText: "保存画像",
       confirmDisabled: !draft.trim(),
-      hint: "支持 ## 二级标题与「- [YYYY-MM-DD] - 内容」格式",
+      hint: "支持直接粘贴任意 Markdown 正文，保留原文不做改写",
       body: `
         <div class="profile-import-bar">
           <span class="profile-import-tip">先将提示词发给 ${esc(p.name)}，再把返回的 Markdown 粘贴到下方：</span>
@@ -851,13 +977,10 @@
         const ta = $("#profileImportArea", api.el);
         const text = ta ? ta.value.trim() : "";
         if (!text) return false;
-        const parsed = parseProfileBody(text);
-        const count = parsed.reduce((acc, s) => acc + s.items.length, 0);
         p.body = text;
         p.status = "ready";
         p.method = "manual";
-        p.updated = "2026-11-20";
-        p.count = count || 1;
+        p.updated = "2026-11-21";
         p.error = "";
         delete state.profileDrafts[p.id];
         render(false);
@@ -887,8 +1010,7 @@
           p.updated = "2026-11-20";
           p.error = "";
           if (!p.body) {
-            p.body = `## 工程习惯\n- [2026-11-20] - 从 ${p.name} 导出的最新偏好记录，已按日期列格式化展示。`;
-            p.count = 1;
+            p.body = `## 通用偏好\n- 从 ${p.name} 导出的最新用户画像正文，保留原始 Markdown 格式展示。`;
           }
           if (state.page === "profile") render(false);
           toast(`${p.name} 用户画像已更新`);
@@ -1019,7 +1141,7 @@
         size: 480,
         cancelText: "关闭",
         confirmText: "复制诊断信息",
-        body: `<p>最近 3 次整理任务均返回 <code>SubprocessTransportError</code>：子进程在输出完整 JSON 前关闭。</p><p style="font-family:var(--font-mono);font-size:var(--fs-caption);padding:var(--s2) var(--s3);border-radius:var(--radius);background:var(--fill-1);color:var(--text-2);white-space:pre-wrap">${esc(D.serviceStatus.diagnosticText)}</p>`,
+        body: `<p>最近 3 次提炼任务均返回 <code>SubprocessTransportError</code>：子进程在输出完整 JSON 前关闭。</p><p style="font-family:var(--font-mono);font-size:var(--fs-caption);padding:var(--s2) var(--s3);border-radius:var(--radius);background:var(--fill-1);color:var(--text-2);white-space:pre-wrap">${esc(D.serviceStatus.diagnosticText)}</p>`,
         onConfirm() { toast("已复制诊断信息"); },
       });
     });
@@ -1125,12 +1247,12 @@
     if (busy) return; busy = true;
     const [project, agent, cat, body] = incoming[inc++ % incoming.length];
     const m = { id: "n" + Date.now(), project, agent, cat, body, recall: 0, date: "刚刚", unread: true, source: "来源会话 · 刚刚", rule: "新入库的记忆。" };
-    state.activity.unshift({ state: "run", title: "正在整理", meta: `${project} · 整理中`, time: "现在" });
+    state.activity.unshift({ state: "run", title: "正在提炼", meta: `${project} · 提炼中`, time: "现在" });
     if (state.page === "overview" && !state.actTab) { $("#actList").innerHTML = actHTML(); bindAct(); }
     setTimeout(() => {
-      state.activity[0] = { state: "ok", title: "整理完成", meta: `${project} · 1 条记忆`, time: "现在" };
+      state.activity[0] = { state: "ok", title: "提炼完成", meta: `${project} · 1 条记忆`, time: "现在" };
       state.memories.unshift(m); state.todayExtra++;
-      renderNav();
+      notifyExternalStateChange({ rerender: false });
       const badge = $(`[data-unread="${project}"]`); if (badge) badge.classList.add("bump");
       if (state.page === "overview") {
         if (!state.actTab) { $("#actList").innerHTML = actHTML(); bindAct(); }
@@ -1152,7 +1274,7 @@
         requestAnimationFrame(() => requestAnimationFrame(() => slot.classList.add("open")));
         slot.querySelector("[data-sel]").onclick = () => select(m.id);
         [60, 200, 450].forEach(t => setTimeout(placeSel, t));
-      } else toast(`新记忆已保存到 ${project}`);
+      } else toast(`新记忆已采集到 ${project}`);
       busy = false;
     }, reduce.checked ? 500 : 1800);
   };
@@ -1172,7 +1294,10 @@
     UI,
     go,
     openMemory: openFromOverview,
+    openCommandPalette: opts => MemlanePages.openCommandPalette(opts),
     render,
+    renderNav,
+    resolveTabIndex,
     toast,
     setTheme,
     getThemeChoice: () => themeChoice,
@@ -1196,6 +1321,11 @@
     stageHTML,
     openServicePopover,
     closeServicePopover,
+    projectHasAlert,
+    getAllProjectAlerts,
+    openProjectMessages,
+    notifyExternalStateChange,
+    onStateChange,
     openProfileImportDialog: () => {
       const sel = state.profiles.find(x => x.id === state.selectedProfile) || state.profiles[0];
       if (sel) openProfileImportDialog(sel);
@@ -1216,15 +1346,16 @@
       applyReduce();
     }
     if (q.get("project")) state.project = q.get("project");
-    if (q.get("page")) state.page = q.get("page");
+    const requestedPage = q.get("page");
+    const redirectedFromSearch = requestedPage === "search";
+    if (requestedPage) state.page = redirectedFromSearch ? "overview" : requestedPage;
     if (q.get("tab")) {
       if (state.page === "project") state.tab = resolveTabIndex(q.get("tab"));
       else if (state.page === "settings") state.settingsTab = q.get("tab");
     }
-    if (q.get("q")) state.searchQuery = q.get("q");
-    if (q.get("scope")) state.searchScope = q.get("scope");
     if (q.get("profile")) state.selectedProfile = q.get("profile");
     if (q.get("step")) state.setupStep = Number(q.get("step")) || 0;
+    if (q.get("dialog")) state.pendingDialog = q.get("dialog");
 
     applyTheme();
     activePageId = state.page;
@@ -1233,7 +1364,10 @@
     state.growHeat = false;
 
     if (q.get("popover") === "service") openServicePopover();
-    if (q.get("cmdk") === "1") setTimeout(() => MemlanePages.openCommandPalette({ query: q.get("q") || "" }), 60);
+    if (q.get("cmdk") === "1" || (redirectedFromSearch && q.get("q"))) {
+      setTimeout(() => MemlanePages.openCommandPalette({ query: q.get("q") || "" }), 60);
+    }
+    if (q.get("menubar") === "1") setTimeout(() => window.MemlaneMenubar && window.MemlaneMenubar.open(), 80);
     if (q.get("dialog") === "import" && state.page === "profile") {
       setTimeout(() => shellCtx.openProfileImportDialog(), 60);
     }

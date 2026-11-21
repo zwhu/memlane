@@ -22,14 +22,14 @@
       title: "连接 Agent",
       sub: "自动采集与召回",
       heading: "连接你正在使用的 Agent",
-      lead: "接入后，Agent 可以保存经验，并在后续任务中找回记忆。",
+      lead: "接入后，Agent 可以采集经验，并在后续任务中找回记忆。",
     },
     {
       id: "processing",
-      title: "配置记忆处理",
+      title: "配置记忆提炼",
       sub: "Agent 或模型 API",
-      heading: "选择如何整理记忆",
-      lead: "连接 Agent 与处理记忆分别配置，使用已有账号或自配模型。",
+      heading: "选择如何提炼记忆",
+      lead: "连接 Agent 与提炼记忆分别配置，使用已有账号或自配模型。",
     },
   ];
 
@@ -44,11 +44,11 @@
     selectedProvider: "openai-compat",
     deps: [
       { group: "运行基础", groupDesc: "Python 与运行依赖", id: "uv", name: "uv", version: "0.7.8", status: "ok", size: "14 MiB", source: "已检测到本机环境", dest: "~/.local/bin/uv", purpose: "受管 Python 依赖解析与隔离安装" },
-      { group: "运行基础", groupDesc: "Python 与运行依赖", id: "python", name: "Python 3.12", version: "3.12.9", status: "ok", size: "42 MiB", source: "已检测到本机环境", dest: "~/.local/share/uv/python/cpython-3.12.9", purpose: "运行官方 Cognee 引擎与控制面" },
+      { group: "运行基础", groupDesc: "Python 与运行依赖", id: "python", name: "Python 3.12", version: "3.12.9", status: "ok", size: "42 MiB", source: "已检测到本机环境", dest: "~/.local/share/uv/python/cpython-3.12.9", purpose: "运行官方记忆引擎（Cognee）与接入网关" },
       { group: "运行基础", groupDesc: "Python 与运行依赖", id: "runtime", name: "运行虚拟环境", version: "venv · 3.12", status: "ok", size: "180 MiB", source: "受管隔离环境", dest: ".local/daily/venv", purpose: "保持与系统 Python 隔离" },
-      { group: "本地记忆引擎", groupDesc: "整理与检索", id: "cognee", name: "Cognee 源码", version: "1.6.7 (ec6f408)", status: "missing", size: "下载 18.4 MiB · 占用 62.0 MiB", source: "官方固定版本归档（启动前 SHA256 校验）", dest: ".local/daily/engine-components/cognee-1.6.7", purpose: "本地知识正文、LanceDB 向量与 Ladybug 图谱唯一数据源" },
-      { group: "本地记忆引擎", groupDesc: "整理与检索", id: "embedding", name: "向量模型", version: "BAAI/bge-small-zh-v1.5", status: "missing", size: "下载 91.2 MiB · 占用 96.0 MiB", source: "HuggingFace 镜像缓存", dest: ".local/daily/model-cache/bge-small-zh-v1.5", purpose: "中文记忆本地语义检索向量化" },
-      { group: "Agent 接入", groupDesc: "保存与召回", id: "plugin", name: "受管 Hook 插件", version: "memlane-hook 1.6.7", status: "ok", size: "2.1 MiB", source: "内置受管插件包", dest: ".local/daily/plugins", purpose: "为 Coding Agents 提供非侵入式采集与召回接口" },
+      { group: "本地记忆引擎", groupDesc: "提炼与检索", id: "cognee", name: "Cognee 源码", version: "1.6.7 (ec6f408)", status: "missing", size: "下载 18.4 MiB · 占用 62.0 MiB", source: "官方固定版本归档（启动前 SHA256 校验）", dest: ".local/daily/engine-components/cognee-1.6.7", purpose: "本地知识正文、LanceDB 向量与 Ladybug 图谱唯一数据源" },
+      { group: "本地记忆引擎", groupDesc: "提炼与检索", id: "embedding", name: "向量模型", version: "BAAI/bge-small-zh-v1.5", status: "missing", size: "下载 91.2 MiB · 占用 96.0 MiB", source: "HuggingFace 镜像缓存", dest: ".local/daily/model-cache/bge-small-zh-v1.5", purpose: "中文记忆本地语义检索向量化" },
+      { group: "Agent 接入", groupDesc: "采集与召回", id: "plugin", name: "受管 Hook 插件", version: "memlane-hook 1.6.7", status: "ok", size: "2.1 MiB", source: "内置受管插件包", dest: ".local/daily/plugins", purpose: "为 Coding Agents 提供非侵入式采集与召回接口" },
     ],
     agents: [
       { id: "gemini", name: "Antigravity", version: "0.9.4", connected: true, note: "已检测到配置目录 ~/.gemini/antigravity-cli" },
@@ -94,7 +94,7 @@
     const t2 = ctx.isReducedMotion() ? 450 : 2100;
     installTimers.push(setTimeout(() => {
       if (!setupState.installing) return;
-      setupState.installStage = "正在启动本地 Cognee 与控制面服务…";
+      setupState.installStage = "正在启动本地记忆引擎（Cognee）与接入网关…";
       const sub = $("#setupStageTitle");
       if (sub) sub.textContent = setupState.installStage;
     }, t1));
@@ -268,14 +268,14 @@
     const mode = setupState.sourceMode;
     const rows = [
       UI.rowHTML({
-        title: "处理来源",
+        title: "提炼来源",
         desc: mode === "cli"
-          ? "让 Codex、Gemini 等已连接的 Agent 用它自己的模型和额度整理记忆，无需填写 API Key"
+          ? "让 Codex、Gemini 等已连接的 Agent 用它自己的模型和额度提炼记忆，无需填写 API Key"
           : "填写 OpenAI 兼容或 Ollama 等接口，由 Memlane 直接调用",
         control: UI.segmentedHTML({
           id: "setupSourceSeg",
           options: [
-            { value: "cli", label: "用已连接的 Agent 整理" },
+            { value: "cli", label: "用已连接的 Agent 提炼" },
             { value: "provider", label: "直接调用模型 API" },
           ],
           value: mode,
@@ -289,7 +289,7 @@
         rows.push(UI.rowHTML({
           leading: ctx.logo(a.id, 20),
           title: ctx.esc(a.name),
-          desc: a.connected ? "已绑定 CLI · 可立即用于整理记忆" : "尚未连接，请先在上一步连接",
+          desc: a.connected ? "已绑定 CLI · 可立即用于提炼记忆" : "尚未连接，请先在上一步连接",
           control: picked
             ? `<span class="set-badge set-badge--ok">已选择</span>`
             : (a.connected ? UI.buttonHTML({ label: "选择", size: "sm", attrs: `data-pick-cli="${ctx.esc(a.id)}"` }) : `<span class="set-state-text">未连接</span>`),
@@ -313,14 +313,14 @@
       <div class="setup-stage-banner">
         ${ctx.stageHTML(true)}
         <div class="setup-stage-info">
-          <div class="setup-stage-title">正在启用记忆处理配置并验证日常服务…</div>
+          <div class="setup-stage-title">正在启用记忆提炼配置并验证日常服务…</div>
           <div class="setup-stage-sub">等待服务回执确认后自动进入总览页。</div>
         </div>
       </div>` : "";
 
     return `
       ${startingBanner}
-      ${UI.groupHTML({ title: "记忆处理方式", desc: "以后可随时在「设置 › 记忆处理」切换", rows })}
+      ${UI.groupHTML({ title: "记忆提炼方式", desc: "以后可随时在「设置 › 记忆提炼」切换", rows })}
     `;
   }
 

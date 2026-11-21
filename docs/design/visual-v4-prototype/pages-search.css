@@ -1,6 +1,6 @@
-/* ⌘K Raycast 式搜索面板与「检索结果」三栏页样式（Q3）。严格仅使用 tokens.css 变量，不写裸色值。 */
+/* ⌘K Raycast 式单栏搜索面板样式。严格仅使用 tokens.css 变量，不写裸色值。 */
 
-/* ---------- 1. ⌘K 面板（宽 640、距顶 ~120、snappy 缩放入场） ---------- */
+/* ---------- ⌘K 面板（宽 640、距顶 ~120、snappy 缩放入场） ---------- */
 .cmdk-scrim {
   position: absolute;
   inset: 0;
@@ -212,6 +212,12 @@
   font-size: var(--fs-caption);
   color: var(--text-3);
 }
+.cmdk-foot-stat {
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .cmdk-hint {
   display: inline-flex;
   align-items: center;
@@ -238,125 +244,4 @@
   color: var(--text-1);
   border-radius: 2px;
   padding: 0 2px;
-}
-
-/* ---------- 2. 「检索结果」三栏页（Q3：列表 360 + 阅读栏 + 关键词高亮） ---------- */
-.sr-tools {
-  padding: var(--s3) var(--s4);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: var(--s2);
-  flex: none;
-}
-.sr-input-wrap {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-.sr-input-wrap .ico {
-  position: absolute;
-  left: 9px;
-  width: 14px;
-  height: 14px;
-  color: var(--text-3);
-  pointer-events: none;
-}
-.sr-input {
-  width: 100%;
-  height: 30px;
-  padding: 0 var(--s2) 0 30px;
-  border: 0;
-  outline: none;
-  border-radius: var(--radius);
-  background: var(--fill-1);
-  color: var(--text-1);
-  font-family: var(--font-ui);
-  font-size: var(--fs-footnote);
-  box-shadow: inset 0 0 0 1px var(--border);
-  transition: box-shadow var(--dur-fast) linear;
-}
-.sr-input:focus { box-shadow: inset 0 0 0 1.5px var(--accent); }
-.sr-input::placeholder { color: var(--text-4); }
-
-.sr-filter-row {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-}
-
-.sr-item-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 4px;
-  font-size: var(--fs-caption);
-  color: var(--text-3);
-}
-.sr-item-title {
-  font-size: var(--fs-body);
-  font-weight: 500;
-  color: var(--text-1);
-  line-height: 1.45;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-/* 原始记录会话阅读视图 */
-.sr-session-title {
-  font-size: var(--fs-heading);
-  font-weight: 600;
-  color: var(--text-1);
-  margin-top: var(--s3);
-  line-height: 1.45;
-}
-.sr-session-summary {
-  font-size: var(--fs-footnote);
-  color: var(--text-2);
-  margin-top: var(--s2);
-  line-height: 1.65;
-}
-.sr-msg-list {
-  margin-top: var(--s5);
-  border-top: 1px solid var(--border);
-}
-.sr-msg {
-  padding: var(--s4) 0;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: var(--s2);
-}
-.sr-msg-role {
-  font-size: var(--fs-caption);
-  font-weight: 600;
-  color: var(--text-3);
-}
-.sr-msg-text {
-  font-size: var(--fs-reading);
-  line-height: 1.75;
-  color: var(--text-1);
-}
-.sr-tool-list {
-  margin-top: var(--s1);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.sr-tool-row {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  padding: 5px var(--s2);
-  border-radius: var(--radius-sm);
-  background: var(--fill-1);
-  font-family: var(--font-mono);
-  font-size: var(--fs-caption);
-  color: var(--text-2);
-}
-.sr-tool-name {
-  color: var(--text-1);
-  font-weight: 500;
 }

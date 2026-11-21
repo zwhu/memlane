@@ -1,0 +1,483 @@
+/* Memlane V4 模拟 macOS 顶部菜单栏 + 300px 状态栏弹出面板。严格使用 tokens.css 令牌。 */
+
+/* 为 .desk 增加定位上下文和顶部 28px 菜单栏留白，保持 #window 居中不裁切 */
+.desk {
+  position: relative;
+  padding-top: 52px;
+}
+
+/* ---------- 1. 模拟 macOS 顶部菜单栏（28px，自适配浅/深色半透明材质） ---------- */
+.macos-menubar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  background: var(--sidebar-bg);
+  backdrop-filter: blur(24px) saturate(1.35);
+  -webkit-backdrop-filter: blur(24px) saturate(1.35);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-1);
+  font-size: var(--fs-footnote);
+  user-select: none;
+}
+
+.mb-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.mb-apple {
+  width: 13px;
+  height: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-1);
+  opacity: .9;
+  flex: none;
+}
+
+.mb-app-name {
+  font-weight: 600;
+  letter-spacing: -.1px;
+  color: var(--text-1);
+}
+
+.mb-menu-item {
+  color: var(--text-2);
+  font-weight: 400;
+  opacity: .82;
+}
+
+.mb-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.mb-sys-icon {
+  width: 24px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-2);
+  opacity: .72;
+}
+
+.mb-sys-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.mb-tray-btn {
+  position: relative;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-1);
+  transition: background var(--dur-fast) linear, transform var(--dur-fast) var(--spring-snappy, ease);
+}
+
+.mb-tray-btn:hover {
+  background: var(--hover);
+}
+
+.mb-tray-btn.is-open {
+  background: var(--pressed);
+}
+
+.mb-tray-btn:active {
+  transform: scale(.94);
+}
+
+.mb-tray-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.mb-tray-dot {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+  box-shadow: 0 0 0 1.5px var(--bg-elevated);
+}
+
+.mb-tray-dot.is-danger {
+  background: var(--danger);
+}
+
+.mb-clock {
+  padding-left: 6px;
+  font-size: var(--fs-footnote);
+  font-weight: 500;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .01em;
+}
+
+/* ---------- 2. 300px V4 状态栏弹出面板（无嵌套带框卡片，纯发丝分隔） ---------- */
+.menubar-flyout {
+  position: absolute;
+  top: 34px;
+  right: 16px;
+  z-index: 85;
+  width: 300px;
+  max-height: calc(100% - 48px);
+  overflow-y: auto;
+  background: var(--bg-elevated);
+  border-radius: 10px;
+  box-shadow: var(--shadow-menu);
+  color: var(--text-1);
+  transform-origin: top right;
+  animation: mbFlyoutIn var(--dur-snappy) var(--spring-snappy, var(--ease-snappy)) both;
+}
+
+.menubar-flyout::-webkit-scrollbar {
+  width: 5px;
+}
+
+.menubar-flyout::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
+
+@keyframes mbFlyoutIn {
+  from {
+    opacity: 0;
+    transform: scale(.95) translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Header */
+.mb-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 10px var(--s3);
+  border-bottom: 1px solid var(--border);
+}
+
+.mb-brand-mark {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.mb-head-status {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mb-head-label {
+  font-size: var(--fs-footnote);
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mb-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.mb-ico-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-2);
+  transition: background var(--dur-fast) linear, color var(--dur-fast) linear, transform var(--dur-fast) var(--spring-snappy, ease);
+}
+
+.mb-ico-btn:hover {
+  background: var(--hover);
+  color: var(--text-1);
+}
+
+.mb-ico-btn:active {
+  transform: scale(.92);
+}
+
+.mb-ico-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Hairline Sections */
+.mb-sec {
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.mb-sec-label {
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  color: var(--text-3);
+  letter-spacing: .02em;
+  padding: 2px 0 6px;
+}
+
+/* Components & Today */
+.mb-comp-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  height: 26px;
+}
+
+.mb-comp-name {
+  font-size: var(--fs-footnote);
+  font-weight: 500;
+  color: var(--text-1);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mb-comp-val {
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex: none;
+}
+
+.mb-comp-val.is-fail {
+  color: var(--danger);
+}
+
+.mb-today-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-footnote);
+  color: var(--text-2);
+}
+
+.mb-today-count {
+  font-family: var(--font-mono);
+  font-size: var(--fs-footnote);
+  font-weight: 600;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Project Alerts */
+.mb-alert-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: calc(100% + var(--s2));
+  margin: 0 calc(-1 * var(--s1));
+  padding: 6px var(--s2);
+  border-radius: var(--radius);
+  text-align: left;
+  transition: background var(--dur-fast) linear, transform var(--dur-fast) var(--spring-snappy, ease);
+}
+
+.mb-alert-row:hover {
+  background: var(--hover);
+}
+
+.mb-alert-row:active {
+  background: var(--pressed);
+  transform: scale(.99);
+}
+
+.mb-alert-name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-footnote);
+  font-weight: 500;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mb-alert-badge {
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--fill-2);
+  color: var(--warning);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex: none;
+}
+
+.mb-alert-badge.is-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.mb-chev {
+  width: 12px;
+  height: 12px;
+  color: var(--text-4);
+  flex: none;
+  transition: transform var(--dur-snappy) var(--spring-snappy, ease), color var(--dur-fast) linear;
+}
+
+.mb-alert-row:hover .mb-chev,
+.mb-link-row:hover .mb-chev {
+  color: var(--text-2);
+  transform: translateX(2px);
+}
+
+.mb-quiet-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  height: 26px;
+  font-size: var(--fs-footnote);
+  color: var(--text-3);
+}
+
+/* Quick Settings */
+.mb-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  min-height: 30px;
+  padding: 3px 0;
+}
+
+.mb-setting-label {
+  font-size: var(--fs-footnote);
+  color: var(--text-1);
+  white-space: nowrap;
+}
+
+.mb-login-hint {
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+  line-height: 1.45;
+  padding: 2px 0 6px;
+}
+
+.mb-links {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.mb-link-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  width: calc(100% + var(--s2));
+  margin: 0 calc(-1 * var(--s1));
+  padding: 6px var(--s2);
+  border-radius: var(--radius);
+  font-size: var(--fs-footnote);
+  color: var(--text-2);
+  text-align: left;
+  transition: background var(--dur-fast) linear, color var(--dur-fast) linear, transform var(--dur-fast) var(--spring-snappy, ease);
+}
+
+.mb-link-row:hover {
+  background: var(--hover);
+  color: var(--text-1);
+}
+
+.mb-link-row:active {
+  background: var(--pressed);
+  transform: scale(.99);
+}
+
+/* Footer */
+.mb-foot {
+  padding: var(--s2) var(--s3) 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mb-quit-btn {
+  width: 100%;
+  height: 28px;
+  padding: 0 var(--s3);
+  border-radius: var(--radius);
+  font-size: var(--fs-footnote);
+  font-weight: 500;
+  color: var(--text-1);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--dur-fast) linear, transform var(--dur-fast) var(--spring-snappy, ease);
+}
+
+.mb-quit-btn:hover {
+  background: var(--hover);
+}
+
+.mb-quit-btn:active {
+  transform: scale(.98);
+}
+
+.mb-quit-hard-btn {
+  width: 100%;
+  height: 26px;
+  padding: 0 var(--s2);
+  border-radius: var(--radius);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  color: var(--danger);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--dur-fast) linear, transform var(--dur-fast) var(--spring-snappy, ease);
+}
+
+.mb-quit-hard-btn:hover {
+  background: var(--danger-soft);
+}
+
+.mb-quit-hard-btn:active {
+  transform: scale(.98);
+}

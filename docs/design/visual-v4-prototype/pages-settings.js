@@ -46,28 +46,62 @@
       "daily-cli": "inherit",
       "dcim-fe": "off",
     },
-    projectNotices: {
-      memlane: [
-        { id: "n-hook", title: "Antigravity Hook 重试已恢复", tag: "已恢复", level: "warn", desc: "19:11 写入回执超时后自动重试成功，原会话消息完整保留。", ack: false },
-        { id: "n-old", title: "历史会话前缀兼容归档", tag: "已知晓", level: "normal", desc: "codex_antigravity- 前缀的历史记录已按旧规则归档，不影响新会话。", ack: true },
-      ],
-    },
     noticeHistoryOpen: {},
-    queuedDocs: {
-      memlane: [
-        { id: "q1", title: "V4 设置页与分组列表交互评审会话", date: "今天 19:28", status: "已保存 · 排队提炼" },
-        { id: "q2", title: "supervisor 日志截尾单测补充", date: "今天 18:54", status: "已保存 · 排队提炼" },
-      ],
-    },
   };
 
-  // URL 参数支持演示「检测中」骨架行（?page=settings&tab=service&detecting=1）
+  // URL 参数支持演示「检测中」骨架行（?page=settings&tab=service&detecting=1）与直开消息详情弹窗（?page=project&tab=manage&dialog=msg）
   const initParams = new URLSearchParams(location.search);
   if (initParams.get("detecting") === "1") cfg.serviceDetecting = true;
   if (initParams.get("diag") === "1") cfg.diagOpen = true;
+  let pendingOpenMsgDialog = initParams.get("dialog") === "msg";
+
+  /* ---------- 共享状态桥接（与 proto-shell / pages-menubar 双向同步） ---------- */
+  function syncExternal(ctx, opts) {
+    if (ctx && typeof ctx.notifyExternalStateChange === "function") {
+      ctx.notifyExternalStateChange(opts);
+    } else if (ctx && typeof ctx.render === "function") {
+      ctx.render(false);
+    }
+  }
+
+  function getTraySettings(ctx) {
+    const st = ctx && ctx.state;
+    if (st) {
+      if (!st.traySettings) {
+        st.traySettings = D.traySettings
+          ? { ...D.traySettings }
+          : {
+            keepAliveOnQuit: true,
+            openAtLogin: false,
+            isDevBundle: true,
+            loginHint: "当前为开发直接运行模式（非 .app 安装包），系统登录项受 macOS 限制时将保持关闭并如实提示。",
+          };
+      }
+      return st.traySettings;
+    }
+    return D.traySettings || { keepAliveOnQuit: true, openAtLogin: false, isDevBundle: true, loginHint: "" };
+  }
+
+  function getProjectMsgState(ctx, projId) {
+    const st = ctx && ctx.state;
+    if (st) {
+      if (!st.projectMessages) {
+        st.projectMessages = D.projectMessages ? JSON.parse(JSON.stringify(D.projectMessages)) : {};
+      }
+      if (!st.projectMessages[projId]) {
+        const seed = D.projectMessages && D.projectMessages[projId];
+        st.projectMessages[projId] = seed
+          ? JSON.parse(JSON.stringify(seed))
+          : { autoSave: true, notices: [], queuedDocs: [] };
+      }
+      return st.projectMessages[projId];
+    }
+    const seed = D.projectMessages && D.projectMessages[projId];
+    return seed || { autoSave: true, notices: [], queuedDocs: [] };
+  }
 
   const SETTINGS_TABS = [
-    { id: "processing", label: "记忆处理" },
+    { id: "processing", label: "记忆提炼" },
     { id: "agents", label: "Agent 与模型" },
     { id: "service", label: "服务" },
   ];
@@ -105,14 +139,14 @@
 
     // 来源选择行（保留 Segmented 契约）
     candidateRows.push(UI.rowHTML({
-      title: "处理来源",
+      title: "提炼来源",
       desc: mode === "cli"
-        ? "让 Codex、Gemini 等已连接的 Agent 用它自己的模型和额度整理记忆，无需填写 API Key"
+        ? "让 Codex、Gemini 等已连接的 Agent 用它自己的模型和额度提炼记忆，无需填写 API Key"
         : "填写 OpenAI 兼容或 Ollama 等接口，由 Memlane 直接调用",
       control: UI.segmentedHTML({
         id: "setSourceSeg",
         options: [
-          { value: "cli", label: "用已连接的 Agent 整理" },
+          { value: "cli", label: "用已连接的 Agent 提炼" },
           { value: "provider", label: "直接调用模型 API" },
         ],
         value: mode,
@@ -166,11 +200,11 @@
     }));
 
     const behaviorGroup = UI.groupHTML({
-      title: "整理与记忆策略",
+      title: "提炼与记忆策略",
       rows: [
         UI.rowHTML({
-          title: "自动整理新会话",
-          desc: "收到新材料后自动提炼记忆；关闭不取消已经运行的整理任务",
+          title: "自动提炼新会话",
+          desc: "收到新材料后自动提炼记忆；关闭不取消已经运行的提炼任务",
           control: UI.switchHTML({ id: "swAutoOrganize", checked: cfg.autoOrganize }),
         }),
         UI.rowHTML({
@@ -180,7 +214,7 @@
         }),
         UI.rowHTML({
           title: "自动构建关系图谱",
-          desc: "开启后消耗模型额度；关闭不影响消息保存与记忆提炼，项目可单独覆盖",
+          desc: "开启后消耗模型额度；关闭不影响消息采集与记忆提炼，项目可单独覆盖",
           control: UI.switchHTML({ id: "swToolGraphGlobal", checked: cfg.toolGraphGlobal }),
         }),
         UI.rowHTML({
@@ -216,7 +250,7 @@
     });
 
     return `<div class="v4-group-wrap settings-pane-enter">
-      ${UI.groupHTML({ title: "处理方式", desc: currentActiveSummary(), rows: candidateRows })}
+      ${UI.groupHTML({ title: "提炼方式", desc: currentActiveSummary(), rows: candidateRows })}
       ${behaviorGroup}
       ${appearanceGroup}
     </div>`;
@@ -348,6 +382,23 @@
         </div>
       </div>` : "";
 
+    const tray = getTraySettings(ctx);
+    const trayRows = [
+      UI.rowHTML({
+        title: "退出时保持后台运行",
+        desc: "退出主窗口和菜单栏图标后，记忆服务与自动采集仍在后台保活",
+        control: UI.switchHTML({ id: "swTrayKeepAlive", checked: !!tray.keepAliveOnQuit }),
+      }),
+      UI.rowHTML({
+        title: "登录时静默启动",
+        desc: "开机登录系统后仅驻留顶部状态栏并拉起记忆服务，不弹出主窗口",
+        control: UI.switchHTML({ id: "swTrayOpenAtLogin", checked: !!tray.openAtLogin }),
+      }),
+    ];
+    if (tray.openAtLogin && tray.isDevBundle && tray.loginHint) {
+      trayRows.push(`<div class="svc-tray-hint"><span class="ico">${ctx.icon("alert")}</span><span>${ctx.esc(tray.loginHint)}</span></div>`);
+    }
+
     return `<div class="v4-group-wrap settings-pane-enter">
       <section class="v4-group">
         <div class="v4-group-head">
@@ -360,6 +411,8 @@
         </div>
         <div class="v4-group-list">${compRowsHTML}</div>
       </section>
+
+      ${UI.groupHTML({ title: "桌面端运行方式", rows: trayRows })}
 
       <section class="v4-group">
         <div class="v4-group-head">
@@ -389,14 +442,14 @@
   /* ---------- 弹窗：切换处理方式确认 / Provider 编辑 / Provider 删除（danger 不绑 ↵） / 环境详情 ---------- */
   function openHandoffDialog(ctx, targetMode, targetId, displayLabel) {
     UI.openDialog({
-      title: "切换处理方式？",
+      title: "切换提炼方式？",
       size: 480,
       cancelText: "取消",
       confirmText: "确认启用",
       hint: "仅确认后的服务回执会更新唯一 active",
       body: `
-        <p>即将把记忆整理切换为：<strong>${ctx.esc(displayLabel)}</strong></p>
-        <p style="font-size:var(--fs-footnote);color:var(--text-3)">当前正在处理 1 个会话，切换后将在收到新模型回执后接续处理，未完成记录不会丢失。</p>
+        <p>即将把记忆提炼切换为：<strong>${ctx.esc(displayLabel)}</strong></p>
+        <p style="font-size:var(--fs-footnote);color:var(--text-3)">当前正在提炼 1 个会话，切换后将在收到新模型回执后接续提炼，未完成记录不会丢失。</p>
       `,
       onConfirm() {
         cfg.activeMode = targetMode;
@@ -618,7 +671,7 @@
           ctx.render(false);
         });
       }
-      UI.bindSwitch($("#swAutoOrganize", mainEl), v => { cfg.autoOrganize = v; ctx.toast(v ? "已开启自动整理新会话" : "已关闭自动整理（运行中任务保留）"); });
+      UI.bindSwitch($("#swAutoOrganize", mainEl), v => { cfg.autoOrganize = v; ctx.toast(v ? "已开启自动提炼新会话" : "已关闭自动提炼（运行中任务保留）"); });
       UI.bindSwitch($("#swAutoRecall", mainEl), v => { cfg.autoRecall = v; ctx.toast(v ? "已开启自动召回" : "已关闭自动召回"); });
       UI.bindSwitch($("#swToolGraphGlobal", mainEl), v => { cfg.toolGraphGlobal = v; ctx.toast(v ? "已开启全局关系图谱构建" : "已关闭全局关系图谱构建"); });
       UI.bindSwitch($("#swDateLock", mainEl), v => { cfg.sessionDateLock = v; ctx.toast(v ? "已启用最早会话日期锁定" : "已关闭日期锁定"); });
@@ -707,7 +760,19 @@
         };
       });
 
-      // 3) 服务 tab 绑定（Q6）
+      // 3) 服务 tab 绑定（Q6 + 桌面端运行方式）
+      const tray = getTraySettings(ctx);
+      UI.bindSwitch($("#swTrayKeepAlive", mainEl), v => {
+        tray.keepAliveOnQuit = v;
+        syncExternal(ctx);
+        ctx.toast(v ? "已开启退出时保持后台运行" : "已关闭退出时后台保活");
+      });
+      UI.bindSwitch($("#swTrayOpenAtLogin", mainEl), v => {
+        tray.openAtLogin = v;
+        syncExternal(ctx);
+        ctx.toast(v ? "已开启登录时静默启动" : "已关闭登录时静默启动");
+      });
+
       const btnRecheck = $("#btnRecheckService", mainEl);
       if (btnRecheck) {
         btnRecheck.onclick = () => {
@@ -763,7 +828,7 @@
   });
 
   /* ==========================================================================
-   *  2. 项目「管理」标签（Q5）
+   *  2. 项目「管理」标签（Q5 + 消息与采集状态）
    * ========================================================================== */
   function ensureProjectAccess(projId) {
     if (!cfg.access[projId]) {
@@ -772,17 +837,346 @@
     return cfg.access[projId];
   }
 
+  const MSG_STATUS_META = {
+    pending: { label: "待补交", cls: "is-accent" },
+    unknown: { label: "状态未知", cls: "is-warn" },
+    filtered: { label: "已过滤", cls: "" },
+    rejected: { label: "被拒绝", cls: "is-danger" },
+  };
+
+  function agentDisplayName(agentId) {
+    return (D.agents && D.agents[agentId] && D.agents[agentId].name) || agentId || "";
+  }
+
+  function scrollToPermissions(containerEl) {
+    const target = $("#projPermGroup", containerEl) || $("#projPermGroup");
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+    target.classList.remove("manage-perm-highlight");
+    void target.offsetWidth;
+    target.classList.add("manage-perm-highlight");
+  }
+
+  function openNoticeDetailDialog(ctx, project, notice, containerEl) {
+    if (!notice) return;
+    const msgState = getProjectMsgState(ctx, project.id);
+    const details = notice.details || {};
+    const messages = Array.isArray(details.messages) ? details.messages : [];
+    const agName = agentDisplayName(notice.agent);
+    const pa = notice.primaryAction || null;
+
+    let confirmText = "";
+    let hideConfirm = true;
+    if (pa) {
+      hideConfirm = false;
+      if (pa.kind === "replay") confirmText = "确认补交这些消息";
+      else if (pa.kind === "permissions") confirmText = "前往权限设置";
+      else if (pa.kind === "retry") confirmText = "重试核对";
+      else if (pa.kind === "resume") confirmText = "恢复采集";
+      else confirmText = pa.label || "确认处理";
+    }
+
+    const msgListHTML = messages.length
+      ? `<div class="msg-dlg-sec-head"><span>本地消息摘要（${messages.length} 条）</span></div>
+         <div class="msg-dlg-list">
+           ${messages.map((m, idx) => {
+             const st = MSG_STATUS_META[m.status] || { label: m.status || "未知", cls: "" };
+             const num = "#" + String(m.index != null ? m.index : idx + 1).padStart(2, "0");
+             const summary = String(m.summary || "");
+             const needsExpand = summary.length > 68 || summary.includes("\n");
+             return `<div class="msg-dlg-item">
+               <span class="msg-dlg-idx">${ctx.esc(num)}</span>
+               <div class="msg-dlg-body">
+                 <div class="msg-dlg-item-head">
+                   <span class="msg-dlg-kind">${ctx.esc(m.kind || "消息")}</span>
+                   <span class="manage-notice-tag ${st.cls}">${ctx.esc(st.label)}</span>
+                 </div>
+                 <div class="msg-dlg-text" data-msg-text="${idx}">${ctx.esc(summary)}</div>
+                 ${needsExpand ? `<button type="button" class="msg-dlg-expand" data-msg-expand="${idx}">展开</button>` : ""}
+               </div>
+             </div>`;
+           }).join("")}
+         </div>`
+      : `<div class="set-field-hint">当前记录未附带本地消息明细。</div>`;
+
+    const diagText = [
+      `project=${project.id}`,
+      `agent=${notice.agent || "-"}`,
+      `session_id=${details.sessionId || "-"}`,
+      `diag_code=${details.diagCode || "-"}`,
+      `time=${notice.time || "-"}`,
+    ].join("\n");
+
+    const bodyHTML = `
+      <div class="msg-dlg-summary">
+        ${details.sessionLabel ? `<span class="msg-dlg-session">${ctx.esc(details.sessionLabel)}</span>` : ""}
+        ${details.diagCode ? `<span class="manage-notice-tag is-mono">${ctx.esc(details.diagCode)}</span>` : ""}
+        ${notice.tag ? `<span class="manage-notice-tag ${notice.group === "error" ? "is-danger" : "is-warn"}">${ctx.esc(notice.tag)}</span>` : ""}
+        <span class="manage-notice-meta" style="margin-left:auto">
+          ${notice.agent ? ctx.logo(notice.agent, 15) : ""}
+          ${agName ? `<span>${ctx.esc(agName)}</span>` : ""}
+          ${notice.time ? `<span>· ${ctx.esc(notice.time)}</span>` : ""}
+        </span>
+      </div>
+      ${details.safetyNote ? `<div class="msg-dlg-safety"><span class="ico">${ctx.icon("shield")}</span><span>${ctx.esc(details.safetyNote)}</span></div>` : ""}
+      ${msgListHTML}
+      <div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:var(--s2)">
+          <button type="button" class="msg-dlg-diag-toggle" id="msgDlgDiagToggle" aria-expanded="false">
+            <span class="svc-diag-chev" id="msgDlgDiagChev">${ctx.icon("chev")}</span>
+            <span>技术诊断信息</span>
+          </button>
+          ${UI.buttonHTML({ id: "msgDlgCopyDiag", label: "复制诊断", size: "sm", icon: ctx.icon("copy") })}
+        </div>
+        <div class="msg-dlg-diag-box" id="msgDlgDiagBox" hidden style="margin-top:var(--s2)">
+          <div class="msg-dlg-diag-row"><span class="msg-dlg-diag-k">session_id</span><span class="msg-dlg-diag-v">${ctx.esc(details.sessionId || "未记录")}</span></div>
+          <div class="msg-dlg-diag-row"><span class="msg-dlg-diag-k">diag_code</span><span class="msg-dlg-diag-v">${ctx.esc(details.diagCode || "NONE")}</span></div>
+          <div class="msg-dlg-diag-row"><span class="msg-dlg-diag-k">project</span><span class="msg-dlg-diag-v">${ctx.esc(project.id)}</span></div>
+          <div class="msg-dlg-diag-row"><span class="msg-dlg-diag-k">agent</span><span class="msg-dlg-diag-v">${ctx.esc(notice.agent || "-")}</span></div>
+        </div>
+      </div>
+    `;
+
+    UI.openDialog({
+      title: notice.title,
+      size: 640,
+      leading: notice.agent ? ctx.logo(notice.agent, 20) : "",
+      cancelText: "关闭",
+      confirmText,
+      hideConfirm,
+      hint: details.diagCode ? `诊断码：${details.diagCode}` : "",
+      body: bodyHTML,
+      onMount(panel) {
+        $$("[data-msg-expand]", panel).forEach(btn => {
+          btn.onclick = () => {
+            const idx = btn.dataset.msgExpand;
+            const txt = $(`[data-msg-text="${idx}"]`, panel);
+            if (!txt) return;
+            const expanded = txt.classList.toggle("is-expanded");
+            btn.textContent = expanded ? "收起" : "展开";
+          };
+        });
+        const toggleBtn = $("#msgDlgDiagToggle", panel);
+        const diagBox = $("#msgDlgDiagBox", panel);
+        const chev = $("#msgDlgDiagChev", panel);
+        if (toggleBtn && diagBox) {
+          toggleBtn.onclick = () => {
+            const nextOpen = diagBox.hidden;
+            diagBox.hidden = !nextOpen;
+            toggleBtn.setAttribute("aria-expanded", nextOpen ? "true" : "false");
+            if (chev) chev.classList.toggle("is-open", nextOpen);
+          };
+        }
+        const copyBtn = $("#msgDlgCopyDiag", panel);
+        if (copyBtn) {
+          copyBtn.onclick = () => {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(diagText).catch(() => {});
+            }
+            ctx.toast("已复制消息诊断信息");
+          };
+        }
+      },
+      onConfirm() {
+        if (!pa) return;
+        if (pa.kind === "permissions") {
+          setTimeout(() => scrollToPermissions(containerEl), 40);
+          ctx.toast("请在「Agent 访问权限」中调整该 Agent 权限");
+          return;
+        }
+        if (pa.kind === "replay") {
+          notice.ack = true;
+          syncExternal(ctx);
+          ctx.toast("已确认补交待发送消息，正在等待回执");
+          return;
+        }
+        if (pa.kind === "retry") {
+          notice.ack = true;
+          syncExternal(ctx);
+          ctx.toast("已重新核对回执，异常提示已解除");
+          return;
+        }
+        if (pa.kind === "resume") {
+          msgState.autoSave = true;
+          notice.ack = true;
+          syncExternal(ctx);
+          ctx.toast("已恢复该项目自动采集");
+          return;
+        }
+        notice.ack = true;
+        syncExternal(ctx);
+        ctx.toast(`已执行：${pa.label || "处理"}`);
+      },
+    });
+  }
+
+  function openQueuedDocsDialog(ctx, docs) {
+    UI.openDialog({
+      title: `进行中与待提炼文档（${docs.length}）`,
+      size: 640,
+      hideConfirm: true,
+      cancelText: "关闭",
+      hint: "点击任意文档行可展开或收起已采集正文",
+      body: `<div class="qdoc-list">
+        ${docs.map((d, idx) => `
+          <div class="qdoc-item" data-qdoc-item="${idx}">
+            <button type="button" class="qdoc-row" data-qdoc-toggle="${idx}" aria-expanded="false">
+              <span class="qdoc-main">
+                <span class="qdoc-title">${ctx.esc(d.title)}</span>
+                <span class="qdoc-meta">${ctx.esc(d.date || "")}</span>
+              </span>
+              <span class="manage-notice-tag is-accent">${ctx.esc(d.status || "排队提炼")}</span>
+              <span class="svc-diag-chev" data-qdoc-chev="${idx}">${ctx.icon("chev")}</span>
+            </button>
+            <div class="qdoc-body" data-qdoc-body="${idx}" hidden>${ctx.esc(d.body || "已采集本地会话原文，等待当前模型完成提炼。")}</div>
+          </div>
+        `).join("")}
+      </div>`,
+      onMount(panel) {
+        $$("[data-qdoc-toggle]", panel).forEach(btn => {
+          btn.onclick = () => {
+            const idx = btn.dataset.qdocToggle;
+            const body = $(`[data-qdoc-body="${idx}"]`, panel);
+            const chev = $(`[data-qdoc-chev="${idx}"]`, panel);
+            if (!body) return;
+            const nextOpen = body.hidden;
+            body.hidden = !nextOpen;
+            btn.setAttribute("aria-expanded", nextOpen ? "true" : "false");
+            if (chev) chev.classList.toggle("is-open", nextOpen);
+          };
+        });
+      },
+    });
+  }
+
+  function renderNoticeRowHTML(ctx, n, isError) {
+    const agName = agentDisplayName(n.agent);
+    const pa = n.primaryAction;
+    const tagCls = isError ? "is-danger" : "is-warn";
+    const dismissLabel = isError ? "不再提醒" : "暂不处理";
+    return `<div class="manage-notice-row">
+      <div class="manage-notice-main">
+        <div class="manage-notice-top">
+          <span class="manage-notice-title">${ctx.esc(n.title)}</span>
+          ${n.tag ? `<span class="manage-notice-tag ${tagCls}">${ctx.esc(n.tag)}</span>` : ""}
+          <span class="manage-notice-meta">
+            ${n.agent ? ctx.logo(n.agent, 15) : ""}
+            ${agName ? `<span>${ctx.esc(agName)}</span>` : ""}
+            ${n.time ? `<span>· ${ctx.esc(n.time)}</span>` : ""}
+          </span>
+        </div>
+        ${n.summary ? `<div class="manage-notice-summary">${ctx.esc(n.summary)}</div>` : ""}
+      </div>
+      <div class="manage-notice-actions">
+        ${pa ? UI.buttonHTML({ label: pa.label, variant: isError ? "default" : "primary", size: "sm", attrs: `data-notice-primary="${ctx.esc(n.id)}"` }) : ""}
+        ${UI.buttonHTML({ label: "详情", size: "sm", attrs: `data-notice-detail="${ctx.esc(n.id)}"` })}
+        ${UI.buttonHTML({ label: dismissLabel, variant: "ghost", size: "sm", attrs: `data-ack-notice="${ctx.esc(n.id)}"` })}
+      </div>
+    </div>`;
+  }
+
+  function renderMessagesGroupHTML(ctx, project, state) {
+    const msgState = getProjectMsgState(ctx, project.id);
+    const notices = msgState.notices || [];
+    const queued = msgState.queuedDocs || [];
+    const actionNotices = notices.filter(n => !n.ack && n.group === "action");
+    const errorNotices = notices.filter(n => !n.ack && n.group === "error");
+    const historyNotices = notices.filter(n => !!n.ack);
+    const historyOpen = !!cfg.noticeHistoryOpen[project.id];
+    const hasActiveAlerts = actionNotices.length > 0 || errorNotices.length > 0;
+    const highlightCls = (hasActiveAlerts && state && state.highlightMessages) ? " manage-msg-group--highlight" : "";
+
+    let listHTML = "";
+
+    if (hasActiveAlerts) {
+      if (actionNotices.length) {
+        listHTML += `<div class="manage-subhead manage-subhead--warn"><span class="manage-subhead-dot"></span><span>需你处理</span><span class="manage-subhead-count">${actionNotices.length}</span></div>`;
+        listHTML += actionNotices.map(n => renderNoticeRowHTML(ctx, n, false)).join("");
+      }
+      if (errorNotices.length) {
+        listHTML += `<div class="manage-subhead manage-subhead--danger"><span class="manage-subhead-dot"></span><span>系统异常</span><span class="manage-subhead-count">${errorNotices.length}</span></div>`;
+        listHTML += errorNotices.map(n => renderNoticeRowHTML(ctx, n, true)).join("");
+      }
+      if (queued.length) {
+        listHTML += `<div class="manage-subhead"><span class="manage-subhead-dot"></span><span>进行中与待提炼</span><span class="manage-subhead-count">${queued.length}</span></div>`;
+        listHTML += UI.rowHTML({
+          title: `${queued.length} 份已采集文档等待提炼`,
+          desc: "会话原文已落盘采集，将按队列顺序提炼为项目记忆",
+          control: UI.buttonHTML({ id: "btnViewQueue", label: "查看文档", size: "sm" }),
+        });
+      }
+    } else {
+      // 健康态：收敛为紧凑单行（除非有待整理文档或已忽略历史）
+      listHTML += UI.rowHTML({
+        leading: `<span class="dot ${msgState.autoSave ? "ok" : ""}"></span>`,
+        title: msgState.autoSave ? "自动采集已开启 · 正常" : "自动采集已关闭 · 正常",
+        control: `
+          ${UI.switchHTML({ id: "swProjAutoSave", checked: !!msgState.autoSave })}
+          ${UI.buttonHTML({ id: "btnRefreshQueue", label: "刷新", size: "sm", icon: ctx.icon("refresh") })}
+        `,
+      });
+      if (queued.length) {
+        listHTML += UI.rowHTML({
+          title: `进行中与待提炼 · ${queued.length} 份已采集文档等待提炼`,
+          desc: "会话原文已落盘采集，将按队列顺序提炼为项目记忆",
+          control: UI.buttonHTML({ id: "btnViewQueue", label: "查看文档", size: "sm" }),
+        });
+      }
+    }
+
+    if (historyNotices.length) {
+      listHTML += UI.rowHTML({
+        id: "btnToggleNoticeHistory",
+        title: `已忽略的历史提示（${historyNotices.length}）`,
+        desc: historyOpen ? "点击收起历史提示" : "点击展开查看或恢复提醒",
+        clickable: true,
+        chevron: false,
+        control: `<span class="svc-diag-chev${historyOpen ? " is-open" : ""}">${ctx.icon("chev")}</span>`,
+      });
+      if (historyOpen) {
+        listHTML += `<div class="manage-history-list">${historyNotices.map(h => {
+          const agName = agentDisplayName(h.agent);
+          return `<div class="manage-history-item">
+            <div class="manage-history-info">
+              <div class="manage-history-title">
+                <span>${ctx.esc(h.title)}</span>
+                ${h.tag ? `<span class="manage-notice-tag">${ctx.esc(h.tag)}</span>` : ""}
+                <span class="manage-notice-meta">${agName ? ctx.esc(agName) : ""}${h.time ? ` · ${ctx.esc(h.time)}` : ""}</span>
+              </div>
+              ${h.summary ? `<div class="manage-history-desc">${ctx.esc(h.summary)}</div>` : ""}
+            </div>
+            ${UI.buttonHTML({ label: "恢复提醒", size: "sm", attrs: `data-restore-notice="${ctx.esc(h.id)}"` })}
+          </div>`;
+        }).join("")}</div>`;
+      }
+    }
+
+    const headRight = hasActiveAlerts
+      ? `<span class="set-state-text is-warn">${actionNotices.length + errorNotices.length} 项待处理</span>
+         <div class="set-group-actions">
+           ${UI.switchHTML({ id: "swProjAutoSave", checked: !!msgState.autoSave, label: "自动采集" })}
+           ${UI.buttonHTML({ id: "btnRefreshQueue", label: "刷新", size: "sm", icon: ctx.icon("refresh") })}
+         </div>`
+      : "";
+
+    const html = `<section id="projMsgGroup" class="v4-group manage-msg-group${highlightCls}">
+      <div class="v4-group-head">
+        <h3 class="v4-group-title">消息与采集状态</h3>
+        ${headRight}
+      </div>
+      <div class="v4-group-list">${listHTML}</div>
+    </section>`;
+
+    return { html, hasActiveAlerts };
+  }
+
   Pages.registerProjectTab("manage", {
     fullWidth: true,
     render(containerEl, project, state, ctx) {
       const accessMap = ensureProjectAccess(project.id);
       const tgMode = cfg.projectToolGraph[project.id] || "inherit";
       const tgEffective = tgMode === "on" || (tgMode === "inherit" && cfg.toolGraphGlobal);
-      const notices = cfg.projectNotices[project.id] || [];
-      const activeNotices = notices.filter(n => !n.ack);
-      const historyNotices = notices.filter(n => n.ack);
-      const historyOpen = !!cfg.noticeHistoryOpen[project.id];
-      const queued = cfg.queuedDocs[project.id] || [];
+      const msgBlock = renderMessagesGroupHTML(ctx, project, state);
 
       const infoGroup = UI.groupHTML({
         title: "项目信息",
@@ -819,6 +1213,7 @@
       });
 
       const permGroup = UI.groupHTML({
+        id: "projPermGroup",
         title: "Agent 访问权限",
         desc: "三档权限立即保存并核对（第 2 次变更将演示失败回滚）",
         rows: permRows,
@@ -841,78 +1236,29 @@
             }),
           }),
           UI.rowHTML({
-            title: "整理历史工具记录",
+            title: "提炼历史工具记录",
             desc: "待处理：6 个会话 · 42 条工具记录（使用当前模型，会消耗额度）",
             control: UI.buttonHTML({ id: "btnBuildToolGraph", label: "创建工具图谱", size: "sm" }),
           }),
         ],
       });
 
-      const statusRows = [];
-      statusRows.push(UI.rowHTML({
-        title: "记忆整理队列",
-        desc: queued.length
-          ? `${queued.length} 份会话文档已保存，等待完成记忆提炼`
-          : "当前没有积压的待整理文档",
-        control: `
-          <span class="manage-notice-tag${queued.length ? " is-accent" : ""}">${queued.length ? `${queued.length} 份排队中` : "已清空"}</span>
-          ${queued.length ? UI.buttonHTML({ id: "btnViewQueue", label: "查看文档", size: "sm" }) : ""}
-        `,
-      }));
-
-      for (const n of activeNotices) {
-        statusRows.push(UI.rowHTML({
-          title: `${ctx.esc(n.title)} <span class="manage-notice-tag${n.level === "warn" ? " is-warn" : ""}">${ctx.esc(n.tag)}</span>`,
-          desc: n.desc,
-          control: UI.buttonHTML({ label: "知道了", size: "sm", attrs: `data-ack-notice="${ctx.esc(n.id)}"` }),
-        }));
-      }
-
-      if (!activeNotices.length) {
-        statusRows.push(UI.rowHTML({
-          title: "状态与异常提示",
-          desc: "当前没有需要你处理的事项或未确认异常",
-          value: "正常",
-        }));
-      }
-
-      let historyBlock = "";
-      if (historyNotices.length) {
-        statusRows.push(UI.rowHTML({
-          id: "btnToggleNoticeHistory",
-          title: `已知晓的历史提示（${historyNotices.length}）`,
-          desc: historyOpen ? "点击收起历史提示" : "点击查看已确认不再提醒的历史记录",
-          clickable: true,
-          chevron: false,
-          control: `<span class="svc-diag-chev${historyOpen ? " is-open" : ""}">${ctx.icon("chev")}</span>`,
-        }));
-        if (historyOpen) {
-          historyBlock = `<div class="manage-history-list">${historyNotices.map(h => `
-            <div class="manage-history-item">
-              <span>${ctx.esc(h.title)} · ${ctx.esc(h.desc)}</span>
-              ${UI.buttonHTML({ label: "恢复提醒", size: "sm", attrs: `data-restore-notice="${ctx.esc(h.id)}"` })}
-            </div>`).join("")}</div>`;
-        }
-      }
-
       containerEl.innerHTML = `<div class="v4-group-wrap settings-pane-enter">
+        ${msgBlock.hasActiveAlerts ? msgBlock.html : ""}
         ${infoGroup}
         ${permGroup}
         ${toolGraphGroup}
-        <section class="v4-group">
-          <div class="v4-group-head">
-            <h3 class="v4-group-title">消息与处理状态</h3>
-            <span class="meta">自动保存已开启</span>
-            <div class="set-group-actions">
-              ${UI.buttonHTML({ id: "btnRefreshQueue", label: "刷新状态", size: "sm", icon: ctx.icon("refresh") })}
-            </div>
-          </div>
-          <div class="v4-group-list">${statusRows.join("")}${historyBlock}</div>
-        </section>
+        ${msgBlock.hasActiveAlerts ? "" : msgBlock.html}
       </div>`;
     },
     bind(containerEl, project, state, ctx) {
       const accessMap = ensureProjectAccess(project.id);
+      const msgState = getProjectMsgState(ctx, project.id);
+
+      // 消费一次性的高亮标记（当前 DOM 节点保留动画 class，下次无关重绘不重复触发）
+      if (state && state.highlightMessages) {
+        state.highlightMessages = false;
+      }
 
       // 编辑项目名称（v4Dialog 480）
       const btnEditName = $("#btnEditProjName", containerEl);
@@ -938,7 +1284,7 @@
               const val = ($("#editProjNameInput", api.el).value || "").trim();
               if (!val) return false;
               project.name = val;
-              ctx.render(false);
+              syncExternal(ctx);
               ctx.toast(`项目名称已更新为 ${val}`);
             },
           });
@@ -972,7 +1318,7 @@
             setTimeout(() => {
               if (shouldFail) {
                 const prevLabel = (UI.TRI_ACCESS_OPTIONS.find(o => o.value === prevVal) || { label: prevVal }).label;
-                ctrl.fail(`保存失败：控制面校验超时，已回滚为「${prevLabel}」`, prevVal);
+                ctrl.fail(`保存失败：接入网关校验超时，已回滚为「${prevLabel}」`, prevVal);
                 return;
               }
               accessMap[agentId] = nextVal;
@@ -1008,7 +1354,7 @@
             confirmText: "开始创建",
             hint: "使用当前模型，会消耗额度",
             body: `
-              <p>将已有工具记录整理成关系图谱，已处理的会话会自动跳过。</p>
+              <p>将已有工具记录提炼成关系图谱，已处理的会话会自动跳过。</p>
               <div class="set-validation-box">
                 <span>待处理：<strong>6 个会话 · 42 条工具记录</strong></span>
               </div>
@@ -1020,47 +1366,82 @@
         };
       }
 
-      // 队列文档查看
+      // 消息与采集状态：自动采集开关
+      UI.bindSwitch($("#swProjAutoSave", containerEl), v => {
+        msgState.autoSave = v;
+        syncExternal(ctx);
+        ctx.toast(v ? "已开启该项目自动采集" : "已暂停该项目自动采集");
+      });
+
+      // 队列文档查看（v4Dialog 640，点击展开正文）
       const btnViewQueue = $("#btnViewQueue", containerEl);
       if (btnViewQueue) {
         btnViewQueue.onclick = () => {
-          const docs = cfg.queuedDocs[project.id] || [];
-          UI.openDialog({
-            title: `待整理文档（${docs.length}）`,
-            size: 480,
-            hideConfirm: true,
-            cancelText: "关闭",
-            body: UI.groupHTML({
-              rows: docs.map(d => UI.rowHTML({
-                title: ctx.esc(d.title),
-                desc: d.date,
-                value: d.status,
-              })),
-            }),
-          });
+          const docs = msgState.queuedDocs || [];
+          openQueuedDocsDialog(ctx, docs);
         };
       }
 
       // 刷新消息状态
       const btnRefresh = $("#btnRefreshQueue", containerEl);
-      if (btnRefresh) btnRefresh.onclick = () => ctx.toast("已刷新消息与处理状态");
+      if (btnRefresh) btnRefresh.onclick = () => ctx.toast("已刷新消息与采集状态");
 
-      // 确认 / 恢复历史提醒
+      // 通知主操作
+      $$("[data-notice-primary]", containerEl).forEach(b => {
+        b.onclick = () => {
+          const notice = (msgState.notices || []).find(n => n.id === b.dataset.noticePrimary);
+          if (!notice || !notice.primaryAction) return;
+          const pa = notice.primaryAction;
+          if (pa.kind === "replay") {
+            openNoticeDetailDialog(ctx, project, notice, containerEl);
+            return;
+          }
+          if (pa.kind === "permissions") {
+            scrollToPermissions(containerEl);
+            ctx.toast("已定位到「Agent 访问权限」");
+            return;
+          }
+          if (pa.kind === "resume") {
+            msgState.autoSave = true;
+            notice.ack = true;
+            syncExternal(ctx);
+            ctx.toast("已恢复该项目自动采集");
+            return;
+          }
+          if (pa.kind === "retry") {
+            notice.ack = true;
+            syncExternal(ctx);
+            ctx.toast("已重新核对回执，异常已解除");
+            return;
+          }
+          notice.ack = true;
+          syncExternal(ctx);
+          ctx.toast(`已执行：${pa.label}`);
+        };
+      });
+
+      // 通知详情（640 v4Dialog）
+      $$("[data-notice-detail]", containerEl).forEach(b => {
+        b.onclick = () => {
+          const notice = (msgState.notices || []).find(n => n.id === b.dataset.noticeDetail);
+          if (notice) openNoticeDetailDialog(ctx, project, notice, containerEl);
+        };
+      });
+
+      // 暂不处理 / 不再提醒 / 恢复提醒
       $$("[data-ack-notice]", containerEl).forEach(b => {
         b.onclick = () => {
-          const list = cfg.projectNotices[project.id] || [];
-          const hit = list.find(n => n.id === b.dataset.ackNotice);
+          const hit = (msgState.notices || []).find(n => n.id === b.dataset.ackNotice);
           if (hit) hit.ack = true;
-          ctx.render(false);
-          ctx.toast("已不再提醒该条提示");
+          syncExternal(ctx);
+          ctx.toast("已移入已忽略的历史提示");
         };
       });
       $$("[data-restore-notice]", containerEl).forEach(b => {
         b.onclick = () => {
-          const list = cfg.projectNotices[project.id] || [];
-          const hit = list.find(n => n.id === b.dataset.restoreNotice);
+          const hit = (msgState.notices || []).find(n => n.id === b.dataset.restoreNotice);
           if (hit) hit.ack = false;
-          ctx.render(false);
+          syncExternal(ctx);
           ctx.toast("已恢复提示显示");
         };
       });
@@ -1070,6 +1451,18 @@
           cfg.noticeHistoryOpen[project.id] = !cfg.noticeHistoryOpen[project.id];
           ctx.render(false);
         };
+      }
+
+      // 支持 URL 参数 ?dialog=msg 一次性自动打开首个活跃提醒的 640 详情弹窗
+      if (pendingOpenMsgDialog) {
+        pendingOpenMsgDialog = false;
+        const list = msgState.notices || [];
+        const firstActive = list.find(n => !n.ack && n.group === "action")
+          || list.find(n => !n.ack && n.group === "error")
+          || list[0];
+        if (firstActive) {
+          requestAnimationFrame(() => openNoticeDetailDialog(ctx, project, firstActive, containerEl));
+        }
       }
     },
   });

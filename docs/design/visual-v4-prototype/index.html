@@ -11,6 +11,8 @@
 <link rel="stylesheet" href="pages-settings.css">
 <link rel="stylesheet" href="pages-search.css">
 <link rel="stylesheet" href="pages-setup.css">
+<link rel="stylesheet" href="pages-menubar.css">
+<link rel="stylesheet" href="pages-common-graph.css">
 </head>
 <body>
 <header class="proto-bar" aria-label="原型控制">
@@ -20,9 +22,10 @@
     <button data-theme-choice="light">浅色</button><button data-theme-choice="dark">深色</button><button data-theme-choice="system">跟随系统</button>
   </div>
   <div class="proto-group" role="group" aria-label="页面" id="protoPages">
-    <button data-page-choice="overview">总览</button><button data-page-choice="project">项目</button><button data-page-choice="profile">画像</button><button data-page-choice="settings">设置</button><button data-page-choice="search">检索结果</button><button data-page-choice="setup">首次启动</button>
+    <button data-page-choice="overview">总览</button><button data-page-choice="common">通用记忆</button><button data-page-choice="project">项目</button><button data-page-choice="profile">画像</button><button data-page-choice="settings">设置</button><button data-page-choice="setup">首次启动</button>
   </div>
   <button id="openCmdK">⌘K 搜索</button>
+  <button id="toggleMenubar">状态栏</button>
   <button id="simulate">模拟新记忆入库</button>
   <button id="replay">重放入场</button>
   <label class="proto-check"><input type="checkbox" id="reduce"> 减少动态效果</label>
@@ -60,5 +63,7 @@
 <script src="pages-settings.js"></script>
 <script src="pages-search.js"></script>
 <script src="pages-setup.js"></script>
+<script src="pages-menubar.js"></script>
+<script src="pages-common-graph.js"></script>
 </body>
 </html>
