@@ -47,7 +47,8 @@ Memlane 是面向程序员的 macOS 记忆客户端，采用 **MyGo Native 桌�
 ## 4. 设计原则
 
 - **全局最优决策**：从全局出发思考当前最优解，不被过时文档约束；若最优解与旧文档冲突，先提出最优解并标明冲突所在与原因，经用户确认后同步更新相关文档。
-- **Cognee 零侵入与记忆日期口径**：所有扩展保持在外置网关、外置存储或宿主插件层，不修改上游 Cognee 源码。记忆日期优先取外置 `provenance_store` 按 `(dataset_id, lesson_type, state_key)` 锁定的最早日期，其次取原生 `session_date`，缺失时回退 `createdAt` 对应本地日历日（`createdAt` 单独保留）。
+- **Cognee 零侵入红线**：严禁修改上游 Cognee 源码、严禁维护私有 Fork 或本地源码补丁副本、严禁绕过 `official_service_dev.verify_source` 的上游 SHA256 校验，也不得在运行期对 Cognee 内部模块、路由或管线做无契约 monkey-patch。一切 Memlane 扩展能力（ACL 门禁、召回合并、Diff/日期注入、召回打点、回执与溯源、语言出口改写等）必须落在外置网关（`cognee_extension_gateway.py`）、外置存储（`capture_receipts` / `provenance_store`）、LLM 出口层（`language_egress.py`）或宿主插件层，保证上游 Cognee 升级时可原样替换。
+- **记忆日期口径**：优先取外置 `provenance_store` 按 `(dataset_id, lesson_type, state_key)` 锁定的最早日期，其次取原生 `session_date`，缺失时回退 `createdAt` 对应本地日历日（`createdAt` 单独保留）。
 - **唯一真相与用户确认边界**：Cognee 官方存储为唯一主数据源；通用记忆与用户画像按来源独立保存，不自动合并为通用记忆。AI 提出的合并、覆盖、删除或跨项目移动，在用户明确确认前不得改变已有有效知识。
 - **模型参数与设置契约**：未配置的模型选项保持省略，用户显式填写的 `0` 必须保留；启动、验证与热切换统一使用 `generation_config.native_llm_configuration` / `native_llm_kwargs`，不继承前一配置环境。桥接与 Provider 并存时查看、编辑或保存均不激活，仅确认后的服务回执更新唯一 `active`；用户画像生成不得按固定总时长超时中断，保存阶段不可取消。
 - **桌面界面与视觉验收**：保持 `1200×820` 默认与最小窗口（允许放大），首页宽幅总览、详情页三栏、关键词搜索统一交给全局 `⌘K`、无全局「全部记忆」侧栏入口。UI 改动须对照 V4 规范与原型在浅色、深色两套外观下实际验收。
