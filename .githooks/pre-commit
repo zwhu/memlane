@@ -1,0 +1,44 @@
+#!/bin/sh
+set -eu
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$REPO_ROOT"
+
+sh "$REPO_ROOT/.githooks/_chain_global.sh" pre-commit "$@"
+
+STAGED="$(git diff --cached --name-only --diff-filter=ACMR)"
+[ -n "$STAGED" ] || exit 0
+
+NEEDS_LINT=0
+RUN_LINT_TESTS=0
+OLD_IFS="$IFS"
+IFS='
+'
+for relpath in $STAGED; do
+    case "$relpath" in
+        scripts/lint.py|scripts/test_lint.py)
+            NEEDS_LINT=1
+            RUN_LINT_TESTS=1
+            ;;
+        engine/python/*.py|scripts/*.py|internal/simpledesktop/*.go)
+            NEEDS_LINT=1
+            ;;
+    esac
+done
+IFS="$OLD_IFS"
+
+[ "$NEEDS_LINT" -eq 1 ] || exit 0
+
+PYTHON_BIN="$REPO_ROOT/.local/cognee-python/bin/python"
+if [ ! -x "$PYTHON_BIN" ]; then
+    PYTHON_BIN="python3"
+fi
+
+TMPDIR_INDEX="$(mktemp -d "${TMPDIR:-/tmp}/memlane-lint-index.XXXXXX")"
+trap 'rm -rf "$TMPDIR_INDEX"' EXIT INT TERM
+
+git checkout-index --all --prefix="$TMPDIR_INDEX/"
+"$PYTHON_BIN" "$TMPDIR_INDEX/scripts/lint.py"
+if [ "$RUN_LINT_TESTS" -eq 1 ]; then
+    (cd "$TMPDIR_INDEX" && "$PYTHON_BIN" -m unittest discover -s scripts -p test_lint.py)
+fi

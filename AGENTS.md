@@ -18,9 +18,9 @@ Memlane 是面向程序员的 macOS 记忆客户端，采用 **MyGo Native 桌�
 | --- | --- |
 | 启动日常服务与 UI（默认配置 `.local/daily/runtime.json`） | `python3 scripts/dev.py start --config /绝对路径/runtime.json` |
 | 仅启动后台 / 查看状态 / 重开窗口 / 停止 / 异常恢复 | `python3 scripts/dev.py {start --no-ui \| status \| open \| stop \| recover} --config /绝对路径/runtime.json` |
-| Go 全量测试（含 `perf_budget_test.go` 冷启动首页 `<150ms`、帧耗时 `<12ms`/`<16ms` 与切页堆内存 `<=25 MiB` 验收）与静态检查 | `sh scripts/go.sh test ./...`、`sh scripts/go.sh vet ./...` |
-| 零依赖静态检查（`ML001`–`ML003` 模型边界、`ML007` 环境变量隔离、`ML008`–`ML012` UI 与冷启动首页性能门禁） | `python3 scripts/task.py -- python3 scripts/lint.py` |
-| Lint 规则回归单测 | `python3 scripts/task.py -- python3 -m unittest discover -s scripts -p test_lint.py` |
+| Go 全量测试（含 `perf_budget_test.go` 冷启动首页 `<150ms`、帧耗时 `<12ms`/`<16ms`、切页堆内存 `<=25 MiB` 及 `lint_gate_test.go` 自动追踪 `.py`/`.go` 静态门禁）与静态检查 | `sh scripts/go.sh test ./...`、`sh scripts/go.sh vet ./...` |
+| 零依赖静态检查（`ML001`–`ML003` 模型边界、`ML007` 环境隔离、`ML008`–`ML012` UI 性能、`ML013`–`ML017` 运行时资源门禁；`go test ./...` 自动强制执行） | `python3 scripts/task.py -- python3 scripts/lint.py` |
+| Scripts 回归与 Hook 配置（`scripts/install-hooks.sh` 仅启用局部 `.githooks` 暂存态 `pre-commit` + `pre-push` 并全阶段透传全局钩子，不改全局 `~/.gitconfig`） | `python3 scripts/task.py -- python3 -m unittest discover -s scripts -p "test_*.py"` |
 | 模型参数 / 探针 / 切换 / 启动回归（修改模型路径时必跑） | `python3 scripts/task.py -- python3 -m unittest` 运行 `test_generation_parameters`、`test_generation_probe`、`test_generation_handoff`、`test_generation_startup` |
 
 运行边界：

@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$REPO_ROOT"
+
+STDIN_TMP="$(mktemp "${TMPDIR:-/tmp}/memlane-pre-push-stdin.XXXXXX")"
+trap 'rm -f "$STDIN_TMP"' EXIT INT TERM
+cat > "$STDIN_TMP"
+
+sh "$REPO_ROOT/.githooks/_chain_global.sh" pre-push "$@" < "$STDIN_TMP"
+
+PYTHON_BIN="$REPO_ROOT/.local/cognee-python/bin/python"
+if [ ! -x "$PYTHON_BIN" ]; then
+    PYTHON_BIN="python3"
+fi
+
+"$PYTHON_BIN" scripts/lint.py
+"$PYTHON_BIN" -m unittest discover -s scripts -p "test_*.py"

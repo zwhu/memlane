@@ -445,6 +445,243 @@ def main(ROOT, report):
 """
         self.assertEqual(self.codes(good_disk_space, 'scripts/disk-space.py'), set())
 
+    def test_hardened_ml001_to_ml003_ml007_coverage(self):
+        bad_param_cases = [
+            "request(temperature=configured or 0.7)",
+            "fields['temperature'] = x if x else 0.7",
+            "request(temperature=x if x else 0.7)",
+            "fields.pop('LLM_TEMPERATURE', 0.7)",
+            "temperature = 0.7",
+            "class C:\n    temperature: float = 0.7",
+            "def f(temperature=0.7):\n    pass",
+            "def f(*, max_tokens=100):\n    pass",
+            "fields = {'temperature': 0.5 + 0.2}",
+            "class Sub(LLMConfig):\n    pass\nSub()",
+            "Cfg: type = LLMConfig\nCfg()",
+        ]
+        for src in bad_param_cases:
+            with self.subTest(bad_param=src):
+                codes = {c for _, c, _ in check_source(src, 'engine/python/generation_handoff_runtime.py')}
+                self.assertTrue(codes & {'ML001', 'ML002', 'ML003'}, (src, codes))
+
+        good_param_cases = [
+            "temperature = None",
+            "def f(temperature=None):\n    pass",
+            "fields.pop('LLM_TEMPERATURE', None)",
+            "request(temperature=None)",
+            "from x import LLMConfig as Cfg\ndef f(Cfg):\n    return Cfg()",
+        ]
+        for src in good_param_cases:
+            with self.subTest(good_param=src):
+                self.assertEqual(check_source(src, 'engine/python/generation_handoff_runtime.py'), [])
+
+        for src in (
+            "import os\nos.environ.__setitem__('FOO', '1')",
+            "import os\nos.environ.__delitem__('FOO')",
+        ):
+            self.assertIn('ML007', {c for _, c, _ in check_source(src, 'engine/python/project_control_server.py')})
+
+        dummy_try_bypass = """import os
+def _scoped_improve_cooldown(value):
+    os.environ['HOME'] = '/evil'
+    try:
+        pass
+    finally:
+        pass
+"""
+        self.assertIn('ML007', {c for _, c, _ in check_source(dummy_try_bypass, 'engine/python/project_backlog_worker.py')})
+
+        wrong_key_in_try = """import os
+def _scoped_improve_cooldown(value):
+    os.environ['HOME'] = '/evil'
+    try:
+        yield
+    finally:
+        os.environ.pop('COGNEE_IMPROVE_COOLDOWN', None)
+"""
+        self.assertIn('ML007', {c for _, c, _ in check_source(wrong_key_in_try, 'engine/python/project_backlog_worker.py')})
+
+        shadowed_env = """from os import environ as env
+def unrelated(env):
+    env['HOME'] = '/tmp'
+"""
+        self.assertEqual(check_source(shadowed_env, 'engine/python/project_control_server.py'), [])
+
+    def test_hardened_go_lexer_and_real_api_coverage(self):
+        self.assertIn('ML008', {c for _, c, _ in lint.check_go_source('func f(c *ui.Context) { c.AnimationFrame /* bypass */ () }', 'overview_ui.go')})
+        self.assertIn('ML008', {c for _, c, _ in lint.check_go_source('func spin(c *ui.Context) { s := "ReduceMotion"; _ = s; c.AnimationFrame() }', 'motion_tokens.go')})
+        self.assertIn('ML008', {c for _, c, _ in lint.check_go_source('func spin(c *ui.Context) { if c.Preferences().ReduceMotion { c.AnimationFrame() } }', 'motion_tokens.go')})
+
+        self.assertEqual(lint.check_go_source('func f(c *ui.Context) { <-time.After(100 * time.Millisecond) }', 'app.go'), [])
+        self.assertIn('ML009', {c for _, c, _ in lint.check_go_source('func f(c *ui.Context) { c.After(time.Millisecond) }', 'app.go')})
+
+        rune_escape = """func f(el ui.Element, r rune) {
+    el.Draw(func(p *ui.Painter, rc ui.Rect) {
+        if r == '}' {}
+        os.ReadFile("secret")
+    })
+}"""
+        self.assertIn('ML010', {c for _, c, _ in lint.check_go_source(rune_escape, 'overview_ui.go')})
+
+        raw_and_str_ok = 'func f() { var m = "overview-ui-cache"; var r = `c.AnimationFrame()\nc.After(10*time.Millisecond)`; _, _ = m, r }'
+        self.assertEqual(lint.check_go_source(raw_and_str_ok, 'app.go'), [])
+
+        self.assertIn('ML010', {c for _, c, _ in lint.check_go_source('func f(el ui.Element) { el.Draw(func(p *ui.Painter, r ui.Rect) { hc.Do(req) }) }', 'overview_ui.go')})
+        self.assertIn('ML010', {c for _, c, _ in lint.check_go_source('func f(el ui.Element) { el.DrawOver(func(p *ui.Painter, r ui.Rect) { os.OpenFile("x", 0, 0600) }) }', 'overview_ui.go')})
+        self.assertIn('ML011', {c for _, c, _ in lint.check_go_source('func (app *App) View(c *ui.Context) { http.NewRequestWithContext(ctx, "GET", "/", nil) }\nvar extra = 1', 'app.go')})
+        self.assertEqual(lint.check_go_source('func (a *App) View(c *ui.Context) {}\nvar helper = func() { os.ReadFile("x") }', 'app.go'), [])
+
+        bad_early_start = 'func (a *App) Start() { a.RefreshIntegrations()\na.RefreshProjectDirectory() }'
+        self.assertIn('ML012', {c for _, c, _ in lint.check_go_source(bad_early_start, 'app.go')})
+        good_early_return_start = 'func (a *App) Start() { if a.Config.GenerationSetupOnly { a.RefreshIntegrations(); return }\na.RefreshProjectDirectory() }'
+        self.assertEqual(lint.check_go_source(good_early_return_start, 'app.go'), [])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'engine/python').mkdir(parents=True)
+            go_dir = root / 'internal/simpledesktop'
+            go_dir.mkdir(parents=True)
+            bad_go = go_dir / 'overview_ui.go'
+            bad_go.write_text('package simpledesktop\nfunc f(c *ui.Context) { c.AnimationFrame() }\n')
+            (go_dir / 'overview_ui_test.go').write_text('package simpledesktop\nfunc TestX(c *ui.Context) { c.AnimationFrame() }\n')
+            output = io.StringIO()
+            with patch.object(lint, 'ROOT', root), contextlib.redirect_stdout(output):
+                self.assertTrue(lint.main())
+                self.assertIn('internal/simpledesktop/overview_ui.go:2: ML008', output.getvalue())
+                self.assertNotIn('overview_ui_test.go', output.getvalue())
+                bad_go.write_text('package simpledesktop\n')
+                self.assertFalse(lint.main())
+
+    def test_hardened_ml013_to_ml017_coverage(self):
+        self.assertIn('ML013', self.codes("import asyncio\nasync def loop():\n    while 1:\n        await asyncio.sleep(delay=1)"))
+        self.assertIn('ML013', self.codes("import asyncio\nPOLL = 0.5\nasync def loop():\n    while True:\n        await asyncio.sleep(POLL)"))
+        self.assertEqual(self.codes("from asyncio import sleep\nasync def ok(sleep):\n    while True:\n        await sleep(1)"), set())
+
+        dev_unthrottled_helper = """import time
+MONITOR_POLL_INTERVAL = 0.5
+def run_monitor_housekeeping(roots, descendants):
+    track_descendants(roots, descendants)
+def main(roots, descendants):
+    while True:
+        run_monitor_housekeeping(roots, descendants)
+        time.sleep(MONITOR_POLL_INTERVAL)
+"""
+        self.assertIn('ML013', self.codes(dev_unthrottled_helper, 'scripts/dev.py'))
+
+        dev_throttled_helper = """import time
+MONITOR_POLL_INTERVAL = 0.5
+def run_monitor_housekeeping(roots, descendants, *, last_run=None, interval=10.0):
+    now = time.monotonic()
+    if last_run is not None and (now - last_run) < interval:
+        return last_run
+    track_descendants(roots, descendants)
+    return now
+def main(roots, descendants):
+    while True:
+        run_monitor_housekeeping(roots, descendants)
+        time.sleep(MONITOR_POLL_INTERVAL)
+"""
+        self.assertEqual(self.codes(dev_throttled_helper, 'scripts/dev.py'), set())
+
+        dev_else_branch = """import time
+def main(roots, descendants):
+    last = 0.0
+    while True:
+        if time.monotonic() - last < 10:
+            pass
+        else:
+            track_descendants(roots, descendants)
+        time.sleep(0.5)
+"""
+        self.assertEqual(self.codes(dev_else_branch, 'scripts/dev.py'), set())
+
+        executor_and_wait_ok = """import asyncio, subprocess
+async def ok(self, pid):
+    loop = asyncio.get_running_loop()
+    a = await loop.run_in_executor(None, lambda: subprocess.run(['ps']))
+    b = await asyncio.wait_for(self.sample_process(pid), 2)
+    return a, b
+"""
+        self.assertEqual(self.codes(executor_and_wait_ok, 'engine/python/service_monitor.py'), set())
+        self.assertIn('ML014', self.codes("import os\nasync def f():\n    os.system('ps')"))
+        self.assertIn('ML014', self.codes("import subprocess\ndef _ps():\n    return subprocess.run(['ps'])\nasync def f():\n    return _ps()"))
+
+        split_read_bytes = """import hashlib
+def verify(executable):
+    raw = executable.read_bytes()
+    return hashlib.sha256(raw).hexdigest()
+"""
+        self.assertIn('ML015', self.codes(split_read_bytes, 'engine/python/worker.py'))
+        self.assertIn('ML015', self.codes("import hashlib\ndef verify(node):\n    return hashlib.sha512(data=node.read_bytes()).hexdigest()", 'engine/python/worker.py'))
+
+        dead_unlink = """async def execute(cancel_file, process):
+    owner_path = cancel_file
+    try:
+        await process.wait()
+    finally:
+        if False:
+            owner_path.unlink()
+"""
+        self.assertIn('ML015', self.codes(dead_unlink, 'engine/python/opencode_backlog.py'))
+
+        helper_unlink = """def _cleanup_owner(p):
+    p.unlink(missing_ok=True)
+async def execute(cancel_file, process):
+    owner_path = cancel_file
+    try:
+        await process.wait()
+    finally:
+        _cleanup_owner(owner_path)
+"""
+        self.assertEqual(self.codes(helper_unlink, 'engine/python/opencode_backlog.py'), set())
+
+        doc_only_wal = '''"""Example note: PRAGMA journal_mode=WAL."""
+def open_db():
+    return None
+'''
+        self.assertEqual(self.codes(doc_only_wal, 'engine/python/external_capture_store.py'), set())
+        self.assertIn('ML016', self.codes("def open_db(db):\n    db.execute(\"PRAGMA main.journal_mode = 'WAL'\")", 'engine/python/external_capture_store.py'))
+        self.assertIn('ML016', self.codes("def open_db(db):\n    db.execute('PRAGMA ' + 'journal_mode=WAL')", 'engine/python/external_capture_store.py'))
+
+        watch_bypass = """def reopen_ui(current, processes, launch, config_path, *, watch_ui=False):
+    if watch_ui:
+        pass
+    return launch([str(GO), 'tool', 'mygo', 'dev'], env=ui_env(config_path))
+"""
+        self.assertIn('ML017', self.codes(watch_bypass, 'scripts/dev.py'))
+
+        watch_not_else = """def reopen_ui(current, processes, launch, config_path, *, watch_ui=False):
+    if not watch_ui:
+        return launch([str(BINARY)], env=ui_env(config_path))
+    else:
+        return launch((str(GO), 'tool', 'mygo', 'dev'), env=ui_env(config_path))
+"""
+        self.assertEqual(self.codes(watch_not_else, 'scripts/dev.py'), set())
+
+        fake_unlink_disk = """def drop_tmp(p):
+    p.unlink()
+def main(ROOT):
+    log = ROOT / 'build/disk-cleanup'
+    (log / '20261121-120000.json').write_text('{}')
+    drop_tmp(ROOT / 'x')
+"""
+        self.assertIn('ML017', self.codes(fake_unlink_disk, 'scripts/disk-space.py'))
+
+        two_hop_disk = """def _unlink_one(p):
+    p.unlink(missing_ok=True)
+def prune_cleanup_receipts(log_dir):
+    for p in log_dir.glob('*.json'):
+        _unlink_one(p)
+def note(p):
+    p.write_text('ok')
+def main(ROOT):
+    log = ROOT / 'build/disk-cleanup'
+    with open(log / 'r.json', 'w') as fh:
+        fh.write('{}')
+    prune_cleanup_receipts(log)
+"""
+        self.assertEqual(self.codes(two_hop_disk, 'scripts/disk-space.py'), set())
+
 
 if __name__ == '__main__':
     unittest.main()

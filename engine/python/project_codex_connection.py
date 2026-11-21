@@ -254,7 +254,7 @@ class CodexConnection:
             preview = record['preview']
             if reviewed_sha != preview['proposed_sha256'] or digest(baseline) != preview['baseline_sha256']:
                 raise PolicyError('codex_configuration_changed', 409)
-            if preview['disabled_plugins'] and legacy_consumers(self.home, preview['disabled_plugins']):
+            if preview['disabled_plugins'] and await asyncio.to_thread(legacy_consumers, self.home, preview['disabled_plugins']):
                 raise PolicyError('codex_legacy_consumers_still_active', 409)
             if project_conflicts(parsed, preview['enabled_plugin'], self.home):
                 raise PolicyError('codex_project_config_requires_review', 409)
