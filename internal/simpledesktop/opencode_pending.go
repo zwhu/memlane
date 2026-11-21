@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 type PendingOperatorConfig struct {
@@ -296,6 +297,21 @@ func captureOpenCodeColdWatch(entry openCodeVerifyEntry, tokenFile, hostSessionK
 	}, true
 }
 
+func openCodeColdWatchEqual(a, b openCodeColdEntry) bool {
+	if a.TokenWatch != b.TokenWatch || a.OutboxDir != b.OutboxDir || a.SessionWatch != b.SessionWatch {
+		return false
+	}
+	if len(a.OutboxEntries) != len(b.OutboxEntries) {
+		return false
+	}
+	for i := range a.OutboxEntries {
+		if a.OutboxEntries[i] != b.OutboxEntries[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func openCodeColdEntryUnchanged(cached openCodeColdEntry) bool {
 	if !openCodeWatchUnchanged(cached.TokenWatch, false) {
 		return false
@@ -536,11 +552,6 @@ func runOpenCodePending(ctx context.Context, installation AgentInstallation, bin
 	if !filepath.IsAbs(operator.TokenFile) || operator.ControlURL == "" || operator.ServiceURL == "" {
 		return result, fmt.Errorf("管理连接尚未确认，未更改记录")
 	}
-	forceVerify := action != "show"
-	verifiedEntry, err := verifyOpenCodePendingMode(installation, forceVerify)
-	if err != nil {
-		return result, fmt.Errorf("连接组件需要重新核对，保留原记录")
-	}
 	coldKey := openCodeColdKey{
 		AgentID:        binding.AgentID,
 		ProjectID:      binding.ProjectID,
@@ -557,7 +568,14 @@ func runOpenCodePending(ctx context.Context, installation AgentInstallation, bin
 		ControlURL:     operator.ControlURL,
 		ServiceURL:     operator.ServiceURL,
 	}
+	forceVerify := action != "show"
+	verifiedEntry, err := verifyOpenCodePendingMode(installation, forceVerify)
+	if err != nil {
+		openCodeColdDelete(coldKey)
+		return result, fmt.Errorf("连接组件需要重新核对，保留原记录")
+	}
 	if action == "show" {
+		waitColdPendingStoreLoad(200 * time.Millisecond)
 		if cached, ok := openCodeColdGet(coldKey); ok {
 			if openCodeColdEntryUnchanged(cached) {
 				return clonePendingMaterials(cached.Result), nil
@@ -566,6 +584,11 @@ func runOpenCodePending(ctx context.Context, installation AgentInstallation, bin
 		}
 	} else {
 		openCodeColdDelete(coldKey)
+	}
+	var preWatch openCodeColdEntry
+	preWatchOK := false
+	if action == "show" {
+		preWatch, preWatchOK = captureOpenCodeColdWatch(verifiedEntry, operator.TokenFile, binding.HostSessionKey)
 	}
 	request := map[string]any{
 		"agent_id": binding.AgentID,
@@ -621,10 +644,12 @@ func runOpenCodePending(ctx context.Context, installation AgentInstallation, bin
 		openCodeColdDelete(coldKey)
 		return result, fmt.Errorf("采集状态未确认，保留原记录")
 	}
-	if action == "show" && result.Pending == 0 && result.Unknown == 0 {
-		if watchEntry, ok := captureOpenCodeColdWatch(verifiedEntry, operator.TokenFile, binding.HostSessionKey); ok {
-			watchEntry.Result = clonePendingMaterials(result)
-			openCodeColdPut(coldKey, watchEntry)
+	if action == "show" && result.Pending == 0 && result.Unknown == 0 && preWatchOK {
+		if postWatch, ok := captureOpenCodeColdWatch(verifiedEntry, operator.TokenFile, binding.HostSessionKey); ok && openCodeColdWatchEqual(preWatch, postWatch) {
+			postWatch.Result = clonePendingMaterials(result)
+			openCodeColdPut(coldKey, postWatch)
+		} else {
+			openCodeColdDelete(coldKey)
 		}
 	} else {
 		openCodeColdDelete(coldKey)

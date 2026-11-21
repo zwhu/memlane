@@ -21,7 +21,7 @@ func (a *App) appendRawRecords(s *pane) {
 			return
 		}
 		s.RawAppending = true
-		request, epoch := s.request, a.epoch
+		request, epoch, authEpoch := s.request, a.epoch, a.authEpoch
 		cursor, kind := s.RawNextCursor, a.kind
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -32,7 +32,7 @@ func (a *App) appendRawRecords(s *pane) {
 				mapped, err = v2RawRecordsToItems(p.Dataset, resp)
 			}
 			a.Update(func() {
-				if epoch != a.epoch || request != s.request || !a.syncReadingIdentity() {
+				if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
 					return
 				}
 				s.RawAppending = false
@@ -40,6 +40,9 @@ func (a *App) appendRawRecords(s *pane) {
 					if isControlInvalidCursor(err) {
 						s.RawNextCursor = ""
 						s.More = false
+						s.Error = ""
+						a.load(s)
+						return
 					}
 					s.Error = controlUserError(err)
 					if readingUnavailable(err) {

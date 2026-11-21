@@ -122,13 +122,14 @@ type App struct {
 	project              int
 	kind                 string
 	epoch                uint64
+	authEpoch            uint64
 	service, completion  string
 	monitor              serviceMonitorState
 	trayCache            trayFlyoutCache
 	knowledgeWriter      *knowledgeReadWriter
 	readingMigrateMu     sync.Mutex
 	readingMigrated      map[string]bool
-	readingMigrating     map[string]bool
+	readingMigrating     map[string]chan struct{}
 	configError          string
 	md                   markdown.Options
 	v4MD                 map[v4MDKey]*markdown.Options
@@ -222,6 +223,23 @@ func (a *App) Start() {
 		a.RefreshIntegrations()
 	}
 }
+func (a *App) FlushPendingState(timeout time.Duration) {
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		a.waitKnowledgeReadFlushWithTimeout(timeout)
+	}()
+	go func() {
+		defer wg.Done()
+		flushColdPendingStoreWithTimeout(timeout)
+	}()
+	wg.Wait()
+}
+
 func (a *App) health() {
 	a.refreshServiceMonitor()
 }
@@ -379,7 +397,7 @@ func (a *App) load(s *pane) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	s.cancel = cancel
 	s.request++
-	request, epoch := s.request, a.epoch
+	request, epoch, authEpoch := s.request, a.epoch, a.authEpoch
 	refreshing := s.Loaded
 	s.Loading = true
 	s.Error = ""
@@ -425,6 +443,7 @@ func (a *App) load(s *pane) {
 		var usedV2Common bool
 		var v2CommonNextCursor string
 		var v2CommonTotal int
+		var v2CommonCursorReset bool
 		var more bool
 		var err error
 		if page == "搜索" || q != "" {
@@ -450,23 +469,35 @@ func (a *App) load(s *pane) {
 		} else if p.Dataset == "" {
 			err = fmt.Errorf("项目正在登记，内容归属尚未确认")
 		} else if page == "通用知识" {
-			if len(recallFilter) == 0 && hasControl && control.hasFeature(ctx, v2FeatureCommonKnowledgeCursor) {
-				v2Resp, v2Err := control.commonKnowledgeV2(ctx, p.Dataset, category, 30, commonCursor)
-				if v2Err == nil {
+			if len(recallFilter) == 0 && hasControl {
+				hasV2Common, probeErr := control.probeFeature(ctx, v2FeatureCommonKnowledgeCursor)
+				if probeErr != nil {
 					usedV2Common = true
-					v2CommonNextCursor = v2Resp.NextCursor
-					v2CommonTotal = v2Resp.TotalFiltered
-					more = v2Resp.HasMore
-					rows = make([]Item, 0, len(v2Resp.Items))
-					for _, itemRow := range v2Resp.Items {
-						if itemRow.DocID == "" {
-							continue
-						}
-						rows = append(rows, itemRow.toItem(recallStartedAt))
+					err = probeErr
+				} else if hasV2Common {
+					v2Resp, v2Err := control.commonKnowledgeV2(ctx, p.Dataset, category, 30, commonCursor)
+					if v2Err != nil && isControlInvalidCursor(v2Err) && commonCursor != "" {
+						// Explicitly reset expired cursor to page 1 under the same filter
+						// instead of silently falling back to legacy offset pagination.
+						v2CommonCursorReset = true
+						v2Resp, v2Err = control.commonKnowledgeV2(ctx, p.Dataset, category, 30, "")
 					}
-				} else if isControlFailClosedV2(v2Err) {
-					usedV2Common = true
-					err = v2Err
+					if v2Err == nil {
+						usedV2Common = true
+						v2CommonNextCursor = v2Resp.NextCursor
+						v2CommonTotal = v2Resp.TotalFiltered
+						more = v2Resp.HasMore
+						rows = make([]Item, 0, len(v2Resp.Items))
+						for _, itemRow := range v2Resp.Items {
+							if itemRow.DocID == "" {
+								continue
+							}
+							rows = append(rows, itemRow.toItem(recallStartedAt))
+						}
+					} else if isControlFailClosedV2(v2Err) || isControlInvalidCursor(v2Err) {
+						usedV2Common = true
+						err = v2Err
+					}
 				}
 			}
 			if !usedV2Common {
@@ -487,18 +518,24 @@ func (a *App) load(s *pane) {
 				}
 			}
 		} else if page == "知识" && (kind == "原始记录" || kind == "会话" || kind == "文档") {
-			if hasControl && p.ID != "" && control.hasFeature(ctx, v2FeatureRawRecords) {
-				v2Resp, v2Err := control.rawRecordsV2(ctx, p.ID, kind, 30, "")
-				if v2Err == nil {
-					rows, err = v2RawRecordsToItems(p.Dataset, v2Resp)
-					more = v2Resp.HasMore
-					rawCacheReady = v2Resp.CacheReady
-					v2RawNextCursor = v2Resp.NextCursor
+			if hasControl && p.ID != "" {
+				hasV2Raw, probeErr := control.probeFeature(ctx, v2FeatureRawRecords)
+				if probeErr != nil {
 					usedV2Raw = true
-					usedFast = true
-				} else if isControlFailClosedV2(v2Err) {
-					usedV2Raw = true
-					err = v2Err
+					err = probeErr
+				} else if hasV2Raw {
+					v2Resp, v2Err := control.rawRecordsV2(ctx, p.ID, kind, 30, "")
+					if v2Err == nil {
+						rows, err = v2RawRecordsToItems(p.Dataset, v2Resp)
+						more = v2Resp.HasMore
+						rawCacheReady = v2Resp.CacheReady
+						v2RawNextCursor = v2Resp.NextCursor
+						usedV2Raw = true
+						usedFast = true
+					} else if isControlFailClosedV2(v2Err) || isControlInvalidCursor(v2Err) {
+						usedV2Raw = true
+						err = v2Err
+					}
 				}
 			}
 			if !usedV2Raw {
@@ -552,7 +589,7 @@ func (a *App) load(s *pane) {
 			rows, more, err = client.documents(ctx, p, offset, kind == "文档")
 		}
 		a.Update(func() {
-			if a.epoch != epoch || s.request != request {
+			if a.epoch != epoch || a.authEpoch != authEpoch || s.request != request {
 				return
 			}
 			s.Loading = false
@@ -576,8 +613,10 @@ func (a *App) load(s *pane) {
 			if page == "通用知识" {
 				s.CommonV2Mode = usedV2Common
 				if usedV2Common {
-					if len(s.CommonCursors) == 0 {
+					if v2CommonCursorReset || len(s.CommonCursors) == 0 {
 						s.CommonCursors = []string{""}
+						s.CommonPageIndex = 0
+						s.Offset = 0
 					}
 					s.CommonNextCursor = v2CommonNextCursor
 					s.CommonTotalFiltered = v2CommonTotal
@@ -658,7 +697,7 @@ func (a *App) selectItem(s *pane, i Item) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	s.readCancel = cancel
 	s.readRequest++
-	request, epoch := s.readRequest, a.epoch
+	request, epoch, authEpoch := s.readRequest, a.epoch, a.authEpoch
 	generation := a.readingGeneration(s)
 	s.Reading = true
 	s.History = nil
@@ -689,7 +728,7 @@ func (a *App) selectItem(s *pane, i Item) {
 			statsCancel()
 		}
 		a.Update(func() {
-			if epoch != a.epoch || request != s.readRequest || revision != a.readingRevisions[i.key()] {
+			if epoch != a.epoch || authEpoch != a.authEpoch || request != s.readRequest || revision != a.readingRevisions[i.key()] {
 				return
 			}
 			if !a.syncReadingIdentity() {
@@ -743,7 +782,7 @@ func (a *App) source(s *pane) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	s.readCancel = cancel
 	s.readRequest++
-	request, epoch := s.readRequest, a.epoch
+	request, epoch, authEpoch := s.readRequest, a.epoch, a.authEpoch
 	s.Reading = true
 	s.ReadingSource = true
 	client := a.Client
@@ -773,7 +812,7 @@ func (a *App) source(s *pane) {
 			i, sessionPage, err = client.sourceWithHistory(ctx, original)
 		}
 		a.Update(func() {
-			if epoch != a.epoch || request != s.readRequest {
+			if epoch != a.epoch || authEpoch != a.authEpoch || request != s.readRequest {
 				return
 			}
 			if !a.syncReadingIdentity() {

@@ -307,6 +307,7 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 }
 
 func (a *App) projectProgressBucket(c *ui.Context, q *projectQueueState, p AccessProject, progress []messageNotice, hasDocs bool) {
+	totalDocs := max(q.PendingDocumentsCount, len(q.Documents))
 	ui.Column(c.Key("proj-progress-" + p.ID)).FillWidth().Gap(0).Children(func() {
 		ui.Row(c).FillWidth().Padding(sp2, sp1, sp1, sp1).Gap(sp2).AlignItems(ui.Center).Children(func() {
 			v4StatusDot(c, "run")
@@ -314,9 +315,9 @@ func (a *App) projectProgressBucket(c *ui.Context, q *projectQueueState, p Acces
 			if len(progress) > 0 && hasDocs {
 				ui.Text(c, fmt.Sprintf("%d 项", len(progress))).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
 				ui.Text(c, "·").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
-				ui.Text(c, fmt.Sprintf("%d 份文档", len(q.Documents))).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
+				ui.Text(c, fmt.Sprintf("%d 份文档", totalDocs)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
 			} else if hasDocs {
-				ui.Text(c, fmt.Sprintf("%d 份文档", len(q.Documents))).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
+				ui.Text(c, fmt.Sprintf("%d 份文档", totalDocs)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
 			} else {
 				ui.Text(c, fmt.Sprintf("%d", len(progress))).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
 			}
@@ -342,11 +343,19 @@ func (a *App) projectProgressBucket(c *ui.Context, q *projectQueueState, p Acces
 					},
 				})
 			}
-			if len(q.Documents) > 5 {
+			if len(q.Documents) > 5 || totalDocs > len(q.Documents) {
 				ui.Row(c).FillWidth().Padding(sp2, sp1).Gap(sp3).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
-					queueAction(c, "上一页", func() { q.Offset = max(0, q.Offset-5) }).Disabled(start == 0)
-					homeText(c, fmt.Sprintf("%d–%d / %d", start+1, end, len(q.Documents)), homeMeta)
-					queueAction(c, "下一页", func() { q.Offset += 5 }).Disabled(end == len(q.Documents))
+					if len(q.Documents) > 5 {
+						queueAction(c, "上一页", func() { q.Offset = max(0, q.Offset-5) }).Disabled(start == 0)
+						pageLabel := fmt.Sprintf("%d–%d / %d", start+1, end, totalDocs)
+						if totalDocs > len(q.Documents) {
+							pageLabel = fmt.Sprintf("%d–%d（已展示前 %d / 共 %d 份）", start+1, end, len(q.Documents), totalDocs)
+						}
+						homeText(c, pageLabel, homeMeta)
+						queueAction(c, "下一页", func() { q.Offset += 5 }).Disabled(end == len(q.Documents))
+					} else {
+						homeText(c, fmt.Sprintf("已展示前 %d / 共 %d 份待提炼文档", len(q.Documents), totalDocs), homeMeta)
+					}
 				})
 			}
 		}

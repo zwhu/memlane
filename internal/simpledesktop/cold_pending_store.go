@@ -3,6 +3,8 @@ package simpledesktop
 import (
 	"container/list"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -47,21 +49,26 @@ type persistedColdPendingSnapshot struct {
 }
 
 type coldPendingDiskStore struct {
-	mu         sync.Mutex
-	fileMu     sync.Mutex
-	cond       *sync.Cond
-	path       string
-	loadedPath string
-	debounce   time.Duration
-	dirty      bool
-	timer      *time.Timer
-	flushing   bool
-	writeCount uint64
+	mu           sync.Mutex
+	fileMu       sync.Mutex
+	cond         *sync.Cond
+	path         string
+	loadedPath   string
+	loadDone     chan struct{}
+	debounce     time.Duration
+	maxDelay     time.Duration
+	dirty        bool
+	firstDirtyAt time.Time
+	timer        *time.Timer
+	flushing     bool
+	writeCount   uint64
+	lastWriteErr error
 }
 
 var coldPendingStore = func() *coldPendingDiskStore {
 	s := &coldPendingDiskStore{
 		debounce: 500 * time.Millisecond,
+		maxDelay: 5 * time.Second,
 	}
 	s.cond = sync.NewCond(&s.mu)
 	return s
@@ -81,15 +88,16 @@ func coldPendingWatchPathForConfig(cfg Config) string {
 func (a *App) configureColdPendingStoreFromConfig() {
 	path := coldPendingWatchPathForConfig(a.Config)
 	if path != "" {
-		configureColdPendingStore(path)
+		configureColdPendingStoreAsync(path)
 	}
 }
 
-func configureColdPendingStore(path string) {
+func configureColdPendingStoreAsync(path string) chan struct{} {
 	coldPendingStore.mu.Lock()
 	if coldPendingStore.path == path && coldPendingStore.loadedPath == path {
+		done := coldPendingStore.loadDone
 		coldPendingStore.mu.Unlock()
-		return
+		return done
 	}
 	if coldPendingStore.timer != nil {
 		coldPendingStore.timer.Stop()
@@ -97,11 +105,48 @@ func configureColdPendingStore(path string) {
 	}
 	coldPendingStore.path = path
 	coldPendingStore.dirty = false
+	coldPendingStore.firstDirtyAt = time.Time{}
 	coldPendingStore.loadedPath = ""
+	if path == "" {
+		coldPendingStore.loadDone = nil
+		coldPendingStore.cond.Broadcast()
+		coldPendingStore.mu.Unlock()
+		return nil
+	}
+	done := make(chan struct{})
+	coldPendingStore.loadDone = done
 	coldPendingStore.mu.Unlock()
 
-	if path != "" {
+	go func() {
+		defer close(done)
 		loadColdPendingStore(path)
+	}()
+	return done
+}
+
+func waitColdPendingStoreLoad(timeout time.Duration) {
+	coldPendingStore.mu.Lock()
+	done := coldPendingStore.loadDone
+	coldPendingStore.mu.Unlock()
+	if done == nil {
+		return
+	}
+	if timeout <= 0 {
+		<-done
+		return
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
+}
+
+func configureColdPendingStore(path string) {
+	done := configureColdPendingStoreAsync(path)
+	if done != nil {
+		<-done
 	}
 }
 
@@ -120,6 +165,9 @@ func resetColdPendingCachesForTest() {
 
 	coldPendingStore.mu.Lock()
 	coldPendingStore.loadedPath = ""
+	coldPendingStore.loadDone = nil
+	coldPendingStore.lastWriteErr = nil
+	coldPendingStore.firstDirtyAt = time.Time{}
 	coldPendingStore.mu.Unlock()
 }
 
@@ -141,15 +189,24 @@ func loadColdPendingStore(path string) {
 	coldPendingStore.fileMu.Lock()
 	defer coldPendingStore.fileMu.Unlock()
 
-	info, err := os.Lstat(path)
+	linfo, err := os.Lstat(path)
 	if err != nil {
 		return
 	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 || info.Size() <= 0 || info.Size() > coldPendingWatchMaxBytes {
+	if !linfo.Mode().IsRegular() || linfo.Mode()&os.ModeSymlink != 0 || linfo.Mode().Perm()&0077 != 0 || linfo.Size() <= 0 || linfo.Size() > coldPendingWatchMaxBytes {
 		return
 	}
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
+		return
+	}
+	defer f.Close()
+	finfo, err := f.Stat()
+	if err != nil || !os.SameFile(linfo, finfo) || !finfo.Mode().IsRegular() || finfo.Mode().Perm()&0077 != 0 || finfo.Size() <= 0 || finfo.Size() > coldPendingWatchMaxBytes {
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(f, coldPendingWatchMaxBytes+1))
+	if err != nil || int64(len(data)) > coldPendingWatchMaxBytes {
 		return
 	}
 	var snap persistedColdPendingSnapshot
@@ -231,18 +288,36 @@ func loadColdPendingStore(path string) {
 }
 
 func scheduleColdPendingFlush() {
+	now := time.Now()
 	coldPendingStore.mu.Lock()
 	if coldPendingStore.path == "" {
 		coldPendingStore.mu.Unlock()
 		return
 	}
+	if !coldPendingStore.dirty || coldPendingStore.firstDirtyAt.IsZero() {
+		coldPendingStore.firstDirtyAt = now
+	}
 	coldPendingStore.dirty = true
 	if coldPendingStore.timer != nil {
 		coldPendingStore.timer.Stop()
+		coldPendingStore.timer = nil
 	}
 	delay := coldPendingStore.debounce
 	if delay <= 0 {
 		delay = 500 * time.Millisecond
+	}
+	maxDelay := coldPendingStore.maxDelay
+	if maxDelay <= 0 {
+		maxDelay = 5 * time.Second
+	}
+	remaining := maxDelay - now.Sub(coldPendingStore.firstDirtyAt)
+	if remaining <= 0 {
+		coldPendingStore.mu.Unlock()
+		go flushColdPendingStoreNow()
+		return
+	}
+	if remaining < delay {
+		delay = remaining
 	}
 	coldPendingStore.timer = time.AfterFunc(delay, func() {
 		flushColdPendingStoreNow()
@@ -258,6 +333,25 @@ func waitColdPendingStoreFlush() {
 	coldPendingStore.mu.Unlock()
 }
 
+func flushColdPendingStoreWithTimeout(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		flushColdPendingStoreNow()
+		waitColdPendingStoreFlush()
+		close(done)
+	}()
+	if timeout <= 0 {
+		<-done
+		return
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
+}
+
 func flushColdPendingStoreNow() {
 	coldPendingStore.mu.Lock()
 	if coldPendingStore.timer != nil {
@@ -267,6 +361,7 @@ func flushColdPendingStoreNow() {
 	path := coldPendingStore.path
 	if path == "" || !coldPendingStore.dirty {
 		coldPendingStore.dirty = false
+		coldPendingStore.firstDirtyAt = time.Time{}
 		coldPendingStore.cond.Broadcast()
 		coldPendingStore.mu.Unlock()
 		return
@@ -276,22 +371,28 @@ func flushColdPendingStoreNow() {
 		return
 	}
 	coldPendingStore.dirty = false
+	coldPendingStore.firstDirtyAt = time.Time{}
 	coldPendingStore.flushing = true
 	coldPendingStore.mu.Unlock()
 
 	for {
 		snap := buildColdPendingSnapshot()
-		_ = writeColdPendingSnapshotAtomic(path, snap)
+		writeErr := writeColdPendingSnapshotAtomic(path, snap)
 
 		coldPendingStore.mu.Lock()
-		coldPendingStore.writeCount++
+		coldPendingStore.lastWriteErr = writeErr
+		if writeErr == nil {
+			coldPendingStore.writeCount++
+		}
 		if !coldPendingStore.dirty || coldPendingStore.path != path {
 			coldPendingStore.flushing = false
+			coldPendingStore.firstDirtyAt = time.Time{}
 			coldPendingStore.cond.Broadcast()
 			coldPendingStore.mu.Unlock()
 			return
 		}
 		coldPendingStore.dirty = false
+		coldPendingStore.firstDirtyAt = time.Time{}
 		coldPendingStore.mu.Unlock()
 	}
 }
@@ -342,12 +443,68 @@ func buildColdPendingSnapshot() persistedColdPendingSnapshot {
 	return snap
 }
 
+func marshalBoundedColdPendingSnapshot(snap persistedColdPendingSnapshot, maxBytes int) ([]byte, error) {
+	data, err := json.Marshal(snap)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) <= maxBytes {
+		return data, nil
+	}
+	// Trim from the LRU tail (end of slices) via binary search over total entries
+	// so the largest valid MRU prefix <= maxBytes is always persisted.
+	total := len(snap.Standard) + len(snap.OpenCode)
+	sliceFor := func(keep int) persistedColdPendingSnapshot {
+		if keep <= 0 {
+			return persistedColdPendingSnapshot{SchemaVersion: snap.SchemaVersion}
+		}
+		stdKeep := 0
+		ocKeep := 0
+		if total > 0 {
+			stdKeep = (len(snap.Standard) * keep) / total
+			ocKeep = keep - stdKeep
+			if ocKeep > len(snap.OpenCode) {
+				extra := ocKeep - len(snap.OpenCode)
+				ocKeep = len(snap.OpenCode)
+				stdKeep = min(len(snap.Standard), stdKeep+extra)
+			}
+			if stdKeep > len(snap.Standard) {
+				stdKeep = len(snap.Standard)
+			}
+		}
+		return persistedColdPendingSnapshot{
+			SchemaVersion: snap.SchemaVersion,
+			Standard:      snap.Standard[:stdKeep],
+			OpenCode:      snap.OpenCode[:ocKeep],
+		}
+	}
+	lo, hi := 0, total
+	var best []byte
+	for lo <= hi {
+		mid := lo + (hi-lo)/2
+		b, mErr := json.Marshal(sliceFor(mid))
+		if mErr != nil {
+			return nil, mErr
+		}
+		if len(b) <= maxBytes {
+			best = b
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	if len(best) == 0 {
+		return nil, fmt.Errorf("冷缓存快照超过大小上限")
+	}
+	return best, nil
+}
+
 func writeColdPendingSnapshotAtomic(path string, snap persistedColdPendingSnapshot) error {
 	coldPendingStore.fileMu.Lock()
 	defer coldPendingStore.fileMu.Unlock()
 
-	data, err := json.Marshal(snap)
-	if err != nil || len(data) > coldPendingWatchMaxBytes {
+	data, err := marshalBoundedColdPendingSnapshot(snap, coldPendingWatchMaxBytes)
+	if err != nil {
 		return err
 	}
 	dir := filepath.Dir(path)

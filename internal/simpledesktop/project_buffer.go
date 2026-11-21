@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 type pendingMessageDetail struct {
@@ -441,7 +442,16 @@ func runPendingMaterials(ctx context.Context, python string, installation AgentI
 		EnvFile:        installation.EnvFile,
 		Home:           installation.Home,
 	}
+	// Always verify the installation integrity BEFORE consulting the cold cache
+	// (deduplicated per Agent via verifiedInstallCache) so tampered/revoked
+	// installations never serve cached results.
+	forceVerify := action == "replay" || action == "discard"
+	if err := verifyInstallationMode(installation, forceVerify); err != nil {
+		coldPendingCacheDelete(cacheKey)
+		return result, err
+	}
 	if action == "show" {
+		waitColdPendingStoreLoad(200 * time.Millisecond)
 		if entry, ok := coldPendingCacheGet(cacheKey); ok {
 			if coldPendingEntryUnchanged(entry) {
 				return clonePendingMaterials(entry.Result), nil
@@ -451,10 +461,8 @@ func runPendingMaterials(ctx context.Context, python string, installation AgentI
 	} else {
 		coldPendingCacheDelete(cacheKey)
 	}
-	forceVerify := action == "replay" || action == "discard"
-	if err := verifyInstallationMode(installation, forceVerify); err != nil {
-		return result, err
-	}
+	manifestPath := filepath.Join(installation.PluginDir, ".memlane-project-access.json")
+	preManifestSig, preManifestOK := lstatRegularSig(manifestPath)
 	arguments := []string{filepath.Join(installation.PluginDir, "scripts/_memlane_policy.py"), "--session-key", binding.HostSessionKey, "--dataset", dataset, "--action", action}
 	if action == "show" || action == "details" {
 		arguments = []string{"-c", pendingSnapshotScript, filepath.Join(installation.PluginDir, "scripts"), binding.HostSessionKey, dataset}
@@ -504,25 +512,34 @@ func runPendingMaterials(ctx context.Context, python string, installation AgentI
 	}
 	watch := result.ColdWatch
 	result.ColdWatch = nil
-	if action == "show" && result.SessionInactive && coldPendingWatchValid(watch) {
-		manifestPath := filepath.Join(installation.PluginDir, ".memlane-project-access.json")
-		if minfo, statErr := os.Lstat(manifestPath); statErr == nil && minfo.Mode().IsRegular() {
+	if action == "show" && result.SessionInactive && coldPendingWatchValid(watch) && preManifestOK {
+		if minfo, statErr := os.Lstat(manifestPath); statErr == nil && minfo.Mode().IsRegular() && statSigFromInfo(minfo) == preManifestSig {
 			var bridgeIno uint64
-			if watch.BridgeExists {
-				if binfo, bErr := os.Lstat(watch.BridgePath); bErr == nil && binfo.Mode().IsRegular() {
+			bridgeStable := false
+			if _, mapErr := os.Lstat(watch.MapPath); os.IsNotExist(mapErr) {
+				if !watch.BridgeExists {
+					_, bErr := os.Lstat(watch.BridgePath)
+					bridgeStable = os.IsNotExist(bErr)
+				} else if binfo, bErr := os.Lstat(watch.BridgePath); bErr == nil && binfo.Mode().IsRegular() &&
+					binfo.Size() == watch.BridgeSize && binfo.ModTime().UnixNano() == watch.BridgeMtimeNS {
 					bridgeIno = statSigFromInfo(binfo).Ino
+					bridgeStable = true
 				}
 			}
-			stored := clonePendingMaterials(result)
-			coldPendingCachePut(cacheKey, coldPendingEntry{
-				Result:          stored,
-				Watch:           *watch,
-				ManifestPath:    manifestPath,
-				ManifestSize:    minfo.Size(),
-				ManifestMtimeNS: minfo.ModTime().UnixNano(),
-				ManifestIno:     statSigFromInfo(minfo).Ino,
-				BridgeIno:       bridgeIno,
-			})
+			if bridgeStable {
+				stored := clonePendingMaterials(result)
+				coldPendingCachePut(cacheKey, coldPendingEntry{
+					Result:          stored,
+					Watch:           *watch,
+					ManifestPath:    manifestPath,
+					ManifestSize:    minfo.Size(),
+					ManifestMtimeNS: minfo.ModTime().UnixNano(),
+					ManifestIno:     statSigFromInfo(minfo).Ino,
+					BridgeIno:       bridgeIno,
+				})
+			} else {
+				coldPendingCacheDelete(cacheKey)
+			}
 		} else {
 			coldPendingCacheDelete(cacheKey)
 		}

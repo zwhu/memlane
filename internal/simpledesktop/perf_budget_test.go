@@ -668,10 +668,16 @@ func TestScale50kDesktopSLABudgets(t *testing.T) {
 				HasMore:        pageIdx < 20,
 			})
 		case strings.HasSuffix(r.URL.Path, "/body") && strings.HasPrefix(r.URL.Path, "/v2/datasets/"):
+			parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v2/datasets/"), "/")
+			dsID, docID := "ds-50k-0", "k50k-00000"
+			if len(parts) >= 4 {
+				dsID, docID = parts[0], parts[2]
+			}
+			bodyText := "# Session learning (session codex_s50k-0)\n\n50k 规模正文直读快路径内容。"
 			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
-				ID:        "k50k-00000",
-				DatasetID: "ds-50k-0",
-				Body:      "# Session learning (session codex_s50k-0)\n\n50k 规模正文直读快路径内容。",
+				ID:        docID,
+				DatasetID: dsID,
+				Body:      &bodyText,
 				MIMEType:  "text/markdown",
 				Source:    "local_fastpath",
 			})

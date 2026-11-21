@@ -123,6 +123,7 @@ func (r *ReadingTitles) cachedItem(client Client, i Item, generation string) (It
 	if cached, ok := r.cache[keyForReading(identity, i, generation)]; ok && cached.item.BodyLoaded {
 		i.Body = cached.item.Body
 		i.BodyLoaded = true
+		i.BodyTruncated = cached.item.BodyTruncated
 		i.ReadingState = "ready"
 		if i.Title == "" {
 			i.Title = itemPresentation(i).DisplayTitle
@@ -137,6 +138,7 @@ func (r *ReadingTitles) cachedItem(client Client, i Item, generation string) (It
 			}
 			i.Body = entry.item.Body
 			i.BodyLoaded = true
+			i.BodyTruncated = entry.item.BodyTruncated
 			i.ReadingState = "ready"
 			if i.Title == "" {
 				i.Title = itemPresentation(i).DisplayTitle
@@ -182,6 +184,7 @@ func (r *ReadingTitles) read(ctx context.Context, client Client, i Item, generat
 		}
 		i.Body = cached.item.Body
 		i.BodyLoaded = true
+		i.BodyTruncated = cached.item.BodyTruncated
 		i.Title = itemPresentation(i).DisplayTitle
 		return i, nil
 	}

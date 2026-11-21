@@ -652,24 +652,30 @@ type codeActivityState struct {
 
 func (c Client) codeActivity(ctx context.Context, p Project) (codeActivityState, error) {
 	state := codeActivityState{}
-	if control, ok := c.controlClient(); ok && p.ID != "" && control.hasFeature(ctx, "code_activity_v2") {
-		res, err := control.projectCodeActivityV2(ctx, p.ID)
-		if err == nil {
-			if p.CodeDataset != "" && res.CodeDatasetID != "" && res.CodeDatasetID != p.CodeDataset {
-				return state, fmt.Errorf("官方索引运行归属不匹配")
+	if control, ok := c.controlClient(); ok && p.ID != "" {
+		hasV2, probeErr := control.probeFeature(ctx, "code_activity_v2")
+		if probeErr != nil {
+			return state, probeErr
+		}
+		if hasV2 {
+			res, err := control.projectCodeActivityV2(ctx, p.ID)
+			if err == nil {
+				if p.CodeDataset != "" && res.CodeDatasetID != "" && res.CodeDatasetID != p.CodeDataset {
+					return state, fmt.Errorf("官方索引运行归属不匹配")
+				}
+				return codeActivityState{
+					Active: res.Active,
+					Status: res.Status,
+					Run:    res.RunID,
+				}, nil
 			}
-			return codeActivityState{
-				Active: res.Active,
-				Status: res.Status,
-				Run:    res.RunID,
-			}, nil
-		}
-		if isControlAuthDenied(err) {
-			return state, err
-		}
-		if isControlErrorCode(err, http.StatusConflict, "code_dataset_not_configured") ||
-			isControlErrorCode(err, http.StatusNotFound, "code_dataset_not_found") {
-			return state, err
+			if isControlAuthDenied(err) {
+				return state, err
+			}
+			if isControlErrorCode(err, http.StatusConflict, "code_dataset_not_configured") ||
+				isControlErrorCode(err, http.StatusNotFound, "code_dataset_not_found") {
+				return state, err
+			}
 		}
 	}
 	generation, err := c.codeDatasetCreated(ctx, p.CodeDataset)

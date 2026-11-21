@@ -10,9 +10,22 @@ func (a *App) startRecentTitles(rows []Item) {
 	if a.Update == nil {
 		return
 	}
+	candidates := make([]Item, 0, min(len(rows), maxTitlePreheatWindow))
+	for _, row := range rows {
+		if row.Document == nil || row.ReadingState == "ready" || row.Preview != "" || readableDocumentTitle(*row.Document) != "" {
+			continue
+		}
+		candidates = append(candidates, row)
+		if len(candidates) >= maxTitlePreheatWindow {
+			break
+		}
+	}
+	if len(candidates) == 0 {
+		return
+	}
 	var scope strings.Builder
-	fmt.Fprintf(&scope, "%d/%d/%s", a.epoch, a.overviewState.generation, a.readingIdentity)
-	for _, i := range rows {
+	fmt.Fprintf(&scope, "%d/%d/%d/%s", a.epoch, a.authEpoch, a.overviewState.generation, a.readingIdentity)
+	for _, i := range candidates {
 		fmt.Fprintf(&scope, "/%v", keyForReading(a.readingIdentity, i, fmt.Sprint(a.overviewState.generation)))
 	}
 	if a.recentScope == scope.String() {
@@ -26,31 +39,37 @@ func (a *App) startRecentTitles(rows []Item) {
 	a.recentCancel = cancel
 	a.recentCtx = ctx
 	a.recentRequest++
-	request, epoch := a.recentRequest, a.epoch
+	request, epoch, authEpoch := a.recentRequest, a.epoch, a.authEpoch
 	client := a.Client
 	generation := fmt.Sprint(a.overviewState.generation)
-	for _, row := range rows {
+	for _, row := range candidates {
 		i := row
-		if i.Document == nil || readableDocumentTitle(*i.Document) != "" {
-			continue
-		}
 		revision := a.readingRevisions[i.key()]
 		go func() {
 			result, err := a.titles.read(ctx, client, i, generation, false, true)
 			a.Update(func() {
-				if request != a.recentRequest || epoch != a.epoch || revision != a.readingRevisions[i.key()] || ctx.Err() != nil || !a.syncReadingIdentity() {
+				if request != a.recentRequest || epoch != a.epoch || authEpoch != a.authEpoch || revision != a.readingRevisions[i.key()] || ctx.Err() != nil || !a.syncReadingIdentity() {
 					return
 				}
-				for n, current := range a.overviewState.Snapshot.Knowledge {
-					if current.key() == i.key() {
-						if err != nil {
-							a.overviewState.Snapshot.Knowledge[n].ReadingState = "failed"
-							a.handleReadingFailure(i, err)
-							return
+				updateSlice := func(target []Item) bool {
+					matched := false
+					for n, current := range target {
+						if current.key() == i.key() {
+							matched = true
+							if err != nil {
+								target[n].ReadingState = "failed"
+								continue
+							}
+							target[n].Title = overviewReadingTitle(result)
+							target[n].ReadingState = "ready"
 						}
-						a.overviewState.Snapshot.Knowledge[n].Title = overviewReadingTitle(result)
-						a.overviewState.Snapshot.Knowledge[n].ReadingState = "ready"
 					}
+					return matched
+				}
+				matchedSnap := updateSlice(a.overviewState.Snapshot.Knowledge)
+				matchedDay := updateSlice(a.overviewState.DayItems)
+				if err != nil && (matchedSnap || matchedDay) {
+					a.handleReadingFailure(i, err)
 				}
 			})
 		}()
@@ -64,26 +83,30 @@ func (a *App) retryRecentTitle(i Item) {
 	if a.recentCtx != nil {
 		ctx = a.recentCtx
 	}
-	request, epoch, revision := a.recentRequest, a.epoch, a.readingRevisions[i.key()]
+	request, epoch, authEpoch, revision := a.recentRequest, a.epoch, a.authEpoch, a.readingRevisions[i.key()]
 	client := a.Client
 	generation := fmt.Sprint(a.overviewState.generation)
 	go func() {
 		result, err := a.titles.read(ctx, client, i, generation, true, false)
 		a.Update(func() {
-			if request != a.recentRequest || epoch != a.epoch || revision != a.readingRevisions[i.key()] || ctx.Err() != nil || !a.syncReadingIdentity() {
+			if request != a.recentRequest || epoch != a.epoch || authEpoch != a.authEpoch || revision != a.readingRevisions[i.key()] || ctx.Err() != nil || !a.syncReadingIdentity() {
 				return
 			}
 			a.handleReadingFailure(i, err)
-			for n, row := range a.overviewState.Snapshot.Knowledge {
-				if row.key() == i.key() {
-					if err != nil {
-						a.overviewState.Snapshot.Knowledge[n].ReadingState = "failed"
-						return
+			apply := func(target []Item) {
+				for n, row := range target {
+					if row.key() == i.key() {
+						if err != nil {
+							target[n].ReadingState = "failed"
+							continue
+						}
+						target[n].Title = overviewReadingTitle(result)
+						target[n].ReadingState = "ready"
 					}
-					a.overviewState.Snapshot.Knowledge[n].Title = overviewReadingTitle(result)
-					a.overviewState.Snapshot.Knowledge[n].ReadingState = "ready"
 				}
 			}
+			apply(a.overviewState.Snapshot.Knowledge)
+			apply(a.overviewState.DayItems)
 		})
 	}()
 }
@@ -144,14 +167,14 @@ func (a *App) startTitles(s *pane) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.titleCancel = cancel
 	s.titleCtx = ctx
-	request, epoch := s.titleRequest, a.epoch
+	request, epoch, authEpoch := s.titleRequest, a.epoch, a.authEpoch
 	generation := a.readingGeneration(s)
 	client := a.Client
 	start, end := titlePreheatRange(s)
 	scheduled := 0
 	for n := start; n < end && scheduled < maxTitlePreheatWindow; n++ {
 		row := s.Items[n]
-		if row.ReadingState == "ready" {
+		if row.ReadingState == "ready" || row.Preview != "" {
 			continue
 		}
 		if row.Session == nil && (row.Kind != "知识" || row.Document == nil || (a.page != "通用知识" && readableDocumentTitle(*row.Document) != "")) {
@@ -166,7 +189,7 @@ func (a *App) startTitles(s *pane) {
 		go func() {
 			result, err := a.titles.read(ctx, client, i, generation, false, true)
 			a.Update(func() {
-				if epoch != a.epoch || request != s.titleRequest || revision != a.readingRevisions[i.key()] || ctx.Err() != nil {
+				if epoch != a.epoch || authEpoch != a.authEpoch || request != s.titleRequest || revision != a.readingRevisions[i.key()] || ctx.Err() != nil {
 					return
 				}
 				if !a.syncReadingIdentity() {
@@ -288,14 +311,14 @@ func (a *App) retryReadingTitle(s *pane, i Item) {
 			s.Items[n].ReadingError = ""
 		}
 	}
-	request, epoch, generation := s.titleRequest, a.epoch, a.readingGeneration(s)
+	request, epoch, authEpoch, generation := s.titleRequest, a.epoch, a.authEpoch, a.readingGeneration(s)
 	client := a.Client
 	revision := a.readingRevisions[i.key()]
 	go func() {
 		defer cancel()
 		result, err := a.titles.read(ctx, client, i, generation, true, false)
 		a.Update(func() {
-			if request != s.titleRequest || epoch != a.epoch || revision != a.readingRevisions[i.key()] || ctx.Err() != nil || !a.syncReadingIdentity() {
+			if request != s.titleRequest || epoch != a.epoch || authEpoch != a.authEpoch || revision != a.readingRevisions[i.key()] || ctx.Err() != nil || !a.syncReadingIdentity() {
 				return
 			}
 			a.handleReadingFailure(i, err)
@@ -315,21 +338,76 @@ func (a *App) retryReadingTitle(s *pane, i Item) {
 }
 
 // InvalidateReading must be called by policy/credential integration when access is
-// revoked. It removes raw data and copy affordances, including nested history.
+// revoked. It removes raw data and copy affordances, including nested history, and
+// fences every in-flight request via authEpoch + per-pane/overview/queue counters.
 func (a *App) InvalidateReading(dataset string) {
+	a.authEpoch++
 	a.invalidateUnifiedSearch(dataset)
+	if dataset == "" || (a.searchAnchor != nil && a.searchAnchor.Dataset == dataset) {
+		a.searchAnchor = nil
+		a.searchPane = nil
+	}
 	a.projectUI.InfoOpen = false
 	a.titles.Invalidate(dataset)
 	a.recentScope = ""
 	if a.recentCancel != nil {
 		a.recentCancel()
-		a.recentRequest++
+		a.recentCancel = nil
+	}
+	a.recentRequest++
+
+	// Fence overview & day in-flight requests so late callbacks cannot repopulate revoked data.
+	a.overviewState.generation++
+	a.overviewState.dayRequest++
+	if a.overviewState.cancel != nil {
+		a.overviewState.cancel()
+		a.overviewState.cancel = nil
+	}
+	if a.overviewState.activityCancel != nil {
+		a.overviewState.activityCancel()
+		a.overviewState.activityCancel = nil
+	}
+	if a.overviewState.dayCancel != nil {
+		a.overviewState.dayCancel()
+		a.overviewState.dayCancel = nil
+	}
+	if a.overviewState.recallCancel != nil {
+		a.overviewState.recallCancel()
+		a.overviewState.recallCancel = nil
+	}
+	a.overviewState.Loading = false
+	a.overviewState.ActivityLoading = false
+	a.overviewState.DayLoading = false
+	if dataset == "" {
+		a.overviewState.DayItems = nil
+		a.overviewState.DayNextCursor = ""
+		a.overviewState.DayHasMore = false
+		a.overviewState.DayTotal = 0
+		a.overviewState.V2DayBuckets = nil
+		a.overviewState.V2TotalKnowledge = 0
+	} else {
+		for n, i := range a.overviewState.DayItems {
+			if i.Dataset == dataset {
+				a.overviewState.DayItems[n].Body = ""
+				a.overviewState.DayItems[n].Preview = ""
+				a.overviewState.DayItems[n].BodyLoaded = false
+				a.overviewState.DayItems[n].Detail = nil
+				a.overviewState.DayItems[n].ReadingState = ""
+				if i.Document != nil {
+					docCopy := *i.Document
+					docCopy.Metadata = nil
+					a.overviewState.DayItems[n].Document = &docCopy
+					a.overviewState.DayItems[n].Title = docCopy.title()
+				}
+			}
+		}
 	}
 	for n, i := range a.overviewState.Snapshot.Knowledge {
 		if dataset == "" || i.Dataset == dataset {
 			a.overviewState.Snapshot.Knowledge[n].Body = ""
 			a.overviewState.Snapshot.Knowledge[n].Preview = ""
 			a.overviewState.Snapshot.Knowledge[n].BodyLoaded = false
+			a.overviewState.Snapshot.Knowledge[n].Detail = nil
 			a.overviewState.Snapshot.Knowledge[n].ReadingState = ""
 			if i.Document != nil {
 				docCopy := *i.Document
@@ -339,42 +417,60 @@ func (a *App) InvalidateReading(dataset string) {
 			}
 		}
 	}
-	for n, i := range a.overviewState.DayItems {
-		if dataset == "" || i.Dataset == dataset {
-			a.overviewState.DayItems[n].Body = ""
-			a.overviewState.DayItems[n].Preview = ""
-			a.overviewState.DayItems[n].BodyLoaded = false
-			a.overviewState.DayItems[n].ReadingState = ""
-			if i.Document != nil {
-				docCopy := *i.Document
-				docCopy.Metadata = nil
-				a.overviewState.DayItems[n].Document = &docCopy
-				a.overviewState.DayItems[n].Title = docCopy.title()
-			}
-		}
-	}
 	for _, s := range a.panes {
 		a.cancelTitles(s)
-		if dataset == "" || (len(s.Items) > 0 && s.Items[0].Dataset == dataset) {
+		paneMatches := dataset == "" ||
+			(len(s.Items) > 0 && s.Items[0].Dataset == dataset) ||
+			(s.Selected != nil && s.Selected.Dataset == dataset) ||
+			(s.HomeAnchor != nil && s.HomeAnchor.Dataset == dataset) ||
+			(s.SubagentParent != nil && s.SubagentParent.Dataset == dataset)
+		if paneMatches {
+			if s.cancel != nil {
+				s.cancel()
+				s.cancel = nil
+			}
+			s.request++
+			s.Loading = false
+			s.Locating = false
+			s.Knowledge.Appending = false
+			s.Knowledge.Prepending = false
+			s.RawAppending = false
 			s.Knowledge.NextCursor = ""
+			s.Knowledge.PrevCursor = ""
+			s.Knowledge.HasPrev = false
 			s.RawNextCursor = ""
 			s.CommonNextCursor = ""
+			s.CommonCursors = nil
+			s.CommonPageIndex = 0
 		}
 		if len(s.RawCatalog) > 0 && (dataset == "" || s.RawCatalog[0].Dataset == dataset) {
 			s.RawCatalog = nil
 			s.More = false
 		}
+		if s.HomeAnchor != nil && (dataset == "" || s.HomeAnchor.Dataset == dataset) {
+			s.HomeAnchor = nil
+		}
+		if s.SubagentParent != nil && (dataset == "" || s.SubagentParent.Dataset == dataset) {
+			s.SubagentParent = nil
+			s.SubagentParentPage = nil
+			s.SessionSubagents = false
+		}
 		if s.SourcePage != nil && (dataset == "" || s.SourcePage.Dataset == dataset) {
 			s.SourcePage = nil
 		}
-		if s.Selected != nil && (dataset == "" || s.Selected.Dataset == dataset) {
+		if dataset == "" || (s.Selected != nil && s.Selected.Dataset == dataset) {
 			if s.readCancel != nil {
 				s.readCancel()
+				s.readCancel = nil
 			}
 			s.readRequest++
-			s.Selected = nil
-			s.Reading = false
-			s.Error = "内容已失效或无权读取，请刷新"
+			if s.Selected != nil {
+				s.Selected = nil
+				s.Reading = false
+				s.Error = "内容已失效或无权读取，请刷新"
+			} else {
+				s.Reading = false
+			}
 		}
 		history := s.History[:0]
 		for _, i := range s.History {
@@ -388,6 +484,7 @@ func (a *App) InvalidateReading(dataset string) {
 				s.Items[n].Body = ""
 				s.Items[n].Preview = ""
 				s.Items[n].BodyLoaded = false
+				s.Items[n].Detail = nil
 				s.Items[n].RecallStats = nil
 				s.Items[n].ReadingState = "unavailable"
 				s.Items[n].ReadingError = "内容不可用"
@@ -404,6 +501,7 @@ func (a *App) InvalidateReading(dataset string) {
 				s.Knowledge.Catalog[n].Body = ""
 				s.Knowledge.Catalog[n].Preview = ""
 				s.Knowledge.Catalog[n].BodyLoaded = false
+				s.Knowledge.Catalog[n].Detail = nil
 				s.Knowledge.Catalog[n].RecallStats = nil
 				s.Knowledge.Catalog[n].ReadingState = "unavailable"
 				s.Knowledge.Catalog[n].ReadingError = "内容不可用"
@@ -414,6 +512,23 @@ func (a *App) InvalidateReading(dataset string) {
 					s.Knowledge.Catalog[n].Title = docCopy.title()
 				}
 			}
+		}
+	}
+	for k, q := range a.access.Queues {
+		if q == nil {
+			continue
+		}
+		if dataset == "" || strings.HasSuffix(k, "/"+dataset) {
+			q.Request++
+			q.Loading = false
+			q.UnreadKnowledge = nil
+			q.UnreadHasMore = false
+			q.ServerUnreadKnown = false
+			q.ServerUnreadCount = 0
+			q.ServerUnreadStateRev = 0
+			q.Documents = nil
+			q.PendingDocumentsCount = 0
+			q.StateVersion++
 		}
 	}
 }

@@ -37,6 +37,7 @@ type projectQueueState struct {
 	KnowledgeCatalogVersion        string
 	ServerUnreadKnown              bool
 	ServerUnreadCount              int
+	ServerUnreadStateRev           int64
 	UnreadHasMore                  bool
 	PendingDocumentsCount          int
 	UnreadKnowledge                []Item
@@ -157,7 +158,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 	}
 	q.Loading = true
 	q.Request++
-	request := q.Request
+	request, authEpoch := q.Request, a.authEpoch
 	q.Next = time.Now().Add(30 * time.Second)
 	if q.Backlog.active() {
 		q.Next = time.Now().Add(5 * time.Second)
@@ -191,6 +192,9 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 	if q.KnowledgeRead.Initialized && q.KnowledgeReadError == "" {
 		knownKnowledgeVersion = q.KnowledgeCatalogVersion
 	}
+	prevKnowledgeStartedAt := q.KnowledgeRead.StartedAt
+	knowledgePath, knowledgePathErr := a.knowledgeReadPath(p)
+	knowledgeWriter := a.ensureKnowledgeWriter()
 	projectsSnapshot := append([]AccessProject(nil), a.access.Directory.Projects...)
 	if a.access.QueueReadSlots == nil {
 		a.access.QueueReadSlots = make(chan struct{}, 4)
@@ -207,6 +211,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 		var documents []Item
 		var pendingDocumentsCount int
 		var knowledgeCatalog []Document
+		var computedCatalog *computedKnowledgeCatalog
 		var knowledgeVersion string
 		var knowledgeUnchanged bool
 		var documentErr error
@@ -229,10 +234,24 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			if control != nil {
 				summaryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 				manager := ProjectControlClient{Config: *control, HTTP: client.HTTP}
-				if manager.hasFeature(summaryCtx, v2FeatureReadingState) {
-					a.migrateReadingStateV2(summaryCtx, manager, projectsSnapshot)
+				hasReadState, rsProbeErr := manager.probeFeature(summaryCtx, v2FeatureReadingState)
+				if rsProbeErr != nil {
+					cancel()
+					noticeErr = rsProbeErr
+					documentErr = rsProbeErr
+					return
 				}
-				if manager.hasFeature(summaryCtx, v2FeatureMessageSummary) {
+				if hasReadState {
+					_ = a.migrateReadingStateV2(summaryCtx, manager, projectsSnapshot)
+				}
+				hasV2Summary, sumProbeErr := manager.probeFeature(summaryCtx, v2FeatureMessageSummary)
+				if sumProbeErr != nil {
+					cancel()
+					noticeErr = sumProbeErr
+					documentErr = sumProbeErr
+					return
+				}
+				if hasV2Summary {
 					v2Res, v2Err := manager.projectMessageSummaryV2(summaryCtx, identity, p.ID)
 					cancel()
 					if v2Err == nil {
@@ -298,6 +317,12 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 					summaryBacklogErr = res.Errors["backlog"]
 					return
 				}
+				if isControlAuthDenied(err) {
+					// Fail closed on 401/403: never fall back to official /api/v1/* with a separate credential.
+					noticeErr = err
+					documentErr = err
+					return
+				}
 				if !isControlNotFound(err) {
 					noticeErr = err
 				}
@@ -327,30 +352,50 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			}()
 			fallback.Wait()
 		}()
-		for n, row := range sessions {
-			workers.Add(1)
-			go func(n int, row queuedSession) {
-				defer workers.Done()
-				select {
-				case slots <- struct{}{}:
-				case <-ctx.Done():
-					results[n].Error = ctx.Err()
-					return
-				}
-				defer func() { <-slots }()
-				results[n].Status, results[n].Error = runPendingMaterials(ctx, python, *row.Agent.Installation, row.Binding, p.Dataset, "show", "", operator)
-				if results[n].Error != nil && results[n].Status.Error == "pending_materials_changed_review_again" && ctx.Err() == nil {
-					results[n].Status, results[n].Error = runPendingMaterials(ctx, python, *row.Agent.Installation, row.Binding, p.Dataset, "show", "", operator)
-				}
-				status := results[n].Status
-				if results[n].Error == nil && (status.Signature == "" || status.Pending < 0 || status.Unknown < 0 || status.Unknown > status.Pending) {
-					results[n].Error = fmt.Errorf("会话采集状态不完整")
-				}
-			}(n, row)
+		// Bounded worker pool (<=4 workers) avoids spawning thousands of goroutines
+		// when a project has hundreds or thousands of historical session bindings.
+		if len(sessions) > 0 {
+			poolSize := min(4, len(sessions))
+			jobs := make(chan int, len(sessions))
+			for n := range sessions {
+				jobs <- n
+			}
+			close(jobs)
+			for wIdx := 0; wIdx < poolSize; wIdx++ {
+				workers.Add(1)
+				go func() {
+					defer workers.Done()
+					for n := range jobs {
+						row := sessions[n]
+						select {
+						case slots <- struct{}{}:
+						case <-ctx.Done():
+							results[n].Error = ctx.Err()
+							continue
+						}
+						results[n].Status, results[n].Error = runPendingMaterials(ctx, python, *row.Agent.Installation, row.Binding, p.Dataset, "show", "", operator)
+						if results[n].Error != nil && results[n].Status.Error == "pending_materials_changed_review_again" && ctx.Err() == nil {
+							results[n].Status, results[n].Error = runPendingMaterials(ctx, python, *row.Agent.Installation, row.Binding, p.Dataset, "show", "", operator)
+						}
+						<-slots
+						status := results[n].Status
+						if results[n].Error == nil && (status.Signature == "" || status.Pending < 0 || status.Unknown < 0 || status.Unknown > status.Pending) {
+							results[n].Error = fmt.Errorf("会话采集状态不完整")
+						}
+					}
+				}()
+			}
 		}
 		workers.Wait()
+		// Execute legacy knowledge-read catalog reconciliation off the UI thread so
+		// a.Update never blocks on waitKnowledgeReadFlush or disk I/O.
+		if !v2SummaryOK && documentErr == nil && knowledgeCatalog != nil && knowledgePathErr == nil {
+			a.waitKnowledgeReadFlush()
+			res := computeKnowledgeCatalogOffUI(knowledgeWriter, knowledgePath, p, knowledgeCatalog, prevKnowledgeStartedAt)
+			computedCatalog = &res
+		}
 		a.Update(func() {
-			if request != q.Request {
+			if request != q.Request || authEpoch != a.authEpoch {
 				return
 			}
 			q.Loading = false
@@ -452,16 +497,18 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 						q.KnowledgeReadError = "未读状态暂时无法读取"
 					} else {
 						q.KnowledgeReadError = ""
-						q.ServerUnreadKnown = true
-						q.ServerUnreadCount = v2Summary.UnreadCount
-						q.UnreadHasMore = v2Summary.UnreadHasMore || v2Summary.UnreadCount > len(v2Summary.UnreadPreview)
-						q.UnreadKnowledge = v2Summary.unreadPreviewItems(p.Dataset)
+						if !a.knowledgeWriterHasPending(p.ID, p.Dataset) {
+							q.ServerUnreadKnown = true
+							q.ServerUnreadCount = v2Summary.UnreadCount
+							q.UnreadHasMore = v2Summary.UnreadHasMore || v2Summary.UnreadCount > len(v2Summary.UnreadPreview)
+							q.UnreadKnowledge = v2Summary.unreadPreviewItems(p.Dataset)
+						}
 					}
 					if knowledgeVersion != "" {
 						q.KnowledgeCatalogVersion = knowledgeVersion
 					}
-				} else if knowledgeCatalog != nil {
-					a.observeKnowledgeCatalog(p, q, knowledgeCatalog)
+				} else if computedCatalog != nil {
+					applyComputedKnowledgeCatalog(q, *computedCatalog)
 					if q.KnowledgeReadError == "" {
 						q.KnowledgeCatalogVersion = knowledgeVersion
 					}

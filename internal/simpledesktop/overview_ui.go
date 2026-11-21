@@ -85,6 +85,7 @@ type overviewViewState struct {
 	V2DayBuckets                               map[string]int
 	V2RecallStartedAt                          string
 	DayItems                                   []Item
+	DayList                                    ui.ListState
 	DayTotal                                   int
 	DayNextCursor                              string
 	DayHasMore                                 bool
@@ -243,12 +244,13 @@ func (a *App) loadOverview() {
 	ctx, cancel := context.WithTimeout(context.Background(), overviewLoadTimeout)
 	v.cancel = cancel
 	v.generation++
-	generation := v.generation
+	generation, authEpoch := v.generation, a.authEpoch
 	epoch, identity := a.epoch, a.readingIdentity
 	v.Loading = true
 	client := a.Client
 	genStr := fmt.Sprint(generation)
 	control, hasControl := a.accessClient()
+	accessProjects := append([]AccessProject(nil), a.access.Directory.Projects...)
 
 	// Fast path: prefer /v2/overview/bootstrap (<=128 KiB pre-aggregated buckets
 	// + top-20 recent items + activity), falling back to /v1/overview/bootstrap
@@ -266,7 +268,39 @@ func (a *App) loadOverview() {
 		readingID, _ := readingIdentity(Client{Config: client.Config})
 		go func() {
 			defer cancel()
-			if control.hasFeature(ctx, v2FeatureOverview) {
+			failClosed := func(err error) {
+				a.Update(func() {
+					if generation != a.overviewState.generation || authEpoch != a.authEpoch {
+						return
+					}
+					a.overviewState.Loading = false
+					a.overviewState.ActivityLoading = false
+					a.overviewState.Error = controlUserError(err)
+					if readingUnavailable(err) {
+						a.InvalidateReading("")
+					}
+				})
+			}
+			hasV2Overview, probeErr := control.probeFeature(ctx, v2FeatureOverview)
+			if probeErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				failClosed(probeErr)
+				return
+			}
+			if hasV2Overview {
+				hasV2ReadState, rsErr := control.probeFeature(ctx, v2FeatureReadingState)
+				if rsErr != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					failClosed(rsErr)
+					return
+				}
+				if hasV2ReadState && len(accessProjects) > 0 {
+					_ = a.migrateReadingStateV2(ctx, control, accessProjects)
+				}
 				v2Resp, v2Err := control.overviewBootstrapV2(ctx, readingID, 365, 20, 50, 50)
 				if v2Err == nil {
 					snapshot, buckets, events, more := buildOverviewFromV2Bootstrap(projects, v2Resp, 50)
@@ -276,7 +310,7 @@ func (a *App) loadOverview() {
 						historyEvents, historyErr = client.overviewSearchHistory(ctx)
 					}
 					a.Update(func() {
-						if generation != a.overviewState.generation {
+						if generation != a.overviewState.generation || authEpoch != a.authEpoch {
 							return
 						}
 						a.overviewState.Loading = false
@@ -325,17 +359,7 @@ func (a *App) loadOverview() {
 					return
 				}
 				if isControlFailClosedV2(v2Err) {
-					a.Update(func() {
-						if generation != a.overviewState.generation {
-							return
-						}
-						a.overviewState.Loading = false
-						a.overviewState.ActivityLoading = false
-						a.overviewState.Error = controlUserError(v2Err)
-						if readingUnavailable(v2Err) {
-							a.InvalidateReading("")
-						}
-					})
+					failClosed(v2Err)
 					return
 				}
 			}
@@ -351,7 +375,7 @@ func (a *App) loadOverview() {
 					return
 				}
 				a.Update(func() {
-					if generation != a.overviewState.generation || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
+					if generation != a.overviewState.generation || authEpoch != a.authEpoch || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
 						return
 					}
 					a.overviewState.Loading = false
@@ -424,9 +448,14 @@ func (a *App) loadOverview() {
 				})
 				return
 			}
+			if isControlAuthDenied(err) {
+				// Never fall back from control-plane 401/403 to official /api/v1/*.
+				failClosed(err)
+				return
+			}
 			// Fallback when control server does not serve /v1/overview/bootstrap.
 			a.Update(func() {
-				if generation != a.overviewState.generation || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
+				if generation != a.overviewState.generation || authEpoch != a.authEpoch || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
 					return
 				}
 				a.loadOverviewLegacy(generation, wasLoaded)
@@ -453,8 +482,10 @@ func (a *App) applyOverviewV2ProjectSummaries(summaries []v2OverviewProjectSumma
 			continue
 		}
 		q := a.projectQueueStateFor(p)
-		q.ServerUnreadKnown = true
-		q.ServerUnreadCount = summary.UnreadCount
+		if !a.knowledgeWriterHasPending(p.ID, p.Dataset) {
+			q.ServerUnreadKnown = true
+			q.ServerUnreadCount = summary.UnreadCount
+		}
 		if summary.CatalogVersion != "" {
 			q.KnowledgeCatalogVersion = summary.CatalogVersion
 		}
@@ -464,6 +495,7 @@ func (a *App) applyOverviewV2ProjectSummaries(summaries []v2OverviewProjectSumma
 
 func (a *App) loadOverviewLegacy(generation uint64, wasLoaded bool) {
 	v := &a.overviewState
+	authEpoch := a.authEpoch
 	activityDone := a.startOverviewActivity()
 	if v.cancel != nil {
 		v.cancel()
@@ -520,7 +552,7 @@ func (a *App) loadOverviewLegacy(generation uint64, wasLoaded bool) {
 			return
 		}
 		a.Update(func() {
-			if generation != a.overviewState.generation || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
+			if generation != a.overviewState.generation || authEpoch != a.authEpoch || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
 				return
 			}
 			a.overviewState.Loading = false
@@ -1333,7 +1365,7 @@ func (a *App) loadOverviewDayV2(day string, appendMore bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	v.dayCancel = cancel
 	v.dayRequest++
-	reqID, gen := v.dayRequest, v.generation
+	reqID, gen, authEpoch := v.dayRequest, v.generation, a.authEpoch
 	v.DayLoading = true
 	v.DayError = ""
 	readingID, _ := readingIdentity(Client{Config: a.Client.Config})
@@ -1342,11 +1374,17 @@ func (a *App) loadOverviewDayV2(day string, appendMore bool) {
 		defer cancel()
 		resp, err := control.overviewDayV2(ctx, readingID, day, 30, cursor)
 		a.Update(func() {
-			if reqID != a.overviewState.dayRequest || gen != a.overviewState.generation || a.overviewState.Day != day {
+			if reqID != a.overviewState.dayRequest || gen != a.overviewState.generation || authEpoch != a.authEpoch || a.overviewState.Day != day {
 				return
 			}
 			a.overviewState.DayLoading = false
 			if err != nil {
+				if isControlInvalidCursor(err) && appendMore {
+					a.overviewState.DayNextCursor = ""
+					a.overviewState.DayHasMore = false
+					a.loadOverviewDayV2(day, false)
+					return
+				}
 				a.overviewState.DayError = controlUserError(err)
 				if readingUnavailable(err) {
 					a.InvalidateReading("")
@@ -1374,6 +1412,12 @@ func (a *App) loadOverviewDayV2(day string, appendMore bool) {
 						a.overviewState.DayItems = append(a.overviewState.DayItems, item)
 						seen[item.key()] = true
 					}
+				}
+				if len(a.overviewState.DayItems) > maxActiveListItems {
+					drop := len(a.overviewState.DayItems) - maxActiveListItems
+					kept := make([]Item, maxActiveListItems)
+					copy(kept, a.overviewState.DayItems[drop:])
+					a.overviewState.DayItems = kept
 				}
 			} else {
 				a.overviewState.DayItems = mapped
@@ -1428,10 +1472,112 @@ func (a *App) overviewDisplayedRows(now time.Time) []Item {
 	return rows
 }
 
+func (a *App) overviewKnowledgeRow(c *ui.Context, now time.Time, i Item, idx int, prevHovered bool) bool {
+	rowKey := fmt.Sprintf("recent-%d-%s", a.motionRuns.overviewKnowledge, i.key())
+	row := ui.ButtonBase(c.Key(rowKey)).Role(ui.RoleButton).Cursor(ui.CursorPointer).
+		Label(i.Title).FillWidth().Justify(ui.Start).AlignItems(ui.Center).
+		MinHeight(rowHeight2).Padding(sp2+2, sp2).Radius(radius).Gap(sp3).BorderWidth(0)
+	hovered := row.Hovered()
+	hoverBg := tok.BgElevated
+	if tok.Dark {
+		hoverBg = tok.Fill1
+	}
+	row.Background(homeHoverColor(row, "knowledge-surface", ui.Transparent, hoverBg))
+	if hovered {
+		row.Shadow(0, 2, 10, 0, tok.ShadowLift)
+	}
+	a.v4StaggerEnter(c, row, "recent-"+i.key(), idx, a.motionRuns.overviewKnowledge, true)
+	// Hairline divider between rows starting after the agent icon.
+	// Hide both above and below a hovered lifted row (.row:hover + .row::before).
+	if idx > 0 && !hovered && !prevHovered {
+		row.DrawOver(func(p *ui.Painter, r ui.Rect) {
+			p.Fill(ui.Rect{X: r.X + 42, Y: r.Y, W: max(0, r.W-50), H: 1}, tok.Border, 0)
+		})
+	}
+	row.Children(func() {
+		ui.Column(c).Size(22, 22).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+			agentLogo(c, recentAgentIcon(i), 20)
+		})
+		ui.Column(c).Gap(4).Grow(1).MinWidth(0).Children(func() {
+			// Lock a 2-line title slot height so async title hydration never
+			// stretches the row downward or shifts rows below it.
+			titlePending := i.ReadingState != "ready" && i.Preview == "" && (i.Document == nil || readableDocumentTitle(*i.Document) == "")
+			ui.Column(c).FillWidth().MinHeight(38).Justify(ui.Center).Children(func() {
+				if titlePending {
+					ui.Column(c).FillWidth().Gap(6).Children(func() {
+						ui.Box(c).FillWidth().Height(12).Radius(4).Background(tok.Fill2)
+						ui.Box(c).Width(220).Height(12).Radius(4).Background(tok.Fill1)
+					})
+				} else {
+					v4InlineMarkdown(c, knowledgePreview(i.Title), fsBody, 500, 1.45, tok.Text1).MaxLines(2).Tooltip(stripInlineBackticks(knowledgePreview(i.Title)))
+				}
+			})
+			date := "来源日期未知"
+			if i.Document != nil {
+				if day, ok := i.Document.knowledgeDay(now.Location()); ok {
+					date = day
+				}
+			}
+			ui.Row(c).AlignItems(ui.Center).Gap(sp2).Children(func() {
+				if a.itemIsUnread(i) {
+					v4UnreadDot(c)
+				}
+				source := a.overviewSourceName(i)
+				homeText(c, middleProjectName(source), homeReadableMeta).Tooltip("所属项目：" + source).MaxLines(1)
+				v4RecallChip(c, i)
+				if fields := knowledgeBasisFields(i); len(fields) > 0 {
+					v4CategoryChip(c, fields[0].Value)
+				}
+				homeText(c, date, homeReadableMeta)
+			})
+		})
+		chevColor := tok.Text4.Alpha(0)
+		if hovered {
+			chevColor = tok.Text4
+		}
+		ui.Icon(c, v4IconChev).FontSize(13).TextColor(row.AnimateColor("chev-col", chevColor, v4Fast)).Shrink(0)
+	}).OnClick(func() { a.openOverviewItem(i) })
+	if i.ReadingState == "failed" || i.ReadingState == "unavailable" {
+		button(c, "标题读取失败 · 重试", func() { a.retryRecentTitle(i) })
+	}
+	return hovered
+}
+
 func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 	v := &a.overviewState
 	rows := a.overviewDisplayedRows(now)
-	a.startRecentTitles(rows)
+	if !v.V2Mode {
+		a.startRecentTitles(rows)
+	}
+	if v.V2Mode && v.Day != "" && len(rows) > 0 {
+		if v.DayHasMore && !v.DayLoading && v.DayError == "" && v.KnowledgeScroll.MaxY > 0 && v.KnowledgeScroll.Y >= v.KnowledgeScroll.MaxY-160 {
+			a.loadOverviewDayV2(v.Day, true)
+		}
+		ui.Column(c.Key("overview-knowledge-v2-day")).Grow(1).MinHeight(0).FillWidth().Background(tok.Bg).Children(func() {
+			if v.DayError != "" {
+				ui.Row(c).Gap(sp2).AlignItems(ui.Center).Padding(sp2, sp2).Shrink(0).Children(func() {
+					homeText(c, "读取失败 · "+v.DayError, homeMeta).MaxLines(2)
+					projectLink(c, "重试", func() { a.loadOverviewDayV2(v.Day, false) })
+				})
+			}
+			v.DayList.Key = func(n int) any { return rows[n].key() }
+			v.DayList.KeepOffset = true
+			v.DayList.Label = func(n int) string { return rows[n].Title }
+			ui.List(c.Key("overview-day-list-"+v.Day), &v.DayList, len(rows), func(n int) {
+				a.overviewKnowledgeRow(c, now, rows[n], n, false)
+			}).Label("当日记忆列表").Grow(1).MinHeight(0).FillWidth().TrackScroll(&v.KnowledgeScroll).Padding(0, 0, sp4, 0)
+			if v.DayHasMore {
+				ui.Row(c).FillWidth().Padding(sp1, sp2).AlignItems(ui.Center).Justify(ui.Center).Shrink(0).Children(func() {
+					if v.DayLoading {
+						homeText(c, "正在加载更多记忆…", homeMeta)
+					} else {
+						projectLink(c, "加载更多", func() { a.loadOverviewDayV2(v.Day, true) })
+					}
+				})
+			}
+		})
+		return
+	}
 	ui.Scroll(c.Key("overview-knowledge")).Label("最近记忆内容").Grow(1).MinHeight(0).FillWidth().TrackScroll(&v.KnowledgeScroll).BorderWidth(0).Radius(0).Background(tok.Bg).Padding(0, 0, sp4, 0).DrawOver(func(p *ui.Painter, r ui.Rect) {
 		bg := tok.Bg
 		if v.KnowledgeScroll.MaxY-v.KnowledgeScroll.Y > 1 {
@@ -1453,76 +1599,7 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 		}
 		prevHovered := false
 		for index, item := range rows {
-			i := item
-			idx := index
-			rowKey := fmt.Sprintf("recent-%d-%s", a.motionRuns.overviewKnowledge, i.key())
-			row := ui.ButtonBase(c.Key(rowKey)).Role(ui.RoleButton).Cursor(ui.CursorPointer).
-				Label(i.Title).FillWidth().Justify(ui.Start).AlignItems(ui.Center).
-				MinHeight(rowHeight2).Padding(sp2+2, sp2).Radius(radius).Gap(sp3).BorderWidth(0)
-			hovered := row.Hovered()
-			hoverBg := tok.BgElevated
-			if tok.Dark {
-				hoverBg = tok.Fill1
-			}
-			row.Background(homeHoverColor(row, "knowledge-surface", ui.Transparent, hoverBg))
-			if hovered {
-				row.Shadow(0, 2, 10, 0, tok.ShadowLift)
-			}
-			a.v4StaggerEnter(c, row, "recent-"+i.key(), idx, a.motionRuns.overviewKnowledge, true)
-			// Hairline divider between rows starting after the agent icon.
-			// Hide both above and below a hovered lifted row (.row:hover + .row::before).
-			if idx > 0 && !hovered && !prevHovered {
-				row.DrawOver(func(p *ui.Painter, r ui.Rect) {
-					p.Fill(ui.Rect{X: r.X + 42, Y: r.Y, W: max(0, r.W-50), H: 1}, tok.Border, 0)
-				})
-			}
-			prevHovered = hovered
-			row.Children(func() {
-				ui.Column(c).Size(22, 22).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-					agentLogo(c, recentAgentIcon(i), 20)
-				})
-				ui.Column(c).Gap(4).Grow(1).MinWidth(0).Children(func() {
-					// Lock a 2-line title slot height so async title hydration never
-					// stretches the row downward or shifts rows below it.
-					titlePending := i.ReadingState != "ready" && (i.Document == nil || readableDocumentTitle(*i.Document) == "")
-					ui.Column(c).FillWidth().MinHeight(38).Justify(ui.Center).Children(func() {
-						if titlePending {
-							ui.Column(c).FillWidth().Gap(6).Children(func() {
-								ui.Box(c).FillWidth().Height(12).Radius(4).Background(tok.Fill2)
-								ui.Box(c).Width(220).Height(12).Radius(4).Background(tok.Fill1)
-							})
-						} else {
-							v4InlineMarkdown(c, knowledgePreview(i.Title), fsBody, 500, 1.45, tok.Text1).MaxLines(2).Tooltip(stripInlineBackticks(knowledgePreview(i.Title)))
-						}
-					})
-					date := "来源日期未知"
-					if i.Document != nil {
-						if day, ok := i.Document.knowledgeDay(now.Location()); ok {
-							date = day
-						}
-					}
-					ui.Row(c).AlignItems(ui.Center).Gap(sp2).Children(func() {
-						if a.itemIsUnread(i) {
-							v4UnreadDot(c)
-						}
-						source := a.overviewSourceName(i)
-						homeText(c, middleProjectName(source), homeReadableMeta).Tooltip("所属项目：" + source).MaxLines(1)
-						v4RecallChip(c, i)
-						if fields := knowledgeBasisFields(i); len(fields) > 0 {
-							v4CategoryChip(c, fields[0].Value)
-						}
-						homeText(c, date, homeReadableMeta)
-					})
-				})
-				chevColor := tok.Text4.Alpha(0)
-				if hovered {
-					chevColor = tok.Text4
-				}
-				ui.Icon(c, v4IconChev).FontSize(13).TextColor(row.AnimateColor("chev-col", chevColor, v4Fast)).Shrink(0)
-			}).OnClick(func() { a.openOverviewItem(i) })
-			if i.ReadingState == "failed" || i.ReadingState == "unavailable" {
-				button(c, "标题读取失败 · 重试", func() { a.retryRecentTitle(i) })
-			}
+			prevHovered = a.overviewKnowledgeRow(c, now, item, index, prevHovered)
 		}
 		if len(rows) == 0 {
 			label := "暂无记忆"

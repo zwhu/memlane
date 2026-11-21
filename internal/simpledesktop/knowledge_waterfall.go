@@ -44,6 +44,9 @@ type knowledgeFeedState struct {
 	UnreadOnly           bool
 	V2Mode               bool
 	NextCursor           string
+	PrevCursor           string
+	HasPrev              bool
+	Prepending           bool
 	TotalFiltered        int
 	ServerCategoryCounts map[string]int
 	ServerBaseTotal      int
@@ -53,16 +56,43 @@ type knowledgeFeedState struct {
 }
 
 // enforceListSlidingWindow caps active list items to maxActiveListItems (300)
-// and releases evicted per-item UI state so deep cursor pagination stays bounded
-// in heap and frame time.
+// from the front and releases evicted per-item UI state so deep cursor
+// pagination stays bounded in heap and frame time.
 func enforceListSlidingWindow(s *pane) {
+	enforceListSlidingWindowDir(s, true)
+}
+
+func enforceListSlidingWindowDir(s *pane, trimFront bool) {
 	if s == nil || len(s.Items) <= maxActiveListItems {
 		return
 	}
 	drop := len(s.Items) - maxActiveListItems
-	evicted := s.Items[:drop]
+	var evicted []Item
 	kept := make([]Item, maxActiveListItems)
-	copy(kept, s.Items[drop:])
+	if trimFront {
+		evicted = s.Items[:drop]
+		copy(kept, s.Items[drop:])
+		if s.Knowledge.V2Mode {
+			s.Knowledge.HasPrev = true
+			s.Knowledge.PrevCursor = ""
+		}
+		if s.ListSelection >= 0 {
+			s.ListSelection -= drop
+			if s.ListSelection < 0 {
+				s.ListSelection = -1
+			}
+		}
+	} else {
+		evicted = s.Items[maxActiveListItems:]
+		copy(kept, s.Items[:maxActiveListItems])
+		if s.Knowledge.V2Mode {
+			s.More = true
+			s.Knowledge.NextCursor = ""
+		}
+		if s.ListSelection >= maxActiveListItems {
+			s.ListSelection = -1
+		}
+	}
 	s.Items = kept
 	selectedKey := ""
 	if s.Selected != nil {
@@ -79,12 +109,6 @@ func enforceListSlidingWindow(s *pane) {
 		delete(s.DetailScroll, key+"/tools")
 		delete(s.DetailScroll, key+"/subagents")
 		delete(s.Technical, key)
-	}
-	if s.ListSelection >= 0 {
-		s.ListSelection -= drop
-		if s.ListSelection < 0 {
-			s.ListSelection = -1
-		}
 	}
 }
 
@@ -133,9 +157,10 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	s.cancel = cancel
 	s.request++
-	request, epoch := s.request, a.epoch
+	request, epoch, authEpoch := s.request, a.epoch, a.authEpoch
 	s.Knowledge.Initialized, s.Loading, s.Error = true, true, ""
 	s.Knowledge.Appending = false
+	s.Knowledge.Prepending = false
 	s.Knowledge.NewCatalogAvailable = false
 	s.Knowledge.RecallRequest++
 	s.Knowledge.RecallPending = 0
@@ -143,6 +168,7 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 	wasLoaded := s.Loaded
 	client := a.Client
 	control, hasControl := a.accessClient()
+	accessProjects := append([]AccessProject(nil), a.access.Directory.Projects...)
 	titles := a.titles
 	genStr := a.readingGeneration(s)
 	sortByRecalls := s.Knowledge.SortByRecalls
@@ -154,81 +180,98 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 	recallStartedAt := a.overviewState.V2RecallStartedAt
 	go func() {
 		defer cancel()
-		if p.Dataset != "" && hasControl && control.hasFeature(ctx, v2FeatureKnowledgeCursor) {
-			sortParam := "date"
-			if sortByRecalls {
-				sortParam = "recall"
-			}
-			v2Resp, v2Err := control.projectKnowledgeV2(ctx, readingID, p.ID, sortParam, categoryFilter, unreadOnly, recallAgentID, recallEventID, knowledgeBatch, "")
-			if v2Err == nil {
-				mapped := make([]Item, 0, len(v2Resp.Items))
-				for _, row := range v2Resp.Items {
-					if row.DocID == "" {
-						continue
-					}
-					mapped = append(mapped, row.toItem(recallStartedAt))
+		failClosed := func(err error) {
+			a.Update(func() {
+				if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
+					return
 				}
-				baseTotal := v2Resp.TotalFiltered
-				if categoryFilter != "" && len(v2Resp.CategoryCounts) > 0 {
-					sum := 0
-					for _, cnt := range v2Resp.CategoryCounts {
-						sum += cnt
-					}
-					baseTotal = sum
-				}
-				a.Update(func() {
-					if epoch != a.epoch || request != s.request || !a.syncReadingIdentity() {
-						return
-					}
-					s.Loading = false
-					s.Error = ""
-					old := map[string]Item{}
-					for _, i := range s.Items {
-						old[i.key()] = i
-					}
-					for n, i := range mapped {
-						if before, ok := old[i.key()]; ok && before.BodyLoaded && keyForReading("", i, "") == keyForReading("", before, "") && i.Document != nil && (i.Document.Updated != "" || i.Document.ContentHash != "") {
-							mapped[n].Body, mapped[n].BodyLoaded = before.Body, true
-							mapped[n].BodyTruncated = before.BodyTruncated
-						}
-					}
-					s.Knowledge.V2Mode = true
-					s.Knowledge.NextCursor = v2Resp.NextCursor
-					s.Knowledge.TotalFiltered = v2Resp.TotalFiltered
-					s.Knowledge.ServerCategoryCounts = v2Resp.CategoryCounts
-					s.Knowledge.ServerBaseTotal = baseTotal
-					s.Knowledge.CatalogVersion = v2Resp.CatalogVersion
-					s.Knowledge.NewCatalogAvailable = false
-					s.Knowledge.CountsLoaded = true
-					s.Knowledge.CountsError = ""
+				s.Loading = false
+				s.Error = controlUserError(err)
+				if readingUnavailable(err) {
+					a.InvalidateReading(p.Dataset)
 					s.Knowledge.Catalog = nil
-					s.Items = mapped
-					s.More = v2Resp.HasMore
-					s.Loaded = true
-					a.syncV2ProjectUnreadCount(p.ID, p.Dataset, v2Resp.UnreadCount, v2Resp.CatalogVersion)
-					a.hydrateKnowledgeCards(s)
-					if s.Selected == nil && len(s.Items) > 0 && !s.Locating {
-						a.selectItem(s, s.Items[0])
-					}
-				})
+				}
+			})
+		}
+		if p.Dataset != "" && hasControl {
+			hasV2Knowledge, probeErr := control.probeFeature(ctx, v2FeatureKnowledgeCursor)
+			if probeErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				failClosed(probeErr)
 				return
 			}
-			if ctx.Err() != nil {
-				return
-			}
-			if isControlFailClosedV2(v2Err) {
-				a.Update(func() {
-					if epoch != a.epoch || request != s.request || !a.syncReadingIdentity() {
+			if hasV2Knowledge {
+				hasV2ReadState, rsErr := control.probeFeature(ctx, v2FeatureReadingState)
+				if rsErr != nil {
+					if ctx.Err() != nil {
 						return
 					}
-					s.Loading = false
-					s.Error = controlUserError(v2Err)
-					if readingUnavailable(v2Err) {
-						a.InvalidateReading(p.Dataset)
-						s.Knowledge.Catalog = nil
+					failClosed(rsErr)
+					return
+				}
+				if hasV2ReadState && len(accessProjects) > 0 {
+					_ = a.migrateReadingStateV2(ctx, control, accessProjects)
+				}
+				sortParam := "date"
+				if sortByRecalls {
+					sortParam = "recall"
+				}
+				v2Resp, v2Err := control.projectKnowledgeV2(ctx, readingID, p.ID, sortParam, categoryFilter, unreadOnly, recallAgentID, recallEventID, knowledgeBatch, "")
+				if v2Err == nil {
+					mapped := make([]Item, 0, len(v2Resp.Items))
+					for _, row := range v2Resp.Items {
+						if row.DocID == "" {
+							continue
+						}
+						mapped = append(mapped, row.toItem(recallStartedAt))
 					}
-				})
-				return
+					baseTotal := v2Resp.TotalFiltered
+					if categoryFilter != "" && len(v2Resp.CategoryCounts) > 0 {
+						sum := 0
+						for _, cnt := range v2Resp.CategoryCounts {
+							sum += cnt
+						}
+						baseTotal = sum
+					}
+					a.Update(func() {
+						if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
+							return
+						}
+						s.Loading = false
+						s.Error = ""
+						s.Knowledge.V2Mode = true
+						s.Knowledge.NextCursor = v2Resp.NextCursor
+						s.Knowledge.PrevCursor = v2Resp.PrevCursor
+						s.Knowledge.HasPrev = v2Resp.HasPrev
+						s.Knowledge.Prepending = false
+						s.Knowledge.TotalFiltered = v2Resp.TotalFiltered
+						s.Knowledge.ServerCategoryCounts = v2Resp.CategoryCounts
+						s.Knowledge.ServerBaseTotal = baseTotal
+						s.Knowledge.CatalogVersion = v2Resp.CatalogVersion
+						s.Knowledge.NewCatalogAvailable = false
+						s.Knowledge.CountsLoaded = true
+						s.Knowledge.CountsError = ""
+						s.Knowledge.Catalog = nil
+						s.Items = mapped
+						s.More = v2Resp.HasMore
+						s.Loaded = true
+						a.syncV2ProjectUnreadCount(p.ID, p.Dataset, v2Resp.UnreadCount, v2Resp.CatalogVersion)
+						a.hydrateKnowledgeCards(s)
+						if s.Selected == nil && len(s.Items) > 0 && !s.Locating {
+							a.selectItem(s, s.Items[0])
+						}
+					})
+					return
+				}
+				if ctx.Err() != nil {
+					return
+				}
+				if isControlFailClosedV2(v2Err) || isControlInvalidCursor(v2Err) {
+					failClosed(v2Err)
+					return
+				}
 			}
 		}
 		var docs []Document
@@ -278,7 +321,7 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 			preCancel()
 		}
 		a.Update(func() {
-			if epoch != a.epoch || request != s.request || !a.syncReadingIdentity() {
+			if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
 				return
 			}
 			s.Loading = false
@@ -292,6 +335,9 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 			}
 			s.Knowledge.V2Mode = false
 			s.Knowledge.NextCursor = ""
+			s.Knowledge.PrevCursor = ""
+			s.Knowledge.HasPrev = false
+			s.Knowledge.Prepending = false
 			rows := knowledgeCatalog(docs)
 			applyRecallCounts(rows, counts)
 			s.Knowledge.CountsLoaded = counts != nil
@@ -349,7 +395,10 @@ func (a *App) appendKnowledgeBatch(s *pane) {
 		return
 	}
 	if s.Knowledge.V2Mode {
-		if s.Knowledge.Appending || s.Knowledge.NextCursor == "" || a.Update == nil {
+		if s.Knowledge.Appending || a.Update == nil {
+			return
+		}
+		if s.Knowledge.NextCursor == "" && len(s.Items) == 0 {
 			return
 		}
 		p, ok := a.current()
@@ -358,8 +407,11 @@ func (a *App) appendKnowledgeBatch(s *pane) {
 			return
 		}
 		s.Knowledge.Appending = true
-		request, epoch := s.request, a.epoch
-		cursor := s.Knowledge.NextCursor
+		request, epoch, authEpoch := s.request, a.epoch, a.authEpoch
+		opts := v2KnowledgePageOpts{Cursor: s.Knowledge.NextCursor, Direction: "next"}
+		if opts.Cursor == "" && len(s.Items) > 0 {
+			opts.AnchorDocID = s.Items[len(s.Items)-1].ID
+		}
 		sortParam := "date"
 		if s.Knowledge.SortByRecalls {
 			sortParam = "recall"
@@ -373,17 +425,22 @@ func (a *App) appendKnowledgeBatch(s *pane) {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			resp, err := control.projectKnowledgeV2(ctx, readingID, p.ID, sortParam, categoryFilter, unreadOnly, recallAgentID, recallEventID, knowledgeBatch, cursor)
+			resp, err := control.projectKnowledgePageV2(ctx, readingID, p.ID, sortParam, categoryFilter, unreadOnly, recallAgentID, recallEventID, knowledgeBatch, opts)
 			a.Update(func() {
-				if epoch != a.epoch || request != s.request || !a.syncReadingIdentity() {
+				if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
 					return
 				}
 				s.Knowledge.Appending = false
 				if err != nil {
 					if isControlInvalidCursor(err) {
+						// Explicitly reset expired cursor to page 1 under the same filter.
 						s.Knowledge.NextCursor = ""
+						s.Knowledge.PrevCursor = ""
+						s.Knowledge.HasPrev = false
 						s.More = false
-						s.Knowledge.NewCatalogAvailable = true
+						s.Error = ""
+						a.loadKnowledgeFeed(s)
+						return
 					}
 					s.Error = controlUserError(err)
 					if readingUnavailable(err) {
@@ -405,7 +462,7 @@ func (a *App) appendKnowledgeBatch(s *pane) {
 						seen[item.key()] = true
 					}
 				}
-				enforceListSlidingWindow(s)
+				enforceListSlidingWindowDir(s, true)
 				s.Knowledge.NextCursor = resp.NextCursor
 				s.More = resp.HasMore
 				s.Knowledge.TotalFiltered = resp.TotalFiltered
@@ -425,6 +482,86 @@ func (a *App) appendKnowledgeBatch(s *pane) {
 	a.hydrateKnowledgeCards(s)
 }
 
+func (a *App) prependKnowledgeBatch(s *pane) {
+	if s.Loading || s.Error != "" || !s.Knowledge.V2Mode || !s.Knowledge.HasPrev || s.Knowledge.Prepending || a.Update == nil || len(s.Items) == 0 {
+		return
+	}
+	p, ok := a.current()
+	control, hasControl := a.accessClient()
+	if !ok || !hasControl || p.ID == "" {
+		return
+	}
+	s.Knowledge.Prepending = true
+	request, epoch, authEpoch := s.request, a.epoch, a.authEpoch
+	opts := v2KnowledgePageOpts{Cursor: s.Knowledge.PrevCursor, Direction: "prev"}
+	if opts.Cursor == "" {
+		opts.AnchorDocID = s.Items[0].ID
+	}
+	sortParam := "date"
+	if s.Knowledge.SortByRecalls {
+		sortParam = "recall"
+	}
+	categoryFilter := s.Knowledge.CategoryFilter
+	unreadOnly := s.Knowledge.UnreadOnly
+	recallAgentID := s.Knowledge.RecallAgentID
+	recallEventID := s.Knowledge.RecallEventID
+	readingID, _ := readingIdentity(Client{Config: a.Client.Config})
+	recallStartedAt := a.overviewState.V2RecallStartedAt
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		resp, err := control.projectKnowledgePageV2(ctx, readingID, p.ID, sortParam, categoryFilter, unreadOnly, recallAgentID, recallEventID, knowledgeBatch, opts)
+		a.Update(func() {
+			if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
+				return
+			}
+			s.Knowledge.Prepending = false
+			if err != nil {
+				if isControlInvalidCursor(err) {
+					s.Knowledge.NextCursor = ""
+					s.Knowledge.PrevCursor = ""
+					s.Knowledge.HasPrev = false
+					s.More = false
+					s.Error = ""
+					a.loadKnowledgeFeed(s)
+					return
+				}
+				s.Error = controlUserError(err)
+				if readingUnavailable(err) {
+					a.InvalidateReading(p.Dataset)
+				}
+				return
+			}
+			seen := make(map[string]bool, len(s.Items))
+			for _, existing := range s.Items {
+				seen[existing.key()] = true
+			}
+			prefix := make([]Item, 0, len(resp.Items))
+			for _, row := range resp.Items {
+				if row.DocID == "" {
+					continue
+				}
+				item := row.toItem(recallStartedAt)
+				if !seen[item.key()] {
+					prefix = append(prefix, item)
+					seen[item.key()] = true
+				}
+			}
+			if len(prefix) > 0 {
+				s.Items = append(prefix, s.Items...)
+				if s.ListSelection >= 0 {
+					s.ListSelection += len(prefix)
+				}
+				enforceListSlidingWindowDir(s, false)
+			}
+			s.Knowledge.PrevCursor = resp.PrevCursor
+			s.Knowledge.HasPrev = resp.HasPrev
+			s.Knowledge.TotalFiltered = resp.TotalFiltered
+			a.hydrateKnowledgeCards(s)
+		})
+	}()
+}
+
 func (a *App) hydrateKnowledgeCards(s *pane) {
 	if a.Update == nil {
 		return
@@ -432,35 +569,49 @@ func (a *App) hydrateKnowledgeCards(s *pane) {
 	if s.titleCtx == nil || s.titleCtx.Err() != nil {
 		s.titleCtx, s.titleCancel = context.WithCancel(context.Background())
 	}
-	ctx, epoch, request, generation := s.titleCtx, a.epoch, s.titleRequest, a.readingGeneration(s)
+	ctx, epoch, authEpoch, request, generation := s.titleCtx, a.epoch, a.authEpoch, s.titleRequest, a.readingGeneration(s)
 	client := a.Client
-	for n, row := range s.Items {
-		if row.BodyLoaded || row.Preview != "" || row.ReadingState == "pending" || row.ReadingState == "failed" || row.ReadingState == "unavailable" {
-			continue
+	v2Mode := s.Knowledge.V2Mode
+
+	scheduleIndex := func(n int) bool {
+		row := s.Items[n]
+		if row.BodyLoaded || row.Preview != "" || row.ReadingState == "ready" || row.ReadingState == "pending" || row.ReadingState == "failed" || row.ReadingState == "unavailable" {
+			return false
 		}
 		i, revision := row, a.readingRevisions[row.key()]
 		s.Items[n].ReadingState = "pending"
 		go func() {
 			result, err := a.titles.read(ctx, client, i, generation, false, true)
 			a.Update(func() {
-				if ctx.Err() != nil || epoch != a.epoch || request != s.titleRequest || revision != a.readingRevisions[i.key()] || !a.syncReadingIdentity() {
+				if ctx.Err() != nil || epoch != a.epoch || authEpoch != a.authEpoch || request != s.titleRequest || revision != a.readingRevisions[i.key()] || !a.syncReadingIdentity() {
 					return
 				}
 				if err != nil {
 					a.handleReadingFailure(i, err)
 				}
-				for n, row := range s.Items {
-					if row.key() == i.key() {
+				for idx, cur := range s.Items {
+					if cur.key() == i.key() {
 						if err != nil {
-							s.Items[n].ReadingState = "failed"
+							s.Items[idx].ReadingState = "failed"
 							if readingUnavailable(err) {
-								s.Items[n].ReadingState = "unavailable"
+								s.Items[idx].ReadingState = "unavailable"
 							}
 							return
 						}
-						s.Items[n].Body, s.Items[n].BodyLoaded, s.Items[n].ReadingState = result.Body, true, "ready"
+						if v2Mode {
+							// Keep full bodies out of list rows in v2 mode; bounded ReadingTitles
+							// cache and s.Selected own full document bodies.
+							visible := strings.TrimSpace(itemPresentation(result).VisibleBody)
+							s.Items[idx].Preview = firstReadingSentenceLimit(visible, 240)
+							s.Items[idx].ReadingState = "ready"
+							if s.Items[idx].Title == "" {
+								s.Items[idx].Title = result.Title
+							}
+						} else {
+							s.Items[idx].Body, s.Items[idx].BodyLoaded, s.Items[idx].BodyTruncated, s.Items[idx].ReadingState = result.Body, true, result.BodyTruncated, "ready"
+						}
 						if s.Selected != nil && s.Selected.key() == i.key() && !s.Selected.BodyLoaded {
-							updated := s.Items[n]
+							updated := result
 							s.Selected = &updated
 							a.markKnowledgeRead(updated)
 						}
@@ -469,6 +620,25 @@ func (a *App) hydrateKnowledgeCards(s *pane) {
 				}
 			})
 		}()
+		return true
+	}
+
+	start, end := titlePreheatRange(s)
+	scheduled := 0
+	for n := start; n < end && scheduled < maxTitlePreheatWindow; n++ {
+		if scheduleIndex(n) {
+			scheduled++
+		}
+	}
+	if !v2Mode && scheduled < maxTitlePreheatWindow {
+		for n := 0; n < len(s.Items) && scheduled < maxTitlePreheatWindow; n++ {
+			if n >= start && n < end {
+				continue
+			}
+			if scheduleIndex(n) {
+				scheduled++
+			}
+		}
 	}
 }
 
@@ -527,6 +697,9 @@ func (a *App) knowledgePage(c *ui.Context, s *pane) {
 	if s.More && s.Loaded && ready && s.ListScroll.MaxY > 0 && s.ListScroll.Y >= s.ListScroll.MaxY-160 {
 		a.appendKnowledgeBatch(s)
 	}
+	if s.Knowledge.V2Mode && s.Knowledge.HasPrev && !s.Knowledge.Prepending && s.Loaded && s.RevealItem == "" && s.ListScroll.MaxY > 0 && s.ListScroll.Y <= 120 {
+		a.prependKnowledgeBatch(s)
+	}
 
 	readingSplit(c, "project-reading-split", &a.layout.ProjectListWidth, func() {
 		ui.Column(c.Key("knowledge-list-pane")).Fill().Background(tok.Bg).Children(func() {
@@ -548,6 +721,17 @@ func (a *App) knowledgePage(c *ui.Context, s *pane) {
 							s.ListScroll.Y = 0
 							a.loadKnowledgeFeed(s)
 						})
+					})
+				}
+				if s.Knowledge.V2Mode && s.Knowledge.HasPrev && !s.Loading {
+					ui.Row(c.Key("knowledge-prev-window-banner")).FillWidth().Padding(sp1, sp4).Gap(sp2).AlignItems(ui.Center).Background(tok.Fill1).Shrink(0).Children(func() {
+						if s.Knowledge.Prepending {
+							homeText(c, "正在加载上一批记忆…", homeMeta)
+						} else {
+							homeText(c, "上方仍有更近的记忆", homeMeta)
+							ui.Spacer(c)
+							homeLink(c, "加载上一批", func() { a.prependKnowledgeBatch(s) })
+						}
 					})
 				}
 				a.projectSessionDriftBanner(c, s)

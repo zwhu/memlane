@@ -175,7 +175,7 @@ func (a *App) readSessionBatch(s *pane, qa, trace int, appendRows bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	s.readCancel = cancel
 	s.readRequest++
-	request, epoch := s.readRequest, a.epoch
+	request, epoch, authEpoch := s.readRequest, a.epoch, a.authEpoch
 	s.Reading, s.Error = true, ""
 	client := a.Client
 	control, hasControl := a.accessClient()
@@ -197,7 +197,7 @@ func (a *App) readSessionBatch(s *pane, qa, trace int, appendRows bool) {
 			page, err = client.sessionHistory(ctx, item, qa, trace)
 		}
 		a.Update(func() {
-			if epoch != a.epoch || request != s.readRequest || s.Selected == nil || s.Selected.key() != item.key() || !a.syncReadingIdentity() {
+			if epoch != a.epoch || authEpoch != a.authEpoch || request != s.readRequest || s.Selected == nil || s.Selected.key() != item.key() || !a.syncReadingIdentity() {
 				return
 			}
 			s.Reading = false
@@ -623,15 +623,16 @@ func (a *App) loadMoreSubagents(s *pane, parent Item) {
 			s.Items[idx].SubagentsLoading = true
 		}
 	}
-	epoch, request := a.epoch, s.readRequest
+	epoch, authEpoch, request := a.epoch, a.authEpoch, s.readRequest
 	cursor := parent.SubagentsNextCursor
 	parentTitle := sessionReadableParentTitle(parent)
+	userID := parent.Session.User
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		resp, err := control.sessionChildrenV2(ctx, p.ID, parent.ID, 30, cursor)
+		resp, err := control.sessionChildrenV2(ctx, p.ID, parent.ID, userID, 30, cursor)
 		a.Update(func() {
-			if epoch != a.epoch || request != s.readRequest || !a.syncReadingIdentity() {
+			if epoch != a.epoch || authEpoch != a.authEpoch || request != s.readRequest || !a.syncReadingIdentity() {
 				return
 			}
 			applyTarget := func(target *Item) {

@@ -333,8 +333,9 @@ func (a *App) trayCachedSummary() trayProjectSummary {
 					progressCount++
 				}
 			}
-			if q.Loaded && q.DocumentError == "" && len(q.Documents) > 0 {
-				progressCount += len(q.Documents)
+			pendingDocs := max(q.PendingDocumentsCount, len(q.Documents))
+			if q.Loaded && q.DocumentError == "" && pendingDocs > 0 {
+				progressCount += pendingDocs
 			}
 		}
 		if actionCount+errorCount == 0 && progressCount == 0 {

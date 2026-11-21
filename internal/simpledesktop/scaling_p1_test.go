@@ -113,10 +113,11 @@ func TestScalingP1BodyFastpathAndPreviewDecoupling(t *testing.T) {
 			})
 		case "/v2/datasets/ds-1/documents/doc-1/body":
 			bodyFastCalls.Add(1)
+			bodyText := "# Session learning (session codex_s1)\n\n这是完整的 8MiB 截断标记测试正文内容。"
 			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
 				ID:          "doc-1",
 				DatasetID:   "ds-1",
-				Body:        "# Session learning (session codex_s1)\n\n这是完整的 8MiB 截断标记测试正文内容。",
+				Body:        &bodyText,
 				MIMEType:    "text/markdown",
 				ContentHash: "hash-1",
 				Truncated:   true,
@@ -394,8 +395,9 @@ func TestScalingP1ProjectKnowledgeCursorV2AndSlidingWindow(t *testing.T) {
 				HasMore:        hasMore,
 			})
 		case "/v2/datasets/ds-1/documents/k-0000/body":
+			bodyText := "完整正文 k-0000"
 			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
-				ID: "k-0000", DatasetID: "ds-1", Body: "完整正文 k-0000", Source: "local_fastpath",
+				ID: "k-0000", DatasetID: "ds-1", Body: &bodyText, Source: "local_fastpath",
 			})
 		default:
 			http.NotFound(w, r)
@@ -436,13 +438,13 @@ func TestScalingP1ProjectKnowledgeCursorV2AndSlidingWindow(t *testing.T) {
 		t.Fatalf("expected evicted item %s pruned from Measurements", firstKey)
 	}
 
-	// Verify 400 invalid_cursor sets NewCatalogAvailable and stops further paging cleanly.
+	// Verify 400 invalid_cursor explicitly resets to page 1 in V2Mode (never falling back to legacy).
 	s.More = true
 	s.Knowledge.NextCursor = "bad-cursor"
 	a.appendKnowledgeBatch(s)
-	drainReading(t, updates, func() bool { return !s.Knowledge.Appending })
-	if !s.Knowledge.NewCatalogAvailable || s.More {
-		t.Fatalf("expected invalid_cursor to set NewCatalogAvailable=true and More=false")
+	drainReading(t, updates, func() bool { return !s.Knowledge.Appending && !s.Loading && len(s.Items) == 30 && s.Items[0].ID == "k-0000" })
+	if !s.Knowledge.V2Mode || s.Error != "" {
+		t.Fatalf("expected invalid_cursor to reset cleanly to page 1 in V2Mode, v2=%v err=%q", s.Knowledge.V2Mode, s.Error)
 	}
 
 	// Verify openRecalledCards sends paired recall_agent_id + recall_event_id.
@@ -789,10 +791,10 @@ func TestScalingP1ReadingStateMigrationUnreadPopupAndNonDisruptiveRefresh(t *tes
 			})
 		case "/v2/reading-state/migrate-local":
 			migrateLocalCalls.Add(1)
-			// Simulate custom ClientStateFile dir not found by server -> triggers 2-phase staging!
+			// Simulate custom ClientStateFile dir returning Python's exact no_legacy_file -> triggers 2-phase staging!
 			_ = json.NewEncoder(w).Encode(v2ReadingStateMigrateResponse{
 				Migrated: []v2ReadingStateMigratedScope{
-					{ProjectID: "p1", DatasetID: "ds-1", Status: "not_found"},
+					{ProjectID: "p1", DatasetID: "ds-1", Status: "no_legacy_file"},
 				},
 			})
 		case "/v2/reading-state/import/begin":
@@ -825,7 +827,10 @@ func TestScalingP1ReadingStateMigrationUnreadPopupAndNonDisruptiveRefresh(t *tes
 			var req v2ReadingStateImportCommitRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			committedBatchID = req.BatchID
-			_ = json.NewEncoder(w).Encode(v2ReadingStateImportCommitResponse{ScopeHash: "sh-1", Committed: stagedItems})
+			if req.ExpectedItems != stagedItems {
+				t.Errorf("import/commit expected_items=%d want=%d", req.ExpectedItems, stagedItems)
+			}
+			_ = json.NewEncoder(w).Encode(v2ReadingStateImportCommitResponse{ScopeHash: "sh-1", Committed: stagedItems, UnreadCount: 25})
 		case "/v2/reading-state/mark-all-read":
 			markAllCalls.Add(1)
 			_ = json.NewEncoder(w).Encode(v2ReadingStateMarkAllReadResponse{ScopeHash: "sh-1", UnreadCount: 0, ReadHorizonAtNS: "2026-11-21T10:00:00.000000000Z"})

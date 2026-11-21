@@ -25,7 +25,7 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	s.cancel = cancel
 	s.request++
-	request, epoch := s.request, a.epoch
+	request, epoch, authEpoch := s.request, a.epoch, a.authEpoch
 	preservePosition := s.HomeAnchor != nil && s.Selected != nil && s.Selected.key() == item.key()
 	previousOffset := s.Offset
 	wasLoaded := s.Loaded
@@ -63,78 +63,94 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 		offset := 0
 		usedV2 := false
 		var v2NextCursor string
+		var v2PrevCursor string
+		var v2HasPrev bool
 		var v2TotalFiltered int
 		var v2CatCounts map[string]int
 		var v2CatalogVersion string
 		var v2UnreadCount int
-		if hasControl && !common && control.hasFeature(ctx, v2FeatureKnowledgeCursor) {
-			v2Resp, v2Err := control.projectKnowledgeV2(ctx, readingID, p.ID, "date", "", false, "", "", knowledgeBatch, "")
-			if v2Err == nil {
+		if hasControl && !common {
+			hasV2Knowledge, probeErr := control.probeFeature(ctx, v2FeatureKnowledgeCursor)
+			if probeErr != nil {
 				usedV2 = true
-				v2NextCursor = v2Resp.NextCursor
-				v2TotalFiltered = v2Resp.TotalFiltered
-				v2CatCounts = v2Resp.CategoryCounts
-				v2CatalogVersion = v2Resp.CatalogVersion
-				v2UnreadCount = v2Resp.UnreadCount
-				more = v2Resp.HasMore
-				rows = make([]Item, 0, len(v2Resp.Items)+1)
-				for _, r := range v2Resp.Items {
-					mapped := r.toItem(recallStartedAt)
-					if mapped.key() == item.key() {
-						found = mapped
-					}
-					rows = append(rows, mapped)
-				}
-				if found.ID == "" {
-					if looked, lookErr := client.documentInfoByID(ctx, item.Dataset, item.ID); lookErr == nil {
-						found = looked
-						if found.Preview == "" && item.Preview != "" {
-							found.Preview = item.Preview
-							found.ReadingState = "ready"
+				err = probeErr
+			} else if hasV2Knowledge {
+				v2Resp, v2Err := control.projectKnowledgePageV2(ctx, readingID, p.ID, "date", "", false, "", "", knowledgeBatch, v2KnowledgePageOpts{
+					AnchorDocID: item.ID,
+				})
+				if v2Err == nil {
+					usedV2 = true
+					v2NextCursor = v2Resp.NextCursor
+					v2PrevCursor = v2Resp.PrevCursor
+					v2HasPrev = v2Resp.HasPrev
+					v2TotalFiltered = v2Resp.TotalFiltered
+					v2CatCounts = v2Resp.CategoryCounts
+					v2CatalogVersion = v2Resp.CatalogVersion
+					v2UnreadCount = v2Resp.UnreadCount
+					more = v2Resp.HasMore
+					rows = make([]Item, 0, len(v2Resp.Items))
+					for _, r := range v2Resp.Items {
+						if r.DocID == "" {
+							continue
 						}
-						rows = append([]Item{found}, rows...)
-					} else if item.Document != nil {
-						found = item
-						rows = append([]Item{found}, rows...)
+						mapped := r.toItem(recallStartedAt)
+						if mapped.key() == item.key() {
+							found = mapped
+						}
+						rows = append(rows, mapped)
+					}
+					if found.ID == "" {
+						err = fmt.Errorf("无法在当前官方目录中定位这条记忆，请重新读取")
+					}
+				} else if isControlFailClosedV2(v2Err) || isControlNotFound(v2Err) {
+					usedV2 = true
+					if isControlNotFound(v2Err) {
+						err = fmt.Errorf("无法在当前官方目录中定位这条记忆，请重新读取")
 					} else {
-						err = lookErr
+						err = v2Err
 					}
 				}
-			} else if isControlFailClosedV2(v2Err) {
-				usedV2 = true
-				err = v2Err
 			}
-		} else if hasControl && common && control.hasFeature(ctx, v2FeatureCommonKnowledgeCursor) {
-			v2Resp, v2Err := control.commonKnowledgeV2(ctx, p.Dataset, category, knowledgeBatch, "")
-			if v2Err == nil {
+		} else if hasControl && common {
+			hasV2Common, probeErr := control.probeFeature(ctx, v2FeatureCommonKnowledgeCursor)
+			if probeErr != nil {
 				usedV2 = true
-				v2NextCursor = v2Resp.NextCursor
-				v2TotalFiltered = v2Resp.TotalFiltered
-				v2CatCounts = v2Resp.CategoryCounts
-				v2CatalogVersion = v2Resp.CatalogVersion
-				more = v2Resp.HasMore
-				rows = make([]Item, 0, len(v2Resp.Items)+1)
-				for _, r := range v2Resp.Items {
-					mapped := r.toItem(recallStartedAt)
-					if mapped.key() == item.key() {
-						found = mapped
+				err = probeErr
+			} else if hasV2Common {
+				v2Resp, v2Err := control.commonKnowledgePageV2(ctx, p.Dataset, category, knowledgeBatch, v2KnowledgePageOpts{
+					AnchorDocID: item.ID,
+				})
+				if v2Err == nil {
+					usedV2 = true
+					v2NextCursor = v2Resp.NextCursor
+					v2PrevCursor = v2Resp.PrevCursor
+					v2HasPrev = v2Resp.HasPrev
+					v2TotalFiltered = v2Resp.TotalFiltered
+					v2CatCounts = v2Resp.CategoryCounts
+					v2CatalogVersion = v2Resp.CatalogVersion
+					more = v2Resp.HasMore
+					rows = make([]Item, 0, len(v2Resp.Items))
+					for _, r := range v2Resp.Items {
+						if r.DocID == "" {
+							continue
+						}
+						mapped := r.toItem(recallStartedAt)
+						if mapped.key() == item.key() {
+							found = mapped
+						}
+						rows = append(rows, mapped)
 					}
-					rows = append(rows, mapped)
-				}
-				if found.ID == "" {
-					if looked, lookErr := client.documentInfoByID(ctx, item.Dataset, item.ID); lookErr == nil {
-						found = looked
-						rows = append([]Item{found}, rows...)
-					} else if item.Document != nil {
-						found = item
-						rows = append([]Item{found}, rows...)
+					if found.ID == "" {
+						err = fmt.Errorf("无法在当前官方目录中定位这条记忆，请重新读取")
+					}
+				} else if isControlFailClosedV2(v2Err) || isControlNotFound(v2Err) {
+					usedV2 = true
+					if isControlNotFound(v2Err) {
+						err = fmt.Errorf("无法在当前官方目录中定位这条记忆，请重新读取")
 					} else {
-						err = lookErr
+						err = v2Err
 					}
 				}
-			} else if isControlFailClosedV2(v2Err) {
-				usedV2 = true
-				err = v2Err
 			}
 		}
 		if !usedV2 {
@@ -198,7 +214,7 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 			preCancel()
 		}
 		a.Update(func() {
-			if epoch != a.epoch || request != s.request || !a.syncReadingIdentity() {
+			if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
 				return
 			}
 			s.Loading, s.Locating = false, false
@@ -216,12 +232,14 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 			}
 			for n, row := range rows {
 				if pre, ok := preheated[row.key()]; ok {
-					rows[n].Body, rows[n].BodyLoaded, rows[n].ReadingState = pre.Body, true, "ready"
+					rows[n].Body, rows[n].BodyLoaded, rows[n].BodyTruncated, rows[n].ReadingState = pre.Body, true, pre.BodyTruncated, "ready"
 					if rows[n].Title == "" {
 						rows[n].Title = pre.Title
 					}
-				} else if old, ok := oldByKey[row.key()]; ok && old.BodyLoaded {
-					rows[n].Body, rows[n].BodyLoaded, rows[n].ReadingState = old.Body, true, "ready"
+				} else if old, ok := oldByKey[row.key()]; ok && old.BodyLoaded &&
+					row.Document != nil && (row.Document.ContentHash != "" || row.Document.Updated != "") &&
+					keyForReading("", row, "") == keyForReading("", old, "") {
+					rows[n].Body, rows[n].BodyLoaded, rows[n].BodyTruncated, rows[n].ReadingState = old.Body, true, old.BodyTruncated, "ready"
 				}
 				if row.key() == found.key() {
 					found = rows[n]
@@ -239,6 +257,9 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 				} else {
 					s.Knowledge.V2Mode = true
 					s.Knowledge.NextCursor = v2NextCursor
+					s.Knowledge.PrevCursor = v2PrevCursor
+					s.Knowledge.HasPrev = v2HasPrev
+					s.Knowledge.Prepending = false
 					s.Knowledge.TotalFiltered = v2TotalFiltered
 					s.Knowledge.ServerCategoryCounts = v2CatCounts
 					s.Knowledge.ServerBaseTotal = v2TotalFiltered

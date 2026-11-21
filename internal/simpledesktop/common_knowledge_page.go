@@ -555,15 +555,21 @@ func (a *App) confirmCommonDeletion() {
 		var present bool
 		var err error
 		usedFast := false
-		if control, ok := client.controlClient(); ok && control.hasFeature(ctx, "document_lookup_v2") {
-			usedFast = true
-			_, lookErr := control.documentLookupV2(ctx, p.Dataset, d.ID)
-			if lookErr == nil {
-				present = true
-			} else if isControlErrorCode(lookErr, http.StatusNotFound, "document_not_found") {
-				present = false
-			} else {
-				err = lookErr
+		if control, ok := client.controlClient(); ok {
+			hasLookup, probeErr := control.probeFeature(ctx, "document_lookup_v2")
+			if probeErr != nil {
+				usedFast = true
+				err = probeErr
+			} else if hasLookup {
+				usedFast = true
+				_, lookErr := control.documentLookupV2(ctx, p.Dataset, d.ID)
+				if lookErr == nil {
+					present = true
+				} else if isControlErrorCode(lookErr, http.StatusNotFound, "document_not_found") {
+					present = false
+				} else {
+					err = lookErr
+				}
 			}
 		}
 		if !usedFast {

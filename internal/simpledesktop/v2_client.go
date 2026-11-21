@@ -26,21 +26,21 @@ const (
 )
 
 type v2DocumentBodyResponse struct {
-	ID          string `json:"id"`
-	DatasetID   string `json:"dataset_id"`
-	Body        string `json:"body"`
-	MIMEType    string `json:"mime_type"`
-	ContentHash string `json:"content_hash"`
-	Truncated   bool   `json:"truncated"`
-	BytesTotal  int64  `json:"bytes_total"`
-	Source      string `json:"source"`
+	ID          string  `json:"id"`
+	DatasetID   string  `json:"dataset_id"`
+	Body        *string `json:"body"`
+	MIMEType    string  `json:"mime_type"`
+	ContentHash string  `json:"content_hash"`
+	Truncated   bool    `json:"truncated"`
+	BytesTotal  int64   `json:"bytes_total"`
+	Source      string  `json:"source"`
 }
 
 func (c ProjectControlClient) documentBodyV2(ctx context.Context, datasetID, docID string) (v2DocumentBodyResponse, error) {
 	var out v2DocumentBodyResponse
 	path := "/v2/datasets/" + url.PathEscape(datasetID) + "/documents/" + url.PathEscape(docID) + "/body"
-	// Allow up to 12 MiB JSON payload to cover an 8 MiB UTF-8 body plus JSON escaping overhead.
-	if err := c.requestWithLimit(ctx, "GET", path, nil, &out, 12*1024*1024); err != nil {
+	// Allow up to 16 MiB JSON payload to cover worst-case JSON escaping of an 8 MiB UTF-8 body.
+	if err := c.requestWithLimit(ctx, "GET", path, nil, &out, 16*1024*1024); err != nil {
 		return v2DocumentBodyResponse{}, err
 	}
 	return out, nil
@@ -192,6 +192,7 @@ type v2OverviewProjectSummary struct {
 	DatasetID      string `json:"dataset_id"`
 	KnowledgeCount int    `json:"knowledge_count"`
 	RawDocCount    int    `json:"raw_doc_count"`
+	SessionCount   int    `json:"session_count"`
 	UnreadCount    int    `json:"unread_count"`
 	CatalogVersion string `json:"catalog_version"`
 }
@@ -199,6 +200,7 @@ type v2OverviewProjectSummary struct {
 type v2OverviewCommonSummary struct {
 	DatasetID      string `json:"dataset_id"`
 	KnowledgeCount int    `json:"knowledge_count"`
+	RawDocCount    int    `json:"raw_doc_count"`
 	CatalogVersion string `json:"catalog_version"`
 }
 
@@ -206,6 +208,7 @@ type v2OverviewBootstrapResponse struct {
 	Generation          int64                      `json:"generation"`
 	LocalTZName         string                     `json:"local_tz_name"`
 	TotalKnowledgeCount int                        `json:"total_knowledge_count"`
+	TotalRawCount       *int                       `json:"total_raw_count,omitempty"`
 	DayBuckets          []v2OverviewDayBucket      `json:"day_buckets"`
 	Projects            []v2OverviewProjectSummary `json:"projects"`
 	Common              *v2OverviewCommonSummary   `json:"common"`
@@ -283,10 +286,29 @@ func buildOverviewFromV2Bootstrap(projects []Project, resp v2OverviewBootstrapRe
 		}
 		recent = append(recent, row.toItem(resp.RecallStartedAt))
 	}
+	allServerDatasetsAllowed := true
+	if len(allowed) > 0 {
+		for _, proj := range resp.Projects {
+			if proj.DatasetID != "" && !allowed[proj.DatasetID] {
+				allServerDatasetsAllowed = false
+				break
+			}
+		}
+		if allServerDatasetsAllowed && resp.Common != nil && resp.Common.DatasetID != "" && !allowed[resp.Common.DatasetID] {
+			allServerDatasetsAllowed = false
+		}
+	}
 	rawTotal := 0
-	for _, proj := range resp.Projects {
-		if len(allowed) == 0 || allowed[proj.DatasetID] {
-			rawTotal += proj.RawDocCount
+	if resp.TotalRawCount != nil && allServerDatasetsAllowed {
+		rawTotal = *resp.TotalRawCount
+	} else {
+		for _, proj := range resp.Projects {
+			if len(allowed) == 0 || allowed[proj.DatasetID] {
+				rawTotal += proj.RawDocCount + proj.SessionCount
+			}
+		}
+		if resp.Common != nil && (len(allowed) == 0 || allowed[resp.Common.DatasetID]) {
+			rawTotal += resp.Common.RawDocCount
 		}
 	}
 	buckets := make(map[string]int, len(resp.DayBuckets))
@@ -309,6 +331,12 @@ func buildOverviewFromV2Bootstrap(projects []Project, resp v2OverviewBootstrapRe
 	return snapshot, buckets, merged, more
 }
 
+type v2KnowledgePageOpts struct {
+	Cursor      string
+	Direction   string
+	AnchorDocID string
+}
+
 type v2ProjectKnowledgeResponse struct {
 	ProjectID      string            `json:"project_id"`
 	DatasetID      string            `json:"dataset_id"`
@@ -321,9 +349,15 @@ type v2ProjectKnowledgeResponse struct {
 	Items          []v2KnowledgeItem `json:"items"`
 	NextCursor     string            `json:"next_cursor"`
 	HasMore        bool              `json:"has_more"`
+	PrevCursor     string            `json:"prev_cursor"`
+	HasPrev        bool              `json:"has_prev"`
 }
 
 func (c ProjectControlClient) projectKnowledgeV2(ctx context.Context, readingID, projectID, sortBy, category string, unreadOnly bool, recallAgentID, recallEventID string, limit int, cursor string) (v2ProjectKnowledgeResponse, error) {
+	return c.projectKnowledgePageV2(ctx, readingID, projectID, sortBy, category, unreadOnly, recallAgentID, recallEventID, limit, v2KnowledgePageOpts{Cursor: cursor})
+}
+
+func (c ProjectControlClient) projectKnowledgePageV2(ctx context.Context, readingID, projectID, sortBy, category string, unreadOnly bool, recallAgentID, recallEventID string, limit int, opts v2KnowledgePageOpts) (v2ProjectKnowledgeResponse, error) {
 	var out v2ProjectKnowledgeResponse
 	q := url.Values{}
 	if sortBy != "" {
@@ -342,8 +376,14 @@ func (c ProjectControlClient) projectKnowledgeV2(ctx context.Context, readingID,
 	if limit > 0 {
 		q.Set("limit", strconv.Itoa(min(50, limit)))
 	}
-	if cursor != "" {
-		q.Set("cursor", cursor)
+	if opts.Cursor != "" {
+		q.Set("cursor", opts.Cursor)
+	}
+	if opts.Direction == "prev" || opts.Direction == "next" {
+		q.Set("direction", opts.Direction)
+	}
+	if opts.AnchorDocID != "" {
+		q.Set("anchor_doc_id", opts.AnchorDocID)
 	}
 	path := "/v2/projects/" + url.PathEscape(projectID) + "/knowledge"
 	if enc := q.Encode(); enc != "" {
@@ -363,9 +403,15 @@ type v2CommonKnowledgeResponse struct {
 	Items          []v2KnowledgeItem `json:"items"`
 	NextCursor     string            `json:"next_cursor"`
 	HasMore        bool              `json:"has_more"`
+	PrevCursor     string            `json:"prev_cursor"`
+	HasPrev        bool              `json:"has_prev"`
 }
 
 func (c ProjectControlClient) commonKnowledgeV2(ctx context.Context, datasetID, commonCategory string, limit int, cursor string) (v2CommonKnowledgeResponse, error) {
+	return c.commonKnowledgePageV2(ctx, datasetID, commonCategory, limit, v2KnowledgePageOpts{Cursor: cursor})
+}
+
+func (c ProjectControlClient) commonKnowledgePageV2(ctx context.Context, datasetID, commonCategory string, limit int, opts v2KnowledgePageOpts) (v2CommonKnowledgeResponse, error) {
 	var out v2CommonKnowledgeResponse
 	q := url.Values{}
 	if datasetID != "" {
@@ -378,8 +424,14 @@ func (c ProjectControlClient) commonKnowledgeV2(ctx context.Context, datasetID, 
 	if limit > 0 {
 		q.Set("limit", strconv.Itoa(min(50, limit)))
 	}
-	if cursor != "" {
-		q.Set("cursor", cursor)
+	if opts.Cursor != "" {
+		q.Set("cursor", opts.Cursor)
+	}
+	if opts.Direction == "prev" || opts.Direction == "next" {
+		q.Set("direction", opts.Direction)
+	}
+	if opts.AnchorDocID != "" {
+		q.Set("anchor_doc_id", opts.AnchorDocID)
 	}
 	path := "/v2/common/knowledge?" + q.Encode()
 	err := c.requestWithLimit(ctx, "GET", path, nil, &out, 512*1024)
@@ -431,7 +483,7 @@ type v2SearchRecentResponse struct {
 	SessionItems   []v2SearchSessionItem `json:"session_items"`
 }
 
-func (c ProjectControlClient) searchRecentV2(ctx context.Context, limit int, projectID string) (v2SearchRecentResponse, error) {
+func (c ProjectControlClient) searchRecentV2(ctx context.Context, readingID string, limit int, projectID string) (v2SearchRecentResponse, error) {
 	var out v2SearchRecentResponse
 	q := url.Values{}
 	if limit > 0 {
@@ -441,7 +493,7 @@ func (c ProjectControlClient) searchRecentV2(ctx context.Context, limit int, pro
 		q.Set("project_id", projectID)
 	}
 	path := "/v2/search/recent?" + q.Encode()
-	err := c.requestWithLimit(ctx, "GET", path, nil, &out, 512*1024)
+	err := c.requestWithHeaders(ctx, "GET", path, v2IdentityHeaders(readingID), nil, &out, 512*1024)
 	return out, err
 }
 
@@ -452,7 +504,7 @@ type v2SearchMetadataResponse struct {
 	HasMore    bool              `json:"has_more"`
 }
 
-func (c ProjectControlClient) searchMetadataV2(ctx context.Context, query, filter string, limit int, projectID string) (v2SearchMetadataResponse, error) {
+func (c ProjectControlClient) searchMetadataV2(ctx context.Context, readingID, query, filter string, limit int, projectID string) (v2SearchMetadataResponse, error) {
 	var out v2SearchMetadataResponse
 	q := url.Values{}
 	q.Set("q", query)
@@ -467,7 +519,7 @@ func (c ProjectControlClient) searchMetadataV2(ctx context.Context, query, filte
 		q.Set("project_id", projectID)
 	}
 	path := "/v2/search/metadata?" + q.Encode()
-	err := c.requestWithLimit(ctx, "GET", path, nil, &out, 512*1024)
+	err := c.requestWithHeaders(ctx, "GET", path, v2IdentityHeaders(readingID), nil, &out, 512*1024)
 	return out, err
 }
 
@@ -525,9 +577,12 @@ type v2SessionChildrenResponse struct {
 	HasMore         bool              `json:"has_more"`
 }
 
-func (c ProjectControlClient) sessionChildrenV2(ctx context.Context, projectID, sessionID string, limit int, cursor string) (v2SessionChildrenResponse, error) {
+func (c ProjectControlClient) sessionChildrenV2(ctx context.Context, projectID, sessionID, userID string, limit int, cursor string) (v2SessionChildrenResponse, error) {
 	var out v2SessionChildrenResponse
 	q := url.Values{}
+	if userID != "" {
+		q.Set("user_id", userID)
+	}
 	if limit > 0 {
 		q.Set("limit", strconv.Itoa(limit))
 	}
@@ -773,12 +828,14 @@ func (c ProjectControlClient) readingStateImportChunkV2(ctx context.Context, req
 }
 
 type v2ReadingStateImportCommitRequest struct {
-	BatchID string `json:"batch_id"`
+	BatchID       string `json:"batch_id"`
+	ExpectedItems int    `json:"expected_items,omitempty"`
 }
 
 type v2ReadingStateImportCommitResponse struct {
-	ScopeHash string `json:"scope_hash"`
-	Committed int    `json:"committed"`
+	ScopeHash   string `json:"scope_hash"`
+	Committed   int    `json:"committed"`
+	UnreadCount int    `json:"unread_count"`
 }
 
 func (c ProjectControlClient) readingStateImportCommitV2(ctx context.Context, req v2ReadingStateImportCommitRequest) (v2ReadingStateImportCommitResponse, error) {
@@ -795,10 +852,16 @@ type v2ReadingStateMarkReadRequest struct {
 }
 
 type v2ReadingStateMarkReadResponse struct {
-	ScopeHash       string `json:"scope_hash"`
-	Marked          int    `json:"marked"`
-	UnreadCount     int    `json:"unread_count"`
-	ReadHorizonAtNS string `json:"read_horizon_at_ns"`
+	ScopeHash        string `json:"scope_hash"`
+	Marked           int    `json:"marked"`
+	UnreadCount      int    `json:"unread_count"`
+	UnreadCountKnown *bool  `json:"unread_count_known,omitempty"`
+	StateRev         int64  `json:"state_rev,omitempty"`
+	ReadHorizonAtNS  string `json:"read_horizon_at_ns"`
+}
+
+func (r v2ReadingStateMarkReadResponse) unreadCountKnown() bool {
+	return r.UnreadCountKnown == nil || *r.UnreadCountKnown
 }
 
 func (c ProjectControlClient) readingStateMarkReadV2(ctx context.Context, req v2ReadingStateMarkReadRequest) (v2ReadingStateMarkReadResponse, error) {
@@ -814,9 +877,15 @@ type v2ReadingStateMarkAllReadRequest struct {
 }
 
 type v2ReadingStateMarkAllReadResponse struct {
-	ScopeHash       string `json:"scope_hash"`
-	UnreadCount     int    `json:"unread_count"`
-	ReadHorizonAtNS string `json:"read_horizon_at_ns"`
+	ScopeHash        string `json:"scope_hash"`
+	UnreadCount      int    `json:"unread_count"`
+	UnreadCountKnown *bool  `json:"unread_count_known,omitempty"`
+	StateRev         int64  `json:"state_rev,omitempty"`
+	ReadHorizonAtNS  string `json:"read_horizon_at_ns"`
+}
+
+func (r v2ReadingStateMarkAllReadResponse) unreadCountKnown() bool {
+	return r.UnreadCountKnown == nil || *r.UnreadCountKnown
 }
 
 func (c ProjectControlClient) readingStateMarkAllReadV2(ctx context.Context, req v2ReadingStateMarkAllReadRequest) (v2ReadingStateMarkAllReadResponse, error) {
@@ -831,11 +900,13 @@ type v2ProvenanceBackfillRequest struct {
 }
 
 type v2ProvenanceBackfillResponse struct {
-	Status     string `json:"status"`
-	Matched    int    `json:"matched"`
-	Imported   int    `json:"imported"`
-	Skipped    int    `json:"skipped"`
-	BackupPath string `json:"backup_path"`
+	Status                 string `json:"status"`
+	Matched                int    `json:"matched"`
+	Imported               int    `json:"imported"`
+	Skipped                int    `json:"skipped"`
+	Unmapped               int    `json:"unmapped"`
+	HasUnconfirmedProjects bool   `json:"has_unconfirmed_projects"`
+	BackupPath             string `json:"backup_path"`
 }
 
 func (c ProjectControlClient) provenanceBackfillLegacyDatesV2(ctx context.Context, req v2ProvenanceBackfillRequest) (v2ProvenanceBackfillResponse, error) {

@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -52,19 +54,31 @@ func knowledgeSourceDatesPath(cfg Config, identity string) (string, bool) {
 }
 
 func readLegacyKnowledgeDatesFile(path string) (map[string]string, bool, error) {
-	info, err := os.Lstat(path)
+	linfo, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() > 8*1024*1024 {
+	if !linfo.Mode().IsRegular() || linfo.Mode()&os.ModeSymlink != 0 || linfo.Mode().Perm()&0077 != 0 || linfo.Size() > 8*1024*1024 {
 		return nil, true, fmt.Errorf("记忆来源日期记录不可用")
 	}
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, true, err
+	}
+	defer f.Close()
+	finfo, err := f.Stat()
+	if err != nil || !os.SameFile(linfo, finfo) || !finfo.Mode().IsRegular() || finfo.Mode().Perm()&0077 != 0 || finfo.Size() > 8*1024*1024 {
+		return nil, true, fmt.Errorf("记忆来源日期记录不可用")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, 8*1024*1024+1))
+	if err != nil {
+		return nil, true, err
+	}
+	if int64(len(data)) > 8*1024*1024 {
+		return nil, true, fmt.Errorf("记忆来源日期记录不可用")
 	}
 	var state struct {
 		Version int               `json:"schema_version"`
@@ -87,6 +101,46 @@ func readLegacyKnowledgeDatesFile(path string) (map[string]string, bool, error) 
 	return days, true, nil
 }
 
+const (
+	provenanceBackfillChunkMaxEntries = 500
+	provenanceBackfillChunkMaxBytes   = 60 * 1024
+)
+
+func chunkLegacyKnowledgeDays(days map[string]string, maxEntries, maxBytes int) []map[string]string {
+	if len(days) == 0 {
+		return nil
+	}
+	if maxEntries <= 0 {
+		maxEntries = provenanceBackfillChunkMaxEntries
+	}
+	if maxBytes <= 0 {
+		maxBytes = provenanceBackfillChunkMaxBytes
+	}
+	keys := make([]string, 0, len(days))
+	for k := range days {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var chunks []map[string]string
+	cur := make(map[string]string, min(len(keys), maxEntries))
+	approxBytes := 256
+	for _, k := range keys {
+		v := days[k]
+		entryBytes := len(k) + len(v) + 12
+		if len(cur) > 0 && (len(cur) >= maxEntries || approxBytes+entryBytes > maxBytes) {
+			chunks = append(chunks, cur)
+			cur = make(map[string]string, min(len(keys), maxEntries))
+			approxBytes = 256
+		}
+		cur[k] = v
+		approxBytes += entryBytes
+	}
+	if len(cur) > 0 {
+		chunks = append(chunks, cur)
+	}
+	return chunks
+}
+
 // backfillLegacyKnowledgeDatesV2 performs a one-shot, single-identity migration
 // of knowledge-source-dates-<sha256(identity)>.json through the control plane
 // to the single-writer official_service_dev provenance store (evidence level
@@ -94,7 +148,14 @@ func readLegacyKnowledgeDatesFile(path string) (map[string]string, bool, error) 
 // local knowledge-source-dates-*.json files.
 func (c Client) backfillLegacyKnowledgeDatesV2(ctx context.Context) (bool, error) {
 	control, ok := c.controlClient()
-	if !ok || !control.hasFeature(ctx, v2FeatureProvenanceBackfill) {
+	if !ok {
+		return false, nil
+	}
+	hasBackfill, probeErr := control.probeFeature(ctx, v2FeatureProvenanceBackfill)
+	if probeErr != nil {
+		return false, probeErr
+	}
+	if !hasBackfill {
 		return false, nil
 	}
 	identity, err := readingIdentity(Client{Config: c.Config})
@@ -147,25 +208,41 @@ func (c Client) backfillLegacyKnowledgeDatesV2(ctx context.Context) (bool, error
 		}
 		switch resp.Status {
 		case "migrated":
-			doneOK = true
-			return true, nil
+			if !resp.HasUnconfirmedProjects && resp.Unmapped == 0 {
+				doneOK = true
+				return true, nil
+			}
+			return false, nil
 		case "absent", "empty":
 			// If the client's own state_dir differs from the server's state_dir
 			// and this exact readingIdentity's legacy file exists locally, pass
-			// its validated days explicitly and rename the file to .migrated.bak.
+			// its validated days in <=500 entry (<64 KiB) chunks and only rename
+			// to .migrated.bak once unmapped == 0 and all projects are confirmed.
 			if hasLocalPath {
 				knowledgeDatesMu.Lock()
 				days, exists, readErr := readLegacyKnowledgeDatesFile(localPath)
 				knowledgeDatesMu.Unlock()
 				if readErr == nil && exists && len(days) > 0 {
-					resp2, err2 := control.provenanceBackfillLegacyDatesV2(ctx, v2ProvenanceBackfillRequest{
-						ReadingIdentity: identity,
-						Days:            days,
-					})
-					if err2 != nil {
-						return false, err2
+					chunks := chunkLegacyKnowledgeDays(days, provenanceBackfillChunkMaxEntries, provenanceBackfillChunkMaxBytes)
+					totalUnmapped := 0
+					anyUnconfirmed := false
+					for _, chunk := range chunks {
+						resp2, err2 := control.provenanceBackfillLegacyDatesV2(ctx, v2ProvenanceBackfillRequest{
+							ReadingIdentity: identity,
+							Days:            chunk,
+						})
+						if err2 != nil {
+							return false, err2
+						}
+						if resp2.Status != "migrated" && resp2.Status != "empty" && resp2.Status != "absent" {
+							return false, fmt.Errorf("来源日期回填状态未确认：%s", resp2.Status)
+						}
+						totalUnmapped += resp2.Unmapped
+						if resp2.HasUnconfirmedProjects {
+							anyUnconfirmed = true
+						}
 					}
-					if resp2.Status == "migrated" || resp2.Status == "empty" || resp2.Status == "absent" {
+					if !anyUnconfirmed && totalUnmapped == 0 {
 						knowledgeDatesMu.Lock()
 						if _, statErr := os.Lstat(localPath); statErr == nil {
 							_ = os.Rename(localPath, localPath+".migrated.bak")
@@ -174,7 +251,9 @@ func (c Client) backfillLegacyKnowledgeDatesV2(ctx context.Context) (bool, error
 						doneOK = true
 						return true, nil
 					}
-					return false, fmt.Errorf("来源日期回填状态未确认：%s", resp2.Status)
+					// Retain local legacy JSON so future startups retry once
+					// unconfirmed projects finish registering.
+					return false, nil
 				}
 			}
 			doneOK = true

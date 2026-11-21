@@ -398,19 +398,30 @@ func (c ProjectControlClient) capabilities(ctx context.Context) (ControlCapabili
 	return result, err
 }
 
-func (c ProjectControlClient) hasFeature(ctx context.Context, feature string) bool {
+func (c ProjectControlClient) probeFeature(ctx context.Context, feature string) (bool, error) {
 	cacheKey := c.Config.URL + "|" + c.Config.ManagementTokenFile
 	now := time.Now()
 	controlCapabilitiesCache.mu.Lock()
 	entry, ok := controlCapabilitiesCache.entries[cacheKey]
 	controlCapabilitiesCache.mu.Unlock()
 	if ok && now.Before(entry.expiresAt) {
-		return entry.supported && entry.caps.HasFeature(feature)
+		return entry.supported && entry.caps.HasFeature(feature), nil
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	caps, err := c.capabilities(probeCtx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		if isControlAuthDenied(err) {
+			// Never cache 401/403 as "unsupported" and never allow silent fallback
+			// to official /api/v1/* with a separate credential.
+			controlCapabilitiesCache.mu.Lock()
+			delete(controlCapabilitiesCache.entries, cacheKey)
+			controlCapabilitiesCache.mu.Unlock()
+			return false, err
+		}
 		ttl := 15 * time.Second
 		if isControlNotFound(err) {
 			ttl = 5 * time.Minute
@@ -421,7 +432,7 @@ func (c ProjectControlClient) hasFeature(ctx context.Context, feature string) bo
 		}
 		controlCapabilitiesCache.entries[cacheKey] = cachedCapabilitiesEntry{supported: false, expiresAt: now.Add(ttl)}
 		controlCapabilitiesCache.mu.Unlock()
-		return false
+		return false, nil
 	}
 	controlCapabilitiesCache.mu.Lock()
 	if len(controlCapabilitiesCache.entries) >= 128 {
@@ -433,7 +444,7 @@ func (c ProjectControlClient) hasFeature(ctx context.Context, feature string) bo
 		expiresAt: now.Add(5 * time.Minute),
 	}
 	controlCapabilitiesCache.mu.Unlock()
-	return caps.HasFeature(feature)
+	return caps.HasFeature(feature), nil
 }
 
 type documentLookupV2Response struct {

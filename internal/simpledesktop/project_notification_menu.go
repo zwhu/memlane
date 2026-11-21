@@ -33,11 +33,15 @@ func (a *App) projectNotificationMenu(c *ui.Context, item ui.Element, project Pr
 				Label:    "清空所有通知",
 				Disabled: !a.access.Loaded || q == nil || !q.Loaded,
 				OnSelect: func() {
-					if err := a.clearProjectNotifications(q, *target); err != nil {
-						c.Toast(err.Error())
-					} else {
-						c.Toast("已清空「" + project.Name + "」的所有通知")
+					if a.Update == nil {
+						if err := a.clearProjectNotifications(q, *target); err != nil {
+							c.Toast(err.Error())
+						} else {
+							c.Toast("已清空「" + project.Name + "」的所有通知")
+						}
+						return
 					}
+					a.clearProjectNotificationsAsync(q, *target)
 				},
 			},
 			{Separator: true},
@@ -59,29 +63,38 @@ func (a *App) projectNotificationMenu(c *ui.Context, item ui.Element, project Pr
 
 // Clear only the currently observed presentation state. Retain the knowledge
 // baseline and issue fingerprints, so new knowledge and new issues still alert.
-// Uses /v2/reading-state/mark-all-read when supported, otherwise falls back to
-// the existing atomic local JSON writer; a partial save reports a failure.
+// Uses /v2/reading-state/mark-all-read (serialized with mark-read via
+// knowledgeWriter) when supported, otherwise falls back to the atomic local
+// JSON writer under knowledgeWriter.fileMu; a partial save reports a failure.
 func (a *App) clearProjectNotifications(q *projectQueueState, p AccessProject) error {
 	useServerReadingState := false
 	var control ProjectControlClient
 	if ctrl, ok := a.accessClient(); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if ctrl.hasFeature(ctx, v2FeatureReadingState) {
+		hasV2, probeErr := ctrl.probeFeature(ctx, v2FeatureReadingState)
+		cancel()
+		if probeErr != nil {
+			return fmt.Errorf("通知未清空：%s", controlUserError(probeErr))
+		}
+		if hasV2 {
 			useServerReadingState = true
 			control = ctrl
 		}
-		cancel()
 	}
 
+	w := a.ensureKnowledgeWriter()
 	var readPath string
 	var read knowledgeReadState
 	if !useServerReadingState {
+		a.waitKnowledgeReadFlush()
 		var err error
 		readPath, err = a.knowledgeReadPath(p)
 		if err != nil {
 			return fmt.Errorf("通知未清空：客户端状态位置不可用")
 		}
+		w.fileMu.Lock()
 		read, err = readKnowledgeState(readPath)
+		w.fileMu.Unlock()
 		if err != nil || (!read.Initialized && q.KnowledgeRead.Initialized) {
 			return fmt.Errorf("通知未清空：已读状态无法读取")
 		}
@@ -118,20 +131,22 @@ func (a *App) clearProjectNotifications(q *projectQueueState, p AccessProject) e
 			q.StateVersion++
 			return fmt.Errorf("异常提醒已清除，未读记忆状态未保存")
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_, markErr := control.readingStateMarkAllReadV2(ctx, v2ReadingStateMarkAllReadRequest{
-			ReadingIdentity: readingID,
-			ProjectID:       p.ID,
-			DatasetID:       p.Dataset,
-		})
-		cancel()
+		readPathForKey, _ := a.knowledgeReadPath(p)
+		resp, markErr := a.enqueueKnowledgeMarkAllReadV2(readPathForKey, q, control, readingID, p.ID, p.Dataset, true)
 		if markErr != nil {
 			q.KnowledgeReadError = "已读状态未保存"
 			q.StateVersion++
 			return fmt.Errorf("异常提醒已清除，未读记忆状态未保存")
 		}
-		q.ServerUnreadKnown = true
-		q.ServerUnreadCount = 0
+		if resp.StateRev == 0 || resp.StateRev >= q.ServerUnreadStateRev {
+			if resp.StateRev > q.ServerUnreadStateRev {
+				q.ServerUnreadStateRev = resp.StateRev
+			}
+			if resp.unreadCountKnown() {
+				q.ServerUnreadKnown = true
+				q.ServerUnreadCount = resp.UnreadCount
+			}
+		}
 		q.UnreadHasMore = false
 		q.UnreadKnowledge = nil
 		q.KnowledgeReadError = ""
@@ -145,10 +160,17 @@ func (a *App) clearProjectNotifications(q *projectQueueState, p AccessProject) e
 		return nil
 	}
 	if read.Initialized {
+		w.fileMu.Lock()
+		latest, readErr := readKnowledgeState(readPath)
+		if readErr == nil && latest.Initialized {
+			read = latest
+		}
 		for id := range read.Read {
 			read.Read[id] = true
 		}
-		if err := writeKnowledgeState(readPath, read); err != nil {
+		writeErr := writeKnowledgeState(readPath, read)
+		w.fileMu.Unlock()
+		if writeErr != nil {
 			q.KnowledgeReadError = "已读状态未保存"
 			return fmt.Errorf("异常提醒已清除，未读记忆状态未保存")
 		}
@@ -157,4 +179,195 @@ func (a *App) clearProjectNotifications(q *projectQueueState, p AccessProject) e
 		q.StateVersion++
 	}
 	return nil
+}
+
+// clearProjectNotificationsAsync executes clearProjectNotifications network and
+// disk I/O off the UI thread so context menu selection never stalls the frame loop.
+func (a *App) clearProjectNotificationsAsync(q *projectQueueState, p AccessProject) {
+	if q == nil || a.Update == nil {
+		return
+	}
+	authEpoch := a.authEpoch
+	ctrl, hasCtrl := a.accessClient()
+	readingID, _ := readingIdentity(Client{Config: a.Client.Config})
+	readPath, readPathErr := a.knowledgeReadPath(p)
+	ackPath, ackPathErr := a.noticeAcknowledgementPath(p)
+	needs, info := a.messageNotices(q, p)
+	qReadInitialized := q.KnowledgeRead.Initialized
+	fingerprints := make(map[string]string, len(needs)+len(info))
+	noticeMeta := make([]struct {
+		Key       string
+		NeedsUser bool
+		Progress  bool
+	}, 0, len(needs)+len(info))
+	for _, n := range append(needs, info...) {
+		fingerprints[n.Key] = q.noticeFingerprint(n.Key)
+		noticeMeta = append(noticeMeta, struct {
+			Key       string
+			NeedsUser bool
+			Progress  bool
+		}{Key: n.Key, NeedsUser: n.NeedsUser, Progress: n.isProgressNotice()})
+	}
+	w := a.ensureKnowledgeWriter()
+	go func() {
+		useServer := false
+		if hasCtrl {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			hasV2, probeErr := ctrl.probeFeature(ctx, v2FeatureReadingState)
+			cancel()
+			if probeErr != nil {
+				a.Update(func() {
+					if authEpoch != a.authEpoch {
+						return
+					}
+					q.KnowledgeReadError = controlUserError(probeErr)
+					q.StateVersion++
+				})
+				return
+			}
+			useServer = hasV2
+		}
+		var localRead knowledgeReadState
+		if !useServer {
+			a.waitKnowledgeReadFlush()
+			if readPathErr != nil {
+				a.Update(func() {
+					if authEpoch != a.authEpoch {
+						return
+					}
+					q.KnowledgeReadError = "通知未清空：客户端状态位置不可用"
+					q.StateVersion++
+				})
+				return
+			}
+			w.fileMu.Lock()
+			var err error
+			localRead, err = readKnowledgeState(readPath)
+			w.fileMu.Unlock()
+			if err != nil || (!localRead.Initialized && qReadInitialized) {
+				a.Update(func() {
+					if authEpoch != a.authEpoch {
+						return
+					}
+					q.KnowledgeReadError = "通知未清空：已读状态无法读取"
+					q.StateVersion++
+				})
+				return
+			}
+		}
+		if ackPathErr != nil {
+			a.Update(func() {
+				if authEpoch != a.authEpoch {
+					return
+				}
+				q.NoticeAcknowledgementError = "提醒处理记录位置不可用"
+				q.StateVersion++
+			})
+			return
+		}
+		acknowledgements, message := a.readNoticeAcknowledgements(p)
+		if message != "" {
+			a.Update(func() {
+				if authEpoch != a.authEpoch {
+					return
+				}
+				q.NoticeAcknowledgementError = message
+				q.StateVersion++
+			})
+			return
+		}
+		now := time.Now().UTC()
+		for _, n := range noticeMeta {
+			if n.Progress {
+				continue
+			}
+			acknowledgements[noticeHash(n.Key)] = noticeAcknowledgement{
+				Fingerprint: fingerprints[n.Key], At: now, Deferred: n.NeedsUser,
+			}
+		}
+		b, mErr := json.Marshal(acknowledgements)
+		if mErr != nil || writeNoticeAcknowledgements(ackPath, b) != nil {
+			a.Update(func() {
+				if authEpoch != a.authEpoch {
+					return
+				}
+				q.NoticeAcknowledgementError = "提醒处理未保存，原提醒仍保留"
+				q.StateVersion++
+			})
+			return
+		}
+		if useServer {
+			if readingID == "" {
+				a.Update(func() {
+					if authEpoch != a.authEpoch {
+						return
+					}
+					q.NoticeAcknowledgements, q.NoticeAcknowledgementError = acknowledgements, ""
+					q.KnowledgeReadError = "已读状态未保存"
+					q.StateVersion++
+				})
+				return
+			}
+			resp, markErr := a.enqueueKnowledgeMarkAllReadV2(readPath, q, ctrl, readingID, p.ID, p.Dataset, true)
+			a.Update(func() {
+				if authEpoch != a.authEpoch {
+					return
+				}
+				q.NoticeAcknowledgements, q.NoticeAcknowledgementError = acknowledgements, ""
+				if markErr != nil {
+					q.KnowledgeReadError = "已读状态未保存"
+					q.StateVersion++
+					return
+				}
+				if resp.StateRev == 0 || resp.StateRev >= q.ServerUnreadStateRev {
+					if resp.StateRev > q.ServerUnreadStateRev {
+						q.ServerUnreadStateRev = resp.StateRev
+					}
+					if resp.unreadCountKnown() {
+						q.ServerUnreadKnown = true
+						q.ServerUnreadCount = resp.UnreadCount
+					}
+				}
+				q.UnreadHasMore = false
+				q.UnreadKnowledge = nil
+				q.KnowledgeReadError = ""
+				if q.KnowledgeRead.Read != nil {
+					for id := range q.KnowledgeRead.Read {
+						q.KnowledgeRead.Read[id] = true
+					}
+				}
+				a.clearDatasetServerUnread(p.Dataset)
+				q.StateVersion++
+			})
+			return
+		}
+		var writeErr error
+		if localRead.Initialized {
+			w.fileMu.Lock()
+			if latest, rErr := readKnowledgeState(readPath); rErr == nil && latest.Initialized {
+				localRead = latest
+			}
+			for id := range localRead.Read {
+				localRead.Read[id] = true
+			}
+			writeErr = writeKnowledgeState(readPath, localRead)
+			w.fileMu.Unlock()
+		}
+		a.Update(func() {
+			if authEpoch != a.authEpoch {
+				return
+			}
+			q.NoticeAcknowledgements, q.NoticeAcknowledgementError = acknowledgements, ""
+			if writeErr != nil {
+				q.KnowledgeReadError = "已读状态未保存"
+				q.StateVersion++
+				return
+			}
+			if localRead.Initialized {
+				q.KnowledgeRead, q.KnowledgeReadError = localRead, ""
+				q.UnreadKnowledge = nil
+			}
+			q.StateVersion++
+		})
+	}()
 }

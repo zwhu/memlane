@@ -36,6 +36,7 @@ type unifiedSearchState struct {
 	Reveal                               bool
 	lastSelIndY                          float32
 	request                              uint64
+	lastPublishSeq                       uint64
 	cancel                               context.CancelFunc
 }
 
@@ -148,7 +149,8 @@ func (a *App) runUnifiedSearch(retry bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	s.cancel = cancel
 	s.request++
-	request := s.request
+	s.lastPublishSeq = 0
+	request, authEpoch := s.request, a.authEpoch
 	signature := a.searchSignature()
 	s.Submitted = signature
 	s.Loading = true
@@ -161,11 +163,22 @@ func (a *App) runUnifiedSearch(retry bool) {
 	client := a.Client
 	control, hasControl := a.accessClient()
 	identity := a.readingIdentity
+	readingID, _ := readingIdentity(Client{Config: client.Config})
 	recallStartedAt := a.overviewState.V2RecallStartedAt
-	publishRows := func(lanes searchLaneResult, rows []Item, err error, done bool) {
+	publishRows := func(seq uint64, lanes searchLaneResult, rows []Item, err error, done bool) {
 		a.Update(func() {
-			if request != s.request || signature != a.searchSignature() || identity != a.readingIdentity {
+			if request != s.request || authEpoch != a.authEpoch || signature != a.searchSignature() || identity != a.readingIdentity {
 				return
+			}
+			if seq < s.lastPublishSeq {
+				return
+			}
+			s.lastPublishSeq = seq
+			prevSelectedKey := ""
+			if s.KeyboardSelection && s.Selection >= 0 {
+				if prevVis := a.visibleSearchRows(); s.Selection < len(prevVis) {
+					prevSelectedKey = prevVis[s.Selection].key()
+				}
 			}
 			if done {
 				s.Loading = false
@@ -209,19 +222,56 @@ func (a *App) runUnifiedSearch(retry bool) {
 			} else {
 				s.Loaded = err == nil || lanes.hasAnySuccess()
 			}
-			if !s.KeyboardSelection {
+			if s.KeyboardSelection && prevSelectedKey != "" {
+				nextVis := a.visibleSearchRows()
+				relocated := false
+				for idx, row := range nextVis {
+					if row.key() == prevSelectedKey {
+						s.Selection = idx
+						relocated = true
+						break
+					}
+				}
+				if !relocated {
+					if len(nextVis) == 0 {
+						s.Selection = 0
+					} else if s.Selection >= len(nextVis) {
+						s.Selection = len(nextVis) - 1
+					}
+				}
+			} else if !s.KeyboardSelection {
 				s.Scroll.Y = 0
 			}
 		})
 	}
 	go func() {
 		defer cancel()
-		if query == "" {
-			rows, err := a.recentSearchItems(ctx, client, projects, signature)
-			publishRows(searchLaneResult{}, rows, err, true)
+		if len(projects) == 0 {
+			publishRows(1, searchLaneResult{MetadataOK: true, SemanticOK: true, KeywordOK: true}, []Item{}, nil, true)
 			return
 		}
-		if hasControl && control.hasFeature(ctx, v2FeatureSearch) {
+		if query == "" {
+			if hasControl {
+				rows, usedV2, err := recentSearchItemsV2(ctx, control, projects, scope, readingID, recallStartedAt)
+				if usedV2 {
+					publishRows(1, searchLaneResult{}, rows, err, true)
+					return
+				}
+			}
+			rows, err := a.recentSearchItems(ctx, client, projects, signature)
+			publishRows(1, searchLaneResult{}, rows, err, true)
+			return
+		}
+		hasV2Search := false
+		if hasControl {
+			var probeErr error
+			hasV2Search, probeErr = control.probeFeature(ctx, v2FeatureSearch)
+			if probeErr != nil {
+				publishRows(1, searchLaneResult{MetadataError: probeErr}, nil, probeErr, true)
+				return
+			}
+		}
+		if hasControl && hasV2Search {
 			projectID := ""
 			if scope != "" && scope != "@common" && len(projects) == 1 {
 				projectID = projects[0].ID
@@ -231,19 +281,22 @@ func (a *App) runUnifiedSearch(retry bool) {
 				allowedDatasets[p.Dataset] = true
 			}
 			var mu sync.Mutex
+			var seq uint64
 			lanes := previous
 			publishProgressive := func(done bool) {
 				mu.Lock()
+				seq++
+				mySeq := seq
 				snap := lanes
 				mu.Unlock()
-				publishRows(snap, snap.rows(query), snap.err(), done)
+				publishRows(mySeq, snap, snap.rows(query), snap.err(), done)
 			}
 			var wg sync.WaitGroup
 			if !lanes.MetadataOK {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					resp, err := control.searchMetadataV2(ctx, query, "all", 30, projectID)
+					resp, err := control.searchMetadataV2(ctx, readingID, query, "all", 30, projectID)
 					var items []Item
 					if err == nil {
 						items = make([]Item, 0, len(resp.Items))
@@ -251,10 +304,15 @@ func (a *App) runUnifiedSearch(retry bool) {
 							if row.DocID == "" {
 								continue
 							}
-							if len(allowedDatasets) > 0 && !allowedDatasets[row.DatasetID] {
+							if !allowedDatasets[row.DatasetID] {
 								continue
 							}
-							items = append(items, row.toItem(recallStartedAt))
+							item := row.toItem(recallStartedAt)
+							if readingID == "" {
+								item.ServerUnreadKnown = false
+								item.ServerUnread = false
+							}
+							items = append(items, item)
 						}
 					}
 					mu.Lock()
@@ -300,7 +358,7 @@ func (a *App) runUnifiedSearch(retry bool) {
 			return
 		}
 		lanes := client.searchLanes(ctx, projects, query, previous)
-		publishRows(lanes, lanes.rows(query), lanes.err(), true)
+		publishRows(1, lanes, lanes.rows(query), lanes.err(), true)
 	}()
 }
 func (a *App) searchSubmitOrOpen() {
@@ -367,12 +425,12 @@ func containsReadingItem(rows []Item, key string) bool {
 func (a *App) resolveSearchDocument(s *pane, i Item) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	a.searchResolveCancel = cancel
-	client, epoch := a.Client, a.epoch
+	client, epoch, authEpoch := a.Client, a.epoch, a.authEpoch
 	go func() {
 		defer cancel()
 		result, err := client.documentInfoByID(ctx, i.Dataset, i.SourceDocument)
 		a.Update(func() {
-			if epoch != a.epoch || a.searchPane != s || a.searchAnchor == nil || a.searchAnchor.key() != i.key() || s.Selected == nil || s.Selected.key() != i.key() {
+			if epoch != a.epoch || authEpoch != a.authEpoch || a.searchPane != s || a.searchAnchor == nil || a.searchAnchor.key() != i.key() || s.Selected == nil || s.Selected.key() != i.key() {
 				return
 			}
 			if err != nil {
@@ -485,58 +543,76 @@ func searchRowText(i Item) (string, string) {
 	}
 	return title, preview
 }
+func recentSearchItemsV2(ctx context.Context, control ProjectControlClient, projects []Project, scope, readingID, recallStartedAt string) ([]Item, bool, error) {
+	if len(projects) == 0 {
+		return []Item{}, true, nil
+	}
+	hasV2Search, probeErr := control.probeFeature(ctx, v2FeatureSearch)
+	if probeErr != nil {
+		return nil, true, probeErr
+	}
+	if !hasV2Search {
+		return nil, false, nil
+	}
+	projectID := ""
+	if len(projects) == 1 && scope != "" && scope != "@common" {
+		projectID = projects[0].ID
+	}
+	allowed := make(map[string]bool, len(projects))
+	for _, p := range projects {
+		allowed[p.Dataset] = true
+	}
+	resp, err := control.searchRecentV2(ctx, readingID, 20, projectID)
+	if err == nil {
+		result := make([]Item, 0, 12)
+		seen := map[string]bool{}
+		kCount := 0
+		for _, row := range resp.KnowledgeItems {
+			if row.DocID == "" || !allowed[row.DatasetID] {
+				continue
+			}
+			item := row.toItem(recallStartedAt)
+			if readingID == "" {
+				item.ServerUnreadKnown = false
+				item.ServerUnread = false
+			}
+			if seen[item.key()] {
+				continue
+			}
+			seen[item.key()] = true
+			result = append(result, item)
+			kCount++
+			if kCount >= 6 {
+				break
+			}
+		}
+		sCount := 0
+		for _, row := range resp.SessionItems {
+			if row.SessionID == "" || !allowed[row.DatasetID] {
+				continue
+			}
+			item := row.toItem()
+			if seen[item.key()] {
+				continue
+			}
+			seen[item.key()] = true
+			result = append(result, item)
+			sCount++
+			if sCount >= 6 {
+				break
+			}
+		}
+		return result, true, nil
+	}
+	if isControlFailClosedV2(err) {
+		return nil, true, err
+	}
+	return nil, false, nil
+}
+
 func (a *App) recentSearchItems(ctx context.Context, client Client, projects []Project, generation string) ([]Item, error) {
-	if control, ok := client.controlClient(); ok && control.hasFeature(ctx, v2FeatureSearch) {
-		projectID := ""
-		if len(projects) == 1 && a.searchUI.Scope != "" && a.searchUI.Scope != "@common" {
-			projectID = projects[0].ID
-		}
-		allowed := make(map[string]bool, len(projects))
-		for _, p := range projects {
-			allowed[p.Dataset] = true
-		}
-		resp, err := control.searchRecentV2(ctx, 20, projectID)
-		if err == nil {
-			recallStartedAt := a.overviewState.V2RecallStartedAt
-			result := make([]Item, 0, 12)
-			seen := map[string]bool{}
-			kCount := 0
-			for _, row := range resp.KnowledgeItems {
-				if row.DocID == "" || (len(allowed) > 0 && !allowed[row.DatasetID]) {
-					continue
-				}
-				item := row.toItem(recallStartedAt)
-				if seen[item.key()] {
-					continue
-				}
-				seen[item.key()] = true
-				result = append(result, item)
-				kCount++
-				if kCount >= 6 {
-					break
-				}
-			}
-			sCount := 0
-			for _, row := range resp.SessionItems {
-				if row.SessionID == "" || (len(allowed) > 0 && !allowed[row.DatasetID]) {
-					continue
-				}
-				item := row.toItem()
-				if seen[item.key()] {
-					continue
-				}
-				seen[item.key()] = true
-				result = append(result, item)
-				sCount++
-				if sCount >= 6 {
-					break
-				}
-			}
-			return result, nil
-		}
-		if isControlFailClosedV2(err) {
-			return nil, err
-		}
+	if len(projects) == 0 {
+		return []Item{}, nil
 	}
 	rows := []Item{}
 	for _, p := range projects {
