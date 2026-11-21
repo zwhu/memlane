@@ -26,6 +26,7 @@ INSTALLATION_VERIFY_TTL_SECONDS = 300.0
 INSTALLATION_VERIFY_MAX_ENTRIES = 256
 REVIEW_CACHE_TTL_SECONDS = 25.0
 REVIEW_CACHE_MAX_ENTRIES = 512
+COLD_REVIEW_MAX_ENTRIES = 2048
 
 _INSTALLATION_VERIFY_LOCK = threading.Lock()
 _INSTALLATION_VERIFY_CACHE = {}
@@ -49,6 +50,48 @@ def _sha256_file(path, *, chunk_size=HASH_CHUNK_SIZE):
 
 def _stat_signature(st):
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _cold_watch_valid(watch):
+    if not isinstance(watch, dict):
+        return False
+    map_path = watch.get('map_path')
+    bridge_path = watch.get('bridge_path')
+    bridge_exists = watch.get('bridge_exists')
+    if (not isinstance(map_path, str) or not os.path.isabs(map_path)
+            or not isinstance(bridge_path, str) or not os.path.isabs(bridge_path)
+            or type(bridge_exists) is not bool):
+        return False
+    for key in ('bridge_dev', 'bridge_ino', 'bridge_size', 'bridge_mtime_ns'):
+        if type(watch.get(key)) is not int:
+            return False
+    return True
+
+
+def _cold_watch_unchanged(watch, manifest_path, manifest_sig):
+    try:
+        mst = os.lstat(manifest_path)
+    except OSError:
+        return False
+    if stat.S_ISLNK(mst.st_mode) or not stat.S_ISREG(mst.st_mode) or _stat_signature(mst) != manifest_sig:
+        return False
+    try:
+        os.lstat(watch['map_path'])
+        return False
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return False
+    try:
+        bst = os.lstat(watch['bridge_path'])
+    except FileNotFoundError:
+        return not watch['bridge_exists']
+    except OSError:
+        return False
+    if not watch['bridge_exists'] or stat.S_ISLNK(bst.st_mode) or not stat.S_ISREG(bst.st_mode):
+        return False
+    expected_bridge_sig = (watch['bridge_dev'], watch['bridge_ino'], watch['bridge_size'], watch['bridge_mtime_ns'])
+    return _stat_signature(bst) == expected_bridge_sig
 
 
 def verify_installation(installation, *, force=False, ttl=INSTALLATION_VERIFY_TTL_SECONDS, clock=time.monotonic):
@@ -124,6 +167,7 @@ class Backlog:
         self._review_cache = {}
         self._review_inflight = {}
         self._review_gen = {}
+        self._cold_reviews = {}
         self.root = registry.path.parent / 'backlog'
         self.path = self.root / 'jobs.json'
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -353,22 +397,40 @@ class Backlog:
             self._review_gen[key] = self._review_gen.get(key, 0) + 1
             self._review_cache.pop(key, None)
             self._review_inflight.pop(key, None)
+            self._cold_reviews.pop(key, None)
             return
-        for key in [k for k in set(self._review_cache) | set(self._review_inflight) if k[0] == project_id]:
+        for key in [k for k in set(self._review_cache) | set(self._review_inflight) | set(self._cold_reviews) if k[0] == project_id]:
             self._review_gen[key] = self._review_gen.get(key, 0) + 1
             self._review_cache.pop(key, None)
             self._review_inflight.pop(key, None)
+            self._cold_reviews.pop(key, None)
 
     async def execute(self, row, target, action, update=None, *, force=False):
         cache_key = (row['project_id'], target['agent_id'], target['host'])
         if action == 'review':
             # Ordinary idle polling must not flood the diagnostic log.
-            self.checked_target(row['project_id'], target, write=False)
+            agent, _ = self.checked_target(row['project_id'], target, write=False)
+            installation = agent.get('installation') or {}
+            inst_sig = (
+                installation.get('plugin_dir'),
+                installation.get('manifest_sha256'),
+                installation.get('env_file'),
+                installation.get('home'),
+            )
             use_cache = not force and update is None and self.review_cache_ttl > 0
             if use_cache:
                 cached = self._review_cache.get(cache_key)
                 if cached is not None and self._clock() < cached[0] and cached[1] == target.get('dataset'):
                     return copy.deepcopy(cached[2])
+            if not force and update is None:
+                cold = self._cold_reviews.get(cache_key)
+                if cold is not None:
+                    cold_dataset, cold_inst_sig, cold_manifest_path, cold_manifest_sig, cold_watch, cold_snapshot = cold
+                    if (cold_dataset == target.get('dataset') and cold_inst_sig == inst_sig
+                            and _cold_watch_unchanged(cold_watch, cold_manifest_path, cold_manifest_sig)):
+                        return copy.deepcopy(cold_snapshot)
+                    self._cold_reviews.pop(cache_key, None)
+            if use_cache:
                 inflight = self._review_inflight.get(cache_key)
                 if inflight is not None and not inflight.done():
                     ok, payload = await asyncio.shield(inflight)
@@ -382,6 +444,30 @@ class Backlog:
                 self._review_inflight[cache_key] = fut
             try:
                 result = await self._execute(row, target, action, update)
+                cold_watch = result.pop('cold_watch', None) if isinstance(result, dict) else None
+                if isinstance(result, dict) and self._review_gen.get(cache_key, 0) == gen:
+                    if result.get('session_inactive') is True and _cold_watch_valid(cold_watch) and installation.get('plugin_dir'):
+                        manifest_path = str(Path(installation['plugin_dir']) / '.memlane-project-access.json')
+                        try:
+                            mst = os.lstat(manifest_path)
+                        except OSError:
+                            self._cold_reviews.pop(cache_key, None)
+                        else:
+                            if not stat.S_ISLNK(mst.st_mode) and stat.S_ISREG(mst.st_mode):
+                                while len(self._cold_reviews) >= COLD_REVIEW_MAX_ENTRIES:
+                                    self._cold_reviews.pop(next(iter(self._cold_reviews)))
+                                self._cold_reviews[cache_key] = (
+                                    target.get('dataset'),
+                                    inst_sig,
+                                    manifest_path,
+                                    _stat_signature(mst),
+                                    cold_watch,
+                                    copy.deepcopy(result),
+                                )
+                            else:
+                                self._cold_reviews.pop(cache_key, None)
+                    else:
+                        self._cold_reviews.pop(cache_key, None)
                 if isinstance(result, dict) and self.review_cache_ttl > 0 and self._review_gen.get(cache_key, 0) == gen:
                     now = self._clock()
                     expired = [k for k, v in self._review_cache.items() if v[0] <= now]
@@ -541,11 +627,14 @@ class Backlog:
                 try:
                     self.invalidate_review_cache(row['project_id'], target['agent_id'], target['host'])
                     snapshot = await self.execute(row, target, 'review')
+                    inactive = snapshot.get('session_inactive') is True if isinstance(snapshot, dict) else False
                     if (not isinstance(snapshot, dict) or not isinstance(snapshot.get('session_id'), str)
-                            or not snapshot['session_id'] or not isinstance(snapshot.get('tokens'), list)
+                            or (not snapshot['session_id'] and not inactive)
+                            or not isinstance(snapshot.get('tokens'), list)
                             or len(snapshot['tokens']) > 200000
                             or any(not isinstance(t, str) or not re.fullmatch('[0-9a-f]{64}', t) for t in snapshot['tokens'])
-                            or type(snapshot.get('unknown')) is not int or snapshot['unknown'] < 0):
+                            or type(snapshot.get('unknown')) is not int or snapshot['unknown'] < 0
+                            or (inactive and (snapshot['tokens'] or snapshot['unknown'] > 0))):
                         reason = snapshot.get('reason') if isinstance(snapshot, dict) else None
                         raise PolicyError(reason if isinstance(reason, str) and reason else 'backlog_snapshot_unconfirmed', 503)
                 except (PolicyError, OSError, ValueError) as error:

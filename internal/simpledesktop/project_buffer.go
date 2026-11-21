@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 type pendingMessageDetail struct {
@@ -33,9 +34,87 @@ type PendingMaterials struct {
 	Drained   int    `json:"drained"`
 	Discarded int    `json:"discarded"`
 	Error     string `json:"error"`
-	Checked   bool   `json:"checked"`
-	Matched   int    `json:"matched_unknown"`
-	SessionID string `json:"session_id"`
+	Checked         bool              `json:"checked"`
+	Matched         int               `json:"matched_unknown"`
+	SessionID       string            `json:"session_id"`
+	SessionInactive bool              `json:"session_inactive,omitempty"`
+	ColdWatch       *coldPendingWatch `json:"cold_watch,omitempty"`
+}
+
+type coldPendingWatch struct {
+	MapPath       string `json:"map_path"`
+	BridgePath    string `json:"bridge_path"`
+	BridgeExists  bool   `json:"bridge_exists"`
+	BridgeSize    int64  `json:"bridge_size"`
+	BridgeMtimeNS int64  `json:"bridge_mtime_ns"`
+}
+
+type coldPendingKey struct {
+	AgentID        string
+	HostSessionKey string
+	Dataset        string
+	PluginDir      string
+	ManifestSHA    string
+	HelperSHA      string
+	EnvFile        string
+	Home           string
+}
+
+type coldPendingEntry struct {
+	Seq             uint64
+	Result          PendingMaterials
+	Watch           coldPendingWatch
+	ManifestPath    string
+	ManifestSize    int64
+	ManifestMtimeNS int64
+}
+
+const coldPendingCacheMaxEntries = 2048
+
+var coldPendingCache = struct {
+	mu      sync.Mutex
+	nextSeq uint64
+	entries map[coldPendingKey]coldPendingEntry
+}{
+	entries: map[coldPendingKey]coldPendingEntry{},
+}
+
+func clonePendingMaterials(in PendingMaterials) PendingMaterials {
+	out := in
+	out.ColdWatch = nil
+	if in.Details != nil {
+		out.Details = append([]pendingMessageDetail(nil), in.Details...)
+	}
+	if in.UnknownEntryIDs != nil {
+		out.UnknownEntryIDs = append([]string(nil), in.UnknownEntryIDs...)
+	}
+	if in.Blocked != nil {
+		b := *in.Blocked
+		out.Blocked = &b
+	}
+	return out
+}
+
+func coldPendingWatchValid(w *coldPendingWatch) bool {
+	return w != nil && filepath.IsAbs(w.MapPath) && filepath.IsAbs(w.BridgePath)
+}
+
+func coldPendingEntryUnchanged(entry coldPendingEntry) bool {
+	minfo, err := os.Lstat(entry.ManifestPath)
+	if err != nil || !minfo.Mode().IsRegular() || minfo.Size() != entry.ManifestSize || minfo.ModTime().UnixNano() != entry.ManifestMtimeNS {
+		return false
+	}
+	if _, err := os.Lstat(entry.Watch.MapPath); !os.IsNotExist(err) {
+		return false
+	}
+	binfo, err := os.Lstat(entry.Watch.BridgePath)
+	if !entry.Watch.BridgeExists {
+		return os.IsNotExist(err)
+	}
+	if err != nil || !binfo.Mode().IsRegular() || binfo.Size() != entry.Watch.BridgeSize || binfo.ModTime().UnixNano() != entry.Watch.BridgeMtimeNS {
+		return false
+	}
+	return true
 }
 
 type boundedBufferOutput struct{ buffer bytes.Buffer }
@@ -104,6 +183,35 @@ func runPendingMaterials(ctx context.Context, python string, installation AgentI
 	if action != "show" && action != "check" && action != "replay" && action != "discard" && action != "details" {
 		return result, fmt.Errorf("待发材料操作无效")
 	}
+	cacheKey := coldPendingKey{
+		AgentID:        binding.AgentID,
+		HostSessionKey: binding.HostSessionKey,
+		Dataset:        dataset,
+		PluginDir:      installation.PluginDir,
+		ManifestSHA:    installation.ManifestSHA,
+		HelperSHA:      installation.HelperSHA,
+		EnvFile:        installation.EnvFile,
+		Home:           installation.Home,
+	}
+	if action == "show" {
+		coldPendingCache.mu.Lock()
+		entry, ok := coldPendingCache.entries[cacheKey]
+		coldPendingCache.mu.Unlock()
+		if ok {
+			if coldPendingEntryUnchanged(entry) {
+				return clonePendingMaterials(entry.Result), nil
+			}
+			coldPendingCache.mu.Lock()
+			if cur, exists := coldPendingCache.entries[cacheKey]; exists && cur.Seq == entry.Seq {
+				delete(coldPendingCache.entries, cacheKey)
+			}
+			coldPendingCache.mu.Unlock()
+		}
+	} else {
+		coldPendingCache.mu.Lock()
+		delete(coldPendingCache.entries, cacheKey)
+		coldPendingCache.mu.Unlock()
+	}
 	if err := verifyInstallation(installation); err != nil {
 		return result, err
 	}
@@ -136,6 +244,9 @@ func runPendingMaterials(ctx context.Context, python string, installation AgentI
 		return result, fmt.Errorf("待发材料结果未确认，保留原材料；不会自动重试")
 	}
 	if result.Error != "" || err != nil {
+		coldPendingCache.mu.Lock()
+		delete(coldPendingCache.entries, cacheKey)
+		coldPendingCache.mu.Unlock()
 		message := "待发材料操作未确认，保留原材料"
 		switch result.Error {
 		case "pending_materials_changed_review_again":
@@ -152,6 +263,39 @@ func runPendingMaterials(ctx context.Context, python string, installation AgentI
 			message = result.Error
 		}
 		return result, fmt.Errorf("%s", message)
+	}
+	watch := result.ColdWatch
+	result.ColdWatch = nil
+	if action == "show" && result.SessionInactive && coldPendingWatchValid(watch) {
+		manifestPath := filepath.Join(installation.PluginDir, ".memlane-project-access.json")
+		if minfo, statErr := os.Lstat(manifestPath); statErr == nil && minfo.Mode().IsRegular() {
+			stored := clonePendingMaterials(result)
+			coldPendingCache.mu.Lock()
+			if _, exists := coldPendingCache.entries[cacheKey]; !exists && len(coldPendingCache.entries) >= coldPendingCacheMaxEntries {
+				for k := range coldPendingCache.entries {
+					delete(coldPendingCache.entries, k)
+					break
+				}
+			}
+			coldPendingCache.nextSeq++
+			coldPendingCache.entries[cacheKey] = coldPendingEntry{
+				Seq:             coldPendingCache.nextSeq,
+				Result:          stored,
+				Watch:           *watch,
+				ManifestPath:    manifestPath,
+				ManifestSize:    minfo.Size(),
+				ManifestMtimeNS: minfo.ModTime().UnixNano(),
+			}
+			coldPendingCache.mu.Unlock()
+		} else {
+			coldPendingCache.mu.Lock()
+			delete(coldPendingCache.entries, cacheKey)
+			coldPendingCache.mu.Unlock()
+		}
+	} else {
+		coldPendingCache.mu.Lock()
+		delete(coldPendingCache.entries, cacheKey)
+		coldPendingCache.mu.Unlock()
 	}
 	return result, nil
 }

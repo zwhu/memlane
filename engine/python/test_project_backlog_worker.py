@@ -478,3 +478,115 @@ class WorkerQueueIsolationTests(unittest.TestCase):
                     self.assertEqual(fixture.read()["pending_entries"], [original])
                     self.assertEqual(fixture.calls, [])
                     self.assertEqual(fixture.http_events, [("GET", "/api/v1/sessions/" + SESSION)])
+
+
+class InactiveSessionReviewTests(unittest.TestCase):
+    def _make_env(self, root, *, map_content=None, bridge_content=None, policy_content=None, bridge_symlink=False):
+        sessions_dir = root / "sessions"
+        bridge_dir = root / "bridge"
+        policy_dir = root / "memlane-policy"
+        sessions_dir.mkdir(exist_ok=True)
+        bridge_dir.mkdir(exist_ok=True)
+        policy_dir.mkdir(exist_ok=True)
+        map_path = sessions_dir / f"{HOST}.json"
+        bridge_path = bridge_dir / f"{HOST}.json"
+        policy_path = policy_dir / f"{HOST}.json"
+        if map_content is not None:
+            map_path.write_text(map_content, encoding="utf-8")
+        if bridge_symlink:
+            outside = root / "outside.json"
+            outside.write_text("{}", encoding="utf-8")
+            os.symlink(outside, bridge_path)
+        elif bridge_content is not None:
+            bridge_path.write_text(bridge_content, encoding="utf-8")
+        if policy_content is not None:
+            policy_path.write_text(policy_content, encoding="utf-8")
+
+        class NotReady(RuntimeError):
+            pass
+
+        state_writes = []
+
+        @contextlib.contextmanager
+        def state(*, writable=True):
+            if writable:
+                state_writes.append(True)
+                data = json.loads(policy_path.read_text(encoding="utf-8")) if policy_path.exists() else {}
+                yield data
+                policy_path.write_text(json.dumps(data), encoding="utf-8")
+            else:
+                if not policy_path.exists():
+                    raise FileNotFoundError(policy_path)
+                yield json.loads(policy_path.read_text(encoding="utf-8"))
+
+        def read_map(host):
+            if not map_path.exists():
+                return {}
+            try:
+                data = json.loads(map_path.read_text(encoding="utf-8"))
+                return data if isinstance(data, dict) else {}
+            except Exception:
+                return {}
+
+        common = types.SimpleNamespace(
+            _AMBIGUOUS_KEY="_replay_ambiguous",
+            set_session_key=lambda host: host,
+            _session_map_path=lambda host: sessions_dir / f"{host}.json",
+            _bridge_file=lambda session_id="": bridge_path,
+            _read_map_record=read_map,
+            _buffer_lock=contextlib.nullcontext,
+        )
+        policy = types.SimpleNamespace(
+            NotReady=NotReady,
+            _state=state,
+            _pending_identity=Mock(),
+            require=Mock(),
+        )
+        return common, policy, map_path, bridge_path, policy_path, state_writes
+
+    def test_gc_missing_map_and_absent_or_empty_bridge_returns_inactive_snapshot_without_creating_policy(self):
+        for bridge_content in (None, "{}", json.dumps({f"{DATASET}:codex_{HOST}": {"pending_entries": []}})):
+            with self.subTest(bridge_content=bridge_content), tempfile.TemporaryDirectory() as directory:
+                common, policy, map_path, bridge_path, policy_path, writes = self._make_env(
+                    Path(directory), bridge_content=bridge_content)
+                snapshot = review(common, policy, DATASET, HOST)
+                self.assertEqual(snapshot["session_id"], "")
+                self.assertTrue(snapshot["session_inactive"])
+                self.assertEqual(snapshot["tokens"], [])
+                self.assertEqual(snapshot["unknown"], 0)
+                self.assertIsNone(snapshot["blocked"])
+                self.assertEqual(snapshot["cold_watch"]["map_path"], str(map_path))
+                self.assertEqual(snapshot["cold_watch"]["bridge_path"], str(bridge_path))
+                self.assertEqual(snapshot["cold_watch"]["bridge_exists"], bridge_content is not None)
+                self.assertFalse(policy_path.exists())
+                self.assertEqual(writes, [])
+                with self.assertRaisesRegex(policy.NotReady, "official_session_unconfirmed"):
+                    check(common, policy, DATASET, HOST)
+
+    def test_gc_missing_map_preserves_historical_blocked_and_rejects_dataset_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            policy_data = json.dumps({
+                "binding": {"dataset_id": DATASET, "project_id": "proj"},
+                "blocked": {"at": 1794592636.0, "reason": "write_result_unknown"},
+            })
+            common, policy, _, _, _, writes = self._make_env(Path(directory), policy_content=policy_data)
+            snapshot = review(common, policy, DATASET, HOST)
+            self.assertTrue(snapshot["session_inactive"])
+            self.assertEqual(snapshot["blocked"], {"at": 1794592636.0, "reason": "write_result_unknown"})
+            self.assertEqual(writes, [])
+            with self.assertRaisesRegex(policy.NotReady, "managed_buffer_session_mismatch"):
+                review(common, policy, "other-dataset", HOST)
+
+    def test_corrupt_map_or_nonempty_or_invalid_bridge_still_fails_closed(self):
+        cases = [
+            ("present_empty_map", {"map_content": "{}"}),
+            ("corrupt_map", {"map_content": "{not-json"}),
+            ("pending_bridge", {"bridge_content": json.dumps({f"{DATASET}:s": {"pending_entries": [{"type": "qa"}]}})}),
+            ("corrupt_bridge", {"bridge_content": "{not-json"}),
+            ("symlink_bridge", {"bridge_symlink": True}),
+        ]
+        for label, kwargs in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as directory:
+                common, policy, _, _, _, _ = self._make_env(Path(directory), **kwargs)
+                with self.assertRaisesRegex(policy.NotReady, "official_session_unconfirmed"):
+                    review(common, policy, DATASET, HOST)

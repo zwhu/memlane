@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import stat
 import sys
 import threading
 import time
@@ -41,11 +42,102 @@ def capture_allowed(common, entry):
     return allow_tool(str(raw.get('origin_function', '')), raw.get('method_params', {}))
 
 
+def _inactive_review_snapshot(common, policy, dataset, host):
+    """Return an empty snapshot when a historical session was GC'd or never buffered.
+
+    Only succeeds if the map file itself is absent (not corrupt/symlinked), the
+    local bridge file is absent or has zero pending entries in every bucket, and
+    any readable policy state agrees on dataset binding. Any violation or local
+    buffer entry still fails closed as unconfirmed.
+    """
+    if not callable(getattr(common, '_session_map_path', None)) or not callable(getattr(common, '_bridge_file', None)):
+        raise policy.NotReady('official_session_unconfirmed')
+    map_path = Path(common._session_map_path(host))
+    try:
+        os.lstat(map_path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        raise policy.NotReady('official_session_unconfirmed') from None
+    else:
+        raise policy.NotReady('official_session_unconfirmed')
+    bridge_st = None
+    with common._buffer_lock():
+        bridge_path = Path(common._bridge_file())
+        try:
+            bridge_st = os.lstat(bridge_path)
+        except FileNotFoundError:
+            bridge_st = None
+        except OSError:
+            raise policy.NotReady('official_session_unconfirmed') from None
+        if bridge_st is not None:
+            if stat.S_ISLNK(bridge_st.st_mode) or not stat.S_ISREG(bridge_st.st_mode):
+                raise policy.NotReady('official_session_unconfirmed')
+            try:
+                cache = json.loads(bridge_path.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                raise policy.NotReady('official_session_unconfirmed') from None
+            if not isinstance(cache, dict):
+                raise policy.NotReady('official_session_unconfirmed')
+            for bucket in cache.values():
+                if not isinstance(bucket, dict):
+                    raise policy.NotReady('official_session_unconfirmed')
+                entries = bucket.get('pending_entries')
+                if entries is not None and (not isinstance(entries, list) or len(entries) > 0):
+                    raise policy.NotReady('official_session_unconfirmed')
+    policy_state = {}
+    try:
+        with policy._state(writable=False) as st:
+            if not isinstance(st, dict):
+                raise policy.NotReady('official_session_unconfirmed')
+            policy_state = dict(st)
+    except FileNotFoundError:
+        policy_state = {}
+    except policy.NotReady:
+        raise
+    except (OSError, ValueError, TypeError):
+        raise policy.NotReady('official_session_unconfirmed') from None
+    binding = policy_state.get('binding')
+    if isinstance(binding, dict) and binding.get('dataset_id') and binding.get('dataset_id') != dataset:
+        raise policy.NotReady('managed_buffer_session_mismatch')
+    blocked = policy_state.get('blocked')
+    if isinstance(blocked, dict) and blocked.get('scope') == 'entries':
+        blocked = None
+    empty_sig = hashlib.sha256(b'[]').hexdigest()
+    cold_watch = {
+        'map_path': str(map_path),
+        'bridge_path': str(bridge_path),
+        'bridge_exists': bridge_st is not None,
+        'bridge_dev': bridge_st.st_dev if bridge_st is not None else 0,
+        'bridge_ino': bridge_st.st_ino if bridge_st is not None else 0,
+        'bridge_size': bridge_st.st_size if bridge_st is not None else 0,
+        'bridge_mtime_ns': bridge_st.st_mtime_ns if bridge_st is not None else 0,
+    }
+    return {
+        'session_id': '',
+        'session_inactive': True,
+        'cold_watch': cold_watch,
+        'tokens': [],
+        'signature': empty_sig,
+        'filtered': 0,
+        'rejected': 0,
+        'deferred': 0,
+        'rejected_unsent': 0,
+        'deferred_unsent': 0,
+        'rejected_unknown': 0,
+        'filtered_unsent': 0,
+        'filtered_tokens': [],
+        'unknown_signature': empty_sig,
+        'unknown': 0,
+        'blocked': blocked,
+    }
+
+
 def review(common, policy, dataset, host):
     common.set_session_key(host)
     session = common._read_map_record(host).get('session_id')
     if not session:
-        raise policy.NotReady('official_session_unconfirmed')
+        return _inactive_review_snapshot(common, policy, dataset, host)
     policy._pending_identity(dataset, session)
     with common._buffer_lock():
         _, _, _, buffer_state, pending, signature = policy._pending_snapshot(dataset, session)
@@ -88,6 +180,8 @@ def check(common, policy, dataset, host):
     """
     before = review(common, policy, dataset, host)
     session = before['session_id']
+    if not session:
+        raise policy.NotReady('official_session_unconfirmed')
     policy.require('read', dataset)
     detail = common.get_session_detail_via_http(session, timeout=12)
     if (not isinstance(detail, dict) or detail.get('session_id') != session

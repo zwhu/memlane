@@ -1,6 +1,8 @@
 import asyncio
 import copy
+import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
 import types
@@ -835,6 +837,134 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(retained, [original])
                 finally:
                     await reopened.close()
+
+    async def test_inactive_session_snapshot_confirmed_without_save_or_cold_watch_persistence(self):
+        actions = []
+
+        async def worker(row, target, action, update):
+            actions.append(action)
+            return {
+                'session_id': '',
+                'session_inactive': True,
+                'cold_watch': {
+                    'map_path': str(self.root / 'sessions/host.json'),
+                    'bridge_path': str(self.root / 'bridge/host.json'),
+                    'bridge_exists': False,
+                    'bridge_dev': 0,
+                    'bridge_ino': 0,
+                    'bridge_size': 0,
+                    'bridge_mtime_ns': 0,
+                },
+                'tokens': [],
+                'unknown': 0,
+                'signature': hashlib.sha256(b'[]').hexdigest(),
+                'filtered': 0,
+            }
+
+        self.backlog.worker = worker
+        operation = str(uuid.uuid4())
+        self.backlog.start('p', operation)
+        await self.backlog.task
+        summary = self.backlog.get('p')['job']
+        self.assertEqual(summary['status'], 'completed')
+        self.assertEqual(summary['review_failed'], 0)
+        self.assertEqual(summary['saved'], 0)
+        self.assertEqual(actions, ['review'])
+        persisted = json.loads(self.backlog.path.read_text())[operation]['targets'][0]
+        self.assertEqual(persisted['review_status'], 'confirmed')
+        self.assertNotIn('cold_watch', persisted)
+
+    async def test_inactive_session_with_nonempty_tokens_or_unknown_is_rejected(self):
+        for bad in (
+            {'session_id': '', 'session_inactive': True, 'tokens': ['a' * 64], 'unknown': 0},
+            {'session_id': '', 'session_inactive': True, 'tokens': [], 'unknown': 1},
+        ):
+            with self.subTest(bad=bad):
+                async def worker(row, target, action, update, payload=bad):
+                    return copy.deepcopy(payload)
+
+                self.backlog.worker = worker
+                operation = str(uuid.uuid4())
+                self.backlog.start('p', operation)
+                await self.backlog.task
+                summary = self.backlog.get('p')['job']
+                self.assertEqual(summary['review_failed'], 1)
+                self.assertEqual(summary['reason'], 'partial_review_unconfirmed')
+
+    async def test_cold_review_cache_survives_zero_ttl_and_invalidates_on_fs_change(self):
+        plugin_dir = self.root / 'plugin'
+        plugin_dir.mkdir()
+        manifest_path = plugin_dir / '.memlane-project-access.json'
+        manifest_bytes = json.dumps({'files': {}}).encode()
+        manifest_path.write_bytes(manifest_bytes)
+        map_path = self.root / 'sessions/host.json'
+        bridge_path = self.root / 'bridge/host.json'
+        map_path.parent.mkdir()
+        bridge_path.parent.mkdir()
+        self.registry.state['agents']['a']['installation'] = {
+            'plugin_dir': str(plugin_dir),
+            'env_file': str(self.root / 'env'),
+            'home': str(self.root),
+            'manifest_sha256': hashlib.sha256(manifest_bytes).hexdigest(),
+        }
+        calls = []
+        mode = ['cold_no_bridge']
+
+        async def worker(row, target, action, update):
+            calls.append((target['host'], action))
+            if mode[0] == 'resumed':
+                return {'session_id': 'resumed-session', 'tokens': ['c' * 64], 'unknown': 0}
+            bridge_exists = bridge_path.exists()
+            bst = os.lstat(bridge_path) if bridge_exists else None
+            return {
+                'session_id': '',
+                'session_inactive': True,
+                'cold_watch': {
+                    'map_path': str(map_path),
+                    'bridge_path': str(bridge_path),
+                    'bridge_exists': bridge_exists,
+                    'bridge_dev': bst.st_dev if bst else 0,
+                    'bridge_ino': bst.st_ino if bst else 0,
+                    'bridge_size': bst.st_size if bst else 0,
+                    'bridge_mtime_ns': bst.st_mtime_ns if bst else 0,
+                },
+                'tokens': [],
+                'unknown': 0,
+            }
+
+        cold_backlog = Backlog(self.registry, {}, worker=worker, review_cache_ttl=0)
+        try:
+            row = {'project_id': 'p', 'operation_id': 'op-cold'}
+            target = {'agent_id': 'a', 'host': 'host', 'dataset': 'ds'}
+            first = await cold_backlog.execute(row, target, 'review')
+            self.assertNotIn('cold_watch', first)
+            self.assertTrue(first['session_inactive'])
+            second = await cold_backlog.execute(row, target, 'review')
+            self.assertEqual(second, first)
+            self.assertEqual(len(calls), 1, 'cold cache missed even though watched files were unchanged')
+
+            # Resuming session by creating map_path immediately invalidates cold cache.
+            map_path.write_text('{"session_id":"resumed-session"}')
+            mode[0] = 'resumed'
+            third = await cold_backlog.execute(row, target, 'review')
+            self.assertEqual(third['session_id'], 'resumed-session')
+            self.assertEqual(len(calls), 2)
+
+            # Empty bridge file gets watched by stat; modifying it invalidates immediately.
+            map_path.unlink()
+            bridge_path.write_text('{}')
+            mode[0] = 'cold_empty_bridge'
+            fourth = await cold_backlog.execute(row, target, 'review')
+            self.assertTrue(fourth['session_inactive'])
+            await cold_backlog.execute(row, target, 'review')
+            self.assertEqual(len(calls), 3)
+            bridge_path.write_text('{"ds:s":{"pending_entries":[{"type":"qa"}]}}')
+            mode[0] = 'resumed'
+            fifth = await cold_backlog.execute(row, target, 'review')
+            self.assertEqual(fifth['session_id'], 'resumed-session')
+            self.assertEqual(len(calls), 4)
+        finally:
+            await cold_backlog.close()
 
 
 if __name__=='__main__':unittest.main()
