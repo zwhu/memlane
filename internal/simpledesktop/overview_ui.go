@@ -80,7 +80,7 @@ type overviewViewState struct {
 	cachedGroupedCount                         int
 	cachedGroupedEvents                        []overviewEvent
 	V2Mode                                     bool
-	V2Generation                               string
+	V2Generation                               int64
 	V2TotalKnowledge                           int
 	V2DayBuckets                               map[string]int
 	V2RecallStartedAt                          string
@@ -267,7 +267,7 @@ func (a *App) loadOverview() {
 		go func() {
 			defer cancel()
 			if control.hasFeature(ctx, v2FeatureOverview) {
-				v2Resp, v2Err := control.overviewBootstrapV2(ctx, readingID, 365, 20, 250, 50)
+				v2Resp, v2Err := control.overviewBootstrapV2(ctx, readingID, 365, 20, 50, 50)
 				if v2Err == nil {
 					snapshot, buckets, events, more := buildOverviewFromV2Bootstrap(projects, v2Resp, 50)
 					var historyEvents []overviewEvent

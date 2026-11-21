@@ -235,8 +235,11 @@ func TestScalingP1OverviewV2BootstrapAndDayDrilldown(t *testing.T) {
 			if r.Header.Get(v2HeaderReadingIdentity) == "" {
 				t.Errorf("missing reading identity header on /v2/overview/bootstrap")
 			}
+			if al := r.URL.Query().Get("activity_limit"); al != "50" {
+				t.Errorf("expected activity_limit=50 (<=50), got %q", al)
+			}
 			_ = json.NewEncoder(w).Encode(v2OverviewBootstrapResponse{
-				Generation:          "gen-42",
+				Generation:          42,
 				LocalTZName:         "Asia/Shanghai",
 				TotalKnowledgeCount: 50000,
 				DayBuckets: []v2OverviewDayBucket{
@@ -257,7 +260,7 @@ func TestScalingP1OverviewV2BootstrapAndDayDrilldown(t *testing.T) {
 			if cursor == "" {
 				_ = json.NewEncoder(w).Encode(v2OverviewDayResponse{
 					Day:        r.URL.Query().Get("day"),
-					Generation: "gen-42",
+					Generation: 42,
 					TotalCount: 35,
 					Items: []v2KnowledgeItem{
 						{DocID: "d-p1", DatasetID: "ds-1", ProjectID: "p1", Title: "某日第1条", EffectiveDate: "2026-11-20", Kind: "knowledge", PreviewText: "页1摘要"},
@@ -269,7 +272,7 @@ func TestScalingP1OverviewV2BootstrapAndDayDrilldown(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(v2OverviewDayResponse{
 				Day:        r.URL.Query().Get("day"),
-				Generation: "gen-42",
+				Generation: 42,
 				TotalCount: 35,
 				Items: []v2KnowledgeItem{
 					{DocID: "d-p2", DatasetID: "ds-1", ProjectID: "p1", Title: "某日第2条", EffectiveDate: "2026-11-20", Kind: "knowledge", PreviewText: "页2摘要"},
@@ -562,7 +565,7 @@ func TestScalingP1ThreeLaneProgressiveSearchAndLexicalSoftTimeout(t *testing.T) 
 		case "/v2/search/recent":
 			recentV2Calls.Add(1)
 			_ = json.NewEncoder(w).Encode(v2SearchRecentResponse{
-				Generation: "g1",
+				Generation: 1,
 				KnowledgeItems: []v2KnowledgeItem{
 					{DocID: "rec-k1", DatasetID: "ds-1", ProjectID: "p1", Title: "最近知识", EffectiveDate: "2026-11-21", Kind: "knowledge", PreviewText: "最近知识预览"},
 				},
@@ -574,9 +577,10 @@ func TestScalingP1ThreeLaneProgressiveSearchAndLexicalSoftTimeout(t *testing.T) 
 			metaCalls.Add(1)
 			_ = json.NewEncoder(w).Encode(v2SearchMetadataResponse{
 				Query:      r.URL.Query().Get("q"),
-				Generation: "g1",
+				Generation: 1,
 				Items: []v2KnowledgeItem{
 					{DocID: "meta-1", DatasetID: "ds-1", ProjectID: "p1", Title: "WAL 模式配置", EffectiveDate: "2026-11-21", Kind: "knowledge", PreviewText: "SQLite WAL 配置要点", MatchField: "title"},
+					{DocID: "meta-raw-1", DatasetID: "ds-1", ProjectID: "p1", Title: "WAL 原始文档", EffectiveDate: "2026-11-21", Kind: "raw_doc", PreviewText: "raw doc preview", MatchField: "doc_name"},
 				},
 			})
 		default:
@@ -643,8 +647,20 @@ func TestScalingP1ThreeLaneProgressiveSearchAndLexicalSoftTimeout(t *testing.T) 
 	if metaCalls.Load() != 1 || semanticCalls.Load() != 1 || lexicalCalls.Load() != 1 {
 		t.Fatalf("expected 3 search lanes fired, got meta=%d sem=%d lex=%d", metaCalls.Load(), semanticCalls.Load(), lexicalCalls.Load())
 	}
-	if len(a.visibleSearchRows()) < 2 {
-		t.Fatalf("expected merged metadata + semantic rows >=2, got %d", len(a.visibleSearchRows()))
+	if len(a.visibleSearchRows()) < 3 {
+		t.Fatalf("expected merged metadata (knowledge+raw_doc) + semantic rows >=3, got %d", len(a.visibleSearchRows()))
+	}
+	foundRawDoc := false
+	for _, row := range a.visibleSearchRows() {
+		if row.ID == "meta-raw-1" {
+			foundRawDoc = true
+			if row.Kind != "文档" {
+				t.Fatalf("expected raw_doc mapped to Kind=文档, got %q", row.Kind)
+			}
+		}
+	}
+	if !foundRawDoc {
+		t.Fatalf("missing raw_doc metadata search hit meta-raw-1")
 	}
 	if !a.searchUI.Lanes.KeywordTimedOut || !strings.Contains(a.searchUI.Error, "词法全文检索超时") {
 		t.Fatalf("expected non-blocking lexical soft-timeout hint, got timedOut=%v err=%q", a.searchUI.Lanes.KeywordTimedOut, a.searchUI.Error)
@@ -757,7 +773,8 @@ func TestScalingP1RawRecordsCursorV2AndSubagentChildrenPagination(t *testing.T) 
 func TestScalingP1ReadingStateMigrationUnreadPopupAndNonDisruptiveRefresh(t *testing.T) {
 	token := p1TestTokenFile(t)
 	var migrateLocalCalls, beginCalls, chunkCalls, commitCalls, markAllCalls atomic.Int32
-	var committedChunks, committedItems int
+	var stagedItems int
+	var committedBatchID string
 	var catalogVersion atomic.Value
 	catalogVersion.Store("cv-1")
 	var knowledgeV2Calls atomic.Int32
@@ -780,25 +797,38 @@ func TestScalingP1ReadingStateMigrationUnreadPopupAndNonDisruptiveRefresh(t *tes
 			})
 		case "/v2/reading-state/import/begin":
 			beginCalls.Add(1)
-			_ = json.NewEncoder(w).Encode(v2ReadingStateImportBeginResponse{ImportID: "imp-1", ScopeHash: "sh-1"})
+			var raw map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&raw)
+			if len(raw) != 5 {
+				t.Errorf("import/begin must send exact 5 keys, got %v", raw)
+			}
+			for _, k := range []string{"reading_identity", "project_id", "dataset_id", "initialized", "enabled_at"} {
+				if _, ok := raw[k]; !ok {
+					t.Errorf("import/begin missing key %q", k)
+				}
+			}
+			_ = json.NewEncoder(w).Encode(v2ReadingStateImportBeginResponse{BatchID: "batch-1", ScopeHash: "sh-1"})
 		case "/v2/reading-state/import/chunk":
 			chunkCalls.Add(1)
 			var req v2ReadingStateImportChunkRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
-			if len(req.Items) > 500 {
-				t.Errorf("chunk exceeded 500 items: %d", len(req.Items))
+			if req.BatchID != "batch-1" {
+				t.Errorf("import/chunk unexpected batch_id=%q", req.BatchID)
 			}
-			_ = json.NewEncoder(w).Encode(v2ReadingStateImportChunkResponse{ImportID: req.ImportID, Seq: req.Seq, Accepted: len(req.Items)})
+			if len(req.Items) > 500 || len(req.Items) == 0 {
+				t.Errorf("chunk size out of range (1..500): %d", len(req.Items))
+			}
+			stagedItems += len(req.Items)
+			_ = json.NewEncoder(w).Encode(v2ReadingStateImportChunkResponse{BatchID: req.BatchID, Staged: len(req.Items)})
 		case "/v2/reading-state/import/commit":
 			commitCalls.Add(1)
 			var req v2ReadingStateImportCommitRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
-			committedChunks = req.ExpectedChunks
-			committedItems = req.ExpectedItems
-			_ = json.NewEncoder(w).Encode(v2ReadingStateImportCommitResponse{ScopeHash: "sh-1", ImportedItems: req.ExpectedItems, UnreadCount: 25})
+			committedBatchID = req.BatchID
+			_ = json.NewEncoder(w).Encode(v2ReadingStateImportCommitResponse{ScopeHash: "sh-1", Committed: stagedItems})
 		case "/v2/reading-state/mark-all-read":
 			markAllCalls.Add(1)
-			_ = json.NewEncoder(w).Encode(v2ReadingStateMarkAllReadResponse{ScopeHash: "sh-1", UnreadCount: 0})
+			_ = json.NewEncoder(w).Encode(v2ReadingStateMarkAllReadResponse{ScopeHash: "sh-1", UnreadCount: 0, ReadHorizonAtNS: "2026-11-21T10:00:00.000000000Z"})
 		case "/v2/projects/p1/message-summary":
 			previews := make([]v2UnreadPreviewItem, 0, 10)
 			for i := 0; i < 10; i++ {
@@ -869,8 +899,8 @@ func TestScalingP1ReadingStateMigrationUnreadPopupAndNonDisruptiveRefresh(t *tes
 	if migrateLocalCalls.Load() != 1 || beginCalls.Load() != 1 || chunkCalls.Load() != 2 || commitCalls.Load() != 1 {
 		t.Fatalf("unexpected migration calls: local=%d begin=%d chunk=%d commit=%d", migrateLocalCalls.Load(), beginCalls.Load(), chunkCalls.Load(), commitCalls.Load())
 	}
-	if committedChunks != 2 || committedItems != 650 {
-		t.Fatalf("unexpected commit totals: chunks=%d items=%d", committedChunks, committedItems)
+	if committedBatchID != "batch-1" || stagedItems != 650 {
+		t.Fatalf("unexpected commit totals: batch=%q staged=%d", committedBatchID, stagedItems)
 	}
 	if q.unreadCount() != 25 || !q.UnreadHasMore || len(q.UnreadKnowledge) != 10 {
 		t.Fatalf("unexpected v2 message-summary unread state: count=%d more=%v preview=%d", q.unreadCount(), q.UnreadHasMore, len(q.UnreadKnowledge))

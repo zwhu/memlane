@@ -422,26 +422,24 @@ func importReadingStateStagingV2(ctx context.Context, control ProjectControlClie
 	}
 	sort.Strings(keys)
 	const chunkSize = 500
-	seq := 0
 	for start := 0; start < len(keys); start += chunkSize {
 		end := min(start+chunkSize, len(keys))
-		chunk := make(map[string]bool, end-start)
+		chunk := make([]v2ReadingStateImportChunkItem, 0, end-start)
 		for _, id := range keys[start:end] {
-			chunk[id] = local.Read[id]
+			chunk = append(chunk, v2ReadingStateImportChunkItem{
+				DocID:  id,
+				IsRead: local.Read[id],
+			})
 		}
 		if _, err := control.readingStateImportChunkV2(ctx, v2ReadingStateImportChunkRequest{
-			ImportID: beginResp.ImportID,
-			Seq:      seq,
-			Items:    chunk,
+			BatchID: beginResp.BatchID,
+			Items:   chunk,
 		}); err != nil {
 			return err
 		}
-		seq++
 	}
 	_, err = control.readingStateImportCommitV2(ctx, v2ReadingStateImportCommitRequest{
-		ImportID:       beginResp.ImportID,
-		ExpectedChunks: seq,
-		ExpectedItems:  len(keys),
+		BatchID: beginResp.BatchID,
 	})
 	return err
 }

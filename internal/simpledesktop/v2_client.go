@@ -82,7 +82,7 @@ var categoryLabelToLessonType = map[string]string{
 func (row v2KnowledgeItem) toItem(recallStartedAt string) Item {
 	kind := "知识"
 	lowerKind := strings.ToLower(strings.TrimSpace(row.Kind))
-	if lowerKind == "document" || lowerKind == "raw" || lowerKind == "raw_document" || row.Kind == "文档" {
+	if lowerKind == "raw_doc" || lowerKind == "document" || lowerKind == "raw" || lowerKind == "raw_document" || row.Kind == "文档" {
 		kind = "文档"
 	}
 
@@ -202,7 +202,7 @@ type v2OverviewCommonSummary struct {
 }
 
 type v2OverviewBootstrapResponse struct {
-	Generation          string                     `json:"generation"`
+	Generation          int64                      `json:"generation"`
 	LocalTZName         string                     `json:"local_tz_name"`
 	TotalKnowledgeCount int                        `json:"total_knowledge_count"`
 	DayBuckets          []v2OverviewDayBucket      `json:"day_buckets"`
@@ -230,13 +230,13 @@ func (c ProjectControlClient) overviewBootstrapV2(ctx context.Context, readingID
 		q.Set("days", strconv.Itoa(days))
 	}
 	if recentLimit > 0 {
-		q.Set("recent_limit", strconv.Itoa(recentLimit))
+		q.Set("recent_limit", strconv.Itoa(min(50, recentLimit)))
 	}
 	if activityLimit > 0 {
-		q.Set("activity_limit", strconv.Itoa(activityLimit))
+		q.Set("activity_limit", strconv.Itoa(min(50, activityLimit)))
 	}
 	if recallLimit > 0 {
-		q.Set("recall_limit", strconv.Itoa(recallLimit))
+		q.Set("recall_limit", strconv.Itoa(min(50, recallLimit)))
 	}
 	path := "/v2/overview/bootstrap"
 	if enc := q.Encode(); enc != "" {
@@ -248,7 +248,7 @@ func (c ProjectControlClient) overviewBootstrapV2(ctx context.Context, readingID
 
 type v2OverviewDayResponse struct {
 	Day        string            `json:"day"`
-	Generation string            `json:"generation"`
+	Generation int64             `json:"generation"`
 	TotalCount int               `json:"total_count"`
 	Items      []v2KnowledgeItem `json:"items"`
 	NextCursor string            `json:"next_cursor"`
@@ -311,7 +311,7 @@ func buildOverviewFromV2Bootstrap(projects []Project, resp v2OverviewBootstrapRe
 type v2ProjectKnowledgeResponse struct {
 	ProjectID      string            `json:"project_id"`
 	DatasetID      string            `json:"dataset_id"`
-	Generation     string            `json:"generation"`
+	Generation     int64             `json:"generation"`
 	CatalogVersion string            `json:"catalog_version"`
 	Sort           string            `json:"sort"`
 	TotalFiltered  int               `json:"total_filtered"`
@@ -354,7 +354,7 @@ func (c ProjectControlClient) projectKnowledgeV2(ctx context.Context, readingID,
 
 type v2CommonKnowledgeResponse struct {
 	DatasetID      string            `json:"dataset_id"`
-	Generation     string            `json:"generation"`
+	Generation     int64             `json:"generation"`
 	CatalogVersion string            `json:"catalog_version"`
 	CommonCategory string            `json:"common_category"`
 	TotalFiltered  int               `json:"total_filtered"`
@@ -425,7 +425,7 @@ func (row v2SearchSessionItem) toItem() Item {
 }
 
 type v2SearchRecentResponse struct {
-	Generation     string                `json:"generation"`
+	Generation     int64                 `json:"generation"`
 	KnowledgeItems []v2KnowledgeItem     `json:"knowledge_items"`
 	SessionItems   []v2SearchSessionItem `json:"session_items"`
 }
@@ -446,7 +446,7 @@ func (c ProjectControlClient) searchRecentV2(ctx context.Context, limit int, pro
 
 type v2SearchMetadataResponse struct {
 	Query      string            `json:"query"`
-	Generation string            `json:"generation"`
+	Generation int64             `json:"generation"`
 	Items      []v2KnowledgeItem `json:"items"`
 	HasMore    bool              `json:"has_more"`
 }
@@ -736,11 +736,11 @@ type v2ReadingStateImportBeginRequest struct {
 	ProjectID       string `json:"project_id"`
 	DatasetID       string `json:"dataset_id"`
 	Initialized     bool   `json:"initialized"`
-	EnabledAt       string `json:"enabled_at,omitempty"`
+	EnabledAt       string `json:"enabled_at"`
 }
 
 type v2ReadingStateImportBeginResponse struct {
-	ImportID  string `json:"import_id"`
+	BatchID   string `json:"batch_id"`
 	ScopeHash string `json:"scope_hash"`
 }
 
@@ -750,16 +750,19 @@ func (c ProjectControlClient) readingStateImportBeginV2(ctx context.Context, req
 	return out, err
 }
 
+type v2ReadingStateImportChunkItem struct {
+	DocID  string `json:"doc_id"`
+	IsRead bool   `json:"is_read"`
+}
+
 type v2ReadingStateImportChunkRequest struct {
-	ImportID string          `json:"import_id"`
-	Seq      int             `json:"seq"`
-	Items    map[string]bool `json:"items"`
+	BatchID string                          `json:"batch_id"`
+	Items   []v2ReadingStateImportChunkItem `json:"items"`
 }
 
 type v2ReadingStateImportChunkResponse struct {
-	ImportID string `json:"import_id"`
-	Seq      int    `json:"seq"`
-	Accepted int    `json:"accepted"`
+	BatchID string `json:"batch_id"`
+	Staged  int    `json:"staged"`
 }
 
 func (c ProjectControlClient) readingStateImportChunkV2(ctx context.Context, req v2ReadingStateImportChunkRequest) (v2ReadingStateImportChunkResponse, error) {
@@ -769,15 +772,12 @@ func (c ProjectControlClient) readingStateImportChunkV2(ctx context.Context, req
 }
 
 type v2ReadingStateImportCommitRequest struct {
-	ImportID       string `json:"import_id"`
-	ExpectedChunks int    `json:"expected_chunks"`
-	ExpectedItems  int    `json:"expected_items"`
+	BatchID string `json:"batch_id"`
 }
 
 type v2ReadingStateImportCommitResponse struct {
-	ScopeHash     string `json:"scope_hash"`
-	ImportedItems int    `json:"imported_items"`
-	UnreadCount   int    `json:"unread_count"`
+	ScopeHash string `json:"scope_hash"`
+	Committed int    `json:"committed"`
 }
 
 func (c ProjectControlClient) readingStateImportCommitV2(ctx context.Context, req v2ReadingStateImportCommitRequest) (v2ReadingStateImportCommitResponse, error) {
@@ -797,7 +797,7 @@ type v2ReadingStateMarkReadResponse struct {
 	ScopeHash       string `json:"scope_hash"`
 	Marked          int    `json:"marked"`
 	UnreadCount     int    `json:"unread_count"`
-	ReadHorizonAtNS int64  `json:"read_horizon_at_ns"`
+	ReadHorizonAtNS string `json:"read_horizon_at_ns"`
 }
 
 func (c ProjectControlClient) readingStateMarkReadV2(ctx context.Context, req v2ReadingStateMarkReadRequest) (v2ReadingStateMarkReadResponse, error) {
@@ -815,7 +815,7 @@ type v2ReadingStateMarkAllReadRequest struct {
 type v2ReadingStateMarkAllReadResponse struct {
 	ScopeHash       string `json:"scope_hash"`
 	UnreadCount     int    `json:"unread_count"`
-	ReadHorizonAtNS int64  `json:"read_horizon_at_ns"`
+	ReadHorizonAtNS string `json:"read_horizon_at_ns"`
 }
 
 func (c ProjectControlClient) readingStateMarkAllReadV2(ctx context.Context, req v2ReadingStateMarkAllReadRequest) (v2ReadingStateMarkAllReadResponse, error) {
