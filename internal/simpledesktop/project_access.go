@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -170,10 +172,35 @@ type ProjectControlClient struct {
 }
 type ControlResponseError struct {
 	Status  int
+	Code    string
 	Message string
 }
 
 func (e *ControlResponseError) Error() string { return e.Message }
+
+func parseControlErrorCode(body []byte) string {
+	var payload struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return ""
+	}
+	if payload.Error != "" {
+		return payload.Error
+	}
+	return payload.Code
+}
+
+func isControlAuthDenied(err error) bool {
+	var ce *ControlResponseError
+	return errors.As(err, &ce) && (ce.Status == http.StatusUnauthorized || ce.Status == http.StatusForbidden)
+}
+
+func isControlErrorCode(err error, status int, code string) bool {
+	var ce *ControlResponseError
+	return errors.As(err, &ce) && ce.Status == status && ce.Code == code
+}
 
 func (c ProjectControlClient) request(ctx context.Context, method, path string, input, output any) error {
 	return c.requestWithLimit(ctx, method, path, input, output, 2*1024*1024)
@@ -212,10 +239,12 @@ func (c ProjectControlClient) requestWithLimit(ctx context.Context, method, path
 	}
 	defer response.Body.Close()
 	if response.StatusCode == 409 {
-		return &ControlResponseError{Status: 409, Message: "设置已变化或关联存在冲突，请刷新核对后再保存"}
+		snippet, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
+		return &ControlResponseError{Status: 409, Code: parseControlErrorCode(snippet), Message: "设置已变化或关联存在冲突，请刷新核对后再保存"}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return &ControlResponseError{Status: response.StatusCode, Message: fmt.Sprintf("项目管理请求未确认（HTTP %d），请核对原操作", response.StatusCode)}
+		snippet, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
+		return &ControlResponseError{Status: response.StatusCode, Code: parseControlErrorCode(snippet), Message: fmt.Sprintf("项目管理请求未确认（HTTP %d），请核对原操作", response.StatusCode)}
 	}
 	if maxBytes <= 0 {
 		maxBytes = 2 * 1024 * 1024
@@ -285,5 +314,126 @@ func (c ProjectControlClient) alias(ctx context.Context, revision int64, project
 func (c ProjectControlClient) rename(ctx context.Context, revision int64, project, name string) (AccessProject, error) {
 	var result AccessProject
 	err := c.request(ctx, "PUT", "/v1/projects/"+url.PathEscape(project)+"/name", map[string]any{"expected_revision": revision, "name": name}, &result)
+	return result, err
+}
+
+type ControlCapabilities struct {
+	APIVersions []string `json:"api_versions"`
+	Features    []string `json:"features"`
+}
+
+func (caps ControlCapabilities) HasFeature(feature string) bool {
+	for _, f := range caps.Features {
+		if f == feature {
+			return true
+		}
+	}
+	return false
+}
+
+type cachedCapabilitiesEntry struct {
+	caps      ControlCapabilities
+	supported bool
+	expiresAt time.Time
+}
+
+var controlCapabilitiesCache = struct {
+	mu      sync.Mutex
+	entries map[string]cachedCapabilitiesEntry
+}{
+	entries: map[string]cachedCapabilitiesEntry{},
+}
+
+func (c ProjectControlClient) capabilities(ctx context.Context) (ControlCapabilities, error) {
+	var result ControlCapabilities
+	err := c.request(ctx, "GET", "/v1/capabilities", nil, &result)
+	return result, err
+}
+
+func (c ProjectControlClient) hasFeature(ctx context.Context, feature string) bool {
+	cacheKey := c.Config.URL + "|" + c.Config.ManagementTokenFile
+	now := time.Now()
+	controlCapabilitiesCache.mu.Lock()
+	entry, ok := controlCapabilitiesCache.entries[cacheKey]
+	controlCapabilitiesCache.mu.Unlock()
+	if ok && now.Before(entry.expiresAt) {
+		return entry.supported && entry.caps.HasFeature(feature)
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	caps, err := c.capabilities(probeCtx)
+	if err != nil {
+		ttl := 15 * time.Second
+		if isControlNotFound(err) {
+			ttl = 5 * time.Minute
+		}
+		controlCapabilitiesCache.mu.Lock()
+		if len(controlCapabilitiesCache.entries) >= 128 {
+			clear(controlCapabilitiesCache.entries)
+		}
+		controlCapabilitiesCache.entries[cacheKey] = cachedCapabilitiesEntry{supported: false, expiresAt: now.Add(ttl)}
+		controlCapabilitiesCache.mu.Unlock()
+		return false
+	}
+	controlCapabilitiesCache.mu.Lock()
+	if len(controlCapabilitiesCache.entries) >= 128 {
+		clear(controlCapabilitiesCache.entries)
+	}
+	controlCapabilitiesCache.entries[cacheKey] = cachedCapabilitiesEntry{
+		caps:      caps,
+		supported: true,
+		expiresAt: now.Add(5 * time.Minute),
+	}
+	controlCapabilitiesCache.mu.Unlock()
+	return caps.HasFeature(feature)
+}
+
+type documentLookupV2Response struct {
+	Document
+	EffectiveDate  string `json:"effective_date"`
+	Category       string `json:"category"`
+	CommonCategory string `json:"common_category"`
+	SessionID      string `json:"session_id"`
+	RecallCount    int64  `json:"recall_count"`
+}
+
+func (c ProjectControlClient) documentLookupV2(ctx context.Context, datasetID, docID string) (documentLookupV2Response, error) {
+	var result documentLookupV2Response
+	path := "/v2/datasets/" + url.PathEscape(datasetID) + "/documents/" + url.PathEscape(docID)
+	err := c.request(ctx, "GET", path, nil, &result)
+	return result, err
+}
+
+type sessionLookupV2Response struct {
+	Session
+	Status string `json:"status"`
+}
+
+func (c ProjectControlClient) sessionLookupV2(ctx context.Context, datasetID, sessionID, userID string) (sessionLookupV2Response, error) {
+	var result sessionLookupV2Response
+	path := "/v2/datasets/" + url.PathEscape(datasetID) + "/sessions/" + url.PathEscape(sessionID)
+	if userID != "" {
+		path += "?user_id=" + url.QueryEscape(userID)
+	}
+	err := c.request(ctx, "GET", path, nil, &result)
+	return result, err
+}
+
+type codeActivityV2Response struct {
+	ProjectID        string `json:"project_id"`
+	CodeDatasetID    string `json:"code_dataset_id"`
+	DatasetCreatedAt string `json:"dataset_created_at"`
+	Active           bool   `json:"active"`
+	Status           string `json:"status"`
+	RunID            string `json:"run_id"`
+	LatestCreatedAt  string `json:"latest_created_at"`
+	LatestStartedAt  string `json:"latest_started_at"`
+	LatestEndedAt    string `json:"latest_ended_at"`
+}
+
+func (c ProjectControlClient) projectCodeActivityV2(ctx context.Context, projectID string) (codeActivityV2Response, error) {
+	var result codeActivityV2Response
+	path := "/v2/projects/" + url.PathEscape(projectID) + "/code-activity"
+	err := c.request(ctx, "GET", path, nil, &result)
 	return result, err
 }

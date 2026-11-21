@@ -105,12 +105,14 @@ func overviewProjects(c Config) []Project {
 	return result
 }
 
+const overviewDocumentsPageSize = 1000
+
 func (c Client) overviewDocuments(ctx context.Context, p Project) ([]Document, error) {
 	var all []Document
 	seen := map[string]bool{}
-	for offset := 0; offset <= 1000000; offset += 100 {
+	for offset := 0; offset <= 1000000; {
 		var page []Document
-		if err := c.get(ctx, fmt.Sprintf("/api/v1/datasets/%s/data?limit=100&offset=%d", url.PathEscape(p.Dataset), offset), &page); err != nil {
+		if err := c.get(ctx, fmt.Sprintf("/api/v1/datasets/%s/data?limit=%d&offset=%d", url.PathEscape(p.Dataset), overviewDocumentsPageSize, offset), &page); err != nil {
 			return nil, err
 		}
 		for _, d := range page {
@@ -122,13 +124,17 @@ func (c Client) overviewDocuments(ctx context.Context, p Project) ([]Document, e
 				all = append(all, d)
 			}
 		}
-		if len(page) < 100 {
+		// Some legacy or test servers cap per-page responses at 100 or 500 rows
+		// even when limit=1000 is requested; advance by len(page) and only stop
+		// early when the page is clearly shorter than both our request and common caps.
+		if len(page) == 0 || (len(page) < overviewDocumentsPageSize && len(page) != 100 && len(page) != 500) {
 			if err := c.rememberKnowledgeDays(all); err != nil {
 				return nil, err
 			}
 			sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
 			return all, nil
 		}
+		offset += len(page)
 	}
 	return nil, fmt.Errorf("官方分页上限内未读完，统计暂不可用")
 }

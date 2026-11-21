@@ -1,0 +1,733 @@
+package simpledesktop
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/egoist/mygo/ui"
+)
+
+func TestTrayFlyoutCachesSummaryAndTodayCountAcrossFrames(t *testing.T) {
+	dir := t.TempDir()
+	a := settingsFixture()
+	a.Config.ConfigFile = filepath.Join(dir, "runtime.json")
+	a.initDesktopPreferences()
+	a.service = "已连接"
+	a.monitor.State = "ready"
+
+	now := time.Now()
+	nowRFC := now.Format(time.RFC3339)
+	a.overviewState.Loaded = true
+	a.overviewState.generation = 1
+	a.overviewState.Snapshot = overviewSnapshot{
+		Knowledge: []Item{
+			{ID: "k1", Dataset: "ds", Kind: "知识", Date: nowRFC, Document: &Document{ID: "k1", Created: nowRFC}},
+			{ID: "k2", Dataset: "ds", Kind: "知识", Date: nowRFC, Document: &Document{ID: "k2", Created: nowRFC}},
+		},
+	}
+
+	p := a.access.Directory.Projects[0]
+	q := a.projectQueueStateFor(p)
+	q.Loaded = true
+	q.Sessions = []queuedSession{{
+		Agent:   AccessAgent{ID: "agent", Name: "Codex"},
+		Binding: ProjectBinding{ProjectID: p.ID, AgentID: "agent", HostSessionKey: "s1"},
+		View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1}},
+	}}
+
+	// Warm both tray status level and full flyout body: must share a single summary computation.
+	_ = a.trayStatusLevel()
+	tt := ui.NewTester(a.TrayFlyoutView, 300, 480)
+	for i := 0; i < 8; i++ {
+		_ = a.trayStatusLevel()
+		_, _, _ = a.TrayIconState()
+		_ = a.trayProjectAlerts()
+		_ = a.trayProjectProgressItems()
+		_ = a.trayTodayMemoryCount(now)
+		tt.Frame()
+	}
+	if a.trayCache.summaryComputations != 1 {
+		t.Fatalf("expected single cached summary computation across trayStatusLevel + flyout frames, got %d", a.trayCache.summaryComputations)
+	}
+	if a.trayCache.todayComputations != 1 {
+		t.Fatalf("expected single cached todayCount computation across frames, got %d", a.trayCache.todayComputations)
+	}
+
+	// Mutating queue state invalidates the cached summary immediately.
+	q.Sessions[0].View.observe(PendingMaterials{Pending: 0, Unknown: 0, Signature: "clean"})
+	if level := a.trayStatusLevel(); level != "ok" {
+		t.Fatalf("expected trayStatusLevel=ok after observe cleared anomaly, got %q", level)
+	}
+	if a.trayCache.summaryComputations != 2 {
+		t.Fatalf("expected summary cache invalidation after observe, got %d computations", a.trayCache.summaryComputations)
+	}
+
+	// Advancing overview generation invalidates todayCount cache.
+	a.overviewState.generation++
+	a.overviewState.Snapshot.Knowledge = append(a.overviewState.Snapshot.Knowledge,
+		Item{ID: "k3", Dataset: "ds", Kind: "知识", Date: nowRFC, Document: &Document{ID: "k3", Created: nowRFC}})
+	if got := a.trayTodayMemoryCount(now); got != 3 {
+		t.Fatalf("expected updated today count=3, got %d", got)
+	}
+	if a.trayCache.todayComputations != 2 {
+		t.Fatalf("expected today cache invalidation on generation bump, got %d", a.trayCache.todayComputations)
+	}
+}
+
+func TestUserProfileLargeMarkdownVirtualizedRenderingLightAndDark(t *testing.T) {
+	t.Cleanup(func() { applyAppearance(false) })
+
+	// Build an ~80 KiB Markdown profile with headings, prose, lists, and fenced code blocks.
+	var sb strings.Builder
+	sb.WriteString("# 大篇幅用户画像基线\n\n")
+	for sec := 0; sec < 60; sec++ {
+		fmt.Fprintf(&sb, "## 第 %d 节：工程实践与协作习惯\n\n", sec)
+		fmt.Fprintf(&sb, "- [2026-11-20] - 保持零侵入外置扩展与严格权限边界，段落索引 %d。\n", sec)
+		sb.WriteString(strings.Repeat("这是一段用于验证 256 KiB 画像分块虚拟化渲染性能与正确性的长中文说明文本。", 12))
+		sb.WriteString("\n\n```go\n")
+		fmt.Fprintf(&sb, "func section%d() {\n\t// blank line inside fence must not split chunk\n\n\tprintln(%d)\n}\n", sec, sec)
+		sb.WriteString("```\n\n")
+	}
+	largeBody := sb.String()
+	if len(largeBody) < 40*1024 {
+		t.Fatalf("expected large profile body > 40KiB, got %d", len(largeBody))
+	}
+
+	chunks := splitProfileMarkdownChunks(largeBody)
+	if len(chunks) < 10 {
+		t.Fatalf("expected large profile split into multiple chunks, got %d", len(chunks))
+	}
+	for idx, ch := range chunks {
+		// Every chunk must have balanced ``` fences (never split inside a code block).
+		if count := strings.Count(ch, "```"); count%2 != 0 {
+			t.Fatalf("chunk %d split inside a fenced code block (``` count=%d):\n%s", idx, count, ch)
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		dark bool
+	}{
+		{name: "light", dark: false},
+		{name: "dark", dark: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := profileUIFixture(t)
+			if tc.dark {
+				a.setAppearancePreference(appearanceDark)
+			} else {
+				a.setAppearancePreference(appearanceLight)
+			}
+			a.userProfiles.Body = largeBody
+			a.userProfiles.BodyKey = "codex/synthetic/large-" + tc.name
+			tt := ui.NewTester(a.View, 1200, 820)
+			tt.SetDark(tc.dark)
+			// Warm up 2 frames.
+			tt.Frame()
+			tt.Frame()
+
+			if !tt.HasText("Codex 对你的了解") || !tt.HasText("大篇幅用户画像基线") {
+				t.Fatalf("[%s] virtualized large profile missing header/title text", tc.name)
+			}
+			firstVis, lastVis := a.userProfiles.ReaderList.Visible()
+			if lastVis < firstVis || lastVis >= len(chunks) {
+				t.Fatalf("[%s] expected virtualized subset of %d chunks, got visible=[%d,%d]", tc.name, len(chunks), firstVis, lastVis)
+			}
+
+			// Measure 10 frames and verify virtualized rendering stays well within 16ms budget.
+			samples := make([]time.Duration, 0, 10)
+			for n := 0; n < 10; n++ {
+				start := time.Now()
+				tt.Frame()
+				samples = append(samples, time.Since(start))
+			}
+			sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+			if !raceDetectorEnabled {
+				if median := samples[len(samples)/2]; median > 16*time.Millisecond {
+					t.Fatalf("[%s] large virtualized profile median frame %v exceeds 16ms budget", tc.name, median)
+				}
+			}
+
+			// Verbatim copy still copies the entire raw body.
+			clickProjectUI(t, tt, "复制正文")
+			if tt.Clipboard() != largeBody {
+				t.Fatalf("[%s] verbatim copy truncated or altered large body (got %d bytes want %d)", tc.name, len(tt.Clipboard()), len(largeBody))
+			}
+		})
+	}
+}
+
+func TestStartTitlesCapsAt30EvenWithRawCatalogAndInvalidateReadingClearsPreviewAndMetadata(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"session_id":"s","dataset_id":"ds","user_id":"u","history_paging":true,"page_limit":20,"qas":[{"qa_id":"q1","question":"Q","answer":"A"}],"msg_count":1}`)
+	}))
+	defer server.Close()
+
+	a := New(Config{ServiceURL: server.URL, Projects: []Project{{ID: "p", Dataset: "ds"}}}, nil)
+	updates := make(chan func(), 256)
+	a.Update = func(fn func()) { updates <- fn }
+	a.page = "知识"
+	a.kind = "原始记录"
+	s := a.state()
+
+	const total = 120
+	items := make([]Item, 0, total)
+	for i := 0; i < total; i++ {
+		id := fmt.Sprintf("sess-%03d", i)
+		sess := Session{ID: id, Dataset: "ds", User: "u", Updated: "2026-11-21T08:00:00Z"}
+		items = append(items, Item{ID: id, Dataset: "ds", Kind: "会话", Title: id, Session: &sess})
+	}
+	s.Items = items
+	s.RawCatalog = append([]Item(nil), items...)
+
+	a.startTitles(s)
+	// Wait until the bounded <=30 goroutines complete.
+	drainReading(t, updates, func() bool {
+		done := 0
+		for _, it := range s.Items {
+			if it.ReadingState == "ready" || it.ReadingState == "failed" || it.ReadingState == "unavailable" {
+				done++
+			}
+		}
+		return done >= maxTitlePreheatWindow
+	})
+	// Brief settle to catch any rogue extra requests beyond 30.
+	time.Sleep(30 * time.Millisecond)
+	if got := hits.Load(); got > maxTitlePreheatWindow {
+		t.Fatalf("startTitles exceeded 30-item preheat cap with RawCatalog != nil: got %d requests", got)
+	}
+
+	// Verify InvalidateReading clears Item.Preview, overviewState.Snapshot.Knowledge[n].Preview, and Document.Metadata.
+	d1 := Document{ID: "doc-1", Dataset: "ds", Name: "doc1.md", Metadata: map[string]any{"why_learned": "secret", "node_set": []any{"session_learnings"}}}
+	d2 := Document{ID: "doc-2", Dataset: "other", Name: "doc2.md", Metadata: map[string]any{"why_learned": "keep"}}
+	s.Items = []Item{
+		{ID: "doc-1", Dataset: "ds", Kind: "知识", Preview: "sensitive preview", Body: "full body", BodyLoaded: true, Document: &d1},
+		{ID: "doc-2", Dataset: "other", Kind: "知识", Preview: "keep preview", Body: "keep body", BodyLoaded: true, Document: &d2},
+	}
+	s.Knowledge.Catalog = []Item{
+		{ID: "doc-1", Dataset: "ds", Kind: "知识", Preview: "catalog preview", Body: "catalog body", BodyLoaded: true, Document: &Document{ID: "doc-1", Dataset: "ds", Name: "doc1.md", Metadata: map[string]any{"secret": "x"}}},
+	}
+	a.overviewState.Snapshot.Knowledge = []Item{
+		{ID: "doc-1", Dataset: "ds", Kind: "知识", Preview: "overview preview", Body: "overview body", BodyLoaded: true, Document: &Document{ID: "doc-1", Dataset: "ds", Name: "doc1.md", Metadata: map[string]any{"secret": "y"}}},
+		{ID: "doc-2", Dataset: "other", Kind: "知识", Preview: "other preview", Body: "other body", BodyLoaded: true, Document: &Document{ID: "doc-2", Dataset: "other", Name: "doc2.md", Metadata: map[string]any{"secret": "z"}}},
+	}
+
+	a.InvalidateReading("ds")
+	if s.Items[0].Preview != "" || s.Items[0].Body != "" || s.Items[0].BodyLoaded || s.Items[0].Document.Metadata != nil {
+		t.Fatalf("InvalidateReading leaked s.Items fields: %+v doc=%+v", s.Items[0], s.Items[0].Document)
+	}
+	if s.Knowledge.Catalog[0].Preview != "" || s.Knowledge.Catalog[0].Body != "" || s.Knowledge.Catalog[0].Document.Metadata != nil {
+		t.Fatalf("InvalidateReading leaked s.Knowledge.Catalog fields: %+v", s.Knowledge.Catalog[0])
+	}
+	if a.overviewState.Snapshot.Knowledge[0].Preview != "" || a.overviewState.Snapshot.Knowledge[0].Body != "" || a.overviewState.Snapshot.Knowledge[0].Document.Metadata != nil {
+		t.Fatalf("InvalidateReading leaked overview knowledge fields: %+v doc=%+v", a.overviewState.Snapshot.Knowledge[0], a.overviewState.Snapshot.Knowledge[0].Document)
+	}
+	if s.Items[1].Preview != "keep preview" || s.Items[1].Document.Metadata == nil || a.overviewState.Snapshot.Knowledge[1].Preview != "other preview" {
+		t.Fatalf("InvalidateReading(ds) unexpectedly cleared unrelated dataset")
+	}
+}
+
+func TestColdPendingCacheTrueLRU65536AndVerifyInstallationAgentDedup(t *testing.T) {
+	if coldPendingCacheMaxEntries != 65536 {
+		t.Fatalf("expected coldPendingCacheMaxEntries=65536, got %d", coldPendingCacheMaxEntries)
+	}
+
+	// Verify true LRU promotion order: touching oldest key moves it to front.
+	k1 := coldPendingKey{AgentID: "lru-test", HostSessionKey: "k1", Dataset: "ds"}
+	k2 := coldPendingKey{AgentID: "lru-test", HostSessionKey: "k2", Dataset: "ds"}
+	k3 := coldPendingKey{AgentID: "lru-test", HostSessionKey: "k3", Dataset: "ds"}
+	defer func() {
+		coldPendingCacheDelete(k1)
+		coldPendingCacheDelete(k2)
+		coldPendingCacheDelete(k3)
+	}()
+	coldPendingCachePut(k1, coldPendingEntry{Result: PendingMaterials{Signature: "s1"}})
+	coldPendingCachePut(k2, coldPendingEntry{Result: PendingMaterials{Signature: "s2"}})
+	coldPendingCachePut(k3, coldPendingEntry{Result: PendingMaterials{Signature: "s3"}})
+	if _, ok := coldPendingCacheGet(k1); !ok {
+		t.Fatal("expected k1 hit")
+	}
+	coldPendingCache.mu.Lock()
+	frontKey := coldPendingCache.order.Front().Value.(*coldPendingNode).Key
+	coldPendingCache.mu.Unlock()
+	if frontKey != k1 {
+		t.Fatalf("expected LRU promotion of k1 to front, got %+v", frontKey)
+	}
+
+	// Verify Agent-level deduplication of verifyInstallation (single SHA256 pass across concurrent + repeat calls).
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	scripts := filepath.Join(root, "scripts")
+	if err := os.MkdirAll(scripts, 0700); err != nil {
+		t.Fatal(err)
+	}
+	common := []byte("# common\n")
+	helper := []byte("# helper\n")
+	commonPath := filepath.Join(scripts, "_plugin_common.py")
+	helperPath := filepath.Join(scripts, "_memlane_policy.py")
+	if err := os.WriteFile(commonPath, common, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(helperPath, helper, 0600); err != nil {
+		t.Fatal(err)
+	}
+	helperSHA := fmt.Sprintf("%x", sha256.Sum256(helper))
+	commonSHA := fmt.Sprintf("%x", sha256.Sum256(common))
+	receipt, _ := json.Marshal(map[string]any{"files": map[string]string{
+		"scripts/_memlane_policy.py": helperSHA,
+		"scripts/_plugin_common.py":  commonSHA,
+	}})
+	receiptPath := filepath.Join(root, ".memlane-project-access.json")
+	if err := os.WriteFile(receiptPath, receipt, 0600); err != nil {
+		t.Fatal(err)
+	}
+	inst := AgentInstallation{
+		HostKind:    "codex",
+		PluginDir:   root,
+		EnvFile:     filepath.Join(root, "managed.env"),
+		Home:        root,
+		HelperSHA:   helperSHA,
+		ManifestSHA: fmt.Sprintf("%x", sha256.Sum256(receipt)),
+	}
+
+	verifiedInstallCache.mu.Lock()
+	beforeHashes := verifiedInstallCache.hashCount
+	verifiedInstallCache.mu.Unlock()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 32)
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := verifyInstallation(inst); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	for i := 0; i < 50; i++ {
+		if err := verifyInstallation(inst); err != nil {
+			errs <- err
+		}
+	}
+	close(errs)
+	for err := range errs {
+		t.Fatalf("unexpected verifyInstallation error: %v", err)
+	}
+
+	verifiedInstallCache.mu.Lock()
+	afterHashes := verifiedInstallCache.hashCount
+	verifiedInstallCache.mu.Unlock()
+	if afterHashes-beforeHashes != 1 {
+		t.Fatalf("expected exactly 1 SHA256 verification across 66 concurrent/repeat calls, got %d", afterHashes-beforeHashes)
+	}
+
+	// Tampering helper immediately invalidates stat cache and fails closed.
+	if err := os.WriteFile(helperPath, []byte("# tampered helper bytes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyInstallation(inst); err == nil || !strings.Contains(err.Error(), "文件发生变化") {
+		t.Fatalf("expected tampered helper rejection after cache warm, got %v", err)
+	}
+}
+
+func TestOpenCodePendingColdCacheMtimeAndInvalidation(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plugin := filepath.Join(root, "artifact")
+	outboxDir := filepath.Join(root, "state", "outbox")
+	bindingsDir := filepath.Join(root, "state", "bindings")
+	for _, d := range []string{filepath.Join(plugin, "dist/src"), outboxDir, bindingsDir} {
+		if err := os.MkdirAll(d, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := map[string]string{}
+	for _, name := range []string{"managed-pending-cli.js", "managed-pending.js"} {
+		val := []byte("verified opencode worker\n")
+		p := filepath.Join(plugin, "dist/src", name)
+		if err := os.WriteFile(p, val, 0600); err != nil {
+			t.Fatal(err)
+		}
+		files["dist/src/"+name] = pendingDigest(val)
+	}
+	manifest, _ := json.Marshal(map[string]any{"protocol": 1, "files": files})
+	if err := os.WriteFile(filepath.Join(plugin, ".memlane-opencode-artifact.json"), manifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	bindingPayload, _ := json.Marshal(map[string]any{
+		"version": 1,
+		"memlane": map[string]any{"stateDir": bindingsDir},
+		"cognee":  map[string]any{"stateDir": outboxDir},
+	})
+	bindingFile := filepath.Join(root, "binding.json")
+	if err := os.WriteFile(bindingFile, bindingPayload, 0600); err != nil {
+		t.Fatal(err)
+	}
+	countFile := filepath.Join(root, "node-count.txt")
+	runtimePath := filepath.Join(root, "node-fixture")
+	script := "#!/bin/sh\n" +
+		"cat >/dev/null\n" +
+		"n=0\n" +
+		"if [ -f " + pendingShellQuote(countFile) + " ]; then n=$(cat " + pendingShellQuote(countFile) + "); fi\n" +
+		"echo $((n + 1)) > " + pendingShellQuote(countFile) + "\n" +
+		"printf '%s\\n' '{\"pending\":0,\"unknown_outcomes\":0,\"signature\":\"" + strings.Repeat("c", 64) + "\"}'\n"
+	if err := os.WriteFile(runtimePath, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	tokenFile := filepath.Join(root, "manager-token")
+	if err := os.WriteFile(tokenFile, []byte(strings.Repeat("m", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := AgentInstallation{
+		HostKind:       "opencode",
+		PluginDir:      plugin,
+		ManifestSHA:    pendingDigest(manifest),
+		HelperSHA:      files["dist/src/managed-pending-cli.js"],
+		BindingFile:    bindingFile,
+		BindingSHA:     pendingDigest(bindingPayload),
+		NodeExecutable: runtimePath,
+		NodeSHA:        pendingDigest([]byte(script)),
+	}
+	operator := PendingOperatorConfig{
+		TokenFile:  tokenFile,
+		ControlURL: "http://127.0.0.1:19301",
+		ServiceURL: "http://127.0.0.1:19302",
+	}
+	hostKey := "opencode-" + strings.Repeat("d", 64)
+	binding := ProjectBinding{
+		AgentID:        "opencode-agent",
+		ProjectID:      "11111111-1111-4111-8111-111111111111",
+		HostSessionKey: hostKey,
+	}
+	readCount := func() int {
+		b, err := os.ReadFile(countFile)
+		if err != nil {
+			return 0
+		}
+		var n int
+		fmt.Sscanf(string(b), "%d", &n)
+		return n
+	}
+
+	openCodeVerifyCache.mu.Lock()
+	beforeVerify := openCodeVerifyCache.hashCount
+	openCodeVerifyCache.mu.Unlock()
+
+	// 1. First show runs worker and warms both verify cache and cold mtime cache.
+	res1, err := runPendingMaterials(context.Background(), "unused", inst, binding, "22222222-2222-4222-8222-222222222222", "show", "", operator)
+	if err != nil || res1.Pending != 0 || readCount() != 1 {
+		t.Fatalf("first opencode show failed: res=%+v err=%v count=%d", res1, err, readCount())
+	}
+
+	// 2. Second show hits cold mtime cache: zero extra Node subprocess and zero extra SHA256 hash.
+	res2, err := runPendingMaterials(context.Background(), "unused", inst, binding, "22222222-2222-4222-8222-222222222222", "show", "", operator)
+	if err != nil || res2.Signature != res1.Signature || readCount() != 1 {
+		t.Fatalf("expected opencode cold cache hit without worker spawn: res=%+v err=%v count=%d", res2, err, readCount())
+	}
+	openCodeVerifyCache.mu.Lock()
+	afterVerify := openCodeVerifyCache.hashCount
+	openCodeVerifyCache.mu.Unlock()
+	if afterVerify-beforeVerify != 1 {
+		t.Fatalf("expected single opencode installation SHA256 pass, got %d", afterVerify-beforeVerify)
+	}
+
+	// 3. New outbox file invalidates mtime cold cache immediately.
+	outboxFile := filepath.Join(outboxDir, "queue.json")
+	if err := os.WriteFile(outboxFile, []byte(`{"entries":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runPendingMaterials(context.Background(), "unused", inst, binding, "22222222-2222-4222-8222-222222222222", "show", "", operator); err != nil || readCount() != 2 {
+		t.Fatalf("outbox mutation did not invalidate opencode cold cache: err=%v count=%d", err, readCount())
+	}
+
+	// 4. Session binding file creation invalidates mtime cold cache immediately.
+	if err := os.WriteFile(filepath.Join(bindingsDir, hostKey+".json"), []byte(`{"state":"bound"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runPendingMaterials(context.Background(), "unused", inst, binding, "22222222-2222-4222-8222-222222222222", "show", "", operator); err != nil || readCount() != 3 {
+		t.Fatalf("binding file mutation did not invalidate opencode cold cache: err=%v count=%d", err, readCount())
+	}
+
+	// 5. Mutating action ("check") always bypasses cold cache and executes worker.
+	if _, err := runPendingMaterials(context.Background(), "unused", inst, binding, "22222222-2222-4222-8222-222222222222", "check", "", operator); err != nil || readCount() != 4 {
+		t.Fatalf("check action did not bypass opencode cold cache: err=%v count=%d", err, readCount())
+	}
+}
+
+func TestMarkKnowledgeReadAsyncCoalescedCorruptSafeAndDoubleSlashCompat(t *testing.T) {
+	a, q := projectQueueFixture()
+	dir := t.TempDir()
+	a.Config.ClientStateFile = filepath.Join(dir, "client-state.json")
+	a.Client.Config.ClientStateFile = a.Config.ClientStateFile
+	updates := make(chan func(), 16)
+	a.Update = func(fn func()) { updates <- fn }
+	p := a.access.Directory.Projects[0]
+
+	// 1. Verify exact double-slash // SHA256 hash compatibility.
+	identity, err := readingIdentity(Client{Config: a.Client.Config})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(identity, "/") {
+		t.Fatalf("expected readingIdentity to end with '/', got %q", identity)
+	}
+	wantPath := filepath.Join(dir, fmt.Sprintf("knowledge-read-%x.json", sha256.Sum256([]byte(identity+"/"+p.ID+"/"+p.Dataset))))
+	gotPath, err := a.knowledgeReadPath(p)
+	if err != nil || gotPath != wantPath {
+		t.Fatalf("knowledgeReadPath broke // hash compat: got %q want %q err=%v", gotPath, wantPath, err)
+	}
+
+	// Seed baseline + 3 unread items.
+	old := unreadDoc("old")
+	u1, u2, u3 := unreadDoc("u1"), unreadDoc("u2"), unreadDoc("u3")
+	a.observeKnowledgeCatalog(p, q, []Document{old})
+	a.observeKnowledgeCatalog(p, q, []Document{old, u1, u2, u3})
+	if q.unreadCount() != 3 {
+		t.Fatalf("expected 3 unread items, got %d", q.unreadCount())
+	}
+
+	// 2. BodyLoaded == false must NOT mark read.
+	a.markKnowledgeRead(Item{ID: u1.ID, Dataset: u1.Dataset, Kind: "知识", Document: &u1, BodyLoaded: false})
+	if q.unreadCount() != 3 {
+		t.Fatalf("BodyLoaded=false item was marked read: unread=%d", q.unreadCount())
+	}
+
+	// 3. Block disk writes and prove markKnowledgeRead returns immediately with instant memory update.
+	writer := a.ensureKnowledgeWriter()
+	writeEntered := make(chan struct{}, 4)
+	releaseWrite := make(chan struct{})
+	var writeCount atomic.Int32
+	var failNext atomic.Bool
+	writer.writeFn = func(path string, s knowledgeReadState) error {
+		writeCount.Add(1)
+		select {
+		case writeEntered <- struct{}{}:
+		default:
+		}
+		<-releaseWrite
+		if failNext.Load() {
+			return errors.New("simulated disk full")
+		}
+		return writeKnowledgeState(path, s)
+	}
+
+	start := time.Now()
+	a.markKnowledgeRead(Item{ID: u1.ID, Dataset: u1.Dataset, Kind: "知识", Document: &u1, BodyLoaded: true})
+	<-writeEntered
+	// While u1's write is blocked in background, queue u2 and u3: both must return instantaneously and coalesce.
+	a.markKnowledgeRead(Item{ID: u2.ID, Dataset: u2.Dataset, Kind: "知识", Document: &u2, BodyLoaded: true})
+	a.markKnowledgeRead(Item{ID: u3.ID, Dataset: u3.Dataset, Kind: "知识", Document: &u3, BodyLoaded: true})
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("markKnowledgeRead blocked UI thread: %v", elapsed)
+	}
+	if q.unreadCount() != 0 {
+		t.Fatalf("expected immediate in-memory unreadCount=0, got %d", q.unreadCount())
+	}
+
+	close(releaseWrite)
+	a.waitKnowledgeReadFlush()
+	for len(updates) > 0 {
+		(<-updates)()
+	}
+
+	persisted, err := readKnowledgeState(gotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"u1", "u2", "u3"} {
+		if !persisted.Read[id] {
+			t.Fatalf("persisted file missing read mark for %s: %+v", id, persisted.Read)
+		}
+	}
+	if got := writeCount.Load(); got > 2 {
+		t.Fatalf("expected coalesced <=2 writes for 3 rapid marks, got %d", got)
+	}
+
+	// 4. Write failure surfaces KnowledgeReadError via a.Update.
+	u4 := unreadDoc("u4")
+	a.observeKnowledgeCatalog(p, q, []Document{old, u1, u2, u3, u4})
+	failNext.Store(true)
+	a.markKnowledgeRead(Item{ID: u4.ID, Dataset: u4.Dataset, Kind: "知识", Document: &u4, BodyLoaded: true})
+	a.waitKnowledgeReadFlush()
+	drainReading(t, updates, func() bool { return q.KnowledgeReadError == "已读状态未保存" })
+
+	// 5. Corrupt file on disk must never be overwritten by async mark-read.
+	failNext.Store(false)
+	writer.writeFn = writeKnowledgeState
+	if err := os.WriteFile(gotPath, []byte("corrupt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	u5 := unreadDoc("u5")
+	a.markKnowledgeRead(Item{ID: u5.ID, Dataset: u5.Dataset, Kind: "知识", Document: &u5, BodyLoaded: true})
+	a.waitKnowledgeReadFlush()
+	raw, _ := os.ReadFile(gotPath)
+	if string(raw) != "corrupt" {
+		t.Fatalf("corrupt state file was overwritten: %q", string(raw))
+	}
+}
+
+func TestP0V2PointLookupsCapabilitiesFailClosedAndFallback(t *testing.T) {
+	dir := t.TempDir()
+	tokenFile := filepath.Join(dir, "manager.token")
+	if err := os.WriteFile(tokenFile, []byte(strings.Repeat("t", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("v2 happy path and fail-closed errors", func(t *testing.T) {
+		var legacyCalls atomic.Int32
+		var capCalls atomic.Int32
+		var docStatus atomic.Int32
+		docStatus.Store(200)
+
+		control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/v1/capabilities":
+				capCalls.Add(1)
+				fmt.Fprint(w, `{"api_versions":["v1","v2"],"features":["document_lookup_v2","session_lookup_v2","code_activity_v2","tool_graph_batched_v2"]}`)
+			case "/v2/datasets/ds-1/documents/doc-1":
+				switch docStatus.Load() {
+				case 403:
+					w.WriteHeader(http.StatusForbidden)
+					fmt.Fprint(w, `{"error":"project_unconfirmed"}`)
+				case 404:
+					w.WriteHeader(http.StatusNotFound)
+					fmt.Fprint(w, `{"error":"document_not_found"}`)
+				default:
+					fmt.Fprint(w, `{"id":"doc-1","datasetId":"ds-1","name":"lesson.md","mimeType":"text/markdown","externalMetadata":{"node_set":["session_learnings"],"lesson_type":"pitfall","session_id":"sess-1"},"updatedAt":"2026-11-21T08:00:00Z","createdAt":"2026-11-20T08:00:00Z","contentHash":"abc","effective_date":"2026-11-19","category":"踩坑经验","common_category":"","session_id":"sess-1","recall_count":4}`)
+				}
+			case "/v2/datasets/ds-1/sessions/sess-1":
+				fmt.Fprint(w, `{"session_id":"sess-1","dataset_id":"ds-1","user_id":"user-1","agent_id":"codex","last_activity_at":"2026-11-21T09:00:00Z","started_at":"2026-11-21T08:00:00Z","status":"active"}`)
+			case "/v2/projects/proj-1/code-activity":
+				fmt.Fprint(w, `{"project_id":"proj-1","code_dataset_id":"code-ds-1","dataset_created_at":"2026-11-20T00:00:00Z","active":true,"status":"running","run_id":"run-42","latest_created_at":"2026-11-21T09:00:00Z","latest_started_at":"2026-11-21T09:00:00Z","latest_ended_at":""}`)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer control.Close()
+
+		official := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			legacyCalls.Add(1)
+			http.Error(w, "legacy endpoint must not be called when v2 succeeds or fails closed", 500)
+		}))
+		defer official.Close()
+
+		client := Client{
+			Config: Config{
+				ServiceURL:      official.URL,
+				ClientStateFile: filepath.Join(dir, "state.json"),
+				ProjectControl:  &ProjectControlConfig{URL: control.URL, ManagementTokenFile: tokenFile},
+			},
+		}
+		ctx := context.Background()
+
+		// 1. O(1) document lookup
+		docItem, err := client.documentInfoByID(ctx, "ds-1", "doc-1")
+		if err != nil || docItem.ID != "doc-1" || docItem.Kind != "知识" || docItem.Date != "2026-11-19" || docItem.Source != "sess-1" || docItem.RecallStats == nil || docItem.RecallStats.Count != 4 {
+			t.Fatalf("unexpected v2 document lookup: item=%+v err=%v", docItem, err)
+		}
+		// 2. O(1) session lookup
+		sessItem, err := client.source(ctx, Item{Dataset: "ds-1", Source: "sess-1"})
+		if err != nil || sessItem.ID != "sess-1" || sessItem.Session == nil || sessItem.Session.User != "user-1" || sessItem.Session.Agent != "codex" {
+			t.Fatalf("unexpected v2 session lookup: item=%+v err=%v", sessItem, err)
+		}
+		// 3. O(1) code activity lookup
+		act, err := client.codeActivity(ctx, Project{ID: "proj-1", CodeDataset: "code-ds-1"})
+		if err != nil || !act.Active || act.Status != "running" || act.Run != "run-42" {
+			t.Fatalf("unexpected v2 code activity: state=%+v err=%v", act, err)
+		}
+		// Capabilities probe must be cached across all 3 lookups.
+		if capCalls.Load() != 1 {
+			t.Fatalf("expected /v1/capabilities cached to 1 call, got %d", capCalls.Load())
+		}
+
+		// 4. 403 project_unconfirmed fails closed without calling legacy.
+		docStatus.Store(403)
+		if _, err := client.documentInfoByID(ctx, "ds-1", "doc-1"); !isControlAuthDenied(err) {
+			t.Fatalf("expected 403 fail-closed error, got %v", err)
+		}
+
+		// 5. 404 document_not_found returns immediately without calling legacy pagination.
+		docStatus.Store(404)
+		if _, err := client.documentInfoByID(ctx, "ds-1", "doc-1"); err == nil || !strings.Contains(err.Error(), "官方未提供") {
+			t.Fatalf("expected not-found error on document_not_found, got %v", err)
+		}
+
+		if legacyCalls.Load() != 0 {
+			t.Fatalf("legacy official endpoints were unexpectedly hit %d times", legacyCalls.Load())
+		}
+	})
+
+	t.Run("404 capabilities falls back losslessly and overviewDocuments uses limit=1000", func(t *testing.T) {
+		var sawOverviewLimit string
+		control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.NotFound(w, r)
+		}))
+		defer control.Close()
+
+		official := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/api/v1/datasets/ds-fb/data":
+				if qLimit := r.URL.Query().Get("limit"); qLimit == "1000" {
+					sawOverviewLimit = qLimit
+				}
+				fmt.Fprint(w, `[{"id":"doc-fb","datasetId":"ds-fb","name":"fb.md","externalMetadata":{"node_set":["session_learnings"]},"createdAt":"2026-11-20T08:00:00Z"}]`)
+			case "/api/v1/sessions":
+				fmt.Fprint(w, `{"sessions":[{"session_id":"sess-fb","dataset_id":"ds-fb","user_id":"u-fb","last_activity_at":"2026-11-21T08:00:00Z"}],"has_more":false}`)
+			case "/api/v1/datasets":
+				fmt.Fprint(w, `[{"id":"code-fb","createdAt":"2026-11-20T00:00:00Z"}]`)
+			case "/api/v1/activity/pipeline-runs":
+				fmt.Fprint(w, `[{"id":"r1","dataset_id":"code-fb","kind":"pipeline","pipeline_name":"code_graph_pipeline","pipeline_run_id":"run-fb","status":"DATASET_PROCESSING_COMPLETED","created_at":"2026-11-21T08:00:00Z","started_at":"2026-11-21T08:00:00Z"}]`)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer official.Close()
+
+		client := Client{
+			Config: Config{
+				ServiceURL:      official.URL,
+				ClientStateFile: filepath.Join(dir, "state-fb.json"),
+				ProjectControl:  &ProjectControlConfig{URL: control.URL, ManagementTokenFile: tokenFile},
+			},
+		}
+		ctx := context.Background()
+
+		if doc, err := client.documentInfoByID(ctx, "ds-fb", "doc-fb"); err != nil || doc.ID != "doc-fb" {
+			t.Fatalf("documentInfoByID fallback failed: %+v %v", doc, err)
+		}
+		if sess, err := client.source(ctx, Item{Dataset: "ds-fb", Source: "sess-fb"}); err != nil || sess.ID != "sess-fb" {
+			t.Fatalf("source fallback failed: %+v %v", sess, err)
+		}
+		if act, err := client.codeActivity(ctx, Project{ID: "p-fb", CodeDataset: "code-fb"}); err != nil || act.Run != "run-fb" || act.Active {
+			t.Fatalf("codeActivity fallback failed: %+v %v", act, err)
+		}
+		if docs, err := client.overviewDocuments(ctx, Project{ID: "p-fb", Dataset: "ds-fb"}); err != nil || len(docs) != 1 || sawOverviewLimit != "1000" {
+			t.Fatalf("overviewDocuments fallback failed: docs=%d limit=%q err=%v", len(docs), sawOverviewLimit, err)
+		}
+	})
+}

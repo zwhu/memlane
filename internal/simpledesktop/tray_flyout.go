@@ -34,14 +34,7 @@ func (a *App) SetTrayDark(dark bool) {
 }
 
 func (a *App) trayStatusLevel() string {
-	alerts := a.trayProjectAlerts()
-	hasErrorAlert := false
-	for _, al := range alerts {
-		if al.ErrorCount > 0 {
-			hasErrorAlert = true
-			break
-		}
-	}
+	summary := a.trayCachedSummary()
 	hookErrors := 0
 	if a.monitor.Snapshot != nil && a.monitor.Snapshot.Summary != nil {
 		hookErrors = a.monitor.Snapshot.Summary.HookErrorsCount
@@ -49,9 +42,9 @@ func (a *App) trayStatusLevel() string {
 	switch {
 	case a.monitor.State == "degraded" || a.monitor.State == "exited" ||
 		(a.service != "" && a.service != "已连接" && a.service != "尚未检查") ||
-		hasErrorAlert:
+		summary.HasErrorAlert:
 		return "danger"
-	case a.monitor.State == "warning" || hookErrors > 0 || len(alerts) > 0:
+	case a.monitor.State == "warning" || hookErrors > 0 || len(summary.Alerts) > 0:
 		return "warn"
 	default:
 		return "ok"
@@ -130,11 +123,26 @@ func (a *App) trayChannelStatus() (dotState, metric string, col ui.Color) {
 }
 
 func (a *App) trayTodayMemoryCount(now time.Time) int {
-	if !a.overviewState.Loaded && len(a.overviewState.Snapshot.Knowledge) == 0 {
+	v := &a.overviewState
+	if !v.Loaded && len(v.Snapshot.Knowledge) == 0 {
 		return 0
 	}
+	day := now.Format("2006-01-02")
+	tc := &a.trayCache
+	if tc.todayValid && tc.todayGen == v.generation && tc.todayLoaded == v.Loaded &&
+		tc.todayKnowledgeCount == len(v.Snapshot.Knowledge) && tc.todayDay == day {
+		return tc.todayCount
+	}
 	buckets := a.overviewCachedBuckets(now)
-	return buckets[now.Format("2006-01-02")]
+	count := buckets[day]
+	tc.todayGen = v.generation
+	tc.todayLoaded = v.Loaded
+	tc.todayKnowledgeCount = len(v.Snapshot.Knowledge)
+	tc.todayDay = day
+	tc.todayCount = count
+	tc.todayValid = true
+	tc.todayComputations++
+	return count
 }
 
 func (a *App) openSettingsFromTray(section string) {
@@ -253,8 +261,9 @@ func trayCompRow(c *ui.Context, name, dotState, metric string, metricColor ui.Co
 }
 
 func (a *App) trayFlyoutAlertsSection(c *ui.Context) {
-	alerts := a.trayProjectAlerts()
-	progress := a.trayProjectProgressItems()
+	summary := a.trayCachedSummary()
+	alerts := summary.Alerts
+	progress := summary.Progress
 	ui.Column(c.Key("tray-alerts")).FillWidth().Padding(sp2, sp3).Gap(4).
 		BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 		if len(alerts) == 0 {

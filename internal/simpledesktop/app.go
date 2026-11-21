@@ -116,6 +116,8 @@ type App struct {
 	epoch                uint64
 	service, completion  string
 	monitor              serviceMonitorState
+	trayCache            trayFlyoutCache
+	knowledgeWriter      *knowledgeReadWriter
 	configError          string
 	md                   markdown.Options
 	v4MD                 map[v4MDKey]*markdown.Options

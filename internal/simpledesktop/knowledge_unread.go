@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -88,20 +89,184 @@ func writeKnowledgeState(path string, s knowledgeReadState) error {
 	}
 	return err
 }
+type knowledgeReadMarkJob struct {
+	path   string
+	docIDs []string
+	queue  *projectQueueState
+	update func(func())
+}
+
+// knowledgeReadWriter serializes all background atomic writes of
+// knowledge-read-*.json off the UI thread and coalesces rapid mark-read bursts.
+type knowledgeReadWriter struct {
+	mu      sync.Mutex
+	fileMu  sync.Mutex
+	cond    *sync.Cond
+	pending map[string]*knowledgeReadMarkJob
+	order   []string
+	running bool
+	inFlight bool
+	writeFn func(path string, s knowledgeReadState) error
+}
+
+func (a *App) ensureKnowledgeWriter() *knowledgeReadWriter {
+	if a.knowledgeWriter == nil {
+		w := &knowledgeReadWriter{
+			pending: map[string]*knowledgeReadMarkJob{},
+			writeFn: writeKnowledgeState,
+		}
+		w.cond = sync.NewCond(&w.mu)
+		a.knowledgeWriter = w
+	}
+	return a.knowledgeWriter
+}
+
+func (a *App) enqueueKnowledgeReadMark(path, docID string, q *projectQueueState) {
+	w := a.ensureKnowledgeWriter()
+	updateFn := a.Update
+	w.mu.Lock()
+	job, exists := w.pending[path]
+	if !exists {
+		job = &knowledgeReadMarkJob{path: path, queue: q, update: updateFn}
+		w.pending[path] = job
+		w.order = append(w.order, path)
+	} else {
+		job.queue = q
+		job.update = updateFn
+	}
+	already := false
+	for _, existing := range job.docIDs {
+		if existing == docID {
+			already = true
+			break
+		}
+	}
+	if !already {
+		job.docIDs = append(job.docIDs, docID)
+	}
+	if !w.running {
+		w.running = true
+		go w.drainLoop()
+	}
+	w.mu.Unlock()
+}
+
+func (w *knowledgeReadWriter) drainLoop() {
+	for {
+		w.mu.Lock()
+		if len(w.order) == 0 {
+			w.running = false
+			w.inFlight = false
+			w.cond.Broadcast()
+			w.mu.Unlock()
+			return
+		}
+		path := w.order[0]
+		w.order = w.order[1:]
+		job := w.pending[path]
+		delete(w.pending, path)
+		w.inFlight = true
+		writeFn := w.writeFn
+		if writeFn == nil {
+			writeFn = writeKnowledgeState
+		}
+		w.mu.Unlock()
+
+		w.executeMarkJob(job, writeFn)
+
+		w.mu.Lock()
+		w.inFlight = false
+		if len(w.order) == 0 {
+			w.cond.Broadcast()
+		}
+		w.mu.Unlock()
+	}
+}
+
+func (w *knowledgeReadWriter) executeMarkJob(job *knowledgeReadMarkJob, writeFn func(string, knowledgeReadState) error) {
+	w.fileMu.Lock()
+	defer w.fileMu.Unlock()
+
+	s, err := readKnowledgeState(job.path)
+	if err != nil {
+		// Never overwrite a corrupt or unreadable read-state file with an invented baseline.
+		if job.update != nil && job.queue != nil {
+			q := job.queue
+			job.update(func() {
+				q.KnowledgeReadError = "已读状态未保存"
+				q.StateVersion++
+			})
+		}
+		return
+	}
+	changed := false
+	for _, id := range job.docIDs {
+		if read, ok := s.Read[id]; !ok || !read {
+			s.Read[id] = true
+			changed = true
+		}
+	}
+	if !changed {
+		return
+	}
+	if err := writeFn(job.path, s); err != nil {
+		if job.update != nil && job.queue != nil {
+			q := job.queue
+			job.update(func() {
+				q.KnowledgeReadError = "已读状态未保存"
+				q.StateVersion++
+			})
+		}
+		return
+	}
+	if job.update != nil && job.queue != nil {
+		q := job.queue
+		job.update(func() {
+			if q.KnowledgeReadError == "已读状态未保存" {
+				q.KnowledgeReadError = ""
+				q.StateVersion++
+			}
+		})
+	}
+}
+
+// waitKnowledgeReadFlush blocks until all queued background mark-read writes
+// have finished flushing to disk.
+func (a *App) waitKnowledgeReadFlush() {
+	if a.knowledgeWriter == nil {
+		return
+	}
+	w := a.knowledgeWriter
+	w.mu.Lock()
+	for len(w.order) > 0 || w.inFlight || w.running {
+		w.cond.Wait()
+	}
+	w.mu.Unlock()
+}
+
 func (a *App) observeKnowledgeCatalog(p AccessProject, q *projectQueueState, docs []Document) {
 	path, err := a.knowledgeReadPath(p)
 	if err != nil {
 		return
 	}
+	// Serialize with any in-flight background markKnowledgeRead writes so disk
+	// state never loses a pending read transition.
+	a.waitKnowledgeReadFlush()
+	w := a.ensureKnowledgeWriter()
+	w.fileMu.Lock()
+	defer w.fileMu.Unlock()
+
 	s, err := readKnowledgeState(path)
 	if err != nil {
 		q.KnowledgeReadError = "未读状态暂时无法读取"
+		q.StateVersion++
 		return
 	}
 	next := map[string]bool{}
 	for _, d := range docs {
 		if d.Dataset != p.Dataset || d.ID == "" {
 			q.KnowledgeReadError = "未读范围尚未确认"
+			q.StateVersion++
 			return
 		}
 		if !d.knowledge() {
@@ -127,6 +292,7 @@ func (a *App) observeKnowledgeCatalog(p AccessProject, q *projectQueueState, doc
 	if changed {
 		if err = writeKnowledgeState(path, s); err != nil {
 			q.KnowledgeReadError = "未读状态未保存"
+			q.StateVersion++
 			return
 		}
 	}
@@ -142,6 +308,7 @@ func (a *App) observeKnowledgeCatalog(p AccessProject, q *projectQueueState, doc
 		return q.UnreadKnowledge[i].Document.Created > q.UnreadKnowledge[j].Document.Created
 	})
 	q.KnowledgeReadError = ""
+	q.StateVersion++
 }
 func (a *App) markKnowledgeRead(i Item) {
 	if i.Kind != "知识" || i.Document == nil || !i.BodyLoaded || !i.Document.knowledge() {
@@ -155,21 +322,27 @@ func (a *App) markKnowledgeRead(i Item) {
 		if err != nil {
 			return
 		}
-		s, err := readKnowledgeState(path)
-		if err != nil {
-			return
-		}
-		if read, ok := s.Read[i.ID]; ok && read {
-			return
-		}
-		s.Read[i.ID] = true
 		q := a.projectQueueStateFor(p)
-		if err = writeKnowledgeState(path, s); err != nil {
-			q.KnowledgeReadError = "已读状态未保存"
+		if q.KnowledgeRead.Read == nil {
+			q.KnowledgeRead.Read = map[string]bool{}
+		}
+		if read, ok := q.KnowledgeRead.Read[i.ID]; ok && read && q.KnowledgeReadError == "" {
 			return
 		}
-		q.KnowledgeRead = s
-		q.KnowledgeReadError = ""
+		// Instant in-memory state update; atomic JSON serialization + fsync runs
+		// serially on the background writer so 10k+ maps never stall the UI thread.
+		q.KnowledgeRead.Read[i.ID] = true
+		if len(q.UnreadKnowledge) > 0 {
+			filtered := q.UnreadKnowledge[:0]
+			for _, row := range q.UnreadKnowledge {
+				if row.ID != i.ID {
+					filtered = append(filtered, row)
+				}
+			}
+			q.UnreadKnowledge = filtered
+		}
+		q.StateVersion++
+		a.enqueueKnowledgeReadMark(path, i.ID, q)
 		return
 	}
 }

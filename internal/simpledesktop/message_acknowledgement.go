@@ -162,6 +162,7 @@ func (a *App) acknowledgeNotice(q *projectQueueState, p AccessProject, n message
 		return
 	}
 	q.NoticeAcknowledgements, q.NoticeAcknowledgementError = rows, ""
+	q.StateVersion++
 }
 
 // Remove a decision only after a successful source read proves its issue ended.
@@ -199,6 +200,7 @@ func (a *App) clearRecoveredNoticeAcknowledgements(q *projectQueueState, p Acces
 		return
 	}
 	q.NoticeAcknowledgements, q.NoticeAcknowledgementError = rows, ""
+	q.StateVersion++
 }
 
 func writeNoticeAcknowledgements(path string, b []byte) error {

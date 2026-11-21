@@ -3,10 +3,13 @@ package simpledesktop
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo/ui"
 )
+
+var pendingBufferObserveSeq atomic.Uint64
 
 type pendingBufferView struct {
 	Status           PendingMaterials
@@ -46,6 +49,7 @@ func (v *pendingBufferView) observe(status PendingMaterials) {
 	v.ReadError = ""
 	v.ReadCode = ""
 	v.Loaded, v.Observed = true, true
+	pendingBufferObserveSeq.Add(1)
 }
 
 func (a *App) pendingMaterialsEditor(c *ui.Context, p AccessProject, agent AccessAgent) {

@@ -50,6 +50,10 @@ type userProfilesState struct {
 	ReadAt                               time.Time
 	ReadGeneration                       uint64
 	Scroll                               ui.ScrollState
+	ReaderList                           ui.ListState
+	cachedBody                           string
+	cachedNormalized                     string
+	cachedChunks                         []string
 	Drafts                               map[string]string
 	Draft                                string
 	DraftSource                          string
@@ -179,7 +183,9 @@ func (a *App) selectUserProfile(id string) {
 	}
 	s.Selected = id
 	s.Body, s.BodyKey, s.Message = "", "", ""
+	s.cachedBody, s.cachedNormalized, s.cachedChunks = "", "", nil
 	s.Scroll = ui.ScrollState{}
+	s.ReaderList = ui.ListState{}
 	s.ReadGeneration++
 	s.Reading = false
 	a.readUserProfile()

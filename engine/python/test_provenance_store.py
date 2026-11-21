@@ -431,5 +431,155 @@ class ProvenanceStoreTests(unittest.IsolatedAsyncioTestCase):
             store.close()
 
 
+    async def test_batch_write_sync_seq_legacy_upgrade_evidence_rank_and_direct_sqlite_sync(self):
+        import sqlite3
+        import threading
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            db_path = root / 'legacy-provenance.sqlite3'
+            ds = str(uuid.uuid4())
+            doc_old = str(uuid.uuid4())
+
+            # Create legacy DB WITHOUT sync_seq column or provenance_meta table
+            raw = sqlite3.connect(db_path)
+            raw.executescript('''
+                CREATE TABLE keyed_provenance (
+                    dataset_id TEXT NOT NULL, lesson_type TEXT NOT NULL, state_key TEXT NOT NULL,
+                    first_source_date TEXT NOT NULL, source_date_status TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    PRIMARY KEY(dataset_id, lesson_type, state_key)
+                );
+                CREATE TABLE document_provenance (
+                    dataset_id TEXT NOT NULL, document_id TEXT NOT NULL, lesson_type TEXT NOT NULL,
+                    state_key TEXT NOT NULL, first_source_date TEXT NOT NULL, source_date_status TEXT NOT NULL,
+                    source_qa_ids_json TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    PRIMARY KEY(dataset_id, document_id)
+                );
+            ''')
+            raw.execute(
+                'INSERT INTO document_provenance VALUES (?,?,?,?,?,?,?,?)',
+                (ds, doc_old, 'state', 'k-old', '2026-11-10', 'created_at', '[]', '2026-11-10T00:00:00+00:00'),
+            )
+            raw.commit()
+            raw.close()
+
+            # Build isolated cognee_db for direct RO sync_dataset (no get_dataset_data!)
+            cognee_db = root / 'cognee_db'
+            c_con = sqlite3.connect(cognee_db)
+            c_con.executescript('''
+                CREATE TABLE data (
+                    id CHAR(32) PRIMARY KEY, dataset_id CHAR(32),
+                    system_metadata JSON, external_metadata JSON,
+                    node_set JSON, created_at DATETIME
+                );
+            ''')
+            doc_from_db = str(uuid.uuid4())
+            doc_raw = str(uuid.uuid4())
+            c_con.execute(
+                'INSERT INTO data VALUES (?,?,?,?,?,?)',
+                (
+                    uuid.UUID(doc_from_db).hex,
+                    uuid.UUID(ds).hex,
+                    json.dumps({'lesson_type': 'convention', 'state_key': 'fmt', 'session_date': '2026-11-12'}),
+                    json.dumps({'first_source_date': '1999-01-01', 'session_date': '1999-01-01'}),
+                    json.dumps(json.dumps(['session_learnings'])),
+                    '2026-11-20 08:00:00',
+                ),
+            )
+            c_con.execute(
+                'INSERT INTO data VALUES (?,?,?,?,?,?)',
+                (
+                    uuid.UUID(doc_raw).hex,
+                    uuid.UUID(ds).hex,
+                    None,
+                    json.dumps({'source': 'raw'}),
+                    json.dumps(['project_docs']),
+                    '2026-11-20 08:00:00',
+                ),
+            )
+            c_con.commit()
+            c_con.close()
+
+            store = ProvenanceStore(db_path, cognee_db_path=cognee_db)
+            try:
+                # Legacy row upgraded with sync_seq >= 1
+                self.assertGreaterEqual(store.max_sync_seq(), 1)
+                initial_seq = store.max_sync_seq()
+
+                # Same-day evidence rank upgrade (created_at -> legacy_json_locked -> session_date -> linked_qa)
+                up1 = store.record_document(
+                    ds, doc_old, lesson_type='state', state_key='k-old',
+                    candidate_dates=('2026-11-10',), explicit_status='legacy_json_locked',
+                )
+                self.assertEqual(up1['source_date_status'], 'legacy_json_locked')
+                self.assertGreater(store.max_sync_seq(), initial_seq)
+
+                up2 = store.record_document(
+                    ds, doc_old, lesson_type='state', state_key='k-old',
+                    candidate_dates=('2026-11-10',), source_qa_ids=['qa-99'], explicit_status='linked_qa',
+                )
+                self.assertEqual(up2['source_date_status'], 'linked_qa')
+                self.assertEqual(up2['source_qa_ids'], ['qa-99'])
+
+                # Lower rank must never downgrade higher rank
+                no_down = store.record_document(
+                    ds, doc_old, lesson_type='state', state_key='k-old',
+                    candidate_dates=('2026-11-10',), explicit_status='created_at',
+                )
+                self.assertEqual(no_down['source_date_status'], 'linked_qa')
+
+                # Batch write inside single transaction
+                batch_ids = [str(uuid.uuid4()) for _ in range(25)]
+                seq_before_batch = store.max_sync_seq()
+                store.record_documents_batch([
+                    {
+                        'dataset_id': ds,
+                        'document_id': did,
+                        'lesson_type': 'pitfall',
+                        'state_key': f'k-{i}',
+                        'candidate_dates': ('2026-11-15',),
+                        'explicit_status': 'session_date',
+                    }
+                    for i, did in enumerate(batch_ids)
+                ])
+                self.assertEqual(store.max_sync_seq(), seq_before_batch + 25)
+                deltas = store.changes_since(seq_before_batch, limit=100)
+                self.assertEqual(len(deltas), 25)
+
+                # Direct RO SQLite sync_dataset (no fetch_rows, no Cognee get_dataset_data!)
+                await store.sync_dataset(ds)
+                synced = store.lookup(ds, doc_from_db)
+                self.assertIsNotNone(synced)
+                self.assertEqual(synced['first_source_date'], '2026-11-12')
+                self.assertEqual(synced['source_date_status'], 'session_date')
+                self.assertIsNone(store.lookup(ds, doc_raw))
+
+                # Concurrent multi-threaded writes protected by _write_lock
+                errors = []
+
+                def worker(worker_idx):
+                    try:
+                        for j in range(10):
+                            store.record_document(
+                                ds,
+                                str(uuid.uuid4()),
+                                lesson_type='other',
+                                state_key=f't-{worker_idx}-{j}',
+                                candidate_dates=('2026-11-19',),
+                                explicit_status='session_date',
+                            )
+                    except Exception as exc:
+                        errors.append(exc)
+
+                threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
+                self.assertEqual(errors, [])
+            finally:
+                store.close()
+
+
 if __name__ == '__main__':
     unittest.main()

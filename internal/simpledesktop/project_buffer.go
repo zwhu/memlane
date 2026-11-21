@@ -2,6 +2,7 @@ package simpledesktop
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 type pendingMessageDetail struct {
@@ -69,14 +71,167 @@ type coldPendingEntry struct {
 	ManifestMtimeNS int64
 }
 
-const coldPendingCacheMaxEntries = 2048
+type coldPendingNode struct {
+	Key   coldPendingKey
+	Entry coldPendingEntry
+}
+
+const coldPendingCacheMaxEntries = 65536
 
 var coldPendingCache = struct {
 	mu      sync.Mutex
 	nextSeq uint64
-	entries map[coldPendingKey]coldPendingEntry
+	order   *list.List
+	entries map[coldPendingKey]*list.Element
 }{
-	entries: map[coldPendingKey]coldPendingEntry{},
+	order:   list.New(),
+	entries: map[coldPendingKey]*list.Element{},
+}
+
+func coldPendingCacheGet(key coldPendingKey) (coldPendingEntry, bool) {
+	coldPendingCache.mu.Lock()
+	defer coldPendingCache.mu.Unlock()
+	elem, ok := coldPendingCache.entries[key]
+	if !ok {
+		return coldPendingEntry{}, false
+	}
+	coldPendingCache.order.MoveToFront(elem)
+	return elem.Value.(*coldPendingNode).Entry, true
+}
+
+func coldPendingCachePut(key coldPendingKey, entry coldPendingEntry) {
+	coldPendingCache.mu.Lock()
+	defer coldPendingCache.mu.Unlock()
+	coldPendingCache.nextSeq++
+	entry.Seq = coldPendingCache.nextSeq
+	if elem, exists := coldPendingCache.entries[key]; exists {
+		elem.Value.(*coldPendingNode).Entry = entry
+		coldPendingCache.order.MoveToFront(elem)
+		return
+	}
+	for len(coldPendingCache.entries) >= coldPendingCacheMaxEntries {
+		back := coldPendingCache.order.Back()
+		if back == nil {
+			break
+		}
+		coldPendingCache.order.Remove(back)
+		delete(coldPendingCache.entries, back.Value.(*coldPendingNode).Key)
+	}
+	elem := coldPendingCache.order.PushFront(&coldPendingNode{Key: key, Entry: entry})
+	coldPendingCache.entries[key] = elem
+}
+
+func coldPendingCacheDelete(key coldPendingKey) {
+	coldPendingCache.mu.Lock()
+	defer coldPendingCache.mu.Unlock()
+	if elem, ok := coldPendingCache.entries[key]; ok {
+		coldPendingCache.order.Remove(elem)
+		delete(coldPendingCache.entries, key)
+	}
+}
+
+func coldPendingCacheDeleteIfSeq(key coldPendingKey, seq uint64) {
+	coldPendingCache.mu.Lock()
+	defer coldPendingCache.mu.Unlock()
+	if elem, ok := coldPendingCache.entries[key]; ok && elem.Value.(*coldPendingNode).Entry.Seq == seq {
+		coldPendingCache.order.Remove(elem)
+		delete(coldPendingCache.entries, key)
+	}
+}
+
+type fileStatSig struct {
+	Mode    os.FileMode
+	Size    int64
+	MtimeNS int64
+	Ino     uint64
+	Dev     int64
+}
+
+func statSigFromInfo(info os.FileInfo) fileStatSig {
+	sig := fileStatSig{
+		Mode:    info.Mode(),
+		Size:    info.Size(),
+		MtimeNS: info.ModTime().UnixNano(),
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok && st != nil {
+		sig.Ino = st.Ino
+		sig.Dev = int64(st.Dev)
+	}
+	return sig
+}
+
+func lstatRegularSig(path string) (fileStatSig, bool) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return fileStatSig{}, false
+	}
+	return statSigFromInfo(info), true
+}
+
+func lstatEntrySig(path string) (fileStatSig, bool) {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		return fileStatSig{}, false
+	}
+	return statSigFromInfo(info), true
+}
+
+type verifiedInstallKey struct {
+	PluginDir   string
+	EnvFile     string
+	Home        string
+	ManifestSHA string
+	HelperSHA   string
+}
+
+type verifiedFileWatch struct {
+	Path string
+	Sig  fileStatSig
+}
+
+type verifiedInstallEntry struct {
+	Files []verifiedFileWatch
+}
+
+const verifiedInstallCacheMax = 256
+
+var verifiedInstallCache = struct {
+	mu          sync.Mutex
+	entries     map[verifiedInstallKey]verifiedInstallEntry
+	hashCount   uint64
+	inflightMu  sync.Mutex
+	inflightMap map[verifiedInstallKey]*verifyCall
+}{
+	entries:     map[verifiedInstallKey]verifiedInstallEntry{},
+	inflightMap: map[verifiedInstallKey]*verifyCall{},
+}
+
+type verifyCall struct {
+	done chan struct{}
+	err  error
+}
+
+func verifiedInstallFilesUnchanged(watches []verifiedFileWatch) bool {
+	if len(watches) == 0 {
+		return false
+	}
+	for _, w := range watches {
+		sig, ok := lstatRegularSig(w.Path)
+		if !ok || sig != w.Sig {
+			return false
+		}
+	}
+	return true
+}
+
+func installKeyFor(installation AgentInstallation) verifiedInstallKey {
+	return verifiedInstallKey{
+		PluginDir:   installation.PluginDir,
+		EnvFile:     installation.EnvFile,
+		Home:        installation.Home,
+		ManifestSHA: installation.ManifestSHA,
+		HelperSHA:   installation.HelperSHA,
+	}
 }
 
 func clonePendingMaterials(in PendingMaterials) PendingMaterials {
@@ -130,43 +285,111 @@ func (b *boundedBufferOutput) Write(value []byte) (int, error) {
 }
 
 func verifyInstallation(installation AgentInstallation) error {
+	return verifyInstallationMode(installation, false)
+}
+
+func verifyInstallationMode(installation AgentInstallation, forceFull bool) error {
 	root := installation.PluginDir
 	if !filepath.IsAbs(root) || !filepath.IsAbs(installation.EnvFile) || !filepath.IsAbs(installation.Home) {
 		return fmt.Errorf("受管插件配置尚未确认")
 	}
+	key := installKeyFor(installation)
+	if !forceFull {
+		verifiedInstallCache.mu.Lock()
+		entry, ok := verifiedInstallCache.entries[key]
+		verifiedInstallCache.mu.Unlock()
+		if ok {
+			if verifiedInstallFilesUnchanged(entry.Files) {
+				return nil
+			}
+			verifiedInstallCache.mu.Lock()
+			delete(verifiedInstallCache.entries, key)
+			verifiedInstallCache.mu.Unlock()
+		}
+	}
+	// Coalesce concurrent verification calls for the same Agent installation so
+	// parallel queue workers compute SHA256 at most once per Agent.
+	verifiedInstallCache.inflightMu.Lock()
+	if !forceFull {
+		if call, ok := verifiedInstallCache.inflightMap[key]; ok {
+			verifiedInstallCache.inflightMu.Unlock()
+			<-call.done
+			return call.err
+		}
+	}
+	call := &verifyCall{done: make(chan struct{})}
+	if !forceFull {
+		verifiedInstallCache.inflightMap[key] = call
+	}
+	verifiedInstallCache.inflightMu.Unlock()
+
+	watches, err := verifyInstallationFull(installation)
+	if err == nil {
+		verifiedInstallCache.mu.Lock()
+		if len(verifiedInstallCache.entries) >= verifiedInstallCacheMax {
+			clear(verifiedInstallCache.entries)
+		}
+		verifiedInstallCache.entries[key] = verifiedInstallEntry{Files: watches}
+		verifiedInstallCache.mu.Unlock()
+	} else {
+		verifiedInstallCache.mu.Lock()
+		delete(verifiedInstallCache.entries, key)
+		verifiedInstallCache.mu.Unlock()
+	}
+
+	call.err = err
+	close(call.done)
+	if !forceFull {
+		verifiedInstallCache.inflightMu.Lock()
+		if verifiedInstallCache.inflightMap[key] == call {
+			delete(verifiedInstallCache.inflightMap, key)
+		}
+		verifiedInstallCache.inflightMu.Unlock()
+	}
+	return err
+}
+
+func verifyInstallationFull(installation AgentInstallation) ([]verifiedFileWatch, error) {
+	root := installation.PluginDir
 	receiptPath := filepath.Join(root, ".memlane-project-access.json")
 	receiptInfo, err := os.Lstat(receiptPath)
 	if err != nil || !receiptInfo.Mode().IsRegular() {
-		return fmt.Errorf("受管插件输入发生变化，请重新核对")
+		return nil, fmt.Errorf("受管插件输入发生变化，请重新核对")
 	}
 	receipt, err := os.ReadFile(receiptPath)
 	if err != nil || fmt.Sprintf("%x", sha256.Sum256(receipt)) != installation.ManifestSHA {
-		return fmt.Errorf("受管插件输入发生变化，请重新核对")
+		return nil, fmt.Errorf("受管插件输入发生变化，请重新核对")
 	}
 	var input struct {
 		Files map[string]string `json:"files"`
 	}
 	if json.Unmarshal(receipt, &input) != nil || input.Files["scripts/_memlane_policy.py"] == "" || input.Files["scripts/_plugin_common.py"] == "" {
-		return fmt.Errorf("受管插件输入未确认")
+		return nil, fmt.Errorf("受管插件输入未确认")
 	}
 	if installation.HelperSHA != "" && input.Files["scripts/_memlane_policy.py"] != installation.HelperSHA {
-		return fmt.Errorf("受管插件输入未确认")
+		return nil, fmt.Errorf("受管插件输入未确认")
 	}
+	watches := make([]verifiedFileWatch, 0, len(input.Files)+1)
+	watches = append(watches, verifiedFileWatch{Path: receiptPath, Sig: statSigFromInfo(receiptInfo)})
 	for name, expected := range input.Files {
 		if filepath.IsAbs(name) || strings.HasPrefix(filepath.Clean(name), "..") {
-			return fmt.Errorf("受管插件文件路径无效")
+			return nil, fmt.Errorf("受管插件文件路径无效")
 		}
 		path := filepath.Join(root, name)
 		info, err := os.Lstat(path)
 		if err != nil || !info.Mode().IsRegular() {
-			return fmt.Errorf("受管插件文件未确认")
+			return nil, fmt.Errorf("受管插件文件未确认")
 		}
 		body, err := os.ReadFile(path)
 		if err != nil || fmt.Sprintf("%x", sha256.Sum256(body)) != expected {
-			return fmt.Errorf("受管插件文件发生变化，请重新核对")
+			return nil, fmt.Errorf("受管插件文件发生变化，请重新核对")
 		}
+		watches = append(watches, verifiedFileWatch{Path: path, Sig: statSigFromInfo(info)})
 	}
-	return nil
+	verifiedInstallCache.mu.Lock()
+	verifiedInstallCache.hashCount++
+	verifiedInstallCache.mu.Unlock()
+	return watches, nil
 }
 
 func runPendingMaterials(ctx context.Context, python string, installation AgentInstallation, binding ProjectBinding, dataset, action, signature string, operator ...PendingOperatorConfig) (PendingMaterials, error) {
@@ -194,25 +417,17 @@ func runPendingMaterials(ctx context.Context, python string, installation AgentI
 		Home:           installation.Home,
 	}
 	if action == "show" {
-		coldPendingCache.mu.Lock()
-		entry, ok := coldPendingCache.entries[cacheKey]
-		coldPendingCache.mu.Unlock()
-		if ok {
+		if entry, ok := coldPendingCacheGet(cacheKey); ok {
 			if coldPendingEntryUnchanged(entry) {
 				return clonePendingMaterials(entry.Result), nil
 			}
-			coldPendingCache.mu.Lock()
-			if cur, exists := coldPendingCache.entries[cacheKey]; exists && cur.Seq == entry.Seq {
-				delete(coldPendingCache.entries, cacheKey)
-			}
-			coldPendingCache.mu.Unlock()
+			coldPendingCacheDeleteIfSeq(cacheKey, entry.Seq)
 		}
 	} else {
-		coldPendingCache.mu.Lock()
-		delete(coldPendingCache.entries, cacheKey)
-		coldPendingCache.mu.Unlock()
+		coldPendingCacheDelete(cacheKey)
 	}
-	if err := verifyInstallation(installation); err != nil {
+	forceVerify := action == "replay" || action == "discard"
+	if err := verifyInstallationMode(installation, forceVerify); err != nil {
 		return result, err
 	}
 	arguments := []string{filepath.Join(installation.PluginDir, "scripts/_memlane_policy.py"), "--session-key", binding.HostSessionKey, "--dataset", dataset, "--action", action}
@@ -244,9 +459,7 @@ func runPendingMaterials(ctx context.Context, python string, installation AgentI
 		return result, fmt.Errorf("待发材料结果未确认，保留原材料；不会自动重试")
 	}
 	if result.Error != "" || err != nil {
-		coldPendingCache.mu.Lock()
-		delete(coldPendingCache.entries, cacheKey)
-		coldPendingCache.mu.Unlock()
+		coldPendingCacheDelete(cacheKey)
 		message := "待发材料操作未确认，保留原材料"
 		switch result.Error {
 		case "pending_materials_changed_review_again":
@@ -270,32 +483,18 @@ func runPendingMaterials(ctx context.Context, python string, installation AgentI
 		manifestPath := filepath.Join(installation.PluginDir, ".memlane-project-access.json")
 		if minfo, statErr := os.Lstat(manifestPath); statErr == nil && minfo.Mode().IsRegular() {
 			stored := clonePendingMaterials(result)
-			coldPendingCache.mu.Lock()
-			if _, exists := coldPendingCache.entries[cacheKey]; !exists && len(coldPendingCache.entries) >= coldPendingCacheMaxEntries {
-				for k := range coldPendingCache.entries {
-					delete(coldPendingCache.entries, k)
-					break
-				}
-			}
-			coldPendingCache.nextSeq++
-			coldPendingCache.entries[cacheKey] = coldPendingEntry{
-				Seq:             coldPendingCache.nextSeq,
+			coldPendingCachePut(cacheKey, coldPendingEntry{
 				Result:          stored,
 				Watch:           *watch,
 				ManifestPath:    manifestPath,
 				ManifestSize:    minfo.Size(),
 				ManifestMtimeNS: minfo.ModTime().UnixNano(),
-			}
-			coldPendingCache.mu.Unlock()
+			})
 		} else {
-			coldPendingCache.mu.Lock()
-			delete(coldPendingCache.entries, cacheKey)
-			coldPendingCache.mu.Unlock()
+			coldPendingCacheDelete(cacheKey)
 		}
 	} else {
-		coldPendingCache.mu.Lock()
-		delete(coldPendingCache.entries, cacheKey)
-		coldPendingCache.mu.Unlock()
+		coldPendingCacheDelete(cacheKey)
 	}
 	return result, nil
 }
