@@ -354,6 +354,8 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
     attach_overview_bootstrap(app, registry, recall_store=recall_store, codex_config=codex_config)
     from raw_records_read import attach_raw_records_read
     attach_raw_records_read(app, registry, codex_config=codex_config)
+    from v2_lookups import attach_v2_lookups
+    attach_v2_lookups(app, registry, recall_store=recall_store, codex_config=codex_config)
     return app
 
 

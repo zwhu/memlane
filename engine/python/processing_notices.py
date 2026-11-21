@@ -1,6 +1,5 @@
 """Read-only projection of bounded, content-free model request diagnostics."""
 import asyncio
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 import re
@@ -9,10 +8,12 @@ from urllib.parse import quote
 
 from aiohttp import web
 from _runtime_common import id_variants, sql_in_clause, uuid_hex, uuid_text, verify_sqlite_schema
+from log_tailer import DEFAULT_TAIL_BYTES, SHARED_TRACE_TAILER
+from sqlite_ro import open_official_sqlite_ro
 from performance_trace import BRIDGE_BACKENDS, BRIDGE_COMPONENTS, BRIDGE_ERROR_CODES
 from project_policy import PolicyError
 
-TAIL_BYTES = 1024 * 1024
+TAIL_BYTES = DEFAULT_TAIL_BYTES
 ACTIVITY_PAGE_SIZE = 100
 MAX_ACTIVITY_PAGES = 5
 MAX_RESOLVED_NOTICES = 20
@@ -20,46 +21,22 @@ _RECEIPT_COLUMNS = ('pipeline_run_id', 'dataset_id', 'pipeline_name', 'parent_op
                     'operation_name', 'outcome', 'ended_at')
 
 
-def trace_rows(path):
-    path = Path(path)
-    if path.is_symlink():
-        raise OSError('diagnostic_log_symlink')
-    if not path.is_file():
-        return []
-    with path.open('rb') as handle:
-        handle.seek(0, 2)
-        size = handle.tell()
-        handle.seek(max(0, size - TAIL_BYTES))
-        data = handle.read(TAIL_BYTES)
-    lines = data.splitlines()
-    if size > TAIL_BYTES:
-        lines = lines[1:]
-    rows = []
-    for line in lines:
-        if len(line) > 8192 or not line.startswith(b'{'):
-            continue
-        try:
-            row = json.loads(line)
-            if (isinstance(row, dict) and row.get('schema_version') == 1
-                    and row.get('event') == 'request_finished'
-                    and re.fullmatch(r'[0-9a-f]{32}', str(row.get('request_id', '')))):
-                rows.append(row)
-        except (ValueError, TypeError):
-            continue
-    return rows
+def trace_rows(path, *, tailer=None):
+    active_tailer = SHARED_TRACE_TAILER if tailer is None else tailer
+    return active_tailer.read_rows(path)
 
 
-def processing_notices(root, dataset, *, now=None):
+def processing_notices(root, dataset, *, now=None, tailer=None):
     now = now or datetime.now(timezone.utc)
     bridge = {}
     for log_name in ('codex_completion_endpoint.log', 'agent_completion_endpoint.log'):
-        for r in trace_rows(Path(root) / log_name):
+        for r in trace_rows(Path(root) / log_name, tailer=tailer):
             comp = r.get('component')
             outcome = r.get('outcome')
             if comp in BRIDGE_COMPONENTS and outcome in BRIDGE_ERROR_CODES:
                 bridge[r['request_id']] = (outcome, comp[:-len('_bridge')])
     failures = {}
-    for row in trace_rows(Path(root) / 'official_service_dev.log'):
+    for row in trace_rows(Path(root) / 'official_service_dev.log', tailer=tailer):
         status = row.get('status')
         if (row.get('component') != 'generation_http' or row.get('dataset_id') != dataset
                 or type(status) is not int):
@@ -101,7 +78,7 @@ def _sqlite_operation_rows(official_data, operations):
     ids = tuple(variant for operation in sorted(operations) for variant in id_variants(operation))
     rows = []
     try:
-        con = sqlite3.connect(db_path.as_uri() + '?mode=ro', uri=True, timeout=1.0)
+        con = open_official_sqlite_ro(db_path, timeout_ms=1000)
         try:
             verify_sqlite_schema(con, {'pipeline_runs': frozenset(_RECEIPT_COLUMNS)})
             # Only constrain the indexed run ID in SQL. Verify dataset and
@@ -117,7 +94,7 @@ def _sqlite_operation_rows(official_data, operations):
                     rows.append(row)
         finally:
             con.close()
-    except sqlite3.Error:
+    except (PolicyError, sqlite3.Error):
         return None
     return rows
 

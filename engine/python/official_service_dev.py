@@ -436,7 +436,10 @@ def main():
             from capture_receipts import install_capture_routes
             install_capture_routes(app, receipt_store=capture_store)
             from provenance_store import ProvenanceStore, install_provenance_middleware
-            provenance_store = ProvenanceStore(state_dir / 'lesson-provenance.sqlite3')
+            provenance_store = ProvenanceStore(
+                state_dir / 'lesson-provenance.sqlite3',
+                cognee_db_path=root / 'system' / 'databases' / 'cognee_db',
+            )
             stack.callback(provenance_store.close)
             install_provenance_middleware(app, provenance_store)
             if not setup_only and config.get('project_control'):

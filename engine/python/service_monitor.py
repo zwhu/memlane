@@ -7,7 +7,9 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
+import threading
 import time
 
 from aiohttp import ClientSession, ClientTimeout, web
@@ -18,6 +20,7 @@ MINIMUM_FREE_BYTES = 50 * 1024 ** 3
 STOP_FREE_BYTES = 55 * 1024 ** 3
 USER_MINIMUM_FREE_BYTES = 2 * 1024 ** 3
 USER_STOP_FREE_BYTES = 5 * 1024 ** 3
+DEFAULT_STORAGE_SAMPLE_INTERVAL_SECONDS = 60.0
 _MAX_OWNER_BYTES = 65536
 _MAX_RECEIPT_BYTES = 16384
 _MAX_CONTROL_LOG_BYTES = 32768
@@ -187,6 +190,91 @@ def backlog_files_count(state_dir, *, max_count: int = 100000) -> int:
         return 0
 
 
+def _regular_file_size(path: Path) -> int:
+    try:
+        info = path.lstat()
+        if stat.S_ISREG(info.st_mode):
+            return int(info.st_size)
+    except OSError:
+        pass
+    return 0
+
+
+def _sqlite_group_bytes(db_path: Path) -> int:
+    total = 0
+    for suffix in ('', '-wal', '-shm'):
+        candidate = Path(str(db_path) + suffix)
+        total += _regular_file_size(candidate)
+    return total
+
+
+def _directory_tree_stats(root: Path, *, max_entries: int = 500000) -> tuple[int, int]:
+    """Iterative non-symlink-following directory size & file count sampler."""
+    try:
+        info = root.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            return 0, 0
+    except OSError:
+        return 0, 0
+
+    total_bytes = 0
+    file_count = 0
+    visited = 0
+    stack = [str(root)]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    visited += 1
+                    if visited > max_entries:
+                        return total_bytes, file_count
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False):
+                            total_bytes += int(entry.stat(follow_symlinks=False).st_size)
+                            file_count += 1
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return total_bytes, file_count
+
+
+def legacy_overview_cache_stats(state_dir) -> tuple[int, int]:
+    """Count & measure retired legacy ``overview-ui-cache-*.json`` files under ``state_dir``."""
+    if state_dir is None:
+        return 0, 0
+    root = Path(state_dir)
+    try:
+        info = root.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            return 0, 0
+    except OSError:
+        return 0, 0
+    count = 0
+    total_bytes = 0
+    try:
+        with os.scandir(root) as it:
+            for entry in it:
+                name = entry.name
+                if not (name.startswith('overview-ui-cache-') and name.endswith('.json')):
+                    continue
+                try:
+                    if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                        continue
+                    total_bytes += int(entry.stat(follow_symlinks=False).st_size)
+                    count += 1
+                except OSError:
+                    continue
+    except OSError:
+        return 0, 0
+    return count, total_bytes
+
+
 def largest_graph_db_bytes(official_data) -> int:
     if not official_data:
         return 0
@@ -209,6 +297,83 @@ def largest_graph_db_bytes(official_data) -> int:
         return largest
     except OSError:
         return 0
+
+
+def sample_storage_breakdown(official_data, state_dir) -> dict:
+    """Sample per-directory storage metrics off the event loop."""
+    cognee_db_bytes = 0
+    cache_db_bytes = 0
+    lancedb_bytes = 0
+    ladybug_bytes = 0
+    largest_lbug = 0
+    data_dir_bytes = 0
+    data_dir_file_count = 0
+
+    if official_data:
+        root = Path(official_data)
+        db_dir = root / 'system' / 'databases'
+        cognee_db_bytes = _sqlite_group_bytes(db_dir / 'cognee_db')
+        cache_db_bytes = _sqlite_group_bytes(db_dir / 'cache.db')
+        lancedb_dir = db_dir / 'cognee.lancedb'
+        lancedb_bytes, _ = _directory_tree_stats(lancedb_dir)
+
+        kuzu_dir = db_dir / 'cognee_graph_kuzu'
+        kuzu_bytes, _ = _directory_tree_stats(kuzu_dir)
+        ladybug_bytes = kuzu_bytes
+
+        try:
+            if db_dir.exists() and db_dir.is_dir() and not db_dir.is_symlink():
+                kuzu_prefix = str(kuzu_dir) + os.sep
+                kuzu_exact = str(kuzu_dir)
+                lance_prefix = str(lancedb_dir) + os.sep
+                lance_exact = str(lancedb_dir)
+                stack = [str(db_dir)]
+                while stack:
+                    cur = stack.pop()
+                    if cur == lance_exact or cur.startswith(lance_prefix):
+                        continue
+                    try:
+                        with os.scandir(cur) as it:
+                            for entry in it:
+                                try:
+                                    if entry.is_symlink():
+                                        continue
+                                    if entry.is_dir(follow_symlinks=False):
+                                        stack.append(entry.path)
+                                    elif entry.is_file(follow_symlinks=False):
+                                        if entry.name.endswith('.lbug'):
+                                            sz = int(entry.stat(follow_symlinks=False).st_size)
+                                            if sz > largest_lbug:
+                                                largest_lbug = sz
+                                            if not (entry.path == kuzu_exact or entry.path.startswith(kuzu_prefix)):
+                                                ladybug_bytes += sz
+                                        elif entry.name.endswith('.lbug.wal'):
+                                            if not (entry.path == kuzu_exact or entry.path.startswith(kuzu_prefix)):
+                                                ladybug_bytes += int(entry.stat(follow_symlinks=False).st_size)
+                                except OSError:
+                                    continue
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+
+        data_dir_bytes, data_dir_file_count = _directory_tree_stats(root / 'data')
+
+    legacy_count, legacy_bytes = legacy_overview_cache_stats(state_dir)
+    return {
+        'backlog_files_count': backlog_files_count(state_dir),
+        'largest_graph_db_bytes': largest_lbug,
+        'storage_breakdown': {
+            'cognee_db_bytes': cognee_db_bytes,
+            'cache_db_bytes': cache_db_bytes,
+            'lancedb_bytes': lancedb_bytes,
+            'ladybug_bytes': ladybug_bytes,
+            'data_dir_bytes': data_dir_bytes,
+            'data_dir_file_count': data_dir_file_count,
+            'legacy_overview_cache_count': legacy_count,
+            'legacy_overview_cache_bytes': legacy_bytes,
+        },
+    }
 
 
 def _parse_trace_timestamp(raw_at) -> float | None:
@@ -289,7 +454,8 @@ async def _default_probe_http(url: str):
 class ServiceMonitor:
     def __init__(self, config, registry=None, *, connections=None, probe_http=None,
                  sample_process=None, disk_usage=shutil.disk_usage, clock=time.time,
-                 recall_store=None):
+                 recall_store=None,
+                 storage_sample_interval: float = DEFAULT_STORAGE_SAMPLE_INTERVAL_SECONDS):
         self.config = dict(config or {})
         self.registry = registry
         self.connections = connections
@@ -298,12 +464,17 @@ class ServiceMonitor:
         self.sample_process = sample_process or default_sample_process
         self.disk_usage = disk_usage
         self.clock = clock
+        self.storage_sample_interval = max(0.0, float(storage_sample_interval))
         self.consecutive_failures = 0
         self.last_ok_at = 0.0
         self.last_checked_at = 0.0
         self.last_error = ''
         self.last_latency_ms = None
         self.history = []
+        self._storage_lock = threading.Lock()
+        self._storage_cache = None
+        self._storage_sampled_at = None
+        self._storage_refresh_task = None
 
     def _state_dir(self):
         if self.config.get('generation_file'):
@@ -422,6 +593,76 @@ class ServiceMonitor:
     def _largest_graph_db_bytes(self, official_data) -> int:
         return largest_graph_db_bytes(official_data)
 
+    def _sample_storage_sync(self, official_data, state_dir, sampled_at: float) -> dict:
+        sampled = sample_storage_breakdown(official_data, state_dir)
+        # Preserve subclass/monkeypatch override compatibility if overridden.
+        if type(self)._backlog_files_count is not ServiceMonitor._backlog_files_count:
+            sampled['backlog_files_count'] = self._backlog_files_count(state_dir)
+        if type(self)._largest_graph_db_bytes is not ServiceMonitor._largest_graph_db_bytes:
+            sampled['largest_graph_db_bytes'] = self._largest_graph_db_bytes(official_data)
+        breakdown = dict(sampled['storage_breakdown'])
+        breakdown['sampled_at'] = sampled_at
+        result = {
+            'backlog_files_count': int(sampled['backlog_files_count']),
+            'largest_graph_db_bytes': int(sampled['largest_graph_db_bytes']),
+            'storage_breakdown': breakdown,
+        }
+        with self._storage_lock:
+            self._storage_cache = result
+            self._storage_sampled_at = sampled_at
+        return result
+
+    async def refresh_storage_stats(self, *, now: float | None = None) -> dict:
+        ts = float(self.clock()) if now is None else float(now)
+        return await asyncio.to_thread(
+            self._sample_storage_sync,
+            self.config.get('official_data'),
+            self._state_dir(),
+            ts,
+        )
+
+    async def _get_storage_metrics(self, official_data, state_dir, now: float) -> dict:
+        with self._storage_lock:
+            cached = self._storage_cache
+            sampled_at = self._storage_sampled_at
+
+        if cached is None:
+            return await asyncio.to_thread(self._sample_storage_sync, official_data, state_dir, now)
+
+        stale = (
+            sampled_at is None
+            or (now - sampled_at) >= self.storage_sample_interval
+            or now < sampled_at
+        )
+        if stale and (self._storage_refresh_task is None or self._storage_refresh_task.done()):
+            async def _bg_refresh():
+                try:
+                    await asyncio.to_thread(self._sample_storage_sync, official_data, state_dir, now)
+                except Exception:
+                    pass
+
+            task = asyncio.create_task(_bg_refresh())
+            self._storage_refresh_task = task
+
+            def _clear_task(done_task):
+                if self._storage_refresh_task is done_task:
+                    self._storage_refresh_task = None
+
+            task.add_done_callback(_clear_task)
+
+        return {
+            'backlog_files_count': cached['backlog_files_count'],
+            'largest_graph_db_bytes': cached['largest_graph_db_bytes'],
+            'storage_breakdown': dict(cached['storage_breakdown']),
+        }
+
+    async def close(self):
+        task = self._storage_refresh_task
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self._storage_refresh_task = None
+
     async def _sample_process_async(self, pid: int) -> dict:
         try:
             if asyncio.iscoroutinefunction(self.sample_process):
@@ -503,15 +744,17 @@ class ServiceMonitor:
         disk = self._sample_disk(state_dir)
         log_tail = []
         if state_dir is not None and (include_logs or state in ('exited', 'degraded')):
-            log_tail = read_log_tail(state_dir / 'runtime-logs/official_service_dev.log')
+            log_tail = await asyncio.to_thread(read_log_tail, state_dir / 'runtime-logs/official_service_dev.log')
 
         recent_ms = (
-            recent_processing_duration_ms(
+            await asyncio.to_thread(
+                recent_processing_duration_ms,
                 state_dir / 'runtime-logs/official_service_dev.log',
                 state_dir / 'runtime-logs/project_control_server.log',
             )
             if state_dir is not None else None
         )
+        storage = await self._get_storage_metrics(self.config.get('official_data'), state_dir, now)
         hook_errors = self._hook_errors()
         summary = {
             'projects_count': len(self.registry.state.get('projects', {})) if self.registry is not None else 0,
@@ -521,8 +764,9 @@ class ServiceMonitor:
             'recent_processing_ms': recent_ms,
             'hook_errors_count': len(hook_errors),
             'hook_errors': hook_errors,
-            'backlog_files_count': self._backlog_files_count(state_dir),
-            'largest_graph_db_bytes': self._largest_graph_db_bytes(self.config.get('official_data')),
+            'backlog_files_count': storage['backlog_files_count'],
+            'largest_graph_db_bytes': storage['largest_graph_db_bytes'],
+            'storage_breakdown': storage['storage_breakdown'],
         }
         recall_queries = self._recall_query_summary()
         if recall_queries is not None:
@@ -556,5 +800,9 @@ def attach_service_monitor(app, config, *, registry=None, connections=None, moni
         include_logs = request.query.get('include_logs', '').lower() in ('1', 'true', 'yes')
         return web.json_response(await active_monitor.snapshot(include_logs=include_logs))
 
+    async def cleanup(_app):
+        await active_monitor.close()
+
     app.add_routes([web.get('/v1/runtime/monitor', runtime_monitor)])
+    app.on_cleanup.append(cleanup)
     return active_monitor

@@ -18,6 +18,11 @@ from _runtime_common import private_write, read_secret
 from project_policy import PolicyError
 
 
+MAX_TOOL_GRAPH_SESSIONS = 10000
+MAX_RETAINED_TERMINAL_JOBS = 200
+_TERMINAL_JOB_STATUSES = frozenset({'completed', 'cancelled'})
+
+
 def now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -39,14 +44,28 @@ class ToolGraphJobs:
                     row.update(status='result_unknown', error_code='tool_graph_owner_restarted')
             self.save()
 
+    def _prune_terminal_jobs(self):
+        terminal = [
+            (str(row.get('ended_at') or row.get('created_at') or ''), op_id)
+            for op_id, row in self.rows.items()
+            if row.get('status') in _TERMINAL_JOB_STATUSES
+        ]
+        if len(terminal) <= MAX_RETAINED_TERMINAL_JOBS:
+            return
+        terminal.sort()
+        excess = len(terminal) - MAX_RETAINED_TERMINAL_JOBS
+        for _, op_id in terminal[:excess]:
+            self.rows.pop(op_id, None)
+
     def save(self):
+        self._prune_terminal_jobs()
         private_write(self.path, json.dumps({'schema_version': 1, 'jobs': self.rows}, sort_keys=True).encode())
 
     async def start(self, user, dataset, sessions, operation, limits=None):
         await self.authorize(user, dataset)
         uid, dataset, operation = str(user.id), str(uuid.UUID(str(dataset))), str(uuid.UUID(str(operation)))
         sessions = sorted(set(sessions))
-        if not sessions or len(sessions) > 128 or any(not isinstance(s, str) or not s or len(s) > 256 for s in sessions):
+        if not sessions or len(sessions) > MAX_TOOL_GRAPH_SESSIONS or any(not isinstance(s, str) or not s or len(s) > 256 for s in sessions):
             raise PolicyError('invalid_tool_graph_sessions')
         if limits is not None and (set(limits) != set(sessions) or any(type(n) is not int or n < 0 for n in limits.values())):
             raise PolicyError('invalid_tool_graph_snapshot')
@@ -187,7 +206,7 @@ def install_tool_graph_routes(app, config):
     class Preview(BaseModel):
         model_config = ConfigDict(extra='forbid')
         dataset_id: uuid.UUID
-        session_ids: list[str] = Field(min_length=1, max_length=128)
+        session_ids: list[str] = Field(min_length=1, max_length=MAX_TOOL_GRAPH_SESSIONS)
 
     class Build(Preview):
         operation_id: uuid.UUID

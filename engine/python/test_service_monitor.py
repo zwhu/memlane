@@ -419,6 +419,72 @@ class ServiceMonitorTests(unittest.IsolatedAsyncioTestCase):
         finally:
             recall.close()
 
+    async def test_storage_breakdown_and_60s_background_sampling_cache(self):
+        async def probe(_url):
+            return True, 200, ''
+
+        db_root = self.official_data / 'system' / 'databases'
+        db_root.mkdir(parents=True, exist_ok=True)
+        (db_root / 'cognee_db').write_bytes(b'a' * 1000)
+        (db_root / 'cognee_db-wal').write_bytes(b'b' * 250)
+        (db_root / 'cache.db').write_bytes(b'c' * 600)
+        (db_root / 'cognee.lancedb').mkdir()
+        (db_root / 'cognee.lancedb' / 'vec.lance').write_bytes(b'v' * 4000)
+        (db_root / 'cognee_graph_kuzu').mkdir()
+        (db_root / 'cognee_graph_kuzu' / 'graph.lbug').write_bytes(b'g' * 3000)
+        data_dir = self.official_data / 'data'
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / 'doc1.txt').write_bytes(b'd' * 120)
+        (data_dir / 'doc2.txt').write_bytes(b'e' * 80)
+        # Legacy overview cache files vs unrelated state files
+        (self.state_dir / 'overview-ui-cache-1.json').write_bytes(b'{}' * 50)
+        (self.state_dir / 'overview-ui-cache-2.json').write_bytes(b'{}' * 25)
+        (self.state_dir / 'knowledge-read-abc.json').write_bytes(b'{}' * 500)
+
+        now_box = {'t': 1000.0}
+        monitor = ServiceMonitor(
+            self.config,
+            registry=self.registry,
+            probe_http=probe,
+            sample_process=lambda pid: {'pid': pid, 'alive': True, 'rss_bytes': 1024, 'cpu_percent': 0.1},
+            disk_usage=lambda _p: SimpleNamespace(free=80 * 1024 ** 3),
+            clock=lambda: now_box['t'],
+            storage_sample_interval=60.0,
+        )
+        try:
+            with patch('service_monitor.sample_storage_breakdown', wraps=__import__('service_monitor').sample_storage_breakdown) as spy:
+                snap1 = await monitor.snapshot()
+                bd = snap1['summary']['storage_breakdown']
+                self.assertEqual(bd['cognee_db_bytes'], 1250)
+                self.assertEqual(bd['cache_db_bytes'], 600)
+                self.assertEqual(bd['lancedb_bytes'], 4000)
+                self.assertEqual(bd['ladybug_bytes'], 3000)
+                self.assertEqual(bd['data_dir_bytes'], 200)
+                self.assertEqual(bd['data_dir_file_count'], 2)
+                self.assertEqual(bd['legacy_overview_cache_count'], 2)
+                self.assertEqual(bd['legacy_overview_cache_bytes'], 150)
+                self.assertEqual(spy.call_count, 1)
+
+                # Within 60s window: reuses cached stats without re-walking disk
+                now_box['t'] = 1030.0
+                (data_dir / 'doc3.txt').write_bytes(b'f' * 300)
+                snap2 = await monitor.snapshot()
+                self.assertEqual(spy.call_count, 1)
+                self.assertEqual(snap2['summary']['storage_breakdown']['data_dir_file_count'], 2)
+
+                # After 60s window: returns immediately and refreshes asynchronously in background
+                now_box['t'] = 1065.0
+                snap3 = await monitor.snapshot()
+                self.assertEqual(snap3['summary']['storage_breakdown']['data_dir_file_count'], 2)
+                if monitor._storage_refresh_task is not None:
+                    await monitor._storage_refresh_task
+                self.assertEqual(spy.call_count, 2)
+                snap4 = await monitor.snapshot()
+                self.assertEqual(snap4['summary']['storage_breakdown']['data_dir_file_count'], 3)
+                self.assertEqual(snap4['summary']['storage_breakdown']['data_dir_bytes'], 500)
+        finally:
+            await monitor.close()
+
 
 if __name__ == '__main__':
     unittest.main()

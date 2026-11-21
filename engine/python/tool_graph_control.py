@@ -1,16 +1,37 @@
 """Project-scoped UI/job coordination around the official SDK adapter."""
 import asyncio
+from collections import OrderedDict
 import copy
 from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import sqlite3
 import uuid
 
 from aiohttp import web
 from _runtime_common import private_write, read_secret
 from project_policy import PolicyError
+from sqlite_ro import id_variants, official_sqlite_ro
 from tool_graph_policy import settings
+
+TOOL_GRAPH_PREVIEW_BATCH_SIZE = 128
+TOOL_GRAPH_BUILD_BATCH_SIZE = 64
+_MAX_COLD_SESSION_CACHE = 65536
+_MAX_RETAINED_TERMINAL_JOBS = 200
+_TERMINAL_JOB_STATUSES = frozenset({'completed', 'cancelled'})
+_SQL_IN_BATCH = 400
+_MAX_HTTP_SESSIONS_OFFSET = 500_000
+
+
+def _in_clause(variants):
+    if len(variants) == 1:
+        return '= ?', variants
+    return f"IN ({','.join('?' for _ in variants)})", variants
+
+
+def _cache_now_space() -> str:
+    return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')
 
 
 class ToolGraphControl:
@@ -21,13 +42,112 @@ class ToolGraphControl:
         self.tasks = {}
         self.previews = {}
         self.loop_task = None
+        # Cold-session watermark cache: (dataset_id, user_id, session_id) -> (last_trace_count, last_pending)
+        self._cold_session_cache: OrderedDict[tuple[str, str, str], tuple[int, int]] = OrderedDict()
         for row in self.jobs.values():
             if row['status'] in ('queued', 'running', 'stopping'):
                 row['status'] = 'result_unknown'
         self.save()
 
+    def _prune_terminal_jobs(self):
+        terminal = [
+            (str(row.get('created_at') or ''), op_id)
+            for op_id, row in self.jobs.items()
+            if row.get('status') in _TERMINAL_JOB_STATUSES
+        ]
+        if len(terminal) <= _MAX_RETAINED_TERMINAL_JOBS:
+            return
+        terminal.sort()
+        excess = len(terminal) - _MAX_RETAINED_TERMINAL_JOBS
+        for _, op_id in terminal[:excess]:
+            self.jobs.pop(op_id, None)
+
     def save(self):
+        self._prune_terminal_jobs()
         private_write(self.path, json.dumps(self.jobs, sort_keys=True).encode())
+
+    def _set_cold_cache(self, dataset_id: str, user_id: str, session_id: str, count: int, pending: int):
+        key = (dataset_id, user_id, session_id)
+        self._cold_session_cache[key] = (count, pending)
+        self._cold_session_cache.move_to_end(key)
+        while len(self._cold_session_cache) > _MAX_COLD_SESSION_CACHE:
+            self._cold_session_cache.popitem(last=False)
+
+    def _invalidate_cold_cache(self, dataset_id: str, user_id: str, session_ids):
+        for sid in session_ids:
+            self._cold_session_cache.pop((dataset_id, user_id, sid), None)
+
+    def _prefilter_sessions_sqlite(self, dataset_id: str, principal_id: str, only_sessions=None):
+        """Read-only SQLite pre-filter returning {session_id: active_trace_count} for sessions with traces > 0.
+
+        Returns ``None`` when official SQLite paths are not configured/present so callers
+        can fall back cleanly to paginated official ``/api/v1/sessions``.
+        Never treats trace counts as pending counts; official ``/preview`` always checks
+        real ``TRACE_PERSIST_WATERMARK``.
+        """
+        official_data = self.runtime.get('official_data')
+        if not official_data:
+            return None
+        db_dir = Path(official_data) / 'system' / 'databases'
+        cognee_db = db_dir / 'cognee_db'
+        cache_db = db_dir / 'cache.db'
+        if not cognee_db.is_file() or cognee_db.is_symlink():
+            return None
+        if not cache_db.is_file() or cache_db.is_symlink():
+            return None
+
+        ds_variants = id_variants(dataset_id)
+        user_variants = id_variants(principal_id)
+        if not ds_variants or not user_variants:
+            return None
+        ds_sql, ds_params = _in_clause(ds_variants)
+        user_sql, user_params = _in_clause(user_variants)
+
+        only_set = set(only_sessions) if only_sessions is not None else None
+        try:
+            with official_sqlite_ro(cognee_db) as con:
+                session_ids = []
+                seen = set()
+                for (sid,) in con.execute(
+                    f'''SELECT session_id FROM session_records
+                        WHERE dataset_id {ds_sql} AND user_id {user_sql}''',
+                    (*ds_params, *user_params),
+                ):
+                    sid_str = str(sid or '')
+                    if not sid_str or sid_str in seen:
+                        continue
+                    if only_set is not None and sid_str not in only_set:
+                        continue
+                    seen.add(sid_str)
+                    session_ids.append(sid_str)
+        except (PolicyError, sqlite3.Error):
+            return None
+
+        if not session_ids:
+            return {}
+
+        now_space = _cache_now_space()
+        active_counts = {}
+        try:
+            with official_sqlite_ro(cache_db) as con:
+                for start in range(0, len(session_ids), _SQL_IN_BATCH):
+                    batch = session_ids[start:start + _SQL_IN_BATCH]
+                    placeholders = ','.join('?' for _ in batch)
+                    for sid, cnt in con.execute(
+                        f'''SELECT session_id, COUNT(*)
+                            FROM cache_trace_entries
+                            WHERE user_id {user_sql}
+                              AND session_id IN ({placeholders})
+                              AND (expires_at IS NULL OR REPLACE(substr(expires_at, 1, 26), 'T', ' ') > ?)
+                            GROUP BY session_id''',
+                        (*user_params, *batch, now_space),
+                    ):
+                        cnt_int = int(cnt)
+                        if cnt_int > 0:
+                            active_counts[str(sid)] = cnt_int
+        except (PolicyError, sqlite3.Error):
+            return None
+        return active_counts
 
     def project(self, project):
         row = self.registry.state['projects'].get(project)
@@ -58,35 +178,64 @@ class ToolGraphControl:
             policy = await self.registry.checked_policy(group, actor_id)
             if not policy['ready'] or 'write' not in policy['policy']['permissions']:
                 continue
-            selected = []
-            for offset in range(0, 10001, 500):
-                page = await self.registry.official.request('GET', '/api/v1/sessions?range=all&limit=500&offset=' + str(offset), token_file=actor['key_file'])
-                rows = page.get('sessions')
-                if not isinstance(rows, list):
-                    raise PolicyError('tool_graph_sources_unconfirmed', 503)
-                for row in rows:
-                    if row.get('dataset_id') != group['dataset_id'] or row.get('user_id') != actor['principal_id']:
+            only_for_actor = only[actor_id] if only is not None else None
+            sqlite_trace_counts = await asyncio.to_thread(
+                self._prefilter_sessions_sqlite,
+                group['dataset_id'],
+                actor['principal_id'],
+                only_for_actor,
+            )
+            if sqlite_trace_counts is not None:
+                selected = []
+                for sid in sorted(sqlite_trace_counts):
+                    trace_count = sqlite_trace_counts[sid]
+                    cached = self._cold_session_cache.get((group['dataset_id'], actor['principal_id'], sid))
+                    # Only skip when previously verified pending == 0 AND exact trace_count is unchanged.
+                    # Both growth (> last) and expiry shrink (< last, which resets watermark) re-verify!
+                    if cached is not None and cached == (trace_count, 0):
+                        self._cold_session_cache.move_to_end((group['dataset_id'], actor['principal_id'], sid))
                         continue
-                    if only is not None and row['session_id'] not in only[actor_id]:
-                        continue
-                    selected.append(row['session_id'])
-                if not page.get('has_more'):
-                    break
-                if not rows or offset == 10000:
-                    raise PolicyError('tool_graph_source_range_too_large', 409)
-            if len(selected) > 128:
-                raise PolicyError('tool_graph_source_range_too_large', 409)
-            if selected:
+                    selected.append(sid)
+            else:
+                selected = []
+                seen_sids = set()
+                for offset in range(0, _MAX_HTTP_SESSIONS_OFFSET + 1, 500):
+                    page = await self.registry.official.request('GET', '/api/v1/sessions?range=all&limit=500&offset=' + str(offset), token_file=actor['key_file'])
+                    rows = page.get('sessions')
+                    if not isinstance(rows, list):
+                        raise PolicyError('tool_graph_sources_unconfirmed', 503)
+                    for row in rows:
+                        if row.get('dataset_id') != group['dataset_id'] or row.get('user_id') != actor['principal_id']:
+                            continue
+                        sid = row.get('session_id')
+                        if not sid or sid in seen_sids:
+                            continue
+                        if only_for_actor is not None and sid not in only_for_actor:
+                            continue
+                        seen_sids.add(sid)
+                        selected.append(sid)
+                    if not page.get('has_more'):
+                        break
+                    if not rows or offset == _MAX_HTTP_SESSIONS_OFFSET:
+                        raise PolicyError('tool_graph_source_range_too_large', 409)
+
+            for batch_start in range(0, len(selected), TOOL_GRAPH_PREVIEW_BATCH_SIZE):
+                batch = selected[batch_start:batch_start + TOOL_GRAPH_PREVIEW_BATCH_SIZE]
                 counts = await self.call('POST', '/preview', actor,
-                    {'dataset_id': group['dataset_id'], 'session_ids': selected})
-                for session in selected:
-                    count, pending = counts['limits'][session], counts['pending'][session]
+                    {'dataset_id': group['dataset_id'], 'session_ids': batch})
+                limits_map = counts.get('limits') if isinstance(counts, dict) else None
+                pending_map = counts.get('pending') if isinstance(counts, dict) else None
+                if not isinstance(limits_map, dict) or not isinstance(pending_map, dict):
+                    raise PolicyError('tool_graph_sources_unconfirmed', 503)
+                for session in batch:
+                    if session not in limits_map or session not in pending_map:
+                        raise PolicyError('tool_graph_sources_unconfirmed', 503)
+                    count, pending = limits_map[session], pending_map[session]
                     if type(count) is not int or type(pending) is not int or not 0 <= pending <= count:
                         raise PolicyError('tool_graph_sources_unconfirmed', 503)
+                    self._set_cold_cache(group['dataset_id'], actor['principal_id'], session, count, pending)
                     if pending:
                         plan.append({'agent_id': actor_id, 'session_id': session, 'steps': count, 'pending_steps': pending})
-        if len(plan) > 128:
-            raise PolicyError('tool_graph_source_range_too_large', 409)
         plan.sort(key=lambda row: (row['agent_id'], row['session_id']))
         snapshot = {'project_id': project, 'dataset_id': group['dataset_id'], 'revision': self.registry.state['revision'], 'plan': plan}
         preview = {**snapshot, 'session_count': len(plan), 'tool_steps': sum(row['pending_steps'] for row in plan),
@@ -114,9 +263,16 @@ class ToolGraphControl:
         for actor_id in sorted({row['agent_id'] for row in preview['plan']}):
             await self.actor(project, actor_id)
             rows = [row for row in preview['plan'] if row['agent_id'] == actor_id]
-            children.append({'agent_id': actor_id, 'operation_id': str(uuid.uuid5(uuid.UUID(operation), actor_id)),
-                             'session_ids': [row['session_id'] for row in rows],
-                             'limits': {row['session_id']: row['steps'] for row in rows}, 'status': 'queued'})
+            for batch_idx, start_pos in enumerate(range(0, len(rows), TOOL_GRAPH_BUILD_BATCH_SIZE)):
+                chunk = rows[start_pos:start_pos + TOOL_GRAPH_BUILD_BATCH_SIZE]
+                op_seed = actor_id if batch_idx == 0 else f'{actor_id}/batch/{batch_idx}'
+                children.append({
+                    'agent_id': actor_id,
+                    'operation_id': str(uuid.uuid5(uuid.UUID(operation), op_seed)),
+                    'session_ids': [row['session_id'] for row in chunk],
+                    'limits': {row['session_id']: row['steps'] for row in chunk},
+                    'status': 'queued',
+                })
         row = {'operation_id': operation, 'project_id': project, 'dataset_id': preview['dataset_id'],
                'review_token': review_token,
                'status': 'queued', 'automatic': automatic, 'created_at': datetime.now(timezone.utc).isoformat(),
@@ -143,6 +299,7 @@ class ToolGraphControl:
                     await self.actor(row['project_id'], child['agent_id'])
                     result = await self.call('GET', '/' + child['operation_id'], actor)
                 child['status'] = result['status']
+                self._invalidate_cold_cache(row['dataset_id'], actor['principal_id'], child['session_ids'])
                 if result['status'] != 'completed':
                     row['status'] = result['status']
                     return
@@ -152,6 +309,10 @@ class ToolGraphControl:
         except Exception:
             row.update(status='result_unknown', error_code='tool_graph_submission_unconfirmed')
         finally:
+            for child in row['children']:
+                actor_cfg = self.registry.state['agents'].get(child['agent_id'])
+                if actor_cfg and actor_cfg.get('principal_id'):
+                    self._invalidate_cold_cache(row['dataset_id'], actor_cfg['principal_id'], child['session_ids'])
             self.save()
 
     async def review(self, project, operation):

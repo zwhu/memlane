@@ -30,6 +30,8 @@ from provenance_store import (
     resolve_lesson_date,
 )
 
+from sqlite_ro import open_official_sqlite_ro
+
 _MACHINE_NAME_RE = re.compile(
     r'^(?:text_[0-9a-fA-F]{32}(?:\.(?:md|txt))?'
     r'|(?:user_context|memory)-[0-9a-fA-F]{32}(?:\.txt)?'
@@ -177,8 +179,8 @@ def _read_sqlite_documents_and_activity(official_data, dataset_id, *, provenance
     doc_prov, key_prov = load_provenance_maps(provenance_path, {expected_ds})
 
     try:
-        con = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True, timeout=2.0)
-    except sqlite3.Error:
+        con = open_official_sqlite_ro(db_path)
+    except (PolicyError, sqlite3.Error):
         return None, True
 
     pending = []
@@ -236,7 +238,8 @@ def _read_sqlite_documents_and_activity(official_data, dataset_id, *, provenance
                 'updatedAt': updated_at,
                 'externalMetadata': meta,
             }
-            if is_knowledge_doc(doc_obj):
+            classified_doc = {**doc_obj, "externalMetadata": trusted}
+            if is_knowledge_doc(classified_doc):
                 knowledge_items.append(_knowledge_catalog_entry(
                     doc_id,
                     created_at,
@@ -247,7 +250,7 @@ def _read_sqlite_documents_and_activity(official_data, dataset_id, *, provenance
                     key_prov=key_prov,
                 ))
                 continue
-            if not _is_refinement_material(doc_obj):
+            if not _is_refinement_material(classified_doc):
                 continue
             ps = parse_json(row[6])
             slots = ps.get('cognify_pipeline') if isinstance(ps, dict) else None

@@ -134,3 +134,39 @@ class ToolGraphJobTests(unittest.IsolatedAsyncioTestCase):
              patch('cognee.infrastructure.session.session_persist_watermark.TRACE_PERSIST_WATERMARK', SimpleNamespace(read_count=AsyncMock(return_value=0))), \
              patch('cognee.memify_pipelines.persist_agent_trace_feedbacks_in_knowledge_graph.persist_agent_trace_feedbacks_in_knowledge_graph_pipeline', pipeline):
             await official_build(self.user, str(self.dataset), ['source'], {'source': 1})
+
+    async def test_uncapped_over_128_sessions_and_terminal_job_pruning(self):
+        sessions = [f's-{i:03d}' for i in range(200)]
+        op = str(uuid.uuid4())
+        res = await self.jobs.start(self.user, self.dataset, sessions, op)
+        await self.jobs.tasks[op]
+        self.assertEqual(self.jobs.get(self.user, op)['status'], 'completed')
+        self.assertEqual(len(self.jobs.get(self.user, op)['session_ids']), 200)
+
+        # Populate 210 terminal jobs + 1 result_unknown job -> prunes terminal to 200, keeps result_unknown
+        unknown_id = str(uuid.uuid4())
+        self.jobs.rows[unknown_id] = {
+            'operation_id': unknown_id,
+            'user_id': str(self.user.id),
+            'dataset_id': self.dataset,
+            'session_ids': ['s-000'],
+            'signature': 'sig',
+            'status': 'result_unknown',
+            'created_at': '2020-01-01T00:00:00+00:00',
+        }
+        for i in range(210):
+            tid = str(uuid.uuid4())
+            self.jobs.rows[tid] = {
+                'operation_id': tid,
+                'user_id': str(self.user.id),
+                'dataset_id': self.dataset,
+                'session_ids': ['s-000'],
+                'signature': f'sig-{i}',
+                'status': 'completed',
+                'created_at': f'2026-11-21T00:{i // 60:02d}:{i % 60:02d}+00:00',
+                'ended_at': f'2026-11-21T00:{i // 60:02d}:{i % 60:02d}+00:00',
+            }
+        self.jobs.save()
+        terminal_remaining = [r for r in self.jobs.rows.values() if r['status'] in ('completed', 'cancelled')]
+        self.assertEqual(len(terminal_remaining), 200)
+        self.assertIn(unknown_id, self.jobs.rows)
