@@ -419,19 +419,32 @@ func (a *App) environmentReviewModal(c *ui.Context) {
 	if !s.Review {
 		return
 	}
+	dailyPluginOnly := isOnlyDailyPluginUpdate(a, s.Plan, s.Journal, s.Busy)
+	modalTitle := "确认安装缺少的依赖"
+	modalIntro := "仅安装以下缺失组件，已有环境保持原样。"
+	modalHint := "已有环境和目录保持原样，不修改系统配置"
+	cancelText := "暂不安装"
+	confirmText := "确认安装"
+	if dailyPluginOnly {
+		modalTitle = "确认更新 Agent 插件"
+		modalIntro = "将下载并校验新版 Agent 插件，然后把日常服务配置切换到新版目录（原插件目录会保留，不影响已有记忆数据）。"
+		modalHint = "已有记忆数据保持不变；配置更新后重启日常服务即可由后台加载新版插件"
+		cancelText = "暂不更新"
+		confirmText = "确认更新"
+	}
 	v4Dialog(c, &s.Review, v4DialogOptions{
 		Key:             "environment-install-plan",
-		Title:           "确认安装缺少的依赖",
+		Title:           modalTitle,
 		Width:           v4DialogLarge,
 		ScrollBody:      true,
-		Hint:            "已有环境和目录保持原样，不修改系统配置",
-		CancelText:      "暂不安装",
-		ConfirmText:     "确认安装",
+		Hint:            modalHint,
+		CancelText:      cancelText,
+		ConfirmText:     confirmText,
 		ConfirmDisabled: s.Loading || s.Busy,
 		OnCancel:        a.declineEnvironment,
 		OnConfirm:       func() { a.runEnvironment(true) },
 		Body: func() {
-			ui.Text(c, "仅安装以下缺失组件，已有环境保持原样。").Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text2)
+			ui.Text(c, modalIntro).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text2).LineHeight(1.5)
 			ui.Column(c).FillWidth().Gap(0).Children(func() {
 				for _, item := range s.Plan.Items {
 					if item.Observation.Status == bootstrap.Available {
@@ -448,7 +461,16 @@ func (a *App) environmentReviewModal(c *ui.Context) {
 						ui.Text(c, r.Purpose).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text2).LineHeight(1.5)
 						if item.Observation.Status == bootstrap.Incompatible {
 							if hint := environmentIncompatibleHint(a, item); hint != "" {
-								ui.Text(c, "原因："+hint).Font("system-ui").FontSize(fsCaption).TextColor(tok.Warning).LineHeight(1.5)
+								prefix := "原因："
+								col := tok.Warning
+								if isDailyPluginUpdateAvailable(a, item, item.Observation.Status) {
+									prefix = "说明："
+									col = tok.Text2
+								}
+								ui.Text(c, prefix+hint).Font("system-ui").FontSize(fsCaption).TextColor(col).LineHeight(1.5)
+							}
+							if s.Details && item.Observation.Reason != "" && isDailyPluginUpdateAvailable(a, item, item.Observation.Status) {
+								ui.Text(c, "技术详情："+bootstrap.RedactInstallerText(item.Observation.Reason)).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
 							}
 						}
 						if r.SizeNote != "" {

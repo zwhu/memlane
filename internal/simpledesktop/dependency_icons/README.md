@@ -7,4 +7,5 @@
 - uv：官方 0.12.3 的 `docs/assets/logo-letter.svg`，https://github.com/astral-sh/uv/blob/0.12.3/docs/assets/logo-letter.svg
 - Hugging Face：官方品牌 SVG，https://huggingface.co/front/assets/huggingface_logo-noborder.svg ，表示模型分发来源。具体模型和 revision 仍由安装清单确定。
 
-“运行库”是依赖集合，使用已有通用组件图标，不冒充单一品牌。
+- 运行库（`runtime.svg`）：Memlane 原创多层模块矢量图标，表示运行库集合（LanceDB / FastEmbed 等），不冒充单一第三方品牌。
+- Agent 插件（`agent_plugin.svg`）：Memlane 原创插件连接器矢量图标，表示宿主 Agent 接入插件包，与 Cognee 引擎品牌图标区分。

@@ -150,3 +150,125 @@ func TestPinnedIntegrationArchiveBuildsManagedPlugin(t *testing.T) {
 		t.Fatal("probe changed foreign content")
 	}
 }
+
+func TestApplyManagedPluginUpdateResolvesActiveSnapshotAndPreservesFields(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	daily := filepath.Join(root, "daily")
+	officialData := filepath.Join(daily, "official-store")
+	oldPlugin := filepath.Join(daily, "old-plugin")
+	newPlugin := filepath.Join(daily, "components", "plugin-new", "plugin")
+	for _, dir := range []string{officialData, oldPlugin, filepath.Join(newPlugin, "scripts")} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script := []byte("# verified new plugin\n")
+	sum := sha256.Sum256(script)
+	manifest, _ := json.Marshal(map[string]any{
+		"plugin_commit": "fixed",
+		"files":         map[string]string{"scripts/main.py": hex.EncodeToString(sum[:])},
+	})
+	if err := os.WriteFile(filepath.Join(newPlugin, "scripts/main.py"), script, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newPlugin, ".memlane-project-access.json"), manifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	persistentCfg := filepath.Join(daily, "runtime.json")
+	activeCfg := filepath.Join(daily, ".runtime-active-999.json")
+	cfgDoc := map[string]any{
+		"official_data": officialData,
+		"model":         "gpt-6.1-sol",
+		"project_control": map[string]any{
+			"url":        "http://127.0.0.1:18777",
+			"plugin_dir": oldPlugin,
+		},
+	}
+	rawCfg, _ := json.MarshalIndent(cfgDoc, "", "  ")
+	if err := os.WriteFile(persistentCfg, rawCfg, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activeCfg, rawCfg, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ownerRaw, _ := json.Marshal(map[string]any{"pid": 999, "config": persistentCfg})
+	if err := os.WriteFile(filepath.Join(officialData, ".memlane-dev-owner.json"), ownerRaw, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	prev, err := ApplyManagedPluginUpdate(activeCfg, officialData, newPlugin, manifest)
+	if err != nil {
+		t.Fatalf("ApplyManagedPluginUpdate failed: %v", err)
+	}
+	if prev != oldPlugin {
+		t.Fatalf("expected previous=%q, got %q", oldPlugin, prev)
+	}
+	for _, path := range []string{persistentCfg, activeCfg} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != 0600 {
+			t.Fatalf("expected 0600 permissions on %s, got %v err=%v", path, info.Mode().Perm(), err)
+		}
+		var updated map[string]any
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(b, &updated); err != nil {
+			t.Fatal(err)
+		}
+		if updated["model"] != "gpt-6.1-sol" || updated["official_data"] != officialData {
+			t.Fatalf("lost unrelated keys in %s: %v", path, updated)
+		}
+		pc := updated["project_control"].(map[string]any)
+		if pc["plugin_dir"] != newPlugin || pc["url"] != "http://127.0.0.1:18777" {
+			t.Fatalf("unexpected project_control in %s: %v", path, pc)
+		}
+	}
+	if _, err := os.Stat(oldPlugin); err != nil {
+		t.Fatalf("old plugin directory must be retained for rollback: %v", err)
+	}
+}
+
+func TestApplyManagedPluginUpdateRefusesUnverifiedOrInsideStore(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	officialData := filepath.Join(root, "official-store")
+	oldPlugin := filepath.Join(root, "old-plugin")
+	if err := os.MkdirAll(officialData, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(oldPlugin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(root, "runtime.json")
+	orig := []byte(`{"project_control":{"plugin_dir":"` + oldPlugin + `"}}`)
+	if err := os.WriteFile(cfgPath, orig, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := []byte(`{"plugin_commit":"fixed","files":{"scripts/main.py":"deadbeef"}}`)
+	insideStore := filepath.Join(officialData, "plugin-inside")
+	if err := os.MkdirAll(insideStore, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyManagedPluginUpdate(cfgPath, officialData, insideStore, manifest); err == nil {
+		t.Fatal("accepted plugin path inside official_data")
+	}
+	unverified := filepath.Join(root, "unverified-plugin")
+	if err := os.MkdirAll(unverified, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyManagedPluginUpdate(cfgPath, officialData, unverified, manifest); err == nil {
+		t.Fatal("accepted unverified plugin directory")
+	}
+	after, _ := os.ReadFile(cfgPath)
+	if string(after) != string(orig) {
+		t.Fatalf("config modified despite refusal: %s", string(after))
+	}
+}

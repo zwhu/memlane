@@ -13,7 +13,7 @@ var dependencyIconFiles embed.FS
 
 var dependencyBrandIcons = func() map[string]*ui.SVG {
 	icons := map[string]*ui.SVG{}
-	for id, file := range map[string]string{"python": "python", "uv": "uv", "cognee-source": "cognee", "embedding": "huggingface", "agent-plugin": "cognee"} {
+	for id, file := range map[string]string{"python": "python", "uv": "uv", "runtime": "runtime", "cognee-source": "cognee", "embedding": "huggingface", "agent-plugin": "agent_plugin"} {
 		b, err := dependencyIconFiles.ReadFile("dependency_icons/" + file + ".svg")
 		if err != nil {
 			panic(err)

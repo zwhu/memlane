@@ -186,41 +186,96 @@ func TestFirstWizardReusesConnectionsAndGenerationWithoutPrematureCompletion(t *
 	}
 }
 
-func TestIncompatibleAgentPluginExplainsReasonAndDailyScope(t *testing.T) {
-	a := New(Config{}, nil)
-	a.initialSetup = false
-	a.service = "已连接"
-	a.environment.Loaded = true
-	a.environment.Plan = bootstrap.Plan{Items: []bootstrap.Item{{
-		Requirement: bootstrap.Requirement{
-			ID:             "agent-plugin",
-			Name:           "Agent 插件",
-			Purpose:        "为已有 Agent 准备官方 Cognee 接入插件及固定权限适配",
-			Version:        "1.8.0 · a176248 · edc059dd",
-			Source:         "https://official.example.test/plugin.tar.gz",
-			Destination:    "/synthetic/components/plugin-integrations",
-			DownloadBytes:  20 << 20,
-			InstalledBytes: 60 << 20,
-		},
-		Observation: bootstrap.Observation{
-			Status: bootstrap.Incompatible,
-			Reason: "插件固定补丁回执不同",
-		},
-	}}}
+func TestDependencyBrandIconsIncludeRuntimeAndDistinctAgentPlugin(t *testing.T) {
+	for _, id := range []string{"python", "uv", "runtime", "cognee-source", "embedding", "agent-plugin"} {
+		if dependencyBrandIcons[id] == nil {
+			t.Fatalf("missing embedded dependency SVG for %q", id)
+		}
+	}
+	if dependencyBrandIcons["agent-plugin"] == dependencyBrandIcons["cognee-source"] {
+		t.Fatal("agent-plugin icon must be distinct from cognee-source icon")
+	}
+	if dependencyBrandIcons["runtime"] == dependencyBrandIcons["cognee-source"] {
+		t.Fatal("runtime icon must be distinct from cognee-source icon")
+	}
+}
 
-	tt := ui.NewTester(func(c *ui.Context) {
-		ui.Themed(c, homeTheme).Fill().Children(func() {
-			ui.Scroll(c).Fill().Children(func() { a.environmentSetup(c, false) })
-		})
-	}, 1200, 820)
-	wantHint := "已有插件目录与当前构建清单版本不同（插件固定补丁回执不同）；日常服务正常运行时可暂不安装，此处安装仅准备新的受管组件目录，不会改写现有日常配置。"
-	if !tt.HasText("不兼容") || !tt.HasText(wantHint) {
-		t.Fatalf("missing incompatible hint before expanding details: %v", tt.Texts())
+func TestIncompatibleAgentPluginExplainsReasonAndDailyScope(t *testing.T) {
+	makeApp := func(initial bool, service string) *App {
+		a := New(Config{
+			ProjectControl: &ProjectControlConfig{
+				URL:       "http://127.0.0.1:18777",
+				PluginDir: "/synthetic/daily/old-plugin",
+			},
+		}, nil)
+		a.initialSetup = initial
+		a.service = service
+		a.environment.Loaded = true
+		a.environment.Plan = bootstrap.Plan{Items: []bootstrap.Item{{
+			Requirement: bootstrap.Requirement{
+				ID:             "agent-plugin",
+				Name:           "Agent 插件",
+				Purpose:        "为已有 Agent 准备官方 Cognee 接入插件及固定权限适配",
+				Version:        "1.8.0 · a176248 · edc059dd",
+				Source:         "https://official.example.test/plugin.tar.gz",
+				Destination:    "/synthetic/components/plugin-integrations",
+				DownloadBytes:  20 << 20,
+				InstalledBytes: 60 << 20,
+			},
+			Observation: bootstrap.Observation{
+				Status: bootstrap.Incompatible,
+				Reason: "插件固定补丁回执不同",
+			},
+		}}}
+		return a
 	}
 
-	clickProjectUI(t, tt, "安装缺少的依赖")
-	if !tt.HasText("原因：" + wantHint) {
-		t.Fatalf("missing incompatible reason inside approval modal: %v", tt.Texts())
+	// Connected daily settings view shows calm "有更新", plain-language copy, and hides jargon unless details expanded.
+	daily := makeApp(false, "已连接")
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Themed(c, homeTheme).Fill().Children(func() {
+			ui.Scroll(c).Fill().Children(func() { daily.environmentSetup(c, false) })
+		})
+	}, 1200, 820)
+	wantHint := "当前服务正在使用旧版接入插件，不影响正常使用。点击下方「更新 Agent 插件」确认后，会下载新版并自动切换配置，原插件目录会保留以便回退。"
+	if !tt.HasText("有更新") || !tt.HasText(wantHint) {
+		t.Fatalf("missing daily update label or plain hint: %v", tt.Texts())
+	}
+	if tt.HasText("不兼容") || tt.HasText("固定补丁回执") || tt.HasText("安装缺少的依赖") {
+		t.Fatalf("daily update leaked scary jargon or wrong button: %v", tt.Texts())
+	}
+	clickProjectUI(t, tt, "查看详情")
+	if !tt.HasText("技术详情：插件固定补丁回执不同") {
+		t.Fatalf("missing technical details after expanding details: %v", tt.Texts())
+	}
+	clickProjectUI(t, tt, "更新 Agent 插件")
+	if !tt.HasText("确认更新 Agent 插件") || !tt.HasText("确认更新") || !tt.HasText("暂不更新") {
+		t.Fatalf("missing update confirmation modal copy: %v", tt.Texts())
+	}
+	if !tt.HasText("说明：" + wantHint) {
+		t.Fatalf("missing plain explanation inside update modal: %v", tt.Texts())
+	}
+
+	// First-install and disconnected service keep strict incompatible status and install action.
+	for _, tc := range []struct {
+		name    string
+		initial bool
+		service string
+	}{
+		{"first_install", true, ""},
+		{"disconnected", false, "未连接"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := makeApp(tc.initial, tc.service)
+			tester := ui.NewTester(func(c *ui.Context) {
+				ui.Themed(c, homeTheme).Fill().Children(func() {
+					ui.Scroll(c).Fill().Children(func() { app.environmentSetup(c, tc.initial) })
+				})
+			}, 1200, 820)
+			if !tester.HasText("不兼容") || !tester.HasText("安装缺少的依赖") {
+				t.Fatalf("%s did not preserve strict incompatible UI: %v", tc.name, tester.Texts())
+			}
+		})
 	}
 }
 
