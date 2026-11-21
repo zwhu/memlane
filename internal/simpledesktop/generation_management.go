@@ -4,46 +4,75 @@ import "github.com/egoist/mygo/ui"
 
 // Management edits saved candidates. It never chooses the running processor.
 func (a *App) generationManagement(c *ui.Context) {
-	ui.Column(c).FillWidth().Gap(12).Children(func() { a.generationManagementContent(c) })
+	ui.Column(c).FillWidth().Gap(0).Children(func() { a.generationManagementContent(c) })
 }
+
 func (a *App) generationManagementContent(c *ui.Context) {
 	s := &a.integrations
 	if !s.Loaded {
-		homeText(c, "记忆处理配置尚未载入", homeMeta)
-		textButton(c, "读取记忆处理配置", a.RefreshIntegrations)
+		v4Group(c, "模型配置", "", nil, func() {
+			v4Row(c, v4RowOptions{
+				Title: "记忆处理配置尚未载入",
+				Control: func() {
+					v4SmallButton(c, "读取记忆处理配置", v4IconRefresh, a.RefreshIntegrations)
+				},
+			})
+		})
 		return
 	}
 	a.generationPendingOperations(c)
 
-	settingsSectionHeader(c, "模型配置", nil, func() {
-		textButton(c, "添加配置", func() { a.newGenerationProfile("provider"); s.GenerationProviderDialog = true }).Disabled(s.Busy)
-	})
 	groups := generationWorkspaceGroups(s.Generation, "provider")
-	if len(groups) == 0 {
-		homeText(c, "尚未添加 Provider", homeMeta)
-	}
-	for _, group := range groups {
-		settingsListSurface(c, func() {
-			homeText(c, group.Title, homeMeta).Margin(8, 0, 4, 0)
-			for index, item := range group.Items {
-				if index > 0 {
-					settingsListDivider(c)
+	v4Group(c, "模型配置", "", func() {
+		v4SmallButton(c, "添加配置", v4IconPlus, func() {
+			a.newGenerationProfile("provider")
+			s.GenerationProviderDialog = true
+		}).Disabled(s.Busy)
+	}, func() {
+		if len(groups) == 0 {
+			v4Row(c, v4RowOptions{
+				Title: "尚未添加 Provider",
+				Desc:  "点击右上角「添加配置」接入 OpenAI 兼容或本地 Ollama 服务",
+			})
+		}
+		for _, group := range groups {
+			for _, item := range group.Items {
+				id, row := item.ID, item.Row
+				ref := &GenerationRef{ID: id, Revision: row.Revision}
+				isActive := s.Generation.Active != nil && *s.Generation.Active == *ref
+				state, tone := "未验证", ""
+				if s.Generation.validated(ref) {
+					state, tone = "已验证", "ok"
 				}
-				settingsListRow(c, func() {
-					ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
-						homeText(c, item.Title, homeBody).FontSize(13).TextColor(homeInk).SingleLine().Tooltip(item.Title)
-						if item.Detail != "" {
-							homeText(c, item.Detail, homeMeta)
-						}
-					})
-					textButton(c, "配置", func() { a.selectGenerationProfile(item.ID, item.Row); s.GenerationProviderDialog = true }).Label("配置模型：" + item.ID).Disabled(s.Busy)
-					ref := &GenerationRef{ID: item.ID, Revision: item.Row.Revision}
-					reason := s.generationDeleteBlock(item.ID)
-					textButton(c, "删除", func() { s.DeleteProfile = ref; s.DeleteOpen = true; s.DeleteError = "" }).Label("删除模型：" + item.ID).Disabled(s.Busy || s.SaveOperation != "" || reason != "").Tooltip(reason)
+				if isActive {
+					state, tone = "当前使用", "ok"
+				}
+				desc := group.Title
+				if item.Detail != "" {
+					desc = group.Title + " · " + item.Detail
+				}
+				reason := s.generationDeleteBlock(id)
+				v4Row(c, v4RowOptions{
+					Key:      "mgmt-provider-" + id,
+					Title:    item.Title,
+					Desc:     desc,
+					DescMono: true,
+					Control: func() {
+						v4Badge(c, state, tone)
+						v4SmallButton(c, "配置", nil, func() {
+							a.selectGenerationProfile(id, row)
+							s.GenerationProviderDialog = true
+						}).Label("配置模型：" + id).Disabled(s.Busy)
+						v4DangerOutlineButton(c, "删除", true, func() {
+							s.DeleteProfile = ref
+							s.DeleteOpen = true
+							s.DeleteError = ""
+						}).Label("删除模型：" + id).Disabled(s.Busy || s.SaveOperation != "" || reason != "").Tooltip(reason)
+					},
 				})
 			}
-		})
-	}
+		}
+	})
 	a.generationProviderDialog(c)
 	a.generationDeleteModal(c)
 }
@@ -53,11 +82,24 @@ func (a *App) generationProviderDialog(c *ui.Context) {
 	if !s.GenerationProviderDialog || !s.Editor || s.DraftMode != "provider" {
 		return
 	}
-	_, height := c.Size()
-	modal := ui.Modal(c.Key("provider-dialog-"+s.ProfileID), &s.GenerationProviderDialog, func() {
-		ui.Scroll(c.Key("provider-dialog-fields")).Width(600).MaxHeight(height - 180).Children(func() { a.generationEditorContent(c) })
+	v4Dialog(c, &s.GenerationProviderDialog, v4DialogOptions{
+		Key:         "provider-dialog-" + s.ProfileID,
+		Title:       "Provider 配置",
+		CloseLabel:  "关闭 Provider 配置",
+		Width:       v4DialogLarge,
+		ScrollBody:  true,
+		HideCancel:  true,
+		HideConfirm: true,
+		Hint:        "保存配置不会自动启用此模型",
+		OnCancel: func() {
+			s.APIKey = ""
+			s.KeyEpoch++
+		},
+		Body: func() {
+			a.generationEditorContent(c)
+		},
 	})
-	if modal.Dismissed() || !s.GenerationProviderDialog {
+	if !s.GenerationProviderDialog {
 		s.APIKey = ""
 		s.KeyEpoch++
 	}

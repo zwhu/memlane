@@ -293,3 +293,42 @@ func TestCommonConfirmKnownOlderDocumentOutsideFirstPage(t *testing.T) {
 		t.Fatalf("known saved ID lost beyond first list page: %s %d %v", d.ID, rawReads, err)
 	}
 }
+
+func TestCommonDeleteAndDiscardV4DialogsIgnoreEnterAndCancelOnEsc(t *testing.T) {
+	a := commonUIFixture()
+	tt := ui.NewTester(a.View, 1200, 820)
+
+	// Delete confirmation dialog must be danger (no Enter confirm) and cancel on Esc.
+	clickProjectUI(t, tt, "删除")
+	if a.commonEdit.Delete == nil || !tt.HasText("删除这条通用记忆？") || !tt.HasText("确认删除此条") {
+		t.Fatal("delete v4Dialog did not open")
+	}
+	tt.Key(0, ui.KeyEnter)
+	if a.commonEdit.DeleteSubmitted || a.commonEdit.Busy {
+		t.Fatal("Enter unexpectedly confirmed destructive common knowledge delete")
+	}
+	tt.Key(0, ui.KeyEscape)
+	if a.commonEdit.Delete != nil {
+		t.Fatal("Escape did not cancel common knowledge delete dialog")
+	}
+
+	// Discard draft confirmation dialog must also ignore Enter and cancel on Esc.
+	clickProjectUI(t, tt, "新增通用记忆")
+	clickProjectUI(t, tt, "通用记忆正文")
+	tt.Type("草稿内容")
+	clickProjectUI(t, tt, "放弃草稿")
+	if !a.commonPage.Discard || !tt.HasText("放弃未保存的草稿？") {
+		t.Fatal("discard v4Dialog did not open")
+	}
+	tt.Key(0, ui.KeyEnter)
+	if !a.commonEdit.Open || !commonHasDraft(a.commonEdit) {
+		t.Fatal("Enter unexpectedly confirmed destructive draft discard")
+	}
+	if !a.commonPage.Discard {
+		clickProjectUI(t, tt, "放弃草稿")
+	}
+	tt.Key(0, ui.KeyEscape)
+	if a.commonPage.Discard || !a.commonEdit.Open || !commonHasDraft(a.commonEdit) {
+		t.Fatal("Escape did not cancel discard dialog cleanly")
+	}
+}

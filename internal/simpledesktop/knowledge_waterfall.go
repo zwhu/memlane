@@ -203,9 +203,6 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 				}
 			}
 			s.More, s.Loaded = count < len(rows), true
-			if !wasLoaded {
-				a.motionRuns.projectList++
-			}
 			a.hydrateKnowledgeCards(s)
 			if s.Selected == nil && len(s.Items) > 0 && !s.Locating {
 				a.selectItem(s, s.Items[0])
@@ -335,10 +332,12 @@ func (a *App) knowledgePage(c *ui.Context, s *pane) {
 			ui.Column(c.Key("project-view-navigation")).Padding(0, sp4).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Shrink(0).Children(func() {
 				a.projectTabs(c)
 			})
-			body := ui.Column(c.Key("knowledge-list-body")).Grow(1).MinHeight(0).FillWidth()
-			v4PageEnter(body, a.motionRuns.projectPage)
+			bodyKey := fmt.Sprintf("knowledge-list-body-%d", a.motionRuns.projectPage)
+			body := ui.Column(c.Key(bodyKey)).Grow(1).MinHeight(0).FillWidth()
+			a.v4PageEnter(c, body, "knowledge-list-body", a.motionRuns.projectPage)
 			body.Children(func() {
 				a.knowledgeFilterBar(c, s)
+				a.projectSessionDriftBanner(c, s)
 				if s.Error != "" {
 					ui.Row(c).Padding(sp1, sp4).Gap(sp2).AlignItems(ui.Center).Shrink(0).Children(func() {
 						homeText(c, "读取未完成 · "+s.Error, homeMeta).MaxLines(2)
@@ -402,6 +401,7 @@ func (a *App) knowledgeList(c *ui.Context, s *pane) {
 		}
 	}
 	s.WidgetList.Key = func(n int) any { return s.Items[n].key() }
+	s.WidgetList.KeepOffset = true
 	s.WidgetList.Label = func(n int) string {
 		if body := knowledgeCardBody(s.Items[n]); body != "" {
 			return body
@@ -429,8 +429,9 @@ func (a *App) knowledgeList(c *ui.Context, s *pane) {
 }
 
 func (a *App) knowledgeListItem(c *ui.Context, s *pane, i Item, index int, selected bool) {
-	col := ui.Column(c.Key("kitem-"+i.key())).FillWidth().MinWidth(0).Padding(10, sp3).Gap(6)
-	v4StaggerEnter(col, index, a.motionRuns.projectList)
+	itemKey := fmt.Sprintf("kitem-%d-%s", a.motionRuns.projectList, i.key())
+	col := ui.Column(c.Key(itemKey)).FillWidth().MinWidth(0).Padding(10, sp3).Gap(6)
+	a.v4StaggerEnter(c, col, "kitem-"+i.key(), index, a.motionRuns.projectList, false)
 	col.Children(func() {
 		body := knowledgeCardBody(i)
 		switch {
@@ -446,11 +447,13 @@ func (a *App) knowledgeListItem(c *ui.Context, s *pane, i Item, index int, selec
 			})
 		case !i.BodyLoaded:
 			preview := strings.TrimSpace(i.Title)
-			if preview == "" {
-				ui.Text(c, "正在读取…").Font("system-ui").FontSize(fsFootnote).FontWeight(400).LineHeight(1.55).TextColor(tok.Text2).MaxLines(knowledgePreviewLines)
-			} else {
-				v4InlineMarkdown(c, preview, fsFootnote, 400, 1.55, tok.Text2).MaxLines(knowledgePreviewLines)
-			}
+			ui.Column(c).FillWidth().MinHeight(54).Children(func() {
+				if preview == "" {
+					ui.Text(c, "正在读取…").Font("system-ui").FontSize(fsFootnote).FontWeight(400).LineHeight(1.55).TextColor(tok.Text2).MaxLines(knowledgePreviewLines)
+				} else {
+					v4InlineMarkdown(c, preview, fsFootnote, 400, 1.55, tok.Text2).MaxLines(knowledgePreviewLines)
+				}
+			})
 		default:
 			v4InlineMarkdown(c, body, fsFootnote, 400, 1.55, tok.Text1).MaxLines(knowledgePreviewLines)
 		}

@@ -1,0 +1,272 @@
+/* 首次启动向导样式（Q7）。严格仅使用 tokens.css 变量，不写裸色值。 */
+
+.setup-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: var(--bg);
+}
+
+/* ---------- 左侧步骤栏（同侧栏 220px 宽与半透明材质 + 弹簧选中块 + 完成勾） ---------- */
+.setup-sidebar {
+  width: var(--sidebar-w);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--sidebar-bg);
+  backdrop-filter: blur(40px) saturate(1.15);
+  -webkit-backdrop-filter: blur(40px) saturate(1.15);
+  border-right: 1px solid var(--border);
+  padding: 0 var(--s2) var(--s4);
+}
+
+.setup-steps {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.setup-step-ind {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  transform: translateY(var(--y, 0));
+  height: var(--h, 48px);
+  transition: transform var(--dur-snappy) var(--spring-snappy, var(--ease-snappy)), height var(--dur-snappy) var(--spring-snappy, var(--ease-snappy));
+  pointer-events: none;
+}
+
+.setup-step-btn {
+  position: relative;
+  width: 100%;
+  min-height: 48px;
+  padding: 8px var(--s2);
+  border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  transition: background var(--dur-fast) linear, transform var(--dur-fast) var(--spring-snappy, ease);
+}
+.setup-step-btn:hover:not(.on) { background: var(--hover); }
+.setup-step-btn:active { transform: scale(.99); }
+
+.setup-step-num {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  background: var(--fill-2);
+  color: var(--text-3);
+  transition: background var(--dur-fast) linear, color var(--dur-fast) linear;
+}
+.setup-step-btn.on .setup-step-num {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.setup-step-btn.is-done .setup-step-num {
+  background: var(--ok);
+  color: var(--on-accent);
+}
+.setup-step-num svg {
+  width: 12px;
+  height: 12px;
+}
+
+.setup-step-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.setup-step-title {
+  font-size: var(--fs-body);
+  font-weight: 500;
+  color: var(--text-2);
+}
+.setup-step-btn.on .setup-step-title {
+  color: var(--accent);
+  font-weight: 600;
+}
+.setup-step-btn.is-done .setup-step-title {
+  color: var(--text-1);
+}
+.setup-step-sub {
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.setup-sidebar-foot {
+  padding: var(--s3) var(--s2) 0;
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+  line-height: 1.5;
+}
+
+/* ---------- 右侧向导主区 ---------- */
+.setup-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.setup-topbar {
+  height: var(--bar);
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s2);
+  padding: 0 var(--s6);
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--dur-fast) linear;
+}
+.setup-topbar.scrolled {
+  border-bottom-color: var(--border);
+}
+
+.setup-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--s3) var(--s10) var(--s8);
+}
+
+.setup-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: var(--s2);
+}
+.setup-eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+.setup-heading {
+  font-size: var(--fs-title);
+  font-weight: 600;
+  color: var(--text-1);
+  letter-spacing: -.3px;
+}
+.setup-lead {
+  font-size: var(--fs-body);
+  color: var(--text-2);
+  line-height: 1.6;
+}
+
+/* 启动 / 安装中方块舞台状态带（复用 .stage.lg） */
+.setup-stage-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  padding: var(--s4);
+  border-radius: var(--radius);
+  background: var(--fill-1);
+  animation: setupFade var(--dur-smooth) var(--spring-smooth, var(--ease-smooth)) both;
+}
+@keyframes setupFade {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.setup-stage-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.setup-stage-title {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text-1);
+}
+.setup-stage-sub {
+  font-size: var(--fs-footnote);
+  color: var(--text-2);
+}
+
+/* 准备概览条（发丝分隔，无带框卡片） */
+.setup-summary-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3) 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.setup-summary-stat {
+  font-size: var(--fs-heading);
+  font-weight: 600;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+}
+.setup-summary-note {
+  font-size: var(--fs-footnote);
+  color: var(--text-2);
+  flex: 1;
+}
+
+/* 底部固定「上一步 / 继续」操作栏 */
+.setup-foot {
+  height: 60px;
+  flex: none;
+  padding: 0 var(--s8);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  background: var(--bg);
+}
+.setup-foot-hint {
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+}
+
+/* 安装确认弹窗内清单 */
+.setup-plan-item {
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.setup-plan-item:last-child { border-bottom: 0; }
+.setup-plan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text-1);
+}
+.setup-plan-meta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+}
+.setup-plan-desc {
+  font-size: var(--fs-footnote);
+  color: var(--text-2);
+}

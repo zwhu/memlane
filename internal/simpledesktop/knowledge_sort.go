@@ -142,6 +142,9 @@ func (a *App) reorderKnowledgeRange(s *pane, limit int, resetScroll bool) {
 	s.More = len(s.Items) < len(rows)
 	if resetScroll {
 		s.ListScroll.Y = 0
+		if len(s.Items) > 0 {
+			s.WidgetList.ScrollTo(0, ui.Start)
+		}
 	}
 	s.Knowledge.RecallOrderPending = false
 	s.Knowledge.Columns = map[string]int{}

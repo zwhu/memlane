@@ -25,6 +25,9 @@ var (
 	v4IconClose    = v4IconSVG(`<path d="M5 5l10 10M15 5L5 15"/>`)
 	v4IconRecall   = v4IconSVG(`<path d="M4 10a6 6 0 1 0 1.8-4.3M4 3.5v3h3"/>`)
 	v4IconInfo     = v4IconSVG(`<circle cx="10" cy="10" r="7"/><path d="M10 9v5M10 6.5v.01"/>`)
+	v4IconCheck    = v4IconSVG(`<path d="M4.5 10.5l3.5 3.5 7.5-8"/>`)
+	v4IconRefresh  = v4IconSVG(`<path d="M16 10a6 6 0 1 1-1.6-4.1M16 4v3.5h-3.5"/>`)
+	v4IconPlus     = v4IconSVG(`<path d="M10 4.5v11M4.5 10h11"/>`)
 )
 
 // v4CategoryChip draws a neutral category tag (V4 never color-codes categories).
@@ -78,7 +81,9 @@ func v4Switch(c *ui.Context, key string, on *bool, label string, onChange func()
 		ui.Box(c).Size(26, 16).Radius(8).Background(trackColor).Shrink(0).DrawOver(func(p *ui.Painter, r ui.Rect) {
 			p.Fill(ui.Rect{X: r.X + 2 + knobX, Y: r.Y + 2, W: 12, H: 12}, tok.OnAccent, 6)
 		})
-		ui.Text(c, label).Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(textColor).SingleLine()
+		if label != "" {
+			ui.Text(c, label).Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(textColor).SingleLine()
+		}
 	}).OnClick(func() {
 		*on = !*on
 		if onChange != nil {
@@ -148,12 +153,14 @@ func v4PrimaryButton(c *ui.Context, label string, fn func()) ui.Element {
 	return b
 }
 
-// v4UnderlineTabs renders underline tabs with a snappy spring-sliding 2px accent bar.
+// v4UnderlineTabs renders underline tabs with a paint-only AnimatePose 2px accent bar.
 func v4UnderlineTabs(c *ui.Context, key, label string, selected *int, labels []string, onChange func()) ui.Element {
 	parts := ui.TabsBase(c.Key(key), selected, len(labels))
 	list := parts.List.Label(label).Height(36).Gap(sp5).AlignItems(ui.Stretch).Shrink(0)
 	var activeTab ui.Element
+	var bar ui.Element
 	list.Children(func() {
+		bar = ui.Box(c.Key(key + "-bar")).Absolute().Bottom(0).Left(0).Height(2).Radius(1).Background(tok.Accent).PassThrough()
 		for idx, text := range labels {
 			on := idx == *selected
 			tab := parts.Tab(idx).Cursor(ui.CursorPointer).Height(36).Padding(0, 1).AlignItems(ui.Center).FocusRing(false)
@@ -178,39 +185,46 @@ func v4UnderlineTabs(c *ui.Context, key, label string, selected *int, labels []s
 	if targetW <= 0 {
 		targetX, targetW = 0, 28
 	}
-	barX := list.Spring("tab-bar-x", targetX, v4Snappy.Spring)
-	barW := list.Spring("tab-bar-w", targetW, v4Snappy.Spring)
-	list.DrawOver(func(p *ui.Painter, r ui.Rect) {
-		if barW > 0 {
-			p.Fill(ui.Rect{X: r.X + barX, Y: r.Y + r.H - 2, W: barW, H: 2}, tok.Accent, 1)
-		}
-	})
+	bar.Width(targetW).AnimatePose(ui.Pose{X: targetX, Scale: 1}, v4Snappy)
 	if onChange != nil {
 		list.OnChange(onChange)
 	}
 	return list
 }
 
-// v4Segmented renders a compact segmented control with a spring-sliding thumb.
+// v4Segmented renders a compact segmented control with a paint-only AnimatePose thumb
+// layered strictly behind the segment labels.
 func v4Segmented(c *ui.Context, key, label string, selected *int, labels []string, onChange func()) ui.Element {
-	parts := ui.SegmentedBase(c.Key(key), selected, len(labels))
-	track := parts.Track.Label(label).Padding(2).Radius(radius).Background(tok.Fill2).AlignItems(ui.Center).Shrink(0)
+	host := ui.Row(c.Key(key + "-host")).Radius(radius).Background(tok.Fill2).AlignItems(ui.Start).Shrink(0)
+	var thumb ui.Element
+	var track ui.Element
 	var activeSeg ui.Element
-	track.Children(func() {
-		for idx, text := range labels {
-			on := idx == *selected
-			seg := parts.Segment(idx).Cursor(ui.CursorPointer).Height(22).Padding(0, 10).Radius(radiusSmall).Background(ui.Transparent).BorderWidth(0)
-			color := tok.Text2
-			weight := 400
-			if on {
-				color = tok.Text1
-				weight = 500
-				activeSeg = seg
+	host.Children(func() {
+		// Normal-flow 0x0 layer declared before track paints strictly behind segment text.
+		ui.Box(c.Key(key + "-bg")).Size(0, 0).Shrink(0).PassThrough().Children(func() {
+			thumb = ui.Box(c.Key(key + "-thumb")).Margin(2, 0, 0, 0).Height(22).Radius(radiusSmall).Background(tok.SegThumb).PassThrough()
+			if !tok.Dark {
+				thumb.Border(1, tok.Border)
 			}
-			seg.Children(func() {
-				ui.Text(c, text).Font("system-ui").FontSize(fsFootnote).FontWeight(weight).TextColor(color).SingleLine()
-			})
-		}
+		})
+		parts := ui.SegmentedBase(c.Key(key), selected, len(labels))
+		track = parts.Track.Label(label).Padding(2).Radius(radius).Background(ui.Transparent).AlignItems(ui.Center).Shrink(0)
+		track.Children(func() {
+			for idx, text := range labels {
+				on := idx == *selected
+				seg := parts.Segment(idx).Cursor(ui.CursorPointer).Height(22).Padding(0, 10).Radius(radiusSmall).Background(ui.Transparent).BorderWidth(0)
+				color := tok.Text2
+				weight := 400
+				if on {
+					color = tok.Text1
+					weight = 500
+					activeSeg = seg
+				}
+				seg.Children(func() {
+					ui.Text(c, text).Font("system-ui").FontSize(fsFootnote).FontWeight(weight).TextColor(color).SingleLine()
+				})
+			}
+		})
 	})
 	trackBox := track.Bounds()
 	segBox := activeSeg.Bounds()
@@ -219,21 +233,11 @@ func v4Segmented(c *ui.Context, key, label string, selected *int, labels []strin
 	if targetW <= 0 {
 		targetX, targetW = 2, 44
 	}
-	thumbX := track.Spring("seg-x", targetX, v4Snappy.Spring)
-	thumbW := track.Spring("seg-w", targetW, v4Snappy.Spring)
-	track.Draw(func(p *ui.Painter, r ui.Rect) {
-		if thumbW > 0 {
-			rect := ui.Rect{X: r.X + thumbX, Y: r.Y + 2, W: thumbW, H: r.H - 4}
-			p.Fill(rect, tok.SegThumb, radiusSmall)
-			if !tok.Dark {
-				p.Stroke(rect, tok.Border, radiusSmall, 1)
-			}
-		}
-	})
+	thumb.Width(targetW).AnimatePose(ui.Pose{X: targetX, Scale: 1}, v4Snappy)
 	if onChange != nil {
 		track.OnChange(onChange)
 	}
-	return track
+	return host
 }
 
 func v4CountBadge(c *ui.Context, label string, active bool) ui.Element {

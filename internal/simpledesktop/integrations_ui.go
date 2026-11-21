@@ -18,78 +18,109 @@ func connectionUnavailable(row AgentConnection) bool {
 }
 
 func (a *App) agentConnectionSettings(c *ui.Context) {
-	ui.Column(c).FillWidth().Gap(12).Children(func() { a.agentConnectionSettingsContent(c) })
+	ui.Column(c).FillWidth().Gap(0).Children(func() { a.agentConnectionSettingsContent(c) })
 }
 func (a *App) agentConnectionSettingsContent(c *ui.Context) {
 	s := &a.integrations
 	a.refreshAgentReceiptsIfDue(time.Now())
-	settingsSectionHeader(c, "Agent 连接", nil, func() {
-		refreshActionLoading(c, "重新检测", s.Loading, a.RefreshConnections).Disabled(s.Busy || s.Loading)
-	})
-	if !s.Loaded {
-		homeText(c, "正在读取连接状态…", homeMeta)
+	recheckLabel := "重新检测"
+	if s.Loading {
+		recheckLabel = "检测中…"
+	}
+	v4Group(c, "Agent 连接", "", func() {
+		v4SmallButton(c, recheckLabel, v4IconRefresh, a.RefreshConnections).Disabled(s.Busy || s.Loading)
+	}, func() {
+		if !s.Loaded {
+			if s.Loading {
+				v4SkeletonGroup(c, 3, 2, true, true)
+			} else {
+				v4Row(c, v4RowOptions{
+					Title: "正在读取连接状态…",
+					Desc:  s.Error,
+					Control: func() {
+						if s.Error != "" {
+							v4SmallButton(c, "重试", v4IconRefresh, a.RefreshIntegrations)
+						}
+					},
+				})
+			}
+			return
+		}
+		if s.Selected == nil {
+			s.Selected = map[string]bool{}
+		}
+		var available, unavailable []AgentConnection
+		for _, row := range s.Connections.Connections {
+			if connectionUnavailable(row) {
+				unavailable = append(unavailable, row)
+			} else {
+				available = append(available, row)
+			}
+		}
+		a.agentConnectionGrid(c, available)
+		if len(unavailable) > 0 {
+			label := fmt.Sprintf("其他 Agent（%d）", len(unavailable))
+			if s.ShowUnavailable {
+				label = "收起其他 Agent"
+			}
+			v4Row(c, v4RowOptions{
+				Key:         "agents-toggle-unavailable",
+				Title:       label,
+				Clickable:   true,
+				HideChevron: true,
+				Control: func() {
+					ico := v4IconChev
+					if s.ShowUnavailable {
+						ico = v4IconDown
+					}
+					ui.Icon(c, ico).FontSize(14).TextColor(tok.Text3).Shrink(0)
+				},
+				OnClick: func() { s.ShowUnavailable = !s.ShowUnavailable },
+			})
+			if s.ShowUnavailable {
+				a.agentConnectionGrid(c, unavailable)
+			}
+		}
+		for _, pending := range s.PendingOperations {
+			if !pending.connection() {
+				continue
+			}
+			found := false
+			for _, row := range s.Connections.Connections {
+				if row.ID == pending.Profile {
+					found = true
+					break
+				}
+			}
+			if found {
+				continue
+			}
+			o := pending
+			name := "Agent"
+			for _, row := range s.Connections.Connections {
+				if row.ID == o.Profile {
+					name = connectionName(row.Kind)
+					break
+				}
+			}
+			v4Row(c, v4RowOptions{
+				Key:   "pending-connection-" + o.Operation,
+				Title: name + " 的连接结果尚未确认",
+				Leading: func() {
+					agentLogo(c, agentBrandIconFor("", name), 16)
+				},
+				Control: func() {
+					v4SmallButton(c, "检查连接", nil, func() { a.reviewConnectionOperation(o) }).Label("检查连接：" + name + " " + o.Operation).Disabled(s.Busy)
+				},
+			})
+		}
+		if s.Message != "" {
+			ui.Row(c).FillWidth().Padding(sp2, sp1).Children(func() { homeText(c, s.Message, homeMeta) })
+		}
 		if s.Error != "" {
-			homeText(c, s.Error, homeMeta)
-			commonButton(c, "重试", false, a.RefreshIntegrations)
+			ui.Row(c).FillWidth().Padding(sp2, sp1).Children(func() { homeText(c, s.Error, homeMeta).TextColor(tok.Danger) })
 		}
-		return
-	}
-	if s.Selected == nil {
-		s.Selected = map[string]bool{}
-	}
-	var available, unavailable []AgentConnection
-	for _, row := range s.Connections.Connections {
-		if connectionUnavailable(row) {
-			unavailable = append(unavailable, row)
-		} else {
-			available = append(available, row)
-		}
-	}
-	a.agentConnectionGrid(c, available)
-	if len(unavailable) > 0 {
-		label := fmt.Sprintf("其他 Agent（%d）", len(unavailable))
-		if s.ShowUnavailable {
-			label = "收起其他 Agent"
-		}
-		projectLink(c, label, func() { s.ShowUnavailable = !s.ShowUnavailable })
-		if s.ShowUnavailable {
-			a.agentConnectionGrid(c, unavailable)
-		}
-	}
-	for _, pending := range s.PendingOperations {
-		if !pending.connection() {
-			continue
-		}
-		found := false
-		for _, row := range s.Connections.Connections {
-			if row.ID == pending.Profile {
-				found = true
-				break
-			}
-		}
-		if found {
-			continue
-		}
-		o := pending
-		name := "Agent"
-		for _, row := range s.Connections.Connections {
-			if row.ID == o.Profile {
-				name = connectionName(row.Kind)
-				break
-			}
-		}
-		ui.Row(c.Key("pending-connection-" + o.Operation)).Gap(12).Children(func() {
-			agentLogo(c, agentBrandIconFor("", name), 14)
-			homeText(c, name+" 的连接结果尚未确认", homeMeta).Grow(1)
-			textButton(c, "检查连接", nil).Label("检查连接：" + name + " " + o.Operation).Disabled(s.Busy).OnClick(func() { a.reviewConnectionOperation(o) })
-		})
-	}
-	if s.Message != "" {
-		homeText(c, s.Message, homeMeta)
-	}
-	if s.Error != "" {
-		homeText(c, s.Error, homeMeta)
-	}
+	})
 }
 
 func (a *App) agentConnectionRow(c *ui.Context, row AgentConnection) {
@@ -100,68 +131,72 @@ func (a *App) agentConnectionRow(c *ui.Context, row AgentConnection) {
 	}
 	pending := s.pendingConnection(row.ID)
 	allowed := pending == nil && (connectionActionAllowed(row, "prepare") || connectionActionAllowed(row, "activate"))
+	version := row.HostVersion
+	if version == "" {
+		version = s.HostVersions[row.Kind]
+	}
+	if version == "" {
+		version = "—"
+	}
+	status := connectionStatus(row)
+	color := tok.Text3
+	if (captureConnection(row) && row.Capture != nil && row.Capture.State == "healthy") ||
+		(!captureConnection(row) && row.Status == "configured_pending_new_session" && row.NewSessions > 0) {
+		color = tok.OK
+	}
+	if pending != nil {
+		status = "连接结果待确认"
+		if pending.Kind == "connection_allow_capture" || pending.Kind == "connection_defer_capture" {
+			status = "自动保存设置待确认"
+		}
+		if s.Busy {
+			status = "正在连接…"
+			if pending.Kind == "connection_allow_capture" || pending.Kind == "connection_defer_capture" {
+				status = "正在设置自动保存…"
+			}
+		}
+	}
 	ui.Column(c.Key("agent-connection-" + row.ID)).FillWidth().Gap(0).Children(func() {
-		settingsListRow(c, func() {
-			ui.Box(c).Size(30, 30).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-				ui.Image(c, agentOriginalIcon(row.Kind)).Size(23, 23).Fit(ui.Contain).TextColor(tok.Text1)
-			})
-			ui.Row(c).Width(190).Shrink(0).Gap(10).AlignItems(ui.Center).Children(func() {
-				homeText(c, name, homeHeading).FontSize(13).FontWeight(500)
-				version := row.HostVersion
-				if version == "" {
-					version = s.HostVersions[row.Kind]
-				}
-				if version == "" {
-					version = "—"
-				}
-				homeText(c, version, homeMeta).Label(name + " 版本：" + version)
-			})
-			status := connectionStatus(row)
-			color := homeMuted
-			if (captureConnection(row) && row.Capture != nil && row.Capture.State == "healthy") ||
-				(!captureConnection(row) && row.Status == "configured_pending_new_session" && row.NewSessions > 0) {
-				color = tok.OK
-			}
-			if pending != nil {
-				status = "连接结果待确认"
-				if pending.Kind == "connection_allow_capture" || pending.Kind == "connection_defer_capture" {
-					status = "自动保存设置待确认"
-				}
-				if s.Busy {
-					status = "正在连接…"
-					if pending.Kind == "connection_allow_capture" || pending.Kind == "connection_defer_capture" {
-						status = "正在设置自动保存…"
+		v4Row(c, v4RowOptions{
+			Key:   "agent-row-" + row.ID,
+			Title: name,
+			TitleExtra: func() {
+				ui.Text(c, version).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).Label(name + " 版本：" + version).SingleLine()
+			},
+			DescExtra: func() {
+				homeText(c, status, homeMeta).TextColor(color).Tooltip(captureSavedTip(row))
+			},
+			Leading: func() {
+				ui.Box(c).Size(24, 24).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+					ui.Image(c, agentOriginalIcon(row.Kind)).Size(20, 20).Fit(ui.Contain).TextColor(tok.Text1)
+				})
+			},
+			Control: func() {
+				if row.Profile != "" || row.EnvironmentIssue != "" || len(row.Environments) > 0 {
+					label := "配置目录"
+					if s.EnvironmentOpen[row.ID] {
+						label = "收起目录"
 					}
+					v4SmallButton(c, label, nil, func() { s.EnvironmentOpen[row.ID] = !s.EnvironmentOpen[row.ID] }).Label("查看配置目录：" + name).Disabled(s.Busy)
 				}
-			}
-			homeText(c, status, homeMeta).TextColor(color).Tooltip(captureSavedTip(row))
-			ui.Spacer(c)
-			if row.Profile != "" || row.EnvironmentIssue != "" || len(row.Environments) > 0 {
-				label := "配置目录"
-				if s.EnvironmentOpen[row.ID] {
-					label = "收起目录"
-				}
-				textButton(c, label, func() { s.EnvironmentOpen[row.ID] = !s.EnvironmentOpen[row.ID] }).Label("查看配置目录：" + name).Disabled(s.Busy)
-			}
-			ui.Row(c).Width(90).Shrink(0).Justify(ui.End).AlignItems(ui.Center).Children(func() {
 				switch {
 				case pending != nil:
-					textButton(c, "核对连接", func() { a.reviewConnectionOperation(*pending) }).Label("核对连接：" + name).Disabled(s.Busy)
+					v4SmallButton(c, "核对连接", nil, func() { a.reviewConnectionOperation(*pending) }).Label("核对连接：" + name).Disabled(s.Busy)
 				case captureConnection(row):
 					a.captureConnectionAction(c, row)
 				case row.Status == "activation_unknown" || row.Status == "preparation_unknown" || row.Status == "requires_review" || row.Status == "staging_unknown" || row.Status == "agent_creation_unconfirmed":
-					textButton(c, "核对连接", func() { a.connectAgents("review", []string{row.ID}) }).Label("核对连接：" + name).Disabled(s.Busy)
+					v4SmallButton(c, "核对连接", nil, func() { a.connectAgents("review", []string{row.ID}) }).Label("核对连接：" + name).Disabled(s.Busy)
 				case allowed:
 					action, label := "prepare", "连接"
 					if connectionActionAllowed(row, "activate") {
 						action, label = "activate", "确认连接"
 					}
-					ui.Button(c, label).Label(label+" "+name).Padding(5, 12).Disabled(s.Busy || s.Loading).OnClick(func() { a.connectAgents(action, []string{row.ID}) })
+					v4SmallPrimaryButton(c, label, func() { a.connectAgents(action, []string{row.ID}) }).Label(label + " " + name).Disabled(s.Busy || s.Loading)
 				}
-			})
+			},
 		})
 		if row.Status == "prepared" && row.Preview != nil {
-			ui.Column(c).FillWidth().Padding(0, 0, 12, 46).Gap(5).Children(func() {
+			ui.Column(c).FillWidth().Padding(sp2, sp1, sp3, 34).Gap(5).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 				homeText(c, "将为 "+name+" 添加 Memlane 连接，确认后生效。", homeMeta)
 				if len(row.Preview.DisabledPlugins) > 0 {
 					homeText(c, fmt.Sprintf("将替换 %d 个旧 Cognee 连接。", len(row.Preview.DisabledPlugins)), homeMeta)
@@ -171,20 +206,20 @@ func (a *App) agentConnectionRow(c *ui.Context, row AgentConnection) {
 			a.captureConnectionDetails(c, row)
 		} else if row.Status == "configured_pending_new_session" && row.NewSessions == 0 {
 			tip := "请重新打开 " + name + " 并新建会话，Memlane 会自动检查连接。"
-			homeText(c, tip, homeMeta).Margin(0, 0, 0, 42).LineHeight(1.5)
+			ui.Row(c).FillWidth().Padding(sp1, sp1, sp2, 34).Children(func() { homeText(c, tip, homeMeta).LineHeight(1.5) })
 		} else if pending == nil {
 			if notice := connectionReviewNotice(name, row); notice != "" {
-				homeText(c, notice, homeMeta).Margin(0, 0, 8, 42).LineHeight(1.5)
+				ui.Row(c).FillWidth().Padding(sp1, sp1, sp2, 34).Children(func() { homeText(c, notice, homeMeta).LineHeight(1.5) })
 			}
 		}
 		if row.Profile != "" || row.EnvironmentIssue != "" || len(row.Environments) > 0 {
 			a.agentEnvironmentDetails(c, row)
 		}
 		if row.Status == "environment_receipt_unconfirmed" {
-			homeText(c, "已检测到会话，但还不能确认使用的是哪个配置目录。", homeMeta).Margin(0, 0, 0, 42)
+			ui.Row(c).FillWidth().Padding(sp1, sp1, sp2, 34).Children(func() { homeText(c, "已检测到会话，但还不能确认使用的是哪个配置目录。", homeMeta) })
 		}
 		if message := s.ItemMessages[row.ID]; message != "" {
-			homeText(c, message, homeMeta).Margin(0, 0, 0, 42).LineHeight(1.5)
+			ui.Row(c).FillWidth().Padding(sp1, sp1, sp2, 34).Children(func() { homeText(c, message, homeMeta).LineHeight(1.5) })
 		}
 	})
 }
@@ -251,10 +286,10 @@ func generationLabel(g GenerationDirectory, ref *GenerationRef) string {
 		return "尚未确认"
 	}
 	if row.Profile.Mode == "agent_bridge" {
-		return "Agent 桥接 · " + generationBridgeLabel(row.Profile.BridgeKind) + " · " + generationDefaultModel(g, row.Profile.BridgeKind)
+		return "已连接的 Agent · " + generationBridgeLabel(row.Profile.BridgeKind) + " · " + generationDefaultModel(g, row.Profile.BridgeKind)
 	}
 	provider := map[string]string{"openai": "OpenAI", "anthropic": "Anthropic", "gemini": "Gemini", "custom": "OpenAI 兼容", "ollama": "Ollama"}[row.Profile.Provider]
-	return "Provider · " + provider + " · " + row.Profile.Model
+	return "模型 API · " + provider + " · " + row.Profile.Model
 }
 func (a *App) generationSetupPage(c *ui.Context) {
 	ui.Column(c).Fill().Padding(28).Gap(20).Background(tok.Bg).Children(func() {
@@ -325,17 +360,15 @@ func (a *App) generationEditorPanel(c *ui.Context) {
 func (a *App) generationEditorContent(c *ui.Context) {
 	s := &a.integrations
 	ui.Column(c).FillWidth().Gap(14).Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			title := "Provider 配置"
-			if s.DraftMode == "agent_bridge" {
-				title = generationBridgeLabel(s.BridgeKind) + " 配置"
-			}
-			homeText(c, title, homeHeading).FontSize(15).FontWeight(500)
-			ui.Spacer(c)
-			if s.GenerationProviderDialog {
-				readingAction(c, "关闭 Provider 配置", readingClose, func() { s.GenerationProviderDialog = false; s.APIKey = ""; s.KeyEpoch++ })
-			}
-		})
+		if !s.GenerationProviderDialog {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+				title := "Provider 配置"
+				if s.DraftMode == "agent_bridge" {
+					title = generationBridgeLabel(s.BridgeKind) + " 配置"
+				}
+				homeText(c, title, homeHeading).FontSize(15).FontWeight(500)
+			})
+		}
 		ui.Column(c.Key("generation-editor-fields-" + s.ProfileID)).FillWidth().Gap(14).Children(func() {
 			locked := s.Busy || s.SaveOperation != ""
 			fieldKey := func(name string) *ui.Context {
@@ -380,21 +413,21 @@ func (a *App) generationEditorContent(c *ui.Context) {
 					homeText(c, "填写Ollama 地址，例如 http://127.0.0.1:11434，无需 API Key；模型需已在服务中可用。", homeMeta)
 				}
 			})
-			ui.Row(c).Gap(10).Children(func() {
+			ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
 				validationLabel := "验证（会消耗额度）"
 				if s.draftProfile().Provider == "ollama" {
 					validationLabel = "验证（调用模型）"
 				}
 				_, defaultAvailable := s.Generation.AgentBridges[s.BridgeKind]
-				ui.Button(c, "保存配置").Disabled(locked || s.pendingGenerationProfile(s.ProfileID) || (s.DraftMode == "agent_bridge" && !defaultAvailable)).OnClick(a.saveGeneration)
+				v4PrimaryButton(c, "保存配置", a.saveGeneration).Disabled(locked || s.pendingGenerationProfile(s.ProfileID) || (s.DraftMode == "agent_bridge" && !defaultAvailable))
 				if s.SaveOperation != "" {
-					textButton(c, "核对保存结果", nil).Disabled(s.Busy).OnClick(a.reviewGenerationSave)
+					v4SmallButton(c, "核对保存结果", v4IconRefresh, a.reviewGenerationSave).Disabled(s.Busy)
 				}
-				ui.Button(c, validationLabel).Disabled(s.Busy || !s.cleanSaved() || s.Validation.Status == "running" || s.Validation.Status == "queued" || s.pendingGenerationProfile(s.ProfileID)).OnClick(func() { a.generationAction("validations") })
+				v4OutlineButton(c, validationLabel, nil, func() { a.generationAction("validations") }).Disabled(s.Busy || !s.cleanSaved() || s.Validation.Status == "running" || s.Validation.Status == "queued" || s.pendingGenerationProfile(s.ProfileID))
 				if s.NextOperation != "" {
-					textButton(c, "核对待应用设置", nil).Disabled(s.Busy).OnClick(a.reviewGenerationNext)
+					v4SmallButton(c, "核对待应用设置", v4IconRefresh, a.reviewGenerationNext).Disabled(s.Busy)
 				}
-				textButton(c, "取消修改", a.discardGenerationDraft).Disabled(s.Busy || s.SaveOperation != "")
+				v4GhostButton(c, "取消修改", nil, a.discardGenerationDraft).Disabled(s.Busy || s.SaveOperation != "")
 			})
 			if !s.cleanSaved() && s.SaveOperation == "" {
 				homeText(c, "配置有未保存修改。", homeMeta)
@@ -414,10 +447,12 @@ func (a *App) generationEditorContent(c *ui.Context) {
 						homeText(c, mode, homeMeta).LineHeight(1.6)
 					}
 				}
-				textButton(c, "核对原验证", nil).Disabled(s.Busy).OnClick(func() { a.pollGenerationValidation(s.ValidationOperation) })
-				if s.Validation.Status == "queued" || s.Validation.Status == "running" {
-					textButton(c, "停止验证", nil).Disabled(s.Busy).OnClick(a.cancelGenerationValidation)
-				}
+				ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
+					v4SmallButton(c, "核对原验证", v4IconRefresh, func() { a.pollGenerationValidation(s.ValidationOperation) }).Disabled(s.Busy)
+					if s.Validation.Status == "queued" || s.Validation.Status == "running" {
+						v4DangerOutlineButton(c, "停止验证", true, a.cancelGenerationValidation).Disabled(s.Busy)
+					}
+				})
 			}
 			if s.Message != "" {
 				homeText(c, s.Message, homeMeta).LineHeight(1.7)

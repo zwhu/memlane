@@ -2,9 +2,28 @@ package simpledesktop
 
 import (
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/egoist/mygo/ui"
+)
+
+type inlineMarkdownCacheKey struct {
+	raw    string
+	size   float32
+	color  ui.Color
+	codeBg ui.Color
+	link   ui.Color
+}
+
+type inlineMarkdownCacheEntry struct {
+	preview string
+	spans   []ui.Span
+}
+
+var (
+	inlineMarkdownMu    sync.RWMutex
+	inlineMarkdownCache = map[inlineMarkdownCacheKey]inlineMarkdownCacheEntry{}
 )
 
 // previewMarkdownSource flattens multi-line memory text into a compact preview
@@ -174,10 +193,26 @@ func parseInlineLink(src string, start int) (label string, next int, ok bool) {
 // v4InlineMarkdown renders a single- or multi-line preview with inline Markdown
 // formatting (code pills, bold, italic, strikethrough, link labels).
 func v4InlineMarkdown(c *ui.Context, raw string, size float32, weight int, lineHeight float32, color ui.Color) ui.Element {
-	preview := previewMarkdownSource(raw)
-	spans := parseInlineMarkdown(preview, size, color)
-	if len(spans) == 0 {
-		return ui.Text(c, preview).Font("system-ui").FontSize(size).FontWeight(weight).LineHeight(lineHeight).TextColor(color)
+	key := inlineMarkdownCacheKey{raw: raw, size: size, color: color, codeBg: tok.Fill2, link: tok.Accent}
+	inlineMarkdownMu.RLock()
+	entry, ok := inlineMarkdownCache[key]
+	inlineMarkdownMu.RUnlock()
+	if !ok {
+		preview := previewMarkdownSource(raw)
+		var spans []ui.Span
+		if strings.ContainsAny(preview, "`*~[") {
+			spans = parseInlineMarkdown(preview, size, color)
+		}
+		entry = inlineMarkdownCacheEntry{preview: preview, spans: spans}
+		inlineMarkdownMu.Lock()
+		if len(inlineMarkdownCache) > 512 {
+			clear(inlineMarkdownCache)
+		}
+		inlineMarkdownCache[key] = entry
+		inlineMarkdownMu.Unlock()
 	}
-	return ui.RichText(c, spans...).Font("system-ui").FontSize(size).FontWeight(weight).LineHeight(lineHeight).TextColor(color)
+	if len(entry.spans) == 0 {
+		return ui.Text(c, entry.preview).Font("system-ui").FontSize(size).FontWeight(weight).LineHeight(lineHeight).TextColor(color)
+	}
+	return ui.RichText(c, entry.spans...).Font("system-ui").FontSize(size).FontWeight(weight).LineHeight(lineHeight).TextColor(color)
 }

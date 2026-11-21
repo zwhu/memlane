@@ -3,6 +3,7 @@ package simpledesktop
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,5 +123,41 @@ func TestProjectModelFailureAppearsWithoutChangingSavedMessageState(t *testing.T
 	}
 	if !found {
 		t.Fatal("model error was hidden behind message-save status")
+	}
+}
+
+func TestProjectModelFailureShowsCauseTimeAndRecovery(t *testing.T) {
+	a, q := projectQueueFixture()
+	now := time.Now().UTC()
+	failedAt := now.Add(-15 * time.Minute)
+	recoveredAt := now.Add(-5 * time.Minute)
+	q.ProcessingNotices = []processingNotice{{
+		Operation:   "op-502",
+		Status:      502,
+		Code:        "codex_connection_failed",
+		Backend:     "codex",
+		At:          failedAt.Format(time.RFC3339),
+		RecoveredAt: recoveredAt.Format(time.RFC3339),
+	}}
+	p := a.access.Directory.Projects[0]
+	_, info := a.messageNotices(q, p)
+	var got *messageNotice
+	for i := range info {
+		if info[i].Key == "processing/op-502" {
+			got = &info[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatal("missing processing notice")
+	}
+	if !strings.Contains(got.Source, "Codex · 记忆提炼 · ") {
+		t.Fatalf("expected failure clock in source, got %q", got.Source)
+	}
+	if !strings.Contains(got.Detail, "连接 Codex 上游模型服务失败（HTTP 502）") {
+		t.Fatalf("unexpected detail: %q", got.Detail)
+	}
+	if !strings.Contains(got.Followup, "后续调用已在") || !strings.Contains(got.Followup, "恢复正常") {
+		t.Fatalf("expected recovery hint in followup, got %q", got.Followup)
 	}
 }

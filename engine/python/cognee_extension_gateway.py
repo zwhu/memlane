@@ -21,6 +21,7 @@ from _runtime_common import CachedSecretReader
 from external_capture_store import ensure_qa_context_date
 from project_control import loopback_origin
 from project_policy import PolicyError
+from session_drift import build_project_alias_index
 
 MAX_GATEWAY_BODY_BYTES = 16 * 1024 * 1024
 GATEWAY_TIMEOUT_SECONDS = 600.0
@@ -392,10 +393,22 @@ def _rewrite_query_datasets(ctx, payload):
     return updated
 
 
-def create_gateway_app(registry, *, recall_store=None, official_url=None, session=None, prefix='/cognee'):
+def create_gateway_app(registry, *, recall_store=None, drift_store=None, official_url=None, session=None, prefix='/cognee'):
     """Create the Cognee HTTP Extension Gateway ``aiohttp.web.Application``."""
     secret_cache = CachedSecretReader()
     owned_session = None
+
+    async def _observe_trace_drift(bound_dataset_id, session_id, entry_obj, *, message_id=None):
+        if (drift_store is None or not isinstance(entry_obj, dict)
+                or entry_obj.get('type') != 'trace'
+                or not isinstance(session_id, str) or not session_id):
+            return
+        try:
+            async with registry.mutex:
+                alias_index = build_project_alias_index(registry.state.get('projects', {}))
+            drift_store.observe_trace(bound_dataset_id, session_id, entry_obj, alias_index, message_id=message_id)
+        except Exception:
+            pass
 
     def resolve_upstream():
         url = official_url or getattr(getattr(registry, 'official', None), 'url', None)
@@ -543,9 +556,14 @@ def create_gateway_app(registry, *, recall_store=None, official_url=None, sessio
                 if not ds_id:
                     raise PolicyError('dataset_access_denied', 403)
                 _authorize_target(_resolve_target(ctx, ds_id), 'capture')
-                if isinstance(payload.get('entry'), dict):
-                    payload = {**payload, 'entry': enrich_codex_file_change_entry(payload['entry'])}
-                return await proxy(request, ctx, f'/api/v1/capture/entries/{msg_id}', json_body=payload)
+                entry_obj = payload.get('entry')
+                if isinstance(entry_obj, dict):
+                    entry_obj = enrich_codex_file_change_entry(entry_obj)
+                    payload = {**payload, 'entry': entry_obj}
+                resp = await proxy(request, ctx, f'/api/v1/capture/entries/{msg_id}', json_body=payload)
+                if 200 <= resp.status < 300:
+                    await _observe_trace_drift(ds_id, payload.get('session_id'), entry_obj, message_id=msg_id)
+                return resp
 
             if method == 'POST' and rel_path in ('/api/v1/recall', '/api/v1/search'):
                 body_bytes = await _read_limited_body(request)
@@ -563,9 +581,14 @@ def create_gateway_app(registry, *, recall_store=None, official_url=None, sessio
                 updated = {**payload, 'dataset_id': info['dataset_id']}
                 updated.pop('datasetId', None)
                 updated.pop('datasetName', None)
-                if isinstance(updated.get('entry'), dict):
-                    updated['entry'] = ensure_qa_context_date(enrich_codex_file_change_entry(updated['entry']))
-                return await proxy(request, ctx, rel_path, json_body=updated)
+                entry_obj = updated.get('entry')
+                if isinstance(entry_obj, dict):
+                    entry_obj = ensure_qa_context_date(enrich_codex_file_change_entry(entry_obj))
+                    updated['entry'] = entry_obj
+                resp = await proxy(request, ctx, rel_path, json_body=updated)
+                if 200 <= resp.status < 300:
+                    await _observe_trace_drift(info['dataset_id'], updated.get('session_id') or updated.get('sessionId'), entry_obj)
+                return resp
 
             if method == 'POST' and rel_path == '/api/v1/remember':
                 body_bytes = await _read_limited_body(request)
@@ -638,8 +661,8 @@ def create_gateway_app(registry, *, recall_store=None, official_url=None, sessio
     return gw
 
 
-def attach_cognee_gateway(app, registry, *, recall_store=None, official_url=None, session=None):
+def attach_cognee_gateway(app, registry, *, recall_store=None, drift_store=None, official_url=None, session=None):
     """Mount the Cognee HTTP Extension Gateway subapp at ``/cognee``."""
-    gw = create_gateway_app(registry, recall_store=recall_store, official_url=official_url, session=session, prefix='/cognee')
+    gw = create_gateway_app(registry, recall_store=recall_store, drift_store=drift_store, official_url=official_url, session=session, prefix='/cognee')
     app.add_subapp('/cognee', gw)
     return gw

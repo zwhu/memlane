@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import types
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from aiohttp.test_utils import TestClient, TestServer
 from project_control_server import create_app
 from processing_notices import processing_notices
@@ -32,3 +32,41 @@ class ProcessingNoticesTests(unittest.IsolatedAsyncioTestCase):
                 response=await client.get('/v1/projects/p/processing-notices',headers={'Authorization':'Bearer '+'m'*40})
                 self.assertEqual(response.status,200)
                 self.assertEqual((await response.json())['items'],items)
+
+    def test_reads_agent_completion_log_and_attaches_recovery_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logs = Path(directory) / 'runtime-logs'
+            logs.mkdir()
+            now = datetime(2026, 11, 21, 1, 0, 0, tzinfo=timezone.utc)
+            fail_at = (now - timedelta(minutes=10)).isoformat()
+            ok_before = (now - timedelta(minutes=20)).isoformat()
+            ok_after = (now - timedelta(minutes=3)).isoformat()
+            req_id = 'b' * 32
+            op_id = '12345678-1234-1234-1234-123456789abc'
+            base = {'schema_version': 1, 'event': 'request_finished', 'component': 'generation_http',
+                    'dataset_id': 'dataset', 'backend_kind': 'codex', 'outcome': 'succeeded'}
+            (logs / 'official_service_dev.log').write_text('\n'.join([
+                json.dumps({**base, 'request_id': 'c' * 32, 'operation_id': op_id, 'at': ok_before, 'status': 200}),
+                json.dumps({**base, 'request_id': req_id, 'operation_id': op_id, 'at': fail_at, 'status': 502}),
+            ]) + '\n')
+            # Legacy log lacks this entry; current agent_completion_endpoint.log supplies codex_connection_failed.
+            (logs / 'codex_completion_endpoint.log').write_text(
+                json.dumps({'schema_version': 1, 'event': 'request_finished', 'component': 'codex_bridge',
+                            'request_id': req_id, 'outcome': 'codex_model_failed'}) + '\n'
+            )
+            (logs / 'agent_completion_endpoint.log').write_text(
+                json.dumps({'schema_version': 1, 'event': 'request_finished', 'component': 'codex_bridge',
+                            'request_id': req_id, 'outcome': 'codex_connection_failed'}) + '\n'
+            )
+            without_recovery = processing_notices(logs, 'dataset', now=now)
+            self.assertEqual(len(without_recovery), 1)
+            self.assertEqual(without_recovery[0]['code'], 'codex_connection_failed')
+            self.assertNotIn('recovered_at', without_recovery[0])
+
+            with (logs / 'official_service_dev.log').open('a') as handle:
+                handle.write(json.dumps({**base, 'request_id': 'd' * 32, 'operation_id': '99999999-1234-1234-1234-123456789abc',
+                                         'at': ok_after, 'status': 200}) + '\n')
+            with_recovery = processing_notices(logs, 'dataset', now=now)
+            self.assertEqual(len(with_recovery), 1)
+            self.assertEqual(with_recovery[0]['code'], 'codex_connection_failed')
+            self.assertEqual(with_recovery[0]['recovered_at'], ok_after)

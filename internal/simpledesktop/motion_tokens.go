@@ -32,64 +32,118 @@ func v4DocTransition() ui.ElementTransition {
 	}
 }
 
-// v4SmoothEase evaluates the exact critically-damped spring (Duration=0.35s,
-// Bounce=0) over 480ms, matching the V4 prototype's --spring-smooth curve.
-func v4SmoothEase(t float32) float32 {
-	if t <= 0 {
-		return 0
-	}
-	if t >= 1 {
-		return 1
-	}
-	const span = 0.48
-	const w = 2 * math.Pi / 0.35
-	wt := w * float64(t) * span
-	val := 1 - (1+wt)*math.Exp(-wt)
-	end := 1 - (1+w*span)*math.Exp(-w*span)
-	return float32(val / end)
+// poseEnterTracker drives paint-only AnimatePose enter transitions in 2 frames:
+// Callers include `run` in the element's c.Key(...) so Frame 1 always starts
+// from a fresh pose state (r == nil -> velocity == 0, never using a 1ns curve
+// that would inject huge velocity and cause up-then-down overshoot).
+// Frame 1 snaps to the starting pose and requests 1 rebuild;
+// Frame 2 heads monotonically for the resting pose on MyGo's paint-only repose().
+type poseEnterTracker struct {
+	armed    map[string]uint64
+	launched map[string]uint64
 }
 
-var v4EnterFrames = []ui.Keyframe{
-	{At: 0, Value: 0},
-	{At: 480 * time.Millisecond, Value: 1, Ease: v4SmoothEase},
-}
-
-// v4PageEnter reproduces the V4 prototype's .page-enter glide (translateY 8px->0
-// on Smooth spring) without allocating a full-window offscreen opacity layer that
-// would nest with staggered child rows.
-func v4PageEnter(el ui.Element, run uint64) ui.Element {
-	p := el.Keyframes("v4-page-enter", v4EnterFrames, ui.KeyframeOptions{Run: run})
-	if p < 1 {
-		el.Transform(ui.Translation(0, (1-p)*8))
+func (t *poseEnterTracker) apply(c *ui.Context, el ui.Element, key string, run uint64, start, rest ui.Pose, delay time.Duration, restAnim ui.Animation) ui.Element {
+	reduce := c.Preferences().ReduceMotion
+	if run == 0 || reduce {
+		return el.AnimatePose(rest, restAnim)
 	}
-	return el
+	if t.armed == nil {
+		t.armed = map[string]uint64{}
+		t.launched = map[string]uint64{}
+	}
+	if len(t.armed) > 256 {
+		clear(t.armed)
+		clear(t.launched)
+	}
+	if t.armed[key] != run {
+		t.armed[key] = run
+		delete(t.launched, key)
+		el.AnimatePose(start, v4Smooth)
+		c.AnimationFrame()
+		return el
+	}
+	if t.launched[key] != run {
+		t.launched[key] = run
+		enterAnim := v4Smooth
+		enterAnim.Delay = delay
+		return el.AnimatePose(rest, enterAnim)
+	}
+	return el.AnimatePose(rest, restAnim)
 }
 
-// v4StaggerEnter reproduces .stagger > * (opacity 0->1, translateY 6px->0,
-// 28ms per-row stagger + 40ms base delay) capped to the first 8 above-the-fold
-// rows to keep transient compositor textures bounded.
-func v4StaggerEnter(el ui.Element, index int, run uint64) ui.Element {
-	if index < 0 || index >= 8 {
+// v4PageEnter ("Page Rise / 页面上浮入场") reproduces .page-enter: monotonic
+// bottom-to-top glide (translateY +10px -> 0, opacity 0 -> 1) on Smooth spring.
+func (a *App) v4PageEnter(c *ui.Context, el ui.Element, key string, run uint64) ui.Element {
+	return a.poseEnter.apply(c, el, "page:"+key, run, ui.Pose{Y: 10, Scale: 1, Fade: 1}, ui.Pose{Scale: 1}, 0, v4Smooth)
+}
+
+// v4StaggerEnter ("Stagger Cascade / 列表错开缓进") reproduces .stagger > *:
+// monotonic bottom-to-top glide (+8px -> 0, opacity 0 -> 1, 28ms per-row delay)
+// merged cleanly with Hover Lift (-1px) and Press Tap (0.99).
+func (a *App) v4StaggerEnter(c *ui.Context, el ui.Element, key string, index int, run uint64, interactive bool) ui.Element {
+	rest := ui.Pose{Scale: 1}
+	if interactive {
+		switch {
+		case el.Pressed():
+			rest.Scale = 0.99
+		case el.Hovered():
+			rest.Y = -1
+		}
+	}
+	if index < 0 || index >= 12 {
+		if interactive {
+			return el.AnimatePose(rest, v4Snappy)
+		}
 		return el
 	}
 	delay := time.Duration(index*28+40) * time.Millisecond
-	p := el.Keyframes("v4-stagger-enter", v4EnterFrames, ui.KeyframeOptions{Run: run, Delay: delay})
-	if p < 1 {
-		el.Opacity(p)
-		el.Transform(ui.Translation(0, (1-p)*6))
-	}
-	return el
+	return a.poseEnter.apply(c, el, "row:"+key, run, ui.Pose{Y: 8, Scale: 1, Fade: 1}, rest, delay, v4Snappy)
 }
 
-// v4DocEnter reproduces .doc-enter (opacity 0->1, translateX 8px->0 on Smooth
-// spring) when switching the active memory in the reading pane.
-func v4DocEnter(el ui.Element, run uint64) ui.Element {
-	p := el.Keyframes("v4-doc-enter", v4EnterFrames, ui.KeyframeOptions{Run: run})
-	if p < 1 {
-		el.Opacity(p)
-		el.Transform(ui.Translation((1-p)*8, 0))
+// v4DocEnter ("Doc Glide / 阅读区侧滑切换") reproduces .doc-enter:
+// translateX +8px -> 0, opacity 0 -> 1 on Smooth spring.
+func (a *App) v4DocEnter(c *ui.Context, el ui.Element, key string, run uint64) ui.Element {
+	return a.poseEnter.apply(c, el, "doc:"+key, run, ui.Pose{X: 8, Scale: 1, Fade: 1}, ui.Pose{Scale: 1}, 0, v4Smooth)
+}
+
+// v4HeatmapWaveElapsed advances the left-to-right staggered wave grow animation
+// for the heatmap canvas. Stops requesting frames once settled or under ReduceMotion.
+func v4HeatmapWaveElapsed(c *ui.Context, start time.Time, total time.Duration) (float64, bool) {
+	if c.Preferences().ReduceMotion || start.IsZero() {
+		return total.Seconds(), false
 	}
-	return el
+	elapsed := c.Now().Sub(start)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	if elapsed >= total {
+		return total.Seconds(), false
+	}
+	c.AnimationFrame()
+	return elapsed.Seconds(), true
+}
+
+// v4BouncyScale evaluates an underdamped Bouncy spring (0 -> 1 with crisp pop)
+// at t seconds for individual heatmap cells during wave grow.
+func v4BouncyScale(t float64) float32 {
+	if t <= 0 {
+		return 0
+	}
+	if t >= 0.65 {
+		return 1
+	}
+	const (
+		w    = 2 * math.Pi / 0.42
+		zeta = 0.62 // slight tactile pop visible on 11px squares
+	)
+	sq := math.Sqrt(1 - zeta*zeta)
+	wd := w * sq
+	val := 1 - math.Exp(-zeta*w*t)*(math.Cos(wd*t)+(zeta/sq)*math.Sin(wd*t))
+	if val < 0 {
+		return 0
+	}
+	return float32(val)
 }
 
 func v4DropInTransition() ui.ElementTransition {
@@ -106,6 +160,76 @@ func v4ModalTransition() ui.ElementTransition {
 		Animation: &anim,
 		Enter:     &ui.Motion{Y: 10, Scale: 0.94, Opacity: 0},
 	}
+}
+
+func v4DialogTransition() ui.ElementTransition {
+	anim := v4Snappy
+	return ui.ElementTransition{
+		Animation: &anim,
+		Enter:     &ui.Motion{Scale: 0.96, Opacity: 0},
+	}
+}
+
+// v4Spinner draws a compact 12px loading spinner. Under ReduceMotion it renders
+// a static dot ring without requesting animation frames.
+func v4Spinner(c *ui.Context) ui.Element {
+	reduce := c.Preferences().ReduceMotion
+	return ui.Box(c).Size(12, 12).Shrink(0).Draw(func(p *ui.Painter, r ui.Rect) {
+		cx, cy := r.X+r.W/2, r.Y+r.H/2
+		rad := float32(4.5)
+		angle := float64(0)
+		if !reduce {
+			c.AnimationFrame()
+			now := float64(c.Now().UnixNano()) / 1e9
+			angle = math.Mod(now/0.7, 1) * 2 * math.Pi
+		}
+		for i := 0; i < 8; i++ {
+			a := float64(i) * (2 * math.Pi / 8)
+			x := cx + float32(math.Cos(a))*rad
+			y := cy + float32(math.Sin(a))*rad
+			p.Fill(ui.Rect{X: x - 0.9, Y: y - 0.9, W: 1.8, H: 1.8}, tok.BorderStrong, 0.9)
+		}
+		for i := 0; i < 4; i++ {
+			a := angle + float64(i)*0.45
+			x := cx + float32(math.Cos(a))*rad
+			y := cy + float32(math.Sin(a))*rad
+			alpha := float32(0.4 + 0.6*float64(i)/3.0)
+			p.Fill(ui.Rect{X: x - 1.1, Y: y - 1.1, W: 2.2, H: 2.2}, tok.Accent.Alpha(alpha), 1.1)
+		}
+	})
+}
+
+// v4SkeletonBar draws a single V4 skeleton placeholder bar with a subtle shimmer.
+// Under ReduceMotion it stays static and never requests animation frames.
+func v4SkeletonBar(c *ui.Context, width, height, cornerRadius float32) ui.Element {
+	reduce := c.Preferences().ReduceMotion
+	box := ui.Box(c).Height(height).Radius(cornerRadius).Shrink(0)
+	if width > 0 {
+		box.Width(width)
+	} else {
+		box.FillWidth()
+	}
+	return box.Draw(func(p *ui.Painter, r ui.Rect) {
+		base := tok.Fill2
+		p.Fill(r, base, cornerRadius)
+		if reduce || r.W <= 0 {
+			return
+		}
+		c.AnimationFrame()
+		now := float64(c.Now().UnixNano()) / 1e9
+		phase := math.Mod(now/1.4, 1)
+		bandW := r.W * 0.36
+		x := r.X - bandW + float32(phase)*(r.W+bandW)
+		clippedX := max(r.X, x)
+		clippedRight := min(r.X+r.W, x+bandW)
+		if clippedRight > clippedX {
+			shine := tok.BgElevated.Alpha(0.55)
+			if tok.Dark {
+				shine = tok.Hover.Alpha(0.22)
+			}
+			p.Fill(ui.Rect{X: clippedX, Y: r.Y, W: clippedRight - clippedX, H: r.H}, shine, cornerRadius)
+		}
+	})
 }
 
 // v4RowInteractive applies the V4 hover lift (-1px) and press scale (0.99)
@@ -168,17 +292,12 @@ func v4StageBlocks(c *ui.Context) ui.Element {
 }
 
 // v4EmptyState renders the V4 floating three-block illustration with subtle
-// pointer parallax. Only animates during its initial 2s settle or while hovered,
-// and stops immediately under ReduceMotion so idle empty views use 0% CPU.
+// pointer parallax. Gently breathes continuously while visible and stops
+// immediately under ReduceMotion.
 func v4EmptyState(c *ui.Context, key, message, hint string) {
 	reduce := c.Preferences().ReduceMotion
 	wrap := ui.Column(c.Key(key)).Grow(1).MinHeight(180).FillWidth().AlignItems(ui.Center).Justify(ui.Center).Gap(sp3).Padding(sp5)
-	hovered := wrap.Hovered()
-	intro := wrap.Keyframes("empty-intro", []ui.Keyframe{
-		{At: 0, Value: 0},
-		{At: 2 * time.Second, Value: 1},
-	})
-	animate := !reduce && (hovered || intro < 1)
+	animate := !reduce
 	var px, py float32
 	if !reduce {
 		if x, y, ok := wrap.PointerPosition(); ok {

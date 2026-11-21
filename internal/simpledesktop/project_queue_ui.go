@@ -8,38 +8,36 @@ import (
 
 func (a *App) projectPermissionCard(c *ui.Context, p AccessProject, agent AccessAgent) {
 	key := p.ID + "/" + agent.ID
-	pending := a.access.CheckboxPending[key]
-	ui.Row(c.Key("permission-row-"+key)).FillWidth().AlignItems(ui.Center).Gap(16).Padding(12, 16).Children(func() {
-		ui.Row(c).Width(180).MinWidth(0).AlignItems(ui.Center).Gap(8).Children(func() {
-			agentLogo(c, accessAgentIcon(agent), 16)
-			homeText(c, agentDisplayName(agent.Name), homeBody).SingleLine()
-		})
-		a.agentPolicyEditor(c, p, agent)
-		ui.Spacer(c)
-		ui.Row(c).Width(120).AlignItems(ui.Center).Justify(ui.End).Gap(8).Children(func() {
-			switch {
-			case pending != nil && a.access.Busy:
-				homeText(c, "保存中…", homeMeta)
-			case pending != nil:
-				homeText(c, "尚未确认保存", homeMeta)
-				projectLink(c, "重新核对", a.RefreshProjectDirectory).Disabled(a.access.Loading).Tooltip(a.access.Message)
-			case time.Now().Before(a.access.PermissionSaved[key]):
-				homeText(c, "已保存", homeMeta)
+	actual := p.Overrides[agent.ID].effective(a.access.Directory.Defaults)
+	savedRecently := a.access.CheckboxPending[key] == nil && time.Now().Before(a.access.PermissionSaved[key])
+	v4Row(c, v4RowOptions{
+		Key:   "permission-row-" + key,
+		Title: agentDisplayName(agent.Name),
+		Desc:  accessTierDesc(actual.Access),
+		Leading: func() {
+			agentLogo(c, accessAgentIcon(agent), 20)
+		},
+		Control: func() {
+			if savedRecently {
+				homeText(c, "已保存", homeMeta).TextColor(tok.OK).SingleLine()
 			}
-		})
+			a.agentPolicyEditor(c, p, agent)
+		},
 	})
 }
 func queueBadge(c *ui.Context, label string, color ui.Color) {
-	ui.Row(c).Height(20).Padding(0, 8).AlignItems(ui.Center).Background(color.Alpha(.09)).Radius(4).Children(func() { homeText(c, label, homeMeta).TextColor(color).FontSize(10) })
+	ui.Row(c).Height(20).Padding(0, 7).AlignItems(ui.Center).Background(color.Alpha(.10)).Radius(radiusSmall).Children(func() {
+		homeText(c, label, homeMeta).TextColor(color).FontSize(fsCaption).FontWeight(500)
+	})
 }
 func queueStatus(c *ui.Context, label string, color ui.Color) {
 	ui.Row(c).Height(24).Shrink(0).Justify(ui.Start).AlignItems(ui.Center).Children(func() { queueBadge(c, label, color) })
 }
 func queueAction(c *ui.Context, label string, fn func()) ui.Element {
-	return textButton(c, label, fn).Shrink(0).Padding(0).AlignSelf(ui.Center).Justify(ui.Start).TextColor(tok.Accent)
+	return v4SmallButton(c, label, nil, fn)
 }
 func queueRefreshAction(c *ui.Context, label string, fn func()) ui.Element {
-	return refreshAction(c, label, fn)
+	return v4SmallButton(c, label, v4IconRefresh, fn)
 }
 
 func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
@@ -58,68 +56,89 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 		return result
 	}
 	needs, info = active(needs), active(info)
-	ui.Column(c.Key("message-status-"+p.ID)).FillWidth().Gap(16).Margin(8, 0, 0, 0).Children(func() {
-		ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
-			homeText(c, "消息与处理状态", homeHeading).FontSize(15)
-			if q.Loading {
-				homeText(c, "更新中…", homeMeta)
-			}
-			if q.AutomaticSave {
-				homeText(c, "自动保存已开启", homeMeta)
-			}
-			if q.Backlog != nil && (q.AutomaticSave || q.Backlog.active()) {
-				queueAction(c, "暂停自动保存", func() { a.changeBacklog(q, p, true) }).Disabled(q.BacklogBusy || q.Backlog.Status == "stopping")
-			}
-			refreshAction(c, "刷新消息状态", func() { a.loadProjectQueue(q, p); a.refreshBacklog(q, p) }).Disabled(q.Loading || q.BacklogLoading || a.access.Busy)
-		})
-		a.messageNoticeGroup(c, q, p, "需要你处理", "仅列出需要你操作的事项。", needs, true)
-		a.messageNoticeGroup(c, q, p, "状态与异常提示", "无需你确认消息是否保存；系统异常会保留显示。", info, false)
-		if len(history) > 0 {
-			projectLink(c, fmt.Sprintf("已知晓的历史提示（%d）", len(history)), func() { q.NoticeHistoryOpen = !q.NoticeHistoryOpen })
-			if q.NoticeHistoryOpen {
-				a.messageNoticeGroup(c, q, p, "已知晓的历史提示", "", history, false)
-			}
+
+	groupDesc := ""
+	if q.Loading {
+		groupDesc = "更新中…"
+	} else if q.AutomaticSave {
+		groupDesc = "自动保存已开启"
+	}
+	v4Group(c, "消息与处理状态", groupDesc, func() {
+		if q.Backlog != nil && (q.AutomaticSave || q.Backlog.active()) {
+			queueAction(c, "暂停自动保存", func() { a.changeBacklog(q, p, true) }).Disabled(q.BacklogBusy || q.Backlog.Status == "stopping")
 		}
-		if q.NoticeAcknowledgementError != "" {
-			homeText(c, q.NoticeAcknowledgementError, homeBody).TextColor(tok.Warning)
-		}
-		if !q.Loaded && len(info) == 0 {
-			homeText(c, "正在读取消息状态…", homeMeta)
-		}
-		if q.Loaded && len(q.Documents) > 0 && q.DocumentError == "" {
-			ui.Column(c).FillWidth().Gap(10).Children(func() {
-				ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-					homeText(c, "记忆整理", homeHeading).FontSize(13)
-					queueBadge(c, fmt.Sprintf("%d 份文档", len(q.Documents)), homeLinkInk)
+		queueRefreshAction(c, "刷新消息状态", func() { a.loadProjectQueue(q, p); a.refreshBacklog(q, p) }).Disabled(q.Loading || q.BacklogLoading || a.access.Busy)
+	}, func() {
+		ui.Column(c.Key("message-status-"+p.ID)).FillWidth().Gap(0).Children(func() {
+			if !q.Loaded && len(info) == 0 {
+				v4Row(c, v4RowOptions{Title: "正在读取消息状态…"})
+			}
+			a.messageNoticeGroup(c, q, p, "需要你处理", "仅列出需要你操作的事项。", needs, true)
+			a.messageNoticeGroup(c, q, p, "状态与异常提示", "无需你确认消息是否保存；系统异常会保留显示。", info, false)
+			if len(history) > 0 {
+				v4Row(c, v4RowOptions{
+					Key:         "proj-notice-history-" + p.ID,
+					Title:       fmt.Sprintf("已知晓的历史提示（%d）", len(history)),
+					Clickable:   true,
+					HideChevron: true,
+					Control: func() {
+						ico := v4IconChev
+						if q.NoticeHistoryOpen {
+							ico = v4IconDown
+						}
+						ui.Icon(c, ico).FontSize(14).TextColor(tok.Text3).Shrink(0)
+					},
+					OnClick: func() { q.NoticeHistoryOpen = !q.NoticeHistoryOpen },
 				})
-				homeText(c, "以下文档已保存，尚未完成记忆整理。", homeMeta)
+				if q.NoticeHistoryOpen {
+					a.messageNoticeGroup(c, q, p, "已知晓的历史提示", "", history, false)
+				}
+			}
+			if q.NoticeAcknowledgementError != "" {
+				ui.Row(c).FillWidth().Padding(sp2, sp1).Children(func() {
+					homeText(c, q.NoticeAcknowledgementError, homeBody).TextColor(tok.Warning)
+				})
+			}
+			if q.Loaded && len(q.Documents) > 0 && q.DocumentError == "" {
+				v4Row(c, v4RowOptions{
+					Key:   "proj-queue-summary-" + p.ID,
+					Title: "记忆整理",
+					Desc:  "以下文档已保存，尚未完成记忆整理。",
+					Control: func() {
+						v4Badge(c, fmt.Sprintf("%d 份文档", len(q.Documents)), "accent")
+					},
+				})
 				start := min(q.Offset, len(q.Documents))
 				end := min(start+5, len(q.Documents))
 				for _, item := range q.Documents[start:end] {
 					item := item
-					ui.Column(c.Key("document-"+item.ID)).FillWidth().Padding(14, 16).Gap(6).Background(tok.BgElevated).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(10).Children(func() {
-						homeText(c, queuedDocumentTitle(item), homeBody).FontSize(12).SingleLine()
-						ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
-							queueBadge(c, "已保存 · 未完成整理", homeLinkInk)
-							if item.Date != "" {
-								homeText(c, displayDate(item.Date), homeMeta)
-							}
+					desc := "已保存 · 未完成整理"
+					if item.Date != "" {
+						desc = displayDate(item.Date) + " · " + desc
+					}
+					v4Row(c, v4RowOptions{
+						Key:   "document-" + item.ID,
+						Title: queuedDocumentTitle(item),
+						Desc:  desc,
+						Control: func() {
 							queueAction(c, "查看", func() { a.openQueuedDocument(p, item) })
-						})
+						},
 					})
 				}
 				if len(q.Documents) > 5 {
-					ui.Row(c).Gap(12).Children(func() {
+					ui.Row(c).FillWidth().Padding(sp2, sp1).Gap(sp3).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 						queueAction(c, "上一页", func() { q.Offset = max(0, q.Offset-5) }).Disabled(start == 0)
 						homeText(c, fmt.Sprintf("%d–%d / %d", start+1, end, len(q.Documents)), homeMeta)
 						queueAction(c, "下一页", func() { q.Offset += 5 }).Disabled(end == len(q.Documents))
 					})
 				}
-			})
-		}
-		if q.ArchiveError != "" {
-			homeText(c, "历史异常记录读取失败；当前保存异常仍会显示。", homeMeta)
-		}
+			}
+			if q.ArchiveError != "" {
+				ui.Row(c).FillWidth().Padding(sp2, sp1).Children(func() {
+					homeText(c, "历史异常记录读取失败；当前保存异常仍会显示。", homeMeta)
+				})
+			}
+		})
 	})
 }
 
@@ -128,109 +147,106 @@ var messageClockIcon = homeSVG(`<circle cx="12" cy="12" r="9"/><path d="M12 7v5l
 var messagePauseIcon = homeSVG(`<rect x="7" y="5" width="3" height="14" rx="1"/><rect x="14" y="5" width="3" height="14" rx="1"/>`)
 
 func (a *App) messageNoticeGroup(c *ui.Context, q *projectQueueState, p AccessProject, title, subtitle string, rows []messageNotice, needsUser bool) {
-	ui.Column(c.Key(title)).FillWidth().Gap(9).Children(func() {
-		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-			homeText(c, title, homeHeading).FontSize(12)
-			if len(rows) > 0 {
-				homeText(c, fmt.Sprintf("%d", len(rows)), homeMeta).FontSize(11)
-			}
-			if len(rows) == 0 && q.Loaded {
+	ui.Column(c.Key(title)).FillWidth().Gap(0).Children(func() {
+		if len(rows) == 0 {
+			if q.Loaded {
 				label := "当前没有需要你处理的事项"
 				if !needsUser {
 					label = "当前没有消息积压或已检测到的异常"
 				}
-				homeText(c, label, homeMeta)
+				v4Row(c, v4RowOptions{
+					Title: title,
+					Desc:  label,
+					Value: "正常",
+				})
 			}
-		})
-		if len(rows) == 0 {
 			return
 		}
-		ui.Column(c).FillWidth().Background(tok.BgElevated).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(10).Children(func() {
-			for index, n := range rows {
-				n := n
-				acknowledged := q.noticeAcknowledged(n.Key)
-				ui.Row(c.Key(n.Key)).FillWidth().Padding(13, 16).Gap(12).AlignItems(ui.Start).Children(func() {
-					color := homeIconInk
-					icon := messageClockIcon
-					switch n.Tag {
-					case "系统异常", "读取异常", "整理异常", "保存受阻", "需要授权", "需要补交":
-						color = tok.Warning
-						icon = messageAlertIcon
-					case "已暂停":
-						icon = messagePauseIcon
-					}
-					ui.Column(c).Width(26).Height(26).AlignItems(ui.Center).Justify(ui.Center).Background(color.Alpha(.07)).Radius(7).Children(func() { ui.Icon(c, icon).FontSize(15).TextColor(color) })
-					ui.Column(c).Grow(1).MinWidth(0).Gap(5).Children(func() {
-						ui.Row(c).AlignItems(ui.Center).Gap(9).Children(func() {
-							homeText(c, n.Title, homeBody).FontSize(12).FontWeight(550).TextColor(homeInk)
-							queueBadge(c, n.Tag, color)
-							if acknowledged {
-								label := "已知晓 · 不再提醒"
-								if q.NoticeAcknowledgements[noticeHash(n.Key)].Deferred {
-									label = "暂不处理 · 不再提醒"
-								}
-								homeText(c, label, homeMeta)
+		ui.Row(c).FillWidth().Padding(sp2, sp1, sp1, sp1).Gap(sp2).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, title).Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
+			ui.Text(c, fmt.Sprintf("%d", len(rows))).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
+		})
+		for _, n := range rows {
+			n := n
+			acknowledged := q.noticeAcknowledged(n.Key)
+			ui.Row(c.Key(n.Key)).FillWidth().Padding(10, sp1).Gap(sp3).AlignItems(ui.Start).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+				color := tok.Text2
+				icon := messageClockIcon
+				switch n.Tag {
+				case "系统异常", "读取异常", "整理异常", "保存受阻", "需要授权", "需要补交":
+					color = tok.Warning
+					icon = messageAlertIcon
+				case "已暂停":
+					icon = messagePauseIcon
+				}
+				ui.Column(c).Width(24).Height(24).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Background(color.Alpha(.08)).Radius(radius).Children(func() { ui.Icon(c, icon).FontSize(14).TextColor(color) })
+				ui.Column(c).Grow(1).MinWidth(0).Gap(5).Children(func() {
+					ui.Row(c).AlignItems(ui.Center).Gap(sp2).Children(func() {
+						homeText(c, n.Title, homeBody).FontSize(fsBody).FontWeight(500).TextColor(tok.Text1)
+						queueBadge(c, n.Tag, color)
+						if acknowledged {
+							label := "已知晓 · 不再提醒"
+							if q.NoticeAcknowledgements[noticeHash(n.Key)].Deferred {
+								label = "暂不处理 · 不再提醒"
 							}
-						})
-						if n.Source != "" {
-							ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-								if n.Session != nil {
-									agentLogo(c, accessAgentIcon(n.Session.Agent), 12)
-								}
-								homeText(c, n.Source, homeMeta).FontSize(10).TextColor(tok.Text3)
-							})
-						}
-						homeText(c, n.Detail, homeBody).FontSize(11).TextColor(tok.Text2).LineHeight(1.45)
-						if n.Followup != "" {
-							homeText(c, n.Followup, homeMeta).LineHeight(1.45)
-						}
-						if n.Session != nil && n.Session.View.Message != "" && n.Session.View.ReadError == "" {
-							homeText(c, n.Session.View.Message, homeMeta).LineHeight(1.45)
-						}
-						ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
-							switch n.Action {
-							case "permissions":
-								queueAction(c, "查看权限设置", func() { q.Scroll.Y = 0 })
-							case "replay":
-								if n.Session != nil {
-									row := *n.Session
-									queueAction(c, "补交这些消息", func() { a.runPendingAction(row.View, p, row.Agent, row.Binding, "replay") }).Disabled(row.View.Busy || a.access.Busy || row.View.Status.Unknown > 0 || row.View.Status.Signature == "" || row.Agent.Installation == nil)
-								}
-							case "resume":
-								queueAction(c, "恢复保存", func() { a.changeBacklog(q, p, false) }).Disabled(q.BacklogBusy || a.access.Busy || a.Config.ProjectControl == nil)
-							case "save":
-								queueAction(c, "开始保存", func() { a.changeBacklog(q, p, false) }).Disabled(q.BacklogBusy || q.Loading || a.access.Busy || a.Config.ProjectControl == nil)
-							case "refresh":
-								queueRefreshAction(c, "重新读取状态", func() { a.loadProjectQueue(q, p); a.refreshBacklog(q, p) }).Disabled(q.Loading || a.access.Busy)
-							}
-							if n.Session != nil {
-								v := n.Session.View
-								label := "查看详情"
-								if v.CheckDetailsOpen {
-									label = "收起详情"
-								}
-								queueAction(c, label, func() { v.CheckDetailsOpen = !v.CheckDetailsOpen })
-							}
-							if acknowledged {
-								queueAction(c, "恢复提醒", func() { a.acknowledgeNotice(q, p, n, true) })
-							} else {
-								label := "知道了，不再提醒"
-								if n.NeedsUser {
-									label = "暂不处理"
-								}
-								queueAction(c, label, func() { a.acknowledgeNotice(q, p, n, false) }).Tooltip("仅结束这项提醒，保留原消息和异常记录；出现新的异常会再次提醒。")
-							}
-						})
-						if n.Session != nil && n.Session.View.CheckDetailsOpen {
-							a.messageNoticeDetails(c, q, p, *n.Session)
+							homeText(c, label, homeMeta)
 						}
 					})
+					if n.Source != "" {
+						ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+							if n.Session != nil {
+								agentLogo(c, accessAgentIcon(n.Session.Agent), 12)
+							}
+							homeText(c, n.Source, homeMeta).FontSize(fsCaption).TextColor(tok.Text3)
+						})
+					}
+					homeText(c, n.Detail, homeBody).FontSize(fsFootnote).TextColor(tok.Text2).LineHeight(1.45)
+					if n.Followup != "" {
+						homeText(c, n.Followup, homeMeta).LineHeight(1.45)
+					}
+					if n.Session != nil && n.Session.View.Message != "" && n.Session.View.ReadError == "" {
+						homeText(c, n.Session.View.Message, homeMeta).LineHeight(1.45)
+					}
+					ui.Row(c).AlignItems(ui.Center).Gap(sp2).Children(func() {
+						switch n.Action {
+						case "permissions":
+							queueAction(c, "查看权限设置", func() { q.Scroll.Y = 0 })
+						case "replay":
+							if n.Session != nil {
+								row := *n.Session
+								queueAction(c, "补交这些消息", func() { a.runPendingAction(row.View, p, row.Agent, row.Binding, "replay") }).Disabled(row.View.Busy || a.access.Busy || row.View.Status.Unknown > 0 || row.View.Status.Signature == "" || row.Agent.Installation == nil)
+							}
+						case "resume":
+							queueAction(c, "恢复保存", func() { a.changeBacklog(q, p, false) }).Disabled(q.BacklogBusy || a.access.Busy || a.Config.ProjectControl == nil)
+						case "save":
+							queueAction(c, "开始保存", func() { a.changeBacklog(q, p, false) }).Disabled(q.BacklogBusy || q.Loading || a.access.Busy || a.Config.ProjectControl == nil)
+						case "refresh":
+							queueRefreshAction(c, "重新读取状态", func() { a.loadProjectQueue(q, p); a.refreshBacklog(q, p) }).Disabled(q.Loading || a.access.Busy)
+						}
+						if n.Session != nil {
+							v := n.Session.View
+							label := "查看详情"
+							if v.CheckDetailsOpen {
+								label = "收起详情"
+							}
+							queueAction(c, label, func() { v.CheckDetailsOpen = !v.CheckDetailsOpen })
+						}
+						if acknowledged {
+							queueAction(c, "恢复提醒", func() { a.acknowledgeNotice(q, p, n, true) })
+						} else {
+							label := "知道了，不再提醒"
+							if n.NeedsUser {
+								label = "暂不处理"
+							}
+							queueAction(c, label, func() { a.acknowledgeNotice(q, p, n, false) }).Tooltip("仅结束这项提醒，保留原消息和异常记录；出现新的异常会再次提醒。")
+						}
+					})
+					if n.Session != nil && n.Session.View.CheckDetailsOpen {
+						a.messageNoticeDetails(c, q, p, *n.Session)
+					}
 				})
-				if index < len(rows)-1 {
-					ui.Column(c).FillWidth().Padding(0, 16).Children(func() { ui.Column(c).Height(1).FillWidth().Background(homeBorder.Alpha(.7)) })
-				}
-			}
-		})
+			})
+		}
 	})
 }
 func (a *App) messageNoticeDetails(c *ui.Context, q *projectQueueState, p AccessProject, row queuedSession) {

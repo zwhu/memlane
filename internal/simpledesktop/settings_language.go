@@ -4,10 +4,10 @@ import "github.com/egoist/mygo/ui"
 
 // Language switching is intentionally closed; the backend default is zh-CN.
 func languageSettingsCard(c *ui.Context) {
-	settingsListSurface(c, func() {
-		settingsListRow(c, func() {
-			homeText(c, "记忆语言", homeBody).FontSize(13).FontWeight(500).TextColor(homeInk).Width(100)
-			homeText(c, "简体中文", homeBody).FontSize(13).TextColor(homeInk)
-		})
+	v4Row(c, v4RowOptions{
+		Key:   "settings-language-row",
+		Title: "记忆语言",
+		Desc:  "中文提炼提示词仅作用于受管副本，不修改上游 Cognee 源码",
+		Value: "简体中文",
 	})
 }

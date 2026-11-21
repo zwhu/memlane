@@ -328,6 +328,30 @@ def check_go_performance(source, path):
                 line = clean[:view_start + bad.start()].count('\n') + 1
                 issues.append((line, 'ML011', 'App.View 渲染热路径禁止同步磁盘 I/O、休眠或网络调用'))
 
+    # ML012: Cold-start Overview performance & single-source guardrails.
+    for match in re.finditer(r'\b(overview-ui-cache|hydrateOverviewFromCache|saveOverviewCache)\b', clean):
+        line = clean[:match.start()].count('\n') + 1
+        issues.append((line, 'ML012', '禁止在桌面端落盘 SWR 首页缓存副本；首页冷启动须走控制面单次只读聚合接口 overviewBootstrap'))
+    if filename == 'overview_ui.go':
+        load_start = clean.find('func (a *App) loadOverview(')
+        if load_start >= 0:
+            load_end = clean.find('\nfunc ', load_start + 1)
+            load_body = clean[load_start:load_end if load_end >= 0 else len(clean)]
+            if 'overviewBootstrap(' not in load_body:
+                line = clean[:load_start].count('\n') + 1
+                issues.append((line, 'ML012', 'loadOverview 必须优先走控制面单次只读聚合接口 overviewBootstrap，禁止冷启动直接扇出多库 HTTP'))
+    if filename == 'app.go':
+        start_idx = clean.find('func (a *App) Start(')
+        if start_idx >= 0:
+            start_end = clean.find('\nfunc ', start_idx + 1)
+            start_body = clean[start_idx:start_end if start_end >= 0 else len(clean)]
+            tail_idx = start_body.find('a.RefreshProjectDirectory()')
+            if tail_idx >= 0:
+                tail = start_body[tail_idx:]
+                if 'a.RefreshIntegrations()' in tail and 'AfterFunc' not in tail:
+                    line = clean[:start_idx + tail_idx].count('\n') + 1
+                    issues.append((line, 'ML012', 'App.Start() 首页冷启动必须延迟 RefreshIntegrations()，避免子进程探测与首屏加载争抢帧预算'))
+
     return issues
 
 
@@ -363,7 +387,7 @@ def main():
                 print('{}:{}: {} {}'.format(path.relative_to(ROOT), line, code, message))
                 failures += 1
     if not failures:
-        print('Lint passed: 模型参数、环境隔离与 UI 性能门禁 (ML001-ML003, ML007-ML011)')
+        print('Lint passed: 模型参数、环境隔离与 UI 性能门禁 (ML001-ML003, ML007-ML012)')
     return bool(failures)
 
 

@@ -331,12 +331,20 @@ func (a *App) commonDeletionBanner(c *ui.Context, i Item) {
 	e := &a.commonEdit
 	if !e.DeleteSubmitted {
 		asking := true
-		switch ui.AlertDialog(c, &asking, "删除这条通用记忆？", "官方确认后将移除记忆及关联索引。此操作无法在客户端撤销。", "确认删除此条", "保留记忆") {
-		case 0:
-			a.deleteCommonKnowledge(*i.Document)
-		case 1, ui.AlertDismissed:
-			e.Delete = nil
-		}
+		v4Dialog(c, &asking, v4DialogOptions{
+			Key:             "common-delete-confirm-" + i.ID,
+			Title:           "删除这条通用记忆？",
+			Width:           v4DialogSmall,
+			Danger:          true,
+			CancelText:      "保留记忆",
+			ConfirmText:     "确认删除此条",
+			ConfirmDisabled: e.Busy,
+			OnCancel:        func() { e.Delete = nil },
+			OnConfirm:       func() { a.deleteCommonKnowledge(*i.Document) },
+			Body: func() {
+				ui.Text(c, "官方确认后将移除记忆及关联索引。此操作无法在客户端撤销。").Font("system-ui").FontSize(fsBody).TextColor(tok.Text2).LineHeight(1.6)
+			},
+		})
 		return
 	}
 
@@ -495,9 +503,19 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 			}
 		})
 	})
-	switch ui.AlertDialog(c, &a.commonPage.Discard, "放弃未保存的草稿？", "草稿尚未保存，放弃后将清除本次编辑。", "放弃并返回", "继续编辑") {
-	case 0:
-		a.discardCommonDraft()
-	}
-
+	v4Dialog(c, &a.commonPage.Discard, v4DialogOptions{
+		Key:         "common-discard-draft",
+		Title:       "放弃未保存的草稿？",
+		Width:       v4DialogSmall,
+		Danger:      true,
+		CancelText:  "继续编辑",
+		ConfirmText: "放弃并返回",
+		OnConfirm: func() {
+			a.commonPage.Discard = false
+			a.discardCommonDraft()
+		},
+		Body: func() {
+			ui.Text(c, "草稿尚未保存，放弃后将清除本次编辑。").Font("system-ui").FontSize(fsBody).TextColor(tok.Text2).LineHeight(1.6)
+		},
+	})
 }

@@ -77,8 +77,11 @@ func TestProjectCheckboxBundlesPermissionAndConfirmsUnknownWithoutRetry(t *testi
 	a.access.OpenProject = "p"
 	a.settingsOrigin = &readingLocation{Page: "知识", ProjectID: "p"}
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"允许读取记忆", "允许读取记忆", "允许写入和删除记忆"} {
-		clickProjectUI(t, tt, label)
+	if !tt.HasText("只读") {
+		t.Fatal("missing initial tri-access value")
+	}
+	for _, nextVal := range []string{"none", "read", "maintain"} {
+		a.saveProjectCheckbox("p", "agent", "access", nextVal)
 		drainReading(t, updates, func() bool { return !a.access.Busy })
 		tt.Frame()
 		if a.access.CheckboxPending["p/agent"] != nil {
@@ -88,11 +91,11 @@ func TestProjectCheckboxBundlesPermissionAndConfirmsUnknownWithoutRetry(t *testi
 	fixtureLock.Lock()
 	valid := writes.Load() == 3 && lastFields["access"] == "maintain" && directory.Projects[0].Overrides["agent"].effective(directory.Defaults).Access == "maintain"
 	fixtureLock.Unlock()
-	if !valid {
-		t.Fatal("checkbox values or read/write dependency lost")
+	if !valid || !tt.HasText("读写") {
+		t.Fatal("tri-access values or read/write dependency lost")
 	}
 	fail.Store(true)
-	clickProjectUI(t, tt, "允许写入和删除记忆")
+	a.saveProjectCheckbox("p", "agent", "access", "read")
 	drainReading(t, updates, func() bool { return !a.access.Busy })
 	tt.Frame()
 	if a.access.CheckboxPending["p/agent"] == nil {

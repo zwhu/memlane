@@ -1,6 +1,21 @@
 package simpledesktop
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
+
+func formatNoticeLocalClock(raw string, now time.Time) string {
+	t, ok := officialTime(raw)
+	if !ok {
+		return ""
+	}
+	local := t.In(now.Location())
+	if local.Format("2006-01-02") == now.Format("2006-01-02") {
+		return local.Format("15:04")
+	}
+	return local.Format("01/02 15:04")
+}
 
 // A projection of observed facts only. It never changes permissions, archives,
 // queues or write outcomes, and does not infer delivery from a running job.
@@ -21,6 +36,7 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 	if q.ProcessingReadError != "" {
 		add(messageNotice{Key: "processing-read", Title: q.ProcessingReadError, Detail: "暂时不能确认最近的模型调用状态。", Tag: "读取异常", Action: "refresh"})
 	}
+	now := time.Now()
 	for _, failure := range q.ProcessingNotices {
 		detail := fmt.Sprintf("最近一次提炼调用返回 HTTP %d，尚不能据此确认记忆已生成。", failure.Status)
 		switch failure.Code {
@@ -32,13 +48,30 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 			detail = "Codex 登录认证失败，提炼调用未完成。"
 		case "codex_context_exceeded":
 			detail = "本次提炼内容超出 Codex 的上下文限制。"
+		case "codex_connection_failed":
+			detail = fmt.Sprintf("连接 Codex 上游模型服务失败（HTTP %d），常见于网络波动或代理中断。", failure.Status)
+		case "codex_stream_disconnected":
+			detail = fmt.Sprintf("与 Codex 上游模型服务的连接中途断开（HTTP %d）。", failure.Status)
+		case "codex_timeout":
+			detail = fmt.Sprintf("Codex 模型响应超时（HTTP %d）。", failure.Status)
+		case "codex_rate_limited":
+			detail = fmt.Sprintf("触发 Codex 请求频率限制（HTTP %d），提炼调用未完成。", failure.Status)
+		case "codex_upstream_error":
+			detail = fmt.Sprintf("Codex 上游服务返回异常（HTTP %d），尚不能据此确认记忆已生成。", failure.Status)
 		}
 		source := "记忆处理服务"
 		if failure.Backend == "codex" {
 			source = "Codex · 记忆提炼"
 		}
+		if atLabel := formatNoticeLocalClock(failure.At, now); atLabel != "" {
+			source += " · " + atLabel
+		}
+		followup := "这是近期调用异常记录，不代表原始消息未保存；后续整理结果需另行核对。"
+		if recLabel := formatNoticeLocalClock(failure.RecoveredAt, now); recLabel != "" {
+			followup = fmt.Sprintf("后续调用已在 %s 恢复正常；但本次失败对应的提炼结果仍需另行核对，不代表原始消息未保存。", recLabel)
+		}
 		add(messageNotice{Key: "processing/" + failure.Operation, Title: "记忆提炼调用失败", Source: source,
-			Detail: detail, Followup: "这是近期调用异常记录，不代表原始消息未保存；后续整理结果需另行核对。", Tag: "整理异常", Action: "refresh"})
+			Detail: detail, Followup: followup, Tag: "整理异常", Action: "refresh"})
 	}
 	for index, row := range q.Sessions {
 		r := row

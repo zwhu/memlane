@@ -16,12 +16,13 @@ type queuedSession struct {
 	View    *pendingBufferView
 }
 type processingNotice struct {
-	Operation string `json:"operation_id"`
-	Request   string `json:"request_id"`
-	At        string `json:"at"`
-	Status    int    `json:"http_status"`
-	Code      string `json:"code"`
-	Backend   string `json:"backend"`
+	Operation   string `json:"operation_id"`
+	Request     string `json:"request_id"`
+	At          string `json:"at"`
+	RecoveredAt string `json:"recovered_at,omitempty"`
+	Status      int    `json:"http_status"`
+	Code        string `json:"code"`
+	Backend     string `json:"backend"`
 }
 
 type projectQueueState struct {

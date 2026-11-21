@@ -40,18 +40,29 @@ func (a *App) generationDeleteModal(c *ui.Context) {
 		return
 	}
 	ref := *s.DeleteProfile
-	modal := ui.Modal(c.Key("delete-generation-"+ref.ID), &s.DeleteOpen, func() {
-		homeText(c, "删除模型配置？", homeHeading).FontSize(18)
-		homeText(c, generationLabel(s.Generation, &ref), homeBody).FontSize(13).MaxLines(3)
-		if s.DeleteError != "" {
-			homeText(c, s.DeleteError, homeMeta).MaxLines(3)
-		}
-		ui.Row(c).FillWidth().Justify(ui.End).Gap(12).Children(func() {
-			textButton(c, "取消", func() { s.DeleteProfile = nil; s.DeleteOpen = false }).Disabled(s.Busy)
-			ui.Button(c, "确认删除").Label("确认删除模型：" + ref.ID).Disabled(s.Busy || s.generationDeleteBlock(ref.ID) != "").OnClick(a.deleteGeneration)
-		})
-	}).Width(460).Padding(24).Gap(18)
-	if modal.Dismissed() || !s.DeleteOpen {
+	blockReason := s.generationDeleteBlock(ref.ID)
+	v4Dialog(c, &s.DeleteOpen, v4DialogOptions{
+		Key:             "delete-generation-" + ref.ID,
+		Title:           "删除模型配置？",
+		Width:           v4DialogSmall,
+		Danger:          true,
+		CancelText:      "取消",
+		ConfirmText:     "确认删除",
+		ConfirmLabel:    "确认删除模型：" + ref.ID,
+		Hint:            "此操作不可撤销（删除确认不绑定回车键）",
+		CancelDisabled:  s.Busy,
+		ConfirmDisabled: s.Busy || blockReason != "",
+		OnCancel:        func() { s.DeleteProfile = nil; s.DeleteOpen = false },
+		OnConfirm:       a.deleteGeneration,
+		Body: func() {
+			homeText(c, generationLabel(s.Generation, &ref), homeBody).FontSize(fsBody).TextColor(tok.Text1).MaxLines(3)
+			homeText(c, "已保存在 Cognee 中的历史记忆与原始记录不受影响。", homeMeta).LineHeight(1.5)
+			if s.DeleteError != "" {
+				homeText(c, s.DeleteError, homeMeta).TextColor(tok.Danger).MaxLines(3)
+			}
+		},
+	})
+	if !s.DeleteOpen {
 		s.DeleteProfile = nil
 	}
 }

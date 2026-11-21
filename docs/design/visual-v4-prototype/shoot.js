@@ -1,4 +1,4 @@
-// 原型自查截图：node shoot.js <outdir>
+// 原型自查截图（建议输出至过程目录）：node shoot.js ../../process/visual-v4-prototype-shots
 const path = require("path");
 const pw = require(path.resolve(__dirname, "../../../web/official-graph/node_modules/.pnpm/playwright-core@1.58.2/node_modules/playwright-core"));
 (async () => {

@@ -297,34 +297,50 @@ func (a *App) commonDatasetSettings(c *ui.Context) {
 	})
 }
 
+func accessTierDesc(access string) string {
+	switch access {
+	case "maintain":
+		return "读取、写入并维护该项目记忆（含删除）"
+	case "read":
+		return "仅允许检索与读取已有记忆，不可写入"
+	default:
+		return "禁止访问此项目的记忆与原始记录"
+	}
+}
+
 func (a *App) agentPolicyEditor(c *ui.Context, p AccessProject, agent AccessAgent) {
 	actual := p.Overrides[agent.ID].effective(a.access.Directory.Defaults)
-	read, maintain := actual.Access != "none" && actual.Access != "", actual.Access == "maintain"
+	currentVal := actual.Access
+	if currentVal != "read" && currentVal != "maintain" {
+		currentVal = "none"
+	}
 	key := p.ID + "/" + agent.ID
 	pending := a.access.CheckboxPending[key]
-	if pending != nil {
-		switch pending.Field {
-		case "access":
-			read = pending.Value != "none"
-			maintain = pending.Value == "maintain"
-
+	saving := pending != nil && a.access.Busy
+	errText := ""
+	displayVal := currentVal
+	if saving {
+		if pv, ok := pending.Value.(string); ok {
+			displayVal = pv
+		}
+	} else if pending != nil {
+		// Unconfirmed / failed write rolls back display to server-confirmed value with danger text.
+		errText = "尚未确认保存，已保留原权限"
+		if a.access.Message != "" {
+			errText = "尚未确认保存：" + a.access.Message
 		}
 	}
-	locked := a.access.Busy || pending != nil
-	ui.Row(c.Key("agent-policy-" + key)).AlignItems(ui.Center).Gap(28).Children(func() {
-		ui.Checkbox(c.Key("project-read-"+key), &read, "允许读取记忆").Disabled(locked).OnChange(func() {
-			value := "none"
-			if read {
-				value = "read"
-			}
-			a.saveProjectCheckbox(p.ID, agent.ID, "access", value)
+	ui.Row(c.Key("agent-policy-"+key)).AlignItems(ui.Center).Gap(sp2).Children(func() {
+		v4TriAccessSelect(c, "project-access-"+key, agentDisplayName(agent.Name), v4TriAccessState{
+			Value:    displayVal,
+			Saving:   saving,
+			Error:    errText,
+			Disabled: a.access.Busy || pending != nil,
+		}, func(nextValue string) {
+			a.saveProjectCheckbox(p.ID, agent.ID, "access", nextValue)
 		})
-		ui.Checkbox(c.Key("project-write-"+key), &maintain, "允许写入和删除记忆").Disabled(locked || !read).OnChange(func() {
-			value := "read"
-			if maintain {
-				value = "maintain"
-			}
-			a.saveProjectCheckbox(p.ID, agent.ID, "access", value)
-		})
+		if pending != nil && !a.access.Busy {
+			v4SmallButton(c, "重新核对", v4IconRefresh, a.RefreshProjectDirectory).Disabled(a.access.Loading).Tooltip(a.access.Message)
+		}
 	})
 }

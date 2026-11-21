@@ -58,108 +58,119 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			homeText(c, "Memlane", homeBrand)
 		})
 		var activeItem ui.Element
-		sb := ui.Sidebar(c.Key("main-sidebar"), &selected, func() {
-			navEntry := func(id, label string, linear, solid *ui.SVG) {
-				on := selected == id
-				buildItem := func() {
-					icon := linear
-					if on {
-						icon = solid
-					}
-					item := ui.SidebarItem(c, id, icon, label).Height(rowHeight1).Gap(10).Padding(0, sp2)
-					if on {
-						activeItem = item
-					}
-					sidebarSelection(item, on, activeItem.Bounds().H > 0)
-				}
-				if on {
-					ui.Themed(c, sidebarSelectedTheme).FillWidth().Background(ui.Transparent).Children(buildItem)
-				} else {
-					buildItem()
-				}
-			}
-			navEntry("总览", "总览", v4IconOverview, tok.SolidOverview)
-			navEntry("通用知识", "通用记忆", v4IconCommon, tok.SolidCommon)
-			navEntry("用户画像", "用户画像", v4IconProfile, tok.SolidProfile)
-
-			ui.Row(c).Padding(sp5, sp1, sp1, sp2).AlignItems(ui.Center).Gap(sp1).Children(func() {
-				ui.Text(c, "项目").Font("system-ui").FontSize(fsCaption).FontWeight(550).TextColor(tok.Text3)
-				ui.Spacer(c)
-				allBtn := ui.ButtonBase(c).Role(ui.RoleButton).Label(fmt.Sprintf("全部 %d", len(a.Config.Projects))).
-					Cursor(ui.CursorPointer).Height(22).Padding(0, 6).Radius(radiusSmall).BorderWidth(0)
-				allBtn.Background(homeHoverColor(allBtn, "all-proj-bg", ui.Transparent, tok.Hover)).Children(func() {
-					ui.Text(c, fmt.Sprintf("全部 %d", len(a.Config.Projects))).Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Text3).SingleLine()
-				}).OnClick(a.openAllProjects)
-				a.projectAddMenu(c)
+		navHost := ui.Column(c.Key("sidebar-nav-host")).FillWidth().Grow(1).MinHeight(0)
+		var ind ui.Element
+		var sb ui.Element
+		navHost.Children(func() {
+			ui.Box(c.Key("sidebar-nav-bg")).Size(0, 0).Shrink(0).PassThrough().Children(func() {
+				ind = ui.Box(c.Key("sidebar-nav-indicator")).Margin(0, 0, 0, sp2).
+					Width(sidebarW - 2*sp2).Height(rowHeight1).Radius(radius).Background(tok.AccentSoft).PassThrough()
 			})
-			labels := projectLabels(a.Config.Projects)
-			for idx, p := range a.Config.Projects {
-				if a.projectIsHidden(p) {
-					continue
-				}
-				index := idx
-				proj := p
-				id := "project:" + proj.ID
-				on := selected == id
-				buildProject := func() {
-					icon := v4IconFolder
-					if on {
-						icon = tok.SolidFolder
-					}
-					item := ui.SidebarItem(c.Key("project-nav-"+proj.ID), id, icon, middleProjectName(labels[index])).
-						Label(labels[index]).Tooltip(proj.Name + " · " + proj.Path).
-						MinHeight(rowHeight1).Height(rowHeight1).FillWidth().MinWidth(0).Gap(8).Padding(0, sp2)
-					a.projectNotificationMenu(c, item, proj)
-					if on {
-						activeItem = item
-					}
-					sidebarSelection(item, on, activeItem.Bounds().H > 0)
-					item.Children(func() {
-						a.unreadProjectBadge(c, proj, index, on)
-						if label, detail := a.sidebarQueueBadge(proj); label != "" {
-							openQueue := func() { a.openProjectSettings(index) }
-							ui.Column(c).Shrink(0).Height(24).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-								if label == "!" {
-									ui.Button(c, "").Cursor(ui.CursorPointer).Label("待处理文档："+proj.Name).Tooltip(detail).Size(8, 8).Padding(0).Radius(4).Background(tok.Warning).BorderWidth(0).OnClick(openQueue)
-								} else {
-									ui.Button(c, label).Cursor(ui.CursorPointer).Label("待处理文档："+proj.Name).Tooltip(detail).FontSize(fsCaption).FontWeight(600).Padding(1, 6).Radius(8).Background(tok.Fill2).TextColor(tok.Text2).BorderWidth(0).OnClick(openQueue)
-								}
-							})
+			sb = ui.Sidebar(c.Key("main-sidebar"), &selected, func() {
+				navEntry := func(id, label string, linear, solid *ui.SVG) {
+					on := selected == id
+					buildItem := func() {
+						icon := linear
+						if on {
+							icon = solid
 						}
-					})
+						item := ui.SidebarItem(c.Key("nav-item-"+id), id, icon, label).Height(rowHeight1).Gap(10).Padding(0, sp2)
+						if on {
+							activeItem = item
+						}
+						sidebarSelection(item, on, activeItem.Bounds().H > 0)
+					}
+					itemTheme := sidebarTheme
+					if on {
+						itemTheme = sidebarSelectedTheme
+					}
+					ui.Themed(c.Key("nav-wrap-"+id), itemTheme).FillWidth().Background(ui.Transparent).Children(buildItem)
 				}
-				if on {
-					ui.Themed(c, sidebarSelectedTheme).FillWidth().Background(ui.Transparent).Children(buildProject)
-				} else {
-					buildProject()
+				navEntry("总览", "总览", v4IconOverview, tok.SolidOverview)
+				navEntry("通用知识", "通用记忆", v4IconCommon, tok.SolidCommon)
+				navEntry("用户画像", "用户画像", v4IconProfile, tok.SolidProfile)
+
+				ui.Row(c).Padding(sp5, sp1, sp1, sp2).AlignItems(ui.Center).Gap(sp1).Children(func() {
+					ui.Text(c, "项目").Font("system-ui").FontSize(fsCaption).FontWeight(550).TextColor(tok.Text3)
+					ui.Spacer(c)
+					allBtn := ui.ButtonBase(c).Role(ui.RoleButton).Label(fmt.Sprintf("全部 %d", len(a.Config.Projects))).
+						Cursor(ui.CursorPointer).Height(22).Padding(0, 6).Radius(radiusSmall).BorderWidth(0)
+					allBtn.Background(homeHoverColor(allBtn, "all-proj-bg", ui.Transparent, tok.Hover)).Children(func() {
+						ui.Text(c, fmt.Sprintf("全部 %d", len(a.Config.Projects))).Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Text3).SingleLine()
+					}).OnClick(a.openAllProjects)
+					a.projectAddMenu(c)
+				})
+				labels := projectLabels(a.Config.Projects)
+				for idx, p := range a.Config.Projects {
+					if a.projectIsHidden(p) {
+						continue
+					}
+					index := idx
+					proj := p
+					id := "project:" + proj.ID
+					on := selected == id
+					buildProject := func() {
+						icon := v4IconFolder
+						if on {
+							icon = tok.SolidFolder
+						}
+						item := ui.SidebarItem(c.Key("project-nav-"+proj.ID), id, icon, middleProjectName(labels[index])).
+							Label(labels[index]).Tooltip(proj.Name + " · " + proj.Path).
+							MinHeight(rowHeight1).Height(rowHeight1).FillWidth().MinWidth(0).Gap(8).Padding(0, sp2)
+						a.projectNotificationMenu(c, item, proj)
+						if on {
+							activeItem = item
+						}
+						sidebarSelection(item, on, activeItem.Bounds().H > 0)
+						item.Children(func() {
+							a.unreadProjectBadge(c, proj, index, on)
+							if label, detail := a.sidebarQueueBadge(proj); label != "" {
+								openQueue := func() { a.openProjectSettings(index) }
+								ui.Column(c).Shrink(0).Height(24).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+									if label == "!" {
+										ui.Button(c, "").Cursor(ui.CursorPointer).Label("待处理文档："+proj.Name).Tooltip(detail).Size(8, 8).Padding(0).Radius(4).Background(tok.Warning).BorderWidth(0).OnClick(openQueue)
+									} else {
+										ui.Button(c, label).Cursor(ui.CursorPointer).Label("待处理文档："+proj.Name).Tooltip(detail).FontSize(fsCaption).FontWeight(600).Padding(1, 6).Radius(8).Background(tok.Fill2).TextColor(tok.Text2).BorderWidth(0).OnClick(openQueue)
+									}
+								})
+							}
+						})
+					}
+					itemTheme := sidebarTheme
+					if on {
+						itemTheme = sidebarSelectedTheme
+					}
+					ui.Themed(c.Key("project-wrap-"+proj.ID), itemTheme).FillWidth().Background(ui.Transparent).Children(buildProject)
 				}
-			}
-		}).FillWidth().Grow(1).MinHeight(0).Padding(0, sp2).Background(ui.Transparent).TrackScroll(&a.overviewState.SidebarScroll).OnChange(func() {
-			for idx, p := range a.Config.Projects {
-				if selected == "project:"+p.ID {
-					a.navigate("知识", idx)
-					return
+			}).FillWidth().Grow(1).MinHeight(0).Padding(0, sp2).Background(ui.Transparent).TrackScroll(&a.overviewState.SidebarScroll).OnChange(func() {
+				for idx, p := range a.Config.Projects {
+					if selected == "project:"+p.ID {
+						a.navigate("知识", idx)
+						return
+					}
 				}
-			}
-			a.navigate(selected, 0)
+				a.navigate(selected, 0)
+			})
 		})
-		// Spring-sliding accent-soft indicator behind the selected nav item.
+		// Paint-only AnimatePose indicator slides at 120Hz without rebuilding App.View.
 		sbBox := sb.Bounds()
 		itemBox := activeItem.Bounds()
 		hasActive := itemBox.H > 0 && sbBox.H > 0 && selected != "设置"
-		targetY := itemBox.Y - sbBox.Y
-		targetH := itemBox.H
-		indY := sb.Spring("nav-ind-y", targetY, v4Snappy.Spring)
-		indH := sb.Spring("nav-ind-h", targetH, v4Snappy.Spring)
-		sb.Draw(func(p *ui.Painter, r ui.Rect) {
-			if !hasActive || indH <= 0 {
-				return
+		targetY := a.overviewState.lastNavIndY
+		fade := float32(1)
+		if hasActive {
+			targetY = itemBox.Y - sbBox.Y
+			a.overviewState.lastNavIndY = targetY
+			if targetY+itemBox.H >= 0 && targetY <= sbBox.H {
+				fade = 0
 			}
-			if indY+indH < 0 || indY > r.H {
-				return
-			}
-			p.Fill(ui.Rect{X: r.X + sp2, Y: r.Y + indY, W: r.W - 2*sp2, H: indH}, tok.AccentSoft, radius)
-		})
+		}
+		if itemBox.H > 0 {
+			ind.Height(itemBox.H)
+		}
+		// Critically damped vertical slide (Bounce: 0) prevents 176px Overview<->Project
+		// indicator jumps from overshooting/bouncing on the first switch.
+		ind.AnimatePose(ui.Pose{Y: targetY, Scale: 1, Fade: fade}, ui.Animation{Spring: ui.SpringOptions{Duration: 240 * time.Millisecond, Bounce: 0}})
 
 		ui.Toolbar(c, func() {
 			on := a.page == "设置" && a.settingsOrigin == nil
@@ -204,20 +215,232 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			}
 			svcBtn := ui.ButtonBase(c.Key("sidebar-service-status")).Role(ui.RoleButton).Label("服务 · "+status).
 				Cursor(ui.CursorPointer).Grow(1).MinWidth(0).Height(28).Padding(0, 4).Radius(radiusSmall).BorderWidth(0).
-				AlignItems(ui.Center).Justify(ui.Start).Gap(sp2).Tooltip(a.serviceConnectionTip())
+				AlignItems(ui.Center).Justify(ui.Start).Gap(sp2)
+			btnHovered := svcBtn.Hovered()
+			btnFocused := svcBtn.Focused()
 			svcBtn.Background(homeHoverColor(svcBtn, "svc-foot-bg", ui.Transparent, tok.Hover)).Children(func() {
 				ui.Box(c).Size(6, 6).Radius(3).Background(color).Shrink(0)
 				homeText(c, "服务 · "+status, homeMeta).SingleLine()
 			}).OnClick(func() {
+				a.closeServicePopover()
+				a.monitor.popoverClicked = true
 				a.settingsOrigin = nil
 				a.access.OpenProject = ""
 				a.access.SettingsSection = "服务"
-				a.monitor.Expanded = true
+				a.monitor.Expanded = false
 				a.navigate("设置", 0)
 			})
+			a.syncServicePopoverHover(btnHovered, a.monitor.popoverPanelHover, btnFocused)
+			a.sidebarServicePopover(c, svcBtn, status, color)
 			a.sidebarAppearanceButton(c)
 		})
 	})
+}
+
+func (a *App) cancelServicePopoverTimers() {
+	if a.monitor.popoverShowTimer != nil {
+		a.monitor.popoverShowTimer.Stop()
+		a.monitor.popoverShowTimer = nil
+	}
+	if a.monitor.popoverHideTimer != nil {
+		a.monitor.popoverHideTimer.Stop()
+		a.monitor.popoverHideTimer = nil
+	}
+}
+
+func (a *App) closeServicePopover() {
+	a.cancelServicePopoverTimers()
+	a.monitor.PopoverOpen = false
+	a.monitor.popoverBtnHover = false
+	a.monitor.popoverPanelHover = false
+}
+
+// syncServicePopoverHover implements 300ms hover-open / 200ms leave-close
+// debounce using one-shot time.AfterFunc timers (zero idle polling), and opens
+// immediately on keyboard focus per #15.
+func (a *App) syncServicePopoverHover(btnHover, panelHover, btnFocus bool) {
+	prevFocus := a.monitor.popoverBtnFocus
+	a.monitor.popoverBtnFocus = btnFocus
+	if !btnFocus {
+		a.monitor.popoverClicked = false
+	}
+	if btnFocus && !prevFocus && !a.monitor.popoverClicked {
+		if a.monitor.popoverHideTimer != nil {
+			a.monitor.popoverHideTimer.Stop()
+			a.monitor.popoverHideTimer = nil
+		}
+		if a.monitor.popoverShowTimer != nil {
+			a.monitor.popoverShowTimer.Stop()
+			a.monitor.popoverShowTimer = nil
+		}
+		a.monitor.popoverBtnHover = true
+		a.monitor.PopoverOpen = true
+		return
+	}
+	if a.monitor.popoverClicked && btnFocus {
+		return
+	}
+	prevAny := a.monitor.popoverBtnHover || a.monitor.popoverPanelHover
+	nextAny := btnHover || panelHover
+	a.monitor.popoverBtnHover = btnHover
+	a.monitor.popoverPanelHover = panelHover
+	if prevAny == nextAny {
+		return
+	}
+	if nextAny {
+		if a.monitor.popoverHideTimer != nil {
+			a.monitor.popoverHideTimer.Stop()
+			a.monitor.popoverHideTimer = nil
+		}
+		if a.monitor.PopoverOpen || a.monitor.popoverShowTimer != nil {
+			return
+		}
+		if a.Update == nil {
+			return
+		}
+		a.monitor.popoverShowTimer = time.AfterFunc(300*time.Millisecond, func() {
+			a.Update(func() {
+				a.monitor.popoverShowTimer = nil
+				if a.monitor.popoverBtnHover || a.monitor.popoverPanelHover {
+					a.monitor.PopoverOpen = true
+				}
+			})
+		})
+		return
+	}
+	if a.monitor.popoverShowTimer != nil {
+		a.monitor.popoverShowTimer.Stop()
+		a.monitor.popoverShowTimer = nil
+	}
+	if !a.monitor.PopoverOpen || a.monitor.popoverHideTimer != nil {
+		return
+	}
+	if a.Update == nil {
+		a.monitor.PopoverOpen = false
+		return
+	}
+	a.monitor.popoverHideTimer = time.AfterFunc(200*time.Millisecond, func() {
+		a.Update(func() {
+			a.monitor.popoverHideTimer = nil
+			if !a.monitor.popoverBtnHover && !a.monitor.popoverPanelHover {
+				a.monitor.PopoverOpen = false
+			}
+		})
+	})
+}
+
+func (a *App) sidebarServicePopover(c *ui.Context, anchor ui.Element, overallStatus string, overallColor ui.Color) {
+	if !a.monitor.PopoverOpen {
+		return
+	}
+	m := &a.monitor
+	checkedLabel := "尚未检查"
+	if !m.LastCheckedAt.IsZero() {
+		checkedLabel = "更新于 " + m.LastCheckedAt.Local().Format("15:04:05")
+	}
+	panelHovered := false
+	ui.PopoverBase(c.Key("sidebar-service-popover"), anchor, &m.PopoverOpen, func(panel ui.Element) {
+		panel.AttachTo(anchor, ui.AnchorTopStart, ui.AnchorBottomStart).Margin(0, 0, 6, 0).
+			Width(312).Padding(0).Gap(0).Radius(radiusMenu).Background(tok.BgElevated).
+			Border(1, tok.Border).Shadow(0, 10, 28, 0, tok.ShadowLift).
+			Label("服务组件状态").Transition(v4DialogTransition())
+		panelHovered = panel.Hovered() || panel.FocusWithin()
+		panel.Children(func() {
+			// Header
+			ui.Row(c).FillWidth().Padding(sp3, sp3, sp2, sp3).Gap(sp2).AlignItems(ui.Center).
+				BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+				ui.Box(c).Size(6, 6).Radius(3).Background(overallColor).Shrink(0)
+				ui.Text(c, "服务 · "+overallStatus).Font("system-ui").FontSize(fsBody).FontWeight(600).TextColor(tok.Text1).SingleLine()
+				ui.Spacer(c)
+				ui.Text(c, checkedLabel).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
+			})
+
+			// Component rows
+			ui.Column(c).FillWidth().Padding(sp1, sp3).Gap(0).Children(func() {
+				popRow := func(dotState, name, stateText, metrics string, stateColor ui.Color, last bool) {
+					borderBottom := float32(1)
+					if last {
+						borderBottom = 0
+					}
+					ui.Row(c).FillWidth().Padding(sp2, 0).Gap(sp2).AlignItems(ui.Start).
+						BorderWidth(0, 0, borderBottom, 0).BorderColor(tok.Border).Children(func() {
+						ui.Box(c).Padding(5, 0, 0, 0).Shrink(0).Children(func() { v4StatusDot(c, dotState) })
+						ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+							ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+								ui.Text(c, name).Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).Grow(1).MinWidth(0).SingleLine()
+								ui.Text(c, stateText).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(stateColor).SingleLine()
+							})
+							if metrics != "" {
+								ui.Text(c, metrics).Font("ui-monospace").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).LineHeight(1.4)
+							}
+						})
+					})
+				}
+
+				cogneeDot, cogneeStatus, cogneeCol := a.serviceCogneeStatus()
+				cogneeMetrics := sanitizedMonitorURL(a.Config.ServiceURL)
+				if summary := serviceMonitorSummaryLine(*m); summary != "" {
+					cogneeMetrics = summary
+				}
+				hasDisk := m.Snapshot != nil && m.Snapshot.Disk != nil
+				hasChannel := a.Config.CompletionURL != ""
+				popRow(cogneeDot, "Cognee 记忆服务", cogneeStatus, cogneeMetrics, cogneeCol, !m.ControlChecked && !hasChannel && !hasDisk)
+
+				if m.ControlChecked {
+					ctrlDot, ctrlText, ctrlCol := "ok", "已连接", tok.Text2
+					if !m.ControlReachable {
+						ctrlDot, ctrlText, ctrlCol = "fail", "异常", tok.Danger
+					}
+					ctrlMetrics := ""
+					if m.Snapshot != nil && m.Snapshot.Summary != nil {
+						ctrlMetrics = fmt.Sprintf("项目 %d 个", m.Snapshot.Summary.ProjectsCount)
+						if m.Snapshot.Summary.HookErrorsCount > 0 {
+							ctrlMetrics += fmt.Sprintf(" · Hook 未记录 %d", m.Snapshot.Summary.HookErrorsCount)
+						}
+					}
+					popRow(ctrlDot, "控制面服务", ctrlText, ctrlMetrics, ctrlCol, !hasChannel && !hasDisk)
+				}
+
+				if hasChannel {
+					chDot, chText, chCol := "neutral", "待检查", tok.Text3
+					if a.completion == "端点已连接（登录状态以实际请求为准）" {
+						chDot, chText, chCol = "ok", "已连接", tok.Text2
+					}
+					popRow(chDot, "Agent 整理通道", chText, sanitizedMonitorURL(a.Config.CompletionURL), chCol, !hasDisk)
+				}
+
+				if hasDisk {
+					diskDot, diskCol := "ok", tok.Text2
+					diskText := formatBytesGiB(m.Snapshot.Disk.FreeBytes)
+					diskMetrics := "可用空间正常（预警线 55 GiB）"
+					if m.Snapshot.Disk.Low {
+						diskDot, diskCol = "fail", tok.Danger
+						diskMetrics = "低于 55 GiB 预警线"
+					}
+					popRow(diskDot, "磁盘空间", diskText, diskMetrics, diskCol, true)
+				}
+			})
+
+			// Footer link
+			ui.Row(c).FillWidth().Padding(sp2, sp3).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
+				detailBtn := ui.ButtonBase(c.Key("sp-go-service")).Role(ui.RoleButton).Label("在设置中查看详情").
+					Cursor(ui.CursorPointer).FillWidth().Height(28).Padding(0, sp2).Radius(radius).BorderWidth(0).
+					AlignItems(ui.Center).Justify(ui.SpaceBetween)
+				detailBtn.Background(homeHoverColor(detailBtn, "sp-go-bg", ui.Transparent, tok.AccentSofter)).Children(func() {
+					ui.Text(c, "在设置中查看详情").Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Accent).SingleLine()
+					ui.Icon(c, v4IconChev).FontSize(14).TextColor(tok.Accent).Shrink(0)
+				}).OnClick(func() {
+					a.closeServicePopover()
+					a.settingsOrigin = nil
+					a.access.OpenProject = ""
+					a.access.SettingsSection = "服务"
+					a.monitor.Expanded = false
+					a.navigate("设置", 0)
+				})
+			})
+		})
+	})
+	a.syncServicePopoverHover(a.monitor.popoverBtnHover, panelHovered, false)
 }
 
 func (a *App) serviceConnectionTip() string {

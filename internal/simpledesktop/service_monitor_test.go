@@ -240,3 +240,65 @@ func TestServiceMonitorFormatsANSILogsAndHookErrors(t *testing.T) {
 		t.Fatalf("unexpected diagnostic text: %q", diag)
 	}
 }
+
+func TestSidebarServicePopoverAndChannelNaming(t *testing.T) {
+	a := settingsFixture()
+	a.service = "已连接"
+	a.Config.CompletionURL = "http://127.0.0.1:61256"
+	a.monitor.State = "ready"
+	a.monitor.ControlChecked = true
+	a.monitor.ControlReachable = true
+	a.monitor.Snapshot = &ServiceMonitorSnapshot{
+		State: "ready",
+		Disk:  &DiskMonitorState{FreeBytes: 80 * 1024 * 1024 * 1024},
+	}
+	updates := make(chan func(), 16)
+	a.Update = func(fn func()) { updates <- fn }
+
+	// 1) Hover 300ms opens popover; before 300ms it stays closed.
+	a.syncServicePopoverHover(true, false, false)
+	time.Sleep(120 * time.Millisecond)
+	if a.monitor.PopoverOpen {
+		t.Fatal("popover opened too early before 300ms hover delay")
+	}
+	drainReading(t, updates, func() bool { return a.monitor.PopoverOpen })
+
+	tt := ui.NewTester(a.View, 1200, 820)
+	for _, want := range []string{"Cognee 记忆服务", "控制面服务", "Agent 整理通道", "磁盘空间", "在设置中查看详情"} {
+		if !tt.HasText(want) {
+			t.Fatalf("service popover missing %q", want)
+		}
+	}
+	if tt.HasText("补全桥") {
+		t.Fatal("retired term 补全桥 appeared in service popover")
+	}
+	// Popover should attach above the bottom service button.
+	svcBox, svcOK := tt.Find("服务 · 已连接")
+	popBox, popOK := tt.Find("服务组件状态")
+	if !svcOK || !popOK || popBox.Y+popBox.H > svcBox.Y+2 {
+		t.Fatalf("service popover did not attach above trigger button: svc=%+v pop=%+v", svcBox, popBox)
+	}
+
+	// 2) Leaving both trigger and popover closes it after ~200ms.
+	a.syncServicePopoverHover(false, false, false)
+	drainReading(t, updates, func() bool { return !a.monitor.PopoverOpen })
+
+	// 3) Keyboard focus opens popover immediately without waiting for timer.
+	a.syncServicePopoverHover(false, false, true)
+	if !a.monitor.PopoverOpen {
+		t.Fatal("keyboard focus did not open service popover immediately")
+	}
+	tt.Frame()
+	clickProjectUI(t, tt, "在设置中查看详情")
+	if a.page != "设置" || a.access.SettingsSection != "服务" || a.monitor.PopoverOpen {
+		t.Fatalf("detail click did not navigate to settings service tab: page=%q section=%q open=%v", a.page, a.access.SettingsSection, a.monitor.PopoverOpen)
+	}
+
+	// 4) Direct click on sidebar "服务 · 已连接" jumps straight to 设置 › 服务.
+	a.navigate("总览", 0)
+	tt.Frame()
+	clickProjectUI(t, tt, "服务 · 已连接")
+	if a.page != "设置" || a.access.SettingsSection != "服务" || a.monitor.PopoverOpen {
+		t.Fatalf("direct service button click did not jump to settings service tab: page=%q section=%q open=%v", a.page, a.access.SettingsSection, a.monitor.PopoverOpen)
+	}
+}

@@ -22,28 +22,37 @@ func (a *App) projectNotificationMenu(c *ui.Context, item ui.Element, project Pr
 		if target != nil {
 			q = a.projectQueueStateFor(*target)
 		}
-		if m.Item("清空所有通知").Disabled(!a.access.Loaded || q == nil || !q.Loaded).Chosen() {
-			if err := a.clearProjectNotifications(q, *target); err != nil {
-				c.Toast(err.Error())
-			} else {
-				c.Toast("已清空「" + project.Name + "」的所有通知")
-			}
-		}
-		m.Separator()
 		hidden := a.projectIsHidden(project)
 		label := "隐藏项目"
 		if hidden {
 			label = "取消隐藏"
 		}
-		if m.Item(label).Chosen() {
-			if err := a.setProjectHidden(project, !hidden); err != nil {
-				c.Toast(err.Error())
-			} else if hidden {
-				c.Toast("已恢复显示「" + project.Name + "」")
-			} else {
-				c.Toast("已隐藏「" + project.Name + "」，可从全部项目中恢复")
-			}
-		}
+		v4BuildMenu(m, []v4MenuItem{
+			{
+				Label:    "清空所有通知",
+				Disabled: !a.access.Loaded || q == nil || !q.Loaded,
+				OnSelect: func() {
+					if err := a.clearProjectNotifications(q, *target); err != nil {
+						c.Toast(err.Error())
+					} else {
+						c.Toast("已清空「" + project.Name + "」的所有通知")
+					}
+				},
+			},
+			{Separator: true},
+			{
+				Label: label,
+				OnSelect: func() {
+					if err := a.setProjectHidden(project, !hidden); err != nil {
+						c.Toast(err.Error())
+					} else if hidden {
+						c.Toast("已恢复显示「" + project.Name + "」")
+					} else {
+						c.Toast("已隐藏「" + project.Name + "」，可从全部项目中恢复")
+					}
+				},
+			},
+		})
 	})
 }
 

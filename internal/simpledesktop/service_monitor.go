@@ -77,6 +77,13 @@ type serviceMonitorState struct {
 	PollEnabled         bool
 	NextPollAt          time.Time
 	Request             uint64
+	PopoverOpen         bool
+	popoverBtnHover     bool
+	popoverBtnFocus     bool
+	popoverClicked      bool
+	popoverPanelHover   bool
+	popoverShowTimer    *time.Timer
+	popoverHideTimer    *time.Timer
 }
 
 func (a *App) refreshServiceMonitor() {

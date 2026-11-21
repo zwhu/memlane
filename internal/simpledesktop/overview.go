@@ -217,7 +217,9 @@ func (c Client) overview(ctx context.Context) (overviewSnapshot, error) {
 		sessions   []Session
 		sessionErr error
 	)
-	sem := make(chan struct{}, min(6, len(projects)))
+	// Bounded concurrency (3) keeps single-process official_service_dev.py responsive
+	// so overviewActivity isn't starved behind a burst of dataset auth checks.
+	sem := make(chan struct{}, min(3, len(projects)))
 	for _, proj := range projects {
 		p := proj
 		wg.Add(1)
@@ -342,24 +344,58 @@ func aggregateActivity(rows []activityRow, projects []Project) []overviewEvent {
 			latest[key] = r
 		}
 	}
-	rootKey := func(key string) string {
+	// Precompute root key for every run in O(N) with memoization to avoid O(N^2) scans.
+	rootOf := make(map[string]string, len(latest))
+	var resolveRoot func(string) string
+	resolveRoot = func(key string) string {
+		if r, ok := rootOf[key]; ok {
+			return r
+		}
+		path := []string{}
 		seen := map[string]bool{}
-		for !seen[key] {
-			seen[key] = true
-			r, ok := latest[key]
+		cur := key
+		for !seen[cur] {
+			if cached, ok := rootOf[cur]; ok {
+				cur = cached
+				break
+			}
+			seen[cur] = true
+			path = append(path, cur)
+			r, ok := latest[cur]
 			if !ok || r.Parent == "" {
 				break
 			}
 			if _, ok := latest[r.Parent]; !ok {
 				break
 			}
-			key = r.Parent
+			cur = r.Parent
 		}
-		return key
+		for _, k := range path {
+			rootOf[k] = cur
+		}
+		return cur
 	}
-	events := map[string]overviewEvent{}
+	childFailed := map[string]bool{}
+	childMaxAt := map[string]time.Time{}
+	failuresByRoot := map[string][]activityRow{}
 	for key, r := range latest {
-		root := rootKey(key)
+		root := resolveRoot(key)
+		state := activityState(r)
+		if state == "失败" {
+			failuresByRoot[root] = append(failuresByRoot[root], r)
+		}
+		if key != root {
+			if state == "失败" {
+				childFailed[root] = true
+			}
+			if t, ok := officialTime(r.Created); ok && t.After(childMaxAt[root]) {
+				childMaxAt[root] = t
+			}
+		}
+	}
+	events := make(map[string]overviewEvent, len(latest))
+	for key, r := range latest {
+		root := rootOf[key]
 		// A parent operation represents its child runs once its row is available.
 		if key != root {
 			continue
@@ -378,34 +414,21 @@ func aggregateActivity(rows []activityRow, projects []Project) []overviewEvent {
 		if r.Background && r.Outcome == "succeeded" {
 			// Visible child failures are conclusive; a page of completed children
 			// cannot prove that every background stage has finished.
-			failed := false
-			for childKey, child := range latest {
-				if childKey != key && rootKey(childKey) == root {
-					s := activityState(child)
-					if s == "失败" {
-						failed = true
-					}
-					if t, ok := officialTime(child.Created); ok && t.After(at) {
-						at = t
-					}
-				}
+			if maxChild := childMaxAt[root]; maxChild.After(at) {
+				at = maxChild
 			}
-			if failed {
+			if childFailed[root] {
 				state = "失败"
-
 			}
 		}
 		project := names[r.Dataset]
 		if project == "" {
 			project = "全局"
 		}
-		var failures []activityRow
-		for childKey, child := range latest {
-			if rootKey(childKey) == root && activityState(child) == "失败" {
-				failures = append(failures, child)
-			}
+		failures := failuresByRoot[root]
+		if len(failures) > 1 {
+			sort.Slice(failures, func(i, j int) bool { return failures[i].ID < failures[j].ID })
 		}
-		sort.Slice(failures, func(i, j int) bool { return failures[i].ID < failures[j].ID })
 		events[root] = overviewEvent{Key: root, Title: activityName(name), State: state, Project: project, At: at, Record: r, Failures: failures}
 	}
 	result := make([]overviewEvent, 0, len(events))
@@ -428,34 +451,40 @@ func (c Client) overviewActivity(ctx context.Context, want int) ([]overviewEvent
 	if len(projects) == 0 {
 		return nil, false, nil
 	}
+	// Official pipeline-runs has ~85ms fixed per-request auth overhead regardless
+	// of limit (1..500), so fetching want*5 (up to 500) resolves 50+ root events
+	// in a single HTTP round-trip instead of 2-5 sequential pages.
+	pageSize := min(500, max(100, want*5))
 	rows := []activityRow{}
-	for offset := 0; offset <= 1000000; offset += 100 {
+	known := map[string]bool{}
+	for offset := 0; offset <= 1000000; {
 		var page []activityRow
-		if err := c.get(ctx, fmt.Sprintf("/api/v1/activity/pipeline-runs?limit=100&offset=%d", offset), &page); err != nil {
+		if err := c.get(ctx, fmt.Sprintf("/api/v1/activity/pipeline-runs?limit=%d&offset=%d", pageSize, offset), &page); err != nil {
 			return nil, false, err
 		}
 		rows = append(rows, page...)
-		events := aggregateActivity(rows, projects)
-		// Resolve parents on page boundaries before counting independent events.
-		unresolved := false
-		known := map[string]bool{}
-		for _, r := range rows {
+		for _, r := range page {
 			if r.Run != "" {
 				known[r.Run] = true
 			}
 		}
+		events := aggregateActivity(rows, projects)
+		// Resolve parents on page boundaries before counting independent events.
+		unresolved := false
 		for _, r := range rows {
 			if r.Parent != "" && !known[r.Parent] {
 				unresolved = true
+				break
 			}
 		}
-		if len(page) < 100 || (len(events) > want && !unresolved) {
-			more := len(events) > want || len(page) == 100
+		if len(page) < pageSize || (len(events) > want && !unresolved) {
+			more := len(events) > want || len(page) == pageSize
 			if len(events) > want {
 				events = events[:want]
 			}
 			return events, more, nil
 		}
+		offset += len(page)
 	}
 	return nil, false, fmt.Errorf("活动分页未读完")
 }

@@ -223,3 +223,20 @@ func TestIncompatibleAgentPluginExplainsReasonAndDailyScope(t *testing.T) {
 		t.Fatalf("missing incompatible reason inside approval modal: %v", tt.Texts())
 	}
 }
+
+func TestSettingsEnvironmentUsesV4SkeletonWhileLoading(t *testing.T) {
+	a := New(Config{}, nil)
+	a.environment.Loading = true
+	a.environment.Loaded = false
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Themed(c, homeTheme).Fill().Children(func() {
+			ui.Scroll(c).Fill().Children(func() { a.environmentSetup(c, false) })
+		})
+	}, 1200, 820)
+	if !tt.HasText("运行环境") || !tt.HasText("重新检测") || !tt.HasText("查看详情") {
+		t.Fatalf("missing V4 group header controls: %v", tt.Texts())
+	}
+	if tt.HasText("检测中…") {
+		t.Fatalf("settings environment still renders legacy plain text loading state: %v", tt.Texts())
+	}
+}

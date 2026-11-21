@@ -234,6 +234,17 @@ class PerformanceLintTests(unittest.TestCase):
         good_draw = 'func paint(el ui.Element) { el.Draw(func(p *ui.Painter, r ui.Rect) { p.Fill(r, tok.Bg, 0) }) }'
         self.assertEqual(self.codes(good_draw, 'overview_ui.go'), set())
 
+    def test_cold_start_overview_guardrails_ml012(self):
+        self.assertIn('ML012', self.codes('func x() { a.hydrateOverviewFromCache("s") }', 'overview_ui.go'))
+        bad_load = 'func (a *App) loadOverview() { client.overview(ctx) }\n'
+        self.assertIn('ML012', self.codes(bad_load, 'overview_ui.go'))
+        good_load = 'func (a *App) loadOverview() { control.overviewBootstrap(ctx, 250, 50) }\n'
+        self.assertEqual(self.codes(good_load, 'overview_ui.go'), set())
+        bad_start = 'func (a *App) Start() { a.RefreshProjectDirectory()\na.RefreshIntegrations() }\n'
+        self.assertIn('ML012', self.codes(bad_start, 'app.go'))
+        good_start = 'func (a *App) Start() { a.RefreshProjectDirectory()\ntime.AfterFunc(700*time.Millisecond, func() { a.RefreshIntegrations() }) }\n'
+        self.assertEqual(self.codes(good_start, 'app.go'), set())
+
 
 if __name__ == '__main__':
     unittest.main()

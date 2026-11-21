@@ -170,24 +170,30 @@ func TestOverviewLayoutAndContinuousUIFixture(t *testing.T) {
 			if err := tt.Click("失败操作：failed"); err != nil {
 				t.Fatal(err)
 			}
-			if err := tt.Click("查看失败详情"); err != nil {
+			if !tt.HasText("连接管道已断开") || !tt.HasText("BrokenPipeError") || !tt.HasText("展开技术信息") {
+				t.Fatal("failure detail dialog missing human-readable explanation or collapsed tech toggle")
+			}
+			if tt.HasText("fixture-row") {
+				t.Fatal("technical row ID should be collapsed by default")
+			}
+			if err := tt.Click("展开技术信息"); err != nil {
 				t.Fatal(err)
 			}
-			if err := tt.Click("失败操作：failed"); err != nil {
-				t.Fatal(err)
+			if !tt.HasText("fixture-row") || !tt.HasText("收起技术信息") {
+				t.Fatal("expanded technical section missing record ID")
 			}
 			if err := tt.Click("复制诊断信息"); err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(tt.Clipboard(), "fixture-run") || a.overviewState.CopiedEvent != "failed" {
+			if !strings.Contains(tt.Clipboard(), "fixture-run") || a.overviewState.CopiedEvent != "failed" || !tt.HasText("已复制诊断信息 · 不含凭据或会话正文") {
 				t.Fatal("diagnostic clipboard/feedback missing")
 			}
-			// Collapse diagnostic before checking project layout.
-			if err := tt.Click("失败操作：failed"); err != nil {
+			// Close diagnostic modal before checking project layout.
+			if err := tt.Click("关闭"); err != nil {
 				t.Fatal(err)
 			}
-			if err := tt.Click("收起失败详情"); err != nil {
-				t.Fatal(err)
+			if a.overviewState.ExpandedEvent != "" || tt.HasText("任务失败详情") {
+				t.Fatal("failure detail dialog did not close")
 			}
 			if tt.HasText("项目入口") {
 				t.Fatal("obsolete project grid visible on V4 overview")
@@ -546,5 +552,88 @@ func TestOverviewHeatmapHidesMissingDatesNotice(t *testing.T) {
 	tt := ui.NewTester(a.View, 1200, 820)
 	if tt.HasText("部分记忆缺少来源日期，未计入热力图。") {
 		t.Fatal("missing dates notice should not be displayed on overview")
+	}
+}
+
+func TestOverviewFailureDetailDialogReadabilityAndAppearances(t *testing.T) {
+	parent := activityRow{
+		ID:        "6299cdd3-51df-4c45-bd3f-c58bf80ce11e",
+		Run:       "7c467ee6-3fb2-444d-ba80-9f55b90ca45b",
+		Dataset:   "0",
+		Operation: "improve",
+		Origin:    "api",
+		Outcome:   "failed",
+		Created:   "2026-11-20T20:21:46.247797",
+		Started:   "2026-11-20T19:57:53.712232",
+		Ended:     "2026-11-20T20:21:46.240281",
+	}
+	child := activityRow{
+		ID:         "e43280b7-f87f-4c87-bd98-cb00b76e87d8",
+		Run:        "e967a7e9-d20a-4184-85e3-4886ba4ffdea",
+		Parent:     parent.Run,
+		Dataset:    "0",
+		Pipeline:   "memify_pipeline",
+		Origin:     "api",
+		ErrorClass: "ConnectTimeout",
+		Outcome:    "failed",
+		Status:     "DATASET_PROCESSING_ERRORED",
+		Created:    "2026-11-20T20:21:42.579387",
+	}
+	for _, tc := range []struct {
+		name string
+		pref string
+	}{
+		{name: "light", pref: appearanceLight},
+		{name: "dark", pref: appearanceDark},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := overviewSelectedAFixture(t)
+			a.Config.ServiceURL = "http://127.0.0.1:61255"
+			a.Config.ServiceCommit = "ec6f40859e5f2df9e7862dde27580ac3268ed43"
+			a.setAppearancePreference(tc.pref)
+			defer a.setAppearancePreference(appearanceLight)
+
+			a.overviewState.Events = []overviewEvent{
+				{
+					Key:      parent.Run,
+					Title:    "整理记忆",
+					State:    "失败",
+					Project:  "memlane",
+					At:       time.Date(2026, 11, 20, 20, 21, 46, 240281000, time.UTC),
+					Record:   parent,
+					Failures: []activityRow{parent, child},
+				},
+			}
+			tt := ui.NewTester(a.overviewShell, 1200, 820)
+			if err := tt.Click("失败操作：" + parent.Run); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"整理记忆 · 失败详情", "连接超时", "ConnectTimeout", "整理记忆流水线", "23 分 53 秒", "展开技术信息"} {
+				if !tt.HasText(want) {
+					t.Fatalf("%s collapsed dialog missing %q", tc.name, want)
+				}
+			}
+			if tt.HasText(child.Run) {
+				t.Fatalf("%s dialog leaked raw child run ID before expanding tech info", tc.name)
+			}
+			fixtureImage(t, tt, "failure-dialog-"+tc.name+"-collapsed")
+
+			if err := tt.Click("展开技术信息"); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"收起技术信息", child.Run, a.Config.ServiceCommit} {
+				if !tt.HasText(want) {
+					t.Fatalf("%s expanded dialog missing %q", tc.name, want)
+				}
+			}
+			fixtureImage(t, tt, "failure-dialog-"+tc.name+"-expanded")
+
+			if err := tt.Click("关闭"); err != nil {
+				t.Fatal(err)
+			}
+			if a.overviewState.ExpandedEvent != "" {
+				t.Fatalf("%s dialog did not close", tc.name)
+			}
+		})
 	}
 }

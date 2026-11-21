@@ -36,3 +36,7 @@ coverage/
 
 # Official Enola generated snapshot and incremental cache
 .enola/
+
+# 过程文档与验收媒体（图片、视频、截图、草稿、实验记录等，不入库）
+docs/process/*
+!docs/process/README.md

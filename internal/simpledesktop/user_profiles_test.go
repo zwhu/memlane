@@ -213,3 +213,44 @@ func TestUserProfileAntigravityDisplaysGeminiAppAndAllowsAutomaticImport(t *test
 		t.Fatalf("expected enabled automatic import request, got %q", called)
 	}
 }
+
+func TestUserProfileV4StructuredDateEntriesAndFallback(t *testing.T) {
+	body := "## 工作习惯\n- [2026-11-18] - 偏好 `1200×820` 固定窗口与发丝分隔\n- [2026-11-19] - 先给结论再给依据\n\n## 技术偏好\n- [2026-11-20] - 零侵入外置扩展"
+	sections, ok := parseProfileDisplaySections(body)
+	if !ok || len(sections) != 2 || len(sections[0].Items) != 2 || sections[0].Items[0].Date != "2026-11-18" || len(sections[1].Items) != 1 {
+		t.Fatalf("unexpected parsed profile sections: ok=%v sections=%+v", ok, sections)
+	}
+	if _, ok := parseProfileDisplaySections("## 普通段落\n\n没有日期前缀的正文。"); ok {
+		t.Fatal("plain markdown without dated entries must fall back to Markdown")
+	}
+
+	a := profileUIFixture(t)
+	a.userProfiles.Body = body
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("2026-11-18") || !tt.HasText("工作习惯") || !tt.HasText("复制正文") || !tt.HasText("3 条记录") {
+		t.Fatalf("structured profile V4 rendering missing expected elements: %v", tt.Texts())
+	}
+	clickProjectUI(t, tt, "复制正文")
+	if tt.Clipboard() != body {
+		t.Fatalf("copy body did not copy raw profile body: %q", tt.Clipboard())
+	}
+	// Window-level ↑↓ keyboard switch works immediately upon entering the profile page.
+	tt.Key(0, ui.KeyDown)
+	if a.userProfiles.Selected != "manual:grok" {
+		t.Fatalf("KeyDown did not select next source: %q", a.userProfiles.Selected)
+	}
+	tt.Key(0, ui.KeyUp)
+	if a.userProfiles.Selected != "codex" {
+		t.Fatalf("KeyUp did not return to previous source: %q", a.userProfiles.Selected)
+	}
+
+	// Failed profile without a prior document must still show "重新导入" consistently.
+	a.userProfiles.Body, a.userProfiles.BodyKey = "", ""
+	a.userProfiles.Directory.Profiles[0].Document = nil
+	a.userProfiles.Directory.Profiles[0].Status = "failed"
+	a.userProfiles.Directory.Profiles[0].CanGenerate = true
+	tt.Frame()
+	if !tt.HasText("重新导入") {
+		t.Fatalf("failed profile without document should show 重新导入, got: %v", tt.Texts())
+	}
+}

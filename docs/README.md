@@ -65,3 +65,7 @@
 - [visual-standards-20261113.md](archive/visual-standards-20261113.md)
 - [scenario-runner.md](archive/scenario-runner.md)
 - [client-simplification-20261112/](archive/client-simplification-20261112/)
+
+## 8. 过程文档与验收媒体 (`process/`)
+
+「过程文档」指仅服务于当次需求探索、调试排查、评审或验收留证、不构成项目长期基线的临时文档、草稿、界面截图及录屏视频等（任务完成后删掉不影响理解当前系统设计与契约）。所有过程产物统一存放在 [process/](process/README.md) 目录（完整正反边界见该说明）；仓库根目录 `.gitignore` 已配置忽略该目录下除 `README.md` 外的全部文件，不提交入库。

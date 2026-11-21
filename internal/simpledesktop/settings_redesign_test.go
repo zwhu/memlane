@@ -36,7 +36,7 @@ func TestSettingsProjectPermissionsCardsAndNavigation(t *testing.T) {
 			if a.kind != "管理" || a.access.OpenProject != "p" {
 				t.Fatal("project identity lost")
 			}
-			for _, label := range []string{"允许读取记忆", "允许写入和删除记忆"} {
+			for _, label := range []string{"Agent 访问权限", "只读"} {
 				if !tt.HasText(label) {
 					t.Fatal("missing", label)
 				}

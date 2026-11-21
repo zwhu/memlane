@@ -83,7 +83,10 @@ type App struct {
 		overviewActivity  uint64
 		projectPage       uint64
 		projectList       uint64
+		docScrollKey      string
+		docEnter          uint64
 	}
+	poseEnter             poseEnterTracker
 	projectCreate        projectCreateState
 	Config               Config
 	Client               Client
@@ -101,6 +104,8 @@ type App struct {
 
 func New(c Config, err error) *App {
 	a := &App{Config: c, Client: Client{Config: c}, page: "总览", kind: "知识", service: "尚未检查", completion: "尚未检查"}
+	// Cold-start entrance motion is armed atomically once overviewBootstrap
+	// delivers the real snapshot (~40-90ms), preventing un-animated flash or double play.
 	if c.GenerationSetupOnly {
 		a.page = "设置"
 		a.access.SettingsSection = "Agent 与模型"
@@ -162,9 +167,20 @@ func (a *App) Start() {
 	a.monitor.PollEnabled = true
 	a.health()
 	a.loadRecent()
-	a.restoreCodeState()
 	a.RefreshProjectDirectory()
-	a.RefreshIntegrations()
+	// Defer non-critical background host CLI probes and code-index state restore
+	// until after Overview cold-start bootstrap and entrance motion settle.
+	if a.Update != nil && a.page == "总览" {
+		time.AfterFunc(700*time.Millisecond, func() {
+			a.Update(func() {
+				a.restoreCodeState()
+				a.RefreshIntegrations()
+			})
+		})
+	} else {
+		a.restoreCodeState()
+		a.RefreshIntegrations()
+	}
 }
 func (a *App) health() {
 	a.refreshServiceMonitor()
@@ -206,10 +222,10 @@ func (a *App) navigateKind(page string, index int, kind string) {
 		a.motionRuns.overviewPage++
 		a.motionRuns.overviewKnowledge++
 		a.motionRuns.overviewActivity++
+		a.overviewState.heatmapGrowStart = time.Now()
 	}
 	if page == "知识" {
 		a.motionRuns.projectPage++
-		a.motionRuns.projectList++
 	}
 	a.cancelRecentTitles()
 	a.epoch++
@@ -239,7 +255,25 @@ func (a *App) navigateKind(page string, index int, kind string) {
 	}
 	a.project = index
 	if page == "总览" {
-		a.loadOverview()
+		if !a.overviewState.Loaded || a.overviewState.scope != a.overviewScope() {
+			a.loadOverview()
+		} else if a.overviewRefreshAt.IsZero() || !time.Now().Before(a.overviewRefreshAt) {
+			// Defer stale background refresh until after the 780ms enter animation
+			// settles so returning from a project never hitches mid-transition.
+			a.overviewRefreshAt = time.Now().Add(overviewRefreshInterval)
+			navEpoch := a.epoch
+			if a.Update != nil {
+				time.AfterFunc(850*time.Millisecond, func() {
+					a.Update(func() {
+						if a.page == "总览" && a.epoch == navEpoch {
+							a.loadOverview()
+						}
+					})
+				})
+			} else {
+				a.loadOverview()
+			}
+		}
 	}
 	if page == "知识" {
 		a.kind = "知识"
@@ -256,6 +290,13 @@ func (a *App) navigateKind(page string, index int, kind string) {
 	if page != "总览" && page != "设置" && page != "图谱" && page != "检索结果" && page != "用户画像" && !(page == "知识" && a.kind == "管理") {
 		s := a.state()
 		if page == "知识" && a.kind == "知识" {
+			if s.Loaded && len(s.Items) > 0 {
+				a.motionRuns.projectList++
+			} else {
+				// Avoid a second staggered bounce when items load asynchronously
+				// after knowledge-list-body has already completed Page Rise.
+				a.motionRuns.projectList = 0
+			}
 			a.loadKnowledgeFeed(s)
 		} else {
 			a.load(s)

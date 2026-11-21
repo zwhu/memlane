@@ -68,11 +68,23 @@ func (a *App) generationHandoffPanel(c *ui.Context) {
 	if !s.HandoffOpen {
 		return
 	}
-	ui.Modal(c.Key("generation-enable-review"), &s.HandoffOpen, func() {
-		ui.Column(c).Width(500).Gap(16).Children(func() {
-			homeText(c, "切换处理方式？", homeHeading).FontSize(16).FontWeight(500)
-			homeText(c, generationLabel(s.Generation, s.HandoffRef), homeBody).FontSize(13).TextColor(homeInk).MaxLines(2)
+	confirmDisabled := s.Busy || !s.HandoffReady || s.HandoffLoading || s.HandoffRef == nil ||
+		(s.HandoffRef != nil && s.Generation.Active != nil && *s.HandoffRef == *s.Generation.Active)
+	v4Dialog(c, &s.HandoffOpen, v4DialogOptions{
+		Key:             "generation-enable-review",
+		Title:           "切换处理方式？",
+		Width:           v4DialogSmall,
+		CancelText:      "取消",
+		ConfirmText:     "确认启用",
+		Hint:            "仅确认后的服务回执会更新当前使用的处理方式",
+		CancelDisabled:  s.Busy,
+		ConfirmDisabled: confirmDisabled,
+		OnCancel:        func() { s.HandoffOpen = false },
+		OnConfirm:       a.startGenerationHandoff,
+		Body: func() {
+			homeText(c, generationLabel(s.Generation, s.HandoffRef), homeBody).FontSize(fsBody).TextColor(tok.Text1).MaxLines(2)
 			if s.HandoffLoading {
+				v4SkeletonRow(c, 1, false, false)
 				homeText(c, "正在读取任务状态…", homeMeta)
 			} else {
 				if s.Handoff.Running > 0 {
@@ -83,14 +95,9 @@ func (a *App) generationHandoffPanel(c *ui.Context) {
 				}
 			}
 			if s.Error != "" {
-				homeText(c, s.Error, homeMeta).MaxLines(3)
+				homeText(c, s.Error, homeMeta).TextColor(tok.Danger).MaxLines(3)
 			}
-			ui.Row(c).FillWidth().Justify(ui.End).Gap(12).Children(func() {
-				textButton(c, "取消", func() { s.HandoffOpen = false }).Disabled(s.Busy)
-				ui.Button(c, "确认启用").Disabled(s.Busy || !s.HandoffReady || s.HandoffLoading || s.HandoffRef == nil ||
-					(s.HandoffRef != nil && s.Generation.Active != nil && *s.HandoffRef == *s.Generation.Active)).OnClick(a.startGenerationHandoff)
-			})
-		})
+		},
 	})
 }
 

@@ -77,7 +77,7 @@ def _legacy_matches(old, capture):
     )
 
 
-def install_capture_routes(app, *, bindings=None, receipt_store=None):
+def install_capture_routes(app, *, bindings=None, receipt_store=None, drift_observer=None):
     from fastapi import Depends, HTTPException, Query
     from pydantic import BaseModel, Field, TypeAdapter
     from cognee.memory import QAEntry, TraceEntry
@@ -193,7 +193,20 @@ def install_capture_routes(app, *, bindings=None, receipt_store=None):
                     state, record = receipt_store.reserve(capture, baseline_count=baseline_count)
                 except CaptureConflict:
                     raise HTTPException(409, 'message ID already used for another payload') from None
+                def _observe_drift():
+                    if drift_observer is not None and entry.type == 'trace':
+                        try:
+                            drift_observer(str(payload.dataset_id), payload.session_id, payload.entry, message)
+                        except Exception:
+                            pass
+
+                def _finish_saved(saved_entry_id):
+                    receipt = receipt_store.mark_saved(capture, str(saved_entry_id))
+                    _observe_drift()
+                    return receipt
+
                 if state == 'saved' and record.get('receipt'):
+                    _observe_drift()
                     return record['receipt']
                 marked_entry = ensure_qa_context_date(attach_capture_marker(entry, capture))
                 alt_contexts = (entry.context,) if getattr(entry, 'type', None) == 'qa' else ()
@@ -203,7 +216,7 @@ def install_capture_routes(app, *, bindings=None, receipt_store=None):
                         alt_contexts=alt_contexts,
                     )
                     if committed_id:
-                        return receipt_store.mark_saved(capture, committed_id)
+                        return _finish_saved(committed_id)
 
                 try:
                     result = await remember(
@@ -215,7 +228,7 @@ def install_capture_routes(app, *, bindings=None, receipt_store=None):
                         alt_contexts=alt_contexts,
                     )
                     if committed_id:
-                        return receipt_store.mark_saved(capture, committed_id)
+                        return _finish_saved(committed_id)
                     receipt_store.abort_pending(capture)
                     raise
 
@@ -229,7 +242,7 @@ def install_capture_routes(app, *, bindings=None, receipt_store=None):
                     if not committed_id:
                         receipt_store.abort_pending(capture)
                         raise HTTPException(503, 'capture commit not confirmed')
-                return receipt_store.mark_saved(capture, str(committed_id))
+                return _finish_saved(committed_id)
         finally:
             if key_locks.get(capture.key) is lock and not lock.locked() and not getattr(lock, '_waiters', None):
                 key_locks.pop(capture.key, None)

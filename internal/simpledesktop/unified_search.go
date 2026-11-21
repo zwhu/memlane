@@ -2,7 +2,6 @@ package simpledesktop
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -21,6 +20,7 @@ type unifiedSearchState struct {
 	KeyboardSelection                    bool
 	Scroll                               ui.ScrollState
 	Reveal                               bool
+	lastSelIndY                          float32
 	request                              uint64
 	cancel                               context.CancelFunc
 }
@@ -57,6 +57,11 @@ func (a *App) openUnifiedSearch(restore bool) {
 	a.projectUI.MenuOpen = false
 	if !restore {
 		s.Scope = ""
+		if a.page == "知识" || a.page == "图谱" {
+			if p, ok := a.current(); ok && p.ID != "" {
+				s.Scope = p.ID
+			}
+		}
 		if strings.TrimSpace(s.Query) != "" {
 			s.Rows = nil
 			s.Loaded = false
@@ -300,148 +305,6 @@ func (a *App) unifiedSearchTrigger(c *ui.Context) {
 		ui.Spacer(c)
 		ui.Text(c, "⌘ K").Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Text4).SingleLine()
 	}).OnClick(a.OpenSearch)
-}
-func (a *App) searchDialog(c *ui.Context) {
-	s := &a.searchUI
-	if !s.Open {
-		return
-	}
-	w, h := c.Size()
-	rows := a.visibleSearchRows()
-	ui.Modal(c.Key("unified-search-modal"), &s.Open, func() {
-		ui.Row(c).Height(68).Shrink(0).Padding(0, 20).Gap(12).AlignItems(ui.Center).Children(func() {
-			ui.Icon(c, homeSearch).FontSize(21).TextColor(homeMuted)
-			input := ui.TextInput(c.Key("unified-query"), &s.Query).Label("搜索关键词").Placeholder("输入关键词，按回车搜索").Grow(1).MinWidth(0).FontSize(18).Background(ui.Transparent).BorderWidth(0).OnSubmit(a.searchSubmitOrOpen)
-			if input.Changed() {
-				s.HistoryDirty = true
-				a.cancelChangedSearch()
-			}
-			if s.Focus {
-				input.Focus()
-				s.Focus = false
-			}
-			if input.Shortcut(0, ui.KeyDown) && len(rows) > 0 {
-				s.Selection = (s.Selection + 1) % len(rows)
-				if !s.KeyboardSelection {
-					s.Selection = 0
-				}
-				s.KeyboardSelection = true
-				s.Reveal = true
-			}
-			if input.Shortcut(0, ui.KeyUp) && len(rows) > 0 {
-				s.Selection = (s.Selection + len(rows) - 1) % len(rows)
-				if !s.KeyboardSelection {
-					s.Selection = len(rows) - 1
-				}
-				s.KeyboardSelection = true
-				s.Reveal = true
-			}
-			readingAction(c, "关闭搜索", readingClose, a.closeUnifiedSearch)
-		})
-		ui.Row(c).Padding(0, 20, 12, 20).Children(func() {
-			labels := []string{"全部", "知识", "原始记录"}
-			selected := 0
-			for n, label := range labels {
-				if s.Type == label {
-					selected = n
-				}
-			}
-			ui.Segmented(c, &selected, "全部", "记忆", "原始记录").Label("搜索内容类型").OnChange(func() {
-				s.Type = labels[selected]
-				s.Selection = 0
-				s.KeyboardSelection = false
-				s.Scroll.Y = 0
-				s.Reveal = true
-			})
-		})
-		if s.Error != "" {
-			ui.Row(c).Padding(8, 20).Gap(12).Children(func() {
-				homeText(c, s.Error, homeMeta).MaxLines(2)
-				textButton(c, "重试", nil).Disabled(s.Loading).OnClick(a.retryUnifiedSearch)
-			})
-		}
-		if strings.TrimSpace(s.Query) != "" && !s.Loading && s.Loaded && s.Submitted == a.searchSignature() {
-			keywords := 0
-			for _, row := range rows {
-				if row.SearchMatch == "关键词匹配" {
-					keywords++
-				}
-			}
-			homeText(c, fmt.Sprintf("关键词匹配 %d · 语义相关 %d", keywords, len(rows)-keywords), homeMeta).Margin(0, 20, 10, 20)
-		}
-		ui.Scroll(c.Key("unified-results")).Grow(1).MinHeight(0).TrackScroll(&s.Scroll).Padding(8, 10).Gap(4).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Children(func() {
-			if len(rows) == 0 {
-				message := "没有找到结果"
-				if s.Loading {
-					message = "搜索中…"
-				} else if s.Error != "" {
-					message = ""
-				} else if strings.TrimSpace(s.Query) != "" && s.Submitted != a.searchSignature() {
-					message = "按回车搜索"
-				} else if strings.TrimSpace(s.Query) == "" {
-					message = "暂无最近内容"
-				}
-				if message != "" {
-					homeText(c, message, homeBody).Margin(16)
-				}
-			}
-			group := ""
-			for n, row := range rows {
-				i, index := row, n
-				kind := "原始记录"
-				if strings.Contains(i.Kind, "知识") {
-					kind = "记忆"
-				}
-				if kind != group {
-					title := kind
-					if strings.TrimSpace(s.Query) == "" {
-						title = "最近" + kind
-					}
-					homeText(c, title, homeMeta).Margin(8, 12)
-					group = kind
-				}
-				title, preview := searchHitText(i, s.Query)
-				b := ui.Button(c, "").Cursor(ui.CursorPointer).Key("search-hit-"+i.key()).Label(title).FillWidth().MinWidth(0).Justify(ui.Start).Padding(12, 14).BorderWidth(0).Radius(8).Gap(12).Background(ui.Transparent)
-				b.Background(homeHoverColor(b, "search-hit-hover", ui.Transparent, c.Theme().SurfaceHover))
-				if s.KeyboardSelection && s.Selection == n {
-					b.Background(c.Theme().SurfaceHover)
-					if s.Reveal {
-						b.ScrollIntoView()
-					}
-				}
-				tip := title
-				if preview != "" {
-					tip += "\n\n" + preview
-				}
-				if v := []rune(tip); len(v) > 800 {
-					tip = string(v[:800]) + "…"
-				}
-				b.Tooltip(tip)
-				b.Children(func() {
-					ui.Icon(c, homeDocument).FontSize(18).TextColor(homeMuted)
-					ui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
-						if i.SearchMatch != "" {
-							homeText(c, i.SearchMatch, homeMeta).TextColor(tok.Accent)
-						}
-						homeText(c, title, homeTitle).FontSize(14).MaxLines(2)
-						if preview != "" && strings.TrimSpace(s.Query) != "" {
-							homeText(c, preview, homeMeta).MaxLines(2)
-						}
-						for _, p := range overviewProjects(a.Config) {
-							if p.Dataset == i.Dataset {
-								homeText(c, p.Name, homeMeta)
-								break
-							}
-						}
-					})
-				}).Disabled(s.Submitted != a.searchSignature() || i.ReadingState == "unavailable").OnClick(func() { s.Selection = index; a.openSearchResult(i) })
-			}
-		})
-		s.Reveal = false
-	}).Width(min(float32(680), w-80)).Height(min(float32(560), h-140)).Padding(0).Gap(0).Label("搜索记忆与原始记录弹框").Transition(projectOverlayMotion())
-	if !s.Open {
-		a.closeUnifiedSearch()
-	}
 }
 func (a *App) visibleSearchRows() []Item {
 	// Submitted identifies the in-flight request, not the rows' provenance.

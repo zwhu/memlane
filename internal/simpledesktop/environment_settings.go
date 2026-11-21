@@ -104,33 +104,39 @@ func (a *App) environmentPathsDialog(c *ui.Context) {
 	if !s.PathDialog {
 		return
 	}
-	_, height := c.Size()
-	modal := ui.Modal(c.Key("environment-path-dialog"), &s.PathDialog, func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			homeText(c, "指定已有路径", homeHeading).FontSize(18)
-			ui.Spacer(c)
-			readingAction(c, "关闭路径编辑", readingClose, a.cancelEnvironmentPaths)
-		})
-		ui.Scroll(c.Key("environment-path-fields")).FillWidth().MaxHeight(height - 240).Children(func() {
-			ui.Column(c).FillWidth().Gap(16).Children(func() {
-				for _, field := range []struct {
-					Label string
-					Value *string
-				}{{"Python 路径", &s.PathDraft.Python}, {"uv 路径", &s.PathDraft.UV}, {"Cognee 源码目录", &s.PathDraft.Source}, {"固定源码归档", &s.PathDraft.Archive}, {"已有模型缓存目录", &s.PathDraft.ModelCache}, {"已有 Agent 插件目录", &s.PathDraft.Plugin}} {
-					ui.Column(c).FillWidth().Gap(4).Children(func() {
-						homeText(c, field.Label, homeMeta).FontWeight(500)
-						ui.TextInput(c.Key("environment-draft-"+field.Label), field.Value).FillWidth().Label("输入" + field.Label).Disabled(s.Busy || s.Loading)
-					})
-				}
-			})
-		})
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {
-			ui.Spacer(c)
-			ui.Button(c, "取消").OnClick(a.cancelEnvironmentPaths)
-			ui.PrimaryButton(c, "检测这些路径").Disabled(s.Busy || s.Loading).OnClick(a.detectEnvironmentPaths)
-		})
-	}).Width(640).Padding(24).Gap(20).Transition(projectOverlayMotion())
-	if modal.Dismissed() || !s.PathDialog {
+	v4Dialog(c, &s.PathDialog, v4DialogOptions{
+		Key:             "environment-path-dialog",
+		Title:           "指定已有路径",
+		CloseLabel:      "关闭路径编辑",
+		Width:           v4DialogLarge,
+		ScrollBody:      true,
+		CancelText:      "取消",
+		ConfirmText:     "检测这些路径",
+		Hint:            "路径编辑仅保存在本地，点击检测后才重新核对环境",
+		CancelDisabled:  s.Busy || s.Loading,
+		ConfirmDisabled: s.Busy || s.Loading,
+		OnCancel:        a.cancelEnvironmentPaths,
+		OnConfirm:       a.detectEnvironmentPaths,
+		Body: func() {
+			for _, field := range []struct {
+				Label string
+				Value *string
+			}{
+				{"Python 路径", &s.PathDraft.Python},
+				{"uv 路径", &s.PathDraft.UV},
+				{"Cognee 源码目录", &s.PathDraft.Source},
+				{"固定源码归档", &s.PathDraft.Archive},
+				{"已有模型缓存目录", &s.PathDraft.ModelCache},
+				{"已有 Agent 插件目录", &s.PathDraft.Plugin},
+			} {
+				ui.Column(c).FillWidth().Gap(4).Children(func() {
+					homeText(c, field.Label, homeMeta).FontWeight(500).TextColor(tok.Text1)
+					ui.TextInput(c.Key("environment-draft-"+field.Label), field.Value).FillWidth().Label("输入" + field.Label).Disabled(s.Busy || s.Loading)
+				})
+			}
+		},
+	})
+	if !s.PathDialog {
 		a.cancelEnvironmentPaths()
 	}
 }

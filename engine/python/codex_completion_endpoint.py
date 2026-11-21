@@ -34,6 +34,13 @@ class CompletionError(Exception):
 def remote_error(raw):
     # Interpret only the machine error tag, never expose model/provider prose.
     info = raw.get('codexErrorInfo') if isinstance(raw, dict) else None
+    tag = None
+    if isinstance(info, str):
+        tag = info
+    elif isinstance(info, dict) and len(info) == 1:
+        key = next(iter(info))
+        if isinstance(key, str):
+            tag = key
     codes = {'unauthorized': ('codex_authentication_failed', 502),
              'usageLimitExceeded': ('codex_quota_exceeded', 429),
              'sessionBudgetExceeded': ('codex_quota_exceeded', 429),
@@ -41,10 +48,14 @@ def remote_error(raw):
              'modelNotFound': ('codex_model_unavailable', 502),
              'contextWindowExceeded': ('codex_context_exceeded', 400),
              'badRequest': ('codex_request_invalid', 400),
-             'sandboxError': ('codex_isolation_failed', 502)}
+             'sandboxError': ('codex_isolation_failed', 502),
+             'httpConnectionFailed': ('codex_connection_failed', 502),
+             'responseStreamDisconnected': ('codex_stream_disconnected', 502),
+             'responseTooManyFailedAttempts': ('codex_connection_failed', 502),
+             'internalServerError': ('codex_upstream_error', 502)}
     # App-server can wrap a provider's machine error in an `other` message.
     # Read only the JSON machine code; never return arbitrary provider prose.
-    if info == 'other' and isinstance(raw.get('message'), str):
+    if tag == 'other' and isinstance(raw.get('message'), str):
         try:
             detail = json.loads(raw['message'])
             if isinstance(detail, dict) and isinstance(detail.get('error'), dict):
@@ -55,7 +66,7 @@ def remote_error(raw):
                     return CompletionError('codex_request_invalid', 400)
         except (ValueError, TypeError):
             pass
-    code, status = codes.get(info, ('codex_model_failed', 502)) if isinstance(info, str) else ('codex_model_failed', 502)
+    code, status = codes.get(tag, ('codex_model_failed', 502)) if isinstance(tag, str) else ('codex_model_failed', 502)
     return CompletionError(code, status)
 
 

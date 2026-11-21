@@ -214,3 +214,129 @@ func TestSearchRestingRowsHaveNoSelectionAndHoverShowsContent(t *testing.T) {
 	}
 	fixtureImage(t, tt, "search-hover-preview")
 }
+
+func TestSearchPaletteV4ProjectScopeChipAndResultsPage(t *testing.T) {
+	a := projectUIFixture()
+	// Opening from a project page defaults "仅当前项目" to active.
+	a.page = "知识"
+	a.project = 0
+	a.OpenSearch()
+	if a.searchUI.Scope != a.Config.Projects[0].ID {
+		t.Fatalf("expected project scope %q when opened from project page, got %q", a.Config.Projects[0].ID, a.searchUI.Scope)
+	}
+	a.searchUI.Query = "sandbox"
+	a.searchUI.Rows = []Item{
+		{ID: "k1", Dataset: "ds", Kind: "知识片段", Title: "Sandbox listener rule", Body: "Sandbox listener requires explicit opt-in.", Preview: "Sandbox listener requires explicit opt-in.", BodyLoaded: true, SearchMatch: "关键词匹配", Date: "2026-11-20"},
+		{ID: "123e4567-e89b-12d3-a456-426614174000", Dataset: "ds", Kind: "会话", Title: "123e4567-e89b-12d3-a456-426614174000", Session: &Session{ID: "codex_123e4567-e89b-12d3-a456-426614174000", Dataset: "ds"}, Preview: "Sandbox session discussion", BodyLoaded: true, SearchMatch: "语义相关", Date: "2026-11-19"},
+	}
+	a.searchUI.Loaded = true
+	a.searchUI.Loading = false
+	a.searchUI.Submitted = a.searchSignature()
+
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("仅当前项目") || !tt.HasText("查看全部结果") || !tt.HasText("检索结果页") {
+		t.Fatalf("V4 palette controls missing: %v", tt.Texts())
+	}
+	// Verify ~120px top offset regardless of window height.
+	if panel, ok := tt.Find("搜索记忆与原始记录弹框"); !ok || panel.Y < 110 || panel.Y > 130 {
+		t.Fatalf("expected ⌘K panel positioned ~120px from top, got ok=%v rect=%+v", ok, panel)
+	}
+	// Raw UUID must not leak as the row title.
+	if tt.HasText("123e4567-e89b-12d3-a456-426614174000") {
+		t.Fatal("bare UUID leaked in search palette row")
+	}
+
+	// Clicking v4Segmented / filter controls must keep ↑↓ and ⌘↵ working via overlay shortcuts.
+	clickProjectUI(t, tt, "搜索内容类型")
+	tt.Key(0, ui.KeyDown)
+	if !a.searchUI.KeyboardSelection || a.searchUI.Selection != 0 {
+		t.Fatalf("↑↓ keyboard selection broke after clicking segmented filter: kb=%v sel=%d", a.searchUI.KeyboardSelection, a.searchUI.Selection)
+	}
+	tt.Key(ui.Cmd, ui.KeyEnter)
+	if a.page != "检索结果" || a.searchUI.Open {
+		t.Fatalf("⌘↵ did not open 检索结果 page after clicking filter: page=%q open=%v", a.page, a.searchUI.Open)
+	}
+	if !tt.HasText("检索结果") || !tt.HasText("复制正文") || !tt.HasText("在项目中打开") {
+		t.Fatalf("three-pane search results page missing V4 elements: %v", tt.Texts())
+	}
+
+	// Raw record / session in search results must also offer "在项目中打开" and render highlighted session QAs.
+	a.searchUI.Type = "全部"
+	rawItem := Item{
+		ID:      "codex_sess1",
+		Dataset: "ds",
+		Kind:    "会话",
+		Title:   "Sandbox session topic",
+		Session: &Session{ID: "codex_sess1", Dataset: "ds"},
+		Detail: &SessionDetail{
+			Count: 1,
+			QAs:   []QA{{ID: "q1", Question: "How does sandbox work?", Answer: "Sandbox uses explicit opt-in."}},
+		},
+		BodyLoaded: true,
+	}
+	a.searchUI.Rows = []Item{rawItem}
+	a.state().Selected = &rawItem
+	tt.Frame()
+	if !tt.HasText("在项目中打开") || !tt.HasText("How does sandbox work?") {
+		t.Fatalf("raw session search result missing open-in-project or Q&A text: %v", tt.Texts())
+	}
+
+	// Opening from overview defaults "仅当前项目" to unchecked.
+	a.navigate("总览", 0)
+	a.OpenSearch()
+	if a.searchUI.Scope != "" {
+		t.Fatalf("expected global scope when opened from overview, got %q", a.searchUI.Scope)
+	}
+}
+
+func TestSearchResultsFromProjectManageTabAndHiddenProjectSkipped(t *testing.T) {
+	a := projectUIFixture()
+	// Mark first project hidden; second project is visible.
+	p0 := a.Config.Projects[0]
+	a.projectVisibility = projectVisibilityState{
+		loaded: true,
+		Hidden: map[string]bool{p0.ID + "/" + p0.Dataset: true},
+	}
+	a.navigate("总览", 0)
+	if proj, ok := a.searchTargetProject(); !ok || proj.ID != a.Config.Projects[1].ID {
+		t.Fatalf("expected visible project %q on overview, got ok=%v proj=%+v", a.Config.Projects[1].ID, ok, proj)
+	}
+
+	// Open ⌘K from project "管理" tab, press ⌘↵, and verify three-pane search results
+	// renders instead of being occluded by the project management view.
+	a.navigateKind("知识", 1, "管理")
+	a.OpenSearch()
+	a.searchUI.Query = "sandbox"
+	a.searchUI.Rows = []Item{
+		{ID: "k-manage", Dataset: a.Config.Projects[1].Dataset, Kind: "知识片段", Title: "Sandbox from manage", Body: "Sandbox rule body", Preview: "Sandbox rule body", BodyLoaded: true, SearchMatch: "关键词匹配", Date: "2026-11-20"},
+	}
+	a.searchUI.Loaded = true
+	a.searchUI.Loading = false
+	a.searchUI.Submitted = a.searchSignature()
+
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("清空") {
+		t.Fatal("distinct clear text button missing when query is non-empty")
+	}
+	tt.Key(ui.Cmd, ui.KeyEnter)
+	if a.page != "检索结果" || a.searchUI.Open {
+		t.Fatalf("⌘↵ from manage tab failed: page=%q open=%v", a.page, a.searchUI.Open)
+	}
+	if _, ok := tt.Find("检索结果列表"); !ok {
+		t.Fatalf("search results three-pane list occluded by manage tab: %v", tt.Texts())
+	}
+	if !tt.HasText("复制正文") || !tt.HasText("在项目中打开") {
+		t.Fatalf("search results reader controls missing after opening from manage tab: %v", tt.Texts())
+	}
+}
+
+func TestSearchPaletteLoadingSkeletonAndReduceMotion(t *testing.T) {
+	a := projectUIFixture()
+	a.OpenSearch()
+	a.searchUI.Loading = true
+	a.searchUI.Rows = nil
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("搜索中…") {
+		t.Fatal("loading state missing skeleton status")
+	}
+}

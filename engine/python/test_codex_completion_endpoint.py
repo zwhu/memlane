@@ -83,6 +83,19 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual((error.code,error.status),('codex_schema_unsupported',400))
         self.assertNotIn('PRIVATE',str(error))
 
+    def test_remote_error_maps_tagged_connection_and_stream_failures_without_prose(self):
+        cases = [
+            ({'codexErrorInfo': {'httpConnectionFailed': {'httpStatusCode': 502}}, 'message': 'PRIVATE'}, 'codex_connection_failed', 502),
+            ({'codexErrorInfo': {'responseStreamDisconnected': {'httpStatusCode': None}}, 'message': 'PRIVATE'}, 'codex_stream_disconnected', 502),
+            ({'codexErrorInfo': {'responseTooManyFailedAttempts': {}}, 'message': 'PRIVATE'}, 'codex_connection_failed', 502),
+            ({'codexErrorInfo': {'internalServerError': {}}, 'message': 'PRIVATE'}, 'codex_upstream_error', 502),
+            ({'codexErrorInfo': 'httpConnectionFailed', 'message': 'PRIVATE'}, 'codex_connection_failed', 502),
+        ]
+        for raw, want_code, want_status in cases:
+            error = endpoint.remote_error(raw)
+            self.assertEqual((error.code, error.status), (want_code, want_status))
+            self.assertNotIn('PRIVATE', str(error))
+
     def test_open_dict_and_remote_ref_rejected(self):
         for schema in ({'type':'object','additionalProperties':{'type':'string'}}, {'$ref':'https://example.invalid/schema'}):
             with self.assertRaises(endpoint.CompletionError): endpoint.strict_schema(schema)

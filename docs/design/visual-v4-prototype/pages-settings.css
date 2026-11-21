@@ -1,0 +1,260 @@
+/* 设置页（Q2 / Q6）与项目「管理」标签（Q5）样式。严格仅使用 tokens.css 变量，不写裸色值。 */
+
+/* ---------- 设置页布局 ---------- */
+.settings-tabs-bar {
+  flex: none;
+  padding: 0 var(--s8);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.settings-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--s6) var(--s8) var(--s10);
+}
+
+.settings-pane-enter {
+  animation: settingsFade var(--dur-smooth) var(--spring-smooth, var(--ease-smooth)) both;
+}
+@keyframes settingsFade {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 分组头部右侧操作区 */
+.set-group-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+/* 行内次要标签 / 状态胶囊 / 版本号 */
+.set-ver {
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  font-weight: 400;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.set-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  background: var(--fill-2);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.set-badge--ok {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.set-badge--warn {
+  background: var(--fill-2);
+  color: var(--warning);
+}
+.set-badge--danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.set-dot-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.set-state-text {
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.set-state-text.is-ok { color: var(--ok); }
+.set-state-text.is-warn { color: var(--warning); }
+.set-state-text.is-fail { color: var(--danger); }
+
+/* 展开的 Agent 配置目录详情区（发丝缩进，不套卡片框） */
+.set-expand-box {
+  padding: var(--s2) var(--s1) var(--s3) 34px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--fs-caption);
+  color: var(--text-2);
+  animation: settingsFade var(--dur-snappy) var(--spring-snappy, var(--ease-snappy)) both;
+}
+.set-expand-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+}
+.set-mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+
+/* ---------- 服务页诊断折叠区（Q6：SF Mono + fill-1，默认收起） ---------- */
+.svc-diag-panel {
+  padding: var(--s3) var(--s1) var(--s4);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  animation: settingsFade var(--dur-snappy) var(--spring-snappy, var(--ease-snappy)) both;
+}
+.svc-diag-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+}
+.svc-log-box {
+  padding: var(--s3);
+  border-radius: var(--radius);
+  background: var(--fill-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  line-height: 1.65;
+  color: var(--text-2);
+  overflow-x: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.svc-log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-variant-numeric: tabular-nums;
+}
+.svc-log-line.is-error { color: var(--danger); }
+.svc-log-line.is-warning { color: var(--warning); }
+
+.svc-diag-chev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--text-4);
+  flex: none;
+  transition: transform var(--dur-snappy) var(--spring-snappy, ease);
+}
+.svc-diag-chev svg {
+  width: 14px;
+  height: 14px;
+}
+.svc-diag-chev.is-open {
+  transform: rotate(90deg);
+  color: var(--text-2);
+}
+
+/* ---------- 表单弹窗辅助样式（Provider 编辑 / 项目改名） ---------- */
+.set-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+.set-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.set-field-label {
+  font-size: var(--fs-footnote);
+  font-weight: 500;
+  color: var(--text-1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.set-field-hint {
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+  line-height: 1.45;
+}
+.set-field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s3);
+}
+.set-form .v4-select {
+  width: 100%;
+  align-items: stretch;
+}
+.set-form .v4-select-wrap {
+  width: 100%;
+}
+.set-form .v4-select-btn {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  background: var(--fill-1);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.set-validation-box {
+  padding: var(--s2) var(--s3);
+  border-radius: var(--radius);
+  background: var(--fill-1);
+  font-size: var(--fs-footnote);
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.set-validation-box.is-ok { color: var(--ok); }
+.set-validation-box.is-fail {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* ---------- 项目「管理」标签（Q5） ---------- */
+.manage-notice-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  background: var(--fill-2);
+  color: var(--text-2);
+}
+.manage-notice-tag.is-warn {
+  color: var(--warning);
+}
+.manage-notice-tag.is-accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.manage-history-list {
+  border-bottom: 1px solid var(--border);
+  padding: var(--s2) 0 var(--s2) var(--s3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  animation: settingsFade var(--dur-snappy) var(--spring-snappy, var(--ease-snappy)) both;
+}
+.manage-history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  font-size: var(--fs-footnote);
+  color: var(--text-3);
+}

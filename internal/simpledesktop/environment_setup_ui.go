@@ -32,9 +32,13 @@ type environmentSetupState struct {
 	Exporting                                      bool
 	AgentOpen                                      bool
 	DiagnosticAgents                               []bootstrap.DiagnosticAgent
-	RuntimeStarted                                 bool
-	RuntimeStage                                   string
-	RuntimePreparation                             bootstrap.FirstRuntime
+	RuntimeStarted     bool
+	RuntimeStage       string
+	RuntimePreparation bootstrap.FirstRuntime
+	setupStepIndY      float32
+	setupStepIndH      float32
+	setupStepRun       uint64
+	setupLastStep      int
 }
 
 func (a *App) environmentOptions() (bootstrap.EnvironmentOptions, error) {
@@ -356,106 +360,127 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 	if !s.Loaded && !s.Loading && a.Update != nil {
 		a.refreshEnvironment()
 	}
-	settingsSection(c, "运行环境", func() {
-		if s.Plan.Complete() && !s.Busy {
-			homeText(c, "已就绪", homeMeta).TextColor(tok.OK)
-		}
-	}, func() {
-		if s.Loading && s.Loaded {
-			ui.Spinner(c).Size(13, 13).TextColor(homeLinkInk)
-		}
-		textButton(c, "重新检测", nil).Disabled(s.Loading || s.Busy).OnClick(a.refreshEnvironment)
-		label := "查看详情"
-		if s.Details {
-			label = "收起详情"
-		}
-		textButton(c, label, nil).OnClick(func() { s.Details = !s.Details })
-	}, func() {
-		if s.Loading && !s.Loaded {
-			homeText(c, "检测中…", homeMeta).Margin(10, 0)
-		}
-		for index, item := range s.Plan.Items {
-			if index > 0 {
-				settingsListDivider(c)
+	ui.Column(c.Key("settings-environment-section")).FillWidth().Gap(sp3).Children(func() {
+		v4Group(c, "运行环境", "", func() {
+			if s.Plan.Complete() && !s.Busy {
+				v4Badge(c, "已就绪", "ok")
 			}
-			row := item
-			status := environmentRowStatus(row, s.Journal, s.Busy)
-			ui.Column(c.Key("environment-" + row.Requirement.ID)).FillWidth().Gap(2).Children(func() {
-				settingsListRow(c, func() {
-					dependencyMark(c, row.Requirement.ID)
-					ui.Row(c).Grow(1).MinWidth(0).AlignItems(ui.Center).Gap(12).Children(func() {
-						homeText(c, dependencyDisplayName(row.Requirement), homeBody).FontSize(14).FontWeight(500).TextColor(homeInk).Width(104).Shrink(0)
-						homeText(c, dependencyDisplayVersion(row, s.Environment), homeMeta).TextColor(tok.Text2).Grow(1).MinWidth(0).SingleLine().Tooltip(row.Requirement.Version)
-					})
-					color := homeMuted
-					if status == bootstrap.Available || status == bootstrap.Ready {
-						color = tok.OK
-					}
-					homeText(c, environmentLabel(status), homeMeta).TextColor(color)
-				})
+			if s.Loading && s.Loaded {
+				v4Spinner(c)
+			}
+			v4SmallButton(c, "重新检测", v4IconRefresh, a.refreshEnvironment).Disabled(s.Loading || s.Busy)
+			label := "查看详情"
+			if s.Details {
+				label = "收起详情"
+			}
+			v4SmallButton(c, label, nil, func() { s.Details = !s.Details })
+		}, func() {
+			if s.Loading && !s.Loaded {
+				v4SkeletonGroup(c, 3, 2, true, true)
+				return
+			}
+			for _, item := range s.Plan.Items {
+				row := item
+				status := environmentRowStatus(row, s.Journal, s.Busy)
+				var extraHint string
+				var extraColor ui.Color
 				if status == bootstrap.Incompatible {
 					if hint := environmentIncompatibleHint(a, row); hint != "" {
-						homeText(c, hint, homeMeta).LineHeight(1.5).Margin(0, 0, 8, 36)
+						extraHint = hint
+						extraColor = tok.Warning
 					}
 				} else if s.Details && row.Observation.Reason != "" && status != bootstrap.Available && status != bootstrap.Ready {
-					homeText(c, bootstrap.RedactInstallerText(row.Observation.Reason), homeMeta).LineHeight(1.5).Margin(0, 0, 8, 36)
+					extraHint = bootstrap.RedactInstallerText(row.Observation.Reason)
+					extraColor = tok.Text3
 				}
-			})
-		}
-		if s.Error != "" {
-			homeText(c, "准备未完成", homeMeta).Margin(8, 0)
-			if s.Details {
-				homeText(c, s.Error, homeMeta).LineHeight(1.6)
-			}
-		}
-		if s.Message != "" {
-			homeText(c, s.Message, homeMeta).LineHeight(1.6)
-		}
-		ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
-			if s.Busy && s.RuntimeStage != "" {
-				homeText(c, s.RuntimeStage+"…", homeMeta)
-			} else if s.Busy {
-				commonButton(c, "停止安装", false, func() {
-					if s.Cancel != nil {
-						s.Cancel()
+				var descExtra func()
+				if extraHint != "" {
+					hintText, hintCol := extraHint, extraColor
+					descExtra = func() {
+						ui.Text(c, hintText).Font("system-ui").FontSize(fsCaption).TextColor(hintCol).LineHeight(1.5)
 					}
-				})
-			} else if s.Plan.Complete() {
-				if initial {
-					commonButton(c, "继续", true, a.continueEnvironment)
 				}
-			} else if len(s.Plan.Items) > 0 {
-				commonButton(c, "安装缺少的依赖", true, func() { s.Review = true }).Disabled(s.Loading)
-			}
-			if s.Error != "" && !s.Busy {
-				textButton(c, "重试", nil).OnClick(func() {
-					if s.Journal.ApprovedDigest != "" {
-						a.runEnvironment(false)
-					} else {
-						a.refreshEnvironment()
-					}
-				})
-				textButton(c, "用 Agent 排查", nil).OnClick(func() {
-					_, prompt := a.environmentDiagnostic()
-					c.WriteClipboard(prompt)
-					s.Message = "已复制排查提示词"
-					s.AgentOpen = true
-					s.DiagnosticAgents = bootstrap.ExistingDiagnosticAgents(nil, nil)
+				v4Row(c, v4RowOptions{
+					Key:       "environment-" + row.Requirement.ID,
+					Title:     dependencyDisplayName(row.Requirement),
+					Desc:      dependencyDisplayVersion(row, s.Environment),
+					DescMono:  true,
+					DescExtra: descExtra,
+					Tooltip:   row.Requirement.Version,
+					Leading: func() {
+						ui.Row(c).AlignItems(ui.Center).Gap(sp2).Children(func() {
+							v4StatusDot(c, environmentDotState(status))
+							dependencyMark(c, row.Requirement.ID)
+						})
+					},
+					Value:      environmentLabel(status),
+					ValueColor: environmentStatusColor(status),
 				})
 			}
 		})
+
+		if s.Error != "" {
+			ui.Column(c).FillWidth().Padding(sp3, sp4).Gap(sp1).Radius(radius).Background(tok.Danger.Alpha(0.08)).Children(func() {
+				ui.Text(c, "准备未完成").Font("system-ui").FontSize(fsFootnote).FontWeight(600).TextColor(tok.Danger)
+				if s.Details {
+					ui.Text(c, s.Error).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text2).LineHeight(1.6)
+				}
+			})
+		}
+		if s.Message != "" {
+			ui.Text(c, s.Message).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.5)
+		}
+		if s.Busy {
+			stageTitle := "正在准备依赖组件…"
+			var stopFn func()
+			if s.RuntimeStage != "" {
+				stageTitle = s.RuntimeStage + "…"
+			} else {
+				stopFn = func() {
+					if s.Cancel != nil {
+						s.Cancel()
+					}
+				}
+			}
+			a.setupStageBanner(c, stageTitle, "请稍候，完成后将自动校验依赖状态。", stopFn)
+		} else {
+			needInstall := !s.Plan.Complete() && len(s.Plan.Items) > 0
+			if needInstall || s.Error != "" {
+				ui.Row(c).FillWidth().Gap(sp2).AlignItems(ui.Center).Children(func() {
+					if needInstall {
+						v4SmallPrimaryButton(c, "安装缺少的依赖", func() { s.Review = true }).Disabled(s.Loading)
+					}
+					if s.Error != "" {
+						v4SmallButton(c, "重试", v4IconRefresh, func() {
+							if s.Journal.ApprovedDigest != "" {
+								a.runEnvironment(false)
+							} else {
+								a.refreshEnvironment()
+							}
+						})
+						v4SmallButton(c, "用 Agent 排查", nil, func() {
+							_, prompt := a.environmentDiagnostic()
+							c.WriteClipboard(prompt)
+							s.Message = "已复制排查提示词"
+							s.AgentOpen = true
+							s.DiagnosticAgents = bootstrap.ExistingDiagnosticAgents(nil, nil)
+						})
+					}
+				})
+			}
+		}
 		a.environmentDiagnosticAgents(c)
 		if s.Details {
 			a.environmentLocations(c)
-			ui.Row(c.Key("environment-detail-actions")).FillWidth().AlignItems(ui.Center).Gap(20).Padding(12, 0, 0, 0).Children(func() {
-				textButton(c, "复制诊断材料", nil).OnClick(func() {
+			ui.Row(c.Key("environment-detail-actions")).FillWidth().AlignItems(ui.Center).Gap(sp2).Padding(sp2, 0, 0, 0).Children(func() {
+				v4SmallButton(c, "复制诊断材料", v4IconCopy, func() {
 					report, _ := a.environmentDiagnostic()
 					c.WriteClipboard(report)
 					s.Message = "脱敏诊断材料已复制"
 				})
-				textButton(c, "导出诊断包", nil).Disabled(s.Exporting || a.ChooseDiagnosticPath == nil).OnClick(a.exportEnvironmentDiagnostic)
+				v4SmallButton(c, "导出诊断包", nil, a.exportEnvironmentDiagnostic).Disabled(s.Exporting || a.ChooseDiagnosticPath == nil)
 				ui.Spacer(c)
-				textButton(c, "指定已有路径", a.openEnvironmentPaths).Disabled(s.Busy || s.Loading)
+				v4SmallButton(c, "指定已有路径", nil, a.openEnvironmentPaths).Disabled(s.Busy || s.Loading)
 			})
 		}
 	})
@@ -474,16 +499,16 @@ func (a *App) continueEnvironment() {
 func (a *App) environmentDiagnosticAgents(c *ui.Context) {
 	s := &a.environment
 	if s.AgentOpen {
-		ui.Column(c).FillWidth().Gap(8).Margin(10, 0).Children(func() {
-			homeText(c, "在已有 Agent 的新会话中粘贴提示词", homeMeta)
-			ui.Row(c).Gap(12).Children(func() {
+		ui.Column(c).FillWidth().Gap(sp2).Margin(sp2, 0).Children(func() {
+			ui.Text(c, "在已有 Agent 的新会话中粘贴提示词").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3)
+			ui.Row(c).Gap(sp2).Children(func() {
 				for _, entry := range s.DiagnosticAgents {
 					agent := entry
 					label := "复制给 " + agent.Name
 					if agent.Application != "" && a.OpenExistingAgent != nil {
 						label = "打开 " + agent.Name
 					}
-					textButton(c, label, nil).OnClick(func() {
+					v4SmallButton(c, label, nil, func() {
 						_, prompt := a.environmentDiagnostic()
 						c.WriteClipboard(prompt)
 						s.Message = "已复制，请在 " + agent.Name + " 新会话中粘贴"
@@ -494,7 +519,7 @@ func (a *App) environmentDiagnosticAgents(c *ui.Context) {
 						}
 					})
 				}
-				textButton(c, "复制完整提示词", nil).OnClick(func() {
+				v4SmallButton(c, "复制完整提示词", v4IconCopy, func() {
 					_, prompt := a.environmentDiagnostic()
 					c.WriteClipboard(prompt)
 					s.Message = "已复制排查提示词"

@@ -1,4 +1,4 @@
-"""Narrow authenticated loopback API for project configuration, never content."""
+"""Authenticated loopback API for project configuration, recall receipts, and read-only overview aggregation."""
 import argparse
 import asyncio
 import json
@@ -346,8 +346,12 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
         attach_user_profiles(app, registry, connections)
     from service_monitor import attach_service_monitor
     attach_service_monitor(app, codex_config or {}, registry=registry, connections=connections, monitor=monitor)
+    from session_drift import attach_session_drift
+    drift_store = attach_session_drift(app, registry)
     from cognee_extension_gateway import attach_cognee_gateway
-    attach_cognee_gateway(app, registry, recall_store=recall_store)
+    attach_cognee_gateway(app, registry, recall_store=recall_store, drift_store=drift_store)
+    from overview_bootstrap import attach_overview_bootstrap
+    attach_overview_bootstrap(app, registry, recall_store=recall_store, codex_config=codex_config)
     return app
 
 

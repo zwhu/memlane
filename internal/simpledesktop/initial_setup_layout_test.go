@@ -101,3 +101,37 @@ func TestSettingsEnvironmentUsesTheSameBoundedApprovalModal(t *testing.T) {
 		t.Fatal("settings approval not bounded", r)
 	}
 }
+
+func TestFirstUseV4StageBannerDetailsDialogAndNoBridgeWording(t *testing.T) {
+	a := setupLayoutFixture()
+	a.environment.Busy = true
+	a.environment.RuntimeStage = ""
+	cancelled := false
+	a.environment.Cancel = func() { cancelled = true }
+
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("正在准备依赖组件…") || !tt.HasText("停止安装") {
+		t.Fatalf("stage banner missing while busy: %v", tt.Texts())
+	}
+	for _, txt := range tt.Texts() {
+		if strings.Contains(txt, "补全桥") {
+			t.Fatalf("unexpected deprecated wording %q", txt)
+		}
+	}
+	clickProjectUI(t, tt, "停止安装")
+	if !cancelled {
+		t.Fatal("stop install button did not invoke cancel")
+	}
+
+	// Open environment details v4Dialog and verify Esc dismisses it.
+	a.environment.Busy = false
+	tt.Frame()
+	clickProjectUI(t, tt, "环境详情")
+	if !a.environment.Details || !tt.HasText("已检测组件路径") || !tt.HasText("复制诊断材料") {
+		t.Fatalf("environment details v4Dialog did not open: details=%v", a.environment.Details)
+	}
+	tt.Key(0, ui.KeyEscape)
+	if a.environment.Details {
+		t.Fatal("Escape did not dismiss environment details v4Dialog")
+	}
+}

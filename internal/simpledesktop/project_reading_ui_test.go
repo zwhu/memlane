@@ -139,6 +139,11 @@ func TestUnifiedSearchRequestsAndNestedReturn(t *testing.T) {
 	origin.Loaded = true
 	origin.ListScroll.Y = 42
 	a.OpenSearch()
+	if a.searchUI.Scope != a.Config.Projects[0].ID {
+		t.Fatalf("expected project scope by default from project page, got %q", a.searchUI.Scope)
+	}
+	// Toggle off "仅当前项目" to verify the global search catalog.
+	a.searchUI.Scope = ""
 	if requests.Load() != 0 {
 		t.Fatal("opening search issued request")
 	}

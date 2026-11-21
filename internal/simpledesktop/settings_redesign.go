@@ -2,27 +2,28 @@ package simpledesktop
 
 import (
 	"context"
+
 	"github.com/egoist/mygo/ui"
 )
 
 func policySettingRow(c *ui.Context, title, explanation, value string, inherited bool, control func()) {
-	ui.Column(c).FillWidth().Padding(sp4).Gap(sp2).Background(tok.Fill1).Border(1, tok.Border).Radius(radius).Children(func() {
-		ui.Row(c).AlignItems(ui.Center).Gap(sp3).Children(func() {
-			homeText(c, title, homeHeading).FontSize(fsBody)
-			ui.Spacer(c)
-			source := "独立设置"
-			if inherited {
-				source = "继承全局默认"
-			}
-			homeText(c, source, homeMeta)
-		})
-		homeText(c, explanation, homeMeta).LineHeight(1.6)
-		ui.Row(c).AlignItems(ui.Center).Gap(sp3).Children(func() {
+	source := "独立设置"
+	if inherited {
+		source = "继承全局默认"
+	}
+	v4Row(c, v4RowOptions{
+		Title: title,
+		Desc:  explanation,
+		TitleExtra: func() {
+			v4Badge(c, source, "")
+		},
+		Control: func() {
 			control()
-			homeText(c, "已保存："+value, homeMeta)
-		})
+			homeText(c, "已保存："+value, homeMeta).SingleLine()
+		},
 	})
 }
+
 func settingsTabs(c *ui.Context, current *string, labels []string) {
 	selected := 0
 	for n, label := range labels {
@@ -42,17 +43,13 @@ func settingsTabs(c *ui.Context, current *string, labels []string) {
 		v4UnderlineTabs(c, "settings-tabs", "设置分类", &selected, displayLabels, func() { *current = labels[selected] })
 	})
 }
+
 func settingsCard(c *ui.Context, title, description string, content func()) {
-	settingsListSurface(c, func() {
-		ui.Column(c).FillWidth().Gap(sp3).Padding(10, 0).Children(func() {
-			homeText(c, title, homeHeading).FontSize(fsReading).FontWeight(600)
-			if description != "" {
-				homeText(c, description, homeMeta).LineHeight(1.6)
-			}
-			content()
-		})
+	v4Group(c, title, description, nil, func() {
+		ui.Column(c).FillWidth().Gap(sp2).Padding(sp2, sp1).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(content)
 	})
 }
+
 func (a *App) globalSettingsPage(c *ui.Context) {
 	switch a.access.SettingsSection {
 	case "服务与连接":
@@ -61,24 +58,42 @@ func (a *App) globalSettingsPage(c *ui.Context) {
 		a.access.SettingsSection = "记忆处理"
 	}
 	settingsTabs(c, &a.access.SettingsSection, []string{"记忆处理", "Agent 与模型", "服务"})
-	ui.Scroll(c.Key("global-settings-"+a.access.SettingsSection)).Grow(1).MinHeight(0).Padding(sp5, sp8, sp6, sp8).Background(tok.Bg).Children(func() {
-		ui.Column(c).FillWidth().MaxWidth(1100).Gap(16).Children(func() {
+	ui.Scroll(c.Key("global-settings-"+a.access.SettingsSection)).Grow(1).MinHeight(0).Padding(sp6, sp8, sp10, sp8).Background(tok.Bg).Children(func() {
+		v4GroupWrap(c, func() {
 			switch a.access.SettingsSection {
 			case "记忆处理":
 				a.generationConfigurationFor(c, false, true)
-				languageSettingsCard(c)
-				a.appearanceSettingsCard(c)
-				a.globalToolGraphSettings(c)
-			case "Agent 与模型":
-				ui.Column(c).FillWidth().Gap(24).Children(func() {
-					if a.Config.ProjectControl != nil {
-						a.agentConnectionSettings(c)
-					}
-					a.generationManagement(c)
+				v4Group(c, "整理与记忆策略", "", nil, func() {
+					a.globalToolGraphSettings(c)
+					languageSettingsCard(c)
 				})
+				a.v4AppearanceSettingsGroup(c)
+			case "Agent 与模型":
+				if a.Config.ProjectControl != nil {
+					a.agentConnectionSettings(c)
+				}
+				a.generationManagement(c)
 			case "服务":
-				ui.Column(c).FillWidth().Gap(24).Children(func() { a.environmentSetup(c, false); a.serviceConnectionOverview(c) })
+				a.serviceConnectionOverview(c)
+				a.environmentSetup(c, false)
 			}
+		})
+	})
+}
+
+func (a *App) v4AppearanceSettingsGroup(c *ui.Context) {
+	mode := a.AppearancePreference()
+	selected := appearanceModeIndex(mode)
+	v4Group(c, "外观", "", nil, func() {
+		v4Row(c, v4RowOptions{
+			Key:   "settings-appearance-row",
+			Title: "外观模式",
+			Desc:  "可与侧栏右下角外观按钮实时同步切换",
+			Control: func() {
+				v4Segmented(c, "settings-appearance", "外观模式", &selected, []string{"跟随系统", "浅色", "深色"}, func() {
+					a.setAppearancePreference(appearanceModes[selected])
+				})
+			},
 		})
 	})
 }
@@ -119,49 +134,80 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 		a.queuedDocumentDetail(c, p, q)
 		return
 	}
-	ui.Scroll(c.Key("project-settings-" + p.ID)).Grow(1).MinHeight(0).TrackScroll(&q.Scroll).Padding(sp8).Background(tok.Bg).Children(func() {
-		ui.Column(c).FillWidth().MaxWidth(900).Gap(sp5).Children(func() {
-			ui.Column(c).FillWidth().Padding(sp4).Gap(10).Background(tok.BgElevated).Border(1, tok.Border).Radius(radius).Children(func() {
-				ui.Row(c).AlignItems(ui.Center).Gap(sp3).Children(func() {
-					homeText(c, p.Name, homeHeading).FontSize(fsReading).Grow(1).MinWidth(0).SingleLine().Tooltip(p.Name)
-					textButton(c, "编辑名称", nil).OnClick(func() { a.openProjectCreation(p.ID) })
+	ui.Scroll(c.Key("project-settings-" + p.ID)).Grow(1).MinHeight(0).TrackScroll(&q.Scroll).Padding(sp6, sp8, sp10, sp8).Background(tok.Bg).Children(func() {
+		v4GroupWrap(c, func() {
+			// 1. 项目信息
+			v4Group(c, "项目信息", "", nil, func() {
+				v4Row(c, v4RowOptions{
+					Key:   "proj-info-name-" + p.ID,
+					Title: "项目名称",
+					Value: p.Name,
+					Control: func() {
+						v4SmallButton(c, "编辑名称", nil, func() { a.openProjectCreation(p.ID) })
+					},
 				})
-				for _, path := range p.Aliases {
+				for idx, path := range p.Aliases {
 					if path == "" {
 						continue
 					}
-					copyableText(c, path, path, "复制项目路径", homePath, func() { c.WriteClipboard(path) })
+					pathCopy := path
+					title := "项目路径"
+					if idx > 0 {
+						title = "关联路径"
+					}
+					v4Row(c, v4RowOptions{
+						Key:      "proj-info-path-" + pathCopy,
+						Title:    title,
+						Desc:     pathCopy,
+						DescMono: true,
+						Control: func() {
+							v4SmallButton(c, "复制路径", v4IconCopy, func() { c.WriteClipboard(pathCopy) }).Label("复制项目路径")
+						},
+					})
 				}
 			})
+
+			// 2. Agent 访问权限（Q5 三档权限下拉）
+			var permActions func()
 			if !p.permissionsReady(a.access.Directory.Agents...) {
-				ui.Row(c).AlignItems(ui.Center).Gap(sp3).Children(func() {
-					homeText(c, "权限尚未同步完成", homeMeta)
-					commonButton(c, "核对权限", false, func() {
+				permActions = func() {
+					v4SmallButton(c, "核对权限", v4IconRefresh, func() {
 						a.mutateAccess(func(ctx context.Context, client ProjectControlClient, revision int64) (AccessDirectory, error) {
 							return client.reconcile(ctx, revision, p.ID)
 						})
+					}).Disabled(a.access.Busy)
+				}
+			}
+			permDesc := "三档权限立即保存并核对"
+			if !p.permissionsReady(a.access.Directory.Agents...) {
+				permDesc = "权限尚未同步完成"
+			}
+			v4Group(c, "Agent 访问权限", permDesc, permActions, func() {
+				if len(a.access.Directory.Agents) == 0 {
+					v4Row(c, v4RowOptions{
+						Title: "尚无已连接的 Agent",
+						Desc:  "请先在全局设置中连接 Agent。",
 					})
-				})
-			}
-			if len(a.access.CheckboxPending) == 0 && a.access.Message != "" && a.access.Message != "设置已保存；生效状态以官方核对结果为准" {
-				homeText(c, a.access.Message, homeMeta).LineHeight(1.7)
-			}
-			if a.access.DirectoryError != "" {
-				homeText(c, a.access.DirectoryError, homeMeta).LineHeight(1.7)
-			}
-			if len(a.access.Directory.Agents) == 0 {
-				homeText(c, "尚无已连接的 Agent；请先在全局设置中连接。", homeMeta)
-			}
-			homeText(c, "权限设置", homeHeading).FontSize(fsReading)
-			ui.Column(c).FillWidth().Gap(0).Background(tok.BgElevated).Border(1, tok.Border).Radius(radius).Children(func() {
-				for i, row := range a.access.Directory.Agents {
-					if i > 0 {
-						ui.Column(c).FillWidth().Height(1).Background(tok.Border)
-					}
+				}
+				for _, row := range a.access.Directory.Agents {
 					a.projectPermissionCard(c, p, row)
 				}
+				if len(a.access.CheckboxPending) == 0 && a.access.Message != "" && a.access.Message != "设置已保存；生效状态以官方核对结果为准" {
+					ui.Row(c).FillWidth().Padding(sp2, sp1).Children(func() {
+						homeText(c, a.access.Message, homeMeta).LineHeight(1.5)
+					})
+				}
+				if a.access.DirectoryError != "" {
+					ui.Row(c).FillWidth().Padding(sp2, sp1).Children(func() {
+						homeText(c, a.access.DirectoryError, homeMeta).TextColor(tok.Danger).LineHeight(1.5)
+					})
+				}
 			})
+
+			// 3. 工具记录关系图谱
 			a.projectToolGraphSettings(c, p)
+
+			// 4. 消息与处理状态
 			a.projectQueueSection(c, p)
 		})
 	})

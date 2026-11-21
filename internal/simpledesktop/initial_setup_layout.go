@@ -7,15 +7,62 @@ import (
 	"github.com/zwhu/memlane/internal/bootstrap"
 )
 
-// A uses the existing shell palette and common controls. These dimensions and
-// type roles apply to all three steps, not to the daily overview.
-const setupInset float32 = 36
+// A uses the V4 design tokens and shared components. These dimensions and
+// type roles apply to all three first-use steps, not to the daily overview.
+const setupInset float32 = sp8
 
 func setupHeading(c *ui.Context, text string) {
-	homeText(c, text, homeHeading).FontSize(26).FontWeight(600)
+	ui.Text(c, text).Font("system-ui").FontSize(fsTitle).FontWeight(600).TextColor(tok.Text1).LineHeight(1.3)
 }
+
 func setupDescription(c *ui.Context, text string) {
-	homeText(c, text, homeBody).FontSize(13).LineHeight(1.6)
+	ui.Text(c, text).Font("system-ui").FontSize(fsBody).FontWeight(400).TextColor(tok.Text2).LineHeight(1.6)
+}
+
+func environmentDotState(status bootstrap.Status) string {
+	switch status {
+	case bootstrap.Available, bootstrap.Ready:
+		return "ok"
+	case bootstrap.Installing:
+		return "run"
+	case bootstrap.Failed:
+		return "fail"
+	case bootstrap.Missing, bootstrap.Incompatible, "unconfirmed":
+		return "warn"
+	default:
+		return ""
+	}
+}
+
+func environmentStatusColor(status bootstrap.Status) ui.Color {
+	switch status {
+	case bootstrap.Available, bootstrap.Ready:
+		return tok.OK
+	case bootstrap.Installing:
+		return tok.Accent
+	case bootstrap.Failed:
+		return tok.Danger
+	case bootstrap.Missing, bootstrap.Incompatible, "unconfirmed":
+		return tok.Warning
+	default:
+		return tok.Text3
+	}
+}
+
+func (a *App) setupStageBanner(c *ui.Context, title, subtitle string, stopFn func()) {
+	ui.Row(c.Key("setup-stage-banner")).FillWidth().Padding(sp4).Gap(sp4).
+		Radius(radius).Background(tok.Fill1).AlignItems(ui.Center).Children(func() {
+		v4StageBlocks(c)
+		ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
+			ui.Text(c, title).Font("system-ui").FontSize(fsBody).FontWeight(600).TextColor(tok.Text1).LineHeight(1.4)
+			if subtitle != "" {
+				ui.Text(c, subtitle).Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text2).LineHeight(1.45)
+			}
+		})
+		if stopFn != nil {
+			v4SmallButton(c, "停止安装", nil, stopFn)
+		}
+	})
 }
 
 func (a *App) initialSetupShell(c *ui.Context) {
@@ -27,58 +74,148 @@ func (a *App) initialSetupShell(c *ui.Context) {
 	if step > 3 {
 		step = 3
 	}
-	titles := []string{"准备环境", "连接 Agent", "配置记忆处理"}
-	headings := []string{"准备好你的本地记忆环境", "连接你正在使用的 Agent", "选择如何整理记忆"}
-	leads := []string{"记忆留在你的电脑上，已有的兼容组件直接复用。", "接入后，Agent 可以保存经验，并在后续任务中找回记忆。", "连接 Agent 与处理记忆分别配置，使用已有账号或自配模型。"}
-	ui.Column(c.Key("first-use-shell")).Fill().Background(shellBackground).Children(func() {
-		ui.Row(c).FillWidth().Height(48).Shrink(0).DragWindow()
-		ui.Row(c).Grow(1).MinHeight(0).FillWidth().AlignItems(ui.Stretch).Children(func() {
-			ui.Column(c.Key("first-use-navigation")).Width(homeSidebarWidth).Shrink(0).Padding(8, 12, 20, 12).Gap(6).Children(func() {
-				ui.Row(c).Height(48).Padding(0, 12).Gap(10).AlignItems(ui.Center).Margin(0, 0, 20, 0).Children(func() {
-					ui.Image(c, tok.BrandMark).Size(20, 20).Fit(ui.Contain)
-					homeText(c, "Memlane", homeBrand).FontSize(fsHeading).TextColor(tok.Text1)
+	if s.setupLastStep != step {
+		s.setupLastStep = step
+		s.setupStepRun++
+	}
+	steps := []struct {
+		title   string
+		sub     string
+		heading string
+		lead    string
+	}{
+		{
+			title:   "准备环境",
+			sub:     "复用已有依赖",
+			heading: "准备好你的本地记忆环境",
+			lead:    "记忆留在你的电脑上，已有的兼容组件直接复用。",
+		},
+		{
+			title:   "连接 Agent",
+			sub:     "自动采集与召回",
+			heading: "连接你正在使用的 Agent",
+			lead:    "接入后，Agent 可以保存经验，并在后续任务中找回记忆。",
+		},
+		{
+			title:   "配置记忆处理",
+			sub:     "Agent 或模型 API",
+			heading: "选择如何整理记忆",
+			lead:    "连接 Agent 与处理记忆分别配置，使用已有账号或自配模型。",
+		},
+	}
+
+	ui.Row(c.Key("first-use-shell")).Fill().Background(tok.Bg).AlignItems(ui.Stretch).Children(func() {
+		// Left step sidebar (220px, spring active pill + completion checkmarks).
+		ui.Column(c.Key("first-use-navigation")).Width(sidebarW).Shrink(0).
+			Background(tok.Sidebar).BorderWidth(0, 1, 0, 0).BorderColor(tok.Border).
+			Padding(0, sp2, sp4, sp2).Children(func() {
+			ui.Row(c).FillWidth().Height(48).Shrink(0).DragWindow()
+			ui.Row(c).FillWidth().Height(36).Padding(0, sp2).Gap(10).AlignItems(ui.Center).Margin(0, 0, sp4, 0).Children(func() {
+				ui.Image(c, tok.BrandMark).Size(18, 18).Fit(ui.Contain)
+				ui.Text(c, "Memlane").Font("system-ui").FontSize(fsHeading).FontWeight(600).TextColor(tok.Text1).SingleLine()
+			})
+
+			var ind ui.Element
+			var activeBtn ui.Element
+			stepsHost := ui.Column(c.Key("first-use-steps")).FillWidth().Gap(sp1)
+			stepsHost.Children(func() {
+				// Normal-flow 0x0 layer declared before step buttons paints strictly behind text.
+				ui.Box(c.Key("first-use-step-ind-layer")).Size(0, 0).Shrink(0).PassThrough().Children(func() {
+					ind = ui.Box(c.Key("first-use-step-ind")).Width(sidebarW - sp2*2).Radius(radius).Background(tok.AccentSoft).PassThrough()
 				})
-				for index, title := range titles {
+				for index, st := range steps {
 					number := index + 1
 					active := number == step
-					selected := ui.Transparent
+					done := !active && ((number == 1 && (s.RuntimeStarted || (s.Loaded && s.Plan.Complete()))) || (number < step && s.RuntimeStarted))
+					disabled := s.Busy || a.integrations.Busy || (number > 1 && !s.RuntimeStarted)
+
+					btn := ui.ButtonBase(c.Key(fmt.Sprintf("setup-step-%d", number))).Role(ui.RoleButton).Label(st.title).
+						FillWidth().MinHeight(48).Padding(sp2, sp2).Gap(10).Radius(radius).
+						AlignItems(ui.Center).Justify(ui.Start).BorderWidth(0).
+						Cursor(ui.CursorPointer).Disabled(disabled).
+						OnClick(func() { a.setInitialStep(number) })
 					if active {
-						selected = tok.AccentSoft
+						btn.Background(ui.Transparent)
+						activeBtn = btn
+					} else if !disabled {
+						btn.Background(homeHoverColor(btn, fmt.Sprintf("setup-step-bg-%d", number), ui.Transparent, tok.Hover))
+					} else {
+						btn.Background(ui.Transparent)
 					}
-					ui.Button(c.Key(fmt.Sprintf("setup-step-%d", number)), "").Label(title).FillWidth().Height(44).Padding(0, 12).Background(selected).BorderWidth(0).Radius(9).Disabled(s.Busy || a.integrations.Busy || (number > 1 && !s.RuntimeStarted)).OnClick(func() { a.setInitialStep(number) }).Children(func() {
-						ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
-							color, bg := homeMuted, ui.Transparent
-							if active {
-								color, bg = homeBackground, homeInk
+					v4ButtonPress(btn, 0.99)
+
+					btn.Children(func() {
+						badgeBg := tok.Fill2
+						badgeFg := tok.Text3
+						if active {
+							badgeBg, badgeFg = tok.Accent, tok.OnAccent
+						} else if done {
+							badgeBg, badgeFg = tok.OK, tok.OnAccent
+						}
+						ui.Row(c).Size(22, 22).Shrink(0).Radius(11).Background(badgeBg).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+							if done {
+								ui.Icon(c, v4IconCheck).FontSize(12).TextColor(badgeFg)
+							} else {
+								ui.Text(c, fmt.Sprint(number)).Font("system-ui").FontSize(fsCaption).FontWeight(600).FontFeatures("tnum").TextColor(badgeFg).SingleLine()
 							}
-							ui.Row(c).Size(22, 22).Shrink(0).Radius(11).Background(bg).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-								homeText(c, fmt.Sprint(number), homeMeta).FontSize(11).TextColor(color)
-							})
-							color = homeMuted
-							if active {
-								color = homeInk
-							}
-							homeText(c, title, homeTitle).FontSize(12).TextColor(color).SingleLine().Grow(1).MinWidth(0)
+						})
+						titleCol := tok.Text2
+						titleWeight := 500
+						if active {
+							titleCol = tok.Accent
+							titleWeight = 600
+						} else if done {
+							titleCol = tok.Text1
+						}
+						ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
+							ui.Text(c, st.title).Font("system-ui").FontSize(fsBody).FontWeight(titleWeight).TextColor(titleCol).SingleLine()
+							ui.Text(c, st.sub).Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Text3).SingleLine()
 						})
 					})
 				}
-				ui.Spacer(c)
-				homeText(c, "以后也能在设置中调整。", homeMeta).FontSize(11).Margin(0, 12)
 			})
-			ui.Column(c.Key("first-use-workspace")).Grow(1).MinWidth(0).Margin(0, 12, 12, 0).Background(homeBackground).Border(1, shellBorder).Radius(14).Clip().Children(func() {
-				ui.Scroll(c.Key("initial-setup-content")).Grow(1).MinHeight(0).FillWidth().Children(func() {
-					ui.Column(c).FillWidth().Padding(setupInset).Gap(10).Children(func() {
-						homeText(c, fmt.Sprintf("开始使用 / %02d", step), homeEyebrow)
-						setupHeading(c, headings[step-1])
-						setupDescription(c, leads[step-1])
-						if s.Busy && s.RuntimeStage != "" {
-							homeText(c, s.RuntimeStage+"…", homeMeta).FontSize(11)
+
+			hostBox := stepsHost.Bounds()
+			activeBox := activeBtn.Bounds()
+			if activeBox.H > 0 {
+				s.setupStepIndY = activeBox.Y - hostBox.Y
+				s.setupStepIndH = activeBox.H
+			}
+			indY, indH := s.setupStepIndY, s.setupStepIndH
+			if indH <= 0 {
+				indY = float32(step-1) * 52
+				indH = 48
+			}
+			ind.Height(indH).AnimatePose(ui.Pose{Y: indY, Scale: 1}, v4Snappy)
+
+			ui.Spacer(c)
+			ui.Column(c).FillWidth().Padding(sp3, sp2, 0, sp2).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
+				ui.Text(c, "以后也能在设置中随时调整所有选项。").Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Text3).LineHeight(1.5)
+			})
+		})
+
+		// Right workspace (drag bar + scrollable 680px content + fixed footer).
+		ui.Column(c.Key("first-use-workspace")).Grow(1).MinWidth(0).Background(tok.Bg).Children(func() {
+			ui.Row(c).FillWidth().Height(48).Shrink(0).DragWindow()
+			ui.Scroll(c.Key("initial-setup-content")).Grow(1).MinHeight(0).FillWidth().Children(func() {
+				pane := ui.Column(c.Key(fmt.Sprintf("setup-pane-%d-%d", step, s.setupStepRun))).FillWidth().Padding(sp3, sp10, sp8, sp10)
+				pane.Children(func() {
+					v4GroupWrap(c, func() {
+						ui.Column(c).FillWidth().Gap(6).Children(func() {
+							ui.Text(c, fmt.Sprintf("开始使用 / %02d", step)).Font("ui-monospace").FontSize(fsCaption).FontWeight(600).TextColor(tok.Accent).SingleLine()
+							setupHeading(c, steps[step-1].heading)
+							setupDescription(c, steps[step-1].lead)
+						})
+						if step > 1 && s.Busy && s.RuntimeStage != "" {
+							a.setupStageBanner(c, s.RuntimeStage+"…", "等待真实服务回执确认后自动继续。", nil)
 						}
 						if s.Error != "" && step > 1 {
-							homeText(c, s.Error, homeMeta).FontSize(11)
-							textButton(c, "重试", func() { a.beginFirstRuntime(step) }).Disabled(s.Busy || a.integrations.Busy)
+							ui.Row(c).FillWidth().Padding(sp3, sp4).Gap(sp3).Radius(radius).Background(tok.Danger.Alpha(0.08)).AlignItems(ui.Center).Children(func() {
+								ui.Text(c, s.Error).Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(tok.Danger).Grow(1).MinWidth(0).LineHeight(1.5)
+								v4SmallButton(c, "重试", v4IconRefresh, func() { a.beginFirstRuntime(step) }).Disabled(s.Busy || a.integrations.Busy)
+							})
 						}
-						ui.Column(c).FillWidth().Gap(18).Margin(18, 0, 0, 0).Children(func() {
+						ui.Column(c).FillWidth().Gap(sp5).Children(func() {
 							switch step {
 							case 1:
 								a.environmentSetup(c, true)
@@ -86,37 +223,51 @@ func (a *App) initialSetupShell(c *ui.Context) {
 								if s.RuntimeStarted {
 									a.agentConnectionSettings(c)
 								} else {
-									homeText(c, "记忆服务尚未就绪", homeMeta)
+									ui.Text(c, "记忆服务尚未就绪").Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text3)
 								}
 							case 3:
 								if s.RuntimeStarted {
 									a.generationConfiguration(c, false)
 								} else {
-									homeText(c, "记忆服务尚未就绪", homeMeta)
+									ui.Text(c, "记忆服务尚未就绪").Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text3)
 								}
 							}
 						})
 					})
 				})
-				settingsListDivider(c)
-				ui.Row(c.Key("first-use-footer")).FillWidth().MinHeight(68).Padding(12, setupInset).Gap(12).AlignItems(ui.Center).Children(func() {
-					textButton(c, "环境详情", func() { s.Details = true }).Disabled(s.Busy)
-					if step == 1 {
-						homeText(c, "只安装你确认的组件", homeMeta).FontSize(11)
+				a.v4PageEnter(c, pane, fmt.Sprintf("setup-step-%d", step), s.setupStepRun)
+			})
+
+			// Fixed footer: 环境详情 + hint | 上一步 / 继续
+			ui.Row(c.Key("first-use-footer")).FillWidth().Height(60).Shrink(0).
+				Padding(0, setupInset).Gap(sp3).AlignItems(ui.Center).
+				Background(tok.Bg).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
+				v4SmallButton(c, "环境详情", nil, func() { s.Details = true }).Disabled(s.Busy)
+				hint := "可随时返回上一步核对"
+				if step == 1 {
+					hint = "只安装你确认的组件"
+				}
+				ui.Text(c, hint).Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Text3).SingleLine()
+				ui.Spacer(c)
+				if step == 1 {
+					v4OutlineButton(c, "上一步", nil, nil).Disabled(true)
+					if s.Plan.Complete() && s.Loaded {
+						v4PrimaryButton(c, "继续", a.continueEnvironment).Disabled(s.Busy || a.integrations.Busy)
+					} else if len(s.Plan.Items) > 0 {
+						v4PrimaryButton(c, "安装并继续", func() { s.Review = true }).Disabled(s.Busy || s.Loading)
 					}
-					ui.Spacer(c)
-					if step > 1 {
-						commonButton(c, "上一步", false, func() { a.setInitialStep(step - 1) }).Disabled(s.Busy || a.integrations.Busy)
-						if step == 2 {
-							commonButton(c, "继续", true, func() { a.setInitialStep(3) }).Disabled(s.Busy || a.integrations.Busy || !s.RuntimeStarted)
-						} else {
-							commonButton(c, "启用并完成", true, a.enableFirstRuntime).Disabled(s.Busy || a.integrations.Busy || !s.RuntimeStarted || !a.integrations.Generation.validated(a.integrations.Generation.Next) || a.integrations.hasPendingGeneration())
-						}
+				} else {
+					v4OutlineButton(c, "上一步", nil, func() { a.setInitialStep(step - 1) }).Disabled(s.Busy || a.integrations.Busy)
+					if step == 2 {
+						v4PrimaryButton(c, "继续", func() { a.setInitialStep(3) }).Disabled(s.Busy || a.integrations.Busy || !s.RuntimeStarted)
+					} else {
+						v4PrimaryButton(c, "启用并完成", a.enableFirstRuntime).Disabled(s.Busy || a.integrations.Busy || !s.RuntimeStarted || !a.integrations.Generation.validated(a.integrations.Generation.Next) || a.integrations.hasPendingGeneration())
 					}
-				})
+				}
 			})
 		})
 	})
+
 	// Portals are rendered at the shell level on steps which do not render the
 	// environment component, so details remain available without nested pages.
 	if step > 1 {
@@ -129,122 +280,137 @@ func (a *App) initialEnvironment(c *ui.Context) {
 	if !s.Loaded && !s.Loading && a.Update != nil {
 		a.refreshEnvironment()
 	}
-	ui.Column(c).FillWidth().Gap(14).Children(func() {
-		settingsSectionHeader(c, "运行环境", nil, func() { textButton(c, "重新检测", a.refreshEnvironment).Disabled(s.Loading || s.Busy) })
-		ui.Row(c).FillWidth().Gap(20).AlignItems(ui.Start).Children(func() {
-			ui.Column(c).Grow(1).MinWidth(0).Border(1, homeBorder).Radius(10).Clip().Children(func() {
-				groups := []struct {
-					title, description string
-					ids                []string
-				}{
-					{"运行基础", "Python 与运行依赖", []string{"uv", "python", "runtime"}},
-					{"本地记忆引擎", "整理与检索", []string{"cognee-source", "embedding"}},
-					{"Agent 接入", "保存与召回", []string{"agent-plugin"}},
-				}
-				shown := false
-				for _, group := range groups {
-					var items []bootstrap.Item
-					for _, id := range group.ids {
-						for _, item := range s.Plan.Items {
-							if item.Requirement.ID == id {
-								items = append(items, item)
-							}
-						}
+	missingCount := 0
+	for _, item := range s.Plan.Items {
+		if item.Observation.Status != bootstrap.Available {
+			missingCount++
+		}
+	}
+
+	ui.Column(c).FillWidth().Gap(sp5).Children(func() {
+		// Top status band: stage blocks banner while busy, otherwise hairline summary row.
+		if s.Busy {
+			stageTitle := "正在准备依赖组件…"
+			var stopFn func()
+			if s.RuntimeStage != "" {
+				stageTitle = s.RuntimeStage + "…"
+			} else {
+				stopFn = func() {
+					if s.Cancel != nil {
+						s.Cancel()
 					}
-					if len(items) == 0 {
-						continue
-					}
-					if shown {
-						settingsListDivider(c)
-					}
-					shown = true
-					ui.Column(c.Key(group.title)).FillWidth().Padding(14, 16, 10, 16).Gap(4).Children(func() {
-						ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-							homeText(c, group.title, homePanelHeading).FontSize(13)
-							ui.Spacer(c)
-							homeText(c, group.description, homeMeta).FontSize(11)
-						})
-						for _, item := range items {
-							row := item
-							ui.Row(c.Key("environment-" + row.Requirement.ID)).FillWidth().MinHeight(51).Gap(11).AlignItems(ui.Center).Children(func() {
-								dependencyMark(c, row.Requirement.ID)
-								ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
-									homeText(c, dependencyDisplayName(row.Requirement), homeTitle).FontSize(13)
-									homeText(c, dependencyDisplayVersion(row, s.Environment), homeMeta).FontSize(11).SingleLine().Tooltip(row.Requirement.Version)
-								})
-								status := environmentRowStatus(row, s.Journal, s.Busy)
-								color := homeMuted
-								if status == bootstrap.Available || status == bootstrap.Ready {
-									color = tok.OK
-								}
-								homeText(c, environmentLabel(status), homeMeta).FontSize(11).TextColor(color)
-							})
-						}
-					})
 				}
-				if !shown {
-					homeText(c, "检测中…", homeMeta).Margin(20)
-				}
+			}
+			a.setupStageBanner(c, stageTitle, "请稍候，完成后将自动校验依赖并启动本地服务。", stopFn)
+		} else {
+			statLabel := fmt.Sprintf("尚缺 %d 个组件", missingCount)
+			noteLabel := "先检测已有环境，仅安装你确认的缺失组件。"
+			if s.Loading || !s.Loaded {
+				statLabel = "检测中"
+			} else if s.Plan.Complete() {
+				statLabel = "已就绪"
+				noteLabel = "全部核心依赖已通过校验，可继续连接 Agent。"
+			}
+			ui.Column(c.Key("environment-summary")).FillWidth().Gap(sp2).Children(func() {
+				ui.Row(c).FillWidth().Padding(sp3, 0).Gap(sp3).AlignItems(ui.Center).
+					BorderWidth(1, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+					ui.Text(c, statLabel).Font("system-ui").FontSize(fsHeading).FontWeight(600).FontFeatures("tnum").TextColor(tok.Text1).SingleLine()
+					ui.Text(c, noteLabel).Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text2).Grow(1).MinWidth(0).SingleLine()
+					v4SmallButton(c, "重新检测", v4IconRefresh, a.refreshEnvironment).Disabled(s.Loading || s.Busy)
+					if s.Plan.Complete() && s.Loaded {
+						v4SmallPrimaryButton(c, "继续", a.continueEnvironment)
+					} else if len(s.Plan.Items) > 0 {
+						v4SmallPrimaryButton(c, "安装缺少的依赖", func() { s.Review = true }).Disabled(s.Loading)
+					}
+				})
+				ui.Row(c).FillWidth().Gap(sp2).AlignItems(ui.Center).Children(func() {
+					v4SmallButton(c, "指定已有环境", nil, func() { s.Details = true; s.Manual = true }).Disabled(s.Busy || s.Loading)
+					v4SmallButton(c, "查看详情", nil, func() { s.Details = true })
+					if s.Message != "" {
+						ui.Text(c, s.Message).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).Grow(1).MinWidth(0).SingleLine()
+					}
+				})
 			})
-			ui.Column(c.Key("environment-summary")).Width(235).Padding(20).Gap(12).Background(tok.Fill1).Border(1, homeBorder).Radius(10).Children(func() {
-				homeText(c, "准备概览", homePanelHeading).FontSize(13)
-				count := 0
-				for _, item := range s.Plan.Items {
-					if item.Observation.Status != bootstrap.Available {
-						count++
-					}
-				}
-				label := fmt.Sprintf("%d 个组件", count)
-				if s.Loading || !s.Loaded {
-					label = "检测中"
-				} else if s.Busy {
-					label = "正在准备"
-				} else if s.Plan.Complete() {
-					label = "已就绪"
-				}
-				homeText(c, label, homeStatValue).FontSize(25).Margin(4, 0, 0, 0)
-				homeText(c, "先检测已有环境，仅安装缺少的组件。", homeBody).FontSize(12).LineHeight(1.6)
-				settingsListDivider(c)
-				if s.Busy {
-					if s.RuntimeStage != "" {
-						homeText(c, s.RuntimeStage+"…", homeMeta).FontSize(11)
-					} else {
-						commonButton(c, "停止安装", false, func() {
-							if s.Cancel != nil {
-								s.Cancel()
-							}
-						})
-					}
-				} else if s.Plan.Complete() && s.Loaded {
-					commonButton(c, "继续", true, a.continueEnvironment)
-				} else if len(s.Plan.Items) > 0 {
-					commonButton(c, "安装缺少的依赖", true, func() { s.Review = true }).Disabled(s.Loading)
-				}
-				textButton(c, "指定已有环境", func() { s.Details = true; s.Manual = true }).Disabled(s.Busy || s.Loading)
-				textButton(c, "查看详情", func() { s.Details = true })
-				if s.Error != "" {
-					homeText(c, "准备未完成", homePanelHeading).FontSize(12)
-					homeText(c, s.Error, homeMeta).FontSize(11).MaxLines(3)
-					textButton(c, "重试", func() {
+		}
+
+		if s.Error != "" {
+			ui.Column(c.Key("environment-error-banner")).FillWidth().Padding(sp3, sp4).Gap(sp2).
+				Radius(radius).Background(tok.Danger.Alpha(0.08)).Children(func() {
+				ui.Text(c, "准备未完成").Font("system-ui").FontSize(fsFootnote).FontWeight(600).TextColor(tok.Danger)
+				ui.Text(c, s.Error).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text2).MaxLines(3).LineHeight(1.5)
+				ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
+					v4SmallButton(c, "重试", v4IconRefresh, func() {
 						if s.Journal.ApprovedDigest != "" {
 							a.runEnvironment(false)
 						} else {
 							a.refreshEnvironment()
 						}
 					}).Disabled(s.Busy)
-					textButton(c, "用 Agent 排查", func() {
+					v4SmallButton(c, "用 Agent 排查", nil, func() {
 						_, prompt := a.environmentDiagnostic()
 						c.WriteClipboard(prompt)
 						s.Message = "已复制排查提示词"
 						s.AgentOpen, s.Details = true, true
 						s.DiagnosticAgents = bootstrap.ExistingDiagnosticAgents(nil, nil)
 					})
+				})
+			})
+		}
+
+		// Grouped dependency list (cardless V4 groups with status dot, version, size).
+		groups := []struct {
+			title, description string
+			ids                []string
+		}{
+			{"运行基础", "Python 与运行依赖", []string{"uv", "python", "runtime"}},
+			{"本地记忆引擎", "整理与检索", []string{"cognee-source", "embedding"}},
+			{"Agent 接入", "保存与召回", []string{"agent-plugin"}},
+		}
+		shown := false
+		for _, group := range groups {
+			var items []bootstrap.Item
+			for _, id := range group.ids {
+				for _, item := range s.Plan.Items {
+					if item.Requirement.ID == id {
+						items = append(items, item)
+					}
 				}
-				if s.Message != "" {
-					homeText(c, s.Message, homeMeta).FontSize(11)
+			}
+			if len(items) == 0 {
+				continue
+			}
+			shown = true
+			v4Group(c, group.title, group.description, nil, func() {
+				for _, item := range items {
+					row := item
+					status := environmentRowStatus(row, s.Journal, s.Busy)
+					desc := dependencyDisplayVersion(row, s.Environment)
+					if row.Requirement.InstalledBytes > 0 {
+						desc = desc + " · " + environmentSize(row.Requirement.InstalledBytes)
+					}
+					v4Row(c, v4RowOptions{
+						Key:      "environment-" + row.Requirement.ID,
+						Title:    dependencyDisplayName(row.Requirement),
+						Desc:     desc,
+						DescMono: true,
+						Tooltip:  row.Requirement.Version,
+						Leading: func() {
+							ui.Row(c).AlignItems(ui.Center).Gap(sp2).Children(func() {
+								v4StatusDot(c, environmentDotState(status))
+								dependencyMark(c, row.Requirement.ID)
+							})
+						},
+						Value:      environmentLabel(status),
+						ValueColor: environmentStatusColor(status),
+					})
 				}
 			})
-		})
+		}
+		if !shown {
+			v4Group(c, "运行环境", "检测中…", nil, func() {
+				v4SkeletonGroup(c, 3, 2, true, true)
+			})
+		}
 	})
 }
 
@@ -253,40 +419,48 @@ func (a *App) environmentReviewModal(c *ui.Context) {
 	if !s.Review {
 		return
 	}
-	ui.Modal(c.Key("environment-install-plan"), &s.Review, func() {
-		homeText(c, "确认安装缺少的依赖", homeHeading).FontSize(18)
-		homeText(c, "仅安装以下缺失组件，已有环境保持原样。", homeBody).FontSize(12)
-		ui.Scroll(c.Key("environment-plan-scroll")).FillWidth().Height(340).Children(func() {
-			ui.Column(c).FillWidth().Gap(14).Children(func() {
+	v4Dialog(c, &s.Review, v4DialogOptions{
+		Key:             "environment-install-plan",
+		Title:           "确认安装缺少的依赖",
+		Width:           v4DialogLarge,
+		ScrollBody:      true,
+		Hint:            "已有环境和目录保持原样，不修改系统配置",
+		CancelText:      "暂不安装",
+		ConfirmText:     "确认安装",
+		ConfirmDisabled: s.Loading || s.Busy,
+		OnCancel:        a.declineEnvironment,
+		OnConfirm:       func() { a.runEnvironment(true) },
+		Body: func() {
+			ui.Text(c, "仅安装以下缺失组件，已有环境保持原样。").Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text2)
+			ui.Column(c).FillWidth().Gap(0).Children(func() {
 				for _, item := range s.Plan.Items {
 					if item.Observation.Status == bootstrap.Available {
 						continue
 					}
 					r := item.Requirement
-					ui.Column(c.Key("plan-" + r.ID)).FillWidth().Gap(6).Children(func() {
-						ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() { dependencyMark(c, r.ID); homeText(c, r.Name+" · "+r.Version, homeTitle).FontSize(13) })
-						homeText(c, r.Purpose, homeBody).FontSize(12)
+					ui.Column(c.Key("plan-"+r.ID)).FillWidth().Padding(sp3, 0).Gap(4).
+						BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+						ui.Row(c).FillWidth().Gap(sp2).AlignItems(ui.Center).Children(func() {
+							dependencyMark(c, r.ID)
+							ui.Text(c, r.Name+" · "+r.Version).Font("system-ui").FontSize(fsBody).FontWeight(600).TextColor(tok.Text1).Grow(1).MinWidth(0)
+							ui.Text(c, "下载 "+environmentSize(r.DownloadBytes)+"，占用 "+environmentSize(r.InstalledBytes)).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
+						})
+						ui.Text(c, r.Purpose).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text2).LineHeight(1.5)
 						if item.Observation.Status == bootstrap.Incompatible {
 							if hint := environmentIncompatibleHint(a, item); hint != "" {
-								homeText(c, "原因："+hint, homeMeta).FontSize(11).LineHeight(1.5)
+								ui.Text(c, "原因："+hint).Font("system-ui").FontSize(fsCaption).TextColor(tok.Warning).LineHeight(1.5)
 							}
 						}
-						homeText(c, "下载 "+environmentSize(r.DownloadBytes)+"，占用 "+environmentSize(r.InstalledBytes), homeMeta).FontSize(11)
 						if r.SizeNote != "" {
-							homeText(c, r.SizeNote, homeMeta).FontSize(11)
+							ui.Text(c, r.SizeNote).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3)
 						}
-						homeText(c, "来源："+r.Source, homePath).FontSize(11).LineHeight(1.5)
-						homeText(c, "位置："+r.Destination, homePath).FontSize(11).LineHeight(1.5)
+						ui.Text(c, "来源："+r.Source).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
+						ui.Text(c, "位置："+r.Destination).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
 					})
-					settingsListDivider(c)
 				}
 			})
-		})
-		ui.Row(c).FillWidth().Gap(12).Justify(ui.End).Children(func() {
-			commonButton(c, "暂不安装", false, a.declineEnvironment)
-			commonButton(c, "确认安装", true, func() { a.runEnvironment(true) }).Disabled(s.Loading || s.Busy)
-		})
-	}).Width(680).Padding(24).Gap(16)
+		},
+	})
 }
 
 func (a *App) initialEnvironmentDetails(c *ui.Context) {
@@ -294,41 +468,74 @@ func (a *App) initialEnvironmentDetails(c *ui.Context) {
 	if !s.Details {
 		return
 	}
-	ui.Modal(c.Key("first-use-environment-details"), &s.Details, func() {
-		homeText(c, "环境详情", homeHeading).FontSize(18)
-		ui.Scroll(c.Key("first-use-details-scroll")).FillWidth().Height(360).Children(func() {
-			ui.Column(c).FillWidth().Gap(12).Children(func() {
-				a.environmentDiagnosticAgents(c)
-				if s.Error != "" {
-					homeText(c, s.Error, homeBody).FontSize(12).LineHeight(1.6)
-				}
-				for _, item := range s.Plan.Items {
-					homeText(c, dependencyDisplayName(item.Requirement)+" · "+dependencyDisplayVersion(item, s.Environment), homeTitle).FontSize(13)
-					homeText(c, bootstrap.RedactInstallerText(item.Observation.Reason), homeMeta).FontSize(11)
-					homeText(c, item.Observation.Path, homePath).FontSize(11)
-					settingsListDivider(c)
-				}
-				if s.Manual {
-					for _, field := range []struct {
-						label string
-						value *string
-					}{{"Python 路径", &s.Python}, {"uv 路径", &s.UV}, {"Cognee 源码目录", &s.Source}, {"固定源码归档", &s.Archive}, {"已有模型缓存目录", &s.ModelCache}, {"已有 Agent 插件目录", &s.Plugin}} {
-						homeText(c, field.label, homeBody).FontSize(12)
-						ui.TextInput(c.Key(field.label), field.value).FillWidth().Label(field.label).Disabled(s.Busy || s.Loading)
-					}
-					commonButton(c, "检测这些路径", false, func() { a.detectEnvironment(true) }).Disabled(s.Busy || s.Loading)
-				}
-			})
-		})
-		ui.Row(c).FillWidth().Gap(12).Children(func() {
-			textButton(c, "复制诊断材料", func() {
+	v4Dialog(c, &s.Details, v4DialogOptions{
+		Key:         "first-use-environment-details",
+		Title:       "环境详情",
+		Width:       v4DialogLarge,
+		ScrollBody:  true,
+		Hint:        "路径与校验结果已脱敏，不含任何密钥或聊天内容",
+		CancelText:  "关闭",
+		HideConfirm: true,
+		ExtraFooter: func() {
+			v4SmallButton(c, "复制诊断材料", v4IconCopy, func() {
 				report, _ := a.environmentDiagnostic()
 				c.WriteClipboard(report)
 				s.Message = "脱敏诊断材料已复制"
 			})
-			textButton(c, "导出诊断包", a.exportEnvironmentDiagnostic).Disabled(s.Exporting || a.ChooseDiagnosticPath == nil)
-			ui.Spacer(c)
-			commonButton(c, "关闭", false, func() { s.Details = false })
-		})
-	}).Width(720).Padding(24).Gap(16)
+			v4SmallButton(c, "导出诊断包", nil, a.exportEnvironmentDiagnostic).Disabled(s.Exporting || a.ChooseDiagnosticPath == nil)
+		},
+		Body: func() {
+			a.environmentDiagnosticAgents(c)
+			if s.Error != "" {
+				ui.Text(c, s.Error).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Danger).LineHeight(1.6)
+			}
+			v4Group(c, "已检测组件路径", "", nil, func() {
+				for _, item := range s.Plan.Items {
+					row := item
+					status := environmentRowStatus(row, s.Journal, s.Busy)
+					desc := row.Observation.Path
+					if reason := bootstrap.RedactInstallerText(row.Observation.Reason); reason != "" {
+						if desc != "" {
+							desc = desc + " · " + reason
+						} else {
+							desc = reason
+						}
+					}
+					v4Row(c, v4RowOptions{
+						Key:        "details-" + row.Requirement.ID,
+						Title:      dependencyDisplayName(row.Requirement) + " · " + dependencyDisplayVersion(row, s.Environment),
+						Desc:       desc,
+						DescMono:   true,
+						Leading:    func() { v4StatusDot(c, environmentDotState(status)) },
+						Value:      environmentLabel(status),
+						ValueColor: environmentStatusColor(status),
+					})
+				}
+			})
+			if s.Manual {
+				ui.Column(c).FillWidth().Gap(sp2).Margin(sp2, 0, 0, 0).Children(func() {
+					ui.Text(c, "指定已有路径").Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3)
+					for _, field := range []struct {
+						label string
+						value *string
+					}{
+						{"Python 路径", &s.Python},
+						{"uv 路径", &s.UV},
+						{"Cognee 源码目录", &s.Source},
+						{"固定源码归档", &s.Archive},
+						{"已有模型缓存目录", &s.ModelCache},
+						{"已有 Agent 插件目录", &s.Plugin},
+					} {
+						ui.Column(c).FillWidth().Gap(4).Children(func() {
+							ui.Text(c, field.label).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text2)
+							ui.TextInput(c.Key(field.label), field.value).FillWidth().Label(field.label).Disabled(s.Busy || s.Loading)
+						})
+					}
+					ui.Row(c).FillWidth().Padding(sp2, 0, 0, 0).Children(func() {
+						v4OutlineButton(c, "检测这些路径", nil, func() { a.detectEnvironment(true) }).Disabled(s.Busy || s.Loading)
+					})
+				})
+			}
+		},
+	})
 }

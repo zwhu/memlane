@@ -137,42 +137,50 @@ func (a *App) toolGraphDialog(c *ui.Context) {
 	if toolGraphActive(s.Job) && !s.Busy && time.Now().After(s.Next) {
 		a.toolGraphAction("review")
 	}
-	ui.Modal(c.Key("tool-graph-modal"), &s.Open, func() {
-		ui.Column(c).FillWidth().Gap(6).Children(func() {
-			homeText(c, "创建工具图谱", homeHeading).FontSize(18)
-			homeText(c, "将已有工具记录整理成关系图谱。", homeMeta)
-		})
-		if s.Preview != nil {
-			ui.Column(c).FillWidth().Padding(12, 14).Gap(6).Background(tok.Fill1).Radius(6).Children(func() {
-				homeText(c, fmt.Sprintf("待处理：%d 个会话 · %d 条工具记录", s.Preview.Sessions, s.Preview.Steps), homeBody).FontSize(14).FontWeight(500)
-				homeText(c, "已处理的会跳过，新记录下次再处理。", homeMeta).FontSize(11)
-			})
-			if s.Preview.Sessions == 0 {
-				homeText(c, "没有需要处理的新记录。", homeMeta)
+	closeLabel := "取消"
+	if s.Job != nil {
+		closeLabel = "关闭"
+	}
+	inProgress := s.Job != nil && (toolGraphActive(s.Job) || s.Job.Status == "result_unknown")
+	v4Dialog(c, &s.Open, v4DialogOptions{
+		Key:             "tool-graph-modal",
+		Title:           "创建工具图谱",
+		Label:           "创建工具图谱确认",
+		Width:           v4DialogSmall,
+		CancelText:      closeLabel,
+		ConfirmText:     "开始创建",
+		HideConfirm:     inProgress,
+		ConfirmDisabled: s.Busy || s.Preview == nil || s.Preview.Sessions == 0,
+		Hint:            "使用当前模型，会消耗额度。",
+		OnCancel:        func() { s.Open = false },
+		OnConfirm:       func() { a.toolGraphAction("start") },
+		ExtraFooter: func() {
+			if !inProgress {
+				return
 			}
-		}
-		homeText(c, "使用当前模型，会消耗额度。", homeMeta).LineHeight(1.5)
-
-		if s.Job != nil {
-			homeText(c, toolGraphStatus(s.Job), homeHeading).FontSize(14)
-		} else if s.Busy {
-			homeText(c, "正在读取待处理记录…", homeMeta)
-		}
-		if s.Error != "" {
-			homeText(c, s.Error, homeMeta).LineHeight(1.6)
-		}
-		ui.Row(c).FillWidth().Gap(12).Justify(ui.End).Children(func() {
-			closeLabel := "取消"
+			v4OutlineButton(c, "核对进度", nil, func() { a.toolGraphAction("review") }).Disabled(s.Busy)
+			v4DangerOutlineButton(c, "停止本次创建", false, func() { a.toolGraphAction("cancel") }).Disabled(s.Busy)
+		},
+		Body: func() {
+			homeText(c, "将已有工具记录整理成关系图谱。", homeBody).TextColor(tok.Text2)
+			if s.Preview != nil {
+				ui.Column(c).FillWidth().Padding(sp3).Gap(sp1).Background(tok.Fill1).Radius(radius).Children(func() {
+					homeText(c, fmt.Sprintf("待处理：%d 个会话 · %d 条工具记录", s.Preview.Sessions, s.Preview.Steps), homeBody).FontSize(fsBody).FontWeight(500).TextColor(tok.Text1)
+					homeText(c, "已处理的会跳过，新记录下次再处理。", homeMeta)
+				})
+				if s.Preview.Sessions == 0 {
+					homeText(c, "没有需要处理的新记录。", homeMeta)
+				}
+			}
 			if s.Job != nil {
-				closeLabel = "关闭"
+				homeText(c, toolGraphStatus(s.Job), homeHeading).FontSize(fsBody)
+			} else if s.Busy {
+				v4SkeletonRow(c, 1, false, false)
+				homeText(c, "正在读取待处理记录…", homeMeta)
 			}
-			ui.Button(c, closeLabel).OnClick(func() { s.Open = false })
-			if s.Job != nil && (toolGraphActive(s.Job) || s.Job.Status == "result_unknown") {
-				textButton(c, "核对进度", nil).Disabled(s.Busy).OnClick(func() { a.toolGraphAction("review") })
-				textButton(c, "停止本次创建", nil).Disabled(s.Busy).OnClick(func() { a.toolGraphAction("cancel") })
-			} else {
-				ui.PrimaryButton(c, "开始创建").Disabled(s.Busy || s.Preview == nil || s.Preview.Sessions == 0).OnClick(func() { a.toolGraphAction("start") })
+			if s.Error != "" {
+				homeText(c, s.Error, homeMeta).TextColor(tok.Danger).LineHeight(1.5)
 			}
-		})
-	}).Width(480).Padding(20).Gap(14).Label("创建工具图谱确认").Transition(projectOverlayMotion())
+		},
+	})
 }

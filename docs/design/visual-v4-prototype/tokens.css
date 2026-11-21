@@ -17,10 +17,12 @@
 
   --radius: 6px;
   --radius-sm: 4px;
-  --row-1: 32px;   /* 单行 */
-  --row-2: 54px;   /* 双行 */
-  --bar: 52px;     /* 与标题栏融合的顶栏 */
+  --radius-lg: 8px;     /* 菜单、弹窗、浮层 */
+  --row-1: 32px;        /* 单行 */
+  --row-2: 54px;        /* 双行 */
+  --bar: 52px;          /* 与标题栏融合的顶栏 */
   --sidebar-w: 220px;
+  --content-max: 680px; /* 配置页与阅读区正文最大宽 */
 
   /* 动效：弹簧在 app.js 中生成 linear() 并覆盖下列回退值 */
   --ease-smooth: cubic-bezier(.25,.1,.25,1);
@@ -56,8 +58,24 @@
   --text-4: #A3A6AD;          /* 占位、禁用 */
 
   --ok: #2E9E5B;
+  --warning: #C88218;
   --danger: #D64545;
+  --danger-hover: #C23B3B;
+  --danger-soft: rgba(214,69,69,.10);
+  --on-danger: #FFFFFF;
+
+  --seg-thumb-bg: #FFFFFF;
+  --knob-bg: #FFFFFF;
+  --knob-shadow: 0 1px 2px rgba(0,0,0,.25);
+  --scrim: rgba(0,0,0,.28);
+  --mark-bg: rgba(94,106,210,.18);
+  --skeleton-base: var(--fill-2);
+  --skeleton-shine: rgba(255,255,255,.55);
+
+  --shadow-thumb: 0 1px 2px rgba(0,0,0,.12);
   --shadow-lift: 0 1px 2px rgba(0,0,0,.05), 0 4px 12px rgba(0,0,0,.06);
+  --shadow-menu: 0 0 0 1px var(--border), 0 8px 24px rgba(0,0,0,.14);
+  --shadow-dialog: 0 0 0 1px var(--border), 0 18px 48px rgba(0,0,0,.20);
   --shadow-window: 0 0 0 .5px rgba(0,0,0,.18), 0 24px 64px rgba(0,0,0,.22);
   --heat-0: var(--fill-2);
   --heat-1: rgba(94,106,210,.22);
@@ -91,8 +109,24 @@
   --text-4: #5C5D64;
 
   --ok: #3FBF73;
+  --warning: #E5A93C;
   --danger: #EF6363;
+  --danger-hover: #F27676;
+  --danger-soft: rgba(239,99,99,.16);
+  --on-danger: #FFFFFF;
+
+  --seg-thumb-bg: #3A3A40;
+  --knob-bg: #FFFFFF;
+  --knob-shadow: 0 1px 2px rgba(0,0,0,.35);
+  --scrim: rgba(0,0,0,.52);
+  --mark-bg: rgba(124,134,232,.26);
+  --skeleton-base: var(--fill-2);
+  --skeleton-shine: rgba(255,255,255,.07);
+
+  --shadow-thumb: 0 1px 2px rgba(0,0,0,.28);
   --shadow-lift: 0 1px 2px rgba(0,0,0,.3), 0 4px 12px rgba(0,0,0,.3);
+  --shadow-menu: 0 0 0 1px var(--border-strong), 0 8px 24px rgba(0,0,0,.42);
+  --shadow-dialog: 0 0 0 1px var(--border-strong), 0 18px 48px rgba(0,0,0,.55);
   --shadow-window: 0 0 0 .5px rgba(255,255,255,.12), 0 24px 64px rgba(0,0,0,.55);
   --heat-0: var(--fill-2);
   --heat-1: rgba(124,134,232,.25);

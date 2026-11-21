@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 
 type overviewViewState struct {
 	ExpandedEvent, ExpandedReport, CopiedEvent string
+	ExpandedDetail                             *failureDetailModel
+	ExpandedTechOpen                           bool
 	RawLoaded                                  bool
 	Snapshot                                   overviewSnapshot
 	Loaded, Loading                            bool
@@ -46,6 +49,17 @@ type overviewViewState struct {
 	cachedBucketsCount                         int
 	cachedBucketsDay                           string
 	cachedBuckets                              map[string]int
+	heatmapGrowStart                           time.Time
+	heatmapTapDay                              string
+	heatmapTapStart                            time.Time
+	heatmapRingPrevDay                         string
+	heatmapRingStart                           time.Time
+	lastNavIndY                                float32
+	activityFetchedAt                          time.Time
+	cachedGroupedGen                           uint64
+	cachedGroupedHistory                       bool
+	cachedGroupedCount                         int
+	cachedGroupedEvents                        []overviewEvent
 }
 
 func (a *App) overviewFirstUseDays(now time.Time) (int, error) {
@@ -107,9 +121,6 @@ func (a *App) loadOverview() {
 		*v = overviewViewState{scope: scope, generation: generation, activityGeneration: activityGeneration,
 			Day: v.Day, Offset: v.Offset, Scroll: v.Scroll, SidebarScroll: v.SidebarScroll, ActivityScroll: v.ActivityScroll, KnowledgeScroll: v.KnowledgeScroll, AllProjects: v.AllProjects, ActivityExpanded: v.ActivityExpanded, ActivityLimit: v.ActivityLimit, SearchHistory: v.SearchHistory}
 	}
-	if !v.Loaded {
-		a.hydrateOverviewFromCache(scope)
-	}
 	wasLoaded := v.Loaded
 	if v.cancel != nil {
 		v.cancel()
@@ -120,10 +131,127 @@ func (a *App) loadOverview() {
 	generation := v.generation
 	v.Loading = true
 	client := a.Client
+	genStr := fmt.Sprint(generation)
+	control, hasControl := a.accessClient()
+
+	// Fast path: single read-only loopback bootstrap call (~30-50ms) returns
+	// documents, top-30 title previews, sessions, recall counts, pipeline runs,
+	// and recall events atomically with zero disk SWR cache.
+	if hasControl {
+		if v.activityCancel != nil {
+			v.activityCancel()
+		}
+		v.activityCancel = cancel
+		v.activityGeneration++
+		actGen := v.activityGeneration
+		v.ActivityLoading = true
+		searchHistory := v.SearchHistory
+		projects := overviewProjects(a.Config)
+		go func() {
+			defer cancel()
+			resp, err := control.overviewBootstrap(ctx, 250, 50)
+			if err == nil {
+				snapshot, events, more, hasRecallCounts := buildOverviewFromBootstrap(client, projects, resp, 50)
+				var historyEvents []overviewEvent
+				var historyErr error
+				if searchHistory {
+					historyEvents, historyErr = client.overviewSearchHistory(ctx)
+				}
+				a.Update(func() {
+					if generation != a.overviewState.generation {
+						return
+					}
+					a.overviewState.Loading = false
+					a.overviewState.RawLoaded = true
+					ready := map[string]Item{}
+					for _, old := range a.overviewState.Snapshot.Knowledge {
+						ready[old.key()] = old
+					}
+					for n, item := range snapshot.Knowledge {
+						if old, ok := ready[item.key()]; ok {
+							if snapshot.Knowledge[n].ReadingState != "ready" && old.ReadingState == "ready" && item.Document != nil && (item.Document.ContentHash != "" || item.Document.Updated != "") && keyForReading(a.readingIdentity, old, genStr) == keyForReading(a.readingIdentity, item, genStr) {
+								snapshot.Knowledge[n].Title, snapshot.Knowledge[n].ReadingState = old.Title, old.ReadingState
+							}
+							if snapshot.Knowledge[n].RecallStats == nil && old.RecallStats != nil {
+								snapshot.Knowledge[n].RecallStats = old.RecallStats
+							}
+						}
+					}
+					a.overviewState.Snapshot = snapshot
+					if !hasRecallCounts {
+						a.loadOverviewRecallStats(generation)
+					}
+					a.recentScope = ""
+					a.overviewState.Loaded = true
+					a.overviewState.Error = ""
+					if !wasLoaded {
+						a.motionRuns.overviewPage++
+						a.motionRuns.overviewKnowledge++
+						a.motionRuns.overviewActivity++
+						a.overviewState.heatmapGrowStart = time.Now()
+					}
+					if actGen == a.overviewState.activityGeneration {
+						a.overviewState.ActivityLoading = false
+						a.overviewState.Events = events
+						a.overviewState.RecallError = ""
+						a.overviewState.More = more
+						a.overviewState.ActivityError = ""
+						a.overviewState.ActivityLoaded = true
+						a.overviewState.activityFetchedAt = time.Now()
+						if searchHistory {
+							if historyErr != nil {
+								a.overviewState.HistoryError = historyErr.Error()
+							} else {
+								a.overviewState.History = historyEvents
+								a.overviewState.HistoryLoaded = true
+								a.overviewState.HistoryError = ""
+							}
+						}
+					}
+				})
+				return
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			// Fallback when control server does not serve /v1/overview/bootstrap.
+			a.Update(func() {
+				if generation != a.overviewState.generation {
+					return
+				}
+				a.loadOverviewLegacy(generation, wasLoaded)
+			})
+		}()
+		return
+	}
+	a.loadOverviewLegacy(generation, wasLoaded)
+}
+
+func (a *App) loadOverviewLegacy(generation uint64, wasLoaded bool) {
+	v := &a.overviewState
+	activityDone := a.startOverviewActivity()
+	if v.cancel != nil {
+		v.cancel()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	v.cancel = cancel
+	v.Loading = true
+	client := a.Client
 	titles := a.titles
 	genStr := fmt.Sprint(generation)
 	go func() {
 		defer cancel()
+		if wasLoaded && activityDone != nil {
+			wait := time.NewTimer(140 * time.Millisecond)
+			select {
+			case <-activityDone:
+			case <-ctx.Done():
+				wait.Stop()
+				return
+			case <-wait.C:
+			}
+			wait.Stop()
+		}
 		snapshot, err := client.overview(ctx)
 		if err == nil && !wasLoaded && len(snapshot.Knowledge) > 0 {
 			// On cold start without cache, preheat the first 10 visible titles
@@ -186,15 +314,20 @@ func (a *App) loadOverview() {
 			a.overviewState.Loaded = true
 			a.overviewState.Error = ""
 			if !wasLoaded {
+				a.motionRuns.overviewPage++
 				a.motionRuns.overviewKnowledge++
+				a.motionRuns.overviewActivity++
+				a.overviewState.heatmapGrowStart = time.Now()
 			}
-			a.saveOverviewCache(scope, snapshot, a.overviewState.RawLoaded)
 		})
 	}()
-	a.loadOverviewActivity()
 }
 
 func (a *App) loadOverviewActivity() {
+	a.startOverviewActivity()
+}
+
+func (a *App) startOverviewActivity() <-chan struct{} {
 	v := &a.overviewState
 	if v.activityCancel != nil {
 		v.activityCancel()
@@ -208,8 +341,12 @@ func (a *App) loadOverviewActivity() {
 	client := a.Client
 	history := v.SearchHistory
 	control, hasControl := a.accessClient()
+	done := make(chan struct{})
+	var closeDone sync.Once
+	signalDone := func() { closeDone.Do(func() { close(done) }) }
 	go func() {
 		defer cancel()
+		defer signalDone()
 		var events []overviewEvent
 		var more bool
 		var err error
@@ -217,9 +354,23 @@ func (a *App) loadOverviewActivity() {
 		if history {
 			events, err = client.overviewSearchHistory(ctx)
 		} else {
+			// Fetch official pipeline-runs and local control recall-events in parallel.
+			var (
+				recalls     []RecallEvent
+				recallMore  bool
+				recallError error
+				wg          sync.WaitGroup
+			)
+			if hasControl {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					recalls, recallMore, recallError = control.recallEvents(ctx, want)
+				}()
+			}
 			events, more, err = client.overviewActivity(ctx, want)
+			wg.Wait()
 			if err == nil && hasControl {
-				recalls, recallMore, recallError := control.recallEvents(ctx, want)
 				if recallError == nil {
 					var mergedMore bool
 					events, mergedMore = mergeRecallActivity(events, recalls, overviewProjects(client.Config), want)
@@ -234,6 +385,7 @@ func (a *App) loadOverviewActivity() {
 				}
 			}
 		}
+		signalDone()
 		a.Update(func() {
 			if generation != a.overviewState.activityGeneration {
 				return
@@ -258,8 +410,10 @@ func (a *App) loadOverviewActivity() {
 			a.overviewState.More = more
 			a.overviewState.ActivityError = ""
 			a.overviewState.ActivityLoaded = true
+			a.overviewState.activityFetchedAt = time.Now()
 		})
 	}()
+	return done
 }
 
 func overviewBuckets(snapshot overviewSnapshot, location *time.Location) map[string]int {
@@ -297,9 +451,11 @@ func (a *App) overviewHome(c *ui.Context) {
 	now := time.Now()
 	midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
 	c.After(midnight.Sub(now))
-	page := ui.Column(c.Key("overview-page")).Fill().Padding(0, sp8).Font("system-ui").FontWeight(400)
-	v4PageEnter(page, a.motionRuns.overviewPage)
-	page.Children(func() {
+	ui.Column(c).Fill().AlignItems(ui.Center).Children(func() {
+		pageKey := fmt.Sprintf("overview-page-%d", a.motionRuns.overviewPage)
+		page := ui.Column(c.Key(pageKey)).Grow(1).MinHeight(0).FillWidth().MaxWidth(1040).Padding(0, sp8).Font("system-ui").FontWeight(400)
+		a.v4PageEnter(c, page, "overview-page", a.motionRuns.overviewPage)
+		page.Children(func() {
 		if _, err := a.overviewFirstUseDays(now); err != nil {
 			homeText(c, "使用时间暂不可用。", homeAction).Margin(0, 0, sp2, 0)
 		}
@@ -355,7 +511,228 @@ func (a *App) overviewHome(c *ui.Context) {
 				a.overviewActivities(c, now)
 			})
 		})
+		})
 	})
+	a.overviewFailureDialog(c)
+}
+
+func (a *App) openOverviewFailureDetail(ev overviewEvent, loc *time.Location) {
+	v := &a.overviewState
+	detail := buildFailureDetail(ev, a.Config, loc)
+	report := failureReport(ev, a.Config)
+	if v.ExpandedEvent != ev.Key {
+		v.CopiedEvent = ""
+	}
+	v.ExpandedEvent = ev.Key
+	v.ExpandedDetail = &detail
+	v.ExpandedReport = report
+	v.ExpandedTechOpen = false
+}
+
+func (a *App) closeOverviewFailureDetail() {
+	v := &a.overviewState
+	v.ExpandedEvent = ""
+	v.ExpandedDetail = nil
+	v.ExpandedTechOpen = false
+}
+
+func (a *App) overviewFailureDialog(c *ui.Context) {
+	v := &a.overviewState
+	if v.ExpandedEvent == "" || v.ExpandedDetail == nil {
+		return
+	}
+	detail := v.ExpandedDetail
+	open := true
+	hint := "来自已有官方记录，不含凭据或会话正文"
+	if v.CopiedEvent == detail.EventKey {
+		hint = "已复制诊断信息 · 不含凭据或会话正文"
+	}
+	v4Dialog(c, &open, v4DialogOptions{
+		Key:         "overview-failure-detail",
+		Title:       detail.DialogTitle,
+		Label:       "任务失败详情",
+		Width:       v4DialogLarge,
+		ScrollBody:  true,
+		Leading:     func() { v4StatusDot(c, "fail") },
+		Hint:        hint,
+		CancelText:  "关闭",
+		ConfirmText: "复制诊断信息",
+		OnCancel:    a.closeOverviewFailureDetail,
+		OnConfirm: func() {
+			c.WriteClipboard(v.ExpandedReport)
+			v.CopiedEvent = detail.EventKey
+		},
+		Body: func() {
+			ui.Column(c).FillWidth().Padding(sp3, sp4).Gap(sp2).Background(tok.Fill1).Radius(radius).Children(func() {
+				ui.Row(c).FillWidth().Gap(sp2).AlignItems(ui.Center).Children(func() {
+					v4StatusDot(c, "fail")
+					ui.Text(c, detail.ReasonLabel).Font("system-ui").FontSize(fsBody).FontWeight(600).TextColor(tok.Danger).Grow(1).MinWidth(0)
+					if detail.ErrorClass != "" {
+						ui.Text(c, detail.ErrorClass).Font("ui-monospace").FontSize(fsCaption).FontWeight(500).
+							Padding(2, 6).Radius(radiusSmall).Background(tok.Fill2).TextColor(tok.Text2).SingleLine().Shrink(0)
+					}
+				})
+				if detail.Summary != "" {
+					ui.Text(c, detail.Summary).Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text1).LineHeight(1.55)
+				}
+				if detail.Hint != "" {
+					ui.Text(c, detail.Hint).Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Text3).LineHeight(1.5)
+				}
+			})
+
+			v4Group(c, "概览", "", nil, func() {
+				if detail.Project != "" {
+					v4Row(c, v4RowOptions{Key: "fail-proj", Title: "所属项目", Value: detail.Project})
+				}
+				if detail.OperationTitle != "" {
+					v4Row(c, v4RowOptions{Key: "fail-op", Title: "任务操作", Value: detail.OperationTitle})
+				}
+				if detail.StageLabel != "" {
+					stageDesc := ""
+					if detail.StageRaw != "" && detail.StageRaw != detail.StageLabel {
+						stageDesc = detail.StageRaw
+					}
+					v4Row(c, v4RowOptions{Key: "fail-stage", Title: "失败环节", Desc: stageDesc, DescMono: stageDesc != "", Value: detail.StageLabel})
+				}
+				if detail.LocalTime != "" {
+					v4Row(c, v4RowOptions{Key: "fail-time", Title: "发生时间", Value: detail.LocalTime, ValueMono: true})
+				}
+				if detail.Duration != "" {
+					v4Row(c, v4RowOptions{Key: "fail-dur", Title: "持续耗时", Value: detail.Duration})
+				}
+				if detail.FailureCount > 1 {
+					v4Row(c, v4RowOptions{Key: "fail-count", Title: "失败次数", Value: fmt.Sprintf("%d 次", detail.FailureCount), ValueColor: tok.Danger})
+				}
+			})
+
+			if len(detail.Items) > 1 {
+				v4Group(c, "失败记录", fmt.Sprintf("共 %d 条", len(detail.Items)), nil, func() {
+					for idx, item := range detail.Items {
+						metaParts := []string{}
+						if item.LocalTime != "" {
+							metaParts = append(metaParts, item.LocalTime)
+						}
+						if item.Duration != "" {
+							metaParts = append(metaParts, "耗时 "+item.Duration)
+						}
+						if item.ErrorClass != "" {
+							metaParts = append(metaParts, item.ErrorClass)
+						}
+						v4Row(c, v4RowOptions{
+							Key:        fmt.Sprintf("fail-item-%d", idx),
+							Title:      item.StageLabel,
+							Desc:       strings.Join(metaParts, " · "),
+							DescMono:   true,
+							Leading:    func() { v4StatusDot(c, "fail") },
+							Value:      item.ReasonLabel,
+							ValueColor: tok.Danger,
+						})
+					}
+				})
+			}
+
+			techDesc := "包含记录 ID、运行 ID、UTC 时间与官方服务信息"
+			if detail.HasLogCandidate {
+				techDesc = "包含记录 ID、运行 ID、UTC 时间及相邻日志调用位置"
+			}
+			v4Group(c, "技术信息", "", nil, func() {
+				title := "展开技术信息"
+				ico := v4IconChev
+				if v.ExpandedTechOpen {
+					title = "收起技术信息"
+					ico = v4IconDown
+				}
+				v4Row(c, v4RowOptions{
+					Key:         "overview-failure-tech-toggle",
+					Title:       title,
+					Desc:        techDesc,
+					Clickable:   true,
+					HideChevron: true,
+					Control:     func() { ui.Icon(c, ico).FontSize(14).TextColor(tok.Text3).Shrink(0) },
+					OnClick:     func() { v.ExpandedTechOpen = !v.ExpandedTechOpen },
+				})
+				if !v.ExpandedTechOpen {
+					return
+				}
+				ui.Column(c.Key("overview-failure-tech-body")).FillWidth().Padding(sp3).Gap(sp2).Background(tok.Fill1).Radius(radius).Children(func() {
+					metaLines := []string{}
+					if detail.EventKey != "" {
+						metaLines = append(metaLines, "事件 ID："+detail.EventKey)
+					}
+					if detail.ServiceEndpoint != "" {
+						metaLines = append(metaLines, "官方服务："+detail.ServiceEndpoint)
+					}
+					if detail.ServiceCommit != "" {
+						metaLines = append(metaLines, "Cognee 源码版本："+detail.ServiceCommit)
+					}
+					if detail.EventUTC != "" {
+						metaLines = append(metaLines, "事件时间（UTC）："+detail.EventUTC)
+					}
+					if detail.LogDir != "" {
+						metaLines = append(metaLines, "本机日志目录："+detail.LogDir)
+					}
+					if len(metaLines) > 0 {
+						ui.Text(c, strings.Join(metaLines, "\n")).Font("ui-monospace").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text2).LineHeight(1.55)
+					}
+					if len(detail.TechRecords) == 0 {
+						ui.Text(c, "官方未返回失败详情。").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.5)
+					}
+					for _, rec := range detail.TechRecords {
+						lines := []string{}
+						stage := rec.StageLabel
+						if rec.StageRaw != "" && rec.StageRaw != rec.StageLabel {
+							stage = fmt.Sprintf("%s (%s)", rec.StageLabel, rec.StageRaw)
+						}
+						lines = append(lines, "阶段："+stage)
+						if rec.ErrorClass != "" {
+							lines = append(lines, "错误类型："+rec.ErrorClass)
+						}
+						if rec.IsParentWrapper {
+							lines = append(lines, "说明：外层任务（由子阶段错误触发，未附额外错误类型）")
+						} else {
+							lines = append(lines, "说明："+rec.ReasonLabel)
+						}
+						if rec.ID != "" {
+							lines = append(lines, "记录 ID："+rec.ID)
+						}
+						if rec.Run != "" {
+							lines = append(lines, "运行 ID："+rec.Run)
+						}
+						if rec.Parent != "" {
+							lines = append(lines, "父操作 ID："+rec.Parent)
+						}
+						if rec.Dataset != "" {
+							lines = append(lines, "数据组："+rec.Dataset)
+						}
+						if rec.Origin != "" {
+							lines = append(lines, "来源："+rec.Origin)
+						}
+						if rec.CreatedUTC != "" {
+							lines = append(lines, "记录时间（UTC）："+rec.CreatedUTC)
+						}
+						if rec.StartedUTC != "" {
+							lines = append(lines, "开始（UTC）："+rec.StartedUTC)
+						}
+						if rec.EndedUTC != "" {
+							lines = append(lines, "结束（UTC）："+rec.EndedUTC)
+						}
+						if rec.LogCandidate != "" {
+							lines = append(lines, "日志候选（尚未按任务 ID 精确确认）：\n"+rec.LogCandidate)
+						}
+						ui.Column(c).FillWidth().Padding(sp2, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
+							ui.Text(c, strings.Join(lines, "\n")).Font("ui-monospace").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text2).LineHeight(1.55)
+						})
+					}
+					if detail.BoundaryNote != "" {
+						ui.Text(c, detail.BoundaryNote).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.5).Padding(sp2, 0, 0, 0)
+					}
+				})
+			})
+		},
+	})
+	if !open {
+		a.closeOverviewFailureDetail()
+	}
 }
 
 func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
@@ -397,9 +774,13 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 			}
 		})
 		ui.Row(c).FillWidth().Gap(sp6).AlignItems(ui.End).Children(func() {
-			// Left: heatmap grid (11px cells, 3px gap).
+			// Left: heatmap grid painted in a single canvas node (11px cells, 3px gap)
+			// instead of 371 separate ButtonBase widgets so Overview builds in ~1ms.
+			gridW := float32(weeks*14 - 3)
+			gridH := float32(7*14 - 3)
 			ui.Column(c).Shrink(0).Gap(4).Children(func() {
-				ui.Row(c).Padding(0, 0, 0, 18).Gap(3).Height(14).Children(func() {
+				// Month labels row: only emit actual month ticks (12 texts, not 53 columns).
+				ui.Box(c).Width(gridW + 18).Height(14).Children(func() {
 					for week := 0; week < weeks; week++ {
 						label := ""
 						if week == 0 {
@@ -415,46 +796,104 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 								}
 							}
 						}
-						ui.Column(c).Width(11).Height(14).Children(func() {
-							if label != "" {
-								text := homeText(c, label, homeReadableMeta).Absolute().Top(0).Width(32).SingleLine()
-								if week >= weeks-2 {
-									text.Right(0)
-								} else {
-									text.Left(0)
-								}
+						if label != "" {
+							t := homeText(c, label, homeReadableMeta).Absolute().Top(0).SingleLine()
+							if week >= weeks-2 {
+								t.Right(0)
+							} else {
+								t.Left(18 + float32(week*14))
 							}
-						})
+						}
 					}
 				})
 				ui.Row(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
-					ui.Column(c).Width(12).Shrink(0).Gap(3).Children(func() {
-						for weekday := 0; weekday < 7; weekday++ {
-							label := ""
-							switch weekday {
-							case 1:
-								label = "一"
-							case 3:
-								label = "三"
-							case 5:
-								label = "五"
-							}
-							ui.Column(c).Height(11).Justify(ui.Center).Children(func() {
-								ui.Text(c, label).Font("system-ui").FontSize(9).TextColor(tok.Text3)
-							})
+					ui.Box(c).Width(12).Height(gridH).Shrink(0).Children(func() {
+						for _, wd := range []struct {
+							row   int
+							label string
+						}{{1, "一"}, {3, "三"}, {5, "五"}} {
+							ui.Text(c, wd.label).Font("system-ui").FontSize(9).TextColor(tok.Text3).
+								Absolute().Left(0).Top(float32(wd.row * 14)).SingleLine()
 						}
 					})
-					ui.Row(c).Gap(3).Children(func() {
-						for week := 0; week < weeks; week++ {
-							w := week
-							col := ui.Column(c).Width(11).Gap(3)
-							col.Children(func() {
-								for weekday := 0; weekday < 7; weekday++ {
-									day := gridStart.AddDate(0, 0, w*7+weekday)
-									date := day.Format("2006-01-02")
+					canvas := ui.Box(c.Key("overview-heatmap-canvas")).Label("记忆分布热力图").Size(gridW, gridH).Shrink(0)
+					hoverW, hoverWD := -1, -1
+					hoveredDate := ""
+					hoveredLabel := ""
+					if v.Loaded {
+						if px, py, ok := canvas.PointerPosition(); ok && px >= 0 && py >= 0 {
+							w := int(px) / 14
+							wd := int(py) / 14
+							if w >= 0 && w < weeks && wd >= 0 && wd < 7 && px-float32(w*14) <= 12 && py-float32(wd*14) <= 12 {
+								day := gridStart.AddDate(0, 0, w*7+wd)
+								if !day.Before(start) && !day.After(today) {
+									hoverW, hoverWD = w, wd
+									hoveredDate = day.Format("2006-01-02")
+									hoveredLabel = fmt.Sprintf("%s · 新增 %d 条记忆", hoveredDate, buckets[hoveredDate])
+								}
+							}
+						}
+					}
+					if hoveredLabel != "" {
+						canvas.Cursor(ui.CursorPointer)
+					}
+					if v.Loaded {
+						canvas.OnClick(func() {
+							if hoveredDate == "" {
+								return
+							}
+							if v.Day == hoveredDate {
+								a.selectOverviewDay("")
+							} else {
+								a.selectOverviewDay(hoveredDate)
+							}
+						})
+					}
+					selDay := v.Day
+					loaded := v.Loaded
+					if loaded && v.heatmapGrowStart.IsZero() && a.motionRuns.overviewPage > 0 {
+						a.overviewState.heatmapGrowStart = c.Now()
+					}
+					growStart := time.Time{}
+					if loaded {
+						growStart = a.overviewState.heatmapGrowStart
+					}
+					tapDay := v.heatmapTapDay
+					tapStart := v.heatmapTapStart
+					ringPrevDay := v.heatmapRingPrevDay
+					ringStart := v.heatmapRingStart
+					waveTotal := time.Duration(max(0, weeks-1)*7)*time.Millisecond + 420*time.Millisecond
+					canvas.Draw(func(p *ui.Painter, r ui.Rect) {
+						elapsed, waving := v4HeatmapWaveElapsed(c, growStart, waveTotal)
+						tapElapsed, tapping := v4HeatmapWaveElapsed(c, tapStart, 650*time.Millisecond)
+						ringElapsed, ringing := v4HeatmapWaveElapsed(c, ringStart, 140*time.Millisecond)
+						for w := 0; w < weeks; w++ {
+							x := r.X + float32(w*14)
+							// Wave Grow: left-to-right per-week 7ms cascade.
+							scale := float32(1)
+							alpha := float32(1)
+							if waving {
+								t := elapsed - float64(w)*0.007
+								scale = v4BouncyScale(t)
+								if t <= 0 {
+									alpha = 0
+								} else if t < 0.14 {
+									alpha = float32(t / 0.14)
+								}
+							}
+							if scale <= 0.01 || alpha <= 0.01 {
+								continue
+							}
+							for wd := 0; wd < 7; wd++ {
+								day := gridStart.AddDate(0, 0, w*7+wd)
+								if day.Before(start) || day.After(today) {
+									continue
+								}
+								y := r.Y + float32(wd*14)
+								date := day.Format("2006-01-02")
+								level := 0
+								if loaded {
 									count := buckets[date]
-									visible := !day.Before(start) && !day.After(today)
-									level := 0
 									switch {
 									case count >= 10:
 										level = 4
@@ -465,40 +904,96 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 									case count > 0:
 										level = 1
 									}
-									color := tok.Heat[level]
-									if !visible {
-										color = ui.Transparent
-									}
-									if !visible || !v.Loaded {
-										ui.Box(c).Key("overview-empty-" + date).Size(11, 11).Radius(2).Background(color)
-										continue
-									}
-									label := fmt.Sprintf("%s · 新增 %d 条记忆", date, count)
-									cell := ui.ButtonBase(c.Key("overview-day-"+date)).Role(ui.RoleButton).Cursor(ui.CursorPointer).
-										Label(label).Tooltip(label).Size(11, 11).Radius(2).BorderWidth(0).Background(color)
-									if v.Day == date {
-										cell.Border(1.5, tok.Accent)
-									}
-									if cell.Hovered() || cell.Pressed() || cell.Transitioning() {
-										pose := ui.Pose{Scale: 1}
-										if cell.Pressed() {
-											pose.Scale = 0.72
-										} else if cell.Hovered() {
-											pose.Scale = 1.32
-										}
-										cell.AnimatePose(pose, v4Bouncy)
-									}
-									cell.OnClick(func() {
-										if v.Day == date {
-											a.selectOverviewDay("")
-										} else {
-											a.selectOverviewDay(date)
-										}
-									})
 								}
-							})
+								color := tok.Heat[level]
+								if alpha < 1 {
+									color = color.Alpha(alpha)
+								}
+								cellScale := scale
+								if !waving {
+									targetScale := float32(1)
+									if w == hoverW && wd == hoverWD {
+										targetScale = 1.35
+									}
+									if tapping && date == tapDay {
+										// Cell Tap: Bouncy spring 0.6 -> targetScale (1.35 if still hovered,
+										// 1.0 otherwise) so there is zero snap when the spring settles at 650ms.
+										cellScale = 0.6 + (targetScale-0.6)*v4BouncyScale(tapElapsed)
+									} else {
+										cellScale = targetScale
+									}
+								}
+								if cellScale != 1 {
+									sz := 11 * cellScale
+									off := (11 - sz) / 2
+									p.Fill(ui.Rect{X: x + off, Y: y + off, W: sz, H: sz}, color, max(1, 2*cellScale))
+								} else {
+									p.Fill(ui.Rect{X: x, Y: y, W: 11, H: 11}, color, 2)
+								}
+								// Double-ring halo matching prototype .cell.sel:
+								// 1.5px bg gap + 1.5px accent outline with smooth fade in/out.
+								if loaded {
+									ringAlpha := float32(0)
+									if selDay == date {
+										ringAlpha = 1
+										if ringing {
+											ringAlpha = min(1, float32(ringElapsed/0.12))
+										}
+									} else if ringing && ringPrevDay == date && selDay == "" {
+										ringAlpha = max(0, 1-float32(ringElapsed/0.12))
+									}
+									if ringAlpha > 0.01 {
+										sz := 11 * cellScale
+										off := (11 - sz) / 2
+										p.Stroke(ui.Rect{X: x + off - 0.75, Y: y + off - 0.75, W: sz + 1.5, H: sz + 1.5}, tok.Bg.Alpha(ringAlpha), 2.5, 1.5)
+										p.Stroke(ui.Rect{X: x + off - 2.25, Y: y + off - 2.25, W: sz + 4.5, H: sz + 4.5}, tok.Accent.Alpha(ringAlpha), 3.8, 1.5)
+									}
+								}
+							}
 						}
 					})
+					// Expose a single accessible hit-target for today's cell so keyboard
+					// and UI tests can locate/click today directly without 371 nodes,
+					// plus a floating cell-anchored tooltip pill right above the hovered day.
+					if v.Loaded {
+						todayDate := today.Format("2006-01-02")
+						todayLabel := fmt.Sprintf("%s · 新增 %d 条记忆", todayDate, buckets[todayDate])
+						todayW := weeks - 1
+						todayWD := int(today.Weekday())
+						canvas.Children(func() {
+							ui.ButtonBase(c.Key("overview-day-"+todayDate)).Role(ui.RoleButton).Cursor(ui.CursorPointer).
+								Label(todayLabel).
+								Absolute().Left(float32(todayW * 14)).Top(float32(todayWD * 14)).Size(11, 11).
+								Background(ui.Transparent).BorderWidth(0).OnClick(func() {
+								if v.Day == todayDate {
+									a.selectOverviewDay("")
+								} else {
+									a.selectOverviewDay(todayDate)
+								}
+							})
+							if hoverW >= 0 && hoverWD >= 0 && hoveredLabel != "" {
+								tip := ui.Row(c.Key("overview-heatmap-tip")).PassThrough().
+									Background(tok.TooltipBg).Border(1, tok.Border).Radius(radiusSmall).
+									Padding(4, 8).Shadow(0, 4, 14, 0, tok.ShadowLift)
+								tipW := tip.Bounds().W
+								if tipW <= 0 {
+									tipW = 156
+								}
+								tipX := float32(hoverW*14) + 5.5 - tipW/2
+								if tipX < 0 {
+									tipX = 0
+								}
+								if maxX := gridW - tipW; tipX > maxX {
+									tipX = maxX
+								}
+								tipY := float32(hoverWD*14) - 30
+								tip.Absolute().Left(tipX).Top(tipY).Children(func() {
+									ui.Text(c, hoveredLabel).Font("system-ui").FontSize(fsCaption).FontWeight(500).
+										FontFeatures("tnum").TextColor(tok.TooltipText).SingleLine()
+								})
+							}
+						})
+					}
 				})
 			})
 			// Right: today summary + legend.
@@ -545,6 +1040,17 @@ func (a *App) overviewKnowledgeRows(now time.Time) []Item {
 
 func (a *App) selectOverviewDay(day string) {
 	v := &a.overviewState
+	prev := v.Day
+	now := time.Now()
+	if day != "" {
+		v.heatmapTapDay = day
+		v.heatmapRingPrevDay = prev
+	} else {
+		v.heatmapTapDay = prev
+		v.heatmapRingPrevDay = prev
+	}
+	v.heatmapTapStart = now
+	v.heatmapRingStart = now
 	v.Day, v.ShowAllForDay = day, false
 	v.KnowledgeScroll.Y = 0
 	a.motionRuns.overviewKnowledge++
@@ -579,10 +1085,10 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 		for index, item := range rows {
 			i := item
 			idx := index
-			row := ui.ButtonBase(c.Key("recent-"+i.key())).Role(ui.RoleButton).Cursor(ui.CursorPointer).
+			rowKey := fmt.Sprintf("recent-%d-%s", a.motionRuns.overviewKnowledge, i.key())
+			row := ui.ButtonBase(c.Key(rowKey)).Role(ui.RoleButton).Cursor(ui.CursorPointer).
 				Label(i.Title).FillWidth().Justify(ui.Start).AlignItems(ui.Center).
 				MinHeight(rowHeight2).Padding(sp2+2, sp2).Radius(radius).Gap(sp3).BorderWidth(0)
-			v4StaggerEnter(row, idx, a.motionRuns.overviewKnowledge)
 			hovered := row.Hovered()
 			hoverBg := tok.BgElevated
 			if tok.Dark {
@@ -592,7 +1098,7 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 			if hovered {
 				row.Shadow(0, 2, 10, 0, tok.ShadowLift)
 			}
-			v4RowInteractive(row)
+			a.v4StaggerEnter(c, row, "recent-"+i.key(), idx, a.motionRuns.overviewKnowledge, true)
 			// Hairline divider between rows starting after the agent icon.
 			// Hide both above and below a hovered lifted row (.row:hover + .row::before).
 			if idx > 0 && !hovered && !prevHovered {
@@ -606,7 +1112,19 @@ func (a *App) overviewKnowledge(c *ui.Context, now time.Time) {
 					agentLogo(c, recentAgentIcon(i), 20)
 				})
 				ui.Column(c).Gap(4).Grow(1).MinWidth(0).Children(func() {
-					v4InlineMarkdown(c, knowledgePreview(i.Title), fsBody, 500, 1.45, tok.Text1).MaxLines(2).Tooltip(stripInlineBackticks(knowledgePreview(i.Title)))
+					// Lock a 2-line title slot height so async title hydration never
+					// stretches the row downward or shifts rows below it.
+					titlePending := i.ReadingState != "ready" && (i.Document == nil || readableDocumentTitle(*i.Document) == "")
+					ui.Column(c).FillWidth().MinHeight(38).Justify(ui.Center).Children(func() {
+						if titlePending {
+							ui.Column(c).FillWidth().Gap(6).Children(func() {
+								ui.Box(c).FillWidth().Height(12).Radius(4).Background(tok.Fill2)
+								ui.Box(c).Width(220).Height(12).Radius(4).Background(tok.Fill1)
+							})
+						} else {
+							v4InlineMarkdown(c, knowledgePreview(i.Title), fsBody, 500, 1.45, tok.Text1).MaxLines(2).Tooltip(stripInlineBackticks(knowledgePreview(i.Title)))
+						}
+					})
 					date := "来源日期未知"
 					if i.Document != nil {
 						if day, ok := i.Document.knowledgeDay(now.Location()); ok {
@@ -701,7 +1219,13 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 				homeText(c, "读取失败，保留上次结果 · "+loadError, homeReadableMeta).MaxLines(2)
 				homeLink(c, "重试读取动态", a.loadOverviewActivity).Margin(0, 0, sp2, 0)
 			}
-			shown := groupOverviewFailures(events)
+			if v.cachedGroupedEvents == nil || v.cachedGroupedGen != v.activityGeneration || v.cachedGroupedHistory != v.SearchHistory || v.cachedGroupedCount != len(events) {
+				v.cachedGroupedEvents = groupOverviewFailures(events)
+				v.cachedGroupedGen = v.activityGeneration
+				v.cachedGroupedHistory = v.SearchHistory
+				v.cachedGroupedCount = len(events)
+			}
+			shown := v.cachedGroupedEvents
 			for idx, event := range shown {
 				ev := event
 				dotColor := tok.Text4
@@ -720,14 +1244,14 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 					recallGroups = a.recallActivityGroups(*ev.Recall)
 				}
 				var row ui.Element
+				evKey := fmt.Sprintf("overview-event-%d-%s", a.motionRuns.overviewActivity, ev.Key)
 				if ev.Recall != nil && len(recallGroups) > 0 {
-					btn := ui.ButtonBase(c.Key("overview-event-"+ev.Key)).Role(ui.RoleButton).
+					btn := ui.ButtonBase(c.Key(evKey)).Role(ui.RoleButton).
 						Label(fmt.Sprintf("%s · %s · %d 条记忆", ev.Title, ev.Project, len(ev.Recall.Hits))).
 						FillWidth().Justify(ui.Start).AlignItems(ui.Stretch).
 						Padding(sp2, sp2, sp3, sp2).Gap(sp3).Radius(radius).BorderWidth(0).
 						Cursor(ui.CursorPointer).Tooltip("查看本次召回的记忆")
 					btn.Background(homeHoverColor(btn, "ev-hover", ui.Transparent, tok.Hover))
-					v4ButtonPress(btn, 0.99)
 					if len(recallGroups) == 1 {
 						ds := recallGroups[0].dataset
 						rc := *ev.Recall
@@ -745,9 +1269,9 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 					}
 					row = btn
 				} else {
-					row = ui.Row(c).Key("overview-event-"+ev.Key).Padding(sp2, sp2, sp3, sp2).Gap(sp3).Radius(radius).AlignItems(ui.Stretch)
+					row = ui.Row(c).Key(evKey).Padding(sp2, sp2, sp3, sp2).Gap(sp3).Radius(radius).AlignItems(ui.Stretch)
 				}
-				v4StaggerEnter(row, idx, a.motionRuns.overviewActivity)
+				a.v4StaggerEnter(c, row, "event-"+ev.Key, idx, a.motionRuns.overviewActivity, ev.Recall != nil && len(recallGroups) > 0)
 				row.Children(func() {
 					ui.Column(c).Width(8).Shrink(0).Padding(6, 0, 0, 0).AlignItems(ui.Center).Children(func() {
 						ui.Box(c).Size(6, 6).Radius(3).Background(dotColor).Shrink(0)
@@ -791,27 +1315,20 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 							}
 						}
 						if ev.State == "失败" {
-							textButton(c, "更多", nil).Label("失败操作："+ev.Key).FontSize(fsCaption).TextColor(tok.Text3).Padding(2, 0).BorderWidth(0).Background(ui.Transparent).AlignSelf(ui.Start).PopoverMenuButton(func(m *ui.Menu) {
-								title := "查看失败详情"
-								if v.ExpandedEvent == ev.Key {
-									title = "收起失败详情"
-								}
-								if m.Item(title).Chosen() {
-									if v.ExpandedEvent == ev.Key {
-										v.ExpandedEvent = ""
-									} else {
-										v.ExpandedEvent = ev.Key
-										v.ExpandedReport = failureReport(ev, a.Config)
-									}
-								}
-								if m.Item("复制诊断信息").Chosen() {
-									c.WriteClipboard(failureReport(ev, a.Config))
-									v.CopiedEvent = ev.Key
-								}
-							})
-							if v.ExpandedEvent == ev.Key {
-								homeText(c, v.ExpandedReport, homeReadableMeta).LineHeight(1.6).Margin(sp2, 0, 0, 0)
+							detailBtn := ui.ButtonBase(c).Role(ui.RoleButton).Label("失败操作："+ev.Key).
+								Cursor(ui.CursorPointer).Height(24).MinHeight(24).Padding(2, 0).Gap(3).
+								Radius(radiusSmall).BorderWidth(0).Background(ui.Transparent).
+								AlignItems(ui.Center).AlignSelf(ui.Start)
+							fg := tok.Text3
+							if detailBtn.Hovered() {
+								fg = tok.Text1
 							}
+							detailBtn.Children(func() {
+								ui.Text(c, "查看详情").Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(fg).SingleLine()
+								ui.Icon(c, v4IconChev).FontSize(10).TextColor(fg).Shrink(0)
+							}).OnClick(func() {
+								a.openOverviewFailureDetail(ev, now.Location())
+							})
 						}
 					})
 				})
@@ -848,6 +1365,11 @@ func (a *App) overviewActivityTabs(c *ui.Context) {
 		v.ActivityExpanded = false
 		v.ActivityScroll.Y = 0
 		a.motionRuns.overviewActivity++
+		// Reuse fresh activity when switching back from 最近搜索 within 15s
+		// instead of firing redundant HTTP fetches on every tab toggle.
+		if !v.SearchHistory && v.ActivityLoaded && !v.activityFetchedAt.IsZero() && time.Since(v.activityFetchedAt) < 15*time.Second {
+			return
+		}
 		a.loadOverviewActivity()
 	})
 }

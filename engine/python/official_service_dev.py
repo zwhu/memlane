@@ -379,8 +379,21 @@ def main():
             from external_capture_store import ExternalCaptureStore
             capture_store = ExternalCaptureStore(state_dir / 'capture-receipts.sqlite3')
             stack.callback(capture_store.close)
+            drift_observer = None
+            if config.get('project_control'):
+                from session_drift import RegistryProjectIndex, SessionDriftStore
+                drift_store = SessionDriftStore(state_dir / 'session-drift.sqlite3')
+                stack.callback(drift_store.close)
+                drift_projects = RegistryProjectIndex(config['project_control']['registry_file'])
+
+                def drift_observer(bound_dataset_id, session_id, entry, message_id):
+                    drift_store.observe_trace(
+                        bound_dataset_id, session_id, entry, drift_projects.alias_index(),
+                        message_id=message_id,
+                    )
+
             from capture_receipts import install_capture_routes
-            install_capture_routes(app, receipt_store=capture_store)
+            install_capture_routes(app, receipt_store=capture_store, drift_observer=drift_observer)
             from provenance_store import ProvenanceStore, install_provenance_middleware
             provenance_store = ProvenanceStore(state_dir / 'lesson-provenance.sqlite3')
             stack.callback(provenance_store.close)

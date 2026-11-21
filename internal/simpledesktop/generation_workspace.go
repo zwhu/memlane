@@ -133,42 +133,38 @@ func (a *App) generationCandidateStatus(c *ui.Context) {
 	s := &a.integrations
 	if s.DraftMode == "agent_bridge" {
 		current := s.Generation.Active != nil && s.Saved != nil && *s.Generation.Active == *s.Saved && s.cleanSaved()
-		ui.Row(c).FillWidth().MinHeight(48).Justify(ui.End).Children(func() {
-			if current {
-				homeText(c, "使用中", homeMeta)
-				return
-			}
-			ui.Button(c, "切换").Disabled(s.Busy || s.HandoffOpen || s.HandoffOperation != "" || s.SaveOperation != "" || !s.connectedProcessingAgent(s.BridgeKind)).OnClick(func() {
-				if s.cleanSaved() {
-					a.applySelectedProcessingAgent()
-				} else {
-					s.GenerationAgentApply = true
-					a.saveGeneration()
-				}
+		if !current {
+			ui.Row(c).FillWidth().MinHeight(44).Padding(sp2, sp1).AlignItems(ui.Center).Justify(ui.End).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+				v4SmallPrimaryButton(c, "切换", func() {
+					if s.cleanSaved() {
+						a.applySelectedProcessingAgent()
+					} else {
+						s.GenerationAgentApply = true
+						a.saveGeneration()
+					}
+				}).Disabled(s.Busy || s.HandoffOpen || s.HandoffOperation != "" || s.SaveOperation != "" || !s.connectedProcessingAgent(s.BridgeKind))
 			})
-		})
+		}
 		if s.Error != "" {
-			homeText(c, s.Error, homeMeta).TextColor(tok.Danger)
+			ui.Row(c).FillWidth().Padding(sp2, sp1).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+				homeText(c, s.Error, homeMeta).TextColor(tok.Danger)
+			})
 		}
 		return
 	}
 	current := s.cleanSaved() && s.Generation.Active != nil && s.Saved != nil && *s.Generation.Active == *s.Saved
+	if current {
+		return
+	}
 
-	ui.Column(c).FillWidth().Children(func() {
-		settingsListRow(c, func() {
-			ui.Spacer(c)
-			if current {
-				homeText(c, "使用中", homeMeta)
-				return
+	ui.Row(c).FillWidth().MinHeight(44).Padding(sp2, sp1).AlignItems(ui.Center).Justify(ui.End).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+		v4SmallPrimaryButton(c, "切换", func() {
+			if s.Generation.HandoffAvailable {
+				a.openGenerationHandoff(s.Saved)
+			} else {
+				a.generationAction("next")
 			}
-			ui.Button(c, "切换").Disabled(s.Busy || s.HandoffOpen || s.HandoffOperation != "" || s.pendingGenerationProfile(s.ProfileID) || !s.cleanSaved() || !s.Generation.validated(s.Saved)).OnClick(func() {
-				if s.Generation.HandoffAvailable {
-					a.openGenerationHandoff(s.Saved)
-				} else {
-					a.generationAction("next")
-				}
-			})
-		})
+		}).Disabled(s.Busy || s.HandoffOpen || s.HandoffOperation != "" || s.pendingGenerationProfile(s.ProfileID) || !s.cleanSaved() || !s.Generation.validated(s.Saved))
 	})
 }
 
@@ -178,7 +174,7 @@ func (a *App) generationWorkspace(c *ui.Context) {
 
 // Selection and configuration share drafts, but only selection can enable a candidate.
 func (a *App) generationWorkspaceFor(c *ui.Context, edit, enable bool) {
-	ui.Column(c).FillWidth().Gap(12).Children(func() { a.generationWorkspaceContent(c, edit, enable) })
+	ui.Column(c).FillWidth().Gap(0).Children(func() { a.generationWorkspaceContent(c, edit, enable) })
 }
 func (a *App) generationWorkspaceContent(c *ui.Context, edit, enable bool) {
 	s := &a.integrations
@@ -193,43 +189,60 @@ func (a *App) generationWorkspaceContent(c *ui.Context, edit, enable bool) {
 		a.chooseGenerationSource(mode)
 	}
 	title := "模型配置"
+	desc := ""
 	if enable {
 		title = "处理方式"
-	}
-	settingsSectionHeader(c, title, nil, func() {
-		if !edit {
-			textButton(c, "管理 Agent 与模型", func() {
-				a.access.SettingsSection = "Agent 与模型"
-			})
-		}
-	})
-	if enable {
-		a.generationCurrentStatus(c)
-		a.generationHandoffStatus(c)
+		desc = "当前使用：" + generationLabel(s.Generation, s.Generation.Active)
 	}
 	selected := 0
 	if s.DraftMode == "provider" {
 		selected = 1
 	}
-	ui.Segmented(c, &selected, "使用 Agent CLI", "模型 Provider").Label("处理来源").AlignSelf(ui.Start).Disabled(s.Busy).OnChange(func() {
-		mode := "agent_bridge"
-		if selected == 1 {
-			mode = "provider"
-		}
-		a.chooseGenerationSource(mode)
-	})
-	if s.DraftMode == "agent_bridge" {
-		homeText(c, "需先在「Agent 与模型」中绑定对应 CLI，才能用于整理记忆。", homeMeta)
+	sourceDesc := "让 Codex、Gemini 等已连接的 Agent 用它自己的模型和额度整理记忆，无需填写 API Key"
+	if s.DraftMode == "provider" {
+		sourceDesc = "填写 OpenAI 兼容或 Ollama 等接口，由 Memlane 直接调用"
 	}
-	if !edit {
-		settingsListSurface(c, func() {
+
+	v4Group(c, title, desc, nil, func() {
+		if enable && s.Handoff.Handoff != nil {
+			ui.Row(c).FillWidth().Padding(sp2, sp1).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+				a.generationHandoffStatus(c)
+			})
+		}
+		v4Row(c, v4RowOptions{
+			Key:   "generation-source-row",
+			Title: "处理来源",
+			Desc:  sourceDesc,
+			Control: func() {
+				v4Segmented(c, "generation-source", "处理来源", &selected, []string{"用已连接的 Agent 整理", "直接调用模型 API"}, func() {
+					if s.Busy {
+						return
+					}
+					mode := "agent_bridge"
+					if selected == 1 {
+						mode = "provider"
+					}
+					a.chooseGenerationSource(mode)
+				})
+			},
+		})
+		if !edit {
 			a.generationProfileCards(c, false)
-			settingsListDivider(c)
 			if enable {
 				a.generationCandidateStatus(c)
 			}
-		})
-	}
+			v4Row(c, v4RowOptions{
+				Key:       "settings-goto-agents",
+				Title:     "管理 Agent 与模型",
+				Desc:      "连接或检查本机 Coding Agents、添加与编辑模型 Provider",
+				Clickable: true,
+				Chevron:   true,
+				OnClick: func() {
+					a.access.SettingsSection = "Agent 与模型"
+				},
+			})
+		}
+	})
 
 	if enable && edit {
 		a.generationCandidateStatus(c)

@@ -1,91 +1,217 @@
 package simpledesktop
 
-import "github.com/egoist/mygo/ui"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/egoist/mygo/ui"
+)
 
 // Settings groups share the same surface, inset and divider treatment.
 func settingsListSurface(c *ui.Context, content func()) {
-	listSurface(c, content)
+	ui.Column(c).FillWidth().Gap(0).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(content)
 }
 
 func settingsListDivider(c *ui.Context) {
-	ui.Column(c).Height(1).FillWidth().Background(homeBorder)
+	ui.Column(c).Height(1).FillWidth().Background(tok.Border)
 }
 
 func settingsListRow(c *ui.Context, content func()) {
-	ui.Row(c).FillWidth().MinHeight(48).Gap(16).AlignItems(ui.Center).Children(content)
+	ui.Row(c).FillWidth().MinHeight(48).Padding(sp2, sp1).Gap(sp3).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(content)
 }
 
 func settingsSectionHeader(c *ui.Context, title string, status, actions func()) {
-	ui.Row(c).FillWidth().MinHeight(28).AlignItems(ui.Center).Gap(12).Children(func() {
-		homeText(c, title, homeHeading).FontSize(15).FontWeight(500).TextColor(homeInk)
+	ui.Row(c).FillWidth().Padding(0, sp1, sp2, sp1).AlignItems(ui.Center).Gap(sp2).Children(func() {
+		ui.Text(c, title).Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
 		if status != nil {
 			status()
 		}
 		ui.Spacer(c)
 		if actions != nil {
-			actions()
+			ui.Row(c).AlignItems(ui.Center).Gap(sp2).Shrink(0).Children(actions)
 		}
 	})
 }
 
 func settingsSection(c *ui.Context, title string, status, actions, content func()) {
-	ui.Column(c).FillWidth().Gap(12).Children(func() {
+	ui.Column(c).FillWidth().Gap(0).Children(func() {
 		settingsSectionHeader(c, title, status, actions)
 		settingsListSurface(c, content)
 	})
 }
 
 func (a *App) serviceConnectionOverview(c *ui.Context) {
-	settingsSection(c, "记忆服务", nil, func() {
-		label := "展开指标"
-		if a.monitor.Expanded {
-			label = "收起指标"
+	m := &a.monitor
+	checkedDesc := ""
+	if !m.LastCheckedAt.IsZero() {
+		checkedDesc = "更新于 " + m.LastCheckedAt.Local().Format("15:04:05")
+	}
+
+	v4Group(c, "记忆服务", checkedDesc, func() {
+		recheckLabel := "重新检查"
+		if m.Polling {
+			recheckLabel = "检测中…"
 		}
-		textButton(c, label, func() {
-			a.monitor.Expanded = !a.monitor.Expanded
-			if a.monitor.Expanded {
-				a.refreshServiceMonitor()
-			}
-		}).Label(label + "：记忆服务")
-		refreshActionLoading(c, "重新检查", a.monitor.Polling, a.health).Disabled(a.monitor.Polling)
+		v4SmallButton(c, recheckLabel, v4IconRefresh, a.health).Disabled(m.Polling)
 	}, func() {
-		ui.Column(c).FillWidth().Gap(4).Children(func() {
-			settingsListRow(c, func() {
-				ui.Row(c).Grow(1).MinWidth(0).Gap(12).AlignItems(ui.Center).Children(func() {
-					homeText(c, "Cognee", homeBody).FontSize(13).TextColor(homeInk)
-					homeText(c, a.Config.ServiceURL, homeMeta).SingleLine().Tooltip(a.Config.ServiceURL)
-				})
-				status := a.service
-				color := homeMuted
-				switch a.monitor.State {
-				case "ready":
-					status = "已连接"
-					color = tok.OK
-				case "warning":
-					status = "短暂波动"
-					color = tok.Warning
-				case "exited":
-					status = "服务已退出"
-					color = tok.Danger
-				case "degraded":
-					status = "响应异常"
-					color = tok.Danger
-				default:
-					if a.service == "已连接" {
-						color = tok.OK
+		if m.Polling && m.Snapshot == nil && m.LastCheckedAt.IsZero() {
+			v4SkeletonGroup(c, 3, 2, false, true)
+			return
+		}
+
+		// 1) Cognee 记忆服务行
+		cogneeState, cogneeStatus, cogneeColor := a.serviceCogneeStatus()
+		var cogneeParts []string
+		if addr := sanitizedMonitorURL(a.Config.ServiceURL); addr != "" {
+			cogneeParts = append(cogneeParts, addr)
+		}
+		if m.HasLatency {
+			cogneeParts = append(cogneeParts, fmt.Sprintf("延迟 %.0f ms", m.LastLatencyMs))
+		}
+		if m.ConsecutiveFailures > 0 {
+			cogneeParts = append(cogneeParts, fmt.Sprintf("连续失败 %d 次", m.ConsecutiveFailures))
+		}
+		if m.Snapshot != nil {
+			if proc, ok := m.Snapshot.Processes["official"]; ok {
+				if proc.PID > 0 {
+					cogneeParts = append(cogneeParts, fmt.Sprintf("PID %d", proc.PID))
+				}
+				if proc.RSSBytes != nil {
+					cogneeParts = append(cogneeParts, "内存 "+formatBytesMB(*proc.RSSBytes))
+				}
+			}
+		}
+		v4Row(c, v4RowOptions{
+			Key:        "svc-row-cognee",
+			Leading:    func() { v4StatusDot(c, cogneeState) },
+			Title:      "Cognee",
+			Desc:       strings.Join(cogneeParts, " · "),
+			DescMono:   true,
+			Value:      cogneeStatus,
+			ValueMono:  true,
+			ValueColor: cogneeColor,
+		})
+
+		// 2) 控制面服务行
+		if m.ControlChecked || m.Snapshot != nil {
+			ctrlDot, ctrlVal, ctrlCol := "ok", "控制面：已连接", tok.OK
+			if m.ControlChecked && !m.ControlReachable {
+				ctrlDot, ctrlVal, ctrlCol = "fail", "控制面：异常", tok.Danger
+			}
+			var ctrlParts []string
+			if m.Snapshot != nil {
+				if proc, ok := m.Snapshot.Processes["project_control"]; ok && proc.RSSBytes != nil {
+					ctrlParts = append(ctrlParts, "内存 "+formatBytesMB(*proc.RSSBytes))
+				}
+				if m.Snapshot.Summary != nil {
+					s := m.Snapshot.Summary
+					ctrlParts = append(ctrlParts, fmt.Sprintf("项目 %d 个", s.ProjectsCount))
+					if s.RecentProcessingMs != nil {
+						ctrlParts = append(ctrlParts, fmt.Sprintf("最近请求 %.0f ms", *s.RecentProcessingMs))
+					}
+					if s.HookErrorsCount > 0 {
+						ctrlParts = append(ctrlParts, fmt.Sprintf("Hook 未记录 %d 项", s.HookErrorsCount))
+					}
+					if s.GenerationReceiptVerified != nil {
+						if *s.GenerationReceiptVerified {
+							ctrlParts = append(ctrlParts, "配置回执一致")
+						} else {
+							ctrlParts = append(ctrlParts, "配置回执待核对")
+						}
 					}
 				}
-				homeText(c, status, homeMeta).TextColor(color)
-				if a.service != "已连接" || a.monitor.State == "degraded" || a.monitor.State == "exited" {
-					textButton(c, "重新检查", a.health).Disabled(a.monitor.Polling)
-				}
-			})
-			if summary := serviceMonitorSummaryLine(a.monitor); summary != "" {
-				homeText(c, summary, homeMeta).Padding(0, 0, 8, 0)
 			}
-			a.serviceMonitorDetails(c)
-		})
+			v4Row(c, v4RowOptions{
+				Key:        "svc-row-control",
+				Leading:    func() { v4StatusDot(c, ctrlDot) },
+				Title:      "控制面服务",
+				Desc:       strings.Join(ctrlParts, " · "),
+				DescMono:   true,
+				Value:      ctrlVal,
+				ValueMono:  true,
+				ValueColor: ctrlCol,
+			})
+		}
+
+		// 3) Agent 整理通道行（原补全端点，绝不使用「补全桥」）
+		if a.Config.CompletionURL != "" || (m.Snapshot != nil && m.Snapshot.Processes["completion"].PID > 0) {
+			compDot, compVal, compCol := "neutral", "待检查", tok.Text3
+			if strings.HasPrefix(a.completion, "端点已连接") {
+				compDot, compVal, compCol = "ok", "已连接", tok.OK
+			} else if a.completion != "" && a.completion != "未配置" {
+				compDot, compVal, compCol = "warn", "待检查", tok.Warning
+			}
+			var compParts []string
+			if u := sanitizedMonitorURL(a.Config.CompletionURL); u != "" && u != "未配置" {
+				compParts = append(compParts, u)
+			}
+			if m.Snapshot != nil {
+				if proc, ok := m.Snapshot.Processes["completion"]; ok && proc.RSSBytes != nil {
+					compParts = append(compParts, "内存 "+formatBytesMB(*proc.RSSBytes))
+				}
+			}
+			v4Row(c, v4RowOptions{
+				Key:        "svc-row-channel",
+				Leading:    func() { v4StatusDot(c, compDot) },
+				Title:      "Agent 整理通道",
+				Desc:       strings.Join(compParts, " · "),
+				DescMono:   true,
+				Value:      compVal,
+				ValueMono:  true,
+				ValueColor: compCol,
+			})
+		}
+
+		// 4) 磁盘空间行
+		if m.Snapshot != nil && m.Snapshot.Disk != nil {
+			diskDot, diskCol := "ok", tok.Text2
+			diskDesc := "预警线 55 GiB · 安全线 50 GiB"
+			if m.Snapshot.Disk.Low {
+				diskDot, diskCol = "fail", tok.Danger
+				diskDesc = "低于 55 GiB 预警线，请及时清理磁盘空间"
+			}
+			v4Row(c, v4RowOptions{
+				Key:        "svc-row-disk",
+				Leading:    func() { v4StatusDot(c, diskDot) },
+				Title:      "磁盘可用空间",
+				Desc:       diskDesc,
+				DescMono:   true,
+				Value:      formatBytesGiB(m.Snapshot.Disk.FreeBytes),
+				ValueMono:  true,
+				ValueColor: diskCol,
+			})
+		}
+
+		// 异常横幅与 Hook 错误明细
+		a.serviceMonitorAlerts(c)
 	})
+
+	// 诊断折叠区（Q6：默认收起，SF Mono + fill-1，带复制诊断）
+	a.serviceMonitorDetails(c)
+}
+
+func (a *App) serviceCogneeStatus() (dotState, status string, color ui.Color) {
+	status = a.service
+	color = tok.Text3
+	dotState = "neutral"
+	switch a.monitor.State {
+	case "ready":
+		return "ok", "已连接", tok.OK
+	case "warning":
+		return "warn", "短暂波动", tok.Warning
+	case "exited":
+		return "fail", "服务已退出", tok.Danger
+	case "degraded":
+		return "fail", "响应异常", tok.Danger
+	default:
+		if a.service == "已连接" {
+			return "ok", "已连接", tok.OK
+		}
+		if a.service != "" && a.service != "尚未检查" {
+			return "fail", a.service, tok.Danger
+		}
+	}
+	return dotState, status, color
 }
 
 // All rows share one stable surface; expanding one Agent never stretches others.
@@ -93,12 +219,9 @@ func (a *App) agentConnectionGrid(c *ui.Context, rows []AgentConnection) {
 	if len(rows) == 0 {
 		return
 	}
-	settingsListSurface(c, func() {
-		for index, row := range rows {
+	ui.Column(c).FillWidth().Gap(0).Children(func() {
+		for _, row := range rows {
 			a.agentConnectionRow(c, row)
-			if index < len(rows)-1 {
-				settingsListDivider(c)
-			}
 		}
 	})
 }

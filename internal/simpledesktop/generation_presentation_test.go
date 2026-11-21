@@ -74,18 +74,18 @@ func TestProcessingSourcesKeepDraftsAndDoNotEnableWhileConfiguring(t *testing.T)
 			Validations: map[string]GenerationValidation{"p": {Digest: "p", Status: "passed", Plain: true, Schema: true, Quality: true}},
 		}
 		tt := ui.NewTester(func(c *ui.Context) { ui.Column(c).Fill().Children(func() { a.generationConfiguration(c, toolGraph) }) }, 1200, 820)
-		clickProjectUI(t, tt, "模型 Provider")
+		clickProjectUI(t, tt, "直接调用模型 API")
 		if a.integrations.HandoffOpen || a.integrations.Generation.Active != active || !tt.HasText("供应商协议") {
 			t.Fatal("configuration source switched runtime or hid fields")
 		}
 		a.integrations.Model = "private-draft-model"
 		a.integrations.APIKey = "unsaved-key"
 		a.integrations.Temperature = "0"
-		clickProjectUI(t, tt, "使用 Agent CLI")
+		clickProjectUI(t, tt, "用已连接的 Agent 整理")
 		if a.integrations.DraftMode != "agent_bridge" || a.integrations.APIKey != "" || a.integrations.Generation.Active != active {
 			t.Fatal("Provider draft leaked into Agent")
 		}
-		clickProjectUI(t, tt, "模型 Provider")
+		clickProjectUI(t, tt, "直接调用模型 API")
 		if a.integrations.Model != "private-draft-model" || a.integrations.APIKey != "unsaved-key" || a.integrations.Temperature != "0" || a.integrations.Generation.Active != active {
 			t.Fatal("source switch discarded draft or changed active")
 		}
@@ -127,7 +127,7 @@ func TestSettingsSeparateProcessingSelectionFromConfigurationAndService(t *testi
 	if !a.integrations.GenerationProviderDialog {
 		t.Fatal("model configuration did not open a dialog")
 	}
-	if !tt.HasText("保存配置") || !tt.HasText("API Key") || tt.HasText("切换") || tt.HasText("使用 Agent CLI") || tt.HasText("选择 Agent CLI") || tt.HasText("模型 Provider") {
+	if !tt.HasText("保存配置") || !tt.HasText("API Key") || tt.HasText("切换") || tt.HasText("用已连接的 Agent 整理") || tt.HasText("选择已连接的 Agent") || tt.HasText("直接调用模型 API") {
 		t.Fatal("configuration tab mixes activation or hides editable fields")
 	}
 	fixtureImage(t, tt, "settings-agent-model-management")
