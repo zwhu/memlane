@@ -248,50 +248,55 @@ func (a *App) projectReading(c *ui.Context) {
 		return
 	}
 	readingSplit(c, "project-reading-split", &a.layout.ProjectListWidth, func() {
-		ui.Column(c).Fill().Children(func() {
-			ui.Column(c.Key("project-view-navigation")).Padding(0, sp4).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Shrink(0).Children(func() { a.projectTabs(c) })
-			ui.Column(c).Padding(sp3, sp4, sp2, sp4).Gap(sp2).Shrink(0).Children(func() {
-				if a.kind != "知识" {
-					labels := []string{"全部", "会话", "文档"}
-					selected := 0
-					if a.kind == "会话" {
-						selected = 1
-					} else if a.kind == "文档" {
-						selected = 2
-					}
-					v4Segmented(c, "raw-kind-seg", "原始记录筛选", &selected, labels, func() {
-						kind := labels[selected]
-						if selected == 0 {
-							kind = "原始记录"
-						}
-						a.switchProjectKind(kind)
-					}).AlignSelf(ui.Start)
-				}
-				ui.Row(c).AlignItems(ui.Center).Children(func() {
-					label := projectListStatus(s)
-					if s.Loading && s.Loaded {
-						label += " · 更新中"
-					}
-					homeText(c, label, homeMeta)
-					ui.Spacer(c)
-					refreshAction(c, "刷新列表", func() { a.load(s) })
-				})
-				if s.Error != "" {
-					homeText(c, "未刷新 · "+s.Error, homeMeta).MaxLines(3)
-					projectLink(c, "重试读取", func() { a.load(s) })
-				}
+		ui.Column(c.Key("raw-list-pane")).Fill().Background(tok.Bg).Children(func() {
+			ui.Column(c.Key("project-view-navigation")).Padding(0, sp4).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Shrink(0).Children(func() {
+				a.projectTabs(c)
 			})
-			a.rawRecordsAutoLoad(s)
-			a.itemList(c, s, false)
-			appFooter(c, "原始记录加载状态").Padding(0, sp4).Children(func() {
-				homeText(c, projectListStatus(s), homeMeta)
-				ui.Spacer(c)
-				if s.Loaded && !s.Loading && s.Error == "" {
-					if s.More {
-						homeText(c, "向下滚动加载更多", homeMeta)
-					} else {
-						homeText(c, "已加载全部", homeMeta)
+			bodyKey := fmt.Sprintf("raw-list-body-%d", a.motionRuns.rawPage)
+			body := ui.Column(c.Key(bodyKey)).Grow(1).MinHeight(0).FillWidth()
+			a.v4PageEnter(c, body, "raw-list-body", a.motionRuns.rawPage)
+			body.Children(func() {
+				ui.Column(c).FillWidth().Padding(sp3, sp4, sp2, sp4).Gap(sp2).Shrink(0).Children(func() {
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+						labels := []string{"全部", "会话", "文档"}
+						selected := 0
+						if a.kind == "会话" {
+							selected = 1
+						} else if a.kind == "文档" {
+							selected = 2
+						}
+						v4Segmented(c, "raw-kind-seg", "原始记录筛选", &selected, labels, func() {
+							kind := labels[selected]
+							if selected == 0 {
+								kind = "原始记录"
+							}
+							a.switchProjectKind(kind)
+						})
+						ui.Spacer(c)
+						refreshAction(c, "刷新列表", func() { a.load(s) })
+					})
+					if s.Error != "" {
+						ui.Row(c).FillWidth().Padding(sp1, 0, 0, 0).Gap(sp2).AlignItems(ui.Center).Shrink(0).Children(func() {
+							homeText(c, "读取未完成 · "+s.Error, homeMeta).MaxLines(2)
+							projectLink(c, "重试读取", func() { a.load(s) })
+						})
 					}
+				})
+				a.rawRecordsAutoLoad(s)
+				a.itemList(c, s, false)
+			})
+			totalRaw := max(len(s.RawCatalog), len(s.Items))
+			appFooter(c, "原始记录加载状态").Padding(0, sp4).Children(func() {
+				if s.Loaded || len(s.Items) > 0 {
+					homeText(c, fmt.Sprintf("已载入 %d 项", len(s.Items)), homeMeta)
+				}
+				ui.Spacer(c)
+				switch {
+				case !s.Loaded || s.Error != "":
+				case s.More:
+					homeText(c, fmt.Sprintf("共 %d 条 · 向下滚动加载", totalRaw), homeMeta)
+				case totalRaw > 0:
+					homeText(c, fmt.Sprintf("共 %d 条", totalRaw), homeMeta)
 				}
 			})
 		})
@@ -315,11 +320,14 @@ func projectDisplayTitle(i Item) string {
 func (a *App) projectDetail(c *ui.Context, s *pane) {
 	ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Background(tok.Bg).Children(func() {
 		if s.Selected == nil {
-			if s.Locating {
+			switch {
+			case s.Locating:
 				v4EmptyState(c, "reader-locating", "正在定位记忆…", "")
-			} else if a.kind != "知识" {
+			case !s.Loaded && s.Loading && s.Error == "":
+				ui.Column(c).Grow(1).MinHeight(0).FillWidth()
+			case a.kind != "知识":
 				v4EmptyState(c, "reader-empty", "选择一条原始记录", "")
-			} else {
+			default:
 				v4EmptyState(c, "reader-empty", "选择一条记忆", "")
 			}
 			appFooter(c, "项目阅读栏").Padding(0, sp6).Children(func() {
@@ -337,9 +345,6 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 					status += " · " + p.Name
 				}
 				status += " · " + displayDate(i.Date)
-				if s.Reading {
-					status += " · 正在读取…"
-				}
 				row := ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(4)
 				row.Children(func() {
 					homeText(c, status, homeBody).SingleLine()
@@ -507,6 +512,10 @@ func (a *App) contentInformation(c *ui.Context, anchor ui.Element, i Item) {
 	}).Modal().Role(ui.RoleDialog).Width(360).Height(height).Padding(0).Transition(projectOverlayMotion())
 }
 func (a *App) projectReadingBody(c *ui.Context, s *pane, i *Item) {
+	if !i.BodyLoaded && i.Detail == nil && i.Preview == "" && i.Body == "" && s.Reading {
+		v4SkeletonGroup(c, 3, 2, false, false)
+		return
+	}
 	presentation := itemPresentation(*i)
 	mdOpts := a.v4MarkdownOptions(fsReading)
 	if i.Detail != nil {
@@ -593,6 +602,10 @@ func (a *App) projectReadingBody(c *ui.Context, s *pane, i *Item) {
 	}
 }
 
+func isRawRecordKind(kind string) bool {
+	return kind == "原始记录" || kind == "会话" || kind == "文档"
+}
+
 func (a *App) switchProjectKind(kind string) {
 	if a.page != "知识" {
 		a.navigateKind("知识", a.project, kind)
@@ -601,6 +614,7 @@ func (a *App) switchProjectKind(kind string) {
 	if a.kind == kind {
 		return
 	}
+	oldKind := a.kind
 	old := a.state()
 	a.cancelTitles(old)
 	if old.cancel != nil {
@@ -624,10 +638,52 @@ func (a *App) switchProjectKind(kind string) {
 	// Each filter keeps its reading position, but its metadata snapshot can be
 	// older than another filter's. Revalidate on entry while retaining content.
 	if kind == "知识" {
+		if n.Loaded && len(n.Items) > 0 {
+			a.motionRuns.projectPage++
+			a.motionRuns.projectList++
+		} else {
+			a.motionRuns.projectPage = 0
+			a.motionRuns.projectList = 0
+		}
 		a.loadKnowledgeFeed(n)
-	} else {
-		a.load(n)
+		return
 	}
+	if isRawRecordKind(kind) {
+		if isRawRecordKind(oldKind) {
+			// Sub-filter switch within Raw Records keeps tabs/toolbar fixed and
+			// seeds from old.RawCatalog so switching never flashes a skeleton.
+			if !n.Loaded && len(old.RawCatalog) > 0 {
+				seed := make([]Item, 0, len(old.RawCatalog))
+				for _, item := range old.RawCatalog {
+					if kind == "原始记录" || item.Kind == kind {
+						seed = append(seed, item)
+					}
+				}
+				end := min(30, len(seed))
+				n.RawCatalog = seed
+				n.Items = append([]Item(nil), seed[:end]...)
+				n.More = end < len(seed)
+				n.Loaded = true
+				if n.Selected == nil && len(n.Items) > 0 {
+					a.selectItem(n, n.Items[0])
+				}
+			}
+			if n.Loaded && len(n.Items) > 0 {
+				a.motionRuns.rawList++
+			} else {
+				a.motionRuns.rawList = 0
+			}
+		} else {
+			if n.Loaded && len(n.Items) > 0 {
+				a.motionRuns.rawPage++
+				a.motionRuns.rawList++
+			} else {
+				a.motionRuns.rawPage = 0
+				a.motionRuns.rawList = 0
+			}
+		}
+	}
+	a.load(n)
 }
 
 func projectListStatus(s *pane) string {
@@ -635,7 +691,7 @@ func projectListStatus(s *pane) string {
 		if s.Error != "" && !s.Loading {
 			return "尚未载入"
 		}
-		return "正在读取"
+		return ""
 	}
 	return fmt.Sprintf("已载入 %d 条", len(s.Items))
 }

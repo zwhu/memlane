@@ -128,6 +128,9 @@ func (a *App) startTitles(s *pane) {
 		if n >= 30 && !(a.page == "知识" && a.kind != "知识" && s.RawCatalog != nil) {
 			break
 		}
+		if row.ReadingState == "ready" {
+			continue
+		}
 		if row.Session == nil && (row.Kind != "知识" || row.Document == nil || (a.page != "通用知识" && readableDocumentTitle(*row.Document) != "")) {
 			continue
 		}

@@ -37,6 +37,45 @@ func sessionCopyBody(s *pane, item Item) string {
 	return itemPresentation(item).VisibleBody
 }
 
+func validateSessionHistoryPage(page SessionHistoryPage, dataset, sessionID, user string, qa, trace int) error {
+	if page.ID != sessionID || page.Dataset != dataset || (user != "" && page.User != user) || !page.Paging ||
+		page.QAOffset != qa || page.TraceOffset != trace || page.Limit != 20 ||
+		page.Count < qa || page.ToolCount < trace ||
+		len(page.QAs) != min(20, page.Count-qa) || len(page.Traces) != min(20, page.ToolCount-trace) ||
+		page.QAMore != (qa+len(page.QAs) < page.Count) || page.TraceMore != (trace+len(page.Traces) < page.ToolCount) {
+		return fmt.Errorf("来源会话身份或分页结果已变化")
+	}
+	return nil
+}
+
+func sessionItemFromHistoryPage(item Item, page SessionHistoryPage) (Item, *SessionHistoryPage) {
+	if page.Session.ID != "" {
+		sess := page.Session
+		item.Session = &sess
+	}
+	if page.Dataset != "" {
+		item.Dataset = page.Dataset
+	}
+	if page.ID != "" {
+		item.ID = page.ID
+	}
+	if item.Kind == "" {
+		item.Kind = "会话"
+	}
+	if page.Updated != "" {
+		item.Date = page.Updated
+	}
+	item.Detail, item.Body = &page.SessionDetail, sessionPageBody(page.SessionDetail)
+	item.SessionSummary = sessionCoverage(page.SessionDetail)
+	item.ReadingState = "ready"
+	if page.Label != "" {
+		item.Title = sessionTitle(page.Label)
+	} else if len(page.QAs) > 0 {
+		item.Title = sessionTitle(page.QAs[0].Question)
+	}
+	return item, &page
+}
+
 func (c Client) sessionHistory(ctx context.Context, item Item, qa, trace int) (SessionHistoryPage, error) {
 	var page SessionHistoryPage
 	if item.Session == nil || qa < 0 || trace < 0 {
@@ -46,12 +85,8 @@ func (c Client) sessionHistory(ctx context.Context, item Item, qa, trace int) (S
 	if err := c.get(ctx, path, &page); err != nil {
 		return page, err
 	}
-	if page.ID != item.ID || page.Dataset != item.Dataset || page.User != item.Session.User || !page.Paging ||
-		page.QAOffset != qa || page.TraceOffset != trace || page.Limit != 20 ||
-		page.Count < qa || page.ToolCount < trace ||
-		len(page.QAs) != min(20, page.Count-qa) || len(page.Traces) != min(20, page.ToolCount-trace) ||
-		page.QAMore != (qa+len(page.QAs) < page.Count) || page.TraceMore != (trace+len(page.Traces) < page.ToolCount) {
-		return SessionHistoryPage{}, fmt.Errorf("来源会话身份或分页结果已变化")
+	if err := validateSessionHistoryPage(page, item.Dataset, item.ID, item.Session.User, qa, trace); err != nil {
+		return SessionHistoryPage{}, err
 	}
 	return page, nil
 }
@@ -69,14 +104,8 @@ func (c Client) readSessionHistory(ctx context.Context, item Item) (Item, *Sessi
 	if err != nil {
 		return item, nil, err
 	}
-	item.Detail, item.Body = &page.SessionDetail, sessionPageBody(page.SessionDetail)
-	item.SessionSummary = sessionCoverage(page.SessionDetail)
-	if page.Label != "" {
-		item.Title = sessionTitle(page.Label)
-	} else if len(page.QAs) > 0 {
-		item.Title = sessionTitle(page.QAs[0].Question)
-	}
-	return item, &page, nil
+	out, pagePtr := sessionItemFromHistoryPage(item, page)
+	return out, pagePtr, nil
 }
 
 func sourceSession(s *pane) bool {
@@ -99,9 +128,24 @@ func (a *App) readSessionBatch(s *pane, qa, trace int, appendRows bool) {
 	request, epoch := s.readRequest, a.epoch
 	s.Reading, s.Error = true, ""
 	client := a.Client
+	control, hasControl := a.accessClient()
 	go func() {
 		defer cancel()
-		page, err := client.sessionHistory(ctx, item, qa, trace)
+		var page SessionHistoryPage
+		var err error
+		if hasControl {
+			var fastErr error
+			page, fastErr = control.rawSessionHistory(ctx, item, qa, trace)
+			if fastErr != nil {
+				if !shouldFallbackFromRawControlError(ctx, fastErr) {
+					err = fastErr
+				} else {
+					page, err = client.sessionHistory(ctx, item, qa, trace)
+				}
+			}
+		} else {
+			page, err = client.sessionHistory(ctx, item, qa, trace)
+		}
 		a.Update(func() {
 			if epoch != a.epoch || request != s.readRequest || s.Selected == nil || s.Selected.key() != item.key() || !a.syncReadingIdentity() {
 				return

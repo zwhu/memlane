@@ -1,4 +1,8 @@
 """Read-only history adapter: official authorization and owner-scoped SDK reads."""
+import json
+from pathlib import Path
+import sqlite3
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -103,3 +107,65 @@ class SessionHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.manager.get_session.side_effect = None
         self.manager.get_session.return_value = [{'qa_id': 'large', 'answer': 'x' * (8 * 1024 * 1024)}]
         self.assertEqual((await self.client.get('/api/v1/sessions/session/history')).status_code, 413)
+
+    async def test_cache_db_fast_path_reads_bounded_pages_without_full_deserialize(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_db = Path(tmp) / 'cache.db'
+            con = sqlite3.connect(cache_db)
+            con.executescript('''
+                CREATE TABLE cache_qa_entries (
+                    seq INTEGER PRIMARY KEY, user_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                    qa_id TEXT NOT NULL, payload JSON NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, expires_at DATETIME
+                );
+                CREATE INDEX idx_cache_qa_expires ON cache_qa_entries (expires_at) WHERE expires_at IS NOT NULL;
+                CREATE INDEX idx_cache_qa_session ON cache_qa_entries (user_id, session_id, seq);
+                CREATE TABLE cache_trace_entries (
+                    seq INTEGER PRIMARY KEY, user_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                    payload JSON NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, expires_at DATETIME
+                );
+                CREATE INDEX idx_cache_trace_expires ON cache_trace_entries (expires_at) WHERE expires_at IS NOT NULL;
+                CREATE INDEX idx_cache_trace_session ON cache_trace_entries (user_id, session_id, seq);
+            ''')
+            con.execute(
+                'INSERT INTO cache_qa_entries (seq, user_id, session_id, qa_id, payload, expires_at) VALUES (?,?,?,?,?,?)',
+                (1, 'owner', 'session', 'expired-q', json.dumps({'qa_id': 'expired-q', 'question': 'stale'}), '2020-01-01 00:00:00'),
+            )
+            for idx in range(25):
+                con.execute(
+                    'INSERT INTO cache_qa_entries (seq, user_id, session_id, qa_id, payload, expires_at) VALUES (?,?,?,?,?,?)',
+                    (idx + 2, 'owner', 'session', f'qa-{idx}', json.dumps({'qa_id': f'qa-{idx}', 'question': f'Q{idx}', 'answer': f'A{idx}'}), None),
+                )
+            for idx in range(30):
+                con.execute(
+                    'INSERT INTO cache_trace_entries (seq, user_id, session_id, payload, expires_at) VALUES (?,?,?,?,?)',
+                    (idx + 1, 'owner', 'session', json.dumps({'trace_id': f'tr-{idx}', 'origin_function': 'Read'}), None),
+                )
+            con.commit()
+            con.close()
+
+            fast_app = FastAPI()
+            install_session_history(fast_app, bindings=self.bindings, cache_db_path=cache_db)
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=fast_app),
+                base_url='http://test',
+                headers={'X-Api-Key': 'synthetic'},
+            ) as fast_client:
+                resp = await fast_client.get('/api/v1/sessions/session/history?qa_offset=20&trace_offset=20&limit=20')
+                self.assertEqual(resp.status_code, 200)
+                body = resp.json()
+                self.assertEqual((body['msg_count'], body['tool_calls']), (25, 30))
+                self.assertEqual(body['label'], 'Q0')
+                self.assertEqual([q['qa_id'] for q in body['qas']], [f'qa-{i}' for i in range(20, 25)])
+                self.assertEqual([t['trace_id'] for t in body['traces']], [f'tr-{i}' for i in range(20, 30)])
+                self.assertFalse(body['qa_more'] or body['trace_more'])
+                self.manager.get_session.assert_not_awaited()
+                self.manager.get_agent_trace_session.assert_not_awaited()
+
+                self.assertEqual((await fast_client.get('/api/v1/sessions/session/history?qa_offset=99')).status_code, 409)
+                # Falls back cleanly to SessionManager if cache_db vanishes
+                cache_db.unlink()
+                fallback_resp = await fast_client.get('/api/v1/sessions/session/history')
+                self.assertEqual(fallback_resp.status_code, 200)
+                self.manager.get_session.assert_awaited_once()

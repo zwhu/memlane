@@ -162,6 +162,10 @@ type ControlResponseError struct {
 func (e *ControlResponseError) Error() string { return e.Message }
 
 func (c ProjectControlClient) request(ctx context.Context, method, path string, input, output any) error {
+	return c.requestWithLimit(ctx, method, path, input, output, 2*1024*1024)
+}
+
+func (c ProjectControlClient) requestWithLimit(ctx context.Context, method, path string, input, output any, maxBytes int64) error {
 	u, err := url.Parse(c.Config.URL)
 	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.Port() == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
 		return fmt.Errorf("项目管理服务尚未配置")
@@ -199,8 +203,11 @@ func (c ProjectControlClient) request(ctx context.Context, method, path string, 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return &ControlResponseError{Status: response.StatusCode, Message: fmt.Sprintf("项目管理请求未确认（HTTP %d），请核对原操作", response.StatusCode)}
 	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, 2*1024*1024+1))
-	if err != nil || len(data) > 2*1024*1024 || json.Unmarshal(data, output) != nil {
+	if maxBytes <= 0 {
+		maxBytes = 2 * 1024 * 1024
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
+	if err != nil || int64(len(data)) > maxBytes || json.Unmarshal(data, output) != nil {
 		return fmt.Errorf("项目管理回执未确认，请刷新核对")
 	}
 	return nil

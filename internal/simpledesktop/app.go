@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -93,6 +94,8 @@ type App struct {
 		overviewActivity  uint64
 		projectPage       uint64
 		projectList       uint64
+		rawPage           uint64
+		rawList           uint64
 		docScrollKey      string
 		docEnter          uint64
 	}
@@ -310,6 +313,15 @@ func (a *App) navigateKind(page string, index int, kind string) {
 			}
 			a.loadKnowledgeFeed(s)
 		} else {
+			if page == "知识" && a.kind != "知识" && a.kind != "管理" {
+				if s.Loaded && len(s.Items) > 0 {
+					a.motionRuns.rawPage++
+					a.motionRuns.rawList++
+				} else {
+					a.motionRuns.rawPage = 0
+					a.motionRuns.rawList = 0
+				}
+			}
 			a.load(s)
 		}
 	}
@@ -361,6 +373,9 @@ func (a *App) load(s *pane) {
 		ps = searchProjects(a.Config.Projects, a.searchProject)
 	}
 	client := a.Client
+	control, hasControl := a.accessClient()
+	titles := a.titles
+	genStr := a.readingGeneration(s)
 	recallFilter := map[string]bool{}
 	for id, yes := range s.Knowledge.RecallFilter {
 		recallFilter[id] = yes
@@ -369,6 +384,8 @@ func (a *App) load(s *pane) {
 		defer cancel()
 		var rows []Item
 		var rawCatalog []Item
+		var rawCacheReady bool
+		var usedFast bool
 		var more bool
 		var err error
 		if page == "搜索" || q != "" {
@@ -410,10 +427,49 @@ func (a *App) load(s *pane) {
 				rows = rows[start:end]
 			}
 		} else if page == "知识" && (kind == "原始记录" || kind == "会话" || kind == "文档") {
-			rawCatalog, err = client.projectRecordCatalog(ctx, p, kind)
-			end := min(rawCount, len(rawCatalog))
-			rows = append([]Item{}, rawCatalog[:end]...)
-			more = end < len(rawCatalog)
+			if hasControl {
+				resp, fastErr := control.rawRecords(ctx, p.Dataset, kind)
+				if fastErr == nil {
+					rawCatalog, rawCacheReady = buildRawRecordsFromFast(p.Dataset, resp)
+					usedFast = true
+				} else if !shouldFallbackFromRawControlError(ctx, fastErr) {
+					err = fastErr
+				}
+			}
+			if !usedFast && err == nil {
+				rawCatalog, err = client.projectRecordCatalog(ctx, p, kind)
+			}
+			if err == nil {
+				end := min(rawCount, len(rawCatalog))
+				rows = append([]Item{}, rawCatalog[:end]...)
+				more = end < len(rawCatalog)
+				if !refreshing && !rawCacheReady && len(rows) > 0 {
+					preCtx, preCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+					limit := min(10, len(rows))
+					var preMu sync.Mutex
+					var preWg sync.WaitGroup
+					for idx := 0; idx < limit; idx++ {
+						if rows[idx].Session == nil || rows[idx].ReadingState == "ready" {
+							continue
+						}
+						idx := idx
+						item := rows[idx]
+						preWg.Add(1)
+						go func() {
+							defer preWg.Done()
+							if res, e := titles.read(preCtx, client, item, genStr, true, true); e == nil {
+								preMu.Lock()
+								rows[idx].Title = res.Title
+								rows[idx].SessionSummary = res.SessionSummary
+								rows[idx].ReadingState = "ready"
+								preMu.Unlock()
+							}
+						}()
+					}
+					preWg.Wait()
+					preCancel()
+				}
+			}
 		} else if kind == "会话" {
 			rows, more, err = client.sessions(ctx, p, offset)
 		} else {
@@ -437,13 +493,17 @@ func (a *App) load(s *pane) {
 			if s.SourceReturn != nil && sourceSession(s) && !containsReadingItem(rows, s.Selected.key()) {
 				rows = append([]Item{*s.Selected}, rows...)
 			}
-			if refreshing {
+			if refreshing && !rawCacheReady {
 				preserveResolvedReadingTitles(rows, s.Items)
 			}
 			s.Items = rows
 			if rawFeed {
 				s.RawCatalog = rawCatalog
 				s.Offset = 0
+				if !refreshing && len(rows) > 0 && a.page == "知识" && a.kind == kind {
+					a.motionRuns.rawPage++
+					a.motionRuns.rawList++
+				}
 			}
 			s.More = more
 			s.Loaded = true
@@ -464,6 +524,8 @@ func (a *App) load(s *pane) {
 					s.Selected = nil
 					s.Error = "选中内容已不在当前官方页面，请重新选择"
 				}
+			} else if rawFeed && len(s.Items) > 0 && !s.Locating && (usedFast || s.Items[0].Session != nil) {
+				a.selectItem(s, s.Items[0])
 			}
 		})
 	}()
@@ -510,7 +572,18 @@ func (a *App) selectItem(s *pane, i Item) {
 		if i.Document != nil {
 			result, err = titles.read(ctx, client, i, generation, true, false)
 		} else if i.Session != nil {
-			result, sessionPage, err = client.readSessionHistory(ctx, i)
+			if hasControl {
+				page, fastErr := control.rawSessionHistory(ctx, i, 0, 0)
+				if fastErr == nil {
+					result, sessionPage = sessionItemFromHistoryPage(i, page)
+				} else if !shouldFallbackFromRawControlError(ctx, fastErr) {
+					err = fastErr
+				} else {
+					result, sessionPage, err = client.readSessionHistory(ctx, i)
+				}
+			} else {
+				result, sessionPage, err = client.readSessionHistory(ctx, i)
+			}
 		} else {
 			result, err = client.read(ctx, i)
 		}
@@ -538,6 +611,12 @@ func (a *App) selectItem(s *pane, i Item) {
 			for idx, row := range s.Items {
 				if row.key() == result.key() {
 					s.Items[idx].Title = result.Title
+					if result.SessionSummary != "" {
+						s.Items[idx].SessionSummary = result.SessionSummary
+					}
+					if result.ReadingState == "ready" {
+						s.Items[idx].ReadingState = "ready"
+					}
 				}
 			}
 		})
@@ -558,6 +637,7 @@ func (a *App) source(s *pane) {
 	s.Reading = true
 	s.ReadingSource = true
 	client := a.Client
+	control, hasControl := a.accessClient()
 	titles, generation := a.titles, a.readingGeneration(s)
 	go func() {
 		defer cancel()
@@ -568,6 +648,16 @@ func (a *App) source(s *pane) {
 			i, err = client.documentInfoByID(ctx, original.Dataset, original.SourceDocument)
 			if err == nil {
 				i, err = titles.read(ctx, client, i, generation, true, false)
+			}
+		} else if hasControl {
+			target := Item{ID: original.Source, Dataset: original.Dataset, Kind: "会话", Session: &Session{ID: original.Source, Dataset: original.Dataset}}
+			page, fastErr := control.rawSessionHistory(ctx, target, 0, 0)
+			if fastErr == nil {
+				i, sessionPage = sessionItemFromHistoryPage(target, page)
+			} else if !shouldFallbackFromRawControlError(ctx, fastErr) {
+				err = fastErr
+			} else {
+				i, sessionPage, err = client.sourceWithHistory(ctx, original)
 			}
 		} else {
 			i, sessionPage, err = client.sourceWithHistory(ctx, original)
@@ -786,7 +876,7 @@ func (a *App) reading(c *ui.Context) {
 					ui.Spacer(c)
 					refreshAction(c, "刷新列表", func() { a.load(s) })
 				})
-				if s.Loading {
+				if s.Loading && !s.Loaded {
 					ui.Text(c, "正在读取…").FontSize(10).TextColor(muted)
 				}
 				if s.Error != "" {
@@ -864,7 +954,7 @@ func (a *App) detail(c *ui.Context, s *pane) {
 			ui.Text(c, presentation.DisplayTitle).FontSize(21).Bold().TextColor(ink)
 			ui.Text(c, displayDate(i.Date)).FontSize(10).TextColor(muted)
 			a.commonActions(c, *i)
-			if s.Reading {
+			if s.Reading && !i.BodyLoaded && i.Detail == nil {
 				ui.Text(c, "正在读取…").FontSize(10).TextColor(muted)
 			}
 			if i.Detail != nil {

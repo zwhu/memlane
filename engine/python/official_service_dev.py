@@ -370,7 +370,7 @@ def main():
                                          environment['LLM_MODEL'], environment['LLM_ENDPOINT'])
             from cognee.api.client import app
             from session_history import install_session_history
-            install_session_history(app)
+            install_session_history(app, cache_db_path=root / 'system' / 'databases' / 'cache.db')
             state_dir = (
                 Path(config['project_control']['registry_file']).parent
                 if config.get('project_control')

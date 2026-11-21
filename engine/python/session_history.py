@@ -2,15 +2,23 @@
 
 No copied content store, cache mutation, inference or changes to upstream files.
 """
-import json
+import asyncio
 from datetime import datetime, timezone
+import json
+from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 
 from fastapi import Depends, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 
 
-def install_session_history(app, *, bindings=None):
+def install_session_history(app, *, bindings=None, cache_db_path=None):
+    cache_db = Path(cache_db_path) if cache_db_path is not None else None
+    read_cache_page = None
+    if cache_db is not None:
+        from raw_records_read import read_cache_session_history
+        read_cache_page = read_cache_session_history
     if bindings is None:
         from cognee.modules.users.methods import get_authenticated_user, get_visible_user_ids
         from cognee.modules.users.permissions.methods import get_permitted_dataset_ids
@@ -75,6 +83,43 @@ def install_session_history(app, *, bindings=None):
         sm = bindings.get_session_manager()
         if not sm.is_available or not owner:
             raise HTTPException(503, 'session history unavailable')
+        page = None
+        if read_cache_page is not None and cache_db.is_file():
+            try:
+                page = await asyncio.to_thread(
+                    read_cache_page,
+                    cache_db,
+                    owner=owner,
+                    session_id=session_id,
+                    qa_offset=qa_offset,
+                    trace_offset=trace_offset,
+                    limit=limit,
+                )
+            except (sqlite3.Error, ValueError):
+                page = None
+        if page is not None:
+            if page['conflict']:
+                raise HTTPException(409, 'session history changed')
+            record = row.to_dict()
+            qas_page = page['qas']
+            traces_page = page['traces']
+            record.update(
+                label=page['label'],
+                msg_count=page['msg_count'],
+                tool_calls=page['tool_calls'],
+                history_paging=True,
+                qa_offset=qa_offset,
+                trace_offset=trace_offset,
+                page_limit=limit,
+                qas=qas_page,
+                traces=traces_page,
+                qa_more=qa_offset + len(qas_page) < page['msg_count'],
+                trace_more=trace_offset + len(traces_page) < page['tool_calls'],
+            )
+            result = jsonable_encoder(record)
+            if len(json.dumps(result, ensure_ascii=False).encode()) > 8 * 1024 * 1024:
+                raise HTTPException(413, 'session history page exceeds reading limit')
+            return result
         try:
             qas = await sm.get_session(user_id=owner, session_id=session_id, formatted=False)
             traces = await sm.get_agent_trace_session(user_id=owner, session_id=session_id)

@@ -352,6 +352,8 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
     attach_cognee_gateway(app, registry, recall_store=recall_store, drift_store=drift_store)
     from overview_bootstrap import attach_overview_bootstrap
     attach_overview_bootstrap(app, registry, recall_store=recall_store, codex_config=codex_config)
+    from raw_records_read import attach_raw_records_read
+    attach_raw_records_read(app, registry, codex_config=codex_config)
     return app
 
 
