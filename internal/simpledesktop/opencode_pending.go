@@ -164,18 +164,18 @@ func runOpenCodePending(ctx context.Context, installation AgentInstallation, bin
 		case "pending_materials_changed_review_again":
 			message = "待处理记录已变化，请重新核对后选择"
 		case "original_write_result_still_unknown":
-			message = "原保存结果仍未知，不重复补交"
+			message = "原采集结果仍未知，不重复补交"
 		case "buffer_send_in_progress":
 			message = "仍有发送正在进行，本次未更改记录"
 		case "project_write_denied", "project_capture_disabled":
-			message = "当前 Agent 没有此项目的保存权限"
+			message = "当前 Agent 没有此项目的采集权限"
 		case "project_read_denied":
-			message = "当前 Agent 无法核对原保存结果"
+			message = "当前 Agent 无法核对原采集结果"
 		}
 		return result, fmt.Errorf("%s", message)
 	}
 	if result.Signature == "" || result.Pending < 0 || result.Unknown < 0 || result.Unknown > result.Pending {
-		return result, fmt.Errorf("保存状态未确认，保留原记录")
+		return result, fmt.Errorf("采集状态未确认，保留原记录")
 	}
 	return result, nil
 }

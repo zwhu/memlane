@@ -275,7 +275,7 @@ func translateCogneeInfoMessage(msg string) string {
 		return "完成后台任务：" + humanCogneeTask(m[1])
 	}
 	if pipelineCompleteRe.MatchString(msg) {
-		return "记忆处理管线完成一条记录"
+		return "记忆提炼管线完成一条记录"
 	}
 	if msg == "improve: global context index updated" {
 		return "全局上下文索引已更新"
@@ -287,7 +287,7 @@ func translateCogneeInfoMessage(msg string) string {
 		return fmt.Sprintf("记忆召回完成（命中 %s 条）", m[1])
 	}
 	if strings.HasPrefix(msg, "Skipping startup recovery for ") {
-		return "跳过启动恢复（存在进行中的处理任务）"
+		return "跳过启动恢复（存在进行中的提炼任务）"
 	}
 	return msg
 }
@@ -426,9 +426,9 @@ func (a *App) serviceDiagnosticText() string {
 	}
 	if m.ControlChecked {
 		if m.ControlReachable {
-			b.WriteString("控制面状态: 已连接\n")
+			b.WriteString("接入网关状态: 已连接\n")
 		} else if m.ControlError != "" {
-			fmt.Fprintf(&b, "控制面状态: 异常 (%s)\n", m.ControlError)
+			fmt.Fprintf(&b, "接入网关状态: 异常 (%s)\n", m.ControlError)
 		}
 	}
 	if m.Snapshot != nil {
@@ -456,7 +456,7 @@ func (a *App) serviceDiagnosticText() string {
 				b.WriteString("  " + formatMonitorHookErrorLine(he) + "\n")
 			}
 			if s.RecentProcessingMs != nil {
-				fmt.Fprintf(&b, "最近控制面耗时: %.1f ms\n", *s.RecentProcessingMs)
+				fmt.Fprintf(&b, "最近接入网关耗时: %.1f ms\n", *s.RecentProcessingMs)
 			}
 			if s.GenerationReceiptVerified != nil {
 				fmt.Fprintf(&b, "模型回执校验: %v\n", *s.GenerationReceiptVerified)

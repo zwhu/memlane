@@ -759,7 +759,7 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 	// V4: stats merged into heatmap header; no card frame or shadow, separated by hairline divider.
 	ui.Column(c).Key("overview-heatmap-module").FillWidth().Shrink(0).Padding(sp2, 0, sp5, 0).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Gap(sp3).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(sp3).Children(func() {
-			homeText(c, "记忆分布", homeHeading).Tooltip("日期优先取自原始记录，不代表整理完成时间。")
+			homeText(c, "记忆分布", homeHeading).Tooltip("日期优先取自原始记录，不代表提炼完成时间。")
 			homeText(c, start.Format("2006.01")+" — "+today.Format("2006.01"), homeReadableMeta)
 			ui.Spacer(c)
 			for idx, metric := range []struct{ value, unit, label string }{{usage, "天", "已使用"}, {knowledge, "条", "记忆"}, {raw, "条", "原始记录"}} {
@@ -1190,7 +1190,7 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 			return
 		}
 		if len(events) == 0 {
-			title, hint := "暂无动态", "保存和整理记忆后，动态会显示在这里"
+			title, hint := "暂无动态", "采集和提炼记忆后，动态会显示在这里"
 			if v.SearchHistory {
 				title, hint = "暂无搜索历史", "在搜索框中输入，记录会显示在这里"
 			}

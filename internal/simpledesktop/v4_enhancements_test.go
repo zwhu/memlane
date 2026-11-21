@@ -69,7 +69,7 @@ func TestAppearanceTogglePersistsAndUpdatesPaletteLive(t *testing.T) {
 
 	// Settings page Segmented switches back to light and system.
 	a.page = "设置"
-	a.access.SettingsSection = "记忆处理"
+	a.access.SettingsSection = "记忆提炼"
 	tt.Frame()
 	if !tt.HasText("外观") || !tt.HasText("跟随系统") || !tt.HasText("浅色") || !tt.HasText("深色") {
 		t.Fatal("settings page missing appearance segmented control")

@@ -287,11 +287,11 @@ type overviewEvent struct {
 func activityName(name string) string {
 	switch name {
 	case "add_pipeline", "add", "remember":
-		return "保存材料"
+		return "采集材料"
 	case "cognify_pipeline", "cognify":
-		return "处理记忆"
+		return "提炼记忆"
 	case "memify_pipeline", "memify", "improve":
-		return "整理记忆"
+		return "提炼记忆"
 	case "search":
 		return "搜索记忆"
 	case "recall":

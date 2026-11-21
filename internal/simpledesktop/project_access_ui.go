@@ -256,13 +256,13 @@ func (a *App) accessSettings(c *ui.Context) {
 	policySettingRow(c, "Agent 默认访问权限", "可写并维护包含读取、写入和删除；不授予分享权限。", accessLabel(directory.Defaults.Access), false, func() {
 		ui.Select(c.Key("default-access"), &access, []string{"不可访问", "只读", "可写并维护记忆（含删除）"}).Width(260).Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.Access = accessValue(access); a.access.DefaultsDirty = true })
 	})
-	policySettingRow(c, "默认自动采集", "保存 Agent 后续的新会话材料；不补采关闭期间的内容。", booleanLabel(directory.Defaults.Capture), false, func() {
+	policySettingRow(c, "默认自动采集", "采集 Agent 后续的新会话材料；不补采关闭期间的内容。", booleanLabel(directory.Defaults.Capture), false, func() {
 		ui.Select(c.Key("default-capture"), &capture, []string{"开启", "关闭"}).Width(180).Label("默认自动采集").Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.Capture = capture == "开启"; a.access.DefaultsDirty = true })
 	})
-	policySettingRow(c, "默认自动处理", "收到新材料后自动整理记忆；关闭不取消已经运行的任务。", booleanLabel(directory.Defaults.AutoProcess), false, func() {
-		ui.Select(c.Key("default-process"), &process, []string{"开启", "关闭"}).Width(180).Label("默认自动处理").Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.AutoProcess = process == "开启"; a.access.DefaultsDirty = true })
+	policySettingRow(c, "默认自动提炼", "收到新材料后自动提炼记忆；关闭不取消已经运行的任务。", booleanLabel(directory.Defaults.AutoProcess), false, func() {
+		ui.Select(c.Key("default-process"), &process, []string{"开启", "关闭"}).Width(180).Label("默认自动提炼").Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.AutoProcess = process == "开启"; a.access.DefaultsDirty = true })
 	})
-	ui.Text(c, fmt.Sprintf("保存将更新 %d 个项目中的 %d 个继承字段；明确覆盖的字段保持。关闭自动处理只停止后续触发，已运行任务保留真实状态。", len(directory.Projects), inheritedFields(directory))).FontSize(11).TextColor(muted).LineHeight(1.7)
+	ui.Text(c, fmt.Sprintf("保存将更新 %d 个项目中的 %d 个继承字段；明确覆盖的字段保持。关闭自动提炼只停止后续触发，已运行任务保留真实状态。", len(directory.Projects), inheritedFields(directory))).FontSize(11).TextColor(muted).LineHeight(1.7)
 	ui.Button(c, "保存默认规则").Disabled(a.access.Busy || !a.access.DefaultsDirty).OnClick(func() {
 		policy := a.access.Defaults
 		draftRevision := a.access.DefaultsRevision

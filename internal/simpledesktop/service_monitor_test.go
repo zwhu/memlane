@@ -106,7 +106,7 @@ func TestServiceMonitorPollAndSettingsCardMetrics(t *testing.T) {
 	tt := ui.NewTester(func(c *ui.Context) {
 		ui.Column(c).FillWidth().Padding(24).Children(func() { a.serviceConnectionOverview(c) })
 	}, 1000, 700)
-	if !tt.HasText("记忆服务") || !tt.HasText("控制面：已连接") || !tt.HasText("复制诊断") {
+	if !tt.HasText("记忆引擎（Cognee）") || !tt.HasText("接入网关：已连接") || !tt.HasText("复制诊断") {
 		t.Fatal("expected expanded service monitor details in settings card")
 	}
 	if tt.HasText("API Key") || tt.HasText("切换") {
@@ -264,7 +264,7 @@ func TestSidebarServicePopoverAndChannelNaming(t *testing.T) {
 	drainReading(t, updates, func() bool { return a.monitor.PopoverOpen })
 
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, want := range []string{"Cognee 记忆服务", "控制面服务", "Agent 整理通道", "磁盘空间", "在设置中查看详情"} {
+	for _, want := range []string{"记忆引擎（Cognee）", "接入网关", "Agent 模型代理", "磁盘空间", "在设置中查看详情"} {
 		if !tt.HasText(want) {
 			t.Fatalf("service popover missing %q", want)
 		}

@@ -42,7 +42,7 @@ func TestFirstGenerationSetupReadsOnlyConfigurationAndReusesProviderEditor(t *te
 		t.Fatalf("first setup sent %q", got)
 	}
 	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("配置记忆处理") || !tt.HasText("添加配置") || !a.integrations.Loaded {
+	if !tt.HasText("配置记忆提炼") || !tt.HasText("添加配置") || !a.integrations.Loaded {
 		t.Fatal("first setup did not show the existing provider editor")
 	}
 	if len(requests) != 0 || a.integrations.Generation.Active != nil || a.integrations.Generation.Next != nil {
@@ -238,7 +238,7 @@ func TestIntegrationAgentListShowsDirectActionsAndHostLimits(t *testing.T) {
 		{ID: "cursor", Kind: "cursor"},
 	}}}
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"Codex", "pi", "TraeX", "Claude Code", "其他 Agent（1）", "确认连接 pi", "连接 Claude Code", "等待确认", "等待保存验证"} {
+	for _, label := range []string{"Codex", "pi", "TraeX", "Claude Code", "其他 Agent（1）", "确认连接 pi", "连接 Claude Code", "等待确认", "等待采集验证"} {
 		if !tt.HasText(label) {
 			t.Fatal("missing Agent control", label)
 		}
@@ -334,7 +334,7 @@ func TestAgentRefreshUsesForceAndKeepsLayoutStableWhileSpinning(t *testing.T) {
 	if gotGeneration.Load() != 0 {
 		t.Fatal("connection recheck unexpectedly blocked on /v1/generation")
 	}
-	if !tt.HasText("自动保存正常") {
+	if !tt.HasText("自动采集正常") {
 		t.Fatal("forced refresh did not update capture status")
 	}
 }

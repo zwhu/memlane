@@ -147,12 +147,12 @@ func (a *App) agentConnectionRow(c *ui.Context, row AgentConnection) {
 	if pending != nil {
 		status = "连接结果待确认"
 		if pending.Kind == "connection_allow_capture" || pending.Kind == "connection_defer_capture" {
-			status = "自动保存设置待确认"
+			status = "自动采集设置待确认"
 		}
 		if s.Busy {
 			status = "正在连接…"
 			if pending.Kind == "connection_allow_capture" || pending.Kind == "connection_defer_capture" {
-				status = "正在设置自动保存…"
+				status = "正在设置自动采集…"
 			}
 		}
 	}
@@ -293,8 +293,8 @@ func generationLabel(g GenerationDirectory, ref *GenerationRef) string {
 }
 func (a *App) generationSetupPage(c *ui.Context) {
 	ui.Column(c).Fill().Padding(28).Gap(20).Background(tok.Bg).Children(func() {
-		homeText(c, "配置记忆处理", homeHeading).FontSize(22)
-		homeText(c, "选择处理记忆的 Agent 或模型。", homeMeta).LineHeight(1.7)
+		homeText(c, "配置记忆提炼", homeHeading).FontSize(22)
+		homeText(c, "选择提炼记忆的 Agent 或模型。", homeMeta).LineHeight(1.7)
 		ui.Scroll(c.Key("generation-first-setup")).Grow(1).MinHeight(0).Children(func() {
 			ui.Column(c).FillWidth().MaxWidth(900).Gap(20).Children(func() { a.generationSettings(c) })
 		})
@@ -315,8 +315,8 @@ func (a *App) generationConfiguration(c *ui.Context, showToolGraph bool) {
 func (a *App) generationConfigurationFor(c *ui.Context, edit, enable bool) {
 	s := &a.integrations
 	if !s.Loaded {
-		homeText(c, "记忆处理配置尚未载入", homeMeta)
-		commonButton(c, "读取记忆处理配置", false, a.RefreshIntegrations)
+		homeText(c, "记忆提炼配置尚未载入", homeMeta)
+		commonButton(c, "读取记忆提炼配置", false, a.RefreshIntegrations)
 		return
 	}
 	a.generationPendingOperations(c)
@@ -335,7 +335,7 @@ func (a *App) generationPendingOperations(c *ui.Context) {
 					continue
 				}
 				o := pending
-				label := map[string]string{"save": "保存配置", "next": "下次启动设置", "handoffs": "更换处理模型", "validations": "模型验证", "delete": "删除配置"}[o.Kind]
+				label := map[string]string{"save": "保存配置", "next": "下次启动设置", "handoffs": "更换提炼模型", "validations": "模型验证", "delete": "删除配置"}[o.Kind]
 				ui.Row(c.Key("pending-generation-" + o.Operation)).Gap(12).Children(func() {
 					homeText(c, label+" · "+o.Profile, homeMeta).Grow(1)
 					textButton(c, "核对原操作", nil).Label("核对原操作：" + o.Operation).Disabled(s.Busy).OnClick(func() { a.reviewPendingGeneration(o) })
@@ -390,7 +390,7 @@ func (a *App) generationEditorContent(c *ui.Context) {
 					})
 				} else {
 					ui.Field(c, "模型 ID", func() {
-						ui.TextInput(fieldKey("model"), &s.Model).Label("处理模型 ID").Placeholder("实际模型 ID").FillWidth().Disabled(locked)
+						ui.TextInput(fieldKey("model"), &s.Model).Label("提炼模型 ID").Placeholder("实际模型 ID").FillWidth().Disabled(locked)
 					})
 				}
 				if s.DraftMode == "provider" {

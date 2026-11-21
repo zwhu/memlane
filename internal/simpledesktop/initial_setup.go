@@ -123,7 +123,7 @@ func (a *App) enableFirstRuntime() {
 		return
 	}
 	reference := bootstrap.FirstGenerationReference{ID: g.Next.ID, Revision: g.Next.Revision}
-	s.Busy, s.Error, s.RuntimeStage = true, "", "启用记忆处理"
+	s.Busy, s.Error, s.RuntimeStage = true, "", "启用记忆提炼"
 	a.integrations.Busy = true
 	a.integrations.Request++
 	a.integrations.Loading = false

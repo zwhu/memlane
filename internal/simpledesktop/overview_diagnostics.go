@@ -47,7 +47,7 @@ func describeFailureClass(class string) failureExplanation {
 	case "BadGatewayError":
 		return failureExplanation{
 			Label:   "模型服务网关异常",
-			Summary: "上游模型通道返回网关错误（HTTP 502），未能完成本次生成。",
+			Summary: "上游模型代理返回网关错误（HTTP 502），未能完成本次生成。",
 			Hint:    "常见于代理/网络瞬时波动或 Codex 上游连接中断，可稍后重试。",
 		}
 	case "BrokenPipeError":
@@ -103,17 +103,17 @@ func failureStageName(row activityRow) (display, raw string) {
 	}
 	switch raw {
 	case "memify_pipeline":
-		return "整理记忆流水线", raw
+		return "提炼记忆流水线", raw
 	case "memify", "improve":
-		return "整理记忆任务", raw
+		return "提炼记忆任务", raw
 	case "cognify_pipeline":
-		return "处理记忆流水线", raw
+		return "提炼记忆流水线", raw
 	case "cognify":
-		return "处理记忆任务", raw
+		return "提炼记忆任务", raw
 	case "add_pipeline":
-		return "保存材料流水线", raw
+		return "采集材料流水线", raw
 	case "add", "remember":
-		return "保存材料任务", raw
+		return "采集材料任务", raw
 	case "code_graph_pipeline":
 		return "更新代码图谱流水线", raw
 	case "recall":

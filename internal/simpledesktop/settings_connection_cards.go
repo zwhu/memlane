@@ -59,7 +59,7 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 			return
 		}
 
-		// 1) Cognee 记忆服务行
+		// 1) 记忆引擎（Cognee）服务行
 		cogneeState, cogneeStatus, cogneeColor := a.serviceCogneeStatus()
 		var cogneeParts []string
 		if addr := sanitizedMonitorURL(a.Config.ServiceURL); addr != "" {
@@ -84,7 +84,7 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 		v4Row(c, v4RowOptions{
 			Key:        "svc-row-cognee",
 			Leading:    func() { v4StatusDot(c, cogneeState) },
-			Title:      "Cognee",
+			Title:      "记忆引擎（Cognee）",
 			Desc:       strings.Join(cogneeParts, " · "),
 			DescMono:   true,
 			Value:      cogneeStatus,
@@ -92,11 +92,11 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 			ValueColor: cogneeColor,
 		})
 
-		// 2) 控制面服务行
+		// 2) 接入网关服务行
 		if m.ControlChecked || m.Snapshot != nil {
-			ctrlDot, ctrlVal, ctrlCol := "ok", "控制面：已连接", tok.OK
+			ctrlDot, ctrlVal, ctrlCol := "ok", "接入网关：已连接", tok.OK
 			if m.ControlChecked && !m.ControlReachable {
-				ctrlDot, ctrlVal, ctrlCol = "fail", "控制面：异常", tok.Danger
+				ctrlDot, ctrlVal, ctrlCol = "fail", "接入网关：异常", tok.Danger
 			}
 			var ctrlParts []string
 			if m.Snapshot != nil {
@@ -124,7 +124,7 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 			v4Row(c, v4RowOptions{
 				Key:        "svc-row-control",
 				Leading:    func() { v4StatusDot(c, ctrlDot) },
-				Title:      "控制面服务",
+				Title:      "接入网关",
 				Desc:       strings.Join(ctrlParts, " · "),
 				DescMono:   true,
 				Value:      ctrlVal,
@@ -133,7 +133,7 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 			})
 		}
 
-		// 3) Agent 整理通道行（原补全端点，绝不使用「补全桥」）
+		// 3) Agent 模型代理行
 		if a.Config.CompletionURL != "" || (m.Snapshot != nil && m.Snapshot.Processes["completion"].PID > 0) {
 			compDot, compVal, compCol := "neutral", "待检查", tok.Text3
 			if strings.HasPrefix(a.completion, "端点已连接") {
@@ -153,7 +153,7 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 			v4Row(c, v4RowOptions{
 				Key:        "svc-row-channel",
 				Leading:    func() { v4StatusDot(c, compDot) },
-				Title:      "Agent 整理通道",
+				Title:      "Agent 模型代理",
 				Desc:       strings.Join(compParts, " · "),
 				DescMono:   true,
 				Value:      compVal,

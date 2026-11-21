@@ -384,7 +384,7 @@ func (a *App) sidebarServicePopover(c *ui.Context, anchor ui.Element, overallSta
 				}
 				hasDisk := m.Snapshot != nil && m.Snapshot.Disk != nil
 				hasChannel := a.Config.CompletionURL != ""
-				popRow(cogneeDot, "Cognee 记忆服务", cogneeStatus, cogneeMetrics, cogneeCol, !m.ControlChecked && !hasChannel && !hasDisk)
+				popRow(cogneeDot, "记忆引擎（Cognee）", cogneeStatus, cogneeMetrics, cogneeCol, !m.ControlChecked && !hasChannel && !hasDisk)
 
 				if m.ControlChecked {
 					ctrlDot, ctrlText, ctrlCol := "ok", "已连接", tok.Text2
@@ -398,7 +398,7 @@ func (a *App) sidebarServicePopover(c *ui.Context, anchor ui.Element, overallSta
 							ctrlMetrics += fmt.Sprintf(" · Hook 未记录 %d", m.Snapshot.Summary.HookErrorsCount)
 						}
 					}
-					popRow(ctrlDot, "控制面服务", ctrlText, ctrlMetrics, ctrlCol, !hasChannel && !hasDisk)
+					popRow(ctrlDot, "接入网关", ctrlText, ctrlMetrics, ctrlCol, !hasChannel && !hasDisk)
 				}
 
 				if hasChannel {
@@ -406,7 +406,7 @@ func (a *App) sidebarServicePopover(c *ui.Context, anchor ui.Element, overallSta
 					if a.completion == "端点已连接（登录状态以实际请求为准）" {
 						chDot, chText, chCol = "ok", "已连接", tok.Text2
 					}
-					popRow(chDot, "Agent 整理通道", chText, sanitizedMonitorURL(a.Config.CompletionURL), chCol, !hasDisk)
+					popRow(chDot, "Agent 模型代理", chText, sanitizedMonitorURL(a.Config.CompletionURL), chCol, !hasDisk)
 				}
 
 				if hasDisk {
@@ -445,14 +445,14 @@ func (a *App) sidebarServicePopover(c *ui.Context, anchor ui.Element, overallSta
 
 func (a *App) serviceConnectionTip() string {
 	address := sanitizedMonitorURL(a.Config.ServiceURL)
-	state := "Cognee 记忆服务 · 待检查"
+	state := "记忆引擎（Cognee）· 待检查"
 	if a.service == "已连接" {
-		state = "Cognee 记忆服务 · 已连接"
+		state = "记忆引擎（Cognee）· 已连接"
 		if a.monitor.State == "warning" {
-			state = "Cognee 记忆服务 · 短暂波动"
+			state = "记忆引擎（Cognee）· 短暂波动"
 		}
 	} else if a.service != "尚未检查" {
-		state = "Cognee 记忆服务 · 连接异常"
+		state = "记忆引擎（Cognee）· 连接异常"
 	}
 	tip := state + "\n地址：" + address
 	if summary := serviceMonitorSummaryLine(a.monitor); summary != "" {

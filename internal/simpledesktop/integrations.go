@@ -256,27 +256,27 @@ func connectionName(kind string) string {
 func connectionStatus(row AgentConnection) string {
 	if captureConnection(row) {
 		if row.Capture == nil {
-			return "等待保存验证"
+			return "等待采集验证"
 		}
 		switch row.Capture.State {
 		case "needs_permission":
-			return "需要允许自动保存"
+			return "需要允许自动采集"
 		case "deferred":
-			return "自动保存未开启"
+			return "自动采集未开启"
 		case "waiting_session":
 			return "等待新会话验证"
 		case "waiting_message":
-			return "等待消息保存"
+			return "等待消息采集"
 		case "healthy":
-			return "自动保存正常"
+			return "自动采集正常"
 		case "check_failed":
-			return "保存状态读取失败"
+			return "采集状态读取失败"
 		case "project_disabled":
-			return "项目未开启自动保存"
+			return "项目未开启自动采集"
 		case "project_pending":
 			return "项目设置待确认"
 		default:
-			return "正在检查自动保存…"
+			return "正在检查自动采集…"
 		}
 	}
 	switch row.Status {
@@ -555,7 +555,7 @@ func (a *App) connectAgentsReviewed(action string, identifiers []string, reviewe
 			}
 			if err == nil && !connectionActionAllowed(*target, action) {
 				if action == "allow_capture" || action == "defer_capture" {
-					err = fmt.Errorf("自动保存状态已变化，请重新检测")
+					err = fmt.Errorf("自动采集状态已变化，请重新检测")
 				} else {
 					cancel()
 					continue

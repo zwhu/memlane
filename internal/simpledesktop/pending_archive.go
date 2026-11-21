@@ -159,13 +159,13 @@ func (a *App) pendingArchiveHistory(c *ui.Context, q *projectQueueState) {
 		return
 	}
 	ui.Column(c).FillWidth().Gap(8).Children(func() {
-		label := fmt.Sprintf("历史保存异常 · %d 个会话", len(q.Archives))
+		label := fmt.Sprintf("历史采集异常 · %d 个会话", len(q.Archives))
 		projectLink(c, label, func() { q.ArchiveHistoryOpen = !q.ArchiveHistoryOpen })
 		if !q.ArchiveHistoryOpen {
 			return
 		}
 		ui.Column(c).FillWidth().Padding(14, 20).Gap(10).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
-			homeText(c, "已归档的记录仍无法确认是否保存；原材料保留，不重复发送。", homeMeta)
+			homeText(c, "已归档的记录仍无法确认是否采集；原材料保留，不重复发送。", homeMeta)
 			for _, r := range q.Archives {
 				count := 0
 				for _, n := range r.Entries {
@@ -173,7 +173,7 @@ func (a *App) pendingArchiveHistory(c *ui.Context, q *projectQueueState) {
 				}
 				ui.Column(c).FillWidth().Gap(4).Children(func() {
 					homeText(c, "会话 "+shortSessionLabel(r.Host), homeBody).FontSize(12).Tooltip(r.Host)
-					homeText(c, fmt.Sprintf("%d 条 · 已归档 · 保存结果未知 · %s", count, r.At.Local().Format("01月02日 15:04")), homeMeta)
+					homeText(c, fmt.Sprintf("%d 条 · 已归档 · 采集结果未知 · %s", count, r.At.Local().Format("01月02日 15:04")), homeMeta)
 				})
 			}
 		})

@@ -35,7 +35,7 @@ func (a *App) globalToolGraphSettings(c *ui.Context) {
 		return
 	}
 	enabled := a.access.Directory.ToolGraph.GlobalEnabled
-	desc := "开启后消耗模型额度；关闭不影响消息保存和记忆提炼，项目可单独覆盖"
+	desc := "开启后消耗模型额度；关闭不影响消息采集和记忆提炼，项目可单独覆盖"
 	if a.access.Message != "" {
 		message := a.access.Message
 		if message == "设置已保存；生效状态以官方核对结果为准" {

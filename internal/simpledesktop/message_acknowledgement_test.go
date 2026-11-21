@@ -157,11 +157,11 @@ func TestMessageActionsRemainVisibleAndAcknowledgementShowsReceipt(t *testing.T)
 	}
 	fixtureImage(t, tt, "message-actions-before")
 	clickProjectUI(t, tt, "知道了，不再提醒")
-	if !tt.HasText("已知晓的历史提示（1）") || tt.HasText("1 条消息未收到保存结果") {
+	if !tt.HasText("已知晓的历史提示（1）") || tt.HasText("1 条消息未收到采集结果") {
 		t.Fatal("acknowledged issue did not leave the current reminder list")
 	}
 	clickProjectUI(t, tt, "已知晓的历史提示（1）")
-	if !tt.HasText("已知晓 · 不再提醒") || !tt.HasText("恢复提醒") || !tt.HasText("1 条消息未收到保存结果") || q.unacknowledgedNotification(time.Now()) {
+	if !tt.HasText("已知晓 · 不再提醒") || !tt.HasText("恢复提醒") || !tt.HasText("1 条消息未收到采集结果") || q.unacknowledgedNotification(time.Now()) {
 		t.Fatal("acknowledgement lost issue facts or failed to remove reminder")
 	}
 	fixtureImage(t, tt, "message-actions-acknowledged")
@@ -173,7 +173,7 @@ func TestMessageActionsRemainVisibleAndAcknowledgementShowsReceipt(t *testing.T)
 	p.Overrides[q.Sessions[0].Agent.ID] = ProjectOverride{Access: &access}
 	q.Sessions[0].View.observe(PendingMaterials{Pending: 2, Signature: "new"})
 	tt.Frame()
-	if !tt.HasText("开始保存") || !tt.HasText("暂不处理") {
+	if !tt.HasText("开始采集") || !tt.HasText("暂不处理") {
 		t.Fatal("safe unsent queue lacks explicit choices")
 	}
 	clickProjectUI(t, tt, "暂不处理")

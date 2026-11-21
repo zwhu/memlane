@@ -94,13 +94,13 @@ func (a *App) initialSetupShell(c *ui.Context) {
 			title:   "连接 Agent",
 			sub:     "自动采集与召回",
 			heading: "连接你正在使用的 Agent",
-			lead:    "接入后，Agent 可以保存经验，并在后续任务中找回记忆。",
+			lead:    "接入后，Agent 可以采集经验，并在后续任务中找回记忆。",
 		},
 		{
-			title:   "配置记忆处理",
+			title:   "配置记忆提炼",
 			sub:     "Agent 或模型 API",
-			heading: "选择如何整理记忆",
-			lead:    "连接 Agent 与处理记忆分别配置，使用已有账号或自配模型。",
+			heading: "选择如何提炼记忆",
+			lead:    "连接 Agent 与提炼记忆分别配置，使用已有账号或自配模型。",
 		},
 	}
 
@@ -363,8 +363,8 @@ func (a *App) initialEnvironment(c *ui.Context) {
 			ids                []string
 		}{
 			{"运行基础", "Python 与运行依赖", []string{"uv", "python", "runtime"}},
-			{"本地记忆引擎", "整理与检索", []string{"cognee-source", "embedding"}},
-			{"Agent 接入", "保存与召回", []string{"agent-plugin"}},
+			{"本地记忆引擎", "提炼与检索", []string{"cognee-source", "embedding"}},
+			{"Agent 接入", "采集与召回", []string{"agent-plugin"}},
 		}
 		shown := false
 		for _, group := range groups {

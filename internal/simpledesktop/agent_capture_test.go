@@ -25,17 +25,17 @@ func TestCaptureUsesSavedEvidenceInsteadOfNewSessionCount(t *testing.T) {
 	tt := ui.NewTester(func(c *ui.Context) {
 		ui.Column(c).Fill().Padding(24).Children(func() { a.agentConnectionSettings(c) })
 	}, 1000, 650)
-	if tt.HasText("已连接") || tt.HasText("自动保存正常") || !tt.HasText("等待消息保存") {
+	if tt.HasText("已连接") || tt.HasText("自动采集正常") || !tt.HasText("等待消息采集") {
 		t.Fatal("a session binding was presented as a completed save")
 	}
 	a.integrations.Connections.Connections[0].Capture = &AgentCaptureState{State: "healthy", LastSavedAt: 1794931200}
 	tt.Frame()
-	if !tt.HasText("自动保存正常") {
+	if !tt.HasText("自动采集正常") {
 		t.Fatal("verified save is not visible")
 	}
 	a.captureReadFailed()
 	tt.Frame()
-	if tt.HasText("自动保存正常") || !tt.HasText("保存状态读取失败") || a.integrations.Connections.Connections[0].Capture.LastSavedAt != 1794931200 {
+	if tt.HasText("自动采集正常") || !tt.HasText("采集状态读取失败") || a.integrations.Connections.Connections[0].Capture.LastSavedAt != 1794931200 {
 		t.Fatal("read failure kept a green status or erased previous save evidence")
 	}
 }
@@ -102,16 +102,16 @@ func TestCodexCaptureConsentIsReviewedAndUnknownWriteIsOnlyReconciled(t *testing
 			tt := ui.NewTester(func(c *ui.Context) {
 				ui.Column(c).Fill().Padding(24).Children(func() { a.agentConnectionSettings(c) })
 			}, 1000, 650)
-			clickProjectUI(t, tt, "允许自动保存：Codex")
-			if posts.Load() != 0 || !tt.HasText("确认允许自动保存：Codex") || !tt.HasText("暂不开启自动保存：Codex") {
+			clickProjectUI(t, tt, "允许自动采集：Codex")
+			if posts.Load() != 0 || !tt.HasText("确认允许自动采集：Codex") || !tt.HasText("暂不开启自动采集：Codex") {
 				t.Fatal("permission was changed before the explicit confirmation")
 			}
 			if action == "allow_capture" {
 				fixtureImage(t, tt, "capture-consent")
 			}
-			label := "确认允许自动保存：Codex"
+			label := "确认允许自动采集：Codex"
 			if action == "defer_capture" {
-				label = "暂不开启自动保存：Codex"
+				label = "暂不开启自动采集：Codex"
 			}
 			clickProjectUI(t, tt, label)
 			drainReading(t, updates, func() bool { return !a.integrations.Busy })
@@ -135,7 +135,7 @@ func TestCodexCaptureConsentIsReviewedAndUnknownWriteIsOnlyReconciled(t *testing
 				if posts.Load() != 1 || a.integrations.pendingConnection("codex") != nil {
 					t.Fatal("recovery repeated the permission write")
 				}
-			} else if action == "defer_capture" && connectionStatus(a.integrations.Connections.Connections[0]) != "自动保存未开启" {
+			} else if action == "defer_capture" && connectionStatus(a.integrations.Connections.Connections[0]) != "自动采集未开启" {
 				t.Fatal("decline was not displayed as an explicit user choice")
 			}
 		})

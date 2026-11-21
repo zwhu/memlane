@@ -147,7 +147,7 @@ func runPendingMaterials(ctx context.Context, python string, installation AgentI
 		case "official_session_unconfirmed":
 			message = "官方会话尚未确认"
 		case "official_review_unavailable":
-			message = "服务端保存结果暂时无法读取；保留原记录，未重新发送"
+			message = "服务端采集结果暂时无法读取；保留原记录，未重新发送"
 		case "当前 Agent 没有此项目的写入权限":
 			message = result.Error
 		}

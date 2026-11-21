@@ -162,7 +162,7 @@ func (a *App) toolGraphDialog(c *ui.Context) {
 			v4DangerOutlineButton(c, "停止本次创建", false, func() { a.toolGraphAction("cancel") }).Disabled(s.Busy)
 		},
 		Body: func() {
-			homeText(c, "将已有工具记录整理成关系图谱。", homeBody).TextColor(tok.Text2)
+			homeText(c, "将已有工具记录提炼成关系图谱。", homeBody).TextColor(tok.Text2)
 			if s.Preview != nil {
 				ui.Column(c).FillWidth().Padding(sp3).Gap(sp1).Background(tok.Fill1).Radius(radius).Children(func() {
 					homeText(c, fmt.Sprintf("待处理：%d 个会话 · %d 条工具记录", s.Preview.Sessions, s.Preview.Steps), homeBody).FontSize(fsBody).FontWeight(500).TextColor(tok.Text1)

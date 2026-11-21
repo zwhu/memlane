@@ -40,11 +40,11 @@ func (a *App) loadGraphPending(p Project) {
 			}
 			s.Busy = false
 			if err != nil {
-				s.Error = "待整理工具记录暂无法核对"
+				s.Error = "待提炼工具记录暂无法核对"
 				return
 			}
 			if preview.Sessions < 0 || preview.Steps < 0 {
-				s.Error = "待整理工具记录暂无法核对"
+				s.Error = "待提炼工具记录暂无法核对"
 				return
 			}
 			s.Preview = &preview
@@ -58,22 +58,28 @@ func (a *App) graphPendingHint(c *ui.Context, p Project) {
 		return
 	}
 	label := s.Error
+	dotState := "fail"
 	if s.Busy {
-		label = "正在核对待整理工具记录…"
+		label = "正在核对待提炼工具记录…"
+		dotState = "run"
 	}
 	if s.Preview != nil && s.Preview.Steps > 0 {
-		label = fmt.Sprintf("有 %d 个会话、%d 条工具记录尚未整理为图谱。", s.Preview.Sessions, s.Preview.Steps)
+		label = fmt.Sprintf("有 %d 个会话、%d 条工具记录尚未提炼为图谱。", s.Preview.Sessions, s.Preview.Steps)
+		dotState = "warn"
 		if toolGraphActive(s.Preview.Job) {
-			label += "已有整理任务进行中。"
+			label += "已有提炼任务进行中。"
+			dotState = "run"
 		}
 	}
 	if label == "" {
 		return
 	}
-	ui.Row(c).Shrink(0).Padding(0, 32, 12, 32).Gap(12).AlignItems(ui.Center).Children(func() {
-		homeText(c, label, homeMeta).Grow(1).MinWidth(0).MaxLines(2)
+	ui.Row(c).Shrink(0).MinHeight(32).Padding(sp1, sp4).Gap(sp2).AlignItems(ui.Center).
+		Background(tok.Fill1).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+		v4StatusDot(c, dotState)
+		ui.Text(c, label).Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Text2).Grow(1).MinWidth(0).MaxLines(2)
 		if s.Preview != nil && s.Preview.Steps > 0 {
-			textButton(c, "查看整理范围", nil).OnClick(func() { a.previewToolGraph(p.ID) })
+			v4SmallButton(c, "查看提炼范围", nil, func() { a.previewToolGraph(p.ID) })
 		}
 	})
 }

@@ -76,17 +76,17 @@ func (a *App) pendingMaterialsEditor(c *ui.Context, p AccessProject, agent Acces
 		ui.Column(c.Key("pending-"+key)).Gap(6).Padding(8, 0).Children(func() {
 			ui.Row(c).Gap(8).Children(func() {
 				ui.Text(c, fmt.Sprintf("会话 %d · %s", count, shortSessionLabel(binding.HostSessionKey))).FontSize(11).Bold()
-				textButton(c, "检查会话保存结果", nil).Disabled(view.Busy || p.Dataset == "").OnClick(func() { a.runPendingAction(view, p, agent, binding, "show") })
+				textButton(c, "检查会话采集结果", nil).Disabled(view.Busy || p.Dataset == "").OnClick(func() { a.runPendingAction(view, p, agent, binding, "show") })
 			})
 			if view.Loaded {
-				ui.Text(c, fmt.Sprintf("尚未保存 %d 条；保存结果不明确 %d 条", view.Status.Pending, view.Status.Unknown)).FontSize(10).TextColor(muted)
+				ui.Text(c, fmt.Sprintf("尚未采集 %d 条；采集结果不明确 %d 条", view.Status.Pending, view.Status.Unknown)).FontSize(10).TextColor(muted)
 				if view.Status.Blocked != nil {
 					ui.Text(c, "已阻塞，不会自动重试；恢复权限也不会自动补交。").FontSize(10).TextColor(muted)
 				}
 				if view.Status.Pending > 0 {
 					ui.Row(c).Gap(8).Children(func() {
-						ui.Button(c, "重新保存这些记录").Disabled(view.Busy).OnClick(func() { a.runPendingAction(view, p, agent, binding, "replay") })
-						ui.Button(c, "丢弃未保存记录").Disabled(view.Busy).OnClick(func() { a.runPendingAction(view, p, agent, binding, "discard") })
+						ui.Button(c, "重新采集这些记录").Disabled(view.Busy).OnClick(func() { a.runPendingAction(view, p, agent, binding, "replay") })
+						ui.Button(c, "丢弃未采集记录").Disabled(view.Busy).OnClick(func() { a.runPendingAction(view, p, agent, binding, "discard") })
 					})
 				}
 			}
@@ -128,7 +128,7 @@ func (a *App) runPendingAction(view *pendingBufferView, p AccessProject, agent A
 				view.Details = nil
 				view.DetailsLoaded = false
 				view.Loaded = false
-				view.Message = "项目权限已变化，请重新读取保存状态"
+				view.Message = "项目权限已变化，请重新读取采集状态"
 				return
 			}
 			if action == "details" {
@@ -159,7 +159,7 @@ func (a *App) runPendingAction(view *pendingBufferView, p AccessProject, agent A
 				if action == "check" {
 					view.Message = pendingCheckMessage(installation, result)
 				} else {
-					view.Message = "保存状态已更新。"
+					view.Message = "采集状态已更新。"
 				}
 			} else {
 				view.observe(result)
@@ -169,9 +169,9 @@ func (a *App) runPendingAction(view *pendingBufferView, p AccessProject, agent A
 				if action == "discard" {
 					view.Message = fmt.Sprintf("已丢弃 %d 条原待发材料", result.Discarded)
 				} else {
-					view.Message = fmt.Sprintf("本次已保存／核对消除 %d 条，剩余 %d 条待确认保存。", result.Drained, result.Pending)
+					view.Message = fmt.Sprintf("本次已采集／核对消除 %d 条，剩余 %d 条待确认采集。", result.Drained, result.Pending)
 					if result.Pending > 0 {
-						view.Message += " 单批已结束，可继续保存下一批。"
+						view.Message += " 单批已结束，可继续采集下一批。"
 					}
 				}
 			}

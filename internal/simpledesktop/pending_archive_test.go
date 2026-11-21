@@ -80,7 +80,7 @@ func TestHistoricalArchiveCannotHideUnresolvedMessages(t *testing.T) {
 	tt := ui.NewTester(func(c *ui.Context) {
 		ui.Column(c).Fill().Children(func() { a.projectQueueSection(c, a.access.Directory.Projects[0]) })
 	}, 1200, 1000)
-	if tt.HasText("归档此异常") || !tt.HasText("1 条消息未收到保存结果") {
+	if tt.HasText("归档此异常") || !tt.HasText("1 条消息未收到采集结果") {
 		t.Fatal("legacy archive hid unresolved delivery")
 	}
 	after, _ := os.ReadFile(mustArchivePath(t, a, a.access.Directory.Projects[0]))

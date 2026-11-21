@@ -54,7 +54,7 @@ func (a *App) openGenerationHandoff(ref *GenerationRef) {
 			}
 			s.HandoffLoading = false
 			if err != nil {
-				s.Error = "无法读取待整理数量"
+				s.Error = "无法读取待提炼数量"
 				return
 			}
 			s.Handoff = value
@@ -72,11 +72,11 @@ func (a *App) generationHandoffPanel(c *ui.Context) {
 		(s.HandoffRef != nil && s.Generation.Active != nil && *s.HandoffRef == *s.Generation.Active)
 	v4Dialog(c, &s.HandoffOpen, v4DialogOptions{
 		Key:             "generation-enable-review",
-		Title:           "切换处理方式？",
+		Title:           "切换提炼方式？",
 		Width:           v4DialogSmall,
 		CancelText:      "取消",
 		ConfirmText:     "确认启用",
-		Hint:            "仅确认后的服务回执会更新当前使用的处理方式",
+		Hint:            "仅确认后的服务回执会更新当前使用的提炼方式",
 		CancelDisabled:  s.Busy,
 		ConfirmDisabled: confirmDisabled,
 		OnCancel:        func() { s.HandoffOpen = false },
@@ -88,7 +88,7 @@ func (a *App) generationHandoffPanel(c *ui.Context) {
 				homeText(c, "正在读取任务状态…", homeMeta)
 			} else {
 				if s.Handoff.Running > 0 {
-					homeText(c, fmt.Sprintf("正在处理 %d 个会话，切换后将接续处理。", s.Handoff.Running), homeMeta)
+					homeText(c, fmt.Sprintf("正在提炼 %d 个会话，切换后将接续提炼。", s.Handoff.Running), homeMeta)
 				}
 				if s.Handoff.Unknown > 0 {
 					homeText(c, fmt.Sprintf("另有 %d 个会话结果待核对。", s.Handoff.Unknown), homeMeta)
@@ -107,7 +107,7 @@ func (a *App) generationHandoffStatus(c *ui.Context) {
 		return
 	}
 	row := s.Handoff.Handoff
-	label := map[string]string{"queued": "切换已登记", "preparing": "正在准备新模型", "stopping": "正在停止旧任务并核对结果", "applying": "正在切换模型", "applied": "已切换，剩余会话继续整理", "not_applied": "未切换，仍使用原模型", "unknown": "切换结果待核对"}[row.Status]
+	label := map[string]string{"queued": "切换已登记", "preparing": "正在准备新模型", "stopping": "正在停止旧任务并核对结果", "applying": "正在切换模型", "applied": "已切换，剩余会话继续提炼", "not_applied": "未切换，仍使用原模型", "unknown": "切换结果待核对"}[row.Status]
 	if label == "" {
 		return
 	}

@@ -37,7 +37,7 @@ func TestAgentEnvironmentChoiceBlocksWrongTargetAndExplainsReceipt(t *testing.T)
 		t.Fatal("verification environment can be selected")
 	}
 	row.Status, row.NewSessions, row.ReceiptOverdue = "configured_pending_new_session", 0, true
-	if connectionStatus(row) != "等待保存验证" {
+	if connectionStatus(row) != "等待采集验证" {
 		t.Fatal("expired wait was presented as a connected host")
 	}
 	row.Status, row.NewSessions = "environment_receipt_unconfirmed", 1
@@ -71,7 +71,7 @@ func TestWaitingAgentReceiptsRefreshWithoutInstallingOrLosingSelection(t *testin
 	a.refreshAgentReceiptsIfDue(now)
 	drainReading(t, updates, func() bool { return !a.integrations.ReceiptCheckLoading })
 	a.refreshAgentReceiptsIfDue(now.Add(time.Second))
-	if requests != 1 || !a.integrations.Selected["other"] || a.integrations.Connections.Revision != 8 || connectionStatus(a.integrations.Connections.Connections[0]) != "等待保存验证" {
+	if requests != 1 || !a.integrations.Selected["other"] || a.integrations.Connections.Revision != 8 || connectionStatus(a.integrations.Connections.Connections[0]) != "等待采集验证" {
 		t.Fatal("receipt refresh did not preserve selection and settle the real connection")
 	}
 }
@@ -148,7 +148,7 @@ func TestWaitingAgentReceiptSettlesFromIdleViewTimer(t *testing.T) {
 			tt.Advance(2 * time.Second)
 			drainReading(t, updates, func() bool { return a.integrations.Connections.Revision == 9 })
 			tt.Frame() // the HTTP completion's native win.Update redraw
-			if requests.Load() != 1 || !a.integrations.Selected["other"] || !tt.HasText("等待保存验证") {
+			if requests.Load() != 1 || !a.integrations.Selected["other"] || !tt.HasText("等待采集验证") {
 				t.Fatal("idle page did not settle the receipt while preserving selection")
 			}
 			a.integrations.NextReceiptCheck = time.Time{}
@@ -194,7 +194,7 @@ func TestAgentReceiptRecoveryClearsOnlyItsOwnError(t *testing.T) {
 	fail.Store(false)
 	a.refreshAgentReceiptsIfDue(now.Add(10 * time.Second))
 	drainReading(t, updates, func() bool { return !a.integrations.ReceiptCheckLoading })
-	if a.integrations.Error != "" || connectionStatus(a.integrations.Connections.Connections[0]) != "等待保存验证" {
+	if a.integrations.Error != "" || connectionStatus(a.integrations.Connections.Connections[0]) != "等待采集验证" {
 		t.Fatal("successful receipt recovery retained a stale polling error")
 	}
 	a.integrations.Connections = waiting

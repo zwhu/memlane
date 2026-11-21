@@ -83,7 +83,7 @@ func TestAgentConnectionUIRequiresConfirmationAfterPreparation(t *testing.T) {
 	if activations.Load() != 1 || a.integrations.Selected["pi"] {
 		t.Fatal("activation or selection cleanup incorrect")
 	}
-	if !tt.HasText("等待保存验证") || !tt.HasText("查看步骤：pi") {
+	if !tt.HasText("等待采集验证") || !tt.HasText("查看步骤：pi") {
 		t.Fatal("next user action missing")
 	}
 	clickProjectUI(t, tt, "查看步骤：pi")
@@ -109,7 +109,7 @@ func TestAgentConnectionDefaultShowsClearStatusesAndCollapsesUnavailable(t *test
 	tt := ui.NewTester(func(c *ui.Context) {
 		ui.Column(c).Fill().Padding(24).Gap(12).Children(func() { a.agentConnectionSettings(c) })
 	}, 900, 560)
-	if !tt.HasText("等待保存验证") || !tt.HasText("其他 Agent（2）") {
+	if !tt.HasText("等待采集验证") || !tt.HasText("其他 Agent（2）") {
 		t.Fatal("simple statuses absent")
 	}
 	if _, ok := tt.Find("选择 Codex"); ok {

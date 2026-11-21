@@ -81,7 +81,7 @@ func TestProcessingSourcesKeepDraftsAndDoNotEnableWhileConfiguring(t *testing.T)
 		a.integrations.Model = "private-draft-model"
 		a.integrations.APIKey = "unsaved-key"
 		a.integrations.Temperature = "0"
-		clickProjectUI(t, tt, "用已连接的 Agent 整理")
+		clickProjectUI(t, tt, "用已连接的 Agent 提炼")
 		if a.integrations.DraftMode != "agent_bridge" || a.integrations.APIKey != "" || a.integrations.Generation.Active != active {
 			t.Fatal("Provider draft leaked into Agent")
 		}
@@ -115,7 +115,7 @@ func TestSettingsSeparateProcessingSelectionFromConfigurationAndService(t *testi
 			"api": {{Revision: 1, Profile: GenerationProfile{Mode: "provider", Provider: "openai", Model: "fixture-model"}}},
 		}}}
 	tt := ui.NewTester(a.View, 1200, 820)
-	if a.access.SettingsSection != "记忆处理" || (!tt.HasText("切换") && !tt.HasText("使用中")) || tt.HasText("API Key") || tt.HasText("下次启动") {
+	if a.access.SettingsSection != "记忆提炼" || (!tt.HasText("切换") && !tt.HasText("使用中")) || tt.HasText("API Key") || tt.HasText("下次启动") {
 		t.Fatal("first tab mixes selection with configuration")
 	}
 	fixtureImage(t, tt, "settings-processing-selection")

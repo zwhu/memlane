@@ -12,9 +12,9 @@ func (a *App) generationManagementContent(c *ui.Context) {
 	if !s.Loaded {
 		v4Group(c, "模型配置", "", nil, func() {
 			v4Row(c, v4RowOptions{
-				Title: "记忆处理配置尚未载入",
+				Title: "记忆提炼配置尚未载入",
 				Control: func() {
-					v4SmallButton(c, "读取记忆处理配置", v4IconRefresh, a.RefreshIntegrations)
+					v4SmallButton(c, "读取记忆提炼配置", v4IconRefresh, a.RefreshIntegrations)
 				},
 			})
 		})

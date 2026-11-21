@@ -95,7 +95,7 @@ func TestOverviewFailureDetailCollapsesParentWrapperAndFormatsScreenshotScenario
 	}
 	event := overviewEvent{
 		Key:      parent.Run,
-		Title:    "整理记忆",
+		Title:    "提炼记忆",
 		State:    "失败",
 		Project:  "memlane",
 		At:       time.Date(2026, 11, 20, 20, 21, 46, 240281000, time.UTC),
@@ -112,7 +112,7 @@ func TestOverviewFailureDetailCollapsesParentWrapperAndFormatsScreenshotScenario
 	if detail.ReasonLabel != "连接超时" || detail.ErrorClass != "ConnectTimeout" {
 		t.Fatalf("unexpected primary reason: %+v", detail)
 	}
-	if detail.StageLabel != "整理记忆流水线" || detail.StageRaw != "memify_pipeline" {
+	if detail.StageLabel != "提炼记忆流水线" || detail.StageRaw != "memify_pipeline" {
 		t.Fatalf("unexpected stage: %+v", detail)
 	}
 	if detail.FailureCount != 1 || len(detail.Items) != 1 {
@@ -140,7 +140,7 @@ func TestOverviewFailureDetailCollapsesParentWrapperAndFormatsScreenshotScenario
 	}
 
 	report := failureReport(event, cfg)
-	if idxErr, idxParent := strings.Index(report, "ConnectTimeout"), strings.Index(report, "操作：整理记忆任务（improve）"); idxErr < 0 || idxParent < 0 || idxErr > idxParent {
+	if idxErr, idxParent := strings.Index(report, "ConnectTimeout"), strings.Index(report, "操作：提炼记忆任务（improve）"); idxErr < 0 || idxParent < 0 || idxErr > idxParent {
 		t.Fatalf("expected ConnectTimeout prioritized before improve wrapper in report:\n%s", report)
 	}
 	if strings.Contains(report, "错误类型：\n") || strings.Contains(report, "父操作 ID：\n") {

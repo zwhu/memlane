@@ -20,17 +20,17 @@ func TestPendingAutoCheckPresentsOnlyRealChecksAndRetriesReadOperation(t *testin
 	key := session.Agent.ID + "/" + session.Binding.HostSessionKey
 	q.Checks[key] = pendingCheckState{Status: "checking"}
 	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("正在检查") || tt.HasText("重新检查保存结果") || tt.HasText("核对保存结果") || !tt.HasText("自动保存已开启") {
+	if !tt.HasText("正在检查") || tt.HasText("重新检查采集结果") || tt.HasText("核对采集结果") || !tt.HasText("自动采集已开启") {
 		t.Fatal("checking state implies user action or an active send")
 	}
 	q.Checks[key] = pendingCheckState{Status: "unconfirmed", Reason: "original_receipt_unavailable", CheckedAt: 1700000000}
 	tt.Frame()
-	if tt.HasText("归档此异常") || tt.HasText("重新检查保存结果") || !tt.HasText("系统异常") {
+	if tt.HasText("归档此异常") || tt.HasText("重新检查采集结果") || !tt.HasText("系统异常") {
 		t.Fatal("missing original receipt has no archive action")
 	}
 	session.View.CheckDetailsOpen = true
 	tt.Frame()
-	if !tt.HasText("检查于 "+time.Unix(1700000000, 0).Format("01月02日 15:04")) || !tt.HasText("这批消息缺少可查询的唯一保存凭证，系统无法核实这次保存。") {
+	if !tt.HasText("检查于 "+time.Unix(1700000000, 0).Format("01月02日 15:04")) || !tt.HasText("这批消息缺少可查询的唯一采集凭证，系统无法核实这次采集。") {
 		t.Fatal("check details did not disclose its evidence boundary")
 	}
 	fixtureImage(t, tt, "pending-check-unconfirmed")
@@ -56,17 +56,17 @@ func TestPendingAutoCheckPresentsOnlyRealChecksAndRetriesReadOperation(t *testin
 	updates := make(chan func(), 10)
 	a.Update = func(fn func()) { updates <- fn }
 	tt.Scroll(1000, 700, 0, 600)
-	clickProjectUI(t, tt, "重新检查保存结果")
+	clickProjectUI(t, tt, "重新检查采集结果")
 	a.retryPendingCheck(q, a.access.Directory.Projects[0], session)
 	drainReading(t, updates, func() bool { return q.BacklogNext.IsZero() })
 	a.Update = nil
 	tt.Frame()
-	if posts != 1 || !tt.HasText("正在检查") || tt.HasText("重新检查保存结果") {
+	if posts != 1 || !tt.HasText("正在检查") || tt.HasText("重新检查采集结果") {
 		t.Fatal("retry duplicated a check or failed to show actual running state")
 	}
 	q.BacklogError = "offline"
 	tt.Frame()
-	if !tt.HasText("重新检查保存结果") || tt.HasText("正在检查") {
+	if !tt.HasText("重新检查采集结果") || tt.HasText("正在检查") {
 		t.Fatal("lost service left a false perpetual spinner")
 	}
 }

@@ -26,7 +26,7 @@ type FirstActivationRequest struct {
 
 func ActivateFirstRuntime(ctx context.Context, prepared FirstRuntime, reference FirstGenerationReference, digest string, revision int64) error {
 	if reference.ID == "" || reference.Revision < 1 || len(digest) != 64 || revision < 1 {
-		return errors.New("请先验证并选择待启用的记忆处理配置")
+		return errors.New("请先验证并选择待启用的记忆提炼配置")
 	}
 	config, err := loadFirstRuntimeConfig(prepared.ConfigPath)
 	if err != nil {

@@ -28,7 +28,7 @@ func TestRejectedMessageDoesNotBecomeSendableOrHideHealthyPending(t *testing.T) 
 			t.Fatal("a known rejection was mislabeled as legacy receipt loss")
 		}
 	}
-	if rejected.Title != "2 条消息保存受阻" || !q.unacknowledgedNotification(time.Now()) {
+	if rejected.Title != "2 条消息采集受阻" || !q.unacknowledgedNotification(time.Now()) {
 		t.Fatal("known rejected records have no visible reason or notification", notices)
 	}
 	a.acknowledgeNotice(q, a.access.Directory.Projects[0], rejected, false)

@@ -17,7 +17,7 @@ func FirstInitializationComplete(configPath string) (bool, error) {
 		return false, nil
 	}
 	if (config.GenerationMode != "provider" && config.GenerationMode != "agent_bridge") || config.Model == "" || config.GenerationFile != filepath.Join(config.Root, "generation.json") {
-		return false, errors.New("首次处理配置尚未确认，保留原回执")
+		return false, errors.New("首次提炼配置尚未确认，保留原回执")
 	}
 	generationBytes, err := privateRead(config.GenerationFile)
 	if errors.Is(err, os.ErrNotExist) {
@@ -41,7 +41,7 @@ func FirstInitializationComplete(configPath string) (bool, error) {
 		return false, err
 	}
 	if generation.Schema != 2 {
-		return false, errors.New("首次处理配置格式不同")
+		return false, errors.New("首次提炼配置格式不同")
 	}
 	if generation.Active == nil {
 		return false, nil

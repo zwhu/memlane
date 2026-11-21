@@ -57,7 +57,7 @@ func TestFirstUseStepsPreserveRuntimeGateAndSharedShell(t *testing.T) {
 	a := setupLayoutFixture()
 	tt := ui.NewTester(a.View, 1200, 820)
 	clickProjectUI(t, tt, "连接 Agent")
-	clickProjectUI(t, tt, "配置记忆处理")
+	clickProjectUI(t, tt, "配置记忆提炼")
 	if a.environment.InitialStep > 1 {
 		t.Fatal("missing runtime allowed future steps")
 	}
@@ -72,8 +72,8 @@ func TestFirstUseStepsPreserveRuntimeGateAndSharedShell(t *testing.T) {
 	tt.Frame()
 	clickProjectUI(t, tt, "连接 Agent")
 	fixtureImage(t, tt, "first-use-a-agents")
-	clickProjectUI(t, tt, "配置记忆处理")
-	if a.environment.InitialStep != 3 || !tt.HasText("选择如何整理记忆") {
+	clickProjectUI(t, tt, "配置记忆提炼")
+	if a.environment.InitialStep != 3 || !tt.HasText("选择如何提炼记忆") {
 		t.Fatal("model configuration bypassed validation/activation")
 	}
 	clickProjectUI(t, tt, "启用并完成")

@@ -59,7 +59,7 @@ func TestBacklogUIStartsOneOwnedJobThenOnlyPollsAndShowsIsolatedCounts(t *testin
 	maintain := "maintain"
 	p.Overrides["agent"] = ProjectOverride{Access: &maintain}
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"暂停自动保存", "75 条消息等待保存", "20 条消息未收到保存结果"} {
+	for _, label := range []string{"自动采集", "75 条消息等待采集", "20 条消息未收到采集结果"} {
 		if !tt.HasText(label) {
 			t.Fatal("missing real job progress", label)
 		}
@@ -67,14 +67,14 @@ func TestBacklogUIStartsOneOwnedJobThenOnlyPollsAndShowsIsolatedCounts(t *testin
 	if tt.HasText("保存一批") {
 		t.Fatal("manual batch controls remain")
 	}
-	if tt.HasText("系统正在查询保存结果，不会重复发送。") {
+	if tt.HasText("系统正在查询采集结果，不会重复发送。") {
 		t.Fatal("inflight journals were shown as final unknown outcomes")
 	}
 	fixtureImage(t, tt, "project-backlog-running")
 	q.Backlog = &backlogJob{Operation: "server-operation", Status: "completed", Saved: 95, Total: 95, Isolated: 20, ProcessingSubmitted: 1}
 	q.Sessions[0].View.Status.Pending = 0
 	tt.Frame()
-	if tt.HasText("上次保存已完成") || !tt.HasText("20 条消息未收到保存结果") {
+	if tt.HasText("上次采集已完成") || !tt.HasText("20 条消息未收到采集结果") {
 		t.Fatal("completion and processing submission were conflated")
 	}
 	fixtureImage(t, tt, "project-backlog-completed")
@@ -90,10 +90,10 @@ func TestAutomaticBacklogPresentationKeepsExistingUnknownVisible(t *testing.T) {
 	q.AutomaticSave = true
 	q.Backlog = &backlogJob{Automatic: true, Status: "running", Saved: 8, Remaining: 7}
 	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("自动保存已开启") || !tt.HasText("暂停自动保存") || tt.HasText("保存积压记录") {
+	if !tt.HasText("自动采集已开启") || !tt.HasText("自动采集") || tt.HasText("保存积压记录") {
 		t.Fatal("automatic save still requires a manual start")
 	}
-	if (!tt.HasText("2 条消息等待保存") || !tt.HasText("1 条消息未收到保存结果")) || tt.HasText("任务已保存 8 条 · 任务内剩余 7 条 · 待核对 0 条") {
+	if (!tt.HasText("2 条消息等待采集") || !tt.HasText("1 条消息未收到采集结果")) || tt.HasText("任务已采集 8 条 · 任务内剩余 7 条 · 待核对 0 条") {
 		t.Fatal("automatic job hid an older unknown record outside its send range")
 	}
 }
@@ -103,10 +103,10 @@ func TestPausedAutomaticSaveShowsPermissionActionInsteadOfResume(t *testing.T) {
 	q.AutomaticSave = true
 	q.Backlog = &backlogJob{Automatic: true, Status: "paused", Reason: "policy_unconfirmed", Remaining: 105}
 	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("后台保存已暂停") || !tt.HasText("这是权限状态核对问题，不表示你需要重新授权。") || tt.HasText("继续保存") {
+	if !tt.HasText("后台采集已暂停") || !tt.HasText("这是权限状态核对问题，不表示你需要重新授权。") || tt.HasText("继续采集") {
 		t.Fatal("paused permission state presented as running or resumable")
 	}
-	if !tt.HasText("2 条消息等待保存") || !tt.HasText("1 条消息未收到保存结果") {
+	if !tt.HasText("2 条消息等待采集") || !tt.HasText("1 条消息未收到采集结果") {
 		t.Fatal("live counts replaced by stale task remaining count")
 	}
 }

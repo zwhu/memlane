@@ -191,14 +191,14 @@ func (a *App) generationWorkspaceContent(c *ui.Context, edit, enable bool) {
 	title := "模型配置"
 	desc := ""
 	if enable {
-		title = "处理方式"
+		title = "提炼方式"
 		desc = "当前使用：" + generationLabel(s.Generation, s.Generation.Active)
 	}
 	selected := 0
 	if s.DraftMode == "provider" {
 		selected = 1
 	}
-	sourceDesc := "让 Codex、Gemini 等已连接的 Agent 用它自己的模型和额度整理记忆，无需填写 API Key"
+	sourceDesc := "让 Codex、Gemini 等已连接的 Agent 用它自己的模型和额度提炼记忆，无需填写 API Key"
 	if s.DraftMode == "provider" {
 		sourceDesc = "填写 OpenAI 兼容或 Ollama 等接口，由 Memlane 直接调用"
 	}
@@ -211,10 +211,10 @@ func (a *App) generationWorkspaceContent(c *ui.Context, edit, enable bool) {
 		}
 		v4Row(c, v4RowOptions{
 			Key:   "generation-source-row",
-			Title: "处理来源",
+			Title: "提炼来源",
 			Desc:  sourceDesc,
 			Control: func() {
-				v4Segmented(c, "generation-source", "处理来源", &selected, []string{"用已连接的 Agent 整理", "直接调用模型 API"}, func() {
+				v4Segmented(c, "generation-source", "提炼来源", &selected, []string{"用已连接的 Agent 提炼", "直接调用模型 API"}, func() {
 					if s.Busy {
 						return
 					}

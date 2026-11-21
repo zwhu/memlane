@@ -58,7 +58,7 @@ func overviewFixture(t *testing.T) *App {
 	}
 	a.overviewState.Events = []overviewEvent{
 		{Key: "complete", Title: "召回记忆", State: "已完成", Project: "synthetic", At: time.Now()},
-		{Key: "running", Title: "整理知识", State: "处理中", Project: "synthetic", At: time.Now()},
+		{Key: "running", Title: "提炼记忆", State: "处理中", Project: "synthetic", At: time.Now()},
 		{Key: "failed", Title: "读取来源", State: "失败", Project: "synthetic", At: time.Now(), Record: activityRow{ID: "fixture-row", Run: "fixture-run", ErrorClass: "BrokenPipeError"}, Failures: []activityRow{{ID: "fixture-row", Run: "fixture-run", ErrorClass: "BrokenPipeError"}}},
 	}
 	return a
@@ -596,7 +596,7 @@ func TestOverviewFailureDetailDialogReadabilityAndAppearances(t *testing.T) {
 			a.overviewState.Events = []overviewEvent{
 				{
 					Key:      parent.Run,
-					Title:    "整理记忆",
+					Title:    "提炼记忆",
 					State:    "失败",
 					Project:  "memlane",
 					At:       time.Date(2026, 11, 20, 20, 21, 46, 240281000, time.UTC),
@@ -608,7 +608,7 @@ func TestOverviewFailureDetailDialogReadabilityAndAppearances(t *testing.T) {
 			if err := tt.Click("失败操作：" + parent.Run); err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range []string{"整理记忆 · 失败详情", "连接超时", "ConnectTimeout", "整理记忆流水线", "23 分 53 秒", "展开技术信息"} {
+			for _, want := range []string{"提炼记忆 · 失败详情", "连接超时", "ConnectTimeout", "提炼记忆流水线", "23 分 53 秒", "展开技术信息"} {
 				if !tt.HasText(want) {
 					t.Fatalf("%s collapsed dialog missing %q", tc.name, want)
 				}

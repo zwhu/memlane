@@ -29,7 +29,7 @@ func TestPendingCheckMessageUsesActualOpenCodeAcknowledgementReceipt(t *testing.
 		t.Fatal("actual acknowledgement fixture missing")
 	}
 	message := pendingCheckMessage(AgentInstallation{HostKind: "opencode"}, correct)
-	if !strings.Contains(message, "1 条记录已确认保存，0 条保存结果仍未知") || strings.Contains(message, "-1") || strings.Contains(message, "20 条") {
+	if !strings.Contains(message, "1 条记录已确认采集，0 条采集结果仍未知") || strings.Contains(message, "-1") || strings.Contains(message, "20 条") {
 		t.Fatalf("wrong post-acknowledgement presentation: %s", message)
 	}
 	shadow := evidence.Checks.Cases["pending-operator-check-shadow"].Status
@@ -37,7 +37,7 @@ func TestPendingCheckMessageUsesActualOpenCodeAcknowledgementReceipt(t *testing.
 		t.Fatal("original-dataset refusal fixture missing")
 	}
 	message = pendingCheckMessage(AgentInstallation{HostKind: "opencode"}, shadow)
-	if !strings.Contains(message, "1 条保存结果仍未知") || !strings.Contains(message, "原记录继续保留") {
+	if !strings.Contains(message, "1 条采集结果仍未知") || !strings.Contains(message, "原记录继续保留") {
 		t.Fatalf("unknown disappeared from presentation: %s", message)
 	}
 }
