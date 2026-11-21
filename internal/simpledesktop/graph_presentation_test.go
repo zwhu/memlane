@@ -152,3 +152,42 @@ func TestProjectHeaderDividerAndFilterInsets(t *testing.T) {
 		t.Fatalf("project tabs shifted between records and knowledge: %v %v", recordTab, knowledgeTab)
 	}
 }
+
+func TestGraphToolbarAndCodeGraphEmptyV4Alignment(t *testing.T) {
+	a := projectUIFixture()
+	a.Config.ProjectControl = &ProjectControlConfig{}
+	a.page = "图谱"
+	a.graphMode = "实体关系"
+	tt := ui.NewTester(a.View, 1200, 820)
+
+	if !tt.HasText("创建工具图谱") || !tt.HasText("刷新图谱") {
+		t.Fatal("entity graph toolbar missing V4 action buttons")
+	}
+
+	// Switch to code graph (disabled) -> V4 empty state + primary CTA + codeStatus filtering.
+	a.graphMode = "代码结构"
+	a.graphError = "代码索引暂不可用"
+	a.codeStatus = "官方代码索引状态：全局缓存不应展示"
+	tt.Frame()
+	if !tt.HasText("代码图谱尚未开启") || !tt.HasText("开启代码图谱") || !tt.HasText("仅当前项目 · 由你选择是否开启") {
+		t.Fatal("code graph empty state missing V4 elements or footer")
+	}
+	if !tt.HasText("代码索引暂不可用") {
+		t.Fatal("code graph empty state hid graphError")
+	}
+	if tt.HasText("官方代码索引状态：全局缓存不应展示") {
+		t.Fatal("code graph empty state leaked global restored codeStatus")
+	}
+	a.codeStatus = "正在等待索引确认"
+	tt.Frame()
+	if !tt.HasText("正在等待索引确认") {
+		t.Fatal("code graph empty state hid project-scoped codeStatus")
+	}
+
+	// Enable code graph -> toolbar shows V4 code index actions.
+	a.Config.Projects[0].CodeEnabled = true
+	tt.Frame()
+	if !tt.HasText("关闭代码索引") || !tt.HasText("更新代码图谱") || !tt.HasText("刷新图谱") {
+		t.Fatal("enabled code graph toolbar missing V4 action buttons")
+	}
+}

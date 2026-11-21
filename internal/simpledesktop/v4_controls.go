@@ -123,10 +123,14 @@ func v4Badge(c *ui.Context, label, tone string) ui.Element {
 	case "danger":
 		bg, fg = tok.Danger.Alpha(0.12), tok.Danger
 	}
-	return ui.Text(c, label).
-		Font("system-ui").FontSize(fsCaption).FontWeight(500).FontFeatures("tnum").
+	return ui.Row(c).
 		Height(20).Padding(0, 7).Radius(radiusSmall).
-		Background(bg).TextColor(fg).SingleLine().Shrink(0)
+		Background(bg).AlignItems(ui.Center).Justify(ui.Center).Shrink(0).
+		Children(func() {
+			ui.Text(c, label).
+				Font("system-ui").FontSize(fsCaption).FontWeight(500).FontFeatures("tnum").
+				TextColor(fg).SingleLine()
+		})
 }
 
 // v4MenuItem describes an entry for v4BuildMenu.

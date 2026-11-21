@@ -58,12 +58,6 @@ type userProfilesState struct {
 	docEnter                             uint64
 	Copied                               string
 	CopyUntil                            time.Time
-	parsedBodyKey                        string
-	parsedBodyRaw                        string
-	parsedUnwrapped                      string
-	parsedSections                       []profileParsedSection
-	parsedStructured                     bool
-	parsedCount                          int
 }
 
 var userProfileIcon = homeSVG(`<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>`)

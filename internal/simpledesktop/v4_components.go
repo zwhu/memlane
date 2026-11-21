@@ -245,10 +245,14 @@ func v4CountBadge(c *ui.Context, label string, active bool) ui.Element {
 	if active {
 		bg, fg = tok.Accent, tok.OnAccent
 	}
-	return ui.Text(c, label).
-		Font("system-ui").FontSize(fsCaption).FontWeight(600).FontFeatures("tnum").
+	return ui.Row(c).
 		MinWidth(20).Height(18).Padding(0, 6).Radius(9).
-		Background(bg).TextColor(fg).TextAlign(ui.Center).SingleLine()
+		Background(bg).AlignItems(ui.Center).Justify(ui.Center).Shrink(0).
+		Children(func() {
+			ui.Text(c, label).
+				Font("system-ui").FontSize(fsCaption).FontWeight(600).FontFeatures("tnum").
+				TextColor(fg).SingleLine()
+		})
 }
 
 // formatBadgeCount formats unread counts for sidebar badges.

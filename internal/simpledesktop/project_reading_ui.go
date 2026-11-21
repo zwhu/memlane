@@ -143,14 +143,6 @@ func (a *App) projectHeader(c *ui.Context) {
 				back = a.returnToSearch
 				label = "返回搜索"
 			}
-		} else if a.page == "检索结果" {
-			if len(a.state().History) > 0 {
-				back = func() { a.returnFromSource(a.state()) }
-				label = "返回检索结果"
-			} else {
-				back = a.returnToSearch
-				label = "返回搜索"
-			}
 		} else if (a.page == "知识" || a.page == "通用知识") && len(a.state().History) > a.overviewSourceFloor[a.state()] {
 			back = func() { a.returnFromSource(a.state()) }
 			label = "返回记忆"
@@ -158,7 +150,7 @@ func (a *App) projectHeader(c *ui.Context) {
 			back = func() { v := a.settingsOrigin; a.restoreReadingLocation(v) }
 			label = "返回项目"
 			switch a.settingsOrigin.Page {
-			case "通用知识", "总览", "设置", "检索结果":
+			case "通用知识", "总览", "设置":
 				label = "返回" + memoryKindLabel(a.settingsOrigin.Page)
 			}
 		}
@@ -179,12 +171,6 @@ func (a *App) projectHeader(c *ui.Context) {
 				title = "项目设置"
 			}
 			homeText(c, title, homeTopTitle).SingleLine()
-		case a.page == "检索结果":
-			ui.Icon(c, v4IconSearch).FontSize(16).TextColor(tok.Text2).Shrink(0)
-			homeText(c, "检索结果", homeTopTitle).SingleLine()
-			if meta := a.searchResultsHeaderMeta(); meta != "" {
-				homeText(c, meta, homeMeta).SingleLine().MinWidth(0)
-			}
 		case a.page == "知识" || a.page == "图谱":
 			if p, ok := a.current(); ok {
 				ui.Icon(c, v4IconFolder).FontSize(16).TextColor(tok.Text2).Shrink(0)
@@ -249,10 +235,6 @@ func (a *App) projectTabs(c *ui.Context) {
 }
 
 func (a *App) projectReading(c *ui.Context) {
-	if a.page == "检索结果" {
-		a.searchResultsPage(c, a.state())
-		return
-	}
 	if a.kind == "管理" {
 		ui.Column(c.Key("project-management-page")).Fill().Background(tok.Bg).Children(func() {
 			a.projectNavigation(c)

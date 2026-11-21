@@ -2,90 +2,12 @@ package simpledesktop
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/markdown"
 )
-
-type profileParsedEntry struct {
-	Date string
-	Text string
-}
-
-type profileParsedSection struct {
-	Heading string
-	Items   []profileParsedEntry
-}
-
-var profileDatedLineRe = regexp.MustCompile(`^(?:[-*]\s+)?\[(\d{4}-\d{2}-\d{2})\]\s*[-–—]\s*(.+)$`)
-
-// parseProfileDisplaySections splits display text into ## headings and
-// "[YYYY-MM-DD] - ..." dated entries. Returns (sections, true) only when at
-// least one dated entry is found; otherwise callers fall back to Markdown.
-func parseProfileDisplaySections(body string) ([]profileParsedSection, bool) {
-	lines := strings.Split(body, "\n")
-	sections := make([]profileParsedSection, 0, 4)
-	current := profileParsedSection{}
-	datedCount := 0
-	for _, raw := range lines {
-		line := strings.TrimSpace(raw)
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "# ") {
-			continue
-		}
-		if strings.HasPrefix(line, "## ") {
-			if current.Heading != "" || len(current.Items) > 0 {
-				sections = append(sections, current)
-			}
-			current = profileParsedSection{Heading: strings.TrimSpace(strings.TrimPrefix(line, "## "))}
-			continue
-		}
-		if m := profileDatedLineRe.FindStringSubmatch(line); m != nil {
-			datedCount++
-			current.Items = append(current.Items, profileParsedEntry{
-				Date: m[1],
-				Text: strings.TrimSpace(m[2]),
-			})
-			continue
-		}
-		cleaned := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(line, "- "), "* "))
-		current.Items = append(current.Items, profileParsedEntry{Text: cleaned})
-	}
-	if current.Heading != "" || len(current.Items) > 0 {
-		sections = append(sections, current)
-	}
-	if datedCount == 0 {
-		return nil, false
-	}
-	return sections, true
-}
-
-func (s *userProfilesState) cachedDisplaySections() (unwrapped string, sections []profileParsedSection, structured bool, entryCount int) {
-	if s.Body == "" {
-		return "", nil, false, 0
-	}
-	if s.parsedBodyKey == s.BodyKey && s.parsedBodyRaw == s.Body {
-		return s.parsedUnwrapped, s.parsedSections, s.parsedStructured, s.parsedCount
-	}
-	unwrapped = profileReadingMarkdown(s.Body)
-	sections, structured = parseProfileDisplaySections(unwrapped)
-	if structured {
-		for _, sec := range sections {
-			entryCount += len(sec.Items)
-		}
-	}
-	s.parsedBodyKey = s.BodyKey
-	s.parsedBodyRaw = s.Body
-	s.parsedUnwrapped = unwrapped
-	s.parsedSections = sections
-	s.parsedStructured = structured
-	s.parsedCount = entryCount
-	return unwrapped, sections, structured, entryCount
-}
 
 func profileUpdatedDay(ts float64) string {
 	if ts <= 0 {
@@ -99,7 +21,7 @@ func profileUpdatedDay(ts float64) string {
 	return t.Format("2006-01-02")
 }
 
-func profileSourceMeta(p userProfile, entryCount int) (text string, fail bool, dotState string) {
+func profileSourceMeta(p userProfile) (text string, fail bool, dotState string) {
 	switch {
 	case p.Status == "generating":
 		return fmt.Sprintf("正在导出 · %d 秒", p.Progress.Elapsed), false, "run"
@@ -119,13 +41,6 @@ func profileSourceMeta(p userProfile, entryCount int) (text string, fail bool, d
 		suffix := "自动生成"
 		if p.Method == "manual" {
 			suffix = "手动导入"
-		}
-		if entryCount > 0 {
-			if p.Method == "manual" {
-				suffix = fmt.Sprintf("手动导入 · %d 条", entryCount)
-			} else {
-				suffix = fmt.Sprintf("%d 条", entryCount)
-			}
 		}
 		return day + " · " + suffix, false, "ok"
 	default:
@@ -222,11 +137,7 @@ func (a *App) userProfileSourceColumn(c *ui.Context) {
 						previousGroup = group
 					}
 					on := s.Selected == p.ID
-					entryCount := 0
-					if on && s.Body != "" {
-						_, _, _, entryCount = s.cachedDisplaySections()
-					}
-					metaText, isFail, dotState := profileSourceMeta(p, entryCount)
+					metaText, isFail, dotState := profileSourceMeta(p)
 
 					btn := ui.ButtonBase(c.Key("profile-source-"+p.ID)).Role(ui.RoleButton).
 						Label(p.Name+"用户画像").Cursor(ui.CursorPointer).
@@ -289,7 +200,6 @@ func (a *App) userProfileReaderPane(c *ui.Context) {
 			v4EmptyState(c, "profile-empty-select", "选择一个 AI，查看它对你的了解", s.Message)
 			return
 		}
-		unwrapped, sections, structured, entryCount := s.cachedDisplaySections()
 		if s.docKey != p.ID {
 			s.docKey = p.ID
 			s.docEnter++
@@ -328,10 +238,6 @@ func (a *App) userProfileReaderPane(c *ui.Context) {
 					if day := profileUpdatedDay(p.Updated); day != "" {
 						homeText(c, "更新于 "+day, homeMeta).FontFeatures("tnum").SingleLine()
 					}
-					if entryCount > 0 {
-						homeText(c, "·", homeMeta)
-						homeText(c, fmt.Sprintf("%d 条记录", entryCount), homeMeta).FontFeatures("tnum").SingleLine()
-					}
 				})
 
 				// Progress indicator when generating
@@ -358,36 +264,10 @@ func (a *App) userProfileReaderPane(c *ui.Context) {
 					})
 				}
 
-				// Body content: structured date-column entries or Markdown fallback
+				// Body content: unified V4 Markdown reading
 				switch {
-				case s.Body != "" && structured:
-					ui.Column(c.Key("user-profile-structured-"+s.BodyKey)).FillWidth().Gap(sp6).Children(func() {
-						for secIdx, sec := range sections {
-							section := sec
-							ui.Column(c.Key(fmt.Sprintf("profile-sec-%d", secIdx))).FillWidth().Children(func() {
-								if section.Heading != "" {
-									ui.Text(c, section.Heading).Font("system-ui").FontSize(fsCaption).FontWeight(600).
-										TextColor(tok.Text3).FillWidth().Padding(0, 0, sp2, 0).
-										BorderWidth(0, 0, 1, 0).BorderColor(tok.Border)
-								}
-								for itemIdx, it := range section.Items {
-									if it.Date != "" {
-										ui.Row(c.Key(fmt.Sprintf("profile-entry-%d-%d", secIdx, itemIdx))).
-											FillWidth().Padding(10, 0).Gap(sp4).AlignItems(ui.Start).
-											BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
-											ui.Text(c, it.Date).Font("SF Mono").FontSize(fsCaption).FontFeatures("tnum").
-												TextColor(tok.Text3).Width(78).Shrink(0).SingleLine().Margin(3, 0, 0, 0)
-											v4InlineMarkdown(c, it.Text, fsReading, 400, 1.75, tok.Text1).Grow(1).MinWidth(0)
-										})
-									} else {
-										v4InlineMarkdown(c, it.Text, fsReading, 400, 1.8, tok.Text1).Margin(sp2, 0, 0, 0)
-									}
-								}
-							})
-						}
-					})
 				case s.Body != "":
-					a.commonMarkdown(c, "user-profile-markdown-"+s.BodyKey, unwrapped)
+					markdown.View(c.Key("user-profile-markdown-"+s.BodyKey), profileReadingMarkdown(s.Body), a.v4MarkdownOptions(fsReading))
 				case !p.working():
 					emptyMsg := fmt.Sprintf("尚未从 %s 导入画像，可点击底部「尝试导入」或「手动导入」", p.Name)
 					if !p.CanGenerate {
@@ -478,13 +358,13 @@ func (a *App) userProfileImportDialog(c *ui.Context) {
 		}
 	}
 	v4Dialog(c, &s.Open, v4DialogOptions{
-		Key:         "user-profile-import-" + s.DraftSource,
-		Title:       "手动导入 " + source.Name + " 用户画像",
-		Width:       v4DialogLarge,
-		ScrollBody:  true,
-		Hint:        "支持 ## 二级标题与「- [YYYY-MM-DD] - 内容」格式",
-		CancelText:  "取消",
-		ConfirmText: "保存画像",
+		Key:             "user-profile-import-" + s.DraftSource,
+		Title:           "手动导入 " + source.Name + " 用户画像",
+		Width:           v4DialogLarge,
+		ScrollBody:      true,
+		Hint:            "支持直接粘贴任意 Markdown 正文，保留原文不做改写",
+		CancelText:      "取消",
+		ConfirmText:     "保存画像",
 		ConfirmDisabled: s.Busy || strings.TrimSpace(s.Draft) == "" || len(s.Draft) > 256*1024 || source.ID == "",
 		Leading: func() {
 			agentLogo(c, agentBrandIconFor(source.Kind, source.Name), 22)
@@ -495,7 +375,7 @@ func (a *App) userProfileImportDialog(c *ui.Context) {
 				v4SmallButton(c, "复制提示词", v4IconCopy, func() { c.WriteClipboard(s.Directory.Prompt) }).Disabled(s.Directory.Prompt == "")
 			})
 			ui.TextArea(c.Key("profile-import-body-"+s.DraftSource), &s.Draft).
-				Label("用户画像文档").Placeholder("粘贴 "+source.Name+" 返回的用户画像正文…").
+				Label("用户画像文档").Placeholder("粘贴 " + source.Name + " 返回的用户画像正文…").
 				FillWidth().Height(220).FontSize(fsBody).Disabled(s.Busy).
 				OnChange(func() { s.Drafts[s.DraftSource] = s.Draft })
 			if s.Message != "" {

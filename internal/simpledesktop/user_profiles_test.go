@@ -175,9 +175,12 @@ func TestProfileExportEnvelopeKeepsInnerCodeAndSavedSource(t *testing.T) {
 }
 
 func TestUserProfileAntigravityDisplaysGeminiAppAndAllowsAutomaticImport(t *testing.T) {
-	var called string
+	called := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = r.Method + " " + r.URL.Path
+		select {
+		case called <- r.Method + " " + r.URL.Path:
+		default:
+		}
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"profiles":[{"instance_id":"antigravity-test","kind":"antigravity","name":"Gemini App","status":"queued","can_generate":true}],"prompt":"p"}`)
 	}))
@@ -188,7 +191,8 @@ func TestUserProfileAntigravityDisplaysGeminiAppAndAllowsAutomaticImport(t *test
 	}
 	a := profileUIFixture(t)
 	a.Config.ProjectControl = &ProjectControlConfig{URL: server.URL, ManagementTokenFile: key}
-	a.Update = func(fn func()) { fn() }
+	updates := make(chan func(), 4)
+	a.Update = func(fn func()) { updates <- fn }
 	a.userProfiles.Directory.Profiles = []userProfile{
 		{ID: "antigravity-test", Kind: "antigravity", Name: "Gemini App", Status: "manual", CanGenerate: true},
 	}
@@ -205,35 +209,88 @@ func TestUserProfileAntigravityDisplaysGeminiAppAndAllowsAutomaticImport(t *test
 		t.Fatal("automatic import button missing")
 	}
 	clickProjectUI(t, tt, "从Gemini App导入画像")
-	deadline := time.Now().Add(2 * time.Second)
-	for called == "" && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	var got string
+	select {
+	case got = <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("automatic import request missing")
 	}
-	if called != "POST /v1/user-profiles/antigravity-test/generate" {
-		t.Fatalf("expected enabled automatic import request, got %q", called)
+	select {
+	case update := <-updates:
+		update()
+	case <-time.After(2 * time.Second):
+		t.Fatal("automatic import update callback missing")
+	}
+	if got != "POST /v1/user-profiles/antigravity-test/generate" {
+		t.Fatalf("expected enabled automatic import request, got %q", got)
 	}
 }
 
-func TestUserProfileV4StructuredDateEntriesAndFallback(t *testing.T) {
-	body := "## 工作习惯\n- [2026-11-18] - 偏好 `1200×820` 固定窗口与发丝分隔\n- [2026-11-19] - 先给结论再给依据\n\n## 技术偏好\n- [2026-11-20] - 零侵入外置扩展"
-	sections, ok := parseProfileDisplaySections(body)
-	if !ok || len(sections) != 2 || len(sections[0].Items) != 2 || sections[0].Items[0].Date != "2026-11-18" || len(sections[1].Items) != 1 {
-		t.Fatalf("unexpected parsed profile sections: ok=%v sections=%+v", ok, sections)
+func TestUserProfileV4UnifiedMarkdownFormatsAndVerbatimCopy(t *testing.T) {
+	// Source meta must show only "<day> · 自动生成" or "<day> · 手动导入" with no entry count.
+	autoMeta, autoFail, autoDot := profileSourceMeta(userProfile{Status: "ready", Method: "automatic", Updated: 1794830400})
+	if autoFail || autoDot != "ok" || !strings.HasSuffix(autoMeta, " · 自动生成") || strings.Contains(autoMeta, "条") {
+		t.Fatalf("unexpected automatic profile source meta: text=%q fail=%v dot=%q", autoMeta, autoFail, autoDot)
 	}
-	if _, ok := parseProfileDisplaySections("## 普通段落\n\n没有日期前缀的正文。"); ok {
-		t.Fatal("plain markdown without dated entries must fall back to Markdown")
+	manualMeta, manualFail, manualDot := profileSourceMeta(userProfile{Status: "ready", Method: "manual", Updated: 1794830400})
+	if manualFail || manualDot != "ok" || !strings.HasSuffix(manualMeta, " · 手动导入") || strings.Contains(manualMeta, "条") {
+		t.Fatalf("unexpected manual profile source meta: text=%q fail=%v dot=%q", manualMeta, manualFail, manualDot)
 	}
 
+	cases := []struct {
+		name     string
+		body     string
+		expected []string
+	}{
+		{
+			name:     "chinese-five-section",
+			body:     "# 用户画像\n\n## 身份与背景\n- [2026-11-18] - 程序员，专注桌面与 AI 工具\n\n## 工作与协作偏好\n- [2026-11-19] - 先给结论再给依据\n\n## 技术偏好\n- [2026-11-20] - 零侵入外置扩展\n\n## 沟通与写作风格\n- 简洁中文\n\n## 依据与未知\n- 仅依据现有记忆",
+			expected: []string{"身份与背景", "工作与协作偏好", "零侵入外置扩展", "依据与未知"},
+		},
+		{
+			name:     "english-headings-and-code-block",
+			body:     "# User Profile\n\n## Engineering Stack\n\nPrefers Go and Python tooling:\n\n```go\npackage main\nfunc main() {}\n```\n",
+			expected: []string{"User Profile", "Engineering Stack", "package main"},
+		},
+		{
+			name:     "dateless-prose",
+			body:     "Plain prose without headings or dates. Keeps original phrasing intact.",
+			expected: []string{"Plain prose without headings or dates. Keeps original phrasing intact."},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := profileUIFixture(t)
+			a.userProfiles.Body = tc.body
+			a.userProfiles.BodyKey = "codex/synthetic/" + tc.name
+			tt := ui.NewTester(a.View, 1200, 820)
+			for _, want := range tc.expected {
+				if !tt.HasText(want) {
+					t.Fatalf("missing expected markdown text %q in %v", want, tt.Texts())
+				}
+			}
+			for _, text := range tt.Texts() {
+				if strings.Contains(text, "条记录") || strings.Contains(text, " · 3 条") {
+					t.Fatalf("unexpected entry count leaked in UI: %q", text)
+				}
+			}
+			clickProjectUI(t, tt, "复制正文")
+			if tt.Clipboard() != tc.body {
+				t.Fatalf("copy body did not copy raw profile body verbatim: got %q want %q", tt.Clipboard(), tc.body)
+			}
+		})
+	}
+
+	// Verify import dialog hint, ↑↓ keyboard switch, and failed profile "重新导入".
 	a := profileUIFixture(t)
-	a.userProfiles.Body = body
 	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("2026-11-18") || !tt.HasText("工作习惯") || !tt.HasText("复制正文") || !tt.HasText("3 条记录") {
-		t.Fatalf("structured profile V4 rendering missing expected elements: %v", tt.Texts())
+	clickProjectUI(t, tt, "导入此来源画像")
+	if !tt.HasText("支持直接粘贴任意 Markdown 正文，保留原文不做改写") {
+		t.Fatalf("import dialog hint not updated: %v", tt.Texts())
 	}
-	clickProjectUI(t, tt, "复制正文")
-	if tt.Clipboard() != body {
-		t.Fatalf("copy body did not copy raw profile body: %q", tt.Clipboard())
-	}
+	clickProjectUI(t, tt, "取消")
+
 	// Window-level ↑↓ keyboard switch works immediately upon entering the profile page.
 	tt.Key(0, ui.KeyDown)
 	if a.userProfiles.Selected != "manual:grok" {

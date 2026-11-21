@@ -94,18 +94,24 @@ func (a *App) discardCommonDraft() {
 	a.commonPage = commonKnowledgePageState{}
 }
 func (a *App) commonListToolbar(c *ui.Context) {
+	s := a.state()
 	e := &a.commonEdit
-	paneHeading(c, "记忆库", func() {
+	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+		ui.Text(c, "记忆库").Font("system-ui").FontSize(fsBody).FontWeight(600).TextColor(tok.Text1).SingleLine()
+		ui.Spacer(c)
 		label := "新增通用记忆"
+		icon := v4IconPlus
 		if commonHasDraft(*e) {
 			label = "继续草稿"
+			icon = nil
 			if e.Submitted {
 				label = "查看保存结果"
 			}
 		}
-		b := commonButton(c, label, false, func() { a.beginCommonDraft(nil) })
+		b := v4SmallButton(c, label, icon, func() { a.beginCommonDraft(nil) })
 		p, ok := a.current()
 		b.Disabled(a.Config.ProjectControl == nil || !ok || p.Dataset == "" || e.DeleteSubmitted)
+		refreshAction(c, "刷新通用记忆", func() { a.load(s) })
 	})
 	labels := []string{"全部", "个人偏好", "通用经验"}
 	selected := 0
@@ -114,46 +120,49 @@ func (a *App) commonListToolbar(c *ui.Context) {
 			selected = n
 		}
 	}
-	ui.Segmented(c, &selected, labels...).Label("通用记忆分类").FillWidth().OnChange(func() {
+	v4Segmented(c, "common-category-seg", "通用记忆分类", &selected, labels, func() {
 		e.Category = ""
 		if selected > 0 {
 			e.Category = labels[selected]
 		}
 		e.Open = false
-		s := a.state()
 		s.Offset = 0
 		a.load(s)
-	})
+	}).FillWidth()
 	if len(a.Config.Common) > 1 {
 		options := projectLabels(a.Config.Common)
 		selected := options[min(max(a.project, 0), len(options)-1)]
-		ui.Select(c, &selected, options).Label("通用记忆库").FillWidth().Disabled(e.Open || e.Busy || (e.Submitted && !e.Completed) || e.DeleteSubmitted).OnChange(func() {
-			for n, label := range options {
-				if label == selected {
-					a.navigate("通用知识", n)
-					break
+		selectOpts := make([]v4SelectOption, 0, len(options))
+		for _, opt := range options {
+			selectOpts = append(selectOpts, v4SelectOption{Value: opt, Label: opt})
+		}
+		v4Select(c, "common-library-select", "通用记忆库", selected, selectOpts,
+			e.Open || e.Busy || (e.Submitted && !e.Completed) || e.DeleteSubmitted, false,
+			func(next string) {
+				for n, label := range options {
+					if label == next {
+						a.navigate("通用知识", n)
+						break
+					}
 				}
-			}
-		})
+			}).FillWidth()
 	}
 }
 func (a *App) commonKnowledgePage(c *ui.Context) {
 	s := a.state()
 	e := &a.commonEdit
 	readingSplit(c, "common-reading-split", &a.layout.CommonListWidth, func() {
-		ui.Column(c).Fill().Children(func() {
-			ui.Column(c).Shrink(0).Padding(pageTopInset, paneInset, controlGap, paneInset).Gap(controlGap).Children(func() {
+		ui.Column(c.Key("common-list-pane")).Fill().Background(tok.Bg).Children(func() {
+			ui.Column(c).Shrink(0).Padding(sp3, sp4, sp3, sp4).Gap(sp2).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 				a.commonListToolbar(c)
 				if len(s.Knowledge.RecallFilter) > 0 {
-					homeText(c, fmt.Sprintf("本次召回 · %d 条", len(s.Knowledge.RecallFilter)), homeBody)
-					queueAction(c, "显示全部记忆", func() { s.Knowledge.RecallFilter = nil; s.Offset = 0; a.load(s) })
-					queueAction(c, "返回动态", func() { a.navigate("总览", 0) })
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Padding(sp1, 0, 0, 0).Children(func() {
+						ui.Text(c, fmt.Sprintf("本次召回 · %d 条", len(s.Knowledge.RecallFilter))).Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Accent).SingleLine()
+						ui.Spacer(c)
+						v4SmallButton(c, "显示全部记忆", nil, func() { s.Knowledge.RecallFilter = nil; s.Offset = 0; a.load(s) })
+						v4SmallButton(c, "返回动态", nil, func() { a.navigate("总览", 0) })
+					})
 				}
-				ui.Row(c).AlignItems(ui.Center).Children(func() {
-					homeText(c, projectListStatus(s), homeMeta)
-					ui.Spacer(c)
-					refreshAction(c, "刷新通用记忆", func() { a.load(s) })
-				})
 				if s.Loading && s.Loaded {
 					homeText(c, "正在刷新，保留现有内容", homeMeta)
 				}
@@ -162,23 +171,25 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 					if s.Loaded {
 						message = "未能刷新，显示上次结果 · " + s.Error
 					}
-					homeText(c, message, homeBody).MaxLines(3)
-					projectLink(c, "重试读取", func() { a.load(s) })
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+						ui.Text(c, message).Font("system-ui").FontSize(fsCaption).TextColor(tok.Danger).Grow(1).MinWidth(0).MaxLines(2)
+						v4SmallButton(c, "重试读取", nil, func() { a.load(s) })
+					})
 				}
 				if !e.Open && e.Message != "" {
 					homeText(c, e.Message, homeMeta).MaxLines(3)
 				}
 				if e.DeleteSubmitted {
-					projectLink(c, "核对原删除结果", a.confirmCommonDeletion).Disabled(e.Busy)
+					v4SmallButton(c, "核对原删除结果", nil, a.confirmCommonDeletion).Disabled(e.Busy)
 				}
 			})
-			a.itemList(c, s, true)
-			appFooter(c, "通用记忆分页栏").Padding(0, paneInset).Children(func() {
+			a.commonKnowledgeList(c, s)
+			appFooter(c, "通用记忆分页栏").Padding(0, sp4).Gap(sp2).Children(func() {
 				homeText(c, projectListStatus(s), homeMeta)
 				ui.Spacer(c)
-				readingAction(c, "上一页", readingBack, func() { s.Offset = max(0, s.Offset-30); a.load(s) }).Disabled(s.Offset == 0 || s.Loading)
-				homeText(c, fmt.Sprint(s.Offset/30+1), homeMeta)
-				readingAction(c, "下一页", homeArrow, func() { s.Offset += 30; a.load(s) }).Disabled(!s.More || s.Loading)
+				v4SmallButton(c, "上一页", nil, func() { s.Offset = max(0, s.Offset-30); a.load(s) }).Disabled(s.Offset == 0 || s.Loading)
+				ui.Text(c, fmt.Sprint(s.Offset/30+1)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
+				v4SmallButton(c, "下一页", nil, func() { s.Offset += 30; a.load(s) }).Disabled(!s.More || s.Loading)
 			})
 		})
 	}, func() {
@@ -189,6 +200,128 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 		}
 	})
 }
+
+func commonListPreview(i Item) string {
+	if i.BodyLoaded {
+		if parts, canonical := commonReadingParts(i); canonical {
+			body := strings.TrimSpace(strings.ReplaceAll(parts.Body, "\n", " "))
+			title := strings.TrimSpace(parts.Title)
+			if title != "" && body != "" {
+				return "**" + strings.ReplaceAll(title, "**", "") + "**  " + body
+			}
+			if body != "" {
+				return body
+			}
+			if title != "" {
+				return title
+			}
+		}
+		if body := knowledgeCardBody(i); body != "" {
+			return strings.ReplaceAll(body, "\n", " ")
+		}
+	}
+	return strings.TrimSpace(i.Title)
+}
+
+func (a *App) commonKnowledgeList(c *ui.Context, s *pane) {
+	if !s.Loaded && s.Loading && len(s.Items) == 0 {
+		ui.Column(c).Grow(1).MinHeight(0).Padding(sp2, sp4).Gap(sp3).Label("正在读取通用记忆…").Children(func() {
+			for n := 0; n < 5; n++ {
+				ui.Column(c).FillWidth().Padding(10, sp2).Gap(6).Children(func() {
+					ui.Box(c).FillWidth().Height(11).Radius(radiusSmall).Background(tok.Fill2)
+					ui.Box(c).Width(240).Height(11).Radius(radiusSmall).Background(tok.Fill2)
+					ui.Box(c).Width(140).Height(9).Radius(3).Background(tok.Fill1)
+				})
+			}
+		})
+		return
+	}
+	if s.Loaded && s.Error == "" && len(s.Items) == 0 {
+		label := "还没有通用记忆"
+		hint := "可新增个人偏好或可复用的经验。"
+		if a.commonCategoryFilter() != "" || a.commonEdit.Category != "" {
+			label = "当前分类没有通用记忆"
+			hint = ""
+		}
+		v4EmptyState(c, "common-list-empty", label, hint)
+		return
+	}
+	s.ListSelection = -1
+	for n, item := range s.Items {
+		if s.Selected != nil && s.Selected.key() == item.key() {
+			s.ListSelection = n
+			break
+		}
+	}
+	s.WidgetList.Key = func(n int) any { return s.Items[n].key() }
+	s.WidgetList.KeepOffset = true
+	s.WidgetList.Label = func(n int) string {
+		if title := strings.TrimSpace(s.Items[n].Title); title != "" {
+			return title
+		}
+		return commonListPreview(s.Items[n])
+	}
+	s.WidgetList.Selected = &s.ListSelection
+	if s.Selected != nil && s.RevealItem == s.Selected.key() && s.ListSelection >= 0 {
+		s.WidgetList.ScrollTo(s.ListSelection, ui.Center)
+		s.RevealItem = ""
+	}
+	ui.Themed(c, listTheme).Grow(1).MinHeight(0).FillWidth().Background(ui.Transparent).Children(func() {
+		ui.List(c.Key("common-list-"+a.routeKey()), &s.WidgetList, len(s.Items), func(n int) {
+			i := s.Items[n]
+			a.commonListItem(c, s, i, n, n == s.ListSelection)
+		}).Label("通用记忆列表").Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(sp1, sp2, sp3, sp2).Gap(2).OnChange(func() {
+			if s.ListSelection < 0 || s.ListSelection >= len(s.Items) {
+				return
+			}
+			a.commonEdit.Open = false
+			a.projectUI.InfoOpen = false
+			a.selectItem(s, s.Items[s.ListSelection])
+		})
+	})
+}
+
+func (a *App) commonListItem(c *ui.Context, s *pane, i Item, index int, selected bool) {
+	col := ui.Column(c.Key("citem-"+i.key())).FillWidth().MinWidth(0).Padding(10, sp3).Gap(6)
+	if index > 0 && !selected && index-1 != s.ListSelection {
+		col.BorderWidth(1, 0, 0, 0).BorderColor(tok.Border)
+	}
+	col.Children(func() {
+		preview := commonListPreview(i)
+		switch {
+		case i.ReadingState == "failed":
+			homeText(c, "标题读取失败", homeMeta)
+			v4SmallButton(c, "重试读取", nil, func() { a.retryReadingTitle(s, i) })
+		case preview == "":
+			ui.Text(c, "正在读取…").Font("system-ui").FontSize(fsFootnote).FontWeight(400).LineHeight(1.55).TextColor(tok.Text2).MaxLines(knowledgePreviewLines)
+		default:
+			colText := tok.Text1
+			if !i.BodyLoaded {
+				colText = tok.Text2
+			}
+			v4InlineMarkdown(c, preview, fsFootnote, 400, 1.55, colText).MaxLines(knowledgePreviewLines)
+		}
+		ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(sp2).Children(func() {
+			agentLogo(c, recentAgentIcon(i), 16).Tooltip("来源 Agent：" + sourceAgentName(i))
+			v4CategoryChip(c, commonCategoryLabel(i.CommonCategory))
+			v4RecallChip(c, i)
+			ui.Spacer(c)
+			ui.Text(c, displayDate(i.Date)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
+		})
+	})
+}
+
+func commonEmptyWithAction(c *ui.Context, key, message, hint string, action func()) {
+	ui.Column(c).Grow(1).MinHeight(0).FillWidth().AlignItems(ui.Center).Justify(ui.Center).Gap(sp3).Padding(sp6).Children(func() {
+		ui.Column(c).FillWidth().MaxHeight(200).AlignItems(ui.Center).Children(func() {
+			v4EmptyState(c, key, message, hint)
+		})
+		if action != nil {
+			action()
+		}
+	})
+}
+
 func (a *App) commonReadActions(c *ui.Context, i Item) {
 	if a.Config.ProjectControl == nil || i.Document == nil || commonCategory(*i.Document) == "" || !i.BodyLoaded {
 		return
@@ -202,8 +335,8 @@ func (a *App) commonReadActions(c *ui.Context, i Item) {
 			label = "查看保存结果"
 		}
 	}
-	commonButton(c, label, false, func() { a.beginCommonDraft(&i) }).Disabled(e.Busy || e.DeleteSubmitted)
-	commonButton(c, "删除", false, func() { d := *i.Document; e.Delete = &d; e.Message = "" }).TextColor(tok.Danger).Disabled(e.Busy || pending || e.DeleteSubmitted)
+	v4SmallButton(c, label, nil, func() { a.beginCommonDraft(&i) }).Disabled(e.Busy || e.DeleteSubmitted)
+	v4DangerOutlineButton(c, "删除", true, func() { d := *i.Document; e.Delete = &d; e.Message = "" }).Disabled(e.Busy || pending || e.DeleteSubmitted)
 }
 func commonReadingParts(i Item) (CommonDraft, bool) {
 	if i.Document == nil {
@@ -215,66 +348,61 @@ func commonReadingParts(i Item) (CommonDraft, bool) {
 }
 func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 	e := &a.commonEdit
-	ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
+	ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Background(tok.Bg).Children(func() {
 		if s.Selected == nil {
-			ui.Column(c).Grow(1).MinHeight(0).Padding(paneInset).Gap(controlGap).Children(func() {
-				if len(a.Config.Common) == 0 {
-					homeText(c, "尚未连接记忆库", homeHeading)
-					projectLink(c, "前往设置", func() { a.navigate("设置", 0) })
-					return
+			switch {
+			case len(a.Config.Common) == 0:
+				commonEmptyWithAction(c, "common-unconnected", "尚未连接记忆库", "", func() {
+					v4OutlineButton(c, "前往设置", nil, func() { a.navigate("设置", 0) })
+				})
+			case !s.Loaded:
+				message := "正在读取…"
+				if s.Error != "" {
+					message = "读取失败"
 				}
-				if !s.Loaded {
-					message := "正在读取…"
-					if s.Error != "" {
-						message = "读取失败"
+				v4EmptyState(c, "common-loading", message, "")
+			case len(s.Items) > 0:
+				v4EmptyState(c, "common-select", "选择一条记忆", "")
+			case s.Loading || s.Error != "":
+				message := "正在刷新…"
+				if s.Error != "" {
+					message = "未能刷新，显示上次结果"
+				}
+				v4EmptyState(c, "common-refresh", message, "")
+			case e.Category != "" || s.Offset > 0:
+				commonEmptyWithAction(c, "common-filter-empty", "当前分类没有记忆", "", func() {
+					v4OutlineButton(c, "显示全部", nil, func() { e.Category = ""; s.Offset = 0; a.load(s) })
+				})
+			default:
+				commonEmptyWithAction(c, "common-empty", "还没有通用记忆", "个人偏好和跨项目经验放在这里。", func() {
+					if a.Config.ProjectControl != nil {
+						v4PrimaryButton(c, "添加记忆", func() { a.beginCommonDraft(nil) })
 					}
-					homeText(c, message, homeHeading)
-					return
-				}
-				if len(s.Items) > 0 {
-					homeText(c, "选择一条记忆", homeHeading)
-					return
-				}
-				if s.Loading || s.Error != "" {
-					message := "正在刷新…"
-					if s.Error != "" {
-						message = "未能刷新，显示上次结果"
-					}
-					homeText(c, message, homeBody)
-					return
-				}
-				if e.Category != "" || s.Offset > 0 {
-					homeText(c, "当前分类没有记忆", homeHeading)
-					projectLink(c, "显示全部", func() { e.Category = ""; s.Offset = 0; a.load(s) })
-					return
-				}
-				homeText(c, "还没有通用记忆", homeHeading)
-				homeText(c, "个人偏好和跨项目经验放在这里。", homeBody).MaxWidth(400)
-				if a.Config.ProjectControl != nil {
-					commonButton(c, "添加记忆", true, func() { a.beginCommonDraft(nil) })
-				}
-			})
-			appFooter(c, "通用记忆阅读栏").Padding(0, paneInset).Children(func() { homeText(c, "跨项目参考 · 项目明确约定优先", homeMeta) })
+				})
+			}
+			appFooter(c, "通用记忆阅读栏").Padding(0, sp6).Children(func() { homeText(c, "跨项目参考 · 项目明确约定优先", homeMeta) })
 			return
 		}
 		i := *s.Selected
 		appToolbar(c, "通用记忆内容工具栏", func() {
-			homeText(c, commonCategoryLabel(i.CommonCategory), homeMeta).FontWeight(500)
-			row := ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(4)
-			row.Children(func() {
-				homeText(c, "· "+displayDate(i.Date), homeMeta)
-				hoverCopyAction(c, row, "复制内容", func() { c.WriteClipboard(itemPresentation(i).VisibleBody); a.copyFeedback("内容") }).Disabled(!i.BodyLoaded)
+			ui.Row(c).FillWidth().MaxWidth(readerMaxW).AlignItems(ui.Center).Gap(sp2).Children(func() {
+				v4CategoryChip(c, commonCategoryLabel(i.CommonCategory))
+				row := ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(4)
+				row.Children(func() {
+					ui.Text(c, displayDate(i.Date)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
+					hoverCopyAction(c, row, "复制内容", func() { c.WriteClipboard(itemPresentation(i).VisibleBody); a.copyFeedback("内容") }).Disabled(!i.BodyLoaded)
+				})
+				v4RecallChip(c, i)
+				knowledgeBasisTag(c, i)
+				ui.Spacer(c)
+				anchor := readingAction(c, "内容信息", readingInfo, func() { a.projectUI.InfoOpen = !a.projectUI.InfoOpen; a.projectUI.InfoKey = i.key() })
+				if a.projectUI.InfoKey != i.key() {
+					a.projectUI.InfoOpen = false
+				}
+				a.contentInformation(c, anchor, i)
+				a.commonReadActions(c, i)
 			})
-			knowledgeRecallLabel(c, i)
-			knowledgeBasisTag(c, i)
-			ui.Spacer(c)
-			anchor := readingAction(c, "内容信息", readingInfo, func() { a.projectUI.InfoOpen = !a.projectUI.InfoOpen; a.projectUI.InfoKey = i.key() })
-			if a.projectUI.InfoKey != i.key() {
-				a.projectUI.InfoOpen = false
-			}
-			a.contentInformation(c, anchor, i)
-			a.commonReadActions(c, i)
-		})
+		}).Height(44).Padding(0, sp10)
 		if e.Delete != nil && e.Delete.ID == i.ID && e.Delete.Dataset == i.Dataset {
 			a.commonDeletionBanner(c, i)
 		}
@@ -283,14 +411,14 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 			scroll = &ui.ScrollState{}
 			s.DetailScroll[i.key()] = scroll
 		}
-		ui.Scroll(c.Key("common-detail-"+i.key())).Grow(1).MinHeight(0).TrackScroll(scroll).Padding(controlGap, paneInset, paneInset, paneInset).Children(func() {
-			ui.Column(c).FillWidth().MaxWidth(760).Gap(20).Children(func() {
+		ui.Scroll(c.Key("common-detail-"+i.key())).Grow(1).MinHeight(0).TrackScroll(scroll).Padding(sp4, sp10, sp8, sp10).Children(func() {
+			ui.Column(c).FillWidth().MaxWidth(readerMaxW).Gap(sp4).Children(func() {
 				parts, canonical := commonReadingParts(i)
 				title := projectDisplayTitle(i)
 				if canonical {
 					title = parts.Title
 				}
-				homeText(c, title, homeHeading).FontSize(22).LineHeight(1.45)
+				homeText(c, title, homeHeading).FontSize(fsTitle).LineHeight(1.35)
 				if s.Reading {
 					homeText(c, "正在读取正文…", homeMeta)
 				}
@@ -300,20 +428,35 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 				if canonical {
 					a.commonMarkdown(c, "common-body-"+i.key(), parts.Body)
 					if parts.Applicability != "" {
-						ui.Column(c).FillWidth().Padding(14, 16).Gap(8).Background(tok.Fill1).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Children(func() {
-							homeText(c, "适用条件", homeMeta).FontWeight(500)
+						ui.Column(c).FillWidth().Margin(sp2, 0, 0, 0).Padding(sp4, 0, 0, 0).Gap(sp2).
+							BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
+							ui.Text(c, "适用条件").Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
 							a.commonMarkdown(c, "common-conditions-"+i.key(), parts.Applicability)
 						})
 					}
 					if parts.Source != "" {
-						ui.Column(c).Gap(6).Children(func() { homeText(c, "原始来源", homeMeta); homeText(c, parts.Source, homeBody).FontSize(12) })
+						ui.Column(c).FillWidth().Margin(sp2, 0, 0, 0).Padding(sp4, 0, 0, 0).Gap(sp2).
+							BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
+							ui.Text(c, "原始来源").Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
+							ui.Text(c, parts.Source).Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text2).LineHeight(1.6)
+						})
 					}
 				} else {
 					a.commonMarkdown(c, "common-original-"+i.key(), itemPresentation(i).VisibleBody)
 				}
 			})
 		})
-		appFooter(c, "通用记忆阅读栏").Padding(0, paneInset).Children(func() { homeText(c, "跨项目参考 · 项目明确约定优先", homeMeta) })
+		appFooter(c, "通用记忆阅读栏").Padding(0, sp6).Gap(sp2).Children(func() {
+			homeText(c, "跨项目参考 · 项目明确约定优先", homeMeta)
+			ui.Spacer(c)
+			if time.Now().Before(a.projectUI.CopyUntil) {
+				homeText(c, a.projectUI.Copied+"已复制", homeMeta)
+			}
+			v4OutlineButton(c, "复制正文", v4IconCopy, func() {
+				c.WriteClipboard(itemPresentation(i).VisibleBody)
+				a.copyFeedback("正文")
+			}).Disabled(!i.BodyLoaded)
+		})
 	})
 }
 func (a *App) commonMarkdown(c *ui.Context, key, body string) {
@@ -348,20 +491,11 @@ func (a *App) commonDeletionBanner(c *ui.Context, i Item) {
 		return
 	}
 
-	ui.Column(c).Shrink(0).Margin(0, 24, 10, 24).Padding(12, 16).Gap(8).Border(1, tok.Danger.Alpha(.35)).Radius(8).Background(tok.Danger.Alpha(.08)).Children(func() {
-		message := "删除“" + i.Title + "”？官方确认后将移除此条记忆及关联索引。"
-		if e.DeleteSubmitted {
-			message = "删除结果尚未确认，请核对原操作，不重复删除。"
-		}
-		homeText(c, message, homeBody).FontSize(12).MaxLines(3)
-		ui.Row(c).Gap(10).Children(func() {
-			if e.DeleteSubmitted {
-				commonButton(c, "核对原删除结果", false, a.confirmCommonDeletion).Disabled(e.Busy)
-			} else {
-				commonButton(c, "确认删除此条", false, func() { a.deleteCommonKnowledge(*i.Document) }).Disabled(e.Busy).TextColor(tok.Danger)
-				projectLink(c, "保留记忆", func() { e.Delete = nil })
-			}
-		})
+	ui.Row(c).Shrink(0).Padding(sp2, sp10).Gap(sp3).AlignItems(ui.Center).
+		BorderWidth(0, 0, 1, 0).BorderColor(tok.Danger.Alpha(.35)).Background(tok.Danger.Alpha(.08)).Children(func() {
+		v4StatusDot(c, "fail")
+		ui.Text(c, "删除结果尚未确认，请核对原操作，不重复删除。").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text1).Grow(1).MinWidth(0).MaxLines(2)
+		v4SmallButton(c, "核对原删除结果", nil, a.confirmCommonDeletion).Disabled(e.Busy)
 	})
 }
 func (a *App) confirmCommonDeletion() {
@@ -410,55 +544,69 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 	e := &a.commonEdit
 	_, h := c.Size()
 	locked := e.Busy || e.Submitted
-	ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
+	ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Background(tok.Bg).Children(func() {
 		appToolbar(c, "通用记忆编辑工具栏", func() {
-			title := "新增通用记忆"
-			if e.Existing != nil {
-				title = "编辑通用记忆"
-			}
-			if e.Submitted {
-				title = "保存结果"
-			}
-			homeText(c, title, homeHeading).FontSize(15)
-			ui.Spacer(c)
-			category := commonCategoryLabel(e.Draft.Category)
-			ui.Select(c, &category, []string{"个人偏好", "通用经验"}).Label("记忆分类").Width(126).Disabled(locked || e.Existing != nil).OnChange(func() {
-				if category == "个人偏好" {
-					e.Draft.Category = "preference"
-				} else {
-					e.Draft.Category = "experience"
+			ui.Row(c).FillWidth().MaxWidth(readerMaxW).AlignItems(ui.Center).Gap(sp3).Children(func() {
+				title := "新增通用记忆"
+				if e.Existing != nil {
+					title = "编辑通用记忆"
+				}
+				if e.Submitted {
+					title = "保存结果"
+				}
+				ui.Text(c, title).Font("system-ui").FontSize(fsBody).FontWeight(600).TextColor(tok.Text1).SingleLine()
+				ui.Spacer(c)
+				catIdx := 0
+				if e.Draft.Category == "experience" {
+					catIdx = 1
+				}
+				catDisabled := locked || e.Existing != nil
+				seg := v4Segmented(c, "common-edit-category", "记忆分类", &catIdx, []string{"个人偏好", "通用经验"}, func() {
+					if catDisabled {
+						return
+					}
+					if catIdx == 0 {
+						e.Draft.Category = "preference"
+					} else {
+						e.Draft.Category = "experience"
+					}
+				})
+				if catDisabled {
+					seg.Disabled(true).Opacity(0.55).Tooltip("编辑已有记忆时不可切换分类")
 				}
 			})
-		})
-		ui.Scroll(c.Key("common-compact-editor")).Grow(1).MinHeight(0).TrackScroll(&a.commonPage.EditorScroll).Padding(controlGap, paneInset, paneInset, paneInset).Children(func() {
-			ui.Column(c).FillWidth().MaxWidth(760).Gap(16).Children(func() {
+		}).Height(48).Padding(0, sp10)
+		ui.Scroll(c.Key("common-compact-editor")).Grow(1).MinHeight(0).TrackScroll(&a.commonPage.EditorScroll).Padding(sp5, sp10, sp8, sp10).Children(func() {
+			ui.Column(c).FillWidth().MaxWidth(readerMaxW).Gap(sp5).Children(func() {
 				if len(a.Config.Common) > 1 {
 					homeText(c, "保存到："+e.Target.Name, homeMeta)
 				}
 				ui.Field(c, "标题", func() {
-					ui.TextInput(c.Key("common-draft-title-"+fmt.Sprint(e.Generation)), &e.Draft.Title).Label("通用记忆标题").Placeholder("一句话概括这条记忆").FillWidth().Height(38).FontSize(14).Disabled(locked)
+					ui.TextInput(c.Key("common-draft-title-"+fmt.Sprint(e.Generation)), &e.Draft.Title).Label("通用记忆标题").Placeholder("一句话概括这条记忆").FillWidth().Height(36).FontSize(fsBody).Disabled(locked)
 				})
 				ui.Field(c, "正文", func() {
-					ui.TextArea(c.Key("common-draft-body-"+fmt.Sprint(e.Generation)), &e.Draft.Body).Label("通用记忆正文").Placeholder("写下可复用的约定或经验，支持 Markdown").FillWidth().Height(min(float32(260), max(float32(180), (h-380)/2))).FontSize(13).Disabled(locked)
+					ui.TextArea(c.Key("common-draft-body-"+fmt.Sprint(e.Generation)), &e.Draft.Body).Label("通用记忆正文").Placeholder("写下可复用的约定或经验，支持 Markdown").FillWidth().Height(min(float32(260), max(float32(180), (h-380)/2))).FontSize(fsReading).Disabled(locked)
 				})
-				label := "补充适用条件与来源（可选）"
-				if a.commonPage.Options {
-					label = "收起补充信息"
-				}
-				projectLink(c, label, func() { a.commonPage.Options = !a.commonPage.Options })
-				if a.commonPage.Options {
-					ui.Field(c, "适用条件", func() {
-						ui.TextArea(c.Key("common-draft-applicability-"+fmt.Sprint(e.Generation)), &e.Draft.Applicability).Label("通用记忆适用条件").Placeholder("例如：适用于 TypeScript 项目").FillWidth().Height(72).FontSize(12).Disabled(locked)
-					})
-					ui.Field(c, "原始来源", func() {
-						ui.TextInput(c.Key("common-draft-source-"+fmt.Sprint(e.Generation)), &e.Draft.Source).Label("通用记忆来源").Placeholder("可填写出处、链接或说明").FillWidth().Height(34).FontSize(12).Disabled(locked || e.Existing != nil)
-					})
-					if e.Existing != nil {
-						homeText(c, "编辑保留创建时的分类与原始来源。", homeMeta)
+				ui.Column(c).FillWidth().Padding(sp4, 0, 0, 0).Gap(sp4).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
+					label := "补充适用条件与来源（可选）"
+					if a.commonPage.Options {
+						label = "收起补充信息"
 					}
-				}
+					v4SmallButton(c, label, nil, func() { a.commonPage.Options = !a.commonPage.Options })
+					if a.commonPage.Options {
+						ui.Field(c, "适用条件", func() {
+							ui.TextArea(c.Key("common-draft-applicability-"+fmt.Sprint(e.Generation)), &e.Draft.Applicability).Label("通用记忆适用条件").Placeholder("例如：适用于 TypeScript 项目").FillWidth().Height(72).FontSize(fsFootnote).Disabled(locked)
+						})
+						ui.Field(c, "原始来源", func() {
+							ui.TextInput(c.Key("common-draft-source-"+fmt.Sprint(e.Generation)), &e.Draft.Source).Label("通用记忆来源").Placeholder("可填写出处、链接或说明").FillWidth().Height(34).FontSize(fsFootnote).Disabled(locked || e.Existing != nil)
+						})
+						if e.Existing != nil {
+							homeText(c, "编辑保留创建时的分类与原始来源。", homeMeta)
+						}
+					}
+				})
 				if e.Submitted {
-					ui.Column(c).Padding(14, 16).Gap(9).Border(1, homeBorder).Shadow(0, 2, 8, 0, panelShadowInk).Radius(8).Background(tok.Fill1).Children(func() {
+					ui.Column(c).FillWidth().Padding(sp3, sp4).Gap(sp2).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Background(tok.Fill1).Radius(radius).Children(func() {
 						saved := "待核对"
 						if e.SaveVerified {
 							saved = "已核对"
@@ -467,20 +615,19 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 						if processing == "" {
 							processing = "待核对"
 						}
-						homeText(c, "正文保存："+saved, homeBody).FontSize(12)
-						homeText(c, "处理状态："+processing, homeBody).FontSize(12)
+						homeText(c, "正文保存："+saved, homeBody).FontSize(fsFootnote)
+						homeText(c, "处理状态："+processing, homeBody).FontSize(fsFootnote)
 						if e.Receipt.PipelineRunID != "" {
 							homeText(c, "原处理记录："+e.Receipt.PipelineRunID, homeMeta).MaxLines(2)
 						}
 					})
 				}
 				if e.Message != "" {
-					homeText(c, e.Message, homeBody).FontSize(12).LineHeight(1.7)
+					homeText(c, e.Message, homeBody).FontSize(fsFootnote).LineHeight(1.7)
 				}
 			})
 		})
-		appFooter(c, "通用记忆编辑栏").Padding(0, paneInset).Gap(10).Children(func() {
-
+		appFooter(c, "通用记忆编辑栏").Padding(0, sp6).Gap(sp2).Children(func() {
 			status := "仅保存在当前编辑草稿"
 			if e.Busy {
 				status = "正在核对官方操作…"
@@ -489,17 +636,17 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 			}
 			homeText(c, status, homeMeta).Grow(1).MinWidth(0).MaxLines(2)
 			if !e.Submitted {
-				projectLink(c, "放弃草稿", func() { a.commonPage.Discard = true }).AlignSelf(ui.Center).Disabled(e.Busy)
+				v4SmallButton(c, "放弃草稿", nil, func() { a.commonPage.Discard = true }).Disabled(e.Busy)
 			}
-			commonButton(c, "返回阅读", false, func() { e.Open = false }).Disabled(e.Busy)
+			v4OutlineButton(c, "返回阅读", nil, func() { e.Open = false }).Disabled(e.Busy)
 			if e.Submitted {
-				commonButton(c, "核对保存结果", true, a.confirmCommonKnowledge).Disabled(e.Busy)
+				ui.PrimaryButton(c, "核对保存结果").OnClick(a.confirmCommonKnowledge).Disabled(e.Busy)
 				if e.SaveVerified && (e.Processing == "已完成" || strings.HasPrefix(e.Processing, "失败")) {
-					commonButton(c, "完成", false, func() { e.Completed = true; e.Open = false })
+					v4OutlineButton(c, "完成", nil, func() { e.Completed = true; e.Open = false })
 				}
 			} else {
 				_, err := e.Draft.markdown()
-				commonButton(c, "保存", true, a.saveCommonKnowledge).Disabled(e.Busy || err != nil)
+				ui.PrimaryButton(c, "保存").OnClick(a.saveCommonKnowledge).Disabled(e.Busy || err != nil)
 			}
 		})
 	})

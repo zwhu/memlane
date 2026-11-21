@@ -332,3 +332,44 @@ func TestCommonDeleteAndDiscardV4DialogsIgnoreEnterAndCancelOnEsc(t *testing.T) 
 		t.Fatal("Escape did not cancel discard dialog cleanly")
 	}
 }
+
+func TestCommonKnowledgeV4ThreePaneAndEditImmutability(t *testing.T) {
+	a := commonUIFixture()
+	tt := ui.NewTester(a.View, 1200, 820)
+
+	// Verify V4 three-pane chrome: list segmented filter, reading pane hairline sections & copy footer.
+	for _, want := range []string{"记忆库", "全部", "个人偏好", "通用经验", "适用条件", "原始来源", "复制正文", "跨项目参考 · 项目明确约定优先"} {
+		if !tt.HasText(want) {
+			t.Fatalf("missing expected V4 common knowledge text %q", want)
+		}
+	}
+
+	// Editing an existing memory must preserve its category even if segmented control is clicked.
+	clickProjectUI(t, tt, "编辑")
+	if !a.commonEdit.Open || a.commonEdit.Existing == nil {
+		t.Fatal("edit mode did not open for existing common knowledge")
+	}
+	beforeCat := a.commonEdit.Draft.Category
+	if beforeCat != "preference" {
+		t.Fatalf("unexpected initial category: %q", beforeCat)
+	}
+	if el, ok := tt.Find("记忆分类"); ok {
+		tt.ClickAt(el.X+el.W*0.75, el.Y+el.H/2)
+	}
+	if a.commonEdit.Draft.Category != beforeCat {
+		t.Fatalf("editing existing memory mutated category: %q -> %q", beforeCat, a.commonEdit.Draft.Category)
+	}
+
+	// Empty state renders V4 empty state with primary CTA "添加记忆".
+	a.commonEdit.Open = false
+	a.discardCommonDraft()
+	s := a.state()
+	s.Items = nil
+	s.Selected = nil
+	s.Loaded = true
+	s.Loading = false
+	tt.Frame()
+	if !tt.HasText("还没有通用记忆") || !tt.HasText("添加记忆") {
+		t.Fatal("empty common knowledge state missing V4 empty state or primary CTA")
+	}
+}
