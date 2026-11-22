@@ -139,6 +139,7 @@ func (a *App) cancelTitles(s *pane) {
 	}
 	s.titleRequest++
 }
+
 const maxTitlePreheatWindow = 30
 
 func titlePreheatRange(s *pane) (start, end int) {
@@ -584,6 +585,7 @@ func (a *App) InvalidateReading(dataset string) {
 			q.ServerUnreadKnown = false
 			q.ServerUnreadCount = 0
 			q.ServerUnreadStateRev = 0
+			q.Activity = nil
 			q.Documents = nil
 			q.PendingDocumentsCount = 0
 			q.StateVersion++

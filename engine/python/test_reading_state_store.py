@@ -418,6 +418,56 @@ class ReadingStateStoreTests(unittest.TestCase):
         finally:
             store.close()
 
+    def test_mark_all_read_counts_invalid_document_published_after_selection(self):
+        from unittest.mock import patch
+
+        cat = CatalogIndex(self.root / 'catalog-index.sqlite3', official_data=self.official_data)
+        store = ReadingStateStore(self.root / 'ui-reading-state.sqlite3', state_dir=self.root)
+        self.addCleanup(cat.close)
+        self.addCleanup(store.close)
+        cat.sync([self.ds])
+        store.ensure_scope(self.identity, self.project_id, self.ds, catalog_index=cat)
+        late = str(uuid.uuid4())
+        scan_invalid = cat.knowledge_docs_invalid_created
+
+        def publish_after_scan(dataset_id):
+            docs = scan_invalid(dataset_id)
+            self._add_knowledge(late, 'invalid')
+            cat.sync([self.ds])
+            return docs
+
+        with patch.object(cat, 'knowledge_docs_invalid_created') as scan:
+            def scan_with_publication(dataset_id):
+                if scan.call_count == 1:
+                    return publish_after_scan(dataset_id)
+                return scan_invalid(dataset_id)
+
+            scan.side_effect = scan_with_publication
+            result = store.mark_all_read(self.identity, self.project_id, self.ds, catalog_index=cat)
+        self.assertEqual(result['unread_count'], 1)
+        self.assertEqual(
+            store.compute_unread_snapshot(self.identity, self.project_id, self.ds, cat),
+            ({late}, result['state_rev']),
+        )
+
+    def test_unread_snapshot_retry_exhaustion_fails_closed(self):
+        from unittest.mock import patch
+        from project_policy import PolicyError
+
+        store = ReadingStateStore(self.root / 'ui-reading-state.sqlite3', state_dir=self.root)
+        self.addCleanup(store.close)
+        scope = store.ensure_scope(self.identity, self.project_id, self.ds)
+
+        def contend(*_args):
+            store.mark_read(self.identity, self.project_id, self.ds, [str(uuid.uuid4())])
+            return set()
+
+        with patch.object(store, '_compute_unread_ids_for_scope', side_effect=contend) as compute:
+            with self.assertRaises(PolicyError) as error:
+                store._compute_unread_snapshot_for_scope(scope['scope_hash'], self.ds, object())
+        self.assertEqual(error.exception.status, 409)
+        self.assertEqual(compute.call_count, 3)
+
 
 if __name__ == '__main__':
     unittest.main()

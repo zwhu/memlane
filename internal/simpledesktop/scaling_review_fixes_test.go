@@ -1171,11 +1171,11 @@ func TestReviewFixSearchEmptyScopeIdentityAndMonotonicMerge(t *testing.T) {
 }
 
 // TestReviewFixR2InvalidateQueuedCallbacksAndSubagents verifies R2-GO-P0-02 & R2-GO-P2-01:
-// 1. Callbacks ALREADY queued in updates channel before InvalidateReading cannot repopulate
-//    overview activity, DayItems, knowledge, queue, or openSubagentSession.
-// 2. Per-dataset InvalidateReading("ds-1") removes ds-1 DayItems while retaining ds-2.
-// 3. project_queue.go 401 triggers InvalidateReading clearing cached UnreadKnowledge/Documents.
-// 4. loadMoreSubagents clears Subagents/cursor on 401/403 and clears dead cursor on 400 invalid_cursor.
+//  1. Callbacks ALREADY queued in updates channel before InvalidateReading cannot repopulate
+//     overview activity, DayItems, knowledge, queue, or openSubagentSession.
+//  2. Per-dataset InvalidateReading("ds-1") removes ds-1 DayItems while retaining ds-2.
+//  3. project_queue.go 401 triggers InvalidateReading clearing cached UnreadKnowledge/Documents.
+//  4. loadMoreSubagents clears Subagents/cursor on 401/403 and clears dead cursor on 400 invalid_cursor.
 func TestReviewFixR2InvalidateQueuedCallbacksAndSubagents(t *testing.T) {
 	controlCapabilitiesCache.mu.Lock()
 	clear(controlCapabilitiesCache.entries)
@@ -1337,11 +1337,11 @@ drainedQueued:
 }
 
 // TestReviewFixR2ReadingStateMigrationPreconditionAndZeroCommit verifies R2-GO-P0-03:
-// 1. When local knowledge-read-<hash>.json exists and migration fails (500 or unknown status),
-//    overview/knowledge/queue/locate/mark-read ALL fail closed without issuing V2 reads/writes
-//    or marking migrated.
-// 2. Empty initialized local state sends explicit `"expected_items":0` on import/commit.
-// 3. Corrupt local JSON file never marks migrated.
+//  1. When local knowledge-read-<hash>.json exists and migration fails (500 or unknown status),
+//     overview/knowledge/queue/locate/mark-read ALL fail closed without issuing V2 reads/writes
+//     or marking migrated.
+//  2. Empty initialized local state sends explicit `"expected_items":0` on import/commit.
+//  3. Corrupt local JSON file never marks migrated.
 func TestReviewFixR2ReadingStateMigrationPreconditionAndZeroCommit(t *testing.T) {
 	controlCapabilitiesCache.mu.Lock()
 	clear(controlCapabilitiesCache.entries)
@@ -1360,6 +1360,10 @@ func TestReviewFixR2ReadingStateMigrationPreconditionAndZeroCommit(t *testing.T)
 					v2FeatureOverview, v2FeatureKnowledgeCursor,
 					v2FeatureMessageSummary, v2FeatureReadingState,
 				},
+			})
+		case "/v1/projects":
+			_ = json.NewEncoder(w).Encode(AccessDirectory{
+				Projects: []AccessProject{{ID: "p1", Dataset: "ds-1", Status: "verified"}},
 			})
 		case "/v2/reading-state/migrate-local":
 			switch migMode.Load() {
@@ -1697,18 +1701,19 @@ func TestReviewFixR2ProvenanceReadErrorMidModifyAndCommonSearch(t *testing.T) {
 }
 
 // TestReviewFixR3ConvergenceClosure verifies all 4 items of #64 §二 (R3 Codex findings):
-// 1. P0-3: project_queue 403 on processing-notices returns immediately without writing concurrent
-//    official Documents/UnreadKnowledge; InvalidateReading withdraws commonEdit and clears Events/History.
-// 2. P1-1: partial InvalidateReading(ds-1) never leaves unrelated project ds-2 q.Loading stuck true.
-// 3. P1-2: migrate-local strictly excludes unconfirmed/pending projects so verified project A is never blocked.
-// 4. P1-5/P1-6: stale mark-all-read state_rev never wipes newer unread preview; equal-length same-mtime
-//    token file replacement immediately busts controlCapabilitiesCache.
+//  1. P0-3: project_queue 403 on processing-notices returns immediately without writing concurrent
+//     official Documents/UnreadKnowledge; InvalidateReading withdraws commonEdit and clears Events/History.
+//  2. P1-1: partial InvalidateReading(ds-1) never leaves unrelated project ds-2 q.Loading stuck true.
+//  3. P1-2: migrate-local strictly excludes unconfirmed/pending projects so verified project A is never blocked.
+//  4. P1-5/P1-6: stale mark-all-read state_rev never wipes newer unread preview; equal-length same-mtime
+//     token file replacement immediately busts controlCapabilitiesCache.
 func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 	controlCapabilitiesCache.mu.Lock()
 	clear(controlCapabilitiesCache.entries)
 	controlCapabilitiesCache.mu.Unlock()
 
 	// --- 1. P0-3: Legacy summary 404 + processing-notices 403 + concurrent official 200 OK ---
+	var denyActivity atomic.Bool
 	officialP0 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.Contains(r.URL.Path, "/data"):
@@ -1717,6 +1722,10 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 				{ID: "know-doc-1", Dataset: "ds-1", Name: "k.md", Created: "2026-11-21T10:00:00Z", Metadata: map[string]any{"memlane_kind": "knowledge"}},
 			})
 		case strings.Contains(r.URL.Path, "/pipeline-runs"):
+			if denyActivity.Load() {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
 			_ = json.NewEncoder(w).Encode([]any{})
 		default:
 			http.NotFound(w, r)
@@ -1729,6 +1738,10 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 		case "/v1/capabilities", "/v1/projects/p1/message-summary":
 			http.NotFound(w, r)
 		case "/v1/projects/p1/processing-notices":
+			if denyActivity.Load() {
+				_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
+				return
+			}
 			w.WriteHeader(http.StatusForbidden)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
 		default:
@@ -1745,6 +1758,16 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 	drainReading(t, updates0, func() bool { return !q1.Loading })
 	if len(q1.Documents) != 0 || len(q1.UnreadKnowledge) != 0 || q1.DocumentError == "" {
 		t.Fatalf("P0-3 VIOLATION: 403 processing-notices wrote concurrent official docs/unread: docs=%d unread=%d err=%q", len(q1.Documents), len(q1.UnreadKnowledge), q1.DocumentError)
+	}
+
+	// A successful parallel document response must also be discarded on activity 403.
+	denyActivity.Store(true)
+	q1.Activity = []overviewEvent{{Title: "cached activity"}}
+	a0.loadProjectQueue(q1, p1)
+	drainReading(t, updates0, func() bool { return !q1.Loading })
+	if len(q1.Activity) != 0 || len(q1.Documents) != 0 || len(q1.UnreadKnowledge) != 0 || q1.DocumentError == "" {
+		t.Fatalf("activity denial leaked queue data: activity=%d docs=%d unread=%d err=%q",
+			len(q1.Activity), len(q1.Documents), len(q1.UnreadKnowledge), q1.DocumentError)
 	}
 
 	// --- 1b. P0-3: InvalidateReading withdraws commonEdit and clears Events/History ---
@@ -1891,6 +1914,20 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 		t.Fatalf("P1-2 VIOLATION: expected only verified [p1] in migrate-local, got %v", gotMig)
 	}
 
+	// Before the directory loads, fallback config has no verified project status.
+	aConfig, configUpdates := p1TestApp(t, controlP2.URL, controlP2.URL, tokenP2)
+	aConfig.access.Directory = AccessDirectory{}
+	aConfig.access.Loaded = false
+	aConfig.Config.Projects = append(aConfig.Config.Projects, Project{ID: "p-unconfirmed", Dataset: "ds-pending"})
+	aConfig.loadOverview()
+	drainReading(t, configUpdates, func() bool { return !aConfig.overviewState.Loading })
+	migMu.Lock()
+	requested := len(sawMigratedIDs)
+	migMu.Unlock()
+	if requested != 1 || overviewHits.Load() != 2 {
+		t.Fatalf("config fallback requested migration or failed overview: migrated=%d overview=%d", requested, overviewHits.Load())
+	}
+
 	// --- 4a. P1-5: stale mark-all-read (state_rev=5) must NOT clear newer unread preview (state_rev=10) ---
 	controlP5 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1970,5 +2007,22 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 	}
 	if _, err := ctrlP6.probeFeature(context.Background(), v2FeatureOverview); !isControlAuthDenied(err) || capReqs.Load() != 2 {
 		t.Fatalf("P1-6 VIOLATION: equal-length same-mtime token swap reused stale capabilities cache: err=%v calls=%d", err, capReqs.Load())
+	}
+}
+
+func TestReviewFixR4MarkAllReceiptPreservesSameRevisionUnread(t *testing.T) {
+	a := &App{}
+	q := &projectQueueState{ServerUnreadStateRev: 5}
+	before := q.ServerUnreadSnapshot
+	if !applyServerUnreadSnapshot(q, 1, 5, false) {
+		t.Fatal("expected same-revision unread snapshot to be accepted")
+	}
+	q.UnreadKnowledge = []Item{{ID: "late"}}
+
+	a.applyMarkAllReadReceipt(q, "ds-1", v2ReadingStateMarkAllReadResponse{
+		UnreadCount: 0, UnreadCountKnown: boolPtr(true), StateRev: 5,
+	}, before, q.KnowledgeCatalogVersion)
+	if q.ServerUnreadCount != 1 || len(q.UnreadKnowledge) != 1 || q.UnreadKnowledge[0].ID != "late" {
+		t.Fatal("delayed mark-all cleared a new unread at the same reading revision")
 	}
 }

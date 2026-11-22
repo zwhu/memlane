@@ -52,7 +52,7 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 	control, hasControl := a.accessClient()
 	readingID, _ := readingIdentity(Client{Config: client.Config})
 	stateDir := a.readingStateDir()
-	migProjects := []AccessProject{{ID: p.ID, Name: p.Name, Dataset: p.Dataset}}
+	var migProjects []AccessProject
 	for _, ap := range a.access.Directory.Projects {
 		if ap.ID == p.ID && ap.Dataset == p.Dataset {
 			migProjects = []AccessProject{ap}

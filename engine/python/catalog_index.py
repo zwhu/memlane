@@ -800,22 +800,23 @@ class CatalogIndex:
         watermark (which would otherwise swallow late-arriving unread documents).
         """
         rs_path = self.path.parent / 'ui-reading-state.sqlite3'
-        if not rs_path.is_file() or rs_path.is_symlink():
-            return 0
         try:
-            with official_sqlite_ro(rs_path) as rcon:
-                has_tbl = rcon.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ui_read_scopes' LIMIT 1"
-                ).fetchone()
-                if not has_tbl:
-                    return 0
-                cols = {str(r[1]) for r in rcon.execute('PRAGMA table_info(ui_read_scopes)').fetchall()}
-                if 'horizon_max_rowid' not in cols:
-                    return 0
-                row = rcon.execute('SELECT COALESCE(MAX(horizon_max_rowid), 0) FROM ui_read_scopes').fetchone()
-                return max(0, int(row[0] or 0)) if row else 0
-        except (PolicyError, sqlite3.Error, OSError):
+            rs_path.lstat()
+        except FileNotFoundError:
             return 0
+        except OSError as exc:
+            raise PolicyError('reading_state_unavailable', 503) from exc
+        if rs_path.is_symlink() or not rs_path.is_file():
+            raise PolicyError('reading_state_unavailable', 503)
+        try:
+            with official_sqlite_ro(rs_path, error_code='reading_state_unavailable') as rcon:
+                cols = {str(r[1]) for r in rcon.execute('PRAGMA table_info(ui_read_scopes)')}
+                if 'horizon_max_rowid' not in cols:
+                    raise PolicyError('reading_state_unavailable', 503)
+                row = rcon.execute('SELECT COALESCE(MAX(horizon_max_rowid), 0) FROM ui_read_scopes').fetchone()
+                return max(0, int(row[0]))
+        except (sqlite3.Error, OSError, TypeError, ValueError) as exc:
+            raise PolicyError('reading_state_unavailable', 503) from exc
 
     def _open_or_recreate_write_con(self) -> sqlite3.Connection:
         """Open ``catalog-index.sqlite3`` with startup corruption self-healing."""
@@ -834,6 +835,7 @@ class CatalogIndex:
                     con.close()
                 except Exception:
                     pass
+            floor = self._read_reading_state_horizon_floor()
             for suffix in ('', '-wal', '-shm'):
                 try:
                     Path(str(self.path) + suffix).unlink(missing_ok=True)
@@ -841,7 +843,6 @@ class CatalogIndex:
                     pass
             fresh = _open_private_rw(self.path)
             _create_catalog_schema(fresh, self.tz_provider())
-            floor = self._read_reading_state_horizon_floor()
             if floor > 0:
                 fresh.execute(
                     'UPDATE catalog_meta SET last_doc_seq = ? WHERE singleton = 1 AND last_doc_seq < ?',
@@ -2066,7 +2067,6 @@ class CatalogIndex:
         preserved_doc_seqs: dict[tuple[str, str], int] | None = None,
         min_last_doc_seq: int = 0,
         min_generation: int = 0,
-        baseline_doc_seq_floor: int = 0,
     ) -> tuple[int, bool]:
         """Synchronize ``catalog_docs``, ``catalog_day_buckets``, ``catalog_sessions``, and ``dataset_sync_state``.
 
@@ -2096,7 +2096,7 @@ class CatalogIndex:
         old_tz = str(meta_row[1]) if meta_row else tz_name
         last_prov_seq = 0 if force_full else (int(meta_row[2]) if meta_row else 0)
         last_recall_rev = 0 if force_full else (int(meta_row[3]) if meta_row else 0)
-        initial_doc_seq = max(int(meta_row[4]) if meta_row else 0, int(min_last_doc_seq), int(baseline_doc_seq_floor or 0))
+        initial_doc_seq = max(int(meta_row[4]) if meta_row else 0, int(min_last_doc_seq))
         preserved_seqs = dict(preserved_doc_seqs) if preserved_doc_seqs else {}
         if preserved_seqs:
             max_pseq = max(preserved_seqs.values())
@@ -2116,10 +2116,6 @@ class CatalogIndex:
                 if pseq > next_doc_seq:
                     next_doc_seq = pseq
                 return proj26 + (pseq,)
-            if baseline_doc_seq_floor > 0 and not preserved_seqs:
-                if baseline_doc_seq_floor > next_doc_seq:
-                    next_doc_seq = baseline_doc_seq_floor
-                return proj26 + (baseline_doc_seq_floor,)
             next_doc_seq += 1
             return proj26 + (next_doc_seq,)
 
@@ -2513,9 +2509,7 @@ class CatalogIndex:
                         tz_info=tz_info,
                     )
                     if projected is not None:
-                        if baseline_doc_seq_floor > 0 and not has_preserved_seqs:
-                            upserts.append(projected + (baseline_doc_seq_floor,))
-                        elif has_preserved_seqs:
+                        if has_preserved_seqs:
                             upserts.append(_with_doc_seq(canon_ds, projected))
                         else:
                             next_doc_seq += 1
@@ -2918,8 +2912,11 @@ class CatalogIndex:
                 # AND incremental provenance date updates + sibling propagation across ALL affected datasets.
                 prov_mutated_datasets: set[str] = set()
                 if need_full_prov and prov_ok and (doc_prov or key_prov):
+                    # Streamed rows already use keyed provenance. Legacy unkeyed entries
+                    # need a second pass using the keys resolved from the catalog rows.
+                    legacy_prov_datasets = {ds for (ds, _), (lt, sk, _) in doc_prov.items() if not lt or not sk}
                     for ds in allowed:
-                        if ds in cold_bucket_summaries:
+                        if ds in cold_bucket_summaries and ds not in legacy_prov_datasets:
                             continue
                         ds_rows = con.execute(
                             '''SELECT doc_id, lesson_type, state_key, effective_date, effective_date_source
@@ -3686,16 +3683,11 @@ class CatalogIndex:
                 prev_gen = max(prev_gen, int(self._last_generation or 0))
                 preserved_doc_seqs = {}
 
-        # When rebuilding from zero (e.g. corruption self-heal where old doc_seq mapping is lost),
-        # preserve monotonic safety against sibling ui-reading-state.sqlite3's MAX(horizon_max_rowid):
-        # baseline docs get doc_seq = floor and catalog_meta.last_doc_seq = floor so existing read docs
-        # stay read while any new/late doc arriving post-heal receives floor+1 (> horizon_max_rowid).
-        baseline_floor = 0
+        # With no surviving mapping, a document may have arrived after a reading horizon.
+        # Allocate fresh sequences above all horizons, preserving explicit reads and treating
+        # ambiguous horizon-only entries as unread rather than swallowing late arrivals.
         if not preserved_doc_seqs:
-            rs_floor = self._read_reading_state_horizon_floor()
-            if rs_floor > 0:
-                baseline_floor = max(rs_floor, prev_last_doc_seq)
-                prev_last_doc_seq = max(prev_last_doc_seq, baseline_floor)
+            prev_last_doc_seq = max(prev_last_doc_seq, self._read_reading_state_horizon_floor())
 
         with self._state_lock:
             self._rebuilding = True
@@ -3713,7 +3705,6 @@ class CatalogIndex:
                 preserved_doc_seqs=preserved_doc_seqs,
                 min_last_doc_seq=prev_last_doc_seq,
                 min_generation=prev_gen,
-                baseline_doc_seq_floor=baseline_floor,
             )
             # Ensure all indexes exist when managed_datasets was empty (stream_cold_bulk skipped)
             if not managed_datasets:

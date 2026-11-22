@@ -22,6 +22,7 @@ Implements every Phase 1 control-plane endpoint specified in proposal.md §3.5:
 import asyncio
 import base64
 from concurrent.futures import ThreadPoolExecutor
+import fcntl
 import functools
 import hashlib
 import heapq
@@ -33,6 +34,7 @@ from pathlib import Path
 import re
 import secrets
 import sqlite3
+import stat
 import threading
 
 from aiohttp import web
@@ -2373,18 +2375,28 @@ def attach_v2_api(
         def _archive_legacy_if_unchanged() -> tuple[str, bool]:
             if legacy_path is None:
                 return '', True
+            lock_path = legacy_path.with_name(legacy_path.name + '.lock')
             try:
-                cur_st = os.lstat(legacy_path)
+                lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
             except OSError:
                 return '', False
-            if (
-                legacy_path.is_symlink()
-                or (cur_st.st_ino, cur_st.st_size, cur_st.st_mtime_ns) != legacy_stat_sig
-            ):
+            try:
+                if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
+                    return '', False
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                cur_st = os.lstat(legacy_path)
+                if (
+                    not stat.S_ISREG(cur_st.st_mode)
+                    or (cur_st.st_ino, cur_st.st_size, cur_st.st_mtime_ns) != legacy_stat_sig
+                ):
+                    return '', False
+                bak = legacy_path.with_name(legacy_path.name + '.migrated.bak')
+                os.replace(legacy_path, bak)
+                return str(bak), True
+            except OSError:
                 return '', False
-            bak = legacy_path.with_name(legacy_path.name + '.migrated.bak')
-            os.replace(legacy_path, bak)
-            return str(bak), True
+            finally:
+                os.close(lock_fd)
 
         if not days:
             backup_path = ''

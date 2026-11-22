@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -22,6 +23,49 @@ var provenanceBackfillTracker = struct {
 }{
 	completed: map[string]bool{},
 	inflight:  map[string]chan struct{}{},
+}
+
+// Lock the stable sidecar shared with the control plane, since archiving or
+// replacing the JSON changes its inode. Leave the sidecar in place.
+func lockKnowledgeDatesFile(path string) (*os.File, error) {
+	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0600)
+	if err != nil {
+		return nil, err
+	}
+	info, err := lock.Stat()
+	if err == nil && !info.Mode().IsRegular() {
+		err = fmt.Errorf("记忆来源日期锁不可用")
+	}
+	if err == nil {
+		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
+	}
+	if err != nil {
+		lock.Close()
+		return nil, err
+	}
+	return lock, nil
+}
+
+func archiveLegacyKnowledgeDatesFile(path string, snapshot os.FileInfo) (bool, error) {
+	lock, err := lockKnowledgeDatesFile(path)
+	if err != nil {
+		return false, err
+	}
+	defer lock.Close()
+	current, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if snapshot == nil || !os.SameFile(snapshot, current) || current.Size() != snapshot.Size() || !current.ModTime().Equal(snapshot.ModTime()) {
+		return false, nil
+	}
+	if err := os.Rename(path, path+".migrated.bak"); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func sourceCalendarDate(value string) (string, bool) {
@@ -259,25 +303,9 @@ func (c Client) backfillLegacyKnowledgeDatesV2(ctx context.Context) (bool, error
 						}
 					}
 					if !anyPartial && !anyUnconfirmed && totalUnmapped == 0 {
-						knowledgeDatesMu.Lock()
-						curInfo, statErr := os.Lstat(localPath)
-						if os.IsNotExist(statErr) {
-							knowledgeDatesMu.Unlock()
-							doneOK = true
-							return true, nil
-						}
-						if statErr != nil || snapInfo == nil || !os.SameFile(snapInfo, curInfo) || curInfo.Size() != snapInfo.Size() || !curInfo.ModTime().Equal(snapInfo.ModTime()) {
-							// File changed during upload; keep it intact so next pass uploads newer entries.
-							knowledgeDatesMu.Unlock()
-							return false, nil
-						}
-						renameErr := os.Rename(localPath, localPath+".migrated.bak")
-						knowledgeDatesMu.Unlock()
-						if renameErr != nil {
-							return false, renameErr
-						}
-						doneOK = true
-						return true, nil
+						archived, archiveErr := archiveLegacyKnowledgeDatesFile(localPath, snapInfo)
+						doneOK = archived
+						return archived, archiveErr
 					}
 					// Retain local legacy JSON so future startups retry once
 					// unconfirmed projects finish registering.
@@ -362,6 +390,11 @@ func (c Client) rememberKnowledgeDays(rows []Document) error {
 	knowledgeDatesMu.Lock()
 	defer knowledgeDatesMu.Unlock()
 	path := filepath.Join(filepath.Dir(base), fmt.Sprintf("knowledge-source-dates-%x.json", sha256.Sum256([]byte(identity))))
+	lock, err := lockKnowledgeDatesFile(path)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
 	state := struct {
 		Version int               `json:"schema_version"`
 		Days    map[string]string `json:"days"`

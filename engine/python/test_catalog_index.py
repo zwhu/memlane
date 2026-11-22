@@ -651,7 +651,7 @@ class CatalogIndexTests(unittest.TestCase):
         """R3 P0-2, P1-3, P1-4: corruption self-heal preserves reading-state floor, per-dataset recent sessions EQP, and full provenance sibling propagation."""
         from reading_state_store import ReadingStateStore
 
-        # 1. P0-2: Corruption self-heal must seed baseline doc_seq & last_doc_seq from sibling ui-reading-state horizon_max_rowid
+        # 1. P0-2: Corruption self-heal must sequence ambiguous rows above the reading horizon.
         d_old = str(uuid.uuid4())
         d_late = str(uuid.uuid4())
         con = sqlite3.connect(self.cognee_db)
@@ -692,13 +692,9 @@ class CatalogIndexTests(unittest.TestCase):
                 recall_path=self.recall_path,
             )
             try:
-                cat.sync([self.ds_proj])
-                old_info = cat.doc_created_at_info(self.ds_proj, [d_old])
-                self.assertEqual(old_info[d_old][2], 100)
-                # d_old remains READ (seq 100 <= 100)
-                self.assertEqual(rstore.compute_unread_ids(identity, 'p-heal', self.ds_proj, cat), set())
-
-                # Now insert late-arriving d_late with created_at between enabled (08:00Z) and horizon (11:00Z)
+                # The surviving reading-state DB still proves this explicit read.
+                rstore.mark_read(identity, 'p-heal', self.ds_proj, [d_old])
+                # Insert a late arrival before the corrupt catalog has been rebuilt.
                 con = sqlite3.connect(self.cognee_db)
                 con.execute(
                     '''INSERT INTO data VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
@@ -711,6 +707,7 @@ class CatalogIndexTests(unittest.TestCase):
                 con.commit()
                 con.close()
                 cat.sync([self.ds_proj])
+                self.assertGreater(cat.doc_created_at_info(self.ds_proj, [d_old])[d_old][2], 100)
                 late_info = cat.doc_created_at_info(self.ds_proj, [d_late])
                 self.assertGreater(late_info[d_late][2], 100)
                 # d_late MUST be detected as UNREAD (not swallowed by horizon_max_rowid=100)!
@@ -793,7 +790,7 @@ class CatalogIndexTests(unittest.TestCase):
                 ''')
                 pcon.execute(
                     'INSERT INTO document_provenance VALUES (?,?,?,?,?,?)',
-                    (self.ds_proj, d_sib1, 'state', 'sk-shared', '2024-03-01', 1),
+                    (self.ds_proj, d_sib1, '', '', '2024-03-01', 1),
                 )
                 pcon.commit()
                 pcon.close()
@@ -803,10 +800,27 @@ class CatalogIndexTests(unittest.TestCase):
                 self.assertEqual(fetched[d_sib2]['effective_date'], '2024-03-01')
                 buckets = {b['day']: b['count'] for b in cat.overview_day_buckets([self.ds_proj], days=3650)}
                 self.assertEqual(buckets.get('2024-03-01'), 2)
+
+                cat.rebuild_atomic([self.ds_proj])
+                rebuilt = cat.fetch_docs_by_ids(self.ds_proj, [d_sib1, d_sib2])
+                self.assertEqual([r['effective_date'] for r in rebuilt], ['2024-03-01'] * 2)
+                rebuilt_buckets = {b['day']: b['count'] for b in cat.overview_day_buckets([self.ds_proj], days=3650)}
+                self.assertEqual(rebuilt_buckets.get('2024-03-01'), 2)
             finally:
                 cat.close()
         finally:
             rstore.close()
+
+    def test_corruption_heal_fails_closed_when_reading_state_is_unreadable(self):
+        from project_policy import PolicyError
+
+        corrupt_catalog = b'corrupt catalog'
+        self.cat_path.write_bytes(corrupt_catalog)
+        (self.root / 'ui-reading-state.sqlite3').write_bytes(b'corrupt reading state')
+        with self.assertRaises(PolicyError) as error:
+            CatalogIndex(self.cat_path, official_data=self.official_data)
+        self.assertEqual(error.exception.code, 'reading_state_unavailable')
+        self.assertEqual(self.cat_path.read_bytes(), corrupt_catalog)
 
 
 if __name__ == '__main__':

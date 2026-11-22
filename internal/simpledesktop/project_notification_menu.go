@@ -131,32 +131,14 @@ func (a *App) clearProjectNotifications(q *projectQueueState, p AccessProject) e
 			return fmt.Errorf("异常提醒已清除，未读记忆状态未保存")
 		}
 		readPathForKey, _ := a.knowledgeReadPath(p)
+		unreadSnapshot, catalogVersion := q.ServerUnreadSnapshot, q.KnowledgeCatalogVersion
 		resp, markErr := a.enqueueKnowledgeMarkAllReadV2(readPathForKey, q, control, readingID, p.ID, p.Dataset, true)
 		if markErr != nil {
 			q.KnowledgeReadError = "已读状态未保存"
 			q.StateVersion++
 			return fmt.Errorf("异常提醒已清除，未读记忆状态未保存")
 		}
-		canApplyUnread := (resp.StateRev > 0 && resp.StateRev >= q.ServerUnreadStateRev) ||
-			(resp.StateRev == 0 && q.ServerUnreadStateRev == 0)
-		q.KnowledgeReadError = ""
-		if canApplyUnread {
-			if resp.StateRev > q.ServerUnreadStateRev {
-				q.ServerUnreadStateRev = resp.StateRev
-			}
-			if resp.unreadCountKnown() {
-				q.ServerUnreadKnown = true
-				q.ServerUnreadCount = resp.UnreadCount
-			}
-			q.UnreadHasMore = false
-			q.UnreadKnowledge = nil
-			if q.KnowledgeRead.Read != nil {
-				for id := range q.KnowledgeRead.Read {
-					q.KnowledgeRead.Read[id] = true
-				}
-			}
-			a.clearDatasetServerUnread(p.Dataset)
-		}
+		a.applyMarkAllReadReceipt(q, p.Dataset, resp, unreadSnapshot, catalogVersion)
 		q.StateVersion++
 		return nil
 	}
@@ -190,6 +172,7 @@ func (a *App) clearProjectNotificationsAsync(q *projectQueueState, p AccessProje
 		return
 	}
 	authEpoch := a.authEpoch
+	unreadSnapshot, catalogVersion := q.ServerUnreadSnapshot, q.KnowledgeCatalogVersion
 	stateDir := a.readingStateDir()
 	ctrl, hasCtrl := a.accessClient()
 	readingID, _ := readingIdentity(Client{Config: a.Client.Config})
@@ -322,26 +305,7 @@ func (a *App) clearProjectNotificationsAsync(q *projectQueueState, p AccessProje
 					q.StateVersion++
 					return
 				}
-				canApplyUnread := (resp.StateRev > 0 && resp.StateRev >= q.ServerUnreadStateRev) ||
-					(resp.StateRev == 0 && q.ServerUnreadStateRev == 0)
-				q.KnowledgeReadError = ""
-				if canApplyUnread {
-					if resp.StateRev > q.ServerUnreadStateRev {
-						q.ServerUnreadStateRev = resp.StateRev
-					}
-					if resp.unreadCountKnown() {
-						q.ServerUnreadKnown = true
-						q.ServerUnreadCount = resp.UnreadCount
-					}
-					q.UnreadHasMore = false
-					q.UnreadKnowledge = nil
-					if q.KnowledgeRead.Read != nil {
-						for id := range q.KnowledgeRead.Read {
-							q.KnowledgeRead.Read[id] = true
-						}
-					}
-					a.clearDatasetServerUnread(p.Dataset)
-				}
+				a.applyMarkAllReadReceipt(q, p.Dataset, resp, unreadSnapshot, catalogVersion)
 				q.StateVersion++
 			})
 			return
@@ -375,4 +339,26 @@ func (a *App) clearProjectNotificationsAsync(q *projectQueueState, p AccessProje
 			q.StateVersion++
 		})
 	}()
+}
+
+func (a *App) applyMarkAllReadReceipt(q *projectQueueState, dataset string, resp v2ReadingStateMarkAllReadResponse, unreadSnapshot uint64, catalogVersion string) {
+	q.KnowledgeReadError = ""
+	if resp.StateRev < q.ServerUnreadStateRev || q.ServerUnreadSnapshot != unreadSnapshot || q.KnowledgeCatalogVersion != catalogVersion {
+		return
+	}
+	q.ServerUnreadStateRev = resp.StateRev
+	if !resp.unreadCountKnown() {
+		return
+	}
+	q.ServerUnreadKnown = true
+	q.ServerUnreadCount = resp.UnreadCount
+	if resp.UnreadCount != 0 {
+		return
+	}
+	q.UnreadHasMore = false
+	q.UnreadKnowledge = nil
+	for id := range q.KnowledgeRead.Read {
+		q.KnowledgeRead.Read[id] = true
+	}
+	a.clearDatasetServerUnread(dataset)
 }

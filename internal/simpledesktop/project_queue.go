@@ -38,6 +38,7 @@ type projectQueueState struct {
 	ServerUnreadKnown              bool
 	ServerUnreadCount              int
 	ServerUnreadStateRev           int64
+	ServerUnreadSnapshot           uint64
 	UnreadHasMore                  bool
 	PendingDocumentsCount          int
 	UnreadKnowledge                []Item
@@ -409,9 +410,10 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			}
 		}
 		workers.Wait()
+		authDenied := readingAuthDenied(documentErr) || readingAuthDenied(noticeErr) || readingAuthDenied(activityErr)
 		// Execute legacy knowledge-read catalog reconciliation off the UI thread so
 		// a.Update never blocks on waitKnowledgeReadFlush or disk I/O.
-		if !v2SummaryOK && documentErr == nil && !readingAuthDenied(noticeErr) && knowledgeCatalog != nil && knowledgePathErr == nil {
+		if !v2SummaryOK && documentErr == nil && !authDenied && knowledgeCatalog != nil && knowledgePathErr == nil {
 			a.waitKnowledgeReadFlush()
 			res := computeKnowledgeCatalogOffUI(knowledgeWriter, knowledgePath, p, knowledgeCatalog, prevKnowledgeStartedAt)
 			computedCatalog = &res
@@ -427,7 +429,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				return
 			}
 			q.Loading = false
-			if readingAuthDenied(documentErr) || readingAuthDenied(noticeErr) {
+			if authDenied {
 				q.DocumentError = "提炼状态暂时无法读取"
 				a.InvalidateReading(p.Dataset)
 				return
@@ -518,13 +520,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			prevCatalogVersion := q.KnowledgeCatalogVersion
 			if documentErr != nil {
 				q.DocumentError = "提炼状态暂时无法读取"
-				if readingAuthDenied(documentErr) {
-					a.InvalidateReading(p.Dataset)
-				}
 			} else {
-				if noticeErr != nil && readingAuthDenied(noticeErr) {
-					a.InvalidateReading(p.Dataset)
-				}
 				q.Documents = documents
 				q.PendingDocumentsCount = max(pendingDocumentsCount, len(documents))
 				if v2SummaryOK {

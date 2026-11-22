@@ -71,7 +71,7 @@ class ReadingStateStore:
         self.state_dir = Path(state_dir) if state_dir is not None else self.path.parent
         self._lock = threading.RLock()
         self._mutation_rev = 0
-        self._unread_cache: dict[tuple[str, str], tuple[int, int, str, int, set[str]]] = {}
+        self._unread_cache: dict[tuple[str, str], tuple[int, int, int, str, int, set[str]]] = {}
         # Cache earliest unread created_at_ns per (scope_hash, dataset_id) to skip O(N) compaction rescans
         self._compact_floor_cache: dict[tuple[str, str], tuple[int, int, str | None]] = {}
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -835,6 +835,7 @@ class ReadingStateStore:
         horizon_ns = scope['read_horizon_at_ns']
         enabled_ns = scope['enabled_at_ns']
         horizon_max_rowid = int(scope.get('horizon_max_rowid') or 0)
+        state_rev = int(scope.get('state_rev') or 0)
         cur_gen = int(catalog_index.generation()) if hasattr(catalog_index, 'generation') else -1
         cache_key = (scope_hash, dataset_id)
 
@@ -842,8 +843,8 @@ class ReadingStateStore:
             mut_rev = self._mutation_rev
             cached = self._unread_cache.get(cache_key)
             if cached is not None:
-                c_gen, c_mut, c_horizon, c_hrowid, c_unread = cached
-                if c_mut == mut_rev and c_horizon == horizon_ns and c_hrowid == horizon_max_rowid and cur_gen >= 0:
+                c_gen, c_mut, c_rev, c_horizon, c_hrowid, c_unread = cached
+                if (c_mut, c_rev, c_horizon, c_hrowid) == (mut_rev, state_rev, horizon_ns, horizon_max_rowid) and cur_gen >= 0:
                     if c_gen == cur_gen:
                         return set(c_unread)
                     if hasattr(catalog_index, 'get_append_deltas'):
@@ -867,7 +868,7 @@ class ReadingStateStore:
                                     for did in candidate_ids:
                                         if did not in exp_read:
                                             updated.add(did)
-                            self._unread_cache[cache_key] = (cur_gen, mut_rev, horizon_ns, horizon_max_rowid, updated)
+                            self._unread_cache[cache_key] = (cur_gen, mut_rev, state_rev, horizon_ns, horizon_max_rowid, updated)
                             return set(updated)
 
         # Branch A: explicit is_read=0
@@ -977,12 +978,12 @@ class ReadingStateStore:
                 if did not in exp_read_inv:
                     unread.add(did)
 
-        if cur_gen >= 0:
+        if cur_gen >= 0 and catalog_index.generation() == cur_gen:
             with self._lock:
                 if self._mutation_rev == mut_rev:
                     if len(self._unread_cache) >= 64:
                         self._unread_cache.clear()
-                    self._unread_cache[cache_key] = (cur_gen, mut_rev, horizon_ns, horizon_max_rowid, set(unread))
+                    self._unread_cache[cache_key] = (cur_gen, mut_rev, state_rev, horizon_ns, horizon_max_rowid, set(unread))
         return unread
 
     def _compute_unread_snapshot_for_scope(
@@ -992,20 +993,23 @@ class ReadingStateStore:
         catalog_index,
     ) -> tuple[set[str], int]:
         """Return ``(unread_ids, state_rev)`` guaranteed to originate from the exact same scope snapshot."""
-        last_unread: set[str] = set()
-        last_rev = 0
+        generation = getattr(catalog_index, 'generation', lambda: -1)
         for _ in range(3):
             with self._lock:
                 mut_before = self._mutation_rev
                 scope = self.get_scope(scope_hash)
             if scope is None:
                 return set(), 0
-            last_rev = int(scope.get('state_rev') or 0)
-            last_unread = self._compute_unread_ids_for_scope(scope_hash, dataset_id, scope, catalog_index)
+            state_rev = int(scope.get('state_rev') or 0)
+            catalog_gen = generation()
+            unread = self._compute_unread_ids_for_scope(scope_hash, dataset_id, scope, catalog_index)
+            if generation() != catalog_gen:
+                continue
             with self._lock:
-                if self._mutation_rev == mut_before:
-                    return last_unread, last_rev
-        return last_unread, last_rev
+                current_scope = self.get_scope(scope_hash)
+                if self._mutation_rev == mut_before and current_scope == scope:
+                    return unread, state_rev
+        raise PolicyError('reading_state_conflict', 409)
 
     def compute_unread_snapshot(
         self,
@@ -1311,6 +1315,7 @@ class ReadingStateStore:
         new_horizon = scope['read_horizon_at_ns']
         state_rev = int(scope.get('state_rev') or 0)
         committed = False
+        unread_count = 0
 
         for _attempt in range(3):
             with self._lock:
@@ -1423,14 +1428,19 @@ class ReadingStateStore:
                     if rev_row is not None:
                         new_horizon = str(rev_row[0])
                         state_rev = int(rev_row[1] or 0)
-                    self.db.execute('COMMIT')
                     self._bump_mutation_rev_locked()
-                    self._compact_floor_cache.pop((scope_hash, dataset_id), None)
+                    if catalog_index is not None:
+                        # Count against the pending reading-state transaction and retry
+                        # the catalog scan if its generation moves during the read.
+                        unread, state_rev = self._compute_unread_snapshot_for_scope(scope_hash, dataset_id, catalog_index)
+                        unread_count = len(unread)
+                    self.db.execute('COMMIT')
                     committed = True
                     break
                 except Exception:
                     if self.db.in_transaction:
                         self.db.execute('ROLLBACK')
+                        self._bump_mutation_rev_locked()
                     raise
 
         if not committed:
@@ -1438,7 +1448,7 @@ class ReadingStateStore:
 
         return {
             'scope_hash': scope_hash,
-            'unread_count': 0,
+            'unread_count': unread_count,
             'unread_count_known': catalog_index is not None,
             'read_horizon_at_ns': new_horizon,
             'state_rev': state_rev,

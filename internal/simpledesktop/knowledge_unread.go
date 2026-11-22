@@ -400,20 +400,17 @@ func (w *knowledgeReadWriter) executeMarkJob(job *knowledgeReadMarkJob, writeFn 
 		}
 		if hasV2 {
 			// Guard against flipping is_auto_baseline before any pending local legacy file is migrated.
-			if job.app != nil && job.stateDir != "" {
-				scopeProj := []AccessProject{{ID: job.projectID, Dataset: job.datasetID}}
-				if job.app.hasPendingLocalReadingMigration(job.control.Config.URL, job.stateDir, job.readingIdentity, scopeProj) {
-					if migErr := job.app.migrateReadingStateV2Snapshot(ctx, *job.control, job.readingIdentity, job.stateDir, scopeProj); migErr != nil {
-						cancel()
-						if !job.markAll {
-							w.requeueFailedIDs(job, job.docIDs)
-						}
-						if job.onResult != nil {
-							job.onResult(v2ReadingStateMarkAllReadResponse{}, migErr)
-						}
-						reportErr()
-						return migErr
+			if job.app != nil {
+				if migErr := job.app.migrateReadingBeforeWrite(ctx, job); migErr != nil {
+					cancel()
+					if !job.markAll {
+						w.requeueFailedIDs(job, job.docIDs)
 					}
+					if job.onResult != nil {
+						job.onResult(v2ReadingStateMarkAllReadResponse{}, migErr)
+					}
+					reportErr()
+					return migErr
 				}
 			}
 			if job.markAll {
@@ -612,7 +609,7 @@ func isMigrationEligibleProject(p AccessProject) bool {
 	if p.ID == "" || p.Dataset == "" {
 		return false
 	}
-	return p.Status == "" || p.Status == "verified"
+	return p.Status == "verified"
 }
 
 func (a *App) hasPendingLocalReadingMigration(controlURL, stateDir, readingID string, projects []AccessProject) bool {
@@ -625,26 +622,53 @@ func (a *App) hasPendingLocalReadingMigration(controlURL, stateDir, readingID st
 		if !isMigrationEligibleProject(p) {
 			continue
 		}
-		if controlURL != "" && a.readingMigrated[controlURL+"|"+readingID+"|"+p.ID+"|"+p.Dataset] {
-			continue
-		}
-		path, err := knowledgeReadPathForDir(stateDir, readingID, p)
-		if err != nil {
-			continue
-		}
-		_, statErr := os.Stat(path)
-		if os.IsNotExist(statErr) {
-			continue
-		}
-		if statErr != nil {
-			return true
-		}
-		localState, readErr := readKnowledgeState(path)
-		if readErr != nil || localState.Initialized {
+		if a.pendingLocalReadingMigrationLocked(controlURL, stateDir, readingID, p) {
 			return true
 		}
 	}
 	return false
+}
+
+func (a *App) pendingLocalReadingMigrationLocked(controlURL, stateDir, readingID string, p AccessProject) bool {
+	if controlURL != "" && a.readingMigrated[controlURL+"|"+readingID+"|"+p.ID+"|"+p.Dataset] {
+		return false
+	}
+	path, err := knowledgeReadPathForDir(stateDir, readingID, p)
+	if err != nil {
+		return false
+	}
+	_, statErr := os.Stat(path)
+	if os.IsNotExist(statErr) {
+		return false
+	}
+	if statErr != nil {
+		return true
+	}
+	localState, readErr := readKnowledgeState(path)
+	return readErr != nil || localState.Initialized
+}
+
+func (a *App) migrateReadingBeforeWrite(ctx context.Context, job *knowledgeReadMarkJob) error {
+	if job.stateDir == "" {
+		return nil
+	}
+	scope := AccessProject{ID: job.projectID, Dataset: job.datasetID}
+	a.readingMigrateMu.Lock()
+	pending := a.pendingLocalReadingMigrationLocked(job.control.Config.URL, job.stateDir, job.readingIdentity, scope)
+	a.readingMigrateMu.Unlock()
+	if !pending {
+		return nil
+	}
+	directory, err := job.control.directory(ctx)
+	if err != nil {
+		return err
+	}
+	for _, p := range directory.Projects {
+		if p.ID == scope.ID && p.Dataset == scope.Dataset && isMigrationEligibleProject(p) {
+			return a.migrateReadingStateV2Snapshot(ctx, *job.control, job.readingIdentity, job.stateDir, []AccessProject{p})
+		}
+	}
+	return fmt.Errorf("项目尚未确认，已读状态未保存")
 }
 
 // migrateReadingStateV2 runs once per (controlURL, readingIdentity, projectID, datasetID)
@@ -878,6 +902,7 @@ func applyServerUnreadSnapshot(q *projectQueueState, unreadCount int, stateRev i
 		q.ServerUnreadStateRev = stateRev
 		q.ServerUnreadKnown = true
 		q.ServerUnreadCount = unreadCount
+		q.ServerUnreadSnapshot++
 		return true
 	}
 	if writerPending || q.ServerUnreadStateRev > 0 {
@@ -885,6 +910,7 @@ func applyServerUnreadSnapshot(q *projectQueueState, unreadCount int, stateRev i
 	}
 	q.ServerUnreadKnown = true
 	q.ServerUnreadCount = unreadCount
+	q.ServerUnreadSnapshot++
 	return true
 }
 
