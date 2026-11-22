@@ -334,7 +334,7 @@ func (a *App) userProfileReaderHeader(c *ui.Context, p userProfile, s *userProfi
 	} else if p.Status == "failed" {
 		methodLabel = "导入未完成"
 	}
-	ui.Row(c).FillWidth().Padding(0, 0, sp4, 0).Gap(sp2).AlignItems(ui.Center).
+	ui.Row(c).Label("用户画像内容工具栏").FillWidth().MinHeight(28).Padding(0, 0, sp4, 0).Gap(sp2).AlignItems(ui.Center).
 		BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 		agentLogo(c, agentBrandIconFor(p.Kind, p.Name), 22)
 		ui.Text(c, p.Name+" 对你的了解").Font("system-ui").FontSize(fsHeading).FontWeight(600).TextColor(tok.Text1).SingleLine()
@@ -431,3 +431,129 @@ func (a *App) userProfileReaderPane(c *ui.Context) {
 			a.poseEnter.apply(c, doc, "profile-doc", s.docEnter, ui.Pose{Y: 6, Scale: 1, Fade: 1}, ui.Pose{Scale: 1}, 0, v4Smooth)
 			doc.Children(func() {
 				a.userProfileReaderHeader(c, p, s)
+
+				// Body content: unified V4 Markdown reading
+				switch {
+				case s.Body != "":
+					markdown.View(c.Key("user-profile-markdown-"+s.BodyKey), normalized, a.v4MarkdownOptions(fsReading))
+				case s.Reading:
+					v4SkeletonGroup(c, 3, 2, false, false)
+				case !p.working():
+					emptyMsg := fmt.Sprintf("尚未从 %s 导入画像，可点击底部「尝试导入」或「手动导入」", p.Name)
+					if !p.CanGenerate {
+						emptyMsg = "该来源支持手动导入：复制提示词后粘贴画像正文"
+					}
+					switch p.Status {
+					case "failed":
+						emptyMsg = "可点击下方「重新导入」重试，或使用「手动导入」粘贴正文"
+					case "unknown":
+						emptyMsg = "上次导入结果待核对，请等待确认或使用底部核对操作"
+					}
+					v4EmptyState(c, "profile-empty-body-"+p.ID, emptyMsg, "")
+				}
+			})
+		})
+
+		// Bottom status bar with actions: 重新导入 / 手动导入 / 复制正文
+		a.userProfileFooterBar(c, p)
+	})
+}
+
+func (a *App) userProfileFooterBar(c *ui.Context, p userProfile) {
+	s := &a.userProfiles
+	automatic := "尝试导入"
+	if p.Document != nil || p.Status == "failed" {
+		automatic = "重新导入"
+	}
+	if p.Status == "unknown" && !p.SaveUnknown {
+		automatic = "结果待确认"
+	}
+	if p.working() {
+		automatic = "停止导入"
+	}
+	if p.SaveUnknown {
+		automatic = "核对保存结果"
+	}
+	automaticLabel := "从" + p.Name + "导入画像"
+	if p.working() {
+		automaticLabel = "停止从" + p.Name + "导入画像"
+	}
+	if p.Status == "saving" {
+		automatic = "保存中…"
+		automaticLabel = "保存" + p.Name + "画像"
+	}
+
+	appFooter(c, "用户画像操作栏").Padding(0, sp6).Gap(sp2).Children(func() {
+		homeText(c, "独立来源 · 仅作个人参考", homeMeta)
+		ui.Spacer(c)
+		if time.Now().Before(s.CopyUntil) {
+			homeText(c, s.Copied+"已复制", homeMeta)
+		}
+		if p.CanGenerate || p.SaveUnknown || p.working() || p.Status == "unknown" {
+			onAuto := func() {
+				if p.working() {
+					a.userProfileAction(p, "cancel", "")
+				} else if p.SaveUnknown {
+					a.userProfileAction(p, "reconcile", "")
+				} else {
+					a.userProfileAction(p, "generate", "")
+				}
+			}
+			disabled := s.Busy || p.Status == "saving" || (!p.CanGenerate && !p.SaveUnknown) || (p.Status == "unknown" && !p.SaveUnknown)
+			if p.working() {
+				v4DangerOutlineButton(c, automatic, false, onAuto).Label(automaticLabel).Tooltip("使用 Agent 默认模型").Disabled(disabled)
+			} else {
+				v4OutlineButton(c, automatic, v4IconRefresh, onAuto).Label(automaticLabel).Tooltip("使用 Agent 默认模型").Disabled(disabled)
+			}
+		}
+		v4OutlineButton(c, "手动导入", v4IconUpload, func() { a.beginProfileImport(p) }).
+			Label("导入此来源画像").Disabled(s.Busy || p.working() || p.SaveUnknown)
+		v4OutlineButton(c, "复制正文", v4IconCopy, func() {
+			c.WriteClipboard(s.Body)
+			s.Copied = "正文"
+			s.CopyUntil = time.Now().Add(3 * time.Second)
+		}).Disabled(s.Body == "")
+	})
+}
+
+func (a *App) userProfileImportDialog(c *ui.Context) {
+	s := &a.userProfiles
+	if !s.Open {
+		return
+	}
+	var source userProfile
+	for _, p := range s.Directory.Profiles {
+		if p.ID == s.DraftSource {
+			source = p
+		}
+	}
+	v4Dialog(c, &s.Open, v4DialogOptions{
+		Key:             "user-profile-import-" + s.DraftSource,
+		Title:           "手动导入 " + source.Name + " 用户画像",
+		Width:           v4DialogLarge,
+		ScrollBody:      true,
+		Hint:            "支持直接粘贴任意 Markdown 正文，保留原文不做改写",
+		CancelText:      "取消",
+		ConfirmText:     "保存画像",
+		ConfirmDisabled: s.Busy || strings.TrimSpace(s.Draft) == "" || len(s.Draft) > 256*1024 || source.ID == "",
+		Leading: func() {
+			agentLogo(c, agentBrandIconFor(source.Kind, source.Name), 22)
+		},
+		Body: func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+				homeText(c, "先将提示词发给 "+source.Name+"，再把返回的 Markdown 粘贴到下方：", homeBody).Grow(1).MinWidth(0)
+				v4SmallButton(c, "复制提示词", v4IconCopy, func() { c.WriteClipboard(s.Directory.Prompt) }).Disabled(s.Directory.Prompt == "")
+			})
+			ui.TextArea(c.Key("profile-import-body-"+s.DraftSource), &s.Draft).
+				Label("用户画像文档").Placeholder("粘贴 " + source.Name + " 返回的用户画像正文…").
+				FillWidth().Height(220).FontSize(fsBody).Disabled(s.Busy).
+				OnChange(func() { s.Drafts[s.DraftSource] = s.Draft })
+			if s.Message != "" {
+				homeText(c, s.Message, homeMeta).TextColor(tok.Danger)
+			}
+		},
+		OnConfirm: func() {
+			a.userProfileAction(source, "import", s.Draft)
+		},
+	})
+}

@@ -51,19 +51,19 @@ ML015_OWNER_CLEANUP_MESSAGE = 'opencode_backlog.execute 必须在 finally 块中
 ML016_MESSAGE = '启用 SQLite WAL 模式时必须在同一模块显式配置 PRAGMA journal_size_limit，防止 WAL 文件无限膨胀'
 ML017_REOPEN_UI_MESSAGE = 'reopen_ui 禁止无条件调用 mygo dev 热重载轮询；默认启动须运行已构建二进制并由 watch 模式门禁守护'
 ML017_CLEANUP_RECEIPT_MESSAGE = '写入 build/disk-cleanup 清理回执时必须同时调用回执轮转清理机制（unlink 淘汰超额旧回执）'
-ML018_DOC_MESSAGE = '正式文档禁止引用本地忽略的 docs/process/ 路径；请将长期结论自包含写入正文，必要静态图移入 docs/images/'
+ML018_MESSAGE = '正式文档禁止引用本地忽略的 docs/process/ 路径；请将长期结论自包含写入正文，必要静态图移入 docs/images/'
 
 DOCS_PROCESS_REF_RE = re.compile(
     r'(?<![A-Za-z0-9_-])docs/process(?:/|(?![A-Za-z0-9_-]))'
     r'|(?<![A-Za-z0-9_-])(?:\.\./)+process(?:/|(?![A-Za-z0-9_-]))'
     r'|\]\(\s*\.?/?process(?:/|\s*\))'
 )
-ML018_MESSAGE = '禁止在 Go 桌面端新增对 overviewDocuments/overviewSessions//v1/overview/bootstrap 的全量拉表调用；仅允许精确回退路径函数，新功能请走 /v2 游标或点查接口'
-ML019_MESSAGE = '/v2 列表接口必须实施 _MAX_PAGE_LIMIT (<=50)、_parse_limit (<=50) 与 JSON 字节预算裁剪 (fit_items_to_json_budget)'
-ML019_UTF8_MESSAGE = '/v2 列表接口禁止裸用默认 ASCII 转义的 web.json_response（会使中文体积翻倍击穿字节预算）；须走统一 UTF-8 JSON 响应辅助或显式 UTF-8 dumps'
-ML020_CONNECT_MESSAGE = '禁止在非白名单模块直接或间接调用 sqlite3.connect（含别名/getattr/importlib）；只读访问官方库必须经 sqlite_ro.open_official_sqlite_ro'
-ML020_IMMUTABLE_MESSAGE = '禁止在线使用 SQLite URI immutable=1（易引发 WAL 脏页/过期视图）；只读连接须走 ?mode=ro + query_only + set_authorizer'
-ML021_MESSAGE = 'catalog_index.py 仅允许 5 张轻量元数据白名单表及白名单列，严禁持久化正文/QA/trace/why_learned/metadata 等违禁字段或新增未授权表/列'
+ML019_MESSAGE = '禁止在 Go 桌面端新增对 overviewDocuments/overviewSessions//v1/overview/bootstrap 的全量拉表调用；仅允许精确回退路径函数，新功能请走 /v2 游标或点查接口'
+ML020_MESSAGE = '/v2 列表接口必须实施 _MAX_PAGE_LIMIT (<=50)、_parse_limit (<=50) 与 JSON 字节预算裁剪 (fit_items_to_json_budget)'
+ML020_UTF8_MESSAGE = '/v2 列表接口禁止裸用默认 ASCII 转义的 web.json_response（会使中文体积翻倍击穿字节预算）；须走统一 UTF-8 JSON 响应辅助或显式 UTF-8 dumps'
+ML021_CONNECT_MESSAGE = '禁止在非白名单模块直接或间接调用 sqlite3.connect（含别名/getattr/importlib）；只读访问官方库必须经 sqlite_ro.open_official_sqlite_ro'
+ML021_IMMUTABLE_MESSAGE = '禁止在线使用 SQLite URI immutable=1（易引发 WAL 脏页/过期视图）；只读连接须走 ?mode=ro + query_only + set_authorizer'
+ML022_MESSAGE = 'catalog_index.py 仅允许 5 张轻量元数据白名单表及白名单列，严禁持久化正文/QA/trace/why_learned/metadata 等违禁字段或新增未授权表/列'
 
 SQLITE_CONNECT_ALLOWLIST = {
     'engine/python/sqlite_ro.py',
@@ -1802,7 +1802,7 @@ def _parse_catalog_ddl_statements(sql):
 def _validate_sqlite_table_xinfo(con, schema, table_name, node, report, *, ignore_stub=False):
     tbl_lower = table_name.lower()
     if tbl_lower not in CATALOG_ALLOWED_TABLES:
-        report(node, 'ML021', ML021_MESSAGE)
+        report(node, 'ML022', ML022_MESSAGE)
     allowed_cols = CATALOG_ALLOWED_TABLES.get(tbl_lower)
     escaped = table_name.replace('"', '""')
     rows = con.execute(f'PRAGMA {schema}.table_xinfo("{escaped}")').fetchall()
@@ -1811,13 +1811,13 @@ def _validate_sqlite_table_xinfo(con, schema, table_name, node, report, *, ignor
         if ignore_stub and col_lower == '__ml021_stub':
             continue
         if col_lower in CATALOG_FORBIDDEN_COLUMNS:
-            report(node, 'ML021', ML021_MESSAGE)
+            report(node, 'ML022', ML022_MESSAGE)
         elif allowed_cols is not None and col_lower not in allowed_cols:
-            report(node, 'ML021', ML021_MESSAGE)
+            report(node, 'ML022', ML022_MESSAGE)
 
 
 def _check_catalog_schema_ml021(all_nodes, parent_map, docstring_ids, str_consts, report):
-    """Dual ML021 validation: balanced-paren static DDL + :memory: SQLite PRAGMA table_xinfo."""
+    """Dual ML022 validation: balanced-paren static DDL + :memory: SQLite PRAGMA table_xinfo."""
     resolved_expr_ids = set()
     candidates = []
     for node in all_nodes:
@@ -1850,16 +1850,16 @@ def _check_catalog_schema_ml021(all_nodes, parent_map, docstring_ids, str_consts
     # Layer 1: Static balanced-paren validation over all CREATE TABLE / ALTER TABLE statements.
     for node, kind, table_name, cols, _ in ddl_entries:
         if kind in ('create_table_as', 'create_virtual_table', 'create_view'):
-            report(node, 'ML021', ML021_MESSAGE)
+            report(node, 'ML022', ML022_MESSAGE)
             continue
         if table_name not in CATALOG_ALLOWED_TABLES:
-            report(node, 'ML021', ML021_MESSAGE)
+            report(node, 'ML022', ML022_MESSAGE)
         allowed_cols = CATALOG_ALLOWED_TABLES.get(table_name)
         for col in cols:
             if col in CATALOG_FORBIDDEN_COLUMNS:
-                report(node, 'ML021', ML021_MESSAGE)
+                report(node, 'ML022', ML022_MESSAGE)
             elif allowed_cols is not None and col not in allowed_cols:
-                report(node, 'ML021', ML021_MESSAGE)
+                report(node, 'ML022', ML022_MESSAGE)
 
     # Layer 2: Execute extracted DDL in :memory: SQLite and validate via PRAGMA table_xinfo.
     create_stmts_by_table = {}
@@ -1876,7 +1876,7 @@ def _check_catalog_schema_ml021(all_nodes, parent_map, docstring_ids, str_consts
                 ).fetchall():
                     _validate_sqlite_table_xinfo(con, schema, str(tbl), node, report)
         except sqlite3.Error:
-            report(node, 'ML021', ML021_MESSAGE)
+            report(node, 'ML022', ML022_MESSAGE)
         finally:
             con.close()
 
@@ -1898,13 +1898,13 @@ def _check_catalog_schema_ml021(all_nodes, parent_map, docstring_ids, str_consts
                 con.execute(full_stmt)
             except sqlite3.OperationalError as exc:
                 if 'duplicate column name' not in str(exc).lower():
-                    report(node, 'ML021', ML021_MESSAGE)
+                    report(node, 'ML022', ML022_MESSAGE)
             for (tbl,) in con.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
             ).fetchall():
                 _validate_sqlite_table_xinfo(con, 'main', str(tbl), node, report, ignore_stub=used_stub)
         except sqlite3.Error:
-            report(node, 'ML021', ML021_MESSAGE)
+            report(node, 'ML022', ML022_MESSAGE)
         finally:
             con.close()
 
@@ -2122,7 +2122,7 @@ def _check_sqlite_connect_ml020(tree, scope_nodes_map, scope_children_map, str_c
             if not isinstance(node, ast.Call):
                 continue
             if is_sqlite_connect_expr(node.func) or is_getattr_connect_call(node):
-                report(node, 'ML020', ML020_CONNECT_MESSAGE)
+                report(node, 'ML021', ML021_CONNECT_MESSAGE)
                 continue
             wrapper_name = (
                 node.func.id if isinstance(node.func, ast.Name)
@@ -2130,7 +2130,7 @@ def _check_sqlite_connect_ml020(tree, scope_nodes_map, scope_children_map, str_c
             )
             if wrapper_name in SQLITE_OFFLOAD_WRAPPER_NAMES:
                 if any(is_sqlite_connect_expr(arg) for arg in node.args):
-                    report(node, 'ML020', ML020_CONNECT_MESSAGE)
+                    report(node, 'ML021', ML021_CONNECT_MESSAGE)
 
         child_env = {
             'sq': sq_names,
@@ -2243,7 +2243,7 @@ def _collect_v2_list_handlers(tree, all_nodes, functions):
 def check_v2_utf8_response(tree_or_source, handler_fns=None, *, require_unconditional=False):
     """Detect /v2 list handlers returning default ASCII-escaped web.json_response(payload).
 
-    Returns list of (lineno, 'ML019', ML019_UTF8_MESSAGE).
+    Returns list of (lineno, 'ML020', ML020_UTF8_MESSAGE).
     When require_unconditional is False, activates automatically once `_json_utf8_response` or
     `json_utf8_response` is defined or imported in v2_api.py.
     """
@@ -2388,12 +2388,12 @@ def check_v2_utf8_response(tree_or_source, handler_fns=None, *, require_uncondit
     for fn in targets:
         for sub in _walk_live_nodes(fn):
             if isinstance(sub, ast.Call) and _is_bare_json_response(sub):
-                issues.append((sub.lineno, 'ML019', ML019_UTF8_MESSAGE))
+                issues.append((sub.lineno, 'ML020', ML020_UTF8_MESSAGE))
     return sorted(set(issues))
 
 
 def _check_scaling_guardrails(tree, path, ast_index, report):
-    """ML019 (/v2 list pagination, budget & UTF-8 JSON exit), ML020 (sqlite3.connect allowlist + no immutable=1), ML021 (zero-body catalog DDL)."""
+    """ML020 (/v2 list pagination, budget & UTF-8 JSON exit), ML021 (sqlite3.connect allowlist + no immutable=1), ML022 (zero-body catalog DDL)."""
     rel_path = _normalize_rel_path(path)
     docstring_ids = ast_index['docstring_ids']
     all_nodes = ast_index['all_nodes']
@@ -2403,25 +2403,25 @@ def _check_scaling_guardrails(tree, path, ast_index, report):
     scope_children_map = ast_index['scope_children']
     str_consts = _collect_module_string_constants(tree)
 
-    # ML020 (part 1): forbid online SQLite URI `immutable=1` outside docstrings.
+    # ML021 (part 1): forbid online SQLite URI `immutable=1` outside docstrings.
     for node in all_nodes:
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstring_ids:
             if IMMUTABLE_URI_RE.search(node.value):
-                report(node, 'ML020', ML020_IMMUTABLE_MESSAGE)
+                report(node, 'ML021', ML021_IMMUTABLE_MESSAGE)
         elif isinstance(node, (ast.JoinedStr, ast.BinOp)):
             sql = _extract_sql_text(node, str_consts)
             if sql and IMMUTABLE_URI_RE.search(sql):
-                report(node, 'ML020', ML020_IMMUTABLE_MESSAGE)
+                report(node, 'ML021', ML021_IMMUTABLE_MESSAGE)
 
-    # ML020 (part 2): restrict sqlite3.connect (including aliases, getattr, importlib, __import__) to exact allowlisted paths.
+    # ML021 (part 2): restrict sqlite3.connect (including aliases, getattr, importlib, __import__) to exact allowlisted paths.
     if rel_path not in SQLITE_CONNECT_ALLOWLIST:
         _check_sqlite_connect_ml020(tree, scope_nodes_map, scope_children_map, str_consts, report)
 
-    # ML021: catalog_index.py DDL must strictly obey the 5-table / allowed-column metadata whitelist.
+    # ML022: catalog_index.py DDL must strictly obey the 5-table / allowed-column metadata whitelist.
     if rel_path in ('engine/python/catalog_index.py', 'catalog_index.py'):
         _check_catalog_schema_ml021(all_nodes, parent_map, docstring_ids, str_consts, report)
 
-    # ML019: v2_api.py list handlers must enforce _MAX_PAGE_LIMIT (<=50), _parse_limit, fit_items_to_json_budget & UTF-8 JSON exit.
+    # ML020: v2_api.py list handlers must enforce _MAX_PAGE_LIMIT (<=50), _parse_limit, fit_items_to_json_budget & UTF-8 JSON exit.
     if rel_path in ('engine/python/v2_api.py', 'v2_api.py'):
         numeric_consts = _collect_module_numeric_constants(tree)
         list_routes = _collect_v2_list_handlers(tree, all_nodes, functions)
@@ -2439,7 +2439,7 @@ def _check_scaling_guardrails(tree, path, ast_index, report):
                     break
             if anchor is None:
                 anchor = tree.body[0] if tree.body else list_routes[0][1]
-            report(anchor, 'ML019', ML019_MESSAGE)
+            report(anchor, 'ML020', ML020_MESSAGE)
 
         # Build transitive call graph for same-module helpers invoking fit_items_to_json_budget or _parse_limit.
         fn_by_name = {fn.name: fn for fn in functions}
@@ -2497,7 +2497,7 @@ def _check_scaling_guardrails(tree, path, ast_index, report):
                             if mv is not None and mv > 50:
                                 bad_limit_bound = True
             if not has_limit or not has_budget or bad_limit_bound:
-                report(handler_fn, 'ML019', ML019_MESSAGE)
+                report(handler_fn, 'ML020', ML020_MESSAGE)
 
         for lineno, code, msg in check_v2_utf8_response(tree, list_handlers, require_unconditional=True):
             anchor = type('_LineAnchor', (), {'lineno': lineno})()
@@ -2543,7 +2543,7 @@ GO_START_FUNC_RE = re.compile(r'func\s*\(\s*\w+\s+\*App\s*\)\s*Start\s*\([^)]*\)
 GO_OVERVIEW_DOCS_CALL_RE = re.compile(r'\.\s*overviewDocuments\b')
 GO_OVERVIEW_SESSIONS_CALL_RE = re.compile(r'\.\s*overviewSessions\b')
 GO_V1_OVERVIEW_BOOTSTRAP_RE = re.compile(r'/v1/overview/bootstrap')
-ML018_LEGACY_OVERVIEW_DOCS_ALLOWLIST = {
+ML019_LEGACY_OVERVIEW_DOCS_ALLOWLIST = {
     ('internal/simpledesktop/overview.go', 'overview'): 1,
     ('internal/simpledesktop/common_knowledge.go', 'commonDocumentItems'): 1,
     ('internal/simpledesktop/common_knowledge_page.go', 'confirmCommonDeletion'): 1,
@@ -2552,10 +2552,10 @@ ML018_LEGACY_OVERVIEW_DOCS_ALLOWLIST = {
     ('internal/simpledesktop/project_records.go', 'projectRecordCatalog'): 1,
     ('internal/simpledesktop/unified_search.go', 'recentSearchItems'): 1,
 }
-ML018_LEGACY_OVERVIEW_SESSIONS_ALLOWLIST = {
+ML019_LEGACY_OVERVIEW_SESSIONS_ALLOWLIST = {
     ('internal/simpledesktop/overview.go', 'overview'): 1,
 }
-ML018_LEGACY_V1_BOOTSTRAP_ALLOWLIST = {
+ML019_LEGACY_V1_BOOTSTRAP_ALLOWLIST = {
     ('internal/simpledesktop/overview_bootstrap.go', 'overviewBootstrap'): 1,
 }
 
@@ -2946,7 +2946,7 @@ def check_go_performance(source, path):
                         line = clean[:brace_idx + 1 + call_match.start()].count('\n') + 1
                         issues.append((line, 'ML012', ML012_START_MESSAGE))
 
-    # ML018: Ban new Go call sites to legacy full-table endpoints; exemptions bind exact path + exact enclosing function.
+    # ML019: Ban new Go call sites to legacy full-table endpoints; exemptions bind exact path + exact enclosing function.
     rel_path = _normalize_rel_path(path)
     toplevel_funcs = _extract_go_toplevel_funcs(clean)
 
@@ -2960,24 +2960,24 @@ def check_go_performance(source, path):
             seen_per_fn[key] = count
             if count > allowed_max:
                 line = text_for_lines[:match.start()].count('\n') + 1
-                issues.append((line, 'ML018', ML018_MESSAGE))
+                issues.append((line, 'ML019', ML019_MESSAGE))
 
     _check_ml018_matches(
         GO_OVERVIEW_DOCS_CALL_RE.finditer(clean),
         clean,
-        ML018_LEGACY_OVERVIEW_DOCS_ALLOWLIST,
+        ML019_LEGACY_OVERVIEW_DOCS_ALLOWLIST,
     )
     _check_ml018_matches(
         GO_OVERVIEW_SESSIONS_CALL_RE.finditer(clean),
         clean,
-        ML018_LEGACY_OVERVIEW_SESSIONS_ALLOWLIST,
+        ML019_LEGACY_OVERVIEW_SESSIONS_ALLOWLIST,
     )
 
     no_comments = _strip_go_comments_keep_strings(source)
     _check_ml018_matches(
         GO_V1_OVERVIEW_BOOTSTRAP_RE.finditer(no_comments),
         no_comments,
-        ML018_LEGACY_V1_BOOTSTRAP_ALLOWLIST,
+        ML019_LEGACY_V1_BOOTSTRAP_ALLOWLIST,
     )
 
     return issues
@@ -3047,7 +3047,7 @@ def main():
             print('{}:{}: {} {}'.format(path.relative_to(ROOT), line, code, message))
             failures += 1
     if not failures:
-        print('Lint passed: 模型参数、环境隔离、UI 性能、运行时资源与扩展架构门禁 (ML001-ML003, ML007-ML012, ML013-ML021)')
+        print('Lint passed: 模型参数、画像无总超时、环境隔离、UI 性能、运行时资源、正式文档边界与扩展架构门禁 (ML001-ML003, ML006-ML022)')
     return bool(failures)
 
 

@@ -691,6 +691,7 @@ type v2MessageSummaryResponse struct {
 	AutomaticSave           bool                            `json:"automatic_save"`
 	Backlog                 *backlogJob                     `json:"backlog"`
 	Checks                  []pendingCheckState             `json:"checks,omitempty"`
+	ProcessingIssues        []processingIssue               `json:"processing_issues,omitempty"`
 	BufferReviews           []bufferReview                  `json:"buffer_reviews,omitempty"`
 	KnowledgeCatalogVersion string                          `json:"knowledge_catalog_version"`
 	UnreadCount             int                             `json:"unread_count"`

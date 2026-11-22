@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 func (a *App) startRecentTitles(rows []Item) {
@@ -237,28 +238,134 @@ func (a *App) startTitles(s *pane) {
 	}
 }
 
+func clearUnavailableItem(item *Item) {
+	item.Body = ""
+	item.BodyLoaded = false
+	item.Detail = nil
+	item.Preview = ""
+	item.Subagents = nil
+	item.SubagentsHasMore = false
+	item.SubagentsNextCursor = ""
+	item.SubagentTotalCount = 0
+	item.SubagentsLoading = false
+	item.SessionSummary = ""
+	item.RecallStats = nil
+	item.ReadingState = "unavailable"
+	item.ReadingError = "内容不可用"
+	if item.Document != nil {
+		doc := *item.Document
+		doc.Metadata = nil
+		item.Document = &doc
+		item.Title = doc.title()
+	}
+}
+
+func (a *App) allReadingPanes() []*pane {
+	seen := make(map[*pane]bool, len(a.panes)+len(a.access.Queues))
+	out := make([]*pane, 0, len(a.panes)+len(a.access.Queues))
+	for _, s := range a.panes {
+		if s != nil && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, q := range a.access.Queues {
+		if q != nil && q.Reader != nil && !seen[q.Reader] {
+			seen[q.Reader] = true
+			out = append(out, q.Reader)
+		}
+	}
+	return out
+}
+
+func (a *App) clearUserProfileBody(dataset, id string) {
+	s := &a.userProfiles
+	match := dataset == ""
+	if !match && id != "" {
+		if strings.HasSuffix(s.BodyKey, "/"+dataset+"/"+id) {
+			match = true
+		}
+		if p, ok := a.selectedUserProfile(); ok && p.Document != nil && p.Document.Dataset == dataset && p.Document.ID == id {
+			match = true
+		}
+	} else if !match {
+		if s.BodyKey == "" || strings.Contains(s.BodyKey, "/"+dataset+"/") {
+			match = true
+		}
+		if p, ok := a.selectedUserProfile(); ok && p.Document != nil && p.Document.Dataset == dataset {
+			match = true
+		}
+	}
+	if match {
+		s.Body = ""
+		s.BodyKey = ""
+		s.cachedBody, s.cachedNormalized, s.cachedChunks = "", "", nil
+		s.ReadAt = time.Time{}
+		s.Reading = false
+		s.ReadGeneration++
+	}
+}
+
 func (a *App) unavailableReadingItem(i Item) {
 	a.projectUI.InfoOpen = false
 	for n, r := range a.searchUI.Rows {
 		if r.Dataset == i.Dataset && (r.ID == i.ID || r.SourceDocument == i.ID) {
 			a.searchUI.Rows[n].Body = ""
+			a.searchUI.Rows[n].BodyLoaded = false
+			a.searchUI.Rows[n].Detail = nil
 			a.searchUI.Rows[n].Preview = ""
+			a.searchUI.Rows[n].Subagents = nil
 			a.searchUI.Rows[n].Title = "内容已失效"
 			a.searchUI.Rows[n].ReadingState = "unavailable"
 		}
 	}
+	if a.searchAnchor != nil && a.searchAnchor.Dataset == i.Dataset && (a.searchAnchor.ID == i.ID || a.searchAnchor.SourceDocument == i.ID) {
+		a.clearSearchOrigin()
+	}
+	a.clearUserProfileBody(i.Dataset, i.ID)
+	if a.graph != nil && a.graph.dataset == i.Dataset {
+		a.graph.clear()
+		a.graphSelection = ""
+		a.graphLoading = false
+	} else if a.graphSelection != "" && (strings.Contains(a.graphSelection, i.ID) || (i.Dataset != "" && strings.Contains(a.graphSelection, i.Dataset))) {
+		a.graphSelection = ""
+	}
 	a.titles.InvalidateObject(i.Dataset, i.ID)
+	a.detailChunks.InvalidateObject(i.Dataset, i.ID)
 	if a.readingRevisions == nil {
 		a.readingRevisions = map[string]uint64{}
 	}
 	a.readingRevisions[i.key()]++
-	for _, s := range a.panes {
+	for _, s := range a.allReadingPanes() {
+		if s.DetailLists != nil {
+			k := i.key()
+			delete(s.DetailLists, k)
+			delete(s.DetailLists, k+"/tools")
+			delete(s.DetailLists, k+"/subagents")
+		}
 		if s.SourcePage != nil && s.SourcePage.ID == i.ID && s.SourcePage.Dataset == i.Dataset {
 			s.SourcePage = nil
+		}
+		if s.SubagentParent != nil && s.SubagentParent.key() == i.key() {
+			s.SubagentParent = nil
+			s.SubagentParentPage = nil
+		} else if s.SubagentParent != nil {
+			for idx := range s.SubagentParent.Subagents {
+				if s.SubagentParent.Subagents[idx].key() == i.key() {
+					clearUnavailableItem(&s.SubagentParent.Subagents[idx])
+				}
+			}
+		}
+		if s.SubagentParentPage != nil && s.SubagentParentPage.ID == i.ID && s.SubagentParentPage.Dataset == i.Dataset {
+			s.SubagentParentPage = nil
+		}
+		if s.HomeAnchor != nil && s.HomeAnchor.key() == i.key() {
+			s.HomeAnchor = nil
 		}
 		if s.Selected != nil && s.Selected.key() == i.key() {
 			s.Selected = nil
 			s.Reading = false
+			s.SessionSubagents = false
 		}
 		history := s.History[:0]
 		for _, h := range s.History {
@@ -266,36 +373,30 @@ func (a *App) unavailableReadingItem(i Item) {
 				history = append(history, h)
 			}
 		}
+		clear(s.History[len(history):])
 		s.History = history
 		for n, row := range s.Items {
 			if row.key() == i.key() {
-				s.Items[n].Body = ""
-				s.Items[n].Preview = ""
-				s.Items[n].BodyLoaded = false
-				s.Items[n].RecallStats = nil
-				s.Items[n].ReadingState = "unavailable"
-				s.Items[n].ReadingError = "内容不可用"
-				if row.Document != nil {
-					docCopy := *row.Document
-					docCopy.Metadata = nil
-					s.Items[n].Document = &docCopy
-					s.Items[n].Title = docCopy.title()
-				}
+				clearUnavailableItem(&s.Items[n])
 			}
+		}
+		for n, row := range s.RawCatalog {
+			if row.key() == i.key() {
+				clearUnavailableItem(&s.RawCatalog[n])
+			}
+		}
+		for n, row := range s.Knowledge.Catalog {
+			if row.key() == i.key() {
+				clearUnavailableItem(&s.Knowledge.Catalog[n])
+			}
+		}
+		if s.Knowledge.Measurements != nil {
+			delete(s.Knowledge.Measurements, i.key())
 		}
 	}
 	for n, row := range a.overviewState.Snapshot.Knowledge {
 		if row.key() == i.key() {
-			a.overviewState.Snapshot.Knowledge[n].Body = ""
-			a.overviewState.Snapshot.Knowledge[n].Preview = ""
-			a.overviewState.Snapshot.Knowledge[n].BodyLoaded = false
-			if row.Document != nil {
-				docCopy := *row.Document
-				docCopy.Metadata = nil
-				a.overviewState.Snapshot.Knowledge[n].Document = &docCopy
-				a.overviewState.Snapshot.Knowledge[n].Title = docCopy.title()
-			}
-			a.overviewState.Snapshot.Knowledge[n].ReadingState = "unavailable"
+			clearUnavailableItem(&a.overviewState.Snapshot.Knowledge[n])
 		}
 	}
 }
@@ -338,6 +439,45 @@ func (a *App) retryReadingTitle(s *pane, i Item) {
 	}()
 }
 
+func (a *App) cancelOverviewRequests() {
+	v := &a.overviewState
+	a.cancelOverviewRecall()
+	if v.cancel != nil {
+		v.cancel()
+		v.cancel = nil
+	}
+	if v.activityCancel != nil {
+		v.activityCancel()
+		v.activityCancel = nil
+	}
+	v.generation++
+	v.activityGeneration++
+	v.Loading = false
+	v.ActivityLoading = false
+}
+
+func overviewEventMatchesDataset(ev overviewEvent, dataset string) bool {
+	if dataset == "" {
+		return true
+	}
+	if ev.Record.Dataset == dataset {
+		return true
+	}
+	for _, f := range ev.Failures {
+		if f.Dataset == dataset {
+			return true
+		}
+	}
+	if ev.Recall != nil {
+		for _, hit := range ev.Recall.Hits {
+			if hit.Dataset == dataset {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // InvalidateReading must be called by policy/credential integration when access is
 // revoked. It removes raw data and copy affordances, including nested history, and
 // fences every in-flight request via authEpoch + per-pane/overview/queue counters.
@@ -346,11 +486,18 @@ func (a *App) InvalidateReading(dataset string) {
 	a.withdrawCommonEditor(dataset)
 	a.invalidateUnifiedSearch(dataset)
 	if dataset == "" || (a.searchAnchor != nil && a.searchAnchor.Dataset == dataset) {
-		a.searchAnchor = nil
-		a.searchPane = nil
+		a.clearSearchOrigin()
 	}
 	a.projectUI.InfoOpen = false
+	a.clearUserProfileBody(dataset, "")
+	if dataset == "" || a.graph == nil || a.graph.dataset == "" || a.graph.dataset == dataset {
+		a.graph.clear()
+		a.graphSelection = ""
+		a.graphLoading = false
+	}
 	a.titles.Invalidate(dataset)
+	a.detailChunks.Invalidate(dataset)
+	a.overviewState.snapshotVersion++
 	a.recentScope = ""
 	if a.recentCancel != nil {
 		a.recentCancel()
@@ -359,17 +506,8 @@ func (a *App) InvalidateReading(dataset string) {
 	a.recentRequest++
 
 	// Fence overview, activity, & day in-flight requests so late callbacks cannot repopulate revoked data.
-	a.overviewState.generation++
-	a.overviewState.activityGeneration++
+	a.cancelOverviewRequests()
 	a.overviewState.dayRequest++
-	if a.overviewState.cancel != nil {
-		a.overviewState.cancel()
-		a.overviewState.cancel = nil
-	}
-	if a.overviewState.activityCancel != nil {
-		a.overviewState.activityCancel()
-		a.overviewState.activityCancel = nil
-	}
 	if a.overviewState.dayCancel != nil {
 		a.overviewState.dayCancel()
 		a.overviewState.dayCancel = nil
@@ -383,6 +521,17 @@ func (a *App) InvalidateReading(dataset string) {
 	a.overviewState.DayLoading = false
 	a.overviewState.cachedGroupedEvents = nil
 	if dataset == "" {
+		a.recent = nil
+		a.overviewState.scope = ""
+		a.overviewState.Loaded = false
+		a.overviewState.RawLoaded = false
+		a.overviewState.ExpandedEvent = ""
+		a.overviewState.ExpandedReport = ""
+		a.overviewState.ExpandedDetail = nil
+		a.overviewState.Error = ""
+		a.overviewState.ActivityError = ""
+		a.overviewState.HistoryError = ""
+		a.overviewState.RecallError = ""
 		a.overviewState.DayItems = nil
 		a.overviewState.DayNextCursor = ""
 		a.overviewState.DayHasMore = false
@@ -409,6 +558,11 @@ func (a *App) InvalidateReading(dataset string) {
 		if len(a.overviewState.Events) > 0 {
 			keptEvents := make([]overviewEvent, 0, len(a.overviewState.Events))
 			for _, ev := range a.overviewState.Events {
+				if ev.Key != "" && ev.Key == a.overviewState.ExpandedEvent && overviewEventMatchesDataset(ev, dataset) {
+					a.overviewState.ExpandedEvent = ""
+					a.overviewState.ExpandedReport = ""
+					a.overviewState.ExpandedDetail = nil
+				}
 				if ev.Record.Dataset == dataset {
 					continue
 				}
@@ -454,20 +608,10 @@ func (a *App) InvalidateReading(dataset string) {
 	}
 	for n, i := range a.overviewState.Snapshot.Knowledge {
 		if dataset == "" || i.Dataset == dataset {
-			a.overviewState.Snapshot.Knowledge[n].Body = ""
-			a.overviewState.Snapshot.Knowledge[n].Preview = ""
-			a.overviewState.Snapshot.Knowledge[n].BodyLoaded = false
-			a.overviewState.Snapshot.Knowledge[n].Detail = nil
-			a.overviewState.Snapshot.Knowledge[n].ReadingState = ""
-			if i.Document != nil {
-				docCopy := *i.Document
-				docCopy.Metadata = nil
-				a.overviewState.Snapshot.Knowledge[n].Document = &docCopy
-				a.overviewState.Snapshot.Knowledge[n].Title = docCopy.title()
-			}
+			clearUnavailableItem(&a.overviewState.Snapshot.Knowledge[n])
 		}
 	}
-	for _, s := range a.panes {
+	for _, s := range a.allReadingPanes() {
 		a.cancelTitles(s)
 		paneMatches := dataset == "" ||
 			(len(s.Items) > 0 && s.Items[0].Dataset == dataset) ||
@@ -496,9 +640,69 @@ func (a *App) InvalidateReading(dataset string) {
 			s.CommonCursors = nil
 			s.CommonPageIndex = 0
 		}
-		if len(s.RawCatalog) > 0 && (dataset == "" || s.RawCatalog[0].Dataset == dataset) {
-			s.RawCatalog = nil
-			s.More = false
+		if s.DetailLists != nil {
+			if dataset == "" {
+				clear(s.DetailLists)
+			} else {
+				prefix := dataset + "/"
+				for k := range s.DetailLists {
+					if strings.HasPrefix(k, prefix) {
+						delete(s.DetailLists, k)
+					}
+				}
+			}
+		}
+		if len(s.RawCatalog) > 0 {
+			if dataset == "" {
+				clear(s.RawCatalog)
+				s.RawCatalog = nil
+				s.More = false
+			} else {
+				kept := s.RawCatalog[:0]
+				for _, row := range s.RawCatalog {
+					if row.Dataset != dataset {
+						kept = append(kept, row)
+					}
+				}
+				clear(s.RawCatalog[len(kept):])
+				if len(kept) == 0 {
+					s.RawCatalog = nil
+					s.More = false
+				} else {
+					s.RawCatalog = kept
+				}
+			}
+		}
+		if len(s.Knowledge.Catalog) > 0 {
+			if dataset == "" {
+				clear(s.Knowledge.Catalog)
+				s.Knowledge.Catalog = nil
+			} else {
+				kept := s.Knowledge.Catalog[:0]
+				for _, row := range s.Knowledge.Catalog {
+					if row.Dataset != dataset {
+						kept = append(kept, row)
+					}
+				}
+				clear(s.Knowledge.Catalog[len(kept):])
+				if len(kept) == 0 {
+					s.Knowledge.Catalog = nil
+				} else {
+					s.Knowledge.Catalog = kept
+				}
+			}
+		}
+		if s.Knowledge.Measurements != nil {
+			if dataset == "" {
+				clear(s.Knowledge.Measurements)
+			} else {
+				prefix := dataset + "/"
+				for k := range s.Knowledge.Measurements {
+					if strings.HasPrefix(k, prefix) {
+						delete(s.Knowledge.Measurements, k)
+					}
+				}
+			}
 		}
 		if s.HomeAnchor != nil && (dataset == "" || s.HomeAnchor.Dataset == dataset) {
 			s.HomeAnchor = nil
@@ -531,45 +735,11 @@ func (a *App) InvalidateReading(dataset string) {
 				history = append(history, i)
 			}
 		}
+		clear(s.History[len(history):])
 		s.History = history
 		for n, i := range s.Items {
 			if dataset == "" || i.Dataset == dataset {
-				s.Items[n].Body = ""
-				s.Items[n].Preview = ""
-				s.Items[n].BodyLoaded = false
-				s.Items[n].Detail = nil
-				s.Items[n].RecallStats = nil
-				s.Items[n].Subagents = nil
-				s.Items[n].SubagentsHasMore = false
-				s.Items[n].SubagentsNextCursor = ""
-				s.Items[n].SubagentTotalCount = 0
-				s.Items[n].SubagentsLoading = false
-				s.Items[n].SessionSummary = ""
-				s.Items[n].ReadingState = "unavailable"
-				s.Items[n].ReadingError = "内容不可用"
-				if i.Document != nil {
-					docCopy := *i.Document
-					docCopy.Metadata = nil
-					s.Items[n].Document = &docCopy
-					s.Items[n].Title = docCopy.title()
-				}
-			}
-		}
-		for n, i := range s.Knowledge.Catalog {
-			if dataset == "" || i.Dataset == dataset {
-				s.Knowledge.Catalog[n].Body = ""
-				s.Knowledge.Catalog[n].Preview = ""
-				s.Knowledge.Catalog[n].BodyLoaded = false
-				s.Knowledge.Catalog[n].Detail = nil
-				s.Knowledge.Catalog[n].RecallStats = nil
-				s.Knowledge.Catalog[n].ReadingState = "unavailable"
-				s.Knowledge.Catalog[n].ReadingError = "内容不可用"
-				if i.Document != nil {
-					docCopy := *i.Document
-					docCopy.Metadata = nil
-					s.Knowledge.Catalog[n].Document = &docCopy
-					s.Knowledge.Catalog[n].Title = docCopy.title()
-				}
+				clearUnavailableItem(&s.Items[n])
 			}
 		}
 	}
@@ -586,6 +756,8 @@ func (a *App) InvalidateReading(dataset string) {
 			q.ServerUnreadCount = 0
 			q.ServerUnreadStateRev = 0
 			q.Activity = nil
+			q.ProcessingNotices = nil
+			q.ProcessingIssues = nil
 			q.Documents = nil
 			q.PendingDocumentsCount = 0
 			q.StateVersion++

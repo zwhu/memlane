@@ -23,6 +23,36 @@ class _DummyOfficial:
         return frozenset(self.authorized)
 
 
+class LegacyProvenanceArchiveTests(unittest.TestCase):
+    def test_archive_skips_lock_holder_and_rechecks_atomic_replacement(self):
+        import fcntl
+        import os
+        from v2_api import _archive_legacy_dates_if_unchanged
+
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy = Path(tmp) / 'knowledge-source-dates-instance.json'
+            legacy.write_text('previous', encoding='utf-8')
+            snapshot = legacy.stat()
+            expected = (snapshot.st_ino, snapshot.st_size, snapshot.st_mtime_ns)
+            lock = legacy.with_suffix('.json.lock')
+
+            with lock.open('wb') as writer:
+                fcntl.flock(writer, fcntl.LOCK_EX)
+                self.assertEqual(_archive_legacy_dates_if_unchanged(legacy, expected), ('', False))
+                replacement = legacy.with_suffix('.new')
+                replacement.write_text('new file', encoding='utf-8')
+                os.replace(replacement, legacy)
+
+            self.assertEqual(_archive_legacy_dates_if_unchanged(legacy, expected), ('', False))
+            self.assertEqual(legacy.read_text(encoding='utf-8'), 'new file')
+            current = legacy.stat()
+            backup, archived = _archive_legacy_dates_if_unchanged(
+                legacy, (current.st_ino, current.st_size, current.st_mtime_ns),
+            )
+            self.assertTrue(archived)
+            self.assertEqual(Path(backup).read_text(encoding='utf-8'), 'new file')
+
+
 class V2APITests(AioHTTPTestCase):
     async def get_application(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -747,34 +777,6 @@ class V2APITests(AioHTTPTestCase):
         self.assertEqual(ms_resp.status, 200)
         ms_raw = await ms_resp.read()
         self.assertLessEqual(len(ms_raw), 16 * 1024)
-
-    async def test_legacy_dates_archive_defers_to_sidecar_lock_holder(self):
-        import fcntl
-        import hashlib
-
-        identity = self.manager_headers['X-Memlane-Reading-Identity']
-        digest = hashlib.sha256(identity.encode('utf-8')).hexdigest()
-        legacy = self.registry.path.parent / f'knowledge-source-dates-{digest}.json'
-        legacy.write_text(json.dumps({'schema_version': 1, 'days': {}}), encoding='utf-8')
-        legacy.chmod(0o600)
-        backup = legacy.with_name(legacy.name + '.migrated.bak')
-        self.registry.state['projects'].pop('p-unconf', None)
-
-        async def backfill():
-            response = await self.client.post(
-                '/v2/provenance/backfill-legacy-dates', headers=self.manager_headers,
-                json={'reading_identity': identity},
-            )
-            self.assertEqual(response.status, 200)
-            return await response.json()
-
-        with legacy.with_name(legacy.name + '.lock').open('wb') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            self.assertEqual((await backfill())['status'], 'partial')
-            self.assertTrue(legacy.is_file())
-            self.assertFalse(backup.exists())
-        self.assertEqual((await backfill())['status'], 'empty')
-        self.assertTrue(backup.is_file())
 
     async def test_r3_backfill_stat_guard_and_snapshot_consistency(self):
         """R3 P1-5 & P1-6: atomic unread snapshot (no second page_unread_flags read) + legacy dates stat guard before archive."""

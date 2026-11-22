@@ -1716,6 +1716,10 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 	var denyActivity atomic.Bool
 	officialP0 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/processing-status"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{
+				{"id": "pend-doc-1", "completed": false},
+			}})
 		case strings.Contains(r.URL.Path, "/data"):
 			_ = json.NewEncoder(w).Encode([]Document{
 				{ID: "pend-doc-1", Dataset: "ds-1", Name: "secret-pending.md", Created: "2026-11-21T10:00:00Z"},
@@ -1762,6 +1766,7 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 
 	// A successful parallel document response must also be discarded on activity 403.
 	denyActivity.Store(true)
+	q1.DocumentError = ""
 	q1.Activity = []overviewEvent{{Title: "cached activity"}}
 	a0.loadProjectQueue(q1, p1)
 	drainReading(t, updates0, func() bool { return !q1.Loading })
@@ -1914,10 +1919,9 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 		t.Fatalf("P1-2 VIOLATION: expected only verified [p1] in migrate-local, got %v", gotMig)
 	}
 
-	// Before the directory loads, fallback config has no verified project status.
+	// An empty directory leaves only the fallback config, which has no verified status.
 	aConfig, configUpdates := p1TestApp(t, controlP2.URL, controlP2.URL, tokenP2)
 	aConfig.access.Directory = AccessDirectory{}
-	aConfig.access.Loaded = false
 	aConfig.Config.Projects = append(aConfig.Config.Projects, Project{ID: "p-unconfirmed", Dataset: "ds-pending"})
 	aConfig.loadOverview()
 	drainReading(t, configUpdates, func() bool { return !aConfig.overviewState.Loading })

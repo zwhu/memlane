@@ -498,7 +498,7 @@ func (a *App) applyOverviewV2ProjectSummaries(summaries []v2OverviewProjectSumma
 		if !ok {
 			continue
 		}
-		q := a.projectQueueStateFor(p)
+		q := a.projectQueueStateForAsync(p)
 		applyServerUnreadSnapshot(q, summary.UnreadCount, summary.UnreadStateRev, a.knowledgeWriterHasPending(p.ID, p.Dataset))
 		if summary.CatalogVersion != "" {
 			q.KnowledgeCatalogVersion = summary.CatalogVersion
@@ -757,78 +757,78 @@ func (a *App) overviewHome(c *ui.Context) {
 		page := ui.Column(c.Key(pageKey)).Grow(1).MinHeight(0).FillWidth().MaxWidth(1040).Padding(0, sp8).Font("system-ui").FontWeight(400)
 		a.v4PageEnter(c, page, "overview-page", a.motionRuns.overviewPage)
 		page.Children(func() {
-		if _, err := a.overviewFirstUseDays(now); err != nil {
-			homeText(c, "使用时间暂不可用。", homeAction).Margin(0, 0, sp2, 0)
-		}
-		if v.Error != "" {
-			message := "统计读取失败 · " + v.Error
-			if v.Loaded {
-				message = "未能刷新，显示上次统计 · " + v.Error
+			if _, err := a.overviewFirstUseDays(now); err != nil {
+				homeText(c, "使用时间暂不可用。", homeAction).Margin(0, 0, sp2, 0)
 			}
-			ui.Row(c).Gap(sp2).AlignItems(ui.Center).Margin(0, 0, sp2, 0).Children(func() {
-				homeText(c, message, homeBody)
-				projectLink(c, "重试读取统计", a.loadOverview)
-			})
-		}
-		if v.Snapshot.RawError != "" {
-			ui.Row(c).Gap(sp2).AlignItems(ui.Center).Margin(0, 0, sp2, 0).Children(func() {
-				homeText(c, "原始记录统计暂不可用 · "+v.Snapshot.RawError, homeAction)
-				projectLink(c, "重试读取记录统计", a.loadOverview)
-			})
-		}
-		a.overviewHeatmap(c, now)
-		// V4: dual columns fill remaining height and scroll independently; no project cards.
-		ui.Row(c).Key("overview-paired-sections").Grow(1).MinHeight(0).FillWidth().AlignItems(ui.Stretch).Children(func() {
-			ui.Column(c).Key("overview-knowledge-section").Width(0).Grow(1.6).MinWidth(0).MinHeight(0).Padding(sp4, sp6, 0, 0).BorderWidth(0, 1, 0, 0).BorderColor(tok.Border).Gap(sp2).Children(func() {
-				ui.Row(c).Height(28).Shrink(0).AlignItems(ui.Center).Children(func() {
-					title := "最近记忆"
-					if v.Day != "" {
-						dayCount := len(a.overviewKnowledgeRows(now))
-						if v.V2Mode {
-							dayCount = v.DayTotal
-							if dayCount == 0 && v.V2DayBuckets[v.Day] > 0 {
-								dayCount = v.V2DayBuckets[v.Day]
-							}
-						}
-						title = fmt.Sprintf("%s · %d 条记忆", v.Day, dayCount)
-					}
-					homeText(c, title, homeHeading)
-					ui.Spacer(c)
-					if v.Day != "" {
-						homeLink(c, "返回最近记忆", func() { a.selectOverviewDay("") })
-					}
+			if v.Error != "" {
+				message := "统计读取失败 · " + v.Error
+				if v.Loaded {
+					message = "未能刷新，显示上次统计 · " + v.Error
+				}
+				ui.Row(c).Gap(sp2).AlignItems(ui.Center).Margin(0, 0, sp2, 0).Children(func() {
+					homeText(c, message, homeBody)
+					projectLink(c, "重试读取统计", a.loadOverview)
 				})
-				a.overviewKnowledge(c, now)
-				if v.Loaded && v.Day != "" {
-					displayed := len(a.overviewDisplayedRows(now))
-					total := len(a.overviewKnowledgeRows(now))
-					if v.V2Mode {
-						total = max(v.DayTotal, displayed)
-					}
-					ui.Row(c).AlignItems(ui.Center).Gap(sp2).Padding(sp2, 0, sp3, 0).Shrink(0).Children(func() {
-						homeText(c, fmt.Sprintf("已显示 %d 条，共 %d 条", displayed, total), homeReadableMeta)
-						ui.Spacer(c)
-						if v.V2Mode {
-							if v.DayHasMore && !v.DayLoading {
-								homeLink(c, "加载更多", func() { a.loadOverviewDayV2(v.Day, true) })
-							} else if v.DayLoading {
-								homeText(c, "正在加载…", homeMeta)
+			}
+			if v.Snapshot.RawError != "" {
+				ui.Row(c).Gap(sp2).AlignItems(ui.Center).Margin(0, 0, sp2, 0).Children(func() {
+					homeText(c, "原始记录统计暂不可用 · "+v.Snapshot.RawError, homeAction)
+					projectLink(c, "重试读取记录统计", a.loadOverview)
+				})
+			}
+			a.overviewHeatmap(c, now)
+			// V4: dual columns fill remaining height and scroll independently; no project cards.
+			ui.Row(c).Key("overview-paired-sections").Grow(1).MinHeight(0).FillWidth().AlignItems(ui.Stretch).Children(func() {
+				ui.Column(c).Key("overview-knowledge-section").Width(0).Grow(1.6).MinWidth(0).MinHeight(0).Padding(sp4, sp6, 0, 0).BorderWidth(0, 1, 0, 0).BorderColor(tok.Border).Gap(sp2).Children(func() {
+					ui.Row(c).Height(28).Shrink(0).AlignItems(ui.Center).Children(func() {
+						title := "最近记忆"
+						if v.Day != "" {
+							dayCount := len(a.overviewKnowledgeRows(now))
+							if v.V2Mode {
+								dayCount = v.DayTotal
+								if dayCount == 0 && v.V2DayBuckets[v.Day] > 0 {
+									dayCount = v.V2DayBuckets[v.Day]
+								}
 							}
-						} else if total > 20 && !v.ShowAllForDay {
-							homeLink(c, "显示全部", func() { v.ShowAllForDay = true })
+							title = fmt.Sprintf("%s · %d 条记忆", v.Day, dayCount)
+						}
+						homeText(c, title, homeHeading)
+						ui.Spacer(c)
+						if v.Day != "" {
+							homeLink(c, "返回最近记忆", func() { a.selectOverviewDay("") })
 						}
 					})
-				}
-			})
-			ui.Column(c).Key("overview-activity-section").Width(0).Grow(1).MinWidth(280).MinHeight(0).Padding(sp4, 0, 0, sp6).Gap(sp2).Children(func() {
-				ui.Row(c).Height(28).Shrink(0).AlignItems(ui.Center).Children(func() {
-					homeText(c, "近期动态", homeHeading)
-					ui.Spacer(c)
-					a.overviewActivityTabs(c)
+					a.overviewKnowledge(c, now)
+					if v.Loaded && v.Day != "" {
+						displayed := len(a.overviewDisplayedRows(now))
+						total := len(a.overviewKnowledgeRows(now))
+						if v.V2Mode {
+							total = max(v.DayTotal, displayed)
+						}
+						ui.Row(c).AlignItems(ui.Center).Gap(sp2).Padding(sp2, 0, sp3, 0).Shrink(0).Children(func() {
+							homeText(c, fmt.Sprintf("已显示 %d 条，共 %d 条", displayed, total), homeReadableMeta)
+							ui.Spacer(c)
+							if v.V2Mode {
+								if v.DayHasMore && !v.DayLoading {
+									homeLink(c, "加载更多", func() { a.loadOverviewDayV2(v.Day, true) })
+								} else if v.DayLoading {
+									homeText(c, "正在加载…", homeMeta)
+								}
+							} else if total > 20 && !v.ShowAllForDay {
+								homeLink(c, "显示全部", func() { v.ShowAllForDay = true })
+							}
+						})
+					}
 				})
-				a.overviewActivities(c, now)
+				ui.Column(c).Key("overview-activity-section").Width(0).Grow(1).MinWidth(280).MinHeight(0).Padding(sp4, 0, 0, sp6).Gap(sp2).Children(func() {
+					ui.Row(c).Height(28).Shrink(0).AlignItems(ui.Center).Children(func() {
+						homeText(c, "近期动态", homeHeading)
+						ui.Spacer(c)
+						a.overviewActivityTabs(c)
+					})
+					a.overviewActivities(c, now)
+				})
 			})
-		})
 		})
 	})
 	a.overviewFailureDialog(c)
@@ -1085,7 +1085,7 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 			homeText(c, start.Format("2006.01")+" — "+today.Format("2006.01"), homeReadableMeta)
 			ui.Spacer(c)
 			for idx, metric := range []struct{ value, unit, label string }{{usage, "天", "已使用"}, {knowledge, "条", "记忆"}, {raw, "条", "原始记录"}} {
-				stat := ui.Row(c).Key("overview-stat-"+metric.label).AlignItems(ui.Baseline).Gap(4).Shrink(0)
+				stat := ui.Row(c).Key("overview-stat-" + metric.label).AlignItems(ui.Baseline).Gap(4).Shrink(0)
 				if idx > 0 {
 					stat.Margin(0, 0, 0, sp6).Padding(0, 0, 0, sp6).BorderWidth(0, 0, 0, 1).BorderColor(tok.Border)
 				}
@@ -1281,7 +1281,7 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 						canvas.Children(func() {
 							ui.ButtonBase(c.Key("overview-day-"+todayDate)).Role(ui.RoleButton).Cursor(ui.CursorPointer).
 								Label(todayLabel).
-								Absolute().Left(float32(todayW * 14)).Top(float32(todayWD * 14)).Size(11, 11).
+								Absolute().Left(float32(todayW*14)).Top(float32(todayWD*14)).Size(11, 11).
 								Background(ui.Transparent).BorderWidth(0).OnClick(func() {
 								if v.Day == todayDate {
 									a.selectOverviewDay("")

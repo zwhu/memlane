@@ -52,7 +52,7 @@ from local_body_reader import (
     read_local_preview_snippet,
     verify_official_read_access,
 )
-from processing_notices import processing_notices
+from processing_notices import read_processing_notices
 from project_policy import PolicyError
 from provenance_store import _calendar_date
 from reading_state_store import ReadingStateStore
@@ -734,9 +734,35 @@ def _read_recall_events_summary(recall_store, allowed_datasets: set[str], agents
     return page['items'], bool(page['more']), started_at
 
 
+def _archive_legacy_dates_if_unchanged(legacy_path: Path, expected_stat: tuple[int, int, int]) -> tuple[str, bool]:
+    """Revalidate and archive under the same sidecar lock used by the desktop writer."""
+    lock_path = legacy_path.with_name(legacy_path.name + '.lock')
+    try:
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    except OSError:
+        return '', False
+    try:
+        if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
+            return '', False
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        cur_st = os.lstat(legacy_path)
+        if (
+            not stat.S_ISREG(cur_st.st_mode)
+            or (cur_st.st_ino, cur_st.st_size, cur_st.st_mtime_ns) != expected_stat
+        ):
+            return '', False
+        bak = legacy_path.with_name(legacy_path.name + '.migrated.bak')
+        os.replace(legacy_path, bak)
+        return str(bak), True
+    except OSError:
+        return '', False
+    finally:
+        os.close(lock_fd)
+
+
 async def _read_backlog_slim(backlog, project_id: str):
     if backlog is None:
-        return None, False
+        return None, False, [], [], []
     reader = getattr(backlog, 'get', None) or getattr(backlog, 'status', None)
     if reader is None:
         raise PolicyError('backlog_unavailable', 503)
@@ -749,7 +775,11 @@ async def _read_backlog_slim(backlog, project_id: str):
     automatic_save = bool(result['automatic_save']) if 'automatic_save' in result else bool(
         result.get('automatic_enabled', False)
     )
-    return job, automatic_save
+    return (
+        job, automatic_save,
+        *(result[key] if isinstance(result.get(key), list) else []
+          for key in ('buffer_reviews', 'checks', 'processing_issues')),
+    )
 
 
 class V2APIHandles:
@@ -1886,6 +1916,7 @@ def attach_v2_api(
         backlog_job = None
         automatic_save = False
         notices = []
+        buffer_reviews, checks, processing_issues = [], [], []
 
         async def _load_backlog():
             return await _read_backlog_slim(handles.backlog, project_id)
@@ -1900,13 +1931,6 @@ def attach_v2_api(
                 sync_err = exc
 
             def _run_all():
-                n_val = []
-                n_err = None
-                try:
-                    n_val = processing_notices(state_dir / 'runtime-logs', dataset_id)
-                except Exception as exc:
-                    n_err = exc
-
                 a_val = ([], False)
                 a_err = None
                 try:
@@ -1921,7 +1945,7 @@ def attach_v2_api(
                     a_err = exc
 
                 if sync_err is not None:
-                    return n_val, n_err, a_val, a_err, None, sync_err
+                    return a_val, a_err, None, sync_err
 
                 try:
                     sinfo = cat.dataset_sync_info(dataset_id) or {}
@@ -1941,7 +1965,7 @@ def attach_v2_api(
                         for d in pending_rows
                     ]
                 except Exception as exc:
-                    return n_val, n_err, a_val, a_err, None, exc
+                    return a_val, a_err, None, exc
 
                 reading_err_l = None
                 unread_count_l = 0
@@ -1992,8 +2016,6 @@ def attach_v2_api(
                     reading_err_l = exc.code if isinstance(exc, PolicyError) else 'reading_state_unavailable'
 
                 return (
-                    n_val,
-                    n_err,
                     a_val,
                     a_err,
                     (
@@ -2010,8 +2032,9 @@ def attach_v2_api(
 
             return await _run_db(_run_all)
 
-        b_res, db_res = await asyncio.gather(
+        b_res, n_res, db_res = await asyncio.gather(
             _load_backlog(),
+            read_processing_notices(registry, dataset_id, official_data=official_data),
             _load_db_sections(),
             return_exceptions=True,
         )
@@ -2021,17 +2044,15 @@ def attach_v2_api(
         if isinstance(b_res, BaseException):
             errors['backlog'] = b_res.code if isinstance(b_res, PolicyError) else 'backlog_unavailable'
         else:
-            backlog_job, automatic_save = b_res
+            backlog_job, automatic_save, buffer_reviews, checks, processing_issues = b_res
 
         if isinstance(db_res, asyncio.CancelledError):
             raise db_res
         if isinstance(db_res, BaseException):
-            n_res = db_res
             a_res = db_res
             d_res = db_res
         else:
-            n_val, n_err, a_val, a_err, d_val, d_err = db_res
-            n_res = n_err if n_err is not None else n_val
+            a_val, a_err, d_val, d_err = db_res
             a_res = a_err if a_err is not None else a_val
             d_res = d_err if d_err is not None else d_val
 
@@ -2042,7 +2063,8 @@ def attach_v2_api(
                 n_res.code if isinstance(n_res, PolicyError) else 'processing_diagnostics_unavailable'
             )
         else:
-            notices = n_res
+            unresolved, resolved = n_res
+            notices = unresolved + resolved
 
         cat_ver = ''
         unread_count = 0
@@ -2073,6 +2095,9 @@ def attach_v2_api(
                 'dataset_id': dataset_id,
                 'automatic_save': automatic_save,
                 'backlog': dict(backlog_job) if isinstance(backlog_job, dict) else backlog_job,
+                'buffer_reviews': list(buffer_reviews),
+                'checks': list(checks),
+                'processing_issues': list(processing_issues),
                 'knowledge_catalog_version': cat_ver,
                 'unread_count': unread_count,
                 'unread_state_rev': unread_state_rev,
@@ -2099,6 +2124,10 @@ def attach_v2_api(
                 p['unread_preview'].pop()
                 p['unread_has_more'] = unread_count > len(p['unread_preview'])
                 return True
+            for key in ('buffer_reviews', 'checks', 'processing_issues'):
+                if p[key]:
+                    p[key].pop()
+                    return True
             if isinstance(p.get('backlog'), dict):
                 b = p['backlog']
                 for k in ('last_error', 'message', 'detail'):
@@ -2372,37 +2401,11 @@ def attach_v2_api(
                     raise PolicyError('invalid_legacy_dates', 400)
                 days[k] = day
 
-        def _archive_legacy_if_unchanged() -> tuple[str, bool]:
-            if legacy_path is None:
-                return '', True
-            lock_path = legacy_path.with_name(legacy_path.name + '.lock')
-            try:
-                lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
-            except OSError:
-                return '', False
-            try:
-                if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
-                    return '', False
-                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                cur_st = os.lstat(legacy_path)
-                if (
-                    not stat.S_ISREG(cur_st.st_mode)
-                    or (cur_st.st_ino, cur_st.st_size, cur_st.st_mtime_ns) != legacy_stat_sig
-                ):
-                    return '', False
-                bak = legacy_path.with_name(legacy_path.name + '.migrated.bak')
-                os.replace(legacy_path, bak)
-                return str(bak), True
-            except OSError:
-                return '', False
-            finally:
-                os.close(lock_fd)
-
         if not days:
             backup_path = ''
             archived_ok = True
             if legacy_path is not None and not has_unconfirmed:
-                backup_path, archived_ok = _archive_legacy_if_unchanged()
+                backup_path, archived_ok = _archive_legacy_dates_if_unchanged(legacy_path, legacy_stat_sig)
             return json_utf8_response({
                 'status': 'empty' if archived_ok else 'partial',
                 'matched': 0,
@@ -2475,7 +2478,7 @@ def attach_v2_api(
         backup_path = ''
         archived_ok = True
         if legacy_path is not None and unmapped_count == 0 and not has_unconfirmed:
-            backup_path, archived_ok = _archive_legacy_if_unchanged()
+            backup_path, archived_ok = _archive_legacy_dates_if_unchanged(legacy_path, legacy_stat_sig)
 
         return json_utf8_response({
             'status': 'migrated' if (unmapped_count == 0 and not has_unconfirmed and archived_ok) else 'partial',

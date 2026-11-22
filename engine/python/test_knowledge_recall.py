@@ -126,10 +126,13 @@ class RecallTests(unittest.TestCase):
 
             store = RecallStore(db_path)
             self.assertEqual(db_path.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(store.db.execute('PRAGMA journal_mode').fetchone()[0].lower(), 'wal')
-            self.assertEqual(store.db.execute('PRAGMA journal_size_limit').fetchone()[0], 4194304)
-            self.assertEqual(store.db.execute('PRAGMA wal_autocheckpoint').fetchone()[0], 1000)
-            self.assertEqual(store.db.execute('PRAGMA busy_timeout').fetchone()[0], 5000)
+            def writer_pragmas():
+                return [
+                    store._writer_db.execute(f'PRAGMA {name}').fetchone()[0]
+                    for name in ('journal_mode', 'journal_size_limit', 'wal_autocheckpoint', 'busy_timeout')
+                ]
+
+            self.assertEqual(store._write_executor.submit(writer_pragmas).result(), ['wal', 4194304, 1000, 5000])
             store.record('agent', event(K, K2))
             store.record('agent', event(K))
             summary = store.counts_for_datasets({D})

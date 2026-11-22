@@ -1468,7 +1468,10 @@ class CatalogIndex:
         doc_label = str(row[3] or '')
         raw_loc = str(row[4] or '')
         meta = extract_trusted_metadata(row[5], row[6], row[7])
-        pipeline_status = _extract_cognify_status(row[8], ds_id)
+        pipeline_status = (
+            'not_applicable' if meta.get('memlane_kind') == 'user_profile'
+            else _extract_cognify_status(row[8], ds_id)
+        )
         raw_upd = row[9]
         raw_cre = row[10]
         created_raw = iso_text(raw_cre)
@@ -4733,7 +4736,7 @@ class CatalogIndex:
                 con.execute(
                     '''SELECT COUNT(*) FROM catalog_docs
                        WHERE dataset_id = ? AND kind = 'raw_doc'
-                         AND pipeline_status != 'DATA_ITEM_PROCESSING_COMPLETED' ''',
+                         AND pipeline_status NOT IN ('DATA_ITEM_PROCESSING_COMPLETED', 'not_applicable') ''',
                     (ds,),
                 ).fetchone()[0]
             )
@@ -4743,7 +4746,7 @@ class CatalogIndex:
                     f'''SELECT {_SELECT_DOC_COLS}
                         FROM catalog_docs
                         WHERE dataset_id = ? AND kind = 'raw_doc'
-                          AND pipeline_status != 'DATA_ITEM_PROCESSING_COMPLETED'
+                          AND pipeline_status NOT IN ('DATA_ITEM_PROCESSING_COMPLETED', 'not_applicable')
                         ORDER BY sort_ts_desc_key ASC, doc_id ASC
                         LIMIT ?''',
                     (ds, lim),

@@ -302,6 +302,7 @@ class BacklogBoundedAndBatchFlushTests(unittest.IsolatedAsyncioTestCase):
             fake_pc.capture_entry_key = lambda e: e.get('message_id', '')
             fake_pc.entry_held = lambda st, e: False
             fake_pc.retain_failure = lambda *a, **k: None
+            fake_pc.release_entry_hold = lambda *a, **k: None
 
             reports = []
             prev_cp = sys.modules.get('_capture_policy')

@@ -446,36 +446,37 @@ class ProvenanceStore:
         return out
 
     def lookup(self, dataset_id, document_id, *, lesson_type='', state_key=''):
-        ds = str(dataset_id)
-        doc = str(document_id)
+        ds_sql, ds_params = sql_in_clause(id_variants(dataset_id) or (str(dataset_id),))
+        doc_sql, doc_params = sql_in_clause(id_variants(document_id) or (str(document_id),))
         with self._write_lock:
-            doc_row = self.db.execute(
-                '''SELECT lesson_type,state_key,first_source_date,source_date_status,source_qa_ids_json
-                   FROM document_provenance WHERE dataset_id=? AND document_id=?''',
-                (ds, doc),
-            ).fetchone()
-            lt = str(lesson_type or (doc_row[0] if doc_row else '') or '').strip()
-            sk = str(state_key or (doc_row[1] if doc_row else '') or '').strip()
-            key_row = None
+            doc_rows = self.db.execute(
+                f'''SELECT lesson_type,state_key,first_source_date,source_date_status,source_qa_ids_json
+                    FROM document_provenance WHERE dataset_id {ds_sql} AND document_id {doc_sql}''',
+                (*ds_params, *doc_params),
+            ).fetchall()
+            lt = str(lesson_type or '').strip()
+            sk = str(state_key or '').strip()
+            for row in doc_rows:
+                lt = lt or row[0]
+                sk = sk or row[1]
+            key_rows = []
             if lt and sk:
-                key_row = self.db.execute(
-                    '''SELECT first_source_date,source_date_status
-                       FROM keyed_provenance WHERE dataset_id=? AND lesson_type=? AND state_key=?''',
-                    (ds, lt, sk),
-                ).fetchone()
-        if doc_row is None and key_row is None:
+                key_rows = self.db.execute(
+                    f'''SELECT first_source_date,source_date_status
+                        FROM keyed_provenance WHERE dataset_id {ds_sql} AND lesson_type=? AND state_key=?''',
+                    (*ds_params, lt, sk),
+                ).fetchall()
+        if not doc_rows and not key_rows:
             return None
-        pairs = []
+        pairs = [(row[2], row[3]) for row in doc_rows] + list(key_rows)
         qas = []
-        if doc_row:
-            if _calendar_date(doc_row[2]):
-                pairs.append((doc_row[2], doc_row[3] if _STATUS_RANK.get(doc_row[3], 0) > 0 else 'created_at'))
+        for row in doc_rows:
             try:
-                qas = json.loads(doc_row[4])
+                parsed = json.loads(row[4])
+                if isinstance(parsed, list):
+                    qas.extend(parsed)
             except ValueError:
-                qas = []
-        if key_row and _calendar_date(key_row[0]):
-            pairs.append((key_row[0], key_row[1] if _STATUS_RANK.get(key_row[1], 0) > 0 else 'created_at'))
+                pass
         best, status = _select_best_date_evidence(pairs)
         return {
             'first_source_date': best,

@@ -102,7 +102,7 @@ def _read_overview_snapshot(official_data, provenance_path, allowed_datasets, ac
     doc_prov, key_prov = load_provenance_maps(provenance_path, canonical_datasets)
 
     try:
-        con = open_official_sqlite_ro(db_path)
+        con = open_official_sqlite_ro(db_path, error_code="overview_store_unavailable")
     except sqlite3.Error as err:
         raise PolicyError('overview_store_unavailable', 503) from err
 

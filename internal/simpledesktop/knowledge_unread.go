@@ -917,7 +917,7 @@ func applyServerUnreadSnapshot(q *projectQueueState, unreadCount int, stateRev i
 func (a *App) syncV2ProjectUnreadCount(projectID, datasetID string, unreadCount int, stateRev int64, catalogVersion string) {
 	for _, p := range a.access.Directory.Projects {
 		if (projectID != "" && p.ID == projectID) || (datasetID != "" && p.Dataset == datasetID) {
-			q := a.projectQueueStateFor(p)
+			q := a.projectQueueStateForAsync(p)
 			applyServerUnreadSnapshot(q, unreadCount, stateRev, a.knowledgeWriterHasPending(p.ID, p.Dataset))
 			if catalogVersion != "" {
 				q.KnowledgeCatalogVersion = catalogVersion

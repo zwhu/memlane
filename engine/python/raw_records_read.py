@@ -106,8 +106,8 @@ def _cache_schema_ready(cache_db):
     if cache_db.is_symlink() or not cache_db.is_file():
         return False
     try:
-        con = sqlite3.connect(f'file:{cache_db}?mode=ro', uri=True, timeout=2.0)
-    except sqlite3.Error:
+        con = open_official_sqlite_ro(cache_db)
+    except (PolicyError, sqlite3.Error):
         return False
     try:
         verify_sqlite_schema(con, _CACHE_REQUIRED_SCHEMA)

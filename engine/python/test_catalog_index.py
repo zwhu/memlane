@@ -811,6 +811,18 @@ class CatalogIndexTests(unittest.TestCase):
         finally:
             rstore.close()
 
+    def test_user_profile_remains_raw_but_excluded_from_pending_refinement(self):
+        profile, raw = str(uuid.uuid4()), str(uuid.uuid4())
+        self._insert_doc(profile, self.ds_proj, sys_meta={'memlane_kind': 'user_profile'})
+        self._insert_doc(raw, self.ds_proj)
+        cat = CatalogIndex(self.cat_path, official_data=self.official_data)
+        self.addCleanup(cat.close)
+        cat.sync([self.ds_proj])
+        rows, count = cat.query_pending_raw_docs(self.ds_proj)
+        self.assertEqual(count, 1)
+        self.assertEqual([row['doc_id'] for row in rows], [raw])
+        self.assertEqual(cat.fetch_docs_by_ids(self.ds_proj, [profile])[0]['kind'], 'raw_doc')
+
     def test_corruption_heal_fails_closed_when_reading_state_is_unreadable(self):
         from project_policy import PolicyError
 

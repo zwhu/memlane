@@ -785,12 +785,12 @@ class ScalingGuardrailLintTests(unittest.TestCase):
     def go_codes(self, source, name):
         return {code for _, code, _ in lint.check_go_source(source, name)}
 
-    def test_ml018_binds_exact_path_and_enclosing_function(self):
-        # New file calling overviewDocuments / overviewSessions / /v1/overview/bootstrap must fail ML018.
-        self.assertIn('ML018', self.go_codes('func f(c Client) { c.overviewDocuments(ctx, p) }', 'internal/simpledesktop/new_feature.go'))
-        self.assertIn('ML018', self.go_codes('func f(c Client) { c.overviewSessions(ctx, ps) }', 'internal/simpledesktop/new_feature.go'))
-        self.assertIn('ML018', self.go_codes('func f() { _ = "/v1/overview/bootstrap" }', 'internal/simpledesktop/new_feature.go'))
-        # Comments mentioning /v1/overview/bootstrap do not trigger ML018.
+    def test_ml019_binds_exact_path_and_enclosing_function(self):
+        # New file calling overviewDocuments / overviewSessions / /v1/overview/bootstrap must fail ML019.
+        self.assertIn('ML019', self.go_codes('func f(c Client) { c.overviewDocuments(ctx, p) }', 'internal/simpledesktop/new_feature.go'))
+        self.assertIn('ML019', self.go_codes('func f(c Client) { c.overviewSessions(ctx, ps) }', 'internal/simpledesktop/new_feature.go'))
+        self.assertIn('ML019', self.go_codes('func f() { _ = "/v1/overview/bootstrap" }', 'internal/simpledesktop/new_feature.go'))
+        # Comments mentioning /v1/overview/bootstrap do not trigger ML019.
         self.assertEqual(self.go_codes('// fallback for /v1/overview/bootstrap\nfunc f() {}', 'internal/simpledesktop/new_feature.go'), set())
 
         # Exact allowed path + exact allowed function (including nested goroutine closure) passes once.
@@ -808,32 +808,32 @@ class ScalingGuardrailLintTests(unittest.TestCase):
 
         # Wrong function in an allowlisted file must fail even if total call count is 1.
         wrong_fn_search = 'func (a *App) newSearchPath(ctx context.Context) { client.overviewDocuments(ctx, p) }'
-        self.assertIn('ML018', self.go_codes(wrong_fn_search, 'internal/simpledesktop/unified_search.go'))
+        self.assertIn('ML019', self.go_codes(wrong_fn_search, 'internal/simpledesktop/unified_search.go'))
         wrong_fn_sessions = 'func (c Client) extraSessions() { c.overviewSessions(ctx, ps) }'
-        self.assertIn('ML018', self.go_codes(wrong_fn_sessions, 'internal/simpledesktop/overview.go'))
+        self.assertIn('ML019', self.go_codes(wrong_fn_sessions, 'internal/simpledesktop/overview.go'))
         wrong_fn_bootstrap = 'func other() { _ = "/v1/overview/bootstrap" }'
-        self.assertIn('ML018', self.go_codes(wrong_fn_bootstrap, 'internal/simpledesktop/overview_bootstrap.go'))
+        self.assertIn('ML019', self.go_codes(wrong_fn_bootstrap, 'internal/simpledesktop/overview_bootstrap.go'))
 
         # Wrong path (basename-only or other directory) must fail even with matching function name.
-        self.assertIn('ML018', self.go_codes(allowed_search, 'unified_search.go'))
-        self.assertIn('ML018', self.go_codes(allowed_search, 'internal/other/unified_search.go'))
+        self.assertIn('ML019', self.go_codes(allowed_search, 'unified_search.go'))
+        self.assertIn('ML019', self.go_codes(allowed_search, 'internal/other/unified_search.go'))
 
-        # Second call inside the same allowed function must fail ML018.
+        # Second call inside the same allowed function must fail ML019.
         two_in_allowed = (
             'func (a *App) recentSearchItems(ctx context.Context) {\n'
             '\tclient.overviewDocuments(ctx, p1)\n'
             '\tclient.overviewDocuments(ctx, p2)\n'
             '}\n'
         )
-        self.assertIn('ML018', self.go_codes(two_in_allowed, 'internal/simpledesktop/unified_search.go'))
+        self.assertIn('ML019', self.go_codes(two_in_allowed, 'internal/simpledesktop/unified_search.go'))
 
-        # Method value alias or package-level call must fail ML018.
+        # Method value alias or package-level call must fail ML019.
         alias_call = 'func (a *App) other() { fn := client.overviewDocuments; fn(ctx, p) }'
-        self.assertIn('ML018', self.go_codes(alias_call, 'internal/simpledesktop/unified_search.go'))
+        self.assertIn('ML019', self.go_codes(alias_call, 'internal/simpledesktop/unified_search.go'))
         pkg_level = 'var _ = client.overviewDocuments(ctx, p)'
-        self.assertIn('ML018', self.go_codes(pkg_level, 'internal/simpledesktop/unified_search.go'))
+        self.assertIn('ML019', self.go_codes(pkg_level, 'internal/simpledesktop/unified_search.go'))
 
-    def test_ml019_enforces_v2_list_limit_byte_budget_and_utf8_exit(self):
+    def test_ml020_enforces_v2_list_limit_byte_budget_and_utf8_exit(self):
         bad_missing_budget = """_MAX_PAGE_LIMIT = 50
 def attach(app):
     async def list_items(request):
@@ -841,7 +841,7 @@ def attach(app):
         return web.json_response({'items': []})
     app.add_routes([web.get('/v2/projects/{id}/knowledge', list_items)])
 """
-        self.assertIn('ML019', self.py_codes(bad_missing_budget, 'engine/python/v2_api.py'))
+        self.assertIn('ML020', self.py_codes(bad_missing_budget, 'engine/python/v2_api.py'))
 
         bad_missing_max_const = """def attach(app):
     async def list_items(request):
@@ -850,7 +850,7 @@ def attach(app):
         return web.json_response(payload)
     app.add_routes([web.get('/v2/projects/{id}/knowledge', list_items)])
 """
-        self.assertIn('ML019', self.py_codes(bad_missing_max_const, 'engine/python/v2_api.py'))
+        self.assertIn('ML020', self.py_codes(bad_missing_max_const, 'engine/python/v2_api.py'))
 
         bad_high_limit = """_MAX_PAGE_LIMIT = 200
 def attach(app):
@@ -860,7 +860,7 @@ def attach(app):
         return web.json_response(payload)
     app.add_routes([web.get('/v2/projects/{id}/knowledge', list_items)])
 """
-        self.assertIn('ML019', self.py_codes(bad_high_limit, 'engine/python/v2_api.py'))
+        self.assertIn('ML020', self.py_codes(bad_high_limit, 'engine/python/v2_api.py'))
 
         bad_positional_max_limit = """_MAX_PAGE_LIMIT = 50
 def attach(app):
@@ -870,7 +870,7 @@ def attach(app):
         return web.json_response(payload)
     app.router.add_get('/v2/projects/{id}/knowledge', list_items)
 """
-        self.assertIn('ML019', self.py_codes(bad_positional_max_limit, 'engine/python/v2_api.py'))
+        self.assertIn('ML020', self.py_codes(bad_positional_max_limit, 'engine/python/v2_api.py'))
 
         bad_dead_budget = """_MAX_PAGE_LIMIT = 50
 def attach(app):
@@ -881,9 +881,9 @@ def attach(app):
         return web.json_response({'items': []})
     app.router.add_route('GET', '/v2/projects/{id}/knowledge', list_items)
 """
-        self.assertIn('ML019', self.py_codes(bad_dead_budget, 'engine/python/v2_api.py'))
+        self.assertIn('ML020', self.py_codes(bad_dead_budget, 'engine/python/v2_api.py'))
 
-        # Once _json_utf8_response or json_utf8_response is present, bare web.json_response on list routes fails ML019.
+        # Once _json_utf8_response or json_utf8_response is present, bare web.json_response on list routes fails ML020.
         bad_bare_json_response_with_helper = """_MAX_PAGE_LIMIT = 50
 def _json_utf8_response(raw_bytes):
     return web.Response(body=raw_bytes, content_type='application/json', charset='utf-8')
@@ -894,7 +894,7 @@ def attach(app):
         return web.json_response(payload)
     app.add_routes([web.get('/v2/projects/{id}/knowledge', list_items)])
 """
-        self.assertIn('ML019', self.py_codes(bad_bare_json_response_with_helper, 'engine/python/v2_api.py'))
+        self.assertIn('ML020', self.py_codes(bad_bare_json_response_with_helper, 'engine/python/v2_api.py'))
 
         bad_ascii_dumps_with_imported_helper = """import json
 from local_body_reader import json_utf8_response
@@ -906,7 +906,7 @@ def attach(app):
         return web.json_response(payload, dumps=json.dumps)
     app.add_routes([web.get('/v2/projects/{id}/knowledge', list_items)])
 """
-        self.assertIn('ML019', self.py_codes(bad_ascii_dumps_with_imported_helper, 'engine/python/v2_api.py'))
+        self.assertIn('ML020', self.py_codes(bad_ascii_dumps_with_imported_helper, 'engine/python/v2_api.py'))
 
         bad_indirect_helper_and_partial_without_utf8 = """import functools, json
 _MAX_PAGE_LIMIT = 50
@@ -922,7 +922,7 @@ def attach(app):
         return _send(payload)
     app.add_routes([web.get('/v2/projects/{id}/knowledge', list_items)])
 """
-        self.assertIn('ML019', self.py_codes(bad_indirect_helper_and_partial_without_utf8, 'engine/python/v2_api.py'))
+        self.assertIn('ML020', self.py_codes(bad_indirect_helper_and_partial_without_utf8, 'engine/python/v2_api.py'))
 
         # Direct check_v2_utf8_response(require_unconditional=True) catches bare web.json_response even without helper.
         legacy_bare = """_MAX_PAGE_LIMIT = 50
@@ -934,7 +934,7 @@ def attach(app):
     app.add_routes([web.get('/v2/projects/{id}/knowledge', list_items)])
 """
         uncond_issues = lint.check_v2_utf8_response(legacy_bare, require_unconditional=True)
-        self.assertTrue(any(code == 'ML019' for _, code, _ in uncond_issues))
+        self.assertTrue(any(code == 'ML020' for _, code, _ in uncond_issues))
 
         # Unified UTF-8 response paths pass cleanly.
         good_utf8 = """import functools, json
@@ -961,7 +961,7 @@ def attach(app):
         self.assertEqual(self.py_codes(good_utf8, 'engine/python/v2_api.py'), set())
         self.assertEqual(lint.check_v2_utf8_response(good_utf8, require_unconditional=True), [])
 
-    def test_ml020_sqlite_connect_allowlist_aliases_importlib_and_immutable_ban(self):
+    def test_ml021_sqlite_connect_allowlist_aliases_importlib_and_immutable_ban(self):
         # Direct calls & basename spoofing rejected outside exact allowlisted relative paths.
         bad_cases = [
             ("import sqlite3\ndef f(p):\n    return sqlite3.connect(p)\n", 'engine/python/new_reader.py'),
@@ -982,7 +982,7 @@ def attach(app):
         ]
         for src, path in bad_cases:
             with self.subTest(path=path, src=src):
-                self.assertIn('ML020', self.py_codes(src, path))
+                self.assertIn('ML021', self.py_codes(src, path))
 
         # Exact allowlisted paths and benign sqlite3 exception handling / parameter shadowing pass.
         self.assertEqual(self.py_codes("import sqlite3\ndef f(p):\n    return sqlite3.connect(p)\n", 'engine/python/sqlite_ro.py'), set())
@@ -991,11 +991,11 @@ def attach(app):
         self.assertEqual(self.py_codes("import sqlite3\ndef f(sqlite3):\n    return sqlite3.connect('x')\n", 'engine/python/new_reader.py'), set())
 
         # immutable=1 banned everywhere outside docstrings (including constant folding).
-        self.assertIn('ML020', self.py_codes("def f(p):\n    return f'file:{p}?mode=ro&immutable=1'\n", 'engine/python/sqlite_ro.py'))
-        self.assertIn('ML020', self.py_codes("FLAG = 'immutable'\ndef f(p):\n    return f'file:{p}?{FLAG}=1'\n", 'engine/python/sqlite_ro.py'))
+        self.assertIn('ML021', self.py_codes("def f(p):\n    return f'file:{p}?mode=ro&immutable=1'\n", 'engine/python/sqlite_ro.py'))
+        self.assertIn('ML021', self.py_codes("FLAG = 'immutable'\ndef f(p):\n    return f'file:{p}?{FLAG}=1'\n", 'engine/python/sqlite_ro.py'))
         self.assertEqual(self.py_codes('"""Never use immutable=1 online."""\ndef f():\n    return 1\n', 'engine/python/sqlite_ro.py'), set())
 
-    def test_ml021_catalog_index_balanced_ddl_alter_and_table_xinfo_whitelist(self):
+    def test_ml022_catalog_index_balanced_ddl_alter_and_table_xinfo_whitelist(self):
         # Injecting forbidden columns AFTER CHECK (kind IN (...)) must be caught 100%.
         for bad_col in ('body', 'why_learned', 'system_metadata', 'raw_text', 'content', 'external_metadata'):
             src = f"""SQL = '''
@@ -1009,7 +1009,7 @@ def attach(app):
                 );
             '''\n"""
             with self.subTest(after_check_col=bad_col):
-                self.assertIn('ML021', self.py_codes(src, 'engine/python/catalog_index.py'))
+                self.assertIn('ML022', self.py_codes(src, 'engine/python/catalog_index.py'))
 
         # ALTER TABLE ADD COLUMN injecting forbidden or unlisted columns must be caught.
         for alter_sql in (
@@ -1020,7 +1020,7 @@ def attach(app):
             "con.execute('ALTER TABLE rogue_table ADD COLUMN id TEXT')",
         ):
             with self.subTest(alter=alter_sql):
-                self.assertIn('ML021', self.py_codes(alter_sql + '\n', 'engine/python/catalog_index.py'))
+                self.assertIn('ML022', self.py_codes(alter_sql + '\n', 'engine/python/catalog_index.py'))
 
         # catalog_sessions with QA/trace/body columns must be rejected.
         for bad_sess_col in ('qa_payload', 'trace_payload', 'question', 'answer', 'body', 'unlisted_col'):
@@ -1033,28 +1033,28 @@ def attach(app):
                 );
             '''\n"""
             with self.subTest(bad_sess_col=bad_sess_col):
-                self.assertIn('ML021', self.py_codes(sess_bad, 'engine/python/catalog_index.py'))
+                self.assertIn('ML022', self.py_codes(sess_bad, 'engine/python/catalog_index.py'))
 
         # Any 6th table outside the 5-table whitelist or virtual table / CTAS must be rejected.
-        self.assertIn('ML021', self.py_codes("SQL = 'CREATE TABLE IF NOT EXISTS catalog_extra (id TEXT)'\n", 'engine/python/catalog_index.py'))
-        self.assertIn('ML021', self.py_codes("SQL = 'CREATE VIRTUAL TABLE catalog_fts USING fts5(doc_label)'\n", 'engine/python/catalog_index.py'))
-        self.assertIn('ML021', self.py_codes("SQL = 'CREATE TABLE catalog_docs AS SELECT 1 AS doc_id'\n", 'engine/python/catalog_index.py'))
+        self.assertIn('ML022', self.py_codes("SQL = 'CREATE TABLE IF NOT EXISTS catalog_extra (id TEXT)'\n", 'engine/python/catalog_index.py'))
+        self.assertIn('ML022', self.py_codes("SQL = 'CREATE VIRTUAL TABLE catalog_fts USING fts5(doc_label)'\n", 'engine/python/catalog_index.py'))
+        self.assertIn('ML022', self.py_codes("SQL = 'CREATE TABLE catalog_docs AS SELECT 1 AS doc_id'\n", 'engine/python/catalog_index.py'))
 
         # Generated column caught by PRAGMA table_xinfo, second CREATE TABLE IF NOT EXISTS not shadowed, split concat caught.
         gen_col = "SQL = '''CREATE TABLE catalog_docs (doc_id TEXT, body TEXT GENERATED ALWAYS AS (doc_id) VIRTUAL)'''\n"
-        self.assertIn('ML021', self.py_codes(gen_col, 'engine/python/catalog_index.py'))
+        self.assertIn('ML022', self.py_codes(gen_col, 'engine/python/catalog_index.py'))
         shadowed_second = """SQL1 = 'CREATE TABLE IF NOT EXISTS catalog_docs (dataset_id TEXT, doc_id TEXT)'
 SQL2 = 'CREATE TABLE IF NOT EXISTS catalog_docs (dataset_id TEXT, doc_id TEXT, body TEXT)'
 """
-        self.assertIn('ML021', self.py_codes(shadowed_second, 'engine/python/catalog_index.py'))
+        self.assertIn('ML022', self.py_codes(shadowed_second, 'engine/python/catalog_index.py'))
         split_concat = """A = 'CREATE TABLE IF NOT EXISTS catalog_docs (dataset_id TEXT, '
 B = 'why_learned TEXT)'
 SQL = A + B
 """
-        self.assertIn('ML021', self.py_codes(split_concat, 'engine/python/catalog_index.py'))
+        self.assertIn('ML022', self.py_codes(split_concat, 'engine/python/catalog_index.py'))
         join_concat = """SQL = '\\n'.join(['CREATE TABLE IF NOT EXISTS catalog_docs (dataset_id TEXT,', 'body TEXT)'])
 """
-        self.assertIn('ML021', self.py_codes(join_concat, 'engine/python/catalog_index.py'))
+        self.assertIn('ML022', self.py_codes(join_concat, 'engine/python/catalog_index.py'))
 
         # All 5 allowed metadata tables + allowed ALTER migrations pass cleanly.
         good_five_tables = """SQL = '''
@@ -1122,7 +1122,7 @@ con.execute("ALTER TABLE catalog_docs ADD COLUMN effective_date_source TEXT NOT 
 """
         self.assertEqual(self.py_codes(good_five_tables, 'engine/python/catalog_index.py'), set())
 
-        # Regression against real catalog_index.py: injecting forbidden cols after CHECK(...) must fail ML021.
+        # Regression against real catalog_index.py: injecting forbidden cols after CHECK(...) must fail ML022.
         real_catalog = (lint.ROOT / 'engine/python/catalog_index.py').read_text(encoding='utf-8')
         self.assertEqual(self.py_codes(real_catalog, 'engine/python/catalog_index.py'), set())
         anchor = "pipeline_status TEXT NOT NULL DEFAULT '',"
@@ -1130,7 +1130,7 @@ con.execute("ALTER TABLE catalog_docs ADD COLUMN effective_date_source TEXT NOT 
         for injected in ('body TEXT NOT NULL DEFAULT \'\',', 'why_learned TEXT NOT NULL DEFAULT \'\',', 'system_metadata TEXT NOT NULL DEFAULT \'\','):
             mutated = real_catalog.replace(anchor, anchor + '\n            ' + injected, 1)
             with self.subTest(injected=injected):
-                self.assertIn('ML021', self.py_codes(mutated, 'engine/python/catalog_index.py'))
+                self.assertIn('ML022', self.py_codes(mutated, 'engine/python/catalog_index.py'))
 
 
 if __name__ == '__main__':

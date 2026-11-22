@@ -20,9 +20,32 @@ type processingNotice struct {
 	Request     string `json:"request_id"`
 	At          string `json:"at"`
 	RecoveredAt string `json:"recovered_at,omitempty"`
+	ResolvedAt  string `json:"resolved_at,omitempty"`
+	FailedAt    string `json:"failed_at,omitempty"`
 	Status      int    `json:"http_status"`
 	Code        string `json:"code"`
 	Backend     string `json:"backend"`
+}
+
+func (n processingNotice) resolved() bool {
+	return n.hasTerminalTime(n.ResolvedAt)
+}
+
+func (n processingNotice) hasTerminalTime(terminal string) bool {
+	at, validAt := officialTime(n.At)
+	ended, validEnd := officialTime(terminal)
+	return validAt && validEnd && !ended.Before(at)
+}
+
+type processingIssue struct {
+	AgentID         string  `json:"agent_id"`
+	Host            string  `json:"host"`
+	SessionID       string  `json:"session_id"`
+	Processing      string  `json:"processing"`
+	Reason          string  `json:"reason"`
+	AttemptedAt     float64 `json:"attempted_at"`
+	ReconcileStatus string  `json:"reconcile_status"`
+	ReconciledAt    float64 `json:"reconciled_at"`
 }
 
 type projectQueueState struct {
@@ -30,7 +53,11 @@ type projectQueueState struct {
 	NoticeAcknowledgements         map[string]noticeAcknowledgement
 	NoticeAcknowledgementError     string
 	NoticeHistoryOpen              bool
+	ResolvedProcessingOpen         bool
 	ProcessingNotices              []processingNotice
+	ProcessingIssues               []processingIssue
+	ProcessingActionBusy           bool
+	ProcessingActionError          string
 	ProcessingReadError            string
 	NotificationFailures           map[string]projectFailure
 	KnowledgeRead                  knowledgeReadState
@@ -70,6 +97,7 @@ type projectQueueState struct {
 	BacklogLoaded                  bool
 	BacklogNext                    time.Time
 	BacklogError, BacklogOperation string
+	localStateLoaded               bool
 }
 
 func (c Client) pendingProjectDocuments(ctx context.Context, p Project) ([]Item, error) {
@@ -110,7 +138,7 @@ func (c Client) pendingProjectCatalog(ctx context.Context, p Project) ([]Item, [
 		if !ok {
 			return nil, nil, fmt.Errorf("文档列表已变化，请重新读取")
 		}
-		if d.knowledge() || derivedMaterial(d) {
+		if d.knowledge() || derivedMaterial(d) || metadataString(d, "memlane_kind") == "user_profile" {
 			continue
 		}
 		copy := d
@@ -118,11 +146,33 @@ func (c Client) pendingProjectCatalog(ctx context.Context, p Project) ([]Item, [
 	}
 	return result, docs, nil
 }
+func (a *App) existingProjectQueueState(p AccessProject) *projectQueueState {
+	if a.access.Queues == nil {
+		return nil
+	}
+	identity := a.cachedBaseReadingIdentity()
+	return a.access.Queues[identity+"/"+p.ID+"/"+p.Dataset]
+}
+
+func (a *App) projectQueueStateForAsync(p AccessProject) *projectQueueState {
+	if a.access.Queues == nil {
+		a.access.Queues = map[string]*projectQueueState{}
+	}
+	identity := a.cachedBaseReadingIdentity()
+	key := identity + "/" + p.ID + "/" + p.Dataset
+	q := a.access.Queues[key]
+	if q == nil {
+		q = &projectQueueState{}
+		a.access.Queues[key] = q
+	}
+	return q
+}
+
 func (a *App) projectQueueStateFor(p AccessProject) *projectQueueState {
 	if a.access.Queues == nil {
 		a.access.Queues = map[string]*projectQueueState{}
 	}
-	identity, _ := readingIdentity(Client{Config: a.Client.Config})
+	identity := a.cachedBaseReadingIdentity()
 	key := identity + "/" + p.ID + "/" + p.Dataset
 	q := a.access.Queues[key]
 	if q == nil {
@@ -134,12 +184,18 @@ func (a *App) projectQueueStateFor(p AccessProject) *projectQueueState {
 				q.KnowledgeRead = s
 			}
 		}
+		q.localStateLoaded = true
 		a.access.Queues[key] = q
 	}
 	return q
 }
 func (a *App) projectQueue(p AccessProject) *projectQueueState {
-	q := a.projectQueueStateFor(p)
+	var q *projectQueueState
+	if a.Update != nil {
+		q = a.projectQueueStateForAsync(p)
+	} else {
+		q = a.projectQueueStateFor(p)
+	}
 	if time.Now().After(q.BacklogNext) {
 		a.refreshBacklog(q, p)
 	}
@@ -164,7 +220,8 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 	if q.Backlog.active() {
 		q.Next = time.Now().Add(5 * time.Second)
 	}
-	identity, _ := readingIdentity(Client{Config: a.Client.Config})
+	baseIdentity := a.cachedBaseReadingIdentity()
+	needLocalState := !q.localStateLoaded
 	if a.access.Buffers == nil {
 		a.access.Buffers = map[string]*pendingBufferView{}
 	}
@@ -217,6 +274,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 	}
 	slots := a.access.QueueReadSlots
 	go func() {
+		identity, _ := readingIdentity(Client{Config: client.Config})
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		type result struct {
@@ -234,7 +292,8 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 		var activity []activityRow
 		var activityErr error
 		var notices struct {
-			Items []processingNotice `json:"items"`
+			Items         []processingNotice `json:"items"`
+			ResolvedItems []processingNotice `json:"resolved_items"`
 		}
 		var noticeErr error
 		var summary projectMessageSummaryResponse
@@ -320,6 +379,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 						noticeErr = fmt.Errorf("%s", msg)
 					} else {
 						notices.Items = res.ProcessingNotices
+						notices.ResolvedItems = res.ResolvedProcessingNotices
 					}
 					if msg := res.Errors["documents"]; msg != "" {
 						documentErr = fmt.Errorf("%s", msg)
@@ -409,6 +469,24 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				}()
 			}
 		}
+		var localArchives []pendingArchiveRow
+		var localArchiveErr string
+		var localKnowledgeRead knowledgeReadState
+		var noticeAcks map[string]noticeAcknowledgement
+		var noticeAckErr string
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			noticeAcks, noticeAckErr = a.readNoticeAcknowledgements(p)
+			if needLocalState {
+				localArchives, localArchiveErr = a.readPendingArchives(p)
+				if path, err := a.knowledgeReadPath(p); err == nil {
+					if s, readErr := readKnowledgeState(path); readErr == nil && s.Initialized {
+						localKnowledgeRead = s
+					}
+				}
+			}
+		}()
 		workers.Wait()
 		authDenied := readingAuthDenied(documentErr) || readingAuthDenied(noticeErr) || readingAuthDenied(activityErr)
 		// Execute legacy knowledge-read catalog reconciliation off the UI thread so
@@ -434,20 +512,30 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				a.InvalidateReading(p.Dataset)
 				return
 			}
-			current, _ := readingIdentity(Client{Config: a.Client.Config})
-			if identity != current {
+			_, current, _ := readingIdentityPair(Client{Config: a.Client.Config})
+			if baseIdentity != current {
 				q.Sessions = nil
 				q.Documents = nil
 				q.Loaded = false
 				return
 			}
-			q.NoticeAcknowledgements, q.NoticeAcknowledgementError = a.readNoticeAcknowledgements(p)
+			if !q.localStateLoaded {
+				if len(q.Archives) == 0 && q.ArchiveError == "" {
+					q.Archives, q.ArchiveError = localArchives, localArchiveErr
+				}
+				if !q.KnowledgeRead.Initialized && localKnowledgeRead.Initialized {
+					q.KnowledgeRead = localKnowledgeRead
+				}
+				q.localStateLoaded = true
+			}
+			q.NoticeAcknowledgements, q.NoticeAcknowledgementError = noticeAcks, noticeAckErr
 			if v2SummaryOK {
 				if summaryBacklogErr != "" {
 					q.BacklogError = "后台采集状态暂时无法读取；任务不会因此重复启动"
 				} else {
 					q.BacklogError = ""
 					q.Backlog = v2Summary.Backlog
+					q.ProcessingIssues = v2Summary.ProcessingIssues
 					q.BacklogLoaded = true
 					q.AutomaticSave = v2Summary.AutomaticSave
 					if v2Summary.BufferReviews != nil {
@@ -463,6 +551,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				} else {
 					q.BacklogError = ""
 					q.Backlog = summary.Backlog
+					q.ProcessingIssues = summary.ProcessingIssues
 					q.BacklogLoaded = true
 					q.AutomaticSave = summary.AutomaticSave
 					if summary.BufferReviews != nil {
@@ -477,7 +566,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			if noticeErr != nil {
 				q.ProcessingReadError = "记忆提炼异常记录暂时无法读取"
 			} else {
-				q.ProcessingNotices = notices.Items
+				q.ProcessingNotices = append(notices.Items, notices.ResolvedItems...)
 			}
 			wasLoaded := q.Loaded
 			q.Loaded = true
@@ -570,6 +659,14 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				if message == "" {
 					recovered = append(recovered, key)
 				}
+			}
+			if (summaryOK || v2SummaryOK) && summaryBacklogErr == "" {
+				if q.Backlog == nil || q.Backlog.ProcessingFailed == 0 {
+					recovered = append(recovered, "processing-failed")
+				}
+			}
+			if !p.policySyncUnconfirmed() {
+				recovered = append(recovered, "policy-sync")
 			}
 			a.clearRecoveredNoticeAcknowledgements(q, p, recovered)
 		})
