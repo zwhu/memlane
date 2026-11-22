@@ -232,8 +232,8 @@ func TestStartTitlesCapsAt30EvenWithRawCatalogAndInvalidateReadingClearsPreviewA
 	if s.Items[0].Preview != "" || s.Items[0].Body != "" || s.Items[0].BodyLoaded || s.Items[0].Document.Metadata != nil {
 		t.Fatalf("InvalidateReading leaked s.Items fields: %+v doc=%+v", s.Items[0], s.Items[0].Document)
 	}
-	if s.Knowledge.Catalog[0].Preview != "" || s.Knowledge.Catalog[0].Body != "" || s.Knowledge.Catalog[0].Document.Metadata != nil {
-		t.Fatalf("InvalidateReading leaked s.Knowledge.Catalog fields: %+v", s.Knowledge.Catalog[0])
+	if len(s.Knowledge.Catalog) != 0 {
+		t.Fatalf("InvalidateReading retained revoked rows in s.Knowledge.Catalog: %+v", s.Knowledge.Catalog)
 	}
 	if a.overviewState.Snapshot.Knowledge[0].Preview != "" || a.overviewState.Snapshot.Knowledge[0].Body != "" || a.overviewState.Snapshot.Knowledge[0].Document.Metadata != nil {
 		t.Fatalf("InvalidateReading leaked overview knowledge fields: %+v doc=%+v", a.overviewState.Snapshot.Knowledge[0], a.overviewState.Snapshot.Knowledge[0].Document)

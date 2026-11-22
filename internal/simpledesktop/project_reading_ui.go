@@ -368,6 +368,9 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 			BorderWidth(0, 0, 1, 0).BorderColor(headerBorder).Children(func() {
 			ui.Column(c).FillWidth().MaxWidth(readerMaxW).Gap(sp3).Children(func() {
 				a.projectDetailHeader(c, s, i, paged)
+				if i.BodyTruncated {
+					homeText(c, "正文超过 8 MiB，已截断显示", homeMeta)
+				}
 			})
 		})
 

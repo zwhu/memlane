@@ -305,9 +305,13 @@ func (a *App) trayCachedSummary() trayProjectSummary {
 	}
 	var out trayProjectSummary
 	for _, p := range a.access.Directory.Projects {
-		q := a.projectQueueStateFor(p)
+		q := a.existingProjectQueueState(p)
 		if q == nil {
-			continue
+			if !p.policySyncUnconfirmed() {
+				continue
+			}
+			// Directory policy warnings are available before the queue loads.
+			q = &projectQueueState{}
 		}
 		needs, info := a.messageNotices(q, p)
 		actionCount, errorCount := 0, 0

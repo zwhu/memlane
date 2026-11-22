@@ -198,20 +198,16 @@ func (a *App) overviewScope() string {
 	return string(scope)
 }
 
-func (a *App) invalidateOverviewOn401(err error) bool {
-	status, ok := httpStatusCode(err)
-	if !ok || status != 401 {
-		return false
-	}
+func (a *App) withdrawOverviewScope() {
 	// Preserve the failed scope so subsequent App.View frames do not treat
-	// scope=="" as a scope change and trigger a per-frame 401 request storm.
+	// the withdrawal as a scope change and retry on every frame.
 	scope := a.overviewState.scope
 	if scope == "" {
 		scope = a.overviewScope()
 	}
 	a.InvalidateReading("")
 	a.overviewState.scope = scope
-	return true
+	a.overviewState.Snapshot = overviewSnapshot{}
 }
 
 func (a *App) loadOverview() {
@@ -278,41 +274,40 @@ func (a *App) loadOverview() {
 		go func() {
 			defer cancel()
 			failClosed := func(err error) {
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return
+				}
 				a.Update(func() {
-					if generation != a.overviewState.generation || authEpoch != a.authEpoch {
+					if generation != a.overviewState.generation || authEpoch != a.authEpoch || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
 						return
 					}
+					withdraw := readingUnavailable(err)
+					if withdraw {
+						a.withdrawOverviewScope()
+					}
 					a.overviewState.Loading = false
-					a.overviewState.ActivityLoading = false
-					a.overviewState.Error = controlUserError(err)
-					if readingUnavailable(err) {
-						a.InvalidateReading("")
+					message := controlUserError(err)
+					a.overviewState.Error = message
+					if withdraw || actGen == a.overviewState.activityGeneration {
+						a.overviewState.ActivityLoading = false
+						a.overviewState.ActivityError = message
 					}
 				})
 			}
 			hasV2Overview, probeErr := control.probeFeature(ctx, v2FeatureOverview)
 			if probeErr != nil {
-				if ctx.Err() != nil {
-					return
-				}
 				failClosed(probeErr)
 				return
 			}
 			if hasV2Overview {
 				hasV2ReadState, rsErr := control.probeFeature(ctx, v2FeatureReadingState)
 				if rsErr != nil {
-					if ctx.Err() != nil {
-						return
-					}
 					failClosed(rsErr)
 					return
 				}
 				if hasV2ReadState && len(accessProjects) > 0 {
 					if migErr := a.migrateReadingStateV2Snapshot(ctx, control, readingID, stateDir, accessProjects); migErr != nil {
-						if ctx.Err() != nil {
-							return
-						}
-						if isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, accessProjects) {
+						if ctx.Err() != nil || isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, accessProjects) {
 							failClosed(migErr)
 							return
 						}
@@ -327,7 +322,7 @@ func (a *App) loadOverview() {
 						historyEvents, historyErr = client.overviewSearchHistory(ctx)
 					}
 					a.Update(func() {
-						if generation != a.overviewState.generation || authEpoch != a.authEpoch {
+						if generation != a.overviewState.generation || authEpoch != a.authEpoch || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
 							return
 						}
 						a.overviewState.Loading = false
@@ -338,6 +333,7 @@ func (a *App) loadOverview() {
 						a.overviewState.V2DayBuckets = buckets
 						a.overviewState.V2RecallStartedAt = v2Resp.RecallStartedAt
 						a.overviewState.Snapshot = snapshot
+						a.overviewState.snapshotVersion++
 						a.recentScope = ""
 						a.overviewState.Loaded = true
 						a.overviewState.Error = ""
@@ -372,10 +368,7 @@ func (a *App) loadOverview() {
 					})
 					return
 				}
-				if ctx.Err() != nil {
-					return
-				}
-				if isControlFailClosedV2(v2Err) {
+				if ctx.Err() != nil || isControlFailClosedV2(v2Err) {
 					failClosed(v2Err)
 					return
 				}
@@ -448,24 +441,7 @@ func (a *App) loadOverview() {
 				})
 				return
 			}
-			if errors.Is(ctx.Err(), context.Canceled) {
-				return
-			}
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				a.Update(func() {
-					if generation != a.overviewState.generation || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
-						return
-					}
-					a.overviewState.Loading = false
-					a.overviewState.Error = err.Error()
-					if actGen == a.overviewState.activityGeneration {
-						a.overviewState.ActivityLoading = false
-						a.overviewState.ActivityError = err.Error()
-					}
-				})
-				return
-			}
-			if isControlAuthDenied(err) {
+			if ctx.Err() != nil || isControlAuthDenied(err) {
 				// Never fall back from control-plane 401/403 to official /api/v1/*.
 				failClosed(err)
 				return
@@ -571,7 +547,9 @@ func (a *App) loadOverviewLegacy(generation uint64, wasLoaded bool) {
 			}
 			a.overviewState.Loading = false
 			if err != nil {
-				a.invalidateOverviewOn401(err)
+				if readingAuthDenied(err) {
+					a.withdrawOverviewScope()
+				}
 				a.overviewState.Error = err.Error()
 				return
 			}
@@ -686,11 +664,10 @@ func (a *App) startOverviewActivity() <-chan struct{} {
 			a.overviewState.ActivityLoading = false
 			if history {
 				if err != nil {
-					a.invalidateOverviewOn401(err)
-					a.overviewState.HistoryError = err.Error()
 					if readingAuthDenied(err) {
-						a.InvalidateReading("")
+						a.withdrawOverviewScope()
 					}
+					a.overviewState.HistoryError = err.Error()
 					return
 				}
 				a.overviewState.History = events
@@ -699,11 +676,10 @@ func (a *App) startOverviewActivity() <-chan struct{} {
 				return
 			}
 			if err != nil {
-				a.invalidateOverviewOn401(err)
-				a.overviewState.ActivityError = err.Error()
 				if readingAuthDenied(err) {
-					a.InvalidateReading("")
+					a.withdrawOverviewScope()
 				}
+				a.overviewState.ActivityError = err.Error()
 				return
 			}
 			a.overviewState.Events = events

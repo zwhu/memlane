@@ -1553,20 +1553,17 @@ func TestReviewFixR2UnreadStateRevMonotonicFlushAndNoticeRace(t *testing.T) {
 	resetColdPendingCachesForTest()
 
 	// 4. Double-click concurrent clearProjectNotificationsAsync under -race.
-	q.Loaded = true
-	a.clearProjectNotificationsAsync(q, p)
-	a.clearProjectNotificationsAsync(q, p)
-	deadline := time.Now().Add(3 * time.Second)
-	for drained := 0; drained < 2 && time.Now().Before(deadline); {
-		select {
-		case fn := <-updates:
-			fn()
-			drained++
-		case <-time.After(10 * time.Millisecond):
-		}
+	// Flush waits for writes, but their UI updates can still be buffered.
+	for len(updates) > 0 {
+		(<-updates)()
 	}
-	if q.NoticeAcknowledgementError != "" {
-		t.Fatalf("concurrent clearProjectNotificationsAsync hit ack error: %s", q.NoticeAcknowledgementError)
+	q.Loaded = true
+	version := q.StateVersion
+	a.clearProjectNotificationsAsync(q, p)
+	a.clearProjectNotificationsAsync(q, p)
+	drainReading(t, updates, func() bool { return q.StateVersion >= version+2 })
+	if q.NoticeAcknowledgementError != "" || q.KnowledgeReadError != "" {
+		t.Fatalf("concurrent clearProjectNotificationsAsync failed: ack=%q read=%q", q.NoticeAcknowledgementError, q.KnowledgeReadError)
 	}
 }
 

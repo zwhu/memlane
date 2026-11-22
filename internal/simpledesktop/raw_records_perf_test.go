@@ -353,7 +353,7 @@ func TestRawRecordsLargeDocumentVirtualizationAndPerfBudget(t *testing.T) {
 			s.RawCatalog = s.Items
 			s.Selected = &item
 
-			tt := ui.NewTester(a.View, 1200, 820)
+			tt, measureFrame := newFrameBudgetTester(t, a.View, 1200, 820)
 			tt.Advance(200 * time.Millisecond)
 			tt.Frame()
 			fixtureImage(t, tt, "raw-large-doc-"+appearance)
@@ -368,9 +368,7 @@ func TestRawRecordsLargeDocumentVirtualizationAndPerfBudget(t *testing.T) {
 			frames := make([]time.Duration, 0, 15)
 			for n := 0; n < 15; n++ {
 				scroll.Y += 480
-				t0 := time.Now()
-				tt.Frame()
-				frames = append(frames, time.Since(t0))
+				frames = append(frames, measureFrame())
 			}
 			sort.Slice(frames, func(i, j int) bool { return frames[i] < frames[j] })
 			if med := frames[len(frames)/2]; med > 12*time.Millisecond {

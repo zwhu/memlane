@@ -18,6 +18,30 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
+func newFrameBudgetTester(t *testing.T, view func(*ui.Context), width, height int) (*ui.Tester, func() time.Duration) {
+	t.Helper()
+	const refresh = time.Second / 60
+	builds := 0
+	tt := ui.NewTester(func(c *ui.Context) {
+		builds++
+		// Force a full view build at each display tick, even for paint-only motion.
+		c.After(refresh)
+		view(c)
+	}, width, height)
+	return tt, func() time.Duration {
+		t.Helper()
+		before := builds
+		start := time.Now()
+		// Frame() repeatedly rebuilds at a frozen clock while animation is active.
+		tt.Advance(refresh)
+		elapsed := time.Since(start)
+		if builds-before != 1 {
+			t.Fatalf("expected one view build per frame sample, got %d", builds-before)
+		}
+		return elapsed
+	}
+}
+
 func perfFixture(t *testing.T) *App {
 	t.Helper()
 	a := overviewFixture(t)
@@ -105,7 +129,7 @@ func perfFixture(t *testing.T) *App {
 // and appearance switches.
 func TestPerformanceBudgetsFrameTimeAndHeapStability(t *testing.T) {
 	a := perfFixture(t)
-	tt := ui.NewTester(a.View, 1200, 820)
+	tt, measureFrame := newFrameBudgetTester(t, a.View, 1200, 820)
 	// Warm up font atlas and layout caches.
 	for n := 0; n < 4; n++ {
 		tt.Frame()
@@ -114,9 +138,7 @@ func TestPerformanceBudgetsFrameTimeAndHeapStability(t *testing.T) {
 	measureMedian := func(label string, frames int) time.Duration {
 		samples := make([]time.Duration, 0, frames)
 		for n := 0; n < frames; n++ {
-			start := time.Now()
-			tt.Frame()
-			samples = append(samples, time.Since(start))
+			samples = append(samples, measureFrame())
 		}
 		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
 		median := samples[len(samples)/2]
@@ -275,8 +297,7 @@ func TestColdStartOverviewPerformanceBudget(t *testing.T) {
 	a.loadOverview()
 	drainReading(t, updates, func() bool { return a.overviewState.Loaded && a.overviewState.ActivityLoaded })
 
-	tt := ui.NewTester(a.View, 1200, 820)
-	tt.Frame()
+	_, measureFrame := newFrameBudgetTester(t, a.View, 1200, 820)
 	coldReady := time.Since(tStart)
 
 	if bootstrapCalls != 1 {
@@ -301,9 +322,7 @@ func TestColdStartOverviewPerformanceBudget(t *testing.T) {
 	// Measure 15 frames during active Page Rise + Wave Grow + Stagger Cascade.
 	frames := make([]time.Duration, 0, 15)
 	for n := 0; n < 15; n++ {
-		f0 := time.Now()
-		tt.Frame()
-		frames = append(frames, time.Since(f0))
+		frames = append(frames, measureFrame())
 	}
 	sort.Slice(frames, func(i, j int) bool { return frames[i] < frames[j] })
 	if median := frames[len(frames)/2]; median > 12*time.Millisecond {
@@ -775,8 +794,7 @@ func TestScale50kDesktopSLABudgets(t *testing.T) {
 	a.loadOverview()
 	drainReading(t, updates, func() bool { return a.overviewState.Loaded && a.overviewState.ActivityLoaded })
 
-	tt := ui.NewTester(a.View, 1200, 820)
-	tt.Frame()
+	tt, measureFrame := newFrameBudgetTester(t, a.View, 1200, 820)
 	coldReady := time.Since(tStart)
 
 	if overviewV2Calls.Load() != 1 || v1BootstrapCalls.Load() != 0 || legacyDataCalls.Load() != 0 {
@@ -830,13 +848,11 @@ func TestScale50kDesktopSLABudgets(t *testing.T) {
 	measureFrames := func(label string, frames int, medianBudget, peakBudget time.Duration) {
 		// Warm up layout/font caches for current page & theme.
 		for w := 0; w < 3; w++ {
-			tt.Frame()
+			measureFrame()
 		}
 		samples := make([]time.Duration, 0, frames)
 		for n := 0; n < frames; n++ {
-			f0 := time.Now()
-			tt.Frame()
-			samples = append(samples, time.Since(f0))
+			samples = append(samples, measureFrame())
 		}
 		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
 		if !raceDetectorEnabled {
@@ -869,13 +885,10 @@ func TestScale50kDesktopSLABudgets(t *testing.T) {
 
 	// 5. Multi-project Tray Flyout caching & frame budget (8 projects, 20 frames -> 1 computation).
 	a.trayCache = trayFlyoutCache{}
-	trayTester := ui.NewTester(a.TrayFlyoutView, 300, 440)
-	trayTester.Frame()
+	_, measureTrayFrame := newFrameBudgetTester(t, a.TrayFlyoutView, 300, 440)
 	trayFrames := make([]time.Duration, 0, 20)
 	for n := 0; n < 20; n++ {
-		f0 := time.Now()
-		trayTester.Frame()
-		trayFrames = append(trayFrames, time.Since(f0))
+		trayFrames = append(trayFrames, measureTrayFrame())
 	}
 	sort.Slice(trayFrames, func(i, j int) bool { return trayFrames[i] < trayFrames[j] })
 	if a.trayCache.summaryComputations != 1 {

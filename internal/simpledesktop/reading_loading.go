@@ -241,8 +241,10 @@ func (a *App) startTitles(s *pane) {
 func clearUnavailableItem(item *Item) {
 	item.Body = ""
 	item.BodyLoaded = false
+	item.BodyTruncated = false
 	item.Detail = nil
 	item.Preview = ""
+	item.PreviewTruncated = false
 	item.Subagents = nil
 	item.SubagentsHasMore = false
 	item.SubagentsNextCursor = ""
@@ -394,9 +396,12 @@ func (a *App) unavailableReadingItem(i Item) {
 			delete(s.Knowledge.Measurements, i.key())
 		}
 	}
-	for n, row := range a.overviewState.Snapshot.Knowledge {
-		if row.key() == i.key() {
-			clearUnavailableItem(&a.overviewState.Snapshot.Knowledge[n])
+	for _, rows := range [][]Item{a.overviewState.Snapshot.Knowledge, a.overviewState.DayItems} {
+		for n, row := range rows {
+			if row.key() == i.key() || (row.Session == nil && i.Session != nil &&
+				row.Dataset == i.Dataset && row.Kind == i.Kind && row.ID == i.ID) {
+				clearUnavailableItem(&rows[n])
+			}
 		}
 	}
 }
