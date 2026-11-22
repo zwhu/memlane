@@ -11,25 +11,29 @@
 
 ## 本地开发
 
-在仓库根目录使用私有运行配置启动（省略 `--config` 时默认读取 `.local/daily/runtime.json`）：
+从仓库根目录用 `runtime.json` 的 `python` 字段指定的受管 Python 3.12 运行日常服务命令。下方示例使用日常配置对应的 `.local/cognee-python/bin/python`。省略 `--config` 时默认读取 `.local/daily/runtime.json`。
+
+启动预检由 `scripts/dev.py` 自己执行，先于服务子进程启动。裸 `python3` 可能选中 Python 3.9，导致读取 Codex 配置时缺少 `tomllib`。直接用受管 Python 启动，预检与服务子进程就使用同一个环境。首次准备受管环境见[开发说明](docs/architecture/development.md)。
+
+启动日常服务和桌面窗口。
 
 ```sh
-python3 scripts/dev.py start --config /绝对路径/runtime.json
+.local/cognee-python/bin/python scripts/dev.py start --config /绝对路径/runtime.json
 ```
 
 仅启动后台服务（不拉起 UI 窗口）：
 
 ```sh
-python3 scripts/dev.py start --no-ui --config /绝对路径/runtime.json
+.local/cognee-python/bin/python scripts/dev.py start --no-ui --config /绝对路径/runtime.json
 ```
 
 常用运维与检查命令：
 
 ```sh
-python3 scripts/dev.py status --config /绝对路径/runtime.json
-python3 scripts/dev.py open --config /绝对路径/runtime.json
-python3 scripts/dev.py stop --config /绝对路径/runtime.json
-python3 scripts/dev.py recover --config /绝对路径/runtime.json
+.local/cognee-python/bin/python scripts/dev.py status --config /绝对路径/runtime.json
+.local/cognee-python/bin/python scripts/dev.py open --config /绝对路径/runtime.json
+.local/cognee-python/bin/python scripts/dev.py stop --config /绝对路径/runtime.json
+.local/cognee-python/bin/python scripts/dev.py recover --config /绝对路径/runtime.json
 python3 scripts/task.py -- python3 scripts/lint.py
 python3 scripts/task.py -- python3 -m unittest discover -s scripts -p test_lint.py
 sh scripts/go.sh test ./...

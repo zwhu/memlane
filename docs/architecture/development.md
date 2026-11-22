@@ -40,21 +40,25 @@ PA配置模板新增可选 `project_control`：显式loopback `url`、私有 `re
 
 2026-11-13 起，精简版唯一开发入口为 `scripts/dev.py`。本轮接管与验收已完成，实际范围和限制见交付记录，阶段证据见执行记录。配置模板为 [`config/daily-runtime.example.json`](../../config/daily-runtime.example.json)，其中路径均为占位符，不能直接启动。
 
-从仓库根目录执行，所有操作使用同一个私有配置文件的绝对路径。先在一个终端启动并保持前台：
+从仓库根目录执行，所有日常服务操作使用同一个私有配置文件的绝对路径，并用该文件 `python` 字段指定的受管 Python 3.12。以下示例使用日常配置对应的 `.local/cognee-python/bin/python`。自定义虚拟环境时，将命令开头换成配置中的虚拟环境入口。
+
+`scripts/dev.py` 在自身进程里预检当前模型代理，然后才启动服务子进程。配置中的 `python` 字段用于启动子进程，无法改变当前启动器的解释器。裸 `python3` 若解析到 Python 3.9，Codex 配置预检会因缺少 `tomllib` 提前失败。首次运行上文的 `prepare` 时，受管环境可能尚未创建，因此该入口仍从宿主 Python 执行。
+
+先在一个终端启动并保持前台。
 
 ```sh
-python3 scripts/dev.py start --config /绝对路径/runtime.json
+.local/cognee-python/bin/python scripts/dev.py start --config /绝对路径/runtime.json
 ```
 
 服务就绪后，在另一个终端按需查看状态、重开窗口或停止：
 
 ```sh
-python3 scripts/dev.py status --config /绝对路径/runtime.json
-python3 scripts/dev.py open --config /绝对路径/runtime.json
-python3 scripts/dev.py stop --config /绝对路径/runtime.json
+.local/cognee-python/bin/python scripts/dev.py status --config /绝对路径/runtime.json
+.local/cognee-python/bin/python scripts/dev.py open --config /绝对路径/runtime.json
+.local/cognee-python/bin/python scripts/dev.py stop --config /绝对路径/runtime.json
 ```
 
-启动器在官方服务及当前模式所需端点健康检查通过后启动MyGo dev；桥模式启动completion，Provider模式不启动它。健康检查就绪不代表真实模型推理已验证。先只运行后台时，使用 `python3 scripts/dev.py start --no-ui --config /绝对路径/runtime.json`，随后仍可用 `open` 打开窗口。
+启动器在官方服务及当前模式所需端点健康检查通过后启动MyGo dev；桥模式启动completion，Provider模式不启动它。健康检查就绪不代表真实模型推理已验证。先只运行后台时，使用 `.local/cognee-python/bin/python scripts/dev.py start --no-ui --config /绝对路径/runtime.json`，随后仍可用 `open` 打开窗口。
 
 关闭桌面窗口或 MyGo 源码重载不会停止这两个端点，也不要再次执行 `start` 来重开窗口。`open` 向现有启动器发送重开请求，停止其已有 MyGo watcher（若有），再启动一个 watcher；它不会启动第二套服务，也不代表窗口已完成显示。UI 源码由 MyGo dev 增量编译、重载。
 
@@ -62,9 +66,9 @@ python3 scripts/dev.py stop --config /绝对路径/runtime.json
 
 `status` 检查启动器所有权并输出运行记录，不是模型推理或全部子进程健康检查。未启动、配置不匹配、端口占用、数据锁被占用或残留所有权记录都应先核实；不要删除锁／运行记录或直接杀掉未知进程来绕过检查。停止未确认时保留记录，不把失败当作已停止。
 
-2026-11-19 增加异常退出后的显式恢复：`python3 scripts/dev.py recover --config /绝对路径/runtime.json`。该命令持有同库锁，核对原配置、记录中的进程及进程组全部消失、服务端口空闲、项目登记及处理配置锁已释放后，原样归档 owner 记录，再允许正常 `start`。不终止任何进程；PID 被复用、未知监听、活跃锁或身份不匹配均拒绝。Cognee、模型桥和 project_control 统一监测父进程丢失并退出。记录和实际验证见本轮可靠性修复。
+2026-11-19 增加异常退出后的显式恢复：`.local/cognee-python/bin/python scripts/dev.py recover --config /绝对路径/runtime.json`。该命令持有同库锁，核对原配置、记录中的进程及进程组全部消失、服务端口空闲、项目登记及处理配置锁已释放后，原样归档 owner 记录，再允许正常 `start`。不终止任何进程；PID 被复用、未知监听、活跃锁或身份不匹配均拒绝。Cognee、模型桥和 project_control 统一监测父进程丢失并退出。记录和实际验证见本轮可靠性修复。
 
-旧启动器仍拥有健康服务、但其 MyGo watcher 已退出时，可通过 `python3 scripts/dev.py open --watch-ui --config /绝对路径/runtime.json` 在当前终端附着一个前台 UI watcher。该入口先核对现有服务所有者和就绪状态，拒绝第二个活跃 watcher；退出此 watcher 只收尾它自己的界面进程组，不停止官方服务。普通 `open` 检测到该附着锁时不再通知旧启动器另开 watcher。此方式用于开发调试，不替代日常服务的 `start`／`stop`。
+旧启动器仍拥有健康服务、但其 MyGo watcher 已退出时，可通过 `.local/cognee-python/bin/python scripts/dev.py open --watch-ui --config /绝对路径/runtime.json` 在当前终端附着一个前台 UI watcher。该入口先核对现有服务所有者和就绪状态，拒绝第二个活跃 watcher；退出此 watcher 只收尾它自己的界面进程组，不停止官方服务。普通 `open` 检测到该附着锁时不再通知旧启动器另开 watcher。此方式用于开发调试，不替代日常服务的 `start`／`stop`。
 
 总览的首次初始化完成日期由启动器在必要配置、带认证官方内容检查及当前模式所需健康检查通过后保存。状态默认位于 `runtime.json` 同目录的 `client-state.json`；可用可选绝对路径字段 `client_state_file` 指定同一持久文件。启动、重开、模型或项目重配不会覆盖已有首日，单次运行清理不得删除该文件；损坏或写入失败保持错误，不用当前日期覆盖。实际知识与活动仍读取官方服务，不保存在此文件中。
 
@@ -116,9 +120,9 @@ OpenCode第二批开发使用`engine/agents/opencode/managed-control.ts`访问�
 
 Provider协议值为 `openai`、`anthropic`、`gemini`、`custom`；DeepSeek等明确OpenAI兼容端点选 `custom`。endpoint/model/key均由用户明确配置，不猜供应商或错误后换模型。凭据0600、目录0700，不回填Native；HTTP重定向拒绝。验证记录实际adapter请求模式，不能当作远端严格Schema保证。
 
-模板 [`daily-runtime.example.json`](../../config/daily-runtime.example.json) 保留旧 Codex 代理兼容字段；[`provider-runtime.example.json`](../../config/provider-runtime.example.json) 展示不含 Agent 代理认证输入的 API 运行配置。两者都需已准备的官方环境／数据及私有凭据；本入口不创建或替换内容库。已有 active 时正常 `start`。尚无生成配置时，先执行 `python3 scripts/dev.py setup --config /绝对路径/runtime.json`：只启动受管理 token 认证的本机配置服务，并复用 Native“记忆提炼”表单，不启动官方引擎、接入 Agent 或写初始化完成标记。
+模板 [`daily-runtime.example.json`](../../config/daily-runtime.example.json) 保留旧 Codex 代理兼容字段；[`provider-runtime.example.json`](../../config/provider-runtime.example.json) 展示不含 Agent 代理认证输入的 API 运行配置。两者都需已准备的官方环境／数据及私有凭据；本入口不创建或替换内容库。已有 active 时正常 `start`。尚无生成配置时，先执行 `.local/cognee-python/bin/python scripts/dev.py setup --config /绝对路径/runtime.json`：只启动受管理 token 认证的本机配置服务，并复用 Native“记忆提炼”表单，不启动官方引擎、接入 Agent 或写初始化完成标记。
 
-首次配置依次保存 Provider、点击会消耗额度的验证、选择“下次启动使用”；保存或验证不会制造 active。完成后通过 `python3 scripts/dev.py stop --config /绝对路径/runtime.json` 停止配置服务，再正常 `start`。启动器只有在已验证候选的健康及完整摘要匹配后才写首个 active；首个候选失败时清理并停止，不恢复不存在的旧配置。没有已验证 next 时不启动引擎。`setup` 拒绝已存在 active 的账本；已有日常配置继续在正常设置页编辑。不得手写 passed、复制验收账本或修改活动修订绕过验证。
+首次配置依次保存 Provider、点击会消耗额度的验证、选择“下次启动使用”；保存或验证不会制造 active。完成后通过 `.local/cognee-python/bin/python scripts/dev.py stop --config /绝对路径/runtime.json` 停止配置服务，再正常 `start`。启动器只有在已验证候选的健康及完整摘要匹配后才写首个 active；首个候选失败时清理并停止，不恢复不存在的旧配置。没有已验证 next 时不启动引擎。`setup` 拒绝已存在 active 的账本；已有日常配置继续在正常设置页编辑。不得手写 passed、复制验收账本或修改活动修订绕过验证。
 
 开发阶段不运行完整打包、DMG、签名、公证、更新或 helper 安装。Go/MyGo 固定版本和仓库内工具链继续复用。2026-11-17 用户将开发态磁盘门禁调整为至少保留 50 GiB，运行中低于 55 GiB 停止受管任务（独立 `.app` 安装态监控阈值为最低 `2 GiB` / 告警线 `5 GiB`）；`dev.py` 与其他检查均通过既有 `scripts/task.py`，Go 检查使用 `sh scripts/go.sh`。新阈值对新启动的包装器生效，已运行的旧包装器不会自动重载；正常收尾／重启须遵守现有运行资源交接规则。
 

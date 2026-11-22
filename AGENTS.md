@@ -16,14 +16,15 @@ Memlane 是面向程序员的 macOS 记忆客户端，采用 **MyGo Native 桌�
 
 | 用途 | 命令 |
 | --- | --- |
-| 启动日常服务与 UI（默认配置 `.local/daily/runtime.json`） | `python3 scripts/dev.py start --config /绝对路径/runtime.json` |
-| 仅启动后台 / 查看状态 / 重开窗口 / 停止 / 异常恢复 | `python3 scripts/dev.py {start --no-ui \| status \| open \| stop \| recover} --config /绝对路径/runtime.json` |
+| 启动日常服务与 UI（默认配置 `.local/daily/runtime.json`） | `.local/cognee-python/bin/python scripts/dev.py start --config /绝对路径/runtime.json` |
+| 仅启动后台 / 查看状态 / 重开窗口 / 停止 / 异常恢复 | `.local/cognee-python/bin/python scripts/dev.py {start --no-ui \| status \| open \| stop \| recover} --config /绝对路径/runtime.json` |
 | Go 全量测试（含 `perf_budget_test.go` 冷启动首页 `<150ms`、帧耗时 `<12ms`/`<16ms`、切页堆内存 `<=25 MiB` 及 `lint_gate_test.go` 自动追踪 `.py`/`.go` 静态门禁）与静态检查 | `sh scripts/go.sh test ./...`、`sh scripts/go.sh vet ./...` |
 | 零依赖静态检查（`ML001`–`ML003` 模型边界、`ML006` 画像无总超时守卫、`ML007` 环境隔离、`ML008`–`ML012` UI 性能、`ML013`–`ML017` 运行时资源门禁，其中 `ML015` 扩展覆盖 `scripts/*.py`；`go test ./...` 自动强制执行） | `python3 scripts/task.py -- python3 scripts/lint.py` |
 | Scripts 回归与 Hook 配置（`scripts/install-hooks.sh` 仅启用局部 `.githooks` 暂存态 `pre-commit` + `pre-push` 并全阶段透传全局钩子，不改全局 `~/.gitconfig`） | `python3 scripts/task.py -- python3 -m unittest discover -s scripts -p "test_*.py"` |
 | 模型参数 / 探针 / 切换 / 启动回归（修改模型路径时必跑） | `python3 scripts/task.py -- python3 -m unittest` 运行 `test_generation_parameters`、`test_generation_probe`、`test_generation_handoff`、`test_generation_startup` |
 
 运行边界：
+- **日常启动解释器**：从仓库根目录用 `runtime.json` 的 `python` 字段指定的受管 Python 3.12 执行 `scripts/dev.py`，本机日常配置对应上表路径。启动预检在启动器进程中执行，裸 `python3` 可能选到缺少 `tomllib` 的旧版本。
 - **单一日常库**：日常运行、Native 界面与真实链路验收统一连接 `.local/daily/official-store`，不另建独立测试库；未核对前不删除原材料或运行依赖。
 - **磁盘门禁与目录保护**：开发态受管任务经 `scripts/task.py` 执行，至少保留 `50 GiB` 可用空间（运行中低于 `55 GiB` 自动停止）；独立 `.app` 安装态监控阈值为最低 `2 GiB` / 告警线 `5 GiB`。**禁止清空 `build/`**（其中 `build/p3-prototype` 是含未提交修改的 Git 工作树）。清理旧运行包前必须先核对 daemon/helper 所属完整包与代理依赖，依赖未知则保留。
 - **隐私与交付范围**：实际运行配置、凭据与真实记忆库位于 Git 跟踪之外的 `.local/`；不提交密钥、真实库、聊天记录或本机 Agent 配置。除非用户明确要求，不构建 DMG 或执行签名、公证、更新与 helper 安装。
