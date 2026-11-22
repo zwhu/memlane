@@ -240,3 +240,179 @@ class IncrementalProcessingTests(unittest.IsolatedAsyncioTestCase):
         self.now += 31
         await self.processing.tick()
         self.assertEqual([t['host'] for t in self.submissions()], ['healthy'])
+    async def test_sqlite_capacity_detects_old_active_run_beyond_500_newer_runs(self):
+        import sqlite3
+        import uuid
+        from incremental_processing import _sqlite_capacity_available
+
+        official_data = Path(self.temp.name) / 'official-cap'
+        db_dir = official_data / 'system' / 'databases'
+        db_dir.mkdir(parents=True)
+        cognee_db = db_dir / 'cognee_db'
+
+        con = sqlite3.connect(cognee_db)
+        con.execute('''
+            CREATE TABLE pipeline_runs (
+                id CHAR(32) PRIMARY KEY,
+                created_at DATETIME,
+                status VARCHAR,
+                pipeline_run_id CHAR(32),
+                pipeline_name VARCHAR,
+                ended_at DATETIME
+            )
+        ''')
+        con.execute('CREATE INDEX ix_pipeline_runs_pipeline_run_id ON pipeline_runs(pipeline_run_id)')
+        con.execute('CREATE INDEX ix_pipeline_runs_created_at_id ON pipeline_runs(created_at, id)')
+
+        old_run_id = uuid.uuid4().hex
+        con.execute(
+            'INSERT INTO pipeline_runs VALUES (?,?,?,?,?,?)',
+            (uuid.uuid4().hex, '2026-11-20 00:00:00', 'DATASET_PROCESSING_STARTED', old_run_id, 'cognify_pipeline', None),
+        )
+        # Insert 600 newer completed runs (1,200 rows) pushing old_run_id well beyond any 500-row window.
+        rows = []
+        for i in range(600):
+            rid = uuid.uuid4().hex
+            ts1 = f'2026-11-21 {i // 3600:02d}:{(i // 60) % 60:02d}:{i % 60:02d}.000000'
+            ts2 = f'2026-11-21 {i // 3600:02d}:{(i // 60) % 60:02d}:{i % 60:02d}.500000'
+            rows.append((uuid.uuid4().hex, ts1, 'DATASET_PROCESSING_STARTED', rid, 'cognify_pipeline', None))
+            rows.append((uuid.uuid4().hex, ts2, 'DATASET_PROCESSING_COMPLETED', rid, 'cognify_pipeline', None))
+        con.executemany('INSERT INTO pipeline_runs VALUES (?,?,?,?,?,?)', rows)
+        con.commit()
+        con.close()
+
+        self.assertFalse(_sqlite_capacity_available(official_data))
+
+        # Completing the old run frees capacity.
+        con = sqlite3.connect(cognee_db)
+        con.execute(
+            'INSERT INTO pipeline_runs VALUES (?,?,?,?,?,?)',
+            (uuid.uuid4().hex, '2026-11-22 00:00:00', 'DATASET_PROCESSING_COMPLETED', old_run_id, 'cognify_pipeline', None),
+        )
+        con.commit()
+        con.close()
+        self.assertTrue(_sqlite_capacity_available(official_data))
+
+        # An active operation row (empty pipeline_name, NULL ended_at) blocks capacity.
+        con = sqlite3.connect(cognee_db)
+        con.execute(
+            'INSERT INTO pipeline_runs VALUES (?,?,?,?,?,?)',
+            (uuid.uuid4().hex, '2026-11-22 00:01:00', None, uuid.uuid4().hex, None, None),
+        )
+        con.commit()
+        con.close()
+        self.assertFalse(_sqlite_capacity_available(official_data))
+
+    async def test_sqlite_summary_handles_iso_t_expiry_out_of_order_times_and_large_2mb_session(self):
+        from datetime import datetime, timedelta, timezone
+        import sqlite3
+        import uuid
+        from incremental_processing import _read_session_incremental_summary_ro, timestamp
+
+        official_data = Path(self.temp.name) / 'official-summary'
+        db_dir = official_data / 'system' / 'databases'
+        db_dir.mkdir(parents=True)
+        cognee_db = db_dir / 'cognee_db'
+        cache_db = db_dir / 'cache.db'
+
+        user_uuid = str(uuid.uuid4())
+        ds_uuid = str(uuid.uuid4())
+        session_id = 'sess-large-oob'
+
+        c1 = sqlite3.connect(cognee_db)
+        c1.execute('''
+            CREATE TABLE session_records (
+                session_id VARCHAR NOT NULL, user_id CHAR(32) NOT NULL, dataset_id CHAR(32),
+                status VARCHAR, started_at DATETIME, last_activity_at DATETIME, agent_id VARCHAR,
+                PRIMARY KEY (session_id, user_id)
+            )
+        ''')
+        c1.execute(
+            'INSERT INTO session_records VALUES (?,?,?,?,?,?,?)',
+            (session_id, uuid.UUID(user_uuid).hex, uuid.UUID(ds_uuid).hex, 'active',
+             '2026-11-21 08:00:00', '2026-11-21 10:05:00', 'codex'),
+        )
+        c1.commit()
+        c1.close()
+
+        now_utc = datetime.now(timezone.utc)
+        # Same-day ISO 'T' timestamp in the past (would falsely compare > space-separated now!).
+        expired_t_same_day = (now_utc - timedelta(seconds=5)).strftime('%Y-%m-%dT%H:%M:%S.%f')
+        expired_tz_same_day = (now_utc - timedelta(seconds=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        future_t = (now_utc + timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%S.%f')
+
+        c2 = sqlite3.connect(cache_db)
+        c2.execute('''
+            CREATE TABLE cache_qa_entries (
+                seq INTEGER PRIMARY KEY, user_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                qa_id TEXT NOT NULL, payload JSON NOT NULL, expires_at DATETIME
+            )
+        ''')
+        c2.execute('CREATE INDEX idx_cache_qa_session ON cache_qa_entries(user_id, session_id, seq)')
+        c2.execute('''
+            CREATE TABLE cache_trace_entries (
+                seq INTEGER PRIMARY KEY, user_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                payload JSON NOT NULL, expires_at DATETIME
+            )
+        ''')
+        c2.execute('CREATE INDEX idx_cache_trace_session ON cache_trace_entries(user_id, session_id, seq)')
+
+        # Active QAs with >2 MiB total payload AND out-of-order event timestamps (seq=1 newer than seq=30).
+        big_pad = 'x' * 80000
+        c2.execute(
+            'INSERT INTO cache_qa_entries VALUES (?,?,?,?,?,?)',
+            (1, user_uuid, session_id, 'qa-newest-time',
+             json.dumps({'time': '2026-11-21T10:15:00Z', 'answer': big_pad}), future_t),
+        )
+        for idx in range(2, 31):
+            c2.execute(
+                'INSERT INTO cache_qa_entries VALUES (?,?,?,?,?,?)',
+                (idx, user_uuid, session_id, f'qa-{idx}',
+                 json.dumps({'time': '2026-11-21T10:01:00Z', 'answer': big_pad}), None),
+            )
+        # Same-day expired ISO 'T' QA rows must NOT be counted or influence qa_at.
+        c2.execute(
+            'INSERT INTO cache_qa_entries VALUES (?,?,?,?,?,?)',
+            (31, user_uuid, session_id, 'qa-expired-t',
+             json.dumps({'time': '2026-11-21T23:59:59Z', 'answer': 'expired'}), expired_t_same_day),
+        )
+        c2.execute(
+            'INSERT INTO cache_qa_entries VALUES (?,?,?,?,?,?)',
+            (32, user_uuid, session_id, 'qa-expired-tz',
+             json.dumps({'time': '2026-11-21T23:59:59Z', 'answer': 'expired'}), expired_tz_same_day),
+        )
+
+        # Traces: seq=1 has newer time than seq=2, plus same-day expired 'T' trace at seq=3.
+        c2.execute(
+            'INSERT INTO cache_trace_entries VALUES (?,?,?,?,?)',
+            (1, user_uuid, session_id, json.dumps({'time': '2026-11-21T10:14:00Z'}), future_t),
+        )
+        c2.execute(
+            'INSERT INTO cache_trace_entries VALUES (?,?,?,?,?)',
+            (2, user_uuid, session_id, json.dumps({'time': '2026-11-21T10:02:00Z'}), None),
+        )
+        c2.execute(
+            'INSERT INTO cache_trace_entries VALUES (?,?,?,?,?)',
+            (3, user_uuid, session_id, json.dumps({'time': '2026-11-21T23:59:59Z'}), expired_t_same_day),
+        )
+        c2.commit()
+
+        # Verify single-format equality query has zero TEMP B-TREE.
+        eqp = c2.execute(
+            """EXPLAIN QUERY PLAN
+               SELECT json_extract(payload, '$.time')
+               FROM cache_qa_entries
+               WHERE user_id = ? AND session_id = ?
+                 AND (expires_at IS NULL OR RTRIM(REPLACE(substr(expires_at, 1, 26), 'T', ' '), 'Zz') > ?)""",
+            (user_uuid, session_id, now_utc.strftime('%Y-%m-%d %H:%M:%S.%f')),
+        ).fetchall()
+        plan_text = ' '.join(str(r[-1]) for r in eqp)
+        self.assertNotIn('TEMP B-TREE', plan_text)
+        c2.close()
+
+        summary = _read_session_incremental_summary_ro(official_data, session_id, user_uuid, ds_uuid)
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary['msg_count'], 30)
+        self.assertEqual(summary['tool_calls'], 2)
+        self.assertEqual(summary['qa_at'], timestamp('2026-11-21T10:15:00Z'))
+        self.assertEqual(summary['trace_at'], timestamp('2026-11-21T10:14:00Z'))

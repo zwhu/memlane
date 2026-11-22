@@ -105,6 +105,37 @@ def _best_status(*statuses):
     return best
 
 
+def _select_best_date_evidence(pairs) -> tuple[str, str]:
+    """Select the earliest valid calendar date paired strictly with evidence proving THAT date.
+
+    When multiple evidence entries share the exact same earliest date, pick the
+    highest evidence rank among them. A later strong date NEVER upgrades the status
+    label attached to an earlier weaker date.
+    """
+    valid: list[tuple[str, str]] = []
+    for raw_day, raw_status in pairs or ():
+        day = _calendar_date(raw_day)
+        if not day:
+            continue
+        st = raw_status if _STATUS_RANK.get(raw_status, 0) > 0 else 'created_at'
+        valid.append((day, st))
+    if not valid:
+        return '', 'unconfirmed'
+    earliest = min(d for d, _ in valid)
+    tied_statuses = [st for d, st in valid if d == earliest]
+    return earliest, _best_status(*tied_statuses)
+
+
+def _inferred_meta_date_status(meta: dict, *, has_qa_ids: bool) -> str:
+    """Resolve evidence status for ``first_source_date`` without fabricating ``linked_qa``."""
+    raw_status = str(meta.get('source_date_status') or '').strip()
+    if has_qa_ids:
+        return 'linked_qa'
+    if raw_status in _STATUS_RANK and raw_status not in ('unconfirmed', 'linked_qa'):
+        return raw_status
+    return 'session_date'
+
+
 def _is_lesson_metadata(meta):
     if not isinstance(meta, dict):
         return False
@@ -292,6 +323,7 @@ class ProvenanceStore:
         self.path = Path(path)
         self.cognee_db_path = Path(cognee_db_path) if cognee_db_path else None
         self._write_lock = threading.Lock()
+        self._last_synced_rowid: dict[str, int] = {}
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.path.parent, 0o700)
         if self.path.is_symlink():
@@ -433,26 +465,18 @@ class ProvenanceStore:
                 ).fetchone()
         if doc_row is None and key_row is None:
             return None
-        dates = []
+        pairs = []
         qas = []
-        statuses = []
         if doc_row:
             if _calendar_date(doc_row[2]):
-                dates.append(doc_row[2])
-                statuses.append(doc_row[3] if _STATUS_RANK.get(doc_row[3], 0) > 0 else 'linked_qa')
-            elif doc_row[3]:
-                statuses.append(doc_row[3])
+                pairs.append((doc_row[2], doc_row[3] if _STATUS_RANK.get(doc_row[3], 0) > 0 else 'created_at'))
             try:
                 qas = json.loads(doc_row[4])
             except ValueError:
                 qas = []
         if key_row and _calendar_date(key_row[0]):
-            dates.append(key_row[0])
-            statuses.append(key_row[1] if _STATUS_RANK.get(key_row[1], 0) > 0 else 'linked_qa')
-        best = min(dates) if dates else ''
-        status = _best_status(*statuses)
-        if best and status == 'unconfirmed':
-            status = 'linked_qa'
+            pairs.append((key_row[0], key_row[1] if _STATUS_RANK.get(key_row[1], 0) > 0 else 'created_at'))
+        best, status = _select_best_date_evidence(pairs)
         return {
             'first_source_date': best,
             'source_date_status': status if best else 'unconfirmed',
@@ -467,6 +491,7 @@ class ProvenanceStore:
         lesson_type='',
         state_key='',
         candidate_dates=(),
+        candidate_pairs=(),
         source_qa_ids=(),
         explicit_status=None,
         now=None,
@@ -492,16 +517,6 @@ class ProvenanceStore:
                 (ds, effective_lt, effective_sk),
             ).fetchone()
 
-        dates = []
-        for raw_d in candidate_dates or ():
-            parsed = _calendar_date(raw_d)
-            if parsed:
-                dates.append(parsed)
-        if doc_row and _calendar_date(doc_row[2]):
-            dates.append(doc_row[2])
-        if key_row and _calendar_date(key_row[0]):
-            dates.append(key_row[0])
-
         existing_qas = []
         if doc_row and doc_row[4]:
             try:
@@ -511,39 +526,33 @@ class ProvenanceStore:
         merged_qas = sorted({str(x) for x in (*existing_qas, *(source_qa_ids or ())) if x})
         merged_qas_json = json.dumps(merged_qas)
 
-        resolved_date = min(dates) if dates else ''
-        if resolved_date:
-            inferred = []
-            if merged_qas:
-                inferred.append('linked_qa')
-            if _STATUS_RANK.get(explicit_status, 0) > 0:
-                inferred.append(explicit_status)
-            elif (
-                explicit_status is None
-                and not (doc_row and _calendar_date(doc_row[2]))
-                and not (key_row and _calendar_date(key_row[0]))
-            ):
-                inferred.append('linked_qa')
-            if doc_row and _calendar_date(doc_row[2]):
-                inferred.append(doc_row[3] if _STATUS_RANK.get(doc_row[3], 0) > 0 else 'linked_qa')
-            if key_row and _calendar_date(key_row[0]):
-                inferred.append(key_row[1] if _STATUS_RANK.get(key_row[1], 0) > 0 else 'linked_qa')
-            status = _best_status(*inferred)
-            if status == 'unconfirmed':
-                status = 'linked_qa'
-            key_status = _best_status(
-                status,
-                key_row[1] if (key_row and _calendar_date(key_row[0])) else 'unconfirmed',
-            )
-        else:
-            status = 'unconfirmed'
-            key_status = 'unconfirmed'
+        pairs: list[tuple[str, str]] = []
+        cand_status = explicit_status if _STATUS_RANK.get(explicit_status, 0) > 0 else (
+            'linked_qa' if (source_qa_ids or explicit_status is None) else 'created_at'
+        )
+        for raw_d in candidate_dates or ():
+            parsed = _calendar_date(raw_d)
+            if parsed:
+                pairs.append((parsed, cand_status))
+        for raw_d, raw_st in candidate_pairs or ():
+            parsed = _calendar_date(raw_d)
+            if parsed:
+                st = raw_st if _STATUS_RANK.get(raw_st, 0) > 0 else 'created_at'
+                pairs.append((parsed, st))
+        if doc_row and _calendar_date(doc_row[2]):
+            pairs.append((doc_row[2], doc_row[3] if _STATUS_RANK.get(doc_row[3], 0) > 0 else 'created_at'))
+        if key_row and _calendar_date(key_row[0]):
+            pairs.append((key_row[0], key_row[1] if _STATUS_RANK.get(key_row[1], 0) > 0 else 'created_at'))
+
+        resolved_date, status = _select_best_date_evidence(pairs)
+        key_status = status if resolved_date else 'unconfirmed'
 
         if effective_lt and effective_sk and resolved_date:
             need_key_write = (
                 key_row is None
-                or key_row[0] != resolved_date
-                or _STATUS_RANK.get(key_status, 0) > _STATUS_RANK.get(key_row[1], 0)
+                or not key_row[0]
+                or resolved_date < key_row[0]
+                or (resolved_date == key_row[0] and _STATUS_RANK.get(key_status, 0) > _STATUS_RANK.get(key_row[1], 0))
             )
             if need_key_write:
                 self.db.execute(
@@ -557,7 +566,13 @@ class ProvenanceStore:
                              THEN excluded.first_source_date
                            ELSE keyed_provenance.first_source_date
                          END,
-                         source_date_status=excluded.source_date_status,
+                         source_date_status=CASE
+                           WHEN keyed_provenance.first_source_date='' OR excluded.first_source_date < keyed_provenance.first_source_date
+                             THEN excluded.source_date_status
+                           WHEN excluded.first_source_date = keyed_provenance.first_source_date
+                             THEN excluded.source_date_status
+                           ELSE keyed_provenance.source_date_status
+                         END,
                          updated_at=excluded.updated_at''',
                     (ds, effective_lt, effective_sk, resolved_date, key_status, ts),
                 )
@@ -643,6 +658,7 @@ class ProvenanceStore:
                         lesson_type=entry.get('lesson_type', ''),
                         state_key=entry.get('state_key', ''),
                         candidate_dates=entry.get('candidate_dates', ()),
+                        candidate_pairs=entry.get('candidate_pairs', ()),
                         source_qa_ids=entry.get('source_qa_ids', ()),
                         explicit_status=entry.get('explicit_status'),
                         now=now,
@@ -717,15 +733,24 @@ class ProvenanceStore:
             return Path(db_dir) / 'cognee_db'
         return None
 
-    def _read_cognee_dataset_rows(self, dataset_id: str, cognee_db_path=None) -> list[dict]:
+    def _read_cognee_dataset_rows(
+        self,
+        dataset_id: str,
+        cognee_db_path=None,
+        *,
+        session_ids=None,
+        min_rowid: int = 0,
+    ) -> tuple[list[dict], int]:
         db_path = self._resolve_cognee_db_path(cognee_db_path)
         if db_path is None:
-            return []
+            return [], min_rowid
         variants = id_variants(dataset_id)
         if not variants:
-            return []
+            return [], min_rowid
+        session_filter = {str(s).strip() for s in (session_ids or ()) if str(s or '').strip()}
         rows_out = []
         seen_ids = set()
+        max_rowid = int(min_rowid or 0)
         with official_sqlite_ro(db_path) as con:
             cols = {
                 str(r[1])
@@ -734,25 +759,39 @@ class ProvenanceStore:
             sys_col = 'system_metadata' if 'system_metadata' in cols else 'NULL'
             node_col = 'node_set' if 'node_set' in cols else 'NULL'
             for variant in variants:
-                for row in con.execute(
-                    f'''SELECT id, {sys_col}, external_metadata, {node_col}, created_at
-                        FROM data
-                        WHERE dataset_id = ?
-                        ORDER BY rowid ASC''',
-                    (variant,),
-                ):
-                    doc_id = uuid_text(row[0])
+                if min_rowid > 0 and not session_filter:
+                    sql = f'''SELECT rowid, id, {sys_col}, external_metadata, {node_col}, created_at
+                              FROM data
+                              WHERE dataset_id = ? AND rowid > ?
+                              ORDER BY rowid ASC'''
+                    params = (variant, int(min_rowid))
+                else:
+                    sql = f'''SELECT rowid, id, {sys_col}, external_metadata, {node_col}, created_at
+                              FROM data
+                              WHERE dataset_id = ?
+                              ORDER BY rowid ASC'''
+                    params = (variant,)
+                for row in con.execute(sql, params):
+                    rid = int(row[0] or 0)
+                    if rid > max_rowid:
+                        max_rowid = rid
+                    if session_filter and rid <= min_rowid:
+                        # Skip already-synced historical rows that do not mention target sessions
+                        raw_blob = f'{row[2] or ""} {row[3] or ""} {row[4] or ""}'
+                        if not any(sid in raw_blob for sid in session_filter):
+                            continue
+                    doc_id = uuid_text(row[1])
                     if not doc_id or doc_id in seen_ids:
                         continue
                     seen_ids.add(doc_id)
                     rows_out.append({
                         'id': doc_id,
-                        'system_metadata': row[1],
-                        'external_metadata': row[2],
-                        'node_set': row[3],
-                        'created_at': row[4],
+                        'system_metadata': row[2],
+                        'external_metadata': row[3],
+                        'node_set': row[4],
+                        'created_at': row[5],
                     })
-        return rows_out
+        return rows_out, max_rowid
 
     async def sync_dataset(
         self,
@@ -765,13 +804,22 @@ class ProvenanceStore:
     ):
         """Sync provenance dates from Cognee's dataset rows (preferring trusted ``system_metadata``)."""
         ds = str(dataset_id)
+        new_max_rowid = self._last_synced_rowid.get(ds, 0)
         if fetch_rows is not None:
             rows = fetch_rows(ds)
             if hasattr(rows, '__await__'):
                 rows = await rows
         else:
-            rows = self._read_cognee_dataset_rows(ds, cognee_db_path=cognee_db_path)
+            prev_rid = self._last_synced_rowid.get(ds, 0) if session_ids else 0
+            rows, new_max_rowid = self._read_cognee_dataset_rows(
+                ds,
+                cognee_db_path=cognee_db_path,
+                session_ids=session_ids,
+                min_rowid=prev_rid,
+            )
         if not rows:
+            if new_max_rowid > self._last_synced_rowid.get(ds, 0):
+                self._last_synced_rowid[ds] = new_max_rowid
             return
         batch = []
         for row in rows:
@@ -800,14 +848,14 @@ class ProvenanceStore:
             lt = str(trusted.get('lesson_type') or '').strip()
             sk = str(trusted.get('state_key') or '').strip()
             qa_ids = list(trusted.get('source_qa_ids') or ())
-            candidates = []
-            origin_status = 'unconfirmed'
+            candidate_pairs = []
             if _calendar_date(trusted.get('first_source_date')):
-                candidates.append(trusted['first_source_date'])
-                origin_status = 'linked_qa'
+                candidate_pairs.append((
+                    trusted['first_source_date'],
+                    _inferred_meta_date_status(trusted, has_qa_ids=bool(qa_ids)),
+                ))
             elif _calendar_date(trusted.get('session_date')):
-                candidates.append(trusted['session_date'])
-                origin_status = 'session_date'
+                candidate_pairs.append((trusted['session_date'], 'session_date'))
             if fetch_session_qa_dates is not None and (qa_ids or trusted.get('session_id') or session_ids):
                 qa_dates = fetch_session_qa_dates(
                     qa_ids=qa_ids,
@@ -816,26 +864,27 @@ class ProvenanceStore:
                 )
                 if hasattr(qa_dates, '__await__'):
                     qa_dates = await qa_dates
-                qa_parsed = [parsed for d in (qa_dates or ()) if (parsed := _calendar_date(d))]
-                if qa_parsed:
-                    candidates.extend(qa_parsed)
-                    origin_status = 'linked_qa'
-            if not candidates:
+                for d in (qa_dates or ()):
+                    parsed = _calendar_date(d)
+                    if parsed:
+                        candidate_pairs.append((parsed, 'linked_qa'))
+            if not candidate_pairs:
                 created_day = _local_calendar_date(raw_created)
                 if created_day:
-                    candidates.append(created_day)
-                    origin_status = 'created_at'
+                    candidate_pairs.append((created_day, 'created_at'))
             batch.append({
                 'dataset_id': ds,
                 'document_id': doc_id,
                 'lesson_type': lt,
                 'state_key': sk,
-                'candidate_dates': candidates,
+                'candidate_pairs': candidate_pairs,
                 'source_qa_ids': qa_ids,
-                'explicit_status': origin_status,
+                'explicit_status': 'unconfirmed',
             })
         if batch:
             self.record_documents_batch(batch)
+        if new_max_rowid > self._last_synced_rowid.get(ds, 0):
+            self._last_synced_rowid[ds] = new_max_rowid
 
     def backfill_legacy_dates(self, entries) -> dict:
         """Batch-record verified legacy ``knowledge-source-dates`` entries as ``legacy_json_locked`` (rank 2).

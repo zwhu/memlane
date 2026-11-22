@@ -353,13 +353,15 @@ class V2APITests(AioHTTPTestCase):
         self.assertTrue(ms['unread_has_more'])
         self.assertEqual(ms['pending_documents_count'], 1)
 
-        # 9. POST /v2/reading-state/mark-read & mark-all-read
+        # 9. POST /v2/reading-state/mark-read & mark-all-read (Contract #1)
         mr = await (await self.client.post(
             '/v2/reading-state/mark-read',
             headers=self.manager_headers,
             json={'reading_identity': self.identity, 'project_id': 'p1', 'dataset_id': self.ds_proj, 'doc_ids': [self.k_docs[0]]},
         )).json()
         self.assertEqual(mr['unread_count'], 14)
+        self.assertTrue(mr['unread_count_known'])
+        self.assertGreater(mr['state_rev'], 0)
 
         mar = await (await self.client.post(
             '/v2/reading-state/mark-all-read',
@@ -367,6 +369,125 @@ class V2APITests(AioHTTPTestCase):
             json={'reading_identity': self.identity, 'project_id': 'p1', 'dataset_id': self.ds_proj},
         )).json()
         self.assertEqual(mar['unread_count'], 0)
+        self.assertTrue(mar['unread_count_known'])
+        self.assertGreater(mar['state_rev'], mr['state_rev'])
+
+    async def test_contracts_overview_kpi_anchor_prev_user_children_pending_docs_and_utf8(self):
+        # Insert pipeline_run for unconfirmed dataset -> MUST NOT appear in /v2/overview/bootstrap!
+        con = sqlite3.connect(self.cognee_db)
+        con.execute(
+            'INSERT INTO pipeline_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (
+                uuid.uuid4().hex, uuid.uuid4().hex, None, uuid.UUID(self.ds_unconf).hex,
+                'cognify_pipeline', '', 'DATASET_PROCESSING_COMPLETED', 'success',
+                1, '', 'auto', '2099-01-01 00:00:00', '2099-01-01 00:00:00', '2099-01-01 00:00:00',
+            ),
+        )
+        con.commit()
+        con.close()
+
+        # Contract #2 & PY-P0-05: overview/bootstrap session_count + common.raw_doc_count + total_raw_count + no unconfirmed runs
+        ov_resp = await self.client.get('/v2/overview/bootstrap', headers=self.manager_headers)
+        self.assertEqual(ov_resp.status, 200)
+        ov_raw = await ov_resp.read()
+        self.assertNotIn(b'\\u9879\\u76ee', ov_raw)  # UTF-8 wire encoding, no ASCII escaping!
+        ov = json.loads(ov_raw)
+        self.assertGreaterEqual(ov['projects'][0]['session_count'], 10)
+        self.assertEqual(ov['common']['raw_doc_count'], 0)
+        self.assertEqual(
+            ov['total_raw_count'],
+            ov['projects'][0]['session_count'] + ov['projects'][0]['raw_doc_count'] + ov['common']['raw_doc_count'],
+        )
+        self.assertTrue(all(r['dataset_id'] != self.ds_unconf for r in ov['pipeline_runs']))
+
+        # Contract #3: anchor_doc_id + direction=prev + 404 for unknown anchor
+        # k_docs[10] is on day 2026-11-20 (strictly after all 8 docs on 2026-11-21), so has_prev is deterministically True.
+        target_mid = self.k_docs[10]
+        anc_resp = await self.client.get(
+            f'/v2/projects/p1/knowledge?limit=5&anchor_doc_id={target_mid}',
+            headers=self.manager_headers,
+        )
+        self.assertEqual(anc_resp.status, 200)
+        anc = await anc_resp.json()
+        self.assertIn(target_mid, [i['doc_id'] for i in anc['items']])
+        self.assertTrue(anc['has_prev'])
+        self.assertTrue(anc['prev_cursor'])
+        prev_resp = await self.client.get(
+            f"/v2/projects/p1/knowledge?limit=5&direction=prev&cursor={anc['prev_cursor']}",
+            headers=self.manager_headers,
+        )
+        self.assertEqual(prev_resp.status, 200)
+        prev_body = await prev_resp.json()
+        self.assertGreater(len(prev_body['items']), 0)
+        self.assertFalse({i['doc_id'] for i in prev_body['items']} & {i['doc_id'] for i in anc['items']})
+        missing_anc = await self.client.get(
+            f'/v2/projects/p1/knowledge?anchor_doc_id={uuid.uuid4()}',
+            headers=self.manager_headers,
+        )
+        self.assertEqual(missing_anc.status, 404)
+
+        # Common knowledge anchor_doc_id + 404
+        c_anc = await self.client.get(
+            f'/v2/common/knowledge?limit=2&anchor_doc_id={self.common_docs[1]}',
+            headers=self.manager_headers,
+        )
+        self.assertEqual(c_anc.status, 200)
+        self.assertIn(self.common_docs[1], [i['doc_id'] for i in (await c_anc.json())['items']])
+
+        # Contract #4: ?user_id=<uuid> on /children validates UUID & scopes owner
+        bad_uid = await self.client.get(
+            '/v2/projects/p1/raw-records/sessions/sess-parent/children?user_id=not-a-uuid',
+            headers=self.manager_headers,
+        )
+        self.assertEqual(bad_uid.status, 400)
+        wrong_owner = await self.client.get(
+            f'/v2/projects/p1/raw-records/sessions/sess-parent/children?user_id={self.user_b}',
+            headers=self.manager_headers,
+        )
+        self.assertEqual(wrong_owner.status, 404)
+        right_owner = await self.client.get(
+            f'/v2/projects/p1/raw-records/sessions/sess-parent/children?user_id={self.user_a}&limit=5',
+            headers=self.manager_headers,
+        )
+        self.assertEqual(right_owner.status, 200)
+        self.assertEqual((await right_owner.json())['total_count'], 8)
+
+        # Contract #5: message-summary pending_documents carries full minimal Document fields
+        ms = await (await self.client.get('/v2/projects/p1/message-summary', headers=self.manager_headers)).json()
+        self.assertEqual(len(ms['pending_documents']), 1)
+        pd = ms['pending_documents'][0]
+        for k in ('id', 'dataset_id', 'name', 'label', 'title', 'date', 'kind', 'created_at'):
+            self.assertIn(k, pd)
+        self.assertEqual(pd['dataset_id'], self.ds_proj)
+
+        # Contract #1: migrate-local with unknown reading_identity returns no_legacy_file without pre-creating scope
+        other_id = 'http://127.0.0.1:18765/custom-dir-id/'
+        m_resp = await self.client.post(
+            '/v2/reading-state/migrate-local',
+            headers=self.manager_headers,
+            json={'reading_identity': other_id},
+        )
+        self.assertEqual(m_resp.status, 200)
+        self.assertEqual((await m_resp.json())['migrated'][0]['status'], 'no_legacy_file')
+        handles = self.app['v2_api_handles']
+        from reading_state_store import knowledge_read_scope_hash
+        self.assertIsNone(handles.reading_state.get_scope(knowledge_read_scope_hash(other_id, 'p1', self.ds_proj)))
+
+        # Contract #6: backfill with unconfirmed project in registry MUST return has_unconfirmed_projects=True and NOT rename file!
+        id_hash = hashlib.sha256(other_id.encode('utf-8')).hexdigest()
+        dates_file = self.root / f'knowledge-source-dates-{id_hash}.json'
+        dates_file.write_text(json.dumps({'schema_version': 1, 'days': {}}), encoding='utf-8')
+        dates_file.chmod(0o600)
+        bf = await self.client.post(
+            '/v2/provenance/backfill-legacy-dates',
+            headers=self.manager_headers,
+            json={'reading_identity': other_id},
+        )
+        self.assertEqual(bf.status, 200)
+        bf_body = await bf.json()
+        self.assertTrue(bf_body['has_unconfirmed_projects'])
+        self.assertEqual(bf_body['backup_path'], '')
+        self.assertTrue(dates_file.exists())
 
     async def test_raw_records_v2_dual_branch_merge_tie_breaker_and_children_paging(self):
         # Traverse ALL top-level raw records with page size 2 -> crosses exact timestamp tie between

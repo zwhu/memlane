@@ -154,9 +154,14 @@ class CatalogIndexTests(unittest.TestCase):
             self.assertEqual(cat._write_con.execute('PRAGMA journal_mode').fetchone()[0].lower(), 'wal')
             self.assertEqual(cat._write_con.execute('PRAGMA journal_size_limit').fetchone()[0], 4194304)
             tables = {r[0] for r in cat._write_con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-            self.assertNotIn('catalog_sessions', tables)
+            self.assertEqual(
+                tables,
+                {'catalog_meta', 'dataset_sync_state', 'catalog_docs', 'catalog_day_buckets', 'catalog_sessions'},
+            )
             cols = {r[1] for r in cat._write_con.execute('PRAGMA table_info(catalog_docs)').fetchall()}
             self.assertFalse(cols & {'body', 'raw_text', 'why_learned', 'metadata_json'})
+            sess_cols = {r[1] for r in cat._write_con.execute('PRAGMA table_info(catalog_sessions)').fetchall()}
+            self.assertFalse(sess_cols & {'body', 'qa_payload', 'trace_payload', 'messages', 'transcript'})
 
             gen = cat.sync([self.ds_proj, self.ds_common])
             self.assertEqual(gen, 1)
@@ -387,6 +392,123 @@ class CatalogIndexTests(unittest.TestCase):
                     self.assertIn(expected_idx, joined)
                     self.assertNotIn('TEMP B-TREE', joined)
                     self.assertNotIn('SCAN catalog_docs', joined)
+        finally:
+            cat.close()
+
+    def test_adversarial_mutations_force_full_provenance_siblings_tz_and_anchor_prev(self):
+        d1 = str(uuid.uuid4())
+        d2 = str(uuid.uuid4())
+        d3 = str(uuid.uuid4())
+        d4 = str(uuid.uuid4())
+        self._insert_doc(
+            d1, self.ds_proj, label='AlphaTitle',
+            sys_meta={'lesson_type': 'state', 'state_key': 'shared-key', 'session_date': '2026-11-18'},
+            node_set=['session_learnings'], created_at='2026-11-18T22:00:00Z', updated_at='2026-11-18T22:00:00Z',
+        )
+        self._insert_doc(
+            d2, self.ds_proj, label='SiblingDoc',
+            sys_meta={'lesson_type': 'state', 'state_key': 'shared-key', 'session_date': '2026-11-19'},
+            node_set=['session_learnings'], created_at='2026-11-19T10:00:00Z', updated_at='2026-11-19T10:00:00Z',
+        )
+        self._insert_doc(
+            d3, self.ds_proj, label='FallbackTZ',
+            ext_meta={'node_set': ['user_context']},
+            created_at='2026-11-20T22:00:00Z', updated_at='2026-11-20T22:00:00Z',
+        )
+        tz_box = {'tz': 'UTC'}
+        cat = CatalogIndex(
+            self.cat_path,
+            official_data=self.official_data,
+            provenance_path=self.prov_path,
+            recall_path=self.recall_path,
+            tz_provider=lambda: tz_box['tz'],
+        )
+        try:
+            cat.sync([self.ds_proj])
+            # 1. Same-length rename with UNCHANGED updated_at + mixed append in same txn (PY-P0-01)
+            con = sqlite3.connect(self.cognee_db)
+            con.execute('UPDATE data SET label = ? WHERE id = ?', ('OmegaTitle', uuid.UUID(d1).hex))
+            con.execute(
+                'INSERT INTO data VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                (
+                    uuid.UUID(d4).hex, uuid.UUID(self.ds_proj).hex, 'd4.md', 'Appended', '',
+                    '{}', json.dumps({'lesson_type': 'pitfall', 'state_key': 'k4', 'session_date': '2026-11-21'}),
+                    json.dumps(['session_learnings']), '{}', '2026-11-21T01:00:00Z', '2026-11-21T01:00:00Z', 'h4',
+                ),
+            )
+            con.commit()
+            con.close()
+            cat.sync([self.ds_proj])
+            by_id = {r['doc_id']: r for r in cat.query_project_knowledge(self.ds_proj, limit=20)['items']}
+            self.assertEqual(by_id[d1]['doc_label'], 'OmegaTitle')
+            self.assertIn(d4, by_id)
+
+            # 2. Metadata category change with NULL updated_at -> category_counts MUST NOT drift (PY-P0-01 + PY-P1-05)
+            con = sqlite3.connect(self.cognee_db)
+            con.execute(
+                'UPDATE data SET system_metadata = ?, updated_at = NULL WHERE id = ?',
+                (json.dumps({'lesson_type': 'pitfall', 'state_key': 'shared-key', 'session_date': '2026-11-18'}), uuid.UUID(d1).hex),
+            )
+            con.commit()
+            con.close()
+            cat.sync([self.ds_proj])
+            res_after = cat.query_project_knowledge(self.ds_proj, limit=20)
+            self.assertEqual(res_after['category_counts'], {'踩坑经验': 2, '项目状态': 1, '直接保存': 1})
+
+            # 3. Simultaneous cognee append + provenance delta updates BOTH doc AND sibling (PY-P0-02 + CC-P0-03)
+            con = sqlite3.connect(self.cognee_db)
+            con.execute(
+                'UPDATE data SET system_metadata = ? WHERE id = ?',
+                (json.dumps({'lesson_type': 'state', 'state_key': 'shared-key', 'session_date': '2026-11-18'}), uuid.UUID(d1).hex),
+            )
+            con.commit()
+            con.close()
+            cat.sync([self.ds_proj])
+
+            prov = ProvenanceStore(self.prov_path)
+            prov.record_document(self.ds_proj, d1, lesson_type='state', state_key='shared-key', candidate_dates=('2026-11-05',))
+            prov.close()
+            d5 = str(uuid.uuid4())
+            self._insert_doc(
+                d5, self.ds_proj, label='ConcurrentAppend',
+                sys_meta={'lesson_type': 'convention', 'session_date': '2026-11-22'},
+                node_set=['session_learnings'],
+            )
+            cat.sync([self.ds_proj])
+            by_id = {r['doc_id']: r for r in cat.query_project_knowledge(self.ds_proj, limit=20)['items']}
+            self.assertEqual(by_id[d1]['effective_date'], '2026-11-05')
+            self.assertEqual(by_id[d2]['effective_date'], '2026-11-05')  # Sibling propagated!
+
+            # 4. Timezone change ONLY updates created_at fallback (d3), NEVER overwrites meta session_date (d4/d5) or provenance (d1/d2) (PY-P1-06)
+            tz_box['tz'] = 'Asia/Shanghai'
+            cat.sync([self.ds_proj])
+            by_id = {r['doc_id']: r for r in cat.query_project_knowledge(self.ds_proj, limit=20)['items']}
+            self.assertEqual(by_id[d3]['effective_date'], '2026-11-21')  # 22:00Z -> +08 next day
+            self.assertEqual(by_id[d4]['effective_date'], '2026-11-21')  # meta preserved
+            self.assertEqual(by_id[d1]['effective_date'], '2026-11-05')  # provenance preserved
+
+            # 5. Anchor jump + bidirectional before_key pagination + missing anchor returns None (CC-P0-04)
+            ordered_all = cat.query_project_knowledge(self.ds_proj, limit=20)['items']
+            mid_doc = ordered_all[2]['doc_id']
+            anchored = cat.query_project_knowledge(self.ds_proj, limit=2, anchor_doc_id=mid_doc)
+            self.assertIsNotNone(anchored)
+            self.assertIn(mid_doc, [r['doc_id'] for r in anchored['items']])
+            self.assertTrue(anchored['has_prev'])
+            self.assertTrue(anchored['has_more'])
+            first_item = anchored['items'][0]
+            prev_page = cat.query_project_knowledge(
+                self.ds_proj, limit=2, before_key=(first_item['day_desc_key'], first_item['doc_id'])
+            )
+            self.assertGreaterEqual(len(prev_page['items']), 1)
+            self.assertIsNone(cat.query_project_knowledge(self.ds_proj, limit=2, anchor_doc_id=str(uuid.uuid4())))
+
+            # 6. force_full=True purges source-deleted rows (PY-P0-01)
+            con = sqlite3.connect(self.cognee_db)
+            con.execute('DELETE FROM data WHERE id = ?', (uuid.UUID(d5).hex,))
+            con.commit()
+            con.close()
+            cat.sync([self.ds_proj], force=True)
+            self.assertEqual(len(cat.fetch_docs_by_ids(self.ds_proj, [d5])), 0)
         finally:
             cat.close()
 

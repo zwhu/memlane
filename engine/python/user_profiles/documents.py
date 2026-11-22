@@ -87,7 +87,7 @@ class ProfileDocuments:
             except LocalPathSecurityError:
                 raise PolicyError('profile_document_unavailable', 503) from None
             except PolicyError as err:
-                if err.code == 'profile_document_too_large':
+                if err.code == 'profile_document_too_large' or err.status in (401, 403):
                     raise
                 text = None
 

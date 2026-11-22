@@ -6,6 +6,7 @@ rewrites safely.
 """
 from collections import deque
 import json
+import os
 from pathlib import Path
 import re
 import stat
@@ -114,9 +115,15 @@ class IncrementalLogTailer:
 
     def _full_tail_read(self, handle, size: int) -> tuple[int, bytes, deque, list]:
         start = max(0, size - self.tail_bytes)
-        handle.seek(start)
+        drop_first_line = False
+        if start > 0:
+            handle.seek(start - 1)
+            prev_byte = handle.read(1)
+            drop_first_line = prev_byte != b'\n'
+        else:
+            handle.seek(0)
         data = handle.read(size - start)
-        rows, consumed, pending = self._parse_chunk(data, drop_first_line=start > 0)
+        rows, consumed, pending = self._parse_chunk(data, drop_first_line=drop_first_line)
         new_offset = start + consumed
         anchor_start = max(0, consumed - _ANCHOR_BYTES)
         anchor = data[anchor_start:consumed] if consumed > 0 else b''
@@ -144,13 +151,42 @@ class IncrementalLogTailer:
                 self._states.pop(key, None)
             return []
 
-        dev = info.st_dev
-        ino = info.st_ino
-        size = info.st_size
-        mtime_ns = info.st_mtime_ns
-
         with self._lock:
             state = self._states.get(key)
+            if (
+                state is not None
+                and state.dev == info.st_dev
+                and state.ino == info.st_ino
+                and state.size == info.st_size
+                and state.mtime_ns == info.st_mtime_ns
+            ):
+                if state.pending_rows:
+                    return [*state.rows, *state.pending_rows]
+                return list(state.rows)
+
+            flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+            try:
+                fd = os.open(target, flags)
+            except FileNotFoundError:
+                self._states.pop(key, None)
+                return []
+
+            try:
+                finfo = os.fstat(fd)
+            except OSError:
+                os.close(fd)
+                raise
+
+            if not stat.S_ISREG(finfo.st_mode):
+                os.close(fd)
+                self._states.pop(key, None)
+                return []
+
+            dev = finfo.st_dev
+            ino = finfo.st_ino
+            size = finfo.st_size
+            mtime_ns = finfo.st_mtime_ns
+
             if (
                 state is not None
                 and state.dev == dev
@@ -158,44 +194,41 @@ class IncrementalLogTailer:
                 and state.size == size
                 and state.mtime_ns == mtime_ns
             ):
+                os.close(fd)
                 if state.pending_rows:
                     return [*state.rows, *state.pending_rows]
                 return list(state.rows)
 
-            try:
-                with target.open('rb') as handle:
-                    can_increment = (
-                        state is not None
-                        and state.dev == dev
-                        and state.ino == ino
-                        and size >= state.offset
-                        and (size - state.offset) <= self.tail_bytes
-                    )
-                    if can_increment and state.offset > 0 and state.anchor:
-                        anchor_pos = state.offset - len(state.anchor)
-                        handle.seek(anchor_pos)
-                        observed_anchor = handle.read(len(state.anchor))
-                        if observed_anchor != state.anchor:
-                            can_increment = False
+            with os.fdopen(fd, 'rb') as handle:
+                can_increment = (
+                    state is not None
+                    and state.dev == dev
+                    and state.ino == ino
+                    and size >= state.offset
+                    and (size - state.offset) <= self.tail_bytes
+                )
+                if can_increment and state.offset > 0 and state.anchor:
+                    anchor_pos = state.offset - len(state.anchor)
+                    handle.seek(anchor_pos)
+                    observed_anchor = handle.read(len(state.anchor))
+                    if observed_anchor != state.anchor:
+                        can_increment = False
 
-                    if can_increment:
-                        handle.seek(state.offset)
-                        delta = handle.read(size - state.offset)
-                        new_rows, consumed, pending = self._parse_chunk(delta, drop_first_line=False)
-                        new_offset = state.offset + consumed
-                        if consumed > 0:
-                            tail_bytes_combined = state.anchor + delta[:consumed]
-                            new_anchor = tail_bytes_combined[-_ANCHOR_BYTES:]
-                        else:
-                            new_anchor = state.anchor
-                        ring = state.rows
-                        for item in new_rows:
-                            ring.append(item)
+                if can_increment:
+                    handle.seek(state.offset)
+                    delta = handle.read(size - state.offset)
+                    new_rows, consumed, pending = self._parse_chunk(delta, drop_first_line=False)
+                    new_offset = state.offset + consumed
+                    if consumed > 0:
+                        tail_bytes_combined = state.anchor + delta[:consumed]
+                        new_anchor = tail_bytes_combined[-_ANCHOR_BYTES:]
                     else:
-                        new_offset, new_anchor, ring, pending = self._full_tail_read(handle, size)
-            except FileNotFoundError:
-                self._states.pop(key, None)
-                return []
+                        new_anchor = state.anchor
+                    ring = state.rows
+                    for item in new_rows:
+                        ring.append(item)
+                else:
+                    new_offset, new_anchor, ring, pending = self._full_tail_read(handle, size)
 
             self._states[key] = _FileTailState(
                 dev=dev,

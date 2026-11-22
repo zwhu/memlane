@@ -10,6 +10,7 @@ import sqlite3
 
 from aiohttp import web
 
+from local_body_reader import json_utf8_response, verify_official_read_access
 from project_policy import PolicyError
 from provenance_store import _calendar_date, _is_lesson_metadata, _local_calendar_date
 from sqlite_ro import (
@@ -21,8 +22,8 @@ from sqlite_ro import (
     knowledge_category_label,
     official_sqlite_ro,
     parse_official_timestamp,
+    ro_snapshot,
     unique_learning_session,
-    uuid_hex,
     uuid_text,
 )
 
@@ -45,6 +46,7 @@ WAVE1_FEATURES = (
 )
 
 _ACTIVE_PIPELINE_STATUSES = frozenset({'DATASET_PROCESSING_STARTED', 'DATASET_PROCESSING_INITIATED'})
+_CODE_ACTIVITY_SCAN_LIMIT = 200
 
 
 def _safe_session_id(value) -> bool:
@@ -87,34 +89,40 @@ def _lookup_provenance_date(provenance_path: Path, dataset_id: str, doc_id: str,
     dates = []
     try:
         with official_sqlite_ro(provenance_path) as con:
-            doc_row = con.execute(
-                '''SELECT lesson_type, state_key, first_source_date
-                   FROM document_provenance
-                   WHERE dataset_id = ? AND document_id = ?''',
-                (dataset_id, doc_id),
-            ).fetchone()
-            if doc_row is not None:
-                if not lt and doc_row[0]:
-                    lt = str(doc_row[0]).strip()
-                if not sk and doc_row[1]:
-                    sk = str(doc_row[1]).strip()
-                if _calendar_date(doc_row[2]):
-                    dates.append(doc_row[2])
-            if lt and sk:
-                key_row = con.execute(
-                    '''SELECT first_source_date
-                       FROM keyed_provenance
-                       WHERE dataset_id = ? AND lesson_type = ? AND state_key = ?''',
-                    (dataset_id, lt, sk),
+            with ro_snapshot(con):
+                doc_row = con.execute(
+                    '''SELECT lesson_type, state_key, first_source_date
+                       FROM document_provenance
+                       WHERE dataset_id = ? AND document_id = ?''',
+                    (dataset_id, doc_id),
                 ).fetchone()
-                if key_row is not None and _calendar_date(key_row[0]):
-                    dates.append(key_row[0])
+                if doc_row is not None:
+                    if not lt and doc_row[0]:
+                        lt = str(doc_row[0]).strip()
+                    if not sk and doc_row[1]:
+                        sk = str(doc_row[1]).strip()
+                    if _calendar_date(doc_row[2]):
+                        dates.append(doc_row[2])
+                if lt and sk:
+                    key_row = con.execute(
+                        '''SELECT first_source_date
+                           FROM keyed_provenance
+                           WHERE dataset_id = ? AND lesson_type = ? AND state_key = ?''',
+                        (dataset_id, lt, sk),
+                    ).fetchone()
+                    if key_row is not None and _calendar_date(key_row[0]):
+                        dates.append(key_row[0])
     except (PolicyError, sqlite3.Error):
         return ''
     return min(dates) if dates else ''
 
 
-def _effective_date(meta: dict, created_at: str) -> str:
+def _effective_date(meta: dict, created_at: str, *, prov_date: str = '') -> str:
+    """Exact 1:1 precedence with ``catalog_index._project_cognee_row``:
+    provenance > meta.first_source_date > meta.session_date > local(created_at).
+    """
+    if _calendar_date(prov_date):
+        return prov_date
     for key in ('first_source_date', 'session_date'):
         day = _calendar_date(meta.get(key))
         if day:
@@ -126,25 +134,26 @@ def _read_single_document(official_data, provenance_path, dataset_id: str, doc_i
     db_path = Path(official_data) / 'system' / 'databases' / 'cognee_db'
     doc_variants = id_variants(doc_id)
     with official_sqlite_ro(db_path) as con:
-        cols = _table_columns(con, 'data')
-        has_sys = 'system_metadata' in cols
-        has_legacy = 'legacy_id' in cols
-        sys_col = 'system_metadata' if has_sys else 'NULL'
-        select_sql = (
-            f'SELECT id, dataset_id, name, label, mime_type, external_metadata, '
-            f'{sys_col}, node_set, updated_at, created_at, content_hash '
-            f'FROM data WHERE '
-        )
-        row = None
-        for variant in doc_variants:
-            row = con.execute(select_sql + 'id = ? LIMIT 1', (variant,)).fetchone()
-            if row is not None:
-                break
-        if row is None and has_legacy:
+        with ro_snapshot(con):
+            cols = _table_columns(con, 'data')
+            has_sys = 'system_metadata' in cols
+            has_legacy = 'legacy_id' in cols
+            sys_col = 'system_metadata' if has_sys else 'NULL'
+            select_sql = (
+                f'SELECT id, dataset_id, name, label, mime_type, external_metadata, '
+                f'{sys_col}, node_set, updated_at, created_at, content_hash '
+                f'FROM data WHERE '
+            )
+            row = None
             for variant in doc_variants:
-                row = con.execute(select_sql + 'legacy_id = ? LIMIT 1', (variant,)).fetchone()
+                row = con.execute(select_sql + 'id = ? LIMIT 1', (variant,)).fetchone()
                 if row is not None:
                     break
+            if row is None and has_legacy:
+                for variant in doc_variants:
+                    row = con.execute(select_sql + 'legacy_id = ? LIMIT 1', (variant,)).fetchone()
+                    if row is not None:
+                        break
 
     if row is None:
         raise PolicyError('document_not_found', 404)
@@ -160,17 +169,14 @@ def _read_single_document(official_data, provenance_path, dataset_id: str, doc_i
     updated_at = iso_text(row[8])
     created_at = iso_text(row[9])
 
+    prov_date = ''
     if _is_lesson_metadata(meta):
         prov_date = _lookup_provenance_date(provenance_path, dataset_id, canonical_id, meta)
-        candidate_dates = [d for d in (prov_date, _calendar_date(meta.get('first_source_date'))) if d]
-        if candidate_dates:
-            meta['first_source_date'] = min(candidate_dates)
-        elif _calendar_date(meta.get('session_date')):
-            meta['first_source_date'] = meta['session_date']
-        else:
-            fallback_day = _local_calendar_date(created_at)
-            if fallback_day:
-                meta['first_source_date'] = fallback_day
+        eff_day = _effective_date(meta, created_at, prov_date=prov_date)
+        if eff_day:
+            meta['first_source_date'] = eff_day
+    else:
+        eff_day = _effective_date(meta, created_at)
 
     return {
         'id': canonical_id,
@@ -182,7 +188,7 @@ def _read_single_document(official_data, provenance_path, dataset_id: str, doc_i
         'updatedAt': updated_at,
         'createdAt': created_at,
         'contentHash': row[10] or '',
-        'effective_date': _effective_date(meta, created_at),
+        'effective_date': eff_day,
         'category': knowledge_category_label(meta),
         'common_category': common_category_from_meta(meta),
         'session_id': unique_learning_session(meta),
@@ -196,41 +202,42 @@ def _read_single_session(official_data, dataset_id: str, session_id: str, *, use
     user_variants = id_variants(user_id) if user_id else ()
 
     with official_sqlite_ro(db_path) as con:
-        cols = _table_columns(con, 'session_records')
-        status_col = 'status' if 'status' in cols else "''"
-        row = None
-        if user_variants:
-            for u_var in user_variants:
+        with ro_snapshot(con):
+            cols = _table_columns(con, 'session_records')
+            status_col = 'status' if 'status' in cols else "''"
+            row = None
+            if user_variants:
+                for u_var in user_variants:
+                    for ds_var in ds_variants:
+                        row = con.execute(
+                            f'''SELECT session_id, user_id, dataset_id, agent_id,
+                                       last_activity_at, started_at, {status_col}
+                                FROM session_records
+                                WHERE session_id = ? AND user_id = ? AND dataset_id = ?
+                                LIMIT 1''',
+                            (session_id, u_var, ds_var),
+                        ).fetchone()
+                        if row is not None:
+                            break
+                    if row is not None:
+                        break
+            else:
+                candidates = []
                 for ds_var in ds_variants:
-                    row = con.execute(
+                    found = con.execute(
                         f'''SELECT session_id, user_id, dataset_id, agent_id,
                                    last_activity_at, started_at, {status_col}
                             FROM session_records
-                            WHERE session_id = ? AND user_id = ? AND dataset_id = ?
+                            WHERE session_id = ? AND dataset_id = ?
+                            ORDER BY last_activity_at DESC
                             LIMIT 1''',
-                        (session_id, u_var, ds_var),
+                        (session_id, ds_var),
                     ).fetchone()
-                    if row is not None:
-                        break
-                if row is not None:
-                    break
-        else:
-            candidates = []
-            for ds_var in ds_variants:
-                found = con.execute(
-                    f'''SELECT session_id, user_id, dataset_id, agent_id,
-                               last_activity_at, started_at, {status_col}
-                        FROM session_records
-                        WHERE session_id = ? AND dataset_id = ?
-                        ORDER BY last_activity_at DESC
-                        LIMIT 1''',
-                    (session_id, ds_var),
-                ).fetchone()
-                if found is not None:
-                    candidates.append(found)
-            if candidates:
-                candidates.sort(key=lambda r: str(r[4] or ''), reverse=True)
-                row = candidates[0]
+                    if found is not None:
+                        candidates.append(found)
+                if candidates:
+                    candidates.sort(key=lambda r: str(r[4] or ''), reverse=True)
+                    row = candidates[0]
 
     if row is None:
         raise PolicyError('session_not_found', 404)
@@ -246,64 +253,91 @@ def _read_single_session(official_data, dataset_id: str, session_id: str, *, use
 
 
 def _read_code_activity(official_data, project_id: str, code_dataset_id: str) -> dict:
+    """Bounded O(log N + K) code-activity check using upstream composite index
+    ``ix_pipeline_runs_dataset_pipeline_created_at(dataset_id, pipeline_name, created_at)``.
+    """
     db_path = Path(official_data) / 'system' / 'databases' / 'cognee_db'
     ds_variants = id_variants(code_dataset_id)
 
     with official_sqlite_ro(db_path) as con:
-        ds_row = None
-        for variant in ds_variants:
-            ds_row = con.execute(
-                'SELECT id, created_at FROM datasets WHERE id = ? LIMIT 1',
-                (variant,),
-            ).fetchone()
-            if ds_row is not None:
-                break
-        if ds_row is None:
-            raise PolicyError('code_dataset_not_found', 404)
+        with ro_snapshot(con):
+            ds_row = None
+            for variant in ds_variants:
+                ds_row = con.execute(
+                    'SELECT id, created_at FROM datasets WHERE id = ? LIMIT 1',
+                    (variant,),
+                ).fetchone()
+                if ds_row is not None:
+                    break
+            if ds_row is None:
+                raise PolicyError('code_dataset_not_found', 404)
 
-        dataset_created_at = iso_text(ds_row[1])
-        generation_dt = parse_official_timestamp(dataset_created_at)
-        if generation_dt is None:
-            raise PolicyError('code_dataset_generation_invalid', 503)
+            dataset_created_at = iso_text(ds_row[1])
+            generation_dt = parse_official_timestamp(dataset_created_at)
+            if generation_dt is None:
+                raise PolicyError('code_dataset_generation_invalid', 503)
 
-        # Use upstream composite index ix_pipeline_runs_dataset_pipeline_created_at
-        # (dataset_id, pipeline_name, created_at) via separate indexed seeks.
-        raw_rows = []
-        seen_raw_ids = set()
-        for variant in ds_variants:
-            queries = (
-                (
-                    '''SELECT id, pipeline_run_id, dataset_id, pipeline_name, operation_name,
-                              status, outcome, created_at, started_at, ended_at
-                       FROM pipeline_runs
-                       WHERE dataset_id = ? AND pipeline_name = 'code_graph_pipeline'
-                       ORDER BY created_at DESC, id DESC''',
-                    (variant,),
-                ),
-                (
-                    '''SELECT id, pipeline_run_id, dataset_id, pipeline_name, operation_name,
-                              status, outcome, created_at, started_at, ended_at
-                       FROM pipeline_runs
-                       WHERE dataset_id = ? AND pipeline_name IS NULL AND operation_name = 'remember'
-                       ORDER BY created_at DESC, id DESC''',
-                    (variant,),
-                ),
-                (
-                    '''SELECT id, pipeline_run_id, dataset_id, pipeline_name, operation_name,
-                              status, outcome, created_at, started_at, ended_at
-                       FROM pipeline_runs
-                       WHERE dataset_id = ? AND pipeline_name = '' AND operation_name = 'remember'
-                       ORDER BY created_at DESC, id DESC''',
-                    (variant,),
-                ),
-            )
-            for sql, params in queries:
-                for row in con.execute(sql, params):
+            raw_rows = []
+            seen_raw_ids = set()
+
+            def _add_rows(rows):
+                for row in rows:
                     row_id = uuid_text(row[0])
                     if row_id in seen_raw_ids:
                         continue
                     seen_raw_ids.add(row_id)
                     raw_rows.append(row)
+
+            for variant in ds_variants:
+                # 1. Bounded recent window per indexed branch (hits ix_pipeline_runs_dataset_pipeline_created_at, 0 TEMP B-TREE)
+                pipe_rows = con.execute(
+                    '''SELECT id, pipeline_run_id, dataset_id, pipeline_name, operation_name,
+                              status, outcome, created_at, started_at, ended_at
+                       FROM pipeline_runs
+                       WHERE dataset_id = ? AND pipeline_name = 'code_graph_pipeline'
+                       ORDER BY created_at DESC
+                       LIMIT ?''',
+                    (variant, _CODE_ACTIVITY_SCAN_LIMIT),
+                ).fetchall()
+                _add_rows(pipe_rows)
+                if len(pipe_rows) == _CODE_ACTIVITY_SCAN_LIMIT:
+                    oldest_cut = pipe_rows[-1][7]
+                    older_active = con.execute(
+                        '''SELECT id, pipeline_run_id, dataset_id, pipeline_name, operation_name,
+                                  status, outcome, created_at, started_at, ended_at
+                           FROM pipeline_runs r1
+                           WHERE r1.dataset_id = ? AND r1.pipeline_name = 'code_graph_pipeline'
+                             AND r1.created_at <= ?
+                             AND r1.status IN ('DATASET_PROCESSING_STARTED', 'DATASET_PROCESSING_INITIATED')
+                             AND NOT EXISTS (
+                               SELECT 1 FROM pipeline_runs r2
+                               WHERE r2.dataset_id = r1.dataset_id
+                                 AND r2.pipeline_name = 'code_graph_pipeline'
+                                 AND r2.pipeline_run_id = r1.pipeline_run_id
+                                 AND r2.status NOT IN ('DATASET_PROCESSING_STARTED', 'DATASET_PROCESSING_INITIATED')
+                             )
+                           ORDER BY r1.created_at DESC
+                           LIMIT 16''',
+                        (variant, oldest_cut),
+                    ).fetchall()
+                    _add_rows(older_active)
+
+                for op_sql in (
+                    '''SELECT id, pipeline_run_id, dataset_id, pipeline_name, operation_name,
+                              status, outcome, created_at, started_at, ended_at
+                       FROM pipeline_runs
+                       WHERE dataset_id = ? AND pipeline_name IS NULL AND operation_name = 'remember'
+                       ORDER BY created_at DESC
+                       LIMIT ?''',
+                    '''SELECT id, pipeline_run_id, dataset_id, pipeline_name, operation_name,
+                              status, outcome, created_at, started_at, ended_at
+                       FROM pipeline_runs
+                       WHERE dataset_id = ? AND pipeline_name = '' AND operation_name = 'remember'
+                       ORDER BY created_at DESC
+                       LIMIT ?''',
+                ):
+                    op_rows = con.execute(op_sql, (variant, _CODE_ACTIVITY_SCAN_LIMIT)).fetchall()
+                    _add_rows(op_rows)
 
     parsed_rows = []
     for row in raw_rows:
@@ -402,7 +436,7 @@ def attach_v2_lookups(
             raise PolicyError('management_required', 403)
         if request.query:
             raise PolicyError('invalid_request_fields')
-        return web.json_response({
+        return json_utf8_response({
             'api_versions': list(WAVE1_API_VERSIONS),
             'features': feature_list,
         })
@@ -418,6 +452,7 @@ def attach_v2_lookups(
             raise PolicyError('invalid_document_id')
         if not official_data:
             raise PolicyError('official_store_unavailable', 503)
+        await verify_official_read_access(getattr(registry, 'official', None), ds_id)
 
         doc = await asyncio.to_thread(
             _read_single_document,
@@ -432,7 +467,7 @@ def attach_v2_lookups(
                 doc['recall_count'] = int(stats.get('count') or 0)
             except Exception:
                 doc['recall_count'] = 0
-        return web.json_response(doc)
+        return json_utf8_response(doc)
 
     async def session_lookup(request):
         if not request['manager']:
@@ -448,6 +483,7 @@ def attach_v2_lookups(
             raise PolicyError('invalid_user_id')
         if not official_data:
             raise PolicyError('official_store_unavailable', 503)
+        await verify_official_read_access(getattr(registry, 'official', None), ds_id)
 
         session_obj = await asyncio.to_thread(
             _read_single_session,
@@ -456,7 +492,7 @@ def attach_v2_lookups(
             session_id,
             user_id=user_id,
         )
-        return web.json_response(session_obj)
+        return json_utf8_response(session_obj)
 
     async def code_activity(request):
         if not request['manager']:
@@ -474,14 +510,16 @@ def attach_v2_lookups(
             raise PolicyError('code_dataset_not_configured', 409)
         if not official_data:
             raise PolicyError('official_store_unavailable', 503)
+        code_ds_canon = uuid_text(code_ds)
+        await verify_official_read_access(getattr(registry, 'official', None), code_ds_canon)
 
         result = await asyncio.to_thread(
             _read_code_activity,
             official_data,
             project_id,
-            uuid_text(code_ds),
+            code_ds_canon,
         )
-        return web.json_response(result)
+        return json_utf8_response(result)
 
     app.add_routes([
         web.get('/v1/capabilities', capabilities),

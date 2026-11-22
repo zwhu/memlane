@@ -1,6 +1,7 @@
 """Local recall receipts: identifiers only, never a second knowledge store."""
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -8,6 +9,7 @@ import os
 from pathlib import Path
 import sqlite3
 import threading
+import time
 import uuid
 
 from aiohttp import web
@@ -39,6 +41,8 @@ class RecallStore:
         self._writer_db = None
         self._local = threading.local()
         self._readers_lock = threading.Lock()
+        self._readers_cond = threading.Condition(self._readers_lock)
+        self._active_readers = 0
         self._readers: list[sqlite3.Connection] = []
         self._write_executor = ThreadPoolExecutor(
             max_workers=1,
@@ -56,6 +60,7 @@ class RecallStore:
         con.execute('PRAGMA journal_size_limit=4194304')
         con.execute('PRAGMA wal_autocheckpoint=1000')
         con.execute('PRAGMA synchronous=NORMAL')
+        con.execute('PRAGMA cache_size=-512')
         con.execute('PRAGMA busy_timeout=5000')
         con.execute('PRAGMA foreign_keys=ON')
         con.executescript('''
@@ -85,6 +90,8 @@ class RecallStore:
             FOREIGN KEY(agent_id,event_id) REFERENCES recall_event(agent_id,event_id)
           );
           CREATE INDEX IF NOT EXISTS recall_hit_document ON recall_hit(dataset_id,document_id);
+          CREATE INDEX IF NOT EXISTS idx_recall_event_received ON recall_event(received_at DESC, agent_id ASC, event_id ASC);
+          CREATE INDEX IF NOT EXISTS idx_recall_hit_dataset_event ON recall_hit(dataset_id, agent_id, event_id);
           CREATE TABLE IF NOT EXISTS recall_doc_counts (
             dataset_id TEXT NOT NULL,
             document_id TEXT NOT NULL,
@@ -141,18 +148,45 @@ class RecallStore:
         self._writer_db = con
 
     def _reader(self) -> sqlite3.Connection:
+        with self._readers_lock:
+            if self._closed:
+                raise PolicyError('recall_store_closed', 503)
         con = getattr(self._local, 'reader', None)
         if con is not None:
             return con
         resolved = self.path.resolve()
-        con = sqlite3.connect(f'file:{resolved}?mode=ro', uri=True, timeout=5.0, check_same_thread=False)
+        con = sqlite3.connect(
+            f'file:{resolved}?mode=ro',
+            uri=True,
+            timeout=5.0,
+            isolation_level=None,
+            check_same_thread=False,
+        )
         con.execute('PRAGMA query_only=ON')
+        con.execute('PRAGMA cache_size=-512')
         con.execute('PRAGMA busy_timeout=5000')
         con.execute('PRAGMA foreign_keys=ON')
-        self._local.reader = con
         with self._readers_lock:
+            if self._closed:
+                con.close()
+                raise PolicyError('recall_store_closed', 503)
+            self._local.reader = con
             self._readers.append(con)
         return con
+
+    @contextmanager
+    def _reader_lease(self):
+        with self._readers_lock:
+            if self._closed:
+                raise PolicyError('recall_store_closed', 503)
+            self._active_readers += 1
+        try:
+            yield self._reader()
+        finally:
+            with self._readers_lock:
+                self._active_readers -= 1
+                if self._active_readers == 0:
+                    self._readers_cond.notify_all()
 
     @property
     def db(self) -> sqlite3.Connection:
@@ -258,37 +292,39 @@ class RecallStore:
         )
 
     def started_at(self) -> str:
-        row = self._reader().execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()
+        with self._reader_lease() as con:
+            row = con.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()
         return str(row[0]) if row and row[0] else ''
 
     def last_rev(self) -> int:
-        row = self._reader().execute('SELECT last_rev FROM recall_rev_state WHERE singleton=1').fetchone()
+        with self._reader_lease() as con:
+            row = con.execute('SELECT last_rev FROM recall_rev_state WHERE singleton=1').fetchone()
         return int(row[0] or 0) if row else 0
 
     def stats(self, dataset, document):
         dataset, document = self.identifier(dataset), self.identifier(document)
-        con = self._reader()
-        row = con.execute(
-            '''SELECT total_hits, last_recalled_at
-               FROM recall_doc_counts
-               WHERE dataset_id=? AND document_id=?''',
-            (dataset, document),
-        ).fetchone()
-        count = int(row[0]) if row else 0
-        last = row[1] if row else None
-        started = con.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()[0]
+        with self._reader_lease() as con:
+            row = con.execute(
+                '''SELECT total_hits, last_recalled_at
+                   FROM recall_doc_counts
+                   WHERE dataset_id=? AND document_id=?''',
+                (dataset, document),
+            ).fetchone()
+            count = int(row[0]) if row else 0
+            last = row[1] if row else None
+            started = con.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()[0]
         return {'count': count, 'last_recalled_at': last, 'started_at': started}
 
     def counts(self, dataset):
         dataset = self.identifier(dataset)
-        con = self._reader()
-        rows = con.execute(
-            '''SELECT document_id, total_hits, last_recalled_at
-               FROM recall_doc_counts
-               WHERE dataset_id=?''',
-            (dataset,),
-        ).fetchall()
-        started = con.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()[0]
+        with self._reader_lease() as con:
+            rows = con.execute(
+                '''SELECT document_id, total_hits, last_recalled_at
+                   FROM recall_doc_counts
+                   WHERE dataset_id=?''',
+                (dataset,),
+            ).fetchall()
+            started = con.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()[0]
         return {
             'started_at': started,
             'items': [
@@ -299,37 +335,43 @@ class RecallStore:
 
     def dataset_counts_map(self, allowed_datasets) -> tuple[str, dict[str, dict]]:
         """Return ``(started_at, {'<ds>/<doc>': {'count', 'last_recalled_at', 'started_at'}})``."""
-        con = self._reader()
-        started_row = con.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()
-        started_at = str(started_row[0]) if started_row and started_row[0] else ''
         allowed_sorted = sorted({str(ds) for ds in (allowed_datasets or ()) if ds})
         counts: dict[str, dict] = {}
-        for start in range(0, len(allowed_sorted), _MAX_IN_BATCH):
-            batch = allowed_sorted[start : start + _MAX_IN_BATCH]
-            placeholders = ','.join('?' for _ in batch)
-            for ds_id, doc_id, total_hits, last_at in con.execute(
-                f'''SELECT dataset_id, document_id, total_hits, last_recalled_at
-                    FROM recall_doc_counts
-                    WHERE dataset_id IN ({placeholders})''',
-                batch,
-            ):
-                counts[f'{ds_id}/{doc_id}'] = {
-                    'count': int(total_hits),
-                    'last_recalled_at': last_at or '',
-                    'started_at': started_at,
-                }
+        with self._reader_lease() as con:
+            started_row = con.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()
+            started_at = str(started_row[0]) if started_row and started_row[0] else ''
+            for start in range(0, len(allowed_sorted), _MAX_IN_BATCH):
+                batch = allowed_sorted[start : start + _MAX_IN_BATCH]
+                placeholders = ','.join('?' for _ in batch)
+                for ds_id, doc_id, total_hits, last_at in con.execute(
+                    f'''SELECT dataset_id, document_id, total_hits, last_recalled_at
+                        FROM recall_doc_counts
+                        WHERE dataset_id IN ({placeholders})''',
+                    batch,
+                ):
+                    counts[f'{ds_id}/{doc_id}'] = {
+                        'count': int(total_hits),
+                        'last_recalled_at': last_at or '',
+                        'started_at': started_at,
+                    }
         return started_at, counts
 
     def doc_counts_since(self, after_rev: int) -> tuple[list[tuple[str, str, int]], int]:
-        """Return ``([(dataset_id, document_id, total_hits)], new_rev)`` for rows with ``rev > after_rev``."""
-        con = self._reader()
-        rows = con.execute(
-            '''SELECT dataset_id, document_id, total_hits, rev
-               FROM recall_doc_counts
-               WHERE rev > ?
-               ORDER BY rev ASC''',
-            (int(after_rev),),
-        ).fetchall()
+        """Return ``([(dataset_id, document_id, total_hits)], new_rev)`` from one consistent snapshot."""
+        with self._reader_lease() as con:
+            con.execute('BEGIN DEFERRED')
+            try:
+                rows = con.execute(
+                    '''SELECT dataset_id, document_id, total_hits, rev
+                       FROM recall_doc_counts
+                       WHERE rev > ?
+                       ORDER BY rev ASC''',
+                    (int(after_rev),),
+                ).fetchall()
+                rev_row = con.execute('SELECT last_rev FROM recall_rev_state WHERE singleton=1').fetchone()
+            finally:
+                if con.in_transaction:
+                    con.execute('ROLLBACK')
         changes = []
         max_rev = int(after_rev)
         for ds_id, doc_id, total_hits, row_rev in rows:
@@ -337,7 +379,6 @@ class RecallStore:
             if r_int > max_rev:
                 max_rev = r_int
             changes.append((str(ds_id), str(doc_id), int(total_hits or 0)))
-        rev_row = con.execute('SELECT last_rev FROM recall_rev_state WHERE singleton=1').fetchone()
         if rev_row and int(rev_row[0] or 0) > max_rev:
             max_rev = int(rev_row[0])
         return changes, max_rev
@@ -345,27 +386,26 @@ class RecallStore:
     def event_doc_ids(self, dataset_id: str, agent_id: str, event_id: str) -> set[str]:
         event_uuid = self.identifier(event_id)
         ds_uuid = self.identifier(dataset_id)
-        rows = self._reader().execute(
-            '''SELECT document_id FROM recall_hit
-               WHERE agent_id = ? AND event_id = ? AND dataset_id = ?''',
-            (agent_id, event_uuid, ds_uuid),
-        ).fetchall()
+        with self._reader_lease() as con:
+            rows = con.execute(
+                '''SELECT document_id FROM recall_hit
+                   WHERE agent_id = ? AND event_id = ? AND dataset_id = ?''',
+                (agent_id, event_uuid, ds_uuid),
+            ).fetchall()
         return {str(r[0]) for r in rows}
 
     def counts_for_datasets(self, allowed):
         """Return aggregate per-document recall counts across allowed datasets."""
-        with self._lock:
-            started_row = self.db.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()
+        with self._reader_lease() as con:
+            started_row = con.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()
             started_at = started_row[0] if started_row else ''
             if not allowed:
                 return {'started_at': started_at, 'counts': {}}
             allowed_sorted = sorted({self.identifier(ds) for ds in allowed})
             placeholders = ','.join('?' for _ in allowed_sorted)
-            rows = self.db.execute(
-                f'''SELECT h.dataset_id, h.document_id, COUNT(*), MAX(e.received_at)
-                    FROM recall_hit h JOIN recall_event e USING(agent_id,event_id)
-                    WHERE h.dataset_id IN ({placeholders})
-                    GROUP BY h.dataset_id, h.document_id''',
+            rows = con.execute(
+                f'''SELECT dataset_id, document_id, total_hits, last_recalled_at
+                    FROM recall_doc_counts WHERE dataset_id IN ({placeholders})''',
                 allowed_sorted,
             ).fetchall()
         counts = {
@@ -383,32 +423,54 @@ class RecallStore:
             return {'items': [], 'more': False}
         allowed = sorted(allowed)
         placeholders = ','.join('?' for _ in allowed)
-        con = self._reader()
-        rows = con.execute(
-            '''SELECT e.agent_id,e.event_id,e.channel,e.received_at
-               FROM recall_event e WHERE EXISTS (SELECT 1 FROM recall_hit h
-               WHERE h.agent_id=e.agent_id AND h.event_id=e.event_id AND h.dataset_id IN ('''
-            + placeholders
-            + '''))
-               ORDER BY e.received_at DESC,e.agent_id,e.event_id LIMIT ? OFFSET ?''',
-            (*allowed, limit + 1, offset),
-        ).fetchall()
+        with self._reader_lease() as con:
+            con.execute('BEGIN DEFERRED')
+            try:
+                rows = con.execute(
+                    '''SELECT e.agent_id,e.event_id,e.channel,e.received_at
+                       FROM recall_event e INDEXED BY idx_recall_event_received
+                       WHERE EXISTS (SELECT 1 FROM recall_hit h
+                       WHERE h.agent_id=e.agent_id AND h.event_id=e.event_id AND h.dataset_id IN ('''
+                    + placeholders
+                    + '''))
+                       ORDER BY e.received_at DESC, e.agent_id ASC, e.event_id ASC LIMIT ? OFFSET ?''',
+                    (*allowed, limit + 1, offset),
+                ).fetchall()
+                page_rows = rows[:limit]
+                hits_by_key: dict[tuple[str, str], list[dict]] = {}
+                if page_rows:
+                    events_by_agent: dict[str, list[str]] = {}
+                    for r in page_rows:
+                        events_by_agent.setdefault(str(r[0]), []).append(str(r[1]))
+                    for ag_id, ag_evs in events_by_agent.items():
+                        uniq_evs = sorted(set(ag_evs))
+                        for start in range(0, len(uniq_evs), _MAX_IN_BATCH):
+                            ev_batch = uniq_evs[start : start + _MAX_IN_BATCH]
+                            ev_ph = ','.join('?' for _ in ev_batch)
+                            for ag, ev, ds_id, doc_id in con.execute(
+                                f'''SELECT agent_id, event_id, dataset_id, document_id
+                                    FROM recall_hit
+                                    WHERE agent_id = ? AND event_id IN ({ev_ph}) AND dataset_id IN ({placeholders})''',
+                                (ag_id, *ev_batch, *allowed),
+                            ):
+                                hits_by_key.setdefault((str(ag), str(ev)), []).append({
+                                    'dataset_id': str(ds_id),
+                                    'document_id': str(doc_id),
+                                })
+                    for hit_list in hits_by_key.values():
+                        if len(hit_list) > 1:
+                            hit_list.sort(key=lambda h: (h['dataset_id'], h['document_id']))
+            finally:
+                if con.in_transaction:
+                    con.execute('ROLLBACK')
         items = []
-        for agent, event, channel, received in rows[:limit]:
-            hits = con.execute(
-                '''SELECT dataset_id,document_id FROM recall_hit
-                   WHERE agent_id=? AND event_id=? AND dataset_id IN ('''
-                + placeholders
-                + ''')
-                   ORDER BY dataset_id,document_id''',
-                (agent, event, *allowed),
-            ).fetchall()
+        for agent, event, channel, received in page_rows:
             items.append({
                 'event_id': event,
                 'agent_id': agent,
                 'channel': channel,
                 'received_at': received,
-                'hits': [{'dataset_id': dataset, 'document_id': document} for dataset, document in hits],
+                'hits': hits_by_key.get((str(agent), str(event)), []),
             })
         return {'items': items, 'more': len(rows) > limit}
 
@@ -450,12 +512,12 @@ class RecallStore:
         return await loop.run_in_executor(self._write_executor, self._record_query_on_writer, channel, hit_count)
 
     def query_summary(self) -> dict:
-        con = self._reader()
-        started_row = con.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()
-        started_at = started_row[0] if started_row else None
-        rows = con.execute(
-            'SELECT channel, total_queries, hit_queries, empty_queries, total_hits, last_query_at FROM recall_query_stats'
-        ).fetchall()
+        with self._reader_lease() as con:
+            started_row = con.execute('SELECT started_at FROM recall_meta WHERE singleton=1').fetchone()
+            started_at = started_row[0] if started_row else None
+            rows = con.execute(
+                'SELECT channel, total_queries, hit_queries, empty_queries, total_hits, last_query_at FROM recall_query_stats'
+            ).fetchall()
         by_channel = {
             ch: {'total_queries': 0, 'hit_queries': 0, 'empty_queries': 0, 'total_hits': 0, 'hit_rate': None, 'last_query_at': None}
             for ch in ('automatic', 'explicit')
@@ -514,10 +576,16 @@ class RecallStore:
                 self._writer_db = None
 
     def close(self):
-        if self._closed:
-            return
-        self._closed = True
         with self._readers_lock:
+            if self._closed:
+                return
+            self._closed = True
+            deadline = time.monotonic() + 5.0
+            while self._active_readers > 0:
+                rem = deadline - time.monotonic()
+                if rem <= 0:
+                    break
+                self._readers_cond.wait(timeout=rem)
             readers = list(self._readers)
             self._readers.clear()
         for con in readers:

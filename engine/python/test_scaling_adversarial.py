@@ -437,7 +437,7 @@ class ProvenanceBackfillV2Tests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(cap_resp.status, 200)
                 self.assertIn('provenance_backfill_v2', (await cap_resp.json())['features'])
 
-                # Execute backfill
+                # Execute backfill with an unmapped orphan key: imports mapped entries but MUST NOT rename to .migrated.bak!
                 resp = await client.post(
                     '/v2/provenance/backfill-legacy-dates',
                     json={'reading_identity': identity},
@@ -445,13 +445,14 @@ class ProvenanceBackfillV2Tests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(resp.status, 200, await resp.text())
                 body = await resp.json()
-                self.assertEqual(body['status'], 'migrated')
+                self.assertEqual(body['status'], 'partial')
                 self.assertEqual(body['matched'], 2)
                 self.assertEqual(body['imported'], 2)
                 self.assertEqual(body['skipped'], 1)
-                self.assertTrue(body['backup_path'].endswith('.migrated.bak'))
-                self.assertFalse(legacy_file.exists())
-                self.assertTrue(Path(body['backup_path']).is_file())
+                self.assertEqual(body['unmapped'], 1)
+                self.assertFalse(body['has_unconfirmed_projects'])
+                self.assertEqual(body['backup_path'], '')
+                self.assertTrue(legacy_file.exists())
                 # Other identity file untouched
                 self.assertTrue(other_file.is_file())
                 self.assertEqual(official.last_token, manager_token)
@@ -471,7 +472,27 @@ class ProvenanceBackfillV2Tests(unittest.IsolatedAsyncioTestCase):
                 ).fetchone()
                 self.assertEqual(row_b, ('2026-08-10', 'linked_qa'))
 
-                # Second call returns absent cleanly (idempotent)
+                # Once all keys map and no unconfirmed projects remain, backfill completes and renames to .migrated.bak
+                legacy_file.write_text(json.dumps({
+                    'schema_version': 1,
+                    'days': {key_a: '2026-07-04', key_b: '2026-09-01'},
+                }), encoding='utf-8')
+                legacy_file.chmod(0o600)
+                resp_full = await client.post(
+                    '/v2/provenance/backfill-legacy-dates',
+                    json={'reading_identity': identity},
+                    headers=headers,
+                )
+                self.assertEqual(resp_full.status, 200, await resp_full.text())
+                body_full = await resp_full.json()
+                self.assertEqual(body_full['status'], 'migrated')
+                self.assertEqual(body_full['unmapped'], 0)
+                self.assertFalse(body_full['has_unconfirmed_projects'])
+                self.assertTrue(body_full['backup_path'].endswith('.migrated.bak'))
+                self.assertFalse(legacy_file.exists())
+                self.assertTrue(Path(body_full['backup_path']).is_file())
+
+                # Subsequent call returns absent cleanly (idempotent)
                 resp2 = await client.post(
                     '/v2/provenance/backfill-legacy-dates',
                     json={'reading_identity': identity},

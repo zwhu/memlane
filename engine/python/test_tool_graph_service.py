@@ -170,3 +170,143 @@ class ToolGraphJobTests(unittest.IsolatedAsyncioTestCase):
         terminal_remaining = [r for r in self.jobs.rows.values() if r['status'] in ('completed', 'cancelled')]
         self.assertEqual(len(terminal_remaining), 200)
         self.assertIn(unknown_id, self.jobs.rows)
+
+    async def test_equal_count_replacement_source_change_and_watermark_coordination(self):
+        import json
+        import sqlite3
+        import sys
+        from tool_graph_service import ToolGraphWatermarkStore, official_build, official_preview
+
+        root = Path(__file__).resolve().parents[2]
+        commit = json.loads((root / 'engine/coding-memory-components.json').read_text())['service']['commit']
+        svc_src = str(root / '.cache/coding-memory-components' / ('service-' + commit))
+        if svc_src not in sys.path:
+            sys.path.insert(0, svc_src)
+        from cognee.modules.pipelines.models import PipelineRunErrored
+
+        cache_db = Path(self.directory.name) / 'cache.db'
+        wm_path = Path(self.directory.name) / 'tool-graph-trace-watermarks.json'
+        uid = str(self.user.id)
+        sess = 'sess-replace'
+
+        con = sqlite3.connect(cache_db)
+        con.execute('''
+            CREATE TABLE cache_trace_entries (
+                seq INTEGER PRIMARY KEY, user_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                payload JSON NOT NULL, expires_at DATETIME
+            )
+        ''')
+        con.execute('CREATE INDEX idx_cache_trace_session ON cache_trace_entries(user_id, session_id, seq)')
+        con.executemany(
+            'INSERT INTO cache_trace_entries VALUES (?,?,?,?,?)',
+            [(1, uid, sess, '{}', None), (2, uid, sess, '{}', None), (3, uid, sess, '{}', None)],
+        )
+        con.commit()
+        con.close()
+
+        watermark_val = {'count': 0}
+        watermark_writes = []
+        pipeline_calls = []
+        pipeline_errored = [False]
+
+        async def get_count(*, user_id, session_id):
+            c = sqlite3.connect(cache_db)
+            cnt = int(c.execute(
+                'SELECT COUNT(*) FROM cache_trace_entries WHERE user_id = ? AND session_id = ?',
+                (user_id, session_id),
+            ).fetchone()[0])
+            c.close()
+            return cnt
+
+        async def read_wm(mgr, user_id, session_id):
+            return watermark_val['count']
+
+        async def write_wm(mgr, user_id, session_id, count):
+            watermark_writes.append(count)
+            watermark_val['count'] = count
+
+        async def fake_pipeline(**kwargs):
+            pipeline_calls.append(kwargs)
+            if pipeline_errored[0]:
+                return {'err': PipelineRunErrored(
+                    pipeline_run_id=uuid.uuid4(),
+                    dataset_id=uuid.UUID(self.dataset),
+                    dataset_name='test-ds',
+                    payload='boom',
+                )}
+            # Simulate upstream advancing TRACE_PERSIST_WATERMARK to persist_up_to[sess]
+            watermark_val['count'] = kwargs['persist_up_to'][sess]
+            return {'ok': SimpleNamespace(pipeline_run_id=uuid.uuid4())}
+
+        manager = SimpleNamespace(is_available=True, get_agent_trace_count=get_count)
+        fake_wm = SimpleNamespace(read_count=read_wm, write_count=write_wm)
+        wm_store = ToolGraphWatermarkStore(wm_path)
+
+        with patch('cognee.infrastructure.session.get_session_manager.get_session_manager', return_value=manager), \
+             patch('cognee.infrastructure.session.session_persist_watermark.TRACE_PERSIST_WATERMARK', fake_wm), \
+             patch('cognee.memify_pipelines.persist_agent_trace_feedbacks_in_knowledge_graph.persist_agent_trace_feedbacks_in_knowledge_graph_pipeline', fake_pipeline):
+            # 1. Initial preview & build on seq 1, 2, 3
+            p1 = await official_preview(self.user, [sess], cache_db=cache_db, watermark_store=wm_store)
+            self.assertEqual(p1['limits'][sess], 3)
+            self.assertEqual(p1['pending'][sess], 3)
+            self.assertEqual(p1['signatures'][sess], {'count': 3, 'min_seq': 1, 'max_seq': 3})
+
+            b1 = await official_build(
+                self.user, self.dataset, [sess], p1['limits'],
+                signatures=p1['signatures'], cache_db=cache_db, watermark_store=wm_store,
+            )
+            self.assertEqual(b1['new_steps'], 3)
+            self.assertEqual(watermark_val['count'], 3)
+
+            # 2. Equal-count replacement: delete seq=1, add seq=4 (count STILL 3, watermark STILL 3!)
+            con = sqlite3.connect(cache_db)
+            con.execute('DELETE FROM cache_trace_entries WHERE seq = 1')
+            con.execute('INSERT INTO cache_trace_entries VALUES (?,?,?,?,?)', (4, uid, sess, '{}', None))
+            con.commit()
+            con.close()
+
+            # Reopen watermark store from disk (simulates restart before second confirmation).
+            wm_store = ToolGraphWatermarkStore(wm_path)
+            p2 = await official_preview(self.user, [sess], cache_db=cache_db, watermark_store=wm_store)
+            self.assertEqual(p2['limits'][sess], 3)
+            self.assertEqual(p2['pending'][sess], 1)
+            self.assertEqual(p2['signatures'][sess], {'count': 3, 'min_seq': 2, 'max_seq': 4})
+
+            # 3. Source mutates between preview and build (delete seq=2, insert seq=5, count STILL 3!) -> 409!
+            con = sqlite3.connect(cache_db)
+            con.execute('DELETE FROM cache_trace_entries WHERE seq = 2')
+            con.execute('INSERT INTO cache_trace_entries VALUES (?,?,?,?,?)', (5, uid, sess, '{}', None))
+            con.commit()
+            con.close()
+            with self.assertRaises(PolicyError) as ctx:
+                await official_build(
+                    self.user, self.dataset, [sess], p2['limits'],
+                    signatures=p2['signatures'], cache_db=cache_db, watermark_store=wm_store,
+                )
+            self.assertEqual((ctx.exception.code, ctx.exception.status), ('tool_graph_source_changed', 409))
+            self.assertEqual(len(pipeline_calls), 1)
+
+            # 4. Re-preview (seq 3, 4, 5 -> 1 persisted, 2 new), fail pipeline -> watermark store stays at max_seq=3
+            p3 = await official_preview(self.user, [sess], cache_db=cache_db, watermark_store=wm_store)
+            self.assertEqual(p3['pending'][sess], 2)
+            pipeline_errored[0] = True
+            with self.assertRaises(PolicyError) as err_ctx:
+                await official_build(
+                    self.user, self.dataset, [sess], p3['limits'],
+                    signatures=p3['signatures'], cache_db=cache_db, watermark_store=wm_store,
+                )
+            self.assertEqual(err_ctx.exception.code, 'official_tool_graph_failed')
+            self.assertEqual(watermark_writes[-1], 1)
+            self.assertEqual(wm_store.get(uid, sess)['persisted_max_seq'], 3)
+
+            # 5. Succeed on retry -> persists remaining 2 steps and advances watermark store to max_seq=5
+            pipeline_errored[0] = False
+            b3 = await official_build(
+                self.user, self.dataset, [sess], p3['limits'],
+                signatures=p3['signatures'], cache_db=cache_db, watermark_store=wm_store,
+            )
+            self.assertEqual(b3['new_steps'], 2)
+            self.assertEqual(wm_store.get(uid, sess)['persisted_max_seq'], 5)
+
+            p4 = await official_preview(self.user, [sess], cache_db=cache_db, watermark_store=wm_store)
+            self.assertEqual(p4['pending'][sess], 0)

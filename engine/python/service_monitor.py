@@ -275,30 +275,6 @@ def legacy_overview_cache_stats(state_dir) -> tuple[int, int]:
     return count, total_bytes
 
 
-def largest_graph_db_bytes(official_data) -> int:
-    if not official_data:
-        return 0
-    db_dir = Path(official_data) / 'system' / 'databases'
-    try:
-        if not db_dir.exists() or not db_dir.is_dir() or db_dir.is_symlink():
-            return 0
-        largest = 0
-        for root, _, files in os.walk(db_dir):
-            for file_name in files:
-                if file_name.endswith('.lbug'):
-                    full_path = os.path.join(root, file_name)
-                    try:
-                        if not os.path.islink(full_path):
-                            size = os.path.getsize(full_path)
-                            if size > largest:
-                                largest = size
-                    except OSError:
-                        continue
-        return largest
-    except OSError:
-        return 0
-
-
 def sample_storage_breakdown(official_data, state_dir) -> dict:
     """Sample per-directory storage metrics off the event loop."""
     cognee_db_bytes = 0
@@ -590,16 +566,11 @@ class ServiceMonitor:
     def _backlog_files_count(self, state_dir) -> int:
         return backlog_files_count(state_dir)
 
-    def _largest_graph_db_bytes(self, official_data) -> int:
-        return largest_graph_db_bytes(official_data)
-
     def _sample_storage_sync(self, official_data, state_dir, sampled_at: float) -> dict:
         sampled = sample_storage_breakdown(official_data, state_dir)
         # Preserve subclass/monkeypatch override compatibility if overridden.
         if type(self)._backlog_files_count is not ServiceMonitor._backlog_files_count:
             sampled['backlog_files_count'] = self._backlog_files_count(state_dir)
-        if type(self)._largest_graph_db_bytes is not ServiceMonitor._largest_graph_db_bytes:
-            sampled['largest_graph_db_bytes'] = self._largest_graph_db_bytes(official_data)
         breakdown = dict(sampled['storage_breakdown'])
         breakdown['sampled_at'] = sampled_at
         result = {
@@ -621,34 +592,49 @@ class ServiceMonitor:
             ts,
         )
 
+    def _start_storage_task(self, official_data, state_dir, now: float) -> asyncio.Task:
+        task = self._storage_refresh_task
+        if task is not None and not task.done():
+            return task
+
+        async def _run_sample():
+            return await asyncio.to_thread(self._sample_storage_sync, official_data, state_dir, now)
+
+        task = asyncio.create_task(_run_sample())
+        self._storage_refresh_task = task
+
+        def _clear_task(done_task):
+            if self._storage_refresh_task is done_task:
+                self._storage_refresh_task = None
+            # Consume unhandled exceptions when running detached in background.
+            if not done_task.cancelled():
+                done_task.exception()
+
+        task.add_done_callback(_clear_task)
+        return task
+
     async def _get_storage_metrics(self, official_data, state_dir, now: float) -> dict:
         with self._storage_lock:
             cached = self._storage_cache
             sampled_at = self._storage_sampled_at
 
         if cached is None:
-            return await asyncio.to_thread(self._sample_storage_sync, official_data, state_dir, now)
+            # Coalesce concurrent cold-start callers onto one in-flight disk sampling task.
+            task = self._start_storage_task(official_data, state_dir, now)
+            fresh = await asyncio.shield(task)
+            return {
+                'backlog_files_count': fresh['backlog_files_count'],
+                'largest_graph_db_bytes': fresh['largest_graph_db_bytes'],
+                'storage_breakdown': dict(fresh['storage_breakdown']),
+            }
 
         stale = (
             sampled_at is None
             or (now - sampled_at) >= self.storage_sample_interval
             or now < sampled_at
         )
-        if stale and (self._storage_refresh_task is None or self._storage_refresh_task.done()):
-            async def _bg_refresh():
-                try:
-                    await asyncio.to_thread(self._sample_storage_sync, official_data, state_dir, now)
-                except Exception:
-                    pass
-
-            task = asyncio.create_task(_bg_refresh())
-            self._storage_refresh_task = task
-
-            def _clear_task(done_task):
-                if self._storage_refresh_task is done_task:
-                    self._storage_refresh_task = None
-
-            task.add_done_callback(_clear_task)
+        if stale:
+            self._start_storage_task(official_data, state_dir, now)
 
         return {
             'backlog_files_count': cached['backlog_files_count'],

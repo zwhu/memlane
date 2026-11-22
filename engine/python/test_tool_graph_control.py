@@ -244,3 +244,218 @@ class ToolGraphControlTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([len(b) for b in build_batches], [64, 64, 14])
         finally:
             await control.close()
+
+    async def test_automatic_loop_does_not_rerun_pruned_operations_beyond_200_limit(self):
+        self.registry.state['tool_graph'] = {'enabled': True, 'changed_at': '2026-11-16T00:00:00+00:00'}
+        ns = uuid.UUID(self.registry.state['service_namespace'])
+        # Create 240 completed operations (> _MAX_RETAINED_TERMINAL_JOBS=200).
+        activity = []
+        for i in range(240):
+            act_id = f'improve-{i:04d}'
+            op_id = str(uuid.uuid5(ns, 'tool-graph/' + act_id))
+            self.control.jobs[op_id] = {
+                'operation_id': op_id,
+                'project_id': 'p',
+                'dataset_id': 'project-dataset',
+                'review_token': f'tok-{i}',
+                'status': 'completed',
+                'automatic': True,
+                'created_at': f'2026-11-17T{i // 60:02d}:{i % 60:02d}:00+00:00',
+                'session_count': 1,
+                'tool_steps': 1,
+                'children': [],
+            }
+            activity.append({
+                'id': act_id,
+                'kind': 'operation',
+                'operation_name': 'improve',
+                'outcome': 'succeeded',
+                'dataset_id': 'project-dataset',
+                'started_at': f'2026-11-17T{i // 60:02d}:{i % 60:02d}:00+00:00',
+                'user_id': 'original-user',
+                'session_ids': ['selected'],
+            })
+        self.control.save()
+        self.assertEqual(len(self.control.jobs), 200)
+        self.assertEqual(len(self.control._seen_operations), 240)
+
+        # Reopen fresh ToolGraphControl from disk to verify seen IDs survive restart.
+        reopened = ToolGraphControl(self.registry, self.control.runtime)
+        try:
+            self.assertEqual(len(reopened.jobs), 200)
+            self.assertEqual(len(reopened._seen_operations), 240)
+            original = self.official.request.side_effect
+            async def request(method, path, *args, **kwargs):
+                if '/activity/' in path:
+                    return activity
+                return await original(method, path, *args, **kwargs)
+            self.official.request.side_effect = request
+            self.registry.checked_policy.return_value = {
+                'ready': True,
+                'policy': {'permissions': ['read', 'write'], 'can_auto_process': True},
+            }
+            reopened.start = AsyncMock()
+            with patch('tool_graph_control.asyncio.sleep', AsyncMock(side_effect=asyncio.CancelledError)):
+                with self.assertRaises(asyncio.CancelledError):
+                    await reopened.automatic_loop()
+            self.assertEqual(reopened.start.await_count, 0, 'pruned historical operation re-triggered in automatic_loop')
+
+            # Adding one genuinely new operation #240 triggers exactly once.
+            activity.append({
+                'id': 'improve-new-241',
+                'kind': 'operation',
+                'operation_name': 'improve',
+                'outcome': 'succeeded',
+                'dataset_id': 'project-dataset',
+                'started_at': '2026-11-18T00:00:00+00:00',
+                'user_id': 'original-user',
+                'session_ids': ['selected'],
+            })
+            with patch('tool_graph_control.asyncio.sleep', AsyncMock(side_effect=asyncio.CancelledError)):
+                with self.assertRaises(asyncio.CancelledError):
+                    await reopened.automatic_loop()
+            self.assertEqual(reopened.start.await_count, 1)
+        finally:
+            await reopened.close()
+
+    async def test_equal_count_replacement_invalidates_cold_cache_and_second_batch_failure_recovers(self):
+        import sqlite3
+
+        root = Path(self.directory.name)
+        official_data = root / 'official-equal-replace'
+        db_dir = official_data / 'system' / 'databases'
+        db_dir.mkdir(parents=True)
+        ds_id = str(uuid.uuid4())
+        user_id = str(uuid.uuid4())
+
+        cognee_db = db_dir / 'cognee_db'
+        cache_db = db_dir / 'cache.db'
+        c1 = sqlite3.connect(cognee_db)
+        c1.execute('''
+            CREATE TABLE session_records (
+                session_id VARCHAR NOT NULL, user_id CHAR(32) NOT NULL, dataset_id CHAR(32),
+                status VARCHAR, started_at DATETIME, last_activity_at DATETIME, agent_id VARCHAR,
+                PRIMARY KEY (session_id, user_id)
+            )
+        ''')
+        all_sessions = ['sess-cold'] + [f'sess-b-{i:03d}' for i in range(70)]
+        c1.executemany(
+            'INSERT INTO session_records VALUES (?,?,?,?,?,?,?)',
+            [(sid, uuid.UUID(user_id).hex, uuid.UUID(ds_id).hex, 'active', '2026-11-21 08:00:00', '2026-11-21 09:00:00', 'codex') for sid in all_sessions],
+        )
+        c1.commit()
+        c1.close()
+
+        c2 = sqlite3.connect(cache_db)
+        c2.execute('''
+            CREATE TABLE cache_trace_entries (
+                seq INTEGER PRIMARY KEY, user_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                payload JSON NOT NULL, expires_at DATETIME
+            )
+        ''')
+        c2.execute('CREATE INDEX idx_cache_trace_session ON cache_trace_entries(user_id, session_id, seq)')
+        # sess-cold starts with seq 1, 2, 3 (count=3, min=1, max=3) already persisted (pending=0)
+        c2.executemany(
+            'INSERT INTO cache_trace_entries VALUES (?,?,?,?,?)',
+            [(1, user_id, 'sess-cold', '{}', None),
+             (2, user_id, 'sess-cold', '{}', None),
+             (3, user_id, 'sess-cold', '{}', None)],
+        )
+        seq = 10
+        for i in range(70):
+            c2.execute('INSERT INTO cache_trace_entries VALUES (?,?,?,?,?)', (seq, user_id, f'sess-b-{i:03d}', '{}', None))
+            seq += 1
+        c2.commit()
+        c2.close()
+
+        persisted_max = {'sess-cold': 3}
+        preview_calls = []
+        build_calls = []
+        fail_second_batch = [True]
+
+        async def mock_request(method, path, body=None, **kwargs):
+            if path.endswith('/preview'):
+                sids = list(body['session_ids'])
+                preview_calls.append(sids)
+                # Read real SQLite window to emulate watermark-aware service
+                c = sqlite3.connect(cache_db)
+                limits, pending, sigs = {}, {}, {}
+                for s in sids:
+                    cnt, mn, mx = c.execute(
+                        'SELECT COUNT(*), MIN(seq), MAX(seq) FROM cache_trace_entries WHERE user_id = ? AND session_id = ?',
+                        (user_id, s),
+                    ).fetchone()
+                    cnt = int(cnt or 0)
+                    already = 0
+                    if s in persisted_max:
+                        already = int(c.execute(
+                            'SELECT COUNT(*) FROM cache_trace_entries WHERE user_id = ? AND session_id = ? AND seq <= ?',
+                            (user_id, s, persisted_max[s]),
+                        ).fetchone()[0])
+                    limits[s] = cnt
+                    pending[s] = max(0, cnt - already)
+                    if cnt > 0:
+                        sigs[s] = {'count': cnt, 'min_seq': int(mn), 'max_seq': int(mx)}
+                c.close()
+                return {'limits': limits, 'pending': pending, 'signatures': sigs}
+            if method == 'POST' and path.endswith('/tool-graphs'):
+                build_calls.append(body)
+                if len(build_calls) == 2 and fail_second_batch[0]:
+                    raise PolicyError('official_tool_graph_failed', 503)
+                for s in body['session_ids']:
+                    persisted_max[s] = body['signatures'][s]['max_seq']
+                return {'status': 'completed'}
+            return {'status': 'completed'}
+
+        token = root / 'manager-token'
+        actor = {'key_file': '/original/agent.key', 'principal_id': user_id}
+        official = SimpleNamespace(request=AsyncMock(side_effect=mock_request))
+        registry = SimpleNamespace(
+            state={
+                'revision': 0,
+                'service_namespace': str(uuid.uuid4()),
+                'projects': {'p-eq': {'id': 'p-eq', 'status': 'verified', 'dataset_id': ds_id}},
+                'agents': {'a': actor},
+            },
+            official=official,
+            checked_policy=AsyncMock(return_value={'ready': True, 'policy': {'permissions': ['read', 'write']}}),
+        )
+        control = ToolGraphControl(registry, {
+            'official_data': str(official_data),
+            'project_control': {'registry_file': str(root / 'reg-eq.json'), 'management_token_file': str(token)},
+        })
+        try:
+            prev1 = await control.preview('p-eq')
+            self.assertEqual(prev1['session_count'], 70)
+
+            # Second preview skips sess-cold (unchanged signature (3, 3, 1), pending=0).
+            preview_calls.clear()
+            await control.preview('p-eq')
+            self.assertNotIn('sess-cold', {s for b in preview_calls for s in b})
+
+            # Equal-count replacement on sess-cold: delete seq=1, insert seq=4 (count STILL 3, max_seq 3->4!).
+            c2 = sqlite3.connect(cache_db)
+            c2.execute("DELETE FROM cache_trace_entries WHERE session_id = 'sess-cold' AND seq = 1")
+            c2.execute('INSERT INTO cache_trace_entries VALUES (?,?,?,?,?)', (4, user_id, 'sess-cold', '{}', None))
+            c2.commit()
+            c2.close()
+
+            preview_calls.clear()
+            prev3 = await control.preview('p-eq')
+            self.assertIn('sess-cold', {s for b in preview_calls for s in b})
+            self.assertEqual(prev3['session_count'], 71)
+            cold_row = next(r for r in prev3['plan'] if r['session_id'] == 'sess-cold')
+            self.assertEqual(cold_row['pending_steps'], 1)
+            self.assertEqual(cold_row['signature'], {'count': 3, 'min_seq': 2, 'max_seq': 4})
+
+            # Start build (71 sessions -> batches 64 + 7); second batch fails -> result_unknown.
+            op1 = str(uuid.uuid4())
+            await control.start('p-eq', op1, prev3['review_token'])
+            await control.tasks[op1]
+            self.assertEqual(control.latest('p-eq')['status'], 'result_unknown')
+            self.assertEqual(len(build_calls), 2)
+            # First batch persisted 64 sessions; second confirmation preview shows remaining 7.
+            prev4 = await control.preview('p-eq')
+            self.assertEqual(prev4['session_count'], 7)
+        finally:
+            await control.close()

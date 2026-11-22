@@ -21,6 +21,50 @@ from project_policy import (
 from registry_sessions_store import RegistrySessionsStore
 
 _DYNAMIC_STATE_KEYS = ('sessions', 'connection_operations', 'connection_receipts')
+_SYNC_META_KEY = '_sessions_store_sync'
+
+
+def _payload_timestamp(payload) -> float:
+    if not isinstance(payload, dict):
+        return 0.0
+    for field in ('received_at', 'completed_at', 'updated_at', 'at'):
+        val = payload.get(field)
+        if type(val) in (int, float) and val > 0:
+            return float(val)
+    return 0.0
+
+
+def _merge_dynamic_by_freshness(
+    json_map: dict,
+    db_meta_map: dict,
+    *,
+    json_rev: int,
+    db_rev: int,
+    json_mtime: float,
+    use_payload_ts: bool = False,
+) -> dict:
+    """Merge legacy/rollback JSON entries with SQLite rows by picking the newer version per key."""
+    merged = {k: v for k, (v, _) in db_meta_map.items()}
+    for key, json_val in json_map.items():
+        if key not in db_meta_map:
+            merged[key] = json_val
+            continue
+        db_val, db_row_ts = db_meta_map[key]
+        if json_val == db_val:
+            continue
+        if db_rev < 0:
+            merged[key] = json_val
+            continue
+        if use_payload_ts:
+            j_ts = _payload_timestamp(json_val)
+            d_ts = _payload_timestamp(db_val)
+            if j_ts != d_ts:
+                if j_ts > d_ts:
+                    merged[key] = json_val
+                continue
+        if json_rev > db_rev or (json_rev == db_rev and json_mtime >= db_row_ts):
+            merged[key] = json_val
+    return merged
 
 
 def _installation_view(installation):
@@ -168,25 +212,56 @@ class Registry:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._lock_file = os.open(str(self.path) + '.lock', os.O_CREAT | os.O_RDWR, 0o600)
         self.sessions_store = None
+        self._sync_version = 0
         try:
             fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.sessions_store = RegistrySessionsStore(self.path.parent / 'registry-sessions.sqlite3')
-            db_sessions, db_ops, db_receipts = self.sessions_store.load_all()
+            db_sess_meta, db_ops_meta, db_rec_meta, db_meta = self.sessions_store.load_all_with_meta()
+            db_sessions = {k: v for k, (v, _) in db_sess_meta.items()}
+            db_ops = {k: v for k, (v, _) in db_ops_meta.items()}
+            db_receipts = {k: v for k, (v, _) in db_rec_meta.items()}
+            self._sync_version = int(db_meta.get('sync_version') or 0)
             if self.path.exists():
-                if self.path.is_symlink() or self.path.stat().st_mode & 0o077:
+                file_stat = self.path.stat()
+                if self.path.is_symlink() or file_stat.st_mode & 0o077:
                     raise PolicyError('private_registry_required', 503)
                 self.state = json.loads(self.path.read_text())
                 if self.state['schema_version'] not in (1, 2):
                     raise PolicyError('unsupported_registry', 503)
+                json_sync_meta = self.state.pop(_SYNC_META_KEY, None)
+                if isinstance(json_sync_meta, dict):
+                    try:
+                        self._sync_version = max(self._sync_version, int(json_sync_meta.get('version') or 0))
+                    except (TypeError, ValueError):
+                        pass
                 migrated_dynamic = False
                 json_sessions = self.state.get('sessions') if isinstance(self.state.get('sessions'), dict) else {}
                 json_ops = self.state.get('connection_operations') if isinstance(self.state.get('connection_operations'), dict) else {}
                 json_receipts = self.state.get('connection_receipts') if isinstance(self.state.get('connection_receipts'), dict) else {}
                 if json_sessions or json_ops or json_receipts:
-                    merged_sessions = {**json_sessions, **db_sessions}
-                    merged_ops = {**json_ops, **db_ops}
-                    merged_receipts = {**json_receipts, **db_receipts}
-                    self.sessions_store.sync_dicts(merged_sessions, merged_ops, merged_receipts)
+                    json_rev = int(self.state.get('revision') or 0)
+                    db_rev = int(db_meta.get('revision', -1))
+                    json_mtime = float(file_stat.st_mtime)
+                    merged_sessions = _merge_dynamic_by_freshness(
+                        json_sessions, db_sess_meta,
+                        json_rev=json_rev, db_rev=db_rev, json_mtime=json_mtime,
+                        use_payload_ts=False,
+                    )
+                    merged_ops = _merge_dynamic_by_freshness(
+                        json_ops, db_ops_meta,
+                        json_rev=json_rev, db_rev=db_rev, json_mtime=json_mtime,
+                        use_payload_ts=True,
+                    )
+                    merged_receipts = _merge_dynamic_by_freshness(
+                        json_receipts, db_rec_meta,
+                        json_rev=json_rev, db_rev=db_rev, json_mtime=json_mtime,
+                        use_payload_ts=True,
+                    )
+                    self._sync_version += 1
+                    sync_meta = self.sessions_store.sync_dicts(
+                        merged_sessions, merged_ops, merged_receipts,
+                        revision=json_rev, sync_version=self._sync_version,
+                    )
                     db_sessions, db_ops, db_receipts = merged_sessions, merged_ops, merged_receipts
                     migrated_dynamic = True
                 self.state['sessions'] = db_sessions
@@ -209,7 +284,11 @@ class Registry:
                     self.state['schema_version'] = 2
                     self.save()
                 elif migrated_dynamic:
-                    self._save_slim_json()
+                    self._save_slim_json(sync_meta={
+                        'revision': sync_meta['revision'],
+                        'version': sync_meta['sync_version'],
+                        'updated_at': sync_meta['updated_at'],
+                    })
             else:
                 self.state = {'schema_version': 2, 'service_namespace': str(uuid.uuid4()),
                               'revision': 0, 'defaults': dict(DEFAULTS), 'agents': {},
@@ -233,24 +312,51 @@ class Registry:
             self.sessions_store = None
         os.close(self._lock_file)
 
-    def _save_slim_json(self):
+    def _save_slim_json(self, *, sync_meta=None):
         slim = {k: v for k, v in self.state.items() if k not in _DYNAMIC_STATE_KEYS}
+        if sync_meta is not None:
+            slim[_SYNC_META_KEY] = sync_meta
         private_write(self.path, json.dumps(slim, ensure_ascii=False, sort_keys=True).encode())
 
     def save(self):
         if self.sessions_store is not None:
-            self.sessions_store.sync_dicts(
+            self._sync_version += 1
+            now = time.time()
+            meta = self.sessions_store.sync_dicts(
                 self.state.get('sessions'),
                 self.state.get('connection_operations'),
                 self.state.get('connection_receipts'),
+                revision=int(self.state.get('revision') or 0),
+                sync_version=self._sync_version,
+                updated_at=now,
             )
-            self._save_slim_json()
+            self._save_slim_json(sync_meta={
+                'revision': meta['revision'],
+                'version': meta['sync_version'],
+                'updated_at': meta['updated_at'],
+            })
         else:
             private_write(self.path, json.dumps(self.state, ensure_ascii=False, sort_keys=True).encode())
 
-    def sessions_for_project(self, identifier):
-        """Return raw session binding keys currently bound to ``identifier``."""
-        return [raw for raw, bound in self.state.get('sessions', {}).items() if bound == identifier]
+    def sessions_for_project(self, identifier, *, after_key=None, limit=None, stop_key=None):
+        """Return raw session binding keys currently bound to ``identifier`` via SQLite project index."""
+        if self.sessions_store is not None:
+            if after_key is not None or limit is not None or stop_key is not None:
+                return self.sessions_store.sessions_for_project_page(
+                    identifier,
+                    after_key=after_key or '',
+                    limit=int(limit) if limit is not None else 64,
+                    stop_key=stop_key,
+                )
+            return self.sessions_store.sessions_for_project(identifier)
+        keys = sorted(raw for raw, bound in self.state.get('sessions', {}).items() if bound == identifier)
+        if after_key is not None:
+            keys = [k for k in keys if k > after_key]
+        if stop_key is not None:
+            keys = [k for k in keys if k <= stop_key]
+        if limit is not None:
+            keys = keys[:int(limit)]
+        return keys
 
     def check_revision(self, expected):
         if type(expected) is not int or expected != self.state['revision']:
@@ -802,7 +908,7 @@ class Registry:
             project = await self.ensure_locked(root)
             self.state['sessions'][key] = project['id']
             if self.sessions_store is not None:
-                self.sessions_store.upsert_session(key, project['id'])
+                self.sessions_store.upsert_session(key, project['id'], revision=int(self.state.get('revision') or 0))
             else:
                 self.save()
             self.record_connection_receipt(agent_id, project['id'], host_session_key, environment)
@@ -879,7 +985,7 @@ class Registry:
                               'evidence': 'authenticated_host_resolve',
                               'recent_sessions': recent, **environment}
         if self.sessions_store is not None:
-            self.sessions_store.upsert_receipt(agent_id, receipts[agent_id])
+            self.sessions_store.upsert_receipt(agent_id, receipts[agent_id], revision=int(self.state.get('revision') or 0))
         else:
             self.save()
 

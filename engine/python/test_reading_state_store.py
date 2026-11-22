@@ -188,7 +188,89 @@ class ReadingStateStoreTests(unittest.TestCase):
             # Mark all read -> 0 unread, d_inv still stays read!
             res_all = store.mark_all_read(self.identity, self.project_id, self.ds, catalog_index=cat)
             self.assertEqual(res_all['unread_count'], 0)
+            self.assertTrue(res_all['unread_count_known'])
+            self.assertGreater(res_all['state_rev'], 0)
             self.assertEqual(store.compute_unread_ids(self.identity, self.project_id, self.ds, cat), set())
+        finally:
+            store.close()
+            cat.close()
+
+    def test_cold_start_race_custom_dir_no_precreate_and_late_backdated_doc_after_compaction(self):
+        d_old = str(uuid.uuid4())
+        d_mid = str(uuid.uuid4())
+        d_new = str(uuid.uuid4())
+        self._add_knowledge(d_old, '2026-11-20T09:00:00Z')
+        self._add_knowledge(d_mid, '2026-11-20T10:00:00Z')
+        self._add_knowledge(d_new, '2026-11-20T11:00:00Z')
+
+        cat = CatalogIndex(self.root / 'catalog-index.sqlite3', official_data=self.official_data)
+        store = ReadingStateStore(self.root / 'ui-reading-state.sqlite3', state_dir=self.root)
+        try:
+            cat.sync([self.ds])
+
+            # 1. Default-dir cold-start race (CC-P0-01): overview calls compute_unread_ids BEFORE migrate_local_file!
+            sh = knowledge_read_scope_hash(self.identity, self.project_id, self.ds)
+            legacy_file = self.root / f'knowledge-read-{sh}.json'
+            legacy_file.write_text(json.dumps({
+                'version': 1,
+                'initialized': True,
+                'enabled_at': '2026-11-20T09:30:00Z',
+                'knowledge_ids': {d_mid: True},
+            }), encoding='utf-8')
+            # Cold read MUST auto-migrate legacy_file first and preserve d_new as unread!
+            unread_cold = store.compute_unread_ids(self.identity, self.project_id, self.ds, cat)
+            self.assertEqual(unread_cold, {d_new})
+            self.assertFalse(legacy_file.exists())
+            # Subsequent migrate_local_file reports already_migrated cleanly
+            res_dup = store.migrate_local_file(self.root, self.identity, self.project_id, self.ds, catalog_index=cat)
+            self.assertEqual(res_dup['status'], 'already_migrated')
+
+            # 2. Custom-dir migration (PY-P0-04): missing file returns no_legacy_file and MUST NOT pre-create scope!
+            proj_custom = 'proj-custom'
+            sh_custom = knowledge_read_scope_hash(self.identity, proj_custom, self.ds)
+            res_missing = store.migrate_local_file(self.root, self.identity, proj_custom, self.ds, catalog_index=cat)
+            self.assertEqual(res_missing['status'], 'no_legacy_file')
+            self.assertIsNone(store.get_scope(sh_custom))
+
+            # Two-stage custom-dir import with expected_items check + idempotent retry + verify_project
+            b = store.begin_import(self.identity, proj_custom, self.ds, initialized=True, enabled_at='2026-11-20T09:30:00Z')
+            store.stage_import_chunk(b['batch_id'], [{'doc_id': d_mid, 'is_read': True}])
+            from project_policy import PolicyError
+            with self.assertRaises(PolicyError) as mismatch:
+                store.commit_import(b['batch_id'], catalog_index=cat, expected_items=2)
+            self.assertEqual(mismatch.exception.status, 409)
+            c1 = store.commit_import(b['batch_id'], catalog_index=cat, expected_items=1)
+            self.assertEqual(c1['unread_count'], 1)
+            self.assertGreater(c1['state_rev'], 0)
+            c2 = store.commit_import(b['batch_id'], catalog_index=cat, expected_items=1)
+            self.assertEqual(c2['committed'], c1['committed'])
+
+            # 3. Late-arriving backdated doc after horizon compaction (PY-P0-03):
+            # Mark d_new read -> horizon compacts up to 11:00:00Z and locks horizon_max_rowid.
+            mr = store.mark_read(self.identity, proj_custom, self.ds, [d_new], catalog_index=cat)
+            self.assertTrue(mr['unread_count_known'])
+            self.assertEqual(mr['unread_count'], 0)
+            self.assertGreater(mr['state_rev'], c1['state_rev'])
+
+            # Now a late-arriving knowledge doc with created_at = 10:30:00Z (< compacted horizon 11:00Z!) lands in cognee_db
+            d_late = str(uuid.uuid4())
+            self._add_knowledge(d_late, '2026-11-20T10:30:00Z')
+            cat.sync([self.ds])
+            # Branch B2 (cognee_rowid > horizon_max_rowid) MUST surface d_late as UNREAD!
+            self.assertEqual(store.compute_unread_ids(self.identity, proj_custom, self.ds, cat), {d_late})
+            late_docs = cat.fetch_docs_by_ids(self.ds, [d_late, d_new])
+            flags = store.page_unread_flags(self.identity, proj_custom, self.ds, late_docs, catalog_index=cat)
+            self.assertTrue(flags[d_late])
+            self.assertFalse(flags[d_new])
+
+            # 4. Re-upgrade merge with older enabled_at MUST NOT manufacture phantom unreads for compacted docs!
+            b_re = store.begin_import(self.identity, proj_custom, self.ds, initialized=True, enabled_at='2026-11-20T09:00:00Z')
+            store.commit_import(b_re['batch_id'], catalog_index=cat)
+            self.assertEqual(store.compute_unread_ids(self.identity, proj_custom, self.ds, cat), {d_late})
+
+            # 5. mark_read without catalog_index reports unread_count_known=False
+            mr_nocat = store.mark_read(self.identity, proj_custom, self.ds, [d_late], catalog_index=None)
+            self.assertFalse(mr_nocat['unread_count_known'])
         finally:
             store.close()
             cat.close()

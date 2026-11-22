@@ -202,3 +202,38 @@ class RecallAPITests(unittest.IsolatedAsyncioTestCase):
         body = await resp.json()
         self.assertEqual(body['total_queries'], 0)
         self.assertIsNone(body['hit_rate'])
+
+    async def test_events_query_uses_received_index_without_temp_btree(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = RecallStore(Path(td) / 'eqp-recall.sqlite3')
+            ds = str(uuid.uuid4())
+            try:
+                for i in range(5):
+                    store.record('agent-1', {
+                        'event_id': str(uuid.uuid4()),
+                        'channel': 'automatic',
+                        'hits': [{'dataset_id': ds, 'document_id': str(uuid.uuid4())}],
+                    })
+                plan = [
+                    str(r[3])
+                    for r in store.db.execute(
+                        '''EXPLAIN QUERY PLAN
+                           SELECT e.agent_id, e.event_id, e.channel, e.received_at
+                           FROM recall_event e INDEXED BY idx_recall_event_received
+                           WHERE EXISTS (
+                             SELECT 1 FROM recall_hit h
+                             WHERE h.agent_id=e.agent_id AND h.event_id=e.event_id AND h.dataset_id IN (?)
+                           )
+                           ORDER BY e.received_at DESC, e.agent_id ASC, e.event_id ASC LIMIT 21 OFFSET 0''',
+                        (ds,),
+                    ).fetchall()
+                ]
+                joined = ' | '.join(plan)
+                self.assertIn('idx_recall_event_received', joined)
+                self.assertNotIn('TEMP B-TREE', joined.upper())
+                res = store.events({ds}, 3, 0)
+                self.assertEqual(len(res['items']), 3)
+                self.assertTrue(res['more'])
+                self.assertEqual(len(res['items'][0]['hits']), 1)
+            finally:
+                store.close()

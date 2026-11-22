@@ -35,66 +35,67 @@ def stopped_scope_applies(job, agent, host, handoff):
     return not targets or any(t.get('agent_id') == agent and t.get('host') == host for t in targets)
 
 
-def _in_clause(variants):
-    if len(variants) == 1:
-        return '= ?', variants
-    return f"IN ({','.join('?' for _ in variants)})", variants
+_TERMINAL_PIPELINE_STATUSES = (
+    'DATASET_PROCESSING_COMPLETED',
+    'DATASET_PROCESSING_ERRORED',
+    'COMPLETED',
+    'FAILED',
+    'ERRORED',
+    'CANCELLED',
+)
+_TERMINAL_STATUS_SQL = ','.join('?' for _ in _TERMINAL_PIPELINE_STATUSES)
+_CACHE_EXPIRY_NORM_EXPR = "RTRIM(REPLACE(substr(expires_at, 1, 26), 'T', ' '), 'Zz')"
 
 
 def _sqlite_capacity_available(official_data) -> bool:
-    """Check engine-wide active pipeline runs via read-only cognee_db in O(log N)."""
+    """Check engine-wide active pipeline runs via read-only cognee_db without window truncation."""
     cognee_db = Path(official_data) / 'system' / 'databases' / 'cognee_db'
     with official_sqlite_ro(cognee_db) as con:
-        active_op = con.execute(
-            '''SELECT 1 FROM pipeline_runs
-               WHERE (pipeline_name IS NULL OR pipeline_name = '')
-                 AND (ended_at IS NULL OR ended_at = '')
-               LIMIT 1'''
-        ).fetchone()
-        if active_op is not None:
-            return False
-        rows = con.execute(
-            '''SELECT pipeline_run_id, pipeline_name, status, ended_at
-               FROM pipeline_runs
-               ORDER BY created_at DESC, id DESC
-               LIMIT 500'''
-        ).fetchall()
-    terminal = {
-        uuid_text(r[0]) or str(r[0] or '')
-        for r in rows
-        if r[2] in ('DATASET_PROCESSING_COMPLETED', 'DATASET_PROCESSING_ERRORED')
-    }
-    for run_id, pipe_name, status, ended_at in rows:
-        if not pipe_name and not ended_at:
-            return False
-        canon_id = uuid_text(run_id) or str(run_id or '')
-        if status == 'DATASET_PROCESSING_STARTED' and canon_id not in terminal:
-            return False
-    return True
-
-
-def _cache_expiry_sql(con, table: str, now_space: str, now_iso: str):
-    row = con.execute(
-        f'SELECT 1 FROM {table} WHERE expires_at IS NOT NULL AND expires_at <= ? LIMIT 1',
-        (now_space,),
-    ).fetchone()
-    if row is None and now_iso != now_space:
-        row = con.execute(
-            f'SELECT 1 FROM {table} WHERE expires_at IS NOT NULL AND expires_at <= ? LIMIT 1',
-            (now_iso,),
-        ).fetchone()
-    if row is None:
-        return '', ()
-    return ' AND (expires_at IS NULL OR expires_at > ?)', (now_space,)
+        con.execute('BEGIN DEFERRED')
+        try:
+            active_op = con.execute(
+                '''SELECT 1 FROM pipeline_runs
+                   WHERE (pipeline_name IS NULL OR pipeline_name = '')
+                     AND (ended_at IS NULL OR ended_at = '')
+                   LIMIT 1'''
+            ).fetchone()
+            if active_op is not None:
+                return False
+            active_unkeyed = con.execute(
+                f'''SELECT 1 FROM pipeline_runs
+                    WHERE pipeline_name IS NOT NULL AND pipeline_name != ''
+                      AND (pipeline_run_id IS NULL OR pipeline_run_id = '')
+                      AND status IS NOT NULL
+                      AND UPPER(status) NOT IN ({_TERMINAL_STATUS_SQL})
+                    LIMIT 1''',
+                _TERMINAL_PIPELINE_STATUSES,
+            ).fetchone()
+            if active_unkeyed is not None:
+                return False
+            # Group by pipeline_run_id (uses ix_pipeline_runs_pipeline_run_id with zero
+            # 500-row truncation) and short-circuit on the first unterminated run.
+            active_run = con.execute(
+                f'''SELECT 1 FROM pipeline_runs
+                    WHERE pipeline_name IS NOT NULL AND pipeline_name != ''
+                      AND pipeline_run_id IS NOT NULL AND pipeline_run_id != ''
+                      AND status IS NOT NULL
+                    GROUP BY pipeline_run_id
+                    HAVING MAX(CASE WHEN UPPER(status) IN ({_TERMINAL_STATUS_SQL}) THEN 1 ELSE 0 END) = 0
+                    LIMIT 1''',
+                _TERMINAL_PIPELINE_STATUSES,
+            ).fetchone()
+            return active_run is None
+        finally:
+            if con.in_transaction:
+                con.execute('ROLLBACK')
 
 
 def _read_session_incremental_summary_ro(official_data, session_id: str, expected_user: str, expected_dataset: str):
-    """Read session counts and latest QA/trace timestamps directly from SQLite (bypasses 2 MiB HTTP cap)."""
+    """Read session counts and max QA/trace event timestamps directly from SQLite (bypasses 2 MiB HTTP cap)."""
     cognee_db = Path(official_data) / 'system' / 'databases' / 'cognee_db'
     cache_db = Path(official_data) / 'system' / 'databases' / 'cache.db'
     if not cognee_db.is_file() or not cache_db.is_file():
         return None
-    u_variants = id_variants(expected_user)
     with official_sqlite_ro(cognee_db) as con:
         rows = con.execute(
             '''SELECT session_id, user_id, dataset_id, last_activity_at
@@ -117,39 +118,43 @@ def _read_session_incremental_summary_ro(official_data, session_id: str, expecte
     if matched is None:
         raise PolicyError('incremental_source_identity_unconfirmed', 409)
 
-    now_dt = datetime.now(timezone.utc)
-    now_space = now_dt.strftime('%Y-%m-%d %H:%M:%S.%f')
-    now_iso = now_dt.strftime('%Y-%m-%dT%H:%M:%S.%f')
-    user_sql, user_params = _in_clause(u_variants or (expected_user,))
+    now_space = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')
+    # Prefer canonical 36-char UUID single-format equality lookup (uses idx_cache_*_session
+    # without TEMP B-TREE); fall back to 32-char hex only if the primary format misses.
+    user_candidates = [expected_user_norm]
+    for variant in id_variants(expected_user):
+        if variant not in user_candidates:
+            user_candidates.append(variant)
+
+    def _scan_table_stats(ccon, table: str) -> tuple[int, float]:
+        sql = (
+            f"SELECT CASE WHEN json_valid(payload) AND json_type(payload) = 'object' "
+            f"THEN json_extract(payload, '$.time') ELSE NULL END "
+            f"FROM {table} "
+            f"WHERE user_id = ? AND session_id = ? "
+            f"AND (expires_at IS NULL OR {_CACHE_EXPIRY_NORM_EXPR} > ?)"
+        )
+        for uid in user_candidates:
+            count = 0
+            max_ts = 0
+            for (raw_time,) in ccon.execute(sql, (uid, session_id, now_space)):
+                count += 1
+                if raw_time is not None:
+                    ts = timestamp(raw_time)
+                    if ts > max_ts:
+                        max_ts = ts
+            if count > 0:
+                return count, max_ts
+        return 0, 0
 
     with official_sqlite_ro(cache_db) as ccon:
-        qa_exp_sql, qa_exp_params = _cache_expiry_sql(ccon, 'cache_qa_entries', now_space, now_iso)
-        tr_exp_sql, tr_exp_params = _cache_expiry_sql(ccon, 'cache_trace_entries', now_space, now_iso)
-        qa_where = f'user_id {user_sql} AND session_id = ?{qa_exp_sql}'
-        qa_params = (*user_params, session_id, *qa_exp_params)
-        tr_where = f'user_id {user_sql} AND session_id = ?{tr_exp_sql}'
-        tr_params = (*user_params, session_id, *tr_exp_params)
-
-        msg_count = int(ccon.execute(f'SELECT COUNT(*) FROM cache_qa_entries WHERE {qa_where}', qa_params).fetchone()[0])
-        tool_calls = int(ccon.execute(f'SELECT COUNT(*) FROM cache_trace_entries WHERE {tr_where}', tr_params).fetchone()[0])
-
-        latest_qa_row = ccon.execute(
-            f'SELECT payload FROM cache_qa_entries WHERE {qa_where} ORDER BY seq DESC LIMIT 1',
-            qa_params,
-        ).fetchone()
-        latest_tr_row = ccon.execute(
-            f'SELECT payload FROM cache_trace_entries WHERE {tr_where} ORDER BY seq DESC LIMIT 1',
-            tr_params,
-        ).fetchone()
-
-    def _payload_time(raw_row):
-        if raw_row is None or not raw_row[0]:
-            return 0.0
+        ccon.execute('BEGIN DEFERRED')
         try:
-            obj = json.loads(raw_row[0]) if isinstance(raw_row[0], str) else raw_row[0]
-        except ValueError:
-            return 0.0
-        return timestamp(obj.get('time')) if isinstance(obj, dict) else 0.0
+            msg_count, qa_at = _scan_table_stats(ccon, 'cache_qa_entries')
+            tool_calls, trace_at = _scan_table_stats(ccon, 'cache_trace_entries')
+        finally:
+            if ccon.in_transaction:
+                ccon.execute('ROLLBACK')
 
     return {
         'session_id': session_id,
@@ -158,8 +163,8 @@ def _read_session_incremental_summary_ro(official_data, session_id: str, expecte
         'last_activity_at': matched[2],
         'msg_count': msg_count,
         'tool_calls': tool_calls,
-        'qa_at': _payload_time(latest_qa_row),
-        'trace_at': _payload_time(latest_tr_row),
+        'qa_at': qa_at,
+        'trace_at': trace_at,
     }
 
 
@@ -235,12 +240,12 @@ class IncrementalProcessing:
             if not isinstance(page, list):
                 raise PolicyError('processing_state_unconfirmed', 503)
             rows.extend(page)
-        terminal = {r['pipeline_run_id'] for r in rows if r.get('status') in (
-            'DATASET_PROCESSING_COMPLETED', 'DATASET_PROCESSING_ERRORED')}
+        terminal = {r['pipeline_run_id'] for r in rows if str(r.get('status') or '').upper() in _TERMINAL_PIPELINE_STATUSES}
         for row in rows:
             if row.get('kind') == 'operation' and not row.get('ended_at'):
                 return False
-            if row.get('status') == 'DATASET_PROCESSING_STARTED' and row.get('pipeline_run_id') not in terminal:
+            status_up = str(row.get('status') or '').upper()
+            if status_up and status_up not in _TERMINAL_PIPELINE_STATUSES and row.get('pipeline_run_id') not in terminal:
                 return False
         return True
 

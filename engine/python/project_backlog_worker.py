@@ -3,6 +3,7 @@
 Runs under one verified installation's original host identity. Only metadata is
 written to stdout. Contents stay in the official buffer until a confirmed POST.
 """
+from collections import deque
 import contextlib
 import hashlib
 import json
@@ -228,12 +229,104 @@ class _ConfirmedQueueChanged(Exception):
     pass
 
 
+def _path_stat_sig(path):
+    if path is None:
+        return None
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _prune_confirmed_from_list(entries, confirmed, ambiguous_key, *, strict):
+    """Remove ``confirmed`` entries from ``entries`` in O(len(entries) + len(confirmed))."""
+    if not confirmed:
+        return list(entries)
+
+    def _base_key(item):
+        base = {k: v for k, v in item.items() if k != ambiguous_key}
+        try:
+            return json.dumps(base, sort_keys=True, ensure_ascii=False, allow_nan=True)
+        except (TypeError, ValueError, RecursionError):
+            return None
+
+    def _amb_tag(item):
+        if ambiguous_key not in item:
+            return (False, None)
+        val = item[ambiguous_key]
+        if isinstance(val, (bool, int, float, str, type(None))):
+            return (True, val)
+        return None
+
+    buckets = {}
+    fallback_indices = []
+    for idx, item in enumerate(entries):
+        bkey = _base_key(item)
+        atag = _amb_tag(item) if bkey is not None else None
+        if bkey is not None and atag is not None:
+            buckets.setdefault((bkey, atag), deque()).append(idx)
+        else:
+            fallback_indices.append(idx)
+
+    removed = set()
+    for done_entry in confirmed:
+        bkey = _base_key(done_entry)
+        atag = _amb_tag(done_entry) if bkey is not None else None
+        matched_idx = None
+        if bkey is not None and atag is not None:
+            exact_q = buckets.get((bkey, atag))
+            if exact_q:
+                for _ in range(len(exact_q)):
+                    cand = exact_q.popleft()
+                    if cand not in removed and entries[cand] == done_entry:
+                        matched_idx = cand
+                        break
+                    exact_q.append(cand)
+            if matched_idx is None:
+                stamped = {**done_entry, ambiguous_key: True}
+                stamped_q = buckets.get((bkey, (True, True)))
+                if stamped_q:
+                    for _ in range(len(stamped_q)):
+                        cand = stamped_q.popleft()
+                        if cand not in removed and entries[cand] == stamped:
+                            matched_idx = cand
+                            break
+                        stamped_q.append(cand)
+        if matched_idx is None:
+            # Fallback for non-JSON / unhashable entries.
+            for cand in fallback_indices:
+                if cand not in removed and entries[cand] == done_entry:
+                    matched_idx = cand
+                    break
+            if matched_idx is None:
+                stamped = {**done_entry, ambiguous_key: True}
+                for cand in fallback_indices:
+                    if cand not in removed and entries[cand] == stamped:
+                        matched_idx = cand
+                        break
+        if matched_idx is None:
+            if strict:
+                raise _ConfirmedQueueChanged()
+            continue
+        removed.add(matched_idx)
+
+    if not removed:
+        return list(entries)
+    return [item for idx, item in enumerate(entries) if idx not in removed]
+
+
 def save(common, policy, payload, stopped, report=emit):
     dataset, session = payload['dataset'], payload['session_id']
-    tokens = list(payload['tokens'])
+    tokens = deque(payload['tokens'])
     saved = handled = isolated = filtered = rejected = deferred = 0
     lease = None
     confirmed_batch = []
+    ambiguous_key = common._AMBIGUOUS_KEY
+    cached_token_index = None
+    cached_buffer_state = None
+    cached_buf_path = None
+    cached_buf_stat = None
 
     def flush_confirmed_best_effort():
         return None
@@ -256,25 +349,38 @@ def save(common, policy, payload, stopped, report=emit):
         from _capture_policy import allow_tool, sanitize
         from plugin_capture import capture_entry_key, entry_held, release_entry_hold, retain_failure
 
+        def _reload_snapshot_index():
+            nonlocal cached_token_index, cached_buffer_state, cached_buf_path, cached_buf_stat
+            with common._buffer_lock():
+                path, _, _, buffer_state, pending, _ = policy._pending_snapshot(dataset, session)
+                buf_stat = _path_stat_sig(path)
+            if confirmed_batch:
+                pending = _prune_confirmed_from_list(pending, confirmed_batch, ambiguous_key, strict=False)
+            index = {}
+            for item in pending:
+                index.setdefault(entry_key(item), []).append(item)
+            cached_token_index = index
+            cached_buffer_state = buffer_state
+            cached_buf_path = path
+            cached_buf_stat = buf_stat
+
         def flush_confirmed():
+            nonlocal cached_buffer_state, cached_buf_path, cached_buf_stat
             if not confirmed_batch:
                 return
             with common._buffer_lock():
                 path, key, cache, state, fresh, _ = policy._pending_snapshot(dataset, session)
+                fresh[:] = _prune_confirmed_from_list(fresh, confirmed_batch, ambiguous_key, strict=True)
+                retries = state.get('capture_retries', {})
                 for done_entry in confirmed_batch:
-                    index = next((i for i, e in enumerate(fresh) if e == done_entry), None)
-                    if index is None:
-                        # Entry may have been stamped ambiguous on disk right before HTTP send.
-                        stamped = {**done_entry, common._AMBIGUOUS_KEY: True}
-                        index = next((i for i, e in enumerate(fresh) if e == stamped), None)
-                    if index is None:
-                        raise _ConfirmedQueueChanged()
-                    fresh.pop(index)
-                    state.get('capture_retries', {}).pop(capture_entry_key(done_entry), None)
+                    retries.pop(capture_entry_key(done_entry), None)
                 state['pending_entries'] = fresh
                 cache[key] = state
                 common._write_json_file(path, cache)
                 release_entry_hold(policy, state)
+                cached_buffer_state = state
+                cached_buf_path = path
+                cached_buf_stat = _path_stat_sig(path)
             confirmed_batch.clear()
 
         def flush_confirmed_best_effort():
@@ -310,32 +416,34 @@ def save(common, policy, payload, stopped, report=emit):
                 progress('stopped' if reason == 'user_stopped' else 'paused', reason)
                 return
             token = tokens[0]
-            with common._buffer_lock():
-                _, _, _, buffer_state, pending, _ = policy._pending_snapshot(dataset, session)
-                if confirmed_batch:
-                    # Exclude entries already confirmed in-memory and pending batch flush.
-                    remaining_pending = list(pending)
-                    for done_entry in confirmed_batch:
-                        idx = next((i for i, e in enumerate(remaining_pending) if e == done_entry), None)
-                        if idx is None:
-                            stamped = {**done_entry, common._AMBIGUOUS_KEY: True}
-                            idx = next((i for i, e in enumerate(remaining_pending) if e == stamped), None)
-                        if idx is not None:
-                            remaining_pending.pop(idx)
-                    pending = remaining_pending
-                matches = [e for e in pending if entry_key(e) == token]
-                entry = next((dict(e) for e in matches if not e.get(common._AMBIGUOUS_KEY) or numbered(e)),
-                             dict(matches[0]) if matches else None)
+            if (
+                cached_token_index is None
+                or (cached_buf_path is not None and _path_stat_sig(cached_buf_path) != cached_buf_stat)
+            ):
+                _reload_snapshot_index()
+            buffer_state = cached_buffer_state
+            matches = cached_token_index.get(token)
+            if matches:
+                match_idx = next(
+                    (i for i, e in enumerate(matches) if not e.get(ambiguous_key) or numbered(e)),
+                    0,
+                )
+                matched_ref = matches[match_idx]
+                entry = dict(matched_ref)
+            else:
+                match_idx = -1
+                matched_ref = None
+                entry = None
             if entry is None:
                 # Another lawful sender/discard may have consumed it. Do not
                 # claim our POST succeeded, and never send the cached body.
                 handled += 1
-                tokens.pop(0)
+                tokens.popleft()
                 progress()
                 continue
-            if entry.get(common._AMBIGUOUS_KEY) and not numbered(entry):
+            if entry.get(ambiguous_key) and not numbered(entry):
                 isolated += 1
-                tokens.pop(0)
+                tokens.popleft()
                 progress()
                 continue
             if entry_held(buffer_state, entry):
@@ -344,7 +452,7 @@ def save(common, policy, payload, stopped, report=emit):
                     rejected += 1
                 else:
                     deferred += 1
-                tokens.pop(0)
+                tokens.popleft()
                 progress()
                 continue
             raw = {k: v for k, v in entry.items() if k not in common._BUFFER_META_KEYS}
@@ -353,7 +461,7 @@ def save(common, policy, payload, stopped, report=emit):
                 # send scope. Filtering is neither a save nor an unknown POST.
                 isolated += 1
                 filtered += 1
-                tokens.pop(0)
+                tokens.popleft()
                 progress()
                 continue
             outgoing = sanitize(raw)
@@ -362,15 +470,20 @@ def save(common, policy, payload, stopped, report=emit):
             except (ValueError, TypeError, RecursionError):
                 flush_confirmed()
                 retain_failure(common, policy, dataset, session, entry, rejected=True,
-                               reason='capture_payload_unserializable', was_ambiguous=bool(entry.get(common._AMBIGUOUS_KEY)))
+                               reason='capture_payload_unserializable', was_ambiguous=bool(entry.get(ambiguous_key)))
+                cached_token_index = None
                 isolated += 1
                 rejected += 1
-                tokens.pop(0)
+                tokens.popleft()
                 progress()
                 continue
-            was_ambiguous = bool(entry.get(common._AMBIGUOUS_KEY))
+            was_ambiguous = bool(entry.get(ambiguous_key))
             # Existing official journal is the single crash/unknown boundary.
             policy.stamp_pending_entry(dataset, session, entry, True)
+            matched_ref.clear()
+            matched_ref.update(entry)
+            if cached_buf_path is not None:
+                cached_buf_stat = _path_stat_sig(cached_buf_path)
             try:
                 common.remember_entry_via_http(dataset, session, outgoing, timeout=12)
             except policy.NotReady as error:
@@ -379,9 +492,10 @@ def save(common, policy, payload, stopped, report=emit):
                 # original durable number exists; scope failures stay paused.
                 if numbered(entry) and str(error) == 'capture_receipt_unconfirmed':
                     retain_failure(common, policy, dataset, session, entry)
+                    cached_token_index = None
                     isolated += 1
                     deferred += 1
-                    tokens.pop(0)
+                    tokens.popleft()
                     progress()
                     continue
                 if not numbered(entry):
@@ -401,8 +515,9 @@ def save(common, policy, payload, stopped, report=emit):
                 elif numbered(entry):
                     retain_failure(common, policy, dataset, session, entry, status=error.code)
                     deferred += 1
+                cached_token_index = None
                 isolated += 1
-                tokens.pop(0)
+                tokens.popleft()
                 progress()
                 continue
             except Exception:
@@ -410,12 +525,16 @@ def save(common, policy, payload, stopped, report=emit):
                 if numbered(entry):
                     retain_failure(common, policy, dataset, session, entry)
                     deferred += 1
+                cached_token_index = None
                 isolated += 1
-                tokens.pop(0)
+                tokens.popleft()
                 progress()
                 continue
             saved += 1
-            tokens.pop(0)
+            tokens.popleft()
+            matches.pop(match_idx)
+            if not matches:
+                cached_token_index.pop(token, None)
             confirmed_batch.append(entry)
             if len(confirmed_batch) >= FLUSH_BATCH_SIZE:
                 flush_confirmed()

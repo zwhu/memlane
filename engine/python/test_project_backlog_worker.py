@@ -618,6 +618,38 @@ class WorkerQueueIsolationTests(unittest.TestCase):
                     self.assertEqual([message for message, _ in fixture.calls], [first["_capture_id"]])
                     self.assertEqual(fixture.read()["pending_entries"], [] if change == "removed_before_save" else [replacement])
 
+    def test_save_long_queue_uses_index_without_per_token_full_reread(self):
+        with tempfile.TemporaryDirectory() as directory:
+            entries = [qa(f"item-{i:03d}") for i in range(65)]
+            with WorkerDrainFixture(directory, entries) as fixture:
+                frozen = review(fixture.common, fixture.policy, DATASET, HOST)["tokens"]
+                snapshot_calls = [0]
+                in_stamp = [0]
+                orig_snapshot = fixture.policy._pending_snapshot
+                orig_stamp = fixture.policy.stamp_pending_entry
+
+                def counting_snapshot(*args, **kwargs):
+                    if not in_stamp[0]:
+                        snapshot_calls[0] += 1
+                    return orig_snapshot(*args, **kwargs)
+
+                def wrapped_stamp(*args, **kwargs):
+                    in_stamp[0] += 1
+                    try:
+                        return orig_stamp(*args, **kwargs)
+                    finally:
+                        in_stamp[0] -= 1
+
+                with patch.object(fixture.policy, "_pending_snapshot", side_effect=counting_snapshot), \
+                     patch.object(fixture.policy, "stamp_pending_entry", side_effect=wrapped_stamp):
+                    result = self.run_save(fixture, tokens=frozen)
+                self.assertEqual((result["status"], result["saved"], result["handled"], result["isolated"], result["remaining"]),
+                                 ("completed", 65, 0, 0, 0))
+                self.assertEqual(fixture.read()["pending_entries"], [])
+                self.assertEqual(len(fixture.calls), 65)
+                # 1 initial index load + 7 batch flushes (65 / 10 = 7) + 1 run_save post-check = 9, NOT 65+!
+                self.assertEqual(snapshot_calls[0], 9)
+
     def test_check_consumes_only_verified_original_receipts_without_any_put(self):
         """Preserved receipt boundary: matching content never confirms an original ID."""
         for mismatch in ("absent", "message_id", "dataset_id", "session_id", "payload_sha256"):

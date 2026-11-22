@@ -20,7 +20,6 @@ from service_monitor import (
     ServiceMonitor,
     backlog_files_count,
     default_sample_process,
-    largest_graph_db_bytes,
     read_log_tail,
     recent_processing_duration_ms,
 )
@@ -483,6 +482,52 @@ class ServiceMonitorTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(snap4['summary']['storage_breakdown']['data_dir_file_count'], 3)
                 self.assertEqual(snap4['summary']['storage_breakdown']['data_dir_bytes'], 500)
         finally:
+            await monitor.close()
+
+    async def test_cold_start_concurrent_snapshots_coalesce_and_dead_code_removed(self):
+        import asyncio
+        import service_monitor
+
+        self.assertFalse(hasattr(service_monitor, 'largest_graph_db_bytes'))
+
+        async def probe(_url):
+            return True, 200, ''
+
+        entered = threading.Event()
+        release = threading.Event()
+        real_sample = service_monitor.sample_storage_breakdown
+        calls = {'n': 0}
+
+        def slow_sample(official_data, state_dir):
+            calls['n'] += 1
+            entered.set()
+            release.wait(timeout=3.0)
+            return real_sample(official_data, state_dir)
+
+        monitor = ServiceMonitor(
+            self.config,
+            registry=self.registry,
+            probe_http=probe,
+            sample_process=lambda pid: {'pid': pid, 'alive': True, 'rss_bytes': 1024, 'cpu_percent': 0.1},
+            disk_usage=lambda _p: SimpleNamespace(free=80 * 1024 ** 3),
+            clock=lambda: 2000.0,
+            storage_sample_interval=60.0,
+        )
+        try:
+            with patch('service_monitor.sample_storage_breakdown', side_effect=slow_sample):
+                tasks = [asyncio.create_task(monitor.snapshot()) for _ in range(5)]
+                # Wait until the single sampling worker enters slow_sample, then let remaining tasks queue.
+                while not entered.is_set():
+                    await asyncio.sleep(0.005)
+                await asyncio.sleep(0.02)
+                release.set()
+                snaps = await asyncio.gather(*tasks)
+            self.assertEqual(calls['n'], 1, 'concurrent cold snapshots triggered redundant disk walks')
+            for snap in snaps:
+                self.assertEqual(snap['state'], 'ready')
+                self.assertEqual(snap['summary']['storage_breakdown']['sampled_at'], 2000.0)
+        finally:
+            release.set()
             await monitor.close()
 
 

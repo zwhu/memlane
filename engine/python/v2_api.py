@@ -17,6 +17,7 @@ Implements every Phase 1 control-plane endpoint specified in proposal.md §3.5:
 - POST /v2/reading-state/import/commit
 - POST /v2/reading-state/mark-read
 - POST /v2/reading-state/mark-all-read
+- POST /v2/provenance/backfill-legacy-dates
 """
 import asyncio
 import base64
@@ -32,29 +33,34 @@ from pathlib import Path
 import re
 import secrets
 import sqlite3
+import threading
 
 from aiohttp import web
 
 from cache_read_v2 import CacheSessionHydrator
-from catalog_index import CatalogIndex, normalize_utc_ns
+from catalog_index import CatalogIndex, _file_stat_sig
 from local_body_reader import (
     DEFAULT_LIST_JSON_BUDGET_BYTES,
     DEFAULT_OVERVIEW_JSON_BUDGET_BYTES,
     MAX_BODY_BYTES,
+    encode_json_utf8,
     fit_items_to_json_budget,
+    json_utf8_response,
     read_document_body_with_fallback,
     read_local_preview_snippet,
+    verify_official_read_access,
 )
 from processing_notices import processing_notices
 from project_policy import PolicyError
 from provenance_store import _calendar_date
 from reading_state_store import ReadingStateStore
-from session_relations import descendant_ids_for_session, resolve_session_relations
+from session_relations import resolve_session_relations
 from sqlite_ro import (
     id_variants,
     is_valid_uuid,
     iso_text,
     official_sqlite_ro,
+    ro_snapshot,
     uuid_text,
 )
 from v2_lookups import _require_verified_managed_dataset, _safe_session_id
@@ -62,6 +68,8 @@ from v2_lookups import _require_verified_managed_dataset, _safe_session_id
 _MAX_PAGE_LIMIT = 50
 _DEFAULT_PAGE_LIMIT = 30
 _MAX_MESSAGE_SUMMARY_BYTES = 16 * 1024
+_PIPELINE_RUN_SCAN_CHUNK = 128
+_PIPELINE_RUN_SCAN_MAX_CHUNKS = 2
 _MACHINE_NAME_RE = re.compile(
     r'^(?:text_[0-9a-fA-F]{32}(?:\.(?:md|txt))?'
     r'|(?:user_context|memory)-[0-9a-fA-F]{32}(?:\.txt)?'
@@ -266,6 +274,16 @@ def _verified_groups(registry):
     return projects, common
 
 
+def _has_unconfirmed_groups(registry) -> bool:
+    for proj in registry.state.get('projects', {}).values():
+        if isinstance(proj, dict) and proj.get('status') != 'verified':
+            return True
+    common = registry.state.get('common')
+    if isinstance(common, dict) and common.get('dataset_id') and common.get('status') != 'verified':
+        return True
+    return False
+
+
 def _require_verified_project(registry, project_id: str) -> dict:
     project = registry.state.get('projects', {}).get(project_id)
     if project is None:
@@ -275,166 +293,274 @@ def _require_verified_project(registry, project_id: str) -> dict:
     return project
 
 
-def _in_clause(variants):
-    if len(variants) == 1:
-        return '= ?', variants
-    return f"IN ({','.join('?' for _ in variants)})", variants
+def _format_pipeline_run_row(pr, fallback_ds: str = '') -> dict:
+    return {
+        'id': uuid_text(pr[0]),
+        'pipeline_run_id': uuid_text(pr[1]),
+        'parent_operation_id': uuid_text(pr[2]),
+        'dataset_id': uuid_text(pr[3]) or fallback_ds,
+        'kind': 'pipeline' if pr[4] else 'operation',
+        'pipeline_name': pr[4] or '',
+        'operation_name': pr[5] or '',
+        'status': pr[6] or '',
+        'outcome': pr[7] or '',
+        'background': bool(pr[8]),
+        'error_class': pr[9] or '',
+        'origin': pr[10] or '',
+        'created_at': iso_text(pr[11]),
+        'started_at': iso_text(pr[12]),
+        'ended_at': iso_text(pr[13]),
+    }
 
 
-def _read_recent_pipeline_runs(official_data, *, dataset_id: str | None = None, limit: int = 20):
+def _read_recent_pipeline_runs(
+    official_data,
+    *,
+    allowed_datasets: set[str] | list[str] | None = None,
+    dataset_id: str | None = None,
+    limit: int = 20,
+    cache: dict | None = None,
+    cache_lock=None,
+) -> tuple[list[dict], bool]:
+    """Read recent pipeline_runs strictly scoped to verified datasets with ZERO TEMP B-TREE.
+
+    Never performs an unscoped global query (eliminating unconfirmed dataset leakage)
+    and never executes ``WHERE dataset_id = ? ORDER BY created_at DESC`` (which lacks
+    a composite index in Cognee 1.6.7 and triggers TEMP B-TREE on 150k rows).
+    Instead:
+    1. Scans bounded chunks along ``ix_pipeline_runs_created_at_id`` (``ORDER BY created_at DESC, id DESC``)
+       filtering ``dataset_id`` in Python — O(1) chunks for hot datasets, zero TEMP B-TREE.
+    2. If the bounded scan exhausts before finding ``limit + 1`` matches (cold dataset buried
+       under 300k noise runs), falls back to per-``pipeline_name`` seeks on composite index
+       ``ix_pipeline_runs_dataset_pipeline_created_at(dataset_id, pipeline_name, created_at)``.
+    """
     if not official_data:
         return [], False
     db_path = Path(official_data) / 'system' / 'databases' / 'cognee_db'
     if not db_path.is_file() or db_path.is_symlink():
         return [], False
-    runs = []
-    more = False
-    try:
-        with official_sqlite_ro(db_path) as con:
-            if dataset_id:
-                variants = id_variants(dataset_id)
-                ds_sql, ds_params = _in_clause(variants)
-                rows = con.execute(
-                    f'''SELECT id, pipeline_run_id, parent_operation_id, dataset_id,
-                               pipeline_name, operation_name, status, outcome, background,
-                               error_class, origin, created_at, started_at, ended_at
-                        FROM pipeline_runs
-                        WHERE dataset_id {ds_sql}
-                        ORDER BY created_at DESC, id DESC
-                        LIMIT ?''',
-                    (*ds_params, limit + 1),
-                ).fetchall()
-            else:
-                rows = con.execute(
-                    '''SELECT id, pipeline_run_id, parent_operation_id, dataset_id,
-                              pipeline_name, operation_name, status, outcome, background,
-                              error_class, origin, created_at, started_at, ended_at
-                       FROM pipeline_runs
-                       ORDER BY created_at DESC, id DESC
-                       LIMIT ?''',
-                    (limit + 1,),
-                ).fetchall()
-        more = len(rows) > limit
-        for pr in rows[:limit]:
-            runs.append({
-                'id': uuid_text(pr[0]),
-                'pipeline_run_id': uuid_text(pr[1]),
-                'parent_operation_id': uuid_text(pr[2]),
-                'dataset_id': uuid_text(pr[3]) or (dataset_id or ''),
-                'kind': 'pipeline' if pr[4] else 'operation',
-                'pipeline_name': pr[4] or '',
-                'operation_name': pr[5] or '',
-                'status': pr[6] or '',
-                'outcome': pr[7] or '',
-                'background': bool(pr[8]),
-                'error_class': pr[9] or '',
-                'origin': pr[10] or '',
-                'created_at': iso_text(pr[11]),
-                'started_at': iso_text(pr[12]),
-                'ended_at': iso_text(pr[13]),
-            })
-    except (PolicyError, sqlite3.Error):
+
+    target_set: set[str] = set()
+    if dataset_id:
+        c = uuid_text(dataset_id)
+        if c:
+            target_set.add(c)
+    if allowed_datasets is not None:
+        for ds in allowed_datasets:
+            c = uuid_text(ds)
+            if c:
+                target_set.add(c)
+    if not target_set:
         return [], False
+
+    target_sorted = tuple(sorted(target_set))
+    stat_sig = _file_stat_sig(db_path)
+    cache_key = (stat_sig, target_sorted, int(limit))
+    if cache is not None and cache_lock is not None:
+        with cache_lock:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return [dict(item) for item in cached[0]], cached[1]
+
+    allowed_variants: set[str] = set()
+    for ds in target_sorted:
+        allowed_variants.update(id_variants(ds))
+
+    matched_rows: list[tuple] = []
+    seen_ids: set[str] = set()
+    exhausted_table = False
+
+    with official_sqlite_ro(db_path) as con:
+        with ro_snapshot(con):
+            # O(log N) pipeline_runs table fingerprint: skip re-scanning when only cognee_db.data changed!
+            pr_max_row = con.execute('SELECT COALESCE(MAX(rowid), 0) FROM pipeline_runs').fetchone()
+            pr_top_row = con.execute(
+                '''SELECT id, created_at, status, outcome, ended_at
+                   FROM pipeline_runs
+                   ORDER BY created_at DESC, id DESC
+                   LIMIT 1'''
+            ).fetchone()
+            pr_fp = (
+                int(pr_max_row[0] or 0) if pr_max_row else 0,
+                tuple(str(v or '') for v in pr_top_row) if pr_top_row else (),
+            )
+            fp_cache_key = ('pr_fp', pr_fp, target_sorted, int(limit))
+            if cache is not None and cache_lock is not None:
+                with cache_lock:
+                    fp_cached = cache.get(fp_cache_key)
+                    if fp_cached is not None:
+                        c_items, c_more, c_has_active = fp_cached
+                        if not c_has_active:
+                            return [dict(item) for item in c_items], c_more
+
+            # Step 1: Indexed global timeline walk on ix_pipeline_runs_created_at_id
+            last_created = None
+            last_id = None
+            chunk_sz = max(limit * 4, _PIPELINE_RUN_SCAN_CHUNK)
+            for _ in range(_PIPELINE_RUN_SCAN_MAX_CHUNKS):
+                if last_created is None:
+                    rows = con.execute(
+                        '''SELECT id, pipeline_run_id, parent_operation_id, dataset_id,
+                                  pipeline_name, operation_name, status, outcome, background,
+                                  error_class, origin, created_at, started_at, ended_at
+                           FROM pipeline_runs
+                           ORDER BY created_at DESC, id DESC
+                           LIMIT ?''',
+                        (chunk_sz,),
+                    ).fetchall()
+                else:
+                    rows = con.execute(
+                        '''SELECT id, pipeline_run_id, parent_operation_id, dataset_id,
+                                  pipeline_name, operation_name, status, outcome, background,
+                                  error_class, origin, created_at, started_at, ended_at
+                           FROM pipeline_runs
+                           WHERE (created_at, id) < (?, ?)
+                           ORDER BY created_at DESC, id DESC
+                           LIMIT ?''',
+                        (last_created, last_id, chunk_sz),
+                    ).fetchall()
+                if not rows:
+                    exhausted_table = True
+                    break
+                for pr in rows:
+                    if str(pr[3] or '') in allowed_variants:
+                        rid = str(pr[0])
+                        if rid not in seen_ids:
+                            seen_ids.add(rid)
+                            matched_rows.append(pr)
+                            if len(matched_rows) > limit:
+                                break
+                if len(matched_rows) > limit:
+                    break
+                if len(rows) < chunk_sz:
+                    exhausted_table = True
+                    break
+                last_created = rows[-1][11]
+                last_id = rows[-1][0]
+
+            # Step 2: Cold-dataset fallback via O(K log N) loose index scan on ix_pipeline_runs_dataset_pipeline_created_at
+            if len(matched_rows) <= limit and not exhausted_table:
+                fallback_candidates: dict[str, tuple] = {str(pr[0]): pr for pr in matched_rows}
+                for ds in target_sorted:
+                    for ds_var in id_variants(ds):
+                        pnames = [
+                            r[0]
+                            for r in con.execute(
+                                '''WITH RECURSIVE pnames(p) AS (
+                                       SELECT MIN(pipeline_name)
+                                       FROM pipeline_runs
+                                       WHERE dataset_id = ? AND pipeline_name IS NOT NULL
+                                       UNION ALL
+                                       SELECT (
+                                           SELECT MIN(pipeline_name)
+                                           FROM pipeline_runs
+                                           WHERE dataset_id = ? AND pipeline_name > pnames.p
+                                       )
+                                       FROM pnames
+                                       WHERE pnames.p IS NOT NULL
+                                   )
+                                   SELECT p FROM pnames WHERE p IS NOT NULL''',
+                                (ds_var, ds_var),
+                            ).fetchall()
+                        ]
+                        has_null_pname = con.execute(
+                            'SELECT 1 FROM pipeline_runs WHERE dataset_id = ? AND pipeline_name IS NULL LIMIT 1',
+                            (ds_var,),
+                        ).fetchone() is not None
+                        if has_null_pname:
+                            pnames.append(None)
+                        for pname in pnames:
+                            if pname is None:
+                                sub = con.execute(
+                                    '''SELECT id, pipeline_run_id, parent_operation_id, dataset_id,
+                                              pipeline_name, operation_name, status, outcome, background,
+                                              error_class, origin, created_at, started_at, ended_at
+                                       FROM pipeline_runs
+                                       WHERE dataset_id = ? AND pipeline_name IS NULL
+                                       ORDER BY created_at DESC
+                                       LIMIT ?''',
+                                    (ds_var, limit + 1),
+                                ).fetchall()
+                            else:
+                                sub = con.execute(
+                                    '''SELECT id, pipeline_run_id, parent_operation_id, dataset_id,
+                                              pipeline_name, operation_name, status, outcome, background,
+                                              error_class, origin, created_at, started_at, ended_at
+                                       FROM pipeline_runs
+                                       WHERE dataset_id = ? AND pipeline_name = ?
+                                       ORDER BY created_at DESC
+                                       LIMIT ?''',
+                                    (ds_var, pname, limit + 1),
+                                ).fetchall()
+                            for pr in sub:
+                                fallback_candidates[str(pr[0])] = pr
+                matched_rows = sorted(
+                    fallback_candidates.values(),
+                    key=lambda r: (str(r[11] or ''), str(r[0] or '')),
+                    reverse=True,
+                )
+
+    more = len(matched_rows) > limit
+    fallback_ds = dataset_id or ''
+    runs = [_format_pipeline_run_row(pr, fallback_ds) for pr in matched_rows[:limit]]
+    if cache is not None and cache_lock is not None:
+        has_active_run = any((not it.get('ended_at')) and (not it.get('outcome')) for it in runs)
+        with cache_lock:
+            if len(cache) >= 32:
+                cache.clear()
+            snap_runs = [dict(item) for item in runs]
+            cache[cache_key] = (snap_runs, more)
+            cache[fp_cache_key] = (snap_runs, more, has_active_run)
     return runs, more
 
 
-def _read_recent_sessions_for_search(
-    official_data,
-    dataset_to_project: dict[str, str],
-    hydrator: CacheSessionHydrator,
-    *,
-    limit: int = 20,
-) -> list[dict]:
-    if not official_data or not dataset_to_project:
-        return []
-    cognee_db = Path(official_data) / 'system' / 'databases' / 'cognee_db'
-    cache_db = Path(official_data) / 'system' / 'databases' / 'cache.db'
-    if not cognee_db.is_file() or cognee_db.is_symlink():
-        return []
-    variants = []
-    var_to_canon = {}
-    for ds_id in dataset_to_project:
-        for v in id_variants(ds_id):
-            var_to_canon[v] = ds_id
-            variants.append(v)
-    variants = list(dict.fromkeys(variants))
-    if not variants:
-        return []
-    ds_sql, ds_params = _in_clause(variants)
-    sessions = []
-    try:
-        with official_sqlite_ro(cognee_db) as con:
-            for srow in con.execute(
-                f'''SELECT session_id, user_id, dataset_id, agent_id, last_activity_at, started_at
-                    FROM session_records
-                    WHERE dataset_id {ds_sql}
-                    ORDER BY last_activity_at DESC, user_id ASC, session_id ASC
-                    LIMIT ?''',
-                (*ds_params, limit),
-            ):
-                sid = str(srow[0] or '')
-                if not sid:
-                    continue
-                ds_canon = var_to_canon.get(str(srow[2]), uuid_text(srow[2]))
-                sessions.append({
-                    'session_id': sid,
-                    'dataset_id': ds_canon,
-                    'project_id': dataset_to_project.get(ds_canon, ''),
-                    'user_id': uuid_text(srow[1]),
-                    'agent_id': str(srow[3] or ''),
-                    'last_activity_at': iso_text(srow[4]),
-                    'started_at': iso_text(srow[5]),
-                })
-    except (PolicyError, sqlite3.Error):
-        return []
-    if sessions:
-        hydrator.hydrate_sessions(cache_db, sessions)
-    return sessions
+class _SessionRelationsResolver:
+    """Callable relation resolver with O(1) signature caching for ``CatalogIndex.sync``."""
 
+    def __init__(self, registry, codex_config):
+        self._registry = registry
+        self._codex_config = codex_config
 
-def _read_dataset_sessions_with_relations(
-    official_data,
-    dataset_id: str,
-    *,
-    registry=None,
-    codex_config=None,
-) -> tuple[list[dict], dict]:
-    cognee_db = Path(official_data) / 'system' / 'databases' / 'cognee_db'
-    ds_norm = uuid_text(dataset_id)
-    ds_variants = id_variants(ds_norm)
-    ds_sql, ds_params = _in_clause(ds_variants)
-    sessions = []
-    with official_sqlite_ro(cognee_db) as con:
-        for srow in con.execute(
-            f'''SELECT session_id, user_id, dataset_id, agent_id, last_activity_at, started_at
-                FROM session_records
-                WHERE dataset_id {ds_sql}
-                ORDER BY last_activity_at DESC, user_id ASC, session_id ASC''',
-            ds_params,
-        ):
-            sid = str(srow[0] or '')
-            if not sid:
-                continue
-            last_iso = iso_text(srow[4])
-            _, sort_epoch_ns, _ = normalize_utc_ns(last_iso)
-            uid = uuid_text(srow[1])
-            sessions.append({
-                'session_id': sid,
-                'user_id': uid,
-                'dataset_id': ds_norm,
-                'agent_id': str(srow[3] or ''),
-                'last_activity_at': last_iso,
-                'started_at': iso_text(srow[5]),
-                '_sort_ts_ns': sort_epoch_ns,
-            })
-    relations = {}
-    if sessions and (registry is not None or codex_config):
-        relations = resolve_session_relations(
-            [s['session_id'] for s in sessions],
-            registry=registry,
-            codex_config=codex_config,
+    def relation_sig(self, _dataset_id: str) -> str:
+        state = getattr(self._registry, 'state', None)
+        persisted = state.get('session_relations') if isinstance(state, dict) else None
+        if isinstance(persisted, dict):
+            n = len(persisted)
+            if n == 0:
+                p_sig = '0'
+            elif n <= 256:
+                h = hashlib.blake2b(digest_size=8)
+                for k in sorted(persisted):
+                    v = persisted[k]
+                    if isinstance(v, dict):
+                        h.update(f"{k}|{v.get('parent_session_id','')}|{v.get('subagent_role','')}|{v.get('nesting_depth',0)}\n".encode('utf-8'))
+                p_sig = f'{n}:{h.hexdigest()}'
+            else:
+                # O(1) fast fingerprint for large synthetic/production maps
+                keys = tuple(persisted.keys())
+                p_sig = f'{n}:{keys[0]}:{keys[n // 2]}:{keys[-1]}'
+        else:
+            p_sig = '0'
+
+        cfg = self._codex_config if isinstance(self._codex_config, dict) else {}
+        host_parts = []
+        for key in ('antigravity_db', 'codex_state_db', 'opencode_db', 'pi_sessions_dir'):
+            val = cfg.get(key)
+            if isinstance(val, (str, Path)) and str(val).strip():
+                p = Path(str(val)).expanduser()
+                try:
+                    st = p.stat()
+                    host_parts.append(f'{key}:{st.st_mtime_ns}:{st.st_size}')
+                except OSError:
+                    host_parts.append(f'{key}:0')
+        return p_sig + '|' + ','.join(host_parts)
+
+    def __call__(self, _dataset_id: str, session_ids: list[str]) -> dict:
+        return resolve_session_relations(
+            session_ids,
+            registry=self._registry,
+            codex_config=self._codex_config,
         )
-    return sessions, relations
 
 
 def _query_raw_records_v2(
@@ -446,55 +572,44 @@ def _query_raw_records_v2(
     kind: str,
     limit: int,
     after_order_key: tuple | None,
-    registry=None,
-    codex_config=None,
 ) -> dict:
-    """Dual-branch independent keyset query + Python heapq.merge (zero UNION ALL TEMP B-TREE)."""
+    """Dual-branch indexed Keyset query + Python ``heapq.merge`` (zero full scan, zero TEMP B-TREE)."""
     cache_db = Path(official_data) / 'system' / 'databases' / 'cache.db'
     session_branch = []
     doc_branch = []
-    all_sessions_by_sid: dict[str, list[dict]] = {}
-    relations = {}
 
     if kind != 'document':
-        all_sessions, relations = _read_dataset_sessions_with_relations(
-            official_data,
+        sess_after = None
+        if after_order_key is not None:
+            last_neg_ts, last_kind_rank, last_uid, last_sid = after_order_key
+            if last_kind_rank == 0:
+                sess_after = (int(last_neg_ts), str(last_uid), str(last_sid))
+            else:
+                # Document came after sessions at the same timestamp -> advance past that timestamp
+                sess_after = (int(last_neg_ts) + 1, '', '')
+        top_sessions = catalog_index.query_top_level_sessions_page(
             dataset_id,
-            registry=registry,
-            codex_config=codex_config,
+            limit=limit + 1,
+            after_key=sess_after,
         )
-        for s in all_sessions:
-            all_sessions_by_sid.setdefault(s['session_id'], []).append(s)
-
-        # Build top-level session branch sorted by (-sort_ts_ns, 0, user_id, session_id)
-        top_sessions = []
-        for s in all_sessions:
-            rel = relations.get(s['session_id'])
-            # Subagents are grouped under their parent session when parent is in the dataset
-            if rel and rel.get('parent_session_id') and rel['parent_session_id'] in all_sessions_by_sid:
-                continue
-            order_key = (-s['_sort_ts_ns'], 0, s['user_id'], s['session_id'])
+        for s in top_sessions:
+            order_key = (int(s['sort_ts_desc_key']), 0, s['user_id'], s['session_id'])
             if after_order_key is not None and order_key <= after_order_key:
                 continue
-            top_sessions.append((order_key, s))
-        top_sessions.sort(key=lambda pair: pair[0])
-        for order_key, s in top_sessions[: limit + 1]:
             session_branch.append({
                 'item_kind': 'session',
-                'sort_ts_ns': s['_sort_ts_ns'],
+                'sort_ts_ns': -int(s['sort_ts_desc_key']),
                 '_order_key': order_key,
                 '_raw_session': s,
             })
 
     if kind != 'session':
-        # Translate global order key into raw_doc branch keyset boundary on idx_cdocs_raw_ts
         doc_after = None
         if after_order_key is not None:
             last_neg_ts, last_kind_rank, _, last_item_id = after_order_key
             if last_kind_rank == 1:
                 doc_after = (int(last_neg_ts), str(last_item_id))
             else:
-                # Session came before docs at the same timestamp -> include docs at sort_ts_desc_key >= last_neg_ts
                 doc_after = (int(last_neg_ts), '')
         raw_docs = catalog_index.query_raw_docs_page(dataset_id, limit=limit + 1, after_key=doc_after)
         for d in raw_docs:
@@ -522,7 +637,7 @@ def _query_raw_records_v2(
     has_more = len(merged) > limit
     page = merged[:limit]
 
-    # Hydrate ONLY the <= limit sessions that landed on this page (plus <=5 preview children each)
+    # Hydrate ONLY the <= limit sessions that landed on this page (plus <=5 indexed preview children each)
     page_sessions_to_hydrate = []
     for entry in page:
         if entry['item_kind'] != 'session':
@@ -539,11 +654,16 @@ def _query_raw_records_v2(
         entry['session'] = s_out
         page_sessions_to_hydrate.append(s_out)
 
-        child_ids = descendant_ids_for_session(raw_s['session_id'], relations) if relations else []
-        children = []
-        for cid in child_ids:
-            for child_row in all_sessions_by_sid.get(cid, ()):
-                rel = relations.get(cid) or {}
+        child_cnt = int(raw_s.get('child_count') or 0)
+        preview_children = []
+        if child_cnt > 0:
+            c_page = catalog_index.query_session_children_page(
+                dataset_id,
+                raw_s['session_id'],
+                user_id=raw_s['user_id'],
+                limit=5,
+            )
+            for child_row in c_page['items']:
                 c_out = {
                     'session_id': child_row['session_id'],
                     'dataset_id': child_row['dataset_id'],
@@ -552,20 +672,20 @@ def _query_raw_records_v2(
                     'last_activity_at': child_row['last_activity_at'],
                     'started_at': child_row['started_at'],
                     'is_subagent': True,
-                    'parent_session_id': rel.get('parent_session_id', ''),
-                    'subagent_role': rel.get('subagent_role', ''),
-                    'nesting_depth': int(rel.get('nesting_depth') or 1),
-                    '_sort_ts_ns': child_row['_sort_ts_ns'],
+                    'parent_session_id': child_row['parent_session_id'],
+                    'subagent_role': child_row['subagent_role'],
+                    'nesting_depth': int(child_row['nesting_depth'] or 1),
                 }
-                children.append(c_out)
-        children.sort(key=lambda r: (-r['_sort_ts_ns'], r['user_id'], r['session_id']))
-        preview_children = children[:5]
-        for pc in preview_children:
-            pc.pop('_sort_ts_ns', None)
-            page_sessions_to_hydrate.append(pc)
-        s_out['child_count'] = len(children)
+                preview_children.append(c_out)
+                page_sessions_to_hydrate.append(c_out)
+            child_cnt = int(c_page['total_count'])
+            children_has_more = bool(c_page['has_more'])
+        else:
+            children_has_more = False
+
+        s_out['child_count'] = child_cnt
         s_out['children_preview'] = preview_children
-        s_out['children_has_more'] = len(children) > 5
+        s_out['children_has_more'] = children_has_more
 
     cache_ready = hydrator.hydrate_sessions(cache_db, page_sessions_to_hydrate) if page_sessions_to_hydrate else (
         cache_db.is_file() and not cache_db.is_symlink()
@@ -598,64 +718,46 @@ def _query_raw_records_v2(
 
 def _query_session_children_v2(
     official_data,
+    catalog_index: CatalogIndex,
     hydrator: CacheSessionHydrator,
     dataset_id: str,
     parent_session_id: str,
     *,
+    user_id: str = '',
     limit: int,
     after_key: tuple | None,
-    registry=None,
-    codex_config=None,
 ) -> dict:
     cache_db = Path(official_data) / 'system' / 'databases' / 'cache.db'
-    all_sessions, relations = _read_dataset_sessions_with_relations(
-        official_data,
+    c_page = catalog_index.query_session_children_page(
         dataset_id,
-        registry=registry,
-        codex_config=codex_config,
+        parent_session_id,
+        user_id=user_id,
+        limit=limit,
+        after_key=after_key,
     )
-    by_sid: dict[str, list[dict]] = {}
-    for s in all_sessions:
-        by_sid.setdefault(s['session_id'], []).append(s)
-
-    if parent_session_id not in by_sid:
-        raise PolicyError('session_not_found', 404)
-
-    child_ids = descendant_ids_for_session(parent_session_id, relations)
-    children = []
-    for cid in child_ids:
-        rel = relations.get(cid) or {}
-        for child_row in by_sid.get(cid, ()):
-            sort_key = (-child_row['_sort_ts_ns'], child_row['user_id'], child_row['session_id'])
-            children.append((
-                sort_key,
-                {
-                    'session_id': child_row['session_id'],
-                    'dataset_id': child_row['dataset_id'],
-                    'user_id': child_row['user_id'],
-                    'agent_id': child_row['agent_id'],
-                    'last_activity_at': child_row['last_activity_at'],
-                    'started_at': child_row['started_at'],
-                    'is_subagent': True,
-                    'parent_session_id': rel.get('parent_session_id', ''),
-                    'subagent_role': rel.get('subagent_role', ''),
-                    'nesting_depth': int(rel.get('nesting_depth') or 1),
-                },
-            ))
-    children.sort(key=lambda pair: pair[0])
-    total_count = len(children)
-
-    filtered = [pair for pair in children if after_key is None or pair[0] > after_key]
-    has_more = len(filtered) > limit
-    page_pairs = filtered[:limit]
-    page_items = [pair[1] for pair in page_pairs]
+    page_items = []
+    order_keys = []
+    for child_row in c_page['items']:
+        order_keys.append((int(child_row['sort_ts_desc_key']), child_row['user_id'], child_row['session_id']))
+        page_items.append({
+            'session_id': child_row['session_id'],
+            'dataset_id': child_row['dataset_id'],
+            'user_id': child_row['user_id'],
+            'agent_id': child_row['agent_id'],
+            'last_activity_at': child_row['last_activity_at'],
+            'started_at': child_row['started_at'],
+            'is_subagent': True,
+            'parent_session_id': child_row['parent_session_id'],
+            'subagent_role': child_row['subagent_role'],
+            'nesting_depth': int(child_row['nesting_depth'] or 1),
+        })
     if page_items:
         hydrator.hydrate_sessions(cache_db, page_items)
     return {
-        'total_count': total_count,
+        'total_count': int(c_page['total_count']),
         'items': page_items,
-        'order_keys': [pair[0] for pair in page_pairs],
-        'has_more': has_more,
+        'order_keys': order_keys,
+        'has_more': bool(c_page['has_more']),
     }
 
 
@@ -742,8 +844,14 @@ def attach_v2_api(
         provenance_path=provenance_path,
         recall_path=recall_path,
     )
-    read_store = reading_state or ReadingStateStore(state_dir / 'ui-reading-state.sqlite3')
+    read_store = reading_state or ReadingStateStore(
+        state_dir / 'ui-reading-state.sqlite3',
+        state_dir=state_dir,
+    )
     hydrator = CacheSessionHydrator()
+    rel_resolver = _SessionRelationsResolver(registry, codex_config)
+    pipeline_runs_cache: dict = {}
+    pipeline_runs_lock = threading.Lock()
     cursor_secret = (
         hashlib.sha256(('memlane-v2-cursor:' + manager_token).encode('utf-8')).digest()
         if manager_token
@@ -752,6 +860,7 @@ def attach_v2_api(
     cursors = CursorCodec(cursor_secret)
     handles = V2APIHandles(cat, read_store)
     handles.backlog = backlog
+    handles.relations_resolver = rel_resolver
     db_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='v2-api-read')
 
     async def _run_db(fn, *args, **kwargs):
@@ -775,7 +884,10 @@ def attach_v2_api(
         managed_ds = [p['dataset_id'] for p in projects]
         if common is not None:
             managed_ds.append(common['dataset_id'])
-        await _run_db(cat.sync, managed_ds)
+        if hasattr(cat, 'sync_async'):
+            await cat.sync_async(managed_ds, relations_resolver=rel_resolver)
+        else:
+            await _run_db(cat.sync, managed_ds, relations_resolver=rel_resolver)
         return projects, common
 
     # 1. GET /v2/datasets/{ds}/documents/{doc}/body
@@ -796,9 +908,9 @@ def attach_v2_api(
             official=getattr(registry, 'official', None),
             max_bytes=MAX_BODY_BYTES,
         )
-        return web.json_response(result)
+        return json_utf8_response(result)
 
-    # 2. GET /v2/overview/bootstrap (<= 128 KiB serialized JSON budget)
+    # 2. GET /v2/overview/bootstrap (<= 128 KiB serialized UTF-8 JSON budget)
     async def overview_bootstrap_v2(request):
         _require_manager(request)
         if set(request.query) - {'days', 'recent_limit', 'activity_limit', 'recall_limit'}:
@@ -812,9 +924,15 @@ def attach_v2_api(
         projects, common = await _ensure_synced()
         allowed_ds = [p['dataset_id'] for p in projects]
         ds_to_proj = {p['dataset_id']: p['id'] for p in projects}
+        allowed_run_ds = set(allowed_ds)
+        for proj in projects:
+            code_ds = proj.get('code_dataset_id')
+            if proj.get('code_enabled') and code_ds and is_valid_uuid(str(code_ds)):
+                allowed_run_ds.add(uuid_text(code_ds))
         if common is not None:
             allowed_ds.append(common['dataset_id'])
             ds_to_proj[common['dataset_id']] = ''
+            allowed_run_ds.add(common['dataset_id'])
 
         def _build_sync():
             meta = cat.meta()
@@ -824,11 +942,15 @@ def attach_v2_api(
 
             proj_summaries = []
             total_knowledge = 0
+            total_raw_count = 0
             for proj in projects:
                 ds = proj['dataset_id']
                 sinfo = sync_map.get(ds) or {}
                 k_cnt = int(sinfo.get('knowledge_count', 0))
+                raw_cnt = int(sinfo.get('raw_doc_count', 0))
+                sess_cnt = int(sinfo.get('session_count', 0))
                 total_knowledge += k_cnt
+                total_raw_count += sess_cnt + raw_cnt
                 unread_cnt = (
                     len(read_store.compute_unread_ids(identity, proj['id'], ds, cat))
                     if identity
@@ -838,7 +960,8 @@ def attach_v2_api(
                     'project_id': proj['id'],
                     'dataset_id': ds,
                     'knowledge_count': k_cnt,
-                    'raw_doc_count': int(sinfo.get('raw_doc_count', 0)),
+                    'raw_doc_count': raw_cnt,
+                    'session_count': sess_cnt,
                     'unread_count': unread_cnt,
                     'catalog_version': str(sinfo.get('catalog_version', '')),
                 })
@@ -848,14 +971,16 @@ def attach_v2_api(
                 cds = common['dataset_id']
                 cinfo = sync_map.get(cds) or {}
                 ck_cnt = int(cinfo.get('knowledge_count', 0))
+                c_raw_cnt = int(cinfo.get('raw_doc_count', 0))
                 total_knowledge += ck_cnt
+                total_raw_count += c_raw_cnt
                 common_summary = {
                     'dataset_id': cds,
                     'knowledge_count': ck_cnt,
+                    'raw_doc_count': c_raw_cnt,
                     'catalog_version': str(cinfo.get('catalog_version', '')),
                 }
 
-            # Resolve unread flags per project for the <= 20 recent items
             unread_flags = {}
             if identity and recent_raw:
                 by_ds: dict[str, list[dict]] = {}
@@ -877,12 +1002,32 @@ def attach_v2_api(
                 )
                 for d in recent_raw
             ]
-            runs, runs_more = _read_recent_pipeline_runs(official_data, limit=activity_limit)
-            return meta, total_knowledge, day_buckets, proj_summaries, common_summary, recent_items, runs, runs_more
+            try:
+                runs, runs_more = _read_recent_pipeline_runs(
+                    official_data,
+                    allowed_datasets=allowed_run_ds,
+                    limit=activity_limit,
+                    cache=pipeline_runs_cache,
+                    cache_lock=pipeline_runs_lock,
+                )
+            except (PolicyError, sqlite3.Error):
+                runs, runs_more = [], False
+            return (
+                meta,
+                total_knowledge,
+                total_raw_count,
+                day_buckets,
+                proj_summaries,
+                common_summary,
+                recent_items,
+                runs,
+                runs_more,
+            )
 
         (
             meta,
             total_knowledge,
+            total_raw_count,
             day_buckets,
             proj_summaries,
             common_summary,
@@ -899,8 +1044,6 @@ def attach_v2_api(
             agents_snapshot,
             recall_limit,
         )
-        # Pre-cap oversized recall hit lists before JSON budget binary search to avoid
-        # multi-hundred-KiB serialization churn under the Python GIL.
         total_rec_hits = sum(len(ev.get('hits') or ()) for ev in rec_events)
         if total_rec_hits > 100:
             capped_events = []
@@ -917,6 +1060,7 @@ def attach_v2_api(
                 'generation': meta['generation'],
                 'local_tz_name': meta['local_tz_name'],
                 'total_knowledge_count': total_knowledge,
+                'total_raw_count': total_raw_count,
                 'day_buckets': day_buckets,
                 'projects': proj_summaries,
                 'common': common_summary,
@@ -933,11 +1077,7 @@ def attach_v2_api(
             recent_items,
             max_json_bytes=DEFAULT_OVERVIEW_JSON_BUDGET_BYTES,
         )
-        # Hard-enforce 128 KiB serialized budget even when recall_events have large hit lists.
-        def _serialized_len(obj) -> int:
-            return len(json.dumps(obj, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
-
-        if _serialized_len(payload) > DEFAULT_OVERVIEW_JSON_BUDGET_BYTES:
+        if len(encode_json_utf8(payload)) > DEFAULT_OVERVIEW_JSON_BUDGET_BYTES:
             trimmed_rec = []
             for ev in payload['recall_events']:
                 ev_copy = dict(ev)
@@ -946,13 +1086,13 @@ def attach_v2_api(
                     payload['recall_events_more'] = True
                 trimmed_rec.append(ev_copy)
             payload['recall_events'] = trimmed_rec
-            while payload['recall_events'] and _serialized_len(payload) > DEFAULT_OVERVIEW_JSON_BUDGET_BYTES:
+            while payload['recall_events'] and len(encode_json_utf8(payload)) > DEFAULT_OVERVIEW_JSON_BUDGET_BYTES:
                 payload['recall_events'].pop()
                 payload['recall_events_more'] = True
-            while payload['pipeline_runs'] and _serialized_len(payload) > DEFAULT_OVERVIEW_JSON_BUDGET_BYTES:
+            while payload['pipeline_runs'] and len(encode_json_utf8(payload)) > DEFAULT_OVERVIEW_JSON_BUDGET_BYTES:
                 payload['pipeline_runs'].pop()
                 payload['pipeline_runs_more'] = True
-        return web.json_response(payload)
+        return json_utf8_response(payload)
 
     # 3. GET /v2/overview/day
     async def overview_day_v2(request):
@@ -1040,12 +1180,15 @@ def attach_v2_api(
             formatted,
             max_json_bytes=DEFAULT_LIST_JSON_BUDGET_BYTES,
         )
-        return web.json_response(payload)
+        return json_utf8_response(payload)
 
     # 4. GET /v2/projects/{id}/knowledge
     async def project_knowledge_v2(request):
         _require_manager(request)
-        allowed_q = {'sort', 'category', 'unread_only', 'recall_agent_id', 'recall_event_id', 'limit', 'cursor'}
+        allowed_q = {
+            'sort', 'category', 'unread_only', 'recall_agent_id',
+            'recall_event_id', 'limit', 'cursor', 'direction', 'anchor_doc_id',
+        }
         if set(request.query) - allowed_q:
             raise PolicyError('invalid_knowledge_query', 400)
 
@@ -1069,8 +1212,20 @@ def attach_v2_api(
         if recall_event and not is_valid_uuid(recall_event):
             raise PolicyError('invalid_recall_filter', 400)
 
+        direction = (request.query.get('direction') or 'next').strip()
+        if direction not in ('next', 'prev'):
+            raise PolicyError('invalid_knowledge_query', 400)
+        anchor_doc_id = (request.query.get('anchor_doc_id') or '').strip()
+        if anchor_doc_id and not is_valid_uuid(anchor_doc_id):
+            raise PolicyError('invalid_document_id', 400)
+
         limit = _parse_limit(request.query.get('limit'))
         raw_cursor = (request.query.get('cursor') or '').strip()
+        if anchor_doc_id and raw_cursor:
+            raise PolicyError('invalid_knowledge_query', 400)
+        if direction == 'prev' and not raw_cursor:
+            raise PolicyError('invalid_cursor', 400)
+
         identity = _reading_identity(request)
         if unread_only and not identity:
             raise PolicyError('reading_identity_required', 400)
@@ -1082,6 +1237,7 @@ def attach_v2_api(
             recall_event=recall_event,
         )
         after_key = None
+        before_key = None
         if raw_cursor:
             keys = cursors.decode(
                 raw_cursor,
@@ -1093,19 +1249,24 @@ def attach_v2_api(
             if sort_mode == 'recall':
                 if len(keys) != 3:
                     raise PolicyError('invalid_cursor', 400)
-                after_key = (int(keys[0]), int(keys[1]), str(keys[2]))
+                parsed_key = (int(keys[0]), int(keys[1]), str(keys[2]))
             else:
                 if len(keys) != 2:
                     raise PolicyError('invalid_cursor', 400)
-                after_key = (int(keys[0]), str(keys[1]))
+                parsed_key = (int(keys[0]), str(keys[1]))
+            if direction == 'prev':
+                before_key = parsed_key
+            else:
+                after_key = parsed_key
 
+        await verify_official_read_access(getattr(registry, 'official', None), dataset_id)
         await _ensure_synced()
 
-        recall_ids = None
-        if recall_agent and recall_event:
-            recall_ids = _recall_event_doc_ids(recall_store, dataset_id, recall_agent, recall_event)
-
         def _query():
+            recall_ids = None
+            if recall_agent and recall_event:
+                recall_ids = _recall_event_doc_ids(recall_store, dataset_id, recall_agent, recall_event)
+
             gen = cat.generation()
             sinfo = cat.dataset_sync_info(dataset_id) or {}
             cat_ver = str(sinfo.get('catalog_version', ''))
@@ -1131,7 +1292,11 @@ def attach_v2_api(
                 allowed_doc_ids=allowed_doc_ids,
                 limit=limit,
                 after_key=after_key,
+                before_key=before_key,
+                anchor_doc_id=anchor_doc_id,
             )
+            if res is None:
+                raise PolicyError('document_not_found', 404)
             page_rows = res['items']
             page_unread = (
                 {d['doc_id']: True for d in page_rows}
@@ -1167,7 +1332,8 @@ def attach_v2_api(
                 res['category_counts'],
                 formatted,
                 cursor_keys,
-                res['has_more'],
+                bool(res['has_more']),
+                bool(res['has_prev']),
             )
 
         (
@@ -1179,11 +1345,14 @@ def attach_v2_api(
             formatted,
             cursor_keys,
             base_has_more,
+            base_has_prev,
         ) = await _run_db(_query)
 
         def _make_payload(subset, trimmed):
             eff_more = bool(base_has_more or trimmed)
+            eff_prev = bool(base_has_prev)
             nxt = ''
+            prv = ''
             if eff_more and subset:
                 nxt = cursors.encode(
                     endpoint='project_knowledge',
@@ -1192,6 +1361,15 @@ def attach_v2_api(
                     filter_digest=f_digest,
                     generation_hint=gen,
                     keys=cursor_keys[len(subset) - 1],
+                )
+            if eff_prev and subset:
+                prv = cursors.encode(
+                    endpoint='project_knowledge',
+                    dataset_id=dataset_id,
+                    sort_mode=sort_mode,
+                    filter_digest=f_digest,
+                    generation_hint=gen,
+                    keys=cursor_keys[0],
                 )
             return {
                 'project_id': project_id,
@@ -1205,19 +1383,61 @@ def attach_v2_api(
                 'items': subset,
                 'next_cursor': nxt,
                 'has_more': eff_more,
+                'prev_cursor': prv,
+                'has_prev': eff_prev,
             }
 
-        payload, _, _ = fit_items_to_json_budget(
+        payload, _, trimmed = fit_items_to_json_budget(
             _make_payload,
             formatted,
             max_json_bytes=DEFAULT_LIST_JSON_BUDGET_BYTES,
         )
-        return web.json_response(payload)
+        # If budget trimming dropped anchor_doc_id off the right, re-window centered around anchor_doc_id
+        if anchor_doc_id and trimmed and not any(it['doc_id'] == uuid_text(anchor_doc_id) for it in payload['items']):
+            canon_anchor = uuid_text(anchor_doc_id)
+            a_idx = next((i for i, it in enumerate(formatted) if it['doc_id'] == canon_anchor), -1)
+            if a_idx >= 0:
+                win_len = max(1, len(payload['items']))
+                lo = max(0, a_idx - win_len // 2)
+                hi = min(len(formatted), lo + win_len)
+                lo = max(0, hi - win_len)
+                sub_items = formatted[lo:hi]
+                sub_keys = cursor_keys[lo:hi]
+                eff_more = bool(base_has_more or hi < len(formatted))
+                eff_prev = bool(base_has_prev or lo > 0)
+                payload['items'] = sub_items
+                payload['has_more'] = eff_more
+                payload['has_prev'] = eff_prev
+                payload['next_cursor'] = (
+                    cursors.encode(
+                        endpoint='project_knowledge',
+                        dataset_id=dataset_id,
+                        sort_mode=sort_mode,
+                        filter_digest=f_digest,
+                        generation_hint=gen,
+                        keys=sub_keys[-1],
+                    )
+                    if eff_more and sub_items
+                    else ''
+                )
+                payload['prev_cursor'] = (
+                    cursors.encode(
+                        endpoint='project_knowledge',
+                        dataset_id=dataset_id,
+                        sort_mode=sort_mode,
+                        filter_digest=f_digest,
+                        generation_hint=gen,
+                        keys=sub_keys[0],
+                    )
+                    if eff_prev and sub_items
+                    else ''
+                )
+        return json_utf8_response(payload)
 
     # 5. GET /v2/common/knowledge
     async def common_knowledge_v2(request):
         _require_manager(request)
-        if set(request.query) - {'dataset_id', 'common_category', 'limit', 'cursor'}:
+        if set(request.query) - {'dataset_id', 'common_category', 'limit', 'cursor', 'direction', 'anchor_doc_id'}:
             raise PolicyError('invalid_common_query', 400)
         raw_ds = (request.query.get('dataset_id') or '').strip()
         if raw_ds:
@@ -1233,11 +1453,23 @@ def attach_v2_api(
         common_cat = (request.query.get('common_category') or 'all').strip()
         if common_cat not in ('all', 'preference', 'experience'):
             raise PolicyError('invalid_common_category', 400)
+        direction = (request.query.get('direction') or 'next').strip()
+        if direction not in ('next', 'prev'):
+            raise PolicyError('invalid_common_query', 400)
+        anchor_doc_id = (request.query.get('anchor_doc_id') or '').strip()
+        if anchor_doc_id and not is_valid_uuid(anchor_doc_id):
+            raise PolicyError('invalid_document_id', 400)
+
         limit = _parse_limit(request.query.get('limit'))
         raw_cursor = (request.query.get('cursor') or '').strip()
+        if anchor_doc_id and raw_cursor:
+            raise PolicyError('invalid_common_query', 400)
+        if direction == 'prev' and not raw_cursor:
+            raise PolicyError('invalid_cursor', 400)
 
         f_digest = _filter_digest(common_category=common_cat)
         after_key = None
+        before_key = None
         if raw_cursor:
             keys = cursors.decode(
                 raw_cursor,
@@ -1248,8 +1480,13 @@ def attach_v2_api(
             )
             if len(keys) != 2:
                 raise PolicyError('invalid_cursor', 400)
-            after_key = (int(keys[0]), str(keys[1]))
+            parsed_key = (int(keys[0]), str(keys[1]))
+            if direction == 'prev':
+                before_key = parsed_key
+            else:
+                after_key = parsed_key
 
+        await verify_official_read_access(getattr(registry, 'official', None), dataset_id)
         await _ensure_synced()
 
         def _query():
@@ -1261,7 +1498,11 @@ def attach_v2_api(
                 common_category=common_cat,
                 limit=limit,
                 after_key=after_key,
+                before_key=before_key,
+                anchor_doc_id=anchor_doc_id,
             )
+            if res is None:
+                raise PolicyError('document_not_found', 404)
             rows = res['items']
             formatted = [
                 _format_knowledge_item(
@@ -1273,13 +1514,33 @@ def attach_v2_api(
                 for d in rows
             ]
             ckeys = [[d['sort_ts_desc_key'], d['doc_id']] for d in rows]
-            return gen, cat_ver, res['total_filtered'], res['category_counts'], formatted, ckeys, res['has_more']
+            return (
+                gen,
+                cat_ver,
+                res['total_filtered'],
+                res['category_counts'],
+                formatted,
+                ckeys,
+                bool(res['has_more']),
+                bool(res['has_prev']),
+            )
 
-        gen, cat_ver, total_filtered, category_counts, formatted, ckeys, base_has_more = await _run_db(_query)
+        (
+            gen,
+            cat_ver,
+            total_filtered,
+            category_counts,
+            formatted,
+            ckeys,
+            base_has_more,
+            base_has_prev,
+        ) = await _run_db(_query)
 
         def _make_payload(subset, trimmed):
             eff_more = bool(base_has_more or trimmed)
+            eff_prev = bool(base_has_prev)
             nxt = ''
+            prv = ''
             if eff_more and subset:
                 nxt = cursors.encode(
                     endpoint='common_knowledge',
@@ -1288,6 +1549,15 @@ def attach_v2_api(
                     filter_digest=f_digest,
                     generation_hint=gen,
                     keys=ckeys[len(subset) - 1],
+                )
+            if eff_prev and subset:
+                prv = cursors.encode(
+                    endpoint='common_knowledge',
+                    dataset_id=dataset_id,
+                    sort_mode='updated_ts',
+                    filter_digest=f_digest,
+                    generation_hint=gen,
+                    keys=ckeys[0],
                 )
             return {
                 'dataset_id': dataset_id,
@@ -1299,14 +1569,55 @@ def attach_v2_api(
                 'items': subset,
                 'next_cursor': nxt,
                 'has_more': eff_more,
+                'prev_cursor': prv,
+                'has_prev': eff_prev,
             }
 
-        payload, _, _ = fit_items_to_json_budget(
+        payload, _, trimmed = fit_items_to_json_budget(
             _make_payload,
             formatted,
             max_json_bytes=DEFAULT_LIST_JSON_BUDGET_BYTES,
         )
-        return web.json_response(payload)
+        if anchor_doc_id and trimmed and not any(it['doc_id'] == uuid_text(anchor_doc_id) for it in payload['items']):
+            canon_anchor = uuid_text(anchor_doc_id)
+            a_idx = next((i for i, it in enumerate(formatted) if it['doc_id'] == canon_anchor), -1)
+            if a_idx >= 0:
+                win_len = max(1, len(payload['items']))
+                lo = max(0, a_idx - win_len // 2)
+                hi = min(len(formatted), lo + win_len)
+                lo = max(0, hi - win_len)
+                sub_items = formatted[lo:hi]
+                sub_keys = ckeys[lo:hi]
+                eff_more = bool(base_has_more or hi < len(formatted))
+                eff_prev = bool(base_has_prev or lo > 0)
+                payload['items'] = sub_items
+                payload['has_more'] = eff_more
+                payload['has_prev'] = eff_prev
+                payload['next_cursor'] = (
+                    cursors.encode(
+                        endpoint='common_knowledge',
+                        dataset_id=dataset_id,
+                        sort_mode='updated_ts',
+                        filter_digest=f_digest,
+                        generation_hint=gen,
+                        keys=sub_keys[-1],
+                    )
+                    if eff_more and sub_items
+                    else ''
+                )
+                payload['prev_cursor'] = (
+                    cursors.encode(
+                        endpoint='common_knowledge',
+                        dataset_id=dataset_id,
+                        sort_mode='updated_ts',
+                        filter_digest=f_digest,
+                        generation_hint=gen,
+                        keys=sub_keys[0],
+                    )
+                    if eff_prev and sub_items
+                    else ''
+                )
+        return json_utf8_response(payload)
 
     # 6. GET /v2/search/recent
     async def search_recent_v2(request):
@@ -1352,7 +1663,23 @@ def attach_v2_api(
                 )
                 for d in k_rows
             ]
-            s_items = _read_recent_sessions_for_search(official_data, ds_to_proj, hydrator, limit=limit)
+            # Indexed query on catalog_sessions (zero TEMP B-TREE) + cache.db hydration
+            s_rows = cat.query_recent_sessions(allowed_ds, limit=limit)
+            s_items = [
+                {
+                    'session_id': sr['session_id'],
+                    'dataset_id': sr['dataset_id'],
+                    'project_id': ds_to_proj.get(sr['dataset_id'], ''),
+                    'user_id': sr['user_id'],
+                    'agent_id': sr['agent_id'],
+                    'last_activity_at': sr['last_activity_at'],
+                    'started_at': sr['started_at'],
+                }
+                for sr in s_rows
+            ]
+            if s_items and official_data:
+                cache_db = Path(official_data) / 'system' / 'databases' / 'cache.db'
+                hydrator.hydrate_sessions(cache_db, s_items)
             return gen, k_items, s_items
 
         gen, k_items, s_items = await _run_db(_query)
@@ -1369,7 +1696,7 @@ def attach_v2_api(
             k_items,
             max_json_bytes=DEFAULT_OVERVIEW_JSON_BUDGET_BYTES,
         )
-        return web.json_response(payload)
+        return json_utf8_response(payload)
 
     # 7. GET /v2/search/metadata (Channel 1 instant metadata search)
     async def search_metadata_v2(request):
@@ -1444,7 +1771,7 @@ def attach_v2_api(
             formatted,
             max_json_bytes=DEFAULT_LIST_JSON_BUDGET_BYTES,
         )
-        return web.json_response(payload)
+        return json_utf8_response(payload)
 
     # 8. GET /v2/projects/{id}/raw-records
     async def raw_records_v2(request):
@@ -1474,21 +1801,23 @@ def attach_v2_api(
                 raise PolicyError('invalid_cursor', 400)
             after_key = (int(keys[0]), int(keys[1]), str(keys[2]), str(keys[3]))
 
+        await verify_official_read_access(getattr(registry, 'official', None), dataset_id)
         await _ensure_synced()
 
-        res = await asyncio.to_thread(
-            _query_raw_records_v2,
-            official_data,
-            cat,
-            hydrator,
-            dataset_id,
-            kind=kind,
-            limit=limit,
-            after_order_key=after_key,
-            registry=registry,
-            codex_config=codex_config,
-        )
-        gen = await asyncio.to_thread(cat.generation)
+        def _query():
+            gen = cat.generation()
+            res = _query_raw_records_v2(
+                official_data,
+                cat,
+                hydrator,
+                dataset_id,
+                kind=kind,
+                limit=limit,
+                after_order_key=after_key,
+            )
+            return gen, res
+
+        gen, res = await _run_db(_query)
         order_keys = res['order_keys']
 
         def _make_payload(subset, trimmed):
@@ -1519,12 +1848,12 @@ def attach_v2_api(
             res['items'],
             max_json_bytes=DEFAULT_LIST_JSON_BUDGET_BYTES,
         )
-        return web.json_response(payload)
+        return json_utf8_response(payload)
 
     # 9. GET /v2/projects/{id}/raw-records/sessions/{sid}/children
     async def raw_records_session_children_v2(request):
         _require_manager(request)
-        if set(request.query) - {'limit', 'cursor'}:
+        if set(request.query) - {'limit', 'cursor', 'user_id'}:
             raise PolicyError('invalid_raw_records_query', 400)
         project_id = request.match_info['id']
         project = _require_verified_project(registry, project_id)
@@ -1532,10 +1861,13 @@ def attach_v2_api(
         parent_sid = request.match_info['sid']
         if not _safe_session_id(parent_sid):
             raise PolicyError('invalid_session_id', 400)
+        user_id = (request.query.get('user_id') or '').strip()
+        if user_id and not is_valid_uuid(user_id):
+            raise PolicyError('invalid_user_id', 400)
         limit = _parse_limit(request.query.get('limit'))
         raw_cursor = (request.query.get('cursor') or '').strip()
 
-        f_digest = _filter_digest(parent_session_id=parent_sid)
+        f_digest = _filter_digest(parent_session_id=parent_sid, user_id=uuid_text(user_id) if user_id else '')
         after_key = None
         if raw_cursor:
             keys = cursors.decode(
@@ -1549,20 +1881,24 @@ def attach_v2_api(
                 raise PolicyError('invalid_cursor', 400)
             after_key = (int(keys[0]), str(keys[1]), str(keys[2]))
 
-        if not official_data:
-            raise PolicyError('official_store_unavailable', 503)
+        await verify_official_read_access(getattr(registry, 'official', None), dataset_id)
+        await _ensure_synced()
 
-        res = await asyncio.to_thread(
-            _query_session_children_v2,
-            official_data,
-            hydrator,
-            dataset_id,
-            parent_sid,
-            limit=limit,
-            after_key=after_key,
-            registry=registry,
-            codex_config=codex_config,
-        )
+        def _query():
+            gen = cat.generation()
+            res = _query_session_children_v2(
+                official_data,
+                cat,
+                hydrator,
+                dataset_id,
+                parent_sid,
+                user_id=user_id,
+                limit=limit,
+                after_key=after_key,
+            )
+            return gen, res
+
+        gen, res = await _run_db(_query)
         order_keys = res['order_keys']
 
         def _make_payload(subset, trimmed):
@@ -1575,7 +1911,7 @@ def attach_v2_api(
                     dataset_id=dataset_id,
                     sort_mode='child_ts',
                     filter_digest=f_digest,
-                    generation_hint=0,
+                    generation_hint=gen,
                     keys=[lk[0], lk[1], lk[2]],
                 )
             return {
@@ -1593,7 +1929,7 @@ def attach_v2_api(
             res['items'],
             max_json_bytes=DEFAULT_LIST_JSON_BUDGET_BYTES,
         )
-        return web.json_response(payload)
+        return json_utf8_response(payload)
 
     # 10. GET /v2/projects/{id}/message-summary (slim < 16 KiB, zero full knowledge_catalog)
     async def message_summary_v2(request):
@@ -1604,6 +1940,7 @@ def attach_v2_api(
         project = _require_verified_project(registry, project_id)
         dataset_id = project['dataset_id']
         identity = _reading_identity(request)
+        await verify_official_read_access(getattr(registry, 'official', None), dataset_id)
 
         errors = {}
         backlog_job = None
@@ -1614,23 +1951,68 @@ def attach_v2_api(
             return await _read_backlog_slim(handles.backlog, project_id)
 
         async def _load_notices():
-            return await asyncio.to_thread(processing_notices, state_dir / 'runtime-logs', dataset_id)
+            return await _run_db(processing_notices, state_dir / 'runtime-logs', dataset_id)
 
-        async def _load_catalog_and_activity():
+        async def _load_activity():
+            return await _run_db(
+                _read_recent_pipeline_runs,
+                official_data,
+                dataset_id=dataset_id,
+                limit=20,
+                cache=pipeline_runs_cache,
+                cache_lock=pipeline_runs_lock,
+            )
+
+        async def _load_docs_and_reading():
             await _ensure_synced()
 
-            def _sync_read():
+            def _sync_docs():
                 sinfo = cat.dataset_sync_info(dataset_id) or {}
                 cat_ver = str(sinfo.get('catalog_version', ''))
+                pending_rows, pending_total = cat.query_pending_raw_docs(dataset_id, limit=20)
+                pending_docs = [
+                    {
+                        'id': d['doc_id'],
+                        'dataset_id': d['dataset_id'],
+                        'name': d['doc_name'],
+                        'label': d['doc_label'] or '',
+                        'title': _readable_name(d['doc_label']) or _readable_name(d['doc_name']) or d['doc_name'],
+                        'date': d['updated_at'] or d['created_at'],
+                        'kind': '文档',
+                        'created_at': d['created_at'],
+                    }
+                    for d in pending_rows
+                ]
+                return cat_ver, pending_total, pending_docs
+
+            def _sync_reading():
                 unread_count = 0
                 unread_preview = []
                 if identity:
                     unread_ids = read_store.compute_unread_ids(identity, project_id, dataset_id, cat)
                     unread_count = len(unread_ids)
                     if unread_ids:
-                        docs = cat.fetch_docs_by_ids(dataset_id, list(unread_ids))
-                        docs.sort(key=lambda d: (d['created_at_ns'] or '', d['doc_id']), reverse=True)
-                        for d in docs[:10]:
+                        if len(unread_ids) <= 200:
+                            docs = cat.fetch_docs_by_ids(dataset_id, list(unread_ids))
+                            docs.sort(key=lambda d: (d['created_at_ns'] or '', d['doc_id']), reverse=True)
+                            top_docs = docs[:10]
+                        else:
+                            # O(10) indexed scan for huge unread sets (never fetch 50,000 docs!)
+                            top_ids = []
+                            for batch in cat.iter_knowledge_doc_ids_after_horizon(dataset_id, '', batch_size=64):
+                                for did in batch:
+                                    if did in unread_ids:
+                                        top_ids.append(did)
+                                        if len(top_ids) >= 10:
+                                            break
+                                if len(top_ids) >= 10:
+                                    break
+                            if len(top_ids) < 10:
+                                rem = [d for d in sorted(unread_ids) if d not in set(top_ids)][: 10 - len(top_ids)]
+                                top_ids.extend(rem)
+                            top_docs = cat.fetch_docs_by_ids(dataset_id, top_ids)
+                            top_docs.sort(key=lambda d: (d['created_at_ns'] or '', d['doc_id']), reverse=True)
+                        for d in top_docs[:10]:
                             preview_snip = ''
                             if official_data and d.get('raw_data_location'):
                                 preview_snip, _ = read_local_preview_snippet(
@@ -1645,25 +2027,25 @@ def attach_v2_api(
                                 'effective_date': d['effective_date'],
                                 'created_at': d['created_at'],
                             })
-                pending_rows, pending_total = cat.query_pending_raw_docs(dataset_id, limit=20)
-                pending_docs = [
-                    {
-                        'id': d['doc_id'],
-                        'title': _readable_name(d['doc_label']) or _readable_name(d['doc_name']) or d['doc_name'],
-                        'date': d['updated_at'] or d['created_at'],
-                        'kind': '文档',
-                    }
-                    for d in pending_rows
-                ]
-                activity, _ = _read_recent_pipeline_runs(official_data, dataset_id=dataset_id, limit=20)
-                return cat_ver, unread_count, unread_preview, pending_total, pending_docs, activity
+                return unread_count, unread_preview
 
-            return await asyncio.to_thread(_sync_read)
+            cat_ver, pending_total, pending_docs = await _run_db(_sync_docs)
+            reading_err = None
+            unread_count = 0
+            unread_preview = []
+            try:
+                unread_count, unread_preview = await _run_db(_sync_reading)
+            except BaseException as exc:
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                reading_err = exc.code if isinstance(exc, PolicyError) else 'reading_state_unavailable'
+            return cat_ver, pending_total, pending_docs, unread_count, unread_preview, reading_err
 
-        b_res, n_res, c_res = await asyncio.gather(
+        b_res, n_res, d_res, a_res = await asyncio.gather(
             _load_backlog(),
             _load_notices(),
-            _load_catalog_and_activity(),
+            _load_docs_and_reading(),
+            _load_activity(),
             return_exceptions=True,
         )
 
@@ -1688,13 +2070,22 @@ def attach_v2_api(
         unread_preview = []
         pending_total = 0
         pending_docs = []
-        activity = []
-        if isinstance(c_res, asyncio.CancelledError):
-            raise c_res
-        if isinstance(c_res, BaseException):
-            errors['documents'] = c_res.code if isinstance(c_res, PolicyError) else 'documents_unavailable'
+        if isinstance(d_res, asyncio.CancelledError):
+            raise d_res
+        if isinstance(d_res, BaseException):
+            errors['documents'] = d_res.code if isinstance(d_res, PolicyError) else 'documents_unavailable'
         else:
-            cat_ver, unread_count, unread_preview, pending_total, pending_docs, activity = c_res
+            cat_ver, pending_total, pending_docs, unread_count, unread_preview, reading_err = d_res
+            if reading_err:
+                errors['reading_state'] = reading_err
+
+        activity = []
+        if isinstance(a_res, asyncio.CancelledError):
+            raise a_res
+        if isinstance(a_res, BaseException):
+            errors['activity'] = a_res.code if isinstance(a_res, PolicyError) else 'activity_unavailable'
+        else:
+            activity, _ = a_res
 
         payload = {
             'project_id': project_id,
@@ -1711,11 +2102,11 @@ def attach_v2_api(
             'activity': activity,
             'errors': errors,
         }
-        # Enforce strict < 16 KiB bound on slim message-summary
-        if len(json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')) > _MAX_MESSAGE_SUMMARY_BYTES:
+        # Enforce strict < 16 KiB UTF-8 bound on slim message-summary
+        if len(encode_json_utf8(payload)) > _MAX_MESSAGE_SUMMARY_BYTES:
             payload['activity'] = payload['activity'][:5]
             payload['pending_documents'] = payload['pending_documents'][:5]
-        return web.json_response(payload)
+        return json_utf8_response(payload)
 
     # 11. Reading State Write & Migration Routes
     async def _json_body(request):
@@ -1769,16 +2160,17 @@ def attach_v2_api(
                     ds_id,
                     catalog_index=cat if synced else None,
                 )
-                unread_cnt = (
-                    len(read_store.compute_unread_ids(identity, pid, ds_id, cat))
-                    if synced
-                    else 0
-                )
+                # CRITICAL (PY-P0-04): NEVER call compute_unread_ids when status == 'no_legacy_file',
+                # as ensure_scope would pre-create an empty scope before custom-dir import!
+                if synced and res.get('status') in ('migrated', 'already_migrated'):
+                    unread_cnt = len(read_store.compute_unread_ids(identity, pid, ds_id, cat))
+                else:
+                    unread_cnt = 0
                 res['unread_count'] = unread_cnt
                 migrated.append(res)
             return migrated
 
-        return web.json_response({'migrated': await asyncio.to_thread(_migrate)})
+        return json_utf8_response({'migrated': await _run_db(_migrate)})
 
     async def reading_import_begin(request):
         _require_manager(request)
@@ -1793,7 +2185,7 @@ def attach_v2_api(
         proj = _require_verified_project(registry, str(body['project_id']))
         if proj['dataset_id'] != uuid_text(body['dataset_id']):
             raise PolicyError('dataset_access_denied', 403)
-        res = await asyncio.to_thread(
+        res = await _run_db(
             read_store.begin_import,
             identity,
             proj['id'],
@@ -1801,21 +2193,32 @@ def attach_v2_api(
             initialized=body['initialized'],
             enabled_at=str(body['enabled_at'] or ''),
         )
-        return web.json_response(res)
+        return json_utf8_response(res)
 
     async def reading_import_chunk(request):
         _require_manager(request)
         body = await _json_body(request)
         if set(body) != {'batch_id', 'items'}:
             raise PolicyError('invalid_request_fields', 400)
-        res = await asyncio.to_thread(read_store.stage_import_chunk, str(body['batch_id']), body['items'])
-        return web.json_response(res)
+        res = await _run_db(read_store.stage_import_chunk, str(body['batch_id']), body['items'])
+        return json_utf8_response(res)
 
     async def reading_import_commit(request):
         _require_manager(request)
         body = await _json_body(request)
-        if set(body) != {'batch_id'}:
+        if set(body) - {'batch_id', 'expected_items'} or 'batch_id' not in body:
             raise PolicyError('invalid_request_fields', 400)
+        expected_items = None
+        if 'expected_items' in body and body['expected_items'] is not None:
+            if type(body['expected_items']) is not int or body['expected_items'] < 0:
+                raise PolicyError('invalid_request_fields', 400)
+            expected_items = body['expected_items']
+
+        def _verify_project(pid: str, ds_id: str):
+            proj = _require_verified_project(registry, pid)
+            if proj['dataset_id'] != uuid_text(ds_id):
+                raise PolicyError('dataset_access_denied', 403)
+
         synced = False
         if official_data:
             try:
@@ -1823,14 +2226,18 @@ def attach_v2_api(
                 synced = True
             except PolicyError:
                 synced = False
-        res = await asyncio.to_thread(
+        res = await _run_db(
             read_store.commit_import,
             str(body['batch_id']),
             catalog_index=cat if synced else None,
+            expected_items=expected_items,
+            verify_project=_verify_project,
         )
-        return web.json_response({
+        return json_utf8_response({
             'scope_hash': res['scope_hash'],
             'committed': res['committed'],
+            'unread_count': int(res.get('unread_count', 0)),
+            'state_rev': int(res.get('state_rev', 0)),
         })
 
     async def reading_mark_read(request):
@@ -1854,7 +2261,7 @@ def attach_v2_api(
                 synced = True
             except PolicyError:
                 synced = False
-        res = await asyncio.to_thread(
+        res = await _run_db(
             read_store.mark_read,
             identity,
             proj['id'],
@@ -1862,7 +2269,7 @@ def attach_v2_api(
             doc_ids,
             catalog_index=cat if synced else None,
         )
-        return web.json_response(res)
+        return json_utf8_response(res)
 
     async def reading_mark_all_read(request):
         _require_manager(request)
@@ -1882,14 +2289,14 @@ def attach_v2_api(
                 synced = True
             except PolicyError:
                 synced = False
-        res = await asyncio.to_thread(
+        res = await _run_db(
             read_store.mark_all_read,
             identity,
             proj['id'],
             proj['dataset_id'],
             catalog_index=cat if synced else None,
         )
-        return web.json_response(res)
+        return json_utf8_response(res)
 
     # 12. POST /v2/provenance/backfill-legacy-dates (single-writer via official_service_dev)
     _LEGACY_KEY_RE = re.compile(r'^[0-9a-f]{64}$')
@@ -1903,6 +2310,7 @@ def attach_v2_api(
         if not isinstance(identity, str) or not identity:
             raise PolicyError('invalid_reading_identity', 400)
 
+        has_unconfirmed = _has_unconfirmed_groups(registry)
         legacy_path = None
         if 'days' in body:
             raw_days = body['days']
@@ -1917,15 +2325,16 @@ def attach_v2_api(
                     raise PolicyError('invalid_legacy_dates', 400)
                 days[k] = day
         else:
-            # Never blind-scan state_dir; locate ONLY the exact reading_identity file.
             digest = hashlib.sha256(identity.encode('utf-8')).hexdigest()
             legacy_path = state_dir / f'knowledge-source-dates-{digest}.json'
             if not legacy_path.exists():
-                return web.json_response({
+                return json_utf8_response({
                     'status': 'absent',
                     'matched': 0,
                     'imported': 0,
                     'skipped': 0,
+                    'unmapped': 0,
+                    'has_unconfirmed_projects': has_unconfirmed,
                     'backup_path': '',
                 })
             try:
@@ -1956,15 +2365,17 @@ def attach_v2_api(
 
         if not days:
             backup_path = ''
-            if legacy_path is not None:
+            if legacy_path is not None and not has_unconfirmed:
                 bak = legacy_path.with_name(legacy_path.name + '.migrated.bak')
                 os.replace(legacy_path, bak)
                 backup_path = str(bak)
-            return web.json_response({
+            return json_utf8_response({
                 'status': 'empty',
                 'matched': 0,
                 'imported': 0,
                 'skipped': 0,
+                'unmapped': 0,
+                'has_unconfirmed_projects': has_unconfirmed,
                 'backup_path': backup_path,
             })
 
@@ -1982,42 +2393,29 @@ def attach_v2_api(
             matched_keys = set()
             if not allowed_ds:
                 return entries, len(days)
-            con = cat._get_reader()
-            for start in range(0, len(allowed_ds), 400):
-                batch = allowed_ds[start : start + 400]
-                ph = ','.join('?' for _ in batch)
-                for ds_id, doc_id, lt, sk in con.execute(
-                    f'''SELECT dataset_id, doc_id, lesson_type, state_key
-                        FROM catalog_docs
-                        WHERE dataset_id IN ({ph}) AND is_knowledge = 1''',
-                    batch,
-                ):
-                    ds_s = str(ds_id)
-                    doc_s = str(doc_id)
-                    lt_s = str(lt or '').strip()
-                    sk_s = str(sk or '').strip()
-                    stable = f'{lt_s}/{sk_s}' if sk_s else doc_s
-                    primary_key = hashlib.sha256(f'{ds_s}/{stable}'.encode('utf-8')).hexdigest()
-                    found = []
-                    if primary_key in days:
-                        found.append(days[primary_key])
-                        matched_keys.add(primary_key)
-                    if sk_s:
-                        fallback_key = hashlib.sha256(f'{ds_s}/{doc_s}'.encode('utf-8')).hexdigest()
-                        if fallback_key != primary_key and fallback_key in days:
-                            found.append(days[fallback_key])
-                            matched_keys.add(fallback_key)
-                    if found:
-                        entries.append({
-                            'dataset_id': ds_s,
-                            'document_id': doc_s,
-                            'lesson_type': lt_s,
-                            'state_key': sk_s,
-                            'first_source_date': min(found),
-                        })
+            for ds_s, doc_s, lt_s, sk_s in cat.iter_knowledge_provenance_keys(allowed_ds):
+                stable = f'{lt_s}/{sk_s}' if sk_s else doc_s
+                primary_key = hashlib.sha256(f'{ds_s}/{stable}'.encode('utf-8')).hexdigest()
+                found = []
+                if primary_key in days:
+                    found.append(days[primary_key])
+                    matched_keys.add(primary_key)
+                if sk_s:
+                    fallback_key = hashlib.sha256(f'{ds_s}/{doc_s}'.encode('utf-8')).hexdigest()
+                    if fallback_key != primary_key and fallback_key in days:
+                        found.append(days[fallback_key])
+                        matched_keys.add(fallback_key)
+                if found:
+                    entries.append({
+                        'dataset_id': ds_s,
+                        'document_id': doc_s,
+                        'lesson_type': lt_s,
+                        'state_key': sk_s,
+                        'first_source_date': min(found),
+                    })
             return entries, len(days) - len(matched_keys)
 
-        entries, unmapped_count = await asyncio.to_thread(_resolve_entries)
+        entries, unmapped_count = await _run_db(_resolve_entries)
 
         total_imported = 0
         total_server_skipped = 0
@@ -2038,17 +2436,21 @@ def attach_v2_api(
             total_imported += int(resp.get('imported') or 0)
             total_server_skipped += int(resp.get('skipped') or 0)
 
+        # Contract #6 (GO-P1-07 / CC-P1-04): NEVER rename legacy .json to .migrated.bak while
+        # unmapped entries remain or any project/common group is still unconfirmed!
         backup_path = ''
-        if legacy_path is not None:
+        if legacy_path is not None and unmapped_count == 0 and not has_unconfirmed:
             bak = legacy_path.with_name(legacy_path.name + '.migrated.bak')
             os.replace(legacy_path, bak)
             backup_path = str(bak)
 
-        return web.json_response({
-            'status': 'migrated',
+        return json_utf8_response({
+            'status': 'migrated' if (unmapped_count == 0 and not has_unconfirmed) else 'partial',
             'matched': len(entries),
             'imported': total_imported,
             'skipped': unmapped_count + total_server_skipped,
+            'unmapped': unmapped_count,
+            'has_unconfirmed_projects': has_unconfirmed,
             'backup_path': backup_path,
         })
 
@@ -2074,6 +2476,7 @@ def attach_v2_api(
 
     async def cleanup(_app):
         db_executor.shutdown(wait=True)
+        hydrator.close()
         if catalog_index is None:
             cat.close()
         if reading_state is None:

@@ -6,14 +6,18 @@ resolve-to-open TOCTOU, zero symlink escape, UTF-8 rune-safe preview truncation,
 and strict serialized JSON byte budgets.
 """
 import asyncio
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import stat
+import threading
+import time
 from urllib.parse import unquote, urlparse
 
 import aiohttp
+from aiohttp import web
 
 from project_control import read_secret
 from project_policy import PolicyError
@@ -28,6 +32,104 @@ _PREVIEW_RAW_READ_BYTES = 4096
 
 _SESSION_HEADER_RE = re.compile(r'^# Session learning \(session ([^\r\n]+)\)$')
 _TRUTHY_FLAGS = frozenset({'1', 'true', 'yes', 'on'})
+_LOCAL_TEXT_MIME_EXACT = frozenset({
+    '',
+    'application/json',
+    'application/xml',
+    'application/x-yaml',
+    'application/yaml',
+    'application/toml',
+    'application/javascript',
+    'application/typescript',
+    'application/x-sh',
+})
+_AUTH_CACHE_LOCK = threading.Lock()
+_AUTH_CACHE: dict[tuple[int, str, str], tuple[float, frozenset[str]]] = {}
+_AUTH_CACHE_TTL_SECONDS = 2.0
+
+
+def _is_local_text_mime(mime_type: str) -> bool:
+    raw = str(mime_type or '').split(';', 1)[0].strip().lower()
+    if not raw or raw.startswith('text/'):
+        return True
+    if raw in _LOCAL_TEXT_MIME_EXACT:
+        return True
+    return raw.endswith('+json') or raw.endswith('+xml')
+
+
+def invalidate_official_read_access_cache():
+    with _AUTH_CACHE_LOCK:
+        _AUTH_CACHE.clear()
+
+
+async def verify_official_read_access(official, dataset_id: str, *, ttl_seconds: float = _AUTH_CACHE_TTL_SECONDS) -> None:
+    """Re-verify live official read permission for ``dataset_id`` before direct local reads.
+
+    - Never caches 401/403 or missing-dataset denials (Fail-Closed).
+    - Preserves official 401 (``official_unauthorized``) and 403 (``dataset_access_denied``).
+    - No-op when ``official`` is None or has no active HTTP session (offline/unit-test stubs).
+    """
+    if official is None:
+        return
+    verifier = getattr(official, 'verify_dataset_read_access', None)
+    if callable(verifier):
+        res = verifier(dataset_id)
+        if asyncio.iscoroutine(res) or hasattr(res, '__await__'):
+            await res
+        return
+    session = getattr(official, 'session', None)
+    base_url = getattr(official, 'url', None)
+    if session is None or not base_url:
+        return
+    ds_canon = uuid_text(dataset_id)
+    token_file = getattr(official, 'token_file', None)
+    secret = read_secret(token_file) if token_file else ''
+    secret_digest = hashlib.sha256(secret.encode('utf-8')).hexdigest()[:16]
+    cache_key = (id(official), str(base_url).rstrip('/'), secret_digest)
+    now = time.monotonic()
+    with _AUTH_CACHE_LOCK:
+        cached = _AUTH_CACHE.get(cache_key)
+        if cached is not None and cached[0] > now and ds_canon in cached[1]:
+            return
+
+    headers = {'X-Api-Key': secret} if secret else {}
+    url = str(base_url).rstrip('/') + '/api/v1/datasets'
+    try:
+        async with session.get(
+            url,
+            headers=headers,
+            allow_redirects=False,
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as response:
+            if response.status == 401:
+                raise PolicyError('official_unauthorized', 401)
+            if response.status == 403:
+                raise PolicyError('dataset_access_denied', 403)
+            if response.status != 200:
+                raise PolicyError('official_store_unavailable', 503)
+            raw = await response.read()
+    except PolicyError:
+        raise
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        raise PolicyError('official_store_unavailable', 503) from None
+
+    try:
+        rows = json.loads(raw)
+    except ValueError as exc:
+        raise PolicyError('official_store_unavailable', 503) from exc
+    if not isinstance(rows, list):
+        raise PolicyError('official_store_unavailable', 503)
+    authorized = frozenset(
+        uuid_text(r.get('id'))
+        for r in rows
+        if isinstance(r, dict) and r.get('id')
+    )
+    if ds_canon not in authorized:
+        raise PolicyError('dataset_access_denied', 403)
+    with _AUTH_CACHE_LOCK:
+        if len(_AUTH_CACHE) >= 32:
+            _AUTH_CACHE.clear()
+        _AUTH_CACHE[cache_key] = (time.monotonic() + max(0.0, float(ttl_seconds)), authorized)
 
 
 class LocalPathSecurityError(PolicyError):
@@ -134,15 +236,34 @@ def open_local_data_file_fd(
     o_nofollow = getattr(os, 'O_NOFOLLOW', 0)
     o_directory = getattr(os, 'O_DIRECTORY', 0)
     o_cloexec = getattr(os, 'O_CLOEXEC', 0)
+    o_nonblock = getattr(os, 'O_NONBLOCK', 0)
 
+    # Pin official_data root directory fd first, then open 'data' via openat(root_fd)
+    # to close the root-resolve TOCTOU gap and reject symlinked data directories.
+    official_root = Path(official_data)
     try:
-        cur_fd = os.open(str(resolved_root), os.O_RDONLY | o_directory | o_nofollow | o_cloexec)
+        base_fd = os.open(str(official_root.resolve()), os.O_RDONLY | o_directory | o_nofollow | o_cloexec)
     except FileNotFoundError:
         return None
     except OSError as exc:
         raise LocalPathSecurityError('document_path_denied', 403) from exc
 
+    cur_fd = -1
     try:
+        try:
+            cur_fd = os.open('data', os.O_RDONLY | o_directory | o_nofollow | o_cloexec, dir_fd=base_fd)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise LocalPathSecurityError('document_path_denied', 403) from exc
+    finally:
+        os.close(base_fd)
+
+    leaf_fd = -1
+    try:
+        root_stat = os.fstat(cur_fd)
+        if not stat.S_ISDIR(root_stat.st_mode):
+            raise LocalPathSecurityError('document_path_denied', 403)
         for segment in parts[:-1]:
             try:
                 next_fd = os.open(segment, os.O_RDONLY | o_directory | o_nofollow | o_cloexec, dir_fd=cur_fd)
@@ -154,20 +275,22 @@ def open_local_data_file_fd(
             cur_fd = next_fd
 
         try:
-            leaf_fd = os.open(parts[-1], os.O_RDONLY | o_nofollow | o_cloexec, dir_fd=cur_fd)
+            # O_NONBLOCK prevents blocking indefinitely if an attacker plants a FIFO/named pipe.
+            leaf_fd = os.open(parts[-1], os.O_RDONLY | o_nofollow | o_cloexec | o_nonblock, dir_fd=cur_fd)
         except FileNotFoundError:
             return None
         except OSError as exc:
             raise LocalPathSecurityError('document_path_denied', 403) from exc
     finally:
-        os.close(cur_fd)
+        if cur_fd >= 0:
+            os.close(cur_fd)
 
     try:
         info = os.fstat(leaf_fd)
         if not stat.S_ISREG(info.st_mode):
-            os.close(leaf_fd)
             raise LocalPathSecurityError('document_path_denied', 403)
     except LocalPathSecurityError:
+        os.close(leaf_fd)
         raise
     except OSError as exc:
         os.close(leaf_fd)
@@ -203,8 +326,12 @@ def read_local_file_body(
     *,
     max_bytes: int = MAX_BODY_BYTES,
     encryption_enabled=None,
+    mime_type: str = '',
 ) -> dict | None:
     """Read local file body strictly bounded to ``max_bytes`` via dir_fd + O_NOFOLLOW."""
+    limit = max(1, int(max_bytes))
+    if mime_type and not _is_local_text_mime(mime_type):
+        return None
     opened = open_local_data_file_fd(
         raw_data_location,
         official_data,
@@ -213,7 +340,6 @@ def read_local_file_body(
     if opened is None:
         return None
     fd, info = opened
-    limit = max(1, int(max_bytes))
     chunks = bytearray()
     try:
         remaining = limit + 1
@@ -334,8 +460,19 @@ def read_local_preview_snippet(
     return snippet, bool(rune_truncated or file_larger)
 
 
+def encode_json_utf8(payload) -> bytes:
+    """Canonical compact UTF-8 JSON encoder used for BOTH byte budgeting and wire emission."""
+    return json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+
+
+def json_utf8_response(payload, *, status: int = 200, raw_bytes: bytes | None = None) -> web.Response:
+    """Emit the exact UTF-8 JSON bytes measured by ``serialized_json_bytes`` (no ASCII \\uXXXX bloat)."""
+    body = raw_bytes if raw_bytes is not None else encode_json_utf8(payload)
+    return web.Response(body=body, status=status, content_type='application/json', charset='utf-8')
+
+
 def serialized_json_bytes(payload) -> int:
-    return len(json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+    return len(encode_json_utf8(payload))
 
 
 def fit_items_to_json_budget(
@@ -346,9 +483,11 @@ def fit_items_to_json_budget(
     preview_key: str = 'preview_text',
     truncated_key: str = 'preview_truncated',
 ) -> tuple[dict, list[dict], bool]:
-    """Enforce actual UTF-8 JSON serialized byte budget (accounting for escape expansion).
+    """Enforce actual UTF-8 JSON serialized byte budget (matching ``json_utf8_response`` byte-for-byte).
 
-    First shrinks previews on rune boundaries, then drops trailing items if still over budget.
+    First shrinks previews on rune boundaries, then drops trailing items down to 1 item;
+    if the sole remaining item still exceeds budget, shrinks oversized free-text fields
+    instead of ever returning an empty ``items=[]`` with ``has_more=true``.
     Returns ``(payload, kept_items, items_trimmed)``.
     """
     working = [dict(row) for row in items]
@@ -375,7 +514,7 @@ def fit_items_to_json_budget(
             return payload, shrunk, False
         working = shrunk
 
-    # Still over budget: drop trailing items until serialized JSON fits cleanly.
+    # Still over budget: drop trailing items down to 1 item.
     while len(working) > 1:
         working.pop()
         payload = build_payload(working, True)
@@ -383,11 +522,26 @@ def fit_items_to_json_budget(
             return payload, working, True
 
     if working:
-        payload = build_payload(working, True)
+        trimmed_flag = len(items) > 1
+        payload = build_payload(working, trimmed_flag)
         if serialized_json_bytes(payload) <= max_json_bytes:
-            return payload, working, True
-        working = []
-    return build_payload(working, bool(items)), working, bool(items)
+            return payload, working, trimmed_flag
+        # Never drop the sole item into an empty page with has_more=true; shrink free-text display fields first.
+        sole = dict(working[0])
+        for field_cap in (120, 48, 16, 0):
+            for field in ('preview_text', 'label', 'title', 'doc_label', 'doc_name', 'state_key', 'category'):
+                val = sole.get(field)
+                if isinstance(val, str) and len(val) > field_cap:
+                    cut_val, was_cut = truncate_utf8_runes(val, max_runes=field_cap, max_utf8_bytes=field_cap * 3)
+                    sole[field] = cut_val
+                    if was_cut and truncated_key in sole:
+                        sole[truncated_key] = True
+            working = [sole]
+            payload = build_payload(working, trimmed_flag)
+            if serialized_json_bytes(payload) <= max_json_bytes:
+                return payload, working, trimmed_flag
+        raise PolicyError('response_budget_exceeded', 500)
+    return build_payload([], False), [], False
 
 
 def _lookup_document_location(official_data, dataset_id: str, doc_id: str) -> dict:
@@ -438,6 +592,10 @@ async def _fetch_official_raw_body(official, dataset_id: str, doc_id: str, *, ma
         allow_redirects=False,
         timeout=aiohttp.ClientTimeout(total=30),
     ) as response:
+        if response.status == 401:
+            raise PolicyError('official_unauthorized', 401)
+        if response.status == 403:
+            raise PolicyError('dataset_access_denied', 403)
         if response.status == 404:
             raise PolicyError('document_not_found', 404)
         if response.status != 200:
@@ -472,17 +630,28 @@ async def read_document_body_with_fallback(
 ) -> dict:
     """Read document body via safe local fast-path, falling back to official ``/raw`` only when needed.
 
-    Security violations (symlink escape, ``..`` traversal, non-regular files) fail closed with 403
-    and NEVER fall back.
+    Security violations (symlink escape, ``..`` traversal, non-regular files, 401/403 official denials)
+    fail closed and NEVER fall back.
     """
+    await verify_official_read_access(official, dataset_id)
     loc = await asyncio.to_thread(_lookup_document_location, official_data, dataset_id, doc_id)
-    local = await asyncio.to_thread(
-        read_local_file_body,
-        loc['raw_data_location'],
-        official_data,
-        max_bytes=max_bytes,
-        encryption_enabled=encryption_enabled,
-    )
+    local = None
+    try:
+        local = await asyncio.to_thread(
+            read_local_file_body,
+            loc['raw_data_location'],
+            official_data,
+            max_bytes=max_bytes,
+            encryption_enabled=encryption_enabled,
+            mime_type=loc.get('mime_type', ''),
+        )
+    except LocalPathSecurityError:
+        raise
+    except PolicyError as err:
+        if err.code == 'document_not_utf8_text' and official is not None and getattr(official, 'session', None) is not None:
+            local = None
+        else:
+            raise
     if local is not None:
         return {
             'id': loc['id'],

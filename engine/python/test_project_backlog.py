@@ -1612,6 +1612,54 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
             await self.backlog.processing_task
         self.assertEqual(submitted_hist, ['s-hist'])
         self.assertEqual(self.backlog.jobs[hist_op]['targets'][0]['processing'], 'submitted')
+    async def test_automatic_tick_rotates_via_indexed_sessions_for_project_cursor(self):
+        from project_control import Registry
+
+        self.policy['policy']['can_capture'] = True
+        reg_path = self.root / 'indexed-registry.json'
+        reg = Registry(reg_path, self.registry.official)
+        try:
+            reg.state['agents'] = copy.deepcopy(self.registry.state['agents'])
+            reg.state['projects'] = {
+                'p1': {'id': 'p1', 'dataset_id': 'ds1', 'status': 'verified', 'desired_revision': 0, 'overrides': {}, 'applied': {'a': {'status': 'verified', 'revision': 0}}, 'aliases': []},
+                'p2': {'id': 'p2', 'dataset_id': 'ds2', 'status': 'verified', 'desired_revision': 0, 'overrides': {}, 'applied': {'a': {'status': 'verified', 'revision': 0}}, 'aliases': []},
+            }
+            for i in range(12):
+                k = json.dumps(['a', f'h1-{i:02d}'])
+                reg.state['sessions'][k] = 'p1'
+            for i in range(40):
+                k = json.dumps(['a', f'h2-{i:02d}'])
+                reg.state['sessions'][k] = 'p2'
+            reg.save()
+            reg.policy = lambda *a: copy.deepcopy(self.policy)
+
+            reviewed = []
+            async def worker(row, target, action, update):
+                reviewed.append((row['project_id'], target['host']))
+                return {'session_id': f"s-{target['host']}", 'tokens': [], 'unknown': 0}
+
+            bl = Backlog(reg, {}, worker=worker, review_cache_ttl=0)
+            bl.MAX_AUTO_REVIEWS_PER_TICK = 4
+            page_calls = []
+            orig_sfp = reg.sessions_for_project
+            def spy_sfp(pid, **kwargs):
+                page_calls.append((pid, kwargs))
+                return orig_sfp(pid, **kwargs)
+            reg.sessions_for_project = spy_sfp
+            try:
+                # Force ticks to target p1 by keeping only p1 in rotation cursor checks (even ticks hit p1).
+                for _ in range(8):
+                    await bl.automatic_tick()
+                p1_reviewed = [host for pid, host in reviewed if pid == 'p1']
+                # 4 ticks for p1 * 4 reviews/tick = 16 reviews, covering all 12 hosts and wrapping cleanly!
+                self.assertEqual(len(p1_reviewed), 16)
+                self.assertEqual(set(p1_reviewed[:12]), {f'h1-{i:02d}' for i in range(12)})
+                self.assertEqual(p1_reviewed[12:16], p1_reviewed[0:4])
+                self.assertTrue(all('limit' in kw and 'after_key' in kw for _, kw in page_calls))
+            finally:
+                await bl.close()
+        finally:
+            reg.close()
 
 
 if __name__=='__main__':unittest.main()

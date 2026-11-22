@@ -159,6 +159,28 @@ class SqliteRoTests(unittest.TestCase):
         self.assertEqual(common_category_from_meta(common_meta), 'preference')
         self.assertEqual(knowledge_category_label(common_meta), '')
 
+        # Corrupted non-dict system_metadata MUST fail closed against external_metadata planting (PY-P1-01)
+        corrupted = extract_trusted_metadata(
+            '{not valid json',
+            json.dumps({
+                'lesson_type': 'pitfall',
+                'first_source_date': '1999-01-01',
+                'session_date': '1999-01-01',
+                'memlane_kind': 'common_knowledge',
+                'category': 'preference',
+                'node_set': ['session_learnings'],
+                'why_learned': 'benign',
+            }),
+            None,
+        )
+        self.assertNotIn('lesson_type', corrupted)
+        self.assertNotIn('first_source_date', corrupted)
+        self.assertNotIn('session_date', corrupted)
+        self.assertNotIn('memlane_kind', corrupted)
+        self.assertNotIn('category', corrupted)
+        self.assertNotIn('node_set', corrupted)
+        self.assertEqual(corrupted.get('why_learned'), 'benign')
+
     def test_category_labels_match_knowledge_basis_contract(self):
         self.assertEqual(
             knowledge_category_label({'node_set': ['user_context']}),

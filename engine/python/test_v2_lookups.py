@@ -493,6 +493,54 @@ class V2LookupsTests(AioHTTPTestCase):
             ]
         self.assertTrue(any('ix_pipeline_runs_dataset_pipeline_created_at' in line for line in plan), plan)
 
+    async def test_v2_lookups_fail_closed_on_official_401_403(self):
+        class _FakeResp:
+            def __init__(self, status):
+                self.status = status
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def read(self):
+                return b''
+
+        class _FakeSession:
+            def __init__(self, status):
+                self.status = status
+                self.calls = []
+
+            def get(self, url, headers=None, allow_redirects=False, timeout=None):
+                del allow_redirects, timeout
+                self.calls.append((url, dict(headers or {})))
+                return _FakeResp(self.status)
+
+        for err_status in (401, 403):
+            fake_sess = _FakeSession(err_status)
+            self.registry.official = type(
+                '_LiveOfficial',
+                (),
+                {
+                    'url': 'http://127.0.0.1:18765',
+                    'session': fake_sess,
+                    'token_file': None,
+                },
+            )()
+            doc_resp = await self.client.get(
+                f'/v2/datasets/{self.ds_verified}/documents/{self.doc_lesson}',
+                headers=self.manager_headers,
+            )
+            self.assertEqual(doc_resp.status, err_status)
+            code_resp = await self.client.get(
+                '/v2/projects/p-verified/code-activity',
+                headers=self.manager_headers,
+            )
+            self.assertEqual(code_resp.status, err_status)
+            self.assertGreaterEqual(len(fake_sess.calls), 2)
+        self.registry.official = _DummyOfficial()
+
 
 if __name__ == '__main__':
     unittest.main()

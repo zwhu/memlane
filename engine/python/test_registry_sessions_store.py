@@ -122,6 +122,110 @@ class RegistrySessionsStoreTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 reg2.close()
 
+    async def test_rollback_and_reupgrade_preserves_newer_json_same_key_records(self):
+        import os
+        import time
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            reg_path = root / 'project-registry.json'
+            repo1 = root / 'repo1'
+            repo2 = root / 'repo2'
+            repo1.mkdir(); (repo1 / '.git').mkdir()
+            repo2.mkdir(); (repo2 / '.git').mkdir()
+
+            official = _FakeOfficial()
+            reg = Registry(reg_path, official)
+            try:
+                reg.state['agents'] = {'a': {'name': 'Agent A', 'principal_id': str(uuid.uuid4()), 'key_file': str(root / 'k')}}
+                reg.save()
+                r1 = await reg.resolve('a', str(repo1), 'shared-host', explicit=True)
+                r2 = await reg.resolve('a', str(repo2), 'sqlite-only-host', explicit=True)
+                p1, p2 = r1['project_id'], r2['project_id']
+                reg.state['connection_operations'] = {'op-1': {'status': 'unknown', 'updated_at': 100.0}}
+                reg.state['connection_receipts'] = {'a': {'received_at': 100.0, 'project_id': p1, 'host_session_key': 'shared-host'}}
+                reg.save()
+                rev_before = reg.state['revision']
+            finally:
+                reg.close()
+
+            # Simulate rollback to legacy JSON-only version that updated the SAME keys with newer values.
+            slim = json.loads(reg_path.read_text(encoding='utf-8'))
+            slim.pop('_sessions_store_sync', None)
+            slim['revision'] = rev_before + 1
+            slim['sessions'] = {
+                json.dumps(['a', 'shared-host']): p2,
+                json.dumps(['a', 'json-only-host']): p2,
+            }
+            slim['connection_operations'] = {'op-1': {'status': 'complete', 'updated_at': 500.0}}
+            slim['connection_receipts'] = {'a': {'received_at': 500.0, 'project_id': p2, 'host_session_key': 'shared-host'}}
+            reg_path.write_text(json.dumps(slim), encoding='utf-8')
+            reg_path.chmod(0o600)
+            future_ts = time.time() + 10.0
+            os.utime(reg_path, (future_ts, future_ts))
+
+            # Re-upgrade must keep newer JSON values for conflicting keys AND preserve sqlite-only keys.
+            reg2 = Registry(reg_path, official)
+            try:
+                self.assertEqual(reg2.state['sessions'][json.dumps(['a', 'shared-host'])], p2)
+                self.assertEqual(reg2.state['sessions'][json.dumps(['a', 'json-only-host'])], p2)
+                self.assertEqual(reg2.state['sessions'][json.dumps(['a', 'sqlite-only-host'])], p2)
+                self.assertEqual(reg2.state['connection_operations']['op-1']['status'], 'complete')
+                self.assertEqual(reg2.state['connection_receipts']['a']['project_id'], p2)
+                self.assertEqual(reg2.state['connection_receipts']['a']['received_at'], 500.0)
+                # Same-revision rollback with newer mtime also lets JSON win over stale SQLite.
+                rev_mid = reg2.state['revision']
+            finally:
+                reg2.close()
+
+            slim2 = json.loads(reg_path.read_text(encoding='utf-8'))
+            slim2.pop('_sessions_store_sync', None)
+            slim2['revision'] = rev_mid
+            slim2['sessions'] = {json.dumps(['a', 'shared-host']): p1}
+            reg_path.write_text(json.dumps(slim2), encoding='utf-8')
+            reg_path.chmod(0o600)
+            future_ts2 = time.time() + 20.0
+            os.utime(reg_path, (future_ts2, future_ts2))
+
+            reg3 = Registry(reg_path, official)
+            try:
+                self.assertEqual(reg3.state['sessions'][json.dumps(['a', 'shared-host'])], p1)
+            finally:
+                reg3.close()
+
+    def test_sessions_for_project_uses_covering_index_and_keyset_pagination(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = Path(folder) / 'registry-sessions.sqlite3'
+            store = RegistrySessionsStore(db_path)
+            try:
+                for i in range(20):
+                    store.upsert_session(json.dumps(['a', f'h-{i:02d}']), 'p1')
+                for i in range(30):
+                    store.upsert_session(json.dumps(['a', f'other-{i:02d}']), 'p2')
+                eqp = store.db.execute(
+                    '''EXPLAIN QUERY PLAN
+                       SELECT session_key FROM registry_sessions
+                       WHERE project_id = ? AND session_key > ?
+                       ORDER BY session_key ASC LIMIT ?''',
+                    ('p1', '', 5),
+                ).fetchall()
+                plan_text = ' '.join(str(r[-1]) for r in eqp)
+                self.assertIn('idx_registry_sessions_project', plan_text)
+                self.assertNotIn('TEMP B-TREE', plan_text)
+
+                collected = []
+                cursor = ''
+                while True:
+                    page = store.sessions_for_project_page('p1', after_key=cursor, limit=6)
+                    if not page:
+                        break
+                    collected.extend(page)
+                    cursor = page[-1]
+                self.assertEqual(collected, store.sessions_for_project('p1'))
+                self.assertEqual(len(collected), 20)
+            finally:
+                store.close()
+
 
 if __name__ == '__main__':
     unittest.main()

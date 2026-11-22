@@ -17,6 +17,21 @@ import uuid
 from project_policy import PolicyError
 
 _RETRY_BACKOFFS_SECONDS = (0.05, 0.15, 0.30)
+_TRANSIENT_RO_ERR_TOKENS = (
+    'locked',
+    'busy',
+    'unable to open',
+    'protocol',
+    'shm',
+    'wal',
+    'disk i/o',
+    'ioerr',
+)
+
+
+def _is_transient_ro_error(exc: sqlite3.OperationalError) -> bool:
+    msg = str(exc or '').lower()
+    return any(tok in msg for tok in _TRANSIENT_RO_ERR_TOKENS)
 
 _ALLOWED_READONLY_ACTIONS = frozenset(
     action
@@ -29,7 +44,7 @@ _ALLOWED_READONLY_ACTIONS = frozenset(
     if action is not None
 )
 
-_READONLY_META_PRAGMAS = frozenset({'table_info', 'table_xinfo', 'index_list', 'index_info'})
+_READONLY_META_PRAGMAS = frozenset({'table_info', 'table_xinfo', 'index_list', 'index_info', 'shrink_memory'})
 
 # Authoritative lesson / classification keys that user-editable external_metadata
 # must never plant or override when Cognee's system_metadata is present.
@@ -62,7 +77,12 @@ _LESSON_CATEGORY_LABELS = {
 
 
 def _readonly_authorizer(action, arg1, arg2, db_name, trigger_name):
-    """SQLite C-level authorizer permitting strictly read-only queries and read snapshots."""
+    """SQLite C-level authorizer permitting strictly read-only queries and deferred read snapshots.
+
+    Note: SQLite passes ``arg1='BEGIN'`` for all BEGIN variants; write transaction intents
+    (``BEGIN IMMEDIATE`` / ``BEGIN EXCLUSIVE``) are unconditionally rejected at the C layer
+    by ``?mode=ro`` + ``PRAGMA query_only=ON`` with ``OperationalError``.
+    """
     del db_name, trigger_name
     if action in _ALLOWED_READONLY_ACTIONS:
         return sqlite3.SQLITE_OK
@@ -109,6 +129,7 @@ def open_official_sqlite_ro(
     timeout_ms: int = 2000,
     error_code: str = 'official_store_unavailable',
     sleep_fn=time.sleep,
+    cache_kib: int = 512,
 ):
     """Open an official SQLite store strictly read-only with kernel authorizer and page-read probe.
 
@@ -118,6 +139,7 @@ def open_official_sqlite_ro(
     """
     resolved = _validate_regular_db_file(db_path, error_code)
     timeout_int = max(100, int(timeout_ms))
+    cache_int = max(64, int(cache_kib))
     encoded = quote(str(resolved), safe='/')
     uri = f'file:{encoded}?mode=ro'
 
@@ -133,6 +155,7 @@ def open_official_sqlite_ro(
                 isolation_level=None,
                 check_same_thread=False,
             )
+            con.execute(f'PRAGMA cache_size = -{cache_int}')
             con.set_authorizer(_readonly_authorizer)
             con.execute('PRAGMA query_only = ON')
             con.execute(f'PRAGMA busy_timeout = {timeout_int}')
@@ -146,7 +169,7 @@ def open_official_sqlite_ro(
                     con.close()
                 except Exception:
                     pass
-            if attempt < len(_RETRY_BACKOFFS_SECONDS):
+            if attempt < len(_RETRY_BACKOFFS_SECONDS) and _is_transient_ro_error(exc):
                 sleep_fn(_RETRY_BACKOFFS_SECONDS[attempt])
                 continue
             raise PolicyError(error_code, 503) from exc
@@ -179,6 +202,23 @@ def official_sqlite_ro(
         yield con
     finally:
         con.close()
+
+
+@contextmanager
+def ro_snapshot(con: sqlite3.Connection):
+    """Execute read queries inside one consistent read-only WAL snapshot (BEGIN DEFERRED .. ROLLBACK).
+
+    Fails closed if snapshot establishment fails (never silently continues in autocommit).
+    """
+    con.execute('BEGIN DEFERRED')
+    try:
+        yield con
+    finally:
+        if con.in_transaction:
+            try:
+                con.execute('ROLLBACK')
+            except sqlite3.Error:
+                pass
 
 
 _HEX32_RE = re.compile(r'^[0-9a-fA-F]{32}$')
@@ -349,43 +389,53 @@ def decode_node_set(raw_value) -> list[str]:
 def extract_trusted_metadata(system_metadata, external_metadata, node_set=None) -> dict:
     """Merge metadata enforcing ``system_metadata > external_metadata`` and decoding ``node_set``.
 
-    Security invariant: when ``system_metadata`` is non-empty, authoritative lesson,
-    date, and classification keys from ``external_metadata`` are never trusted so
-    planted external fields cannot spoof provenance dates or categories.
+    Security invariants:
+    - When ``system_metadata`` is present (non-empty and not empty JSON ``{}``), authoritative
+      lesson, date, classification keys and ``node_set`` from ``external_metadata`` are NEVER
+      trusted — even if ``system_metadata`` is corrupted/non-dict JSON.
+    - Only when ``system_metadata`` is genuinely absent (``None`` / ``''`` / ``'{}'`` / empty dict)
+      may legacy ``external_metadata`` supply classification keys.
     """
     # Fast path when external_metadata is empty and system_metadata is a JSON dict string.
     if (external_metadata is None or external_metadata == '' or external_metadata == '{}') and isinstance(system_metadata, str) and system_metadata and system_metadata[0] == '{':
-        try:
-            sys_obj = _JSON_DECODE(system_metadata)
-        except ValueError:
-            sys_obj = None
-        if isinstance(sys_obj, dict) and sys_obj:
-            col_ns = decode_node_set(node_set)
-            resolved_ns = (
-                decode_node_set(sys_obj.get('node_set'))
-                if 'node_set' in sys_obj
-                else []
-            ) or col_ns
-            if resolved_ns:
-                sys_obj['node_set'] = resolved_ns
-            return sys_obj
+        if system_metadata != '{}':
+            try:
+                sys_obj = _JSON_DECODE(system_metadata)
+            except ValueError:
+                sys_obj = None
+            if isinstance(sys_obj, dict) and sys_obj:
+                col_ns = decode_node_set(node_set)
+                resolved_ns = (
+                    decode_node_set(sys_obj.get('node_set'))
+                    if 'node_set' in sys_obj
+                    else []
+                ) or col_ns
+                if resolved_ns:
+                    sys_obj['node_set'] = resolved_ns
+                return sys_obj
 
-    sys_meta = parse_json_dict(system_metadata)
+    sys_absent = (
+        system_metadata is None
+        or (isinstance(system_metadata, str) and system_metadata.strip() in ('', '{}'))
+        or (isinstance(system_metadata, dict) and not system_metadata)
+    )
+    sys_meta = {} if sys_absent else parse_json_dict(system_metadata)
     ext_meta = parse_json_dict(external_metadata)
     col_ns = decode_node_set(node_set)
 
-    if sys_meta:
+    if not sys_absent:
+        # Either valid non-empty system_metadata OR corrupted/non-dict system_metadata:
+        # Fail closed against external_metadata planting authoritative keys or node_set.
         trusted = {
             key: value
             for key, value in ext_meta.items()
             if key not in _SYSTEM_AUTHORITATIVE_KEYS and key != 'node_set'
         }
-        trusted.update(sys_meta)
+        if sys_meta:
+            trusted.update(sys_meta)
         resolved_ns = (
-            decode_node_set(sys_meta.get('node_set'))
-            or col_ns
-            or decode_node_set(ext_meta.get('node_set'))
-        )
+            decode_node_set(sys_meta.get('node_set')) if sys_meta else []
+        ) or col_ns
     else:
         trusted = dict(ext_meta)
         resolved_ns = col_ns or decode_node_set(ext_meta.get('node_set'))

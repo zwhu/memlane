@@ -577,6 +577,35 @@ class ProvenanceStoreTests(unittest.IsolatedAsyncioTestCase):
                 for t in threads:
                     t.join()
                 self.assertEqual(errors, [])
+
+                # Evidence-date pairing (PY-P1-01): later linked_qa MUST NOT upgrade an earlier weak date,
+                # and first_source_date without source_qa_ids MUST NOT fabricate linked_qa!
+                doc_pair = str(uuid.uuid4())
+                store.record_document(
+                    ds, doc_pair, lesson_type='state', state_key='pair-key',
+                    candidate_dates=('2026-10-01',), explicit_status='created_at',
+                )
+                after_later_qa = store.record_document(
+                    ds, doc_pair, lesson_type='state', state_key='pair-key',
+                    candidate_dates=('2026-10-20',), source_qa_ids=['qa-late'], explicit_status='linked_qa',
+                )
+                self.assertEqual(after_later_qa['first_source_date'], '2026-10-01')
+                self.assertEqual(after_later_qa['source_date_status'], 'created_at')
+
+                doc_unverified = str(uuid.uuid4())
+                enriched = store.enrich_data_items(
+                    ds,
+                    [{
+                        'id': doc_unverified,
+                        'externalMetadata': {
+                            'lesson_type': 'state',
+                            'state_key': 'unverified-key',
+                            'first_source_date': '2026-10-05',
+                        },
+                    }],
+                )
+                self.assertEqual(enriched[0]['externalMetadata']['first_source_date'], '2026-10-05')
+                self.assertNotEqual(enriched[0]['externalMetadata']['source_date_status'], 'linked_qa')
             finally:
                 store.close()
 

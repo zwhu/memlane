@@ -3,6 +3,7 @@
 import ast
 from collections import deque
 import re
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -57,32 +58,126 @@ DOCS_PROCESS_REF_RE = re.compile(
     r'|(?<![A-Za-z0-9_-])(?:\.\./)+process(?:/|(?![A-Za-z0-9_-]))'
     r'|\]\(\s*\.?/?process(?:/|\s*\))'
 )
-ML018_MESSAGE = '禁止在 Go 桌面端新增对 overviewDocuments/overviewSessions//v1/overview/bootstrap 的全量拉表调用；请走 /v2 游标或点查接口'
-ML019_MESSAGE = '/v2 列表接口必须实施 _parse_limit (<=50) 与 JSON 字节预算裁剪 (fit_items_to_json_budget)'
-ML020_CONNECT_MESSAGE = '禁止在非白名单模块直接调用 sqlite3.connect；只读访问官方库必须经 sqlite_ro.open_official_sqlite_ro'
+ML018_MESSAGE = '禁止在 Go 桌面端新增对 overviewDocuments/overviewSessions//v1/overview/bootstrap 的全量拉表调用；仅允许精确回退路径函数，新功能请走 /v2 游标或点查接口'
+ML019_MESSAGE = '/v2 列表接口必须实施 _MAX_PAGE_LIMIT (<=50)、_parse_limit (<=50) 与 JSON 字节预算裁剪 (fit_items_to_json_budget)'
+ML019_UTF8_MESSAGE = '/v2 列表接口禁止裸用默认 ASCII 转义的 web.json_response（会使中文体积翻倍击穿字节预算）；须走统一 UTF-8 JSON 响应辅助或显式 UTF-8 dumps'
+ML020_CONNECT_MESSAGE = '禁止在非白名单模块直接或间接调用 sqlite3.connect（含别名/getattr/importlib）；只读访问官方库必须经 sqlite_ro.open_official_sqlite_ro'
 ML020_IMMUTABLE_MESSAGE = '禁止在线使用 SQLite URI immutable=1（易引发 WAL 脏页/过期视图）；只读连接须走 ?mode=ro + query_only + set_authorizer'
-ML021_MESSAGE = 'catalog_index.py 严禁在表结构中存储正文/why_learned/metadata_json 或建立 catalog_sessions 表'
+ML021_MESSAGE = 'catalog_index.py 仅允许 5 张轻量元数据白名单表及白名单列，严禁持久化正文/QA/trace/why_learned/metadata 等违禁字段或新增未授权表/列'
 
 SQLITE_CONNECT_ALLOWLIST = {
-    'sqlite_ro.py',
-    'catalog_index.py',
-    'reading_state_store.py',
-    'provenance_store.py',
-    'knowledge_recall.py',
-    'external_capture_store.py',
-    'session_drift.py',
-    'registry_sessions_store.py',
-    'local_prepare.py',
-    'bench_scaling.py',
+    'engine/python/sqlite_ro.py',
+    'engine/python/catalog_index.py',
+    'engine/python/reading_state_store.py',
+    'engine/python/provenance_store.py',
+    'engine/python/knowledge_recall.py',
+    'engine/python/external_capture_store.py',
+    'engine/python/session_drift.py',
+    'engine/python/registry_sessions_store.py',
+    'scripts/local_prepare.py',
+    'scripts/bench_scaling.py',
 }
 IMMUTABLE_URI_RE = re.compile(r'\bimmutable\s*=\s*1\b', re.IGNORECASE)
-CREATE_TABLE_RE = re.compile(
-    r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\((.*?)\)',
-    re.IGNORECASE | re.DOTALL,
-)
-CATALOG_FORBIDDEN_TABLES = {'catalog_sessions'}
-CATALOG_FORBIDDEN_COLUMNS = {'body', 'raw_text', 'why_learned', 'metadata_json'}
+SQLITE_MODULE_NAMES = {'sqlite3', 'sqlite3.dbapi2'}
+SQLITE_OFFLOAD_WRAPPER_NAMES = {'to_thread', 'run_in_executor', 'submit', 'partial'}
+CATALOG_ALLOWED_TABLES = {
+    'catalog_meta': {
+        'singleton',
+        'schema_version',
+        'generation',
+        'local_tz_name',
+        'last_provenance_seq',
+        'last_recall_rev',
+        'built_at',
+    },
+    'dataset_sync_state': {
+        'dataset_id',
+        'dataset_hex',
+        'doc_count',
+        'max_rowid',
+        'sum_rowid',
+        'max_updated_at',
+        'id_checksum',
+        'data_hash',
+        'knowledge_count',
+        'raw_doc_count',
+        'common_count',
+        'session_count',
+        'session_sig',
+        'catalog_version',
+        'synced_at',
+    },
+    'catalog_docs': {
+        'dataset_id',
+        'doc_id',
+        'cognee_rowid',
+        'kind',
+        'is_knowledge',
+        'common_category',
+        'lesson_type',
+        'state_key',
+        'category',
+        'session_id',
+        'doc_name',
+        'doc_label',
+        'raw_data_location',
+        'content_hash',
+        'created_at_raw',
+        'created_at_ns',
+        'created_at_invalid',
+        'updated_at_ns',
+        'effective_date',
+        'effective_date_source',
+        'day_desc_key',
+        'sort_ts_desc_key',
+        'recall_count',
+        'recall_desc_key',
+        'pipeline_status',
+        'source_updated_at',
+    },
+    'catalog_day_buckets': {
+        'dataset_id',
+        'effective_date',
+        'knowledge_count',
+    },
+    'catalog_sessions': {
+        'dataset_id',
+        'session_id',
+        'user_id',
+        'agent_id',
+        'status',
+        'started_at',
+        'last_activity_at',
+        'sort_ts_desc_key',
+        'parent_session_id',
+        'root_session_id',
+        'subagent_role',
+        'nesting_depth',
+        'is_top_level',
+        'child_count',
+    },
+}
+CATALOG_FORBIDDEN_COLUMNS = {
+    'body',
+    'raw_text',
+    'content',
+    'why_learned',
+    'metadata_json',
+    'system_metadata',
+    'external_metadata',
+    'qa_payload',
+    'trace_payload',
+    'question',
+    'answer',
+    'qa_json',
+    'trace_json',
+    'messages',
+    'transcript',
+    'prompt',
+    'response',
+}
 V2_NON_LIST_ROUTE_MARKERS = ('/body', '/message-summary', '/documents/{doc}', '/sessions/{sid}', '/code-activity')
+V2_UTF8_RESPONSE_HELPER_NAMES = {'_json_utf8_response', 'json_utf8_response'}
 
 BLOCKING_SUBPROCESS_CALLS = {'run', 'check_output', 'call', 'check_call', 'Popen'}
 BLOCKING_OS_PROCESS_CALLS = {
@@ -660,24 +755,95 @@ def _check_model_boundaries(tree, path, ast_index, report):
     walk_scope(tree, {'LLMConfig'})
 
 
-def _extract_sql_text(node):
+def _normalize_rel_path(path):
+    """Normalize a path to a POSIX relative path under ROOT when possible."""
+    path_obj = Path(path)
+    if path_obj.is_absolute():
+        try:
+            return path_obj.resolve().relative_to(ROOT.resolve()).as_posix()
+        except ValueError:
+            try:
+                return path_obj.relative_to(ROOT).as_posix()
+            except ValueError:
+                parts = path_obj.parts
+                for anchor in ('engine', 'scripts', 'internal'):
+                    if anchor in parts:
+                        idx = parts.index(anchor)
+                        return Path(*parts[idx:]).as_posix()
+                return path_obj.as_posix()
+    rel = path_obj.as_posix()
+    while rel.startswith('./'):
+        rel = rel[2:]
+    return rel
+
+
+def _extract_sql_text(node, str_consts=None):
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
+    if str_consts and isinstance(node, ast.Name) and node.id in str_consts:
+        return str_consts[node.id]
     if isinstance(node, ast.JoinedStr):
         parts = []
         for value in node.values:
             if isinstance(value, ast.Constant) and isinstance(value.value, str):
                 parts.append(value.value)
             elif isinstance(value, ast.FormattedValue):
-                inner = _extract_sql_text(value.value)
+                inner = _extract_sql_text(value.value, str_consts)
                 parts.append(inner if inner is not None else '{}')
         return ''.join(parts)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left = _extract_sql_text(node.left)
-        right = _extract_sql_text(node.right)
+        left = _extract_sql_text(node.left, str_consts)
+        right = _extract_sql_text(node.right, str_consts)
         if left is not None and right is not None:
             return left + right
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == 'join'
+        and len(node.args) == 1
+        and not node.keywords
+    ):
+        sep = _extract_sql_text(node.func.value, str_consts)
+        seq = node.args[0]
+        if sep is not None and isinstance(seq, (ast.List, ast.Tuple)):
+            items = []
+            for elt in seq.elts:
+                part = _extract_sql_text(elt, str_consts)
+                if part is None:
+                    return None
+                items.append(part)
+            return sep.join(items)
     return None
+
+
+def _collect_module_string_constants(tree):
+    constants = {}
+    for _ in range(4):
+        changed = False
+        for stmt in tree.body:
+            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+                name = stmt.targets[0].id
+                val = _extract_sql_text(stmt.value, constants)
+                if val is not None:
+                    if constants.get(name) != val:
+                        constants[name] = val
+                        changed = True
+                elif name in constants:
+                    del constants[name]
+                    changed = True
+            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.value is not None:
+                name = stmt.target.id
+                val = _extract_sql_text(stmt.value, constants)
+                if val is not None:
+                    if constants.get(name) != val:
+                        constants[name] = val
+                        changed = True
+                elif name in constants:
+                    del constants[name]
+                    changed = True
+        if not changed:
+            break
+    return constants
 
 
 def _is_dead_false_branch(test):
@@ -1274,15 +1440,966 @@ def _check_runtime_hygiene(tree, path, ast_index, report):
                 report(wal_node, 'ML016', ML016_MESSAGE)
 
 
+_SQL_IDENT_ATOM = r'(?:"(?:""|[^"])*"|`(?:``|[^`])*`|\[[^\]]*\]|[A-Za-z_][A-Za-z0-9_]*|\{\})'
+_SQL_CREATE_TABLE_HEAD_RE = re.compile(
+    rf'\bCREATE\s+(?:(?:TEMP|TEMPORARY)\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
+    rf'(?:{_SQL_IDENT_ATOM}\s*\.\s*)?({_SQL_IDENT_ATOM})\s*(\(|AS\b)',
+    re.IGNORECASE,
+)
+_SQL_CREATE_VIRTUAL_TABLE_RE = re.compile(
+    rf'\bCREATE\s+(?:(?:TEMP|TEMPORARY)\s+)?VIRTUAL\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
+    rf'(?:{_SQL_IDENT_ATOM}\s*\.\s*)?({_SQL_IDENT_ATOM})\b',
+    re.IGNORECASE,
+)
+_SQL_CREATE_VIEW_RE = re.compile(
+    rf'\bCREATE\s+(?:(?:TEMP|TEMPORARY)\s+)?VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?'
+    rf'(?:{_SQL_IDENT_ATOM}\s*\.\s*)?({_SQL_IDENT_ATOM})\b',
+    re.IGNORECASE,
+)
+_SQL_ALTER_ADD_COL_RE = re.compile(
+    rf'\bALTER\s+TABLE\s+(?:{_SQL_IDENT_ATOM}\s*\.\s*)?({_SQL_IDENT_ATOM})\s+'
+    rf'ADD\s+(?:COLUMN\s+)?({_SQL_IDENT_ATOM})',
+    re.IGNORECASE,
+)
+_SQL_ALTER_RENAME_TABLE_RE = re.compile(
+    rf'\bALTER\s+TABLE\s+(?:{_SQL_IDENT_ATOM}\s*\.\s*)?({_SQL_IDENT_ATOM})\s+'
+    rf'RENAME\s+TO\s+({_SQL_IDENT_ATOM})',
+    re.IGNORECASE,
+)
+_SQL_ALTER_RENAME_COL_RE = re.compile(
+    rf'\bALTER\s+TABLE\s+(?:{_SQL_IDENT_ATOM}\s*\.\s*)?({_SQL_IDENT_ATOM})\s+'
+    rf'RENAME\s+(?:COLUMN\s+)?({_SQL_IDENT_ATOM})\s+TO\s+({_SQL_IDENT_ATOM})',
+    re.IGNORECASE,
+)
+_SQL_TRAILING_TABLE_OPT_RE = re.compile(
+    r'^(?:\s*,?\s*(?:WITHOUT\s+ROWID|STRICT)\b)+',
+    re.IGNORECASE,
+)
+
+
+def _strip_sql_comments_and_mask_strings(sql):
+    """Return (comment_free_sql, search_sql) with identical lengths.
+
+    comment_free_sql removes -- and /* */ comments while keeping string/identifier literals intact.
+    search_sql additionally replaces single-quoted string literal interiors with spaces so regex
+    scans never match DDL keywords inside SQL string literals.
+    """
+    clean = []
+    search = []
+    i = 0
+    n = len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch == "'":
+            clean.append(ch)
+            search.append(ch)
+            i += 1
+            while i < n:
+                c = sql[i]
+                clean.append(c)
+                if c == "'" and i + 1 < n and sql[i + 1] == "'":
+                    clean.append("'")
+                    search.append('  ')
+                    i += 2
+                    continue
+                if c == "'":
+                    search.append("'")
+                    i += 1
+                    break
+                search.append('\n' if c == '\n' else ' ')
+                i += 1
+        elif ch in ('"', '`'):
+            quote = ch
+            clean.append(ch)
+            search.append(ch)
+            i += 1
+            while i < n:
+                c = sql[i]
+                clean.append(c)
+                search.append(c)
+                if c == quote and i + 1 < n and sql[i + 1] == quote:
+                    clean.append(quote)
+                    search.append(quote)
+                    i += 2
+                    continue
+                i += 1
+                if c == quote:
+                    break
+        elif ch == '[':
+            clean.append(ch)
+            search.append(ch)
+            i += 1
+            while i < n:
+                c = sql[i]
+                clean.append(c)
+                search.append(c)
+                i += 1
+                if c == ']':
+                    break
+        elif ch == '-' and i + 1 < n and sql[i + 1] == '-':
+            while i < n and sql[i] != '\n':
+                clean.append(' ')
+                search.append(' ')
+                i += 1
+        elif ch == '/' and i + 1 < n and sql[i + 1] == '*':
+            clean.append('  ')
+            search.append('  ')
+            i += 2
+            while i < n:
+                if sql[i] == '*' and i + 1 < n and sql[i + 1] == '/':
+                    clean.append('  ')
+                    search.append('  ')
+                    i += 2
+                    break
+                repl = '\n' if sql[i] == '\n' else ' '
+                clean.append(repl)
+                search.append(repl)
+                i += 1
+        else:
+            clean.append(ch)
+            search.append(ch)
+            i += 1
+    return ''.join(clean), ''.join(search)
+
+
+def _unquote_sql_ident(token):
+    t = token.strip()
+    if len(t) >= 2:
+        if t[0] == '"' and t[-1] == '"':
+            return t[1:-1].replace('""', '"').lower()
+        if t[0] == '`' and t[-1] == '`':
+            return t[1:-1].replace('``', '`').lower()
+        if t[0] == '[' and t[-1] == ']':
+            return t[1:-1].lower()
+    return t.lower()
+
+
+def _extract_balanced_sql_paren(sql, open_idx):
+    """Extract content inside balanced (...) starting at open_idx, skipping SQL literals."""
+    depth = 1
+    i = open_idx + 1
+    n = len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch == "'":
+            i += 1
+            while i < n:
+                if sql[i] == "'" and i + 1 < n and sql[i + 1] == "'":
+                    i += 2
+                    continue
+                if sql[i] == "'":
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch in ('"', '`'):
+            quote = ch
+            i += 1
+            while i < n:
+                if sql[i] == quote and i + 1 < n and sql[i + 1] == quote:
+                    i += 2
+                    continue
+                if sql[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == '[':
+            i += 1
+            while i < n and sql[i] != ']':
+                i += 1
+            i += 1
+            continue
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+            if depth == 0:
+                return sql[open_idx + 1:i], i, True
+        i += 1
+    return sql[open_idx + 1:], n - 1, False
+
+
+def _split_sql_top_level_commas(body):
+    """Split CREATE TABLE body on commas at parenthesis depth 0, respecting SQL literals."""
+    parts = []
+    start = 0
+    depth = 0
+    i = 0
+    n = len(body)
+    while i < n:
+        ch = body[i]
+        if ch == "'":
+            i += 1
+            while i < n:
+                if body[i] == "'" and i + 1 < n and body[i + 1] == "'":
+                    i += 2
+                    continue
+                if body[i] == "'":
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch in ('"', '`'):
+            quote = ch
+            i += 1
+            while i < n:
+                if body[i] == quote and i + 1 < n and body[i + 1] == quote:
+                    i += 2
+                    continue
+                if body[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == '[':
+            i += 1
+            while i < n and body[i] != ']':
+                i += 1
+            i += 1
+            continue
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            if depth > 0:
+                depth -= 1
+        elif ch == ',' and depth == 0:
+            parts.append(body[start:i])
+            start = i + 1
+        i += 1
+    parts.append(body[start:])
+    return parts
+
+
+def _extract_sql_col_name(item_sql):
+    """Extract lowercase column name from a top-level CREATE TABLE element, or None for table constraints."""
+    s = item_sql.strip()
+    if not s:
+        return None
+    if s[0] in ('"', '`', '['):
+        m = re.match(_SQL_IDENT_ATOM, s)
+        return _unquote_sql_ident(m.group(0)) if m else None
+    m = re.match(r'([A-Za-z_][A-Za-z0-9_]*)\s*(.*)', s, re.DOTALL)
+    if not m:
+        return None
+    first_upper = m.group(1).upper()
+    rest = m.group(2).lstrip()
+    if first_upper == 'CONSTRAINT':
+        return None
+    if first_upper in ('PRIMARY', 'FOREIGN') and re.match(r'^KEY\b', rest, re.IGNORECASE):
+        return None
+    if first_upper in ('UNIQUE', 'CHECK') and rest.startswith('('):
+        return None
+    return first_upper.lower()
+
+
+def _extract_sql_stmt_end(sql, start_idx):
+    """Find the end of a SQL statement terminated by ';' at paren depth 0 (or end of string)."""
+    depth = 0
+    i = start_idx
+    n = len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch == "'":
+            i += 1
+            while i < n:
+                if sql[i] == "'" and i + 1 < n and sql[i + 1] == "'":
+                    i += 2
+                    continue
+                if sql[i] == "'":
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch in ('"', '`'):
+            quote = ch
+            i += 1
+            while i < n:
+                if sql[i] == quote and i + 1 < n and sql[i + 1] == quote:
+                    i += 2
+                    continue
+                if sql[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == '[':
+            i += 1
+            while i < n and sql[i] != ']':
+                i += 1
+            i += 1
+            continue
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            if depth > 0:
+                depth -= 1
+        elif ch == ';' and depth == 0:
+            return i
+        i += 1
+    return n
+
+
+def _parse_catalog_ddl_statements(sql):
+    """Parse CREATE TABLE / VIRTUAL TABLE / VIEW and ALTER TABLE statements using balanced parens."""
+    clean_sql, search_sql = _strip_sql_comments_and_mask_strings(sql)
+    results = []
+
+    for m in _SQL_CREATE_TABLE_HEAD_RE.finditer(search_sql):
+        table_name = _unquote_sql_ident(m.group(1))
+        marker = m.group(2)
+        if marker == '(':
+            open_idx = m.end() - 1
+            body, close_idx, closed = _extract_balanced_sql_paren(clean_sql, open_idx)
+            cols = []
+            for item in _split_sql_top_level_commas(body):
+                col = _extract_sql_col_name(item)
+                if col is not None:
+                    cols.append(col)
+            stmt_end = close_idx + 1
+            if closed:
+                tail_match = _SQL_TRAILING_TABLE_OPT_RE.match(search_sql[stmt_end:])
+                if tail_match:
+                    stmt_end += tail_match.end()
+            full_stmt = clean_sql[m.start():stmt_end] if closed else None
+            results.append(('create_table', table_name, cols, full_stmt))
+        else:
+            stmt_end = _extract_sql_stmt_end(clean_sql, m.start())
+            results.append(('create_table_as', table_name, [], clean_sql[m.start():stmt_end]))
+
+    for m in _SQL_CREATE_VIRTUAL_TABLE_RE.finditer(search_sql):
+        table_name = _unquote_sql_ident(m.group(1))
+        stmt_end = _extract_sql_stmt_end(clean_sql, m.start())
+        results.append(('create_virtual_table', table_name, [], clean_sql[m.start():stmt_end]))
+
+    for m in _SQL_CREATE_VIEW_RE.finditer(search_sql):
+        view_name = _unquote_sql_ident(m.group(1))
+        stmt_end = _extract_sql_stmt_end(clean_sql, m.start())
+        results.append(('create_view', view_name, [], clean_sql[m.start():stmt_end]))
+
+    for m in _SQL_ALTER_ADD_COL_RE.finditer(search_sql):
+        table_name = _unquote_sql_ident(m.group(1))
+        col_name = _unquote_sql_ident(m.group(2))
+        stmt_end = _extract_sql_stmt_end(clean_sql, m.start())
+        results.append(('alter_add_column', table_name, [col_name], clean_sql[m.start():stmt_end]))
+
+    for m in _SQL_ALTER_RENAME_TABLE_RE.finditer(search_sql):
+        new_table = _unquote_sql_ident(m.group(2))
+        stmt_end = _extract_sql_stmt_end(clean_sql, m.start())
+        results.append(('alter_rename_table', new_table, [], clean_sql[m.start():stmt_end]))
+
+    for m in _SQL_ALTER_RENAME_COL_RE.finditer(search_sql):
+        table_name = _unquote_sql_ident(m.group(1))
+        new_col = _unquote_sql_ident(m.group(3))
+        stmt_end = _extract_sql_stmt_end(clean_sql, m.start())
+        results.append(('alter_rename_column', table_name, [new_col], clean_sql[m.start():stmt_end]))
+
+    return results
+
+
+def _validate_sqlite_table_xinfo(con, schema, table_name, node, report, *, ignore_stub=False):
+    tbl_lower = table_name.lower()
+    if tbl_lower not in CATALOG_ALLOWED_TABLES:
+        report(node, 'ML021', ML021_MESSAGE)
+    allowed_cols = CATALOG_ALLOWED_TABLES.get(tbl_lower)
+    escaped = table_name.replace('"', '""')
+    rows = con.execute(f'PRAGMA {schema}.table_xinfo("{escaped}")').fetchall()
+    for row in rows:
+        col_lower = str(row[1]).lower()
+        if ignore_stub and col_lower == '__ml021_stub':
+            continue
+        if col_lower in CATALOG_FORBIDDEN_COLUMNS:
+            report(node, 'ML021', ML021_MESSAGE)
+        elif allowed_cols is not None and col_lower not in allowed_cols:
+            report(node, 'ML021', ML021_MESSAGE)
+
+
+def _check_catalog_schema_ml021(all_nodes, parent_map, docstring_ids, str_consts, report):
+    """Dual ML021 validation: balanced-paren static DDL + :memory: SQLite PRAGMA table_xinfo."""
+    resolved_expr_ids = set()
+    candidates = []
+    for node in all_nodes:
+        if id(node) in docstring_ids:
+            continue
+        if not isinstance(node, (ast.Constant, ast.JoinedStr, ast.BinOp, ast.Call)):
+            continue
+        if isinstance(node, ast.Call) and not (isinstance(node.func, ast.Attribute) and node.func.attr == 'join'):
+            continue
+        sql = _extract_sql_text(node, str_consts)
+        if sql is not None:
+            resolved_expr_ids.add(id(node))
+            candidates.append((node, sql))
+
+    ddl_entries = []
+    for node, sql in candidates:
+        parent = parent_map.get(id(node))
+        if parent is not None and id(parent) in resolved_expr_ids and isinstance(parent, (ast.BinOp, ast.JoinedStr, ast.Call)):
+            continue
+        if parent is not None and isinstance(parent, (ast.List, ast.Tuple)):
+            grandparent = parent_map.get(id(parent))
+            if grandparent is not None and id(grandparent) in resolved_expr_ids and isinstance(grandparent, ast.Call):
+                continue
+        upper = sql.upper()
+        if 'CREATE' not in upper and 'ALTER' not in upper:
+            continue
+        for kind, table_name, cols, full_stmt in _parse_catalog_ddl_statements(sql):
+            ddl_entries.append((node, kind, table_name, cols, full_stmt))
+
+    # Layer 1: Static balanced-paren validation over all CREATE TABLE / ALTER TABLE statements.
+    for node, kind, table_name, cols, _ in ddl_entries:
+        if kind in ('create_table_as', 'create_virtual_table', 'create_view'):
+            report(node, 'ML021', ML021_MESSAGE)
+            continue
+        if table_name not in CATALOG_ALLOWED_TABLES:
+            report(node, 'ML021', ML021_MESSAGE)
+        allowed_cols = CATALOG_ALLOWED_TABLES.get(table_name)
+        for col in cols:
+            if col in CATALOG_FORBIDDEN_COLUMNS:
+                report(node, 'ML021', ML021_MESSAGE)
+            elif allowed_cols is not None and col not in allowed_cols:
+                report(node, 'ML021', ML021_MESSAGE)
+
+    # Layer 2: Execute extracted DDL in :memory: SQLite and validate via PRAGMA table_xinfo.
+    create_stmts_by_table = {}
+    for node, kind, table_name, _, full_stmt in ddl_entries:
+        if kind != 'create_table' or not full_stmt or '{}' in full_stmt:
+            continue
+        create_stmts_by_table.setdefault(table_name, full_stmt)
+        con = sqlite3.connect(':memory:')
+        try:
+            con.execute(full_stmt)
+            for schema, master in (('main', 'sqlite_master'), ('temp', 'sqlite_temp_master')):
+                for (tbl,) in con.execute(
+                    f"SELECT name FROM {master} WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'"
+                ).fetchall():
+                    _validate_sqlite_table_xinfo(con, schema, str(tbl), node, report)
+        except sqlite3.Error:
+            report(node, 'ML021', ML021_MESSAGE)
+        finally:
+            con.close()
+
+    # Validate ALTER TABLE ADD COLUMN statements in :memory: SQLite + PRAGMA table_xinfo.
+    for node, kind, table_name, _, full_stmt in ddl_entries:
+        if kind != 'alter_add_column' or not full_stmt or '{}' in full_stmt:
+            continue
+        con = sqlite3.connect(':memory:')
+        try:
+            used_stub = False
+            base_ddl = create_stmts_by_table.get(table_name)
+            if base_ddl:
+                con.execute(base_ddl)
+            else:
+                escaped = table_name.replace('"', '""')
+                con.execute(f'CREATE TABLE "{escaped}" (__ml021_stub INTEGER)')
+                used_stub = True
+            try:
+                con.execute(full_stmt)
+            except sqlite3.OperationalError as exc:
+                if 'duplicate column name' not in str(exc).lower():
+                    report(node, 'ML021', ML021_MESSAGE)
+            for (tbl,) in con.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall():
+                _validate_sqlite_table_xinfo(con, 'main', str(tbl), node, report, ignore_stub=used_stub)
+        except sqlite3.Error:
+            report(node, 'ML021', ML021_MESSAGE)
+        finally:
+            con.close()
+
+
+def _iter_assigned_name_value_pairs(node):
+    """Yield (target_name, value_expr) pairs from Assign, AnnAssign, and NamedExpr."""
+    def _unpack(target, value):
+        if isinstance(target, ast.Name):
+            yield target.id, value
+        elif isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (ast.Tuple, ast.List)):
+            if len(target.elts) == len(value.elts):
+                for sub_t, sub_v in zip(target.elts, value.elts):
+                    yield from _unpack(sub_t, sub_v)
+
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            yield from _unpack(target, node.value)
+    elif isinstance(node, ast.AnnAssign) and node.value is not None:
+        yield from _unpack(node.target, node.value)
+    elif isinstance(node, ast.NamedExpr):
+        yield from _unpack(node.target, node.value)
+
+
+def _check_sqlite_connect_ml020(tree, scope_nodes_map, scope_children_map, str_consts, report):
+    """Track sqlite3 module/connect aliases, getattr, importlib.import_module, and __import__."""
+    def walk_sqlite_scope(scope_root, base_env):
+        params = _param_names(scope_root)
+        sq_names = set(base_env['sq']) - params
+        conn_names = set(base_env['conn']) - params
+        importlib_names = set(base_env['importlib']) - params
+        import_mod_names = set(base_env['import_mod']) - params
+        builtins_names = set(base_env['builtins']) - params
+        imp_fn_names = set(base_env['imp_fn']) - params
+        getattr_fn_names = set(base_env['getattr_fn']) - params
+        sys_names = set(base_env['sys']) - params
+        functools_names = set(base_env['functools']) - params
+        partial_fn_names = set(base_env['partial_fn']) - params
+        nodes = scope_nodes_map[id(scope_root)]
+
+        for node in nodes:
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    local = alias.asname or alias.name.split('.')[0]
+                    if alias.name in SQLITE_MODULE_NAMES:
+                        sq_names.add(alias.asname or alias.name)
+                    elif alias.name == 'importlib':
+                        importlib_names.add(local)
+                    elif alias.name == 'builtins':
+                        builtins_names.add(local)
+                    elif alias.name == 'sys':
+                        sys_names.add(local)
+                    elif alias.name == 'functools':
+                        functools_names.add(local)
+            elif isinstance(node, ast.ImportFrom):
+                mod = node.module or ''
+                for alias in node.names:
+                    local = alias.asname or alias.name
+                    if mod in SQLITE_MODULE_NAMES:
+                        if alias.name == 'connect':
+                            conn_names.add(local)
+                        elif alias.name == 'dbapi2':
+                            sq_names.add(local)
+                    elif mod == 'importlib' and alias.name == 'import_module':
+                        import_mod_names.add(local)
+                    elif mod == 'builtins':
+                        if alias.name == '__import__':
+                            imp_fn_names.add(local)
+                        elif alias.name == 'getattr':
+                            getattr_fn_names.add(local)
+                    elif mod == 'functools' and alias.name == 'partial':
+                        partial_fn_names.add(local)
+
+        def _arg_str(call, idx, kw_name):
+            expr = call.args[idx] if len(call.args) > idx else next(
+                (kw.value for kw in call.keywords if kw.arg == kw_name), None
+            )
+            return _extract_sql_text(expr, str_consts) if expr is not None else None
+
+        def is_import_module_fn(expr):
+            return (
+                (isinstance(expr, ast.Name) and expr.id in import_mod_names)
+                or (
+                    isinstance(expr, ast.Attribute)
+                    and expr.attr == 'import_module'
+                    and isinstance(expr.value, ast.Name)
+                    and expr.value.id in importlib_names
+                )
+            )
+
+        def is_dunder_import_fn(expr):
+            return (
+                (isinstance(expr, ast.Name) and expr.id in imp_fn_names)
+                or (
+                    isinstance(expr, ast.Attribute)
+                    and expr.attr == '__import__'
+                    and isinstance(expr.value, ast.Name)
+                    and expr.value.id in builtins_names
+                )
+            )
+
+        def is_getattr_fn(expr):
+            return (
+                (isinstance(expr, ast.Name) and expr.id in getattr_fn_names)
+                or (
+                    isinstance(expr, ast.Attribute)
+                    and expr.attr == 'getattr'
+                    and isinstance(expr.value, ast.Name)
+                    and expr.value.id in builtins_names
+                )
+            )
+
+        def is_partial_fn(expr):
+            return (
+                (isinstance(expr, ast.Name) and expr.id in partial_fn_names)
+                or (
+                    isinstance(expr, ast.Attribute)
+                    and expr.attr == 'partial'
+                    and isinstance(expr.value, ast.Name)
+                    and expr.value.id in functools_names
+                )
+            )
+
+        def is_sqlite_module_expr(expr):
+            if isinstance(expr, ast.Name) and expr.id in sq_names:
+                return True
+            if isinstance(expr, ast.Attribute) and expr.attr == 'dbapi2' and is_sqlite_module_expr(expr.value):
+                return True
+            if isinstance(expr, ast.Call):
+                if is_import_module_fn(expr.func) and _arg_str(expr, 0, 'name') in SQLITE_MODULE_NAMES:
+                    return True
+                if is_dunder_import_fn(expr.func) and _arg_str(expr, 0, 'name') in SQLITE_MODULE_NAMES:
+                    return True
+                if (
+                    isinstance(expr.func, ast.Attribute)
+                    and expr.func.attr == 'get'
+                    and isinstance(expr.func.value, ast.Attribute)
+                    and expr.func.value.attr == 'modules'
+                    and isinstance(expr.func.value.value, ast.Name)
+                    and expr.func.value.value.id in sys_names
+                    and _arg_str(expr, 0, 'key') in SQLITE_MODULE_NAMES
+                ):
+                    return True
+            if (
+                isinstance(expr, ast.Subscript)
+                and isinstance(expr.value, ast.Attribute)
+                and expr.value.attr == 'modules'
+                and isinstance(expr.value.value, ast.Name)
+                and expr.value.value.id in sys_names
+                and _extract_sql_text(expr.slice, str_consts) in SQLITE_MODULE_NAMES
+            ):
+                return True
+            return False
+
+        def is_getattr_connect_call(expr):
+            return (
+                isinstance(expr, ast.Call)
+                and is_getattr_fn(expr.func)
+                and len(expr.args) >= 2
+                and is_sqlite_module_expr(expr.args[0])
+                and _extract_sql_text(expr.args[1], str_consts) == 'connect'
+            )
+
+        def is_sqlite_connect_expr(expr):
+            if isinstance(expr, ast.Name) and expr.id in conn_names:
+                return True
+            if isinstance(expr, ast.Attribute) and expr.attr == 'connect' and is_sqlite_module_expr(expr.value):
+                return True
+            if is_getattr_connect_call(expr):
+                return True
+            if isinstance(expr, ast.Call) and is_partial_fn(expr.func) and expr.args:
+                if is_sqlite_connect_expr(expr.args[0]):
+                    return True
+            return False
+
+        # Fixpoint alias propagation inside scope.
+        for _ in range(len(nodes) + 1):
+            changed = False
+            for node in nodes:
+                for target_name, val in _iter_assigned_name_value_pairs(node):
+                    if isinstance(val, ast.Name):
+                        if val.id in importlib_names and target_name not in importlib_names:
+                            importlib_names.add(target_name)
+                            changed = True
+                        if val.id in builtins_names and target_name not in builtins_names:
+                            builtins_names.add(target_name)
+                            changed = True
+                        if val.id in sys_names and target_name not in sys_names:
+                            sys_names.add(target_name)
+                            changed = True
+                        if val.id in functools_names and target_name not in functools_names:
+                            functools_names.add(target_name)
+                            changed = True
+                    if is_import_module_fn(val) and target_name not in import_mod_names:
+                        import_mod_names.add(target_name)
+                        changed = True
+                    if is_dunder_import_fn(val) and target_name not in imp_fn_names:
+                        imp_fn_names.add(target_name)
+                        changed = True
+                    if is_getattr_fn(val) and target_name not in getattr_fn_names:
+                        getattr_fn_names.add(target_name)
+                        changed = True
+                    if is_partial_fn(val) and target_name not in partial_fn_names:
+                        partial_fn_names.add(target_name)
+                        changed = True
+                    if is_sqlite_module_expr(val) and target_name not in sq_names:
+                        sq_names.add(target_name)
+                        changed = True
+                    if is_sqlite_connect_expr(val) and target_name not in conn_names:
+                        conn_names.add(target_name)
+                        changed = True
+            if not changed:
+                break
+
+        for node in nodes:
+            if not isinstance(node, ast.Call):
+                continue
+            if is_sqlite_connect_expr(node.func) or is_getattr_connect_call(node):
+                report(node, 'ML020', ML020_CONNECT_MESSAGE)
+                continue
+            wrapper_name = (
+                node.func.id if isinstance(node.func, ast.Name)
+                else (node.func.attr if isinstance(node.func, ast.Attribute) else '')
+            )
+            if wrapper_name in SQLITE_OFFLOAD_WRAPPER_NAMES:
+                if any(is_sqlite_connect_expr(arg) for arg in node.args):
+                    report(node, 'ML020', ML020_CONNECT_MESSAGE)
+
+        child_env = {
+            'sq': sq_names,
+            'conn': conn_names,
+            'importlib': importlib_names,
+            'import_mod': import_mod_names,
+            'builtins': builtins_names,
+            'imp_fn': imp_fn_names,
+            'getattr_fn': getattr_fn_names,
+            'sys': sys_names,
+            'functools': functools_names,
+            'partial_fn': partial_fn_names,
+        }
+        for child_def in scope_children_map[id(scope_root)]:
+            walk_sqlite_scope(child_def, child_env)
+
+    walk_sqlite_scope(tree, {
+        'sq': {'sqlite3'},
+        'conn': set(),
+        'importlib': {'importlib'},
+        'import_mod': set(),
+        'builtins': {'builtins'},
+        'imp_fn': {'__import__'},
+        'getattr_fn': {'getattr'},
+        'sys': {'sys'},
+        'functools': {'functools'},
+        'partial_fn': set(),
+    })
+
+
+def _collect_v2_list_handlers(tree, all_nodes, functions):
+    """Collect (route_path, handler_fn) pairs for all registered GET /v2/* list routes."""
+    fn_by_name = {fn.name: fn for fn in functions}
+    routes = []
+    seen = set()
+
+    def _add(route_path, handler_fn):
+        if not route_path or not route_path.startswith('/v2/'):
+            return
+        if any(route_path.endswith(marker) for marker in V2_NON_LIST_ROUTE_MARKERS):
+            return
+        key = (route_path, id(handler_fn))
+        if key not in seen:
+            seen.add(key)
+            routes.append((route_path, handler_fn))
+
+    def _resolve_handler(expr):
+        if isinstance(expr, ast.Name) and expr.id in fn_by_name:
+            return fn_by_name[expr.id]
+        return None
+
+    for node in all_nodes:
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        attr = node.func.attr
+        if attr in ('get', 'add_get'):
+            path_expr = node.args[0] if len(node.args) >= 1 else next(
+                (kw.value for kw in node.keywords if kw.arg == 'path'), None
+            )
+            handler_expr = node.args[1] if len(node.args) >= 2 else next(
+                (kw.value for kw in node.keywords if kw.arg == 'handler'), None
+            )
+            route_path = string(path_expr) if path_expr is not None else None
+            handler_fn = _resolve_handler(handler_expr) if handler_expr is not None else None
+            if route_path and handler_fn is not None:
+                _add(route_path, handler_fn)
+        elif attr in ('route', 'add_route'):
+            method_expr = node.args[0] if len(node.args) >= 1 else next(
+                (kw.value for kw in node.keywords if kw.arg == 'method'), None
+            )
+            path_expr = node.args[1] if len(node.args) >= 2 else next(
+                (kw.value for kw in node.keywords if kw.arg == 'path'), None
+            )
+            handler_expr = node.args[2] if len(node.args) >= 3 else next(
+                (kw.value for kw in node.keywords if kw.arg == 'handler'), None
+            )
+            method_val = (string(method_expr) or '').upper() if method_expr is not None else ''
+            if method_val in ('GET', '*'):
+                route_path = string(path_expr) if path_expr is not None else None
+                handler_fn = _resolve_handler(handler_expr) if handler_expr is not None else None
+                if route_path and handler_fn is not None:
+                    _add(route_path, handler_fn)
+
+    for fn in functions:
+        for dec in fn.decorator_list:
+            if not (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)):
+                continue
+            if dec.func.attr == 'get':
+                path_expr = dec.args[0] if dec.args else next(
+                    (kw.value for kw in dec.keywords if kw.arg == 'path'), None
+                )
+                route_path = string(path_expr) if path_expr is not None else None
+                if route_path:
+                    _add(route_path, fn)
+            elif dec.func.attr == 'route':
+                method_expr = dec.args[0] if len(dec.args) >= 1 else next(
+                    (kw.value for kw in dec.keywords if kw.arg == 'method'), None
+                )
+                path_expr = dec.args[1] if len(dec.args) >= 2 else next(
+                    (kw.value for kw in dec.keywords if kw.arg == 'path'), None
+                )
+                method_val = (string(method_expr) or '').upper() if method_expr is not None else ''
+                route_path = string(path_expr) if path_expr is not None else None
+                if method_val in ('GET', '*') and route_path:
+                    _add(route_path, fn)
+
+    return routes
+
+
+def check_v2_utf8_response(tree_or_source, handler_fns=None, *, require_unconditional=False):
+    """Detect /v2 list handlers returning default ASCII-escaped web.json_response(payload).
+
+    Returns list of (lineno, 'ML019', ML019_UTF8_MESSAGE).
+    When require_unconditional is False, activates automatically once `_json_utf8_response` or
+    `json_utf8_response` is defined or imported in v2_api.py.
+    """
+    tree = ast.parse(tree_or_source) if isinstance(tree_or_source, str) else tree_or_source
+    ast_index = _build_ast_index(tree)
+    all_nodes = ast_index['all_nodes']
+    functions = ast_index['functions']
+
+    utf8_helper_fns = [fn for fn in functions if fn.name in V2_UTF8_RESPONSE_HELPER_NAMES]
+    has_utf8_helper = bool(utf8_helper_fns)
+    web_names = {'web'}
+    json_response_names = set()
+    json_names = {'json'}
+    json_dumps_names = set()
+    functools_names = {'functools'}
+    partial_names = set()
+
+    for node in all_nodes:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local = alias.asname or alias.name.split('.')[0]
+                if alias.name == 'aiohttp.web':
+                    web_names.add(alias.asname or alias.name)
+                elif alias.name == 'json':
+                    json_names.add(local)
+                elif alias.name == 'functools':
+                    functools_names.add(local)
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ''
+            for alias in node.names:
+                local = alias.asname or alias.name
+                if alias.name in V2_UTF8_RESPONSE_HELPER_NAMES or local in V2_UTF8_RESPONSE_HELPER_NAMES:
+                    has_utf8_helper = True
+                if mod == 'aiohttp' and alias.name == 'web':
+                    web_names.add(local)
+                elif mod == 'aiohttp.web' and alias.name == 'json_response':
+                    json_response_names.add(local)
+                elif mod == 'json' and alias.name == 'dumps':
+                    json_dumps_names.add(local)
+                elif mod == 'functools' and alias.name == 'partial':
+                    partial_names.add(local)
+
+    if not require_unconditional and not has_utf8_helper:
+        return []
+
+    if handler_fns is None:
+        handler_fns = [fn for _, fn in _collect_v2_list_handlers(tree, all_nodes, functions)]
+
+    fn_by_name = {fn.name: fn for fn in functions}
+    assigned_exprs = {}
+    for node in all_nodes:
+        for name, val in _iter_assigned_name_value_pairs(node):
+            assigned_exprs[name] = val
+
+    def _is_plain_json_dumps(expr):
+        if isinstance(expr, ast.Name) and expr.id in json_dumps_names:
+            return True
+        return (
+            isinstance(expr, ast.Attribute)
+            and expr.attr == 'dumps'
+            and isinstance(expr.value, ast.Name)
+            and expr.value.id in json_names
+        )
+
+    def _has_ensure_ascii_false(call_node):
+        for kw in call_node.keywords:
+            if kw.arg == 'ensure_ascii':
+                return isinstance(kw.value, ast.Constant) and kw.value.value is False
+        return False
+
+    def _is_safe_utf8_dumps(expr, seen=None):
+        if seen is None:
+            seen = set()
+        if _is_plain_json_dumps(expr):
+            return False
+        if isinstance(expr, ast.Call):
+            is_partial = (
+                (isinstance(expr.func, ast.Name) and expr.func.id in partial_names)
+                or (
+                    isinstance(expr.func, ast.Attribute)
+                    and expr.func.attr == 'partial'
+                    and isinstance(expr.func.value, ast.Name)
+                    and expr.func.value.id in functools_names
+                )
+            )
+            if is_partial:
+                return _has_ensure_ascii_false(expr)
+        if isinstance(expr, ast.Lambda):
+            for sub in ast.walk(expr.body):
+                if isinstance(sub, ast.Call) and _is_plain_json_dumps(sub.func):
+                    return _has_ensure_ascii_false(sub)
+            return False
+        if isinstance(expr, ast.Name):
+            if expr.id in seen:
+                return True
+            seen = seen | {expr.id}
+            if expr.id in assigned_exprs:
+                return _is_safe_utf8_dumps(assigned_exprs[expr.id], seen)
+            if expr.id in fn_by_name:
+                dumps_calls = [
+                    sub for sub in _walk_live_nodes(fn_by_name[expr.id])
+                    if isinstance(sub, ast.Call) and _is_plain_json_dumps(sub.func)
+                ]
+                if dumps_calls:
+                    return all(_has_ensure_ascii_false(c) for c in dumps_calls)
+        return True
+
+    def _is_bare_json_response(call):
+        is_jr = (
+            (isinstance(call.func, ast.Name) and call.func.id in json_response_names)
+            or (
+                isinstance(call.func, ast.Attribute)
+                and call.func.attr == 'json_response'
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id in web_names
+            )
+        )
+        if not is_jr:
+            return False
+        dumps_expr = next((kw.value for kw in call.keywords if kw.arg == 'dumps'), None)
+        if dumps_expr is None:
+            return True
+        return not _is_safe_utf8_dumps(dumps_expr)
+
+    # Expand targets to include helper functions transitively invoked by list handlers.
+    targets = []
+    seen_fn_ids = set()
+    queue = deque(list(handler_fns) + utf8_helper_fns)
+    while queue:
+        fn = queue.popleft()
+        if id(fn) in seen_fn_ids:
+            continue
+        seen_fn_ids.add(id(fn))
+        targets.append(fn)
+        for sub in _walk_live_nodes(fn):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id in fn_by_name:
+                callee = fn_by_name[sub.func.id]
+                if id(callee) not in seen_fn_ids:
+                    queue.append(callee)
+
+    issues = []
+    for fn in targets:
+        for sub in _walk_live_nodes(fn):
+            if isinstance(sub, ast.Call) and _is_bare_json_response(sub):
+                issues.append((sub.lineno, 'ML019', ML019_UTF8_MESSAGE))
+    return sorted(set(issues))
+
+
 def _check_scaling_guardrails(tree, path, ast_index, report):
-    """ML019 (/v2 list pagination & budget), ML020 (sqlite3.connect allowlist + no immutable=1), ML021 (zero-body catalog DDL)."""
-    path_obj = Path(path)
-    filename = path_obj.name
+    """ML019 (/v2 list pagination, budget & UTF-8 JSON exit), ML020 (sqlite3.connect allowlist + no immutable=1), ML021 (zero-body catalog DDL)."""
+    rel_path = _normalize_rel_path(path)
     docstring_ids = ast_index['docstring_ids']
     all_nodes = ast_index['all_nodes']
     functions = ast_index['functions']
+    parent_map = ast_index['parent_map']
     scope_nodes_map = ast_index['scope_nodes']
     scope_children_map = ast_index['scope_children']
+    str_consts = _collect_module_string_constants(tree)
 
     # ML020 (part 1): forbid online SQLite URI `immutable=1` outside docstrings.
     for node in all_nodes:
@@ -1290,117 +2407,99 @@ def _check_scaling_guardrails(tree, path, ast_index, report):
             if IMMUTABLE_URI_RE.search(node.value):
                 report(node, 'ML020', ML020_IMMUTABLE_MESSAGE)
         elif isinstance(node, (ast.JoinedStr, ast.BinOp)):
-            sql = _extract_sql_text(node)
+            sql = _extract_sql_text(node, str_consts)
             if sql and IMMUTABLE_URI_RE.search(sql):
                 report(node, 'ML020', ML020_IMMUTABLE_MESSAGE)
 
-    # ML020 (part 2): restrict direct sqlite3.connect(...) calls to explicit allowlist.
-    if filename not in SQLITE_CONNECT_ALLOWLIST:
-        def walk_sqlite_scope(scope_root, base_sq, base_conn):
-            params = _param_names(scope_root)
-            sq_names = set(base_sq) - params
-            conn_names = set(base_conn) - params
-            nodes = scope_nodes_map[id(scope_root)]
-            for node in nodes:
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        if alias.name == 'sqlite3':
-                            sq_names.add(alias.asname or alias.name)
-                elif isinstance(node, ast.ImportFrom) and node.module == 'sqlite3':
-                    for alias in node.names:
-                        if alias.name == 'connect':
-                            conn_names.add(alias.asname or alias.name)
-            for node in nodes:
-                if not isinstance(node, ast.Call):
-                    continue
-                is_sq_connect = (
-                    (isinstance(node.func, ast.Name) and node.func.id in conn_names)
-                    or (
-                        isinstance(node.func, ast.Attribute)
-                        and node.func.attr == 'connect'
-                        and isinstance(node.func.value, ast.Name)
-                        and node.func.value.id in sq_names
-                    )
-                )
-                if is_sq_connect:
-                    report(node, 'ML020', ML020_CONNECT_MESSAGE)
-            for child_def in scope_children_map[id(scope_root)]:
-                walk_sqlite_scope(child_def, sq_names, conn_names)
+    # ML020 (part 2): restrict sqlite3.connect (including aliases, getattr, importlib, __import__) to exact allowlisted paths.
+    if rel_path not in SQLITE_CONNECT_ALLOWLIST:
+        _check_sqlite_connect_ml020(tree, scope_nodes_map, scope_children_map, str_consts, report)
 
-        walk_sqlite_scope(tree, {'sqlite3'}, set())
+    # ML021: catalog_index.py DDL must strictly obey the 5-table / allowed-column metadata whitelist.
+    if rel_path in ('engine/python/catalog_index.py', 'catalog_index.py'):
+        _check_catalog_schema_ml021(all_nodes, parent_map, docstring_ids, str_consts, report)
 
-    # ML021: catalog_index.py DDL must never store body/raw_text/why_learned/metadata_json or catalog_sessions.
-    if filename == 'catalog_index.py':
-        for node in all_nodes:
-            if id(node) in docstring_ids:
-                continue
-            if not isinstance(node, (ast.Constant, ast.JoinedStr, ast.BinOp)):
-                continue
-            sql = _extract_sql_text(node)
-            if not sql or 'CREATE' not in sql.upper():
-                continue
-            for match in CREATE_TABLE_RE.finditer(sql):
-                table_name = match.group(1).strip().lower()
-                if table_name in CATALOG_FORBIDDEN_TABLES:
-                    report(node, 'ML021', ML021_MESSAGE)
-                    continue
-                cols_body = match.group(2)
-                for raw_line in cols_body.split(','):
-                    tokens = raw_line.strip().split()
-                    if not tokens:
-                        continue
-                    col_name = tokens[0].strip('"`[]').lower()
-                    if col_name in CATALOG_FORBIDDEN_COLUMNS:
-                        report(node, 'ML021', ML021_MESSAGE)
-
-    # ML019: v2_api.py list handlers must enforce _parse_limit (max <= 50) & fit_items_to_json_budget.
-    if filename == 'v2_api.py':
+    # ML019: v2_api.py list handlers must enforce _MAX_PAGE_LIMIT (<=50), _parse_limit, fit_items_to_json_budget & UTF-8 JSON exit.
+    if rel_path in ('engine/python/v2_api.py', 'v2_api.py'):
         numeric_consts = _collect_module_numeric_constants(tree)
+        list_routes = _collect_v2_list_handlers(tree, all_nodes, functions)
         max_limit_val = numeric_consts.get('_MAX_PAGE_LIMIT')
-        if max_limit_val is not None and not (1 <= max_limit_val <= 50):
+        if list_routes and (max_limit_val is None or not (1 <= max_limit_val <= 50)):
+            anchor = None
             for node in tree.body:
                 if isinstance(node, ast.Assign) and any(
                     isinstance(t, ast.Name) and t.id == '_MAX_PAGE_LIMIT' for t in node.targets
                 ):
-                    report(node, 'ML019', ML019_MESSAGE)
+                    anchor = node
+                    break
+                if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == '_MAX_PAGE_LIMIT':
+                    anchor = node
+                    break
+            if anchor is None:
+                anchor = tree.body[0] if tree.body else list_routes[0][1]
+            report(anchor, 'ML019', ML019_MESSAGE)
 
+        # Build transitive call graph for same-module helpers invoking fit_items_to_json_budget or _parse_limit.
         fn_by_name = {fn.name: fn for fn in functions}
-        for node in all_nodes:
-            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'get'):
-                continue
-            if len(node.args) < 2:
-                continue
-            route_path = string(node.args[0])
-            if not route_path or not route_path.startswith('/v2/'):
-                continue
-            if any(route_path.endswith(marker) for marker in V2_NON_LIST_ROUTE_MARKERS):
-                continue
-            handler_arg = node.args[1]
-            if not isinstance(handler_arg, ast.Name) or handler_arg.id not in fn_by_name:
-                continue
-            handler_fn = fn_by_name[handler_arg.id]
-            handler_calls = [n for n in ast.walk(handler_fn) if isinstance(n, ast.Call)]
-            has_limit = False
-            has_budget = False
+        direct_budget = set()
+        direct_limit = set()
+        fn_callees = {fn.name: set() for fn in functions}
+        for fn in functions:
+            for sub in _walk_live_nodes(fn):
+                if not isinstance(sub, ast.Call):
+                    continue
+                fname = sub.func.id if isinstance(sub.func, ast.Name) else (
+                    sub.func.attr if isinstance(sub.func, ast.Attribute) else ''
+                )
+                if fname == 'fit_items_to_json_budget':
+                    direct_budget.add(fn.name)
+                elif fname == '_parse_limit':
+                    direct_limit.add(fn.name)
+                if isinstance(sub.func, ast.Name) and sub.func.id in fn_by_name:
+                    fn_callees[fn.name].add(sub.func.id)
+
+        budget_helpers = set(direct_budget)
+        limit_helpers = set(direct_limit)
+        for _ in range(len(functions) + 1):
+            changed = False
+            for name, callees in fn_callees.items():
+                if name not in budget_helpers and (callees & budget_helpers):
+                    budget_helpers.add(name)
+                    changed = True
+                if name not in limit_helpers and (callees & limit_helpers):
+                    limit_helpers.add(name)
+                    changed = True
+            if not changed:
+                break
+
+        list_handlers = []
+        for _, handler_fn in list_routes:
+            list_handlers.append(handler_fn)
+            has_limit = handler_fn.name in limit_helpers
+            has_budget = handler_fn.name in budget_helpers
             bad_limit_bound = False
-            for call in handler_calls:
-                fname = call.func.id if isinstance(call.func, ast.Name) else (
-                    call.func.attr if isinstance(call.func, ast.Attribute) else ''
+            for sub in _walk_live_nodes(handler_fn):
+                if not isinstance(sub, ast.Call):
+                    continue
+                fname = sub.func.id if isinstance(sub.func, ast.Name) else (
+                    sub.func.attr if isinstance(sub.func, ast.Attribute) else ''
                 )
                 if fname == '_parse_limit':
-                    has_limit = True
-                    # Check explicit max_val on pagination limit (ignore days window parameter).
-                    is_days_arg = bool(call.args and 'days' in ast.dump(call.args[0]))
+                    is_days_arg = bool(sub.args and 'days' in ast.dump(sub.args[0]))
                     if not is_days_arg:
-                        for kw in call.keywords:
-                            if kw.arg == 'max_val':
-                                mv = _numeric_literal(kw.value, numeric_consts)
-                                if mv is not None and mv > 50:
-                                    bad_limit_bound = True
-                elif fname == 'fit_items_to_json_budget':
-                    has_budget = True
+                        mv_expr = next((kw.value for kw in sub.keywords if kw.arg == 'max_val'), None)
+                        if mv_expr is None and len(sub.args) >= 3:
+                            mv_expr = sub.args[2]
+                        if mv_expr is not None:
+                            mv = _numeric_literal(mv_expr, numeric_consts)
+                            if mv is not None and mv > 50:
+                                bad_limit_bound = True
             if not has_limit or not has_budget or bad_limit_bound:
                 report(handler_fn, 'ML019', ML019_MESSAGE)
+
+        for lineno, code, msg in check_v2_utf8_response(tree, list_handlers, require_unconditional=True):
+            anchor = type('_LineAnchor', (), {'lineno': lineno})()
+            report(anchor, code, msg)
 
 
 def check_source(source, path):
@@ -1439,20 +2538,24 @@ GO_FUNC_HEADER_RE = re.compile(r'(?:^|\n)func\b[^{]*\{')
 GO_VIEW_FUNC_RE = re.compile(r'func\s*\(\s*\w+\s+\*App\s*\)\s*View\s*\([^)]*\)\s*\{')
 GO_LOAD_OVERVIEW_RE = re.compile(r'func\s*\(\s*\w+\s+\*App\s*\)\s*loadOverview\s*\([^)]*\)\s*\{')
 GO_START_FUNC_RE = re.compile(r'func\s*\(\s*\w+\s+\*App\s*\)\s*Start\s*\([^)]*\)\s*\{')
-GO_OVERVIEW_DOCS_CALL_RE = re.compile(r'\.\s*overviewDocuments\s*\(')
-GO_OVERVIEW_SESSIONS_CALL_RE = re.compile(r'\.\s*overviewSessions\s*\(')
+GO_OVERVIEW_DOCS_CALL_RE = re.compile(r'\.\s*overviewDocuments\b')
+GO_OVERVIEW_SESSIONS_CALL_RE = re.compile(r'\.\s*overviewSessions\b')
 GO_V1_OVERVIEW_BOOTSTRAP_RE = re.compile(r'/v1/overview/bootstrap')
-ML018_LEGACY_OVERVIEW_DOCS_MAX = {
-    'overview.go': 1,
-    'common_knowledge.go': 1,
-    'common_knowledge_page.go': 1,
-    'knowledge_waterfall.go': 1,
-    'project_queue.go': 1,
-    'project_records.go': 1,
-    'unified_search.go': 1,
+ML018_LEGACY_OVERVIEW_DOCS_ALLOWLIST = {
+    ('internal/simpledesktop/overview.go', 'overview'): 1,
+    ('internal/simpledesktop/common_knowledge.go', 'commonDocumentItems'): 1,
+    ('internal/simpledesktop/common_knowledge_page.go', 'confirmCommonDeletion'): 1,
+    ('internal/simpledesktop/knowledge_waterfall.go', 'loadKnowledgeFeed'): 1,
+    ('internal/simpledesktop/project_queue.go', 'pendingProjectCatalog'): 1,
+    ('internal/simpledesktop/project_records.go', 'projectRecordCatalog'): 1,
+    ('internal/simpledesktop/unified_search.go', 'recentSearchItems'): 1,
 }
-ML018_LEGACY_OVERVIEW_SESSIONS_MAX = {'overview.go': 1}
-ML018_LEGACY_V1_BOOTSTRAP_MAX = {'overview_bootstrap.go': 1}
+ML018_LEGACY_OVERVIEW_SESSIONS_ALLOWLIST = {
+    ('internal/simpledesktop/overview.go', 'overview'): 1,
+}
+ML018_LEGACY_V1_BOOTSTRAP_ALLOWLIST = {
+    ('internal/simpledesktop/overview_bootstrap.go', 'overviewBootstrap'): 1,
+}
 
 
 def _strip_go_comments_keep_strings(source):
@@ -1621,6 +2724,115 @@ def _strip_go_comments(source):
     return ''.join(out)
 
 
+def _skip_go_balanced(text, start, open_ch, close_ch):
+    depth = 0
+    i = start
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+def _extract_go_toplevel_funcs(clean):
+    """Return list of (body_open_idx, body_end_idx, func_name) for top-level Go functions/methods."""
+    funcs = []
+    n = len(clean)
+    i = 0
+    brace_depth = 0
+    while i < n:
+        ch = clean[i]
+        if ch == '{':
+            brace_depth += 1
+            i += 1
+            continue
+        if ch == '}':
+            if brace_depth > 0:
+                brace_depth -= 1
+            i += 1
+            continue
+        if brace_depth == 0 and clean.startswith('func', i):
+            after_kw = i + 4
+            line_start = clean.rfind('\n', 0, i) + 1
+            if (
+                clean[line_start:i].strip() == ''
+                and after_kw < n
+                and (clean[after_kw] in ' \t' or clean[after_kw] == '(')
+            ):
+                j = after_kw
+                while j < n and clean[j] in ' \t\r\n':
+                    j += 1
+                if j < n and clean[j] == '(':
+                    j = _skip_go_balanced(clean, j, '(', ')')
+                    while j < n and clean[j] in ' \t\r\n':
+                        j += 1
+                name_start = j
+                while j < n and (clean[j].isalnum() or clean[j] == '_'):
+                    j += 1
+                func_name = clean[name_start:j]
+                if func_name:
+                    while j < n and clean[j] in ' \t\r':
+                        j += 1
+                    if j < n and clean[j] == '[':
+                        j = _skip_go_balanced(clean, j, '[', ']')
+                        while j < n and clean[j] in ' \t\r':
+                            j += 1
+                    if j < n and clean[j] == '(':
+                        j = _skip_go_balanced(clean, j, '(', ')')
+                        matched_body = False
+                        while j < n:
+                            while j < n and clean[j] in ' \t\r':
+                                j += 1
+                            if j >= n or clean[j] == '\n':
+                                break
+                            if clean[j] == '{':
+                                body = _extract_brace_block(clean, j)
+                                body_end = j + len(body)
+                                funcs.append((j, body_end, func_name))
+                                i = body_end
+                                matched_body = True
+                                break
+                            if clean[j] == '(':
+                                j = _skip_go_balanced(clean, j, '(', ')')
+                            elif clean[j] == '[':
+                                j = _skip_go_balanced(clean, j, '[', ']')
+                            elif clean.startswith('interface', j) and (
+                                j + 9 == n or not (clean[j + 9].isalnum() or clean[j + 9] == '_')
+                            ):
+                                j += 9
+                                while j < n and clean[j] in ' \t\r':
+                                    j += 1
+                                if j < n and clean[j] == '{':
+                                    j = _skip_go_balanced(clean, j, '{', '}')
+                            elif clean.startswith('struct', j) and (
+                                j + 6 == n or not (clean[j + 6].isalnum() or clean[j + 6] == '_')
+                            ):
+                                j += 6
+                                while j < n and clean[j] in ' \t\r':
+                                    j += 1
+                                if j < n and clean[j] == '{':
+                                    j = _skip_go_balanced(clean, j, '{', '}')
+                            else:
+                                j += 1
+                        if matched_body:
+                            continue
+        i += 1
+    return funcs
+
+
+def _enclosing_go_func_name(toplevel_funcs, pos):
+    for start, end, name in toplevel_funcs:
+        if start <= pos < end:
+            return name
+    return None
+
+
 def _enclosing_go_func_body(clean, pos):
     last_block = None
     for match in GO_FUNC_HEADER_RE.finditer(clean, 0, pos + 1):
@@ -1732,25 +2944,39 @@ def check_go_performance(source, path):
                         line = clean[:brace_idx + 1 + call_match.start()].count('\n') + 1
                         issues.append((line, 'ML012', ML012_START_MESSAGE))
 
-    # ML018: Ban new Go call sites to legacy full-table endpoints (overviewDocuments, overviewSessions, /v1/overview/bootstrap).
-    docs_matches = list(GO_OVERVIEW_DOCS_CALL_RE.finditer(clean))
-    max_docs = ML018_LEGACY_OVERVIEW_DOCS_MAX.get(filename, 0)
-    for match in docs_matches[max_docs:]:
-        line = clean[:match.start()].count('\n') + 1
-        issues.append((line, 'ML018', ML018_MESSAGE))
+    # ML018: Ban new Go call sites to legacy full-table endpoints; exemptions bind exact path + exact enclosing function.
+    rel_path = _normalize_rel_path(path)
+    toplevel_funcs = _extract_go_toplevel_funcs(clean)
 
-    sess_matches = list(GO_OVERVIEW_SESSIONS_CALL_RE.finditer(clean))
-    max_sess = ML018_LEGACY_OVERVIEW_SESSIONS_MAX.get(filename, 0)
-    for match in sess_matches[max_sess:]:
-        line = clean[:match.start()].count('\n') + 1
-        issues.append((line, 'ML018', ML018_MESSAGE))
+    def _check_ml018_matches(matches, text_for_lines, allowlist):
+        seen_per_fn = {}
+        for match in matches:
+            fn_name = _enclosing_go_func_name(toplevel_funcs, match.start())
+            key = (rel_path, fn_name)
+            allowed_max = allowlist.get(key, 0) if fn_name is not None else 0
+            count = seen_per_fn.get(key, 0) + 1
+            seen_per_fn[key] = count
+            if count > allowed_max:
+                line = text_for_lines[:match.start()].count('\n') + 1
+                issues.append((line, 'ML018', ML018_MESSAGE))
+
+    _check_ml018_matches(
+        GO_OVERVIEW_DOCS_CALL_RE.finditer(clean),
+        clean,
+        ML018_LEGACY_OVERVIEW_DOCS_ALLOWLIST,
+    )
+    _check_ml018_matches(
+        GO_OVERVIEW_SESSIONS_CALL_RE.finditer(clean),
+        clean,
+        ML018_LEGACY_OVERVIEW_SESSIONS_ALLOWLIST,
+    )
 
     no_comments = _strip_go_comments_keep_strings(source)
-    v1_boot_matches = list(GO_V1_OVERVIEW_BOOTSTRAP_RE.finditer(no_comments))
-    max_v1_boot = ML018_LEGACY_V1_BOOTSTRAP_MAX.get(filename, 0)
-    for match in v1_boot_matches[max_v1_boot:]:
-        line = no_comments[:match.start()].count('\n') + 1
-        issues.append((line, 'ML018', ML018_MESSAGE))
+    _check_ml018_matches(
+        GO_V1_OVERVIEW_BOOTSTRAP_RE.finditer(no_comments),
+        no_comments,
+        ML018_LEGACY_V1_BOOTSTRAP_ALLOWLIST,
+    )
 
     return issues
 

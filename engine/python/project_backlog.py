@@ -453,9 +453,12 @@ class Backlog:
             raise PolicyError('backlog_journal_limit', 409)
         project = self.registry.state['projects'][project_id]
         targets = []
-        for key, bound in self.registry.state['sessions'].items():
-            if bound != project_id:
-                continue
+        project_keys = (
+            self.registry.sessions_for_project(project_id)
+            if hasattr(self.registry, 'sessions_for_project')
+            else [k for k, bound in self.registry.state['sessions'].items() if bound == project_id]
+        )
+        for key in project_keys:
             agent_id, host = json.loads(key)
             agent = self.registry.state['agents'].get(agent_id, {})
             if not agent.get('installation') or agent_id in self.registry.state.get('agent_retirements', {}):
@@ -1269,20 +1272,60 @@ class Backlog:
         has_unsent = False
         reviewed = False
         review_cleared = False
-        project_bindings = (
-            self.registry.sessions_for_project(project_id)
-            if hasattr(self.registry, 'sessions_for_project')
-            else [raw for raw, bound in list(self.registry.state['sessions'].items()) if bound == project_id]
-        )
         max_reviews = getattr(self, 'MAX_AUTO_REVIEWS_PER_TICK', 8)
         session_cursors = getattr(self, '_auto_session_cursors', None)
         if session_cursors is None:
             session_cursors = {}
             self._auto_session_cursors = session_cursors
-        start_idx = session_cursors.get(project_id, 0) % len(project_bindings) if project_bindings else 0
-        rotated_bindings = project_bindings[start_idx:] + project_bindings[:start_idx]
+
+        def _iter_project_bindings():
+            if hasattr(self.registry, 'sessions_for_project'):
+                raw_cursor = session_cursors.get(project_id, '')
+                start_cursor = raw_cursor if isinstance(raw_cursor, str) else ''
+                page_size = max(max_reviews * 2, 16)
+                try:
+                    cur = start_cursor
+                    while True:
+                        page = self.registry.sessions_for_project(project_id, after_key=cur, limit=page_size)
+                        if not page:
+                            break
+                        for item in page:
+                            yield item
+                        cur = page[-1]
+                        if len(page) < page_size:
+                            break
+                    if start_cursor:
+                        cur = ''
+                        while True:
+                            page = self.registry.sessions_for_project(
+                                project_id, after_key=cur, stop_key=start_cursor, limit=page_size
+                            )
+                            if not page:
+                                break
+                            for item in page:
+                                yield item
+                            cur = page[-1]
+                            if len(page) < page_size or cur >= start_cursor:
+                                break
+                    return
+                except TypeError:
+                    project_bindings = list(self.registry.sessions_for_project(project_id))
+            else:
+                project_bindings = [raw for raw, bound in list(self.registry.state['sessions'].items()) if bound == project_id]
+            if not project_bindings:
+                return
+            raw_cursor = session_cursors.get(project_id, '')
+            if isinstance(raw_cursor, str) and raw_cursor:
+                start_idx = next((i for i, k in enumerate(project_bindings) if k > raw_cursor), 0)
+            elif isinstance(raw_cursor, int):
+                start_idx = raw_cursor % len(project_bindings)
+            else:
+                start_idx = 0
+            for idx in range(len(project_bindings)):
+                yield project_bindings[(start_idx + idx) % len(project_bindings)]
+
         inspected = 0
-        for offset, raw in enumerate(rotated_bindings):
+        for raw in _iter_project_bindings():
             if inspected >= max_reviews:
                 break
             agent_id, host = json.loads(raw)
@@ -1295,7 +1338,7 @@ class Backlog:
             if retry.get('after', 0) > time.time():
                 continue
             inspected += 1
-            session_cursors[project_id] = (start_idx + offset + 1) % len(project_bindings)
+            session_cursors[project_id] = raw
             try:
                 _, view = self.checked_target(project_id, target)
                 if not view['policy'].get('can_capture'):
