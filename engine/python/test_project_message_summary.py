@@ -177,6 +177,12 @@ class ProjectMessageSummaryTests(unittest.IsolatedAsyncioTestCase):
             'name': 'done.md',
             'externalMetadata': {},
         }
+        profile_doc = {
+            'id': 'doc-profile',
+            'datasetId': self.dataset_id,
+            'name': 'profile.md',
+            'externalMetadata': {'memlane_kind': 'user_profile'},
+        }
         self.official.responses = {
             f'/api/v1/datasets/{self.dataset_id}/processing-status?pipeline=cognify_pipeline': {
                 'items': [
@@ -186,10 +192,11 @@ class ProjectMessageSummaryTests(unittest.IsolatedAsyncioTestCase):
                     {'id': 'doc-common', 'name': 'common.md', 'completed': False},
                     {'id': 'doc-derived', 'name': 'cache.txt', 'completed': False},
                     {'id': 'doc-done', 'name': 'done.md', 'completed': True},
+                    {'id': 'doc-profile', 'name': 'profile.md', 'completed': False},
                 ],
             },
             f'/api/v1/datasets/{self.dataset_id}/data?limit=500': [
-                raw_doc, raw_machine_doc, knowledge_doc, common_doc, derived_doc, completed_doc,
+                raw_doc, raw_machine_doc, knowledge_doc, common_doc, derived_doc, completed_doc, profile_doc,
             ],
             f'/api/v1/activity/pipeline-runs?dataset_id={self.dataset_id}&limit=20': [
                 {'id': 'run-1', 'dataset_id': self.dataset_id, 'status': 'completed'},
@@ -476,6 +483,7 @@ class ProjectMessageSummaryTests(unittest.IsolatedAsyncioTestCase):
         doc_knowledge = str(uuid.uuid4())
         doc_common = str(uuid.uuid4())
         doc_derived = str(uuid.uuid4())
+        doc_profile = str(uuid.uuid4())
         doc_other = str(uuid.uuid4())
         run_id = str(uuid.uuid4())
 
@@ -521,6 +529,11 @@ class ProjectMessageSummaryTests(unittest.IsolatedAsyncioTestCase):
                 uuid.UUID(doc_derived).hex, ds_hex, 'cache.txt', None, 'text/plain',
                 '', json.dumps({'node_set': ['user_sessions_from_cache']}), None, '{}',
                 '2026-11-21 08:15:00', '2026-11-21 08:15:00', 'h5',
+            ),
+            (
+                uuid.UUID(doc_profile).hex, ds_hex, 'profile.md', None, 'text/markdown',
+                '', json.dumps({'memlane_kind': 'user_profile'}), None, '{}',
+                '2026-11-21 08:20:00', '2026-11-21 08:20:00', 'h7',
             ),
             (
                 uuid.UUID(doc_other).hex, other_ds_hex, 'foreign.md', None, 'text/markdown',

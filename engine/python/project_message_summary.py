@@ -128,6 +128,14 @@ def _is_data_item_completed(status_value):
     return status_value == 'DATA_ITEM_PROCESSING_COMPLETED'
 
 
+def _is_refinement_material(doc):
+    meta = doc.get('externalMetadata')
+    # User profiles are saved and read as raw documents without refinement.
+    if isinstance(meta, dict) and meta.get('memlane_kind') == 'user_profile':
+        return False
+    return not is_derived_material(doc)
+
+
 def _knowledge_catalog_version(items):
     digest = hashlib.sha256()
     for item in sorted(items, key=lambda row: (row['id'], row['created_at'])):
@@ -239,7 +247,7 @@ def _read_sqlite_documents_and_activity(official_data, dataset_id, *, provenance
                     key_prov=key_prov,
                 ))
                 continue
-            if is_derived_material(doc_obj):
+            if not _is_refinement_material(doc_obj):
                 continue
             ps = parse_json(row[6])
             slots = ps.get('cognify_pipeline') if isinstance(ps, dict) else None
@@ -345,7 +353,7 @@ async def _read_pending_documents(official, dataset_id, *, provenance_path=None)
         doc = metadata.get(row.get('id'))
         if doc is None:
             raise PolicyError('document_catalog_mismatch', 503)
-        if is_knowledge_doc(doc) or is_derived_material(doc):
+        if is_knowledge_doc(doc) or not _is_refinement_material(doc):
             continue
         pending.append({
             'id': doc['id'],
