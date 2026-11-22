@@ -78,7 +78,7 @@ type Client struct {
 }
 
 func (c Client) controlClient() (ProjectControlClient, bool) {
-	if c.Config.ProjectControl == nil {
+	if c.Config.ProjectControl == nil || strings.TrimSpace(c.Config.ProjectControl.URL) == "" {
 		return ProjectControlClient{}, false
 	}
 	return ProjectControlClient{Config: *c.Config.ProjectControl, HTTP: c.HTTP}, true
@@ -302,6 +302,16 @@ func (c Client) sessions(ctx context.Context, p Project, offset int) ([]Item, bo
 	}
 	return items, page.HasMore, e
 }
+func canonicalIDMatch(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	return strings.EqualFold(strings.ReplaceAll(a, "-", ""), strings.ReplaceAll(b, "-", ""))
+}
+
 func (c Client) read(ctx context.Context, i Item) (Item, error) {
 	if i.Document != nil {
 		if control, ok := c.controlClient(); ok && i.Dataset != "" && i.ID != "" {
@@ -312,7 +322,7 @@ func (c Client) read(ctx context.Context, i Item) (Item, error) {
 			if hasFastBody {
 				res, err := control.documentBodyV2(ctx, i.Dataset, i.ID)
 				if err == nil {
-					if res.Body == nil || res.ID == "" || res.ID != i.ID || res.DatasetID == "" || res.DatasetID != i.Dataset {
+					if res.Body == nil || !canonicalIDMatch(res.ID, i.ID) || !canonicalIDMatch(res.DatasetID, i.Dataset) {
 						return i, fmt.Errorf("官方文档正文回执不完整")
 					}
 					body := *res.Body

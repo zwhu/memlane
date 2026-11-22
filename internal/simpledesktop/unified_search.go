@@ -273,8 +273,13 @@ func (a *App) runUnifiedSearch(retry bool) {
 		}
 		if hasControl && hasV2Search {
 			projectID := ""
-			if scope != "" && scope != "@common" && len(projects) == 1 {
-				projectID = projects[0].ID
+			datasetID := ""
+			if len(projects) == 1 {
+				if scope == "@common" {
+					datasetID = projects[0].Dataset
+				} else if scope != "" {
+					projectID = projects[0].ID
+				}
 			}
 			allowedDatasets := make(map[string]bool, len(projects))
 			for _, p := range projects {
@@ -296,7 +301,7 @@ func (a *App) runUnifiedSearch(retry bool) {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					resp, err := control.searchMetadataV2(ctx, readingID, query, "all", 30, projectID)
+					resp, err := control.searchMetadataV2(ctx, readingID, query, "all", 30, projectID, datasetID)
 					var items []Item
 					if err == nil {
 						items = make([]Item, 0, len(resp.Items))
@@ -555,14 +560,19 @@ func recentSearchItemsV2(ctx context.Context, control ProjectControlClient, proj
 		return nil, false, nil
 	}
 	projectID := ""
-	if len(projects) == 1 && scope != "" && scope != "@common" {
-		projectID = projects[0].ID
+	datasetID := ""
+	if len(projects) == 1 {
+		if scope == "@common" {
+			datasetID = projects[0].Dataset
+		} else if scope != "" {
+			projectID = projects[0].ID
+		}
 	}
 	allowed := make(map[string]bool, len(projects))
 	for _, p := range projects {
 		allowed[p.Dataset] = true
 	}
-	resp, err := control.searchRecentV2(ctx, readingID, 20, projectID)
+	resp, err := control.searchRecentV2(ctx, readingID, 20, projectID, datasetID)
 	if err == nil {
 		result := make([]Item, 0, 12)
 		seen := map[string]bool{}

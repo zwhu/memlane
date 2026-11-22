@@ -33,7 +33,7 @@ type projectAccessState struct {
 }
 
 func (a *App) accessClient() (ProjectControlClient, bool) {
-	if a.Config.ProjectControl == nil {
+	if a.Config.ProjectControl == nil || strings.TrimSpace(a.Config.ProjectControl.URL) == "" {
 		return ProjectControlClient{}, false
 	}
 	return ProjectControlClient{Config: *a.Config.ProjectControl}, true

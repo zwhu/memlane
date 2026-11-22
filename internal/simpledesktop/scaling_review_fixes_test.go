@@ -123,8 +123,73 @@ func TestReviewFixFailClosedCapability401NoOfficialFallback(t *testing.T) {
 	a.loadProjectQueue(q, a.access.Directory.Projects[0])
 	drainReading(t, updates, func() bool { return !q.Loading })
 
+	// 4. R2-GO-P0-01: HTTP 500 on /v1/capabilities MUST fail closed (never cache false, zero official fallback).
+	controlCapabilitiesCache.mu.Lock()
+	clear(controlCapabilitiesCache.entries)
+	controlCapabilitiesCache.mu.Unlock()
+	capStatus.Store(http.StatusInternalServerError)
+	if _, err := a.Client.documentInfoByID(ctx, "ds-1", "doc-1"); err == nil {
+		t.Fatalf("HTTP 500 on /v1/capabilities must fail closed, got nil")
+	}
+
+	// 5. R2-GO-P0-01: Unreadable/missing token file MUST fail closed with zero official fallback.
+	badClient := a.Client
+	badCtrl := *a.Config.ProjectControl
+	badCtrl.ManagementTokenFile = filepath.Join(t.TempDir(), "does-not-exist.token")
+	badClient.Config.ProjectControl = &badCtrl
+	if _, err := badClient.documentInfoByID(ctx, "ds-1", "doc-1"); err == nil {
+		t.Fatalf("missing management token file must fail closed, got nil")
+	}
+
+	// 6. R2-GO-P0-01: Rotating token content at the SAME file path MUST bust controlCapabilitiesCache.
+	rotatedTokenFile := filepath.Join(t.TempDir(), "rotated.token")
+	goodTok := strings.Repeat("a", 40)
+	revokedTok := strings.Repeat("b", 40)
+	if err := os.WriteFile(rotatedTokenFile, []byte(goodTok), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var rotCapCalls atomic.Int32
+	rotSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/capabilities" {
+			rotCapCalls.Add(1)
+			if r.Header.Get("Authorization") != "Bearer "+goodTok {
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(ControlCapabilities{
+				APIVersions: []string{"v1", "v2"},
+				Features:    []string{v2FeatureOverview},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer rotSrv.Close()
+
+	rotClient := ProjectControlClient{Config: ProjectControlConfig{URL: rotSrv.URL, ManagementTokenFile: rotatedTokenFile}}
+	has1, err := rotClient.probeFeature(ctx, v2FeatureOverview)
+	if err != nil || !has1 || rotCapCalls.Load() != 1 {
+		t.Fatalf("initial token probe expected true/nil/1, got has=%v err=%v calls=%d", has1, err, rotCapCalls.Load())
+	}
+	// Cached hit with same token content.
+	has2, err := rotClient.probeFeature(ctx, v2FeatureOverview)
+	if err != nil || !has2 || rotCapCalls.Load() != 1 {
+		t.Fatalf("cached probe expected true/nil/1, got has=%v err=%v calls=%d", has2, err, rotCapCalls.Load())
+	}
+	// Overwrite same path with revoked token -> cache key digest changes -> MUST re-probe and fail closed 401!
+	if err := os.WriteFile(rotatedTokenFile, []byte(revokedTok), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rotClient.probeFeature(ctx, v2FeatureOverview); !isControlAuthDenied(err) {
+		t.Fatalf("rotated revoked token at same path must bust cache and return 401, got err=%v calls=%d", err, rotCapCalls.Load())
+	}
+	if rotCapCalls.Load() != 2 {
+		t.Fatalf("expected second /v1/capabilities probe after token rotation, got %d", rotCapCalls.Load())
+	}
+
 	if officialCalls.Load() != 0 {
-		t.Fatalf("FAIL-CLOSED VIOLATION: official /api/v1/* received %d requests after control-plane 401/403", officialCalls.Load())
+		t.Fatalf("FAIL-CLOSED VIOLATION: official /api/v1/* received %d requests after control-plane errors", officialCalls.Load())
 	}
 }
 
@@ -437,9 +502,12 @@ func TestReviewFixAnchorPositioningAndBidirectionalWindow300(t *testing.T) {
 
 	var sawAnchor atomic.Value
 	var sawPrevDir atomic.Bool
+	var sawFrontTrimAnchor atomic.Value
 	var invalidCursorOnce atomic.Bool
 	invalidCursorOnce.Store(true)
 	var resetFilterCategory atomic.Value
+	var commonCallsMu sync.Mutex
+	var commonCallLog []string
 
 	makeV2Item := func(idx int) v2KnowledgeItem {
 		return v2KnowledgeItem{
@@ -449,19 +517,44 @@ func TestReviewFixAnchorPositioningAndBidirectionalWindow300(t *testing.T) {
 			PreviewText: fmt.Sprintf("摘要 %04d", idx),
 		}
 	}
+	makeCommonV2Item := func(idx int) v2KnowledgeItem {
+		return v2KnowledgeItem{
+			DocID: fmt.Sprintf("c-%04d", idx), DatasetID: "ds-common", ProjectID: "common-1",
+			Title: fmt.Sprintf("通用记忆 %04d", idx), EffectiveDate: "2026-11-21",
+			Kind: "knowledge", CommonCategory: "通用约定", Category: "通用约定",
+			PreviewText: fmt.Sprintf("通用摘要 %04d", idx),
+		}
+	}
+
+	enforceContract1 := func(w http.ResponseWriter, anchor, dir, cursor string) bool {
+		if anchor != "" && cursor != "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_cursor"})
+			return false
+		}
+		if dir == "prev" && cursor == "" && anchor == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_cursor"})
+			return false
+		}
+		return true
+	}
 
 	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
 				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureKnowledgeCursor, v2FeatureLocalBodyFastpath},
+				Features:    []string{v2FeatureKnowledgeCursor, v2FeatureCommonKnowledgeCursor, v2FeatureLocalBodyFastpath},
 			})
 		case "/v2/projects/p1/knowledge":
 			q := r.URL.Query()
 			anchor := q.Get("anchor_doc_id")
 			dir := q.Get("direction")
 			cursor := q.Get("cursor")
+			if !enforceContract1(w, anchor, dir, cursor) {
+				return
+			}
 			if anchor == "missing-doc" {
 				w.WriteHeader(http.StatusNotFound)
 				_ = json.NewEncoder(w).Encode(map[string]string{"error": "document_not_found"})
@@ -489,6 +582,9 @@ func TestReviewFixAnchorPositioningAndBidirectionalWindow300(t *testing.T) {
 			}
 			if dir == "prev" {
 				sawPrevDir.Store(true)
+				if anchor != "" {
+					sawFrontTrimAnchor.Store(anchor)
+				}
 				items := make([]v2KnowledgeItem, 0, 30)
 				for i := 20; i < 50; i++ {
 					items = append(items, makeV2Item(i))
@@ -507,9 +603,62 @@ func TestReviewFixAnchorPositioningAndBidirectionalWindow300(t *testing.T) {
 				ProjectID: "p1", DatasetID: "ds-1", TotalFiltered: 450,
 				Items: items, NextCursor: "next-30", HasMore: true,
 			})
+		case "/v2/common/knowledge":
+			q := r.URL.Query()
+			anchor := q.Get("anchor_doc_id")
+			dir := q.Get("direction")
+			cursor := q.Get("cursor")
+			if !enforceContract1(w, anchor, dir, cursor) {
+				return
+			}
+			commonCallsMu.Lock()
+			commonCallLog = append(commonCallLog, fmt.Sprintf("dir=%s|cursor=%s|anchor=%s", dir, cursor, anchor))
+			commonCallsMu.Unlock()
+			switch {
+			case anchor == "c-0065" && dir == "":
+				items := make([]v2KnowledgeItem, 0, 30)
+				for i := 50; i < 80; i++ {
+					items = append(items, makeCommonV2Item(i))
+				}
+				_ = json.NewEncoder(w).Encode(v2CommonKnowledgeResponse{
+					DatasetID: "ds-common", TotalFiltered: 200,
+					Items: items, PrevCursor: "c-prev-50", HasPrev: true, NextCursor: "c-next-80", HasMore: true,
+				})
+			case cursor == "c-next-80":
+				items := make([]v2KnowledgeItem, 0, 30)
+				for i := 80; i < 110; i++ {
+					items = append(items, makeCommonV2Item(i))
+				}
+				_ = json.NewEncoder(w).Encode(v2CommonKnowledgeResponse{
+					DatasetID: "ds-common", TotalFiltered: 200,
+					Items: items, PrevCursor: "c-prev-80", HasPrev: true, NextCursor: "c-next-110", HasMore: true,
+				})
+			case dir == "prev" && cursor == "c-prev-50":
+				items := make([]v2KnowledgeItem, 0, 30)
+				for i := 20; i < 50; i++ {
+					items = append(items, makeCommonV2Item(i))
+				}
+				_ = json.NewEncoder(w).Encode(v2CommonKnowledgeResponse{
+					DatasetID: "ds-common", TotalFiltered: 200,
+					Items: items, PrevCursor: "c-prev-20", HasPrev: true, NextCursor: "c-next-50", HasMore: true,
+				})
+			default:
+				items := make([]v2KnowledgeItem, 0, 30)
+				for i := 0; i < 30; i++ {
+					items = append(items, makeCommonV2Item(i))
+				}
+				_ = json.NewEncoder(w).Encode(v2CommonKnowledgeResponse{
+					DatasetID: "ds-common", TotalFiltered: 200,
+					Items: items, NextCursor: "c-next-30", HasMore: true,
+				})
+			}
 		case "/v2/datasets/ds-1/documents/k-0065/body":
 			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
 				ID: "k-0065", DatasetID: "ds-1", Body: strPtr("锚点记忆全文 65"), Source: "local_fastpath",
+			})
+		case "/v2/datasets/ds-common/documents/c-0065/body":
+			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
+				ID: "c-0065", DatasetID: "ds-common", Body: strPtr("通用锚点记忆全文 65"), Source: "local_fastpath",
 			})
 		default:
 			http.NotFound(w, r)
@@ -541,7 +690,8 @@ func TestReviewFixAnchorPositioningAndBidirectionalWindow300(t *testing.T) {
 		t.Fatalf("expected explicit error when anchor_doc_id returns 404")
 	}
 
-	// 3. Bidirectional sliding window: prependKnowledgeBatch from 300 items prepends head and trims tail to <=300.
+	// 3. Bidirectional sliding window: prependKnowledgeBatch after front-trim (PrevCursor=="")
+	// MUST pass direction=prev&anchor_doc_id=<head.ID> (without cursor) per Contract #1.
 	s.Error = ""
 	s.Items = make([]Item, 300)
 	for i := 0; i < 300; i++ {
@@ -550,14 +700,24 @@ func TestReviewFixAnchorPositioningAndBidirectionalWindow300(t *testing.T) {
 	s.ListSelection = 10
 	s.Knowledge.V2Mode = true
 	s.Knowledge.HasPrev = true
-	s.Knowledge.PrevCursor = "prev-50"
+	s.Knowledge.PrevCursor = "" // Simulates front-trimmed window!
 	a.prependKnowledgeBatch(s)
 	drainReading(t, updates, func() bool { return !s.Knowledge.Prepending })
-	if !sawPrevDir.Load() || len(s.Items) != maxActiveListItems || s.Items[0].ID != "k-0020" || !s.More || s.ListSelection != 40 {
-		t.Fatalf("bidirectional prepend failed: prevDir=%v len=%d head=%s more=%v sel=%d", sawPrevDir.Load(), len(s.Items), s.Items[0].ID, s.More, s.ListSelection)
+	if !sawPrevDir.Load() || sawFrontTrimAnchor.Load() != "k-0050" || len(s.Items) != maxActiveListItems || s.Items[0].ID != "k-0020" || !s.More || s.ListSelection != 40 {
+		t.Fatalf("front-trim bidirectional prepend failed: prevDir=%v anchor=%v len=%d head=%s more=%v sel=%d", sawPrevDir.Load(), sawFrontTrimAnchor.Load(), len(s.Items), s.Items[0].ID, s.More, s.ListSelection)
 	}
 
-	// 4. 400 invalid_cursor resets to page 1 under the SAME category filter without leaving V2Mode.
+	// 4. R2-GO-P1-04: V2 item with non-empty Title and EMPTY Preview must NOT block knowledgePage rendering.
+	s.Items[0].Preview = ""
+	s.Knowledge.Detail = false
+	a.setAppearancePreference(appearanceLight)
+	ttV2 := ui.NewTester(a.View, 1200, 820)
+	ttV2.Frame()
+	if !ttV2.HasText("记忆 0020") {
+		t.Fatalf("V2 knowledge item with empty Preview failed to render in knowledgePage")
+	}
+
+	// 5. 400 invalid_cursor resets to page 1 under the SAME category filter without leaving V2Mode.
 	s.Knowledge.CategoryFilter = "踩坑经验"
 	s.Knowledge.NextCursor = "expired-cursor"
 	s.More = true
@@ -565,6 +725,55 @@ func TestReviewFixAnchorPositioningAndBidirectionalWindow300(t *testing.T) {
 	drainReading(t, updates, func() bool { return !s.Knowledge.Appending && !s.Loading && resetFilterCategory.Load() != nil })
 	if !s.Knowledge.V2Mode || resetFilterCategory.Load() != "踩坑经验" {
 		t.Fatalf("invalid_cursor must stay in V2Mode and reload same filter, v2=%v cat=%v", s.Knowledge.V2Mode, resetFilterCategory.Load())
+	}
+
+	// 6. CC2-P0-03: Common Knowledge deep-page anchor supports bidirectional paging:
+	// locate(c-0065) -> next (80..109) -> prev (back to anchor 50..79, NOT page 1!) -> prev (20..49 via PrevCursor).
+	a.page, a.kind, a.project = "通用知识", "知识", 0
+	cs := a.state()
+	commonTargetDoc := Document{ID: "c-0065", Dataset: "ds-common"}
+	a.locateOverviewItem(cs, Item{ID: "c-0065", Dataset: "ds-common", Kind: "知识", CommonCategory: "通用约定", Document: &commonTargetDoc})
+	drainReading(t, updates, func() bool { return !cs.Loading && !cs.Locating && cs.Loaded && !cs.Reading })
+	if !cs.CommonV2Mode || !cs.CommonHasPrev || cs.CommonPrevCursor != "c-prev-50" || cs.Selected == nil || cs.Selected.ID != "c-0065" {
+		t.Fatalf("unexpected common anchor state: v2=%v hasPrev=%v prev=%q sel=%v", cs.CommonV2Mode, cs.CommonHasPrev, cs.CommonPrevCursor, cs.Selected)
+	}
+	for _, pref := range []string{appearanceLight, appearanceDark} {
+		a.setAppearancePreference(pref)
+		tt := ui.NewTester(a.View, 1200, 820)
+		tt.Frame()
+		if !tt.HasText("通用摘要 0065") || !tt.HasText("通用锚点记忆全文 65") || !tt.HasText("上一页") || !tt.HasText("下一页") {
+			t.Fatalf("[%s] common anchor view missing expected controls/item", pref)
+		}
+	}
+	// Step next -> 80..109.
+	a.stepCommonKnowledgeV2(cs, 1)
+	drainReading(t, updates, func() bool { return !cs.Loading })
+	if len(cs.Items) == 0 || cs.Items[0].ID != "c-0080" {
+		t.Fatalf("common next page expected c-0080, got %+v", cs.Items)
+	}
+	// Step prev -> MUST return to anchor window 50..79 (NOT page 1!).
+	a.stepCommonKnowledgeV2(cs, -1)
+	drainReading(t, updates, func() bool { return !cs.Loading })
+	if len(cs.Items) == 0 || cs.Items[0].ID != "c-0050" || !cs.CommonHasPrev || cs.CommonPrevCursor != "c-prev-50" {
+		t.Fatalf("common prev from next expected anchor window c-0050, got head=%v hasPrev=%v prev=%q", cs.Items[0].ID, cs.CommonHasPrev, cs.CommonPrevCursor)
+	}
+	// Step prev AGAIN from CommonPageIndex==0 with CommonHasPrev==true -> MUST send direction=prev&cursor=c-prev-50 (20..49)!
+	a.stepCommonKnowledgeV2(cs, -1)
+	drainReading(t, updates, func() bool { return !cs.Loading })
+	if len(cs.Items) == 0 || cs.Items[0].ID != "c-0020" {
+		t.Fatalf("common prev past anchor expected c-0020, got %+v", cs.Items)
+	}
+	commonCallsMu.Lock()
+	gotLog := append([]string(nil), commonCallLog...)
+	commonCallsMu.Unlock()
+	wantLog := []string{
+		"dir=|cursor=|anchor=c-0065",
+		"dir=next|cursor=c-next-80|anchor=",
+		"dir=|cursor=|anchor=c-0065",
+		"dir=prev|cursor=c-prev-50|anchor=",
+	}
+	if strings.Join(gotLog, ",") != strings.Join(wantLog, ",") {
+		t.Fatalf("unexpected common bidirectional call sequence:\n got: %v\nwant: %v", gotLog, wantLog)
 	}
 }
 
@@ -958,5 +1167,531 @@ func TestReviewFixSearchEmptyScopeIdentityAndMonotonicMerge(t *testing.T) {
 	drainReading(t, updates, func() bool { return !a.searchUI.Loading && a.searchUI.Loaded })
 	if got, _ := metaIdentity.Load().(string); got == "" {
 		t.Fatalf("expected X-Memlane-Reading-Identity on /v2/search/metadata")
+	}
+}
+
+// TestReviewFixR2InvalidateQueuedCallbacksAndSubagents verifies R2-GO-P0-02 & R2-GO-P2-01:
+// 1. Callbacks ALREADY queued in updates channel before InvalidateReading cannot repopulate
+//    overview activity, DayItems, knowledge, queue, or openSubagentSession.
+// 2. Per-dataset InvalidateReading("ds-1") removes ds-1 DayItems while retaining ds-2.
+// 3. project_queue.go 401 triggers InvalidateReading clearing cached UnreadKnowledge/Documents.
+// 4. loadMoreSubagents clears Subagents/cursor on 401/403 and clears dead cursor on 400 invalid_cursor.
+func TestReviewFixR2InvalidateQueuedCallbacksAndSubagents(t *testing.T) {
+	controlCapabilitiesCache.mu.Lock()
+	clear(controlCapabilitiesCache.entries)
+	controlCapabilitiesCache.mu.Unlock()
+
+	var queueStatus atomic.Int32
+	queueStatus.Store(http.StatusOK)
+	var childStatus atomic.Int32
+	childStatus.Store(http.StatusOK)
+
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			_ = json.NewEncoder(w).Encode(ControlCapabilities{
+				APIVersions: []string{"v1", "v2"},
+				Features: []string{
+					v2FeatureOverview, v2FeatureKnowledgeCursor,
+					v2FeatureMessageSummary, v2FeatureRawRecords,
+				},
+			})
+		case "/api/v1/search/history":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"id": "sh-1", "text": "secret query", "createdAt": "2026-11-21T10:00:00Z"},
+			})
+		case "/v2/projects/p1/message-summary":
+			if st := int(queueStatus.Load()); st != http.StatusOK {
+				w.WriteHeader(st)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(v2MessageSummaryResponse{
+				ProjectID: "p1", DatasetID: "ds-1", UnreadCount: 3, UnreadStateRev: 2,
+				UnreadPreview: []v2UnreadPreviewItem{{DocID: "u-1", Title: "未读 1"}},
+			})
+		case "/v1/raw-records/session-history":
+			_ = json.NewEncoder(w).Encode(SessionHistoryPage{
+				Paging: true, Limit: 20,
+				SessionDetail: SessionDetail{
+					Session: Session{ID: "sub-1", Dataset: "ds-1", User: "u1", IsSubagent: true},
+					Label:   "子代理会话",
+				},
+			})
+		case "/v2/projects/p1/raw-records/sessions/parent-1/children":
+			switch int(childStatus.Load()) {
+			case http.StatusUnauthorized:
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+			case http.StatusBadRequest:
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_cursor"})
+			default:
+				_ = json.NewEncoder(w).Encode(v2SessionChildrenResponse{
+					ProjectID: "p1", DatasetID: "ds-1", ParentSessionID: "parent-1", TotalCount: 2,
+					Items:      []rawSessionEntry{{Session: Session{ID: "sub-1", Dataset: "ds-1", User: "u1", IsSubagent: true}, Label: "子 1"}},
+					NextCursor: "dead-cur", HasMore: true,
+				})
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer control.Close()
+
+	token := p1TempToken(t)
+	a, updates := p1TestApp(t, control.URL, control.URL, token)
+	a.Config.Projects[0].CodeDataset = "code-1"
+
+	// Seed DayItems from two datasets; InvalidateReading("ds-1") must remove only ds-1.
+	a.overviewState.DayItems = []Item{
+		{ID: "d1", Dataset: "ds-1", Kind: "知识", Title: "Secret ds-1"},
+		{ID: "d2", Dataset: "ds-2", Kind: "知识", Title: "Keep ds-2"},
+	}
+
+	// Launch overview activity + openSubagentSession and wait until BOTH have queued
+	// their a.Update(fn) callbacks in `updates` BEFORE calling InvalidateReading!
+	a.page, a.kind = "知识", "原始记录"
+	s := a.state()
+	parent := Item{ID: "parent-1", Dataset: "ds-1", Kind: "会话", Session: &Session{ID: "parent-1", Dataset: "ds-1", User: "u1"}}
+	sub := Item{ID: "sub-1", Dataset: "ds-1", Kind: "会话", Session: &Session{ID: "sub-1", Dataset: "ds-1", User: "u1", IsSubagent: true}}
+	s.Selected = &parent
+
+	a.overviewState.SearchHistory = true
+	a.startOverviewActivity()
+	a.openSubagentSession(s, parent, sub)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for len(updates) < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(updates) < 2 {
+		t.Fatalf("expected >=2 queued callbacks before InvalidateReading, got %d", len(updates))
+	}
+
+	// Now revoke ds-1 while those 200-OK callbacks are ALREADY sitting in `updates`!
+	a.InvalidateReading("ds-1")
+
+	// Per-dataset DayItems filtering must drop ds-1 and retain ds-2.
+	if len(a.overviewState.DayItems) != 1 || a.overviewState.DayItems[0].Dataset != "ds-2" {
+		t.Fatalf("InvalidateReading(ds-1) did not cleanly filter DayItems: %+v", a.overviewState.DayItems)
+	}
+
+	// Drain the already-queued callbacks: NONE may repopulate revoked state!
+	for {
+		select {
+		case fn := <-updates:
+			fn()
+		default:
+			goto drainedQueued
+		}
+	}
+drainedQueued:
+	if len(a.overviewState.History) != 0 || len(a.overviewState.Events) != 0 {
+		t.Fatalf("queued startOverviewActivity callback repopulated activity after InvalidateReading: history=%+v events=%+v", a.overviewState.History, a.overviewState.Events)
+	}
+	if s.Selected != nil && s.Selected.ID == "sub-1" {
+		t.Fatalf("queued openSubagentSession callback repopulated revoked subagent after InvalidateReading")
+	}
+
+	// 3. project_queue.go 401 on message-summary must trigger InvalidateReading clearing UnreadKnowledge.
+	p := a.access.Directory.Projects[0]
+	q := a.projectQueueStateFor(p)
+	q.UnreadKnowledge = []Item{{ID: "old-u", Dataset: "ds-1", Kind: "知识"}}
+	q.ServerUnreadKnown = true
+	q.ServerUnreadCount = 4
+	queueStatus.Store(http.StatusUnauthorized)
+	a.loadProjectQueue(q, p)
+	drainReading(t, updates, func() bool { return !q.Loading })
+	if len(q.UnreadKnowledge) != 0 || q.ServerUnreadKnown || q.ServerUnreadCount != 0 {
+		t.Fatalf("project_queue 401 failed to invalidate cached unread state: known=%v cnt=%d items=%d", q.ServerUnreadKnown, q.ServerUnreadCount, len(q.UnreadKnowledge))
+	}
+
+	// 4a. loadMoreSubagents 400 invalid_cursor clears dead cursor.
+	parentLoaded := parent
+	parentLoaded.Subagents = []Item{sub}
+	parentLoaded.SubagentsHasMore = true
+	parentLoaded.SubagentsNextCursor = "dead-cur"
+	s.Items = []Item{parentLoaded}
+	s.Selected = &parentLoaded
+	childStatus.Store(http.StatusBadRequest)
+	a.loadMoreSubagents(s, parentLoaded)
+	drainReading(t, updates, func() bool { return s.Selected == nil || !s.Selected.SubagentsLoading })
+	if s.Selected == nil || s.Selected.SubagentsNextCursor != "" || s.Error == "" {
+		t.Fatalf("loadMoreSubagents 400 invalid_cursor must clear cursor and surface error: sel=%+v err=%q", s.Selected, s.Error)
+	}
+
+	// 4b. loadMoreSubagents 401 clears Selected AND scrubs cached Subagents/cursor/count on pane item.
+	parentLoaded.Subagents = []Item{sub}
+	parentLoaded.SubagentsHasMore = true
+	parentLoaded.SubagentsNextCursor = "cur-2"
+	parentLoaded.SubagentTotalCount = 5
+	s.Items = []Item{parentLoaded}
+	s.Selected = &parentLoaded
+	childStatus.Store(http.StatusUnauthorized)
+	a.loadMoreSubagents(s, parentLoaded)
+	drainReading(t, updates, func() bool { return s.Selected == nil || !s.Selected.SubagentsLoading })
+	if s.Selected != nil || len(s.Items) != 1 || s.Items[0].ReadingState != "unavailable" || len(s.Items[0].Subagents) != 0 || s.Items[0].SubagentsHasMore || s.Items[0].SubagentsNextCursor != "" || s.Items[0].SubagentTotalCount != 0 {
+		t.Fatalf("loadMoreSubagents 401 must clear Selected and scrub item Subagents, got sel=%v item=%+v", s.Selected, s.Items[0])
+	}
+}
+
+// TestReviewFixR2ReadingStateMigrationPreconditionAndZeroCommit verifies R2-GO-P0-03:
+// 1. When local knowledge-read-<hash>.json exists and migration fails (500 or unknown status),
+//    overview/knowledge/queue/locate/mark-read ALL fail closed without issuing V2 reads/writes
+//    or marking migrated.
+// 2. Empty initialized local state sends explicit `"expected_items":0` on import/commit.
+// 3. Corrupt local JSON file never marks migrated.
+func TestReviewFixR2ReadingStateMigrationPreconditionAndZeroCommit(t *testing.T) {
+	controlCapabilitiesCache.mu.Lock()
+	clear(controlCapabilitiesCache.entries)
+	controlCapabilitiesCache.mu.Unlock()
+
+	var migMode atomic.Int32 // 0=unknown status, 1=500, 2=no_legacy_file (staging import)
+	var v2DataHits atomic.Int32
+	var rawCommitBody atomic.Value
+
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			_ = json.NewEncoder(w).Encode(ControlCapabilities{
+				APIVersions: []string{"v1", "v2"},
+				Features: []string{
+					v2FeatureOverview, v2FeatureKnowledgeCursor,
+					v2FeatureMessageSummary, v2FeatureReadingState,
+				},
+			})
+		case "/v2/reading-state/migrate-local":
+			switch migMode.Load() {
+			case 0:
+				_ = json.NewEncoder(w).Encode(v2ReadingStateMigrateResponse{
+					Migrated: []v2ReadingStateMigratedScope{{ProjectID: "p1", DatasetID: "ds-1", Status: "mystery_pending"}},
+				})
+			case 1:
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "db_locked"})
+			default:
+				_ = json.NewEncoder(w).Encode(v2ReadingStateMigrateResponse{
+					Migrated: []v2ReadingStateMigratedScope{{ProjectID: "p1", DatasetID: "ds-1", Status: "no_legacy_file"}},
+				})
+			}
+		case "/v2/reading-state/import/begin":
+			_ = json.NewEncoder(w).Encode(v2ReadingStateImportBeginResponse{BatchID: "b-zero"})
+		case "/v2/reading-state/import/commit":
+			raw, _ := io.ReadAll(r.Body)
+			rawCommitBody.Store(string(raw))
+			_ = json.NewEncoder(w).Encode(v2ReadingStateImportCommitResponse{ScopeHash: "sh-0", Committed: 0, UnreadCount: 1, StateRev: 1})
+		case "/v2/overview/bootstrap":
+			v2DataHits.Add(1)
+			_ = json.NewEncoder(w).Encode(v2OverviewBootstrapResponse{Generation: 1})
+		case "/v2/projects/p1/knowledge":
+			v2DataHits.Add(1)
+			_ = json.NewEncoder(w).Encode(v2ProjectKnowledgeResponse{ProjectID: "p1", DatasetID: "ds-1", UnreadStateRev: 1})
+		case "/v2/projects/p1/message-summary":
+			v2DataHits.Add(1)
+			_ = json.NewEncoder(w).Encode(v2MessageSummaryResponse{ProjectID: "p1", DatasetID: "ds-1", UnreadStateRev: 1})
+		case "/v2/reading-state/mark-read":
+			v2DataHits.Add(1)
+			_ = json.NewEncoder(w).Encode(v2ReadingStateMarkReadResponse{ScopeHash: "sh-0", Marked: 1, UnreadCount: 0, StateRev: 2})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer control.Close()
+
+	token := p1TempToken(t)
+	a, updates := p1TestApp(t, control.URL, control.URL, token)
+	p := a.access.Directory.Projects[0]
+	readPath, err := a.knowledgeReadPath(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Write initialized local knowledge-read file with ZERO read IDs (tests expected_items: 0 too).
+	if err := writeKnowledgeState(readPath, knowledgeReadState{
+		Version: 1, Initialized: true, StartedAt: time.Now().UTC(), Read: map[string]bool{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Phase A: unknown status -> ALL V2 consumers MUST fail closed with ZERO V2 data calls.
+	migMode.Store(0)
+	a.loadOverview()
+	drainReading(t, updates, func() bool { return !a.overviewState.Loading })
+	a.page, a.kind = "知识", "知识"
+	s := a.state()
+	a.loadKnowledgeFeed(s)
+	drainReading(t, updates, func() bool { return !s.Loading })
+	q := a.projectQueueStateFor(p)
+	a.loadProjectQueue(q, p)
+	drainReading(t, updates, func() bool { return !q.Loading })
+	ctrl, _ := a.accessClient()
+	readingID, _ := readingIdentity(Client{Config: a.Client.Config})
+	a.enqueueKnowledgeReadMark(readPath, "doc-1", q, &ctrl, readingID, p.ID, p.Dataset)
+	if flushErr := a.FlushPendingState(2 * time.Second); flushErr == nil {
+		t.Fatalf("expected FlushPendingState error when mark-read blocked on failed migration")
+	}
+	if v2DataHits.Load() != 0 {
+		t.Fatalf("V2 data endpoints received %d calls despite failed pending migration!", v2DataHits.Load())
+	}
+
+	// Phase B: corrupt local file with no_legacy_file -> MUST fail closed and NOT mark migrated.
+	migMode.Store(2)
+	if err := os.WriteFile(readPath, []byte("{corrupt-json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if migErr := a.migrateReadingStateV2(context.Background(), ctrl, []AccessProject{p}); migErr == nil {
+		t.Fatalf("corrupt local knowledge-read file must return error without marking migrated")
+	}
+
+	// Phase C: restore valid empty-read initialized file -> staging import commits with explicit `"expected_items":0`.
+	if err := writeKnowledgeState(readPath, knowledgeReadState{
+		Version: 1, Initialized: true, StartedAt: time.Now().UTC(), Read: map[string]bool{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// FlushPendingState re-enqueues the previously failed doc-1 mark-read, migrates via staging import, and succeeds!
+	if flushErr := a.FlushPendingState(2 * time.Second); flushErr != nil {
+		t.Fatalf("expected FlushPendingState to succeed after migration recovered, got %v", flushErr)
+	}
+	commitJSON, _ := rawCommitBody.Load().(string)
+	if !strings.Contains(commitJSON, `"expected_items":0`) {
+		t.Fatalf("import/commit payload omitted explicit expected_items=0: %s", commitJSON)
+	}
+	if v2DataHits.Load() == 0 {
+		t.Fatalf("expected mark-read to execute once migration settled")
+	}
+}
+
+// TestReviewFixR2UnreadStateRevMonotonicFlushAndNoticeRace verifies R2-GO-P1-02, R2-GO-P1-03, R2-GO-P1-08:
+// 1. GET snapshots with stale unread_state_rev cannot overwrite newer ServerUnreadCount.
+// 2. FlushPendingState returns error when mark-read or cold-store write fails.
+// 3. Concurrent clearProjectNotificationsAsync runs cleanly under -race with noticeAckMu serialization.
+func TestReviewFixR2UnreadStateRevMonotonicFlushAndNoticeRace(t *testing.T) {
+	controlCapabilitiesCache.mu.Lock()
+	clear(controlCapabilitiesCache.entries)
+	controlCapabilitiesCache.mu.Unlock()
+
+	var markFail atomic.Bool
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			_ = json.NewEncoder(w).Encode(ControlCapabilities{
+				APIVersions: []string{"v1", "v2"},
+				Features:    []string{v2FeatureReadingState, v2FeatureMessageSummary},
+			})
+		case "/v2/reading-state/mark-read":
+			if markFail.Load() {
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "boom"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(v2ReadingStateMarkReadResponse{ScopeHash: "sh", Marked: 1, UnreadCount: 2, StateRev: 10})
+		case "/v2/reading-state/mark-all-read":
+			_ = json.NewEncoder(w).Encode(v2ReadingStateMarkAllReadResponse{ScopeHash: "sh", UnreadCount: 0, StateRev: 11})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer control.Close()
+
+	token := p1TempToken(t)
+	a, updates := p1TestApp(t, control.URL, control.URL, token)
+	p := a.access.Directory.Projects[0]
+	q := a.projectQueueStateFor(p)
+
+	// 1. Monotonic unread_state_rev snapshot protection.
+	if !applyServerUnreadSnapshot(q, 5, 10, false) || q.ServerUnreadCount != 5 || q.ServerUnreadStateRev != 10 {
+		t.Fatalf("expected rev=10 count=5 applied, got rev=%d cnt=%d", q.ServerUnreadStateRev, q.ServerUnreadCount)
+	}
+	if applyServerUnreadSnapshot(q, 99, 8, false) || q.ServerUnreadCount != 5 {
+		t.Fatalf("stale rev=8 overwrote count: rev=%d cnt=%d", q.ServerUnreadStateRev, q.ServerUnreadCount)
+	}
+	if applyServerUnreadSnapshot(q, 88, 0, false) || q.ServerUnreadCount != 5 {
+		t.Fatalf("rev=0 snapshot overwrote tracked rev=10: rev=%d cnt=%d", q.ServerUnreadStateRev, q.ServerUnreadCount)
+	}
+	if applyServerUnreadSnapshot(q, 4, 10, true) || q.ServerUnreadCount != 5 {
+		t.Fatalf("same-rev snapshot while writer pending overwrote count: rev=%d cnt=%d", q.ServerUnreadStateRev, q.ServerUnreadCount)
+	}
+	if !applyServerUnreadSnapshot(q, 3, 12, false) || q.ServerUnreadCount != 3 || q.ServerUnreadStateRev != 12 {
+		t.Fatalf("newer rev=12 failed to apply: rev=%d cnt=%d", q.ServerUnreadStateRev, q.ServerUnreadCount)
+	}
+
+	// 2. FlushPendingState returns error on unsaved mark-read failure, and retries cleanly on next flush.
+	ctrl, _ := a.accessClient()
+	readingID, _ := readingIdentity(Client{Config: a.Client.Config})
+	markFail.Store(true)
+	a.enqueueKnowledgeReadMark("", "doc-fail", q, &ctrl, readingID, p.ID, p.Dataset)
+	if err := a.FlushPendingState(2 * time.Second); err == nil {
+		t.Fatalf("FlushPendingState must return error when mark-read failed")
+	}
+	markFail.Store(false)
+	if err := a.FlushPendingState(2 * time.Second); err != nil {
+		t.Fatalf("FlushPendingState retry after recovery must succeed, got %v", err)
+	}
+
+	// 3. FlushPendingState surfaces cold-pending store write failure.
+	blocked := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocked, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		configureColdPendingStore("")
+		resetColdPendingCachesForTest()
+	})
+	configureColdPendingStore(filepath.Join(blocked, "cold-pending-watch.json"))
+	coldPendingStore.mu.Lock()
+	coldPendingStore.dirty = true
+	coldPendingStore.mu.Unlock()
+	if err := a.FlushPendingState(2 * time.Second); err == nil {
+		t.Fatalf("FlushPendingState must return error when cold-pending store write fails")
+	}
+	configureColdPendingStore("")
+	resetColdPendingCachesForTest()
+
+	// 4. Double-click concurrent clearProjectNotificationsAsync under -race.
+	q.Loaded = true
+	a.clearProjectNotificationsAsync(q, p)
+	a.clearProjectNotificationsAsync(q, p)
+	deadline := time.Now().Add(3 * time.Second)
+	for drained := 0; drained < 2 && time.Now().Before(deadline); {
+		select {
+		case fn := <-updates:
+			fn()
+			drained++
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if q.NoticeAcknowledgementError != "" {
+		t.Fatalf("concurrent clearProjectNotificationsAsync hit ack error: %s", q.NoticeAcknowledgementError)
+	}
+}
+
+// TestReviewFixR2ProvenanceReadErrorMidModifyAndCommonSearch verifies R2-GO-P1-07, R2-GO-P1-10, R2-GO-P1-01.
+func TestReviewFixR2ProvenanceReadErrorMidModifyAndCommonSearch(t *testing.T) {
+	controlCapabilitiesCache.mu.Lock()
+	clear(controlCapabilitiesCache.entries)
+	controlCapabilitiesCache.mu.Unlock()
+	provenanceBackfillTracker.mu.Lock()
+	clear(provenanceBackfillTracker.completed)
+	provenanceBackfillTracker.mu.Unlock()
+
+	var recentDatasetID, metaDatasetID atomic.Value
+	var modifyFileDuringBackfill atomic.Bool
+	var legacyPath string
+	var absentUnconfirmed atomic.Bool
+
+	canonicalUUID := "01234567-89ab-cdef-0123-456789abcdef"
+	hexUUID := "0123456789abcdef0123456789abcdef"
+
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			_ = json.NewEncoder(w).Encode(ControlCapabilities{
+				APIVersions: []string{"v1", "v2"},
+				Features: []string{
+					v2FeatureProvenanceBackfill, v2FeatureSearch, v2FeatureLocalBodyFastpath,
+				},
+			})
+		case "/v2/provenance/backfill-legacy-dates":
+			var req v2ProvenanceBackfillRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if len(req.Days) == 0 {
+				_ = json.NewEncoder(w).Encode(v2ProvenanceBackfillResponse{
+					Status:                 "absent",
+					HasUnconfirmedProjects: absentUnconfirmed.Load(),
+				})
+				return
+			}
+			if modifyFileDuringBackfill.Swap(false) && legacyPath != "" {
+				// Mutate local file mid-upload -> client must detect stat change and skip rename!
+				_ = os.WriteFile(legacyPath, []byte(`{"schema_version":1,"days":{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":"2026-11-22","bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb":"2026-11-22"}}`), 0600)
+			}
+			_ = json.NewEncoder(w).Encode(v2ProvenanceBackfillResponse{Status: "migrated", Imported: len(req.Days)})
+		case "/v2/search/recent":
+			recentDatasetID.Store(r.URL.Query().Get("dataset_id"))
+			_ = json.NewEncoder(w).Encode(v2SearchRecentResponse{
+				KnowledgeItems: []v2KnowledgeItem{{DocID: "c-1", DatasetID: "ds-common", Title: "通用最近", Kind: "knowledge"}},
+			})
+		case "/v2/search/metadata":
+			metaDatasetID.Store(r.URL.Query().Get("dataset_id"))
+			_ = json.NewEncoder(w).Encode(v2SearchMetadataResponse{
+				Query: r.URL.Query().Get("q"),
+				Items: []v2KnowledgeItem{{DocID: "c-2", DatasetID: "ds-common", Title: "通用命中", Kind: "knowledge"}},
+			})
+		case "/api/v1/search":
+			_ = json.NewEncoder(w).Encode([]any{})
+		case "/v2/datasets/" + canonicalUUID + "/documents/" + canonicalUUID + "/body":
+			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
+				ID: hexUUID, DatasetID: hexUUID, Body: strPtr("canonical uuid body"), Source: "local_fastpath",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer control.Close()
+
+	token := p1TempToken(t)
+	a, updates := p1TestApp(t, control.URL, control.URL, token)
+
+	// 1. R2-GO-P1-07: corrupt local dates file must return error and NOT settle.
+	identity, err := readingIdentity(a.Client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ok bool
+	legacyPath, ok = knowledgeSourceDatesPath(a.Config, identity)
+	if !ok {
+		t.Fatal("expected legacy knowledge source dates path")
+	}
+	if err := os.WriteFile(legacyPath, []byte("{bad-json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if settled, bErr := a.Client.backfillLegacyKnowledgeDatesV2(context.Background()); bErr == nil || settled {
+		t.Fatalf("corrupt local dates file must error and not settle: settled=%v err=%v", settled, bErr)
+	}
+
+	// 2. R2-GO-P1-07: absent + has_unconfirmed_projects=true must NOT settle even without local file.
+	_ = os.Remove(legacyPath)
+	absentUnconfirmed.Store(true)
+	if settled, bErr := a.Client.backfillLegacyKnowledgeDatesV2(context.Background()); bErr != nil || settled {
+		t.Fatalf("absent with has_unconfirmed_projects=true must not settle: settled=%v err=%v", settled, bErr)
+	}
+	absentUnconfirmed.Store(false)
+
+	// 3. R2-GO-P1-07: file modified mid-upload must NOT rename to .migrated.bak and must NOT settle!
+	if err := os.WriteFile(legacyPath, []byte(`{"schema_version":1,"days":{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":"2026-11-21"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	modifyFileDuringBackfill.Store(true)
+	if settled, bErr := a.Client.backfillLegacyKnowledgeDatesV2(context.Background()); bErr != nil || settled {
+		t.Fatalf("mid-upload file modification must defer rename and return settled=false, got settled=%v err=%v", settled, bErr)
+	}
+	if _, statErr := os.Stat(legacyPath); statErr != nil {
+		t.Fatalf("modified local dates file was unexpectedly renamed/removed: %v", statErr)
+	}
+	if _, statErr := os.Stat(legacyPath + ".migrated.bak"); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no .migrated.bak when file changed mid-upload")
+	}
+
+	// 4. R2-GO-P1-10: @common search scope sends dataset_id=ds-common to BOTH recent and metadata endpoints.
+	a.searchUI.Scope = "@common"
+	a.searchUI.Query = ""
+	a.runUnifiedSearch(false)
+	drainReading(t, updates, func() bool { return !a.searchUI.Loading && a.searchUI.Loaded })
+	if got, _ := recentDatasetID.Load().(string); got != "ds-common" {
+		t.Fatalf("@common recent search expected dataset_id=ds-common, got %q", got)
+	}
+	a.searchUI.Query = "通用"
+	a.runUnifiedSearch(false)
+	drainReading(t, updates, func() bool { return !a.searchUI.Loading && a.searchUI.Loaded })
+	if got, _ := metaDatasetID.Load().(string); got != "ds-common" {
+		t.Fatalf("@common metadata search expected dataset_id=ds-common, got %q", got)
+	}
+
+	// 5. R2-GO-P1-01: canonical UUID matches hyphenless hex UUID in /v2/.../body response.
+	docUUID := Document{ID: canonicalUUID, Dataset: canonicalUUID}
+	readItem, readErr := a.Client.read(context.Background(), Item{ID: canonicalUUID, Dataset: canonicalUUID, Kind: "知识", Document: &docUUID})
+	if readErr != nil || !readItem.BodyLoaded || readItem.Body != "canonical uuid body" {
+		t.Fatalf("canonical UUID matching failed: err=%v loaded=%v body=%q", readErr, readItem.BodyLoaded, readItem.Body)
 	}
 }

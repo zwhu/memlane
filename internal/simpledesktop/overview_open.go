@@ -51,6 +51,7 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 	client, category := a.Client, a.commonCategoryFilter()
 	control, hasControl := a.accessClient()
 	readingID, _ := readingIdentity(Client{Config: client.Config})
+	stateDir := a.readingStateDir()
 	recallStartedAt := a.overviewState.V2RecallStartedAt
 	titles := a.titles
 	genStr := a.readingGeneration(s)
@@ -69,45 +70,57 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 		var v2CatCounts map[string]int
 		var v2CatalogVersion string
 		var v2UnreadCount int
+		var v2UnreadStateRev int64
 		if hasControl && !common {
 			hasV2Knowledge, probeErr := control.probeFeature(ctx, v2FeatureKnowledgeCursor)
 			if probeErr != nil {
 				usedV2 = true
 				err = probeErr
 			} else if hasV2Knowledge {
-				v2Resp, v2Err := control.projectKnowledgePageV2(ctx, readingID, p.ID, "date", "", false, "", "", knowledgeBatch, v2KnowledgePageOpts{
-					AnchorDocID: item.ID,
-				})
-				if v2Err == nil {
+				migProjects := []AccessProject{{ID: p.ID, Dataset: p.Dataset}}
+				if migErr := a.migrateReadingStateV2Snapshot(ctx, control, readingID, stateDir, migProjects); migErr != nil && (isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, migProjects)) {
 					usedV2 = true
-					v2NextCursor = v2Resp.NextCursor
-					v2PrevCursor = v2Resp.PrevCursor
-					v2HasPrev = v2Resp.HasPrev
-					v2TotalFiltered = v2Resp.TotalFiltered
-					v2CatCounts = v2Resp.CategoryCounts
-					v2CatalogVersion = v2Resp.CatalogVersion
-					v2UnreadCount = v2Resp.UnreadCount
-					more = v2Resp.HasMore
-					rows = make([]Item, 0, len(v2Resp.Items))
-					for _, r := range v2Resp.Items {
-						if r.DocID == "" {
-							continue
+					err = migErr
+				}
+				if err != nil {
+					// Fail closed: pending local reading-state migration must succeed
+					// before issuing V2 project knowledge reads.
+				} else {
+					v2Resp, v2Err := control.projectKnowledgePageV2(ctx, readingID, p.ID, "date", "", false, "", "", knowledgeBatch, v2KnowledgePageOpts{
+						AnchorDocID: item.ID,
+					})
+					if v2Err == nil {
+						usedV2 = true
+						v2NextCursor = v2Resp.NextCursor
+						v2PrevCursor = v2Resp.PrevCursor
+						v2HasPrev = v2Resp.HasPrev
+						v2TotalFiltered = v2Resp.TotalFiltered
+						v2CatCounts = v2Resp.CategoryCounts
+						v2CatalogVersion = v2Resp.CatalogVersion
+						v2UnreadCount = v2Resp.UnreadCount
+						v2UnreadStateRev = v2Resp.UnreadStateRev
+						more = v2Resp.HasMore
+						rows = make([]Item, 0, len(v2Resp.Items))
+						for _, r := range v2Resp.Items {
+							if r.DocID == "" {
+								continue
+							}
+							mapped := r.toItem(recallStartedAt)
+							if mapped.key() == item.key() {
+								found = mapped
+							}
+							rows = append(rows, mapped)
 						}
-						mapped := r.toItem(recallStartedAt)
-						if mapped.key() == item.key() {
-							found = mapped
+						if found.ID == "" {
+							err = fmt.Errorf("无法在当前官方目录中定位这条记忆，请重新读取")
 						}
-						rows = append(rows, mapped)
-					}
-					if found.ID == "" {
-						err = fmt.Errorf("无法在当前官方目录中定位这条记忆，请重新读取")
-					}
-				} else if isControlFailClosedV2(v2Err) || isControlNotFound(v2Err) {
-					usedV2 = true
-					if isControlNotFound(v2Err) {
-						err = fmt.Errorf("无法在当前官方目录中定位这条记忆，请重新读取")
-					} else {
-						err = v2Err
+					} else if isControlFailClosedV2(v2Err) || isControlNotFound(v2Err) {
+						usedV2 = true
+						if isControlNotFound(v2Err) {
+							err = fmt.Errorf("无法在当前官方目录中定位这条记忆，请重新读取")
+						} else {
+							err = v2Err
+						}
 					}
 				}
 			}
@@ -250,9 +263,12 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 			if usedV2 {
 				if common {
 					s.CommonV2Mode = true
+					s.CommonNav = []v2KnowledgePageOpts{{AnchorDocID: found.ID}}
 					s.CommonCursors = []string{""}
 					s.CommonPageIndex = 0
 					s.CommonNextCursor = v2NextCursor
+					s.CommonPrevCursor = v2PrevCursor
+					s.CommonHasPrev = v2HasPrev
 					s.CommonTotalFiltered = v2TotalFiltered
 				} else {
 					s.Knowledge.V2Mode = true
@@ -267,7 +283,7 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 					s.Knowledge.CountsLoaded = true
 					s.Knowledge.CountsError = ""
 					s.Knowledge.Catalog = nil
-					a.syncV2ProjectUnreadCount(p.ID, p.Dataset, v2UnreadCount, v2CatalogVersion)
+					a.syncV2ProjectUnreadCount(p.ID, p.Dataset, v2UnreadCount, v2UnreadStateRev, v2CatalogVersion)
 				}
 			} else if !common && len(s.Knowledge.Catalog) == 0 {
 				s.Knowledge.Catalog = append([]Item(nil), rows...)

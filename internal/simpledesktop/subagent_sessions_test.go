@@ -256,6 +256,8 @@ func TestSubagentUILinkingQAsToolsAndReturnLightDark(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
+		case "/v1/capabilities":
+			http.NotFound(w, r)
 		case "/v1/raw-records":
 			_ = json.NewEncoder(w).Encode(rawResp)
 		case "/v1/raw-records/session-history":

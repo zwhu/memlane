@@ -426,7 +426,7 @@ func (a *App) openSubagentSession(s *pane, parent, child Item) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	s.readCancel = cancel
 	s.readRequest++
-	request, epoch := s.readRequest, a.epoch
+	request, epoch, authEpoch := s.readRequest, a.epoch, a.authEpoch
 	s.Reading, s.Error = true, ""
 	s.Selected = &child
 	revision := a.readingRevisions[child.key()]
@@ -434,7 +434,7 @@ func (a *App) openSubagentSession(s *pane, parent, child Item) {
 		defer cancel()
 		result, sessionPage, err := fetchSessionHistoryPage(ctx, control, hasControl, client, child)
 		a.Update(func() {
-			if epoch != a.epoch || request != s.readRequest || revision != a.readingRevisions[child.key()] {
+			if epoch != a.epoch || authEpoch != a.authEpoch || request != s.readRequest || revision != a.readingRevisions[child.key()] {
 				return
 			}
 			if !a.syncReadingIdentity() {
@@ -641,6 +641,14 @@ func (a *App) loadMoreSubagents(s *pane, parent Item) {
 				}
 				target.SubagentsLoading = false
 				if err != nil {
+					if readingUnavailable(err) {
+						target.Subagents = nil
+						target.SubagentsHasMore = false
+						target.SubagentsNextCursor = ""
+						target.SubagentTotalCount = 0
+					} else if isControlInvalidCursor(err) {
+						target.SubagentsNextCursor = ""
+					}
 					return
 				}
 				seen := make(map[string]bool, len(target.Subagents))
@@ -672,6 +680,9 @@ func (a *App) loadMoreSubagents(s *pane, parent Item) {
 				if s.Items[idx].key() == parent.key() {
 					applyTarget(&s.Items[idx])
 				}
+			}
+			if err != nil && readingUnavailable(err) {
+				a.handleReadingFailure(parent, err)
 			}
 		})
 	}()

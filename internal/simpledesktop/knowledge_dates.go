@@ -53,52 +53,52 @@ func knowledgeSourceDatesPath(cfg Config, identity string) (string, bool) {
 	return filepath.Join(filepath.Dir(base), fmt.Sprintf("knowledge-source-dates-%x.json", sha256.Sum256([]byte(identity)))), true
 }
 
-func readLegacyKnowledgeDatesFile(path string) (map[string]string, bool, error) {
+func readLegacyKnowledgeDatesFile(path string) (map[string]string, bool, os.FileInfo, error) {
 	linfo, err := os.Lstat(path)
 	if os.IsNotExist(err) {
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, false, nil, err
 	}
 	if !linfo.Mode().IsRegular() || linfo.Mode()&os.ModeSymlink != 0 || linfo.Mode().Perm()&0077 != 0 || linfo.Size() > 8*1024*1024 {
-		return nil, true, fmt.Errorf("记忆来源日期记录不可用")
+		return nil, true, nil, fmt.Errorf("记忆来源日期记录不可用")
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, true, err
+		return nil, true, nil, err
 	}
 	defer f.Close()
 	finfo, err := f.Stat()
 	if err != nil || !os.SameFile(linfo, finfo) || !finfo.Mode().IsRegular() || finfo.Mode().Perm()&0077 != 0 || finfo.Size() > 8*1024*1024 {
-		return nil, true, fmt.Errorf("记忆来源日期记录不可用")
+		return nil, true, nil, fmt.Errorf("记忆来源日期记录不可用")
 	}
 	data, err := io.ReadAll(io.LimitReader(f, 8*1024*1024+1))
 	if err != nil {
-		return nil, true, err
+		return nil, true, nil, err
 	}
 	if int64(len(data)) > 8*1024*1024 {
-		return nil, true, fmt.Errorf("记忆来源日期记录不可用")
+		return nil, true, nil, fmt.Errorf("记忆来源日期记录不可用")
 	}
 	var state struct {
 		Version int               `json:"schema_version"`
 		Days    map[string]string `json:"days"`
 	}
 	if json.Unmarshal(data, &state) != nil || state.Version != 1 || state.Days == nil {
-		return nil, true, fmt.Errorf("记忆来源日期记录无效")
+		return nil, true, nil, fmt.Errorf("记忆来源日期记录无效")
 	}
 	days := make(map[string]string, len(state.Days))
 	for k, v := range state.Days {
 		if !isLowerHex64(k) {
-			return nil, true, fmt.Errorf("记忆来源日期记录无效")
+			return nil, true, nil, fmt.Errorf("记忆来源日期记录无效")
 		}
 		day, ok := sourceCalendarDate(v)
 		if !ok {
-			return nil, true, fmt.Errorf("记忆来源日期记录无效")
+			return nil, true, nil, fmt.Errorf("记忆来源日期记录无效")
 		}
 		days[k] = day
 	}
-	return days, true, nil
+	return days, true, finfo, nil
 }
 
 const (
@@ -214,25 +214,36 @@ func (c Client) backfillLegacyKnowledgeDatesV2(ctx context.Context) (bool, error
 			}
 			return false, nil
 		case "absent", "empty":
+			if resp.HasUnconfirmedProjects || resp.Unmapped > 0 {
+				return false, nil
+			}
 			// If the client's own state_dir differs from the server's state_dir
 			// and this exact readingIdentity's legacy file exists locally, pass
 			// its validated days in <=500 entry (<64 KiB) chunks and only rename
-			// to .migrated.bak once status is not partial, unmapped == 0, and
-			// all projects are confirmed.
+			// to .migrated.bak once status is not partial, unmapped == 0, all
+			// projects are confirmed, and the on-disk file matches the uploaded snapshot.
 			if hasLocalPath {
 				knowledgeDatesMu.Lock()
-				days, exists, readErr := readLegacyKnowledgeDatesFile(localPath)
+				days, exists, snapInfo, readErr := readLegacyKnowledgeDatesFile(localPath)
 				knowledgeDatesMu.Unlock()
-				if readErr == nil && exists && len(days) > 0 {
+				if readErr != nil {
+					// Never mark backfill completed when the local file cannot be read.
+					return false, readErr
+				}
+				if exists && len(days) > 0 {
 					chunks := chunkLegacyKnowledgeDays(days, provenanceBackfillChunkMaxEntries, provenanceBackfillChunkMaxBytes)
 					totalUnmapped := 0
 					anyUnconfirmed := false
 					anyPartial := false
 					for _, chunk := range chunks {
-						resp2, err2 := control.provenanceBackfillLegacyDatesV2(ctx, v2ProvenanceBackfillRequest{
+						req := v2ProvenanceBackfillRequest{
 							ReadingIdentity: identity,
 							Days:            chunk,
-						})
+						}
+						if encoded, mErr := json.Marshal(req); mErr != nil || len(encoded) > provenanceBackfillChunkMaxBytes+4096 {
+							return false, fmt.Errorf("来源日期回填分片超过上限")
+						}
+						resp2, err2 := control.provenanceBackfillLegacyDatesV2(ctx, req)
 						if err2 != nil {
 							return false, err2
 						}
@@ -249,10 +260,22 @@ func (c Client) backfillLegacyKnowledgeDatesV2(ctx context.Context) (bool, error
 					}
 					if !anyPartial && !anyUnconfirmed && totalUnmapped == 0 {
 						knowledgeDatesMu.Lock()
-						if _, statErr := os.Lstat(localPath); statErr == nil {
-							_ = os.Rename(localPath, localPath+".migrated.bak")
+						curInfo, statErr := os.Lstat(localPath)
+						if os.IsNotExist(statErr) {
+							knowledgeDatesMu.Unlock()
+							doneOK = true
+							return true, nil
 						}
+						if statErr != nil || snapInfo == nil || !os.SameFile(snapInfo, curInfo) || curInfo.Size() != snapInfo.Size() || !curInfo.ModTime().Equal(snapInfo.ModTime()) {
+							// File changed during upload; keep it intact so next pass uploads newer entries.
+							knowledgeDatesMu.Unlock()
+							return false, nil
+						}
+						renameErr := os.Rename(localPath, localPath+".migrated.bak")
 						knowledgeDatesMu.Unlock()
+						if renameErr != nil {
+							return false, renameErr
+						}
 						doneOK = true
 						return true, nil
 					}

@@ -168,7 +168,18 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 	wasLoaded := s.Loaded
 	client := a.Client
 	control, hasControl := a.accessClient()
+	stateDir := a.readingStateDir()
 	accessProjects := append([]AccessProject(nil), a.access.Directory.Projects...)
+	hasCurrentProject := false
+	for _, ap := range accessProjects {
+		if ap.ID == p.ID && ap.Dataset == p.Dataset {
+			hasCurrentProject = true
+			break
+		}
+	}
+	if !hasCurrentProject && p.ID != "" && p.Dataset != "" {
+		accessProjects = append(accessProjects, AccessProject{ID: p.ID, Name: p.Name, Dataset: p.Dataset})
+	}
 	titles := a.titles
 	genStr := a.readingGeneration(s)
 	sortByRecalls := s.Knowledge.SortByRecalls
@@ -212,7 +223,15 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 					return
 				}
 				if hasV2ReadState && len(accessProjects) > 0 {
-					_ = a.migrateReadingStateV2(ctx, control, accessProjects)
+					if migErr := a.migrateReadingStateV2Snapshot(ctx, control, readingID, stateDir, accessProjects); migErr != nil {
+						if ctx.Err() != nil {
+							return
+						}
+						if isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, accessProjects) {
+							failClosed(migErr)
+							return
+						}
+					}
 				}
 				sortParam := "date"
 				if sortByRecalls {
@@ -257,7 +276,7 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 						s.Items = mapped
 						s.More = v2Resp.HasMore
 						s.Loaded = true
-						a.syncV2ProjectUnreadCount(p.ID, p.Dataset, v2Resp.UnreadCount, v2Resp.CatalogVersion)
+						a.syncV2ProjectUnreadCount(p.ID, p.Dataset, v2Resp.UnreadCount, v2Resp.UnreadStateRev, v2Resp.CatalogVersion)
 						a.hydrateKnowledgeCards(s)
 						if s.Selected == nil && len(s.Items) > 0 && !s.Locating {
 							a.selectItem(s, s.Items[0])
@@ -376,9 +395,9 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 			s.Items = append([]Item(nil), rows[:count]...)
 			for n, i := range s.Items {
 				if pre, ok := preheated[i.key()]; ok {
-					s.Items[n].Body, s.Items[n].BodyLoaded, s.Items[n].ReadingState = pre.Body, true, "ready"
+					s.Items[n].Body, s.Items[n].BodyLoaded, s.Items[n].BodyTruncated, s.Items[n].ReadingState = pre.Body, true, pre.BodyTruncated, "ready"
 				} else if before, ok := old[i.key()]; ok && before.BodyLoaded && keyForReading("", i, "") == keyForReading("", before, "") && i.Document != nil && (i.Document.Updated != "" || i.Document.ContentHash != "") {
-					s.Items[n].Body, s.Items[n].BodyLoaded, s.Items[n].ReadingState = before.Body, true, "ready"
+					s.Items[n].Body, s.Items[n].BodyLoaded, s.Items[n].BodyTruncated, s.Items[n].ReadingState = before.Body, true, before.BodyTruncated, "ready"
 				}
 			}
 			s.More, s.Loaded = count < len(rows), true
@@ -689,9 +708,11 @@ func (a *App) knowledgePage(c *ui.Context, s *pane) {
 		}
 	}
 	ready := true
-	for _, i := range s.Items {
-		if !i.BodyLoaded && i.Preview == "" && i.ReadingState != "failed" && i.ReadingState != "unavailable" {
-			ready = false
+	if !s.Knowledge.V2Mode {
+		for _, i := range s.Items {
+			if !i.BodyLoaded && i.Preview == "" && i.ReadingState != "failed" && i.ReadingState != "unavailable" {
+				ready = false
+			}
 		}
 	}
 	if s.More && s.Loaded && ready && s.ListScroll.MaxY > 0 && s.ListScroll.Y >= s.ListScroll.MaxY-160 {

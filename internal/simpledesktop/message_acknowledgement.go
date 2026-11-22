@@ -8,8 +8,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
+
+var noticeAckMu sync.Mutex
 
 // Only presentation decisions are stored. Acknowledgement never changes a
 // message, permission, task or save outcome, and never adopts old archives.
@@ -46,12 +49,8 @@ func (a *App) noticeAcknowledgementPath(p AccessProject) (string, error) {
 	return filepath.Join(filepath.Dir(base), "message-acknowledgements-"+noticeHash([]string{identity, p.ID, p.Dataset})+".json"), nil
 }
 
-func (a *App) readNoticeAcknowledgements(p AccessProject) (map[string]noticeAcknowledgement, string) {
+func readNoticeAcknowledgementsAtPathLocked(path string) (map[string]noticeAcknowledgement, string) {
 	rows := map[string]noticeAcknowledgement{}
-	path, err := a.noticeAcknowledgementPath(p)
-	if err != nil { // Fixtures without a configured state path have no decisions.
-		return rows, ""
-	}
 	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return rows, "提醒处理记录读取失败，原提醒仍保留"
 	}
@@ -68,6 +67,35 @@ func (a *App) readNoticeAcknowledgements(p AccessProject) (map[string]noticeAckn
 		}
 	}
 	return rows, ""
+}
+
+func updateNoticeAcknowledgementsAtPath(path string, mutate func(map[string]noticeAcknowledgement)) (map[string]noticeAcknowledgement, string, error) {
+	noticeAckMu.Lock()
+	defer noticeAckMu.Unlock()
+	rows, message := readNoticeAcknowledgementsAtPathLocked(path)
+	if message != "" {
+		return nil, message, nil
+	}
+	mutate(rows)
+	b, err := json.Marshal(rows)
+	if err == nil {
+		err = writeNoticeAcknowledgements(path, b)
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	return rows, "", nil
+}
+
+func (a *App) readNoticeAcknowledgements(p AccessProject) (map[string]noticeAcknowledgement, string) {
+	rows := map[string]noticeAcknowledgement{}
+	path, err := a.noticeAcknowledgementPath(p)
+	if err != nil { // Fixtures without a configured state path have no decisions.
+		return rows, ""
+	}
+	noticeAckMu.Lock()
+	defer noticeAckMu.Unlock()
+	return readNoticeAcknowledgementsAtPathLocked(path)
 }
 
 // Stable issue identity excludes polling times, task progress and display copy.
@@ -141,23 +169,20 @@ func (a *App) acknowledgeNotice(q *projectQueueState, p AccessProject, n message
 		q.NoticeAcknowledgementError = "提醒处理未保存，原提醒仍保留"
 		return
 	}
-	rows, message := a.readNoticeAcknowledgements(p)
+	key := noticeHash(n.Key)
+	fp := q.noticeFingerprint(n.Key)
+	rows, message, writeErr := updateNoticeAcknowledgementsAtPath(path, func(r map[string]noticeAcknowledgement) {
+		if restore {
+			delete(r, key)
+		} else {
+			r[key] = noticeAcknowledgement{Fingerprint: fp, At: time.Now().UTC(), Deferred: n.NeedsUser}
+		}
+	})
 	if message != "" {
 		q.NoticeAcknowledgementError = message
 		return
 	}
-	key := noticeHash(n.Key)
-	if restore {
-		delete(rows, key)
-	} else {
-		rows[key] = noticeAcknowledgement{Fingerprint: q.noticeFingerprint(n.Key), At: time.Now().UTC(), Deferred: n.NeedsUser}
-	}
-	// Use the same atomic client-state write contract without writing content.
-	b, err := json.Marshal(rows)
-	if err == nil {
-		err = writeNoticeAcknowledgements(path, b)
-	}
-	if err != nil {
+	if writeErr != nil {
 		q.NoticeAcknowledgementError = "提醒处理未保存，原提醒仍保留"
 		return
 	}
@@ -183,19 +208,16 @@ func (a *App) clearRecoveredNoticeAcknowledgements(q *projectQueueState, p Acces
 		q.NoticeAcknowledgementError = "提醒处理记录未更新，原提醒仍保留"
 		return
 	}
-	rows, message := a.readNoticeAcknowledgements(p)
+	rows, message, writeErr := updateNoticeAcknowledgementsAtPath(path, func(r map[string]noticeAcknowledgement) {
+		for _, key := range keys {
+			delete(r, noticeHash(key))
+		}
+	})
 	if message != "" {
 		q.NoticeAcknowledgementError = message
 		return
 	}
-	for _, key := range keys {
-		delete(rows, noticeHash(key))
-	}
-	b, err := json.Marshal(rows)
-	if err == nil {
-		err = writeNoticeAcknowledgements(path, b)
-	}
-	if err != nil {
+	if writeErr != nil {
 		q.NoticeAcknowledgementError = "提醒处理记录未更新，原提醒仍保留"
 		return
 	}

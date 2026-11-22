@@ -51,7 +51,9 @@ func main() {
 		quitCoord := newQuitCoordinator(
 			app.KeepAliveOnQuit,
 			func(ctx context.Context) error {
-				app.FlushPendingState(2 * time.Second)
+				if flushErr := app.FlushPendingState(2 * time.Second); flushErr != nil {
+					log.Printf("退出前保存客户端状态未完成：%v", flushErr)
+				}
 				err := bootstrap.ShutdownAllFirstRuntimes(ctx)
 				if configuration != "" {
 					if extErr := bootstrap.ShutdownExternalRuntime(ctx, configuration); extErr != nil {
@@ -84,7 +86,9 @@ func main() {
 			log.Printf("菜单栏状态图标不可用：%v", trayErr)
 		}
 		mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
-			app.FlushPendingState(2 * time.Second)
+			if flushErr := app.FlushPendingState(2 * time.Second); flushErr != nil {
+				log.Printf("退出前保存客户端状态未完成：%v", flushErr)
+			}
 			if tray != nil {
 				tray.Destroy()
 			}

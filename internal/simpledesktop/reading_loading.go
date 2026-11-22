@@ -356,8 +356,9 @@ func (a *App) InvalidateReading(dataset string) {
 	}
 	a.recentRequest++
 
-	// Fence overview & day in-flight requests so late callbacks cannot repopulate revoked data.
+	// Fence overview, activity, & day in-flight requests so late callbacks cannot repopulate revoked data.
 	a.overviewState.generation++
+	a.overviewState.activityGeneration++
 	a.overviewState.dayRequest++
 	if a.overviewState.cancel != nil {
 		a.overviewState.cancel()
@@ -385,22 +386,16 @@ func (a *App) InvalidateReading(dataset string) {
 		a.overviewState.DayTotal = 0
 		a.overviewState.V2DayBuckets = nil
 		a.overviewState.V2TotalKnowledge = 0
-	} else {
-		for n, i := range a.overviewState.DayItems {
-			if i.Dataset == dataset {
-				a.overviewState.DayItems[n].Body = ""
-				a.overviewState.DayItems[n].Preview = ""
-				a.overviewState.DayItems[n].BodyLoaded = false
-				a.overviewState.DayItems[n].Detail = nil
-				a.overviewState.DayItems[n].ReadingState = ""
-				if i.Document != nil {
-					docCopy := *i.Document
-					docCopy.Metadata = nil
-					a.overviewState.DayItems[n].Document = &docCopy
-					a.overviewState.DayItems[n].Title = docCopy.title()
-				}
+	} else if len(a.overviewState.DayItems) > 0 {
+		keptDay := make([]Item, 0, len(a.overviewState.DayItems))
+		for _, i := range a.overviewState.DayItems {
+			if i.Dataset != dataset {
+				keptDay = append(keptDay, i)
 			}
 		}
+		a.overviewState.DayItems = keptDay
+		a.overviewState.DayNextCursor = ""
+		a.overviewState.DayHasMore = false
 	}
 	for n, i := range a.overviewState.Snapshot.Knowledge {
 		if dataset == "" || i.Dataset == dataset {
@@ -440,6 +435,9 @@ func (a *App) InvalidateReading(dataset string) {
 			s.Knowledge.HasPrev = false
 			s.RawNextCursor = ""
 			s.CommonNextCursor = ""
+			s.CommonPrevCursor = ""
+			s.CommonHasPrev = false
+			s.CommonNav = nil
 			s.CommonCursors = nil
 			s.CommonPageIndex = 0
 		}
@@ -486,6 +484,12 @@ func (a *App) InvalidateReading(dataset string) {
 				s.Items[n].BodyLoaded = false
 				s.Items[n].Detail = nil
 				s.Items[n].RecallStats = nil
+				s.Items[n].Subagents = nil
+				s.Items[n].SubagentsHasMore = false
+				s.Items[n].SubagentsNextCursor = ""
+				s.Items[n].SubagentTotalCount = 0
+				s.Items[n].SubagentsLoading = false
+				s.Items[n].SessionSummary = ""
 				s.Items[n].ReadingState = "unavailable"
 				s.Items[n].ReadingError = "内容不可用"
 				if i.Document != nil {

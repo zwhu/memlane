@@ -2,7 +2,6 @@ package simpledesktop
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -103,23 +102,23 @@ func (a *App) clearProjectNotifications(q *projectQueueState, p AccessProject) e
 	if err != nil {
 		return fmt.Errorf("通知未清空：提醒处理记录位置不可用")
 	}
-	acknowledgements, message := a.readNoticeAcknowledgements(p)
+	needs, info := a.messageNotices(q, p)
+	now := time.Now().UTC()
+	acknowledgements, message, writeErr := updateNoticeAcknowledgementsAtPath(ackPath, func(rows map[string]noticeAcknowledgement) {
+		for _, n := range append(needs, info...) {
+			if n.isProgressNotice() {
+				continue
+			}
+			rows[noticeHash(n.Key)] = noticeAcknowledgement{
+				Fingerprint: q.noticeFingerprint(n.Key), At: now, Deferred: n.NeedsUser,
+			}
+		}
+	})
 	if message != "" {
 		q.NoticeAcknowledgementError = message
 		return fmt.Errorf("通知未清空：提醒处理记录无法读取")
 	}
-	needs, info := a.messageNotices(q, p)
-	now := time.Now().UTC()
-	for _, n := range append(needs, info...) {
-		if n.isProgressNotice() {
-			continue
-		}
-		acknowledgements[noticeHash(n.Key)] = noticeAcknowledgement{
-			Fingerprint: q.noticeFingerprint(n.Key), At: now, Deferred: n.NeedsUser,
-		}
-	}
-	b, err := json.Marshal(acknowledgements)
-	if err != nil || writeNoticeAcknowledgements(ackPath, b) != nil {
+	if writeErr != nil {
 		q.NoticeAcknowledgementError = "提醒处理未保存，原提醒仍保留"
 		return fmt.Errorf("通知未清空：提醒处理记录未保存")
 	}
@@ -182,12 +181,14 @@ func (a *App) clearProjectNotifications(q *projectQueueState, p AccessProject) e
 }
 
 // clearProjectNotificationsAsync executes clearProjectNotifications network and
-// disk I/O off the UI thread so context menu selection never stalls the frame loop.
+// disk I/O off the UI thread using immutable UI-captured snapshots and serialized
+// noticeAckMu + knowledgeWriter locking.
 func (a *App) clearProjectNotificationsAsync(q *projectQueueState, p AccessProject) {
 	if q == nil || a.Update == nil {
 		return
 	}
 	authEpoch := a.authEpoch
+	stateDir := a.readingStateDir()
 	ctrl, hasCtrl := a.accessClient()
 	readingID, _ := readingIdentity(Client{Config: a.Client.Config})
 	readPath, readPathErr := a.knowledgeReadPath(p)
@@ -265,7 +266,17 @@ func (a *App) clearProjectNotificationsAsync(q *projectQueueState, p AccessProje
 			})
 			return
 		}
-		acknowledgements, message := a.readNoticeAcknowledgements(p)
+		now := time.Now().UTC()
+		acknowledgements, message, writeAckErr := updateNoticeAcknowledgementsAtPath(ackPath, func(rows map[string]noticeAcknowledgement) {
+			for _, n := range noticeMeta {
+				if n.Progress {
+					continue
+				}
+				rows[noticeHash(n.Key)] = noticeAcknowledgement{
+					Fingerprint: fingerprints[n.Key], At: now, Deferred: n.NeedsUser,
+				}
+			}
+		})
 		if message != "" {
 			a.Update(func() {
 				if authEpoch != a.authEpoch {
@@ -276,17 +287,7 @@ func (a *App) clearProjectNotificationsAsync(q *projectQueueState, p AccessProje
 			})
 			return
 		}
-		now := time.Now().UTC()
-		for _, n := range noticeMeta {
-			if n.Progress {
-				continue
-			}
-			acknowledgements[noticeHash(n.Key)] = noticeAcknowledgement{
-				Fingerprint: fingerprints[n.Key], At: now, Deferred: n.NeedsUser,
-			}
-		}
-		b, mErr := json.Marshal(acknowledgements)
-		if mErr != nil || writeNoticeAcknowledgements(ackPath, b) != nil {
+		if writeAckErr != nil {
 			a.Update(func() {
 				if authEpoch != a.authEpoch {
 					return
@@ -308,7 +309,7 @@ func (a *App) clearProjectNotificationsAsync(q *projectQueueState, p AccessProje
 				})
 				return
 			}
-			resp, markErr := a.enqueueKnowledgeMarkAllReadV2(readPath, q, ctrl, readingID, p.ID, p.Dataset, true)
+			resp, markErr := a.enqueueKnowledgeMarkAllReadV2WithEpoch(readPath, stateDir, q, ctrl, readingID, p.ID, p.Dataset, authEpoch, true)
 			a.Update(func() {
 				if authEpoch != a.authEpoch {
 					return

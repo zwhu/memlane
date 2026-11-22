@@ -72,9 +72,9 @@ func TestScalingP1BodyFastpathAndPreviewDecoupling(t *testing.T) {
 				ProjectID:      "p1",
 				DatasetID:      "ds-1",
 				CatalogVersion: "v1",
-				TotalFiltered:  2,
-				UnreadCount:    1,
-				CategoryCounts: map[string]int{"项目约定": 2},
+				TotalFiltered:  3,
+				UnreadCount:    2,
+				CategoryCounts: map[string]int{"项目约定": 3},
 				Items: []v2KnowledgeItem{
 					{
 						DocID:            "doc-1",
@@ -109,17 +109,46 @@ func TestScalingP1BodyFastpathAndPreviewDecoupling(t *testing.T) {
 						PreviewText:      "受限预览",
 						PreviewTruncated: true,
 					},
+					{
+						DocID:            "doc-trunc",
+						DatasetID:        "ds-1",
+						ProjectID:        "p1",
+						Title:            "超大截断文档",
+						DocName:          "k-trunc.md",
+						EffectiveDate:    "2026-11-19",
+						CreatedAt:        "2026-11-19T10:00:00Z",
+						ContentHash:      "hash-trunc",
+						Kind:             "knowledge",
+						Category:         "项目约定",
+						LessonType:       "convention",
+						IsUnread:         true,
+						PreviewText:      "超大文档预览",
+						PreviewTruncated: true,
+					},
 				},
 			})
 		case "/v2/datasets/ds-1/documents/doc-1/body":
 			bodyFastCalls.Add(1)
-			bodyText := "# Session learning (session codex_s1)\n\n这是完整的 8MiB 截断标记测试正文内容。"
+			bodyText := "# Session learning (session codex_s1)\n\n这是完整的正文内容。"
 			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
 				ID:          "doc-1",
 				DatasetID:   "ds-1",
 				Body:        &bodyText,
 				MIMEType:    "text/markdown",
 				ContentHash: "hash-1",
+				Truncated:   false,
+				BytesTotal:  int64(len(bodyText)),
+				Source:      "local_fastpath",
+			})
+		case "/v2/datasets/ds-1/documents/doc-trunc/body":
+			bodyFastCalls.Add(1)
+			bodyText := "# Session learning (session codex_s1)\n\n这是完整的 8MiB 截断标记测试正文内容。"
+			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
+				ID:          "doc-trunc",
+				DatasetID:   "ds-1",
+				Body:        &bodyText,
+				MIMEType:    "text/markdown",
+				ContentHash: "hash-trunc",
 				Truncated:   true,
 				BytesTotal:  9 * 1024 * 1024,
 				Source:      "local_fastpath",
@@ -161,8 +190,8 @@ func TestScalingP1BodyFastpathAndPreviewDecoupling(t *testing.T) {
 	if !s.Knowledge.V2Mode {
 		t.Fatalf("expected V2Mode enabled on project knowledge pane")
 	}
-	if len(s.Items) != 2 {
-		t.Fatalf("expected 2 items, got %d", len(s.Items))
+	if len(s.Items) != 3 {
+		t.Fatalf("expected 3 items, got %d", len(s.Items))
 	}
 	// Item 1 (unselected) must strictly keep Preview decoupled from Body / BodyLoaded!
 	unselected := s.Items[1]
@@ -182,8 +211,8 @@ func TestScalingP1BodyFastpathAndPreviewDecoupling(t *testing.T) {
 	if bodyFastCalls.Load() != 1 || officialRawCalls.Load() != 0 {
 		t.Fatalf("expected 1 fastpath body call and 0 official /raw calls, got fast=%d official=%d", bodyFastCalls.Load(), officialRawCalls.Load())
 	}
-	if s.Selected == nil || !s.Selected.BodyLoaded || !s.Selected.BodyTruncated {
-		t.Fatalf("expected selected item loaded & truncated via fastpath, got %+v", s.Selected)
+	if s.Selected == nil || !s.Selected.BodyLoaded || s.Selected.BodyTruncated {
+		t.Fatalf("expected selected item loaded & non-truncated via fastpath, got %+v", s.Selected)
 	}
 	a.waitKnowledgeReadFlush()
 	drainReading(t, updates, func() bool { return true })
@@ -191,7 +220,22 @@ func TestScalingP1BodyFastpathAndPreviewDecoupling(t *testing.T) {
 	gotMarked := append([]string(nil), markedDocIDs...)
 	markMu.Unlock()
 	if len(gotMarked) != 1 || gotMarked[0] != "doc-1" {
-		t.Fatalf("expected mark-read for doc-1 after BodyLoaded=true, got %v", gotMarked)
+		t.Fatalf("expected mark-read for doc-1 after BodyLoaded=true && !BodyTruncated, got %v", gotMarked)
+	}
+
+	// Selecting a truncated (>8 MiB) item loads via fastpath, renders the truncation notice
+	// in both Light and Dark modes, and MUST NOT trigger markKnowledgeRead!
+	a.selectItem(s, s.Items[2])
+	drainReading(t, updates, func() bool { return !s.Reading && s.Selected != nil && s.Selected.ID == "doc-trunc" })
+	if s.Selected == nil || !s.Selected.BodyLoaded || !s.Selected.BodyTruncated {
+		t.Fatalf("expected truncated item loaded with BodyTruncated=true, got %+v", s.Selected)
+	}
+	a.waitKnowledgeReadFlush()
+	markMu.Lock()
+	gotMarkedAfterTrunc := append([]string(nil), markedDocIDs...)
+	markMu.Unlock()
+	if len(gotMarkedAfterTrunc) != 1 || gotMarkedAfterTrunc[0] != "doc-1" {
+		t.Fatalf("truncated body MUST NOT mark read, got marked=%v", gotMarkedAfterTrunc)
 	}
 
 	// Render both Light and Dark modes to verify preview card & truncation notice UI build cleanly.
@@ -827,8 +871,8 @@ func TestScalingP1ReadingStateMigrationUnreadPopupAndNonDisruptiveRefresh(t *tes
 			var req v2ReadingStateImportCommitRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			committedBatchID = req.BatchID
-			if req.ExpectedItems != stagedItems {
-				t.Errorf("import/commit expected_items=%d want=%d", req.ExpectedItems, stagedItems)
+			if req.ExpectedItems == nil || *req.ExpectedItems != stagedItems {
+				t.Errorf("import/commit expected_items=%v want=%d", req.ExpectedItems, stagedItems)
 			}
 			_ = json.NewEncoder(w).Encode(v2ReadingStateImportCommitResponse{ScopeHash: "sh-1", Committed: stagedItems, UnreadCount: 25})
 		case "/v2/reading-state/mark-all-read":

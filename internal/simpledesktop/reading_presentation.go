@@ -257,6 +257,19 @@ func readingUnavailable(err error) bool {
 	if status, ok := httpStatusCode(err); ok && (status == 401 || status == 403 || status == 404) {
 		return true
 	}
+	return readingAuthDenied(err)
+}
+
+func readingAuthDenied(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isControlAuthDenied(err) {
+		return true
+	}
+	if status, ok := httpStatusCode(err); ok && (status == 401 || status == 403) {
+		return true
+	}
 	s := err.Error()
 	for _, reason := range []string{"identity changed", "dataset changed", "credential unavailable"} {
 		if strings.Contains(s, reason) {

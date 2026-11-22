@@ -25,19 +25,37 @@ type knowledgeReadState struct {
 	Read        map[string]bool `json:"knowledge_ids"`
 }
 
-func (a *App) knowledgeReadPath(p AccessProject) (string, error) {
+func (a *App) readingStateDir() string {
 	base := a.Config.ClientStateFile
 	if base == "" {
 		base = a.Config.ConfigFile
 	}
 	if base == "" {
+		return ""
+	}
+	return filepath.Dir(base)
+}
+
+func knowledgeReadPathForDir(stateDir, readingID string, p AccessProject) (string, error) {
+	if stateDir == "" {
+		return "", fmt.Errorf("客户端状态位置不可用")
+	}
+	if readingID == "" {
+		return "", fmt.Errorf("客户端阅读身份不可用")
+	}
+	return filepath.Join(stateDir, fmt.Sprintf("knowledge-read-%x.json", sha256.Sum256([]byte(readingID+"/"+p.ID+"/"+p.Dataset)))), nil
+}
+
+func (a *App) knowledgeReadPath(p AccessProject) (string, error) {
+	stateDir := a.readingStateDir()
+	if stateDir == "" {
 		return "", fmt.Errorf("客户端状态位置不可用")
 	}
 	identity, err := readingIdentity(Client{Config: a.Client.Config})
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(filepath.Dir(base), fmt.Sprintf("knowledge-read-%x.json", sha256.Sum256([]byte(identity+"/"+p.ID+"/"+p.Dataset)))), nil
+	return knowledgeReadPathForDir(stateDir, identity, p)
 }
 func readKnowledgeState(path string) (knowledgeReadState, error) {
 	s := knowledgeReadState{Version: 1, Read: map[string]bool{}}
@@ -100,6 +118,7 @@ const (
 type knowledgeReadMarkJob struct {
 	key             string
 	path            string
+	stateDir        string
 	docIDs          []string
 	markAll         bool
 	queue           *projectQueueState
@@ -124,6 +143,7 @@ type knowledgeReadWriter struct {
 	cond          *sync.Cond
 	jobs          []*knowledgeReadMarkJob
 	failedPending map[string][]string
+	failedMeta    map[string]*knowledgeReadMarkJob
 	running       bool
 	inFlight      bool
 	inFlightJob   *knowledgeReadMarkJob
@@ -134,6 +154,7 @@ func (a *App) ensureKnowledgeWriter() *knowledgeReadWriter {
 	if a.knowledgeWriter == nil {
 		w := &knowledgeReadWriter{
 			failedPending: map[string][]string{},
+			failedMeta:    map[string]*knowledgeReadMarkJob{},
 			writeFn:       writeKnowledgeState,
 		}
 		w.cond = sync.NewCond(&w.mu)
@@ -188,6 +209,7 @@ func (a *App) enqueueKnowledgeReadMark(path, docID string, q *projectQueueState,
 	w := a.ensureKnowledgeWriter()
 	updateFn := a.Update
 	authEpoch := a.authEpoch
+	stateDir := a.readingStateDir()
 	key := path
 	if key == "" {
 		key = readingID + "/" + projectID + "/" + datasetID
@@ -205,11 +227,13 @@ func (a *App) enqueueKnowledgeReadMark(path, docID string, q *projectQueueState,
 	retryIDs := w.failedPending[key]
 	if len(retryIDs) > 0 {
 		delete(w.failedPending, key)
+		delete(w.failedMeta, key)
 	}
 	if target == nil {
 		target = &knowledgeReadMarkJob{
 			key:             key,
 			path:            path,
+			stateDir:        stateDir,
 			queue:           q,
 			update:          updateFn,
 			control:         control,
@@ -221,6 +245,7 @@ func (a *App) enqueueKnowledgeReadMark(path, docID string, q *projectQueueState,
 		}
 		w.jobs = append(w.jobs, target)
 	} else {
+		target.stateDir = stateDir
 		target.queue = q
 		target.update = updateFn
 		target.control = control
@@ -240,8 +265,11 @@ func (a *App) enqueueKnowledgeReadMark(path, docID string, q *projectQueueState,
 }
 
 func (a *App) enqueueKnowledgeMarkAllReadV2(path string, q *projectQueueState, control ProjectControlClient, readingID, projectID, datasetID string, syncWait bool) (v2ReadingStateMarkAllReadResponse, error) {
+	return a.enqueueKnowledgeMarkAllReadV2WithEpoch(path, a.readingStateDir(), q, control, readingID, projectID, datasetID, a.authEpoch, syncWait)
+}
+
+func (a *App) enqueueKnowledgeMarkAllReadV2WithEpoch(path, stateDir string, q *projectQueueState, control ProjectControlClient, readingID, projectID, datasetID string, authEpoch uint64, syncWait bool) (v2ReadingStateMarkAllReadResponse, error) {
 	w := a.ensureKnowledgeWriter()
-	authEpoch := a.authEpoch
 	key := path
 	if key == "" {
 		key = readingID + "/" + projectID + "/" + datasetID
@@ -252,6 +280,7 @@ func (a *App) enqueueKnowledgeMarkAllReadV2(path string, q *projectQueueState, c
 	job := &knowledgeReadMarkJob{
 		key:             key,
 		path:            path,
+		stateDir:        stateDir,
 		markAll:         true,
 		queue:           q,
 		control:         &ctrlCopy,
@@ -267,6 +296,7 @@ func (a *App) enqueueKnowledgeMarkAllReadV2(path string, q *projectQueueState, c
 	}
 	w.mu.Lock()
 	delete(w.failedPending, key)
+	delete(w.failedMeta, key)
 	w.jobs = append(w.jobs, job)
 	if !w.running {
 		w.running = true
@@ -316,17 +346,25 @@ func (w *knowledgeReadWriter) drainLoop() {
 	}
 }
 
-func (w *knowledgeReadWriter) requeueFailedIDs(key string, ids []string) {
-	if len(ids) == 0 {
+func (w *knowledgeReadWriter) requeueFailedIDs(job *knowledgeReadMarkJob, ids []string) {
+	if job == nil || len(ids) == 0 {
 		return
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	merged := appendUniqueDocIDs(w.failedPending[key], ids...)
+	if w.failedMeta == nil {
+		w.failedMeta = map[string]*knowledgeReadMarkJob{}
+	}
+	merged := appendUniqueDocIDs(w.failedPending[job.key], ids...)
 	if len(merged) > maxFailedMarkReadQueue {
 		merged = merged[len(merged)-maxFailedMarkReadQueue:]
 	}
-	w.failedPending[key] = merged
+	w.failedPending[job.key] = merged
+	metaCopy := *job
+	metaCopy.docIDs = nil
+	metaCopy.done = nil
+	metaCopy.onResult = nil
+	w.failedMeta[job.key] = &metaCopy
 }
 
 func (w *knowledgeReadWriter) executeMarkJob(job *knowledgeReadMarkJob, writeFn func(string, knowledgeReadState) error) error {
@@ -352,7 +390,7 @@ func (w *knowledgeReadWriter) executeMarkJob(job *knowledgeReadMarkJob, writeFn 
 		if probeErr != nil {
 			cancel()
 			if !job.markAll {
-				w.requeueFailedIDs(job.key, job.docIDs)
+				w.requeueFailedIDs(job, job.docIDs)
 			}
 			if job.onResult != nil {
 				job.onResult(v2ReadingStateMarkAllReadResponse{}, probeErr)
@@ -361,6 +399,23 @@ func (w *knowledgeReadWriter) executeMarkJob(job *knowledgeReadMarkJob, writeFn 
 			return probeErr
 		}
 		if hasV2 {
+			// Guard against flipping is_auto_baseline before any pending local legacy file is migrated.
+			if job.app != nil && job.stateDir != "" {
+				scopeProj := []AccessProject{{ID: job.projectID, Dataset: job.datasetID}}
+				if job.app.hasPendingLocalReadingMigration(job.control.Config.URL, job.stateDir, job.readingIdentity, scopeProj) {
+					if migErr := job.app.migrateReadingStateV2Snapshot(ctx, *job.control, job.readingIdentity, job.stateDir, scopeProj); migErr != nil {
+						cancel()
+						if !job.markAll {
+							w.requeueFailedIDs(job, job.docIDs)
+						}
+						if job.onResult != nil {
+							job.onResult(v2ReadingStateMarkAllReadResponse{}, migErr)
+						}
+						reportErr()
+						return migErr
+					}
+				}
+			}
 			if job.markAll {
 				resp, err := job.control.readingStateMarkAllReadV2(ctx, v2ReadingStateMarkAllReadRequest{
 					ReadingIdentity: job.readingIdentity,
@@ -401,7 +456,7 @@ func (w *knowledgeReadWriter) executeMarkJob(job *knowledgeReadMarkJob, writeFn 
 				}
 				if err != nil {
 					cancel()
-					w.requeueFailedIDs(job.key, job.docIDs[start:])
+					w.requeueFailedIDs(job, job.docIDs[start:])
 					reportErr()
 					return err
 				}
@@ -450,6 +505,7 @@ func (w *knowledgeReadWriter) executeMarkJob(job *knowledgeReadMarkJob, writeFn 
 	s, err := readKnowledgeState(job.path)
 	if err != nil {
 		// Never overwrite a corrupt or unreadable read-state file with an invented baseline.
+		w.requeueFailedIDs(job, job.docIDs)
 		reportErr()
 		return err
 	}
@@ -464,7 +520,7 @@ func (w *knowledgeReadWriter) executeMarkJob(job *knowledgeReadMarkJob, writeFn 
 		return nil
 	}
 	if err := writeFn(job.path, s); err != nil {
-		w.requeueFailedIDs(job.key, job.docIDs)
+		w.requeueFailedIDs(job, job.docIDs)
 		reportErr()
 		return err
 	}
@@ -497,10 +553,33 @@ func (a *App) waitKnowledgeReadFlush() {
 	w.mu.Unlock()
 }
 
-func (a *App) waitKnowledgeReadFlushWithTimeout(timeout time.Duration) {
+// flushKnowledgeReadWithTimeout re-enqueues any previously failed mark-read items
+// for a final bounded attempt before exit and returns an error if items remain unsaved.
+func (a *App) flushKnowledgeReadWithTimeout(timeout time.Duration) error {
 	if a.knowledgeWriter == nil {
-		return
+		return nil
 	}
+	w := a.knowledgeWriter
+	w.mu.Lock()
+	if len(w.failedPending) > 0 {
+		for key, ids := range w.failedPending {
+			meta := w.failedMeta[key]
+			if meta == nil || len(ids) == 0 {
+				continue
+			}
+			retryJob := *meta
+			retryJob.docIDs = append([]string(nil), ids...)
+			delete(w.failedPending, key)
+			delete(w.failedMeta, key)
+			w.jobs = append(w.jobs, &retryJob)
+		}
+		if len(w.jobs) > 0 && !w.running {
+			w.running = true
+			go w.drainLoop()
+		}
+	}
+	w.mu.Unlock()
+
 	done := make(chan struct{})
 	go func() {
 		a.waitKnowledgeReadFlush()
@@ -508,31 +587,85 @@ func (a *App) waitKnowledgeReadFlushWithTimeout(timeout time.Duration) {
 	}()
 	if timeout <= 0 {
 		<-done
-		return
+	} else {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+			return fmt.Errorf("已读状态刷新超时")
+		}
 	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-done:
-	case <-timer.C:
+	w.mu.Lock()
+	unsaved := 0
+	for _, ids := range w.failedPending {
+		unsaved += len(ids)
 	}
+	w.mu.Unlock()
+	if unsaved > 0 {
+		return fmt.Errorf("仍有 %d 条已读状态未能保存", unsaved)
+	}
+	return nil
+}
+
+func (a *App) hasPendingLocalReadingMigration(controlURL, stateDir, readingID string, projects []AccessProject) bool {
+	if stateDir == "" || readingID == "" {
+		return false
+	}
+	a.readingMigrateMu.Lock()
+	defer a.readingMigrateMu.Unlock()
+	for _, p := range projects {
+		if p.ID == "" || p.Dataset == "" {
+			continue
+		}
+		if controlURL != "" && a.readingMigrated[controlURL+"|"+readingID+"|"+p.ID+"|"+p.Dataset] {
+			continue
+		}
+		path, err := knowledgeReadPathForDir(stateDir, readingID, p)
+		if err != nil {
+			continue
+		}
+		_, statErr := os.Stat(path)
+		if os.IsNotExist(statErr) {
+			continue
+		}
+		if statErr != nil {
+			return true
+		}
+		localState, readErr := readKnowledgeState(path)
+		if readErr != nil || localState.Initialized {
+			return true
+		}
+	}
+	return false
 }
 
 // migrateReadingStateV2 runs once per (controlURL, readingIdentity, projectID, datasetID)
-// scope with singleflight coalescing so cold-start reads wait for migration to settle:
-// 1. Attempts same-machine fast migration via POST /v2/reading-state/migrate-local.
-// 2. For any project whose local file lives outside the server's default directory
-//    (status == "no_legacy_file", etc.), streams it atomically via 2-phase staging
-//    (POST /v2/reading-state/import/begin -> /chunk (<=500) -> /commit with expected_items).
+// scope with singleflight coalescing so cold-start reads wait for migration to settle.
 func (a *App) migrateReadingStateV2(ctx context.Context, control ProjectControlClient, projects []AccessProject) error {
 	readingID, err := readingIdentity(Client{Config: a.Client.Config})
 	if err != nil || readingID == "" {
 		return err
 	}
+	return a.migrateReadingStateV2Snapshot(ctx, control, readingID, a.readingStateDir(), projects)
+}
+
+func (a *App) migrateReadingStateV2Snapshot(ctx context.Context, control ProjectControlClient, readingID, stateDir string, projects []AccessProject) error {
+	if readingID == "" {
+		return fmt.Errorf("客户端阅读身份不可用")
+	}
+	hasV2ReadState, probeErr := control.probeFeature(ctx, v2FeatureReadingState)
+	if probeErr != nil {
+		return probeErr
+	}
+	if !hasV2ReadState {
+		return nil
+	}
 	scopeKeyFor := func(p AccessProject) string {
 		return control.Config.URL + "|" + readingID + "|" + p.ID + "|" + p.Dataset
 	}
 
+	var err error
 	for {
 		var pending []AccessProject
 		var waitChs []chan struct{}
@@ -613,38 +746,53 @@ func (a *App) migrateReadingStateV2(ctx context.Context, control ProjectControlC
 			for _, p := range pending {
 				sk := scopeKeyFor(p)
 				row, reported := migratedStatus[p.ID+"/"+p.Dataset]
-				status := strings.ToLower(strings.TrimSpace(row.Status))
-				needsRemoteImport := !reported ||
-					status == "no_legacy_file" ||
-					status == "no_local_file" ||
-					status == "not_found" ||
-					status == "missing" ||
-					status == "missing_local" ||
-					status == "empty" ||
-					status == "skipped"
-				if !needsRemoteImport {
-					migratedOK[sk] = true
-					continue
-				}
-				path, pathErr := a.knowledgeReadPath(p)
-				if pathErr != nil {
-					migratedOK[sk] = true
-					continue
-				}
-				if _, statErr := os.Stat(path); statErr != nil {
-					migratedOK[sk] = true
-					continue
-				}
-				localState, readErr := readKnowledgeState(path)
-				if readErr != nil || !localState.Initialized {
-					migratedOK[sk] = true
-					continue
-				}
-				if importErr := importReadingStateStagingV2(ctx, control, readingID, p.ID, p.Dataset, localState); importErr != nil {
-					err = importErr
+				if !reported {
+					err = fmt.Errorf("未读状态迁移回执缺少项目 %s", p.ID)
 					return
 				}
-				migratedOK[sk] = true
+				status := strings.ToLower(strings.TrimSpace(row.Status))
+				switch status {
+				case "migrated", "already_migrated":
+					migratedOK[sk] = true
+					continue
+				case "no_legacy_file", "no_local_file", "not_found":
+					if stateDir == "" {
+						migratedOK[sk] = true
+						continue
+					}
+					path, pathErr := knowledgeReadPathForDir(stateDir, readingID, p)
+					if pathErr != nil {
+						err = pathErr
+						return
+					}
+					if _, statErr := os.Stat(path); statErr != nil {
+						if os.IsNotExist(statErr) {
+							migratedOK[sk] = true
+							continue
+						}
+						// Non-ENOENT stat error: never mark migrated!
+						err = statErr
+						return
+					}
+					localState, readErr := readKnowledgeState(path)
+					if readErr != nil {
+						// Corrupt/unreadable local file: never mark migrated!
+						err = readErr
+						return
+					}
+					if !localState.Initialized {
+						migratedOK[sk] = true
+						continue
+					}
+					if _, importErr := importReadingStateStagingV2(ctx, control, readingID, p.ID, p.Dataset, localState); importErr != nil {
+						err = importErr
+						return
+					}
+					migratedOK[sk] = true
+				default:
+					err = fmt.Errorf("未读状态迁移状态未确认：%s", row.Status)
+					return
+				}
 			}
 		}()
 		if err != nil {
@@ -663,7 +811,7 @@ func (a *App) migrateReadingStateV2(ctx context.Context, control ProjectControlC
 	}
 }
 
-func importReadingStateStagingV2(ctx context.Context, control ProjectControlClient, readingID, projectID, datasetID string, local knowledgeReadState) error {
+func importReadingStateStagingV2(ctx context.Context, control ProjectControlClient, readingID, projectID, datasetID string, local knowledgeReadState) (v2ReadingStateImportCommitResponse, error) {
 	enabledAt := ""
 	if !local.StartedAt.IsZero() {
 		enabledAt = local.StartedAt.UTC().Format(time.RFC3339Nano)
@@ -676,7 +824,7 @@ func importReadingStateStagingV2(ctx context.Context, control ProjectControlClie
 		EnabledAt:       enabledAt,
 	})
 	if err != nil {
-		return err
+		return v2ReadingStateImportCommitResponse{}, err
 	}
 	keys := make([]string, 0, len(local.Read))
 	for id := range local.Read {
@@ -699,24 +847,45 @@ func importReadingStateStagingV2(ctx context.Context, control ProjectControlClie
 			BatchID: beginResp.BatchID,
 			Items:   chunk,
 		}); err != nil {
-			return err
+			return v2ReadingStateImportCommitResponse{}, err
 		}
 	}
-	_, err = control.readingStateImportCommitV2(ctx, v2ReadingStateImportCommitRequest{
+	expected := len(keys)
+	return control.readingStateImportCommitV2(ctx, v2ReadingStateImportCommitRequest{
 		BatchID:       beginResp.BatchID,
-		ExpectedItems: len(keys),
+		ExpectedItems: &expected,
 	})
-	return err
 }
 
-func (a *App) syncV2ProjectUnreadCount(projectID, datasetID string, unreadCount int, catalogVersion string) {
+func applyServerUnreadSnapshot(q *projectQueueState, unreadCount int, stateRev int64, writerPending bool) bool {
+	if q == nil {
+		return false
+	}
+	if stateRev > 0 {
+		if stateRev < q.ServerUnreadStateRev {
+			return false
+		}
+		if writerPending && stateRev <= q.ServerUnreadStateRev {
+			return false
+		}
+		q.ServerUnreadStateRev = stateRev
+		q.ServerUnreadKnown = true
+		q.ServerUnreadCount = unreadCount
+		return true
+	}
+	if writerPending || q.ServerUnreadStateRev > 0 {
+		return false
+	}
+	q.ServerUnreadKnown = true
+	q.ServerUnreadCount = unreadCount
+	return true
+}
+
+func (a *App) syncV2ProjectUnreadCount(projectID, datasetID string, unreadCount int, stateRev int64, catalogVersion string) {
 	for _, p := range a.access.Directory.Projects {
 		if (projectID != "" && p.ID == projectID) || (datasetID != "" && p.Dataset == datasetID) {
 			q := a.projectQueueStateFor(p)
-			if !a.knowledgeWriterHasPending(p.ID, p.Dataset) {
-				q.ServerUnreadKnown = true
-				q.ServerUnreadCount = unreadCount
-			}
+			applyServerUnreadSnapshot(q, unreadCount, stateRev, a.knowledgeWriterHasPending(p.ID, p.Dataset))
 			if catalogVersion != "" {
 				q.KnowledgeCatalogVersion = catalogVersion
 			}
@@ -868,7 +1037,7 @@ func (a *App) observeKnowledgeCatalog(p AccessProject, q *projectQueueState, doc
 }
 
 func (a *App) markKnowledgeRead(i Item) {
-	if i.Kind != "知识" || i.Document == nil || !i.BodyLoaded || !i.Document.knowledge() {
+	if i.Kind != "知识" || i.Document == nil || !i.BodyLoaded || i.BodyTruncated || !i.Document.knowledge() {
 		return
 	}
 	readingID, _ := readingIdentity(Client{Config: a.Client.Config})

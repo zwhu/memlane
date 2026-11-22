@@ -333,7 +333,7 @@ func waitColdPendingStoreFlush() {
 	coldPendingStore.mu.Unlock()
 }
 
-func flushColdPendingStoreWithTimeout(timeout time.Duration) {
+func flushColdPendingStoreWithTimeout(timeout time.Duration) error {
 	done := make(chan struct{})
 	go func() {
 		flushColdPendingStoreNow()
@@ -342,14 +342,19 @@ func flushColdPendingStoreWithTimeout(timeout time.Duration) {
 	}()
 	if timeout <= 0 {
 		<-done
-		return
+	} else {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+			return fmt.Errorf("冷缓存持久化刷新超时")
+		}
 	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-done:
-	case <-timer.C:
-	}
+	coldPendingStore.mu.Lock()
+	err := coldPendingStore.lastWriteErr
+	coldPendingStore.mu.Unlock()
+	return err
 }
 
 func flushColdPendingStoreNow() {
@@ -359,7 +364,7 @@ func flushColdPendingStoreNow() {
 		coldPendingStore.timer = nil
 	}
 	path := coldPendingStore.path
-	if path == "" || !coldPendingStore.dirty {
+	if path == "" || (!coldPendingStore.dirty && coldPendingStore.lastWriteErr == nil) {
 		coldPendingStore.dirty = false
 		coldPendingStore.firstDirtyAt = time.Time{}
 		coldPendingStore.cond.Broadcast()
@@ -384,7 +389,7 @@ func flushColdPendingStoreNow() {
 		if writeErr == nil {
 			coldPendingStore.writeCount++
 		}
-		if !coldPendingStore.dirty || coldPendingStore.path != path {
+		if !coldPendingStore.dirty || coldPendingStore.path != path || writeErr != nil {
 			coldPendingStore.flushing = false
 			coldPendingStore.firstDirtyAt = time.Time{}
 			coldPendingStore.cond.Broadcast()

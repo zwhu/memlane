@@ -116,8 +116,11 @@ func (a *App) commonListHeader(c *ui.Context) {
 		b.Disabled(a.Config.ProjectControl == nil || !ok || p.Dataset == "" || e.DeleteSubmitted)
 		refreshAction(c, "刷新通用记忆", func() {
 			s.CommonPageIndex = 0
+			s.CommonNav = nil
 			s.CommonCursors = nil
 			s.CommonNextCursor = ""
+			s.CommonPrevCursor = ""
+			s.CommonHasPrev = false
 			s.Offset = 0
 			a.load(s)
 		})
@@ -142,8 +145,11 @@ func (a *App) commonFilterBar(c *ui.Context) {
 		e.Open = false
 		s.Offset = 0
 		s.CommonPageIndex = 0
+		s.CommonNav = nil
 		s.CommonCursors = nil
 		s.CommonNextCursor = ""
+		s.CommonPrevCursor = ""
+		s.CommonHasPrev = false
 		a.load(s)
 	}).FillWidth()
 	if len(a.Config.Common) > 1 {
@@ -207,35 +213,24 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 				prevDisabled := s.Offset == 0 || s.Loading
 				if s.CommonV2Mode {
 					pageNum = s.CommonPageIndex + 1
-					prevDisabled = s.CommonPageIndex == 0 || s.Loading
+					prevDisabled = (s.CommonPageIndex == 0 && !s.CommonHasPrev) || s.Loading
 				}
 				v4SmallButton(c, "上一页", nil, func() {
 					if s.CommonV2Mode {
-						s.CommonPageIndex = max(0, s.CommonPageIndex-1)
-						s.Offset = s.CommonPageIndex * 30
+						a.stepCommonKnowledgeV2(s, -1)
 					} else {
 						s.Offset = max(0, s.Offset-30)
+						a.load(s)
 					}
-					a.load(s)
 				}).Disabled(prevDisabled)
 				ui.Text(c, fmt.Sprint(pageNum)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
 				v4SmallButton(c, "下一页", nil, func() {
 					if s.CommonV2Mode {
-						if len(s.CommonCursors) == 0 {
-							s.CommonCursors = []string{""}
-						}
-						nextIdx := s.CommonPageIndex + 1
-						if nextIdx < len(s.CommonCursors) {
-							s.CommonCursors[nextIdx] = s.CommonNextCursor
-						} else {
-							s.CommonCursors = append(s.CommonCursors, s.CommonNextCursor)
-						}
-						s.CommonPageIndex = nextIdx
-						s.Offset = s.CommonPageIndex * 30
+						a.stepCommonKnowledgeV2(s, 1)
 					} else {
 						s.Offset += 30
+						a.load(s)
 					}
-					a.load(s)
 				}).Disabled(!s.More || s.Loading || (s.CommonV2Mode && s.CommonNextCursor == ""))
 			})
 		})

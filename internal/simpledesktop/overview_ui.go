@@ -250,7 +250,16 @@ func (a *App) loadOverview() {
 	client := a.Client
 	genStr := fmt.Sprint(generation)
 	control, hasControl := a.accessClient()
+	stateDir := a.readingStateDir()
 	accessProjects := append([]AccessProject(nil), a.access.Directory.Projects...)
+	if len(accessProjects) == 0 && len(a.Config.Projects) > 0 {
+		accessProjects = make([]AccessProject, 0, len(a.Config.Projects))
+		for _, p := range a.Config.Projects {
+			if p.ID != "" && p.Dataset != "" {
+				accessProjects = append(accessProjects, AccessProject{ID: p.ID, Name: p.Name, Dataset: p.Dataset})
+			}
+		}
+	}
 
 	// Fast path: prefer /v2/overview/bootstrap (<=128 KiB pre-aggregated buckets
 	// + top-20 recent items + activity), falling back to /v1/overview/bootstrap
@@ -299,7 +308,15 @@ func (a *App) loadOverview() {
 					return
 				}
 				if hasV2ReadState && len(accessProjects) > 0 {
-					_ = a.migrateReadingStateV2(ctx, control, accessProjects)
+					if migErr := a.migrateReadingStateV2Snapshot(ctx, control, readingID, stateDir, accessProjects); migErr != nil {
+						if ctx.Err() != nil {
+							return
+						}
+						if isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, accessProjects) {
+							failClosed(migErr)
+							return
+						}
+					}
 				}
 				v2Resp, v2Err := control.overviewBootstrapV2(ctx, readingID, 365, 20, 50, 50)
 				if v2Err == nil {
@@ -482,10 +499,7 @@ func (a *App) applyOverviewV2ProjectSummaries(summaries []v2OverviewProjectSumma
 			continue
 		}
 		q := a.projectQueueStateFor(p)
-		if !a.knowledgeWriterHasPending(p.ID, p.Dataset) {
-			q.ServerUnreadKnown = true
-			q.ServerUnreadCount = summary.UnreadCount
-		}
+		applyServerUnreadSnapshot(q, summary.UnreadCount, summary.UnreadStateRev, a.knowledgeWriterHasPending(p.ID, p.Dataset))
 		if summary.CatalogVersion != "" {
 			q.KnowledgeCatalogVersion = summary.CatalogVersion
 		}
@@ -610,7 +624,7 @@ func (a *App) startOverviewActivity() <-chan struct{} {
 	ctx, cancel := context.WithTimeout(context.Background(), overviewActivityTimeout)
 	v.activityCancel = cancel
 	v.activityGeneration++
-	generation := v.activityGeneration
+	generation, authEpoch := v.activityGeneration, a.authEpoch
 	epoch, identity := a.epoch, a.readingIdentity
 	v.ActivityLoading = true
 	want := 50
@@ -666,7 +680,7 @@ func (a *App) startOverviewActivity() <-chan struct{} {
 			return
 		}
 		a.Update(func() {
-			if generation != a.overviewState.activityGeneration || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
+			if generation != a.overviewState.activityGeneration || authEpoch != a.authEpoch || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
 				return
 			}
 			a.overviewState.ActivityLoading = false
@@ -674,6 +688,9 @@ func (a *App) startOverviewActivity() <-chan struct{} {
 				if err != nil {
 					a.invalidateOverviewOn401(err)
 					a.overviewState.HistoryError = err.Error()
+					if readingAuthDenied(err) {
+						a.InvalidateReading("")
+					}
 					return
 				}
 				a.overviewState.History = events
@@ -684,6 +701,9 @@ func (a *App) startOverviewActivity() <-chan struct{} {
 			if err != nil {
 				a.invalidateOverviewOn401(err)
 				a.overviewState.ActivityError = err.Error()
+				if readingAuthDenied(err) {
+					a.InvalidateReading("")
+				}
 				return
 			}
 			a.overviewState.Events = events

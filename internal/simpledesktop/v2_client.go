@@ -39,8 +39,8 @@ type v2DocumentBodyResponse struct {
 func (c ProjectControlClient) documentBodyV2(ctx context.Context, datasetID, docID string) (v2DocumentBodyResponse, error) {
 	var out v2DocumentBodyResponse
 	path := "/v2/datasets/" + url.PathEscape(datasetID) + "/documents/" + url.PathEscape(docID) + "/body"
-	// Allow up to 16 MiB JSON payload to cover worst-case JSON escaping of an 8 MiB UTF-8 body.
-	if err := c.requestWithLimit(ctx, "GET", path, nil, &out, 16*1024*1024); err != nil {
+	// Allow up to 24 MiB JSON payload to cover worst-case JSON control-character escaping of an 8 MiB UTF-8 body.
+	if err := c.requestWithLimit(ctx, "GET", path, nil, &out, 24*1024*1024); err != nil {
 		return v2DocumentBodyResponse{}, err
 	}
 	return out, nil
@@ -194,6 +194,7 @@ type v2OverviewProjectSummary struct {
 	RawDocCount    int    `json:"raw_doc_count"`
 	SessionCount   int    `json:"session_count"`
 	UnreadCount    int    `json:"unread_count"`
+	UnreadStateRev int64  `json:"unread_state_rev,omitempty"`
 	CatalogVersion string `json:"catalog_version"`
 }
 
@@ -345,6 +346,7 @@ type v2ProjectKnowledgeResponse struct {
 	Sort           string            `json:"sort"`
 	TotalFiltered  int               `json:"total_filtered"`
 	UnreadCount    int               `json:"unread_count"`
+	UnreadStateRev int64             `json:"unread_state_rev,omitempty"`
 	CategoryCounts map[string]int    `json:"category_counts"`
 	Items          []v2KnowledgeItem `json:"items"`
 	NextCursor     string            `json:"next_cursor"`
@@ -483,7 +485,7 @@ type v2SearchRecentResponse struct {
 	SessionItems   []v2SearchSessionItem `json:"session_items"`
 }
 
-func (c ProjectControlClient) searchRecentV2(ctx context.Context, readingID string, limit int, projectID string) (v2SearchRecentResponse, error) {
+func (c ProjectControlClient) searchRecentV2(ctx context.Context, readingID string, limit int, projectID, datasetID string) (v2SearchRecentResponse, error) {
 	var out v2SearchRecentResponse
 	q := url.Values{}
 	if limit > 0 {
@@ -491,6 +493,9 @@ func (c ProjectControlClient) searchRecentV2(ctx context.Context, readingID stri
 	}
 	if projectID != "" {
 		q.Set("project_id", projectID)
+	}
+	if datasetID != "" {
+		q.Set("dataset_id", datasetID)
 	}
 	path := "/v2/search/recent?" + q.Encode()
 	err := c.requestWithHeaders(ctx, "GET", path, v2IdentityHeaders(readingID), nil, &out, 512*1024)
@@ -504,7 +509,7 @@ type v2SearchMetadataResponse struct {
 	HasMore    bool              `json:"has_more"`
 }
 
-func (c ProjectControlClient) searchMetadataV2(ctx context.Context, readingID, query, filter string, limit int, projectID string) (v2SearchMetadataResponse, error) {
+func (c ProjectControlClient) searchMetadataV2(ctx context.Context, readingID, query, filter string, limit int, projectID, datasetID string) (v2SearchMetadataResponse, error) {
 	var out v2SearchMetadataResponse
 	q := url.Values{}
 	q.Set("q", query)
@@ -517,6 +522,9 @@ func (c ProjectControlClient) searchMetadataV2(ctx context.Context, readingID, q
 	}
 	if projectID != "" {
 		q.Set("project_id", projectID)
+	}
+	if datasetID != "" {
+		q.Set("dataset_id", datasetID)
 	}
 	path := "/v2/search/metadata?" + q.Encode()
 	err := c.requestWithHeaders(ctx, "GET", path, v2IdentityHeaders(readingID), nil, &out, 512*1024)
@@ -686,6 +694,7 @@ type v2MessageSummaryResponse struct {
 	BufferReviews           []bufferReview                  `json:"buffer_reviews,omitempty"`
 	KnowledgeCatalogVersion string                          `json:"knowledge_catalog_version"`
 	UnreadCount             int                             `json:"unread_count"`
+	UnreadStateRev          int64                           `json:"unread_state_rev,omitempty"`
 	UnreadPreview           []v2UnreadPreviewItem           `json:"unread_preview"`
 	UnreadHasMore           bool                            `json:"unread_has_more"`
 	PendingDocumentsCount   int                             `json:"pending_documents_count"`
@@ -829,13 +838,14 @@ func (c ProjectControlClient) readingStateImportChunkV2(ctx context.Context, req
 
 type v2ReadingStateImportCommitRequest struct {
 	BatchID       string `json:"batch_id"`
-	ExpectedItems int    `json:"expected_items,omitempty"`
+	ExpectedItems *int   `json:"expected_items,omitempty"`
 }
 
 type v2ReadingStateImportCommitResponse struct {
 	ScopeHash   string `json:"scope_hash"`
 	Committed   int    `json:"committed"`
 	UnreadCount int    `json:"unread_count"`
+	StateRev    int64  `json:"state_rev,omitempty"`
 }
 
 func (c ProjectControlClient) readingStateImportCommitV2(ctx context.Context, req v2ReadingStateImportCommitRequest) (v2ReadingStateImportCommitResponse, error) {

@@ -34,9 +34,12 @@ type pane struct {
 	RawNextCursor                  string
 	RawAppending                   bool
 	CommonV2Mode                   bool
+	CommonNav                      []v2KnowledgePageOpts
 	CommonCursors                  []string
 	CommonPageIndex                int
 	CommonNextCursor               string
+	CommonPrevCursor               string
+	CommonHasPrev                  bool
 	CommonTotalFiltered            int
 	WidgetList                     ui.ListState
 	ListSelection                  int
@@ -223,21 +226,80 @@ func (a *App) Start() {
 		a.RefreshIntegrations()
 	}
 }
-func (a *App) FlushPendingState(timeout time.Duration) {
+func (a *App) FlushPendingState(timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = 2 * time.Second
 	}
+	var readErr, coldErr error
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		a.waitKnowledgeReadFlushWithTimeout(timeout)
+		readErr = a.flushKnowledgeReadWithTimeout(timeout)
 	}()
 	go func() {
 		defer wg.Done()
-		flushColdPendingStoreWithTimeout(timeout)
+		coldErr = flushColdPendingStoreWithTimeout(timeout)
 	}()
 	wg.Wait()
+	return errors.Join(readErr, coldErr)
+}
+
+func (a *App) stepCommonKnowledgeV2(s *pane, delta int) {
+	if s == nil || !s.CommonV2Mode || s.Loading {
+		return
+	}
+	s.HomeAnchor = nil
+	if delta < 0 {
+		if s.CommonPageIndex > 0 {
+			s.CommonPageIndex--
+			s.Offset = s.CommonPageIndex * 30
+			a.load(s)
+			return
+		}
+		if !s.CommonHasPrev {
+			return
+		}
+		prevOpts := v2KnowledgePageOpts{Cursor: s.CommonPrevCursor, Direction: "prev"}
+		if prevOpts.Cursor == "" && len(s.Items) > 0 {
+			prevOpts.AnchorDocID = s.Items[0].ID
+		}
+		if len(s.CommonNav) == 0 {
+			s.CommonNav = []v2KnowledgePageOpts{{}}
+		}
+		s.CommonNav = append([]v2KnowledgePageOpts{prevOpts}, s.CommonNav...)
+		s.CommonCursors = append([]string{prevOpts.Cursor}, s.CommonCursors...)
+		s.CommonPageIndex = 0
+		s.Offset = 0
+		a.load(s)
+		return
+	}
+	if delta > 0 {
+		if !s.More || s.CommonNextCursor == "" {
+			return
+		}
+		if len(s.CommonNav) == 0 {
+			s.CommonNav = []v2KnowledgePageOpts{{}}
+		}
+		if len(s.CommonCursors) == 0 {
+			s.CommonCursors = []string{""}
+		}
+		nextOpts := v2KnowledgePageOpts{Cursor: s.CommonNextCursor, Direction: "next"}
+		nextIdx := s.CommonPageIndex + 1
+		if nextIdx < len(s.CommonNav) {
+			s.CommonNav[nextIdx] = nextOpts
+		} else {
+			s.CommonNav = append(s.CommonNav, nextOpts)
+		}
+		if nextIdx < len(s.CommonCursors) {
+			s.CommonCursors[nextIdx] = s.CommonNextCursor
+		} else {
+			s.CommonCursors = append(s.CommonCursors, s.CommonNextCursor)
+		}
+		s.CommonPageIndex = nextIdx
+		s.Offset = s.CommonPageIndex * 30
+		a.load(s)
+	}
 }
 
 func (a *App) health() {
@@ -407,9 +469,11 @@ func (a *App) load(s *pane) {
 	rawCount := max(30, len(s.Items))
 	category := a.commonCategoryFilter()
 	commonPageIdx := s.CommonPageIndex
-	commonCursor := ""
-	if commonPageIdx > 0 && commonPageIdx < len(s.CommonCursors) {
-		commonCursor = s.CommonCursors[commonPageIdx]
+	var commonOpts v2KnowledgePageOpts
+	if commonPageIdx >= 0 && commonPageIdx < len(s.CommonNav) {
+		commonOpts = s.CommonNav[commonPageIdx]
+	} else if commonPageIdx > 0 && commonPageIdx < len(s.CommonCursors) {
+		commonOpts = v2KnowledgePageOpts{Cursor: s.CommonCursors[commonPageIdx]}
 	}
 	recallStartedAt := a.overviewState.V2RecallStartedAt
 	filter := a.searchType
@@ -442,6 +506,8 @@ func (a *App) load(s *pane) {
 		var v2RawNextCursor string
 		var usedV2Common bool
 		var v2CommonNextCursor string
+		var v2CommonPrevCursor string
+		var v2CommonHasPrev bool
 		var v2CommonTotal int
 		var v2CommonCursorReset bool
 		var more bool
@@ -475,16 +541,18 @@ func (a *App) load(s *pane) {
 					usedV2Common = true
 					err = probeErr
 				} else if hasV2Common {
-					v2Resp, v2Err := control.commonKnowledgeV2(ctx, p.Dataset, category, 30, commonCursor)
-					if v2Err != nil && isControlInvalidCursor(v2Err) && commonCursor != "" {
+					v2Resp, v2Err := control.commonKnowledgePageV2(ctx, p.Dataset, category, 30, commonOpts)
+					if v2Err != nil && isControlInvalidCursor(v2Err) && (commonOpts.Cursor != "" || commonOpts.AnchorDocID != "") {
 						// Explicitly reset expired cursor to page 1 under the same filter
 						// instead of silently falling back to legacy offset pagination.
 						v2CommonCursorReset = true
-						v2Resp, v2Err = control.commonKnowledgeV2(ctx, p.Dataset, category, 30, "")
+						v2Resp, v2Err = control.commonKnowledgePageV2(ctx, p.Dataset, category, 30, v2KnowledgePageOpts{})
 					}
 					if v2Err == nil {
 						usedV2Common = true
 						v2CommonNextCursor = v2Resp.NextCursor
+						v2CommonPrevCursor = v2Resp.PrevCursor
+						v2CommonHasPrev = v2Resp.HasPrev
 						v2CommonTotal = v2Resp.TotalFiltered
 						more = v2Resp.HasMore
 						rows = make([]Item, 0, len(v2Resp.Items))
@@ -613,17 +681,23 @@ func (a *App) load(s *pane) {
 			if page == "通用知识" {
 				s.CommonV2Mode = usedV2Common
 				if usedV2Common {
-					if v2CommonCursorReset || len(s.CommonCursors) == 0 {
+					if v2CommonCursorReset || len(s.CommonNav) == 0 {
+						s.CommonNav = []v2KnowledgePageOpts{{}}
 						s.CommonCursors = []string{""}
 						s.CommonPageIndex = 0
 						s.Offset = 0
 					}
 					s.CommonNextCursor = v2CommonNextCursor
+					s.CommonPrevCursor = v2CommonPrevCursor
+					s.CommonHasPrev = v2CommonHasPrev
 					s.CommonTotalFiltered = v2CommonTotal
 				} else {
+					s.CommonNav = nil
 					s.CommonCursors = nil
 					s.CommonPageIndex = 0
 					s.CommonNextCursor = ""
+					s.CommonPrevCursor = ""
+					s.CommonHasPrev = false
 					s.CommonTotalFiltered = 0
 				}
 			}

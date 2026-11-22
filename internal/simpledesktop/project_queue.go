@@ -193,9 +193,20 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 		knownKnowledgeVersion = q.KnowledgeCatalogVersion
 	}
 	prevKnowledgeStartedAt := q.KnowledgeRead.StartedAt
+	stateDir := a.readingStateDir()
 	knowledgePath, knowledgePathErr := a.knowledgeReadPath(p)
 	knowledgeWriter := a.ensureKnowledgeWriter()
 	projectsSnapshot := append([]AccessProject(nil), a.access.Directory.Projects...)
+	hasSelfProject := false
+	for _, ap := range projectsSnapshot {
+		if ap.ID == p.ID && ap.Dataset == p.Dataset {
+			hasSelfProject = true
+			break
+		}
+	}
+	if !hasSelfProject && p.ID != "" && p.Dataset != "" {
+		projectsSnapshot = append(projectsSnapshot, p)
+	}
 	if a.access.QueueReadSlots == nil {
 		a.access.QueueReadSlots = make(chan struct{}, 4)
 	}
@@ -242,7 +253,14 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 					return
 				}
 				if hasReadState {
-					_ = a.migrateReadingStateV2(summaryCtx, manager, projectsSnapshot)
+					if migErr := a.migrateReadingStateV2Snapshot(summaryCtx, manager, identity, stateDir, projectsSnapshot); migErr != nil {
+						if isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(manager.Config.URL, stateDir, identity, projectsSnapshot) {
+							cancel()
+							noticeErr = migErr
+							documentErr = migErr
+							return
+						}
+					}
 				}
 				hasV2Summary, sumProbeErr := manager.probeFeature(summaryCtx, v2FeatureMessageSummary)
 				if sumProbeErr != nil {
@@ -485,11 +503,13 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			prevCatalogVersion := q.KnowledgeCatalogVersion
 			if documentErr != nil {
 				q.DocumentError = "提炼状态暂时无法读取"
-				if readingUnavailable(documentErr) {
-					q.Documents = nil
-					q.PendingDocumentsCount = 0
+				if readingAuthDenied(documentErr) {
+					a.InvalidateReading(p.Dataset)
 				}
 			} else {
+				if noticeErr != nil && readingAuthDenied(noticeErr) {
+					a.InvalidateReading(p.Dataset)
+				}
 				q.Documents = documents
 				q.PendingDocumentsCount = max(pendingDocumentsCount, len(documents))
 				if v2SummaryOK {
@@ -497,9 +517,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 						q.KnowledgeReadError = "未读状态暂时无法读取"
 					} else {
 						q.KnowledgeReadError = ""
-						if !a.knowledgeWriterHasPending(p.ID, p.Dataset) {
-							q.ServerUnreadKnown = true
-							q.ServerUnreadCount = v2Summary.UnreadCount
+						if applyServerUnreadSnapshot(q, v2Summary.UnreadCount, v2Summary.UnreadStateRev, a.knowledgeWriterHasPending(p.ID, p.Dataset)) {
 							q.UnreadHasMore = v2Summary.UnreadHasMore || v2Summary.UnreadCount > len(v2Summary.UnreadPreview)
 							q.UnreadKnowledge = v2Summary.unreadPreviewItems(p.Dataset)
 						}

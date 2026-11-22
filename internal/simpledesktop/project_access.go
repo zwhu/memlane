@@ -3,6 +3,7 @@ package simpledesktop
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -399,7 +400,14 @@ func (c ProjectControlClient) capabilities(ctx context.Context) (ControlCapabili
 }
 
 func (c ProjectControlClient) probeFeature(ctx context.Context, feature string) (bool, error) {
-	cacheKey := c.Config.URL + "|" + c.Config.ManagementTokenFile
+	token, tokErr := readCachedToken(c.Config.ManagementTokenFile, 32, true)
+	if tokErr != nil {
+		// Fail closed when management credentials are unavailable; never silently
+		// downgrade to official /api/v1/* with a separate API key.
+		return false, fmt.Errorf("项目管理服务凭据不可用：%w", tokErr)
+	}
+	tokenDigest := fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+	cacheKey := c.Config.URL + "|" + tokenDigest
 	now := time.Now()
 	controlCapabilitiesCache.mu.Lock()
 	entry, ok := controlCapabilitiesCache.entries[cacheKey]
@@ -411,28 +419,27 @@ func (c ProjectControlClient) probeFeature(ctx context.Context, feature string) 
 	defer cancel()
 	caps, err := c.capabilities(probeCtx)
 	if err != nil {
-		if ctx.Err() != nil {
-			return false, ctx.Err()
+		if isControlNotFound(err) {
+			// Confirmed legacy control server without /v1/capabilities: safe to cache fallback.
+			controlCapabilitiesCache.mu.Lock()
+			if len(controlCapabilitiesCache.entries) >= 128 {
+				clear(controlCapabilitiesCache.entries)
+			}
+			controlCapabilitiesCache.entries[cacheKey] = cachedCapabilitiesEntry{supported: false, expiresAt: now.Add(5 * time.Minute)}
+			controlCapabilitiesCache.mu.Unlock()
+			return false, nil
 		}
+		// All other errors (401/403, 5xx, network failure, cancellation) fail closed
+		// without caching supported=false or falling back to official /api/v1/*.
 		if isControlAuthDenied(err) {
-			// Never cache 401/403 as "unsupported" and never allow silent fallback
-			// to official /api/v1/* with a separate credential.
 			controlCapabilitiesCache.mu.Lock()
 			delete(controlCapabilitiesCache.entries, cacheKey)
 			controlCapabilitiesCache.mu.Unlock()
-			return false, err
 		}
-		ttl := 15 * time.Second
-		if isControlNotFound(err) {
-			ttl = 5 * time.Minute
+		if ctx.Err() != nil {
+			return false, ctx.Err()
 		}
-		controlCapabilitiesCache.mu.Lock()
-		if len(controlCapabilitiesCache.entries) >= 128 {
-			clear(controlCapabilitiesCache.entries)
-		}
-		controlCapabilitiesCache.entries[cacheKey] = cachedCapabilitiesEntry{supported: false, expiresAt: now.Add(ttl)}
-		controlCapabilitiesCache.mu.Unlock()
-		return false, nil
+		return false, err
 	}
 	controlCapabilitiesCache.mu.Lock()
 	if len(controlCapabilitiesCache.entries) >= 128 {

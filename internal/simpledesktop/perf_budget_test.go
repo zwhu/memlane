@@ -227,6 +227,10 @@ func TestColdStartOverviewPerformanceBudget(t *testing.T) {
 	}
 	bootstrapCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/capabilities" {
+			http.NotFound(w, r)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/v1/overview/bootstrap") {
 			bootstrapCalls++
 			w.Header().Set("Content-Type", "application/json")
