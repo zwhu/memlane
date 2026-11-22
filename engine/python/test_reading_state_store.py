@@ -450,6 +450,32 @@ class ReadingStateStoreTests(unittest.TestCase):
             ({late}, result['state_rev']),
         )
 
+    def test_mark_all_read_counts_invalid_document_published_at_commit(self):
+        cat = CatalogIndex(self.root / 'catalog-index.sqlite3', official_data=self.official_data)
+        store = ReadingStateStore(self.root / 'ui-reading-state.sqlite3', state_dir=self.root)
+        self.addCleanup(cat.close)
+        self.addCleanup(store.close)
+        cat.sync([self.ds])
+        store.ensure_scope(self.identity, self.project_id, self.ds, catalog_index=cat)
+        late = str(uuid.uuid4())
+
+        def publish_at_commit(statement):
+            if statement == 'COMMIT':
+                self._add_knowledge(late, 'invalid')
+                cat.sync([self.ds])
+
+        store.db.set_trace_callback(publish_at_commit)
+        try:
+            result = store.mark_all_read(self.identity, self.project_id, self.ds, catalog_index=cat)
+        finally:
+            store.db.set_trace_callback(None)
+        self.assertEqual(
+            store.compute_unread_snapshot(self.identity, self.project_id, self.ds, cat),
+            ({late}, result['state_rev']),
+        )
+        self.assertTrue(result['unread_count_known'])
+        self.assertEqual(result['unread_count'], 1)
+
     def test_unread_snapshot_retry_exhaustion_fails_closed(self):
         from unittest.mock import patch
         from project_policy import PolicyError

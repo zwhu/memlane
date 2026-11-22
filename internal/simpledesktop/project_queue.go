@@ -258,17 +258,15 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 	stateDir := a.readingStateDir()
 	knowledgePath, knowledgePathErr := a.knowledgeReadPath(p)
 	knowledgeWriter := a.ensureKnowledgeWriter()
-	projectsSnapshot := append([]AccessProject(nil), a.access.Directory.Projects...)
-	hasSelfProject := false
-	for _, ap := range projectsSnapshot {
+	// Queue loads only depend on migration for their own project.
+	migrationProject := p
+	for _, ap := range a.access.Directory.Projects {
 		if ap.ID == p.ID && ap.Dataset == p.Dataset {
-			hasSelfProject = true
+			migrationProject = ap
 			break
 		}
 	}
-	if !hasSelfProject && p.ID != "" && p.Dataset != "" {
-		projectsSnapshot = append(projectsSnapshot, p)
-	}
+	migrationProjects := []AccessProject{migrationProject}
 	if a.access.QueueReadSlots == nil {
 		a.access.QueueReadSlots = make(chan struct{}, 4)
 	}
@@ -317,8 +315,8 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 					return
 				}
 				if hasReadState {
-					if migErr := a.migrateReadingStateV2Snapshot(summaryCtx, manager, identity, stateDir, projectsSnapshot); migErr != nil {
-						if isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(manager.Config.URL, stateDir, identity, projectsSnapshot) {
+					if migErr := a.migrateReadingStateV2Snapshot(summaryCtx, manager, identity, stateDir, migrationProjects); migErr != nil {
+						if isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(manager.Config.URL, stateDir, identity, migrationProjects) {
 							cancel()
 							noticeErr = migErr
 							documentErr = migErr
@@ -500,16 +498,13 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			if request != q.Request {
 				return
 			}
-			if authEpoch != a.authEpoch {
-				// Partial InvalidateReading(otherDataset) bumps global authEpoch without
-				// resetting unrelated queues; clear Loading so polling never stalls.
-				q.Loading = false
-				return
-			}
 			q.Loading = false
 			if authDenied {
 				q.DocumentError = "提炼状态暂时无法读取"
 				a.InvalidateReading(p.Dataset)
+				return
+			}
+			if authEpoch != a.authEpoch {
 				return
 			}
 			_, current, _ := readingIdentityPair(Client{Config: a.Client.Config})

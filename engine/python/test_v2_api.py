@@ -287,6 +287,83 @@ class V2APITests(AioHTTPTestCase):
         self.registry.close()
         self.tmp.cleanup()
 
+    async def test_migrate_local_skips_unconfirmed_project_in_batch(self):
+        response = await self.client.post(
+            '/v2/reading-state/migrate-local',
+            headers=self.manager_headers,
+            json={'reading_identity': self.identity, 'projects': [
+                {'project_id': 'p-unconf', 'dataset_id': self.ds_unconf},
+                {'project_id': 'p1', 'dataset_id': self.ds_proj},
+            ]},
+        )
+        self.assertEqual(response.status, 200)
+        rows = {row['project_id']: row for row in (await response.json())['migrated']}
+        self.assertEqual(rows['p-unconf']['status'], 'unconfirmed')
+        self.assertEqual(rows['p1']['status'], 'migrated')
+        self.assertEqual(rows['p1']['unread_count'], 15)
+
+    async def test_project_reads_retry_when_catalog_publishes_after_unread_snapshot(self):
+        from unittest.mock import patch
+
+        handles = self.app['v2_api_handles']
+        cat, store = handles.catalog_index, handles.reading_state
+        summary_path = '/v2/projects/p1/message-summary'
+        initial = await self.client.get(summary_path, headers=self.manager_headers)
+        self.assertEqual(initial.status, 200)
+        await initial.read()
+        snapshot = store.compute_unread_snapshot
+        for path in ('/v2/projects/p1/knowledge?limit=50', summary_path):
+            with self.subTest(path=path):
+                store.mark_all_read(self.identity, 'p1', self.ds_proj, catalog_index=cat)
+                late = uuid.uuid4()
+                published = False
+
+                def snapshot_then_publish(*args):
+                    nonlocal published
+                    result = snapshot(*args)
+                    if not published:
+                        with sqlite3.connect(self.cognee_db) as con:
+                            con.execute(
+                                """INSERT INTO data
+                                   SELECT ?, dataset_id, legacy_id, name, label, mime_type, raw_data_location,
+                                          external_metadata, system_metadata, node_set, pipeline_status,
+                                          updated_at, 'invalid', content_hash FROM data WHERE id = ?""",
+                                (late.hex, uuid.UUID(self.k_docs[0]).hex),
+                            )
+                        cat.sync([self.ds_proj, self.ds_common])
+                        published = True
+                    return result
+
+                with patch.object(store, 'compute_unread_snapshot', side_effect=snapshot_then_publish):
+                    response = await self.client.get(path, headers=self.manager_headers)
+                    self.assertEqual(response.status, 200)
+                    body = await response.json()
+                self.assertEqual(body['unread_count'], 1)
+                version = cat.dataset_sync_info(self.ds_proj)['catalog_version']
+                if path == summary_path:
+                    self.assertEqual(body['knowledge_catalog_version'], version)
+                    self.assertEqual([row['doc_id'] for row in body['unread_preview']], [str(late)])
+                else:
+                    self.assertEqual(body['catalog_version'], version)
+                    self.assertEqual([row['doc_id'] for row in body['items'] if row['is_unread']], [str(late)])
+
+    async def test_project_reads_fail_closed_after_catalog_retry_exhaustion(self):
+        from itertools import count
+        from unittest.mock import patch
+
+        handles = self.app['v2_api_handles']
+        paths = ('/v2/projects/p1/knowledge', '/v2/projects/p1/message-summary')
+        for path in paths:
+            with self.subTest(path=path):
+                with (
+                    patch.object(handles.catalog_index, 'generation', side_effect=count()),
+                    patch.object(handles.reading_state, 'compute_unread_snapshot', return_value=(set(), 1)) as snapshot,
+                ):
+                    response = await self.client.get(path, headers=self.manager_headers)
+                    self.assertEqual(response.status, 409)
+                    self.assertEqual((await response.json())['error'], 'catalog_generation_conflict')
+                    self.assertEqual(snapshot.call_count, 3)
+
     async def test_overview_body_knowledge_common_search_and_reading_state_flow(self):
         # 1. Migrate local reading state via POST /v2/reading-state/migrate-local
         mig = await self.client.post(

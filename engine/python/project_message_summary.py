@@ -250,7 +250,7 @@ def _read_sqlite_documents_and_activity(official_data, dataset_id, *, provenance
                     key_prov=key_prov,
                 ))
                 continue
-            if not _is_refinement_material(classified_doc):
+            if meta.get('memlane_kind') == 'user_profile' or not _is_refinement_material(classified_doc):
                 continue
             ps = parse_json(row[6])
             slots = ps.get('cognify_pipeline') if isinstance(ps, dict) else None

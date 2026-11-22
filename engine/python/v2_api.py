@@ -841,6 +841,19 @@ def attach_v2_api(
             return await loop.run_in_executor(db_executor, functools.partial(fn, *args, **kwargs))
         return await loop.run_in_executor(db_executor, fn, *args)
 
+    def _query_catalog_snapshot(query):
+        for _ in range(3):
+            gen = cat.generation()
+            try:
+                result = query(gen)
+            except PolicyError:
+                if cat.generation() == gen:
+                    raise
+            else:
+                if cat.generation() == gen:
+                    return result
+        raise PolicyError('catalog_generation_conflict', 409)
+
     def _require_manager(request):
         if not request['manager']:
             raise PolicyError('management_required', 403)
@@ -1257,12 +1270,11 @@ def attach_v2_api(
         await verify_official_read_access(getattr(registry, 'official', None), dataset_id)
         await _ensure_synced()
 
-        def _query():
+        def _query(gen):
             recall_ids = None
             if recall_agent and recall_event:
                 recall_ids = _recall_event_doc_ids(recall_store, dataset_id, recall_agent, recall_event)
 
-            gen = cat.generation()
             sinfo = cat.dataset_sync_info(dataset_id) or {}
             cat_ver = str(sinfo.get('catalog_version', ''))
 
@@ -1347,7 +1359,7 @@ def attach_v2_api(
             cursor_keys,
             base_has_more,
             base_has_prev,
-        ) = await _run_db(_query)
+        ) = await _run_db(_query_catalog_snapshot, _query)
 
         def _make_payload(subset, lo, hi):
             eff_more = bool(base_has_more or hi < len(formatted))
@@ -1948,25 +1960,27 @@ def attach_v2_api(
                     return a_val, a_err, None, sync_err
 
                 try:
-                    sinfo = cat.dataset_sync_info(dataset_id) or {}
-                    cat_ver_l = str(sinfo.get('catalog_version', ''))
-                    pending_rows, pending_total_l = cat.query_pending_raw_docs(dataset_id, limit=20)
-                    pending_docs_l = [
-                        {
-                            'id': d['doc_id'],
-                            'dataset_id': d['dataset_id'],
-                            'name': d['doc_name'],
-                            'label': d['doc_label'] or '',
-                            'title': _readable_name(d['doc_label']) or _readable_name(d['doc_name']) or d['doc_name'],
-                            'date': d['updated_at'] or d['created_at'],
-                            'kind': '文档',
-                            'created_at': d['created_at'],
-                        }
-                        for d in pending_rows
-                    ]
+                    return a_val, a_err, _query_catalog_snapshot(_query), None
                 except Exception as exc:
                     return a_val, a_err, None, exc
 
+            def _query(_gen):
+                sinfo = cat.dataset_sync_info(dataset_id) or {}
+                cat_ver_l = str(sinfo.get('catalog_version', ''))
+                pending_rows, pending_total_l = cat.query_pending_raw_docs(dataset_id, limit=20)
+                pending_docs_l = [
+                    {
+                        'id': d['doc_id'],
+                        'dataset_id': d['dataset_id'],
+                        'name': d['doc_name'],
+                        'label': d['doc_label'] or '',
+                        'title': _readable_name(d['doc_label']) or _readable_name(d['doc_name']) or d['doc_name'],
+                        'date': d['updated_at'] or d['created_at'],
+                        'kind': '文档',
+                        'created_at': d['created_at'],
+                    }
+                    for d in pending_rows
+                ]
                 reading_err_l = None
                 unread_count_l = 0
                 unread_state_rev_l = 0
@@ -2016,18 +2030,13 @@ def attach_v2_api(
                     reading_err_l = exc.code if isinstance(exc, PolicyError) else 'reading_state_unavailable'
 
                 return (
-                    a_val,
-                    a_err,
-                    (
-                        cat_ver_l,
-                        pending_total_l,
-                        pending_docs_l,
-                        unread_count_l,
-                        unread_state_rev_l,
-                        unread_preview_l,
-                        reading_err_l,
-                    ),
-                    None,
+                    cat_ver_l,
+                    pending_total_l,
+                    pending_docs_l,
+                    unread_count_l,
+                    unread_state_rev_l,
+                    unread_preview_l,
+                    reading_err_l,
                 )
 
             return await _run_db(_run_all)
@@ -2073,6 +2082,8 @@ def attach_v2_api(
         pending_total = 0
         pending_docs = []
         if isinstance(d_res, asyncio.CancelledError):
+            raise d_res
+        if isinstance(d_res, PolicyError) and d_res.code == 'catalog_generation_conflict':
             raise d_res
         if isinstance(d_res, BaseException):
             errors['documents'] = d_res.code if isinstance(d_res, PolicyError) else 'documents_unavailable'
@@ -2164,6 +2175,7 @@ def attach_v2_api(
 
         req_projects = body.get('projects')
         targets = []
+        unconfirmed = []
         if req_projects is None:
             verified_projs, _ = _verified_groups(registry)
             targets = [(p['id'], p['dataset_id']) for p in verified_projs]
@@ -2173,8 +2185,18 @@ def attach_v2_api(
             for item in req_projects:
                 if not isinstance(item, dict) or set(item) != {'project_id', 'dataset_id'}:
                     raise PolicyError('invalid_request_fields', 400)
-                proj = _require_verified_project(registry, str(item['project_id']))
-                if proj['dataset_id'] != uuid_text(item['dataset_id']):
+                pid, ds_id = str(item['project_id']), uuid_text(item['dataset_id'])
+                try:
+                    proj = _require_verified_project(registry, pid)
+                except PolicyError as exc:
+                    if exc.code != 'project_unconfirmed':
+                        raise
+                    unconfirmed.append({
+                        'project_id': pid, 'dataset_id': ds_id,
+                        'status': 'unconfirmed', 'unread_count': 0,
+                    })
+                    continue
+                if proj['dataset_id'] != ds_id:
                     raise PolicyError('dataset_access_denied', 403)
                 targets.append((proj['id'], proj['dataset_id']))
 
@@ -2206,7 +2228,7 @@ def attach_v2_api(
                 migrated.append(res)
             return migrated
 
-        return json_utf8_response({'migrated': await _run_db(_migrate)})
+        return json_utf8_response({'migrated': await _run_db(_migrate) + unconfirmed})
 
     async def reading_import_begin(request):
         _require_manager(request)

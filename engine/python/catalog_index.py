@@ -32,13 +32,14 @@ from sqlite_ro import (
     iso_text,
     official_sqlite_ro,
     open_official_sqlite_ro,
+    parse_json_dict,
     parse_json_value,
     ro_snapshot,
     uuid_hex,
     uuid_text,
 )
 
-CATALOG_SCHEMA_VERSION = 4
+CATALOG_SCHEMA_VERSION = 5
 _MAX_IN_BATCH = 400
 _CHUNK_SPAN = 256
 _CHUNK_SHIFT = 8  # 1 << 8 == 256
@@ -576,6 +577,11 @@ def _create_catalog_schema(con: sqlite3.Connection, tz_name: str, *, create_inde
             'UPDATE catalog_meta SET last_doc_seq = ? WHERE singleton = 1 AND last_doc_seq < ?',
             (max_seq_val, max_seq_val),
         )
+    # Reproject existing rows when upgrading to the profile exclusion rule.
+    con.execute(
+        "UPDATE dataset_sync_state SET data_hash = '' "
+        "WHERE (SELECT schema_version FROM catalog_meta WHERE singleton = 1) < 5"
+    )
     con.execute(
         'UPDATE catalog_meta SET schema_version = ? WHERE singleton = 1 AND schema_version < ?',
         (CATALOG_SCHEMA_VERSION, CATALOG_SCHEMA_VERSION),
@@ -1469,7 +1475,9 @@ class CatalogIndex:
         raw_loc = str(row[4] or '')
         meta = extract_trusted_metadata(row[5], row[6], row[7])
         pipeline_status = (
-            'not_applicable' if meta.get('memlane_kind') == 'user_profile'
+            'not_applicable'
+            if meta.get('memlane_kind') == 'user_profile'
+            or parse_json_dict(row[6]).get('memlane_kind') == 'user_profile'
             else _extract_cognify_status(row[8], ds_id)
         )
         raw_upd = row[9]

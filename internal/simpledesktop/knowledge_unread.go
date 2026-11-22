@@ -783,6 +783,8 @@ func (a *App) migrateReadingStateV2Snapshot(ctx context.Context, control Project
 				}
 				status := strings.ToLower(strings.TrimSpace(row.Status))
 				switch status {
+				case "unconfirmed":
+					continue
 				case "migrated", "already_migrated":
 					migratedOK[sk] = true
 					continue

@@ -542,6 +542,9 @@ class ProjectMessageSummaryTests(unittest.IsolatedAsyncioTestCase):
             ),
         ]
         con.executemany('INSERT INTO data VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', rows)
+        con.execute('ALTER TABLE data ADD COLUMN system_metadata JSON')
+        con.execute('UPDATE data SET system_metadata = ? WHERE id = ?',
+                    (json.dumps({'source': 'official'}), uuid.UUID(doc_profile).hex))
         con.execute(
             'INSERT INTO pipeline_runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (

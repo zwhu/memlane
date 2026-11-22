@@ -1429,11 +1429,6 @@ class ReadingStateStore:
                         new_horizon = str(rev_row[0])
                         state_rev = int(rev_row[1] or 0)
                     self._bump_mutation_rev_locked()
-                    if catalog_index is not None:
-                        # Count against the pending reading-state transaction and retry
-                        # the catalog scan if its generation moves during the read.
-                        unread, state_rev = self._compute_unread_snapshot_for_scope(scope_hash, dataset_id, catalog_index)
-                        unread_count = len(unread)
                     self.db.execute('COMMIT')
                     committed = True
                     break
@@ -1446,10 +1441,23 @@ class ReadingStateStore:
         if not committed:
             raise PolicyError('reading_state_conflict', 409)
 
+        unread_count_known = False
+        if catalog_index is not None:
+            # A catalog publish can land while COMMIT is in progress.
+            try:
+                unread, snapshot_rev = self._compute_unread_snapshot_for_scope(scope_hash, dataset_id, catalog_index)
+            except PolicyError as exc:
+                if exc.status not in (409, 503):
+                    raise
+            else:
+                if snapshot_rev == state_rev:
+                    unread_count = len(unread)
+                    unread_count_known = True
+
         return {
             'scope_hash': scope_hash,
             'unread_count': unread_count,
-            'unread_count_known': catalog_index is not None,
+            'unread_count_known': unread_count_known,
             'read_horizon_at_ns': new_horizon,
             'state_rev': state_rev,
         }

@@ -812,8 +812,12 @@ class CatalogIndexTests(unittest.TestCase):
             rstore.close()
 
     def test_user_profile_remains_raw_but_excluded_from_pending_refinement(self):
-        profile, raw = str(uuid.uuid4()), str(uuid.uuid4())
+        profile, external_profile, raw = (str(uuid.uuid4()) for _ in range(3))
         self._insert_doc(profile, self.ds_proj, sys_meta={'memlane_kind': 'user_profile'})
+        self._insert_doc(
+            external_profile, self.ds_proj,
+            sys_meta={'source': 'official'}, ext_meta={'memlane_kind': 'user_profile'},
+        )
         self._insert_doc(raw, self.ds_proj)
         cat = CatalogIndex(self.cat_path, official_data=self.official_data)
         self.addCleanup(cat.close)
@@ -821,7 +825,35 @@ class CatalogIndexTests(unittest.TestCase):
         rows, count = cat.query_pending_raw_docs(self.ds_proj)
         self.assertEqual(count, 1)
         self.assertEqual([row['doc_id'] for row in rows], [raw])
-        self.assertEqual(cat.fetch_docs_by_ids(self.ds_proj, [profile])[0]['kind'], 'raw_doc')
+        docs = cat.fetch_docs_by_ids(self.ds_proj, [profile, external_profile])
+        self.assertEqual(len(docs), 2)
+        self.assertTrue(all(d['kind'] == 'raw_doc' and d['pipeline_status'] == 'not_applicable' for d in docs))
+
+    def test_profile_exclusion_is_reprojected_on_catalog_upgrade(self):
+        from unittest.mock import patch
+
+        profile = str(uuid.uuid4())
+        self._insert_doc(
+            profile, self.ds_proj,
+            sys_meta={'source': 'official'}, ext_meta={'memlane_kind': 'user_profile'},
+        )
+        with patch('catalog_index.CATALOG_SCHEMA_VERSION', 4):
+            old = CatalogIndex(self.cat_path, official_data=self.official_data)
+            try:
+                old.sync([self.ds_proj])
+            finally:
+                old.close()
+        with sqlite3.connect(self.cat_path) as con:
+            con.execute("UPDATE catalog_docs SET pipeline_status = '' WHERE doc_id = ?", (profile,))
+            seq = con.execute('SELECT doc_seq FROM catalog_docs WHERE doc_id = ?', (profile,)).fetchone()[0]
+
+        cat = CatalogIndex(self.cat_path, official_data=self.official_data)
+        self.addCleanup(cat.close)
+        cat.sync([self.ds_proj])
+        self.assertEqual(cat.query_pending_raw_docs(self.ds_proj)[1], 0)
+        doc = cat.fetch_docs_by_ids(self.ds_proj, [profile])[0]
+        self.assertEqual(doc['pipeline_status'], 'not_applicable')
+        self.assertEqual(doc['doc_seq'], seq)
 
     def test_corruption_heal_fails_closed_when_reading_state_is_unreadable(self):
         from project_policy import PolicyError

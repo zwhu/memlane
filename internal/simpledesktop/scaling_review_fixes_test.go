@@ -2014,6 +2014,81 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 	}
 }
 
+type queueTestTransport http.HandlerFunc
+
+func (handler queueTestTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Body != nil {
+		defer r.Body.Close()
+	}
+	w := httptest.NewRecorder()
+	handler(w, r)
+	return w.Result(), nil
+}
+
+func TestReviewFixQueueMigrationAndAuthorizationIsolation(t *testing.T) {
+	var denySummary atomic.Bool
+	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			_ = json.NewEncoder(w).Encode(ControlCapabilities{
+				APIVersions: []string{"v1", "v2"},
+				Features:    []string{v2FeatureReadingState, v2FeatureMessageSummary},
+			})
+		case "/v2/reading-state/migrate-local":
+			var req v2ReadingStateMigrateRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			resp := v2ReadingStateMigrateResponse{}
+			for _, ref := range req.Projects {
+				if ref.ProjectID == "stale" {
+					http.Error(w, `{"error":"project_unconfirmed"}`, http.StatusForbidden)
+					return
+				}
+				resp.Migrated = append(resp.Migrated, v2ReadingStateMigratedScope{
+					ProjectID: ref.ProjectID, DatasetID: ref.DatasetID, Status: "already_migrated",
+				})
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/v2/projects/p1/message-summary":
+			if denySummary.Load() {
+				http.Error(w, `{"error":"project_unconfirmed"}`, http.StatusForbidden)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(v2MessageSummaryResponse{
+				ProjectID: "p1", DatasetID: "ds-1", UnreadCount: 3, UnreadStateRev: 1,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	const endpoint = "http://127.0.0.1:16129"
+	a, updates := p1TestApp(t, endpoint, endpoint, p1TempToken(t))
+	a.Client.HTTP = &http.Client{Transport: transport}
+	a.access.Directory.Projects = append(a.access.Directory.Projects, AccessProject{
+		ID: "stale", Dataset: "ds-stale", Status: "verified",
+	})
+	p := a.access.Directory.Projects[0]
+	q := a.projectQueueStateFor(p)
+	a.loadProjectQueue(q, p)
+	drainReading(t, updates, func() bool { return !q.Loading })
+	if q.DocumentError != "" || !q.ServerUnreadKnown || q.ServerUnreadCount != 3 {
+		t.Fatalf("unrelated migration denial blocked queue: err=%q known=%t count=%d",
+			q.DocumentError, q.ServerUnreadKnown, q.ServerUnreadCount)
+	}
+
+	denySummary.Store(true)
+	q.Activity = []overviewEvent{{Title: "cached activity"}}
+	q.Documents = []Item{{ID: "cached document"}}
+	q.UnreadKnowledge = []Item{{ID: "cached unread"}}
+	a.loadProjectQueue(q, p)
+	a.InvalidateReading("ds-stale")
+	drainReading(t, updates, func() bool { return !q.Loading })
+	if len(q.Activity) != 0 || len(q.Documents) != 0 || len(q.UnreadKnowledge) != 0 ||
+		q.ServerUnreadKnown || q.ServerUnreadCount != 0 || q.DocumentError == "" {
+		t.Fatalf("403 after unrelated invalidation left stale queue state: %+v", q)
+	}
+}
+
 func TestReviewFixR4MarkAllReceiptPreservesSameRevisionUnread(t *testing.T) {
 	a := &App{}
 	q := &projectQueueState{ServerUnreadStateRev: 5}
