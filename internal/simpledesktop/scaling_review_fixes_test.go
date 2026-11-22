@@ -694,8 +694,8 @@ func TestReviewFixChunkedProvenanceBackfillAndUnconfirmedRetention(t *testing.T)
 	var mu sync.Mutex
 	var chunkCounts []int
 	var maxBodyBytes int
-	unconfirmedMode := atomic.Bool{}
-	unconfirmedMode.Store(true)
+	mode := atomic.Int32{}
+	mode.Store(0) // 0: same-machine partial; 1: custom-dir chunked with chunk 1 returning partial; 2: settled migrated
 
 	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -709,18 +709,35 @@ func TestReviewFixChunkedProvenanceBackfillAndUnconfirmedRetention(t *testing.T)
 			var req v2ProvenanceBackfillRequest
 			_ = json.Unmarshal(raw, &req)
 			if len(req.Days) == 0 {
+				if mode.Load() == 0 {
+					_ = json.NewEncoder(w).Encode(v2ProvenanceBackfillResponse{
+						Status: "partial", Imported: 10, Unmapped: 2, HasUnconfirmedProjects: true,
+					})
+					return
+				}
 				_ = json.NewEncoder(w).Encode(v2ProvenanceBackfillResponse{Status: "absent"})
 				return
 			}
 			mu.Lock()
 			chunkCounts = append(chunkCounts, len(req.Days))
+			chunkIndex := len(chunkCounts)
 			if len(raw) > maxBodyBytes {
 				maxBodyBytes = len(raw)
 			}
 			mu.Unlock()
-			if unconfirmedMode.Load() {
+			if mode.Load() == 1 {
+				// Return Python's exact "partial" on chunk 1 while subsequent chunks return "migrated":
+				// client MUST NOT abort on chunk 1, MUST upload all remaining chunks, and MUST NOT archive.
+				status := "migrated"
+				unmapped := 0
+				unconfirmed := false
+				if chunkIndex == 1 {
+					status = "partial"
+					unmapped = 1
+					unconfirmed = true
+				}
 				_ = json.NewEncoder(w).Encode(v2ProvenanceBackfillResponse{
-					Status: "migrated", Imported: len(req.Days) - 1, Unmapped: 1, HasUnconfirmedProjects: true,
+					Status: status, Imported: len(req.Days) - unmapped, Unmapped: unmapped, HasUnconfirmedProjects: unconfirmed,
 				})
 				return
 			}
@@ -760,27 +777,37 @@ func TestReviewFixChunkedProvenanceBackfillAndUnconfirmedRetention(t *testing.T)
 		t.Fatal(err)
 	}
 
-	// Pass 1: server reports unconfirmed projects & unmapped -> MUST keep legacy file intact and NOT mark settled.
+	// Pass 0: same-machine response returns status="partial" -> no error, not settled, file untouched.
 	settled, err := client.backfillLegacyKnowledgeDatesV2(context.Background())
 	if err != nil || settled {
-		t.Fatalf("unconfirmed pass expected settled=false err=nil, got settled=%v err=%v", settled, err)
+		t.Fatalf("same-machine partial pass expected settled=false err=nil, got settled=%v err=%v", settled, err)
+	}
+
+	// Pass 1: chunk 1 returns status="partial" -> MUST continue uploading ALL remaining chunks,
+	// return settled=false err=nil, and MUST keep legacy file intact without renaming to .migrated.bak.
+	mode.Store(1)
+	settled, err = client.backfillLegacyKnowledgeDatesV2(context.Background())
+	if err != nil || settled {
+		t.Fatalf("chunked partial pass expected settled=false err=nil, got settled=%v err=%v", settled, err)
 	}
 	if _, err := os.Stat(legacyPath); err != nil {
-		t.Fatalf("legacy file must NOT be renamed while unmapped/unconfirmed: %v", err)
+		t.Fatalf("legacy file must NOT be renamed while any chunk returned partial: %v", err)
 	}
 	mu.Lock()
-	if len(chunkCounts) < 3 || maxBodyBytes >= 64*1024 {
-		t.Fatalf("expected >=3 chunks each <64 KiB, got chunks=%v maxBytes=%d", chunkCounts, maxBodyBytes)
-	}
+	totalUploaded := 0
 	for _, cnt := range chunkCounts {
+		totalUploaded += cnt
 		if cnt > 500 {
 			t.Fatalf("chunk exceeded 500 entries: %d", cnt)
 		}
 	}
+	if len(chunkCounts) < 3 || totalUploaded != 1250 || maxBodyBytes >= 64*1024 {
+		t.Fatalf("expected all 1250 entries across >=3 chunks (<64 KiB each) despite chunk 1 partial, got chunks=%v total=%d maxBytes=%d", chunkCounts, totalUploaded, maxBodyBytes)
+	}
 	mu.Unlock()
 
 	// Pass 2: projects confirmed & unmapped=0 -> MUST rename to .migrated.bak and mark settled.
-	unconfirmedMode.Store(false)
+	mode.Store(2)
 	settled, err = client.backfillLegacyKnowledgeDatesV2(context.Background())
 	if err != nil || !settled {
 		t.Fatalf("confirmed pass expected settled=true err=nil, got settled=%v err=%v", settled, err)

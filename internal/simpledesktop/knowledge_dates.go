@@ -207,8 +207,8 @@ func (c Client) backfillLegacyKnowledgeDatesV2(ctx context.Context) (bool, error
 			return false, reqErr
 		}
 		switch resp.Status {
-		case "migrated":
-			if !resp.HasUnconfirmedProjects && resp.Unmapped == 0 {
+		case "migrated", "partial":
+			if resp.Status == "migrated" && !resp.HasUnconfirmedProjects && resp.Unmapped == 0 {
 				doneOK = true
 				return true, nil
 			}
@@ -217,7 +217,8 @@ func (c Client) backfillLegacyKnowledgeDatesV2(ctx context.Context) (bool, error
 			// If the client's own state_dir differs from the server's state_dir
 			// and this exact readingIdentity's legacy file exists locally, pass
 			// its validated days in <=500 entry (<64 KiB) chunks and only rename
-			// to .migrated.bak once unmapped == 0 and all projects are confirmed.
+			// to .migrated.bak once status is not partial, unmapped == 0, and
+			// all projects are confirmed.
 			if hasLocalPath {
 				knowledgeDatesMu.Lock()
 				days, exists, readErr := readLegacyKnowledgeDatesFile(localPath)
@@ -226,6 +227,7 @@ func (c Client) backfillLegacyKnowledgeDatesV2(ctx context.Context) (bool, error
 					chunks := chunkLegacyKnowledgeDays(days, provenanceBackfillChunkMaxEntries, provenanceBackfillChunkMaxBytes)
 					totalUnmapped := 0
 					anyUnconfirmed := false
+					anyPartial := false
 					for _, chunk := range chunks {
 						resp2, err2 := control.provenanceBackfillLegacyDatesV2(ctx, v2ProvenanceBackfillRequest{
 							ReadingIdentity: identity,
@@ -234,15 +236,18 @@ func (c Client) backfillLegacyKnowledgeDatesV2(ctx context.Context) (bool, error
 						if err2 != nil {
 							return false, err2
 						}
-						if resp2.Status != "migrated" && resp2.Status != "empty" && resp2.Status != "absent" {
+						if resp2.Status != "migrated" && resp2.Status != "partial" && resp2.Status != "empty" && resp2.Status != "absent" {
 							return false, fmt.Errorf("来源日期回填状态未确认：%s", resp2.Status)
+						}
+						if resp2.Status == "partial" {
+							anyPartial = true
 						}
 						totalUnmapped += resp2.Unmapped
 						if resp2.HasUnconfirmedProjects {
 							anyUnconfirmed = true
 						}
 					}
-					if !anyUnconfirmed && totalUnmapped == 0 {
+					if !anyPartial && !anyUnconfirmed && totalUnmapped == 0 {
 						knowledgeDatesMu.Lock()
 						if _, statErr := os.Lstat(localPath); statErr == nil {
 							_ = os.Rename(localPath, localPath+".migrated.bak")
