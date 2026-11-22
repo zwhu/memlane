@@ -44,6 +44,7 @@
 | [hindsight-vs-memlane-20261117.md](research/hindsight-vs-memlane-20261117.md) | Hindsight 能力边界与替换可行性审计 |
 | [macos-updater-20261119.md](research/macos-updater-20261119.md) | macOS 应用更新机制调研与方案建议 |
 | [trae-ide-memory-processing-20261119.md](research/trae-ide-memory-processing-20261119.md) | TRAE IDE 场景下记忆整理模型执行入口调研 |
+| [native-first-screen-performance-20261122.md](research/native-first-screen-performance-20261122.md) | Native 客户端首屏 20× 性能基线拆解、启动并发风暴归因与优化路线研究 |
 
 ## 5. 工程规范、复盘与模板 (`engineering/`)
 

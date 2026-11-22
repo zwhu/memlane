@@ -18,7 +18,7 @@ func resolveLintPython() string {
 
 func recordLintInputs(t *testing.T) {
 	t.Helper()
-	for _, root := range []string{"scripts", filepath.Join("engine", "python"), filepath.Join("internal", "simpledesktop")} {
+	for _, root := range []string{"scripts", filepath.Join("engine", "python"), filepath.Join("internal", "simpledesktop"), "docs"} {
 		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
@@ -27,10 +27,13 @@ func recordLintInputs(t *testing.T) {
 				if entry.Name() == "__pycache__" || entry.Name() == ".local" {
 					return filepath.SkipDir
 				}
+				if root == "docs" && (entry.Name() == "process" || entry.Name() == "archive") {
+					return filepath.SkipDir
+				}
 				return nil
 			}
 			ext := filepath.Ext(entry.Name())
-			if ext == ".py" || ext == ".go" {
+			if ext == ".py" || ext == ".go" || (root == "docs" && ext == ".md") {
 				if _, err := os.Stat(path); err != nil {
 					return err
 				}

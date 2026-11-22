@@ -8,7 +8,7 @@
 ## 1. 依据与适用范围
 
 - **原型**：[visual-v4-prototype/](visual-v4-prototype/)（可交互，含浅色／深色两套主题、动效与「减少动态效果」开关，已覆盖首页、项目三栏、项目「管理」与消息模块、通用记忆三栏与原位编辑器、项目「图谱」Native 外壳、用户画像、设置三标签与服务页、侧栏服务悬停浮层、macOS 顶部状态栏图标与 300px 自定义弹层、⌘K 单栏命令面板、首次启动向导及各类 `v4Dialog`/菜单）。令牌以 [tokens.css](visual-v4-prototype/tokens.css) 为准，共用组件以 [components.css](visual-v4-prototype/components.css) / [app.css](visual-v4-prototype/app.css) 为准。
-- **截图**：[docs/images/visual-v4-20261120/](../images/visual-v4-20261120/) 与剩余页面评审/复验截图 [docs/process/visual-v4-prototype-shots/verify/](../process/visual-v4-prototype-shots/verify/)（本机过程产物，`.gitignore` 忽略不入库）。
+- **截图**：正式入库参考截图位于 [docs/images/visual-v4-20261120/](../images/visual-v4-20261120/)（其余单次评审与复验过程截图按仓库过程文档规范仅在本机留存，不入库）。
 
   | 页面 | 浅色 | 深色 |
   | --- | --- | --- |

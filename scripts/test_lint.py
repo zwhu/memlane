@@ -721,5 +721,62 @@ def main(archive):
         self.assertEqual(self.codes(good_script_chunked_hash, 'scripts/bootstrap.py'), set())
 
 
+class DocsProcessBoundaryLintTests(unittest.TestCase):
+    def test_ml018_rejects_process_dir_references_and_allows_technical_prose(self):
+        bad_cases = [
+            '实测脚本保存在 `docs/process/native-perf-20261122/` 目录。',
+            '参考 `docs/process` 下的截图。',
+            '复验截图见 [verify](../process/visual-v4-prototype-shots/verify/)。',
+            '深层引用 [log](../../process/run1.log)。',
+            '同级引用 [report](process/report.md) 或 [report](./process/report.md)。',
+            '绝对链接 [shot](file:///Users/dev/memlane/docs/process/a.png)。',
+        ]
+        for line in bad_cases:
+            with self.subTest(line=line):
+                issues = lint.check_markdown_doc('# Title\n' + line + '\n', 'docs/research/sample.md')
+                self.assertEqual([(no, code) for no, code, _ in issues], [(2, 'ML018')])
+
+        good_cases = [
+            '# 架构说明\n采用 in-process/out-of-process 隔离与多 process/worker 调度。',
+            '详见 [通知处理](../../engine/python/processing_notices.py) 与 `../processing_notices.py`。',
+            '正式截图位于 [overview](../images/visual-v4-20261120/overview-light.png)。',
+        ]
+        for text in good_cases:
+            with self.subTest(text=text):
+                self.assertEqual(lint.check_markdown_doc(text, 'docs/architecture/overview.md'), [])
+
+    def test_lint_main_scans_formal_docs_and_skips_index_process_and_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'engine/python').mkdir(parents=True)
+            for rel in ('docs/research', 'docs/design', 'docs/process/demo', 'docs/archive'):
+                (root / rel).mkdir(parents=True)
+
+            # Allowed routing indexes and ignored/archived trees:
+            (root / 'docs/README.md').write_text('所有临时产物放 [process/](process/README.md) 即 `docs/process/`。\n')
+            (root / 'docs/process/README.md').write_text('本目录 `docs/process/` 不入库。\n')
+            (root / 'docs/process/demo/note.md').write_text('本地草稿 `docs/process/demo/run.log`。\n')
+            (root / 'docs/archive/old.md').write_text('历史归档 `docs/process/old/`。\n')
+
+            bad_research = root / 'docs/research/perf.md'
+            bad_research.write_text('# Perf\n详见 `docs/process/perf/timeline.txt`。\n')
+            bad_design = root / 'docs/design/spec.md'
+            bad_design.write_text('# Spec\n截图 [shots](../process/shots/)。\n')
+
+            output = io.StringIO()
+            with patch.object(lint, 'ROOT', root), contextlib.redirect_stdout(output):
+                self.assertTrue(lint.main())
+                rendered = output.getvalue()
+                self.assertIn('docs/research/perf.md:2: ML018', rendered)
+                self.assertIn('docs/design/spec.md:2: ML018', rendered)
+                self.assertNotIn('docs/README.md', rendered)
+                self.assertNotIn('docs/process/', rendered.split('ML018')[0])
+                self.assertNotIn('docs/archive/old.md', rendered)
+
+                bad_research.write_text('# Perf\n所有结论已内聚于本文正文。\n')
+                bad_design.write_text('# Spec\n正式截图见 [shots](../images/shots.png)。\n')
+                self.assertFalse(lint.main())
+
+
 if __name__ == '__main__':
     unittest.main()

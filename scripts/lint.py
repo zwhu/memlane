@@ -50,6 +50,13 @@ ML015_OWNER_CLEANUP_MESSAGE = 'opencode_backlog.execute 必须在 finally 块中
 ML016_MESSAGE = '启用 SQLite WAL 模式时必须在同一模块显式配置 PRAGMA journal_size_limit，防止 WAL 文件无限膨胀'
 ML017_REOPEN_UI_MESSAGE = 'reopen_ui 禁止无条件调用 mygo dev 热重载轮询；默认启动须运行已构建二进制并由 watch 模式门禁守护'
 ML017_CLEANUP_RECEIPT_MESSAGE = '写入 build/disk-cleanup 清理回执时必须同时调用回执轮转清理机制（unlink 淘汰超额旧回执）'
+ML018_MESSAGE = '正式文档禁止引用本地忽略的 docs/process/ 路径；请将长期结论自包含写入正文，必要静态图移入 docs/images/'
+
+DOCS_PROCESS_REF_RE = re.compile(
+    r'(?<![A-Za-z0-9_-])docs/process(?:/|(?![A-Za-z0-9_-]))'
+    r'|(?<![A-Za-z0-9_-])(?:\.\./)+process(?:/|(?![A-Za-z0-9_-]))'
+    r'|\]\(\s*\.?/?process(?:/|\s*\))'
+)
 
 BLOCKING_SUBPROCESS_CALLS = {'run', 'check_output', 'call', 'check_call', 'Popen'}
 BLOCKING_OS_PROCESS_CALLS = {
@@ -1513,6 +1520,34 @@ def check_go_source(source, path):
     return sorted(set(check_go_performance(source, path)))
 
 
+def check_markdown_doc(source, path=''):
+    """Enforce self-contained formal docs without references to gitignored docs/process/."""
+    _ = path
+    issues = []
+    for line_no, line in enumerate(source.splitlines(), start=1):
+        if DOCS_PROCESS_REF_RE.search(line):
+            issues.append((line_no, 'ML018', ML018_MESSAGE))
+    return issues
+
+
+def iter_formal_markdown_docs(docs_dir):
+    if not docs_dir.is_dir():
+        return
+    paths = []
+    for entry in docs_dir.iterdir():
+        if entry.is_symlink():
+            continue
+        if entry.is_dir():
+            if entry.name in ('process', 'archive', '__pycache__'):
+                continue
+            for sub in entry.rglob('*.md'):
+                if not sub.is_symlink() and sub.is_file():
+                    paths.append(sub)
+        elif entry.is_file() and entry.suffix.lower() == '.md' and entry.name != 'README.md':
+            paths.append(entry)
+    yield from sorted(paths)
+
+
 def main():
     failures = 0
     paths = sorted((ROOT / 'engine/python').rglob('*.py'))
@@ -1539,8 +1574,12 @@ def main():
             for line, code, message in check_go_source(path.read_text(encoding='utf-8'), path):
                 print('{}:{}: {} {}'.format(path.relative_to(ROOT), line, code, message))
                 failures += 1
+    for path in iter_formal_markdown_docs(ROOT / 'docs'):
+        for line, code, message in check_markdown_doc(path.read_text(encoding='utf-8'), path):
+            print('{}:{}: {} {}'.format(path.relative_to(ROOT), line, code, message))
+            failures += 1
     if not failures:
-        print('Lint passed: 模型参数、画像无总超时、环境隔离、UI 性能与运行时资源门禁 (ML001-ML003, ML006-ML017)')
+        print('Lint passed: 模型参数、画像无总超时、环境隔离、UI 性能、运行时资源与正式文档边界门禁 (ML001-ML003, ML006-ML018)')
     return bool(failures)
 
 

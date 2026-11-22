@@ -20,7 +20,14 @@ for relpath in $STAGED; do
             NEEDS_LINT=1
             RUN_LINT_TESTS=1
             ;;
-        engine/python/*.py|scripts/*.py|internal/simpledesktop/*.go)
+        docs/process/README.md)
+            NEEDS_LINT=1
+            ;;
+        docs/process/*)
+            echo "pre-commit: 禁止提交过程文档目录产物 ($relpath)，仅允许 docs/process/README.md 入库" >&2
+            exit 1
+            ;;
+        engine/python/*.py|scripts/*.py|internal/simpledesktop/*.go|docs/*.md)
             NEEDS_LINT=1
             ;;
     esac
