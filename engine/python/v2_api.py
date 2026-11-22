@@ -43,8 +43,8 @@ from local_body_reader import (
     DEFAULT_LIST_JSON_BUDGET_BYTES,
     DEFAULT_OVERVIEW_JSON_BUDGET_BYTES,
     MAX_BODY_BYTES,
-    encode_json_utf8,
-    fit_items_to_json_budget,
+    fetch_authorized_official_datasets,
+    finalize_budgeted_payload,
     json_utf8_response,
     read_document_body_with_fallback,
     read_local_preview_snippet,
@@ -54,7 +54,7 @@ from processing_notices import processing_notices
 from project_policy import PolicyError
 from provenance_store import _calendar_date
 from reading_state_store import ReadingStateStore
-from session_relations import resolve_session_relations
+from session_relations import TrackedRelationsDict, resolve_session_relations
 from sqlite_ro import (
     close_pooled_official_sqlite_ro,
     id_variants,
@@ -323,17 +323,12 @@ def _read_recent_pipeline_runs(
     cache: dict | None = None,
     cache_lock=None,
 ) -> tuple[list[dict], bool]:
-    """Read recent pipeline_runs strictly scoped to verified datasets with ZERO TEMP B-TREE.
+    """Read recent pipeline_runs strictly SQL-scoped to authorized datasets with ZERO TEMP B-TREE.
 
-    Never performs an unscoped global query (eliminating unconfirmed dataset leakage)
-    and never executes ``WHERE dataset_id = ? ORDER BY created_at DESC`` (which lacks
-    a composite index in Cognee 1.6.7 and triggers TEMP B-TREE on 150k rows).
-    Instead:
-    1. Scans bounded chunks along ``ix_pipeline_runs_created_at_id`` (``ORDER BY created_at DESC, id DESC``)
-       filtering ``dataset_id`` in Python — O(1) chunks for hot datasets, zero TEMP B-TREE.
-    2. If the bounded scan exhausts before finding ``limit + 1`` matches (cold dataset buried
-       under 300k noise runs), falls back to per-``pipeline_name`` seeks on composite index
-       ``ix_pipeline_runs_dataset_pipeline_created_at(dataset_id, pipeline_name, created_at)``.
+    Always scopes SQL via ``WHERE dataset_id = ?`` using Cognee 1.6.7's composite index
+    ``ix_pipeline_runs_dataset_pipeline_created_at(dataset_id, pipeline_name, created_at)``
+    loose index scan — never reads unauthorized/unconfirmed dataset rows in SQL and never
+    relies on global table probes.
     """
     if not official_data:
         return [], False
@@ -363,189 +358,122 @@ def _read_recent_pipeline_runs(
             if cached is not None:
                 return [dict(item) for item in cached[0]], cached[1]
 
-    allowed_variants: set[str] = set()
-    for ds in target_sorted:
-        allowed_variants.update(id_variants(ds))
-
-    matched_rows: list[tuple] = []
-    seen_ids: set[str] = set()
-    exhausted_table = False
-
+    candidates: dict[str, tuple] = {}
     with pooled_official_sqlite_ro(db_path) as con:
         with ro_snapshot(con):
-            # O(log N) pipeline_runs table fingerprint: skip re-scanning when only cognee_db.data changed!
-            pr_max_row = con.execute('SELECT COALESCE(MAX(rowid), 0) FROM pipeline_runs').fetchone()
-            pr_top_row = con.execute(
-                '''SELECT id, created_at, status, outcome, ended_at
-                   FROM pipeline_runs
-                   ORDER BY created_at DESC, id DESC
-                   LIMIT 1'''
-            ).fetchone()
-            pr_fp = (
-                int(pr_max_row[0] or 0) if pr_max_row else 0,
-                tuple(str(v or '') for v in pr_top_row) if pr_top_row else (),
-            )
-            fp_cache_key = ('pr_fp', pr_fp, target_sorted, int(limit))
-            if cache is not None and cache_lock is not None:
-                with cache_lock:
-                    fp_cached = cache.get(fp_cache_key)
-                    if fp_cached is not None:
-                        c_items, c_more, c_has_active = fp_cached
-                        if not c_has_active:
-                            if len(cache) >= 32:
-                                cache.clear()
-                                cache[fp_cache_key] = fp_cached
-                            cache[cache_key] = (c_items, c_more)
-                            return [dict(item) for item in c_items], c_more
-
-            # Step 1: Indexed global timeline walk on ix_pipeline_runs_created_at_id
-            last_created = None
-            last_id = None
-            chunk_sz = max(limit * 4, _PIPELINE_RUN_SCAN_CHUNK)
-            for _ in range(_PIPELINE_RUN_SCAN_MAX_CHUNKS):
-                if last_created is None:
-                    rows = con.execute(
-                        '''SELECT id, pipeline_run_id, parent_operation_id, dataset_id,
-                                  pipeline_name, operation_name, status, outcome, background,
-                                  error_class, origin, created_at, started_at, ended_at
-                           FROM pipeline_runs
-                           ORDER BY created_at DESC, id DESC
-                           LIMIT ?''',
-                        (chunk_sz,),
-                    ).fetchall()
-                else:
-                    rows = con.execute(
-                        '''SELECT id, pipeline_run_id, parent_operation_id, dataset_id,
-                                  pipeline_name, operation_name, status, outcome, background,
-                                  error_class, origin, created_at, started_at, ended_at
-                           FROM pipeline_runs
-                           WHERE (created_at, id) < (?, ?)
-                           ORDER BY created_at DESC, id DESC
-                           LIMIT ?''',
-                        (last_created, last_id, chunk_sz),
-                    ).fetchall()
-                if not rows:
-                    exhausted_table = True
-                    break
-                for pr in rows:
-                    if str(pr[3] or '') in allowed_variants:
-                        rid = str(pr[0])
-                        if rid not in seen_ids:
-                            seen_ids.add(rid)
-                            matched_rows.append(pr)
-                            if len(matched_rows) > limit:
-                                break
-                if len(matched_rows) > limit:
-                    break
-                if len(rows) < chunk_sz:
-                    exhausted_table = True
-                    break
-                last_created = rows[-1][11]
-                last_id = rows[-1][0]
-
-            # Step 2: Cold-dataset fallback via O(K log N) loose index scan on ix_pipeline_runs_dataset_pipeline_created_at
-            if len(matched_rows) <= limit and not exhausted_table:
-                fallback_candidates: dict[str, tuple] = {str(pr[0]): pr for pr in matched_rows}
-                for ds in target_sorted:
-                    for ds_var in id_variants(ds):
-                        pnames = [
-                            r[0]
-                            for r in con.execute(
-                                '''WITH RECURSIVE pnames(p) AS (
+            for ds in target_sorted:
+                for ds_var in id_variants(ds):
+                    pnames = [
+                        r[0]
+                        for r in con.execute(
+                            '''WITH RECURSIVE pnames(p) AS (
+                                   SELECT MIN(pipeline_name)
+                                   FROM pipeline_runs
+                                   WHERE dataset_id = ? AND pipeline_name IS NOT NULL
+                                   UNION ALL
+                                   SELECT (
                                        SELECT MIN(pipeline_name)
                                        FROM pipeline_runs
-                                       WHERE dataset_id = ? AND pipeline_name IS NOT NULL
-                                       UNION ALL
-                                       SELECT (
-                                           SELECT MIN(pipeline_name)
-                                           FROM pipeline_runs
-                                           WHERE dataset_id = ? AND pipeline_name > pnames.p
-                                       )
-                                       FROM pnames
-                                       WHERE pnames.p IS NOT NULL
+                                       WHERE dataset_id = ? AND pipeline_name > pnames.p
                                    )
-                                   SELECT p FROM pnames WHERE p IS NOT NULL''',
-                                (ds_var, ds_var),
+                                   FROM pnames
+                                   WHERE pnames.p IS NOT NULL
+                               )
+                               SELECT p FROM pnames WHERE p IS NOT NULL''',
+                            (ds_var, ds_var),
+                        ).fetchall()
+                    ]
+                    has_null_pname = con.execute(
+                        'SELECT 1 FROM pipeline_runs WHERE dataset_id = ? AND pipeline_name IS NULL LIMIT 1',
+                        (ds_var,),
+                    ).fetchone() is not None
+                    if has_null_pname:
+                        pnames.append(None)
+                    for pname in pnames:
+                        if pname is None:
+                            sub = con.execute(
+                                '''SELECT id, pipeline_run_id, parent_operation_id, dataset_id,
+                                          pipeline_name, operation_name, status, outcome, background,
+                                          error_class, origin, created_at, started_at, ended_at
+                                   FROM pipeline_runs
+                                   WHERE dataset_id = ? AND pipeline_name IS NULL
+                                   ORDER BY created_at DESC
+                                   LIMIT ?''',
+                                (ds_var, limit + 1),
                             ).fetchall()
-                        ]
-                        has_null_pname = con.execute(
-                            'SELECT 1 FROM pipeline_runs WHERE dataset_id = ? AND pipeline_name IS NULL LIMIT 1',
-                            (ds_var,),
-                        ).fetchone() is not None
-                        if has_null_pname:
-                            pnames.append(None)
-                        for pname in pnames:
-                            if pname is None:
-                                sub = con.execute(
-                                    '''SELECT id, pipeline_run_id, parent_operation_id, dataset_id,
-                                              pipeline_name, operation_name, status, outcome, background,
-                                              error_class, origin, created_at, started_at, ended_at
-                                       FROM pipeline_runs
-                                       WHERE dataset_id = ? AND pipeline_name IS NULL
-                                       ORDER BY created_at DESC
-                                       LIMIT ?''',
-                                    (ds_var, limit + 1),
-                                ).fetchall()
-                            else:
-                                sub = con.execute(
-                                    '''SELECT id, pipeline_run_id, parent_operation_id, dataset_id,
-                                              pipeline_name, operation_name, status, outcome, background,
-                                              error_class, origin, created_at, started_at, ended_at
-                                       FROM pipeline_runs
-                                       WHERE dataset_id = ? AND pipeline_name = ?
-                                       ORDER BY created_at DESC
-                                       LIMIT ?''',
-                                    (ds_var, pname, limit + 1),
-                                ).fetchall()
-                            for pr in sub:
-                                fallback_candidates[str(pr[0])] = pr
-                matched_rows = sorted(
-                    fallback_candidates.values(),
-                    key=lambda r: (str(r[11] or ''), str(r[0] or '')),
-                    reverse=True,
-                )
+                        else:
+                            sub = con.execute(
+                                '''SELECT id, pipeline_run_id, parent_operation_id, dataset_id,
+                                          pipeline_name, operation_name, status, outcome, background,
+                                          error_class, origin, created_at, started_at, ended_at
+                                   FROM pipeline_runs
+                                   WHERE dataset_id = ? AND pipeline_name = ?
+                                   ORDER BY created_at DESC
+                                   LIMIT ?''',
+                                (ds_var, pname, limit + 1),
+                            ).fetchall()
+                        for pr in sub:
+                            candidates[str(pr[0])] = pr
 
+    matched_rows = sorted(
+        candidates.values(),
+        key=lambda r: (str(r[11] or ''), str(r[0] or '')),
+        reverse=True,
+    )
     more = len(matched_rows) > limit
     fallback_ds = dataset_id or ''
     runs = [_format_pipeline_run_row(pr, fallback_ds) for pr in matched_rows[:limit]]
     if cache is not None and cache_lock is not None:
-        has_active_run = any((not it.get('ended_at')) and (not it.get('outcome')) for it in runs)
         with cache_lock:
             if len(cache) >= 32:
                 cache.clear()
-            snap_runs = [dict(item) for item in runs]
-            cache[cache_key] = (snap_runs, more)
-            cache[fp_cache_key] = (snap_runs, more, has_active_run)
+            cache[cache_key] = ([dict(item) for item in runs], more)
     return runs, more
 
 
 class _SessionRelationsResolver:
-    """Callable relation resolver with O(1) signature caching for ``CatalogIndex.sync``."""
+    """Callable relation resolver with exact full-map Blake2b signature for ``CatalogIndex.sync``."""
+
+    global_relation_sig = True
 
     def __init__(self, registry, codex_config):
         self._registry = registry
         self._codex_config = codex_config
+        self._tracked_sig_cache: tuple[int, int, str] | None = None
 
-    def relation_sig(self, _dataset_id: str) -> str:
+    @staticmethod
+    def _full_ordered_digest(persisted: dict) -> str:
+        n = len(persisted)
+        if n == 0:
+            return '0'
+        h = hashlib.blake2b(digest_size=16)
+        for k in sorted(persisted):
+            v = persisted[k]
+            if isinstance(v, dict):
+                h.update(
+                    f"{k}|{v.get('parent_session_id','')}|{v.get('subagent_role','')}|{v.get('nesting_depth',0)}\n".encode('utf-8')
+                )
+            else:
+                h.update(f'{k}|\n'.encode('utf-8'))
+        return f'{n}:{h.hexdigest()}'
+
+    def relation_sig(self, _dataset_id: str = '') -> str:
         state = getattr(self._registry, 'state', None)
         persisted = state.get('session_relations') if isinstance(state, dict) else None
-        if isinstance(persisted, dict):
-            n = len(persisted)
-            if n == 0:
-                p_sig = '0'
-            elif n <= 256:
-                h = hashlib.blake2b(digest_size=8)
-                for k in sorted(persisted):
-                    v = persisted[k]
-                    if isinstance(v, dict):
-                        h.update(f"{k}|{v.get('parent_session_id','')}|{v.get('subagent_role','')}|{v.get('nesting_depth',0)}\n".encode('utf-8'))
-                p_sig = f'{n}:{h.hexdigest()}'
+        if isinstance(persisted, TrackedRelationsDict):
+            pid = id(persisted)
+            rev = persisted.revision
+            cached = self._tracked_sig_cache
+            if cached is not None and cached[0] == pid and cached[1] == rev:
+                p_sig = cached[2]
             else:
-                # O(1) zero-allocation fast fingerprint for large synthetic/production maps
-                first_k = next(iter(persisted))
-                last_k = next(reversed(persisted))
-                p_sig = f'{n}:{first_k}:{last_k}'
+                p_sig = self._full_ordered_digest(persisted)
+                self._tracked_sig_cache = (pid, rev, p_sig)
+        elif isinstance(persisted, dict):
+            self._tracked_sig_cache = None
+            p_sig = self._full_ordered_digest(persisted)
         else:
+            self._tracked_sig_cache = None
             p_sig = '0'
 
         cfg = self._codex_config if isinstance(self._codex_config, dict) else {}
@@ -933,14 +861,21 @@ def attach_v2_api(
         recall_limit = _parse_limit(request.query.get('recall_limit'), default=20, max_val=50)
         identity = _reading_identity(request)
 
+        authorized_ds = await fetch_authorized_official_datasets(getattr(registry, 'official', None))
         projects, common = await _ensure_synced()
+        projects = [p for p in projects if p['dataset_id'] in authorized_ds]
+        if common is not None and common['dataset_id'] not in authorized_ds:
+            common = None
+
         allowed_ds = [p['dataset_id'] for p in projects]
         ds_to_proj = {p['dataset_id']: p['id'] for p in projects}
         allowed_run_ds = set(allowed_ds)
         for proj in projects:
             code_ds = proj.get('code_dataset_id')
             if proj.get('code_enabled') and code_ds and is_valid_uuid(str(code_ds)):
-                allowed_run_ds.add(uuid_text(code_ds))
+                code_canon = uuid_text(code_ds)
+                if code_canon in authorized_ds:
+                    allowed_run_ds.add(code_canon)
         if common is not None:
             allowed_ds.append(common['dataset_id'])
             ds_to_proj[common['dataset_id']] = ''
@@ -966,11 +901,12 @@ def attach_v2_api(
                 sess_cnt = int(sinfo.get('session_count', 0))
                 total_knowledge += k_cnt
                 total_raw_count += sess_cnt + raw_cnt
-                unread_cnt = (
-                    len(read_store.compute_unread_ids(identity, proj['id'], ds, cat))
-                    if identity
-                    else 0
-                )
+                if identity:
+                    u_ids, u_rev = read_store.compute_unread_snapshot(identity, proj['id'], ds, cat)
+                    unread_cnt = len(u_ids)
+                else:
+                    unread_cnt = 0
+                    u_rev = 0
                 proj_summaries.append({
                     'project_id': proj['id'],
                     'dataset_id': ds,
@@ -978,6 +914,7 @@ def attach_v2_api(
                     'raw_doc_count': raw_cnt,
                     'session_count': sess_cnt,
                     'unread_count': unread_cnt,
+                    'unread_state_rev': u_rev,
                     'catalog_version': str(sinfo.get('catalog_version', '')),
                 })
 
@@ -1073,44 +1010,58 @@ def attach_v2_api(
                 capped_events.append(ev_copy)
             rec_events = capped_events
 
-        def _make_payload(items_subset, _trimmed):
+        def _make_payload(items_subset, _lo, _hi):
             return {
                 'generation': meta['generation'],
                 'local_tz_name': meta['local_tz_name'],
                 'total_knowledge_count': total_knowledge,
                 'total_raw_count': total_raw_count,
-                'day_buckets': day_buckets,
+                'day_buckets': list(day_buckets),
                 'projects': proj_summaries,
                 'common': common_summary,
                 'recent_items': items_subset,
-                'pipeline_runs': runs,
+                'pipeline_runs': list(runs),
                 'pipeline_runs_more': runs_more,
-                'recall_events': rec_events,
+                'recall_events': [dict(ev) for ev in rec_events],
                 'recall_events_more': rec_more,
                 'recall_started_at': rec_started,
             }
 
-        payload, _, _ = fit_items_to_json_budget(
+        def _trim_overview(p: dict) -> bool:
+            # 1. Trim verbose hit arrays on recall_events first
+            shrunk_hits = False
+            for idx, ev in enumerate(p['recall_events']):
+                if isinstance(ev.get('hits'), list) and len(ev['hits']) > 5:
+                    ev_copy = dict(ev)
+                    ev_copy['hits'] = ev_copy['hits'][:5]
+                    p['recall_events'][idx] = ev_copy
+                    p['recall_events_more'] = True
+                    shrunk_hits = True
+            if shrunk_hits:
+                return True
+            if p['recall_events']:
+                p['recall_events'].pop()
+                p['recall_events_more'] = True
+                return True
+            if p['pipeline_runs']:
+                p['pipeline_runs'].pop()
+                p['pipeline_runs_more'] = True
+                return True
+            if p['day_buckets']:
+                p['day_buckets'].pop()
+                return True
+            if p['recent_items']:
+                p['recent_items'].pop()
+                return True
+            return False
+
+        payload, raw_bytes = finalize_budgeted_payload(
             _make_payload,
             recent_items,
             max_json_bytes=DEFAULT_OVERVIEW_JSON_BUDGET_BYTES,
+            fixed_trimmer=_trim_overview,
         )
-        if len(encode_json_utf8(payload)) > DEFAULT_OVERVIEW_JSON_BUDGET_BYTES:
-            trimmed_rec = []
-            for ev in payload['recall_events']:
-                ev_copy = dict(ev)
-                if isinstance(ev_copy.get('hits'), list) and len(ev_copy['hits']) > 5:
-                    ev_copy['hits'] = ev_copy['hits'][:5]
-                    payload['recall_events_more'] = True
-                trimmed_rec.append(ev_copy)
-            payload['recall_events'] = trimmed_rec
-            while payload['recall_events'] and len(encode_json_utf8(payload)) > DEFAULT_OVERVIEW_JSON_BUDGET_BYTES:
-                payload['recall_events'].pop()
-                payload['recall_events_more'] = True
-            while payload['pipeline_runs'] and len(encode_json_utf8(payload)) > DEFAULT_OVERVIEW_JSON_BUDGET_BYTES:
-                payload['pipeline_runs'].pop()
-                payload['pipeline_runs_more'] = True
-        return json_utf8_response(payload)
+        return json_utf8_response(payload, raw_bytes=raw_bytes)
 
     # 3. GET /v2/overview/day
     async def overview_day_v2(request):
@@ -1138,7 +1089,11 @@ def attach_v2_api(
                 raise PolicyError('invalid_cursor', 400)
             after_key = (str(keys[0]), str(keys[1]))
 
+        authorized_ds = await fetch_authorized_official_datasets(getattr(registry, 'official', None))
         projects, common = await _ensure_synced()
+        projects = [p for p in projects if p['dataset_id'] in authorized_ds]
+        if common is not None and common['dataset_id'] not in authorized_ds:
+            common = None
         allowed_ds = [p['dataset_id'] for p in projects]
         ds_to_proj = {p['dataset_id']: p['id'] for p in projects}
         if common is not None:
@@ -1171,8 +1126,8 @@ def attach_v2_api(
 
         gen, formatted, base_has_more, total_count = await _run_db(_query)
 
-        def _make_payload(subset, trimmed):
-            eff_more = bool(base_has_more or trimmed)
+        def _make_payload(subset, _lo, hi):
+            eff_more = bool(base_has_more or hi < len(formatted))
             nxt = ''
             if eff_more and subset:
                 last = subset[-1]
@@ -1193,12 +1148,12 @@ def attach_v2_api(
                 'has_more': eff_more,
             }
 
-        payload, _, _ = fit_items_to_json_budget(
+        payload, raw_bytes = finalize_budgeted_payload(
             _make_payload,
             formatted,
             max_json_bytes=DEFAULT_LIST_JSON_BUDGET_BYTES,
         )
-        return json_utf8_response(payload)
+        return json_utf8_response(payload, raw_bytes=raw_bytes)
 
     # 4. GET /v2/projects/{id}/knowledge
     async def project_knowledge_v2(request):
@@ -1241,7 +1196,7 @@ def attach_v2_api(
         raw_cursor = (request.query.get('cursor') or '').strip()
         if anchor_doc_id and raw_cursor:
             raise PolicyError('invalid_knowledge_query', 400)
-        if direction == 'prev' and not raw_cursor:
+        if direction == 'prev' and not raw_cursor and not anchor_doc_id:
             raise PolicyError('invalid_cursor', 400)
 
         identity = _reading_identity(request)
@@ -1291,8 +1246,11 @@ def attach_v2_api(
 
             unread_ids_set = None
             unread_count = 0
+            unread_state_rev = 0
             if identity:
-                unread_ids_set = read_store.compute_unread_ids(identity, project_id, dataset_id, cat)
+                unread_ids_set, unread_state_rev = read_store.compute_unread_snapshot(
+                    identity, project_id, dataset_id, cat
+                )
                 unread_count = len(unread_ids_set)
 
             allowed_doc_ids = None
@@ -1312,6 +1270,7 @@ def attach_v2_api(
                 after_key=after_key,
                 before_key=before_key,
                 anchor_doc_id=anchor_doc_id,
+                anchor_direction=direction,
             )
             if res is None:
                 raise PolicyError('document_not_found', 404)
@@ -1346,6 +1305,7 @@ def attach_v2_api(
                 gen,
                 cat_ver,
                 unread_count,
+                unread_state_rev,
                 res['total_filtered'],
                 res['category_counts'],
                 formatted,
@@ -1358,6 +1318,7 @@ def attach_v2_api(
             gen,
             cat_ver,
             unread_count,
+            unread_state_rev,
             total_filtered,
             category_counts,
             formatted,
@@ -1366,9 +1327,9 @@ def attach_v2_api(
             base_has_prev,
         ) = await _run_db(_query)
 
-        def _make_payload(subset, trimmed):
-            eff_more = bool(base_has_more or trimmed)
-            eff_prev = bool(base_has_prev)
+        def _make_payload(subset, lo, hi):
+            eff_more = bool(base_has_more or hi < len(formatted))
+            eff_prev = bool(base_has_prev or lo > 0)
             nxt = ''
             prv = ''
             if eff_more and subset:
@@ -1378,7 +1339,7 @@ def attach_v2_api(
                     sort_mode=sort_mode,
                     filter_digest=f_digest,
                     generation_hint=gen,
-                    keys=cursor_keys[len(subset) - 1],
+                    keys=cursor_keys[hi - 1],
                 )
             if eff_prev and subset:
                 prv = cursors.encode(
@@ -1387,7 +1348,7 @@ def attach_v2_api(
                     sort_mode=sort_mode,
                     filter_digest=f_digest,
                     generation_hint=gen,
-                    keys=cursor_keys[0],
+                    keys=cursor_keys[lo],
                 )
             return {
                 'project_id': project_id,
@@ -1397,6 +1358,7 @@ def attach_v2_api(
                 'sort': sort_mode,
                 'total_filtered': total_filtered,
                 'unread_count': unread_count,
+                'unread_state_rev': unread_state_rev,
                 'category_counts': category_counts,
                 'items': subset,
                 'next_cursor': nxt,
@@ -1405,52 +1367,14 @@ def attach_v2_api(
                 'has_prev': eff_prev,
             }
 
-        payload, _, trimmed = fit_items_to_json_budget(
+        payload, raw_bytes = finalize_budgeted_payload(
             _make_payload,
             formatted,
             max_json_bytes=DEFAULT_LIST_JSON_BUDGET_BYTES,
+            anchor_doc_id=(anchor_doc_id if direction != 'prev' else ''),
+            trim_from_left=(direction == 'prev'),
         )
-        # If budget trimming dropped anchor_doc_id off the right, re-window centered around anchor_doc_id
-        if anchor_doc_id and trimmed and not any(it['doc_id'] == uuid_text(anchor_doc_id) for it in payload['items']):
-            canon_anchor = uuid_text(anchor_doc_id)
-            a_idx = next((i for i, it in enumerate(formatted) if it['doc_id'] == canon_anchor), -1)
-            if a_idx >= 0:
-                win_len = max(1, len(payload['items']))
-                lo = max(0, a_idx - win_len // 2)
-                hi = min(len(formatted), lo + win_len)
-                lo = max(0, hi - win_len)
-                sub_items = formatted[lo:hi]
-                sub_keys = cursor_keys[lo:hi]
-                eff_more = bool(base_has_more or hi < len(formatted))
-                eff_prev = bool(base_has_prev or lo > 0)
-                payload['items'] = sub_items
-                payload['has_more'] = eff_more
-                payload['has_prev'] = eff_prev
-                payload['next_cursor'] = (
-                    cursors.encode(
-                        endpoint='project_knowledge',
-                        dataset_id=dataset_id,
-                        sort_mode=sort_mode,
-                        filter_digest=f_digest,
-                        generation_hint=gen,
-                        keys=sub_keys[-1],
-                    )
-                    if eff_more and sub_items
-                    else ''
-                )
-                payload['prev_cursor'] = (
-                    cursors.encode(
-                        endpoint='project_knowledge',
-                        dataset_id=dataset_id,
-                        sort_mode=sort_mode,
-                        filter_digest=f_digest,
-                        generation_hint=gen,
-                        keys=sub_keys[0],
-                    )
-                    if eff_prev and sub_items
-                    else ''
-                )
-        return json_utf8_response(payload)
+        return json_utf8_response(payload, raw_bytes=raw_bytes)
 
     # 5. GET /v2/common/knowledge
     async def common_knowledge_v2(request):
@@ -1482,7 +1406,7 @@ def attach_v2_api(
         raw_cursor = (request.query.get('cursor') or '').strip()
         if anchor_doc_id and raw_cursor:
             raise PolicyError('invalid_common_query', 400)
-        if direction == 'prev' and not raw_cursor:
+        if direction == 'prev' and not raw_cursor and not anchor_doc_id:
             raise PolicyError('invalid_cursor', 400)
 
         f_digest = _filter_digest(common_category=common_cat)
@@ -1518,6 +1442,7 @@ def attach_v2_api(
                 after_key=after_key,
                 before_key=before_key,
                 anchor_doc_id=anchor_doc_id,
+                anchor_direction=direction,
             )
             if res is None:
                 raise PolicyError('document_not_found', 404)
@@ -1554,9 +1479,9 @@ def attach_v2_api(
             base_has_prev,
         ) = await _run_db(_query)
 
-        def _make_payload(subset, trimmed):
-            eff_more = bool(base_has_more or trimmed)
-            eff_prev = bool(base_has_prev)
+        def _make_payload(subset, lo, hi):
+            eff_more = bool(base_has_more or hi < len(formatted))
+            eff_prev = bool(base_has_prev or lo > 0)
             nxt = ''
             prv = ''
             if eff_more and subset:
@@ -1566,7 +1491,7 @@ def attach_v2_api(
                     sort_mode='updated_ts',
                     filter_digest=f_digest,
                     generation_hint=gen,
-                    keys=ckeys[len(subset) - 1],
+                    keys=ckeys[hi - 1],
                 )
             if eff_prev and subset:
                 prv = cursors.encode(
@@ -1575,7 +1500,7 @@ def attach_v2_api(
                     sort_mode='updated_ts',
                     filter_digest=f_digest,
                     generation_hint=gen,
-                    keys=ckeys[0],
+                    keys=ckeys[lo],
                 )
             return {
                 'dataset_id': dataset_id,
@@ -1591,68 +1516,47 @@ def attach_v2_api(
                 'has_prev': eff_prev,
             }
 
-        payload, _, trimmed = fit_items_to_json_budget(
+        payload, raw_bytes = finalize_budgeted_payload(
             _make_payload,
             formatted,
             max_json_bytes=DEFAULT_LIST_JSON_BUDGET_BYTES,
+            anchor_doc_id=(anchor_doc_id if direction != 'prev' else ''),
+            trim_from_left=(direction == 'prev'),
         )
-        if anchor_doc_id and trimmed and not any(it['doc_id'] == uuid_text(anchor_doc_id) for it in payload['items']):
-            canon_anchor = uuid_text(anchor_doc_id)
-            a_idx = next((i for i, it in enumerate(formatted) if it['doc_id'] == canon_anchor), -1)
-            if a_idx >= 0:
-                win_len = max(1, len(payload['items']))
-                lo = max(0, a_idx - win_len // 2)
-                hi = min(len(formatted), lo + win_len)
-                lo = max(0, hi - win_len)
-                sub_items = formatted[lo:hi]
-                sub_keys = ckeys[lo:hi]
-                eff_more = bool(base_has_more or hi < len(formatted))
-                eff_prev = bool(base_has_prev or lo > 0)
-                payload['items'] = sub_items
-                payload['has_more'] = eff_more
-                payload['has_prev'] = eff_prev
-                payload['next_cursor'] = (
-                    cursors.encode(
-                        endpoint='common_knowledge',
-                        dataset_id=dataset_id,
-                        sort_mode='updated_ts',
-                        filter_digest=f_digest,
-                        generation_hint=gen,
-                        keys=sub_keys[-1],
-                    )
-                    if eff_more and sub_items
-                    else ''
-                )
-                payload['prev_cursor'] = (
-                    cursors.encode(
-                        endpoint='common_knowledge',
-                        dataset_id=dataset_id,
-                        sort_mode='updated_ts',
-                        filter_digest=f_digest,
-                        generation_hint=gen,
-                        keys=sub_keys[0],
-                    )
-                    if eff_prev and sub_items
-                    else ''
-                )
-        return json_utf8_response(payload)
+        return json_utf8_response(payload, raw_bytes=raw_bytes)
 
     # 6. GET /v2/search/recent
     async def search_recent_v2(request):
         _require_manager(request)
-        if set(request.query) - {'limit', 'project_id'}:
+        if set(request.query) - {'limit', 'project_id', 'dataset_id'}:
             raise PolicyError('invalid_search_query', 400)
         limit = _parse_limit(request.query.get('limit'), default=20, max_val=_MAX_PAGE_LIMIT)
         project_id_filter = (request.query.get('project_id') or '').strip()
+        dataset_id_filter = (request.query.get('dataset_id') or '').strip()
+        if project_id_filter and dataset_id_filter:
+            raise PolicyError('invalid_search_query', 400)
         identity = _reading_identity(request)
 
         if project_id_filter:
             proj = _require_verified_project(registry, project_id_filter)
+            await verify_official_read_access(getattr(registry, 'official', None), proj['dataset_id'])
             await _ensure_synced()
             allowed_ds = [proj['dataset_id']]
             ds_to_proj = {proj['dataset_id']: proj['id']}
-        else:
+        elif dataset_id_filter:
+            target_ds = _require_verified_managed_dataset(registry, dataset_id_filter, allow_code=False)
+            await verify_official_read_access(getattr(registry, 'official', None), target_ds)
             projects, common = await _ensure_synced()
+            ds_to_proj = {p['dataset_id']: p['id'] for p in projects}
+            if common is not None:
+                ds_to_proj[common['dataset_id']] = ''
+            allowed_ds = [target_ds]
+        else:
+            authorized_ds = await fetch_authorized_official_datasets(getattr(registry, 'official', None))
+            projects, common = await _ensure_synced()
+            projects = [p for p in projects if p['dataset_id'] in authorized_ds]
+            if common is not None and common['dataset_id'] not in authorized_ds:
+                common = None
             allowed_ds = [p['dataset_id'] for p in projects]
             ds_to_proj = {p['dataset_id']: p['id'] for p in projects}
             if common is not None:
@@ -1702,24 +1606,34 @@ def attach_v2_api(
 
         gen, k_items, s_items = await _run_db(_query)
 
-        def _make_payload(subset, _trimmed):
+        def _make_payload(subset, _lo, _hi):
             return {
                 'generation': gen,
                 'knowledge_items': subset,
-                'session_items': s_items,
+                'session_items': list(s_items),
             }
 
-        payload, _, _ = fit_items_to_json_budget(
+        def _trim_recent(p: dict) -> bool:
+            if p['session_items']:
+                p['session_items'].pop()
+                return True
+            if p['knowledge_items']:
+                p['knowledge_items'].pop()
+                return True
+            return False
+
+        payload, raw_bytes = finalize_budgeted_payload(
             _make_payload,
             k_items,
             max_json_bytes=DEFAULT_OVERVIEW_JSON_BUDGET_BYTES,
+            fixed_trimmer=_trim_recent,
         )
-        return json_utf8_response(payload)
+        return json_utf8_response(payload, raw_bytes=raw_bytes)
 
     # 7. GET /v2/search/metadata (Channel 1 instant metadata search)
     async def search_metadata_v2(request):
         _require_manager(request)
-        if set(request.query) - {'q', 'filter', 'project_id', 'limit'}:
+        if set(request.query) - {'q', 'filter', 'project_id', 'dataset_id', 'limit'}:
             raise PolicyError('invalid_search_query', 400)
         query_text = (request.query.get('q') or '').strip()
         if not query_text or len(query_text) > 256:
@@ -1729,15 +1643,31 @@ def attach_v2_api(
             raise PolicyError('invalid_search_query', 400)
         limit = _parse_limit(request.query.get('limit'), default=30, max_val=_MAX_PAGE_LIMIT)
         project_id_filter = (request.query.get('project_id') or '').strip()
+        dataset_id_filter = (request.query.get('dataset_id') or '').strip()
+        if project_id_filter and dataset_id_filter:
+            raise PolicyError('invalid_search_query', 400)
         identity = _reading_identity(request)
 
         if project_id_filter:
             proj = _require_verified_project(registry, project_id_filter)
+            await verify_official_read_access(getattr(registry, 'official', None), proj['dataset_id'])
             await _ensure_synced()
             allowed_ds = [proj['dataset_id']]
             ds_to_proj = {proj['dataset_id']: proj['id']}
-        else:
+        elif dataset_id_filter:
+            target_ds = _require_verified_managed_dataset(registry, dataset_id_filter, allow_code=False)
+            await verify_official_read_access(getattr(registry, 'official', None), target_ds)
             projects, common = await _ensure_synced()
+            ds_to_proj = {p['dataset_id']: p['id'] for p in projects}
+            if common is not None:
+                ds_to_proj[common['dataset_id']] = ''
+            allowed_ds = [target_ds]
+        else:
+            authorized_ds = await fetch_authorized_official_datasets(getattr(registry, 'official', None))
+            projects, common = await _ensure_synced()
+            projects = [p for p in projects if p['dataset_id'] in authorized_ds]
+            if common is not None and common['dataset_id'] not in authorized_ds:
+                common = None
             allowed_ds = [p['dataset_id'] for p in projects]
             ds_to_proj = {p['dataset_id']: p['id'] for p in projects}
             if common is not None:
@@ -1776,20 +1706,20 @@ def attach_v2_api(
 
         gen, formatted, base_has_more = await _run_db(_query)
 
-        def _make_payload(subset, trimmed):
+        def _make_payload(subset, _lo, hi):
             return {
                 'query': query_text,
                 'generation': gen,
                 'items': subset,
-                'has_more': bool(base_has_more or trimmed),
+                'has_more': bool(base_has_more or hi < len(formatted)),
             }
 
-        payload, _, _ = fit_items_to_json_budget(
+        payload, raw_bytes = finalize_budgeted_payload(
             _make_payload,
             formatted,
             max_json_bytes=DEFAULT_LIST_JSON_BUDGET_BYTES,
         )
-        return json_utf8_response(payload)
+        return json_utf8_response(payload, raw_bytes=raw_bytes)
 
     # 8. GET /v2/projects/{id}/raw-records
     async def raw_records_v2(request):
@@ -1838,11 +1768,11 @@ def attach_v2_api(
         gen, res = await _run_db(_query)
         order_keys = res['order_keys']
 
-        def _make_payload(subset, trimmed):
-            eff_more = bool(res['has_more'] or trimmed)
+        def _make_payload(subset, _lo, hi):
+            eff_more = bool(res['has_more'] or hi < len(res['items']))
             nxt = ''
             if eff_more and subset:
-                lk = order_keys[len(subset) - 1]
+                lk = order_keys[hi - 1]
                 nxt = cursors.encode(
                     endpoint='raw_records',
                     dataset_id=dataset_id,
@@ -1861,12 +1791,12 @@ def attach_v2_api(
                 'has_more': eff_more,
             }
 
-        payload, _, _ = fit_items_to_json_budget(
+        payload, raw_bytes = finalize_budgeted_payload(
             _make_payload,
             res['items'],
             max_json_bytes=DEFAULT_LIST_JSON_BUDGET_BYTES,
         )
-        return json_utf8_response(payload)
+        return json_utf8_response(payload, raw_bytes=raw_bytes)
 
     # 9. GET /v2/projects/{id}/raw-records/sessions/{sid}/children
     async def raw_records_session_children_v2(request):
@@ -1919,11 +1849,11 @@ def attach_v2_api(
         gen, res = await _run_db(_query)
         order_keys = res['order_keys']
 
-        def _make_payload(subset, trimmed):
-            eff_more = bool(res['has_more'] or trimmed)
+        def _make_payload(subset, _lo, hi):
+            eff_more = bool(res['has_more'] or hi < len(res['items']))
             nxt = ''
             if eff_more and subset:
-                lk = order_keys[len(subset) - 1]
+                lk = order_keys[hi - 1]
                 nxt = cursors.encode(
                     endpoint='raw_records_children',
                     dataset_id=dataset_id,
@@ -1942,12 +1872,12 @@ def attach_v2_api(
                 'has_more': eff_more,
             }
 
-        payload, _, _ = fit_items_to_json_budget(
+        payload, raw_bytes = finalize_budgeted_payload(
             _make_payload,
             res['items'],
             max_json_bytes=DEFAULT_LIST_JSON_BUDGET_BYTES,
         )
-        return json_utf8_response(payload)
+        return json_utf8_response(payload, raw_bytes=raw_bytes)
 
     # 10. GET /v2/projects/{id}/message-summary (slim < 16 KiB, zero full knowledge_catalog)
     async def message_summary_v2(request):
@@ -2023,10 +1953,13 @@ def attach_v2_api(
 
                 reading_err_l = None
                 unread_count_l = 0
+                unread_state_rev_l = 0
                 unread_preview_l = []
                 try:
                     if identity:
-                        unread_ids = read_store.compute_unread_ids(identity, project_id, dataset_id, cat)
+                        unread_ids, unread_state_rev_l = read_store.compute_unread_snapshot(
+                            identity, project_id, dataset_id, cat
+                        )
                         unread_count_l = len(unread_ids)
                         if unread_ids:
                             if len(unread_ids) <= 200:
@@ -2071,7 +2004,15 @@ def attach_v2_api(
                     n_err,
                     a_val,
                     a_err,
-                    (cat_ver_l, pending_total_l, pending_docs_l, unread_count_l, unread_preview_l, reading_err_l),
+                    (
+                        cat_ver_l,
+                        pending_total_l,
+                        pending_docs_l,
+                        unread_count_l,
+                        unread_state_rev_l,
+                        unread_preview_l,
+                        reading_err_l,
+                    ),
                     None,
                 )
 
@@ -2113,6 +2054,7 @@ def attach_v2_api(
 
         cat_ver = ''
         unread_count = 0
+        unread_state_rev = 0
         unread_preview = []
         pending_total = 0
         pending_docs = []
@@ -2121,7 +2063,7 @@ def attach_v2_api(
         if isinstance(d_res, BaseException):
             errors['documents'] = d_res.code if isinstance(d_res, PolicyError) else 'documents_unavailable'
         else:
-            cat_ver, pending_total, pending_docs, unread_count, unread_preview, reading_err = d_res
+            cat_ver, pending_total, pending_docs, unread_count, unread_state_rev, unread_preview, reading_err = d_res
             if reading_err:
                 errors['reading_state'] = reading_err
 
@@ -2133,26 +2075,53 @@ def attach_v2_api(
         else:
             activity, _ = a_res
 
-        payload = {
-            'project_id': project_id,
-            'dataset_id': dataset_id,
-            'automatic_save': automatic_save,
-            'backlog': backlog_job,
-            'knowledge_catalog_version': cat_ver,
-            'unread_count': unread_count,
-            'unread_preview': unread_preview,
-            'unread_has_more': unread_count > len(unread_preview),
-            'pending_documents_count': pending_total,
-            'pending_documents': pending_docs,
-            'notices': notices,
-            'activity': activity,
-            'errors': errors,
-        }
-        # Enforce strict < 16 KiB UTF-8 bound on slim message-summary
-        if len(encode_json_utf8(payload)) > _MAX_MESSAGE_SUMMARY_BYTES:
-            payload['activity'] = payload['activity'][:5]
-            payload['pending_documents'] = payload['pending_documents'][:5]
-        return json_utf8_response(payload)
+        def _make_summary_payload(_sub, _lo, _hi):
+            return {
+                'project_id': project_id,
+                'dataset_id': dataset_id,
+                'automatic_save': automatic_save,
+                'backlog': dict(backlog_job) if isinstance(backlog_job, dict) else backlog_job,
+                'knowledge_catalog_version': cat_ver,
+                'unread_count': unread_count,
+                'unread_state_rev': unread_state_rev,
+                'unread_preview': list(unread_preview),
+                'unread_has_more': unread_count > len(unread_preview),
+                'pending_documents_count': pending_total,
+                'pending_documents': list(pending_docs),
+                'notices': list(notices),
+                'activity': list(activity),
+                'errors': dict(errors),
+            }
+
+        def _trim_summary(p: dict) -> bool:
+            if p['activity']:
+                p['activity'].pop()
+                return True
+            if p['pending_documents']:
+                p['pending_documents'].pop()
+                return True
+            if p['notices']:
+                p['notices'].pop()
+                return True
+            if p['unread_preview']:
+                p['unread_preview'].pop()
+                p['unread_has_more'] = unread_count > len(p['unread_preview'])
+                return True
+            if isinstance(p.get('backlog'), dict):
+                b = p['backlog']
+                for k in ('last_error', 'message', 'detail'):
+                    if isinstance(b.get(k), str) and len(b[k]) > 64:
+                        b[k] = b[k][:64]
+                        return True
+            return False
+
+        payload, raw_bytes = finalize_budgeted_payload(
+            _make_summary_payload,
+            [],
+            max_json_bytes=_MAX_MESSAGE_SUMMARY_BYTES,
+            fixed_trimmer=_trim_summary,
+        )
+        return json_utf8_response(payload, raw_bytes=raw_bytes)
 
     # 11. Reading State Write & Migration Routes
     async def _json_body(request):

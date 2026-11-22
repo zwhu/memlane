@@ -6,14 +6,11 @@ resolve-to-open TOCTOU, zero symlink escape, UTF-8 rune-safe preview truncation,
 and strict serialized JSON byte budgets.
 """
 import asyncio
-import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import stat
-import threading
-import time
 from urllib.parse import unquote, urlparse
 
 import aiohttp
@@ -43,11 +40,6 @@ _LOCAL_TEXT_MIME_EXACT = frozenset({
     'application/typescript',
     'application/x-sh',
 })
-_AUTH_CACHE_LOCK = threading.Lock()
-_AUTH_CACHE: dict[tuple[int, str, str], tuple[float, frozenset[str]]] = {}
-_AUTH_CACHE_TTL_SECONDS = 2.0
-
-
 def _is_local_text_mime(mime_type: str) -> bool:
     raw = str(mime_type or '').split(';', 1)[0].strip().lower()
     if not raw or raw.startswith('text/'):
@@ -58,40 +50,32 @@ def _is_local_text_mime(mime_type: str) -> bool:
 
 
 def invalidate_official_read_access_cache():
-    with _AUTH_CACHE_LOCK:
-        _AUTH_CACHE.clear()
+    """No-op compatibility hook: official dataset authorization is always checked live."""
+    return None
 
 
-async def verify_official_read_access(official, dataset_id: str, *, ttl_seconds: float = _AUTH_CACHE_TTL_SECONDS) -> None:
-    """Re-verify live official read permission for ``dataset_id`` before direct local reads.
+async def fetch_authorized_official_datasets(official) -> frozenset[str]:
+    """Fetch the live authorized dataset ID set from the official backend (Fail-Closed, zero TTL cache).
 
-    - Never caches 401/403 or missing-dataset denials (Fail-Closed).
-    - Preserves official 401 (``official_unauthorized``) and 403 (``dataset_access_denied``).
-    - No-op when ``official`` is None or has no active HTTP session (offline/unit-test stubs).
+    - Fails closed with ``503 official_store_unavailable`` when ``official`` or its HTTP session is absent.
+    - Preserves upstream ``401 official_unauthorized`` and ``403 dataset_access_denied`` verbatim.
     """
     if official is None:
-        return
-    verifier = getattr(official, 'verify_dataset_read_access', None)
-    if callable(verifier):
-        res = verifier(dataset_id)
+        raise PolicyError('official_store_unavailable', 503)
+    custom_list = getattr(official, 'authorized_datasets', None)
+    if callable(custom_list):
+        res = custom_list()
         if asyncio.iscoroutine(res) or hasattr(res, '__await__'):
-            await res
-        return
+            res = await res
+        return frozenset(uuid_text(d) for d in (res or ()) if d)
+
     session = getattr(official, 'session', None)
     base_url = getattr(official, 'url', None)
     if session is None or not base_url:
-        return
-    ds_canon = uuid_text(dataset_id)
+        raise PolicyError('official_store_unavailable', 503)
+
     token_file = getattr(official, 'token_file', None)
     secret = read_secret(token_file) if token_file else ''
-    secret_digest = hashlib.sha256(secret.encode('utf-8')).hexdigest()[:16]
-    cache_key = (id(official), str(base_url).rstrip('/'), secret_digest)
-    now = time.monotonic()
-    with _AUTH_CACHE_LOCK:
-        cached = _AUTH_CACHE.get(cache_key)
-        if cached is not None and cached[0] > now and ds_canon in cached[1]:
-            return
-
     headers = {'X-Api-Key': secret} if secret else {}
     url = str(base_url).rstrip('/') + '/api/v1/datasets'
     try:
@@ -119,17 +103,32 @@ async def verify_official_read_access(official, dataset_id: str, *, ttl_seconds:
         raise PolicyError('official_store_unavailable', 503) from exc
     if not isinstance(rows, list):
         raise PolicyError('official_store_unavailable', 503)
-    authorized = frozenset(
+    return frozenset(
         uuid_text(r.get('id'))
         for r in rows
         if isinstance(r, dict) and r.get('id')
     )
+
+
+async def verify_official_read_access(official, dataset_id: str) -> None:
+    """Re-verify live official read permission for ``dataset_id`` before any direct local read.
+
+    - Strictly Fail-Closed: ``official is None`` or missing session raises ``503 official_store_unavailable``.
+    - Never caches authorization across requests (zero stale-permission window after revocation).
+    - Preserves official ``401 official_unauthorized`` and ``403 dataset_access_denied``.
+    """
+    if official is None:
+        raise PolicyError('official_store_unavailable', 503)
+    verifier = getattr(official, 'verify_dataset_read_access', None)
+    if callable(verifier):
+        res = verifier(dataset_id)
+        if asyncio.iscoroutine(res) or hasattr(res, '__await__'):
+            await res
+        return
+    authorized = await fetch_authorized_official_datasets(official)
+    ds_canon = uuid_text(dataset_id)
     if ds_canon not in authorized:
         raise PolicyError('dataset_access_denied', 403)
-    with _AUTH_CACHE_LOCK:
-        if len(_AUTH_CACHE) >= 32:
-            _AUTH_CACHE.clear()
-        _AUTH_CACHE[cache_key] = (time.monotonic() + max(0.0, float(ttl_seconds)), authorized)
 
 
 class LocalPathSecurityError(PolicyError):
@@ -542,6 +541,144 @@ def fit_items_to_json_budget(
                 return payload, working, trimmed_flag
         raise PolicyError('response_budget_exceeded', 500)
     return build_payload([], False), [], False
+
+
+def _shrink_sole_item_fields(sole: dict, field_cap: int, truncated_key: str) -> dict:
+    """Return a copy of ``sole`` with oversized free-text display fields shrunk to ``field_cap``."""
+    out = dict(sole)
+    for field in ('preview_text', 'label', 'title', 'doc_label', 'doc_name', 'state_key', 'category'):
+        val = out.get(field)
+        if isinstance(val, str) and len(val) > field_cap:
+            cut_val, was_cut = truncate_utf8_runes(val, max_runes=field_cap, max_utf8_bytes=field_cap * 3)
+            out[field] = cut_val
+            if was_cut and truncated_key in out:
+                out[truncated_key] = True
+    if isinstance(out.get('session'), dict):
+        sess = dict(out['session'])
+        if isinstance(sess.get('children_preview'), list) and sess['children_preview']:
+            sess['children_preview'] = []
+            sess['children_has_more'] = True
+        lbl = sess.get('label')
+        if isinstance(lbl, str) and len(lbl) > field_cap:
+            sess['label'], _ = truncate_utf8_runes(lbl, max_runes=field_cap, max_utf8_bytes=field_cap * 3)
+        out['session'] = sess
+    if isinstance(out.get('document'), dict):
+        doc = dict(out['document'])
+        for dfield in ('label', 'name'):
+            dval = doc.get(dfield)
+            if isinstance(dval, str) and len(dval) > field_cap:
+                doc[dfield], _ = truncate_utf8_runes(dval, max_runes=field_cap, max_utf8_bytes=field_cap * 3)
+        out['document'] = doc
+    return out
+
+
+def finalize_budgeted_payload(
+    build_payload,
+    items: list[dict],
+    *,
+    max_json_bytes: int = DEFAULT_LIST_JSON_BUDGET_BYTES,
+    preview_key: str = 'preview_text',
+    truncated_key: str = 'preview_truncated',
+    anchor_doc_id: str = '',
+    anchor_field: str = 'doc_id',
+    trim_from_left: bool = False,
+    fixed_trimmer=None,
+) -> tuple[dict, bytes]:
+    """Single canonical UTF-8 JSON budget finalizer returning ``(payload, raw_bytes)``.
+
+    Guarantees:
+    - Measures the exact UTF-8 bytes emitted by ``json_utf8_response(payload, raw_bytes=raw_bytes)``.
+    - When ``anchor_doc_id`` is present, re-windows strictly around the anchor and re-measures.
+    - When ``fixed_trimmer`` is supplied, trims outer envelope collections (e.g. recall_events,
+      pipeline_runs, day_buckets, activity, notices) until within budget.
+    - Never emits an over-budget HTTP 200: raises ``PolicyError('response_budget_exceeded', 500)``
+      if the payload still exceeds ``max_json_bytes`` after maximum trimming.
+    """
+    working = [dict(row) for row in items]
+    n = len(working)
+
+    def _apply_fixed(p: dict) -> tuple[dict, bytes]:
+        raw = encode_json_utf8(p)
+        if len(raw) <= max_json_bytes or fixed_trimmer is None:
+            return p, raw
+        while len(raw) > max_json_bytes:
+            if not fixed_trimmer(p):
+                break
+            raw = encode_json_utf8(p)
+        return p, raw
+
+    # Step 1: full slice as-is
+    payload = build_payload(working, 0, n)
+    raw = encode_json_utf8(payload)
+    if len(raw) <= max_json_bytes:
+        return payload, raw
+
+    # Step 2: shrink previews on rune boundaries across the full slice
+    if n > 0:
+        for preview_cap in (120, 60, 0):
+            shrunk = []
+            for row in working:
+                copy_row = dict(row)
+                if isinstance(copy_row.get(preview_key), str) and copy_row[preview_key]:
+                    trimmed_preview, was_cut = truncate_utf8_runes(
+                        copy_row[preview_key],
+                        max_runes=preview_cap,
+                        max_utf8_bytes=preview_cap * 3,
+                    )
+                    copy_row[preview_key] = trimmed_preview
+                    if was_cut:
+                        copy_row[truncated_key] = True
+                shrunk.append(copy_row)
+            working = shrunk
+            payload = build_payload(working, 0, n)
+            raw = encode_json_utf8(payload)
+            if len(raw) <= max_json_bytes:
+                return payload, raw
+
+    # Step 3: shrink item window down to 1 item (preserving anchor_doc_id when present)
+    lo = 0
+    hi = n
+    canon_anchor = uuid_text(anchor_doc_id) if anchor_doc_id else ''
+    a_idx = (
+        next((i for i, row in enumerate(working) if uuid_text(row.get(anchor_field)) == canon_anchor), -1)
+        if canon_anchor
+        else -1
+    )
+    while hi - lo > 1:
+        if a_idx >= 0:
+            right_dist = (hi - 1) - a_idx
+            left_dist = a_idx - lo
+            if right_dist >= left_dist and hi - 1 > a_idx:
+                hi -= 1
+            elif lo < a_idx:
+                lo += 1
+            else:
+                hi -= 1
+        elif trim_from_left:
+            lo += 1
+        else:
+            hi -= 1
+        payload = build_payload(working[lo:hi], lo, hi)
+        raw = encode_json_utf8(payload)
+        if len(raw) <= max_json_bytes:
+            return payload, raw
+
+    # Step 4: trim outer envelope sections via fixed_trimmer (e.g., bootstrap / message-summary)
+    payload, raw = _apply_fixed(payload)
+    if len(raw) <= max_json_bytes:
+        return payload, raw
+
+    # Step 5: shrink sole remaining item's oversized free-text fields (never return items=[] + has_more=True)
+    if hi - lo == 1:
+        sole = working[lo]
+        for field_cap in (120, 48, 16, 0):
+            shrunk_sole = _shrink_sole_item_fields(sole, field_cap, truncated_key)
+            payload = build_payload([shrunk_sole], lo, hi)
+            payload, raw = _apply_fixed(payload)
+            if len(raw) <= max_json_bytes:
+                return payload, raw
+
+    raise PolicyError('response_budget_exceeded', 500)
 
 
 def _lookup_document_location(official_data, dataset_id: str, doc_id: str) -> dict:

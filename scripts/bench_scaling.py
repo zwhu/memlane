@@ -46,6 +46,7 @@ from knowledge_recall import RecallStore
 from project_control_server import create_app
 from provenance_store import ProvenanceStore
 from reading_state_store import ReadingStateStore
+from session_relations import TrackedRelationsDict
 from sqlite_ro import uuid_hex
 
 SCALES = {
@@ -975,10 +976,12 @@ async def run_benchmark(scale: str = '1k', concurrency_seconds: float = 2.0) -> 
                 },
                 'agents': {'codex-main': {'name': 'Codex', 'kind': 'codex'}},
                 'sessions': {},
-                'session_relations': fixture['session_relations'],
+                'session_relations': TrackedRelationsDict(fixture['session_relations']),
             },
             mutex=asyncio.Lock(),
-            official=None,
+            official=types.SimpleNamespace(
+                authorized_datasets=lambda: {ds_main, ds_code, ds_common},
+            ),
         )
         registry.managed_groups = lambda: [registry.state['projects'][proj_id], registry.state['common']]
         manager_token = 'm' * 40

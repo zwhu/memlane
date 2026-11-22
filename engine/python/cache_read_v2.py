@@ -68,9 +68,6 @@ class CacheSessionHydrator:
         self._cache_sig = None
         self._cache_ino = -1
         self._session_cache: OrderedDict[tuple[str, str], tuple[str, int, int, str | None]] = OrderedDict()
-        # Per-session append/delete covering-index caches keyed by (uid, sid) -> (cnt, min_seq, max_seq, ...)
-        self._qa_seq_cache: OrderedDict[tuple[str, str], tuple[int, int, int, str, int, str | None]] = OrderedDict()
-        self._tr_seq_cache: OrderedDict[tuple[str, str], tuple[int, int, int, int, str | None]] = OrderedDict()
         self._local = threading.local()
         self._open_cons: list[sqlite3.Connection] = []
         self._closed = False
@@ -182,11 +179,6 @@ class CacheSessionHydrator:
             return {}
 
         computed: dict[tuple[str, str], tuple[str, int, int, str | None]] = {}
-        qa_seq_updates: dict[tuple[str, str], tuple[int, int, int, str, int, str | None]] = {}
-        tr_seq_updates: dict[tuple[str, str], tuple[int, int, int, int, str | None]] = {}
-        with self._lock:
-            qa_seq_snap = dict(self._qa_seq_cache)
-            tr_seq_snap = dict(self._tr_seq_cache)
 
         with ro_snapshot(con):
             for uid, user_rows in by_uid.items():
@@ -195,212 +187,123 @@ class CacheSessionHydrator:
                 qa_user = self._resolve_user_key_once(con, 'cache_qa_entries', uid, sample_sid)
                 tr_user = self._resolve_user_key_once(con, 'cache_trace_entries', uid, sample_sid)
 
-                # 1. Covering-index QA summary (0 table-page reads!) to detect ONLY sessions whose QA rows changed
-                qa_cov: dict[str, tuple[int, int, int]] = {}
+                # 1. Fresh batched QA counts + MIN(seq) + MIN(expires_at) (no seq-only reuse cache!)
+                qa_counts: dict[str, int] = {}
+                qa_min_seq: dict[str, int] = {}
+                qa_min_exp: dict[str, str | None] = {}
+                qa_needs_filter: set[str] = set()
                 for start in range(0, len(uniq_sids), _MAX_IN_BATCH):
                     batch = uniq_sids[start : start + _MAX_IN_BATCH]
                     ph = ','.join('?' for _ in batch)
-                    for sid_v, cnt_v, min_seq_v, max_seq_v in con.execute(
-                        f'''SELECT session_id, COUNT(*), COALESCE(MIN(seq), 0), COALESCE(MAX(seq), 0)
+                    for sid_v, cnt_v, min_seq_v, min_exp_v in con.execute(
+                        f'''SELECT session_id, COUNT(*), COALESCE(MIN(seq), 0),
+                                   MIN(CASE WHEN expires_at IS NOT NULL THEN REPLACE(substr(expires_at, 1, 26), 'T', ' ') END)
                             FROM cache_qa_entries
                             WHERE user_id = ? AND session_id IN ({ph})
                             GROUP BY session_id''',
                         (qa_user, *batch),
                     ):
-                        qa_cov[str(sid_v)] = (int(cnt_v or 0), int(min_seq_v or 0), int(max_seq_v or 0))
+                        s_key = str(sid_v)
+                        qa_counts[s_key] = int(cnt_v or 0)
+                        qa_min_seq[s_key] = int(min_seq_v or 0)
+                        norm_exp = _normalize_expires(min_exp_v)
+                        qa_min_exp[s_key] = norm_exp
+                        if norm_exp and norm_exp <= now_sp:
+                            qa_needs_filter.add(s_key)
 
-                qa_counts: dict[str, int] = {}
+                for s_key in qa_needs_filter:
+                    cnt_row = con.execute(
+                        '''SELECT COUNT(*),
+                                  MIN(CASE WHEN expires_at IS NOT NULL THEN REPLACE(substr(expires_at, 1, 26), 'T', ' ') END)
+                           FROM cache_qa_entries
+                           WHERE user_id = ? AND session_id = ?
+                             AND (expires_at IS NULL OR REPLACE(substr(expires_at, 1, 26), 'T', ' ') > ?)''',
+                        (qa_user, s_key, now_sp),
+                    ).fetchone()
+                    qa_counts[s_key] = int(cnt_row[0] or 0) if cnt_row else 0
+                    qa_min_exp[s_key] = _normalize_expires(cnt_row[1]) if cnt_row else None
+
+                # Batched PK lookup for first QA payload on non-expired sessions
                 qa_labels: dict[str, str] = {}
-                qa_min_exp: dict[str, str | None] = {}
-                qa_dirty_sids: list[str] = []
-                for s_key in uniq_sids:
-                    cov = qa_cov.get(s_key)
-                    if cov is None or cov[0] <= 0:
-                        qa_counts[s_key] = 0
-                        qa_labels[s_key] = ''
-                        qa_min_exp[s_key] = None
-                        qa_seq_updates[(uid, s_key)] = (0, 0, 0, '', 0, None)
-                        continue
-                    prev_q = qa_seq_snap.get((uid, s_key))
-                    if (
-                        prev_q is not None
-                        and prev_q[0] == cov[0]
-                        and prev_q[1] == cov[1]
-                        and prev_q[2] == cov[2]
-                        and (prev_q[5] is None or prev_q[5] > now_sp)
+                fast_seqs = [
+                    qa_min_seq[s_key]
+                    for s_key in uniq_sids
+                    if qa_counts.get(s_key, 0) > 0 and s_key not in qa_needs_filter and qa_min_seq.get(s_key, 0) > 0
+                ]
+                for start in range(0, len(fast_seqs), _MAX_IN_BATCH):
+                    seq_batch = fast_seqs[start : start + _MAX_IN_BATCH]
+                    ph = ','.join('?' for _ in seq_batch)
+                    for uid_v, sid_v, raw_payload in con.execute(
+                        f'SELECT user_id, session_id, payload FROM cache_qa_entries WHERE seq IN ({ph})',
+                        seq_batch,
                     ):
-                        qa_labels[s_key] = prev_q[3]
-                        qa_counts[s_key] = prev_q[4]
-                        qa_min_exp[s_key] = prev_q[5]
-                    else:
-                        qa_dirty_sids.append(s_key)
-
-                if qa_dirty_sids:
-                    qa_needs_filter: set[str] = set()
-                    for start in range(0, len(qa_dirty_sids), _MAX_IN_BATCH):
-                        batch = qa_dirty_sids[start : start + _MAX_IN_BATCH]
-                        ph = ','.join('?' for _ in batch)
-                        for sid_v, cnt_v, min_exp_v in con.execute(
-                            f'''SELECT session_id, COUNT(*),
-                                       MIN(CASE WHEN expires_at IS NOT NULL THEN REPLACE(substr(expires_at, 1, 26), 'T', ' ') END)
-                                FROM cache_qa_entries
-                                WHERE user_id = ? AND session_id IN ({ph})
-                                GROUP BY session_id''',
-                            (qa_user, *batch),
-                        ):
-                            s_key = str(sid_v)
-                            qa_counts[s_key] = int(cnt_v or 0)
-                            norm_exp = _normalize_expires(min_exp_v)
-                            qa_min_exp[s_key] = norm_exp
-                            if norm_exp and norm_exp <= now_sp:
-                                qa_needs_filter.add(s_key)
-
-                    for s_key in qa_needs_filter:
-                        cnt_row = con.execute(
-                            '''SELECT COUNT(*),
-                                      MIN(CASE WHEN expires_at IS NOT NULL THEN REPLACE(substr(expires_at, 1, 26), 'T', ' ') END)
-                               FROM cache_qa_entries
-                               WHERE user_id = ? AND session_id = ?
-                                 AND (expires_at IS NULL OR REPLACE(substr(expires_at, 1, 26), 'T', ' ') > ?)''',
-                            (qa_user, s_key, now_sp),
-                        ).fetchone()
-                        qa_counts[s_key] = int(cnt_row[0] or 0) if cnt_row else 0
-                        qa_min_exp[s_key] = _normalize_expires(cnt_row[1]) if cnt_row else None
-
-                    # 1 batched PK lookup for dirty non-expired sessions
-                    fast_seqs = [
-                        qa_cov[s_key][1]
-                        for s_key in qa_dirty_sids
-                        if qa_counts.get(s_key, 0) > 0 and s_key not in qa_needs_filter and qa_cov[s_key][1] > 0
-                    ]
-                    for start in range(0, len(fast_seqs), _MAX_IN_BATCH):
-                        seq_batch = fast_seqs[start : start + _MAX_IN_BATCH]
-                        ph = ','.join('?' for _ in seq_batch)
-                        for sid_v, raw_payload in con.execute(
-                            f'SELECT session_id, payload FROM cache_qa_entries WHERE seq IN ({ph})',
-                            seq_batch,
-                        ):
-                            found = _extract_question_label(raw_payload)
-                            if found is not None:
-                                qa_labels[str(sid_v)] = found
-
-                    for s_key in qa_dirty_sids:
-                        if s_key in qa_labels:
+                        if str(uid_v) != qa_user:
                             continue
-                        q_cnt = qa_counts.get(s_key, 0)
-                        if q_cnt <= 0:
-                            continue
-                        if s_key in qa_needs_filter:
-                            q_sql = (
-                                "SELECT payload FROM cache_qa_entries "
-                                "WHERE user_id = ? AND session_id = ? "
-                                "AND (expires_at IS NULL OR REPLACE(substr(expires_at, 1, 26), 'T', ' ') > ?) "
-                                "ORDER BY seq ASC"
-                            )
-                            q_params = (qa_user, s_key, now_sp)
-                        elif q_cnt > 1 and qa_cov[s_key][1] > 0:
-                            q_sql = (
-                                'SELECT payload FROM cache_qa_entries '
-                                'WHERE user_id = ? AND session_id = ? AND seq > ? ORDER BY seq ASC'
-                            )
-                            q_params = (qa_user, s_key, qa_cov[s_key][1])
-                        else:
-                            continue
-                        for (raw_payload,) in con.execute(q_sql, q_params):
-                            found = _extract_question_label(raw_payload)
-                            if found is not None:
-                                qa_labels[s_key] = found
-                                break
+                        found = _extract_question_label(raw_payload)
+                        if found is not None:
+                            qa_labels[str(sid_v)] = found
 
-                    for s_key in qa_dirty_sids:
-                        cov = qa_cov[s_key]
-                        qa_seq_updates[(uid, s_key)] = (
-                            cov[0],
-                            cov[1],
-                            cov[2],
-                            qa_labels.get(s_key, ''),
-                            qa_counts.get(s_key, 0),
-                            qa_min_exp.get(s_key),
+                for s_key in uniq_sids:
+                    if s_key in qa_labels:
+                        continue
+                    q_cnt = qa_counts.get(s_key, 0)
+                    if q_cnt <= 0:
+                        continue
+                    if s_key in qa_needs_filter:
+                        q_sql = (
+                            "SELECT payload FROM cache_qa_entries "
+                            "WHERE user_id = ? AND session_id = ? "
+                            "AND (expires_at IS NULL OR REPLACE(substr(expires_at, 1, 26), 'T', ' ') > ?) "
+                            "ORDER BY seq ASC"
                         )
+                        q_params = (qa_user, s_key, now_sp)
+                    elif q_cnt > 1 and qa_min_seq.get(s_key, 0) > 0:
+                        q_sql = (
+                            'SELECT payload FROM cache_qa_entries '
+                            'WHERE user_id = ? AND session_id = ? AND seq > ? ORDER BY seq ASC'
+                        )
+                        q_params = (qa_user, s_key, qa_min_seq[s_key])
+                    else:
+                        continue
+                    for (raw_payload,) in con.execute(q_sql, q_params):
+                        found = _extract_question_label(raw_payload)
+                        if found is not None:
+                            qa_labels[s_key] = found
+                            break
 
-                # 2. Covering-index trace summary (0 table-page reads!) to skip unchanged sessions' 7,200+ trace rows
-                tr_cov: dict[str, tuple[int, int, int]] = {}
+                # 2. Fresh batched trace counts + MIN(expires_at)
+                tr_counts: dict[str, int] = {}
+                tr_min_exp: dict[str, str | None] = {}
+                tr_needs_filter: set[str] = set()
                 for start in range(0, len(uniq_sids), _MAX_IN_BATCH):
                     batch = uniq_sids[start : start + _MAX_IN_BATCH]
                     ph = ','.join('?' for _ in batch)
-                    for sid_v, cnt_v, min_seq_v, max_seq_v in con.execute(
-                        f'''SELECT session_id, COUNT(*), COALESCE(MIN(seq), 0), COALESCE(MAX(seq), 0)
+                    for sid_v, cnt_v, min_exp_v in con.execute(
+                        f'''SELECT session_id, COUNT(*),
+                                   MIN(CASE WHEN expires_at IS NOT NULL THEN REPLACE(substr(expires_at, 1, 26), 'T', ' ') END)
                             FROM cache_trace_entries
                             WHERE user_id = ? AND session_id IN ({ph})
                             GROUP BY session_id''',
                         (tr_user, *batch),
                     ):
-                        tr_cov[str(sid_v)] = (int(cnt_v or 0), int(min_seq_v or 0), int(max_seq_v or 0))
+                        s_key = str(sid_v)
+                        tr_counts[s_key] = int(cnt_v or 0)
+                        norm_exp = _normalize_expires(min_exp_v)
+                        tr_min_exp[s_key] = norm_exp
+                        if norm_exp and norm_exp <= now_sp:
+                            tr_needs_filter.add(s_key)
 
-                tr_counts: dict[str, int] = {}
-                tr_min_exp: dict[str, str | None] = {}
-                tr_dirty_sids: list[str] = []
-                for s_key in uniq_sids:
-                    cov = tr_cov.get(s_key)
-                    if cov is None or cov[0] <= 0:
-                        tr_counts[s_key] = 0
-                        tr_min_exp[s_key] = None
-                        tr_seq_updates[(uid, s_key)] = (0, 0, 0, 0, None)
-                        continue
-                    prev_t = tr_seq_snap.get((uid, s_key))
-                    if (
-                        prev_t is not None
-                        and prev_t[0] == cov[0]
-                        and prev_t[1] == cov[1]
-                        and prev_t[2] == cov[2]
-                        and (prev_t[4] is None or prev_t[4] > now_sp)
-                    ):
-                        tr_counts[s_key] = prev_t[3]
-                        tr_min_exp[s_key] = prev_t[4]
-                    else:
-                        tr_dirty_sids.append(s_key)
-
-                if tr_dirty_sids:
-                    tr_needs_filter: set[str] = set()
-                    for start in range(0, len(tr_dirty_sids), _MAX_IN_BATCH):
-                        batch = tr_dirty_sids[start : start + _MAX_IN_BATCH]
-                        ph = ','.join('?' for _ in batch)
-                        for sid_v, cnt_v, min_exp_v in con.execute(
-                            f'''SELECT session_id, COUNT(*),
-                                       MIN(CASE WHEN expires_at IS NOT NULL THEN REPLACE(substr(expires_at, 1, 26), 'T', ' ') END)
-                                FROM cache_trace_entries
-                                WHERE user_id = ? AND session_id IN ({ph})
-                                GROUP BY session_id''',
-                            (tr_user, *batch),
-                        ):
-                            s_key = str(sid_v)
-                            tr_counts[s_key] = int(cnt_v or 0)
-                            norm_exp = _normalize_expires(min_exp_v)
-                            tr_min_exp[s_key] = norm_exp
-                            if norm_exp and norm_exp <= now_sp:
-                                tr_needs_filter.add(s_key)
-
-                    for s_key in tr_needs_filter:
-                        cnt_row = con.execute(
-                            '''SELECT COUNT(*),
-                                      MIN(CASE WHEN expires_at IS NOT NULL THEN REPLACE(substr(expires_at, 1, 26), 'T', ' ') END)
-                               FROM cache_trace_entries
-                               WHERE user_id = ? AND session_id = ?
-                                 AND (expires_at IS NULL OR REPLACE(substr(expires_at, 1, 26), 'T', ' ') > ?)''',
-                            (tr_user, s_key, now_sp),
-                        ).fetchone()
-                        tr_counts[s_key] = int(cnt_row[0] or 0) if cnt_row else 0
-                        tr_min_exp[s_key] = _normalize_expires(cnt_row[1]) if cnt_row else None
-
-                    for s_key in tr_dirty_sids:
-                        cov = tr_cov[s_key]
-                        tr_seq_updates[(uid, s_key)] = (
-                            cov[0],
-                            cov[1],
-                            cov[2],
-                            tr_counts.get(s_key, 0),
-                            tr_min_exp.get(s_key),
-                        )
+                for s_key in tr_needs_filter:
+                    cnt_row = con.execute(
+                        '''SELECT COUNT(*),
+                                  MIN(CASE WHEN expires_at IS NOT NULL THEN REPLACE(substr(expires_at, 1, 26), 'T', ' ') END)
+                           FROM cache_trace_entries
+                           WHERE user_id = ? AND session_id = ?
+                             AND (expires_at IS NULL OR REPLACE(substr(expires_at, 1, 26), 'T', ' ') > ?)''',
+                        (tr_user, s_key, now_sp),
+                    ).fetchone()
+                    tr_counts[s_key] = int(cnt_row[0] or 0) if cnt_row else 0
+                    tr_min_exp[s_key] = _normalize_expires(cnt_row[1]) if cnt_row else None
 
                 for row in user_rows:
                     s_key = str(row['session_id'])
@@ -418,18 +321,6 @@ class CacheSessionHydrator:
                         next_exp = e1 or e2
                     computed[(uid, s_key)] = (lbl, mc, tc, next_exp)
 
-        if qa_seq_updates or tr_seq_updates:
-            with self._lock:
-                for k, v in qa_seq_updates.items():
-                    self._qa_seq_cache[k] = v
-                    self._qa_seq_cache.move_to_end(k)
-                while len(self._qa_seq_cache) > 4096:
-                    self._qa_seq_cache.popitem(last=False)
-                for k, v in tr_seq_updates.items():
-                    self._tr_seq_cache[k] = v
-                    self._tr_seq_cache.move_to_end(k)
-                while len(self._tr_seq_cache) > 4096:
-                    self._tr_seq_cache.popitem(last=False)
         return computed
 
     def _fill_from_cache_locked(
@@ -440,15 +331,10 @@ class CacheSessionHydrator:
         now_sp: str,
     ) -> list[dict]:
         db_ino = sig[0][0] if sig and sig[0] else -1
-        if self._cache_db_key != db_key or self._cache_ino != db_ino:
+        if self._cache_db_key != db_key or self._cache_ino != db_ino or self._cache_sig != sig:
             self._session_cache.clear()
-            self._qa_seq_cache.clear()
-            self._tr_seq_cache.clear()
             self._cache_db_key = db_key
             self._cache_ino = db_ino
-            self._cache_sig = sig
-        elif self._cache_sig != sig:
-            self._session_cache.clear()
             self._cache_sig = sig
         missing: list[dict] = []
         cache = self._session_cache

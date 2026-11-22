@@ -275,6 +275,101 @@ class ReadingStateStoreTests(unittest.TestCase):
             store.close()
             cat.close()
 
+    def test_round2_doc_seq_late_unread_preservation_cas_mark_all_and_commit_guard(self):
+        """Regression for R2-PY-P0-02, CC2-P0-01, R2-PY-P1-07, and Contract #2."""
+        from project_policy import PolicyError
+
+        d1 = str(uuid.uuid4())
+        d2 = str(uuid.uuid4())
+        d3 = str(uuid.uuid4())
+        self._add_knowledge(d1, '2026-11-20T10:00:00Z')
+        self._add_knowledge(d2, '2026-11-20T11:00:00Z')
+        self._add_knowledge(d3, '2026-11-20T12:00:00Z')
+
+        cat = CatalogIndex(self.root / 'catalog-index.sqlite3', official_data=self.official_data)
+        store = ReadingStateStore(self.root / 'ui-reading-state.sqlite3', state_dir=self.root)
+        try:
+            cat.sync([self.ds])
+            # Initialize scope at 09:00:00Z (all 3 unread)
+            b0 = store.begin_import(self.identity, 'proj-r2', self.ds, initialized=True, enabled_at='2026-11-20T09:00:00Z')
+            c0 = store.commit_import(b0['batch_id'], catalog_index=cat, expected_items=0)
+            self.assertEqual(c0['committed'], 0)
+            self.assertEqual(c0['unread_count'], 3)
+            self.assertGreater(c0['state_rev'], 0)
+
+            # Mark d1 read -> horizon compacts to 10:00:00Z with monotonic doc_seq watermark
+            mr1 = store.mark_read(self.identity, 'proj-r2', self.ds, [d1], catalog_index=cat)
+            self.assertEqual(mr1['unread_count'], 2)
+
+            # Delete highest-rowid doc (d3) and insert a backdated d_late reusing d3's EXACT cognee_rowid!
+            con = sqlite3.connect(self.cognee_db)
+            d3_rid = con.execute('SELECT rowid FROM data WHERE id = ?', (uuid.UUID(d3).hex,)).fetchone()[0]
+            con.execute('DELETE FROM data WHERE id = ?', (uuid.UUID(d3).hex,))
+            d_late = str(uuid.uuid4())
+            con.execute(
+                '''INSERT INTO data(rowid, id, dataset_id, name, label, raw_data_location,
+                   external_metadata, system_metadata, node_set, pipeline_status, updated_at, created_at, content_hash)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (
+                    d3_rid, uuid.UUID(d_late).hex, uuid.UUID(self.ds).hex, 'late.md', 'Late', '',
+                    '{}', json.dumps({'lesson_type': 'state', 'state_key': 'sk-late', 'session_date': '2026-11-20'}),
+                    json.dumps(['session_learnings']), '{}', '2026-11-20T09:30:00Z', '2026-11-20T09:30:00Z', 'h-late',
+                ),
+            )
+            con.commit()
+            con.close()
+            cat.sync([self.ds])
+
+            # Despite reusing d3's exact cognee_rowid, monotonic doc_seq MUST detect d_late as UNREAD!
+            u_snap1, rev1 = store.compute_unread_snapshot(self.identity, 'proj-r2', self.ds, cat)
+            self.assertEqual(u_snap1, {d2, d_late})
+            self.assertGreater(rev1, 0)
+
+            # Now read d2 -> compact_horizon advances horizon from 10:00Z to 11:00Z AND MUST materialize
+            # d_late as explicit is_read=0 inside the SAME transaction so d_late stays UNREAD!
+            mr2 = store.mark_read(self.identity, 'proj-r2', self.ds, [d2], catalog_index=cat)
+            self.assertEqual(mr2['unread_count'], 1)
+            u_snap2, rev2 = store.compute_unread_snapshot(self.identity, 'proj-r2', self.ds, cat)
+            self.assertEqual(u_snap2, {d_late})
+            self.assertEqual(mr2['state_rev'], rev2)
+            flags = store.page_unread_flags(
+                self.identity, 'proj-r2', self.ds, cat.fetch_docs_by_ids(self.ds, [d1, d2, d_late]), catalog_index=cat
+            )
+            self.assertTrue(flags[d_late])
+            self.assertFalse(flags[d1])
+            self.assertFalse(flags[d2])
+
+            # commit_import requiring merge materialization with catalog_index=None MUST fail-closed 503
+            # and keep staging rows uncommitted & retryable!
+            b_merge = store.begin_import(
+                self.identity, 'proj-r2', self.ds, initialized=True, enabled_at='2026-11-20T08:00:00Z'
+            )
+            store.stage_import_chunk(b_merge['batch_id'], [{'doc_id': d1, 'is_read': True}])
+            with self.assertRaises(PolicyError) as err503:
+                store.commit_import(b_merge['batch_id'], catalog_index=None, expected_items=1)
+            self.assertEqual(err503.exception.status, 503)
+            # Retry with catalog_index=cat succeeds cleanly on the SAME batch_id!
+            c_retry = store.commit_import(b_merge['batch_id'], catalog_index=cat, expected_items=1)
+            self.assertEqual(c_retry['committed'], 1)
+            self.assertEqual(c_retry['unread_count'], 1)
+
+            # Single-tx CAS mark_all_read clears all unreads + prunes redundant is_read=1 in one commit
+            ma = store.mark_all_read(self.identity, 'proj-r2', self.ds, catalog_index=cat)
+            self.assertEqual(ma['unread_count'], 0)
+            self.assertGreater(ma['state_rev'], c_retry['state_rev'])
+            u_final, rev_final = store.compute_unread_snapshot(self.identity, 'proj-r2', self.ds, cat)
+            self.assertEqual(u_final, set())
+            self.assertEqual(rev_final, ma['state_rev'])
+            # No stale explicit is_read=0 or redundant valid is_read=1 rows remain
+            sh = ma['scope_hash']
+            leftover = store.db.execute(
+                'SELECT COUNT(*) FROM ui_read_items WHERE scope_hash = ?', (sh,)
+            ).fetchone()[0]
+            self.assertEqual(leftover, 0)
+        finally:
+            store.close()
+            cat.close()
+
 
 if __name__ == '__main__':
     unittest.main()

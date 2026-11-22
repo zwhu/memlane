@@ -88,6 +88,7 @@ CATALOG_ALLOWED_TABLES = {
         'local_tz_name',
         'last_provenance_seq',
         'last_recall_rev',
+        'last_doc_seq',
         'built_at',
     },
     'dataset_sync_state': {
@@ -134,6 +135,7 @@ CATALOG_ALLOWED_TABLES = {
         'recall_desc_key',
         'pipeline_status',
         'source_updated_at',
+        'doc_seq',
     },
     'catalog_day_buckets': {
         'dataset_id',
@@ -2451,7 +2453,7 @@ def _check_scaling_guardrails(tree, path, ast_index, report):
                 fname = sub.func.id if isinstance(sub.func, ast.Name) else (
                     sub.func.attr if isinstance(sub.func, ast.Attribute) else ''
                 )
-                if fname == 'fit_items_to_json_budget':
+                if fname in ('fit_items_to_json_budget', 'finalize_budgeted_payload'):
                     direct_budget.add(fn.name)
                 elif fname == '_parse_limit':
                     direct_limit.add(fn.name)

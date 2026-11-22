@@ -422,9 +422,9 @@ class ReadingStateStore:
                     final_horizon_ns = low_ns
                     final_horizon_max_rowid = 0
                 else:
-                    # Without catalog_index we cannot materialize compacted docs; never lower horizon!
-                    final_enabled_ns = low_ns
-                    final_horizon_ns = max(old_horizon_ns, low_ns)
+                    # Without catalog_index we cannot safely materialize compacted reads across (low_ns, high_span];
+                    # Fail-Closed so commit_import rolls back cleanly and keeps the staging batch retryable!
+                    raise PolicyError('catalog_index_rebuilding', 503)
         elif not old_init and initialized and new_enabled_ns:
             final_enabled_ns = new_enabled_ns
             final_horizon_ns = new_enabled_ns
@@ -755,7 +755,7 @@ class ReadingStateStore:
                     dataset_id=dataset_id,
                     initialized=initialized,
                     new_enabled_ns=enabled_ns,
-                    imported_items=staged,
+                    imported_items=dict(staged),
                     legacy_sha256='',
                     legacy_mtime_ns=0,
                     catalog_index=catalog_index,
@@ -774,18 +774,18 @@ class ReadingStateStore:
 
         if catalog_index is not None:
             self.compact_horizon(scope_hash, dataset_id, catalog_index)
-        sc_after = self.get_scope(scope_hash)
-        unread_cnt = (
-            len(self._compute_unread_ids_for_scope(scope_hash, dataset_id, sc_after, catalog_index))
-            if (catalog_index is not None and sc_after is not None)
-            else 0
-        )
+            unread_ids, state_rev = self._compute_unread_snapshot_for_scope(scope_hash, dataset_id, catalog_index)
+            unread_cnt = len(unread_ids)
+        else:
+            sc_after = self.get_scope(scope_hash)
+            unread_cnt = 0
+            state_rev = sc_after['state_rev'] if sc_after else 1
         return {
             'scope_hash': scope_hash,
             'committed': len(staged),
             'dataset_id': dataset_id,
             'unread_count': unread_cnt,
-            'state_rev': sc_after['state_rev'] if sc_after else 1,
+            'state_rev': state_rev,
         }
 
     def export_scope(self, scope_hash: str) -> dict | None:
@@ -985,6 +985,39 @@ class ReadingStateStore:
                     self._unread_cache[cache_key] = (cur_gen, mut_rev, horizon_ns, horizon_max_rowid, set(unread))
         return unread
 
+    def _compute_unread_snapshot_for_scope(
+        self,
+        scope_hash: str,
+        dataset_id: str,
+        catalog_index,
+    ) -> tuple[set[str], int]:
+        """Return ``(unread_ids, state_rev)`` guaranteed to originate from the exact same scope snapshot."""
+        last_unread: set[str] = set()
+        last_rev = 0
+        for _ in range(3):
+            with self._lock:
+                mut_before = self._mutation_rev
+                scope = self.get_scope(scope_hash)
+            if scope is None:
+                return set(), 0
+            last_rev = int(scope.get('state_rev') or 0)
+            last_unread = self._compute_unread_ids_for_scope(scope_hash, dataset_id, scope, catalog_index)
+            with self._lock:
+                if self._mutation_rev == mut_before:
+                    return last_unread, last_rev
+        return last_unread, last_rev
+
+    def compute_unread_snapshot(
+        self,
+        reading_identity: str,
+        project_id: str,
+        dataset_id: str,
+        catalog_index,
+    ) -> tuple[set[str], int]:
+        """Compute exact ``(unread_ids, state_rev)`` from a single consistent scope snapshot."""
+        scope = self.ensure_scope(reading_identity, project_id, dataset_id, catalog_index=catalog_index)
+        return self._compute_unread_snapshot_for_scope(scope['scope_hash'], dataset_id, catalog_index)
+
     def compute_unread_ids(
         self,
         reading_identity: str,
@@ -993,8 +1026,8 @@ class ReadingStateStore:
         catalog_index,
     ) -> set[str]:
         """Compute exact unread doc_id set in O(U log N) via sparse indexed branches."""
-        scope = self.ensure_scope(reading_identity, project_id, dataset_id, catalog_index=catalog_index)
-        return self._compute_unread_ids_for_scope(scope['scope_hash'], dataset_id, scope, catalog_index)
+        unread, _ = self.compute_unread_snapshot(reading_identity, project_id, dataset_id, catalog_index)
+        return unread
 
     def page_unread_flags(
         self,
@@ -1040,8 +1073,8 @@ class ReadingStateStore:
                 elif cns > horizon_ns:
                     flags[did] = True
                 elif horizon_max_rowid > 0 and cns > enabled_ns:
-                    rid = int(doc.get('cognee_rowid') or 0)
-                    flags[did] = bool(rid > horizon_max_rowid)
+                    seq = int(doc['doc_seq']) if 'doc_seq' in doc else int(doc.get('cognee_rowid') or 0)
+                    flags[did] = bool(seq > horizon_max_rowid)
                 else:
                     flags[did] = False
         return flags
@@ -1054,11 +1087,12 @@ class ReadingStateStore:
         *,
         touched_doc_ids: list[str] | None = None,
     ) -> str:
-        """Advance ``read_horizon_at_ns`` past contiguous read prefixes with late-arrival safety."""
+        """Advance ``read_horizon_at_ns`` past contiguous read prefixes with late-arrival preservation."""
         with self._lock:
             scope = self.get_scope(scope_hash)
             if scope is None or not scope['initialized']:
                 return ''
+            enabled_ns = scope['enabled_at_ns']
             cur_horizon = scope['read_horizon_at_ns']
             cur_state_rev = scope['state_rev']
             cur_hrowid = int(scope.get('horizon_max_rowid') or 0)
@@ -1104,12 +1138,29 @@ class ReadingStateStore:
                     self._compact_floor_cache[floor_key] = (cur_gen, cur_state_rev, first_unread_doc)
                 return cur_horizon
 
-            max_rowid_now = (
+            max_seq_now = (
                 int(catalog_index.max_knowledge_rowid(dataset_id))
                 if hasattr(catalog_index, 'max_knowledge_rowid')
                 else 0
             )
-            new_hrowid = max(cur_hrowid, max_rowid_now)
+            new_hrowid = max(cur_hrowid, max_seq_now)
+
+            # CRITICAL (R2-PY-P0-02 / CC2-P0-01): before advancing horizon_max_rowid, materialize ALL
+            # late-arriving unread docs (doc_seq > cur_hrowid, enabled_at_ns < created_at_ns <= new_horizon)
+            # as explicit is_read=0 inside the SAME transaction so they are never silently marked read!
+            late_unread: list[str] = []
+            if (
+                cur_hrowid > 0
+                and new_horizon > enabled_ns
+                and hasattr(catalog_index, 'knowledge_doc_ids_late_after_rowid')
+            ):
+                late_ids = catalog_index.knowledge_doc_ids_late_after_rowid(
+                    dataset_id, cur_hrowid, enabled_ns, new_horizon
+                )
+                if late_ids:
+                    exp_read_late = self._explicit_read_subset_locked(scope_hash, late_ids)
+                    late_unread = [did for did in late_ids if did not in exp_read_late]
+            late_unread_set = set(late_unread)
 
             read_ids = [
                 str(r[0])
@@ -1121,12 +1172,19 @@ class ReadingStateStore:
             info_map = catalog_index.doc_created_at_info(dataset_id, read_ids) if read_ids else {}
             prunable = []
             for did in read_ids:
+                if did in late_unread_set:
+                    continue
                 info = info_map.get(did)
                 if not info:
                     continue
                 cns_i, inv_i = info[0], info[1]
-                rid_i = int(info[2]) if len(info) > 2 else 0
-                if inv_i == 0 and cns_i and cns_i <= new_horizon and (new_hrowid == 0 or rid_i <= new_hrowid):
+                seq_i = int(info[2]) if len(info) > 2 else 0
+                if (
+                    inv_i == 0
+                    and cns_i
+                    and cns_i <= new_horizon
+                    and (new_hrowid == 0 or (seq_i > 0 and seq_i <= new_hrowid))
+                ):
                     prunable.append(did)
 
             now_iso = _iso_now()
@@ -1139,6 +1197,12 @@ class ReadingStateStore:
                 if cur_row is None or int(cur_row[1] or 0) != cur_state_rev or str(cur_row[0]) >= new_horizon:
                     self.db.execute('ROLLBACK')
                     return str(cur_row[0]) if cur_row else cur_horizon
+                if late_unread:
+                    self.db.executemany(
+                        '''INSERT OR IGNORE INTO ui_read_items(scope_hash, doc_id, is_read, updated_at)
+                           VALUES (?,?,0,?)''',
+                        [(scope_hash, did, now_iso) for did in late_unread],
+                    )
                 self.db.execute(
                     '''UPDATE ui_read_scopes
                        SET read_horizon_at_ns = ?, horizon_max_rowid = ?,
@@ -1219,15 +1283,11 @@ class ReadingStateStore:
                 catalog_index,
                 touched_doc_ids=clean_ids,
             )
-            unread_count = len(self.compute_unread_ids(reading_identity, project_id, dataset_id, catalog_index))
+            unread_ids, state_rev = self.compute_unread_snapshot(
+                reading_identity, project_id, dataset_id, catalog_index
+            )
+            unread_count = len(unread_ids)
             unread_count_known = True
-            with self._lock:
-                rev_row = self.db.execute(
-                    'SELECT state_rev FROM ui_read_scopes WHERE scope_hash = ?',
-                    (scope_hash,),
-                ).fetchone()
-                if rev_row is not None:
-                    state_rev = int(rev_row[0] or 0)
         return {
             'scope_hash': scope_hash,
             'marked': len(clean_ids),
@@ -1247,96 +1307,129 @@ class ReadingStateStore:
     ) -> dict:
         scope = self.ensure_scope(reading_identity, project_id, dataset_id, catalog_index=catalog_index)
         scope_hash = scope['scope_hash']
-        new_horizon = max(scope['read_horizon_at_ns'], now_utc_ns())
-        new_horizon_rowid = int(scope.get('horizon_max_rowid') or 0)
-        invalid_docs = []
-        if catalog_index is not None:
-            max_created = catalog_index.max_knowledge_created_at_ns(dataset_id)
-            if max_created and max_created > new_horizon:
-                new_horizon = max_created
-            if hasattr(catalog_index, 'max_knowledge_rowid'):
-                max_rid = int(catalog_index.max_knowledge_rowid(dataset_id) or 0)
-                if max_rid > new_horizon_rowid:
-                    new_horizon_rowid = max_rid
-            invalid_docs = catalog_index.knowledge_docs_invalid_created(dataset_id)
-
-        now_iso = _iso_now()
+        new_horizon = scope['read_horizon_at_ns']
         state_rev = int(scope.get('state_rev') or 0)
-        with self._lock:
-            self.db.execute('BEGIN IMMEDIATE')
-            try:
-                # All valid-timestamp docs <= new_horizon are now implicitly read; delete explicit rows
-                # for valid docs and keep only explicit is_read=1 markers for invalid-timestamp docs!
-                self.db.execute(
-                    '''UPDATE ui_read_scopes
-                       SET read_horizon_at_ns = ?,
-                           horizon_max_rowid = CASE
-                             WHEN ? > horizon_max_rowid THEN ?
-                             ELSE horizon_max_rowid
-                           END,
-                           state_rev = state_rev + 1,
-                           is_auto_baseline = 0,
-                           updated_at = ?
-                       WHERE scope_hash = ?''',
-                    (new_horizon, new_horizon_rowid, new_horizon_rowid, now_iso, scope_hash),
-                )
-                self.db.execute(
-                    'DELETE FROM ui_read_items WHERE scope_hash = ? AND is_read = 0',
-                    (scope_hash,),
-                )
-                if invalid_docs:
-                    self.db.executemany(
-                        '''INSERT INTO ui_read_items(scope_hash, doc_id, is_read, updated_at)
-                           VALUES (?,?,1,?)
-                           ON CONFLICT(scope_hash, doc_id) DO UPDATE SET
-                             is_read = 1, updated_at = excluded.updated_at''',
-                        [(scope_hash, did, now_iso) for did in invalid_docs],
-                    )
-                rev_row = self.db.execute(
-                    'SELECT state_rev FROM ui_read_scopes WHERE scope_hash = ?',
-                    (scope_hash,),
-                ).fetchone()
-                if rev_row is not None:
-                    state_rev = int(rev_row[0] or 0)
-                self.db.execute('COMMIT')
-                self._bump_mutation_rev_locked()
-            except Exception:
-                if self.db.in_transaction:
-                    self.db.execute('ROLLBACK')
-                raise
-            self._compact_floor_cache.pop((scope_hash, dataset_id), None)
-        if catalog_index is not None:
-            # Prune redundant is_read=1 rows below new_horizon
+
+        for _attempt in range(3):
             with self._lock:
-                read_ids = [
-                    str(r[0])
-                    for r in self.db.execute(
-                        'SELECT doc_id FROM ui_read_items WHERE scope_hash = ? AND is_read = 1',
+                cur_scope = self.get_scope(scope_hash)
+                if cur_scope is None:
+                    cur_scope = scope
+                expected_rev = int(cur_scope.get('state_rev') or 0)
+                cur_horizon = cur_scope['read_horizon_at_ns']
+                cur_hseq = int(cur_scope.get('horizon_max_rowid') or 0)
+                existing_read_ids = (
+                    [
+                        str(r[0])
+                        for r in self.db.execute(
+                            'SELECT doc_id FROM ui_read_items WHERE scope_hash = ? AND is_read = 1',
+                            (scope_hash,),
+                        ).fetchall()
+                    ]
+                    if catalog_index is not None
+                    else []
+                )
+
+            new_horizon = max(cur_horizon, now_utc_ns())
+            new_horizon_seq = cur_hseq
+            invalid_docs: list[str] = []
+            prunable: list[str] = []
+            if catalog_index is not None:
+                max_created = catalog_index.max_knowledge_created_at_ns(dataset_id)
+                if max_created and max_created > new_horizon:
+                    new_horizon = max_created
+                if hasattr(catalog_index, 'max_knowledge_rowid'):
+                    max_seq = int(catalog_index.max_knowledge_rowid(dataset_id) or 0)
+                    if max_seq > new_horizon_seq:
+                        new_horizon_seq = max_seq
+                invalid_docs = catalog_index.knowledge_docs_invalid_created(dataset_id)
+                invalid_set = set(invalid_docs)
+                if existing_read_ids:
+                    info_map = catalog_index.doc_created_at_info(dataset_id, existing_read_ids)
+                    for did in existing_read_ids:
+                        if did in invalid_set:
+                            continue
+                        info = info_map.get(did)
+                        if not info:
+                            continue
+                        cns_i, inv_i = info[0], info[1]
+                        seq_i = int(info[2]) if len(info) > 2 else 0
+                        if (
+                            inv_i == 0
+                            and cns_i
+                            and cns_i <= new_horizon
+                            and (new_horizon_seq == 0 or (seq_i > 0 and seq_i <= new_horizon_seq))
+                        ):
+                            prunable.append(did)
+
+            now_iso = _iso_now()
+            # Single atomic BEGIN IMMEDIATE transaction with state_rev CAS (horizon + delete is_read=0 +
+            # invalid_docs is_read=1 + prune redundant is_read=1).
+            with self._lock:
+                self.db.execute('BEGIN IMMEDIATE')
+                try:
+                    cur = self.db.execute(
+                        '''UPDATE ui_read_scopes
+                           SET read_horizon_at_ns = CASE
+                                 WHEN ? > read_horizon_at_ns THEN ?
+                                 ELSE read_horizon_at_ns
+                               END,
+                               horizon_max_rowid = CASE
+                                 WHEN ? > horizon_max_rowid THEN ?
+                                 ELSE horizon_max_rowid
+                               END,
+                               state_rev = state_rev + 1,
+                               is_auto_baseline = 0,
+                               updated_at = ?
+                           WHERE scope_hash = ? AND state_rev = ?''',
+                        (
+                            new_horizon,
+                            new_horizon,
+                            new_horizon_seq,
+                            new_horizon_seq,
+                            now_iso,
+                            scope_hash,
+                            expected_rev,
+                        ),
+                    )
+                    if cur.rowcount != 1:
+                        self.db.execute('ROLLBACK')
+                        continue
+                    self.db.execute(
+                        'DELETE FROM ui_read_items WHERE scope_hash = ? AND is_read = 0',
                         (scope_hash,),
-                    ).fetchall()
-                ]
-            info_map = catalog_index.doc_created_at_info(dataset_id, read_ids) if read_ids else {}
-            prunable = [
-                did for did in read_ids
-                if did in info_map and info_map[did][1] == 0 and info_map[did][0] and info_map[did][0] <= new_horizon
-            ]
-            if prunable:
-                with self._lock:
-                    self.db.execute('BEGIN IMMEDIATE')
-                    try:
-                        for start in range(0, len(prunable), _MAX_IN_BATCH):
-                            batch = prunable[start : start + _MAX_IN_BATCH]
-                            ph = ','.join('?' for _ in batch)
-                            self.db.execute(
-                                f'DELETE FROM ui_read_items WHERE scope_hash = ? AND is_read = 1 AND doc_id IN ({ph})',
-                                (scope_hash, *batch),
-                            )
-                        self.db.execute('COMMIT')
-                        self._bump_mutation_rev_locked()
-                    except Exception:
-                        if self.db.in_transaction:
-                            self.db.execute('ROLLBACK')
-                        raise
+                    )
+                    if invalid_docs:
+                        self.db.executemany(
+                            '''INSERT INTO ui_read_items(scope_hash, doc_id, is_read, updated_at)
+                               VALUES (?,?,1,?)
+                               ON CONFLICT(scope_hash, doc_id) DO UPDATE SET
+                                 is_read = 1, updated_at = excluded.updated_at''',
+                            [(scope_hash, did, now_iso) for did in invalid_docs],
+                        )
+                    for start in range(0, len(prunable), _MAX_IN_BATCH):
+                        batch = prunable[start : start + _MAX_IN_BATCH]
+                        ph = ','.join('?' for _ in batch)
+                        self.db.execute(
+                            f'DELETE FROM ui_read_items WHERE scope_hash = ? AND is_read = 1 AND doc_id IN ({ph})',
+                            (scope_hash, *batch),
+                        )
+                    rev_row = self.db.execute(
+                        'SELECT read_horizon_at_ns, state_rev FROM ui_read_scopes WHERE scope_hash = ?',
+                        (scope_hash,),
+                    ).fetchone()
+                    if rev_row is not None:
+                        new_horizon = str(rev_row[0])
+                        state_rev = int(rev_row[1] or 0)
+                    self.db.execute('COMMIT')
+                    self._bump_mutation_rev_locked()
+                    self._compact_floor_cache.pop((scope_hash, dataset_id), None)
+                    break
+                except Exception:
+                    if self.db.in_transaction:
+                        self.db.execute('ROLLBACK')
+                    raise
+
         return {
             'scope_hash': scope_hash,
             'unread_count': 0,

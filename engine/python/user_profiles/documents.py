@@ -99,6 +99,10 @@ class ProfileDocuments:
                 allow_redirects=False,
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as response:
+                if response.status == 401:
+                    raise PolicyError('official_unauthorized', 401)
+                if response.status == 403:
+                    raise PolicyError('dataset_access_denied', 403)
                 if response.status != 200:
                     raise PolicyError('profile_document_unavailable', 503)
                 body = bytearray()

@@ -16,7 +16,11 @@ from reading_state_store import knowledge_read_scope_hash
 
 
 class _DummyOfficial:
-    pass
+    def __init__(self, authorized=()):
+        self.authorized = set(authorized)
+
+    def authorized_datasets(self):
+        return frozenset(self.authorized)
 
 
 class V2APITests(AioHTTPTestCase):
@@ -228,7 +232,8 @@ class V2APITests(AioHTTPTestCase):
             encoding='utf-8',
         )
 
-        self.registry = Registry(self.root / 'registry.json', _DummyOfficial())
+        self.dummy_official = _DummyOfficial({self.ds_proj, self.ds_common})
+        self.registry = Registry(self.root / 'registry.json', self.dummy_official)
         self.registry.state['projects'] = {
             'p1': {'id': 'p1', 'name': 'Alpha', 'dataset_id': self.ds_proj, 'status': 'verified'},
             'p-unconf': {'id': 'p-unconf', 'name': 'Unconfirmed', 'dataset_id': self.ds_unconf, 'status': 'unconfirmed'},
@@ -544,6 +549,204 @@ class V2APITests(AioHTTPTestCase):
             ccursor = cpage['next_cursor']
         self.assertEqual(len(children_seen), 8)
         self.assertEqual(len(set(children_seen)), 8)
+
+    async def test_round2_contracts_live_auth_relation_sig_cache_update_and_summary_budget(self):
+        """Regression for #55 Contracts #1/#2/#3, live auth, relation_sig>256, cache QA UPDATE, and 16KiB budget."""
+        # 1. Contract #1: direction=prev&anchor_doc_id on BOTH /v2/projects/{id}/knowledge and /v2/common/knowledge
+        all_pk = await (await self.client.get(
+            '/v2/projects/p1/knowledge?limit=50', headers=self.manager_headers
+        )).json()
+        all_ids = [it['doc_id'] for it in all_pk['items']]
+        self.assertGreaterEqual(len(all_ids), 10)
+        anchor_id = all_ids[5]
+
+        # direction=prev&anchor_doc_id returns items strictly BEFORE anchor_id (no cursor needed!)
+        prev_resp = await self.client.get(
+            f'/v2/projects/p1/knowledge?direction=prev&anchor_doc_id={anchor_id}&limit=3',
+            headers=self.manager_headers,
+        )
+        self.assertEqual(prev_resp.status, 200)
+        prev_body = await prev_resp.json()
+        self.assertEqual([it['doc_id'] for it in prev_body['items']], all_ids[2:5])
+        self.assertTrue(prev_body['has_prev'])
+        self.assertTrue(prev_body['has_more'])
+        # Mutual exclusion of cursor + anchor_doc_id still returns 400
+        bad_both = await self.client.get(
+            f"/v2/projects/p1/knowledge?direction=prev&anchor_doc_id={anchor_id}&cursor={prev_body['prev_cursor']}",
+            headers=self.manager_headers,
+        )
+        self.assertEqual(bad_both.status, 400)
+
+        # Common knowledge direction=prev&anchor_doc_id
+        all_ck = await (await self.client.get('/v2/common/knowledge?limit=50', headers=self.manager_headers)).json()
+        ck_ids = [it['doc_id'] for it in all_ck['items']]
+        self.assertEqual(len(ck_ids), 3)
+        ck_prev = await self.client.get(
+            f'/v2/common/knowledge?direction=prev&anchor_doc_id={ck_ids[2]}&limit=2',
+            headers=self.manager_headers,
+        )
+        self.assertEqual(ck_prev.status, 200)
+        ck_prev_body = await ck_prev.json()
+        self.assertEqual([it['doc_id'] for it in ck_prev_body['items']], ck_ids[0:2])
+        self.assertFalse(ck_prev_body['has_prev'])
+        self.assertTrue(ck_prev_body['has_more'])
+
+        # 2. Contract #2: unread_state_rev returned & synced across bootstrap, knowledge, message-summary, and mutations
+        ov = await (await self.client.get('/v2/overview/bootstrap', headers=self.manager_headers)).json()
+        self.assertIn('unread_state_rev', ov['projects'][0])
+        rev_ov = ov['projects'][0]['unread_state_rev']
+        self.assertGreater(rev_ov, 0)
+        pk = await (await self.client.get('/v2/projects/p1/knowledge?limit=5', headers=self.manager_headers)).json()
+        self.assertEqual(pk['unread_state_rev'], rev_ov)
+        ms = await (await self.client.get('/v2/projects/p1/message-summary', headers=self.manager_headers)).json()
+        self.assertEqual(ms['unread_state_rev'], rev_ov)
+
+        mr = await (await self.client.post(
+            '/v2/reading-state/mark-read',
+            headers=self.manager_headers,
+            json={
+                'reading_identity': self.identity,
+                'project_id': 'p1',
+                'dataset_id': self.ds_proj,
+                'doc_ids': [all_ids[0]],
+            },
+        )).json()
+        self.assertGreater(mr['state_rev'], rev_ov)
+        pk2 = await (await self.client.get('/v2/projects/p1/knowledge?limit=5', headers=self.manager_headers)).json()
+        self.assertEqual(pk2['unread_state_rev'], mr['state_rev'])
+        self.assertEqual(pk2['unread_count'], mr['unread_count'])
+
+        # import/commit explicitly accepts expected_items: 0 and returns state_rev
+        b_zero = await (await self.client.post(
+            '/v2/reading-state/import/begin',
+            headers=self.manager_headers,
+            json={
+                'reading_identity': 'http://127.0.0.1:61255/zero-items/',
+                'project_id': 'p1',
+                'dataset_id': self.ds_proj,
+                'initialized': True,
+                'enabled_at': '2026-11-21T09:59:00Z',
+            },
+        )).json()
+        c_zero = await self.client.post(
+            '/v2/reading-state/import/commit',
+            headers=self.manager_headers,
+            json={'batch_id': b_zero['batch_id'], 'expected_items': 0},
+        )
+        self.assertEqual(c_zero.status, 200)
+        c_zero_body = await c_zero.json()
+        self.assertEqual(c_zero_body['committed'], 0)
+        self.assertGreater(c_zero_body['state_rev'], 0)
+
+        # 3. Contract #3: ?dataset_id=<uuid> on /v2/search/recent and /v2/search/metadata filters in SQL before LIMIT
+        sr_common = await self.client.get(
+            f'/v2/search/recent?dataset_id={self.ds_common}&limit=10',
+            headers=self.manager_headers,
+        )
+        self.assertEqual(sr_common.status, 200)
+        sr_body = await sr_common.json()
+        self.assertEqual(len(sr_body['knowledge_items']), 3)
+        self.assertTrue(all(it['dataset_id'] == self.ds_common for it in sr_body['knowledge_items']))
+
+        sm_common = await self.client.get(
+            f'/v2/search/metadata?q=Common&dataset_id={self.ds_common}&limit=10',
+            headers=self.manager_headers,
+        )
+        self.assertEqual(sm_common.status, 200)
+        sm_body = await sm_common.json()
+        self.assertEqual(len(sm_body['items']), 3)
+        self.assertTrue(all(it['dataset_id'] == self.ds_common for it in sm_body['items']))
+
+        # Reject project_id + dataset_id together (400) and unconfirmed dataset_id (403)
+        self.assertEqual(
+            (await self.client.get(
+                f'/v2/search/recent?project_id=p1&dataset_id={self.ds_common}', headers=self.manager_headers
+            )).status,
+            400,
+        )
+        self.assertEqual(
+            (await self.client.get(
+                f'/v2/search/metadata?q=Secret&dataset_id={self.ds_unconf}', headers=self.manager_headers
+            )).status,
+            403,
+        )
+
+        # 4. Live official auth intersection & Fail-Closed 503 when official=None (R2-PY-P0-01)
+        self.dummy_official.authorized.discard(self.ds_common)
+        ov_revoked = await (await self.client.get('/v2/overview/bootstrap', headers=self.manager_headers)).json()
+        self.assertIsNone(ov_revoked['common'])
+        self.assertEqual(
+            (await self.client.get(
+                f'/v2/search/recent?dataset_id={self.ds_common}', headers=self.manager_headers
+            )).status,
+            403,
+        )
+        self.dummy_official.authorized.add(self.ds_common)
+
+        saved_official = self.registry.official
+        self.registry.official = None
+        try:
+            self.assertEqual(
+                (await self.client.get('/v2/overview/bootstrap', headers=self.manager_headers)).status,
+                503,
+            )
+        finally:
+            self.registry.official = saved_official
+
+        # 5. CacheSessionHydrator detects in-place QA payload UPDATE immediately (R2-PY-P1-05 / CC2-P1-02)
+        rr1 = await (await self.client.get('/v2/projects/p1/raw-records?kind=session&limit=10', headers=self.manager_headers)).json()
+        parent_before = next(e['session'] for e in rr1['items'] if e['session']['session_id'] == 'sess-parent')
+        self.assertEqual(parent_before['label'], 'Parent task question')
+
+        c2 = sqlite3.connect(self.cache_db)
+        c2.execute(
+            "UPDATE cache_qa_entries SET payload = ? WHERE session_id = 'sess-parent'",
+            (json.dumps({'question': 'Updated QA title in-place!'}),),
+        )
+        c2.commit()
+        c2.close()
+        rr2 = await (await self.client.get('/v2/projects/p1/raw-records?kind=session&limit=10', headers=self.manager_headers)).json()
+        parent_after = next(e['session'] for e in rr2['items'] if e['session']['session_id'] == 'sess-parent')
+        self.assertEqual(parent_after['label'], 'Updated QA title in-place!')
+
+        # 6. _SessionRelationsResolver.relation_sig detects middle-session mutation even when >256 entries (R2-PY-P1-04)
+        #    BOTH on raw plain dict AND on TrackedRelationsDict (outer replace + nested in-place mutation)!
+        from session_relations import TrackedRelationsDict
+        handles = self.app['v2_api_handles']
+        big_rels = {
+            f's-{i:04d}': {'parent_session_id': 'root-a', 'subagent_role': 'worker', 'nesting_depth': 1}
+            for i in range(300)
+        }
+        self.registry.state['session_relations'] = big_rels
+        sig1 = handles.relations_resolver.relation_sig(self.ds_proj)
+        big_rels['s-0150'] = {'parent_session_id': 'root-b', 'subagent_role': 'worker', 'nesting_depth': 1}
+        sig2 = handles.relations_resolver.relation_sig(self.ds_proj)
+        self.assertNotEqual(sig1, sig2)
+
+        tracked_rels = TrackedRelationsDict(big_rels)
+        self.registry.state['session_relations'] = tracked_rels
+        sig_t1 = handles.relations_resolver.relation_sig(self.ds_proj)
+        tracked_rels['s-0150']['parent_session_id'] = 'root-c'
+        sig_t2 = handles.relations_resolver.relation_sig(self.ds_proj)
+        self.assertNotEqual(sig_t1, sig_t2)
+
+        # 7. message-summary enforces hard <= 16 KiB UTF-8 byte cap even with massive activity/notices
+        c1 = sqlite3.connect(self.cognee_db)
+        for i in range(30):
+            c1.execute(
+                'INSERT INTO pipeline_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                (
+                    uuid.uuid4().hex, uuid.uuid4().hex, None, uuid.UUID(self.ds_proj).hex,
+                    'cognify_pipeline', 'op_' + ('x' * 600), 'COMPLETED', 'ok', 0, 'err_' + ('y' * 400),
+                    'manual', f'2026-11-21 12:00:{i:02d}', f'2026-11-21 12:00:{i:02d}', f'2026-11-21 12:00:{i:02d}',
+                ),
+            )
+        c1.commit()
+        c1.close()
+        ms_resp = await self.client.get('/v2/projects/p1/message-summary', headers=self.manager_headers)
+        self.assertEqual(ms_resp.status, 200)
+        ms_raw = await ms_resp.read()
+        self.assertLessEqual(len(ms_raw), 16 * 1024)
 
 
 if __name__ == '__main__':

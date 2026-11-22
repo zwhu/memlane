@@ -38,7 +38,7 @@ from sqlite_ro import (
     uuid_text,
 )
 
-CATALOG_SCHEMA_VERSION = 3
+CATALOG_SCHEMA_VERSION = 4
 _MAX_IN_BATCH = 400
 _CHUNK_SPAN = 256
 _CHUNK_SHIFT = 8  # 1 << 8 == 256
@@ -377,7 +377,10 @@ _CATALOG_INDEX_DDL = '''
             ON catalog_docs(dataset_id, doc_id)
             WHERE is_knowledge = 1 AND created_at_invalid = 1;
         CREATE INDEX IF NOT EXISTS idx_cdocs_ds_rowid
-            ON catalog_docs(dataset_id, cognee_rowid, is_knowledge, doc_id);
+            ON catalog_docs(dataset_id, cognee_rowid);
+        CREATE INDEX IF NOT EXISTS idx_cdocs_ds_doc_seq
+            ON catalog_docs(dataset_id, doc_seq, doc_id)
+            WHERE is_knowledge = 1;
 '''
 
 _CATALOG_SESSION_INDEX_DDL = '''
@@ -389,8 +392,14 @@ _CATALOG_SESSION_INDEX_DDL = '''
         CREATE INDEX IF NOT EXISTS idx_csess_root_ts
             ON catalog_sessions(dataset_id, root_session_id, sort_ts_desc_key ASC, user_id ASC, session_id ASC)
             WHERE is_top_level = 0;
+        CREATE INDEX IF NOT EXISTS idx_csess_root_user_ts
+            ON catalog_sessions(dataset_id, user_id, root_session_id, sort_ts_desc_key ASC, session_id ASC)
+            WHERE is_top_level = 0;
         CREATE INDEX IF NOT EXISTS idx_csess_parent_ts
             ON catalog_sessions(dataset_id, parent_session_id, sort_ts_desc_key ASC, user_id ASC, session_id ASC)
+            WHERE parent_session_id != '';
+        CREATE INDEX IF NOT EXISTS idx_csess_parent_user_ts
+            ON catalog_sessions(dataset_id, user_id, parent_session_id, sort_ts_desc_key ASC, session_id ASC)
             WHERE parent_session_id != '';
         CREATE INDEX IF NOT EXISTS idx_csess_ds_sid
             ON catalog_sessions(dataset_id, session_id, user_id);
@@ -413,20 +422,22 @@ _CATALOG_INDEX_NAMES = (
     'idx_cdocs_proj_invalid_ts',
     'idx_cdocs_proj_rowid',
     'idx_cdocs_ds_rowid',
+    'idx_cdocs_ds_doc_seq',
 )
 
 _CATALOG_SESSION_INDEX_NAMES = (
     'idx_csess_pk',
     'idx_csess_top_ts',
     'idx_csess_root_ts',
+    'idx_csess_root_user_ts',
     'idx_csess_parent_ts',
+    'idx_csess_parent_user_ts',
     'idx_csess_ds_sid',
     'idx_csess_recent_ts',
 )
 
 
-def _create_catalog_schema(con: sqlite3.Connection, tz_name: str):
-    con.execute('PRAGMA page_size=8192')
+def _apply_connection_pragmas(con: sqlite3.Connection):
     con.execute('PRAGMA journal_mode=WAL')
     con.execute('PRAGMA journal_size_limit=4194304')
     con.execute('PRAGMA wal_autocheckpoint=2000')
@@ -435,6 +446,11 @@ def _create_catalog_schema(con: sqlite3.Connection, tz_name: str):
     con.execute('PRAGMA cache_size=-1024')
     con.execute('PRAGMA threads=2')
     con.execute('PRAGMA busy_timeout=5000')
+
+
+def _create_catalog_schema(con: sqlite3.Connection, tz_name: str, *, create_indexes: bool = True):
+    con.execute('PRAGMA page_size=8192')
+    _apply_connection_pragmas(con)
     con.executescript('''
         CREATE TABLE IF NOT EXISTS catalog_meta (
             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -443,6 +459,7 @@ def _create_catalog_schema(con: sqlite3.Connection, tz_name: str):
             local_tz_name TEXT NOT NULL,
             last_provenance_seq INTEGER NOT NULL,
             last_recall_rev INTEGER NOT NULL,
+            last_doc_seq INTEGER NOT NULL DEFAULT 0,
             built_at TEXT NOT NULL
         );
 
@@ -490,7 +507,8 @@ def _create_catalog_schema(con: sqlite3.Connection, tz_name: str):
             recall_count INTEGER NOT NULL DEFAULT 0,
             recall_desc_key INTEGER NOT NULL DEFAULT 0,
             pipeline_status TEXT NOT NULL DEFAULT '',
-            source_updated_at TEXT NOT NULL DEFAULT ''
+            source_updated_at TEXT NOT NULL DEFAULT '',
+            doc_seq INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS catalog_day_buckets (
@@ -516,9 +534,13 @@ def _create_catalog_schema(con: sqlite3.Connection, tz_name: str):
             is_top_level INTEGER NOT NULL DEFAULT 1 CHECK (is_top_level IN (0, 1)),
             child_count INTEGER NOT NULL DEFAULT 0
         );
-    ''' + _CATALOG_INDEX_DDL + _CATALOG_SESSION_INDEX_DDL)
+    ''')
 
-    # Backward-compatible in-place schema migration from v2 -> v3 using explicit literal DDL
+    # Backward-compatible in-place schema migration from v2/v3 -> v4 using explicit literal DDL
+    meta_cols = {str(r[1]) for r in con.execute('PRAGMA table_info(catalog_meta)').fetchall()}
+    if 'last_doc_seq' not in meta_cols:
+        con.execute('ALTER TABLE catalog_meta ADD COLUMN last_doc_seq INTEGER NOT NULL DEFAULT 0')
+
     state_cols = {str(r[1]) for r in con.execute('PRAGMA table_info(dataset_sync_state)').fetchall()}
     if 'id_checksum' not in state_cols:
         con.execute('ALTER TABLE dataset_sync_state ADD COLUMN id_checksum INTEGER NOT NULL DEFAULT 0')
@@ -532,13 +554,28 @@ def _create_catalog_schema(con: sqlite3.Connection, tz_name: str):
     doc_cols = {str(r[1]) for r in con.execute('PRAGMA table_info(catalog_docs)').fetchall()}
     if 'effective_date_source' not in doc_cols:
         con.execute("ALTER TABLE catalog_docs ADD COLUMN effective_date_source TEXT NOT NULL DEFAULT ''")
+    if 'doc_seq' not in doc_cols:
+        con.execute('ALTER TABLE catalog_docs ADD COLUMN doc_seq INTEGER NOT NULL DEFAULT 0')
+        con.execute(
+            'UPDATE catalog_docs SET doc_seq = CASE WHEN cognee_rowid > 0 THEN cognee_rowid ELSE rowid END WHERE doc_seq = 0'
+        )
+
+    if create_indexes:
+        con.executescript(_CATALOG_INDEX_DDL + _CATALOG_SESSION_INDEX_DDL)
 
     con.execute(
         '''INSERT OR IGNORE INTO catalog_meta
-           (singleton, schema_version, generation, local_tz_name, last_provenance_seq, last_recall_rev, built_at)
-           VALUES (1, ?, 0, ?, 0, 0, ?)''',
+           (singleton, schema_version, generation, local_tz_name, last_provenance_seq, last_recall_rev, last_doc_seq, built_at)
+           VALUES (1, ?, 0, ?, 0, 0, 0, ?)''',
         (CATALOG_SCHEMA_VERSION, tz_name, _iso_now()),
     )
+    max_seq_row = con.execute('SELECT COALESCE(MAX(doc_seq), 0) FROM catalog_docs').fetchone()
+    max_seq_val = int(max_seq_row[0] or 0) if max_seq_row else 0
+    if max_seq_val > 0:
+        con.execute(
+            'UPDATE catalog_meta SET last_doc_seq = ? WHERE singleton = 1 AND last_doc_seq < ?',
+            (max_seq_val, max_seq_val),
+        )
     con.execute(
         'UPDATE catalog_meta SET schema_version = ? WHERE singleton = 1 AND schema_version < ?',
         (CATALOG_SCHEMA_VERSION, CATALOG_SCHEMA_VERSION),
@@ -584,6 +621,7 @@ def _row_to_doc_dict(row) -> dict:
         'recall_desc_key': int(row[23]),
         'pipeline_status': row[24],
         'updated_at': row[25],
+        'doc_seq': int(row[26] or 0) if len(row) > 26 else int(row[2] or 0),
     }
 
 
@@ -611,7 +649,7 @@ _SELECT_DOC_COLS = '''
     category, session_id, doc_name, doc_label, raw_data_location, content_hash,
     created_at_raw, created_at_ns, created_at_invalid, updated_at_ns, effective_date,
     effective_date_source, day_desc_key, sort_ts_desc_key, recall_count, recall_desc_key,
-    pipeline_status, source_updated_at
+    pipeline_status, source_updated_at, doc_seq
 '''
 
 _SELECT_SESS_COLS = '''
@@ -626,13 +664,13 @@ _INSERT_DOC_SQL = '''INSERT INTO catalog_docs (
     doc_name, doc_label, raw_data_location, content_hash,
     created_at_raw, created_at_ns, created_at_invalid, updated_at_ns,
     effective_date, effective_date_source, day_desc_key, sort_ts_desc_key,
-    recall_count, recall_desc_key, pipeline_status, source_updated_at
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'''
+    recall_count, recall_desc_key, pipeline_status, source_updated_at, doc_seq
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'''
 
 _INSERT_DOC_MULTI_SQL = (
     _INSERT_DOC_SQL.split('VALUES')[0]
     + 'VALUES '
-    + ','.join(['(' + ','.join('?' * 26) + ')'] * _MULTI_INSERT_ROWS)
+    + ','.join(['(' + ','.join('?' * 27) + ')'] * _MULTI_INSERT_ROWS)
 )
 
 
@@ -727,6 +765,8 @@ class CatalogIndex:
         self._last_stat_sig = None
         self._last_prov_stat = None
         self._last_recall_stat = None
+        self._prov_sync_incomplete = False
+        self._recall_sync_incomplete = False
         self._last_generation = 0
         self._sessions_generation = 0
         self._last_synced_pin_ts_ns = 0
@@ -751,8 +791,33 @@ class CatalogIndex:
         self._readers_cond = threading.Condition(self._readers_lock)
         self._active_readers = 0
 
-        self._write_con = _open_private_rw(self.path)
-        _create_catalog_schema(self._write_con, self.tz_provider())
+        self._write_con = self._open_or_recreate_write_con()
+
+    def _open_or_recreate_write_con(self) -> sqlite3.Connection:
+        """Open ``catalog-index.sqlite3`` with startup corruption self-healing."""
+        con = None
+        try:
+            con = _open_private_rw(self.path)
+            _create_catalog_schema(con, self.tz_provider())
+            chk = con.execute('PRAGMA quick_check(1)').fetchone()
+            if not chk or str(chk[0]).lower() != 'ok':
+                raise sqlite3.DatabaseError('catalog index quick_check failed on startup')
+            con.execute('SELECT schema_version, generation, last_doc_seq FROM catalog_meta WHERE singleton = 1').fetchone()
+            return con
+        except sqlite3.DatabaseError:
+            if con is not None:
+                try:
+                    con.close()
+                except Exception:
+                    pass
+            for suffix in ('', '-wal', '-shm'):
+                try:
+                    Path(str(self.path) + suffix).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            fresh = _open_private_rw(self.path)
+            _create_catalog_schema(fresh, self.tz_provider())
+            return fresh
 
     def _check_not_rebuilding(self):
         with self._state_lock:
@@ -1312,7 +1377,7 @@ class CatalogIndex:
                                 tot_u = u_i
                         if (
                             (expected_cnt is None or tot_c == expected_cnt)
-                            and tot_m == max_rid
+                            and (tot_m <= max_rid if verify_global_max_rid is not None else tot_m == max_rid)
                             and (expected_sum_rid is None or tot_s == expected_sum_rid)
                         ):
                             return merged_d, tot_c, tot_m, tot_s, tot_u
@@ -1581,12 +1646,125 @@ class CatalogIndex:
 
     # ============ Session Projection Sync (catalog_sessions) ============
 
+    def _hash_sessions_dataset(
+        self,
+        cog_con: sqlite3.Connection,
+        cognee_db: Path,
+        ds_vars: list[str],
+        *,
+        agent_col: str,
+        status_col: str,
+        started_col: str,
+        last_col: str,
+        cog_snap_sig=None,
+    ) -> tuple[int, str]:
+        """Compute exact cryptographic 6-column Blake2b digest for one dataset's ``session_records``."""
+        min_rid = 0
+        max_rid = 0
+        for v in ds_vars:
+            mm = cog_con.execute(
+                'SELECT MIN(rowid), MAX(rowid) FROM session_records WHERE dataset_id = ?',
+                (v,),
+            ).fetchone()
+            if mm and mm[0] is not None:
+                lo_v = int(mm[0])
+                hi_v = int(mm[1] or 0)
+                if lo_v > 0 and (min_rid == 0 or lo_v < min_rid):
+                    min_rid = lo_v
+                if hi_v > max_rid:
+                    max_rid = hi_v
+        if max_rid <= 0:
+            return 0, _fold_chunk_digests({})
+
+        sess_shift = 11  # 2048 rows per aligned bucket
+        sess_span = 1 << sess_shift
+        min_bkt = min_rid >> sess_shift
+        max_bkt = max_rid >> sess_shift
+        if max_bkt - min_bkt + 1 <= 256:
+            buckets = list(range(min_bkt, max_bkt + 1))
+        else:
+            ph_b = ','.join('?' for _ in ds_vars)
+            buckets = sorted({
+                int(r[0])
+                for r in cog_con.execute(
+                    f'SELECT DISTINCT (rowid >> {sess_shift}) FROM session_records WHERE dataset_id IN ({ph_b})',
+                    ds_vars,
+                )
+            })
+        if not buckets:
+            return 0, _fold_chunk_digests({})
+
+        ph = ','.join('?' for _ in ds_vars)
+        ds_filter = '+dataset_id = ?' if len(ds_vars) == 1 else f'+dataset_id IN ({ph})'
+        ns = _NULL_HASH_SENTINEL
+        row_expr = (
+            f"rowid||'\x1f'||"
+            f"ifnull(session_id,'{ns}')||'\x1f'||"
+            f"ifnull(user_id,'{ns}')||'\x1f'||"
+            f"ifnull({agent_col},'{ns}')||'\x1f'||"
+            f"ifnull({status_col},'{ns}')||'\x1f'||"
+            f"ifnull({started_col},'{ns}')||'\x1f'||"
+            f"ifnull({last_col},'{ns}')"
+        )
+        chunk_sql = (
+            f"SELECT COUNT(*), GROUP_CONCAT({row_expr}, '\x1e') "
+            f"FROM session_records WHERE rowid BETWEEN ? AND ? AND {ds_filter}"
+        )
+        fallback_sql = (
+            f"SELECT {row_expr} FROM session_records "
+            f"WHERE rowid BETWEEN ? AND ? AND {ds_filter} ORDER BY rowid ASC"
+        )
+        ds_params = tuple(ds_vars)
+
+        def _hash_bkts(con_ro: sqlite3.Connection, bkt_list: list[int]) -> tuple[dict[int, bytes], int]:
+            digs: dict[int, bytes] = {}
+            tot = 0
+            _b2 = hashlib.blake2b
+            for bkt in bkt_list:
+                lo = bkt << sess_shift
+                hi = lo + sess_span - 1
+                try:
+                    row = con_ro.execute(chunk_sql, (lo, hi, *ds_params)).fetchone()
+                except sqlite3.OperationalError:
+                    h = _b2(digest_size=16)
+                    b_cnt = 0
+                    for (r_line,) in con_ro.execute(fallback_sql, (lo, hi, *ds_params)):
+                        if b_cnt > 0:
+                            h.update(b'\x1e')
+                        h.update(r_line if isinstance(r_line, bytes) else str(r_line).encode('utf-8'))
+                        b_cnt += 1
+                    if b_cnt > 0:
+                        digs[bkt] = h.digest()
+                        tot += b_cnt
+                    continue
+                if row is None or not row[0]:
+                    continue
+                tot += int(row[0])
+                payload = row[1]
+                if payload is not None:
+                    raw_b = payload if isinstance(payload, bytes) else str(payload).encode('utf-8')
+                    digs[bkt] = _b2(raw_b, digest_size=16).digest()
+            return digs, tot
+
+        # Run directly on the already-pinned cog_con snapshot (~4ms for 10k sessions):
+        # avoids polluting the dedicated `data` chunk-hash worker pool (`_hash_worker_cons`)
+        # and guarantees bit-exact consistency with cog_con's BEGIN DEFERRED read-mark.
+        prev_tf = cog_con.text_factory
+        cog_con.text_factory = bytes
+        try:
+            digs, tot_c = _hash_bkts(cog_con, buckets)
+            return tot_c, _fold_chunk_digests(digs)
+        finally:
+            cog_con.text_factory = prev_tf
+
     def _sync_sessions_into_connection(
         self,
         con: sqlite3.Connection,
         cog_con: sqlite3.Connection,
         allowed: list[str],
         *,
+        cognee_db: Path | None = None,
+        cog_snap_sig=None,
         relations_resolver=None,
         force_full: bool = False,
         bulk_empty: bool = False,
@@ -1610,57 +1788,26 @@ class CatalogIndex:
             ).fetchall():
                 existing_sess_sig[str(ds_id)] = (int(scnt or 0), str(ssig or ''))
 
-        # Single-pass summary across session_records for ALL allowed datasets (1 scan instead of N scans!)
-        # On cold bulk_empty builds we read all rows once directly below, skipping the summary pre-scan!
+        db_path = cognee_db or (
+            (self.official_data / 'system' / 'databases' / 'cognee_db') if self.official_data else None
+        )
         sr_ds_map: dict[str, str] = {}
         for ds in allowed:
             h = uuid_hex(ds)
             if h:
                 sr_ds_map[h] = ds
             sr_ds_map[ds] = ds
-        sr_summary: dict[str, list] = {ds: [0, 0, 0, '', 0] for ds in allowed}
+
         cold_rows_by_ds: dict[str, list[tuple]] | None = None
         if bulk_empty:
             cold_rows_by_ds = {ds: [] for ds in allowed}
-            for r_ds, r_rid, r_sid, r_uid, r_aid, r_st, r_started, r_last in cog_con.execute(
-                f'''SELECT dataset_id, rowid, session_id, user_id, {agent_col}, {status_col}, {started_col}, {last_col}
+            for r_ds, r_sid, r_uid, r_aid, r_st, r_started, r_last in cog_con.execute(
+                f'''SELECT dataset_id, session_id, user_id, {agent_col}, {status_col}, {started_col}, {last_col}
                     FROM session_records'''
             ):
                 canon = sr_ds_map.get(str(r_ds))
-                if canon is None:
-                    continue
-                acc = sr_summary[canon]
-                acc[0] += 1
-                rid_i = int(r_rid or 0)
-                if rid_i > acc[1]:
-                    acc[1] = rid_i
-                acc[2] += rid_i
-                l_v = str(r_last or '')
-                if l_v > acc[3]:
-                    acc[3] = l_v
-                acc[4] += len(str(r_sid or '')) + len(str(r_st or '')) + len(l_v)
-                cold_rows_by_ds[canon].append((r_sid, r_uid, r_aid, r_st, r_started, r_last))
-        else:
-            for r_ds, r_cnt, r_max, r_sum, r_last, r_len in cog_con.execute(
-                f'''SELECT dataset_id, COUNT(*), COALESCE(MAX(rowid), 0), COALESCE(SUM(rowid), 0),
-                           COALESCE(MAX({last_col}), ''),
-                           COALESCE(SUM(length(coalesce(session_id,'')) + length(coalesce({status_col},'')) + length(coalesce({last_col},''))), 0)
-                    FROM session_records
-                    GROUP BY dataset_id'''
-            ):
-                canon = sr_ds_map.get(str(r_ds))
-                if canon is None:
-                    continue
-                acc = sr_summary[canon]
-                acc[0] += int(r_cnt or 0)
-                m_v = int(r_max or 0)
-                if m_v > acc[1]:
-                    acc[1] = m_v
-                acc[2] += int(r_sum or 0)
-                l_v = str(r_last or '')
-                if l_v > acc[3]:
-                    acc[3] = l_v
-                acc[4] += int(r_len or 0)
+                if canon is not None:
+                    cold_rows_by_ds[canon].append((r_sid, r_uid, r_aid, r_st, r_started, r_last))
 
         any_mutated = False
         now_iso = _iso_now()
@@ -1669,7 +1816,20 @@ class CatalogIndex:
             if not ds_vars:
                 continue
             ph = ','.join('?' for _ in ds_vars)
-            s_rows_cnt, s_max_rid, s_sum_rid, s_max_last, s_len_sum = sr_summary[ds]
+
+            if db_path is not None:
+                s_cnt, s_dig = self._hash_sessions_dataset(
+                    cog_con,
+                    db_path,
+                    ds_vars,
+                    agent_col=agent_col,
+                    status_col=status_col,
+                    started_col=started_col,
+                    last_col=last_col,
+                    cog_snap_sig=cog_snap_sig,
+                )
+            else:
+                s_cnt, s_dig = 0, _fold_chunk_digests({})
 
             rel_sig = '0'
             rel_resolver_fn = relations_resolver
@@ -1682,7 +1842,7 @@ class CatalogIndex:
             elif rel_resolver_fn is not None:
                 rel_sig = ''
 
-            base_sig = f'{s_rows_cnt}|{s_max_rid}|{s_sum_rid}|{s_max_last}|{s_len_sum}'
+            base_sig = f'{s_cnt}:{s_dig}'
             prev_entry = existing_sess_sig.get(ds)
             if not force_full and rel_sig and prev_entry is not None and prev_entry[1] == f'{base_sig}|{rel_sig}':
                 continue
@@ -1858,6 +2018,9 @@ class CatalogIndex:
         *,
         force_full: bool = False,
         relations_resolver=None,
+        preserved_doc_seqs: dict[tuple[str, str], int] | None = None,
+        min_last_doc_seq: int = 0,
+        min_generation: int = 0,
     ) -> tuple[int, bool]:
         """Synchronize ``catalog_docs``, ``catalog_day_buckets``, ``catalog_sessions``, and ``dataset_sync_state``.
 
@@ -1881,20 +2044,44 @@ class CatalogIndex:
         tz_name = self.tz_provider()
         tz_info = _tzinfo_for_name(tz_name)
         meta_row = con.execute(
-            'SELECT generation, local_tz_name, last_provenance_seq, last_recall_rev FROM catalog_meta WHERE singleton=1'
+            'SELECT generation, local_tz_name, last_provenance_seq, last_recall_rev, last_doc_seq FROM catalog_meta WHERE singleton=1'
         ).fetchone()
-        cur_gen = int(meta_row[0]) if meta_row else 0
+        cur_gen = max(int(meta_row[0]) if meta_row else 0, int(min_generation))
         old_tz = str(meta_row[1]) if meta_row else tz_name
         last_prov_seq = 0 if force_full else (int(meta_row[2]) if meta_row else 0)
         last_recall_rev = 0 if force_full else (int(meta_row[3]) if meta_row else 0)
+        initial_doc_seq = max(int(meta_row[4]) if meta_row else 0, int(min_last_doc_seq))
+        preserved_seqs = dict(preserved_doc_seqs) if preserved_doc_seqs else {}
+        if preserved_seqs:
+            max_pseq = max(preserved_seqs.values())
+            if max_pseq > initial_doc_seq:
+                initial_doc_seq = max_pseq
+        next_doc_seq = initial_doc_seq
         tz_changed = (old_tz != tz_name)
 
+        def _with_doc_seq(ds_id: str, proj26: tuple, existing_seq: int | None = None) -> tuple:
+            nonlocal next_doc_seq
+            if existing_seq is not None and existing_seq > 0:
+                if existing_seq > next_doc_seq:
+                    next_doc_seq = existing_seq
+                return proj26 + (existing_seq,)
+            pseq = preserved_seqs.get((ds_id, proj26[1]))
+            if pseq is not None and pseq > 0:
+                if pseq > next_doc_seq:
+                    next_doc_seq = pseq
+                return proj26 + (pseq,)
+            next_doc_seq += 1
+            return proj26 + (next_doc_seq,)
+
         existing_states: dict[str, tuple[int, int, int, str, str]] = {}
-        if not force_full:
-            for row in con.execute(
-                'SELECT dataset_id, doc_count, max_rowid, sum_rowid, max_updated_at, data_hash FROM dataset_sync_state'
-            ).fetchall():
-                existing_states[str(row[0])] = (
+        all_existing_ds: list[str] = []
+        for row in con.execute(
+            'SELECT dataset_id, doc_count, max_rowid, sum_rowid, max_updated_at, data_hash FROM dataset_sync_state'
+        ).fetchall():
+            ds_k = str(row[0])
+            all_existing_ds.append(ds_k)
+            if not force_full:
+                existing_states[ds_k] = (
                     int(row[1]),
                     int(row[2]),
                     int(row[3]),
@@ -1902,13 +2089,23 @@ class CatalogIndex:
                     str(row[5] or ''),
                 )
 
+        is_temp_rebuild = (con is not self._write_con)
+        if force_full and not is_temp_rebuild and not preserved_seqs:
+            for ds_s, doc_s, seq_s in con.execute('SELECT dataset_id, doc_id, doc_seq FROM catalog_docs').fetchall():
+                si = int(seq_s or 0)
+                if si > 0:
+                    preserved_seqs[(str(ds_s), str(doc_s))] = si
+                    if si > next_doc_seq:
+                        next_doc_seq = si
+
         live_fingerprints: dict[str, tuple[int, int, int, str, str]] = {ds: (0, 0, 0, '', '') for ds in allowed}
         query_variants = sorted(ds_hex_to_uuid.keys())
         prov_stat_now = _file_stat_sig(self.provenance_path) if self.provenance_path else None
         recall_stat_now = _file_stat_sig(self.recall_path) if self.recall_path else None
         is_cold_build = force_full or not existing_states
+        # Bulk journal_mode=OFF + deferred index build is ONLY permitted on private temp rebuild files!
         stream_cold_bulk = bool(
-            is_cold_build and con.execute('SELECT 1 FROM catalog_docs LIMIT 1').fetchone() is None
+            is_temp_rebuild and is_cold_build and con.execute('SELECT 1 FROM catalog_docs LIMIT 1').fetchone() is None
         )
         stream_cold_sessions = bool(
             stream_cold_bulk and con.execute('SELECT 1 FROM catalog_sessions LIMIT 1').fetchone() is None
@@ -1923,7 +2120,7 @@ class CatalogIndex:
         incremental_bucket_deltas: dict[str, tuple[dict[str, int], int, int, int]] = {}
         cold_bucket_summaries: dict[str, tuple[dict[str, int], int, int, int, dict[str, int]]] = {}
         proven_pure_append_ds: set[str] = set()
-        removed_datasets = [ds for ds in existing_states if ds not in allowed_set]
+        removed_datasets = [ds for ds in all_existing_ds if ds not in allowed_set]
         changed_datasets: list[str] = []
         changed_buckets_by_ds: dict[str, list[int]] = {}
         removed_buckets_by_ds: dict[str, list[int]] = {}
@@ -2071,8 +2268,10 @@ class CatalogIndex:
                 if recall_ok and full_recall_rev > new_recall_rev:
                     new_recall_rev = full_recall_rev
             else:
-                if self._last_prov_stat is not None and prov_stat_now == self._last_prov_stat:
+                if not self._prov_sync_incomplete and self._last_prov_stat is not None and prov_stat_now == self._last_prov_stat:
                     prov_changes, new_prov_seq, prov_needs_full, prov_ok = [], last_prov_seq, False, True
+                elif self._prov_sync_incomplete:
+                    prov_changes, new_prov_seq, prov_needs_full, prov_ok = [], last_prov_seq, True, True
                 else:
                     prov_changes, new_prov_seq, prov_needs_full, prov_ok = self._load_provenance_delta(
                         last_prov_seq, allowed_set
@@ -2085,8 +2284,10 @@ class CatalogIndex:
                 else:
                     doc_prov, key_prov = {}, {}
 
-                if self._last_recall_stat is not None and recall_stat_now == self._last_recall_stat:
+                if not self._recall_sync_incomplete and self._last_recall_stat is not None and recall_stat_now == self._last_recall_stat:
                     recall_changes, new_recall_rev, recall_needs_full, recall_ok = [], last_recall_rev, False, True
+                elif self._recall_sync_incomplete:
+                    recall_changes, new_recall_rev, recall_needs_full, recall_ok = [], last_recall_rev, True, True
                 else:
                     recall_changes, new_recall_rev, recall_needs_full, recall_ok = self._load_recall_delta(
                         last_recall_rev, allowed_set
@@ -2204,16 +2405,13 @@ class CatalogIndex:
                         recall_ok = False
 
             # Reconcile each changed dataset
-            # Fast single-pass streaming cold bulk build across all allowed datasets at once
+            # Fast single-pass streaming cold bulk build (ONLY on private temp rebuild files!)
             if stream_cold_bulk and changed_datasets:
                 _ensure_changed_maps(changed_datasets)
-                with self._readers_lock:
-                    no_open_readers = (len(self._open_readers) == 0)
-                if con is not self._write_con or no_open_readers:
-                    con.execute('PRAGMA journal_mode = OFF')
-                    bulk_journal_off = True
+                con.execute('PRAGMA journal_mode = OFF')
+                bulk_journal_off = True
                 con.execute('PRAGMA synchronous = OFF')
-                con.execute('PRAGMA cache_size = -4096')
+                con.execute('PRAGMA cache_size = -6144')
                 con.execute('PRAGMA threads = 1')
                 bulk_pragmas_set = True
                 con.execute('BEGIN IMMEDIATE')
@@ -2228,6 +2426,7 @@ class CatalogIndex:
                     for ds in changed_datasets
                 }
                 upserts: list[tuple] = []
+                has_preserved_seqs = bool(preserved_seqs)
                 if query_variants and len(query_variants) <= _MAX_IN_BATCH:
                     ph_all = ','.join('?' for _ in query_variants)
                     cold_cursor = cog_con.execute(
@@ -2264,7 +2463,11 @@ class CatalogIndex:
                         tz_info=tz_info,
                     )
                     if projected is not None:
-                        upserts.append(projected)
+                        if has_preserved_seqs:
+                            upserts.append(_with_doc_seq(canon_ds, projected))
+                        else:
+                            next_doc_seq += 1
+                            upserts.append(projected + (next_doc_seq,))
                         p_kind = projected[3]
                         if projected[4]:
                             st[7] += 1
@@ -2329,6 +2532,7 @@ class CatalogIndex:
 
                         # Fetch existing catalog rows inside ALL touched buckets (for exact diff + bucket deltas)
                         existing_in_bkts: dict[str, tuple] = {}
+                        existing_seqs_in_bkts: dict[str, int] = {}
                         for bkt in all_touched_bkts:
                             lo = bkt << _CHUNK_SHIFT
                             hi = lo + _CHUNK_SPAN - 1
@@ -2338,16 +2542,23 @@ class CatalogIndex:
                                           doc_name, doc_label, raw_data_location, content_hash,
                                           created_at_raw, created_at_ns, created_at_invalid, updated_at_ns,
                                           effective_date, effective_date_source, day_desc_key, sort_ts_desc_key,
-                                          recall_count, recall_desc_key, pipeline_status, source_updated_at
+                                          recall_count, recall_desc_key, pipeline_status, source_updated_at, doc_seq
                                    FROM catalog_docs
                                    WHERE dataset_id = ? AND cognee_rowid BETWEEN ? AND ?''',
                                 (ds, lo, hi),
                             ).fetchall():
-                                existing_in_bkts[str(crow[1])] = crow
+                                did_k = str(crow[1])
+                                existing_in_bkts[did_k] = crow[:26]
+                                existing_seqs_in_bkts[did_k] = int(crow[26] or 0)
 
                         query_doc_ids = []
                         specific_keys: set[tuple[str, str, str]] = set()
-                        fast_existing_maps = not prov_changes and not recall_changes
+                        fast_existing_maps = (
+                            not prov_changes
+                            and not recall_changes
+                            and not need_full_prov
+                            and not need_full_recall
+                        )
                         for r in live_rows_in_bkts:
                             did_c = uuid_text(r[0])
                             if not did_c:
@@ -2426,22 +2637,23 @@ class CatalogIndex:
                                 # Check if this doc already exists in another bucket (e.g. rowid moved!)
                                 if int(full_row[1] or 0) <= old_max_rid:
                                     all_strictly_new_appends = False
-                                else:
-                                    moved_old = con.execute(
-                                        'SELECT kind, is_knowledge, effective_date FROM catalog_docs WHERE dataset_id = ? AND doc_id = ?',
-                                        (ds, did),
-                                    ).fetchone()
-                                    if moved_old is not None:
-                                        all_strictly_new_appends = False
-                                        if int(moved_old[1]):
-                                            dk -= 1
-                                            if moved_old[2]:
-                                                day_delta[str(moved_old[2])] = day_delta.get(str(moved_old[2]), 0) - 1
-                                        if moved_old[0] == 'raw_doc':
-                                            dr -= 1
-                                        if moved_old[0] == 'common':
-                                            dc -= 1
-                                upserts.append(projected)
+                                moved_old = con.execute(
+                                    'SELECT kind, is_knowledge, effective_date, doc_seq FROM catalog_docs WHERE dataset_id = ? AND doc_id = ?',
+                                    (ds, did),
+                                ).fetchone()
+                                moved_seq = None
+                                if moved_old is not None:
+                                    all_strictly_new_appends = False
+                                    moved_seq = int(moved_old[3] or 0) or None
+                                    if int(moved_old[1]):
+                                        dk -= 1
+                                        if moved_old[2]:
+                                            day_delta[str(moved_old[2])] = day_delta.get(str(moved_old[2]), 0) - 1
+                                    if moved_old[0] == 'raw_doc':
+                                        dr -= 1
+                                    if moved_old[0] == 'common':
+                                        dc -= 1
+                                upserts.append(_with_doc_seq(ds, projected, existing_seq=moved_seq))
                                 if projected[4]:
                                     dk += 1
                                     if projected[18]:
@@ -2468,7 +2680,7 @@ class CatalogIndex:
                                 if old_row[3] == 'common':
                                     dc -= 1
                                 if projected is not None:
-                                    upserts.append(projected)
+                                    upserts.append(_with_doc_seq(ds, projected, existing_seq=existing_seqs_in_bkts.get(did)))
                                     if projected[4]:
                                         dk += 1
                                         if projected[18]:
@@ -2533,7 +2745,7 @@ class CatalogIndex:
                                 tz_info=tz_info,
                             )
                             if projected is not None:
-                                upserts.append(projected)
+                                upserts.append(_with_doc_seq(ds, projected))
                                 p_kind = projected[3]
                                 if projected[4]:
                                     cold_k += 1
@@ -2559,17 +2771,20 @@ class CatalogIndex:
 
                     # Full diff against existing catalog_docs (post-restart or bulk change)
                     existing_rows: dict[str, tuple] = {}
+                    existing_row_seqs: dict[str, int] = {}
                     for crow in con.execute(
                         '''SELECT dataset_id, doc_id, cognee_rowid, kind, is_knowledge,
                                   common_category, lesson_type, state_key, category, session_id,
                                   doc_name, doc_label, raw_data_location, content_hash,
                                   created_at_raw, created_at_ns, created_at_invalid, updated_at_ns,
                                   effective_date, effective_date_source, day_desc_key, sort_ts_desc_key,
-                                  recall_count, recall_desc_key, pipeline_status, source_updated_at
+                                  recall_count, recall_desc_key, pipeline_status, source_updated_at, doc_seq
                            FROM catalog_docs WHERE dataset_id = ?''',
                         (ds,),
                     ):
-                        existing_rows[str(crow[1])] = crow
+                        did_k = str(crow[1])
+                        existing_rows[did_k] = crow[:26]
+                        existing_row_seqs[did_k] = int(crow[26] or 0)
 
                     upserts = []
                     deleted_ids = []
@@ -2581,6 +2796,7 @@ class CatalogIndex:
                         if not did:
                             continue
                         old_row = existing_rows.pop(did, None)
+                        old_seq = existing_row_seqs.get(did)
                         projected = self._project_cognee_row(
                             full_row,
                             ds,
@@ -2591,7 +2807,7 @@ class CatalogIndex:
                         )
                         if projected is not None:
                             if old_row is None or projected != old_row:
-                                upserts.append(projected)
+                                upserts.append(_with_doc_seq(ds, projected, existing_seq=old_seq))
                         elif old_row is not None:
                             deleted_ids.append(did)
                     deleted_ids.extend(existing_rows.keys())
@@ -2602,12 +2818,13 @@ class CatalogIndex:
             dirty_datasets = set(changed_datasets)
             now_iso = _iso_now()
             total_upserts = sum(len(u) for u, _ in dataset_diffs.values())
-            use_bulk_index_build = bool(stream_cold_bulk and con.in_transaction)
+            use_bulk_index_build = bool(is_temp_rebuild and stream_cold_bulk and con.in_transaction)
             if not con.in_transaction:
                 con.execute('BEGIN IMMEDIATE')
             try:
                 if (
-                    not use_bulk_index_build
+                    is_temp_rebuild
+                    and not use_bulk_index_build
                     and total_upserts >= 5000
                     and con.execute('SELECT 1 FROM catalog_docs LIMIT 1').fetchone() is None
                 ):
@@ -2645,9 +2862,56 @@ class CatalogIndex:
                         if s:
                             con.execute(s)
 
-                # Apply incremental provenance date updates to ALL affected docs (including changed_datasets!)
-                # AND propagate earlier dates to sibling docs sharing (dataset_id, lesson_type, state_key).
+                # Apply full provenance recovery write-back (when provenance recovered from transient failure or lacks sync_seq)
+                # AND incremental provenance date updates + sibling propagation across ALL affected datasets.
                 prov_mutated_datasets: set[str] = set()
+                if need_full_prov and prov_ok and (doc_prov or key_prov):
+                    for ds in allowed:
+                        if ds in cold_bucket_summaries:
+                            continue
+                        full_prov_updates = []
+                        for r_doc_id, r_lt, r_sk, r_day, r_src in con.execute(
+                            '''SELECT doc_id, lesson_type, state_key, effective_date, effective_date_source
+                               FROM catalog_docs
+                               WHERE dataset_id = ? AND is_knowledge = 1''',
+                            (ds,),
+                        ).fetchall():
+                            did_s = str(r_doc_id)
+                            lt_s = str(r_lt or '').strip()
+                            sk_s = str(r_sk or '').strip()
+                            prov_e = doc_prov.get((ds, did_s))
+                            if prov_e is not None:
+                                if not lt_s and prov_e[0]:
+                                    lt_s = prov_e[0]
+                                if not sk_s and prov_e[1]:
+                                    sk_s = prov_e[1]
+                            kd = key_prov.get((ds, lt_s, sk_s)) if (lt_s and sk_s) else None
+                            cand_dates = []
+                            if prov_e is not None and isinstance(prov_e[2], str):
+                                cd = _cached_calendar_date(prov_e[2])
+                                if cd:
+                                    cand_dates.append(cd)
+                            if isinstance(kd, str):
+                                cd = _cached_calendar_date(kd)
+                                if cd:
+                                    cand_dates.append(cd)
+                            if not cand_dates:
+                                continue
+                            best_day = min(cand_dates)
+                            cur_day = str(r_day or '')
+                            cur_src = str(r_src or '')
+                            if cur_src != 'provenance' or not cur_day or best_day < cur_day:
+                                full_prov_updates.append((best_day, day_to_desc_key(best_day), ds, did_s))
+                        if full_prov_updates:
+                            con.executemany(
+                                '''UPDATE catalog_docs
+                                   SET effective_date = ?, effective_date_source = 'provenance', day_desc_key = ?
+                                   WHERE dataset_id = ? AND doc_id = ?''',
+                                full_prov_updates,
+                            )
+                            dirty_datasets.add(ds)
+                            prov_mutated_datasets.add(ds)
+
                 for ds, doc_id, lt, sk, fdate in prov_changes:
                     valid_day = _calendar_date(fdate)
                     if not valid_day:
@@ -2776,6 +3040,8 @@ class CatalogIndex:
                     con,
                     cog_con,
                     allowed,
+                    cognee_db=cognee_db,
+                    cog_snap_sig=cog_snap_sig,
                     relations_resolver=relations_resolver,
                     force_full=force_full,
                     bulk_empty=bool(stream_cold_sessions and use_bulk_index_build),
@@ -2881,15 +3147,15 @@ class CatalogIndex:
                         con, ds, live_fingerprints[ds], next_gen, new_prov_seq, now_iso
                     )
 
-                if mutated:
+                if mutated or next_doc_seq != initial_doc_seq:
                     persisted_prov_seq = new_prov_seq if prov_ok else last_prov_seq
                     persisted_recall_rev = new_recall_rev if recall_ok else last_recall_rev
                     con.execute(
                         '''UPDATE catalog_meta
                            SET generation = ?, local_tz_name = ?, last_provenance_seq = ?,
-                               last_recall_rev = ?, built_at = ?
+                               last_recall_rev = ?, last_doc_seq = ?, built_at = ?
                            WHERE singleton = 1''',
-                        (next_gen, tz_name, persisted_prov_seq, persisted_recall_rev, now_iso),
+                        (next_gen, tz_name, persisted_prov_seq, persisted_recall_rev, next_doc_seq, now_iso),
                     )
                 con.execute('COMMIT')
             except Exception:
@@ -2911,8 +3177,16 @@ class CatalogIndex:
                     pass
             if prov_ok:
                 self._last_prov_stat = prov_stat_now
+                self._prov_sync_incomplete = False
+            else:
+                self._last_prov_stat = None
+                self._prov_sync_incomplete = True
             if recall_ok:
                 self._last_recall_stat = recall_stat_now
+                self._recall_sync_incomplete = False
+            else:
+                self._last_recall_stat = None
+                self._recall_sync_incomplete = True
 
             # Maintain O(1) pure-append reading deltas & category_counts caches ONLY when proven strictly pure-append!
             pure_append = (
@@ -2922,6 +3196,8 @@ class CatalogIndex:
                 and not tz_changed
                 and not prov_changes
                 and not recall_changes
+                and not need_full_prov
+                and not need_full_recall
                 and not sessions_mutated
                 and not force_full
             )
@@ -2931,7 +3207,7 @@ class CatalogIndex:
                     upserts_only, del_only = dataset_diffs.get(only_ds, ([], []))
                     if upserts_only and not del_only:
                         appended = [
-                            (str(p[1]), str(p[15]), int(p[16]), int(p[2]))
+                            (str(p[1]), str(p[15]), int(p[16]), int(p[26]))
                             for p in upserts_only
                             if int(p[4]) == 1
                         ]
@@ -3046,6 +3322,8 @@ class CatalogIndex:
                 return base + (None,)
             if callable(rel_sig_fn):
                 try:
+                    if getattr(relations_resolver, 'global_relation_sig', False):
+                        return base + (str(rel_sig_fn('') or ''),)
                     return base + (tuple(str(rel_sig_fn(ds) or '') for ds in ds_tuple),)
                 except Exception:
                     return base + (time.monotonic_ns(),)
@@ -3094,12 +3372,23 @@ class CatalogIndex:
                             if not self._rebuilding and self._last_stat_sig == sig_before:
                                 return self._last_generation
                     try:
-                        gen, cacheable = self._sync_into_connection(
-                            self._write_con,
-                            list(ds_tuple),
-                            force_full=force,
-                            relations_resolver=relations_resolver,
+                        is_uninitialized = bool(
+                            ds_tuple
+                            and self._write_con.execute('SELECT 1 FROM dataset_sync_state LIMIT 1').fetchone() is None
+                            and self._write_con.execute('SELECT 1 FROM catalog_docs LIMIT 1').fetchone() is None
                         )
+                        if force or is_uninitialized:
+                            gen, cacheable = self._atomic_rebuild_locked(
+                                list(ds_tuple),
+                                relations_resolver=relations_resolver,
+                            )
+                        else:
+                            gen, cacheable = self._sync_into_connection(
+                                self._write_con,
+                                list(ds_tuple),
+                                force_full=False,
+                                relations_resolver=relations_resolver,
+                            )
                     except sqlite3.DatabaseError:
                         gen, cacheable = self._atomic_rebuild_locked(
                             list(ds_tuple),
@@ -3174,6 +3463,8 @@ class CatalogIndex:
                 return base + (None,)
             if callable(rel_sig_fn):
                 try:
+                    if getattr(relations_resolver, 'global_relation_sig', False):
+                        return base + (str(rel_sig_fn('') or ''),)
                     return base + (tuple(str(rel_sig_fn(ds) or '') for ds in ds_tuple),)
                 except Exception:
                     return base + (time.monotonic_ns(),)
@@ -3218,12 +3509,23 @@ class CatalogIndex:
                             if not self._rebuilding and self._last_stat_sig == sig_before:
                                 return self._last_generation
                     try:
-                        gen, cacheable = self._sync_into_connection(
-                            self._write_con,
-                            list(ds_tuple),
-                            force_full=force,
-                            relations_resolver=relations_resolver,
+                        is_uninitialized = bool(
+                            ds_tuple
+                            and self._write_con.execute('SELECT 1 FROM dataset_sync_state LIMIT 1').fetchone() is None
+                            and self._write_con.execute('SELECT 1 FROM catalog_docs LIMIT 1').fetchone() is None
                         )
+                        if force or is_uninitialized:
+                            gen, cacheable = self._atomic_rebuild_locked(
+                                list(ds_tuple),
+                                relations_resolver=relations_resolver,
+                            )
+                        else:
+                            gen, cacheable = self._sync_into_connection(
+                                self._write_con,
+                                list(ds_tuple),
+                                force_full=False,
+                                relations_resolver=relations_resolver,
+                            )
                     except sqlite3.DatabaseError:
                         gen, cacheable = self._atomic_rebuild_locked(
                             list(ds_tuple),
@@ -3288,11 +3590,33 @@ class CatalogIndex:
         return self.sync(managed_datasets, force=force, relations_resolver=relations_resolver)
 
     def _atomic_rebuild_locked(self, managed_datasets: list[str], *, relations_resolver=None) -> tuple[int, bool]:
-        """Self-healing atomic generation rebuild: build temp DB -> quick_check -> os.replace.
+        """Self-healing atomic generation rebuild: build temp DB -> verify WAL + quick_check -> os.replace.
 
-        Keeps the existing ``self._write_con`` open until ``tmp_con`` passes ``quick_check``
-        so a failed rebuild never leaves the live handle closed.
+        Keeps the existing ``self._write_con`` open until ``tmp_con`` passes WAL verification and
+        ``quick_check`` so a failed rebuild never leaves the live handle closed or corrupted.
+        Preserves monotonic ``generation`` and ``doc_seq`` across rebuilds when live DB is readable.
         """
+        prev_gen = 0
+        prev_last_doc_seq = 0
+        preserved_doc_seqs: dict[tuple[str, str], int] = {}
+        if self._write_con is not None:
+            try:
+                mrow = self._write_con.execute(
+                    'SELECT generation, last_doc_seq FROM catalog_meta WHERE singleton = 1'
+                ).fetchone()
+                if mrow is not None:
+                    prev_gen = int(mrow[0] or 0)
+                    prev_last_doc_seq = int(mrow[1] or 0)
+                for ds_s, doc_s, seq_s in self._write_con.execute(
+                    'SELECT dataset_id, doc_id, doc_seq FROM catalog_docs'
+                ).fetchall():
+                    si = int(seq_s or 0)
+                    if si > 0:
+                        preserved_doc_seqs[(str(ds_s), str(doc_s))] = si
+            except sqlite3.Error:
+                prev_gen = max(prev_gen, int(self._last_generation or 0))
+                preserved_doc_seqs = {}
+
         with self._state_lock:
             self._rebuilding = True
         tmp_path = self.path.parent / f'{self.path.name}.rebuilding.{os.getpid()}.{time.time_ns()}'
@@ -3300,13 +3624,26 @@ class CatalogIndex:
         write_con_closed = False
         try:
             tmp_con = _open_private_rw(tmp_path)
-            _create_catalog_schema(tmp_con, self.tz_provider())
+            _create_catalog_schema(tmp_con, self.tz_provider(), create_indexes=False)
             gen, cacheable = self._sync_into_connection(
                 tmp_con,
                 managed_datasets,
                 force_full=True,
                 relations_resolver=relations_resolver,
+                preserved_doc_seqs=preserved_doc_seqs,
+                min_last_doc_seq=prev_last_doc_seq,
+                min_generation=prev_gen,
             )
+            # Ensure all indexes exist when managed_datasets was empty (stream_cold_bulk skipped)
+            if not managed_datasets:
+                tmp_con.executescript(_CATALOG_INDEX_DDL + _CATALOG_SESSION_INDEX_DDL)
+            mode_row = tmp_con.execute('PRAGMA journal_mode = WAL').fetchone()
+            if not mode_row or str(mode_row[0]).lower() != 'wal':
+                raise sqlite3.DatabaseError(f'catalog index WAL restore failed after rebuild: {mode_row}')
+            tmp_con.execute('PRAGMA journal_size_limit = 4194304')
+            tmp_con.execute('PRAGMA wal_autocheckpoint = 2000')
+            tmp_con.execute('PRAGMA synchronous = NORMAL')
+            tmp_con.execute('PRAGMA shrink_memory')
             check = tmp_con.execute('PRAGMA quick_check').fetchone()
             if not check or str(check[0]).lower() != 'ok':
                 raise sqlite3.DatabaseError('catalog index quick_check failed after rebuild')
@@ -3334,7 +3671,7 @@ class CatalogIndex:
             os.replace(tmp_path, self.path)
             os.chmod(self.path, 0o600)
             self._write_con = _open_private_rw(self.path)
-            _create_catalog_schema(self._write_con, self.tz_provider())
+            _apply_connection_pragmas(self._write_con)
             write_con_closed = False
             self._invalidate_readers()
             return gen, cacheable
@@ -3584,6 +3921,7 @@ class CatalogIndex:
         after_key: tuple | None = None,
         before_key: tuple | None = None,
         anchor_doc_id: str = '',
+        anchor_direction: str = 'next',
     ) -> dict | None:
         """Query project knowledge with bidirectional same-direction Keyset pagination and anchor jump."""
         ds = uuid_text(dataset_id)
@@ -3634,6 +3972,18 @@ class CatalogIndex:
                     anchor_idx = next((i for i, r in enumerate(filtered) if r['doc_id'] == anchor_id), -1)
                     if anchor_idx < 0:
                         return None
+                    if anchor_direction == 'prev':
+                        prev_all = filtered[:anchor_idx]
+                        has_prev = len(prev_all) > limit
+                        page = prev_all[-limit:] if limit > 0 else []
+                        has_more = bool(page and _item_sort_key(page[-1]) < _item_sort_key(filtered[-1]))
+                        return {
+                            'items': page,
+                            'has_more': has_more,
+                            'has_prev': has_prev,
+                            'total_filtered': total_filtered,
+                            'category_counts': category_counts,
+                        }
                     half = limit // 2
                     lo = max(0, anchor_idx - half)
                     hi = min(total_filtered, lo + limit)
@@ -3757,50 +4107,53 @@ class CatalogIndex:
                 if category and anchor_dict['category'] != category:
                     return None
                 a_key = _item_sort_key(anchor_dict)
-                before_want = limit // 2
-                before_rows = [
-                    _row_to_doc_dict(r)
-                    for r in con.execute(
-                        f'SELECT {_SELECT_DOC_COLS} FROM catalog_docs WHERE {base_where} AND {key_expr} < {key_ph} ORDER BY {order_desc} LIMIT ?',
-                        (*base_params, *a_key, before_want + 1),
-                    ).fetchall()
-                ]
-                has_prev = len(before_rows) > before_want
-                before_slice = list(reversed(before_rows[:before_want]))
-
-                after_want = max(0, limit - 1 - len(before_slice))
-                after_rows = [
-                    _row_to_doc_dict(r)
-                    for r in con.execute(
-                        f'SELECT {_SELECT_DOC_COLS} FROM catalog_docs WHERE {base_where} AND {key_expr} > {key_ph} ORDER BY {order_asc} LIMIT ?',
-                        (*base_params, *a_key, after_want + 1),
-                    ).fetchall()
-                ]
-                has_more = len(after_rows) > after_want
-                after_slice = after_rows[:after_want]
-
-                # Near bottom: pull additional predecessors to keep a full page when possible
-                if len(after_slice) < after_want and has_prev:
-                    extra_want = after_want - len(after_slice)
-                    ref_key = _item_sort_key(before_slice[0]) if before_slice else a_key
-                    extra_rows = [
+                if anchor_direction == 'prev':
+                    before_key = a_key
+                else:
+                    before_want = limit // 2
+                    before_rows = [
                         _row_to_doc_dict(r)
                         for r in con.execute(
                             f'SELECT {_SELECT_DOC_COLS} FROM catalog_docs WHERE {base_where} AND {key_expr} < {key_ph} ORDER BY {order_desc} LIMIT ?',
-                            (*base_params, *ref_key, extra_want + 1),
+                            (*base_params, *a_key, before_want + 1),
                         ).fetchall()
                     ]
-                    has_prev = len(extra_rows) > extra_want
-                    before_slice = list(reversed(extra_rows[:extra_want])) + before_slice
+                    has_prev = len(before_rows) > before_want
+                    before_slice = list(reversed(before_rows[:before_want]))
 
-                page_items = before_slice + [anchor_dict] + after_slice
-                return {
-                    'items': page_items,
-                    'has_more': has_more,
-                    'has_prev': has_prev,
-                    'total_filtered': total_filtered,
-                    'category_counts': category_counts,
-                }
+                    after_want = max(0, limit - 1 - len(before_slice))
+                    after_rows = [
+                        _row_to_doc_dict(r)
+                        for r in con.execute(
+                            f'SELECT {_SELECT_DOC_COLS} FROM catalog_docs WHERE {base_where} AND {key_expr} > {key_ph} ORDER BY {order_asc} LIMIT ?',
+                            (*base_params, *a_key, after_want + 1),
+                        ).fetchall()
+                    ]
+                    has_more = len(after_rows) > after_want
+                    after_slice = after_rows[:after_want]
+
+                    # Near bottom: pull additional predecessors to keep a full page when possible
+                    if len(after_slice) < after_want and has_prev:
+                        extra_want = after_want - len(after_slice)
+                        ref_key = _item_sort_key(before_slice[0]) if before_slice else a_key
+                        extra_rows = [
+                            _row_to_doc_dict(r)
+                            for r in con.execute(
+                                f'SELECT {_SELECT_DOC_COLS} FROM catalog_docs WHERE {base_where} AND {key_expr} < {key_ph} ORDER BY {order_desc} LIMIT ?',
+                                (*base_params, *ref_key, extra_want + 1),
+                            ).fetchall()
+                        ]
+                        has_prev = len(extra_rows) > extra_want
+                        before_slice = list(reversed(extra_rows[:extra_want])) + before_slice
+
+                    page_items = before_slice + [anchor_dict] + after_slice
+                    return {
+                        'items': page_items,
+                        'has_more': has_more,
+                        'has_prev': has_prev,
+                        'total_filtered': total_filtered,
+                        'category_counts': category_counts,
+                    }
 
             if before_key is not None:
                 bk = _norm_key(before_key)
@@ -3866,6 +4219,7 @@ class CatalogIndex:
         after_key: tuple[int, str] | None = None,
         before_key: tuple[int, str] | None = None,
         anchor_doc_id: str = '',
+        anchor_direction: str = 'next',
     ) -> dict | None:
         """Query common knowledge sorted by full updatedAt/createdAt timestamp DESC with anchor & bidirectional cursors."""
         ds = uuid_text(dataset_id)
@@ -3935,48 +4289,51 @@ class CatalogIndex:
                 if common_category in ('preference', 'experience') and adict['common_category'] != common_category:
                     return None
                 a_key = _ckey(adict)
-                before_want = limit // 2
-                before_rows = [
-                    _row_to_doc_dict(r)
-                    for r in con.execute(
-                        f'SELECT {_SELECT_DOC_COLS} FROM catalog_docs WHERE {base_where} AND (sort_ts_desc_key, doc_id) < (?, ?) ORDER BY {order_desc} LIMIT ?',
-                        (*base_params, a_key[0], a_key[1], before_want + 1),
-                    ).fetchall()
-                ]
-                has_prev = len(before_rows) > before_want
-                before_slice = list(reversed(before_rows[:before_want]))
-
-                after_want = max(0, limit - 1 - len(before_slice))
-                after_rows = [
-                    _row_to_doc_dict(r)
-                    for r in con.execute(
-                        f'SELECT {_SELECT_DOC_COLS} FROM catalog_docs WHERE {base_where} AND (sort_ts_desc_key, doc_id) > (?, ?) ORDER BY {order_asc} LIMIT ?',
-                        (*base_params, a_key[0], a_key[1], after_want + 1),
-                    ).fetchall()
-                ]
-                has_more = len(after_rows) > after_want
-                after_slice = after_rows[:after_want]
-
-                if len(after_slice) < after_want and has_prev:
-                    extra_want = after_want - len(after_slice)
-                    ref_key = _ckey(before_slice[0]) if before_slice else a_key
-                    extra_rows = [
+                if anchor_direction == 'prev':
+                    before_key = a_key
+                else:
+                    before_want = limit // 2
+                    before_rows = [
                         _row_to_doc_dict(r)
                         for r in con.execute(
                             f'SELECT {_SELECT_DOC_COLS} FROM catalog_docs WHERE {base_where} AND (sort_ts_desc_key, doc_id) < (?, ?) ORDER BY {order_desc} LIMIT ?',
-                            (*base_params, ref_key[0], ref_key[1], extra_want + 1),
+                            (*base_params, a_key[0], a_key[1], before_want + 1),
                         ).fetchall()
                     ]
-                    has_prev = len(extra_rows) > extra_want
-                    before_slice = list(reversed(extra_rows[:extra_want])) + before_slice
+                    has_prev = len(before_rows) > before_want
+                    before_slice = list(reversed(before_rows[:before_want]))
 
-                return {
-                    'items': before_slice + [adict] + after_slice,
-                    'has_more': has_more,
-                    'has_prev': has_prev,
-                    'total_filtered': total_filtered,
-                    'category_counts': category_counts,
-                }
+                    after_want = max(0, limit - 1 - len(before_slice))
+                    after_rows = [
+                        _row_to_doc_dict(r)
+                        for r in con.execute(
+                            f'SELECT {_SELECT_DOC_COLS} FROM catalog_docs WHERE {base_where} AND (sort_ts_desc_key, doc_id) > (?, ?) ORDER BY {order_asc} LIMIT ?',
+                            (*base_params, a_key[0], a_key[1], after_want + 1),
+                        ).fetchall()
+                    ]
+                    has_more = len(after_rows) > after_want
+                    after_slice = after_rows[:after_want]
+
+                    if len(after_slice) < after_want and has_prev:
+                        extra_want = after_want - len(after_slice)
+                        ref_key = _ckey(before_slice[0]) if before_slice else a_key
+                        extra_rows = [
+                            _row_to_doc_dict(r)
+                            for r in con.execute(
+                                f'SELECT {_SELECT_DOC_COLS} FROM catalog_docs WHERE {base_where} AND (sort_ts_desc_key, doc_id) < (?, ?) ORDER BY {order_desc} LIMIT ?',
+                                (*base_params, ref_key[0], ref_key[1], extra_want + 1),
+                            ).fetchall()
+                        ]
+                        has_prev = len(extra_rows) > extra_want
+                        before_slice = list(reversed(extra_rows[:extra_want])) + before_slice
+
+                    return {
+                        'items': before_slice + [adict] + after_slice,
+                        'has_more': has_more,
+                        'has_prev': has_prev,
+                        'total_filtered': total_filtered,
+                        'category_counts': category_counts,
+                    }
 
             if before_key is not None:
                 rows = [
@@ -4128,45 +4485,54 @@ class CatalogIndex:
             is_top = bool(parent['is_top_level'])
             scope_by_user = bool(uid_filter and sibling_owner_cnt > 1)
 
-            if is_top:
-                base_where = 'dataset_id = ? AND is_top_level = 0 AND root_session_id = ?'
-                base_params: tuple = (ds, parent_session_id)
+            if scope_by_user:
+                if is_top:
+                    base_where = 'dataset_id = ? AND user_id = ? AND is_top_level = 0 AND root_session_id = ?'
+                    base_params: tuple = (ds, uid_filter, parent_session_id)
+                else:
+                    base_where = 'dataset_id = ? AND user_id = ? AND parent_session_id = ?'
+                    base_params = (ds, uid_filter, parent_session_id)
+                if after_key is not None:
+                    sql = f'''SELECT {_SELECT_SESS_COLS}
+                              FROM catalog_sessions
+                              WHERE {base_where}
+                                AND (sort_ts_desc_key, session_id) > (?, ?)
+                              ORDER BY sort_ts_desc_key ASC, session_id ASC
+                              LIMIT ?'''
+                    params = (*base_params, int(after_key[0]), str(after_key[2]), limit + 1)
+                else:
+                    sql = f'''SELECT {_SELECT_SESS_COLS}
+                              FROM catalog_sessions
+                              WHERE {base_where}
+                              ORDER BY sort_ts_desc_key ASC, session_id ASC
+                              LIMIT ?'''
+                    params = (*base_params, limit + 1)
             else:
-                base_where = 'dataset_id = ? AND parent_session_id = ?'
-                base_params = (ds, parent_session_id)
+                if is_top:
+                    base_where = 'dataset_id = ? AND is_top_level = 0 AND root_session_id = ?'
+                    base_params = (ds, parent_session_id)
+                else:
+                    base_where = 'dataset_id = ? AND parent_session_id = ?'
+                    base_params = (ds, parent_session_id)
+                if after_key is not None:
+                    sql = f'''SELECT {_SELECT_SESS_COLS}
+                              FROM catalog_sessions
+                              WHERE {base_where}
+                                AND (sort_ts_desc_key, user_id, session_id) > (?, ?, ?)
+                              ORDER BY sort_ts_desc_key ASC, user_id ASC, session_id ASC
+                              LIMIT ?'''
+                    params = (*base_params, int(after_key[0]), str(after_key[1]), str(after_key[2]), limit + 1)
+                else:
+                    sql = f'''SELECT {_SELECT_SESS_COLS}
+                              FROM catalog_sessions
+                              WHERE {base_where}
+                              ORDER BY sort_ts_desc_key ASC, user_id ASC, session_id ASC
+                              LIMIT ?'''
+                    params = (*base_params, limit + 1)
 
-            if after_key is not None:
-                sql = f'''SELECT {_SELECT_SESS_COLS}
-                          FROM catalog_sessions
-                          WHERE {base_where}
-                            AND (sort_ts_desc_key, user_id, session_id) > (?, ?, ?)
-                          ORDER BY sort_ts_desc_key ASC, user_id ASC, session_id ASC'''
-                params = (*base_params, int(after_key[0]), str(after_key[1]), str(after_key[2]))
-            else:
-                sql = f'''SELECT {_SELECT_SESS_COLS}
-                          FROM catalog_sessions
-                          WHERE {base_where}
-                          ORDER BY sort_ts_desc_key ASC, user_id ASC, session_id ASC'''
-                params = base_params
-
-            if not scope_by_user:
-                sql += ' LIMIT ?'
-                params = (*params, limit + 1)
-                rows = [_row_to_session_dict(r) for r in con.execute(sql, params).fetchall()]
-                has_more = len(rows) > limit
-                page_rows = rows[:limit]
-            else:
-                page_rows = []
-                has_more = False
-                for r in con.execute(sql, params):
-                    item = _row_to_session_dict(r)
-                    if item['user_id'] != uid_filter:
-                        continue
-                    if len(page_rows) < limit:
-                        page_rows.append(item)
-                    else:
-                        has_more = True
-                        break
+            rows = [_row_to_session_dict(r) for r in con.execute(sql, params).fetchall()]
+            has_more = len(rows) > limit
+            page_rows = rows[:limit]
 
             return {
                 'total_count': int(parent['child_count']),
@@ -4226,8 +4592,9 @@ class CatalogIndex:
                                LIMIT ?'''
             sql_scoped = f'''SELECT {_SELECT_SESS_COLS}
                              FROM catalog_sessions
-                             WHERE dataset_id = ? AND is_top_level = 0 AND root_session_id = ?
-                             ORDER BY sort_ts_desc_key ASC, user_id ASC, session_id ASC'''
+                             WHERE dataset_id = ? AND user_id = ? AND is_top_level = 0 AND root_session_id = ?
+                             ORDER BY sort_ts_desc_key ASC, session_id ASC
+                             LIMIT ?'''
 
             for raw_sid, raw_uid in missing_specs:
                 key = (raw_sid, raw_uid)
@@ -4242,18 +4609,11 @@ class CatalogIndex:
                     ]
                     fetched[key] = (rows[:lim], len(rows) > lim)
                 else:
-                    page_rows = []
-                    has_more = False
-                    for r in con.execute(sql_scoped, (ds, raw_sid)):
-                        item = _row_to_session_dict(r)
-                        if item['user_id'] != uid_filter:
-                            continue
-                        if len(page_rows) < lim:
-                            page_rows.append(item)
-                        else:
-                            has_more = True
-                            break
-                    fetched[key] = (page_rows, has_more)
+                    rows = [
+                        _row_to_session_dict(r)
+                        for r in con.execute(sql_scoped, (ds, uid_filter, raw_sid, lim + 1)).fetchall()
+                    ]
+                    fetched[key] = (rows[:lim], len(rows) > lim)
 
         with self._state_lock:
             if self._sessions_generation == sgen:
@@ -4445,7 +4805,7 @@ class CatalogIndex:
         enabled_ns: str,
         horizon_ns: str,
     ) -> list[str]:
-        """Indexed scan on ``idx_cdocs_proj_rowid`` for late-arriving backdated docs after compaction."""
+        """Indexed scan on ``idx_cdocs_ds_doc_seq`` for late-arriving backdated docs after compaction."""
         ds = uuid_text(dataset_id)
         with self._reader_lease() as con:
             return [
@@ -4454,7 +4814,7 @@ class CatalogIndex:
                     '''SELECT doc_id
                        FROM catalog_docs
                        WHERE dataset_id = ? AND is_knowledge = 1
-                         AND cognee_rowid > ?
+                         AND doc_seq > ?
                          AND created_at_invalid = 0
                          AND created_at_ns > ? AND created_at_ns <= ?''',
                     (ds, int(min_rowid), enabled_ns, horizon_ns),
@@ -4496,13 +4856,13 @@ class CatalogIndex:
         low_ns: str,
         high_ns: str,
     ) -> list[tuple[str, str, int]]:
-        """Fetch ``(doc_id, created_at_ns, cognee_rowid)`` with ``low_ns < created_at_ns <= high_ns``."""
+        """Fetch ``(doc_id, created_at_ns, doc_seq)`` with ``low_ns < created_at_ns <= high_ns``."""
         ds = uuid_text(dataset_id)
         with self._reader_lease() as con:
             return [
                 (str(r[0]), str(r[1]), int(r[2] or 0))
                 for r in con.execute(
-                    '''SELECT doc_id, created_at_ns, cognee_rowid
+                    '''SELECT doc_id, created_at_ns, doc_seq
                        FROM catalog_docs
                        WHERE dataset_id = ? AND is_knowledge = 1
                          AND created_at_ns > ? AND created_at_ns <= ?''',
@@ -4524,17 +4884,23 @@ class CatalogIndex:
         return str(row[0]) if row else ''
 
     def max_knowledge_rowid(self, dataset_id: str) -> int:
+        """Return monotonic ``doc_seq`` high-watermark (never regresses across deletions)."""
         ds = uuid_text(dataset_id)
         with self._reader_lease() as con:
             row = con.execute(
-                '''SELECT cognee_rowid
+                '''SELECT doc_seq
                    FROM catalog_docs
                    WHERE dataset_id = ? AND is_knowledge = 1
-                   ORDER BY cognee_rowid DESC
+                   ORDER BY doc_seq DESC
                    LIMIT 1''',
                 (ds,),
             ).fetchone()
-        return int(row[0] or 0) if row else 0
+            meta_row = con.execute(
+                'SELECT last_doc_seq FROM catalog_meta WHERE singleton = 1'
+            ).fetchone()
+        ds_max = int(row[0] or 0) if row else 0
+        meta_max = int(meta_row[0] or 0) if meta_row else 0
+        return max(ds_max, meta_max)
 
     def existing_knowledge_doc_ids(self, dataset_id: str, doc_ids: list[str]) -> set[str]:
         if not doc_ids:
@@ -4553,8 +4919,8 @@ class CatalogIndex:
                     found.add(str(did))
         return found
 
-    def doc_created_at_info(self, dataset_id: str, doc_ids: list[str]) -> dict[str, tuple[str, int]]:
-        """Return {doc_id: (created_at_ns, created_at_invalid)} for the given doc_ids."""
+    def doc_created_at_info(self, dataset_id: str, doc_ids: list[str]) -> dict[str, tuple[str, int, int]]:
+        """Return {doc_id: (created_at_ns, created_at_invalid, doc_seq)} for the given doc_ids."""
         if not doc_ids:
             return {}
         ds = uuid_text(dataset_id)
@@ -4563,13 +4929,13 @@ class CatalogIndex:
             for start in range(0, len(doc_ids), _MAX_IN_BATCH):
                 batch = doc_ids[start : start + _MAX_IN_BATCH]
                 ph = ','.join('?' for _ in batch)
-                for did, cns, cinv in con.execute(
-                    f'''SELECT doc_id, created_at_ns, created_at_invalid
+                for did, cns, cinv, dseq in con.execute(
+                    f'''SELECT doc_id, created_at_ns, created_at_invalid, doc_seq
                         FROM catalog_docs
                         WHERE dataset_id = ? AND doc_id IN ({ph})''',
                     (ds, *batch),
                 ):
-                    out[str(did)] = (str(cns), int(cinv))
+                    out[str(did)] = (str(cns), int(cinv), int(dseq or 0))
         return out
 
     def fetch_docs_by_ids(self, dataset_id: str, doc_ids: list[str]) -> list[dict]:

@@ -213,12 +213,40 @@ class LocalBodyReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r_s3['source'], 'official_fallback')
         self.assertEqual(len([u for u in fake_session.calls if '/raw' in u]), 2)
 
-        # 4. ProfileDocuments.read() hits 2s auth cache + local fast-path with ZERO extra official HTTP calls
-        calls_before = len(fake_session.calls)
+        # 4. ProfileDocuments.read() verifies live auth (no stale cache) + uses local fast-path with ZERO /raw calls
+        raw_calls_before = len([u for u in fake_session.calls if '/raw' in u])
+        ds_calls_before = len([u for u in fake_session.calls if u.endswith('/api/v1/datasets')])
         profiles_docs = ProfileDocuments(fake_official, official_data=self.official_data)
         portrait = await profiles_docs.read(ds_id, doc_profile)
-        self.assertEqual(portrait, '# My Portrait\nFast body!')
-        self.assertEqual(len(fake_session.calls), calls_before)
+        self.assertIn('My Portrait', portrait)
+        self.assertIn('Fast body!', portrait)
+        self.assertEqual(len([u for u in fake_session.calls if '/raw' in u]), raw_calls_before)
+        self.assertEqual(len([u for u in fake_session.calls if u.endswith('/api/v1/datasets')]), ds_calls_before + 1)
+
+        # 5. Immediate live revocation (R2-PY-P0-01): removing ds_id from authorized_datasets denies IMMEDIATELY!
+        from project_policy import PolicyError
+        fake_session.authorized_datasets = []
+        with self.assertRaises(PolicyError) as revoked_err:
+            await read_document_body_with_fallback(self.official_data, ds_id, doc_local, official=fake_official)
+        self.assertEqual(revoked_err.exception.status, 403)
+
+        # 6. official=None fails closed with 503 (never silently allows reads!)
+        with self.assertRaises(PolicyError) as none_err:
+            await read_document_body_with_fallback(self.official_data, ds_id, doc_local, official=None)
+        self.assertEqual(none_err.exception.status, 503)
+
+        # 7. ProfileDocuments.read() /raw fallback (official_data=None) preserves 401 and 403 verbatim!
+        tok_file = self.root / 'tok.secret'
+        tok_file.write_text('secret-token', encoding='utf-8')
+        tok_file.chmod(0o600)
+        off_raw_401 = SimpleNamespace(url='http://127.0.0.1:9999', session=_FakeSession(b'', status=401), token_file=tok_file)
+        with self.assertRaises(PolicyError) as p_raw_401:
+            await ProfileDocuments(off_raw_401, official_data=None).read(ds_id, doc_profile)
+        self.assertEqual(p_raw_401.exception.status, 401)
+        off_raw_403 = SimpleNamespace(url='http://127.0.0.1:9999', session=_FakeSession(b'', status=403), token_file=tok_file)
+        with self.assertRaises(PolicyError) as p_raw_403:
+            await ProfileDocuments(off_raw_403, official_data=None).read(ds_id, doc_profile)
+        self.assertEqual(p_raw_403.exception.status, 403)
 
     async def test_official_auth_401_403_fifo_nonblocking_binary_fallback_and_sole_item_budget(self):
         import os
@@ -290,6 +318,34 @@ class LocalBodyReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(kept), 1)
         self.assertFalse(trimmed)
         self.assertNotIn(b'\\u4e2d', raw_wire)
+
+        # 5. finalize_budgeted_payload: anchor re-windowing + re-measurement + outer fixed_trimmer + 500 on impossible budget
+        from local_body_reader import finalize_budgeted_payload
+        anchor_id = str(uuid.uuid4())
+        many_items = [
+            {'doc_id': str(uuid.uuid4()), 'title': 'T' * 40, 'preview_text': 'P' * 400, 'preview_truncated': False}
+            for _ in range(8)
+        ]
+        many_items[5]['doc_id'] = anchor_id
+        many_items[5]['title'] = 'ANCHOR_ZH_' + ('中文' * 30)
+        p_anc, raw_anc = finalize_budgeted_payload(
+            lambda sub, lo, hi: {'items': sub, 'lo': lo, 'hi': hi, 'has_prev': lo > 0, 'has_more': hi < len(many_items)},
+            many_items,
+            max_json_bytes=700,
+            anchor_doc_id=anchor_id,
+        )
+        self.assertLessEqual(len(raw_anc), 700)
+        self.assertIn(anchor_id, [it['doc_id'] for it in p_anc['items']])
+        self.assertEqual(raw_anc, encode_json_utf8(p_anc))
+
+        # Impossible budget raises 500 response_budget_exceeded instead of emitting over-budget 200
+        with self.assertRaises(PolicyError) as over_err:
+            finalize_budgeted_payload(
+                lambda sub, lo, hi: {'fixed_blob': 'x' * 500, 'items': sub},
+                [],
+                max_json_bytes=128,
+            )
+        self.assertEqual(over_err.exception.status, 500)
 
 
 if __name__ == '__main__':

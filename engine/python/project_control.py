@@ -273,6 +273,9 @@ class Registry:
                     self.state['connection_receipts'] = db_receipts
                 elif 'connection_receipts' in self.state:
                     self.state['connection_receipts'] = {}
+                if isinstance(self.state.get('session_relations'), dict):
+                    from session_relations import TrackedRelationsDict
+                    self.state['session_relations'] = TrackedRelationsDict(self.state['session_relations'])
                 if self.state['schema_version'] == 1:
                     private_write(str(self.path) + '.schema1-backup', self.path.read_bytes())
                     self.state['connections'] = copy.deepcopy(self.state.get('codex_connections', {}))

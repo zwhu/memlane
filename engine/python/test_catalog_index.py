@@ -512,6 +512,141 @@ class CatalogIndexTests(unittest.TestCase):
         finally:
             cat.close()
 
+    def test_round2_startup_self_heal_full_prov_recovery_session_blake2b_and_multi_user_sql(self):
+        """Regression for R2-PY-P0-03, R2-PY-P1-02, CC2-P0-02, CC2-P1-01, and R2-GO-P0-04."""
+        # 1. Startup corruption self-heal (R2-PY-P1-02): garbage catalog DB must self-heal in __init__
+        corrupt_path = self.root / 'corrupt-catalog.sqlite3'
+        corrupt_path.write_bytes(b'NOT A VALID SQLITE DATABASE HEADER' * 64)
+        cat_healed = CatalogIndex(corrupt_path, official_data=self.official_data)
+        try:
+            mode = cat_healed._write_con.execute('PRAGMA journal_mode').fetchone()[0]
+            self.assertEqual(str(mode).lower(), 'wal')
+        finally:
+            cat_healed.close()
+
+        # 2. Full provenance recovery after initial prov_ok=False (R2-PY-P0-03 / CC2-P1-01)
+        d1 = str(uuid.uuid4())
+        self._insert_doc(
+            d1, self.ds_proj, label='ProvRecovery',
+            sys_meta={'lesson_type': 'state', 'state_key': 'sk-rec', 'session_date': '2026-11-20'},
+            node_set=['session_learnings'],
+            created_at='2026-11-20 10:00:00',
+        )
+        # Plant unreadable/corrupt provenance file on sync 1 so prov_ok=False
+        self.prov_path.write_bytes(b'corrupted provenance file')
+        cat = CatalogIndex(
+            self.root / 'cat-r2.sqlite3',
+            official_data=self.official_data,
+            provenance_path=self.prov_path,
+        )
+        try:
+            cat.sync([self.ds_proj])
+            # Live DB stays strictly WAL after cold build!
+            mode = cat._write_con.execute('PRAGMA journal_mode').fetchone()[0]
+            self.assertEqual(str(mode).lower(), 'wal')
+            doc_before = cat.fetch_docs_by_ids(self.ds_proj, [d1])[0]
+            self.assertEqual(doc_before['effective_date'], '2026-11-20')
+
+            # Now replace with valid legacy provenance DB (even without sync_seq!) without touching cognee_db
+            self.prov_path.unlink()
+            pcon = sqlite3.connect(self.prov_path)
+            pcon.executescript('''
+                CREATE TABLE document_provenance (
+                    dataset_id TEXT NOT NULL, document_id TEXT NOT NULL,
+                    lesson_type TEXT NOT NULL DEFAULT '', state_key TEXT NOT NULL DEFAULT '',
+                    first_source_date TEXT NOT NULL,
+                    PRIMARY KEY (dataset_id, document_id)
+                );
+                CREATE TABLE keyed_provenance (
+                    dataset_id TEXT NOT NULL, lesson_type TEXT NOT NULL,
+                    state_key TEXT NOT NULL, first_source_date TEXT NOT NULL,
+                    PRIMARY KEY (dataset_id, lesson_type, state_key)
+                );
+            ''')
+            pcon.execute(
+                'INSERT INTO document_provenance VALUES (?,?,?,?,?)',
+                (self.ds_proj, d1, 'state', 'sk-rec', '2026-10-01'),
+            )
+            pcon.commit()
+            pcon.close()
+
+            cat.sync([self.ds_proj])
+            doc_after = cat.fetch_docs_by_ids(self.ds_proj, [d1])[0]
+            self.assertEqual(doc_after['effective_date'], '2026-10-01')
+            self.assertEqual(doc_after['effective_date_source'], 'provenance')
+            buckets = cat.overview_day_buckets([self.ds_proj])
+            self.assertEqual(buckets, [{'day': '2026-10-01', 'count': 1}])
+
+            # 3. Session in-place UPDATE detection (CC2-P0-02): same-length status/agent_id/non-max timestamp
+            con = sqlite3.connect(self.cognee_db)
+            con.executescript('''
+                CREATE TABLE IF NOT EXISTS session_records (
+                    session_id VARCHAR NOT NULL, user_id CHAR(32) NOT NULL, dataset_id CHAR(32),
+                    status VARCHAR, started_at DATETIME, last_activity_at DATETIME, agent_id VARCHAR,
+                    PRIMARY KEY (session_id, user_id)
+                );
+            ''')
+            u1, u2 = str(uuid.uuid4()), str(uuid.uuid4())
+            con.executemany(
+                'INSERT INTO session_records VALUES (?,?,?,?,?,?,?)',
+                [
+                    ('shared-root', uuid.UUID(u1).hex, uuid.UUID(self.ds_proj).hex, 'active', '2026-11-20 08:00:00', '2026-11-20 10:00:00', 'codex'),
+                    ('shared-root', uuid.UUID(u2).hex, uuid.UUID(self.ds_proj).hex, 'active', '2026-11-20 08:00:00', '2026-11-20 12:00:00', 'claude'),
+                    ('child-u1-a', uuid.UUID(u1).hex, uuid.UUID(self.ds_proj).hex, 'active', '2026-11-20 08:10:00', '2026-11-20 09:00:00', 'codex'),
+                    ('child-u1-b', uuid.UUID(u1).hex, uuid.UUID(self.ds_proj).hex, 'active', '2026-11-20 08:15:00', '2026-11-20 09:05:00', 'codex'),
+                    ('child-u2-a', uuid.UUID(u2).hex, uuid.UUID(self.ds_proj).hex, 'active', '2026-11-20 08:20:00', '2026-11-20 09:10:00', 'claude'),
+                ],
+            )
+            con.commit()
+            con.close()
+
+            rels = {
+                'child-u1-a': {'parent_session_id': 'shared-root', 'subagent_role': 'w', 'nesting_depth': 1},
+                'child-u1-b': {'parent_session_id': 'shared-root', 'subagent_role': 'w', 'nesting_depth': 1},
+                'child-u2-a': {'parent_session_id': 'shared-root', 'subagent_role': 'w', 'nesting_depth': 1},
+            }
+            cat.sync([self.ds_proj], relations_resolver=lambda _ds, _sids: rels)
+
+            # Same-length in-place UPDATE: 'active' -> 'closed' (both 6 chars), 'codex' -> 'other' (5 chars),
+            # and non-max last_activity_at 09:00:00 -> 09:01:00 (same length, < max 12:00:00)!
+            con = sqlite3.connect(self.cognee_db)
+            con.execute(
+                "UPDATE session_records SET status='closed', agent_id='other', last_activity_at='2026-11-20 09:01:00' WHERE session_id='child-u1-a'"
+            )
+            con.commit()
+            con.close()
+            cat.sync([self.ds_proj], relations_resolver=lambda _ds, _sids: rels)
+
+            # Multi-user scoped children page & previews + zero TEMP B-TREE EQP verification (R2-GO-P0-04)
+            cpage = cat.query_session_children_page(self.ds_proj, 'shared-root', user_id=u1, limit=10)
+            self.assertEqual(cpage['total_count'], 2)
+            by_sid = {r['session_id']: r for r in cpage['items']}
+            self.assertEqual(set(by_sid), {'child-u1-a', 'child-u1-b'})
+            self.assertEqual(by_sid['child-u1-a']['status'], 'closed')
+            self.assertEqual(by_sid['child-u1-a']['agent_id'], 'other')
+            self.assertIn('09:01:00', by_sid['child-u1-a']['last_activity_at'])
+
+            previews = cat.query_top_level_children_previews(self.ds_proj, [('shared-root', u1)], limit=1)
+            self.assertEqual(len(previews[('shared-root', u1)][0]), 1)
+            self.assertTrue(previews[('shared-root', u1)][1])
+            self.assertEqual(previews[('shared-root', u1)][0][0]['user_id'], u1)
+
+            # Verify EXPLAIN QUERY PLAN uses idx_csess_root_user_ts with ZERO TEMP B-TREE
+            rcon = cat._get_reader()
+            eqp_rows = rcon.execute(
+                '''EXPLAIN QUERY PLAN
+                   SELECT session_id FROM catalog_sessions
+                   WHERE dataset_id = ? AND user_id = ? AND is_top_level = 0 AND root_session_id = ?
+                   ORDER BY sort_ts_desc_key ASC, session_id ASC
+                   LIMIT 5''',
+                (self.ds_proj, u1, 'shared-root'),
+            ).fetchall()
+            plan_txt = ' | '.join(str(r[3]) for r in eqp_rows)
+            self.assertNotIn('TEMP B-TREE', plan_txt.upper(), plan_txt)
+            self.assertIn('idx_csess_root_user_ts', plan_txt)
+        finally:
+            cat.close()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -16,7 +16,11 @@ from sqlite_ro import official_sqlite_ro
 
 
 class _DummyOfficial:
-    pass
+    def __init__(self, authorized=()):
+        self._authorized = set(authorized)
+
+    def authorized_datasets(self):
+        return frozenset(self._authorized)
 
 
 class V2LookupsTests(AioHTTPTestCase):
@@ -266,7 +270,10 @@ class V2LookupsTests(AioHTTPTestCase):
             })
         recall.close()
 
-        self.registry = Registry(root / 'registry.json', _DummyOfficial())
+        self.registry = Registry(
+            root / 'registry.json',
+            _DummyOfficial({self.ds_verified, self.ds_code, self.ds_common}),
+        )
         self.registry.state['projects'] = {
             'p-verified': {
                 'id': 'p-verified',

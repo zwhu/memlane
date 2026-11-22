@@ -86,6 +86,102 @@ def clear_relation_cache():
         _HOST_CACHE.clear()
 
 
+class _TrackedRelationEntry(dict):
+    """Dict entry that bumps its parent ``TrackedRelationsDict.revision`` on any in-place mutation."""
+
+    __slots__ = ('_owner',)
+
+    def __init__(self, owner, mapping=()):
+        super().__init__(mapping)
+        self._owner = owner
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self._owner.revision += 1
+
+    def __delitem__(self, key):
+        super().__delitem__(key)
+        self._owner.revision += 1
+
+    def update(self, *args, **kwargs):
+        super().update(*args, **kwargs)
+        self._owner.revision += 1
+
+    def pop(self, *args):
+        res = super().pop(*args)
+        self._owner.revision += 1
+        return res
+
+    def popitem(self):
+        res = super().popitem()
+        self._owner.revision += 1
+        return res
+
+    def clear(self):
+        if self:
+            super().clear()
+            self._owner.revision += 1
+
+    def setdefault(self, key, default=None):
+        if key not in self:
+            self._owner.revision += 1
+        return super().setdefault(key, default)
+
+
+class TrackedRelationsDict(dict):
+    """JSON-serializable dict maintaining an exact monotonic ``revision`` across outer and nested writes."""
+
+    __slots__ = ('revision',)
+
+    def __init__(self, mapping=None):
+        super().__init__()
+        self.revision = 1
+        if mapping:
+            for k, v in mapping.items():
+                super().__setitem__(k, _TrackedRelationEntry(self, v) if isinstance(v, dict) else v)
+
+    def _wrap(self, value):
+        if isinstance(value, _TrackedRelationEntry) and value._owner is self:
+            return value
+        return _TrackedRelationEntry(self, value) if isinstance(value, dict) else value
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, self._wrap(value))
+        self.revision += 1
+
+    def __delitem__(self, key):
+        super().__delitem__(key)
+        self.revision += 1
+
+    def update(self, *args, **kwargs):
+        for k, v in dict(*args, **kwargs).items():
+            super().__setitem__(k, self._wrap(v))
+        self.revision += 1
+
+    def pop(self, *args):
+        res = super().pop(*args)
+        self.revision += 1
+        return res
+
+    def popitem(self):
+        res = super().popitem()
+        self.revision += 1
+        return res
+
+    def clear(self):
+        if self:
+            super().clear()
+            self.revision += 1
+
+    def setdefault(self, key, default=None):
+        if key not in self:
+            val = self._wrap(default)
+            super().__setitem__(key, val)
+            self.revision += 1
+            return val
+        return self[key]
+
+
 def _registry_agents(registry):
     state = getattr(registry, 'state', None) if registry is not None else None
     if not isinstance(state, dict):
