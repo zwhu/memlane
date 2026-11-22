@@ -8,12 +8,14 @@ from unittest.mock import patch
 
 from project_policy import PolicyError
 from sqlite_ro import (
+    close_pooled_official_sqlite_ro,
     common_category_from_meta,
     decode_node_set,
     extract_trusted_metadata,
     knowledge_category_label,
     official_sqlite_ro,
     open_official_sqlite_ro,
+    pooled_official_sqlite_ro,
     unique_learning_session,
 )
 
@@ -221,6 +223,48 @@ class SqliteRoTests(unittest.TestCase):
             }),
             '',
         )
+
+    def test_pooled_official_sqlite_ro_reuses_and_reopens_on_inode_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = self._make_wal_db(root)
+            try:
+                with pooled_official_sqlite_ro(db_path) as con1:
+                    id1 = id(con1)
+                    self.assertEqual(con1.execute("SELECT val FROM sample WHERE id='1'").fetchone()[0], 'hello')
+                    # Leave an open deferred transaction; pool exit must roll it back cleanly
+                    con1.execute('BEGIN DEFERRED')
+                    con1.execute('SELECT name FROM sqlite_master LIMIT 1').fetchone()
+                    with self.assertRaises(sqlite3.DatabaseError):
+                        con1.execute("INSERT INTO sample VALUES ('2', 'nope')")
+
+                with pooled_official_sqlite_ro(db_path) as con2:
+                    self.assertEqual(id(con2), id1)
+                    self.assertFalse(con2.in_transaction)
+
+                # Atomic file replacement (new inode) must automatically reopen a fresh connection
+                alt_path = root / 'cognee_db_new'
+                wcon = sqlite3.connect(alt_path)
+                wcon.execute('PRAGMA journal_mode=WAL')
+                wcon.execute('CREATE TABLE sample (id TEXT PRIMARY KEY, val TEXT)')
+                wcon.execute("INSERT INTO sample VALUES ('1', 'rotated')")
+                wcon.commit()
+                wcon.close()
+                alt_path.replace(db_path)
+
+                with pooled_official_sqlite_ro(db_path) as con3:
+                    self.assertNotEqual(id(con3), id1)
+                    self.assertEqual(con3.execute("SELECT val FROM sample WHERE id='1'").fetchone()[0], 'rotated')
+
+                # Symlink rejection remains Fail-Closed
+                sym_path = root / 'cognee_sym'
+                sym_path.symlink_to(db_path)
+                with self.assertRaises(PolicyError) as ctx:
+                    with pooled_official_sqlite_ro(sym_path):
+                        pass
+                self.assertEqual(ctx.exception.status, 503)
+            finally:
+                close_pooled_official_sqlite_ro()
 
 
 if __name__ == '__main__':

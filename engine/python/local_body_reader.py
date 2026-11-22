@@ -21,7 +21,7 @@ from aiohttp import web
 
 from project_control import read_secret
 from project_policy import PolicyError
-from sqlite_ro import id_variants, official_sqlite_ro, uuid_text
+from sqlite_ro import id_variants, pooled_official_sqlite_ro, uuid_text
 
 MAX_BODY_BYTES = 8 * 1024 * 1024
 DEFAULT_PREVIEW_MAX_RUNES = 240
@@ -547,7 +547,7 @@ def fit_items_to_json_budget(
 def _lookup_document_location(official_data, dataset_id: str, doc_id: str) -> dict:
     db_path = Path(official_data) / 'system' / 'databases' / 'cognee_db'
     doc_variants = id_variants(doc_id)
-    with official_sqlite_ro(db_path) as con:
+    with pooled_official_sqlite_ro(db_path) as con:
         cols = {str(r[1]) for r in con.execute('PRAGMA table_info(data)').fetchall()}
         has_legacy = 'legacy_id' in cols
         row = None

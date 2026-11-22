@@ -56,10 +56,11 @@ from provenance_store import _calendar_date
 from reading_state_store import ReadingStateStore
 from session_relations import resolve_session_relations
 from sqlite_ro import (
+    close_pooled_official_sqlite_ro,
     id_variants,
     is_valid_uuid,
     iso_text,
-    official_sqlite_ro,
+    pooled_official_sqlite_ro,
     ro_snapshot,
     uuid_text,
 )
@@ -370,7 +371,7 @@ def _read_recent_pipeline_runs(
     seen_ids: set[str] = set()
     exhausted_table = False
 
-    with official_sqlite_ro(db_path) as con:
+    with pooled_official_sqlite_ro(db_path) as con:
         with ro_snapshot(con):
             # O(log N) pipeline_runs table fingerprint: skip re-scanning when only cognee_db.data changed!
             pr_max_row = con.execute('SELECT COALESCE(MAX(rowid), 0) FROM pipeline_runs').fetchone()
@@ -391,6 +392,10 @@ def _read_recent_pipeline_runs(
                     if fp_cached is not None:
                         c_items, c_more, c_has_active = fp_cached
                         if not c_has_active:
+                            if len(cache) >= 32:
+                                cache.clear()
+                                cache[fp_cache_key] = fp_cached
+                            cache[cache_key] = (c_items, c_more)
                             return [dict(item) for item in c_items], c_more
 
             # Step 1: Indexed global timeline walk on ix_pipeline_runs_created_at_id
@@ -536,9 +541,10 @@ class _SessionRelationsResolver:
                         h.update(f"{k}|{v.get('parent_session_id','')}|{v.get('subagent_role','')}|{v.get('nesting_depth',0)}\n".encode('utf-8'))
                 p_sig = f'{n}:{h.hexdigest()}'
             else:
-                # O(1) fast fingerprint for large synthetic/production maps
-                keys = tuple(persisted.keys())
-                p_sig = f'{n}:{keys[0]}:{keys[n // 2]}:{keys[-1]}'
+                # O(1) zero-allocation fast fingerprint for large synthetic/production maps
+                first_k = next(iter(persisted))
+                last_k = next(reversed(persisted))
+                p_sig = f'{n}:{first_k}:{last_k}'
         else:
             p_sig = '0'
 
@@ -638,6 +644,16 @@ def _query_raw_records_v2(
     page = merged[:limit]
 
     # Hydrate ONLY the <= limit sessions that landed on this page (plus <=5 indexed preview children each)
+    parent_preview_specs = [
+        (entry['_raw_session']['session_id'], entry['_raw_session']['user_id'])
+        for entry in page
+        if entry['item_kind'] == 'session' and int(entry['_raw_session'].get('child_count') or 0) > 0
+    ]
+    previews_by_parent = (
+        catalog_index.query_top_level_children_previews(dataset_id, parent_preview_specs, limit=5)
+        if parent_preview_specs
+        else {}
+    )
     page_sessions_to_hydrate = []
     for entry in page:
         if entry['item_kind'] != 'session':
@@ -657,13 +673,11 @@ def _query_raw_records_v2(
         child_cnt = int(raw_s.get('child_count') or 0)
         preview_children = []
         if child_cnt > 0:
-            c_page = catalog_index.query_session_children_page(
-                dataset_id,
-                raw_s['session_id'],
-                user_id=raw_s['user_id'],
-                limit=5,
+            p_items, children_has_more = previews_by_parent.get(
+                (raw_s['session_id'], raw_s['user_id']),
+                ([], False),
             )
-            for child_row in c_page['items']:
+            for child_row in p_items:
                 c_out = {
                     'session_id': child_row['session_id'],
                     'dataset_id': child_row['dataset_id'],
@@ -678,8 +692,6 @@ def _query_raw_records_v2(
                 }
                 preview_children.append(c_out)
                 page_sessions_to_hydrate.append(c_out)
-            child_cnt = int(c_page['total_count'])
-            children_has_more = bool(c_page['has_more'])
         else:
             children_has_more = False
 
@@ -934,6 +946,9 @@ def attach_v2_api(
             ds_to_proj[common['dataset_id']] = ''
             allowed_run_ds.add(common['dataset_id'])
 
+        agents_snapshot = {k: dict(v) for k, v in registry.state.get('agents', {}).items()}
+        allowed_ds_set = set(allowed_ds)
+
         def _build_sync():
             meta = cat.meta()
             sync_map = cat.all_dataset_sync_info(allowed_ds)
@@ -1012,6 +1027,12 @@ def attach_v2_api(
                 )
             except (PolicyError, sqlite3.Error):
                 runs, runs_more = [], False
+            rec_events, rec_more, rec_started = _read_recall_events_summary(
+                recall_store,
+                allowed_ds_set,
+                agents_snapshot,
+                recall_limit,
+            )
             return (
                 meta,
                 total_knowledge,
@@ -1022,6 +1043,9 @@ def attach_v2_api(
                 recent_items,
                 runs,
                 runs_more,
+                rec_events,
+                rec_more,
+                rec_started,
             )
 
         (
@@ -1034,16 +1058,10 @@ def attach_v2_api(
             recent_items,
             runs,
             runs_more,
+            rec_events,
+            rec_more,
+            rec_started,
         ) = await _run_db(_build_sync)
-
-        agents_snapshot = {k: dict(v) for k, v in registry.state.get('agents', {}).items()}
-        rec_events, rec_more, rec_started = await _run_db(
-            _read_recall_events_summary,
-            recall_store,
-            set(allowed_ds),
-            agents_snapshot,
-            recall_limit,
-        )
         total_rec_hits = sum(len(ev.get('hits') or ()) for ev in rec_events)
         if total_rec_hits > 100:
             capped_events = []
@@ -1950,102 +1968,118 @@ def attach_v2_api(
         async def _load_backlog():
             return await _read_backlog_slim(handles.backlog, project_id)
 
-        async def _load_notices():
-            return await _run_db(processing_notices, state_dir / 'runtime-logs', dataset_id)
-
-        async def _load_activity():
-            return await _run_db(
-                _read_recent_pipeline_runs,
-                official_data,
-                dataset_id=dataset_id,
-                limit=20,
-                cache=pipeline_runs_cache,
-                cache_lock=pipeline_runs_lock,
-            )
-
-        async def _load_docs_and_reading():
-            await _ensure_synced()
-
-            def _sync_docs():
-                sinfo = cat.dataset_sync_info(dataset_id) or {}
-                cat_ver = str(sinfo.get('catalog_version', ''))
-                pending_rows, pending_total = cat.query_pending_raw_docs(dataset_id, limit=20)
-                pending_docs = [
-                    {
-                        'id': d['doc_id'],
-                        'dataset_id': d['dataset_id'],
-                        'name': d['doc_name'],
-                        'label': d['doc_label'] or '',
-                        'title': _readable_name(d['doc_label']) or _readable_name(d['doc_name']) or d['doc_name'],
-                        'date': d['updated_at'] or d['created_at'],
-                        'kind': '文档',
-                        'created_at': d['created_at'],
-                    }
-                    for d in pending_rows
-                ]
-                return cat_ver, pending_total, pending_docs
-
-            def _sync_reading():
-                unread_count = 0
-                unread_preview = []
-                if identity:
-                    unread_ids = read_store.compute_unread_ids(identity, project_id, dataset_id, cat)
-                    unread_count = len(unread_ids)
-                    if unread_ids:
-                        if len(unread_ids) <= 200:
-                            docs = cat.fetch_docs_by_ids(dataset_id, list(unread_ids))
-                            docs.sort(key=lambda d: (d['created_at_ns'] or '', d['doc_id']), reverse=True)
-                            top_docs = docs[:10]
-                        else:
-                            # O(10) indexed scan for huge unread sets (never fetch 50,000 docs!)
-                            top_ids = []
-                            for batch in cat.iter_knowledge_doc_ids_after_horizon(dataset_id, '', batch_size=64):
-                                for did in batch:
-                                    if did in unread_ids:
-                                        top_ids.append(did)
-                                        if len(top_ids) >= 10:
-                                            break
-                                if len(top_ids) >= 10:
-                                    break
-                            if len(top_ids) < 10:
-                                rem = [d for d in sorted(unread_ids) if d not in set(top_ids)][: 10 - len(top_ids)]
-                                top_ids.extend(rem)
-                            top_docs = cat.fetch_docs_by_ids(dataset_id, top_ids)
-                            top_docs.sort(key=lambda d: (d['created_at_ns'] or '', d['doc_id']), reverse=True)
-                        for d in top_docs[:10]:
-                            preview_snip = ''
-                            if official_data and d.get('raw_data_location'):
-                                preview_snip, _ = read_local_preview_snippet(
-                                    d['raw_data_location'],
-                                    official_data,
-                                    max_runes=80,
-                                    max_utf8_bytes=240,
-                                )
-                            unread_preview.append({
-                                'doc_id': d['doc_id'],
-                                'title': _knowledge_title(d, preview_snip),
-                                'effective_date': d['effective_date'],
-                                'created_at': d['created_at'],
-                            })
-                return unread_count, unread_preview
-
-            cat_ver, pending_total, pending_docs = await _run_db(_sync_docs)
-            reading_err = None
-            unread_count = 0
-            unread_preview = []
+        async def _load_db_sections():
+            sync_err = None
             try:
-                unread_count, unread_preview = await _run_db(_sync_reading)
+                await _ensure_synced()
             except BaseException as exc:
                 if isinstance(exc, asyncio.CancelledError):
                     raise
-                reading_err = exc.code if isinstance(exc, PolicyError) else 'reading_state_unavailable'
-            return cat_ver, pending_total, pending_docs, unread_count, unread_preview, reading_err
+                sync_err = exc
 
-        b_res, n_res, d_res, a_res = await asyncio.gather(
+            def _run_all():
+                n_val = []
+                n_err = None
+                try:
+                    n_val = processing_notices(state_dir / 'runtime-logs', dataset_id)
+                except Exception as exc:
+                    n_err = exc
+
+                a_val = ([], False)
+                a_err = None
+                try:
+                    a_val = _read_recent_pipeline_runs(
+                        official_data,
+                        dataset_id=dataset_id,
+                        limit=20,
+                        cache=pipeline_runs_cache,
+                        cache_lock=pipeline_runs_lock,
+                    )
+                except Exception as exc:
+                    a_err = exc
+
+                if sync_err is not None:
+                    return n_val, n_err, a_val, a_err, None, sync_err
+
+                try:
+                    sinfo = cat.dataset_sync_info(dataset_id) or {}
+                    cat_ver_l = str(sinfo.get('catalog_version', ''))
+                    pending_rows, pending_total_l = cat.query_pending_raw_docs(dataset_id, limit=20)
+                    pending_docs_l = [
+                        {
+                            'id': d['doc_id'],
+                            'dataset_id': d['dataset_id'],
+                            'name': d['doc_name'],
+                            'label': d['doc_label'] or '',
+                            'title': _readable_name(d['doc_label']) or _readable_name(d['doc_name']) or d['doc_name'],
+                            'date': d['updated_at'] or d['created_at'],
+                            'kind': '文档',
+                            'created_at': d['created_at'],
+                        }
+                        for d in pending_rows
+                    ]
+                except Exception as exc:
+                    return n_val, n_err, a_val, a_err, None, exc
+
+                reading_err_l = None
+                unread_count_l = 0
+                unread_preview_l = []
+                try:
+                    if identity:
+                        unread_ids = read_store.compute_unread_ids(identity, project_id, dataset_id, cat)
+                        unread_count_l = len(unread_ids)
+                        if unread_ids:
+                            if len(unread_ids) <= 200:
+                                docs = cat.fetch_docs_by_ids(dataset_id, list(unread_ids))
+                                docs.sort(key=lambda d: (d['created_at_ns'] or '', d['doc_id']), reverse=True)
+                                top_docs = docs[:10]
+                            else:
+                                top_ids = []
+                                for batch in cat.iter_knowledge_doc_ids_after_horizon(dataset_id, '', batch_size=64):
+                                    for did in batch:
+                                        if did in unread_ids:
+                                            top_ids.append(did)
+                                            if len(top_ids) >= 10:
+                                                break
+                                    if len(top_ids) >= 10:
+                                        break
+                                if len(top_ids) < 10:
+                                    rem = [d for d in sorted(unread_ids) if d not in set(top_ids)][: 10 - len(top_ids)]
+                                    top_ids.extend(rem)
+                                top_docs = cat.fetch_docs_by_ids(dataset_id, top_ids)
+                                top_docs.sort(key=lambda d: (d['created_at_ns'] or '', d['doc_id']), reverse=True)
+                            for d in top_docs[:10]:
+                                preview_snip = ''
+                                if official_data and d.get('raw_data_location'):
+                                    preview_snip, _ = read_local_preview_snippet(
+                                        d['raw_data_location'],
+                                        official_data,
+                                        max_runes=80,
+                                        max_utf8_bytes=240,
+                                    )
+                                unread_preview_l.append({
+                                    'doc_id': d['doc_id'],
+                                    'title': _knowledge_title(d, preview_snip),
+                                    'effective_date': d['effective_date'],
+                                    'created_at': d['created_at'],
+                                })
+                except Exception as exc:
+                    reading_err_l = exc.code if isinstance(exc, PolicyError) else 'reading_state_unavailable'
+
+                return (
+                    n_val,
+                    n_err,
+                    a_val,
+                    a_err,
+                    (cat_ver_l, pending_total_l, pending_docs_l, unread_count_l, unread_preview_l, reading_err_l),
+                    None,
+                )
+
+            return await _run_db(_run_all)
+
+        b_res, db_res = await asyncio.gather(
             _load_backlog(),
-            _load_notices(),
-            _load_docs_and_reading(),
-            _load_activity(),
+            _load_db_sections(),
             return_exceptions=True,
         )
 
@@ -2055,6 +2089,18 @@ def attach_v2_api(
             errors['backlog'] = b_res.code if isinstance(b_res, PolicyError) else 'backlog_unavailable'
         else:
             backlog_job, automatic_save = b_res
+
+        if isinstance(db_res, asyncio.CancelledError):
+            raise db_res
+        if isinstance(db_res, BaseException):
+            n_res = db_res
+            a_res = db_res
+            d_res = db_res
+        else:
+            n_val, n_err, a_val, a_err, d_val, d_err = db_res
+            n_res = n_err if n_err is not None else n_val
+            a_res = a_err if a_err is not None else a_val
+            d_res = d_err if d_err is not None else d_val
 
         if isinstance(n_res, asyncio.CancelledError):
             raise n_res
@@ -2477,6 +2523,7 @@ def attach_v2_api(
     async def cleanup(_app):
         db_executor.shutdown(wait=True)
         hydrator.close()
+        close_pooled_official_sqlite_ro()
         if catalog_index is None:
             cat.close()
         if reading_state is None:

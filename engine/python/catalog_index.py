@@ -40,14 +40,17 @@ from sqlite_ro import (
 
 CATALOG_SCHEMA_VERSION = 3
 _MAX_IN_BATCH = 400
-_CHUNK_SPAN = 512
-_CHUNK_SHIFT = 9  # 1 << 9 == 512
+_CHUNK_SPAN = 256
+_CHUNK_SHIFT = 8  # 1 << 8 == 256
 _NULL_HASH_SENTINEL = '\x01\x02NULL\x03'
-_MULTI_INSERT_ROWS = 100
+_MULTI_INSERT_ROWS = 250
 _DERIVED_NODE_SETS = frozenset({'user_sessions_from_cache', 'agent_trace_feedbacks', 'session_learnings'})
 _TS_FRAC_RE = re.compile(
     r'^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})?$'
 )
+_FAST_SQLITE_TS_MATCH = re.compile(
+    r'^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2}):(\d{2})\.(\d{6})$'
+).match
 
 
 def current_local_tz_name() -> str:
@@ -85,6 +88,11 @@ def _tzinfo_for_name(tz_name: str):
         except (ZoneInfoNotFoundError, ValueError):
             pass
     return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+@lru_cache(maxsize=4096)
+def _cached_calendar_date(raw_val: str):
+    return _calendar_date(raw_val)
 
 
 @lru_cache(maxsize=4096)
@@ -130,6 +138,20 @@ def normalize_utc_ns(raw_value) -> tuple[str, int, bool]:
         return '', 0, True
     text = raw_value if (raw_value[0] > ' ' and raw_value[-1] > ' ') else raw_value.strip()
     n = len(text)
+    if n == 26:
+        fm = _FAST_SQLITE_TS_MATCH(text)
+        if fm is not None:
+            date_part, hh_s, mm_s, ss_s, frac_part = fm.groups()
+            day_sec = _ymd_epoch_seconds(date_part)
+            if day_sec is None:
+                return '', 0, True
+            hh = int(hh_s)
+            mm = int(mm_s)
+            ss = int(ss_s)
+            if hh > 23 or mm > 59 or ss > 59:
+                return '', 0, True
+            epoch_ns = (day_sec + hh * 3600 + mm * 60 + ss) * 1_000_000_000 + int(frac_part) * 1000
+            return f'{date_part}T{hh_s}:{mm_s}:{ss_s}.{frac_part}000Z', epoch_ns, False
     if n < 19:
         return '', 0, True
     if (
@@ -147,7 +169,11 @@ def normalize_utc_ns(raw_value) -> tuple[str, int, bool]:
     ):
         tail = text[19:]
         frac_part = None
-        if not tail or tail == 'Z' or tail == '+00:00' or tail == '-00:00':
+        if n == 26 and text[19] == '.':
+            cand = text[20:]
+            if cand.isascii() and cand.isdigit():
+                frac_part = cand
+        elif not tail or tail == 'Z' or tail == '+00:00' or tail == '-00:00':
             frac_part = ''
         elif tail[0] == '.':
             if tail[-1] == 'Z':
@@ -324,32 +350,32 @@ _CATALOG_INDEX_DDL = '''
         CREATE UNIQUE INDEX IF NOT EXISTS idx_cdocs_pk
             ON catalog_docs(dataset_id, doc_id);
         CREATE INDEX IF NOT EXISTS idx_cdocs_proj_day
-            ON catalog_docs(dataset_id, is_knowledge, day_desc_key ASC, doc_id ASC)
+            ON catalog_docs(dataset_id, day_desc_key ASC, doc_id ASC)
             WHERE is_knowledge = 1;
         CREATE INDEX IF NOT EXISTS idx_cdocs_proj_recall
-            ON catalog_docs(dataset_id, is_knowledge, recall_desc_key ASC, day_desc_key ASC, doc_id ASC)
+            ON catalog_docs(dataset_id, recall_desc_key ASC, day_desc_key ASC, doc_id ASC)
             WHERE is_knowledge = 1;
         CREATE INDEX IF NOT EXISTS idx_cdocs_proj_cat_day
-            ON catalog_docs(dataset_id, is_knowledge, category, day_desc_key ASC, doc_id ASC)
+            ON catalog_docs(dataset_id, category, day_desc_key ASC, doc_id ASC)
             WHERE is_knowledge = 1;
         CREATE INDEX IF NOT EXISTS idx_cdocs_proj_cat_recall
-            ON catalog_docs(dataset_id, is_knowledge, category, recall_desc_key ASC, day_desc_key ASC, doc_id ASC)
+            ON catalog_docs(dataset_id, category, recall_desc_key ASC, day_desc_key ASC, doc_id ASC)
             WHERE is_knowledge = 1;
         CREATE INDEX IF NOT EXISTS idx_cdocs_common_ts
-            ON catalog_docs(dataset_id, kind, common_category, sort_ts_desc_key ASC, doc_id ASC)
+            ON catalog_docs(dataset_id, common_category, sort_ts_desc_key ASC, doc_id ASC)
             WHERE kind = 'common';
         CREATE INDEX IF NOT EXISTS idx_cdocs_common_all_ts
-            ON catalog_docs(dataset_id, kind, sort_ts_desc_key ASC, doc_id ASC)
+            ON catalog_docs(dataset_id, sort_ts_desc_key ASC, doc_id ASC)
             WHERE kind = 'common';
         CREATE INDEX IF NOT EXISTS idx_cdocs_raw_ts
-            ON catalog_docs(dataset_id, kind, sort_ts_desc_key ASC, doc_id ASC)
+            ON catalog_docs(dataset_id, sort_ts_desc_key ASC, doc_id ASC)
             WHERE kind = 'raw_doc';
         CREATE INDEX IF NOT EXISTS idx_cdocs_proj_created
-            ON catalog_docs(dataset_id, is_knowledge, created_at_ns DESC, doc_id ASC)
+            ON catalog_docs(dataset_id, created_at_ns DESC, doc_id ASC)
             WHERE is_knowledge = 1;
         CREATE INDEX IF NOT EXISTS idx_cdocs_proj_invalid_ts
-            ON catalog_docs(dataset_id, is_knowledge, created_at_invalid, doc_id)
-            WHERE created_at_invalid = 1;
+            ON catalog_docs(dataset_id, doc_id)
+            WHERE is_knowledge = 1 AND created_at_invalid = 1;
         CREATE INDEX IF NOT EXISTS idx_cdocs_ds_rowid
             ON catalog_docs(dataset_id, cognee_rowid, is_knowledge, doc_id);
 '''
@@ -403,9 +429,9 @@ def _create_catalog_schema(con: sqlite3.Connection, tz_name: str):
     con.execute('PRAGMA page_size=8192')
     con.execute('PRAGMA journal_mode=WAL')
     con.execute('PRAGMA journal_size_limit=4194304')
-    con.execute('PRAGMA wal_autocheckpoint=1000')
+    con.execute('PRAGMA wal_autocheckpoint=2000')
     con.execute('PRAGMA synchronous=NORMAL')
-    con.execute('PRAGMA temp_store=MEMORY')
+    con.execute('PRAGMA temp_store=FILE')
     con.execute('PRAGMA cache_size=-1024')
     con.execute('PRAGMA threads=2')
     con.execute('PRAGMA busy_timeout=5000')
@@ -702,10 +728,15 @@ class CatalogIndex:
         self._last_prov_stat = None
         self._last_recall_stat = None
         self._last_generation = 0
+        self._sessions_generation = 0
+        self._last_synced_pin_ts_ns = 0
+        self._last_synced_ds_tuple = None
         self._inflight_sync = None
         self._recent_appends: dict[int, tuple[str, list[tuple[str, str, int, int]]]] = {}
         self._cat_counts_cache: dict[tuple[int, str], dict[str, int]] = {}
         self._common_cat_counts_cache: dict[tuple[int, str], dict[str, int]] = {}
+        self._pending_raw_cache: dict[tuple[int, str, int], tuple[list[dict], int]] = {}
+        self._children_preview_cache: dict[tuple[int, str, str, str, int], tuple[list[dict], bool]] = {}
         # In-memory cryptographic chunk digests per dataset: ds -> {bucket_id: 16-byte blake2b}
         self._chunk_digests: dict[str, dict[int, bytes]] = {}
         self._writer_ro_cons: dict[str, tuple[int, sqlite3.Connection]] = {}
@@ -828,7 +859,7 @@ class CatalogIndex:
                 c_con.close()
             except Exception:
                 pass
-        con = open_official_sqlite_ro(db_path, cache_kib=256)
+        con = open_official_sqlite_ro(db_path, cache_kib=512)
         con.text_factory = bytes
         self._hash_worker_cons[slot] = (key, ino, con)
         return con
@@ -1181,6 +1212,7 @@ class CatalogIndex:
         cog_snap_sig=None,
         est_cnt: int = 0,
         allow_stale_signal: bool = False,
+        verify_global_max_rid: int | None = None,
     ) -> tuple[dict[int, bytes], int, int, int, str] | None:
         """Compute full-13-column cryptographic chunk digests for one dataset.
 
@@ -1226,16 +1258,24 @@ class CatalogIndex:
                     if allow_stale_signal:
                         return None
                 else:
-                    # O(log N) MAX(rowid) seek (<0.03ms) belt-and-suspenders proof wcons[0] matches cog_con
-                    w_max = 0
-                    for v in ds_vars:
+                    # O(log N) MAX(rowid) PK seek (<0.02ms) belt-and-suspenders proof wcons[0] matches cog_con
+                    if verify_global_max_rid is not None:
                         mr = wcons[0].execute(
-                            'SELECT rowid FROM data WHERE dataset_id = ? ORDER BY rowid DESC LIMIT 1',
-                            (v,),
+                            'SELECT rowid FROM data ORDER BY rowid DESC LIMIT 1'
                         ).fetchone()
-                        if mr and int(mr[0] or 0) > w_max:
-                            w_max = int(mr[0])
-                    if w_max != max_rid:
+                        w_max = int(mr[0] or 0) if mr else 0
+                        snap_ok = (w_max == verify_global_max_rid)
+                    else:
+                        w_max = 0
+                        for v in ds_vars:
+                            mr = wcons[0].execute(
+                                'SELECT MAX(rowid) FROM data WHERE dataset_id = ?',
+                                (v,),
+                            ).fetchone()
+                            if mr and mr[0] is not None and int(mr[0]) > w_max:
+                                w_max = int(mr[0])
+                        snap_ok = (w_max == max_rid)
+                    if not snap_ok:
                         if allow_stale_signal:
                             return None
                     else:
@@ -1318,8 +1358,10 @@ class CatalogIndex:
         raw_loc = str(row[4] or '')
         meta = extract_trusted_metadata(row[5], row[6], row[7])
         pipeline_status = _extract_cognify_status(row[8], ds_id)
-        updated_raw = iso_text(row[9])
-        created_raw = iso_text(row[10])
+        raw_upd = row[9]
+        raw_cre = row[10]
+        created_raw = iso_text(raw_cre)
+        updated_raw = created_raw if raw_upd == raw_cre else iso_text(raw_upd)
         content_hash = str(row[11] or '')
 
         common_cat = ''
@@ -1346,18 +1388,18 @@ class CatalogIndex:
             is_know = 0
 
         if is_know:
+            raw_lt = meta.get('lesson_type')
+            lesson_type = raw_lt.strip() if isinstance(raw_lt, str) else ''
+            raw_sk = meta.get('state_key')
+            state_key = raw_sk.strip() if isinstance(raw_sk, str) else ''
             if common_cat:
                 category = ''
             elif 'session_learnings' not in tags and ('user_context' in tags or 'memory' in tags):
                 category = '直接保存'
             else:
-                rk = meta.get('lesson_type')
-                lk = rk.strip() if isinstance(rk, str) else ''
-                category = _LESSON_CATEGORY_LABELS.get(lk) or (f'未识别分类（{lk}）' if lk else '未记录')
-            raw_lt = meta.get('lesson_type')
-            lesson_type = raw_lt.strip() if isinstance(raw_lt, str) else ''
-            raw_sk = meta.get('state_key')
-            state_key = raw_sk.strip() if isinstance(raw_sk, str) else ''
+                category = _LESSON_CATEGORY_LABELS.get(lesson_type) or (
+                    f'未识别分类（{lesson_type}）' if lesson_type else '未记录'
+                )
             if len(tags) == 1 and tags[0] == 'session_learnings':
                 session_id = ''
             else:
@@ -1388,36 +1430,35 @@ class CatalogIndex:
         effective_date = ''
         effective_date_source = ''
         if is_know:
-            if (doc_prov or key_prov) and (
+            prov = doc_prov.get((ds_id, doc_id)) if doc_prov else None
+            lt = lesson_type
+            sk = state_key
+            if prov is not None:
+                if not lt and prov[0]:
+                    lt = prov[0]
+                if not sk and prov[1]:
+                    sk = prov[1]
+            kd = key_prov.get((ds_id, lt, sk)) if (lt and sk and key_prov) else None
+            if (prov is not None or kd is not None) and (
                 lesson_type or meta.get('first_source_date') or meta.get('source_date_status') or 'session_learnings' in tags
             ):
                 dates = []
-                lt = lesson_type
-                sk = state_key
-                prov = doc_prov.get((ds_id, doc_id)) if doc_prov else None
-                if prov:
-                    if not lt and prov[0]:
-                        lt = prov[0]
-                    if not sk and prov[1]:
-                        sk = prov[1]
-                    if _calendar_date(prov[2]):
-                        dates.append(prov[2])
-                if lt and sk and key_prov:
-                    kd = key_prov.get((ds_id, lt, sk))
-                    if _calendar_date(kd):
-                        dates.append(kd)
+                if prov is not None and isinstance(prov[2], str) and _cached_calendar_date(prov[2]):
+                    dates.append(prov[2])
+                if isinstance(kd, str) and _cached_calendar_date(kd):
+                    dates.append(kd)
                 if dates:
                     effective_date = min(dates)
                     effective_date_source = 'provenance'
             if not effective_date:
                 fsd = meta.get('first_source_date')
-                day = _calendar_date(fsd) if fsd else None
+                day = _cached_calendar_date(fsd) if isinstance(fsd, str) and fsd else None
                 if day:
                     effective_date = day
                     effective_date_source = 'meta'
                 else:
                     sdate = meta.get('session_date')
-                    day = _calendar_date(sdate) if sdate else None
+                    day = _cached_calendar_date(sdate) if isinstance(sdate, str) and sdate else None
                     if day:
                         effective_date = day
                         effective_date_source = 'meta'
@@ -1836,6 +1877,7 @@ class CatalogIndex:
                 ds_hex_to_uuid[h] = ds
             ds_hex_to_uuid[ds] = ds
 
+        sync_pin_ts_ns = time.monotonic_ns()
         tz_name = self.tz_provider()
         tz_info = _tzinfo_for_name(tz_name)
         meta_row = con.execute(
@@ -1872,6 +1914,7 @@ class CatalogIndex:
             stream_cold_bulk and con.execute('SELECT 1 FROM catalog_sessions LIMIT 1').fetchone() is None
         )
         bulk_pragmas_set = False
+        bulk_journal_off = False
 
         prov_ok = True
         recall_ok = True
@@ -1890,6 +1933,7 @@ class CatalogIndex:
         try:
             cog_snap_sig = _file_stat_sig(cognee_db)
             cog_con.execute('BEGIN DEFERRED')
+            cog_con.execute('SELECT name FROM sqlite_master LIMIT 1').fetchone()
             cog_in_tx = True
 
             data_cols = {str(r[1]) for r in cog_con.execute('PRAGMA table_info(data)').fetchall()}
@@ -1915,7 +1959,7 @@ class CatalogIndex:
                 f"{col_exprs['mime_type']}"
             )
 
-            # Stage 1 (O(log N) MIN/MAX rowid bounds) + 6-worker cryptographic chunk digest scan.
+            # Stage 1 (O(log N) global MIN/MAX rowid PK seeks) + 6-worker cryptographic chunk digest scan.
             # If a concurrent WAL write landed between cog_con's snapshot and worker pinning,
             # retry pinning cog_con cleanly (<0.2ms) instead of falling back to single-threaded scan.
             for _snap_attempt in range(3):
@@ -1929,28 +1973,36 @@ class CatalogIndex:
                 new_chunk_digests = {}
                 live_fingerprints = {ds: (0, 0, 0, '', '') for ds in allowed}
                 snap_stale = False
+                g_min_row = cog_con.execute('SELECT rowid FROM data ORDER BY rowid ASC LIMIT 1').fetchone()
+                g_max_row = cog_con.execute('SELECT rowid FROM data ORDER BY rowid DESC LIMIT 1').fetchone()
+                global_min_rid = int(g_min_row[0] or 0) if g_min_row else 0
+                global_max_rid = int(g_max_row[0] or 0) if g_max_row else 0
+
                 for ds in allowed:
                     prev_fp = existing_states.get(ds)
                     ds_vars = list(dict.fromkeys(v for v in (uuid_hex(ds), ds) if v))
-                    s1_min_rid = 0
-                    s1_max_rid = 0
-                    for v in ds_vars:
-                        r_min = cog_con.execute(
-                            'SELECT rowid FROM data WHERE dataset_id = ? ORDER BY rowid ASC LIMIT 1',
-                            (v,),
-                        ).fetchone()
-                        if r_min:
-                            rv = int(r_min[0] or 0)
-                            if rv > 0 and (s1_min_rid == 0 or rv < s1_min_rid):
-                                s1_min_rid = rv
-                        r_max = cog_con.execute(
-                            'SELECT rowid FROM data WHERE dataset_id = ? ORDER BY rowid DESC LIMIT 1',
-                            (v,),
-                        ).fetchone()
-                        if r_max:
-                            rv = int(r_max[0] or 0)
-                            if rv > s1_max_rid:
-                                s1_max_rid = rv
+                    if global_max_rid == 0:
+                        s1_min_rid = 0
+                        s1_max_rid = 0
+                    elif prev_fp is not None and prev_fp[0] > 2000:
+                        # O(log N) global PK bounds avoid scanning 60k covering-index entries + TEMP B-TREE!
+                        s1_min_rid = global_min_rid
+                        s1_max_rid = global_max_rid
+                    else:
+                        s1_min_rid = 0
+                        s1_max_rid = 0
+                        for v in ds_vars:
+                            mm = cog_con.execute(
+                                'SELECT MIN(rowid), MAX(rowid) FROM data WHERE dataset_id = ?',
+                                (v,),
+                            ).fetchone()
+                            if mm and mm[0] is not None:
+                                lo_v = int(mm[0])
+                                hi_v = int(mm[1] or 0)
+                                if lo_v > 0 and (s1_min_rid == 0 or lo_v < s1_min_rid):
+                                    s1_min_rid = lo_v
+                                if hi_v > s1_max_rid:
+                                    s1_max_rid = hi_v
 
                     if s1_max_rid == 0:
                         live_fingerprints[ds] = (0, 0, 0, '', _fold_chunk_digests({}))
@@ -1979,6 +2031,7 @@ class CatalogIndex:
                         cog_snap_sig=cog_snap_sig,
                         est_cnt=prev_fp[0],
                         allow_stale_signal=(_snap_attempt < 2),
+                        verify_global_max_rid=global_max_rid,
                     )
                     if scan_res is None:
                         snap_stale = True
@@ -2154,9 +2207,14 @@ class CatalogIndex:
             # Fast single-pass streaming cold bulk build across all allowed datasets at once
             if stream_cold_bulk and changed_datasets:
                 _ensure_changed_maps(changed_datasets)
+                with self._readers_lock:
+                    no_open_readers = (len(self._open_readers) == 0)
+                if con is not self._write_con or no_open_readers:
+                    con.execute('PRAGMA journal_mode = OFF')
+                    bulk_journal_off = True
                 con.execute('PRAGMA synchronous = OFF')
                 con.execute('PRAGMA cache_size = -4096')
-                con.execute('PRAGMA threads = 4')
+                con.execute('PRAGMA threads = 1')
                 bulk_pragmas_set = True
                 con.execute('BEGIN IMMEDIATE')
                 for idx_name in _CATALOG_INDEX_NAMES:
@@ -2287,28 +2345,31 @@ class CatalogIndex:
                             ).fetchall():
                                 existing_in_bkts[str(crow[1])] = crow
 
-                        live_doc_ids = []
+                        query_doc_ids = []
                         specific_keys: set[tuple[str, str, str]] = set()
+                        fast_existing_maps = not prov_changes and not recall_changes
                         for r in live_rows_in_bkts:
                             did_c = uuid_text(r[0])
                             if not did_c:
                                 continue
-                            live_doc_ids.append(did_c)
                             old_c = existing_in_bkts.get(did_c)
                             if old_c is None:
+                                query_doc_ids.append(did_c)
                                 m_c = extract_trusted_metadata(r[5], r[6], r[7])
                                 lt_c = str(m_c.get('lesson_type') or '').strip()
                                 sk_c = str(m_c.get('state_key') or '').strip()
                                 if lt_c and sk_c:
                                     specific_keys.add((ds, lt_c, sk_c))
-                            else:
+                            elif not fast_existing_maps:
+                                query_doc_ids.append(did_c)
                                 if old_c[6] and old_c[7]:
                                     specific_keys.add((ds, str(old_c[6]), str(old_c[7])))
-                        _ensure_changed_maps(
-                            [ds],
-                            specific_doc_ids=live_doc_ids if len(live_doc_ids) <= 2048 else None,
-                            specific_lesson_keys=specific_keys if len(live_doc_ids) <= 2048 else None,
-                        )
+                        if query_doc_ids:
+                            _ensure_changed_maps(
+                                [ds],
+                                specific_doc_ids=query_doc_ids if len(query_doc_ids) <= 2048 else None,
+                                specific_lesson_keys=specific_keys if len(query_doc_ids) <= 2048 else None,
+                            )
 
                         upserts = []
                         deleted_ids = []
@@ -2333,6 +2394,32 @@ class CatalogIndex:
                                 recall_counts=recall_counts,
                                 tz_info=tz_info,
                             )
+                            if old_row is not None and fast_existing_maps and projected is not None:
+                                if projected[6] != old_row[6] or projected[7] != old_row[7]:
+                                    extra_keys = (
+                                        {(ds, str(projected[6]), str(projected[7]))}
+                                        if projected[6] and projected[7]
+                                        else set()
+                                    )
+                                    _ensure_changed_maps(
+                                        [ds],
+                                        specific_doc_ids=[did],
+                                        specific_lesson_keys=extra_keys,
+                                    )
+                                    projected = self._project_cognee_row(
+                                        full_row,
+                                        ds,
+                                        doc_prov=doc_prov,
+                                        key_prov=key_prov,
+                                        recall_counts=recall_counts,
+                                        tz_info=tz_info,
+                                    )
+                                elif old_row[19] == 'provenance' and projected[19] != 'provenance':
+                                    projected = (
+                                        projected[:18]
+                                        + (old_row[18], 'provenance', old_row[20])
+                                        + projected[21:]
+                                    )
                             if old_row is None:
                                 if projected is None:
                                     continue
@@ -2869,23 +2956,41 @@ class CatalogIndex:
                                     k: v for k, v in self._cat_counts_cache.items() if k[0] >= next_gen - 2
                                 }
                             self._common_cat_counts_cache.pop((cur_gen, only_ds), None)
+                            if not any(p[3] == 'raw_doc' for p in upserts_only):
+                                for (g_k, ds_k, lim_k), pv in list(self._pending_raw_cache.items()):
+                                    if g_k == cur_gen:
+                                        self._pending_raw_cache[(next_gen, ds_k, lim_k)] = pv
+                                if len(self._pending_raw_cache) > 32:
+                                    self._pending_raw_cache = {
+                                        k: v for k, v in self._pending_raw_cache.items() if k[0] >= next_gen - 2
+                                    }
+                            else:
+                                self._pending_raw_cache.clear()
                     else:
                         with self._state_lock:
                             self._recent_appends.clear()
                             self._cat_counts_cache.clear()
                             self._common_cat_counts_cache.clear()
+                            self._pending_raw_cache.clear()
                 else:
                     with self._state_lock:
                         self._recent_appends.clear()
                         self._cat_counts_cache.clear()
                         self._common_cat_counts_cache.clear()
+                        self._pending_raw_cache.clear()
             elif mutated:
                 with self._state_lock:
                     self._recent_appends.clear()
                     self._cat_counts_cache.clear()
                     self._common_cat_counts_cache.clear()
+                    self._pending_raw_cache.clear()
+                    if sessions_mutated or removed_datasets or force_full:
+                        self._sessions_generation += 1
+                        self._children_preview_cache.clear()
                     for ds_c, (_days, _k, _r, _c, cold_cats) in cold_bucket_summaries.items():
                         self._cat_counts_cache[(next_gen, ds_c)] = dict(cold_cats)
+            self._last_synced_cog_sig = cog_snap_sig
+            self._last_synced_pin_ts_ns_pending = sync_pin_ts_ns
             return next_gen, (prov_ok and recall_ok)
         except (PolicyError, sqlite3.Error):
             if con.in_transaction:
@@ -2909,6 +3014,13 @@ class CatalogIndex:
                     con.execute('PRAGMA cache_size = -1024')
                     con.execute('PRAGMA threads = 2')
                     con.execute('PRAGMA shrink_memory')
+                except sqlite3.Error:
+                    pass
+            if bulk_journal_off:
+                try:
+                    con.execute('PRAGMA journal_mode = WAL')
+                    con.execute('PRAGMA journal_size_limit = 4194304')
+                    con.execute('PRAGMA wal_autocheckpoint = 2000')
                 except sqlite3.Error:
                     pass
             if cog_in_tx:
@@ -2939,12 +3051,16 @@ class CatalogIndex:
                     return base + (time.monotonic_ns(),)
             return base + (time.monotonic_ns(),)
 
+        entry_ts_ns = time.monotonic_ns()
         entry_sig = _full_stat_sig() if not force else None
         for attempt in range(2):
             if not force:
-                sig = entry_sig if attempt == 0 else _full_stat_sig()
+                sig = entry_sig
                 with self._state_lock:
-                    if not self._rebuilding and self._last_stat_sig == sig:
+                    if not self._rebuilding and (
+                        self._last_stat_sig == sig
+                        or (self._last_synced_ds_tuple == ds_tuple and self._last_synced_pin_ts_ns >= entry_ts_ns)
+                    ):
                         return self._last_generation
                     inflight = self._inflight_sync
                     if inflight is not None and inflight[0] == ds_tuple:
@@ -2956,12 +3072,14 @@ class CatalogIndex:
                 if shared_future is not None:
                     gen = shared_future.result()
                     # Linearizable read-after-write guard:
-                    # If the in-flight sync already started at or after our entry_sig, we observed
-                    # every write committed before we arrived — return immediately without chasing
-                    # future writes arriving after our call began!
+                    # If the in-flight sync pinned its snapshots at or after our entry_ts_ns (or
+                    # matched entry_sig), we observed every write committed before we arrived —
+                    # return immediately without chasing future writes arriving after entry_ts_ns!
                     with self._state_lock:
                         if not self._rebuilding and (
-                            self._last_stat_sig == sig or shared_start_sig == sig
+                            self._last_stat_sig == sig
+                            or shared_start_sig == sig
+                            or (self._last_synced_ds_tuple == ds_tuple and self._last_synced_pin_ts_ns >= entry_ts_ns)
                         ):
                             return self._last_generation
                     if attempt == 0:
@@ -2988,14 +3106,23 @@ class CatalogIndex:
                             relations_resolver=relations_resolver,
                         )
                     with self._state_lock:
-                        self._last_stat_sig = sig_before if cacheable else None
+                        if cacheable:
+                            eff_cog = getattr(self, '_last_synced_cog_sig', None)
+                            self._last_stat_sig = (eff_cog,) + sig_before[1:] if eff_cog is not None else sig_before
+                            self._last_synced_pin_ts_ns = getattr(self, '_last_synced_pin_ts_ns_pending', 0)
+                            self._last_synced_ds_tuple = ds_tuple
+                        else:
+                            self._last_stat_sig = None
                         self._last_generation = gen
                     return gen
 
             with self._state_lock:
                 if not force:
-                    sig_check = entry_sig if attempt == 0 else _full_stat_sig()
-                    if not self._rebuilding and self._last_stat_sig == sig_check:
+                    sig_check = entry_sig
+                    if not self._rebuilding and (
+                        self._last_stat_sig == sig_check
+                        or (self._last_synced_ds_tuple == ds_tuple and self._last_synced_pin_ts_ns >= entry_ts_ns)
+                    ):
                         return self._last_generation
                     inflight = self._inflight_sync
                     if inflight is not None and inflight[0] == ds_tuple:
@@ -3025,7 +3152,9 @@ class CatalogIndex:
                 return gen
             with self._state_lock:
                 if not self._rebuilding and (
-                    self._last_stat_sig == sig_check or shared_start_sig == sig_check
+                    self._last_stat_sig == sig_check
+                    or shared_start_sig == sig_check
+                    or (self._last_synced_ds_tuple == ds_tuple and self._last_synced_pin_ts_ns >= entry_ts_ns)
                 ):
                     return self._last_generation
         return self._last_generation
@@ -3050,12 +3179,16 @@ class CatalogIndex:
                     return base + (time.monotonic_ns(),)
             return base + (time.monotonic_ns(),)
 
+        entry_ts_ns = time.monotonic_ns()
         entry_sig = _full_stat_sig() if not force else None
         for attempt in range(2):
             if not force:
-                sig = entry_sig if attempt == 0 else _full_stat_sig()
+                sig = entry_sig
                 with self._state_lock:
-                    if not self._rebuilding and self._last_stat_sig == sig:
+                    if not self._rebuilding and (
+                        self._last_stat_sig == sig
+                        or (self._last_synced_ds_tuple == ds_tuple and self._last_synced_pin_ts_ns >= entry_ts_ns)
+                    ):
                         return self._last_generation
                     inflight = self._inflight_sync
                     if inflight is not None and inflight[0] == ds_tuple:
@@ -3068,7 +3201,9 @@ class CatalogIndex:
                     gen = await asyncio.wrap_future(shared_future)
                     with self._state_lock:
                         if not self._rebuilding and (
-                            self._last_stat_sig == sig or shared_start_sig == sig
+                            self._last_stat_sig == sig
+                            or shared_start_sig == sig
+                            or (self._last_synced_ds_tuple == ds_tuple and self._last_synced_pin_ts_ns >= entry_ts_ns)
                         ):
                             return self._last_generation
                     if attempt == 0:
@@ -3095,14 +3230,23 @@ class CatalogIndex:
                             relations_resolver=relations_resolver,
                         )
                     with self._state_lock:
-                        self._last_stat_sig = sig_before if cacheable else None
+                        if cacheable:
+                            eff_cog = getattr(self, '_last_synced_cog_sig', None)
+                            self._last_stat_sig = (eff_cog,) + sig_before[1:] if eff_cog is not None else sig_before
+                            self._last_synced_pin_ts_ns = getattr(self, '_last_synced_pin_ts_ns_pending', 0)
+                            self._last_synced_ds_tuple = ds_tuple
+                        else:
+                            self._last_stat_sig = None
                         self._last_generation = gen
                     return gen
 
             with self._state_lock:
                 if not force:
-                    sig_check = entry_sig if attempt == 0 else _full_stat_sig()
-                    if not self._rebuilding and self._last_stat_sig == sig_check:
+                    sig_check = entry_sig
+                    if not self._rebuilding and (
+                        self._last_stat_sig == sig_check
+                        or (self._last_synced_ds_tuple == ds_tuple and self._last_synced_pin_ts_ns >= entry_ts_ns)
+                    ):
                         return self._last_generation
                     inflight = self._inflight_sync
                     if inflight is not None and inflight[0] == ds_tuple:
@@ -3132,7 +3276,9 @@ class CatalogIndex:
                 return gen
             with self._state_lock:
                 if not self._rebuilding and (
-                    self._last_stat_sig == sig_check or shared_start_sig == sig_check
+                    self._last_stat_sig == sig_check
+                    or shared_start_sig == sig_check
+                    or (self._last_synced_ds_tuple == ds_tuple and self._last_synced_pin_ts_ns >= entry_ts_ns)
                 ):
                     return self._last_generation
         return self._last_generation
@@ -4028,6 +4174,99 @@ class CatalogIndex:
                 'has_more': has_more,
             }
 
+    def query_top_level_children_previews(
+        self,
+        dataset_id: str,
+        parent_specs: list[tuple[str, str]],
+        *,
+        limit: int = 5,
+    ) -> dict[tuple[str, str], tuple[list[dict], bool]]:
+        """Batch preview child fetches for a page of top-level sessions under ONE reader lease."""
+        if not parent_specs:
+            return {}
+        ds = uuid_text(dataset_id)
+        lim = int(limit)
+        out: dict[tuple[str, str], tuple[list[dict], bool]] = {}
+        missing_specs: list[tuple[str, str]] = []
+        with self._state_lock:
+            sgen = self._sessions_generation
+            for raw_sid, raw_uid in parent_specs:
+                key = (raw_sid, raw_uid)
+                if key in out:
+                    continue
+                cached = self._children_preview_cache.get((sgen, ds, raw_sid, raw_uid, lim))
+                if cached is not None:
+                    out[key] = ([dict(r) for r in cached[0]], cached[1])
+                else:
+                    missing_specs.append(key)
+        if not missing_specs:
+            return out
+
+        uniq_sids = list(dict.fromkeys(str(sid) for sid, _uid in missing_specs if sid))
+        if not uniq_sids:
+            return out
+        fetched: dict[tuple[str, str], tuple[list[dict], bool]] = {}
+        with self._reader_lease() as con:
+            multi_owner_sids: set[str] = set()
+            for start in range(0, len(uniq_sids), _MAX_IN_BATCH):
+                batch = uniq_sids[start : start + _MAX_IN_BATCH]
+                ph = ','.join('?' for _ in batch)
+                for (sid_m,) in con.execute(
+                    f'''SELECT session_id FROM catalog_sessions
+                        WHERE dataset_id = ? AND session_id IN ({ph})
+                        GROUP BY session_id HAVING COUNT(*) > 1''',
+                    (ds, *batch),
+                ):
+                    multi_owner_sids.add(str(sid_m))
+
+            sql_unscoped = f'''SELECT {_SELECT_SESS_COLS}
+                               FROM catalog_sessions
+                               WHERE dataset_id = ? AND is_top_level = 0 AND root_session_id = ?
+                               ORDER BY sort_ts_desc_key ASC, user_id ASC, session_id ASC
+                               LIMIT ?'''
+            sql_scoped = f'''SELECT {_SELECT_SESS_COLS}
+                             FROM catalog_sessions
+                             WHERE dataset_id = ? AND is_top_level = 0 AND root_session_id = ?
+                             ORDER BY sort_ts_desc_key ASC, user_id ASC, session_id ASC'''
+
+            for raw_sid, raw_uid in missing_specs:
+                key = (raw_sid, raw_uid)
+                if key in fetched:
+                    continue
+                uid_filter = uuid_text(raw_uid) if raw_uid else ''
+                scope_by_user = bool(uid_filter and raw_sid in multi_owner_sids)
+                if not scope_by_user:
+                    rows = [
+                        _row_to_session_dict(r)
+                        for r in con.execute(sql_unscoped, (ds, raw_sid, lim + 1)).fetchall()
+                    ]
+                    fetched[key] = (rows[:lim], len(rows) > lim)
+                else:
+                    page_rows = []
+                    has_more = False
+                    for r in con.execute(sql_scoped, (ds, raw_sid)):
+                        item = _row_to_session_dict(r)
+                        if item['user_id'] != uid_filter:
+                            continue
+                        if len(page_rows) < lim:
+                            page_rows.append(item)
+                        else:
+                            has_more = True
+                            break
+                    fetched[key] = (page_rows, has_more)
+
+        with self._state_lock:
+            if self._sessions_generation == sgen:
+                if len(self._children_preview_cache) > 512:
+                    self._children_preview_cache.clear()
+                for (raw_sid, raw_uid), val in fetched.items():
+                    self._children_preview_cache[(sgen, ds, raw_sid, raw_uid, lim)] = (
+                        [dict(r) for r in val[0]],
+                        val[1],
+                    )
+        out.update(fetched)
+        return out
+
     def query_recent_sessions(self, allowed_datasets: list[str], *, limit: int = 20) -> list[dict]:
         """Indexed recent sessions across verified datasets via ``idx_csess_recent_ts`` (zero TEMP B-TREE)."""
         if not allowed_datasets:
@@ -4049,6 +4288,12 @@ class CatalogIndex:
 
     def query_pending_raw_docs(self, dataset_id: str, *, limit: int = 20) -> tuple[list[dict], int]:
         ds = uuid_text(dataset_id)
+        lim = int(limit)
+        with self._state_lock:
+            gen_before = self._last_generation
+            cached = self._pending_raw_cache.get((gen_before, ds, lim))
+            if cached is not None:
+                return [dict(r) for r in cached[0]], cached[1]
         with self._reader_lease() as con:
             total = int(
                 con.execute(
@@ -4067,9 +4312,14 @@ class CatalogIndex:
                           AND pipeline_status != 'DATA_ITEM_PROCESSING_COMPLETED'
                         ORDER BY sort_ts_desc_key ASC, doc_id ASC
                         LIMIT ?''',
-                    (ds, limit),
+                    (ds, lim),
                 ).fetchall()
             ]
+        with self._state_lock:
+            if self._last_generation == gen_before and gen_before > 0:
+                if len(self._pending_raw_cache) > 32:
+                    self._pending_raw_cache.clear()
+                self._pending_raw_cache[(gen_before, ds, lim)] = ([dict(r) for r in rows], total)
         return rows, total
 
     def query_search_metadata(

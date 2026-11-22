@@ -86,7 +86,7 @@ class ReadingStateStore:
         self.db.execute('PRAGMA journal_size_limit=4194304')
         self.db.execute('PRAGMA wal_autocheckpoint=1000')
         self.db.execute('PRAGMA synchronous=NORMAL')
-        self.db.execute('PRAGMA cache_size=-2048')
+        self.db.execute('PRAGMA cache_size=-1024')
         self.db.execute('PRAGMA foreign_keys=ON')
         self.db.execute('PRAGMA busy_timeout=5000')
         with self._lock:

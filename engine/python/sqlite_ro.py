@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import threading
 import time
 from urllib.parse import quote
 import uuid
@@ -202,6 +203,123 @@ def official_sqlite_ro(
         yield con
     finally:
         con.close()
+
+
+_RO_POOL_LOCAL = threading.local()
+_RO_POOL_LOCK = threading.Lock()
+_RO_POOL_OPEN: set[sqlite3.Connection] = set()
+_RO_POOL_GEN = 0
+_RO_POOL_MAX_PER_THREAD = 4
+
+
+def close_pooled_official_sqlite_ro():
+    """Close all thread-local pooled read-only connections cleanly (e.g., on server shutdown)."""
+    global _RO_POOL_GEN
+    with _RO_POOL_LOCK:
+        _RO_POOL_GEN += 1
+        stale = list(_RO_POOL_OPEN)
+        _RO_POOL_OPEN.clear()
+    for con in stale:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
+@contextmanager
+def pooled_official_sqlite_ro(
+    db_path,
+    *,
+    timeout_ms: int = 2000,
+    error_code: str = 'official_store_unavailable',
+    sleep_fn=time.sleep,
+    cache_kib: int = 256,
+):
+    """Thread-local inode-validated read-only WAL connection pool.
+
+    Preserves every security invariant of ``open_official_sqlite_ro`` (symlink rejection,
+    ?mode=ro, PRAGMA query_only=ON, kernel authorizer) while avoiding repeated
+    ``sqlite3_wal_open`` / SHM lock stalls under concurrent WAL writes.
+    Always rolls back any dangling transaction on exit so WAL checkpoints are never held back.
+    """
+    resolved = _validate_regular_db_file(db_path, error_code)
+    try:
+        ino = resolved.stat().st_ino
+    except OSError as exc:
+        raise PolicyError(error_code, 503) from exc
+    key = str(resolved)
+    with _RO_POOL_LOCK:
+        cur_gen = _RO_POOL_GEN
+
+    pool: dict[str, tuple[int, sqlite3.Connection]] | None = getattr(_RO_POOL_LOCAL, 'cons', None)
+    pool_gen = getattr(_RO_POOL_LOCAL, 'gen', -1)
+    if pool is None or pool_gen != cur_gen:
+        pool = {}
+        _RO_POOL_LOCAL.cons = pool
+        _RO_POOL_LOCAL.gen = cur_gen
+
+    con = None
+    cached = pool.get(key)
+    if cached is not None:
+        c_ino, c_con = cached
+        if c_ino == ino:
+            con = c_con
+        else:
+            pool.pop(key, None)
+            with _RO_POOL_LOCK:
+                _RO_POOL_OPEN.discard(c_con)
+            try:
+                c_con.close()
+            except Exception:
+                pass
+
+    if con is None:
+        con = open_official_sqlite_ro(
+            resolved,
+            timeout_ms=timeout_ms,
+            error_code=error_code,
+            sleep_fn=sleep_fn,
+            cache_kib=cache_kib,
+        )
+        while len(pool) >= _RO_POOL_MAX_PER_THREAD:
+            old_k = next(iter(pool))
+            _, old_con = pool.pop(old_k)
+            with _RO_POOL_LOCK:
+                _RO_POOL_OPEN.discard(old_con)
+            try:
+                old_con.close()
+            except Exception:
+                pass
+        pool[key] = (ino, con)
+        with _RO_POOL_LOCK:
+            if _RO_POOL_GEN == cur_gen:
+                _RO_POOL_OPEN.add(con)
+
+    try:
+        if con.in_transaction:
+            con.execute('ROLLBACK')
+        yield con
+    except sqlite3.Error:
+        pool.pop(key, None)
+        with _RO_POOL_LOCK:
+            _RO_POOL_OPEN.discard(con)
+        try:
+            con.close()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            if con.in_transaction:
+                con.execute('ROLLBACK')
+        except sqlite3.Error:
+            pool.pop(key, None)
+            with _RO_POOL_LOCK:
+                _RO_POOL_OPEN.discard(con)
+            try:
+                con.close()
+            except Exception:
+                pass
 
 
 @contextmanager

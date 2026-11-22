@@ -22,6 +22,7 @@ from sqlite_ro import (
     knowledge_category_label,
     official_sqlite_ro,
     parse_official_timestamp,
+    pooled_official_sqlite_ro,
     ro_snapshot,
     unique_learning_session,
     uuid_text,
@@ -259,7 +260,7 @@ def _read_code_activity(official_data, project_id: str, code_dataset_id: str) ->
     db_path = Path(official_data) / 'system' / 'databases' / 'cognee_db'
     ds_variants = id_variants(code_dataset_id)
 
-    with official_sqlite_ro(db_path) as con:
+    with pooled_official_sqlite_ro(db_path) as con:
         with ro_snapshot(con):
             ds_row = None
             for variant in ds_variants:
