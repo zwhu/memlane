@@ -39,6 +39,8 @@ UI组件保持稳定Key，异步结果核对项目／配置代次和当前操作
 
 ## 留证契约
 
+Codex App Server 宣布在同一回合重试时，模型代理等待该回合最终结果，并记录安全错误码与重试标记。见[Codex 代理提前结束可重试的断流](codex-retry-notification-20261122.md)。
+
 ### 模型参数契约（2026-11-18，用户明确要求桥接与直连都防复发）
 
 - 静态门禁：`python3 scripts/task.py -- python3 scripts/lint.py`，覆盖 Python 与 Go 生产模块（含 `scripts/*.py`），执行 `ML001`–`ML003`、`ML006`–`ML017`（其中 `ML006` 守卫画像无固定总超时、`ML015` 扩展覆盖 `scripts/*.py`），并由 `sh scripts/go.sh test ./...` 经 `lint_gate_test.go` 自动强制执行；违规输出文件／行号／ML规则编号并非零退出。检查器回归：`python3 scripts/task.py -- python3 -m unittest discover -s scripts -p test_lint.py`。覆盖原始 `setdefault` 错误、别名构造器、请求字面量、合法显式配置及语法错误；不能只在测试里保留架构约束而不接 lint 入口。

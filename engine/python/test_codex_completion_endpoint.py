@@ -1,5 +1,7 @@
 """Synthetic stdio/HTTP regression checks; never calls a model or daily config."""
 import asyncio
+from contextlib import redirect_stderr
+import io
 import json
 import os
 from pathlib import Path
@@ -23,14 +25,30 @@ config=(Path(os.environ['CODEX_HOME'])/'config.toml').read_text()
 assert 'hooks = false' in config and 'plugins = false' in config and 'shell_tool = false' in config
 assert not (Path(os.environ['CODEX_HOME'])/'daily-marker').exists()
 def send(x): print(json.dumps(x),flush=True)
+mode = {mode!r}
+disconnect = {{'codexErrorInfo': {{'responseStreamDisconnected': {{'httpStatusCode': None}}}},
+              'message': 'synthetic error detail that must stay private'}}
 for line in sys.stdin:
  m=json.loads(line); method=m['method']; p=m.get('params',{{}})
  if method=='initialize':send({{'id':m['id'],'result':{{}}}})
  if method=='thread/start':
   send({{'id':m['id'],'result':{{'thread':{{'id':'t'}},'model':'fixture-model','modelProvider':'openai','runtimeWorkspaceRoots':[],'activePermissionProfile':{{'id':'memlane_completion'}}}}}})
  if method=='turn/start':
-  send({{'id':m['id'],'result':{{'turn':{{'id':'u'}}}}}})
-  if {mode!r}=='hang':continue
+  if mode == 'retry-before-reply':
+   send({{'method':'turn/started','params':{{'threadId':'t','turn':{{'id':'u'}}}}}})
+  else:
+   send({{'id':m['id'],'result':{{'turn':{{'id':'u'}}}}}})
+  if mode in ('retry-success', 'retry-terminal', 'retry-wrong-turn', 'retry-hang', 'retry-before-reply', 'terminal'):
+   if mode == 'retry-success':
+    send({{'method':'item/completed','params':{{'threadId':'t','turnId':'u','item':{{'type':'agentMessage','text':'{{"answer":"stale"}}'}}}}}})
+   send({{'method':'error','params':{{'threadId':'t','turnId':'wrong' if mode == 'retry-wrong-turn' else 'u',
+                                      'willRetry':mode != 'terminal','error':disconnect}}}})
+   if mode == 'retry-before-reply':
+    send({{'id':m['id'],'result':{{'turn':{{'id':'u'}}}}}})
+   if mode == 'retry-terminal':
+    send({{'method':'turn/completed','params':{{'threadId':'t','turn':{{'id':'u','status':'failed','error':disconnect}}}}}})
+    continue
+  if mode in ('hang', 'retry-hang'):continue
   if {mode!r}=='slow-success':time.sleep(.1)
   thread='wrong' if {mode!r}=='wrong-id' else 't'
   if {mode!r}=='plain':
@@ -108,8 +126,6 @@ class SchemaTests(unittest.TestCase):
             with self.assertRaises(endpoint.CompletionError): endpoint.parse_request(body | changed, 'fixture-model')
 
     def test_activity_clock_and_cli_timeout_validation(self):
-        from contextlib import redirect_stderr
-        import io
         for bad in (0, -1, float('nan'), float('inf'), None, 'bad'):
             with self.assertRaises(ValueError):
                 endpoint.ActivityClock(bad)
@@ -167,6 +183,45 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_success_process_exit_and_auth_unchanged(self):
         self.assertEqual(json.loads(await self.run_fake('success')), {'answer':'ok'})
         self.assertEqual((self.auth/'auth.json').read_text(), '{"synthetic":true}')
+
+    async def test_retryable_error_notification_recovers_in_same_http_request(self):
+        for mode in ('retry-success', 'retry-before-reply'):
+            with self.subTest(mode=mode):
+                self.fake(mode)
+                previous_processes = len(self.processes)
+                args = self.prepare_http_args('codex', timeout=2)
+                diagnostics = io.StringIO()
+                with redirect_stderr(diagnostics):
+                    async with TestClient(TestServer(endpoint.create_app(args))) as client:
+                        response = await client.post('/v1/chat/completions', json={
+                            'model': 'fixture-model', 'messages': [{'role': 'user', 'content': 'q'}],
+                            'response_format': {'type': 'json_schema', 'json_schema': {'schema': SCHEMA}},
+                        }, headers={'Authorization': 'Bearer ' + args.token_file.read_text()})
+                        result = await response.json()
+                self.assertEqual(response.status, 200, result)
+                self.assertEqual(json.loads(result['choices'][0]['message']['content']), {'answer': 'ok'})
+                self.assertEqual(len(self.processes), previous_processes + 1)
+                rows = [json.loads(line) for line in diagnostics.getvalue().splitlines() if line.startswith('{')]
+                retry, = [row for row in rows if row.get('event') == 'codex_turn_error']
+                finished, = [row for row in rows if row.get('event') == 'request_finished']
+                self.assertEqual(retry['request_id'], finished['request_id'])
+                self.assertIs(retry['will_retry'], True)
+                self.assertEqual(retry['outcome'], 'codex_stream_disconnected')
+                self.assertEqual(finished['outcome'], 'succeeded')
+                self.assertNotIn('synthetic error detail', diagnostics.getvalue())
+
+    async def test_retryable_error_keeps_terminal_failure_identity_and_timeout_enforcement(self):
+        self.args.timeout = .5
+        for mode, code, status in (
+            ('retry-terminal', 'codex_stream_disconnected', 502),
+            ('terminal', 'codex_stream_disconnected', 502),
+            ('retry-wrong-turn', 'codex_event_identity_invalid', 502),
+            ('retry-hang', 'codex_timeout', 504),
+        ):
+            with self.subTest(mode=mode):
+                with self.assertRaises(endpoint.CompletionError) as caught:
+                    await self.run_fake(mode)
+                self.assertEqual((caught.exception.code, caught.exception.status), (code, status))
 
     async def test_native_request_inherits_default_effort_and_internal_memory_models(self):
         for kind in ('codex', 'traex'):

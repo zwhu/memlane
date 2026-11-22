@@ -463,7 +463,21 @@ async def execute(args, system, prompt, schema, transport):
                         raise CompletionError('codex_event_identity_invalid')
                     continue
                 if method == 'error':
-                    raise remote_error(params.get('error'))
+                    error = remote_error(params.get('error'))
+                    will_retry = kind == 'codex' and params.get('willRetry') is True
+                    if will_retry:
+                        active_turn = turn_id or announced
+                        if not active_turn or params.get('threadId') != thread_id or params.get('turnId') != active_turn:
+                            raise CompletionError('codex_event_identity_invalid')
+                    trace = current_trace.get()
+                    if trace and kind == 'codex':
+                        trace.emit('codex_turn_error', outcome=error.code, will_retry=will_retry)
+                    if will_retry:
+                        # The App Server owns the retry within this turn. A
+                        # result from the interrupted attempt cannot be returned.
+                        final = None
+                        continue
+                    raise error
                 if method == 'turn/started':
                     announced = params.get('turn', {}).get('id')
                     if params.get('threadId') != thread_id or not announced or turn_id and announced != turn_id:
