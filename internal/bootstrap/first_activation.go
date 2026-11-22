@@ -8,12 +8,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+
+	"github.com/zwhu/memlane/internal/supervisor"
 )
 
-type FirstGenerationReference struct {
-	ID       string `json:"id"`
-	Revision int64  `json:"revision"`
-}
+type FirstGenerationReference = supervisor.GenerationReference
 type FirstActivationRequest struct {
 	Schema    int                      `json:"schema"`
 	StoreID   string                   `json:"store_id"`

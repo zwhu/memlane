@@ -144,7 +144,20 @@ def verify_info_plist(app_path: Path, expected_version: str, expected_min_macos:
         'bundle_identifier': str(info.get('CFBundleIdentifier', '')),
         'short_version': actual_ver,
         'minimum_system_version': actual_min,
+        'executable': str(info.get('CFBundleExecutable', '')),
     }
+
+
+def verify_packaged_first_store(executable: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix='memlane-release-check-') as work_dir:
+        probe = subprocess.run(
+            [str(executable), '--check-first-store-resources', sys.executable],
+            cwd=work_dir,
+            env={'HOME': work_dir, 'TMPDIR': work_dir, 'PATH': os.defpath},
+            capture_output=True, text=True, timeout=45, check=False,
+        )
+    if probe.returncode != 0:
+        raise RuntimeError(f'packaged first-store check failed: {probe.stderr.strip() or probe.stdout.strip()}')
 
 
 def normalize_dmg_filename(platform_dir: Path, slug: str, name: str, version: str, arch: str) -> Path:
@@ -328,6 +341,11 @@ def _execute_build(
     sign_proc = subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app_path)], capture_output=True, text=True, check=False)
     if sign_proc.returncode != 0:
         raise RuntimeError(f'codesign verify failed: {sign_proc.stderr.strip() or sign_proc.stdout.strip()}')
+    executable_name = plist_info['executable']
+    if executable_name in ('', '.', '..') or Path(executable_name).name != executable_name:
+        raise ValueError('invalid CFBundleExecutable')
+    executable = app_path / 'Contents' / 'MacOS' / executable_name
+    verify_packaged_first_store(executable)
 
     checksum_targets: list[Path] = []
     dmg_path_str = ''
@@ -339,10 +357,7 @@ def _execute_build(
         dmg_path_str = str(dmg_path)
         checksum_targets.append(dmg_path)
     else:
-        exe = app_path / 'Contents' / 'MacOS' / manifest['name']
-        if not exe.is_file():
-            exe = app_path / 'Contents' / 'MacOS' / manifest['slug']
-        checksum_targets.append(exe)
+        checksum_targets.append(executable)
 
     sums_path, sums = write_sha256_sums(platform_dir, checksum_targets)
     res = {
@@ -357,6 +372,7 @@ def _execute_build(
         'checksums_path': str(sums_path),
         'sha256sums': sums,
         'info_plist': plist_info,
+        'packaged_first_store': 'passed',
     }
     if git_ref:
         res['git_ref'] = git_ref

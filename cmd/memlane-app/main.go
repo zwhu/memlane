@@ -8,15 +8,28 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane"
 	"github.com/zwhu/memlane/internal/bootstrap"
 	"github.com/zwhu/memlane/internal/simpledesktop"
-	"time"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--check-first-store-resources" {
+		if len(os.Args) != 3 {
+			log.Fatal("usage: --check-first-store-resources /absolute/path/to/python3")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := bootstrap.CheckFirstStoreResources(ctx, os.Args[2], memlane.RuntimeAssets)
+		cancel()
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	configuration := os.Getenv("MEMLANE_DEV_RUNTIME_CONFIG")
 	firstDefault := configuration == ""
 	var pathError error

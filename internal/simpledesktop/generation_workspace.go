@@ -135,10 +135,19 @@ func (a *App) applySelectedProcessingAgent() {
 func (a *App) generationCandidateStatus(c *ui.Context) {
 	s := &a.integrations
 	if s.DraftMode == "agent_bridge" {
+		setupCandidate := a.initialSetup && s.cleanSaved() && s.Generation.Next != nil && *s.Generation.Next == *s.Saved
 		current := s.Generation.Active != nil && s.Saved != nil && *s.Generation.Active == *s.Saved && s.cleanSaved()
 		if !current {
 			ui.Row(c).FillWidth().MinHeight(44).Padding(sp2, sp1).AlignItems(ui.Center).Justify(ui.End).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
-				v4SmallPrimaryButton(c, "切换", func() {
+				if setupCandidate {
+					v4SmallPrimaryButton(c, "验证（会消耗额度）", func() { a.generationAction("validations") }).Disabled(s.Busy || s.Validation.Status == "running" || s.Validation.Status == "queued" || s.hasPendingGeneration() || !s.connectedProcessingAgent(s.BridgeKind))
+					return
+				}
+				label := "切换"
+				if a.initialSetup {
+					label = "保存提炼选项"
+				}
+				v4SmallPrimaryButton(c, label, func() {
 					if s.cleanSaved() {
 						a.applySelectedProcessingAgent()
 					} else {
@@ -146,6 +155,11 @@ func (a *App) generationCandidateStatus(c *ui.Context) {
 						a.saveGeneration()
 					}
 				}).Disabled(s.Busy || s.HandoffOpen || s.HandoffOperation != "" || s.SaveOperation != "" || !s.connectedProcessingAgent(s.BridgeKind))
+			})
+		}
+		if setupCandidate && s.ValidationOperation != "" {
+			ui.Column(c).FillWidth().Padding(sp2, sp1).Gap(sp2).Children(func() {
+				a.generationValidationStatus(c)
 			})
 		}
 		if s.Error != "" {
@@ -181,6 +195,11 @@ func (a *App) generationWorkspaceFor(c *ui.Context, edit, enable bool) {
 }
 func (a *App) generationWorkspaceContent(c *ui.Context, edit, enable bool) {
 	s := &a.integrations
+	if !s.Editor && a.initialSetup {
+		if row, ok := s.Generation.row(s.Generation.Next); ok {
+			a.selectGenerationProfile(s.Generation.Next.ID, row)
+		}
+	}
 	if !s.Editor {
 		mode := s.GenerationDraftMode
 		if mode == "" {

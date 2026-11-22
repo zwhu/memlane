@@ -457,28 +457,7 @@ func (a *App) generationEditorContent(c *ui.Context) {
 			if !s.cleanSaved() && s.SaveOperation == "" {
 				homeText(c, "配置有未保存修改。", homeMeta)
 			}
-			if s.ValidationOperation != "" {
-				label := map[string]string{"queued": "验证已登记", "running": "正在验证", "passed": "验证通过", "failed": "验证未通过", "result_unknown": "验证结果未确认"}[s.Validation.Status]
-				if !s.cleanSaved() {
-					label = "已保存配置的原验证：" + label
-				}
-				homeText(c, label, homeMeta)
-				if message := generationValidationMessage(s.Validation.ErrorCode); message != "" {
-					homeText(c, message, homeMeta).LineHeight(1.6)
-				}
-				if s.Validation.ModeEvidence == "official_adapter_request" {
-					mode := map[string]string{"json_schema": "本次结构化请求：Schema", "json_schema_non_strict": "本次结构化请求：非严格 Schema", "json_object": "本次结构化请求：JSON 对象"}[s.Validation.StructuredMode]
-					if mode != "" {
-						homeText(c, mode, homeMeta).LineHeight(1.6)
-					}
-				}
-				ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
-					v4SmallButton(c, "核对原验证", v4IconRefresh, func() { a.pollGenerationValidation(s.ValidationOperation) }).Disabled(s.Busy)
-					if s.Validation.Status == "queued" || s.Validation.Status == "running" {
-						v4DangerOutlineButton(c, "停止验证", true, a.cancelGenerationValidation).Disabled(s.Busy)
-					}
-				})
-			}
+			a.generationValidationStatus(c)
 			if s.Message != "" {
 				homeText(c, s.Message, homeMeta).LineHeight(1.7)
 			}
@@ -487,6 +466,32 @@ func (a *App) generationEditorContent(c *ui.Context) {
 			}
 		})
 	})
+}
+
+func (a *App) generationValidationStatus(c *ui.Context) {
+	s := &a.integrations
+	if s.ValidationOperation != "" {
+		label := map[string]string{"queued": "验证已登记", "running": "正在验证", "passed": "验证通过", "failed": "验证未通过", "result_unknown": "验证结果未确认"}[s.Validation.Status]
+		if !s.cleanSaved() {
+			label = "已保存配置的原验证：" + label
+		}
+		homeText(c, label, homeMeta)
+		if message := generationValidationMessage(s.Validation.ErrorCode); message != "" {
+			homeText(c, message, homeMeta).LineHeight(1.6)
+		}
+		if s.Validation.ModeEvidence == "official_adapter_request" {
+			mode := map[string]string{"json_schema": "本次结构化请求：Schema", "json_schema_non_strict": "本次结构化请求：非严格 Schema", "json_object": "本次结构化请求：JSON 对象"}[s.Validation.StructuredMode]
+			if mode != "" {
+				homeText(c, mode, homeMeta).LineHeight(1.6)
+			}
+		}
+		ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
+			v4SmallButton(c, "核对原验证", v4IconRefresh, func() { a.pollGenerationValidation(s.ValidationOperation) }).Disabled(s.Busy)
+			if s.Validation.Status == "queued" || s.Validation.Status == "running" {
+				v4DangerOutlineButton(c, "停止验证", true, a.cancelGenerationValidation).Disabled(s.Busy)
+			}
+		})
+	}
 }
 
 func generationValidationMessage(code string) string {

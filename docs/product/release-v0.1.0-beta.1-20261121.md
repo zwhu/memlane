@@ -80,6 +80,8 @@
 | **M3：构建 `v0.1.0-beta.1` DMG 与公测文档**（代码、构建与校验已完成；`.app` 实机字体目视留待 M4） | ① 更新 [mygo.json](../../mygo.json)（`version: "0.1.0-beta.1"`、`macos.minimumSystemVersion: "14.0"`）；<br>② 新增发布构建脚本 [build_release.py](../../scripts/build_release.py) 与单测 [test_build_release.py](../../scripts/test_build_release.py)，支持 `--git-ref HEAD` 从干净 worktree 串联 [scripts/mygo_sdk.py](../../scripts/mygo_sdk.py) 私有字体抗锯齿补丁、`web/official-graph/dist` 与 `mygo build`，自 `e46957d` 产出 `build/release-v0.1.0-beta.1/darwin-arm64/` 下 `Memlane.app`（`22.3 MB`，`arm64`）、`Memlane-0.1.0-beta.1-arm64.dmg`（`6.0M`，SHA256 `540850f272bcd279f905db27e4b88e006b96634d4846db8bdce0335c1cdb8c1d`）与 `SHA256SUMS.txt`；<br>③ 新增 [beta-install-guide.md](beta-install-guide.md) 与 [THIRD_PARTY_LICENSES.md](../../THIRD_PARTY_LICENSES.md) 并接入 [docs/README.md](../README.md) | `scripts/test_build_release.py`（全量 `scripts` 单测 `101/101`）与 `lint.py` 通过；`Memlane.app` 的 `Info.plist`（`0.1.0-beta.1` / `14.0`）、`codesign --verify --deep --strict`（adhoc）、`hdiutil verify` 与 `shasum -a 256 -c SHA256SUMS.txt` 全部通过（提交 `859a4ad`、`e46957d`）；`.app` 实窗字体渲染目视与净室安装留待 M4 |
 | **M4：无缓存净室实机验收与发布** | 在无缓存、未预装项目环境的干净 macOS 14+ Apple Silicon 环境从双击 `.dmg` 起执行连续场景验收：<br>Gatekeeper 放行 → 国内镜像源首次安装（含中断/手动补齐后「重新检测」）→ 首次配置（模型验证与激活）→ 主窗/图谱/状态栏与后台保活 → 接入 4 个首发 Agent → 自动采集 → 记忆提炼 → 阅读与实际召回 → 卸载脚本演练 | 全连续场景实际证据按过程文档规范本机留档；确认零阻塞缺陷后打 tag 并在 GitHub Releases 发布 `v0.1.0-beta.1`（Pre-release） |
 
+M4 每个候选包须满足[首装发版门禁](../engineering/workflow.md#首装发版门禁)。
+
 ## 四、已知风险与后续正式版（v1.0）增量
 
 1. **公测期主要风险**：

@@ -25,7 +25,7 @@ type Config struct {
 	ControlURL              string
 	RuntimeConfig           string
 	GenerationMode          string
-	GenerationReference     string
+	GenerationReference     *GenerationReference
 	LogDir                  string
 	LogLimitBytes           int64
 	MonitorInterval         time.Duration

@@ -601,18 +601,18 @@ func (e *Environment) PrepareFirstRuntime(ctx context.Context, configPath string
 	if plugin.Status != Available {
 		return prepared, errors.New("固定 Agent 插件尚未准备完成")
 	}
-	if !existing {
-		engineAssets, err := fs.Sub(assets, "engine")
+	var resources string
+	if existing {
+		resources, err = PrepareRuntimeResources(ctx, e.Installer().Root, assets)
 		if err != nil {
 			return prepared, err
 		}
-		if _, err := e.InitializeStore(ctx, root, engineAssets); err != nil {
+	} else {
+		store, err := e.InitializeStore(ctx, root, assets)
+		if err != nil {
 			return prepared, err
 		}
-	}
-	resources, err := PrepareRuntimeResources(ctx, e.Installer().Root, assets)
-	if err != nil {
-		return prepared, err
+		resources = store.Resources
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

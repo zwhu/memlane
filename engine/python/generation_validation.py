@@ -122,7 +122,7 @@ class GenerationValidation:
                 self.bridge = ValidationBridge(self.runtime, profile, temporary, changed)
                 environment = await self.bridge.start()
             env.update(HOME=temporary, XDG_CACHE_HOME=str(Path(temporary) / 'cache'))
-            command = [self.runtime['python'], str(ROOT / 'engine/python/generation_probe.py')]
+            command = [self.runtime['python'], '-B', str(ROOT / 'engine/python/generation_probe.py')]
             trace.transition('process_spawn')
             launch = asyncio.create_task(asyncio.create_subprocess_exec(*command, env=env, cwd=temporary,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,

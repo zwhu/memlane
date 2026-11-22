@@ -86,6 +86,12 @@ func TestFirstRuntimeReadinessRequiresLiveOwnerAndBothAuthenticatedAPIs(t *testi
 	if ready, err := FirstRuntimeReady(context.Background(), configPath); err != nil || !ready {
 		t.Fatal(ready, err)
 	}
+	owner["phase"] = "ready"
+	owner["generation_reference"] = map[string]any{"id": "synthetic-pi", "revision": 1}
+	write(ownerPath, owner)
+	if ready, err := FirstRuntimeReady(context.Background(), configPath); err != nil || !ready {
+		t.Fatal("Python activation receipt should pass readiness", ready, err)
+	}
 	ownerIdentity.Store("another-owner")
 	if ready, err := FirstRuntimeReady(context.Background(), configPath); err == nil || ready {
 		t.Fatal("foreign owner accepted", ready, err)

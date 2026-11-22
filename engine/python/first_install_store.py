@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
 import tempfile
 from uuid import UUID, uuid4
 
@@ -80,8 +81,6 @@ def configure_environment(spec, root):
 
 class PinnedSDK:
     def __init__(self, spec):
-        import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
         from official_service_dev import verify_source
         source = verify_source({'official_source': spec['source'], 'official_archive': spec['archive']})
         sys.path.insert(0, str(source))
@@ -195,8 +194,22 @@ async def initialize(spec, sdk=None, after_step=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', required=True, type=Path)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--config', type=Path)
+    mode.add_argument('--check-resources', action='store_true')
     args = parser.parse_args()
+    # Python -I omits the script directory. Resolve imports from the verified
+    # runtime generation that contains this entry point.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    if args.check_resources:
+        from official_service_dev import COMPONENT_MANIFEST
+        json.loads(COMPONENT_MANIFEST.read_text())['service']
+        with tempfile.TemporaryDirectory() as root:
+            probe = Path(root) / 'private-write-probe'
+            write_private(probe, 'memlane-first-store')
+            if read_private(probe) != 'memlane-first-store' or stat.S_IMODE(probe.stat().st_mode) != 0o600:
+                raise StoreInitializationError('first_store_resource_check_failed')
+        return
     spec = json.loads(read_private(args.config))
     result = asyncio.run(initialize(spec))
     print(json.dumps(result))

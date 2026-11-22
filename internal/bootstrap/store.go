@@ -3,7 +3,6 @@ package bootstrap
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,6 +28,7 @@ type StoreReceipt struct {
 type StoreResult struct {
 	Receipt                                              StoreReceipt
 	Root, TokenFile, Python, Source, Archive, ModelCache string
+	Resources                                            string
 }
 
 // InitializeStore is an explicit first-use operation, not a normal startup
@@ -81,6 +81,10 @@ func (e *Environment) InitializeStore(ctx context.Context, root string, assets f
 		if model.Status != Available {
 			return errors.New("模型能力尚未确认，未创建内容库")
 		}
+		resources, err := prepareRuntimeResources(ctx, installer.Root, assets)
+		if err != nil {
+			return err
+		}
 		identity := StoreIdentity{Schema: 1, SourceCommit: e.Source.Managed.Spec.Commit, ModelDigest: e.Model.Spec.Digest()}
 		marker := filepath.Join(root, ".memlane-first-store.json")
 		b, err := privateRead(marker)
@@ -109,10 +113,6 @@ func (e *Environment) InitializeStore(ctx context.Context, root string, assets f
 		if err := claimComponentRoot(root, ".memlane-first-store.json", b); err != nil {
 			return err
 		}
-		resources, err := prepareStoreResources(installer.Root, assets)
-		if err != nil {
-			return err
-		}
 		spec := struct {
 			StoreIdentity
 			Root       string `json:"root"`
@@ -128,7 +128,7 @@ func (e *Environment) InitializeStore(ctx context.Context, root string, assets f
 		if err := atomicPrivateFile(input, b); err != nil {
 			return err
 		}
-		if err := runManaged(ctx, root, python, "-I", "-B", filepath.Join(resources, "python/first_install_store.py"), "--config", input); err != nil {
+		if err := runFirstStore(ctx, root, python, resources, "--config", input); err != nil {
 			return err
 		}
 		b, err = privateRead(filepath.Join(root, "store-identity.json"))
@@ -145,47 +145,35 @@ func (e *Environment) InitializeStore(ctx context.Context, root string, assets f
 		if _, err := privateRead(filepath.Join(root, "owner.token")); err != nil {
 			return err
 		}
-		result = StoreResult{Receipt: receipt, Root: root, TokenFile: filepath.Join(root, "owner.token"), Python: python, Source: sourcePath, Archive: archive, ModelCache: model.Path}
+		result = StoreResult{Receipt: receipt, Root: root, TokenFile: filepath.Join(root, "owner.token"), Python: python, Source: sourcePath, Archive: archive, ModelCache: model.Path, Resources: resources}
 		return nil
 	})
 	return result, err
 }
 
-func prepareStoreResources(root string, assets fs.FS) (string, error) {
-	files := []string{"python/first_install_store.py", "python/official_service_dev.py", "coding-memory-components.json"}
-	data := map[string][]byte{}
-	hash := sha256.New()
-	for _, name := range files {
-		b, err := fs.ReadFile(assets, name)
-		if err != nil {
-			return "", err
-		}
-		data[name] = b
-		hash.Write([]byte(name))
-		hash.Write(b)
+func runFirstStore(ctx context.Context, root, python, resources string, args ...string) error {
+	command := []string{"-I", "-B", filepath.Join(resources, "engine/python/first_install_store.py")}
+	return runManaged(ctx, root, python, append(command, args...)...)
+}
+
+// CheckFirstStoreResources exercises the packaged initializer in a disposable
+// directory using only the application's verified runtime resources.
+func CheckFirstStoreResources(ctx context.Context, python string, assets fs.FS) error {
+	if !filepath.IsAbs(python) {
+		return errors.New("first-store resource check needs an absolute Python executable path")
 	}
-	id := hex.EncodeToString(hash.Sum(nil))
-	destination := filepath.Join(root, "resources-"+id[:12])
-	identity, _ := json.Marshal(map[string]string{"sha256": id})
-	if err := claimComponentRoot(destination, ".memlane-adapters.json", identity); err != nil {
-		return "", err
+	temp, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		return err
 	}
-	for _, name := range files {
-		p := filepath.Join(destination, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
-			return "", err
-		}
-		if b, err := privateRead(p); err == nil {
-			if string(b) != string(data[name]) {
-				return "", errors.New("首次准备适配资源已被修改，保留原件")
-			}
-			continue
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return "", err
-		}
-		if err := atomicPrivateFile(p, data[name]); err != nil {
-			return "", err
-		}
+	root, err := os.MkdirTemp(temp, "memlane-first-store-check-")
+	if err != nil {
+		return err
 	}
-	return destination, nil
+	defer os.RemoveAll(root)
+	resources, err := PrepareRuntimeResources(ctx, filepath.Join(root, "installation"), assets)
+	if err != nil {
+		return err
+	}
+	return runFirstStore(ctx, root, python, resources, "--check-resources")
 }

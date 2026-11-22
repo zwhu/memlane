@@ -74,7 +74,9 @@ class ValidationTests(unittest.IsolatedAsyncioTestCase):
         path.write_text(source)
 
     async def test_real_owned_worker_receipt_and_current_configuration_are_separate(self):
-        self.worker('import json,sys\nrequest=json.load(sys.stdin)\nassert request["environment"]["LLM_API_KEY"] == "synthetic-secret"\nprint(json.dumps({"status":"passed","plain_passed":True,"schema_passed":True,"quality_passed":True,"structured_mode":"unknown"}))\n')
+        self.worker('import json,sys\nimport validation_fixture\nrequest=json.load(sys.stdin)\nassert request["environment"]["LLM_API_KEY"] == "synthetic-secret"\nprint(json.dumps({"status":"passed","plain_passed":True,"schema_passed":True,"quality_passed":True,"structured_mode":"unknown"}))\n')
+        modules = self.root / 'engine/python'
+        (modules / 'validation_fixture.py').write_text('fixture = True\n')
         with patch('generation_validation.ROOT', self.root):
             receipt = self.validator.start(self.profile, 1, 'validate')
             self.assertEqual(self.validator.start(self.profile, 1, 'validate'), receipt)
@@ -82,6 +84,7 @@ class ValidationTests(unittest.IsolatedAsyncioTestCase):
                 self.validator.start(self.profile, self.store.state['revision'], 'another')
             await self.validator.task
         self.assertEqual(self.validator.get('validate')['status'], 'passed')
+        self.assertFalse((modules / '__pycache__').exists())
         self.assertIsNone(self.validator.process)
         self.assertEqual(self.store.state['active']['id'], 'existing-codex')
         self.store.select_next(self.profile, self.store.state['revision'], 'select')

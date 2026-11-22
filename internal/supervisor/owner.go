@@ -38,23 +38,29 @@ const (
 	maxOwnerReceiptBytes = 2 << 20
 )
 
+// GenerationReference identifies a selected generation profile and its revision.
+type GenerationReference struct {
+	ID       string `json:"id"`
+	Revision int64  `json:"revision"`
+}
+
 // OwnerRecord matches the .memlane-dev-owner.json schema expected by dev.py and bootstrap.
 type OwnerRecord struct {
-	PID                 int               `json:"pid"`
-	Started             string            `json:"started"`
-	Phase               string            `json:"phase"`
-	Config              string            `json:"config"`
-	OfficialData        string            `json:"official_data"`
-	ServiceURL          string            `json:"service_url,omitempty"`
-	CompletionURL       string            `json:"completion_url,omitempty"`
-	ProjectControlURL   string            `json:"project_control_url,omitempty"`
-	RuntimeConfig       string            `json:"runtime_config,omitempty"`
-	GenerationMode      string            `json:"generation_mode,omitempty"`
-	GenerationReference string            `json:"generation_reference,omitempty"`
-	Children            []int             `json:"children"`
-	ServiceChildren     map[string]int    `json:"service_children"`
-	ChildStartTimes     map[string]string `json:"child_start_times,omitempty"`
-	ObservedDescendants map[string]string `json:"observed_descendants,omitempty"`
+	PID                 int                  `json:"pid"`
+	Started             string               `json:"started"`
+	Phase               string               `json:"phase"`
+	Config              string               `json:"config"`
+	OfficialData        string               `json:"official_data"`
+	ServiceURL          string               `json:"service_url,omitempty"`
+	CompletionURL       string               `json:"completion_url,omitempty"`
+	ProjectControlURL   string               `json:"project_control_url,omitempty"`
+	RuntimeConfig       string               `json:"runtime_config,omitempty"`
+	GenerationMode      string               `json:"generation_mode,omitempty"`
+	GenerationReference *GenerationReference `json:"generation_reference,omitempty"`
+	Children            []int                `json:"children"`
+	ServiceChildren     map[string]int       `json:"service_children"`
+	ChildStartTimes     map[string]string    `json:"child_start_times,omitempty"`
+	ObservedDescendants map[string]string    `json:"observed_descendants,omitempty"`
 }
 
 // OwnerLock holds an exclusive non-blocking advisory lock on <canonical_store>/.service-owner.

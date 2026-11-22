@@ -51,6 +51,7 @@
 | 文档 | 说明 |
 | --- | --- |
 | [workflow.md](engineering/workflow.md) | 工程执行节奏、Go/MyGo 检查要求、模型参数留证契约与“四次失败停止”规则 |
+| [beta-install-issues.md](engineering/beta-install-issues.md) | Beta 安装问题、根因、修复与 UTM 复验边界 |
 | [runtime-package-cleanup-incident-20261111.md](engineering/runtime-package-cleanup-incident-20261111.md) | 运行中后台所属运行包被误清理复盘与依赖保护规则 |
 | [task-brief-template.md](engineering/templates/task-brief-template.md) | 跨模块任务影响范围与验证说明填写模板 |
 | [testcase-template.md](engineering/templates/testcase-template.md) | 连续主流程集成/验收用例模板 |

@@ -1,8 +1,14 @@
 package simpledesktop
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/zwhu/memlane/internal/bootstrap"
@@ -85,6 +91,61 @@ func TestFirstUseStepsPreserveRuntimeGateAndSharedShell(t *testing.T) {
 	clickProjectUI(t, tt, "准备环境")
 	if !tt.HasText("准备好你的本地记忆环境") || !tt.HasText("运行基础") || !tt.HasText("本地记忆引擎") || !tt.HasText("Agent 接入") {
 		t.Fatal("return lost environment grouping")
+	}
+}
+
+func TestFirstUseValidatesSavedPiBeforeEnablingRuntime(t *testing.T) {
+	root := t.TempDir()
+	token := filepath.Join(root, "manager")
+	if err := os.WriteFile(token, []byte(strings.Repeat("a", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ref := GenerationRef{ID: "pi-setup", Revision: 2}
+	directory := GenerationDirectory{Revision: 5, Next: &ref, Profiles: map[string][]GenerationRow{
+		ref.ID: {{Revision: ref.Revision, Digest: "pi-digest", Profile: GenerationProfile{Mode: "agent_bridge", BridgeKind: "pi", BridgeProvider: "deepseek", Model: "selected-model"}}},
+	}}
+	validated := make(chan GenerationRef, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/v1/generation/validations":
+			var body struct {
+				Revision int64         `json:"expected_revision"`
+				Profile  GenerationRef `json:"profile"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Revision != directory.Revision {
+				t.Error("validation did not use the reviewed generation revision")
+			}
+			validated <- body.Profile
+			w.Write([]byte(`{}`))
+		case r.URL.Path == "/v1/generation":
+			json.NewEncoder(w).Encode(directory)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	a := setupLayoutFixture()
+	a.Config.GenerationFile = filepath.Join(root, "generation.json")
+	a.Config.ProjectControl = &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}
+	a.Update = func(func()) {}
+	a.environment.RuntimeStarted = true
+	a.environment.InitialStep = 3
+	a.integrations.Loaded = true
+	a.integrations.Connections.Connections = []AgentConnection{{Kind: "pi", Status: "configured_pending_new_session"}}
+	a.integrations.Generation = directory
+	tt := ui.NewTester(a.View, 1200, 820)
+	clickProjectUI(t, tt, "启用并完成")
+	if a.environment.Busy {
+		t.Fatal("activation started without a validation receipt")
+	}
+	clickProjectUI(t, tt, "验证（会消耗额度）")
+	select {
+	case actual := <-validated:
+		if actual != ref {
+			t.Fatalf("validated profile %+v, want %+v", actual, ref)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("saved Pi candidate did not submit validation")
 	}
 }
 
