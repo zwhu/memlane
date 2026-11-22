@@ -71,7 +71,11 @@ func dependencyDisplayVersion(item bootstrap.Item, environment *bootstrap.Enviro
 		if environment != nil {
 			versions, err := bootstrap.LockedVersions(environment.Runtime.Lock)
 			if err == nil {
-				return "LanceDB " + versions["lancedb"] + " · FastEmbed " + versions["fastembed"]
+				databases := "LanceDB " + versions["lancedb"]
+				if version := versions["ladybug"]; version != "" {
+					databases += " · Ladybug " + version
+				}
+				return databases + " · FastEmbed " + versions["fastembed"]
 			}
 		}
 		if len(r.Digest) >= 8 {

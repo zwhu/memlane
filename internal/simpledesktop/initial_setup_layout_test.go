@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/internal/bootstrap"
 )
 
 func setupLayoutFixture() *App {
@@ -99,6 +100,35 @@ func TestSettingsEnvironmentUsesTheSameBoundedApprovalModal(t *testing.T) {
 	r, ok := tt.Find("确认安装")
 	if !ok || r.Y+r.H > 820 {
 		t.Fatal("settings approval not bounded", r)
+	}
+}
+
+func TestSettingsEnvironmentShowsLadybugInRuntimeSummary(t *testing.T) {
+	darkBefore := appliedDark != nil && *appliedDark
+	t.Cleanup(func() { applyAppearance(darkBefore) })
+	a := setupLayoutFixture()
+	a.environment.Environment = &bootstrap.Environment{
+		Runtime: bootstrap.RuntimeDriver{Lock: []byte("lancedb==0.39.0\nladybug==0.19.0\nfastembed==0.9.1\n")},
+	}
+	const summary = "LanceDB 0.39.0 · Ladybug 0.19.0 · FastEmbed 0.9.1"
+	for _, appearance := range []struct {
+		name string
+		dark bool
+	}{{"light", false}, {"dark", true}} {
+		t.Run(appearance.name, func(t *testing.T) {
+			applyAppearance(appearance.dark)
+			tt := ui.NewTester(func(c *ui.Context) {
+				ui.Themed(c, homeTheme).Fill().Children(func() {
+					ui.Scroll(c).Fill().Children(func() { a.environmentSetup(c, false) })
+				})
+			}, 1200, 820)
+			tt.SetDark(appearance.dark)
+			tt.Frame()
+			if !tt.HasText(summary) {
+				t.Fatalf("runtime summary missing %q", summary)
+			}
+			fixtureImage(t, tt, "environment-runtime-"+appearance.name)
+		})
 	}
 }
 
