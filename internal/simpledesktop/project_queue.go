@@ -20,9 +20,21 @@ type processingNotice struct {
 	Request     string `json:"request_id"`
 	At          string `json:"at"`
 	RecoveredAt string `json:"recovered_at,omitempty"`
+	ResolvedAt  string `json:"resolved_at,omitempty"`
+	FailedAt    string `json:"failed_at,omitempty"`
 	Status      int    `json:"http_status"`
 	Code        string `json:"code"`
 	Backend     string `json:"backend"`
+}
+
+func (n processingNotice) resolved() bool {
+	return n.hasTerminalTime(n.ResolvedAt)
+}
+
+func (n processingNotice) hasTerminalTime(terminal string) bool {
+	at, validAt := officialTime(n.At)
+	ended, validEnd := officialTime(terminal)
+	return validAt && validEnd && !ended.Before(at)
 }
 
 type processingIssue struct {
@@ -41,6 +53,7 @@ type projectQueueState struct {
 	NoticeAcknowledgements         map[string]noticeAcknowledgement
 	NoticeAcknowledgementError     string
 	NoticeHistoryOpen              bool
+	ResolvedProcessingOpen         bool
 	ProcessingNotices              []processingNotice
 	ProcessingIssues               []processingIssue
 	ProcessingActionBusy           bool
@@ -250,7 +263,8 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 		var activity []activityRow
 		var activityErr error
 		var notices struct {
-			Items []processingNotice `json:"items"`
+			Items         []processingNotice `json:"items"`
+			ResolvedItems []processingNotice `json:"resolved_items"`
 		}
 		var noticeErr error
 		var summary projectMessageSummaryResponse
@@ -272,6 +286,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 						noticeErr = fmt.Errorf("%s", msg)
 					} else {
 						notices.Items = res.ProcessingNotices
+						notices.ResolvedItems = res.ResolvedProcessingNotices
 					}
 					if msg := res.Errors["documents"]; msg != "" {
 						documentErr = fmt.Errorf("%s", msg)
@@ -403,7 +418,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			if noticeErr != nil {
 				q.ProcessingReadError = "记忆提炼异常记录暂时无法读取"
 			} else {
-				q.ProcessingNotices = notices.Items
+				q.ProcessingNotices = append(notices.Items, notices.ResolvedItems...)
 			}
 			wasLoaded := q.Loaded
 			q.Loaded = true

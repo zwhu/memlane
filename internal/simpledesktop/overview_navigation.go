@@ -115,7 +115,7 @@ func (a *App) overviewNavigation(c *ui.Context) {
 							icon = tok.SolidFolder
 						}
 						item := ui.SidebarItem(c.Key("project-nav-"+proj.ID), id, icon, middleProjectName(labels[index])).
-							Label(labels[index]).Tooltip(proj.Name + " · " + proj.Path).
+							Label(labels[index]).Tooltip(proj.Name+" · "+proj.Path).
 							MinHeight(rowHeight1).Height(rowHeight1).FillWidth().MinWidth(0).Gap(8).Padding(0, sp2)
 						a.projectNotificationMenu(c, item, proj)
 						if on {
@@ -124,16 +124,6 @@ func (a *App) overviewNavigation(c *ui.Context) {
 						sidebarSelection(item, on, activeItem.Bounds().H > 0)
 						item.Children(func() {
 							a.unreadProjectBadge(c, proj, index, on)
-							if label, detail := a.sidebarQueueBadge(proj); label != "" {
-								openQueue := func() { a.openProjectQueueStatus(index) }
-								ui.Column(c).Shrink(0).Height(24).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-									if label == "!" {
-										ui.Button(c, "").Cursor(ui.CursorPointer).Label("待处理文档："+proj.Name).Tooltip(detail).Size(8, 8).Padding(0).Radius(4).Background(tok.Warning).BorderWidth(0).OnClick(openQueue)
-									} else {
-										ui.Button(c, label).Cursor(ui.CursorPointer).Label("待处理文档："+proj.Name).Tooltip(detail).FontSize(fsCaption).FontWeight(600).Padding(1, 6).Radius(8).Background(tok.Fill2).TextColor(tok.Text2).BorderWidth(0).OnClick(openQueue)
-									}
-								})
-							}
 						})
 					}
 					itemTheme := sidebarTheme

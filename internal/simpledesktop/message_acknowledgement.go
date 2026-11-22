@@ -271,8 +271,3 @@ func (q *projectQueueState) unacknowledgedNotificationKeys(now time.Time) (map[s
 	}
 	return alertKeys, ackErr
 }
-
-func (q *projectQueueState) unacknowledgedNotification(now time.Time) bool {
-	keys, ackErr := q.unacknowledgedNotificationKeys(now)
-	return ackErr || len(keys) > 0
-}

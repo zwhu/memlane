@@ -121,6 +121,13 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	q := a.projectQueue(p)
 	needs, info := a.messageNotices(q, p)
 	anomalies, progress := partitionInfoNotices(info)
+	var resolvedProcessing []messageNotice
+	now := time.Now()
+	for _, failure := range q.ProcessingNotices {
+		if failure.resolved() {
+			resolvedProcessing = append(resolvedProcessing, processingMessageNotice(failure, now))
+		}
+	}
 	var history []messageNotice
 	active := func(rows []messageNotice) []messageNotice {
 		var result []messageNotice
@@ -180,7 +187,7 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	var targetEl ui.Element
 	hasTarget := false
 	section := v4Group(c.Key("project-queue-section-"+p.ID), "消息与采集状态", groupDesc, headerActions, func() {
-		ui.Column(c.Key("message-status-"+p.ID)).FillWidth().Gap(0).Children(func() {
+		ui.Column(c.Key("message-status-" + p.ID)).FillWidth().Gap(0).Children(func() {
 			if !q.Loaded && !hasAlerts && !hasProgress {
 				v4SkeletonRow(c, 1, false, false)
 			} else if !hasAlerts {
@@ -253,6 +260,28 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 				}
 			}
 
+			if len(resolvedProcessing) > 0 {
+				v4Row(c, v4RowOptions{
+					Key:         "proj-resolved-processing-" + p.ID,
+					Title:       fmt.Sprintf("已恢复的提炼调用（%d）", len(resolvedProcessing)),
+					Clickable:   true,
+					HideChevron: true,
+					Control: func() {
+						ico := v4IconChev
+						if q.ResolvedProcessingOpen {
+							ico = v4IconDown
+						}
+						ui.Icon(c, ico).FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
+					},
+					OnClick: func() { q.ResolvedProcessingOpen = !q.ResolvedProcessingOpen },
+				})
+				if q.ResolvedProcessingOpen {
+					ui.Column(c.Key("resolved-processing-rows")).FillWidth().Gap(0).Children(func() {
+						a.messageNoticeBucket(c, q, p, "", "", resolvedProcessing, "", "", false)
+					})
+				}
+			}
+
 			if q.ArchiveError != "" {
 				ui.Row(c).FillWidth().Padding(sp2, sp1).Children(func() {
 					homeText(c, "历史异常记录读取失败；当前采集异常仍会显示。", homeMeta)
@@ -262,7 +291,7 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	})
 
 	detailNotices := append(append([]messageNotice(nil), anomalies...), progress...)
-	if activeNotice, ok := q.activeDetailNotice(needs, detailNotices, history); ok {
+	if activeNotice, ok := q.activeDetailNotice(needs, detailNotices, append(history, resolvedProcessing...)); ok {
 		a.renderMessageNoticeDialog(c, q, p, activeNotice)
 	}
 
@@ -347,7 +376,7 @@ func (a *App) messageNoticeBucket(c *ui.Context, q *projectQueueState, p AccessP
 		}
 		for _, n := range rows {
 			n := n
-			acknowledged := q.noticeAcknowledged(n.Key)
+			acknowledged := (n.Processing == nil || !n.Processing.resolved()) && q.noticeAcknowledged(n.Key)
 			row := ui.Row(c.Key(n.Key)).FillWidth().Padding(10, sp1).Gap(sp3).AlignItems(ui.Start).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border)
 			if highlightKey != "" && n.Key == highlightKey && !acknowledged {
 				row.Background(tok.Warning.Alpha(.07)).Radius(radius)
@@ -757,6 +786,12 @@ func (a *App) processingNoticeDetails(c *ui.Context, q *projectQueueState, f pro
 	}
 	if f.RecoveredAt != "" {
 		entries = append(entries, diagEntry{"recovered_at", f.RecoveredAt})
+	}
+	if f.ResolvedAt != "" {
+		entries = append(entries, diagEntry{"resolved_at", f.ResolvedAt})
+	}
+	if f.FailedAt != "" {
+		entries = append(entries, diagEntry{"failed_at", f.FailedAt})
 	}
 	if len(entries) == 0 {
 		return

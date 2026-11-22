@@ -31,9 +31,6 @@ func TestBaseReadingIdentityCachedAndSyncedOnTokenChange(t *testing.T) {
 			KnowledgeRead: knowledgeReadState{
 				Read: map[string]bool{"doc-1": false, "doc-2": true},
 			},
-			Sessions: []queuedSession{{
-				View: &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1}},
-			}},
 		},
 	}
 
@@ -45,9 +42,6 @@ func TestBaseReadingIdentityCachedAndSyncedOnTokenChange(t *testing.T) {
 	}
 	if !a.itemIsUnread(Item{ID: "doc-1", Dataset: project.Dataset, Kind: "知识"}) {
 		t.Fatal("expected cached unread status for doc-1")
-	}
-	if label, _ := a.sidebarQueueBadge(project); label != "!" {
-		t.Fatalf("expected cached sidebar queue badge '!', got %q", label)
 	}
 
 	if err := os.WriteFile(tokenPath, []byte("rotated-token\n"), 0600); err != nil {

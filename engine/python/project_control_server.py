@@ -340,7 +340,7 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
         app.on_cleanup.append(capture_cleanup)
     if registry is not None:
         from processing_notices import attach_processing_notices
-        attach_processing_notices(app, registry)
+        attach_processing_notices(app, registry, official_data=(codex_config or {}).get('official_data'))
     if registry is not None and connections is not None:
         from user_profiles import attach_user_profiles
         attach_user_profiles(app, registry, connections)

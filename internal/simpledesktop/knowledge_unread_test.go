@@ -126,7 +126,7 @@ func TestProjectModelFailureAppearsWithoutChangingSavedMessageState(t *testing.T
 	}
 }
 
-func TestProjectModelFailureShowsCauseTimeAndRecovery(t *testing.T) {
+func TestProjectModelFailureRequiresOperationReceiptForRecovery(t *testing.T) {
 	a, q := projectQueueFixture()
 	now := time.Now().UTC()
 	failedAt := now.Add(-15 * time.Minute)
@@ -157,7 +157,7 @@ func TestProjectModelFailureShowsCauseTimeAndRecovery(t *testing.T) {
 	if !strings.Contains(got.Detail, "连接 Codex 上游模型服务失败（HTTP 502）") {
 		t.Fatalf("unexpected detail: %q", got.Detail)
 	}
-	if !strings.Contains(got.Followup, "后续调用已在") || !strings.Contains(got.Followup, "恢复正常") {
-		t.Fatalf("expected recovery hint in followup, got %q", got.Followup)
+	if !strings.Contains(got.Followup, "该次提炼结果仍需核对") {
+		t.Fatalf("a legacy HTTP recovery hint appeared to complete the operation: %q", got.Followup)
 	}
 }

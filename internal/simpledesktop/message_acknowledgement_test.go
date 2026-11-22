@@ -184,3 +184,8 @@ func TestMessageActionsRemainVisibleAndAcknowledgementShowsReceipt(t *testing.T)
 		t.Fatal("defer action consumed messages")
 	}
 }
+
+func (q *projectQueueState) unacknowledgedNotification(now time.Time) bool {
+	keys, ackErr := q.unacknowledgedNotificationKeys(now)
+	return ackErr || len(keys) > 0
+}

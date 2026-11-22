@@ -2,10 +2,12 @@ package simpledesktop
 
 import (
 	"fmt"
-	"github.com/egoist/mygo/ui"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/egoist/mygo/ui"
 )
 
 func TestMessageStatusClassificationUsesObservedFacts(t *testing.T) {
@@ -378,6 +380,84 @@ func TestProcessingNoticeDetailDialogShowsDiagnostics(t *testing.T) {
 	clickProjectUI(t, tt, "关闭")
 	if q.DetailDialogOpen {
 		t.Fatal("expected detail dialog to close")
+	}
+}
+
+func TestProcessingNoticeMovesToResolvedHistoryWithoutClosingDiagnostics(t *testing.T) {
+	for _, appearance := range []string{"light", "dark"} {
+		t.Run(appearance, func(t *testing.T) {
+			a, q := projectQueueFixture()
+			a.Config.ConfigFile = filepath.Join(t.TempDir(), "runtime.json")
+			a.Config.ClientStateFile = filepath.Join(t.TempDir(), "client-state.json")
+			a.initDesktopPreferences()
+			a.setAppearancePreference(appearance)
+			p := a.access.Directory.Projects[0]
+			q.Sessions = nil
+			q.Documents = nil
+			q.Loaded = true
+			q.ProcessingNotices = []processingNotice{{
+				Operation: "original", Request: "original-request", At: "2026-11-21T18:55:28Z",
+				Status: 502, Code: "codex_stream_disconnected", Backend: "codex",
+			}}
+			tt := ui.NewTester(func(c *ui.Context) {
+				ui.Column(c).FillWidth().MaxWidth(900).Children(func() { a.projectQueueSection(c, p) })
+			}, 1200, 1000)
+			if !tt.HasText("1 项待处理") {
+				t.Fatal("unconfirmed original operation must appear as pending")
+			}
+			clickProjectUI(t, tt, "查看详情")
+			clickProjectUI(t, tt, "诊断信息")
+			q.ProcessingNotices[0].ResolvedAt = "2026-11-21T18:57:18Z"
+			tt.Frame()
+			if !q.DetailDialogOpen || !tt.HasText("original-request") || !tt.HasText("resolved_at") {
+				t.Fatal("open diagnostics must show the same operation and the completion receipt")
+			}
+			if _, count := a.countProjectMessageAlerts(p); count != 0 {
+				t.Fatalf("confirmed operation still counts as a project anomaly: %d", count)
+			}
+			clickProjectUI(t, tt, "关闭")
+			if tt.HasText("1 项待处理") || !tt.HasText("已恢复的提炼调用（1）") {
+				t.Fatal("confirmed operation did not leave pending and enter history")
+			}
+			clickProjectUI(t, tt, "已恢复的提炼调用（1）")
+			if tt.HasText("恢复提醒") || tt.HasText("知道了，不再提醒") {
+				t.Fatal("automatically resolved operation was offered a manual acknowledgement")
+			}
+			clickProjectUI(t, tt, "查看详情")
+			if !q.DetailDialogOpen {
+				t.Fatal("resolved operation no longer opens diagnostics")
+			}
+			clickProjectUI(t, tt, "关闭")
+			q.ProcessingNotices = append(q.ProcessingNotices, processingNotice{
+				Operation: "older", At: "2026-11-21T17:00:00Z", Status: 502, Code: "codex_stream_disconnected", Backend: "codex",
+			})
+			tt.Frame()
+			if !tt.HasText("1 项待处理") || !tt.HasText("已恢复的提炼调用（1）") {
+				t.Fatal("closed history must not mask an older unresolved operation")
+			}
+		})
+	}
+}
+
+func TestProcessingNoticeUsesConfirmedFailureReceipt(t *testing.T) {
+	a, q := projectQueueFixture()
+	q.Sessions = nil
+	q.Documents = nil
+	q.Loaded = true
+	p := a.access.Directory.Projects[0]
+	now := time.Now().UTC()
+	q.ProcessingNotices = []processingNotice{{
+		Operation: "failed-operation", Request: "failed-request", At: now.Add(-2 * time.Minute).Format(time.RFC3339),
+		FailedAt: now.Add(-time.Minute).Format(time.RFC3339), Status: 502, Code: "codex_stream_disconnected", Backend: "codex",
+	}}
+	tt := ui.NewTester(func(c *ui.Context) { a.projectQueueSection(c, p) }, 1200, 820)
+	if !tt.HasText("记忆提炼失败") || !tt.HasText("结果为失败") || tt.HasText("该次提炼结果仍需核对") || !tt.HasText("1 项待处理") {
+		t.Fatalf("confirmed failure was not presented as a terminal anomaly: %v", tt.Texts())
+	}
+	clickProjectUI(t, tt, "查看详情")
+	clickProjectUI(t, tt, "诊断信息")
+	if !tt.HasText("failed_at") || !tt.HasText("failed-request") {
+		t.Fatal("diagnostics lost the failure receipt or request ID")
 	}
 }
 

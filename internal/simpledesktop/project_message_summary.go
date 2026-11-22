@@ -29,6 +29,7 @@ type projectMessageSummaryResponse struct {
 	BufferReviews             []bufferReview                   `json:"buffer_reviews,omitempty"`
 	ProcessingIssues          []processingIssue                `json:"processing_issues,omitempty"`
 	ProcessingNotices         []processingNotice               `json:"processing_notices"`
+	ResolvedProcessingNotices []processingNotice               `json:"resolved_processing_notices"`
 	PendingDocuments          []projectMessageSummaryDocument  `json:"pending_documents"`
 	KnowledgeCatalog          []projectMessageSummaryKnowledge `json:"knowledge_catalog"`
 	KnowledgeCatalogVersion   string                           `json:"knowledge_catalog_version,omitempty"`

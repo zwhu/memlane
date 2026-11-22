@@ -40,9 +40,6 @@ code { font-family: var(--font-mono); font-size: .9em; padding: 0 3px; border-ra
 .nav-item .ico { width: 18px; height: 18px; color: var(--text-2); flex: none; }
 .nav-item.on .ico { color: var(--accent); }
 .nav-item .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.proj-alert-dot { position: relative; width: 6px; height: 6px; border-radius: 50%; background: var(--warning); flex: none; transition: transform var(--dur-fast) var(--spring-snappy, ease), box-shadow var(--dur-fast) linear; }
-.proj-alert-dot::after { content: ""; position: absolute; inset: -6px; }
-.proj-alert-dot:hover { transform: scale(1.35); box-shadow: 0 0 0 3px var(--hover); }
 .badge { min-width: 20px; height: 18px; padding: 0 6px; border-radius: 9px; font-size: var(--fs-caption); font-weight: 600; line-height: 18px; text-align: center; background: var(--fill-2); color: var(--text-2); font-variant-numeric: tabular-nums; transition: background var(--dur-fast), color var(--dur-fast), transform var(--dur-fast) var(--spring-bouncy, ease); }
 .badge:hover { background: var(--accent); color: var(--on-accent); }
 .nav-item.on .badge { background: var(--accent); color: var(--on-accent); }

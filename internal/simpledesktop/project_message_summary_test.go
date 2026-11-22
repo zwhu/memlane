@@ -32,6 +32,10 @@ func TestLoadProjectQueueUsesMessageSummaryAndHandlesPartialErrors(t *testing.T)
 				ProcessingNotices: []processingNotice{
 					{Operation: "proc-1", Status: 502, Code: "codex_upstream_error", Backend: "codex", At: time.Now().UTC().Format(time.RFC3339)},
 				},
+				ResolvedProcessingNotices: []processingNotice{
+					{Operation: "resolved-1", Status: 502, Code: "codex_stream_disconnected", Backend: "codex",
+						At: "2026-11-21T18:55:28Z", ResolvedAt: "2026-11-21T18:57:18Z"},
+				},
 				PendingDocuments: []projectMessageSummaryDocument{
 					{ID: "d1", Title: "pending-doc.md", Date: "2026-11-21T08:00:00Z", Kind: "文档"},
 				},
@@ -70,7 +74,7 @@ func TestLoadProjectQueueUsesMessageSummaryAndHandlesPartialErrors(t *testing.T)
 	if !q.Loaded || !q.BacklogLoaded || !q.AutomaticSave || q.Backlog == nil || q.Backlog.Operation != "op-1" {
 		t.Fatalf("summary state not applied: loaded=%v backlogLoaded=%v auto=%v backlog=%+v", q.Loaded, q.BacklogLoaded, q.AutomaticSave, q.Backlog)
 	}
-	if len(q.ProcessingNotices) != 1 || len(q.Documents) != 1 || q.Documents[0].ID != "d1" {
+	if len(q.ProcessingNotices) != 2 || !q.ProcessingNotices[1].resolved() || len(q.Documents) != 1 || q.Documents[0].ID != "d1" {
 		t.Fatalf("summary items not applied: notices=%+v docs=%+v", q.ProcessingNotices, q.Documents)
 	}
 
@@ -97,8 +101,18 @@ func TestLoadProjectQueueFallsBackOn404MessageSummary(t *testing.T) {
 			return
 		}
 		if r.URL.Path == "/v1/projects/p/processing-notices" {
-			atomic.AddInt32(&sawProcessingNotices, 1)
-			json.NewEncoder(w).Encode(map[string]any{"items": []processingNotice{}})
+			calls := atomic.AddInt32(&sawProcessingNotices, 1)
+			reply := map[string]any{"items": []processingNotice{{
+				Operation: "proc-1", Status: 502, Code: "codex_upstream_error", Backend: "codex",
+				At: "2026-11-21T18:55:28Z", RecoveredAt: "2026-11-21T18:57:18Z",
+			}}}
+			if calls > 1 {
+				reply["resolved_items"] = []processingNotice{{
+					Operation: "resolved-1", Status: 502, Code: "codex_stream_disconnected", Backend: "codex",
+					At: "2026-11-21T18:55:28Z", ResolvedAt: "2026-11-21T18:57:18Z",
+				}}
+			}
+			json.NewEncoder(w).Encode(reply)
 			return
 		}
 		http.NotFound(w, r)
@@ -136,6 +150,14 @@ func TestLoadProjectQueueFallsBackOn404MessageSummary(t *testing.T) {
 	}
 	if !q.Loaded || q.DocumentError != "" || len(q.Documents) != 1 || q.Documents[0].ID != "raw-1" {
 		t.Fatalf("fallback did not load documents: loaded=%v err=%q docs=%+v", q.Loaded, q.DocumentError, q.Documents)
+	}
+	if len(q.ProcessingNotices) != 1 || q.ProcessingNotices[0].resolved() {
+		t.Fatalf("legacy standalone payload must retain its unresolved notice: %+v", q.ProcessingNotices)
+	}
+	a.loadProjectQueue(q, p)
+	drainReading(t, updates, func() bool { return !q.Loading })
+	if len(q.ProcessingNotices) != 2 || !q.ProcessingNotices[1].resolved() {
+		t.Fatalf("standalone payload did not load resolved diagnostics: %+v", q.ProcessingNotices)
 	}
 }
 

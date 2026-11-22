@@ -135,6 +135,7 @@ class ProjectMessageSummaryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_full_aggregation_filters_docs_and_is_read_only(self):
         req_id, op_id = self._write_notice_log(self.dataset_id)
+        completed_at = datetime.now(timezone.utc).isoformat()
         raw_doc = {
             'id': 'doc-raw-1',
             'datasetId': self.dataset_id,
@@ -194,6 +195,10 @@ class ProjectMessageSummaryTests(unittest.IsolatedAsyncioTestCase):
                 {'id': 'run-1', 'dataset_id': self.dataset_id, 'status': 'completed'},
                 {'id': 'run-other', 'dataset_id': 'other-dataset', 'status': 'completed'},
             ],
+            f'/api/v1/activity/pipeline-runs?dataset_id={self.dataset_id}&limit=100': [{
+                'kind': 'operation', 'dataset_id': self.dataset_id, 'pipeline_run_id': str(uuid.UUID(op_id)),
+                'operation_name': 'improve', 'background': True, 'outcome': 'succeeded', 'ended_at': completed_at,
+            }],
         }
         backlog = BacklogStub({
             'job': {'operation_id': 'op-1', 'status': 'watching', 'remaining': 2},
@@ -218,9 +223,11 @@ class ProjectMessageSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body['dataset_id'], self.dataset_id)
         self.assertTrue(body['automatic_save'])
         self.assertEqual(body['backlog'], {'operation_id': 'op-1', 'status': 'watching', 'remaining': 2})
-        self.assertEqual(len(body['processing_notices']), 1)
-        self.assertEqual(body['processing_notices'][0]['request_id'], req_id)
-        self.assertEqual(body['processing_notices'][0]['operation_id'], op_id)
+        self.assertEqual(body['processing_notices'], [])
+        self.assertEqual(len(body['resolved_processing_notices']), 1)
+        self.assertEqual(body['resolved_processing_notices'][0]['request_id'], req_id)
+        self.assertEqual(body['resolved_processing_notices'][0]['operation_id'], op_id)
+        self.assertEqual(body['resolved_processing_notices'][0]['resolved_at'], completed_at)
         self.assertEqual(
             body['pending_documents'],
             [
@@ -290,6 +297,7 @@ class ProjectMessageSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(body['backlog'])
         self.assertFalse(body['automatic_save'])
         self.assertEqual(body['processing_notices'], [])
+        self.assertEqual(body['resolved_processing_notices'], [])
         self.assertEqual(body['pending_documents'], [])
         self.assertEqual(body['activity'], [])
         self.assertEqual(body['errors']['backlog'], 'backlog_unavailable')

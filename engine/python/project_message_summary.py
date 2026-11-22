@@ -21,7 +21,7 @@ from _runtime_common import (
     uuid_text,
     verify_sqlite_schema,
 )
-from processing_notices import processing_notices
+from processing_notices import read_processing_notices
 from project_policy import PolicyError
 from provenance_store import (
     calendar_date,
@@ -116,20 +116,6 @@ async def _read_backlog(backlog, project_id):
         checks if isinstance(checks, list) else [],
         processing_issues if isinstance(processing_issues, list) else [],
     )
-
-
-async def _read_processing_notices(registry, dataset_id):
-    try:
-        items = await asyncio.to_thread(
-            processing_notices,
-            registry.path.parent / 'runtime-logs',
-            dataset_id,
-        )
-    except OSError:
-        raise PolicyError('processing_diagnostics_unavailable', 503) from None
-    if not isinstance(items, list):
-        raise PolicyError('processing_diagnostics_unavailable', 503)
-    return items
 
 
 _DATA_HTTP_PAGE_SIZE = 500
@@ -443,7 +429,7 @@ async def build_project_message_summary(
 
     backlog_res, notices_res, docs_and_activity = await asyncio.gather(
         _read_backlog(backlog, project_id),
-        _read_processing_notices(registry, dataset_id),
+        read_processing_notices(registry, dataset_id, official_data=official_data),
         _read_documents_and_activity(official, official_data, dataset_id, provenance_path=provenance_path),
         return_exceptions=True,
     )
@@ -473,10 +459,10 @@ async def build_project_message_summary(
     if isinstance(notices_res, BaseException):
         if isinstance(notices_res, asyncio.CancelledError):
             raise notices_res
-        notices = []
+        notices, resolved_notices = [], []
         errors['processing_notices'] = _error_code(notices_res, 'processing_diagnostics_unavailable')
     else:
-        notices = notices_res
+        notices, resolved_notices = notices_res
 
     if isinstance(docs_res, BaseException):
         if isinstance(docs_res, asyncio.CancelledError):
@@ -509,6 +495,7 @@ async def build_project_message_summary(
         'checks': checks,
         'processing_issues': processing_issues,
         'processing_notices': notices,
+        'resolved_processing_notices': resolved_notices,
         'pending_documents': pending_documents,
         'knowledge_catalog': knowledge_catalog,
         'knowledge_catalog_version': knowledge_version,

@@ -106,11 +106,6 @@
   };
   const unreadCount = p => state.memories.filter(m => m.project === p && m.unread).length;
 
-  function projectHasAlert(projectId) {
-    const pm = state.projectMessages && state.projectMessages[projectId];
-    return !!(pm && Array.isArray(pm.notices) && pm.notices.some(n => !n.ack));
-  }
-
   function getAllProjectAlerts() {
     const res = [];
     for (const p of D.projects) {
@@ -400,8 +395,7 @@
     $("#navProjects").innerHTML = D.projects.map(p => {
       const on = state.page === "project" && state.project === p.id;
       const n = unreadCount(p.id);
-      const hasAlert = projectHasAlert(p.id);
-      return `<button class="nav-item ${on ? "on" : ""}" data-nav="project" data-project="${p.id}" title="${esc(p.path)}"><span class="ico">${icon("folder", on)}</span><span class="label">${esc(p.name)}</span>${hasAlert ? `<span class="proj-alert-dot" data-alert-project="${p.id}" title="有待处理的消息或异常，点击处理" aria-label="有待处理的消息或异常"></span>` : ""}${n ? `<span class="badge" data-unread="${p.id}" title="${n} 条未读记忆，点击查看">${n}</span>` : ""}</button>`;
+      return `<button class="nav-item ${on ? "on" : ""}" data-nav="project" data-project="${p.id}" title="${esc(p.path)}"><span class="ico">${icon("folder", on)}</span><span class="label">${esc(p.name)}</span>${n ? `<span class="badge" data-unread="${p.id}" title="${n} 条未读记忆，点击查看">${n}</span>` : ""}</button>`;
     }).join("");
 
     const settingsBtn = $("#navSettings");
@@ -411,12 +405,6 @@
 
     $$(".nav-item").forEach(b => b.onclick = e => {
       const nav = b.dataset.nav;
-      const alertDot = e.target.closest(".proj-alert-dot");
-      if (alertDot && alertDot.dataset.alertProject) {
-        e.stopPropagation();
-        openProjectMessages(alertDot.dataset.alertProject);
-        return;
-      }
       if (e.target.dataset.unread) {
         state.unreadOnly = true; state.cat = ""; state.recall = null;
         return go("project", { project: e.target.dataset.unread, tab: 0, force: true });
@@ -1322,7 +1310,6 @@
     stageHTML,
     openServicePopover,
     closeServicePopover,
-    projectHasAlert,
     getAllProjectAlerts,
     openProjectMessages,
     notifyExternalStateChange,

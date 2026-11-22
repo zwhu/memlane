@@ -49,61 +49,38 @@ func TestSlowSidebarProjectDoesNotBlockOtherProjectBadges(t *testing.T) {
 	}
 }
 
-func TestSidebarPendingBadgeOpensProjectAndClearsAfterProcessing(t *testing.T) {
-	a := settingsFixture()
-	p := a.access.Directory.Projects[0]
-	q := a.projectQueueStateFor(p)
-	q.Documents = []Item{{ID: "unprocessed"}}
-	q.Sessions = []queuedSession{{Agent: AccessAgent{ID: "a"}, Binding: ProjectBinding{HostSessionKey: "s"}, View: &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 2}}}}
-	if label, _ := a.sidebarQueueBadge(a.Config.Projects[0]); label != "" {
-		t.Fatal("normal automatic work should not notify", label)
+func TestSidebarShowsUnreadCountWithoutProjectAlertDot(t *testing.T) {
+	t.Cleanup(func() { applyAppearance(false) })
+	a, q := projectQueueFixture()
+	q.Loaded = true
+	q.KnowledgeRead = knowledgeReadState{Read: map[string]bool{"unread": false}}
+	if _, isTemplate, _ := a.TrayIconState(); isTemplate {
+		t.Fatal("project anomaly did not mark the macOS status icon")
 	}
-	now := time.Now()
-	q.Sessions[0].View.Loaded = false
-	q.observeNotificationFailures(now.Add(-3 * time.Minute))
-	q.observeNotificationFailures(now.Add(-2 * time.Minute))
-	if label, _ := a.sidebarQueueBadge(a.Config.Projects[0]); label != "" {
-		t.Fatal("only two failed checks notified")
-	}
-	q.observeNotificationFailures(now)
+
 	a.page = "总览"
 	tt := ui.NewTester(a.View, 1200, 820)
-	if label, _ := a.sidebarQueueBadge(a.Config.Projects[0]); label != "!" {
-		t.Fatal("persistent failure was hidden")
+	for _, dark := range []bool{false, true} {
+		applyAppearance(dark)
+		tt.SetDark(dark)
+		tt.Frame()
+		if !tt.HasText("未读记忆：memlane") || tt.HasText("待处理文档：memlane") {
+			t.Fatalf("sidebar did not show only the unread badge in dark=%t", dark)
+		}
+		name := "project-sidebar-no-alert-dot-light"
+		if dark {
+			name = "project-sidebar-no-alert-dot-dark"
+		}
+		fixtureImage(t, tt, name)
 	}
-	clickProjectUI(t, tt, "待处理文档：memlane")
-	if a.access.OpenProject != p.ID || a.page != "知识" || a.kind != "管理" {
-		t.Fatal("persistent notification did not open project management tab")
-	}
-	q.Sessions[0].View.Loaded = true
-	q.observeNotificationFailures(time.Now())
+	a.openProjectSettings(0)
 	tt.Frame()
-	if label, _ := a.sidebarQueueBadge(a.Config.Projects[0]); label != "" {
-		t.Fatal("successful recovery retained error notification")
+	if !tt.HasText("1 条消息未收到采集结果") {
+		t.Fatal("project management lost the anomaly")
 	}
 }
 
-func TestSidebarUnknownBadgeAppearsOnFirstReadAfterReload(t *testing.T) {
-	a := settingsFixture()
-	p := a.access.Directory.Projects[0]
-	for reload := 0; reload < 2; reload++ {
-		// Reconstruct the UI cache, as on reload. Source status, not the old counter,
-		// must restore the notification on the first successful status response.
-		a.access.Queues = nil
-		q := a.projectQueueStateFor(p)
-		q.Loaded = true
-		q.Sessions = []queuedSession{{View: &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1}}}}
-		if label, _ := a.sidebarQueueBadge(a.Config.Projects[0]); label != "!" {
-			t.Fatal("confirmed failure waits again after reload", reload, label)
-		}
-		q.Sessions[0].View.observe(PendingMaterials{Signature: "resolved"})
-		if label, _ := a.sidebarQueueBadge(a.Config.Projects[0]); label != "" {
-			t.Fatal("resolved failure left a stale dot", label)
-		}
-	}
-}
-
-func TestSidebarAlertBadgeScrollsDirectlyToStatusAnomaly(t *testing.T) {
+func TestProjectAlertShortcutScrollsDirectlyToStatusAnomaly(t *testing.T) {
 	t.Cleanup(func() { applyAppearance(false) })
 
 	setupApp := func() (*App, AccessProject, *projectQueueState) {
@@ -146,7 +123,8 @@ func TestSidebarAlertBadgeScrollsDirectlyToStatusAnomaly(t *testing.T) {
 		a.page = "总览"
 		tt := ui.NewTester(a.View, 1200, 820)
 
-		clickProjectUI(t, tt, "待处理文档：memlane")
+		a.openProjectQueueStatus(0)
+		tt.Frame()
 		if a.access.OpenProject != p.ID || a.page != "知识" || a.kind != "管理" {
 			t.Fatalf("did not open project management tab: page=%q kind=%q open=%q", a.page, a.kind, a.access.OpenProject)
 		}
@@ -161,10 +139,11 @@ func TestSidebarAlertBadgeScrollsDirectlyToStatusAnomaly(t *testing.T) {
 			t.Fatalf("target anomaly not visible inside viewport: ok=%v bounds=%+v", ok, r)
 		}
 
-		// Scroll down away from top while already on 管理 tab and click the sidebar alert dot again.
+		// Scroll down away from top while already on 管理 tab and use the project alert shortcut again.
 		q.Scroll.Y = 300
 		tt.Frame()
-		clickProjectUI(t, tt, "待处理文档：memlane")
+		a.openProjectQueueStatus(0)
+		tt.Frame()
 		if r2, ok := tt.Find("1 条消息未收到采集结果"); !ok || r2.Y < 80 || r2.Y+r2.H > 820 {
 			t.Fatalf("target anomaly not visible after repeated click: ok=%v bounds=%+v", ok, r2)
 		}
@@ -205,7 +184,8 @@ func TestSidebarAlertBadgeScrollsDirectlyToStatusAnomaly(t *testing.T) {
 		a.page = "总览"
 		tt := ui.NewTester(a.View, 1200, 820)
 
-		clickProjectUI(t, tt, "待处理文档：memlane")
+		a.openProjectQueueStatus(0)
+		tt.Frame()
 		if q.LocatedNoticeKey != wantKey {
 			t.Fatalf("LocatedNoticeKey = %q, want %q", q.LocatedNoticeKey, wantKey)
 		}

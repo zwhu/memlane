@@ -50,18 +50,6 @@ func (a *App) refreshSidebarQueueIfDue(now time.Time) {
 	}
 }
 
-func (a *App) sidebarQueueBadge(p Project) (string, string) {
-	identity := a.cachedBaseReadingIdentity()
-	q := a.access.Queues[identity+"/"+p.ID+"/"+p.Dataset]
-	if q == nil || !q.Loaded {
-		return "", ""
-	}
-	if q.unacknowledgedNotification(time.Now()) {
-		return "!", "有尚未处理的消息提醒，打开项目设置处理或选择不再提醒。"
-	}
-	return "", ""
-}
-
 func (a *App) countProjectMessageAlerts(p AccessProject) (actionCount, errorCount int) {
 	q := a.existingProjectQueueState(p)
 	if q == nil {

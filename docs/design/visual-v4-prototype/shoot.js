@@ -150,15 +150,19 @@ async function runRound2(baseUrl, out) {
     }
   };
 
-  // Smoke 1 & 2: Sidebar .proj-alert-dot jump + acknowledge all active alerts on memlane
-  await check("sidebar-alert-dot-jump-and-ack", async () => {
-    await open("theme=light&page=overview", 500);
-    const dot = page.locator('.proj-alert-dot[data-alert-project="memlane"]');
-    assert.strictEqual(await dot.count(), 1, "Expected .proj-alert-dot on memlane");
-    await dot.click();
+  // Verify the project row keeps its unread count and reminders stay accessible from the menu bar.
+  await check("sidebar-unread-and-menubar-alert-jump", async () => {
+    for (const theme of ["light", "dark"]) {
+      await open(`theme=${theme}&page=overview`, 500);
+      const projectRow = page.locator('#navProjects [data-project="memlane"]');
+      assert.strictEqual(await projectRow.locator('[data-unread="memlane"]').count(), 1);
+      assert.strictEqual(await projectRow.locator(".proj-alert-dot").count(), 0);
+    }
+
+    await page.click("#menubarTrayBtn");
+    await page.locator('.mb-alert-row[data-mb-project="memlane"]').click();
     await waitSettled(page, 400);
 
-    // Should be on memlane project -> 管理 tab with messages section visible
     const msgGroup = page.locator(".manage-msg-group, #projectMessagesGroup, .proj-msg-group").first();
     assert.strictEqual(await msgGroup.isVisible(), true, "Expected topped 管理 messages section to be visible");
 
@@ -173,13 +177,6 @@ async function runRound2(baseUrl, out) {
     }
     assert.ok(guard > 0, "Expected at least one active alert to acknowledge on memlane");
     await page.waitForTimeout(250);
-
-    // Sidebar dot for memlane must be cleared
-    assert.strictEqual(
-      await page.locator('.proj-alert-dot[data-alert-project="memlane"]').count(),
-      0,
-      "Expected .proj-alert-dot for memlane to be cleared after acking all alerts"
-    );
 
     // Open menubar flyout and verify memlane is removed from alerts list
     await page.click("#menubarTrayBtn");

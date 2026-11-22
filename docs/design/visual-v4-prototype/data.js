@@ -327,7 +327,7 @@ Disk: free=118.4GiB | threshold=55GiB`,
   heat[key(today)] = 7;
   const y = new Date(today); y.setDate(y.getDate() - 1); heat[key(y)] = 3;
 
-  /* 项目消息与采集状态（供侧栏黄点、项目「管理」标签、macOS 状态栏浮层共用） */
+  /* 项目消息与采集状态（供项目「管理」标签和 macOS 状态栏浮层共用） */
   const projectMessages = {
     memlane: {
       autoSave: true,
@@ -402,7 +402,7 @@ Disk: free=118.4GiB | threshold=55GiB`,
           title: "V4 视觉规范与侧栏状态栏联动决议",
           date: "今天 19:30",
           status: "等待提炼",
-          body: "确认在侧栏项目行右侧增加 6px 警告圆点（使用 `var(--warning)`），与未读数字徽标保持独立间距；点击黄点直接进入该项目「管理」标签并将「消息与采集状态」自动置顶，同时与顶部状态栏 300px 浮层双向同步。",
+          body: "项目侧栏右侧仅显示未读记忆数。项目消息提醒在「管理」标签和 macOS 状态栏弹层查看。从状态栏弹层点击项目提醒可直达「消息与采集状态」。",
         },
         {
           id: "qdoc-memlane-2",
