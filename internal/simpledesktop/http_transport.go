@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -59,37 +58,17 @@ func httpStatusCode(err error) (int, bool) {
 	return 0, false
 }
 
-type cachedTokenEntry struct {
-	modTime time.Time
-	size    int64
-	perm    os.FileMode
-	token   string
-}
-
-var (
-	tokenCacheMu sync.RWMutex
-	tokenCache   = map[string]cachedTokenEntry{}
-)
-
 func readCachedToken(path string, minLen int, requirePrivate bool) (string, error) {
-	var info os.FileInfo
-	var err error
 	if requirePrivate {
-		info, err = os.Lstat(path)
+		info, err := os.Lstat(path)
 		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
 			return "", errors.New("private credential unavailable")
 		}
 	} else {
-		info, err = os.Stat(path)
+		info, err := os.Stat(path)
 		if err != nil || !info.Mode().IsRegular() {
 			return "", errors.New("credential unavailable")
 		}
-	}
-	tokenCacheMu.RLock()
-	cached, ok := tokenCache[path]
-	tokenCacheMu.RUnlock()
-	if ok && cached.modTime.Equal(info.ModTime()) && cached.size == info.Size() && cached.perm == info.Mode().Perm() && len(cached.token) >= minLen {
-		return cached.token, nil
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -99,13 +78,5 @@ func readCachedToken(path string, minLen int, requirePrivate bool) (string, erro
 	if len(token) < minLen {
 		return "", errors.New("credential too short")
 	}
-	tokenCacheMu.Lock()
-	tokenCache[path] = cachedTokenEntry{
-		modTime: info.ModTime(),
-		size:    info.Size(),
-		perm:    info.Mode().Perm(),
-		token:   token,
-	}
-	tokenCacheMu.Unlock()
 	return token, nil
 }

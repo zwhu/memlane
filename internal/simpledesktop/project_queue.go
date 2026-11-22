@@ -185,7 +185,11 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			sessions = append(sessions, queuedSession{agent, binding, view})
 		}
 	}
-	control := a.Config.ProjectControl
+	var control *ProjectControlConfig
+	if ctrl, ok := a.accessClient(); ok {
+		cfg := ctrl.Config
+		control = &cfg
+	}
 	client, python := a.Client, a.Config.Python
 	operator := pendingOperatorConfig(a.Config)
 	knownKnowledgeVersion := ""
@@ -407,16 +411,27 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 		workers.Wait()
 		// Execute legacy knowledge-read catalog reconciliation off the UI thread so
 		// a.Update never blocks on waitKnowledgeReadFlush or disk I/O.
-		if !v2SummaryOK && documentErr == nil && knowledgeCatalog != nil && knowledgePathErr == nil {
+		if !v2SummaryOK && documentErr == nil && !readingAuthDenied(noticeErr) && knowledgeCatalog != nil && knowledgePathErr == nil {
 			a.waitKnowledgeReadFlush()
 			res := computeKnowledgeCatalogOffUI(knowledgeWriter, knowledgePath, p, knowledgeCatalog, prevKnowledgeStartedAt)
 			computedCatalog = &res
 		}
 		a.Update(func() {
-			if request != q.Request || authEpoch != a.authEpoch {
+			if request != q.Request {
+				return
+			}
+			if authEpoch != a.authEpoch {
+				// Partial InvalidateReading(otherDataset) bumps global authEpoch without
+				// resetting unrelated queues; clear Loading so polling never stalls.
+				q.Loading = false
 				return
 			}
 			q.Loading = false
+			if readingAuthDenied(documentErr) || readingAuthDenied(noticeErr) {
+				q.DocumentError = "提炼状态暂时无法读取"
+				a.InvalidateReading(p.Dataset)
+				return
+			}
 			current, _ := readingIdentity(Client{Config: a.Client.Config})
 			if identity != current {
 				q.Sessions = nil

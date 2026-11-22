@@ -52,6 +52,13 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 	control, hasControl := a.accessClient()
 	readingID, _ := readingIdentity(Client{Config: client.Config})
 	stateDir := a.readingStateDir()
+	migProjects := []AccessProject{{ID: p.ID, Name: p.Name, Dataset: p.Dataset}}
+	for _, ap := range a.access.Directory.Projects {
+		if ap.ID == p.ID && ap.Dataset == p.Dataset {
+			migProjects = []AccessProject{ap}
+			break
+		}
+	}
 	recallStartedAt := a.overviewState.V2RecallStartedAt
 	titles := a.titles
 	genStr := a.readingGeneration(s)
@@ -77,7 +84,6 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 				usedV2 = true
 				err = probeErr
 			} else if hasV2Knowledge {
-				migProjects := []AccessProject{{ID: p.ID, Dataset: p.Dataset}}
 				if migErr := a.migrateReadingStateV2Snapshot(ctx, control, readingID, stateDir, migProjects); migErr != nil && (isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, migProjects)) {
 					usedV2 = true
 					err = migErr

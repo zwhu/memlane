@@ -1695,3 +1695,280 @@ func TestReviewFixR2ProvenanceReadErrorMidModifyAndCommonSearch(t *testing.T) {
 		t.Fatalf("canonical UUID matching failed: err=%v loaded=%v body=%q", readErr, readItem.BodyLoaded, readItem.Body)
 	}
 }
+
+// TestReviewFixR3ConvergenceClosure verifies all 4 items of #64 §二 (R3 Codex findings):
+// 1. P0-3: project_queue 403 on processing-notices returns immediately without writing concurrent
+//    official Documents/UnreadKnowledge; InvalidateReading withdraws commonEdit and clears Events/History.
+// 2. P1-1: partial InvalidateReading(ds-1) never leaves unrelated project ds-2 q.Loading stuck true.
+// 3. P1-2: migrate-local strictly excludes unconfirmed/pending projects so verified project A is never blocked.
+// 4. P1-5/P1-6: stale mark-all-read state_rev never wipes newer unread preview; equal-length same-mtime
+//    token file replacement immediately busts controlCapabilitiesCache.
+func TestReviewFixR3ConvergenceClosure(t *testing.T) {
+	controlCapabilitiesCache.mu.Lock()
+	clear(controlCapabilitiesCache.entries)
+	controlCapabilitiesCache.mu.Unlock()
+
+	// --- 1. P0-3: Legacy summary 404 + processing-notices 403 + concurrent official 200 OK ---
+	officialP0 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/data"):
+			_ = json.NewEncoder(w).Encode([]Document{
+				{ID: "pend-doc-1", Dataset: "ds-1", Name: "secret-pending.md", Created: "2026-11-21T10:00:00Z"},
+				{ID: "know-doc-1", Dataset: "ds-1", Name: "k.md", Created: "2026-11-21T10:00:00Z", Metadata: map[string]any{"memlane_kind": "knowledge"}},
+			})
+		case strings.Contains(r.URL.Path, "/pipeline-runs"):
+			_ = json.NewEncoder(w).Encode([]any{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer officialP0.Close()
+
+	controlP0 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/capabilities", "/v1/projects/p1/message-summary":
+			http.NotFound(w, r)
+		case "/v1/projects/p1/processing-notices":
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer controlP0.Close()
+
+	tokenP0 := p1TempToken(t)
+	a0, updates0 := p1TestApp(t, officialP0.URL, controlP0.URL, tokenP0)
+	p1 := a0.access.Directory.Projects[0]
+	q1 := a0.projectQueueStateFor(p1)
+	a0.loadProjectQueue(q1, p1)
+	drainReading(t, updates0, func() bool { return !q1.Loading })
+	if len(q1.Documents) != 0 || len(q1.UnreadKnowledge) != 0 || q1.DocumentError == "" {
+		t.Fatalf("P0-3 VIOLATION: 403 processing-notices wrote concurrent official docs/unread: docs=%d unread=%d err=%q", len(q1.Documents), len(q1.UnreadKnowledge), q1.DocumentError)
+	}
+
+	// --- 1b. P0-3: InvalidateReading withdraws commonEdit and clears Events/History ---
+	existingCommon := Document{ID: "c-edit-1", Dataset: "ds-common", Name: "c.md"}
+	a0.commonEdit = commonEditorState{
+		Open:     true,
+		Target:   Project{ID: "common-1", Dataset: "ds-common"},
+		Existing: &existingCommon,
+		Draft:    CommonDraft{Title: "机密通用草稿", Body: "敏感正文"},
+	}
+	a0.overviewState.Events = []overviewEvent{
+		{Key: "ev-ds1", Title: "ds-1 活动", Record: activityRow{Dataset: "ds-1"}},
+		{Key: "ev-ds2", Title: "ds-2 活动", Record: activityRow{Dataset: "ds-2"}},
+		{Key: "ev-rec1", Title: "ds-1 召回", Recall: &RecallEvent{ID: "r1", Hits: []RecallHit{{Dataset: "ds-1", Document: "k1"}}}},
+	}
+	a0.overviewState.History = []overviewEvent{{Key: "h-1", Title: "搜索历史 1"}}
+	a0.overviewState.HistoryLoaded = true
+	a0.overviewState.ActivityLoaded = true
+	a0.overviewState.cachedGroupedEvents = a0.overviewState.Events
+
+	// Partial invalidate ds-1: drops ds-1 event + ds-1 recall, keeps ds-2 event and ds-common editor.
+	a0.InvalidateReading("ds-1")
+	if len(a0.overviewState.Events) != 1 || a0.overviewState.Events[0].Key != "ev-ds2" || a0.overviewState.cachedGroupedEvents != nil {
+		t.Fatalf("InvalidateReading(ds-1) did not cleanly filter Events: %+v", a0.overviewState.Events)
+	}
+	if !a0.commonEdit.Open || a0.commonEdit.Existing == nil {
+		t.Fatalf("InvalidateReading(ds-1) unexpectedly closed unrelated ds-common editor")
+	}
+	// Partial invalidate ds-common: withdraws ds-common editor immediately.
+	a0.InvalidateReading("ds-common")
+	if a0.commonEdit.Open || a0.commonEdit.Existing != nil || a0.commonEdit.Draft.Body != "" {
+		t.Fatalf("InvalidateReading(ds-common) failed to withdraw commonEdit: %+v", a0.commonEdit)
+	}
+	// Global invalidate "": clears all remaining Events and History.
+	a0.InvalidateReading("")
+	if len(a0.overviewState.Events) != 0 || len(a0.overviewState.History) != 0 || a0.overviewState.HistoryLoaded || a0.overviewState.ActivityLoaded {
+		t.Fatalf("InvalidateReading(\"\") leaked Events/History: events=%d history=%d", len(a0.overviewState.Events), len(a0.overviewState.History))
+	}
+
+	// --- 2. P1-1: Partial InvalidateReading(ds-1) must NOT stall unrelated project ds-2 q.Loading ---
+	p2Started := make(chan struct{}, 1)
+	p2Release := make(chan struct{})
+	var p2Calls atomic.Int32
+	controlP1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			_ = json.NewEncoder(w).Encode(ControlCapabilities{
+				APIVersions: []string{"v1", "v2"},
+				Features:    []string{v2FeatureMessageSummary},
+			})
+		case "/v2/projects/p2/message-summary":
+			if p2Calls.Add(1) == 1 {
+				select {
+				case p2Started <- struct{}{}:
+				default:
+				}
+				<-p2Release
+			}
+			_ = json.NewEncoder(w).Encode(v2MessageSummaryResponse{
+				ProjectID: "p2", DatasetID: "ds-2", UnreadCount: 2, UnreadStateRev: 1,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer controlP1.Close()
+
+	tokenP1 := p1TempToken(t)
+	a1, updates1 := p1TestApp(t, controlP1.URL, controlP1.URL, tokenP1)
+	p2 := AccessProject{ID: "p2", Name: "other", Dataset: "ds-2", Status: "verified"}
+	a1.access.Directory.Projects = append(a1.access.Directory.Projects, p2)
+	q2 := a1.projectQueueStateFor(p2)
+	a1.loadProjectQueue(q2, p2)
+	<-p2Started
+	// Revoke unrelated ds-1 while p2 is mid-flight!
+	a1.InvalidateReading("ds-1")
+	close(p2Release)
+	drainReading(t, updates1, func() bool { return !q2.Loading })
+	if q2.Loading {
+		t.Fatalf("P1-1 VIOLATION: unrelated project p2 q.Loading stuck true after InvalidateReading(ds-1)")
+	}
+	// Verify p2 can immediately be polled again and loads cleanly.
+	a1.loadProjectQueue(q2, p2)
+	drainReading(t, updates1, func() bool { return !q2.Loading && q2.ServerUnreadKnown })
+	if q2.ServerUnreadCount != 2 {
+		t.Fatalf("p2 follow-up poll failed after recovery: known=%v count=%d", q2.ServerUnreadKnown, q2.ServerUnreadCount)
+	}
+
+	// --- 3. P1-2: migrate-local excludes transitional unconfirmed project B so verified A loads cleanly ---
+	var sawMigratedIDs []string
+	var migMu sync.Mutex
+	var overviewHits atomic.Int32
+	controlP2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			_ = json.NewEncoder(w).Encode(ControlCapabilities{
+				APIVersions: []string{"v1", "v2"},
+				Features:    []string{v2FeatureOverview, v2FeatureReadingState},
+			})
+		case "/v2/reading-state/migrate-local":
+			var req v2ReadingStateMigrateRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			resp := v2ReadingStateMigrateResponse{}
+			for _, pr := range req.Projects {
+				migMu.Lock()
+				sawMigratedIDs = append(sawMigratedIDs, pr.ProjectID)
+				migMu.Unlock()
+				if pr.ProjectID == "p-unconfirmed" {
+					w.WriteHeader(http.StatusForbidden)
+					_ = json.NewEncoder(w).Encode(map[string]string{"error": "project_not_verified"})
+					return
+				}
+				resp.Migrated = append(resp.Migrated, v2ReadingStateMigratedScope{
+					ProjectID: pr.ProjectID, DatasetID: pr.DatasetID, Status: "already_migrated",
+				})
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/v2/overview/bootstrap":
+			overviewHits.Add(1)
+			_ = json.NewEncoder(w).Encode(v2OverviewBootstrapResponse{
+				Generation: 1, TotalKnowledgeCount: 10,
+				Projects: []v2OverviewProjectSummary{{ProjectID: "p1", DatasetID: "ds-1", KnowledgeCount: 10, UnreadCount: 1, UnreadStateRev: 1}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer controlP2.Close()
+
+	tokenP2 := p1TempToken(t)
+	a2, updates2 := p1TestApp(t, controlP2.URL, controlP2.URL, tokenP2)
+	a2.access.Directory.Projects = append(a2.access.Directory.Projects, AccessProject{
+		ID: "p-unconfirmed", Name: "unconfirmed", Dataset: "ds-pending", Status: "pending",
+	})
+	a2.loadOverview()
+	drainReading(t, updates2, func() bool { return !a2.overviewState.Loading })
+	if a2.overviewState.Error != "" || overviewHits.Load() != 1 {
+		t.Fatalf("P1-2 VIOLATION: unconfirmed project blocked verified overview load: err=%q hits=%d", a2.overviewState.Error, overviewHits.Load())
+	}
+	migMu.Lock()
+	gotMig := append([]string(nil), sawMigratedIDs...)
+	migMu.Unlock()
+	if len(gotMig) != 1 || gotMig[0] != "p1" {
+		t.Fatalf("P1-2 VIOLATION: expected only verified [p1] in migrate-local, got %v", gotMig)
+	}
+
+	// --- 4a. P1-5: stale mark-all-read (state_rev=5) must NOT clear newer unread preview (state_rev=10) ---
+	controlP5 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			_ = json.NewEncoder(w).Encode(ControlCapabilities{
+				APIVersions: []string{"v1", "v2"},
+				Features:    []string{v2FeatureReadingState},
+			})
+		case "/v2/reading-state/mark-all-read":
+			_ = json.NewEncoder(w).Encode(v2ReadingStateMarkAllReadResponse{
+				ScopeHash: "sh-5", UnreadCount: 0, UnreadCountKnown: boolPtr(true), StateRev: 5,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer controlP5.Close()
+
+	tokenP5 := p1TempToken(t)
+	a5, updates5 := p1TestApp(t, controlP5.URL, controlP5.URL, tokenP5)
+	p5 := a5.access.Directory.Projects[0]
+	q5 := a5.projectQueueStateFor(p5)
+	q5.Loaded = true
+	q5.ServerUnreadKnown = true
+	q5.ServerUnreadStateRev = 10
+	q5.ServerUnreadCount = 3
+	q5.UnreadHasMore = true
+	q5.UnreadKnowledge = []Item{{ID: "newer-unread", Dataset: "ds-1", Kind: "知识", Title: "新到达未读"}}
+	a5.clearProjectNotificationsAsync(q5, p5)
+	drainReading(t, updates5, func() bool { return q5.StateVersion > 0 })
+	if q5.ServerUnreadStateRev != 10 || q5.ServerUnreadCount != 3 || len(q5.UnreadKnowledge) != 1 || !q5.UnreadHasMore {
+		t.Fatalf("P1-5 VIOLATION: stale mark-all-read rev=5 clobbered newer unread rev=10: rev=%d cnt=%d unread=%d more=%v",
+			q5.ServerUnreadStateRev, q5.ServerUnreadCount, len(q5.UnreadKnowledge), q5.UnreadHasMore)
+	}
+
+	// --- 4b. P1-6: equal-length, identical-mtime token replacement immediately busts capabilities cache ---
+	sameMtimeTokFile := filepath.Join(t.TempDir(), "same-mtime.token")
+	tokA := strings.Repeat("x", 40)
+	tokB := strings.Repeat("y", 40)
+	fixedTime := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	if err := os.WriteFile(sameMtimeTokFile, []byte(tokA), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(sameMtimeTokFile, fixedTime, fixedTime); err != nil {
+		t.Fatal(err)
+	}
+	var capReqs atomic.Int32
+	srvP6 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/capabilities" {
+			capReqs.Add(1)
+			if r.Header.Get("Authorization") != "Bearer "+tokA {
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(ControlCapabilities{
+				APIVersions: []string{"v1", "v2"},
+				Features:    []string{v2FeatureOverview},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srvP6.Close()
+
+	ctrlP6 := ProjectControlClient{Config: ProjectControlConfig{URL: srvP6.URL, ManagementTokenFile: sameMtimeTokFile}}
+	has, err := ctrlP6.probeFeature(context.Background(), v2FeatureOverview)
+	if err != nil || !has || capReqs.Load() != 1 {
+		t.Fatalf("initial probe failed: has=%v err=%v calls=%d", has, err, capReqs.Load())
+	}
+	// Replace file with equal-length tokB AND pin exact same mtime!
+	if err := os.WriteFile(sameMtimeTokFile, []byte(tokB), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(sameMtimeTokFile, fixedTime, fixedTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ctrlP6.probeFeature(context.Background(), v2FeatureOverview); !isControlAuthDenied(err) || capReqs.Load() != 2 {
+		t.Fatalf("P1-6 VIOLATION: equal-length same-mtime token swap reused stale capabilities cache: err=%v calls=%d", err, capReqs.Load())
+	}
+}

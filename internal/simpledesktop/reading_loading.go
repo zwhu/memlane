@@ -342,6 +342,7 @@ func (a *App) retryReadingTitle(s *pane, i Item) {
 // fences every in-flight request via authEpoch + per-pane/overview/queue counters.
 func (a *App) InvalidateReading(dataset string) {
 	a.authEpoch++
+	a.withdrawCommonEditor(dataset)
 	a.invalidateUnifiedSearch(dataset)
 	if dataset == "" || (a.searchAnchor != nil && a.searchAnchor.Dataset == dataset) {
 		a.searchAnchor = nil
@@ -379,6 +380,7 @@ func (a *App) InvalidateReading(dataset string) {
 	a.overviewState.Loading = false
 	a.overviewState.ActivityLoading = false
 	a.overviewState.DayLoading = false
+	a.overviewState.cachedGroupedEvents = nil
 	if dataset == "" {
 		a.overviewState.DayItems = nil
 		a.overviewState.DayNextCursor = ""
@@ -386,16 +388,68 @@ func (a *App) InvalidateReading(dataset string) {
 		a.overviewState.DayTotal = 0
 		a.overviewState.V2DayBuckets = nil
 		a.overviewState.V2TotalKnowledge = 0
-	} else if len(a.overviewState.DayItems) > 0 {
-		keptDay := make([]Item, 0, len(a.overviewState.DayItems))
-		for _, i := range a.overviewState.DayItems {
-			if i.Dataset != dataset {
-				keptDay = append(keptDay, i)
+		a.overviewState.Events = nil
+		a.overviewState.History = nil
+		a.overviewState.HistoryLoaded = false
+		a.overviewState.ActivityLoaded = false
+		a.overviewState.More = false
+	} else {
+		if len(a.overviewState.DayItems) > 0 {
+			keptDay := make([]Item, 0, len(a.overviewState.DayItems))
+			for _, i := range a.overviewState.DayItems {
+				if i.Dataset != dataset {
+					keptDay = append(keptDay, i)
+				}
 			}
+			a.overviewState.DayItems = keptDay
+			a.overviewState.DayNextCursor = ""
+			a.overviewState.DayHasMore = false
 		}
-		a.overviewState.DayItems = keptDay
-		a.overviewState.DayNextCursor = ""
-		a.overviewState.DayHasMore = false
+		if len(a.overviewState.Events) > 0 {
+			keptEvents := make([]overviewEvent, 0, len(a.overviewState.Events))
+			for _, ev := range a.overviewState.Events {
+				if ev.Record.Dataset == dataset {
+					continue
+				}
+				if len(ev.Failures) > 0 {
+					keptFailures := make([]activityRow, 0, len(ev.Failures))
+					for _, f := range ev.Failures {
+						if f.Dataset != dataset {
+							keptFailures = append(keptFailures, f)
+						}
+					}
+					if len(keptFailures) == 0 {
+						continue
+					}
+					ev.Failures = keptFailures
+				}
+				if ev.Recall != nil {
+					keptHits := make([]RecallHit, 0, len(ev.Recall.Hits))
+					for _, h := range ev.Recall.Hits {
+						if h.Dataset != dataset {
+							keptHits = append(keptHits, h)
+						}
+					}
+					if len(keptHits) == 0 {
+						continue
+					}
+					rcCopy := *ev.Recall
+					rcCopy.Hits = keptHits
+					ev.Recall = &rcCopy
+				}
+				keptEvents = append(keptEvents, ev)
+			}
+			a.overviewState.Events = keptEvents
+		}
+		if len(a.overviewState.History) > 0 {
+			keptHistory := make([]overviewEvent, 0, len(a.overviewState.History))
+			for _, ev := range a.overviewState.History {
+				if ev.Record.Dataset != dataset {
+					keptHistory = append(keptHistory, ev)
+				}
+			}
+			a.overviewState.History = keptHistory
+		}
 	}
 	for n, i := range a.overviewState.Snapshot.Knowledge {
 		if dataset == "" || i.Dataset == dataset {

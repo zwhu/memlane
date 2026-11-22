@@ -137,7 +137,10 @@ func (a *App) clearProjectNotifications(q *projectQueueState, p AccessProject) e
 			q.StateVersion++
 			return fmt.Errorf("异常提醒已清除，未读记忆状态未保存")
 		}
-		if resp.StateRev == 0 || resp.StateRev >= q.ServerUnreadStateRev {
+		canApplyUnread := (resp.StateRev > 0 && resp.StateRev >= q.ServerUnreadStateRev) ||
+			(resp.StateRev == 0 && q.ServerUnreadStateRev == 0)
+		q.KnowledgeReadError = ""
+		if canApplyUnread {
 			if resp.StateRev > q.ServerUnreadStateRev {
 				q.ServerUnreadStateRev = resp.StateRev
 			}
@@ -145,16 +148,15 @@ func (a *App) clearProjectNotifications(q *projectQueueState, p AccessProject) e
 				q.ServerUnreadKnown = true
 				q.ServerUnreadCount = resp.UnreadCount
 			}
-		}
-		q.UnreadHasMore = false
-		q.UnreadKnowledge = nil
-		q.KnowledgeReadError = ""
-		if q.KnowledgeRead.Read != nil {
-			for id := range q.KnowledgeRead.Read {
-				q.KnowledgeRead.Read[id] = true
+			q.UnreadHasMore = false
+			q.UnreadKnowledge = nil
+			if q.KnowledgeRead.Read != nil {
+				for id := range q.KnowledgeRead.Read {
+					q.KnowledgeRead.Read[id] = true
+				}
 			}
+			a.clearDatasetServerUnread(p.Dataset)
 		}
-		a.clearDatasetServerUnread(p.Dataset)
 		q.StateVersion++
 		return nil
 	}
@@ -320,7 +322,10 @@ func (a *App) clearProjectNotificationsAsync(q *projectQueueState, p AccessProje
 					q.StateVersion++
 					return
 				}
-				if resp.StateRev == 0 || resp.StateRev >= q.ServerUnreadStateRev {
+				canApplyUnread := (resp.StateRev > 0 && resp.StateRev >= q.ServerUnreadStateRev) ||
+					(resp.StateRev == 0 && q.ServerUnreadStateRev == 0)
+				q.KnowledgeReadError = ""
+				if canApplyUnread {
 					if resp.StateRev > q.ServerUnreadStateRev {
 						q.ServerUnreadStateRev = resp.StateRev
 					}
@@ -328,16 +333,15 @@ func (a *App) clearProjectNotificationsAsync(q *projectQueueState, p AccessProje
 						q.ServerUnreadKnown = true
 						q.ServerUnreadCount = resp.UnreadCount
 					}
-				}
-				q.UnreadHasMore = false
-				q.UnreadKnowledge = nil
-				q.KnowledgeReadError = ""
-				if q.KnowledgeRead.Read != nil {
-					for id := range q.KnowledgeRead.Read {
-						q.KnowledgeRead.Read[id] = true
+					q.UnreadHasMore = false
+					q.UnreadKnowledge = nil
+					if q.KnowledgeRead.Read != nil {
+						for id := range q.KnowledgeRead.Read {
+							q.KnowledgeRead.Read[id] = true
+						}
 					}
+					a.clearDatasetServerUnread(p.Dataset)
 				}
-				a.clearDatasetServerUnread(p.Dataset)
 				q.StateVersion++
 			})
 			return

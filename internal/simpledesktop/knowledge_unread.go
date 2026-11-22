@@ -608,6 +608,13 @@ func (a *App) flushKnowledgeReadWithTimeout(timeout time.Duration) error {
 	return nil
 }
 
+func isMigrationEligibleProject(p AccessProject) bool {
+	if p.ID == "" || p.Dataset == "" {
+		return false
+	}
+	return p.Status == "" || p.Status == "verified"
+}
+
 func (a *App) hasPendingLocalReadingMigration(controlURL, stateDir, readingID string, projects []AccessProject) bool {
 	if stateDir == "" || readingID == "" {
 		return false
@@ -615,7 +622,7 @@ func (a *App) hasPendingLocalReadingMigration(controlURL, stateDir, readingID st
 	a.readingMigrateMu.Lock()
 	defer a.readingMigrateMu.Unlock()
 	for _, p := range projects {
-		if p.ID == "" || p.Dataset == "" {
+		if !isMigrationEligibleProject(p) {
 			continue
 		}
 		if controlURL != "" && a.readingMigrated[controlURL+"|"+readingID+"|"+p.ID+"|"+p.Dataset] {
@@ -677,7 +684,7 @@ func (a *App) migrateReadingStateV2Snapshot(ctx context.Context, control Project
 			a.readingMigrating = map[string]chan struct{}{}
 		}
 		for _, p := range projects {
-			if p.ID == "" || p.Dataset == "" {
+			if !isMigrationEligibleProject(p) {
 				continue
 			}
 			sk := scopeKeyFor(p)

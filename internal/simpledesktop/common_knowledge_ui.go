@@ -28,7 +28,7 @@ type commonEditorState struct {
 
 func (a *App) withdrawCommonEditor(dataset string) {
 	e := &a.commonEdit
-	if e.Existing != nil && (dataset == "" || e.Target.Dataset == dataset) {
+	if e.Existing != nil && (dataset == "" || e.Target.Dataset == dataset || e.Existing.Dataset == dataset) {
 		e.Open = false
 		e.Existing = nil
 		e.Draft = CommonDraft{}
