@@ -403,8 +403,8 @@ _CATALOG_SESSION_INDEX_DDL = '''
             WHERE parent_session_id != '';
         CREATE INDEX IF NOT EXISTS idx_csess_ds_sid
             ON catalog_sessions(dataset_id, session_id, user_id);
-        CREATE INDEX IF NOT EXISTS idx_csess_recent_ts
-            ON catalog_sessions(sort_ts_desc_key ASC, user_id ASC, session_id ASC);
+        CREATE INDEX IF NOT EXISTS idx_csess_ds_recent_ts
+            ON catalog_sessions(dataset_id, sort_ts_desc_key ASC, user_id ASC, session_id ASC);
 '''
 
 _CATALOG_INDEX_NAMES = (
@@ -433,7 +433,7 @@ _CATALOG_SESSION_INDEX_NAMES = (
     'idx_csess_parent_ts',
     'idx_csess_parent_user_ts',
     'idx_csess_ds_sid',
-    'idx_csess_recent_ts',
+    'idx_csess_ds_recent_ts',
 )
 
 
@@ -793,6 +793,30 @@ class CatalogIndex:
 
         self._write_con = self._open_or_recreate_write_con()
 
+    def _read_reading_state_horizon_floor(self) -> int:
+        """Read-only lookup of MAX(horizon_max_rowid) from sibling ``ui-reading-state.sqlite3``.
+
+        Prevents corruption self-heal from resetting ``doc_seq`` below an existing reading-state
+        watermark (which would otherwise swallow late-arriving unread documents).
+        """
+        rs_path = self.path.parent / 'ui-reading-state.sqlite3'
+        if not rs_path.is_file() or rs_path.is_symlink():
+            return 0
+        try:
+            with official_sqlite_ro(rs_path) as rcon:
+                has_tbl = rcon.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ui_read_scopes' LIMIT 1"
+                ).fetchone()
+                if not has_tbl:
+                    return 0
+                cols = {str(r[1]) for r in rcon.execute('PRAGMA table_info(ui_read_scopes)').fetchall()}
+                if 'horizon_max_rowid' not in cols:
+                    return 0
+                row = rcon.execute('SELECT COALESCE(MAX(horizon_max_rowid), 0) FROM ui_read_scopes').fetchone()
+                return max(0, int(row[0] or 0)) if row else 0
+        except (PolicyError, sqlite3.Error, OSError):
+            return 0
+
     def _open_or_recreate_write_con(self) -> sqlite3.Connection:
         """Open ``catalog-index.sqlite3`` with startup corruption self-healing."""
         con = None
@@ -817,6 +841,12 @@ class CatalogIndex:
                     pass
             fresh = _open_private_rw(self.path)
             _create_catalog_schema(fresh, self.tz_provider())
+            floor = self._read_reading_state_horizon_floor()
+            if floor > 0:
+                fresh.execute(
+                    'UPDATE catalog_meta SET last_doc_seq = ? WHERE singleton = 1 AND last_doc_seq < ?',
+                    (floor, floor),
+                )
             return fresh
 
     def _check_not_rebuilding(self):
@@ -1013,11 +1043,18 @@ class CatalogIndex:
                                 FROM document_provenance WHERE dataset_id IN ({ph})''',
                             batch,
                         ):
-                            doc_prov[(str(ds), str(doc_id))] = (
-                                str(lt or '').strip(),
-                                str(sk or '').strip(),
-                                str(fdate or '').strip(),
-                            )
+                            ds_s = str(ds)
+                            lt_s = str(lt or '').strip()
+                            sk_s = str(sk or '').strip()
+                            fd_s = str(fdate or '').strip()
+                            doc_prov[(ds_s, str(doc_id))] = (lt_s, sk_s, fd_s)
+                            if lt_s and sk_s:
+                                cd = _cached_calendar_date(fd_s)
+                                if cd:
+                                    k_key = (ds_s, lt_s, sk_s)
+                                    prev_k = key_prov.get(k_key)
+                                    if not prev_k or cd < prev_k:
+                                        key_prov[k_key] = cd
                             if int(sseq or 0) > max_seq:
                                 max_seq = int(sseq or 0)
                         for ds, lt, sk, fdate in con.execute(
@@ -1025,7 +1062,15 @@ class CatalogIndex:
                                 FROM keyed_provenance WHERE dataset_id IN ({ph})''',
                             batch,
                         ):
-                            key_prov[(str(ds), str(lt or '').strip(), str(sk or '').strip())] = str(fdate or '').strip()
+                            ds_s = str(ds)
+                            lt_s = str(lt or '').strip()
+                            sk_s = str(sk or '').strip()
+                            fd_s = str(fdate or '').strip()
+                            cd = _cached_calendar_date(fd_s) or fd_s
+                            k_key = (ds_s, lt_s, sk_s)
+                            prev_k = key_prov.get(k_key)
+                            if cd and (not prev_k or cd < prev_k):
+                                key_prov[k_key] = cd
                     if has_seq:
                         meta_exists = con.execute(
                             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='provenance_meta' LIMIT 1"
@@ -2021,6 +2066,7 @@ class CatalogIndex:
         preserved_doc_seqs: dict[tuple[str, str], int] | None = None,
         min_last_doc_seq: int = 0,
         min_generation: int = 0,
+        baseline_doc_seq_floor: int = 0,
     ) -> tuple[int, bool]:
         """Synchronize ``catalog_docs``, ``catalog_day_buckets``, ``catalog_sessions``, and ``dataset_sync_state``.
 
@@ -2050,7 +2096,7 @@ class CatalogIndex:
         old_tz = str(meta_row[1]) if meta_row else tz_name
         last_prov_seq = 0 if force_full else (int(meta_row[2]) if meta_row else 0)
         last_recall_rev = 0 if force_full else (int(meta_row[3]) if meta_row else 0)
-        initial_doc_seq = max(int(meta_row[4]) if meta_row else 0, int(min_last_doc_seq))
+        initial_doc_seq = max(int(meta_row[4]) if meta_row else 0, int(min_last_doc_seq), int(baseline_doc_seq_floor or 0))
         preserved_seqs = dict(preserved_doc_seqs) if preserved_doc_seqs else {}
         if preserved_seqs:
             max_pseq = max(preserved_seqs.values())
@@ -2070,6 +2116,10 @@ class CatalogIndex:
                 if pseq > next_doc_seq:
                     next_doc_seq = pseq
                 return proj26 + (pseq,)
+            if baseline_doc_seq_floor > 0 and not preserved_seqs:
+                if baseline_doc_seq_floor > next_doc_seq:
+                    next_doc_seq = baseline_doc_seq_floor
+                return proj26 + (baseline_doc_seq_floor,)
             next_doc_seq += 1
             return proj26 + (next_doc_seq,)
 
@@ -2463,7 +2513,9 @@ class CatalogIndex:
                         tz_info=tz_info,
                     )
                     if projected is not None:
-                        if has_preserved_seqs:
+                        if baseline_doc_seq_floor > 0 and not has_preserved_seqs:
+                            upserts.append(projected + (baseline_doc_seq_floor,))
+                        elif has_preserved_seqs:
                             upserts.append(_with_doc_seq(canon_ds, projected))
                         else:
                             next_doc_seq += 1
@@ -2869,13 +2921,17 @@ class CatalogIndex:
                     for ds in allowed:
                         if ds in cold_bucket_summaries:
                             continue
-                        full_prov_updates = []
-                        for r_doc_id, r_lt, r_sk, r_day, r_src in con.execute(
+                        ds_rows = con.execute(
                             '''SELECT doc_id, lesson_type, state_key, effective_date, effective_date_source
                                FROM catalog_docs
                                WHERE dataset_id = ? AND is_knowledge = 1''',
                             (ds,),
-                        ).fetchall():
+                        ).fetchall()
+                        # Pass 1: aggregate earliest valid provenance date across every (lesson_type, state_key)
+                        # sibling group even when keyed_provenance is empty and only document_provenance exists.
+                        group_earliest: dict[tuple[str, str], str] = {}
+                        resolved_rows: list[tuple[str, str, str, str, str, tuple | None]] = []
+                        for r_doc_id, r_lt, r_sk, r_day, r_src in ds_rows:
                             did_s = str(r_doc_id)
                             lt_s = str(r_lt or '').strip()
                             sk_s = str(r_sk or '').strip()
@@ -2885,21 +2941,34 @@ class CatalogIndex:
                                     lt_s = prov_e[0]
                                 if not sk_s and prov_e[1]:
                                     sk_s = prov_e[1]
-                            kd = key_prov.get((ds, lt_s, sk_s)) if (lt_s and sk_s) else None
+                            resolved_rows.append((did_s, lt_s, sk_s, str(r_day or ''), str(r_src or ''), prov_e))
+                            if lt_s and sk_s:
+                                g_key = (lt_s, sk_s)
+                                for raw_cand in (
+                                    prov_e[2] if prov_e is not None else '',
+                                    key_prov.get((ds, lt_s, sk_s), ''),
+                                ):
+                                    if isinstance(raw_cand, str) and raw_cand:
+                                        cd = _cached_calendar_date(raw_cand)
+                                        if cd:
+                                            prev_g = group_earliest.get(g_key)
+                                            if not prev_g or cd < prev_g:
+                                                group_earliest[g_key] = cd
+                        # Pass 2: propagate earliest provenance date to both directly linked rows and siblings.
+                        full_prov_updates = []
+                        for did_s, lt_s, sk_s, cur_day, cur_src, prov_e in resolved_rows:
                             cand_dates = []
                             if prov_e is not None and isinstance(prov_e[2], str):
                                 cd = _cached_calendar_date(prov_e[2])
                                 if cd:
                                     cand_dates.append(cd)
-                            if isinstance(kd, str):
-                                cd = _cached_calendar_date(kd)
-                                if cd:
-                                    cand_dates.append(cd)
+                            if lt_s and sk_s:
+                                g_day = group_earliest.get((lt_s, sk_s))
+                                if g_day:
+                                    cand_dates.append(g_day)
                             if not cand_dates:
                                 continue
                             best_day = min(cand_dates)
-                            cur_day = str(r_day or '')
-                            cur_src = str(r_src or '')
                             if cur_src != 'provenance' or not cur_day or best_day < cur_day:
                                 full_prov_updates.append((best_day, day_to_desc_key(best_day), ds, did_s))
                         if full_prov_updates:
@@ -3617,6 +3686,17 @@ class CatalogIndex:
                 prev_gen = max(prev_gen, int(self._last_generation or 0))
                 preserved_doc_seqs = {}
 
+        # When rebuilding from zero (e.g. corruption self-heal where old doc_seq mapping is lost),
+        # preserve monotonic safety against sibling ui-reading-state.sqlite3's MAX(horizon_max_rowid):
+        # baseline docs get doc_seq = floor and catalog_meta.last_doc_seq = floor so existing read docs
+        # stay read while any new/late doc arriving post-heal receives floor+1 (> horizon_max_rowid).
+        baseline_floor = 0
+        if not preserved_doc_seqs:
+            rs_floor = self._read_reading_state_horizon_floor()
+            if rs_floor > 0:
+                baseline_floor = max(rs_floor, prev_last_doc_seq)
+                prev_last_doc_seq = max(prev_last_doc_seq, baseline_floor)
+
         with self._state_lock:
             self._rebuilding = True
         tmp_path = self.path.parent / f'{self.path.name}.rebuilding.{os.getpid()}.{time.time_ns()}'
@@ -3633,6 +3713,7 @@ class CatalogIndex:
                 preserved_doc_seqs=preserved_doc_seqs,
                 min_last_doc_seq=prev_last_doc_seq,
                 min_generation=prev_gen,
+                baseline_doc_seq_floor=baseline_floor,
             )
             # Ensure all indexes exist when managed_datasets was empty (stream_cold_bulk skipped)
             if not managed_datasets:
@@ -4628,23 +4709,25 @@ class CatalogIndex:
         return out
 
     def query_recent_sessions(self, allowed_datasets: list[str], *, limit: int = 20) -> list[dict]:
-        """Indexed recent sessions across verified datasets via ``idx_csess_recent_ts`` (zero TEMP B-TREE)."""
-        if not allowed_datasets:
+        """Indexed per-dataset recent sessions via ``idx_csess_ds_recent_ts`` + in-memory merge (zero TEMP B-TREE)."""
+        if not allowed_datasets or int(limit) <= 0:
             return []
-        allowed_set = {uuid_text(ds) for ds in allowed_datasets}
-        out = []
+        uniq_ds = list(dict.fromkeys(uuid_text(ds) for ds in allowed_datasets if ds))
+        if not uniq_ds:
+            return []
+        lim = int(limit)
+        candidates: list[tuple[int, str, str, dict]] = []
+        sql = f'''SELECT {_SELECT_SESS_COLS}
+                  FROM catalog_sessions
+                  WHERE dataset_id = ?
+                  ORDER BY sort_ts_desc_key ASC, user_id ASC, session_id ASC
+                  LIMIT ?'''
         with self._reader_lease() as con:
-            for r in con.execute(
-                f'''SELECT {_SELECT_SESS_COLS}
-                    FROM catalog_sessions
-                    ORDER BY sort_ts_desc_key ASC, user_id ASC, session_id ASC'''
-            ):
-                if str(r[0]) not in allowed_set:
-                    continue
-                out.append(_row_to_session_dict(r))
-                if len(out) >= limit:
-                    break
-        return out
+            for ds in uniq_ds:
+                for r in con.execute(sql, (ds, lim)).fetchall():
+                    candidates.append((int(r[7]), str(r[2]), str(r[1]), _row_to_session_dict(r)))
+        candidates.sort(key=lambda t: (t[0], t[1], t[2]))
+        return [t[3] for t in candidates[:lim]]
 
     def query_pending_raw_docs(self, dataset_id: str, *, limit: int = 20) -> tuple[list[dict], int]:
         ds = uuid_text(dataset_id)

@@ -748,6 +748,83 @@ class V2APITests(AioHTTPTestCase):
         ms_raw = await ms_resp.read()
         self.assertLessEqual(len(ms_raw), 16 * 1024)
 
+    async def test_r3_backfill_stat_guard_and_snapshot_consistency(self):
+        """R3 P1-5 & P1-6: atomic unread snapshot (no second page_unread_flags read) + legacy dates stat guard before archive."""
+        import hashlib
+        import os
+        handles = self.app['v2_api_handles']
+        orig_page_flags = handles.reading_state.page_unread_flags
+
+        def _forbid_second_read(*_a, **_kw):
+            raise AssertionError('page_unread_flags must NOT be called separately on bootstrap/knowledge!')
+
+        handles.reading_state.page_unread_flags = _forbid_second_read
+        try:
+            bs = await (await self.client.get('/v2/overview/bootstrap', headers=self.manager_headers)).json()
+            self.assertEqual(bs['projects'][0]['unread_count'], len([it for it in bs['recent_items'] if it['project_id'] == 'p1' and it['is_unread']]))
+            kn = await (await self.client.get('/v2/projects/p1/knowledge?limit=10', headers=self.manager_headers)).json()
+            self.assertIn('unread_state_rev', kn)
+            self.assertGreaterEqual(kn['unread_state_rev'], 0)
+        finally:
+            handles.reading_state.page_unread_flags = orig_page_flags
+
+        # P1-6: backfill-legacy-dates must NOT rename .migrated.bak if the default file changed mid-request!
+        identity = self.manager_headers['X-Memlane-Reading-Identity']
+        digest = hashlib.sha256(identity.encode('utf-8')).hexdigest()
+        legacy_file = self.registry.path.parent / f'knowledge-source-dates-{digest}.json'
+        key_d1 = hashlib.sha256(f'{self.ds_proj}/state/sk:0'.encode('utf-8')).hexdigest()
+        legacy_file.write_text(json.dumps({'schema_version': 1, 'days': {key_d1: '2025-02-01'}}), encoding='utf-8')
+        os.chmod(legacy_file, 0o600)
+
+        mutated_once = {'done': False}
+        had_req = hasattr(self.dummy_official, 'request')
+        orig_req = getattr(self.dummy_official, 'request', None)
+
+        async def _mutating_request(method, path, payload=None, adapter_token=None):
+            if not mutated_once['done']:
+                mutated_once['done'] = True
+                # Concurrent modification while backfill request is in flight!
+                legacy_file.write_text(
+                    json.dumps({'schema_version': 1, 'days': {key_d1: '2025-02-01', 'a' * 64: '2025-01-01'}}),
+                    encoding='utf-8',
+                )
+            return {'imported': len((payload or {}).get('entries') or ()), 'skipped': 0}
+
+        saved_unconf = self.registry.state['projects'].pop('p-unconf', None)
+        self.dummy_official.request = _mutating_request
+        try:
+            r_changed = await self.client.post(
+                '/v2/provenance/backfill-legacy-dates',
+                headers=self.manager_headers,
+                json={'reading_identity': identity},
+            )
+            self.assertEqual(r_changed.status, 200)
+            body_changed = await r_changed.json()
+            self.assertFalse(body_changed['has_unconfirmed_projects'])
+            self.assertEqual(body_changed['status'], 'partial')
+            self.assertEqual(body_changed['backup_path'], '')
+            self.assertTrue(legacy_file.exists())
+            self.assertFalse(legacy_file.with_name(legacy_file.name + '.migrated.bak').exists())
+
+            # Now write only the matched key and run unchanged -> archives cleanly to .migrated.bak
+            legacy_file.write_text(json.dumps({'schema_version': 1, 'days': {key_d1: '2025-02-01'}}), encoding='utf-8')
+            r_ok = await self.client.post(
+                '/v2/provenance/backfill-legacy-dates',
+                headers=self.manager_headers,
+                json={'reading_identity': identity},
+            )
+            self.assertEqual(r_ok.status, 200)
+            body_ok = await r_ok.json()
+            self.assertEqual(body_ok['status'], 'migrated')
+            self.assertTrue(legacy_file.with_name(legacy_file.name + '.migrated.bak').exists())
+        finally:
+            if saved_unconf is not None:
+                self.registry.state['projects']['p-unconf'] = saved_unconf
+            if had_req:
+                self.dummy_official.request = orig_req
+            else:
+                delattr(self.dummy_official, 'request')
+
 
 if __name__ == '__main__':
     unittest.main()

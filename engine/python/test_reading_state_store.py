@@ -370,6 +370,54 @@ class ReadingStateStoreTests(unittest.TestCase):
             store.close()
             cat.close()
 
+    def test_mark_all_read_cas_exhaustion_raises_409_conflict(self):
+        """R3 P0-1: mark_all_read must raise 409 conflict when all 3 CAS attempts roll back (never false 200)."""
+        from project_control import PolicyError
+        store = ReadingStateStore(self.root / 'ui-reading-state.sqlite3', state_dir=self.root)
+        try:
+            b = store.begin_import(
+                self.identity, 'proj-cas', self.ds, initialized=True, enabled_at='2026-11-20T08:00:00Z'
+            )
+            store.stage_import_chunk(b['batch_id'], [{'doc_id': str(uuid.uuid4()), 'is_read': False}])
+            res = store.commit_import(b['batch_id'], expected_items=1)
+            scope_hash = res['scope_hash']
+            rev_before = res['state_rev']
+
+            class _ContendingCatalog:
+                def max_knowledge_created_at_ns(self, _ds):
+                    # Simulate a concurrent writer advancing state_rev between read and CAS UPDATE every attempt
+                    store.db.execute(
+                        'UPDATE ui_read_scopes SET state_rev = state_rev + 1 WHERE scope_hash = ?',
+                        (scope_hash,),
+                    )
+                    return '2026-11-20T12:00:00.000000000Z'
+
+                def max_knowledge_rowid(self, _ds):
+                    return 10
+
+                def knowledge_docs_invalid_created(self, _ds):
+                    return []
+
+                def doc_created_at_info(self, _ds, _ids):
+                    return {}
+
+            with self.assertRaises(PolicyError) as err409:
+                store.mark_all_read(
+                    self.identity, 'proj-cas', self.ds, catalog_index=_ContendingCatalog()
+                )
+            self.assertEqual(err409.exception.status, 409)
+            self.assertEqual(err409.exception.code, 'reading_state_conflict')
+            # Explicit unread row MUST remain untouched and state_rev advanced 3 times by contender
+            rem = store.db.execute(
+                'SELECT COUNT(*) FROM ui_read_items WHERE scope_hash = ? AND is_read = 0',
+                (scope_hash,),
+            ).fetchone()[0]
+            self.assertEqual(rem, 1)
+            rev_after = store.get_scope(scope_hash)['state_rev']
+            self.assertEqual(rev_after, rev_before + 3)
+        finally:
+            store.close()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -891,6 +891,7 @@ def attach_v2_api(
             recent_raw = cat.query_overview_recent(allowed_ds, limit=recent_limit)
 
             proj_summaries = []
+            proj_unread_sets: dict[str, set[str]] = {}
             total_knowledge = 0
             total_raw_count = 0
             for proj in projects:
@@ -903,6 +904,7 @@ def attach_v2_api(
                 total_raw_count += sess_cnt + raw_cnt
                 if identity:
                     u_ids, u_rev = read_store.compute_unread_snapshot(identity, proj['id'], ds, cat)
+                    proj_unread_sets[ds] = u_ids
                     unread_cnt = len(u_ids)
                 else:
                     unread_cnt = 0
@@ -933,23 +935,11 @@ def attach_v2_api(
                     'catalog_version': str(cinfo.get('catalog_version', '')),
                 }
 
-            unread_flags = {}
-            if identity and recent_raw:
-                by_ds: dict[str, list[dict]] = {}
-                for d in recent_raw:
-                    by_ds.setdefault(d['dataset_id'], []).append(d)
-                for ds, docs_in_ds in by_ds.items():
-                    pid = ds_to_proj.get(ds, '')
-                    if pid:
-                        flags = read_store.page_unread_flags(identity, pid, ds, docs_in_ds, catalog_index=cat)
-                        for did, flag in flags.items():
-                            unread_flags[(ds, did)] = flag
-
             recent_items = [
                 _format_knowledge_item(
                     d,
                     project_id=ds_to_proj.get(d['dataset_id'], ''),
-                    is_unread=unread_flags.get((d['dataset_id'], d['doc_id']), False),
+                    is_unread=(d['doc_id'] in proj_unread_sets.get(d['dataset_id'], ())) if identity else False,
                     official_data=official_data,
                 )
                 for d in recent_raw
@@ -1279,8 +1269,8 @@ def attach_v2_api(
                 {d['doc_id']: True for d in page_rows}
                 if unread_only
                 else (
-                    read_store.page_unread_flags(identity, project_id, dataset_id, page_rows, catalog_index=cat)
-                    if identity
+                    {d['doc_id']: (d['doc_id'] in unread_ids_set) for d in page_rows}
+                    if identity and unread_ids_set is not None
                     else {}
                 )
             )
@@ -2327,6 +2317,7 @@ def attach_v2_api(
 
         has_unconfirmed = _has_unconfirmed_groups(registry)
         legacy_path = None
+        legacy_stat_sig = None
         if 'days' in body:
             raw_days = body['days']
             if not isinstance(raw_days, dict) or len(raw_days) > 200000:
@@ -2358,6 +2349,7 @@ def attach_v2_api(
                 raise PolicyError('invalid_legacy_dates', 400) from exc
             if legacy_path.is_symlink() or (st.st_mode & 0o077) != 0 or st.st_size > 8 * 1024 * 1024:
                 raise PolicyError('invalid_legacy_dates', 400)
+            legacy_stat_sig = (st.st_ino, st.st_size, st.st_mtime_ns)
             try:
                 parsed = json.loads(legacy_path.read_text(encoding='utf-8'))
             except (OSError, ValueError) as exc:
@@ -2378,14 +2370,29 @@ def attach_v2_api(
                     raise PolicyError('invalid_legacy_dates', 400)
                 days[k] = day
 
+        def _archive_legacy_if_unchanged() -> tuple[str, bool]:
+            if legacy_path is None:
+                return '', True
+            try:
+                cur_st = os.lstat(legacy_path)
+            except OSError:
+                return '', False
+            if (
+                legacy_path.is_symlink()
+                or (cur_st.st_ino, cur_st.st_size, cur_st.st_mtime_ns) != legacy_stat_sig
+            ):
+                return '', False
+            bak = legacy_path.with_name(legacy_path.name + '.migrated.bak')
+            os.replace(legacy_path, bak)
+            return str(bak), True
+
         if not days:
             backup_path = ''
+            archived_ok = True
             if legacy_path is not None and not has_unconfirmed:
-                bak = legacy_path.with_name(legacy_path.name + '.migrated.bak')
-                os.replace(legacy_path, bak)
-                backup_path = str(bak)
+                backup_path, archived_ok = _archive_legacy_if_unchanged()
             return json_utf8_response({
-                'status': 'empty',
+                'status': 'empty' if archived_ok else 'partial',
                 'matched': 0,
                 'imported': 0,
                 'skipped': 0,
@@ -2452,15 +2459,14 @@ def attach_v2_api(
             total_server_skipped += int(resp.get('skipped') or 0)
 
         # Contract #6 (GO-P1-07 / CC-P1-04): NEVER rename legacy .json to .migrated.bak while
-        # unmapped entries remain or any project/common group is still unconfirmed!
+        # unmapped entries remain, any project/common group is still unconfirmed, or file stat drifted!
         backup_path = ''
+        archived_ok = True
         if legacy_path is not None and unmapped_count == 0 and not has_unconfirmed:
-            bak = legacy_path.with_name(legacy_path.name + '.migrated.bak')
-            os.replace(legacy_path, bak)
-            backup_path = str(bak)
+            backup_path, archived_ok = _archive_legacy_if_unchanged()
 
         return json_utf8_response({
-            'status': 'migrated' if (unmapped_count == 0 and not has_unconfirmed) else 'partial',
+            'status': 'migrated' if (unmapped_count == 0 and not has_unconfirmed and archived_ok) else 'partial',
             'matched': len(entries),
             'imported': total_imported,
             'skipped': unmapped_count + total_server_skipped,

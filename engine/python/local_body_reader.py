@@ -21,6 +21,7 @@ from project_policy import PolicyError
 from sqlite_ro import id_variants, pooled_official_sqlite_ro, uuid_text
 
 MAX_BODY_BYTES = 8 * 1024 * 1024
+MAX_BODY_JSON_WIRE_BYTES = 20 * 1024 * 1024
 DEFAULT_PREVIEW_MAX_RUNES = 240
 DEFAULT_PREVIEW_MAX_UTF8_BYTES = 720
 DEFAULT_LIST_JSON_BUDGET_BYTES = 256 * 1024
@@ -319,6 +320,32 @@ def _decode_utf8_bounded(raw_bytes: bytes, *, truncated_at_limit: bool) -> str:
     raise PolicyError('document_not_utf8_text', 415)
 
 
+def _bound_body_json_wire(
+    text: str,
+    truncated: bool,
+    *,
+    max_json_bytes: int = MAX_BODY_JSON_WIRE_BYTES,
+) -> tuple[str, bool]:
+    """Ensure JSON-serialized ``text`` fits safely inside the client wire limit (even under 6x control-char escaping)."""
+    if not text:
+        return text, truncated
+    cap = max(64, int(max_json_bytes))
+    # Worst-case JSON escape expansion per code point is 6 bytes (\uXXXX); skip encoding when guaranteed safe.
+    if len(text) * 6 + 2 <= cap:
+        return text, truncated
+    if len(encode_json_utf8(text)) <= cap:
+        return text, truncated
+    lo = 0
+    hi = len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if len(encode_json_utf8(text[:mid])) <= cap:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo], True
+
+
 def read_local_file_body(
     raw_data_location,
     official_data,
@@ -354,6 +381,7 @@ def read_local_file_body(
     truncated = len(chunks) > limit or int(info.st_size) > limit
     bounded = bytes(chunks[:limit])
     text = _decode_utf8_bounded(bounded, truncated_at_limit=truncated)
+    text, truncated = _bound_body_json_wire(text, truncated)
     return {
         'body': text,
         'truncated': truncated,
@@ -748,6 +776,7 @@ async def _fetch_official_raw_body(official, dataset_id: str, doc_id: str, *, ma
                 break
             buf.extend(chunk)
     text = _decode_utf8_bounded(bytes(buf), truncated_at_limit=truncated)
+    text, truncated = _bound_body_json_wire(text, truncated)
     return {
         'body': text,
         'truncated': truncated,

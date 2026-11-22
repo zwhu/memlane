@@ -1043,13 +1043,14 @@ class ReadingStateStore:
             return {}
         scope = self.ensure_scope(reading_identity, project_id, dataset_id, catalog_index=catalog_index)
         scope_hash = scope['scope_hash']
-        horizon_ns = scope['read_horizon_at_ns']
-        enabled_ns = scope['enabled_at_ns']
-        horizon_max_rowid = int(scope.get('horizon_max_rowid') or 0)
 
         doc_ids = [str(d['doc_id']) for d in page_docs]
         explicit_map = {}
         with self._lock:
+            cur_scope = self.get_scope(scope_hash) or scope
+            horizon_ns = cur_scope['read_horizon_at_ns']
+            enabled_ns = cur_scope['enabled_at_ns']
+            horizon_max_rowid = int(cur_scope.get('horizon_max_rowid') or 0)
             for start in range(0, len(doc_ids), _MAX_IN_BATCH):
                 batch = doc_ids[start : start + _MAX_IN_BATCH]
                 ph = ','.join('?' for _ in batch)
@@ -1309,6 +1310,7 @@ class ReadingStateStore:
         scope_hash = scope['scope_hash']
         new_horizon = scope['read_horizon_at_ns']
         state_rev = int(scope.get('state_rev') or 0)
+        committed = False
 
         for _attempt in range(3):
             with self._lock:
@@ -1424,11 +1426,15 @@ class ReadingStateStore:
                     self.db.execute('COMMIT')
                     self._bump_mutation_rev_locked()
                     self._compact_floor_cache.pop((scope_hash, dataset_id), None)
+                    committed = True
                     break
                 except Exception:
                     if self.db.in_transaction:
                         self.db.execute('ROLLBACK')
                     raise
+
+        if not committed:
+            raise PolicyError('reading_state_conflict', 409)
 
         return {
             'scope_hash': scope_hash,

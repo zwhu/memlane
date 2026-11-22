@@ -347,6 +347,19 @@ class LocalBodyReaderTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(over_err.exception.status, 500)
 
+        # 6. R3 P1-6: Control-char heavy body (6x JSON \u001b escaping) is bounded <= 20 MiB JSON wire budget
+        from local_body_reader import MAX_BODY_JSON_WIRE_BYTES, _bound_body_json_wire
+        esc_file = self.data_dir / 'esc_heavy.txt'
+        # 4 MiB of ESC (\x1b) is <= 8 MiB raw, but expands to 24 MiB JSON (\u001b) without wire guard!
+        esc_file.write_bytes(b'\x1b' * (4 * 1024 * 1024))
+        res_esc = read_local_file_body(str(esc_file), self.official_data)
+        self.assertTrue(res_esc['truncated'])
+        self.assertLessEqual(len(encode_json_utf8(res_esc)), MAX_BODY_JSON_WIRE_BYTES + 1024)
+        # Also verify UTF-8 rune safety with small cap
+        s_cut, was_cut = _bound_body_json_wire('\x1b中文' * 50, False, max_json_bytes=64)
+        self.assertTrue(was_cut)
+        self.assertLessEqual(len(encode_json_utf8(s_cut)), 64)
+
 
 if __name__ == '__main__':
     unittest.main()

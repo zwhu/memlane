@@ -647,6 +647,167 @@ class CatalogIndexTests(unittest.TestCase):
         finally:
             cat.close()
 
+    def test_r3_corruption_heal_floor_recent_sessions_eqp_and_provenance_siblings(self):
+        """R3 P0-2, P1-3, P1-4: corruption self-heal preserves reading-state floor, per-dataset recent sessions EQP, and full provenance sibling propagation."""
+        from reading_state_store import ReadingStateStore
+
+        # 1. P0-2: Corruption self-heal must seed baseline doc_seq & last_doc_seq from sibling ui-reading-state horizon_max_rowid
+        d_old = str(uuid.uuid4())
+        d_late = str(uuid.uuid4())
+        con = sqlite3.connect(self.cognee_db)
+        con.execute('DELETE FROM data')
+        con.execute(
+            '''INSERT INTO data VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (
+                uuid.UUID(d_old).hex, uuid.UUID(self.ds_proj).hex, 'old.md', 'Old', '',
+                '{}', json.dumps({'lesson_type': 'state', 'state_key': 'sk-old', 'session_date': '2026-11-20'}),
+                json.dumps(['session_learnings']), '{}', '2026-11-20T09:00:00Z', '2026-11-20T09:00:00Z', 'h-old',
+            ),
+        )
+        con.commit()
+        con.close()
+
+        rs_path = self.root / 'ui-reading-state.sqlite3'
+        rstore = ReadingStateStore(rs_path, state_dir=self.root)
+        cat_path = self.cat_path
+        try:
+            # Create scope with horizon_max_rowid=100, enabled=08:00Z, horizon=11:00Z (d_old at 09:00Z is READ)
+            identity = 'http://127.0.0.1:18765/r3-test/'
+            b = rstore.begin_import(identity, 'p-heal', self.ds_proj, initialized=True, enabled_at='2026-11-20T08:00:00Z')
+            rstore.commit_import(b['batch_id'], expected_items=0)
+            sh = b['scope_hash']
+            rstore.db.execute(
+                '''UPDATE ui_read_scopes
+                   SET read_horizon_at_ns = '2026-11-20T11:00:00.000000000Z', horizon_max_rowid = 100
+                   WHERE scope_hash = ?''',
+                (sh,),
+            )
+
+            # Corrupt catalog-index.sqlite3 on disk before opening CatalogIndex
+            cat_path.write_bytes(b'CORRUPTED_CATALOG_HEADER_XYZ' * 128)
+            cat = CatalogIndex(
+                cat_path,
+                official_data=self.official_data,
+                provenance_path=self.prov_path,
+                recall_path=self.recall_path,
+            )
+            try:
+                cat.sync([self.ds_proj])
+                old_info = cat.doc_created_at_info(self.ds_proj, [d_old])
+                self.assertEqual(old_info[d_old][2], 100)
+                # d_old remains READ (seq 100 <= 100)
+                self.assertEqual(rstore.compute_unread_ids(identity, 'p-heal', self.ds_proj, cat), set())
+
+                # Now insert late-arriving d_late with created_at between enabled (08:00Z) and horizon (11:00Z)
+                con = sqlite3.connect(self.cognee_db)
+                con.execute(
+                    '''INSERT INTO data VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    (
+                        uuid.UUID(d_late).hex, uuid.UUID(self.ds_proj).hex, 'late.md', 'Late', '',
+                        '{}', json.dumps({'lesson_type': 'state', 'state_key': 'sk-late', 'session_date': '2026-11-20'}),
+                        json.dumps(['session_learnings']), '{}', '2026-11-20T09:30:00Z', '2026-11-20T09:30:00Z', 'h-late',
+                    ),
+                )
+                con.commit()
+                con.close()
+                cat.sync([self.ds_proj])
+                late_info = cat.doc_created_at_info(self.ds_proj, [d_late])
+                self.assertGreater(late_info[d_late][2], 100)
+                # d_late MUST be detected as UNREAD (not swallowed by horizon_max_rowid=100)!
+                self.assertEqual(rstore.compute_unread_ids(identity, 'p-heal', self.ds_proj, cat), {d_late})
+                flags = rstore.page_unread_flags(
+                    identity, 'p-heal', self.ds_proj, cat.fetch_docs_by_ids(self.ds_proj, [d_old, d_late]), catalog_index=cat
+                )
+                self.assertFalse(flags[d_old])
+                self.assertTrue(flags[d_late])
+
+                # 2. P1-3: query_recent_sessions uses idx_csess_ds_recent_ts (0 TEMP B-TREE) & isolates empty dataset
+                con = sqlite3.connect(self.cognee_db)
+                con.execute('''
+                    CREATE TABLE IF NOT EXISTS session_records (
+                        session_id VARCHAR NOT NULL, user_id CHAR(32) NOT NULL, dataset_id CHAR(32),
+                        status VARCHAR, started_at DATETIME, last_activity_at DATETIME, agent_id VARCHAR,
+                        PRIMARY KEY (session_id, user_id)
+                    );
+                ''')
+                u1 = str(uuid.uuid4())
+                con.execute(
+                    'INSERT INTO session_records VALUES (?,?,?,?,?,?,?)',
+                    ('proj-sess-1', uuid.UUID(u1).hex, uuid.UUID(self.ds_proj).hex, 'active', '2026-11-20 08:00:00', '2026-11-20 10:00:00', 'codex'),
+                )
+                con.commit()
+                con.close()
+                cat.sync([self.ds_proj, self.ds_common])
+                self.assertEqual(cat.query_recent_sessions([self.ds_common], limit=10), [])
+                self.assertEqual(len(cat.query_recent_sessions([self.ds_proj], limit=10)), 1)
+                eqp = cat._get_reader().execute(
+                    '''EXPLAIN QUERY PLAN
+                       SELECT session_id FROM catalog_sessions
+                       WHERE dataset_id = ?
+                       ORDER BY sort_ts_desc_key ASC, user_id ASC, session_id ASC
+                       LIMIT 20''',
+                    (self.ds_common,),
+                ).fetchall()
+                plan_txt = ' | '.join(str(r[3]) for r in eqp)
+                self.assertNotIn('TEMP B-TREE', plan_txt.upper(), plan_txt)
+                self.assertIn('idx_csess_ds_recent_ts', plan_txt)
+
+                # 3. P1-4: Full provenance recovery propagates earliest date from document_provenance to same-key sibling
+                #    even when keyed_provenance is completely empty!
+                d_sib1, d_sib2 = str(uuid.uuid4()), str(uuid.uuid4())
+                con = sqlite3.connect(self.cognee_db)
+                con.executemany(
+                    'INSERT INTO data VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                    [
+                        (
+                            uuid.UUID(d_sib1).hex, uuid.UUID(self.ds_proj).hex, 'sib1.md', 'Sib1', '',
+                            '{}', json.dumps({'lesson_type': 'state', 'state_key': 'sk-shared', 'session_date': '2026-11-20'}),
+                            json.dumps(['session_learnings']), '{}', '2026-11-20T10:00:00Z', '2026-11-20T10:00:00Z', 'h-s1',
+                        ),
+                        (
+                            uuid.UUID(d_sib2).hex, uuid.UUID(self.ds_proj).hex, 'sib2.md', 'Sib2', '',
+                            '{}', json.dumps({'lesson_type': 'state', 'state_key': 'sk-shared', 'session_date': '2026-11-21'}),
+                            json.dumps(['session_learnings']), '{}', '2026-11-21T10:00:00Z', '2026-11-21T10:00:00Z', 'h-s2',
+                        ),
+                    ],
+                )
+                con.commit()
+                con.close()
+                # Simulate transient provenance outage during first sync, then recover with document_provenance ONLY (empty keyed_provenance)
+                self.prov_path.write_bytes(b'corrupt')
+                cat.sync([self.ds_proj])
+                self.prov_path.unlink()
+                pcon = sqlite3.connect(self.prov_path)
+                pcon.executescript('''
+                    CREATE TABLE document_provenance (
+                        dataset_id TEXT NOT NULL, document_id TEXT NOT NULL,
+                        lesson_type TEXT NOT NULL DEFAULT '', state_key TEXT NOT NULL DEFAULT '',
+                        first_source_date TEXT NOT NULL, sync_seq INTEGER NOT NULL DEFAULT 1,
+                        PRIMARY KEY (dataset_id, document_id)
+                    );
+                    CREATE TABLE keyed_provenance (
+                        dataset_id TEXT NOT NULL, lesson_type TEXT NOT NULL, state_key TEXT NOT NULL,
+                        first_source_date TEXT NOT NULL,
+                        PRIMARY KEY (dataset_id, lesson_type, state_key)
+                    );
+                ''')
+                pcon.execute(
+                    'INSERT INTO document_provenance VALUES (?,?,?,?,?,?)',
+                    (self.ds_proj, d_sib1, 'state', 'sk-shared', '2024-03-01', 1),
+                )
+                pcon.commit()
+                pcon.close()
+                cat.sync([self.ds_proj])
+                fetched = {r['doc_id']: r for r in cat.fetch_docs_by_ids(self.ds_proj, [d_sib1, d_sib2])}
+                self.assertEqual(fetched[d_sib1]['effective_date'], '2024-03-01')
+                self.assertEqual(fetched[d_sib2]['effective_date'], '2024-03-01')
+                buckets = {b['day']: b['count'] for b in cat.overview_day_buckets([self.ds_proj], days=3650)}
+                self.assertEqual(buckets.get('2024-03-01'), 2)
+            finally:
+                cat.close()
+        finally:
+            rstore.close()
+
 
 if __name__ == '__main__':
     unittest.main()
