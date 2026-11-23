@@ -4,7 +4,7 @@
 
 ## 1. 运行环境要求
 
-- **芯片与系统**：Apple Silicon（`arm64`，M1/M2/M3/M4/M5 系列 Mac），**macOS 14.0 及以上**；本内测版不提供 Intel（`amd64`）包。
+- **芯片与系统**：Apple Silicon（`arm64`，M1/M2/M3/M4/M5 系列 Mac），**macOS 26 及以上**；本内测版不提供 Intel（`amd64`）包。
 - **磁盘空间**：首次准备需要约 **4–6 GiB** 可用空间（用于隔离安装 Python 3.12、记忆引擎（Cognee）运行库及本地向量模型 `BAAI/bge-small-zh-v1.5`）。
 
 ## 2. 安装与 Gatekeeper 放行

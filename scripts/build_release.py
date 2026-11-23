@@ -54,8 +54,8 @@ def load_release_manifest(root: Path = ROOT) -> dict:
         raise ValueError(f'mygo.json version must be set to release version, got {version!r}')
     if not slug:
         raise ValueError('mygo.json slug is required')
-    if min_sys != '14.0':
-        raise ValueError(f'mygo.json macos.minimumSystemVersion expected "14.0", got {min_sys!r}')
+    if min_sys != '26.0':
+        raise ValueError(f'mygo.json macos.minimumSystemVersion expected "26.0", got {min_sys!r}')
     return {
         'name': name,
         'slug': slug,

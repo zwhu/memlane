@@ -19,7 +19,7 @@ class BuildReleaseTests(unittest.TestCase):
         root: Path,
         *,
         version: str = '0.1.0-beta.1',
-        min_sys: str = '14.0',
+        min_sys: str = '26.0',
         with_graph: bool = True,
         missing_licenses: list[str] | None = None,
     ) -> None:
@@ -71,13 +71,13 @@ class BuildReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_release.load_release_manifest(root)
 
-            self._write_fake_repo(root, version='0.1.0-beta.1', min_sys='15.0')
+            self._write_fake_repo(root, version='0.1.0-beta.1', min_sys='14.0')
             with self.assertRaises(ValueError):
                 build_release.load_release_manifest(root)
 
             no_graph = root / 'no-graph'
             no_graph.mkdir()
-            self._write_fake_repo(no_graph, version='0.1.0-beta.1', min_sys='14.0', with_graph=False)
+            self._write_fake_repo(no_graph, version='0.1.0-beta.1', min_sys='26.0', with_graph=False)
             with self.assertRaises(ValueError):
                 build_release.verify_graph_assets(no_graph)
 
@@ -131,13 +131,13 @@ class BuildReleaseTests(unittest.TestCase):
                 plistlib.dump({
                     'CFBundleIdentifier': 'io.github.zwhu.memlane',
                     'CFBundleShortVersionString': '0.1.0-beta.1',
-                    'LSMinimumSystemVersion': '14.0',
+                    'LSMinimumSystemVersion': '26.0',
                 }, fh)
 
-            info = build_release.verify_info_plist(app, '0.1.0-beta.1', '14.0')
+            info = build_release.verify_info_plist(app, '0.1.0-beta.1', '26.0')
             self.assertEqual(info['short_version'], '0.1.0-beta.1')
             with self.assertRaises(ValueError):
-                build_release.verify_info_plist(app, '0.1.0-beta.2', '14.0')
+                build_release.verify_info_plist(app, '0.1.0-beta.2', '26.0')
 
             raw_dmg = platform_dir / 'memlane-0.1.0-beta.1-arm64.dmg'
             raw_dmg.write_bytes(b'fake-dmg-payload')

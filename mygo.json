@@ -7,7 +7,7 @@
   "main": "./cmd/memlane-app",
   "out": "build",
   "macos": {
-    "minimumSystemVersion": "14.0",
+    "minimumSystemVersion": "26.0",
     "signingIdentity": "-"
   },
   "linux": { "webview": false }
