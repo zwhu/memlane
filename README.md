@@ -1,8 +1,12 @@
 # Memlane
 
+![Memlane 总览（演示数据）](web/website/demo-overview.png)
+
 面向程序员的 macOS 记忆客户端，让编码 Agent 共用项目知识、保留可追溯出处，并提供独立阅读与管理界面。
 
 ## 当前架构
+
+![Memlane 系统架构全景](docs/images/memlane-architecture-20261120.svg)
 
 - **MyGo Native**：桌面入口为 `cmd/memlane-app/main.go`，默认与最小窗口为 `1200×820`（允许放大），围绕总览、通用记忆、用户画像、项目记忆／原始记录、搜索与设置展开。
 - **官方 Cognee（零侵入外置扩展）**：从固定上游源码载入官方 API（版本由 `engine/coding-memory-components.json` 校验），通过外置扩展网关 `engine/python/cognee_extension_gateway.py` 与外置日期归因存储 `engine/python/provenance_store.py` 对齐来源日期与图谱开关，统一连接同一套日常存储 `.local/daily/official-store`。
@@ -61,5 +65,3 @@ sh scripts/go.sh test ./...
 - [开发说明](docs/architecture/development.md)
 - [工程规范与失败停止规则](docs/engineering/workflow.md)
 - [架构改造总览](docs/architecture/architecture-refactor-20261120.md)
-
-![V4 首页设计参考图](docs/images/visual-v4-20261120/overview-light.png)
