@@ -1,7 +1,6 @@
 package simpledesktop
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -62,24 +61,11 @@ func (a *App) projectNotificationMenu(c *ui.Context, item ui.Element, project Pr
 
 // Clear only the currently observed presentation state. Retain the knowledge
 // baseline and issue fingerprints, so new knowledge and new issues still alert.
-// Uses /v2/reading-state/mark-all-read (serialized with mark-read via
-// knowledgeWriter) when supported, otherwise falls back to the atomic local
+// Uses /v1/reading-state/mark-all-read (serialized with mark-read via
+// knowledgeWriter) for managed projects. Without a control service it uses the atomic local
 // JSON writer under knowledgeWriter.fileMu; a partial save reports a failure.
 func (a *App) clearProjectNotifications(q *projectQueueState, p AccessProject) error {
-	useServerReadingState := false
-	var control ProjectControlClient
-	if ctrl, ok := a.accessClient(); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		hasV2, probeErr := ctrl.probeFeature(ctx, v2FeatureReadingState)
-		cancel()
-		if probeErr != nil {
-			return fmt.Errorf("通知未清空：%s", controlUserError(probeErr))
-		}
-		if hasV2 {
-			useServerReadingState = true
-			control = ctrl
-		}
-	}
+	control, useServerReadingState := a.accessClient()
 
 	w := a.ensureKnowledgeWriter()
 	var readPath string
@@ -196,23 +182,7 @@ func (a *App) clearProjectNotificationsAsync(q *projectQueueState, p AccessProje
 	}
 	w := a.ensureKnowledgeWriter()
 	go func() {
-		useServer := false
-		if hasCtrl {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			hasV2, probeErr := ctrl.probeFeature(ctx, v2FeatureReadingState)
-			cancel()
-			if probeErr != nil {
-				a.Update(func() {
-					if authEpoch != a.authEpoch {
-						return
-					}
-					q.KnowledgeReadError = controlUserError(probeErr)
-					q.StateVersion++
-				})
-				return
-			}
-			useServer = hasV2
-		}
+		useServer := hasCtrl
 		var localRead knowledgeReadState
 		if !useServer {
 			a.waitKnowledgeReadFlush()

@@ -327,7 +327,7 @@ class V2LookupsTests(AioHTTPTestCase):
         resp = await self.client.get('/v1/capabilities', headers=self.manager_headers)
         self.assertEqual(resp.status, 200)
         body = await resp.json()
-        self.assertEqual(body['api_versions'], ['v1', 'v2'])
+        self.assertEqual(body['api_versions'], ['v1'])
         for feat in (
             'document_lookup_v2',
             'session_lookup_v2',
@@ -348,7 +348,7 @@ class V2LookupsTests(AioHTTPTestCase):
     async def test_v2_document_lookup_acl_unconfirmed_and_trusted_enrichment(self):
         # Unconfirmed group -> Fail-Closed 403 project_unconfirmed
         unconf = await self.client.get(
-            f'/v2/datasets/{self.ds_unconfirmed}/documents/{self.doc_unconfirmed}',
+            f'/v1/datasets/{self.ds_unconfirmed}/documents/{self.doc_unconfirmed}',
             headers=self.manager_headers,
         )
         self.assertEqual(unconf.status, 403)
@@ -356,7 +356,7 @@ class V2LookupsTests(AioHTTPTestCase):
 
         # Unmanaged dataset -> 403 dataset_access_denied
         unmanaged = await self.client.get(
-            f'/v2/datasets/{self.ds_unmanaged}/documents/{self.doc_unmanaged}',
+            f'/v1/datasets/{self.ds_unmanaged}/documents/{self.doc_unmanaged}',
             headers=self.manager_headers,
         )
         self.assertEqual(unmanaged.status, 403)
@@ -364,14 +364,14 @@ class V2LookupsTests(AioHTTPTestCase):
 
         # Cross-dataset doc lookup -> 404 document_not_found
         wrong_ds = await self.client.get(
-            f'/v2/datasets/{self.ds_common}/documents/{self.doc_lesson}',
+            f'/v1/datasets/{self.ds_common}/documents/{self.doc_lesson}',
             headers=self.manager_headers,
         )
         self.assertEqual(wrong_ds.status, 404)
 
         # Verified lesson lookup by primary id
         resp = await self.client.get(
-            f'/v2/datasets/{self.ds_verified}/documents/{self.doc_lesson}',
+            f'/v1/datasets/{self.ds_verified}/documents/{self.doc_lesson}',
             headers=self.manager_headers,
         )
         self.assertEqual(resp.status, 200)
@@ -389,7 +389,7 @@ class V2LookupsTests(AioHTTPTestCase):
 
         # Lookup by legacy_id resolves canonical document
         legacy_resp = await self.client.get(
-            f'/v2/datasets/{self.ds_verified}/documents/{self.doc_legacy}',
+            f'/v1/datasets/{self.ds_verified}/documents/{self.doc_legacy}',
             headers=self.manager_headers,
         )
         self.assertEqual(legacy_resp.status, 200)
@@ -397,7 +397,7 @@ class V2LookupsTests(AioHTTPTestCase):
 
         # Verified common & code dataset lookups succeed
         common_resp = await self.client.get(
-            f'/v2/datasets/{self.ds_common}/documents/{self.doc_common}',
+            f'/v1/datasets/{self.ds_common}/documents/{self.doc_common}',
             headers=self.manager_headers,
         )
         self.assertEqual(common_resp.status, 200)
@@ -406,7 +406,7 @@ class V2LookupsTests(AioHTTPTestCase):
         self.assertEqual(c_doc['category'], '')
 
         code_resp = await self.client.get(
-            f'/v2/datasets/{self.ds_code}/documents/{self.doc_code}',
+            f'/v1/datasets/{self.ds_code}/documents/{self.doc_code}',
             headers=self.manager_headers,
         )
         self.assertEqual(code_resp.status, 200)
@@ -414,7 +414,7 @@ class V2LookupsTests(AioHTTPTestCase):
 
     async def test_v2_session_lookup_acl_and_user_disambiguation(self):
         unconf = await self.client.get(
-            f'/v2/datasets/{self.ds_unconfirmed}/sessions/sess-unconf',
+            f'/v1/datasets/{self.ds_unconfirmed}/sessions/sess-unconf',
             headers=self.manager_headers,
         )
         self.assertEqual(unconf.status, 403)
@@ -422,7 +422,7 @@ class V2LookupsTests(AioHTTPTestCase):
 
         # Without user_id returns most recently active matching session (user_b)
         latest = await self.client.get(
-            f'/v2/datasets/{self.ds_verified}/sessions/sess-shared',
+            f'/v1/datasets/{self.ds_verified}/sessions/sess-shared',
             headers=self.manager_headers,
         )
         self.assertEqual(latest.status, 200)
@@ -434,30 +434,30 @@ class V2LookupsTests(AioHTTPTestCase):
 
         # With explicit user_id returns user_a
         scoped = await self.client.get(
-            f'/v2/datasets/{self.ds_verified}/sessions/sess-shared?user_id={self.user_a}',
+            f'/v1/datasets/{self.ds_verified}/sessions/sess-shared?user_id={self.user_a}',
             headers=self.manager_headers,
         )
         self.assertEqual(scoped.status, 200)
         self.assertEqual((await scoped.json())['user_id'], self.user_a)
 
         missing = await self.client.get(
-            f'/v2/datasets/{self.ds_verified}/sessions/does-not-exist',
+            f'/v1/datasets/{self.ds_verified}/sessions/does-not-exist',
             headers=self.manager_headers,
         )
         self.assertEqual(missing.status, 404)
 
     async def test_v2_code_activity_acl_generation_dedup_and_indexed_plan(self):
         # Unconfirmed project rejected Fail-Closed
-        unconf = await self.client.get('/v2/projects/p-unconfirmed/code-activity', headers=self.manager_headers)
+        unconf = await self.client.get('/v1/projects/p-unconfirmed/code-activity', headers=self.manager_headers)
         self.assertEqual(unconf.status, 403)
         self.assertEqual((await unconf.json())['error'], 'project_unconfirmed')
 
         # Unconfigured code project -> 409
-        nocode = await self.client.get('/v2/projects/p-nocode/code-activity', headers=self.manager_headers)
+        nocode = await self.client.get('/v1/projects/p-nocode/code-activity', headers=self.manager_headers)
         self.assertEqual(nocode.status, 409)
 
         # Verified code project -> ignores pre-generation active run, sees COMPLETED dedup -> active=False
-        resp = await self.client.get('/v2/projects/p-verified/code-activity', headers=self.manager_headers)
+        resp = await self.client.get('/v1/projects/p-verified/code-activity', headers=self.manager_headers)
         self.assertEqual(resp.status, 200)
         act = await resp.json()
         self.assertEqual(act['project_id'], 'p-verified')
@@ -479,7 +479,7 @@ class V2LookupsTests(AioHTTPTestCase):
         con.commit()
         con.close()
 
-        resp2 = await self.client.get('/v2/projects/p-verified/code-activity', headers=self.manager_headers)
+        resp2 = await self.client.get('/v1/projects/p-verified/code-activity', headers=self.manager_headers)
         self.assertEqual(resp2.status, 200)
         act2 = await resp2.json()
         self.assertTrue(act2['active'])
@@ -536,12 +536,12 @@ class V2LookupsTests(AioHTTPTestCase):
                 },
             )()
             doc_resp = await self.client.get(
-                f'/v2/datasets/{self.ds_verified}/documents/{self.doc_lesson}',
+                f'/v1/datasets/{self.ds_verified}/documents/{self.doc_lesson}',
                 headers=self.manager_headers,
             )
             self.assertEqual(doc_resp.status, err_status)
             code_resp = await self.client.get(
-                '/v2/projects/p-verified/code-activity',
+                '/v1/projects/p-verified/code-activity',
                 headers=self.manager_headers,
             )
             self.assertEqual(code_resp.status, err_status)

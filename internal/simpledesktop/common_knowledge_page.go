@@ -184,7 +184,13 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Padding(sp1, 0, 0, 0).Children(func() {
 						ui.Text(c, fmt.Sprintf("本次召回 · %d 条", len(s.Knowledge.RecallFilter))).Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Accent).SingleLine()
 						ui.Spacer(c)
-						v4SmallButton(c, "显示全部记忆", nil, func() { s.Knowledge.RecallFilter = nil; s.Offset = 0; a.load(s) })
+						v4SmallButton(c, "显示全部记忆", nil, func() {
+							s.Knowledge.RecallFilter = nil
+							s.Knowledge.RecallAgentID, s.Knowledge.RecallEventID = "", ""
+							s.Offset, s.CommonPageIndex = 0, 0
+							s.CommonNav, s.CommonCursors = nil, nil
+							a.load(s)
+						})
 						v4SmallButton(c, "返回动态", nil, func() { a.navigate("总览", 0) })
 					})
 				}
@@ -549,25 +555,13 @@ func (a *App) confirmCommonDeletion() {
 		defer cancel()
 		var present bool
 		var err error
-		usedFast := false
 		if control, ok := client.controlClient(); ok {
-			hasLookup, probeErr := control.probeFeature(ctx, "document_lookup_v2")
-			if probeErr != nil {
-				usedFast = true
-				err = probeErr
-			} else if hasLookup {
-				usedFast = true
-				_, lookErr := control.documentLookupV2(ctx, p.Dataset, d.ID)
-				if lookErr == nil {
-					present = true
-				} else if isControlErrorCode(lookErr, http.StatusNotFound, "document_not_found") {
-					present = false
-				} else {
-					err = lookErr
-				}
+			_, err = control.documentLookupV2(ctx, p.Dataset, d.ID)
+			present = err == nil
+			if isControlErrorCode(err, http.StatusNotFound, "document_not_found") {
+				err = nil
 			}
-		}
-		if !usedFast {
+		} else {
 			docs, listErr := client.overviewDocuments(ctx, p)
 			err = listErr
 			for _, doc := range docs {

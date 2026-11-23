@@ -315,40 +315,35 @@ func canonicalIDMatch(a, b string) bool {
 func (c Client) read(ctx context.Context, i Item) (Item, error) {
 	if i.Document != nil {
 		if control, ok := c.controlClient(); ok && i.Dataset != "" && i.ID != "" {
-			hasFastBody, probeErr := control.probeFeature(ctx, v2FeatureLocalBodyFastpath)
-			if probeErr != nil {
-				return i, probeErr
+			res, err := control.documentBodyV2(ctx, i.Dataset, i.ID)
+			if err == nil {
+				if res.Body == nil || !canonicalIDMatch(res.ID, i.ID) || !canonicalIDMatch(res.DatasetID, i.Dataset) {
+					return i, fmt.Errorf("官方文档正文回执不完整")
+				}
+				body := *res.Body
+				if !utf8.ValidString(body) || strings.IndexByte(body, 0) >= 0 {
+					return i, fmt.Errorf("此官方文档不是 UTF-8 文本")
+				}
+				i.Body = body
+				i.BodyLoaded = true
+				i.BodyTruncated = res.Truncated
+				if res.ContentHash != "" && i.Document.ContentHash == "" {
+					docCopy := *i.Document
+					docCopy.ContentHash = res.ContentHash
+					i.Document = &docCopy
+				}
+				if i.Kind == "知识" {
+					i.Title = itemPresentation(i).DisplayTitle
+				}
+				return i, nil
 			}
-			if hasFastBody {
-				res, err := control.documentBodyV2(ctx, i.Dataset, i.ID)
-				if err == nil {
-					if res.Body == nil || !canonicalIDMatch(res.ID, i.ID) || !canonicalIDMatch(res.DatasetID, i.Dataset) {
-						return i, fmt.Errorf("官方文档正文回执不完整")
-					}
-					body := *res.Body
-					if !utf8.ValidString(body) || strings.IndexByte(body, 0) >= 0 {
-						return i, fmt.Errorf("此官方文档不是 UTF-8 文本")
-					}
-					i.Body = body
-					i.BodyLoaded = true
-					i.BodyTruncated = res.Truncated
-					if res.ContentHash != "" && i.Document.ContentHash == "" {
-						docCopy := *i.Document
-						docCopy.ContentHash = res.ContentHash
-						i.Document = &docCopy
-					}
-					if i.Kind == "知识" {
-						i.Title = itemPresentation(i).DisplayTitle
-					}
-					return i, nil
-				}
-				if isControlAuthDenied(err) {
-					return i, err
-				}
-				if isControlErrorCode(err, http.StatusNotFound, "document_not_found") {
-					return i, &OfficialHTTPError{Status: http.StatusNotFound, Body: "document_not_found"}
-				}
+			if isControlAuthDenied(err) {
+				return i, err
 			}
+			if isControlErrorCode(err, http.StatusNotFound, "document_not_found") {
+				return i, &OfficialHTTPError{Status: http.StatusNotFound, Body: "document_not_found"}
+			}
+			return i, err
 		}
 		b, e := c.request(ctx, "GET", "/api/v1/datasets/"+url.PathEscape(i.Dataset)+"/data/"+url.PathEscape(i.ID)+"/raw", nil)
 		if e != nil {
@@ -373,33 +368,28 @@ func (c Client) read(ctx context.Context, i Item) (Item, error) {
 }
 func (c Client) source(ctx context.Context, i Item) (Item, error) {
 	if control, ok := c.controlClient(); ok && i.Dataset != "" && i.Source != "" {
-		hasLookup, probeErr := control.probeFeature(ctx, "session_lookup_v2")
-		if probeErr != nil {
-			return i, probeErr
+		userID := ""
+		if i.Session != nil {
+			userID = i.Session.User
 		}
-		if hasLookup {
-			userID := ""
-			if i.Session != nil {
-				userID = i.Session.User
+		res, err := control.sessionLookupV2(ctx, i.Dataset, i.Source, userID)
+		if err == nil {
+			s := res.Session
+			if s.ID != i.Source || (s.Dataset != "" && s.Dataset != i.Dataset) {
+				return i, fmt.Errorf("官方会话身份不匹配")
 			}
-			res, err := control.sessionLookupV2(ctx, i.Dataset, i.Source, userID)
-			if err == nil {
-				s := res.Session
-				if s.ID != i.Source || (s.Dataset != "" && s.Dataset != i.Dataset) {
-					return i, fmt.Errorf("官方会话身份不匹配")
-				}
-				if s.Dataset == "" {
-					s.Dataset = i.Dataset
-				}
-				return Item{ID: s.ID, Dataset: s.Dataset, Kind: "会话", Title: s.ID, Date: s.Updated, Session: &s}, nil
+			if s.Dataset == "" {
+				s.Dataset = i.Dataset
 			}
-			if isControlAuthDenied(err) {
-				return i, err
-			}
-			if isControlErrorCode(err, http.StatusNotFound, "session_not_found") {
-				return i, fmt.Errorf("官方未保留此记忆关联的会话")
-			}
+			return Item{ID: s.ID, Dataset: s.Dataset, Kind: "会话", Title: s.ID, Date: s.Updated, Session: &s}, nil
 		}
+		if isControlAuthDenied(err) {
+			return i, err
+		}
+		if isControlErrorCode(err, http.StatusNotFound, "session_not_found") {
+			return i, fmt.Errorf("官方未保留此记忆关联的会话")
+		}
+		return i, err
 	}
 	var page struct {
 		Sessions []Session `json:"sessions"`
@@ -505,57 +495,52 @@ func (c Client) documentByID(ctx context.Context, dataset, id string) (Item, err
 }
 func (c Client) documentInfoByID(ctx context.Context, dataset, id string) (Item, error) {
 	if control, ok := c.controlClient(); ok && dataset != "" && id != "" {
-		hasLookup, probeErr := control.probeFeature(ctx, "document_lookup_v2")
-		if probeErr != nil {
-			return Item{}, probeErr
+		res, err := control.documentLookupV2(ctx, dataset, id)
+		if err == nil {
+			d := res.Document
+			if d.Dataset != dataset || d.ID != id {
+				return Item{}, fmt.Errorf("official document dataset changed")
+			}
+			if res.EffectiveDate != "" {
+				d.FirstSourceDate = res.EffectiveDate
+			}
+			if e := c.rememberKnowledgeDays([]Document{d}); e != nil {
+				return Item{}, e
+			}
+			kind := "文档"
+			if d.knowledge() {
+				kind = "知识"
+			}
+			date := d.date()
+			if date == "" && res.EffectiveDate != "" {
+				date = res.EffectiveDate
+			}
+			source := d.session()
+			if source == "" {
+				source = res.SessionID
+			}
+			item := Item{
+				ID:             d.ID,
+				Dataset:        dataset,
+				Kind:           kind,
+				Title:          d.title(),
+				Date:           date,
+				CommonCategory: res.CommonCategory,
+				Document:       &d,
+				Source:         source,
+			}
+			if res.RecallCount > 0 {
+				item.RecallStats = &KnowledgeRecallStats{Count: res.RecallCount}
+			}
+			return item, nil
 		}
-		if hasLookup {
-			res, err := control.documentLookupV2(ctx, dataset, id)
-			if err == nil {
-				d := res.Document
-				if d.Dataset != dataset || d.ID != id {
-					return Item{}, fmt.Errorf("official document dataset changed")
-				}
-				if res.EffectiveDate != "" {
-					d.FirstSourceDate = res.EffectiveDate
-				}
-				if e := c.rememberKnowledgeDays([]Document{d}); e != nil {
-					return Item{}, e
-				}
-				kind := "文档"
-				if d.knowledge() {
-					kind = "知识"
-				}
-				date := d.date()
-				if date == "" && res.EffectiveDate != "" {
-					date = res.EffectiveDate
-				}
-				source := d.session()
-				if source == "" {
-					source = res.SessionID
-				}
-				item := Item{
-					ID:             d.ID,
-					Dataset:        dataset,
-					Kind:           kind,
-					Title:          d.title(),
-					Date:           date,
-					CommonCategory: res.CommonCategory,
-					Document:       &d,
-					Source:         source,
-				}
-				if res.RecallCount > 0 {
-					item.RecallStats = &KnowledgeRecallStats{Count: res.RecallCount}
-				}
-				return item, nil
-			}
-			if isControlAuthDenied(err) {
-				return Item{}, err
-			}
-			if isControlErrorCode(err, http.StatusNotFound, "document_not_found") {
-				return Item{}, fmt.Errorf("官方未提供可定位的文档出处")
-			}
+		if isControlAuthDenied(err) {
+			return Item{}, err
 		}
+		if isControlErrorCode(err, http.StatusNotFound, "document_not_found") {
+			return Item{}, fmt.Errorf("官方未提供可定位的文档出处")
+		}
+		return Item{}, err
 	}
 	for offset := 0; offset <= 100000; offset += 100 {
 		var rows []Document

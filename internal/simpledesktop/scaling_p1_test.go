@@ -61,10 +61,10 @@ func TestScalingP1BodyFastpathAndPreviewDecoupling(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureLocalBodyFastpath, v2FeatureKnowledgeCursor, v2FeatureReadingState},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureLocalBodyFastpath, v2FeatureKnowledgeCursor, v2FeatureReadingState},
 			})
-		case "/v2/projects/p1/knowledge":
+		case "/v1/projects/p1/knowledge":
 			if r.Header.Get(v2HeaderReadingIdentity) == "" {
 				t.Errorf("missing %s header on knowledge v2", v2HeaderReadingIdentity)
 			}
@@ -127,7 +127,7 @@ func TestScalingP1BodyFastpathAndPreviewDecoupling(t *testing.T) {
 					},
 				},
 			})
-		case "/v2/datasets/ds-1/documents/doc-1/body":
+		case "/v1/datasets/ds-1/documents/doc-1/body":
 			bodyFastCalls.Add(1)
 			bodyText := "# Session learning (session codex_s1)\n\n这是完整的正文内容。"
 			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
@@ -140,7 +140,7 @@ func TestScalingP1BodyFastpathAndPreviewDecoupling(t *testing.T) {
 				BytesTotal:  int64(len(bodyText)),
 				Source:      "local_fastpath",
 			})
-		case "/v2/datasets/ds-1/documents/doc-trunc/body":
+		case "/v1/datasets/ds-1/documents/doc-trunc/body":
 			bodyFastCalls.Add(1)
 			bodyText := "# Session learning (session codex_s1)\n\n这是完整的 8MiB 截断标记测试正文内容。"
 			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
@@ -153,10 +153,10 @@ func TestScalingP1BodyFastpathAndPreviewDecoupling(t *testing.T) {
 				BytesTotal:  9 * 1024 * 1024,
 				Source:      "local_fastpath",
 			})
-		case "/v2/datasets/ds-1/documents/doc-denied/body":
+		case "/v1/datasets/ds-1/documents/doc-denied/body":
 			w.WriteHeader(http.StatusForbidden)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "document_path_denied"})
-		case "/v2/reading-state/mark-read":
+		case "/v1/reading-state/mark-read":
 			markReadCalls.Add(1)
 			var req v2ReadingStateMarkReadRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
@@ -207,7 +207,7 @@ func TestScalingP1BodyFastpathAndPreviewDecoupling(t *testing.T) {
 	if markReadCalls.Load() != beforeMarks {
 		t.Fatalf("markKnowledgeRead fired for BodyLoaded==false item!")
 	}
-	// Selected item 0 loaded via /v2/.../body fastpath (0 official /raw calls) and triggered mark-read.
+	// Selected item 0 loaded via /v1/.../body fastpath (0 official /raw calls) and triggered mark-read.
 	if bodyFastCalls.Load() != 1 || officialRawCalls.Load() != 0 {
 		t.Fatalf("expected 1 fastpath body call and 0 official /raw calls, got fast=%d official=%d", bodyFastCalls.Load(), officialRawCalls.Load())
 	}
@@ -261,24 +261,24 @@ func TestScalingP1BodyFastpathAndPreviewDecoupling(t *testing.T) {
 func TestScalingP1OverviewV2BootstrapAndDayDrilldown(t *testing.T) {
 	token := p1TestTokenFile(t)
 	today := time.Now().Format("2006-01-02")
-	var v1Calls, dayCalls atomic.Int32
+	var dayCalls atomic.Int32
 	var rebuildFail atomic.Bool
 
 	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureOverview},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureOverview},
 			})
-		case "/v2/overview/bootstrap":
+		case "/v1/overview/bootstrap":
 			if rebuildFail.Load() {
 				w.WriteHeader(http.StatusServiceUnavailable)
 				_ = json.NewEncoder(w).Encode(map[string]string{"error": "catalog_index_rebuilding"})
 				return
 			}
 			if r.Header.Get(v2HeaderReadingIdentity) == "" {
-				t.Errorf("missing reading identity header on /v2/overview/bootstrap")
+				t.Errorf("missing reading identity header on /v1/overview/bootstrap")
 			}
 			if al := r.URL.Query().Get("activity_limit"); al != "50" {
 				t.Errorf("expected activity_limit=50 (<=50), got %q", al)
@@ -299,7 +299,7 @@ func TestScalingP1OverviewV2BootstrapAndDayDrilldown(t *testing.T) {
 				},
 				RecallStartedAt: "2026-10-01T00:00:00Z",
 			})
-		case "/v2/overview/day":
+		case "/v1/overview/day":
 			dayCalls.Add(1)
 			cursor := r.URL.Query().Get("cursor")
 			if cursor == "" {
@@ -325,9 +325,6 @@ func TestScalingP1OverviewV2BootstrapAndDayDrilldown(t *testing.T) {
 				NextCursor: "",
 				HasMore:    false,
 			})
-		case "/v1/overview/bootstrap":
-			v1Calls.Add(1)
-			http.Error(w, "should not fallback to v1", 500)
 		default:
 			http.NotFound(w, r)
 		}
@@ -346,9 +343,6 @@ func TestScalingP1OverviewV2BootstrapAndDayDrilldown(t *testing.T) {
 	}
 	if got := a.projectUnread(a.Config.Projects[0]); got != 14 {
 		t.Fatalf("expected sidebar unread=14 from overview v2 project summary, got %d", got)
-	}
-	if v1Calls.Load() != 0 {
-		t.Fatalf("expected 0 /v1/overview/bootstrap calls, got %d", v1Calls.Load())
 	}
 
 	// Day drilldown page 1 + cursor page 2.
@@ -370,9 +364,7 @@ func TestScalingP1OverviewV2BootstrapAndDayDrilldown(t *testing.T) {
 	if !strings.Contains(a.overviewState.Error, "索引正在构建中") {
 		t.Fatalf("expected rebuilding user error, got %q", a.overviewState.Error)
 	}
-	if v1Calls.Load() != 0 {
-		t.Fatalf("503 catalog_index_rebuilding fell back to v1 (%d calls)", v1Calls.Load())
-	}
+
 }
 
 func TestScalingP1ProjectKnowledgeCursorV2AndSlidingWindow(t *testing.T) {
@@ -384,10 +376,10 @@ func TestScalingP1ProjectKnowledgeCursorV2AndSlidingWindow(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureKnowledgeCursor, v2FeatureLocalBodyFastpath},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureKnowledgeCursor, v2FeatureLocalBodyFastpath},
 			})
-		case "/v2/projects/p1/knowledge":
+		case "/v1/projects/p1/knowledge":
 			q := r.URL.Query()
 			mu.Lock()
 			if q.Get("recall_agent_id") != "" {
@@ -438,7 +430,7 @@ func TestScalingP1ProjectKnowledgeCursorV2AndSlidingWindow(t *testing.T) {
 				NextCursor:     nextCursor,
 				HasMore:        hasMore,
 			})
-		case "/v2/datasets/ds-1/documents/k-0000/body":
+		case "/v1/datasets/ds-1/documents/k-0000/body":
 			bodyText := "完整正文 k-0000"
 			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
 				ID: "k-0000", DatasetID: "ds-1", Body: &bodyText, Source: "local_fastpath",
@@ -486,7 +478,9 @@ func TestScalingP1ProjectKnowledgeCursorV2AndSlidingWindow(t *testing.T) {
 	s.More = true
 	s.Knowledge.NextCursor = "bad-cursor"
 	a.appendKnowledgeBatch(s)
-	drainReading(t, updates, func() bool { return !s.Knowledge.Appending && !s.Loading && len(s.Items) == 30 && s.Items[0].ID == "k-0000" })
+	drainReading(t, updates, func() bool {
+		return !s.Knowledge.Appending && !s.Loading && len(s.Items) == 30 && s.Items[0].ID == "k-0000"
+	})
 	if !s.Knowledge.V2Mode || s.Error != "" {
 		t.Fatalf("expected invalid_cursor to reset cleanly to page 1 in V2Mode, v2=%v err=%q", s.Knowledge.V2Mode, s.Error)
 	}
@@ -516,10 +510,10 @@ func TestScalingP1CommonKnowledgeCursorV2AndO1DeleteVerify(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureCommonKnowledgeCursor, "document_lookup_v2"},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureCommonKnowledgeCursor, "document_lookup_v2"},
 			})
-		case "/v2/common/knowledge":
+		case "/v1/common/knowledge":
 			cursor := r.URL.Query().Get("cursor")
 			if cursor == "" {
 				_ = json.NewEncoder(w).Encode(v2CommonKnowledgeResponse{
@@ -544,7 +538,7 @@ func TestScalingP1CommonKnowledgeCursorV2AndO1DeleteVerify(t *testing.T) {
 				NextCursor: "",
 				HasMore:    false,
 			})
-		case "/v2/datasets/ds-common/documents/c-1":
+		case "/v1/datasets/ds-common/documents/c-1":
 			lookupCalls.Add(1)
 			if deleted {
 				w.WriteHeader(http.StatusNotFound)
@@ -577,7 +571,7 @@ func TestScalingP1CommonKnowledgeCursorV2AndO1DeleteVerify(t *testing.T) {
 	a.load(s)
 	drainReading(t, updates, func() bool { return !s.Loading && len(s.Items) == 1 && s.Items[0].ID == "c-2" })
 
-	// O(1) delete verification must use /v2/datasets/ds-common/documents/c-1 (0 overviewDocuments calls).
+	// O(1) delete verification must use /v1/datasets/ds-common/documents/c-1 (0 overviewDocuments calls).
 	deleted = true
 	a.commonEdit.DeleteSubmitted = true
 	a.commonEdit.Delete = &Document{ID: "c-1", Dataset: "ds-common"}
@@ -605,10 +599,10 @@ func TestScalingP1ThreeLaneProgressiveSearchAndLexicalSoftTimeout(t *testing.T) 
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureSearch},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureSearch},
 			})
-		case "/v2/search/recent":
+		case "/v1/search/recent":
 			recentV2Calls.Add(1)
 			_ = json.NewEncoder(w).Encode(v2SearchRecentResponse{
 				Generation: 1,
@@ -619,7 +613,7 @@ func TestScalingP1ThreeLaneProgressiveSearchAndLexicalSoftTimeout(t *testing.T) 
 					{SessionID: "codex_rec1", DatasetID: "ds-1", ProjectID: "p1", Label: "最近会话主题", MsgCount: 4, ToolCalls: 2, LastActivityAt: "2026-11-21T09:00:00Z"},
 				},
 			})
-		case "/v2/search/metadata":
+		case "/v1/search/metadata":
 			metaCalls.Add(1)
 			_ = json.NewEncoder(w).Encode(v2SearchMetadataResponse{
 				Query:      r.URL.Query().Get("q"),
@@ -669,11 +663,11 @@ func TestScalingP1ThreeLaneProgressiveSearchAndLexicalSoftTimeout(t *testing.T) 
 	defer cognee.Close()
 
 	a, updates := p1TestApp(t, cognee.URL, control.URL, token)
-	// 1. Empty query hits /v2/search/recent (0 overviewDocuments calls).
+	// 1. Empty query hits /v1/search/recent (0 overviewDocuments calls).
 	a.openUnifiedSearch(false)
 	drainReading(t, updates, func() bool { return !a.searchUI.Loading && a.searchUI.Loaded })
 	if recentV2Calls.Load() != 1 || overviewDocsCalls.Load() != 0 || len(a.visibleSearchRows()) != 2 {
-		t.Fatalf("expected /v2/search/recent=1 overview=0 rows=2, got recent=%d overview=%d rows=%d", recentV2Calls.Load(), overviewDocsCalls.Load(), len(a.visibleSearchRows()))
+		t.Fatalf("expected /v1/search/recent=1 overview=0 rows=2, got recent=%d overview=%d rows=%d", recentV2Calls.Load(), overviewDocsCalls.Load(), len(a.visibleSearchRows()))
 	}
 
 	// 2. Non-empty query renders Lane 1 (metadata) progressively while semantic & lexical are still running!
@@ -721,10 +715,10 @@ func TestScalingP1RawRecordsCursorV2AndSubagentChildrenPagination(t *testing.T) 
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureRawRecords},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureRawRecords},
 			})
-		case "/v2/projects/p1/raw-records":
+		case "/v1/projects/p1/raw-records":
 			cursor := r.URL.Query().Get("cursor")
 			pageIdx := 0
 			if cursor != "" {
@@ -734,8 +728,8 @@ func TestScalingP1RawRecordsCursorV2AndSubagentChildrenPagination(t *testing.T) 
 			for i := 0; i < 30; i++ {
 				sid := fmt.Sprintf("codex_s-%04d", pageIdx*30+i)
 				entry := &v2RawSessionEntry{
-					Session: Session{ID: sid, Dataset: "ds-1", User: "u1", Agent: "codex", Updated: "2026-11-21T10:00:00Z"},
-					Label:   "会话 " + sid,
+					Session:  Session{ID: sid, Dataset: "ds-1", User: "u1", Agent: "codex", Updated: "2026-11-21T10:00:00Z"},
+					Label:    "会话 " + sid,
 					MsgCount: 3,
 				}
 				if pageIdx == 0 && i == 0 {
@@ -764,7 +758,7 @@ func TestScalingP1RawRecordsCursorV2AndSubagentChildrenPagination(t *testing.T) 
 				NextCursor: nextCursor,
 				HasMore:    hasMore,
 			})
-		case "/v2/projects/p1/raw-records/sessions/codex_s-0000/children":
+		case "/v1/projects/p1/raw-records/sessions/codex_s-0000/children":
 			childCalls.Add(1)
 			_ = json.NewEncoder(w).Encode(v2SessionChildrenResponse{
 				ProjectID:       "p1",
@@ -830,10 +824,10 @@ func TestScalingP1ReadingStateMigrationUnreadPopupAndNonDisruptiveRefresh(t *tes
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureReadingState, v2FeatureMessageSummary, v2FeatureKnowledgeCursor},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureReadingState, v2FeatureMessageSummary, v2FeatureKnowledgeCursor},
 			})
-		case "/v2/reading-state/migrate-local":
+		case "/v1/reading-state/migrate-local":
 			migrateLocalCalls.Add(1)
 			// Simulate custom ClientStateFile dir returning Python's exact no_legacy_file -> triggers 2-phase staging!
 			_ = json.NewEncoder(w).Encode(v2ReadingStateMigrateResponse{
@@ -841,7 +835,7 @@ func TestScalingP1ReadingStateMigrationUnreadPopupAndNonDisruptiveRefresh(t *tes
 					{ProjectID: "p1", DatasetID: "ds-1", Status: "no_legacy_file"},
 				},
 			})
-		case "/v2/reading-state/import/begin":
+		case "/v1/reading-state/import/begin":
 			beginCalls.Add(1)
 			var raw map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&raw)
@@ -854,7 +848,7 @@ func TestScalingP1ReadingStateMigrationUnreadPopupAndNonDisruptiveRefresh(t *tes
 				}
 			}
 			_ = json.NewEncoder(w).Encode(v2ReadingStateImportBeginResponse{BatchID: "batch-1", ScopeHash: "sh-1"})
-		case "/v2/reading-state/import/chunk":
+		case "/v1/reading-state/import/chunk":
 			chunkCalls.Add(1)
 			var req v2ReadingStateImportChunkRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
@@ -866,7 +860,7 @@ func TestScalingP1ReadingStateMigrationUnreadPopupAndNonDisruptiveRefresh(t *tes
 			}
 			stagedItems += len(req.Items)
 			_ = json.NewEncoder(w).Encode(v2ReadingStateImportChunkResponse{BatchID: req.BatchID, Staged: len(req.Items)})
-		case "/v2/reading-state/import/commit":
+		case "/v1/reading-state/import/commit":
 			commitCalls.Add(1)
 			var req v2ReadingStateImportCommitRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
@@ -875,10 +869,10 @@ func TestScalingP1ReadingStateMigrationUnreadPopupAndNonDisruptiveRefresh(t *tes
 				t.Errorf("import/commit expected_items=%v want=%d", req.ExpectedItems, stagedItems)
 			}
 			_ = json.NewEncoder(w).Encode(v2ReadingStateImportCommitResponse{ScopeHash: "sh-1", Committed: stagedItems, UnreadCount: 25})
-		case "/v2/reading-state/mark-all-read":
+		case "/v1/reading-state/mark-all-read":
 			markAllCalls.Add(1)
 			_ = json.NewEncoder(w).Encode(v2ReadingStateMarkAllReadResponse{ScopeHash: "sh-1", UnreadCount: 0, ReadHorizonAtNS: "2026-11-21T10:00:00.000000000Z"})
-		case "/v2/projects/p1/message-summary":
+		case "/v1/projects/p1/message-summary":
 			previews := make([]v2UnreadPreviewItem, 0, 10)
 			for i := 0; i < 10; i++ {
 				previews = append(previews, v2UnreadPreviewItem{
@@ -897,7 +891,7 @@ func TestScalingP1ReadingStateMigrationUnreadPopupAndNonDisruptiveRefresh(t *tes
 				UnreadPreview:           previews,
 				UnreadHasMore:           true,
 			})
-		case "/v2/projects/p1/knowledge":
+		case "/v1/projects/p1/knowledge":
 			knowledgeV2Calls.Add(1)
 			if r.URL.Query().Get("unread_only") == "1" {
 				sawUnreadOnly.Store(true)
@@ -1000,7 +994,7 @@ func TestScalingP1ReadingStateMigrationUnreadPopupAndNonDisruptiveRefresh(t *tes
 		t.Fatalf("top-of-list silent refresh should clear NewCatalogAvailable")
 	}
 
-	// 5. clearProjectNotifications calls POST /v2/reading-state/mark-all-read and zeroes unreadCount.
+	// 5. clearProjectNotifications calls POST /v1/reading-state/mark-all-read and zeroes unreadCount.
 	if err := a.clearProjectNotifications(q, p); err != nil {
 		t.Fatalf("clearProjectNotifications v2 failed: %v", err)
 	}

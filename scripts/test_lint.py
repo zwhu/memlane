@@ -804,7 +804,7 @@ class ScalingGuardrailLintTests(unittest.TestCase):
         )
         self.assertEqual(self.go_codes(allowed_overview, 'internal/simpledesktop/overview.go'), set())
         allowed_bootstrap = 'func (c ProjectControlClient) overviewBootstrap() { _ = "/v1/overview/bootstrap" }'
-        self.assertEqual(self.go_codes(allowed_bootstrap, 'internal/simpledesktop/overview_bootstrap.go'), set())
+        self.assertEqual(self.go_codes(allowed_bootstrap, 'internal/simpledesktop/v2_client.go'), set())
 
         # Wrong function in an allowlisted file must fail even if total call count is 1.
         wrong_fn_search = 'func (a *App) newSearchPath(ctx context.Context) { client.overviewDocuments(ctx, p) }'
@@ -839,7 +839,7 @@ def attach(app):
     async def list_items(request):
         limit = _parse_limit(request.query.get('limit'))
         return web.json_response({'items': []})
-    app.add_routes([web.get('/v2/projects/{id}/knowledge', list_items)])
+    app.add_routes([web.get('/v1/projects/{id}/knowledge', list_items)])
 """
         self.assertIn('ML020', self.py_codes(bad_missing_budget, 'engine/python/v2_api.py'))
 
@@ -848,7 +848,7 @@ def attach(app):
         limit = _parse_limit(request.query.get('limit'))
         payload, _, _ = fit_items_to_json_budget(fn, [])
         return web.json_response(payload)
-    app.add_routes([web.get('/v2/projects/{id}/knowledge', list_items)])
+    app.add_routes([web.get('/v1/projects/{id}/knowledge', list_items)])
 """
         self.assertIn('ML020', self.py_codes(bad_missing_max_const, 'engine/python/v2_api.py'))
 
@@ -858,7 +858,7 @@ def attach(app):
         limit = _parse_limit(request.query.get('limit'))
         payload, _, _ = fit_items_to_json_budget(fn, [])
         return web.json_response(payload)
-    app.add_routes([web.get('/v2/projects/{id}/knowledge', list_items)])
+    app.add_routes([web.get('/v1/projects/{id}/knowledge', list_items)])
 """
         self.assertIn('ML020', self.py_codes(bad_high_limit, 'engine/python/v2_api.py'))
 
@@ -868,7 +868,7 @@ def attach(app):
         limit = _parse_limit(request.query.get('limit'), 30, 100)
         payload, _, _ = fit_items_to_json_budget(fn, [])
         return web.json_response(payload)
-    app.router.add_get('/v2/projects/{id}/knowledge', list_items)
+    app.router.add_get('/v1/projects/{id}/knowledge', list_items)
 """
         self.assertIn('ML020', self.py_codes(bad_positional_max_limit, 'engine/python/v2_api.py'))
 
@@ -879,7 +879,7 @@ def attach(app):
         if False:
             fit_items_to_json_budget(fn, [])
         return web.json_response({'items': []})
-    app.router.add_route('GET', '/v2/projects/{id}/knowledge', list_items)
+    app.router.add_route('GET', '/v1/projects/{id}/knowledge', list_items)
 """
         self.assertIn('ML020', self.py_codes(bad_dead_budget, 'engine/python/v2_api.py'))
 
@@ -892,7 +892,7 @@ def attach(app):
         limit = _parse_limit(request.query.get('limit'))
         payload, _, _ = fit_items_to_json_budget(fn, [])
         return web.json_response(payload)
-    app.add_routes([web.get('/v2/projects/{id}/knowledge', list_items)])
+    app.add_routes([web.get('/v1/projects/{id}/knowledge', list_items)])
 """
         self.assertIn('ML020', self.py_codes(bad_bare_json_response_with_helper, 'engine/python/v2_api.py'))
 
@@ -904,7 +904,7 @@ def attach(app):
         limit = _parse_limit(request.query.get('limit'))
         payload, _, _ = fit_items_to_json_budget(fn, [])
         return web.json_response(payload, dumps=json.dumps)
-    app.add_routes([web.get('/v2/projects/{id}/knowledge', list_items)])
+    app.add_routes([web.get('/v1/projects/{id}/knowledge', list_items)])
 """
         self.assertIn('ML020', self.py_codes(bad_ascii_dumps_with_imported_helper, 'engine/python/v2_api.py'))
 
@@ -920,7 +920,7 @@ def attach(app):
         limit = _parse_limit(request.query.get('limit'))
         payload, _, _ = fit_items_to_json_budget(fn, [])
         return _send(payload)
-    app.add_routes([web.get('/v2/projects/{id}/knowledge', list_items)])
+    app.add_routes([web.get('/v1/projects/{id}/knowledge', list_items)])
 """
         self.assertIn('ML020', self.py_codes(bad_indirect_helper_and_partial_without_utf8, 'engine/python/v2_api.py'))
 
@@ -931,7 +931,7 @@ def attach(app):
         limit = _parse_limit(request.query.get('limit'))
         payload, _, _ = fit_items_to_json_budget(fn, [])
         return web.json_response(payload)
-    app.add_routes([web.get('/v2/projects/{id}/knowledge', list_items)])
+    app.add_routes([web.get('/v1/projects/{id}/knowledge', list_items)])
 """
         uncond_issues = lint.check_v2_utf8_response(legacy_bare, require_unconditional=True)
         self.assertTrue(any(code == 'ML020' for _, code, _ in uncond_issues))
@@ -953,9 +953,9 @@ def attach(app):
     async def doc_body(request):
         return web.json_response({})
     app.add_routes([
-        web.get('/v2/projects/{id}/knowledge', list_items),
-        web.get('/v2/common/knowledge', list_items_partial),
-        web.get('/v2/datasets/{ds}/documents/{doc}/body', doc_body),
+        web.get('/v1/projects/{id}/knowledge', list_items),
+        web.get('/v1/common/knowledge', list_items_partial),
+        web.get('/v1/datasets/{ds}/documents/{doc}/body', doc_body),
     ])
 """
         self.assertEqual(self.py_codes(good_utf8, 'engine/python/v2_api.py'), set())

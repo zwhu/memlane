@@ -79,6 +79,7 @@ func TestUnreadBadgeAndListAreDistinctFromPendingWork(t *testing.T) {
 	q.Sessions[1].View.Status.Unknown = 0
 	a.Update = nil
 	a.Config.ClientStateFile = filepath.Join(t.TempDir(), "client-state.json")
+	t.Cleanup(a.waitKnowledgeReadFlush)
 	p := a.access.Directory.Projects[0]
 	q.Next = time.Now().Add(time.Hour)
 	q.BacklogNext = q.Next

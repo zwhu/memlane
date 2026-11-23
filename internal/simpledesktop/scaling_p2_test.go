@@ -26,10 +26,10 @@ func TestScalingP2ProvenanceBackfillSameMachineAndStopLocalWrite(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureProvenanceBackfill},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureProvenanceBackfill},
 			})
-		case "/v2/provenance/backfill-legacy-dates":
+		case "/v1/provenance/backfill-legacy-dates":
 			backfillCalls.Add(1)
 			var raw map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&raw)
@@ -105,10 +105,10 @@ func TestScalingP2ProvenanceBackfillCustomDirDaysAndBackup(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureProvenanceBackfill},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureProvenanceBackfill},
 			})
-		case "/v2/provenance/backfill-legacy-dates":
+		case "/v1/provenance/backfill-legacy-dates":
 			n := calls.Add(1)
 			var req v2ProvenanceBackfillRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)

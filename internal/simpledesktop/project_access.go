@@ -231,6 +231,8 @@ func controlUserError(err error) string {
 			return "内容路径受限，无法读取"
 		case "catalog_index_rebuilding":
 			return "索引正在构建中，请稍候刷新"
+		case "reading_contract_mismatch":
+			return "桌面端与本地后台的读取协议不一致，请用当前版本重启后台服务"
 		case "invalid_cursor":
 			return "列表分页游标已失效，请刷新列表"
 		}
@@ -247,6 +249,23 @@ func (c ProjectControlClient) requestWithLimit(ctx context.Context, method, path
 }
 
 func (c ProjectControlClient) requestWithHeaders(ctx context.Context, method, path string, headers map[string]string, input, output any, maxBytes int64) error {
+	route, _, _ := strings.Cut(path, "?")
+	// These paths existed with a different response contract before the cutover.
+	requiredReadingField := ""
+	if method == http.MethodGet {
+		switch {
+		case route == "/v1/overview/bootstrap":
+			requiredReadingField = "generation"
+		case strings.HasPrefix(route, "/v1/projects/") && strings.HasSuffix(route, "/message-summary"):
+			requiredReadingField = "unread_count"
+		}
+	}
+	if requiredReadingField != "" {
+		if err := c.requireReadingContract(ctx); err != nil {
+			return err
+		}
+	}
+
 	u, err := url.Parse(c.Config.URL)
 	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.Port() == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
 		return fmt.Errorf("项目管理服务尚未配置")
@@ -274,6 +293,9 @@ func (c ProjectControlClient) requestWithHeaders(ctx context.Context, method, pa
 			req.Header.Set(k, v)
 		}
 	}
+	if requiredReadingField != "" {
+		req.Header.Set("X-Memlane-Reading-Contract", readingContract)
+	}
 	hc := newHTTPClient(c.HTTP, 125*time.Second)
 	response, err := hc.Do(req)
 	if err != nil {
@@ -299,7 +321,17 @@ func (c ProjectControlClient) requestWithHeaders(ctx context.Context, method, pa
 		maxBytes = 2 * 1024 * 1024
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
-	if err != nil || int64(len(data)) > maxBytes || json.Unmarshal(data, output) != nil {
+	if err != nil || int64(len(data)) > maxBytes {
+		return fmt.Errorf("项目管理回执未确认，请刷新核对")
+	}
+	if requiredReadingField != "" {
+		// The running backend may have changed after the successful capability probe.
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(data, &fields) != nil || fields[requiredReadingField] == nil {
+			return readingContractMismatch()
+		}
+	}
+	if json.Unmarshal(data, output) != nil {
 		return fmt.Errorf("项目管理回执未确认，请刷新核对")
 	}
 	return nil
@@ -367,17 +399,42 @@ func (c ProjectControlClient) rename(ctx context.Context, revision int64, projec
 }
 
 type ControlCapabilities struct {
-	APIVersions []string `json:"api_versions"`
-	Features    []string `json:"features"`
+	APIVersions     []string `json:"api_versions"`
+	ReadingContract string   `json:"reading_contract"`
+	Features        []string `json:"features"`
 }
 
 func (caps ControlCapabilities) HasFeature(feature string) bool {
+	if feature == readingContract {
+		return caps.ReadingContract == readingContract
+	}
+
 	for _, f := range caps.Features {
 		if f == feature {
 			return true
 		}
 	}
 	return false
+}
+
+const readingContract = "catalog-cursor-v1"
+
+func (c ProjectControlClient) requireReadingContract(ctx context.Context) error {
+	ok, err := c.probeFeature(ctx, readingContract)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return readingContractMismatch()
+	}
+	return nil
+}
+
+func readingContractMismatch() error {
+	return &ControlResponseError{
+		Status: http.StatusServiceUnavailable, Code: "reading_contract_mismatch",
+		Message: "本地后台仍在使用旧版读取接口，请停止并重启后台服务",
+	}
 }
 
 type cachedCapabilitiesEntry struct {
@@ -412,7 +469,7 @@ func (c ProjectControlClient) probeFeature(ctx context.Context, feature string) 
 	controlCapabilitiesCache.mu.Lock()
 	entry, ok := controlCapabilitiesCache.entries[cacheKey]
 	controlCapabilitiesCache.mu.Unlock()
-	if ok && now.Before(entry.expiresAt) {
+	if ok && now.Before(entry.expiresAt) && (feature != readingContract || entry.caps.ReadingContract == readingContract) {
 		return entry.supported && entry.caps.HasFeature(feature), nil
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -465,7 +522,7 @@ type documentLookupV2Response struct {
 
 func (c ProjectControlClient) documentLookupV2(ctx context.Context, datasetID, docID string) (documentLookupV2Response, error) {
 	var result documentLookupV2Response
-	path := "/v2/datasets/" + url.PathEscape(datasetID) + "/documents/" + url.PathEscape(docID)
+	path := "/v1/datasets/" + url.PathEscape(datasetID) + "/documents/" + url.PathEscape(docID)
 	err := c.request(ctx, "GET", path, nil, &result)
 	return result, err
 }
@@ -477,7 +534,7 @@ type sessionLookupV2Response struct {
 
 func (c ProjectControlClient) sessionLookupV2(ctx context.Context, datasetID, sessionID, userID string) (sessionLookupV2Response, error) {
 	var result sessionLookupV2Response
-	path := "/v2/datasets/" + url.PathEscape(datasetID) + "/sessions/" + url.PathEscape(sessionID)
+	path := "/v1/datasets/" + url.PathEscape(datasetID) + "/sessions/" + url.PathEscape(sessionID)
 	if userID != "" {
 		path += "?user_id=" + url.QueryEscape(userID)
 	}
@@ -499,7 +556,7 @@ type codeActivityV2Response struct {
 
 func (c ProjectControlClient) projectCodeActivityV2(ctx context.Context, projectID string) (codeActivityV2Response, error) {
 	var result codeActivityV2Response
-	path := "/v2/projects/" + url.PathEscape(projectID) + "/code-activity"
+	path := "/v1/projects/" + url.PathEscape(projectID) + "/code-activity"
 	err := c.request(ctx, "GET", path, nil, &result)
 	return result, err
 }

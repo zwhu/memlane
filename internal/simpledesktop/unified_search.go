@@ -262,16 +262,11 @@ func (a *App) runUnifiedSearch(retry bool) {
 			publishRows(1, searchLaneResult{}, rows, err, true)
 			return
 		}
-		hasV2Search := false
 		if hasControl {
-			var probeErr error
-			hasV2Search, probeErr = control.probeFeature(ctx, v2FeatureSearch)
-			if probeErr != nil {
-				publishRows(1, searchLaneResult{MetadataError: probeErr}, nil, probeErr, true)
+			if err := control.requireReadingContract(ctx); err != nil {
+				publishRows(1, searchLaneResult{MetadataError: err}, nil, err, true)
 				return
 			}
-		}
-		if hasControl && hasV2Search {
 			projectID := ""
 			datasetID := ""
 			if len(projects) == 1 {
@@ -552,13 +547,6 @@ func recentSearchItemsV2(ctx context.Context, control ProjectControlClient, proj
 	if len(projects) == 0 {
 		return []Item{}, true, nil
 	}
-	hasV2Search, probeErr := control.probeFeature(ctx, v2FeatureSearch)
-	if probeErr != nil {
-		return nil, true, probeErr
-	}
-	if !hasV2Search {
-		return nil, false, nil
-	}
 	projectID := ""
 	datasetID := ""
 	if len(projects) == 1 {
@@ -614,10 +602,7 @@ func recentSearchItemsV2(ctx context.Context, control ProjectControlClient, proj
 		}
 		return result, true, nil
 	}
-	if isControlFailClosedV2(err) {
-		return nil, true, err
-	}
-	return nil, false, nil
+	return nil, true, err
 }
 
 func (a *App) recentSearchItems(ctx context.Context, client Client, projects []Project, generation string) ([]Item, error) {

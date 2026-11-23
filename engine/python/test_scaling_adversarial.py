@@ -440,7 +440,7 @@ class ProvenanceBackfillV2Tests(unittest.IsolatedAsyncioTestCase):
 
                 # Execute backfill with an unmapped orphan key: imports mapped entries but MUST NOT rename to .migrated.bak!
                 resp = await client.post(
-                    '/v2/provenance/backfill-legacy-dates',
+                    '/v1/provenance/backfill-legacy-dates',
                     json={'reading_identity': identity},
                     headers=headers,
                 )
@@ -480,7 +480,7 @@ class ProvenanceBackfillV2Tests(unittest.IsolatedAsyncioTestCase):
                 }), encoding='utf-8')
                 legacy_file.chmod(0o600)
                 resp_full = await client.post(
-                    '/v2/provenance/backfill-legacy-dates',
+                    '/v1/provenance/backfill-legacy-dates',
                     json={'reading_identity': identity},
                     headers=headers,
                 )
@@ -495,7 +495,7 @@ class ProvenanceBackfillV2Tests(unittest.IsolatedAsyncioTestCase):
 
                 # Subsequent call returns absent cleanly (idempotent)
                 resp2 = await client.post(
-                    '/v2/provenance/backfill-legacy-dates',
+                    '/v1/provenance/backfill-legacy-dates',
                     json={'reading_identity': identity},
                     headers=headers,
                 )

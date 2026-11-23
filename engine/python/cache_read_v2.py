@@ -1,8 +1,7 @@
 """Efficient read-only cache.db session hydrator with batched per-user queries.
 
 Solves C-P1-02 & CR-P0-02:
-1. Resolves single-equality ``user_id`` format once per distinct user on the page
-   via O(log N) covering-index seeks (never scanning all rows of cache.db).
+1. Queries both stored UUID forms for each user via indexed predicates.
 2. Batches QA and trace counts + min-expiry probes across all sessions on the page
    (<= 50 sessions) inside ONE short read-only WAL snapshot (``ro_snapshot``),
    so concurrent writes to ``cache.db`` never trigger 150+ per-session queries or
@@ -16,7 +15,8 @@ from pathlib import Path
 import sqlite3
 import threading
 
-from sqlite_ro import open_official_sqlite_ro, parse_json_value, ro_snapshot, uuid_hex, uuid_text
+from _runtime_common import sql_in_clause
+from sqlite_ro import id_variants, open_official_sqlite_ro, parse_json_value, ro_snapshot
 
 _MAX_EXPIRY_CACHE = 32768
 _MAX_IN_BATCH = 200
@@ -124,39 +124,6 @@ class CacheSessionHydrator:
             except Exception:
                 pass
 
-    def _resolve_user_key_once(
-        self,
-        con: sqlite3.Connection,
-        table: str,
-        user_id: str,
-        sample_sid: str,
-    ) -> str:
-        """Resolve single-equality user_id format via O(log N) covering index seek."""
-        uid36 = uuid_text(user_id)
-        uhex = uuid_hex(user_id)
-        primary = uid36 or str(user_id)
-        row = con.execute(
-            f'SELECT 1 FROM {table} WHERE user_id = ? LIMIT 1',
-            (primary,),
-        ).fetchone()
-        if row is not None:
-            return primary
-        if uhex and uhex != primary:
-            row_hex = con.execute(
-                f'SELECT 1 FROM {table} WHERE user_id = ? LIMIT 1',
-                (uhex,),
-            ).fetchone()
-            if row_hex is not None:
-                return uhex
-        if sample_sid and uhex and uhex != primary:
-            row_s = con.execute(
-                f'SELECT 1 FROM {table} WHERE user_id = ? AND session_id = ? LIMIT 1',
-                (uhex, sample_sid),
-            ).fetchone()
-            if row_s is not None:
-                return uhex
-        return primary
-
     def _hydrate_on_con(
         self,
         con: sqlite3.Connection,
@@ -183,9 +150,8 @@ class CacheSessionHydrator:
         with ro_snapshot(con):
             for uid, user_rows in by_uid.items():
                 uniq_sids = list(dict.fromkeys(str(r['session_id']) for r in user_rows))
-                sample_sid = uniq_sids[0]
-                qa_user = self._resolve_user_key_once(con, 'cache_qa_entries', uid, sample_sid)
-                tr_user = self._resolve_user_key_once(con, 'cache_trace_entries', uid, sample_sid)
+                users = id_variants(uid)
+                user_sql, user_params = sql_in_clause(users)
 
                 # 1. Fresh batched QA counts + MIN(seq) + MIN(expires_at) (no seq-only reuse cache!)
                 qa_counts: dict[str, int] = {}
@@ -199,9 +165,9 @@ class CacheSessionHydrator:
                         f'''SELECT session_id, COUNT(*), COALESCE(MIN(seq), 0),
                                    MIN(CASE WHEN expires_at IS NOT NULL THEN REPLACE(substr(expires_at, 1, 26), 'T', ' ') END)
                             FROM cache_qa_entries
-                            WHERE user_id = ? AND session_id IN ({ph})
+                            WHERE user_id {user_sql} AND session_id IN ({ph})
                             GROUP BY session_id''',
-                        (qa_user, *batch),
+                        (*user_params, *batch),
                     ):
                         s_key = str(sid_v)
                         qa_counts[s_key] = int(cnt_v or 0)
@@ -213,12 +179,12 @@ class CacheSessionHydrator:
 
                 for s_key in qa_needs_filter:
                     cnt_row = con.execute(
-                        '''SELECT COUNT(*),
+                        f'''SELECT COUNT(*),
                                   MIN(CASE WHEN expires_at IS NOT NULL THEN REPLACE(substr(expires_at, 1, 26), 'T', ' ') END)
                            FROM cache_qa_entries
-                           WHERE user_id = ? AND session_id = ?
+                           WHERE user_id {user_sql} AND session_id = ?
                              AND (expires_at IS NULL OR REPLACE(substr(expires_at, 1, 26), 'T', ' ') > ?)''',
-                        (qa_user, s_key, now_sp),
+                        (*user_params, s_key, now_sp),
                     ).fetchone()
                     qa_counts[s_key] = int(cnt_row[0] or 0) if cnt_row else 0
                     qa_min_exp[s_key] = _normalize_expires(cnt_row[1]) if cnt_row else None
@@ -237,7 +203,7 @@ class CacheSessionHydrator:
                         f'SELECT user_id, session_id, payload FROM cache_qa_entries WHERE seq IN ({ph})',
                         seq_batch,
                     ):
-                        if str(uid_v) != qa_user:
+                        if str(uid_v) not in users:
                             continue
                         found = _extract_question_label(raw_payload)
                         if found is not None:
@@ -252,17 +218,17 @@ class CacheSessionHydrator:
                     if s_key in qa_needs_filter:
                         q_sql = (
                             "SELECT payload FROM cache_qa_entries "
-                            "WHERE user_id = ? AND session_id = ? "
+                            f"WHERE user_id {user_sql} AND session_id = ? "
                             "AND (expires_at IS NULL OR REPLACE(substr(expires_at, 1, 26), 'T', ' ') > ?) "
                             "ORDER BY seq ASC"
                         )
-                        q_params = (qa_user, s_key, now_sp)
+                        q_params = (*user_params, s_key, now_sp)
                     elif q_cnt > 1 and qa_min_seq.get(s_key, 0) > 0:
                         q_sql = (
                             'SELECT payload FROM cache_qa_entries '
-                            'WHERE user_id = ? AND session_id = ? AND seq > ? ORDER BY seq ASC'
+                            f'WHERE user_id {user_sql} AND session_id = ? AND seq > ? ORDER BY seq ASC'
                         )
-                        q_params = (qa_user, s_key, qa_min_seq[s_key])
+                        q_params = (*user_params, s_key, qa_min_seq[s_key])
                     else:
                         continue
                     for (raw_payload,) in con.execute(q_sql, q_params):
@@ -282,9 +248,9 @@ class CacheSessionHydrator:
                         f'''SELECT session_id, COUNT(*),
                                    MIN(CASE WHEN expires_at IS NOT NULL THEN REPLACE(substr(expires_at, 1, 26), 'T', ' ') END)
                             FROM cache_trace_entries
-                            WHERE user_id = ? AND session_id IN ({ph})
+                            WHERE user_id {user_sql} AND session_id IN ({ph})
                             GROUP BY session_id''',
-                        (tr_user, *batch),
+                        (*user_params, *batch),
                     ):
                         s_key = str(sid_v)
                         tr_counts[s_key] = int(cnt_v or 0)
@@ -295,12 +261,12 @@ class CacheSessionHydrator:
 
                 for s_key in tr_needs_filter:
                     cnt_row = con.execute(
-                        '''SELECT COUNT(*),
+                        f'''SELECT COUNT(*),
                                   MIN(CASE WHEN expires_at IS NOT NULL THEN REPLACE(substr(expires_at, 1, 26), 'T', ' ') END)
                            FROM cache_trace_entries
-                           WHERE user_id = ? AND session_id = ?
+                           WHERE user_id {user_sql} AND session_id = ?
                              AND (expires_at IS NULL OR REPLACE(substr(expires_at, 1, 26), 'T', ' ') > ?)''',
-                        (tr_user, s_key, now_sp),
+                        (*user_params, s_key, now_sp),
                     ).fetchone()
                     tr_counts[s_key] = int(cnt_row[0] or 0) if cnt_row else 0
                     tr_min_exp[s_key] = _normalize_expires(cnt_row[1]) if cnt_row else None
@@ -403,6 +369,3 @@ class CacheSessionHydrator:
                     row.setdefault('tool_calls', 0)
                 return False
         return False
-
-
-SHARED_CACHE_HYDRATOR = CacheSessionHydrator()

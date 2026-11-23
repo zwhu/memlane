@@ -1,7 +1,7 @@
 """Phase 0 capability negotiation and O(1) / O(log N) read-only /v2 lookup endpoints.
 
-Serves ``/v1/capabilities``, ``/v2/datasets/{ds}/documents/{doc}``,
-``/v2/datasets/{ds}/sessions/{sid}``, and ``/v2/projects/{id}/code-activity``
+Serves ``/v1/capabilities``, ``/v1/datasets/{ds}/documents/{doc}``,
+``/v1/datasets/{ds}/sessions/{sid}``, and ``/v1/projects/{id}/code-activity``
 using ``sqlite_ro.open_official_sqlite_ro`` with Fail-Closed ACL enforcement.
 """
 import asyncio
@@ -12,13 +12,14 @@ from aiohttp import web
 
 from local_body_reader import json_utf8_response, verify_official_read_access
 from project_policy import PolicyError
-from provenance_store import _calendar_date, _is_lesson_metadata, _local_calendar_date
+from provenance_store import _calendar_date, _is_lesson_metadata, _resolve_unlocked_metadata_date
 from sqlite_ro import (
     common_category_from_meta,
     extract_trusted_metadata,
     id_variants,
     is_valid_uuid,
     iso_text,
+    has_system_metadata,
     knowledge_category_label,
     official_sqlite_ro,
     parse_official_timestamp,
@@ -28,7 +29,8 @@ from sqlite_ro import (
     uuid_text,
 )
 
-WAVE1_API_VERSIONS = ('v1', 'v2')
+READING_CONTRACT = 'catalog-cursor-v1'
+READING_CONTRACT_HEADER = 'X-Memlane-Reading-Contract'
 WAVE1_FEATURES = (
     'document_lookup_v2',
     'session_lookup_v2',
@@ -118,19 +120,6 @@ def _lookup_provenance_date(provenance_path: Path, dataset_id: str, doc_id: str,
     return min(dates) if dates else ''
 
 
-def _effective_date(meta: dict, created_at: str, *, prov_date: str = '') -> str:
-    """Exact 1:1 precedence with ``catalog_index._project_cognee_row``:
-    provenance > meta.first_source_date > meta.session_date > local(created_at).
-    """
-    if _calendar_date(prov_date):
-        return prov_date
-    for key in ('first_source_date', 'session_date'):
-        day = _calendar_date(meta.get(key))
-        if day:
-            return day
-    return _local_calendar_date(created_at) or ''
-
-
 def _read_single_document(official_data, provenance_path, dataset_id: str, doc_id: str) -> dict:
     db_path = Path(official_data) / 'system' / 'databases' / 'cognee_db'
     doc_variants = id_variants(doc_id)
@@ -170,14 +159,14 @@ def _read_single_document(official_data, provenance_path, dataset_id: str, doc_i
     updated_at = iso_text(row[8])
     created_at = iso_text(row[9])
 
-    prov_date = ''
-    if _is_lesson_metadata(meta):
-        prov_date = _lookup_provenance_date(provenance_path, dataset_id, canonical_id, meta)
-        eff_day = _effective_date(meta, created_at, prov_date=prov_date)
-        if eff_day:
-            meta['first_source_date'] = eff_day
-    else:
-        eff_day = _effective_date(meta, created_at)
+    lesson = _is_lesson_metadata(meta)
+    eff_day = _lookup_provenance_date(provenance_path, dataset_id, canonical_id, meta) if lesson else ''
+    if not eff_day:
+        eff_day, _, _ = _resolve_unlocked_metadata_date(
+            meta, from_system=has_system_metadata(row[6]), created_at=created_at,
+        )
+    if lesson and eff_day:
+        meta['first_source_date'] = eff_day
 
     return {
         'id': canonical_id,
@@ -438,7 +427,8 @@ def attach_v2_lookups(
         if request.query:
             raise PolicyError('invalid_request_fields')
         return json_utf8_response({
-            'api_versions': list(WAVE1_API_VERSIONS),
+            'api_versions': ['v1'],
+            'reading_contract': READING_CONTRACT,
             'features': feature_list,
         })
 
@@ -524,7 +514,7 @@ def attach_v2_lookups(
 
     app.add_routes([
         web.get('/v1/capabilities', capabilities),
-        web.get('/v2/datasets/{ds}/documents/{doc}', document_lookup),
-        web.get('/v2/datasets/{ds}/sessions/{sid}', session_lookup),
-        web.get('/v2/projects/{id}/code-activity', code_activity),
+        web.get('/v1/datasets/{ds}/documents/{doc}', document_lookup),
+        web.get('/v1/datasets/{ds}/sessions/{sid}', session_lookup),
+        web.get('/v1/projects/{id}/code-activity', code_activity),
     ])

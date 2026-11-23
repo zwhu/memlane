@@ -1,23 +1,23 @@
-"""Phase 1 /v2/* cursor-paginated read APIs, local body fast-path, and reading-state endpoints.
+"""Phase 1 /v1/* cursor-paginated read APIs, local body fast-path, and reading-state endpoints.
 
 Implements every Phase 1 control-plane endpoint specified in proposal.md §3.5:
-- GET  /v2/datasets/{ds}/documents/{doc}/body
-- GET  /v2/overview/bootstrap
-- GET  /v2/overview/day
-- GET  /v2/projects/{id}/knowledge
-- GET  /v2/common/knowledge
-- GET  /v2/search/recent
-- GET  /v2/search/metadata
-- GET  /v2/projects/{id}/raw-records
-- GET  /v2/projects/{id}/raw-records/sessions/{sid}/children
-- GET  /v2/projects/{id}/message-summary
-- POST /v2/reading-state/migrate-local
-- POST /v2/reading-state/import/begin
-- POST /v2/reading-state/import/chunk
-- POST /v2/reading-state/import/commit
-- POST /v2/reading-state/mark-read
-- POST /v2/reading-state/mark-all-read
-- POST /v2/provenance/backfill-legacy-dates
+- GET  /v1/datasets/{ds}/documents/{doc}/body
+- GET  /v1/overview/bootstrap
+- GET  /v1/overview/day
+- GET  /v1/projects/{id}/knowledge
+- GET  /v1/common/knowledge
+- GET  /v1/search/recent
+- GET  /v1/search/metadata
+- GET  /v1/projects/{id}/raw-records
+- GET  /v1/projects/{id}/raw-records/sessions/{sid}/children
+- GET  /v1/projects/{id}/message-summary
+- POST /v1/reading-state/migrate-local
+- POST /v1/reading-state/import/begin
+- POST /v1/reading-state/import/chunk
+- POST /v1/reading-state/import/commit
+- POST /v1/reading-state/mark-read
+- POST /v1/reading-state/mark-all-read
+- POST /v1/provenance/backfill-legacy-dates
 """
 import asyncio
 import base64
@@ -66,7 +66,9 @@ from sqlite_ro import (
     ro_snapshot,
     uuid_text,
 )
-from v2_lookups import _require_verified_managed_dataset, _safe_session_id
+from v2_lookups import (
+    READING_CONTRACT, READING_CONTRACT_HEADER, _require_verified_managed_dataset, _safe_session_id,
+)
 
 _MAX_PAGE_LIMIT = 50
 _DEFAULT_PAGE_LIMIT = 30
@@ -858,6 +860,10 @@ def attach_v2_api(
         if not request['manager']:
             raise PolicyError('management_required', 403)
 
+    def _require_reading_contract(request):
+        if request.headers.get(READING_CONTRACT_HEADER) != READING_CONTRACT:
+            raise PolicyError('reading_contract_mismatch', 409)
+
     def _reading_identity(request) -> str:
         raw = request.headers.get('X-Memlane-Reading-Identity', '')
         return raw if isinstance(raw, str) else ''
@@ -875,7 +881,7 @@ def attach_v2_api(
             await _run_db(cat.sync, managed_ds, relations_resolver=rel_resolver)
         return projects, common
 
-    # 1. GET /v2/datasets/{ds}/documents/{doc}/body
+    # 1. GET /v1/datasets/{ds}/documents/{doc}/body
     async def document_body(request):
         _require_manager(request)
         if request.query:
@@ -895,9 +901,10 @@ def attach_v2_api(
         )
         return json_utf8_response(result)
 
-    # 2. GET /v2/overview/bootstrap (<= 128 KiB serialized UTF-8 JSON budget)
+    # 2. GET /v1/overview/bootstrap (<= 128 KiB serialized UTF-8 JSON budget)
     async def overview_bootstrap_v2(request):
         _require_manager(request)
+        _require_reading_contract(request)
         if set(request.query) - {'days', 'recent_limit', 'activity_limit', 'recall_limit'}:
             raise PolicyError('invalid_overview_query', 400)
         days = _parse_limit(request.query.get('days'), default=365, max_val=3650)
@@ -1098,7 +1105,7 @@ def attach_v2_api(
         )
         return json_utf8_response(payload, raw_bytes=raw_bytes)
 
-    # 3. GET /v2/overview/day
+    # 3. GET /v1/overview/day
     async def overview_day_v2(request):
         _require_manager(request)
         if set(request.query) - {'day', 'limit', 'cursor'}:
@@ -1190,7 +1197,7 @@ def attach_v2_api(
         )
         return json_utf8_response(payload, raw_bytes=raw_bytes)
 
-    # 4. GET /v2/projects/{id}/knowledge
+    # 4. GET /v1/projects/{id}/knowledge
     async def project_knowledge_v2(request):
         _require_manager(request)
         allowed_q = {
@@ -1410,10 +1417,13 @@ def attach_v2_api(
         )
         return json_utf8_response(payload, raw_bytes=raw_bytes)
 
-    # 5. GET /v2/common/knowledge
+    # 5. GET /v1/common/knowledge
     async def common_knowledge_v2(request):
         _require_manager(request)
-        if set(request.query) - {'dataset_id', 'common_category', 'limit', 'cursor', 'direction', 'anchor_doc_id'}:
+        if set(request.query) - {
+            'dataset_id', 'common_category', 'limit', 'cursor', 'direction', 'anchor_doc_id',
+            'recall_agent_id', 'recall_event_id',
+        }:
             raise PolicyError('invalid_common_query', 400)
         raw_ds = (request.query.get('dataset_id') or '').strip()
         if raw_ds:
@@ -1429,6 +1439,10 @@ def attach_v2_api(
         common_cat = (request.query.get('common_category') or 'all').strip()
         if common_cat not in ('all', 'preference', 'experience'):
             raise PolicyError('invalid_common_category', 400)
+        recall_agent = (request.query.get('recall_agent_id') or '').strip()
+        recall_event = (request.query.get('recall_event_id') or '').strip()
+        if bool(recall_agent) != bool(recall_event) or (recall_event and not is_valid_uuid(recall_event)):
+            raise PolicyError('invalid_recall_filter', 400)
         direction = (request.query.get('direction') or 'next').strip()
         if direction not in ('next', 'prev'):
             raise PolicyError('invalid_common_query', 400)
@@ -1443,7 +1457,7 @@ def attach_v2_api(
         if direction == 'prev' and not raw_cursor and not anchor_doc_id:
             raise PolicyError('invalid_cursor', 400)
 
-        f_digest = _filter_digest(common_category=common_cat)
+        f_digest = _filter_digest(common_category=common_cat, recall_agent=recall_agent, recall_event=recall_event)
         after_key = None
         before_key = None
         if raw_cursor:
@@ -1469,9 +1483,11 @@ def attach_v2_api(
             gen = cat.generation()
             sinfo = cat.dataset_sync_info(dataset_id) or {}
             cat_ver = str(sinfo.get('catalog_version', ''))
+            recall_ids = _recall_event_doc_ids(recall_store, dataset_id, recall_agent, recall_event) if recall_event else None
             res = cat.query_common_knowledge(
                 dataset_id,
                 common_category=common_cat,
+                recall_ids=recall_ids,
                 limit=limit,
                 after_key=after_key,
                 before_key=before_key,
@@ -1559,7 +1575,7 @@ def attach_v2_api(
         )
         return json_utf8_response(payload, raw_bytes=raw_bytes)
 
-    # 6. GET /v2/search/recent
+    # 6. GET /v1/search/recent
     async def search_recent_v2(request):
         _require_manager(request)
         if set(request.query) - {'limit', 'project_id', 'dataset_id'}:
@@ -1664,7 +1680,7 @@ def attach_v2_api(
         )
         return json_utf8_response(payload, raw_bytes=raw_bytes)
 
-    # 7. GET /v2/search/metadata (Channel 1 instant metadata search)
+    # 7. GET /v1/search/metadata (Channel 1 instant metadata search)
     async def search_metadata_v2(request):
         _require_manager(request)
         if set(request.query) - {'q', 'filter', 'project_id', 'dataset_id', 'limit'}:
@@ -1755,7 +1771,7 @@ def attach_v2_api(
         )
         return json_utf8_response(payload, raw_bytes=raw_bytes)
 
-    # 8. GET /v2/projects/{id}/raw-records
+    # 8. GET /v1/projects/{id}/raw-records
     async def raw_records_v2(request):
         _require_manager(request)
         if set(request.query) - {'kind', 'limit', 'cursor'}:
@@ -1832,7 +1848,7 @@ def attach_v2_api(
         )
         return json_utf8_response(payload, raw_bytes=raw_bytes)
 
-    # 9. GET /v2/projects/{id}/raw-records/sessions/{sid}/children
+    # 9. GET /v1/projects/{id}/raw-records/sessions/{sid}/children
     async def raw_records_session_children_v2(request):
         _require_manager(request)
         if set(request.query) - {'limit', 'cursor', 'user_id'}:
@@ -1913,9 +1929,10 @@ def attach_v2_api(
         )
         return json_utf8_response(payload, raw_bytes=raw_bytes)
 
-    # 10. GET /v2/projects/{id}/message-summary (slim < 16 KiB, zero full knowledge_catalog)
+    # 10. GET /v1/projects/{id}/message-summary (slim < 16 KiB, zero full knowledge_catalog)
     async def message_summary_v2(request):
         _require_manager(request)
+        _require_reading_contract(request)
         if request.query:
             raise PolicyError('invalid_summary_query', 400)
         project_id = request.match_info['id']
@@ -2356,7 +2373,7 @@ def attach_v2_api(
         )
         return json_utf8_response(res)
 
-    # 12. POST /v2/provenance/backfill-legacy-dates (single-writer via official_service_dev)
+    # 12. POST /v1/provenance/backfill-legacy-dates (single-writer via official_service_dev)
     _LEGACY_KEY_RE = re.compile(r'^[0-9a-f]{64}$')
 
     async def provenance_backfill_legacy_dates(request):
@@ -2513,23 +2530,23 @@ def attach_v2_api(
         })
 
     app.add_routes([
-        web.get('/v2/datasets/{ds}/documents/{doc}/body', document_body),
-        web.get('/v2/overview/bootstrap', overview_bootstrap_v2),
-        web.get('/v2/overview/day', overview_day_v2),
-        web.get('/v2/projects/{id}/knowledge', project_knowledge_v2),
-        web.get('/v2/common/knowledge', common_knowledge_v2),
-        web.get('/v2/search/recent', search_recent_v2),
-        web.get('/v2/search/metadata', search_metadata_v2),
-        web.get('/v2/projects/{id}/raw-records', raw_records_v2),
-        web.get('/v2/projects/{id}/raw-records/sessions/{sid}/children', raw_records_session_children_v2),
-        web.get('/v2/projects/{id}/message-summary', message_summary_v2),
-        web.post('/v2/reading-state/migrate-local', reading_migrate_local),
-        web.post('/v2/reading-state/import/begin', reading_import_begin),
-        web.post('/v2/reading-state/import/chunk', reading_import_chunk),
-        web.post('/v2/reading-state/import/commit', reading_import_commit),
-        web.post('/v2/reading-state/mark-read', reading_mark_read),
-        web.post('/v2/reading-state/mark-all-read', reading_mark_all_read),
-        web.post('/v2/provenance/backfill-legacy-dates', provenance_backfill_legacy_dates),
+        web.get('/v1/datasets/{ds}/documents/{doc}/body', document_body),
+        web.get('/v1/overview/bootstrap', overview_bootstrap_v2),
+        web.get('/v1/overview/day', overview_day_v2),
+        web.get('/v1/projects/{id}/knowledge', project_knowledge_v2),
+        web.get('/v1/common/knowledge', common_knowledge_v2),
+        web.get('/v1/search/recent', search_recent_v2),
+        web.get('/v1/search/metadata', search_metadata_v2),
+        web.get('/v1/projects/{id}/raw-records', raw_records_v2),
+        web.get('/v1/projects/{id}/raw-records/sessions/{sid}/children', raw_records_session_children_v2),
+        web.get('/v1/projects/{id}/message-summary', message_summary_v2),
+        web.post('/v1/reading-state/migrate-local', reading_migrate_local),
+        web.post('/v1/reading-state/import/begin', reading_import_begin),
+        web.post('/v1/reading-state/import/chunk', reading_import_chunk),
+        web.post('/v1/reading-state/import/commit', reading_import_commit),
+        web.post('/v1/reading-state/mark-read', reading_mark_read),
+        web.post('/v1/reading-state/mark-all-read', reading_mark_all_read),
+        web.post('/v1/provenance/backfill-legacy-dates', provenance_backfill_legacy_dates),
     ])
 
     async def cleanup(_app):

@@ -58,7 +58,7 @@ DOCS_PROCESS_REF_RE = re.compile(
     r'|(?<![A-Za-z0-9_-])(?:\.\./)+process(?:/|(?![A-Za-z0-9_-]))'
     r'|\]\(\s*\.?/?process(?:/|\s*\))'
 )
-ML019_MESSAGE = '禁止在 Go 桌面端新增对 overviewDocuments/overviewSessions//v1/overview/bootstrap 的全量拉表调用；仅允许精确回退路径函数，新功能请走 /v2 游标或点查接口'
+ML019_MESSAGE = '禁止在 Go 桌面端新增对 overviewDocuments/overviewSessions/旧首页接口的全量拉表调用；仅允许精确回退路径函数，新功能请走 /v2 游标或点查接口'
 ML020_MESSAGE = '/v2 列表接口必须实施 _MAX_PAGE_LIMIT (<=50)、_parse_limit (<=50) 与 JSON 字节预算裁剪 (fit_items_to_json_budget)'
 ML020_UTF8_MESSAGE = '/v2 列表接口禁止裸用默认 ASCII 转义的 web.json_response（会使中文体积翻倍击穿字节预算）；须走统一 UTF-8 JSON 响应辅助或显式 UTF-8 dumps'
 ML021_CONNECT_MESSAGE = '禁止在非白名单模块直接或间接调用 sqlite3.connect（含别名/getattr/importlib）；只读访问官方库必须经 sqlite_ro.open_official_sqlite_ro'
@@ -2162,13 +2162,13 @@ def _check_sqlite_connect_ml020(tree, scope_nodes_map, scope_children_map, str_c
 
 
 def _collect_v2_list_handlers(tree, all_nodes, functions):
-    """Collect (route_path, handler_fn) pairs for all registered GET /v2/* list routes."""
+    """Collect (route_path, handler_fn) pairs for all registered GET /v1/* list routes."""
     fn_by_name = {fn.name: fn for fn in functions}
     routes = []
     seen = set()
 
     def _add(route_path, handler_fn):
-        if not route_path or not route_path.startswith('/v2/'):
+        if not route_path or not route_path.startswith('/v1/'):
             return
         if any(route_path.endswith(marker) for marker in V2_NON_LIST_ROUTE_MARKERS):
             return
@@ -2556,7 +2556,8 @@ ML019_LEGACY_OVERVIEW_SESSIONS_ALLOWLIST = {
     ('internal/simpledesktop/overview.go', 'overview'): 1,
 }
 ML019_LEGACY_V1_BOOTSTRAP_ALLOWLIST = {
-    ('internal/simpledesktop/overview_bootstrap.go', 'overviewBootstrap'): 1,
+    ('internal/simpledesktop/v2_client.go', 'overviewBootstrap'): 1,
+    ('internal/simpledesktop/project_access.go', 'requestWithHeaders'): 1,
 }
 
 

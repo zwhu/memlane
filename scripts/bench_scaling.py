@@ -987,6 +987,7 @@ async def run_benchmark(scale: str = '1k', concurrency_seconds: float = 2.0) -> 
         manager_token = 'm' * 40
         headers = {
             'Authorization': 'Bearer ' + manager_token,
+            'X-Memlane-Reading-Contract': 'catalog-cursor-v1',
             'X-Memlane-Reading-Identity': identity,
         }
         codex_config = {'official_data': str(fixture['official_data'])}
@@ -1026,7 +1027,7 @@ async def run_benchmark(scale: str = '1k', concurrency_seconds: float = 2.0) -> 
                 deep_samples.append((time.perf_counter() - ts) * 1000.0)
                 assert len(page_res['items']) > 0
 
-        # 2. HTTP /v2/* latency & payload bytes
+        # 2. HTTP /v1/* latency & payload bytes
         client = TestClient(TestServer(app))
         await client.start_server()
         try:
@@ -1052,28 +1053,28 @@ async def run_benchmark(scale: str = '1k', concurrency_seconds: float = 2.0) -> 
                 }
 
             # Warm session projection once via overview bootstrap
-            b_overview = await _bench_get('/v2/overview/bootstrap')
+            b_overview = await _bench_get('/v1/overview/bootstrap')
             # Run full production EQP checks now that catalog_sessions is also synced
             eqp = _check_eqp_zero_temp_btree(cat, fixture)
 
-            b_knowledge = await _bench_get(f'/v2/projects/{proj_id}/knowledge?sort=date&limit=30')
-            b_anchor = await _bench_get(f'/v2/projects/{proj_id}/knowledge?sort=recall&limit=30&anchor_doc_id={deep_anchor_doc_id}')
-            b_unread = await _bench_get(f'/v2/projects/{proj_id}/knowledge?unread_only=1&limit=30')
-            b_body = await _bench_get(f'/v2/datasets/{ds_main}/documents/{fixture["doc_ids"][0]}/body')
-            b_raw = await _bench_get(f'/v2/projects/{proj_id}/raw-records?limit=30')
+            b_knowledge = await _bench_get(f'/v1/projects/{proj_id}/knowledge?sort=date&limit=30')
+            b_anchor = await _bench_get(f'/v1/projects/{proj_id}/knowledge?sort=recall&limit=30&anchor_doc_id={deep_anchor_doc_id}')
+            b_unread = await _bench_get(f'/v1/projects/{proj_id}/knowledge?unread_only=1&limit=30')
+            b_body = await _bench_get(f'/v1/datasets/{ds_main}/documents/{fixture["doc_ids"][0]}/body')
+            b_raw = await _bench_get(f'/v1/projects/{proj_id}/raw-records?limit=30')
             b_children = await _bench_get(
-                f'/v2/projects/{proj_id}/raw-records/sessions/{fixture["parent_sid"]}/children?limit=30'
+                f'/v1/projects/{proj_id}/raw-records/sessions/{fixture["parent_sid"]}/children?limit=30'
             )
-            b_code_act = await _bench_get(f'/v2/projects/{proj_id}/code-activity')
-            b_msg_summary = await _bench_get(f'/v2/projects/{proj_id}/message-summary')
+            b_code_act = await _bench_get(f'/v1/projects/{proj_id}/code-activity')
+            b_msg_summary = await _bench_get(f'/v1/projects/{proj_id}/message-summary')
 
-            # Walk deep page N (50 at 50k!) on /v2/projects/{id}/raw-records
+            # Walk deep page N (50 at 50k!) on /v1/projects/{id}/raw-records
             raw_cursor = b_raw['sample'].get('next_cursor') or ''
             raw_deep_target = fixture['spec']['raw_deep_pages']
             pages_walked = 1
-            deep_raw_url = f'/v2/projects/{proj_id}/raw-records?limit=30'
+            deep_raw_url = f'/v1/projects/{proj_id}/raw-records?limit=30'
             while raw_cursor and pages_walked < raw_deep_target:
-                deep_raw_url = f'/v2/projects/{proj_id}/raw-records?limit=30&cursor={raw_cursor}'
+                deep_raw_url = f'/v1/projects/{proj_id}/raw-records?limit=30&cursor={raw_cursor}'
                 r_step = await client.get(deep_raw_url, headers=headers)
                 assert r_step.status == 200, (pages_walked, r_step.status)
                 d_step = await r_step.json()
@@ -1158,12 +1159,12 @@ async def run_benchmark(scale: str = '1k', concurrency_seconds: float = 2.0) -> 
 
             async def _reader_worker(worker_id: int):
                 endpoints = [
-                    '/v2/overview/bootstrap',
-                    f'/v2/projects/{proj_id}/knowledge?sort=date&limit=30',
-                    f'/v2/datasets/{ds_main}/documents/{fixture["doc_ids"][worker_id]}/body',
-                    f'/v2/projects/{proj_id}/raw-records?limit=30',
-                    f'/v2/projects/{proj_id}/message-summary',
-                    f'/v2/projects/{proj_id}/code-activity',
+                    '/v1/overview/bootstrap',
+                    f'/v1/projects/{proj_id}/knowledge?sort=date&limit=30',
+                    f'/v1/datasets/{ds_main}/documents/{fixture["doc_ids"][worker_id]}/body',
+                    f'/v1/projects/{proj_id}/raw-records?limit=30',
+                    f'/v1/projects/{proj_id}/message-summary',
+                    f'/v1/projects/{proj_id}/code-activity',
                 ]
                 deadline = time.monotonic() + concurrency_seconds
                 step = 0
@@ -1338,14 +1339,14 @@ def main():
         print(f"  catalog incremental 1-doc : {report['catalog_incremental_1doc_ms']} ms (SLA < 60 ms)")
         print(f"  deep keyset page          : {report['deep_keyset_page_p95_ms']} ms P95")
         print(f"  EQP violations            : {len(report['eqp_violations'])}")
-        print(f"  /v2/overview/bootstrap    : P95={report['overview_bootstrap']['p95_ms']} ms, bytes={report['overview_bootstrap']['max_bytes']} (SLA <25ms, <128KiB)")
-        print(f"  /v2/projects/../knowledge : P95={report['project_knowledge']['p95_ms']} ms, bytes={report['project_knowledge']['max_bytes']} (SLA <15ms, <256KiB)")
-        print(f"  /v2/.../knowledge?anchor  : P95={report['anchor_jump']['p95_ms']} ms (SLA <15ms)")
-        print(f"  /v2/.../body              : P95={report['document_body']['p95_ms']} ms (SLA <5ms)")
-        print(f"  /v2/.../raw-records (p1)  : P95={report['raw_records']['p95_ms']} ms (SLA <25ms)")
-        print(f"  /v2/.../raw-records (p{report['raw_records_deep']['pages_walked']}) : P95={report['raw_records_deep']['p95_ms']} ms (SLA <25ms)")
-        print(f"  /v2/.../code-activity     : P95={report['code_activity']['p95_ms']} ms (SLA <20ms)")
-        print(f"  /v2/.../message-summary   : P95={report['message_summary']['p95_ms']} ms, bytes={report['message_summary']['max_bytes']} (SLA <25ms, <16KiB)")
+        print(f"  /v1/overview/bootstrap    : P95={report['overview_bootstrap']['p95_ms']} ms, bytes={report['overview_bootstrap']['max_bytes']} (SLA <25ms, <128KiB)")
+        print(f"  /v1/projects/../knowledge : P95={report['project_knowledge']['p95_ms']} ms, bytes={report['project_knowledge']['max_bytes']} (SLA <15ms, <256KiB)")
+        print(f"  /v1/.../knowledge?anchor  : P95={report['anchor_jump']['p95_ms']} ms (SLA <15ms)")
+        print(f"  /v1/.../body              : P95={report['document_body']['p95_ms']} ms (SLA <5ms)")
+        print(f"  /v1/.../raw-records (p1)  : P95={report['raw_records']['p95_ms']} ms (SLA <25ms)")
+        print(f"  /v1/.../raw-records (p{report['raw_records_deep']['pages_walked']}) : P95={report['raw_records_deep']['p95_ms']} ms (SLA <25ms)")
+        print(f"  /v1/.../code-activity     : P95={report['code_activity']['p95_ms']} ms (SLA <20ms)")
+        print(f"  /v1/.../message-summary   : P95={report['message_summary']['p95_ms']} ms, bytes={report['message_summary']['max_bytes']} (SLA <25ms, <16KiB)")
         print(f"  sparse unread             : count={report['sparse_unread']['count']} P95={report['sparse_unread']['p95_ms']} ms")
         mut_ok = all(
             report['mutations'][k]

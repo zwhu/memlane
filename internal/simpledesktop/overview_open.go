@@ -79,64 +79,16 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 		var v2UnreadCount int
 		var v2UnreadStateRev int64
 		if hasControl && !common {
-			hasV2Knowledge, probeErr := control.probeFeature(ctx, v2FeatureKnowledgeCursor)
-			if probeErr != nil {
+			usedV2 = true
+			if migErr := a.migrateReadingStateV2Snapshot(ctx, control, readingID, stateDir, migProjects); migErr != nil && (isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, migProjects)) {
 				usedV2 = true
-				err = probeErr
-			} else if hasV2Knowledge {
-				if migErr := a.migrateReadingStateV2Snapshot(ctx, control, readingID, stateDir, migProjects); migErr != nil && (isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, migProjects)) {
-					usedV2 = true
-					err = migErr
-				}
-				if err != nil {
-					// Fail closed: pending local reading-state migration must succeed
-					// before issuing V2 project knowledge reads.
-				} else {
-					v2Resp, v2Err := control.projectKnowledgePageV2(ctx, readingID, p.ID, "date", "", false, "", "", knowledgeBatch, v2KnowledgePageOpts{
-						AnchorDocID: item.ID,
-					})
-					if v2Err == nil {
-						usedV2 = true
-						v2NextCursor = v2Resp.NextCursor
-						v2PrevCursor = v2Resp.PrevCursor
-						v2HasPrev = v2Resp.HasPrev
-						v2TotalFiltered = v2Resp.TotalFiltered
-						v2CatCounts = v2Resp.CategoryCounts
-						v2CatalogVersion = v2Resp.CatalogVersion
-						v2UnreadCount = v2Resp.UnreadCount
-						v2UnreadStateRev = v2Resp.UnreadStateRev
-						more = v2Resp.HasMore
-						rows = make([]Item, 0, len(v2Resp.Items))
-						for _, r := range v2Resp.Items {
-							if r.DocID == "" {
-								continue
-							}
-							mapped := r.toItem(recallStartedAt)
-							if mapped.key() == item.key() {
-								found = mapped
-							}
-							rows = append(rows, mapped)
-						}
-						if found.ID == "" {
-							err = fmt.Errorf("无法在当前官方目录中定位这条记忆，请重新读取")
-						}
-					} else if isControlFailClosedV2(v2Err) || isControlNotFound(v2Err) {
-						usedV2 = true
-						if isControlNotFound(v2Err) {
-							err = fmt.Errorf("无法在当前官方目录中定位这条记忆，请重新读取")
-						} else {
-							err = v2Err
-						}
-					}
-				}
+				err = migErr
 			}
-		} else if hasControl && common {
-			hasV2Common, probeErr := control.probeFeature(ctx, v2FeatureCommonKnowledgeCursor)
-			if probeErr != nil {
-				usedV2 = true
-				err = probeErr
-			} else if hasV2Common {
-				v2Resp, v2Err := control.commonKnowledgePageV2(ctx, p.Dataset, category, knowledgeBatch, v2KnowledgePageOpts{
+			if err != nil {
+				// Fail closed: pending local reading-state migration must succeed
+				// before issuing V2 project knowledge reads.
+			} else {
+				v2Resp, v2Err := control.projectKnowledgePageV2(ctx, readingID, p.ID, "date", "", false, "", "", knowledgeBatch, v2KnowledgePageOpts{
 					AnchorDocID: item.ID,
 				})
 				if v2Err == nil {
@@ -147,6 +99,8 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 					v2TotalFiltered = v2Resp.TotalFiltered
 					v2CatCounts = v2Resp.CategoryCounts
 					v2CatalogVersion = v2Resp.CatalogVersion
+					v2UnreadCount = v2Resp.UnreadCount
+					v2UnreadStateRev = v2Resp.UnreadStateRev
 					more = v2Resp.HasMore
 					rows = make([]Item, 0, len(v2Resp.Items))
 					for _, r := range v2Resp.Items {
@@ -162,13 +116,49 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 					if found.ID == "" {
 						err = fmt.Errorf("无法在当前官方目录中定位这条记忆，请重新读取")
 					}
-				} else if isControlFailClosedV2(v2Err) || isControlNotFound(v2Err) {
+				} else {
 					usedV2 = true
 					if isControlNotFound(v2Err) {
 						err = fmt.Errorf("无法在当前官方目录中定位这条记忆，请重新读取")
 					} else {
 						err = v2Err
 					}
+				}
+			}
+		} else if hasControl && common {
+			usedV2 = true
+			v2Resp, v2Err := control.commonKnowledgePageV2(ctx, p.Dataset, category, knowledgeBatch, v2KnowledgePageOpts{
+				AnchorDocID: item.ID,
+			})
+			if v2Err == nil {
+				usedV2 = true
+				v2NextCursor = v2Resp.NextCursor
+				v2PrevCursor = v2Resp.PrevCursor
+				v2HasPrev = v2Resp.HasPrev
+				v2TotalFiltered = v2Resp.TotalFiltered
+				v2CatCounts = v2Resp.CategoryCounts
+				v2CatalogVersion = v2Resp.CatalogVersion
+				more = v2Resp.HasMore
+				rows = make([]Item, 0, len(v2Resp.Items))
+				for _, r := range v2Resp.Items {
+					if r.DocID == "" {
+						continue
+					}
+					mapped := r.toItem(recallStartedAt)
+					if mapped.key() == item.key() {
+						found = mapped
+					}
+					rows = append(rows, mapped)
+				}
+				if found.ID == "" {
+					err = fmt.Errorf("无法在当前官方目录中定位这条记忆，请重新读取")
+				}
+			} else {
+				usedV2 = true
+				if isControlNotFound(v2Err) {
+					err = fmt.Errorf("无法在当前官方目录中定位这条记忆，请重新读取")
+				} else {
+					err = v2Err
 				}
 			}
 		}

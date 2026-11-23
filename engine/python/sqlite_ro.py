@@ -504,6 +504,17 @@ def decode_node_set(raw_value) -> list[str]:
     return []
 
 
+def has_system_metadata(value) -> bool:
+    """Distinguish absent system metadata from a corrupt authoritative value."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip() not in ('', '{}')
+    if isinstance(value, dict):
+        return bool(value)
+    return True
+
+
 def extract_trusted_metadata(system_metadata, external_metadata, node_set=None) -> dict:
     """Merge metadata enforcing ``system_metadata > external_metadata`` and decoding ``node_set``.
 
@@ -532,11 +543,7 @@ def extract_trusted_metadata(system_metadata, external_metadata, node_set=None) 
                     sys_obj['node_set'] = resolved_ns
                 return sys_obj
 
-    sys_absent = (
-        system_metadata is None
-        or (isinstance(system_metadata, str) and system_metadata.strip() in ('', '{}'))
-        or (isinstance(system_metadata, dict) and not system_metadata)
-    )
+    sys_absent = not has_system_metadata(system_metadata)
     sys_meta = {} if sys_absent else parse_json_dict(system_metadata)
     ext_meta = parse_json_dict(external_metadata)
     col_ns = decode_node_set(node_set)

@@ -198,31 +198,22 @@ func TestColdStartOverviewPerformanceBudget(t *testing.T) {
 		totalSessions  = 86
 		totalRuns      = 50
 	)
-	docs := make([]Document, 0, totalKnowledge)
-	previews := make(map[string]string, 30)
-	recallCounts := make(map[string]*KnowledgeRecallStats, 30)
+	buckets := make(map[string]int)
+	recent := make([]v2KnowledgeItem, 0, 20)
 	for n := 0; n < totalKnowledge; n++ {
 		day := now.AddDate(0, 0, -(n / 5)).Format("2006-01-02")
-		id := fmt.Sprintf("cold-%04d", n)
-		docs = append(docs, Document{
-			ID:      id,
-			Dataset: "ds-main",
-			Name:    fmt.Sprintf("text_%032x", n),
-			Created: day + "T08:00:00Z",
-			Metadata: map[string]any{
-				"node_set":          []any{"session_learnings"},
-				"lesson_type":       "code_location",
-				"first_source_date": day,
-			},
-		})
-		if n < 30 {
-			previews["ds-main/"+id] = fmt.Sprintf("`internal/simpledesktop/overview_bootstrap.go` 单次只读聚合第 %d 条标题预览，冷启动零撑开。", n)
-			recallCounts["ds-main/"+id] = &KnowledgeRecallStats{Count: int64(n % 9), StartedAt: "2026-11-01T00:00:00Z"}
+		buckets[day]++
+		if n < 20 {
+			recent = append(recent, v2KnowledgeItem{
+				DocID: fmt.Sprintf("cold-%04d", n), DatasetID: "ds-main", ProjectID: "p1",
+				Title: fmt.Sprintf("冷启动聚合第 %d 条", n), PreviewText: "正文预览",
+				Kind: "knowledge", EffectiveDate: day, CreatedAt: day + "T08:00:00Z",
+			})
 		}
 	}
-	sessions := make([]Session, 0, totalSessions)
-	for n := 0; n < totalSessions; n++ {
-		sessions = append(sessions, Session{ID: fmt.Sprintf("s-%d", n), User: "u1", Dataset: "ds-main"})
+	dayBuckets := make([]v2OverviewDayBucket, 0, len(buckets))
+	for day, count := range buckets {
+		dayBuckets = append(dayBuckets, v2OverviewDayBucket{Day: day, Count: count})
 	}
 	runs := make([]activityRow, 0, totalRuns)
 	for n := 0; n < totalRuns; n++ {
@@ -235,13 +226,13 @@ func TestColdStartOverviewPerformanceBudget(t *testing.T) {
 			Created:   now.Add(-time.Duration(n) * time.Minute).UTC().Format(time.RFC3339),
 		})
 	}
-	payload := overviewBootstrapResponse{
-		Documents:       docs,
-		Sessions:        sessions,
-		Previews:        previews,
-		PipelineRuns:    runs,
-		RecallStartedAt: "2026-11-01T00:00:00Z",
-		RecallCounts:    recallCounts,
+	payload := v2OverviewBootstrapResponse{
+		Generation:          1,
+		TotalKnowledgeCount: totalKnowledge,
+		DayBuckets:          dayBuckets,
+		RecentItems:         recent,
+		Projects:            []v2OverviewProjectSummary{{ProjectID: "p1", DatasetID: "ds-main", SessionCount: totalSessions}},
+		PipelineRuns:        runs,
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -250,7 +241,7 @@ func TestColdStartOverviewPerformanceBudget(t *testing.T) {
 	bootstrapCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/capabilities" {
-			http.NotFound(w, r)
+			_ = json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/v1/overview/bootstrap") {
@@ -306,7 +297,7 @@ func TestColdStartOverviewPerformanceBudget(t *testing.T) {
 	if coldReady > 150*time.Millisecond {
 		t.Errorf("cold-start Overview ready time %v exceeds 150ms budget", coldReady)
 	}
-	if len(a.overviewState.Snapshot.Knowledge) != totalKnowledge || a.overviewState.Snapshot.Raw != totalSessions {
+	if a.overviewState.V2TotalKnowledge != totalKnowledge || a.overviewState.Snapshot.Raw != totalSessions {
 		t.Fatalf("unexpected cold-start snapshot: knowledge=%d raw=%d", len(a.overviewState.Snapshot.Knowledge), a.overviewState.Snapshot.Raw)
 	}
 	readyTop := 0
@@ -540,7 +531,7 @@ func TestSwitchProjectToOverviewIsPaintOnlyAndZeroTitleStorm(t *testing.T) {
 }
 
 // TestScale50kDesktopSLABudgets enforces the §6.2 50k-scale desktop SLA gates
-// across /v2/* cursor APIs, <=300 sliding window pagination, 256 KiB profile
+// across /v1/* cursor APIs, <=300 sliding window pagination, 256 KiB profile
 // virtualization, multi-project tray flyout caching, Light/Dark frame times
 // (<12ms/<16ms median, <25ms peak), cold-start Overview (<150ms), and bounded
 // heap delta (<=25 MiB) with zero legacy overviewDocuments fallbacks.
@@ -635,7 +626,7 @@ func TestScale50kDesktopSLABudgets(t *testing.T) {
 		switch {
 		case r.URL.Path == "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
 				Features: []string{
 					v2FeatureCatalogIndex,
 					v2FeatureReadingState,
@@ -648,11 +639,11 @@ func TestScale50kDesktopSLABudgets(t *testing.T) {
 					v2FeatureProvenanceBackfill,
 				},
 			})
-		case r.URL.Path == "/v2/overview/bootstrap":
+		case r.URL.Path == "/v1/overview/bootstrap":
 			overviewV2Calls.Add(1)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(overviewPayload)
-		case r.URL.Path == "/v2/projects/p-50k-0/knowledge":
+		case r.URL.Path == "/v1/projects/p-50k-0/knowledge":
 			pageIdx := 0
 			if cursor := r.URL.Query().Get("cursor"); cursor != "" {
 				_, _ = fmt.Sscanf(cursor, "p50k-%d", &pageIdx)
@@ -690,8 +681,8 @@ func TestScale50kDesktopSLABudgets(t *testing.T) {
 				NextCursor:     fmt.Sprintf("p50k-%d", pageIdx+1),
 				HasMore:        pageIdx < 20,
 			})
-		case strings.HasSuffix(r.URL.Path, "/body") && strings.HasPrefix(r.URL.Path, "/v2/datasets/"):
-			parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v2/datasets/"), "/")
+		case strings.HasSuffix(r.URL.Path, "/body") && strings.HasPrefix(r.URL.Path, "/v1/datasets/"):
+			parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/datasets/"), "/")
 			dsID, docID := "ds-50k-0", "k50k-00000"
 			if len(parts) >= 4 {
 				dsID, docID = parts[0], parts[2]
@@ -704,7 +695,7 @@ func TestScale50kDesktopSLABudgets(t *testing.T) {
 				MIMEType:  "text/markdown",
 				Source:    "local_fastpath",
 			})
-		case r.URL.Path == "/v2/projects/p-50k-0/raw-records":
+		case r.URL.Path == "/v1/projects/p-50k-0/raw-records":
 			items := make([]v2RawRecordItem, 0, 30)
 			for i := 0; i < 30; i++ {
 				sid := fmt.Sprintf("codex_raw-%04d", i)
@@ -735,13 +726,13 @@ func TestScale50kDesktopSLABudgets(t *testing.T) {
 					Label:   "50k 原始会话详情",
 				},
 			})
-		case r.URL.Path == "/v2/reading-state/mark-read":
+		case r.URL.Path == "/v1/reading-state/mark-read":
 			_ = json.NewEncoder(w).Encode(v2ReadingStateMarkReadResponse{ScopeHash: "s1", Marked: 1, UnreadCount: 2, ReadHorizonAtNS: now.UTC().Format(time.RFC3339Nano)})
-		case r.URL.Path == "/v2/reading-state/migrate-local":
+		case r.URL.Path == "/v1/reading-state/migrate-local":
 			_ = json.NewEncoder(w).Encode(v2ReadingStateMigrateResponse{})
-		case r.URL.Path == "/v2/provenance/backfill-legacy-dates":
+		case r.URL.Path == "/v1/provenance/backfill-legacy-dates":
 			_ = json.NewEncoder(w).Encode(v2ProvenanceBackfillResponse{Status: "absent"})
-		case strings.HasPrefix(r.URL.Path, "/v2/projects/") && strings.HasSuffix(r.URL.Path, "/message-summary"):
+		case strings.HasPrefix(r.URL.Path, "/v1/projects/") && strings.HasSuffix(r.URL.Path, "/message-summary"):
 			_ = json.NewEncoder(w).Encode(v2MessageSummaryResponse{
 				ProjectID:               "p-50k-0",
 				DatasetID:               "ds-50k-0",
@@ -780,7 +771,7 @@ func TestScale50kDesktopSLABudgets(t *testing.T) {
 		Projects:        projects,
 	}
 
-	// 1. Cold-start Overview via /v2/overview/bootstrap (<150ms budget).
+	// 1. Cold-start Overview via /v1/overview/bootstrap (<150ms budget).
 	tStart := time.Now()
 	a := New(cfg, nil)
 	a.access.Loaded = true

@@ -38,7 +38,7 @@ type v2DocumentBodyResponse struct {
 
 func (c ProjectControlClient) documentBodyV2(ctx context.Context, datasetID, docID string) (v2DocumentBodyResponse, error) {
 	var out v2DocumentBodyResponse
-	path := "/v2/datasets/" + url.PathEscape(datasetID) + "/documents/" + url.PathEscape(docID) + "/body"
+	path := "/v1/datasets/" + url.PathEscape(datasetID) + "/documents/" + url.PathEscape(docID) + "/body"
 	// Allow up to 24 MiB JSON payload to cover worst-case JSON control-character escaping of an 8 MiB UTF-8 body.
 	if err := c.requestWithLimit(ctx, "GET", path, nil, &out, 24*1024*1024); err != nil {
 		return v2DocumentBodyResponse{}, err
@@ -161,7 +161,7 @@ func (row v2KnowledgeItem) toItem(recallStartedAt string) Item {
 
 	// Strictly decouple Preview from Body / BodyLoaded:
 	// list cards display Preview directly while Body remains empty and BodyLoaded=false
-	// until the full document is fetched via /v2/datasets/{ds}/documents/{doc}/body.
+	// until the full document is fetched via /v1/datasets/{ds}/documents/{doc}/body.
 	return Item{
 		ID:                row.DocID,
 		Dataset:           row.DatasetID,
@@ -228,7 +228,7 @@ func v2IdentityHeaders(readingID string) map[string]string {
 	return map[string]string{v2HeaderReadingIdentity: readingID}
 }
 
-func (c ProjectControlClient) overviewBootstrapV2(ctx context.Context, readingID string, days, recentLimit, activityLimit, recallLimit int) (v2OverviewBootstrapResponse, error) {
+func (c ProjectControlClient) overviewBootstrap(ctx context.Context, readingID string, days, recentLimit, activityLimit, recallLimit int) (v2OverviewBootstrapResponse, error) {
 	var out v2OverviewBootstrapResponse
 	q := url.Values{}
 	if days > 0 {
@@ -243,7 +243,7 @@ func (c ProjectControlClient) overviewBootstrapV2(ctx context.Context, readingID
 	if recallLimit > 0 {
 		q.Set("recall_limit", strconv.Itoa(min(50, recallLimit)))
 	}
-	path := "/v2/overview/bootstrap"
+	path := "/v1/overview/bootstrap"
 	if enc := q.Encode(); enc != "" {
 		path += "?" + enc
 	}
@@ -270,7 +270,7 @@ func (c ProjectControlClient) overviewDayV2(ctx context.Context, readingID, day 
 	if cursor != "" {
 		q.Set("cursor", cursor)
 	}
-	path := "/v2/overview/day?" + q.Encode()
+	path := "/v1/overview/day?" + q.Encode()
 	err := c.requestWithHeaders(ctx, "GET", path, v2IdentityHeaders(readingID), nil, &out, 512*1024)
 	return out, err
 }
@@ -333,9 +333,10 @@ func buildOverviewFromV2Bootstrap(projects []Project, resp v2OverviewBootstrapRe
 }
 
 type v2KnowledgePageOpts struct {
-	Cursor      string
-	Direction   string
-	AnchorDocID string
+	Cursor                       string
+	Direction                    string
+	AnchorDocID                  string
+	RecallAgentID, RecallEventID string
 }
 
 type v2ProjectKnowledgeResponse struct {
@@ -387,7 +388,7 @@ func (c ProjectControlClient) projectKnowledgePageV2(ctx context.Context, readin
 	if opts.AnchorDocID != "" {
 		q.Set("anchor_doc_id", opts.AnchorDocID)
 	}
-	path := "/v2/projects/" + url.PathEscape(projectID) + "/knowledge"
+	path := "/v1/projects/" + url.PathEscape(projectID) + "/knowledge"
 	if enc := q.Encode(); enc != "" {
 		path += "?" + enc
 	}
@@ -435,7 +436,11 @@ func (c ProjectControlClient) commonKnowledgePageV2(ctx context.Context, dataset
 	if opts.AnchorDocID != "" {
 		q.Set("anchor_doc_id", opts.AnchorDocID)
 	}
-	path := "/v2/common/knowledge?" + q.Encode()
+	if opts.RecallEventID != "" {
+		q.Set("recall_agent_id", opts.RecallAgentID)
+		q.Set("recall_event_id", opts.RecallEventID)
+	}
+	path := "/v1/common/knowledge?" + q.Encode()
 	err := c.requestWithLimit(ctx, "GET", path, nil, &out, 512*1024)
 	return out, err
 }
@@ -497,7 +502,7 @@ func (c ProjectControlClient) searchRecentV2(ctx context.Context, readingID stri
 	if datasetID != "" {
 		q.Set("dataset_id", datasetID)
 	}
-	path := "/v2/search/recent?" + q.Encode()
+	path := "/v1/search/recent?" + q.Encode()
 	err := c.requestWithHeaders(ctx, "GET", path, v2IdentityHeaders(readingID), nil, &out, 512*1024)
 	return out, err
 }
@@ -526,7 +531,7 @@ func (c ProjectControlClient) searchMetadataV2(ctx context.Context, readingID, q
 	if datasetID != "" {
 		q.Set("dataset_id", datasetID)
 	}
-	path := "/v2/search/metadata?" + q.Encode()
+	path := "/v1/search/metadata?" + q.Encode()
 	err := c.requestWithHeaders(ctx, "GET", path, v2IdentityHeaders(readingID), nil, &out, 512*1024)
 	return out, err
 }
@@ -568,7 +573,7 @@ func (c ProjectControlClient) rawRecordsV2(ctx context.Context, projectID, kind 
 	if cursor != "" {
 		q.Set("cursor", cursor)
 	}
-	path := "/v2/projects/" + url.PathEscape(projectID) + "/raw-records?" + q.Encode()
+	path := "/v1/projects/" + url.PathEscape(projectID) + "/raw-records?" + q.Encode()
 	if err := c.requestWithLimit(ctx, "GET", path, nil, &out, 512*1024); err != nil {
 		return v2RawRecordsResponse{}, err
 	}
@@ -597,7 +602,7 @@ func (c ProjectControlClient) sessionChildrenV2(ctx context.Context, projectID, 
 	if cursor != "" {
 		q.Set("cursor", cursor)
 	}
-	path := "/v2/projects/" + url.PathEscape(projectID) + "/raw-records/sessions/" + url.PathEscape(sessionID) + "/children"
+	path := "/v1/projects/" + url.PathEscape(projectID) + "/raw-records/sessions/" + url.PathEscape(sessionID) + "/children"
 	if enc := q.Encode(); enc != "" {
 		path += "?" + enc
 	}
@@ -701,24 +706,8 @@ type v2MessageSummaryResponse struct {
 	PendingDocumentsCount   int                             `json:"pending_documents_count"`
 	PendingDocuments        []projectMessageSummaryDocument `json:"pending_documents"`
 	Notices                 []processingNotice              `json:"notices"`
-	ProcessingNotices       []processingNotice              `json:"processing_notices,omitempty"`
 	Activity                []activityRow                   `json:"activity"`
 	Errors                  map[string]string               `json:"errors"`
-}
-
-func (r v2MessageSummaryResponse) notices() []processingNotice {
-	if len(r.Notices) > 0 {
-		return r.Notices
-	}
-	return r.ProcessingNotices
-}
-
-func (r v2MessageSummaryResponse) pendingItems(defaultDataset string) []Item {
-	compat := projectMessageSummaryResponse{
-		DatasetID:        r.DatasetID,
-		PendingDocuments: r.PendingDocuments,
-	}
-	return compat.pendingItems(defaultDataset)
 }
 
 func (r v2MessageSummaryResponse) unreadPreviewItems(defaultDataset string) []Item {
@@ -763,7 +752,7 @@ func (r v2MessageSummaryResponse) unreadPreviewItems(defaultDataset string) []It
 
 func (c ProjectControlClient) projectMessageSummaryV2(ctx context.Context, readingID, projectID string) (v2MessageSummaryResponse, error) {
 	var out v2MessageSummaryResponse
-	path := "/v2/projects/" + url.PathEscape(projectID) + "/message-summary"
+	path := "/v1/projects/" + url.PathEscape(projectID) + "/message-summary"
 	err := c.requestWithHeaders(ctx, "GET", path, v2IdentityHeaders(readingID), nil, &out, 512*1024)
 	return out, err
 }
@@ -793,7 +782,7 @@ type v2ReadingStateMigrateResponse struct {
 
 func (c ProjectControlClient) readingStateMigrateLocalV2(ctx context.Context, req v2ReadingStateMigrateRequest) (v2ReadingStateMigrateResponse, error) {
 	var out v2ReadingStateMigrateResponse
-	err := c.requestWithLimit(ctx, "POST", "/v2/reading-state/migrate-local", req, &out, 512*1024)
+	err := c.requestWithLimit(ctx, "POST", "/v1/reading-state/migrate-local", req, &out, 512*1024)
 	return out, err
 }
 
@@ -812,7 +801,7 @@ type v2ReadingStateImportBeginResponse struct {
 
 func (c ProjectControlClient) readingStateImportBeginV2(ctx context.Context, req v2ReadingStateImportBeginRequest) (v2ReadingStateImportBeginResponse, error) {
 	var out v2ReadingStateImportBeginResponse
-	err := c.requestWithLimit(ctx, "POST", "/v2/reading-state/import/begin", req, &out, 256*1024)
+	err := c.requestWithLimit(ctx, "POST", "/v1/reading-state/import/begin", req, &out, 256*1024)
 	return out, err
 }
 
@@ -833,7 +822,7 @@ type v2ReadingStateImportChunkResponse struct {
 
 func (c ProjectControlClient) readingStateImportChunkV2(ctx context.Context, req v2ReadingStateImportChunkRequest) (v2ReadingStateImportChunkResponse, error) {
 	var out v2ReadingStateImportChunkResponse
-	err := c.requestWithLimit(ctx, "POST", "/v2/reading-state/import/chunk", req, &out, 256*1024)
+	err := c.requestWithLimit(ctx, "POST", "/v1/reading-state/import/chunk", req, &out, 256*1024)
 	return out, err
 }
 
@@ -851,7 +840,7 @@ type v2ReadingStateImportCommitResponse struct {
 
 func (c ProjectControlClient) readingStateImportCommitV2(ctx context.Context, req v2ReadingStateImportCommitRequest) (v2ReadingStateImportCommitResponse, error) {
 	var out v2ReadingStateImportCommitResponse
-	err := c.requestWithLimit(ctx, "POST", "/v2/reading-state/import/commit", req, &out, 256*1024)
+	err := c.requestWithLimit(ctx, "POST", "/v1/reading-state/import/commit", req, &out, 256*1024)
 	return out, err
 }
 
@@ -877,7 +866,7 @@ func (r v2ReadingStateMarkReadResponse) unreadCountKnown() bool {
 
 func (c ProjectControlClient) readingStateMarkReadV2(ctx context.Context, req v2ReadingStateMarkReadRequest) (v2ReadingStateMarkReadResponse, error) {
 	var out v2ReadingStateMarkReadResponse
-	err := c.requestWithLimit(ctx, "POST", "/v2/reading-state/mark-read", req, &out, 256*1024)
+	err := c.requestWithLimit(ctx, "POST", "/v1/reading-state/mark-read", req, &out, 256*1024)
 	return out, err
 }
 
@@ -901,7 +890,7 @@ func (r v2ReadingStateMarkAllReadResponse) unreadCountKnown() bool {
 
 func (c ProjectControlClient) readingStateMarkAllReadV2(ctx context.Context, req v2ReadingStateMarkAllReadRequest) (v2ReadingStateMarkAllReadResponse, error) {
 	var out v2ReadingStateMarkAllReadResponse
-	err := c.requestWithLimit(ctx, "POST", "/v2/reading-state/mark-all-read", req, &out, 256*1024)
+	err := c.requestWithLimit(ctx, "POST", "/v1/reading-state/mark-all-read", req, &out, 256*1024)
 	return out, err
 }
 
@@ -922,6 +911,6 @@ type v2ProvenanceBackfillResponse struct {
 
 func (c ProjectControlClient) provenanceBackfillLegacyDatesV2(ctx context.Context, req v2ProvenanceBackfillRequest) (v2ProvenanceBackfillResponse, error) {
 	var out v2ProvenanceBackfillResponse
-	err := c.requestWithLimit(ctx, "POST", "/v2/provenance/backfill-legacy-dates", req, &out, 512*1024)
+	err := c.requestWithLimit(ctx, "POST", "/v1/provenance/backfill-legacy-dates", req, &out, 512*1024)
 	return out, err
 }

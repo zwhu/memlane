@@ -244,7 +244,6 @@ func (a *App) loadOverview() {
 	epoch, identity := a.epoch, a.readingIdentity
 	v.Loading = true
 	client := a.Client
-	genStr := fmt.Sprint(generation)
 	control, hasControl := a.accessClient()
 	stateDir := a.readingStateDir()
 	accessProjects := append([]AccessProject(nil), a.access.Directory.Projects...)
@@ -257,9 +256,6 @@ func (a *App) loadOverview() {
 		}
 	}
 
-	// Fast path: prefer /v2/overview/bootstrap (<=128 KiB pre-aggregated buckets
-	// + top-20 recent items + activity), falling back to /v1/overview/bootstrap
-	// with zero disk SWR cache.
 	if hasControl {
 		if v.activityCancel != nil {
 			v.activityCancel()
@@ -294,95 +290,25 @@ func (a *App) loadOverview() {
 					}
 				})
 			}
-			hasV2Overview, probeErr := control.probeFeature(ctx, v2FeatureOverview)
-			if probeErr != nil {
-				failClosed(probeErr)
+			if err := control.requireReadingContract(ctx); err != nil {
+				failClosed(err)
 				return
 			}
-			if hasV2Overview {
-				hasV2ReadState, rsErr := control.probeFeature(ctx, v2FeatureReadingState)
-				if rsErr != nil {
-					failClosed(rsErr)
-					return
-				}
-				if hasV2ReadState && len(accessProjects) > 0 {
-					if migErr := a.migrateReadingStateV2Snapshot(ctx, control, readingID, stateDir, accessProjects); migErr != nil {
-						if ctx.Err() != nil || isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, accessProjects) {
-							failClosed(migErr)
-							return
-						}
+			if len(accessProjects) > 0 {
+				if migErr := a.migrateReadingStateV2Snapshot(ctx, control, readingID, stateDir, accessProjects); migErr != nil {
+					if ctx.Err() != nil || isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, accessProjects) {
+						failClosed(migErr)
+						return
 					}
-				}
-				v2Resp, v2Err := control.overviewBootstrapV2(ctx, readingID, 365, 20, 50, 50)
-				if v2Err == nil {
-					snapshot, buckets, events, more := buildOverviewFromV2Bootstrap(projects, v2Resp, 50)
-					var historyEvents []overviewEvent
-					var historyErr error
-					if searchHistory {
-						historyEvents, historyErr = client.overviewSearchHistory(ctx)
-					}
-					a.Update(func() {
-						if generation != a.overviewState.generation || authEpoch != a.authEpoch || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
-							return
-						}
-						a.overviewState.Loading = false
-						a.overviewState.RawLoaded = true
-						a.overviewState.V2Mode = true
-						a.overviewState.V2Generation = v2Resp.Generation
-						a.overviewState.V2TotalKnowledge = v2Resp.TotalKnowledgeCount
-						a.overviewState.V2DayBuckets = buckets
-						a.overviewState.V2RecallStartedAt = v2Resp.RecallStartedAt
-						a.overviewState.Snapshot = snapshot
-						a.overviewState.snapshotVersion++
-						a.recentScope = ""
-						a.overviewState.Loaded = true
-						a.overviewState.Error = ""
-						a.applyOverviewV2ProjectSummaries(v2Resp.Projects)
-						if !wasLoaded {
-							a.motionRuns.overviewPage++
-							a.motionRuns.overviewKnowledge++
-							a.motionRuns.overviewActivity++
-							a.overviewState.heatmapGrowStart = time.Now()
-						}
-						if actGen == a.overviewState.activityGeneration {
-							a.overviewState.ActivityLoading = false
-							a.overviewState.Events = events
-							a.overviewState.RecallError = ""
-							a.overviewState.More = more
-							a.overviewState.ActivityError = ""
-							a.overviewState.ActivityLoaded = true
-							a.overviewState.activityFetchedAt = time.Now()
-							if searchHistory {
-								if historyErr != nil {
-									a.overviewState.HistoryError = historyErr.Error()
-								} else {
-									a.overviewState.History = historyEvents
-									a.overviewState.HistoryLoaded = true
-									a.overviewState.HistoryError = ""
-								}
-							}
-						}
-						if a.overviewState.Day != "" {
-							a.loadOverviewDayV2(a.overviewState.Day, false)
-						}
-					})
-					return
-				}
-				if ctx.Err() != nil || isControlFailClosedV2(v2Err) {
-					failClosed(v2Err)
-					return
 				}
 			}
-			resp, err := control.overviewBootstrap(ctx, 250, 50)
-			if err == nil {
-				snapshot, events, more, hasRecallCounts := buildOverviewFromBootstrap(client, projects, resp, 50)
+			v2Resp, v2Err := control.overviewBootstrap(ctx, readingID, 365, 20, 50, 50)
+			if v2Err == nil {
+				snapshot, buckets, events, more := buildOverviewFromV2Bootstrap(projects, v2Resp, 50)
 				var historyEvents []overviewEvent
 				var historyErr error
 				if searchHistory {
 					historyEvents, historyErr = client.overviewSearchHistory(ctx)
-				}
-				if errors.Is(ctx.Err(), context.Canceled) {
-					return
 				}
 				a.Update(func() {
 					if generation != a.overviewState.generation || authEpoch != a.authEpoch || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
@@ -390,35 +316,22 @@ func (a *App) loadOverview() {
 					}
 					a.overviewState.Loading = false
 					a.overviewState.RawLoaded = true
-					a.overviewState.V2Mode = false
-					a.overviewState.V2DayBuckets = nil
-					ready := map[string]Item{}
-					for _, old := range a.overviewState.Snapshot.Knowledge {
-						ready[old.key()] = old
-					}
-					for n, item := range snapshot.Knowledge {
-						if old, ok := ready[item.key()]; ok {
-							if snapshot.Knowledge[n].ReadingState != "ready" && old.ReadingState == "ready" && item.Document != nil && (item.Document.ContentHash != "" || item.Document.Updated != "") && keyForReading(a.readingIdentity, old, genStr) == keyForReading(a.readingIdentity, item, genStr) {
-								snapshot.Knowledge[n].Title, snapshot.Knowledge[n].ReadingState = old.Title, old.ReadingState
-							}
-							if snapshot.Knowledge[n].RecallStats == nil && old.RecallStats != nil {
-								snapshot.Knowledge[n].RecallStats = old.RecallStats
-							}
-						}
-					}
+					a.overviewState.V2Mode = true
+					a.overviewState.V2Generation = v2Resp.Generation
+					a.overviewState.V2TotalKnowledge = v2Resp.TotalKnowledgeCount
+					a.overviewState.V2DayBuckets = buckets
+					a.overviewState.V2RecallStartedAt = v2Resp.RecallStartedAt
 					a.overviewState.Snapshot = snapshot
 					a.overviewState.snapshotVersion++
-					if !hasRecallCounts {
-						a.loadOverviewRecallStats(generation)
-					}
 					a.recentScope = ""
 					a.overviewState.Loaded = true
 					a.overviewState.Error = ""
+					a.applyOverviewV2ProjectSummaries(v2Resp.Projects)
 					if !wasLoaded {
 						a.motionRuns.overviewPage++
 						a.motionRuns.overviewKnowledge++
 						a.motionRuns.overviewActivity++
-						a.overviewState.heatmapGrowStart = time.Time{}
+						a.overviewState.heatmapGrowStart = time.Now()
 					}
 					if actGen == a.overviewState.activityGeneration {
 						a.overviewState.ActivityLoading = false
@@ -438,21 +351,13 @@ func (a *App) loadOverview() {
 							}
 						}
 					}
+					if a.overviewState.Day != "" {
+						a.loadOverviewDayV2(a.overviewState.Day, false)
+					}
 				})
 				return
 			}
-			if ctx.Err() != nil || isControlAuthDenied(err) {
-				// Never fall back from control-plane 401/403 to official /api/v1/*.
-				failClosed(err)
-				return
-			}
-			// Fallback when control server does not serve /v1/overview/bootstrap.
-			a.Update(func() {
-				if generation != a.overviewState.generation || authEpoch != a.authEpoch || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
-					return
-				}
-				a.loadOverviewLegacy(generation, wasLoaded)
-			})
+			failClosed(v2Err)
 		}()
 		return
 	}

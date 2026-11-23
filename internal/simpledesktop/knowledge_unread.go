@@ -134,8 +134,8 @@ type knowledgeReadMarkJob struct {
 }
 
 // knowledgeReadWriter serializes all background atomic writes of
-// knowledge-read-*.json, /v2/reading-state/mark-read (chunked <=200), and
-// /v2/reading-state/mark-all-read off the UI thread, coalescing rapid
+// knowledge-read-*.json, /v1/reading-state/mark-read (chunked <=200), and
+// /v1/reading-state/mark-all-read off the UI thread, coalescing rapid
 // mark-read bursts while keeping mark-all-read strictly ordered per scope.
 type knowledgeReadWriter struct {
 	mu            sync.Mutex
@@ -386,108 +386,93 @@ func (w *knowledgeReadWriter) executeMarkJob(job *knowledgeReadMarkJob, writeFn 
 
 	if job.control != nil && job.projectID != "" && job.datasetID != "" && job.readingIdentity != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		hasV2, probeErr := job.control.probeFeature(ctx, v2FeatureReadingState)
-		if probeErr != nil {
-			cancel()
-			if !job.markAll {
-				w.requeueFailedIDs(job, job.docIDs)
-			}
-			if job.onResult != nil {
-				job.onResult(v2ReadingStateMarkAllReadResponse{}, probeErr)
-			}
-			reportErr()
-			return probeErr
-		}
-		if hasV2 {
-			// Guard against flipping is_auto_baseline before any pending local legacy file is migrated.
-			if job.app != nil {
-				if migErr := job.app.migrateReadingBeforeWrite(ctx, job); migErr != nil {
-					cancel()
-					if !job.markAll {
-						w.requeueFailedIDs(job, job.docIDs)
-					}
-					if job.onResult != nil {
-						job.onResult(v2ReadingStateMarkAllReadResponse{}, migErr)
-					}
-					reportErr()
-					return migErr
-				}
-			}
-			if job.markAll {
-				resp, err := job.control.readingStateMarkAllReadV2(ctx, v2ReadingStateMarkAllReadRequest{
-					ReadingIdentity: job.readingIdentity,
-					ProjectID:       job.projectID,
-					DatasetID:       job.datasetID,
-				})
+		// Guard against flipping is_auto_baseline before any pending local legacy file is migrated.
+		if job.app != nil {
+			if migErr := job.app.migrateReadingBeforeWrite(ctx, job); migErr != nil {
 				cancel()
+				if !job.markAll {
+					w.requeueFailedIDs(job, job.docIDs)
+				}
 				if job.onResult != nil {
-					job.onResult(resp, err)
+					job.onResult(v2ReadingStateMarkAllReadResponse{}, migErr)
 				}
-				if err != nil {
-					reportErr()
-					return err
-				}
-				return nil
+				reportErr()
+				return migErr
 			}
-			var lastResp v2ReadingStateMarkReadResponse
-			var hasResp bool
-			for start := 0; start < len(job.docIDs); start += maxMarkReadBatch {
-				end := min(start+maxMarkReadBatch, len(job.docIDs))
-				chunk := job.docIDs[start:end]
-				var resp v2ReadingStateMarkReadResponse
-				var err error
-				for attempt := 0; attempt < 3; attempt++ {
-					resp, err = job.control.readingStateMarkReadV2(ctx, v2ReadingStateMarkReadRequest{
-						ReadingIdentity: job.readingIdentity,
-						ProjectID:       job.projectID,
-						DatasetID:       job.datasetID,
-						DocIDs:          chunk,
-					})
-					if err == nil || isControlAuthDenied(err) || isControlNotFound(err) || ctx.Err() != nil {
-						break
-					}
-					select {
-					case <-ctx.Done():
-					case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
-					}
-				}
-				if err != nil {
-					cancel()
-					w.requeueFailedIDs(job, job.docIDs[start:])
-					reportErr()
-					return err
-				}
-				lastResp = resp
-				hasResp = true
-			}
+		}
+		if job.markAll {
+			resp, err := job.control.readingStateMarkAllReadV2(ctx, v2ReadingStateMarkAllReadRequest{
+				ReadingIdentity: job.readingIdentity,
+				ProjectID:       job.projectID,
+				DatasetID:       job.datasetID,
+			})
 			cancel()
-			if hasResp && job.update != nil && job.queue != nil {
-				q := job.queue
-				resp := lastResp
-				job.update(func() {
-					if !jobStillValid() {
-						return
-					}
-					if resp.StateRev > 0 && resp.StateRev < q.ServerUnreadStateRev {
-						// Stale out-of-order response: never regress unread count.
-						return
-					}
-					if resp.StateRev > q.ServerUnreadStateRev {
-						q.ServerUnreadStateRev = resp.StateRev
-					}
-					if resp.unreadCountKnown() {
-						q.ServerUnreadKnown = true
-						q.ServerUnreadCount = resp.UnreadCount
-					}
-					if q.KnowledgeReadError == "已读状态未保存" {
-						q.KnowledgeReadError = ""
-					}
-					q.StateVersion++
-				})
+			if job.onResult != nil {
+				job.onResult(resp, err)
+			}
+			if err != nil {
+				reportErr()
+				return err
 			}
 			return nil
 		}
+		var lastResp v2ReadingStateMarkReadResponse
+		var hasResp bool
+		for start := 0; start < len(job.docIDs); start += maxMarkReadBatch {
+			end := min(start+maxMarkReadBatch, len(job.docIDs))
+			chunk := job.docIDs[start:end]
+			var resp v2ReadingStateMarkReadResponse
+			var err error
+			for attempt := 0; attempt < 3; attempt++ {
+				resp, err = job.control.readingStateMarkReadV2(ctx, v2ReadingStateMarkReadRequest{
+					ReadingIdentity: job.readingIdentity,
+					ProjectID:       job.projectID,
+					DatasetID:       job.datasetID,
+					DocIDs:          chunk,
+				})
+				if err == nil || isControlAuthDenied(err) || isControlNotFound(err) || ctx.Err() != nil {
+					break
+				}
+				select {
+				case <-ctx.Done():
+				case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
+				}
+			}
+			if err != nil {
+				cancel()
+				w.requeueFailedIDs(job, job.docIDs[start:])
+				reportErr()
+				return err
+			}
+			lastResp = resp
+			hasResp = true
+		}
 		cancel()
+		if hasResp && job.update != nil && job.queue != nil {
+			q := job.queue
+			resp := lastResp
+			job.update(func() {
+				if !jobStillValid() {
+					return
+				}
+				if resp.StateRev > 0 && resp.StateRev < q.ServerUnreadStateRev {
+					// Stale out-of-order response: never regress unread count.
+					return
+				}
+				if resp.StateRev > q.ServerUnreadStateRev {
+					q.ServerUnreadStateRev = resp.StateRev
+				}
+				if resp.unreadCountKnown() {
+					q.ServerUnreadKnown = true
+					q.ServerUnreadCount = resp.UnreadCount
+				}
+				if q.KnowledgeReadError == "已读状态未保存" {
+					q.KnowledgeReadError = ""
+				}
+				q.StateVersion++
+			})
+		}
+		return nil
 	}
 
 	if job.markAll {
@@ -684,13 +669,6 @@ func (a *App) migrateReadingStateV2(ctx context.Context, control ProjectControlC
 func (a *App) migrateReadingStateV2Snapshot(ctx context.Context, control ProjectControlClient, readingID, stateDir string, projects []AccessProject) error {
 	if readingID == "" {
 		return fmt.Errorf("客户端阅读身份不可用")
-	}
-	hasV2ReadState, probeErr := control.probeFeature(ctx, v2FeatureReadingState)
-	if probeErr != nil {
-		return probeErr
-	}
-	if !hasV2ReadState {
-		return nil
 	}
 	scopeKeyFor := func(p AccessProject) string {
 		return control.Config.URL + "|" + readingID + "|" + p.ID + "|" + p.Dataset
@@ -1099,7 +1077,7 @@ func (a *App) markKnowledgeRead(i Item) {
 			return
 		}
 		// Instant in-memory state update; atomic JSON serialization or
-		// /v2/reading-state/mark-read runs serially on the background writer so
+		// /v1/reading-state/mark-read runs serially on the background writer so
 		// 10k+ maps never stall the UI thread.
 		q.KnowledgeRead.Read[i.ID] = true
 		if q.ServerUnreadKnown && q.ServerUnreadCount > 0 && (wasServerUnread || (!exists || !wasRead)) {

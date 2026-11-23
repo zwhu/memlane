@@ -1,13 +1,12 @@
 package simpledesktop
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,20 +22,24 @@ func TestLoadProjectQueueUsesMessageSummaryAndHandlesPartialErrors(t *testing.T)
 
 	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/capabilities" {
-			http.NotFound(w, r)
+			_ = json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+			return
+		}
+		if r.URL.Path == "/v1/reading-state/migrate-local" {
+			_ = json.NewEncoder(w).Encode(v2ReadingStateMigrateResponse{
+				Migrated: []v2ReadingStateMigratedScope{{ProjectID: "p", DatasetID: "ds", Status: "no_legacy_file"}},
+			})
 			return
 		}
 		if r.URL.Path == "/v1/projects/p/message-summary" {
 			atomic.AddInt32(&summaryCalls, 1)
-			json.NewEncoder(w).Encode(projectMessageSummaryResponse{
+			json.NewEncoder(w).Encode(v2MessageSummaryResponse{
 				ProjectID:     "p",
 				DatasetID:     "ds",
 				AutomaticSave: true,
 				Backlog:       &backlogJob{Operation: "op-1", Status: "watching", Automatic: true},
-				ProcessingNotices: []processingNotice{
+				Notices: []processingNotice{
 					{Operation: "proc-1", Status: 502, Code: "codex_upstream_error", Backend: "codex", At: time.Now().UTC().Format(time.RFC3339)},
-				},
-				ResolvedProcessingNotices: []processingNotice{
 					{Operation: "resolved-1", Status: 502, Code: "codex_stream_disconnected", Backend: "codex",
 						At: "2026-11-21T18:55:28Z", ResolvedAt: "2026-11-21T18:57:18Z"},
 				},
@@ -91,218 +94,66 @@ func TestLoadProjectQueueUsesMessageSummaryAndHandlesPartialErrors(t *testing.T)
 	}
 }
 
-func TestLoadProjectQueueFallsBackOn404MessageSummary(t *testing.T) {
-	token := filepath.Join(t.TempDir(), "manager.token")
-	if err := os.WriteFile(token, []byte("synthetic-management-token-123456789"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	var sawSummary404, sawProcessingNotices, sawProcessingStatus int32
-
-	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/capabilities" {
-			http.NotFound(w, r)
-			return
-		}
-		if r.URL.Path == "/v1/projects/p/message-summary" {
-			atomic.AddInt32(&sawSummary404, 1)
-			http.NotFound(w, r)
-			return
-		}
-		if r.URL.Path == "/v1/projects/p/processing-notices" {
-			calls := atomic.AddInt32(&sawProcessingNotices, 1)
-			reply := map[string]any{"items": []processingNotice{{
-				Operation: "proc-1", Status: 502, Code: "codex_upstream_error", Backend: "codex",
-				At: "2026-11-21T18:55:28Z", RecoveredAt: "2026-11-21T18:57:18Z",
-			}}}
-			if calls > 1 {
-				reply["resolved_items"] = []processingNotice{{
-					Operation: "resolved-1", Status: 502, Code: "codex_stream_disconnected", Backend: "codex",
-					At: "2026-11-21T18:55:28Z", ResolvedAt: "2026-11-21T18:57:18Z",
-				}}
+func TestReadingContractRejectsOldBackendAndRecoversAfterRestart(t *testing.T) {
+	token := p1TestTokenFile(t)
+	var restarted atomic.Bool
+	var reads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			caps := ControlCapabilities{APIVersions: []string{"v1", "v2"}}
+			if restarted.Load() {
+				caps.APIVersions = []string{"v1"}
+				caps.ReadingContract = readingContract
 			}
-			json.NewEncoder(w).Encode(reply)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer control.Close()
-
-	cognee := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.Contains(r.URL.Path, "processing-status"):
-			atomic.AddInt32(&sawProcessingStatus, 1)
-			json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{{"id": "raw-1", "name": "fallback.md", "completed": false}}})
-		case strings.Contains(r.URL.Path, "activity/pipeline-runs"):
-			json.NewEncoder(w).Encode([]activityRow{})
+			_ = json.NewEncoder(w).Encode(caps)
+		case "/v1/overview/bootstrap":
+			if r.Header.Get("X-Memlane-Reading-Contract") != readingContract {
+				http.Error(w, "missing reading contract", 409)
+				return
+			}
+			reads.Add(1)
+			if !restarted.Load() {
+				_ = json.NewEncoder(w).Encode(map[string]any{"documents": []any{}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(v2OverviewBootstrapResponse{Generation: 42})
+		case "/v1/projects/p1/message-summary":
+			if r.Header.Get("X-Memlane-Reading-Contract") != readingContract {
+				http.Error(w, "missing reading contract", 409)
+				return
+			}
+			reads.Add(1)
+			_ = json.NewEncoder(w).Encode(v2MessageSummaryResponse{ProjectID: "p1", UnreadCount: 3})
 		default:
-			json.NewEncoder(w).Encode([]Document{{ID: "raw-1", Dataset: "ds", Name: "fallback.md"}})
-		}
-	}))
-	defer cognee.Close()
-
-	a := settingsFixture()
-	a.access.Directory.Bindings = nil
-	a.Config.ServiceURL = cognee.URL
-	a.Client = Client{Config: a.Config}
-	a.Config.ProjectControl = &ProjectControlConfig{URL: control.URL, ManagementTokenFile: token}
-	updates := make(chan func(), 10)
-	a.Update = func(fn func()) { updates <- fn }
-
-	p := a.access.Directory.Projects[0]
-	q := a.projectQueueStateFor(p)
-	a.loadProjectQueue(q, p)
-	drainReading(t, updates, func() bool { return !q.Loading })
-
-	if atomic.LoadInt32(&sawSummary404) != 1 || atomic.LoadInt32(&sawProcessingNotices) != 1 || atomic.LoadInt32(&sawProcessingStatus) != 1 {
-		t.Fatalf("404 fallback did not run legacy endpoints: summary=%d notices=%d status=%d", sawSummary404, sawProcessingNotices, sawProcessingStatus)
-	}
-	if !q.Loaded || q.DocumentError != "" || len(q.Documents) != 1 || q.Documents[0].ID != "raw-1" {
-		t.Fatalf("fallback did not load documents: loaded=%v err=%q docs=%+v", q.Loaded, q.DocumentError, q.Documents)
-	}
-	if len(q.ProcessingNotices) != 1 || q.ProcessingNotices[0].resolved() {
-		t.Fatalf("legacy standalone payload must retain its unresolved notice: %+v", q.ProcessingNotices)
-	}
-	a.loadProjectQueue(q, p)
-	drainReading(t, updates, func() bool { return !q.Loading })
-	if len(q.ProcessingNotices) != 2 || !q.ProcessingNotices[1].resolved() {
-		t.Fatalf("standalone payload did not load resolved diagnostics: %+v", q.ProcessingNotices)
-	}
-}
-
-func TestLoadProjectQueuePreloadsReadStateAndSyncsKnowledgeCatalogDelta(t *testing.T) {
-	dir := t.TempDir()
-	token := filepath.Join(dir, "manager.token")
-	if err := os.WriteFile(token, []byte("synthetic-management-token-123456789"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	stateFile := filepath.Join(dir, "client-state.json")
-
-	// Pre-seed persisted knowledge-read file on disk (1 read, 1 unread).
-	seed := settingsFixture()
-	seed.Config.ClientStateFile = stateFile
-	seed.Client.Config.ClientStateFile = stateFile
-	p := seed.access.Directory.Projects[0]
-	readPath, err := seed.knowledgeReadPath(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	enabledAt := time.Now().Add(-time.Hour).UTC()
-	if err := writeKnowledgeState(readPath, knowledgeReadState{
-		Version:     1,
-		Initialized: true,
-		StartedAt:   enabledAt,
-		Read: map[string]bool{
-			"k-old-read":   true,
-			"k-old-unread": false,
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	var mu sync.Mutex
-	var queryVersions []string
-	var stage int32
-
-	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/projects/p/message-summary" {
 			http.NotFound(w, r)
-			return
-		}
-		ver := r.URL.Query().Get("knowledge_version")
-		mu.Lock()
-		queryVersions = append(queryVersions, ver)
-		mu.Unlock()
-		cur := atomic.LoadInt32(&stage)
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		switch cur {
-		case 0:
-			// First poll: returns 3 knowledge items (k-old-read, k-old-unread, k-new-1) with v1.
-			json.NewEncoder(w).Encode(projectMessageSummaryResponse{
-				ProjectID: "p",
-				DatasetID: "ds",
-				KnowledgeCatalog: []projectMessageSummaryKnowledge{
-					{ID: "k-old-read", CreatedAt: enabledAt.Add(-time.Minute).Format(time.RFC3339Nano)},
-					{ID: "k-old-unread", CreatedAt: enabledAt.Add(time.Minute).Format(time.RFC3339Nano)},
-					{ID: "k-new-1", CreatedAt: now},
-				},
-				KnowledgeCatalogVersion: "v1-abc",
-				Errors:                  map[string]string{},
-			})
-		case 1:
-			// Second poll: server sees v1-abc and returns unchanged delta without catalog payload.
-			json.NewEncoder(w).Encode(projectMessageSummaryResponse{
-				ProjectID:                 "p",
-				DatasetID:                 "ds",
-				KnowledgeCatalog:          nil,
-				KnowledgeCatalogVersion:   "v1-abc",
-				KnowledgeCatalogUnchanged: ver == "v1-abc",
-				Errors:                    map[string]string{},
-			})
-		default:
-			// Third poll: k-old-unread removed, k-new-2 arrived under v2-def.
-			json.NewEncoder(w).Encode(projectMessageSummaryResponse{
-				ProjectID: "p",
-				DatasetID: "ds",
-				KnowledgeCatalog: []projectMessageSummaryKnowledge{
-					{ID: "k-old-read", CreatedAt: enabledAt.Add(-time.Minute).Format(time.RFC3339Nano)},
-					{ID: "k-new-1", CreatedAt: now},
-					{ID: "k-new-2", CreatedAt: now},
-				},
-				KnowledgeCatalogVersion: "v2-def",
-				Errors:                  map[string]string{},
-			})
 		}
 	}))
-	defer control.Close()
+	defer server.Close()
 
-	a := settingsFixture()
-	a.access.Directory.Bindings = nil
-	a.Config.ClientStateFile = stateFile
-	a.Client.Config.ClientStateFile = stateFile
-	a.Config.ProjectControl = &ProjectControlConfig{URL: control.URL, ManagementTokenFile: token}
-	// Reset queues to simulate cold start after restart.
-	a.access.Queues = nil
-	updates := make(chan func(), 10)
-	a.Update = func(fn func()) { updates <- fn }
-
-	// 1. Cold-start preload restores persisted unread count before any network poll.
-	q := a.projectQueueStateFor(p)
-	if !q.KnowledgeRead.Initialized || q.unreadCount() != 1 {
-		t.Fatalf("expected cold-start preload unread=1, got init=%v unread=%d", q.KnowledgeRead.Initialized, q.unreadCount())
+	client := ProjectControlClient{Config: ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}}
+	ctx := context.Background()
+	if _, err := client.overviewBootstrap(ctx, "reader", 365, 20, 50, 50); !isControlErrorCode(err, 503, "reading_contract_mismatch") {
+		t.Fatalf("old backend bootstrap: %v", err)
+	}
+	if _, err := client.projectMessageSummaryV2(ctx, "reader", "p1"); !isControlErrorCode(err, 503, "reading_contract_mismatch") {
+		t.Fatalf("old backend summary: %v", err)
+	}
+	if reads.Load() != 0 {
+		t.Fatalf("received %d incompatible requests", reads.Load())
 	}
 
-	// 2. First poll syncs catalog and reveals k-new-1 (total unread = 2).
-	a.loadProjectQueue(q, p)
-	drainReading(t, updates, func() bool { return !q.Loading })
-	if q.KnowledgeReadError != "" || q.unreadCount() != 2 || q.KnowledgeCatalogVersion != "v1-abc" {
-		t.Fatalf("first poll mismatch: err=%q unread=%d ver=%q", q.KnowledgeReadError, q.unreadCount(), q.KnowledgeCatalogVersion)
+	restarted.Store(true)
+	if summary, err := client.projectMessageSummaryV2(ctx, "reader", "p1"); err != nil || summary.UnreadCount != 3 {
+		t.Fatalf("summary after restart: %+v, %v", summary, err)
+	}
+	if overview, err := client.overviewBootstrap(ctx, "reader", 365, 20, 50, 50); err != nil || overview.Generation != 42 {
+		t.Fatalf("overview after restart: %+v, %v", overview, err)
 	}
 
-	// 3. Second poll passes ?knowledge_version=v1-abc and preserves unread=2 on unchanged response.
-	atomic.StoreInt32(&stage, 1)
-	a.loadProjectQueue(q, p)
-	drainReading(t, updates, func() bool { return !q.Loading })
-	if q.unreadCount() != 2 || q.KnowledgeCatalogVersion != "v1-abc" {
-		t.Fatalf("unchanged delta poll broke unread state: unread=%d ver=%q", q.unreadCount(), q.KnowledgeCatalogVersion)
-	}
-
-	// 4. Third poll reflects deleted k-old-unread and added k-new-2 (still 2 unread: k-new-1, k-new-2).
-	atomic.StoreInt32(&stage, 2)
-	a.loadProjectQueue(q, p)
-	drainReading(t, updates, func() bool { return !q.Loading })
-	if q.unreadCount() != 2 || q.KnowledgeCatalogVersion != "v2-def" || q.KnowledgeRead.Read["k-old-unread"] || !q.KnowledgeRead.Read["k-old-read"] {
-		t.Fatalf("updated catalog poll mismatch: unread=%d ver=%q readMap=%+v", q.unreadCount(), q.KnowledgeCatalogVersion, q.KnowledgeRead.Read)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	wantVersions := []string{"", "v1-abc", "v1-abc"}
-	if len(queryVersions) != len(wantVersions) {
-		t.Fatalf("expected %d polls, got %v", len(wantVersions), queryVersions)
-	}
-	for i := range wantVersions {
-		if queryVersions[i] != wantVersions[i] {
-			t.Fatalf("poll %d sent knowledge_version=%q, want %q", i, queryVersions[i], wantVersions[i])
-		}
+	// A cached successful probe does not make a legacy response compatible.
+	restarted.Store(false)
+	if _, err := client.overviewBootstrap(ctx, "reader", 365, 20, 50, 50); !isControlErrorCode(err, 503, "reading_contract_mismatch") {
+		t.Fatalf("backend replacement after successful probe: %v", err)
 	}
 }

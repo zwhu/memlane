@@ -195,13 +195,6 @@ func (c Client) backfillLegacyKnowledgeDatesV2(ctx context.Context) (bool, error
 	if !ok {
 		return false, nil
 	}
-	hasBackfill, probeErr := control.probeFeature(ctx, v2FeatureProvenanceBackfill)
-	if probeErr != nil {
-		return false, probeErr
-	}
-	if !hasBackfill {
-		return false, nil
-	}
 	identity, err := readingIdentity(Client{Config: c.Config})
 	if err != nil || identity == "" {
 		return false, err

@@ -589,14 +589,14 @@ func TestMarkKnowledgeReadAsyncCoalescedCorruptSafeAndDoubleSlashCompat(t *testi
 	}
 }
 
-func TestP0V2PointLookupsCapabilitiesFailClosedAndFallback(t *testing.T) {
+func TestManagedPointLookupsUseOnlyUnifiedRoutes(t *testing.T) {
 	dir := t.TempDir()
 	tokenFile := filepath.Join(dir, "manager.token")
 	if err := os.WriteFile(tokenFile, []byte(strings.Repeat("t", 40)), 0600); err != nil {
 		t.Fatal(err)
 	}
 
-	t.Run("v2 happy path and fail-closed errors", func(t *testing.T) {
+	t.Run("point reads and fail-closed errors", func(t *testing.T) {
 		var legacyCalls atomic.Int32
 		var capCalls atomic.Int32
 		var docStatus atomic.Int32
@@ -607,8 +607,8 @@ func TestP0V2PointLookupsCapabilitiesFailClosedAndFallback(t *testing.T) {
 			switch r.URL.Path {
 			case "/v1/capabilities":
 				capCalls.Add(1)
-				fmt.Fprint(w, `{"api_versions":["v1","v2"],"features":["document_lookup_v2","session_lookup_v2","code_activity_v2","tool_graph_batched_v2"]}`)
-			case "/v2/datasets/ds-1/documents/doc-1":
+				fmt.Fprint(w, `{"api_versions":["v1"],"reading_contract":"catalog-cursor-v1","features":["document_lookup_v2","session_lookup_v2","code_activity_v2","tool_graph_batched_v2"]}`)
+			case "/v1/datasets/ds-1/documents/doc-1":
 				switch docStatus.Load() {
 				case 403:
 					w.WriteHeader(http.StatusForbidden)
@@ -619,9 +619,9 @@ func TestP0V2PointLookupsCapabilitiesFailClosedAndFallback(t *testing.T) {
 				default:
 					fmt.Fprint(w, `{"id":"doc-1","datasetId":"ds-1","name":"lesson.md","mimeType":"text/markdown","externalMetadata":{"node_set":["session_learnings"],"lesson_type":"pitfall","session_id":"sess-1"},"updatedAt":"2026-11-21T08:00:00Z","createdAt":"2026-11-20T08:00:00Z","contentHash":"abc","effective_date":"2026-11-19","category":"踩坑经验","common_category":"","session_id":"sess-1","recall_count":4}`)
 				}
-			case "/v2/datasets/ds-1/sessions/sess-1":
+			case "/v1/datasets/ds-1/sessions/sess-1":
 				fmt.Fprint(w, `{"session_id":"sess-1","dataset_id":"ds-1","user_id":"user-1","agent_id":"codex","last_activity_at":"2026-11-21T09:00:00Z","started_at":"2026-11-21T08:00:00Z","status":"active"}`)
-			case "/v2/projects/proj-1/code-activity":
+			case "/v1/projects/proj-1/code-activity":
 				fmt.Fprint(w, `{"project_id":"proj-1","code_dataset_id":"code-ds-1","dataset_created_at":"2026-11-20T00:00:00Z","active":true,"status":"running","run_id":"run-42","latest_created_at":"2026-11-21T09:00:00Z","latest_started_at":"2026-11-21T09:00:00Z","latest_ended_at":""}`)
 			default:
 				http.NotFound(w, r)
@@ -659,9 +659,9 @@ func TestP0V2PointLookupsCapabilitiesFailClosedAndFallback(t *testing.T) {
 		if err != nil || !act.Active || act.Status != "running" || act.Run != "run-42" {
 			t.Fatalf("unexpected v2 code activity: state=%+v err=%v", act, err)
 		}
-		// Capabilities probe must be cached across all 3 lookups.
-		if capCalls.Load() != 1 {
-			t.Fatalf("expected /v1/capabilities cached to 1 call, got %d", capCalls.Load())
+		// Non-colliding routes use only their own response and authorization.
+		if capCalls.Load() != 0 {
+			t.Fatalf("point reads issued %d capability probes", capCalls.Load())
 		}
 
 		// 4. 403 project_unconfirmed fails closed without calling legacy.
@@ -681,53 +681,31 @@ func TestP0V2PointLookupsCapabilitiesFailClosedAndFallback(t *testing.T) {
 		}
 	})
 
-	t.Run("404 capabilities falls back losslessly and overviewDocuments uses limit=1000", func(t *testing.T) {
-		var sawOverviewLimit string
-		control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	t.Run("missing managed endpoints never scan official lists", func(t *testing.T) {
+		var officialReads atomic.Int32
+		control := httptest.NewServer(http.HandlerFunc(http.NotFound))
+		defer control.Close()
+		official := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			officialReads.Add(1)
 			http.NotFound(w, r)
 		}))
-		defer control.Close()
-
-		official := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			switch r.URL.Path {
-			case "/api/v1/datasets/ds-fb/data":
-				if qLimit := r.URL.Query().Get("limit"); qLimit == "1000" {
-					sawOverviewLimit = qLimit
-				}
-				fmt.Fprint(w, `[{"id":"doc-fb","datasetId":"ds-fb","name":"fb.md","externalMetadata":{"node_set":["session_learnings"]},"createdAt":"2026-11-20T08:00:00Z"}]`)
-			case "/api/v1/sessions":
-				fmt.Fprint(w, `{"sessions":[{"session_id":"sess-fb","dataset_id":"ds-fb","user_id":"u-fb","last_activity_at":"2026-11-21T08:00:00Z"}],"has_more":false}`)
-			case "/api/v1/datasets":
-				fmt.Fprint(w, `[{"id":"code-fb","createdAt":"2026-11-20T00:00:00Z"}]`)
-			case "/api/v1/activity/pipeline-runs":
-				fmt.Fprint(w, `[{"id":"r1","dataset_id":"code-fb","kind":"pipeline","pipeline_name":"code_graph_pipeline","pipeline_run_id":"run-fb","status":"DATASET_PROCESSING_COMPLETED","created_at":"2026-11-21T08:00:00Z","started_at":"2026-11-21T08:00:00Z"}]`)
-			default:
-				http.NotFound(w, r)
-			}
-		}))
 		defer official.Close()
-
-		client := Client{
-			Config: Config{
-				ServiceURL:      official.URL,
-				ClientStateFile: filepath.Join(dir, "state-fb.json"),
-				ProjectControl:  &ProjectControlConfig{URL: control.URL, ManagementTokenFile: tokenFile},
-			},
-		}
+		client := Client{Config: Config{
+			ServiceURL:     official.URL,
+			ProjectControl: &ProjectControlConfig{URL: control.URL, ManagementTokenFile: tokenFile},
+		}}
 		ctx := context.Background()
-
-		if doc, err := client.documentInfoByID(ctx, "ds-fb", "doc-fb"); err != nil || doc.ID != "doc-fb" {
-			t.Fatalf("documentInfoByID fallback failed: %+v %v", doc, err)
+		if _, err := client.documentInfoByID(ctx, "ds", "doc"); !isControlNotFound(err) {
+			t.Fatalf("document lookup: %v", err)
 		}
-		if sess, err := client.source(ctx, Item{Dataset: "ds-fb", Source: "sess-fb"}); err != nil || sess.ID != "sess-fb" {
-			t.Fatalf("source fallback failed: %+v %v", sess, err)
+		if _, err := client.source(ctx, Item{Dataset: "ds", Source: "session"}); !isControlNotFound(err) {
+			t.Fatalf("session lookup: %v", err)
 		}
-		if act, err := client.codeActivity(ctx, Project{ID: "p-fb", CodeDataset: "code-fb"}); err != nil || act.Run != "run-fb" || act.Active {
-			t.Fatalf("codeActivity fallback failed: %+v %v", act, err)
+		if _, err := client.codeActivity(ctx, Project{ID: "project", CodeDataset: "code"}); !isControlNotFound(err) {
+			t.Fatalf("code activity: %v", err)
 		}
-		if docs, err := client.overviewDocuments(ctx, Project{ID: "p-fb", Dataset: "ds-fb"}); err != nil || len(docs) != 1 || sawOverviewLimit != "1000" {
-			t.Fatalf("overviewDocuments fallback failed: docs=%d limit=%q err=%v", len(docs), sawOverviewLimit, err)
+		if officialReads.Load() != 0 {
+			t.Fatalf("unified reads fell back to %d official requests", officialReads.Load())
 		}
 	})
 }

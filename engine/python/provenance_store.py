@@ -215,6 +215,15 @@ def load_provenance_maps(provenance_path, allowed_datasets):
     return doc_dates, key_dates
 
 
+def lesson_metadata_days(trusted, *, from_system, parse_day=calendar_date):
+    """Return the preferred metadata day and the legacy date fallback."""
+    first = trusted.get('first_source_date')
+    session = trusted.get('session_date')
+    first_day = parse_day(first) if isinstance(first, str) else None
+    session_day = parse_day(session) if isinstance(session, str) else None
+    return (first_day or session_day, '') if from_system else (session_day, first_day)
+
+
 def _resolve_unlocked_metadata_date(trusted, *, from_system=False, created_at=None, include_created_fallback=True):
     """Canonical unlocked fallback order shared by SQLite fast path and HTTP enrichment.
 
@@ -229,11 +238,11 @@ def _resolve_unlocked_metadata_date(trusted, *, from_system=False, created_at=No
       3. ``first_source_date`` (only when ``created_at`` is absent) -> ``unconfirmed``
     """
     qa_ids = sorted({str(x) for x in (trusted.get('source_qa_ids') or ()) if x})
-    first_day = calendar_date(trusted.get('first_source_date'))
-    session_day = calendar_date(trusted.get('session_date'))
     created_day = local_calendar_date(created_at)
 
     if from_system:
+        first_day = calendar_date(trusted.get('first_source_date'))
+        session_day = calendar_date(trusted.get('session_date'))
         if first_day:
             if qa_ids:
                 return first_day, 'linked_qa', qa_ids
@@ -253,6 +262,7 @@ def _resolve_unlocked_metadata_date(trusted, *, from_system=False, created_at=No
             return '', 'created_at', qa_ids
         return '', 'unconfirmed', qa_ids
 
+    session_day, first_day = lesson_metadata_days(trusted, from_system=False)
     if session_day:
         return session_day, 'session_date', []
     if created_day:

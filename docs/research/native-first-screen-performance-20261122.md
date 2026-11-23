@@ -68,7 +68,7 @@
    - **第 2 波（`a.access.Loaded` 首帧）**：紧随第 1 次 `/v1/projects` 返回，下一帧在发起 `/v1/overview/bootstrap` 的**同一帧**内，侧栏 `overviewNavigation` 调用 `refreshSidebarQueueIfDue`（[overview_navigation.go](../../internal/simpledesktop/overview_navigation.go#L40) → [project_queue_badge.go](../../internal/simpledesktop/project_queue_badge.go#L39)），立即并发拉起**最多 3 个项目的 `/v1/projects/{id}/message-summary`**（争抢 `asyncio.to_thread` 工作线程与 SQLite 只读连接）及**最多 4 个 `runPendingMaterials` Python 子进程**（[project_queue.go](../../internal/simpledesktop/project_queue.go#L334)）。
 3. **第 3 波 `Start() + 700 ms` 定时炸弹（制造 `925–1,163 ms` 双峰断崖）**：[app.go](../../internal/simpledesktop/app.go#L199) 使用硬编码 `time.AfterFunc(700*time.Millisecond, ...)` 触发 `RefreshIntegrations()`，并发请求 `/v1/generation` 与 `/v1/connections?force=1`（[integrations.go](../../internal/simpledesktop/integrations.go#L457)）。服务端 `Connections.checked_view(force=True)`（[agent_connections.py](../../engine/python/agent_connections.py#L524)）在单事件循环上**调用两次 `Connections.view()`**——同步执行 **2 次 `CodexConnection.view()`（2× `ps` + 2× TOML 解析 ≈ `110–130 ms` 纯事件循环冻结）+ 全宿主插件逐文件 SHA-256 校验**，并穿透缓存拉起 `ConnectionCapture` 子进程探测。凡赶在 `Start() + 700 ms` 前完成 `bootstrap` 的样本总耗时为 `916–1,248 ms`；凡因第 2 次 `/v1/projects` 推迟而跨过 `+700 ms` 边界的样本直接撞上该事件循环冻结，`bootstrap` TTFB 跃升至 `925–1,163 ms`，总耗时跳变至 `1,621–1,864 ms`。
 
-[目录路由](../../engine/python/project_control_server.py#L118) · [Codex 进程扫描](../../engine/python/project_codex_connection.py#L125) · [宿主连接检查](../../engine/python/agent_connections.py#L467) · [三层监控快照](../../engine/python/service_monitor.py#L440) · [总览投影](../../engine/python/overview_bootstrap.py#L259) · [召回存储](../../engine/python/knowledge_recall.py#L171)
+[目录路由](../../engine/python/project_control_server.py#L118) · [Codex 进程扫描](../../engine/python/project_codex_connection.py#L125) · [宿主连接检查](../../engine/python/agent_connections.py#L467) · [三层监控快照](../../engine/python/service_monitor.py#L440) · [当前总览路由](../../engine/python/v2_api.py#L901) · [召回存储](../../engine/python/knowledge_recall.py#L171)
 
 ### 4.2 首屏数据路径演进约束
 
@@ -76,7 +76,7 @@
 2. **精简首屏载荷时必须保留 4 项隐式全量/跨接口真值**。当前 `bootstrap` 约 `1.06 MB` 中 `documents` 占 `746 KB`，若下钻为「轻量首屏响应 + 按需分页补齐」，不能简单只传 Top-20 文档与 365 天桶，必须同时精确给出：
    - **全历史总记忆数**（含早于 365 天热力图窗口及 `MissingDates` 的记忆，不能用 365 天桶求和替代，见 [overview_ui.go](../../internal/simpledesktop/overview_ui.go#L883)）；
    - **去重后的全量原始记录数**（跨会话与非派生原始文档按身份去重，见 [overview.go](../../internal/simpledesktop/overview.go#L175)）；
-   - **经足够窗口（现为 250 条）完成父子操作折叠与连续失败归并后的动态列表**（不能在 SQL 层直接截断为前 20 条原始 `pipeline_runs`，见 [overview_bootstrap.go](../../internal/simpledesktop/overview_bootstrap.go#L84)）；
+   - **经足够窗口（现为 250 条）完成父子操作折叠与连续失败归并后的动态列表**（不能在 SQL 层直接截断为前 20 条原始 `pipeline_runs`，旧实现见 `3436cf9:internal/simpledesktop/overview_bootstrap.go`）；
    - **首屏近期记忆与侧栏项目的未读状态**（现行 `itemIsUnread` 与 `unreadProjectBadge` 依赖 `projectQueueState.KnowledgeRead`，见 [knowledge_unread.go](../../internal/simpledesktop/knowledge_unread.go#L196)，须避免延迟队列后导致未读蓝点与徽标二次跳变）。
 3. **严守 `503` 回退解耦、跨库修订复核与日期口径单一真相**：
    - **禁止合并接口整包 `503` 拖垮项目目录**：按架构契约，SQLite 投影遇 schema 不匹配或锁超时须 fail-closed 回退官方 Cognee HTTP（`loadOverviewLegacy`）。若合并目录与首屏投影，投影降级时仍须正常返回权威目录并标记 `projection_unavailable`，否则客户端缺失 `a.Config.Projects` 将导致侧栏与官方 HTTP 回退同时失效。
@@ -84,7 +84,7 @@
    - **消除 `rememberKnowledgeDays` 的隐藏同步落盘 `fsync` 与日期桶分裂**：现行 `buildOverviewFromBootstrap` 调用的 `rememberKnowledgeDays`（[knowledge_dates.go](../../internal/simpledesktop/knowledge_dates.go#L52)）在无新记忆复跑时仅耗时 `6.5–11.4 ms`（命中 `!changed` 早退），但**一旦存在新提炼记忆便会在上屏前同步执行 `CreateTemp + Sync() + Rename`**；同时若改为服务端计算热力图日期桶，须先核对并收敛客户端私有 `knowledge-source-dates-*.json` 与外置 `provenance_store` 的历史映射，确保总览桶计数与项目页日期完全一致。
 4. **服务端内存物化仅作兜底备选**：仅在完成上述拆障与载荷精简后实测仍无法达标时再评估；候选只允许缓存可重建的轻量元数据，严禁桌面落盘缓存副本（工程门禁 `ML012`），且须基于存储水位、管理目录修订与服务身份验证确定性失效，严禁按 TTL 推断可见性。
 
-[Go 首屏聚合](../../internal/simpledesktop/overview_bootstrap.go#L27) · [历史日期锁](../../internal/simpledesktop/knowledge_dates.go#L52) · [未读状态读取](../../internal/simpledesktop/knowledge_unread.go#L196) · [开发说明与 ML012](../architecture/development.md)
+[当前 Go 首屏聚合](../../internal/simpledesktop/v2_client.go#L278) · [历史日期锁](../../internal/simpledesktop/knowledge_dates.go#L52) · [未读状态读取](../../internal/simpledesktop/knowledge_unread.go#L196) · [开发说明与 ML012](../architecture/development.md)
 
 ### 4.3 为什么点击进入 `Memlane`（1.51–1.85 s）比 `item-fe`（0.71–0.78 s）慢
 

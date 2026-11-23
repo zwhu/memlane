@@ -74,20 +74,20 @@ type App struct {
 	readingController
 	overviewController
 
-	userProfiles         userProfilesState
-	environment          environmentSetupState
-	initialSetup         bool
-	integrations         integrationState
-	layout               appLayoutState
-	projectUI            projectReadingState
-	settingsOrigin       *readingLocation
-	access               projectAccessState
-	commonEdit           commonEditorState
-	commonPage           commonKnowledgePageState
-	commonGeneration     uint64
-	editProject          *Project
-	editIndex            int
-	settingsMessage      string
+	userProfiles          userProfilesState
+	environment           environmentSetupState
+	initialSetup          bool
+	integrations          integrationState
+	layout                appLayoutState
+	projectUI             projectReadingState
+	settingsOrigin        *readingLocation
+	access                projectAccessState
+	commonEdit            commonEditorState
+	commonPage            commonKnowledgePageState
+	commonGeneration      uint64
+	editProject           *Project
+	editIndex             int
+	settingsMessage       string
 	ChooseProjectFolder   func() (string, error)
 	ChooseDiagnosticPath  func() (string, error)
 	OpenExistingAgent     func(string) error
@@ -116,26 +116,26 @@ type App struct {
 		docBodyKey        string
 		docBodyFade       uint64
 	}
-	poseEnter             poseEnterTracker
-	projectCreate        projectCreateState
-	Config               Config
-	Client               Client
-	Update               func(func())
-	page                 string
-	project              int
-	kind                 string
-	epoch                uint64
-	authEpoch            uint64
-	service, completion  string
-	monitor              serviceMonitorState
-	trayCache            trayFlyoutCache
-	knowledgeWriter      *knowledgeReadWriter
-	readingMigrateMu     sync.Mutex
-	readingMigrated      map[string]bool
-	readingMigrating     map[string]chan struct{}
-	configError          string
-	md                   markdown.Options
-	v4MD                 map[v4MDKey]*markdown.Options
+	poseEnter           poseEnterTracker
+	projectCreate       projectCreateState
+	Config              Config
+	Client              Client
+	Update              func(func())
+	page                string
+	project             int
+	kind                string
+	epoch               uint64
+	authEpoch           uint64
+	service, completion string
+	monitor             serviceMonitorState
+	trayCache           trayFlyoutCache
+	knowledgeWriter     *knowledgeReadWriter
+	readingMigrateMu    sync.Mutex
+	readingMigrated     map[string]bool
+	readingMigrating    map[string]chan struct{}
+	configError         string
+	md                  markdown.Options
+	v4MD                map[v4MDKey]*markdown.Options
 }
 
 type v4MDKey struct {
@@ -475,6 +475,7 @@ func (a *App) load(s *pane) {
 	} else if commonPageIdx > 0 && commonPageIdx < len(s.CommonCursors) {
 		commonOpts = v2KnowledgePageOpts{Cursor: s.CommonCursors[commonPageIdx]}
 	}
+	commonOpts.RecallAgentID, commonOpts.RecallEventID = s.Knowledge.RecallAgentID, s.Knowledge.RecallEventID
 	recallStartedAt := a.overviewState.V2RecallStartedAt
 	filter := a.searchType
 	if page != "搜索" {
@@ -535,37 +536,32 @@ func (a *App) load(s *pane) {
 		} else if p.Dataset == "" {
 			err = fmt.Errorf("项目正在登记，内容归属尚未确认")
 		} else if page == "通用知识" {
-			if len(recallFilter) == 0 && hasControl {
-				hasV2Common, probeErr := control.probeFeature(ctx, v2FeatureCommonKnowledgeCursor)
-				if probeErr != nil {
-					usedV2Common = true
-					err = probeErr
-				} else if hasV2Common {
-					v2Resp, v2Err := control.commonKnowledgePageV2(ctx, p.Dataset, category, 30, commonOpts)
-					if v2Err != nil && isControlInvalidCursor(v2Err) && (commonOpts.Cursor != "" || commonOpts.AnchorDocID != "") {
-						// Explicitly reset expired cursor to page 1 under the same filter
-						// instead of silently falling back to legacy offset pagination.
-						v2CommonCursorReset = true
-						v2Resp, v2Err = control.commonKnowledgePageV2(ctx, p.Dataset, category, 30, v2KnowledgePageOpts{})
-					}
-					if v2Err == nil {
-						usedV2Common = true
-						v2CommonNextCursor = v2Resp.NextCursor
-						v2CommonPrevCursor = v2Resp.PrevCursor
-						v2CommonHasPrev = v2Resp.HasPrev
-						v2CommonTotal = v2Resp.TotalFiltered
-						more = v2Resp.HasMore
-						rows = make([]Item, 0, len(v2Resp.Items))
-						for _, itemRow := range v2Resp.Items {
-							if itemRow.DocID == "" {
-								continue
-							}
-							rows = append(rows, itemRow.toItem(recallStartedAt))
+			if hasControl {
+				usedV2Common = true
+				v2Resp, v2Err := control.commonKnowledgePageV2(ctx, p.Dataset, category, 30, commonOpts)
+				if v2Err != nil && isControlInvalidCursor(v2Err) && (commonOpts.Cursor != "" || commonOpts.AnchorDocID != "") {
+					// Explicitly reset expired cursor to page 1 under the same filter
+					// instead of silently falling back to legacy offset pagination.
+					v2CommonCursorReset = true
+					v2Resp, v2Err = control.commonKnowledgePageV2(ctx, p.Dataset, category, 30, v2KnowledgePageOpts{
+						RecallAgentID: commonOpts.RecallAgentID, RecallEventID: commonOpts.RecallEventID,
+					})
+				}
+				if v2Err == nil {
+					v2CommonNextCursor = v2Resp.NextCursor
+					v2CommonPrevCursor = v2Resp.PrevCursor
+					v2CommonHasPrev = v2Resp.HasPrev
+					v2CommonTotal = v2Resp.TotalFiltered
+					more = v2Resp.HasMore
+					rows = make([]Item, 0, len(v2Resp.Items))
+					for _, itemRow := range v2Resp.Items {
+						if itemRow.DocID == "" {
+							continue
 						}
-					} else if isControlFailClosedV2(v2Err) || isControlInvalidCursor(v2Err) {
-						usedV2Common = true
-						err = v2Err
+						rows = append(rows, itemRow.toItem(recallStartedAt))
 					}
+				} else {
+					err = v2Err
 				}
 			}
 			if !usedV2Common {
@@ -586,39 +582,20 @@ func (a *App) load(s *pane) {
 				}
 			}
 		} else if page == "知识" && (kind == "原始记录" || kind == "会话" || kind == "文档") {
-			if hasControl && p.ID != "" {
-				hasV2Raw, probeErr := control.probeFeature(ctx, v2FeatureRawRecords)
-				if probeErr != nil {
-					usedV2Raw = true
-					err = probeErr
-				} else if hasV2Raw {
-					v2Resp, v2Err := control.rawRecordsV2(ctx, p.ID, kind, 30, "")
-					if v2Err == nil {
-						rows, err = v2RawRecordsToItems(p.Dataset, v2Resp)
-						more = v2Resp.HasMore
-						rawCacheReady = v2Resp.CacheReady
-						v2RawNextCursor = v2Resp.NextCursor
-						usedV2Raw = true
-						usedFast = true
-					} else if isControlFailClosedV2(v2Err) || isControlInvalidCursor(v2Err) {
-						usedV2Raw = true
-						err = v2Err
-					}
+			if hasControl {
+				usedV2Raw = true
+				resp, readErr := control.rawRecordsV2(ctx, p.ID, kind, 30, "")
+				if readErr != nil {
+					err = readErr
+				} else {
+					rows, err = v2RawRecordsToItems(p.Dataset, resp)
+					more = resp.HasMore
+					rawCacheReady = resp.CacheReady
+					v2RawNextCursor = resp.NextCursor
+					usedFast = true
 				}
-			}
-			if !usedV2Raw {
-				if hasControl {
-					resp, fastErr := control.rawRecords(ctx, p.Dataset, kind)
-					if fastErr == nil {
-						rawCatalog, rawCacheReady = buildRawRecordsFromFast(p.Dataset, resp)
-						usedFast = true
-					} else if !shouldFallbackFromRawControlError(ctx, fastErr) {
-						err = fastErr
-					}
-				}
-				if !usedFast && err == nil {
-					rawCatalog, err = client.projectRecordCatalog(ctx, p, kind)
-				}
+			} else {
+				rawCatalog, err = client.projectRecordCatalog(ctx, p, kind)
 				if err == nil {
 					end := min(rawCount, len(rawCatalog))
 					rows = append([]Item{}, rawCatalog[:end]...)

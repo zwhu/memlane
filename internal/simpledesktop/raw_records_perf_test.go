@@ -26,13 +26,13 @@ func TestRawRecordsColdStartAndSessionOpenPerformanceBudget(t *testing.T) {
 	for n := 0; n < totalDocs; n++ {
 		ts := now.Add(-time.Duration(n*3) * time.Minute).Format(time.RFC3339)
 		docs = append(docs, Document{
-			ID:        fmt.Sprintf("raw-doc-%03d", n),
-			Dataset:   "ds-main",
-			Name:      fmt.Sprintf("notes_%03d.md", n),
-			MIME:      "text/markdown",
-			Updated:   ts,
-			Created:   ts,
-			Metadata:  map[string]any{"node_set": []any{"project_docs"}},
+			ID:       fmt.Sprintf("raw-doc-%03d", n),
+			Dataset:  "ds-main",
+			Name:     fmt.Sprintf("notes_%03d.md", n),
+			MIME:     "text/markdown",
+			Updated:  ts,
+			Created:  ts,
+			Metadata: map[string]any{"node_set": []any{"project_docs"}},
 		})
 	}
 	sessions := make([]rawSessionEntry, 0, totalSessions)
@@ -52,11 +52,17 @@ func TestRawRecordsColdStartAndSessionOpenPerformanceBudget(t *testing.T) {
 			ToolCalls: 42,
 		})
 	}
-	payload, err := json.Marshal(rawRecordsResponse{
-		DatasetID:  "ds-main",
-		CacheReady: true,
-		Documents:  docs,
-		Sessions:   sessions,
+	items := make([]v2RawRecordItem, 0, 30)
+	for _, row := range sessions[:25] {
+		items = append(items, v2RawRecordItem{ItemKind: "session", Session: &v2RawSessionEntry{
+			Session: row.Session, Label: row.Label, MsgCount: row.MsgCount, ToolCalls: row.ToolCalls,
+		}})
+	}
+	for _, doc := range docs[:5] {
+		items = append(items, v2RawRecordItem{ItemKind: "document", Document: &doc})
+	}
+	payload, err := json.Marshal(v2RawRecordsResponse{
+		DatasetID: "ds-main", CacheReady: true, Items: items, HasMore: true, NextCursor: "next",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +76,7 @@ func TestRawRecordsColdStartAndSessionOpenPerformanceBudget(t *testing.T) {
 		switch {
 		case r.URL.Path == "/v1/capabilities":
 			http.NotFound(w, r)
-		case r.URL.Path == "/v1/raw-records":
+		case r.URL.Path == "/v1/projects/p1/raw-records":
 			rawRecordsCalls.Add(1)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(payload)

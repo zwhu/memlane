@@ -363,8 +363,6 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
     drift_store = attach_session_drift(app, registry)
     from cognee_extension_gateway import attach_cognee_gateway
     attach_cognee_gateway(app, registry, recall_store=recall_store, drift_store=drift_store)
-    from overview_bootstrap import attach_overview_bootstrap
-    attach_overview_bootstrap(app, registry, recall_store=recall_store, codex_config=codex_config)
     from raw_records_read import attach_raw_records_read
     attach_raw_records_read(app, registry, codex_config=codex_config)
     from v2_lookups import attach_v2_lookups
@@ -434,8 +432,6 @@ async def configured_app(config):
                 attach_generation_handoff(app, generation, registry, config, incremental, backlog)
             from tool_graph_control import attach_tool_graph
             attach_tool_graph(app, registry, config)
-        from project_message_summary import attach_project_message_summary
-        attach_project_message_summary(app, registry, backlog=backlog, codex_config=config)
         if 'v2_api_handles' in app and backlog is not None:
             app['v2_api_handles'].set_backlog(backlog)
     except BaseException:

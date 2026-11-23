@@ -250,10 +250,6 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 	}
 	client, python := a.Client, a.Config.Python
 	operator := pendingOperatorConfig(a.Config)
-	knownKnowledgeVersion := ""
-	if q.KnowledgeRead.Initialized && q.KnowledgeReadError == "" {
-		knownKnowledgeVersion = q.KnowledgeCatalogVersion
-	}
 	prevKnowledgeStartedAt := q.KnowledgeRead.StartedAt
 	stateDir := a.readingStateDir()
 	knowledgePath, knowledgePathErr := a.knowledgeReadPath(p)
@@ -285,17 +281,11 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 		var knowledgeCatalog []Document
 		var computedCatalog *computedKnowledgeCatalog
 		var knowledgeVersion string
-		var knowledgeUnchanged bool
 		var documentErr error
 		var activity []activityRow
 		var activityErr error
-		var notices struct {
-			Items         []processingNotice `json:"items"`
-			ResolvedItems []processingNotice `json:"resolved_items"`
-		}
+		var notices []processingNotice
 		var noticeErr error
-		var summary projectMessageSummaryResponse
-		var summaryOK bool
 		var summaryBacklogErr string
 		var v2Summary v2MessageSummaryResponse
 		var v2SummaryOK bool
@@ -306,119 +296,50 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			defer workers.Done()
 			if control != nil {
 				summaryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				defer cancel()
 				manager := ProjectControlClient{Config: *control, HTTP: client.HTTP}
-				hasReadState, rsProbeErr := manager.probeFeature(summaryCtx, v2FeatureReadingState)
-				if rsProbeErr != nil {
-					cancel()
-					noticeErr = rsProbeErr
-					documentErr = rsProbeErr
+				if err := manager.requireReadingContract(summaryCtx); err != nil {
+					noticeErr, documentErr, activityErr = err, err, err
 					return
 				}
-				if hasReadState {
-					if migErr := a.migrateReadingStateV2Snapshot(summaryCtx, manager, identity, stateDir, migrationProjects); migErr != nil {
-						if isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(manager.Config.URL, stateDir, identity, migrationProjects) {
-							cancel()
-							noticeErr = migErr
-							documentErr = migErr
-							return
-						}
-					}
-				}
-				hasV2Summary, sumProbeErr := manager.probeFeature(summaryCtx, v2FeatureMessageSummary)
-				if sumProbeErr != nil {
-					cancel()
-					noticeErr = sumProbeErr
-					documentErr = sumProbeErr
-					return
-				}
-				if hasV2Summary {
-					v2Res, v2Err := manager.projectMessageSummaryV2(summaryCtx, identity, p.ID)
-					cancel()
-					if v2Err == nil {
-						v2Summary = v2Res
-						v2SummaryOK = true
-						if msg := v2Res.Errors["processing_notices"]; msg != "" {
-							noticeErr = fmt.Errorf("%s", msg)
-						} else if msg := v2Res.Errors["notices"]; msg != "" {
-							noticeErr = fmt.Errorf("%s", msg)
-						} else {
-							notices.Items = v2Res.notices()
-						}
-						if msg := v2Res.Errors["documents"]; msg != "" {
-							documentErr = fmt.Errorf("%s", msg)
-						} else {
-							documents = v2Res.pendingItems(p.Dataset)
-							pendingDocumentsCount = max(v2Res.PendingDocumentsCount, len(documents))
-							knowledgeVersion = v2Res.KnowledgeCatalogVersion
-						}
-						if msg := v2Res.Errors["activity"]; msg != "" {
-							activityErr = fmt.Errorf("%s", msg)
-						} else {
-							activity = v2Res.Activity
-						}
-						summaryBacklogErr = v2Res.Errors["backlog"]
-						v2ReadStateErr = v2Res.Errors["reading_state"]
+				if migErr := a.migrateReadingStateV2Snapshot(summaryCtx, manager, identity, stateDir, migrationProjects); migErr != nil {
+					if isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(manager.Config.URL, stateDir, identity, migrationProjects) {
+						cancel()
+						noticeErr = migErr
+						documentErr = migErr
 						return
 					}
-					if isControlFailClosedV2(v2Err) {
-						noticeErr = v2Err
-						documentErr = v2Err
-						return
-					}
-					// Fall through to v1 message-summary if v2 endpoint returned 404.
-					summaryCtx, cancel = context.WithTimeout(ctx, 10*time.Second)
 				}
-				res, err := manager.projectMessageSummary(summaryCtx, p.ID, knownKnowledgeVersion)
+				v2Res, v2Err := manager.projectMessageSummaryV2(summaryCtx, identity, p.ID)
 				cancel()
-				if err == nil {
-					summary = res
-					summaryOK = true
-					if msg := res.Errors["processing_notices"]; msg != "" {
+				if v2Err == nil {
+					v2Summary = v2Res
+					v2SummaryOK = true
+					if msg := v2Res.Errors["processing_notices"]; msg != "" {
 						noticeErr = fmt.Errorf("%s", msg)
 					} else {
-						notices.Items = res.ProcessingNotices
-						notices.ResolvedItems = res.ResolvedProcessingNotices
+						notices = v2Res.Notices
 					}
-					if msg := res.Errors["documents"]; msg != "" {
+					if msg := v2Res.Errors["documents"]; msg != "" {
 						documentErr = fmt.Errorf("%s", msg)
 					} else {
-						documents = res.pendingItems(p.Dataset)
-						pendingDocumentsCount = len(documents)
-						knowledgeVersion = res.KnowledgeCatalogVersion
-						knowledgeUnchanged = res.KnowledgeCatalogUnchanged
-						if !knowledgeUnchanged {
-							knowledgeCatalog = res.knowledgeDocuments(p.Dataset)
-						}
+						documents = v2Res.pendingItems(p.Dataset)
+						pendingDocumentsCount = max(v2Res.PendingDocumentsCount, len(documents))
+						knowledgeVersion = v2Res.KnowledgeCatalogVersion
 					}
-					if msg := res.Errors["activity"]; msg != "" {
+					if msg := v2Res.Errors["activity"]; msg != "" {
 						activityErr = fmt.Errorf("%s", msg)
 					} else {
-						activity = res.Activity
+						activity = v2Res.Activity
 					}
-					summaryBacklogErr = res.Errors["backlog"]
+					summaryBacklogErr = v2Res.Errors["backlog"]
+					v2ReadStateErr = v2Res.Errors["reading_state"]
 					return
 				}
-				if isControlAuthDenied(err) {
-					// Fail closed on 401/403: never fall back to official /api/v1/* with a separate credential.
-					noticeErr = err
-					documentErr = err
-					return
-				}
-				if !isControlNotFound(err) {
-					noticeErr = err
-				}
+				noticeErr, documentErr, activityErr = v2Err, v2Err, v2Err
+				return
 			}
 			var fallback sync.WaitGroup
-			if control != nil && noticeErr == nil {
-				fallback.Add(1)
-				go func() {
-					defer fallback.Done()
-					noticeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-					defer cancel()
-					manager := ProjectControlClient{Config: *control, HTTP: client.HTTP}
-					noticeErr = manager.request(noticeCtx, "GET", "/v1/projects/"+url.PathEscape(p.ID)+"/processing-notices", nil, &notices)
-				}()
-			}
 			fallback.Add(1)
 			go func() {
 				defer fallback.Done()
@@ -486,7 +407,8 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			}
 		}()
 		workers.Wait()
-		authDenied := readingAuthDenied(documentErr) || readingAuthDenied(noticeErr) || readingAuthDenied(activityErr)
+		authDenied := readingAuthDenied(documentErr) || readingAuthDenied(noticeErr) || readingAuthDenied(activityErr) ||
+			isControlErrorCode(documentErr, 503, "reading_contract_mismatch")
 		// Execute legacy knowledge-read catalog reconciliation off the UI thread so
 		// a.Update never blocks on waitKnowledgeReadFlush or disk I/O.
 		if !v2SummaryOK && documentErr == nil && !authDenied && knowledgeCatalog != nil && knowledgePathErr == nil {
@@ -500,7 +422,8 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			}
 			q.Loading = false
 			if authDenied {
-				q.DocumentError = "提炼状态暂时无法读取"
+				q.DocumentError = controlUserError(documentErr)
+				q.Activity = nil
 				a.InvalidateReading(p.Dataset)
 				return
 			}
@@ -540,28 +463,12 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 						a.applyPendingChecks(q, v2Summary.Checks)
 					}
 				}
-			} else if summaryOK {
-				if summaryBacklogErr != "" {
-					q.BacklogError = "后台采集状态暂时无法读取；任务不会因此重复启动"
-				} else {
-					q.BacklogError = ""
-					q.Backlog = summary.Backlog
-					q.ProcessingIssues = summary.ProcessingIssues
-					q.BacklogLoaded = true
-					q.AutomaticSave = summary.AutomaticSave
-					if summary.BufferReviews != nil {
-						q.BufferReviews = summary.BufferReviews
-					}
-					if summary.Checks != nil {
-						a.applyPendingChecks(q, summary.Checks)
-					}
-				}
 			}
 			q.ProcessingReadError = ""
 			if noticeErr != nil {
 				q.ProcessingReadError = "记忆提炼异常记录暂时无法读取"
 			} else {
-				q.ProcessingNotices = append(notices.Items, notices.ResolvedItems...)
+				q.ProcessingNotices = notices
 			}
 			wasLoaded := q.Loaded
 			q.Loaded = true
@@ -625,8 +532,6 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 					if q.KnowledgeReadError == "" {
 						q.KnowledgeCatalogVersion = knowledgeVersion
 					}
-				} else if knowledgeUnchanged && knowledgeVersion != "" {
-					q.KnowledgeCatalogVersion = knowledgeVersion
 				}
 				q.Offset = min(q.Offset, max(0, len(documents)-1))
 			}
@@ -655,7 +560,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 					recovered = append(recovered, key)
 				}
 			}
-			if (summaryOK || v2SummaryOK) && summaryBacklogErr == "" {
+			if v2SummaryOK && summaryBacklogErr == "" {
 				if q.Backlog == nil || q.Backlog.ProcessingFailed == 0 {
 					recovered = append(recovered, "processing-failed")
 				}

@@ -1,4 +1,4 @@
-"""Read-only raw-records catalog & paged session-history endpoints over official SQLite stores.
+"""Read-only paged session-history endpoint over official SQLite stores.
 
 Runs strictly in ``project_control_server`` (outside upstream Cognee files) without
 copying raw bodies or modifying Cognee's ``cognee_db`` / ``cache.db``.
@@ -13,29 +13,19 @@ import uuid
 from aiohttp import web
 
 from _runtime_common import (
-    decode_node_set,
     id_variants,
-    is_derived_material,
-    is_knowledge_doc,
     iso_text,
     parse_json,
     sql_in_clause,
     uuid_text,
     verify_sqlite_schema,
 )
+from cache_read_v2 import CacheSessionHydrator
 from project_policy import PolicyError
 from session_relations import descendant_ids_for_session, resolve_session_relations
 from sqlite_ro import open_official_sqlite_ro
 
 MAX_RAW_HISTORY_BYTES = 8 * 1024 * 1024
-_VALID_KINDS = frozenset({'all', 'session', 'document'})
-_SQL_IN_BATCH = 400
-_COGNEE_DATA_SCHEMA = {
-    'data': frozenset({
-        'id', 'dataset_id', 'name', 'label', 'mime_type',
-        'external_metadata', 'node_set', 'updated_at', 'created_at', 'content_hash',
-    }),
-}
 _COGNEE_SESSION_SCHEMA = {
     'session_records': frozenset({
         'session_id', 'user_id', 'dataset_id', 'agent_id', 'last_activity_at', 'started_at',
@@ -100,22 +90,6 @@ def _extract_question_label(payload):
     if q:
         return str(q)[:120]
     return None
-
-
-def _cache_schema_ready(cache_db):
-    if cache_db.is_symlink() or not cache_db.is_file():
-        return False
-    try:
-        con = open_official_sqlite_ro(cache_db)
-    except (PolicyError, sqlite3.Error):
-        return False
-    try:
-        verify_sqlite_schema(con, _CACHE_REQUIRED_SCHEMA)
-        return True
-    except sqlite3.Error:
-        return False
-    finally:
-        con.close()
 
 
 def read_cache_session_history(cache_db, *, owner, session_id, qa_offset=0, trace_offset=0, limit=20):
@@ -207,108 +181,12 @@ def read_cache_session_history(cache_db, *, owner, session_id, qa_offset=0, trac
         con.close()
 
 
-def _hydrate_session_summaries(cache_db, sessions):
-    if cache_db.is_symlink() or not cache_db.is_file():
-        return False
-    bounds = _cache_expiry_bounds()
-    now_space = bounds[0]
+def _hydrate_related_sessions(cache_db, rows):
+    hydrator = CacheSessionHydrator()
     try:
-        con = open_official_sqlite_ro(cache_db, timeout_ms=2000)
-    except (PolicyError, sqlite3.Error):
-        return False
-
-    try:
-        verify_sqlite_schema(con, _CACHE_REQUIRED_SCHEMA)
-        qa_expired = _cache_table_has_expired(con, 'cache_qa_entries', bounds)
-        tr_expired = _cache_table_has_expired(con, 'cache_trace_entries', bounds)
-        qa_exp_sql, qa_exp_params = _expiry_sql(qa_expired, now_space)
-        tr_exp_sql, tr_exp_params = _expiry_sql(tr_expired, now_space)
-
-        by_user = {}
-        for row in sessions:
-            by_user.setdefault(row['user_id'], []).append(row['session_id'])
-
-        qa_counts = {}
-        trace_counts = {}
-        min_seqs = []
-        min_seq_owner = {}
-
-        for user_id, sids in by_user.items():
-            user_variants = id_variants(user_id)
-            user_sql, user_params = sql_in_clause(user_variants)
-            unique_sids = list(dict.fromkeys(sids))
-            for i in range(0, len(unique_sids), _SQL_IN_BATCH):
-                batch = unique_sids[i:i + _SQL_IN_BATCH]
-                sid_placeholders = ','.join('?' for _ in batch)
-                for sid, cnt, min_seq in con.execute(
-                    f'''SELECT session_id, COUNT(*), MIN(seq)
-                        FROM cache_qa_entries
-                        WHERE user_id {user_sql} AND session_id IN ({sid_placeholders}){qa_exp_sql}
-                        GROUP BY session_id''',
-                    (*user_params, *batch, *qa_exp_params),
-                ):
-                    key = (user_id, str(sid))
-                    qa_counts[key] = int(cnt)
-                    if min_seq is not None:
-                        seq_int = int(min_seq)
-                        min_seqs.append(seq_int)
-                        min_seq_owner[seq_int] = key
-
-                for sid, cnt in con.execute(
-                    f'''SELECT session_id, COUNT(*)
-                        FROM cache_trace_entries
-                        WHERE user_id {user_sql} AND session_id IN ({sid_placeholders}){tr_exp_sql}
-                        GROUP BY session_id''',
-                    (*user_params, *batch, *tr_exp_params),
-                ):
-                    trace_counts[(user_id, str(sid))] = int(cnt)
-
-        labels = {}
-        fallback_needed = []
-        for i in range(0, len(min_seqs), _SQL_IN_BATCH):
-            batch = min_seqs[i:i + _SQL_IN_BATCH]
-            seq_placeholders = ','.join('?' for _ in batch)
-            for seq_val, raw_payload in con.execute(
-                f'SELECT seq, payload FROM cache_qa_entries WHERE seq IN ({seq_placeholders})',
-                batch,
-            ):
-                key = min_seq_owner.get(int(seq_val))
-                if key is None:
-                    continue
-                label = _extract_question_label(raw_payload)
-                if label is not None:
-                    labels[key] = label
-                elif qa_counts.get(key, 0) > 1:
-                    fallback_needed.append((key[0], key[1], int(seq_val)))
-
-        for user_id, sid, first_seq in fallback_needed:
-            user_variants = id_variants(user_id)
-            user_sql, user_params = sql_in_clause(user_variants)
-            for (raw_payload,) in con.execute(
-                f'''SELECT payload FROM cache_qa_entries
-                    WHERE user_id {user_sql} AND session_id = ? AND seq > ?{qa_exp_sql}
-                    ORDER BY seq ASC''',
-                (*user_params, sid, first_seq, *qa_exp_params),
-            ):
-                label = _extract_question_label(raw_payload)
-                if label is not None:
-                    labels[(user_id, sid)] = label
-                    break
-
-        for row in sessions:
-            key = (row['user_id'], row['session_id'])
-            row['label'] = labels.get(key, '')
-            row['msg_count'] = qa_counts.get(key, 0)
-            row['tool_calls'] = trace_counts.get(key, 0)
-        return True
-    except sqlite3.Error:
-        for row in sessions:
-            row.pop('label', None)
-            row.pop('msg_count', None)
-            row.pop('tool_calls', None)
-        return False
+        return hydrator.hydrate_sessions(cache_db, rows)
     finally:
-        con.close()
+        hydrator.close()
 
 
 def _apply_relation_fields(target, rel):
@@ -321,110 +199,6 @@ def _apply_relation_fields(target, rel):
         target['subagent_role'] = rel['subagent_role']
     if rel.get('nesting_depth'):
         target['nesting_depth'] = int(rel['nesting_depth'])
-
-
-def _read_raw_records_catalog(official_data, dataset_id, kind='all', *, registry=None, codex_config=None):
-    official_root = Path(official_data).resolve()
-    cognee_db = official_root / 'system' / 'databases' / 'cognee_db'
-    cache_db = official_root / 'system' / 'databases' / 'cache.db'
-    if cognee_db.is_symlink() or not cognee_db.is_file():
-        raise PolicyError('raw_records_store_unavailable', 503)
-
-    ds_norm = uuid_text(dataset_id)
-    ds_variants = id_variants(ds_norm)
-    ds_sql, ds_params = sql_in_clause(ds_variants)
-
-    try:
-        con = open_official_sqlite_ro(cognee_db, timeout_ms=2000)
-    except (PolicyError, sqlite3.Error) as err:
-        raise PolicyError('raw_records_store_unavailable', 503) from err
-
-    documents = []
-    sessions = []
-    try:
-        required_schema = {}
-        if kind != 'session':
-            required_schema.update(_COGNEE_DATA_SCHEMA)
-        if kind != 'document':
-            required_schema.update(_COGNEE_SESSION_SCHEMA)
-        verify_sqlite_schema(con, required_schema)
-
-        if kind != 'session':
-            for row in con.execute(
-                f'''SELECT id, dataset_id, name, label, mime_type, external_metadata,
-                           node_set, updated_at, created_at, content_hash
-                    FROM data WHERE dataset_id {ds_sql}''',
-                ds_params,
-            ):
-                doc_id = uuid_text(row[0])
-                if not doc_id:
-                    continue
-                meta = parse_json(row[5])
-                if not isinstance(meta, dict):
-                    meta = {}
-                else:
-                    meta = dict(meta)
-                ns = decode_node_set(row[6])
-                if ns and 'node_set' not in meta:
-                    meta['node_set'] = ns
-                if is_knowledge_doc(meta) or is_derived_material(meta):
-                    continue
-                documents.append({
-                    'id': doc_id,
-                    'datasetId': ds_norm,
-                    'name': row[2] or '',
-                    'label': row[3],
-                    'mimeType': row[4] or '',
-                    'externalMetadata': meta,
-                    'updatedAt': iso_text(row[7]),
-                    'createdAt': iso_text(row[8]),
-                    'contentHash': row[9] or '',
-                })
-
-        if kind != 'document':
-            for srow in con.execute(
-                f'''SELECT session_id, user_id, dataset_id, agent_id, last_activity_at, started_at
-                    FROM session_records
-                    WHERE dataset_id {ds_sql}
-                    ORDER BY last_activity_at DESC''',
-                ds_params,
-            ):
-                sid = str(srow[0] or '')
-                if not sid:
-                    raise PolicyError('session_identity_missing', 503)
-                sessions.append({
-                    'session_id': sid,
-                    'user_id': uuid_text(srow[1]),
-                    'dataset_id': ds_norm,
-                    'agent_id': str(srow[3] or ''),
-                    'last_activity_at': iso_text(srow[4]),
-                    'started_at': iso_text(srow[5]),
-                })
-    except PolicyError:
-        raise
-    except sqlite3.Error as err:
-        raise PolicyError('raw_records_store_unavailable', 503) from err
-    finally:
-        con.close()
-
-    cache_ready = False
-    if kind != 'document':
-        cache_ready = _hydrate_session_summaries(cache_db, sessions) if sessions else _cache_schema_ready(cache_db)
-        if sessions and (registry is not None or codex_config):
-            relations = resolve_session_relations(
-                [row['session_id'] for row in sessions],
-                registry=registry,
-                codex_config=codex_config,
-            )
-            for row in sessions:
-                _apply_relation_fields(row, relations.get(row['session_id']))
-
-    return {
-        'dataset_id': ds_norm,
-        'cache_ready': cache_ready,
-        'documents': documents,
-        'sessions': sessions,
-    }
 
 
 def _read_session_history_page(
@@ -559,7 +333,7 @@ def _read_session_history_page(
         parent_id = self_rel.get('parent_session_id', '') if self_rel else ''
         if parent_id and parent_id in ds_sessions:
             parent_summary_row = dict(ds_sessions[parent_id])
-            if _hydrate_session_summaries(cache_db, [parent_summary_row]) and parent_summary_row.get('label'):
+            if _hydrate_related_sessions(cache_db, [parent_summary_row]) and parent_summary_row.get('label'):
                 record['parent_label'] = parent_summary_row['label']
         child_ids = descendant_ids_for_session(session_id, relations)
         if child_ids and qa_offset == 0 and trace_offset == 0:
@@ -572,7 +346,7 @@ def _read_session_history_page(
                 _apply_relation_fields(row, relations.get(cid))
                 subagent_rows.append(row)
             if subagent_rows:
-                _hydrate_session_summaries(cache_db, subagent_rows)
+                _hydrate_related_sessions(cache_db, subagent_rows)
                 subagent_rows.sort(
                     key=lambda r: (r.get('last_activity_at') or '', r.get('session_id') or ''),
                     reverse=True,
@@ -595,28 +369,6 @@ def attach_raw_records_read(app, registry, *, codex_config=None):
         if ds_id not in allowed:
             raise PolicyError('dataset_access_denied', 403)
         return ds_id
-
-    async def raw_records(request):
-        if not request['manager']:
-            raise PolicyError('management_required', 403)
-        if set(request.query) - {'dataset_id', 'kind'}:
-            raise PolicyError('invalid_raw_records_query')
-        ds_id = require_managed_dataset(request.query.get('dataset_id', ''))
-        kind = request.query.get('kind', 'all')
-        if kind not in _VALID_KINDS:
-            raise PolicyError('invalid_raw_records_query')
-        if not official_data:
-            raise PolicyError('raw_records_store_unavailable', 503)
-
-        payload = await asyncio.to_thread(
-            _read_raw_records_catalog,
-            official_data,
-            ds_id,
-            kind,
-            registry=registry,
-            codex_config=codex_config,
-        )
-        return web.json_response(payload)
 
     async def raw_session_history(request):
         if not request['manager']:
@@ -659,6 +411,5 @@ def attach_raw_records_read(app, registry, *, codex_config=None):
         return web.Response(body=body_bytes, content_type='application/json')
 
     app.add_routes([
-        web.get('/v1/raw-records', raw_records),
         web.get('/v1/raw-records/session-history', raw_session_history),
     ])

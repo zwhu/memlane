@@ -87,9 +87,6 @@ func TestReviewFixFailClosedCapability401NoOfficialFallback(t *testing.T) {
 	if _, err := a.Client.codeActivity(ctx, Project{ID: "p1", Dataset: "ds-1", CodeDataset: "code-1"}); !isControlAuthDenied(err) {
 		t.Fatalf("Client.codeActivity must fail closed on 401, got %v", err)
 	}
-	if capCalls.Load() < 4 {
-		t.Fatalf("401 must NOT be cached as unsupported, got capCalls=%d", capCalls.Load())
-	}
 
 	// 2. loadOverview, loadKnowledgeFeed, loadProjectQueue, runUnifiedSearch must also fail closed.
 	a.loadOverview()
@@ -116,6 +113,10 @@ func TestReviewFixFailClosedCapability401NoOfficialFallback(t *testing.T) {
 	a.runUnifiedSearch(false)
 	drainReading(t, updates, func() bool { return !a.searchUI.Loading })
 
+	if capCalls.Load() < 3 {
+		t.Fatalf("shared contract checks must not cache a 401, got %d probes", capCalls.Load())
+	}
+
 	// 3. Also test v1 bootstrap / message-summary 403 when /v1/capabilities returns 404.
 	capStatus.Store(http.StatusNotFound)
 	a.loadOverview()
@@ -128,7 +129,7 @@ func TestReviewFixFailClosedCapability401NoOfficialFallback(t *testing.T) {
 	clear(controlCapabilitiesCache.entries)
 	controlCapabilitiesCache.mu.Unlock()
 	capStatus.Store(http.StatusInternalServerError)
-	if _, err := a.Client.documentInfoByID(ctx, "ds-1", "doc-1"); err == nil {
+	if control, _ := a.accessClient(); control.requireReadingContract(ctx) == nil {
 		t.Fatalf("HTTP 500 on /v1/capabilities must fail closed, got nil")
 	}
 
@@ -158,8 +159,8 @@ func TestReviewFixFailClosedCapability401NoOfficialFallback(t *testing.T) {
 				return
 			}
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureOverview},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureOverview},
 			})
 			return
 		}
@@ -206,7 +207,7 @@ func TestReviewFixInvalidateReadingFencesInFlightCallbacks(t *testing.T) {
 	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/capabilities" {
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
 				Features: []string{
 					v2FeatureOverview, v2FeatureKnowledgeCursor,
 					v2FeatureMessageSummary, v2FeatureSearch,
@@ -221,7 +222,7 @@ func TestReviewFixInvalidateReadingFencesInFlightCallbacks(t *testing.T) {
 			return
 		}
 		switch r.URL.Path {
-		case "/v2/overview/bootstrap":
+		case "/v1/overview/bootstrap":
 			_ = json.NewEncoder(w).Encode(v2OverviewBootstrapResponse{
 				Generation:          1,
 				TotalKnowledgeCount: 99,
@@ -229,14 +230,14 @@ func TestReviewFixInvalidateReadingFencesInFlightCallbacks(t *testing.T) {
 					{DocID: "revoked-1", DatasetID: "ds-1", ProjectID: "p1", Title: "Secret", PreviewText: "Top Secret", Kind: "knowledge"},
 				},
 			})
-		case "/v2/projects/p1/knowledge":
+		case "/v1/projects/p1/knowledge":
 			_ = json.NewEncoder(w).Encode(v2ProjectKnowledgeResponse{
 				ProjectID: "p1", DatasetID: "ds-1", TotalFiltered: 1, UnreadCount: 7,
 				Items: []v2KnowledgeItem{
 					{DocID: "revoked-1", DatasetID: "ds-1", ProjectID: "p1", Title: "Secret", PreviewText: "Top Secret", Kind: "knowledge"},
 				},
 			})
-		case "/v2/projects/p1/message-summary":
+		case "/v1/projects/p1/message-summary":
 			_ = json.NewEncoder(w).Encode(v2MessageSummaryResponse{
 				ProjectID: "p1", DatasetID: "ds-1", UnreadCount: 7,
 				UnreadPreview: []v2UnreadPreviewItem{{DocID: "revoked-1", Title: "Secret"}},
@@ -320,10 +321,10 @@ func TestReviewFixReadingStateBatch200StateRevAndNoLegacyFile(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureReadingState},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureReadingState},
 			})
-		case "/v2/reading-state/mark-read":
+		case "/v1/reading-state/mark-read":
 			var req v2ReadingStateMarkReadRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			mu.Lock()
@@ -544,10 +545,10 @@ func TestReviewFixAnchorPositioningAndBidirectionalWindow300(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureKnowledgeCursor, v2FeatureCommonKnowledgeCursor, v2FeatureLocalBodyFastpath},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureKnowledgeCursor, v2FeatureCommonKnowledgeCursor, v2FeatureLocalBodyFastpath},
 			})
-		case "/v2/projects/p1/knowledge":
+		case "/v1/projects/p1/knowledge":
 			q := r.URL.Query()
 			anchor := q.Get("anchor_doc_id")
 			dir := q.Get("direction")
@@ -603,7 +604,7 @@ func TestReviewFixAnchorPositioningAndBidirectionalWindow300(t *testing.T) {
 				ProjectID: "p1", DatasetID: "ds-1", TotalFiltered: 450,
 				Items: items, NextCursor: "next-30", HasMore: true,
 			})
-		case "/v2/common/knowledge":
+		case "/v1/common/knowledge":
 			q := r.URL.Query()
 			anchor := q.Get("anchor_doc_id")
 			dir := q.Get("direction")
@@ -652,11 +653,11 @@ func TestReviewFixAnchorPositioningAndBidirectionalWindow300(t *testing.T) {
 					Items: items, NextCursor: "c-next-30", HasMore: true,
 				})
 			}
-		case "/v2/datasets/ds-1/documents/k-0065/body":
+		case "/v1/datasets/ds-1/documents/k-0065/body":
 			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
 				ID: "k-0065", DatasetID: "ds-1", Body: strPtr("锚点记忆全文 65"), Source: "local_fastpath",
 			})
-		case "/v2/datasets/ds-common/documents/c-0065/body":
+		case "/v1/datasets/ds-common/documents/c-0065/body":
 			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
 				ID: "c-0065", DatasetID: "ds-common", Body: strPtr("通用锚点记忆全文 65"), Source: "local_fastpath",
 			})
@@ -788,20 +789,20 @@ func TestReviewFixBodyValidationSessionUserIDAndPendingDocs(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureLocalBodyFastpath, v2FeatureRawRecords},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureLocalBodyFastpath, v2FeatureRawRecords},
 			})
-		case "/v2/datasets/ds-1/documents/doc-null/body":
+		case "/v1/datasets/ds-1/documents/doc-null/body":
 			_, _ = w.Write([]byte(`{"id":"doc-null","dataset_id":"ds-1","body":null}`))
-		case "/v2/datasets/ds-1/documents/doc-mismatch/body":
+		case "/v1/datasets/ds-1/documents/doc-mismatch/body":
 			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
 				ID: "other-id", DatasetID: "ds-1", Body: strPtr("wrong doc"),
 			})
-		case "/v2/datasets/ds-1/documents/doc-trunc/body":
+		case "/v1/datasets/ds-1/documents/doc-trunc/body":
 			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
 				ID: "doc-trunc", DatasetID: "ds-1", Body: strPtr("truncated content"), Truncated: true, ContentHash: "h-trunc",
 			})
-		case "/v2/projects/p1/raw-records/sessions/shared-sid/children":
+		case "/v1/projects/p1/raw-records/sessions/shared-sid/children":
 			sawChildrenUserID.Store(r.URL.Query().Get("user_id"))
 			_ = json.NewEncoder(w).Encode(v2SessionChildrenResponse{
 				ProjectID: "p1", DatasetID: "ds-1", ParentSessionID: "shared-sid", TotalCount: 1,
@@ -910,10 +911,10 @@ func TestReviewFixChunkedProvenanceBackfillAndUnconfirmedRetention(t *testing.T)
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureProvenanceBackfill},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureProvenanceBackfill},
 			})
-		case "/v2/provenance/backfill-legacy-dates":
+		case "/v1/provenance/backfill-legacy-dates":
 			raw, _ := io.ReadAll(r.Body)
 			var req v2ProvenanceBackfillRequest
 			_ = json.Unmarshal(raw, &req)
@@ -1112,10 +1113,10 @@ func TestReviewFixSearchEmptyScopeIdentityAndMonotonicMerge(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureSearch},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureSearch},
 			})
-		case "/v2/search/recent":
+		case "/v1/search/recent":
 			searchCalls.Add(1)
 			recentIdentity.Store(r.Header.Get(v2HeaderReadingIdentity))
 			_ = json.NewEncoder(w).Encode(v2SearchRecentResponse{
@@ -1123,7 +1124,7 @@ func TestReviewFixSearchEmptyScopeIdentityAndMonotonicMerge(t *testing.T) {
 					{DocID: "r-1", DatasetID: "ds-1", ProjectID: "p1", Title: "最近记忆 1", Kind: "knowledge", PreviewText: "最近摘要", IsUnread: true},
 				},
 			})
-		case "/v2/search/metadata":
+		case "/v1/search/metadata":
 			searchCalls.Add(1)
 			metaIdentity.Store(r.Header.Get(v2HeaderReadingIdentity))
 			_ = json.NewEncoder(w).Encode(v2SearchMetadataResponse{
@@ -1152,21 +1153,21 @@ func TestReviewFixSearchEmptyScopeIdentityAndMonotonicMerge(t *testing.T) {
 		t.Fatalf("invalid project scope must return empty without hitting backend: rows=%d calls=%d", len(a.searchUI.Rows), searchCalls.Load())
 	}
 
-	// 2. Valid empty query -> sends X-Memlane-Reading-Identity to /v2/search/recent.
+	// 2. Valid empty query -> sends X-Memlane-Reading-Identity to /v1/search/recent.
 	a.searchUI.Scope = ""
 	a.searchUI.Query = ""
 	a.runUnifiedSearch(false)
 	drainReading(t, updates, func() bool { return !a.searchUI.Loading && a.searchUI.Loaded })
 	if got, _ := recentIdentity.Load().(string); got == "" {
-		t.Fatalf("expected X-Memlane-Reading-Identity on /v2/search/recent")
+		t.Fatalf("expected X-Memlane-Reading-Identity on /v1/search/recent")
 	}
 
-	// 3. Valid keyword query -> sends X-Memlane-Reading-Identity to /v2/search/metadata.
+	// 3. Valid keyword query -> sends X-Memlane-Reading-Identity to /v1/search/metadata.
 	a.searchUI.Query = "命中"
 	a.runUnifiedSearch(false)
 	drainReading(t, updates, func() bool { return !a.searchUI.Loading && a.searchUI.Loaded })
 	if got, _ := metaIdentity.Load().(string); got == "" {
-		t.Fatalf("expected X-Memlane-Reading-Identity on /v2/search/metadata")
+		t.Fatalf("expected X-Memlane-Reading-Identity on /v1/search/metadata")
 	}
 }
 
@@ -1190,7 +1191,7 @@ func TestReviewFixR2InvalidateQueuedCallbacksAndSubagents(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
 				Features: []string{
 					v2FeatureOverview, v2FeatureKnowledgeCursor,
 					v2FeatureMessageSummary, v2FeatureRawRecords,
@@ -1200,7 +1201,7 @@ func TestReviewFixR2InvalidateQueuedCallbacksAndSubagents(t *testing.T) {
 			_ = json.NewEncoder(w).Encode([]map[string]any{
 				{"id": "sh-1", "text": "secret query", "createdAt": "2026-11-21T10:00:00Z"},
 			})
-		case "/v2/projects/p1/message-summary":
+		case "/v1/projects/p1/message-summary":
 			if st := int(queueStatus.Load()); st != http.StatusOK {
 				w.WriteHeader(st)
 				_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
@@ -1218,7 +1219,7 @@ func TestReviewFixR2InvalidateQueuedCallbacksAndSubagents(t *testing.T) {
 					Label:   "子代理会话",
 				},
 			})
-		case "/v2/projects/p1/raw-records/sessions/parent-1/children":
+		case "/v1/projects/p1/raw-records/sessions/parent-1/children":
 			switch int(childStatus.Load()) {
 			case http.StatusUnauthorized:
 				w.WriteHeader(http.StatusUnauthorized)
@@ -1355,7 +1356,7 @@ func TestReviewFixR2ReadingStateMigrationPreconditionAndZeroCommit(t *testing.T)
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
 				Features: []string{
 					v2FeatureOverview, v2FeatureKnowledgeCursor,
 					v2FeatureMessageSummary, v2FeatureReadingState,
@@ -1365,7 +1366,7 @@ func TestReviewFixR2ReadingStateMigrationPreconditionAndZeroCommit(t *testing.T)
 			_ = json.NewEncoder(w).Encode(AccessDirectory{
 				Projects: []AccessProject{{ID: "p1", Dataset: "ds-1", Status: "verified"}},
 			})
-		case "/v2/reading-state/migrate-local":
+		case "/v1/reading-state/migrate-local":
 			switch migMode.Load() {
 			case 0:
 				_ = json.NewEncoder(w).Encode(v2ReadingStateMigrateResponse{
@@ -1379,22 +1380,22 @@ func TestReviewFixR2ReadingStateMigrationPreconditionAndZeroCommit(t *testing.T)
 					Migrated: []v2ReadingStateMigratedScope{{ProjectID: "p1", DatasetID: "ds-1", Status: "no_legacy_file"}},
 				})
 			}
-		case "/v2/reading-state/import/begin":
+		case "/v1/reading-state/import/begin":
 			_ = json.NewEncoder(w).Encode(v2ReadingStateImportBeginResponse{BatchID: "b-zero"})
-		case "/v2/reading-state/import/commit":
+		case "/v1/reading-state/import/commit":
 			raw, _ := io.ReadAll(r.Body)
 			rawCommitBody.Store(string(raw))
 			_ = json.NewEncoder(w).Encode(v2ReadingStateImportCommitResponse{ScopeHash: "sh-0", Committed: 0, UnreadCount: 1, StateRev: 1})
-		case "/v2/overview/bootstrap":
+		case "/v1/overview/bootstrap":
 			v2DataHits.Add(1)
 			_ = json.NewEncoder(w).Encode(v2OverviewBootstrapResponse{Generation: 1})
-		case "/v2/projects/p1/knowledge":
+		case "/v1/projects/p1/knowledge":
 			v2DataHits.Add(1)
 			_ = json.NewEncoder(w).Encode(v2ProjectKnowledgeResponse{ProjectID: "p1", DatasetID: "ds-1", UnreadStateRev: 1})
-		case "/v2/projects/p1/message-summary":
+		case "/v1/projects/p1/message-summary":
 			v2DataHits.Add(1)
 			_ = json.NewEncoder(w).Encode(v2MessageSummaryResponse{ProjectID: "p1", DatasetID: "ds-1", UnreadStateRev: 1})
-		case "/v2/reading-state/mark-read":
+		case "/v1/reading-state/mark-read":
 			v2DataHits.Add(1)
 			_ = json.NewEncoder(w).Encode(v2ReadingStateMarkReadResponse{ScopeHash: "sh-0", Marked: 1, UnreadCount: 0, StateRev: 2})
 		default:
@@ -1480,17 +1481,17 @@ func TestReviewFixR2UnreadStateRevMonotonicFlushAndNoticeRace(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureReadingState, v2FeatureMessageSummary},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureReadingState, v2FeatureMessageSummary},
 			})
-		case "/v2/reading-state/mark-read":
+		case "/v1/reading-state/mark-read":
 			if markFail.Load() {
 				w.WriteHeader(http.StatusInternalServerError)
 				_ = json.NewEncoder(w).Encode(map[string]string{"error": "boom"})
 				return
 			}
 			_ = json.NewEncoder(w).Encode(v2ReadingStateMarkReadResponse{ScopeHash: "sh", Marked: 1, UnreadCount: 2, StateRev: 10})
-		case "/v2/reading-state/mark-all-read":
+		case "/v1/reading-state/mark-all-read":
 			_ = json.NewEncoder(w).Encode(v2ReadingStateMarkAllReadResponse{ScopeHash: "sh", UnreadCount: 0, StateRev: 11})
 		default:
 			http.NotFound(w, r)
@@ -1588,12 +1589,12 @@ func TestReviewFixR2ProvenanceReadErrorMidModifyAndCommonSearch(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
 				Features: []string{
 					v2FeatureProvenanceBackfill, v2FeatureSearch, v2FeatureLocalBodyFastpath,
 				},
 			})
-		case "/v2/provenance/backfill-legacy-dates":
+		case "/v1/provenance/backfill-legacy-dates":
 			var req v2ProvenanceBackfillRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			if len(req.Days) == 0 {
@@ -1608,12 +1609,12 @@ func TestReviewFixR2ProvenanceReadErrorMidModifyAndCommonSearch(t *testing.T) {
 				_ = os.WriteFile(legacyPath, []byte(`{"schema_version":1,"days":{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":"2026-11-22","bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb":"2026-11-22"}}`), 0600)
 			}
 			_ = json.NewEncoder(w).Encode(v2ProvenanceBackfillResponse{Status: "migrated", Imported: len(req.Days)})
-		case "/v2/search/recent":
+		case "/v1/search/recent":
 			recentDatasetID.Store(r.URL.Query().Get("dataset_id"))
 			_ = json.NewEncoder(w).Encode(v2SearchRecentResponse{
 				KnowledgeItems: []v2KnowledgeItem{{DocID: "c-1", DatasetID: "ds-common", Title: "通用最近", Kind: "knowledge"}},
 			})
-		case "/v2/search/metadata":
+		case "/v1/search/metadata":
 			metaDatasetID.Store(r.URL.Query().Get("dataset_id"))
 			_ = json.NewEncoder(w).Encode(v2SearchMetadataResponse{
 				Query: r.URL.Query().Get("q"),
@@ -1621,7 +1622,7 @@ func TestReviewFixR2ProvenanceReadErrorMidModifyAndCommonSearch(t *testing.T) {
 			})
 		case "/api/v1/search":
 			_ = json.NewEncoder(w).Encode([]any{})
-		case "/v2/datasets/" + canonicalUUID + "/documents/" + canonicalUUID + "/body":
+		case "/v1/datasets/" + canonicalUUID + "/documents/" + canonicalUUID + "/body":
 			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
 				ID: hexUUID, DatasetID: hexUUID, Body: strPtr("canonical uuid body"), Source: "local_fastpath",
 			})
@@ -1689,7 +1690,7 @@ func TestReviewFixR2ProvenanceReadErrorMidModifyAndCommonSearch(t *testing.T) {
 		t.Fatalf("@common metadata search expected dataset_id=ds-common, got %q", got)
 	}
 
-	// 5. R2-GO-P1-01: canonical UUID matches hyphenless hex UUID in /v2/.../body response.
+	// 5. R2-GO-P1-01: canonical UUID matches hyphenless hex UUID in /v1/.../body response.
 	docUUID := Document{ID: canonicalUUID, Dataset: canonicalUUID}
 	readItem, readErr := a.Client.read(context.Background(), Item{ID: canonicalUUID, Dataset: canonicalUUID, Kind: "知识", Document: &docUUID})
 	if readErr != nil || !readItem.BodyLoaded || readItem.Body != "canonical uuid body" {
@@ -1817,10 +1818,10 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureMessageSummary},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureMessageSummary},
 			})
-		case "/v2/projects/p2/message-summary":
+		case "/v1/projects/p2/message-summary":
 			if p2Calls.Add(1) == 1 {
 				select {
 				case p2Started <- struct{}{}:
@@ -1866,10 +1867,10 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureOverview, v2FeatureReadingState},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureOverview, v2FeatureReadingState},
 			})
-		case "/v2/reading-state/migrate-local":
+		case "/v1/reading-state/migrate-local":
 			var req v2ReadingStateMigrateRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			resp := v2ReadingStateMigrateResponse{}
@@ -1887,7 +1888,7 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 				})
 			}
 			_ = json.NewEncoder(w).Encode(resp)
-		case "/v2/overview/bootstrap":
+		case "/v1/overview/bootstrap":
 			overviewHits.Add(1)
 			_ = json.NewEncoder(w).Encode(v2OverviewBootstrapResponse{
 				Generation: 1, TotalKnowledgeCount: 10,
@@ -1934,10 +1935,10 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureReadingState},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureReadingState},
 			})
-		case "/v2/reading-state/mark-all-read":
+		case "/v1/reading-state/mark-all-read":
 			_ = json.NewEncoder(w).Encode(v2ReadingStateMarkAllReadResponse{
 				ScopeHash: "sh-5", UnreadCount: 0, UnreadCountKnown: boolPtr(true), StateRev: 5,
 			})
@@ -1985,8 +1986,8 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 				return
 			}
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureOverview},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureOverview},
 			})
 			return
 		}
@@ -2028,10 +2029,10 @@ func TestReviewFixQueueMigrationAndAuthorizationIsolation(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1", "v2"},
-				Features:    []string{v2FeatureReadingState, v2FeatureMessageSummary},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract,
+				Features: []string{v2FeatureReadingState, v2FeatureMessageSummary},
 			})
-		case "/v2/reading-state/migrate-local":
+		case "/v1/reading-state/migrate-local":
 			var req v2ReadingStateMigrateRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			resp := v2ReadingStateMigrateResponse{}
@@ -2045,7 +2046,7 @@ func TestReviewFixQueueMigrationAndAuthorizationIsolation(t *testing.T) {
 				})
 			}
 			_ = json.NewEncoder(w).Encode(resp)
-		case "/v2/projects/p1/message-summary":
+		case "/v1/projects/p1/message-summary":
 			if denySummary.Load() {
 				http.Error(w, `{"error":"project_unconfirmed"}`, http.StatusForbidden)
 				return

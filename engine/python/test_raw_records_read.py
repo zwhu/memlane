@@ -206,41 +206,13 @@ class RawRecordsReadTest(AioHTTPTestCase):
         self.registry.close()
         self.tmp.cleanup()
 
-    async def test_auth_validation_and_dataset_isolation(self):
-        mgr = {'Authorization': 'Bearer ' + self.manager_token}
-        agt = {'Authorization': 'Bearer ' + self.agent_token}
-
-        self.assertEqual((await self.client.get(f'/v1/raw-records?dataset_id={self.ds_managed}', headers=agt)).status, 403)
-        self.assertEqual((await self.client.get(f'/v1/raw-records?dataset_id={self.ds_other}', headers=mgr)).status, 403)
-        self.assertEqual((await self.client.get(f'/v1/raw-records?dataset_id={self.ds_managed}&kind=invalid', headers=mgr)).status, 400)
-        self.assertEqual((await self.client.get(f'/v1/raw-records?dataset_id={self.ds_managed}&extra=1', headers=mgr)).status, 400)
-        self.assertEqual((await self.client.get(f'/v1/raw-records/session-history?dataset_id={self.ds_managed}&session_id=../bad', headers=mgr)).status, 400)
-        self.assertEqual((await self.client.get(f'/v1/raw-records/session-history?dataset_id={self.ds_managed}&session_id=codex_s1&limit=99', headers=mgr)).status, 400)
-
-    async def test_raw_records_catalog_hydrates_titles_and_counts_and_respects_kinds(self):
-        mgr = {'Authorization': 'Bearer ' + self.manager_token}
-        resp = await self.client.get(f'/v1/raw-records?dataset_id={self.ds_managed}&kind=all', headers=mgr)
-        self.assertEqual(resp.status, 200)
-        data = await resp.json()
-        self.assertEqual(data['dataset_id'], self.ds_managed)
-        self.assertTrue(data['cache_ready'])
-        self.assertEqual([d['id'] for d in data['documents']], [self.raw_doc_id])
-        self.assertEqual([s['session_id'] for s in data['sessions']], ['codex_s1', 'codex_s2'])
-        s1 = data['sessions'][0]
-        self.assertEqual(s1['label'], '如何优化原始记录加载性能？')
-        self.assertEqual(s1['msg_count'], 2)
-        self.assertEqual(s1['tool_calls'], 25)
-        self.assertEqual(s1['user_id'], self.user_uuid)
-        s2 = data['sessions'][1]
-        self.assertEqual((s2['label'], s2['msg_count'], s2['tool_calls']), ('', 0, 0))
-
-        sess_only = await (await self.client.get(f'/v1/raw-records?dataset_id={self.ds_managed}&kind=session', headers=mgr)).json()
-        self.assertEqual(sess_only['documents'], [])
-        self.assertEqual(len(sess_only['sessions']), 2)
-
-        doc_only = await (await self.client.get(f'/v1/raw-records?dataset_id={self.ds_managed}&kind=document', headers=mgr)).json()
-        self.assertEqual(len(doc_only['documents']), 1)
-        self.assertEqual(doc_only['sessions'], [])
+    async def test_retired_catalog_route_and_history_dataset_isolation(self):
+        manager = {'Authorization': 'Bearer ' + self.manager_token}
+        legacy = await self.client.get('/v1/raw-records', headers=manager)
+        self.assertEqual(legacy.status, 404)
+        history = f'/v1/raw-records/session-history?dataset_id={self.ds_other}&session_id=foreign_s'
+        self.assertEqual((await self.client.get(history, headers=manager)).status, 403)
+        self.assertEqual((await self.client.get(history)).status, 401)
 
     async def test_session_history_pagination_and_edge_errors(self):
         mgr = {'Authorization': 'Bearer ' + self.manager_token}
@@ -281,18 +253,14 @@ class RawRecordsReadTest(AioHTTPTestCase):
             headers=mgr,
         )).status, 409)
 
-        # Missing cache.db degrades raw-records to cache_ready=False and returns 503 for history
+        # A missing cache requires the authoritative session history fallback.
         self.cache_db.unlink()
-        degraded = await (await self.client.get(f'/v1/raw-records?dataset_id={self.ds_managed}', headers=mgr)).json()
-        self.assertFalse(degraded['cache_ready'])
-        self.assertEqual(len(degraded['sessions']), 2)
-        self.assertNotIn('label', degraded['sessions'][0])
         self.assertEqual((await self.client.get(
             f'/v1/raw-records/session-history?dataset_id={self.ds_managed}&session_id=codex_s1',
             headers=mgr,
         )).status, 503)
 
-    async def test_raw_records_and_history_include_subagent_relations(self):
+    async def test_history_includes_subagent_relations(self):
         mgr = {'Authorization': 'Bearer ' + self.manager_token}
         root = Path(self.tmp.name)
         codex_dir = root / '.codex'
@@ -342,15 +310,6 @@ class RawRecordsReadTest(AioHTTPTestCase):
             'codex-1': {'kind': 'codex', 'host_profile': str(codex_dir)},
         }
 
-        catalog = await (await self.client.get(f'/v1/raw-records?dataset_id={self.ds_managed}&kind=session', headers=mgr)).json()
-        by_id = {s['session_id']: s for s in catalog['sessions']}
-        self.assertNotIn('is_subagent', by_id['codex_s1'])
-        self.assertTrue(by_id['codex_s2']['is_subagent'])
-        self.assertEqual(by_id['codex_s2']['parent_session_id'], 'codex_s1')
-        self.assertEqual(by_id['codex_s2']['subagent_role'], 'research')
-        self.assertTrue(by_id['codex_orphan_sub']['is_subagent'])
-        self.assertNotIn('parent_session_id', by_id['codex_orphan_sub'])
-
         parent_hist = await (await self.client.get(
             f'/v1/raw-records/session-history?dataset_id={self.ds_managed}&session_id=codex_s1',
             headers=mgr,
@@ -379,29 +338,22 @@ class RawRecordsReadTest(AioHTTPTestCase):
         )
         self.assertEqual(empty_hist.status, 503)
 
-        # Dropping a required cache table degrades /v1/raw-records to cache_ready=False and fails history with 503.
+        # Dropping a required cache table fails history with 503.
         c2 = sqlite3.connect(self.cache_db)
         c2.execute('DROP TABLE cache_trace_entries')
         c2.commit()
         c2.close()
-        cat = await (await self.client.get(f'/v1/raw-records?dataset_id={self.ds_managed}', headers=mgr)).json()
-        self.assertFalse(cat['cache_ready'])
-        self.assertNotIn('label', cat['sessions'][0])
         hist_broken_cache = await self.client.get(
             f'/v1/raw-records/session-history?dataset_id={self.ds_managed}&session_id=codex_s1',
             headers=mgr,
         )
         self.assertEqual(hist_broken_cache.status, 503)
 
-        # Dropping a required cognee_db table fails both endpoints closed with 503.
+        # Dropping the session records table fails history with 503.
         c1 = sqlite3.connect(self.cognee_db)
         c1.execute('DROP TABLE session_records')
         c1.commit()
         c1.close()
-        self.assertEqual(
-            (await self.client.get(f'/v1/raw-records?dataset_id={self.ds_managed}&kind=session', headers=mgr)).status,
-            503,
-        )
         self.assertEqual(
             (await self.client.get(
                 f'/v1/raw-records/session-history?dataset_id={self.ds_managed}&session_id=codex_s1',

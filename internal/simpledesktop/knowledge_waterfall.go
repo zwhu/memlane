@@ -205,93 +205,70 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 			})
 		}
 		if p.Dataset != "" && hasControl {
-			hasV2Knowledge, probeErr := control.probeFeature(ctx, v2FeatureKnowledgeCursor)
-			if probeErr != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				failClosed(probeErr)
-				return
-			}
-			if hasV2Knowledge {
-				hasV2ReadState, rsErr := control.probeFeature(ctx, v2FeatureReadingState)
-				if rsErr != nil {
+			if len(accessProjects) > 0 {
+				if migErr := a.migrateReadingStateV2Snapshot(ctx, control, readingID, stateDir, accessProjects); migErr != nil {
 					if ctx.Err() != nil {
 						return
 					}
-					failClosed(rsErr)
-					return
-				}
-				if hasV2ReadState && len(accessProjects) > 0 {
-					if migErr := a.migrateReadingStateV2Snapshot(ctx, control, readingID, stateDir, accessProjects); migErr != nil {
-						if ctx.Err() != nil {
-							return
-						}
-						if isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, accessProjects) {
-							failClosed(migErr)
-							return
-						}
+					if isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, accessProjects) {
+						failClosed(migErr)
+						return
 					}
-				}
-				sortParam := "date"
-				if sortByRecalls {
-					sortParam = "recall"
-				}
-				v2Resp, v2Err := control.projectKnowledgeV2(ctx, readingID, p.ID, sortParam, categoryFilter, unreadOnly, recallAgentID, recallEventID, knowledgeBatch, "")
-				if v2Err == nil {
-					mapped := make([]Item, 0, len(v2Resp.Items))
-					for _, row := range v2Resp.Items {
-						if row.DocID == "" {
-							continue
-						}
-						mapped = append(mapped, row.toItem(recallStartedAt))
-					}
-					baseTotal := v2Resp.TotalFiltered
-					if categoryFilter != "" && len(v2Resp.CategoryCounts) > 0 {
-						sum := 0
-						for _, cnt := range v2Resp.CategoryCounts {
-							sum += cnt
-						}
-						baseTotal = sum
-					}
-					a.Update(func() {
-						if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
-							return
-						}
-						s.Loading = false
-						s.Error = ""
-						s.Knowledge.V2Mode = true
-						s.Knowledge.NextCursor = v2Resp.NextCursor
-						s.Knowledge.PrevCursor = v2Resp.PrevCursor
-						s.Knowledge.HasPrev = v2Resp.HasPrev
-						s.Knowledge.Prepending = false
-						s.Knowledge.TotalFiltered = v2Resp.TotalFiltered
-						s.Knowledge.ServerCategoryCounts = v2Resp.CategoryCounts
-						s.Knowledge.ServerBaseTotal = baseTotal
-						s.Knowledge.CatalogVersion = v2Resp.CatalogVersion
-						s.Knowledge.NewCatalogAvailable = false
-						s.Knowledge.CountsLoaded = true
-						s.Knowledge.CountsError = ""
-						s.Knowledge.Catalog = nil
-						s.Items = mapped
-						s.More = v2Resp.HasMore
-						s.Loaded = true
-						a.syncV2ProjectUnreadCount(p.ID, p.Dataset, v2Resp.UnreadCount, v2Resp.UnreadStateRev, v2Resp.CatalogVersion)
-						a.hydrateKnowledgeCards(s)
-						if s.Selected == nil && len(s.Items) > 0 && !s.Locating {
-							a.selectItem(s, s.Items[0])
-						}
-					})
-					return
-				}
-				if ctx.Err() != nil {
-					return
-				}
-				if isControlFailClosedV2(v2Err) || isControlInvalidCursor(v2Err) {
-					failClosed(v2Err)
-					return
 				}
 			}
+			sortParam := "date"
+			if sortByRecalls {
+				sortParam = "recall"
+			}
+			v2Resp, v2Err := control.projectKnowledgeV2(ctx, readingID, p.ID, sortParam, categoryFilter, unreadOnly, recallAgentID, recallEventID, knowledgeBatch, "")
+			if v2Err == nil {
+				mapped := make([]Item, 0, len(v2Resp.Items))
+				for _, row := range v2Resp.Items {
+					if row.DocID == "" {
+						continue
+					}
+					mapped = append(mapped, row.toItem(recallStartedAt))
+				}
+				baseTotal := v2Resp.TotalFiltered
+				if categoryFilter != "" && len(v2Resp.CategoryCounts) > 0 {
+					sum := 0
+					for _, cnt := range v2Resp.CategoryCounts {
+						sum += cnt
+					}
+					baseTotal = sum
+				}
+				a.Update(func() {
+					if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
+						return
+					}
+					s.Loading = false
+					s.Error = ""
+					s.Knowledge.V2Mode = true
+					s.Knowledge.NextCursor = v2Resp.NextCursor
+					s.Knowledge.PrevCursor = v2Resp.PrevCursor
+					s.Knowledge.HasPrev = v2Resp.HasPrev
+					s.Knowledge.Prepending = false
+					s.Knowledge.TotalFiltered = v2Resp.TotalFiltered
+					s.Knowledge.ServerCategoryCounts = v2Resp.CategoryCounts
+					s.Knowledge.ServerBaseTotal = baseTotal
+					s.Knowledge.CatalogVersion = v2Resp.CatalogVersion
+					s.Knowledge.NewCatalogAvailable = false
+					s.Knowledge.CountsLoaded = true
+					s.Knowledge.CountsError = ""
+					s.Knowledge.Catalog = nil
+					s.Items = mapped
+					s.More = v2Resp.HasMore
+					s.Loaded = true
+					a.syncV2ProjectUnreadCount(p.ID, p.Dataset, v2Resp.UnreadCount, v2Resp.UnreadStateRev, v2Resp.CatalogVersion)
+					a.hydrateKnowledgeCards(s)
+					if s.Selected == nil && len(s.Items) > 0 && !s.Locating {
+						a.selectItem(s, s.Items[0])
+					}
+				})
+				return
+			}
+			failClosed(v2Err)
+			return
 		}
 		var docs []Document
 		var err error

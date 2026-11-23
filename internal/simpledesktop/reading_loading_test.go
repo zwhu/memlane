@@ -377,27 +377,16 @@ func TestRevocationAndIdentityChangeClearAllMemoryCopiesGraphAndProfile(t *testi
 }
 
 func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
-	bootstrapResp := overviewBootstrapResponse{
-		Documents: []Document{{
-			ID:       "doc-secret",
-			Dataset:  "ds1",
-			Name:     "",
-			Created:  "2026-11-21T10:00:00Z",
-			Metadata: map[string]any{"node_set": []any{"session_learnings"}},
+	bootstrapResp := v2OverviewBootstrapResponse{
+		Generation: 1,
+		RecentItems: []v2KnowledgeItem{{
+			DocID: "doc-secret", DatasetID: "ds1", ProjectID: "p1", Title: "confidential",
+			Kind: "knowledge", PreviewText: "SECRET_REVOKED_PREVIEW: confidential memory preview content",
 		}},
-		Previews: map[string]string{
-			"ds1/doc-secret": "SECRET_REVOKED_PREVIEW: confidential memory preview content",
-		},
 		PipelineRuns: []activityRow{{
-			ID:        "run-1",
-			Run:       "run-1",
-			Dataset:   "ds1",
-			Operation: "improve",
-			Outcome:   "completed",
-			Created:   "2026-11-21T10:05:00Z",
+			ID: "run-1", Run: "run-1", Dataset: "ds1", Operation: "improve", Outcome: "completed",
+			Created: "2026-11-21T10:05:00Z",
 		}},
-		RecallStartedAt: "2026-11-21T00:00:00Z",
-		RecallCounts:    map[string]*KnowledgeRecallStats{},
 	}
 
 	// 1. In-flight /v1/overview/bootstrap is cancelled immediately on InvalidateReading("ds1").
@@ -405,6 +394,10 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 		started := make(chan struct{}, 1)
 		cancelled := make(chan struct{}, 1)
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/capabilities" {
+				_ = json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+				return
+			}
 			if strings.HasPrefix(r.URL.Path, "/v1/overview/bootstrap") {
 				select {
 				case started <- struct{}{}:
@@ -463,6 +456,10 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 	// 2. Already-queued /v1/overview/bootstrap callback is dropped after identity/policy revocation.
 	t.Run("bootstrap_queued_callback_dropped_after_policy_revision", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/capabilities" {
+				_ = json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+				return
+			}
 			if strings.HasPrefix(r.URL.Path, "/v1/overview/bootstrap") {
 				_ = json.NewEncoder(w).Encode(bootstrapResp)
 				return
@@ -508,7 +505,7 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch {
 			case strings.Contains(r.URL.Path, "/data"):
-				_ = json.NewEncoder(w).Encode(bootstrapResp.Documents)
+				_ = json.NewEncoder(w).Encode([]Document{{ID: "doc-secret", Dataset: "ds1", Created: "2026-11-21T10:00:00Z", Metadata: map[string]any{"node_set": []any{"session_learnings"}}}})
 			case strings.HasSuffix(r.URL.Path, "/raw"):
 				_, _ = fmt.Fprint(w, "SECRET_REVOKED_PREVIEW: legacy body")
 			case strings.Contains(r.URL.Path, "/sessions"):
@@ -554,6 +551,10 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 	// 4. Token rotation on disk during in-flight overview bootstrap is rejected by callback identity guard.
 	t.Run("token_rotation_on_disk_drops_in_flight_overview", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/capabilities" {
+				_ = json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+				return
+			}
 			if strings.HasPrefix(r.URL.Path, "/v1/overview/bootstrap") {
 				_ = json.NewEncoder(w).Encode(bootstrapResp)
 				return

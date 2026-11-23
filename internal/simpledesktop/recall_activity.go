@@ -117,7 +117,9 @@ func (a *App) openRecalledCards(event RecallEvent, dataset string) {
 		a.navigate("通用知识", index)
 		s := a.state()
 		s.Knowledge.RecallFilter = filter
-		s.Offset = 0
+		s.Knowledge.RecallAgentID, s.Knowledge.RecallEventID = event.AgentID, event.ID
+		s.Offset, s.CommonPageIndex = 0, 0
+		s.CommonNav, s.CommonCursors = nil, nil
 		s.Selected = nil
 		a.load(s)
 		return

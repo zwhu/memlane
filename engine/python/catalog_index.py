@@ -1,4 +1,4 @@
-"""Rebuildable minimal metadata projection (catalog-index.sqlite3) for O(log N + K) /v2 queries.
+"""Rebuildable minimal metadata projection (catalog-index.sqlite3) for O(log N + K) queries.
 
 Strictly obeys zero-body-copy red lines: persists ONLY whitelisted structural metadata
 (never body text, raw_text, why_learned, metadata_json, or session QA/trace payloads).
@@ -25,10 +25,11 @@ import time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from project_policy import PolicyError
-from provenance_store import _calendar_date
+from provenance_store import _calendar_date, lesson_metadata_days
 from sqlite_ro import (
     _LESSON_CATEGORY_LABELS,
     extract_trusted_metadata,
+    has_system_metadata,
     iso_text,
     official_sqlite_ro,
     open_official_sqlite_ro,
@@ -39,7 +40,7 @@ from sqlite_ro import (
     uuid_text,
 )
 
-CATALOG_SCHEMA_VERSION = 5
+CATALOG_SCHEMA_VERSION = 6
 _MAX_IN_BATCH = 400
 _CHUNK_SPAN = 256
 _CHUNK_SHIFT = 8  # 1 << 8 == 256
@@ -577,10 +578,10 @@ def _create_catalog_schema(con: sqlite3.Connection, tz_name: str, *, create_inde
             'UPDATE catalog_meta SET last_doc_seq = ? WHERE singleton = 1 AND last_doc_seq < ?',
             (max_seq_val, max_seq_val),
         )
-    # Reproject existing rows when upgrading to the profile exclusion rule.
+    # Reproject existing rows when upgrading the projection rules.
     con.execute(
         "UPDATE dataset_sync_state SET data_hash = '' "
-        "WHERE (SELECT schema_version FROM catalog_meta WHERE singleton = 1) < 5"
+        "WHERE (SELECT schema_version FROM catalog_meta WHERE singleton = 1) < 6"
     )
     con.execute(
         'UPDATE catalog_meta SET schema_version = ? WHERE singleton = 1 AND schema_version < ?',
@@ -1548,7 +1549,6 @@ class CatalogIndex:
         else:
             updated_ns, updated_epoch_ns, updated_invalid = normalize_utc_ns(updated_raw)
 
-        # Effective date rule: provenance > explicit first_source_date > session_date > local(createdAt)
         effective_date = ''
         effective_date_source = ''
         if is_know:
@@ -1573,21 +1573,17 @@ class CatalogIndex:
                     effective_date = min(dates)
                     effective_date_source = 'provenance'
             if not effective_date:
-                fsd = meta.get('first_source_date')
-                day = _cached_calendar_date(fsd) if isinstance(fsd, str) and fsd else None
+                day, legacy_day = lesson_metadata_days(
+                    meta, from_system=has_system_metadata(row[5]), parse_day=_cached_calendar_date,
+                )
                 if day:
-                    effective_date = day
-                    effective_date_source = 'meta'
-                else:
-                    sdate = meta.get('session_date')
-                    day = _cached_calendar_date(sdate) if isinstance(sdate, str) and sdate else None
-                    if day:
-                        effective_date = day
-                        effective_date_source = 'meta'
-            if not effective_date and not created_invalid:
-                effective_date = _local_day_from_utc_ns(created_ns, tz_info, created_epoch_ns)
-                if effective_date:
-                    effective_date_source = 'created_at'
+                    effective_date, effective_date_source = day, 'meta'
+                elif not created_invalid:
+                    effective_date = _local_day_from_utc_ns(created_ns, tz_info, created_epoch_ns)
+                    if effective_date:
+                        effective_date_source = 'created_at'
+                elif legacy_day:
+                    effective_date, effective_date_source = legacy_day, 'meta'
         else:
             if not updated_invalid:
                 effective_date = _local_day_from_utc_ns(updated_ns, tz_info, updated_epoch_ns)
@@ -4298,6 +4294,7 @@ class CatalogIndex:
         dataset_id: str,
         *,
         common_category: str = 'all',
+        recall_ids: set[str] | None = None,
         limit: int = 30,
         after_key: tuple[int, str] | None = None,
         before_key: tuple[int, str] | None = None,
@@ -4311,29 +4308,41 @@ class CatalogIndex:
         def _ckey(d: dict) -> tuple[int, str]:
             return (int(d['sort_ts_desc_key']), str(d['doc_id']))
 
+        recall_sql = ''
+        recall_params: tuple = ()
+        if recall_ids is not None:
+            if not recall_ids:
+                if anchor_id:
+                    return None
+                return {'items': [], 'has_more': False, 'has_prev': False,
+                        'total_filtered': 0, 'category_counts': {'preference': 0, 'experience': 0}}
+            recall_params = tuple(sorted(recall_ids))
+            recall_sql = ' AND doc_id IN (' + ','.join('?' for _ in recall_params) + ')'
+
         with self._reader_lease() as con:
             meta_r = con.execute('SELECT generation FROM catalog_meta WHERE singleton = 1').fetchone()
             cur_gen = int(meta_r[0]) if meta_r else 0
             cc_key = (cur_gen, ds)
             with self._state_lock:
-                cached_cc = self._common_cat_counts_cache.get(cc_key)
+                cached_cc = self._common_cat_counts_cache.get(cc_key) if recall_ids is None else None
             if cached_cc is not None:
                 category_counts = dict(cached_cc)
             else:
                 category_counts = {'preference': 0, 'experience': 0}
                 for ccat, cnt in con.execute(
-                    '''SELECT common_category, COUNT(*)
+                    f'''SELECT common_category, COUNT(*)
                        FROM catalog_docs
-                       WHERE dataset_id = ? AND kind = 'common'
+                       WHERE dataset_id = ? AND kind = 'common'{recall_sql}
                        GROUP BY common_category''',
-                    (ds,),
+                    (ds, *recall_params),
                 ):
                     if ccat in category_counts:
                         category_counts[str(ccat)] = int(cnt)
-                with self._state_lock:
-                    if len(self._common_cat_counts_cache) >= 64:
-                        self._common_cat_counts_cache.clear()
-                    self._common_cat_counts_cache[cc_key] = dict(category_counts)
+                if recall_ids is None:
+                    with self._state_lock:
+                        if len(self._common_cat_counts_cache) >= 64:
+                            self._common_cat_counts_cache.clear()
+                        self._common_cat_counts_cache[cc_key] = dict(category_counts)
 
             if common_category in ('preference', 'experience'):
                 total_filtered = category_counts[common_category]
@@ -4343,6 +4352,9 @@ class CatalogIndex:
                 total_filtered = category_counts['preference'] + category_counts['experience']
                 base_where = "dataset_id = ? AND kind = 'common'"
                 base_params = (ds,)
+
+            base_where += recall_sql
+            base_params += recall_params
 
             order_asc = 'sort_ts_desc_key ASC, doc_id ASC'
             order_desc = 'sort_ts_desc_key DESC, doc_id DESC'
@@ -4360,6 +4372,8 @@ class CatalogIndex:
                 ).fetchone() is not None
 
             if anchor_id:
+                if recall_ids is not None and anchor_id not in recall_ids:
+                    return None
                 arow = con.execute(
                     f'SELECT {_SELECT_DOC_COLS} FROM catalog_docs WHERE dataset_id = ? AND doc_id = ?',
                     (ds, anchor_id),
