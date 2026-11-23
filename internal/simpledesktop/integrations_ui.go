@@ -9,7 +9,7 @@ import (
 
 func isBetaSupportedAgentKind(kind string) bool {
 	switch kind {
-	case "codex", "antigravity", "pi", "traex":
+	case "codex", "antigravity", "pi", "traex", "trae_ide":
 		return true
 	default:
 		return false

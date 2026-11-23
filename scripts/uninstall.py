@@ -13,6 +13,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import stat
@@ -409,6 +410,38 @@ def _atomic_write_private_text(path: Path, text: str) -> None:
                 tmp.unlink()
             except OSError:
                 pass
+
+
+def _remove_trae_ide_hooks(data, runtime_dir: Path) -> list[str]:
+    if not isinstance(data, dict) or not isinstance(data.get('hooks'), dict):
+        raise ValueError('invalid TRAE IDE hooks')
+    managed = runtime_dir / 'managed-marketplaces'
+    removed = []
+    for event in ('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop'):
+        groups = data['hooks'].get(event, [])
+        for group in list(groups):
+            if not isinstance(group, dict) or set(group) != {'hooks'}:
+                continue
+            hooks = group['hooks']
+            if not isinstance(hooks, list) or len(hooks) != 1 or not isinstance(hooks[0], dict):
+                continue
+            hook = hooks[0]
+            if set(hook) != {'type', 'command', 'timeout'} or hook.get('type') != 'command':
+                continue
+            try:
+                args = shlex.split(hook['command'])
+                if len(args) != 4 or args[1] != '-B' or args[3] != event:
+                    continue
+                script = Path(args[2])
+                parts = script.relative_to(managed).parts
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if (len(parts) == 6 and re.fullmatch(r'trae_ide-[a-f0-9]{24}', parts[0])
+                    and re.fullmatch(r'[a-f0-9]{20}', parts[1])
+                    and parts[2:] == ('plugins', 'cognee', 'scripts', 'trae_ide_hook.py')):
+                groups.remove(group)
+                removed.append(event)
+    return removed
 
 
 def _backup_file(path: Path, stamp: str) -> Path:
@@ -892,6 +925,22 @@ def run_uninstall(argv: list[str] | None = None) -> tuple[int, dict]:
                     if target.exists() or target.is_symlink():
                         _remove_dir_action(target, trae_dir, apply=args.apply, planned=planned, applied=applied, skipped=skipped, errors=errors)
 
+        trae_ide = home / '.trae-cn' / 'hooks.json'
+        if trae_ide.is_symlink() or trae_ide.parent.is_symlink():
+            skipped.append(f'symlink-rejected: {trae_ide}')
+        elif trae_ide.is_file():
+            try:
+                data = json.loads(trae_ide.read_text(encoding='utf-8'))
+                removed = _remove_trae_ide_hooks(data, runtime_dir)
+                if removed:
+                    planned.append(f'edit-trae-ide-config: {trae_ide} ({", ".join(removed)})')
+                    if args.apply:
+                        backups.append(str(_backup_file(trae_ide, stamp)))
+                        _atomic_write_private_text(trae_ide, json.dumps(data, indent=2, ensure_ascii=False) + '\n')
+                        applied.append(f'updated: {trae_ide}')
+            except (OSError, TypeError, ValueError) as exc:
+                errors.append(f'failed processing {trae_ide}: {exc}')
+
         # 7. Per-host plugin runtime buffer dirs under ~/.cognee-plugin/.
         cognee_plugin_dir = home / '.cognee-plugin'
         if cognee_plugin_dir.is_symlink():
@@ -906,7 +955,7 @@ def run_uninstall(argv: list[str] | None = None) -> tuple[int, dict]:
                 name = entry.name
                 has_marker = any(child.name.startswith('.memlane-') for child in entry.iterdir())
                 if (name.startswith('codex-') and has_marker) or (
-                    name.startswith(('antigravity-', 'pi-', 'traex-')) and (has_marker or (entry / 'last-hook-error.json').is_file() or (entry / 'pending.json').is_file())
+                    name.startswith(('antigravity-', 'pi-', 'traex-', 'trae_ide-')) and (has_marker or (entry / 'last-hook-error.json').is_file() or (entry / 'pending.json').is_file())
                 ):
                     _remove_dir_action(entry, cognee_plugin_dir, apply=args.apply, planned=planned, applied=applied, skipped=skipped, errors=errors)
                 else:

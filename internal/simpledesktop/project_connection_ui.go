@@ -85,5 +85,8 @@ func agentDisplayName(name string) string {
 	for _, prefix := range []string{"本机 ", "本地 "} {
 		name = strings.TrimPrefix(name, prefix)
 	}
+	if name == "TraeX" {
+		return "TRAE CLI"
+	}
 	return name
 }

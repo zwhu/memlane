@@ -10,7 +10,7 @@ from urllib.parse import quote
 from codex_hook_access import CodexHookAccess
 from project_policy import DEFAULTS, PolicyError, effective
 
-KINDS = {'codex', 'pi', 'traex', 'antigravity'}
+KINDS = {'codex', 'pi', 'traex', 'trae_ide', 'antigravity'}
 ELIGIBLE = {'configured_pending_new_session', 'environment_receipt_unconfirmed'}
 
 

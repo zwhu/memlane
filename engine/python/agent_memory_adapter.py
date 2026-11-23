@@ -48,7 +48,7 @@ def setup(request):
     if marker.is_symlink() or marker.stat().st_mode & 0o077:
         raise ValueError('private_installation_binding_required')
     binding = json.loads(marker.read_text())
-    if binding.get('host_kind') not in ('pi', 'traex'):
+    if binding.get('host_kind') not in ('pi', 'traex', 'trae_ide'):
         raise ValueError('unsupported_installation_host')
     # Ambient exports cannot nominate another session or credential. The fixed
     # environment loader pins the child key from this installation's marker.

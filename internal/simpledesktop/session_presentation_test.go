@@ -83,9 +83,16 @@ func TestSessionIdentityAndRecentAgentIcon(t *testing.T) {
 		},
 		{
 			id:       "traex-1234567890abcdef",
-			identity: "TraeX 会话 · traex-12…90abcdef",
-			agent:    "TraeX",
+			identity: "TRAE CLI 会话 · traex-12…90abcdef",
+			agent:    "TRAE CLI",
 			icon:     agentBrandIcon("traex"),
+			notCodex: true,
+		},
+		{
+			id:       "trae_ide-1234567890abcdef",
+			identity: "TRAE IDE 会话 · trae_ide…90abcdef",
+			agent:    "TRAE IDE",
+			icon:     agentBrandIcon("trae_ide"),
 			notCodex: true,
 		},
 		{
@@ -191,7 +198,7 @@ func TestTraeXIconUsesMonochromeCurrentColorInLightAndDarkAppearances(t *testing
 	if got := agentOriginalIcon("traex"); got != traeIcon {
 		t.Fatal("agentOriginalIcon(\"traex\") did not match agentBrandIcon(\"traex\")")
 	}
-	for _, name := range []string{"TraeX", "TRAE"} {
+	for _, name := range []string{"TRAE CLI", "TraeX", "TRAE"} {
 		if got := agentBrandIconFor("", name); got != traeIcon {
 			t.Fatalf("agentBrandIconFor(\"\", %q) did not resolve to TraeX icon", name)
 		}

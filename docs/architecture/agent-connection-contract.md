@@ -51,6 +51,9 @@ Codex、Antigravity（Gemini App）、pi、TraeX（以及保留兼容的 OpenCod
 
 当前源码已有自动检测、重新检测及批量准备／启用入口；Codex、Antigravity（Gemini App）、pi、TraeX 已纳入 `v0.1.0-beta.1` 首发四宿主，pi／TraeX 实际 Native 设置证据见执行记录检查点四十五，OpenCode 实际 Native 绑定及新会话回执见检查点四十七、五十。各 Agent 的采集、召回、记忆提炼质量与暂缓验证范围仍分别按支持矩阵与发版边界表达，不因列表项存在而视为全部交付。
 
+Agent 连接分别显示 TRAE CLI 和 TRAE IDE，项目权限按连接身份设置。TRAE CLI 使用既有 `traex` 身份并可选为记忆提炼处理器。TRAE CN IDE 使用独立的 `trae_ide` 采集身份。用户确认后，Memlane 在 `~/.trae-cn/hooks.json` 合并受管命令组。先在 Memlane 授权对应项目，再在 TRAE 打开该单根工作区并新建会话。适配器使用 IDE 的提问、工具完成和回复结束事件进行实时采集，在提问时按项目权限自动召回。Hook 在默认沙箱内经回环接口转发，由接入网关按 IDE 身份鉴权并保存。多根窗口无法从全局 Hook 的工作目录确认会话对应的项目时跳过。提炼继续使用已配置的 Agent 模型代理或直连 Provider。
+
+
 ## 执行边界
 
 2026-11-12只清理设计的记录保留为历史；当前已进入增补实施，隔离开发接入及验证按执行账本留证，不推定日常配置已完成迁移。真实错误按实际影响修复，历史失败计数继续保留。

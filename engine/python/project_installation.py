@@ -23,7 +23,7 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
     if host_kind in ('claude_code', 'cursor', 'antigravity'):
         return prepare_official_host(root, instance_id, agent, service_url, control_url, host_home,
                                      host_kind=host_kind, python=python, source=source)
-    if host_kind not in ('codex', 'pi', 'traex'):
+    if host_kind not in ('codex', 'pi', 'traex', 'trae_ide'):
         raise PolicyError('unsupported_installation_host')
     source, root = Path(source), Path(root)
     receipt = json.loads((source / '.memlane-project-access.json').read_text())
@@ -45,7 +45,8 @@ def prepare(source, root, instance_id, agent, service_url, control_url, host_hom
         if host_kind == 'pi':
             host_files.update({'extension/' + path.name: path.read_bytes() for path in (ENGINE / 'agents/pi').iterdir() if path.is_file()})
         else:
-            host_files['scripts/traex_hook.py'] = (ENGINE / 'python/traex_hook.py').read_bytes()
+            helper = {'traex': 'traex_hook.py', 'trae_ide': 'trae_ide_hook.py'}[host_kind]
+            host_files['scripts/' + helper] = (ENGINE / 'python' / helper).read_bytes()
         host_files['host-binding.json'] = json.dumps({'python': python, 'host_kind': host_kind}).encode()
     from project_tool_patch import common_recall_response, forget_response, remember_response
     tool_patch = hashlib.sha256((ENGINE / 'python/project_tool_patch.py').read_bytes()).hexdigest()

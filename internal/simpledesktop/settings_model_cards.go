@@ -11,7 +11,7 @@ func generationBridgeLabel(kind string) string {
 	case "pi":
 		return "pi CLI"
 	case "traex":
-		return "TraeX CLI"
+		return "TRAE CLI"
 	case "antigravity":
 		return "Gemini CLI"
 	default:

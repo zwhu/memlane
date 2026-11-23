@@ -51,7 +51,7 @@ func mergeRecallActivity(events []overviewEvent, recalls []RecallEvent, projects
 			continue
 		}
 		name := agentDisplayName(recall.AgentName)
-		if label, ok := map[string]string{"codex": "Codex", "pi": "pi", "traex": "TraeX", "claude_code": "Claude Code", "cursor": "Cursor", "opencode": "OpenCode"}[recall.AgentKind]; ok {
+		if label, ok := map[string]string{"codex": "Codex", "pi": "pi", "traex": "TRAE CLI", "trae_ide": "TRAE IDE", "claude_code": "Claude Code", "cursor": "Cursor", "opencode": "OpenCode"}[recall.AgentKind]; ok {
 			name = label
 		}
 		title := name + " 召回记忆"

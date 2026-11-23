@@ -616,7 +616,7 @@ class Backlog:
         self.invalidate_review_cache(*cache_key)
         agent, _ = self.checked_target(row['project_id'], target, write=action not in ('review', 'check'))
         kind = agent.get('kind')
-        host_kind = kind if kind in {'codex', 'pi', 'traex', 'claude_code', 'cursor', 'opencode', 'antigravity'} else 'unknown'
+        host_kind = kind if kind in {'codex', 'pi', 'traex', 'trae_ide', 'claude_code', 'cursor', 'opencode', 'antigravity'} else 'unknown'
         trace = RequestTrace('agent_capture')
         trace.transition({'save': 'save_worker', 'check': 'receipt_check'}.get(action, 'official_process_submission'))
         outcome = 'failed'

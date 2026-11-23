@@ -933,7 +933,8 @@ class Registry:
         plugin = Path(payload.get('plugin_path', ''))
         source = Path(installation['plugin_dir'])
         cache = Path(profile) / 'plugins/cache' / installation['marketplace_name']
-        native_path = self.state.get('connections', {}).get(agent_id, {}).get('native_plugin_dir')
+        connection = self.state.get('connections', {}).get(agent_id, {})
+        native_path = connection.get('native_plugin_dir')
         native_installation = (agent.get('kind') == 'antigravity' and native_path
                                and plugin == Path(native_path) and plugin.parent == Path(profile) / 'plugins')
         if not plugin.is_absolute() or not (plugin == source or cache in plugin.parents or native_installation):
@@ -949,7 +950,12 @@ class Registry:
                 raise ValueError()
         except (OSError, ValueError, TypeError):
             raise PolicyError('host_environment_artifact_unconfirmed', 403) from None
-        return {**payload, 'environment_verified': bool(payload.get('runtime_profile') or cache in plugin.parents or native_installation),
+        ide_installation = (agent.get('kind') == 'trae_ide' and plugin == source
+                            and connection.get('activated')
+                            and connection.get('status') == 'configured_pending_new_session'
+                            and marker.get('runtime_profile') == profile)
+        return {**payload, 'environment_verified': bool(payload.get('runtime_profile') or cache in plugin.parents
+                                                         or native_installation or ide_installation),
                 'artifact_verified': True, 'profile': profile}
 
     def record_connection_receipt(self, agent_id, project_id, session_key, environment):

@@ -22,7 +22,7 @@ func TestLocalAgentDetectionSettingsShowsRefreshAndUnavailableBinding(t *testing
 			t.Fatalf("missing detection control %q", label)
 		}
 	}
-	for _, hidden := range []string{"OpenCode", "Claude Code", "Cursor", "TraeX", "暂时无法连接"} {
+	for _, hidden := range []string{"OpenCode", "Claude Code", "Cursor", "TRAE CLI", "暂时无法连接"} {
 		if tt.HasText(hidden) {
 			t.Fatalf("unreleased/collapsed host %q should not be visible", hidden)
 		}
@@ -31,7 +31,7 @@ func TestLocalAgentDetectionSettingsShowsRefreshAndUnavailableBinding(t *testing
 		t.Fatal("obsolete bulk connection toggle should be removed")
 	}
 	clickProjectUI(t, tt, "其他 Agent（1）")
-	if !tt.HasText("TraeX") || !tt.HasText("暂时无法连接") {
+	if !tt.HasText("TRAE CLI") || !tt.HasText("暂时无法连接") {
 		t.Fatal("expanded unavailable beta host missing")
 	}
 	if tt.HasText("OpenCode") || tt.HasText("Claude Code") || tt.HasText("Cursor") {

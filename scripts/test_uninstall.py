@@ -96,6 +96,21 @@ class UninstallScriptTests(unittest.TestCase):
 
         return home, runtime_dir, components_dir, store_dir
 
+    def test_trae_ide_cleanup_removes_only_the_managed_command(self):
+        import shlex
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory) / 'Application Support' / 'Memlane'
+            script = (runtime / 'managed-marketplaces' / ('trae_ide-' + 'a' * 24) /
+                      ('b' * 20) / 'plugins/cognee/scripts/trae_ide_hook.py')
+            def group(path):
+                return {'hooks': [{'type': 'command', 'timeout': 25,
+                                   'command': shlex.join(['/usr/bin/python3', '-B', str(path), 'Stop'])}]}
+            unrelated = group(runtime.parent / 'trae_ide_hook.py')
+            data = {'version': 1, 'hooks': {'Stop': [unrelated, group(script)]}}
+            self.assertEqual(uninstall._remove_trae_ide_hooks(data, runtime), ['Stop'])
+            self.assertEqual(data['hooks']['Stop'], [unrelated])
+            self.assertEqual(uninstall._remove_trae_ide_hooks(data, runtime), [])
+
     def test_dry_run_makes_zero_mutations_and_json_is_valid(self):
         with tempfile.TemporaryDirectory() as raw_tmp:
             tmp = Path(raw_tmp).resolve()

@@ -24,7 +24,7 @@ func TestConnectionExpandedDirectoryStaysInsideFirstUseWorkspace(t *testing.T) {
 			if tt.HasText("确认连接（0）") || tt.HasText("已选 0 个") {
 				t.Fatal("completed selection left an empty bulk action bar")
 			}
-			detail, ok := tt.Find("Agent目录详情：TraeX")
+			detail, ok := tt.Find("Agent目录详情：TRAE CLI")
 			if !ok || detail.W <= 0 || detail.X+detail.W > float32(width)-48 {
 				t.Fatal("directory detail escaped list inset", detail)
 			}
@@ -49,7 +49,7 @@ func TestConnectionCardsUseColumnsAndKeepBatchSelection(t *testing.T) {
 			tt := ui.NewTester(a.View, width, 820)
 			codex, cOK := tt.Find("Codex")
 			pi, pOK := tt.Find("pi")
-			traex, tOK := tt.Find("TraeX")
+			traex, tOK := tt.Find("TRAE CLI")
 			agy, aOK := tt.Find("Gemini App")
 			if !cOK || !pOK || !tOK || !aOK || codex.X != pi.X || pi.X != traex.X || !(codex.Y < pi.Y && pi.Y < traex.Y && traex.Y < agy.Y) {
 				t.Fatal("Agent connections are not aligned compact rows", codex, pi, traex, agy)

@@ -381,20 +381,20 @@ func processingMessageNotice(f processingNotice, now time.Time) messageNotice {
 		"antigravity_model_or_context_changed", "antigravity_terminal_invalid", "antigravity_cancelled":
 		detail = fmt.Sprintf("Antigravity 记忆提炼调用异常（%s，HTTP %d），尚不能据此确认记忆已生成。", f.Code, f.Status)
 	case "traex_authentication_failed", "traex_authentication_required":
-		detail = "TraeX 登录认证失败，提炼调用未完成。"
+		detail = "TRAE CLI 登录认证失败，提炼调用未完成。"
 	case "traex_quota_exceeded":
-		detail = "TraeX 可用额度不足，提炼调用未完成。"
+		detail = "TRAE CLI 可用额度不足，提炼调用未完成。"
 	case "traex_rate_limited", "traex_busy":
-		detail = fmt.Sprintf("触发 TraeX 请求频率限制或并发队列繁忙（HTTP %d）。", f.Status)
+		detail = fmt.Sprintf("触发 TRAE CLI 请求频率限制或并发队列繁忙（HTTP %d）。", f.Status)
 	case "traex_schema_unsupported", "traex_schema_failed":
-		detail = "TraeX 未通过结构化输出格式约束或不支持当前 Schema。"
+		detail = "TRAE CLI 未通过结构化输出格式约束或不支持当前 Schema。"
 	case "traex_context_exceeded":
-		detail = "本次提炼内容超出 TraeX 的上下文限制。"
+		detail = "本次提炼内容超出 TRAE CLI 的上下文限制。"
 	case "traex_timeout":
-		detail = fmt.Sprintf("TraeX 模型响应超时（HTTP %d）。", f.Status)
+		detail = fmt.Sprintf("TRAE CLI 模型响应超时（HTTP %d）。", f.Status)
 	case "traex_model_failed", "traex_request_invalid", "traex_connection_failed",
 		"traex_stream_disconnected", "traex_upstream_error", "traex_upstream_cancelled":
-		detail = fmt.Sprintf("TraeX 记忆提炼调用异常（%s，HTTP %d），尚不能据此确认记忆已生成。", f.Code, f.Status)
+		detail = fmt.Sprintf("TRAE CLI 记忆提炼调用异常（%s，HTTP %d），尚不能据此确认记忆已生成。", f.Code, f.Status)
 	}
 	source := "记忆提炼服务"
 	switch f.Backend {
@@ -403,7 +403,7 @@ func processingMessageNotice(f processingNotice, now time.Time) messageNotice {
 	case "pi":
 		source = "Pi · 记忆提炼"
 	case "traex":
-		source = "TraeX · 记忆提炼"
+		source = "TRAE CLI · 记忆提炼"
 	case "antigravity":
 		source = "Antigravity · 记忆提炼"
 	}

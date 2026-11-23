@@ -477,7 +477,7 @@ func TestMessageNoticesSupportsAllAgentBridgeBackends(t *testing.T) {
 	}{
 		{"pi", "pi_authentication_required", 409, "Pi · 记忆提炼", "Pi 登录认证失败"},
 		{"antigravity", "antigravity_account_location_unavailable", 403, "Antigravity · 记忆提炼", "地区或网络出口不可用"},
-		{"traex", "traex_quota_exceeded", 429, "TraeX · 记忆提炼", "TraeX 可用额度不足"},
+		{"traex", "traex_quota_exceeded", 429, "TRAE CLI · 记忆提炼", "TRAE CLI 可用额度不足"},
 	}
 	for _, tc := range cases {
 		q.ProcessingNotices = []processingNotice{{

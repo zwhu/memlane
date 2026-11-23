@@ -36,11 +36,11 @@ class NativeConnection:
         self.root = registry.path.parent / 'connections' / self.id
         self.target = self.profile / {'pi': 'extensions/memlane-cognee/index.ts', 'traex': 'traecli.toml',
                                      'claude_code': 'settings.json',
-                                     'cursor': 'hooks.json'}[kind]
+                                     'cursor': 'hooks.json', 'trae_ide': 'hooks.json'}[kind]
 
     def component_source_available(self):
         source = self.config.get('project_control', {}).get('plugin_dir') or self.config.get('plugin_dir')
-        if self.kind not in ('pi', 'traex'):
+        if self.kind not in ('pi', 'traex', 'trae_ide'):
             from project_host_plugin import archive_available
             return archive_available(source)
         if not isinstance(source, (str, Path)) or not source:
@@ -55,12 +55,15 @@ class NativeConnection:
         result = {'instance_id': self.id, 'kind': self.kind, 'profile': str(self.profile),
                   'detected': bool(self.executable and Path(self.executable).is_file()),
                   'status': status,
-                  'requires_reload': True, 'entrypoints': ['ide'] if self.kind == 'cursor' else ['cli'],
+                  'requires_reload': True, 'entrypoints': ['ide'] if self.kind in ('cursor', 'trae_ide') else ['cli'],
                   'capabilities': {key: {'available': True, 'verified': False}
                                    for key in ('explicit_memory', 'auto_capture', 'auto_recall', 'project_policy')},
                   'preview': copy.deepcopy(record.get('preview'))}
         if self.kind == 'cursor':
             result['capabilities']['auto_recall']['condition'] = 'session_start_or_first_non_read_tool; no_tool_turn_not_supported'
+        if self.kind == 'trae_ide':
+            result['capabilities']['explicit_memory']['available'] = False
+            result['capabilities']['auto_capture']['condition'] = 'single_workspace_live_turns'
         if self.kind == 'claude_code':
             result['capabilities']['auto_capture']['condition'] = 'bound_main_session; sidechains_require_independent_binding'
         result['new_sessions'] = sum(json.loads(key)[0] == self.id and key not in record.get('sessions_before_activation', [])
@@ -71,6 +74,8 @@ class NativeConnection:
         if result['status'] == 'configured_pending_new_session' and self.kind == 'cursor':
             installation = self.registry.state['agents'][self.id]['installation']
             self.cursor_installed(installation, record)
+        if result['status'] == 'configured_pending_new_session' and self.kind == 'trae_ide':
+            self.trae_ide_installed(self.registry.state['agents'][self.id]['installation'], record)
         if result['status'] == 'configured_pending_new_session' and self.kind == 'traex':
             self.traex_installed(self.registry.state['agents'][self.id]['installation'])
         if result['status'] == 'configured_pending_new_session' and self.kind == 'claude_code':
@@ -84,6 +89,11 @@ class NativeConnection:
         if sha(raw) != record.get('cursor_proposal_sha256'):
             raise PolicyError('cursor_loader_changed_requires_review', 409)
         proposal(raw, record.get('cursor_next_hook'), None)
+
+    def trae_ide_installed(self, installation, record):
+        from trae_ide_connection import proposal
+        verify_artifact(installation)
+        proposal(safe_file(self.target), record['trae_ide_next_hooks'], None)
 
     def traex_installed(self, installation):
         """Review the native direct-install receipt and cache without replay."""
@@ -172,6 +182,9 @@ class NativeConnection:
                    and not (record.get('activated') and name == record.get('enabled_plugin'))
                    for name, enabled in settings.get('enabledPlugins', {}).items()):
                 raise PolicyError('duplicate_claude_memory_plugin_requires_review', 409)
+        elif self.kind == 'trae_ide':
+            from trae_ide_connection import proposal
+            proposal(baseline, record.get('trae_ide_hooks'), None)
         else:
             from cursor_connection import proposal
             proposal(baseline, record.get('cursor_hook'), None)
@@ -204,7 +217,7 @@ class NativeConnection:
         if record.get('status') in ('activation_unknown', 'preparation_unknown'):
             raise PolicyError('connection_result_requires_review', 409)
         if self.id not in r.state['agents']:
-            await r.provision_agent(expected, self.id, '本机 ' + {'pi': 'pi', 'traex': 'TraeX', 'claude_code': 'Claude Code', 'cursor': 'Cursor', 'antigravity': 'Gemini App'}[self.kind])
+            await r.provision_agent(expected, self.id, '本机 ' + {'pi': 'pi', 'traex': 'TRAE CLI', 'trae_ide': 'TRAE IDE', 'claude_code': 'Claude Code', 'cursor': 'Cursor', 'antigravity': 'Gemini App'}[self.kind])
         async with r.mutex:
             previous_plugin = record.get('enabled_plugin') if record.get('activated') else record.get('previous_plugin')
             if self.kind == 'traex' and record.get('activated') and not previous_plugin:
@@ -217,6 +230,8 @@ class NativeConnection:
             if self.kind == 'cursor':
                 record['cursor_hook'] = cursor_hook
                 record['cursor_active_installation'] = copy.deepcopy(cursor_active)
+            if self.kind == 'trae_ide':
+                record['trae_ide_hooks'] = self.registry.state['connections'].get(self.id, {}).get('trae_ide_hooks')
             r.state['connections'][self.id] = record
             r.state['revision'] += 1
             r.save()
@@ -230,13 +245,16 @@ class NativeConnection:
                                    self.id, agent, gateway_url, control_url,
                                    self.config.get('agent_host_home', agent.get('installation', {}).get('home') or str(Path.home())),
                                    host_kind=self.kind, python=self.config['python'])
-            if self.kind == 'cursor':
+            if self.kind in ('cursor', 'trae_ide'):
                 marker = Path(installation['plugin_dir']) / '.memlane-installation.json'
                 marker_data = json.loads(marker.read_text())
                 marker_data['runtime_profile'] = str(self.profile)
+                if self.kind == 'trae_ide':
+                    marker_data.update(hook_origin=loopback_origin(control_url),
+                                       hook_token_file=agent['control_token_file'])
                 private_write(marker, json.dumps(marker_data).encode())
             agent.update(kind=self.kind, host_profile=str(self.profile), host_profile_fingerprint=sha(str(self.profile).encode()),
-                         entrypoints=['ide'] if self.kind == 'cursor' else ['cli'], capabilities=self.view()['capabilities'], installation=installation)
+                         entrypoints=['ide'] if self.kind in ('cursor', 'trae_ide') else ['cli'], capabilities=self.view()['capabilities'], installation=installation)
             if self.kind == 'pi':
                 stub = 'export { default } from ' + json.dumps(str(Path(installation['plugin_dir']) / 'extension/index.ts')) + ';\n'
                 private_write(self.root / 'extension-proposed.ts', stub.encode())
@@ -247,6 +265,12 @@ class NativeConnection:
                 proposed = proposal(safe_file(self.target), cursor_hook, record['cursor_next_hook'])
                 private_write(self.root / 'cursor-hooks-proposed.json', proposed)
                 record['cursor_proposal_sha256'] = sha(proposed)
+                record['proposed_sha256'] = sha((installation['manifest_sha256'] + sha(proposed)).encode())
+            elif self.kind == 'trae_ide':
+                from trae_ide_connection import loader, proposal
+                next_hooks = loader(installation, self.config['python'])
+                proposed = proposal(safe_file(self.target), record['trae_ide_hooks'], next_hooks)
+                record['trae_ide_next_hooks'] = next_hooks
                 record['proposed_sha256'] = sha((installation['manifest_sha256'] + sha(proposed)).encode())
             else:
                 record['proposed_sha256'] = installation['manifest_sha256']
@@ -273,6 +297,11 @@ class NativeConnection:
                     raise PolicyError('connection_preview_changed', 409)
                 # Recheck duplicate imports before any host mutation.
                 self.preview()
+            if self.kind == 'trae_ide':
+                from trae_ide_connection import proposal
+                proposed = proposal(safe_file(self.target), record['trae_ide_hooks'], record['trae_ide_next_hooks'])
+                if sha((installation['manifest_sha256'] + sha(proposed)).encode()) != reviewed_sha:
+                    raise PolicyError('connection_preview_changed', 409)
             record.update(status='activation_unknown', sessions_before_activation=[
                 key for key in r.state['sessions'] if json.loads(key)[0] == self.id])
             r.state['revision'] += 1
@@ -293,6 +322,12 @@ class NativeConnection:
                 self.cursor_installed(installation, record)
                 record['cursor_hook'] = record['cursor_next_hook']
                 record['cursor_active_installation'] = copy.deepcopy(installation)
+            elif self.kind == 'trae_ide':
+                if sha(safe_file(self.target)) != record['preview']['baseline_sha256']:
+                    raise PolicyError('host_configuration_changed', 409)
+                private_write(self.target, proposed)
+                self.trae_ide_installed(installation, record)
+                record['trae_ide_hooks'] = record['trae_ide_next_hooks']
             else:
                 env = {key: value for key, value in os.environ.items()
                        if not key.startswith(('COGNEE_', 'MEMLANE_', 'TRAE_', 'TRAECLI_'))}
@@ -335,13 +370,29 @@ class NativeConnection:
         async with r.mutex:
             r.check_revision(expected)
             record = r.state.get('connections', {}).get(self.id, {})
+            if record.get('status') == 'preparation_unknown' and self.kind == 'trae_ide':
+                agent = r.state['agents'].get(self.id, {})
+                artifacts = r.path.parent / 'managed-marketplaces' / self.id
+                if (record.get('trae_ide_hooks') is None and not agent.get('installation')
+                        and not artifacts.exists() and not artifacts.is_symlink()
+                        and sha(safe_file(self.target)) == record['preview']['baseline_sha256']):
+                    self.preview()
+                    del r.state['connections'][self.id]
+                    r.state['revision'] += 1
+                    result = {'revision': r.state['revision'], 'connection': self.view()}
+                    for operation in r.state.get('connection_operations', {}).values():
+                        if (operation.get('instance_id') == self.id and operation.get('action') == 'prepare'
+                                and operation.get('status') != 'complete'):
+                            operation.update(status='complete', outcome='rejected',
+                                             error_code='trae_ide_preparation_did_not_install', result=result)
+                    r.save()
             if record.get('status') == 'activation_unknown' and self.kind == 'pi':
                 if sha(safe_file(self.target)) == record.get('proposed_sha256'):
                     verify_artifact(r.state['agents'][self.id]['installation'])
                     record.update(status='configured_pending_new_session', activated=True)
                     r.state['revision'] += 1
                     r.save()
-            elif record.get('status') == 'activation_unknown' and self.kind in ('claude_code', 'cursor', 'traex'):
+            elif record.get('status') == 'activation_unknown' and self.kind in ('claude_code', 'cursor', 'traex', 'trae_ide'):
                 installation = r.state['agents'][self.id]['installation']
                 if self.kind == 'claude_code':
                     self.claude_installed(installation)
@@ -350,6 +401,9 @@ class NativeConnection:
                         raise PolicyError('claude_configuration_requires_review', 409)
                 elif self.kind == 'traex':
                     self.traex_installed(installation)
+                elif self.kind == 'trae_ide':
+                    self.trae_ide_installed(installation, record)
+                    record['trae_ide_hooks'] = record['trae_ide_next_hooks']
                 else:
                     self.cursor_installed(installation, record)
                     record['cursor_hook'] = record['cursor_next_hook']
@@ -383,7 +437,7 @@ def detect_executable(kind, settings, legacy=None):
     if configured:
         path = Path(configured).expanduser()
         return str(path) if path.is_absolute() and path.is_file() and os.access(path, os.X_OK) else None
-    commands = {'codex': ('codex',), 'pi': ('pi',), 'traex': ('traecli', 'traex'),
+    commands = {'codex': ('codex',), 'pi': ('pi',), 'traex': ('traecli', 'traex'), 'trae_ide': (),
                            'claude_code': ('claude',), 'cursor': ('cursor',), 'opencode': ('opencode',), 'antigravity': ('agy',)}[kind]
     for command in commands:
         found = shutil.which(command)
@@ -400,6 +454,9 @@ def detect_executable(kind, settings, legacy=None):
                           for app in ('Codex.app', 'ChatGPT.app'))
     if kind == 'antigravity':
         candidates.extend(base / 'Gemini.app/Contents/Helpers/agy'
+                          for base in (Path('/Applications'), home / 'Applications'))
+    if kind == 'trae_ide':
+        candidates.extend(base / 'Trae CN.app/Contents/MacOS/Electron'
                           for base in (Path('/Applications'), home / 'Applications'))
     if kind == 'cursor':
         candidates.extend(base / 'Cursor.app/Contents/Resources/app/bin/cursor'
@@ -444,6 +501,7 @@ class Connections:
             self.missing_codex = {'instance_id': 'codex-unavailable', 'kind': 'codex', 'detected': False,
                                   'status': 'not_connected'}
         for kind, directory in [('pi', Path.home() / '.pi/agent'), ('traex', Path.home() / '.trae'),
+                                ('trae_ide', Path.home() / '.trae-cn'),
                                 ('claude_code', Path.home() / '.claude'), ('cursor', Path.home() / '.cursor')]:
             settings = configured.get(kind, {})
             executable = detect_executable(kind, settings)
@@ -570,9 +628,12 @@ class Connections:
                     result = None
                 if result is not None:
                     return {'recorded': True, 'status': 'complete', 'result': result, 'reconciled': True}
-        return {'recorded': True, 'status': receipt['status'],
-                'result': copy.deepcopy(receipt.get('result')),
-                'error_code': receipt.get('error_code')}
+        result = {'recorded': True, 'status': receipt['status'],
+                  'result': copy.deepcopy(receipt.get('result')),
+                  'error_code': receipt.get('error_code')}
+        if receipt.get('outcome'):
+            result['outcome'] = receipt['outcome']
+        return result
 
     async def perform(self, identifier, action, expected, operation_id, reviewed_sha=None):
         if not isinstance(operation_id, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', operation_id):

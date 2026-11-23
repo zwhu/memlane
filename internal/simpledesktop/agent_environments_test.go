@@ -29,7 +29,7 @@ func TestAgentEnvironmentChoiceBlocksWrongTargetAndExplainsReceipt(t *testing.T)
 	if !tt.HasText("需要更换配置目录") || connectionActionAllowed(row, "prepare") {
 		t.Fatal("verification environment was offered as a valid daily connection")
 	}
-	clickProjectUI(t, tt, "查看配置目录：TraeX")
+	clickProjectUI(t, tt, "查看配置目录：TRAE CLI")
 	if !tt.HasText("默认目录：/synthetic/daily traex") || !tt.HasText("使用目录：/synthetic/daily traex") {
 		t.Fatal("real daily environment choice is not visible")
 	}

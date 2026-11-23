@@ -234,13 +234,14 @@ func TestIntegrationAgentListShowsDirectActionsAndHostLimits(t *testing.T) {
 		{ID: "codex", Kind: "codex", Status: "configured_pending_new_session", NewSessions: 1},
 		{ID: "pi", Kind: "pi", Detected: true, Status: "prepared", Preview: &CodexConnectionPreview{ProposedSHA: "reviewed"}},
 		{ID: "traex", Kind: "traex", Detected: true, Status: "activation_unknown"},
+		{ID: "trae-ide", Kind: "trae_ide", Detected: true},
 		{ID: "antigravity", Kind: "antigravity", Detected: true},
 		{ID: "antigravity-uninstalled", Kind: "antigravity"},
 		{ID: "claude", Kind: "claude_code", Detected: true},
 		{ID: "cursor", Kind: "cursor"},
 	}}}
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"Codex", "pi", "TraeX", "Gemini App", "其他 Agent（1）", "确认连接 pi", "连接 Gemini App", "等待确认", "等待采集验证"} {
+	for _, label := range []string{"Codex", "pi", "TRAE CLI", "TRAE IDE", "Gemini App", "其他 Agent（1）", "确认连接 pi", "连接 Gemini App", "等待确认", "等待采集验证"} {
 		if !tt.HasText(label) {
 			t.Fatal("missing Agent control", label)
 		}

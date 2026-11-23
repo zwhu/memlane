@@ -92,6 +92,19 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
             raise PolicyError('json_required', 415)
         return await request.json()
 
+    if codex_config and codex_config.get('python'):
+        from trae_ide_connection import HookDispatch
+        trae_ide_dispatch = HookDispatch(registry, codex_config['python'])
+
+        async def trae_ide_hook(request):
+            identity = agent(request)
+            if request.content_type != 'application/json':
+                raise PolicyError('json_required', 415)
+            result = await trae_ide_dispatch.run(identity, request.match_info['event'], await request.read())
+            return web.json_response(result)
+
+        app.router.add_post('/v1/trae-ide/hooks/{event}', trae_ide_hook)
+
     async def resolve(request):
         identity = agent(request)
         payload = fields(await body(request), ('workspace', 'host_session_key'), ('explicit_workspace', 'host_environment'))

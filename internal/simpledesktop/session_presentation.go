@@ -15,8 +15,10 @@ func sessionIdentity(id string) string {
 		host, key = "Agy", id
 	case strings.HasPrefix(lowerID, "gemini-"):
 		host, key = "Gemini", id
+	case strings.HasPrefix(lowerID, "trae_ide-"):
+		host, key = "TRAE IDE", id
 	case strings.HasPrefix(lowerID, "traex-"):
-		host, key = "TraeX", id
+		host, key = "TRAE CLI", id
 	case strings.HasPrefix(lowerID, "pi-"):
 		host, key = "pi", id
 	case strings.HasPrefix(lowerID, "opencode-"):
@@ -37,7 +39,7 @@ func sessionIdentity(id string) string {
 		case "opencode":
 			host = "opencode"
 		case "traex":
-			host = "TraeX"
+			host = "TRAE CLI"
 		case "antigravity", "agy":
 			host = "Agy"
 		case "gemini":

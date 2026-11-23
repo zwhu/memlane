@@ -555,6 +555,118 @@ print("explicit skill and hooks resolve one binding without cwd fallback")
                                           env=environment, cwd=self.workspace, capture_output=True, text=True, timeout=20)
         self.assertEqual(process.returncode, 0, process.stderr[-3000:])
 
+    async def test_trae_ide_installs_live_hooks_and_captures_only_observed_turns(self):
+        profile = self.workspace / 'trae-ide-profile'
+        profile.mkdir()
+        adapter = NativeConnection(self.registry, self.config, 'trae_ide', profile, sys.executable)
+        other = {'hooks': [{'command': 'echo existing'}]}
+        baseline = {'version': 1, 'hooks': {'Stop': [other]}}
+        adapter.target.write_text(json.dumps(baseline))
+        self.registry.state['agents'][adapter.id] = dict(self.registry.state['agents'][self.adapter.id])
+        self.registry.state['connections'] = {
+            adapter.id: {'status': 'preparation_unknown', 'preview': adapter.preview(), 'trae_ide_hooks': None},
+        }
+        original = {'instance_id': adapter.id, 'action': 'prepare', 'status': 'unknown'}
+        self.registry.state['connection_operations'] = {'original-prepare': original}
+        self.assertEqual((await adapter.review(self.registry.state['revision']))['status'], 'not_connected')
+        self.assertEqual(original['outcome'], 'rejected')
+        self.assertEqual(original['status'], 'complete')
+        self.assertEqual(json.loads(adapter.target.read_text()), baseline)
+        prepared = await adapter.prepare(self.registry.state['revision'])
+        self.assertEqual(json.loads(adapter.target.read_text()), baseline)
+        receipt = await adapter.activate(self.registry.state['revision'], prepared['preview']['proposed_sha256'])
+        self.assertEqual(receipt['entrypoints'], ['ide'])
+        self.assertEqual(receipt['status'], 'configured_pending_new_session')
+        config = json.loads(adapter.target.read_text())
+        self.assertEqual(config['hooks']['Stop'][0], other)
+        installation = self.registry.state['agents'][adapter.id]['installation']
+        verify_artifact(installation)
+        binding = json.loads((Path(installation['plugin_dir']) / '.memlane-installation.json').read_text())
+        self.assertEqual(binding['runtime_profile'], str(profile))
+        self.assertEqual(binding['hook_origin'], self.config['project_control']['url'])
+        self.assertEqual(binding['hook_token_file'], self.registry.state['agents'][adapter.id]['control_token_file'])
+        environment_receipt = self.registry.check_host_environment(adapter.id, {
+            'instance_id': adapter.id, 'plugin_path': installation['plugin_dir'],
+        })
+        self.assertTrue(environment_receipt['environment_verified'])
+
+        from aiohttp.test_utils import TestClient, TestServer
+        from project_control_server import create_app
+        from unittest.mock import AsyncMock, patch
+
+        manager_token = 'm' * 32
+        ide_token = 't' * 32
+        unrelated_token = 'u' * 32
+        private_write(self.workspace / 'ide-token', ide_token.encode())
+        self.registry.state['agents'][adapter.id]['control_token_file'] = str(self.workspace / 'ide-token')
+        app = create_app(self.registry, manager_token, {'unrelated': unrelated_token}, codex_config=self.config)
+        route = '/v1/trae-ide/hooks/UserPromptSubmit'
+        payload = {'session_id': 'synthetic-session', 'cwd': str(profile), 'workspace_roots': [str(profile)],
+                   'hook_event_name': 'UserPromptSubmit', 'prompt': 'synthetic prompt'}
+
+        worker = type('Worker', (), {'returncode': 0, 'communicate': AsyncMock(return_value=(b'{}', b''))})()
+        with patch('asyncio.create_subprocess_exec', new_callable=AsyncMock, return_value=worker) as execute:
+            async with TestClient(TestServer(app)) as client:
+                for token, status in ((None, 401), (manager_token, 403), (unrelated_token, 403), (ide_token, 200)):
+                    headers = {'Authorization': 'Bearer ' + token} if token else {}
+                    response = await client.post(route, json=payload, headers=headers)
+                    self.assertEqual(response.status, status, await response.text())
+                execute.assert_awaited_once()
+                launch = execute.await_args
+                self.assertEqual(launch.args[-2:], ('UserPromptSubmit', '--dispatch'))
+                self.assertEqual(launch.kwargs['umask'], 0o077)
+
+        script = r'''
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import trae_ide_hook as hook
+import agent_memory_adapter as memory
+import _coding_memory as coding
+import _memlane_policy as policy
+import _project_memory as projects
+projects.begin = lambda *args: None
+projects.prepare = lambda *args, **kwargs: {}
+policy.bind = lambda *args: "00000000-0000-0000-0000-000000000001"
+allowed = True
+policy.permit = lambda *args, **kwargs: allowed
+saved = []
+coding._deliver = lambda dataset, session, entries: saved.extend(entries)
+coding._drain = lambda *args: None
+memory.handle = lambda request: {"context": "authorized synthetic context"}
+base = {"session_id": "synthetic-ide-session", "cwd": os.environ["HOME"],
+        "workspace_roots": [os.environ["HOME"]]}
+
+def run(event, **fields):
+    return hook.handle(event, {**base, "hook_event_name": event, **fields})
+
+run("SessionStart")
+run("Stop", last_assistant_message="reply from before connection")
+assert saved == []
+result = run("UserPromptSubmit", prompt="IDE question")
+assert result["hookSpecificOutput"]["additionalContext"] == "authorized synthetic context"
+run("PostToolUse", tool_use_id="tool-1", tool_name="Read", tool_response={"result":"synthetic"})
+run("Stop", last_assistant_message="IDE answer")
+run("Stop", last_assistant_message="duplicate answer")
+assert [entry["type"] for entry in saved] == ["trace", "qa"]
+assert saved[-1]["question"] == "IDE question" and saved[-1]["answer"] == "IDE answer"
+
+run("UserPromptSubmit", prompt="revoked question")
+allowed = False
+run("Stop", last_assistant_message="revoked answer")
+run("UserPromptSubmit", prompt="paused question")
+allowed = True
+run("Stop", last_assistant_message="paused answer")
+assert run("UserPromptSubmit", prompt="ambiguous", workspace_roots=[base["cwd"], "/tmp"]) == {}
+run("Stop", last_assistant_message="ambiguous answer")
+assert len(saved) == 2
+'''
+        environment = {key: value for key, value in os.environ.items() if not key.startswith(('COGNEE_', 'MEMLANE_'))}
+        environment['HOME'] = str(self.workspace)
+        process = await asyncio.to_thread(subprocess.run, [sys.executable, '-B', '-c', script,
+                                          str(Path(installation['plugin_dir']) / 'scripts')],
+                                          env=environment, cwd=self.workspace, capture_output=True, text=True, timeout=20)
+        self.assertEqual(process.returncode, 0, process.stderr[-3000:])
+
     async def test_traex_capture_recovers_interrupted_rollout_and_respects_boundary(self):
         from project_installation import prepare
         installation = prepare(self.plugin, self.registry.path.parent, 'synthetic-traex',

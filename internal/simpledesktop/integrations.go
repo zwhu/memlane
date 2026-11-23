@@ -244,7 +244,9 @@ func connectionName(kind string) string {
 	case "pi":
 		return "pi"
 	case "traex":
-		return "TraeX"
+		return "TRAE CLI"
+	case "trae_ide":
+		return "TRAE IDE"
 	case "claude_code":
 		return "Claude Code"
 	case "cursor":
@@ -349,7 +351,7 @@ func connectionReviewNotice(name string, row AgentConnection) string {
 }
 
 func captureConnection(row AgentConnection) bool {
-	return (row.Kind == "codex" || row.Kind == "pi" || row.Kind == "traex" || row.Kind == "antigravity") &&
+	return (row.Kind == "codex" || row.Kind == "pi" || row.Kind == "traex" || row.Kind == "trae_ide" || row.Kind == "antigravity") &&
 		(row.Status == "configured_pending_new_session" || row.Status == "environment_receipt_unconfirmed")
 }
 

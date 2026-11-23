@@ -19,7 +19,7 @@ func agentLogo(c *ui.Context, mark *ui.SVG, size float32) ui.Element {
 var agentBrandIcons = func() map[string]*ui.SVG {
 	icons := make(map[string]*ui.SVG)
 	for kind, file := range map[string]string{
-		"codex": "codex-color", "pi": "pi", "traex": "trae",
+		"codex": "codex-color", "pi": "pi", "traex": "trae", "trae_ide": "trae",
 		"claude_code": "claudecode-color", "claude": "claude-color", "opencode": "opencode", "cursor": "cursor",
 		"chatgpt": "openai", "openai": "openai", "gemini": "gemini-color", "antigravity": "gemini-color", "grok": "grok", "deepseek": "deepseek-color",
 	} {
@@ -59,8 +59,10 @@ func agentBrandIconFor(kind, name string) *ui.SVG {
 	switch key {
 	case "claudecode":
 		key = "claude_code"
-	case "trae":
+	case "trae", "traecli":
 		key = "traex"
+	case "traeide":
+		key = "trae_ide"
 	case "agy", "agycli", "antigravitycli", "geminiapp":
 		key = "antigravity"
 	case "geminicli":
@@ -117,7 +119,8 @@ func recentAgentIcon(item Item) *ui.SVG {
 	}
 	if kind, found := map[string]string{
 		"Codex":       "codex",
-		"TraeX":       "traex",
+		"TRAE CLI":    "traex",
+		"TRAE IDE":    "trae_ide",
 		"pi":          "pi",
 		"Claude Code": "claude_code",
 		"opencode":    "opencode",
