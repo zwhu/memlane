@@ -1,4 +1,4 @@
-# Memlane v0.1.0-beta.1 内测安装、校验与卸载指南
+# Memlane v0.1.0-beta.1 内测安装与卸载指南
 
 ## 1. 运行环境与要求
 
@@ -7,29 +7,18 @@
 
 ## 2. 安装 Memlane
 
-1. 双击 `.dmg`，把 **Memlane** 拖入「应用程序」，再从「应用程序」打开 Memlane。
-2. 如果弹出「未打开‘Memlane’」，点 **「完成」**。确认安装包来自项目发布页，且[校验通过](#下载与校验)。
+1. 双击从项目发布页下载的 `.dmg`，把 **Memlane** 拖入「应用程序」，再从「应用程序」打开 Memlane。[GitHub 发布页](https://github.com/zwhu/memlane/releases/tag/v0.1.0-beta.1)
+2. 如果弹出「未打开‘Memlane’」，点 **「完成」**，确认安装包来自项目发布页。
 3. 打开 **系统设置 → 隐私与安全性**，向下滚动到 **「安全性」**。找到「已阻止‘Memlane’以保护 Mac」右侧的 **「仍要打开」**，点击它。
 4. 在确认框里再次点 **「仍要打开」**，按 macOS 提示用管理员触控 ID 或密码完成验证。Memlane 打开后就可以继续使用。
 
 ![macOS 隐私与安全性页面显示 Memlane 被阻止，提示右侧是「仍要打开」按钮](../images/memlane-gatekeeper-open-anyway-20261123.jpg)
 
-### 下载与校验
-
-1. 从 [GitHub Releases（`v0.1.0-beta.1` 内测版）](https://github.com/zwhu/memlane/releases/tag/v0.1.0-beta.1) 下载：
-   - `Memlane-0.1.0-beta.1-arm64.dmg`
-   - `SHA256SUMS.txt`
-2. 在下载目录校验安装包完整性：
-
-```sh
-shasum -a 256 -c SHA256SUMS.txt
-```
-
 ## 3. 为什么会出现系统提示
 
 内测版使用 ad-hoc 签名，尚未经过 Apple 公证。macOS 可能在首次打开时拦截。「仍要打开」会为这个 App 单独添加例外。[Apple 操作说明](https://support.apple.com/zh-cn/102445)
 
-确认安装包校验通过后，也可使用以下终端命令。
+确认安装包来自项目发布页后，也可使用以下终端命令。
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Memlane.app
