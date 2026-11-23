@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import socket
+import urllib.error
 from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location('daily_dev', Path(__file__).with_name('dev.py'))
@@ -21,6 +22,20 @@ def try_lock(root, queue):
 
 
 class OwnershipTests(unittest.TestCase):
+    def test_startup_log_distinguishes_http_readiness_from_process_exit(self):
+        with patch.object(dev, 'report_notice') as log, patch.object(dev.time, 'sleep'):
+            with patch.object(dev.time, 'monotonic', side_effect=[0, 0, 0, 61, 61]):
+                with self.assertRaisesRegex(dev.ReadinessError, 'readiness_timeout last_probe=http_503'):
+                    with dev.startup_stage('memory_engine_readiness'):
+                        response = urllib.error.HTTPError('http://localhost/secret', 503, 'secret', {}, None)
+                        dev.wait_ready(Mock(side_effect=response), Mock(poll=Mock(return_value=None)), 60)
+            self.assertIn('stage=memory_engine_readiness', log.call_args.args[0])
+            self.assertNotIn('secret', log.call_args.args[0])
+            with self.assertRaisesRegex(dev.ReadinessError, 'process_exited exit_code=-15'):
+                with dev.startup_stage('agent_bridge_readiness'):
+                    dev.wait_ready(Mock(), Mock(poll=Mock(return_value=-15)), 60)
+            self.assertIn('stage=agent_bridge_readiness', log.call_args.args[0])
+
     def test_owner_control_preserves_auth_checks_without_requiring_future_plugin_source(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)

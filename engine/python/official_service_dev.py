@@ -384,6 +384,12 @@ def main():
         profile, generation_environment, generation_digest = runtime_generation(config)
     environment.update(generation_environment)
     os.environ.update(environment)
+    if config.get('first_install') and not setup_only:
+        from ladybug_extension import prepare_json_extension
+        try:
+            prepare_json_extension(root / 'home')
+        except Exception:
+            raise RuntimeError('ladybug_json_extension_prepare_failed') from None
     sys.dont_write_bytecode = True
     _install_source_only_import_hook(source)
     sys.path.insert(0, str(source))

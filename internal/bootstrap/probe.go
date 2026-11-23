@@ -74,7 +74,11 @@ func isolatedPython(ctx context.Context, executable, code string, args ...string
 		"XDG_CACHE_HOME=" + filepath.Join(home, "cache"), "COGNEE_LOGS_DIR=" + filepath.Join(home, "logs"),
 		"LOGS_ROOT_DIRECTORY=" + filepath.Join(home, "logs"), "TELEMETRY_DISABLED=true", "PYTHON_DOTENV_DISABLED=1"}
 	// Probe snippets emit bounded metadata; don't propagate inherited credentials.
-	return command.Output()
+	output, err := command.Output()
+	if err != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return output, err
 }
 
 func ProbePython(ctx context.Context, executable string) (Observation, error) {
@@ -98,6 +102,9 @@ func ProbePython(ctx context.Context, executable string) (Observation, error) {
 			return o, ctx.Err()
 		}
 		o.Reason = "无法执行 Python 版本检测"
+		if errors.Is(err, context.DeadlineExceeded) {
+			o.Reason = "Python 版本检测超时（30 秒）"
+		}
 		return o, nil
 	}
 	var p PythonInfo

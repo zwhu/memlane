@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os/exec"
 	"regexp"
 	"strings"
 )
@@ -63,7 +64,14 @@ print(json.dumps(dict(mismatch=mismatch,native_error=native_error)))`
 		if ctx.Err() != nil {
 			return o, ctx.Err()
 		}
-		o.Status, o.Reason = Incompatible, "运行库探测无法完成"
+		o.Status, o.Reason = Incompatible, "运行库探测无法启动"
+		var exit *exec.ExitError
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			o.Reason = "运行库探测超时（30 秒）"
+		case errors.As(err, &exit):
+			o.Reason = fmt.Sprintf("运行库探测进程退出（exit_code=%d）", exit.ExitCode())
+		}
 		return o, nil
 	}
 	var result struct {

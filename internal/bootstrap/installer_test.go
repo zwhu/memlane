@@ -12,10 +12,11 @@ import (
 )
 
 type testDriver struct {
-	observed map[string]Observation
-	installs []string
-	fail     string
-	cancel   context.CancelFunc
+	observed     map[string]Observation
+	installs     []string
+	fail         string
+	cancel       context.CancelFunc
+	afterInstall *Observation
 }
 
 func (d *testDriver) Probe(_ context.Context, r Requirement) (Observation, error) {
@@ -27,6 +28,9 @@ func (d *testDriver) Install(_ context.Context, r Requirement) error {
 		return errors.New("network unavailable")
 	}
 	d.observed[r.ID] = Observation{Status: Available, Path: r.Destination}
+	if d.afterInstall != nil {
+		d.observed[r.ID] = *d.afterInstall
+	}
 	if d.cancel != nil {
 		d.cancel()
 	}
@@ -74,6 +78,24 @@ func TestDetectionAndDeclineNeverInstall(t *testing.T) {
 	}
 	if len(d.installs) != 0 {
 		t.Fatal("declined plan installed")
+	}
+}
+
+func TestPostInstallProbeFailurePreservesReason(t *testing.T) {
+	i, d, reqs := fixture(t)
+	d.afterInstall = &Observation{Status: Incompatible, Reason: "运行库探测超时（30 秒）"}
+	p := approved(t, i, reqs)
+	err := i.Run(context.Background(), "operation", p)
+	if err == nil || !strings.Contains(err.Error(), "component=python status=incompatible") ||
+		!strings.Contains(err.Error(), d.afterInstall.Reason) {
+		t.Fatalf("probe failure lost its reason: %v", err)
+	}
+	j, readErr := i.Snapshot()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if step := j.Steps["python"]; step.Status != Failed || step.Error != err.Error() {
+		t.Fatalf("journal lost probe failure: %+v", step)
 	}
 }
 func TestReuseAndChangedExternalDependency(t *testing.T) {

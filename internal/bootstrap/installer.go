@@ -259,7 +259,8 @@ func (i Installer) Run(ctx context.Context, operation string, p Plan) error {
 				return fail(err)
 			}
 			if o.Status != Available {
-				return fail(errors.New("installed component failed verification"))
+				return fail(fmt.Errorf("installed component failed verification: component=%s status=%s reason=%q",
+					r.ID, o.Status, RedactInstallerText(o.Reason)))
 			}
 			s.Status, s.Error = Ready, ""
 			j.Steps[r.ID] = s

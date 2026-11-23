@@ -34,8 +34,10 @@ func (d RuntimeDriver) Probe(ctx context.Context, r Requirement) (Observation, e
 	}
 	managed := filepath.Join(r.Destination, "venv/bin/python")
 	paths := []string{managed}
+	var nativeErr error
 	if d.Native != nil {
-		if err := d.Native.verify(r.Destination); err == nil {
+		nativeErr = d.Native.verify(r.Destination)
+		if nativeErr == nil {
 			paths = []string{nativeWrapper(r.Destination)}
 		} else {
 			paths = nil
@@ -45,10 +47,15 @@ func (d RuntimeDriver) Probe(ctx context.Context, r Requirement) (Observation, e
 		paths = append(paths, d.ExistingPython)
 	}
 	o := Observation{Status: Missing, Path: managed, Reason: "需要准备引擎运行库"}
-	if d.Native != nil {
+	if nativeErr != nil {
 		if _, err := os.Stat(managed); err == nil && len(paths) == 0 {
 			o.Status = Incompatible
 			o.Reason = "需要补齐可独立加载的 OpenSSL 原生依赖"
+			var pathErr *os.PathError
+			if errors.As(nativeErr, &pathErr) {
+				nativeErr = pathErr.Err
+			}
+			o.Reason += "：" + nativeErr.Error()
 		}
 	}
 	for _, p := range paths {

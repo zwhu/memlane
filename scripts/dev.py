@@ -13,7 +13,9 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import tempfile
 import hashlib
@@ -229,20 +231,12 @@ def verify_managed_plugin(directory):
 
 
 def wait_project_control(control, process, timeout=60, *, setup_only=False):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            raise RuntimeError('project control exited before readiness')
+    def probe():
         request = urllib.request.Request(control['url'].rstrip('/') + ('/v1/generation' if setup_only else '/v1/projects'),
                                          headers={'Authorization': 'Bearer ' + Path(control['management_token_file']).read_text().strip()})
-        try:
-            with urllib.request.urlopen(request, timeout=1) as response:
-                if response.status == 200 and isinstance(json.load(response).get('revision'), int):
-                    return
-        except Exception:
-            pass
-        time.sleep(.2)
-    raise RuntimeError('project control readiness timed out')
+        with urllib.request.urlopen(request, timeout=1) as response:
+            return response.status == 200 and isinstance(json.load(response).get('revision'), int)
+    wait_ready(probe, process, timeout)
 
 
 def owner_ui_children(state):
@@ -753,16 +747,47 @@ def stop_descendants(known, *, grace=1.5, kill_wait=1.5):
     raise RuntimeError('owned descendant exit remains unconfirmed')
 
 
-def wait_http(url, process, timeout=60):
+class ReadinessError(RuntimeError):
+    pass
+
+
+def wait_ready(probe, process, timeout):
     deadline = time.monotonic() + timeout
+    last = 'no_response'
     while time.monotonic() < deadline:
-        if process.poll() is not None: raise RuntimeError('owned service exited before readiness')
+        code = process.poll()
+        if code is not None:
+            raise ReadinessError(f'process_exited exit_code={code} last_probe={last}')
         try:
-            with urllib.request.urlopen(url, timeout=1) as response:
-                if response.status == 200: return
-        except Exception: pass
+            if probe():
+                return
+            last = 'unexpected_response'
+        except urllib.error.HTTPError as error:
+            last = f'http_{error.code}'
+            error.close()
+        except (OSError, ValueError) as error:
+            last = type(error).__name__
         time.sleep(.2)
-    raise RuntimeError('service readiness timed out: ' + url)
+    raise ReadinessError(f'readiness_timeout last_probe={last}')
+
+
+def wait_http(url, process, timeout=60):
+    def probe():
+        with urllib.request.urlopen(url, timeout=1) as response:
+            return response.status == 200
+    wait_ready(probe, process, timeout)
+
+
+@contextmanager
+def startup_stage(stage):
+    started = time.monotonic()
+    try:
+        yield
+    except Exception as error:
+        # Ordinary exceptions can contain URLs, credentials or response bodies.
+        reason = str(error) if type(error) is ReadinessError else type(error).__name__
+        report_notice(f'[startup] stage={stage} result=failed elapsed_ms={int((time.monotonic() - started) * 1000)} reason={reason}')
+        raise
 
 
 def port_free(url):
@@ -839,16 +864,18 @@ def start_generation_stack(config, config_path, launch, cleanup, *, health=wait_
                 effective.pop('completion_url', None)
             endpoint = None
             if profile['mode'] == 'agent_bridge':
-                from agent_bridge_runtime import require_bridge_startup
-                selected_bridge = require_bridge_startup(store, config, row)
-                for key in ('completion_token_file',):
-                    if key == 'completion_token_file' and Path(config[key]).expanduser().is_symlink():
+                with startup_stage('agent_bridge_configuration'):
+                    from agent_bridge_runtime import require_bridge_startup
+                    selected_bridge = require_bridge_startup(store, config, row)
+                    token = Path(config['completion_token_file']).expanduser()
+                    if token.is_symlink():
                         raise ValueError('completion credential must not be a symlink')
-                    effective[key] = str(Path(config[key]).expanduser().resolve(strict=True))
-                token = Path(effective['completion_token_file'])
-                if token.is_symlink() or token.stat().st_mode & 0o077:
-                    raise ValueError('completion credential must be private')
-                port_free(effective['completion_url'])
+                    token = token.resolve(strict=True)
+                    if token.stat().st_mode & 0o077:
+                        raise ValueError('completion credential must be private')
+                    effective['completion_token_file'] = str(token)
+                with startup_stage('agent_bridge_port'):
+                    port_free(effective['completion_url'])
             applied_path.unlink(missing_ok=True)
             private_write(runtime_path, json.dumps(effective).encode())
             if profile['mode'] == 'agent_bridge':
@@ -858,16 +885,20 @@ def start_generation_stack(config, config_path, launch, cleanup, *, health=wait_
                     '--auth-home', str(selected_bridge['home']), '--bridge-kind', selected_bridge['kind'], '--model', effective['model']]
                 if profile.get('bridge_provider'):
                     command.extend(['--bridge-provider', profile['bridge_provider']])
-                endpoint = launch(command)
-                health(effective['completion_url'] + '/health', endpoint)
-            port_free(effective['service_url'])
-            service = launch([effective['python'], str(ROOT / 'engine/python/official_service_dev.py'), '--config', str(runtime_path)])
-            health(effective['service_url'] + '/health', service)
-            if applied_path.is_symlink() or applied_path.stat().st_mode & 0o077:
-                raise RuntimeError('private generation applied receipt required')
-            applied = json.loads(applied_path.read_text())
-            if applied.get('pid') != service.pid or applied.get('digest') != digest or applied.get('reference') != reference:
-                raise RuntimeError('generation applied configuration unconfirmed')
+                with startup_stage('agent_bridge_readiness'):
+                    endpoint = launch(command)
+                    health(effective['completion_url'] + '/health', endpoint)
+            with startup_stage('memory_engine_port'):
+                port_free(effective['service_url'])
+            with startup_stage('memory_engine_readiness'):
+                service = launch([effective['python'], str(ROOT / 'engine/python/official_service_dev.py'), '--config', str(runtime_path)])
+                health(effective['service_url'] + '/health', service)
+            with startup_stage('generation_applied_receipt'):
+                if applied_path.is_symlink() or applied_path.stat().st_mode & 0o077:
+                    raise RuntimeError('private generation applied receipt required')
+                applied = json.loads(applied_path.read_text())
+                if applied.get('pid') != service.pid or applied.get('digest') != digest or applied.get('reference') != reference:
+                    raise RuntimeError('generation applied configuration unconfirmed')
             return effective, runtime_path, endpoint, service
         return start_generation(store, start, cleanup)
     finally:
@@ -1048,7 +1079,8 @@ def main():
             config, runtime_path = generation_setup_runtime(config, path)
             endpoint = service = None
         elif first_setup:
-            config, runtime_path, endpoint, service = first_install_runtime(config, path, launch)
+            with startup_stage('first_install_setup_engine'):
+                config, runtime_path, endpoint, service = first_install_runtime(config, path, launch)
         else:
             config, runtime_path, endpoint, service = start_generation_stack(config, path, launch, cleanup_stack)
             if config.get('first_install'):
@@ -1059,16 +1091,19 @@ def main():
         save_owner()
         control = None
         if config.get('project_control'):
-            port_free(config['project_control']['url'])
-            control = launch([config['python'], str(ROOT / 'engine/python/project_control_server.py'), '--config', str(runtime_path)])
-            state['service_children']['project_control'] = control.pid
-            state['project_control_url'] = config['project_control']['url']
-            wait_project_control(config['project_control'], control, setup_only=config.get('generation_setup_only', False))
+            with startup_stage('project_control_port'):
+                port_free(config['project_control']['url'])
+            with startup_stage('project_control_readiness'):
+                control = launch([config['python'], str(ROOT / 'engine/python/project_control_server.py'), '--config', str(runtime_path)])
+                state['service_children']['project_control'] = control.pid
+                state['project_control_url'] = config['project_control']['url']
+                wait_project_control(config['project_control'], control, setup_only=config.get('generation_setup_only', False))
         if not config.get('generation_setup_only') and not first_setup:
-            complete_initialization(config, path)
-            if config.get('first_install'):
-                from first_install_runtime import finish_activation
-                finish_activation(config, path)
+            with startup_stage('initialization_receipt'):
+                complete_initialization(config, path)
+                if config.get('first_install'):
+                    from first_install_runtime import finish_activation
+                    finish_activation(config, path)
         state['phase'] = ('first_install_setup' if first_setup else
                           'generation_setup' if config.get('generation_setup_only') else 'ready')
         save_owner()

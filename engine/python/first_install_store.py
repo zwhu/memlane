@@ -123,6 +123,12 @@ async def initialize(spec, sdk=None, after_step=None):
     root = validate_spec(spec)
     if sdk is None:
         configure_environment(spec, root)
+        from ladybug_extension import prepare_json_extension, probe_json_extension
+        try:
+            prepare_json_extension(root / 'home')
+            probe_json_extension()
+        except Exception:
+            raise StoreInitializationError('ladybug_json_extension_preflight_failed') from None
         sdk = PinnedSDK(spec)
     after_step = after_step or (lambda step: None)
     failed = await sdk.migrations()
