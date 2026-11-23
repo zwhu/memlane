@@ -555,16 +555,18 @@ print("explicit skill and hooks resolve one binding without cwd fallback")
                                           env=environment, cwd=self.workspace, capture_output=True, text=True, timeout=20)
         self.assertEqual(process.returncode, 0, process.stderr[-3000:])
 
-    async def test_traex_payloads_pair_prompt_answer_and_never_read_transcript(self):
+    async def test_traex_capture_recovers_interrupted_rollout_and_respects_boundary(self):
         from project_installation import prepare
         installation = prepare(self.plugin, self.registry.path.parent, 'synthetic-traex',
             self.registry.state['agents'][self.adapter.id], 'http://127.0.0.1:18999', 'http://127.0.0.1:18998',
             str(self.workspace), host_kind='traex', python=sys.executable)
         script = r'''
 import json, os, sys
+from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import traex_hook as hook
 import agent_memory_adapter as memory
+import _coding_memory as coding
 import _memlane_policy as policy
 import _project_memory as projects
 projects.begin = lambda *args: None
@@ -573,36 +575,100 @@ os.environ["MEMLANE_PROCESSING_SESSION"] = "1"
 assert hook.handle("SessionStart", {}) == {}
 os.environ.pop("MEMLANE_PROCESSING_SESSION")
 policy.bind = lambda *args: "00000000-0000-0000-0000-000000000001"
-policy.permit = lambda *args, **kwargs: True
-calls = []
+policy._connection = lambda: ("http://127.0.0.1:18998", "synthetic-control-token")
+allowed = True
+policy.permit = lambda *args, **kwargs: allowed
+calls, saved = [], []
+coding._deliver = lambda dataset, session, entries: saved.extend(entries)
+
 def operation(request):
     calls.append(request)
     return {"context":"synthetic authorized context", "status":"buffered"}
 memory.handle = operation
-payload = {"session_id":"host-session", "cwd":os.environ["HOME"], "turn_id":"host-turn", "prompt":"synthetic prompt"}
-assert hook.handle("UserPromptSubmit", payload)["hookSpecificOutput"] == {"hookEventName":"UserPromptSubmit", "additionalContext":"synthetic authorized context"}
-assert hook.handle("Stop", {**payload,"transcript_path":"/never-open-this"})["status"] == "missing_answer"
-assert len(calls) == 1
-hook.handle("Stop", {**payload,"last_assistant_message":"synthetic answer"})
-qa = next(c for c in calls if c["operation"] == "capture")
-assert qa["entry"]["question"] == "synthetic prompt"
-assert qa["entry"]["answer"] == "synthetic answer"
-assert qa["entry"]["time"] and qa["entry"]["prompt_time"]
+root = Path.home() / ".trae" / "cli" / "sessions"
+root.mkdir(parents=True)
+rollout = root / "rollout-synthetic-host-session.jsonl"
+rollout.touch()
+payload = {"session_id":"host-session", "cwd":os.environ["HOME"],
+           "source":"startup", "transcript_path":str(rollout)}
+assert hook.transcript_path(str(rollout), "other-session") is None
+elsewhere = Path.home() / rollout.name
+elsewhere.touch()
+assert hook.transcript_path(str(elsewhere), "host-session") is None
+symlink = root / "rollout-symlink-host-session.jsonl"
+symlink.symlink_to(elsewhere)
+assert hook.transcript_path(str(symlink), "host-session") is None
+
+seq = 0
+def event(kind, **fields):
+    global seq
+    seq += 1
+    stamp = f"2026-11-23T02:03:{seq:02d}Z"
+    with rollout.open("a") as f:
+        f.write(json.dumps({"type":"event_msg","timestamp":stamp,"payload":{"type":kind,**fields}}) + "\n")
+def item(kind, text):
+    event("item_completed", item={"type":kind,"content":[{"type":"Text","text":text}]})
+def prompt(text):
+    result = hook.handle("UserPromptSubmit", {**payload,"prompt":text})
+    assert result["hookSpecificOutput"]["additionalContext"] == "synthetic authorized context"
+    item("UserMessage", text)
+
+# Startup may precede creation of the native rollout.
+hook.handle("SessionStart", {**payload,"transcript_path":None})
+prompt("interrupted prompt")
+item("AgentMessage", "progress reply")
+event("turn_aborted", reason="interrupted")
+assert saved == []
+prompt("continue")
+item("AgentMessage", "final reply")
+assert hook.handle("Stop", {**payload,"last_assistant_message":"final reply"})["qa"] == 2
+assert [row["question"] for row in saved] == ["interrupted prompt", "continue"]
+assert "progress reply" in saved[0]["answer"]
+assert json.loads(saved[0]["context"])["interrupted"] is True
 assert calls[-1]["operation"] == "flush"
-hook.handle("PostToolUseFailure", {**payload,"tool_use_id":"native-tool-id","tool_name":"bash","tool_input":{"command":"synthetic"},"tool_response":{"exit_code":1}})
+assert hook.handle("Stop", payload)["qa"] == 0
+hook.handle("PostToolUseFailure", {**payload,"tool_use_id":"native-tool-id","tool_name":"bash",
+            "tool_input":{"command":"synthetic"},"tool_response":{"exit_code":1}})
 assert calls[-1]["entry"]["status"] == "error"
 assert calls[-1]["event_id"] == "tool:native-tool-id"
-assert calls[-1]["entry"]["time"]
-for index in range(2):
-    no_turn = {"session_id":"host-session", "cwd":os.environ["HOME"], "prompt":"another synthetic prompt"}
-    hook.handle("UserPromptSubmit", no_turn)
-    hook.handle("Stop", {**no_turn,"last_assistant_message":"another synthetic answer"})
-qas = [c for c in calls if c["operation"] == "capture" and c["entry"]["type"] == "qa"]
-assert len({c["event_id"] for c in qas}) == 3
-from datetime import datetime
-assert all(datetime.fromisoformat(c["entry"]["prompt_time"]).tzinfo for c in qas)
-assert all("transcript_path" not in c for c in calls)
-print("TraeX event adaptation passed; no transcript access")
+
+prompt("request with a reply")
+item("AgentMessage", "response before steering")
+prompt("steering with no reply")
+prompt("last steering request")
+item("AgentMessage", "response after steering")
+assert hook.handle("Stop", payload)["qa"] == 2
+assert [row["question"] for row in saved[-2:]] == ["request with a reply", "last steering request"]
+
+allowed = False
+prompt("private question")
+item("AgentMessage", "private reply")
+hook.handle("Stop", payload)
+allowed = True
+prompt("resume boundary")
+item("AgentMessage", "allowed reply")
+hook.handle("Stop", payload)
+assert "private question" not in [row["question"] for row in saved]
+
+# Final capture still works when a shutdown hook omits the transcript path.
+prompt("last question")
+item("AgentMessage", "last reply")
+hook.handle("SessionEnd", {**payload,"transcript_path":None})
+assert saved[-1]["question"] == "last question"
+assert calls[-1]["final"] is True
+
+# Resuming a session first seen by this generation never replays its old turns.
+rollout = root / "rollout-synthetic-old-session.jsonl"
+payload.update(session_id="old-session", source="resume", transcript_path=str(rollout))
+item("UserMessage", "already saved")
+item("AgentMessage", "old reply")
+hook.handle("SessionStart", payload)
+event("task_started")
+prompt("after upgrade")
+item("AgentMessage", "fresh reply")
+hook.handle("Stop", payload)
+assert saved[-1]["question"] == "after upgrade"
+assert "already saved" not in [row["question"] for row in saved]
 '''
         environment = {key: value for key, value in os.environ.items() if not key.startswith(('COGNEE_', 'MEMLANE_', 'LLM_', 'EMBEDDING_'))}
         environment['HOME'] = str(self.workspace)

@@ -12,6 +12,12 @@
 
 首版沿官方安装、信任及重载流程完成接入，允许一次性官方安装步骤，不建设通用安装管理平台。只修改明确属于本项目的连接项，保留第三方配置、账号与历史会话。
 
+### TraeX 问答采集
+
+TraeX 的 `Stop` 和 `SessionEnd` 回读当前会话的 rollout，复用 Cognee 的 Codex 解析与问答配对。后续采集可以补上已写入日志的中断提问及阶段回复。运行中追加的提问各自参与配对，有对应回复或中断记录时进入问答列表。工具调用仍由 TraeX 原生工具事件采集。
+
+回读限于当前 TraeX profile 中与宿主会话 ID 匹配的日志，经过项目采集授权和暂停水位。升级后首次恢复旧会话从切换时的水位开始采集。
+
 ### Antigravity（Gemini App）接入规范
 
 - **安装与配置目录**：宿主类型为 `antigravity`（`Gemini.app` 及原生 `agy` 辅助程序，默认扫描 `PATH`、标准用户 bin 与 `Gemini.app/Contents/Helpers/agy`）；电脑级配置目录固定为 `~/.gemini/config`（当前拒绝自定义非标准路径），配置文件为 `~/.gemini/config/config.json`，受管派生插件目录为 `~/.gemini/config/plugins/memlane-cognee`（基于固定官方 `integrations/antigravity/` 与共享 `_coding_memory.py` 构造，保留其他插件，检测到冲突旧 Cognee 插件时拒绝覆盖并要求人工复核）。

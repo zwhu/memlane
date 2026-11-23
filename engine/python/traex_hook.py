@@ -1,12 +1,75 @@
-"""TraeX command-hook payload adaptation; no transcript fallback or trust edits."""
+"""TraeX command hooks using Cognee's Codex rollout reader for questions."""
 import json
-import sys
 import os
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import agent_memory_adapter as memory
 
 EVENTS = {'SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostToolUseFailure', 'Stop', 'SessionEnd'}
+
+
+def transcript_path(value, session_id):
+    """Accept only the current session's rollout in the TraeX profile."""
+    if not isinstance(value, str) or not value:
+        return None
+    path = Path(value)
+    if (not path.is_absolute() or not path.name.startswith('rollout-')
+            or not path.name.endswith(f'-{session_id}.jsonl')):
+        return None
+    try:
+        resolved = path.resolve(strict=True)
+        if resolved != path or not resolved.is_file():
+            return None
+        profile = Path(os.environ.get('TRAECLI_HOME') or os.environ.get('TRAE_HOME') or Path.home() / '.trae').resolve()
+        if any(resolved.is_relative_to(root) for root in (profile / 'sessions', profile / 'cli/sessions')):
+            return resolved
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return None
+
+
+def capture_questions(event, payload, request, key, session, dataset):
+    from _capture_policy import capture_enabled, sanitize
+    from _coding_memory import _SessionState, _deliver, _qa_entries, parse_codex
+    from _memlane_policy import capture_boundary, permit
+
+    with _SessionState(key) as state:
+        if not state.acquired:
+            return {'status': 'capture_state_locked'}
+        data = state.data
+        previous_path = data.get('traex_transcript')
+        existing_history = event == 'SessionStart' and payload.get('source') in ('resume', 'compact', 'fork')
+        if not previous_path and (existing_history or 'traex_exclude_history' not in data):
+            data['traex_exclude_history'] = bool(existing_history or data.get('host_events'))
+        path = transcript_path(payload.get('transcript_path') or previous_path, request['session_id'])
+        allowed = capture_enabled() and permit('capture', dataset)
+        if path is None or (previous_path and str(path) != previous_path):
+            if not allowed:
+                data['traex_exclude_history'] = True
+            state.save()
+            return {'status': 'transcript_unavailable'}
+
+        if data.pop('traex_exclude_history', False):
+            # Baseline existing/unauthorized history with the same stat-only
+            # policy boundary used by Codex before any transcript read.
+            capture_boundary(path, enabled=False)
+        data['traex_transcript'] = str(path)
+        offset = capture_boundary(path, enabled=allowed)
+        state.save()
+        if offset is None or event not in ('Stop', 'SessionEnd'):
+            return {'status': 'capture_boundary_observed'}
+
+        parsed = parse_codex(path, offset)
+        entries = _qa_entries(
+            {**payload, 'transcript_path': str(path)}, parsed, data, request['cwd'], sanitize, event == 'SessionEnd',
+        )
+        if entries:
+            _deliver(dataset, session, entries)
+            data['host_capture_generation'] = data.get('host_capture_generation', 0) + len(entries)
+            state.save()
+        return {'status': 'captured', 'qa': len(entries)}
 
 
 def handle(event, payload):
@@ -17,25 +80,16 @@ def handle(event, payload):
     request = {'operation': 'resolve', 'session_id': payload.get('session_id'), 'cwd': payload.get('cwd')}
     memory.request_fields(request)
     key, session, dataset = memory.setup(request)
-    from _memlane_policy import permit
-    from _plugin_common import remember_pending_prompt, pop_pending_prompt
-    from _capture_policy import capture_enabled, sanitize
     if event == 'SessionStart':
+        capture_questions(event, payload, request, key, session, dataset)
         return {}
     if event == 'UserPromptSubmit':
+        from _coding_memory import begin_turn
         prompt = payload.get('prompt')
         if not isinstance(prompt, str):
             raise ValueError('traex_prompt_required')
-        submitted = datetime.now(timezone.utc).isoformat()
-        turn = str(payload.get('turn_id') or submitted)
-        memory.begin_turn({**request, 'event_id': 'prompt:' + turn}, key)
-        if capture_enabled() and permit('capture'):
-            remember_pending_prompt(session, sanitize(prompt), turn_id=str(payload.get('turn_id') or ''),
-                                    context=json.dumps({'prompt_time': submitted, 'turn_id': turn}))
-        else:
-            # Forget a previously pending prompt if permission was revoked;
-            # restoring permission must not pair it with a later response.
-            pop_pending_prompt(session, turn_id=str(payload.get('turn_id') or ''))
+        capture_questions(event, payload, request, key, session, dataset)
+        begin_turn(key, prompt, request['cwd'])
         result = memory.handle({**request, 'operation': 'recall', 'query': prompt[:16000]})
         return {'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit',
                                        'additionalContext': result.get('context', '')}}
@@ -43,34 +97,18 @@ def handle(event, payload):
         tool_id, name = payload.get('tool_use_id'), payload.get('tool_name')
         if not isinstance(tool_id, str) or not isinstance(name, str):
             raise ValueError('traex_tool_identity_required')
-        return memory.handle({**request, 'operation': 'capture', 'event_id': 'tool:' + tool_id, 'entry': {
+        result = memory.handle({**request, 'operation': 'capture', 'event_id': 'tool:' + tool_id, 'entry': {
             'type': 'trace', 'origin_function': name, 'method_params': payload.get('tool_input', {}),
             'method_return_value': payload.get('tool_response', ''),
             'status': 'error' if event == 'PostToolUseFailure' else 'success',
             'time': datetime.now(timezone.utc).isoformat(),
         }})
-    if event == 'Stop':
-        answer = payload.get('last_assistant_message')
-        if not isinstance(answer, str) or not answer.strip():
-            return {'status': 'missing_answer'}
-        pending = pop_pending_prompt(session, turn_id=str(payload.get('turn_id') or ''))
-        if not pending.get('prompt'):
-            return {'status': 'missing_prompt'}
-        try:
-            context = json.loads(pending.get('context') or '{}')
-        except (ValueError, TypeError):
-            context = {}
-        if not isinstance(context, dict):
-            context = {}
-        turn = str(payload.get('turn_id') or context.get('turn_id') or datetime.now(timezone.utc).isoformat())
-        result = memory.handle({**request, 'operation': 'capture', 'event_id': 'answer:' + turn, 'entry': {
-            'type': 'qa', 'question': pending['prompt'], 'answer': answer,
-            'prompt_time': context.get('prompt_time') or None,
-            'time': datetime.now(timezone.utc).isoformat(),
-        }})
-        memory.handle({**request, 'operation': 'flush'})
+        if result.get('status') == 'skipped_policy':
+            capture_questions(event, payload, request, key, session, dataset)
         return result
-    return memory.handle({**request, 'operation': 'flush', 'final': True})
+    result = capture_questions(event, payload, request, key, session, dataset)
+    flushed = memory.handle({**request, 'operation': 'flush', 'final': event == 'SessionEnd'})
+    return result if event == 'Stop' else flushed
 
 
 def main():
