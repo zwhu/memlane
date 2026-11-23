@@ -1,4 +1,4 @@
-"""Prepare the static Memlane website against a verified release package."""
+"""Prepare the static Memlane website with optional verified release assets."""
 
 import argparse
 import hashlib
@@ -13,12 +13,30 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("tag")
-    parser.add_argument("assets", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--tag")
+    parser.add_argument("--assets", type=Path)
     parser.add_argument("--repository", default="zwhu/memlane")
     args = parser.parse_args()
 
+    if bool(args.tag) != bool(args.assets):
+        parser.error("--tag and --assets must be supplied together")
+
+    source = ROOT / "web/website"
+    html = (source / "index.html").read_text()
+    replacements = {'  <meta name="robots" content="noindex">\n': ""}
+    if args.tag:
+        replacements.update(release_links(args, parser))
+    for before, after in replacements.items():
+        if html.count(before) != 1:
+            parser.error("expected exactly one website release placeholder")
+        html = html.replace(before, after)
+
+    shutil.copytree(source, args.output)
+    (args.output / "index.html").write_text(html)
+
+
+def release_links(args, parser):
     version = json.loads((ROOT / "mygo.json").read_text())["version"]
     if args.tag != f"v{version}" or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository):
         parser.error("release tag or GitHub repository does not match the website")
@@ -31,23 +49,15 @@ def main():
         parser.error("SHA256SUMS.txt does not match the arm64 DMG")
 
     prefix = f"https://github.com/{args.repository}/releases/download/{args.tag}"
-    source = ROOT / "web/website"
-    html = (source / "index.html").read_text()
-    replacements = {
-        '  <meta name="robots" content="noindex">\n': "",
-        '<a class="pill" href="#download">下载 macOS 内测版</a>':
+    return {
+        '<a class="pill pill-small" href="#download">内测</a>':
+            '<a class="pill pill-small" href="#download">下载</a>',
+        '<a class="pill" href="#download">查看内测信息</a>':
             f'<a class="pill" href="{prefix}/{dmg.name}">下载 macOS 内测版</a>',
         '<p class="release-status">内测安装包待发布</p>':
             f'<p class="release-status"><a class="pill" href="{prefix}/{dmg.name}">下载 {args.tag}</a></p>\n'
             f'      <p><a class="text-link" href="{prefix}/{checksum.name}">SHA256 校验文件</a></p>',
     }
-    for before, after in replacements.items():
-        if html.count(before) != 1:
-            parser.error("expected exactly one website release placeholder")
-        html = html.replace(before, after)
-
-    shutil.copytree(source, args.output)
-    (args.output / "index.html").write_text(html)
 
 
 if __name__ == "__main__":

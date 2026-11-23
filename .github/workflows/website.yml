@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Published Memlane release tag
-        required: true
+        description: Published Memlane release tag, or leave blank for the introduction
+        required: false
         type: string
 
 permissions:
@@ -20,15 +20,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Verify release and prepare website
+      - name: Prepare website
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
+          output="$RUNNER_TEMP/memlane-site"
+          if [ -z "$RELEASE_TAG" ]; then
+            python3 web/prepare_release_site.py "$output"
+            exit 0
+          fi
           test "$(gh release view --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft -- "$RELEASE_TAG")" = false
           gh release download --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/memlane-release" \
             --pattern "Memlane-${RELEASE_TAG#v}-arm64.dmg" --pattern SHA256SUMS.txt -- "$RELEASE_TAG"
-          python3 web/prepare_release_site.py "$RELEASE_TAG" "$RUNNER_TEMP/memlane-release" "$RUNNER_TEMP/memlane-site" \
+          python3 web/prepare_release_site.py "$output" --tag "$RELEASE_TAG" --assets "$RUNNER_TEMP/memlane-release" \
             --repository "$GITHUB_REPOSITORY"
       - uses: actions/upload-pages-artifact@v4
         with:
