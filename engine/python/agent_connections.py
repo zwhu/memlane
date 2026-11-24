@@ -101,8 +101,12 @@ class NativeConnection:
         verify_hook_artifact({**installation, 'host_kind': self.kind, 'instance_id': self.id}, str(self.profile))
         raw = safe_file(self.target)
         digest = record.get('trae_ide_proposal_sha256')
-        if isinstance(digest, str) and sha(raw) != digest:
-            raise PolicyError('trae_ide_hook_changed_requires_review', 409)
+        if isinstance(digest, str):
+            if sha(raw) != digest:
+                raise PolicyError('trae_ide_hook_changed_requires_review', 409)
+        elif hooks is None and isinstance(record.get('proposed_sha256'), str):
+            if sha((installation['manifest_sha256'] + sha(raw)).encode()) != record['proposed_sha256']:
+                raise PolicyError('trae_ide_hook_changed_requires_review', 409)
         verify_hooks(raw, expected_hooks, Path(installation['plugin_dir']) / 'scripts/trae_ide_hook.py')
 
     def _verify_active_installation(self, installation, record):
@@ -372,7 +376,10 @@ class NativeConnection:
                 raise PolicyError('host_configuration_changed', 409)
             agent = r.state['agents'][self.id]
             installation = record.get('prepared_installation') or agent['installation']
-            verify_artifact(installation)
+            if self.kind in ('cursor', 'trae_ide'):
+                verify_hook_artifact({**installation, 'host_kind': self.kind, 'instance_id': self.id}, str(self.profile))
+            else:
+                verify_artifact({**installation, 'host_kind': self.kind, 'instance_id': self.id})
             if self.kind == 'pi':
                 stub = safe_file(self.root / 'extension-proposed.ts')
                 if sha(stub) != reviewed_sha:

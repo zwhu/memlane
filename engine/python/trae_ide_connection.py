@@ -71,20 +71,24 @@ class HookDispatch:
         self.running = 0
 
     async def run(self, identity, event, raw):
-        from agent_connections import safe_file, verify_hook_artifact
+        from agent_connections import safe_file, sha, verify_hook_artifact
         from agent_memory_adapter import MAX_INPUT
         from trae_ide_hook import workspace
 
         agent = self.registry.state['agents'].get(identity, {})
         record = self.registry.state.get('connections', {}).get(identity, {})
-        installation = expected_hooks = None
+        installation = expected_hooks = proposal_sha = None
         if agent.get('kind') == 'trae_ide' and record.get('activated') is True:
             if record.get('status') == 'configured_pending_new_session':
                 installation = agent.get('installation')
                 expected_hooks = record.get('trae_ide_hooks') or record.get('trae_ide_next_hooks')
+                proposal_sha = record.get('trae_ide_proposal_sha256')
             elif record.get('status') in ('prepared', 'preparation_unknown'):
                 installation = record.get('active_installation')
                 expected_hooks = record.get('trae_ide_hooks')
+                active_record = record.get('active_record')
+                if isinstance(active_record, dict):
+                    proposal_sha = active_record.get('trae_ide_proposal_sha256')
         if not isinstance(installation, dict) or not isinstance(expected_hooks, dict):
             raise PolicyError('trae_ide_hook_not_authorized', 403)
         if event not in EVENTS or len(raw) > MAX_INPUT:
@@ -96,8 +100,11 @@ class HookDispatch:
 
         def verified_script():
             verify_hook_artifact({**installation, 'host_kind': 'trae_ide', 'instance_id': identity}, profile)
+            raw_hooks = safe_file(Path(profile) / 'hooks.json')
+            if isinstance(proposal_sha, str) and sha(raw_hooks) != proposal_sha:
+                raise PolicyError('trae_ide_hook_changed_requires_review', 409)
             script = Path(installation['plugin_dir']) / 'scripts/trae_ide_hook.py'
-            verify_hooks(safe_file(Path(profile) / 'hooks.json'), expected_hooks, script)
+            verify_hooks(raw_hooks, expected_hooks, script)
             return script
 
         if self.running >= 8:

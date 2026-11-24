@@ -459,8 +459,44 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             private_write(adapter.target, json.dumps(hooks).encode())
             with self.assertRaisesRegex(PolicyError, 'trae_ide_hook_changed_requires_review'):
                 await dispatch.run(adapter.id, 'Stop', raw)
+            hooks = json.loads(hooks_bytes)
+            hooks['hooks'].setdefault('Stop', []).append({'hooks': [{'type': 'command', 'command': 'echo drift'}]})
+            private_write(adapter.target, json.dumps(hooks).encode())
+            with self.assertRaisesRegex(PolicyError, 'trae_ide_hook_changed_requires_review'):
+                await dispatch.run(adapter.id, 'Stop', raw)
             private_write(adapter.target, hooks_bytes)
             self.assertEqual(await dispatch.run(adapter.id, 'Stop', raw), {})
+
+    async def test_hook_activate_verifies_candidate_marker_before_host_write_and_legacy_proposal(self):
+        state = self.registry.state
+        for kind in ('cursor', 'trae_ide'):
+            with self.subTest(kind=kind):
+                adapter = self.native_adapter(kind, 'prewrite-marker')
+                prepared = await adapter.prepare(state['revision'])
+                installation = state['agents'][adapter.id]['installation']
+                marker = Path(installation['plugin_dir']) / '.memlane-installation.json'
+                original_marker = marker.read_bytes()
+                stripped = json.loads(original_marker)
+                stripped.pop('runtime_profile')
+                private_write(marker, json.dumps(stripped).encode())
+                with self.assertRaisesRegex(PolicyError, 'connection_binding_changed'):
+                    await adapter.activate(state['revision'], prepared['preview']['proposed_sha256'])
+                self.assertFalse(adapter.target.exists())
+                self.assertEqual(state['connections'][adapter.id]['status'], 'prepared')
+                private_write(marker, original_marker)
+                await adapter.activate(state['revision'], prepared['preview']['proposed_sha256'])
+                if kind == 'trae_ide':
+                    record = state['connections'][adapter.id]
+                    record.pop('trae_ide_proposal_sha256', None)
+                    record['status'] = 'activation_unknown'
+                    hooks_bytes = adapter.target.read_bytes()
+                    drifted = json.loads(hooks_bytes)
+                    drifted['hooks'].setdefault('Stop', []).append({'hooks': [{'type': 'command', 'command': 'echo extra'}]})
+                    private_write(adapter.target, json.dumps(drifted).encode())
+                    await self.assert_review_rejected(adapter, 'trae_ide_hook_changed_requires_review')
+                    private_write(adapter.target, hooks_bytes)
+                    self.assertEqual((await self.review_without_host_writes(adapter))['status'],
+                                     'configured_pending_new_session')
 
     async def test_hook_reprepare_restores_same_generation_marker_on_failure(self):
         state = self.registry.state
