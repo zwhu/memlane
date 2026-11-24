@@ -3,6 +3,8 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -71,5 +73,47 @@ func TestDependencyProbeReportsDeterministicFailures(t *testing.T) {
 				t.Fatalf("probe detail is not bounded and single-line: %q", o.Reason)
 			}
 		})
+	}
+}
+
+func TestDependencyProbeRedactsStderrBeforePersistingPlan(t *testing.T) {
+	python := fakeDependencyPython(t, "printf 'Authorization: Bearer secret-tok API_KEY=top-secret /Users/alice/private https://u:pw@host/p?k=secret\\n' >&2; exit 17")
+	o, err := ProbeDependencies(context.Background(), python, []byte("locked==1"))
+	if err != nil || o.Status != Incompatible || o.transientTimeout || !strings.Contains(o.Reason, "exit_code=17") {
+		t.Fatalf("unexpected probe result: %+v, %v", o, err)
+	}
+	for _, secret := range []string{"secret-tok", "top-secret", "/Users/alice", "u:pw", "k=secret"} {
+		if strings.Contains(o.Reason, secret) {
+			t.Fatalf("secret %q leaked in observation reason: %q", secret, o.Reason)
+		}
+	}
+
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(parent, "state")
+	d := RuntimeDriver{Lock: []byte("locked==1\n"), ExistingPython: python}
+	inst := Installer{Root: root, Driver: d}
+	req := Requirement{
+		ID: "runtime", Name: "runtime", Purpose: "engine", Version: "lock",
+		Source: "https://pypi.org/simple/", Digest: d.Digest(),
+		DownloadBytes: 1, InstalledBytes: 1, Destination: filepath.Join(root, "runtime"),
+	}
+	plan, err := inst.Detect(context.Background(), []Requirement{req})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.Review("op", plan, plan.Digest(), true); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "installation.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"secret-tok", "top-secret", "/Users/alice", "u:pw", "k=secret"} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("secret %q persisted to installation.json: %s", secret, string(raw))
+		}
 	}
 }

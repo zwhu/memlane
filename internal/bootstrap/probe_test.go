@@ -10,6 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -159,4 +162,36 @@ func TestPythonProbeDeterministicResults(t *testing.T) {
 	if err != nil || o.Status != Available || o.transientTimeout {
 		t.Fatalf("unexpected valid Python result: %+v, %v", o, err)
 	}
+}
+
+func TestIsolatedPythonPreservesDeterministicExitAndReapsDescendant(t *testing.T) {
+	routine, postInstall := routineProbeTimeout, postInstallProbeTimeout
+	routineProbeTimeout, postInstallProbeTimeout = 1500*time.Millisecond, 1500*time.Millisecond
+	t.Cleanup(func() { routineProbeTimeout, postInstallProbeTimeout = routine, postInstall })
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	// Parent exits deterministically with 42 while a grandchild keeps stdout open.
+	script := "sleep 10 &\necho $! > '" + pidFile + "'\nexit 42"
+	python := fakeDependencyPython(t, script)
+
+	o, err := ProbeDependencies(withPostInstallProbe(context.Background()), python, []byte("locked==1"))
+	if err != nil || o.Status != Incompatible || o.transientTimeout || !strings.Contains(o.Reason, "exit_code=42") {
+		t.Fatalf("deterministic exit 42 lost or misclassified as timeout: %+v, %v", o, err)
+	}
+	raw, readErr := os.ReadFile(pidFile)
+	if readErr != nil {
+		t.Fatalf("missing descendant pid file: %v", readErr)
+	}
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if parseErr != nil || pid <= 0 {
+		t.Fatalf("invalid descendant pid %q: %v", string(raw), parseErr)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	t.Fatalf("descendant pid %d survived after probe exited", pid)
 }

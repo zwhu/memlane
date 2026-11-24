@@ -43,7 +43,7 @@ func (d RuntimeDriver) Probe(ctx context.Context, r Requirement) (Observation, e
 			paths = nil
 		}
 	}
-	if d.ExistingPython != "" {
+	if d.ExistingPython != "" && !isPostInstallProbe(ctx) {
 		paths = append(paths, d.ExistingPython)
 	}
 	o := Observation{Status: Missing, Path: managed, Reason: "需要准备引擎运行库"}

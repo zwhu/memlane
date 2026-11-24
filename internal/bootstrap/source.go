@@ -5,11 +5,14 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -144,13 +147,116 @@ func (e existingArchiveError) Error() string { return e.msg }
 
 const artifactUserAgent = "Memlane/0.1.0-beta.1"
 
+type artifactHTTPError struct{ statusCode int }
+
+func (e artifactHTTPError) Error() string { return fmt.Sprintf("artifact HTTP %d", e.statusCode) }
+
+type summarizedArtifactError struct{ msg string }
+
+func (e summarizedArtifactError) Error() string { return e.msg }
+
 var (
 	artifactResponseHeaderTimeout = 30 * time.Second
 	artifactReadStallTimeout      = 30 * time.Second
 	artifactTotalTimeout          = 30 * time.Minute
 	artifactHTTPClientFactory     = newArtifactHTTPClient
 	errArtifactStalled            = errors.New("artifact download stalled")
+	errArtifactDigestMismatch     = errors.New("downloaded artifact digest mismatch")
+	errArtifactHTTPSRequired      = errors.New("HTTPS artifact URL required")
+	errArtifactDigestRequired     = errors.New("fixed artifact digest required")
+	errUnsafeArtifactRedirect     = errors.New("unsafe artifact redirect")
 )
+
+func summarizeArtifactError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var summarized summarizedArtifactError
+	if errors.As(err, &summarized) {
+		return summarized.msg
+	}
+	if errors.Is(err, errArtifactStalled) {
+		return err.Error()
+	}
+	var httpErr artifactHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.Error()
+	}
+	for _, sentinel := range []error{
+		errArtifactDigestMismatch,
+		errArtifactHTTPSRequired,
+		errArtifactDigestRequired,
+		errUnsafeArtifactRedirect,
+	} {
+		if errors.Is(err, sentinel) {
+			return sentinel.Error()
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "request timeout"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "request canceled"
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		if dnsErr.IsTimeout {
+			return "DNS lookup timeout"
+		}
+		return "DNS lookup failed"
+	}
+	var escErr url.EscapeError
+	var hostErr url.InvalidHostError
+	if errors.As(err, &escErr) || errors.As(err, &hostErr) {
+		return "invalid redirect location"
+	}
+	var unknownAuth x509.UnknownAuthorityError
+	var hostCert x509.HostnameError
+	var invalidCert x509.CertificateInvalidError
+	var tlsRecord tls.RecordHeaderError
+	if errors.As(err, &unknownAuth) || errors.As(err, &hostCert) || errors.As(err, &invalidCert) || errors.As(err, &tlsRecord) {
+		return "TLS verification failed"
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		if opErr.Timeout() {
+			return fmt.Sprintf("network %s timeout", opErr.Op)
+		}
+		return fmt.Sprintf("network %s failed", opErr.Op)
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return "unexpected EOF"
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr.Err != nil {
+		if urlErr.Timeout() {
+			return "network timeout"
+		}
+		lower := strings.ToLower(urlErr.Err.Error())
+		switch {
+		case strings.Contains(lower, "proxy"):
+			return "proxy connection failed"
+		case strings.Contains(lower, "location") || strings.Contains(lower, "redirect") || strings.Contains(lower, "parse") || strings.Contains(lower, "escape"):
+			return "invalid redirect location"
+		case strings.Contains(lower, "tls") || strings.Contains(lower, "x509") || strings.Contains(lower, "certificate"):
+			return "TLS verification failed"
+		default:
+			return "HTTP request failed"
+		}
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return "network timeout"
+		}
+		return "network error"
+	}
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return "local file error"
+	}
+	return "download failed"
+}
 
 func isHomebrewRegistryURL(u *url.URL) bool {
 	return u.Host == "ghcr.io" && strings.HasPrefix(u.Path, "/v2/homebrew/core/")
@@ -164,7 +270,7 @@ func newArtifactHTTPClient(ctx context.Context) *http.Client {
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Scheme != "https" || req.URL.User != nil || len(via) > 5 {
-				return errors.New("unsafe artifact redirect")
+				return errUnsafeArtifactRedirect
 			}
 			req.Header.Set("User-Agent", artifactUserAgent)
 			if !isHomebrewRegistryURL(req.URL) {
@@ -200,7 +306,7 @@ func fetchArtifactCandidates(ctx context.Context, candidates []ArtifactCandidate
 		if u, parseErr := url.Parse(cand.URL); parseErr == nil && u.Host != "" {
 			label = u.Host + u.EscapedPath()
 		}
-		failures = append(failures, fmt.Errorf("%s: %s", label, RedactInstallerText(err.Error())))
+		failures = append(failures, fmt.Errorf("%s: %s", label, summarizeArtifactError(err)))
 	}
 	return ArtifactCandidate{}, errors.Join(failures...)
 }
@@ -264,7 +370,7 @@ func (r *artifactStallReader) stop() {
 
 func fetchArchive(ctx context.Context, rawURL, digest, destination string) error {
 	if len(digest) != 64 {
-		return errors.New("fixed artifact digest required")
+		return errArtifactDigestRequired
 	}
 	if info, err := os.Lstat(destination); err == nil {
 		if !info.Mode().IsRegular() {
@@ -288,7 +394,7 @@ func fetchArchive(ctx context.Context, rawURL, digest, destination string) error
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
-		return errors.New("HTTPS artifact URL required")
+		return errArtifactHTTPSRequired
 	}
 	totalCtx, cancelTotal := context.WithTimeout(ctx, artifactTotalTimeout)
 	defer cancelTotal()
@@ -298,7 +404,7 @@ func fetchArchive(ctx context.Context, rawURL, digest, destination string) error
 	defer client.CloseIdleConnections()
 	req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return err
+		return summarizedArtifactError{msg: summarizeArtifactError(err)}
 	}
 	// GHCR uses this public anonymous pull token for Homebrew bottles. No user
 	// credential is read or forwarded, and this is limited to the fixed registry.
@@ -308,11 +414,14 @@ func fetchArchive(ctx context.Context, rawURL, digest, destination string) error
 	}
 	response, err := client.Do(req)
 	if err != nil {
-		return err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return summarizedArtifactError{msg: summarizeArtifactError(err)}
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("artifact HTTP %d", response.StatusCode)
+		return artifactHTTPError{statusCode: response.StatusCode}
 	}
 	f, err := os.CreateTemp(filepath.Dir(destination), ".download-")
 	if err != nil {
@@ -333,10 +442,10 @@ func fetchArchive(ctx context.Context, rawURL, digest, destination string) error
 		if errors.Is(context.Cause(attemptCtx), errArtifactStalled) {
 			return fmt.Errorf("%w (no data for %s)", errArtifactStalled, stallTimeout)
 		}
-		return copyErr
+		return summarizedArtifactError{msg: summarizeArtifactError(copyErr)}
 	}
 	if hex.EncodeToString(h.Sum(nil)) != digest {
-		return errors.New("downloaded artifact digest mismatch")
+		return errArtifactDigestMismatch
 	}
 	if err := f.Sync(); err != nil {
 		return err

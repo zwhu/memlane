@@ -72,7 +72,7 @@ print(json.dumps(dict(mismatch=mismatch,native_error=native_error)))`
 			o.transientTimeout = true
 		case errors.As(err, &exit):
 			o.Reason = fmt.Sprintf("运行库探测进程退出（exit_code=%d）", exit.ExitCode())
-			if detail := strings.Join(strings.Fields(string(exit.Stderr)), " "); detail != "" {
+			if detail := strings.Join(strings.Fields(RedactInstallerText(string(exit.Stderr))), " "); detail != "" {
 				const maxDetailRunes = 256
 				runes := []rune(detail)
 				if len(runes) > maxDetailRunes {

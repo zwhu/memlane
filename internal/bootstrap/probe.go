@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -17,6 +18,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -101,8 +104,12 @@ func isolatedPython(ctx context.Context, executable, code string, args ...string
 	}
 	defer os.RemoveAll(home)
 	command := exec.CommandContext(probeCtx, executable, append([]string{"-I", "-B", "-c", code}, args...)...)
+	var timedOut atomic.Bool
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Cancel = func() error {
+		if probeCtx.Err() != nil && ctx.Err() == nil {
+			timedOut.Store(true)
+		}
 		if command.Process == nil {
 			return os.ErrProcessDone
 		}
@@ -118,15 +125,54 @@ func isolatedPython(ctx context.Context, executable, code string, args ...string
 		"LANG=en_US.UTF-8", "HF_HOME=" + filepath.Join(home, "hf"), "HF_HUB_OFFLINE=1", "TRANSFORMERS_OFFLINE=1",
 		"XDG_CACHE_HOME=" + filepath.Join(home, "cache"), "COGNEE_LOGS_DIR=" + filepath.Join(home, "logs"),
 		"LOGS_ROOT_DIRECTORY=" + filepath.Join(home, "logs"), "TELEMETRY_DISABLED=true", "PYTHON_DOTENV_DISABLED=1"}
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
 	// Probe snippets emit bounded metadata; don't propagate inherited credentials.
-	output, err := command.Output()
+	if err := command.Start(); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if probeCtx.Err() != nil {
+			return nil, context.DeadlineExceeded
+		}
+		return nil, err
+	}
+	pgid := command.Process.Pid
+	waitDone := make(chan struct{})
+	var watchWG sync.WaitGroup
+	watchWG.Add(1)
+	go func() {
+		defer watchWG.Done()
+		select {
+		case <-waitDone:
+		case <-probeCtx.Done():
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		}
+	}()
+	err = command.Wait()
+	close(waitDone)
+	watchWG.Wait()
+	// Ensure no descendant holding stdout/stderr survives after the probe ends.
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	if probeCtx.Err() != nil {
+	var exit *exec.ExitError
+	if err != nil && errors.As(err, &exit) {
+		exit.Stderr = stderr.Bytes()
+		// Preserve deterministic non-zero exit codes even if probeCtx expired
+		// while draining pipes from a lingering descendant.
+		if exit.ExitCode() >= 0 && !timedOut.Load() {
+			return nil, exit
+		}
+	}
+	if timedOut.Load() || (err != nil && probeCtx.Err() != nil) {
 		return nil, context.DeadlineExceeded
 	}
-	return output, err
+	if err != nil {
+		return nil, err
+	}
+	return stdout.Bytes(), nil
 }
 
 func ProbePython(ctx context.Context, executable string) (Observation, error) {

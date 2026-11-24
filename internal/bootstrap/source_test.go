@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -261,4 +262,56 @@ func TestArtifactDigestMismatchFailsClosedAcrossCandidates(t *testing.T) {
 		t.Fatalf("fallback failed: %+v, %v", chosen, err)
 	}
 	checkTestArtifact(t, dest)
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestArtifactErrorsDoNotLeakMalformedRedirectOrProxySecrets(t *testing.T) {
+	t.Run("malformed relative redirect with signed query", func(t *testing.T) {
+		server := artifactTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", "/signed/%zz?sig=top-secret-signature")
+			w.WriteHeader(http.StatusFound)
+		})
+		dest := filepath.Join(t.TempDir(), "artifact")
+		_, err := fetchTestArtifacts(server, dest, "/redirect")
+		if err == nil {
+			t.Fatal("malformed redirect accepted")
+		}
+		if strings.Contains(err.Error(), "top-secret-signature") || strings.Contains(err.Error(), "%zz") {
+			t.Fatalf("malformed redirect location leaked into error: %v", err)
+		}
+	})
+
+	t.Run("proxy connect error hides upstream text", func(t *testing.T) {
+		oldFactory := artifactHTTPClientFactory
+		artifactHTTPClientFactory = func(context.Context) *http.Client {
+			return &http.Client{
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					return nil, &url.Error{
+						Op:  "Get",
+						URL: req.URL.String(),
+						Err: errors.New("proxyconnect tcp: 407 Proxy Authentication Required realm=corp-secret-token"),
+					}
+				}),
+			}
+		}
+		t.Cleanup(func() { artifactHTTPClientFactory = oldFactory })
+
+		dest := filepath.Join(t.TempDir(), "artifact")
+		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(testArtifact)))
+		_, err := fetchArtifactCandidates(context.Background(), []ArtifactCandidate{
+			{URL: "https://mirror.example.test/archive.tar.gz?token=hidden-query", SHA256: digest},
+		}, func(ArtifactCandidate) string { return dest })
+		if err == nil {
+			t.Fatal("proxy failure accepted")
+		}
+		if strings.Contains(err.Error(), "corp-secret-token") || strings.Contains(err.Error(), "hidden-query") {
+			t.Fatalf("proxy or query secret leaked into error: %v", err)
+		}
+		if !strings.Contains(err.Error(), "mirror.example.test/archive.tar.gz: proxy connection failed") {
+			t.Fatalf("expected structured proxy classification, got: %v", err)
+		}
+	})
 }
