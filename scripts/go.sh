@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 MEMLANE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-MEMLANE_GO="$MEMLANE_ROOT/.local/toolchains/go-1.27.3/go/bin/go"
+MEMLANE_GO="$MEMLANE_ROOT/.local/toolchains/go-1.27.4/go/bin/go"
 if [ ! -x "$MEMLANE_GO" ]; then
     echo "请先运行 python3 scripts/bootstrap.py" >&2
     exit 1
@@ -15,7 +15,7 @@ export PATH="$(dirname -- "$MEMLANE_GO"):$PATH"
 # A nested module boundary preserves those artifacts while excluding them from ./....
 mkdir -p "$MEMLANE_ROOT/build"
 if [ ! -e "$MEMLANE_ROOT/build/go.mod" ]; then
-    printf 'module memlane.local/build-artifacts\n\ngo 1.27.3\n' > "$MEMLANE_ROOT/build/go.mod"
+    printf 'module memlane.local/build-artifacts\n\ngo 1.27.4\n' > "$MEMLANE_ROOT/build/go.mod"
 fi
 cd "$MEMLANE_ROOT"
 python3 "$MEMLANE_ROOT/scripts/task.py" -- python3 "$MEMLANE_ROOT/scripts/mygo_sdk.py" --exec "$MEMLANE_GO" "$@"

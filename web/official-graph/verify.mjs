@@ -18,8 +18,13 @@ const server = createServer(async (req, res) => {
     const file = path.resolve(root, '.' + (name === '/' ? '/index.html' : name));
     if (!file.startsWith(root + path.sep)) { res.writeHead(403).end(); return; }
     const mime = file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html';
-    res.writeHead(200, {'Content-Type': mime}); res.end(await readFile(file));
-  } catch { res.writeHead(404).end(); }
+    const content = await readFile(file);
+    res.writeHead(200, {'Content-Type': mime});
+    res.end(content);
+  } catch {
+    if (!res.headersSent) res.writeHead(404);
+    res.end();
+  }
 });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
@@ -96,7 +101,7 @@ try {
   await page.keyboard.up('Shift');
   await page.getByText(/path to .* — 1 hop/).waitFor();
   await page.screenshot({path:path.join(output,'official-selection.png')});
-  await page.getByRole('button',{name:'Records',exact:true}).click();
+  await page.getByRole('button',{name:'查看节点',exact:true}).click();
   await page.waitForTimeout(300);
   await page.screenshot({path:path.join(output,'official-records.png')});
   assert.equal(await page.evaluate(() => window.memlaneOfficialGraph.clear(2)), true);

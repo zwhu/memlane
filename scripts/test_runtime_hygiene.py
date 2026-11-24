@@ -316,7 +316,7 @@ class DiskSpaceHygieneTests(unittest.TestCase):
         # Active compiler under ROOT still defers cache trim.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
-            go_bin = str(root / '.local/toolchains/go-1.27.3/go/bin/go')
+            go_bin = str(root / '.local/toolchains/go-1.27.4/go/bin/go')
             with patch.object(disk, 'ROOT', root), \
                  patch.object(disk, 'DEPENDENCIES', root / 'absent'), \
                  patch.object(disk, 'active_arguments', return_value=[f'300 {go_bin} test ./...']):

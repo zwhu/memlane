@@ -23,7 +23,7 @@ import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'engine/python'))
-GO = ROOT / '.local/toolchains/go-1.27.3/go/bin/go'
+GO = ROOT / '.local/toolchains/go-1.27.4/go/bin/go'
 DEFAULT_CONFIG = ROOT / '.local/daily/runtime.json'
 MONITOR_POLL_INTERVAL = 0.5
 HOUSEKEEPING_INTERVAL = 10.0

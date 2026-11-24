@@ -31,7 +31,7 @@
 
 ## Go与MyGo
 
-工具链固定Go 1.27.3、MyGo v0.7.4，以go.mod/go.sum和scripts/go.sh为准，不改系统默认环境。当前锁版本静态检查采用该Go工具链的gofmt与go vet；尚未引入第三方lint，不能写成已配置golangci-lint。
+工具链固定Go 1.27.4、MyGo v0.7.4，以go.mod/go.sum和scripts/go.sh为准，不改系统默认环境。当前锁版本静态检查采用该Go工具链的gofmt与go vet；尚未引入第三方lint，不能写成已配置golangci-lint。
 
 改动Go文件先gofmt，再以 `sh scripts/go.sh vet ./受影响包` 和定向测试检查；集成门禁为 `sh scripts/go.sh test ./...`、`sh scripts/go.sh vet ./...`。有并发所有权变更时对受影响包运行race，不重复无关全矩阵。
 

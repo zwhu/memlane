@@ -3,9 +3,11 @@ package simpledesktop
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -58,21 +60,34 @@ func httpStatusCode(err error) (int, bool) {
 	return 0, false
 }
 
+const maxCachedTokenBytes = 64 << 10
+
 func readCachedToken(path string, minLen int, requirePrivate bool) (string, error) {
+	flags := os.O_RDONLY
+	unavailable := "credential unavailable"
 	if requirePrivate {
-		info, err := os.Lstat(path)
-		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-			return "", errors.New("private credential unavailable")
-		}
-	} else {
-		info, err := os.Stat(path)
-		if err != nil || !info.Mode().IsRegular() {
-			return "", errors.New("credential unavailable")
-		}
+		flags |= syscall.O_NOFOLLOW
+		unavailable = "private credential unavailable"
 	}
-	raw, err := os.ReadFile(path)
+	f, err := os.OpenFile(path, flags, 0)
+	if err != nil {
+		return "", errors.New(unavailable)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || (requirePrivate && info.Mode().Perm()&0077 != 0) {
+		return "", errors.New(unavailable)
+	}
+	if info.Size() > maxCachedTokenBytes {
+		return "", errors.New("credential too large")
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, maxCachedTokenBytes+1))
 	if err != nil {
 		return "", err
+	}
+	if int64(len(raw)) > maxCachedTokenBytes {
+		return "", errors.New("credential too large")
 	}
 	token := strings.TrimSpace(string(raw))
 	if len(token) < minLen {

@@ -10,11 +10,11 @@ import urllib.request
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "1.27.3"
+VERSION = "1.27.4"
 ARCHIVES = {
     ("Darwin", "arm64"): (
-        "go1.27.3.darwin-arm64.tar.gz",
-        "dd3908cf20959d798c1e06ebe5b72213f0505ce01373b40ce3110975a6cd99c2",
+        "go1.27.4.darwin-arm64.tar.gz",
+        "91a44a2b8a716600ad94a4f143e156116620db8828086a6e3602291be9bd0bb4",
     ),
 }
 

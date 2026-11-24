@@ -46,43 +46,99 @@ func TestReadCachedTokenValidationAndRotation(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "secret.token")
 	first := strings.Repeat("a", 32)
-	if err := os.WriteFile(path, []byte(first+"\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(first+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readCachedToken(path, 32, true); err == nil {
-		t.Fatal("expected 0644 private token to be rejected")
+	checkToken := func(want string) {
+		t.Helper()
+		got, err := readCachedToken(path, 32, true)
+		if err != nil || got != want {
+			t.Fatalf("readCachedToken() = %q, %v; want %q", got, err, want)
+		}
 	}
-	if err := os.Chmod(path, 0600); err != nil {
-		t.Fatal(err)
+	checkUnavailable := func() {
+		t.Helper()
+		got, err := readCachedToken(path, 32, true)
+		if got != "" || err == nil || err.Error() != "private credential unavailable" {
+			t.Fatalf("readCachedToken() = %q, %v; want private credential unavailable", got, err)
+		}
 	}
-	got, err := readCachedToken(path, 32, true)
-	if err != nil || got != first {
-		t.Fatalf("unexpected token read: %q %v", got, err)
+
+	checkToken(first)
+	checkToken(first)
+	for _, mode := range []os.FileMode{0640, 0604, 0644} {
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		checkUnavailable()
 	}
-	// Cached hit still checks permissions/symlink via Lstat.
-	if err := os.Chmod(path, 0644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := readCachedToken(path, 32, true); err == nil {
-		t.Fatal("expected warmed cache to reject widened permissions")
-	}
-	if err := os.Chmod(path, 0600); err != nil {
-		t.Fatal(err)
-	}
+
 	second := strings.Repeat("b", 40)
-	if err := os.WriteFile(path, []byte(second+"\n"), 0600); err != nil {
+	next := filepath.Join(root, "next.token")
+	if err := os.WriteFile(next, []byte(second+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	got2, err := readCachedToken(path, 32, true)
-	if err != nil || got2 != second {
-		t.Fatalf("expected rotated token %q, got %q %v", second, got2, err)
-	}
-	link := filepath.Join(root, "link.token")
-	if err := os.Symlink(path, link); err != nil {
+	if err := os.Rename(next, path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readCachedToken(link, 32, true); err == nil {
-		t.Fatal("expected symlink token to be rejected")
+	checkToken(second)
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	checkUnavailable()
+	if err := os.WriteFile(next, []byte(second), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(next, path); err != nil {
+		t.Fatal(err)
+	}
+	checkUnavailable()
+}
+
+func TestReadCachedTokenFileBoundaries(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "secret.token")
+	for _, tc := range []struct {
+		name           string
+		content        string
+		requirePrivate bool
+		wantToken      string
+		wantError      string
+	}{
+		{name: "private directory", requirePrivate: true, wantError: "private credential unavailable"},
+		{name: "public directory", wantError: "credential unavailable"},
+		{name: "private oversized", content: strings.Repeat("a", maxCachedTokenBytes+1), requirePrivate: true, wantError: "credential too large"},
+		{name: "public oversized", content: strings.Repeat("a", maxCachedTokenBytes+1), wantError: "credential too large"},
+		{name: "too short after trimming", content: " short \n", requirePrivate: true, wantError: "credential too short"},
+		{name: "public trimmed", content: " \tpublic-token\n", wantToken: "public-token"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := root
+			if tc.content != "" {
+				target = path
+				mode := os.FileMode(0644)
+				if tc.requirePrivate {
+					mode = 0600
+				}
+				if err := os.WriteFile(target, []byte(tc.content), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(target, mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			token, err := readCachedToken(target, 10, tc.requirePrivate)
+			if tc.wantError != "" {
+				if token != "" || err == nil || err.Error() != tc.wantError {
+					t.Fatalf("readCachedToken() = %q, %v; want %q error", token, err, tc.wantError)
+				}
+				return
+			}
+			if token != tc.wantToken || err != nil {
+				t.Fatalf("readCachedToken() = %q, %v; want %q", token, err, tc.wantToken)
+			}
+		})
 	}
 }
 
