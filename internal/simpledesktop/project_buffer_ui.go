@@ -82,7 +82,7 @@ func (a *App) pendingMaterialsEditor(c *ui.Context, p AccessProject, agent Acces
 		}
 		ui.Column(c.Key("pending-"+key)).Gap(6).Padding(8, 0).Children(func() {
 			ui.Row(c).Gap(8).Children(func() {
-				ui.Text(c, fmt.Sprintf("会话 %d · %s", count, shortSessionLabel(binding.HostSessionKey))).FontSize(11).Bold()
+				ui.Text(c, fmt.Sprintf("会话 %d · %s", count, shortSessionLabel(binding.HostSessionKey))).FontSize(11).FontWeight(550)
 				textButton(c, "检查会话采集结果", nil).Disabled(view.Busy || p.Dataset == "").OnClick(func() { a.runPendingAction(view, p, agent, binding, "show") })
 			})
 			if view.Loaded {

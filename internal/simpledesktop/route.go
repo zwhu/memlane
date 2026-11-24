@@ -17,7 +17,7 @@ func (r appRoute) Key() string {
 }
 
 func (r appRoute) IsProjectScoped() bool {
-	return r.Page == "知识" || r.Page == "通用知识" || r.Page == "图谱" || r.Page == "检索结果"
+	return r.Page == "知识" || r.Page == "通用知识" || r.Page == "图谱"
 }
 
 func parsePaneRoute(key string) (appRoute, bool) {

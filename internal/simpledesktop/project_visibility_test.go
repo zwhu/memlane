@@ -1,9 +1,9 @@
 package simpledesktop
 
 import (
+	"fmt"
 	"os"
 	"reflect"
-	"slices"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -49,20 +49,23 @@ func TestProjectVisibilityPersistsWithoutChangingProjectsOrNotices(t *testing.T)
 	}
 }
 
+func projectVisibilityTester(a *App) *ui.Tester {
+	return ui.NewTester(func(c *ui.Context) {
+		applyAppearance(a.effectiveDark(c.Theme().Dark))
+		ui.Row(c).Fill().Children(func() {
+			a.overviewNavigation(c)
+			a.allProjectsDialog(c)
+		})
+	}, 1200, 820)
+}
+
 func TestProjectVisibilityMenuHideRestoreAndFilteredNavigation(t *testing.T) {
 	a := overviewFixture(t)
 	a.Update = nil
 	a.Config.Projects[0].Name = "hide-target"
 	a.Config.Projects[1].Name = "visible-target"
-	a.overviewState.AllProjects = false
 	p, second := a.Config.Projects[0], a.Config.Projects[1]
-	view := func(c *ui.Context) {
-		ui.Row(c).Fill().Children(func() {
-			a.overviewNavigation(c)
-			ui.Column(c).Grow(1).Children(func() { a.overviewProjectGrid(c) })
-		})
-	}
-	tt := ui.NewTester(view, 1200, 820)
+	tt := projectVisibilityTester(a)
 	if err := tt.RightClick(p.Name); err != nil {
 		t.Fatal(err)
 	}
@@ -77,30 +80,39 @@ func TestProjectVisibilityMenuHideRestoreAndFilteredNavigation(t *testing.T) {
 	if err := tt.ChooseMenuItem("隐藏项目"); err != nil {
 		t.Fatal(err)
 	}
-	if !a.projectIsHidden(p) || slices.Contains(tt.Texts(), p.Name) || a.page != page || a.project != project {
+	if _, listed := tt.Find(p.Name); !a.projectIsHidden(p) || listed || a.page != page || a.project != project {
 		t.Fatal("project did not hide or reading location changed")
 	}
-	if err := tt.Click(second.Name + " · " + second.Path + " · 查看项目记忆"); err != nil {
+	if err := tt.Click(second.Name); err != nil {
 		t.Fatal(err)
 	}
-	if a.project != 1 {
-		t.Fatal("filtered grid navigated to the hidden project's index")
+	if a.project != 1 || a.page != "知识" {
+		t.Fatal("filtered sidebar navigated to the wrong project")
 	}
-	// The component fixture has no service/update scheduler. Reveal its all-
-	// project projection without starting the overview's unrelated readers.
-	a.overviewState.AllProjects = true
-	tt.Frame()
-	if !tt.HasText("已隐藏 · 右键取消隐藏") {
-		t.Fatal("all-project view lost hidden project")
+	all := fmt.Sprintf("全部 %d", len(a.Config.Projects))
+	if err := tt.Click(all); err != nil {
+		t.Fatal(err)
 	}
-	if err := tt.RightClick(p.Name + " · " + p.Path + " · 查看项目记忆"); err != nil {
+	if err := tt.RightClick("全部项目：" + p.Name); err != nil {
 		t.Fatal(err)
 	}
 	if err := tt.ChooseMenuItem("取消隐藏"); err != nil {
 		t.Fatal(err)
 	}
-	if a.projectIsHidden(p) || !slices.Contains(tt.Texts(), p.Name) {
-		t.Fatal("project did not return to sidebar")
+	if err := tt.Click("关闭全部项目"); err != nil {
+		t.Fatal(err)
+	}
+	if _, listed := tt.Find(p.Name); a.projectIsHidden(p) || !listed || a.project != 1 {
+		t.Fatal("project did not return to sidebar or reading location changed")
+	}
+	if err := tt.Click(all); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("打开项目：" + p.Name); err != nil {
+		t.Fatal(err)
+	}
+	if a.project != 0 || a.allProjectsOpen {
+		t.Fatal("opening the restored project did not navigate and close the dialog")
 	}
 }
 
@@ -108,20 +120,31 @@ func TestProjectVisibilityRestoresWhenEveryProjectIsHidden(t *testing.T) {
 	a := overviewFixture(t)
 	a.Update = nil
 	a.Config.Projects = a.Config.Projects[:1]
-	a.overviewState.AllProjects = false
 	p := a.Config.Projects[0]
 	if err := a.setProjectHidden(p, true); err != nil {
 		t.Fatal(err)
 	}
-	tt := ui.NewTester(a.overviewProjectGrid, 1000, 500)
-	if !tt.HasText("项目已全部隐藏，可从查看全部中恢复。") {
-		t.Fatal("all-hidden recovery hint missing")
+	tt := projectVisibilityTester(a)
+	if _, listed := tt.Find(p.Name); listed {
+		t.Fatal("hidden project is visible in the sidebar")
 	}
-	if err := tt.Click("查看全部  ›"); err != nil {
+	if err := tt.Click("全部 1"); err != nil {
 		t.Fatal(err)
 	}
-	if !tt.HasText("已隐藏 · 右键取消隐藏") {
+	if _, found := tt.Find("全部项目：" + p.Name); !found {
 		t.Fatal("all-hidden projects cannot be recovered")
+	}
+	if err := tt.Click("取消隐藏项目：" + p.Name); err != nil {
+		t.Fatal(err)
+	}
+	if a.projectIsHidden(p) || !a.allProjectsOpen || a.page != "总览" {
+		t.Fatal("restoring the only project changed the overview or closed the dialog")
+	}
+	if err := tt.Click("关闭全部项目"); err != nil {
+		t.Fatal(err)
+	}
+	if _, listed := tt.Find(p.Name); !listed {
+		t.Fatal("restored project did not appear in the sidebar")
 	}
 }
 

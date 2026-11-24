@@ -35,6 +35,13 @@ func (c *searchController) clearSearchOrigin() {
 	c.searchAnchor = nil
 }
 
+func (c *searchController) invalidateReading(dataset string) {
+	c.invalidateUnifiedSearch(dataset)
+	if dataset == "" || (c.searchAnchor != nil && c.searchAnchor.Dataset == dataset) {
+		c.clearSearchOrigin()
+	}
+}
+
 func (c *searchController) hasSearchOriginFor(p *pane) bool {
 	return c.searchOrigin != nil && c.searchPane == p
 }
@@ -88,6 +95,15 @@ func (c *graphController) cancelGraphLoad() {
 	c.graphLoadRequest++
 	c.pendingGraphLoad = nil
 	c.graphLoading = false
+}
+
+func (c *graphController) invalidateReading(dataset string) {
+	c.pendingGraphLoad = nil
+	if dataset == "" || c.graph == nil || c.graph.dataset == "" || c.graph.dataset == dataset {
+		c.graph.clear()
+		c.graphSelection = ""
+		c.cancelGraphLoad()
+	}
 }
 
 // readingController owns reading panes, title cache, reading identity tracking,
@@ -160,6 +176,31 @@ func (c *readingController) cancelAndResetPanes() {
 		}
 	}
 	c.panes = map[string]*pane{}
+}
+
+func (c *readingController) invalidateReading(dataset string) {
+	if c.titles != nil {
+		c.titles.Invalidate(dataset)
+	}
+	if c.detailChunks != nil {
+		c.detailChunks.Invalidate(dataset)
+	}
+	c.recentScope = ""
+	if c.recentCancel != nil {
+		c.recentCancel()
+		c.recentCancel = nil
+	}
+	c.recentRequest++
+	if dataset == "" {
+		c.recent = nil
+	}
+	seen := make(map[*pane]bool, len(c.panes))
+	for _, s := range c.panes {
+		if s != nil && !seen[s] {
+			seen[s] = true
+			invalidateReadingPane(s, dataset)
+		}
+	}
 }
 
 // overviewController owns overview home state, refresh cadence, overview return

@@ -58,8 +58,6 @@ func commonDraftFor(i Item) CommonDraft {
 	return draft
 }
 
-func (a *App) commonToolbar(c *ui.Context) { a.commonFilterBar(c) }
-
 func (a *App) commonCategoryFilter() string {
 	switch a.commonEdit.Category {
 	case "个人偏好":

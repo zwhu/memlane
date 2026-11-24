@@ -17,22 +17,6 @@ var (
 	v4QuickFade = ui.Animation{Duration: 140 * time.Millisecond, Ease: ui.EaseOut}
 )
 
-func v4PageTransition() ui.ElementTransition {
-	anim := v4Smooth
-	return ui.ElementTransition{
-		Animation: &anim,
-		Enter:     &ui.Motion{Y: 8, Opacity: 0},
-	}
-}
-
-func v4DocTransition() ui.ElementTransition {
-	anim := v4Smooth
-	return ui.ElementTransition{
-		Animation: &anim,
-		Enter:     &ui.Motion{X: 8, Opacity: 0},
-	}
-}
-
 // poseEnterTracker drives paint-only AnimatePose enter transitions in 2 frames:
 // Callers include `run` in the element's c.Key(...) so Frame 1 always starts
 // from a fresh pose state (r == nil -> velocity == 0, never using a 1ns curve
@@ -119,12 +103,6 @@ func (a *App) staggerEnter(c *ui.Context, el ui.Element, key string, index int, 
 	return a.poseEnter.apply(c, el, "row:"+key, run, start, rest, delay, v4Snappy)
 }
 
-// v4DocEnter ("Doc Glide / 阅读区侧滑切换") reproduces .doc-enter:
-// translateX +8px -> 0, opacity 0 -> 1 on Smooth spring.
-func (a *App) v4DocEnter(c *ui.Context, el ui.Element, key string, run uint64) ui.Element {
-	return a.poseEnter.apply(c, el, "doc:"+key, run, ui.Pose{X: 8, Scale: 1, Fade: 1}, ui.Pose{Scale: 1}, 0, v4Smooth)
-}
-
 // v4ContentFade applies an ultra-short paint-only opacity fade-in (0.15 -> 1.0,
 // 140ms EaseOut) with zero X/Y translation when swapping detail content inside a
 // stationary reading panel.
@@ -169,14 +147,6 @@ func v4BouncyScale(t float64) float32 {
 		return 0
 	}
 	return float32(val)
-}
-
-func v4DropInTransition() ui.ElementTransition {
-	anim := v4Bouncy
-	return ui.ElementTransition{
-		Animation: &anim,
-		Enter:     &ui.Motion{Collapse: true, Y: -16, Scale: 0.98, Opacity: 0},
-	}
 }
 
 func v4ModalTransition() ui.ElementTransition {

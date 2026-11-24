@@ -12,7 +12,6 @@ const (
 	homeMaxWidth           = 1320
 	homeColumnGap          = 32
 	homeCalendarMaxWidth   = 900
-	homeGridGap            = 12
 	homeSectionOffset      = 1
 )
 
@@ -92,7 +91,6 @@ func homeSVG(paths string) *ui.SVG {
 
 var homeDocument = v4IconDoc
 var homeCommon = v4IconCommon
-var homeFolder = v4IconFolder
 var homeArrow = v4IconChev
 var homeRefresh = homeSVG(`<path d="M20 9a8 8 0 1 0 0 6M20 3v6h-6"/>`)
 var homeSearch = v4IconSearch

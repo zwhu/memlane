@@ -74,6 +74,8 @@ type App struct {
 	readingController
 	overviewController
 
+	readingInvalidators []namedReadingInvalidator
+
 	userProfiles          userProfilesState
 	environment           environmentSetupState
 	initialSetup          bool
@@ -85,9 +87,6 @@ type App struct {
 	commonEdit            commonEditorState
 	commonPage            commonKnowledgePageState
 	commonGeneration      uint64
-	editProject           *Project
-	editIndex             int
-	settingsMessage       string
 	ChooseProjectFolder   func() (string, error)
 	ChooseDiagnosticPath  func() (string, error)
 	OpenExistingAgent     func(string) error
@@ -186,6 +185,7 @@ func New(c Config, err error) *App {
 			b.Body(c).Label("代码横向滚动")
 		})
 	}}
+	a.ensureReadingInvalidators()
 	return a
 }
 
@@ -640,17 +640,9 @@ func (a *App) load(s *pane) {
 	}
 	commonOpts.RecallAgentID, commonOpts.RecallEventID = s.Knowledge.RecallAgentID, s.Knowledge.RecallEventID
 	recallStartedAt := a.overviewState.V2RecallStartedAt
-	filter := a.searchType
-	if page != "搜索" {
-		if kind == "知识" {
-			filter = "知识"
-		} else {
-			filter = "原始材料"
-		}
-	}
-	ps := a.projects()
-	if page == "搜索" {
-		ps = searchProjects(a.Config.Projects, a.searchProject)
+	filter := "原始材料"
+	if kind == "知识" {
+		filter = "知识"
 	}
 	client := a.Client
 	control, hasControl := a.accessClient()
@@ -676,23 +668,16 @@ func (a *App) load(s *pane) {
 		var v2CommonCursorReset bool
 		var more bool
 		var err error
-		if page == "搜索" || q != "" {
-			if q == "" {
-				rows = []Item{}
-			} else {
-				if page != "搜索" {
-					ps = []Project{p}
-				}
-				rows, err = client.search(ctx, ps, q, filter)
-				if page == "通用知识" {
-					filtered := []Item{}
-					for _, row := range rows {
-						if row.CommonCategory != "" && (category == "" || row.CommonCategory == category) {
-							filtered = append(filtered, row)
-						}
+		if q != "" {
+			rows, err = client.search(ctx, []Project{p}, q, filter)
+			if page == "通用知识" {
+				filtered := []Item{}
+				for _, row := range rows {
+					if row.CommonCategory != "" && (category == "" || row.CommonCategory == category) {
+						filtered = append(filtered, row)
 					}
-					rows = filtered
 				}
+				rows = filtered
 			}
 		} else if !ok {
 			rows = []Item{}
@@ -877,7 +862,7 @@ func (a *App) load(s *pane) {
 						return
 					}
 				}
-				if page != "搜索" && q == "" {
+				if q == "" {
 					s.Selected = nil
 					s.SubagentParent, s.SubagentParentPage = nil, nil
 					s.SessionSubagents = false
@@ -1152,7 +1137,7 @@ func (a *App) mainShell(c *ui.Context) {
 				case "知识":
 					a.projectReading(c)
 				default:
-					a.reading(c)
+					a.home(c)
 				}
 			})
 		})
@@ -1167,261 +1152,6 @@ func (a *App) settings(c *ui.Context) {
 	}
 	a.globalSettingsPage(c)
 }
-func (a *App) reading(c *ui.Context) {
-	s := a.state()
-	ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
-		ui.Column(c).Width(316).Shrink(0).BorderWidth(0, 1, 0, 0).BorderColor(border).Children(func() {
-			ui.Column(c).Padding(24, 18, 16, 18).Gap(12).Children(func() {
-				label := "项目内容"
-				if a.page == "通用知识" {
-					label = "通用记忆"
-				}
-				ui.Text(c, label).FontSize(10).TextColor(muted)
-				if a.page != "搜索" {
-					ui.Row(c).Gap(3).Children(func() {
-						if a.page != "通用知识" {
-							button(c, "图谱", func() { a.navigate("图谱", a.project); a.loadGraph() })
-						}
-						for _, k := range []string{"知识", "会话", "文档"} {
-							if a.page == "通用知识" && k != "知识" {
-								continue
-							}
-							kind := k
-							label := kind
-							if k == "会话" {
-								label = "原始记录"
-							}
-							button(c, memoryKindLabel(label), func() {
-								a.cancelTitles(s)
-								a.epoch++
-								if s.cancel != nil {
-									s.cancel()
-								}
-								a.kind = kind
-								next := a.state()
-								if !next.Loaded {
-									a.load(next)
-								}
-							})
-						}
-					})
-				} else {
-					catalog := append([]Project(nil), a.Config.Projects...)
-					options := []string{"全部项目"}
-					options = append(options, projectLabels(catalog)...)
-					selected := options[0]
-					for index, p := range a.Config.Projects {
-						if p.ID == a.searchProject {
-							selected = options[index+1]
-							break
-						}
-					}
-					ui.Select(c, &selected, options).Width(270).OnChange(func() {
-						if selected == options[0] {
-							a.searchProject = ""
-						}
-						for index, label := range options[1:] {
-							if label == selected {
-								a.searchProject = catalog[index].ID
-								break
-							}
-						}
-						s.Offset = 0
-						a.load(s)
-					})
-					ui.Select(c, &a.searchType, []string{"全部类型", "知识", "原始材料"}).Width(270).OnChange(func() { s.Offset = 0; a.load(s) })
-					ui.Text(c, "最多30个官方检索片段；类型按返回元数据筛选").FontSize(10).TextColor(muted)
-				}
-				if a.page == "通用知识" {
-					a.commonToolbar(c)
-					options := []string{}
-					for _, p := range a.Config.Common {
-						options = append(options, p.Name)
-					}
-					if len(options) > 0 {
-						selected := options[min(a.project, len(options)-1)]
-						ui.Select(c, &selected, options).Width(270).OnChange(func() {
-							for idx, name := range options {
-								if name == selected {
-									a.navigate("通用知识", idx)
-								}
-							}
-						})
-					}
-				}
-
-				ui.Row(c).Children(func() {
-					ui.Text(c, fmt.Sprintf("已载入 %d 项", len(s.Items))).FontSize(10).TextColor(muted)
-					ui.Spacer(c)
-					refreshAction(c, "刷新列表", func() { a.load(s) })
-				})
-				if s.Loading && !s.Loaded {
-					ui.Text(c, "正在读取…").FontSize(10).TextColor(muted)
-				}
-				if s.Error != "" {
-					ui.Text(c, s.Error).FontSize(11).TextColor(muted)
-				}
-			})
-			ui.Scroll(c.Key("list-"+a.routeKey())).Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(0, 10).Gap(4).Children(func() {
-				if s.Loaded && len(s.Items) == 0 {
-					label := "当前页面没有内容"
-					if a.page == "搜索" && s.Query == "" {
-						label = "输入关键词搜索官方内容"
-					}
-					if a.page == "通用知识" && len(a.Config.Common) == 0 {
-						label = "官方当前暂不支持个人偏好与通用经验的独立阅读。后续可使用独立的通用记忆数据组，供所有 Agent 读取。"
-					}
-					if s.Query != "" {
-						label = "没有匹配结果"
-					}
-					if s.Loading {
-						label = "正在读取…"
-					} else if s.Error != "" {
-						label = "内容读取失败，请刷新"
-					}
-					ui.Text(c, label).Margin(12).FontSize(12).TextColor(muted)
-				}
-				for _, row := range s.Items {
-					i := row
-					b := ui.Button(c, "").Key("item-"+i.key()).Justify(ui.Start).Padding(14, 12).Background(ui.Transparent).BorderWidth(0).Radius(6).Children(func() {
-						ui.Column(c).Grow(1).MinWidth(0).Gap(8).Children(func() {
-							ui.Text(c, i.Title).MinWidth(0).FontSize(13).Bold().SingleLine().TextColor(ink)
-							ui.Text(c, memoryKindLabel(i.Kind)+" · "+displayDate(i.Date)).MinWidth(0).FontSize(10).TextColor(muted).SingleLine()
-							if i.ReadingState == "failed" || i.ReadingState == "unavailable" {
-								button(c, "标题读取失败 · 重试", func() { a.retryReadingTitle(s, i) })
-							}
-						})
-					}).OnClick(func() { a.selectItem(s, i) })
-					if s.Selected != nil && s.Selected.key() == i.key() {
-						b.Background(tok.AccentSoft)
-					}
-				}
-			})
-			ui.Row(c).Height(48).Shrink(0).Padding(0, 12).BorderWidth(1, 0, 0, 0).BorderColor(border).Children(func() {
-				ui.Button(c, "‹").Disabled(s.Offset == 0 || s.Loading || s.Query != "").OnClick(func() { s.Offset = max(0, s.Offset-30); a.load(s) })
-				ui.Text(c, fmt.Sprintf("%d", s.Offset/30+1)).FontSize(11)
-				ui.Button(c, "›").Disabled(!s.More || s.Loading || s.Query != "").OnClick(func() { s.Offset += 30; a.load(s) })
-			})
-		})
-		if a.page == "通用知识" && a.commonEdit.Open {
-			a.commonEditor(c)
-		} else {
-			a.detail(c, s)
-		}
-	})
-}
-func (a *App) detail(c *ui.Context, s *pane) {
-	ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-		if s.Selected == nil {
-			ui.Text(c, "选择一项内容开始阅读").FontSize(14).TextColor(muted).Margin(30)
-			return
-		}
-		i := s.Selected
-		if len(s.History) > 0 {
-			ui.Row(c).Height(42).Shrink(0).Padding(0, 22).Children(func() {
-				button(c, "‹ 返回阅读", func() { a.returnFromSource(s) })
-			})
-		}
-		scroll := s.DetailScroll[i.key()]
-		if scroll == nil {
-			scroll = &ui.ScrollState{}
-			s.DetailScroll[i.key()] = scroll
-		}
-		ui.Scroll(c.Key("detail-"+i.key())).Grow(1).MinHeight(0).TrackScroll(scroll).Padding(28, 30).Gap(18).Children(func() {
-			ui.Text(c, memoryKindLabel(i.Kind)+" / 只读").FontSize(10).TextColor(muted)
-			presentation := itemPresentation(*i)
-			ui.Text(c, presentation.DisplayTitle).FontSize(21).Bold().TextColor(ink)
-			ui.Text(c, displayDate(i.Date)).FontSize(10).TextColor(muted)
-			a.commonActions(c, *i)
-			if s.Reading && !i.BodyLoaded && i.Detail == nil {
-				ui.Text(c, "正在读取…").FontSize(10).TextColor(muted)
-			}
-			if i.Detail != nil {
-				mdOpts := a.v4MarkdownOptions(fsReading)
-				ui.Text(c, fmt.Sprintf("官方已载入 %d/%d 条问答；工具记录独立列示", len(i.Detail.QAs), i.Detail.Count)).FontSize(fsCaption).TextColor(tok.Text3)
-				for _, q := range i.Detail.QAs {
-					ui.Column(c).Padding(11, 14).Background(tok.Fill1).Border(1, tok.Border).Radius(radius).Gap(6).Children(func() {
-						ui.Text(c, "用户").FontSize(fsCaption).TextColor(tok.Text3)
-						markdown.View(c.Key("q-"+q.ID), q.Question, mdOpts)
-						if q.QuestionTruncated {
-							ui.Text(c, "官方内容已截断").FontSize(fsCaption).TextColor(tok.Text3)
-						}
-					})
-					sourceAgentLabel(c, *i)
-					markdown.View(c.Key("a-"+q.ID), q.Answer, mdOpts)
-					if q.AnswerTruncated {
-						ui.Text(c, "官方内容已截断").FontSize(fsCaption).TextColor(tok.Text3)
-					}
-				}
-				for _, trace := range i.Detail.Traces {
-					t := trace
-					key := i.key() + "/" + t.ID
-					label := "› " + t.Name + " · " + t.Status
-					if s.Tools[key] {
-						label = "⌄ " + t.Name + " · " + t.Status
-					}
-					ui.Column(c).Border(1, tok.Border).Radius(radius).Padding(sp2).Children(func() {
-						button(c, memoryKindLabel(label), func() { s.Tools[key] = !s.Tools[key] })
-						if s.Tools[key] {
-							markdown.View(c.Key("tool-"+key), "```json\n"+string(t.Params)+"\n```\n\n```json\n"+string(t.Result)+"\n```\n\n"+t.Error, mdOpts)
-						}
-					})
-				}
-			} else {
-				markdown.View(c.Key("body-"+i.key()), presentation.VisibleBody, a.v4MarkdownOptions(fsReading))
-				if presentation.Unrecognized {
-					ui.Text(c, "原文格式未识别，保留原文").FontSize(fsCaption).TextColor(tok.Text3)
-				}
-			}
-			if i.Source != "" || i.SourceDocument != "" {
-				ui.Column(c).Padding(16).Border(1, border).Radius(8).Gap(8).Children(func() {
-					ui.Text(c, "出处 · 官方关联材料").FontSize(12).Bold()
-					ui.Text(c, readingSourceLabel(*i)).FontSize(10).TextColor(muted)
-					button(c, "查看原始记录 →", func() { a.source(s) })
-				})
-			} else if i.Kind == "知识" && (i.Document == nil || commonCategory(*i.Document) == "") {
-				ui.Text(c, "官方未提供可定位的会话出处").FontSize(10).TextColor(muted)
-			}
-			if s.Technical == nil {
-				s.Technical = map[string]bool{}
-			}
-			label := "› 技术详情"
-			if s.Technical[i.key()] {
-				label = "⌄ 技术详情"
-			}
-			button(c, memoryKindLabel(label), func() { s.Technical[i.key()] = !s.Technical[i.key()] })
-			if s.Technical[i.key()] {
-				fields := presentation.TechnicalFields
-				if len(fields) == 0 {
-					fields = []ReadingField{{"数据组 ID", i.Dataset}, {"对象 ID", i.ID}}
-				}
-				for _, field := range fields {
-					f := field
-					if f.Value != "" {
-						copyableText(c, f.Name+"："+f.Value, f.Value, "复制"+f.Name, homeMeta, func() { c.WriteClipboard(f.Value) })
-					}
-				}
-				if i.BodyLoaded || i.Detail != nil || i.Preview != "" {
-					copyableText(c, "原文", i.Body, "复制原文", homeMeta, func() { c.WriteClipboard(i.Body) })
-				}
-			}
-		})
-		ui.Row(c).Height(48).Shrink(0).Padding(0, 24).BorderWidth(1, 0, 0, 0).BorderColor(border).Children(func() {
-			row := ui.Row(c).AlignItems(ui.Center).Gap(4)
-			row.Children(func() {
-				ui.Text(c, "只读 · 内容由 Cognee 提供").FontSize(10).TextColor(muted)
-				if i.BodyLoaded || i.Detail != nil || i.Preview != "" {
-					label := "复制已载入内容"
-					if i.Kind == "知识" {
-						label = "复制记忆内容"
-					}
-					hoverCopyAction(c, row, label, func() { c.WriteClipboard(itemPresentation(*i).VisibleBody) })
-				}
-			})
-		})
-	})
-}
-
 func displayDate(date string) string {
 	if day, ok := sourceCalendarDate(date); ok {
 		return day
@@ -1440,58 +1170,6 @@ func (a *App) OpenSearch() {
 		a.openUnifiedSearch(false)
 	}
 }
-func (a *App) projectEditor(c *ui.Context) {
-	if a.settingsMessage != "" {
-		ui.Text(c, a.settingsMessage).FontSize(11).TextColor(muted)
-	}
-	p := a.editProject
-	if p == nil {
-		return
-	}
-	ui.Column(c).Padding(18).Border(1, border).Radius(8).Gap(10).Children(func() {
-		ui.Text(c, "关联已有官方数据组").FontSize(14).Bold()
-		for _, field := range []struct {
-			Label string
-			Value *string
-		}{{"项目标识", &p.ID}, {"显示名称", &p.Name}, {"仓库路径", &p.Path}, {"记忆数据组 ID", &p.Dataset}, {"代码数据组 ID（可选）", &p.CodeDataset}} {
-			ui.Text(c, field.Label).FontSize(10).TextColor(muted)
-			ui.TextInput(c.Key("project-field-"+field.Label), field.Value).Height(32).Label(field.Label)
-		}
-		ui.Row(c).Gap(8).Children(func() {
-			button(c, "保存关联", func() {
-				if p.ID == "" || p.Name == "" || p.Dataset == "" {
-					a.settingsMessage = "请填写项目标识、名称与已有官方数据组 ID"
-					return
-				}
-				for idx, existing := range a.Config.Projects {
-					if idx != a.editIndex && existing.ID == p.ID {
-						a.settingsMessage = "项目标识已存在"
-						return
-					}
-				}
-				before := append([]Project(nil), a.Config.Projects...)
-				if a.editIndex < 0 {
-					a.Config.Projects = append(a.Config.Projects, *p)
-				} else {
-					a.Config.Projects[a.editIndex] = *p
-				}
-				if e := a.saveProjects(); e != nil {
-					a.Config.Projects = before
-					a.settingsMessage = e.Error()
-					return
-				}
-				a.epoch++
-				a.InvalidateReading("")
-				a.cancelAndResetPanes()
-				a.editProject = nil
-				a.settingsMessage = "关联已保存；服务与模型配置通过重启后台生效"
-				a.loadRecent()
-			})
-			button(c, "取消", func() { a.editProject = nil })
-		})
-	})
-}
-
 func (a *App) returnFromSource(s *pane) {
 	s.SubagentParent, s.SubagentParentPage = nil, nil
 	s.SessionSubagents = false

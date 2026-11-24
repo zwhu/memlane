@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -728,4 +729,189 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 			t.Fatal("dataset invalidation retained expanded detail of revoked event")
 		}
 	})
+}
+
+func TestInvalidateReadingUnifiedHooks(t *testing.T) {
+	wantOrder := []string{"common-editor", "search", "project-ui", "user-profiles", "graph", "reading", "overview", "project-queues"}
+	t.Run("zero value", func(t *testing.T) {
+		a := &App{}
+		a.InvalidateReading("ds-1")
+		a.InvalidateReading("")
+		if a.authEpoch != 2 || len(a.readingInvalidators) != len(wantOrder) {
+			t.Fatal("zero-value App did not install and run its hooks")
+		}
+	})
+
+	a := New(Config{}, nil)
+	var names []string
+	for _, entry := range a.readingInvalidators {
+		names = append(names, entry.name)
+	}
+	if !slices.Equal(names, wantOrder) {
+		t.Fatalf("built-in hook order = %v, want %v", names, wantOrder)
+	}
+
+	first := Item{Dataset: "ds-1", ID: "one", Body: "private body", BodyLoaded: true, Preview: "preview"}
+	second := Item{Dataset: "ds-2", ID: "two", Body: "other body", BodyLoaded: true}
+	newPane := func(item Item) *pane {
+		return &pane{
+			Items: []Item{item}, Selected: &item, HomeAnchor: &item, SubagentParent: &item,
+			SubagentParentPage: &SessionHistoryPage{}, SessionSubagents: true, SourcePage: &SessionHistoryPage{Dataset: item.Dataset},
+			History: []Item{first, second}, RawCatalog: []Item{first, second},
+			DetailLists: map[string]*ui.ListState{"ds-1/one": {}, "ds-2/two": {}},
+			Knowledge: knowledgeFeedState{
+				Catalog: []Item{first, second}, Measurements: map[string]knowledgeCardMeasurement{"ds-1/one": {}, "ds-2/two": {}},
+				Appending: true, Prepending: true, NextCursor: "next", PrevCursor: "prev", HasPrev: true,
+			},
+			Loading: true, Locating: true, Reading: true, RawAppending: true, RawNextCursor: "raw",
+			CommonNextCursor: "next", CommonPrevCursor: "prev", CommonHasPrev: true,
+			CommonNav: []v2KnowledgePageOpts{{Cursor: "page"}}, CommonCursors: []string{"page"}, CommonPageIndex: 1,
+		}
+	}
+	p1, p2, queueReader := newPane(first), newPane(second), newPane(first)
+	a.panes["first"], a.panes["alias"], a.panes["second"] = p1, p1, p2
+	newQueue := func(reader *pane) *projectQueueState {
+		return &projectQueueState{
+			Reader: reader, Loading: true, UnreadKnowledge: []Item{first}, UnreadHasMore: true,
+			ServerUnreadKnown: true, ServerUnreadCount: 4, ServerUnreadStateRev: 7,
+			Activity: []overviewEvent{{Key: "event"}}, ProcessingNotices: []processingNotice{{Code: "notice"}},
+			ProcessingIssues: []processingIssue{{Reason: "issue"}}, Documents: []Item{first}, PendingDocumentsCount: 1,
+		}
+	}
+	q1, q2, qAlias := newQueue(p1), newQueue(p2), newQueue(queueReader)
+	a.access.Queues = map[string]*projectQueueState{
+		"project/ds-1": q1, "project/ds-2": q2, "alias/ds-1": qAlias, "other/ds-2": {Reader: queueReader},
+	}
+
+	a.commonEdit = commonEditorState{Open: true, Existing: &Document{Dataset: first.Dataset}, Draft: CommonDraft{Body: first.Body},
+		Submitted: true, Receipt: CommonWriteReceipt{DataID: "keep"}}
+	a.searchUI = unifiedSearchState{Open: true, Loading: true, Rows: []Item{first, second}, Submitted: "search"}
+	a.searchOrigin, a.searchAnchor, a.searchPane = &readingLocation{}, &second, p2
+	a.projectUI.InfoOpen = true
+	a.userProfiles = userProfilesState{Body: first.Body, BodyKey: "profile/ds-1/one", Reading: true}
+	a.graph, a.graphSelection, a.pendingGraphLoad, a.graphLoading = &GraphHost{dataset: second.Dataset}, "node", &graphLoad{}, true
+	a.recentScope, a.recent = "recent", []Item{second}
+	for _, item := range []Item{first, second} {
+		a.titles.cache[readingKey{Dataset: item.Dataset, ID: item.ID}] = readingCacheEntry{item: item}
+		a.titles.bytes += len(item.Body)
+		a.detailChunks.getOrSplit(item.Dataset, item.ID, "body", detailContentKey{}, func() []string { return []string{item.Body} })
+	}
+	ev1 := overviewEvent{Key: "first", Record: activityRow{Dataset: first.Dataset}}
+	ev2 := overviewEvent{Key: "second", Record: activityRow{Dataset: second.Dataset}}
+	recall := &RecallEvent{Hits: []RecallHit{{Dataset: first.Dataset}, {Dataset: second.Dataset}}}
+	mixed := overviewEvent{Key: "mixed", Failures: []activityRow{ev1.Record, ev2.Record}, Recall: recall}
+	v := &a.overviewState
+	*v = overviewViewState{
+		scope: "scope", Loaded: true, RawLoaded: true, Loading: true, ActivityLoading: true, DayLoading: true,
+		DayItems: []Item{first, second}, DayNextCursor: "next", DayHasMore: true, DayTotal: 2,
+		Events: []overviewEvent{ev1, mixed, ev2}, History: []overviewEvent{ev1, ev2}, HistoryLoaded: true,
+		ExpandedEvent: "mixed", ExpandedReport: "report", ExpandedDetail: &failureDetailModel{},
+		cachedGroupedEvents: []overviewEvent{mixed}, Snapshot: overviewSnapshot{Knowledge: []Item{first, second}},
+	}
+	cancelCount := 0
+	cancel := func() { cancelCount++ }
+	a.recentCancel, p1.cancel, p1.readCancel, p1.titleCancel = cancel, cancel, cancel, cancel
+	v.cancel, v.activityCancel, v.dayCancel, v.recallCancel, a.searchUI.cancel = cancel, cancel, cancel, cancel, cancel
+
+	var customCalls []string
+	a.registerReadingInvalidator("probe", readingInvalidatorFunc(func(string) { t.Fatal("replaced hook was called") }))
+	a.registerReadingInvalidator("last", readingInvalidatorFunc(func(dataset string) { customCalls = append(customCalls, "last:"+dataset) }))
+	a.registerReadingInvalidator("probe", readingInvalidatorFunc(func(dataset string) {
+		customCalls = append(customCalls, "probe:"+dataset)
+		if a.authEpoch != 1 && dataset == first.Dataset || a.authEpoch != 2 && dataset == "" ||
+			a.projectUI.InfoOpen || q1.Documents != nil || p1.Selected != nil {
+			t.Error("custom hook ran before the fence or a built-in hook")
+		}
+	}))
+
+	a.InvalidateReading(first.Dataset)
+	if !slices.Equal(customCalls, []string{"probe:ds-1", "last:ds-1"}) || cancelCount != 9 {
+		t.Fatalf("scoped invalidation calls = %v, cancellations = %d", customCalls, cancelCount)
+	}
+	if a.commonEdit.Open || a.commonEdit.Existing != nil || a.commonEdit.Draft.Body != "" ||
+		!a.commonEdit.Submitted || a.commonEdit.Receipt.DataID != "keep" ||
+		a.userProfiles.Reading || a.userProfiles.Body != "" || a.userProfiles.ReadGeneration != 1 {
+		t.Fatal("scoped invalidation did not withdraw editor/profile content and preserve the save receipt")
+	}
+	if a.searchUI.Open || a.searchUI.Loading || a.searchUI.request != 1 || len(a.searchUI.Rows) != 1 ||
+		a.searchUI.Rows[0].ID != second.ID || a.searchAnchor != &second ||
+		a.pendingGraphLoad != nil || !a.graphLoading || a.graphSelection != "node" || a.graphLoadRequest != 0 {
+		t.Fatal("scoped invalidation changed the unrelated search origin or graph")
+	}
+	if len(a.titles.cache) != 1 || a.titles.cache[readingKey{Dataset: second.Dataset, ID: second.ID}].item.Body != second.Body ||
+		len(a.detailChunks.entries) != 1 || a.detailChunks.entries[0].dataset != second.Dataset ||
+		a.recentScope != "" || a.recentCancel != nil || a.recentRequest != 1 || len(a.recent) != 1 {
+		t.Fatal("scoped invalidation did not preserve unrelated cached reading state")
+	}
+	if p1.request != 1 || p1.readRequest != 1 || p1.titleRequest != 1 ||
+		p1.cancel != nil || p1.readCancel != nil || p1.titleCancel != nil ||
+		p1.Loading || p1.Locating || p1.Reading || p1.RawAppending || p1.Knowledge.Appending || p1.Knowledge.Prepending ||
+		p1.RawNextCursor != "" || p1.Knowledge.NextCursor != "" || p1.Knowledge.PrevCursor != "" || p1.Knowledge.HasPrev ||
+		p1.CommonNextCursor != "" || p1.CommonPrevCursor != "" || p1.CommonHasPrev ||
+		p1.CommonNav != nil || p1.CommonCursors != nil || p1.CommonPageIndex != 0 ||
+		p1.Selected != nil || p1.HomeAnchor != nil || p1.SubagentParent != nil || p1.SubagentParentPage != nil || p1.SessionSubagents ||
+		p1.SourcePage != nil || p1.Error != "内容已失效或无权读取，请刷新" || p1.Items[0].ReadingState != "unavailable" ||
+		len(p1.History) != 1 || p1.History[0].ID != second.ID || len(p1.DetailLists) != 1 || p1.DetailLists["ds-2/two"] == nil ||
+		len(p1.Knowledge.Measurements) != 1 || len(p1.Knowledge.Catalog) != 1 || p1.Knowledge.Catalog[0].ID != second.ID ||
+		len(p1.RawCatalog) != 1 || p1.RawCatalog[0].ID != second.ID {
+		t.Fatal("scoped invalidation did not reset the matched pane exactly once")
+	}
+	if p2.request != 0 || p2.readRequest != 0 || p2.titleRequest != 1 || !p2.Loading || p2.Selected == nil ||
+		p2.Items[0].Body != second.Body || queueReader.request != 1 || queueReader.readRequest != 1 || queueReader.titleRequest != 1 {
+		t.Fatal("scoped invalidation changed unrelated pane data or failed to deduplicate the queue reader")
+	}
+	if v.snapshotVersion != 1 || v.generation != 1 || v.activityGeneration != 1 || v.dayRequest != 1 ||
+		v.cancel != nil || v.activityCancel != nil || v.dayCancel != nil || v.recallCancel != nil ||
+		v.Loading || v.ActivityLoading || v.DayLoading || v.cachedGroupedEvents != nil ||
+		len(v.DayItems) != 1 || v.DayItems[0].ID != second.ID || v.DayNextCursor != "" || v.DayHasMore || v.DayTotal != 2 ||
+		v.ExpandedEvent != "" || v.ExpandedReport != "" || v.ExpandedDetail != nil ||
+		len(v.Events) != 2 || v.Events[0].Key != mixed.Key || len(v.Events[0].Failures) != 1 ||
+		v.Events[0].Failures[0].Dataset != second.Dataset || len(v.Events[0].Recall.Hits) != 1 ||
+		v.Events[0].Recall.Hits[0].Dataset != second.Dataset || len(recall.Hits) != 2 ||
+		v.Events[1].Key != ev2.Key || len(v.History) != 1 || v.History[0].Key != ev2.Key ||
+		v.Snapshot.Knowledge[0].BodyLoaded || v.Snapshot.Knowledge[1].Body != second.Body {
+		t.Fatal("scoped invalidation did not filter overview data and fence loaders")
+	}
+	checkQueueReset := func(q *projectQueueState, version uint64) {
+		t.Helper()
+		if q.Loading || q.Request != version || q.StateVersion != version ||
+			q.UnreadKnowledge != nil || q.UnreadHasMore || q.ServerUnreadKnown || q.ServerUnreadCount != 0 || q.ServerUnreadStateRev != 0 ||
+			q.Activity != nil || q.ProcessingNotices != nil || q.ProcessingIssues != nil || q.Documents != nil || q.PendingDocumentsCount != 0 {
+			t.Fatalf("queue did not reset at generation %d", version)
+		}
+	}
+	checkQueueReset(q1, 1)
+	checkQueueReset(qAlias, 1)
+	if !q2.Loading || q2.Request != 0 || q2.StateVersion != 0 || q2.ServerUnreadCount != 4 || len(q2.Documents) != 1 {
+		t.Fatal("unrelated queue changed")
+	}
+
+	a.commonEdit.Open, a.commonEdit.Existing = true, &Document{Dataset: second.Dataset}
+	a.userProfiles.Body, a.userProfiles.BodyKey = second.Body, "profile/ds-2/two"
+	a.projectUI.InfoOpen = true
+	a.InvalidateReading("")
+	if !slices.Equal(customCalls, []string{"probe:ds-1", "last:ds-1", "probe:", "last:"}) {
+		t.Fatalf("global invalidation hook order = %v", customCalls)
+	}
+	if a.commonEdit.Open || a.commonEdit.Existing != nil || a.userProfiles.Body != "" || a.userProfiles.ReadGeneration != 2 ||
+		a.searchOrigin != nil || a.searchAnchor != nil || a.searchPane != nil || a.searchUI.Rows != nil ||
+		a.graph.epoch != 1 || a.graphSelection != "" || a.graphLoading || a.graphLoadRequest != 1 ||
+		len(a.titles.cache) != 0 || len(a.detailChunks.entries) != 0 || a.recent != nil || a.recentRequest != 2 {
+		t.Fatal("global invalidation retained controller state")
+	}
+	if p1.request != 2 || p1.readRequest != 2 || p1.titleRequest != 2 ||
+		queueReader.request != 2 || queueReader.readRequest != 2 || queueReader.titleRequest != 2 ||
+		p2.request != 1 || p2.readRequest != 1 || p2.titleRequest != 2 || p2.Selected != nil ||
+		p2.Items[0].BodyLoaded || p2.RawCatalog != nil || p2.Knowledge.Catalog != nil ||
+		len(p2.History) != 0 || len(p2.DetailLists) != 0 || len(p2.Knowledge.Measurements) != 0 {
+		t.Fatal("global invalidation did not reset all unique panes")
+	}
+	if v.snapshotVersion != 2 || v.generation != 2 || v.activityGeneration != 2 || v.dayRequest != 2 || v.scope != "" ||
+		v.Loaded || v.RawLoaded || v.HistoryLoaded || v.DayItems != nil || v.DayTotal != 0 || v.Events != nil ||
+		v.History != nil || v.Snapshot.Knowledge[1].BodyLoaded {
+		t.Fatal("global invalidation retained overview data")
+	}
+	checkQueueReset(q1, 2)
+	checkQueueReset(qAlias, 2)
+	checkQueueReset(q2, 1)
 }

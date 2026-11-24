@@ -20,22 +20,27 @@ type pendingArchiveRow struct {
 }
 
 func (a *App) pendingArchivePath(p AccessProject) (string, error) {
-	base := a.Config.ClientStateFile
-	if base == "" {
-		base = a.Config.ConfigFile
-	}
-	if base == "" {
+	return pendingArchivePath(a.readingStateDir(), a.Client, p)
+}
+
+func pendingArchivePath(stateDir string, client Client, p AccessProject) (string, error) {
+	if stateDir == "" {
 		return "", fmt.Errorf("客户端状态位置不可用")
 	}
-	identity, err := readingIdentity(Client{Config: a.Client.Config})
+	identity, err := readingIdentity(Client{Config: client.Config})
 	if err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256([]byte(identity + "/" + p.ID + "/" + p.Dataset))
-	return filepath.Join(filepath.Dir(base), fmt.Sprintf("pending-anomaly-archive-%x.json", sum)), nil
+	return filepath.Join(stateDir, fmt.Sprintf("pending-anomaly-archive-%x.json", sum)), nil
 }
+
 func (a *App) readPendingArchives(p AccessProject) ([]pendingArchiveRow, string) {
-	path, err := a.pendingArchivePath(p)
+	return readPendingArchives(a.readingStateDir(), a.Client, p)
+}
+
+func readPendingArchives(stateDir string, client Client, p AccessProject) ([]pendingArchiveRow, string) {
+	path, err := pendingArchivePath(stateDir, client, p)
 	// An unconfigured fixture has no archive; actual persistence still fails closed.
 	if err != nil {
 		return nil, ""

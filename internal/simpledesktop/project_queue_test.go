@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -351,5 +352,125 @@ func TestProjectQueueAcknowledgementReadCannotOverwriteNewerDecision(t *testing.
 				t.Fatalf("queue callback replaced a newer decision: acks=%v error=%q loaded=%t", q.NoticeAcknowledgements, q.NoticeAcknowledgementError, q.Loaded)
 			}
 		})
+	}
+}
+
+func TestProjectQueueReconcileActivity(t *testing.T) {
+	p := AccessProject{ID: "one", Name: "Project", Dataset: "ds-1"}
+	const at = "2026-11-24T08:00:00Z"
+	snap := projectQueueSnapshot{activity: []activityRow{
+		{ID: "earlier", Run: "extract", Dataset: p.Dataset, Operation: "cognify", Created: at},
+		{ID: "finished", Run: "extract", Dataset: p.Dataset, Operation: "cognify", Created: at, Outcome: "succeeded"},
+		{ID: "unrelated", Run: "extract", Dataset: "ds-2", Operation: "memify", Created: "2026-11-24T09:00:00Z"},
+		{ID: "global", Run: "extract", Operation: "memify", Created: "2026-11-24T10:00:00Z"},
+		{ID: "ignored", Dataset: p.Dataset, Operation: "search", Created: at},
+	}}
+	before := append([]activityRow(nil), snap.activity...)
+	rec := reconcileProjectQueueState(p, snap)
+	if rec.ActivityError != "" || len(rec.Activity) != 1 || rec.Activity[0].Title != "提炼记忆" ||
+		rec.Activity[0].Project != p.Name || rec.Activity[0].Record.ID != "finished" || !slices.Equal(snap.activity, before) {
+		t.Fatalf("incorrect activity reconciliation: %+v", rec.Activity)
+	}
+}
+
+func TestProjectQueueApplyReadErrorsAndRecovery(t *testing.T) {
+	a := &App{}
+	p := AccessProject{ID: "one", Dataset: "ds-1"}
+	backlog := &backlogJob{ProcessingFailed: 1}
+	check := pendingCheckState{Status: "confirmed"}
+	q := &projectQueueState{
+		Loading: true, Backlog: backlog, BacklogLoaded: true, AutomaticSave: true,
+		ProcessingIssues: []processingIssue{{Reason: "existing"}}, BufferReviews: []bufferReview{{}},
+		Checks:            map[string]pendingCheckState{"existing": check},
+		ProcessingNotices: []processingNotice{{Code: "existing"}},
+	}
+	meta := projectQueueApplyMeta{baseIdentity: a.cachedBaseReadingIdentity()}
+	snap := projectQueueSnapshot{
+		v2SummaryOK: true, summaryBacklogErr: "unavailable",
+		v2Summary: v2MessageSummaryResponse{BufferReviews: []bufferReview{}, Checks: []pendingCheckState{}},
+		noticeErr: fmt.Errorf("failed"), notices: []processingNotice{{Code: "fresh"}},
+	}
+	rec := reconcileProjectQueueState(p, snap)
+	if rec.UpdateNotices || rec.UpdateBacklog {
+		t.Fatalf("partial failures made snapshots eligible for replacement: %+v", rec)
+	}
+	a.applyProjectQueueResult(q, p, meta, snap, rec)
+	if q.Loading || !q.Loaded || q.ProcessingReadError != "记忆提炼异常记录暂时无法读取" ||
+		len(q.ProcessingNotices) != 1 || q.ProcessingNotices[0].Code != "existing" ||
+		q.BacklogError != "后台采集状态暂时无法读取；任务不会因此重复启动" || q.Backlog != backlog ||
+		!q.BacklogLoaded || !q.AutomaticSave || len(q.BufferReviews) != 1 || q.Checks["existing"] != check ||
+		len(q.ProcessingIssues) != 1 || q.ProcessingIssues[0].Reason != "existing" {
+		t.Fatal("failed read discarded an existing queue snapshot")
+	}
+	recovered := reconcileRecoveredNoticeKeys(p, q, snap.v2SummaryOK, snap.summaryBacklogErr)
+	if slices.Contains(recovered, "processing-read") || slices.Contains(recovered, "processing-failed") {
+		t.Fatalf("failed reads were treated as recovered: %v", recovered)
+	}
+
+	snap.noticeErr = nil
+	snap.summaryBacklogErr = ""
+	a.applyProjectQueueResult(q, p, meta, snap, reconcileProjectQueueState(p, snap))
+	if q.ProcessingReadError != "" || !slices.Equal(q.ProcessingNotices, snap.notices) ||
+		q.BacklogError != "" || q.Backlog != nil || q.ProcessingIssues != nil || q.AutomaticSave ||
+		len(q.BufferReviews) != 0 || len(q.Checks) != 0 {
+		t.Fatal("successful read did not replace queue snapshots and clear errors")
+	}
+	recovered = reconcileRecoveredNoticeKeys(p, q, snap.v2SummaryOK, snap.summaryBacklogErr)
+	if !slices.Contains(recovered, "processing-read") || !slices.Contains(recovered, "processing-failed") {
+		t.Fatalf("successful reads did not recover notices: %v", recovered)
+	}
+}
+
+func TestProjectQueueApplyAcknowledgementFences(t *testing.T) {
+	a := &App{}
+	p := AccessProject{}
+	path := filepath.Join(t.TempDir(), "acks.json")
+	key := noticeHash("unresolved")
+	newer, older := noticeAcknowledgement{Fingerprint: noticeHash("new"), At: time.Now()},
+		noticeAcknowledgement{Fingerprint: noticeHash("old"), At: time.Now()}
+	if _, msg, err := updateNoticeAcknowledgementsAtPath(path, func(rows map[string]noticeAcknowledgement) { rows[key] = newer }); msg != "" || err != nil {
+		t.Fatalf("could not seed a newer acknowledgement: %s %v", msg, err)
+	}
+	_, _, seq := readNoticeAcknowledgementsWithSeq(path)
+	for _, tc := range []struct {
+		name        string
+		epoch, seq  uint64
+		want        noticeAcknowledgement
+		wantMessage string
+	}{
+		{"stale epoch", 1, seq, newer, "newer decision"},
+		{"stale sequence", 2, seq - 1, newer, "newer decision"},
+		{"current", 2, seq, older, "read result"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := &projectQueueState{noticeAckEpoch: 2, NoticeAcknowledgements: map[string]noticeAcknowledgement{key: newer}, NoticeAcknowledgementError: "newer decision"}
+			meta := projectQueueApplyMeta{baseIdentity: a.cachedBaseReadingIdentity(), ackEpoch: tc.epoch}
+			snap := projectQueueSnapshot{ackPath: path, noticeAckSeq: tc.seq,
+				noticeAcks: map[string]noticeAcknowledgement{key: older}, noticeAckErr: "read result"}
+			a.applyProjectQueueResult(q, p, meta, snap, reconcileProjectQueueState(p, snap))
+			if q.NoticeAcknowledgements[key] != tc.want || q.NoticeAcknowledgementError != tc.wantMessage {
+				t.Fatal("wrong acknowledgement snapshot was applied")
+			}
+		})
+	}
+}
+
+func TestProjectQueueApplyAuthorizationFences(t *testing.T) {
+	p := AccessProject{ID: "one", Dataset: "ds-1"}
+	q := &projectQueueState{Request: 7, Loading: true, Activity: []overviewEvent{{Key: "existing"}}, Documents: []Item{{ID: "private"}}}
+	other := &projectQueueState{Documents: []Item{{ID: "other"}}}
+	a := &App{authEpoch: 3}
+	a.access.Queues = map[string]*projectQueueState{"one/ds-1": q, "two/ds-2": other}
+	snap := projectQueueSnapshot{authDenied: true, documentErr: &ControlResponseError{Status: 403, Code: "document_path_denied"}}
+	rec := reconcileProjectQueueState(p, snap)
+	a.applyProjectQueueResult(q, p, projectQueueApplyMeta{request: 6}, snap, rec)
+	if !q.Loading || a.authEpoch != 3 || len(q.Documents) != 1 {
+		t.Fatal("stale request crossed the request fence")
+	}
+	// A current request's authorization denial must win over any stale epoch.
+	a.applyProjectQueueResult(q, p, projectQueueApplyMeta{request: 7, authEpoch: 2}, snap, rec)
+	if a.authEpoch != 4 || q.Loading || q.Request != 8 || q.Documents != nil || q.Activity != nil ||
+		q.DocumentError != "内容路径受限，无法读取" || len(other.Documents) != 1 {
+		t.Fatal("authorization denial failed to withdraw only the affected dataset")
 	}
 }

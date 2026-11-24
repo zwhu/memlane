@@ -38,18 +38,18 @@ func noticeSessionKey(row queuedSession, index int) string {
 }
 
 func (a *App) noticeAcknowledgementPath(p AccessProject) (string, error) {
-	base := a.Config.ClientStateFile
-	if base == "" {
-		base = a.Config.ConfigFile
-	}
-	if base == "" {
+	return noticeAcknowledgementPath(a.readingStateDir(), a.Client, p)
+}
+
+func noticeAcknowledgementPath(stateDir string, client Client, p AccessProject) (string, error) {
+	if stateDir == "" {
 		return "", fmt.Errorf("客户端状态位置不可用")
 	}
-	identity, err := readingIdentity(Client{Config: a.Client.Config})
+	identity, err := readingIdentity(Client{Config: client.Config})
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(filepath.Dir(base), "message-acknowledgements-"+noticeHash([]string{identity, p.ID, p.Dataset})+".json"), nil
+	return filepath.Join(stateDir, "message-acknowledgements-"+noticeHash([]string{identity, p.ID, p.Dataset})+".json"), nil
 }
 
 func readNoticeAcknowledgementsAtPathLocked(path string) (map[string]noticeAcknowledgement, string) {

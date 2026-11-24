@@ -242,7 +242,7 @@ func (a *App) accessSettings(c *ui.Context) {
 		ui.Text(c, "项目管理服务尚未启用").FontSize(13).TextColor(muted)
 		return
 	}
-	ui.Text(c, "项目默认规则").FontSize(17).Bold()
+	ui.Text(c, "项目默认规则").FontSize(17).FontWeight(600)
 	if a.access.Message != "" {
 		ui.Text(c, a.access.Message).FontSize(11).TextColor(muted)
 	}

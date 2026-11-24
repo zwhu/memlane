@@ -22,7 +22,7 @@ func overviewReadingTitle(i Item) string {
 }
 
 func (a *App) returnToOverview() {
-	if a.page == "知识" || a.page == "搜索" || a.page == "通用知识" {
+	if a.page == "知识" || a.page == "通用知识" {
 		s := a.state()
 		if len(s.History) > a.overviewSourceFloor[s] {
 			a.returnFromSource(s)
@@ -40,7 +40,7 @@ func (a *App) overviewNavigation(c *ui.Context) {
 	a.refreshSidebarQueueIfDue(time.Now())
 	a.refreshServiceMonitorIfDue(time.Now())
 	selected := a.page
-	if (a.page == "知识" || a.page == "图谱" || a.page == "检索结果") && a.project >= 0 && a.project < len(a.Config.Projects) {
+	if (a.page == "知识" || a.page == "图谱") && a.project >= 0 && a.project < len(a.Config.Projects) {
 		selected = "project:" + a.Config.Projects[a.project].ID
 	}
 	if a.page == "设置" && a.settingsOrigin != nil {
@@ -461,75 +461,4 @@ func (a *App) serviceConnectionTip() string {
 		tip += "\n错误：" + a.monitor.LastError
 	}
 	return tip
-}
-
-// overviewProjectGrid is retained for direct project visibility tests; V4 removes
-// the duplicate project cards section from the overview home page.
-func (a *App) overviewProjectGrid(c *ui.Context) {
-	v := &a.overviewState
-	indices := []int{}
-	hasHidden := false
-	for idx, p := range a.Config.Projects {
-		hidden := a.projectIsHidden(p)
-		hasHidden = hasHidden || hidden
-		if v.AllProjects || !hidden {
-			indices = append(indices, idx)
-		}
-	}
-	ui.Column(c).Gap(homeGridGap).Children(func() {
-		head := ui.Row(c).Margin(0, 0, 3, 0).Children(func() {
-			homeText(c, "项目入口", homeHeading)
-			homeText(c, fmt.Sprint(len(a.Config.Projects)), homeMeta).Margin(0, 7)
-			ui.Spacer(c)
-			if len(a.Config.Projects) > 3 || hasHidden {
-				label := "查看全部  ›"
-				if v.AllProjects {
-					label = "收起项目"
-				}
-				homeLink(c, label, func() { v.AllProjects = !v.AllProjects })
-			}
-		})
-		if v.RevealProjects {
-			head.ScrollIntoView()
-			v.RevealProjects = false
-		}
-		count := min(3, len(indices))
-		if v.AllProjects {
-			count = len(indices)
-		}
-		if count == 0 && hasHidden {
-			homeText(c, "项目已全部隐藏，可从查看全部中恢复。", homeMeta)
-		}
-		for start := 0; start < count; start += 3 {
-			ui.Row(c).Gap(homeGridGap).AlignItems(ui.Stretch).Children(func() {
-				for col := 0; col < 3; col++ {
-					position := start + col
-					if position >= count {
-						ui.Column(c).Width(0).Grow(1)
-						continue
-					}
-					idx := indices[position]
-					p := a.Config.Projects[idx]
-					card := ui.Button(c, "").Cursor(ui.CursorPointer).Key("home-project-"+p.ID).Label(p.Name+" · "+p.Path+" · 查看项目记忆").Width(0).Grow(1).MinWidth(0).MinHeight(94).Padding(15).Gap(11).Justify(ui.Start).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Radius(0)
-					a.projectNotificationMenu(c, card, p)
-					card.Background(homeHoverColor(card, "card-surface", tok.Bg, tok.Hover))
-					card.Children(func() {
-						ui.Column(c).Size(30, 31).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Radius(radius).Background(tok.Fill1).Children(func() { ui.Icon(c, homeFolder).FontSize(16).TextColor(tok.Text2) })
-						ui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
-							homeText(c, p.Name, homeTitle).MaxLines(2)
-							path := p.Path
-							if path == "" {
-								path = "未关联路径"
-							}
-							homeText(c, path, homePath)
-							if a.projectIsHidden(p) {
-								homeText(c, "已隐藏 · 右键取消隐藏", homeMeta)
-							}
-						})
-						ui.Icon(c, homeArrow).FontSize(12).TextColor(tok.Text4).Shrink(0)
-					}).OnClick(func() { a.navigate("知识", idx) })
-				}
-			})
-		}
-	})
 }

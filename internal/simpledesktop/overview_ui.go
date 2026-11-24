@@ -44,7 +44,6 @@ type overviewViewState struct {
 	KnowledgeScroll                            ui.ScrollState
 	AllProjects                                bool
 	ActivityExpanded                           bool
-	RevealProjects                             bool
 	scope                                      string
 	generation, activityGeneration             uint64
 	cancel, activityCancel, recallCancel       context.CancelFunc

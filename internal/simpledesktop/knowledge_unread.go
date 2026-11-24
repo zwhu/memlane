@@ -47,11 +47,14 @@ func knowledgeReadPathForDir(stateDir, readingID string, p AccessProject) (strin
 }
 
 func (a *App) knowledgeReadPath(p AccessProject) (string, error) {
-	stateDir := a.readingStateDir()
+	return knowledgeReadPath(a.readingStateDir(), a.Client, p)
+}
+
+func knowledgeReadPath(stateDir string, client Client, p AccessProject) (string, error) {
 	if stateDir == "" {
 		return "", fmt.Errorf("客户端状态位置不可用")
 	}
-	identity, err := readingIdentity(Client{Config: a.Client.Config})
+	identity, err := readingIdentity(Client{Config: client.Config})
 	if err != nil {
 		return "", err
 	}
@@ -524,10 +527,13 @@ func (w *knowledgeReadWriter) executeMarkJob(job *knowledgeReadMarkJob, writeFn 
 // waitKnowledgeReadFlush blocks until all queued background mark-read writes
 // have finished flushing to disk or server.
 func (a *App) waitKnowledgeReadFlush() {
-	if a.knowledgeWriter == nil {
+	a.knowledgeWriter.waitKnowledgeReadFlush()
+}
+
+func (w *knowledgeReadWriter) waitKnowledgeReadFlush() {
+	if w == nil {
 		return
 	}
-	w := a.knowledgeWriter
 	w.mu.Lock()
 	for len(w.jobs) > 0 || w.inFlight || w.running {
 		w.cond.Wait()

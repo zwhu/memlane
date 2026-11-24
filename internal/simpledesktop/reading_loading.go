@@ -133,7 +133,9 @@ func (a *App) handleReadingFailure(i Item, err error) {
 		a.unavailableReadingItem(i)
 	}
 }
-func (a *App) cancelTitles(s *pane) {
+func (c *readingController) cancelTitles(s *pane) { cancelTitles(s) }
+
+func cancelTitles(s *pane) {
 	if s.titleCancel != nil {
 		s.titleCancel()
 		s.titleCancel = nil
@@ -444,9 +446,9 @@ func (a *App) retryReadingTitle(s *pane, i Item) {
 	}()
 }
 
-func (a *App) cancelOverviewRequests() {
-	v := &a.overviewState
-	a.cancelOverviewRecall()
+func (c *overviewController) cancelOverviewRequests() {
+	v := &c.overviewState
+	c.cancelOverviewRecall()
 	if v.cancel != nil {
 		v.cancel()
 		v.cancel = nil
@@ -483,91 +485,115 @@ func overviewEventMatchesDataset(ev overviewEvent, dataset string) bool {
 	return false
 }
 
-// InvalidateReading must be called by policy/credential integration when access is
-// revoked. It removes raw data and copy affordances, including nested history, and
-// fences every in-flight request via authEpoch + per-pane/overview/queue counters.
+type readingInvalidator interface {
+	invalidateReading(dataset string)
+}
+
+type readingInvalidatorFunc func(dataset string)
+
+func (f readingInvalidatorFunc) invalidateReading(dataset string) { f(dataset) }
+
+type namedReadingInvalidator struct {
+	name        string
+	invalidator readingInvalidator
+}
+
+// The registry and controller state belong to the UI thread, like authEpoch.
+func (a *App) registerReadingInvalidator(name string, inv readingInvalidator) {
+	a.ensureReadingInvalidators()
+	for i := range a.readingInvalidators {
+		if a.readingInvalidators[i].name == name {
+			a.readingInvalidators[i].invalidator = inv
+			return
+		}
+	}
+	a.readingInvalidators = append(a.readingInvalidators, namedReadingInvalidator{name, inv})
+}
+
+func (a *App) ensureReadingInvalidators() []namedReadingInvalidator {
+	if a.readingInvalidators == nil {
+		a.readingInvalidators = []namedReadingInvalidator{
+			{"common-editor", readingInvalidatorFunc(a.withdrawCommonEditor)},
+			{"search", &a.searchController},
+			{"project-ui", readingInvalidatorFunc(func(string) { a.projectUI.InfoOpen = false })},
+			{"user-profiles", readingInvalidatorFunc(func(dataset string) { a.clearUserProfileBody(dataset, "") })},
+			{"graph", &a.graphController},
+			{"reading", &a.readingController},
+			{"overview", &a.overviewController},
+			{"project-queues", readingInvalidatorFunc(a.invalidateProjectQueues)},
+		}
+	}
+	return a.readingInvalidators
+}
+
+// InvalidateReading must be called on the UI thread when access is revoked.
+// It withdraws cached content and fences in-flight callbacks before any reset.
 func (a *App) InvalidateReading(dataset string) {
 	a.authEpoch++
-	a.withdrawCommonEditor(dataset)
-	a.invalidateUnifiedSearch(dataset)
-	if dataset == "" || (a.searchAnchor != nil && a.searchAnchor.Dataset == dataset) {
-		a.clearSearchOrigin()
+	for _, entry := range a.ensureReadingInvalidators() {
+		entry.invalidator.invalidateReading(dataset)
 	}
-	a.projectUI.InfoOpen = false
-	a.clearUserProfileBody(dataset, "")
-	a.pendingGraphLoad = nil
-	if dataset == "" || a.graph == nil || a.graph.dataset == "" || a.graph.dataset == dataset {
-		a.graph.clear()
-		a.graphSelection = ""
-		a.cancelGraphLoad()
-	}
-	a.titles.Invalidate(dataset)
-	a.detailChunks.Invalidate(dataset)
-	a.overviewState.snapshotVersion++
-	a.recentScope = ""
-	if a.recentCancel != nil {
-		a.recentCancel()
-		a.recentCancel = nil
-	}
-	a.recentRequest++
+}
 
+func (c *overviewController) invalidateReading(dataset string) {
+	v := &c.overviewState
+	v.snapshotVersion++
 	// Fence overview, activity, & day in-flight requests so late callbacks cannot repopulate revoked data.
-	a.cancelOverviewRequests()
-	a.overviewState.dayRequest++
-	if a.overviewState.dayCancel != nil {
-		a.overviewState.dayCancel()
-		a.overviewState.dayCancel = nil
+	c.cancelOverviewRequests()
+	v.dayRequest++
+	if v.dayCancel != nil {
+		v.dayCancel()
+		v.dayCancel = nil
 	}
-	if a.overviewState.recallCancel != nil {
-		a.overviewState.recallCancel()
-		a.overviewState.recallCancel = nil
+	if v.recallCancel != nil {
+		v.recallCancel()
+		v.recallCancel = nil
 	}
-	a.overviewState.Loading = false
-	a.overviewState.ActivityLoading = false
-	a.overviewState.DayLoading = false
-	a.overviewState.cachedGroupedEvents = nil
+	v.Loading = false
+	v.ActivityLoading = false
+	v.DayLoading = false
+	v.cachedGroupedEvents = nil
 	if dataset == "" {
-		a.recent = nil
-		a.overviewState.scope = ""
-		a.overviewState.Loaded = false
-		a.overviewState.RawLoaded = false
-		a.overviewState.ExpandedEvent = ""
-		a.overviewState.ExpandedReport = ""
-		a.overviewState.ExpandedDetail = nil
-		a.overviewState.Error = ""
-		a.overviewState.ActivityError = ""
-		a.overviewState.HistoryError = ""
-		a.overviewState.RecallError = ""
-		a.overviewState.DayItems = nil
-		a.overviewState.DayNextCursor = ""
-		a.overviewState.DayHasMore = false
-		a.overviewState.DayTotal = 0
-		a.overviewState.V2DayBuckets = nil
-		a.overviewState.V2TotalKnowledge = 0
-		a.overviewState.Events = nil
-		a.overviewState.History = nil
-		a.overviewState.HistoryLoaded = false
-		a.overviewState.ActivityLoaded = false
-		a.overviewState.More = false
+		v.scope = ""
+		v.Loaded = false
+		v.RawLoaded = false
+		v.ExpandedEvent = ""
+		v.ExpandedReport = ""
+		v.ExpandedDetail = nil
+		v.Error = ""
+		v.ActivityError = ""
+		v.HistoryError = ""
+		v.RecallError = ""
+		v.DayItems = nil
+		v.DayNextCursor = ""
+		v.DayHasMore = false
+		v.DayTotal = 0
+		v.V2DayBuckets = nil
+		v.V2TotalKnowledge = 0
+		v.Events = nil
+		v.History = nil
+		v.HistoryLoaded = false
+		v.ActivityLoaded = false
+		v.More = false
 	} else {
-		if len(a.overviewState.DayItems) > 0 {
-			keptDay := make([]Item, 0, len(a.overviewState.DayItems))
-			for _, i := range a.overviewState.DayItems {
+		if len(v.DayItems) > 0 {
+			keptDay := make([]Item, 0, len(v.DayItems))
+			for _, i := range v.DayItems {
 				if i.Dataset != dataset {
 					keptDay = append(keptDay, i)
 				}
 			}
-			a.overviewState.DayItems = keptDay
-			a.overviewState.DayNextCursor = ""
-			a.overviewState.DayHasMore = false
+			v.DayItems = keptDay
+			v.DayNextCursor = ""
+			v.DayHasMore = false
 		}
-		if len(a.overviewState.Events) > 0 {
-			keptEvents := make([]overviewEvent, 0, len(a.overviewState.Events))
-			for _, ev := range a.overviewState.Events {
-				if ev.Key != "" && ev.Key == a.overviewState.ExpandedEvent && overviewEventMatchesDataset(ev, dataset) {
-					a.overviewState.ExpandedEvent = ""
-					a.overviewState.ExpandedReport = ""
-					a.overviewState.ExpandedDetail = nil
+		if len(v.Events) > 0 {
+			keptEvents := make([]overviewEvent, 0, len(v.Events))
+			for _, ev := range v.Events {
+				if ev.Key != "" && ev.Key == v.ExpandedEvent && overviewEventMatchesDataset(ev, dataset) {
+					v.ExpandedEvent = ""
+					v.ExpandedReport = ""
+					v.ExpandedDetail = nil
 				}
 				if ev.Record.Dataset == dataset {
 					continue
@@ -600,153 +626,167 @@ func (a *App) InvalidateReading(dataset string) {
 				}
 				keptEvents = append(keptEvents, ev)
 			}
-			a.overviewState.Events = keptEvents
+			v.Events = keptEvents
 		}
-		if len(a.overviewState.History) > 0 {
-			keptHistory := make([]overviewEvent, 0, len(a.overviewState.History))
-			for _, ev := range a.overviewState.History {
+		if len(v.History) > 0 {
+			keptHistory := make([]overviewEvent, 0, len(v.History))
+			for _, ev := range v.History {
 				if ev.Record.Dataset != dataset {
 					keptHistory = append(keptHistory, ev)
 				}
 			}
-			a.overviewState.History = keptHistory
+			v.History = keptHistory
 		}
 	}
-	for n, i := range a.overviewState.Snapshot.Knowledge {
+	for n, i := range v.Snapshot.Knowledge {
 		if dataset == "" || i.Dataset == dataset {
-			clearUnavailableItem(&a.overviewState.Snapshot.Knowledge[n])
+			clearUnavailableItem(&v.Snapshot.Knowledge[n])
 		}
 	}
-	for _, s := range a.allReadingPanes() {
-		a.cancelTitles(s)
-		paneMatches := dataset == "" ||
-			(len(s.Items) > 0 && s.Items[0].Dataset == dataset) ||
-			(s.Selected != nil && s.Selected.Dataset == dataset) ||
-			(s.HomeAnchor != nil && s.HomeAnchor.Dataset == dataset) ||
-			(s.SubagentParent != nil && s.SubagentParent.Dataset == dataset)
-		if paneMatches {
-			if s.cancel != nil {
-				s.cancel()
-				s.cancel = nil
-			}
-			s.request++
-			s.Loading = false
-			s.Locating = false
-			s.Knowledge.Appending = false
-			s.Knowledge.Prepending = false
-			s.RawAppending = false
-			s.Knowledge.NextCursor = ""
-			s.Knowledge.PrevCursor = ""
-			s.Knowledge.HasPrev = false
-			s.RawNextCursor = ""
-			s.CommonNextCursor = ""
-			s.CommonPrevCursor = ""
-			s.CommonHasPrev = false
-			s.CommonNav = nil
-			s.CommonCursors = nil
-			s.CommonPageIndex = 0
+}
+
+func invalidateReadingPane(s *pane, dataset string) {
+	cancelTitles(s)
+	paneMatches := dataset == "" ||
+		(len(s.Items) > 0 && s.Items[0].Dataset == dataset) ||
+		(s.Selected != nil && s.Selected.Dataset == dataset) ||
+		(s.HomeAnchor != nil && s.HomeAnchor.Dataset == dataset) ||
+		(s.SubagentParent != nil && s.SubagentParent.Dataset == dataset)
+	if paneMatches {
+		if s.cancel != nil {
+			s.cancel()
+			s.cancel = nil
 		}
-		if s.DetailLists != nil {
-			if dataset == "" {
-				clear(s.DetailLists)
-			} else {
-				prefix := dataset + "/"
-				for k := range s.DetailLists {
-					if strings.HasPrefix(k, prefix) {
-						delete(s.DetailLists, k)
-					}
+		s.request++
+		s.Loading = false
+		s.Locating = false
+		s.Knowledge.Appending = false
+		s.Knowledge.Prepending = false
+		s.RawAppending = false
+		s.Knowledge.NextCursor = ""
+		s.Knowledge.PrevCursor = ""
+		s.Knowledge.HasPrev = false
+		s.RawNextCursor = ""
+		s.CommonNextCursor = ""
+		s.CommonPrevCursor = ""
+		s.CommonHasPrev = false
+		s.CommonNav = nil
+		s.CommonCursors = nil
+		s.CommonPageIndex = 0
+	}
+	if s.DetailLists != nil {
+		if dataset == "" {
+			clear(s.DetailLists)
+		} else {
+			prefix := dataset + "/"
+			for k := range s.DetailLists {
+				if strings.HasPrefix(k, prefix) {
+					delete(s.DetailLists, k)
 				}
 			}
 		}
-		if len(s.RawCatalog) > 0 {
-			if dataset == "" {
-				clear(s.RawCatalog)
+	}
+	if len(s.RawCatalog) > 0 {
+		if dataset == "" {
+			clear(s.RawCatalog)
+			s.RawCatalog = nil
+			s.More = false
+		} else {
+			kept := s.RawCatalog[:0]
+			for _, row := range s.RawCatalog {
+				if row.Dataset != dataset {
+					kept = append(kept, row)
+				}
+			}
+			clear(s.RawCatalog[len(kept):])
+			if len(kept) == 0 {
 				s.RawCatalog = nil
 				s.More = false
 			} else {
-				kept := s.RawCatalog[:0]
-				for _, row := range s.RawCatalog {
-					if row.Dataset != dataset {
-						kept = append(kept, row)
-					}
-				}
-				clear(s.RawCatalog[len(kept):])
-				if len(kept) == 0 {
-					s.RawCatalog = nil
-					s.More = false
-				} else {
-					s.RawCatalog = kept
-				}
+				s.RawCatalog = kept
 			}
 		}
-		if len(s.Knowledge.Catalog) > 0 {
-			if dataset == "" {
-				clear(s.Knowledge.Catalog)
+	}
+	if len(s.Knowledge.Catalog) > 0 {
+		if dataset == "" {
+			clear(s.Knowledge.Catalog)
+			s.Knowledge.Catalog = nil
+		} else {
+			kept := s.Knowledge.Catalog[:0]
+			for _, row := range s.Knowledge.Catalog {
+				if row.Dataset != dataset {
+					kept = append(kept, row)
+				}
+			}
+			clear(s.Knowledge.Catalog[len(kept):])
+			if len(kept) == 0 {
 				s.Knowledge.Catalog = nil
 			} else {
-				kept := s.Knowledge.Catalog[:0]
-				for _, row := range s.Knowledge.Catalog {
-					if row.Dataset != dataset {
-						kept = append(kept, row)
-					}
-				}
-				clear(s.Knowledge.Catalog[len(kept):])
-				if len(kept) == 0 {
-					s.Knowledge.Catalog = nil
-				} else {
-					s.Knowledge.Catalog = kept
-				}
+				s.Knowledge.Catalog = kept
 			}
 		}
-		if s.Knowledge.Measurements != nil {
-			if dataset == "" {
-				clear(s.Knowledge.Measurements)
-			} else {
-				prefix := dataset + "/"
-				for k := range s.Knowledge.Measurements {
-					if strings.HasPrefix(k, prefix) {
-						delete(s.Knowledge.Measurements, k)
-					}
+	}
+	if s.Knowledge.Measurements != nil {
+		if dataset == "" {
+			clear(s.Knowledge.Measurements)
+		} else {
+			prefix := dataset + "/"
+			for k := range s.Knowledge.Measurements {
+				if strings.HasPrefix(k, prefix) {
+					delete(s.Knowledge.Measurements, k)
 				}
 			}
 		}
-		if s.HomeAnchor != nil && (dataset == "" || s.HomeAnchor.Dataset == dataset) {
-			s.HomeAnchor = nil
+	}
+	if s.HomeAnchor != nil && (dataset == "" || s.HomeAnchor.Dataset == dataset) {
+		s.HomeAnchor = nil
+	}
+	if s.SubagentParent != nil && (dataset == "" || s.SubagentParent.Dataset == dataset) {
+		s.SubagentParent = nil
+		s.SubagentParentPage = nil
+		s.SessionSubagents = false
+	}
+	if s.SourcePage != nil && (dataset == "" || s.SourcePage.Dataset == dataset) {
+		s.SourcePage = nil
+	}
+	if dataset == "" || (s.Selected != nil && s.Selected.Dataset == dataset) {
+		if s.readCancel != nil {
+			s.readCancel()
+			s.readCancel = nil
 		}
-		if s.SubagentParent != nil && (dataset == "" || s.SubagentParent.Dataset == dataset) {
-			s.SubagentParent = nil
-			s.SubagentParentPage = nil
-			s.SessionSubagents = false
+		s.readRequest++
+		if s.Selected != nil {
+			s.Selected = nil
+			s.Reading = false
+			s.Error = "内容已失效或无权读取，请刷新"
+		} else {
+			s.Reading = false
 		}
-		if s.SourcePage != nil && (dataset == "" || s.SourcePage.Dataset == dataset) {
-			s.SourcePage = nil
+	}
+	history := s.History[:0]
+	for _, i := range s.History {
+		if dataset != "" && i.Dataset != dataset {
+			history = append(history, i)
 		}
-		if dataset == "" || (s.Selected != nil && s.Selected.Dataset == dataset) {
-			if s.readCancel != nil {
-				s.readCancel()
-				s.readCancel = nil
-			}
-			s.readRequest++
-			if s.Selected != nil {
-				s.Selected = nil
-				s.Reading = false
-				s.Error = "内容已失效或无权读取，请刷新"
-			} else {
-				s.Reading = false
-			}
+	}
+	clear(s.History[len(history):])
+	s.History = history
+	for n, i := range s.Items {
+		if dataset == "" || i.Dataset == dataset {
+			clearUnavailableItem(&s.Items[n])
 		}
-		history := s.History[:0]
-		for _, i := range s.History {
-			if dataset != "" && i.Dataset != dataset {
-				history = append(history, i)
-			}
-		}
-		clear(s.History[len(history):])
-		s.History = history
-		for n, i := range s.Items {
-			if dataset == "" || i.Dataset == dataset {
-				clearUnavailableItem(&s.Items[n])
-			}
+	}
+}
+
+func (a *App) invalidateProjectQueues(dataset string) {
+	seen := make(map[*pane]bool, len(a.panes)+len(a.access.Queues))
+	for _, s := range a.panes {
+		seen[s] = true
+	}
+	for _, q := range a.access.Queues {
+		if q != nil && q.Reader != nil && !seen[q.Reader] {
+			seen[q.Reader] = true
+			invalidateReadingPane(q.Reader, dataset)
 		}
 	}
 	for k, q := range a.access.Queues {
@@ -770,6 +810,7 @@ func (a *App) InvalidateReading(dataset string) {
 		}
 	}
 }
+
 func (a *App) cachedBaseReadingIdentity() string {
 	if a.baseReadingIdentity != "" &&
 		a.baseIdentityURL == a.Client.Config.ServiceURL &&
