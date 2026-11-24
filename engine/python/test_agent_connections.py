@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -8,6 +9,7 @@ import subprocess
 import os
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -17,6 +19,7 @@ from project_codex_connection import CodexConnection
 from project_policy import PolicyError
 
 ROOT = Path(__file__).resolve().parents[2]
+NATIVE_KINDS = ('pi', 'traex', 'cursor', 'claude_code', 'trae_ide')
 
 
 class CheckedConnectionViewTests(unittest.IsolatedAsyncioTestCase):
@@ -130,6 +133,274 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.registry.close()
         shutil.rmtree(self.workspace)
+
+    def native_adapter(self, kind, label):
+        config = {**self.config, 'agent_hosts': {'claude_code': {'profile': str(self.workspace / 'isolated-claude')}}}
+        adapter = NativeConnection(self.registry, config, kind, self.workspace / f'{label}-{kind}', sys.executable)
+        self.registry.state['agents'][adapter.id] = {
+            'name': kind, 'key_file': str(self.workspace / 'key'), 'control_token_file': str(self.workspace / 'control')}
+        return adapter
+
+    async def activate_native_fixture(self, adapter, prepared):
+        def native_install(*args, **kwargs):
+            installation = self.registry.state['agents'][adapter.id]['installation']
+            source = Path(installation['plugin_dir'])
+            marketplace = installation['marketplace_name']
+            cache = adapter.profile / 'plugins/cache' / marketplace
+            if adapter.kind == 'traex':
+                version = json.loads((source / '.codex-plugin/plugin.json').read_text())['version']
+                shutil.copytree(source, cache / 'memlane-cognee' / version)
+                receipt = adapter.profile / '.tmp/marketplaces' / marketplace / '.agents/plugins/trae-direct-install.json'
+                private_write(receipt, json.dumps({
+                    'type': 'trae-direct-plugin-install', 'marketplace': marketplace,
+                    'plugins': {'memlane-cognee': {'source_path': str(source), 'source_kind': 'native'}},
+                }).encode())
+                private_write(adapter.target, f'[plugins."memlane-cognee@{marketplace}"]\nenabled = true\n'.encode())
+            elif adapter.kind == 'claude_code' and args[0][1:3] == ['plugin', 'install']:
+                cache = cache / 'cognee'
+                shutil.copytree(source, cache)
+                name = 'cognee@' + marketplace
+                private_write(adapter.profile / 'plugins/installed_plugins.json', json.dumps({
+                    'plugins': {name: [{'scope': 'user', 'installPath': str(cache)}]},
+                }).encode())
+                private_write(adapter.target, json.dumps({'enabledPlugins': {name: True}}).encode())
+            return SimpleNamespace(returncode=0)
+
+        with patch('agent_connections.subprocess.run', side_effect=native_install):
+            return await adapter.activate(self.registry.state['revision'], prepared['preview']['proposed_sha256'])
+
+    def pending_prepare(self, adapter):
+        operations = self.registry.state.setdefault('connection_operations', {})
+        operation = {'instance_id': adapter.id, 'action': 'prepare', 'status': 'unknown'}
+        operations[adapter.id] = operation
+        return operation
+
+    async def review_without_host_writes(self, adapter, operation=None):
+        baseline = adapter.target.read_bytes() if adapter.target.exists() else None
+        revision = self.registry.state['revision']
+        with patch('agent_connections.private_write') as write, patch('agent_connections.subprocess.run') as installer:
+            row = await adapter.review(revision)
+        write.assert_not_called()
+        installer.assert_not_called()
+        self.assertEqual(adapter.target.read_bytes() if adapter.target.exists() else None, baseline)
+        self.assertEqual(self.registry.state['revision'], revision + 1)
+        if operation is not None:
+            self.assertEqual(operation['status'], 'complete')
+            self.assertEqual(operation['outcome'], 'rejected')
+            self.assertEqual(operation['error_code'], f'{adapter.kind}_preparation_did_not_install')
+            self.assertEqual(operation['result'], {'revision': revision + 1, 'connection': row})
+        return row
+
+    async def assert_review_rejected(self, adapter, code):
+        before = copy.deepcopy(self.registry.state)
+        saved = self.registry.path.read_bytes()
+        with self.assertRaisesRegex(PolicyError, code) as error:
+            await adapter.review(self.registry.state['revision'])
+        self.assertEqual(error.exception.status, 409)
+        self.assertEqual(self.registry.state, before)
+        self.assertEqual(self.registry.path.read_bytes(), saved)
+
+    async def test_first_preparation_unknown_recovers_after_checking_staged_artifacts(self):
+        from project_installation import prepare
+
+        for kind in NATIVE_KINDS:
+            for stages_artifact in (False, True):
+                with self.subTest(kind=kind, stages_artifact=stages_artifact):
+                    adapter = self.native_adapter(kind, f'first-{stages_artifact}')
+                    operation = self.pending_prepare(adapter)
+                    agent = self.registry.state['agents'][adapter.id]
+
+                    def interrupt(*args, **kwargs):
+                        if stages_artifact:
+                            agent['installation'] = prepare(*args, **kwargs)
+                        raise RuntimeError('interrupted prepare')
+
+                    with patch('project_installation.prepare', side_effect=interrupt):
+                        with self.assertRaisesRegex(RuntimeError, 'interrupted prepare'):
+                            await adapter.prepare(self.registry.state['revision'])
+                    self.assertEqual(adapter.view()['status'], 'preparation_unknown')
+                    artifacts = self.registry.path.parent / 'managed-marketplaces' / adapter.id
+                    half = artifacts / 'half-applied'
+                    half.mkdir(parents=True)
+                    await self.assert_review_rejected(adapter, 'connection_artifact_changed')
+                    half.rmdir()
+                    if not stages_artifact:
+                        artifacts.rmdir()
+                    else:
+                        plugin = Path(agent['installation']['plugin_dir'])
+                        marker = plugin / '.memlane-installation.json'
+                        marker.chmod(0o644)
+                        await self.assert_review_rejected(adapter, 'connection_artifact_changed')
+                        marker.chmod(0o600)
+                        binding = plugin / 'host-binding.json'
+                        contents = binding.read_bytes()
+                        binding.unlink()
+                        await self.assert_review_rejected(adapter, 'connection_artifact_changed')
+                        private_write(binding, contents)
+
+                    private_write(adapter.target, b'host edited after preview')
+                    await self.assert_review_rejected(adapter, 'host_configuration_changed')
+                    adapter.target.unlink()
+                    row = await self.review_without_host_writes(adapter, operation)
+                    self.assertEqual(row['status'], 'not_connected')
+                    self.assertNotIn('installation', agent)
+                    self.assertEqual((await adapter.prepare(self.registry.state['revision']))['status'], 'prepared')
+                    self.assertEqual((await adapter.review(self.registry.state['revision']))['status'], 'prepared')
+
+    async def test_upgrade_preparation_unknown_recovers_new_and_legacy_journals(self):
+        for kind in NATIVE_KINDS:
+            with self.subTest(kind=kind):
+                adapter = self.native_adapter(kind, 'upgrade')
+                prepared = await adapter.prepare(self.registry.state['revision'])
+                await self.activate_native_fixture(adapter, prepared)
+                agent = self.registry.state['agents'][adapter.id]
+                installation = copy.deepcopy(agent['installation'])
+                active = self.registry.state['connections'][adapter.id]
+                active.update(activated_at=42, upgraded_at=43, environment_receipt_required=True,
+                              executable_fingerprint=[1, 2, 3])
+                original = copy.deepcopy(active)
+                baseline = adapter.target.read_bytes()
+                manifest = Path(installation['plugin_dir']) / '.memlane-project-access.json'
+                manifest_bytes = manifest.read_bytes()
+                self.registry.save()
+                manifest.write_bytes(b'{}')
+                before = copy.deepcopy(self.registry.state)
+                with self.assertRaisesRegex(PolicyError, 'connection_artifact_changed'):
+                    await adapter.prepare(self.registry.state['revision'])
+                self.assertEqual(self.registry.state, before)
+                manifest.write_bytes(manifest_bytes)
+
+                operation = self.pending_prepare(adapter)
+                with patch('project_installation.prepare', side_effect=RuntimeError('interrupted prepare')):
+                    with self.assertRaisesRegex(RuntimeError, 'interrupted prepare'):
+                        await adapter.prepare(self.registry.state['revision'])
+                journal = self.registry.state['connections'][adapter.id]
+                persisted = json.loads(self.registry.path.read_bytes())
+                self.assertEqual(persisted['connections'][adapter.id], journal)
+                self.assertTrue(journal['activated'])
+                for key in ('activated_at', 'upgraded_at', 'environment_receipt_required',
+                            'executable_fingerprint', 'sessions_before_activation'):
+                    self.assertEqual(journal[key], original[key])
+                legacy = {key: copy.deepcopy(journal[key]) for key in
+                          ('status', 'preview', 'previous_plugin', 'cursor_hook', 'cursor_active_installation',
+                           'trae_ide_hooks') if key in journal}
+                for format_name in ('current', 'legacy'):
+                    with self.subTest(journal=format_name):
+                        if format_name == 'legacy':
+                            self.registry.state['connections'][adapter.id] = legacy
+                            operation = self.pending_prepare(adapter)
+                            self.registry.save()
+                        manifest.write_bytes(b'{}')
+                        await self.assert_review_rejected(adapter, 'connection_artifact_changed')
+                        manifest.write_bytes(manifest_bytes)
+                        adapter.target.write_bytes(b'edited host config')
+                        await self.assert_review_rejected(adapter, 'host_configuration_changed')
+                        adapter.target.write_bytes(baseline)
+
+                        row = await self.review_without_host_writes(adapter, operation)
+                        self.assertEqual(row['status'], 'configured_pending_new_session')
+                        self.assertEqual(agent['installation'], installation)
+                        restored = self.registry.state['connections'][adapter.id]
+                        if format_name == 'current':
+                            self.assertEqual(restored, original)
+                        self.assertFalse({'prepared_installation', 'active_installation', 'active_record'} & restored.keys())
+
+    async def test_trae_ide_dispatch_uses_active_generation_until_upgrade_activation(self):
+        from trae_ide_connection import HookDispatch
+
+        adapter = self.native_adapter('trae_ide', 'dispatch')
+        adapter.profile.mkdir()
+        dispatch = HookDispatch(self.registry, sys.executable)
+        event = 'Stop'
+        raw = json.dumps({'hook_event_name': event, 'cwd': str(adapter.profile),
+                          'workspace_roots': [str(adapter.profile)]}).encode()
+        worker = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(b'{}', b'')))
+
+        async def assert_dispatch(installation):
+            with patch('asyncio.create_subprocess_exec', new_callable=AsyncMock, return_value=worker) as execute:
+                self.assertEqual(await dispatch.run(adapter.id, event, raw), {})
+            execute.assert_awaited_once()
+            self.assertEqual(execute.await_args.args[2], str(Path(installation['plugin_dir']) / 'scripts/trae_ide_hook.py'))
+
+        prepared = await adapter.prepare(self.registry.state['revision'])
+        record = self.registry.state['connections'][adapter.id]
+        for status in ('prepared', 'preparation_unknown'):
+            record['status'] = status
+            with self.assertRaisesRegex(PolicyError, 'trae_ide_hook_not_authorized') as error:
+                await dispatch.run(adapter.id, event, raw)
+            self.assertEqual(error.exception.status, 403)
+        record['status'] = 'prepared'
+        await adapter.activate(self.registry.state['revision'], prepared['preview']['proposed_sha256'])
+        agent = self.registry.state['agents'][adapter.id]
+        v1 = copy.deepcopy(agent['installation'])
+        baseline = adapter.target.read_bytes()
+        await assert_dispatch(v1)
+
+        adapter.config = {**adapter.config, 'python': '/usr/bin/python3'}
+        with patch('project_installation.prepare', side_effect=RuntimeError('interrupted prepare')):
+            with self.assertRaisesRegex(RuntimeError, 'interrupted prepare'):
+                await adapter.prepare(self.registry.state['revision'])
+        self.assertEqual(adapter.view()['status'], 'preparation_unknown')
+        await assert_dispatch(v1)
+        await self.review_without_host_writes(adapter)
+
+        self.assertEqual((await adapter.prepare(self.registry.state['revision']))['status'], 'prepared')
+        record = self.registry.state['connections'][adapter.id]
+        v2 = record['prepared_installation']
+        self.assertNotEqual(v1['plugin_dir'], v2['plugin_dir'])
+        self.assertTrue(record['activated'])
+        self.assertEqual(agent['installation'], v1)
+        self.assertEqual(adapter.target.read_bytes(), baseline)
+        await assert_dispatch(v1)
+        private_write(adapter.target, b'host edited after preview')
+        await self.assert_review_rejected(adapter, 'host_configuration_changed')
+        private_write(adapter.target, baseline)
+
+        self.assertEqual((await self.review_without_host_writes(adapter))['status'], 'configured_pending_new_session')
+        self.assertFalse({'prepared_installation', 'active_installation', 'active_record'}
+                         & self.registry.state['connections'][adapter.id].keys())
+        self.assertEqual(agent['installation'], v1)
+        self.assertEqual(adapter.target.read_bytes(), baseline)
+        await assert_dispatch(v1)
+
+        prepared = await adapter.prepare(self.registry.state['revision'])
+        row = await adapter.activate(self.registry.state['revision'], prepared['preview']['proposed_sha256'])
+        self.assertEqual(row['status'], 'configured_pending_new_session')
+        self.assertFalse({'prepared_installation', 'active_installation', 'active_record'}
+                         & self.registry.state['connections'][adapter.id].keys())
+        self.assertEqual(agent['installation'], v2)
+        self.assertIn(v2['plugin_dir'].encode(), adapter.target.read_bytes())
+        self.assertNotIn(v1['plugin_dir'].encode(), adapter.target.read_bytes())
+        await assert_dispatch(v2)
+
+    async def test_pi_reprepares_upgrade_and_recovers_completed_activation(self):
+        adapter = self.adapter
+        state = self.registry.state
+        prepared = await adapter.prepare(state['revision'])
+        await adapter.activate(state['revision'], prepared['preview']['proposed_sha256'])
+        active = copy.deepcopy(state['agents'][adapter.id]['installation'])
+        baseline = adapter.target.read_bytes()
+        adapter.config = {**adapter.config, 'python': '/usr/bin/python3'}
+        upgraded = await adapter.prepare(state['revision'])
+        self.assertNotEqual(prepared['preview']['proposed_sha256'], upgraded['preview']['proposed_sha256'])
+        self.assertEqual(await adapter.prepare(state['revision']), upgraded)
+        self.assertEqual(adapter.target.read_bytes(), baseline)
+        self.assertEqual(state['agents'][adapter.id]['installation'], active)
+
+        def interrupt_after_write(path, data):
+            private_write(path, data)
+            raise RuntimeError('interrupted activation')
+
+        with patch('agent_connections.private_write', side_effect=interrupt_after_write):
+            with self.assertRaisesRegex(RuntimeError, 'interrupted activation'):
+                await adapter.activate(state['revision'], upgraded['preview']['proposed_sha256'])
+        journal = state['connections'][adapter.id]
+        self.assertEqual(journal['status'], 'activation_unknown')
+        self.assertEqual(state['agents'][adapter.id]['installation'], journal['prepared_installation'])
+        row = await self.review_without_host_writes(adapter)
+        self.assertEqual(row['status'], 'configured_pending_new_session')
+        self.assertNotEqual(state['agents'][adapter.id]['installation'], active)
+        self.assertFalse({'prepared_installation', 'active_installation', 'active_record'} & journal.keys())
 
     async def test_pi_traex_missing_component_refuses_before_provision_or_state_write(self):
         from unittest.mock import AsyncMock, patch

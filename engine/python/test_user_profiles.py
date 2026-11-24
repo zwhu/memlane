@@ -136,6 +136,25 @@ class UserProfilesTests(unittest.IsolatedAsyncioTestCase):
         bodies = [body for _, body in self.documents.rows.values()]
         self.assertNotEqual(bodies[0], bodies[1])
 
+    async def test_trae_ide_profile_supports_manual_import_only(self):
+        identifier = 'trae-ide-test'
+        self.connections.rows.append({'instance_id': identifier, 'kind': 'trae_ide', 'detected': True,
+                                      'status': 'configured_pending_new_session'})
+        profile = next(row for row in self.service.view()['profiles'] if row['instance_id'] == identifier)
+        self.assertEqual(profile['name'], 'TRAE IDE')
+        self.assertFalse(profile['can_generate'])
+        with self.assertRaisesRegex(PolicyError, 'profile_automatic_unavailable') as error:
+            await self.service.start(identifier, 'automatic-attempt')
+        self.assertEqual(error.exception.status, 409)
+
+        body = '# TRAE IDE profile\n\nUser prefers short examples.'
+        await self.service.start(identifier, 'manual-import', body=body)
+        await self.finish()
+        result = await self.service.read(identifier)
+        self.assertIn(body, result['body'])
+        self.assertEqual(self.service.state['profiles'][identifier]['method'], 'manual')
+        self.assertEqual(self.calls, 0)
+
     async def test_failure_falls_back_to_manual_without_automatic_retry(self):
         async def fail(*args):
             self.calls += 1
@@ -517,7 +536,7 @@ class UserProfilesTests(unittest.IsolatedAsyncioTestCase):
             await generate(SimpleNamespace(executable=str(bad_json_exec)), {'kind': 'antigravity', 'profile': str(profile)})
 
     def test_provider_registry_consistency(self):
-        expected_kinds = {'codex', 'traex', 'pi', 'claude_code', 'antigravity', 'cursor', 'opencode'}
+        expected_kinds = {'codex', 'traex', 'pi', 'claude_code', 'antigravity', 'cursor', 'trae_ide', 'opencode'}
         self.assertEqual(set(PROVIDERS), expected_kinds)
         self.assertEqual(set(NAMES), expected_kinds)
         self.assertEqual(GENERATE_KINDS, {'codex', 'traex', 'pi', 'claude_code', 'antigravity'})

@@ -63,8 +63,15 @@ class HookDispatch:
 
         agent = self.registry.state['agents'].get(identity, {})
         record = self.registry.state.get('connections', {}).get(identity, {})
-        if (agent.get('kind') != 'trae_ide' or not record.get('activated')
-                or record.get('status') != 'configured_pending_new_session'):
+        installation = None
+        if agent.get('kind') == 'trae_ide' and record.get('activated') is True:
+            if record.get('status') == 'configured_pending_new_session':
+                installation = agent.get('installation')
+            elif record.get('status') in ('prepared', 'preparation_unknown'):
+                hooks = record.get('trae_ide_hooks')
+                if isinstance(hooks, dict) and set(hooks) == set(EVENTS):
+                    installation = record.get('active_installation')
+        if not isinstance(installation, dict):
             raise PolicyError('trae_ide_hook_not_authorized', 403)
         if event not in EVENTS or len(raw) > MAX_INPUT:
             raise PolicyError('invalid_trae_ide_hook')
@@ -78,7 +85,6 @@ class HookDispatch:
             raise PolicyError('trae_ide_hook_busy', 503)
         self.running += 1
         try:
-            installation = agent['installation']
             await asyncio.to_thread(verify_artifact, installation)
             script = Path(installation['plugin_dir']) / 'scripts/trae_ide_hook.py'
             environment = {key: value for key, value in os.environ.items()

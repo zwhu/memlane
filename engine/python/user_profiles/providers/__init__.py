@@ -75,6 +75,7 @@ for _provider in (
     ClaudeCodeProvider(),
     AntigravityProvider(),
     ManualOnlyProvider('cursor', 'Cursor'),
+    ManualOnlyProvider('trae_ide', 'TRAE IDE'),
     ManualOnlyProvider('opencode', 'OpenCode'),
 ):
     register_provider(_provider)
