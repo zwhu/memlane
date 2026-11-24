@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 import uuid
 
 from aiohttp import FormData, web
@@ -16,8 +16,10 @@ from aiohttp.test_utils import TestClient, TestServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _runtime_common import private_write
+from knowledge_recall import RecallStore
 from project_control import Official, Registry
 from project_control_server import create_app
+from project_policy import PolicyError
 
 
 class _FakeRegistry(Registry):
@@ -351,6 +353,62 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         r = await self.client.post('/cognee/api/v1/recall', headers=self._headers(), json={'query': 'stream test'})
         self.assertEqual(r.status, 200)
         self.assertEqual(await r.read(), b'data: {"chunk":"hello"}\n\n')
+
+    async def test_paused_recall_writer_leaves_registry_and_event_loop_available(self):
+        import threading
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        started, release = asyncio.Event(), threading.Event()
+        original_record_query = RecallStore._record_query_on_writer
+
+        def slow_writer(store, channel, hit_count):
+            self.assertNotEqual(threading.get_ident(), loop_thread)
+            loop.call_soon_threadsafe(started.set)
+            if not release.wait(3):
+                raise TimeoutError('test did not release recall writer')
+            return original_record_query(store, channel, hit_count)
+
+        with patch.object(RecallStore, '_record_query_on_writer', slow_writer):
+            request = asyncio.create_task(self.client.post('/cognee/api/v1/recall', headers=self._headers(),
+                                                           json={'query': 'test', 'dataset_ids': [self.project_ds]}))
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                self.assertFalse(self.registry.mutex.locked())
+                async with asyncio.timeout(2):
+                    async with self.registry.mutex:
+                        await asyncio.sleep(0)
+                    health = await self.client.get('/cognee/health', headers=self._headers())
+                self.assertEqual(health.status, 200)
+                self.assertFalse(request.done())
+            finally:
+                release.set()
+                response = await request
+            self.assertEqual(response.status, 200)
+
+    async def test_recall_write_failures_log_metadata_and_preserve_full_response(self):
+        query = 'private query text'
+        payload = [{'dataset_id': self.project_ds, 'text': 'private lesson content',
+                    'metadata': {'document_id': self.doc_proj}}]
+        self.recall_override = payload
+        sensitive = [query, self.agent_key, self.project_ds, self.doc_proj, payload[0]['text']]
+        failed_query = AsyncMock(side_effect=RuntimeError(' '.join(sensitive)))
+        failed_record = AsyncMock(side_effect=PolicyError('invalid_recall_event', 409))
+        with (patch.object(RecallStore, 'record_query_async', failed_query),
+              patch.object(RecallStore, 'record_async', failed_record),
+              self.assertLogs('cognee_extension_gateway', level='WARNING') as logs):
+            response = await self.client.post('/cognee/api/v1/recall', headers=self._headers(),
+                                              json={'query': query, 'dataset_ids': [self.project_ds]})
+        self.assertEqual(response.status, 200)
+        self.assertEqual(await response.json(), payload)
+        failed_query.assert_awaited_once_with('explicit', 1)
+        failed_record.assert_awaited_once()
+        fields = {'event': 'recall_record_failed', 'component': 'cognee_gateway', 'channel': 'explicit', 'hit_count': 1}
+        self.assertEqual([json.loads(record.getMessage()) for record in logs.records], [
+            {**fields, 'stage': 'record_query', 'error_type': 'RuntimeError'},
+            {**fields, 'stage': 'record', 'error_type': 'PolicyError', 'error_code': 'invalid_recall_event'},
+        ])
+        for value in sensitive:
+            self.assertNotIn(value, '\n'.join(logs.output))
 
     async def test_codex_edit_diff_enrichment_and_gates(self):
         diff = '@@ -1 +1 @@\n-old\n+new\n'

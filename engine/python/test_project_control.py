@@ -3,8 +3,11 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
+import threading
 import unittest
+from unittest.mock import AsyncMock, patch
 import uuid
 
 from aiohttp import ClientSession, web
@@ -12,6 +15,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from project_control import Official, Registry, private_write
 from project_control_server import create_app
+from project_codex_connection import CodexConnection
 from project_policy import PolicyError
 
 
@@ -44,6 +48,100 @@ class OfficialFixture:
     async def retirement_datasets(self, agent):
         return {dataset for (principal, dataset), permissions in self.acls.items()
                 if principal == agent['principal_id'] and permissions}
+
+
+class CodexDirectoryTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        self.profile = root / 'codex'
+        self.profile.mkdir()
+        self.enterContext(patch('project_codex_connection.legacy_consumers', return_value=[]))
+        self.registry = Registry(root / 'private/registry.json', OfficialFixture())
+        self.addCleanup(self.registry.close)
+        config = {'agent_hosts': {'codex': {'profile': str(self.profile), 'executable': sys.executable}}}
+        self.client = TestClient(TestServer(create_app(self.registry, 'm' * 40, {}, codex_config=config)))
+        self.addAsyncCleanup(self.client.close)
+        await self.client.start_server()
+        self.manager = {'Authorization': 'Bearer ' + 'm' * 40}
+
+    async def get_directory(self):
+        response = await self.client.get('/v1/projects', headers=self.manager)
+        self.assertEqual(response.status, 200)
+        return await response.json()
+
+    async def test_concurrent_project_reads_share_view_without_holding_registry_mutex(self):
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        started, release = asyncio.Event(), threading.Event()
+        second_stat = threading.Event()
+        viewed = []
+        original_view = CodexConnection.view
+        from project_control_server import _codex_config_lstat
+
+        def paused_view(adapter):
+            self.assertNotEqual(threading.get_ident(), loop_thread)
+            self.assertIsNot(adapter.registry, self.registry)
+            viewed.append(adapter)
+            loop.call_soon_threadsafe(started.set)
+            if not release.wait(3):
+                raise TimeoutError('test did not release directory view')
+            return original_view(adapter)
+
+        def stat_config(home):
+            if started.is_set():
+                second_stat.set()
+            return _codex_config_lstat(home)
+
+        with (patch.object(CodexConnection, 'view', paused_view),
+              patch('project_control_server._codex_config_lstat', side_effect=stat_config)):
+            requests = [asyncio.create_task(self.get_directory())]
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                self.assertFalse(self.registry.mutex.locked())
+                async with asyncio.timeout(2):
+                    async with self.registry.mutex:
+                        await asyncio.sleep(0)
+                requests.append(asyncio.create_task(self.get_directory()))
+                self.assertTrue(await asyncio.to_thread(second_stat.wait, 2))
+                self.assertTrue(all(not request.done() for request in requests))
+            finally:
+                release.set()
+                results = await asyncio.gather(*requests)
+        self.assertEqual(len(viewed), 1)
+        expected = {**self.registry.directory(), 'codex_connection': {
+            'instance_id': viewed[0].id, 'codex_home': str(self.profile), 'detected': True, 'status': 'not_connected',
+            'agent_registered': False, 'legacy_plugins': [], 'legacy_consumers': [], 'project_config_conflicts': [],
+            'preview': None, 'new_sessions': 0,
+        }}
+        self.assertEqual(results, [expected, expected])
+
+    async def test_project_view_cache_refreshes_on_config_change_and_review(self):
+        original_view = CodexConnection.view
+        with (patch.object(CodexConnection, 'view', autospec=True, side_effect=original_view) as view,
+              patch.object(CodexConnection, 'review', new_callable=AsyncMock) as review):
+            first = await self.get_directory()
+            self.assertEqual(await self.get_directory(), first)
+            self.assertEqual(view.call_count, 1)
+
+            config = self.profile / 'config.toml'
+            config.write_text('[plugins."cognee@legacy"]\nenabled = true\n')
+            updated = await self.get_directory()
+            self.assertEqual(updated['codex_connection']['legacy_plugins'], ['cognee@legacy'])
+            self.assertEqual(view.call_count, 2)
+
+            response = await self.client.post('/v1/codex/review', headers=self.manager,
+                                              json={'expected_revision': updated['revision']})
+            self.assertEqual(response.status, 200)
+            self.assertEqual(await response.json(), updated)
+            review.assert_awaited_once_with(updated['revision'])
+            self.assertEqual(await self.get_directory(), updated)
+            self.assertEqual(view.call_count, 3)
+
+            config.write_text('malformed [')
+            for _ in range(2):
+                self.assertEqual(await self.get_directory(), {**self.registry.directory(), 'codex_connection': {
+                    'status': 'requires_review', 'error_code': 'codex_config_requires_review'}})
+            self.assertEqual(view.call_count, 5)
 
 
 class RegistryTests(unittest.IsolatedAsyncioTestCase):

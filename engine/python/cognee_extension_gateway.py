@@ -11,6 +11,7 @@ import email.policy
 import hmac
 import inspect
 import json
+import logging
 import re
 import uuid
 from urllib.parse import parse_qs, quote
@@ -24,6 +25,22 @@ from performance_trace import HEADER as TRACE_HEADER, RequestTrace
 from project_control import loopback_origin
 from project_policy import PolicyError
 from session_drift import build_project_alias_index
+
+
+async def _record_recall(store, stage, args, channel, hit_count):
+    try:
+        async_write = getattr(store, stage + '_async', None)
+        if async_write is not None:
+            await async_write(*args)
+        elif hasattr(store, stage):
+            await asyncio.to_thread(getattr(store, stage), *args)
+    except Exception as exc:
+        warning = {'event': 'recall_record_failed', 'component': 'cognee_gateway',
+                   'stage': stage, 'channel': channel, 'hit_count': hit_count,
+                   'error_type': type(exc).__name__}
+        if isinstance(exc, PolicyError):
+            warning['error_code'] = exc.code
+        logging.getLogger(__name__).warning('%s', json.dumps(warning))
 
 MAX_GATEWAY_BODY_BYTES = 16 * 1024 * 1024
 GATEWAY_TIMEOUT_SECONDS = 600.0
@@ -773,18 +790,12 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
                             hits = _extract_recall_hits(parsed, ctx.readable_ids)
                             extra_trace['hit_count'] = len(hits)
                             if recall_store is not None:
-                                try:
-                                    async with registry.mutex:
-                                        if hasattr(recall_store, 'record_query'):
-                                            recall_store.record_query(recall_channel, len(hits))
-                                        if hits:
-                                            recall_store.record(ctx.agent_id, {
-                                                'event_id': str(uuid.uuid4()),
-                                                'channel': recall_channel,
-                                                'hits': hits,
-                                            })
-                                except Exception:
-                                    pass
+                                await _record_recall(recall_store, 'record_query', (recall_channel, len(hits)),
+                                                     recall_channel, len(hits))
+                                if hits:
+                                    event = {'event_id': str(uuid.uuid4()), 'channel': recall_channel, 'hits': hits}
+                                    await _record_recall(recall_store, 'record', (ctx.agent_id, event),
+                                                         recall_channel, len(hits))
                 outcome = 'succeeded' if upstream_resp.status < 400 else 'upstream_error'
                 trace.finish(outcome, route=route_label, status=upstream_resp.status, output_bytes=len(resp_bytes), **extra_trace)
                 return web.Response(status=upstream_resp.status, body=resp_bytes, headers=resp_headers)

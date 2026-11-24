@@ -5,10 +5,47 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
+import threading
+import time
 
+from _runtime_common import file_sha256
 from project_control import loopback_origin, private_write
 from project_policy import PolicyError
 from opencode_installation import loader, prepare as prepare_binding, verify, pending_runtime
+
+
+NODE_HASH_CACHE_TTL_SECONDS = 300.0
+NODE_HASH_CACHE_MAX_ENTRIES = 256
+_node_hash_lock = threading.Lock()
+_node_hash_cache = {}
+
+
+def clear_node_hash_cache():
+    with _node_hash_lock:
+        _node_hash_cache.clear()
+
+
+def _node_stat_key(node, st):
+    return (str(node), st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _node_digest(node, st, *, force):
+    key = _node_stat_key(node, st)
+    if not force:
+        with _node_hash_lock:
+            cached = _node_hash_cache.get(key)
+            if cached is not None and cached[0] > time.monotonic():
+                return cached[1]
+    digest = file_sha256(node)
+    if _node_stat_key(node, os.lstat(node)) != key:
+        raise ValueError('node changed while hashing')
+    with _node_hash_lock:
+        _node_hash_cache.pop(key, None)
+        if len(_node_hash_cache) >= NODE_HASH_CACHE_MAX_ENTRIES:
+            del _node_hash_cache[next(iter(_node_hash_cache))]
+        _node_hash_cache[key] = (time.monotonic() + NODE_HASH_CACHE_TTL_SECONDS, digest)
+    return digest
 
 
 def sha(raw):
@@ -159,16 +196,21 @@ class OpenCodeConnection:
                 'baseline_sha256': sha(raw), 'configuration_sha256': sha(json.dumps([configs, sorted(inventory)], sort_keys=True).encode()),
                 'preserve_other_plugins': True, 'requires_reload': True, 'requires_host_trust': True}
 
-    def verify_installation(self, installation):
+    def verify_installation(self, installation, *, force=False):
         try:
             if installation['instance_id'] != self.id or installation['profile'] != str(self.profile):
                 raise ValueError()
             manifest = verify(installation['plugin_dir'], installation['manifest_sha256'])
             if 'dist/src/managed-pending-cli.js' in manifest['files']:
                 node = Path(installation['node_executable'])
-                if (not node.is_absolute() or node.resolve(strict=True) != node or node.is_symlink()
-                        or not node.is_file() or not os.access(node, os.X_OK) or node.stat().st_size > 512 * 1024 * 1024
-                        or sha(node.read_bytes()) != installation['node_sha256']
+                if not node.is_absolute():
+                    raise ValueError()
+                st = os.lstat(node)
+                expected = installation['node_sha256']
+                if (stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode) or node.resolve(strict=True) != node
+                        or not os.access(node, os.X_OK) or st.st_size > 512 * 1024 * 1024
+                        or not isinstance(expected, str) or not expected
+                        or _node_digest(node, st, force=force) != expected
                         or installation['helper_sha256'] != manifest['files']['dist/src/managed-pending-cli.js']):
                     raise ValueError()
             binding = Path(installation['binding_file'])
@@ -187,11 +229,11 @@ class OpenCodeConnection:
         except (OSError, KeyError, ValueError, TypeError):
             raise PolicyError('opencode_installation_requires_review', 409) from None
 
-    def installed(self, record):
+    def installed(self, record, *, force=False):
         installation = record.get('active_installation') or record.get('installation')
         if not installation:
             raise PolicyError('opencode_installation_requires_review', 409)
-        self.verify_installation(installation)
+        self.verify_installation(installation, force=force)
         if sha(safe_file(self.target)) != record.get('active_loader_sha256', record.get('proposed_sha256')):
             raise PolicyError('opencode_loader_changed_requires_review', 409)
 
@@ -253,7 +295,7 @@ class OpenCodeConnection:
             if any(current[key] != record['preview'][key] for key in ('baseline_sha256', 'configuration_sha256')):
                 raise PolicyError('host_configuration_changed', 409)
             installation = record['installation']
-            self.verify_installation(installation)
+            self.verify_installation(installation, force=True)
             stub = safe_file(self.root / 'opencode-proposed.ts')
             if sha(stub) != reviewed_sha or stub != loader(installation):
                 raise PolicyError('connection_preview_changed', 409)
@@ -264,7 +306,7 @@ class OpenCodeConnection:
             if sha(safe_file(self.target)) != record['preview']['baseline_sha256']:
                 raise PolicyError('host_configuration_changed', 409)
             private_write(self.target, stub)
-            self.installed({**record, 'active_installation': installation, 'active_loader_sha256': reviewed_sha})
+            self.installed({**record, 'active_installation': installation, 'active_loader_sha256': reviewed_sha}, force=True)
             record.update(status='configured_pending_new_session', activated=True,
                           active_installation=copy.deepcopy(installation), active_loader_sha256=reviewed_sha)
             r.save()
@@ -276,7 +318,7 @@ class OpenCodeConnection:
             record = self.record()
             if record.get('status') == 'activation_unknown':
                 self.installed({**record, 'active_installation': record['installation'],
-                                'active_loader_sha256': record['proposed_sha256']})
+                                'active_loader_sha256': record['proposed_sha256']}, force=True)
                 record.update(status='configured_pending_new_session', activated=True,
                               active_installation=copy.deepcopy(record['installation']), active_loader_sha256=record['proposed_sha256'])
                 self.registry.state['revision'] += 1

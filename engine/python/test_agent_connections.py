@@ -7,13 +7,94 @@ import sys
 import subprocess
 import os
 import tempfile
+import threading
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from agent_connections import NativeConnection, Connections, sha, verify_artifact
 from project_control import Registry, private_write
+from project_codex_connection import CodexConnection
 from project_policy import PolicyError
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+class CheckedConnectionViewTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        self.profile = self.root / 'codex'
+        self.profile.mkdir()
+        self.registry = Registry(self.root / 'private/registry.json', None)
+        self.addCleanup(self.registry.close)
+        self.config = {'agent_hosts': {'codex': {'profile': str(self.profile), 'executable': sys.executable}}}
+        self.connections = Connections(self.registry, self.config)
+        self.addAsyncCleanup(self.connections.capture.close)
+
+    async def test_checked_view_discovers_once_and_attaches_refreshed_capture(self):
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        started, release = asyncio.Event(), threading.Event()
+        viewed = []
+
+        def paused_view(adapter):
+            self.assertNotEqual(threading.get_ident(), loop_thread)
+            self.assertIsNot(adapter.registry, self.registry)
+            viewed.append(adapter)
+            loop.call_soon_threadsafe(started.set)
+            if not release.wait(3):
+                raise TimeoutError('test did not release Codex view')
+            return {'instance_id': adapter.id, 'status': 'configured_pending_new_session'}
+
+        inspect = AsyncMock(return_value={'state': 'healthy', 'permission': 'granted'})
+        with (patch.object(CodexConnection, 'view', paused_view),
+              patch.object(Connections, '_discover', wraps=Connections._discover) as discover,
+              patch.object(self.connections.capture, 'inspect', inspect)):
+            request = asyncio.create_task(self.connections.checked_view(force=True))
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                await asyncio.sleep(0)
+                self.assertFalse(request.done())
+            finally:
+                release.set()
+                result = await request
+        discover.assert_called_once()
+        self.assertEqual(len(viewed), 1)
+        self.assertIs(viewed[0].registry, self.registry)
+        self.assertIs(self.connections.adapters[viewed[0].id], viewed[0])
+        inspect.assert_awaited_once()
+        row = next(row for row in result['connections'] if row['kind'] == 'codex')
+        self.assertEqual(row['capture']['state'], 'healthy')
+        self.assertTrue(row['capabilities']['auto_capture']['verified'])
+
+    async def test_checked_view_does_not_replace_newly_selected_environment(self):
+        loop = asyncio.get_running_loop()
+        started, release = asyncio.Event(), threading.Event()
+        replacement = self.root / 'other-codex'
+        replacement.mkdir()
+
+        def paused_view(adapter):
+            if adapter.registry is not self.registry:
+                loop.call_soon_threadsafe(started.set)
+                if not release.wait(3):
+                    raise TimeoutError('test did not release Codex view')
+            return {'instance_id': adapter.id, 'status': 'not_connected'}
+
+        revision = self.registry.state['revision']
+        with patch.object(CodexConnection, 'view', paused_view):
+            request = asyncio.create_task(self.connections.checked_view())
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                selected = await self.connections.select_environment('codex', str(replacement), revision)
+                selected_adapters = self.connections.adapters
+            finally:
+                release.set()
+                original = await request
+        self.assertEqual(original['revision'], revision)
+        self.assertEqual(selected['revision'], revision + 1)
+        self.assertEqual(next(row['profile'] for row in original['connections'] if row['kind'] == 'codex'), str(self.profile))
+        self.assertIs(self.connections.adapters, selected_adapters)
+        self.assertEqual(self.connections.environments['codex']['profile'], str(replacement))
+        self.assertEqual(next(adapter.home for adapter in selected_adapters.values() if isinstance(adapter, CodexConnection)), replacement)
 
 
 class ConnectionTests(unittest.IsolatedAsyncioTestCase):

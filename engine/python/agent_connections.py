@@ -464,6 +464,14 @@ def detect_executable(kind, settings, legacy=None):
     return next((str(path) for path in candidates if path.is_file() and os.access(path, os.X_OK)), None)
 
 
+class _StateSnapshotRegistry:
+    def __init__(self, registry):
+        self.path = registry.path
+        self.state = copy.deepcopy({key: registry.state[key] for key in (
+            'revision', 'host_targets', 'agents', 'enrollments', 'connections',
+            'codex_connections', 'connection_receipts', 'sessions') if key in registry.state})
+
+
 class Connections:
     def __init__(self, registry, config):
         self.registry, self.adapters = registry, {}
@@ -474,21 +482,24 @@ class Connections:
         self.discover()
 
     def discover(self):
-        registry, config = self.registry, self.config
+        self.environments, self.adapters, self.missing_codex = self._discover(self.registry, self.config)
+
+    @staticmethod
+    def _discover(registry, config):
         from agent_environments import DEFAULTS, environment
-        self.environments = {}
+        environments = {}
         for kind in DEFAULTS:
             try:
-                self.environments[kind] = environment(config, registry.state, kind)
+                environments[kind] = environment(config, registry.state, kind)
             except (PolicyError, OSError, ValueError, TypeError):
-                self.environments[kind] = environment({}, {}, kind, environ={})
-                self.environments[kind]['environment_issue'] = 'environment_unavailable'
+                environments[kind] = environment({}, {}, kind, environ={})
+                environments[kind]['environment_issue'] = 'environment_unavailable'
         configured = {kind: {**config.get('agent_hosts', {}).get(kind, {}), 'profile': row['profile']}
-                      for kind, row in self.environments.items()}
-        self.adapters = {}
+                      for kind, row in environments.items()}
+        adapters = {}
         codex = configured.get('codex', {})
         executable = detect_executable('codex', codex, config.get('codex_executable'))
-        self.missing_codex = None
+        missing_codex = None
         if executable and Path(executable).is_file():
             from project_codex_connection import CodexConnection
             # Separate host discovery from generation runtime/auth fields.
@@ -496,10 +507,10 @@ class Connections:
             host_config = {**config, 'auth_home': codex.get('profile') or config.get('auth_home') or str(Path.home() / '.codex'),
                            'codex_executable': executable}
             adapter = CodexConnection(registry, host_config)
-            self.adapters[adapter.id] = adapter
+            adapters[adapter.id] = adapter
         else:
-            self.missing_codex = {'instance_id': 'codex-unavailable', 'kind': 'codex', 'detected': False,
-                                  'status': 'not_connected'}
+            missing_codex = {'instance_id': 'codex-unavailable', 'kind': 'codex', 'detected': False,
+                             'status': 'not_connected'}
         for kind, directory in [('pi', Path.home() / '.pi/agent'), ('traex', Path.home() / '.trae'),
                                 ('trae_ide', Path.home() / '.trae-cn'),
                                 ('claude_code', Path.home() / '.claude'), ('cursor', Path.home() / '.cursor')]:
@@ -507,41 +518,42 @@ class Connections:
             executable = detect_executable(kind, settings)
             adapter = NativeConnection(registry, config, kind, settings.get('profile', directory),
                                        executable)
-            self.adapters[adapter.id] = adapter
+            adapters[adapter.id] = adapter
 
         from opencode_connection import OpenCodeConnection
         settings = configured.get('opencode', {})
         directory = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'opencode'
         adapter = OpenCodeConnection(registry, config, settings.get('profile', directory),
                                      detect_executable('opencode', settings))
-        self.adapters[adapter.id] = adapter
+        adapters[adapter.id] = adapter
 
         from antigravity_connection import AntigravityConnection
         settings = configured.get('antigravity', {})
         adapter = AntigravityConnection(registry, config, settings.get('profile', Path.home() / '.gemini/config'),
                                         detect_executable('antigravity', settings))
-        self.adapters[adapter.id] = adapter
+        adapters[adapter.id] = adapter
+        return environments, adapters, missing_codex
 
-    def view(self):
-        self.discover()
-        known_codex = any(getattr(a, 'kind', 'codex') == 'codex' for a in self.adapters.values())
-        rows = [self.missing_codex] if self.missing_codex and not known_codex else []
-        for adapter in self.adapters.values():
+    @staticmethod
+    def _connection_rows(registry, environments, adapters, missing_codex):
+        known_codex = any(getattr(a, 'kind', 'codex') == 'codex' for a in adapters.values())
+        rows = [missing_codex] if missing_codex and not known_codex else []
+        for adapter in adapters.values():
             try:
                 row = adapter.view()
                 row.setdefault('kind', 'codex')
-                if row['kind'] == 'codex' and self.missing_codex:
+                if row['kind'] == 'codex' and missing_codex:
                     row['detected'] = False
             except PolicyError as error:
                 row = {'instance_id': adapter.id, 'kind': getattr(adapter, 'kind', 'codex'),
                        'status': 'requires_review', 'error_code': error.code}
-            details = self.environments[row['kind']]
+            details = environments[row['kind']]
             row.update(details)
             if details['environment_issue']:
                 row['status'] = details['environment_issue']
             records = 'codex_connections' if row['kind'] == 'codex' else 'connections'
-            record = self.registry.state.get(records, {}).get(adapter.id, {})
-            receipt = self.registry.state.get('connection_receipts', {}).get(adapter.id)
+            record = registry.state.get(records, {}).get(adapter.id, {})
+            receipt = registry.state.get('connection_receipts', {}).get(adapter.id)
             row['last_receipt_at'] = receipt.get('received_at', 0) if receipt else 0
             receipt_profile_verified = bool(
                 receipt and receipt.get('environment_verified')
@@ -572,17 +584,47 @@ class Connections:
                     row['error_code'] = 'host_executable_changed'
             except (OSError, TypeError):
                 pass
+            rows.append(row)
+        return rows
+
+    @classmethod
+    def _discover_rows(cls, registry, config):
+        environments, adapters, missing_codex = cls._discover(registry, config)
+        rows = cls._connection_rows(registry, environments, adapters, missing_codex)
+        return environments, adapters, missing_codex, rows
+
+    def _attach_capture(self, rows, adapters):
+        for row in rows:
+            if (adapter := adapters.get(row['instance_id'])) is None:
+                continue
             capture = self.capture.view(row, adapter)
             if capture is not None:
                 row['capture'] = capture
                 row.setdefault('capabilities', {}).setdefault('auto_capture', {'available': True})['verified'] = capture['state'] == 'healthy'
-            rows.append(row)
+
+    def view(self):
+        self.discover()
+        rows = self._connection_rows(self.registry, self.environments, self.adapters, self.missing_codex)
+        self._attach_capture(rows, self.adapters)
         return {'revision': self.registry.state['revision'], 'connections': rows}
 
     async def checked_view(self, *, force=False):
-        rows = self.view()['connections']
-        await self.capture.refresh(rows, self.adapters, force=force)
-        return self.view()
+        from project_codex_connection import CodexConnection
+
+        snapshot = _StateSnapshotRegistry(self.registry)
+        config = copy.deepcopy(self.config)
+        host_targets_before = snapshot.state.get('host_targets', {})
+        environments, adapters, missing_codex, rows = await asyncio.to_thread(self._discover_rows, snapshot, config)
+        for adapter in adapters.values():
+            adapter.registry = self.registry
+            if not isinstance(adapter, CodexConnection):
+                adapter.config = self.config
+        if self.registry.state.get('host_targets', {}) == host_targets_before:
+            self.environments, self.adapters, self.missing_codex = environments, adapters, missing_codex
+
+        await self.capture.refresh(rows, adapters, force=force)
+        self._attach_capture(rows, adapters)
+        return {'revision': snapshot.state['revision'], 'connections': rows}
 
     async def select_environment(self, kind, profile, expected):
         from agent_environments import DEFAULTS, profile_path, verification_profile

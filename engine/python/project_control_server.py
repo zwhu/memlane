@@ -1,15 +1,34 @@
 """Authenticated loopback API for project configuration, recall receipts, and read-only overview aggregation."""
 import argparse
 import asyncio
+import copy
+import hashlib
 import json
 from pathlib import Path
 import secrets
+import time
 
 from aiohttp import ClientSession, web
 
 from _runtime_common import CachedSecretReader, read_secret
 from project_control import Official, Registry, loopback_origin
 from project_policy import PolicyError
+
+
+CODEX_VIEW_CACHE_TTL_SECONDS = 3.0
+
+
+class _SnapshotRegistry:
+    def __init__(self, path, state):
+        self.path, self.state = path, state
+
+
+def _codex_config_lstat(home):
+    try:
+        st = (home / 'config.toml').lstat()
+    except OSError as error:
+        return (error.errno,)
+    return (st.st_dev, st.st_ino, st.st_mode, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
 
 def fields(body, required, optional=()):
@@ -69,13 +88,62 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
         connections = Connections(registry, codex_config)
         connection = next((adapter for adapter in connections.adapters.values() if isinstance(adapter, CodexConnection)), None)
 
-    def directory_result():
-        result = registry.directory()
-        if connection:
-            try:
-                result['codex_connection'] = connection.view()
-            except PolicyError as error:
-                result['codex_connection'] = {'status': 'requires_review', 'error_code': error.code}
+    codex_view_cache = None
+    codex_view_generation = 0
+    codex_view_tasks = {}
+
+    def invalidate_codex_view():
+        nonlocal codex_view_cache, codex_view_generation
+        codex_view_cache = None
+        codex_view_generation += 1
+
+    async def read_codex_view(clone, key, generation):
+        nonlocal codex_view_cache
+        try:
+            view = await asyncio.to_thread(clone.view)
+        except PolicyError as error:
+            return {'status': 'requires_review', 'error_code': error.code}
+        if generation == codex_view_generation:
+            codex_view_cache = (key, time.monotonic() + CODEX_VIEW_CACHE_TTL_SECONDS, copy.deepcopy(view))
+        return view
+
+    def codex_view_finished(key, task):
+        if codex_view_tasks.get(key) is task:
+            codex_view_tasks.pop(key, None)
+        if not task.cancelled():
+            task.exception()  # All request waiters may have been cancelled.
+
+    async def directory_result_async(*, force_refresh=False):
+        async with registry.mutex:
+            result = registry.directory()
+            active_connection = connection
+            if active_connection is None:
+                return result
+            identifier = active_connection.id
+            state = {key: copy.deepcopy({identifier: registry.state[key][identifier]})
+                     if identifier in registry.state.get(key, {}) else {}
+                     for key in ('agents', 'codex_connections', 'enrollments')}
+            fingerprint = hashlib.sha256(json.dumps(state, sort_keys=True).encode()).digest()
+            state['sessions'] = {key: value for key, value in registry.state['sessions'].items()
+                                 if json.loads(key)[0] == identifier}
+            generation = codex_view_generation
+            key = (id(active_connection), identifier, str(active_connection.home), result['revision'],
+                   fingerprint, tuple(state['sessions']), generation)
+            clone = copy.copy(active_connection)
+            clone.registry = _SnapshotRegistry(registry.path, state)
+
+        key += (await asyncio.to_thread(_codex_config_lstat, clone.home),)
+        cached = codex_view_cache
+        if not force_refresh and cached is not None and cached[0] == key and cached[1] > time.monotonic():
+            view = cached[2]
+        else:
+            task = codex_view_tasks.get(key)
+            if task is None:
+                task = asyncio.create_task(read_codex_view(clone, key, generation))
+                codex_view_tasks[key] = task
+                task.add_done_callback(lambda done: codex_view_finished(key, done))
+            view = await asyncio.shield(task)
+        result['codex_connection'] = copy.deepcopy(view)
         return result
 
     def manager(request):
@@ -130,8 +198,7 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
 
     async def directory(request):
         manager(request)
-        async with registry.mutex:
-            return web.json_response(directory_result())
+        return web.json_response(await directory_result_async())
 
     async def datasets(request):
         manager(request)
@@ -227,15 +294,18 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
             raise PolicyError('codex_host_not_configured', 503)
         payload = fields(await body(request), ('expected_revision',),
                          ('proposed_sha256',) if request.path.endswith('/activate') else ())
-        if request.path.endswith('/activate'):
-            if not isinstance(payload.get('proposed_sha256'), str):
-                raise PolicyError('reviewed_preview_required', 409)
-            await connection.activate(payload['expected_revision'], payload['proposed_sha256'])
-        elif request.path.endswith('/review'):
-            await connection.review(payload['expected_revision'])
-        else:
-            await connection.prepare(payload['expected_revision'])
-        return web.json_response(directory_result())
+        try:
+            if request.path.endswith('/activate'):
+                if not isinstance(payload.get('proposed_sha256'), str):
+                    raise PolicyError('reviewed_preview_required', 409)
+                await connection.activate(payload['expected_revision'], payload['proposed_sha256'])
+            elif request.path.endswith('/review'):
+                await connection.review(payload['expected_revision'])
+            else:
+                await connection.prepare(payload['expected_revision'])
+        finally:
+            invalidate_codex_view()
+        return web.json_response(await directory_result_async(force_refresh=True))
 
     async def generic_connections(request):
         manager(request)
@@ -254,8 +324,13 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                          else ('expected_revision', 'operation_id'), ('proposed_sha256',))
         identifier = payload.get('instance_id') if preview else request.match_info['id']
         action = 'preview' if preview else request.match_info['action']
-        return web.json_response(await connections.perform(identifier, action, payload['expected_revision'],
-                                                           payload['operation_id'], payload.get('proposed_sha256')))
+        try:
+            result = await connections.perform(identifier, action, payload['expected_revision'],
+                                               payload['operation_id'], payload.get('proposed_sha256'))
+        finally:
+            if not preview:
+                invalidate_codex_view()
+        return web.json_response(result)
 
     async def select_environment(request):
         nonlocal connection
@@ -263,7 +338,10 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
         payload = fields(await body(request), ('expected_revision', 'kind', 'profile'))
         if connections is None:
             raise PolicyError('connection_hosts_not_configured', 503)
-        result = await connections.select_environment(payload['kind'], payload['profile'], payload['expected_revision'])
+        try:
+            result = await connections.select_environment(payload['kind'], payload['profile'], payload['expected_revision'])
+        finally:
+            invalidate_codex_view()
         from project_codex_connection import CodexConnection
         connection = next((adapter for adapter in connections.adapters.values() if isinstance(adapter, CodexConnection)), None)
         return web.json_response(result)
@@ -349,6 +427,7 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                     web.post('/v1/connections/{id}/{action:prepare|activate|review|allow_capture|defer_capture}', generic_connections)])
     if connections is not None:
         async def capture_cleanup(_):
+            await asyncio.gather(*codex_view_tasks.values(), return_exceptions=True)
             await connections.capture.close()
         app.on_cleanup.append(capture_cleanup)
     if registry is not None:

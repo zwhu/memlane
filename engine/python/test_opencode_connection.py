@@ -11,7 +11,9 @@ import uuid
 from unittest.mock import patch
 
 from agent_connections import Connections
-from opencode_connection import OpenCodeConnection, jsonc
+from _runtime_common import file_sha256
+from opencode_connection import OpenCodeConnection, clear_node_hash_cache, jsonc, sha
+from opencode_installation import loader
 from project_control import Registry, private_write
 from project_policy import PolicyError
 from test_project_control import OfficialFixture
@@ -337,6 +339,82 @@ class OpenCodeConnectionTests(unittest.IsolatedAsyncioTestCase):
             await self.prepare('symlink-config')
         self.assertEqual(other.read_text(), '{}')
         self.assertEqual(self.official.enrolled, 0)
+
+
+class OpenCodeVerifyInstallationHashTests(unittest.TestCase):
+    def setUp(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        clear_node_hash_cache()
+        self.addCleanup(clear_node_hash_cache)
+        registry = Registry(root / 'private/registry.json', EnrollmentFixture())
+        self.addCleanup(registry.close)
+        profile = root / 'profile'
+        profile.mkdir()
+        self.adapter = OpenCodeConnection(registry, {}, profile, sys.executable)
+        self.node = root / 'node'
+        self.node.write_bytes(b'x' * (1024 * 1024 + 1))
+        self.node.chmod(0o700)
+        artifact = root / 'artifact'
+        helper = artifact / 'dist/src/managed-pending-cli.js'
+        helper.parent.mkdir(parents=True)
+        helper.write_bytes(b'export {};')
+        helper_sha = file_sha256(helper)
+        manifest = json.dumps({'protocol': 1, 'files': {str(helper.relative_to(artifact)): helper_sha}}).encode()
+        (artifact / '.memlane-opencode-artifact.json').write_bytes(manifest)
+        secret = root / 'secret'
+        private_write(secret, b'synthetic secret')
+        binding_file = root / 'binding.json'
+        binding = {'instance_id': self.adapter.id, 'profile': str(profile),
+                   'secrets': [{'path': str(secret), 'sha256': file_sha256(secret)}]}
+        raw_binding = json.dumps(binding).encode()
+        private_write(binding_file, raw_binding)
+        self.installation = {'instance_id': self.adapter.id, 'profile': str(profile), 'plugin_dir': str(artifact),
+                             'manifest_sha256': sha(manifest), 'node_executable': str(self.node),
+                             'node_sha256': file_sha256(self.node), 'helper_sha256': helper_sha,
+                             'binding_file': str(binding_file), 'binding_sha256': sha(raw_binding)}
+        self.installation['loader_sha256'] = sha(loader(self.installation))
+
+    def assert_requires_review(self, installation):
+        with self.assertRaises(PolicyError) as raised:
+            self.adapter.verify_installation(installation)
+        self.assertEqual((raised.exception.code, raised.exception.status), ('opencode_installation_requires_review', 409))
+
+    def test_streams_hash_caches_unchanged_node_and_rehashes_on_force_or_change(self):
+        verify = self.adapter.verify_installation
+        read_bytes = Path.read_bytes
+
+        def forbid_node_read_bytes(path):
+            self.assertNotEqual(path, self.node)
+            return read_bytes(path)
+
+        with (patch.object(Path, 'read_bytes', forbid_node_read_bytes),
+              patch('opencode_connection.file_sha256', wraps=file_sha256) as hashed):
+            verify(self.installation)
+            verify(self.installation)
+            hashed.assert_called_once_with(self.node)
+            verify(self.installation, force=True)
+            self.assertEqual(hashed.call_count, 2)
+            with self.node.open('ab') as handle:
+                handle.write(b'changed')
+            self.assert_requires_review(self.installation)
+            self.assertEqual(hashed.call_count, 3)
+
+    def test_rejects_unsafe_node_before_hashing_even_with_a_cached_digest(self):
+        self.adapter.verify_installation(self.installation)
+        link = self.node.with_name('node-link')
+        link.symlink_to(self.node)
+        loop = self.node.with_name('node-loop')
+        loop.symlink_to(loop)
+        with patch('opencode_connection.file_sha256', wraps=file_sha256) as hashed:
+            self.assert_requires_review({**self.installation, 'node_executable': str(link)})
+            self.assert_requires_review({**self.installation, 'node_executable': str(loop)})
+            self.node.chmod(0o600)
+            self.assert_requires_review(self.installation)
+            self.node.chmod(0o700)
+            with self.node.open('r+b') as handle:
+                handle.truncate(512 * 1024 * 1024 + 1)
+            self.assert_requires_review(self.installation)
+            hashed.assert_not_called()
 
 
 class OpenCodeJSONCTests(unittest.TestCase):
