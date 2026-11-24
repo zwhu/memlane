@@ -117,9 +117,68 @@ class CatalogIndexTests(unittest.TestCase):
                 self.assertEqual(strong.await_count, 3)
 
                 self.cognee_db.unlink()
+                # Also verify fail-closed when a stale non-empty -wal file remains after main DB vanishes.
+                Path(str(self.cognee_db) + '-wal').write_bytes(b'stale-wal-frames')
                 with self.assertRaises(PolicyError):
                     await cat.sync_for_read_async([self.ds_proj, self.ds_common])
                 self.assertEqual(strong.await_count, 4)
+
+        asyncio.run(check())
+
+    def test_failed_temp_rebuild_does_not_pollute_live_chunk_digests(self):
+        cat = CatalogIndex(self.cat_path, official_data=self.official_data)
+        self.addCleanup(cat.close)
+        doc1 = str(uuid.uuid4())
+        self._insert_doc(doc1, self.ds_proj)
+        gen1 = cat.sync([self.ds_proj])
+
+        doc2 = str(uuid.uuid4())
+        self._insert_doc(doc2, self.ds_proj)
+        orig_invalidate = cat._invalidate_readers
+        with patch.object(cat, '_invalidate_readers', side_effect=RuntimeError('swap aborted')):
+            with self.assertRaisesRegex(RuntimeError, 'swap aborted'):
+                cat.rebuild_atomic([self.ds_proj])
+
+        # Live catalog still only has doc1, and next sync MUST detect and ingest doc2!
+        self.assertEqual(len(cat.fetch_docs_by_ids(self.ds_proj, [doc2])), 0)
+        gen2 = cat.sync([self.ds_proj])
+        self.assertGreater(gen2, gen1)
+        self.assertEqual(len(cat.fetch_docs_by_ids(self.ds_proj, [doc1, doc2])), 2)
+
+    def test_bg_timer_signature_failure_clears_timer_and_recovers_on_next_read(self):
+        async def check():
+            fail_tz = [False]
+
+            def flaky_tz():
+                if fail_tz[0]:
+                    raise RuntimeError('transient tz error')
+                return 'UTC'
+
+            cat = CatalogIndex(self.cat_path, official_data=self.official_data, tz_provider=flaky_tz)
+            self.addCleanup(cat.close)
+            cat._FAST_DOC_COUNT_THRESHOLD = 0
+            cat._FAST_SYNC_THRESHOLD_NS = 0
+            cat._BG_COALESCE_MIN_NS = cat._BG_COALESCE_MAX_NS = 60_000_000_000
+            self._insert_doc(str(uuid.uuid4()), self.ds_proj)
+            cat.sync([self.ds_proj])
+            doc2 = str(uuid.uuid4())
+            self._insert_doc(doc2, self.ds_proj)
+
+            with patch('catalog_index.threading.Timer') as timer_cls:
+                await cat.sync_for_read_async([self.ds_proj])
+                timer_cls.assert_called_once()
+                # Trigger the timer callback when tz_provider raises inside _full_stat_sig
+                fail_tz[0] = True
+                timer_cls.call_args.args[1]()
+                fail_tz[0] = False
+                self.assertIsNone(cat._bg_timer)
+                self.assertTrue(cat._bg_sync_failed)
+                self.assertTrue(cat.is_catchup_pending())
+
+            # Next read takes blocking path, recovers cleanly, and ingests doc2
+            await cat.sync_for_read_async([self.ds_proj])
+            self.assertFalse(cat._bg_sync_failed)
+            self.assertEqual(len(cat.fetch_docs_by_ids(self.ds_proj, [doc2])), 1)
 
         asyncio.run(check())
 

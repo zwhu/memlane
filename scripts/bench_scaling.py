@@ -1183,6 +1183,7 @@ async def run_benchmark(scale: str = '1k', concurrency_seconds: float = 2.0) -> 
                     except Exception as exc:
                         reader_errors.append(f'{url}: {exc!r}')
 
+            gen_before_wal = cat.generation()
             writer_thread = threading.Thread(target=_writer_loop, daemon=True)
             writer_thread.start()
             try:
@@ -1190,6 +1191,8 @@ async def run_benchmark(scale: str = '1k', concurrency_seconds: float = 2.0) -> 
             finally:
                 stop_ev.set()
                 writer_thread.join(timeout=5.0)
+            gen_after_wal_loop = cat.generation()
+            bg_caught_up = gen_after_wal_loop > gen_before_wal
 
             # Final content reconciliation after concurrent WAL writes
             cat.sync([ds_main, ds_common])
@@ -1241,6 +1244,7 @@ async def run_benchmark(scale: str = '1k', concurrency_seconds: float = 2.0) -> 
             'reads_completed': len(reader_lats),
             'read_p95_ms': _percentile(reader_lats, 95),
             'read_p99_ms': _percentile(reader_lats, 99),
+            'bg_caught_up': bg_caught_up,
             'reconciled': wal_reconciled,
             'write_errors': write_errors,
             'reader_errors': reader_errors,
@@ -1306,6 +1310,8 @@ def check_sla(report: dict) -> list[str]:
         failures.append(f"WAL concurrency errors: writes={wc['write_errors']} reads={wc['reader_errors']}")
     if not wc.get('reconciled'):
         failures.append('WAL concurrency final content reconciliation failed')
+    if wc['writes_committed'] >= 5 and not wc.get('bg_caught_up'):
+        failures.append('WAL concurrency background SWR catch-up did not advance catalog generation')
     if wc['writes_committed'] < 5 or wc['cache_writes_committed'] < 5 or wc['reads_completed'] < 20:
         failures.append(
             f"WAL concurrency throughput too low: writes={wc['writes_committed']} "

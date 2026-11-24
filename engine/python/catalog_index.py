@@ -753,8 +753,8 @@ class CatalogIndex:
     _READ_FRESH_WAIT_NS = 12_000_000
     _FAST_SYNC_THRESHOLD_NS = 10_000_000
     _FAST_DOC_COUNT_THRESHOLD = 5_000
-    _BG_COALESCE_MIN_NS = 200_000_000
-    _BG_COALESCE_MAX_NS = 300_000_000
+    _BG_COALESCE_MIN_NS = 150_000_000
+    _BG_COALESCE_MAX_NS = 250_000_000
 
     def __init__(
         self,
@@ -793,6 +793,7 @@ class CatalogIndex:
         self._bg_sync_failed = False
         self._bg_timer: threading.Timer | None = None
         self._pending_bg_sync: tuple[tuple[str, ...], object] | None = None
+        self._pending_rebuild_publish = None
         self._recent_appends: dict[int, tuple[str, list[tuple[str, str, int, int]]]] = {}
         self._cat_counts_cache: dict[tuple[int, str], dict[str, int]] = {}
         self._common_cat_counts_cache: dict[tuple[int, str], dict[str, int]] = {}
@@ -3256,84 +3257,97 @@ class CatalogIndex:
                     con.execute('ROLLBACK')
                 raise
 
-            # Commit succeeded: update in-memory chunk digest cache & stat watermarks
-            for ds in removed_datasets:
-                self._chunk_digests.pop(ds, None)
-            for ds, cmap in new_chunk_digests.items():
-                self._chunk_digests[ds] = cmap
-
             if use_bulk_index_build or (dirty_datasets and not incremental_bucket_deltas):
                 con.execute('PRAGMA shrink_memory')
                 try:
                     cog_con.execute('PRAGMA shrink_memory')
                 except sqlite3.Error:
                     pass
-            if prov_ok:
-                self._last_prov_stat = prov_stat_now
-                self._prov_sync_incomplete = False
-            else:
-                self._last_prov_stat = None
-                self._prov_sync_incomplete = True
-            if recall_ok:
-                self._last_recall_stat = recall_stat_now
-                self._recall_sync_incomplete = False
-            else:
-                self._last_recall_stat = None
-                self._recall_sync_incomplete = True
 
-            # Maintain O(1) pure-append reading deltas & category_counts caches ONLY when proven strictly pure-append!
-            pure_append = (
-                mutated
-                and len(dirty_datasets) == 1
-                and not removed_datasets
-                and not tz_changed
-                and not prov_changes
-                and not recall_changes
-                and not need_full_prov
-                and not need_full_recall
-                and not sessions_mutated
-                and not force_full
-            )
-            if pure_append:
-                only_ds = next(iter(dirty_datasets))
-                if only_ds in proven_pure_append_ds:
-                    upserts_only, del_only = dataset_diffs.get(only_ds, ([], []))
-                    if upserts_only and not del_only:
-                        appended = [
-                            (str(p[1]), str(p[15]), int(p[16]), int(p[26]))
-                            for p in upserts_only
-                            if int(p[4]) == 1
-                        ]
-                        with self._state_lock:
-                            self._recent_appends[next_gen] = (only_ds, appended)
-                            if len(self._recent_appends) > 64:
-                                oldest_k = min(self._recent_appends)
-                                self._recent_appends.pop(oldest_k, None)
-                            prev_cats = self._cat_counts_cache.get((cur_gen, only_ds))
-                            if prev_cats is not None:
-                                updated_cats = dict(prev_cats)
-                                for p in upserts_only:
-                                    if int(p[4]) == 1 and p[8]:
-                                        c_lbl = str(p[8])
-                                        updated_cats[c_lbl] = updated_cats.get(c_lbl, 0) + 1
-                                self._cat_counts_cache[(next_gen, only_ds)] = updated_cats
-                            for (g_k, ds_k), cats_v in list(self._cat_counts_cache.items()):
-                                if g_k == cur_gen and ds_k != only_ds:
-                                    self._cat_counts_cache[(next_gen, ds_k)] = cats_v
-                            if len(self._cat_counts_cache) > 64:
-                                self._cat_counts_cache = {
-                                    k: v for k, v in self._cat_counts_cache.items() if k[0] >= next_gen - 2
-                                }
-                            self._common_cat_counts_cache.pop((cur_gen, only_ds), None)
-                            if not any(p[3] == 'raw_doc' for p in upserts_only):
-                                for (g_k, ds_k, lim_k), pv in list(self._pending_raw_cache.items()):
-                                    if g_k == cur_gen:
-                                        self._pending_raw_cache[(next_gen, ds_k, lim_k)] = pv
-                                if len(self._pending_raw_cache) > 32:
-                                    self._pending_raw_cache = {
-                                        k: v for k, v in self._pending_raw_cache.items() if k[0] >= next_gen - 2
+            # Prepare in-memory watermark/digest/cache publication.
+            # On temp rebuilds (con is not self._write_con), defer publication until
+            # _atomic_rebuild_locked completes os.replace so a failed rebuild never
+            # pollutes the live DB's incremental baseline!
+            doc_count_total = sum(int(fp[0]) for fp in live_fingerprints.values())
+
+            def _publish_in_memory_state():
+                for ds in removed_datasets:
+                    self._chunk_digests.pop(ds, None)
+                for ds, cmap in new_chunk_digests.items():
+                    self._chunk_digests[ds] = cmap
+
+                if prov_ok:
+                    self._last_prov_stat = prov_stat_now
+                    self._prov_sync_incomplete = False
+                else:
+                    self._last_prov_stat = None
+                    self._prov_sync_incomplete = True
+                if recall_ok:
+                    self._last_recall_stat = recall_stat_now
+                    self._recall_sync_incomplete = False
+                else:
+                    self._last_recall_stat = None
+                    self._recall_sync_incomplete = True
+
+                # Maintain O(1) pure-append reading deltas & category_counts caches ONLY when proven strictly pure-append!
+                pure_append = (
+                    mutated
+                    and len(dirty_datasets) == 1
+                    and not removed_datasets
+                    and not tz_changed
+                    and not prov_changes
+                    and not recall_changes
+                    and not need_full_prov
+                    and not need_full_recall
+                    and not sessions_mutated
+                    and not force_full
+                )
+                if pure_append:
+                    only_ds = next(iter(dirty_datasets))
+                    if only_ds in proven_pure_append_ds:
+                        upserts_only, del_only = dataset_diffs.get(only_ds, ([], []))
+                        if upserts_only and not del_only:
+                            appended = [
+                                (str(p[1]), str(p[15]), int(p[16]), int(p[26]))
+                                for p in upserts_only
+                                if int(p[4]) == 1
+                            ]
+                            with self._state_lock:
+                                self._recent_appends[next_gen] = (only_ds, appended)
+                                if len(self._recent_appends) > 64:
+                                    oldest_k = min(self._recent_appends)
+                                    self._recent_appends.pop(oldest_k, None)
+                                prev_cats = self._cat_counts_cache.get((cur_gen, only_ds))
+                                if prev_cats is not None:
+                                    updated_cats = dict(prev_cats)
+                                    for p in upserts_only:
+                                        if int(p[4]) == 1 and p[8]:
+                                            c_lbl = str(p[8])
+                                            updated_cats[c_lbl] = updated_cats.get(c_lbl, 0) + 1
+                                    self._cat_counts_cache[(next_gen, only_ds)] = updated_cats
+                                for (g_k, ds_k), cats_v in list(self._cat_counts_cache.items()):
+                                    if g_k == cur_gen and ds_k != only_ds:
+                                        self._cat_counts_cache[(next_gen, ds_k)] = cats_v
+                                if len(self._cat_counts_cache) > 64:
+                                    self._cat_counts_cache = {
+                                        k: v for k, v in self._cat_counts_cache.items() if k[0] >= next_gen - 2
                                     }
-                            else:
+                                self._common_cat_counts_cache.pop((cur_gen, only_ds), None)
+                                if not any(p[3] == 'raw_doc' for p in upserts_only):
+                                    for (g_k, ds_k, lim_k), pv in list(self._pending_raw_cache.items()):
+                                        if g_k == cur_gen:
+                                            self._pending_raw_cache[(next_gen, ds_k, lim_k)] = pv
+                                    if len(self._pending_raw_cache) > 32:
+                                        self._pending_raw_cache = {
+                                            k: v for k, v in self._pending_raw_cache.items() if k[0] >= next_gen - 2
+                                        }
+                                else:
+                                    self._pending_raw_cache.clear()
+                        else:
+                            with self._state_lock:
+                                self._recent_appends.clear()
+                                self._cat_counts_cache.clear()
+                                self._common_cat_counts_cache.clear()
                                 self._pending_raw_cache.clear()
                     else:
                         with self._state_lock:
@@ -3341,26 +3355,25 @@ class CatalogIndex:
                             self._cat_counts_cache.clear()
                             self._common_cat_counts_cache.clear()
                             self._pending_raw_cache.clear()
-                else:
+                elif mutated:
                     with self._state_lock:
                         self._recent_appends.clear()
                         self._cat_counts_cache.clear()
                         self._common_cat_counts_cache.clear()
                         self._pending_raw_cache.clear()
-            elif mutated:
-                with self._state_lock:
-                    self._recent_appends.clear()
-                    self._cat_counts_cache.clear()
-                    self._common_cat_counts_cache.clear()
-                    self._pending_raw_cache.clear()
-                    if sessions_mutated or removed_datasets or force_full:
-                        self._sessions_generation += 1
-                        self._children_preview_cache.clear()
-                    for ds_c, (_days, _k, _r, _c, cold_cats) in cold_bucket_summaries.items():
-                        self._cat_counts_cache[(next_gen, ds_c)] = dict(cold_cats)
-            self._last_synced_cog_sig = cog_snap_sig
-            self._last_synced_pin_ts_ns_pending = sync_pin_ts_ns
-            self._last_sync_doc_count_pending = sum(int(fp[0]) for fp in live_fingerprints.values())
+                        if sessions_mutated or removed_datasets or force_full:
+                            self._sessions_generation += 1
+                            self._children_preview_cache.clear()
+                        for ds_c, (_days, _k, _r, _c, cold_cats) in cold_bucket_summaries.items():
+                            self._cat_counts_cache[(next_gen, ds_c)] = dict(cold_cats)
+                self._last_synced_cog_sig = cog_snap_sig
+                self._last_synced_pin_ts_ns_pending = sync_pin_ts_ns
+                self._last_sync_doc_count_pending = doc_count_total
+
+            if is_temp_rebuild:
+                self._pending_rebuild_publish = _publish_in_memory_state
+            else:
+                _publish_in_memory_state()
             return next_gen, (prov_ok and recall_ok)
         except (PolicyError, sqlite3.Error):
             if con.in_transaction:
@@ -3503,8 +3516,13 @@ class CatalogIndex:
                 return self._last_generation, None, False
             if join and self._inflight_sync is not None and self._inflight_sync[0] == ds_tuple:
                 return None, self._inflight_sync[1], True
-            self._cancel_bg_timer_locked()
-            self._pending_bg_sync = None
+            if (
+                force
+                or self._pending_bg_sync is None
+                or (self._pending_bg_sync[0] == ds_tuple and self._pending_bg_sync[1] is relations_resolver)
+            ):
+                self._cancel_bg_timer_locked()
+                self._pending_bg_sync = None
             fut = self._submit_sync_locked(ds_tuple, entry_sig, relations_resolver, force=force)
             return None, fut, False
 
@@ -3580,7 +3598,15 @@ class CatalogIndex:
                 return
             pending = self._pending_bg_sync
         ds_tuple, relations_resolver = pending
-        cur_sig = self._full_stat_sig(ds_tuple, relations_resolver)
+        try:
+            cur_sig = self._full_stat_sig(ds_tuple, relations_resolver)
+        except Exception:
+            with self._state_lock:
+                if self._bg_timer is timer:
+                    self._bg_timer = None
+                self._pending_bg_sync = None
+                self._bg_sync_failed = True
+            return
         with self._state_lock:
             if self._bg_timer is not timer:
                 return
@@ -3632,9 +3658,10 @@ class CatalogIndex:
                 self._rebuilding
                 or not self._has_synced_in_process
                 or self._last_synced_ds_tuple != ds_tuple
+                or (self._inflight_sync is not None and self._inflight_sync[0] != ds_tuple)
                 or self._last_synced_tz_name != entry_sig[3]
                 or self._bg_sync_failed
-                or (bool(self.official_data) and entry_sig[0] == ((0, 0, 0), (0, 0, 0)))
+                or (bool(self.official_data) and entry_sig[0][0] == (0, 0, 0))
             )
             if not need_blocking:
                 if self._last_stat_sig == entry_sig:
@@ -3703,6 +3730,7 @@ class CatalogIndex:
         tmp_path = self.path.parent / f'{self.path.name}.rebuilding.{os.getpid()}.{time.time_ns()}'
         tmp_con = None
         write_con_closed = False
+        self._pending_rebuild_publish = None
         try:
             tmp_con = _open_private_rw(tmp_path)
             _create_catalog_schema(tmp_con, self.tz_provider(), create_indexes=False)
@@ -3755,6 +3783,10 @@ class CatalogIndex:
             _apply_connection_pragmas(self._write_con)
             write_con_closed = False
             self._invalidate_readers()
+            publish_fn = self._pending_rebuild_publish
+            self._pending_rebuild_publish = None
+            if publish_fn is not None:
+                publish_fn()
             return gen, cacheable
         except Exception:
             if write_con_closed and self._write_con is None and self.path.is_file():
@@ -3764,6 +3796,7 @@ class CatalogIndex:
                     pass
             raise
         finally:
+            self._pending_rebuild_publish = None
             if tmp_con is not None:
                 try:
                     tmp_con.close()
@@ -4550,88 +4583,89 @@ class CatalogIndex:
         ds = uuid_text(dataset_id)
         uid_filter = uuid_text(user_id) if user_id else ''
         with self._reader_lease() as con:
-            if uid_filter:
-                parent_row = con.execute(
-                    f'SELECT {_SELECT_SESS_COLS} FROM catalog_sessions WHERE dataset_id = ? AND session_id = ? AND user_id = ? LIMIT 1',
-                    (ds, parent_session_id, uid_filter),
-                ).fetchone()
-                sibling_owner_cnt = int(
-                    con.execute(
-                        'SELECT COUNT(*) FROM catalog_sessions WHERE dataset_id = ? AND session_id = ?',
+            with ro_snapshot(con):
+                if uid_filter:
+                    parent_row = con.execute(
+                        f'SELECT {_SELECT_SESS_COLS} FROM catalog_sessions WHERE dataset_id = ? AND session_id = ? AND user_id = ? LIMIT 1',
+                        (ds, parent_session_id, uid_filter),
+                    ).fetchone()
+                    sibling_owner_cnt = int(
+                        con.execute(
+                            'SELECT COUNT(*) FROM catalog_sessions WHERE dataset_id = ? AND session_id = ?',
+                            (ds, parent_session_id),
+                        ).fetchone()[0]
+                        or 0
+                    )
+                else:
+                    parent_row = con.execute(
+                        f'''SELECT {_SELECT_SESS_COLS}
+                            FROM catalog_sessions
+                            WHERE dataset_id = ? AND session_id = ?
+                            ORDER BY sort_ts_desc_key ASC, user_id ASC
+                            LIMIT 1''',
                         (ds, parent_session_id),
-                    ).fetchone()[0]
-                    or 0
-                )
-            else:
-                parent_row = con.execute(
-                    f'''SELECT {_SELECT_SESS_COLS}
-                        FROM catalog_sessions
-                        WHERE dataset_id = ? AND session_id = ?
-                        ORDER BY sort_ts_desc_key ASC, user_id ASC
-                        LIMIT 1''',
-                    (ds, parent_session_id),
-                ).fetchone()
-                sibling_owner_cnt = 1
-            if parent_row is None:
-                raise PolicyError('session_not_found', 404)
-            parent = _row_to_session_dict(parent_row)
-            is_top = bool(parent['is_top_level'])
-            scope_by_user = bool(uid_filter and sibling_owner_cnt > 1)
+                    ).fetchone()
+                    sibling_owner_cnt = 1
+                if parent_row is None:
+                    raise PolicyError('session_not_found', 404)
+                parent = _row_to_session_dict(parent_row)
+                is_top = bool(parent['is_top_level'])
+                scope_by_user = bool(uid_filter and sibling_owner_cnt > 1)
 
-            if scope_by_user:
-                if is_top:
-                    base_where = 'dataset_id = ? AND user_id = ? AND is_top_level = 0 AND root_session_id = ?'
-                    base_params: tuple = (ds, uid_filter, parent_session_id)
+                if scope_by_user:
+                    if is_top:
+                        base_where = 'dataset_id = ? AND user_id = ? AND is_top_level = 0 AND root_session_id = ?'
+                        base_params: tuple = (ds, uid_filter, parent_session_id)
+                    else:
+                        base_where = 'dataset_id = ? AND user_id = ? AND parent_session_id = ?'
+                        base_params = (ds, uid_filter, parent_session_id)
+                    if after_key is not None:
+                        sql = f'''SELECT {_SELECT_SESS_COLS}
+                                  FROM catalog_sessions
+                                  WHERE {base_where}
+                                    AND (sort_ts_desc_key, session_id) > (?, ?)
+                                  ORDER BY sort_ts_desc_key ASC, session_id ASC
+                                  LIMIT ?'''
+                        params = (*base_params, int(after_key[0]), str(after_key[2]), limit + 1)
+                    else:
+                        sql = f'''SELECT {_SELECT_SESS_COLS}
+                                  FROM catalog_sessions
+                                  WHERE {base_where}
+                                  ORDER BY sort_ts_desc_key ASC, session_id ASC
+                                  LIMIT ?'''
+                        params = (*base_params, limit + 1)
                 else:
-                    base_where = 'dataset_id = ? AND user_id = ? AND parent_session_id = ?'
-                    base_params = (ds, uid_filter, parent_session_id)
-                if after_key is not None:
-                    sql = f'''SELECT {_SELECT_SESS_COLS}
-                              FROM catalog_sessions
-                              WHERE {base_where}
-                                AND (sort_ts_desc_key, session_id) > (?, ?)
-                              ORDER BY sort_ts_desc_key ASC, session_id ASC
-                              LIMIT ?'''
-                    params = (*base_params, int(after_key[0]), str(after_key[2]), limit + 1)
-                else:
-                    sql = f'''SELECT {_SELECT_SESS_COLS}
-                              FROM catalog_sessions
-                              WHERE {base_where}
-                              ORDER BY sort_ts_desc_key ASC, session_id ASC
-                              LIMIT ?'''
-                    params = (*base_params, limit + 1)
-            else:
-                if is_top:
-                    base_where = 'dataset_id = ? AND is_top_level = 0 AND root_session_id = ?'
-                    base_params = (ds, parent_session_id)
-                else:
-                    base_where = 'dataset_id = ? AND parent_session_id = ?'
-                    base_params = (ds, parent_session_id)
-                if after_key is not None:
-                    sql = f'''SELECT {_SELECT_SESS_COLS}
-                              FROM catalog_sessions
-                              WHERE {base_where}
-                                AND (sort_ts_desc_key, user_id, session_id) > (?, ?, ?)
-                              ORDER BY sort_ts_desc_key ASC, user_id ASC, session_id ASC
-                              LIMIT ?'''
-                    params = (*base_params, int(after_key[0]), str(after_key[1]), str(after_key[2]), limit + 1)
-                else:
-                    sql = f'''SELECT {_SELECT_SESS_COLS}
-                              FROM catalog_sessions
-                              WHERE {base_where}
-                              ORDER BY sort_ts_desc_key ASC, user_id ASC, session_id ASC
-                              LIMIT ?'''
-                    params = (*base_params, limit + 1)
+                    if is_top:
+                        base_where = 'dataset_id = ? AND is_top_level = 0 AND root_session_id = ?'
+                        base_params = (ds, parent_session_id)
+                    else:
+                        base_where = 'dataset_id = ? AND parent_session_id = ?'
+                        base_params = (ds, parent_session_id)
+                    if after_key is not None:
+                        sql = f'''SELECT {_SELECT_SESS_COLS}
+                                  FROM catalog_sessions
+                                  WHERE {base_where}
+                                    AND (sort_ts_desc_key, user_id, session_id) > (?, ?, ?)
+                                  ORDER BY sort_ts_desc_key ASC, user_id ASC, session_id ASC
+                                  LIMIT ?'''
+                        params = (*base_params, int(after_key[0]), str(after_key[1]), str(after_key[2]), limit + 1)
+                    else:
+                        sql = f'''SELECT {_SELECT_SESS_COLS}
+                                  FROM catalog_sessions
+                                  WHERE {base_where}
+                                  ORDER BY sort_ts_desc_key ASC, user_id ASC, session_id ASC
+                                  LIMIT ?'''
+                        params = (*base_params, limit + 1)
 
-            rows = [_row_to_session_dict(r) for r in con.execute(sql, params).fetchall()]
-            has_more = len(rows) > limit
-            page_rows = rows[:limit]
+                rows = [_row_to_session_dict(r) for r in con.execute(sql, params).fetchall()]
+                has_more = len(rows) > limit
+                page_rows = rows[:limit]
 
-            return {
-                'total_count': int(parent['child_count']),
-                'items': page_rows,
-                'has_more': has_more,
-            }
+                return {
+                    'total_count': int(parent['child_count']),
+                    'items': page_rows,
+                    'has_more': has_more,
+                }
 
     def query_top_level_children_previews(
         self,

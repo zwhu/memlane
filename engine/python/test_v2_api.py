@@ -1098,6 +1098,55 @@ class V2APITests(AioHTTPTestCase):
             else:
                 delattr(self.dummy_official, 'request')
 
+    async def test_message_summary_preview_error_isolates_reading_state_and_404_retry_checks_acl_first(self):
+        # 1. Malformed raw_data_location on an unread doc without readable label/name must only set
+        #    errors['reading_state'] without wiping activity or pending_documents!
+        bad_doc = str(uuid.uuid4())
+        with sqlite3.connect(self.cognee_db) as con:
+            con.execute(
+                'INSERT INTO data VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                (
+                    uuid.UUID(bad_doc).hex, uuid.UUID(self.ds_proj).hex, None,
+                    f'text_{"f" * 32}.md', None, 'text/markdown', 'file://[broken',
+                    '{}', json.dumps({'lesson_type': 'state', 'state_key': 'sk:bad-uri', 'session_date': '2026-11-22'}),
+                    json.dumps(['session_learnings']), '{}',
+                    '2026-11-22 12:00:00', '2026-11-22 12:00:00', 'h-bad-uri',
+                ),
+            )
+        ms = await self.client.get('/v1/projects/p1/message-summary', headers=self.manager_headers)
+        self.assertEqual(ms.status, 200)
+        ms_body = await ms.json()
+        self.assertEqual(ms_body['pending_documents_count'], 1)
+        self.assertEqual(ms_body['errors'].get('reading_state'), 'reading_state_unavailable')
+        self.assertNotIn('documents', ms_body['errors'])
+
+        # 2. On 404 anchor retry, if permission is revoked before retry, 403 must win even if sync would fail!
+        handles = self.app['v2_api_handles']
+        cat = handles.catalog_index
+        missing_anchor = str(uuid.uuid4())
+        orig_query = cat.query_project_knowledge
+
+        def _revoke_during_first_query(*args, **kwargs):
+            self.dummy_official.authorized.discard(self.ds_proj)
+            return orig_query(*args, **kwargs)
+
+        orig_sync_async = cat.sync_async
+        async def _broken_sync(*args, **kwargs):
+            raise PolicyError('official_store_unavailable', 503)
+
+        cat.query_project_knowledge = _revoke_during_first_query
+        cat.sync_async = _broken_sync
+        try:
+            resp = await self.client.get(
+                f'/v1/projects/p1/knowledge?anchor_doc_id={missing_anchor}',
+                headers=self.manager_headers,
+            )
+            self.assertEqual(resp.status, 403)
+        finally:
+            cat.query_project_knowledge = orig_query
+            cat.sync_async = orig_sync_async
+            self.dummy_official.authorized.add(self.ds_proj)
+
 
 if __name__ == '__main__':
     unittest.main()

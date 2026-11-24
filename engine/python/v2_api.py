@@ -883,15 +883,46 @@ def attach_v2_api(
             await _run_db(cat.sync, managed_ds, relations_resolver=rel_resolver)
         return projects, common
 
-    async def _query_with_fresh_retry(dataset_id, missing_code, query, *args):
+    async def _run_read_query(query, *args, missing_code=None, revalidate=None):
         try:
             return await _run_db(query, *args)
         except PolicyError as exc:
-            if not missing_code or exc.code != missing_code or exc.status != 404:
+            is_rebuilding = exc.code == 'catalog_index_rebuilding' and exc.status == 503
+            is_missing = bool(missing_code and exc.code == missing_code and exc.status == 404)
+            if not is_rebuilding and not is_missing:
                 raise
+        if revalidate is not None:
+            await revalidate()
         await _ensure_synced(fresh=True)
-        await verify_official_read_access(getattr(registry, 'official', None), dataset_id)
+        if revalidate is not None:
+            await revalidate()
         return await _run_db(query, *args)
+
+    def _project_revalidator(project_id: str, expected_dataset_id: str):
+        async def _revalidate():
+            proj = _require_verified_project(registry, project_id)
+            if proj['dataset_id'] != expected_dataset_id:
+                raise PolicyError('dataset_access_denied', 403)
+            await verify_official_read_access(getattr(registry, 'official', None), expected_dataset_id)
+
+        return _revalidate
+
+    def _common_revalidator(raw_ds: str, expected_dataset_id: str):
+        async def _revalidate():
+            if raw_ds:
+                cur_ds = _require_verified_managed_dataset(registry, raw_ds, allow_code=False)
+            else:
+                cur_common = registry.state.get('common')
+                if not isinstance(cur_common, dict) or not cur_common.get('dataset_id'):
+                    raise PolicyError('common_dataset_not_configured', 404)
+                if cur_common.get('status') != 'verified':
+                    raise PolicyError('project_unconfirmed', 403)
+                cur_ds = cur_common['dataset_id']
+            if cur_ds != expected_dataset_id:
+                raise PolicyError('dataset_access_denied', 403)
+            await verify_official_read_access(getattr(registry, 'official', None), expected_dataset_id)
+
+        return _revalidate
 
     # 1. GET /v1/datasets/{ds}/documents/{doc}/body
     async def document_body(request):
@@ -948,7 +979,7 @@ def attach_v2_api(
         agents_snapshot = {k: dict(v) for k, v in registry.state.get('agents', {}).items()}
         allowed_ds_set = set(allowed_ds)
 
-        def _build_sync():
+        def _query_overview_snap(_gen):
             meta = cat.meta()
             sync_map = cat.all_dataset_sync_info(allowed_ds)
             day_buckets = cat.overview_day_buckets(allowed_ds, days=days)
@@ -998,7 +1029,28 @@ def attach_v2_api(
                     'raw_doc_count': c_raw_cnt,
                     'catalog_version': str(cinfo.get('catalog_version', '')),
                 }
+            return (
+                meta,
+                total_knowledge,
+                total_raw_count,
+                day_buckets,
+                proj_summaries,
+                common_summary,
+                recent_raw,
+                proj_unread_sets,
+            )
 
+        def _build_sync():
+            (
+                meta,
+                total_knowledge,
+                total_raw_count,
+                day_buckets,
+                proj_summaries,
+                common_summary,
+                recent_raw,
+                proj_unread_sets,
+            ) = _query_catalog_snapshot(_query_overview_snap)
             recent_items = [
                 _format_knowledge_item(
                     d,
@@ -1052,7 +1104,7 @@ def attach_v2_api(
             rec_events,
             rec_more,
             rec_started,
-        ) = await _run_db(_build_sync)
+        ) = await _run_read_query(_build_sync)
         total_rec_hits = sum(len(ev.get('hits') or ()) for ev in rec_events)
         if total_rec_hits > 100:
             capped_events = []
@@ -1154,8 +1206,7 @@ def attach_v2_api(
             allowed_ds.append(common['dataset_id'])
             ds_to_proj[common['dataset_id']] = ''
 
-        def _query():
-            gen = cat.generation()
+        def _query_day_snap(gen):
             rows, has_more, total_count = cat.query_overview_day(allowed_ds, day, limit=limit, after_key=after_key)
             unread_flags = {}
             if identity and rows:
@@ -1167,6 +1218,10 @@ def attach_v2_api(
                     if pid:
                         for did, flag in read_store.page_unread_flags(identity, pid, ds, docs_in_ds, catalog_index=cat).items():
                             unread_flags[(ds, did)] = flag
+            return gen, rows, unread_flags, has_more, total_count
+
+        def _query():
+            gen, rows, unread_flags, has_more, total_count = _query_catalog_snapshot(_query_day_snap)
             formatted = [
                 _format_knowledge_item(
                     d,
@@ -1178,7 +1233,7 @@ def attach_v2_api(
             ]
             return gen, formatted, has_more, total_count
 
-        gen, formatted, base_has_more, total_count = await _run_db(_query)
+        gen, formatted, base_has_more, total_count = await _run_read_query(_query)
 
         def _make_payload(subset, _lo, hi):
             eff_more = bool(base_has_more or hi < len(formatted))
@@ -1406,8 +1461,10 @@ def attach_v2_api(
             cursor_keys,
             base_has_more,
             base_has_prev,
-        ) = await _query_with_fresh_retry(
-            dataset_id, 'document_not_found' if anchor_doc_id else None, _query_and_format,
+        ) = await _run_read_query(
+            _query_and_format,
+            missing_code='document_not_found' if anchor_doc_id else None,
+            revalidate=_project_revalidator(project_id, dataset_id),
         )
 
         def _make_payload(subset, lo, hi):
@@ -1521,8 +1578,7 @@ def attach_v2_api(
         await verify_official_read_access(getattr(registry, 'official', None), dataset_id)
         await _ensure_synced()
 
-        def _query():
-            gen = cat.generation()
+        def _query_snap(gen):
             sinfo = cat.dataset_sync_info(dataset_id) or {}
             cat_ver = str(sinfo.get('catalog_version', ''))
             recall_ids = _recall_event_doc_ids(recall_store, dataset_id, recall_agent, recall_event) if recall_event else None
@@ -1539,25 +1595,47 @@ def attach_v2_api(
             if res is None:
                 raise PolicyError('document_not_found', 404)
             rows = res['items']
-            formatted = [
-                _format_knowledge_item(
-                    d,
-                    project_id='',
-                    is_unread=False,
-                    official_data=official_data,
-                )
-                for d in rows
-            ]
             ckeys = [[d['sort_ts_desc_key'], d['doc_id']] for d in rows]
             return (
                 gen,
                 cat_ver,
                 res['total_filtered'],
                 res['category_counts'],
-                formatted,
+                rows,
                 ckeys,
                 bool(res['has_more']),
                 bool(res['has_prev']),
+            )
+
+        def _query_and_format_common():
+            (
+                gen_r,
+                cat_ver_r,
+                total_filtered_r,
+                category_counts_r,
+                rows_r,
+                ckeys_r,
+                has_more_r,
+                has_prev_r,
+            ) = _query_catalog_snapshot(_query_snap)
+            formatted_r = [
+                _format_knowledge_item(
+                    d,
+                    project_id='',
+                    is_unread=False,
+                    official_data=official_data,
+                )
+                for d in rows_r
+            ]
+            return (
+                gen_r,
+                cat_ver_r,
+                total_filtered_r,
+                category_counts_r,
+                formatted_r,
+                ckeys_r,
+                has_more_r,
+                has_prev_r,
             )
 
         (
@@ -1569,8 +1647,10 @@ def attach_v2_api(
             ckeys,
             base_has_more,
             base_has_prev,
-        ) = await _query_with_fresh_retry(
-            dataset_id, 'document_not_found' if anchor_doc_id else None, _query,
+        ) = await _run_read_query(
+            _query_and_format_common,
+            missing_code='document_not_found' if anchor_doc_id else None,
+            revalidate=_common_revalidator(raw_ds, dataset_id),
         )
 
         def _make_payload(subset, lo, hi):
@@ -1657,8 +1737,7 @@ def attach_v2_api(
                 allowed_ds.append(common['dataset_id'])
                 ds_to_proj[common['dataset_id']] = ''
 
-        def _query():
-            gen = cat.generation()
+        def _query_recent_snap(gen):
             k_rows = cat.query_overview_recent(allowed_ds, limit=limit)
             unread_flags = {}
             if identity and k_rows:
@@ -1670,6 +1749,11 @@ def attach_v2_api(
                     if pid:
                         for did, flag in read_store.page_unread_flags(identity, pid, ds, docs_in_ds, catalog_index=cat).items():
                             unread_flags[(ds, did)] = flag
+            s_rows = cat.query_recent_sessions(allowed_ds, limit=limit)
+            return gen, k_rows, unread_flags, s_rows
+
+        def _query():
+            gen, k_rows, unread_flags, s_rows = _query_catalog_snapshot(_query_recent_snap)
             k_items = [
                 _format_knowledge_item(
                     d,
@@ -1680,7 +1764,6 @@ def attach_v2_api(
                 for d in k_rows
             ]
             # Indexed query on catalog_sessions (zero TEMP B-TREE) + cache.db hydration
-            s_rows = cat.query_recent_sessions(allowed_ds, limit=limit)
             s_items = [
                 {
                     'session_id': sr['session_id'],
@@ -1698,7 +1781,7 @@ def attach_v2_api(
                 hydrator.hydrate_sessions(cache_db, s_items)
             return gen, k_items, s_items
 
-        gen, k_items, s_items = await _run_db(_query)
+        gen, k_items, s_items = await _run_read_query(_query)
 
         def _make_payload(subset, _lo, _hi):
             return {
@@ -1768,8 +1851,7 @@ def attach_v2_api(
                 allowed_ds.append(common['dataset_id'])
                 ds_to_proj[common['dataset_id']] = ''
 
-        def _query():
-            gen = cat.generation()
+        def _query_meta_snap(gen):
             rows, has_more = cat.query_search_metadata(
                 allowed_ds,
                 query_text,
@@ -1787,6 +1869,10 @@ def attach_v2_api(
                     if pid:
                         for did, flag in read_store.page_unread_flags(identity, pid, ds, docs_in_ds, catalog_index=cat).items():
                             unread_flags[(ds, did)] = flag
+            return gen, rows, unread_flags, has_more
+
+        def _query():
+            gen, rows, unread_flags, has_more = _query_catalog_snapshot(_query_meta_snap)
             formatted = [
                 _format_knowledge_item(
                     d,
@@ -1798,7 +1884,7 @@ def attach_v2_api(
             ]
             return gen, formatted, has_more
 
-        gen, formatted, base_has_more = await _run_db(_query)
+        gen, formatted, base_has_more = await _run_read_query(_query)
 
         def _make_payload(subset, _lo, hi):
             return {
@@ -1859,7 +1945,10 @@ def attach_v2_api(
             )
             return gen, res
 
-        gen, res = await _run_db(_query)
+        gen, res = await _run_read_query(
+            _query,
+            revalidate=_project_revalidator(project_id, dataset_id),
+        )
         order_keys = res['order_keys']
 
         def _make_payload(subset, _lo, hi):
@@ -1940,8 +2029,10 @@ def attach_v2_api(
             )
             return gen, res
 
-        gen, res = await _query_with_fresh_retry(
-            dataset_id, 'session_not_found', _query,
+        gen, res = await _run_read_query(
+            _query,
+            missing_code='session_not_found',
+            revalidate=_project_revalidator(project_id, dataset_id),
         )
         order_keys = res['order_keys']
 
@@ -2036,26 +2127,31 @@ def attach_v2_api(
                     reading_err_l,
                 ) = snap
                 unread_preview_l = []
-                for d in top_docs_l:
-                    preview_snip = ''
-                    if (
-                        official_data
-                        and d.get('raw_data_location')
-                        and not _readable_name(d.get('doc_label'))
-                        and not _readable_name(d.get('doc_name'))
-                    ):
-                        preview_snip, _ = read_local_preview_snippet(
-                            d['raw_data_location'],
-                            official_data,
-                            max_runes=80,
-                            max_utf8_bytes=240,
-                        )
-                    unread_preview_l.append({
-                        'doc_id': d['doc_id'],
-                        'title': _knowledge_title(d, preview_snip),
-                        'effective_date': d['effective_date'],
-                        'created_at': d['created_at'],
-                    })
+                if reading_err_l is None and top_docs_l:
+                    try:
+                        for d in top_docs_l:
+                            preview_snip = ''
+                            if (
+                                official_data
+                                and d.get('raw_data_location')
+                                and not _readable_name(d.get('doc_label'))
+                                and not _readable_name(d.get('doc_name'))
+                            ):
+                                preview_snip, _ = read_local_preview_snippet(
+                                    d['raw_data_location'],
+                                    official_data,
+                                    max_runes=80,
+                                    max_utf8_bytes=240,
+                                )
+                            unread_preview_l.append({
+                                'doc_id': d['doc_id'],
+                                'title': _knowledge_title(d, preview_snip),
+                                'effective_date': d['effective_date'],
+                                'created_at': d['created_at'],
+                            })
+                    except Exception as exc:
+                        reading_err_l = exc.code if isinstance(exc, PolicyError) else 'reading_state_unavailable'
+                        unread_preview_l = []
                 return (
                     a_val,
                     a_err,
@@ -2132,7 +2228,20 @@ def attach_v2_api(
                     reading_err_l,
                 )
 
-            return await _run_db(_run_all)
+            result = await _run_db(_run_all)
+            a_val, a_err, d_val, d_err = result
+            if isinstance(d_err, PolicyError) and d_err.code == 'catalog_index_rebuilding' and d_err.status == 503:
+                try:
+                    await _project_revalidator(project_id, dataset_id)()
+                    await _ensure_synced(fresh=True)
+                    await _project_revalidator(project_id, dataset_id)()
+                except BaseException as exc:
+                    if isinstance(exc, asyncio.CancelledError):
+                        raise
+                    return a_val, a_err, None, exc
+                sync_err = None
+                return await _run_db(_run_all)
+            return result
 
         b_res, n_res, db_res = await asyncio.gather(
             _load_backlog(),
