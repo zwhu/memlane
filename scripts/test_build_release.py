@@ -18,7 +18,7 @@ class BuildReleaseTests(unittest.TestCase):
         self,
         root: Path,
         *,
-        version: str = '0.1.0-beta.1',
+        version: str = '0.1.0-beta.2',
         min_sys: str = '26.0',
         with_graph: bool = True,
         missing_licenses: list[str] | None = None,
@@ -71,13 +71,13 @@ class BuildReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_release.load_release_manifest(root)
 
-            self._write_fake_repo(root, version='0.1.0-beta.1', min_sys='14.0')
+            self._write_fake_repo(root, version='0.1.0-beta.2', min_sys='14.0')
             with self.assertRaises(ValueError):
                 build_release.load_release_manifest(root)
 
             no_graph = root / 'no-graph'
             no_graph.mkdir()
-            self._write_fake_repo(no_graph, version='0.1.0-beta.1', min_sys='26.0', with_graph=False)
+            self._write_fake_repo(no_graph, version='0.1.0-beta.2', min_sys='26.0', with_graph=False)
             with self.assertRaises(ValueError):
                 build_release.verify_graph_assets(no_graph)
 
@@ -117,7 +117,7 @@ class BuildReleaseTests(unittest.TestCase):
             )
             self.assertEqual(code, 0)
             self.assertEqual(res['status'], 'dry_run')
-            self.assertTrue(res['planned_dmg'].endswith('darwin-arm64/Memlane-0.1.0-beta.1-arm64.dmg'))
+            self.assertTrue(res['planned_dmg'].endswith('darwin-arm64/Memlane-0.1.0-beta.2-arm64.dmg'))
             self.assertFalse(out_dir.exists())
 
     def test_verify_info_plist_normalize_dmg_and_sha256sums(self):
@@ -130,24 +130,24 @@ class BuildReleaseTests(unittest.TestCase):
             with (contents / 'Info.plist').open('wb') as fh:
                 plistlib.dump({
                     'CFBundleIdentifier': 'io.github.zwhu.memlane',
-                    'CFBundleShortVersionString': '0.1.0-beta.1',
+                    'CFBundleShortVersionString': '0.1.0-beta.2',
                     'LSMinimumSystemVersion': '26.0',
                 }, fh)
 
-            info = build_release.verify_info_plist(app, '0.1.0-beta.1', '26.0')
-            self.assertEqual(info['short_version'], '0.1.0-beta.1')
+            info = build_release.verify_info_plist(app, '0.1.0-beta.2', '26.0')
+            self.assertEqual(info['short_version'], '0.1.0-beta.2')
             with self.assertRaises(ValueError):
-                build_release.verify_info_plist(app, '0.1.0-beta.2', '26.0')
+                build_release.verify_info_plist(app, '0.1.0-beta.3', '26.0')
 
-            raw_dmg = platform_dir / 'memlane-0.1.0-beta.1-arm64.dmg'
+            raw_dmg = platform_dir / 'memlane-0.1.0-beta.2-arm64.dmg'
             raw_dmg.write_bytes(b'fake-dmg-payload')
-            canonical = build_release.normalize_dmg_filename(platform_dir, 'memlane', 'Memlane', '0.1.0-beta.1', 'arm64')
-            self.assertEqual(canonical.name, 'Memlane-0.1.0-beta.1-arm64.dmg')
-            self.assertIn('Memlane-0.1.0-beta.1-arm64.dmg', [p.name for p in platform_dir.iterdir()])
+            canonical = build_release.normalize_dmg_filename(platform_dir, 'memlane', 'Memlane', '0.1.0-beta.2', 'arm64')
+            self.assertEqual(canonical.name, 'Memlane-0.1.0-beta.2-arm64.dmg')
+            self.assertIn('Memlane-0.1.0-beta.2-arm64.dmg', [p.name for p in platform_dir.iterdir()])
 
             sums_path, sums = build_release.write_sha256_sums(platform_dir, [canonical])
             self.assertTrue(sums_path.is_file())
-            expected_line = f'{sums[canonical.name]}  Memlane-0.1.0-beta.1-arm64.dmg'
+            expected_line = f'{sums[canonical.name]}  Memlane-0.1.0-beta.2-arm64.dmg'
             self.assertIn(expected_line, sums_path.read_text(encoding='utf-8'))
 
     def _init_git_repo(self, repo: Path, *, with_graph: bool = True) -> str:
@@ -179,7 +179,7 @@ class BuildReleaseTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(res['git_ref'], 'HEAD')
             self.assertEqual(res['commit'], head_sha)
-            self.assertEqual(res['manifest']['version'], '0.1.0-beta.1')
+            self.assertEqual(res['manifest']['version'], '0.1.0-beta.2')
             self.assertFalse(out_dir.exists())
 
             local_dir = repo / '.local'

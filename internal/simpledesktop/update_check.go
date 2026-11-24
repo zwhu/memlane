@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	AppVersion            = "0.1.0-beta.1"
+	AppVersion            = "0.1.0-beta.2"
 	defaultReleasesAPIURL = "https://api.github.com/repos/zwhu/memlane/releases?per_page=10"
 	releasesPagePrefix    = "https://github.com/zwhu/memlane/releases/"
 	releasesIndexURL      = "https://github.com/zwhu/memlane/releases"

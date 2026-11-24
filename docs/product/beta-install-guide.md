@@ -1,4 +1,4 @@
-# Memlane v0.1.0-beta.1 内测安装与卸载指南
+# Memlane v0.1.0-beta.2 内测安装与卸载指南
 
 ## 1. 运行环境与要求
 
@@ -7,7 +7,7 @@
 
 ## 2. 安装 Memlane
 
-1. 双击从项目发布页下载的 `.dmg`，把 **Memlane** 拖入「应用程序」，再从「应用程序」打开 Memlane。[GitHub 发布页](https://github.com/zwhu/memlane/releases/tag/v0.1.0-beta.1)
+1. 双击从项目发布页下载的 `.dmg`，把 **Memlane** 拖入「应用程序」，再从「应用程序」打开 Memlane。[GitHub 发布页](https://github.com/zwhu/memlane/releases/tag/v0.1.0-beta.2)
 2. 如果弹出「未打开‘Memlane’」，点 **「完成」**，确认安装包来自项目发布页。
 3. 打开 **系统设置 → 隐私与安全性**，向下滚动到 **「安全性」**。找到「已阻止‘Memlane’以保护 Mac」右侧的 **「仍要打开」**，点击它。
 4. 在确认框里再次点 **「仍要打开」**，按 macOS 提示用管理员触控 ID 或密码完成验证。Memlane 打开后就可以继续使用。
@@ -32,7 +32,7 @@ xattr -dr com.apple.quarantine /Applications/Memlane.app
 
 ## 5. 本次内测支持的 Agent
 
-`v0.1.0-beta.1` 接入页默认开放以下 4 个已完成真机主链路验证的宿主 Coding Agent（其余宿主待后续真机验收完闭环后逐步开放）：
+`v0.1.0-beta.2` 接入页默认开放以下 4 个已完成真机主链路验证的宿主 Coding Agent（其余宿主待后续真机验收完闭环后逐步开放）：
 
 - **Codex**
 - **Antigravity（Gemini App）**（提示：目前验证覆盖任务/CodeMode 新会话，普通闲聊尚待后续适配）

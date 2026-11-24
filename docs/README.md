@@ -11,7 +11,7 @@
 | [roadmap.md](product/roadmap.md) | 后续演进方向与待办记录 |
 | [deployment-options-20261117.md](product/deployment-options-20261117.md) | 单人记忆库在本地、Docker 与远程部署的演进方向与兼容评估 |
 | [release-v0.1.0-beta.1-20261121.md](product/release-v0.1.0-beta.1-20261121.md) | v0.1.0-beta.1 小范围公测发版边界、国内镜像源实测调研与 M1–M4 实施清单 |
-| [beta-install-guide.md](product/beta-install-guide.md) | v0.1.0-beta.1 内测安装、SHA256 校验、Gatekeeper 放行、首次下载源与安全卸载指南 |
+| [beta-install-guide.md](product/beta-install-guide.md) | v0.1.0-beta.2 内测安装、SHA256 校验、Gatekeeper 放行、首次下载源与安全卸载指南 |
 | [THIRD_PARTY_LICENSES.md](../THIRD_PARTY_LICENSES.md) | 第三方开源组件、本地运行依赖与向量模型许可说明 |
 
 ## 2. 系统架构与技术契约 (`architecture/`)

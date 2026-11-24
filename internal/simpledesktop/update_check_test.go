@@ -16,11 +16,12 @@ func TestCompareSemverHandlesBetaPrereleasesAndMultiDigitParts(t *testing.T) {
 		a, b string
 		want int
 	}{
+		{"v0.1.0-beta.3", "v0.1.0-beta.2", 1},
 		{"v0.1.0-beta.2", "0.1.0-beta.1", 1},
 		{"v0.1.0-beta.10", "v0.1.0-beta.2", 1},
 		{"0.1.0", "0.1.0-beta.9", 1},
-		{"0.1.0-beta.1", "0.1.0", -1},
-		{"v0.1.0-beta.1", "0.1.0-beta.1", 0},
+		{"0.1.0-beta.2", "0.1.0", -1},
+		{"v0.1.0-beta.2", "0.1.0-beta.2", 0},
 		{"v0.2.0-beta.1", "v0.1.9", 1},
 	}
 	for _, tc := range cases {
@@ -48,16 +49,16 @@ func TestFetchLatestReleaseFiltersDraftsAndUnsafeURLs(t *testing.T) {
 				Prerelease: false,
 			},
 			{
-				TagName:    "v0.1.0-beta.2",
-				Name:       "Beta 2",
-				HTMLURL:    "https://github.com/zwhu/memlane/releases/tag/v0.1.0-beta.2",
+				TagName:    "v0.1.0-beta.3",
+				Name:       "Beta 3",
+				HTMLURL:    "https://github.com/zwhu/memlane/releases/tag/v0.1.0-beta.3",
 				Draft:      false,
 				Prerelease: true,
 			},
 			{
-				TagName:    "v0.1.0-beta.1",
-				Name:       "Beta 1",
-				HTMLURL:    "https://github.com/zwhu/memlane/releases/tag/v0.1.0-beta.1",
+				TagName:    "v0.1.0-beta.2",
+				Name:       "Beta 2",
+				HTMLURL:    "https://github.com/zwhu/memlane/releases/tag/v0.1.0-beta.2",
 				Draft:      false,
 				Prerelease: true,
 			},
@@ -69,7 +70,7 @@ func TestFetchLatestReleaseFiltersDraftsAndUnsafeURLs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetchLatestRelease failed: %v", err)
 	}
-	if !hasUpdate || latest != "v0.1.0-beta.2" || relURL != "https://github.com/zwhu/memlane/releases/tag/v0.1.0-beta.2" {
+	if !hasUpdate || latest != "v0.1.0-beta.3" || relURL != "https://github.com/zwhu/memlane/releases/tag/v0.1.0-beta.3" {
 		t.Fatalf("unexpected release result: latest=%q url=%q hasUpdate=%v", latest, relURL, hasUpdate)
 	}
 
@@ -92,8 +93,8 @@ func TestVersionUpdateSettingsUIAndOpenDownloadPage(t *testing.T) {
 	a.updateCheck = updateCheckState{
 		Checked:       true,
 		HasUpdate:     true,
-		LatestVersion: "v0.1.0-beta.2",
-		ReleaseURL:    "https://github.com/zwhu/memlane/releases/tag/v0.1.0-beta.2",
+		LatestVersion: "v0.1.0-beta.3",
+		ReleaseURL:    "https://github.com/zwhu/memlane/releases/tag/v0.1.0-beta.3",
 		CheckedAt:     time.Now(),
 	}
 
@@ -105,12 +106,12 @@ func TestVersionUpdateSettingsUIAndOpenDownloadPage(t *testing.T) {
 		})
 	}, 1200, 820)
 
-	if !tt.HasText("版本与更新") || !tt.HasText("v0.1.0-beta.1") || !tt.HasText("发现新版本") || !tt.HasText("前往下载页面") {
+	if !tt.HasText("版本与更新") || !tt.HasText("v0.1.0-beta.2") || !tt.HasText("发现新版本") || !tt.HasText("前往下载页面") {
 		t.Fatalf("missing version update settings UI text: %v", tt.Texts())
 	}
 
 	clickProjectUI(t, tt, "前往下载页面")
-	if openedURL != "https://github.com/zwhu/memlane/releases/tag/v0.1.0-beta.2" {
+	if openedURL != "https://github.com/zwhu/memlane/releases/tag/v0.1.0-beta.3" {
 		t.Fatalf("expected validated GitHub release URL opened, got %q", openedURL)
 	}
 

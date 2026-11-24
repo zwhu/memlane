@@ -145,7 +145,7 @@ type existingArchiveError struct{ msg string }
 
 func (e existingArchiveError) Error() string { return e.msg }
 
-const artifactUserAgent = "Memlane/0.1.0-beta.1"
+const artifactUserAgent = "Memlane/0.1.0-beta.2"
 
 type artifactHTTPError struct{ statusCode int }
 
