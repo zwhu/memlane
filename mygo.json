@@ -6,6 +6,7 @@
   "icon": "assets/branding/memlane-icon.png",
   "main": "./cmd/memlane-app",
   "out": "build",
+  "resources": ["LICENSE", "NOTICE", "THIRD_PARTY_LICENSES.md"],
   "macos": {
     "minimumSystemVersion": "26.0",
     "signingIdentity": "-"

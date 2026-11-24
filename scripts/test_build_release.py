@@ -22,6 +22,7 @@ class BuildReleaseTests(unittest.TestCase):
         min_sys: str = '26.0',
         with_graph: bool = True,
         missing_licenses: list[str] | None = None,
+        declare_license_resources: bool = True,
     ) -> None:
         (root / 'mygo.json').write_text(json.dumps({
             'name': 'Memlane',
@@ -31,8 +32,11 @@ class BuildReleaseTests(unittest.TestCase):
             'icon': 'assets/branding/memlane-icon.png',
             'main': './cmd/memlane-app',
             'out': 'build',
+            'resources': list(build_release.REQUIRED_LICENSE_FILES) if declare_license_resources else [],
             'macos': {'minimumSystemVersion': min_sys, 'signingIdentity': '-'},
         }), encoding='utf-8')
+        for name in build_release.REQUIRED_LICENSE_FILES:
+            (root / name).write_text(f'{name} text\n', encoding='utf-8')
         if with_graph:
             dist = root / 'web' / 'official-graph' / 'dist'
             dist.mkdir(parents=True, exist_ok=True)
@@ -117,8 +121,47 @@ class BuildReleaseTests(unittest.TestCase):
             )
             self.assertEqual(code, 0)
             self.assertEqual(res['status'], 'dry_run')
+            self.assertEqual(res['license_files'], list(build_release.REQUIRED_LICENSE_FILES))
             self.assertTrue(res['planned_dmg'].endswith('darwin-arm64/Memlane-0.1.0-beta.2-arm64.dmg'))
             self.assertFalse(out_dir.exists())
+
+    def test_license_files_declared_present_and_bundled(self):
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp).resolve()
+            self._write_fake_repo(root)
+            self.assertEqual(build_release.verify_license_sources(root), list(build_release.REQUIRED_LICENSE_FILES))
+
+            # Not declared as mygo resources: mygo would not ship them, so fail before building.
+            undeclared = root / 'undeclared'
+            undeclared.mkdir()
+            self._write_fake_repo(undeclared, declare_license_resources=False)
+            with self.assertRaisesRegex(ValueError, 'must declare license files'):
+                build_release.verify_license_sources(undeclared)
+            with self.assertRaisesRegex(ValueError, 'must declare license files'):
+                build_release.run_build(['--dry-run'], root=undeclared, prepare_sdk_fn=lambda: '/tmp/fake.mod')
+
+            missing = root / 'missing'
+            missing.mkdir()
+            self._write_fake_repo(missing)
+            (missing / 'NOTICE').unlink()
+            with self.assertRaisesRegex(ValueError, 'NOTICE'):
+                build_release.verify_license_sources(missing)
+
+            # Built bundle must carry byte-identical copies in Contents/Resources.
+            app = root / 'Memlane.app'
+            resources = app / 'Contents' / 'Resources'
+            resources.mkdir(parents=True)
+            for name in build_release.REQUIRED_LICENSE_FILES:
+                (resources / name).write_bytes((root / name).read_bytes())
+            digests = build_release.verify_bundled_licenses(app, root)
+            self.assertEqual(sorted(digests), sorted(build_release.REQUIRED_LICENSE_FILES))
+
+            (resources / 'LICENSE').write_text('tampered\n', encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'differs from source: LICENSE'):
+                build_release.verify_bundled_licenses(app, root)
+            (resources / 'LICENSE').unlink()
+            with self.assertRaisesRegex(ValueError, 'not bundled in app: Contents/Resources/LICENSE'):
+                build_release.verify_bundled_licenses(app, root)
 
     def test_verify_info_plist_normalize_dmg_and_sha256sums(self):
         with tempfile.TemporaryDirectory() as raw_tmp:

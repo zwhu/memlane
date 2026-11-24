@@ -36,6 +36,44 @@ REQUIRED_GRAPH_FILES = (
     *(f'web/official-graph/dist/{name}' for name in REQUIRED_GRAPH_DIST_FILES),
 )
 CHUNK_SIZE = 1 << 20
+# Apache-2.0 §4 requires redistributions to carry the License and NOTICE; they are
+# declared as mygo.json "resources" so mygo copies them into Contents/Resources
+# before ad-hoc signing and DMG creation.
+REQUIRED_LICENSE_FILES = ('LICENSE', 'NOTICE', 'THIRD_PARTY_LICENSES.md')
+
+
+def verify_license_sources(root: Path = ROOT) -> list[str]:
+    cfg_path = root / 'mygo.json'
+    with cfg_path.open('r', encoding='utf-8') as fh:
+        cfg = json.load(fh)
+    declared = cfg.get('resources')
+    if not isinstance(declared, list):
+        declared = []
+    missing_decl = [name for name in REQUIRED_LICENSE_FILES if name not in declared]
+    if missing_decl:
+        raise ValueError('mygo.json resources must declare license files: ' + ', '.join(missing_decl))
+    invalid = [
+        name for name in REQUIRED_LICENSE_FILES
+        if (root / name).is_symlink() or not (root / name).is_file() or (root / name).stat().st_size == 0
+    ]
+    if invalid:
+        raise ValueError('missing or invalid license files: ' + ', '.join(invalid))
+    return list(REQUIRED_LICENSE_FILES)
+
+
+def verify_bundled_licenses(app_path: Path, source_root: Path) -> dict[str, str]:
+    resources = app_path / 'Contents' / 'Resources'
+    digests: dict[str, str] = {}
+    for name in REQUIRED_LICENSE_FILES:
+        bundled = resources / name
+        if bundled.is_symlink() or not bundled.is_file():
+            raise ValueError(f'license file not bundled in app: Contents/Resources/{name}')
+        digest = sha256_file(bundled)
+        expected = sha256_file(source_root / name)
+        if digest != expected:
+            raise ValueError(f'bundled license file differs from source: {name}')
+        digests[name] = digest
+    return digests
 
 
 def load_release_manifest(root: Path = ROOT) -> dict:
@@ -275,6 +313,7 @@ def _execute_build(
 ) -> tuple[int, dict]:
     manifest = load_release_manifest(build_root)
     graph_files = verify_graph_assets(build_root)
+    license_files = verify_license_sources(build_root)
 
     if prepare_sdk_fn is None:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -308,6 +347,7 @@ def _execute_build(
             'dry_run': True,
             'manifest': manifest,
             'graph_assets': graph_files,
+            'license_files': license_files,
             'modfile': modfile,
             'out_dir': str(out_dir),
             'platform_dir': str(platform_dir),
@@ -337,6 +377,7 @@ def _execute_build(
 
     app_path = platform_dir / f'{manifest["name"]}.app'
     plist_info = verify_info_plist(app_path, manifest['version'], manifest['minimum_system_version'])
+    bundled_licenses = verify_bundled_licenses(app_path, build_root)
 
     sign_proc = subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app_path)], capture_output=True, text=True, check=False)
     if sign_proc.returncode != 0:
@@ -372,6 +413,7 @@ def _execute_build(
         'checksums_path': str(sums_path),
         'sha256sums': sums,
         'info_plist': plist_info,
+        'bundled_licenses': bundled_licenses,
         'packaged_first_store': 'passed',
     }
     if git_ref:
