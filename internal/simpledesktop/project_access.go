@@ -272,7 +272,11 @@ func (c ProjectControlClient) requestWithHeaders(ctx context.Context, method, pa
 	}
 	key, err := readCachedToken(c.Config.ManagementTokenFile, 32, true)
 	if err != nil {
-		return fmt.Errorf("项目管理连接凭据不可用")
+		return &ControlResponseError{
+			Status:  http.StatusUnauthorized,
+			Code:    "control_credential_unavailable",
+			Message: "项目管理连接凭据不可用",
+		}
 	}
 	var body io.Reader
 	if input != nil {

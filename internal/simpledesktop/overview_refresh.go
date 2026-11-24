@@ -49,6 +49,14 @@ func (a *App) setWindowActive(active, wasHidden bool) {
 			a.loadOverview()
 		}
 	}
+	if a.startupDeferred.armed && a.startupDeferred.done && !a.startupDeferred.visibleDone {
+		if a.overviewState.Loaded || a.page != "总览" || (!a.overviewState.Loading && a.overviewState.Error != "") {
+			a.releaseVisibleStartupTasks(false)
+		} else {
+			a.resetDeferredStartupFallback()
+		}
+		return
+	}
 	if (wasInactive || wasHidden) && a.startupDeferred.done && a.startupDeferred.visibleDone {
 		a.PrewarmGraph()
 		a.refreshServiceMonitorIfDue(now)

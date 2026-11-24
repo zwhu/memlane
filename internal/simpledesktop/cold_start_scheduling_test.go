@@ -629,3 +629,170 @@ func TestColdStartLegacyWaitsForActivityAndOverview(t *testing.T) {
 		t.Fatal("legacy overview did not settle after both results")
 	}
 }
+
+func TestColdStartHiddenRevealNeverDeadlocksVisibleStartup(t *testing.T) {
+	origFallback := startupDeferredFallbackTimeout
+	origPostFrame := startupPostFirstFrameDelay
+	startupDeferredFallbackTimeout = 100 * time.Millisecond
+	startupPostFirstFrameDelay = 20 * time.Millisecond
+	t.Cleanup(func() {
+		startupDeferredFallbackTimeout = origFallback
+		startupPostFirstFrameDelay = origPostFrame
+	})
+
+	t.Run("login hidden with failing directory re-arms fallback on reveal", func(t *testing.T) {
+		transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/v1/projects":
+				http.Error(w, "directory unavailable", http.StatusServiceUnavailable)
+			case "/health", "/v1/runtime/monitor", "/v1/generation", "/v1/connections":
+				_, _ = w.Write([]byte(`{}`))
+			default:
+				http.NotFound(w, r)
+			}
+		})
+		a := New(Config{ServiceURL: coldStartTestURL, ProjectControl: &ProjectControlConfig{
+			URL: coldStartTestURL, ManagementTokenFile: p1TestTokenFile(t),
+		}}, nil)
+		a.Client.HTTP = &http.Client{Transport: transport}
+		defer a.cancelOverviewRequests()
+		defer a.cancelAndResetPanes()
+		updates := make(chan func(), 64)
+		a.Update = func(fn func()) { updates <- fn }
+		attaches := 0
+		a.graphAttachFn = func(*GraphHost) error { attaches++; return nil }
+		defer func() {
+			if a.graph != nil {
+				a.graph.close()
+			}
+		}()
+
+		a.SetWindowHidden(true)
+		a.Start()
+		// Wait for initial failed /v1/projects and the hidden 100ms fallback.
+		drainReading(t, updates, func() bool { return a.startupDeferred.done && !a.access.Loading })
+		if a.startupDeferred.visibleDone || a.monitor.PollEnabled || a.startupDeferred.timer != nil {
+			t.Fatal("hidden startup should have deferred visible tasks with stopped timer")
+		}
+		// Reveal while /v1/projects is still failing: must re-arm fallback and release visible startup.
+		a.SetWindowHidden(false)
+		if a.startupDeferred.timer == nil {
+			t.Fatal("reveal with failing directory did not re-arm visible startup fallback")
+		}
+		drainReading(t, updates, func() bool { return a.startupDeferred.visibleDone && a.monitor.PollEnabled && attaches == 1 })
+	})
+
+	t.Run("bootstrap settles while hidden then quick reopen releases visible startup", func(t *testing.T) {
+		bootstrapStarted, releaseBootstrap := make(chan struct{}, 1), make(chan struct{}, 1)
+		defer close(releaseBootstrap)
+		transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/v1/projects":
+				_ = json.NewEncoder(w).Encode(AccessDirectory{
+					Revision: 1, Projects: []AccessProject{{ID: "p", Name: "Memlane", Dataset: "ds", Status: "verified"}},
+				})
+			case "/v1/capabilities":
+				_ = json.NewEncoder(w).Encode(ControlCapabilities{APIVersions: []string{"v1"}, ReadingContract: readingContract})
+			case "/v1/overview/bootstrap":
+				bootstrapStarted <- struct{}{}
+				<-releaseBootstrap
+				_ = json.NewEncoder(w).Encode(v2OverviewBootstrapResponse{
+					Generation: 1, TotalKnowledgeCount: 1,
+					RecentItems: []v2KnowledgeItem{{DocID: "k", DatasetID: "ds", ProjectID: "p", Title: "settled while hidden"}},
+				})
+			case "/health", "/v1/runtime/monitor", "/v1/generation", "/v1/connections", "/v1/projects/p/message-summary":
+				_, _ = w.Write([]byte(`{"project_id":"p","unread_count":0}`))
+			default:
+				http.NotFound(w, r)
+			}
+		})
+		a := New(Config{ServiceURL: coldStartTestURL, ProjectControl: &ProjectControlConfig{
+			URL: coldStartTestURL, ManagementTokenFile: p1TestTokenFile(t),
+		}}, nil)
+		a.Client.HTTP = &http.Client{Transport: transport}
+		defer a.cancelOverviewRequests()
+		defer a.cancelAndResetPanes()
+		updates := make(chan func(), 64)
+		a.Update = func(fn func()) { updates <- fn }
+		attaches := 0
+		a.graphAttachFn = func(*GraphHost) error { attaches++; return nil }
+		defer func() {
+			if a.graph != nil {
+				a.graph.close()
+			}
+		}()
+
+		a.Start()
+		drainReading(t, updates, func() bool { return a.access.Loaded })
+		a.loadOverview()
+		<-bootstrapStarted
+
+		// User hits ⌘W while bootstrap is in flight, and bootstrap settles while hidden.
+		a.SetWindowHidden(true)
+		releaseBootstrap <- struct{}{}
+		drainReading(t, updates, func() bool { return a.overviewState.Loaded && a.startupDeferred.done })
+		if a.startupDeferred.visibleDone || a.monitor.PollEnabled {
+			t.Fatal("hidden settlement should keep visible polling paused until reveal")
+		}
+
+		// Quick reopen (within 3s, with search overlay open so overview reload is skipped):
+		// must immediately release visible startup tasks & monitor polling.
+		a.searchUI.Open = true
+		a.SetWindowHidden(false)
+		if !a.startupDeferred.visibleDone || !a.monitor.PollEnabled || !a.monitor.Polling {
+			t.Fatal("reopening after hidden bootstrap settlement deadlocked visible startup")
+		}
+		drainReading(t, updates, func() bool { return attaches == 1 })
+	})
+}
+
+func TestColdStartManagementTokenRemovalInvalidatesReadingOnUnhide(t *testing.T) {
+	managementToken := p1TestTokenFile(t)
+	readingToken := p1TestTokenFile(t)
+	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/projects" {
+			_ = json.NewEncoder(w).Encode(AccessDirectory{
+				Revision: 1, Projects: []AccessProject{{ID: "p", Name: "Memlane", Dataset: "ds", Status: "verified"}},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	})
+	a := New(Config{
+		ServiceURL: coldStartTestURL,
+		TokenFile:  readingToken,
+		ProjectControl: &ProjectControlConfig{
+			URL:                 coldStartTestURL,
+			ManagementTokenFile: managementToken,
+		},
+	}, nil)
+	a.Client.HTTP = &http.Client{Transport: transport}
+	updates := make(chan func(), 32)
+	a.Update = func(fn func()) { updates <- fn }
+	defer a.cancelAndResetPanes()
+
+	a.RefreshProjectDirectory()
+	drainReading(t, updates, func() bool { return a.access.Loaded })
+
+	a.navigate("知识", 0)
+	p := a.state()
+	p.Loaded = true
+	p.Items = []Item{{ID: "k1", Dataset: "ds", Body: "secret management-gated body", BodyLoaded: true}}
+	p.Selected = &p.Items[0]
+
+	// Hide window, remove ONLY ManagementTokenFile (official TokenFile stays valid), then unhide.
+	a.SetWindowHidden(true)
+	if err := os.Remove(managementToken); err != nil {
+		t.Fatal(err)
+	}
+	a.SetWindowHidden(false)
+	drainReading(t, updates, func() bool { return !a.access.Loading })
+
+	if a.access.DirectoryError != "项目管理连接凭据不可用" {
+		t.Fatalf("unexpected DirectoryError: %q", a.access.DirectoryError)
+	}
+	bodyVisible := len(p.Items) > 0 && (p.Items[0].BodyLoaded || p.Items[0].Body != "")
+	if p.Selected != nil || bodyVisible {
+		t.Fatalf("missing ManagementTokenFile failed to withdraw cached reading content: selected=%v item=%+v", p.Selected, p.Items)
+	}
+}
