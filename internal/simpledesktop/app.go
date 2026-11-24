@@ -187,12 +187,18 @@ func New(c Config, err error) *App {
 	return a
 }
 
-var startupDeferredFallbackTimeout = 5 * time.Second
+var (
+	startupDeferredFallbackTimeout = 5 * time.Second
+	startupPostFirstFrameDelay     = 450 * time.Millisecond
+)
 
 type deferredStartupState struct {
-	armed, done bool
-	gen         uint64
-	timer       *time.Timer
+	armed, done    bool
+	gen            uint64
+	timer          *time.Timer
+	postFrameGen   uint64
+	postFrameTimer *time.Timer
+	postFrameDone  bool
 }
 
 func (s *deferredStartupState) stopTimer() {
@@ -200,6 +206,15 @@ func (s *deferredStartupState) stopTimer() {
 	if s.timer != nil {
 		s.timer.Stop()
 		s.timer = nil
+	}
+}
+
+func (s *deferredStartupState) stopAllTimers() {
+	s.stopTimer()
+	s.postFrameGen++
+	if s.postFrameTimer != nil {
+		s.postFrameTimer.Stop()
+		s.postFrameTimer = nil
 	}
 }
 
@@ -225,9 +240,9 @@ func (a *App) Start() {
 		return
 	}
 	s := &a.startupDeferred
-	s.stopTimer()
+	s.stopAllTimers()
 	update := a.Update
-	s.armed, s.done = update != nil && a.page == "总览", false
+	s.armed, s.done, s.postFrameDone = update != nil && a.page == "总览", false, false
 	if s.armed {
 		a.overviewFirstScreenReady = false
 		a.monitor.PollEnabled = false
@@ -239,6 +254,23 @@ func (a *App) Start() {
 		a.runDeferredStartupTasks()
 		return
 	}
+	gen := s.gen
+	s.timer = time.AfterFunc(startupDeferredFallbackTimeout, func() {
+		update(func() {
+			if gen == a.startupDeferred.gen {
+				a.runDeferredStartupTasks()
+			}
+		})
+	})
+}
+
+func (a *App) resetDeferredStartupFallback() {
+	s := &a.startupDeferred
+	update := a.Update
+	if !s.armed || s.done || update == nil {
+		return
+	}
+	s.stopTimer()
 	gen := s.gen
 	s.timer = time.AfterFunc(startupDeferredFallbackTimeout, func() {
 		update(func() {
@@ -273,19 +305,50 @@ func (a *App) finishDeferredStartup(settingsRefreshed bool) {
 	a.restoreCodeState()
 	if !settingsRefreshed {
 		a.RefreshIntegrations()
-		a.RefreshOpenAtLoginAsync()
 	}
-	if !a.windowInactive {
+	if !a.windowInactive && !a.windowHidden {
 		a.health()
-		a.PrewarmGraph()
+		a.verifyGraphAssetsAsync()
 		if !settingsRefreshed {
 			a.refreshSidebarQueueIfDue(time.Now())
 		}
 	}
+	a.schedulePostFirstFrameStartup(settingsRefreshed)
+}
+
+func (a *App) schedulePostFirstFrameStartup(skipLoginRefresh bool) {
+	s := &a.startupDeferred
+	run := func() {
+		s.postFrameTimer = nil
+		s.postFrameDone = true
+		if !skipLoginRefresh && !a.desktopPrefs.LoginSynced {
+			a.RefreshOpenAtLoginAsync()
+		}
+		if !a.windowInactive && !a.windowHidden {
+			a.PrewarmGraph()
+		}
+	}
+	update := a.Update
+	if update == nil || startupPostFirstFrameDelay <= 0 {
+		run()
+		return
+	}
+	s.postFrameGen++
+	if s.postFrameTimer != nil {
+		s.postFrameTimer.Stop()
+	}
+	gen := s.postFrameGen
+	s.postFrameTimer = time.AfterFunc(startupPostFirstFrameDelay, func() {
+		update(func() {
+			if gen == a.startupDeferred.postFrameGen {
+				run()
+			}
+		})
+	})
 }
 
 func (a *App) cancelAndResetPanes() {
-	a.startupDeferred.stopTimer()
+	a.startupDeferred.stopAllTimers()
 	a.readingController.cancelAndResetPanes()
 }
 
@@ -459,7 +522,7 @@ func (a *App) navigateKind(page string, index int, kind string) {
 			if a.Update != nil {
 				time.AfterFunc(850*time.Millisecond, func() {
 					a.Update(func() {
-						if !a.windowInactive && a.page == "总览" && a.epoch == navEpoch {
+						if !a.windowInactive && !a.windowHidden && a.page == "总览" && a.epoch == navEpoch {
 							a.loadOverview()
 						}
 					})
@@ -995,14 +1058,14 @@ func (a *App) View(c *ui.Context) {
 	})
 }
 func (a *App) viewContent(c *ui.Context) {
-	if !a.windowInactive {
+	if !a.windowHidden {
 		c.After(2 * time.Second)
 		a.syncReadingIdentity()
 		if time.Now().After(a.access.Next) {
 			a.RefreshProjectDirectory()
 		}
 	}
-	if !a.windowInactive && a.page == "总览" && a.Update != nil {
+	if !a.windowHidden && a.page == "总览" && a.Update != nil {
 		if a.Config.ProjectControl != nil && !a.access.Loaded {
 			if a.access.DirectoryError != "" {
 				a.overviewState.Loading, a.overviewState.ActivityLoading = false, false

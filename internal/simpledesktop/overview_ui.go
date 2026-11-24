@@ -271,6 +271,7 @@ func (a *App) loadOverview() {
 		v.Loading, v.ActivityLoading = true, true
 		return
 	}
+	a.resetDeferredStartupFallback()
 	scope := a.overviewScope()
 	if scope != v.scope {
 		if v.cancel != nil {
@@ -697,7 +698,7 @@ func (a *App) overviewHome(c *ui.Context) {
 	v := &a.overviewState
 	now := time.Now()
 	midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
-	if !a.windowInactive {
+	if !a.windowHidden {
 		c.After(midnight.Sub(now))
 	}
 	ui.Column(c).Fill().AlignItems(ui.Center).Children(func() {

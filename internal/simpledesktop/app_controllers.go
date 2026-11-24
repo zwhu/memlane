@@ -50,8 +50,9 @@ type graphController struct {
 	graphAssetsCheck   *graphAssetCheck
 	graphAssetsChecked bool
 	graphAssetsErr     error
-	graphAttachErr     error
-	graphAttachFn      func(*GraphHost) error
+	graphAttachErr       error
+	graphAttachRequested bool
+	graphAttachFn        func(*GraphHost) error
 	pendingGraphLoad   *graphLoad
 	graphLoadRequest   uint64
 	graphError         string
@@ -172,6 +173,7 @@ type overviewController struct {
 	fromOverview             bool
 	overviewSourceFloor      map[*pane]int
 	windowInactive           bool
+	windowHidden             bool
 	allProjectsOpen          bool
 	allProjectsScroll        ui.ScrollState
 	projectVisibility        projectVisibilityState

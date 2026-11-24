@@ -140,6 +140,10 @@ func TestColdStartGraphAttachesOnceAndAppliesWaitingHTTPResult(t *testing.T) {
 }
 
 func TestColdStartDeferredTasksFollowBootstrap(t *testing.T) {
+	origPostFrame := startupPostFirstFrameDelay
+	startupPostFirstFrameDelay = 25 * time.Millisecond
+	t.Cleanup(func() { startupPostFirstFrameDelay = origPostFrame })
+
 	for _, scenario := range []string{"success", "fail closed", "fallback", "settings", "hidden at login"} {
 		t.Run(scenario, func(t *testing.T) {
 			if scenario == "settings" || scenario == "fallback" || scenario == "hidden at login" {
@@ -147,7 +151,7 @@ func TestColdStartDeferredTasksFollowBootstrap(t *testing.T) {
 				startupDeferredFallbackTimeout = 150 * time.Millisecond
 				t.Cleanup(func() { startupDeferredFallbackTimeout = original })
 			}
-			bootstrapStarted, releaseBootstrap := make(chan struct{}, 1), make(chan struct{}, 1)
+			bootstrapStarted, releaseBootstrap := make(chan struct{}, 2), make(chan struct{}, 2)
 			requests := make(chan string, 64)
 			transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
@@ -202,7 +206,7 @@ func TestColdStartDeferredTasksFollowBootstrap(t *testing.T) {
 
 			hidden := scenario == "hidden at login"
 			if hidden {
-				a.SetWindowActive(false)
+				a.SetWindowHidden(true)
 			}
 			a.Start()
 			drainReading(t, updates, func() bool { return a.access.Loaded })
@@ -217,10 +221,11 @@ func TestColdStartDeferredTasksFollowBootstrap(t *testing.T) {
 				if a.monitor.Request != 0 || a.graphAssetsCheck != nil || a.graph != nil {
 					t.Fatal("hidden startup started monitor or prewarm")
 				}
-				a.SetWindowActive(true)
-				if !a.monitor.Polling || a.graphAssetsCheck == nil {
-					t.Fatal("first activation did not resume monitor and graph prewarm")
+				a.SetWindowHidden(false)
+				if !a.monitor.Polling || a.graphAssetsCheck == nil || attaches != 0 {
+					t.Fatal("first reveal must start monitor and async asset check without synchronous WebView attach")
 				}
+				drainReading(t, updates, func() bool { return attaches == 1 })
 				return
 			}
 
@@ -259,6 +264,9 @@ func TestColdStartDeferredTasksFollowBootstrap(t *testing.T) {
 				t.Fatal("settlement did not release deferred work exactly once")
 			}
 			if scenario == "success" {
+				if attaches != 0 || loginReads.Load() != 0 {
+					t.Fatalf("main-thread prewarm/login ran before post-first-frame delay: attaches=%d loginReads=%d", attaches, loginReads.Load())
+				}
 				if !a.overviewState.overviewColdStartMotion {
 					t.Fatal("first payload did not arm cold-start motion")
 				}
@@ -345,35 +353,59 @@ func TestColdStartHiddenWindowStopsPollingAndRevalidatesOnFocus(t *testing.T) {
 	if a.access.Request != firstRequest || directoryCalls.Load() != 1 {
 		t.Fatal("focus ignored startup directory throttle")
 	}
+
+	// Visible but blurred window must STILL check credentials on its 2s timer.
 	a.SetWindowActive(false)
-	a.access.Next = time.Now().Add(-time.Second)
 	identity := a.readingIdentity
 	p := a.state()
 	p.Loaded = true
-	p.Items = []Item{{ID: "sensitive", Body: "private text", BodyLoaded: true}}
+	p.Items = []Item{{ID: "sensitive-visible", Body: "private text", BodyLoaded: true}}
 	p.Selected = &p.Items[0]
-	if err := os.Remove(readingToken); err != nil {
-		t.Fatal(err)
-	}
 	builds := 0
 	tt := ui.NewTester(func(c *ui.Context) {
 		builds++
 		a.View(c)
 	}, 1200, 820)
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
+	if err := os.Remove(readingToken); err != nil {
+		t.Fatal(err)
+	}
+	builds = 0
+	tt.Advance(2 * time.Second)
+	if builds == 0 || a.readingIdentity == identity || p.Loaded || p.Selected != nil {
+		t.Fatal("visible unfocused window failed to withdraw content after credential removal")
+	}
+
+	// Restore token, then hide the window (⌘W): all periodic polling must stop.
+	if err := os.WriteFile(readingToken, []byte("rotated-token-value-12345678901234567890"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a.SetWindowActive(true)
+	identity = a.readingIdentity
+	p.Loaded = true
+	p.Items = []Item{{ID: "sensitive-hidden", Body: "private text", BodyLoaded: true}}
+	p.Selected = &p.Items[0]
+	a.SetWindowHidden(true)
+	a.access.Next = time.Now().Add(time.Hour) // Still within normal throttle window.
+	if err := os.Remove(readingToken); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
 	builds = 0
 	tt.Advance(20 * time.Second)
 	if builds != 0 || tt.FramePending() || a.access.Request != firstRequest ||
 		a.readingIdentity != identity || !p.Loaded || a.overviewState.Loading {
 		t.Fatalf("hidden view polled or revalidated: builds=%d directory=%d", builds, a.access.Request)
 	}
-	a.SetWindowActive(true)
+	// Reopening a hidden window must IMMEDIATELY withdraw removed credentials AND
+	// bypass access.Next to revalidate server-side authorization.
+	a.SetWindowHidden(false)
 	bodyVisible := len(p.Items) > 0 && (p.Items[0].BodyLoaded || p.Items[0].Body != "")
 	if a.readingIdentity == identity || p.Loaded || p.Selected != nil || bodyVisible {
-		t.Fatal("focus did not immediately withdraw content after credential removal")
+		t.Fatal("reopening hidden window did not immediately withdraw content after credential removal")
 	}
 	if a.access.Request != firstRequest+1 {
-		t.Fatal("focus did not refresh expired directory")
+		t.Fatal("reopening hidden window did not immediately revalidate project directory")
 	}
 	tt.Frame()
 	builds = 0
@@ -386,6 +418,73 @@ func TestColdStartHiddenWindowStopsPollingAndRevalidatesOnFocus(t *testing.T) {
 		t.Fatalf("expected two directory requests, got %d", directoryCalls.Load())
 	}
 	a.cancelOverviewRequests()
+}
+
+func TestColdStartSlowDirectoryResetsBootstrapFallbackDeadline(t *testing.T) {
+	origFallback := startupDeferredFallbackTimeout
+	origPostFrame := startupPostFirstFrameDelay
+	startupDeferredFallbackTimeout = 160 * time.Millisecond
+	startupPostFirstFrameDelay = 20 * time.Millisecond
+	t.Cleanup(func() {
+		startupDeferredFallbackTimeout = origFallback
+		startupPostFirstFrameDelay = origPostFrame
+	})
+
+	dirRelease := make(chan struct{})
+	bootstrapStarted := make(chan struct{}, 1)
+	bootstrapRelease := make(chan struct{})
+	defer close(bootstrapRelease)
+	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/projects":
+			<-dirRelease
+			_ = json.NewEncoder(w).Encode(AccessDirectory{
+				Revision: 1, Projects: []AccessProject{{ID: "p", Name: "Memlane", Dataset: "ds", Status: "verified"}},
+			})
+		case "/v1/capabilities":
+			_ = json.NewEncoder(w).Encode(ControlCapabilities{APIVersions: []string{"v1"}, ReadingContract: readingContract})
+		case "/v1/overview/bootstrap":
+			bootstrapStarted <- struct{}{}
+			select {
+			case <-bootstrapRelease:
+			case <-r.Context().Done():
+				return
+			}
+			_ = json.NewEncoder(w).Encode(v2OverviewBootstrapResponse{Generation: 1, TotalKnowledgeCount: 1})
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	})
+	a := New(Config{ServiceURL: coldStartTestURL, ProjectControl: &ProjectControlConfig{
+		URL: coldStartTestURL, ManagementTokenFile: p1TestTokenFile(t),
+	}}, nil)
+	a.Client.HTTP = &http.Client{Transport: transport}
+	defer a.cancelOverviewRequests()
+	defer a.cancelAndResetPanes()
+	updates := make(chan func(), 32)
+	a.Update = func(fn func()) { updates <- fn }
+
+	a.Start()
+	// Directory takes 100ms (> half of 160ms fallback).
+	time.Sleep(100 * time.Millisecond)
+	close(dirRelease)
+	drainReading(t, updates, func() bool { return a.access.Loaded })
+	// Starting bootstrap must reset the fallback timer to a fresh 160ms window.
+	a.loadOverview()
+	select {
+	case <-bootstrapStarted:
+	case <-time.After(time.Second):
+		t.Fatal("bootstrap did not start")
+	}
+	// At t=190ms from Start() (past original 160ms, but only 90ms into bootstrap),
+	// deferred startup must NOT have fired yet.
+	time.Sleep(90 * time.Millisecond)
+	for len(updates) > 0 {
+		(<-updates)()
+	}
+	if a.startupDeferred.done || a.integrations.Request != 0 {
+		t.Fatal("original directory fallback fired prematurely during fresh bootstrap")
+	}
 }
 
 func TestColdStartFirstUseLoadsOnceAndRendersAfterPublication(t *testing.T) {

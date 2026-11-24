@@ -388,6 +388,7 @@ func (a *App) BindGraphWindow(win *mygo.Window) {
 	}
 	win.OnClosed(func() {
 		a.graphWindowClosed = true
+		a.startupDeferred.stopAllTimers()
 		a.cancelGraphLoad()
 		if a.graph != nil {
 			a.graph.close()
@@ -395,16 +396,9 @@ func (a *App) BindGraphWindow(win *mygo.Window) {
 	})
 }
 
-func (a *App) EnsureGraphAttached() {
-	if a.graphWindowClosed || a.graph != nil || a.graphAttachErr != nil ||
-		(a.graphWindow == nil && a.graphAttachFn == nil) {
-		return
-	}
-	if a.graphAssetsChecked {
-		_ = a.attachVerifiedGraph()
-		return
-	}
-	if a.graphAssetsCheck != nil || a.Update == nil {
+func (a *App) verifyGraphAssetsAsync() {
+	if a.graphWindowClosed || a.graph != nil || a.graphAttachErr != nil || a.graphAssetsChecked ||
+		a.graphAssetsCheck != nil || a.Update == nil || (a.graphWindow == nil && a.graphAttachFn == nil) {
 		return
 	}
 	check := &graphAssetCheck{done: make(chan struct{})}
@@ -417,13 +411,28 @@ func (a *App) EnsureGraphAttached() {
 			if !a.graphAssetsChecked {
 				a.applyGraphAssetCheck(check.assets, check.err)
 			}
-			_ = a.attachVerifiedGraph()
+			if a.graphAttachRequested {
+				_ = a.attachVerifiedGraph()
+			}
 		})
 	}()
 }
 
+func (a *App) EnsureGraphAttached() {
+	if a.graphWindowClosed || a.graph != nil || a.graphAttachErr != nil ||
+		(a.graphWindow == nil && a.graphAttachFn == nil) {
+		return
+	}
+	a.graphAttachRequested = true
+	if a.graphAssetsChecked {
+		_ = a.attachVerifiedGraph()
+		return
+	}
+	a.verifyGraphAssetsAsync()
+}
+
 func (a *App) PrewarmGraph() {
-	if !a.windowInactive {
+	if !a.windowInactive && !a.windowHidden {
 		a.EnsureGraphAttached()
 	}
 }
@@ -593,7 +602,7 @@ func (a *App) graphView(c *ui.Context) {
 		if a.graphMode == "代码结构" && a.codeStatus != "" {
 			ui.Text(c, a.codeStatus).FontSize(11).TextColor(muted).Margin(10, 32)
 		}
-		if a.graph != nil && a.graph.view != nil {
+		if a.graph != nil && a.graph.view != nil && a.graph.frame != nil {
 			ui.Column(c.Key("graph-canvas-container")).Grow(1).MinHeight(0).Margin(0, pageInset, pageInset, pageInset).Radius(12).Clip().Children(func() {
 				ui.WebView(c.Key("official-graph-canvas"), a.graph.view).Grow(1).MinHeight(0)
 			})

@@ -169,7 +169,7 @@ func main() {
 		// Revalidate reading credentials and flush withdrawn UI state before revealing a retained window.
 		showMainWindow := func(action func()) {
 			win.Update(func() {
-				app.SetWindowActive(true)
+				app.SetWindowHidden(false)
 				if action != nil {
 					action()
 				}
@@ -260,7 +260,7 @@ func main() {
 		})
 		win.OnFocus(func() { win.Update(func() { app.SetWindowActive(true) }) })
 		win.OnBlur(func() { win.Update(func() { app.SetWindowActive(false) }) })
-		win.OnHide(func() { win.Update(func() { app.SetWindowActive(false) }) })
+		win.OnHide(func() { win.Update(func() { app.SetWindowHidden(true) }) })
 		app.BindGraphWindow(win)
 		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
 			{Role: mygo.RoleAppMenu},
@@ -279,7 +279,7 @@ func main() {
 		})
 
 		if mygo.App.WasOpenedAtLogin() {
-			app.SetWindowActive(false)
+			app.SetWindowHidden(true)
 		} else {
 			win.Show()
 		}

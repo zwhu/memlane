@@ -230,7 +230,7 @@ func (a *App) applyServiceMonitorResult(now time.Time, healthErr error, latencyM
 }
 
 func (a *App) refreshServiceMonitorIfDue(now time.Time) {
-	if a.Update == nil || a.windowInactive || !a.monitor.PollEnabled || a.monitor.Polling || a.Config.ServiceURL == "" || now.Before(a.monitor.NextPollAt) {
+	if a.Update == nil || a.windowInactive || a.windowHidden || !a.monitor.PollEnabled || a.monitor.Polling || a.Config.ServiceURL == "" || now.Before(a.monitor.NextPollAt) {
 		return
 	}
 	a.refreshServiceMonitor()
