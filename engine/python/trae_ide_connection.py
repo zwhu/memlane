@@ -3,11 +3,43 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 
 from project_policy import PolicyError
+from trae_ide_hook import record_hook_error, scrub_diagnostic_secrets
 
-EVENTS = ('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop')
+LEGACY_EVENTS = ('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop')
+EVENTS = ('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostToolUseFailure', 'Stop', 'SessionEnd')
+
+_DIAGNOSTIC_WORDS = frozenset('''traceback most recent call last file line error exception
+    runtimeerror valueerror typeerror oserror permissionerror timeouterror subprocesserror
+    connectionrefusederror filenotfounderror keyerror attributeerror assertionerror
+    worker hook failed failure exited timed out timeout startup dispatch invalid output
+    malformed json denied refused not found permission network disconnected unknown
+    authorization x-api-key api_key token secret password'''.lower().split())
+
+
+def redact_diagnostic_text(raw, max_len=240):
+    """Keep the stderr tail's diagnostic vocabulary, dropping arbitrary prose."""
+    text = raw.decode(errors='replace') if isinstance(raw, bytes) else raw
+    lines = []
+    for line in text.splitlines()[-12:]:
+        line = scrub_diagnostic_secrets(line)
+        words = re.findall(r'\[redacted\]|[\w-]+', line)
+        clean = ' '.join(word for word in words if word.lower() in _DIAGNOSTIC_WORDS or word == '[redacted]')
+        if clean:
+            lines.append(clean)
+    return ' '.join(lines)[-max_len:].lstrip() if max_len > 0 else ''
+
+
+def record_dispatch_error(home, instance_id, event, *, status, error_code, error_type, stderr=b'', payload=None):
+    try:
+        state_dir = Path(home) / '.cognee-plugin' / ('trae_ide-' + instance_id)
+        record_hook_error(event, error_code=error_code, error_type=error_type, status=status,
+                          payload=payload, state_dir=state_dir, stderr_snippet=redact_diagnostic_text(stderr))
+    except Exception:
+        pass
 
 
 def loader(installation, python):
@@ -35,7 +67,7 @@ def proposal(raw, previous, replacement):
         for group in groups:
             if 'trae_ide_hook.py' in json.dumps(group) and group != previous.get(event):
                 raise PolicyError('trae_ide_hook_changed_requires_review', 409)
-    for event in EVENTS:
+    for event in dict.fromkeys((*EVENTS, *previous, *replacement)):
         old, new = previous.get(event), replacement.get(event)
         if old is not None:
             groups = hooks.get(event, [])
@@ -50,7 +82,7 @@ def proposal(raw, previous, replacement):
 
 def verify_hooks(raw, expected_hooks, script):
     try:
-        if not isinstance(expected_hooks, dict) or set(expected_hooks) != set(EVENTS):
+        if not isinstance(expected_hooks, dict) or set(expected_hooks) not in (set(EVENTS), set(LEGACY_EVENTS)):
             raise ValueError()
         for event, group in expected_hooks.items():
             commands = group['hooks']
@@ -91,7 +123,7 @@ class HookDispatch:
                     proposal_sha = active_record.get('trae_ide_proposal_sha256')
         if not isinstance(installation, dict) or not isinstance(expected_hooks, dict):
             raise PolicyError('trae_ide_hook_not_authorized', 403)
-        if event not in EVENTS or len(raw) > MAX_INPUT:
+        if event not in EVENTS or event not in expected_hooks or len(raw) > MAX_INPUT:
             raise PolicyError('invalid_trae_ide_hook')
         payload = json.loads(raw)
         if not isinstance(payload, dict) or payload.get('hook_event_name') != event:
@@ -120,20 +152,40 @@ class HookDispatch:
             environment['HOME'] = installation['home']
             process = await asyncio.create_subprocess_exec(
                 self.python, '-B', str(script), event, '--dispatch', cwd=cwd, env=environment, umask=0o077,
-                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
+            async def report(code, error_type, stderr):
+                await asyncio.to_thread(record_dispatch_error, installation['home'], identity, event,
+                                        status=process.returncode, error_code=code, error_type=error_type,
+                                        stderr=stderr, payload=payload)
+
+            # Keep draining the original pipes after killing the worker so
+            # timeout diagnostics include bytes already read by communicate.
+            communication = asyncio.create_task(process.communicate(raw))
             try:
-                output, _ = await asyncio.wait_for(process.communicate(raw), timeout=20)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+                output, stderr = await asyncio.wait_for(asyncio.shield(communication), timeout=20)
+            except (asyncio.TimeoutError, asyncio.CancelledError) as error:
                 if process.returncode is None:
                     try:
                         process.kill()
                     except ProcessLookupError:
                         pass
-                await process.communicate()
+                _, stderr = await asyncio.shield(communication)
+                if isinstance(error, asyncio.TimeoutError):
+                    await report('dispatch_timeout', 'TimeoutError', stderr)
                 raise
-            if process.returncode or len(output) > MAX_INPUT:
+            if process.returncode:
+                await report('dispatch_exit_nonzero', 'SubprocessError', stderr)
                 raise PolicyError('trae_ide_hook_result_unconfirmed', 503)
-            return json.loads(output)
+            try:
+                if len(output) > MAX_INPUT:
+                    raise ValueError()
+                result = json.loads(output)
+                if not isinstance(result, dict):
+                    raise ValueError()
+                return result
+            except (ValueError, RecursionError):
+                await report('dispatch_invalid_output', 'ValueError', stderr)
+                raise PolicyError('trae_ide_hook_result_unconfirmed', 503) from None
         finally:
             self.running -= 1

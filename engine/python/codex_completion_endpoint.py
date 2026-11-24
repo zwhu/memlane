@@ -3,15 +3,19 @@
 import argparse
 import asyncio
 import copy
+from collections import OrderedDict
 from contextlib import contextmanager
 import hmac
 import json
 import math
 import os
 from pathlib import Path
+import re
 import signal
 import shutil
+import subprocess
 import tempfile
+from threading import Event, Lock
 import time
 import uuid
 
@@ -169,12 +173,116 @@ def parse_request(body, model):
     return '\n\n'.join(system), json.dumps(prompt, ensure_ascii=False), schema, transport
 
 
-def private_config(model, work, provider='openai', defaults=None):
-    features = ('shell_tool unified_exec apps plugins hooks memories multi_agent multi_agent_v2 browser_use browser_use_external computer_use image_generation skill_search skill_mcp_dependency_install workspace_dependencies code_mode_host view_image remote_plugin').split()
-    if provider == 'trae':
-        # Pinned TraeX 0.215.0 exposes neither feature key. Strict config must
-        # still reject unknown options rather than silently ignoring them.
-        features = [name for name in features if name not in ('view_image', 'remote_plugin')]
+DISABLED_FEATURES = (
+    'shell_tool', 'unified_exec', 'apps', 'plugins', 'hooks', 'memories', 'multi_agent', 'multi_agent_v2',
+    'browser_use', 'browser_use_external', 'computer_use', 'image_generation', 'skill_search',
+    'skill_mcp_dependency_install', 'workspace_dependencies', 'code_mode_host', 'view_image', 'remote_plugin',
+)
+# Use only the known common TraeX keys when the CLI cannot list its features.
+TRAE_FEATURE_FALLBACK = frozenset(DISABLED_FEATURES) - {'view_image', 'remote_plugin'}
+_feature_cache = OrderedDict()
+_feature_cache_lock = Lock()
+_feature_probes_inflight = {}
+_MAX_FEATURE_CACHE = 64
+
+
+def feature_cache_key(executable, provider):
+    try:
+        info = os.stat(executable)
+    except OSError:
+        return None
+    return str(executable), info.st_ino, info.st_mtime_ns, info.st_size, provider
+
+
+def _cache_features(key, supported, excluded):
+    # Caller holds the lock, including when combining concurrent discoveries.
+    _feature_cache[key] = supported, excluded
+    _feature_cache.move_to_end(key)
+    if len(_feature_cache) > _MAX_FEATURE_CACHE:
+        _feature_cache.popitem(last=False)
+
+
+def probe_supported_features(executable, *, provider='openai', env=None, cwd=None, timeout=5.0):
+    key = feature_cache_key(executable, provider)
+    if key is None:
+        return None
+    while True:
+        with _feature_cache_lock:
+            if key in _feature_cache:
+                _feature_cache.move_to_end(key)
+                return _feature_cache[key][0]
+            inflight = _feature_probes_inflight.get(key)
+            if inflight is None:
+                inflight = Event()
+                _feature_probes_inflight[key] = inflight
+                break
+        inflight.wait(timeout=timeout + 1.0)
+
+    def run(environment, work):
+        result = subprocess.run([str(executable), 'features', 'list'], env=environment, cwd=work,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=timeout, encoding='utf-8', errors='replace')
+        features = set()
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                tokens = line.split()
+                if (len(tokens) >= 3 and re.fullmatch(r'[a-z0-9_]+', tokens[0])
+                        and tokens[-1] in ('true', 'false') and ' '.join(tokens[1:-1]).lower() != 'removed'):
+                    features.add(tokens[0])
+        return frozenset(features) if features else None
+
+    try:
+        try:
+            if env is None:
+                with tempfile.TemporaryDirectory(prefix='memlane-features-') as directory:
+                    environment = {'HOME': directory, 'TMPDIR': directory,
+                                   'PATH': str(Path(executable).absolute().parent) + ':/usr/bin:/bin'}
+                    if provider == 'trae':
+                        cli = Path(directory) / 'cli'
+                        cli.mkdir(mode=0o700)
+                        environment.update(TRAE_HOME=directory, TRAECLI_HOME=str(cli), MEMLANE_PROCESSING_SESSION='1')
+                    else:
+                        environment['CODEX_HOME'] = directory
+                    supported = run(environment, cwd if cwd is not None else directory)
+            else:
+                supported = run(dict(env), cwd)
+        except (OSError, subprocess.TimeoutExpired):
+            supported = None
+
+        with _feature_cache_lock:
+            previous, excluded = _feature_cache.get(key, (None, frozenset()))
+            if supported is None:
+                supported = previous
+            _cache_features(key, supported, excluded)
+        return supported
+    finally:
+        with _feature_cache_lock:
+            _feature_probes_inflight.pop(key, None)
+            inflight.set()
+
+
+def disabled_features(provider, supported_features, excluded_features):
+    selected = supported_features
+    if selected is None:
+        selected = TRAE_FEATURE_FALLBACK if provider == 'trae' else DISABLED_FEATURES
+    return [name for name in DISABLED_FEATURES if name in selected and name not in (excluded_features or ())]
+
+
+def parse_unknown_feature_error(stderr, candidates):
+    for match in re.finditer(
+            r"""(?i)\b(?:unknown (?:field|feature)|invalid feature)\s*[:=]?\s*['"`]?([a-z0-9_]+)(?![a-z0-9_-])""",
+            stderr.decode(errors='replace') if isinstance(stderr, bytes) else stderr):
+        if match[1] in candidates:
+            return match[1]
+    return None
+
+
+class UnsupportedStartupFeature(Exception):
+    pass
+
+
+def private_config(model, work, provider='openai', defaults=None, supported_features=None, excluded_features=None):
+    features = disabled_features(provider, supported_features, excluded_features)
     options = []
     if defaults and 'reasoning_effort' in defaults:
         options.append('model_reasoning_effort = ' + json.dumps(defaults['reasoning_effort']))
@@ -329,6 +437,8 @@ async def collect_stderr(stream, on_activity=None):
 
 
 def record_start_failure(args, process, code, stderr):
+    from trae_ide_hook import scrub_diagnostic_secrets
+
     directory = getattr(args, 'diagnostics_dir', None)
     if directory is None:
         token_file = getattr(args, 'token_file', None)
@@ -341,7 +451,7 @@ def record_start_failure(args, process, code, stderr):
         raise CompletionError('codex_diagnostic_directory_invalid', 503)
     record = {'at': int(time.time()), 'failure_code': code,
               'pid': process.pid, 'exit_code': process.returncode,
-              'stderr': stderr.decode(errors='replace')}
+              'stderr': scrub_diagnostic_secrets(stderr.decode(errors='replace'))}
     payload = json.dumps(record, ensure_ascii=False).encode()
     while len(payload) > 16384:
         record['stderr'] = record['stderr'][:len(record['stderr']) // 2]
@@ -385,24 +495,14 @@ async def execute(args, system, prompt, schema, transport):
     if kind not in ('codex', 'traex'):
         raise CompletionError('unsupported_generation_bridge', 400)
     provider = 'trae' if kind == 'traex' else 'openai'
+    auth = args.auth_home / ('cli/auth.json' if kind == 'traex' else 'auth.json')
+    if not auth.is_file():
+        raise CompletionError('codex_authentication_required', 503)
     with completion_workspace(args) as root:
         home, private, work = (root / name for name in ('home', 'codex', 'task'))
         for directory in (home, private, work):
             directory.mkdir(mode=0o700)
         config = private / ('traecli.toml' if kind == 'traex' else 'config.toml')
-        config.write_text(private_config(args.model, work, provider, args.agent_defaults_snapshot))
-        config.chmod(0o600)
-        # Copy only subscription authentication, never daily config/plugins/history.
-        auth = args.auth_home / ('cli/auth.json' if kind == 'traex' else 'auth.json')
-        if not auth.is_file():
-            raise CompletionError('codex_authentication_required', 503)
-        auth_target = private / ('cli/auth.json' if kind == 'traex' else 'auth.json')
-        if kind == 'traex':
-            auth_target.parent.mkdir(mode=0o700)
-            auth_target.symlink_to(auth)
-        else:
-            auth_target.write_bytes(auth.read_bytes())
-            auth_target.chmod(0o600)
         environment = {'HOME': str(home), 'CODEX_HOME': str(private), 'TMPDIR': str(root),
                        'PATH': str(args.codex_executable.parent) + ':/usr/bin:/bin'}
         if kind == 'traex':
@@ -411,147 +511,194 @@ async def execute(args, system, prompt, schema, transport):
         for key in ('LANG', 'LC_ALL', 'HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY', 'NO_PROXY'):
             if key in os.environ:
                 environment[key] = os.environ[key]
-        # The group is owned by this request, never the user's ordinary Codex.
-        phase('process_spawn')
-        spawn = asyncio.create_task(asyncio.create_subprocess_exec(str(args.codex_executable), 'app-server', '--strict-config', '--stdio',
-            cwd=work, env=environment, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE, start_new_session=True, limit=8 * 1024 * 1024))
-        try:
-            process = await asyncio.shield(spawn)
-        except asyncio.CancelledError:
-            process = await spawn
+        cache_key = feature_cache_key(args.codex_executable, provider)
+        supported = await asyncio.to_thread(probe_supported_features, args.codex_executable, provider=provider)
+        with _feature_cache_lock:
+            _, excluded = _feature_cache.get(cache_key, (None, frozenset()))
+
+        def remember_unsupported(feature):
+            nonlocal excluded
+            excluded |= {feature}
+            if cache_key is not None:
+                with _feature_cache_lock:
+                    cached, previous = _feature_cache.get(cache_key, (supported, frozenset()))
+                    excluded |= previous
+                    _cache_features(cache_key, cached, excluded)
+
+        # Copy only subscription authentication, never daily config/plugins/history.
+        auth_target = private / ('cli/auth.json' if kind == 'traex' else 'auth.json')
+        if kind == 'traex':
+            auth_target.parent.mkdir(mode=0o700, exist_ok=True)
+            auth_target.symlink_to(auth)
+        else:
+            auth_target.write_bytes(auth.read_bytes())
+            auth_target.chmod(0o600)
+        for attempt in range(3):
+            config.write_text(private_config(args.model, work, provider, args.agent_defaults_snapshot,
+                                             supported_features=supported, excluded_features=excluded))
+            config.chmod(0o600)
+            candidates = disabled_features(provider, supported, excluded)
             try:
-                track_process(args, process, True)
-            finally:
-                await terminate(process)
-                track_process(args, process, False)
-            raise
-        clock = ActivityClock(args.timeout)
-        stderr_task = asyncio.create_task(collect_stderr(process.stderr, on_activity=clock.touch))
-        rpc, thread_id, turn_id, failure = RPC(process, clock), None, None, None
+                return await execute_attempt(args, system, prompt, schema, transport, kind=kind,
+                                             provider=provider, work=work, environment=environment,
+                                             candidates=candidates, can_retry=attempt < 2,
+                                             remember_unsupported=remember_unsupported)
+            except UnsupportedStartupFeature:
+                continue
+
+
+async def execute_attempt(args, system, prompt, schema, transport, *, kind, provider, work, environment,
+                          candidates, can_retry, remember_unsupported):
+    # The group is owned by this request, never the user's ordinary Codex.
+    phase('process_spawn')
+    spawn = asyncio.create_task(asyncio.create_subprocess_exec(str(args.codex_executable), 'app-server', '--strict-config', '--stdio',
+        cwd=work, env=environment, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE, start_new_session=True, limit=8 * 1024 * 1024))
+    try:
+        process = await asyncio.shield(spawn)
+    except asyncio.CancelledError:
+        process = await spawn
         try:
             track_process(args, process, True)
-            phase('rpc_initialize')
-            await rpc.call('initialize', {'clientInfo': {'name': 'memlane_completion', 'version': '1'}, 'capabilities': {'experimentalApi': True}})
-            await rpc.send('initialized', {}, notification=True)
-            phase('thread_start')
-            instructions = 'Complete only this isolated model request.'
-            if kind == 'traex':
-                instructions += (' Return only the JSON object constrained by outputSchema, without Markdown. '
-                                 'The user message describes the answer content, not the transport encoding. '
-                                 'For a text envelope, put the requested answer in its text field. '
-                                 'Required output schema: ' + json.dumps(transport))
-            started = await rpc.call('thread/start', {'cwd': str(work), 'runtimeWorkspaceRoots': [],
-                'permissions': PROFILE, 'model': args.model, 'modelProvider': provider, 'approvalPolicy': 'never',
-                'ephemeral': True, 'allowProviderModelFallback': False, 'dynamicTools': [],
-                'baseInstructions': system, 'developerInstructions': instructions})
-            thread_id = started.get('thread', {}).get('id')
-            if not thread_id or started.get('model') != args.model or started.get('modelProvider') != provider or started.get('runtimeWorkspaceRoots') != [] or started.get('activePermissionProfile', {}).get('id') != PROFILE:
-                raise CompletionError('codex_model_or_permissions_changed')
-            phase('model_turn')
-            request_id = await rpc.send('turn/start', {'threadId': thread_id, 'input': [{'type': 'text', 'text': prompt, 'text_elements': []}], 'outputSchema': transport, 'permissions': PROFILE})
-            final, announced = None, None
-            first_output = False
-            while True:
-                event = await rpc.read()
-                method, params = event.get('method', ''), event.get('params', {})
-                if 'id' in event:
-                    if method or event['id'] != request_id or event.get('error') or turn_id:
-                        raise CompletionError('codex_tool_or_rpc_rejected')
-                    turn_id = event.get('result', {}).get('turn', {}).get('id')
-                    if not turn_id or announced and announced != turn_id:
-                        raise CompletionError('codex_event_identity_invalid')
-                    continue
-                if method == 'error':
-                    error = remote_error(params.get('error'))
-                    will_retry = kind == 'codex' and params.get('willRetry') is True
-                    if will_retry:
-                        active_turn = turn_id or announced
-                        if not active_turn or params.get('threadId') != thread_id or params.get('turnId') != active_turn:
-                            raise CompletionError('codex_event_identity_invalid')
-                    trace = current_trace.get()
-                    if trace and kind == 'codex':
-                        trace.emit('codex_turn_error', outcome=error.code, will_retry=will_retry)
-                    if will_retry:
-                        # The App Server owns the retry within this turn. A
-                        # result from the interrupted attempt cannot be returned.
-                        final = None
-                        continue
-                    raise error
-                if method == 'turn/started':
-                    announced = params.get('turn', {}).get('id')
-                    if params.get('threadId') != thread_id or not announced or turn_id and announced != turn_id:
-                        raise CompletionError('codex_event_identity_invalid')
-                if method.startswith('item/'):
-                    if params.get('threadId') != thread_id or not turn_id or params.get('turnId') != turn_id:
-                        raise CompletionError('codex_event_identity_invalid')
-                    if method in ('item/started', 'item/completed'):
-                        item = params.get('item', {})
-                        if item.get('type') not in ('agentMessage', 'reasoning', 'userMessage'):
-                            raise CompletionError('codex_unexpected_tool_execution')
-                        if method == 'item/completed' and item['type'] == 'agentMessage' and item.get('phase') != 'commentary':
-                            if final is not None:
-                                raise CompletionError('codex_multiple_final_answers')
-                            final = item.get('text')
-                    elif not method.startswith(('item/agentMessage/', 'item/reasoning/')):
-                        raise CompletionError('codex_unexpected_tool_execution')
-                    if not first_output and method.startswith('item/agentMessage/'):
-                        first_output = True
-                        trace = current_trace.get()
-                        if trace:
-                            trace.emit('first_output_event')
-                if method == 'turn/completed':
-                    turn = params.get('turn', {})
-                    if params.get('threadId') != thread_id or not turn_id or turn.get('id') != turn_id:
-                        raise CompletionError('codex_event_identity_invalid')
-                    if turn.get('status') != 'completed' or turn.get('error'):
-                        raise remote_error(turn.get('error'))
-                    break
-            phase('schema_validation')
-            try:
-                if not isinstance(final, str) or len(final) > MAX_BODY:
-                    raise ValueError()
-                value = json.loads(final)
-                for contract in ((schema, transport) if schema is not None else (transport,)):
-                    validators.validator_for(contract)(contract).validate(value)
-            except Exception:
-                raise CompletionError('codex_schema_failed') from None
-            return value['text'] if schema is None else final
-        except CompletionError as error:
-            failure = error.code
-            raise
-        except (TimeoutError, asyncio.CancelledError) as error:
-            failure = 'codex_timeout' if isinstance(error, TimeoutError) else 'codex_cancelled'
-            rpc.clock = None
-            if thread_id and turn_id:
-                try:
-                    async with asyncio.timeout(2):
-                        await rpc.send('turn/interrupt', {'threadId': thread_id, 'turnId': turn_id})
-                        while True:
-                            event = await rpc.read()
-                            params = event.get('params', {})
-                            if event.get('method') == 'turn/completed' and params.get('threadId') == thread_id and params.get('turn', {}).get('id') == turn_id:
-                                break
-                except Exception:
-                    pass
-            if isinstance(error, TimeoutError):
-                raise CompletionError('codex_timeout', 504) from None
-            raise
         finally:
-            phase('process_cleanup')
-            # Shield cleanup even when upstream disconnects or server shuts down.
-            async def finish():
-                await terminate(process)
-                track_process(args, process, False)
-                stderr = await stderr_task
-                if failure and turn_id is None:
-                    record_start_failure(args, process, failure, stderr)
-            cleanup = asyncio.create_task(finish())
+            await terminate(process)
+            track_process(args, process, False)
+        raise
+    clock = ActivityClock(args.timeout)
+    stderr_task = asyncio.create_task(collect_stderr(process.stderr, on_activity=clock.touch))
+    rpc, thread_id, turn_id, failure = RPC(process, clock), None, None, None
+    initialized = False
+    try:
+        track_process(args, process, True)
+        phase('rpc_initialize')
+        await rpc.call('initialize', {'clientInfo': {'name': 'memlane_completion', 'version': '1'}, 'capabilities': {'experimentalApi': True}})
+        initialized = True
+        await rpc.send('initialized', {}, notification=True)
+        phase('thread_start')
+        instructions = 'Complete only this isolated model request.'
+        if kind == 'traex':
+            instructions += (' Return only the JSON object constrained by outputSchema, without Markdown. '
+                             'The user message describes the answer content, not the transport encoding. '
+                             'For a text envelope, put the requested answer in its text field. '
+                             'Required output schema: ' + json.dumps(transport))
+        started = await rpc.call('thread/start', {'cwd': str(work), 'runtimeWorkspaceRoots': [],
+            'permissions': PROFILE, 'model': args.model, 'modelProvider': provider, 'approvalPolicy': 'never',
+            'ephemeral': True, 'allowProviderModelFallback': False, 'dynamicTools': [],
+            'baseInstructions': system, 'developerInstructions': instructions})
+        thread_id = started.get('thread', {}).get('id')
+        if not thread_id or started.get('model') != args.model or started.get('modelProvider') != provider or started.get('runtimeWorkspaceRoots') != [] or started.get('activePermissionProfile', {}).get('id') != PROFILE:
+            raise CompletionError('codex_model_or_permissions_changed')
+        phase('model_turn')
+        request_id = await rpc.send('turn/start', {'threadId': thread_id, 'input': [{'type': 'text', 'text': prompt, 'text_elements': []}], 'outputSchema': transport, 'permissions': PROFILE})
+        final, announced = None, None
+        first_output = False
+        while True:
+            event = await rpc.read()
+            method, params = event.get('method', ''), event.get('params', {})
+            if 'id' in event:
+                if method or event['id'] != request_id or event.get('error') or turn_id:
+                    raise CompletionError('codex_tool_or_rpc_rejected')
+                turn_id = event.get('result', {}).get('turn', {}).get('id')
+                if not turn_id or announced and announced != turn_id:
+                    raise CompletionError('codex_event_identity_invalid')
+                continue
+            if method == 'error':
+                error = remote_error(params.get('error'))
+                will_retry = kind in ('codex', 'traex') and params.get('willRetry') is True
+                if will_retry:
+                    active_turn = turn_id or announced
+                    if not active_turn or params.get('threadId') != thread_id or params.get('turnId') != active_turn:
+                        raise CompletionError('codex_event_identity_invalid')
+                trace = current_trace.get()
+                if trace and kind in ('codex', 'traex'):
+                    trace.emit('codex_turn_error', outcome=error.code, will_retry=will_retry)
+                if will_retry:
+                    # The App Server owns the retry within this turn. A
+                    # result from the interrupted attempt cannot be returned.
+                    final = None
+                    continue
+                raise error
+            if method == 'turn/started':
+                announced = params.get('turn', {}).get('id')
+                if params.get('threadId') != thread_id or not announced or turn_id and announced != turn_id:
+                    raise CompletionError('codex_event_identity_invalid')
+            if method.startswith('item/'):
+                if params.get('threadId') != thread_id or not turn_id or params.get('turnId') != turn_id:
+                    raise CompletionError('codex_event_identity_invalid')
+                if method in ('item/started', 'item/completed'):
+                    item = params.get('item', {})
+                    if item.get('type') not in ('agentMessage', 'reasoning', 'userMessage'):
+                        raise CompletionError('codex_unexpected_tool_execution')
+                    if method == 'item/completed' and item['type'] == 'agentMessage' and item.get('phase') != 'commentary':
+                        if final is not None:
+                            raise CompletionError('codex_multiple_final_answers')
+                        final = item.get('text')
+                elif not method.startswith(('item/agentMessage/', 'item/reasoning/')):
+                    raise CompletionError('codex_unexpected_tool_execution')
+                if not first_output and method.startswith('item/agentMessage/'):
+                    first_output = True
+                    trace = current_trace.get()
+                    if trace:
+                        trace.emit('first_output_event')
+            if method == 'turn/completed':
+                turn = params.get('turn', {})
+                if params.get('threadId') != thread_id or not turn_id or turn.get('id') != turn_id:
+                    raise CompletionError('codex_event_identity_invalid')
+                if turn.get('status') != 'completed' or turn.get('error'):
+                    raise remote_error(turn.get('error'))
+                break
+        phase('schema_validation')
+        try:
+            if not isinstance(final, str) or len(final) > MAX_BODY:
+                raise ValueError()
+            value = json.loads(final)
+            for contract in ((schema, transport) if schema is not None else (transport,)):
+                validators.validator_for(contract)(contract).validate(value)
+        except Exception:
+            raise CompletionError('codex_schema_failed') from None
+        return value['text'] if schema is None else final
+    except CompletionError as error:
+        failure = error.code
+        raise
+    except (TimeoutError, asyncio.CancelledError) as error:
+        failure = 'codex_timeout' if isinstance(error, TimeoutError) else 'codex_cancelled'
+        rpc.clock = None
+        if thread_id and turn_id:
             try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                await cleanup
-                raise
+                async with asyncio.timeout(2):
+                    await rpc.send('turn/interrupt', {'threadId': thread_id, 'turnId': turn_id})
+                    while True:
+                        event = await rpc.read()
+                        params = event.get('params', {})
+                        if event.get('method') == 'turn/completed' and params.get('threadId') == thread_id and params.get('turn', {}).get('id') == turn_id:
+                            break
+            except Exception:
+                pass
+        if isinstance(error, TimeoutError):
+            raise CompletionError('codex_timeout', 504) from None
+        raise
+    finally:
+        phase('process_cleanup')
+        # Shield cleanup even when upstream disconnects or server shuts down.
+        async def finish():
+            await terminate(process)
+            track_process(args, process, False)
+            stderr = await stderr_task
+            if failure and turn_id is None:
+                if not initialized and failure != 'codex_cancelled':
+                    unsupported = parse_unknown_feature_error(stderr, candidates)
+                    if unsupported:
+                        remember_unsupported(unsupported)
+                        if can_retry:
+                            raise UnsupportedStartupFeature from None
+                # Once initialized, the worker can see request instructions.
+                record_start_failure(args, process, failure, b'' if initialized else stderr)
+        cleanup = asyncio.create_task(finish())
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await cleanup
+            raise
 
 
 def default_request_args(args):

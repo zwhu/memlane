@@ -7,11 +7,12 @@ import os
 from pathlib import Path
 import tempfile
 import time
+import tomllib
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 import agent_completion_endpoint
 import codex_completion_endpoint as endpoint
 from process_groups import group_exists
@@ -172,9 +173,19 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ProcessLookupError): os.killpg(p.pid, 0)
         self.temporary.cleanup()
 
-    def fake(self, mode):
-        self.executable.write_text(FAKE.format(python=self.python,mode=mode))
+    def fake_source(self, mode, kind='codex'):
+        source = FAKE.format(python=self.python, mode=mode)
+        if kind == 'traex':
+            source = source.replace("'openai'", "'trae'").replace("'CODEX_HOME'", "'TRAE_HOME'")
+            source = source.replace("'config.toml'", "'traecli.toml'")
+        return source
+
+    def write_executable(self, source):
+        self.executable.write_text(source)
         self.executable.chmod(0o700)
+
+    def fake(self, mode, kind='codex'):
+        self.write_executable(self.fake_source(mode, kind))
 
     async def run_fake(self, mode):
         self.fake(mode)
@@ -184,44 +195,58 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(await self.run_fake('success')), {'answer':'ok'})
         self.assertEqual((self.auth/'auth.json').read_text(), '{"synthetic":true}')
 
+    async def retry_request(self, kind, mode, timeout):
+        self.fake(mode, kind)
+        previous_processes = len(self.processes)
+        args = self.prepare_http_args(kind, timeout=timeout)
+        app = endpoint.create_app(args)
+        request = make_mocked_request('POST', '/v1/chat/completions', app=app,
+                                      headers={'Authorization': 'Bearer ' + args.token_file.read_text()},
+                                      transport=Mock(is_closing=Mock(return_value=False)))
+        request.json = AsyncMock(return_value={
+            'model': 'fixture-model', 'messages': [{'role': 'user', 'content': 'q'}],
+            'response_format': {'type': 'json_schema', 'json_schema': {'schema': SCHEMA}},
+        })
+        route = await app.router.resolve(request)
+        diagnostics = io.StringIO()
+        with redirect_stderr(diagnostics):
+            response = await route.handler(request)
+            result = json.loads(response.body)
+        self.assertEqual(len(self.processes), previous_processes + 1)
+        self.assertNotIn('synthetic error detail', diagnostics.getvalue())
+        rows = [json.loads(line) for line in diagnostics.getvalue().splitlines() if line.startswith('{')]
+        return response.status, result, rows
+
     async def test_retryable_error_notification_recovers_in_same_http_request(self):
-        for mode in ('retry-success', 'retry-before-reply'):
-            with self.subTest(mode=mode):
-                self.fake(mode)
-                previous_processes = len(self.processes)
-                args = self.prepare_http_args('codex', timeout=2)
-                diagnostics = io.StringIO()
-                with redirect_stderr(diagnostics):
-                    async with TestClient(TestServer(endpoint.create_app(args))) as client:
-                        response = await client.post('/v1/chat/completions', json={
-                            'model': 'fixture-model', 'messages': [{'role': 'user', 'content': 'q'}],
-                            'response_format': {'type': 'json_schema', 'json_schema': {'schema': SCHEMA}},
-                        }, headers={'Authorization': 'Bearer ' + args.token_file.read_text()})
-                        result = await response.json()
-                self.assertEqual(response.status, 200, result)
-                self.assertEqual(json.loads(result['choices'][0]['message']['content']), {'answer': 'ok'})
-                self.assertEqual(len(self.processes), previous_processes + 1)
-                rows = [json.loads(line) for line in diagnostics.getvalue().splitlines() if line.startswith('{')]
-                retry, = [row for row in rows if row.get('event') == 'codex_turn_error']
-                finished, = [row for row in rows if row.get('event') == 'request_finished']
-                self.assertEqual(retry['request_id'], finished['request_id'])
-                self.assertIs(retry['will_retry'], True)
-                self.assertEqual(retry['outcome'], 'codex_stream_disconnected')
-                self.assertEqual(finished['outcome'], 'succeeded')
-                self.assertNotIn('synthetic error detail', diagnostics.getvalue())
+        for kind in ('codex', 'traex'):
+            for mode in ('retry-success', 'retry-before-reply'):
+                with self.subTest(kind=kind, mode=mode):
+                    status, result, rows = await self.retry_request(kind, mode, timeout=3)
+                    self.assertEqual(status, 200, result)
+                    self.assertEqual(json.loads(result['choices'][0]['message']['content']), {'answer': 'ok'})
+                    retry, = [row for row in rows if row.get('event') == 'codex_turn_error']
+                    finished, = [row for row in rows if row.get('event') == 'request_finished']
+                    self.assertEqual(retry['request_id'], finished['request_id'])
+                    self.assertEqual(retry['backend_kind'], kind)
+                    self.assertIs(retry['will_retry'], True)
+                    self.assertEqual(retry['outcome'], 'codex_stream_disconnected')
+                    self.assertEqual(finished['outcome'], 'succeeded')
 
     async def test_retryable_error_keeps_terminal_failure_identity_and_timeout_enforcement(self):
-        self.args.timeout = .5
-        for mode, code, status in (
-            ('retry-terminal', 'codex_stream_disconnected', 502),
-            ('terminal', 'codex_stream_disconnected', 502),
-            ('retry-wrong-turn', 'codex_event_identity_invalid', 502),
-            ('retry-hang', 'codex_timeout', 504),
-        ):
-            with self.subTest(mode=mode):
-                with self.assertRaises(endpoint.CompletionError) as caught:
-                    await self.run_fake(mode)
-                self.assertEqual((caught.exception.code, caught.exception.status), (code, status))
+        for kind in ('codex', 'traex'):
+            for mode, code, expected_status in (
+                ('retry-terminal', 'codex_stream_disconnected', 502),
+                ('terminal', 'codex_stream_disconnected', 502),
+                ('retry-wrong-turn', 'codex_event_identity_invalid', 502),
+                ('retry-hang', 'codex_timeout', 504),
+            ):
+                with self.subTest(kind=kind, mode=mode):
+                    status, result, rows = await self.retry_request(kind, mode, timeout=.8 if mode == 'retry-hang' else 3)
+                    self.assertEqual(status, expected_status, result)
+                    self.assertEqual(result['error']['code'], code)
+                    retries = [row for row in rows if row.get('event') == 'codex_turn_error']
+                    self.assertEqual([row['will_retry'] for row in retries],
+                                     [] if mode == 'retry-wrong-turn' else [mode != 'terminal'])
 
     async def test_native_request_inherits_default_effort_and_internal_memory_models(self):
         for kind in ('codex', 'traex'):
@@ -287,12 +312,104 @@ def send(x):''')
                 with self.assertRaises(endpoint.CompletionError) as caught: await self.run_fake(mode)
                 self.assertEqual(caught.exception.code, code)
 
+    async def test_probe_features_and_cache_by_executable_stat_and_provider(self):
+        launches = self.root / 'feature-probes'
+
+        def write_listing(output, status=0):
+            self.write_executable(f"""#!{self.python}
+import os, sys
+from pathlib import Path
+assert sys.argv[1:] == ['features', 'list']
+assert os.environ['HOME'] != {str(self.auth)!r}
+with Path({str(launches)!r}).open('a') as stream:
+    print('probe', file=stream)
+print({output!r})
+sys.exit({status})
+""")
+
+        def feature_config(supported, provider='trae'):
+            return tomllib.loads(endpoint.private_config('fixture-model', self.root, provider,
+                                                         supported_features=supported))['features']
+
+        write_listing('shell_tool stable true\nworkspace_dependencies experimental false')
+        older = endpoint.probe_supported_features(self.executable, provider='trae')
+        self.assertEqual(older, frozenset({'shell_tool', 'workspace_dependencies'}))
+        self.assertEqual(feature_config(older), {'shell_tool': False, 'workspace_dependencies': False})
+        self.assertEqual(endpoint.probe_supported_features(self.executable, provider='trae'), older)
+        self.assertEqual(launches.read_text().splitlines(), ['probe'])
+        self.assertEqual(endpoint.probe_supported_features(self.executable, provider='openai'), older)
+        self.assertEqual(len(launches.read_text().splitlines()), 2)
+
+        write_listing('shell_tool stable true\nview_image under development false\n'
+                      'workspace_dependencies REMOVED true\ninvalid-feature stable false\na false\nbad stable maybe')
+        newer = endpoint.probe_supported_features(self.executable, provider='trae')
+        self.assertEqual(newer, frozenset({'shell_tool', 'view_image'}))
+        self.assertEqual(feature_config(newer), {'shell_tool': False, 'view_image': False})
+        self.assertEqual(len(launches.read_text().splitlines()), 3)
+
+        write_listing('shell_tool stable true', status=2)
+        missing = endpoint.probe_supported_features(self.executable, provider='trae')
+        self.assertIsNone(missing)
+        self.assertEqual(set(feature_config(missing)), set(endpoint.DISABLED_FEATURES) - {'view_image', 'remote_plugin'})
+        self.assertEqual(set(feature_config(missing, 'openai')), set(endpoint.DISABLED_FEATURES))
+        self.assertIsNone(endpoint.probe_supported_features(self.executable, provider='trae'))
+        self.assertEqual(len(launches.read_text().splitlines()), 4)
+
+    async def test_strict_config_retries_unsupported_keys_and_caches_rejections(self):
+        args = self.prepare_http_args('traex', timeout=3)
+        source = self.fake_source('success', 'traex')
+        source = source.replace("root=Path(", """if sys.argv[1:] == ['features', 'list']:
+ print('shell_tool stable true\\nshell_unused stable false\\nhooks stable true\\nplugins stable true'
+       '\\nview_image stable true\\nremote_plugin stable false')
+ sys.exit(0)
+assert sys.argv[1:] == ['app-server', '--strict-config', '--stdio']
+root=Path(""")
+        source = source.replace('def send(x):', """for key, message in [('view_image', 'unknown field `view_image`'),
+                     ('remote_plugin', 'invalid feature "remote_plugin"')]:
+ if key + ' = false' in config:
+  sys.stderr.write(message)
+  sys.exit(2)
+def send(x):""")
+        self.write_executable(source)
+        for expected_spawns in (3, 1):
+            before = len(self.processes)
+            result = await endpoint.execute(args, 'system', 'prompt', SCHEMA, endpoint.strict_schema(SCHEMA))
+            self.assertEqual(json.loads(result), {'answer': 'ok'})
+            self.assertEqual(len(self.processes) - before, expected_spawns)
+        self.assertEqual(self.peak_live, 1)
+        self.assertFalse((args.diagnostics_dir / 'codex-start-failure.json').exists())
+
+    async def test_strict_config_ignores_nonfeature_errors_and_limits_retries(self):
+        args = self.prepare_http_args('traex', timeout=3)
+        source = self.fake_source('success', 'traex')
+        for keys, expected_spawns in ((['unrelated_option'], 1), (['apps', 'memories', 'code_mode_host'], 3)):
+            with self.subTest(keys=keys):
+                rejection = f"""
+for key in {keys!r}:
+ if key == 'unrelated_option' or key + ' = false' in config:
+  sys.stderr.write("unknown feature '" + key + "'")
+  sys.exit(2)
+"""
+                self.write_executable(source.replace('def send(x):', rejection + 'def send(x):'))
+                before = len(self.processes)
+                with self.assertRaisesRegex(endpoint.CompletionError, 'codex_transport_closed'):
+                    await endpoint.execute(args, 'system', 'prompt', SCHEMA, endpoint.strict_schema(SCHEMA))
+                self.assertEqual(len(self.processes) - before, expected_spawns)
+                diagnostic = json.loads((args.diagnostics_dir / 'codex-start-failure.json').read_text())
+                self.assertIn(keys[-1], diagnostic['stderr'])
+                if len(keys) == 3:
+                    before = len(self.processes)
+                    result = await endpoint.execute(args, 'system', 'prompt', SCHEMA, endpoint.strict_schema(SCHEMA))
+                    self.assertEqual(json.loads(result), {'answer': 'ok'})
+                    self.assertEqual(len(self.processes) - before, 1)
+
     async def test_startup_stderr_retained_privately_and_bounded(self):
         self.executable.write_text('#!' + self.python + '\nimport sys\nsys.stderr.write("synthetic-start-error" + "x" * 40000)\nsys.exit(1)\n')
         self.executable.chmod(0o700)
         with self.assertRaises(endpoint.CompletionError) as caught:
             await endpoint.execute(self.args, 's', 'p', SCHEMA, endpoint.strict_schema(SCHEMA))
         self.assertEqual(caught.exception.code, 'codex_transport_closed')
+        self.assertEqual(len(self.processes), 1)
         diagnostic = self.args.diagnostics_dir / 'codex-start-failure.json'
         self.assertLessEqual(diagnostic.stat().st_size, 16384)
         self.assertEqual(diagnostic.stat().st_mode & 0o777, 0o600)
@@ -551,9 +668,10 @@ for line in sys.stdin:
             return await client.post('/v1/chat/completions', json=request, headers=headers)
         pending = [asyncio.create_task(post()) for _ in range(32)]
         try:
-            for _ in range(30):
+            for _ in range(100):
                 response = await client.get('/health')
-                if (await response.json())['active_or_waiting'] == 32: break
+                if (await response.json())['active_or_waiting'] == 32 and len(self.processes) == 2:
+                    break
                 await asyncio.sleep(.02)
             response = await post()
             self.assertEqual(response.status,429)

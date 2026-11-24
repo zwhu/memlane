@@ -53,6 +53,43 @@ class NativeConnection:
         marker = source / '.memlane-project-access.json'
         return source.is_absolute() and not source.is_symlink() and source.is_dir() and not marker.is_symlink() and marker.is_file()
 
+    def last_hook_error(self):
+        if self.kind != 'trae_ide':
+            return None
+        from trae_ide_hook import EVENTS, PAYLOAD_KEYS, read_hook_errors
+        from trae_ide_connection import redact_diagnostic_text
+
+        state = self.registry.state
+        agent = state.get('agents', {}).get(self.id, {})
+        home = (agent.get('installation') or {}).get('home') or Path.home()
+        directory = Path(home) / '.cognee-plugin' / ('trae_ide-' + self.id)
+        activated_at = state.get('connections', {}).get(self.id, {}).get('activated_at')
+        cutoff = activated_at if type(activated_at) in (int, float) else 0.0
+        receipt = state.get('connection_receipts', {}).get(self.id, {})
+        if (isinstance(receipt, dict) and receipt.get('artifact_verified') and receipt.get('environment_verified')
+                and type(receipt.get('received_at')) in (int, float) and receipt['received_at'] > cutoff):
+            cutoff = receipt['received_at']
+        for item in reversed(read_hook_errors(directory)):
+            if not isinstance(item, dict):
+                continue
+            at = item.get('at')
+            if type(at) not in (int, float) or not 0 < at < float('inf') or at < cutoff:
+                continue
+            keys = item.get('payload_keys')
+            result = {
+                'at': float(at), 'timestamp': str(item.get('timestamp', ''))[:80],
+                'event': item.get('event') if item.get('event') in tuple(EVENTS) else '',
+                'script': 'trae_ide_hook.py', 'status': item.get('status') if type(item.get('status')) is int else None,
+                'error_code': str(item.get('error_code', ''))[:80], 'error_type': str(item.get('error_type', ''))[:80],
+                'reason': str(item.get('reason', ''))[:120],
+                'payload_keys': sorted(key for key in PAYLOAD_KEYS if isinstance(keys, list) and key in keys),
+            }
+            snippet = item.get('stderr_snippet')
+            if isinstance(snippet, str) and (clean := redact_diagnostic_text(snippet)):
+                result['stderr_snippet'] = clean
+            return result
+        return None
+
     def view(self):
         record = self.registry.state.get('connections', {}).get(self.id, {})
         status = record.get('status', 'not_connected' if self.component_source_available() else 'component_unavailable')
@@ -68,6 +105,9 @@ class NativeConnection:
         if self.kind == 'trae_ide':
             result['capabilities']['explicit_memory']['available'] = False
             result['capabilities']['auto_capture']['condition'] = 'single_workspace_live_turns'
+            hook_error = self.last_hook_error()
+            if hook_error is not None:
+                result['last_hook_error'] = hook_error
         if self.kind == 'claude_code':
             result['capabilities']['auto_capture']['condition'] = 'bound_main_session; sidechains_require_independent_binding'
         result['new_sessions'] = sum(json.loads(key)[0] == self.id and key not in record.get('sessions_before_activation', [])

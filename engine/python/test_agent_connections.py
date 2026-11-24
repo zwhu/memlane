@@ -329,7 +329,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
                         self.assertFalse({'prepared_installation', 'active_installation', 'active_record'} & restored.keys())
 
     async def test_trae_ide_dispatch_uses_active_generation_until_upgrade_activation(self):
-        from trae_ide_connection import HookDispatch
+        from trae_ide_connection import EVENTS, LEGACY_EVENTS, HookDispatch, loader
 
         adapter = self.native_adapter('trae_ide', 'dispatch')
         adapter.profile.mkdir()
@@ -345,7 +345,10 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             execute.assert_awaited_once()
             self.assertEqual(execute.await_args.args[2], str(Path(installation['plugin_dir']) / 'scripts/trae_ide_hook.py'))
 
-        prepared = await adapter.prepare(self.registry.state['revision'])
+        with patch('trae_ide_connection.loader', side_effect=lambda installation, python: {
+            event: group for event, group in loader(installation, python).items() if event in LEGACY_EVENTS
+        }):
+            prepared = await adapter.prepare(self.registry.state['revision'])
         record = self.registry.state['connections'][adapter.id]
         for status in ('prepared', 'preparation_unknown'):
             record['status'] = status
@@ -357,6 +360,8 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         agent = self.registry.state['agents'][adapter.id]
         v1 = copy.deepcopy(agent['installation'])
         baseline = adapter.target.read_bytes()
+        self.assertEqual(set(json.loads(baseline)['hooks']), set(LEGACY_EVENTS))
+        self.assertEqual(adapter.view()['status'], 'configured_pending_new_session')
         await assert_dispatch(v1)
 
         adapter.config = {**adapter.config, 'python': '/usr/bin/python3'}
@@ -370,6 +375,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await adapter.prepare(self.registry.state['revision']))['status'], 'prepared')
         record = self.registry.state['connections'][adapter.id]
         v2 = record['prepared_installation']
+        self.assertEqual(set(record['trae_ide_next_hooks']), set(EVENTS))
         self.assertNotEqual(v1['plugin_dir'], v2['plugin_dir'])
         self.assertTrue(record['activated'])
         self.assertEqual(agent['installation'], v1)
@@ -1217,9 +1223,8 @@ print("explicit skill and hooks resolve one binding without cwd fallback")
         })
         self.assertTrue(environment_receipt['environment_verified'])
 
-        from aiohttp.test_utils import TestClient, TestServer
+        from aiohttp.test_utils import make_mocked_request
         from project_control_server import create_app
-        from unittest.mock import AsyncMock, patch
 
         manager_token = 'm' * 32
         ide_token = 't' * 32
@@ -1227,21 +1232,25 @@ print("explicit skill and hooks resolve one binding without cwd fallback")
         private_write(self.workspace / 'ide-token', ide_token.encode())
         self.registry.state['agents'][adapter.id]['control_token_file'] = str(self.workspace / 'ide-token')
         app = create_app(self.registry, manager_token, {'unrelated': unrelated_token}, codex_config=self.config)
+        app.freeze()
         route = '/v1/trae-ide/hooks/UserPromptSubmit'
         payload = {'session_id': 'synthetic-session', 'cwd': str(profile), 'workspace_roots': [str(profile)],
                    'hook_event_name': 'UserPromptSubmit', 'prompt': 'synthetic prompt'}
 
         worker = type('Worker', (), {'returncode': 0, 'communicate': AsyncMock(return_value=(b'{}', b''))})()
         with patch('asyncio.create_subprocess_exec', new_callable=AsyncMock, return_value=worker) as execute:
-            async with TestClient(TestServer(app)) as client:
-                for token, status in ((None, 401), (manager_token, 403), (unrelated_token, 403), (ide_token, 200)):
-                    headers = {'Authorization': 'Bearer ' + token} if token else {}
-                    response = await client.post(route, json=payload, headers=headers)
-                    self.assertEqual(response.status, status, await response.text())
-                execute.assert_awaited_once()
-                launch = execute.await_args
-                self.assertEqual(launch.args[-2:], ('UserPromptSubmit', '--dispatch'))
-                self.assertEqual(launch.kwargs['umask'], 0o077)
+            for token, status in ((None, 401), (manager_token, 403), (unrelated_token, 403), (ide_token, 200)):
+                headers = {'Content-Type': 'application/json'}
+                if token:
+                    headers['Authorization'] = 'Bearer ' + token
+                request = make_mocked_request('POST', route, app=app, headers=headers)
+                request.read = AsyncMock(return_value=json.dumps(payload).encode())
+                response = await app._handle(request)
+                self.assertEqual(response.status, status, response.text)
+            execute.assert_awaited_once()
+            launch = execute.await_args
+            self.assertEqual(launch.args[-2:], ('UserPromptSubmit', '--dispatch'))
+            self.assertEqual(launch.kwargs['umask'], 0o077)
 
         script = r'''
 import os, sys
