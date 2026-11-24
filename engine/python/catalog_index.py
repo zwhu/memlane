@@ -785,6 +785,7 @@ class CatalogIndex:
         self._last_synced_pin_ts_ns = 0
         self._last_synced_ds_tuple = None
         self._inflight_sync = None
+        self._active_syncs: dict[object, tuple[str, ...]] = {}
         self._has_synced_in_process = False
         self._last_synced_tz_name = ''
         self._last_sync_doc_count = 0
@@ -3426,6 +3427,21 @@ class CatalogIndex:
                 pass
         return base + (time.monotonic_ns(),)
 
+    def _open_configured_write_con(self) -> sqlite3.Connection:
+        con = _open_private_rw(self.path)
+        try:
+            _apply_connection_pragmas(con)
+        except Exception:
+            try:
+                con.close()
+            except Exception:
+                pass
+            raise
+        return con
+
+    def _has_other_scope_active_locked(self, ds_tuple: tuple[str, ...]) -> bool:
+        return any(scope != ds_tuple for scope in self._active_syncs.values())
+
     def _submit_sync_locked(
         self, ds_tuple, sig_check, relations_resolver, *, force=False, background=False, low_priority=False, rebuild=False,
     ):
@@ -3436,8 +3452,7 @@ class CatalogIndex:
             try:
                 with self._write_lock:
                     if self._write_con is None and self.path.is_file():
-                        self._write_con = _open_private_rw(self.path)
-                        _apply_connection_pragmas(self._write_con)
+                        self._write_con = self._open_configured_write_con()
                     sig_before = self._full_stat_sig(ds_tuple, relations_resolver)
                     with self._state_lock:
                         if not force and not self._bg_sync_failed and self._last_stat_sig == sig_before:
@@ -3488,6 +3503,7 @@ class CatalogIndex:
                 raise
             finally:
                 with self._state_lock:
+                    self._active_syncs.pop(run_token, None)
                     if self._inflight_sync is not None and self._inflight_sync[3] is run_token:
                         self._inflight_sync = None
                     if not self._closed and self._pending_bg_sync is not None:
@@ -3496,7 +3512,12 @@ class CatalogIndex:
                         else:
                             self._arm_bg_timer_locked()
 
-        fut = self._writer_executor.submit(_run)
+        self._active_syncs[run_token] = ds_tuple
+        try:
+            fut = self._writer_executor.submit(_run)
+        except Exception:
+            self._active_syncs.pop(run_token, None)
+            raise
         self._inflight_sync = (ds_tuple, fut, sig_check, run_token)
         if background:
             fut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
@@ -3510,7 +3531,7 @@ class CatalogIndex:
                 not force
                 and not self._rebuilding
                 and not self._bg_sync_failed
-                and (self._inflight_sync is None or self._inflight_sync[0] == ds_tuple)
+                and not self._has_other_scope_active_locked(ds_tuple)
                 and (
                     self._last_stat_sig == entry_sig
                     or (
@@ -3613,8 +3634,11 @@ class CatalogIndex:
             with self._state_lock:
                 if self._bg_timer is timer:
                     self._bg_timer = None
-                    self._pending_bg_sync = None
-                    self._bg_sync_failed = True
+                    if self._pending_bg_sync == pending:
+                        self._pending_bg_sync = None
+                        self._bg_sync_failed = True
+                    elif self._pending_bg_sync is not None and not self._closed and self._inflight_sync is None:
+                        self._arm_bg_timer_locked()
             return
         with self._state_lock:
             if self._bg_timer is not timer:
@@ -3667,7 +3691,7 @@ class CatalogIndex:
                 self._rebuilding
                 or not self._has_synced_in_process
                 or self._last_synced_ds_tuple != ds_tuple
-                or (self._inflight_sync is not None and self._inflight_sync[0] != ds_tuple)
+                or self._has_other_scope_active_locked(ds_tuple)
                 or self._last_synced_tz_name != entry_sig[3]
                 or self._bg_sync_failed
                 or (bool(self.official_data) and entry_sig[0][0] == (0, 0, 0))
@@ -3790,8 +3814,7 @@ class CatalogIndex:
             os.replace(tmp_path, self.path)
             replaced = True
             os.chmod(self.path, 0o600)
-            self._write_con = _open_private_rw(self.path)
-            _apply_connection_pragmas(self._write_con)
+            self._write_con = self._open_configured_write_con()
             write_con_closed = False
             self._invalidate_readers()
             publish_fn = self._pending_rebuild_publish
@@ -3823,8 +3846,7 @@ class CatalogIndex:
                     pass
             if write_con_closed and self._write_con is None and self.path.is_file():
                 try:
-                    self._write_con = _open_private_rw(self.path)
-                    _apply_connection_pragmas(self._write_con)
+                    self._write_con = self._open_configured_write_con()
                 except Exception:
                     pass
             raise
@@ -4073,7 +4095,7 @@ class CatalogIndex:
                 return (int(d['recall_desc_key']), int(d['day_desc_key']), str(d['doc_id']))
             return (int(d['day_desc_key']), str(d['doc_id']))
 
-        with self._reader_lease() as con:
+        with self._reader_lease() as con, ro_snapshot(con):
             # Sparse subset path (when unread_only or recall_(agent_id, event_id) filter is active)
             if allowed_doc_ids is not None:
                 if not allowed_doc_ids:
@@ -4381,7 +4403,7 @@ class CatalogIndex:
             recall_params = tuple(sorted(recall_ids))
             recall_sql = ' AND doc_id IN (' + ','.join('?' for _ in recall_params) + ')'
 
-        with self._reader_lease() as con:
+        with self._reader_lease() as con, ro_snapshot(con):
             meta_r = con.execute('SELECT generation FROM catalog_meta WHERE singleton = 1').fetchone()
             cur_gen = int(meta_r[0]) if meta_r else 0
             cc_key = (cur_gen, ds)
@@ -4804,6 +4826,8 @@ class CatalogIndex:
                 self._children_preview_cache = {
                     k: v for k, v in self._children_preview_cache.items() if k[0] >= snap_gen - 2
                 }
+                if len(self._children_preview_cache) > 512:
+                    self._children_preview_cache.clear()
             for (raw_sid, raw_uid), val in fetched.items():
                 self._children_preview_cache[(snap_gen, ds, raw_sid, raw_uid, lim)] = (
                     [dict(r) for r in val[0]],
@@ -4833,15 +4857,25 @@ class CatalogIndex:
         candidates.sort(key=lambda t: (t[0], t[1], t[2]))
         return [t[3] for t in candidates[:lim]]
 
-    def query_pending_raw_docs(self, dataset_id: str, *, limit: int = 20) -> tuple[list[dict], int]:
+    def query_pending_raw_docs(
+        self, dataset_id: str, *, limit: int = 20, expected_gen: int | None = None,
+    ) -> tuple[list[dict], int]:
         ds = uuid_text(dataset_id)
         lim = int(limit)
-        with self._state_lock:
-            gen_before = self._last_generation
-            cached = self._pending_raw_cache.get((gen_before, ds, lim))
-            if cached is not None:
-                return [dict(r) for r in cached[0]], cached[1]
-        with self._reader_lease() as con:
+        if expected_gen is not None:
+            exp_gen = int(expected_gen)
+            with self._state_lock:
+                cached = self._pending_raw_cache.get((exp_gen, ds, lim))
+                if cached is not None:
+                    return [dict(r) for r in cached[0]], cached[1]
+        with self._reader_lease() as con, ro_snapshot(con):
+            gen_row = con.execute('SELECT generation FROM catalog_meta WHERE singleton = 1').fetchone()
+            snap_gen = int(gen_row[0]) if gen_row is not None else 0
+            if expected_gen is None and snap_gen > 0:
+                with self._state_lock:
+                    cached = self._pending_raw_cache.get((snap_gen, ds, lim))
+                    if cached is not None:
+                        return [dict(r) for r in cached[0]], cached[1]
             total = int(
                 con.execute(
                     '''SELECT COUNT(*) FROM catalog_docs
@@ -4862,11 +4896,15 @@ class CatalogIndex:
                     (ds, lim),
                 ).fetchall()
             ]
-        with self._state_lock:
-            if self._last_generation == gen_before and gen_before > 0:
+        if snap_gen > 0:
+            with self._state_lock:
                 if len(self._pending_raw_cache) > 32:
-                    self._pending_raw_cache.clear()
-                self._pending_raw_cache[(gen_before, ds, lim)] = ([dict(r) for r in rows], total)
+                    self._pending_raw_cache = {
+                        k: v for k, v in self._pending_raw_cache.items() if k[0] >= snap_gen - 2
+                    }
+                    if len(self._pending_raw_cache) > 32:
+                        self._pending_raw_cache.clear()
+                self._pending_raw_cache[(snap_gen, ds, lim)] = ([dict(r) for r in rows], total)
         return rows, total
 
     def query_search_metadata(

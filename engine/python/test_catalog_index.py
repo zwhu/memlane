@@ -1293,6 +1293,148 @@ class CatalogIndexTests(unittest.TestCase):
         p2_no_hint = cat.query_top_level_children_previews(self.ds_proj, [('parent-1', u1)], limit=5)
         self.assertEqual({r['session_id'] for r in p2_no_hint[('parent-1', u1)][0]}, {'child-1', 'child-2'})
 
+    def test_third_caller_same_scope_waits_behind_executing_other_scope(self):
+        import asyncio
+        import threading
+
+        d1 = str(uuid.uuid4())
+        d2 = str(uuid.uuid4())
+        self._insert_doc(d1, self.ds_proj, name='proj.md', sys_meta={'lesson_type': 'state', 'session_date': '2026-11-20'}, node_set=['session_learnings'])
+        self._insert_doc(d2, self.ds_common, name='common.md', ext_meta={'memlane_kind': 'common_knowledge', 'category': 'preference'})
+
+        cat = CatalogIndex(self.cat_path, official_data=self.official_data)
+        self.addCleanup(cat.close)
+        cat.sync([self.ds_proj])
+
+        entered_b = threading.Event()
+        release_b = threading.Event()
+        orig_sync_into = cat._sync_into_connection
+
+        def _slow_scope_b(con, managed_datasets, **kwargs):
+            if managed_datasets == [self.ds_common]:
+                entered_b.set()
+                release_b.wait(timeout=5.0)
+            return orig_sync_into(con, managed_datasets, **kwargs)
+
+        cat._sync_into_connection = _slow_scope_b
+
+        async def _run():
+            task_b = asyncio.create_task(cat.sync_async([self.ds_common]))
+            await asyncio.to_thread(entered_b.wait, 5.0)
+            # First A request queues behind executing B (overwriting _inflight_sync)
+            task_a1 = asyncio.create_task(cat.sync_for_read_async([self.ds_proj]))
+            await asyncio.sleep(0.03)
+            # Second A request arrives while B is STILL executing and A1 is queued!
+            task_a2 = asyncio.create_task(cat.sync_for_read_async([self.ds_proj]))
+            await asyncio.sleep(0.03)
+            self.assertFalse(task_a1.done())
+            self.assertFalse(task_a2.done())
+            release_b.set()
+            await asyncio.gather(task_b, task_a1, task_a2)
+
+        asyncio.run(_run())
+        self.assertEqual(len(cat.fetch_docs_by_ids(self.ds_proj, [d1])), 1)
+        self.assertEqual(len(cat.fetch_docs_by_ids(self.ds_common, [d2])), 0)
+
+    def test_pending_raw_and_category_counts_caches_use_committed_snapshot_generation(self):
+        d_raw1 = str(uuid.uuid4())
+        d_raw2 = str(uuid.uuid4())
+        d_k1 = str(uuid.uuid4())
+        d_k2 = str(uuid.uuid4())
+        self._insert_doc(d_raw1, self.ds_proj, name='raw1.md')
+        self._insert_doc(d_k1, self.ds_proj, name='k1.md', sys_meta={'lesson_type': 'state', 'session_date': '2026-11-20'}, node_set=['session_learnings'])
+
+        cat = CatalogIndex(self.cat_path, official_data=self.official_data)
+        self.addCleanup(cat.close)
+        gen1 = cat.sync([self.ds_proj])
+        rows1, total1 = cat.query_pending_raw_docs(self.ds_proj, limit=20, expected_gen=gen1)
+        self.assertEqual(total1, 1)
+        self.assertEqual([r['doc_id'] for r in rows1], [d_raw1])
+
+        # Simulate SQLite COMMIT of a new pending raw doc + generation bump BEFORE _last_generation updates!
+        with cat._write_lock:
+            cat._write_con.execute(
+                '''INSERT INTO catalog_docs(
+                     dataset_id, doc_id, cognee_rowid, kind, is_knowledge,
+                     common_category, lesson_type, state_key, category, session_id,
+                     doc_name, doc_label, raw_data_location, content_hash,
+                     created_at_raw, created_at_ns, created_at_invalid, updated_at_ns,
+                     effective_date, effective_date_source, day_desc_key, sort_ts_desc_key,
+                     recall_count, recall_desc_key, pipeline_status, source_updated_at, doc_seq
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (
+                    self.ds_proj, d_raw2, 9999, 'raw_doc', 0,
+                    '', '', '', '', '',
+                    'raw2.md', '', '', 'h-raw2',
+                    '2026-11-21 10:00:00', '2026-11-21T10:00:00.000000000Z', 0, '2026-11-21T10:00:00.000000000Z',
+                    '2026-11-21', 'created_at', -20261121, -1795255200000000000,
+                    0, 0, '', '2026-11-21 10:00:00', 9999,
+                ),
+            )
+            cat._write_con.execute('UPDATE catalog_meta SET generation = generation + 1 WHERE singleton = 1')
+            cat._write_con.commit()
+
+        self.assertEqual(cat._last_generation, gen1)
+        gen2 = cat.generation()
+        self.assertEqual(gen2, gen1 + 1)
+        rows2, total2 = cat.query_pending_raw_docs(self.ds_proj, limit=20, expected_gen=gen2)
+        self.assertEqual(total2, 2)
+        self.assertEqual({r['doc_id'] for r in rows2}, {d_raw1, d_raw2})
+        rows2_no_hint, total2_no_hint = cat.query_pending_raw_docs(self.ds_proj, limit=20)
+        self.assertEqual(total2_no_hint, 2)
+        self.assertEqual({r['doc_id'] for r in rows2_no_hint}, {d_raw1, d_raw2})
+
+        # Verify query_project_knowledge holds ro_snapshot so category_counts cannot mix G and G+1!
+        self._insert_doc(d_k2, self.ds_proj, name='k2.md', sys_meta={'lesson_type': 'state', 'session_date': '2026-11-21'}, node_set=['session_learnings'])
+        with cat._state_lock:
+            cat._cat_counts_cache.clear()
+        res_k = cat.query_project_knowledge(self.ds_proj, category='项目状态')
+        self.assertEqual(res_k['category_counts'].get('项目状态'), 1)
+
+    def test_same_timer_with_newer_pending_sync_preserves_newer_request_on_old_error(self):
+        import threading
+
+        d1 = str(uuid.uuid4())
+        self._insert_doc(d1, self.ds_proj, name='t2.md', sys_meta={'lesson_type': 'state', 'session_date': '2026-11-20'}, node_set=['session_learnings'])
+        cat = CatalogIndex(self.cat_path, official_data=self.official_data)
+        self.addCleanup(cat.close)
+        cat.sync([self.ds_proj])
+
+        same_timer = object()
+        old_pending = ((self.ds_proj,), None)
+        new_pending = ((self.ds_proj, self.ds_common), None)
+        entered_sig = threading.Event()
+        release_sig = threading.Event()
+        orig_full_sig = cat._full_stat_sig
+
+        def _failing_old_sig(dt, rr):
+            entered_sig.set()
+            release_sig.wait(timeout=5.0)
+            raise RuntimeError('old pending stat failed')
+
+        cat._full_stat_sig = _failing_old_sig
+        with cat._state_lock:
+            cat._bg_timer = same_timer
+            cat._pending_bg_sync = old_pending
+
+        th = threading.Thread(target=cat._on_bg_timer_fire, args=(same_timer,))
+        th.start()
+        self.assertTrue(entered_sig.wait(timeout=5.0))
+        # Newer read overwrote _pending_bg_sync while same_timer was still firing
+        with cat._state_lock:
+            cat._pending_bg_sync = new_pending
+        release_sig.set()
+        th.join(timeout=5.0)
+        cat._full_stat_sig = orig_full_sig
+
+        with cat._state_lock:
+            self.assertEqual(cat._pending_bg_sync, new_pending)
+            self.assertFalse(cat._bg_sync_failed)
+            self.assertIsNotNone(cat._bg_timer)
+            self.assertIsNot(cat._bg_timer, same_timer)
+            cat._cancel_bg_timer_locked()
+            cat._pending_bg_sync = None
+
 
 if __name__ == '__main__':
     unittest.main()

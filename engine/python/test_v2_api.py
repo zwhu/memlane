@@ -1216,6 +1216,57 @@ class V2APITests(AioHTTPTestCase):
             cat.dataset_sync_info = orig_ds_info
             self.dummy_official.authorized.add(self.ds_proj)
 
+        # 4. Generation-conflict retry must revalidate ACL before reading the newer generation!
+        orig_gen = cat.generation
+        gen_calls = [0]
+
+        def _conflict_then_revoke():
+            gen_calls[0] += 1
+            if gen_calls[0] == 1:
+                return orig_gen()
+            if gen_calls[0] == 2:
+                self.dummy_official.authorized.discard(self.ds_proj)
+                return orig_gen() + 1
+            return orig_gen() + 1
+
+        cat.generation = _conflict_then_revoke
+        try:
+            resp = await self.client.get('/v1/projects/p1/knowledge?limit=10', headers=self.manager_headers)
+            self.assertEqual(resp.status, 403)
+        finally:
+            cat.generation = orig_gen
+            self.dummy_official.authorized.add(self.ds_proj)
+
+        # 5. Revalidator must re-check local registry binding AFTER await verify_official_read_access!
+        orig_auth_ds = self.dummy_official.authorized_datasets
+        orig_query = cat.query_project_knowledge
+        tripped_rebind = [False]
+        rebound_once = [False]
+
+        def _rebuild_once_for_rebind(*args, **kwargs):
+            if not tripped_rebind[0]:
+                tripped_rebind[0] = True
+                raise PolicyError('catalog_index_rebuilding', 503)
+            return orig_query(*args, **kwargs)
+
+        def _rebind_during_official_check():
+            res = orig_auth_ds()
+            if tripped_rebind[0] and not rebound_once[0]:
+                rebound_once[0] = True
+                # Local project binding is unconfirmed/removed during the official ACL check!
+                self.registry.state['projects']['p1']['status'] = 'pending_confirmation'
+            return res
+
+        cat.query_project_knowledge = _rebuild_once_for_rebind
+        self.dummy_official.authorized_datasets = _rebind_during_official_check
+        try:
+            resp = await self.client.get('/v1/projects/p1/knowledge?limit=10', headers=self.manager_headers)
+            self.assertEqual(resp.status, 403)
+        finally:
+            cat.query_project_knowledge = orig_query
+            self.dummy_official.authorized_datasets = orig_auth_ds
+            self.registry.state['projects']['p1']['status'] = 'verified'
+
 
 if __name__ == '__main__':
     unittest.main()

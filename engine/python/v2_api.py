@@ -858,16 +858,15 @@ def attach_v2_api(
         return await loop.run_in_executor(db_executor, fn, *args)
 
     def _query_catalog_snapshot(query):
-        for _ in range(3):
-            gen = cat.generation()
-            try:
-                result = query(gen)
-            except PolicyError:
-                if cat.generation() == gen:
-                    raise
-            else:
-                if cat.generation() == gen:
-                    return result
+        gen = cat.generation()
+        try:
+            result = query(gen)
+        except PolicyError:
+            if cat.generation() == gen:
+                raise
+            raise PolicyError('catalog_generation_conflict', 409)
+        if cat.generation() == gen:
+            return result
         raise PolicyError('catalog_generation_conflict', 409)
 
     def _require_manager(request):
@@ -898,31 +897,45 @@ def attach_v2_api(
         return projects, common
 
     async def _run_read_query(query, *args, missing_code=None, revalidate=None):
-        try:
-            return await _run_db(query, *args)
-        except PolicyError as exc:
-            is_rebuilding = exc.code == 'catalog_index_rebuilding' and exc.status == 503
-            is_missing = bool(missing_code and exc.code == missing_code and exc.status == 404)
-            if not is_rebuilding and not is_missing:
+        conflict_retries = 0
+        sync_retried = False
+        while True:
+            try:
+                return await _run_db(query, *args)
+            except PolicyError as exc:
+                is_conflict = exc.code == 'catalog_generation_conflict' and exc.status == 409
+                if is_conflict and conflict_retries < 2:
+                    conflict_retries += 1
+                    if revalidate is not None:
+                        await revalidate()
+                    continue
+                is_rebuilding = exc.code == 'catalog_index_rebuilding' and exc.status == 503
+                is_missing = bool(missing_code and exc.code == missing_code and exc.status == 404)
+                if (is_rebuilding or is_missing) and not sync_retried:
+                    sync_retried = True
+                    if revalidate is not None:
+                        await revalidate()
+                    await _ensure_synced(fresh=True)
+                    if revalidate is not None:
+                        await revalidate()
+                    continue
                 raise
-        if revalidate is not None:
-            await revalidate()
-        await _ensure_synced(fresh=True)
-        if revalidate is not None:
-            await revalidate()
-        return await _run_db(query, *args)
 
     def _project_revalidator(project_id: str, expected_dataset_id: str):
-        async def _revalidate():
+        def _check_local():
             proj = _require_verified_project(registry, project_id)
             if proj['dataset_id'] != expected_dataset_id:
                 raise PolicyError('dataset_access_denied', 403)
+
+        async def _revalidate():
+            _check_local()
             await verify_official_read_access(getattr(registry, 'official', None), expected_dataset_id)
+            _check_local()
 
         return _revalidate
 
     def _common_revalidator(raw_ds: str, expected_dataset_id: str):
-        async def _revalidate():
+        def _check_local():
             if raw_ds:
                 cur_ds = _require_verified_managed_dataset(registry, raw_ds, allow_code=False)
             else:
@@ -934,16 +947,24 @@ def attach_v2_api(
                 cur_ds = cur_common['dataset_id']
             if cur_ds != expected_dataset_id:
                 raise PolicyError('dataset_access_denied', 403)
+
+        async def _revalidate():
+            _check_local()
             await verify_official_read_access(getattr(registry, 'official', None), expected_dataset_id)
+            _check_local()
 
         return _revalidate
 
     def _managed_dataset_revalidator(raw_ds: str, expected_dataset_id: str, ds_to_proj_out: dict | None = None):
-        async def _revalidate():
+        def _check_local():
             cur_ds = _require_verified_managed_dataset(registry, raw_ds, allow_code=False)
             if cur_ds != expected_dataset_id:
                 raise PolicyError('dataset_access_denied', 403)
+
+        async def _revalidate():
+            _check_local()
             await verify_official_read_access(getattr(registry, 'official', None), expected_dataset_id)
+            _check_local()
             if ds_to_proj_out is not None:
                 projs_v, common_v = _verified_groups(registry)
                 ds_to_proj_out.clear()
@@ -2226,10 +2247,10 @@ def attach_v2_api(
                     None,
                 )
 
-            def _query(_gen):
+            def _query(gen):
                 sinfo = cat.dataset_sync_info(dataset_id) or {}
                 cat_ver_l = str(sinfo.get('catalog_version', ''))
-                pending_rows, pending_total_l = cat.query_pending_raw_docs(dataset_id, limit=20)
+                pending_rows, pending_total_l = cat.query_pending_raw_docs(dataset_id, limit=20, expected_gen=gen)
                 pending_docs_l = [
                     {
                         'id': d['doc_id'],
@@ -2287,20 +2308,39 @@ def attach_v2_api(
                     reading_err_l,
                 )
 
-            result = await _run_db(_run_all)
-            a_val, a_err, d_val, d_err = result
-            if isinstance(d_err, PolicyError) and d_err.code == 'catalog_index_rebuilding' and d_err.status == 503:
-                await _project_revalidator(project_id, dataset_id)()
-                try:
-                    await _ensure_synced(fresh=True)
-                except BaseException as exc:
-                    if isinstance(exc, asyncio.CancelledError):
-                        raise
-                    return a_val, a_err, None, exc
-                await _project_revalidator(project_id, dataset_id)()
-                sync_err = None
-                return await _run_db(_run_all)
-            return result
+            revalidate_proj = _project_revalidator(project_id, dataset_id)
+            conflict_retries = 0
+            rebuild_retried = False
+            while True:
+                result = await _run_db(_run_all)
+                a_val, a_err, d_val, d_err = result
+                if (
+                    isinstance(d_err, PolicyError)
+                    and d_err.code == 'catalog_generation_conflict'
+                    and d_err.status == 409
+                    and conflict_retries < 2
+                ):
+                    conflict_retries += 1
+                    await revalidate_proj()
+                    continue
+                if (
+                    isinstance(d_err, PolicyError)
+                    and d_err.code == 'catalog_index_rebuilding'
+                    and d_err.status == 503
+                    and not rebuild_retried
+                ):
+                    rebuild_retried = True
+                    await revalidate_proj()
+                    try:
+                        await _ensure_synced(fresh=True)
+                    except BaseException as exc:
+                        if isinstance(exc, asyncio.CancelledError):
+                            raise
+                        return a_val, a_err, None, exc
+                    await revalidate_proj()
+                    sync_err = None
+                    continue
+                return result
 
         b_res, n_res, db_res = await asyncio.gather(
             _load_backlog(),

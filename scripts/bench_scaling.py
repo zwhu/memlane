@@ -1191,8 +1191,18 @@ async def run_benchmark(scale: str = '1k', concurrency_seconds: float = 2.0) -> 
             finally:
                 stop_ev.set()
                 writer_thread.join(timeout=5.0)
-            gen_after_wal_loop = cat.generation()
-            k_count_after_wal_loop = cat.dataset_sync_info(ds_main)['knowledge_count']
+            with cat._reader_lease() as snap_con:
+                snap_con.execute('BEGIN DEFERRED')
+                try:
+                    gen_row = snap_con.execute('SELECT generation FROM catalog_meta WHERE singleton = 1').fetchone()
+                    cnt_row = snap_con.execute(
+                        'SELECT knowledge_count FROM dataset_sync_state WHERE dataset_id = ?',
+                        (ds_main,),
+                    ).fetchone()
+                    gen_after_wal_loop = int(gen_row[0]) if gen_row else 0
+                    k_count_after_wal_loop = int(cnt_row[0]) if cnt_row else 0
+                finally:
+                    snap_con.execute('ROLLBACK')
             bg_docs_ingested = max(0, k_count_after_wal_loop - initial_k_count)
             bg_gen_delta = max(0, gen_after_wal_loop - gen_before_wal)
             bg_caught_up = (
