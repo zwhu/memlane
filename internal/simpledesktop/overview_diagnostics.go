@@ -243,6 +243,7 @@ type failureTechRecord struct {
 
 type failureDetailModel struct {
 	EventKey        string
+	Datasets        []string
 	DialogTitle     string
 	OperationTitle  string
 	Project         string
@@ -277,6 +278,7 @@ func buildFailureDetail(event overviewEvent, c Config, loc *time.Location) failu
 	}
 	detail := failureDetailModel{
 		EventKey:       event.Key,
+		Datasets:       overviewEventDatasets(event),
 		DialogTitle:    dialogTitle,
 		OperationTitle: event.Title,
 		Project:        event.Project,

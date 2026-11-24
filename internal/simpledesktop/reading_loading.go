@@ -463,6 +463,52 @@ func (c *overviewController) cancelOverviewRequests() {
 	v.ActivityLoading = false
 }
 
+func overviewEventDatasets(ev overviewEvent) []string {
+	seen := map[string]bool{}
+	var datasets []string
+	add := func(ds string) {
+		if ds != "" && !seen[ds] {
+			seen[ds] = true
+			datasets = append(datasets, ds)
+		}
+	}
+	add(ev.Record.Dataset)
+	for _, f := range ev.Failures {
+		add(f.Dataset)
+	}
+	if ev.Recall != nil {
+		for _, hit := range ev.Recall.Hits {
+			add(hit.Dataset)
+		}
+	}
+	return datasets
+}
+
+func failureDetailMatchesDataset(detail *failureDetailModel, dataset string) (matched, known bool) {
+	if detail == nil {
+		return false, false
+	}
+	for _, ds := range detail.Datasets {
+		if ds == "" {
+			continue
+		}
+		known = true
+		if ds == dataset {
+			return true, true
+		}
+	}
+	for _, rec := range detail.TechRecords {
+		if rec.Dataset == "" {
+			continue
+		}
+		known = true
+		if rec.Dataset == dataset {
+			return true, true
+		}
+	}
+	return false, known
+}
+
 func overviewEventMatchesDataset(ev overviewEvent, dataset string) bool {
 	if dataset == "" {
 		return true
@@ -560,6 +606,7 @@ func (c *overviewController) invalidateReading(dataset string) {
 		v.ExpandedEvent = ""
 		v.ExpandedReport = ""
 		v.ExpandedDetail = nil
+		v.CopiedEvent = ""
 		v.Error = ""
 		v.ActivityError = ""
 		v.HistoryError = ""
@@ -587,13 +634,16 @@ func (c *overviewController) invalidateReading(dataset string) {
 			v.DayNextCursor = ""
 			v.DayHasMore = false
 		}
+		expandedFoundInEvents := false
+		expandedMatchesEvent := false
 		if len(v.Events) > 0 {
 			keptEvents := make([]overviewEvent, 0, len(v.Events))
 			for _, ev := range v.Events {
-				if ev.Key != "" && ev.Key == v.ExpandedEvent && overviewEventMatchesDataset(ev, dataset) {
-					v.ExpandedEvent = ""
-					v.ExpandedReport = ""
-					v.ExpandedDetail = nil
+				if ev.Key != "" && ev.Key == v.ExpandedEvent {
+					expandedFoundInEvents = true
+					if overviewEventMatchesDataset(ev, dataset) {
+						expandedMatchesEvent = true
+					}
 				}
 				if ev.Record.Dataset == dataset {
 					continue
@@ -627,6 +677,13 @@ func (c *overviewController) invalidateReading(dataset string) {
 				keptEvents = append(keptEvents, ev)
 			}
 			v.Events = keptEvents
+		}
+		detailMatched, detailKnown := failureDetailMatchesDataset(v.ExpandedDetail, dataset)
+		if expandedMatchesEvent || detailMatched || (!detailKnown && !expandedFoundInEvents && (v.ExpandedEvent != "" || v.ExpandedReport != "" || v.ExpandedDetail != nil)) {
+			v.ExpandedEvent = ""
+			v.ExpandedReport = ""
+			v.ExpandedDetail = nil
+			v.CopiedEvent = ""
 		}
 		if len(v.History) > 0 {
 			keptHistory := make([]overviewEvent, 0, len(v.History))

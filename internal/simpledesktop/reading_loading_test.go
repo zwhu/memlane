@@ -835,8 +835,8 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 	}
 	if a.searchUI.Open || a.searchUI.Loading || a.searchUI.request != 1 || len(a.searchUI.Rows) != 1 ||
 		a.searchUI.Rows[0].ID != second.ID || a.searchAnchor != &second ||
-		a.pendingGraphLoad != nil || !a.graphLoading || a.graphSelection != "node" || a.graphLoadRequest != 0 {
-		t.Fatal("scoped invalidation changed the unrelated search origin or graph")
+		a.pendingGraphLoad != nil || a.graphLoading || a.graphSelection != "node" || a.graphLoadRequest != 1 || a.graph.epoch != 0 {
+		t.Fatal("scoped invalidation changed unrelated search/graph content or left graphLoading stuck")
 	}
 	if len(a.titles.cache) != 1 || a.titles.cache[readingKey{Dataset: second.Dataset, ID: second.ID}].item.Body != second.Body ||
 		len(a.detailChunks.entries) != 1 || a.detailChunks.entries[0].dataset != second.Dataset ||
@@ -895,7 +895,7 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 	}
 	if a.commonEdit.Open || a.commonEdit.Existing != nil || a.userProfiles.Body != "" || a.userProfiles.ReadGeneration != 2 ||
 		a.searchOrigin != nil || a.searchAnchor != nil || a.searchPane != nil || a.searchUI.Rows != nil ||
-		a.graph.epoch != 1 || a.graphSelection != "" || a.graphLoading || a.graphLoadRequest != 1 ||
+		a.graph.epoch != 1 || a.graphSelection != "" || a.graphLoading || a.graphLoadRequest != 2 ||
 		len(a.titles.cache) != 0 || len(a.detailChunks.entries) != 0 || a.recent != nil || a.recentRequest != 2 {
 		t.Fatal("global invalidation retained controller state")
 	}
@@ -914,4 +914,48 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 	checkQueueReset(q1, 2)
 	checkQueueReset(qAlias, 2)
 	checkQueueReset(q2, 1)
+
+	t.Run("evicted expanded failure detail and unrelated graphLoading", func(t *testing.T) {
+		app := New(Config{}, nil)
+		evDS1 := overviewEvent{
+			Key: "ev-ds1", Title: "提炼记忆", Project: "Proj1",
+			Record:   activityRow{Dataset: "ds-1", Operation: "cognify", Outcome: "failed"},
+			Failures: []activityRow{{ID: "f1", Dataset: "ds-1", Operation: "cognify", ErrorClass: "TimeoutError"}},
+		}
+		evDS2 := overviewEvent{
+			Key: "ev-ds2", Title: "提炼记忆", Project: "Proj2",
+			Record:   activityRow{Dataset: "ds-2", Operation: "cognify", Outcome: "failed"},
+			Failures: []activityRow{{ID: "f2", Dataset: "ds-2", Operation: "cognify", ErrorClass: "TimeoutError"}},
+		}
+		// 1. Open ds-1 failure detail, then evict it from v.Events before revoking ds-1.
+		app.openOverviewFailureDetail(evDS1, time.UTC)
+		app.overviewState.CopiedEvent = evDS1.Key
+		app.overviewState.Events = []overviewEvent{evDS2}
+		app.graph = &GraphHost{dataset: "ds-2"}
+		app.graphSelection = "node-ds2"
+		app.graphLoading = true
+
+		app.InvalidateReading("ds-1")
+		if app.overviewState.ExpandedEvent != "" || app.overviewState.ExpandedReport != "" ||
+			app.overviewState.ExpandedDetail != nil || app.overviewState.CopiedEvent != "" {
+			t.Fatal("revoking ds-1 retained evicted failure dialog or copy report")
+		}
+		if app.graphLoading || app.graphLoadRequest != 1 || app.graph.dataset != "ds-2" ||
+			app.graph.epoch != 0 || app.graphSelection != "node-ds2" {
+			t.Fatal("revoking ds-1 left ds-2 graphLoading stuck or cleared ds-2 graph canvas")
+		}
+
+		// 2. Open ds-2 failure detail, evict it from v.Events, then revoke ds-1: ds-2 detail stays open.
+		app.openOverviewFailureDetail(evDS2, time.UTC)
+		app.overviewState.Events = nil
+		app.InvalidateReading("ds-1")
+		if app.overviewState.ExpandedEvent != evDS2.Key || app.overviewState.ExpandedDetail == nil || app.overviewState.ExpandedReport == "" {
+			t.Fatal("revoking ds-1 unexpectedly closed evicted ds-2 failure dialog")
+		}
+		// Revoking ds-2 clears it immediately.
+		app.InvalidateReading("ds-2")
+		if app.overviewState.ExpandedEvent != "" || app.overviewState.ExpandedDetail != nil || app.overviewState.ExpandedReport != "" {
+			t.Fatal("revoking ds-2 did not close evicted ds-2 failure dialog")
+		}
+	})
 }

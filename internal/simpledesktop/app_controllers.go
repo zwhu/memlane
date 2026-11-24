@@ -98,11 +98,13 @@ func (c *graphController) cancelGraphLoad() {
 }
 
 func (c *graphController) invalidateReading(dataset string) {
-	c.pendingGraphLoad = nil
+	// authEpoch is incremented globally by InvalidateReading, so any in-flight
+	// graph request will be fenced when it returns; cancelGraphLoad must always
+	// clear graphLoading to avoid leaving another dataset's refresh button stuck.
+	c.cancelGraphLoad()
 	if dataset == "" || c.graph == nil || c.graph.dataset == "" || c.graph.dataset == dataset {
 		c.graph.clear()
 		c.graphSelection = ""
-		c.cancelGraphLoad()
 	}
 }
 
