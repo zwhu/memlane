@@ -72,37 +72,40 @@ class CodexDirectoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_project_reads_share_view_without_holding_registry_mutex(self):
         loop = asyncio.get_running_loop()
         loop_thread = threading.get_ident()
-        started, release = asyncio.Event(), threading.Event()
-        second_stat = threading.Event()
+        started, second_joined = asyncio.Event(), asyncio.Event()
+        release = threading.Event()
         viewed = []
+        shield_count = 0
         original_view = CodexConnection.view
-        from project_control_server import _codex_config_lstat
+        original_shield = asyncio.shield
 
         def paused_view(adapter):
             self.assertNotEqual(threading.get_ident(), loop_thread)
             self.assertIsNot(adapter.registry, self.registry)
             viewed.append(adapter)
             loop.call_soon_threadsafe(started.set)
-            if not release.wait(3):
+            if not release.wait(5):
                 raise TimeoutError('test did not release directory view')
             return original_view(adapter)
 
-        def stat_config(home):
-            if started.is_set():
-                second_stat.set()
-            return _codex_config_lstat(home)
+        def tracked_shield(arg):
+            nonlocal shield_count
+            shield_count += 1
+            if shield_count >= 2:
+                second_joined.set()
+            return original_shield(arg)
 
         with (patch.object(CodexConnection, 'view', paused_view),
-              patch('project_control_server._codex_config_lstat', side_effect=stat_config)):
+              patch('project_control_server.asyncio.shield', side_effect=tracked_shield)):
             requests = [asyncio.create_task(self.get_directory())]
             try:
-                await asyncio.wait_for(started.wait(), 2)
+                await asyncio.wait_for(started.wait(), 5)
                 self.assertFalse(self.registry.mutex.locked())
                 async with asyncio.timeout(2):
                     async with self.registry.mutex:
                         await asyncio.sleep(0)
                 requests.append(asyncio.create_task(self.get_directory()))
-                self.assertTrue(await asyncio.to_thread(second_stat.wait, 2))
+                await asyncio.wait_for(second_joined.wait(), 5)
                 self.assertTrue(all(not request.done() for request in requests))
             finally:
                 release.set()
@@ -115,10 +118,11 @@ class CodexDirectoryTests(unittest.IsolatedAsyncioTestCase):
         }}
         self.assertEqual(results, [expected, expected])
 
-    async def test_project_view_cache_refreshes_on_config_change_and_review(self):
+    async def test_project_view_cache_refreshes_on_config_change_and_real_review_unblocked(self):
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
         original_view = CodexConnection.view
-        with (patch.object(CodexConnection, 'view', autospec=True, side_effect=original_view) as view,
-              patch.object(CodexConnection, 'review', new_callable=AsyncMock) as review):
+        with patch.object(CodexConnection, 'view', autospec=True, side_effect=original_view) as view:
             first = await self.get_directory()
             self.assertEqual(await self.get_directory(), first)
             self.assertEqual(view.call_count, 1)
@@ -129,11 +133,37 @@ class CodexDirectoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(updated['codex_connection']['legacy_plugins'], ['cognee@legacy'])
             self.assertEqual(view.call_count, 2)
 
-            response = await self.client.post('/v1/codex/review', headers=self.manager,
-                                              json={'expected_revision': updated['revision']})
+            # Real POST /v1/codex/review (unmocked): must call view() only once, off-thread, without holding registry.mutex.
+            review_started, review_release = asyncio.Event(), threading.Event()
+            review_views = []
+
+            def paused_review_view(adapter):
+                self.assertNotEqual(threading.get_ident(), loop_thread)
+                review_views.append(adapter)
+                loop.call_soon_threadsafe(review_started.set)
+                if not review_release.wait(5):
+                    raise TimeoutError('test did not release review view')
+                return original_view(adapter)
+
+            view.side_effect = paused_review_view
+            post_task = asyncio.create_task(self.client.post(
+                '/v1/codex/review', headers=self.manager,
+                json={'expected_revision': updated['revision']},
+            ))
+            try:
+                await asyncio.wait_for(review_started.wait(), 5)
+                self.assertFalse(self.registry.mutex.locked())
+                async with asyncio.timeout(2):
+                    async with self.registry.mutex:
+                        await asyncio.sleep(0)
+                self.assertFalse(post_task.done())
+            finally:
+                review_release.set()
+                response = await post_task
             self.assertEqual(response.status, 200)
             self.assertEqual(await response.json(), updated)
-            review.assert_awaited_once_with(updated['revision'])
+            self.assertEqual(len(review_views), 1)
+            view.side_effect = original_view
             self.assertEqual(await self.get_directory(), updated)
             self.assertEqual(view.call_count, 3)
 

@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from agent_connections import Connections
 from _runtime_common import file_sha256
-from opencode_connection import OpenCodeConnection, clear_node_hash_cache, jsonc, sha
+from opencode_connection import OpenCodeConnection, _stream_fd_sha256, clear_node_hash_cache, jsonc, sha
 from opencode_installation import loader
 from project_control import Registry, private_write
 from project_policy import PolicyError
@@ -341,29 +341,29 @@ class OpenCodeConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.official.enrolled, 0)
 
 
-class OpenCodeVerifyInstallationHashTests(unittest.TestCase):
+class OpenCodeVerifyInstallationHashTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         clear_node_hash_cache()
         self.addCleanup(clear_node_hash_cache)
-        registry = Registry(root / 'private/registry.json', EnrollmentFixture())
-        self.addCleanup(registry.close)
-        profile = root / 'profile'
+        self.registry = Registry(self.root / 'private/registry.json', EnrollmentFixture())
+        self.addCleanup(self.registry.close)
+        profile = self.root / 'profile'
         profile.mkdir()
-        self.adapter = OpenCodeConnection(registry, {}, profile, sys.executable)
-        self.node = root / 'node'
+        self.adapter = OpenCodeConnection(self.registry, {}, profile, sys.executable)
+        self.node = self.root / 'node'
         self.node.write_bytes(b'x' * (1024 * 1024 + 1))
         self.node.chmod(0o700)
-        artifact = root / 'artifact'
+        artifact = self.root / 'artifact'
         helper = artifact / 'dist/src/managed-pending-cli.js'
         helper.parent.mkdir(parents=True)
         helper.write_bytes(b'export {};')
         helper_sha = file_sha256(helper)
         manifest = json.dumps({'protocol': 1, 'files': {str(helper.relative_to(artifact)): helper_sha}}).encode()
         (artifact / '.memlane-opencode-artifact.json').write_bytes(manifest)
-        secret = root / 'secret'
+        secret = self.root / 'secret'
         private_write(secret, b'synthetic secret')
-        binding_file = root / 'binding.json'
+        binding_file = self.root / 'binding.json'
         binding = {'instance_id': self.adapter.id, 'profile': str(profile),
                    'secrets': [{'path': str(secret), 'sha256': file_sha256(secret)}]}
         raw_binding = json.dumps(binding).encode()
@@ -379,7 +379,7 @@ class OpenCodeVerifyInstallationHashTests(unittest.TestCase):
             self.adapter.verify_installation(installation)
         self.assertEqual((raised.exception.code, raised.exception.status), ('opencode_installation_requires_review', 409))
 
-    def test_streams_hash_caches_unchanged_node_and_rehashes_on_force_or_change(self):
+    async def test_streams_hash_caches_unchanged_node_and_rehashes_on_force_review_or_change(self):
         verify = self.adapter.verify_installation
         read_bytes = Path.read_bytes
 
@@ -388,16 +388,33 @@ class OpenCodeVerifyInstallationHashTests(unittest.TestCase):
             return read_bytes(path)
 
         with (patch.object(Path, 'read_bytes', forbid_node_read_bytes),
-              patch('opencode_connection.file_sha256', wraps=file_sha256) as hashed):
+              patch('opencode_connection._stream_fd_sha256', wraps=_stream_fd_sha256) as hashed):
             verify(self.installation)
             verify(self.installation)
-            hashed.assert_called_once_with(self.node)
+            self.assertEqual(hashed.call_count, 1)
             verify(self.installation, force=True)
             self.assertEqual(hashed.call_count, 2)
-            with self.node.open('ab') as handle:
-                handle.write(b'changed')
-            self.assert_requires_review(self.installation)
+
+            # Explicit review on a configured connection must force a fresh hash even with a warm cache.
+            stub = loader(self.installation)
+            private_write(self.adapter.target, stub)
+            self.registry.state.setdefault('connections', {})[self.adapter.id] = {
+                'status': 'configured_pending_new_session',
+                'activated': True,
+                'active_installation': dict(self.installation),
+                'active_loader_sha256': sha(stub),
+            }
+            reviewed = await self.adapter.review(self.registry.state['revision'])
+            self.assertEqual(reviewed['status'], 'configured_pending_new_session')
             self.assertEqual(hashed.call_count, 3)
+
+            # Same-length in-place edit preserving mtime must still invalidate cache via ctime_ns.
+            st_before = os.lstat(self.node)
+            with self.node.open('r+b') as handle:
+                handle.write(b'y')
+            os.utime(self.node, ns=(st_before.st_atime_ns, st_before.st_mtime_ns))
+            self.assert_requires_review(self.installation)
+            self.assertEqual(hashed.call_count, 4)
 
     def test_rejects_unsafe_node_before_hashing_even_with_a_cached_digest(self):
         self.adapter.verify_installation(self.installation)
@@ -405,9 +422,15 @@ class OpenCodeVerifyInstallationHashTests(unittest.TestCase):
         link.symlink_to(self.node)
         loop = self.node.with_name('node-loop')
         loop.symlink_to(loop)
-        with patch('opencode_connection.file_sha256', wraps=file_sha256) as hashed:
+        parent_link = self.root / 'dir-link'
+        parent_link.symlink_to(self.root)
+        node_dir = self.root / 'node-dir'
+        node_dir.mkdir()
+        with patch('opencode_connection._stream_fd_sha256', wraps=_stream_fd_sha256) as hashed:
             self.assert_requires_review({**self.installation, 'node_executable': str(link)})
             self.assert_requires_review({**self.installation, 'node_executable': str(loop)})
+            self.assert_requires_review({**self.installation, 'node_executable': str(parent_link / 'node')})
+            self.assert_requires_review({**self.installation, 'node_executable': str(node_dir)})
             self.node.chmod(0o600)
             self.assert_requires_review(self.installation)
             self.node.chmod(0o700)

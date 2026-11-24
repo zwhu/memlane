@@ -169,12 +169,28 @@ def stage_install(executable, installation, stage):
     return cache
 
 
+class _CodexStateSnapshotRegistry:
+    def __init__(self, path, state):
+        self.path, self.state = path, state
+
+
 class CodexConnection:
     def __init__(self, registry, config):
         self.registry, self.config = registry, config
         self.home, self.executable = host(config)
         self.id = instance_id(config)
         self.root = registry.path.parent / 'codex-connections' / self.id
+
+    async def _view_off_thread(self):
+        state = self.registry.state
+        snap = {
+            key: copy.deepcopy({self.id: state[key][self.id]}) if self.id in state.get(key, {}) else {}
+            for key in ('agents', 'codex_connections', 'enrollments')
+        }
+        snap['sessions'] = dict(state.get('sessions', {}))
+        clone = copy.copy(self)
+        clone.registry = _CodexStateSnapshotRegistry(self.registry.path, snap)
+        return await asyncio.to_thread(clone.view)
 
     def view(self):
         state = self.registry.state
@@ -197,7 +213,7 @@ class CodexConnection:
                 'new_sessions': sum(json.loads(key)[0] == self.id and key not in record.get('sessions_before_activation', [])
                                     for key in state['sessions']) if status == 'configured_pending_new_session' else 0}
 
-    async def prepare(self, expected):
+    async def prepare(self, expected, *, include_view=True):
         r = self.registry
         read_config(self.home)  # Reject a bad host target before creating an identity.
         # The same stable home always refers to the original creation attempt.
@@ -241,9 +257,9 @@ class CodexConnection:
                 raise
             record.update(status='prepared', staged_cache=str(cache))
             r.save()
-            return self.view()
+        return await self._view_off_thread() if include_view else None
 
-    async def activate(self, expected, reviewed_sha):
+    async def activate(self, expected, reviewed_sha, *, include_view=True):
         r = self.registry
         async with r.mutex:
             r.check_revision(expected)
@@ -287,14 +303,14 @@ class CodexConnection:
             record['status'] = 'configured_pending_new_session'
             record['activated_at'] = time.time()
             r.save()
-            return self.view()
+        return await self._view_off_thread() if include_view else None
 
-    async def review(self, expected):
+    async def review(self, expected, *, include_view=True):
         """Inspect the original preview/cache/config, without rerunning commands."""
         r = self.registry
         if self.id not in r.state['agents'] and self.id in r.state.get('enrollments', {}):
             await r.recover_agent(expected, self.id)
-            return self.view()
+            return await self._view_off_thread() if include_view else None
         async with r.mutex:
             r.check_revision(expected)
             record = r.state.get('codex_connections', {}).get(self.id)
@@ -303,24 +319,24 @@ class CodexConnection:
                     # Recovery of an official creation needs its own original
                     # credential checks, outside this filesystem review.
                     raise PolicyError('agent_creation_requires_review', 409)
-                return self.view()
-            installation = r.state['agents'][self.id]['installation']
-            current, parsed = read_config(self.home)
-            preview = record['preview']
-            version = json.loads((Path(installation['plugin_dir']) / '.codex-plugin/plugin.json').read_text())['version']
-            staged = Path(record.get('staged_cache') or self.root / 'staged-home/plugins/cache' / installation['marketplace_name'] / 'cognee' / version)
-            target = self.home / 'plugins/cache' / installation['marketplace_name'] / 'cognee' / version
-            if configured(parsed, installation):
-                verify_cache(target, installation)
-                record['status'] = 'configured_pending_new_session'
-            elif digest(current) == preview['baseline_sha256']:
-                if staged.exists():
-                    verify_cache(staged, installation)
-                    record.update(status='prepared', staged_cache=str(staged))
-                else:
-                    record['status'] = 'staging_not_complete'
             else:
-                raise PolicyError('codex_configuration_changed', 409)
-            r.state['revision'] += 1
-            r.save()
-            return self.view()
+                installation = r.state['agents'][self.id]['installation']
+                current, parsed = read_config(self.home)
+                preview = record['preview']
+                version = json.loads((Path(installation['plugin_dir']) / '.codex-plugin/plugin.json').read_text())['version']
+                staged = Path(record.get('staged_cache') or self.root / 'staged-home/plugins/cache' / installation['marketplace_name'] / 'cognee' / version)
+                target = self.home / 'plugins/cache' / installation['marketplace_name'] / 'cognee' / version
+                if configured(parsed, installation):
+                    verify_cache(target, installation)
+                    record['status'] = 'configured_pending_new_session'
+                elif digest(current) == preview['baseline_sha256']:
+                    if staged.exists():
+                        verify_cache(staged, installation)
+                        record.update(status='prepared', staged_cache=str(staged))
+                    else:
+                        record['status'] = 'staging_not_complete'
+                else:
+                    raise PolicyError('codex_configuration_changed', 409)
+                r.state['revision'] += 1
+                r.save()
+        return await self._view_off_thread() if include_view else None

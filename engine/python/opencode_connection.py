@@ -9,7 +9,6 @@ import stat
 import threading
 import time
 
-from _runtime_common import file_sha256
 from project_control import loopback_origin, private_write
 from project_policy import PolicyError
 from opencode_installation import loader, prepare as prepare_binding, verify, pending_runtime
@@ -17,6 +16,8 @@ from opencode_installation import loader, prepare as prepare_binding, verify, pe
 
 NODE_HASH_CACHE_TTL_SECONDS = 300.0
 NODE_HASH_CACHE_MAX_ENTRIES = 256
+NODE_HASH_CHUNK_BYTES = 1024 * 1024
+MAX_NODE_BINARY_BYTES = 512 * 1024 * 1024
 _node_hash_lock = threading.Lock()
 _node_hash_cache = {}
 
@@ -27,24 +28,60 @@ def clear_node_hash_cache():
 
 
 def _node_stat_key(node, st):
-    return (str(node), st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+    return (str(node), st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _stream_fd_sha256(handle, *, max_bytes=MAX_NODE_BINARY_BYTES):
+    digest = hashlib.sha256()
+    total = 0
+    while True:
+        chunk = handle.read(NODE_HASH_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError('node exceeds size limit')
+        digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _node_digest(node, st, *, force):
     key = _node_stat_key(node, st)
+    now = time.monotonic()
     if not force:
         with _node_hash_lock:
             cached = _node_hash_cache.get(key)
-            if cached is not None and cached[0] > time.monotonic():
+            if cached is not None and cached[0] > now:
                 return cached[1]
-    digest = file_sha256(node)
-    if _node_stat_key(node, os.lstat(node)) != key:
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+    fd = os.open(node, flags)
+    try:
+        fst = os.fstat(fd)
+        if (not stat.S_ISREG(fst.st_mode)
+                or fst.st_size > MAX_NODE_BINARY_BYTES
+                or (fst.st_dev, fst.st_ino) != (st.st_dev, st.st_ino)):
+            raise ValueError('node changed before hashing')
+        if node.resolve(strict=True) != node or not os.access(node, os.X_OK):
+            raise ValueError('node path invalid')
+        with os.fdopen(fd, 'rb') as handle:
+            fd = -1
+            digest = _stream_fd_sha256(handle, max_bytes=MAX_NODE_BINARY_BYTES)
+            post_fst = os.fstat(handle.fileno())
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    final_key = _node_stat_key(node, post_fst)
+    if final_key != key or _node_stat_key(node, os.lstat(node)) != key:
         raise ValueError('node changed while hashing')
+    now = time.monotonic()
     with _node_hash_lock:
+        expired = [k for k, v in _node_hash_cache.items() if v[0] <= now]
+        for k in expired:
+            _node_hash_cache.pop(k, None)
         _node_hash_cache.pop(key, None)
-        if len(_node_hash_cache) >= NODE_HASH_CACHE_MAX_ENTRIES:
+        while len(_node_hash_cache) >= NODE_HASH_CACHE_MAX_ENTRIES:
             del _node_hash_cache[next(iter(_node_hash_cache))]
-        _node_hash_cache[key] = (time.monotonic() + NODE_HASH_CACHE_TTL_SECONDS, digest)
+        _node_hash_cache[key] = (now + NODE_HASH_CACHE_TTL_SECONDS, digest)
     return digest
 
 
@@ -133,13 +170,13 @@ class OpenCodeConnection:
     def record(self):
         return self.registry.state.get('connections', {}).get(self.id, {})
 
-    def view(self):
+    def view(self, *, force_verify=False):
         record = self.record()
         status = record.get('status', 'not_connected' if self.artifact and self.artifact_sha else 'integration_pending')
         if self.profile.exists() and not self.profile.is_dir():
             raise PolicyError('opencode_configuration_requires_review', 409)
         if status == 'configured_pending_new_session':
-            self.installed(record)
+            self.installed(record, force=force_verify)
         if self.id in self.registry.state.get('enrollments', {}) and self.id not in self.registry.state['agents']:
             status = 'agent_creation_unconfirmed'
         return {'instance_id': self.id, 'kind': self.kind, 'profile': str(self.profile),
@@ -208,7 +245,7 @@ class OpenCodeConnection:
                 st = os.lstat(node)
                 expected = installation['node_sha256']
                 if (stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode) or node.resolve(strict=True) != node
-                        or not os.access(node, os.X_OK) or st.st_size > 512 * 1024 * 1024
+                        or not os.access(node, os.X_OK) or st.st_size > MAX_NODE_BINARY_BYTES
                         or not isinstance(expected, str) or not expected
                         or _node_digest(node, st, force=force) != expected
                         or installation['helper_sha256'] != manifest['files']['dist/src/managed-pending-cli.js']):
@@ -323,7 +360,7 @@ class OpenCodeConnection:
                               active_installation=copy.deepcopy(record['installation']), active_loader_sha256=record['proposed_sha256'])
                 self.registry.state['revision'] += 1
                 self.registry.save()
-            return self.view()
+            return self.view(force_verify=True)
 
     def original_result(self, operation_id):
         record = self.record()

@@ -477,12 +477,14 @@ class Connections:
         self.registry, self.adapters = registry, {}
         self.mutex = asyncio.Lock()
         self.config = config
+        self._discover_generation = 0
         from connection_capture import ConnectionCapture
         self.capture = ConnectionCapture(registry, config)
         self.discover()
 
     def discover(self):
         self.environments, self.adapters, self.missing_codex = self._discover(self.registry, self.config)
+        self._discover_generation += 1
 
     @staticmethod
     def _discover(registry, config):
@@ -614,13 +616,16 @@ class Connections:
         snapshot = _StateSnapshotRegistry(self.registry)
         config = copy.deepcopy(self.config)
         host_targets_before = snapshot.state.get('host_targets', {})
+        generation_before = self._discover_generation
         environments, adapters, missing_codex, rows = await asyncio.to_thread(self._discover_rows, snapshot, config)
         for adapter in adapters.values():
             adapter.registry = self.registry
             if not isinstance(adapter, CodexConnection):
                 adapter.config = self.config
-        if self.registry.state.get('host_targets', {}) == host_targets_before:
+        if (self._discover_generation == generation_before
+                and self.registry.state.get('host_targets', {}) == host_targets_before):
             self.environments, self.adapters, self.missing_codex = environments, adapters, missing_codex
+            self._discover_generation += 1
 
         await self.capture.refresh(rows, adapters, force=force)
         self._attach_capture(rows, adapters)

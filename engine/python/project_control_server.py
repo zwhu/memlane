@@ -298,11 +298,11 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
             if request.path.endswith('/activate'):
                 if not isinstance(payload.get('proposed_sha256'), str):
                     raise PolicyError('reviewed_preview_required', 409)
-                await connection.activate(payload['expected_revision'], payload['proposed_sha256'])
+                await connection.activate(payload['expected_revision'], payload['proposed_sha256'], include_view=False)
             elif request.path.endswith('/review'):
-                await connection.review(payload['expected_revision'])
+                await connection.review(payload['expected_revision'], include_view=False)
             else:
-                await connection.prepare(payload['expected_revision'])
+                await connection.prepare(payload['expected_revision'], include_view=False)
         finally:
             invalidate_codex_view()
         return web.json_response(await directory_result_async(force_refresh=True))
@@ -427,7 +427,12 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                     web.post('/v1/connections/{id}/{action:prepare|activate|review|allow_capture|defer_capture}', generic_connections)])
     if connections is not None:
         async def capture_cleanup(_):
-            await asyncio.gather(*codex_view_tasks.values(), return_exceptions=True)
+            pending = list(codex_view_tasks.values())
+            if pending:
+                try:
+                    await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=5.0)
+                except asyncio.TimeoutError:
+                    pass
             await connections.capture.close()
         app.on_cleanup.append(capture_cleanup)
     if registry is not None:
