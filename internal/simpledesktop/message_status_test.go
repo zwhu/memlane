@@ -595,6 +595,13 @@ func TestRateLimitedCaptureNotice(t *testing.T) {
 	if info[1].Title != "消息采集触发限流，等待重试" || len(a.trayProjectAlerts()) != 0 || a.trayStatusLevel() != "ok" {
 		t.Fatalf("rate limit triggered a tray alert: %+v", info)
 	}
+	// When backlog status cannot be read, stale automatic backoff must not claim active retry.
+	q.BacklogError = "后台采集状态暂时无法读取"
+	_, errInfo := a.messageNotices(q, p)
+	if len(errInfo) == 0 || errInfo[0].Tag == "等待重试" {
+		t.Fatalf("stale automatic backoff claimed active retry despite BacklogError: %+v", errInfo)
+	}
+	q.BacklogError = ""
 	q.Backlog.Automatic = false
 	needs, _ = a.messageNotices(q, p)
 	if len(needs) != 1 || needs[0].Title != "消息采集因限流已暂停" || needs[0].Tag != "等待恢复" || needs[0].Action != "resume" {

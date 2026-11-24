@@ -69,10 +69,12 @@ func isLoginLaunchAppleEventDescriptor(ev objc.ID) bool {
 	descType := objc.Send[uint32](prop, objc.RegisterName("descriptorType"))
 	var enumCode, typeCode uint32
 	switch descType {
-	case enumeratedDescriptor:
+	case enumeratedDescriptor, keywordDescriptor:
 		enumCode = objc.Send[uint32](prop, objc.RegisterName("enumCodeValue"))
+		typeCode = objc.Send[uint32](prop, objc.RegisterName("typeCodeValue"))
 	case typeDescriptor:
 		typeCode = objc.Send[uint32](prop, objc.RegisterName("typeCodeValue"))
+		enumCode = objc.Send[uint32](prop, objc.RegisterName("enumCodeValue"))
 	}
 	return isLoginLaunchPropDescriptor(descType, enumCode, typeCode)
 }

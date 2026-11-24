@@ -266,4 +266,14 @@ func TestAcknowledgementAlertTargetsIgnoreOrdinaryRetryProgress(t *testing.T) {
 	q.Sessions = nil
 	q.Backlog = &backlogJob{Status: "paused", Reason: "capture_retry_pending", Automatic: true}
 	check("自动重试")
+
+	// Nil queue state must not panic and still surfaces directory policy-sync unconfirmed state.
+	if keys, ackErr := a.unacknowledgedNotificationKeys(nil, p); len(keys) != 0 || ackErr {
+		t.Fatalf("unexpected keys for nil queue on verified project: %v, err=%t", keys, ackErr)
+	}
+	unconfirmed := p
+	unconfirmed.Status = "unconfirmed"
+	if keys, ackErr := a.unacknowledgedNotificationKeys(nil, unconfirmed); !keys["policy-sync"] || len(keys) != 1 || ackErr {
+		t.Fatalf("expected policy-sync key for nil queue on unconfirmed project: %v, err=%t", keys, ackErr)
+	}
 }

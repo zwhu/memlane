@@ -141,7 +141,7 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 		})
 	}
 	now := time.Now()
-	automaticBackoff := q.Backlog != nil && q.Backlog.Automatic && q.Backlog.Status == "paused" &&
+	automaticBackoff := q.BacklogError == "" && q.Backlog != nil && q.Backlog.Automatic && q.Backlog.Status == "paused" &&
 		(q.Backlog.Reason == "rate_limited" || q.Backlog.Reason == "capture_retry_pending")
 	for _, failure := range q.ProcessingNotices {
 		if !failure.resolved() {

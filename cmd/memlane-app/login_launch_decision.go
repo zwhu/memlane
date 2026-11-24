@@ -7,6 +7,7 @@ const (
 	launchedAsLoginItem   = uint32(0x6c676974) // lgit
 	enumeratedDescriptor  = uint32(0x656e756d) // enum
 	typeDescriptor        = uint32(0x74797065) // type
+	keywordDescriptor     = uint32(0x6b657977) // keyw
 )
 
 func shouldStartHiddenAtLogin(mygoReported, appleEventReported bool) bool {
@@ -15,10 +16,10 @@ func shouldStartHiddenAtLogin(mygoReported, appleEventReported bool) bool {
 
 func isLoginLaunchPropDescriptor(descType, enumCode, typeCode uint32) bool {
 	switch descType {
-	case enumeratedDescriptor:
-		return enumCode == launchedAsLoginItem
+	case enumeratedDescriptor, keywordDescriptor:
+		return enumCode == launchedAsLoginItem || typeCode == launchedAsLoginItem
 	case typeDescriptor:
-		return typeCode == launchedAsLoginItem
+		return typeCode == launchedAsLoginItem || enumCode == launchedAsLoginItem
 	default:
 		return false
 	}

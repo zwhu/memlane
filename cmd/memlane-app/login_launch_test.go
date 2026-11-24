@@ -20,8 +20,11 @@ func TestIsLoginLaunchPropDescriptor(t *testing.T) {
 	}{
 		{enumeratedDescriptor, launchedAsLoginItem, 0, true},
 		{typeDescriptor, 0, launchedAsLoginItem, true},
-		{enumeratedDescriptor, 0, launchedAsLoginItem, false},
-		{typeDescriptor, launchedAsLoginItem, 0, false},
+		{keywordDescriptor, launchedAsLoginItem, 0, true},
+		{keywordDescriptor, 0, launchedAsLoginItem, true},
+		{enumeratedDescriptor, 0, launchedAsLoginItem, true},
+		{typeDescriptor, launchedAsLoginItem, 0, true},
+		{enumeratedDescriptor, 0x74657374, 0x74657374, false},
 		{0, launchedAsLoginItem, launchedAsLoginItem, false},
 	} {
 		if got := isLoginLaunchPropDescriptor(tc.kind, tc.enum, tc.code); got != tc.want {

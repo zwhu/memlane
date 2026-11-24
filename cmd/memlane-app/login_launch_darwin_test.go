@@ -5,6 +5,7 @@ package main
 import (
 	"runtime"
 	"testing"
+	"unsafe"
 
 	"github.com/ebitengine/purego/objc"
 )
@@ -24,9 +25,13 @@ func TestLoginLaunchAppleEventDescriptor(t *testing.T) {
 	}
 	loginEnum := class.Send(objc.RegisterName("descriptorWithEnumCode:"), launchedAsLoginItem)
 	loginType := class.Send(objc.RegisterName("descriptorWithTypeCode:"), launchedAsLoginItem)
+	keywordVal := launchedAsLoginItem
+	loginKeyword := class.Send(objc.RegisterName("descriptorWithDescriptorType:bytes:length:"),
+		keywordDescriptor, uintptr(unsafe.Pointer(&keywordVal)), uintptr(unsafe.Sizeof(keywordVal)))
+	runtime.KeepAlive(keywordVal)
 	otherEnum := class.Send(objc.RegisterName("descriptorWithEnumCode:"), uint32(0x74657374))
 	unexpectedType := class.Send(objc.RegisterName("descriptorWithInt32:"), int32(launchedAsLoginItem))
-	if loginEnum == 0 || loginType == 0 || otherEnum == 0 || unexpectedType == 0 {
+	if loginEnum == 0 || loginType == 0 || loginKeyword == 0 || otherEnum == 0 || unexpectedType == 0 {
 		t.Fatal("failed to construct property descriptors")
 	}
 	if isLoginLaunchAppleEventDescriptor(0) {
@@ -43,6 +48,7 @@ func TestLoginLaunchAppleEventDescriptor(t *testing.T) {
 		{"no launch property", coreEventClass, openApplicationEvent, 0, false},
 		{"login enum", coreEventClass, openApplicationEvent, loginEnum, true},
 		{"login type", coreEventClass, openApplicationEvent, loginType, true},
+		{"login keyword", coreEventClass, openApplicationEvent, loginKeyword, true},
 		{"other enum value", coreEventClass, openApplicationEvent, otherEnum, false},
 		{"unexpected descriptor type", coreEventClass, openApplicationEvent, unexpectedType, false},
 	} {

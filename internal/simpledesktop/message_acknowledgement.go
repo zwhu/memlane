@@ -272,9 +272,15 @@ func writeNoticeAcknowledgements(path string, b []byte) error {
 }
 
 func (a *App) unacknowledgedNotificationKeys(q *projectQueueState, p AccessProject) (map[string]bool, bool) {
+	alertKeys := map[string]bool{}
+	if q == nil {
+		if p.policySyncUnconfirmed() {
+			alertKeys["policy-sync"] = true
+		}
+		return alertKeys, false
+	}
 	needs, info := a.messageNotices(q, p)
 	anomalies, _ := partitionInfoNotices(info)
-	alertKeys := map[string]bool{}
 	for _, n := range append(needs, anomalies...) {
 		if !q.noticeAcknowledged(n.Key) {
 			alertKeys[n.Key] = true

@@ -24,9 +24,11 @@ func setTrayBackgroundPollInterval(d time.Duration) {
 
 // RefreshForTrayClick reads the tray's status even during a hidden cold start.
 func (a *App) RefreshForTrayClick() {
+	now := time.Now()
 	a.refreshServiceMonitorForTray()
-	a.refreshSidebarQueueForTray(time.Now())
-	if !a.access.Loaded && !a.access.Loading && !a.access.Busy && a.Config.ProjectControl != nil {
+	a.refreshSidebarQueueForTray(now)
+	if a.Config.ProjectControl != nil && !a.access.Loading && !a.access.Busy &&
+		(!a.access.Loaded || a.access.Next.IsZero() || !now.Before(a.access.Next)) {
 		a.RefreshProjectDirectory()
 	}
 }
