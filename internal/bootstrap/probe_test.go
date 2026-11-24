@@ -3,11 +3,15 @@ package bootstrap
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
+	"time"
 )
 
 func sourceFixture(t *testing.T) (archive, source, digest string) {
@@ -89,5 +93,70 @@ func TestFixedSourceRejectsLinkedPackageAndWrongDigest(t *testing.T) {
 	}
 	if err := VerifySource(archive, source, digest, []string{"cognee"}); err == nil {
 		t.Fatal("linked package accepted")
+	}
+}
+
+func setShortProbeTimeouts(t *testing.T) {
+	t.Helper()
+	routine, postInstall := routineProbeTimeout, postInstallProbeTimeout
+	routineProbeTimeout, postInstallProbeTimeout = 150*time.Millisecond, 400*time.Millisecond
+	t.Cleanup(func() { routineProbeTimeout, postInstallProbeTimeout = routine, postInstall })
+}
+
+func fakePython(t *testing.T, script string) string {
+	t.Helper()
+	executable := filepath.Join(t.TempDir(), "python")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"+script+"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	return executable
+}
+
+func pythonVersionScript() string {
+	machine := map[string]string{"arm64": "arm64", "amd64": "x86_64"}[runtime.GOARCH]
+	return `printf '%s\n' '{"version":"3.12.12","machine":"` + machine + `"}'`
+}
+
+func TestPythonProbeTimeoutModes(t *testing.T) {
+	setShortProbeTimeouts(t)
+	ctx := context.Background()
+	// The subprocess inherits stdout. Killing only the shell would leave the pipe open.
+	python := fakePython(t, "sleep 10 & wait")
+	start := time.Now()
+	for _, tc := range []struct {
+		ctx    context.Context
+		reason string
+	}{
+		{ctx, "Python 版本检测超时（150 毫秒）"},
+		{withPostInstallProbe(ctx), "Python 版本检测超时（400 毫秒）"},
+	} {
+		o, err := ProbePython(tc.ctx, python)
+		if err != nil || o.Status != Incompatible || !o.transientTimeout || o.Reason != tc.reason {
+			t.Fatalf("unexpected probe result: %+v, %v", o, err)
+		}
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("probe subprocess pipe remained open for %s", elapsed)
+	}
+
+	parent, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	o, err := ProbePython(withPostInstallProbe(parent), python)
+	if !errors.Is(err, context.DeadlineExceeded) || o.transientTimeout {
+		t.Fatalf("parent deadline was classified as a probe timeout: %+v, %v", o, err)
+	}
+}
+
+func TestPythonProbeDeterministicResults(t *testing.T) {
+	ctx := withPostInstallProbe(context.Background())
+	for _, script := range []string{"echo invalid-json", "exit 23", `echo '{"version":"3.11.0"}'`} {
+		o, err := ProbePython(ctx, fakePython(t, script))
+		if err != nil || o.Status != Incompatible || o.transientTimeout {
+			t.Fatalf("unexpected result for %q: %+v, %v", script, o, err)
+		}
+	}
+	o, err := ProbePython(ctx, fakePython(t, pythonVersionScript()))
+	if err != nil || o.Status != Available || o.transientTimeout {
+		t.Fatalf("unexpected valid Python result: %+v, %v", o, err)
 	}
 }

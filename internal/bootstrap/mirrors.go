@@ -28,6 +28,18 @@ type ArtifactCandidate struct {
 	ZipEntry string
 }
 
+func withOfficialFallback(mirrors []ArtifactCandidate, official ArtifactCandidate) []ArtifactCandidate {
+	result := make([]ArtifactCandidate, 0, len(mirrors)+1)
+	seen := map[string]bool{official.URL: true}
+	for _, mirror := range mirrors {
+		if !seen[mirror.URL] {
+			seen[mirror.URL] = true
+			result = append(result, mirror)
+		}
+	}
+	return append(result, official)
+}
+
 // NormalizeDownloadSource normalizes a source mode string; empty/unknown defaults to China mirrors.
 func NormalizeDownloadSource(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
@@ -87,18 +99,16 @@ func ToolCandidates(id, officialURL, officialSHA, downloadSource string) []Artif
 				ArtifactCandidate{URL: "https://gh-proxy.com/" + officialURL, SHA256: officialSHA, Format: "tar.gz"},
 			)
 		}
-		if len(out) > 0 {
-			return out
-		}
+		return withOfficialFallback(out, official)
 	case "python":
 		const prefix = "/astral-sh/python-build-standalone/releases/download/"
 		if u.Host == "github.com" && strings.HasPrefix(u.EscapedPath(), prefix) {
 			rel := strings.TrimPrefix(u.EscapedPath(), prefix)
-			return []ArtifactCandidate{
+			return withOfficialFallback([]ArtifactCandidate{
 				{URL: "https://registry.npmmirror.com/-/binary/python-build-standalone/" + rel, SHA256: officialSHA, Format: "tar.gz"},
 				{URL: "https://gh-proxy.org/" + officialURL, SHA256: officialSHA, Format: "tar.gz"},
 				{URL: "https://gh-proxy.com/" + officialURL, SHA256: officialSHA, Format: "tar.gz"},
-			}
+			}, official)
 		}
 	}
 	return []ArtifactCandidate{official}
@@ -125,7 +135,7 @@ func NativeCandidates(officialURL, officialSHA, downloadSource string) []Artifac
 				Format: "tar.gz",
 			})
 		}
-		return out
+		return withOfficialFallback(out, official)
 	}
 	return []ArtifactCandidate{official}
 }
@@ -141,10 +151,10 @@ func SourceCandidates(officialURL, officialSHA, downloadSource string) []Artifac
 		return []ArtifactCandidate{official}
 	}
 	if u.Host == "codeload.github.com" || u.Host == "github.com" {
-		return []ArtifactCandidate{
+		return withOfficialFallback([]ArtifactCandidate{
 			{URL: "https://gh-proxy.org/" + officialURL, SHA256: officialSHA, Format: "tar.gz"},
 			{URL: "https://gh-proxy.com/" + officialURL, SHA256: officialSHA, Format: "tar.gz"},
-		}
+		}, official)
 	}
 	return []ArtifactCandidate{official}
 }
@@ -161,13 +171,13 @@ func ModelFileCandidates(repo string, file ModelFile, downloadSource string) []A
 	}
 	// ModelScope mirrors Qdrant/bge-small-zh-v1.5 and BAAI/bge-small-zh-v1.5 on master
 	// with byte-for-byte identical files verified against the pinned SHA256 digests.
-	return []ArtifactCandidate{
+	return withOfficialFallback([]ArtifactCandidate{
 		{
 			URL:    "https://modelscope.cn/models/" + repo + "/resolve/master/" + file.Name,
 			SHA256: file.SHA256,
 			Format: "raw",
 		},
-	}
+	}, official)
 }
 
 // DisplaySourceURL returns the primary URL shown to the user for a given requirement ID and download source mode.

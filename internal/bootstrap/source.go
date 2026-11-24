@@ -16,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -141,15 +142,33 @@ type existingArchiveError struct{ msg string }
 
 func (e existingArchiveError) Error() string { return e.msg }
 
+const artifactUserAgent = "Memlane/0.1.0-beta.1"
+
+var (
+	artifactResponseHeaderTimeout = 30 * time.Second
+	artifactReadStallTimeout      = 30 * time.Second
+	artifactTotalTimeout          = 30 * time.Minute
+	artifactHTTPClientFactory     = newArtifactHTTPClient
+	errArtifactStalled            = errors.New("artifact download stalled")
+)
+
+func isHomebrewRegistryURL(u *url.URL) bool {
+	return u.Host == "ghcr.io" && strings.HasPrefix(u.Path, "/v2/homebrew/core/")
+}
+
 func newArtifactHTTPClient(ctx context.Context) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = artifactProxyFunc(ctx)
+	transport.ResponseHeaderTimeout = artifactResponseHeaderTimeout
 	return &http.Client{
-		Timeout:   30 * time.Minute,
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Scheme != "https" || req.URL.User != nil || len(via) > 5 {
 				return errors.New("unsafe artifact redirect")
+			}
+			req.Header.Set("User-Agent", artifactUserAgent)
+			if !isHomebrewRegistryURL(req.URL) {
+				req.Header.Del("Authorization")
 			}
 			return nil
 		},
@@ -160,13 +179,16 @@ func fetchArtifactCandidates(ctx context.Context, candidates []ArtifactCandidate
 	if len(candidates) == 0 {
 		return ArtifactCandidate{}, errors.New("no download candidate configured")
 	}
-	var lastErr error
+	var failures []error
 	for _, cand := range candidates {
 		if err := ctx.Err(); err != nil {
 			return ArtifactCandidate{}, err
 		}
 		dest := destinationFor(cand)
 		err := fetchArchive(ctx, cand.URL, cand.SHA256, dest)
+		if ctx.Err() != nil {
+			return ArtifactCandidate{}, ctx.Err()
+		}
 		if err == nil {
 			return cand, nil
 		}
@@ -174,9 +196,70 @@ func fetchArtifactCandidates(ctx context.Context, candidates []ArtifactCandidate
 		if errors.As(err, &existing) {
 			return ArtifactCandidate{}, err
 		}
-		lastErr = err
+		label := "invalid artifact URL"
+		if u, parseErr := url.Parse(cand.URL); parseErr == nil && u.Host != "" {
+			label = u.Host + u.EscapedPath()
+		}
+		failures = append(failures, fmt.Errorf("%s: %s", label, RedactInstallerText(err.Error())))
 	}
-	return ArtifactCandidate{}, lastErr
+	return ArtifactCandidate{}, errors.Join(failures...)
+}
+
+// artifactStallReader gives each successful read a fresh idle window. A timer
+// callback already waiting for the lock checks the latest deadline before firing.
+type artifactStallReader struct {
+	body     io.Reader
+	idle     time.Duration
+	cancel   context.CancelCauseFunc
+	mu       sync.Mutex
+	timer    *time.Timer
+	deadline time.Time
+	stopped  bool
+}
+
+func newArtifactStallReader(body io.Reader, idle time.Duration, cancel context.CancelCauseFunc) *artifactStallReader {
+	r := &artifactStallReader{body: body, idle: idle, cancel: cancel}
+	r.mu.Lock()
+	r.deadline = time.Now().Add(idle)
+	r.timer = time.AfterFunc(idle, r.check)
+	r.mu.Unlock()
+	return r
+}
+
+func (r *artifactStallReader) check() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return
+	}
+	if remaining := time.Until(r.deadline); remaining > 0 {
+		r.timer.Reset(remaining)
+		return
+	}
+	r.stopped = true
+	r.cancel(errArtifactStalled)
+}
+
+func (r *artifactStallReader) Read(p []byte) (int, error) {
+	n, err := r.body.Read(p)
+	if n > 0 {
+		r.mu.Lock()
+		if !r.stopped {
+			r.deadline = time.Now().Add(r.idle)
+			if r.timer.Stop() {
+				r.timer.Reset(r.idle)
+			}
+		}
+		r.mu.Unlock()
+	}
+	return n, err
+}
+
+func (r *artifactStallReader) stop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stopped = true
+	r.timer.Stop()
 }
 
 func fetchArchive(ctx context.Context, rawURL, digest, destination string) error {
@@ -207,14 +290,20 @@ func fetchArchive(ctx context.Context, rawURL, digest, destination string) error
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
 		return errors.New("HTTPS artifact URL required")
 	}
-	client := newArtifactHTTPClient(ctx)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	totalCtx, cancelTotal := context.WithTimeout(ctx, artifactTotalTimeout)
+	defer cancelTotal()
+	attemptCtx, cancelAttempt := context.WithCancelCause(totalCtx)
+	defer cancelAttempt(nil)
+	client := artifactHTTPClientFactory(attemptCtx)
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return err
 	}
 	// GHCR uses this public anonymous pull token for Homebrew bottles. No user
 	// credential is read or forwarded, and this is limited to the fixed registry.
-	if u.Host == "ghcr.io" && strings.HasPrefix(u.Path, "/v2/homebrew/core/") {
+	req.Header.Set("User-Agent", artifactUserAgent)
+	if isHomebrewRegistryURL(u) {
 		req.Header.Set("Authorization", "Bearer QQ==")
 	}
 	response, err := client.Do(req)
@@ -232,8 +321,19 @@ func fetchArchive(ctx context.Context, rawURL, digest, destination string) error
 	defer os.Remove(f.Name())
 	defer f.Close()
 	h := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(f, h), response.Body); err != nil {
+	stallTimeout := artifactReadStallTimeout
+	body := newArtifactStallReader(response.Body, stallTimeout, cancelAttempt)
+	defer body.stop()
+	_, copyErr := io.Copy(io.MultiWriter(f, h), body)
+	body.stop()
+	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if copyErr != nil {
+		if errors.Is(context.Cause(attemptCtx), errArtifactStalled) {
+			return fmt.Errorf("%w (no data for %s)", errArtifactStalled, stallTimeout)
+		}
+		return copyErr
 	}
 	if hex.EncodeToString(h.Sum(nil)) != digest {
 		return errors.New("downloaded artifact digest mismatch")
@@ -242,6 +342,9 @@ func fetchArchive(ctx context.Context, rawURL, digest, destination string) error
 		return err
 	}
 	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := totalCtx.Err(); err != nil {
 		return err
 	}
 	return os.Rename(f.Name(), destination)

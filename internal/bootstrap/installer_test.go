@@ -9,17 +9,21 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type testDriver struct {
-	observed     map[string]Observation
-	installs     []string
-	fail         string
-	cancel       context.CancelFunc
-	afterInstall *Observation
+	observed         map[string]Observation
+	installs         []string
+	fail             string
+	cancel           context.CancelFunc
+	postInstallProbe func() (Observation, error)
 }
 
-func (d *testDriver) Probe(_ context.Context, r Requirement) (Observation, error) {
+func (d *testDriver) Probe(ctx context.Context, r Requirement) (Observation, error) {
+	if isPostInstallProbe(ctx) && d.postInstallProbe != nil {
+		return d.postInstallProbe()
+	}
 	return d.observed[r.ID], nil
 }
 func (d *testDriver) Install(_ context.Context, r Requirement) error {
@@ -28,9 +32,6 @@ func (d *testDriver) Install(_ context.Context, r Requirement) error {
 		return errors.New("network unavailable")
 	}
 	d.observed[r.ID] = Observation{Status: Available, Path: r.Destination}
-	if d.afterInstall != nil {
-		d.observed[r.ID] = *d.afterInstall
-	}
 	if d.cancel != nil {
 		d.cancel()
 	}
@@ -81,23 +82,102 @@ func TestDetectionAndDeclineNeverInstall(t *testing.T) {
 	}
 }
 
-func TestPostInstallProbeFailurePreservesReason(t *testing.T) {
-	i, d, reqs := fixture(t)
-	d.afterInstall = &Observation{Status: Incompatible, Reason: "运行库探测超时（30 秒）"}
-	p := approved(t, i, reqs)
-	err := i.Run(context.Background(), "operation", p)
-	if err == nil || !strings.Contains(err.Error(), "component=python status=incompatible") ||
-		!strings.Contains(err.Error(), d.afterInstall.Reason) {
-		t.Fatalf("probe failure lost its reason: %v", err)
-	}
-	j, readErr := i.Snapshot()
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if step := j.Steps["python"]; step.Status != Failed || step.Error != err.Error() {
-		t.Fatalf("journal lost probe failure: %+v", step)
+func TestPostInstallVerification(t *testing.T) {
+	maxAttempts, retryDelay := postInstallProbeMaxAttempts, postInstallProbeRetryDelay
+	postInstallProbeMaxAttempts, postInstallProbeRetryDelay = 2, time.Millisecond
+	t.Cleanup(func() {
+		postInstallProbeMaxAttempts, postInstallProbeRetryDelay = maxAttempts, retryDelay
+	})
+	timedOut := Observation{Status: Incompatible, Reason: "运行库探测超时（90 秒）", transientTimeout: true}
+	lastTimeout := timedOut
+	lastTimeout.Reason = "运行库探测超时（90 秒），原生库尚未加载完毕"
+	probeErr := errors.New("probe failed")
+	for _, tc := range []struct {
+		name         string
+		observations []Observation
+		probeErr     error
+		status       Status
+		reason       string
+	}{
+		{"retry succeeds", []Observation{timedOut, {Status: Available}}, nil, Ready, ""},
+		{"retry exhausted", []Observation{timedOut, lastTimeout}, nil, Failed, lastTimeout.Reason},
+		{"missing module", []Observation{{Status: Incompatible, Reason: "原生运行库加载失败：ModuleNotFoundError"}}, nil, Failed, "原生运行库加载失败：ModuleNotFoundError"},
+		{"checksum", []Observation{{Status: Incompatible, Reason: "checksum mismatch"}}, nil, Failed, "checksum mismatch"},
+		{"driver error", []Observation{timedOut}, probeErr, Failed, probeErr.Error()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			i, d, reqs := fixture(t)
+			calls := 0
+			d.postInstallProbe = func() (Observation, error) {
+				if calls >= len(tc.observations) {
+					t.Fatal("unexpected post-install probe")
+				}
+				o := tc.observations[calls]
+				calls++
+				return o, tc.probeErr
+			}
+			p := approved(t, i, reqs[:1])
+			err := i.Run(context.Background(), "operation", p)
+			if calls != len(tc.observations) || len(d.installs) != 1 {
+				t.Fatalf("probe calls: %d, installs: %v", calls, d.installs)
+			}
+			if tc.status == Ready && err != nil {
+				t.Fatal(err)
+			}
+			if tc.status == Failed && (err == nil || !strings.Contains(err.Error(), tc.reason)) {
+				t.Fatalf("probe failure lost its reason: %v", err)
+			}
+			if tc.probeErr != nil && !errors.Is(err, tc.probeErr) {
+				t.Fatalf("driver error lost: %v", err)
+			}
+			j, readErr := i.Snapshot()
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			step := j.Steps["python"]
+			if j.Status != tc.status || step.Status != tc.status || step.Attempts != 1 ||
+				(err != nil && step.Error != err.Error()) {
+				t.Fatalf("unexpected journal: %s, %+v", j.Status, step)
+			}
+		})
 	}
 }
+
+func TestPostInstallProbeRetryDelayIsCancellable(t *testing.T) {
+	retryDelay := postInstallProbeRetryDelay
+	postInstallProbeRetryDelay = 10 * time.Second
+	t.Cleanup(func() { postInstallProbeRetryDelay = retryDelay })
+
+	i, d, reqs := fixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	d.postInstallProbe = func() (Observation, error) {
+		calls++
+		time.AfterFunc(30*time.Millisecond, cancel)
+		return Observation{Status: Incompatible, transientTimeout: true}, nil
+	}
+	p := approved(t, i, reqs[:1])
+	start := time.Now()
+	err := i.Run(ctx, "operation", p)
+	if !errors.Is(err, context.Canceled) || calls != 1 || time.Since(start) >= 2*time.Second {
+		t.Fatalf("retry delay did not stop promptly: %d calls, %v", calls, err)
+	}
+	j, err := i.Snapshot()
+	if err != nil || j.Status != Cancelled || j.Steps["python"].Status != Cancelled {
+		t.Fatalf("unexpected cancellation journal: %+v, %v", j, err)
+	}
+}
+
+func TestTransientTimeoutDoesNotChangePlanDigest(t *testing.T) {
+	plan := Plan{Items: []Item{{Observation: Observation{Status: Incompatible, Reason: "timed out"}}}}
+	before := plan.Digest()
+	plan.Items[0].Observation.transientTimeout = true
+	if plan.Digest() != before {
+		t.Fatal("transient timeout changed the serialized plan")
+	}
+}
+
 func TestReuseAndChangedExternalDependency(t *testing.T) {
 	i, d, reqs := fixture(t)
 	d.observed["python"] = Observation{Status: Available, Path: "/external/python", Fingerprint: "one"}

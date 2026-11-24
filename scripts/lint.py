@@ -58,9 +58,9 @@ DOCS_PROCESS_REF_RE = re.compile(
     r'|(?<![A-Za-z0-9_-])(?:\.\./)+process(?:/|(?![A-Za-z0-9_-]))'
     r'|\]\(\s*\.?/?process(?:/|\s*\))'
 )
-ML019_MESSAGE = '禁止在 Go 桌面端新增对 overviewDocuments/overviewSessions/旧首页接口的全量拉表调用；仅允许精确回退路径函数，新功能请走 /v2 游标或点查接口'
-ML020_MESSAGE = '/v2 列表接口必须实施 _MAX_PAGE_LIMIT (<=50)、_parse_limit (<=50) 与 JSON 字节预算裁剪 (fit_items_to_json_budget)'
-ML020_UTF8_MESSAGE = '/v2 列表接口禁止裸用默认 ASCII 转义的 web.json_response（会使中文体积翻倍击穿字节预算）；须走统一 UTF-8 JSON 响应辅助或显式 UTF-8 dumps'
+ML019_MESSAGE = '禁止在 Go 桌面端新增对 overviewDocuments/overviewSessions/旧首页接口的全量拉表调用；仅允许精确回退路径函数，新功能请走 /v1 游标或点查接口'
+ML020_MESSAGE = '/v1 列表接口必须实施 _MAX_PAGE_LIMIT (<=50)、_parse_limit (<=50) 与 JSON 字节预算裁剪 (fit_items_to_json_budget)'
+ML020_UTF8_MESSAGE = '/v1 列表接口禁止裸用默认 ASCII 转义的 web.json_response（会使中文体积翻倍击穿字节预算）；须走统一 UTF-8 JSON 响应辅助或显式 UTF-8 dumps'
 ML021_CONNECT_MESSAGE = '禁止在非白名单模块直接或间接调用 sqlite3.connect（含别名/getattr/importlib）；只读访问官方库必须经 sqlite_ro.open_official_sqlite_ro'
 ML021_IMMUTABLE_MESSAGE = '禁止在线使用 SQLite URI immutable=1（易引发 WAL 脏页/过期视图）；只读连接须走 ?mode=ro + query_only + set_authorizer'
 ML022_MESSAGE = 'catalog_index.py 仅允许 5 张轻量元数据白名单表及白名单列，严禁持久化正文/QA/trace/why_learned/metadata 等违禁字段或新增未授权表/列'

@@ -17,6 +17,11 @@ import (
 
 type Status string
 
+var (
+	postInstallProbeMaxAttempts = 2
+	postInstallProbeRetryDelay  = 2 * time.Second
+)
+
 const (
 	Available    Status = "available"
 	Missing      Status = "missing"
@@ -49,7 +54,8 @@ type Observation struct {
 	Version string `json:"version,omitempty"`
 	Reason  string `json:"reason,omitempty"`
 	// Fingerprint binds approval to the selected external dependencies too.
-	Fingerprint string `json:"fingerprint,omitempty"`
+	Fingerprint      string `json:"fingerprint,omitempty"`
+	transientTimeout bool
 }
 
 type Item struct {
@@ -251,16 +257,32 @@ func (i Installer) Run(ctx context.Context, operation string, p Plan) error {
 			if err := i.Driver.Install(ctx, r); err != nil {
 				return fail(err)
 			}
-			o, err = i.Driver.Probe(ctx, r)
-			if err != nil {
-				return fail(err)
-			}
-			if err := ctx.Err(); err != nil {
-				return fail(err)
-			}
-			if o.Status != Available {
-				return fail(fmt.Errorf("installed component failed verification: component=%s status=%s reason=%q",
-					r.ID, o.Status, RedactInstallerText(o.Reason)))
+			probeCtx := withPostInstallProbe(ctx)
+			for attempt := 1; ; attempt++ {
+				if err := ctx.Err(); err != nil {
+					return fail(err)
+				}
+				o, err := i.Driver.Probe(probeCtx, r)
+				if err != nil {
+					return fail(err)
+				}
+				if err := ctx.Err(); err != nil {
+					return fail(err)
+				}
+				if o.Status == Available {
+					break
+				}
+				if !o.transientTimeout || attempt >= postInstallProbeMaxAttempts {
+					return fail(fmt.Errorf("installed component failed verification: component=%s status=%s reason=%q",
+						r.ID, o.Status, RedactInstallerText(o.Reason)))
+				}
+				timer := time.NewTimer(postInstallProbeRetryDelay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return fail(ctx.Err())
+				case <-timer.C:
+				}
 			}
 			s.Status, s.Error = Ready, ""
 			j.Steps[r.ID] = s

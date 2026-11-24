@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -59,15 +60,59 @@ type PythonInfo struct {
 	BasePrefix string `json:"base_prefix"`
 }
 
+var (
+	routineProbeTimeout     = 30 * time.Second
+	postInstallProbeTimeout = 90 * time.Second
+)
+
+type postInstallProbeKey struct{}
+
+func withPostInstallProbe(ctx context.Context) context.Context {
+	return context.WithValue(ctx, postInstallProbeKey{}, true)
+}
+
+func isPostInstallProbe(ctx context.Context) bool {
+	marked, _ := ctx.Value(postInstallProbeKey{}).(bool)
+	return marked
+}
+
+func probeTimeout(ctx context.Context) time.Duration {
+	if isPostInstallProbe(ctx) {
+		return postInstallProbeTimeout
+	}
+	return routineProbeTimeout
+}
+
+func probeTimeoutText(ctx context.Context) string {
+	timeout := probeTimeout(ctx)
+	unit, label := time.Second, "秒"
+	if timeout < time.Second {
+		unit, label = time.Millisecond, "毫秒"
+	}
+	return fmt.Sprintf("%g %s", float64(timeout)/float64(unit), label)
+}
+
 func isolatedPython(ctx context.Context, executable, code string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout(ctx))
 	defer cancel()
 	home, err := os.MkdirTemp("", "memlane-bootstrap-probe-")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(home)
-	command := exec.CommandContext(ctx, executable, append([]string{"-I", "-B", "-c", code}, args...)...)
+	command := exec.CommandContext(probeCtx, executable, append([]string{"-I", "-B", "-c", code}, args...)...)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error {
+		if command.Process == nil {
+			return os.ErrProcessDone
+		}
+		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	command.WaitDelay = 2 * time.Second
 	command.Dir = home
 	command.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=" + home, "TMPDIR=" + home,
 		"LANG=en_US.UTF-8", "HF_HOME=" + filepath.Join(home, "hf"), "HF_HUB_OFFLINE=1", "TRANSFORMERS_OFFLINE=1",
@@ -75,8 +120,11 @@ func isolatedPython(ctx context.Context, executable, code string, args ...string
 		"LOGS_ROOT_DIRECTORY=" + filepath.Join(home, "logs"), "TELEMETRY_DISABLED=true", "PYTHON_DOTENV_DISABLED=1"}
 	// Probe snippets emit bounded metadata; don't propagate inherited credentials.
 	output, err := command.Output()
-	if err != nil && ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return nil, ctx.Err()
+	}
+	if probeCtx.Err() != nil {
+		return nil, context.DeadlineExceeded
 	}
 	return output, err
 }
@@ -103,7 +151,8 @@ func ProbePython(ctx context.Context, executable string) (Observation, error) {
 		}
 		o.Reason = "无法执行 Python 版本检测"
 		if errors.Is(err, context.DeadlineExceeded) {
-			o.Reason = "Python 版本检测超时（30 秒）"
+			o.Reason = "Python 版本检测超时（" + probeTimeoutText(ctx) + "）"
+			o.transientTimeout = true
 		}
 		return o, nil
 	}

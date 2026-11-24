@@ -68,9 +68,18 @@ print(json.dumps(dict(mismatch=mismatch,native_error=native_error)))`
 		var exit *exec.ExitError
 		switch {
 		case errors.Is(err, context.DeadlineExceeded):
-			o.Reason = "运行库探测超时（30 秒）"
+			o.Reason = "运行库探测超时（" + probeTimeoutText(ctx) + "）"
+			o.transientTimeout = true
 		case errors.As(err, &exit):
 			o.Reason = fmt.Sprintf("运行库探测进程退出（exit_code=%d）", exit.ExitCode())
+			if detail := strings.Join(strings.Fields(string(exit.Stderr)), " "); detail != "" {
+				const maxDetailRunes = 256
+				runes := []rune(detail)
+				if len(runes) > maxDetailRunes {
+					detail = string(runes[:maxDetailRunes]) + "…"
+				}
+				o.Reason += "：" + detail
+			}
 		}
 		return o, nil
 	}
