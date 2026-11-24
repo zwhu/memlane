@@ -3435,6 +3435,9 @@ class CatalogIndex:
             t_start_ns = time.monotonic_ns()
             try:
                 with self._write_lock:
+                    if self._write_con is None and self.path.is_file():
+                        self._write_con = _open_private_rw(self.path)
+                        _apply_connection_pragmas(self._write_con)
                     sig_before = self._full_stat_sig(ds_tuple, relations_resolver)
                     with self._state_lock:
                         if not force and not self._bg_sync_failed and self._last_stat_sig == sig_before:
@@ -3503,14 +3506,20 @@ class CatalogIndex:
         with self._state_lock:
             if self._closed:
                 raise PolicyError('catalog_index_closed', 503)
-            if not force and not self._rebuilding and not self._bg_sync_failed and (
-                self._last_stat_sig == entry_sig
-                or (
-                    self._last_stat_sig is not None
-                    and self._last_synced_ds_tuple == ds_tuple
-                    and self._last_synced_tz_name == entry_sig[3]
-                    and self._last_stat_sig[5] == entry_sig[5]
-                    and self._last_synced_pin_ts_ns >= entry_ts_ns
+            if (
+                not force
+                and not self._rebuilding
+                and not self._bg_sync_failed
+                and (self._inflight_sync is None or self._inflight_sync[0] == ds_tuple)
+                and (
+                    self._last_stat_sig == entry_sig
+                    or (
+                        self._last_stat_sig is not None
+                        and self._last_synced_ds_tuple == ds_tuple
+                        and self._last_synced_tz_name == entry_sig[3]
+                        and self._last_stat_sig[5] == entry_sig[5]
+                        and self._last_synced_pin_ts_ns >= entry_ts_ns
+                    )
                 )
             ):
                 return self._last_generation, None, False
@@ -3604,8 +3613,8 @@ class CatalogIndex:
             with self._state_lock:
                 if self._bg_timer is timer:
                     self._bg_timer = None
-                self._pending_bg_sync = None
-                self._bg_sync_failed = True
+                    self._pending_bg_sync = None
+                    self._bg_sync_failed = True
             return
         with self._state_lock:
             if self._bg_timer is not timer:
@@ -3730,6 +3739,7 @@ class CatalogIndex:
         tmp_path = self.path.parent / f'{self.path.name}.rebuilding.{os.getpid()}.{time.time_ns()}'
         tmp_con = None
         write_con_closed = False
+        replaced = False
         self._pending_rebuild_publish = None
         try:
             tmp_con = _open_private_rw(tmp_path)
@@ -3778,6 +3788,7 @@ class CatalogIndex:
                     except OSError:
                         pass
             os.replace(tmp_path, self.path)
+            replaced = True
             os.chmod(self.path, 0o600)
             self._write_con = _open_private_rw(self.path)
             _apply_connection_pragmas(self._write_con)
@@ -3789,9 +3800,31 @@ class CatalogIndex:
                 publish_fn()
             return gen, cacheable
         except Exception:
+            if replaced:
+                # Disk now holds the rebuilt DB; clear all in-memory baselines/caches so the next
+                # sync cannot skip diverged rows/buckets using pre-rebuild chunk digests.
+                self._chunk_digests.clear()
+                self._last_prov_stat = None
+                self._last_recall_stat = None
+                self._prov_sync_incomplete = True
+                self._recall_sync_incomplete = True
+                self._last_synced_cog_sig = None
+                with self._state_lock:
+                    self._last_stat_sig = None
+                    self._last_synced_pin_ts_ns = 0
+                    self._recent_appends.clear()
+                    self._cat_counts_cache.clear()
+                    self._common_cat_counts_cache.clear()
+                    self._pending_raw_cache.clear()
+                    self._children_preview_cache.clear()
+                try:
+                    self._invalidate_readers()
+                except Exception:
+                    pass
             if write_con_closed and self._write_con is None and self.path.is_file():
                 try:
                     self._write_con = _open_private_rw(self.path)
+                    _apply_connection_pragmas(self._write_con)
                 except Exception:
                     pass
             raise
@@ -4584,6 +4617,8 @@ class CatalogIndex:
         uid_filter = uuid_text(user_id) if user_id else ''
         with self._reader_lease() as con:
             with ro_snapshot(con):
+                gen_row = con.execute('SELECT generation FROM catalog_meta WHERE singleton = 1').fetchone()
+                snap_gen = int(gen_row[0]) if gen_row is not None else 0
                 if uid_filter:
                     parent_row = con.execute(
                         f'SELECT {_SELECT_SESS_COLS} FROM catalog_sessions WHERE dataset_id = ? AND session_id = ? AND user_id = ? LIMIT 1',
@@ -4662,6 +4697,7 @@ class CatalogIndex:
                 page_rows = rows[:limit]
 
                 return {
+                    'generation': snap_gen,
                     'total_count': int(parent['child_count']),
                     'items': page_rows,
                     'has_more': has_more,
@@ -4673,6 +4709,7 @@ class CatalogIndex:
         parent_specs: list[tuple[str, str]],
         *,
         limit: int = 5,
+        expected_gen: int | None = None,
     ) -> dict[tuple[str, str], tuple[list[dict], bool]]:
         """Batch preview child fetches for a page of top-level sessions under ONE reader lease."""
         if not parent_specs:
@@ -4681,76 +4718,97 @@ class CatalogIndex:
         lim = int(limit)
         out: dict[tuple[str, str], tuple[list[dict], bool]] = {}
         missing_specs: list[tuple[str, str]] = []
-        with self._state_lock:
-            sgen = self._sessions_generation
-            for raw_sid, raw_uid in parent_specs:
-                key = (raw_sid, raw_uid)
-                if key in out:
-                    continue
-                cached = self._children_preview_cache.get((sgen, ds, raw_sid, raw_uid, lim))
-                if cached is not None:
-                    out[key] = ([dict(r) for r in cached[0]], cached[1])
-                else:
-                    missing_specs.append(key)
-        if not missing_specs:
-            return out
+        if expected_gen is not None:
+            exp_gen = int(expected_gen)
+            with self._state_lock:
+                for raw_sid, raw_uid in parent_specs:
+                    key = (raw_sid, raw_uid)
+                    if key in out:
+                        continue
+                    cached = self._children_preview_cache.get((exp_gen, ds, raw_sid, raw_uid, lim))
+                    if cached is not None:
+                        out[key] = ([dict(r) for r in cached[0]], cached[1])
+                    else:
+                        missing_specs.append(key)
+            if not missing_specs:
+                return out
+        else:
+            missing_specs = list(dict.fromkeys((raw_sid, raw_uid) for raw_sid, raw_uid in parent_specs))
 
-        uniq_sids = list(dict.fromkeys(str(sid) for sid, _uid in missing_specs if sid))
-        if not uniq_sids:
-            return out
         fetched: dict[tuple[str, str], tuple[list[dict], bool]] = {}
+        snap_gen = 0
         with self._reader_lease() as con:
-            multi_owner_sids: set[str] = set()
-            for start in range(0, len(uniq_sids), _MAX_IN_BATCH):
-                batch = uniq_sids[start : start + _MAX_IN_BATCH]
-                ph = ','.join('?' for _ in batch)
-                for (sid_m,) in con.execute(
-                    f'''SELECT session_id FROM catalog_sessions
-                        WHERE dataset_id = ? AND session_id IN ({ph})
-                        GROUP BY session_id HAVING COUNT(*) > 1''',
-                    (ds, *batch),
-                ):
-                    multi_owner_sids.add(str(sid_m))
+            with ro_snapshot(con):
+                gen_row = con.execute('SELECT generation FROM catalog_meta WHERE singleton = 1').fetchone()
+                snap_gen = int(gen_row[0]) if gen_row is not None else 0
+                if expected_gen is None:
+                    still_missing: list[tuple[str, str]] = []
+                    with self._state_lock:
+                        for key in missing_specs:
+                            cached = self._children_preview_cache.get((snap_gen, ds, key[0], key[1], lim))
+                            if cached is not None:
+                                out[key] = ([dict(r) for r in cached[0]], cached[1])
+                            else:
+                                still_missing.append(key)
+                    missing_specs = still_missing
+                if not missing_specs:
+                    return out
+                uniq_sids = list(dict.fromkeys(str(sid) for sid, _uid in missing_specs if sid))
+                if not uniq_sids:
+                    return out
 
-            sql_unscoped = f'''SELECT {_SELECT_SESS_COLS}
-                               FROM catalog_sessions
-                               WHERE dataset_id = ? AND is_top_level = 0 AND root_session_id = ?
-                               ORDER BY sort_ts_desc_key ASC, user_id ASC, session_id ASC
-                               LIMIT ?'''
-            sql_scoped = f'''SELECT {_SELECT_SESS_COLS}
-                             FROM catalog_sessions
-                             WHERE dataset_id = ? AND user_id = ? AND is_top_level = 0 AND root_session_id = ?
-                             ORDER BY sort_ts_desc_key ASC, session_id ASC
-                             LIMIT ?'''
+                multi_owner_sids: set[str] = set()
+                for start in range(0, len(uniq_sids), _MAX_IN_BATCH):
+                    batch = uniq_sids[start : start + _MAX_IN_BATCH]
+                    ph = ','.join('?' for _ in batch)
+                    for (sid_m,) in con.execute(
+                        f'''SELECT session_id FROM catalog_sessions
+                            WHERE dataset_id = ? AND session_id IN ({ph})
+                            GROUP BY session_id HAVING COUNT(*) > 1''',
+                        (ds, *batch),
+                    ):
+                        multi_owner_sids.add(str(sid_m))
 
-            for raw_sid, raw_uid in missing_specs:
-                key = (raw_sid, raw_uid)
-                if key in fetched:
-                    continue
-                uid_filter = uuid_text(raw_uid) if raw_uid else ''
-                scope_by_user = bool(uid_filter and raw_sid in multi_owner_sids)
-                if not scope_by_user:
-                    rows = [
-                        _row_to_session_dict(r)
-                        for r in con.execute(sql_unscoped, (ds, raw_sid, lim + 1)).fetchall()
-                    ]
-                    fetched[key] = (rows[:lim], len(rows) > lim)
-                else:
-                    rows = [
-                        _row_to_session_dict(r)
-                        for r in con.execute(sql_scoped, (ds, uid_filter, raw_sid, lim + 1)).fetchall()
-                    ]
-                    fetched[key] = (rows[:lim], len(rows) > lim)
+                sql_unscoped = f'''SELECT {_SELECT_SESS_COLS}
+                                   FROM catalog_sessions
+                                   WHERE dataset_id = ? AND is_top_level = 0 AND root_session_id = ?
+                                   ORDER BY sort_ts_desc_key ASC, user_id ASC, session_id ASC
+                                   LIMIT ?'''
+                sql_scoped = f'''SELECT {_SELECT_SESS_COLS}
+                                 FROM catalog_sessions
+                                 WHERE dataset_id = ? AND user_id = ? AND is_top_level = 0 AND root_session_id = ?
+                                 ORDER BY sort_ts_desc_key ASC, session_id ASC
+                                 LIMIT ?'''
+
+                for raw_sid, raw_uid in missing_specs:
+                    key = (raw_sid, raw_uid)
+                    if key in fetched:
+                        continue
+                    uid_filter = uuid_text(raw_uid) if raw_uid else ''
+                    scope_by_user = bool(uid_filter and raw_sid in multi_owner_sids)
+                    if not scope_by_user:
+                        rows = [
+                            _row_to_session_dict(r)
+                            for r in con.execute(sql_unscoped, (ds, raw_sid, lim + 1)).fetchall()
+                        ]
+                        fetched[key] = (rows[:lim], len(rows) > lim)
+                    else:
+                        rows = [
+                            _row_to_session_dict(r)
+                            for r in con.execute(sql_scoped, (ds, uid_filter, raw_sid, lim + 1)).fetchall()
+                        ]
+                        fetched[key] = (rows[:lim], len(rows) > lim)
 
         with self._state_lock:
-            if self._sessions_generation == sgen:
-                if len(self._children_preview_cache) > 512:
-                    self._children_preview_cache.clear()
-                for (raw_sid, raw_uid), val in fetched.items():
-                    self._children_preview_cache[(sgen, ds, raw_sid, raw_uid, lim)] = (
-                        [dict(r) for r in val[0]],
-                        val[1],
-                    )
+            if len(self._children_preview_cache) > 512:
+                self._children_preview_cache = {
+                    k: v for k, v in self._children_preview_cache.items() if k[0] >= snap_gen - 2
+                }
+            for (raw_sid, raw_uid), val in fetched.items():
+                self._children_preview_cache[(snap_gen, ds, raw_sid, raw_uid, lim)] = (
+                    [dict(r) for r in val[0]],
+                    val[1],
+                )
         out.update(fetched)
         return out
 

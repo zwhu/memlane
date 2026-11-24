@@ -1120,6 +1120,179 @@ class CatalogIndexTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 'reading_state_unavailable')
         self.assertEqual(self.cat_path.read_bytes(), corrupt_catalog)
 
+    def test_rebuild_post_replace_failure_clears_digests_and_reconciles(self):
+        import os
+        from unittest.mock import patch
+
+        d1 = str(uuid.uuid4())
+        self._insert_doc(
+            d1, self.ds_proj, name='A.md', label='LabelA',
+            sys_meta={'lesson_type': 'state', 'session_date': '2026-11-20'},
+            node_set=['session_learnings'],
+        )
+        cat = CatalogIndex(self.cat_path, official_data=self.official_data)
+        self.addCleanup(cat.close)
+        cat.sync([self.ds_proj])
+        self.assertEqual(cat.fetch_docs_by_ids(self.ds_proj, [d1])[0]['doc_name'], 'A.md')
+
+        # Mutate official source to B.md, then inject os.chmod failure right after os.replace in rebuild_atomic
+        with sqlite3.connect(self.cognee_db) as con:
+            con.execute("UPDATE data SET name = 'B.md', label = 'LabelB' WHERE id = ?", (uuid.UUID(d1).hex,))
+        real_chmod = os.chmod
+        fail_once = [True]
+
+        def _flaky_chmod(path, mode):
+            if fail_once[0] and str(path) == str(self.cat_path):
+                fail_once[0] = False
+                raise OSError('injected chmod failure after os.replace')
+            return real_chmod(path, mode)
+
+        with patch('catalog_index.os.chmod', side_effect=_flaky_chmod):
+            with self.assertRaises(OSError):
+                cat.rebuild_atomic([self.ds_proj])
+
+        # Disk now holds B.md; revert official source back to A.md and verify sync reconciles to A.md!
+        with sqlite3.connect(self.cognee_db) as con:
+            con.execute("UPDATE data SET name = 'A.md', label = 'LabelA' WHERE id = ?", (uuid.UUID(d1).hex,))
+        cat.sync([self.ds_proj])
+        row = cat.fetch_docs_by_ids(self.ds_proj, [d1])[0]
+        self.assertEqual(row['doc_name'], 'A.md')
+        self.assertEqual(row['doc_label'], 'LabelA')
+
+    def test_cross_scope_inflight_does_not_short_circuit_foreground_sync(self):
+        import asyncio
+        import threading
+
+        d1 = str(uuid.uuid4())
+        d2 = str(uuid.uuid4())
+        self._insert_doc(d1, self.ds_proj, name='proj.md', sys_meta={'lesson_type': 'state', 'session_date': '2026-11-20'}, node_set=['session_learnings'])
+        self._insert_doc(d2, self.ds_common, name='common.md', ext_meta={'memlane_kind': 'common_knowledge', 'category': 'preference'})
+
+        cat = CatalogIndex(self.cat_path, official_data=self.official_data)
+        self.addCleanup(cat.close)
+        cat.sync([self.ds_proj])
+
+        entered_b = threading.Event()
+        release_b = threading.Event()
+        orig_sync_into = cat._sync_into_connection
+
+        def _slow_scope_b(con, managed_datasets, **kwargs):
+            if managed_datasets == [self.ds_common]:
+                entered_b.set()
+                release_b.wait(timeout=5.0)
+            return orig_sync_into(con, managed_datasets, **kwargs)
+
+        cat._sync_into_connection = _slow_scope_b
+
+        async def _run():
+            task_b = asyncio.create_task(cat.sync_async([self.ds_common]))
+            await asyncio.to_thread(entered_b.wait, 5.0)
+            self.assertTrue(entered_b.is_set())
+            task_a = asyncio.create_task(cat.sync_for_read_async([self.ds_proj]))
+            await asyncio.sleep(0.05)
+            # A must NOT have short-circuited while incompatible scope B is still in-flight!
+            self.assertFalse(task_a.done())
+            release_b.set()
+            await task_b
+            await task_a
+
+        asyncio.run(_run())
+        # After A completes, catalog MUST be projected to scope A (ds_proj present, ds_common absent).
+        self.assertEqual(len(cat.fetch_docs_by_ids(self.ds_proj, [d1])), 1)
+        self.assertEqual(len(cat.fetch_docs_by_ids(self.ds_common, [d2])), 0)
+
+    def test_displaced_bg_timer_error_does_not_clear_newer_pending_sync(self):
+        import threading
+
+        d1 = str(uuid.uuid4())
+        self._insert_doc(d1, self.ds_proj, name='t.md', sys_meta={'lesson_type': 'state', 'session_date': '2026-11-20'}, node_set=['session_learnings'])
+        cat = CatalogIndex(self.cat_path, official_data=self.official_data)
+        self.addCleanup(cat.close)
+        cat.sync([self.ds_proj])
+
+        old_timer = object()
+        new_timer = object()
+        ds_tuple = (self.ds_proj,)
+        new_pending = ((self.ds_proj, self.ds_common), None)
+        entered_sig = threading.Event()
+        release_sig = threading.Event()
+        orig_full_sig = cat._full_stat_sig
+
+        def _failing_sig(dt, rr):
+            entered_sig.set()
+            release_sig.wait(timeout=5.0)
+            raise RuntimeError('old timer stat failed')
+
+        cat._full_stat_sig = _failing_sig
+        with cat._state_lock:
+            cat._bg_timer = old_timer
+            cat._pending_bg_sync = (ds_tuple, None)
+
+        th = threading.Thread(target=cat._on_bg_timer_fire, args=(old_timer,))
+        th.start()
+        self.assertTrue(entered_sig.wait(timeout=5.0))
+        with cat._state_lock:
+            cat._bg_timer = new_timer
+            cat._pending_bg_sync = new_pending
+        release_sig.set()
+        th.join(timeout=5.0)
+        cat._full_stat_sig = orig_full_sig
+
+        with cat._state_lock:
+            self.assertIs(cat._bg_timer, new_timer)
+            self.assertEqual(cat._pending_bg_sync, new_pending)
+            self.assertFalse(cat._bg_sync_failed)
+            cat._bg_timer = None
+            cat._pending_bg_sync = None
+
+    def test_children_preview_cache_tracks_committed_generation_not_post_commit_counter(self):
+        u1 = str(uuid.uuid4())
+        with sqlite3.connect(self.cognee_db) as con:
+            con.execute('''
+                CREATE TABLE IF NOT EXISTS session_records (
+                    session_id VARCHAR NOT NULL, user_id CHAR(32) NOT NULL, dataset_id CHAR(32),
+                    status VARCHAR, started_at DATETIME, last_activity_at DATETIME, agent_id VARCHAR,
+                    PRIMARY KEY (session_id, user_id)
+                );
+            ''')
+            con.execute(
+                'INSERT INTO session_records VALUES (?,?,?,?,?,?,?)',
+                ('parent-1', uuid.UUID(u1).hex, uuid.UUID(self.ds_proj).hex, 'active', '2026-11-20 08:00:00', '2026-11-20 10:00:00', 'codex'),
+            )
+            con.execute(
+                'INSERT INTO session_records VALUES (?,?,?,?,?,?,?)',
+                ('child-1', uuid.UUID(u1).hex, uuid.UUID(self.ds_proj).hex, 'active', '2026-11-20 08:01:00', '2026-11-20 10:01:00', 'codex'),
+            )
+        rels = {'child-1': {'parent_session_id': 'parent-1', 'subagent_role': 'worker', 'nesting_depth': 1}}
+        cat = CatalogIndex(self.cat_path, official_data=self.official_data)
+        self.addCleanup(cat.close)
+        gen1 = cat.sync([self.ds_proj], relations_resolver=lambda _ds, _sids: rels)
+        p1 = cat.query_top_level_children_previews(self.ds_proj, [('parent-1', u1)], limit=5, expected_gen=gen1)
+        self.assertEqual([r['session_id'] for r in p1[('parent-1', u1)][0]], ['child-1'])
+
+        # Simulate SQLite COMMIT of a new child + generation increment BEFORE any in-memory counter updates!
+        with cat._write_lock:
+            cat._write_con.execute(
+                '''INSERT INTO catalog_sessions(
+                     dataset_id, session_id, user_id, agent_id, started_at, last_activity_at,
+                     sort_ts_desc_key, is_top_level, parent_session_id, root_session_id,
+                     subagent_role, nesting_depth, child_count
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (
+                    self.ds_proj, 'child-2', u1, 'codex', '2026-11-20 08:02:00', '2026-11-20 10:02:00',
+                    -1795168920000000000, 0, 'parent-1', 'parent-1', 'worker', 1, 0,
+                ),
+            )
+            cat._write_con.execute('UPDATE catalog_meta SET generation = generation + 1 WHERE singleton = 1')
+            cat._write_con.commit()
+
+        gen2 = cat.generation()
+        self.assertEqual(gen2, gen1 + 1)
+        p2 = cat.query_top_level_children_previews(self.ds_proj, [('parent-1', u1)], limit=5, expected_gen=gen2)
+        self.assertEqual({r['session_id'] for r in p2[('parent-1', u1)][0]}, {'child-1', 'child-2'})
+        p2_no_hint = cat.query_top_level_children_previews(self.ds_proj, [('parent-1', u1)], limit=5)
+        self.assertEqual({r['session_id'] for r in p2_no_hint[('parent-1', u1)][0]}, {'child-1', 'child-2'})
+
 
 if __name__ == '__main__':
     unittest.main()

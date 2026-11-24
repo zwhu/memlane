@@ -1147,6 +1147,75 @@ class V2APITests(AioHTTPTestCase):
             cat.sync_async = orig_sync_async
             self.dummy_official.authorized.add(self.ds_proj)
 
+    async def test_rebuild_retry_revalidates_acl_on_overview_search_and_message_summary(self):
+        from project_policy import PolicyError
+
+        handles = self.app['v2_api_handles']
+        cat = handles.catalog_index
+
+        # 1. /v1/overview/bootstrap: mid-rebuild revocation of ds_common must exclude ds_common on retry
+        orig_meta = cat.meta
+        tripped_ov = [False]
+
+        def _rebuild_then_revoke_common():
+            if not tripped_ov[0]:
+                tripped_ov[0] = True
+                self.dummy_official.authorized.discard(self.ds_common)
+                raise PolicyError('catalog_index_rebuilding', 503)
+            return orig_meta()
+
+        cat.meta = _rebuild_then_revoke_common
+        try:
+            resp = await self.client.get('/v1/overview/bootstrap', headers=self.manager_headers)
+            self.assertEqual(resp.status, 200)
+            body = await resp.json()
+            self.assertIsNone(body['common'])
+            self.assertTrue(all(it['dataset_id'] != self.ds_common for it in body['recent_items']))
+        finally:
+            cat.meta = orig_meta
+            self.dummy_official.authorized.add(self.ds_common)
+
+        # 2. /v1/search/metadata?dataset_id=<ds_common>: mid-rebuild revocation must fail closed with 403
+        orig_search = cat.query_search_metadata
+        tripped_sm = [False]
+
+        def _rebuild_then_revoke_search(*args, **kwargs):
+            if not tripped_sm[0]:
+                tripped_sm[0] = True
+                self.dummy_official.authorized.discard(self.ds_common)
+                raise PolicyError('catalog_index_rebuilding', 503)
+            return orig_search(*args, **kwargs)
+
+        cat.query_search_metadata = _rebuild_then_revoke_search
+        try:
+            resp = await self.client.get(
+                f'/v1/search/metadata?q=Common&dataset_id={self.ds_common}',
+                headers=self.manager_headers,
+            )
+            self.assertEqual(resp.status, 403)
+        finally:
+            cat.query_search_metadata = orig_search
+            self.dummy_official.authorized.add(self.ds_common)
+
+        # 3. /v1/projects/p1/message-summary: mid-rebuild revocation must fail closed with 403 (NOT 200!)
+        orig_ds_info = cat.dataset_sync_info
+        tripped_ms = [False]
+
+        def _rebuild_then_revoke_ms(*args, **kwargs):
+            if not tripped_ms[0]:
+                tripped_ms[0] = True
+                self.dummy_official.authorized.discard(self.ds_proj)
+                raise PolicyError('catalog_index_rebuilding', 503)
+            return orig_ds_info(*args, **kwargs)
+
+        cat.dataset_sync_info = _rebuild_then_revoke_ms
+        try:
+            resp = await self.client.get('/v1/projects/p1/message-summary', headers=self.manager_headers)
+            self.assertEqual(resp.status, 403)
+        finally:
+            cat.dataset_sync_info = orig_ds_info
+            self.dummy_official.authorized.add(self.ds_proj)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -510,82 +510,94 @@ def _query_raw_records_v2(
     kind: str,
     limit: int,
     after_order_key: tuple | None,
+    snapshot_runner=None,
 ) -> dict:
     """Dual-branch indexed Keyset query + Python ``heapq.merge`` (zero full scan, zero TEMP B-TREE)."""
     cache_db = Path(official_data) / 'system' / 'databases' / 'cache.db'
-    session_branch = []
-    doc_branch = []
 
-    if kind != 'document':
-        sess_after = None
-        if after_order_key is not None:
-            last_neg_ts, last_kind_rank, last_uid, last_sid = after_order_key
-            if last_kind_rank == 0:
-                sess_after = (int(last_neg_ts), str(last_uid), str(last_sid))
-            else:
-                # Document came after sessions at the same timestamp -> advance past that timestamp
-                sess_after = (int(last_neg_ts) + 1, '', '')
-        top_sessions = catalog_index.query_top_level_sessions_page(
-            dataset_id,
-            limit=limit + 1,
-            after_key=sess_after,
+    def _query_catalog(gen: int):
+        session_branch = []
+        doc_branch = []
+
+        if kind != 'document':
+            sess_after = None
+            if after_order_key is not None:
+                last_neg_ts, last_kind_rank, last_uid, last_sid = after_order_key
+                if last_kind_rank == 0:
+                    sess_after = (int(last_neg_ts), str(last_uid), str(last_sid))
+                else:
+                    # Document came after sessions at the same timestamp -> advance past that timestamp
+                    sess_after = (int(last_neg_ts) + 1, '', '')
+            top_sessions = catalog_index.query_top_level_sessions_page(
+                dataset_id,
+                limit=limit + 1,
+                after_key=sess_after,
+            )
+            for s in top_sessions:
+                order_key = (int(s['sort_ts_desc_key']), 0, s['user_id'], s['session_id'])
+                if after_order_key is not None and order_key <= after_order_key:
+                    continue
+                session_branch.append({
+                    'item_kind': 'session',
+                    'sort_ts_ns': -int(s['sort_ts_desc_key']),
+                    '_order_key': order_key,
+                    '_raw_session': s,
+                })
+
+        if kind != 'session':
+            doc_after = None
+            if after_order_key is not None:
+                last_neg_ts, last_kind_rank, _, last_item_id = after_order_key
+                if last_kind_rank == 1:
+                    doc_after = (int(last_neg_ts), str(last_item_id))
+                else:
+                    doc_after = (int(last_neg_ts), '')
+            raw_docs = catalog_index.query_raw_docs_page(dataset_id, limit=limit + 1, after_key=doc_after)
+            for d in raw_docs:
+                sort_ts_ns = -int(d['sort_ts_desc_key'])
+                order_key = (int(d['sort_ts_desc_key']), 1, '', d['doc_id'])
+                if after_order_key is not None and order_key <= after_order_key:
+                    continue
+                doc_branch.append({
+                    'item_kind': 'document',
+                    'sort_ts_ns': sort_ts_ns,
+                    '_order_key': order_key,
+                    'document': {
+                        'id': d['doc_id'],
+                        'datasetId': d['dataset_id'],
+                        'name': d['doc_name'],
+                        'label': d['doc_label'],
+                        'createdAt': d['created_at'],
+                        'updatedAt': d['updated_at'],
+                        'contentHash': d['content_hash'],
+                        'pipeline_status': d['pipeline_status'],
+                    },
+                })
+
+        merged = list(heapq.merge(session_branch, doc_branch, key=lambda item: item['_order_key']))
+        has_more_l = len(merged) > limit
+        page_l = merged[:limit]
+
+        parent_preview_specs = [
+            (entry['_raw_session']['session_id'], entry['_raw_session']['user_id'])
+            for entry in page_l
+            if entry['item_kind'] == 'session' and int(entry['_raw_session'].get('child_count') or 0) > 0
+        ]
+        previews_l = (
+            catalog_index.query_top_level_children_previews(
+                dataset_id, parent_preview_specs, limit=5, expected_gen=gen,
+            )
+            if parent_preview_specs
+            else {}
         )
-        for s in top_sessions:
-            order_key = (int(s['sort_ts_desc_key']), 0, s['user_id'], s['session_id'])
-            if after_order_key is not None and order_key <= after_order_key:
-                continue
-            session_branch.append({
-                'item_kind': 'session',
-                'sort_ts_ns': -int(s['sort_ts_desc_key']),
-                '_order_key': order_key,
-                '_raw_session': s,
-            })
+        return gen, page_l, previews_l, has_more_l
 
-    if kind != 'session':
-        doc_after = None
-        if after_order_key is not None:
-            last_neg_ts, last_kind_rank, _, last_item_id = after_order_key
-            if last_kind_rank == 1:
-                doc_after = (int(last_neg_ts), str(last_item_id))
-            else:
-                doc_after = (int(last_neg_ts), '')
-        raw_docs = catalog_index.query_raw_docs_page(dataset_id, limit=limit + 1, after_key=doc_after)
-        for d in raw_docs:
-            sort_ts_ns = -int(d['sort_ts_desc_key'])
-            order_key = (int(d['sort_ts_desc_key']), 1, '', d['doc_id'])
-            if after_order_key is not None and order_key <= after_order_key:
-                continue
-            doc_branch.append({
-                'item_kind': 'document',
-                'sort_ts_ns': sort_ts_ns,
-                '_order_key': order_key,
-                'document': {
-                    'id': d['doc_id'],
-                    'datasetId': d['dataset_id'],
-                    'name': d['doc_name'],
-                    'label': d['doc_label'],
-                    'createdAt': d['created_at'],
-                    'updatedAt': d['updated_at'],
-                    'contentHash': d['content_hash'],
-                    'pipeline_status': d['pipeline_status'],
-                },
-            })
-
-    merged = list(heapq.merge(session_branch, doc_branch, key=lambda item: item['_order_key']))
-    has_more = len(merged) > limit
-    page = merged[:limit]
+    if snapshot_runner is not None:
+        gen, page, previews_by_parent, has_more = snapshot_runner(_query_catalog)
+    else:
+        gen, page, previews_by_parent, has_more = _query_catalog(catalog_index.generation())
 
     # Hydrate ONLY the <= limit sessions that landed on this page (plus <=5 indexed preview children each)
-    parent_preview_specs = [
-        (entry['_raw_session']['session_id'], entry['_raw_session']['user_id'])
-        for entry in page
-        if entry['item_kind'] == 'session' and int(entry['_raw_session'].get('child_count') or 0) > 0
-    ]
-    previews_by_parent = (
-        catalog_index.query_top_level_children_previews(dataset_id, parent_preview_specs, limit=5)
-        if parent_preview_specs
-        else {}
-    )
     page_sessions_to_hydrate = []
     for entry in page:
         if entry['item_kind'] != 'session':
@@ -653,6 +665,7 @@ def _query_raw_records_v2(
             })
 
     return {
+        'generation': gen,
         'cache_ready': cache_ready,
         'items': clean_items,
         'order_keys': order_keys,
@@ -698,6 +711,7 @@ def _query_session_children_v2(
     if page_items:
         hydrator.hydrate_sessions(cache_db, page_items)
     return {
+        'generation': int(c_page.get('generation', 0)),
         'total_count': int(c_page['total_count']),
         'items': page_items,
         'order_keys': order_keys,
@@ -924,6 +938,58 @@ def attach_v2_api(
 
         return _revalidate
 
+    def _managed_dataset_revalidator(raw_ds: str, expected_dataset_id: str, ds_to_proj_out: dict | None = None):
+        async def _revalidate():
+            cur_ds = _require_verified_managed_dataset(registry, raw_ds, allow_code=False)
+            if cur_ds != expected_dataset_id:
+                raise PolicyError('dataset_access_denied', 403)
+            await verify_official_read_access(getattr(registry, 'official', None), expected_dataset_id)
+            if ds_to_proj_out is not None:
+                projs_v, common_v = _verified_groups(registry)
+                ds_to_proj_out.clear()
+                for p in projs_v:
+                    ds_to_proj_out[p['dataset_id']] = p['id']
+                if common_v is not None:
+                    ds_to_proj_out[common_v['dataset_id']] = ''
+
+        return _revalidate
+
+    def _populate_authorized_scope(scope: dict, authorized_ds: set[str], projects_v: list[dict], common_v: dict | None, *, include_runs: bool = False):
+        projs = [p for p in projects_v if p['dataset_id'] in authorized_ds]
+        com = common_v if (common_v is not None and common_v['dataset_id'] in authorized_ds) else None
+        allowed = [p['dataset_id'] for p in projs]
+        ds_to_proj = {p['dataset_id']: p['id'] for p in projs}
+        allowed_run = set(allowed) if include_runs else set()
+        if include_runs:
+            for proj in projs:
+                code_ds = proj.get('code_dataset_id')
+                if proj.get('code_enabled') and code_ds and is_valid_uuid(str(code_ds)):
+                    code_canon = uuid_text(code_ds)
+                    if code_canon in authorized_ds:
+                        allowed_run.add(code_canon)
+        if com is not None:
+            allowed.append(com['dataset_id'])
+            ds_to_proj[com['dataset_id']] = ''
+            if include_runs:
+                allowed_run.add(com['dataset_id'])
+        scope['projects'] = projs
+        scope['common'] = com
+        scope['allowed_ds'] = allowed
+        scope['ds_to_proj'] = ds_to_proj
+        scope['allowed_ds_set'] = set(allowed)
+        if include_runs:
+            scope['allowed_run_ds'] = allowed_run
+            scope['agents_snapshot'] = {k: dict(v) for k, v in registry.state.get('agents', {}).items()}
+        return scope
+
+    def _multi_scope_revalidator(scope: dict, *, include_runs: bool = False):
+        async def _revalidate():
+            authorized_ds = await fetch_authorized_official_datasets(getattr(registry, 'official', None))
+            projects_v, common_v = _verified_groups(registry)
+            _populate_authorized_scope(scope, authorized_ds, projects_v, common_v, include_runs=include_runs)
+
+        return _revalidate
+
     # 1. GET /v1/datasets/{ds}/documents/{doc}/body
     async def document_body(request):
         _require_manager(request)
@@ -958,38 +1024,23 @@ def attach_v2_api(
 
         authorized_ds = await fetch_authorized_official_datasets(getattr(registry, 'official', None))
         projects, common = await _ensure_synced()
-        projects = [p for p in projects if p['dataset_id'] in authorized_ds]
-        if common is not None and common['dataset_id'] not in authorized_ds:
-            common = None
-
-        allowed_ds = [p['dataset_id'] for p in projects]
-        ds_to_proj = {p['dataset_id']: p['id'] for p in projects}
-        allowed_run_ds = set(allowed_ds)
-        for proj in projects:
-            code_ds = proj.get('code_dataset_id')
-            if proj.get('code_enabled') and code_ds and is_valid_uuid(str(code_ds)):
-                code_canon = uuid_text(code_ds)
-                if code_canon in authorized_ds:
-                    allowed_run_ds.add(code_canon)
-        if common is not None:
-            allowed_ds.append(common['dataset_id'])
-            ds_to_proj[common['dataset_id']] = ''
-            allowed_run_ds.add(common['dataset_id'])
-
-        agents_snapshot = {k: dict(v) for k, v in registry.state.get('agents', {}).items()}
-        allowed_ds_set = set(allowed_ds)
+        scope: dict = {}
+        _populate_authorized_scope(scope, authorized_ds, projects, common, include_runs=True)
 
         def _query_overview_snap(_gen):
+            cur_projects = scope['projects']
+            cur_common = scope['common']
+            cur_allowed_ds = scope['allowed_ds']
             meta = cat.meta()
-            sync_map = cat.all_dataset_sync_info(allowed_ds)
-            day_buckets = cat.overview_day_buckets(allowed_ds, days=days)
-            recent_raw = cat.query_overview_recent(allowed_ds, limit=recent_limit)
+            sync_map = cat.all_dataset_sync_info(cur_allowed_ds)
+            day_buckets = cat.overview_day_buckets(cur_allowed_ds, days=days)
+            recent_raw = cat.query_overview_recent(cur_allowed_ds, limit=recent_limit)
 
             proj_summaries = []
             proj_unread_sets: dict[str, set[str]] = {}
             total_knowledge = 0
             total_raw_count = 0
-            for proj in projects:
+            for proj in cur_projects:
                 ds = proj['dataset_id']
                 sinfo = sync_map.get(ds) or {}
                 k_cnt = int(sinfo.get('knowledge_count', 0))
@@ -1016,8 +1067,8 @@ def attach_v2_api(
                 })
 
             common_summary = None
-            if common is not None:
-                cds = common['dataset_id']
+            if cur_common is not None:
+                cds = cur_common['dataset_id']
                 cinfo = sync_map.get(cds) or {}
                 ck_cnt = int(cinfo.get('knowledge_count', 0))
                 c_raw_cnt = int(cinfo.get('raw_doc_count', 0))
@@ -1041,6 +1092,10 @@ def attach_v2_api(
             )
 
         def _build_sync():
+            cur_ds_to_proj = scope['ds_to_proj']
+            cur_allowed_run_ds = scope['allowed_run_ds']
+            cur_allowed_ds_set = scope['allowed_ds_set']
+            cur_agents = scope['agents_snapshot']
             (
                 meta,
                 total_knowledge,
@@ -1054,7 +1109,7 @@ def attach_v2_api(
             recent_items = [
                 _format_knowledge_item(
                     d,
-                    project_id=ds_to_proj.get(d['dataset_id'], ''),
+                    project_id=cur_ds_to_proj.get(d['dataset_id'], ''),
                     is_unread=(d['doc_id'] in proj_unread_sets.get(d['dataset_id'], ())) if identity else False,
                     official_data=official_data,
                 )
@@ -1063,7 +1118,7 @@ def attach_v2_api(
             try:
                 runs, runs_more = _read_recent_pipeline_runs(
                     official_data,
-                    allowed_datasets=allowed_run_ds,
+                    allowed_datasets=cur_allowed_run_ds,
                     limit=activity_limit,
                     cache=pipeline_runs_cache,
                     cache_lock=pipeline_runs_lock,
@@ -1072,8 +1127,8 @@ def attach_v2_api(
                 runs, runs_more = [], False
             rec_events, rec_more, rec_started = _read_recall_events_summary(
                 recall_store,
-                allowed_ds_set,
-                agents_snapshot,
+                cur_allowed_ds_set,
+                cur_agents,
                 recall_limit,
             )
             return (
@@ -1104,7 +1159,10 @@ def attach_v2_api(
             rec_events,
             rec_more,
             rec_started,
-        ) = await _run_read_query(_build_sync)
+        ) = await _run_read_query(
+            _build_sync,
+            revalidate=_multi_scope_revalidator(scope, include_runs=True),
+        )
         total_rec_hits = sum(len(ev.get('hits') or ()) for ev in rec_events)
         if total_rec_hits > 100:
             capped_events = []
@@ -1197,35 +1255,32 @@ def attach_v2_api(
 
         authorized_ds = await fetch_authorized_official_datasets(getattr(registry, 'official', None))
         projects, common = await _ensure_synced()
-        projects = [p for p in projects if p['dataset_id'] in authorized_ds]
-        if common is not None and common['dataset_id'] not in authorized_ds:
-            common = None
-        allowed_ds = [p['dataset_id'] for p in projects]
-        ds_to_proj = {p['dataset_id']: p['id'] for p in projects}
-        if common is not None:
-            allowed_ds.append(common['dataset_id'])
-            ds_to_proj[common['dataset_id']] = ''
+        scope: dict = {}
+        _populate_authorized_scope(scope, authorized_ds, projects, common)
 
         def _query_day_snap(gen):
-            rows, has_more, total_count = cat.query_overview_day(allowed_ds, day, limit=limit, after_key=after_key)
+            cur_allowed_ds = scope['allowed_ds']
+            cur_ds_to_proj = scope['ds_to_proj']
+            rows, has_more, total_count = cat.query_overview_day(cur_allowed_ds, day, limit=limit, after_key=after_key)
             unread_flags = {}
             if identity and rows:
                 by_ds: dict[str, list[dict]] = {}
                 for d in rows:
                     by_ds.setdefault(d['dataset_id'], []).append(d)
                 for ds, docs_in_ds in by_ds.items():
-                    pid = ds_to_proj.get(ds, '')
+                    pid = cur_ds_to_proj.get(ds, '')
                     if pid:
                         for did, flag in read_store.page_unread_flags(identity, pid, ds, docs_in_ds, catalog_index=cat).items():
                             unread_flags[(ds, did)] = flag
             return gen, rows, unread_flags, has_more, total_count
 
         def _query():
+            cur_ds_to_proj = scope['ds_to_proj']
             gen, rows, unread_flags, has_more, total_count = _query_catalog_snapshot(_query_day_snap)
             formatted = [
                 _format_knowledge_item(
                     d,
-                    project_id=ds_to_proj.get(d['dataset_id'], ''),
+                    project_id=cur_ds_to_proj.get(d['dataset_id'], ''),
                     is_unread=unread_flags.get((d['dataset_id'], d['doc_id']), False),
                     official_data=official_data,
                 )
@@ -1233,7 +1288,10 @@ def attach_v2_api(
             ]
             return gen, formatted, has_more, total_count
 
-        gen, formatted, base_has_more, total_count = await _run_read_query(_query)
+        gen, formatted, base_has_more, total_count = await _run_read_query(
+            _query,
+            revalidate=_multi_scope_revalidator(scope),
+        )
 
         def _make_payload(subset, _lo, hi):
             eff_more = bool(base_has_more or hi < len(formatted))
@@ -1711,12 +1769,14 @@ def attach_v2_api(
             raise PolicyError('invalid_search_query', 400)
         identity = _reading_identity(request)
 
+        scope: dict = {}
         if project_id_filter:
             proj = _require_verified_project(registry, project_id_filter)
             await verify_official_read_access(getattr(registry, 'official', None), proj['dataset_id'])
             await _ensure_synced()
-            allowed_ds = [proj['dataset_id']]
-            ds_to_proj = {proj['dataset_id']: proj['id']}
+            scope['allowed_ds'] = [proj['dataset_id']]
+            scope['ds_to_proj'] = {proj['dataset_id']: proj['id']}
+            revalidate_fn = _project_revalidator(project_id_filter, proj['dataset_id'])
         elif dataset_id_filter:
             target_ds = _require_verified_managed_dataset(registry, dataset_id_filter, allow_code=False)
             await verify_official_read_access(getattr(registry, 'official', None), target_ds)
@@ -1724,40 +1784,39 @@ def attach_v2_api(
             ds_to_proj = {p['dataset_id']: p['id'] for p in projects}
             if common is not None:
                 ds_to_proj[common['dataset_id']] = ''
-            allowed_ds = [target_ds]
+            scope['allowed_ds'] = [target_ds]
+            scope['ds_to_proj'] = ds_to_proj
+            revalidate_fn = _managed_dataset_revalidator(dataset_id_filter, target_ds, scope['ds_to_proj'])
         else:
             authorized_ds = await fetch_authorized_official_datasets(getattr(registry, 'official', None))
             projects, common = await _ensure_synced()
-            projects = [p for p in projects if p['dataset_id'] in authorized_ds]
-            if common is not None and common['dataset_id'] not in authorized_ds:
-                common = None
-            allowed_ds = [p['dataset_id'] for p in projects]
-            ds_to_proj = {p['dataset_id']: p['id'] for p in projects}
-            if common is not None:
-                allowed_ds.append(common['dataset_id'])
-                ds_to_proj[common['dataset_id']] = ''
+            _populate_authorized_scope(scope, authorized_ds, projects, common)
+            revalidate_fn = _multi_scope_revalidator(scope)
 
         def _query_recent_snap(gen):
-            k_rows = cat.query_overview_recent(allowed_ds, limit=limit)
+            cur_allowed_ds = scope['allowed_ds']
+            cur_ds_to_proj = scope['ds_to_proj']
+            k_rows = cat.query_overview_recent(cur_allowed_ds, limit=limit)
             unread_flags = {}
             if identity and k_rows:
                 by_ds: dict[str, list[dict]] = {}
                 for d in k_rows:
                     by_ds.setdefault(d['dataset_id'], []).append(d)
                 for ds, docs_in_ds in by_ds.items():
-                    pid = ds_to_proj.get(ds, '')
+                    pid = cur_ds_to_proj.get(ds, '')
                     if pid:
                         for did, flag in read_store.page_unread_flags(identity, pid, ds, docs_in_ds, catalog_index=cat).items():
                             unread_flags[(ds, did)] = flag
-            s_rows = cat.query_recent_sessions(allowed_ds, limit=limit)
+            s_rows = cat.query_recent_sessions(cur_allowed_ds, limit=limit)
             return gen, k_rows, unread_flags, s_rows
 
         def _query():
+            cur_ds_to_proj = scope['ds_to_proj']
             gen, k_rows, unread_flags, s_rows = _query_catalog_snapshot(_query_recent_snap)
             k_items = [
                 _format_knowledge_item(
                     d,
-                    project_id=ds_to_proj.get(d['dataset_id'], ''),
+                    project_id=cur_ds_to_proj.get(d['dataset_id'], ''),
                     is_unread=unread_flags.get((d['dataset_id'], d['doc_id']), False),
                     official_data=official_data,
                 )
@@ -1768,7 +1827,7 @@ def attach_v2_api(
                 {
                     'session_id': sr['session_id'],
                     'dataset_id': sr['dataset_id'],
-                    'project_id': ds_to_proj.get(sr['dataset_id'], ''),
+                    'project_id': cur_ds_to_proj.get(sr['dataset_id'], ''),
                     'user_id': sr['user_id'],
                     'agent_id': sr['agent_id'],
                     'last_activity_at': sr['last_activity_at'],
@@ -1781,7 +1840,7 @@ def attach_v2_api(
                 hydrator.hydrate_sessions(cache_db, s_items)
             return gen, k_items, s_items
 
-        gen, k_items, s_items = await _run_read_query(_query)
+        gen, k_items, s_items = await _run_read_query(_query, revalidate=revalidate_fn)
 
         def _make_payload(subset, _lo, _hi):
             return {
@@ -1825,12 +1884,14 @@ def attach_v2_api(
             raise PolicyError('invalid_search_query', 400)
         identity = _reading_identity(request)
 
+        scope: dict = {}
         if project_id_filter:
             proj = _require_verified_project(registry, project_id_filter)
             await verify_official_read_access(getattr(registry, 'official', None), proj['dataset_id'])
             await _ensure_synced()
-            allowed_ds = [proj['dataset_id']]
-            ds_to_proj = {proj['dataset_id']: proj['id']}
+            scope['allowed_ds'] = [proj['dataset_id']]
+            scope['ds_to_proj'] = {proj['dataset_id']: proj['id']}
+            revalidate_fn = _project_revalidator(project_id_filter, proj['dataset_id'])
         elif dataset_id_filter:
             target_ds = _require_verified_managed_dataset(registry, dataset_id_filter, allow_code=False)
             await verify_official_read_access(getattr(registry, 'official', None), target_ds)
@@ -1838,22 +1899,20 @@ def attach_v2_api(
             ds_to_proj = {p['dataset_id']: p['id'] for p in projects}
             if common is not None:
                 ds_to_proj[common['dataset_id']] = ''
-            allowed_ds = [target_ds]
+            scope['allowed_ds'] = [target_ds]
+            scope['ds_to_proj'] = ds_to_proj
+            revalidate_fn = _managed_dataset_revalidator(dataset_id_filter, target_ds, scope['ds_to_proj'])
         else:
             authorized_ds = await fetch_authorized_official_datasets(getattr(registry, 'official', None))
             projects, common = await _ensure_synced()
-            projects = [p for p in projects if p['dataset_id'] in authorized_ds]
-            if common is not None and common['dataset_id'] not in authorized_ds:
-                common = None
-            allowed_ds = [p['dataset_id'] for p in projects]
-            ds_to_proj = {p['dataset_id']: p['id'] for p in projects}
-            if common is not None:
-                allowed_ds.append(common['dataset_id'])
-                ds_to_proj[common['dataset_id']] = ''
+            _populate_authorized_scope(scope, authorized_ds, projects, common)
+            revalidate_fn = _multi_scope_revalidator(scope)
 
         def _query_meta_snap(gen):
+            cur_allowed_ds = scope['allowed_ds']
+            cur_ds_to_proj = scope['ds_to_proj']
             rows, has_more = cat.query_search_metadata(
-                allowed_ds,
+                cur_allowed_ds,
                 query_text,
                 filter_kind=filter_kind,
                 limit=limit,
@@ -1865,18 +1924,19 @@ def attach_v2_api(
                     if d['is_knowledge']:
                         by_ds.setdefault(d['dataset_id'], []).append(d)
                 for ds, docs_in_ds in by_ds.items():
-                    pid = ds_to_proj.get(ds, '')
+                    pid = cur_ds_to_proj.get(ds, '')
                     if pid:
                         for did, flag in read_store.page_unread_flags(identity, pid, ds, docs_in_ds, catalog_index=cat).items():
                             unread_flags[(ds, did)] = flag
             return gen, rows, unread_flags, has_more
 
         def _query():
+            cur_ds_to_proj = scope['ds_to_proj']
             gen, rows, unread_flags, has_more = _query_catalog_snapshot(_query_meta_snap)
             formatted = [
                 _format_knowledge_item(
                     d,
-                    project_id=ds_to_proj.get(d['dataset_id'], ''),
+                    project_id=cur_ds_to_proj.get(d['dataset_id'], ''),
                     is_unread=unread_flags.get((d['dataset_id'], d['doc_id']), False),
                     official_data=official_data,
                 )
@@ -1884,7 +1944,7 @@ def attach_v2_api(
             ]
             return gen, formatted, has_more
 
-        gen, formatted, base_has_more = await _run_read_query(_query)
+        gen, formatted, base_has_more = await _run_read_query(_query, revalidate=revalidate_fn)
 
         def _make_payload(subset, _lo, hi):
             return {
@@ -1933,8 +1993,7 @@ def attach_v2_api(
         await _ensure_synced()
 
         def _query():
-            gen = cat.generation()
-            res = _query_raw_records_v2(
+            res_l = _query_raw_records_v2(
                 official_data,
                 cat,
                 hydrator,
@@ -1942,8 +2001,9 @@ def attach_v2_api(
                 kind=kind,
                 limit=limit,
                 after_order_key=after_key,
+                snapshot_runner=_query_catalog_snapshot,
             )
-            return gen, res
+            return res_l['generation'], res_l
 
         gen, res = await _run_read_query(
             _query,
@@ -2016,8 +2076,7 @@ def attach_v2_api(
         await _ensure_synced()
 
         def _query():
-            gen = cat.generation()
-            res = _query_session_children_v2(
+            res_l = _query_session_children_v2(
                 official_data,
                 cat,
                 hydrator,
@@ -2027,7 +2086,7 @@ def attach_v2_api(
                 limit=limit,
                 after_key=after_key,
             )
-            return gen, res
+            return res_l['generation'], res_l
 
         gen, res = await _run_read_query(
             _query,
@@ -2231,14 +2290,14 @@ def attach_v2_api(
             result = await _run_db(_run_all)
             a_val, a_err, d_val, d_err = result
             if isinstance(d_err, PolicyError) and d_err.code == 'catalog_index_rebuilding' and d_err.status == 503:
+                await _project_revalidator(project_id, dataset_id)()
                 try:
-                    await _project_revalidator(project_id, dataset_id)()
                     await _ensure_synced(fresh=True)
-                    await _project_revalidator(project_id, dataset_id)()
                 except BaseException as exc:
                     if isinstance(exc, asyncio.CancelledError):
                         raise
                     return a_val, a_err, None, exc
+                await _project_revalidator(project_id, dataset_id)()
                 sync_err = None
                 return await _run_db(_run_all)
             return result
@@ -2258,6 +2317,8 @@ def attach_v2_api(
             backlog_job, automatic_save, buffer_reviews, checks, processing_issues = b_res
 
         if isinstance(db_res, asyncio.CancelledError):
+            raise db_res
+        if isinstance(db_res, PolicyError):
             raise db_res
         if isinstance(db_res, BaseException):
             a_res = db_res
@@ -2285,7 +2346,9 @@ def attach_v2_api(
         pending_docs = []
         if isinstance(d_res, asyncio.CancelledError):
             raise d_res
-        if isinstance(d_res, PolicyError) and d_res.code == 'catalog_generation_conflict':
+        if isinstance(d_res, PolicyError) and (
+            d_res.code == 'catalog_generation_conflict' or d_res.status in (401, 403, 404)
+        ):
             raise d_res
         if isinstance(d_res, BaseException):
             errors['documents'] = d_res.code if isinstance(d_res, PolicyError) else 'documents_unavailable'

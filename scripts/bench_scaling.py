@@ -1192,7 +1192,13 @@ async def run_benchmark(scale: str = '1k', concurrency_seconds: float = 2.0) -> 
                 stop_ev.set()
                 writer_thread.join(timeout=5.0)
             gen_after_wal_loop = cat.generation()
-            bg_caught_up = gen_after_wal_loop > gen_before_wal
+            k_count_after_wal_loop = cat.dataset_sync_info(ds_main)['knowledge_count']
+            bg_docs_ingested = max(0, k_count_after_wal_loop - initial_k_count)
+            bg_gen_delta = max(0, gen_after_wal_loop - gen_before_wal)
+            bg_caught_up = (
+                bg_gen_delta >= 2
+                and bg_docs_ingested >= max(1, len(written_doc_ids) // 2)
+            )
 
             # Final content reconciliation after concurrent WAL writes
             cat.sync([ds_main, ds_common])
@@ -1244,6 +1250,8 @@ async def run_benchmark(scale: str = '1k', concurrency_seconds: float = 2.0) -> 
             'reads_completed': len(reader_lats),
             'read_p95_ms': _percentile(reader_lats, 95),
             'read_p99_ms': _percentile(reader_lats, 99),
+            'bg_gen_delta': bg_gen_delta,
+            'bg_docs_ingested': bg_docs_ingested,
             'bg_caught_up': bg_caught_up,
             'reconciled': wal_reconciled,
             'write_errors': write_errors,
