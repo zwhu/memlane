@@ -554,15 +554,23 @@ class V2ApiContext:
         self.manager_token = manager_token
         self.recall_store = recall_store
         self.codex_config = codex_config
-        self.cat = catalog_index or CatalogIndex(
-            self.state_dir / 'catalog-index.sqlite3',
-            official_data=self.official_data,
-            provenance_path=self.state_dir / 'lesson-provenance.sqlite3',
-            recall_path=self.state_dir / 'knowledge-recall.sqlite3',
+        self.cat = (
+            catalog_index
+            if catalog_index is not None
+            else CatalogIndex(
+                self.state_dir / 'catalog-index.sqlite3',
+                official_data=self.official_data,
+                provenance_path=self.state_dir / 'lesson-provenance.sqlite3',
+                recall_path=self.state_dir / 'knowledge-recall.sqlite3',
+            )
         )
-        self.read_store = reading_state or ReadingStateStore(
-            self.state_dir / 'ui-reading-state.sqlite3',
-            state_dir=self.state_dir,
+        self.read_store = (
+            reading_state
+            if reading_state is not None
+            else ReadingStateStore(
+                self.state_dir / 'ui-reading-state.sqlite3',
+                state_dir=self.state_dir,
+            )
         )
         self.hydrator = CacheSessionHydrator()
         self.rel_resolver = _SessionRelationsResolver(registry, codex_config)
@@ -780,7 +788,8 @@ class V2ApiContext:
             revalidate_fn = self.multi_scope_revalidator(scope)
         return scope, revalidate_fn
 
-    def page_unread_flags_by_dataset(self, 
+    def page_unread_flags_by_dataset(
+        self,
         identity: str, rows: list[dict], ds_to_proj: dict[str, str], *, knowledge_only: bool = False,
     ) -> dict[tuple[str, str], bool]:
         unread_flags = {}

@@ -1284,18 +1284,18 @@ class V2APITests(AioHTTPTestCase):
             self.registry.state['projects']['p1']['status'] = 'verified'
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class V2ApiExtractionTests(unittest.TestCase):
     def test_compatibility_exports_resolve_to_extracted_symbols(self):
+        import catalog_index
         import v2_api
         import v2_api_context
         import v2_api_mutations
         import v2_api_raw
+        import v2_lookups
 
         for module, names in (
+            (catalog_index, ('_file_stat_sig',)),
+            (v2_lookups, ('READING_CONTRACT', 'READING_CONTRACT_HEADER')),
             (v2_api_context, ('V2APIHandles', 'CursorCodec', '_filter_digest', '_SessionRelationsResolver')),
             (v2_api_mutations, ('_archive_legacy_dates_if_unchanged',)),
             (v2_api_raw, ('_query_raw_records_v2', '_query_session_children_v2')),
@@ -1340,8 +1340,92 @@ class V2ApiExtractionTests(unittest.TestCase):
                 self.assertTrue({'_parse_limit', 'finalize_budgeted_payload'} <= calls)
                 self.assertEqual(ast.unparse(handler.body[-1]), 'return json_utf8_response(payload, raw_bytes=raw_bytes)')
 
+    def test_extracted_v2_domain_modules_obey_ml020_utf8_and_no_http_response_bypass(self):
+        import ast
+        import importlib.util
+
+        engine_dir = Path(__file__).resolve().parent
+        lint_path = engine_dir.parents[1] / 'scripts' / 'lint.py'
+        spec = importlib.util.spec_from_file_location('memlane_lint_v2_domains', lint_path)
+        lint = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(lint)
+
+        domain_modules = (
+            'v2_api_context.py',
+            'v2_api_overview.py',
+            'v2_api_knowledge.py',
+            'v2_api_raw.py',
+            'v2_api_mutations.py',
+        )
+        for mod_name in domain_modules:
+            with self.subTest(module=mod_name):
+                mod_path = engine_dir / mod_name
+                src = mod_path.read_text(encoding='utf-8')
+                tree = ast.parse(src, filename=str(mod_path))
+                idx = lint._build_ast_index(tree)
+                # All extracted domain modules must pass general lint and unconditional ML020 UTF-8 check
+                self.assertEqual(lint.check_source(src, str(mod_path)), [])
+                self.assertEqual(
+                    lint.check_v2_utf8_response(tree, idx['functions'], require_unconditional=True),
+                    [],
+                )
+                # Domain modules must not construct HTTP responses directly or hardcode limit > 50
+                for node in idx['all_nodes']:
+                    if isinstance(node, ast.ImportFrom) and (node.module or '').startswith('aiohttp'):
+                        self.fail(f'{mod_name} must not import from aiohttp directly')
+                    if isinstance(node, ast.Call):
+                        attr = node.func.attr if isinstance(node.func, ast.Attribute) else (
+                            node.func.id if isinstance(node.func, ast.Name) else ''
+                        )
+                        self.assertNotEqual(attr, 'json_response')
+                        for kw in node.keywords:
+                            if kw.arg == 'limit' and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, int):
+                                self.assertLessEqual(kw.value.value, 50)
+        # Negative control: bare web.json_response in a domain module must be caught by ML020
+        bad_src = (engine_dir / 'v2_api_knowledge.py').read_text(encoding='utf-8') + (
+            "\nfrom aiohttp import web\ndef _bad_resp(p):\n    return web.json_response(p)\n"
+        )
+        bad_tree = ast.parse(bad_src)
+        bad_idx = lint._build_ast_index(bad_tree)
+        bad_codes = {
+            code for _, code, _ in lint.check_v2_utf8_response(
+                bad_tree, bad_idx['functions'], require_unconditional=True,
+            )
+        }
+        self.assertIn('ML020', bad_codes)
+
 
 class V2ApiContextTests(unittest.IsolatedAsyncioTestCase):
+    async def test_falsy_injected_dependencies_are_preserved_and_not_closed_on_cleanup(self):
+        from types import SimpleNamespace
+        from v2_api_context import V2ApiContext
+
+        class _FalsyStore:
+            def __init__(self):
+                self.closed = False
+
+            def __bool__(self):
+                return False
+
+            def close(self):
+                self.closed = True
+
+        registry = SimpleNamespace(
+            path=Path('/unused/project-registry.json'),
+            state={'projects': {}, 'common': None},
+            official=None,
+        )
+        fake_cat = _FalsyStore()
+        fake_read = _FalsyStore()
+        ctx = V2ApiContext(registry, catalog_index=fake_cat, reading_state=fake_read)
+        self.assertIs(ctx.cat, fake_cat)
+        self.assertIs(ctx.read_store, fake_read)
+        self.assertFalse(ctx.owns_catalog)
+        self.assertFalse(ctx.owns_reading_state)
+        await ctx.cleanup(None)
+        self.assertFalse(fake_cat.closed)
+        self.assertFalse(fake_read.closed)
+
     async def test_search_scope_revalidates_live_access_and_refreshes_unfiltered_scope(self):
         from types import SimpleNamespace
         from unittest.mock import AsyncMock
@@ -1374,3 +1458,7 @@ class V2ApiContextTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PolicyError) as exc:
             await revalidate()
         self.assertEqual((exc.exception.code, exc.exception.status), ('dataset_access_denied', 403))
+
+
+if __name__ == '__main__':
+    unittest.main()

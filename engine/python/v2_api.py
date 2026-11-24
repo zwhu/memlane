@@ -20,7 +20,7 @@ Implements every Phase 1 control-plane endpoint specified in proposal.md §3.5:
 - POST /v1/provenance/backfill-legacy-dates
 """
 from aiohttp import web
-from catalog_index import CatalogIndex
+from catalog_index import CatalogIndex, _file_stat_sig
 from local_body_reader import (
     DEFAULT_LIST_JSON_BUDGET_BYTES,
     DEFAULT_OVERVIEW_JSON_BUDGET_BYTES,
@@ -33,7 +33,12 @@ from project_policy import PolicyError
 from provenance_store import _calendar_date
 from reading_state_store import ReadingStateStore
 from sqlite_ro import is_valid_uuid
-from v2_lookups import _require_verified_managed_dataset, _safe_session_id
+from v2_lookups import (
+    READING_CONTRACT,
+    READING_CONTRACT_HEADER,
+    _require_verified_managed_dataset,
+    _safe_session_id,
+)
 from v2_api_context import (
     CursorCodec,
     V2APIHandles,

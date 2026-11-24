@@ -1442,10 +1442,6 @@ class CatalogIndexTests(unittest.TestCase):
             cat._pending_bg_sync = None
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class CatalogSyncStagesTests(unittest.TestCase):
     def test_init_sync_state_preserves_high_watermark_and_existing_sequence(self):
         from catalog_index import _create_catalog_schema
@@ -1484,3 +1480,26 @@ class CatalogSyncStagesTests(unittest.TestCase):
 
         self.assertEqual(expressions['pipeline_status'], 'NULL')
         self.assertEqual(projected, ('doc', 1, 'title', *(None,) * 9, 'text/plain'))
+
+    def test_catalog_sync_stages_obeys_ml022_and_ml021_guardrails(self):
+        import importlib.util
+
+        engine_dir = Path(__file__).resolve().parent
+        lint_path = engine_dir.parents[1] / 'scripts' / 'lint.py'
+        spec = importlib.util.spec_from_file_location('memlane_lint_catalog', lint_path)
+        lint = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(lint)
+
+        stages_path = engine_dir / 'catalog_sync_stages.py'
+        stages_src = stages_path.read_text(encoding='utf-8')
+        # Verify ML021 (no sqlite3.connect / immutable=1) and ML016 directly on catalog_sync_stages.py
+        self.assertEqual(lint.check_source(stages_src, str(stages_path)), [])
+        # Verify ML022 zero-body 5-table DDL guard on catalog_sync_stages.py as well as negative control
+        self.assertEqual(lint.check_source(stages_src, 'engine/python/catalog_index.py'), [])
+        bad_src = stages_src + "\n_FORBIDDEN_DDL = 'CREATE TABLE shadow(body TEXT)'\n"
+        bad_codes = {code for _, code, _ in lint.check_source(bad_src, 'engine/python/catalog_index.py')}
+        self.assertIn('ML022', bad_codes)
+
+
+if __name__ == '__main__':
+    unittest.main()
