@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestOfficialHTTPErrorAndStatusCodeHelper(t *testing.T) {
@@ -110,6 +112,7 @@ func TestReadCachedTokenFileBoundaries(t *testing.T) {
 		{name: "public directory", wantError: "credential unavailable"},
 		{name: "private oversized", content: strings.Repeat("a", maxCachedTokenBytes+1), requirePrivate: true, wantError: "credential too large"},
 		{name: "public oversized", content: strings.Repeat("a", maxCachedTokenBytes+1), wantError: "credential too large"},
+		{name: "private exact max size", content: strings.Repeat("m", maxCachedTokenBytes), requirePrivate: true, wantToken: strings.Repeat("m", maxCachedTokenBytes)},
 		{name: "too short after trimming", content: " short \n", requirePrivate: true, wantError: "credential too short"},
 		{name: "public trimmed", content: " \tpublic-token\n", wantToken: "public-token"},
 	} {
@@ -137,6 +140,42 @@ func TestReadCachedTokenFileBoundaries(t *testing.T) {
 			}
 			if token != tc.wantToken || err != nil {
 				t.Fatalf("readCachedToken() = %q, %v; want %q", token, err, tc.wantToken)
+			}
+		})
+	}
+}
+
+func TestReadCachedTokenRejectsFIFOWithoutBlocking(t *testing.T) {
+	root := t.TempDir()
+	fifo := filepath.Join(root, "secret.fifo")
+	if err := syscall.Mkfifo(fifo, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name           string
+		requirePrivate bool
+		wantErr        string
+	}{
+		{name: "private fifo", requirePrivate: true, wantErr: "private credential unavailable"},
+		{name: "public fifo", requirePrivate: false, wantErr: "credential unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			done := make(chan error, 1)
+			go func() {
+				tok, err := readCachedToken(fifo, 10, tc.requirePrivate)
+				if tok != "" {
+					done <- errors.New("unexpected non-empty token from fifo")
+					return
+				}
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err == nil || err.Error() != tc.wantErr {
+					t.Fatalf("readCachedToken(fifo) error = %v; want %q", err, tc.wantErr)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("readCachedToken blocked on FIFO instead of rejecting non-regular file")
 			}
 		})
 	}

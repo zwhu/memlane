@@ -63,7 +63,7 @@ func httpStatusCode(err error) (int, bool) {
 const maxCachedTokenBytes = 64 << 10
 
 func readCachedToken(path string, minLen int, requirePrivate bool) (string, error) {
-	flags := os.O_RDONLY
+	flags := os.O_RDONLY | syscall.O_NONBLOCK
 	unavailable := "credential unavailable"
 	if requirePrivate {
 		flags |= syscall.O_NOFOLLOW

@@ -28,9 +28,10 @@ const server = createServer(async (req, res) => {
 });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
-const browser = await chromium.launch({executablePath, headless: true});
 const errors = [], external = [], selections = [];
+let browser;
 try {
+  browser = await chromium.launch({executablePath, headless: true});
   const page = await browser.newPage({viewport: {width: 1100, height: 720}, reducedMotion: 'reduce'});
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('request', (request) => {if (!request.url().startsWith(origin + '/')) external.push(request.url());});
@@ -95,7 +96,10 @@ try {
     await writeFile(path.join(output,'selection-failure.json'),JSON.stringify({text:await page.locator('body').innerText(),selections,errors,centers},null,2)+'\n');
     throw error;
   }
-  assert(selections.some((event)=>event.name==='OfficialGraph.Select' && ['a','b'].includes(event.value.node)));
+  assert(selections.some((event)=>event.name==='OfficialGraph.Select'
+    && event.value?.epoch===1 && event.value?.project==='synthetic-project'
+    && event.value?.instance==='synthetic-instance' && event.value?.dataset==='synthetic-dataset'
+    && ['a','b'].includes(event.value?.node)));
   await page.keyboard.down('Shift');
   await page.mouse.click(centers[1].x,centers[1].y);
   await page.keyboard.up('Shift');
@@ -113,10 +117,12 @@ try {
   await page.setViewportSize({width:760,height:540});
   await page.locator('canvas').waitFor();
   await page.waitForTimeout(300);
+  const resized = await page.locator('canvas').evaluate((el) => ({width: el.width, height: el.height}));
+  assert(resized.width > 0 && resized.width < canvas.width && resized.height > 0 && resized.height < canvas.height, 'canvas did not resize');
   await page.screenshot({path:path.join(output,'official-resized.png')});
   assert.deepEqual(external,[]); assert.deepEqual(errors,[]);
-  await writeFile(path.join(output,'browser.json'),JSON.stringify({scope:'Actual Chromium and unchanged official Canvas; synthetic data; not Native or real SDK graph acceptance',canvas,errors,external,ready:selections.some((x)=>x.name==='OfficialGraph.Ready'),pointer_selection:true,shortest_path:true,clear_and_stale_rejection:true,resize:true},null,2)+'\n');
+  await writeFile(path.join(output,'browser.json'),JSON.stringify({scope:'Actual Chromium and unchanged official Canvas; synthetic data; not Native or real SDK graph acceptance',canvas,resized,errors,external,ready:selections.some((x)=>x.name==='OfficialGraph.Ready'),pointer_selection:true,shortest_path:true,clear_and_stale_rejection:true,resize:true},null,2)+'\n');
 } finally {
-  await browser.close();
+  if (browser) await browser.close();
   await new Promise((resolve) => server.close(resolve));
 }

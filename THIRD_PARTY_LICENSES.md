@@ -10,8 +10,8 @@ Memlane 基于多个开源项目与预训练模型构建。本文件按核心直
 | `github.com/ebitengine/purego` | `v0.11.1` | Apache-2.0 | 免 CGO 调用 macOS 原生系统框架 |
 | `github.com/go-text/typesetting` | `v0.3.5` | Unlicense / MIT / BSD | 原生文本排版与字体塑形引擎 |
 | `golang.org/x/image` | `v0.46.0` | BSD-3-Clause | 图像解码与绘制原语 |
-| `golang.org/x/net` | `v0.59.0` | BSD-3-Clause | HTTP / 网络协议辅助库 |
-| `golang.org/x/text` | `v0.43.0` | BSD-3-Clause | Unicode 文本规范化与编码支持 |
+| `golang.org/x/net` | `v0.63.0` | BSD-3-Clause | HTTP / 网络协议辅助库 |
+| `golang.org/x/text` | `v0.44.0` | BSD-3-Clause | Unicode 文本规范化与编码支持 |
 
 ## 2. 首次安装引导工具与原生运行依赖（`engine/*.json`）
 
