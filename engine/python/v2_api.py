@@ -894,9 +894,12 @@ def attach_v2_api(
             await cat.sync_async(managed_ds, relations_resolver=rel_resolver)
         else:
             await _run_db(cat.sync, managed_ds, relations_resolver=rel_resolver)
-        return projects, common
+        return _verified_groups(registry)
 
     async def _run_read_query(query, *args, missing_code=None, revalidate=None):
+        check_local = getattr(revalidate, 'check_local', None)
+        if check_local is not None:
+            check_local()
         conflict_retries = 0
         sync_retried = False
         while True:
@@ -932,6 +935,7 @@ def attach_v2_api(
             await verify_official_read_access(getattr(registry, 'official', None), expected_dataset_id)
             _check_local()
 
+        _revalidate.check_local = _check_local
         return _revalidate
 
     def _common_revalidator(raw_ds: str, expected_dataset_id: str):
@@ -953,6 +957,7 @@ def attach_v2_api(
             await verify_official_read_access(getattr(registry, 'official', None), expected_dataset_id)
             _check_local()
 
+        _revalidate.check_local = _check_local
         return _revalidate
 
     def _managed_dataset_revalidator(raw_ds: str, expected_dataset_id: str, ds_to_proj_out: dict | None = None):
@@ -973,6 +978,7 @@ def attach_v2_api(
                 if common_v is not None:
                     ds_to_proj_out[common_v['dataset_id']] = ''
 
+        _revalidate.check_local = _check_local
         return _revalidate
 
     def _populate_authorized_scope(scope: dict, authorized_ds: set[str], projects_v: list[dict], common_v: dict | None, *, include_runs: bool = False):
@@ -2309,6 +2315,7 @@ def attach_v2_api(
                 )
 
             revalidate_proj = _project_revalidator(project_id, dataset_id)
+            revalidate_proj.check_local()
             conflict_retries = 0
             rebuild_retried = False
             while True:

@@ -3634,7 +3634,7 @@ class CatalogIndex:
             with self._state_lock:
                 if self._bg_timer is timer:
                     self._bg_timer = None
-                    if self._pending_bg_sync == pending:
+                    if self._pending_bg_sync is pending:
                         self._pending_bg_sync = None
                         self._bg_sync_failed = True
                     elif self._pending_bg_sync is not None and not self._closed and self._inflight_sync is None:
@@ -3649,7 +3649,7 @@ class CatalogIndex:
                 return
             if self._inflight_sync is not None:
                 return
-            if self._pending_bg_sync != pending:
+            if self._pending_bg_sync is not pending:
                 self._arm_bg_timer_locked()
                 return
             self._pending_bg_sync = None
@@ -3835,6 +3835,9 @@ class CatalogIndex:
                 with self._state_lock:
                     self._last_stat_sig = None
                     self._last_synced_pin_ts_ns = 0
+                    self._last_synced_ds_tuple = None
+                    self._has_synced_in_process = False
+                    self._bg_sync_failed = True
                     self._recent_appends.clear()
                     self._cat_counts_cache.clear()
                     self._common_cat_counts_cache.clear()
@@ -4822,17 +4825,17 @@ class CatalogIndex:
                         fetched[key] = (rows[:lim], len(rows) > lim)
 
         with self._state_lock:
-            if len(self._children_preview_cache) > 512:
-                self._children_preview_cache = {
-                    k: v for k, v in self._children_preview_cache.items() if k[0] >= snap_gen - 2
-                }
-                if len(self._children_preview_cache) > 512:
-                    self._children_preview_cache.clear()
             for (raw_sid, raw_uid), val in fetched.items():
                 self._children_preview_cache[(snap_gen, ds, raw_sid, raw_uid, lim)] = (
                     [dict(r) for r in val[0]],
                     val[1],
                 )
+            if len(self._children_preview_cache) > 512:
+                self._children_preview_cache = {
+                    k: v for k, v in self._children_preview_cache.items() if k[0] >= snap_gen - 2
+                }
+                while len(self._children_preview_cache) > 512:
+                    self._children_preview_cache.pop(next(iter(self._children_preview_cache)))
         out.update(fetched)
         return out
 
@@ -4898,13 +4901,13 @@ class CatalogIndex:
             ]
         if snap_gen > 0:
             with self._state_lock:
+                self._pending_raw_cache[(snap_gen, ds, lim)] = ([dict(r) for r in rows], total)
                 if len(self._pending_raw_cache) > 32:
                     self._pending_raw_cache = {
                         k: v for k, v in self._pending_raw_cache.items() if k[0] >= snap_gen - 2
                     }
-                    if len(self._pending_raw_cache) > 32:
-                        self._pending_raw_cache.clear()
-                self._pending_raw_cache[(snap_gen, ds, lim)] = ([dict(r) for r in rows], total)
+                    while len(self._pending_raw_cache) > 32:
+                        self._pending_raw_cache.pop(next(iter(self._pending_raw_cache)))
         return rows, total
 
     def query_search_metadata(

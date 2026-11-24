@@ -1267,6 +1267,22 @@ class V2APITests(AioHTTPTestCase):
             self.dummy_official.authorized_datasets = orig_auth_ds
             self.registry.state['projects']['p1']['status'] = 'verified'
 
+        # 6. Initial read must re-check local binding AFTER _ensure_synced() before querying catalog!
+        orig_sync_read = cat.sync_for_read_async
+
+        async def _unconfirm_during_initial_sync(*args, **kwargs):
+            res = await orig_sync_read(*args, **kwargs)
+            self.registry.state['projects']['p1']['status'] = 'pending_confirmation'
+            return res
+
+        cat.sync_for_read_async = _unconfirm_during_initial_sync
+        try:
+            resp = await self.client.get('/v1/projects/p1/knowledge?limit=10', headers=self.manager_headers)
+            self.assertEqual(resp.status, 403)
+        finally:
+            cat.sync_for_read_async = orig_sync_read
+            self.registry.state['projects']['p1']['status'] = 'verified'
+
 
 if __name__ == '__main__':
     unittest.main()

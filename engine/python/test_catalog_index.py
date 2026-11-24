@@ -1152,6 +1152,10 @@ class CatalogIndexTests(unittest.TestCase):
                 cat.rebuild_atomic([self.ds_proj])
 
         # Disk now holds B.md; revert official source back to A.md and verify sync reconciles to A.md!
+        with cat._state_lock:
+            self.assertIsNone(cat._last_synced_ds_tuple)
+            self.assertFalse(cat._has_synced_in_process)
+            self.assertTrue(cat._bg_sync_failed)
         with sqlite3.connect(self.cognee_db) as con:
             con.execute("UPDATE data SET name = 'A.md', label = 'LabelA' WHERE id = ?", (uuid.UUID(d1).hex,))
         cat.sync([self.ds_proj])
@@ -1402,7 +1406,9 @@ class CatalogIndexTests(unittest.TestCase):
 
         same_timer = object()
         old_pending = ((self.ds_proj,), None)
-        new_pending = ((self.ds_proj, self.ds_common), None)
+        # Same value as old_pending, distinct tuple object (must be distinguished by identity!)
+        new_pending = ((self.ds_proj,), None)
+        self.assertIsNot(old_pending, new_pending)
         entered_sig = threading.Event()
         release_sig = threading.Event()
         orig_full_sig = cat._full_stat_sig
