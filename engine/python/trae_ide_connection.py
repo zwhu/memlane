@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import signal
 
 from project_policy import PolicyError
 from trae_ide_hook import record_hook_error, scrub_diagnostic_secrets
@@ -153,24 +154,43 @@ class HookDispatch:
             process = await asyncio.create_subprocess_exec(
                 self.python, '-B', str(script), event, '--dispatch', cwd=cwd, env=environment, umask=0o077,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
             async def report(code, error_type, stderr):
                 await asyncio.to_thread(record_dispatch_error, installation['home'], identity, event,
                                         status=process.returncode, error_code=code, error_type=error_type,
                                         stderr=stderr, payload=payload)
 
-            # Keep draining the original pipes after killing the worker so
-            # timeout diagnostics include bytes already read by communicate.
-            communication = asyncio.create_task(process.communicate(raw))
-            try:
-                output, stderr = await asyncio.wait_for(asyncio.shield(communication), timeout=20)
-            except (asyncio.TimeoutError, asyncio.CancelledError) as error:
+            def terminate_worker():
+                pid = getattr(process, 'pid', None)
+                if type(pid) is int and pid > 0:
+                    try:
+                        os.killpg(pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
                 if process.returncode is None:
                     try:
                         process.kill()
                     except ProcessLookupError:
                         pass
-                _, stderr = await asyncio.shield(communication)
+
+            # Keep draining the original pipes after killing the worker group so
+            # timeout diagnostics include bytes already read by communicate, while
+            # bounding the drain so stubborn descendants cannot pin a dispatch slot.
+            communication = asyncio.create_task(process.communicate(raw))
+            try:
+                output, stderr = await asyncio.wait_for(asyncio.shield(communication), timeout=20)
+            except (asyncio.TimeoutError, asyncio.CancelledError) as error:
+                terminate_worker()
+                stderr = b''
+                try:
+                    _, stderr = await asyncio.wait_for(asyncio.shield(communication), timeout=2)
+                except asyncio.TimeoutError:
+                    communication.cancel()
+                    try:
+                        await communication
+                    except (asyncio.CancelledError, Exception):
+                        pass
                 if isinstance(error, asyncio.TimeoutError):
                     await report('dispatch_timeout', 'TimeoutError', stderr)
                 raise

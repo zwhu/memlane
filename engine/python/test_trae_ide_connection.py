@@ -146,8 +146,9 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
         original_wait = asyncio.wait_for
 
         async def deadline(awaitable, timeout):
-            self.assertEqual(timeout, 20)
-            return await original_wait(awaitable, timeout=.01)
+            if timeout == 20:
+                return await original_wait(awaitable, timeout=.01)
+            return await original_wait(awaitable, timeout=timeout)
 
         with (patch('asyncio.create_subprocess_exec', new_callable=AsyncMock, return_value=worker),
               patch('asyncio.wait_for', side_effect=deadline)):
@@ -157,6 +158,33 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(killed.is_set())
         self.assertEqual(self.dispatch.running, 0)
         self.assertEqual(self.assert_diagnostic('dispatch_timeout')['status'], -9)
+
+    async def test_timeout_with_held_pipes_bounds_drain_and_releases_slot(self):
+        never = asyncio.Event()
+        killed = False
+
+        async def stuck_communicate(raw):
+            await never.wait()
+            return b'', b''
+
+        def kill():
+            nonlocal killed
+            killed = True
+
+        worker = SimpleNamespace(returncode=None, communicate=AsyncMock(side_effect=stuck_communicate), kill=kill)
+        original_wait = asyncio.wait_for
+
+        async def fast_deadlines(awaitable, timeout):
+            return await original_wait(awaitable, timeout=.01)
+
+        with (patch('asyncio.create_subprocess_exec', new_callable=AsyncMock, return_value=worker),
+              patch('asyncio.wait_for', side_effect=fast_deadlines)):
+            with self.assertRaises(asyncio.TimeoutError):
+                await self.dispatch.run(self.identity, 'Stop', self.raw('Stop'))
+        self.assertTrue(killed)
+        self.assertEqual(self.dispatch.running, 0)
+        entry = self.native.last_hook_error()
+        self.assertEqual(entry['error_code'], 'dispatch_timeout')
 
     async def test_invalid_output_is_reported(self):
         for output in (b'broken', b'[]', b'x' * (MAX_INPUT + 1)):

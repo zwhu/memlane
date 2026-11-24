@@ -364,7 +364,7 @@ sys.exit({status})
  sys.exit(0)
 assert sys.argv[1:] == ['app-server', '--strict-config', '--stdio']
 root=Path(""")
-        source = source.replace('def send(x):', """for key, message in [('view_image', 'unknown field `view_image`'),
+        source = source.replace('def send(x):', """for key, message in [('view_image', 'Error: /tmp/traecli.toml:2:1: unknown configuration field `features.view_image`\\n'),
                      ('remote_plugin', 'invalid feature "remote_plugin"')]:
  if key + ' = false' in config:
   sys.stderr.write(message)
@@ -378,6 +378,63 @@ def send(x):""")
             self.assertEqual(len(self.processes) - before, expected_spawns)
         self.assertEqual(self.peak_live, 1)
         self.assertFalse((args.diagnostics_dir / 'codex-start-failure.json').exists())
+
+    async def test_cancellation_during_startup_cleanup_does_not_retry_worker(self):
+        args = self.prepare_http_args('traex', timeout=3)
+        source = self.fake_source('success', 'traex')
+        source = source.replace('def send(x):', """if 'hooks = false' in config:
+ sys.stderr.write('Error: /tmp/traecli.toml:2:1: unknown configuration field `features.hooks`\\n')
+ sys.exit(1)
+def send(x):""")
+        self.write_executable(source)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        real_terminate = endpoint.terminate
+
+        async def paused_terminate(process):
+            entered.set()
+            await release.wait()
+            return await real_terminate(process)
+
+        before = len(self.processes)
+        with patch.object(endpoint, 'terminate', side_effect=paused_terminate):
+            task = asyncio.create_task(endpoint.execute(args, 'system', 'prompt', SCHEMA, endpoint.strict_schema(SCHEMA)))
+            await asyncio.wait_for(entered.wait(), 3)
+            task.cancel()
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertEqual(len(self.processes) - before, 1)
+
+    async def test_startup_timeout_with_log_noise_does_not_exclude_disabled_feature(self):
+        args = self.prepare_http_args('traex', timeout=.3)
+        self.write_executable(f"""#!{self.python}
+import sys, time
+if sys.argv[1:] == ['features', 'list']:
+    sys.exit(2)
+sys.stderr.write('debug log: unknown field `hooks` mentioned in prose\\n')
+sys.stderr.flush()
+time.sleep(10)
+""")
+        before = len(self.processes)
+        with self.assertRaises(endpoint.CompletionError) as caught:
+            await endpoint.execute(args, 'system', 'prompt', SCHEMA, endpoint.strict_schema(SCHEMA))
+        self.assertEqual(caught.exception.code, 'codex_timeout')
+        self.assertEqual(len(self.processes) - before, 1)
+        cache_key = endpoint.feature_cache_key(args.codex_executable, 'trae')
+        _, excluded = endpoint._feature_cache.get(cache_key, (None, frozenset()))
+        self.assertNotIn('hooks', excluded)
+
+    async def test_terminal_error_with_wrong_turn_id_rejected(self):
+        args = self.prepare_http_args('traex', timeout=3)
+        source = self.fake_source('terminal', 'traex').replace(
+            "'turnId':'wrong' if mode == 'retry-wrong-turn' else 'u'",
+            "'turnId':'wrong'",
+        )
+        self.write_executable(source)
+        with self.assertRaises(endpoint.CompletionError) as caught:
+            await endpoint.execute(args, 'system', 'prompt', SCHEMA, endpoint.strict_schema(SCHEMA))
+        self.assertEqual((caught.exception.code, caught.exception.status), ('codex_event_identity_invalid', 502))
 
     async def test_strict_config_ignores_nonfeature_errors_and_limits_retries(self):
         args = self.prepare_http_args('traex', timeout=3)

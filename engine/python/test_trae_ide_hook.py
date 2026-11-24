@@ -147,6 +147,44 @@ class TurnTests(unittest.TestCase):
         self.run_hook('SessionEnd', last_assistant_message='private denied answer')
         self.assertEqual(self.qa(), [('allowed', 'allowed answer')])
 
+    def test_overflow_evicting_paused_tombstone_does_not_mispair_paused_reply(self):
+        self.enabled = False
+        self.run_hook('UserPromptSubmit', prompt='private paused prompt')
+        self.enabled = True
+        for number in range(hook.MAX_PENDING_TURNS):
+            self.run_hook('UserPromptSubmit', prompt=f'Q{number}')
+        self.assertEqual(self.state.get('trae_ide_evicted_stops'), 1)
+        self.run_hook('Stop', last_assistant_message='private paused answer')
+        self.assertEqual(self.qa(), [])
+        self.assertNotIn('trae_ide_evicted_stops', self.state)
+        self.run_hook('Stop', last_assistant_message='A0')
+        self.assertEqual(self.qa(), [('Q0', 'A0')])
+
+    def test_transient_capture_failure_preserves_remaining_turns_and_defers_final_flush(self):
+        for question in ('Q1', 'Q2', 'Q3'):
+            self.run_hook('UserPromptSubmit', prompt=question)
+        calls = 0
+
+        def flaky_capture(request, *_):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise ValueError('capture_state_locked')
+            self.entries.append(request)
+
+        with patch.object(hook.memory, 'capture', side_effect=flaky_capture):
+            with self.assertRaisesRegex(ValueError, 'capture_state_locked'):
+                self.run_hook('SessionEnd')
+        self.assertEqual(self.qa(), [('Q1', '[Turn interrupted before assistant completion]')])
+        self.assertEqual([turn['question'] for turn in self.state['trae_ide_turns']], ['Q2', 'Q3'])
+        self.assertFalse(any(call.args[0].get('final') is True for call in self.handle.call_args_list))
+
+        self.run_hook('SessionEnd')
+        marker = '[Turn interrupted before assistant completion]'
+        self.assertEqual(self.qa(), [('Q1', marker), ('Q2', marker), ('Q3', marker)])
+        self.assertEqual(self.state['trae_ide_turns'], [])
+        self.assertTrue(self.handle.call_args.args[0]['final'])
+
 
 class ForwardTests(unittest.TestCase):
     def setUp(self):

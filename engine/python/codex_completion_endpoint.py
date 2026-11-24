@@ -219,12 +219,24 @@ def probe_supported_features(executable, *, provider='openai', env=None, cwd=Non
         inflight.wait(timeout=timeout + 1.0)
 
     def run(environment, work):
-        result = subprocess.run([str(executable), 'features', 'list'], env=environment, cwd=work,
+        proc = subprocess.Popen([str(executable), 'features', 'list'], env=environment, cwd=work,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                timeout=timeout, encoding='utf-8', errors='replace')
+                                encoding='utf-8', errors='replace', start_new_session=True)
+        try:
+            stdout, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()
+            try:
+                proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+            raise
         features = set()
-        if result.returncode == 0:
-            for line in result.stdout.splitlines():
+        if proc.returncode == 0:
+            for line in stdout.splitlines():
                 tokens = line.split()
                 if (len(tokens) >= 3 and re.fullmatch(r'[a-z0-9_]+', tokens[0])
                         and tokens[-1] in ('true', 'false') and ' '.join(tokens[1:-1]).lower() != 'removed'):
@@ -269,11 +281,20 @@ def disabled_features(provider, supported_features, excluded_features):
 
 
 def parse_unknown_feature_error(stderr, candidates):
-    for match in re.finditer(
-            r"""(?i)\b(?:unknown (?:field|feature)|invalid feature)\s*[:=]?\s*['"`]?([a-z0-9_]+)(?![a-z0-9_-])""",
-            stderr.decode(errors='replace') if isinstance(stderr, bytes) else stderr):
-        if match[1] in candidates:
-            return match[1]
+    text = stderr.decode(errors='replace') if isinstance(stderr, bytes) else stderr
+    for line in text.splitlines():
+        for pattern in (
+            r"""(?i)\bunknown (?:configuration )?field\s*[:=]?\s*['"`]features\.([a-z0-9_]+)['"`]""",
+            r"""(?i)\b(?:unknown|invalid) feature\s*[:=]?\s*['"`]?(?:features\.)?([a-z0-9_]+)(?![a-z0-9_-])""",
+        ):
+            for match in re.finditer(pattern, line):
+                if match[1] in candidates:
+                    return match[1]
+        if any(marker in line.lower() for marker in ('features', 'config.toml', 'traecli.toml')):
+            for match in re.finditer(
+                    r"""(?i)\bunknown (?:configuration )?field\s*[:=]?\s*['"`]([a-z0-9_]+)['"`]""", line):
+                if match[1] in candidates:
+                    return match[1]
     return None
 
 
@@ -605,9 +626,13 @@ async def execute_attempt(args, system, prompt, schema, transport, *, kind, prov
             if method == 'error':
                 error = remote_error(params.get('error'))
                 will_retry = kind in ('codex', 'traex') and params.get('willRetry') is True
+                active_turn = turn_id or announced
                 if will_retry:
-                    active_turn = turn_id or announced
                     if not active_turn or params.get('threadId') != thread_id or params.get('turnId') != active_turn:
+                        raise CompletionError('codex_event_identity_invalid')
+                else:
+                    if (('threadId' in params and params.get('threadId') != thread_id)
+                            or ('turnId' in params and active_turn and params.get('turnId') != active_turn)):
                         raise CompletionError('codex_event_identity_invalid')
                 trace = current_trace.get()
                 if trace and kind in ('codex', 'traex'):
@@ -685,20 +710,24 @@ async def execute_attempt(args, system, prompt, schema, transport, *, kind, prov
             track_process(args, process, False)
             stderr = await stderr_task
             if failure and turn_id is None:
-                if not initialized and failure != 'codex_cancelled':
+                if (not initialized and failure == 'codex_transport_closed'
+                        and process.returncode not in (None, 0)):
                     unsupported = parse_unknown_feature_error(stderr, candidates)
                     if unsupported:
                         remember_unsupported(unsupported)
                         if can_retry:
-                            raise UnsupportedStartupFeature from None
+                            return True
                 # Once initialized, the worker can see request instructions.
                 record_start_failure(args, process, failure, b'' if initialized else stderr)
+            return False
         cleanup = asyncio.create_task(finish())
         try:
-            await asyncio.shield(cleanup)
+            retry_unsupported = await asyncio.shield(cleanup)
         except asyncio.CancelledError:
             await cleanup
             raise
+        if retry_unsupported:
+            raise UnsupportedStartupFeature from None
 
 
 def default_request_args(args):

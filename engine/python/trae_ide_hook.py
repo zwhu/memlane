@@ -53,6 +53,16 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _load_turns(state):
+    previous = state.data.pop('trae_ide_turn', None)
+    turns = state.data.setdefault('trae_ide_turns', [])
+    if not isinstance(turns, list):
+        turns = state.data['trae_ide_turns'] = []
+    if isinstance(previous, dict):
+        turns.insert(0, previous)
+    return turns
+
+
 def observe_turn(event, key, payload):
     from _capture_policy import capture_enabled, sanitize
     from _coding_memory import _SessionState, _truncate
@@ -61,15 +71,18 @@ def observe_turn(event, key, payload):
     with _SessionState(key) as state:
         if not state.acquired:
             raise ValueError('capture_state_locked')
-        previous = state.data.pop('trae_ide_turn', None)
-        turns = state.data.setdefault('trae_ide_turns', [])
-        if isinstance(previous, dict):
-            turns.insert(0, previous)
-        drained = []
+        turns = _load_turns(state)
+        evicted = state.data.get('trae_ide_evicted_stops', 0)
+        if type(evicted) is not int or evicted < 0:
+            evicted = 0
+        pending = []
         turn_id = None
         if event == 'SessionStart':
             state.data.pop('trae_ide_turns', None)
-        elif event == 'UserPromptSubmit':
+            state.data.pop('trae_ide_evicted_stops', None)
+            state.save()
+            return None, []
+        if event == 'UserPromptSubmit':
             prompt = payload.get('prompt')
             if isinstance(prompt, str) and prompt.strip():
                 turn = {'id': uuid.uuid4().hex, 'time': now()}
@@ -79,8 +92,11 @@ def observe_turn(event, key, payload):
                 else:
                     turn['skipped_policy'] = True
                 turns.append(turn)
-        elif event == 'Stop' and turns:
-            drained.append(turns.pop(0))
+        elif event == 'Stop':
+            if evicted > 0:
+                evicted -= 1
+            elif turns:
+                pending = [dict(turns[0])]
         elif event == 'PostToolUseFailure':
             name = payload.get('tool_name')
             if turns and not turns[-1].get('skipped_policy') and isinstance(name, str) and name.strip():
@@ -88,11 +104,32 @@ def observe_turn(event, key, payload):
                 failures.append(_truncate(sanitize(name), 80))
                 del failures[:-8]
         if event == 'SessionEnd' or (event == 'PostToolUseFailure' and payload.get('is_interrupt') is True):
-            drained = turns[:]
-            turns.clear()
-        del turns[:-MAX_PENDING_TURNS]
+            pending = [dict(turn) for turn in turns]
+            evicted = 0
+        overflow = len(turns) - MAX_PENDING_TURNS
+        if overflow > 0:
+            del turns[:overflow]
+            evicted += overflow
+        if evicted > 0:
+            state.data['trae_ide_evicted_stops'] = evicted
+        else:
+            state.data.pop('trae_ide_evicted_stops', None)
         state.save()
-        return turn_id, drained
+        return turn_id, pending
+
+
+def _consume_turn(key, turn_id):
+    from _coding_memory import _SessionState
+
+    with _SessionState(key) as state:
+        if not state.acquired:
+            raise ValueError('capture_state_locked')
+        turns = _load_turns(state)
+        for index, item in enumerate(turns):
+            if isinstance(item, dict) and item.get('id') == turn_id:
+                del turns[index]
+                break
+        state.save()
 
 
 def interrupted_answer_for(turn):
@@ -104,13 +141,13 @@ def interrupted_answer_for(turn):
 
 def capture_turns(turns, answer, request, key, session, dataset):
     for index, turn in enumerate(turns):
-        if turn.get('skipped_policy'):
-            continue
-        reply = answer if index == len(turns) - 1 and isinstance(answer, str) and answer.strip() else interrupted_answer_for(turn)
-        memory.capture({**request, 'event_id': 'qa:' + turn['id'], 'entry': {
-            'type': 'qa', 'question': turn['question'], 'answer': reply,
-            'prompt_time': turn['time'], 'time': now(),
-        }}, key, session, dataset)
+        if not turn.get('skipped_policy'):
+            reply = answer if index == len(turns) - 1 and isinstance(answer, str) and answer.strip() else interrupted_answer_for(turn)
+            memory.capture({**request, 'event_id': 'qa:' + turn['id'], 'entry': {
+                'type': 'qa', 'question': turn['question'], 'answer': reply,
+                'prompt_time': turn['time'], 'time': now(),
+            }}, key, session, dataset)
+        _consume_turn(key, turn['id'])
 
 
 def capture_tool(payload, failed, request, key, session, dataset):
@@ -156,16 +193,18 @@ def handle(event, payload):
         if event == 'SessionEnd':
             flush['final'] = True
         failed = event == 'PostToolUseFailure'
-        try:
-            if failed:
-                capture_tool(payload, True, request, key, session, dataset)
-        finally:
+        tool_error = None
+        if failed:
             try:
-                _, turns = observe_turn(event, key, payload)
-                answer = None if failed else payload.get('last_assistant_message')
-                capture_turns(turns, answer, request, key, session, dataset)
-            finally:
-                memory.handle(flush)
+                capture_tool(payload, True, request, key, session, dataset)
+            except Exception as error:
+                tool_error = error
+        _, turns = observe_turn(event, key, payload)
+        answer = None if failed else payload.get('last_assistant_message')
+        capture_turns(turns, answer, request, key, session, dataset)
+        memory.handle(flush)
+        if tool_error is not None:
+            raise tool_error
     return {}
 
 
