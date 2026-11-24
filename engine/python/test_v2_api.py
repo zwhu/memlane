@@ -1286,3 +1286,91 @@ class V2APITests(AioHTTPTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class V2ApiExtractionTests(unittest.TestCase):
+    def test_compatibility_exports_resolve_to_extracted_symbols(self):
+        import v2_api
+        import v2_api_context
+        import v2_api_mutations
+        import v2_api_raw
+
+        for module, names in (
+            (v2_api_context, ('V2APIHandles', 'CursorCodec', '_filter_digest', '_SessionRelationsResolver')),
+            (v2_api_mutations, ('_archive_legacy_dates_if_unchanged',)),
+            (v2_api_raw, ('_query_raw_records_v2', '_query_session_children_v2')),
+        ):
+            for name in names:
+                with self.subTest(symbol=name):
+                    self.assertIs(getattr(v2_api, name), getattr(module, name))
+
+    def test_ml020_discovers_all_list_handlers_and_their_direct_budget_calls(self):
+        import ast
+        import importlib.util
+
+        engine_dir = Path(__file__).resolve().parent
+        lint_path = engine_dir.parents[1] / 'scripts' / 'lint.py'
+        spec = importlib.util.spec_from_file_location('memlane_lint', lint_path)
+        lint = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(lint)
+
+        tree = ast.parse((engine_dir / 'v2_api.py').read_text(encoding='utf-8'))
+        index = lint._build_ast_index(tree)
+        discovered = lint._collect_v2_list_handlers(tree, index['all_nodes'], index['functions'])
+        self.assertEqual(
+            {route: fn.name for route, fn in discovered},
+            {
+                '/v1/overview/bootstrap': 'overview_bootstrap_v2',
+                '/v1/overview/day': 'overview_day_v2',
+                '/v1/projects/{id}/knowledge': 'project_knowledge_v2',
+                '/v1/common/knowledge': 'common_knowledge_v2',
+                '/v1/search/recent': 'search_recent_v2',
+                '/v1/search/metadata': 'search_metadata_v2',
+                '/v1/projects/{id}/raw-records': 'raw_records_v2',
+                '/v1/projects/{id}/raw-records/sessions/{sid}/children': 'raw_records_session_children_v2',
+            },
+        )
+        self.assertEqual(len(discovered), 8)
+        for route, handler in discovered:
+            with self.subTest(route=route):
+                calls = {
+                    node.func.id for node in ast.walk(handler)
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                }
+                self.assertTrue({'_parse_limit', 'finalize_budgeted_payload'} <= calls)
+                self.assertEqual(ast.unparse(handler.body[-1]), 'return json_utf8_response(payload, raw_bytes=raw_bytes)')
+
+
+class V2ApiContextTests(unittest.IsolatedAsyncioTestCase):
+    async def test_search_scope_revalidates_live_access_and_refreshes_unfiltered_scope(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from project_policy import PolicyError
+        from v2_api_context import V2ApiContext
+
+        project_ds, common_ds = str(uuid.uuid4()), str(uuid.uuid4())
+        project = {'id': 'example', 'dataset_id': project_ds, 'status': 'verified'}
+        common = {'dataset_id': common_ds, 'status': 'verified'}
+        official = _DummyOfficial({project_ds, common_ds})
+        registry = SimpleNamespace(
+            path=Path('/unused/project-registry.json'),
+            state={'projects': {'example': project}, 'common': common},
+            managed_groups=lambda: [project, common],
+            official=official,
+        )
+        cat = SimpleNamespace(sync_for_read_async=AsyncMock())
+        ctx = V2ApiContext(registry, codex_config={'official_data': '/unused'}, catalog_index=cat, reading_state=object())
+        self.addAsyncCleanup(ctx.cleanup, None)
+
+        scope, revalidate = await ctx.resolve_search_scope('', project_ds.replace('-', ''))
+        self.assertEqual(scope['allowed_ds'], [project_ds])
+        self.assertEqual(scope['ds_to_proj'], {project_ds: 'example', common_ds: ''})
+        cat.sync_for_read_async.assert_awaited_once_with([project_ds, common_ds], relations_resolver=ctx.rel_resolver)
+
+        unfiltered, refresh = await ctx.resolve_search_scope('', '')
+        official.authorized = {common_ds}
+        await refresh()
+        self.assertEqual(unfiltered['allowed_ds'], [common_ds])
+        with self.assertRaises(PolicyError) as exc:
+            await revalidate()
+        self.assertEqual((exc.exception.code, exc.exception.status), ('dataset_access_denied', 403))

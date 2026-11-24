@@ -1444,3 +1444,43 @@ class CatalogIndexTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CatalogSyncStagesTests(unittest.TestCase):
+    def test_init_sync_state_preserves_high_watermark_and_existing_sequence(self):
+        from catalog_index import _create_catalog_schema
+        from catalog_sync_stages import init_sync_state
+        from types import SimpleNamespace
+
+        dataset = str(uuid.uuid4())
+        preserved = {(dataset, 'preserved'): 80, (dataset, 'existing'): 70}
+        with sqlite3.connect(':memory:') as con:
+            _create_catalog_schema(con, 'UTC')
+            con.execute('UPDATE catalog_meta SET generation = 3, last_doc_seq = 60')
+            owner = SimpleNamespace(
+                _write_con=con, tz_provider=lambda: 'UTC', provenance_path=None, recall_path=None,
+            )
+            state = init_sync_state(
+                owner, con, [dataset, dataset.replace('-', '')], force_full=True,
+                preserved_doc_seqs=preserved, min_last_doc_seq=65, min_generation=4,
+            )
+        self.assertEqual(state.allowed, [dataset])
+        self.assertEqual((state.cur_gen, state.initial_doc_seq), (4, 80))
+        self.assertFalse(state.stream_cold_bulk)
+        self.assertEqual(state.with_doc_seq(dataset, (dataset, 'existing'), 50)[-1], 50)
+        self.assertEqual(state.with_doc_seq(dataset, (dataset, 'preserved'))[-1], 80)
+        self.assertEqual(state.with_doc_seq(dataset, (dataset, 'moved'), 90)[-1], 90)
+        self.assertEqual(state.with_doc_seq(dataset, (dataset, 'new'))[-1], 91)
+        self.assertEqual(preserved, {(dataset, 'preserved'): 80, (dataset, 'existing'): 70})
+
+    def test_cognee_column_projection_keeps_missing_fields_in_position(self):
+        from catalog_sync_stages import build_cognee_data_columns
+
+        with sqlite3.connect(':memory:') as con:
+            con.execute('CREATE TABLE data (id TEXT, name TEXT, mime_type TEXT)')
+            con.execute("INSERT INTO data VALUES ('doc', 'title', 'text/plain')")
+            expressions, projection = build_cognee_data_columns(con)
+            projected = con.execute(f'SELECT {projection} FROM data').fetchone()
+
+        self.assertEqual(expressions['pipeline_status'], 'NULL')
+        self.assertEqual(projected, ('doc', 1, 'title', *(None,) * 9, 'text/plain'))
