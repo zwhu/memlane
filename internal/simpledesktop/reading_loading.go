@@ -253,6 +253,7 @@ func clearUnavailableItem(item *Item) {
 	item.SubagentTotalCount = 0
 	item.SubagentsLoading = false
 	item.SessionSummary = ""
+	item.ParentTitle = ""
 	item.RecallStats = nil
 	item.ReadingState = "unavailable"
 	item.ReadingError = "内容不可用"
@@ -261,6 +262,8 @@ func clearUnavailableItem(item *Item) {
 		doc.Metadata = nil
 		item.Document = &doc
 		item.Title = doc.title()
+	} else if item.Session != nil {
+		item.Title = ""
 	}
 }
 
@@ -704,22 +707,25 @@ func (c *overviewController) invalidateReading(dataset string) {
 
 func invalidateReadingPane(s *pane, dataset string) {
 	cancelTitles(s)
+	// authEpoch is incremented globally by InvalidateReading, so every in-flight
+	// pane load/read callback will be fenced on return; always cancel and clear
+	// transient loading flags so empty or unrelated panes never stay stuck loading.
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
+	}
+	s.Loading = false
+	s.Locating = false
+	s.Knowledge.Appending = false
+	s.Knowledge.Prepending = false
+	s.RawAppending = false
 	paneMatches := dataset == "" ||
 		(len(s.Items) > 0 && s.Items[0].Dataset == dataset) ||
 		(s.Selected != nil && s.Selected.Dataset == dataset) ||
 		(s.HomeAnchor != nil && s.HomeAnchor.Dataset == dataset) ||
 		(s.SubagentParent != nil && s.SubagentParent.Dataset == dataset)
 	if paneMatches {
-		if s.cancel != nil {
-			s.cancel()
-			s.cancel = nil
-		}
 		s.request++
-		s.Loading = false
-		s.Locating = false
-		s.Knowledge.Appending = false
-		s.Knowledge.Prepending = false
-		s.RawAppending = false
 		s.Knowledge.NextCursor = ""
 		s.Knowledge.PrevCursor = ""
 		s.Knowledge.HasPrev = false
@@ -806,18 +812,17 @@ func invalidateReadingPane(s *pane, dataset string) {
 	if s.SourcePage != nil && (dataset == "" || s.SourcePage.Dataset == dataset) {
 		s.SourcePage = nil
 	}
+	if s.readCancel != nil {
+		s.readCancel()
+		s.readCancel = nil
+	}
+	s.Reading = false
+	s.ReadingSource = false
 	if dataset == "" || (s.Selected != nil && s.Selected.Dataset == dataset) {
-		if s.readCancel != nil {
-			s.readCancel()
-			s.readCancel = nil
-		}
 		s.readRequest++
 		if s.Selected != nil {
 			s.Selected = nil
-			s.Reading = false
 			s.Error = "内容已失效或无权读取，请刷新"
-		} else {
-			s.Reading = false
 		}
 	}
 	history := s.History[:0]

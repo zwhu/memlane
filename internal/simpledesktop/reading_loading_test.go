@@ -856,9 +856,9 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 		len(p1.RawCatalog) != 1 || p1.RawCatalog[0].ID != second.ID {
 		t.Fatal("scoped invalidation did not reset the matched pane exactly once")
 	}
-	if p2.request != 0 || p2.readRequest != 0 || p2.titleRequest != 1 || !p2.Loading || p2.Selected == nil ||
+	if p2.request != 0 || p2.readRequest != 0 || p2.titleRequest != 1 || p2.Loading || p2.Reading || p2.Selected == nil ||
 		p2.Items[0].Body != second.Body || queueReader.request != 1 || queueReader.readRequest != 1 || queueReader.titleRequest != 1 {
-		t.Fatal("scoped invalidation changed unrelated pane data or failed to deduplicate the queue reader")
+		t.Fatal("scoped invalidation changed unrelated pane data, left loading stuck, or failed to deduplicate the queue reader")
 	}
 	if v.snapshotVersion != 1 || v.generation != 1 || v.activityGeneration != 1 || v.dayRequest != 1 ||
 		v.cancel != nil || v.activityCancel != nil || v.dayCancel != nil || v.recallCancel != nil ||
@@ -956,6 +956,39 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 		app.InvalidateReading("ds-2")
 		if app.overviewState.ExpandedEvent != "" || app.overviewState.ExpandedDetail != nil || app.overviewState.ExpandedReport != "" {
 			t.Fatal("revoking ds-2 did not close evicted ds-2 failure dialog")
+		}
+	})
+
+	t.Run("session title excerpt cleared and empty/unrelated pane loading unfrozen", func(t *testing.T) {
+		app := New(Config{}, nil)
+		sessItem := Item{
+			ID: "sess-1", Dataset: "ds-1", Kind: "会话",
+			Title: "secret first question excerpt", ParentTitle: "secret parent question",
+			Session: &Session{ID: "sess-1", Dataset: "ds-1"}, ReadingState: "ready",
+		}
+		pSess := app.paneFor("知识/0/会话")
+		pSess.Items = []Item{sessItem}
+		pEmpty := app.paneFor("知识/1/知识")
+		pEmpty.Loading = true
+		pEmpty.Knowledge.Appending = true
+		pOther := app.paneFor("知识/2/知识")
+		otherItem := Item{ID: "k-2", Dataset: "ds-2", Kind: "知识", Title: "keep-ds2", Body: "keep-body"}
+		pOther.Items = []Item{otherItem}
+		pOther.Selected = &otherItem
+		pOther.Loading = true
+		pOther.Reading = true
+		otherCancelled := false
+		pOther.cancel = func() { otherCancelled = true }
+
+		app.InvalidateReading("ds-1")
+		if pSess.Items[0].Title != "" || pSess.Items[0].ParentTitle != "" || pSess.Items[0].ReadingState != "unavailable" {
+			t.Fatalf("revoked session retained title excerpt: %+v", pSess.Items[0])
+		}
+		if pEmpty.Loading || pEmpty.Knowledge.Appending {
+			t.Fatal("empty pane stayed stuck in loading after dataset invalidation")
+		}
+		if !otherCancelled || pOther.Loading || pOther.Reading || pOther.Selected == nil || pOther.Items[0].Title != "keep-ds2" {
+			t.Fatal("unrelated pane stayed stuck loading or lost its already-loaded ds-2 data")
 		}
 	})
 }
